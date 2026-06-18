@@ -16,6 +16,7 @@ import { planeToWorld, type PlaneFrame } from "./sketchPlaneFrame";
 import { slotOutline } from "./sketchSlot";
 import { bsplinePoints, catmullRomPoints, type Vec2 } from "./sketchSpline";
 import { closedRegionsCached } from "./sketchRegions";
+import { regularPolygonVertices } from "./sketchSession";
 
 export interface SketchSubCall {
   type: string;
@@ -51,9 +52,12 @@ export function collectSketchLinePickables(
     const a = p.start;
     const b = p.end;
     if (
-      !Array.isArray(a) || !Array.isArray(b) ||
-      typeof a[0] !== "number" || typeof a[1] !== "number" ||
-      typeof b[0] !== "number" || typeof b[1] !== "number"
+      !Array.isArray(a) ||
+      !Array.isArray(b) ||
+      typeof a[0] !== "number" ||
+      typeof a[1] !== "number" ||
+      typeof b[0] !== "number" ||
+      typeof b[1] !== "number"
     ) {
       continue;
     }
@@ -76,11 +80,19 @@ export function collectSketchLineSegments(
 ): number[] {
   const out: number[] = [];
   const emit = (a: [number, number], b: [number, number]) => {
-    out.push(...planeToWorld(a[0], a[1], frame), ...planeToWorld(b[0], b[1], frame));
+    out.push(
+      ...planeToWorld(a[0], a[1], frame),
+      ...planeToWorld(b[0], b[1], frame),
+    );
   };
 
   const getVec2 = (v: unknown): [number, number] | null => {
-    if (Array.isArray(v) && v.length >= 2 && typeof v[0] === "number" && typeof v[1] === "number") {
+    if (
+      Array.isArray(v) &&
+      v.length >= 2 &&
+      typeof v[0] === "number" &&
+      typeof v[1] === "number"
+    ) {
       return [v[0], v[1]];
     }
     return null;
@@ -149,6 +161,24 @@ export function collectSketchLineSegments(
         }
         break;
       }
+      case "sketch_regular_polygon": {
+        // Ticket 8vb5: the N-gon outline was never emitted, so a committed
+        // regular polygon vanished (only its vertex dots survived). Emit the
+        // closed loop of edges from the same vertices the kernel computes.
+        const c = getVec2(p.center);
+        const r = getNum(p.radius);
+        if (c && r !== null && r > 0) {
+          const vs = regularPolygonVertices(
+            c,
+            r,
+            Number(p.sides),
+            p.inscribed !== false,
+          );
+          for (let i = 0; i < vs.length; i++)
+            emit(vs[i], vs[(i + 1) % vs.length]);
+        }
+        break;
+      }
       case "sketch_arc": {
         const c = getVec2(p.center);
         const r = getNum(p.radius);
@@ -156,7 +186,10 @@ export function collectSketchLineSegments(
         const sweep = getNum(p.sweep_angle);
         if (c && r !== null && r > 0 && a0 !== null && sweep !== null) {
           const a1 = a0 + sweep;
-          const steps = Math.max(8, Math.ceil((Math.abs(a1 - a0) / Math.PI) * 32));
+          const steps = Math.max(
+            8,
+            Math.ceil((Math.abs(a1 - a0) / Math.PI) * 32),
+          );
           let prev: [number, number] = [
             c[0] + r * Math.cos(a0),
             c[1] + r * Math.sin(a0),
@@ -217,6 +250,7 @@ export const SESSION_3D_TYPES: ReadonlySet<string> = new Set([
   "sketch_rectangle",
   "sketch_circle",
   "sketch_polygon",
+  "sketch_regular_polygon",
   "sketch_arc",
   "sketch_ellipse",
   "sketch_slot",
@@ -259,7 +293,8 @@ export function collectSketchSessionGeometry(
   const legs: number[] = [];
   const points: number[] = [];
   const handles: number[] = [];
-  const w = (a: Vec2): [number, number, number] => planeToWorld(a[0], a[1], frame);
+  const w = (a: Vec2): [number, number, number] =>
+    planeToWorld(a[0], a[1], frame);
   const seg = (target: number[], a: Vec2, b: Vec2) => {
     target.push(...w(a), ...w(b));
   };
@@ -282,12 +317,18 @@ export function collectSketchSessionGeometry(
   };
 
   const getVec2 = (v: unknown): Vec2 | null => {
-    if (Array.isArray(v) && v.length >= 2 && typeof v[0] === "number" && typeof v[1] === "number") {
+    if (
+      Array.isArray(v) &&
+      v.length >= 2 &&
+      typeof v[0] === "number" &&
+      typeof v[1] === "number"
+    ) {
       return [v[0], v[1]];
     }
     return null;
   };
-  const getNum = (v: unknown): number | null => (typeof v === "number" ? v : null);
+  const getNum = (v: unknown): number | null =>
+    typeof v === "number" ? v : null;
 
   for (const call of subCalls) {
     const p = call.params;
@@ -354,13 +395,34 @@ export function collectSketchSessionGeometry(
         }
         break;
       }
+      case "sketch_regular_polygon": {
+        // Ticket 8vb5: render the N-gon's closed edge loop + vertex dots.
+        const c = getVec2(p.center);
+        const r = getNum(p.radius);
+        if (c && r !== null && r > 0) {
+          const vs = regularPolygonVertices(
+            c,
+            r,
+            Number(p.sides),
+            p.inscribed !== false,
+          );
+          for (let i = 0; i < vs.length; i++) {
+            seg(line, vs[i], vs[(i + 1) % vs.length]);
+            pt(vs[i]);
+          }
+        }
+        break;
+      }
       case "sketch_arc": {
         const c = getVec2(p.center);
         const r = getNum(p.radius);
         const a0 = getNum(p.start_angle);
         const sweep = getNum(p.sweep_angle);
         if (c && r !== null && r > 0 && a0 !== null && sweep !== null) {
-          const steps = Math.max(8, Math.ceil((Math.abs(sweep) / Math.PI) * 32));
+          const steps = Math.max(
+            8,
+            Math.ceil((Math.abs(sweep) / Math.PI) * 32),
+          );
           arc(line, c[0], c[1], r, a0, sweep, steps);
           pt(c);
         }
@@ -399,9 +461,25 @@ export function collectSketchSessionGeometry(
           if (o) {
             const caps = 16;
             seg(line, o.aPlus, o.bPlus);
-            arc(line, o.centerB[0], o.centerB[1], o.radius, o.capBStart, -Math.PI, caps);
+            arc(
+              line,
+              o.centerB[0],
+              o.centerB[1],
+              o.radius,
+              o.capBStart,
+              -Math.PI,
+              caps,
+            );
             seg(line, o.bMinus, o.aMinus);
-            arc(line, o.centerA[0], o.centerA[1], o.radius, o.capAStart, -Math.PI, caps);
+            arc(
+              line,
+              o.centerA[0],
+              o.centerA[1],
+              o.radius,
+              o.capAStart,
+              -Math.PI,
+              caps,
+            );
             pt(a);
             pt(b);
           }
@@ -451,10 +529,19 @@ export function collectSketchSessionGeometry(
         const contours = p.contours;
         if (Array.isArray(contours)) {
           for (const c of contours) {
-            const cc = c as { start?: unknown; segments?: unknown; closed?: unknown };
+            const cc = c as {
+              start?: unknown;
+              segments?: unknown;
+              closed?: unknown;
+            };
             const start = cc.start;
             const segs = cc.segments;
-            if (!Array.isArray(start) || start.length !== 2 || !Array.isArray(segs)) continue;
+            if (
+              !Array.isArray(start) ||
+              start.length !== 2 ||
+              !Array.isArray(segs)
+            )
+              continue;
             let prev: Vec2 = [Number(start[0]), Number(start[1])];
             const first = prev;
             if (!isC) pt(first);

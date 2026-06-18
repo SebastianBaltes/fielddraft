@@ -9,7 +9,10 @@
  * solve pipeline.
  */
 
-import { buildDraftSketchState, ellipseParamsFromFocus } from "../sketchSession";
+import {
+  buildDraftSketchState,
+  ellipseParamsFromFocus,
+} from "../sketchSession";
 import { solveSketch } from "./planegcs";
 import type { SketchDiagnostics, SketchState } from "./types";
 
@@ -106,6 +109,14 @@ export function rebuildSubCallsFromSolved(
         }
         return { ...call, params: { ...call.params, vertices: newVerts } };
       }
+      return call;
+    }
+    if (call.type === "sketch_regular_polygon") {
+      // The N-gon is defined by centre/radius/sides — its vertices are derived,
+      // not solved back. But buildDraftSketchState pushes N vertex points, so
+      // advance nextId past them (ticket 8vb5) or later sub-calls misalign.
+      const sides = Math.max(3, Math.round(Number(call.params.sides) || 3));
+      nextId += sides;
       return call;
     }
     if (call.type === "sketch_arc") {
