@@ -7120,6 +7120,82 @@ mod tests {
     }
 
     #[test]
+    fn revolve_axis_direction_keeps_profile_on_positive_x() {
+        // Regression for tickets a204/ifn2: the revolve SDF folds every query to
+        // radius √(x²+z²) ≥ 0, so a profile that the axis-alignment lands on the
+        // NEGATIVE-x side is never reached → an EMPTY solid (nothing rendered,
+        // only B-Rep edges). Here the axis line points DOWNWARD (5,10)→(5,-10),
+        // which without the fix flips the +x rectangle (x=6..9) onto −x. The fix
+        // reverses the axis direction so the aligned profile stays on +x — the
+        // same revolve line, the same solid, a NON-empty SDF.
+        let registry = FeatureRegistry::with_builtins();
+        let mut doc = empty_ctx();
+        let mut ctx = Context::new(&mut doc);
+        let sketch_id = id(1);
+        let revolve_id = id(2);
+
+        let sketch_call = FeatureCall::new(
+            "sketch",
+            sketch_id.clone(),
+            json!({
+                "plane": "qCreatedBy(origin_plane_xy)",
+                "sub_calls": [
+                    {
+                        "type": "sketch_rectangle",
+                        "id": "r1",
+                        "params": { "corner_a": [6.0, -8.0], "corner_b": [9.0, 8.0] }
+                    },
+                    {
+                        "type": "sketch_line",
+                        "id": "10",
+                        "params": {
+                            "start": [5.0, 10.0],
+                            "end": [5.0, -10.0],
+                            "construction": true
+                        }
+                    }
+                ]
+            }),
+        );
+        let revolve_call = FeatureCall::new(
+            "revolve",
+            revolve_id.clone(),
+            json!({
+                "profiles": format!("qCreatedBy({sketch_id})"),
+                "axis": format!("qSketchLine({sketch_id}, 10)"),
+            }),
+        );
+        registry
+            .regenerate(&mut ctx, &[sketch_call, revolve_call], None)
+            .unwrap();
+
+        let revolve_feature = ctx
+            .features
+            .iter()
+            .find(|f| f.id == revolve_id)
+            .expect("revolve spine entry");
+        match &revolve_feature.export_primitive().expect("primitive") {
+            Primitive::Revolve { sketch, .. } => {
+                let aabb = sketch.aabb();
+                // The aligned profile must be wholly on +x (radius 1..4 from the
+                // picked axis), never on −x, regardless of axis direction.
+                assert!(
+                    aabb.min[0] >= -1e-4,
+                    "aligned profile leaked onto −x (empty-SDF bug): min x = {}",
+                    aabb.min[0]
+                );
+                assert!(
+                    (aabb.min[0] - 1.0).abs() < 1e-3 && (aabb.max[0] - 4.0).abs() < 1e-3,
+                    "expected radial extent 1..4, got {}..{}",
+                    aabb.min[0],
+                    aabb.max[0]
+                );
+            }
+            other => panic!("expected Primitive::Revolve, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn helix_with_sketch_line_axis_realigns_profile() {
         // A small circular thread profile at r≈5, with an explicit
         // construction `sketch_line` axis at x = 5. After alignment the
