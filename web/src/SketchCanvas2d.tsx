@@ -713,6 +713,42 @@ function resolveSnap(
     snapDistanceMm: SNAP_RADIUS_MM,
   });
 
+  // Tickets pgyf / ymbp: snap onto an existing SKETCH LINE segment (project the
+  // cursor onto the nearest committed line within the snap radius). Lower
+  // priority than an endpoint/origin coincident snap, so a vertex still wins;
+  // used as the fallback when no point-snap candidate applies. This is what
+  // lets the Point tool land on a line and a dragged endpoint land on another
+  // line. The in-flight draft line isn't a committed entity, so we never snap
+  // onto the line being drawn.
+  const lineSnap = ((): SnapResolution | null => {
+    let bestD = SNAP_RADIUS_MM;
+    let bestPt: [number, number] | null = null;
+    for (const e of state.entities) {
+      if (e.kind !== "line") continue;
+      const a = state.entities.find((x) => x.id === e.start);
+      const b = state.entities.find((x) => x.id === e.end);
+      if (!a || !b || a.kind !== "point" || b.kind !== "point") continue;
+      const np = nearestPointOnSegment(
+        cursor,
+        [a.at.x, a.at.y],
+        [b.at.x, b.at.y],
+      );
+      const d = dist2d(cursor, np);
+      if (d < bestD) {
+        bestD = d;
+        bestPt = np;
+      }
+    }
+    return bestPt
+      ? {
+          snapped: bestPt,
+          candidate: null,
+          anchor: bestPt,
+          coincidentTargetId: null,
+        }
+      : null;
+  })();
+
   // K6b: check B-Rep edge snapping before falling through to no-snap.
   // Edge snap is lower priority than entity snap (coincident/H/V) but
   // higher priority than no snap at all.
@@ -750,6 +786,8 @@ function resolveSnap(
   }
 
   if (cands.length === 0) {
+    // Fall back to a sketch-line projection snap before giving up (pgyf/ymbp).
+    if (lineSnap) return lineSnap;
     return {
       snapped: cursor,
       candidate: null,
@@ -831,6 +869,9 @@ function resolveSnap(
       }
     }
   }
+  // No endpoint / H-V / parallel snap applied — fall back to projecting onto a
+  // sketch line if the cursor is near one (pgyf/ymbp).
+  if (lineSnap) return lineSnap;
   return {
     snapped: cursor,
     candidate: null,
