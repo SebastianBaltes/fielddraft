@@ -105,9 +105,9 @@ export interface TicketPayload {
   uiState?: Record<string, unknown>;
   /** Replayable user-action trace — semantic actions (entered sketch, picked
    *  tool, applied constraint, picked entity) interleaved with raw input
-   *  (pointer/key/wheel/resize, with `data-testid` targets) — from
-   *  `serializeActionLog()`. Reconstructs the steps that led to the bug.
-   *  Privacy-conscious (no typed text). Written as a separate actions.json. */
+   *  (pointer/key/wheel/resize + field values, with `data-testid` targets) —
+   *  from `serializeActionLog()`. Reconstructs the steps that led to the bug.
+   *  Dev phase: logs everything, including typed text. actions.json. */
   actionLog?: Record<string, unknown>;
 }
 

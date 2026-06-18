@@ -218,7 +218,7 @@ export function ReportDialog({ store, onClose }: ReportDialogProps) {
               onChange={(e) => setIncludeActions(e.target.checked)}
             />
             <span className="label">
-              Attach action log (recent clicks, tools, picks — no typed text)
+              Attach action log (recent clicks, tools, picks, typed values)
             </span>
           </label>
 

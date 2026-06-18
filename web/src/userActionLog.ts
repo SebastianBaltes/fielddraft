@@ -9,13 +9,14 @@
  *    the Line tool, applied a constraint, selected a feature, picked an entity
  *    in the viewport. Emitted explicitly via `logUserAction()` from the store
  *    and a few UI boundaries (things that are NOT plain DOM clicks).
- *  - **Raw input** — pointer/keyboard/wheel/resize with coordinates and the
- *    nearest `data-testid`, so interaction bugs (drag distance, which element,
- *    timing) are reconstructable. Installed once via `installRawInputCapture`.
+ *  - **Raw input** — pointer/keyboard/wheel/resize + field value changes, with
+ *    coordinates and the nearest `data-testid`, so interaction bugs (drag
+ *    distance, which element, what was typed, timing) are reconstructable.
+ *    Installed once via `installRawInputCapture`.
  *
- * Privacy: never logs typed text or character keys — only control/modifier
- * keys by name, otherwise just "printable". Coordinates, window size and
- * tool/feature names are safe.
+ * Dev-phase logging: EVERYTHING is captured, including typed characters and the
+ * committed value of every field — there is no privacy filtering (we're in a
+ * pure dev phase). Revisit if/when this ships to real users.
  *
  * Plain module singleton — no React state, no store coupling, so any layer can
  * log without threading context. The Report dialog serialises it on demand.
@@ -29,7 +30,7 @@ export interface ActionEntry {
   cat: string;
   /** Specific action, e.g. "tool:sketch_line", "constraint:parallel". */
   name: string;
-  /** Optional structured payload (ids, values — never raw typed text). */
+  /** Optional structured payload (ids, type names, values, query strings). */
   detail?: Record<string, unknown>;
 }
 
@@ -43,12 +44,14 @@ export interface InputEntry {
   button?: number;
   /** Wheel direction sign. */
   dy?: number;
-  /** Control/modifier key name, or "printable" for ordinary characters. */
+  /** The pressed key, verbatim (`e.key`) — including typed characters. */
   key?: string;
   /** Active modifiers, e.g. "ctrl+shift". */
   mods?: string;
   /** Nearest `data-testid` (or tagName) under the event. */
   target?: string;
+  /** Committed field value for "input"-type entries (text/number/select). */
+  value?: string;
   /** Window size for resize entries. */
   w?: number;
   h?: number;
@@ -80,8 +83,8 @@ function push(entry: LogEntry): void {
 }
 
 /**
- * Record a semantic action. `detail` must not contain raw typed text — pass
- * ids, type names, numeric values, query strings, but not field contents.
+ * Record a semantic action — pass ids, type names, numeric values, query
+ * strings in `detail` (dev phase: typed values are fine too).
  */
 export function logUserAction(
   cat: string,
@@ -99,6 +102,17 @@ export function getActionLog(): LogEntry[] {
 /** Drop the whole log (e.g. on a fresh document / after a successful report). */
 export function clearActionLog(): void {
   buffer.length = 0;
+}
+
+// Dev affordance: expose the LIVE (bundled) log on window so it's inspectable
+// from the console (a dynamic re-import would be a separate module instance
+// with an empty buffer). Dev-only.
+if (typeof window !== "undefined" && import.meta.env?.DEV) {
+  (window as unknown as { __fdActionLog?: unknown }).__fdActionLog = {
+    get: getActionLog,
+    serialize: serializeActionLog,
+    clear: clearActionLog,
+  };
 }
 
 /** Serialise the log to a compact JSON document for the ticket payload. */
@@ -120,38 +134,6 @@ export function serializeActionLog(): {
 }
 
 // ─── raw input capture ──────────────────────────────────────────────
-
-/** Control keys we log by name (everything else is "printable" — never the
- *  actual character, to keep typed text out of the log). */
-const NAMED_KEYS = new Set([
-  "Escape",
-  "Enter",
-  "Tab",
-  "Backspace",
-  "Delete",
-  "Insert",
-  "Home",
-  "End",
-  "PageUp",
-  "PageDown",
-  "ArrowUp",
-  "ArrowDown",
-  "ArrowLeft",
-  "ArrowRight",
-  " ",
-  "F1",
-  "F2",
-  "F3",
-  "F4",
-  "F5",
-  "F6",
-  "F7",
-  "F8",
-  "F9",
-  "F10",
-  "F11",
-  "F12",
-]);
 
 function modString(e: {
   ctrlKey: boolean;
@@ -268,25 +250,43 @@ export function installRawInputCapture(): void {
   window.addEventListener(
     "keydown",
     (e) => {
-      // Privacy: only name control keys; ordinary characters log as "printable"
-      // (with modifiers, so shortcuts like ctrl+z are still legible).
-      const key = NAMED_KEYS.has(e.key)
-        ? e.key === " "
-          ? "Space"
-          : e.key
-        : e.key.length === 1 && (e.ctrlKey || e.metaKey || e.altKey)
-          ? e.key
-          : e.key.length === 1
-            ? "printable"
-            : e.key;
+      // Dev phase: log the key verbatim, typed characters included (no masking).
       push({
         t: now(),
         kind: "input",
         type: "key",
-        key,
+        key: e.key === " " ? "Space" : e.key,
         mods: modString(e),
         target: targetLabel(e.target),
       });
+    },
+    true,
+  );
+
+  // Field value changes: log the committed value of every input/textarea/select
+  // (dev phase — full text values). Fires on commit (blur/Enter for text, on
+  // pick for selects/checkboxes), so it's the final value, not per-keystroke.
+  window.addEventListener(
+    "change",
+    (e) => {
+      const el = e.target;
+      if (
+        el instanceof HTMLInputElement ||
+        el instanceof HTMLTextAreaElement ||
+        el instanceof HTMLSelectElement
+      ) {
+        const value =
+          el instanceof HTMLInputElement && el.type === "checkbox"
+            ? String(el.checked)
+            : el.value;
+        push({
+          t: now(),
+          kind: "input",
+          type: "input",
+          target: targetLabel(el),
+          value,
+        });
+      }
     },
     true,
   );
