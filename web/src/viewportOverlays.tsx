@@ -53,6 +53,10 @@ import {
   type SketchLinePickable,
 } from "./sketchOutline";
 import { buildDraftSketchState } from "./sketchSession";
+import {
+  getHoveredSketchEntity,
+  subscribeHoveredSketchEntity,
+} from "./sketchEntityHoverBridge";
 import { SketchDots, makeSketchDots } from "./sketchDots";
 import type { SketchState } from "./solver/types";
 import { displayDegreesOfFreedom } from "./solver/dofPreflight";
@@ -495,6 +499,9 @@ const SKETCH_STROKE_WIDTH = 4;
 const SKETCH_POINT_SIZE = 2 * SKETCH_STROKE_WIDTH;
 const SKETCH_AXIS_COLOR = 0x000000; // origin axes (rgba .25)
 const SKETCH_SELECTED_COLOR = 0xf97316; // COLOR_SELECTED
+// Pre-pick hover highlight (ticket zadt): amber, distinct from both the blue
+// edit strokes and the orange committed selection — "a click here picks this".
+const SKETCH_HOVER_COLOR = 0xfbbf24;
 
 /** Selection highlight + grip markers (world-space) for the picked sketch
  *  entities, mirroring drawOverlay's `drawSelectionHighlight` + `drawGrips`.
@@ -653,6 +660,44 @@ export function SketchSession3D() {
     return g.highlight.length || g.markers.length ? g : null;
   }, [active, frame, skState, session?.selection, session?.subCalls]);
 
+  // Pre-pick hover highlight (ticket zadt): the entity under the cursor while
+  // in select mode, published by the 2D interaction canvas. Drawn like the
+  // selection but amber and one layer below it — an already-selected entity
+  // keeps the orange selection look, so hover never doubles up on it.
+  const hoveredEntity = useSyncExternalStore(
+    subscribeHoveredSketchEntity,
+    getHoveredSketchEntity,
+    () => null,
+  );
+  const hover = useMemo(() => {
+    if (
+      !active ||
+      !frame ||
+      !session ||
+      !skState ||
+      hoveredEntity === null ||
+      session.selectedTool !== null ||
+      session.selection.includes(hoveredEntity)
+    ) {
+      return null;
+    }
+    const g = collectSelectionGeometry(
+      skState,
+      [hoveredEntity],
+      session.subCalls,
+      frame,
+    );
+    return g.highlight.length || g.markers.length ? g : null;
+  }, [
+    active,
+    frame,
+    skState,
+    hoveredEntity,
+    session?.selectedTool,
+    session?.selection,
+    session?.subCalls,
+  ]);
+
   const fill = useMemo(() => {
     if (!active || !frame || !session) return null;
     const tri = (poly: [number, number][]): number[][] => {
@@ -700,6 +745,7 @@ export function SketchSession3D() {
     leg: LineMat;
     axis: LineMat;
     selLine: LineMat;
+    hovLine: LineMat;
     fill: FillMat;
   } | null>(null);
   if (!matsRef.current) {
@@ -734,6 +780,7 @@ export function SketchSession3D() {
         leg: fatLine(SKETCH_LEG_COLOR, 2),
         axis: fatLine(SKETCH_AXIS_COLOR, 1, { opacity: 0.22 }),
         selLine: fatLine(SKETCH_SELECTED_COLOR, 4),
+        hovLine: fatLine(SKETCH_HOVER_COLOR, 4),
         fill: new MeshBasicNodeMaterial({
           color: SKETCH_FILL_COLOR,
           transparent: true,
@@ -774,6 +821,7 @@ export function SketchSession3D() {
         leg: solidLine(SKETCH_LEG_COLOR),
         axis: solidLine(SKETCH_AXIS_COLOR, 0.22),
         selLine: solidLine(SKETCH_SELECTED_COLOR),
+        hovLine: solidLine(SKETCH_HOVER_COLOR),
         fill: new THREE.MeshBasicMaterial({
           color: SKETCH_FILL_COLOR,
           transparent: true,
@@ -865,12 +913,16 @@ export function SketchSession3D() {
       addDots(geom.points, color, SKETCH_POINT_SIZE, 998); // double the line width (b78p)
       addDots(geom.handles, color, 6, 998);
     }
+    if (hover) {
+      addLines(hover.highlight, M.hovLine, 998.5, false);
+      addDots(hover.markers, SKETCH_HOVER_COLOR, 10, 998.6);
+    }
     if (selection) {
       addLines(selection.highlight, M.selLine, 999, false);
       addDots(selection.markers, SKETCH_SELECTED_COLOR, 10, 1000);
     }
     return { objs, dotSets };
-  }, [geom, fill, axes, selection, color, M, isWebGPU]);
+  }, [geom, fill, axes, hover, selection, color, M, isWebGPU]);
 
   useEffect(() => {
     invalidate();

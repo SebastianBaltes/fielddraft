@@ -75,6 +75,7 @@ import {
   rect3pCorners,
 } from "./sketchPrimitiveVariants";
 import { setOverlayRedraw } from "./sketchOverlayBridge";
+import { setHoveredSketchEntity } from "./sketchEntityHoverBridge";
 import { publishSketchHud, type SketchHudGeometry } from "./sketchHudBridge";
 import {
   publishSketchLabels,
@@ -2058,6 +2059,23 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
       );
       return;
     }
+    // Select mode (no drawing/constraint tool active): highlight the entity
+    // under the cursor so the user sees what a click will pick (ticket zadt).
+    // SketchSession3D draws the published id amber, mirroring the orange
+    // click-selection. Done before the tool guard below — hover is a
+    // select-mode-only affordance.
+    if (session.active && !session.selectedTool) {
+      const cam = readCamForCanvas(e.currentTarget as HTMLCanvasElement);
+      const [u, v] = screenToSketchFromEvent(e, cam);
+      const tolMm = SELECT_PICK_PX / Math.max(cam.zoom, 1e-6);
+      const hit = hitTestSketchEntity(
+        buildDraftSketchState(session.subCalls),
+        [u, v],
+        tolMm,
+      );
+      setHoveredSketchEntity(hit);
+      return;
+    }
     if (!session.active || !session.selectedTool) return;
     const cam = readCamForCanvas(e.currentTarget as HTMLCanvasElement);
     let [u, v] = screenToSketchFromEvent(e, cam);
@@ -2689,8 +2707,19 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
     lastCamVersionRef.current = -1;
   };
 
+  // zadt: the entity-hover highlight is a select-mode-only affordance. Drop it
+  // whenever the session ends or a tool takes over, so a stale amber stroke
+  // can't linger past the gesture that produced it.
+  useEffect(() => {
+    if (!session.active || session.selectedTool !== null) {
+      setHoveredSketchEntity(null);
+    }
+  }, [session.active, session.selectedTool]);
+
   const onPointerLeave = () => {
     hoverRef.current = null;
+    setHoveredSketchEntity(null); // zadt: drop the entity hover highlight
+
     snapRef.current = {
       snapped: [0, 0],
       candidate: null,
