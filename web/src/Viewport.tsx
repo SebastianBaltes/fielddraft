@@ -21,7 +21,11 @@ import * as THREE from "three";
 import { useKernelStore } from "./store";
 import type { PickHit, PickResult } from "./kernel";
 import type { BRepEdgeMode, FrameLoopMode } from "./SettingsMenu";
-import { SdfVmOverlay, SdfDeferredOverlay } from "./viewportSdfOverlays";
+import {
+  SdfVmOverlay,
+  SdfDeferredOverlay,
+  OVERLAY_LAYER,
+} from "./viewportSdfOverlays";
 import {
   CameraBridgePublisher,
   CameraRig,
@@ -170,7 +174,21 @@ function Scene({ ndc, onPick, renderMode, brepEdgeMode }: SceneProps) {
       <DatumOverlay />
       <Invalidator ndc={ndc} />
       <PerfProbe renderMode={renderMode} />
-      <gridHelper args={[BUILD_VOLUME_SIZE, 30, "#b8b8ae", "#d6d6ce"]} />
+      {/* Ticket p8dp: the ground grid must ALSO live on OVERLAY_LAYER so the
+          SDF overlay-on-top pass re-draws it AFTER the deferred shade quad —
+          otherwise the shade's opaque background fill on miss pixels paints
+          straight over the grid that the main-scene pass drew underneath it
+          (in sdf-vm the quad is transparent on miss, so the grid showed; in
+          sdf-deferred it didn't). depthWrite stays off so the grid is occluded
+          BY bodies (depthTest) without occluding other overlays. */}
+      <gridHelper
+        ref={(o: THREE.GridHelper | null) => {
+          if (!o) return;
+          o.layers.enable(OVERLAY_LAYER);
+          (o.material as THREE.Material).depthWrite = false;
+        }}
+        args={[BUILD_VOLUME_SIZE, 30, "#b8b8ae", "#d6d6ce"]}
+      />
     </>
   );
 }

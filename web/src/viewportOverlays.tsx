@@ -4163,10 +4163,20 @@ export function DatumOverlay() {
     invalidate();
   }, [hidden, selectedDatum, invalidate]);
 
+  // Ticket p8dp: the datum origin/planes share the grid's fate — the deferred
+  // shade quad's opaque miss-fill paints over anything the main-scene pass drew
+  // underneath it. Put them on OVERLAY_LAYER so the SDF overlay-on-top pass
+  // re-draws them AFTER the shade (depth-tested against the bodies). Re-runs
+  // whenever the visible set changes so freshly mounted meshes get the layer.
+  const groupRef = useRef<THREE.Group>(null);
+  useEffect(() => {
+    groupRef.current?.traverse((o) => o.layers.enable(OVERLAY_LAYER));
+  }, [originVisible, visiblePlanes.length, selectedDatum]);
+
   if (!originVisible && visiblePlanes.length === 0) return null;
 
   return (
-    <group>
+    <group ref={groupRef}>
       {originVisible && (
         <mesh>
           <sphereGeometry args={[1.5, 16, 16]} />
