@@ -43,7 +43,7 @@ pub const OP_PRIM2D_CIRCLE: u32  = 0x10; // +3: center(2) + radius(1)
 pub const OP_PRIM2D_RECT: u32    = 0x11; // +4: center(2) + half_extents(2)
 pub const OP_PRIM2D_POLY: u32    = 0x12; // +1+2N: vertex_count(1) + vertices(2*N)
 pub const OP_PRIM2D_SECTOR: u32  = 0x13; // +5: center(2) + radius(1) + start(1) + sweep(1)
-pub const OP_PRIM2D_PATH: u32    = 0x14; // +6+7N: seg_count(1) + closed(1) + bbox(4: minx,miny,maxx,maxy) + records(7*N), record = kind(1) + payload(6); every record is y-monotone
+pub const OP_PRIM2D_PATH: u32    = 0x14; // +2+7N: seg_count(1) + closed(1) + records(7*N), record = kind(1) + payload(6); every record is y-monotone
 
 // Binary operators — pop 2, push 1.
 pub const OP_UNION: u32          = 0x20; // +0
@@ -134,15 +134,7 @@ pub fn compile_body(node: &BoundedCsg) -> CompiledSdf {
 /// baking the factor into the FIELD is unsafe (it would change the shell wall
 /// thickness). Gyroid and Helix already normalise their FIELD (gyroid ·0.2887,
 /// `OP_HELIX_SCALE`), so they need no step relax here (factor 1.0).
-// Was 0.7 (Ticket 1wnm) to stop a thin revolve/shell wall being overshot at
-// grazing angles. But the analytic path field (OP_PRIM2D_PATH: exact
-// line/quad/arc distance) is Lipschitz-1, and the revolve warp r=√(x²+z²) and
-// the shell `max` preserve that — so a full sphere-trace step never overshoots.
-// The grazing miss only happened because the deferred proxy was the body AABB,
-// so rays approached the thin wall nearly tangent from far away; with a tight
-// leaf hull as the proxy (rays now approach the wall head-on) that motivation
-// is gone. Match the VM renderer (relax 1.0) — they must not differ.
-const REVOLVE_MARCH_RELAX: f32 = 1.0;
+const REVOLVE_MARCH_RELAX: f32 = 0.7;
 
 fn march_relax(node: &BoundedCsg) -> f32 {
     match node {
@@ -836,41 +828,6 @@ fn emit_path_record(segments: &[SketchSegment], closed: bool, out: &mut Vec<f32>
     out.push(op(OP_PRIM2D_PATH));
     out.push(records.len() as f32);
     out.push(if closed { 1.0 } else { 0.0 });
-    // Conservative 2D bbox of the whole profile (the GPU VM early-outs to the
-    // bbox distance when a sample is outside it, turning the far field O(1)
-    // instead of O(segments)·Cardano per march step). Bezier control hull and
-    // arc center±radius are conservative supersets of the actual curve, so the
-    // bound never clips the field. Empty profile → an inverted box that fails
-    // every "outside" test, so the loop still runs.
-    let (mut minx, mut miny) = (f32::INFINITY, f32::INFINITY);
-    let (mut maxx, mut maxy) = (f32::NEG_INFINITY, f32::NEG_INFINITY);
-    let mut grow = |x: f32, y: f32| {
-        minx = minx.min(x);
-        miny = miny.min(y);
-        maxx = maxx.max(x);
-        maxy = maxy.max(y);
-    };
-    for seg in &records {
-        match seg {
-            SketchSegment::Line { start, end } => {
-                grow(start[0], start[1]);
-                grow(end[0], end[1]);
-            }
-            SketchSegment::QuadBezier { p0, p1, p2 } => {
-                grow(p0[0], p0[1]);
-                grow(p1[0], p1[1]);
-                grow(p2[0], p2[1]);
-            }
-            SketchSegment::Arc { center, radius, .. } => {
-                grow(center[0] - radius, center[1] - radius);
-                grow(center[0] + radius, center[1] + radius);
-            }
-        }
-    }
-    out.push(minx);
-    out.push(miny);
-    out.push(maxx);
-    out.push(maxy);
     for seg in &records {
         match seg {
             SketchSegment::Line { start, end } => {
@@ -1073,11 +1030,6 @@ pub fn eval_opcodes_with_volumes(
             OP_PRIM2D_PATH => {
                 let n = rd!() as usize;
                 let closed = rd!() != 0.0;
-                // bbox(minx,miny,maxx,maxy): a GPU-only far-field early-out, so
-                // this mirror just consumes it and keeps the exact field (used
-                // by the DC mesher — far-field accuracy matters more than speed
-                // here, and the conservative GPU gate never moves a zero-set).
-                let _ = (rd!(), rd!(), rd!(), rd!());
                 let mut segs = Vec::with_capacity(n);
                 for _ in 0..n {
                     let kind = rd!();
