@@ -53,6 +53,7 @@ import { MeshBasicNodeMaterial, StorageBufferAttribute } from "three/webgpu";
 import { buildVmSdfEvalFn } from "./sdfVmInterpreter";
 import { buildHelixGeometry, decodeHelixParams } from "./helixMesh";
 import { buildSweepGeometry } from "./sweepMesh";
+import { ensureOutwardOrientation } from "./sweptShell";
 import {
   subdivideAlongAxis,
   applyWarp,
@@ -148,6 +149,10 @@ function createExtrudeGeometry(
       new THREE.Path(hole.map(([x, y]) => new THREE.Vector2(x, y))),
     );
   }
+  // ExtrudeGeometry self-normalises the shape orientation (ShapeUtils orients
+  // outer CCW / holes CW regardless of the input loop direction), so its
+  // winding + normals are already outward — no ensureOutwardOrientation needed
+  // here (verified: signed volume > 0 for both CW and CCW input contours).
   const geo = new THREE.ExtrudeGeometry(shape, {
     depth: 2 * halfHeight,
     bevelEnabled: false,
@@ -168,62 +173,12 @@ function createRevolveGeometry(
   // order (bottom→top vs top→bottom) and its x-sign, and the two can even
   // DISAGREE (a −x profile yields outward winding but inward normals). Rather
   // than special-case the input, build directly and force outward orientation
-  // after the fact — see orientRevolveOutward.
+  // after the fact — ensureOutwardOrientation handles concave and torus-loop
+  // profiles too (signed-volume test, not a radial heuristic).
   const points = contour.outer.map(([x, y]) => new THREE.Vector2(x, y));
   const geo = new THREE.LatheGeometry(points, 48);
-  orientRevolveOutward(geo);
+  ensureOutwardOrientation(geo);
   return geo;
-}
-
-/**
- * Force a LatheGeometry's triangle winding AND its normal attribute to face
- * OUTWARD (away from the revolve axis = local Y). The deferred G-buffer captures
- * the FrontSide of this proxy, so inward winding would cull the near wall and
- * capture the far wall → inside-out shading; the WebGL overlay shades with the
- * normals, so inward normals would light it backwards. Winding and normals are
- * corrected independently (they can disagree) via a per-triangle majority vote
- * of the geometric/stored normal against the radial direction (x,0,z).
- */
-function orientRevolveOutward(geo: THREE.BufferGeometry): void {
-  const pos = geo.getAttribute("position");
-  const nor = geo.getAttribute("normal");
-  const idx = geo.getIndex();
-  if (!idx || !nor) return;
-  const a = new THREE.Vector3();
-  const b = new THREE.Vector3();
-  const c = new THREE.Vector3();
-  const ab = new THREE.Vector3();
-  const ac = new THREE.Vector3();
-  const faceN = new THREE.Vector3();
-  let windingDot = 0;
-  let normalDot = 0;
-  for (let t = 0; t < idx.count; t += 3) {
-    const ia = idx.getX(t);
-    a.fromBufferAttribute(pos, ia);
-    b.fromBufferAttribute(pos, idx.getX(t + 1));
-    c.fromBufferAttribute(pos, idx.getX(t + 2));
-    ab.subVectors(b, a);
-    ac.subVectors(c, a);
-    faceN.crossVectors(ab, ac);
-    const rx = (a.x + b.x + c.x) / 3;
-    const rz = (a.z + b.z + c.z) / 3;
-    windingDot += faceN.x * rx + faceN.z * rz;
-    normalDot += nor.getX(ia) * rx + nor.getZ(ia) * rz;
-  }
-  if (windingDot < 0) {
-    const arr = idx.array as Uint16Array | Uint32Array;
-    for (let t = 0; t < arr.length; t += 3) {
-      const tmp = arr[t + 1];
-      arr[t + 1] = arr[t + 2];
-      arr[t + 2] = tmp;
-    }
-    idx.needsUpdate = true;
-  }
-  if (normalDot < 0) {
-    const arr = nor.array as Float32Array;
-    for (let i = 0; i < arr.length; i++) arr[i] = -arr[i];
-    nor.needsUpdate = true;
-  }
 }
 
 function createHelixGeometry(
