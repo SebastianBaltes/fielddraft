@@ -1223,32 +1223,51 @@ export async function compileDeferredPipeline(
 
 // ── Dispose ─────────────────────────────────────────────────────────
 
-export function disposeDeferredPipeline(state: DeferredPipelineState): void {
+export function disposeDeferredPipeline(
+  state: DeferredPipelineState,
+  renderer?: THREE.WebGPURenderer,
+): void {
+  // Ticket 323i: free the GPU resources only AFTER the device confirms it's
+  // done with every in-flight submit. Tearing the pipeline down synchronously
+  // (render-mode switch / StrictMode remount / unmount) raced the previous
+  // frame's submit → "Buffer used in submit while destroyed" → frozen device —
+  // the same race the rebuild path already guards (fg9o), just on teardown.
+  // Detach the JS bookkeeping now; the actual `.dispose()` waits for GPU idle.
+  const geometries: THREE.BufferGeometry[] = [];
+  const materials: THREE.Material[] = [];
   for (const meshes of state.bodyOpaqueMeshes.values()) {
     for (const m of meshes) {
-      m.geometry.dispose();
-      (m.material as THREE.Material).dispose();
+      geometries.push(m.geometry);
+      materials.push(m.material as THREE.Material);
     }
   }
   for (const meshes of state.bodyTransparentMeshes.values()) {
     for (const m of meshes) {
-      m.geometry.dispose();
-      (m.material as THREE.Material).dispose();
+      geometries.push(m.geometry);
+      materials.push(m.material as THREE.Material);
     }
   }
   for (const meshes of state.bodyBackMeshes.values()) {
-    for (const m of meshes) {
-      m.geometry.dispose();
-    }
+    for (const m of meshes) geometries.push(m.geometry);
   }
   state.bodyOpaqueMeshes.clear();
   state.bodyTransparentMeshes.clear();
   state.bodyBackMeshes.clear();
-  for (const tex of state.volumeTextures) tex.dispose();
+  const textures = state.volumeTextures;
   state.volumeTextures = [];
-  state.opaqueRT.dispose();
-  state.transparentRT.dispose();
-  state.transparentBackRT.dispose();
-  state.backFaceMaterial.dispose();
-  state.shadeMaterial.dispose();
+  const renderTargets = [
+    state.opaqueRT,
+    state.transparentRT,
+    state.transparentBackRT,
+  ];
+  const pipelineMaterials = [state.backFaceMaterial, state.shadeMaterial];
+  // disposeAfterGpuIdle falls back to synchronous disposal when no renderer /
+  // queue is available, so older callers keep working unchanged.
+  disposeAfterGpuIdle(renderer, () => {
+    for (const g of geometries) g.dispose();
+    for (const m of materials) m.dispose();
+    for (const t of textures) t.dispose();
+    for (const rt of renderTargets) rt.dispose();
+    for (const m of pipelineMaterials) m.dispose();
+  });
 }

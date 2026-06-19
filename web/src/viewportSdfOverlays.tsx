@@ -147,6 +147,9 @@ export function SdfVmOverlay({ brepEdgeMode }: { brepEdgeMode: BRepEdgeMode }) {
   const compilingRef = useRef(false);
   const readyRef = useRef(false);
   const matFeaturesRef = useRef<unknown>(null);
+  // Captured from useFrame so the unmount cleanup can defer the pipeline's GPU
+  // disposal until the device is idle (ticket 323i).
+  const rendererRef = useRef<WebGPURenderer | null>(null);
 
   useEffect(() => {
     pipelineRef.current = initVmPipeline();
@@ -159,7 +162,7 @@ export function SdfVmOverlay({ brepEdgeMode }: { brepEdgeMode: BRepEdgeMode }) {
 
     return () => {
       if (pipelineRef.current) {
-        disposeVmPipeline(pipelineRef.current);
+        disposeVmPipeline(pipelineRef.current, rendererRef.current ?? undefined);
         pipelineRef.current = null;
       }
     };
@@ -167,6 +170,7 @@ export function SdfVmOverlay({ brepEdgeMode }: { brepEdgeMode: BRepEdgeMode }) {
 
   useFrame(({ gl: renderer, camera }) => {
     if (!store || !pipelineRef.current) return;
+    rendererRef.current = renderer as unknown as WebGPURenderer;
     const pipeline = pipelineRef.current;
     const k = store.kernel;
     const count = k.bodyCount();
@@ -293,6 +297,9 @@ export function SdfDeferredOverlay({
   const readyRef = useRef(false);
   const matFeaturesRef = useRef<unknown>(null);
   const selectionRef = useRef<unknown>(null);
+  // Captured from useFrame so the unmount cleanup can defer the pipeline's GPU
+  // disposal until the device is idle (ticket 323i).
+  const rendererRef = useRef<WebGPURenderer | null>(null);
 
   useEffect(() => {
     pipelineRef.current = initDeferredPipeline(1, 1);
@@ -306,7 +313,7 @@ export function SdfDeferredOverlay({
 
     return () => {
       if (pipelineRef.current) {
-        disposeDeferredPipeline(pipelineRef.current);
+        disposeDeferredPipeline(pipelineRef.current, rendererRef.current ?? undefined);
         pipelineRef.current = null;
       }
     };
@@ -322,6 +329,7 @@ export function SdfDeferredOverlay({
 
   useFrame(({ gl: renderer, camera }) => {
     if (!store || !pipelineRef.current) return;
+    rendererRef.current = renderer as unknown as WebGPURenderer;
     const pipeline = pipelineRef.current;
     const k = store.kernel;
     const count = k.bodyCount();

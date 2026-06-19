@@ -430,8 +430,19 @@ export async function probeVmSdf(
 
 // ── Dispose ─────────────────────────────────────────────────────────
 
-export function disposeVmPipeline(state: VmPipelineState): void {
-  if (state.material) state.material.dispose();
-  if (state.mesh) state.mesh.geometry.dispose();
-  for (const tex of state.volumeTextures) tex.dispose();
+export function disposeVmPipeline(
+  state: VmPipelineState,
+  renderer?: THREE.WebGPURenderer,
+): void {
+  // Ticket 323i (mirrors the deferred teardown): defer the GPU `.dispose()`
+  // until the device is done with in-flight submits so tearing the pipeline
+  // down (render-mode switch / remount) can't race the last frame's submit.
+  const material = state.material;
+  const geometry = state.mesh?.geometry;
+  const textures = state.volumeTextures;
+  disposeAfterGpuIdle(renderer, () => {
+    material?.dispose();
+    geometry?.dispose();
+    for (const tex of textures) tex.dispose();
+  });
 }
