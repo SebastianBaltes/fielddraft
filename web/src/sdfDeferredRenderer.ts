@@ -161,21 +161,69 @@ function createRevolveGeometry(
 ): THREE.BufferGeometry | null {
   const contour = leaf.contour;
   if (!contour || contour.outer.length < 3) return null;
-  // Tickets a204/ngj1/ifn2: the kernel aligns the revolve axis onto local-Y,
-  // which can land the whole profile on the NEGATIVE-x side. LatheGeometry
-  // builds each vertex as (x·sinφ, y, x·cosφ): with x<0 the SURFACE is the same
-  // solid of revolution, but the φ-tangent flips, so the normals point INWARD —
-  // the mesh is backface-culled (invisible in the deferred hull = ifn2) or
-  // renders inside-out (garbled in WebGL = ngj1). The SDF revolves |x| (radius),
-  // so it stays correct (a204: "SDF VM korrekt"). Mirror a wholly-negative
-  // profile to +x: identical geometry, normals flipped outward. (Reversing the
-  // point order would flip the normal a SECOND time and re-break it.)
-  let outer = contour.outer;
-  if (Math.max(...outer.map((p) => p[0])) <= 0) {
-    outer = outer.map(([x, y]) => [-x, y] as [number, number]);
+  // LatheGeometry revolves the profile around local-Y as (x·sinφ, y, x·cosφ),
+  // so a profile on +x or −x sweeps the IDENTICAL solid (the SDF revolves the
+  // radius |x| — a204: "SDF VM korrekt"). What is NOT identical is the triangle
+  // winding and the analytic vertex normals: both depend on the profile's point
+  // order (bottom→top vs top→bottom) and its x-sign, and the two can even
+  // DISAGREE (a −x profile yields outward winding but inward normals). Rather
+  // than special-case the input, build directly and force outward orientation
+  // after the fact — see orientRevolveOutward.
+  const points = contour.outer.map(([x, y]) => new THREE.Vector2(x, y));
+  const geo = new THREE.LatheGeometry(points, 48);
+  orientRevolveOutward(geo);
+  return geo;
+}
+
+/**
+ * Force a LatheGeometry's triangle winding AND its normal attribute to face
+ * OUTWARD (away from the revolve axis = local Y). The deferred G-buffer captures
+ * the FrontSide of this proxy, so inward winding would cull the near wall and
+ * capture the far wall → inside-out shading; the WebGL overlay shades with the
+ * normals, so inward normals would light it backwards. Winding and normals are
+ * corrected independently (they can disagree) via a per-triangle majority vote
+ * of the geometric/stored normal against the radial direction (x,0,z).
+ */
+function orientRevolveOutward(geo: THREE.BufferGeometry): void {
+  const pos = geo.getAttribute("position");
+  const nor = geo.getAttribute("normal");
+  const idx = geo.getIndex();
+  if (!idx || !nor) return;
+  const a = new THREE.Vector3();
+  const b = new THREE.Vector3();
+  const c = new THREE.Vector3();
+  const ab = new THREE.Vector3();
+  const ac = new THREE.Vector3();
+  const faceN = new THREE.Vector3();
+  let windingDot = 0;
+  let normalDot = 0;
+  for (let t = 0; t < idx.count; t += 3) {
+    const ia = idx.getX(t);
+    a.fromBufferAttribute(pos, ia);
+    b.fromBufferAttribute(pos, idx.getX(t + 1));
+    c.fromBufferAttribute(pos, idx.getX(t + 2));
+    ab.subVectors(b, a);
+    ac.subVectors(c, a);
+    faceN.crossVectors(ab, ac);
+    const rx = (a.x + b.x + c.x) / 3;
+    const rz = (a.z + b.z + c.z) / 3;
+    windingDot += faceN.x * rx + faceN.z * rz;
+    normalDot += nor.getX(ia) * rx + nor.getZ(ia) * rz;
   }
-  const points = outer.map(([x, y]) => new THREE.Vector2(x, y));
-  return new THREE.LatheGeometry(points, 48);
+  if (windingDot < 0) {
+    const arr = idx.array as Uint16Array | Uint32Array;
+    for (let t = 0; t < arr.length; t += 3) {
+      const tmp = arr[t + 1];
+      arr[t + 1] = arr[t + 2];
+      arr[t + 2] = tmp;
+    }
+    idx.needsUpdate = true;
+  }
+  if (normalDot < 0) {
+    const arr = nor.array as Float32Array;
+    for (let i = 0; i < arr.length; i++) arr[i] = -arr[i];
+    nor.needsUpdate = true;
+  }
 }
 
 function createHelixGeometry(
