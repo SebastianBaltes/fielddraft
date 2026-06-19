@@ -311,6 +311,20 @@ export function Outliner({
     store.clearSelection();
   };
 
+  // Tickets rw26/nuh7: the sketch session's ✓/✗ both commit/discard the
+  // session AND close the Detail panel in one click. Without the explicit
+  // clearSelection() the just-edited sketch stays selected, so the panel
+  // re-renders as that sketch's generic feature dialog — looking unclosed
+  // and forcing the user to click a second time to actually deselect.
+  const handleSketchCommit = () => {
+    store.commitSketch();
+    store.clearSelection();
+  };
+  const handleSketchDiscard = () => {
+    store.exitSketch();
+    store.clearSelection();
+  };
+
   const handleDialogCancel = () => {
     // Cancelling a PENDING ghost feature (created suppressed, never
     // confirmed — ticket x7af) drops the feature entirely; the undo-replay
@@ -624,6 +638,17 @@ export function Outliner({
     inSketchSession &&
     selectedFeature?.kind === "sketch" &&
     sketchSession.editingFeatureId === selectedFeature.id;
+  // Ticket jxvl: the Detail header always shows the edited entity's name as
+  // an editable input — a sketch is no exception. During a session the name
+  // is sourced from the feature being re-edited; a fresh, never-committed
+  // draft has no feature yet, so the header keeps a plain "Sketch" label.
+  const detailTitleFeature: FeatureSummary | null = inSketchSession
+    ? sketchSession.editingFeatureId !== null
+      ? (state.features.find(
+          (f) => f.id === sketchSession.editingFeatureId,
+        ) ?? null)
+      : null
+    : (selectedFeature ?? null);
   const [sketchToolSchema, setSketchToolSchema] =
     useState<FeatureSchema | null>(null);
   useEffect(() => {
@@ -1297,24 +1322,25 @@ export function Outliner({
             <span className="accordion-chevron">
               {collapsed.has("detail") ? "▸" : "▾"}
             </span>
-            {/* Ticket f7xk: the Detail header shows the selected feature's name
-                (editable inline) instead of a generic "Detail". Empty selection
-                or an active sketch session keeps the plain label. */}
-            {!inSketchSession && selectedFeature ? (
+            {/* Tickets f7xk/jxvl: the Detail header shows the edited feature's
+                name (editable inline) instead of a generic "Detail" — a sketch
+                being edited is no exception. Only a fresh, unnamed sketch draft
+                or an empty selection falls back to a plain label. */}
+            {detailTitleFeature ? (
               <input
-                key={selectedFeature.id}
+                key={detailTitleFeature.id}
                 className={
                   "detail-title-input" +
-                  (selectedFeature.error ? " has-error" : "")
+                  (detailTitleFeature.error ? " has-error" : "")
                 }
                 data-testid="detail-title-input"
-                defaultValue={selectedFeature.name}
-                title={selectedFeature.error || "Feature umbenennen"}
+                defaultValue={detailTitleFeature.name}
+                title={detailTitleFeature.error || "Feature umbenennen"}
                 onClick={(e) => e.stopPropagation()}
                 onBlur={(e) => {
                   const v = e.currentTarget.value.trim();
-                  if (v && v !== selectedFeature.name) {
-                    store.renameFeature(selectedFeature.id, v);
+                  if (v && v !== detailTitleFeature.name) {
+                    store.renameFeature(detailTitleFeature.id, v);
                   }
                 }}
                 onKeyDown={(e) => {
@@ -1323,14 +1349,14 @@ export function Outliner({
                     e.currentTarget.blur();
                   } else if (e.key === "Escape") {
                     e.preventDefault();
-                    e.currentTarget.value = selectedFeature.name;
+                    e.currentTarget.value = detailTitleFeature.name;
                     e.currentTarget.blur();
                   }
                   e.stopPropagation();
                 }}
               />
             ) : (
-              <span>Detail</span>
+              <span>{inSketchSession ? "Sketch" : "Detail"}</span>
             )}
             {/* Ticket pqoe: while a sketch session is active its ✓/✗
                 commit/discard the live session (the toolbar no longer
@@ -1344,7 +1370,7 @@ export function Outliner({
                 <button
                   className="detail-ok"
                   data-testid="sketch-detail-accept"
-                  onClick={() => store.commitSketch()}
+                  onClick={handleSketchCommit}
                   title="Accept sketch"
                 >
                   ✓
@@ -1352,7 +1378,7 @@ export function Outliner({
                 <button
                   className="detail-cancel"
                   data-testid="sketch-detail-cancel"
-                  onClick={() => store.exitSketch()}
+                  onClick={handleSketchDiscard}
                   title="Discard sketch edits"
                 >
                   ✗
