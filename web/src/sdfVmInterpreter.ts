@@ -294,43 +294,61 @@ export function buildVmSdfEvalFn(
         const REC = 7;
         const nRaw = rd();
         const closedFlag = rd();
+        // Whole-profile bbox (minx, miny, maxx, maxy), emitted by
+        // `emit_path_record`. A sample outside it is unambiguously outside the
+        // (closed) contour, and the distance to the bbox is a conservative
+        // lower bound on the distance to the profile (profile ⊆ bbox) — safe to
+        // sphere-trace against. So in the far field we return that O(1) instead
+        // of running the O(segments) Cardano loop per march step (the thing
+        // that made a deferred revolve cost seconds/frame).
+        const bbMinX = rd(), bbMinY = rd(), bbMaxX = rd(), bbMaxY = rd();
         const nInt = floatToIntFn({ v: nRaw });
         const recStart = pc.toVar();
         pc.addAssign(nInt.mul(REC));
 
-        const p2d = vec2(ptx, pty).toVar();
-        const dSq = float(1e30).toVar();
-        const crossings = int(0).toVar();
-        const ii = int(0).toVar();
-        Loop(nInt, () => {
-          const base = recStart.add(ii.mul(REC));
-          const kind = floatToIntFn({ v: opBuf.element(base) });
-          const f0 = opBuf.element(base.add(1)).toVar();
-          const f1 = opBuf.element(base.add(2)).toVar();
-          const f2 = opBuf.element(base.add(3)).toVar();
-          const f3 = opBuf.element(base.add(4)).toVar();
-          const f4 = opBuf.element(base.add(5)).toVar();
-          If(kind.equal(int(0)), () => {
-            const a = vec2(f0, f1), b = vec2(f2, f3);
-            dSq.assign(min(dSq, pathSegDistSqFn({ p: p2d, a, b })));
-            crossings.addAssign(pathSegCrossingFn({ p: p2d, a, b }));
-          }).ElseIf(kind.equal(int(1)), () => {
-            const f5 = opBuf.element(base.add(6));
-            const a = vec2(f0, f1), b = vec2(f2, f3), c = vec2(f4, f5);
-            dSq.assign(pathQuadDistSqFn({ p: p2d, a, b, c, best_in: dSq }));
-            crossings.addAssign(pathQuadCrossingFn({ p: p2d, a, b, c }));
-          }).Else(() => {
-            const c = vec2(f0, f1);
-            dSq.assign(min(dSq, pathArcDistSqFn({ p: p2d, c, r: f2, a0: f3, sweep: f4 })));
-            crossings.addAssign(pathArcCrossingFn({ p: p2d, c, r: f2, a0: f3, sweep: f4 }));
+        const dvx = max(max(bbMinX.sub(ptx), ptx.sub(bbMaxX)), float(0));
+        const dvy = max(max(bbMinY.sub(pty), pty.sub(bbMaxY)), float(0));
+        const outsideSq = dvx.mul(dvx).add(dvy.mul(dvy));
+
+        const result = float(0).toVar();
+        If(outsideSq.greaterThan(float(0)), () => {
+          result.assign(sqrt(outsideSq));
+        }).Else(() => {
+          const p2d = vec2(ptx, pty).toVar();
+          const dSq = float(1e30).toVar();
+          const crossings = int(0).toVar();
+          const ii = int(0).toVar();
+          Loop(nInt, () => {
+            const base = recStart.add(ii.mul(REC));
+            const kind = floatToIntFn({ v: opBuf.element(base) });
+            const f0 = opBuf.element(base.add(1)).toVar();
+            const f1 = opBuf.element(base.add(2)).toVar();
+            const f2 = opBuf.element(base.add(3)).toVar();
+            const f3 = opBuf.element(base.add(4)).toVar();
+            const f4 = opBuf.element(base.add(5)).toVar();
+            If(kind.equal(int(0)), () => {
+              const a = vec2(f0, f1), b = vec2(f2, f3);
+              dSq.assign(min(dSq, pathSegDistSqFn({ p: p2d, a, b })));
+              crossings.addAssign(pathSegCrossingFn({ p: p2d, a, b }));
+            }).ElseIf(kind.equal(int(1)), () => {
+              const f5 = opBuf.element(base.add(6));
+              const a = vec2(f0, f1), b = vec2(f2, f3), c = vec2(f4, f5);
+              dSq.assign(pathQuadDistSqFn({ p: p2d, a, b, c, best_in: dSq }));
+              crossings.addAssign(pathQuadCrossingFn({ p: p2d, a, b, c }));
+            }).Else(() => {
+              const c = vec2(f0, f1);
+              dSq.assign(min(dSq, pathArcDistSqFn({ p: p2d, c, r: f2, a0: f3, sweep: f4 })));
+              crossings.addAssign(pathArcCrossingFn({ p: p2d, c, r: f2, a0: f3, sweep: f4 }));
+            });
+            ii.addAssign(1);
           });
-          ii.addAssign(1);
+          const dist = sqrt(dSq).toVar();
+          If(closedFlag.greaterThan(float(0.5)).and(crossings.bitAnd(int(1)).equal(int(1))), () => {
+            dist.assign(dist.negate());
+          });
+          result.assign(dist);
         });
-        const dist = sqrt(dSq).toVar();
-        If(closedFlag.greaterThan(float(0.5)).and(crossings.bitAnd(int(1)).equal(int(1))), () => {
-          dist.assign(dist.negate());
-        });
-        pushV(dist);
+        pushV(result);
 
       }).ElseIf(tag.equal(int(OP_UNION)), () => {
         const b = popV(), a = popV();

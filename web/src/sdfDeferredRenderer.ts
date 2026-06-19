@@ -243,6 +243,51 @@ export function buildWarpedLeafGeometry(
   return geo;
 }
 
+/** Scale a geometry by `f` about its own bounding-box center (world space). */
+function inflateAboutCenter(geo: THREE.BufferGeometry, f: number): void {
+  geo.computeBoundingBox();
+  const c = new THREE.Vector3();
+  geo.boundingBox!.getCenter(c);
+  geo.translate(-c.x, -c.y, -c.z);
+  geo.scale(f, f, f);
+  geo.translate(c.x, c.y, c.z);
+}
+
+/**
+ * Build an inflated render-hull mesh for a single leaf, ready to drop into the
+ * transparent/back proxy scenes of a `needs_full_sdf` body. The SDF march in
+ * the shade pass is the source of truth; this hull only needs to CONTAIN the
+ * field's surface so the ray starts at (≈) the surface instead of an AABB face.
+ * Returns null if the leaf has no meshable geometry.
+ *
+ * A warped (Twist/Bend) leaf bakes its world placement + deformation into the
+ * geometry and carries an IDENTITY transform — so it gets no `leafIdx` (the
+ * per-frame updater must not re-apply a leaf transform to it).
+ */
+function buildInflatedLeafMesh(
+  leaf: HybridLeafInfo,
+  leafIdx: number,
+  material: MeshBasicNodeMaterial,
+): THREE.Mesh | null {
+  if (leaf.warp) {
+    const geo = buildWarpedLeafGeometry(leaf);
+    if (!geo) return null;
+    inflateAboutCenter(geo, HULL_INFLATE);
+    const mesh = new THREE.Mesh(geo, material);
+    mesh.frustumCulled = false;
+    mesh.userData.isWarped = true;
+    return mesh;
+  }
+  const geo = createPrimitiveGeometry(leaf);
+  if (!geo) return null;
+  geo.scale(HULL_INFLATE, HULL_INFLATE, HULL_INFLATE);
+  const mesh = new THREE.Mesh(geo, material);
+  applyLeafTransform(mesh, leaf);
+  mesh.frustumCulled = false;
+  mesh.userData.leafIdx = leafIdx;
+  return mesh;
+}
+
 function getCenterOffset(
   leaf: HybridLeafInfo,
 ): [number, number, number] | null {
@@ -919,19 +964,64 @@ export function rebuildDeferredBodies(
     const backMeshes: THREE.Mesh[] = [];
 
     if (hybridInfo.needs_full_sdf) {
-      const bodyAABB = aabb
-        ? ([aabb[0], aabb[1], aabb[2], aabb[3], aabb[4], aabb[5]] as const)
-        : computeLeafAABB(hybridInfo.leaves);
-      if (bodyAABB) {
-        addAabbBox(bodyAABB, transMat, state.transparentScene, transMeshes);
+      // The shade-pass SDF march is the source of truth for these bodies
+      // (booleans / shells / warps reshape the surface), so they get NO opaque
+      // mesh. But the kernel still emits a meshable leaf wherever a tight render
+      // hull is provably safe — Revolve/Extrude/Helix/Sweep, gated Twist/Bend,
+      // and the solid side of a Difference/SmoothX (the hollow vase is exactly
+      // this: Difference{ revolve_solid, Offset(...) }, so its outer revolve
+      // solid IS an emitted leaf). Use those leaf hulls — plus the sdf_regions
+      // that flag where the field bulges past the leaf union (smooth-union
+      // fillet, masked blend) — as the transparent/back proxy, so the ray
+      // starts AT the surface instead of an AABB face hundreds of steps away.
+      // Only when nothing meshable remains (pure Offset/Displace/Morph/Shell-
+      // node, or a failed gate) fall back to the whole-body AABB.
+      for (let leafIdx = 0; leafIdx < hybridInfo.leaves.length; leafIdx++) {
+        const leaf = hybridInfo.leaves[leafIdx];
+        if (leaf.role === "skip") continue;
+        const tMesh = buildInflatedLeafMesh(leaf, leafIdx, transMat);
+        if (!tMesh) continue;
+        state.transparentScene.add(tMesh);
+        transMeshes.push(tMesh);
+        const bMesh = buildInflatedLeafMesh(
+          leaf,
+          leafIdx,
+          state.backFaceMaterial,
+        );
+        if (bMesh) {
+          state.transparentBackScene.add(bMesh);
+          backMeshes.push(bMesh);
+        }
+      }
+      // Overlap/blend zones where the field can escape the leaf hulls — bound
+      // them with their AABB so the smooth-union fillet etc. is not clipped.
+      for (const region of hybridInfo.sdf_regions) {
+        addAabbBox(region.aabb, transMat, state.transparentScene, transMeshes);
         transMeshes[transMeshes.length - 1].userData.isAabb = true;
         addAabbBox(
-          bodyAABB,
+          region.aabb,
           state.backFaceMaterial,
           state.transparentBackScene,
           backMeshes,
         );
         backMeshes[backMeshes.length - 1].userData.isAabb = true;
+      }
+      // No usable hull → conservative whole-body AABB.
+      if (transMeshes.length === 0) {
+        const bodyAABB = aabb
+          ? ([aabb[0], aabb[1], aabb[2], aabb[3], aabb[4], aabb[5]] as const)
+          : computeLeafAABB(hybridInfo.leaves);
+        if (bodyAABB) {
+          addAabbBox(bodyAABB, transMat, state.transparentScene, transMeshes);
+          transMeshes[transMeshes.length - 1].userData.isAabb = true;
+          addAabbBox(
+            bodyAABB,
+            state.backFaceMaterial,
+            state.transparentBackScene,
+            backMeshes,
+          );
+          backMeshes[backMeshes.length - 1].userData.isAabb = true;
+        }
       }
     } else {
       for (let leafIdx = 0; leafIdx < hybridInfo.leaves.length; leafIdx++) {
