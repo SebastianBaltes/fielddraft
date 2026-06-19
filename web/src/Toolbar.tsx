@@ -684,6 +684,16 @@ export function Toolbar({ store, state }: ToolbarProps) {
       setMenuOpen(false);
     }
   };
+  // Ticket qh4l: the collapsed mobile toggle is a DROPDOWN affordance — it
+  // shows the currently active tool (icon + label) plus a caret, not a third
+  // hamburger (three identical ☰ read as the same control). In sketch mode the
+  // active sketch tool is shown (Select when none); otherwise just "Tools".
+  const activeTool =
+    sketchSession.active
+      ? sketchSession.selectedTool
+        ? meta(sketchSession.selectedTool)
+        : { label: "Select", glyph: "↖" }
+      : { label: "Tools", glyph: null as string | null };
   const wrapToolbar = (children: ReactElement) => (
     <div
       className={
@@ -703,10 +713,15 @@ export function Toolbar({ store, state }: ToolbarProps) {
           aria-label={menuOpen ? "Close tools" : "Open tools"}
           onClick={() => setMenuOpen((v) => !v)}
         >
-          <span className="glyph" aria-hidden="true">
-            ☰
+          {activeTool.glyph ? (
+            <span className="glyph" aria-hidden="true">
+              {activeTool.glyph}
+            </span>
+          ) : null}
+          <span className="toolbar-menu-label">{activeTool.label}</span>
+          <span className="caret" aria-hidden="true">
+            ▾
           </span>
-          <span>Tools</span>
         </button>
       ) : null}
       <div className="toolbar-tools" onClick={closeMenuOnPick}>

@@ -265,16 +265,6 @@ export function App() {
           double-inits the renderer. See main.tsx. */}
       <StrictMode>
       <header className="topbar">
-        <button
-          type="button"
-          className="nav-toggle"
-          data-testid="mobile-nav-toggle"
-          aria-label={mobileNavOpen ? "Close panel" : "Open panel"}
-          aria-expanded={mobileNavOpen}
-          onClick={() => setMobileNavOpen((v) => !v)}
-        >
-          ☰
-        </button>
         <div className="title">
           FieldDraft <span className="version">v{__APP_VERSION__}</span>
           <SettingsMenu
@@ -319,6 +309,20 @@ export function App() {
             <span>loading…</span>
           )}
         </div>
+        {/* Ticket qh4l: the feature-panel toggle lives on the RIGHT (where the
+            panel docks) and reads as a collapse chevron, not a third ☰ that
+            looks identical to the settings menu. ◀ pulls the panel out, ▶
+            collapses it. */}
+        <button
+          type="button"
+          className="nav-toggle"
+          data-testid="mobile-nav-toggle"
+          aria-label={mobileNavOpen ? "Collapse panel" : "Expand panel"}
+          aria-expanded={mobileNavOpen}
+          onClick={() => setMobileNavOpen((v) => !v)}
+        >
+          {mobileNavOpen ? "▶" : "◀"}
+        </button>
       </header>
       </StrictMode>
       {/* MT-A: both workspaces stay mounted; we toggle visibility with

@@ -21,28 +21,32 @@
     height: var(--topbar-height);
     flex: 0 0 var(--topbar-height);
 
-    /* Hamburger that toggles the off-canvas outliner. Desktop docks the
-       outliner permanently, so the toggle only appears at phone width
-       (see the responsive block below). */
+    /* Collapse chevron that toggles the off-canvas outliner (ticket qh4l).
+       Docked on the RIGHT, where the panel lives. Desktop docks the outliner
+       permanently, so the toggle only appears at phone width (see the
+       responsive block below). */
     & .nav-toggle {
       display: none;
       align-items: center;
       justify-content: center;
-      margin-right: var(--space-2);
+      margin-left: var(--space-2);
       background: transparent;
       border: none;
       border-radius: var(--radius-sm);
-      color: var(--color-text);
-      font-size: var(--fs-lg);
+      color: var(--color-text-muted);
+      font-size: var(--fs-base);
       line-height: 1;
       cursor: pointer;
 
       &:hover {
         background: var(--color-bg-hover);
+        color: var(--color-text);
       }
     }
 
     & .title {
+      /* Push the meta block + collapse chevron to the right edge. */
+      margin-right: auto;
       font-size: var(--fs-lg);
       font-weight: var(--fw-semibold);
       letter-spacing: 0.01em;
