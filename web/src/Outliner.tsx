@@ -1334,12 +1334,25 @@ export function Outliner({
                   (detailTitleFeature.error ? " has-error" : "")
                 }
                 data-testid="detail-title-input"
-                defaultValue={detailTitleFeature.name}
+                // Ticket o9ul: show the SAME prettified label as the feature
+                // list ("Material 2"), not the raw kind-prefixed auto-name
+                // ("material 2"). The blur/Escape paths compare against the
+                // prettified value so merely focusing the field never renames.
+                defaultValue={prettifyFeatureName(
+                  detailTitleFeature.name,
+                  detailTitleFeature.kind,
+                  state.scriptTypes,
+                )}
                 title={detailTitleFeature.error || "Feature umbenennen"}
                 onClick={(e) => e.stopPropagation()}
                 onBlur={(e) => {
                   const v = e.currentTarget.value.trim();
-                  if (v && v !== detailTitleFeature.name) {
+                  const pretty = prettifyFeatureName(
+                    detailTitleFeature.name,
+                    detailTitleFeature.kind,
+                    state.scriptTypes,
+                  );
+                  if (v && v !== pretty && v !== detailTitleFeature.name) {
                     store.renameFeature(detailTitleFeature.id, v);
                   }
                 }}
@@ -1349,7 +1362,11 @@ export function Outliner({
                     e.currentTarget.blur();
                   } else if (e.key === "Escape") {
                     e.preventDefault();
-                    e.currentTarget.value = detailTitleFeature.name;
+                    e.currentTarget.value = prettifyFeatureName(
+                      detailTitleFeature.name,
+                      detailTitleFeature.kind,
+                      state.scriptTypes,
+                    );
                     e.currentTarget.blur();
                   }
                   e.stopPropagation();

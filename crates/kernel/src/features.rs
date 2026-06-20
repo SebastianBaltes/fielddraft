@@ -4839,7 +4839,7 @@ impl FeatureKind for BooleanFeature {
 #[derive(FeatureSchema)]
 #[schema(type = "material")]
 pub struct MaterialDef {
-    #[param(name = "Bodies", default = ::fielddraft_protocol::MultiQuery::new(""))]
+    #[param(name = "Bodies", default = ::fielddraft_protocol::MultiQuery::new(""), entity_filter = "BODY")]
     pub targets: ::fielddraft_protocol::MultiQuery,
 
     // ── PBR optical ──────────────────────────────────────────
