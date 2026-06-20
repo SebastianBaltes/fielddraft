@@ -87,7 +87,7 @@ pub struct SdfRegionInfo {
     pub aabb: [f32; 6],
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Default, Serialize)]
 pub struct HybridInfo {
     pub leaves: Vec<HybridLeafInfo>,
     pub sdf_regions: Vec<SdfRegionInfo>,

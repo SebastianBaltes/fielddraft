@@ -3279,10 +3279,15 @@ impl Kernel {
 
     #[wasm_bindgen(js_name = bodyHybridInfoJson)]
     pub fn body_hybrid_info_json(&self, i: usize) -> String {
-        let bounded = body::build_bounded_for_body(
-            &self.decoded,
-            &self.bodies[i].feature_indices,
-        );
+        // The JS side queries by index from a meshed-body snapshot that can
+        // lag the live kernel by a frame (e.g. right after "New" empties the
+        // bodies). An out-of-range index must yield an empty info, never panic.
+        let Some(body) = self.bodies.get(i) else {
+            return serde_json::to_string(&bvh::HybridInfo::default())
+                .unwrap_or_else(|_| "{}".into());
+        };
+        let bounded =
+            body::build_bounded_for_body(&self.decoded, &body.feature_indices);
         let info = bounded.classify_for_hybrid();
         serde_json::to_string(&info).unwrap_or_else(|_| "{}".into())
     }
