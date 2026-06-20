@@ -36,6 +36,11 @@ export interface CameraBindings {
    *  camera rig swaps the MIDDLE action between pan and rotate on
    *  Shift down/up. */
   shiftMiddleOrbit?: boolean;
+  /** Three.js-editor idiom: LMB orbits, but Shift+LMB-drag draws a box
+   *  select. The camera rig FREES the left button while Shift is held (so
+   *  OrbitControls ignores the drag) and the viewport arms a box instead.
+   *  Requires `selection.boxSelect` to be set. */
+  shiftLeftBoxSelect?: boolean;
   rotateSpeed: number;
   panSpeed: number;
   zoomSpeed: number;
@@ -93,6 +98,10 @@ export const CONTROLS_PRESETS: Record<ControlsPresetId, ControlsPreset> = {
     label: "Three.js Editor",
     camera: {
       mouseButtons: { left: "rotate", middle: "dolly", right: "pan" },
+      // LMB orbits on a drag, but a plain click still selects (the click
+      // falls through OrbitControls); Shift+LMB-drag frees LMB and draws a
+      // selection box instead (ticket 8ikq).
+      shiftLeftBoxSelect: true,
       rotateSpeed: 1.4,
       panSpeed: 1.2,
       zoomSpeed: 1.6,
@@ -103,8 +112,9 @@ export const CONTROLS_PRESETS: Record<ControlsPresetId, ControlsPreset> = {
       additive: ["shift", "ctrl", "meta"],
       bodyEscalation: false,
       implicitMultiSelect: false,
-      // The editor has no rubber-band select; LMB orbits anyway.
-      boxSelect: null,
+      // Shift+LMB-drag rubber-band (window: fully-enclosed objects). LMB
+      // without Shift orbits — the viewport gates the box on the Shift key.
+      boxSelect: "window",
       spaceClears: false,
     },
     keys: { views: DEFAULT_VIEW_KEYS },

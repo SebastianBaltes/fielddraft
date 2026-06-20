@@ -42,6 +42,18 @@ describe("controls preset registry (docs/UX-PRESETS.md)", () => {
     expect(CONTROLS_PRESETS.threejs.camera.mouseButtons.left).toBe("rotate");
   });
 
+  it("Three.js editor draws a Shift+LMB box select (ticket 8ikq)", () => {
+    const tj = CONTROLS_PRESETS.threejs;
+    // LMB orbits on a drag; Shift frees it so Shift+LMB-drag boxes instead.
+    expect(tj.camera.mouseButtons.left).toBe("rotate");
+    expect(tj.camera.shiftLeftBoxSelect).toBe(true);
+    expect(tj.selection.boxSelect).toBe("window");
+    // No other preset uses the Shift-frees-LMB mechanism.
+    for (const p of PRESETS) {
+      if (p.id !== "threejs") expect(p.camera.shiftLeftBoxSelect).toBeFalsy();
+    }
+  });
+
   it("matches the doc's orbit/pan table", () => {
     expect(CONTROLS_PRESETS.onshape.camera.mouseButtons).toEqual({
       left: null,

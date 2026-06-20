@@ -936,7 +936,8 @@ export function Viewport({
     event: ReactPointerEvent<HTMLDivElement>,
   ): void => {
     if (!store || event.button !== 0) return;
-    const selection = CONTROLS_PRESETS[controlsPreset].selection;
+    const preset = CONTROLS_PRESETS[controlsPreset];
+    const selection = preset.selection;
     if (!selection.boxSelect) return;
     // Box select never starts inside another interaction mode…
     if (
@@ -948,14 +949,23 @@ export function Viewport({
       getActiveQueryPicker()
     )
       return;
-    // …and only from EMPTY space: nothing hovered, nothing under the ray.
-    if (getHoveredElement()) return;
-    const click = pickAtMouse(
-      event as unknown as React.MouseEvent<HTMLDivElement>,
-      hostRef.current,
-      store,
-    );
-    if (click?.hit) return;
+    if (preset.camera.shiftLeftBoxSelect) {
+      // Three.js preset: LMB orbits, so the box is gated on Shift (the rig has
+      // freed LMB while Shift is down). It may start anywhere — a Shift+click
+      // (no drag) still falls through to additive selection; only a Shift+drag
+      // grows into a box.
+      if (!event.shiftKey) return;
+    } else {
+      // Free-LMB presets: the box starts only from EMPTY space — nothing
+      // hovered, nothing under the ray — so it never eats a plain pick.
+      if (getHoveredElement()) return;
+      const click = pickAtMouse(
+        event as unknown as React.MouseEvent<HTMLDivElement>,
+        hostRef.current,
+        store,
+      );
+      if (click?.hit) return;
+    }
     const host = hostRef.current;
     if (!host) return;
     const rect = host.getBoundingClientRect();
