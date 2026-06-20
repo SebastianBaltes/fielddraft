@@ -24,6 +24,7 @@ export const INACTIVE_SKETCH_SESSION: SketchSessionState = {
   toolDraft: {},
   subCalls: [],
   editingFeatureId: null,
+  createdThisSession: false,
   selection: [],
   diagnostics: emptyDiagnostics(),
 };
@@ -35,6 +36,8 @@ export const INACTIVE_SKETCH_SESSION: SketchSessionState = {
 export interface EnterSketchOpts {
   initialSubCalls?: SketchSessionState["subCalls"];
   editingFeatureId?: number | null;
+  /** Ticket d9o9: the session created its sketch feature on entry. */
+  createdThisSession?: boolean;
 }
 
 /** Enter a new sketch session. If a session is already active
@@ -53,6 +56,7 @@ export function enterSketchSession(
     toolDraft: {},
     subCalls: opts.initialSubCalls ?? [],
     editingFeatureId: opts.editingFeatureId ?? null,
+    createdThisSession: opts.createdThisSession ?? false,
     selection: [],
     diagnostics: emptyDiagnostics(),
   };

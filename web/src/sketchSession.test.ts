@@ -214,6 +214,7 @@ describe("sketchSession reducers", () => {
       selectedTool: null,
       toolDraft: {},
       editingFeatureId: null,
+      createdThisSession: false,
       selection: [],
       diagnostics: emptyDiagnostics(),
       subCalls: [
@@ -237,6 +238,7 @@ describe("sketchSession reducers", () => {
       selectedTool: null,
       toolDraft: {},
       editingFeatureId: null,
+      createdThisSession: false,
       selection: [],
       diagnostics: emptyDiagnostics(),
       subCalls: [
@@ -370,6 +372,7 @@ describe("sketchSession reducers", () => {
       selectedTool: null,
       toolDraft: {},
       editingFeatureId: null,
+      createdThisSession: false,
       selection: [],
       diagnostics: emptyDiagnostics(),
       subCalls: [
@@ -395,6 +398,7 @@ describe("sketchSession reducers", () => {
       selectedTool: null,
       toolDraft: {},
       editingFeatureId: null,
+      createdThisSession: false,
       selection: [],
       diagnostics: emptyDiagnostics(),
       subCalls: [

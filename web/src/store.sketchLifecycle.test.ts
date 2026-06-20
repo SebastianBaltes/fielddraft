@@ -172,6 +172,45 @@ describe("KernelStore — sketch-session lifecycle", () => {
     expect(store.getState().sketchSession.editingFeatureId).toBe(1);
   });
 
+  // ── d9o9: a new sketch materialises in the tree immediately ─────────
+  it("enterSketch creates the sketch feature up front (Onshape style)", () => {
+    const before = kernel.features.length;
+    store.enterSketch("qCreatedBy(origin_plane_xy)");
+    const session = store.getState().sketchSession;
+    expect(session.active).toBe(true);
+    expect(session.createdThisSession).toBe(true);
+    expect(session.editingFeatureId).not.toBeNull();
+    // The feature exists right away — not only after Finish.
+    expect(kernel.features.length).toBe(before + 1);
+  });
+
+  it("cancelSketch removes a freshly-created sketch entirely", () => {
+    const before = kernel.features.length;
+    store.enterSketch("qCreatedBy(origin_plane_xy)");
+    expect(kernel.features.length).toBe(before + 1);
+    store.cancelSketch();
+    expect(store.getState().sketchSession.active).toBe(false);
+    // The just-created (never-confirmed) sketch is gone again.
+    expect(kernel.features.length).toBe(before);
+  });
+
+  it("Finish keeps a freshly-created sketch even when empty", () => {
+    const before = kernel.features.length;
+    store.enterSketch("qCreatedBy(origin_plane_xy)");
+    store.commitSketch();
+    expect(store.getState().sketchSession.active).toBe(false);
+    expect(kernel.features.length).toBe(before + 1);
+  });
+
+  it("cancelSketch on an edit re-entry keeps the committed sketch", () => {
+    // editSketch (re-open id 1) is NOT a fresh creation.
+    store.editSketch(1);
+    expect(store.getState().sketchSession.createdThisSession).toBe(false);
+    const before = kernel.features.length;
+    store.cancelSketch();
+    expect(kernel.features.length).toBe(before); // nothing deleted
+  });
+
   // ── 5zd3: New Project clears any lingering session ──────────────────
   it("newProject fully clears an active session", () => {
     store.enterSketch("qCreatedBy(origin_plane_xy)");

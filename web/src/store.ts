@@ -221,6 +221,12 @@ export interface SketchSessionState {
    *  through `replaceSketch` instead of `addSketch` so the
    *  outliner row keeps its id. */
   editingFeatureId: number | null;
+  /** Ticket d9o9: true when this session MATERIALISED its sketch
+   *  feature on entry (Onshape style — the sketch shows in the tree
+   *  immediately). Cancel (✗) then deletes that fresh feature; an
+   *  edit-reentry of an existing sketch leaves this false so Cancel
+   *  only discards the in-session edits. */
+  createdThisSession: boolean;
   /** Solver-entity ids of the committed geometry currently
    *  selected in the canvas (select mode — no drawing tool
    *  active). Drives the context-sensitive constraint palette
@@ -2851,9 +2857,46 @@ export class KernelStore {
   }
 
   enterSketch(planeQuery: string): void {
+    if (this.state.sketchSession.active) return;
     logUserAction("sketch", "enter", { plane: planeQuery });
+    // Ticket d9o9 (Onshape style): materialise the sketch as a real feature
+    // immediately so it shows up in the tree the moment you start drawing —
+    // not only after Finish. We then edit it in place (the editingFeatureId
+    // path); Finish keeps it (even empty) and Cancel deletes it.
+    let id: number;
+    try {
+      id = this.kernel.addSketch(planeQuery, []);
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error("fielddraft: enterSketch failed to create sketch", err);
+      this.setTransientError(formatKernelError(err, "Could not start sketch"));
+      return;
+    }
     this.resetSketchHistory(); // r3ci: fresh session, fresh history
-    this.updateSketch(reduceEnter(this.state.sketchSession, planeQuery));
+    this.commit(new Set([id]), id); // surface + select the new sketch row
+    this.updateSketch(
+      reduceEnter(this.state.sketchSession, planeQuery, {
+        editingFeatureId: id,
+        createdThisSession: true,
+      }),
+    );
+  }
+
+  /**
+   * Ticket d9o9: Cancel (✗) a sketch session. When the session created its
+   * feature on entry, the cancel removes that fresh sketch entirely (it was
+   * never confirmed); re-editing an existing sketch just discards the
+   * in-session edits and leaves the committed feature untouched.
+   */
+  cancelSketch(): void {
+    const session = this.state.sketchSession;
+    const createdId = session.createdThisSession
+      ? session.editingFeatureId
+      : null;
+    this.exitSketch();
+    if (createdId !== null) {
+      this.removeFeature(createdId);
+    }
   }
 
   /**

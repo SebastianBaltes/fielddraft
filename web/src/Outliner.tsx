@@ -333,7 +333,9 @@ export function Outliner({
     store.clearSelection();
   };
   const handleSketchDiscard = () => {
-    store.exitSketch();
+    // Ticket d9o9: ✗ removes a freshly-created sketch entirely; for an edit
+    // re-entry it just drops the in-session edits. cancelSketch decides.
+    store.cancelSketch();
     store.clearSelection();
   };
 
