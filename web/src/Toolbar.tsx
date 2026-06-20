@@ -1119,11 +1119,9 @@ export function Toolbar({ store, state }: ToolbarProps) {
             testId="sketch-tool-sketch_mirror"
             onClick={() => store.selectSketchTool("sketch_mirror", {})}
           />
-          {sketchSession.selectedTool === "sketch_mirror" && (
-            <span className="hint" data-testid="sketch-mirror-hint">
-              Click the axis line to mirror the selected geometry
-            </span>
-          )}
+          {/* jq6i/D1: the mirror instruction now floats as the centered
+              ToolHint pill (SketchCanvas2d drives it through the two-step
+              axis→objects flow), not as inline text next to the button. */}
           {/* Ticket pqoe (plan item 2): the Pattern controls (count /
               spacing / angle + Linear X / Linear Y / Circular) moved in-scene
               — they now float in the canvas corner as part of the
@@ -1147,12 +1145,8 @@ export function Toolbar({ store, state }: ToolbarProps) {
             testId="sketch-tool-sketch_copy"
             onClick={() => store.selectSketchTool("sketch_copy", {})}
           />
-          {(sketchSession.selectedTool === "sketch_move" ||
-            sketchSession.selectedTool === "sketch_copy") && (
-            <span className="hint" data-testid="sketch-move-hint">
-              Click a base point, then a target point
-            </span>
-          )}
+          {/* 3rz2/D1: the move/copy instruction now floats as the ToolHint
+              pill instead of inline text next to the button. */}
           {/* Ticket pqoe (plan item 3): the Rotate controls (angle + Rotate)
               moved in-scene — they now sit in the selection-transform panel in
               the canvas corner alongside the Pattern controls, shown while a

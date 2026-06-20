@@ -75,6 +75,7 @@ import {
   rect3pCorners,
 } from "./sketchPrimitiveVariants";
 import { setOverlayRedraw } from "./sketchOverlayBridge";
+import { setToolHint } from "./toolHintBridge";
 import { setHoveredSketchEntity } from "./sketchEntityHoverBridge";
 import { publishSketchHud, type SketchHudGeometry } from "./sketchHudBridge";
 import {
@@ -480,6 +481,18 @@ function dist2d(a: [number, number], b: [number, number]): number {
 
 type DragState =
   | { kind: "idle" }
+  | {
+      /** Ticket 3rz2: a direct click-drag of the current selection with the
+       *  Move/Copy tool. Pressing an entity selects it (if needed) and arms
+       *  this; dragging past a small threshold and releasing translates the
+       *  selection by (current − start). A release without drag is a plain
+       *  select. `copy` distinguishes Move (in place) from Copy (appended). */
+      kind: "move_drag";
+      start: [number, number];
+      current: [number, number];
+      copy: boolean;
+      moved: boolean;
+    }
   | {
       kind: "line";
       start: [number, number];
@@ -970,6 +983,21 @@ function anchorConstraints(
   ];
 }
 
+/** Ticket D1 (jq6i / 3rz2): the active sketch tool's first-step instruction for
+ *  the floating ToolHint pill, or null for tools that need no guidance. */
+function initialToolHint(tool: string | null): string | null {
+  switch (tool) {
+    case "sketch_mirror":
+      return "Spiegeln: Spiegelachse anklicken.";
+    case "sketch_move":
+      return "Verschieben: selektierte Geometrie ziehen, oder Basis- dann Zielpunkt anklicken.";
+    case "sketch_copy":
+      return "Kopieren: Basispunkt anklicken, dann Zielpunkt.";
+    default:
+      return null;
+  }
+}
+
 export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const dragRef = useRef<DragState>({ kind: "idle" });
@@ -993,6 +1021,11 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
   const mirrorAxisHoverRef = useRef<
     [[number, number], [number, number]] | null
   >(null);
+  // Ticket jq6i: the Mirror tool is a two-step Onshape flow now — first click
+  // picks the axis (sub-call index stored here), then clicks toggle the objects
+  // to mirror into the sketch selection; Enter applies, Esc cancels. `null`
+  // means "no axis yet" (step 1).
+  const mirrorAxisRef = useRef<number | null>(null);
   // F10: the first line picked in the two-click fillet flow (sub-call
   // index), pending the second pick. Reset whenever the tool changes.
   const filletFirstRef = useRef<number | null>(null);
@@ -1282,7 +1315,14 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
     moveBaseRef.current = null;
     // F11: drop a pending first chamfer pick when leaving the tool.
     chamferFirstRef.current = null;
+    // jq6i: drop a pending mirror axis when leaving the tool.
+    mirrorAxisRef.current = null;
+    // D1: surface the new tool's first-step instruction as the hint pill.
+    setToolHint(initialToolHint(session.selectedTool));
   }, [session.selectedTool]);
+
+  // D1: clear the tool hint when the sketch canvas unmounts (session exit).
+  useEffect(() => () => setToolHint(null), []);
 
   // Size the canvas to its container on mount and on resize.
   useLayoutEffect(() => {
@@ -1629,13 +1669,34 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
       session.selectedTool === "sketch_move" ||
       session.selectedTool === "sketch_copy"
     ) {
+      const copy = session.selectedTool === "sketch_copy";
+      // Ticket 3rz2: if a base point is already pending (Onshape base→target
+      // path), the second click applies the delta. Otherwise, a press ON an
+      // entity selects it (if needed) and arms a direct click-drag; a press on
+      // empty space records the base point for the two-click path.
       const base = moveBaseRef.current;
-      if (base === null) {
-        moveBaseRef.current = [u, v];
-      } else {
-        const copy = session.selectedTool === "sketch_copy";
+      if (base !== null) {
         store.moveSketchSelection(u - base[0], v - base[1], copy);
         moveBaseRef.current = null;
+        lastCamVersionRef.current = -1;
+        return;
+      }
+      const tolMm = SELECT_PICK_PX / Math.max(cam.zoom, 1e-6);
+      const state = buildDraftSketchState(session.subCalls);
+      const hit = hitTestSketchEntity(state, [u, v], tolMm);
+      if (hit !== null) {
+        if (!session.selection.includes(hit)) store.setSketchSelection([hit]);
+        (e.currentTarget as HTMLCanvasElement).setPointerCapture(e.pointerId);
+        dragRef.current = {
+          kind: "move_drag",
+          start: [u, v],
+          current: [u, v],
+          copy,
+          moved: false,
+        };
+      } else {
+        // Empty space → start the two-click base→target transform.
+        moveBaseRef.current = [u, v];
       }
       lastCamVersionRef.current = -1;
       return;
@@ -2011,21 +2072,27 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
     // selected simple-geometry sub-call across it, appending editable
     // mirrored copies (see store.mirrorSketchSelection / sketchMirror.ts).
     if (session.selectedTool === "sketch_mirror") {
-      // Ticket czqf: generous pick tolerance so clicking near a line selects it
-      // as the mirror axis; a no-op when nothing was hit. If the user hasn't
-      // selected any geometry yet, the mirror has nothing to reflect — surface
-      // that instead of doing nothing silently.
-      const tolMm = (SELECT_PICK_PX * 2.5) / Math.max(cam.zoom, 1e-6);
-      const axis = nearestLineSubCall(session.subCalls, [u, v], tolMm);
-      if (axis !== null) {
-        if (session.selection.length === 0) {
-          store.showTransientError(
-            "Erst Geometrie auswählen, dann die Spiegel-Achse anklicken.",
+      // Ticket jq6i: Onshape-style two-step flow.
+      // Step 1 (no axis yet): the click picks the mirror axis line.
+      if (mirrorAxisRef.current === null) {
+        const tolMm = (SELECT_PICK_PX * 2.5) / Math.max(cam.zoom, 1e-6);
+        const axis = nearestLineSubCall(session.subCalls, [u, v], tolMm);
+        if (axis !== null) {
+          mirrorAxisRef.current = axis;
+          store.clearSketchSelection(); // start a fresh object set
+          setToolHint(
+            "Spiegeln: Objekte anklicken — Enter wendet an, Esc bricht ab.",
           );
-        } else {
-          store.mirrorSketchSelection(axis);
         }
+        lastCamVersionRef.current = -1;
+        return;
       }
+      // Step 2 (axis set): clicks toggle the objects to mirror into the
+      // selection. Enter (keyboard handler below) applies, Esc cancels.
+      const tolMm = SELECT_PICK_PX / Math.max(cam.zoom, 1e-6);
+      const state = buildDraftSketchState(session.subCalls);
+      const hit = hitTestSketchEntity(state, [u, v], tolMm);
+      if (hit !== null) store.toggleSketchSelection(hit);
       lastCamVersionRef.current = -1;
       return;
     }
@@ -2116,6 +2183,24 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
         v = Math.round(v / step) * step;
       }
       void dragControllerRef.current.update([u, v]);
+      lastCamVersionRef.current = -1;
+      return;
+    }
+    // Ticket 3rz2: direct click-drag of the Move/Copy selection. Track the
+    // cursor; the actual translate lands on release (onPointerUp) so the
+    // constraint solver runs once, not per frame. The `moved` flag separates a
+    // real drag from a plain select-click.
+    if (dragRef.current.kind === "move_drag") {
+      const cam = readCamForCanvas(e.currentTarget as HTMLCanvasElement);
+      const [u, v] = screenToSketchFromEvent(e, cam);
+      const { start } = dragRef.current;
+      const movedPx =
+        Math.hypot(u - start[0], v - start[1]) * Math.max(cam.zoom, 1e-6);
+      dragRef.current = {
+        ...dragRef.current,
+        current: [u, v],
+        moved: dragRef.current.moved || movedPx > 4,
+      };
       lastCamVersionRef.current = -1;
       return;
     }
@@ -2439,6 +2524,19 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
         e.preventDefault();
         return;
       }
+    }
+    // Ticket 3rz2: commit a direct Move/Copy click-drag. A real drag
+    // translates the selection by (current − start); a release without drag was
+    // just a select-click (the press already selected the entity).
+    if (dragRef.current.kind === "move_drag") {
+      (e.currentTarget as HTMLCanvasElement).releasePointerCapture(e.pointerId);
+      const { start, current, copy, moved } = dragRef.current;
+      dragRef.current = { kind: "idle" };
+      if (moved && store) {
+        store.moveSketchSelection(current[0] - start[0], current[1] - start[1], copy);
+      }
+      lastCamVersionRef.current = -1;
+      return;
     }
     if (dragRef.current.kind === "grip") {
       (e.currentTarget as HTMLCanvasElement).releasePointerCapture(e.pointerId);
@@ -2881,6 +2979,31 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [session.active, editor, textEditor, cornerEditor]);
+
+  // Ticket jq6i: Mirror tool — once an axis is picked, Enter applies the
+  // reflection across it for the selected objects, Esc cancels back to the
+  // pick-axis step. (Step 1, no axis, is handled by the pointerdown handler.)
+  useEffect(() => {
+    if (!store || session.selectedTool !== "sketch_mirror") return;
+    const onKey = (e: KeyboardEvent) => {
+      const axis = mirrorAxisRef.current;
+      if (axis === null) return;
+      if (e.key === "Enter") {
+        e.preventDefault();
+        if (session.selection.length > 0) store.mirrorSketchSelection(axis);
+        mirrorAxisRef.current = null;
+        store.clearSketchSelection();
+        setToolHint(initialToolHint("sketch_mirror"));
+      } else if (e.key === "Escape") {
+        e.preventDefault();
+        mirrorAxisRef.current = null;
+        store.clearSketchSelection();
+        setToolHint(initialToolHint("sketch_mirror"));
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [store, session.selectedTool, session.selection]);
 
   // F23: keyboard finish for the spline gesture — Enter commits the
   // in-progress spline (open, needs ≥ 2 control points); Escape cancels

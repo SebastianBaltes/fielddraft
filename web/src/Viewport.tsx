@@ -38,6 +38,7 @@ import {
 } from "./viewportCamera";
 import { ExtrudeDepthGizmo } from "./ExtrudeGizmo";
 import { SweepPathGizmo } from "./SweepGizmo";
+import { ToolHint } from "./ToolHint";
 import { ContextMenu, type ContextMenuItem } from "./ContextMenu";
 import { requestViewFit, requestViewNormal } from "./viewCommands";
 import {
@@ -1487,6 +1488,7 @@ export function Viewport({
           normal 3D camera there too (sketch-in-3D), and "look straight at
           the plane" is the single most wanted view action while drawing. */}
       <ViewCube />
+      <ToolHint />
       {state?.sketchSession.active ? (
         <SketchCanvas2d store={store} session={state.sketchSession} />
       ) : null}
