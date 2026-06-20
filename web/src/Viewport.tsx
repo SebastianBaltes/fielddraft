@@ -827,7 +827,11 @@ export function Viewport({
             label: "Confirm Sketch",
             testId: "ctx-confirm-sketch",
             onSelect: () => {
+              // Ticket rkez: mirror the ✓ button — commit AND clear the
+              // selection, otherwise the just-committed sketch stays selected
+              // and its Detail dialog reads as still-open.
               store?.commitSketch();
+              store?.clearSelection();
             },
           },
         ]
