@@ -12,15 +12,14 @@
  *     selects whole objects instead of faces/edges/vertices.
  *   - `keys`: bare-digit view shortcuts (front/top/… per program).
  *
- * The main conflict axis is the LEFT mouse button: FieldDraft and the
- * Three.js editor orbit with LMB; classic CAD packages keep LMB for
- * selection and orbit with RMB/MMB (`left: null` frees the button).
+ * The main conflict axis is the LEFT mouse button: the Three.js editor orbits
+ * with LMB; classic CAD packages keep LMB for selection and orbit with RMB/MMB
+ * (`left: null` frees the button).
  */
 
 import type { ViewPreset } from "./viewCommands";
 
 export type ControlsPresetId =
-  | "fielddraft"
   | "threejs"
   | "onshape"
   | "freecad"
@@ -89,26 +88,6 @@ const DEFAULT_VIEW_KEYS: KeyBindings["views"] = {
 };
 
 export const CONTROLS_PRESETS: Record<ControlsPresetId, ControlsPreset> = {
-  fielddraft: {
-    id: "fielddraft",
-    label: "FieldDraft",
-    camera: {
-      mouseButtons: { left: "rotate", middle: "dolly", right: "pan" },
-      rotateSpeed: 1.4,
-      panSpeed: 1.2,
-      zoomSpeed: 1.6,
-    },
-    selection: {
-      mode: "element",
-      additive: ["shift", "ctrl", "meta"],
-      bodyEscalation: true,
-      implicitMultiSelect: false,
-      // LMB orbits in this preset — the button is never free for a drag.
-      boxSelect: null,
-      spaceClears: false,
-    },
-    keys: { views: DEFAULT_VIEW_KEYS },
-  },
   threejs: {
     id: "threejs",
     label: "Three.js Editor",
@@ -238,7 +217,7 @@ export const CONTROLS_PRESET_OPTIONS: { key: ControlsPresetId; label: string }[]
     label: p.label,
   }));
 
-export const DEFAULT_CONTROLS_PRESET: ControlsPresetId = "fielddraft";
+export const DEFAULT_CONTROLS_PRESET: ControlsPresetId = "onshape";
 
 export function isControlsPresetId(val: unknown): val is ControlsPresetId {
   return typeof val === "string" && val in CONTROLS_PRESETS;

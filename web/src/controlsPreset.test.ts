@@ -12,9 +12,8 @@ import {
 const PRESETS = Object.values(CONTROLS_PRESETS) as ControlsPreset[];
 
 describe("controls preset registry (docs/UX-PRESETS.md)", () => {
-  it("covers all six programs from the doc", () => {
+  it("covers the five programs from the doc", () => {
     expect(Object.keys(CONTROLS_PRESETS).sort()).toEqual([
-      "fielddraft",
       "freecad",
       "fusion",
       "onshape",
@@ -39,8 +38,7 @@ describe("controls preset registry (docs/UX-PRESETS.md)", () => {
     for (const id of ["onshape", "freecad", "fusion", "tinkercad"] as const) {
       expect(CONTROLS_PRESETS[id].camera.mouseButtons.left).toBeNull();
     }
-    // FieldDraft and the Three.js editor keep LMB orbit.
-    expect(CONTROLS_PRESETS.fielddraft.camera.mouseButtons.left).toBe("rotate");
+    // The Three.js editor keeps LMB orbit.
     expect(CONTROLS_PRESETS.threejs.camera.mouseButtons.left).toBe("rotate");
   });
 
@@ -69,7 +67,7 @@ describe("controls preset registry (docs/UX-PRESETS.md)", () => {
     }
     expect(CONTROLS_PRESETS.threejs.selection.mode).toBe("object");
     expect(CONTROLS_PRESETS.tinkercad.selection.mode).toBe("object");
-    expect(CONTROLS_PRESETS.fielddraft.selection.mode).toBe("element");
+    expect(CONTROLS_PRESETS.onshape.selection.mode).toBe("element");
   });
 
   it("every preset binds at least the iso view key", () => {
@@ -83,7 +81,7 @@ describe("controls preset registry (docs/UX-PRESETS.md)", () => {
 
 describe("toOrbitMouseButtons", () => {
   it("maps actions to THREE.MOUSE codes and frees unbound buttons", () => {
-    expect(toOrbitMouseButtons(CONTROLS_PRESETS.fielddraft.camera)).toEqual({
+    expect(toOrbitMouseButtons(CONTROLS_PRESETS.threejs.camera)).toEqual({
       LEFT: 0, // ROTATE
       MIDDLE: 1, // DOLLY
       RIGHT: 2, // PAN
@@ -104,11 +102,12 @@ describe("isAdditiveClick", () => {
   });
 
   it("honours each preset's modifier list", () => {
-    const fd = CONTROLS_PRESETS.fielddraft.selection;
-    expect(isAdditiveClick(fd, ev(true))).toBe(true);
-    expect(isAdditiveClick(fd, ev(false, true))).toBe(true);
-    expect(isAdditiveClick(fd, ev(false, false, true))).toBe(true);
-    expect(isAdditiveClick(fd, ev())).toBe(false);
+    // Onshape multi-selects with Shift, Ctrl or Cmd.
+    const os = CONTROLS_PRESETS.onshape.selection;
+    expect(isAdditiveClick(os, ev(true))).toBe(true);
+    expect(isAdditiveClick(os, ev(false, true))).toBe(true);
+    expect(isAdditiveClick(os, ev(false, false, true))).toBe(true);
+    expect(isAdditiveClick(os, ev())).toBe(false);
 
     // FreeCAD/Fusion: Ctrl (or Cmd) only — Shift is not additive.
     const fc = CONTROLS_PRESETS.freecad.selection;
@@ -124,7 +123,7 @@ describe("isAdditiveClick", () => {
 
 describe("viewShortcutRow", () => {
   it("renders the default and FreeCAD view-key rows", () => {
-    expect(viewShortcutRow(CONTROLS_PRESETS.fielddraft)).toEqual({
+    expect(viewShortcutRow(CONTROLS_PRESETS.onshape)).toEqual({
       keys: "1 / 2 / 3 / 0",
       action: "Front / Top / Right / Isometric view",
     });

@@ -7,7 +7,8 @@ Setting `fielddraft.controlsPreset`). Was bewusst noch fehlt, steht unter
 Konzept aus Ticket 20260610-085906-evq2: Anwender bringen
 Steuerungs-Gewohnheiten aus ihrem bisherigen Programm mit. Ein Preset-System
 soll die wichtigsten Schemata per Setting abbilden: **Three.js-Editor,
-Onshape, FreeCAD, Fusion 360, TinkerCAD** (plus FieldDraft-Default).
+Onshape, FreeCAD, Fusion 360, TinkerCAD**. Default ist **Onshape** (Ticket
+8ikq; das frühere FieldDraft-Preset wurde entfernt).
 
 ## Ist-Zustand
 
@@ -28,15 +29,14 @@ Orbit/Pan/Zoom der unterstützten Programme (Maus, Default-Konfiguration):
 
 | Programm | Orbit | Pan | Zoom | Selektions-Idiom |
 |---|---|---|---|---|
-| FieldDraft (heute) | LMB-Drag | RMB-Drag | Wheel | Klick = Element, 2. Klick Fläche = Körper |
 | Three.js-Editor | LMB-Drag | RMB-Drag (bzw. 2-Finger) | Wheel | Klick = Objekt (keine Sub-Elemente) |
 | Onshape | RMB-Drag | MMB-Drag (oder Ctrl+RMB) | Wheel | Klick = Element, Doppelklick = Kette/Fläche, RMB-Menü |
 | FreeCAD (CAD-Navigation) | MMB-Drag | MMB+LMB oder Space | Wheel | Klick = Element, Ctrl = Multi |
 | Fusion 360 | Shift+MMB-Drag | MMB-Drag | Wheel | Klick = Element, Klick-Halten = Tiefen-Auswahlmenü |
 | TinkerCAD | RMB-Drag | MMB-Drag | Wheel | Klick = Objekt, Drag = Box-Select |
 
-Wichtigste Konfliktachse: **Wer bekommt die linke Maustaste?** FieldDraft und
-der Three.js-Editor orbiten mit LMB; alle klassischen CAD-Systeme reservieren
+Wichtigste Konfliktachse: **Wer bekommt die linke Maustaste?** Der
+Three.js-Editor orbitet mit LMB; alle klassischen CAD-Systeme reservieren
 LMB für Selektion/Box-Select und orbiten mit RMB/MMB. Das Preset entscheidet
 also primär über die Button-Zuordnung der `OrbitControls` und darüber, ob
 LMB-Drag eine Box-Selektion (später) oder eine Kamerafahrt ist.
@@ -63,9 +63,9 @@ flowchart LR
      Körper-Eskalationsklick aktiv ist, später Box-Select-Verhalten.
    - `keys`: Tastatur-Kürzel-Overrides (z. B. FreeCAD-Viewcube-Tasten),
      angedockt an das bestehende `keyboardTarget`/`viewCommands`-System.
-2. **Persistenz**: ein Key `fielddraft.controlsPreset` (Werte: `fielddraft`,
-   `threejs`, `onshape`, `freecad`, `fusion`, `tinkercad`), gelesen wie die
-   übrigen Settings in `SettingsMenu.tsx`; Default `fielddraft`.
+2. **Persistenz**: ein Key `fielddraft.controlsPreset` (Werte: `threejs`,
+   `onshape`, `freecad`, `fusion`, `tinkercad`), gelesen wie die
+   übrigen Settings in `SettingsMenu.tsx`; Default `onshape`.
 3. **Anwendung**: `viewportCamera.tsx` liest das Preset und setzt
    `mouseButtons`/Speeds der OrbitControls; `Viewport.tsx` fragt die
    Selektions-Idiome ab, statt Modifier hart zu codieren. Die
@@ -103,7 +103,7 @@ flowchart LR
      (FreeCAD Std BoxSelection als LMB-Approximation, TinkerCAD
      Rubber-Band) selektiert immer nur komplett Enthaltenes; im
      Objekt-Modus (TinkerCAD) ganze Körper (Kugeln ohne B-Rep-Kanten
-     über ihre Welt-AABB). FieldDraft-/Three.js-Preset: `null`, weil
+     über ihre Welt-AABB). Three.js-Preset: `null`, weil
      LMB dort die Kamera orbitet.
    - Implementierung: `boxSelect.ts` (pure NDC-Logik, getestet) +
      Drag-Handling/Overlay im Viewport; `store.applyBoxSelection`

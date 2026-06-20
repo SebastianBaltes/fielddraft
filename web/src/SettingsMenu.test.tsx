@@ -48,7 +48,7 @@ function setup() {
     liveExtrudeDrag: true,
     showEdgePoints: false,
     showOctreeCells: false,
-    controlsPreset: "fielddraft",
+    controlsPreset: "onshape",
     autoReload: true,
   };
 
@@ -283,15 +283,15 @@ describe("SettingsMenu", () => {
     const select = t.container.querySelector<HTMLSelectElement>(
       '[data-testid="setting-controls-preset-select"]',
     )!;
-    expect(select.value).toBe("fielddraft");
+    expect(select.value).toBe("onshape");
     act(() => {
-      select.value = "onshape";
+      select.value = "freecad";
       select.dispatchEvent(new Event("change", { bubbles: true }));
     });
     expect(t.onChange).toHaveBeenCalledWith(
-      expect.objectContaining({ controlsPreset: "onshape" }),
+      expect.objectContaining({ controlsPreset: "freecad" }),
     );
-    expect(localStorage.getItem("fielddraft.controlsPreset")).toBe("onshape");
+    expect(localStorage.getItem("fielddraft.controlsPreset")).toBe("freecad");
     t.cleanup();
   });
 
@@ -397,7 +397,7 @@ describe("loadSettings", () => {
       liveExtrudeDrag: true,
       showEdgePoints: false,
       showOctreeCells: false,
-      controlsPreset: "fielddraft",
+      controlsPreset: "onshape",
       autoReload: true,
     });
   });
@@ -430,7 +430,7 @@ describe("loadSettings", () => {
       liveExtrudeDrag: true,
       showEdgePoints: false,
       showOctreeCells: false,
-      controlsPreset: "fielddraft",
+      controlsPreset: "onshape",
       autoReload: true,
     });
   });
@@ -458,7 +458,10 @@ describe("loadSettings", () => {
     localStorage.setItem("fielddraft.controlsPreset", "tinkercad");
     expect(loadSettings().controlsPreset).toBe("tinkercad");
 
+    // Unknown ids (incl. the removed "fielddraft" preset) fall back to default.
     localStorage.setItem("fielddraft.controlsPreset", "blender");
-    expect(loadSettings().controlsPreset).toBe("fielddraft");
+    expect(loadSettings().controlsPreset).toBe("onshape");
+    localStorage.setItem("fielddraft.controlsPreset", "fielddraft");
+    expect(loadSettings().controlsPreset).toBe("onshape");
   });
 });
