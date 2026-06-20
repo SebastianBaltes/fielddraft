@@ -63,6 +63,13 @@ export function App() {
         e.preventDefault();
         return;
       }
+      // F2 opens the Report Issue dialog — also global, even in inputs, so it
+      // works mid-task. SettingsMenu owns the dialog; bridge via a window event.
+      if (e.key === "F2") {
+        window.dispatchEvent(new Event("fd:report-issue"));
+        e.preventDefault();
+        return;
+      }
       // Never steal keystrokes from a focused text surface (form fields,
       // and the Monaco script editor).
       if (isTextEntryTarget(e.target)) return;
@@ -413,6 +420,7 @@ export function App() {
                 })()}
                 <tr><td><kbd>Arrows</kbd></td><td>Nudge selection</td></tr>
                 <tr><td><kbd>F1</kbd></td><td>Toggle this help</td></tr>
+                <tr><td><kbd>F2</kbd></td><td>Report an issue</td></tr>
               </tbody>
             </table>
             <button type="button" onClick={() => setShowHelp(false)}>Close</button>

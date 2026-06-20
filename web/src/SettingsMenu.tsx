@@ -362,6 +362,7 @@ function shortcutRows(preset: ControlsPresetId): { keys: string; action: string 
     viewShortcutRow(CONTROLS_PRESETS[preset]),
     { keys: "Arrows", action: "Nudge selection" },
     { keys: "F1", action: "Toggle help overlay" },
+    { keys: "F2", action: "Report an issue" },
   ];
 }
 
@@ -387,6 +388,13 @@ export function SettingsMenu({
   const buttonRef = useRef<HTMLButtonElement>(null);
 
   const close = useCallback(() => setOpen(false), []);
+
+  // F2 (handled globally in App) opens the Report Issue dialog from anywhere.
+  useEffect(() => {
+    const openReport = () => setReportDialogOpen(true);
+    window.addEventListener("fd:report-issue", openReport);
+    return () => window.removeEventListener("fd:report-issue", openReport);
+  }, []);
 
   useEffect(() => {
     if (!open) return;
@@ -591,7 +599,8 @@ export function SettingsMenu({
             data-testid="menu-report"
             onClick={() => menuAction(() => setReportDialogOpen(true))}
           >
-            Report Issue…
+            <span>Report Issue…</span>
+            <span className="menu-shortcut">F2</span>
           </button>
         </div>
       )}
