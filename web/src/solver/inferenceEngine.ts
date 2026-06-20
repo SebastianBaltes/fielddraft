@@ -46,6 +46,16 @@ import type { Constraint, EntityId, SketchState } from "./types";
 export const DEFAULT_SNAP_DISTANCE_MM = 1.5;
 
 /**
+ * Ticket 4peq: orientation hints (Horizontal / Vertical / Parallel) snap on an
+ * ANGULAR threshold, not a perpendicular distance. A distance gate
+ * (`|dy| <= snap`) is length-dependent — a short line at 30° still has a tiny
+ * `dy`, so it got force-aligned and couldn't be drawn freely. An angle gate is
+ * length-independent: only lines that are genuinely near-axis (within a few
+ * degrees) snap, at any length. ~5° matches the Onshape feel.
+ */
+const ORIENT_SNAP_ANGLE_RAD = (5 * Math.PI) / 180;
+
+/**
  * Priority tier for a candidate. Lower numbers win. Gaps
  * between tiers leave room for future in-between ranks
  * without breaking stored preferences.
@@ -223,8 +233,10 @@ export function inferCandidates(
       // non-trivial length; a zero-length line has no
       // direction.
       if (lineLength > snap * 0.5) {
-        const horizontalAngleOffset = Math.abs(dy);
-        if (horizontalAngleOffset <= snap) {
+        // Angle from the horizontal / vertical axis (length-independent).
+        const angleFromHorizontal = Math.atan2(Math.abs(dy), Math.abs(dx));
+        const angleFromVertical = Math.atan2(Math.abs(dx), Math.abs(dy));
+        if (angleFromHorizontal <= ORIENT_SNAP_ANGLE_RAD) {
           candidates.push({
             constraint: {
               kind: "horizontal",
@@ -232,12 +244,11 @@ export function inferCandidates(
               line: -1,
             },
             priority: InferencePriority.Horizontal,
-            distanceMm: horizontalAngleOffset,
+            distanceMm: Math.abs(dy),
             label: "Horizontal",
           });
         }
-        const verticalAngleOffset = Math.abs(dx);
-        if (verticalAngleOffset <= snap) {
+        if (angleFromVertical <= ORIENT_SNAP_ANGLE_RAD) {
           candidates.push({
             constraint: {
               kind: "vertical",
@@ -245,7 +256,7 @@ export function inferCandidates(
               line: -1,
             },
             priority: InferencePriority.Vertical,
-            distanceMm: verticalAngleOffset,
+            distanceMm: Math.abs(dx),
             label: "Vertical",
           });
         }
@@ -268,7 +279,11 @@ export function inferCandidates(
           const cross =
             (dx * (oe.y - os.y) - dy * (oe.x - os.x)) / oLen;
           const offset = Math.abs(cross);
-          if (offset <= snap) {
+          // |cross| / lineLength == sin(angle between the drag and `other`),
+          // so the parallel hint is gated on the same angular threshold as
+          // H/V — length-independent, not the sticky distance gate (4peq).
+          const angleOff = Math.asin(Math.min(1, offset / lineLength));
+          if (angleOff <= ORIENT_SNAP_ANGLE_RAD) {
             candidates.push({
               constraint: {
                 kind: "parallel",
