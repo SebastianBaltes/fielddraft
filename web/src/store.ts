@@ -285,9 +285,12 @@ export interface StoreState {
     normals: Float32Array;
     indices: Uint32Array;
   } | null;
-  /** K9.4: measure mode active — clicks place measure points
+  /** K9.4: measure mode active — clicks pick B-Rep elements to measure
    *  instead of selecting features. */
   measureMode: boolean;
+  /** stv8: B-Rep elements picked for measurement (max 2: one → length/radius,
+   *  two → distance). Cleared when measure mode toggles. */
+  measureSelection: readonly PickedElement[];
   /** K10.6: fillet mode — clicks on edges create fillet_edge features. */
   filletMode: boolean;
   /** F10: sketch-fillet radius (mm) used by the two-click `sketch_fillet`
@@ -673,6 +676,7 @@ export class KernelStore {
       nextOp: BoolOpTag.Add,
       meshedBodies: [],
       measureMode: false,
+      measureSelection: [],
       filletMode: false,
       sketchFilletRadius: 5,
       sketchChamferDistance: 5,
@@ -772,6 +776,7 @@ export class KernelStore {
       nextOp: this.state.nextOp,
       meshedBodies: this.state.meshedBodies,
       measureMode: this.state.measureMode,
+      measureSelection: this.state.measureSelection,
       filletMode: this.state.filletMode,
       sketchFilletRadius: this.state.sketchFilletRadius,
       sketchChamferDistance: this.state.sketchChamferDistance,
@@ -2253,9 +2258,45 @@ export class KernelStore {
   toggleMeasureMode(): void {
     this.patch({
       measureMode: !this.state.measureMode,
+      measureSelection: [],
       filletMode: false,
       mateMode: false,
     });
+    for (const listener of this.listeners) listener();
+  }
+
+  /** stv8: add a picked B-Rep element to the measure set. A repeated pick of
+   *  the same element removes it (toggle). The set holds at most two entities
+   *  — a third pick starts a fresh pair from the new element. */
+  addMeasureEntity(el: PickedElement): void {
+    const sel = this.state.measureSelection;
+    const idx = sel.findIndex(
+      (e) => e.kind === el.kind && e.idHash === el.idHash,
+    );
+    let next: PickedElement[];
+    if (idx >= 0) {
+      next = sel.filter((_, i) => i !== idx);
+    } else if (sel.length >= 2) {
+      next = [el];
+    } else {
+      next = [...sel, el];
+    }
+    this.patch({ measureSelection: next });
+    for (const listener of this.listeners) listener();
+  }
+
+  /** stv8: drop one measured element (panel "×" button). */
+  removeMeasureEntity(el: PickedElement): void {
+    this.patch({
+      measureSelection: this.state.measureSelection.filter(
+        (e) => !(e.kind === el.kind && e.idHash === el.idHash),
+      ),
+    });
+    for (const listener of this.listeners) listener();
+  }
+
+  clearMeasureSelection(): void {
+    this.patch({ measureSelection: [] });
     for (const listener of this.listeners) listener();
   }
 
@@ -2263,6 +2304,7 @@ export class KernelStore {
     this.patch({
       filletMode: !this.state.filletMode,
       measureMode: false,
+      measureSelection: [],
       mateMode: false,
     });
     for (const listener of this.listeners) listener();
@@ -2273,6 +2315,7 @@ export class KernelStore {
       mateMode: !this.state.mateMode,
       filletMode: false,
       measureMode: false,
+      measureSelection: [],
     });
     for (const listener of this.listeners) listener();
   }

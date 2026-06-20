@@ -79,6 +79,8 @@ import { getPublishedPickCamera, publishPickCamera } from "./pickCameraBridge";
 import { publishSketchCamera } from "./sketchCameraBridge";
 import { requestOverlayRedraw } from "./sketchOverlayBridge";
 import { getHoveredElement, getHoveredElementOfKind } from "./brepPickBridge";
+import type { PickedElement } from "./elementQuery";
+import { MeasurePanel } from "./MeasurePanel";
 import { pickSketchAtRay } from "./sketchPickBridge";
 import {
   pickSketchLineAtRay,
@@ -462,26 +464,15 @@ function handleFilletClick(
   store.addFilletAtEdge(query);
 }
 
-type MeasurePoints = {
-  a: [number, number, number];
-  b?: [number, number, number];
-} | null;
-
-function handleMeasureClick(
-  click: PickHit,
-  measurePoints: MeasurePoints,
-  setMeasurePoints: (pts: MeasurePoints) => void,
-): void {
-  const pt: [number, number, number] = [
-    click.point[0],
-    click.point[1],
-    click.point[2],
-  ];
-  if (!measurePoints || measurePoints.b) {
-    setMeasurePoints({ a: pt });
-  } else {
-    setMeasurePoints({ ...measurePoints, b: pt });
-  }
+function handleMeasureClick(store: {
+  addMeasureEntity(el: PickedElement): void;
+}): void {
+  // stv8: Measure picks a B-Rep EDGE by its stable id_hash (the same hovered
+  // element the fillet tool consumes), then the floating MeasurePanel resolves
+  // it to a polyline and shows length / radius / distance. A click that isn't
+  // over an edge is ignored (keeps the current measure set intact).
+  const edge = getHoveredElementOfKind("edge");
+  if (edge) store.addMeasureEntity(edge);
 }
 
 function handleSelectionClick(
@@ -495,13 +486,11 @@ function handleSelectionClick(
   },
   click: PickResult | null,
   event: React.MouseEvent,
-  setMeasurePoints: (pts: MeasurePoints) => void,
 ): void {
   if (!click || !click.hit) {
     if (!event.shiftKey && !event.ctrlKey && !event.metaKey) {
       store.clearSelection("scene");
     }
-    setMeasurePoints(null);
     invalidateCanvas();
     return;
   }
@@ -781,7 +770,6 @@ export function Viewport({
     active: false,
   });
   const [pickResult, setPickResult] = useState<PickResult | null>(null);
-  const [measurePoints, setMeasurePoints] = useState<MeasurePoints>(null);
 
   // Right-click context menu. Tracked separately from the pointer handlers
   // because the right button also drives orbit/pan in most controls presets —
@@ -1109,8 +1097,8 @@ export function Viewport({
       handleFilletClick(store, click);
       return;
     }
-    if (state?.measureMode && click?.hit) {
-      handleMeasureClick(click, measurePoints, setMeasurePoints);
+    if (state?.measureMode) {
+      handleMeasureClick(store);
       return;
     }
 
@@ -1206,7 +1194,7 @@ export function Viewport({
     store.clearElementSelection();
     if (state?.highlightedBodyIndex != null) store.highlightBody(null);
 
-    handleSelectionClick(store, click, event, setMeasurePoints);
+    handleSelectionClick(store, click, event);
   };
 
   const handleDragOver = (e: React.DragEvent<HTMLDivElement>): void => {
@@ -1517,22 +1505,7 @@ export function Viewport({
       </div>
       <PerfHud renderMode={renderMode} />
       <PickHud result={pickResult} />
-      {measurePoints ? (
-        <div className="measure-hud" data-testid="measure-hud">
-          {measurePoints.b ? (
-            <>
-              {Math.hypot(
-                measurePoints.b[0] - measurePoints.a[0],
-                measurePoints.b[1] - measurePoints.a[1],
-                measurePoints.b[2] - measurePoints.a[2],
-              ).toFixed(2)}{" "}
-              mm
-            </>
-          ) : (
-            "Click second point…"
-          )}
-        </div>
-      ) : null}
+      <MeasurePanel />
       {state?.mateMode && (
         <div className="face-pick-hud" data-testid="mate-mode-hud">
           Click a surface to place a mate connector

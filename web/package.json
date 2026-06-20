@@ -1,7 +1,7 @@
 {
   "name": "fielddraft-web",
   "private": true,
-  "version": "0.6.260",
+  "version": "0.6.261",
   "type": "module",
   "engines": {
     "node": ">=22"
