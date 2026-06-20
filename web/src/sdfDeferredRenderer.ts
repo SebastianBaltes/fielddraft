@@ -772,6 +772,7 @@ export function updateDeferredData(
     volumes?: { data: Float32Array; dims: [number, number, number] }[];
     marchRelax?: number;
   }[],
+  renderer?: THREE.WebGPURenderer,
 ): void {
   const ranges = packOpcodes(
     state.opcodeData,
@@ -801,12 +802,18 @@ export function updateDeferredData(
             : computeLeafAABB(hybridInfo.leaves);
           if (bodyAABB) {
             const pad = 0.5;
-            m.geometry.dispose();
+            // Ticket sgzw: defer the OLD geometry's GPU disposal until the
+            // device is idle. Disposing it synchronously here races the
+            // in-flight frame's submit → "Buffer used in submit while
+            // destroyed" → corrupted/smeared render that persists. Same race
+            // the rebuild/teardown paths already guard (fg9o/323i).
+            const retiredGeo = m.geometry;
             m.geometry = new THREE.BoxGeometry(
               bodyAABB[3] - bodyAABB[0] + pad * 2,
               bodyAABB[4] - bodyAABB[1] + pad * 2,
               bodyAABB[5] - bodyAABB[2] + pad * 2,
             );
+            disposeAfterGpuIdle(renderer, () => retiredGeo.dispose());
             m.position.set(
               (bodyAABB[0] + bodyAABB[3]) * 0.5,
               (bodyAABB[1] + bodyAABB[4]) * 0.5,

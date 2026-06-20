@@ -392,7 +392,11 @@ export function SdfDeferredOverlay({
     }
 
     if (needsDataUpdate && readyRef.current && !compilingRef.current) {
-      updateDeferredData(pipeline, collectDeferredBodies());
+      updateDeferredData(
+        pipeline,
+        collectDeferredBodies(),
+        renderer as unknown as WebGPURenderer,
+      );
       dataFpRef.current = dataFp;
     }
 
