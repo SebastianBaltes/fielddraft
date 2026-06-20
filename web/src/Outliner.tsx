@@ -720,7 +720,34 @@ export function Outliner({
                       className="row"
                       data-testid={`variable-row-${v.name}`}
                     >
-                      <span className="variable-name">{v.name}</span>
+                      <input
+                        key={`name-${v.name}`}
+                        className="variable-name"
+                        aria-label={`Name of ${v.name}`}
+                        data-testid={`variable-name-${v.name}`}
+                        defaultValue={v.name}
+                        onClick={(e) => e.stopPropagation()}
+                        onBlur={(e) => {
+                          const next = e.currentTarget.value.trim();
+                          if (next && next !== v.name) {
+                            if (!store.renameVariable(v.name, next)) {
+                              e.currentTarget.value = v.name;
+                            }
+                          } else {
+                            e.currentTarget.value = v.name;
+                          }
+                        }}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") {
+                            e.preventDefault();
+                            (e.currentTarget as HTMLInputElement).blur();
+                          } else if (e.key === "Escape") {
+                            e.preventDefault();
+                            e.currentTarget.value = v.name;
+                            (e.currentTarget as HTMLInputElement).blur();
+                          }
+                        }}
+                      />
                       <input
                         className="variable-value"
                         type="number"

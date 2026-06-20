@@ -1334,6 +1334,12 @@ export class Kernel {
     return this.inner.removeVariable(name);
   }
 
+  /** Ticket 8ar9: rename a variable, keeping its value. Throws on
+   *  an empty new name or a collision with an existing variable. */
+  renameVariable(oldName: string, newName: string): void {
+    this.inner.renameVariable(oldName, newName);
+  }
+
   /** K8.10: list every variable as `{name, value}` entries,
    *  sorted by name. */
   listVariables(): { name: string; value: number }[] {

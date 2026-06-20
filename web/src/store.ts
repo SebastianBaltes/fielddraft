@@ -1518,6 +1518,23 @@ export class KernelStore {
     return true;
   }
 
+  /** Ticket 8ar9: rename a variable, keeping its value, and commit.
+   *  Returns `true` on success, `false` when the kernel rejected the
+   *  rename (empty new name or a collision). A no-op rename succeeds. */
+  renameVariable(oldName: string, newName: string): boolean {
+    if (oldName === newName) return true;
+    try {
+      this.kernel.renameVariable(oldName, newName);
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error("fielddraft: renameVariable failed", err);
+      this.setTransientError(formatKernelError(err, "Variable rename failed"));
+      return false;
+    }
+    this.commit();
+    return true;
+  }
+
   /** K12: add a thread with specific metric preset params. */
   addThreadPreset(radius: number, pitch: number, depth: number): number {
     const offset: [number, number, number] = [

@@ -2361,6 +2361,44 @@ impl Kernel {
         true
     }
 
+    /// Ticket 8ar9: rename a document-level variable, keeping its
+    /// value. Errors on an empty new name or a collision with an
+    /// existing variable; a no-op rename (`old == new`) succeeds.
+    /// Re-bootstraps so any formula that referenced the old name
+    /// surfaces as a regen error (which rolls the rename back) —
+    /// future formula support will rewrite references here instead.
+    #[wasm_bindgen(js_name = renameVariable)]
+    pub fn rename_variable(&mut self, old: &str, new: &str) -> Result<(), JsError> {
+        let new_name = new.trim();
+        if new_name.is_empty() {
+            return Err(JsError::new("variable name must not be empty"));
+        }
+        if old == new_name {
+            return Ok(());
+        }
+        let Some(&value) = self.document.variables.get(old) else {
+            return Err(JsError::new(&format!("no variable named `{old}`")));
+        };
+        if self.document.variables.contains_key(new_name) {
+            return Err(JsError::new(&format!(
+                "a variable named `{new_name}` already exists"
+            )));
+        }
+        self.snapshot();
+        self.document.variables.remove(old);
+        self.document
+            .variables
+            .insert(new_name.to_string(), value);
+        if let Err(err) = self.bootstrap_features_from_calls() {
+            self.undo();
+            return Err(JsError::new(&format!(
+                "variable rename failed to regenerate: {err}"
+            )));
+        }
+        self.rebuild_packed();
+        Ok(())
+    }
+
     /// K8.10: list every document-level variable as a JSON
     /// array of `{name, value}` pairs, sorted by name (the
     /// BTreeMap ordering).
@@ -4088,6 +4126,31 @@ mod tests {
         // Undo removes the variable entirely.
         assert!(k.undo());
         assert!(k.document.variables.is_empty());
+    }
+
+    #[test]
+    fn rename_variable_keeps_value_and_undoes() {
+        // NB error paths construct a `JsError`, which panics on non-wasm
+        // targets (wasm-bindgen import) — so this only exercises the success
+        // paths, like the other variable tests. The guard clauses (empty /
+        // collision / unknown) are covered by the web-side store tests.
+        let mut k = Kernel::new();
+        k.set_variable("width", 50.0).unwrap();
+        k.set_variable("depth", 30.0).unwrap();
+
+        // Rename keeps the value; the old name is gone.
+        k.rename_variable("width", "Seitenlänge").unwrap();
+        assert_eq!(k.document.variables.get("Seitenlänge"), Some(&50.0));
+        assert!(!k.document.variables.contains_key("width"));
+
+        // A no-op rename (same name) succeeds without changing anything.
+        k.rename_variable("depth", "depth").unwrap();
+        assert_eq!(k.document.variables.get("depth"), Some(&30.0));
+
+        // The rename participates in undo (back to `width`).
+        assert!(k.undo());
+        assert_eq!(k.document.variables.get("width"), Some(&50.0));
+        assert!(!k.document.variables.contains_key("Seitenlänge"));
     }
 
     #[test]

@@ -186,9 +186,9 @@
     & .variable-name {
       flex: 1;
       font-family: var(--font-mono, monospace);
-      font-size: var(--fs-base);
     }
 
+    & .variable-name,
     & .variable-value,
     & .variable-name-input,
     & .variable-value-input {
