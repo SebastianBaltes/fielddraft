@@ -7,8 +7,9 @@ Setting `fielddraft.controlsPreset`). Was bewusst noch fehlt, steht unter
 Konzept aus Ticket 20260610-085906-evq2: Anwender bringen
 Steuerungs-Gewohnheiten aus ihrem bisherigen Programm mit. Ein Preset-System
 soll die wichtigsten Schemata per Setting abbilden: **Three.js-Editor,
-Onshape, FreeCAD, Fusion 360, Blender, TinkerCAD**. Default ist **Onshape**
-(Ticket 8ikq; das frühere FieldDraft-Preset wurde entfernt, Blender ergänzt).
+Onshape, FreeCAD, Fusion 360, Blender, SolidWorks, TinkerCAD**. Default ist
+**Onshape** (Ticket 8ikq; das frühere FieldDraft-Preset wurde entfernt, Blender
+und SolidWorks ergänzt, FreeCAD ans Wiki angeglichen).
 
 ## Ist-Zustand
 
@@ -31,10 +32,26 @@ Orbit/Pan/Zoom der unterstützten Programme (Maus, Default-Konfiguration):
 |---|---|---|---|---|
 | Three.js-Editor | LMB-Drag | RMB-Drag (bzw. 2-Finger) | Wheel | Klick = Objekt (keine Sub-Elemente) |
 | Onshape | RMB-Drag | MMB-Drag (oder Ctrl+RMB) | Wheel | Klick = Element, Doppelklick = Kette/Fläche, RMB-Menü |
-| FreeCAD (CAD-Navigation) | MMB-Drag | MMB+LMB oder Space | Wheel | Klick = Element, Ctrl = Multi |
+| FreeCAD (CAD-Navigation) | MMB+LMB-Chord (≈ RMB-Drag) | MMB-Drag | Wheel | Klick = Element, Ctrl = Multi |
 | Fusion 360 | Shift+MMB-Drag | MMB-Drag | Wheel | Klick = Element, Klick-Halten = Tiefen-Auswahlmenü |
 | Blender | MMB-Drag | Shift+MMB-Drag | Wheel | Klick = Auswahl, LMB-Drag = Border/Box-Select |
+| SolidWorks | MMB-Drag | Ctrl+MMB-Drag | Wheel | Klick = Element, Ctrl = Multi |
 | TinkerCAD | RMB-Drag | MMB-Drag | Wheel | Klick = Objekt, Drag = Box-Select |
+
+Quelle der Mappings: FreeCAD-Wiki „Mouse navigation". FreeCADs eigene Stile
+bilden auf diese Presets ab — mehrere fallen auf dieselbe Button-Belegung
+zusammen, da `OrbitControls` nur Einzel-Buttons (keine Chords/Alt-Modifier) kann:
+
+| FreeCAD-Stil | FieldDraft-Preset / Hinweis |
+|---|---|
+| CAD (Default) | **FreeCAD** (MMB-Pan; Rotate-Chord auf RMB approximiert) |
+| Blender | **Blender** (exakt) |
+| TinkerCAD | **TinkerCAD** (exakt) |
+| SolidWorks | **SolidWorks** (exakt) |
+| Revit | = **Fusion 360** (MMB-Pan, Shift+MMB-Orbit) |
+| OpenCascade / Siemens NX | = **Onshape** (MMB-Pan, RMB-Rotate) |
+| Gesture / OpenSCAD | ≈ **Three.js** (LMB-Drag orbitet) |
+| Maya-Gesture, Touchpad | **nicht abbildbar** — brauchen Alt-/Modifier-gehaltenes Drag, das OrbitControls' Button-only-Modell nicht kennt |
 
 Wichtigste Konfliktachse: **Wer bekommt die linke Maustaste?** Der
 Three.js-Editor orbitet mit LMB; alle klassischen CAD-Systeme reservieren
@@ -65,8 +82,8 @@ flowchart LR
    - `keys`: Tastatur-Kürzel-Overrides (z. B. FreeCAD-Viewcube-Tasten),
      angedockt an das bestehende `keyboardTarget`/`viewCommands`-System.
 2. **Persistenz**: ein Key `fielddraft.controlsPreset` (Werte: `threejs`,
-   `onshape`, `freecad`, `fusion`, `blender`, `tinkercad`), gelesen wie die
-   übrigen Settings in `SettingsMenu.tsx`; Default `onshape`.
+   `onshape`, `freecad`, `fusion`, `blender`, `solidworks`, `tinkercad`),
+   gelesen wie die übrigen Settings in `SettingsMenu.tsx`; Default `onshape`.
 3. **Anwendung**: `viewportCamera.tsx` liest das Preset und setzt
    `mouseButtons`/Speeds der OrbitControls; `Viewport.tsx` fragt die
    Selektions-Idiome ab, statt Modifier hart zu codieren. Die

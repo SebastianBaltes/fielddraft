@@ -109,41 +109,59 @@ export function CameraRig({ preset }: { preset: ControlsPresetId }) {
   // re-render needed.
   //  · Fusion: MMB pans normally, orbits while Shift is held.
   //  · Blender: MMB orbits normally, pans while Shift is held (the inverse).
+  //  · SolidWorks: MMB orbits normally, pans while Ctrl is held.
   //  · Three.js: LMB orbits normally, but Shift FREES it so Shift+LMB-drag
   //    falls through to the viewport's box select instead of orbiting.
   useEffect(() => {
     if (
       !camera.shiftMiddleOrbit &&
       !camera.shiftMiddlePan &&
+      !camera.ctrlMiddlePan &&
       !camera.shiftLeftBoxSelect
     )
       return;
-    const setShift = (down: boolean) => {
+    const setMod = (key: "Shift" | "Control", down: boolean) => {
       const ctrl = controlsRef.current;
       if (!ctrl) return;
-      if (camera.shiftMiddleOrbit) {
+      if (key === "Shift" && camera.shiftMiddleOrbit) {
         ctrl.mouseButtons.MIDDLE = down
           ? ORBIT_ACTION_CODE.rotate
           : ORBIT_ACTION_CODE.pan;
       }
-      if (camera.shiftMiddlePan) {
+      if (key === "Shift" && camera.shiftMiddlePan) {
         ctrl.mouseButtons.MIDDLE = down
           ? ORBIT_ACTION_CODE.pan
           : ORBIT_ACTION_CODE.rotate;
       }
-      if (camera.shiftLeftBoxSelect) {
+      if (key === "Control" && camera.ctrlMiddlePan) {
+        ctrl.mouseButtons.MIDDLE = down
+          ? ORBIT_ACTION_CODE.pan
+          : ORBIT_ACTION_CODE.rotate;
+      }
+      if (key === "Shift" && camera.shiftLeftBoxSelect) {
         ctrl.mouseButtons.LEFT = down ? undefined : ORBIT_ACTION_CODE.rotate;
       }
     };
-    const onDown = (e: KeyboardEvent) => { if (e.key === "Shift") setShift(true); };
-    const onUp = (e: KeyboardEvent) => { if (e.key === "Shift") setShift(false); };
+    const onDown = (e: KeyboardEvent) => {
+      if (e.key === "Shift") setMod("Shift", true);
+      if (e.key === "Control") setMod("Control", true);
+    };
+    const onUp = (e: KeyboardEvent) => {
+      if (e.key === "Shift") setMod("Shift", false);
+      if (e.key === "Control") setMod("Control", false);
+    };
     window.addEventListener("keydown", onDown);
     window.addEventListener("keyup", onUp);
     return () => {
       window.removeEventListener("keydown", onDown);
       window.removeEventListener("keyup", onUp);
     };
-  }, [camera.shiftMiddleOrbit, camera.shiftMiddlePan, camera.shiftLeftBoxSelect]);
+  }, [
+    camera.shiftMiddleOrbit,
+    camera.shiftMiddlePan,
+    camera.ctrlMiddlePan,
+    camera.shiftLeftBoxSelect,
+  ]);
 
   // Ticket bxoo: no separate sketch camera — the normal camera and
   // controls stay live during a sketch session; the overlay projects

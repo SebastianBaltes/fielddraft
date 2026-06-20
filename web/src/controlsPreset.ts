@@ -25,6 +25,7 @@ export type ControlsPresetId =
   | "freecad"
   | "fusion"
   | "blender"
+  | "solidworks"
   | "tinkercad";
 
 /** What a mouse button does to the camera. `null` = button is free
@@ -40,6 +41,9 @@ export interface CameraBindings {
   /** Blender idiom (inverse of `shiftMiddleOrbit`): MMB orbits, and Shift+MMB
    *  pans. The rig swaps the MIDDLE action to pan while Shift is held. */
   shiftMiddlePan?: boolean;
+  /** SolidWorks idiom: MMB orbits, and Ctrl+MMB pans. Like `shiftMiddlePan`
+   *  but gated on Ctrl. */
+  ctrlMiddlePan?: boolean;
   /** Three.js-editor idiom: LMB orbits, but Shift+LMB-drag draws a box
    *  select. The camera rig FREES the left button while Shift is held (so
    *  OrbitControls ignores the drag) and the viewport arms a box instead.
@@ -150,9 +154,12 @@ export const CONTROLS_PRESETS: Record<ControlsPresetId, ControlsPreset> = {
     id: "freecad",
     label: "FreeCAD",
     camera: {
-      // CAD navigation orbits with MMB; the MMB+LMB pan chord has no
-      // OrbitControls equivalent, so pan approximates onto RMB.
-      mouseButtons: { left: null, middle: "rotate", right: "pan" },
+      // FreeCAD "CAD navigation" (its default): MMB-drag PANS; rotate is a
+      // chord (MMB then LMB, or MMB then RMB) that OrbitControls can't express,
+      // so we approximate the alternate MMB+RMB method onto a plain RMB-drag.
+      // (wiki.freecad.org/Mouse_navigation — the previous mapping had pan/rotate
+      // swapped.)
+      mouseButtons: { left: null, middle: "pan", right: "rotate" },
       rotateSpeed: 1.4,
       panSpeed: 1.2,
       zoomSpeed: 1.6,
@@ -223,6 +230,30 @@ export const CONTROLS_PRESETS: Record<ControlsPresetId, ControlsPreset> = {
       bodyEscalation: true,
       implicitMultiSelect: false,
       boxSelect: "window",
+      spaceClears: false,
+    },
+    keys: { views: DEFAULT_VIEW_KEYS },
+  },
+  solidworks: {
+    id: "solidworks",
+    label: "SolidWorks",
+    camera: {
+      // SolidWorks orbits with MMB and pans with Ctrl+MMB; the wheel zooms and
+      // LMB is free for selection. Like Blender but the pan modifier is Ctrl.
+      mouseButtons: { left: null, middle: "rotate", right: null },
+      ctrlMiddlePan: true,
+      rotateSpeed: 1.4,
+      panSpeed: 1.2,
+      zoomSpeed: 1.6,
+    },
+    // SolidWorks adds to a selection with Ctrl; its box select is a window
+    // (L→R) / crossing (R→L) drag.
+    selection: {
+      mode: "element",
+      additive: ["ctrl", "meta"],
+      bodyEscalation: true,
+      implicitMultiSelect: false,
+      boxSelect: "window-crossing",
       spaceClears: false,
     },
     keys: { views: DEFAULT_VIEW_KEYS },

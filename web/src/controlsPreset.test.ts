@@ -12,12 +12,13 @@ import {
 const PRESETS = Object.values(CONTROLS_PRESETS) as ControlsPreset[];
 
 describe("controls preset registry (docs/UX-PRESETS.md)", () => {
-  it("covers the six programs from the doc", () => {
+  it("covers the seven programs from the doc", () => {
     expect(Object.keys(CONTROLS_PRESETS).sort()).toEqual([
       "blender",
       "freecad",
       "fusion",
       "onshape",
+      "solidworks",
       "threejs",
       "tinkercad",
     ]);
@@ -41,6 +42,7 @@ describe("controls preset registry (docs/UX-PRESETS.md)", () => {
       "freecad",
       "fusion",
       "blender",
+      "solidworks",
       "tinkercad",
     ] as const) {
       expect(CONTROLS_PRESETS[id].camera.mouseButtons.left).toBeNull();
@@ -67,7 +69,9 @@ describe("controls preset registry (docs/UX-PRESETS.md)", () => {
       middle: "pan",
       right: "rotate",
     });
-    expect(CONTROLS_PRESETS.freecad.camera.mouseButtons.middle).toBe("rotate");
+    // FreeCAD "CAD" style: MMB pans (rotate is a chord → approximated onto RMB).
+    expect(CONTROLS_PRESETS.freecad.camera.mouseButtons.middle).toBe("pan");
+    expect(CONTROLS_PRESETS.freecad.camera.mouseButtons.right).toBe("rotate");
     expect(CONTROLS_PRESETS.tinkercad.camera.mouseButtons).toEqual({
       left: null,
       middle: "pan",
@@ -79,7 +83,9 @@ describe("controls preset registry (docs/UX-PRESETS.md)", () => {
     // Blender: MMB orbits, Shift+MMB pans (the inverse of Fusion).
     expect(CONTROLS_PRESETS.blender.camera.mouseButtons.middle).toBe("rotate");
     expect(CONTROLS_PRESETS.blender.camera.shiftMiddlePan).toBe(true);
-    expect(CONTROLS_PRESETS.fusion.camera.shiftMiddleOrbit).toBe(true);
+    // SolidWorks: MMB orbits, Ctrl+MMB pans.
+    expect(CONTROLS_PRESETS.solidworks.camera.mouseButtons.middle).toBe("rotate");
+    expect(CONTROLS_PRESETS.solidworks.camera.ctrlMiddlePan).toBe(true);
   });
 
   it("object-mode presets skip sub-element picking and escalation", () => {
