@@ -16,7 +16,7 @@ import { planeToWorld, type PlaneFrame } from "./sketchPlaneFrame";
 import { slotOutline } from "./sketchSlot";
 import { bsplinePoints, catmullRomPoints, type Vec2 } from "./sketchSpline";
 import { closedRegionsCached } from "./sketchRegions";
-import { regularPolygonVertices } from "./sketchSession";
+import { buildDraftSketchState, regularPolygonVertices } from "./sketchSession";
 
 export interface SketchSubCall {
   type: string;
@@ -35,36 +35,27 @@ export interface SketchLinePickable {
   b: [number, number, number];
 }
 
-/** Per-line pickables for every straight `sketch_line` sub-call (including
- *  construction lines — a revolve axis is often a construction line). Only
- *  `sketch_line`s carry a single, axis-meaningful entity id; rectangles and
- *  circles are skipped. */
+/** Per-line pickables for EVERY straight line entity in the sketch — not just
+ *  raw `sketch_line` sub-calls but also the edges a `sketch_rectangle`,
+ *  `sketch_polygon`, etc. expand into (ticket pr8a). We enumerate the solved
+ *  entity state (whose ids mirror the kernel's allocation, so the emitted
+ *  `qSketchLine(sketchId, lineId)` resolves on the kernel side), instead of
+ *  reading per-sub-call ids — a rectangle has no single axis-meaningful id. */
 export function collectSketchLinePickables(
   subCalls: SketchSubCall[],
   frame: PlaneFrame,
 ): SketchLinePickable[] {
   const out: SketchLinePickable[] = [];
-  for (const call of subCalls) {
-    if (call.type !== "sketch_line") continue;
-    const lineId = typeof call.id === "string" ? Number(call.id) : call.id;
-    if (typeof lineId !== "number" || !Number.isFinite(lineId)) continue;
-    const p = call.params;
-    const a = p.start;
-    const b = p.end;
-    if (
-      !Array.isArray(a) ||
-      !Array.isArray(b) ||
-      typeof a[0] !== "number" ||
-      typeof a[1] !== "number" ||
-      typeof b[0] !== "number" ||
-      typeof b[1] !== "number"
-    ) {
-      continue;
-    }
-    const wa = planeToWorld(a[0], a[1], frame);
-    const wb = planeToWorld(b[0], b[1], frame);
+  const state = buildDraftSketchState(subCalls);
+  for (const e of state.entities) {
+    if (e.kind !== "line") continue;
+    const a = state.entities.find((x) => x.id === e.start);
+    const b = state.entities.find((x) => x.id === e.end);
+    if (a?.kind !== "point" || b?.kind !== "point") continue;
+    const wa = planeToWorld(a.at.x, a.at.y, frame);
+    const wb = planeToWorld(b.at.x, b.at.y, frame);
     out.push({
-      lineId,
+      lineId: e.id,
       a: [wa[0], wa[1], wa[2]],
       b: [wb[0], wb[1], wb[2]],
     });

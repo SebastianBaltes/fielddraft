@@ -804,15 +804,28 @@ impl<'a> Context<'a> {
                         frame.origin[2] + uv[0] * frame.x_axis[2] + uv[1] * frame.y_axis[2],
                     ]
                 };
-                for call in &sketch.sub_calls {
-                    if call.type_name != "sketch_line" {
-                        continue;
+                // Ticket pr8a: resolve ANY straight line entity by id from the
+                // solved sketch state — not just raw `sketch_line` sub-calls.
+                // Rectangle / polygon edges are line entities too, so this lets
+                // them serve as a revolve axis like a free-standing line.
+                use fielddraft_solver::Entity;
+                let state = &sketch.state;
+                let point_at = |id: fielddraft_solver::EntityId| -> Option<[f32; 2]> {
+                    state.entities.iter().find_map(|e| match e {
+                        Entity::Point { id: pid, at } if *pid == id => {
+                            Some([at.x as f32, at.y as f32])
+                        }
+                        _ => None,
+                    })
+                };
+                for e in &state.entities {
+                    if let Entity::Line { id, start, end } = e {
+                        if id.0 == *line_id {
+                            let a = point_at(*start)?;
+                            let b = point_at(*end)?;
+                            return Some((lift(a), lift(b)));
+                        }
                     }
-                    if call.id.as_u32_if_flat() != Some(*line_id) {
-                        continue;
-                    }
-                    let line = crate::sketch_features::SketchLineDef::parse(&call.params).ok()?;
-                    return Some((lift(line.start), lift(line.end)));
                 }
                 None
             }
@@ -7109,7 +7122,10 @@ mod tests {
             revolve_id.clone(),
             json!({
                 "profiles": format!("qCreatedBy({sketch_id})"),
-                "axis": format!("qSketchLine({sketch_id}, 10)"),
+                // pr8a: qSketchLine addresses the LINE ENTITY id. The
+                // rectangle takes ids 1–8 (4 corners + 4 edges), so the
+                // construction line's entity is 11 (start 9, end 10, line 11).
+                "axis": format!("qSketchLine({sketch_id}, 11)"),
             }),
         );
         registry
@@ -7175,7 +7191,10 @@ mod tests {
             revolve_id.clone(),
             json!({
                 "profiles": format!("qCreatedBy({sketch_id})"),
-                "axis": format!("qSketchLine({sketch_id}, 10)"),
+                // pr8a: qSketchLine addresses the LINE ENTITY id. The
+                // rectangle takes ids 1–8 (4 corners + 4 edges), so the
+                // construction line's entity is 11 (start 9, end 10, line 11).
+                "axis": format!("qSketchLine({sketch_id}, 11)"),
             }),
         );
         registry
@@ -7248,7 +7267,10 @@ mod tests {
             helix_id.clone(),
             json!({
                 "profiles": format!("qCreatedBy({sketch_id})"),
-                "axis": format!("qSketchLine({sketch_id}, 10)"),
+                // pr8a: qSketchLine now addresses the LINE ENTITY id. The
+                // circle (centre + entity) takes ids 1–2, so the construction
+                // line's entity is 5 (start 3, end 4, line 5).
+                "axis": format!("qSketchLine({sketch_id}, 5)"),
             }),
         );
         registry
@@ -7305,7 +7327,9 @@ mod tests {
             })),
             FeatureCall::new("revolve", revolve_id.clone(), json!({
                 "profiles": format!("qCreatedBy({profile_sketch})"),
-                "axis": format!("qSketchLine({axis_sketch}, 20)"),
+                // pr8a: LINE ENTITY id. The axis sketch holds a single line,
+                // so its entity is 3 (start 1, end 2, line 3).
+                "axis": format!("qSketchLine({axis_sketch}, 3)"),
             })),
         ];
         registry.regenerate(&mut ctx, &calls, None).unwrap();
