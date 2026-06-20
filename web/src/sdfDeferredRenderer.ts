@@ -166,16 +166,21 @@ function createRevolveGeometry(
 ): THREE.BufferGeometry | null {
   const contour = leaf.contour;
   if (!contour || contour.outer.length < 3) return null;
-  // LatheGeometry revolves the profile around local-Y as (x·sinφ, y, x·cosφ),
-  // so a profile on +x or −x sweeps the IDENTICAL solid (the SDF revolves the
-  // radius |x| — a204: "SDF VM korrekt"). What is NOT identical is the triangle
-  // winding and the analytic vertex normals: both depend on the profile's point
-  // order (bottom→top vs top→bottom) and its x-sign, and the two can even
-  // DISAGREE (a −x profile yields outward winding but inward normals). Rather
-  // than special-case the input, build directly and force outward orientation
-  // after the fact — ensureOutwardOrientation handles concave and torus-loop
-  // profiles too (signed-volume test, not a radial heuristic).
+  // The kernel's contour is an IMPLICITLY-CLOSED loop — its last vertex
+  // connects back to the first to bound a solid cross-section (that's why the
+  // SDF, which fills that region, is correct: a204 "SDF VM korrekt").
+  // LatheGeometry only links CONSECUTIVE profile points though, so without an
+  // explicit closing vertex the lathe is left OPEN: the annular wall between the
+  // last and first rings is missing. The opaque G-buffer captures nothing across
+  // that hole, so those pixels read straight through to the background — the
+  // deferred "inside-out"/see-through (tickets ceat/0b8m/a72n). It surfaces on
+  // the user's ANGLE/GLES WebGPU but not on native Vulkan because backends
+  // raster/cull the open seam differently — which is exactly why it never
+  // reproduced in automation. Close the loop so the proxy is a complete solid.
   const points = contour.outer.map(([x, y]) => new THREE.Vector2(x, y));
+  const firstP = points[0];
+  const lastP = points[points.length - 1];
+  if (firstP.distanceTo(lastP) > 1e-5) points.push(firstP.clone());
   const geo = new THREE.LatheGeometry(points, 48);
   ensureOutwardOrientation(geo);
   return geo;
