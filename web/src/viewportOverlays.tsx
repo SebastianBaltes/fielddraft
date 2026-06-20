@@ -30,6 +30,7 @@ import {
 } from "./kernel";
 import type { BRepEdgeMode } from "./SettingsMenu";
 import { PerfProbe } from "./perfMonitor";
+import { GRID_WORLD_SIZE } from "./sceneBoundsBridge";
 import { OVERLAY_LAYER } from "./viewportSdfOverlays";
 import { resolveMaterials, type MaterialProps } from "./materialBridge";
 import { DEFAULT_ROUGHNESS, DEFAULT_METALNESS } from "./pbrShading";
@@ -4236,7 +4237,7 @@ export function DatumOverlay() {
 
 export function WorldGrid() {
   const grid = useMemo(() => {
-    const g = new THREE.GridHelper(600, 60, 0x999999, 0xdddddd);
+    const g = new THREE.GridHelper(GRID_WORLD_SIZE, 60, 0x999999, 0xdddddd);
     g.position.y = -0.1;
     (g.material as THREE.Material).transparent = true;
     (g.material as THREE.Material).opacity = 0.5;

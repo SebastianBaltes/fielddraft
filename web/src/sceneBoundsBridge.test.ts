@@ -1,16 +1,27 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import * as THREE from "three";
-import { publishSceneBounds, getSceneBounds } from "./sceneBoundsBridge";
+import {
+  publishSceneBounds,
+  getSceneBounds,
+  GRID_BOUNDS,
+} from "./sceneBoundsBridge";
 import { adaptClipPlanes } from "./viewportCamera";
 
 describe("adaptClipPlanes (ticket lbzq)", () => {
   beforeEach(() => publishSceneBounds(null));
 
-  it("leaves the camera untouched for an empty scene", () => {
+  it("brackets the always-present world grid even with no bodies (xv9c)", () => {
+    // The world grid is drawn even in an empty scene, so its foreground edge
+    // must never be clipped — adaptClipPlanes brackets it instead of leaving
+    // the camera's fixed defaults.
     const cam = new THREE.PerspectiveCamera(45, 1, 1, 4000);
-    expect(adaptClipPlanes(cam)).toBe(false);
-    expect(cam.near).toBe(1);
-    expect(cam.far).toBe(4000);
+    cam.position.set(0, 0, 800);
+    expect(adaptClipPlanes(cam)).toBe(true);
+    expect(cam.near).toBeGreaterThan(0);
+    // Far must cover the grid's far corner from the camera.
+    expect(cam.far).toBeGreaterThanOrEqual(800 + GRID_BOUNDS.radius);
+    // Near must reach in for the grid's near corner (closer than the model).
+    expect(cam.near).toBeLessThan(800 - GRID_BOUNDS.radius + 1);
   });
 
   it("brackets the scene so geometry never clips, even zoomed far out", () => {

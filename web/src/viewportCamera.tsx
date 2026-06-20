@@ -13,7 +13,7 @@ import {
   type ViewPreset,
 } from "./viewCommands";
 import { publishPickCamera } from "./pickCameraBridge";
-import { getSceneBounds } from "./sceneBoundsBridge";
+import { getSceneBounds, GRID_BOUNDS } from "./sceneBoundsBridge";
 import {
   CONTROLS_PRESETS,
   ORBIT_ACTION_CODE,
@@ -33,19 +33,28 @@ import {
 export function adaptClipPlanes(camera: THREE.Camera): boolean {
   const persp = camera as THREE.PerspectiveCamera;
   if (!persp.isPerspectiveCamera) return false;
-  const b = getSceneBounds();
-  if (!b || b.radius <= 0) return false;
-  const dx = camera.position.x - b.center[0];
-  const dy = camera.position.y - b.center[1];
-  const dz = camera.position.z - b.center[2];
-  const d = Math.sqrt(dx * dx + dy * dy + dz * dz);
-  // Pad so geometry exactly on the sphere never lands on a clip plane.
-  const pad = b.radius * 0.5 + 1;
-  const far = d + b.radius + pad;
-  // Push near out as far as the scene front allows (best depth precision), but
-  // never behind the camera, below a small floor, or past a 1e-4 ratio (the
-  // f32 depth-buffer limit).
-  const near = Math.max(d - b.radius - pad, far * 1e-4, 0.05);
+  // Bracket near/far around EVERY drawn thing, not just the bodies: the world
+  // grid extends well past a small model and its foreground edge sits far
+  // closer to the camera, so bracketing the bodies alone clipped it (xv9c).
+  // Take the closest near and farthest far across the body + grid spheres.
+  const body = getSceneBounds();
+  const spheres =
+    body && body.radius > 0 ? [body, GRID_BOUNDS] : [GRID_BOUNDS];
+  let near = Infinity;
+  let far = 0;
+  for (const s of spheres) {
+    const dx = camera.position.x - s.center[0];
+    const dy = camera.position.y - s.center[1];
+    const dz = camera.position.z - s.center[2];
+    const d = Math.sqrt(dx * dx + dy * dy + dz * dz);
+    // Pad so geometry exactly on the sphere never lands on a clip plane.
+    const pad = s.radius * 0.5 + 1;
+    far = Math.max(far, d + s.radius + pad);
+    near = Math.min(near, d - s.radius - pad);
+  }
+  // Never put near behind the camera, below a small floor, or past a 1e-4
+  // ratio to far (the f32 depth-buffer limit).
+  near = Math.max(near, far * 1e-4, 0.05);
   if (
     Math.abs(persp.near - near) > near * 1e-3 ||
     Math.abs(persp.far - far) > far * 1e-3

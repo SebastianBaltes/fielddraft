@@ -18,6 +18,20 @@ export interface SceneBounds {
   radius: number;
 }
 
+/** Edge length of the world reference grid (`WorldGrid` = a centred
+ *  `GridHelper(GRID_WORLD_SIZE)` in the XZ plane). Shared so the camera clip
+ *  planes can bracket the grid too. */
+export const GRID_WORLD_SIZE = 600;
+
+/** Bounding sphere of the world grid: centred on the origin, radius reaching
+ *  its far corner. The clip-plane adaptation unions this with the body bounds
+ *  so the grid's foreground edge (often far closer to the camera than the
+ *  model) is never clipped by the near plane (ticket xv9c). */
+export const GRID_BOUNDS: SceneBounds = {
+  center: [0, 0, 0],
+  radius: (GRID_WORLD_SIZE / 2) * Math.SQRT2,
+};
+
 let bounds: SceneBounds | null = null;
 
 /** Publish the current scene bounds (called by the store on each regen). */
