@@ -355,40 +355,52 @@ export function SdfDeferredOverlay({
 
     if (needsRebuild && !compilingRef.current) {
       showCompilationStatus("Building SDF…");
-
-      rebuildDeferredBodies(
-        pipeline,
-        collectDeferredBodies(),
-        renderer as unknown as WebGPURenderer,
-      );
-      rebuildShadeMaterialIfNeeded(
-        pipeline,
-        renderer as unknown as WebGPURenderer,
-      );
+      // Gate the render loop NOW (before any await) so no new frame submits
+      // while we tear down and rebuild the pipeline below.
+      compilingRef.current = true;
       structFpRef.current = structFp;
       dataFpRef.current = dataFp;
-
-      showCompilationStatus("Compiling shader…");
-      compilingRef.current = true;
       const wgpu = renderer as unknown as WebGPURenderer;
-      compileDeferredPipeline(pipeline, wgpu, camera)
-        .then(() => {
-          // Ignore a compile that finished for a pipeline we've since
-          // replaced (StrictMode remounts dispose the old pipeline while
-          // its async compile is still in flight). Acting on a stale
-          // result would flip `readyRef` true for a disposed pipeline and
-          // wedge the loop on a blank frame.
-          if (pipeline !== pipelineRef.current) return;
-          compilingRef.current = false;
-          readyRef.current = true;
-          hideCompilationOverlay();
-          invalidate();
-        })
-        .catch((err) => {
-          if (pipeline !== pipelineRef.current) return;
-          compilingRef.current = false;
-          showGpuError(err);
-        });
+      const bodies = collectDeferredBodies();
+
+      // Ticket sgzw: do the DESTRUCTIVE rebuild (mesh swap + shader recompile)
+      // only after the device is idle. Rebuilding while the previous frame's
+      // submit is still in flight lets three.js destroy an internal
+      // render-context buffer mid-submit → "Buffer used in submit while
+      // destroyed" → persistent GPU corruption (the smeared revolve). The
+      // disposeAfterGpuIdle guard covers OUR THREE resources but not three's
+      // own per-pass buffers; waiting for idle here covers both.
+      const runRebuild = () => {
+        if (pipeline !== pipelineRef.current) return;
+        rebuildDeferredBodies(pipeline, bodies, wgpu);
+        rebuildShadeMaterialIfNeeded(pipeline, wgpu);
+        showCompilationStatus("Compiling shader…");
+        compileDeferredPipeline(pipeline, wgpu, camera)
+          .then(() => {
+            // Ignore a compile that finished for a pipeline we've since
+            // replaced (StrictMode remounts dispose the old pipeline while
+            // its async compile is still in flight). Acting on a stale
+            // result would flip `readyRef` true for a disposed pipeline and
+            // wedge the loop on a blank frame.
+            if (pipeline !== pipelineRef.current) return;
+            compilingRef.current = false;
+            readyRef.current = true;
+            hideCompilationOverlay();
+            invalidate();
+          })
+          .catch((err) => {
+            if (pipeline !== pipelineRef.current) return;
+            compilingRef.current = false;
+            showGpuError(err);
+          });
+      };
+      const queue = (wgpu as unknown as { backend?: { device?: GPUDevice } })
+        .backend?.device?.queue;
+      if (queue && typeof queue.onSubmittedWorkDone === "function") {
+        queue.onSubmittedWorkDone().then(runRebuild, runRebuild);
+      } else {
+        runRebuild();
+      }
     }
 
     if (needsDataUpdate && readyRef.current && !compilingRef.current) {
