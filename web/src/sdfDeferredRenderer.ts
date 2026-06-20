@@ -21,6 +21,7 @@ import {
   Fn,
   If,
   Loop,
+  abs,
   atomicAdd,
   atomicLoad,
   atomicOr,
@@ -82,6 +83,9 @@ import {
 const DEFERRED_MAX_OPCODES = 16384;
 const MAX_BODIES = 256;
 const DEFERRED_MARCH_STEPS = 512;
+// Sphere-trace steps used to polish a rasterized opaque hit onto the true SDF
+// surface (Ticket vlhp). Few are needed: the proxy hit starts sub-facet-close.
+const POLISH_STEPS = 8;
 const SURFACE_EPS = 0.002;
 const HULL_INFLATE = 1.01;
 const MAX_PIXELS = 4096 * 2160;
@@ -450,6 +454,39 @@ function createShadeMaterial(
     });
   };
 
+  // ── Surface polish (Ticket vlhp) ──────────────────────────────────
+  // The opaque G-buffer hands us shadePos straight from the RASTERIZED proxy
+  // hull. That hull's angular facets sit on chords a hair off the true revolve
+  // surface, and the offset is angle-periodic (largest mid-facet, zero at the
+  // facet edges). Sampling the central-difference normal at such a point makes
+  // the normal wobble with that same angular period → radial spokes on curved
+  // faces. sdf-vm never shows this because it has no proxy: it marches the true
+  // SDF and lands shadePos exactly on the smooth isosurface. So re-trace the
+  // true SDF along the view ray from the proxy hit — only a handful of steps,
+  // since we start sub-facet-close — to snap shadePos onto the real surface
+  // before the normal is taken. A signed sphere-trace converges whether the
+  // proxy chord sits just outside (d>0) or just inside (d<0) the surface.
+  const refineOpaqueHit = (rawPos: any, bodyIdx: any) => {
+    const baseOff = int(offsetBuf.element(bodyIdx.mul(2)));
+    const volBase = int(volumeBaseBuf.element(bodyIdx));
+    const rd = normalize(rawPos.sub(camPosU));
+    const t = float(0).toVar();
+    Loop(int(POLISH_STEPS), () => {
+      const p = rawPos.add(rd.mul(t));
+      const d = sdfEval({
+        p,
+        baseOffset: baseOff,
+        volumeBaseIdx: volBase,
+        bodyIdx,
+      });
+      If(abs(d).lessThan(float(SURFACE_EPS)), () => {
+        Break();
+      });
+      t.addAssign(d);
+    });
+    return rawPos.add(rd.mul(t));
+  };
+
   const material = new MeshBasicNodeMaterial();
   material.outputNode = Fn(() => {
     const texUv = vec2(uv().x, float(1).sub(uv().y));
@@ -556,8 +593,8 @@ function createShadeMaterial(
           If(
             hasOpaque.and(opaqueIsAlsoTrans.not()).and(opaqueDist2.lessThan(t)),
             () => {
-              shadePos.assign(opaqueGbuf.xyz);
               shadeBodyIdx.assign(int(opaqueTag.sub(0.5)));
+              shadePos.assign(refineOpaqueHit(opaqueGbuf.xyz, shadeBodyIdx));
             },
           ).Else(() => {
             shadePos.assign(hitPos);
@@ -566,14 +603,14 @@ function createShadeMaterial(
           hasHit.assign(int(1));
         }).Else(() => {
           If(hasOpaque.and(opaqueIsAlsoTrans.not()), () => {
-            shadePos.assign(opaqueGbuf.xyz);
             shadeBodyIdx.assign(int(opaqueTag.sub(0.5)));
+            shadePos.assign(refineOpaqueHit(opaqueGbuf.xyz, shadeBodyIdx));
             hasHit.assign(int(1));
           });
         });
       }).Else(() => {
-        shadePos.assign(opaqueGbuf.xyz);
         shadeBodyIdx.assign(int(opaqueTag.sub(0.5)));
+        shadePos.assign(refineOpaqueHit(opaqueGbuf.xyz, shadeBodyIdx));
         hasHit.assign(int(1));
       });
     });
