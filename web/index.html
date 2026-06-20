@@ -4,6 +4,54 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>FieldDraft</title>
+    <script>
+      // Ticket cztw/4kky: the "Auto-reload on code change" setting (off) must
+      // survive BOTH ways Vite reloads the page. main.tsx cancels the
+      // `vite:beforeFullReload` MESSAGE path; but a server restart (e.g. a WASM
+      // rebuild) reloads via a different route — Vite's HMR socket closes, its
+      // close handler fires `vite:ws:disconnect`, and that calls
+      // `location.reload()` (which browsers won't let us override). We catch it
+      // at the source: this inline classic script runs BEFORE the deferred
+      // `@vite/client` module, so our `close` listener on the HMR socket
+      // (protocol "vite-hmr") is registered first and, when the setting is off,
+      // `stopImmediatePropagation()` blocks Vite's reconnect-reload handler.
+      // Dev-only in effect: no "vite-hmr" socket exists in a production build.
+      (function () {
+        var KEY = "fielddraft.autoReload";
+        function isOff() {
+          try {
+            return localStorage.getItem(KEY) === "false";
+          } catch (e) {
+            return false;
+          }
+        }
+        var Native = window.WebSocket;
+        if (!Native) return;
+        function Patched(url, protocols) {
+          var ws = new Native(url, protocols);
+          var isViteHmr =
+            protocols === "vite-hmr" ||
+            (Array.isArray(protocols) && protocols.indexOf("vite-hmr") !== -1);
+          if (isViteHmr) {
+            ws.addEventListener("close", function (ev) {
+              if (isOff()) {
+                ev.stopImmediatePropagation();
+                console.info(
+                  "[FieldDraft] HMR auto-reload suppressed (off in Settings). Press F5 to pick up server/code changes.",
+                );
+              }
+            });
+          }
+          return ws;
+        }
+        Patched.prototype = Native.prototype;
+        Patched.CONNECTING = Native.CONNECTING;
+        Patched.OPEN = Native.OPEN;
+        Patched.CLOSING = Native.CLOSING;
+        Patched.CLOSED = Native.CLOSED;
+        window.WebSocket = Patched;
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>
