@@ -786,23 +786,38 @@ export function Viewport({
   // because the right button also drives orbit/pan in most controls presets —
   // we only pop the menu on a stationary right-click, not after a drag.
   const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number } | null>(null);
-  const rightDownRef = useRef<{ x: number; y: number } | null>(null);
+  // The context menu opens on the right-button pointerUP, and only when the
+  // press did NOT turn into an orbit/pan drag. We can't decide this in the
+  // `contextmenu` handler: on Linux/X11 Chrome that event fires at press time
+  // (before any movement), so a right-DRAG would open the menu before we ever
+  // see the drag. Instead we watch the whole right-button gesture via window
+  // listeners (capture phase, so OrbitControls' stopPropagation can't hide it).
   const trackRightDown = (e: ReactPointerEvent) => {
-    rightDownRef.current =
-      e.button === 2 ? { x: e.clientX, y: e.clientY } : null;
+    if (e.button !== 2) return;
+    const down = { x: e.clientX, y: e.clientY };
+    let moved = false;
+    const onMove = (ev: PointerEvent) => {
+      if (Math.abs(ev.clientX - down.x) > 4 || Math.abs(ev.clientY - down.y) > 4)
+        moved = true;
+    };
+    const cleanup = () => {
+      window.removeEventListener("pointermove", onMove, true);
+      window.removeEventListener("pointerup", onUp, true);
+      window.removeEventListener("pointercancel", cleanup, true);
+    };
+    const onUp = (ev: PointerEvent) => {
+      if (ev.button !== 2) return;
+      cleanup();
+      if (!moved) setCtxMenu({ x: ev.clientX, y: ev.clientY });
+    };
+    window.addEventListener("pointermove", onMove, true);
+    window.addEventListener("pointerup", onUp, true);
+    window.addEventListener("pointercancel", cleanup, true);
   };
   const handleContextMenu = (e: ReactMouseEvent) => {
-    // Always suppress the browser menu over the 3D scene.
+    // Always suppress the native browser menu over the 3D scene; the app menu
+    // is driven from the right-button pointerUp (see trackRightDown).
     e.preventDefault();
-    const down = rightDownRef.current;
-    if (
-      down &&
-      (Math.abs(e.clientX - down.x) > 4 || Math.abs(e.clientY - down.y) > 4)
-    ) {
-      // The right button was dragged (orbit/pan) — not a menu request.
-      return;
-    }
-    setCtxMenu({ x: e.clientX, y: e.clientY });
   };
   const inSketch = state?.sketchSession.active ?? false;
   const contextMenuItems: ContextMenuItem[] = [
