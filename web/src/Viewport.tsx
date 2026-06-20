@@ -1114,6 +1114,21 @@ export function Viewport({
       return;
     }
 
+    // Ticket D6/320t: Move mode armed (transform toolbar button) — a click on a
+    // body materialises (or re-selects) its transform feature and shows the
+    // gizmo, instead of a plain face/feature select. A click on empty space
+    // just disarms.
+    if (state?.gizmoArmed) {
+      const fid = click?.hit ? click.contributors[0] : undefined;
+      if (fid !== undefined && fid > 0) {
+        store.transformBody(fid);
+      } else {
+        store.disarmGizmo();
+      }
+      invalidateCanvas();
+      return;
+    }
+
     // Tool-free B-Rep element selection. A plain click on a hovered
     // face/edge/vertex persistently selects it; an additive click (the
     // preset's multi-select modifier) toggles it in the multi-select set

@@ -359,6 +359,11 @@ export interface StoreState {
   ikMode: boolean;
   /** K7.21h: transform gizmo mode. */
   gizmoMode: "translate" | "rotate" | "scale";
+  /** Ticket D6/320t: "Move mode" — armed by the transform toolbar button. While
+   *  true, the next scene click on a body creates (or re-selects the most
+   *  recent) transform feature for that body and shows the gizmo, instead of a
+   *  plain feature select. Consumed (disarmed) by that click. */
+  gizmoArmed: boolean;
   /** True while a transform-gizmo drag runs WITH B-Rep suppression
    *  (setting "B-Rep rebuild while dragging" off). The viewport hides
    *  every B-Rep overlay for the drag's duration — cached edges would
@@ -694,6 +699,7 @@ export class KernelStore {
       assembly: initialAssembly,
       ikMode: false,
       gizmoMode: "translate" as const,
+      gizmoArmed: false,
       gizmoDragSuppressed: false,
       threemfStash: null,
       loading: null,
@@ -792,6 +798,7 @@ export class KernelStore {
       assembly: this.state.assembly,
       ikMode: false,
       gizmoMode: this.state.gizmoMode,
+      gizmoArmed: this.state.gizmoArmed,
       gizmoDragSuppressed: this.state.gizmoDragSuppressed,
       threemfStash: this.state.threemfStash,
       loading: this.state.loading,
@@ -4337,7 +4344,58 @@ export class KernelStore {
   }
 
   setGizmoMode(mode: "translate" | "rotate" | "scale"): void {
-    this.patch({ gizmoMode: mode });
+    // Ticket D6: picking a transform mode also ARMS it — the next scene body
+    // click materialises/edits the matching transform feature (see
+    // transformBody), Onshape "Move tool" style.
+    this.patch({ gizmoMode: mode, gizmoArmed: true });
+    this.notify();
+  }
+
+  /** Ticket D6/320t: a scene click on a body while Move mode is armed creates
+   *  (or re-selects the most recent) transform feature of the active gizmoMode
+   *  targeting that body, then selects it so the gizmo appears. Reusing the
+   *  last matching transform keeps repeated moves from stacking features.
+   *  `bodyFeatureId` is the body's owning feature (click.contributors[0]).
+   *  Returns the transform feature id, or null on failure. */
+  transformBody(bodyFeatureId: number): number | null {
+    if (bodyFeatureId <= 0) return null;
+    const kind = this.state.gizmoMode; // translate | rotate | scale
+    // Reuse the most recent transform of this kind already targeting the body.
+    let existing: number | null = null;
+    for (const f of this.state.features) {
+      if (f.kind !== kind) continue;
+      try {
+        const p = this.kernel.getFeatureCallParams(f.id);
+        if (Number(p.target_id) === bodyFeatureId) existing = f.id;
+      } catch {
+        // unreadable params — skip
+      }
+    }
+    this.patch({ gizmoArmed: false }); // consume the arm
+    if (existing !== null) {
+      this.selectOnly(existing, "scene");
+      return existing;
+    }
+    let id: number;
+    try {
+      id = this.kernel.addFeatureCall(
+        kind,
+        JSON.stringify({ target_id: bodyFeatureId }),
+      );
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error("fielddraft: transformBody failed", err);
+      this.setTransientError(formatKernelError(err, "Move failed"));
+      return null;
+    }
+    this.commit(new Set([id]), id);
+    return id;
+  }
+
+  /** Ticket D6: leave Move mode without acting (Esc, or a list selection). */
+  disarmGizmo(): void {
+    if (!this.state.gizmoArmed) return;
+    this.patch({ gizmoArmed: false });
     this.notify();
   }
 
