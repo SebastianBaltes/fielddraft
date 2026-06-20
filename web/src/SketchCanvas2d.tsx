@@ -907,6 +907,69 @@ function readCamForCanvas(
   return { ...cam, width: rect.width, height: rect.height };
 }
 
+/**
+ * Ticket inej: classify where a committed line endpoint landed so the commit
+ * can emit a *persistent* constraint, not just a one-off snapped position.
+ * Snapping placed the point exactly on existing geometry, so:
+ *   - on/at an existing point → coincident (the point IS that vertex);
+ *   - on a line's interior     → point-on-object (slides along that line).
+ * Without this the endpoint sits on the target visually but is unconstrained,
+ * so a later dimension change drifts it off (the reported bug). Points are
+ * checked before lines so an endpoint hit reads as coincident, not on-object.
+ */
+type AnchorClass =
+  | { kind: "point"; id: number }
+  | { kind: "object"; id: number }
+  | null;
+
+// Tight tolerance: a snapped endpoint lands EXACTLY on its target, so we only
+// bind when the point is essentially on the geometry — not merely within the
+// (much larger) live snap radius, which would over-constrain a free endpoint
+// that just happens to pass near an unrelated line.
+const ANCHOR_ON_EPS_MM = 0.1;
+
+function classifyLineAnchor(
+  pt: [number, number],
+  state: SketchState,
+): AnchorClass {
+  for (const e of state.entities) {
+    if (e.kind === "point" && dist2d(pt, [e.at.x, e.at.y]) < ANCHOR_ON_EPS_MM) {
+      return { kind: "point", id: e.id };
+    }
+  }
+  for (const e of state.entities) {
+    if (e.kind !== "line") continue;
+    const a = state.entities.find((x) => x.id === e.start);
+    const b = state.entities.find((x) => x.id === e.end);
+    if (!a || !b || a.kind !== "point" || b.kind !== "point") continue;
+    const np = nearestPointOnSegment(pt, [a.at.x, a.at.y], [b.at.x, b.at.y]);
+    if (dist2d(pt, np) < ANCHOR_ON_EPS_MM) return { kind: "object", id: e.id };
+  }
+  return null;
+}
+
+/** Constraint sub-calls binding a new line endpoint to whatever it landed on. */
+function anchorConstraints(
+  pointId: number,
+  anchor: AnchorClass,
+): Array<{ type: string; params: Record<string, unknown> }> {
+  if (anchor === null) return [];
+  if (anchor.kind === "point") {
+    return [
+      {
+        type: "sketch_constraint_coincident",
+        params: { a: pointId, b: anchor.id },
+      },
+    ];
+  }
+  return [
+    {
+      type: "sketch_constraint_point_on_object",
+      params: { point: pointId, curve: anchor.id },
+    },
+  ];
+}
+
 export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const dragRef = useRef<DragState>({ kind: "idle" });
@@ -2295,6 +2358,7 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
     // Reject a degenerate zero-length line.
     if (measuredLength(start, current) < 1e-3) return false;
     const ids = predictNextLineIds(session.subCalls);
+    const state = buildDraftSketchState(session.subCalls);
     const calls: Array<{ type: string; params: Record<string, unknown> }> = [
       {
         type: "sketch_line",
@@ -2304,12 +2368,24 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
         },
       },
     ];
+    // Start: an explicit coincident captured at pointerdown (the chain / a
+    // point snap) wins; otherwise classify where it landed (ticket inej).
     if (startAnchorId !== null) {
       calls.push({
         type: "sketch_constraint_coincident",
         params: { a: ids.start, b: startAnchorId },
       });
+    } else {
+      calls.push(
+        ...anchorConstraints(ids.start, classifyLineAnchor(start, state)),
+      );
     }
+    // End: bind it to whatever it snapped onto — a vertex (coincident, e.g.
+    // closing a loop) or a line interior (point-on-object). Without this the
+    // endpoint drifts off the target when the sketch is later dimensioned.
+    calls.push(
+      ...anchorConstraints(ids.end, classifyLineAnchor(current, state)),
+    );
     recentLineRef.current = session.subCalls.length;
     store.pushSketchSubCalls(calls);
     // Ticket daa8: chain — instead of ending, start a NEW rubber-band line from
@@ -2641,6 +2717,7 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
     // replicating the kernel's allocation order so the
     // constraint calls reference the correct line/point.
     const predictedIds = predictNextLineIds(session.subCalls);
+    const priorState = buildDraftSketchState(session.subCalls);
     const lineCall = {
       type: "sketch_line",
       params: {
@@ -2652,17 +2729,28 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
       lineCall,
     ];
 
-    // Start coincident: the line's start snapped to a pre-
-    // existing entity at pointerdown. Emit a coincident
-    // constraint referencing that entity's id.
+    // Start: an explicit coincident captured at pointerdown wins; otherwise
+    // classify where the start landed (vertex → coincident, line interior →
+    // point-on-object) so it stays put under later edits (ticket inej).
     if (startAnchorId !== null) {
       newCalls.push({
         type: "sketch_constraint_coincident",
         params: { a: predictedIds.start, b: startAnchorId },
       });
+    } else {
+      newCalls.push(
+        ...anchorConstraints(
+          predictedIds.start,
+          classifyLineAnchor(start, priorState),
+        ),
+      );
     }
 
-    // End snap: can be horizontal / vertical / coincident.
+    // End snap: orientation (horizontal / vertical) plus a binding. The live
+    // candidate covers H/V and an inferred vertex coincident; anything else
+    // (a line-interior snap, or a snap the inference missed) is bound by
+    // classifying the landed position — ticket inej.
+    let endBound = false;
     if (snap.candidate) {
       const c = snap.candidate.constraint;
       if (c.kind === "horizontal") {
@@ -2680,7 +2768,16 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
           type: "sketch_constraint_coincident",
           params: { a: predictedIds.end, b: snap.coincidentTargetId },
         });
+        endBound = true;
       }
+    }
+    if (!endBound) {
+      newCalls.push(
+        ...anchorConstraints(
+          predictedIds.end,
+          classifyLineAnchor([su, sv], priorState),
+        ),
+      );
     }
 
     // The placed line becomes the click-to-edit dimension target.
