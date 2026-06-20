@@ -1,8 +1,8 @@
 diff --git a/node_modules/three/build/three.webgpu.js b/node_modules/three/build/three.webgpu.js
-index ff56ac4..75c7e15 100644
+index da6128d..8f107a7 100644
 --- a/node_modules/three/build/three.webgpu.js
 +++ b/node_modules/three/build/three.webgpu.js
-@@ -74422,8 +74422,6 @@ class WGSLNodeBuilder extends NodeBuilder {
+@@ -75793,8 +75793,6 @@ class WGSLNodeBuilder extends NodeBuilder {
  
  			if ( node.isAtomic === true ) {
  
@@ -11,7 +11,7 @@ index ff56ac4..75c7e15 100644
  				return NodeAccess.READ_WRITE;
  
  			}
-@@ -77000,19 +76998,9 @@ class WebGPUBindingUtils {
+@@ -78479,19 +78477,9 @@ class WebGPUBindingUtils {
  
  				if ( binding.isStorageBuffer ) {
  
@@ -34,10 +34,10 @@ index ff56ac4..75c7e15 100644
  					} else {
  
 diff --git a/node_modules/three/build/three.webgpu.nodes.js b/node_modules/three/build/three.webgpu.nodes.js
-index 58195f2..6500308 100644
+index 6834eb4..7077290 100644
 --- a/node_modules/three/build/three.webgpu.nodes.js
 +++ b/node_modules/three/build/three.webgpu.nodes.js
-@@ -74422,8 +74422,6 @@ class WGSLNodeBuilder extends NodeBuilder {
+@@ -75793,8 +75793,6 @@ class WGSLNodeBuilder extends NodeBuilder {
  
  			if ( node.isAtomic === true ) {
  
@@ -46,7 +46,7 @@ index 58195f2..6500308 100644
  				return NodeAccess.READ_WRITE;
  
  			}
-@@ -77000,19 +76998,9 @@ class WebGPUBindingUtils {
+@@ -78479,19 +78477,9 @@ class WebGPUBindingUtils {
  
  				if ( binding.isStorageBuffer ) {
  
@@ -69,10 +69,10 @@ index 58195f2..6500308 100644
  					} else {
  
 diff --git a/node_modules/three/src/renderers/webgpu/nodes/WGSLNodeBuilder.js b/node_modules/three/src/renderers/webgpu/nodes/WGSLNodeBuilder.js
-index 12d41fe..793eb0e 100644
+index 45dc7fe..5a3fc3b 100644
 --- a/node_modules/three/src/renderers/webgpu/nodes/WGSLNodeBuilder.js
 +++ b/node_modules/three/src/renderers/webgpu/nodes/WGSLNodeBuilder.js
-@@ -1024,8 +1024,6 @@ class WGSLNodeBuilder extends NodeBuilder {
+@@ -1040,8 +1040,6 @@ class WGSLNodeBuilder extends NodeBuilder {
  
  			if ( node.isAtomic === true ) {
  
@@ -82,7 +82,7 @@ index 12d41fe..793eb0e 100644
  
  			}
 diff --git a/node_modules/three/src/renderers/webgpu/utils/WebGPUBindingUtils.js b/node_modules/three/src/renderers/webgpu/utils/WebGPUBindingUtils.js
-index e08aeb5..81cc5a4 100644
+index 2f9488d..0e8c4f2 100644
 --- a/node_modules/three/src/renderers/webgpu/utils/WebGPUBindingUtils.js
 +++ b/node_modules/three/src/renderers/webgpu/utils/WebGPUBindingUtils.js
 @@ -433,19 +433,9 @@ class WebGPUBindingUtils {
