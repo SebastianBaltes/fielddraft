@@ -1017,7 +1017,14 @@ impl FeatureRegistry {
         // cloning here means the param resolver can borrow
         // without tangling with the `ctx.document` mutable
         // borrow.
-        let variables = ctx.document.variables.clone();
+        // The formula resolver only needs name → numeric value; the variable
+        // kind is a UI concern, so project the table down to an f32 map.
+        let variables: std::collections::BTreeMap<String, f32> = ctx
+            .document
+            .variables
+            .iter()
+            .map(|(name, var)| (name.clone(), var.value))
+            .collect();
         let mut errors: Vec<(FeatureId, FeatureError)> = Vec::new();
         for (i, call) in calls.iter().enumerate() {
             if call.suppressed || rollback_after.is_some_and(|ra| i >= ra) {
@@ -6552,7 +6559,13 @@ mod tests {
     fn regenerate_resolves_length_formulas_against_variables() {
         let registry = FeatureRegistry::with_builtins();
         let mut doc = empty_ctx();
-        doc.variables.insert("width".to_string(), 50.0);
+        doc.variables.insert(
+            "width".to_string(),
+            fielddraft_protocol::Variable::new(
+                50.0,
+                fielddraft_protocol::VarKind::Length,
+            ),
+        );
         let mut ctx = Context::new(&mut doc);
         let call = FeatureCall::new(
             "hole",

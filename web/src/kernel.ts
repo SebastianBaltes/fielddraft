@@ -30,6 +30,17 @@ export const CONTRIBUTOR_SENTINEL = 0xffffffff;
  *  per mesh vertex. */
 export type ProxyElement = "face" | "edge" | "vertex";
 
+/** What a document variable represents (ticket 8ar9). Drives its display
+ *  unit (mm / ° / none) and the type tab in the variables panel. */
+export type VarKind = "number" | "length" | "angle";
+
+/** A document-level variable as listed by {@link Kernel.listVariables}. */
+export interface VariableEntry {
+  name: string;
+  value: number;
+  kind: VarKind;
+}
+
 export interface PickHit {
   hit: true;
   point: [number, number, number];
@@ -1323,9 +1334,11 @@ export class Kernel {
     return this.inner.getRollbackIndex();
   }
 
-  /** K8.10: upsert a document-level variable. */
-  setVariable(name: string, value: number): void {
-    this.inner.setVariable(name, value);
+  /** K8.10 / 8ar9: upsert a document-level variable. `kind` controls how
+   *  the value is presented (number/length/angle); pass "" to keep an
+   *  existing variable's kind (or default to number on insert). */
+  setVariable(name: string, value: number, kind: VarKind | "" = ""): void {
+    this.inner.setVariable(name, value, kind);
   }
 
   /** K8.10: remove a variable. Returns true when something
@@ -1340,13 +1353,10 @@ export class Kernel {
     this.inner.renameVariable(oldName, newName);
   }
 
-  /** K8.10: list every variable as `{name, value}` entries,
+  /** K8.10 / 8ar9: list every variable as `{name, value, kind}` entries,
    *  sorted by name. */
-  listVariables(): { name: string; value: number }[] {
-    return JSON.parse(this.inner.listVariables()) as {
-      name: string;
-      value: number;
-    }[];
+  listVariables(): VariableEntry[] {
+    return JSON.parse(this.inner.listVariables()) as VariableEntry[];
   }
 
   /** K8.8: duplicate a feature call with a +20mm X nudge on

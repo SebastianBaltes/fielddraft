@@ -829,16 +829,43 @@ pub struct Document {
     pub scripts: Vec<FieldSkriptRecord>,
     /// Monotonic counter that seeds the next [`FeatureId`].
     pub next_feature_id: u32,
-    /// K8.10: document-level scalar variables. Keyed by
-    /// user-chosen name, value in the model unit
-    /// (millimetres for lengths, dimensionless otherwise).
-    /// The K8.11 formula engine will teach Length fields to
-    /// reference these by name; this first slice is just the
-    /// persisted table. BTreeMap so the wire form is
-    /// deterministically ordered across saves — snapshots
-    /// diff cleanly.
+    /// K8.10 / ticket 8ar9: document-level scalar variables. Keyed by
+    /// user-chosen name. Each carries a value plus a [`VarKind`] that tells
+    /// the UI how to present it (mm for lengths, degrees for angles, raw for
+    /// numbers). The value is stored in that display unit, which lines up
+    /// with the `{value, unit}` wire form of Length/Angle params so a
+    /// `=name` formula resolves consistently. BTreeMap so the wire form is
+    /// deterministically ordered across saves — snapshots diff cleanly.
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
-    pub variables: std::collections::BTreeMap<String, f32>,
+    pub variables: std::collections::BTreeMap<String, Variable>,
+}
+
+/// What a document variable represents — drives its display unit and the
+/// type tab in the variables panel (ticket 8ar9, mirroring Onshape).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum VarKind {
+    /// A dimensionless number — no unit suffix.
+    #[default]
+    Number,
+    /// A length, stored and displayed in millimetres.
+    Length,
+    /// An angle, stored and displayed in degrees.
+    Angle,
+}
+
+/// A document-level variable: a scalar value plus its [`VarKind`].
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct Variable {
+    pub value: f32,
+    #[serde(default)]
+    pub kind: VarKind,
+}
+
+impl Variable {
+    pub const fn new(value: f32, kind: VarKind) -> Self {
+        Self { value, kind }
+    }
 }
 
 impl Default for Document {

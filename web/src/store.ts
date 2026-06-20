@@ -17,6 +17,8 @@ import {
   type BoolOpTagValue,
   type FeatureSummary,
   type PrimitiveKindName,
+  type VarKind,
+  type VariableEntry,
 } from "./kernel";
 import {
   createAutoSave,
@@ -265,10 +267,10 @@ export interface StoreState {
   meshedBodies: readonly MeshedBody[];
   /** K6b.2: active sketch session, or inactive-default. */
   sketchSession: SketchSessionState;
-  /** K8.10: document-level scalar variables, sorted by name
-   *  (the kernel's BTreeMap ordering). K8.11 will teach
-   *  Length fields to reference these by name. */
-  variables: readonly { name: string; value: number }[];
+  /** K8.10 / 8ar9: document-level scalar variables, sorted by name
+   *  (the kernel's BTreeMap ordering). Each carries a kind
+   *  (number/length/angle) that drives its display unit. */
+  variables: readonly VariableEntry[];
   /** K9.0: imported STL reference mesh. Ephemeral — not
    *  persisted to the document. `null` when no import is
    *  loaded. */
@@ -1496,12 +1498,12 @@ export class KernelStore {
 
   // ── K8.10: document-level variables ──────────────────────────
 
-  /** K8.10: upsert a variable and commit. Returns `true` on
-   *  success, `false` when the kernel rejected the call
-   *  (empty name, NaN, Infinity). */
-  setVariable(name: string, value: number): boolean {
+  /** K8.10 / 8ar9: upsert a variable and commit. Returns `true` on
+   *  success, `false` when the kernel rejected the call (empty name,
+   *  NaN, Infinity). `kind` defaults to "" = keep existing / number. */
+  setVariable(name: string, value: number, kind: VarKind | "" = ""): boolean {
     try {
-      this.kernel.setVariable(name, value);
+      this.kernel.setVariable(name, value, kind);
     } catch (err) {
       // eslint-disable-next-line no-console
       console.error("fielddraft: setVariable failed", err);

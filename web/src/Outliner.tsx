@@ -13,7 +13,7 @@ import {
   type MouseEvent,
   type PointerEvent as ReactPointerEvent,
 } from "react";
-import { type FeatureSummary } from "./kernel";
+import { type FeatureSummary, type VarKind } from "./kernel";
 import type { FeatureFolder, KernelStore, StoreState } from "./store";
 import { createFdApi } from "./api/fd";
 import { useMediaQuery, MOBILE_QUERY } from "./useMediaQuery";
@@ -54,6 +54,18 @@ export function kindGlyph(
   const script = scriptTypeFor(kind, scriptTypes);
   if (script) return script.icon;
   return FEATURE_TYPE_META[kind]?.glyph ?? "?";
+}
+
+/** Variable type options for the kind selector (ticket 8ar9). */
+const VAR_KIND_OPTIONS: { key: VarKind; label: string }[] = [
+  { key: "number", label: "Number" },
+  { key: "length", label: "Length" },
+  { key: "angle", label: "Angle" },
+];
+
+/** The unit suffix shown next to a variable's value for its kind. */
+function varUnitLabel(kind: VarKind): string {
+  return kind === "length" ? "mm" : kind === "angle" ? "°" : "";
 }
 
 export function prettifyFeatureName(
@@ -387,6 +399,7 @@ export function Outliner({
   // row. Blank name + blank value until the user types.
   const [newVarName, setNewVarName] = useState<string>("");
   const [newVarValue, setNewVarValue] = useState<string>("");
+  const [newVarKind, setNewVarKind] = useState<VarKind>("number");
 
   const [collapsed, setCollapsed] = useState<Set<string>>(() => {
     // Ticket pqoe: the sketch geometry list is collapsed by default, so it
@@ -556,17 +569,28 @@ export function Outliner({
     if (trimmed.length === 0) return;
     const value = Number(newVarValue);
     if (!Number.isFinite(value)) return;
-    if (store.setVariable(trimmed, value)) {
+    if (store.setVariable(trimmed, value, newVarKind)) {
       setNewVarName("");
       setNewVarValue("");
+      setNewVarKind("number");
     }
   };
 
   const handleVariableValueChange = (name: string, text: string) => {
     const value = Number(text);
     if (Number.isFinite(value)) {
-      store.setVariable(name, value);
+      // "" keeps the variable's existing kind (ticket 8ar9).
+      store.setVariable(name, value, "");
     }
+  };
+
+  // Ticket 8ar9: change a variable's kind, keeping its value.
+  const handleVariableKindChange = (
+    name: string,
+    value: number,
+    kind: VarKind,
+  ) => {
+    store.setVariable(name, value, kind);
   };
 
   const beginRename = (feature: FeatureSummary) => {
@@ -748,26 +772,53 @@ export function Outliner({
                           }
                         }}
                       />
-                      <input
-                        className="variable-value"
-                        type="number"
-                        inputMode="decimal"
-                        aria-label={`Value of ${v.name}`}
-                        data-testid={`variable-value-${v.name}`}
-                        defaultValue={v.value}
-                        onBlur={(e) =>
-                          handleVariableValueChange(
+                      <div className="variable-controls">
+                      <div className="variable-value-cell">
+                        <input
+                          className="variable-value"
+                          type="number"
+                          inputMode="decimal"
+                          aria-label={`Value of ${v.name}`}
+                          data-testid={`variable-value-${v.name}`}
+                          defaultValue={v.value}
+                          onBlur={(e) =>
+                            handleVariableValueChange(
+                              v.name,
+                              e.currentTarget.value,
+                            )
+                          }
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") {
+                              e.preventDefault();
+                              (e.currentTarget as HTMLInputElement).blur();
+                            }
+                          }}
+                        />
+                        {varUnitLabel(v.kind) ? (
+                          <span className="variable-unit">
+                            {varUnitLabel(v.kind)}
+                          </span>
+                        ) : null}
+                      </div>
+                      <select
+                        className="variable-kind"
+                        aria-label={`Type of ${v.name}`}
+                        data-testid={`variable-kind-${v.name}`}
+                        value={v.kind}
+                        onChange={(e) =>
+                          handleVariableKindChange(
                             v.name,
-                            e.currentTarget.value,
+                            v.value,
+                            e.currentTarget.value as VarKind,
                           )
                         }
-                        onKeyDown={(e) => {
-                          if (e.key === "Enter") {
-                            e.preventDefault();
-                            (e.currentTarget as HTMLInputElement).blur();
-                          }
-                        }}
-                      />
+                      >
+                        {VAR_KIND_OPTIONS.map((o) => (
+                          <option key={o.key} value={o.key}>
+                            {o.label}
+                          </option>
+                        ))}
+                      </select>
                       <button
                         type="button"
                         className="row-delete"
@@ -777,6 +828,7 @@ export function Outliner({
                       >
                         ×
                       </button>
+                      </div>
                     </li>
                   ))}
                 </ul>
@@ -812,6 +864,21 @@ export function Outliner({
                     }
                   }}
                 />
+                <select
+                  className="variable-kind"
+                  aria-label="New variable type"
+                  data-testid="variable-new-kind"
+                  value={newVarKind}
+                  onChange={(e) =>
+                    setNewVarKind(e.currentTarget.value as VarKind)
+                  }
+                >
+                  {VAR_KIND_OPTIONS.map((o) => (
+                    <option key={o.key} value={o.key}>
+                      {o.label}
+                    </option>
+                  ))}
+                </select>
                 <button
                   type="button"
                   className="apply"

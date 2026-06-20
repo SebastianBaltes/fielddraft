@@ -2312,7 +2312,12 @@ impl Kernel {
     /// the new value on the next mesh pass. Pre-K8.11 this
     /// was a pure state edit with no geometry side effect.
     #[wasm_bindgen(js_name = setVariable)]
-    pub fn set_variable(&mut self, name: &str, value: f32) -> Result<(), JsError> {
+    pub fn set_variable(
+        &mut self,
+        name: &str,
+        value: f32,
+        kind: &str,
+    ) -> Result<(), JsError> {
         let trimmed = name.trim();
         if trimmed.is_empty() {
             return Err(JsError::new("variable name must not be empty"));
@@ -2322,10 +2327,24 @@ impl Kernel {
                 "variable `{trimmed}` must be a finite number"
             )));
         }
+        // An unknown / empty kind keeps the existing kind (when upserting) or
+        // defaults to Number — so callers that don't care can pass "".
+        let kind = match kind {
+            "length" => fielddraft_protocol::VarKind::Length,
+            "angle" => fielddraft_protocol::VarKind::Angle,
+            "number" => fielddraft_protocol::VarKind::Number,
+            _ => self
+                .document
+                .variables
+                .get(trimmed)
+                .map(|v| v.kind)
+                .unwrap_or_default(),
+        };
         self.snapshot();
-        self.document
-            .variables
-            .insert(trimmed.to_string(), value);
+        self.document.variables.insert(
+            trimmed.to_string(),
+            fielddraft_protocol::Variable::new(value, kind),
+        );
         if let Err(err) = self.bootstrap_features_from_calls() {
             self.undo();
             return Err(JsError::new(&format!(
@@ -2376,7 +2395,7 @@ impl Kernel {
         if old == new_name {
             return Ok(());
         }
-        let Some(&value) = self.document.variables.get(old) else {
+        let Some(&var) = self.document.variables.get(old) else {
             return Err(JsError::new(&format!("no variable named `{old}`")));
         };
         if self.document.variables.contains_key(new_name) {
@@ -2388,7 +2407,7 @@ impl Kernel {
         self.document.variables.remove(old);
         self.document
             .variables
-            .insert(new_name.to_string(), value);
+            .insert(new_name.to_string(), var);
         if let Err(err) = self.bootstrap_features_from_calls() {
             self.undo();
             return Err(JsError::new(&format!(
@@ -2425,12 +2444,17 @@ impl Kernel {
         struct Entry<'a> {
             name: &'a str,
             value: f32,
+            kind: fielddraft_protocol::VarKind,
         }
         let out: Vec<Entry> = self
             .document
             .variables
             .iter()
-            .map(|(name, value)| Entry { name, value: *value })
+            .map(|(name, var)| Entry {
+                name,
+                value: var.value,
+                kind: var.kind,
+            })
             .collect();
         serde_json::to_string(&out).map_err(|e| JsError::new(&e.to_string()))
     }
@@ -4095,13 +4119,16 @@ mod tests {
         let mut k = Kernel::new();
         assert_eq!(k.list_variables().unwrap(), "[]");
 
-        k.set_variable("width", 50.0).unwrap();
-        k.set_variable("depth", 30.0).unwrap();
+        k.set_variable("width", 50.0, "length").unwrap();
+        k.set_variable("depth", 30.0, "number").unwrap();
         // Inserted in reverse alphabetical order, but the
         // BTreeMap normalises to name-sorted on listing.
         let json = k.list_variables().unwrap();
         assert!(json.contains("\"name\":\"depth\""));
         assert!(json.contains("\"name\":\"width\""));
+        // The kind rides along on the wire form (ticket 8ar9).
+        assert!(json.contains("\"kind\":\"length\""));
+        assert!(json.contains("\"kind\":\"number\""));
         let depth_idx = json.find("depth").unwrap();
         let width_idx = json.find("width").unwrap();
         assert!(depth_idx < width_idx);
@@ -4121,8 +4148,11 @@ mod tests {
     #[test]
     fn set_variable_trims_whitespace_and_undo_rolls_back() {
         let mut k = Kernel::new();
-        k.set_variable("  width  ", 42.0).unwrap();
-        assert_eq!(k.document.variables.get("width"), Some(&42.0));
+        k.set_variable("  width  ", 42.0, "number").unwrap();
+        assert_eq!(
+            k.document.variables.get("width").map(|v| v.value),
+            Some(42.0)
+        );
         // Undo removes the variable entirely.
         assert!(k.undo());
         assert!(k.document.variables.is_empty());
@@ -4135,21 +4165,29 @@ mod tests {
         // paths, like the other variable tests. The guard clauses (empty /
         // collision / unknown) are covered by the web-side store tests.
         let mut k = Kernel::new();
-        k.set_variable("width", 50.0).unwrap();
-        k.set_variable("depth", 30.0).unwrap();
+        k.set_variable("width", 50.0, "length").unwrap();
+        k.set_variable("depth", 30.0, "number").unwrap();
 
-        // Rename keeps the value; the old name is gone.
+        // Rename keeps the value AND the kind; the old name is gone.
         k.rename_variable("width", "Seitenlänge").unwrap();
-        assert_eq!(k.document.variables.get("Seitenlänge"), Some(&50.0));
+        let renamed = k.document.variables.get("Seitenlänge").copied();
+        assert_eq!(renamed.map(|v| v.value), Some(50.0));
+        assert_eq!(renamed.map(|v| v.kind), Some(fielddraft_protocol::VarKind::Length));
         assert!(!k.document.variables.contains_key("width"));
 
         // A no-op rename (same name) succeeds without changing anything.
         k.rename_variable("depth", "depth").unwrap();
-        assert_eq!(k.document.variables.get("depth"), Some(&30.0));
+        assert_eq!(
+            k.document.variables.get("depth").map(|v| v.value),
+            Some(30.0)
+        );
 
         // The rename participates in undo (back to `width`).
         assert!(k.undo());
-        assert_eq!(k.document.variables.get("width"), Some(&50.0));
+        assert_eq!(
+            k.document.variables.get("width").map(|v| v.value),
+            Some(50.0)
+        );
         assert!(!k.document.variables.contains_key("Seitenlänge"));
     }
 

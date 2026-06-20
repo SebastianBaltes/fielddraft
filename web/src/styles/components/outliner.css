@@ -183,6 +183,21 @@
   & .variables-panel {
     border-bottom: 1px solid var(--color-divider);
 
+    /* Stack name above the value/unit/kind/delete controls so the
+       name stays readable in a narrow panel (ticket 8ar9). */
+    & .list .row {
+      display: flex;
+      flex-direction: column;
+      align-items: stretch;
+      gap: var(--space-1);
+    }
+
+    & .variable-controls {
+      display: flex;
+      align-items: center;
+      gap: var(--space-1);
+    }
+
     & .variable-name {
       flex: 1;
       font-family: var(--font-mono, monospace);
@@ -191,7 +206,8 @@
     & .variable-name,
     & .variable-value,
     & .variable-name-input,
-    & .variable-value-input {
+    & .variable-value-input,
+    & .variable-kind {
       padding: var(--space-1) var(--space-2);
       border: 1px solid var(--color-border);
       border-radius: var(--radius-sm);
@@ -201,8 +217,30 @@
       min-width: 0;
     }
 
+    /* value + its unit suffix (ticket 8ar9) */
+    & .variable-value-cell {
+      display: flex;
+      align-items: center;
+      gap: var(--space-1);
+      flex: 1;
+      min-width: 0;
+    }
+
     & .variable-value {
-      width: 6rem;
+      flex: 1;
+      min-width: 0;
+    }
+
+    & .variable-unit {
+      color: var(--color-text-muted);
+      font-size: var(--fs-base);
+      min-width: 1.5em;
+    }
+
+    & .variable-kind {
+      flex-shrink: 0;
+      width: 5.5rem;
+      cursor: pointer;
     }
 
     & .variables-add {
@@ -216,7 +254,7 @@
       }
 
       & .variable-value-input {
-        width: 5rem;
+        width: 4rem;
       }
 
       & .apply {
