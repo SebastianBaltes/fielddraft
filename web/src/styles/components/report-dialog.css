@@ -1,20 +1,25 @@
 /* In-app bug / feature-request dialog (ReportDialog.tsx).
  *
- * One top-level class `.fd-report-dialog` plus its modal backdrop
- * `.fd-report-overlay`; all child selectors nest inside, unprefixed.
- * Values come from the shared tokens. */
+ * One top-level class `.fd-report-dialog` plus its `.fd-report-overlay`
+ * positioning layer; all child selectors nest inside, unprefixed.
+ * Values come from the shared tokens.
+ *
+ * ticket ttzl: the panel is NON-modal — the overlay is click-through so the
+ * app stays usable while a report is being written. The dialog is a floating,
+ * draggable, minimizable panel anchored top-right by default. */
 
 .fd-report-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.4);
-  display: flex;
-  align-items: center;
-  justify-content: center;
+  pointer-events: none;
   z-index: 1000;
 }
 
 .fd-report-dialog {
+  position: fixed;
+  top: var(--space-4);
+  right: var(--space-4);
+  pointer-events: auto;
   display: flex;
   flex-direction: column;
   gap: var(--space-3);
@@ -23,17 +28,51 @@
   border-radius: var(--radius-md);
   box-shadow: var(--shadow-lg, 0 8px 32px rgba(0, 0, 0, 0.2));
   padding: var(--space-4);
-  width: 90%;
-  max-width: 460px;
+  width: min(460px, calc(100vw - 2 * var(--space-4)));
+  max-height: calc(100vh - 2 * var(--space-4));
+  overflow: auto;
   font-size: var(--fs-base);
   color: var(--color-text);
 
+  &.minimized {
+    gap: 0;
+
+    & .header {
+      padding-bottom: 0;
+      border-bottom: none;
+    }
+  }
+
   & .header {
     display: flex;
-    align-items: baseline;
+    align-items: center;
     gap: var(--space-2);
     padding-bottom: var(--space-2);
     border-bottom: 1px solid var(--color-divider);
+    cursor: move;
+    user-select: none;
+    touch-action: none;
+  }
+
+  & .icon-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 26px;
+    height: 26px;
+    padding: 0;
+    font-size: var(--fs-md);
+    line-height: 1;
+    cursor: pointer;
+    border: 1px solid transparent;
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: var(--color-text-muted);
+
+    &:not(:disabled):hover {
+      background: var(--color-bg-hover);
+      color: var(--color-text);
+    }
   }
 
   & .title {

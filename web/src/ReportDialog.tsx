@@ -40,6 +40,35 @@ export function ReportDialog({ store, onClose }: ReportDialogProps) {
   const [errorMsg, setErrorMsg] = useState("");
   const fileInputRef = useRef<HTMLInputElement>(null);
   const pasteCounter = useRef(0);
+  // ticket ttzl: the dialog is a non-modal, draggable, minimizable panel so
+  // the user can keep using the app (copy text, grab a screenshot, double-check
+  // something) while writing the report. `pos` is null until first dragged —
+  // then the CSS default top-right anchor gives way to explicit coordinates.
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const dragRef = useRef<{ dx: number; dy: number } | null>(null);
+  const [minimized, setMinimized] = useState(false);
+  const [pos, setPos] = useState<{ x: number; y: number } | null>(null);
+
+  const onHeaderPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    // Let the header buttons (minimize/close) handle their own clicks.
+    if ((e.target as HTMLElement).closest("button")) return;
+    const rect = dialogRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    dragRef.current = { dx: e.clientX - rect.left, dy: e.clientY - rect.top };
+    e.currentTarget.setPointerCapture(e.pointerId);
+  };
+  const onHeaderPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!dragRef.current) return;
+    // Keep at least a sliver on-screen so the panel can't be lost off-edge.
+    setPos({
+      x: Math.max(0, Math.min(window.innerWidth - 48, e.clientX - dragRef.current.dx)),
+      y: Math.max(0, Math.min(window.innerHeight - 48, e.clientY - dragRef.current.dy)),
+    });
+  };
+  const onHeaderPointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
+    dragRef.current = null;
+    e.currentTarget.releasePointerCapture?.(e.pointerId);
+  };
 
   // Snapshot the window once, when the dialog opens. Capturing here (rather
   // than on submit) freezes the view the user is reporting about. The WebGPU
@@ -64,13 +93,15 @@ export function ReportDialog({ store, onClose }: ReportDialogProps) {
     };
   }, []);
 
-  // Esc closes while editing.
+  // Esc closes while editing — but only when focus is inside the dialog. The
+  // panel is non-modal (ticket ttzl), so Escape must still cancel tools and
+  // selections in the app behind it when the user is interacting there.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && phase !== "sending") {
-        onClose();
-        e.stopPropagation();
-      }
+      if (e.key !== "Escape" || phase === "sending") return;
+      if (!dialogRef.current?.contains(document.activeElement)) return;
+      onClose();
+      e.stopPropagation();
     };
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
@@ -155,23 +186,46 @@ export function ReportDialog({ store, onClose }: ReportDialogProps) {
   };
 
   return (
-    <div
-      className="fd-report-overlay"
-      onClick={() => phase !== "sending" && onClose()}
-    >
+    <div className="fd-report-overlay">
       <div
-        className="fd-report-dialog"
+        ref={dialogRef}
+        className={`fd-report-dialog${minimized ? " minimized" : ""}`}
         role="dialog"
         aria-label="Report an issue"
         data-testid="report-dialog"
-        onClick={(e) => e.stopPropagation()}
+        style={pos ? { left: pos.x, top: pos.y, right: "auto" } : undefined}
       >
-        <div className="header">
+        <div
+          className="header"
+          onPointerDown={onHeaderPointerDown}
+          onPointerMove={onHeaderPointerMove}
+          onPointerUp={onHeaderPointerUp}
+        >
           <span className="title">Report an issue</span>
           <span className="version-tag">v{__APP_VERSION__}</span>
+          <button
+            type="button"
+            className="icon-btn"
+            data-testid="report-minimize"
+            aria-label={minimized ? "Maximize" : "Minimize"}
+            title={minimized ? "Maximize" : "Minimize"}
+            onClick={() => setMinimized((m) => !m)}
+          >
+            {minimized ? "▢" : "–"}
+          </button>
+          <button
+            type="button"
+            className="icon-btn"
+            aria-label="Close"
+            title="Close"
+            disabled={phase === "sending"}
+            onClick={onClose}
+          >
+            {"×"}
+          </button>
         </div>
 
-        <div className="body">
+        <div className="body" hidden={minimized}>
           <label className="field">
             <span className="label">
               Description<span className="required">*</span>

@@ -116,6 +116,31 @@ describe("ReportDialog", () => {
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
+  // ticket ttzl: the panel minimizes to its header and back, keeping the
+  // already-typed description (body stays mounted, just hidden).
+  it("minimizes and restores without losing the description", async () => {
+    render();
+    typeInto('[data-testid="report-description"]', "Half-written report");
+
+    const body = () =>
+      container.querySelector<HTMLElement>('[data-testid="report-dialog"] .body')!;
+    expect(body().hidden).toBe(false);
+
+    const minBtn = container.querySelector<HTMLButtonElement>(
+      '[data-testid="report-minimize"]',
+    )!;
+    await act(async () => minBtn.click());
+    expect(body().hidden).toBe(true);
+
+    await act(async () => minBtn.click());
+    expect(body().hidden).toBe(false);
+    expect(
+      container.querySelector<HTMLTextAreaElement>(
+        '[data-testid="report-description"]',
+      )!.value,
+    ).toBe("Half-written report");
+  });
+
   it("attaches picked files, shows thumbs and removes via the X", async () => {
     render();
     const file = new File(["hello"], "notes.txt", { type: "text/plain" });
