@@ -459,7 +459,7 @@ describe("loadSettings", () => {
     expect(loadSettings().controlsPreset).toBe("tinkercad");
 
     // Unknown ids (incl. the removed "fielddraft" preset) fall back to default.
-    localStorage.setItem("fielddraft.controlsPreset", "blender");
+    localStorage.setItem("fielddraft.controlsPreset", "catia");
     expect(loadSettings().controlsPreset).toBe("onshape");
     localStorage.setItem("fielddraft.controlsPreset", "fielddraft");
     expect(loadSettings().controlsPreset).toBe("onshape");

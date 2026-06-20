@@ -24,6 +24,7 @@ export type ControlsPresetId =
   | "onshape"
   | "freecad"
   | "fusion"
+  | "blender"
   | "tinkercad";
 
 /** What a mouse button does to the camera. `null` = button is free
@@ -36,6 +37,9 @@ export interface CameraBindings {
    *  camera rig swaps the MIDDLE action between pan and rotate on
    *  Shift down/up. */
   shiftMiddleOrbit?: boolean;
+  /** Blender idiom (inverse of `shiftMiddleOrbit`): MMB orbits, and Shift+MMB
+   *  pans. The rig swaps the MIDDLE action to pan while Shift is held. */
+  shiftMiddlePan?: boolean;
   /** Three.js-editor idiom: LMB orbits, but Shift+LMB-drag draws a box
    *  select. The camera rig FREES the left button while Shift is held (so
    *  OrbitControls ignores the drag) and the viewport arms a box instead.
@@ -194,6 +198,31 @@ export const CONTROLS_PRESETS: Record<ControlsPresetId, ControlsPreset> = {
       bodyEscalation: true,
       implicitMultiSelect: false,
       boxSelect: "window-crossing",
+      spaceClears: false,
+    },
+    keys: { views: DEFAULT_VIEW_KEYS },
+  },
+  blender: {
+    id: "blender",
+    label: "Blender",
+    camera: {
+      // Blender orbits with MMB and pans with Shift+MMB; the wheel zooms and
+      // LMB is free for selection. The rig swaps MIDDLE to pan while Shift is
+      // held (shiftMiddlePan — the inverse of Fusion's shiftMiddleOrbit).
+      mouseButtons: { left: null, middle: "rotate", right: null },
+      shiftMiddlePan: true,
+      rotateSpeed: 1.4,
+      panSpeed: 1.2,
+      zoomSpeed: 1.6,
+    },
+    // Blender multi-selects with Shift; LMB-drag from empty space is its
+    // border (box) select — a window selection of fully-enclosed objects.
+    selection: {
+      mode: "element",
+      additive: ["shift"],
+      bodyEscalation: true,
+      implicitMultiSelect: false,
+      boxSelect: "window",
       spaceClears: false,
     },
     keys: { views: DEFAULT_VIEW_KEYS },

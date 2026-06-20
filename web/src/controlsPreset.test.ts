@@ -12,8 +12,9 @@ import {
 const PRESETS = Object.values(CONTROLS_PRESETS) as ControlsPreset[];
 
 describe("controls preset registry (docs/UX-PRESETS.md)", () => {
-  it("covers the five programs from the doc", () => {
+  it("covers the six programs from the doc", () => {
     expect(Object.keys(CONTROLS_PRESETS).sort()).toEqual([
+      "blender",
       "freecad",
       "fusion",
       "onshape",
@@ -30,12 +31,18 @@ describe("controls preset registry (docs/UX-PRESETS.md)", () => {
       expect(CONTROLS_PRESETS[p.id]).toBe(p);
       expect(isControlsPresetId(p.id)).toBe(true);
     }
-    expect(isControlsPresetId("blender")).toBe(false);
+    expect(isControlsPresetId("catia")).toBe(false);
     expect(isControlsPresetId(null)).toBe(false);
   });
 
   it("classic CAD presets free the left mouse button for selection", () => {
-    for (const id of ["onshape", "freecad", "fusion", "tinkercad"] as const) {
+    for (const id of [
+      "onshape",
+      "freecad",
+      "fusion",
+      "blender",
+      "tinkercad",
+    ] as const) {
       expect(CONTROLS_PRESETS[id].camera.mouseButtons.left).toBeNull();
     }
     // The Three.js editor keeps LMB orbit.
@@ -68,6 +75,10 @@ describe("controls preset registry (docs/UX-PRESETS.md)", () => {
     });
     // Fusion: MMB pans, orbit only while Shift is held.
     expect(CONTROLS_PRESETS.fusion.camera.mouseButtons.middle).toBe("pan");
+    expect(CONTROLS_PRESETS.fusion.camera.shiftMiddleOrbit).toBe(true);
+    // Blender: MMB orbits, Shift+MMB pans (the inverse of Fusion).
+    expect(CONTROLS_PRESETS.blender.camera.mouseButtons.middle).toBe("rotate");
+    expect(CONTROLS_PRESETS.blender.camera.shiftMiddlePan).toBe(true);
     expect(CONTROLS_PRESETS.fusion.camera.shiftMiddleOrbit).toBe(true);
   });
 

@@ -7,8 +7,8 @@ Setting `fielddraft.controlsPreset`). Was bewusst noch fehlt, steht unter
 Konzept aus Ticket 20260610-085906-evq2: Anwender bringen
 Steuerungs-Gewohnheiten aus ihrem bisherigen Programm mit. Ein Preset-System
 soll die wichtigsten Schemata per Setting abbilden: **Three.js-Editor,
-Onshape, FreeCAD, Fusion 360, TinkerCAD**. Default ist **Onshape** (Ticket
-8ikq; das frühere FieldDraft-Preset wurde entfernt).
+Onshape, FreeCAD, Fusion 360, Blender, TinkerCAD**. Default ist **Onshape**
+(Ticket 8ikq; das frühere FieldDraft-Preset wurde entfernt, Blender ergänzt).
 
 ## Ist-Zustand
 
@@ -33,6 +33,7 @@ Orbit/Pan/Zoom der unterstützten Programme (Maus, Default-Konfiguration):
 | Onshape | RMB-Drag | MMB-Drag (oder Ctrl+RMB) | Wheel | Klick = Element, Doppelklick = Kette/Fläche, RMB-Menü |
 | FreeCAD (CAD-Navigation) | MMB-Drag | MMB+LMB oder Space | Wheel | Klick = Element, Ctrl = Multi |
 | Fusion 360 | Shift+MMB-Drag | MMB-Drag | Wheel | Klick = Element, Klick-Halten = Tiefen-Auswahlmenü |
+| Blender | MMB-Drag | Shift+MMB-Drag | Wheel | Klick = Auswahl, LMB-Drag = Border/Box-Select |
 | TinkerCAD | RMB-Drag | MMB-Drag | Wheel | Klick = Objekt, Drag = Box-Select |
 
 Wichtigste Konfliktachse: **Wer bekommt die linke Maustaste?** Der
@@ -64,7 +65,7 @@ flowchart LR
    - `keys`: Tastatur-Kürzel-Overrides (z. B. FreeCAD-Viewcube-Tasten),
      angedockt an das bestehende `keyboardTarget`/`viewCommands`-System.
 2. **Persistenz**: ein Key `fielddraft.controlsPreset` (Werte: `threejs`,
-   `onshape`, `freecad`, `fusion`, `tinkercad`), gelesen wie die
+   `onshape`, `freecad`, `fusion`, `blender`, `tinkercad`), gelesen wie die
    übrigen Settings in `SettingsMenu.tsx`; Default `onshape`.
 3. **Anwendung**: `viewportCamera.tsx` liest das Preset und setzt
    `mouseButtons`/Speeds der OrbitControls; `Viewport.tsx` fragt die

@@ -108,10 +108,16 @@ export function CameraRig({ preset }: { preset: ControlsPresetId }) {
   // pointerdown, so mutating the live object on Shift down/up is enough — no
   // re-render needed.
   //  · Fusion: MMB pans normally, orbits while Shift is held.
+  //  · Blender: MMB orbits normally, pans while Shift is held (the inverse).
   //  · Three.js: LMB orbits normally, but Shift FREES it so Shift+LMB-drag
   //    falls through to the viewport's box select instead of orbiting.
   useEffect(() => {
-    if (!camera.shiftMiddleOrbit && !camera.shiftLeftBoxSelect) return;
+    if (
+      !camera.shiftMiddleOrbit &&
+      !camera.shiftMiddlePan &&
+      !camera.shiftLeftBoxSelect
+    )
+      return;
     const setShift = (down: boolean) => {
       const ctrl = controlsRef.current;
       if (!ctrl) return;
@@ -119,6 +125,11 @@ export function CameraRig({ preset }: { preset: ControlsPresetId }) {
         ctrl.mouseButtons.MIDDLE = down
           ? ORBIT_ACTION_CODE.rotate
           : ORBIT_ACTION_CODE.pan;
+      }
+      if (camera.shiftMiddlePan) {
+        ctrl.mouseButtons.MIDDLE = down
+          ? ORBIT_ACTION_CODE.pan
+          : ORBIT_ACTION_CODE.rotate;
       }
       if (camera.shiftLeftBoxSelect) {
         ctrl.mouseButtons.LEFT = down ? undefined : ORBIT_ACTION_CODE.rotate;
@@ -132,7 +143,7 @@ export function CameraRig({ preset }: { preset: ControlsPresetId }) {
       window.removeEventListener("keydown", onDown);
       window.removeEventListener("keyup", onUp);
     };
-  }, [camera.shiftMiddleOrbit, camera.shiftLeftBoxSelect]);
+  }, [camera.shiftMiddleOrbit, camera.shiftMiddlePan, camera.shiftLeftBoxSelect]);
 
   // Ticket bxoo: no separate sketch camera — the normal camera and
   // controls stay live during a sketch session; the overlay projects
