@@ -1941,10 +1941,33 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
         const res = circleThrough3(drag.p1, drag.p2, [su, sv]);
         dragRef.current = { kind: "idle" };
         if (res) {
+          // Ticket ybnl: keep the three defining points as real entities (so
+          // they render as draggable dots) and bind the circle through them
+          // with point-on-object constraints, instead of collapsing to a bare
+          // centre+radius circle. Dragging any point re-fits the circle.
+          // Id allocation order (mirrors buildDraftSketchState): three points,
+          // then the circle's centre + entity.
+          const base = predictNextLineIds(session.subCalls).start;
+          const circleId = base + 4; // base..+2 points, +3 centre, +4 circle
           store.pushSketchSubCalls([
+            { type: "sketch_point", params: { at: drag.p1 } },
+            { type: "sketch_point", params: { at: drag.p2 } },
+            { type: "sketch_point", params: { at: [su, sv] } },
             {
               type: "sketch_circle",
               params: { center: res.center, radius: res.radius },
+            },
+            {
+              type: "sketch_constraint_point_on_object",
+              params: { point: base, curve: circleId },
+            },
+            {
+              type: "sketch_constraint_point_on_object",
+              params: { point: base + 1, curve: circleId },
+            },
+            {
+              type: "sketch_constraint_point_on_object",
+              params: { point: base + 2, curve: circleId },
             },
           ]);
           scheduleSolverReplay();
