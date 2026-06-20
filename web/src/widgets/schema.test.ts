@@ -443,6 +443,21 @@ describe("validateParamValue", () => {
     expect(validateParamValue(paramOf("vec3"), "not an array")).not.toBeNull();
   });
 
+  // Ticket x2m7: a `=…` formula string is a valid scalar — for plain numbers
+  // and for individual vec components — while a non-formula string stays invalid.
+  it("accepts formula strings for number and vec components", () => {
+    expect(validateParamValue(paramOf("number"), "=Seitenlänge")).toBeNull();
+    expect(validateParamValue(paramOf("vec2"), [1, "=w"])).toBeNull();
+    expect(validateParamValue(paramOf("vec3"), ["=w", 2, "=h / 2"])).toBeNull();
+  });
+
+  it("still rejects non-formula strings and keeps colours strictly numeric", () => {
+    expect(validateParamValue(paramOf("number"), "5")).not.toBeNull();
+    expect(validateParamValue(paramOf("vec3"), [1, 2, "3"])).not.toBeNull();
+    // A colour channel must stay a number — no formulas.
+    expect(validateParamValue(paramOf("color"), [0.1, 0.2, "=c"])).not.toBeNull();
+  });
+
   it("accepts every supported length unit", () => {
     for (const unit of LENGTH_UNITS) {
       expect(

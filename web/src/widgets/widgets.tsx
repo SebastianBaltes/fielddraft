@@ -292,6 +292,68 @@ function UnitInput({
 
 // ─── number ─────────────────────────────────────────────────────
 
+/** A scalar value that may be a plain number or a `"=…"` formula string
+ *  (resolved kernel-side against the document variables). Ticket x2m7. */
+type Scalar = number | string;
+
+/**
+ * A single numeric cell that can flip to a formula (`=Seitenlänge`) via a
+ * ƒx toggle — the per-component building block behind NumberWidget and the
+ * vector widgets (ticket x2m7). In numeric mode it's a unit-aware input; in
+ * formula mode a free-text field bound to the wire-form string. The kernel
+ * resolves the formula against the variables table at regen time, so a bound
+ * cell persists as a string element in the param's JSON.
+ */
+function ScalarFormulaInput({
+  value,
+  onCommit,
+  unit,
+  id,
+  className,
+  ariaLabel,
+}: {
+  value: Scalar;
+  onCommit: (next: Scalar) => void;
+  unit?: string;
+  id?: string;
+  className?: string;
+  ariaLabel?: string;
+}) {
+  const formula = isFormula(value);
+  return (
+    <div className="formula-cell">
+      {formula ? (
+        <input
+          id={id}
+          className={(className ?? "input") + " is-formula"}
+          type="text"
+          value={value as string}
+          aria-label={ariaLabel ? `${ariaLabel} formula` : undefined}
+          onChange={(e) => onCommit(e.currentTarget.value)}
+        />
+      ) : (
+        <UnitInput
+          id={id}
+          className={className ?? "input"}
+          aria-label={ariaLabel}
+          value={Number.isFinite(value as number) ? (value as number) : 0}
+          onCommit={onCommit}
+          unit={unit}
+        />
+      )}
+      <button
+        type="button"
+        className={"formula-toggle" + (formula ? " is-active" : "")}
+        title={formula ? "Switch to numeric" : "Switch to formula"}
+        tabIndex={-1}
+        onClick={() => onCommit(formula ? 0 : "=")}
+      >
+        ƒx
+      </button>
+    </div>
+  );
+}
+
 export function NumberWidget({
   label,
   value,
@@ -299,14 +361,13 @@ export function NumberWidget({
   error,
   required,
   unit,
-}: WidgetProps<number> & { unit?: string }) {
+}: WidgetProps<Scalar> & { unit?: string }) {
   const id = useId();
   return (
     <Field label={label} htmlFor={id} error={error} required={required}>
-      <UnitInput
+      <ScalarFormulaInput
         id={id}
-        className="input"
-        value={Number.isFinite(value) ? value : 0}
+        value={value}
         onCommit={onChange}
         unit={unit}
       />
@@ -323,10 +384,10 @@ export function Vec2Widget({
   error,
   required,
   unit,
-}: WidgetProps<[number, number]> & { unit?: string }) {
+}: WidgetProps<[Scalar, Scalar]> & { unit?: string }) {
   const id = useId();
-  const updateIndex = (index: 0 | 1, next: number) => {
-    const copy: [number, number] = [value[0], value[1]];
+  const updateIndex = (index: 0 | 1, next: Scalar) => {
+    const copy: [Scalar, Scalar] = [value[0], value[1]];
     copy[index] = next;
     onChange(copy);
   };
@@ -336,11 +397,10 @@ export function Vec2Widget({
         {(["x", "y"] as const).map((axis, i) => (
           <div key={axis} className="vec-cell">
             <span className="axis-tag">{axis.toUpperCase()}</span>
-            <UnitInput
+            <ScalarFormulaInput
               id={`${id}-${axis}`}
-              className="input"
-              aria-label={`${label} ${axis}`}
-              value={Number.isFinite(value[i]) ? value[i] : 0}
+              ariaLabel={`${label} ${axis}`}
+              value={value[i]}
               onCommit={(n) => updateIndex(i as 0 | 1, n)}
               unit={unit}
             />
@@ -360,10 +420,10 @@ export function Vec3Widget({
   error,
   required,
   unit,
-}: WidgetProps<[number, number, number]> & { unit?: string }) {
+}: WidgetProps<[Scalar, Scalar, Scalar]> & { unit?: string }) {
   const id = useId();
-  const updateIndex = (index: 0 | 1 | 2, next: number) => {
-    const copy: [number, number, number] = [value[0], value[1], value[2]];
+  const updateIndex = (index: 0 | 1 | 2, next: Scalar) => {
+    const copy: [Scalar, Scalar, Scalar] = [value[0], value[1], value[2]];
     copy[index] = next;
     onChange(copy);
   };
@@ -373,11 +433,10 @@ export function Vec3Widget({
         {(["x", "y", "z"] as const).map((axis, i) => (
           <div key={axis} className="vec-cell">
             <span className="axis-tag">{axis.toUpperCase()}</span>
-            <UnitInput
+            <ScalarFormulaInput
               id={`${id}-${axis}`}
-              className="input"
-              aria-label={`${label} ${axis}`}
-              value={Number.isFinite(value[i]) ? value[i] : 0}
+              ariaLabel={`${label} ${axis}`}
+              value={value[i]}
               onCommit={(n) => updateIndex(i as 0 | 1 | 2, n)}
               unit={unit}
             />

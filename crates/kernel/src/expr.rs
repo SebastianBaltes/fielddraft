@@ -151,7 +151,13 @@ impl<'a> Lexer<'a> {
                 b'0'..=b'9' | b'.' => {
                     out.push(self.number()?);
                 }
+                // Identifier start: ASCII letter / underscore, or any
+                // non-ASCII UTF-8 byte (>= 0x80) so variable names like
+                // `Seitenlänge` or `Höhe` parse (ticket x2m7).
                 b'a'..=b'z' | b'A'..=b'Z' | b'_' => {
+                    out.push(self.ident());
+                }
+                c if c >= 0x80 => {
                     out.push(self.ident());
                 }
                 other => {
@@ -200,7 +206,9 @@ impl<'a> Lexer<'a> {
         let start = self.pos;
         while self.pos < self.src.len() {
             let c = self.src[self.pos];
-            if c.is_ascii_alphanumeric() || c == b'_' {
+            // ASCII alphanumeric / underscore, plus any non-ASCII UTF-8 byte
+            // (lead or continuation) so multi-byte letters stay in the ident.
+            if c.is_ascii_alphanumeric() || c == b'_' || c >= 0x80 {
                 self.pos += 1;
             } else {
                 break;
@@ -528,6 +536,22 @@ mod tests {
         let before = v.clone();
         resolve_params_with_variables(&mut v, &vars).unwrap();
         assert_eq!(v, before);
+    }
+
+    #[test]
+    fn walker_substitutes_formula_inside_a_vec_array() {
+        // Ticket x2m7: a vec component can be a `=…` formula string
+        // (e.g. a Box half-extent bound to a variable). The walker
+        // recurses into array elements and resolves the bare formula in
+        // place, so the array deserializes cleanly into `[f32; 3]`.
+        let vars = vars_of(&[("Seitenlänge", 25.0)]);
+        let mut v = serde_json::json!({
+            "half_extents": [50.0, "=Seitenlänge", "=Seitenlänge * 2"],
+        });
+        resolve_params_with_variables(&mut v, &vars).unwrap();
+        assert_eq!(v["half_extents"][0], serde_json::json!(50.0));
+        assert_eq!(v["half_extents"][1], serde_json::json!(25.0));
+        assert_eq!(v["half_extents"][2], serde_json::json!(50.0));
     }
 
     #[test]

@@ -685,21 +685,33 @@ export function validateParamValue(
   switch (param.widget) {
     case "number":
     case "slider":
-      return typeof value === "number" && Number.isFinite(value)
+      // Ticket x2m7: a formula string (`"=Seitenlänge"`) is a valid value —
+      // the kernel resolves it against the variables table at regen time.
+      return isNumberOrFormula(value)
         ? null
-        : `${param.label} must be a finite number`;
+        : `${param.label} must be a finite number or a formula (=…)`;
     case "vec2":
       if (!Array.isArray(value) || value.length !== 2) {
         return `${param.label} must be a 2-element array`;
       }
       for (const v of value) {
-        if (typeof v !== "number" || !Number.isFinite(v)) {
-          return `${param.label} must contain two finite numbers`;
+        if (!isNumberOrFormula(v)) {
+          return `${param.label} must contain two finite numbers or formulas (=…)`;
         }
       }
       return null;
     case "vec3":
+      if (!Array.isArray(value) || value.length !== 3) {
+        return `${param.label} must be a 3-element array`;
+      }
+      for (const v of value) {
+        if (!isNumberOrFormula(v)) {
+          return `${param.label} must contain three finite numbers or formulas (=…)`;
+        }
+      }
+      return null;
     case "color":
+      // Colours stay strictly numeric — a formula RGB makes no sense.
       if (!Array.isArray(value) || value.length !== 3) {
         return `${param.label} must be a 3-element array`;
       }
@@ -735,6 +747,13 @@ export function validateParamValue(
     case "unknown":
       return null;
   }
+}
+
+/** A scalar param value is valid if it's a finite number or a formula
+ *  string (`"=…"`, resolved kernel-side at regen time). Ticket x2m7. */
+function isNumberOrFormula(v: unknown): boolean {
+  if (typeof v === "number") return Number.isFinite(v);
+  return typeof v === "string" && v.startsWith("=");
 }
 
 function validateValueUnit(
