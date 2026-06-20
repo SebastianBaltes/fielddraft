@@ -190,7 +190,16 @@ export function ViewCommandConsumer() {
       const dist = b && b.radius > 0
         ? fitDistance(camera as THREE.PerspectiveCamera, b.radius)
         : Math.max(camera.position.distanceTo(origin), 1);
-      camera.up.set(...frame.yAxis);
+      // Respect the camera's CURRENT up as much as possible (ticket s8l0):
+      // project the live view-up onto the plane ⊥ normal so we only rotate to
+      // face the sketch, without rolling to the plane's own Y axis. Fall back
+      // to the plane yAxis only when the current up is parallel to the normal
+      // (degenerate projection — nothing sensible to preserve).
+      const up = new THREE.Vector3(0, 1, 0)
+        .applyQuaternion(camera.quaternion)
+        .projectOnPlane(normal);
+      if (up.lengthSq() < 1e-6) up.set(...frame.yAxis).projectOnPlane(normal);
+      camera.up.copy(up.normalize());
       camera.position.copy(origin).addScaledVector(normal, dist);
       camera.lookAt(origin);
       target.copy(origin);
