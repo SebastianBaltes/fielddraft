@@ -24,6 +24,9 @@ const LS_LIVE_EXTRUDE_DRAG = "fielddraft.liveExtrudeDrag";
 const LS_SHOW_EDGE_POINTS = "fielddraft.showEdgePoints";
 const LS_SHOW_OCTREE_CELLS = "fielddraft.showOctreeCells";
 const LS_CONTROLS_PRESET = "fielddraft.controlsPreset";
+/** Shared with main.tsx's HMR guard — kept here so all localStorage keys live
+ *  in one place. */
+export const LS_AUTO_RELOAD = "fielddraft.autoReload";
 
 export type LengthUnitKey = "mm" | "cm" | "m" | "in" | "ft";
 export type LinearAccelerationUnitKey = "m/s2" | "mm/s2" | "ft/s2" | "in/s2";
@@ -236,6 +239,11 @@ export interface SettingsState {
   /** Mouse/keyboard control scheme (docs/UX-PRESETS.md) — which CAD
    * package's habits the camera, selection and view keys follow. */
   controlsPreset: ControlsPresetId;
+  /** Dev-only: auto-reload the page when Vite pushes a code change it can't
+   * hot-swap. On by default. Off keeps the running session (and in-progress
+   * project) alive across edits — main.tsx's `vite:beforeFullReload` guard
+   * reads this. No effect in a production build (no HMR). */
+  autoReload: boolean;
 }
 
 function validOr<K extends string>(opts: { key: K }[], val: unknown, fallback: K): K {
@@ -291,6 +299,7 @@ export function loadSettings(): SettingsState {
   let showEdgePoints = false;
   const showOctreeCells = false;
   let controlsPreset: ControlsPresetId = DEFAULT_CONTROLS_PRESET;
+  let autoReload = true;
   try {
     compact = localStorage.getItem(LS_COMPACT) === "true";
     units = parseUnits(localStorage.getItem(LS_UNITS));
@@ -318,10 +327,11 @@ export function loadSettings(): SettingsState {
     localStorage.removeItem(LS_SHOW_OCTREE_CELLS);
     const rawPreset = localStorage.getItem(LS_CONTROLS_PRESET);
     if (isControlsPresetId(rawPreset)) controlsPreset = rawPreset;
+    autoReload = localStorage.getItem(LS_AUTO_RELOAD) !== "false";
   } catch {
     // localStorage may be unavailable
   }
-  return { compact, units, theme, renderMode, meshAlgorithm, brepEdgeMode, frameLoop, parametricWeave, dragBrepRecompute, liveExtrudeDrag, showEdgePoints, showOctreeCells, controlsPreset };
+  return { compact, units, theme, renderMode, meshAlgorithm, brepEdgeMode, frameLoop, parametricWeave, dragBrepRecompute, liveExtrudeDrag, showEdgePoints, showOctreeCells, controlsPreset, autoReload };
 }
 
 function saveSetting(key: string, value: string): void {
@@ -927,6 +937,12 @@ function SettingsDialog({
     onSettingsChange(next);
   };
 
+  const toggleAutoReload = () => {
+    const next = { ...settings, autoReload: !settings.autoReload };
+    saveSetting(LS_AUTO_RELOAD, String(next.autoReload));
+    onSettingsChange(next);
+  };
+
   const setControlsPreset = (preset: ControlsPresetId) => {
     const next = { ...settings, controlsPreset: preset };
     saveSetting(LS_CONTROLS_PRESET, preset);
@@ -1194,6 +1210,24 @@ function SettingsDialog({
                   {settings.showOctreeCells ? "On" : "Off"}
                 </button>
               </div>
+
+              {import.meta.hot && (
+                <div className="setting-row" data-testid="setting-auto-reload">
+                  <span className="setting-label" title="Dev only: when off, a code change that Vite can't hot-swap no longer reloads the page — your running session and in-progress project stay alive. Reload manually (F5) to pick the change up.">
+                    Auto-reload on code change
+                  </span>
+                  <button
+                    type="button"
+                    className={"toggle" + (settings.autoReload ? " is-on" : "")}
+                    role="switch"
+                    aria-checked={settings.autoReload}
+                    data-testid="setting-auto-reload-toggle"
+                    onClick={toggleAutoReload}
+                  >
+                    {settings.autoReload ? "On" : "Off"}
+                  </button>
+                </div>
+              )}
             </>
           )}
 

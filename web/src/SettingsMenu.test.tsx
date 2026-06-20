@@ -49,6 +49,7 @@ function setup() {
     showEdgePoints: false,
     showOctreeCells: false,
     controlsPreset: "fielddraft",
+    autoReload: true,
   };
 
   const onChange = vi.fn((next: SettingsState) => {
@@ -397,6 +398,7 @@ describe("loadSettings", () => {
       showEdgePoints: false,
       showOctreeCells: false,
       controlsPreset: "fielddraft",
+      autoReload: true,
     });
   });
 
@@ -429,6 +431,7 @@ describe("loadSettings", () => {
       showEdgePoints: false,
       showOctreeCells: false,
       controlsPreset: "fielddraft",
+      autoReload: true,
     });
   });
 

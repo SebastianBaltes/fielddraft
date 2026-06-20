@@ -1,7 +1,27 @@
 import { createRoot } from "react-dom/client";
 import { App } from "./App";
 import { installRawInputCapture } from "./userActionLog";
+import { LS_AUTO_RELOAD } from "./SettingsMenu";
 import "./styles/index.css";
+
+// Ticket cztw: let the user keep a running session across edits. When Vite has
+// a change it can't hot-swap it normally reloads the whole page — wiping the
+// in-progress (unsaved) project. With the "Auto-reload on code change" setting
+// off, throwing from this handler aborts Vite's `location.reload()`, so the app
+// keeps running; the user reloads manually (F5) when ready. Dev-only —
+// `import.meta.hot` is undefined in a production build.
+if (import.meta.hot) {
+  import.meta.hot.on("vite:beforeFullReload", () => {
+    if (localStorage.getItem(LS_AUTO_RELOAD) === "false") {
+      // The throw is the documented way to cancel Vite's full reload.
+      // eslint-disable-next-line no-console
+      console.info(
+        "[FieldDraft] Full reload skipped (Auto-reload off in Settings). Press F5 to apply the latest code.",
+      );
+      throw new Error("vite full reload cancelled by FieldDraft setting");
+    }
+  });
+}
 
 // Capture raw pointer/keyboard/wheel/resize input into the user-action log so a
 // "Report an issue" can ship a replayable interaction trace. Installed once,
