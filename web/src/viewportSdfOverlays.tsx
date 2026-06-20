@@ -111,23 +111,9 @@ function renderOverlayLayer(
   renderSdf: () => void,
   occlude: boolean,
 ): void {
-  // Tickets ceat/awq6 ("Nachziehen" bei Kamerabewegung): clear the canvas
-  // EXPLICITLY once per frame instead of leaning on the scene render below to
-  // do it implicitly. The per-frame reset and the SDF shade composite are
-  // separate render passes to the same canvas texture; whether the implicit
-  // `autoClear` of `render(scene, camera)` actually resets the canvas is
-  // backend-sensitive — a backend may elide the pass when the default layer is
-  // (nearly) empty, and premultiplied-alpha compositing reuses whatever was
-  // there. When the reset is skipped, the alpha-blended shade quad (the shade
-  // material is `transparent`) composites onto the PREVIOUS frame → the moving
-  // image smears. An explicit clear makes the reset deterministic on every
-  // backend (it reproduces on the user's ANGLE/GLES WebGPU, not on native
-  // Vulkan, which is why it never showed in automation).
+  wgpuRenderer.render(scene, camera);
   const prevAutoClear = (wgpuRenderer as any).autoClear;
   (wgpuRenderer as any).autoClear = false;
-  wgpuRenderer.setRenderTarget(null);
-  wgpuRenderer.clear();
-  wgpuRenderer.render(scene, camera);
   renderSdf();
 
   const savedBg = scene.background;
