@@ -194,14 +194,19 @@ export function ViewCommandConsumer() {
   useFrame(({ camera, controls }) => {
     if (controls) controlsRef.current = controls as unknown as THREE.EventDispatcher;
     if (!peekViewCommand()) return;
+    // Ticket xw51: apply the view command even when no orbit-controls object
+    // is registered on the R3F state at this instant (it can be null on the
+    // frame the command fires — and is entirely absent in a sketch session,
+    // where the rig isn't the default controls). The camera is moved directly
+    // below; `ctrl` only keeps an OrbitControls target/update in sync when one
+    // exists. The old `if (!ctrl) return` left the ViewCube / zoom-to-fit dead.
     const ctrl = controlsRef.current as unknown as {
       target?: THREE.Vector3;
       object?: THREE.Camera;
       update?: () => void;
     } | null;
-    if (!ctrl) return;
     const cmd = consumeViewCommand()!;
-    const target = ctrl.target ?? new THREE.Vector3(0, 0, 0);
+    const target = ctrl?.target ?? new THREE.Vector3(0, 0, 0);
 
     if (cmd.kind === "preset") {
       const preset = VIEW_PRESETS[cmd.preset];
@@ -251,9 +256,10 @@ export function ViewCommandConsumer() {
     }
 
     camera.updateProjectionMatrix();
-    if (ctrl.update) {
+    if (ctrl?.update) {
       ctrl.update();
     }
+    invalidate();
   });
   return null;
 }

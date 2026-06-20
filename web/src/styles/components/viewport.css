@@ -221,7 +221,12 @@
       border: 1px solid var(--color-border);
       cursor: pointer;
       user-select: none;
-      backface-visibility: visible;
+      /* Ticket xw51: hide back-facing faces so they don't intercept the
+       * pointer. With `visible`, a face on the far side of the cube projects
+       * over a visible front face in screen space and swallowed its click, so
+       * the ViewCube never navigated. `hidden` leaves only the 3 camera-facing
+       * faces clickable — the standard ViewCube setup. */
+      backface-visibility: hidden;
       line-height: 1;
 
       &:hover {
