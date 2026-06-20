@@ -849,7 +849,6 @@ export function SketchSession3D() {
 
   const objects = useMemo(() => {
     const objs: THREE.Object3D[] = [];
-    const dotSets: SketchDots[] = [];
     const addLines = (
       pos: number[] | null,
       mat: LineMat,
@@ -880,22 +879,10 @@ export function SketchSession3D() {
       o.layers.enable(OVERLAY_LAYER);
       objs.push(o);
     };
-    // Vertex/handle/selection dots as billboarded screen-constant circle MESHES
-    // (ticket tdq2 — the old THREE.Points dots never rendered in the overlay
-    // pass). The DOF colour is baked at build time; a colour change rebuilds the
-    // dots via the `color` memo dep below.
-    const addDots = (
-      pos: number[] | null,
-      colorHex: number,
-      diameterPx: number,
-      order: number,
-    ) => {
-      const d = makeSketchDots(pos, colorHex, diameterPx, order);
-      if (d) {
-        objs.push(d.mesh);
-        dotSets.push(d);
-      }
-    };
+    // Vertex/handle/selection dots are NOT built here — they live in a
+    // persistent pool (`dotPoolRef`, ticket vwzj) so a per-frame geom rebuild
+    // (endpoint drag) updates them in place instead of recreating the
+    // InstancedMesh and flashing all points. Only the lines/fill rebuild here.
     addLines(axes, M.axis, 994, false);
     if (fill) {
       const g = new THREE.BufferGeometry();
@@ -911,18 +898,14 @@ export function SketchSession3D() {
       addLines(geom.guide, M.guide, 996, true);
       addLines(geom.legs, M.leg, 996, false);
       addLines(geom.solid, M.solid, 997, false);
-      addDots(geom.points, color, SKETCH_POINT_SIZE, 998); // double the line width (b78p)
-      addDots(geom.handles, color, 6, 998);
     }
     if (hover) {
       addLines(hover.highlight, M.hovLine, 998.5, false);
-      addDots(hover.markers, SKETCH_HOVER_COLOR, 10, 998.6);
     }
     if (selection) {
       addLines(selection.highlight, M.selLine, 999, false);
-      addDots(selection.markers, SKETCH_SELECTED_COLOR, 10, 1000);
     }
-    return { objs, dotSets };
+    return { objs };
   }, [geom, fill, axes, hover, selection, color, M, isWebGPU]);
 
   useEffect(() => {
@@ -930,9 +913,72 @@ export function SketchSession3D() {
     return () => {
       for (const o of objects.objs)
         (o as { geometry?: THREE.BufferGeometry }).geometry?.dispose();
-      for (const d of objects.dotSets) d.dispose();
     };
   }, [objects, invalidate]);
+
+  // Persistent vertex/handle/hover/selection dots (ticket vwzj). Updated IN
+  // PLACE across rebuilds — an endpoint drag rebuilds `geom` every frame, and
+  // recreating the InstancedMesh dots each time made ALL points flash (a fresh
+  // InstancedMesh churns for a frame while the baked-in fat lines stay put).
+  // Reusing the same mesh per role keeps the scene-graph object stable.
+  const dotsGroupRef = useRef<THREE.Group>(null);
+  const dotPoolRef = useRef<Map<string, SketchDots>>(new Map());
+  useEffect(() => {
+    const group = dotsGroupRef.current;
+    if (!group) return;
+    const pool = dotPoolRef.current;
+    const want: Array<{
+      role: string;
+      pos: number[] | null | undefined;
+      color: number;
+      size: number;
+      order: number;
+    }> = [];
+    if (geom) {
+      want.push({ role: "points", pos: geom.points, color, size: SKETCH_POINT_SIZE, order: 998 });
+      want.push({ role: "handles", pos: geom.handles, color, size: 6, order: 998 });
+    }
+    if (hover) {
+      want.push({ role: "hover", pos: hover.markers, color: SKETCH_HOVER_COLOR, size: 10, order: 998.6 });
+    }
+    if (selection) {
+      want.push({ role: "selection", pos: selection.markers, color: SKETCH_SELECTED_COLOR, size: 10, order: 1000 });
+    }
+    const used = new Set<string>();
+    for (const w of want) {
+      if (!w.pos || w.pos.length === 0) continue;
+      used.add(w.role);
+      const existing = pool.get(w.role);
+      if (existing && existing.tryUpdate(w.pos, w.color, w.size)) continue;
+      if (existing) {
+        group.remove(existing.mesh);
+        existing.dispose();
+        pool.delete(w.role);
+      }
+      const d = makeSketchDots(w.pos, w.color, w.size, w.order);
+      if (d) {
+        group.add(d.mesh);
+        pool.set(w.role, d);
+      }
+    }
+    for (const [role, d] of [...pool]) {
+      if (!used.has(role)) {
+        group.remove(d.mesh);
+        d.dispose();
+        pool.delete(role);
+      }
+    }
+    invalidate();
+  }, [geom, hover, selection, color, invalidate]);
+
+  // Dispose all pooled dots when the session closes.
+  useEffect(() => {
+    const pool = dotPoolRef.current;
+    return () => {
+      for (const d of pool.values()) d.dispose();
+      pool.clear();
+    };
+  }, []);
 
   if (!active) return null;
   return (
@@ -940,6 +986,9 @@ export function SketchSession3D() {
       {objects.objs.map((o, i) => (
         <primitive key={i} object={o} dispose={null} />
       ))}
+      {/* Persistent dots (ticket vwzj) — the pool mutates this group's
+          children imperatively; never recreated per geom rebuild. */}
+      <group ref={dotsGroupRef} />
     </group>
   );
 }

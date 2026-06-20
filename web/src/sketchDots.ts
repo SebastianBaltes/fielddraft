@@ -35,7 +35,7 @@ export class SketchDots {
   // BOTH the WebGPU overlay pass and the classic WebGL fallback canvas — like
   // the committed sketch region fill (ticket jjmv).
   private readonly material: THREE.MeshBasicMaterial;
-  private readonly diameterPx: number;
+  private diameterPx: number;
   /** World-space centre of each dot (3 floats per dot). */
   private readonly centers: Float32Array;
   private readonly count: number;
@@ -86,6 +86,24 @@ export class SketchDots {
   /** Recolour in place (DOF status change) — no geometry churn. */
   setColor(colorHex: number): void {
     this.material.color.setHex(colorHex);
+  }
+
+  /**
+   * Update this dot set IN PLACE when the point COUNT is unchanged (ticket
+   * vwzj: dragging a sketch endpoint rebuilds the geometry every frame; reusing
+   * the same InstancedMesh — rather than disposing and recreating it — keeps
+   * the dots from flashing). Returns `false` when the count differs, since an
+   * InstancedMesh's capacity is fixed at construction and the caller must
+   * recreate. Colour and screen-size are mutable and applied immediately; the
+   * per-render `onBeforeRender` rescale picks up the new centres.
+   */
+  tryUpdate(positions: number[], colorHex: number, diameterPx: number): boolean {
+    if (Math.floor(positions.length / 3) !== this.count) return false;
+    this.centers.set(positions);
+    this.diameterPx = diameterPx;
+    this.material.color.setHex(colorHex);
+    this.mesh.instanceMatrix.needsUpdate = true;
+    return true;
   }
 
   private update(renderer: RendererWithSize, camera: THREE.Camera): void {
