@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { applyGripDrag, gripsForSelection, type SubCall } from "./sketchGrips";
+import {
+  allGrips,
+  applyGripDrag,
+  entityIdForGrip,
+  gripsForSelection,
+  pickGripAt,
+  type SubCall,
+} from "./sketchGrips";
 
 /**
  * Entity ids mirror `buildDraftSketchState`: origin = 0, then one
@@ -397,5 +404,84 @@ describe("applyGripDrag", () => {
     )[0].segments;
     expect(segs[1].ctrl).toEqual([16, 6]);
     expect(segs[1].to).toEqual([20, 10]); // endpoint untouched
+  });
+});
+
+describe("allGrips (ticket t11x — direct grab without prior selection)", () => {
+  it("exposes every entity's handles regardless of selection", () => {
+    const subCalls: SubCall[] = [
+      { type: "sketch_point", params: { at: [5, 7] } },
+      { type: "sketch_line", params: { start: [0, 0], end: [40, 0] } },
+      { type: "sketch_circle", params: { center: [10, 20], radius: 5 } },
+    ];
+    const roles = allGrips(subCalls)
+      .map((g) => g.role)
+      .sort();
+    expect(roles).toEqual([
+      "circle-center",
+      "circle-rim",
+      "line-end",
+      "line-start",
+      "point",
+    ]);
+  });
+
+  it("dedupes a line's endpoint listed under both the point and line id", () => {
+    const subCalls: SubCall[] = [
+      { type: "sketch_line", params: { start: [0, 0], end: [40, 0] } },
+    ];
+    // start grip appears for point-id 1 and inside line-id 3's pair; allGrips
+    // must list it once.
+    const starts = allGrips(subCalls).filter((g) => g.role === "line-start");
+    expect(starts).toHaveLength(1);
+  });
+});
+
+describe("pickGripAt (ticket t11x)", () => {
+  const subCalls: SubCall[] = [
+    { type: "sketch_point", params: { at: [5, 7] } },
+    { type: "sketch_line", params: { start: [0, 0], end: [40, 0] } },
+  ];
+  // Identity projection: sketch mm == pixels for the test.
+  const project = (p: readonly [number, number]): [number, number] => [
+    p[0],
+    p[1],
+  ];
+
+  it("grabs the point under the pointer within tolerance", () => {
+    const g = pickGripAt(allGrips(subCalls), [5.5, 7.5], project, 9);
+    expect(g).toMatchObject({ role: "point", pos: [5, 7] });
+  });
+
+  it("returns null when no handle is within tolerance", () => {
+    const g = pickGripAt(allGrips(subCalls), [100, 100], project, 9);
+    expect(g).toBeNull();
+  });
+
+  it("picks the nearest handle when several are in range", () => {
+    // Pointer near the line's start (0,0), far from end (40,0) and point.
+    const g = pickGripAt(allGrips(subCalls), [1, 1], project, 9);
+    expect(g).toMatchObject({ role: "line-start", pos: [0, 0] });
+  });
+});
+
+describe("entityIdForGrip (ticket t11x — select the dragged entity)", () => {
+  it("resolves a free point's own id", () => {
+    const subCalls: SubCall[] = [
+      { type: "sketch_point", params: { at: [5, 7] } },
+    ];
+    const grip = allGrips(subCalls).find((g) => g.role === "point")!;
+    expect(entityIdForGrip(subCalls, grip)).toBe(1); // origin=0, point=1
+  });
+
+  it("resolves a line endpoint to its point id, not the line id", () => {
+    const subCalls: SubCall[] = [
+      { type: "sketch_line", params: { start: [0, 0], end: [40, 0] } },
+    ];
+    // ids: start=1, end=2, line=3
+    const start = allGrips(subCalls).find((g) => g.role === "line-start")!;
+    const end = allGrips(subCalls).find((g) => g.role === "line-end")!;
+    expect(entityIdForGrip(subCalls, start)).toBe(1);
+    expect(entityIdForGrip(subCalls, end)).toBe(2);
   });
 });

@@ -67,7 +67,13 @@ import {
   type TaggedCornerHit,
   type TaggedTextHit,
 } from "./sketchHitTest";
-import { gripsForSelection, type Grip } from "./sketchGrips";
+import {
+  allGrips,
+  entityIdForGrip,
+  gripsForSelection,
+  pickGripAt,
+  type Grip,
+} from "./sketchGrips";
 import { angleAbout, buildArcSubCall, unwrapSweep } from "./sketchArc";
 import {
   circleThrough3,
@@ -1471,6 +1477,38 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
         dragControllerRef.current.start(store, grip);
         lastCamVersionRef.current = -1;
         return;
+      }
+
+      // Ticket t11x: a direct pointer-down on ANY entity's handle (a free
+      // point, a line endpoint, a vertex, …) grabs it and starts the drag
+      // immediately — no prior click to select. Searches all committed
+      // entities, not just the current selection, then selects the dragged
+      // entity so its grips/highlight show while it moves.
+      {
+        const rect = (
+          e.currentTarget as HTMLCanvasElement
+        ).getBoundingClientRect();
+        const pointerPx: [number, number] = [
+          e.clientX - rect.left,
+          e.clientY - rect.top,
+        ];
+        const direct = pickGripAt(
+          allGrips(session.subCalls),
+          pointerPx,
+          (pos) => sketchToScreen(pos[0], pos[1], cam),
+          GRIP_PICK_PX,
+        );
+        if (direct) {
+          (e.currentTarget as HTMLCanvasElement).setPointerCapture(
+            e.pointerId,
+          );
+          const ownerId = entityIdForGrip(session.subCalls, direct);
+          if (ownerId !== null) store.setSketchSelection([ownerId]);
+          dragRef.current = { kind: "grip", grip: direct };
+          dragControllerRef.current.start(store, direct);
+          lastCamVersionRef.current = -1;
+          return;
+        }
       }
 
       const tolMm = SELECT_PICK_PX / Math.max(cam.zoom, 1e-6);

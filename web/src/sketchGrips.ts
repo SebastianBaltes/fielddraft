@@ -365,6 +365,89 @@ export function gripsForSelection(
   return out;
 }
 
+/** Every editable grip of every committed entity, in allocation order.
+ *  Unlike {@link gripsForSelection} this ignores the current selection —
+ *  it's the set a *direct* pointer-down can grab (ticket t11x: mouse-down
+ *  on a point/handle starts the drag immediately, without a prior click to
+ *  select). Deduplicated by (subCallIndex, role) so a line's endpoint isn't
+ *  listed twice (once for the point id, once for the line id). */
+export function allGrips(subCalls: ReadonlyArray<SubCall>): Grip[] {
+  const index = buildGripIndex(subCalls);
+  const out: Grip[] = [];
+  const seen = new Set<string>();
+  for (const grips of index.values()) {
+    for (const g of grips) {
+      const key = `${g.subCallIndex}:${g.role}:${g.vertexIndex ?? ""}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push(g);
+    }
+  }
+  return out;
+}
+
+/**
+ * Ticket t11x: pick the grip nearest the pointer within `tolPx` screen
+ * pixels, searching *all* committed entities (not just the selection).
+ * `project` maps a grip's sketch-mm position to canvas pixels so the
+ * tolerance is zoom-independent and the function stays free of camera
+ * internals (and therefore unit-testable). Returns the closest grip, or
+ * `null` if none is within tolerance.
+ */
+export function pickGripAt(
+  grips: ReadonlyArray<Grip>,
+  pointerPx: readonly [number, number],
+  project: (pos: readonly [number, number]) => [number, number],
+  tolPx: number,
+): Grip | null {
+  let best: Grip | null = null;
+  let bestD = tolPx;
+  for (const g of grips) {
+    const [gx, gy] = project(g.pos);
+    const d = Math.hypot(pointerPx[0] - gx, pointerPx[1] - gy);
+    if (d <= bestD) {
+      bestD = d;
+      best = g;
+    }
+  }
+  return best;
+}
+
+/** Value-equality for two grips (the picked grip and one rebuilt by the
+ *  index may be distinct object instances). */
+function sameGrip(a: Grip, b: Grip): boolean {
+  return (
+    a.subCallIndex === b.subCallIndex &&
+    a.role === b.role &&
+    (a.vertexIndex ?? -1) === (b.vertexIndex ?? -1) &&
+    JSON.stringify(a.pathTarget ?? null) === JSON.stringify(b.pathTarget ?? null)
+  );
+}
+
+/** The entity id that owns `grip` — i.e. the id whose pick should select
+ *  the dragged geometry. Mirrors the allocation in {@link buildGripIndex}:
+ *  it's the id mapped to a single-grip role (a free point, a line endpoint,
+ *  a polygon/spline vertex, a rectangle corner, an arc/circle centre). For
+ *  whole-curve grips (line/circle/arc body) we return the most specific
+ *  owning id. Returns `null` if no owner can be resolved. */
+export function entityIdForGrip(
+  subCalls: ReadonlyArray<SubCall>,
+  grip: Grip,
+): number | null {
+  const index = buildGripIndex(subCalls);
+  // Prefer a single-grip entry — that's the grip's own handle id (point,
+  // endpoint, vertex, corner, centre), the most specific selectable target.
+  for (const [id, grips] of index.entries()) {
+    if (grips.length === 1 && sameGrip(grips[0], grip)) return id;
+  }
+  // Fall back: the first id whose grip list contains this grip (whole-curve
+  // ids list several grips; selecting any is acceptable for the drag).
+  for (const [id, grips] of index.entries()) {
+    if (grips.some((g) => sameGrip(g, grip))) return id;
+  }
+  return null;
+}
+
 /**
  * Return a new sub-calls array with `grip`'s coordinate moved to
  * `to`. The dragged geometry call is replaced immutably; every
