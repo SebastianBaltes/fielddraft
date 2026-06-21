@@ -22,10 +22,12 @@
 
 import { useEffect, useMemo, useRef } from "react";
 import { useFrame, useThree } from "@react-three/fiber";
-import { LineSegments2 } from "three/examples/jsm/lines/webgpu/LineSegments2.js";
-import { LineSegmentsGeometry } from "three/examples/jsm/lines/LineSegmentsGeometry.js";
-import { Line2NodeMaterial } from "three/webgpu";
 import * as THREE from "three";
+import {
+  createFatLineMaterials,
+  isWebGPURenderer,
+  makeFatLine,
+} from "./overlayLineMaterials";
 import { useKernelStore } from "./store";
 import { findSingleSelectedFeature } from "./viewportOverlays";
 import { OVERLAY_LAYER } from "./viewportSdfOverlays";
@@ -132,29 +134,41 @@ export function SweepPathGizmo() {
   const sphereGeo = useMemo(() => new THREE.SphereGeometry(1, 16, 12), []);
   useEffect(() => () => sphereGeo.dispose(), [sphereGeo]);
 
-  // The spine spline preview, built imperatively so the geometry can be rebuilt
-  // each drag frame without remounting (WebGPU fat line, like the overlays).
+  // Fat node materials only render on WebGPU; the classic WebGLRenderer crashes
+  // in resolveIncludes on a node material (ticket gsoj), so build the preview
+  // through the shared backend-aware fat-line factory.
+  const isWebGPU = isWebGPURenderer(gl);
+
+  // The spine spline preview, built imperatively so the geometry is rebuilt
+  // each drag frame without remounting. `setPathPositions` swaps the geometry
+  // backend-correctly: a fat `LineSegmentsGeometry` on WebGPU, a plain
+  // BufferGeometry attribute on the classic WebGLRenderer.
   const pathLine = useMemo(() => {
-    const g = new LineSegmentsGeometry();
-    const m = new Line2NodeMaterial({
-      color: PATH_COLOR,
-      linewidth: 2,
-      worldUnits: false,
-      depthTest: false,
-      depthWrite: false,
-      transparent: true,
-    });
-    const o = new LineSegments2(g, m);
+    const mats = createFatLineMaterials({ color: PATH_COLOR, linewidth: 2 });
+    const { object: o } = makeFatLine(new Float32Array(0), mats, isWebGPU);
     o.frustumCulled = false;
     o.renderOrder = 1001;
     o.layers.enable(OVERLAY_LAYER);
     o.visible = false;
-    return o;
-  }, []);
+    return { object: o, mats };
+  }, [isWebGPU]);
+  const setPathPositions = (seg: Float32Array): void => {
+    const o = pathLine.object as
+      | THREE.LineSegments
+      | { geometry: { setPositions(p: Float32Array): void } };
+    if (isWebGPU) {
+      (o.geometry as { setPositions(p: Float32Array): void }).setPositions(seg);
+    } else {
+      const geom = (o as THREE.LineSegments).geometry as THREE.BufferGeometry;
+      geom.setAttribute("position", new THREE.Float32BufferAttribute(seg, 3));
+      geom.computeBoundingSphere();
+    }
+  };
   useEffect(
     () => () => {
-      pathLine.geometry.dispose();
-      (pathLine.material as THREE.Material).dispose();
+      (pathLine.object as unknown as { geometry: { dispose(): void } }).geometry.dispose();
+      pathLine.mats.node.dispose();
+      pathLine.mats.classic.dispose();
     },
     [pathLine],
   );
@@ -185,10 +199,10 @@ export function SweepPathGizmo() {
       const closed = pathInfoRef.current?.closed ?? false;
       const seg = polylineToSegments(catmullRomSpline(nodes, closed, SPLINE_SPS), closed);
       if (seg.length >= 6) {
-        pathLine.geometry.setPositions(new Float32Array(seg));
-        pathLine.visible = true;
+        setPathPositions(new Float32Array(seg));
+        pathLine.object.visible = true;
       } else {
-        pathLine.visible = false;
+        pathLine.object.visible = false;
       }
       splineDirtyRef.current = false;
     }
@@ -372,7 +386,7 @@ export function SweepPathGizmo() {
 
   return (
     <>
-      <primitive object={pathLine} />
+      <primitive object={pathLine.object} />
       {pathInfo.nodes.map((_, i) => (
         <group key={i} ref={(g: THREE.Group | null) => (nodeGroupRefs.current[i] = g)}>
           {/* Dark outline shell behind the white fill (toon-outline trick). */}

@@ -15,6 +15,11 @@ import {
   SpriteNodeMaterial,
 } from "three/webgpu";
 import * as THREE from "three";
+import {
+  createFatLineMaterials,
+  isWebGPURenderer,
+  makeFatLine,
+} from "./overlayLineMaterials";
 import { useKernelStore, type StoreState } from "./store";
 import {
   FACE_INDEX_SENTINEL,
@@ -1364,7 +1369,9 @@ function renderLabelCanvas(label: SketchLabel): {
 interface LabelSprite {
   sprite: THREE.Sprite;
   tex: THREE.CanvasTexture;
-  mat: SpriteNodeMaterial;
+  // SpriteNodeMaterial on WebGPU, classic THREE.SpriteMaterial on the WebGL
+  // fallback (ticket n6rs: the node material crashes in resolveIncludes there).
+  mat: SpriteNodeMaterial | THREE.SpriteMaterial;
   anchorUv: [number, number];
   cssW: number;
   cssH: number;
@@ -1384,6 +1391,11 @@ export function SketchLabels3D() {
   const invalidate = useThree((s) => s.invalidate);
   const camera = useThree((s) => s.camera);
   const size = useThree((s) => s.size);
+  const gl = useThree((s) => s.gl);
+  // SpriteNodeMaterial renders only on WebGPU; the classic WebGLRenderer needs
+  // a plain THREE.SpriteMaterial (ticket n6rs — resolveIncludes crash while a
+  // sketch dimension/snap label is on screen during a line draw).
+  const isWebGPU = isWebGPURenderer(gl);
   const groupRef = useRef<THREE.Group>(null);
   const lastVer = useRef(-1);
   const itemsRef = useRef<LabelSprite[]>([]);
@@ -1429,7 +1441,9 @@ export function SketchLabels3D() {
         tex.colorSpace = THREE.SRGBColorSpace;
         tex.minFilter = THREE.LinearFilter;
         tex.generateMipmaps = false;
-        const mat = new SpriteNodeMaterial();
+        const mat = isWebGPU
+          ? new SpriteNodeMaterial()
+          : new THREE.SpriteMaterial();
         mat.map = tex;
         mat.transparent = true;
         mat.depthTest = false;
@@ -2720,6 +2734,10 @@ export function BRepSelectionOverlay({
   const { store, state } = useKernelStore();
   const camera = useThree((s) => s.camera);
   const invalidate = useThree((s) => s.invalidate);
+  const gl = useThree((s) => s.gl);
+  // Fat node materials only render on WebGPU; the classic WebGLRenderer needs a
+  // plain LineBasicMaterial or it crashes in resolveIncludes (ticket gsoj).
+  const isWebGPU = isWebGPURenderer(gl);
   const raycaster = useRef(new THREE.Raycaster());
 
   const faceHighlightGeom = useRef(new THREE.BufferGeometry());
@@ -2798,24 +2816,24 @@ export function BRepSelectionOverlay({
 
   // Boundary-outline hover highlight for the hovered face (ticket evq2) —
   // every analytic edge bounding the face lights up exactly like a hovered
-  // edge. This is the ONLY face-hover feedback in the SDF render modes (no
-  // triangle fill there), and it must go through the fat-line path
-  // (LineSegments2 + Line2NodeMaterial): the previous plain LineBasicMaterial
-  // lineSegments never composited on the WebGPU backend, so hovering a face
-  // gave no edge feedback at all (ticket bqvz).
-  const outlineMatRef = useRef(
-    new Line2NodeMaterial({
+  // edge. On WebGPU this is the ONLY face-hover feedback in the SDF render
+  // modes (no triangle fill there), and it goes through the fat-line path
+  // (LineSegments2 + Line2NodeMaterial): a plain LineBasicMaterial never
+  // composited on the WebGPU backend (ticket bqvz). On the classic
+  // WebGLRenderer the node material would crash in resolveIncludes (ticket
+  // gsoj), so makeFatLine picks a plain LineSegments there instead.
+  const outlineMatsRef = useRef(
+    createFatLineMaterials({
       color: ELEMENT_HOVER_COLOR,
       linewidth: ELEMENT_HOVER_LINEWIDTH,
-      worldUnits: false,
-      depthTest: false,
-      depthWrite: false,
-      transparent: true,
     }),
   );
   useEffect(() => {
-    const mat = outlineMatRef.current;
-    return () => mat.dispose();
+    const mats = outlineMatsRef.current;
+    return () => {
+      mats.node.dispose();
+      mats.classic.dispose();
+    };
   }, []);
   // Hovered face, published from useFrame; the outline gets a BRAND-NEW
   // LineSegments2 + geometry per change — the WebGPU renderer does not
@@ -2841,7 +2859,7 @@ export function BRepSelectionOverlay({
       return next;
     });
   };
-  const [outlineObj, setOutlineObj] = useState<LineSegments2 | null>(null);
+  const [outlineObj, setOutlineObj] = useState<THREE.Object3D | null>(null);
   useEffect(() => {
     if (hoverFace === null) {
       setOutlineObj(null);
@@ -2865,16 +2883,18 @@ export function BRepSelectionOverlay({
       setOutlineObj(null);
       return;
     }
-    const geom = new LineSegmentsGeometry();
-    geom.setPositions(new Float32Array(segs));
-    const obj = new LineSegments2(geom, outlineMatRef.current);
+    const { object: obj, geometry } = makeFatLine(
+      new Float32Array(segs),
+      outlineMatsRef.current,
+      isWebGPU,
+    );
     obj.frustumCulled = false;
     obj.renderOrder = 999;
     obj.layers.enable(OVERLAY_LAYER);
     setOutlineObj(obj);
     invalidate();
-    return () => geom.dispose();
-  }, [hoverFace, bodies, invalidate]);
+    return () => geometry.dispose();
+  }, [hoverFace, bodies, invalidate, isWebGPU]);
 
   useFrame(() => {
     const picker = getActiveQueryPicker();
@@ -3140,6 +3160,10 @@ export function BRepSelectionOverlay({
  */
 export function BRepSelectedOverlay() {
   const { store, state } = useKernelStore();
+  const gl = useThree((s) => s.gl);
+  // Fat node materials only render on WebGPU; the classic WebGLRenderer needs a
+  // plain LineBasicMaterial (ticket gsoj — resolveIncludes crash otherwise).
+  const isWebGPU = isWebGPURenderer(gl);
   const selected = state?.selectedElement ?? null;
   // Full multi-select set: a face primary highlights every selected face
   // (the coplanar extrude gather); edges/vertices stay single-primary.
@@ -3159,22 +3183,14 @@ export function BRepSelectedOverlay() {
       side: THREE.DoubleSide,
     }),
   );
-  // Selected edges use a *fat* line (LineSegments2 + Line2NodeMaterial). A
-  // plain LineBasicMaterial silently ignores `linewidth` on WebGPU/WebGL — it
-  // always rasterises 1px — so a visible stroke only materialises through the
-  // instanced screen-space line shader. The WebGPU variant derives its pixel
-  // scale from the built-in viewport/DPR nodes, so unlike the WebGL
-  // LineMaterial there is no `resolution` uniform to keep in sync.
-  // 4 px matches Onshape's chunky selected-edge stroke (ticket 6btt).
-  const edgeMatRef = useRef(
-    new Line2NodeMaterial({
-      color: ELEMENT_SELECTION_COLOR,
-      linewidth: 4,
-      worldUnits: false,
-      depthTest: false,
-      depthWrite: false,
-      transparent: true,
-    }),
+  // Selected edges use a *fat* line on WebGPU (LineSegments2 +
+  // Line2NodeMaterial): a plain LineBasicMaterial silently ignores `linewidth`
+  // there, so the chunky 4 px Onshape stroke (ticket 6btt) only materialises
+  // through the instanced screen-space line shader. On the classic
+  // WebGLRenderer the node material would crash in resolveIncludes (ticket
+  // gsoj), so makeFatLine falls back to a plain LineSegments (1 px) there.
+  const edgeMatsRef = useRef(
+    createFatLineMaterials({ color: ELEMENT_SELECTION_COLOR, linewidth: 4 }),
   );
   // A selected FULL-PRIMITIVE face (a sphere/torus face — no mesh, no
   // boundary edges, not planar) tints the matching hybrid leaf primitive,
@@ -3195,17 +3211,18 @@ export function BRepSelectedOverlay() {
   // highlight on the first edge ever selected (ticket twxw: "immer dieselbe
   // Kante"). Handing the renderer a fresh object forces fresh buffers. The ref
   // only tracks the current object so the resolver can dispose the previous.
-  const edgeObjRef = useRef<LineSegments2 | null>(null);
+  const edgeObjRef = useRef<LineSegments2 | THREE.LineSegments | null>(null);
 
   useEffect(() => {
     const fg = faceGeomRef.current;
     const fm = faceMatRef.current;
-    const em = edgeMatRef.current;
+    const em = edgeMatsRef.current;
     return () => {
       fg.dispose();
       fm.dispose();
       edgeObjRef.current?.geometry.dispose();
-      em.dispose();
+      em.node.dispose();
+      em.classic.dispose();
       disposeLeafGroup();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -3433,14 +3450,12 @@ export function BRepSelectedOverlay() {
     if (segs.length > 0) {
       // Fresh fat-line object per selection — the WebGPU backend does not
       // re-upload a LineSegmentsGeometry mutated in place (ticket twxw).
-      const geom = new LineSegmentsGeometry();
-      geom.setPositions(segs);
-      const obj = new LineSegments2(geom, edgeMatRef.current);
+      const { object: obj } = makeFatLine(segs, edgeMatsRef.current, isWebGPU);
       obj.frustumCulled = false;
       obj.renderOrder = 1002;
       obj.layers.enable(OVERLAY_LAYER);
       edgeObjRef.current?.geometry.dispose();
-      edgeObjRef.current = obj;
+      edgeObjRef.current = obj as LineSegments2 | THREE.LineSegments;
     } else {
       edgeObjRef.current?.geometry.dispose();
       edgeObjRef.current = null;
@@ -3453,7 +3468,7 @@ export function BRepSelectedOverlay() {
       vertices,
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [store, selected, selectedKey, bodyFingerprint]);
+  }, [store, selected, selectedKey, bodyFingerprint, isWebGPU]);
 
   if (!resolved) return null;
 
@@ -3506,17 +3521,14 @@ export function BRepSelectedOverlay() {
  */
 export function BodyHighlightOverlay() {
   const { store, state } = useKernelStore();
+  const gl = useThree((s) => s.gl);
+  // Fat node materials only render on WebGPU; the classic WebGLRenderer needs a
+  // plain LineBasicMaterial (ticket gsoj — resolveIncludes crash otherwise).
+  const isWebGPU = isWebGPURenderer(gl);
   const bodyIndex = state?.highlightedBodyIndex ?? null;
 
-  const matRef = useRef(
-    new Line2NodeMaterial({
-      color: ELEMENT_SELECTION_COLOR,
-      linewidth: 2,
-      worldUnits: false,
-      depthTest: false,
-      depthWrite: false,
-      transparent: true,
-    }),
+  const matsRef = useRef(
+    createFatLineMaterials({ color: ELEMENT_SELECTION_COLOR, linewidth: 2 }),
   );
   const fillMatRef = useRef(
     new THREE.MeshBasicMaterial({
@@ -3536,11 +3548,12 @@ export function BodyHighlightOverlay() {
     objRef.current = null;
   };
   useEffect(() => {
-    const mat = matRef.current;
+    const mats = matsRef.current;
     const fillMat = fillMatRef.current;
     return () => {
       disposeObj();
-      mat.dispose();
+      mats.node.dispose();
+      mats.classic.dispose();
       fillMat.dispose();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -3633,9 +3646,7 @@ export function BodyHighlightOverlay() {
     if (segs.length === 0) return false;
     // Fresh geometry + object per change — the WebGPU backend does not
     // re-upload a LineSegmentsGeometry mutated in place (ticket twxw).
-    const geom = new LineSegmentsGeometry();
-    geom.setPositions(segs);
-    const obj = new LineSegments2(geom, matRef.current);
+    const { object: obj } = makeFatLine(segs, matsRef.current, isWebGPU);
     obj.frustumCulled = false;
     obj.renderOrder = 1002;
     obj.layers.enable(OVERLAY_LAYER);
@@ -3643,7 +3654,7 @@ export function BodyHighlightOverlay() {
     objRef.current = obj;
     return true;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [store, bodyIndex, bodyFingerprint]);
+  }, [store, bodyIndex, bodyFingerprint, isWebGPU]);
 
   if (!ready || !objRef.current) return null;
   return <primitive object={objRef.current} dispose={null} />;
