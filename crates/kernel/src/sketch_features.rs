@@ -372,6 +372,7 @@ impl SketchToolRegistry {
         r.register(Box::new(SketchSlotTool));
         r.register(Box::new(SketchMirrorTool));
         r.register(Box::new(SketchOffsetTool));
+        r.register(Box::new(SketchProjectTool));
         r.register(Box::new(SketchHorizontalConstraintTool));
         r.register(Box::new(SketchVerticalConstraintTool));
         r.register(Box::new(SketchCoincidentConstraintTool));
@@ -845,6 +846,71 @@ impl SketchToolKind for SketchOffsetTool {
         _id: &FeatureId,
         _def: &Value,
     ) -> Result<(), FeatureError> {
+        Ok(())
+    }
+}
+
+/// `sketch_project` — an ASSOCIATIVE projection of an external B-Rep edge
+/// onto the sketch plane (ticket jcb7).
+///
+/// Unlike the old "adopt a faint guide as a frozen `sketch_line`" approach,
+/// this sub-call stores the *query* that names the source edge
+/// (`edge: qEdge(hash)`), not just a snapshot of its coordinates. The cached
+/// `start`/`end` 2D endpoints are a **persistence fallback** only: on every
+/// regeneration [`SketchFeature::execute`] re-resolves the edge against the
+/// live B-Rep, projects its sampled endpoints onto the sketch frame, and
+/// overwrites these fields with the current coordinates — so the projected
+/// line FOLLOWS the body when a parameter upstream changes.
+///
+/// The result is a plain line entity in the [`SketchState`] (two points + a
+/// line, allocated exactly like [`SketchLineTool`] so the TS entity-id mirror
+/// stays in lockstep) that the constraint solver can reference. `construction`
+/// defaults to `true` because a projected reference is, by CAD convention,
+/// construction geometry: visible, snappable, constrainable, but excluded
+/// from the extrudable profile.
+#[derive(FeatureSchema)]
+#[schema(type = "sketch_project")]
+pub struct SketchProjectDef {
+    /// The source B-Rep edge, as a query (`qEdge(<id_hash>)`). Re-resolved
+    /// every regen so the projection tracks the body.
+    pub edge: Query,
+    /// Cached 2D start endpoint in sketch coordinates — the live re-resolution
+    /// in `execute` overwrites this; it only survives as a fallback when the
+    /// edge no longer resolves (e.g. the source feature was deleted).
+    pub start: [f32; 2],
+    /// Cached 2D end endpoint in sketch coordinates (see `start`).
+    pub end: [f32; 2],
+    /// `true` ⇒ reference/construction geometry (default), excluded from the
+    /// extrudable profile.
+    #[param(default = true)]
+    pub construction: bool,
+}
+
+pub struct SketchProjectTool;
+
+impl SketchToolKind for SketchProjectTool {
+    fn type_name(&self) -> &'static str {
+        SketchProjectDef::TYPE_NAME
+    }
+
+    fn schema_json(&self) -> Value {
+        SketchProjectDef::schema_json()
+    }
+
+    fn apply(
+        &self,
+        state: &mut SketchState,
+        _id: &FeatureId,
+        def: &Value,
+    ) -> Result<(), FeatureError> {
+        // The `start`/`end` here are already the live-resolved coordinates:
+        // `SketchFeature::execute` rewrites them before `apply_all` runs
+        // (`resolve_projected_sub_calls`). We just materialise the line — same
+        // entity allocation as `SketchLineTool` so the TS mirror matches.
+        let d = SketchProjectDef::parse(def)?;
+        let start = state.add_point(Point2::new(d.start[0] as f64, d.start[1] as f64));
+        let end = state.add_point(Point2::new(d.end[0] as f64, d.end[1] as f64));
+        state.add_line(start, end);
         Ok(())
     }
 }
@@ -2501,6 +2567,67 @@ impl ParsedSketchDef {
     }
 }
 
+/// Project a world-space edge polyline onto a sketch frame, returning the
+/// 2D `(start, end)` endpoints in the frame's `(u, v)` coordinates.
+///
+/// A straight edge round-trips exactly; a curved edge degrades to its chord
+/// (first→last sample) — the same convention [`Context::resolve_axis_world_segment`]
+/// uses for an edge-as-axis. Returns `None` for a degenerate (<2-point)
+/// polyline. Pure and frame-only so it is unit-testable without a B-Rep
+/// (ticket jcb7).
+pub fn project_edge_polyline_to_frame(
+    polyline: &[[f32; 3]],
+    frame: &SketchFrame,
+) -> Option<([f32; 2], [f32; 2])> {
+    if polyline.len() < 2 {
+        return None;
+    }
+    let start = frame.world_to_local_2d(polyline[0]);
+    let end = frame.world_to_local_2d(polyline[polyline.len() - 1]);
+    Some((start, end))
+}
+
+/// Walk the sub-calls and, for every `sketch_project`, re-resolve its `edge`
+/// query against the live B-Rep and overwrite the cached `start`/`end` params
+/// with the current projection onto `frame`. This is what makes a projected
+/// edge ASSOCIATIVE: the coordinates the downstream `apply` materialises are
+/// always the body's *current* geometry, never a frozen snapshot (ticket jcb7).
+///
+/// An edge that no longer resolves (source feature deleted, etc.) keeps its
+/// cached fallback coordinates — the projection stays put rather than
+/// vanishing or erroring the whole sketch.
+fn resolve_projected_sub_calls(
+    ctx: &mut Context<'_>,
+    frame: &SketchFrame,
+    sub_calls: &mut [FeatureCall],
+) {
+    for call in sub_calls.iter_mut() {
+        if call.type_name != SketchProjectDef::TYPE_NAME {
+            continue;
+        }
+        let Some(edge_slot) = call.params.get("edge") else {
+            continue;
+        };
+        let Ok(query) = serde_json::from_value::<Query>(edge_slot.clone()) else {
+            continue;
+        };
+        let Ok(expr) = crate::queries::parse_query(query.as_str()) else {
+            continue;
+        };
+        let polylines = ctx.resolve_edge_polylines(&expr);
+        let Some(poly) = polylines.iter().find(|p| p.len() >= 2) else {
+            continue;
+        };
+        let Some((start, end)) = project_edge_polyline_to_frame(poly, frame) else {
+            continue;
+        };
+        if let Some(obj) = call.params.as_object_mut() {
+            obj.insert("start".to_string(), serde_json::json!([start[0], start[1]]));
+            obj.insert("end".to_string(), serde_json::json!([end[0], end[1]]));
+        }
+    }
+}
+
 impl FeatureKind for SketchFeature {
     fn type_name(&self) -> &'static str {
         Self::TYPE_NAME
@@ -2540,13 +2667,22 @@ impl FeatureKind for SketchFeature {
                 message: "plane query resolved to no datum and no face".to_string(),
             })?;
 
+        // jcb7: associative re-resolution. Before building the sketch state,
+        // refresh every `sketch_project` sub-call's cached endpoints from the
+        // live B-Rep so the projection tracks the body across edits. The
+        // rewritten `sub_calls` flow into both the state and the stashed
+        // `SketchData`, so downstream consumers (profile, lowering) see the
+        // current coordinates too.
+        let mut sub_calls = parsed.sub_calls;
+        resolve_projected_sub_calls(ctx, &frame, &mut sub_calls);
+
         let mut state = SketchState::with_origin();
-        self.tools.apply_all(&mut state, &parsed.sub_calls)?;
+        self.tools.apply_all(&mut state, &sub_calls)?;
         ctx.sketches.insert(
             id.clone(),
             SketchData {
                 state,
-                sub_calls: parsed.sub_calls,
+                sub_calls,
                 frame,
             },
         );
@@ -3549,6 +3685,7 @@ mod tests {
                 "sketch_path".to_string(),
                 "sketch_point".to_string(),
                 "sketch_polygon".to_string(),
+                "sketch_project".to_string(),
                 "sketch_rectangle".to_string(),
                 "sketch_regular_polygon".to_string(),
                 "sketch_slot".to_string(),
@@ -5434,6 +5571,206 @@ mod tests {
             (extrude.transform.translate[2] - 5.0).abs() < 1e-2,
             "extrude placement lifted to the face, got {:?}",
             extrude.transform.translate
+        );
+    }
+
+    // ─── sketch_project (jcb7, associative edge projection) ─────────
+
+    #[test]
+    fn project_edge_polyline_to_frame_round_trips_on_identity() {
+        // A horizontal world edge projects to its own XY coordinates on the
+        // identity frame (z dropped).
+        let frame = SketchFrame::IDENTITY;
+        let poly = vec![[1.0, 2.0, 5.0], [4.0, 2.0, 5.0]];
+        let (s, e) = project_edge_polyline_to_frame(&poly, &frame).unwrap();
+        assert_eq!(s, [1.0, 2.0]);
+        assert_eq!(e, [4.0, 2.0]);
+    }
+
+    #[test]
+    fn project_edge_polyline_to_frame_uses_chord_and_offset_origin() {
+        // On a frame whose origin is shifted, the projection is relative to
+        // the origin; a curved (multi-point) polyline degrades to its chord
+        // (first→last sample).
+        let frame = SketchFrame {
+            origin: [10.0, 0.0, 0.0],
+            x_axis: [1.0, 0.0, 0.0],
+            y_axis: [0.0, 1.0, 0.0],
+            normal: [0.0, 0.0, 1.0],
+        };
+        let poly = vec![[10.0, 0.0, 0.0], [12.0, 1.0, 0.0], [14.0, 0.0, 0.0]];
+        let (s, e) = project_edge_polyline_to_frame(&poly, &frame).unwrap();
+        assert_eq!(s, [0.0, 0.0]);
+        assert_eq!(e, [4.0, 0.0]);
+    }
+
+    #[test]
+    fn project_edge_polyline_to_frame_rejects_degenerate() {
+        assert!(project_edge_polyline_to_frame(&[], &SketchFrame::IDENTITY).is_none());
+        assert!(
+            project_edge_polyline_to_frame(&[[0.0, 0.0, 0.0]], &SketchFrame::IDENTITY).is_none()
+        );
+    }
+
+    #[test]
+    fn sketch_project_tool_materialises_a_line_like_sketch_line() {
+        // The tool reads the (already live-resolved) start/end and pushes the
+        // same 2 points + 1 line a `sketch_line` would, so the TS entity-id
+        // mirror stays aligned.
+        let tools = SketchToolRegistry::with_builtins();
+        let mut state = SketchState::with_origin();
+        let call = FeatureCall::new(
+            "sketch_project",
+            id(1),
+            json!({ "edge": "qEdge(42)", "start": [1.0, 1.0], "end": [3.0, 5.0] }),
+        );
+        tools.apply_all(&mut state, std::slice::from_ref(&call)).unwrap();
+        let coords = path_point_coords(&state);
+        // with_origin() seeds an origin point; the project adds two more.
+        assert!(coords.contains(&(1.0, 1.0)), "start point present");
+        assert!(coords.contains(&(3.0, 5.0)), "end point present");
+        let lines = state
+            .entities
+            .iter()
+            .filter(|e| matches!(e, fielddraft_solver::Entity::Line { .. }))
+            .count();
+        assert_eq!(lines, 1, "exactly one line entity");
+    }
+
+    #[test]
+    fn sketch_project_is_excluded_from_the_extrudable_profile() {
+        // A lone projected edge forms no region — even though its underlying
+        // line would otherwise chain. Construction + unknown-profile-type both
+        // keep it out of `build_sketch2d_from_sub_calls`.
+        let sub_calls: Vec<FeatureCall> = serde_json::from_value(json!([
+            {"type":"sketch_project","id":"1","params":{
+                "edge":"qEdge(7)","start":[0.0,0.0],"end":[10.0,0.0],"construction":true}}
+        ]))
+        .unwrap();
+        let bounded = crate::sketch2d::BoundedSketch2d::from_sketch(
+            &build_sketch2d_from_sub_calls(&sub_calls),
+        );
+        assert!(
+            crate::sketch2d::extract_contours(&bounded, crate::sketch2d::CONTOUR_RESOLUTION)
+                .is_empty(),
+            "projected edge must not produce an extrudable region"
+        );
+    }
+
+    #[test]
+    fn sketch_project_follows_the_body_associatively() {
+        // End-to-end: box → sketch-on-+Z-face → project a top-rim edge. The
+        // resolved sketch line must equal the edge's current geometry; when
+        // the box grows, the projection FOLLOWS (re-resolved per regen).
+        let registry = FeatureRegistry::with_builtins();
+
+        // Learn a +Z face id_hash AND one of its bounding edge id_hashes from a
+        // box centred at the origin (placement is identity, so local sample
+        // coords ARE world coords). A top-rim edge has both endpoints at
+        // z == +half.
+        let learn = |half: f32| -> (u64, u64) {
+            let mut doc = Document::default();
+            let mut ctx = Context::new(&mut doc);
+            let box_call = FeatureCall::new(
+                "box",
+                id(1),
+                json!({ "half_extents": [half, half, half] }),
+            );
+            registry
+                .regenerate(&mut ctx, std::slice::from_ref(&box_call), None)
+                .unwrap();
+            let woven = crate::body::weave_all(&ctx.features);
+            let (brep, placement) = &woven[0];
+            // +Z face.
+            let mut top_face = None;
+            for i in 0..brep.face_count() {
+                let f = face_plane_frame(brep, crate::brep::FaceId(i as u32), placement);
+                if (f.normal[2] - 1.0).abs() < 1e-4 {
+                    top_face = Some(crate::brep::FaceId(i as u32));
+                }
+            }
+            let top_face = top_face.expect("box has a +Z face");
+            let face_hash =
+                crate::brep::naming::TopoRef::from_face(brep, top_face).id_hash;
+            // An edge whose both endpoints sit on z == +half (top rim).
+            let mut edge_hash = None;
+            for i in 0..brep.edges.len() {
+                let eid = crate::brep::EdgeId(i as u32);
+                let edge = brep.edge(eid);
+                let samples = crate::brep::edge_sampling::sample_edge(&edge.geometry);
+                if samples.len() < 2 {
+                    continue;
+                }
+                let z0 = samples[0][2] as f32;
+                let zn = samples[samples.len() - 1][2] as f32;
+                if (z0 - half).abs() < 1e-3 && (zn - half).abs() < 1e-3 {
+                    edge_hash =
+                        Some(crate::brep::naming::TopoRef::from_edge(brep, eid).id_hash);
+                    break;
+                }
+            }
+            (face_hash, edge_hash.expect("a top-rim edge"))
+        };
+
+        let (face_hash, edge_hash) = learn(2.5);
+
+        let sketch_id = id(2);
+        let project_call = json!({
+            "plane": format!("qFace({face_hash})"),
+            "sub_calls": [
+                { "type": "sketch_project", "id": "200", "params": {
+                    "edge": format!("qEdge({edge_hash})"),
+                    "start": [0.0, 0.0], "end": [0.0, 0.0],
+                    "construction": true } }
+            ]
+        });
+
+        // Regen with the small box and read the resolved projected line.
+        let resolved_line = |half: f32| -> ([f32; 2], [f32; 2]) {
+            let mut doc = Document::default();
+            let mut ctx = Context::new(&mut doc);
+            registry
+                .regenerate(
+                    &mut ctx,
+                    &[
+                        FeatureCall::new(
+                            "box",
+                            id(1),
+                            json!({ "half_extents": [half, half, half] }),
+                        ),
+                        FeatureCall::new(
+                            SketchFeature::TYPE_NAME,
+                            sketch_id.clone(),
+                            project_call.clone(),
+                        ),
+                    ],
+                    None,
+                )
+                .unwrap();
+            let data = ctx.sketches.get(&sketch_id).unwrap();
+            // The stored sub_call now carries the LIVE coordinates.
+            let pc = &data.sub_calls[0].params;
+            let read = |k: &str| {
+                let a = pc.get(k).unwrap().as_array().unwrap();
+                [a[0].as_f64().unwrap() as f32, a[1].as_f64().unwrap() as f32]
+            };
+            (read("start"), read("end"))
+        };
+
+        let (s_small, e_small) = resolved_line(2.5);
+        // The cached [0,0],[0,0] was overwritten — the projection resolved to a
+        // non-degenerate segment.
+        let len_small = ((e_small[0] - s_small[0]).powi(2)
+            + (e_small[1] - s_small[1]).powi(2))
+        .sqrt();
+        assert!(len_small > 1e-3, "projection resolved to a real segment");
+
+        // Grow the box: same edge query, the projected line must MOVE.
+        let (s_big, e_big) = resolved_line(5.0);
+        let len_big = ((e_big[0] - s_big[0]).powi(2) + (e_big[1] - s_big[1]).powi(2)).sqrt();
+        assert!(
+            (len_big - 2.0 * len_small).abs() < 1e-2,
+            "the projected edge followed the body (small {len_small}, big {len_big})"
         );
     }
 

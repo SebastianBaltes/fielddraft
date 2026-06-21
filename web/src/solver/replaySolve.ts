@@ -62,7 +62,13 @@ export function rebuildSubCallsFromSolved(
       if (!at) return call;
       return { ...call, params: { ...call.params, at } };
     }
-    if (call.type === "sketch_line") {
+    if (call.type === "sketch_line" || call.type === "sketch_project") {
+      // jcb7: a `sketch_project` allocates exactly like a `sketch_line`
+      // (2 points + 1 line) in both the kernel and buildDraftSketchState, so
+      // it MUST advance nextId identically here or every later sub-call's id
+      // misaligns. We refresh its cached start/end from the solved points but
+      // KEEP the `edge` query param — the kernel re-resolves the projection
+      // from that query on the next regen, so these coords are only a cache.
       const start = pointAt(nextId++);
       const end = pointAt(nextId++);
       nextId += 1; // line entity itself

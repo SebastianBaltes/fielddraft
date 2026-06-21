@@ -314,7 +314,13 @@ export function buildDraftSketchState(
           at: { x: Number(at[0]), y: Number(at[1]) },
         });
       }
-    } else if (call.type === "sketch_line") {
+    } else if (call.type === "sketch_line" || call.type === "sketch_project") {
+      // jcb7: `sketch_project` materialises as a line in the kernel
+      // (`SketchProjectTool::apply` allocates 2 points + 1 line just like
+      // `sketch_line`), so it MUST allocate identically here to keep the
+      // JS↔kernel entity-id mirror in lockstep. Its cached `start`/`end`
+      // are the projected endpoints; the live re-resolution for DISPLAY
+      // happens upstream in `resolveProjectedSubCalls`.
       const start = call.params.start;
       const end = call.params.end;
       if (

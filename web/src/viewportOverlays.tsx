@@ -55,6 +55,10 @@ import {
 } from "./sketchOutline";
 import { buildDraftSketchState } from "./sketchSession";
 import {
+  makeLiveEdgeLookup,
+  resolveProjectedSubCalls,
+} from "./sketchProject";
+import {
   getHoveredSketchEntity,
   subscribeHoveredSketchEntity,
 } from "./sketchEntityHoverBridge";
@@ -148,6 +152,11 @@ export function SketchOverlay3D() {
       const contour = poly.map((q) => new THREE.Vector2(q[0], q[1]));
       return THREE.ShapeUtils.triangulateShape(contour, []);
     };
+    // jcb7: live edge lookup, shared across all committed sketches in this
+    // pass, so a `sketch_project` sub-call resolves to the body's CURRENT
+    // geometry rather than its frozen document snapshot. Built lazily inside
+    // the lookup, so sketches without projections pay nothing.
+    const liveEdges = makeLiveEdgeLookup(store.kernel);
     for (const sketchId of visibleSketches) {
       // Skip the actively-edited sketch — the session overlay owns it (o2y3).
       if (sketchId === editingSketchId) continue;
@@ -164,7 +173,14 @@ export function SketchOverlay3D() {
             params.plane ?? "qCreatedBy(origin_plane_xy)",
             store.kernel,
           ) ?? resolvePlaneFrame("qCreatedBy(origin_plane_xy)", store.kernel)!;
-        const subCalls = params.sub_calls ?? [];
+        // jcb7: rewrite `sketch_project` sub-calls to live `sketch_line`s so
+        // the projection tracks the body — then every collector below stays
+        // projection-agnostic.
+        const subCalls = resolveProjectedSubCalls(
+          (params.sub_calls ?? []) as SketchSubCall[],
+          frame,
+          liveEdges,
+        );
         const linePos = collectSketchLineSegments(subCalls, frame);
         if (linePos.length === 0) continue;
         // Endpoint/vertex dots like the active sketch session (ticket n6hg):
@@ -614,16 +630,34 @@ export function SketchSession3D() {
     );
   }, [store, active, session?.planeQuery]);
 
+  // jcb7: resolve the session's `sketch_project` sub-calls to live
+  // `sketch_line`s against the CURRENT body edges, so the in-edit overlay
+  // tracks the body exactly like the committed overlay. A `sketch_project`
+  // resolves to one `sketch_line` (2 points + 1 line) — the same allocation
+  // the kernel's `SketchProjectTool::apply` does — so the entity-id mirror
+  // (`buildDraftSketchState`) stays in lockstep. Falls back to raw sub-calls
+  // when there's no frame yet (one-frame plane-resolve race).
+  const sessionSubCalls = useMemo(() => {
+    if (!session) return [];
+    const raw = session.subCalls as SketchSubCall[];
+    if (!store || !frame) return raw;
+    return resolveProjectedSubCalls(
+      raw,
+      frame,
+      makeLiveEdgeLookup(store.kernel),
+    );
+  }, [store, frame, session?.subCalls]);
+
   // Solved entity state — shared by the DOF colour and the selection
   // highlight (same id space as session.selection).
   const skState = useMemo(() => {
     if (!active || !session) return null;
     try {
-      return buildDraftSketchState(session.subCalls);
+      return buildDraftSketchState(sessionSubCalls);
     } catch {
       return null;
     }
-  }, [active, session?.subCalls]);
+  }, [active, session, sessionSubCalls]);
 
   // 3-colour DOF status — same derivation as drawOverlay's committedColor.
   const color = useMemo(() => {
@@ -649,11 +683,8 @@ export function SketchSession3D() {
 
   const geom = useMemo(() => {
     if (!active || !frame || !session) return null;
-    return collectSketchSessionGeometry(
-      session.subCalls as SketchSubCall[],
-      frame,
-    );
-  }, [active, frame, session?.subCalls]);
+    return collectSketchSessionGeometry(sessionSubCalls, frame);
+  }, [active, frame, session, sessionSubCalls]);
 
   const selection = useMemo(() => {
     if (
@@ -668,11 +699,11 @@ export function SketchSession3D() {
     const g = collectSelectionGeometry(
       skState,
       session.selection,
-      session.subCalls,
+      sessionSubCalls,
       frame,
     );
     return g.highlight.length || g.markers.length ? g : null;
-  }, [active, frame, skState, session?.selection, session?.subCalls]);
+  }, [active, frame, skState, session?.selection, sessionSubCalls]);
 
   // Pre-pick hover highlight (ticket zadt): the entity under the cursor while
   // in select mode, published by the 2D interaction canvas. Drawn like the
@@ -698,7 +729,7 @@ export function SketchSession3D() {
     const g = collectSelectionGeometry(
       skState,
       [hoveredEntity],
-      session.subCalls,
+      sessionSubCalls,
       frame,
     );
     return g.highlight.length || g.markers.length ? g : null;
@@ -707,6 +738,7 @@ export function SketchSession3D() {
     frame,
     skState,
     hoveredEntity,
+    sessionSubCalls,
     session?.selectedTool,
     session?.selection,
     session?.subCalls,

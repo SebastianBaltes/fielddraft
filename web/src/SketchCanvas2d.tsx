@@ -445,10 +445,15 @@ function textParamsSnapshot(store: KernelStore): TextParams {
 interface ProjectedEdge {
   p0: [number, number];
   p1: [number, number];
+  /** jcb7: the source B-Rep edge's stable id-hash, so the Project tool can
+   *  emit an ASSOCIATIVE `sketch_project { edge: qEdge(idHash) }` sub-call
+   *  rather than a frozen coordinate copy. Absent for guides whose edge has
+   *  no exported id-hash (older bodies) — those fall back to a plain copy. */
+  idHash?: string;
 }
 
 function projectEdgesToSketchPlane(
-  edges: { p0: number[]; p1: number[] }[],
+  edges: { p0: number[]; p1: number[]; idHash?: string }[],
 ): ProjectedEdge[] {
   // Tickets yx6a/bxoo: drop each world point into the resolved plane
   // frame (orthogonal projection along the plane normal).
@@ -462,7 +467,7 @@ function projectEdgesToSketchPlane(
       dx * f.yAxis[0] + dy * f.yAxis[1] + dz * f.yAxis[2],
     ];
   };
-  return edges.map((e) => ({ p0: uv(e.p0), p1: uv(e.p1) }));
+  return edges.map((e) => ({ p0: uv(e.p0), p1: uv(e.p1), idHash: e.idHash }));
 }
 
 function nearestPointOnSegment(
@@ -1203,10 +1208,10 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
       return;
     }
     try {
-      const segs: { p0: number[]; p1: number[] }[] = [];
+      const segs: { p0: number[]; p1: number[]; idHash?: string }[] = [];
       const count = store.kernel.bodyCount();
       for (let i = 0; i < count; i++) {
-        let bodyEdges: { a: number; b: number; points: number[] }[];
+        let bodyEdges: { a: number; b: number; points: number[]; idHash?: string }[];
         try {
           bodyEdges = store.kernel.bodyBrepEdges(i);
         } catch {
@@ -1215,6 +1220,8 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
         for (const e of bodyEdges) {
           const n = e.points.length / 3;
           for (let p = 0; p < n - 1; p++) {
+            // Every flattened segment carries its parent edge's id-hash so a
+            // Project-tool click resolves to an associative `qEdge(...)` (jcb7).
             segs.push({
               p0: [e.points[p * 3], e.points[p * 3 + 1], e.points[p * 3 + 2]],
               p1: [
@@ -1222,6 +1229,7 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
                 e.points[(p + 1) * 3 + 1],
                 e.points[(p + 1) * 3 + 2],
               ],
+              idHash: e.idHash,
             });
           }
         }
@@ -2152,12 +2160,16 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
       lastCamVersionRef.current = -1;
       return;
     }
-    // F21: Project / Use external geometry. The faint guides drawn from
+    // F21 / jcb7: Project / Use external geometry. The faint guides drawn from
     // existing bodies' B-Rep edges (projected onto the sketch plane in
-    // `projectedEdgesRef`) are inert reference lines. A single click adopts
-    // the nearest guide as a real CONSTRUCTION `sketch_line`, so the solver
-    // can constrain against it. Construction matches the CAD "projected
-    // reference" convention (visible + snappable, excluded from the profile).
+    // `projectedEdgesRef`) are inert reference lines. A single click adopts the
+    // nearest guide as an ASSOCIATIVE CONSTRUCTION projection: a `sketch_project`
+    // sub-call that stores the edge QUERY (`qEdge(idHash)`), not a frozen copy,
+    // so the kernel re-resolves it every regen and the line FOLLOWS the body.
+    // Construction matches the CAD "projected reference" convention (visible +
+    // snappable, excluded from the profile). A guide whose edge has no exported
+    // id-hash falls back to a frozen `sketch_line` (non-associative, but still
+    // usable) rather than failing the pick.
     if (session.selectedTool === "sketch_project") {
       const tolMm = SELECT_PICK_PX / Math.max(cam.zoom, 1e-6);
       const idx = nearestProjectedEdge(
@@ -2168,10 +2180,20 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
       if (idx !== null) {
         const edge = projectedEdgesRef.current[idx];
         store.pushSketchSubCalls([
-          {
-            type: "sketch_line",
-            params: { start: edge.p0, end: edge.p1, construction: true },
-          },
+          edge.idHash
+            ? {
+                type: "sketch_project",
+                params: {
+                  edge: `qEdge(${edge.idHash})`,
+                  start: edge.p0,
+                  end: edge.p1,
+                  construction: true,
+                },
+              }
+            : {
+                type: "sketch_line",
+                params: { start: edge.p0, end: edge.p1, construction: true },
+              },
         ]);
         scheduleSolverReplay();
       }
