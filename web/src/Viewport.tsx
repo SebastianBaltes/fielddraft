@@ -717,6 +717,16 @@ function WebGLViewport({
             ignoring the Onshape preset (MIDDLE=pan, RIGHT=rotate) — so the mouse
             felt wrong in the WebGL fallback, including in sketch mode. */}
         <CameraRig preset={controlsPreset} />
+        {/* Ticket 10cl: the view-command consumer (ViewCube clicks, standard
+            views, zoom-to-fit, view-normal) was mounted ONLY in the WebGPU
+            <Canvas>. In WebGL mode the shared HTML <ViewCube> still rendered and
+            its onClick called requestView(...), but nothing consumed the pending
+            command — so the camera never moved. Mounting it here moves THIS
+            root's WebGL camera; this root's manual rAF advance() ticks its
+            useFrame every frame, so the consume happens without an explicit
+            invalidate. Only one of the two roots is ever mounted (isWebGL gate),
+            so the module-singleton registerInvalidate never collides. */}
+        <ViewCommandConsumer />
       </Canvas>
     </div>
   );
