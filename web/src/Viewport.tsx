@@ -484,12 +484,14 @@ function handleFilletClick(
 function handleMeasureClick(store: {
   addMeasureEntity(el: PickedElement): void;
 }): void {
-  // stv8: Measure picks a B-Rep EDGE by its stable id_hash (the same hovered
-  // element the fillet tool consumes), then the floating MeasurePanel resolves
-  // it to a polyline and shows length / radius / distance. A click that isn't
-  // over an edge is ignored (keeps the current measure set intact).
-  const edge = getHoveredElementOfKind("edge");
-  if (edge) store.addMeasureEntity(edge);
+  // stv8 + me9w: Measure picks a B-Rep VERTEX, EDGE or FACE by its stable
+  // id_hash. `getHoveredElement` already merges the three overlays by the CAD
+  // priority vertex > edge > face, so the most specific element under the
+  // cursor wins. The floating MeasurePanel resolves it to geometry and reports
+  // length / area / coordinates / distance. A click over nothing is ignored
+  // (keeps the current measure set intact).
+  const el = getHoveredElement();
+  if (el) store.addMeasureEntity(el);
 }
 
 function handleSelectionClick(
