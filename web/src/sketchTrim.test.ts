@@ -202,8 +202,35 @@ describe("trimCurveAt — lines", () => {
 });
 
 describe("trimCurveAt — circles", () => {
-  it("deletes a circle with no crossings", () => {
-    expect(trimCurveAt([circle([0, 0], 10)], 0, [10, 0])).toEqual([]);
+  it("keeps an uncrossed circle intact (rxi2: never wipe a whole circle)", () => {
+    const out = trimCurveAt([circle([0, 0], 10)], 0, [10, 0])!;
+    expect(out).toHaveLength(1);
+    expect(out[0].type).toBe("sketch_circle");
+    expect(out[0].params.radius).toBe(10);
+  });
+
+  it("keeps the circle when a dividing line is a chord that stops inside it", () => {
+    // rxi2: a horizontal 'diameter' drawn by eye whose endpoints land
+    // *inside* the disc never crosses the rim → 0 intersections. Clicking
+    // the lower rim must NOT erase the circle (the reported bug).
+    const calls = [
+      circle([0, 0], 10),
+      line([-6, 0], [6, 0]), // both endpoints inside the circle
+    ];
+    const out = trimCurveAt(calls, 0, [0, -10])!; // click the bottom rim
+    expect(out).toHaveLength(1);
+    expect(out[0].type).toBe("sketch_circle");
+  });
+
+  it("a true diameter still splits the circle into the complementary arc", () => {
+    // Endpoints ON the rim → 2 crossings → clicking the bottom keeps the top.
+    const calls = [circle([0, 0], 10), line([-10, 0], [10, 0])];
+    const out = trimCurveAt(calls, 0, [0, -10])!;
+    expect(out).toHaveLength(1);
+    expect(out[0].type).toBe("sketch_arc");
+    const a = curveOfSubCall(out[0])!;
+    expect(distToCurve([0, 10], a)).toBeLessThan(1e-6);
+    expect(distToCurve([0, -10], a)).toBeGreaterThan(5);
   });
 
   it("turns a circle into the complementary arc (click top → keep bottom)", () => {

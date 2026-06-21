@@ -466,14 +466,18 @@ function trimEdge(
     }));
   }
 
-  // Full circle: needs at least two intersections to leave an arc;
-  // otherwise the click deletes the whole circle.
+  // Full circle: needs at least two intersections to split into removable
+  // arcs. With fewer than two it isn't divided, so trimming it is a no-op —
+  // we keep the whole circle rather than deleting it. Wiping an entire closed
+  // loop on a click that can't bound a segment is never the intent (Onshape
+  // leaves an uncut circle alone); the old "return []" here is exactly the
+  // rxi2 bug where clicking a circle's rim erased the whole circle.
   const angles = dedupeSorted(
     hits
       .map((p) => norm2pi(Math.atan2(p[1] - cv.c[1], p[0] - cv.c[0])))
       .sort((a, b) => a - b),
   );
-  if (angles.length < 2) return [];
+  if (angles.length < 2) return [subCallOfCurve(cv, carry)];
 
   const clickTheta = norm2pi(
     Math.atan2(click[1] - cv.c[1], click[0] - cv.c[0]),
