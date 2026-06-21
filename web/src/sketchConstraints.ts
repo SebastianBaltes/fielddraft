@@ -26,6 +26,23 @@ import type { Entity, SketchState } from "./solver/types";
 export const CONSTRAINT_DIMENSION_TOOL = "sketch_constraint_dimension";
 
 /**
+ * uf62: the unified Coincident tool's `selectedTool` sentinel. Like the
+ * Dimension tool it has no fixed constraint type — it resolves the
+ * fitting "make these two things coincide" constraint from the kinds of
+ * the two picked entities (see {@link resolveCoincidentConstraint}):
+ *
+ *   point + point            → coincident (glue the two points)
+ *   point + curve            → point-on-object (point lies on the curve)
+ *   line  + line             → collinear (share one supporting line)
+ *   circle/arc + circle/arc  → concentric (share a centre)
+ *
+ * "Curve" here is any line / circle / arc / ellipse / spline; "Bogen" in
+ * the ticket. The Onshape reading of Coincident is exactly this
+ * type-dependent dispatch, so one tool covers every pairing.
+ */
+export const CONSTRAINT_COINCIDENT_TOOL = "sketch_constraint_coincident";
+
+/**
  * Dimensional constraint types, most- to least-specific, so the unified
  * Dimension tool can pick the right one from the current selection. zz1r
  * (moved here from Toolbar so the store can resolve it too).
@@ -150,6 +167,52 @@ function roundDim(n: number): number {
 }
 
 /**
+ * uf62: resolve the concrete constraint type the unified Coincident tool
+ * should apply to exactly two picked entities, dispatched on their kinds.
+ * Returns null when the pair fits no coincidence relation (e.g. a point
+ * with a B-spline is handled — point-on-object — but two ellipses are
+ * not, since PlaneGCS has no concentric for them in our wiring).
+ *
+ * Pure, so the dispatch table is unit-tested directly. The chosen
+ * semantics, Onshape-style:
+ *   point + point            → coincident
+ *   point + line/circle/arc/ellipse/bspline → point_on_object
+ *   line  + line             → collinear
+ *   circle/arc + circle/arc  → concentric
+ */
+export function resolveCoincidentConstraint(
+  state: SketchState,
+  selection: ReadonlyArray<number>,
+): string | null {
+  if (selection.length !== 2) return null;
+  const ka = kindOf(state, selection[0]);
+  const kb = kindOf(state, selection[1]);
+  if (ka === null || kb === null) return null;
+
+  // Point + point → glue them together.
+  if (isPointish(ka) && isPointish(kb)) {
+    return "sketch_constraint_coincident";
+  }
+  // Point + curve → the point lies on the curve. `isOnCurve` covers
+  // circle/arc/ellipse/bspline; lines are added explicitly.
+  if (
+    (isPointish(ka) && (kb === "line" || isOnCurve(kb))) ||
+    (isPointish(kb) && (ka === "line" || isOnCurve(ka)))
+  ) {
+    return "sketch_constraint_point_on_object";
+  }
+  // Line + line → collinear (one shared infinite line).
+  if (ka === "line" && kb === "line") {
+    return "sketch_constraint_collinear";
+  }
+  // Circle/arc + circle/arc → concentric (shared centre).
+  if (isCurvish(ka) && isCurvish(kb)) {
+    return "sketch_constraint_concentric";
+  }
+  return null;
+}
+
+/**
  * Which constraints can apply to the current selection. Order is the
  * palette display order. Empty when the selection fits nothing.
  */
@@ -193,6 +256,14 @@ export function applicableConstraints(
   }
 
   if (n === 2 && lines === 2) {
+    // uf62: two lines can be made collinear (one shared infinite line) —
+    // the Coincident tool's line+line case.
+    out.push({
+      type: "sketch_constraint_collinear",
+      label: "Collinear",
+      glyph: "⋯",
+      title: "Make the two lines lie on one line",
+    });
     out.push({
       type: "sketch_constraint_parallel",
       label: "Parallel",
@@ -338,6 +409,7 @@ export function buildConstraintCall(
 
     case "sketch_constraint_parallel":
     case "sketch_constraint_perpendicular":
+    case "sketch_constraint_collinear":
       if (
         selection.length !== 2 ||
         kinds[0] !== "line" ||

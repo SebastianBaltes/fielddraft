@@ -574,7 +574,8 @@ const SKETCH_CONSTRAINT_BUTTONS: ConstraintButtonMeta[] = [
     testid: "coincident",
     label: "Coincident",
     icon: "coincident",
-    title: "Coincident — pick two points to make them coincident",
+    title:
+      "Coincident — pick two entities: point+point glue, point+curve on-curve, line+line collinear, circle/arc+circle/arc concentric",
   },
   {
     type: "sketch_constraint_concentric",

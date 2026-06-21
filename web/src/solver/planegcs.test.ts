@@ -210,6 +210,46 @@ describe("solveSketch: orientation constraints", () => {
   });
 
   /**
+   * uf62: two lines made collinear must end up on one common infinite
+   * line. Realised in the translator as parallel + a point-on-line, so
+   * after the solve all four endpoints are colinear (zero cross product
+   * against the first line's direction).
+   */
+  it("collinear constraint puts two lines on one supporting line", async () => {
+    const sketch = emptySketch("collinear");
+    // Line 1: (0, 0) -> (10, 0) — horizontal anchor.
+    sketch.entities.push({ kind: "point", id: 1, at: { x: 0, y: 0 } });
+    sketch.entities.push({ kind: "point", id: 2, at: { x: 10, y: 0 } });
+    sketch.entities.push({ kind: "line", id: 3, start: 1, end: 2 });
+    // Line 2: (3, 4) -> (12, 6) — offset and a different slope.
+    sketch.entities.push({ kind: "point", id: 4, at: { x: 3, y: 4 } });
+    sketch.entities.push({ kind: "point", id: 5, at: { x: 12, y: 6 } });
+    sketch.entities.push({ kind: "line", id: 6, start: 4, end: 5 });
+    sketch.next_entity_id = 7;
+    sketch.constraints.push({ kind: "collinear", id: 1, a: 3, b: 6 });
+    sketch.next_constraint_id = 2;
+    const result = await solveSketch(sketch);
+    expect(result.diagnostics.converged).toBe(true);
+    const p = (id: number) => {
+      const e = result.state.entities.find((x) => x.id === id);
+      if (e && e.kind === "point") return e.at;
+      throw new Error(`expected point at ${id}`);
+    };
+    // Direction of line 1 after the solve.
+    const a = p(1);
+    const b = p(2);
+    const dx = b.x - a.x;
+    const dy = b.y - a.y;
+    const len = Math.hypot(dx, dy);
+    // Perpendicular distance of line 2's endpoints from line 1's
+    // infinite support must be ~0 → they all lie on one line.
+    const offset = (q: { x: number; y: number }) =>
+      Math.abs((q.x - a.x) * dy - (q.y - a.y) * dx) / len;
+    expect(offset(p(4))).toBeLessThan(1e-5);
+    expect(offset(p(5))).toBeLessThan(1e-5);
+  });
+
+  /**
    * Perpendicular constraint between two lines whose initial
    * angle isn't 90°. After solving, the angle must be exactly
    * π/2 within tolerance.

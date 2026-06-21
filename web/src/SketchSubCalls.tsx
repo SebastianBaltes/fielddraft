@@ -40,6 +40,7 @@ export const SKETCH_SUB_LABEL: Record<string, string> = {
   sketch_constraint_angle: "Angle",
   sketch_constraint_equal: "Equal",
   sketch_constraint_parallel: "Parallel",
+  sketch_constraint_collinear: "Collinear",
   sketch_constraint_perpendicular: "Perpendicular",
   sketch_constraint_tangent: "Tangent",
   sketch_constraint_midpoint: "Midpoint",

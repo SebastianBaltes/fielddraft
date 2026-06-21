@@ -383,6 +383,7 @@ impl SketchToolRegistry {
         r.register(Box::new(SketchFixConstraintTool));
         r.register(Box::new(SketchPointOnObjectConstraintTool));
         r.register(Box::new(SketchParallelConstraintTool));
+        r.register(Box::new(SketchCollinearConstraintTool));
         r.register(Box::new(SketchPerpendicularConstraintTool));
         r.register(Box::new(SketchTangentConstraintTool));
         r.register(Box::new(SketchMidpointConstraintTool));
@@ -2361,6 +2362,22 @@ constraint_tool!(
 );
 
 #[derive(FeatureSchema)]
+#[schema(type = "sketch_constraint_collinear")]
+pub struct SketchCollinearConstraintDef {
+    pub line_a: u32,
+    pub line_b: u32,
+}
+constraint_tool!(
+    SketchCollinearConstraintDef,
+    SketchCollinearConstraintTool,
+    |state, d| state.add_constraint(|cid| Constraint::Collinear {
+        id: cid,
+        a: EntityId(d.line_a),
+        b: EntityId(d.line_b)
+    })
+);
+
+#[derive(FeatureSchema)]
 #[schema(type = "sketch_constraint_perpendicular")]
 pub struct SketchPerpendicularConstraintDef {
     pub line_a: u32,
@@ -3689,6 +3706,7 @@ mod tests {
                 "sketch_circle".to_string(),
                 "sketch_constraint_angle".to_string(),
                 "sketch_constraint_coincident".to_string(),
+                "sketch_constraint_collinear".to_string(),
                 "sketch_constraint_concentric".to_string(),
                 "sketch_constraint_diameter".to_string(),
                 "sketch_constraint_distance".to_string(),
@@ -3991,6 +4009,46 @@ mod tests {
             Constraint::Concentric {
                 a: EntityId(2),
                 b: EntityId(4),
+                ..
+            }
+        )));
+    }
+
+    #[test]
+    fn sketch_collinear_constraint_tool_wires_through() {
+        // uf62: two lines made collinear via the Coincident tool's
+        // line+line case emit a `Collinear` constraint referencing both
+        // line ids.
+        let tools = SketchToolRegistry::with_builtins();
+        let mut state = SketchState::with_origin();
+        tools
+            .apply_all(
+                &mut state,
+                &[
+                    FeatureCall::new(
+                        "sketch_line",
+                        id(1),
+                        json!({ "start": [0.0, 0.0], "end": [10.0, 0.0] }),
+                    ),
+                    FeatureCall::new(
+                        "sketch_line",
+                        id(2),
+                        json!({ "start": [0.0, 5.0], "end": [10.0, 5.0] }),
+                    ),
+                    FeatureCall::new(
+                        "sketch_constraint_collinear",
+                        id(3),
+                        json!({ "line_a": 3, "line_b": 6 }),
+                    ),
+                ],
+            )
+            .unwrap();
+        assert_eq!(state.constraints.len(), 1);
+        assert!(state.constraints.iter().any(|c| matches!(
+            c,
+            Constraint::Collinear {
+                a: EntityId(3),
+                b: EntityId(6),
                 ..
             }
         )));

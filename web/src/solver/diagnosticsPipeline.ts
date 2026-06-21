@@ -164,6 +164,7 @@ export function entitiesReferencedBy(
   switch (constraint.kind) {
     case "coincident":
     case "parallel":
+    case "collinear":
     case "perpendicular":
     case "concentric":
     case "equal":

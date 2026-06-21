@@ -232,6 +232,14 @@ pub enum Constraint {
         a: EntityId,
         b: EntityId,
     },
+    /// Two lines lie on one common infinite line (Onshape's
+    /// "Coincident" applied to two lines). The PlaneGCS side
+    /// realises it as parallel + a point of one line on the other.
+    Collinear {
+        id: ConstraintId,
+        a: EntityId,
+        b: EntityId,
+    },
     /// A single line is horizontal in sketch coordinates.
     Horizontal { id: ConstraintId, line: EntityId },
     /// A single line is vertical in sketch coordinates.
@@ -342,6 +350,7 @@ impl Constraint {
         match *self {
             Constraint::Coincident { id, .. }
             | Constraint::Parallel { id, .. }
+            | Constraint::Collinear { id, .. }
             | Constraint::Horizontal { id, .. }
             | Constraint::Vertical { id, .. }
             | Constraint::Perpendicular { id, .. }
@@ -363,6 +372,7 @@ impl Constraint {
         match self {
             Constraint::Coincident { .. } => "coincident",
             Constraint::Parallel { .. } => "parallel",
+            Constraint::Collinear { .. } => "collinear",
             Constraint::Horizontal { .. } => "horizontal",
             Constraint::Vertical { .. } => "vertical",
             Constraint::Perpendicular { .. } => "perpendicular",

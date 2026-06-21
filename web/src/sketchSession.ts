@@ -183,6 +183,7 @@ export const CONSTRAINT_ENTITY_PARAMS: Record<string, readonly string[]> = {
   sketch_constraint_fix: ["point"],
   sketch_constraint_point_on_object: ["point", "curve"],
   sketch_constraint_parallel: ["line_a", "line_b"],
+  sketch_constraint_collinear: ["line_a", "line_b"],
   sketch_constraint_perpendicular: ["line_a", "line_b"],
   sketch_constraint_tangent: ["line", "curve"],
   sketch_constraint_midpoint: ["point", "line"],
@@ -764,6 +765,17 @@ export function buildDraftSketchState(
       if (Number.isFinite(a) && Number.isFinite(b)) {
         state.constraints.push({
           kind: "parallel",
+          id: state.next_constraint_id++,
+          a,
+          b,
+        });
+      }
+    } else if (call.type === "sketch_constraint_collinear") {
+      const a = Number(call.params.line_a);
+      const b = Number(call.params.line_b);
+      if (Number.isFinite(a) && Number.isFinite(b)) {
+        state.constraints.push({
+          kind: "collinear",
           id: state.next_constraint_id++,
           a,
           b,

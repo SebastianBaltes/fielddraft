@@ -156,6 +156,8 @@ function constraintDof(constraint: Constraint): number {
       // The point keeps one freedom sliding along the curve, so only
       // one DOF is removed.
       return 1;
+    case "collinear":
+    // Collinear removes 2 DOF: parallel (direction) + offset.
     case "concentric":
     case "midpoint":
     case "symmetric":

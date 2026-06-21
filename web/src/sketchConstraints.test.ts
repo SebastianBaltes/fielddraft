@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   applicableConstraints,
   buildConstraintCall,
+  resolveCoincidentConstraint,
 } from "./sketchConstraints";
 import { buildDraftSketchState } from "./sketchSession";
 import type { SketchState } from "./solver/types";
@@ -27,10 +28,11 @@ describe("applicableConstraints", () => {
     ]);
   });
 
-  it("offers parallel + perpendicular + angle for two lines", () => {
+  it("offers collinear + parallel + perpendicular + angle for two lines", () => {
     const state = twoLinesAndCircle();
     const opts = applicableConstraints(state, [3, 6]).map((o) => o.type);
     expect(opts).toEqual([
+      "sketch_constraint_collinear",
       "sketch_constraint_parallel",
       "sketch_constraint_perpendicular",
       "sketch_constraint_angle",
@@ -318,8 +320,9 @@ describe("applicableConstraints", () => {
     expect(
       applicableConstraints(state, [circle, endLeg]).map((o) => o.type),
     ).toContain("sketch_constraint_tangent");
-    // leg + line → parallel/perpendicular/angle.
+    // leg + line → collinear/parallel/perpendicular/angle.
     expect(applicableConstraints(state, [endLeg, line]).map((o) => o.type)).toEqual([
+      "sketch_constraint_collinear",
       "sketch_constraint_parallel",
       "sketch_constraint_perpendicular",
       "sketch_constraint_angle",
@@ -611,5 +614,81 @@ describe("buildConstraintCall", () => {
     // radius / diameter need a single circle or arc, not a line.
     expect(buildConstraintCall("sketch_constraint_radius", [3], state)).toBeNull();
     expect(buildConstraintCall("sketch_constraint_diameter", [3], state)).toBeNull();
+  });
+
+  it("maps two lines to line_a / line_b for collinear", () => {
+    const state = twoLinesAndCircle();
+    expect(buildConstraintCall("sketch_constraint_collinear", [3, 6], state)).toEqual({
+      type: "sketch_constraint_collinear",
+      params: { line_a: 3, line_b: 6 },
+    });
+    // collinear needs exactly two lines.
+    expect(buildConstraintCall("sketch_constraint_collinear", [3], state)).toBeNull();
+    expect(buildConstraintCall("sketch_constraint_collinear", [3, 8], state)).toBeNull();
+  });
+});
+
+// uf62: the unified Coincident tool dispatches on the kinds of the two
+// picked entities to the fitting "make these coincide" constraint.
+describe("resolveCoincidentConstraint", () => {
+  // line 3 (start 1/end 2), line 6 (start 4/end 5), circle 8 (centre 7).
+  function fixture() {
+    return buildDraftSketchState([
+      { type: "sketch_line", params: { start: [0, 0], end: [10, 0] } }, // line 3
+      { type: "sketch_line", params: { start: [0, 5], end: [10, 5] } }, // line 6
+      { type: "sketch_circle", params: { center: [20, 20], radius: 5 } }, // circle 8
+      { type: "sketch_circle", params: { center: [40, 40], radius: 3 } }, // circle 10
+    ]);
+  }
+
+  it("point + point → coincident (order-independent)", () => {
+    const s = fixture();
+    expect(resolveCoincidentConstraint(s, [1, 4])).toBe(
+      "sketch_constraint_coincident",
+    );
+    // origin counts as a point too.
+    expect(resolveCoincidentConstraint(s, [0, 1])).toBe(
+      "sketch_constraint_coincident",
+    );
+  });
+
+  it("point + line → point-on-object (order-independent)", () => {
+    const s = fixture();
+    expect(resolveCoincidentConstraint(s, [1, 6])).toBe(
+      "sketch_constraint_point_on_object",
+    );
+    expect(resolveCoincidentConstraint(s, [6, 1])).toBe(
+      "sketch_constraint_point_on_object",
+    );
+  });
+
+  it("point + circle → point-on-object", () => {
+    const s = fixture();
+    expect(resolveCoincidentConstraint(s, [1, 8])).toBe(
+      "sketch_constraint_point_on_object",
+    );
+  });
+
+  it("line + line → collinear", () => {
+    const s = fixture();
+    expect(resolveCoincidentConstraint(s, [3, 6])).toBe(
+      "sketch_constraint_collinear",
+    );
+  });
+
+  it("circle + circle → concentric", () => {
+    const s = fixture();
+    expect(resolveCoincidentConstraint(s, [8, 10])).toBe(
+      "sketch_constraint_concentric",
+    );
+  });
+
+  it("returns null for unsupported pairings and bad arity", () => {
+    const s = fixture();
+    // line + circle has no coincidence semantics (that's tangent).
+    expect(resolveCoincidentConstraint(s, [3, 8])).toBeNull();
+    // need exactly two entities.
+    expect(resolveCoincidentConstraint(s, [1])).toBeNull();
+    expect(resolveCoincidentConstraint(s, [1, 4, 6])).toBeNull();
   });
 });

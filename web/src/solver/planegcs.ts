@@ -284,20 +284,21 @@ function requirePoint(
  * coincidence between two circle centres, and `Symmetric` is
  * unsupported in K5a (throws).
  *
- * Returns `null` for `fix`: the constraint has no own PlaneGCS
- * primitive — it's realised through the target point's
- * `fixed: true` flag (see [`translateEntity`]). The caller filters
- * the nulls out of the primitive stream.
+ * Returns an array because some FieldDraft constraints decompose into
+ * several PlaneGCS primitives (e.g. `collinear` → parallel + point-on-line),
+ * and `fix` decomposes into none — it's realised through the target point's
+ * `fixed: true` flag (see [`translateEntity`]). The caller pushes whatever
+ * is returned.
  */
 function translateConstraint(
   constraint: Constraint,
   entityIndex: Map<EntityId, Entity>,
-): SketchPrimitive | null {
+): SketchPrimitive[] {
   const id = constraintOid(constraint.id);
   switch (constraint.kind) {
     case "fix":
       // No primitive: realised via the entity's `fixed` flag.
-      return null;
+      return [];
     case "point_on_object": {
       // Constrain a point onto a curve, dispatched by the curve's
       // kind: a line uses `point_on_line_pl`, a circle
@@ -309,100 +310,149 @@ function translateConstraint(
         );
       }
       if (curve.kind === "line") {
-        return {
-          type: "point_on_line_pl",
-          id,
-          p_id: entityOid(constraint.point),
-          l_id: entityOid(constraint.curve),
-        };
+        return [
+          {
+            type: "point_on_line_pl",
+            id,
+            p_id: entityOid(constraint.point),
+            l_id: entityOid(constraint.curve),
+          },
+        ];
       }
       if (curve.kind === "circle") {
-        return {
-          type: "point_on_circle",
-          id,
-          p_id: entityOid(constraint.point),
-          c_id: entityOid(constraint.curve),
-        };
+        return [
+          {
+            type: "point_on_circle",
+            id,
+            p_id: entityOid(constraint.point),
+            c_id: entityOid(constraint.curve),
+          },
+        ];
       }
       if (curve.kind === "arc") {
-        return {
-          type: "point_on_arc",
-          id,
-          p_id: entityOid(constraint.point),
-          a_id: entityOid(constraint.curve),
-        };
+        return [
+          {
+            type: "point_on_arc",
+            id,
+            p_id: entityOid(constraint.point),
+            a_id: entityOid(constraint.curve),
+          },
+        ];
       }
       if (curve.kind === "ellipse") {
-        return {
-          type: "point_on_ellipse",
-          id,
-          p_id: entityOid(constraint.point),
-          e_id: entityOid(constraint.curve),
-        };
+        return [
+          {
+            type: "point_on_ellipse",
+            id,
+            p_id: entityOid(constraint.point),
+            e_id: entityOid(constraint.curve),
+          },
+        ];
       }
       if (curve.kind === "bspline") {
         // No declarative primitive — point_on_bspline is added on the
         // raw GcsSystem after the B-spline geometry is built (see
         // `injectBSplines`). Skip it in the declarative stream.
-        return null;
+        return [];
       }
       throw new Error(
         `solver: point_on_object curve must be a line, circle, arc, ellipse, or bspline, got ${curve.kind}`,
       );
     }
     case "coincident":
-      return {
-        type: "p2p_coincident",
-        id,
-        p1_id: entityOid(constraint.a),
-        p2_id: entityOid(constraint.b),
-      };
+      return [
+        {
+          type: "p2p_coincident",
+          id,
+          p1_id: entityOid(constraint.a),
+          p2_id: entityOid(constraint.b),
+        },
+      ];
+    case "collinear": {
+      // Two lines lie on one infinite line. PlaneGCS has no single
+      // collinear primitive, so we decompose: a `parallel` locks the
+      // directions, and a `point_on_line_pl` (line a's start onto line b)
+      // locks the offset — together exactly the 2 DOF a collinear
+      // relation removes. The second primitive reuses the constraint id
+      // with a tag suffix so both map back to one FieldDraft constraint.
+      const a = entityIndex.get(constraint.a);
+      const b = entityIndex.get(constraint.b);
+      if (!a || a.kind !== "line" || !b || b.kind !== "line") {
+        throw new Error("solver: collinear requires two lines");
+      }
+      return [
+        {
+          type: "parallel",
+          id,
+          l1_id: entityOid(constraint.a),
+          l2_id: entityOid(constraint.b),
+        },
+        {
+          type: "point_on_line_pl",
+          id: `${id}.on`,
+          p_id: entityOid(a.start),
+          l_id: entityOid(constraint.b),
+        },
+      ];
+    }
     case "parallel":
-      return {
-        type: "parallel",
-        id,
-        l1_id: entityOid(constraint.a),
-        l2_id: entityOid(constraint.b),
-      };
+      return [
+        {
+          type: "parallel",
+          id,
+          l1_id: entityOid(constraint.a),
+          l2_id: entityOid(constraint.b),
+        },
+      ];
     case "horizontal":
-      return {
-        type: "horizontal_l",
-        id,
-        l_id: entityOid(constraint.line),
-      };
+      return [
+        {
+          type: "horizontal_l",
+          id,
+          l_id: entityOid(constraint.line),
+        },
+      ];
     case "vertical":
-      return {
-        type: "vertical_l",
-        id,
-        l_id: entityOid(constraint.line),
-      };
+      return [
+        {
+          type: "vertical_l",
+          id,
+          l_id: entityOid(constraint.line),
+        },
+      ];
     case "perpendicular":
-      return {
-        type: "perpendicular_ll",
-        id,
-        l1_id: entityOid(constraint.a),
-        l2_id: entityOid(constraint.b),
-      };
+      return [
+        {
+          type: "perpendicular_ll",
+          id,
+          l1_id: entityOid(constraint.a),
+          l2_id: entityOid(constraint.b),
+        },
+      ];
     case "distance":
-      return {
-        type: "p2p_distance",
-        id,
-        p1_id: entityOid(constraint.a),
-        p2_id: entityOid(constraint.b),
-        distance: constraint.value_mm,
-        driving: !(constraint.driven ?? false),
-      };
+      return [
+        {
+          type: "p2p_distance",
+          id,
+          p1_id: entityOid(constraint.a),
+          p2_id: entityOid(constraint.b),
+          distance: constraint.value_mm,
+          driving: !(constraint.driven ?? false),
+        },
+      ];
     case "angle": {
       // PlaneGCS `l2l_angle_ll` expects the angle in radians.
       const radians = (constraint.value_deg * Math.PI) / 180;
-      return {
-        type: "l2l_angle_ll",
-        id,
-        l1_id: entityOid(constraint.a),
-        l2_id: entityOid(constraint.b),
-        angle: radians,
-        driving: !(constraint.driven ?? false),
-      };
+      return [
+        {
+          type: "l2l_angle_ll",
+          id,
+          l1_id: entityOid(constraint.a),
+          l2_id: entityOid(constraint.b),
+          angle: radians,
+          driving: !(constraint.driven ?? false),
+        },
+      ];
     }
     case "tangent": {
       // Dispatch by curve kind: line-to-circle → tangent_lc,
@@ -414,28 +464,34 @@ function translateConstraint(
         );
       }
       if (curve.kind === "circle") {
-        return {
-          type: "tangent_lc",
-          id,
-          l_id: entityOid(constraint.line),
-          c_id: entityOid(constraint.curve),
-        };
+        return [
+          {
+            type: "tangent_lc",
+            id,
+            l_id: entityOid(constraint.line),
+            c_id: entityOid(constraint.curve),
+          },
+        ];
       }
       if (curve.kind === "arc") {
-        return {
-          type: "tangent_la",
-          id,
-          l_id: entityOid(constraint.line),
-          a_id: entityOid(constraint.curve),
-        };
+        return [
+          {
+            type: "tangent_la",
+            id,
+            l_id: entityOid(constraint.line),
+            a_id: entityOid(constraint.curve),
+          },
+        ];
       }
       if (curve.kind === "ellipse") {
-        return {
-          type: "tangent_le",
-          id,
-          l_id: entityOid(constraint.line),
-          e_id: entityOid(constraint.curve),
-        };
+        return [
+          {
+            type: "tangent_le",
+            id,
+            l_id: entityOid(constraint.line),
+            e_id: entityOid(constraint.curve),
+          },
+        ];
       }
       throw new Error(
         `solver: tangent curve must be a circle, arc, or ellipse, got ${curve.kind}`,
@@ -458,12 +514,14 @@ function translateConstraint(
           "solver: concentric requires two circles or arcs",
         );
       }
-      return {
-        type: "p2p_coincident",
-        id,
-        p1_id: entityOid(a.center),
-        p2_id: entityOid(b.center),
-      };
+      return [
+        {
+          type: "p2p_coincident",
+          id,
+          p1_id: entityOid(a.center),
+          p2_id: entityOid(b.center),
+        },
+      ];
     }
     case "equal": {
       // For two circles / arcs, PlaneGCS has `equal_radius_cc`
@@ -480,31 +538,37 @@ function translateConstraint(
         throw new Error("solver: equal references unknown entities");
       }
       if (a.kind === "circle" && b.kind === "circle") {
-        return {
-          type: "equal_radius_cc",
-          id,
-          c1_id: entityOid(constraint.a),
-          c2_id: entityOid(constraint.b),
-        };
+        return [
+          {
+            type: "equal_radius_cc",
+            id,
+            c1_id: entityOid(constraint.a),
+            c2_id: entityOid(constraint.b),
+          },
+        ];
       }
       if (a.kind === "arc" && b.kind === "arc") {
-        return {
-          type: "equal_radius_aa",
-          id,
-          a1_id: entityOid(constraint.a),
-          a2_id: entityOid(constraint.b),
-        };
+        return [
+          {
+            type: "equal_radius_aa",
+            id,
+            a1_id: entityOid(constraint.a),
+            a2_id: entityOid(constraint.b),
+          },
+        ];
       }
       if (
         (a.kind === "circle" && b.kind === "arc") ||
         (a.kind === "arc" && b.kind === "circle")
       ) {
-        return {
-          type: "equal_radius_ca",
-          id,
-          c1_id: entityOid(a.kind === "circle" ? constraint.a : constraint.b),
-          a2_id: entityOid(a.kind === "arc" ? constraint.a : constraint.b),
-        };
+        return [
+          {
+            type: "equal_radius_ca",
+            id,
+            c1_id: entityOid(a.kind === "circle" ? constraint.a : constraint.b),
+            a2_id: entityOid(a.kind === "arc" ? constraint.a : constraint.b),
+          },
+        ];
       }
       throw new Error(
         `solver: equal between ${a.kind} and ${b.kind} is not yet supported`,
@@ -521,13 +585,15 @@ function translateConstraint(
       if (!line || line.kind !== "line") {
         throw new Error("solver: midpoint requires a line");
       }
-      return {
-        type: "p2p_symmetric_ppp",
-        id,
-        p1_id: entityOid(line.start),
-        p2_id: entityOid(line.end),
-        p_id: entityOid(constraint.point),
-      };
+      return [
+        {
+          type: "p2p_symmetric_ppp",
+          id,
+          p1_id: entityOid(line.start),
+          p2_id: entityOid(line.end),
+          p_id: entityOid(constraint.point),
+        },
+      ];
     }
     case "symmetric": {
       // `Symmetric { a, b, axis }`: points a and b mirror across the
@@ -536,13 +602,15 @@ function translateConstraint(
       if (!axis || axis.kind !== "line") {
         throw new Error("solver: symmetric axis must be a line");
       }
-      return {
-        type: "p2p_symmetric_ppl",
-        id,
-        p1_id: entityOid(constraint.a),
-        p2_id: entityOid(constraint.b),
-        l_id: entityOid(constraint.axis),
-      };
+      return [
+        {
+          type: "p2p_symmetric_ppl",
+          id,
+          p1_id: entityOid(constraint.a),
+          p2_id: entityOid(constraint.b),
+          l_id: entityOid(constraint.axis),
+        },
+      ];
     }
     case "radius": {
       // Dispatch by entity kind: circle → circle_radius, arc →
@@ -552,21 +620,23 @@ function translateConstraint(
         throw new Error("solver: radius requires a circle or arc");
       }
       const driving = !(constraint.driven ?? false);
-      return e.kind === "circle"
-        ? {
-            type: "circle_radius",
-            id,
-            c_id: entityOid(constraint.entity),
-            radius: constraint.value_mm,
-            driving,
-          }
-        : {
-            type: "arc_radius",
-            id,
-            a_id: entityOid(constraint.entity),
-            radius: constraint.value_mm,
-            driving,
-          };
+      return [
+        e.kind === "circle"
+          ? {
+              type: "circle_radius",
+              id,
+              c_id: entityOid(constraint.entity),
+              radius: constraint.value_mm,
+              driving,
+            }
+          : {
+              type: "arc_radius",
+              id,
+              a_id: entityOid(constraint.entity),
+              radius: constraint.value_mm,
+              driving,
+            },
+      ];
     }
     case "diameter": {
       // Dispatch by entity kind: circle → circle_diameter, arc →
@@ -576,21 +646,23 @@ function translateConstraint(
         throw new Error("solver: diameter requires a circle or arc");
       }
       const driving = !(constraint.driven ?? false);
-      return e.kind === "circle"
-        ? {
-            type: "circle_diameter",
-            id,
-            c_id: entityOid(constraint.entity),
-            diameter: constraint.value_mm,
-            driving,
-          }
-        : {
-            type: "arc_diameter",
-            a_id: entityOid(constraint.entity),
-            id,
-            diameter: constraint.value_mm,
-            driving,
-          };
+      return [
+        e.kind === "circle"
+          ? {
+              type: "circle_diameter",
+              id,
+              c_id: entityOid(constraint.entity),
+              diameter: constraint.value_mm,
+              driving,
+            }
+          : {
+              type: "arc_diameter",
+              a_id: entityOid(constraint.entity),
+              id,
+              diameter: constraint.value_mm,
+              driving,
+            },
+      ];
     }
   }
 }
@@ -792,8 +864,9 @@ async function solveSketchInner(input: SketchState): Promise<SolveResult> {
   }
 
   for (const constraint of input.constraints) {
-    const primitive = translateConstraint(constraint, entityIndex);
-    if (primitive !== null) wrapper.push_primitive(primitive);
+    for (const primitive of translateConstraint(constraint, entityIndex)) {
+      wrapper.push_primitive(primitive);
+    }
   }
 
   // B-splines and their point-on-spline constraints aren't part of the

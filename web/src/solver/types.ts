@@ -82,6 +82,10 @@ export type Entity =
  */
 export type Constraint =
   | { kind: "coincident"; id: ConstraintId; a: EntityId; b: EntityId }
+  // Two lines share one infinite supporting line (Onshape's "Coincident"
+  // applied to two lines). Realised in the solver as parallel + a point of
+  // one line lying on the other — see `translateConstraint`.
+  | { kind: "collinear"; id: ConstraintId; a: EntityId; b: EntityId }
   | { kind: "parallel"; id: ConstraintId; a: EntityId; b: EntityId }
   | { kind: "horizontal"; id: ConstraintId; line: EntityId }
   | { kind: "vertical"; id: ConstraintId; line: EntityId }

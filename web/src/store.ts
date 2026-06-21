@@ -58,7 +58,9 @@ import {
   buildConstraintCall,
   applicableConstraints,
   isConstraintTool,
+  resolveCoincidentConstraint,
   CONSTRAINT_DIMENSION_TOOL,
+  CONSTRAINT_COINCIDENT_TOOL,
   DIMENSION_TYPES_BY_SPECIFICITY,
 } from "./sketchConstraints";
 import { logUserAction } from "./userActionLog";
@@ -4316,14 +4318,20 @@ export class KernelStore {
     if (session.selection.length === 0) return;
     const state = buildDraftSketchState(session.subCalls);
     const options = applicableConstraints(state, session.selection);
+    // uf62: the Coincident tool, like Dimension, is a type-dependent
+    // dispatcher — it resolves the fitting coincidence constraint
+    // (coincident / point-on-object / collinear / concentric) from the
+    // two picked entities rather than emitting a fixed type.
     const resolved =
       tool === CONSTRAINT_DIMENSION_TOOL
         ? (DIMENSION_TYPES_BY_SPECIFICITY.find((t) =>
             options.some((o) => o.type === t),
           ) ?? null)
-        : options.some((o) => o.type === tool)
-          ? tool
-          : null;
+        : tool === CONSTRAINT_COINCIDENT_TOOL
+          ? resolveCoincidentConstraint(state, session.selection)
+          : options.some((o) => o.type === tool)
+            ? tool
+            : null;
     if (!resolved) return;
     this.applySketchConstraint(resolved);
   }
