@@ -90,6 +90,7 @@ import {
   mapPickToQuery,
   filterAllows,
   filterAllowsSketchLine,
+  filterAllowsSketchRegion,
   elementQueryString,
   resolveElementClick,
 } from "./elementQuery";
@@ -303,6 +304,10 @@ function tryQueryPick(
   datumAtRay?: () => string | null,
   onReject?: (msg: string) => void,
   sketchLineAtRay?: () => { sketchId: number; lineId: number } | null,
+  // Ticket dhjn: resolve a click on a committed sketch's filled region to the
+  // `qRegion(...)` query string for THAT region (or null on a miss). Gated on
+  // the picker's `SKETCHREGION` filter — the Revolve/Extrude profile field.
+  sketchRegionAtRay?: () => string | null,
 ): boolean {
   const picker = getActiveQueryPicker();
   if (!picker) return false;
@@ -343,6 +348,17 @@ function tryQueryPick(
     const hit = sketchLineAtRay();
     if (hit)
       return picker.onPick(`qSketchLine(${hit.sketchId}, ${hit.lineId})`);
+  }
+
+  // Sketch-region profile pick (`qRegion`): the Revolve/Extrude profiles field
+  // (`SKETCHREGION` filter) accepts a single closed region of a committed
+  // sketch. Resolve the clicked region to its `qRegion(...)` query — a hit here
+  // takes the picked region; a miss falls through (so a click on empty space or
+  // a B-Rep body can still feed the field its whole-sketch fallback). Runs after
+  // B-Rep hover so a hovered face still wins where relevant (ticket dhjn).
+  if (sketchRegionAtRay && filterAllowsSketchRegion(picker.entityFilter)) {
+    const query = sketchRegionAtRay();
+    if (query) return picker.onPick(query);
   }
 
   // Click-time face resolution (tickets yx6a/bxoo): the hover overlay
@@ -518,52 +534,21 @@ function handleSelectionClick(
 function WebGLViewport({
   controlsPreset,
   brepEdgeMode,
+  ndc,
 }: {
   controlsPreset: ControlsPresetId;
   brepEdgeMode: BRepEdgeMode;
+  // Live cursor NDC + active flag, driven by the parent Viewport's host-pointer
+  // handlers (now enabled in WebGL mode too — ticket 814w). Feeds the hover
+  // overlays below so B-Rep edge/face/vertex hover publishes to brepPickBridge,
+  // which is what makes Measure / element selection / body selection work on
+  // this backend exactly like on WebGPU.
+  ndc: { x: number; y: number; active: boolean };
 }) {
   const wrapRef = useRef<HTMLDivElement>(null);
-  const { store, state } = useKernelStore();
+  const { state } = useKernelStore();
+  const suppressBrepOverlays = state?.gizmoDragSuppressed ?? false;
 
-  // Ticket sqif: the WebGL fallback viewport had NO click handler at all, so a
-  // scene click never reached `tryQueryPick` — an armed query picker (e.g. the
-  // sketch "Sketch plane" field) could never be satisfied by clicking a datum
-  // plane in the scene (only the outliner row worked). Route armed query picks
-  // through the same `tryQueryPick` datum path the WebGPU viewport uses; the
-  // ray comes from the pick camera this viewport now publishes (see the rAF
-  // loop). Non-picker clicks are left alone (WebGL selection is out of scope).
-  const handleQueryPickClick = (
-    event: React.MouseEvent<HTMLDivElement>,
-  ): void => {
-    if (!store || !getActiveQueryPicker()) return;
-    const ray = rayAtMouse(event, wrapRef.current);
-    const datumAtRay = (): string | null => {
-      if (!ray) return null;
-      return pickDatumAtRay(
-        ray.origin,
-        ray.direction,
-        state?.hiddenDatums ?? new Set<string>(),
-      );
-    };
-    // Ticket 6vdf: the WebGL pick path resolved ONLY datums, so the Revolve
-    // axis field couldn't pick a sketch line in this backend (you'd focus the
-    // field, click the axis line, and nothing happened). Resolve sketch lines
-    // by ray too, exactly like the WebGPU viewport — zoom-aware tolerance via
-    // the published pick camera + viewport height (fs23).
-    const sketchLineAtRay = (): { sketchId: number; lineId: number } | null => {
-      if (!ray) return null;
-      const camera = getPublishedPickCamera();
-      const h = wrapRef.current?.getBoundingClientRect().height ?? 0;
-      return pickSketchLineAtRay(ray, camera ?? undefined, h);
-    };
-    tryQueryPick(
-      null,
-      store,
-      datumAtRay,
-      (msg) => store.showTransientError(msg),
-      sketchLineAtRay,
-    );
-  };
   // The kernel's Dual-Contouring mesher produces a boolean-correct mesh of every
   // body. When those are available we render them (booleans visible); until the
   // async mesh arrives we fall back to the per-leaf parametric hulls so the view
@@ -573,6 +558,9 @@ function WebGLViewport({
     gl: THREE.WebGLRenderer;
     scene: THREE.Scene;
     camera: THREE.Camera;
+    // R3F's per-root loop driver. Calling it runs every `useFrame` subscriber
+    // in THIS root (the B-Rep hover overlays — ticket 814w) and then renders.
+    advance: (timestamp: number, runGlobalEffects?: boolean) => void;
   } | null>(null);
 
   // (The react-use-measure resize nudge lives in the parent Viewport, keyed on
@@ -580,12 +568,14 @@ function WebGLViewport({
 
   // Drive rendering ourselves. R3F's shared global loop doesn't tick this
   // standalone second root (the WebGPU canvas owns the scheduler), so the Canvas
-  // runs `frameloop="never"` and we render the scene directly each animation
-  // frame. Bypasses R3F's loop entirely — meshes come from React state/useMemo
-  // and OrbitControls updates the camera on input, so a per-frame draw suffices.
+  // runs `frameloop="never"` and we advance THIS root's loop each animation
+  // frame. Ticket 814w: we call R3F's per-root `advance()` (not a bare
+  // `gl.render`) so every `useFrame` subscriber in this root runs first — that
+  // is what ticks the B-Rep hover overlays (edge/face/vertex hover → pick
+  // bridge), making Measure / element / body selection work on this backend.
   useEffect(() => {
     let raf = 0;
-    const tick = () => {
+    const tick = (timestamp: number) => {
       const st = stateRef.current;
       if (st) {
         // Adapt the clip planes to the scene each frame (ticket lbzq) — the
@@ -616,7 +606,11 @@ function WebGLViewport({
           devicePixelRatio: st.gl.getPixelRatio(),
         });
         requestOverlayRedraw();
-        st.gl.render(st.scene, st.camera);
+        // Run this root's useFrame subscribers (hover overlays) + render.
+        // `advance` expects seconds; rAF gives milliseconds. `runGlobalEffects:
+        // false` — only THIS root's local frame loop; the WebGPU root (when it
+        // exists) owns the global effects, so we must not double-fire them.
+        st.advance(timestamp / 1000, false);
       }
       raf = requestAnimationFrame(tick);
     };
@@ -631,11 +625,12 @@ function WebGLViewport({
   }, []);
 
   return (
-    <div
-      ref={wrapRef}
-      style={{ position: "absolute", inset: 0 }}
-      onClick={handleQueryPickClick}
-    >
+    // No own pointer handlers: the parent Viewport's host-pointer handlers
+    // (onClick/onPointerMove/… on the .fd-viewport ancestor) now drive
+    // selection, hover, measure and query picks in WebGL mode too — the same
+    // renderer-independent `kernel.pick` / pick-camera ray path the WebGPU
+    // viewport uses (ticket 814w). Events bubble up to that ancestor.
+    <div ref={wrapRef} style={{ position: "absolute", inset: 0 }}>
       <Canvas
         frameloop="never"
         camera={{ position: [200, 200, 200], fov: 45, near: 1, far: 4000 }}
@@ -644,6 +639,7 @@ function WebGLViewport({
             gl: st.gl as unknown as THREE.WebGLRenderer,
             scene: st.scene,
             camera: st.camera,
+            advance: st.advance,
           };
         }}
       >
@@ -680,15 +676,22 @@ function WebGLViewport({
         <SketchSession3D />
         <SketchHud3D />
         <SketchLabels3D />
-        {/* Ticket jnej: B-Rep edges must render on the WebGL fallback too. It
-            was only mounted in the WebGPU Scene; BRepEdgeOverlay now draws
-            classic LineSegments on this backend (the fat-line path is
-            WebGPU-only). The WebGL viewport has no host-pointer hover, so the
-            ndc is inactive — the base wireframe still draws. */}
-        <BRepEdgeOverlay
-          ndc={{ x: 0, y: 0, active: false }}
-          mode={brepEdgeMode}
-        />
+        {/* Ticket jnej: B-Rep edges render on the WebGL fallback (classic
+            LineSegments; the fat-line path is WebGPU-only). Ticket 814w: the
+            live `ndc` is now fed in so the edge-hover useFrame publishes the
+            hovered edge to brepPickBridge — which is what Measure reads. The
+            selection/hover overlays below complete the picture (face/vertex
+            hover + persistent selection), all driven by `kernel.pick` /
+            screen-space projection, so they work renderer-independently.
+            Hidden during a suppressed gizmo drag, like the WebGPU path. */}
+        {!suppressBrepOverlays && (
+          <>
+            <BRepEdgeOverlay ndc={ndc} mode={brepEdgeMode} />
+            <BRepSelectionOverlay ndc={ndc} />
+            <BRepSelectedOverlay />
+            <BodyHighlightOverlay />
+          </>
+        )}
         <gridHelper args={[BUILD_VOLUME_SIZE, 30, "#b8b8ae", "#d6d6ce"]} />
         {/* Ticket owia: use the SAME preset-aware controls as the WebGPU path
             (CameraRig applies the active controlsPreset's mouseButtons). A bare
@@ -1066,6 +1069,26 @@ export function Viewport({
       const h = hostRef.current?.getBoundingClientRect().height ?? 0;
       return pickSketchLineAtRay(ray, camera ?? undefined, h);
     };
+    // Ticket dhjn: resolve a click on a committed sketch's filled region to the
+    // `qRegion(...)` query for that ONE region. The kernel runs its own region
+    // detection (same flood-fill order as `listSketchRegions`) on the picked
+    // sketch-space point, so the index it returns addresses the same region.
+    const sketchRegionAtClick = (): string | null => {
+      const ray = rayAtMouse(event, hostRef.current);
+      if (!ray) return null;
+      const hit = pickSketchAtRay(ray);
+      if (!hit) return null;
+      try {
+        const q = store.kernel.regionQueryAtPoint(
+          hit.sketchId,
+          hit.uv[0],
+          hit.uv[1],
+        );
+        return q && q.length > 0 ? q : null;
+      } catch {
+        return null;
+      }
+    };
     if (
       tryQueryPick(
         click,
@@ -1073,6 +1096,7 @@ export function Viewport({
         datumAtClick,
         (msg) => store.showTransientError(msg),
         sketchLineAtClick,
+        sketchRegionAtClick,
       )
     )
       return;
@@ -1273,7 +1297,13 @@ export function Viewport({
   };
 
   const isWebGL = renderMode === "webgl";
-  const noHostPointer = webgpuError || isWebGL;
+  // Ticket 814w: the WebGL render path now uses the SAME host-pointer handlers
+  // as the WebGPU path. They are renderer-independent — every pick rays through
+  // `getPublishedPickCamera()` (which WebGLViewport publishes) into
+  // `kernel.pick`, and hover/selection flow through the shared brepPickBridge /
+  // store. Only a hard WebGPU init error still disables the host pointers
+  // (nothing to interact with then).
+  const noHostPointer = webgpuError !== null;
 
   // Nudge R3F's react-use-measure. The <Canvas> (WebGPU OR WebGL) doesn't
   // render until its ResizeObserver reports a non-zero container size, and that
@@ -1335,6 +1365,7 @@ export function Viewport({
         <WebGLViewport
           controlsPreset={controlsPreset}
           brepEdgeMode={brepEdgeMode}
+          ndc={ndc}
         />
       )}
       {!isWebGL && (
