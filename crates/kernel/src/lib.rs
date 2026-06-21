@@ -2350,6 +2350,7 @@ impl Kernel {
         name: &str,
         value: f32,
         kind: &str,
+        formula: Option<String>,
     ) -> Result<(), JsError> {
         let trimmed = name.trim();
         if trimmed.is_empty() {
@@ -2373,10 +2374,13 @@ impl Kernel {
                 .map(|v| v.kind)
                 .unwrap_or_default(),
         };
+        // An empty formula string means "plain literal" (no source text to
+        // remember) — collapse it to None so the wire form stays clean.
+        let formula = formula.filter(|s| !s.trim().is_empty());
         self.snapshot();
         self.document.variables.insert(
             trimmed.to_string(),
-            fielddraft_protocol::Variable::new(value, kind),
+            fielddraft_protocol::Variable::with_formula(value, kind, formula),
         );
         if let Err(err) = self.bootstrap_features_from_calls() {
             self.undo();
@@ -2428,7 +2432,7 @@ impl Kernel {
         if old == new_name {
             return Ok(());
         }
-        let Some(&var) = self.document.variables.get(old) else {
+        let Some(var) = self.document.variables.get(old).cloned() else {
             return Err(JsError::new(&format!("no variable named `{old}`")));
         };
         if self.document.variables.contains_key(new_name) {
@@ -2478,6 +2482,8 @@ impl Kernel {
             name: &'a str,
             value: f32,
             kind: fielddraft_protocol::VarKind,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            formula: Option<&'a str>,
         }
         let out: Vec<Entry> = self
             .document
@@ -2487,6 +2493,7 @@ impl Kernel {
                 name,
                 value: var.value,
                 kind: var.kind,
+                formula: var.formula.as_deref(),
             })
             .collect();
         serde_json::to_string(&out).map_err(|e| JsError::new(&e.to_string()))
@@ -4152,8 +4159,8 @@ mod tests {
         let mut k = Kernel::new();
         assert_eq!(k.list_variables().unwrap(), "[]");
 
-        k.set_variable("width", 50.0, "length").unwrap();
-        k.set_variable("depth", 30.0, "number").unwrap();
+        k.set_variable("width", 50.0, "length", None).unwrap();
+        k.set_variable("depth", 30.0, "number", None).unwrap();
         // Inserted in reverse alphabetical order, but the
         // BTreeMap normalises to name-sorted on listing.
         let json = k.list_variables().unwrap();
@@ -4181,7 +4188,7 @@ mod tests {
     #[test]
     fn set_variable_trims_whitespace_and_undo_rolls_back() {
         let mut k = Kernel::new();
-        k.set_variable("  width  ", 42.0, "number").unwrap();
+        k.set_variable("  width  ", 42.0, "number", None).unwrap();
         assert_eq!(
             k.document.variables.get("width").map(|v| v.value),
             Some(42.0)
@@ -4198,14 +4205,17 @@ mod tests {
         // paths, like the other variable tests. The guard clauses (empty /
         // collision / unknown) are covered by the web-side store tests.
         let mut k = Kernel::new();
-        k.set_variable("width", 50.0, "length").unwrap();
-        k.set_variable("depth", 30.0, "number").unwrap();
+        k.set_variable("width", 50.0, "length", None).unwrap();
+        k.set_variable("depth", 30.0, "number", None).unwrap();
 
         // Rename keeps the value AND the kind; the old name is gone.
         k.rename_variable("width", "Seitenlänge").unwrap();
-        let renamed = k.document.variables.get("Seitenlänge").copied();
-        assert_eq!(renamed.map(|v| v.value), Some(50.0));
-        assert_eq!(renamed.map(|v| v.kind), Some(fielddraft_protocol::VarKind::Length));
+        let renamed = k.document.variables.get("Seitenlänge").cloned();
+        assert_eq!(renamed.as_ref().map(|v| v.value), Some(50.0));
+        assert_eq!(
+            renamed.as_ref().map(|v| v.kind),
+            Some(fielddraft_protocol::VarKind::Length)
+        );
         assert!(!k.document.variables.contains_key("width"));
 
         // A no-op rename (same name) succeeds without changing anything.

@@ -39,6 +39,10 @@ export interface VariableEntry {
   name: string;
   value: number;
   kind: VarKind;
+  /** The raw source text the value was resolved from (e.g. `"10 cm"` or
+   *  `"sin(Breite) * 2"`), or undefined for a plain literal whose display
+   *  equals `value`. Drives what the variables panel shows in its input. */
+  formula?: string;
 }
 
 export interface PickHit {
@@ -1348,8 +1352,13 @@ export class Kernel {
   /** K8.10 / 8ar9: upsert a document-level variable. `kind` controls how
    *  the value is presented (number/length/angle); pass "" to keep an
    *  existing variable's kind (or default to number on insert). */
-  setVariable(name: string, value: number, kind: VarKind | "" = ""): void {
-    this.inner.setVariable(name, value, kind);
+  setVariable(
+    name: string,
+    value: number,
+    kind: VarKind | "" = "",
+    formula?: string,
+  ): void {
+    this.inner.setVariable(name, value, kind, formula);
   }
 
   /** K8.10: remove a variable. Returns true when something

@@ -854,17 +854,43 @@ pub enum VarKind {
     Angle,
 }
 
-/// A document-level variable: a scalar value plus its [`VarKind`].
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+/// A document-level variable: a resolved scalar value, its [`VarKind`], and
+/// the optional source formula it was resolved from.
+///
+/// `value` is always the *resolved* number in the variable's display unit
+/// (mm for lengths, degrees for angles, raw for numbers) — it's what feature
+/// `=name` formulas and the kernel read. `formula`, when present, is the raw
+/// user text the value was computed from (e.g. `"sin(Breite) * 2"` or
+/// `"10 cm"`); it persists so the UI can show what the user typed and so a
+/// later edit to a referenced variable can be re-resolved web-side. A `None`
+/// formula means the variable is a plain literal whose display equals `value`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Variable {
     pub value: f32,
     #[serde(default)]
     pub kind: VarKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub formula: Option<String>,
 }
 
 impl Variable {
-    pub const fn new(value: f32, kind: VarKind) -> Self {
-        Self { value, kind }
+    pub fn new(value: f32, kind: VarKind) -> Self {
+        Self {
+            value,
+            kind,
+            formula: None,
+        }
+    }
+
+    /// A variable carrying a resolved value and the raw formula text it came
+    /// from. Used when the web layer resolves a formula variable and pushes
+    /// both the number and its source text down to the kernel.
+    pub fn with_formula(value: f32, kind: VarKind, formula: Option<String>) -> Self {
+        Self {
+            value,
+            kind,
+            formula,
+        }
     }
 }
 

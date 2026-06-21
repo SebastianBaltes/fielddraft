@@ -99,6 +99,8 @@ enum Token {
     Minus,
     Star,
     Slash,
+    Caret,
+    Comma,
     LParen,
     RParen,
 }
@@ -138,6 +140,14 @@ impl<'a> Lexer<'a> {
                 }
                 b'/' => {
                     out.push(Token::Slash);
+                    self.pos += 1;
+                }
+                b'^' => {
+                    out.push(Token::Caret);
+                    self.pos += 1;
+                }
+                b',' => {
+                    out.push(Token::Comma);
                     self.pos += 1;
                 }
                 b'(' => {
@@ -230,6 +240,21 @@ enum Node {
     Sub(Box<Node>, Box<Node>),
     Mul(Box<Node>, Box<Node>),
     Div(Box<Node>, Box<Node>),
+    Pow(Box<Node>, Box<Node>),
+    /// A function call (`sin(x)`, `max(a, b)`). The name is lower-cased at
+    /// parse time so `Sin`/`SIN`/`sin` all resolve to the same builtin.
+    Call(String, Vec<Node>),
+}
+
+/// Built-in math constants resolved as bare identifiers. Looked up only when
+/// a name isn't a document variable, so a user variable can still shadow them.
+fn builtin_const(name: &str) -> Option<f32> {
+    match name {
+        "pi" | "PI" | "Pi" => Some(std::f32::consts::PI),
+        "tau" | "TAU" | "Tau" => Some(std::f32::consts::TAU),
+        "e" | "E" => Some(std::f32::consts::E),
+        _ => None,
+    }
 }
 
 impl Node {
@@ -239,6 +264,7 @@ impl Node {
             Node::Var(name) => vars
                 .get(name)
                 .copied()
+                .or_else(|| builtin_const(name))
                 .ok_or_else(|| FormulaError::UnknownIdent(name.clone())),
             Node::Neg(inner) => Ok(-inner.eval(vars)?),
             Node::Add(a, b) => Ok(a.eval(vars)? + b.eval(vars)?),
@@ -252,7 +278,64 @@ impl Node {
                     Ok(a.eval(vars)? / denom)
                 }
             }
+            Node::Pow(a, b) => Ok(a.eval(vars)?.powf(b.eval(vars)?)),
+            Node::Call(name, args) => {
+                let argv: Vec<f32> =
+                    args.iter().map(|a| a.eval(vars)).collect::<Result<_, _>>()?;
+                eval_builtin(name, &argv)
+            }
         }
+    }
+}
+
+/// Trig builtins take/return *radians* — but document Angle variables live in
+/// degrees, so `deg2rad`/`rad2deg` are exposed for explicit conversion. The
+/// common ergonomic case `sin(90 deg)` works because a `deg`-tagged literal is
+/// converted to degrees-as-number; callers wanting trig on an angle should
+/// wrap in `deg2rad`. Unknown names / wrong arity surface as a parse error so
+/// the kernel can show a regen failure rather than NaN-poisoning geometry.
+fn eval_builtin(name: &str, args: &[f32]) -> Result<f32, FormulaError> {
+    let one = |f: fn(f32) -> f32| -> Result<f32, FormulaError> {
+        if args.len() != 1 {
+            return Err(FormulaError::Parse(format!(
+                "`{name}` takes 1 argument, got {}",
+                args.len()
+            )));
+        }
+        Ok(f(args[0]))
+    };
+    match name {
+        "sin" => one(f32::sin),
+        "cos" => one(f32::cos),
+        "tan" => one(f32::tan),
+        "asin" => one(f32::asin),
+        "acos" => one(f32::acos),
+        "atan" => one(f32::atan),
+        "sqrt" => one(f32::sqrt),
+        "abs" => one(f32::abs),
+        "floor" => one(f32::floor),
+        "ceil" => one(f32::ceil),
+        "round" => one(f32::round),
+        "sign" => one(f32::signum),
+        "ln" => one(f32::ln),
+        "deg2rad" => one(f32::to_radians),
+        "rad2deg" => one(f32::to_degrees),
+        "pow" | "min" | "max" | "atan2" => {
+            if args.len() != 2 {
+                return Err(FormulaError::Parse(format!(
+                    "`{name}` takes 2 arguments, got {}",
+                    args.len()
+                )));
+            }
+            Ok(match name {
+                "pow" => args[0].powf(args[1]),
+                "min" => args[0].min(args[1]),
+                "max" => args[0].max(args[1]),
+                "atan2" => args[0].atan2(args[1]),
+                _ => unreachable!(),
+            })
+        }
+        other => Err(FormulaError::Parse(format!("unknown function `{other}`"))),
     }
 }
 
@@ -327,14 +410,53 @@ impl<'a> Parser<'a> {
                 self.consume();
                 self.parse_factor()
             }
-            _ => self.parse_atom(),
+            _ => self.parse_power(),
+        }
+    }
+
+    /// `^` binds tighter than `*`/`/` and is right-associative, so
+    /// `2 ^ 3 ^ 2 == 2 ^ (3 ^ 2) == 512`.
+    fn parse_power(&mut self) -> Result<Node, FormulaError> {
+        let base = self.parse_atom()?;
+        if matches!(self.peek(), Some(Token::Caret)) {
+            self.consume();
+            // Right operand may carry its own unary sign (`2 ^ -1`).
+            let exp = self.parse_factor()?;
+            Ok(Node::Pow(Box::new(base), Box::new(exp)))
+        } else {
+            Ok(base)
         }
     }
 
     fn parse_atom(&mut self) -> Result<Node, FormulaError> {
         match self.consume() {
             Some(Token::Number(n)) => Ok(Node::Lit(n)),
-            Some(Token::Ident(name)) => Ok(Node::Var(name)),
+            Some(Token::Ident(name)) => {
+                // An identifier followed by `(` is a function call; otherwise
+                // it's a variable / constant reference.
+                if matches!(self.peek(), Some(Token::LParen)) {
+                    self.consume();
+                    let mut args = Vec::new();
+                    if !matches!(self.peek(), Some(Token::RParen)) {
+                        loop {
+                            args.push(self.parse_expr()?);
+                            match self.peek() {
+                                Some(Token::Comma) => {
+                                    self.consume();
+                                }
+                                _ => break,
+                            }
+                        }
+                    }
+                    match self.consume() {
+                        Some(Token::RParen) => {}
+                        _ => return Err(FormulaError::Parse("missing `)`".to_string())),
+                    }
+                    Ok(Node::Call(name.to_lowercase(), args))
+                } else {
+                    Ok(Node::Var(name))
+                }
+            }
             Some(Token::LParen) => {
                 let inner = self.parse_expr()?;
                 match self.consume() {
@@ -488,6 +610,49 @@ mod tests {
         assert!(matches!(
             resolve_formula("=10 / zero", &vars),
             Err(FormulaError::DivisionByZero)
+        ));
+    }
+
+    #[test]
+    fn builtin_functions_and_constants() {
+        let vars = vars_of(&[("Breite", 90.0)]);
+        // sin(pi/2) ≈ 1
+        assert!((resolve_formula("=sin(pi / 2)", &vars).unwrap() - 1.0).abs() < 1e-5);
+        // max / min two-arg
+        assert_eq!(resolve_formula("=max(3, 7)", &vars).unwrap(), 7.0);
+        assert_eq!(resolve_formula("=min(3, 7)", &vars).unwrap(), 3.0);
+        // sqrt + variable reference
+        assert_eq!(resolve_formula("=sqrt(Breite + 10)", &vars).unwrap(), 10.0);
+        // deg2rad bridge: sin of a degree angle
+        assert!(
+            (resolve_formula("=sin(deg2rad(Breite))", &vars).unwrap() - 1.0).abs() < 1e-5
+        );
+    }
+
+    #[test]
+    fn power_operator_is_right_associative() {
+        let vars = BTreeMap::new();
+        assert_eq!(resolve_formula("=2 ^ 3", &vars).unwrap(), 8.0);
+        assert_eq!(resolve_formula("=2 ^ 3 ^ 2", &vars).unwrap(), 512.0);
+        // ^ binds tighter than *
+        assert_eq!(resolve_formula("=3 * 2 ^ 2", &vars).unwrap(), 12.0);
+    }
+
+    #[test]
+    fn unknown_function_errors() {
+        let vars = BTreeMap::new();
+        assert!(matches!(
+            resolve_formula("=frobnicate(1)", &vars),
+            Err(FormulaError::Parse(_))
+        ));
+    }
+
+    #[test]
+    fn function_arity_is_checked() {
+        let vars = BTreeMap::new();
+        assert!(matches!(
+            resolve_formula("=sin(1, 2)", &vars),
+            Err(FormulaError::Parse(_))
         ));
     }
 

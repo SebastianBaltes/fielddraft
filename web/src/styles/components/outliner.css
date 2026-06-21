@@ -206,8 +206,7 @@
     & .variable-name,
     & .variable-value,
     & .variable-name-input,
-    & .variable-value-input,
-    & .variable-kind {
+    & .variable-value-input {
       padding: var(--space-1) var(--space-2);
       border: 1px solid var(--color-border);
       border-radius: var(--radius-sm);
@@ -217,10 +216,13 @@
       min-width: 0;
     }
 
-    /* value + its unit suffix (ticket 8ar9) */
+    /* Tickets buy9 + nlij: one smart text field per value. It accepts a plain
+       number, a unit literal (`10 cm`) or a formula (`sin(Breite)`); the
+       dimension/formula is inferred, so there's no kind selector and no ƒx
+       toggle. A parse/cycle error tints the field and shows a warning row. */
     & .variable-value-cell {
       display: flex;
-      align-items: center;
+      align-items: baseline;
       gap: var(--space-1);
       flex: 1;
       min-width: 0;
@@ -229,32 +231,44 @@
     & .variable-value {
       flex: 1;
       min-width: 0;
+      font-family: var(--font-mono, monospace);
+
+      &.has-error {
+        border-color: var(--color-error);
+      }
     }
 
-    & .variable-unit {
+    /* Resolved value of a formula variable, shown as a muted hint. */
+    & .variable-resolved {
       color: var(--color-text-muted);
       font-size: var(--fs-base);
-      min-width: 1.5em;
+      white-space: nowrap;
     }
 
-    & .variable-kind {
-      flex-shrink: 0;
-      width: 5.5rem;
-      cursor: pointer;
+    & .variable-error {
+      color: var(--color-error-text, var(--color-error));
+      font-size: var(--fs-base);
+      padding-left: var(--space-1);
     }
 
     & .variables-add {
       display: flex;
       align-items: center;
       gap: var(--space-2);
-      padding: var(--space-2) var(--space-4);
+      padding: var(--space-2) var(--space-4) 0;
 
       & .variable-name-input {
-        flex: 1;
+        flex: 0 0 6rem;
       }
 
       & .variable-value-input {
-        width: 4rem;
+        flex: 1;
+        min-width: 0;
+        font-family: var(--font-mono, monospace);
+
+        &.has-error {
+          border-color: var(--color-error);
+        }
       }
 
       & .apply {

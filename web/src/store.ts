@@ -25,6 +25,11 @@ import {
   loadPersisted,
   type AutoSaveHandle,
 } from "./persistence";
+import {
+  parseVariableInput,
+  resolveVariableTable,
+  type RawVariable,
+} from "./variableInput";
 import type { PickedElement } from "./elementQuery";
 import type {
   MesherBodiesResponse,
@@ -1529,6 +1534,77 @@ export class KernelStore {
     }
     this.commit();
     return true;
+  }
+
+  /**
+   * Tickets buy9 + nlij: upsert a variable from the single smart value field.
+   * The raw text may be a plain number (`42`), a number with a unit (`10 cm`,
+   * inferred as Length), an angle (`90 deg`), or a formula referencing other
+   * variables and math functions (`sin(Breite) * 2`). The dimension is inferred
+   * from the unit / referenced variables — there is no kind selector and no
+   * `ƒx` toggle.
+   *
+   * The whole variable table (with this edit applied) is resolved web-side
+   * with cycle detection; the resolved numeric value + raw source text are then
+   * pushed to the kernel, so a `=name` feature formula keeps reading a plain
+   * number. Dependents are re-resolved too. Returns an error string on a parse
+   * / resolution / cycle failure (which is surfaced inline and leaves the table
+   * untouched), or `null` on success.
+   */
+  setVariableFromInput(name: string, raw: string): string | null {
+    const trimmed = name.trim();
+    if (trimmed.length === 0) return "name must not be empty";
+
+    // Build the prospective table: existing variables + this edit. A bare
+    // identifier can reference any *other* declared name (plus the one being
+    // edited is allowed to be referenced by others, but not itself).
+    const existing = this.kernel.listVariables();
+    const known = new Set(existing.map((v) => v.name));
+    known.add(trimmed);
+
+    const parse = parseVariableInput(raw, known);
+    if (!parse.ok) return parse.error;
+
+    const draft: RawVariable[] = existing.map((v) => ({
+      name: v.name,
+      value: v.value,
+      kind: v.kind,
+      formula: v.formula,
+    }));
+    const next: RawVariable = parse.isFormula
+      ? { name: trimmed, value: NaN, kind: parse.kind, formula: parse.source }
+      : {
+          name: trimmed,
+          value: parse.value,
+          kind: parse.kind,
+          formula: parse.source,
+        };
+    const idx = draft.findIndex((v) => v.name === trimmed);
+    if (idx >= 0) draft[idx] = next;
+    else draft.push(next);
+
+    const { resolved, errors } = resolveVariableTable(draft);
+    const ownErr = errors.get(trimmed);
+    if (ownErr) return ownErr;
+    // A cycle / break introduced elsewhere by this edit also blocks the commit.
+    if (errors.size > 0) {
+      const [first] = [...errors.entries()];
+      return `${first[0]}: ${first[1]}`;
+    }
+
+    // Push every (possibly re-resolved) variable into the kernel. Pushing the
+    // full set keeps dependents current after a referenced variable changes.
+    try {
+      for (const r of resolved.values()) {
+        this.kernel.setVariable(r.name, r.value, r.kind, r.formula);
+      }
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error("fielddraft: setVariableFromInput failed", err);
+      return formatKernelError(err, "variable update failed");
+    }
+    this.commit();
+    return null;
   }
 
   /** K8.10: remove a variable and commit. */

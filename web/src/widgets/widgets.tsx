@@ -43,6 +43,7 @@ import {
 } from "../queryPickerBridge";
 import { useWorkspaceUnits, decimalPlaces } from "../SettingsMenu";
 import { LENGTH_TO_MM, isLengthUnit } from "../lengthUnits";
+import { looksLikeFormula } from "../variableInput";
 import { useKernelStore } from "../store";
 import { formatQueryDisplay } from "../queryLabels";
 import { queryAcceptedByFilter } from "../elementQuery";
@@ -100,10 +101,14 @@ function Field({
 function BufferedNumberInput({
   value,
   onCommit,
+  onFormula,
   ...rest
 }: {
   value: number;
   onCommit: (n: number) => void;
+  /** Ticket nlij: invoked when the typed text reads as a formula rather than a
+   *  number, so the parent can switch the cell into formula mode. */
+  onFormula?: (text: string) => void;
 } & Omit<
   React.InputHTMLAttributes<HTMLInputElement>,
   "value" | "onChange" | "type"
@@ -125,6 +130,10 @@ function BufferedNumberInput({
       onChange={(e) => {
         const s = e.currentTarget.value;
         setRaw(s);
+        if (onFormula && looksLikeFormula(s)) {
+          onFormula(s);
+          return;
+        }
         const n = Number(s);
         if (s.length > 0 && Number.isFinite(n)) {
           onCommit(n);
@@ -199,11 +208,14 @@ function isAngleUnit(unit: string): boolean {
 function UnitInput({
   value,
   onCommit,
+  onFormula,
   unit,
   ...rest
 }: {
   value: number;
   onCommit: (n: number) => void;
+  /** Ticket nlij: invoked when the typed text reads as a formula. */
+  onFormula?: (text: string) => void;
   unit?: string;
 } & Omit<
   React.InputHTMLAttributes<HTMLInputElement>,
@@ -212,7 +224,14 @@ function UnitInput({
   const ws = useWorkspaceUnits();
 
   if (!unit) {
-    return <BufferedNumberInput value={value} onCommit={onCommit} {...rest} />;
+    return (
+      <BufferedNumberInput
+        value={value}
+        onCommit={onCommit}
+        onFormula={onFormula}
+        {...rest}
+      />
+    );
   }
 
   const displayUnit = isLengthUnit(unit)
@@ -256,6 +275,10 @@ function UnitInput({
       onChange={(e) => {
         const text = e.currentTarget.value;
         setRaw(text);
+        if (onFormula && looksLikeFormula(text)) {
+          onFormula(text);
+          return;
+        }
         tryCommit(text);
       }}
       onFocus={(e) => {
@@ -297,12 +320,17 @@ function UnitInput({
 type Scalar = number | string;
 
 /**
- * A single numeric cell that can flip to a formula (`=Seitenlänge`) via a
- * ƒx toggle — the per-component building block behind NumberWidget and the
- * vector widgets (ticket x2m7). In numeric mode it's a unit-aware input; in
- * formula mode a free-text field bound to the wire-form string. The kernel
- * resolves the formula against the variables table at regen time, so a bound
- * cell persists as a string element in the param's JSON.
+ * A single numeric cell that doubles as a formula field (ticket nlij): the
+ * user types either a number (`42`) or an expression referencing variables and
+ * math functions (`Seitenlänge / 2`, `sin(Breite)`). There is no `ƒx` toggle —
+ * whether the text is a literal or a formula is read straight from the text via
+ * {@link looksLikeFormula}. A formula is committed as the kernel's wire form
+ * (`=…`), a literal as a plain number; the kernel resolves formulas against the
+ * variables table at regen time.
+ *
+ * The numeric path keeps the unit-aware {@link UnitInput} as long as the cell
+ * holds a literal, switching to a free-text input the moment the user types
+ * something formula-shaped.
  */
 function ScalarFormulaInput({
   value,
@@ -320,37 +348,42 @@ function ScalarFormulaInput({
   ariaLabel?: string;
 }) {
   const formula = isFormula(value);
+  // A formula edits its raw wire form (with the leading `=`) as free text. A
+  // literal stays on the unit-aware numeric input until the user types an
+  // expression, at which point a single change handler re-commits it as a `=…`
+  // formula string and the cell re-renders into formula mode.
+  if (formula) {
+    return (
+      <input
+        id={id}
+        className={(className ?? "input") + " is-formula"}
+        type="text"
+        value={value as string}
+        aria-label={ariaLabel ? `${ariaLabel} formula` : undefined}
+        onChange={(e) => {
+          const text = e.currentTarget.value;
+          // A formula the user has emptied / reduced to a plain number drops
+          // back to a numeric literal (no stray `=`).
+          if (!looksLikeFormula(text)) {
+            const n = Number(text.replace(/^=/, "").trim());
+            onCommit(Number.isFinite(n) ? n : text);
+          } else {
+            onCommit(text.startsWith("=") ? text : `=${text}`);
+          }
+        }}
+      />
+    );
+  }
   return (
-    <div className="formula-cell">
-      {formula ? (
-        <input
-          id={id}
-          className={(className ?? "input") + " is-formula"}
-          type="text"
-          value={value as string}
-          aria-label={ariaLabel ? `${ariaLabel} formula` : undefined}
-          onChange={(e) => onCommit(e.currentTarget.value)}
-        />
-      ) : (
-        <UnitInput
-          id={id}
-          className={className ?? "input"}
-          aria-label={ariaLabel}
-          value={Number.isFinite(value as number) ? (value as number) : 0}
-          onCommit={onCommit}
-          unit={unit}
-        />
-      )}
-      <button
-        type="button"
-        className={"formula-toggle" + (formula ? " is-active" : "")}
-        title={formula ? "Switch to numeric" : "Switch to formula"}
-        tabIndex={-1}
-        onClick={() => onCommit(formula ? 0 : "=")}
-      >
-        ƒx
-      </button>
-    </div>
+    <UnitInput
+      id={id}
+      className={className ?? "input"}
+      aria-label={ariaLabel}
+      value={Number.isFinite(value as number) ? (value as number) : 0}
+      onCommit={onCommit}
+      onFormula={(text) => onCommit(text.startsWith("=") ? text : `=${text}`)}
+      unit={unit}
+    />
   );
 }
 
@@ -570,11 +603,14 @@ function LengthInlineInput({
   storedValue,
   storedUnit,
   onCommit,
+  onFormula,
   ...rest
 }: {
   storedValue: number;
   storedUnit: string;
   onCommit: (value: number, unit: string) => void;
+  /** Ticket nlij: invoked when the typed text reads as a formula. */
+  onFormula?: (text: string) => void;
 } & Omit<
   React.InputHTMLAttributes<HTMLInputElement>,
   "value" | "onChange" | "type"
@@ -605,8 +641,13 @@ function LengthInlineInput({
       type="text"
       value={raw}
       onChange={(e) => {
-        setRaw(e.currentTarget.value);
-        tryCommit(e.currentTarget.value);
+        const text = e.currentTarget.value;
+        setRaw(text);
+        if (onFormula && looksLikeFormula(text)) {
+          onFormula(text);
+          return;
+        }
+        tryCommit(text);
       }}
       onFocus={(e) => {
         setEditing(true);
@@ -662,9 +703,21 @@ export function LengthWidget({
             type="text"
             value={value.value as string}
             aria-label={`${label} formula`}
-            onChange={(e) =>
-              onChange({ value: e.currentTarget.value, unit: value.unit })
-            }
+            onChange={(e) => {
+              const text = e.currentTarget.value;
+              if (!looksLikeFormula(text)) {
+                // Reduced back to a plain number/unit → leave formula mode.
+                const parsed = parseValueWithUnit(text.replace(/^=/, ""), value.unit);
+                if (parsed && Number.isFinite(parsed.value)) {
+                  onChange({ value: parsed.value, unit: parsed.unit as LengthUnit });
+                  return;
+                }
+              }
+              onChange({
+                value: text.startsWith("=") ? text : `=${text}`,
+                unit: value.unit,
+              });
+            }}
           />
         ) : (
           <LengthInlineInput
@@ -677,22 +730,14 @@ export function LengthWidget({
             }
             storedUnit={value.unit}
             onCommit={(v, u) => onChange({ value: v, unit: u as LengthUnit })}
+            onFormula={(text) =>
+              onChange({
+                value: text.startsWith("=") ? text : `=${text}`,
+                unit: value.unit,
+              })
+            }
           />
         )}
-        <button
-          type="button"
-          className={"formula-toggle" + (formula ? " is-active" : "")}
-          title={formula ? "Switch to numeric" : "Switch to formula"}
-          onClick={() => {
-            if (formula) {
-              onChange({ value: 0, unit: value.unit });
-            } else {
-              onChange({ value: "=", unit: value.unit });
-            }
-          }}
-        >
-          ƒx
-        </button>
       </div>
     </Field>
   );

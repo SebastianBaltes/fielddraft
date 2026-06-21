@@ -13,7 +13,8 @@ import {
   type MouseEvent,
   type PointerEvent as ReactPointerEvent,
 } from "react";
-import { type FeatureSummary, type VarKind } from "./kernel";
+import { type FeatureSummary } from "./kernel";
+import { baseUnitLabel, variableDisplayText } from "./variableInput";
 import type { FeatureFolder, KernelStore, StoreState } from "./store";
 import { createFdApi } from "./api/fd";
 import { useMediaQuery, MOBILE_QUERY } from "./useMediaQuery";
@@ -54,18 +55,6 @@ export function kindGlyph(
   const script = scriptTypeFor(kind, scriptTypes);
   if (script) return script.icon;
   return FEATURE_TYPE_META[kind]?.glyph ?? "?";
-}
-
-/** Variable type options for the kind selector (ticket 8ar9). */
-const VAR_KIND_OPTIONS: { key: VarKind; label: string }[] = [
-  { key: "number", label: "Number" },
-  { key: "length", label: "Length" },
-  { key: "angle", label: "Angle" },
-];
-
-/** The unit suffix shown next to a variable's value for its kind. */
-function varUnitLabel(kind: VarKind): string {
-  return kind === "length" ? "mm" : kind === "angle" ? "°" : "";
 }
 
 export function prettifyFeatureName(
@@ -401,7 +390,10 @@ export function Outliner({
   // row. Blank name + blank value until the user types.
   const [newVarName, setNewVarName] = useState<string>("");
   const [newVarValue, setNewVarValue] = useState<string>("");
-  const [newVarKind, setNewVarKind] = useState<VarKind>("number");
+  // Tickets buy9 + nlij: inline parse/resolve error for the add row and per
+  // existing variable (keyed by name). A clear warning replaces any crash.
+  const [newVarError, setNewVarError] = useState<string | null>(null);
+  const [varErrors, setVarErrors] = useState<Record<string, string | null>>({});
 
   const [collapsed, setCollapsed] = useState<Set<string>>(() => {
     // Ticket pqoe: the sketch geometry list is collapsed by default, so it
@@ -566,33 +558,32 @@ export function Outliner({
     setContextMenu({ x: e.clientX, y: e.clientY, featureId });
   };
 
+  // Tickets buy9 + nlij: one smart text field per variable value. The
+  // dimension/formula is inferred from the text; the store parses, resolves the
+  // whole table (cycle-safe) and surfaces any error inline.
   const handleAddVariable = () => {
     const trimmed = newVarName.trim();
-    if (trimmed.length === 0) return;
-    const value = Number(newVarValue);
-    if (!Number.isFinite(value)) return;
-    if (store.setVariable(trimmed, value, newVarKind)) {
-      setNewVarName("");
-      setNewVarValue("");
-      setNewVarKind("number");
+    if (trimmed.length === 0) {
+      setNewVarError("name must not be empty");
+      return;
     }
+    if (newVarValue.trim().length === 0) {
+      setNewVarError("value must not be empty");
+      return;
+    }
+    const err = store.setVariableFromInput(trimmed, newVarValue);
+    if (err) {
+      setNewVarError(err);
+      return;
+    }
+    setNewVarName("");
+    setNewVarValue("");
+    setNewVarError(null);
   };
 
   const handleVariableValueChange = (name: string, text: string) => {
-    const value = Number(text);
-    if (Number.isFinite(value)) {
-      // "" keeps the variable's existing kind (ticket 8ar9).
-      store.setVariable(name, value, "");
-    }
-  };
-
-  // Ticket 8ar9: change a variable's kind, keeping its value.
-  const handleVariableKindChange = (
-    name: string,
-    value: number,
-    kind: VarKind,
-  ) => {
-    store.setVariable(name, value, kind);
+    const err = store.setVariableFromInput(name, text);
+    setVarErrors((prev) => ({ ...prev, [name]: err }));
   };
 
   const beginRename = (feature: FeatureSummary) => {
@@ -775,62 +766,62 @@ export function Outliner({
                         }}
                       />
                       <div className="variable-controls">
-                      <div className="variable-value-cell">
-                        <input
-                          className="variable-value"
-                          type="number"
-                          inputMode="decimal"
-                          aria-label={`Value of ${v.name}`}
-                          data-testid={`variable-value-${v.name}`}
-                          defaultValue={v.value}
-                          onBlur={(e) =>
-                            handleVariableValueChange(
-                              v.name,
-                              e.currentTarget.value,
-                            )
-                          }
-                          onKeyDown={(e) => {
-                            if (e.key === "Enter") {
-                              e.preventDefault();
-                              (e.currentTarget as HTMLInputElement).blur();
+                        <div className="variable-value-cell">
+                          <input
+                            key={`value-${v.name}-${v.formula ?? v.value}`}
+                            className={
+                              "variable-value" +
+                              (varErrors[v.name] ? " has-error" : "")
                             }
-                          }}
-                        />
-                        {varUnitLabel(v.kind) ? (
-                          <span className="variable-unit">
-                            {varUnitLabel(v.kind)}
-                          </span>
-                        ) : null}
+                            type="text"
+                            aria-label={`Value of ${v.name}`}
+                            data-testid={`variable-value-${v.name}`}
+                            defaultValue={variableDisplayText(v)}
+                            title={
+                              v.formula
+                                ? `= ${v.value}${baseUnitLabel(v.kind)}`
+                                : undefined
+                            }
+                            onBlur={(e) =>
+                              handleVariableValueChange(
+                                v.name,
+                                e.currentTarget.value,
+                              )
+                            }
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter") {
+                                e.preventDefault();
+                                (e.currentTarget as HTMLInputElement).blur();
+                              }
+                            }}
+                          />
+                          {v.formula && baseUnitLabel(v.kind) ? (
+                            <span
+                              className="variable-resolved"
+                              data-testid={`variable-resolved-${v.name}`}
+                            >
+                              {`= ${v.value} ${baseUnitLabel(v.kind)}`}
+                            </span>
+                          ) : null}
+                        </div>
+                        <button
+                          type="button"
+                          className="row-delete"
+                          title="Remove variable"
+                          data-testid={`variable-delete-${v.name}`}
+                          onClick={() => store.removeVariable(v.name)}
+                        >
+                          ×
+                        </button>
                       </div>
-                      <select
-                        className="variable-kind"
-                        aria-label={`Type of ${v.name}`}
-                        data-testid={`variable-kind-${v.name}`}
-                        value={v.kind}
-                        onChange={(e) =>
-                          handleVariableKindChange(
-                            v.name,
-                            v.value,
-                            e.currentTarget.value as VarKind,
-                          )
-                        }
-                      >
-                        {VAR_KIND_OPTIONS.map((o) => (
-                          <option key={o.key} value={o.key}>
-                            {o.label}
-                          </option>
-                        ))}
-                      </select>
-                      <button
-                        type="button"
-                        className="row-delete"
-                        title="Remove variable"
-                        data-testid={`variable-delete-${v.name}`}
-                        onClick={() => store.removeVariable(v.name)}
-                      >
-                        ×
-                      </button>
-                      </div>
+                      {varErrors[v.name] ? (
+                        <div
+                          className="variable-error"
+                          data-testid={`variable-error-${v.name}`}
+                        >
+                          {varErrors[v.name]}
+                        </div>
+                      ) : null}
                     </li>
                   ))}
                 </ul>
@@ -842,7 +833,10 @@ export function Outliner({
                   aria-label="New variable name"
                   data-testid="variable-new-name"
                   value={newVarName}
-                  onChange={(e) => setNewVarName(e.currentTarget.value)}
+                  onChange={(e) => {
+                    setNewVarName(e.currentTarget.value);
+                    setNewVarError(null);
+                  }}
                   onKeyDown={(e) => {
                     if (e.key === "Enter") {
                       e.preventDefault();
@@ -851,14 +845,18 @@ export function Outliner({
                   }}
                 />
                 <input
-                  className="variable-value-input"
-                  type="number"
-                  inputMode="decimal"
-                  placeholder="value"
+                  className={
+                    "variable-value-input" + (newVarError ? " has-error" : "")
+                  }
+                  type="text"
+                  placeholder="value, e.g. 10 cm or Breite * 2"
                   aria-label="New variable value"
                   data-testid="variable-new-value"
                   value={newVarValue}
-                  onChange={(e) => setNewVarValue(e.currentTarget.value)}
+                  onChange={(e) => {
+                    setNewVarValue(e.currentTarget.value);
+                    setNewVarError(null);
+                  }}
                   onKeyDown={(e) => {
                     if (e.key === "Enter") {
                       e.preventDefault();
@@ -866,21 +864,6 @@ export function Outliner({
                     }
                   }}
                 />
-                <select
-                  className="variable-kind"
-                  aria-label="New variable type"
-                  data-testid="variable-new-kind"
-                  value={newVarKind}
-                  onChange={(e) =>
-                    setNewVarKind(e.currentTarget.value as VarKind)
-                  }
-                >
-                  {VAR_KIND_OPTIONS.map((o) => (
-                    <option key={o.key} value={o.key}>
-                      {o.label}
-                    </option>
-                  ))}
-                </select>
                 <button
                   type="button"
                   className="apply"
@@ -890,6 +873,14 @@ export function Outliner({
                   +
                 </button>
               </div>
+              {newVarError ? (
+                <div
+                  className="variable-error"
+                  data-testid="variable-new-error"
+                >
+                  {newVarError}
+                </div>
+              ) : null}
             </>
           )}
         </section>

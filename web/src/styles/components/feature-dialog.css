@@ -186,44 +186,7 @@
     gap: var(--space-2);
   }
 
-  /* ── x2m7: per-cell numeric-or-formula input (NumberWidget + vec cells) ── */
-  & .formula-cell {
-    display: flex;
-    flex: 1;
-    align-items: center;
-    gap: var(--space-1);
-    min-width: 0;
-
-    & > .input {
-      flex: 1;
-      min-width: 0;
-    }
-  }
-
-  & .formula-toggle {
-    background: transparent;
-    border: 1px solid var(--color-border);
-    border-radius: var(--radius-sm);
-    color: var(--color-text-subtle);
-    font-size: var(--fs-base);
-    padding: var(--space-1) var(--space-2);
-    cursor: pointer;
-    font-style: italic;
-    line-height: 1;
-    transition: color var(--motion-fast), background var(--motion-fast);
-
-    &:hover {
-      color: var(--color-text);
-      background: var(--color-surface-strong);
-    }
-
-    &.is-active {
-      background: var(--color-accent);
-      color: var(--color-text-on-accent, white);
-      border-color: var(--color-accent);
-    }
-  }
-
+  /* ── nlij: a numeric cell that auto-detects formulas (no ƒx toggle) ── */
   & .input.is-formula {
     font-family: var(--font-family-mono);
     color: var(--color-accent);
