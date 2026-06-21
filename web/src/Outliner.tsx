@@ -711,7 +711,11 @@ export function Outliner({
           its plane field, per-tool edit block, geometry list and constraint
           manager now live inside the sketch's generic Detail dialog below
           (see SketchDetailBody, rendered from the Detail panel). */}
-      {!sketchSession.active ? (
+      {/* Ticket v1a7: the right sidebar is identical in and out of a sketch —
+          there is no "sketch mode" for it. Variables are especially useful
+          while sketching (drive dimensions), so the Variables panel always
+          renders, never gated on the sketch session. */}
+      {(
         <section className="variables-panel" data-testid="variables-panel">
           <div
             className="header accordion-header"
@@ -884,7 +888,7 @@ export function Outliner({
             </>
           )}
         </section>
-      ) : null}
+      )}
       {!sketchSession.active && state.assembly.active && (
         <section className="assembly-panel" data-testid="assembly-panel">
           <div
