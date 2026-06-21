@@ -45,8 +45,12 @@ import { useWorkspaceUnits, decimalPlaces } from "../SettingsMenu";
 import { LENGTH_TO_MM, isLengthUnit } from "../lengthUnits";
 import { looksLikeFormula } from "../variableInput";
 import { useKernelStore } from "../store";
+import { computeSelectableFeatureIds } from "../snapshotScope";
 import { formatQueryDisplay } from "../queryLabels";
-import { queryAcceptedByFilter } from "../elementQuery";
+import {
+  queryAcceptedByFilter,
+  filterAllowsSketchRegion,
+} from "../elementQuery";
 import { logUserAction } from "../userActionLog";
 import {
   ANGLE_UNITS,
@@ -993,6 +997,23 @@ export function GroupHeader({
  * focus automatically.
  */
 
+/**
+ * Snapshot scope for a viewport query picker (tickets 9wxs / 2ukj). When one
+ * feature is being edited, only geometry from features BEFORE it in the tree
+ * may be referenced — a feature can't take as input what it (or a later
+ * feature) produces. Returns the set of allowed owner-feature ids, or
+ * `undefined` (no restriction) when nothing single is selected. Shared by
+ * MultiQueryWidget and QueryWidget so both selection inputs enforce the
+ * forward-reference guard identically.
+ */
+function useSelectableFeatureIds(): ReadonlySet<number> | undefined {
+  const { state } = useKernelStore();
+  return useMemo<ReadonlySet<number> | undefined>(
+    () => computeSelectableFeatureIds(state),
+    [state],
+  );
+}
+
 export function QueryWidget({
   label,
   value,
@@ -1012,12 +1033,17 @@ export function QueryWidget({
   deactivateOnPick?: boolean;
 }) {
   const id = useId();
-  // NB: the single-query picker is intentionally NOT scoped to
-  // `selectableFeatureIds` (unlike MultiQueryWidget). It drives sketch-plane
-  // / single-face selection, which references datums or earlier faces anyway,
-  // so the snapshot risk is low — and subscribing here (useKernelStore) would
-  // pull the async store into every dialog widget. The body-selection path
-  // (Boolean tools/targets, merge scope) IS scoped via MultiQueryWidget.
+  // Ticket 2ukj: the PROFILE field (Extrude/Revolve, `SKETCHREGION` filter)
+  // must obey the same forward-reference guard the body pickers do — a feature
+  // can't reference the very bodies it (or a later feature) creates. So scope a
+  // SKETCHREGION single-query picker to `selectableFeatureIds`. Other single-
+  // query pickers (sketch-plane / single-face) stay UNSCOPED on purpose: they
+  // reference datums (origin planes, owner id 0) or earlier faces, and the
+  // snapshot risk there is low.
+  const snapshotScope = useSelectableFeatureIds();
+  const selectableFeatureIds = filterAllowsSketchRegion(entityFilter)
+    ? snapshotScope
+    : undefined;
   const [text, setText] = useState<string>(value);
   const [focused, setFocused] = useState(false);
 
@@ -1063,8 +1089,13 @@ export function QueryWidget({
   // torn down on unmount or when another widget claims focus.
   useEffect(() => {
     if (!active) return;
-    return registerQueryPicker({ ownerId: id, onPick, entityFilter });
-  }, [active, id, onPick, entityFilter]);
+    return registerQueryPicker({
+      ownerId: id,
+      onPick,
+      entityFilter,
+      selectableFeatureIds,
+    });
+  }, [active, id, onPick, entityFilter, selectableFeatureIds]);
 
   // Auto-activate on an empty required field so a freshly-opened
   // dialog already has the viewport click focus on its primary
@@ -1076,9 +1107,14 @@ export function QueryWidget({
   useEffect(() => {
     if (autoArmed && value === "" && !active && !getActiveQueryPicker()) {
       setAutoArmed(false);
-      registerQueryPicker({ ownerId: id, onPick, entityFilter });
+      registerQueryPicker({
+        ownerId: id,
+        onPick,
+        entityFilter,
+        selectableFeatureIds,
+      });
     }
-  }, [autoArmed, value, active, id, onPick, entityFilter]);
+  }, [autoArmed, value, active, id, onPick, entityFilter, selectableFeatureIds]);
 
   // True toggle: arming twice releases the viewport again. Without
   // this, a picker whose target can't be picked (or one armed by
@@ -1090,7 +1126,7 @@ export function QueryWidget({
       deactivateQueryPicker();
       return;
     }
-    registerQueryPicker({ ownerId: id, onPick, entityFilter });
+    registerQueryPicker({ ownerId: id, onPick, entityFilter, selectableFeatureIds });
   };
 
   const commitText = () => {
@@ -1131,7 +1167,12 @@ export function QueryWidget({
             // the ⊕ button armed it, so a user who clicked into the field
             // and then clicked a datum plane in the scene saw nothing happen.
             if (!active && !getActiveQueryPicker()) {
-              registerQueryPicker({ ownerId: id, onPick, entityFilter });
+              registerQueryPicker({
+                ownerId: id,
+                onPick,
+                entityFilter,
+                selectableFeatureIds,
+              });
             }
           }}
           onClick={() => {
@@ -1141,7 +1182,12 @@ export function QueryWidget({
             // and the field stays disarmed. Re-arm on a click into the already
             // focused input whenever no picker is active.
             if (!active && !getActiveQueryPicker()) {
-              registerQueryPicker({ ownerId: id, onPick, entityFilter });
+              registerQueryPicker({
+                ownerId: id,
+                onPick,
+                entityFilter,
+                selectableFeatureIds,
+              });
             }
           }}
           onBlur={() => {
@@ -1192,14 +1238,8 @@ export function MultiQueryWidget({
   // Snapshot semantics: when editing one feature, only features BEFORE it in
   // the tree may be referenced. Hand the picker the set of allowed owner ids
   // so later geometry stays unpickable (e.g. a Boolean can't take a body that
-  // was created after it).
-  const selectableFeatureIds = useMemo<ReadonlySet<number> | undefined>(() => {
-    if (!state || state.selection.size !== 1) return undefined;
-    const editedId = [...state.selection][0];
-    const idx = state.features.findIndex((f) => f.id === editedId);
-    if (idx < 0) return undefined;
-    return new Set(state.features.slice(0, idx).map((f) => f.id));
-  }, [state]);
+  // was created after it). Shared with QueryWidget via `useSelectableFeatureIds`.
+  const selectableFeatureIds = useSelectableFeatureIds();
   const itemsRef = useRef<string[]>(parseMultiQuery(value));
 
   useEffect(() => {
