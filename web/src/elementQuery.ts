@@ -81,6 +81,21 @@ export function filterAllowsSketchLine(entityFilter?: string): boolean {
 }
 
 /**
+ * Does the picker's `entityFilter` opt into committed sketch REGIONS
+ * (`qRegion`/`qRegions`/`qAllRegions`)? The Revolve/Extrude `profiles` field
+ * carries the `SKETCHREGION` token (ticket dhjn): with it, a click on one of a
+ * sketch's filled closed regions stores just that region instead of the whole
+ * sketch. Sketch regions are NOT B-Rep elements (no id_hash), so they sit
+ * outside {@link allowedKinds} — like sketch lines.
+ */
+export function filterAllowsSketchRegion(entityFilter?: string): boolean {
+  if (!entityFilter) return false;
+  return entityFilter
+    .split(/[,\s|]+/)
+    .some((t) => t.trim().toUpperCase() === "SKETCHREGION");
+}
+
+/**
  * Does a canonical query string satisfy a picker's `entityFilter`? The single
  * chokepoint that keeps a filtered picker from accepting the wrong kind of
  * pick, no matter which code path emits it (viewport, outliner row, datum
@@ -117,11 +132,17 @@ export function queryAcceptedByFilter(query: string, entityFilter?: string): boo
     case "SketchLine":
       return has("SKETCHLINE");
     case "FaceOf":
+      return has("FACE");
     case "Region":
     case "Regions":
     case "AllRegions":
-      return has("FACE");
+      // A sketch region satisfies a FACE picker (region = face-level) OR a
+      // SKETCHREGION profile picker (ticket dhjn).
+      return has("FACE") || has("SKETCHREGION");
     case "CreatedBy":
+      // A bare `qCreatedBy(sketch)` is the WHOLE-sketch profile — accepted by a
+      // SKETCHREGION picker too (it's the "all regions" case).
+      if (has("SKETCHREGION") && !/origin_plane_/.test(query)) return true;
       return /origin_plane_/.test(query) ? has("FACE") : has("FACE") || has("BODY");
     default:
       // Unknown / future query forms: don't block them.

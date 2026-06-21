@@ -2749,6 +2749,69 @@ pub fn build_sketch2d_from_sub_calls_raw(raw: &[serde_json::Value]) -> Sketch2d 
     build_sketch2d_from_sub_calls(&calls)
 }
 
+/// Grid density for region detection when resolving a profile query
+/// (`qRegion`/`qRegions`/`qAllRegions`). Matches `listSketchRegions`' default
+/// so the region INDEX the UI emitted (from the kernel's own flood-fill order)
+/// addresses the same region here.
+pub const PROFILE_REGION_RESOLUTION: u32 = 128;
+
+/// Resolve a profile query against the sketch table to a `(Sketch2d, frame)`,
+/// or `None` when it doesn't resolve to a non-empty profile (ticket dhjn).
+///
+/// Honoured query forms — all addressing one sketch feature:
+///   * `qCreatedBy(sketch_id)` — the WHOLE sketch (every closed region).
+///   * `qAllRegions(sketch_id)` — same as above, explicit.
+///   * `qRegion(sketch_id, i)` — only the i-th connected region.
+///   * `qRegions(sketch_id, [i, j, …])` — only the listed regions.
+///
+/// Region indices come from [`crate::sketch_regions::find_regions`] (its
+/// flood-fill order), which is exactly what `listSketchRegions` exposes to the
+/// UI — so the index the user picked addresses the same region here. The
+/// returned profile is the EXACT CSG of the selected region(s)
+/// ([`crate::sketch_regions::restrict_sketch_to_points`]), holes included.
+pub fn resolve_profile_query(
+    query: &str,
+    sketches: &std::collections::HashMap<FeatureId, SketchData>,
+) -> Option<(Sketch2d, SketchFrame)> {
+    use crate::queries::QueryExpr;
+    let expr = crate::queries::parse_query(query).ok()?;
+    let (sketch_id, indices): (FeatureId, Option<Vec<u32>>) = match expr {
+        QueryExpr::CreatedBy(id) | QueryExpr::AllRegions(id) => (id, None),
+        QueryExpr::Region(id, i) => (id, Some(vec![i])),
+        QueryExpr::Regions(id, list) => (id, Some(list)),
+        _ => return None,
+    };
+    let sketch_data = sketches.get(&sketch_id)?;
+    let full = build_sketch2d_from_sub_calls(&sketch_data.sub_calls);
+    if matches!(full, Sketch2d::Empty) {
+        return None;
+    }
+    let sketch = match indices {
+        None => full,
+        Some(indices) => {
+            // Map each requested index to its region's guaranteed-interior
+            // point, then restrict the profile to the branches containing them.
+            let regions =
+                crate::sketch_regions::find_regions(&full, PROFILE_REGION_RESOLUTION);
+            let points: Vec<[f32; 2]> = indices
+                .iter()
+                .filter_map(|&i| regions.iter().find(|r| r.index == i))
+                .map(|r| r.interior)
+                .collect();
+            if points.is_empty() {
+                return None;
+            }
+            let restricted =
+                crate::sketch_regions::restrict_sketch_to_points(&full, &points);
+            if matches!(restricted, Sketch2d::Empty) {
+                return None;
+            }
+            restricted
+        }
+    };
+    Some((sketch, sketch_data.frame))
+}
+
 pub fn build_sketch2d_from_sub_calls(sub_calls: &[FeatureCall]) -> Sketch2d {
     // K7.1 loop inference: free `sketch_line`s and open `sketch_spline`s
     // form no region on their own, but a chain of them whose endpoints
@@ -4806,6 +4869,86 @@ mod tests {
         assert!(sketch.sdf([20.0, 0.0]) < 0.0);
         // A point far from both is outside.
         assert!(sketch.sdf([100.0, 100.0]) > 0.0);
+    }
+
+    #[test]
+    fn resolve_profile_query_restricts_to_one_region() {
+        // Ticket dhjn: a two-region sketch (rectangle + separate circle).
+        // `qCreatedBy` takes BOTH; `qRegion(_, i)` takes only the one the
+        // index points at.
+        let calls = vec![
+            FeatureCall::new(
+                "sketch_rectangle",
+                id(2),
+                json!({ "corner_a": [-10.0, -10.0], "corner_b": [10.0, 10.0] }),
+            ),
+            FeatureCall::new(
+                "sketch_circle",
+                id(3),
+                json!({ "center": [40.0, 0.0], "radius": 5.0 }),
+            ),
+        ];
+        let mut sketches: HashMap<FeatureId, SketchData> = HashMap::new();
+        sketches.insert(
+            id(1),
+            SketchData {
+                state: SketchState::with_origin(),
+                sub_calls: calls,
+                frame: SketchFrame::IDENTITY,
+            },
+        );
+
+        // Whole sketch: both regions inside.
+        let (whole, _) = resolve_profile_query("qCreatedBy(1)", &sketches).unwrap();
+        assert!(whole.sdf([0.0, 0.0]) < 0.0);
+        assert!(whole.sdf([40.0, 0.0]) < 0.0);
+
+        // Find which region index is the circle (centre x ≈ 40).
+        let regions =
+            crate::sketch_regions::find_regions(&whole, PROFILE_REGION_RESOLUTION);
+        assert_eq!(regions.len(), 2);
+        let circle = regions.iter().find(|r| r.centroid[0] > 20.0).unwrap();
+
+        let (just_circle, _) =
+            resolve_profile_query(&format!("qRegion(1, {})", circle.index), &sketches)
+                .unwrap();
+        assert!(just_circle.sdf([40.0, 0.0]) < 0.0, "circle kept");
+        assert!(just_circle.sdf([0.0, 0.0]) > 0.0, "rectangle dropped");
+    }
+
+    #[test]
+    fn region_query_at_point_matches_listed_index() {
+        // A point inside a region resolves to that region's index — the same
+        // index `find_regions` reports (ticket dhjn: UI ↔ kernel agreement).
+        let sketch = Sketch2d::Union(
+            Box::new(Sketch2d::Prim(Sketch2dPrimitive::Circle {
+                center: [-20.0, 0.0],
+                radius: 5.0,
+            })),
+            Box::new(Sketch2d::Prim(Sketch2dPrimitive::Circle {
+                center: [20.0, 0.0],
+                radius: 5.0,
+            })),
+        );
+        let regions =
+            crate::sketch_regions::find_regions(&sketch, PROFILE_REGION_RESOLUTION);
+        for r in &regions {
+            let idx = crate::sketch_regions::region_index_at_point(
+                &sketch,
+                r.interior,
+                PROFILE_REGION_RESOLUTION,
+            );
+            assert_eq!(idx, Some(r.index));
+        }
+        // Outside every region → None.
+        assert_eq!(
+            crate::sketch_regions::region_index_at_point(
+                &sketch,
+                [0.0, 0.0],
+                PROFILE_REGION_RESOLUTION
+            ),
+            None
+        );
     }
 
     #[test]

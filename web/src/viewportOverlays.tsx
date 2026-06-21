@@ -136,6 +136,13 @@ export function SketchOverlay3D() {
       pointPos: number[];
       fillPos: number[] | null;
       linePick: SketchLinePickable[];
+      // The sketch's plane frame, so a region click can map world→uv for the
+      // kernel's region query (ticket dhjn).
+      frame: {
+        origin: [number, number, number];
+        xAxis: [number, number, number];
+        yAxis: [number, number, number];
+      };
     }[] = [];
     const tri = (poly: [number, number][]): number[][] => {
       const contour = poly.map((q) => new THREE.Vector2(q[0], q[1]));
@@ -187,6 +194,11 @@ export function SketchOverlay3D() {
           pointPos,
           fillPos: fp.length ? fp : null,
           linePick,
+          frame: {
+            origin: frame.origin,
+            xAxis: frame.xAxis,
+            yAxis: frame.yAxis,
+          },
         });
       } catch {
         // Skip invalid sketches
@@ -365,6 +377,7 @@ export function SketchOverlay3D() {
         sketchId: s.id,
         fill: s.fillPos ? new Float32Array(s.fillPos) : null,
         lines: s.linePos.length ? new Float32Array(s.linePos) : null,
+        frame: s.frame,
       })),
     );
     return () => clearSketchPickables();

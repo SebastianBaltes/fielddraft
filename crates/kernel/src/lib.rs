@@ -2062,6 +2062,39 @@ impl Kernel {
         serde_json::to_string(&regions).map_err(|e| JsError::new(&e.to_string()))
     }
 
+    /// Ticket dhjn: the `qRegion(sketch_id, i)` query string for the closed
+    /// region of `sketch_id` containing the sketch-space point `(u, v)`, or an
+    /// empty string when the point is outside every region. The viewport calls
+    /// this when a Revolve/Extrude profile picker is armed and the user clicks
+    /// a single filled region — so the field stores just that region instead of
+    /// the whole sketch. Region index order matches `listSketchRegions`.
+    #[wasm_bindgen(js_name = regionQueryAtPoint)]
+    pub fn region_query_at_point(
+        &self,
+        sketch_id: u32,
+        u: f32,
+        v: f32,
+    ) -> Result<String, JsError> {
+        let target = FeatureId::from_u32(sketch_id);
+        let call = self
+            .document
+            .feature_calls
+            .iter()
+            .find(|c| c.id == target && c.type_name == "sketch")
+            .ok_or_else(|| JsError::new(&format!("feature {sketch_id} is not a sketch")))?;
+        let sub_calls: Vec<serde_json::Value> = call
+            .params
+            .get("sub_calls")
+            .and_then(|v| serde_json::from_value(v.clone()).ok())
+            .unwrap_or_default();
+        let sketch2d = crate::sketch_features::build_sketch2d_from_sub_calls_raw(&sub_calls);
+        let res = crate::sketch_features::PROFILE_REGION_RESOLUTION;
+        match sketch_regions::region_index_at_point(&sketch2d, [u, v], res) {
+            Some(i) => Ok(format!("qRegion({sketch_id}, {i})")),
+            None => Ok(String::new()),
+        }
+    }
+
     /// K13.1: import triangle data as a solid CSG leaf.
     /// Stores only the original positions+indices in the document (~2MB)
     /// instead of the full MeshSdf with tris/bboxes (~175MB after voxel repair).

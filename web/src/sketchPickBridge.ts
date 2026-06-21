@@ -18,6 +18,16 @@
 
 import * as THREE from "three";
 
+/** A sketch's 3D plane frame: world `origin` plus the unit `xAxis`/`yAxis`
+ *  that span the sketch's (u, v) plane. World→uv is `((P−origin)·xAxis,
+ *  (P−origin)·yAxis)` — used to map a click on a filled region back to the
+ *  sketch-space point that addresses one region (ticket dhjn). */
+export interface SketchPickFrame {
+  origin: [number, number, number];
+  xAxis: [number, number, number];
+  yAxis: [number, number, number];
+}
+
 /** One pickable committed sketch: its fill triangles and outline segments,
  *  both flat world-space position arrays (xyz triplets). */
 export interface SketchPickable {
@@ -27,6 +37,19 @@ export interface SketchPickable {
   fill: Float32Array | null;
   /** Flat line-segment endpoints (pairs of xyz), world-space. */
   lines: Float32Array | null;
+  /** The sketch's plane frame, for world→uv region resolution (ticket dhjn). */
+  frame: SketchPickFrame;
+}
+
+/** A sketch hit: which sketch, how far along the ray, the world hit point, and
+ *  the sketch-space (u, v) of that point (ticket dhjn — region resolution). */
+export interface SketchRayHit {
+  sketchId: number;
+  distance: number;
+  /** World-space hit point. */
+  point: [number, number, number];
+  /** Sketch-plane (u, v) of the hit point. */
+  uv: [number, number];
 }
 
 let pickables: SketchPickable[] = [];
@@ -46,15 +69,29 @@ export function clearSketchPickables(): void {
 // triangles are the priority — this is the fallback for open profiles.
 const LINE_PICK_WORLD_RADIUS = 0.5;
 
+/** World→uv in a sketch frame: `((P−origin)·xAxis, (P−origin)·yAxis)`. */
+function worldToUv(
+  p: [number, number, number],
+  frame: SketchPickFrame,
+): [number, number] {
+  const dx = p[0] - frame.origin[0];
+  const dy = p[1] - frame.origin[1];
+  const dz = p[2] - frame.origin[2];
+  return [
+    dx * frame.xAxis[0] + dy * frame.xAxis[1] + dz * frame.xAxis[2],
+    dx * frame.yAxis[0] + dy * frame.yAxis[1] + dz * frame.yAxis[2],
+  ];
+}
+
 /**
  * Nearest committed sketch the ray crosses, or `null`. Fill triangles win by
  * true ray–triangle distance; outline-only sketches fall back to ray-vs-segment
- * proximity. Returns the closest hit by distance along the ray.
+ * proximity. Returns the closest hit by distance along the ray, plus the world
+ * hit point and its sketch-space (u, v) (ticket dhjn — region resolution).
  */
-export function pickSketchAtRay(
-  ray: THREE.Ray,
-): { sketchId: number; distance: number } | null {
-  let best: { sketchId: number; distance: number } | null = null;
+export function pickSketchAtRay(ray: THREE.Ray): SketchRayHit | null {
+  let best: { pickable: SketchPickable; distance: number; point: THREE.Vector3 } | null =
+    null;
   const a = new THREE.Vector3();
   const b = new THREE.Vector3();
   const c = new THREE.Vector3();
@@ -70,7 +107,8 @@ export function pickSketchAtRay(
         // by winding — a sketch is pickable from either side.
         if (ray.intersectTriangle(a, b, c, false, hit)) {
           const d = ray.origin.distanceTo(hit);
-          if (!best || d < best.distance) best = { sketchId: p.sketchId, distance: d };
+          if (!best || d < best.distance)
+            best = { pickable: p, distance: d, point: hit.clone() };
         }
       }
     } else if (p.lines && p.lines.length >= 6) {
@@ -82,12 +120,24 @@ export function pickSketchAtRay(
         const d = raySegmentDistance(ray, a, b, hit);
         if (d <= LINE_PICK_WORLD_RADIUS) {
           const along = ray.origin.distanceTo(hit);
-          if (!best || along < best.distance) best = { sketchId: p.sketchId, distance: along };
+          if (!best || along < best.distance)
+            best = { pickable: p, distance: along, point: hit.clone() };
         }
       }
     }
   }
-  return best;
+  if (!best) return null;
+  const point: [number, number, number] = [
+    best.point.x,
+    best.point.y,
+    best.point.z,
+  ];
+  return {
+    sketchId: best.pickable.sketchId,
+    distance: best.distance,
+    point,
+    uv: worldToUv(point, best.pickable.frame),
+  };
 }
 
 /** Shortest distance between a ray and a segment; writes the point ON the

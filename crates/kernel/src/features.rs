@@ -3424,8 +3424,12 @@ impl FeatureKind for ThickenFeature {
 #[derive(FeatureSchema)]
 #[schema(type = "revolve")]
 pub struct RevolveDef {
-    /// Sketch profile this revolve consumes. `qCreatedBy(sketch_id)`
-    /// is the only query variant honoured today.
+    /// Sketch profile this revolve consumes. Accepts the WHOLE sketch
+    /// (`qCreatedBy(sketch_id)` / `qAllRegions`) or a single closed region
+    /// of it (`qRegion`/`qRegions`) — ticket dhjn. The `SKETCHREGION` entity
+    /// filter tells the viewport's profile picker to resolve a clicked filled
+    /// region to a `qRegion` query instead of the whole sketch.
+    #[param(entity_filter = "SKETCHREGION")]
     pub profiles: ::fielddraft_protocol::Query,
 
     /// Boolean op used to fold the revolved body into the running
@@ -3484,24 +3488,14 @@ impl FeatureKind for RevolveFeature {
         // Resolve the `profiles` query against the sketch table.
         // Unlike ExtrudeFeature, we don't fall back to a legacy
         // half-extent stand-in: Revolve needs a real sketch to
-        // produce any geometry at all.
-        let mut sketch_frame = crate::sketch_features::SketchFrame::IDENTITY;
-        let sketch = (|| -> Option<::fielddraft_protocol::Sketch2d> {
-            let expr = crate::queries::parse_query(d.profiles.as_str()).ok()?;
-            let crate::queries::QueryExpr::CreatedBy(sketch_id) = expr else {
-                return None;
-            };
-            let sketch_data = ctx.sketches.get(&sketch_id)?;
-            let sketch2d = crate::sketch_features::build_sketch2d_from_sub_calls(
-                &sketch_data.sub_calls,
-            );
-            if matches!(sketch2d, ::fielddraft_protocol::Sketch2d::Empty) {
-                None
-            } else {
-                sketch_frame = sketch_data.frame;
-                Some(sketch2d)
-            }
-        })()
+        // produce any geometry at all. Ticket dhjn: the query may name
+        // the WHOLE sketch (`qCreatedBy`) OR a single closed region of it
+        // (`qRegion`/`qRegions`/`qAllRegions`) — `resolve_profile_query`
+        // restricts the profile to the picked region(s) in either case.
+        let (sketch, sketch_frame) = crate::sketch_features::resolve_profile_query(
+            d.profiles.as_str(),
+            &ctx.sketches,
+        )
         .ok_or(FeatureError::MissingParameter {
             feature: RevolveDef::TYPE_NAME,
             name: "profiles",

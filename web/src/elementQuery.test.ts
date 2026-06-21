@@ -3,6 +3,7 @@ import {
   allowedKinds,
   filterAllows,
   filterAllowsSketchLine,
+  filterAllowsSketchRegion,
   queryAcceptedByFilter,
   elementQueryString,
   mapPickToQuery,
@@ -108,6 +109,32 @@ describe("filterAllowsSketchLine", () => {
     expect(filterAllowsSketchLine("FACE")).toBe(false);
     expect(filterAllowsSketchLine(undefined)).toBe(false);
     expect(filterAllowsSketchLine("")).toBe(false);
+  });
+});
+
+describe("filterAllowsSketchRegion (ticket dhjn)", () => {
+  it("only the SKETCHREGION token enables sketch regions", () => {
+    expect(filterAllowsSketchRegion("SKETCHREGION")).toBe(true);
+    expect(filterAllowsSketchRegion("sketchregion")).toBe(true);
+    expect(filterAllowsSketchRegion("FACE")).toBe(false);
+    expect(filterAllowsSketchRegion("SKETCHLINE")).toBe(false);
+    expect(filterAllowsSketchRegion(undefined)).toBe(false);
+    expect(filterAllowsSketchRegion("")).toBe(false);
+  });
+});
+
+describe("queryAcceptedByFilter — SKETCHREGION profile picker (ticket dhjn)", () => {
+  const f = "SKETCHREGION";
+  it("accepts whole-sketch and single-region profile queries", () => {
+    expect(queryAcceptedByFilter("qCreatedBy(5)", f)).toBe(true); // whole sketch
+    expect(queryAcceptedByFilter("qAllRegions(5)", f)).toBe(true);
+    expect(queryAcceptedByFilter("qRegion(5, 0)", f)).toBe(true);
+    expect(queryAcceptedByFilter("qRegions(5, [0, 1])", f)).toBe(true);
+  });
+  it("rejects datum planes, edges and bodies", () => {
+    expect(queryAcceptedByFilter("qCreatedBy(origin_plane_xy)", f)).toBe(false);
+    expect(queryAcceptedByFilter("qEdge(1)", f)).toBe(false);
+    expect(queryAcceptedByFilter("qVertex(1)", f)).toBe(false);
   });
 });
 

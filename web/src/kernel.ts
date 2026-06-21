@@ -623,6 +623,17 @@ export class Kernel {
   }
 
   /**
+   * Ticket dhjn: the `qRegion(sketch_id, i)` query for the closed region of
+   * `sketchId` that contains the sketch-space point `(u, v)`, or `""` when the
+   * point is outside every region. Lets a Revolve/Extrude profile picker store
+   * just the clicked region instead of the whole sketch. Region index order
+   * matches the kernel's own flood-fill (same as `listSketchRegions`).
+   */
+  regionQueryAtPoint(sketchId: number, u: number, v: number): string {
+    return this.inner.regionQueryAtPoint(sketchId, u, v);
+  }
+
+  /**
    * Rigid + uniform-scale placement of body `i`. B-Reps stay body-local and an
    * affine transform never invalidates them; compose this back in with {@link
    * localToWorld} to get world geometry.
