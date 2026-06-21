@@ -332,11 +332,13 @@ type Scalar = number | string;
  * (`=…`), a literal as a plain number; the kernel resolves formulas against the
  * variables table at regen time.
  *
- * The numeric path keeps the unit-aware {@link UnitInput} as long as the cell
- * holds a literal, switching to a free-text input the moment the user types
- * something formula-shaped.
+ * Both modes share ONE persistent text input (ticket 6sjq): the field is never
+ * swapped for a different element when the text crosses the literal⇄formula
+ * boundary, so focus survives typing a variable name (`Welt`) into a field that
+ * previously held a number. While idle a literal renders unit-formatted
+ * (`50.000 mm`); while editing it is free text.
  */
-function ScalarFormulaInput({
+export function ScalarFormulaInput({
   value,
   onCommit,
   unit,
@@ -351,42 +353,93 @@ function ScalarFormulaInput({
   className?: string;
   ariaLabel?: string;
 }) {
+  // Ticket 6sjq: literal and formula share ONE persistent <input>. Switching
+  // the rendered element on every keystroke (literal ⇄ formula) remounted the
+  // field and dropped focus mid-word — typing "Welt" lost focus right after
+  // the "W" (the moment the text stopped looking like a number), so the user
+  // could never finish the variable name and the field appeared to "close".
+  // A single text input that simply reads the typed text — number vs. formula
+  // decided by {@link looksLikeFormula} — keeps focus throughout.
+  const ws = useWorkspaceUnits();
   const formula = isFormula(value);
-  // A formula edits its raw wire form (with the leading `=`) as free text. A
-  // literal stays on the unit-aware numeric input until the user types an
-  // expression, at which point a single change handler re-commits it as a `=…`
-  // formula string and the cell re-renders into formula mode.
-  if (formula) {
-    return (
-      <input
-        id={id}
-        className={(className ?? "input") + " is-formula"}
-        type="text"
-        value={value as string}
-        aria-label={ariaLabel ? `${ariaLabel} formula` : undefined}
-        onChange={(e) => {
-          const text = e.currentTarget.value;
-          // A formula the user has emptied / reduced to a plain number drops
-          // back to a numeric literal (no stray `=`).
-          if (!looksLikeFormula(text)) {
-            const n = Number(text.replace(/^=/, "").trim());
-            onCommit(Number.isFinite(n) ? n : text);
-          } else {
-            onCommit(text.startsWith("=") ? text : `=${text}`);
-          }
-        }}
-      />
-    );
-  }
+
+  // Display unit + formatting for the literal (non-editing) state. Mirrors
+  // UnitInput: length/angle fields follow the workspace display unit.
+  const displayUnit = unit
+    ? isLengthUnit(unit)
+      ? ws.lengthUnit
+      : isAngleUnit(unit)
+        ? ws.angleUnit
+        : unit
+    : undefined;
+  const decimals =
+    unit && isLengthUnit(unit)
+      ? decimalPlaces(ws.lengthDecimals)
+      : unit && isAngleUnit(unit)
+        ? decimalPlaces(ws.angleDecimals)
+        : 3;
+
+  // The committed text for the idle (non-editing) field: the raw formula wire
+  // form, or the unit-formatted literal.
+  const formatValue = (): string => {
+    if (isFormula(value)) return value as string;
+    const n = Number.isFinite(value as number) ? (value as number) : 0;
+    if (!unit || !displayUnit) return String(n);
+    const display = convertUnit(n, unit, displayUnit) ?? n;
+    return `${display.toFixed(decimals)} ${unitDisplayLabel(displayUnit)}`;
+  };
+
+  const [raw, setRaw] = useState(formatValue);
+  const [editing, setEditing] = useState(false);
+
+  // Reformat from props whenever the field is idle (value changed elsewhere,
+  // unit toggled, …). Never while editing — that would fight the user's text.
+  useEffect(() => {
+    if (!editing) setRaw(formatValue());
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [value, displayUnit, decimals, editing]);
+
+  const commit = (text: string) => {
+    if (looksLikeFormula(text)) {
+      onCommit(text.startsWith("=") ? text : `=${text}`);
+      return;
+    }
+    // A plain literal: parse a number (with optional unit) and store it in the
+    // field's base unit. An empty / unparseable field is left for blur to undo.
+    if (unit && displayUnit) {
+      const parsed = parseValueWithUnit(text, displayUnit);
+      if (parsed) {
+        const converted = convertUnit(parsed.value, parsed.unit, unit);
+        if (converted !== null && Number.isFinite(converted)) onCommit(converted);
+      }
+      return;
+    }
+    const n = Number(text.replace(/^=/, "").trim());
+    if (text.length > 0 && Number.isFinite(n)) onCommit(n);
+  };
+
   return (
-    <UnitInput
+    <input
       id={id}
-      className={className ?? "input"}
-      aria-label={ariaLabel}
-      value={Number.isFinite(value as number) ? (value as number) : 0}
-      onCommit={onCommit}
-      onFormula={(text) => onCommit(text.startsWith("=") ? text : `=${text}`)}
-      unit={unit}
+      className={(className ?? "input") + (formula ? " is-formula" : "")}
+      type="text"
+      value={raw}
+      aria-label={
+        ariaLabel ? (formula ? `${ariaLabel} formula` : ariaLabel) : undefined
+      }
+      onChange={(e) => {
+        const text = e.currentTarget.value;
+        setRaw(text);
+        commit(text);
+      }}
+      onFocus={() => setEditing(true)}
+      onBlur={() => {
+        setEditing(false);
+        setRaw(formatValue());
+      }}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") (e.currentTarget as HTMLInputElement).blur();
+      }}
     />
   );
 }
