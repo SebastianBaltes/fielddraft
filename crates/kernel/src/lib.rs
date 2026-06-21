@@ -1715,10 +1715,11 @@ impl Kernel {
     pub fn add_revolve(&mut self, sketch_id: u32, op: u32) -> Result<u32, JsError> {
         let op_wire = Self::op_wire_name(op)?;
         // `sketch_id == 0` creates an EMPTY revolve (ticket 1rax): the
-        // dialog's query picker fills `profiles` afterwards; until then
-        // the feature reports its regen error (red title + tooltip). The
-        // revolve axis defaults to the sketch's local Y at x=0; the dialog's
-        // `axis` query field overrides it with a picked edge/sketch line.
+        // dialog's query picker fills `profiles` + `axis` afterwards. Until
+        // BOTH are resolved the revolve is invalid — it produces NO body and
+        // reports a warning (label warn-colour + tooltip) instead of a garbage
+        // solid (ticket ni56). The `axis` field is REQUIRED; there is no
+        // implicit local-Y fallback.
         if sketch_id == 0 {
             return self.push_feature_call("revolve", serde_json::json!({
                 "profiles": "",

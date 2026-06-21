@@ -3440,9 +3440,9 @@ pub struct RevolveDef {
     /// Revolve axis, as a query on a single straight line. Accepts a
     /// B-Rep edge (`qEdge(hash)`) or a sketch line (`qSketchLine(sketch,
     /// line)`) — both resolve to a world-space line the profile sweeps
-    /// around. Empty (the default) falls back to the sketch's local Y
-    /// axis at `x = 0`, the legacy half-profile convention where the
-    /// axis is implied by the profile sitting on `x ≥ 0`.
+    /// around. REQUIRED (ticket ni56): an empty / unresolvable / off-plane
+    /// axis makes the revolve invalid (no body) with a warning. There is no
+    /// implicit local-Y fallback.
     #[param(default = ::fielddraft_protocol::Query::new(""), entity_filter = "EDGE,SKETCHLINE")]
     pub axis: ::fielddraft_protocol::Query,
 
@@ -3492,14 +3492,22 @@ impl FeatureKind for RevolveFeature {
         // the WHOLE sketch (`qCreatedBy`) OR a single closed region of it
         // (`qRegion`/`qRegions`/`qAllRegions`) — `resolve_profile_query`
         // restricts the profile to the picked region(s) in either case.
-        let (sketch, sketch_frame) = crate::sketch_features::resolve_profile_query(
+        //
+        // Ticket ni56: an incomplete revolve must produce NO body and read as
+        // invalid with a clear warning — never a garbage solid. A missing /
+        // unresolvable profile is exactly that, so we warn and bail out
+        // (return Ok without pushing a feature) instead of erroring out.
+        let Some((sketch, sketch_frame)) = crate::sketch_features::resolve_profile_query(
             d.profiles.as_str(),
             &ctx.sketches,
-        )
-        .ok_or(FeatureError::MissingParameter {
-            feature: RevolveDef::TYPE_NAME,
-            name: "profiles",
-        })?;
+        ) else {
+            ctx.warn_feature(
+                id,
+                "Revolve unvollständig: kein gültiges Profil ausgewählt — kein Körper."
+                    .to_string(),
+            );
+            return Ok(());
+        };
         let name = optional_display_name(def, || format!("Revolve {id}"));
         let rotation = optional_rotation(def);
         let scale = optional_scale(def);
@@ -3514,7 +3522,7 @@ impl FeatureKind for RevolveFeature {
             },
         );
 
-        // Axis query → revolve around an arbitrary in-plane line. We
+        // Axis query → revolve around the chosen in-plane line. We
         // resolve the picked line (B-Rep edge OR sketch line) to a world
         // segment, project it into the profile's sketch frame, and apply
         // the rigid 2D map `M` that carries that line onto the canonical
@@ -3522,59 +3530,59 @@ impl FeatureKind for RevolveFeature {
         // (so the existing revolve-around-Y machinery is reused verbatim)
         // and the inverse `M⁻¹` is post-composed into the placement, so
         // the body lands exactly where the profile was drawn — only the
-        // axis of revolution moves. Empty axis → identity → legacy
-        // local-Y-at-x=0 behaviour.
-        let axis_world = (|| -> Option<([f32; 3], [f32; 3])> {
-            let expr = crate::queries::parse_query(d.axis.as_str()).ok()?;
-            ctx.resolve_axis_world_segment(&expr)
-        })();
-        // Ticket dnfe: a revolve axis must lie IN the profile plane (the profile
-        // rotates around it). A picked edge off the plane (e.g. a box edge
-        // perpendicular to the sketch) makes the revolve geometrically
-        // undefined — warn and ignore it rather than produce garbage.
-        let axis_2d = match axis_world {
-            Some((w0, w1)) if axis_in_sketch_plane(&sketch_frame, w0, w1) => Some((
-                sketch_frame.world_to_local_2d(w0),
-                sketch_frame.world_to_local_2d(w1),
-            )),
-            Some(_) => {
+        // axis of revolution moves.
+        //
+        // Ticket ni56: an axis is REQUIRED. There is no legacy implicit
+        // local-Y fallback anymore — an empty / unresolvable / off-plane axis
+        // makes the revolve invalid (no body) with a clear warning, instead of
+        // silently producing a body around a guessed axis (the old behaviour
+        // also caused the y2xm "tail" while picking an axis: a transient regen
+        // with a not-yet-resolved axis built a degenerate solid).
+        let axis_2d = match classify_revolve_axis(ctx, &sketch_frame, d.axis.as_str()) {
+            RevolveAxis::Valid(a, b) => (a, b),
+            RevolveAxis::Missing => {
                 ctx.warn_feature(
                     id,
-                    "Revolve-Achse liegt nicht in der Sketch-Ebene und wird ignoriert."
+                    "Revolve unvollständig: keine Achse ausgewählt — kein Körper."
                         .to_string(),
                 );
-                None
+                return Ok(());
             }
-            None => None,
+            RevolveAxis::OffPlane => {
+                ctx.warn_feature(
+                    id,
+                    "Revolve-Achse liegt nicht in der Sketch-Ebene — kein Körper."
+                        .to_string(),
+                );
+                return Ok(());
+            }
         };
 
-        let (sketch, transform) = match axis_2d {
-            None => (sketch, base_transform),
-            Some((a, b)) => {
-                let (m, m_inv) = revolve_axis_alignment(a, b);
-                let aligned = transform_sketch_2d(sketch.clone(), &m);
-                // The revolve SDF folds every query to radius √(x²+z²) ≥ 0 and
-                // tests the profile there, so a profile that the axis-alignment
-                // lands on the NEGATIVE-x side is never reached → an EMPTY solid
-                // (tickets a204/ifn2: the SDF/deferred show only the B-Rep edges,
-                // never a surface; only the WebGL lathe mesh — independent of the
-                // SDF — looked right). Reversing the axis direction flips the
-                // profile onto +x: the SAME revolve line, hence the SAME world
-                // solid (the matching M⁻¹ places it back), so pick whichever
-                // orientation lands the profile on +x.
-                if crate::sketch2d::BoundedSketch2d::from_sketch(&aligned)
-                    .aabb()
-                    .max[0]
-                    <= 0.0
-                {
-                    let (m2, m_inv2) = revolve_axis_alignment(b, a);
-                    (
-                        transform_sketch_2d(sketch, &m2),
-                        crate::compose_transforms(&base_transform, &m_inv2),
-                    )
-                } else {
-                    (aligned, crate::compose_transforms(&base_transform, &m_inv))
-                }
+        let (a, b) = axis_2d;
+        let (sketch, transform) = {
+            let (m, m_inv) = revolve_axis_alignment(a, b);
+            let aligned = transform_sketch_2d(sketch.clone(), &m);
+            // The revolve SDF folds every query to radius √(x²+z²) ≥ 0 and
+            // tests the profile there, so a profile that the axis-alignment
+            // lands on the NEGATIVE-x side is never reached → an EMPTY solid
+            // (tickets a204/ifn2: the SDF/deferred show only the B-Rep edges,
+            // never a surface; only the WebGL lathe mesh — independent of the
+            // SDF — looked right). Reversing the axis direction flips the
+            // profile onto +x: the SAME revolve line, hence the SAME world
+            // solid (the matching M⁻¹ places it back), so pick whichever
+            // orientation lands the profile on +x.
+            if crate::sketch2d::BoundedSketch2d::from_sketch(&aligned)
+                .aabb()
+                .max[0]
+                <= 0.0
+            {
+                let (m2, m_inv2) = revolve_axis_alignment(b, a);
+                (
+                    transform_sketch_2d(sketch, &m2),
+                    crate::compose_transforms(&base_transform, &m_inv2),
+                )
+            } else {
+                (aligned, crate::compose_transforms(&base_transform, &m_inv))
             }
         };
 
@@ -3612,6 +3620,46 @@ impl FeatureKind for RevolveFeature {
             target_ids,
         ));
         Ok(())
+    }
+}
+
+/// Classification of a revolve's `axis` query against its profile plane
+/// (ticket ni56). Only [`RevolveAxis::Valid`] yields a body; the other two
+/// variants make the revolve invalid (no body) with a warning.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum RevolveAxis {
+    /// Axis resolved to an in-plane segment, given in the sketch frame's
+    /// local 2D coordinates as `(a, b)`.
+    Valid([f32; 2], [f32; 2]),
+    /// No axis query, or the query couldn't be resolved to a world segment
+    /// (e.g. an empty field or a dangling edge/line reference).
+    Missing,
+    /// The axis resolved but lies off the profile plane (ticket dnfe): the
+    /// profile can't rotate around a line it isn't coplanar with.
+    OffPlane,
+}
+
+/// Resolve a revolve's `axis` query and classify it against the profile plane.
+/// An empty or unresolvable query → [`RevolveAxis::Missing`]; an off-plane
+/// segment → [`RevolveAxis::OffPlane`]; otherwise the in-plane 2D endpoints.
+fn classify_revolve_axis(
+    ctx: &mut Context<'_>,
+    sketch_frame: &crate::sketch_features::SketchFrame,
+    axis_query: &str,
+) -> RevolveAxis {
+    let Some((w0, w1)) = crate::queries::parse_query(axis_query)
+        .ok()
+        .and_then(|expr| ctx.resolve_axis_world_segment(&expr))
+    else {
+        return RevolveAxis::Missing;
+    };
+    if axis_in_sketch_plane(sketch_frame, w0, w1) {
+        RevolveAxis::Valid(
+            sketch_frame.world_to_local_2d(w0),
+            sketch_frame.world_to_local_2d(w1),
+        )
+    } else {
+        RevolveAxis::OffPlane
     }
 }
 
@@ -7004,8 +7052,9 @@ mod tests {
 
     #[test]
     fn revolve_lowers_rectangle_sketch_into_primitive_revolve() {
-        // Profile: a 4 × 20 mm rectangle at r=5, so revolving
-        // it around the Y axis gives a tube.
+        // Profile: a 4 × 20 mm rectangle at r=5, revolved around the local-Y
+        // axis at x=0 (an explicit construction line — ni56 requires one) →
+        // a tube.
         let registry = FeatureRegistry::with_builtins();
         let mut doc = empty_ctx();
         let mut ctx = Context::new(&mut doc);
@@ -7025,6 +7074,13 @@ mod tests {
                             "corner_a": [5.0, -10.0],
                             "corner_b": [9.0, 10.0],
                         }
+                    },
+                    // Axis line at x=0. The rectangle takes entity ids 1–8
+                    // (4 corners + 4 edges), so this line is entity 11.
+                    {
+                        "type": "sketch_line",
+                        "id": "axis",
+                        "params": { "start": [0.0, -10.0], "end": [0.0, 10.0] }
                     }
                 ]
             }),
@@ -7034,6 +7090,7 @@ mod tests {
             revolve_id.clone(),
             json!({
                 "profiles": format!("qCreatedBy({sketch_id})"),
+                "axis": format!("qSketchLine({sketch_id}, 11)"),
             }),
         );
         registry
@@ -7290,11 +7347,11 @@ mod tests {
     }
 
     #[test]
-    fn revolve_axis_not_coplanar_warns_and_falls_back() {
-        // Ticket dnfe: a revolve axis off the profile plane (here a line on the
-        // XY plane used as the axis of a YZ-plane revolve — its x≠0 endpoints
-        // are off the YZ plane) is geometrically invalid → warn + ignore the
-        // axis (fall back to the default local-Y), still producing geometry.
+    fn revolve_axis_not_coplanar_warns_and_produces_no_body() {
+        // Ticket dnfe + ni56: a revolve axis off the profile plane (here a line
+        // on the XY plane used as the axis of a YZ-plane revolve — its x≠0
+        // endpoints are off the YZ plane) is geometrically invalid → warn AND
+        // produce NO body (no implicit local-Y fallback anymore).
         let registry = FeatureRegistry::with_builtins();
         let mut doc = empty_ctx();
         let mut ctx = Context::new(&mut doc);
@@ -7330,14 +7387,80 @@ mod tests {
 
         assert!(
             ctx.feature_warnings.iter().any(|(fid, msg)| *fid == revolve_id
-                && msg.contains("nicht in der Sketch-Ebene")),
-            "off-plane revolve axis must warn, got {:?}",
+                && msg.contains("nicht in der Sketch-Ebene")
+                && msg.contains("kein Körper")),
+            "off-plane revolve axis must warn with 'kein Körper', got {:?}",
             ctx.feature_warnings
         );
-        // Still produced a (default-axis) body.
+        // ni56: produced NO body (the off-plane axis is rejected outright).
         assert!(
-            ctx.features.iter().any(|f| f.id == revolve_id),
-            "revolve still produces geometry with the bad axis ignored"
+            !ctx.features.iter().any(|f| f.id == revolve_id),
+            "off-plane revolve axis must yield no body"
+        );
+    }
+
+    #[test]
+    fn revolve_without_axis_is_invalid_and_warns() {
+        // Ticket ni56: a revolve with a resolvable profile but NO axis must
+        // produce no body and record a clear warning (invalid feature).
+        let registry = FeatureRegistry::with_builtins();
+        let mut doc = empty_ctx();
+        let mut ctx = Context::new(&mut doc);
+        let sketch_id = id(1);
+        let revolve_id = id(2);
+        let calls = vec![
+            FeatureCall::new("sketch", sketch_id.clone(), json!({
+                "plane": "qCreatedBy(origin_plane_xy)",
+                "sub_calls": [
+                    { "type": "sketch_rectangle", "id": "r1",
+                      "params": { "corner_a": [5.0, -10.0], "corner_b": [9.0, 10.0] } }
+                ]
+            })),
+            // No axis field → invalid.
+            FeatureCall::new("revolve", revolve_id.clone(), json!({
+                "profiles": format!("qCreatedBy({sketch_id})"),
+            })),
+        ];
+        registry.regenerate(&mut ctx, &calls, None).unwrap();
+        assert!(
+            !ctx.features.iter().any(|f| f.id == revolve_id),
+            "revolve without an axis must yield no body"
+        );
+        assert!(
+            ctx.feature_warnings.iter().any(|(fid, msg)| *fid == revolve_id
+                && msg.contains("keine Achse")),
+            "missing-axis revolve must warn, got {:?}",
+            ctx.feature_warnings
+        );
+    }
+
+    #[test]
+    fn revolve_without_profile_is_invalid_and_warns() {
+        // Ticket ni56: a revolve whose profile query can't be resolved must
+        // produce no body and warn (instead of erroring out). This is the
+        // empty/just-created revolve case (ticket 1rax).
+        let registry = FeatureRegistry::with_builtins();
+        let mut doc = empty_ctx();
+        let mut ctx = Context::new(&mut doc);
+        let revolve_id = id(1);
+        registry
+            .regenerate(
+                &mut ctx,
+                &[FeatureCall::new("revolve", revolve_id.clone(), json!({
+                    "profiles": "qCreatedBy(sketch_999)",
+                }))],
+                None,
+            )
+            .unwrap();
+        assert!(
+            !ctx.features.iter().any(|f| f.id == revolve_id),
+            "revolve without a profile must yield no body"
+        );
+        assert!(
+            ctx.feature_warnings.iter().any(|(fid, msg)| *fid == revolve_id
+                && msg.contains("kein gültiges Profil")),
+            "missing-profile revolve must warn, got {:?}",
+            ctx.feature_warnings
         );
     }
 
@@ -7430,33 +7553,6 @@ mod tests {
             })
             .count();
         assert_eq!(cap_planes, 2, "start + end cap are analytic plane faces");
-    }
-
-    #[test]
-    fn revolve_errors_when_sketch_cannot_be_resolved() {
-        let registry = FeatureRegistry::with_builtins();
-        let mut doc = empty_ctx();
-        let mut ctx = Context::new(&mut doc);
-        let err = registry
-            .regenerate(
-                &mut ctx,
-                &[FeatureCall::new(
-                    "revolve",
-                    id(1),
-                    json!({
-                        "profiles": "qCreatedBy(sketch_999)",
-                    }),
-                )],
-                None,
-            )
-            .unwrap_err();
-        assert!(matches!(
-            err,
-            FeatureError::MissingParameter {
-                feature: "revolve",
-                name: "profiles",
-            }
-        ));
     }
 
     #[test]
@@ -9485,7 +9581,9 @@ mod tests {
                 ]
             }),
         );
-        let revolve_call = FeatureCall::new("revolve", id(2), json!({ "profiles": "qCreatedBy(1)" }));
+        // ni56: revolve requires an explicit axis. l1 (0,−70)→(0,68) is the
+        // x=0 local-Y axis line, entity id 8 in the solved sketch.
+        let revolve_call = FeatureCall::new("revolve", id(2), json!({ "profiles": "qCreatedBy(1)", "axis": "qSketchLine(1, 8)" }));
         (sketch_call, revolve_call)
     }
 
@@ -10041,7 +10139,9 @@ mod tests {
                 ]
             }),
         );
-        let revolve_call = FeatureCall::new("revolve", id(2), json!({ "profiles": "qCreatedBy(1)" }));
+        // ni56: revolve requires an explicit axis. l1 (0,−70)→(0,68) is the
+        // x=0 local-Y axis line, entity id 8 in the solved sketch.
+        let revolve_call = FeatureCall::new("revolve", id(2), json!({ "profiles": "qCreatedBy(1)", "axis": "qSketchLine(1, 8)" }));
         registry
             .regenerate(&mut ctx, &[sketch_call.clone(), revolve_call.clone()], None)
             .unwrap();
