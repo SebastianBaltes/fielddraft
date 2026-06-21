@@ -548,6 +548,9 @@ function WebGLViewport({
   const wrapRef = useRef<HTMLDivElement>(null);
   const { state } = useKernelStore();
   const suppressBrepOverlays = state?.gizmoDragSuppressed ?? false;
+  // Mirror the WebGPU <Scene>: hide the transform gizmos while a query-by-click
+  // picker is armed so they can't occlude the pickable geometry (ticket pqoe).
+  const queryPickerActive = useQueryPickerActive();
 
   // The kernel's Dual-Contouring mesher produces a boolean-correct mesh of every
   // body. When those are available we render them (booleans visible); until the
@@ -690,6 +693,21 @@ function WebGLViewport({
             <BRepSelectionOverlay ndc={ndc} />
             <BRepSelectedOverlay />
             <BodyHighlightOverlay />
+          </>
+        )}
+        {/* Ticket 7hk3: the Move/transform gizmos must render on the WebGL
+            fallback too. They were only mounted in the WebGPU <Scene>, so in
+            WebGL mode arming Move + selecting a body (via scene click → host
+            pointer `transformBody`, or Parts-list click) materialised the
+            transform feature but drew NO gizmo. SelectionTransformGizmo is
+            renderer-independent (useThree + classic ThreeTransformControls),
+            and this root's manual rAF advance() keeps it interactive without
+            relying on invalidate(). Gated on the query picker like WebGPU. */}
+        {!queryPickerActive && (
+          <>
+            <SelectionTransformGizmo />
+            <ExtrudeDepthGizmo />
+            <SweepPathGizmo />
           </>
         )}
         <gridHelper args={[BUILD_VOLUME_SIZE, 30, "#b8b8ae", "#d6d6ce"]} />

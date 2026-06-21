@@ -1664,6 +1664,14 @@ function PartTree({
       picker.onPick(`qCreatedBy(${seedFeature.id})`);
       return;
     }
+    // Ticket 7hk3: Move mode armed — clicking a body in the Parts list must
+    // arm its transform gizmo exactly like a scene click does (the viewport
+    // host handler calls `transformBody` on a body hit). Previously this row
+    // only highlighted the body, so the gizmo never appeared via the list.
+    if (state.gizmoArmed) {
+      store.transformBody(seedFeature.id);
+      return;
+    }
     store.highlightBody(highlighted === index ? null : index);
   };
 

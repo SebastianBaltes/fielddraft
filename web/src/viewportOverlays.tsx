@@ -1567,9 +1567,23 @@ export function SelectionTransformGizmo() {
     tc.attach(mesh);
     tc.setMode(gizmoMode);
     tc.setSize(0.5);
-    helper.traverse((child: THREE.Object3D) =>
-      child.layers.enable(OVERLAY_LAYER),
-    );
+    helper.traverse((child: THREE.Object3D) => {
+      child.layers.enable(OVERLAY_LAYER);
+      // Ticket 7hk3: on the WebGL fallback the gizmo's FIRST program compile can
+      // land before the classic WebGLRenderer's shader infrastructure is fully
+      // warm (the manual-advance root renders the helper on the very first frame
+      // it appears). That throws inside resolveIncludes and three caches the
+      // failed program, so the gizmo silently never draws on the first
+      // arm-and-select after load. Forcing the helper's materials to recompile
+      // clears any cached failure on the next (warm) frame — a one-time no-op on
+      // WebGPU and on every subsequent mount. Mirrors the manual recompile that
+      // was verified to make the arrows appear.
+      const mat = (child as THREE.Mesh).material;
+      if (mat) {
+        if (Array.isArray(mat)) mat.forEach((m) => (m.needsUpdate = true));
+        else mat.needsUpdate = true;
+      }
+    });
 
     const onDragging = (e: { value: boolean }) => {
       if (defaultControls) (defaultControls as any).enabled = !e.value;
