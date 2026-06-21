@@ -21,6 +21,7 @@ import {
   Fn,
   If,
   Loop,
+  abs,
   atomicAdd,
   atomicLoad,
   atomicOr,
@@ -82,11 +83,9 @@ import {
 const DEFERRED_MAX_OPCODES = 16384;
 const MAX_BODIES = 256;
 const DEFERRED_MARCH_STEPS = 512;
-// Forward-difference step for the opaque-hit polish gradient (Ticket vlhp),
-// matching NORMAL_EPS. The polish is two UNROLLED Newton steps (no loop) — a
-// dynamic loop with nested SDF evals compiled so heavily it tripped the WebGPU
-// device-loss watchdog; unrolled straight-line code stays light.
-const POLISH_EPS = 0.01;
+// Sphere-trace steps used to polish a rasterized opaque hit onto the true SDF
+// surface (Ticket vlhp). Few are needed: the proxy hit starts sub-facet-close.
+const POLISH_STEPS = 8;
 const SURFACE_EPS = 0.002;
 const HULL_INFLATE = 1.01;
 const MAX_PIXELS = 4096 * 2160;
@@ -462,33 +461,30 @@ function createShadeMaterial(
   // facet edges). Sampling the central-difference normal at such a point makes
   // the normal wobble with that same angular period → radial spokes on curved
   // faces. sdf-vm never shows this because it has no proxy: it marches the true
-  // SDF and lands shadePos exactly on the smooth isosurface. So snap shadePos
-  // onto the real surface before the normal is taken, by Newton-stepping along
-  // the SDF gradient: p -= d·∇d/|∇d|. The gradient step moves PERPENDICULAR to
-  // the surface, so it converges regardless of view angle — unlike a view-ray
-  // sphere-trace, which stalls at the grazing underside (exactly where the
-  // spokes were worst). Two unrolled steps suffice (proxy starts sub-facet-
-  // close, Newton converges quadratically); flat faces (box proxy == SDF) get
-  // d≈0 and stay put.
+  // SDF and lands shadePos exactly on the smooth isosurface. So re-trace the
+  // true SDF along the view ray from the proxy hit — only a handful of steps,
+  // since we start sub-facet-close — to snap shadePos onto the real surface
+  // before the normal is taken. A signed sphere-trace converges whether the
+  // proxy chord sits just outside (d>0) or just inside (d<0) the surface.
   const refineOpaqueHit = (rawPos: any, bodyIdx: any) => {
     const baseOff = int(offsetBuf.element(bodyIdx.mul(2)));
     const volBase = int(volumeBaseBuf.element(bodyIdx));
-    const e = float(POLISH_EPS);
-    const ex = vec3(e, 0, 0);
-    const ey = vec3(0, e, 0);
-    const ez = vec3(0, 0, e);
-    const p = vec3(rawPos).toVar();
-    const newtonStep = () => {
-      const d = sdfEval({ p, baseOffset: baseOff, volumeBaseIdx: volBase, bodyIdx }).toVar();
-      const dx = sdfEval({ p: p.add(ex), baseOffset: baseOff, volumeBaseIdx: volBase, bodyIdx }).sub(d);
-      const dy = sdfEval({ p: p.add(ey), baseOffset: baseOff, volumeBaseIdx: volBase, bodyIdx }).sub(d);
-      const dz = sdfEval({ p: p.add(ez), baseOffset: baseOff, volumeBaseIdx: volBase, bodyIdx }).sub(d);
-      const g = normalize(vec3(dx, dy, dz));
-      p.subAssign(g.mul(d));
-    };
-    newtonStep();
-    newtonStep();
-    return p;
+    const rd = normalize(rawPos.sub(camPosU));
+    const t = float(0).toVar();
+    Loop(int(POLISH_STEPS), () => {
+      const p = rawPos.add(rd.mul(t));
+      const d = sdfEval({
+        p,
+        baseOffset: baseOff,
+        volumeBaseIdx: volBase,
+        bodyIdx,
+      });
+      If(abs(d).lessThan(float(SURFACE_EPS)), () => {
+        Break();
+      });
+      t.addAssign(d);
+    });
+    return rawPos.add(rd.mul(t));
   };
 
   const material = new MeshBasicNodeMaterial();
