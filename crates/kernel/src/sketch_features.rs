@@ -2996,6 +2996,31 @@ pub fn build_sketch2d_from_sub_calls(sub_calls: &[FeatureCall]) -> Sketch2d {
                     }
                 }
             }
+            // Ticket 6b41: a `sketch_arc` is an open curve whose two endpoints
+            // can close a contour together with lines/splines/other arcs (e.g. a
+            // diameter line + a semicircular arc → a half-disc). Offer it to the
+            // chainer as a single `Arc` segment so that loop is detected as a
+            // closed region. A full-circle arc (|sweep| ≈ 2π) is already closed
+            // on its own, so it stays out of the chainer and is lowered to a
+            // `Sector` below; likewise a lone open arc that joins no loop falls
+            // through to the `Sector` (pie-wedge) lowering via `consumed`.
+            "sketch_arc" => {
+                if let Ok(d) = SketchArcDef::parse(&call.params) {
+                    let nearly_full =
+                        (d.sweep_angle.abs() - std::f32::consts::TAU).abs() < 1e-3;
+                    if d.radius > 0.0 && d.sweep_angle.abs() > 1e-6 && !nearly_full {
+                        chainable.push(ChainElement {
+                            call_index: idx,
+                            segments: vec![SketchSegment::Arc {
+                                center: d.center,
+                                radius: d.radius,
+                                start_angle: d.start_angle,
+                                sweep_angle: d.sweep_angle,
+                            }],
+                        });
+                    }
+                }
+            }
             _ => {}
         }
     }
@@ -5156,6 +5181,79 @@ mod tests {
         assert!(sketch.sdf([5.0, 10.0]) < 0.0, "interior inside");
         assert!(sketch.sdf([-5.0, 10.0]) > 0.0, "left of axis outside");
         assert!(sketch.sdf([20.0, 10.0]) > 0.0, "far right outside");
+    }
+
+    #[test]
+    fn loop_inference_closes_arc_and_line_into_half_disc() {
+        // Ticket 6b41: a semicircle drawn as a diameter LINE plus a half-circle
+        // ARC must close into one region (the half-disc). The arc spans the
+        // upper half (start 0, sweep +π) from (10,0) over (0,10) to (−10,0); the
+        // line runs back across the diameter. Before the fix the arc was lowered
+        // to a full pie-`Sector` and never chained, so the half-disc had no
+        // region and the profile picker couldn't pick it.
+        let calls = vec![
+            FeatureCall::new(
+                "sketch_arc",
+                id(1),
+                json!({
+                    "center": [0.0, 0.0],
+                    "radius": 10.0,
+                    "start_angle": 0.0,
+                    "sweep_angle": std::f32::consts::PI
+                }),
+            ),
+            FeatureCall::new(
+                "sketch_line",
+                id(2),
+                json!({ "start": [-10.0, 0.0], "end": [10.0, 0.0] }),
+            ),
+        ];
+        let sketch = build_sketch2d_from_sub_calls(&calls);
+        assert!(sketch.sdf([0.0, 5.0]) < 0.0, "inside the upper half-disc");
+        assert!(sketch.sdf([0.0, -5.0]) > 0.0, "below the diameter outside");
+        assert!(sketch.sdf([0.0, 15.0]) > 0.0, "above the arc outside");
+        // The half-disc is exactly ONE detected region, pickable by qRegion(_,0).
+        let regions =
+            crate::sketch_regions::find_regions(&sketch, PROFILE_REGION_RESOLUTION);
+        assert_eq!(regions.len(), 1, "one region for the half-disc");
+        assert_eq!(
+            crate::sketch_regions::region_index_at_point(
+                &sketch,
+                [0.0, 5.0],
+                PROFILE_REGION_RESOLUTION
+            ),
+            Some(0),
+            "click inside the half-disc resolves to region 0"
+        );
+        assert_eq!(
+            crate::sketch_regions::region_index_at_point(
+                &sketch,
+                [0.0, -5.0],
+                PROFILE_REGION_RESOLUTION
+            ),
+            None,
+            "click below the diameter resolves to no region"
+        );
+    }
+
+    #[test]
+    fn lone_full_circle_arc_stays_a_sector() {
+        // A near-full-circle `sketch_arc` is closed on its own; it must NOT be
+        // pulled into the line chainer (it would never chain anyway), and stays
+        // lowered to a `Sector` disc so a lone arc keeps its standalone region.
+        let calls = vec![FeatureCall::new(
+            "sketch_arc",
+            id(1),
+            json!({
+                "center": [0.0, 0.0],
+                "radius": 8.0,
+                "start_angle": 0.0,
+                "sweep_angle": std::f32::consts::TAU
+            }),
+        )];
+        let sketch = build_sketch2d_from_sub_calls(&calls);
+        assert!(sketch.sdf([0.0, 0.0]) < 0.0, "disc centre inside");
+        assert!(sketch.sdf([0.0, 12.0]) > 0.0, "outside the disc");
     }
 
     #[test]
