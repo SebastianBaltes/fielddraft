@@ -89,6 +89,7 @@ import {
   clearSketchLabels,
   type SketchLabel,
 } from "./sketchLabelBridge";
+import { snapToCircles, type SnapCircle } from "./sketchCircleSnap";
 import { bsplinePoints, catmullRomPoints, type Vec2 } from "./sketchSpline";
 import { curveOfSubCall, distToCurve, nearestTrimTarget } from "./sketchTrim";
 import { nearestProjectedEdge } from "./sketchProject";
@@ -490,6 +491,50 @@ function dist2d(a: [number, number], b: [number, number]): number {
   return Math.hypot(a[0] - b[0], a[1] - b[1]);
 }
 
+/**
+ * Ticket fkig: collect the sketch's circles and arcs as resolved
+ * [`SnapCircle`]s so a drawn endpoint can snap onto their rim / centre /
+ * quadrants. Centres and arc endpoints are looked up from the entity list;
+ * an arc's live span is recovered from the angles of its start/end points
+ * about the centre (PlaneGCS stores arcs CCW from start to end).
+ */
+function snapCirclesOf(state: SketchState): SnapCircle[] {
+  const pointAt = (id: number): [number, number] | null => {
+    const e = state.entities.find((x) => x.id === id);
+    if (e?.kind === "point") return [e.at.x, e.at.y];
+    if (e?.kind === "origin") return [0, 0];
+    return null;
+  };
+  const out: SnapCircle[] = [];
+  for (const e of state.entities) {
+    if (e.kind === "circle") {
+      const c = pointAt(e.center);
+      if (c && e.radius > 1e-9) {
+        out.push({ id: e.id, centerId: e.center, center: c, radius: e.radius });
+      }
+    } else if (e.kind === "arc") {
+      const c = pointAt(e.center);
+      const s = pointAt(e.start);
+      const en = pointAt(e.end);
+      if (c && s && en && e.radius > 1e-9) {
+        const a0 = Math.atan2(s[1] - c[1], s[0] - c[0]);
+        const a1 = Math.atan2(en[1] - c[1], en[0] - c[0]);
+        let sweep = a1 - a0;
+        while (sweep <= 0) sweep += Math.PI * 2; // CCW span in (0, 2π]
+        out.push({
+          id: e.id,
+          centerId: e.center,
+          center: c,
+          radius: e.radius,
+          start: a0,
+          sweep,
+        });
+      }
+    }
+  }
+  return out;
+}
+
 type DragState =
   | { kind: "idle" }
   | {
@@ -782,6 +827,36 @@ function resolveSnap(
       : null;
   })();
 
+  // Ticket fkig: snap onto an existing SKETCH CIRCLE / ARC — rim projection,
+  // centre, or quadrant. Like the line snap above it's a fallback below the
+  // endpoint/origin coincident snaps (a real vertex still wins), but a circle
+  // centre is itself a coincident target so the commit binds to it. The draft
+  // curve isn't a committed entity, so we never snap onto what's being drawn.
+  const circleSnap = ((): SnapResolution | null => {
+    const hit = snapToCircles(snapCirclesOf(state), cursor, SNAP_RADIUS_MM);
+    if (!hit) return null;
+    // A centre snap is a coincident-to-point relationship; rim / quadrant land
+    // ON the curve, so the commit emits point-on-object (classifyLineAnchor).
+    return {
+      snapped: hit.at,
+      candidate: null,
+      anchor: hit.at,
+      coincidentTargetId: hit.kind === "center" ? hit.curve.centerId : null,
+    };
+  })();
+
+  // Combined geometry fallback: whichever of the line / circle projection is
+  // closer to the cursor (both already passed their own snap radius). A circle
+  // centre wins outright — it carries a coincident target the line snap can't.
+  const curveSnap: SnapResolution | null = (() => {
+    if (circleSnap && circleSnap.coincidentTargetId !== null) return circleSnap;
+    if (!circleSnap) return lineSnap;
+    if (!lineSnap) return circleSnap;
+    const dC = dist2d(cursor, circleSnap.anchor ?? cursor);
+    const dL = dist2d(cursor, lineSnap.anchor ?? cursor);
+    return dC <= dL ? circleSnap : lineSnap;
+  })();
+
   // K6b: check B-Rep edge snapping before falling through to no-snap.
   // Edge snap is lower priority than entity snap (coincident/H/V) but
   // higher priority than no snap at all.
@@ -819,8 +894,9 @@ function resolveSnap(
   }
 
   if (cands.length === 0) {
-    // Fall back to a sketch-line projection snap before giving up (pgyf/ymbp).
-    if (lineSnap) return lineSnap;
+    // Fall back to a sketch line / circle projection snap before giving up
+    // (pgyf/ymbp for lines, fkig for circles & arcs).
+    if (curveSnap) return curveSnap;
     return {
       snapped: cursor,
       candidate: null,
@@ -903,8 +979,8 @@ function resolveSnap(
     }
   }
   // No endpoint / H-V / parallel snap applied — fall back to projecting onto a
-  // sketch line if the cursor is near one (pgyf/ymbp).
-  if (lineSnap) return lineSnap;
+  // sketch line (pgyf/ymbp) or circle/arc (fkig) if the cursor is near one.
+  if (curveSnap) return curveSnap;
   return {
     snapped: cursor,
     candidate: null,
@@ -968,6 +1044,20 @@ function classifyLineAnchor(
     if (!a || !b || a.kind !== "point" || b.kind !== "point") continue;
     const np = nearestPointOnSegment(pt, [a.at.x, a.at.y], [b.at.x, b.at.y]);
     if (dist2d(pt, np) < ANCHOR_ON_EPS_MM) return { kind: "object", id: e.id };
+  }
+  // Ticket fkig: an endpoint snapped onto a circle / arc rim binds to that
+  // curve with point-on-object, so a later radius change keeps it on the rim.
+  // The snap already placed it exactly on the radius, so test radial distance.
+  for (const c of snapCirclesOf(state)) {
+    const radial = Math.abs(dist2d(pt, c.center) - c.radius);
+    if (radial >= ANCHOR_ON_EPS_MM) continue;
+    if (c.start !== undefined && c.sweep !== undefined) {
+      // Arc: only bind when the point's angle is on the live span.
+      let off = Math.atan2(pt[1] - c.center[1], pt[0] - c.center[0]) - c.start;
+      while (off < 0) off += Math.PI * 2;
+      if (off > c.sweep + 1e-6) continue;
+    }
+    return { kind: "object", id: c.id };
   }
   return null;
 }
@@ -3839,7 +3929,11 @@ function buildSketchHudUv(
     previewPoints,
     previewGuides,
     hover: drag.kind === "idle" ? hover : null,
-    snap: snap.anchor && snap.candidate ? snap.anchor : null,
+    // Show the snap ring whenever the cursor is pulled onto a target — an
+    // inference candidate (endpoint/H/V/…) OR a geometry projection snap
+    // (line: pgyf/ymbp, circle/arc: fkig), which carry no candidate but do
+    // place the cursor exactly on geometry.
+    snap: snap.anchor,
     projected: projectedEdges.map(
       (e) => [e.p0, e.p1] as [[number, number], [number, number]],
     ),
