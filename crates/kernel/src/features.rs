@@ -2941,9 +2941,14 @@ impl FeatureKind for HoleFeature {
 #[schema(type = "extrude")]
 pub struct ExtrudeDef {
     /// Sketch profile this extrude consumes. Evaluated against
-    /// [`Context::sketches`] at regeneration time. Only
-    /// `qCreatedBy(sketch_id)` is honoured today; other query
-    /// variants fall through to the fallback extents.
+    /// [`Context::sketches`] at regeneration time via
+    /// [`crate::sketch_features::resolve_profile_query`]. Accepts the WHOLE
+    /// sketch (`qCreatedBy(sketch_id)` / `qAllRegions`) or a single closed
+    /// region of it (`qRegion`/`qRegions`) — ticket tgdg. The `SKETCHREGION`
+    /// entity filter tells the viewport's profile picker to resolve a clicked
+    /// filled region to a `qRegion` query instead of the whole sketch (it is
+    /// the same picker path Revolve uses, ticket dhjn).
+    #[param(entity_filter = "SKETCHREGION")]
     pub profiles: ::fielddraft_protocol::Query,
 
     /// Extrude depth along the local Z axis. Any supported
@@ -3146,18 +3151,31 @@ impl FeatureKind for ExtrudeFeature {
         let mut resolved_sketch: Option<::fielddraft_protocol::Sketch2d> = None;
         let mut sketch_frame = crate::sketch_features::SketchFrame::IDENTITY;
         let mut sketch_was_found_but_empty = false;
-        if let Ok(crate::queries::QueryExpr::CreatedBy(sketch_id)) =
-            crate::queries::parse_query(d.profiles.as_str())
-        {
-            if let Some(sketch_data) = ctx.sketches.get(&sketch_id) {
-                let sketch2d = crate::sketch_features::build_sketch2d_from_sub_calls(
-                    &sketch_data.sub_calls,
-                );
-                if !matches!(sketch2d, ::fielddraft_protocol::Sketch2d::Empty) {
-                    resolved_sketch = Some(sketch2d);
-                    sketch_frame = sketch_data.frame;
-                } else {
-                    sketch_was_found_but_empty = true;
+        // Ticket tgdg: resolve `qCreatedBy`/`qAllRegions`/`qRegion`/`qRegions`
+        // through the same path Revolve uses (ticket dhjn) so a single picked
+        // region extrudes just that region (holes preserved), not the whole
+        // sketch. `resolve_profile_query` returns `None` both for an
+        // unresolvable query (→ legacy half-extent fallback) and for a sketch
+        // that resolved but has no closed regions; distinguish those so the
+        // "draw a closed region first" error still fires.
+        match crate::sketch_features::resolve_profile_query(
+            d.profiles.as_str(),
+            &ctx.sketches,
+        ) {
+            Some((sketch2d, frame)) => {
+                resolved_sketch = Some(sketch2d);
+                sketch_frame = frame;
+            }
+            None => {
+                // A `qCreatedBy(id)` that names a known sketch with no
+                // extrudable region is the "found but empty" case.
+                if let Ok(crate::queries::QueryExpr::CreatedBy(sketch_id))
+                | Ok(crate::queries::QueryExpr::AllRegions(sketch_id)) =
+                    crate::queries::parse_query(d.profiles.as_str())
+                {
+                    if ctx.sketches.contains_key(&sketch_id) {
+                        sketch_was_found_but_empty = true;
+                    }
                 }
             }
         }
@@ -6058,6 +6076,58 @@ mod tests {
                 assert_eq!(half_extents[2], 5.0);
             }
             other => panic!("expected Primitive::Box, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn extrude_qregion_extrudes_only_the_picked_region() {
+        // Ticket tgdg: a two-region sketch (rectangle + a separate circle). The
+        // extrude must now resolve `qRegion(s, i)` through the same path Revolve
+        // uses, so a single picked region extrudes JUST that region — not the
+        // whole sketch. Before the fix the executor honoured only
+        // `qCreatedBy(sketch)` and a `qRegion` fell through to the half-extent
+        // fallback (a wrong box / no body).
+        use crate::sketch_features::{SketchData, SketchFrame};
+        use fielddraft_solver::SketchState;
+        let mut doc = empty_ctx();
+        let mut ctx = Context::new(&mut doc);
+        let sketch_calls = vec![
+            ::fielddraft_protocol::FeatureCall::new(
+                "sketch_rectangle",
+                id(2),
+                json!({ "corner_a": [-10.0, -10.0], "corner_b": [10.0, 10.0] }),
+            ),
+            ::fielddraft_protocol::FeatureCall::new(
+                "sketch_circle",
+                id(3),
+                json!({ "center": [40.0, 0.0], "radius": 5.0 }),
+            ),
+        ];
+        ctx.sketches.insert(
+            id(1),
+            SketchData {
+                state: SketchState::with_origin(),
+                sub_calls: sketch_calls.clone(),
+                frame: SketchFrame::IDENTITY,
+            },
+        );
+
+        // Find which region index is the circle (centre x ≈ 40).
+        let whole = crate::sketch_features::build_sketch2d_from_sub_calls(&sketch_calls);
+        let regions = crate::sketch_regions::find_regions(&whole, 96);
+        let circle = regions.iter().find(|r| r.centroid[0] > 20.0).unwrap();
+
+        let def = json!({
+            "profiles": format!("qRegion(1, {})", circle.index),
+            "depth": { "value": 10.0, "unit": "mm" },
+        });
+        ExtrudeFeature.execute(&mut ctx, &id(4), &def).unwrap();
+        match &ctx.features[0].export_primitive().expect("extrude primitive") {
+            Primitive::Extrude { sketch, .. } => {
+                assert!(sketch.sdf([40.0, 0.0]) < 0.0, "circle region kept");
+                assert!(sketch.sdf([0.0, 0.0]) > 0.0, "rectangle region dropped");
+            }
+            other => panic!("expected Primitive::Extrude, got {other:?}"),
         }
     }
 
