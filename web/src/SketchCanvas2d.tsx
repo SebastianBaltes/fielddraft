@@ -2117,20 +2117,19 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
         const axis = nearestLineSubCall(session.subCalls, [u, v], tolMm);
         if (axis !== null) {
           mirrorAxisRef.current = axis;
-          store.clearSketchSelection(); // start a fresh object set
-          setToolHint(
-            "Spiegeln: Objekte anklicken — Enter wendet an, Esc bricht ab.",
-          );
+          store.clearSketchSelection();
+          setToolHint("Spiegeln: Teile anklicken zum Spiegeln · Esc beendet.");
         }
         lastCamVersionRef.current = -1;
         return;
       }
-      // Step 2 (axis set): clicks toggle the objects to mirror into the
-      // selection. Enter (keyboard handler below) applies, Esc cancels.
+      // Step 2 (axis set): ticket ps21 — each click on a part mirrors it
+      // LIVE across the axis (Onshape pick-to-apply), no Enter, no
+      // selection collecting. Esc ends the tool (keyboard handler below).
       const tolMm = SELECT_PICK_PX / Math.max(cam.zoom, 1e-6);
       const state = buildDraftSketchState(session.subCalls);
       const hit = hitTestSketchEntity(state, [u, v], tolMm);
-      if (hit !== null) store.toggleSketchSelection(hit);
+      if (hit !== null) store.mirrorSketchEntityAt(mirrorAxisRef.current, hit);
       lastCamVersionRef.current = -1;
       return;
     }
@@ -3018,30 +3017,28 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
     return () => window.removeEventListener("keydown", onKey);
   }, [session.active, editor, textEditor, cornerEditor]);
 
-  // Ticket jq6i: Mirror tool — once an axis is picked, Enter applies the
-  // reflection across it for the selected objects, Esc cancels back to the
-  // pick-axis step. (Step 1, no axis, is handled by the pointerdown handler.)
+  // Ticket ps21: Mirror tool — pick-to-apply. Clicks on parts mirror them
+  // live across the picked axis (pointerdown handler), so there is no
+  // Enter-applies step. Esc ENDS the tool: with an axis set it drops back
+  // to the pick-axis step; pressed again (no axis) it leaves Mirror for the
+  // default Select tool. Switching to another toolbar button also ends it
+  // (the selectedTool effect resets mirrorAxisRef).
   useEffect(() => {
     if (!store || session.selectedTool !== "sketch_mirror") return;
     const onKey = (e: KeyboardEvent) => {
-      const axis = mirrorAxisRef.current;
-      if (axis === null) return;
-      if (e.key === "Enter") {
-        e.preventDefault();
-        if (session.selection.length > 0) store.mirrorSketchSelection(axis);
+      if (e.key !== "Escape") return;
+      e.preventDefault();
+      if (mirrorAxisRef.current !== null) {
         mirrorAxisRef.current = null;
         store.clearSketchSelection();
         setToolHint(initialToolHint("sketch_mirror"));
-      } else if (e.key === "Escape") {
-        e.preventDefault();
-        mirrorAxisRef.current = null;
-        store.clearSketchSelection();
-        setToolHint(initialToolHint("sketch_mirror"));
+      } else {
+        store.selectSketchTool(null);
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [store, session.selectedTool, session.selection]);
+  }, [store, session.selectedTool]);
 
   // F23: keyboard finish for the spline gesture — Enter commits the
   // in-progress spline (open, needs ≥ 2 control points); Escape cancels

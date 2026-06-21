@@ -3316,13 +3316,6 @@ export class KernelStore {
     if (!session.active) return;
     if (session.selection.length === 0) return;
 
-    const axisCall = session.subCalls[axisLineIndex];
-    if (!axisCall) return;
-    const axisCurve = curveOfSubCall(axisCall);
-    if (!axisCurve || axisCurve.kind !== "line") return;
-    const axisA = axisCurve.a;
-    const axisB = axisCurve.b;
-
     // Map the entity-id selection back to the simple-geometry sub-calls
     // that produced it, dropping the axis line and any non-simple kinds.
     const sources = subCallsForSelection(
@@ -3332,7 +3325,55 @@ export class KernelStore {
       if (i === axisLineIndex) return false;
       return curveOfSubCall(session.subCalls[i]) !== null;
     });
+    const appended = this.mirrorSubCallsAcrossAxis(axisLineIndex, sources);
+    if (!appended) return;
+    this.updateSketch(reduceClearSelection(this.state.sketchSession));
+    void solveAndReplace(this);
+  }
+
+  /**
+   * Ticket ps21: live "pick-to-apply" Mirror. Reflect the single sketch
+   * entity `entityId` across the axis line at `axisLineIndex` and append
+   * the mirrored copy immediately — no Enter, no selection step. Each
+   * click in the viewport while the Mirror tool's axis is set calls this,
+   * so the result appears the instant the user clicks the source object
+   * (Onshape style). No-op when the entity maps to no simple curve, is the
+   * axis itself, or the axis isn't a line.
+   */
+  mirrorSketchEntityAt(axisLineIndex: number, entityId: number): void {
+    const session = this.state.sketchSession;
+    if (!session.active) return;
+    const sources = subCallsForSelection(session.subCalls, [entityId]).filter(
+      (i) => {
+        if (i === axisLineIndex) return false;
+        return curveOfSubCall(session.subCalls[i]) !== null;
+      },
+    );
     if (sources.length === 0) return;
+    if (this.mirrorSubCallsAcrossAxis(axisLineIndex, sources)) {
+      void solveAndReplace(this);
+    }
+  }
+
+  /**
+   * Shared core for both Mirror entry points: reflect every sub-call in
+   * `sourceIndices` across the line at `axisLineIndex` and append the
+   * mirrored copies (carrying each source's construction flag). Returns
+   * `true` when at least one mirrored copy was pushed, `false` on a no-op
+   * (axis not a line, no mirrorable sources). Does NOT touch the selection
+   * or trigger a re-solve — callers decide.
+   */
+  private mirrorSubCallsAcrossAxis(
+    axisLineIndex: number,
+    sourceIndices: ReadonlyArray<number>,
+  ): boolean {
+    const session = this.state.sketchSession;
+    const axisCall = session.subCalls[axisLineIndex];
+    if (!axisCall) return false;
+    const axisCurve = curveOfSubCall(axisCall);
+    if (!axisCurve || axisCurve.kind !== "line") return false;
+    const axisA = axisCurve.a;
+    const axisB = axisCurve.b;
 
     const carry = (params: Record<string, unknown>): Record<string, unknown> =>
       params.construction !== undefined
@@ -3341,7 +3382,7 @@ export class KernelStore {
 
     const mirrored: Array<{ type: string; params: Record<string, unknown> }> =
       [];
-    for (const i of sources) {
+    for (const i of sourceIndices) {
       const call = session.subCalls[i];
       const cv = curveOfSubCall(call);
       if (!cv) continue;
@@ -3349,11 +3390,9 @@ export class KernelStore {
         subCallOfCurve(mirrorCurve(cv, axisA, axisB), carry(call.params)),
       );
     }
-    if (mirrored.length === 0) return;
-
+    if (mirrored.length === 0) return false;
     this.pushSketchSubCalls(mirrored);
-    this.updateSketch(reduceClearSelection(this.state.sketchSession));
-    void solveAndReplace(this);
+    return true;
   }
 
   /** F10: set the radius (mm) the two-click `sketch_fillet` tool uses to

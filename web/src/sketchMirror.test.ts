@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { mirrorCurve, reflectPoint } from "./sketchMirror";
-import type { Curve, Vec2 } from "./sketchTrim";
+import { curveOfSubCall, subCallOfCurve, type Curve, type Vec2 } from "./sketchTrim";
+import { subCallsForSelection } from "./sketchSession";
 
 const close = (a: number, b: number, eps = 1e-9) => Math.abs(a - b) < eps;
 const closeV = (a: Vec2, b: Vec2, eps = 1e-9) =>
@@ -128,5 +129,53 @@ describe("mirrorCurve", () => {
   it("throws (via reflectPoint) on a degenerate axis", () => {
     const cv: Curve = { kind: "line", a: [1, 2], b: [4, 5] };
     expect(() => mirrorCurve(cv, [0, 0], [0, 0])).toThrow();
+  });
+});
+
+// Ticket ps21: live "pick-to-apply" Mirror. Each click on a part maps its
+// hit entity id back to its source sub-call (subCallsForSelection),
+// reflects that one curve across the axis line and appends the mirrored
+// copy — no selection collecting, no Enter. This pins the exact pipeline
+// store.mirrorSketchEntityAt runs per click.
+describe("mirrorSketchEntityAt pipeline (ps21 live pick-to-apply)", () => {
+  // Spine: axis line A (start id 1, end id 2, line id 3) along the Y axis,
+  // then a circle (centre id 4, circle id 5) at (5, 2).
+  const subCalls = [
+    { type: "sketch_line", params: { start: [0, -5], end: [0, 5] } },
+    { type: "sketch_circle", params: { center: [5, 2], radius: 1.5 } },
+  ];
+  const axisLineIndex = 0;
+
+  const mirrorOneEntity = (entityId: number) => {
+    const sources = subCallsForSelection(subCalls, [entityId]).filter((i) => {
+      if (i === axisLineIndex) return false;
+      return curveOfSubCall(subCalls[i]) !== null;
+    });
+    const axisCv = curveOfSubCall(subCalls[axisLineIndex]);
+    if (!axisCv || axisCv.kind !== "line") return [];
+    return sources.flatMap((i) => {
+      const cv = curveOfSubCall(subCalls[i]);
+      return cv ? [subCallOfCurve(mirrorCurve(cv, axisCv.a, axisCv.b), {})] : [];
+    });
+  };
+
+  it("clicking the circle mirrors it across the Y axis to the left", () => {
+    // Hitting the circle's rim (id 5) or its centre (id 4) both resolve to
+    // the same source sub-call and mirror it live.
+    for (const hit of [5, 4]) {
+      const appended = mirrorOneEntity(hit);
+      expect(appended).toHaveLength(1);
+      expect(appended[0].type).toBe("sketch_circle");
+      expect(appended[0].params.center).toEqual([-5, 2]);
+      expect(appended[0].params.radius).toBe(1.5);
+    }
+  });
+
+  it("clicking the axis line itself is a no-op (axis excluded)", () => {
+    expect(mirrorOneEntity(3)).toHaveLength(0);
+  });
+
+  it("clicking empty space (origin id 0) is a no-op", () => {
+    expect(mirrorOneEntity(0)).toHaveLength(0);
   });
 });
