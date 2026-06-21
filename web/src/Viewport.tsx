@@ -99,6 +99,7 @@ import {
   isAdditiveClick,
   type ControlsPresetId,
 } from "./controlsPreset";
+import { routeSketchSceneClick } from "./sketchSceneClick";
 import { setGpuInfo, type GpuInfo } from "./telemetry";
 import {
   bodiesInRect,
@@ -1137,6 +1138,33 @@ export function Viewport({
       invalidateCanvas();
       return;
     }
+
+    // Ticket 4anf: context-dependent scene-click routing while a sketch is
+    // open. The two contexts that MAY pick scene geometry both run before this
+    // point: the sketch-PLANE field's pick via `tryQueryPick` + the armed-
+    // picker swallow above, and the PROJECT tool's pick on the 2D overlay
+    // (pointer-events: auto, so its clicks never reach here). What remains is
+    // the rule that in EVERY OTHER sketch context the 3D scene is INERT: no
+    // feature / element / datum selection, no mode activation — so no other
+    // feature can be activated and the sketch ends only via Accept (✓) /
+    // Cancel (✗). A click that reaches here during a session therefore either
+    // missed the Project guides or had no armed picker; routing says inert and
+    // we swallow it. Only the `default` routing (no session) falls through to
+    // the normal selection / mode branches below.
+    const sketchRouting = routeSketchSceneClick({
+      sketchActive: state?.sketchSession.active ?? false,
+      // The plane-pick context was fully consumed above; a surviving picker was
+      // already handled by the swallow. We still report it so the routing keeps
+      // its own invariant (`plane-pick` ⇒ not a fall-through to selection).
+      planeQueryArmed: getActiveQueryPicker() !== null,
+      projectToolActive:
+        state?.sketchSession.selectedTool === "sketch_project",
+    });
+    if (sketchRouting !== "default") {
+      invalidateCanvas();
+      return;
+    }
+
     if (state?.ikMode && state?.assembly.active && click?.hit) {
       handleIkClick(store, state, click);
       return;
