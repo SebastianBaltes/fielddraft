@@ -73,14 +73,17 @@ import {
   subCallOfCurve,
 } from "./sketchTrim";
 import type { Vec2 } from "./sketchTrim";
-import { mirrorCurve } from "./sketchMirror";
+import { mirrorSubCall, isMirrorableSubCall } from "./sketchMirror";
 import { offsetCurve, offsetChain, buildChain } from "./sketchOffset";
 import {
   patternLinear,
   patternCircular,
-  translateCurve,
   rotateCurve,
 } from "./sketchPattern";
+import {
+  translateSubCall,
+  isTranslatableSubCall,
+} from "./sketchSubCallTransform";
 import {
   filletLines,
   filletRecipe,
@@ -3399,10 +3402,7 @@ export class KernelStore {
     const sources = subCallsForSelection(
       session.subCalls,
       session.selection,
-    ).filter((i) => {
-      if (i === axisLineIndex) return false;
-      return curveOfSubCall(session.subCalls[i]) !== null;
-    });
+    ).filter((i) => i !== axisLineIndex && isMirrorableSubCall(session.subCalls[i]));
     const appended = this.mirrorSubCallsAcrossAxis(axisLineIndex, sources);
     if (!appended) return;
     this.updateSketch(reduceClearSelection(this.state.sketchSession));
@@ -3422,10 +3422,7 @@ export class KernelStore {
     const session = this.state.sketchSession;
     if (!session.active) return;
     const sources = subCallsForSelection(session.subCalls, [entityId]).filter(
-      (i) => {
-        if (i === axisLineIndex) return false;
-        return curveOfSubCall(session.subCalls[i]) !== null;
-      },
+      (i) => i !== axisLineIndex && isMirrorableSubCall(session.subCalls[i]),
     );
     if (sources.length === 0) return;
     if (this.mirrorSubCallsAcrossAxis(axisLineIndex, sources)) {
@@ -3453,20 +3450,12 @@ export class KernelStore {
     const axisA = axisCurve.a;
     const axisB = axisCurve.b;
 
-    const carry = (params: Record<string, unknown>): Record<string, unknown> =>
-      params.construction !== undefined
-        ? { construction: params.construction }
-        : {};
-
     const mirrored: Array<{ type: string; params: Record<string, unknown> }> =
       [];
     for (const i of sourceIndices) {
-      const call = session.subCalls[i];
-      const cv = curveOfSubCall(call);
-      if (!cv) continue;
-      mirrored.push(
-        subCallOfCurve(mirrorCurve(cv, axisA, axisB), carry(call.params)),
-      );
+      // Ticket o6hx: points, simple curves and composites (rectangle /
+      // polygon) all reflect via the pure `mirrorSubCall` SSOT.
+      mirrored.push(...mirrorSubCall(session.subCalls[i], axisA, axisB));
     }
     if (mirrored.length === 0) return false;
     this.pushSketchSubCalls(mirrored);
@@ -4116,28 +4105,68 @@ export class KernelStore {
     const session = this.state.sketchSession;
     if (!session.active) return;
     if (session.selection.length === 0) return;
-
-    const sources = subCallsForSelection(
-      session.subCalls,
+    this.translateSketchSubCalls(
+      subCallsForSelection(session.subCalls, session.selection),
+      dx,
+      dy,
+      copy,
       session.selection,
-    ).filter((i) => curveOfSubCall(session.subCalls[i]) !== null);
-    if (sources.length === 0) return;
+    );
+  }
 
-    const carry = (params: Record<string, unknown>): Record<string, unknown> =>
-      params.construction !== undefined
-        ? { construction: params.construction }
-        : {};
+  /**
+   * Ticket matf: rigidly translate the geometry of an explicit set of
+   * committed ENTITY ids by `(dx, dy)`. Backs the Select-mode click-drag (a
+   * single entity body, or a whole multi-selection grabbed and dragged). The
+   * dragged ids map back to their owning geometry sub-calls and translate in
+   * place; the solver then settles every constraint (a move forbidden by a
+   * constraint is pulled back). No-op when nothing translatable maps.
+   */
+  translateSketchEntities(
+    entityIds: ReadonlyArray<number>,
+    dx: number,
+    dy: number,
+  ): void {
+    const session = this.state.sketchSession;
+    if (!session.active) return;
+    if (entityIds.length === 0) return;
+    this.translateSketchSubCalls(
+      subCallsForSelection(session.subCalls, entityIds),
+      dx,
+      dy,
+      false,
+      entityIds,
+    );
+  }
+
+  /**
+   * Shared core for Move / Copy / Select-drag translation. Translates every
+   * TRANSLATABLE geometry sub-call in `sourceIndices` by `(dx, dy)` — lines,
+   * circles, arcs, rectangles, polygons, ellipses, splines, paths and free
+   * points all move as one rigid body (ticket matf widened this past the
+   * line/circle/arc-only `curveOfSubCall` path). `copy` appends translated
+   * copies instead of moving in place. `restoreSelection` is re-applied after
+   * an in-place move (an equal-count replace keeps entity ids stable).
+   */
+  private translateSketchSubCalls(
+    sourceIndices: ReadonlyArray<number>,
+    dx: number,
+    dy: number,
+    copy: boolean,
+    restoreSelection: ReadonlyArray<number>,
+  ): void {
+    const session = this.state.sketchSession;
+    if (!session.active) return;
+    const sources = sourceIndices.filter((i) =>
+      isTranslatableSubCall(session.subCalls[i]),
+    );
+    if (sources.length === 0) return;
 
     if (copy) {
       const copies: Array<{ type: string; params: Record<string, unknown> }> =
         [];
       for (const i of sources) {
-        const call = session.subCalls[i];
-        const cv = curveOfSubCall(call);
-        if (!cv) continue;
-        copies.push(
-          subCallOfCurve(translateCurve(cv, dx, dy), carry(call.params)),
-        );
+        copies.push(translateSubCall(session.subCalls[i], dx, dy));
       }
       if (copies.length === 0) return;
       this.pushSketchSubCalls(copies);
@@ -4145,23 +4174,17 @@ export class KernelStore {
       return;
     }
 
-    // In-place Move: replace each selected geometry sub-call with its
-    // translated self. Same entity count → ids stay stable, so we can
-    // apply against the SNAPSHOT of indices. Highest index first keeps the
-    // lower indices valid across each rewrite (replaceSketchSubCallAt
-    // clears the selection, but we restore it below).
+    // In-place: replace each selected geometry sub-call with its translated
+    // self. A translation preserves each call's entity count, so ids stay
+    // stable. Highest index first keeps the lower indices valid across each
+    // rewrite (replaceSketchSubCallAt clears the selection; restored below).
     let next = session;
     for (const i of [...sources].sort((a, b) => b - a)) {
-      const call = session.subCalls[i];
-      const cv = curveOfSubCall(call);
-      if (!cv) continue;
-      next = reduceReplaceAt(next, i, [
-        subCallOfCurve(translateCurve(cv, dx, dy), carry(call.params)),
-      ]);
+      next = reduceReplaceAt(next, i, [translateSubCall(session.subCalls[i], dx, dy)]);
     }
-    // Entity ids are unchanged by an equal-count replace, so the original
-    // selection still points at the moved geometry — restore it.
-    this.updateSketch(reduceSetSelection(next, session.selection));
+    // Equal-count replace keeps entity ids, so the original selection still
+    // points at the moved geometry — restore it.
+    this.updateSketch(reduceSetSelection(next, [...restoreSelection]));
     void solveAndReplace(this);
   }
 

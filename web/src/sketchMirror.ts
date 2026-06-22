@@ -24,7 +24,14 @@
  * reflections of the original arc's start and end points.
  */
 
-import type { Curve, Vec2 } from "./sketchTrim";
+import {
+  curveOfSubCall,
+  edgesOfSubCall,
+  subCallOfCurve,
+  type Curve,
+  type SubCall,
+  type Vec2,
+} from "./sketchTrim";
 
 /** Squared length of the axis below which it's treated as degenerate. */
 const AXIS_EPS_SQ = 1e-18;
@@ -104,4 +111,62 @@ export function mirrorCurve(cv: Curve, axisA: Vec2, axisB: Vec2): Curve {
     // Orientation reverses under reflection: a +sweep becomes −sweep.
     sweep: -cv.sweep,
   };
+}
+
+/** Carry only the construction flag onto a mirrored copy (other params are
+ *  re-derived from the reflected geometry). */
+function carryConstruction(
+  params: Record<string, unknown>,
+): Record<string, unknown> {
+  return params.construction !== undefined
+    ? { construction: params.construction }
+    : {};
+}
+
+/**
+ * Ticket o6hx: can this sub-call be mirrored across an axis? A free point, a
+ * simple curve (line / circle / arc), or a composite whose boundary decomposes
+ * into mirrorable edges (rectangle / polygon). Constraints and unknown kinds
+ * cannot.
+ */
+export function isMirrorableSubCall(call: SubCall): boolean {
+  if (call.type === "sketch_point") return true;
+  if (curveOfSubCall(call) !== null) return true;
+  return edgesOfSubCall(call).length > 0;
+}
+
+/**
+ * Ticket o6hx: reflect one source sub-call across the infinite axis line
+ * through `axisA`/`axisB`, returning the mirrored sub-call(s) to append.
+ *
+ *  - point  → one mirrored point.
+ *  - simple curve (line / circle / arc) → one mirrored curve of the same kind.
+ *  - composite (rectangle / polygon) → one mirrored LINE per boundary edge
+ *    (the kernel has no mirror primitive, so a mirrored box/polygon is just
+ *    its reflected boundary segments).
+ *  - anything else → no output.
+ *
+ * The construction flag carries onto every emitted copy. This is the SSOT the
+ * store's interactive Mirror runs per source — keeping it pure makes the
+ * point/composite decomposition unit-testable without a kernel.
+ */
+export function mirrorSubCall(
+  call: SubCall,
+  axisA: Vec2,
+  axisB: Vec2,
+): SubCall[] {
+  if (call.type === "sketch_point") {
+    const at = call.params.at;
+    if (!Array.isArray(at) || at.length !== 2) return [];
+    const p = reflectPoint([Number(at[0]), Number(at[1])], axisA, axisB);
+    if (!Number.isFinite(p[0]) || !Number.isFinite(p[1])) return [];
+    return [{ type: "sketch_point", params: { ...carryConstruction(call.params), at: p } }];
+  }
+  const simple = curveOfSubCall(call);
+  if (simple) {
+    return [subCallOfCurve(mirrorCurve(simple, axisA, axisB), carryConstruction(call.params))];
+  }
+  return edgesOfSubCall(call).map((edge) =>
+    subCallOfCurve(mirrorCurve(edge, axisA, axisB), carryConstruction(call.params)),
+  );
 }

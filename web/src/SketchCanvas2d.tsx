@@ -74,6 +74,7 @@ import {
   pickGripAt,
   type Grip,
 } from "./sketchGrips";
+import { planSelectDrag } from "./sketchSelectDrag";
 import { angleAbout, buildArcSubCall, unwrapSweep } from "./sketchArc";
 import {
   circleThrough3,
@@ -547,6 +548,23 @@ type DragState =
       start: [number, number];
       current: [number, number];
       copy: boolean;
+      moved: boolean;
+    }
+  | {
+      /** Ticket matf: a plain Select-mode click-drag that rigidly translates
+       *  geometry — a single entity body (line / circle / arc / region) or a
+       *  whole multi-selection grabbed and dragged together. `entityIds` are
+       *  the committed entities to translate; the translate lands on release
+       *  by (current − start), then the solver settles constraints. A release
+       *  without a real drag was a plain pick (the down already selected). */
+      kind: "select_drag";
+      entityIds: number[];
+      /** Selection to apply once a real drag begins (so the moved group
+       *  highlights). Applied lazily on the first move, not at arm time, to
+       *  preserve a no-drag click's additive toggle. */
+      selectIds: number[];
+      start: [number, number];
+      current: [number, number];
       moved: boolean;
     }
   | {
@@ -1421,6 +1439,8 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
     chamferFirstRef.current = null;
     // jq6i: drop a pending mirror axis when leaving the tool.
     mirrorAxisRef.current = null;
+    // o6hx: drop any mirror step-2 hover highlight when leaving the tool.
+    setHoveredSketchEntity(null);
     // D1: surface the new tool's first-step instruction as the hint pill.
     setToolHint(initialToolHint(session.selectedTool));
   }, [session.selectedTool]);
@@ -1563,51 +1583,38 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
       const cam = readCamForCanvas(e.currentTarget as HTMLCanvasElement);
       const [u, v] = screenToSketchFromEvent(e, cam);
 
-      // P0.3: grabbing a grip handle on the current selection starts a
-      // drag-edit. Grips win over entity picking — they're a deliberate
-      // edit gesture, and a re-toggle of the selection would be wrong.
-      const grip = pickGrip(e, cam, session);
-      if (grip) {
-        (e.currentTarget as HTMLCanvasElement).setPointerCapture(e.pointerId);
-        dragRef.current = { kind: "grip", grip };
-        // Live-solve from here: every move re-solves so constraints stay
-        // satisfied as the grip moves, and drop just settles the last frame.
-        dragControllerRef.current.start(store, grip);
-        lastCamVersionRef.current = -1;
-        return;
-      }
-
-      // Ticket t11x: a direct pointer-down on ANY entity's handle (a free
-      // point, a line endpoint, a vertex, …) grabs it and starts the drag
-      // immediately — no prior click to select. Searches all committed
-      // entities, not just the current selection, then selects the dragged
-      // entity so its grips/highlight show while it moves.
+      // Ticket matf: resolve the precise HANDLE under the cursor (a free
+      // point, a line endpoint, a polygon/spline vertex, a circle/arc
+      // centre/rim) up-front. Whether grabbing it reshapes that one degree of
+      // freedom (a lone handle) or rigid-translates a group (a handle inside a
+      // multi-selection) is decided by `planSelectDrag` below, once the broad
+      // entity hit is also known. Searches ALL committed entities so a direct
+      // pointer-down grabs without a prior selecting click (ticket t11x).
+      let directGrip: Grip | null = null;
       {
-        const rect = (
-          e.currentTarget as HTMLCanvasElement
-        ).getBoundingClientRect();
-        const pointerPx: [number, number] = [
-          e.clientX - rect.left,
-          e.clientY - rect.top,
-        ];
-        const direct = pickGripAt(
-          allGrips(session.subCalls),
-          pointerPx,
-          (pos) => sketchToScreen(pos[0], pos[1], cam),
-          GRIP_PICK_PX,
-        );
-        if (direct) {
-          (e.currentTarget as HTMLCanvasElement).setPointerCapture(
-            e.pointerId,
+        const grip = pickGrip(e, cam, session);
+        if (grip) {
+          directGrip = grip;
+        } else {
+          const rect = (
+            e.currentTarget as HTMLCanvasElement
+          ).getBoundingClientRect();
+          const pointerPx: [number, number] = [
+            e.clientX - rect.left,
+            e.clientY - rect.top,
+          ];
+          directGrip = pickGripAt(
+            allGrips(session.subCalls),
+            pointerPx,
+            (pos) => sketchToScreen(pos[0], pos[1], cam),
+            GRIP_PICK_PX,
           );
-          const ownerId = entityIdForGrip(session.subCalls, direct);
-          if (ownerId !== null) store.setSketchSelection([ownerId]);
-          dragRef.current = { kind: "grip", grip: direct };
-          dragControllerRef.current.start(store, direct);
-          lastCamVersionRef.current = -1;
-          return;
         }
       }
+      const handleEntityId =
+        directGrip !== null
+          ? entityIdForGrip(session.subCalls, directGrip)
+          : null;
 
       const tolMm = SELECT_PICK_PX / Math.max(cam.zoom, 1e-6);
 
@@ -1670,10 +1677,51 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
 
       const state = buildDraftSketchState(session.subCalls);
       const hit = hitTestSketchEntity(state, [u, v], tolMm);
-      if (hit === null) {
-        // Empty space: begin a marquee. We DON'T clear the selection
-        // yet — that happens on pointerup if the gesture turns out to
-        // be a plain click (no drag).
+
+      // Ticket matf: decide the drag gesture from {handle, entity hit,
+      // selection}. A lone handle reshapes its DoF (grip); a handle inside a
+      // multi-selection, or any entity body, rigid-translates a group.
+      const plan = planSelectDrag({
+        selection: session.selection,
+        handleEntityId,
+        hitEntityId: hit,
+      });
+
+      if (plan.kind === "grip" && directGrip) {
+        (e.currentTarget as HTMLCanvasElement).setPointerCapture(e.pointerId);
+        if (plan.selectId !== null) store.setSketchSelection([plan.selectId]);
+        dragRef.current = { kind: "grip", grip: directGrip };
+        // Live-solve from here: every move re-solves so constraints stay
+        // satisfied as the grip moves, and drop just settles the last frame.
+        dragControllerRef.current.start(store, directGrip);
+        lastCamVersionRef.current = -1;
+        return;
+      }
+
+      if (plan.kind === "translate") {
+        // Arm a rigid-translate of `entityIds`. The move lands on release
+        // (current − start) so the solver runs once; a release WITHOUT a real
+        // drag falls back to the historic additive toggle (handled in
+        // onPointerUp), so plain click-to-build-a-selection still works. The
+        // selection is set lazily on the first real move (below), not here —
+        // arming must not disturb a no-drag click's toggle.
+        (e.currentTarget as HTMLCanvasElement).setPointerCapture(e.pointerId);
+        dragRef.current = {
+          kind: "select_drag",
+          entityIds: plan.entityIds,
+          selectIds: plan.selectIds,
+          start: [u, v],
+          current: [u, v],
+          moved: false,
+        };
+        lastCamVersionRef.current = -1;
+        return;
+      }
+
+      // Nothing under the cursor: begin a marquee. We DON'T clear the
+      // selection yet — that happens on pointerup if the gesture turns out to
+      // be a plain click (no drag).
+      {
         const canvas = e.currentTarget as HTMLCanvasElement;
         canvas.setPointerCapture(e.pointerId);
         const rect = canvas.getBoundingClientRect();
@@ -1688,8 +1736,6 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
           startPx,
           currentPx: startPx,
         };
-      } else {
-        store.toggleSketchSelection(hit);
       }
       lastCamVersionRef.current = -1;
       return;
@@ -2353,6 +2399,31 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
       lastCamVersionRef.current = -1;
       return;
     }
+    // Ticket matf: plain Select-mode rigid translate of an entity / group.
+    // Track the cursor; the translate lands on release (onPointerUp) so the
+    // solver runs once. The `moved` flag separates a real drag from a plain
+    // select-click (which falls back to a toggle).
+    if (dragRef.current.kind === "select_drag") {
+      const cam = readCamForCanvas(e.currentTarget as HTMLCanvasElement);
+      const [u, v] = screenToSketchFromEvent(e, cam);
+      const { start } = dragRef.current;
+      const movedPx =
+        Math.hypot(u - start[0], v - start[1]) * Math.max(cam.zoom, 1e-6);
+      const nowMoved = dragRef.current.moved || movedPx > 4;
+      // On the FIRST frame that becomes a real drag, set the selection to the
+      // grabbed group so it highlights while moving (deferred from arm time so
+      // a no-drag click keeps its additive toggle).
+      if (nowMoved && !dragRef.current.moved && store) {
+        store.setSketchSelection(dragRef.current.selectIds);
+      }
+      dragRef.current = {
+        ...dragRef.current,
+        current: [u, v],
+        moved: nowMoved,
+      };
+      lastCamVersionRef.current = -1;
+      return;
+    }
     // F4: marquee drag also lives in select mode (no tool active), so
     // it runs before the drawing-tool guard. Track both the sketch-mm
     // corner and the client-pixel corner, then redraw.
@@ -2527,7 +2598,23 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
     // tool (czqf) OR a constraint tool — e.g. Dimension (7lxk) — is armed, so
     // the user sees what a click will target. (Point hover comes from the snap
     // dot above.)
-    if (
+    //
+    // Ticket o6hx: the Mirror flow has two steps. STEP 1 (no axis yet) the
+    // candidate is the AXIS LINE → highlight the nearest line. STEP 2 (axis
+    // set) the candidate is the OBJECT TO MIRROR (point / line / polygon) →
+    // highlight the entity under the cursor (same hover as Select mode), and
+    // drop the axis-line highlight.
+    if (session.selectedTool === "sketch_mirror" && mirrorAxisRef.current !== null) {
+      // Step 2: hover the mirror-source entity under the cursor.
+      const tolMm = SELECT_PICK_PX / Math.max(cam.zoom, 1e-6);
+      const hovered = hitTestSketchEntity(
+        buildDraftSketchState(session.subCalls),
+        [u, v],
+        tolMm,
+      );
+      setHoveredSketchEntity(hovered);
+      mirrorAxisHoverRef.current = null;
+    } else if (
       session.selectedTool === "sketch_mirror" ||
       isConstraintTool(session.selectedTool)
     ) {
@@ -2536,6 +2623,7 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
       const cv = idx !== null ? curveOfSubCall(session.subCalls[idx]) : null;
       mirrorAxisHoverRef.current =
         cv && cv.kind === "line" ? [cv.a, cv.b] : null;
+      setHoveredSketchEntity(null);
     } else {
       mirrorAxisHoverRef.current = null;
     }
@@ -2683,6 +2771,31 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
       dragRef.current = { kind: "idle" };
       if (moved && store) {
         store.moveSketchSelection(current[0] - start[0], current[1] - start[1], copy);
+      }
+      lastCamVersionRef.current = -1;
+      return;
+    }
+    // Ticket matf: commit a plain Select-mode rigid translate. A real drag
+    // moves the grabbed entity / group by (current − start); a release without
+    // a real drag was just a select-click — fall back to toggling the entity
+    // (and clearing the rest), so a plain click still selects exactly one.
+    if (dragRef.current.kind === "select_drag") {
+      (e.currentTarget as HTMLCanvasElement).releasePointerCapture(e.pointerId);
+      const { start, current, moved, entityIds } = dragRef.current;
+      dragRef.current = { kind: "idle" };
+      if (store) {
+        if (moved) {
+          store.translateSketchEntities(
+            entityIds,
+            current[0] - start[0],
+            current[1] - start[1],
+          );
+        } else if (entityIds.length === 1) {
+          // A plain click without a drag keeps the historic additive toggle
+          // (click entities one by one to build a multi-selection). The drag
+          // arming did NOT touch the selection, so a straight toggle is right.
+          store.toggleSketchSelection(entityIds[0]);
+        }
       }
       lastCamVersionRef.current = -1;
       return;
@@ -3143,6 +3256,7 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
       if (mirrorAxisRef.current !== null) {
         mirrorAxisRef.current = null;
         store.clearSketchSelection();
+        setHoveredSketchEntity(null); // o6hx: drop step-2 hover highlight
         setToolHint(initialToolHint("sketch_mirror"));
       } else {
         store.selectSketchTool(null);

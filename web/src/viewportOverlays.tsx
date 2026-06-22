@@ -37,6 +37,7 @@ import type { BRepEdgeMode } from "./SettingsMenu";
 import { PerfProbe } from "./perfMonitor";
 import { GRID_WORLD_SIZE } from "./sceneBoundsBridge";
 import { OVERLAY_LAYER } from "./viewportSdfOverlays";
+import { disposeAfterGpuIdle } from "./sdfPipelineCommon";
 import { resolveMaterials, type MaterialProps } from "./materialBridge";
 import { DEFAULT_ROUGHNESS, DEFAULT_METALNESS } from "./pbrShading";
 import {
@@ -375,14 +376,22 @@ export function SketchOverlay3D() {
 
   useEffect(() => {
     return () => {
-      fatLines?.forEach((o) => o.geometry.dispose());
-      classicLines?.forEach((g) => g.dispose());
-      dots.forEach((d) => d.dispose());
-      fills.forEach((g) => g.dispose());
-      hoverFat?.geometry.dispose();
-      hoverClassic?.dispose();
+      // Ticket o6hx / fg9o: these geometries may still be referenced by an
+      // in-flight GPU submit when a sketch edit (e.g. Mirror live-apply)
+      // recomputes the memo and tears the previous set down. Destroying them
+      // synchronously mid-submit triggers "[Buffer] used in submit while
+      // destroyed" and can wedge the device, so defer disposal until the GPU
+      // queue has drained (falls back to sync on the WebGL backend).
+      disposeAfterGpuIdle(gl, () => {
+        fatLines?.forEach((o) => o.geometry.dispose());
+        classicLines?.forEach((g) => g.dispose());
+        dots.forEach((d) => d.dispose());
+        fills.forEach((g) => g.dispose());
+        hoverFat?.geometry.dispose();
+        hoverClassic?.dispose();
+      });
     };
-  }, [fatLines, classicLines, dots, fills, hoverFat, hoverClassic]);
+  }, [gl, fatLines, classicLines, dots, fills, hoverFat, hoverClassic]);
 
   // Publish the world-space pick geometry per visible committed sketch so a
   // plain click in the viewport can select the sketch — taking priority over

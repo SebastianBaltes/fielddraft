@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { mirrorCurve, reflectPoint } from "./sketchMirror";
+import {
+  mirrorCurve,
+  reflectPoint,
+  mirrorSubCall,
+  isMirrorableSubCall,
+} from "./sketchMirror";
 import { curveOfSubCall, subCallOfCurve, type Curve, type Vec2 } from "./sketchTrim";
 import { subCallsForSelection } from "./sketchSession";
 
@@ -177,5 +182,88 @@ describe("mirrorSketchEntityAt pipeline (ps21 live pick-to-apply)", () => {
 
   it("clicking empty space (origin id 0) is a no-op", () => {
     expect(mirrorOneEntity(0)).toHaveLength(0);
+  });
+});
+
+// Ticket o6hx: mirror step 2 must accept POINTS and COMPOSITES (rectangle /
+// polygon), not just simple curves. These pin the pure decomposition the
+// store's interactive Mirror runs per source.
+describe("mirrorSubCall (o6hx: points + composites)", () => {
+  const axisA: Vec2 = [0, -5];
+  const axisB: Vec2 = [0, 5]; // Y axis
+
+  it("mirrors a free point across the Y axis", () => {
+    const out = mirrorSubCall(
+      { type: "sketch_point", params: { at: [3, 2] } },
+      axisA,
+      axisB,
+    );
+    expect(out).toHaveLength(1);
+    expect(out[0].type).toBe("sketch_point");
+    expect((out[0].params.at as number[])[0]).toBeCloseTo(-3);
+    expect((out[0].params.at as number[])[1]).toBeCloseTo(2);
+  });
+
+  it("mirrors a polygon into one line per edge", () => {
+    const out = mirrorSubCall(
+      { type: "sketch_polygon", params: { vertices: [2, 0, 4, 0, 3, 2] } },
+      axisA,
+      axisB,
+    );
+    expect(out).toHaveLength(3);
+    expect(out.every((c) => c.type === "sketch_line")).toBe(true);
+    // First edge (2,0)→(4,0) reflects to (-2,0)→(-4,0).
+    expect(out[0].params.start).toEqual([-2, 0]);
+    expect(out[0].params.end).toEqual([-4, 0]);
+  });
+
+  it("mirrors a rectangle into four boundary lines", () => {
+    const out = mirrorSubCall(
+      { type: "sketch_rectangle", params: { corner_a: [1, 1], corner_b: [3, 4] } },
+      axisA,
+      axisB,
+    );
+    expect(out).toHaveLength(4);
+    expect(out.every((c) => c.type === "sketch_line")).toBe(true);
+  });
+
+  it("carries the construction flag onto a mirrored point", () => {
+    const out = mirrorSubCall(
+      { type: "sketch_point", params: { at: [3, 2], construction: true } },
+      axisA,
+      axisB,
+    );
+    expect(out[0].params.construction).toBe(true);
+  });
+
+  it("returns nothing for a constraint sub-call", () => {
+    expect(
+      mirrorSubCall(
+        { type: "sketch_constraint_horizontal", params: { entity: 3 } },
+        axisA,
+        axisB,
+      ),
+    ).toHaveLength(0);
+  });
+});
+
+describe("isMirrorableSubCall (o6hx)", () => {
+  it("accepts point, line, circle, arc, rectangle, polygon", () => {
+    expect(isMirrorableSubCall({ type: "sketch_point", params: { at: [0, 0] } })).toBe(true);
+    expect(
+      isMirrorableSubCall({ type: "sketch_line", params: { start: [0, 0], end: [1, 0] } }),
+    ).toBe(true);
+    expect(
+      isMirrorableSubCall({ type: "sketch_polygon", params: { vertices: [0, 0, 1, 0, 0, 1] } }),
+    ).toBe(true);
+    expect(
+      isMirrorableSubCall({ type: "sketch_rectangle", params: { corner_a: [0, 0], corner_b: [2, 2] } }),
+    ).toBe(true);
+  });
+
+  it("rejects constraints", () => {
+    expect(
+      isMirrorableSubCall({ type: "sketch_constraint_coincident", params: {} }),
+    ).toBe(false);
   });
 });
