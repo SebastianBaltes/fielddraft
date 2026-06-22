@@ -1,7 +1,7 @@
 import { useEffect, useRef } from "react";
 import { useFrame, useThree } from "@react-three/fiber";
-import { OrbitControls } from "@react-three/drei";
 import * as THREE from "three";
+import { OnshapeControls, type RotateMode } from "./onshapeControls";
 import { publishSketchCamera, getSketchPlaneFrame } from "./sketchCameraBridge";
 import { requestOverlayRedraw } from "./sketchOverlayBridge";
 import {
@@ -19,7 +19,6 @@ import {
   ORBIT_ACTION_CODE,
   toOrbitMouseButtons,
   type ControlsPresetId,
-  type OrbitMouseButtons,
 } from "./controlsPreset";
 
 /**
@@ -102,11 +101,77 @@ export function CameraBridgePublisher() {
 
 export function CameraRig({ preset }: { preset: ControlsPresetId }) {
   const { camera } = CONTROLS_PRESETS[preset];
-  const controlsRef = useRef<{ mouseButtons: OrbitMouseButtons } | null>(null);
+  const cam = useThree((s) => s.camera);
+  const gl = useThree((s) => s.gl);
+  const invalidate = useThree((s) => s.invalidate);
+  const set = useThree((s) => s.set);
+  const get = useThree((s) => s.get);
+  const controlsRef = useRef<OnshapeControls | null>(null);
 
-  // Shift-held button remaps. OrbitControls reads `mouseButtons` at
-  // pointerdown, so mutating the live object on Shift down/up is enough — no
-  // re-render needed.
+  // Create the OnshapeControls and register them as the R3F default `controls`
+  // — view commands (ViewCube / zoom-to-fit / view-normal), the transform
+  // gizmos and the B-Rep overlays all read `state.controls`. Recreated only
+  // when the camera/canvas identity changes; preset config lives in its own
+  // effect so switching presets doesn't tear the controls down.
+  useEffect(() => {
+    const controls = new OnshapeControls(cam, gl.domElement as HTMLElement);
+    // Demand-frameloop roots only render when invalidated, so a drag that
+    // moves the camera must request a frame (the WebGL root's own rAF loop
+    // ticks regardless, but the extra invalidate is harmless there).
+    controls.onChange = () => invalidate();
+    controlsRef.current = controls;
+    const previous = get().controls;
+    set({ controls: controls as unknown as THREE.Controls });
+    return () => {
+      set({ controls: previous });
+      controls.dispose();
+      controlsRef.current = null;
+    };
+  }, [cam, gl, invalidate, set, get]);
+
+  // Apply the active preset's button mapping + speeds. Mutating the live
+  // controls is enough — they read `mouseButtons` at pointerdown.
+  useEffect(() => {
+    const controls = controlsRef.current;
+    if (!controls) return;
+    const mb = toOrbitMouseButtons(camera);
+    controls.mouseButtons = {
+      LEFT: mb.LEFT ?? null,
+      MIDDLE: mb.MIDDLE ?? null,
+      RIGHT: mb.RIGHT ?? null,
+    };
+    controls.rotateSpeed = camera.rotateSpeed;
+    controls.panSpeed = camera.panSpeed;
+    controls.zoomSpeed = camera.zoomSpeed;
+  }, [camera]);
+
+  // Onshape's two rotation modes (resource-center: "Rotation with an upright
+  // vertical axis"): free tumble by default, upright (model never rolls) while
+  // Alt is held. Flip the mode on the modifier; `blur` resets a stuck Alt.
+  useEffect(() => {
+    const setMode = (m: RotateMode) => {
+      if (controlsRef.current) controlsRef.current.rotateMode = m;
+    };
+    const onDown = (e: KeyboardEvent) => {
+      if (e.key === "Alt") setMode("upright");
+    };
+    const onUp = (e: KeyboardEvent) => {
+      if (e.key === "Alt") setMode("free");
+    };
+    const onBlur = () => setMode("free");
+    window.addEventListener("keydown", onDown);
+    window.addEventListener("keyup", onUp);
+    window.addEventListener("blur", onBlur);
+    return () => {
+      window.removeEventListener("keydown", onDown);
+      window.removeEventListener("keyup", onUp);
+      window.removeEventListener("blur", onBlur);
+    };
+  }, []);
+
+  // Shift/Ctrl-held button remaps. The controls read `mouseButtons` at
+  // pointerdown, so mutating the live object on Shift/Ctrl down/up is enough —
+  // no re-render needed.
   //  · Fusion: MMB pans normally, orbits while Shift is held.
   //  · Blender: MMB orbits normally, pans while Shift is held (the inverse).
   //  · SolidWorks: MMB orbits normally, pans while Ctrl is held.
@@ -139,7 +204,7 @@ export function CameraRig({ preset }: { preset: ControlsPresetId }) {
           : ORBIT_ACTION_CODE.rotate;
       }
       if (key === "Shift" && camera.shiftLeftBoxSelect) {
-        ctrl.mouseButtons.LEFT = down ? undefined : ORBIT_ACTION_CODE.rotate;
+        ctrl.mouseButtons.LEFT = down ? null : ORBIT_ACTION_CODE.rotate;
       }
     };
     const onDown = (e: KeyboardEvent) => {
@@ -163,22 +228,11 @@ export function CameraRig({ preset }: { preset: ControlsPresetId }) {
     camera.shiftLeftBoxSelect,
   ]);
 
-  // Ticket bxoo: no separate sketch camera — the normal camera and
-  // controls stay live during a sketch session; the overlay projects
-  // through them (sketchCameraBridge).
-  const mouseButtons = toOrbitMouseButtons(camera);
-
-  return (
-    <OrbitControls
-      ref={controlsRef as never}
-      makeDefault
-      enableDamping={false}
-      mouseButtons={mouseButtons}
-      rotateSpeed={camera.rotateSpeed}
-      zoomSpeed={camera.zoomSpeed}
-      panSpeed={camera.panSpeed}
-    />
-  );
+  // Ticket bxoo: no separate sketch camera — the normal camera and controls
+  // stay live during a sketch session; the overlay projects through them
+  // (sketchCameraBridge). The controls are imperative (set as the R3F default
+  // above), so the rig renders nothing.
+  return null;
 }
 
 export function ViewCommandConsumer() {
