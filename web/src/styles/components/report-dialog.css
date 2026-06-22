@@ -6,7 +6,8 @@
  *
  * ticket ttzl: the panel is NON-modal — the overlay is click-through so the
  * app stays usable while a report is being written. The dialog is a floating,
- * draggable, minimizable panel anchored top-right by default. */
+ * draggable, minimizable panel anchored top-LEFT by default, tucked just below
+ * the topbar+toolbar with a small gap from the left edge (ticket nwgi). */
 
 .fd-report-overlay {
   position: fixed;
@@ -17,8 +18,11 @@
 
 .fd-report-dialog {
   position: fixed;
-  top: var(--space-4);
-  right: var(--space-4);
+  /* Below the topbar + toolbar with a small gap; small inset from the left
+     edge (ticket nwgi). Once dragged, ReportDialog.tsx overrides via inline
+     left/top and resets `right` to auto. */
+  top: calc(var(--topbar-height) + var(--toolbar-height) + var(--space-2));
+  left: var(--space-4);
   pointer-events: auto;
   display: flex;
   flex-direction: column;

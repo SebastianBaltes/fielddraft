@@ -43,7 +43,8 @@ export function ReportDialog({ store, onClose }: ReportDialogProps) {
   // ticket ttzl: the dialog is a non-modal, draggable, minimizable panel so
   // the user can keep using the app (copy text, grab a screenshot, double-check
   // something) while writing the report. `pos` is null until first dragged —
-  // then the CSS default top-right anchor gives way to explicit coordinates.
+  // then the CSS default top-left anchor (below the toolbar, ticket nwgi)
+  // gives way to explicit coordinates.
   const dialogRef = useRef<HTMLDivElement>(null);
   const dragRef = useRef<{ dx: number; dy: number } | null>(null);
   const [minimized, setMinimized] = useState(false);
