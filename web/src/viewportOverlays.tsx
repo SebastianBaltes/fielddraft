@@ -3680,49 +3680,55 @@ const WEBGL_DEFAULT_METALNESS = DEFAULT_METALNESS;
  * Scene lighting for the classic-WebGL render paths. Uses the SAME light setup
  * as the SDF (WebGPU) shader — `LIGHTS` / `AMBIENT` from pbrShading.ts as the
  * single source of truth. The SDF dirs/radiances are VIEW-space (camera-space),
- * so here we mount the directionals as children of the camera: each light sits
- * at `dir` in the camera-local frame with its target at the camera-local origin,
- * making the three.js light direction `normalize(position - target) =
- * normalize(dir)` exactly match the SDF view-space `L`. The lights therefore
- * move with the camera (headlight-like), identical to the SDF renderer. Exact
+ * so each frame we rotate every `dir` into world space with the camera's
+ * orientation and place the directional there (target pinned to the world
+ * origin), making the three.js light direction `normalize(position - target)`
+ * track the camera (headlight-like) exactly like the SDF view-space `L`. Exact
  * pixel parity isn't expected (three's MeshStandardMaterial BRDF differs from
  * the SDF Cook-Torrance), only an identical light configuration.
  */
 export function WebGLSceneLights() {
   const camera = useThree((s) => s.camera);
-  const groupRef = useRef<THREE.Group>(null);
+  const lightRefs = useRef<(THREE.DirectionalLight | null)[]>([]);
 
-  // Stable per-light targets (at the camera-local origin) so each directional's
-  // direction is `normalize(position - target) = normalize(dir)`.
+  // Per-light targets pinned to the WORLD origin. three computes a directional's
+  // direction as `lightPos − targetPos`, so the target MUST be a separate object
+  // at the origin: nesting it under the light (both at the same world position)
+  // collapses the direction to (0,0,0) and the light contributes nothing.
   const targets = useMemo(() => LIGHTS.map(() => new THREE.Object3D()), []);
+  const tmp = useMemo(() => new THREE.Vector3(), []);
 
-  // Mount the camera-local light rig as a child of the camera so the light
-  // directions stay fixed in view-space (and thus move with the camera).
-  useEffect(() => {
-    const group = groupRef.current;
-    if (!group) return;
-    camera.add(group);
-    return () => {
-      camera.remove(group);
-    };
-  }, [camera]);
+  // The SDF dirs are VIEW-space; rotate them into world space by the camera
+  // orientation each frame so the directionals follow the camera. The lights
+  // stay DIRECT scene children — three's WebGLRenderer only collects lights it
+  // finds while traversing the scene graph, and R3F's camera is NOT in that
+  // graph, so parenting lights to the camera would leave the scene unlit.
+  useFrame(() => {
+    for (let i = 0; i < LIGHTS.length; i++) {
+      const light = lightRefs.current[i];
+      if (!light) continue;
+      const d = LIGHTS[i].dir;
+      tmp.set(d[0], d[1], d[2]).applyQuaternion(camera.quaternion);
+      light.position.copy(tmp);
+    }
+  });
 
   return (
     <>
       <ambientLight intensity={AMBIENT} />
-      {/* Attached to the camera in the effect above; `dir` is camera-local. */}
-      <group ref={groupRef}>
-        {LIGHTS.map(({ dir, radiance }, i) => (
-          <directionalLight
-            key={i}
-            position={[dir[0], dir[1], dir[2]]}
-            intensity={radiance}
-            target={targets[i]}
-          >
-            <primitive object={targets[i]} position={[0, 0, 0]} />
-          </directionalLight>
-        ))}
-      </group>
+      {targets.map((t, i) => (
+        <primitive key={`tgt-${i}`} object={t} />
+      ))}
+      {LIGHTS.map(({ radiance }, i) => (
+        <directionalLight
+          key={i}
+          ref={(el) => {
+            lightRefs.current[i] = el;
+          }}
+          intensity={radiance}
+          target={targets[i]}
+        />
+      ))}
     </>
   );
 }
