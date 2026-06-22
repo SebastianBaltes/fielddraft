@@ -373,24 +373,44 @@ export function SketchOverlay3D() {
     return g;
   }, [isWebGPU, hoverSeg]);
 
+  // Ticket o6hx / fg9o: these geometries may still be referenced by an
+  // in-flight GPU submit when their memo recomputes and tears the previous set
+  // down. Destroying them synchronously mid-submit triggers "[Buffer] used in
+  // submit while destroyed" and can wedge the device, so defer disposal until
+  // the GPU queue has drained (falls back to sync on the WebGL backend).
+  //
+  // CRUCIAL: one effect PER memo, each keyed on its OWN value. A single bundled
+  // effect over all six sets re-ran whenever ANY of them changed — so hovering
+  // the Revolve-axis sketch line (which only recomputes `hoverFat`) tore down
+  // the still-live base lines/dots/fills, making the hovered edge vanish and
+  // spamming the buffer-destroyed error (ticket y2xm).
   useEffect(() => {
-    return () => {
-      // Ticket o6hx / fg9o: these geometries may still be referenced by an
-      // in-flight GPU submit when a sketch edit (e.g. Mirror live-apply)
-      // recomputes the memo and tears the previous set down. Destroying them
-      // synchronously mid-submit triggers "[Buffer] used in submit while
-      // destroyed" and can wedge the device, so defer disposal until the GPU
-      // queue has drained (falls back to sync on the WebGL backend).
-      disposeAfterGpuIdle(gl, () => {
-        fatLines?.forEach((o) => o.geometry.dispose());
-        classicLines?.forEach((g) => g.dispose());
-        dots.forEach((d) => d.dispose());
-        fills.forEach((g) => g.dispose());
-        hoverFat?.geometry.dispose();
-        hoverClassic?.dispose();
-      });
-    };
-  }, [gl, fatLines, classicLines, dots, fills, hoverFat, hoverClassic]);
+    if (!fatLines) return;
+    return () =>
+      disposeAfterGpuIdle(gl, () =>
+        fatLines.forEach((o) => o.geometry.dispose()),
+      );
+  }, [gl, fatLines]);
+  useEffect(() => {
+    if (!classicLines) return;
+    return () =>
+      disposeAfterGpuIdle(gl, () => classicLines.forEach((g) => g.dispose()));
+  }, [gl, classicLines]);
+  useEffect(() => {
+    return () => disposeAfterGpuIdle(gl, () => dots.forEach((d) => d.dispose()));
+  }, [gl, dots]);
+  useEffect(() => {
+    return () =>
+      disposeAfterGpuIdle(gl, () => fills.forEach((g) => g.dispose()));
+  }, [gl, fills]);
+  useEffect(() => {
+    if (!hoverFat) return;
+    return () => disposeAfterGpuIdle(gl, () => hoverFat.geometry.dispose());
+  }, [gl, hoverFat]);
+  useEffect(() => {
+    if (!hoverClassic) return;
+    return () => disposeAfterGpuIdle(gl, () => hoverClassic.dispose());
+  }, [gl, hoverClassic]);
 
   // Publish the world-space pick geometry per visible committed sketch so a
   // plain click in the viewport can select the sketch — taking priority over
