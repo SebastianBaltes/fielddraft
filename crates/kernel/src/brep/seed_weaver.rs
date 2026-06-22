@@ -14,10 +14,22 @@
 //!
 //! This module replaces the four hand-written `weave_parametric` special cases
 //! (box / cylinder / edgeless) with one general pipeline that also covers
-//! Boolean combinations and analytic sweeps. It is an all-or-nothing path: a
-//! body is either fully seed-woven or fully octree-woven (see [`scope_supported`]
-//! and the dynamic gates in `build_seed_wireframe`), so the `id_hash` toggle-
-//! invariance contract is preserved.
+//! Boolean combinations and analytic sweeps.
+//!
+//! Two entry modes (see [`SeedMode`]):
+//!
+//! - **Strict** ([`weave_branch_seeds`] / [`seed_wireframe`]): all-or-nothing —
+//!   a body is either fully seed-woven or fully octree-woven (see
+//!   [`scope_supported`] and the dynamic gates in `build_seed_wireframe`), so the
+//!   `id_hash` toggle-invariance contract is preserved for the bodies it fully
+//!   covers. This is the path `weave_parametric` chains.
+//! - **Graceful** ([`weave_branch_seeds_partial`], tickets 7vbe/qmvn): when the
+//!   strict path bails on a single unresolvable transition seam, this keeps every
+//!   branch pair that *did* resolve — each operand's own analytic edges plus the
+//!   analytically resolvable Boolean boundary (SSI cross-pair) edges — and skips
+//!   only the genuine transition seams. The result is a *partial*, non-watertight
+//!   wireframe; it is used solely as a fallback *after* strict returned `None`
+//!   (in [`crate::body::Body::ensure_brep`]), so the strict contract is untouched.
 
 use std::collections::HashMap;
 
@@ -35,6 +47,25 @@ use crate::brep::{BRep, Edge, EdgeGeometry, HermiteSample, Vertex, VertexId};
 use crate::csg::BranchId;
 use crate::bvh::BoundedCsg;
 
+/// How `build_seed_wireframe` reacts to a branch pair / corner the analytic
+/// pipeline cannot resolve cleanly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SeedMode {
+    /// All-or-nothing: the FIRST unresolvable seam aborts the whole wireframe
+    /// (`None`) → the caller octree-weaves the entire body. This preserves the
+    /// `id_hash` toggle-invariance contract for the bodies the seed path fully
+    /// covers (every existing `seed_*` test asserts handle-identity with the
+    /// octree, so the strict output must never change).
+    Strict,
+    /// Graceful: an unresolvable seam is SKIPPED rather than aborting. The
+    /// resolvable operand edges and the analytically-resolvable Boolean boundary
+    /// edges are still emitted; only the genuine transition seams are absent, so
+    /// the resulting wireframe is *partial* (a non-watertight shell). Used only
+    /// as a fallback after [`SeedMode::Strict`] has already returned `None`, so
+    /// the strict contract is untouched (tickets 7vbe/qmvn).
+    Partial,
+}
+
 /// Weave `body` analytically from branch-pair seeds, or return `None` to fall
 /// back to the octree route ([`crate::brep::weaving::weave`]).
 ///
@@ -44,6 +75,30 @@ use crate::bvh::BoundedCsg;
 /// caller treats `None` as "use the octree".
 pub fn weave_branch_seeds(body: &BoundedCsg) -> Option<BRep> {
     Some(finish_weave(seed_wireframe(body)?, body))
+}
+
+/// **Graceful** seed weave (Stufe A+B, tickets 7vbe/qmvn): when the strict
+/// all-or-nothing seed path ([`weave_branch_seeds`]) bails on a single
+/// unresolvable transition seam, this emits the wireframe of every branch pair
+/// that *did* resolve — each operand's own analytic edges PLUS the analytically
+/// resolvable Boolean boundary (SSI cross-pair) edges — and skips only the
+/// genuinely unresolvable seams.
+///
+/// The result is a *partial*, non-watertight B-Rep: it carries the parametric
+/// single-operand and analytic-boundary edges the user wants to see, while the
+/// genuine transition zones simply have no edges (the octree would be needed to
+/// fill those — Stufe C, not implemented here). Returns `None` only for
+/// out-of-scope bodies or when not a single seam resolved (→ whole-body octree).
+pub fn weave_branch_seeds_partial(body: &BoundedCsg) -> Option<BRep> {
+    if !scope_supported(body) {
+        return None;
+    }
+    let wireframe = build_seed_wireframe(body, SeedMode::Partial)?;
+    // Nothing resolved → no graceful gain over the octree; let the caller octree.
+    if wireframe.edges.is_empty() && wireframe.vertices.is_empty() {
+        return None;
+    }
+    Some(finish_weave(wireframe, body))
 }
 
 /// The scope-gated *raw* seed wireframe (deduplicated corner vertices + signed
@@ -57,7 +112,7 @@ pub(crate) fn seed_wireframe(body: &BoundedCsg) -> Option<BRep> {
     if !scope_supported(body) {
         return None;
     }
-    build_seed_wireframe(body)
+    build_seed_wireframe(body, SeedMode::Strict)
 }
 
 /// Static structural scope gate. Returns `false` (→ octree) for bodies the
@@ -134,13 +189,16 @@ fn group_diameter(all: &[[f64; 3]], members: &[usize]) -> f64 {
 /// (re-solved analytically by `refine_triple_vertex`), and emit signed edges.
 /// Any condition the analytic path cannot lift cleanly returns `None` so the
 /// caller falls back to the whole-body octree weave.
-fn build_seed_wireframe(body: &BoundedCsg) -> Option<BRep> {
+fn build_seed_wireframe(body: &BoundedCsg, mode: SeedMode) -> Option<BRep> {
     // 1. Seed every candidate branch pair. An unresolved pair is one whose field
     //    we cannot lift analytically (missing half-space / SSI `Unsupported`) —
-    //    the analytic route cannot trace it, so the WHOLE body goes to octree
-    //    (the all-or-nothing contract that keeps `id_hash` toggle-invariant).
+    //    the analytic route cannot trace it. In `Strict` mode the WHOLE body goes
+    //    to octree (the all-or-nothing contract that keeps `id_hash` toggle-
+    //    invariant); in `Partial` mode the unresolved pairs are simply absent
+    //    from `seeds` (they never produced one), so we just proceed — every pair
+    //    that DID seed is still woven, only the unresolvable seams are skipped.
     let SeedResult { seeds, unresolved } = seed_branch_pairs(body);
-    if !unresolved.is_empty() {
+    if mode == SeedMode::Strict && !unresolved.is_empty() {
         return None;
     }
 
@@ -244,13 +302,18 @@ fn build_seed_wireframe(body: &BoundedCsg) -> Option<BRep> {
             let seed = &seeds[members[idx]];
             let (a, b) = (seed.a, seed.b);
 
-            // Build the two fields. With `unresolved` empty both lookups must
-            // succeed; a `None` here would be an internal inconsistency, so we
-            // bail to octree defensively rather than panic.
+            // Build the two fields. In `Strict` mode `unresolved` is empty so
+            // both lookups must succeed; a `None` here would be an internal
+            // inconsistency, so we bail to octree defensively rather than panic.
+            // In `Partial` mode an unliftable branch is expected (it is exactly
+            // a transition seam we mean to skip), so we drop just this seed.
             let (Some(fa), Some(fb)) = (
                 branch_field(&halfspaces, &leaf_map, a.as_u32()),
                 branch_field(&halfspaces, &leaf_map, b.as_u32()),
             ) else {
+                if mode == SeedMode::Partial {
+                    continue;
+                }
                 return None;
             };
 
@@ -282,11 +345,15 @@ fn build_seed_wireframe(body: &BoundedCsg) -> Option<BRep> {
             // A closed ring carries `(Open, Open)` ends by construction (it has no
             // termini) — only an OPEN arc's `Open` end signals a stalled march. On
             // the seed path there is no sample-fit backstop for a stall, so an open
-            // arc that failed to reach a clean end is an unbounded/unresolved seam
-            // → octree fallback.
+            // arc that failed to reach a clean end is an unbounded/unresolved seam.
+            // In `Strict` mode this aborts to the whole-body octree; in `Partial`
+            // mode it is precisely a transition seam, so we drop just this record.
             if !traced.closed
                 && (matches!(traced.ends.0, EdgeEnd::Open) || matches!(traced.ends.1, EdgeEnd::Open))
             {
+                if mode == SeedMode::Partial {
+                    continue;
+                }
                 return None;
             }
 
@@ -402,6 +469,12 @@ fn build_seed_wireframe(body: &BoundedCsg) -> Option<BRep> {
                             work.push((group, tighter));
                             continue;
                         }
+                        // Cannot place this corner. Strict → whole-body octree;
+                        // partial → skip just this cluster (its incident edges
+                        // emit unbounded on the affected side).
+                        if mode == SeedMode::Partial {
+                            continue;
+                        }
                         return None;
                     }
                     p
@@ -429,6 +502,11 @@ fn build_seed_wireframe(body: &BoundedCsg) -> Option<BRep> {
                     let tighter = (g * 0.5).min(0.5 * group_diameter(&trim_pos, &group));
                     if group.len() > 1 && tighter >= min_gap {
                         work.push((group, tighter));
+                        continue;
+                    }
+                    // Genuine phantom corner. Strict → whole-body octree;
+                    // partial → skip just this cluster.
+                    if mode == SeedMode::Partial {
                         continue;
                     }
                     return None;
@@ -518,10 +596,22 @@ fn build_seed_wireframe(body: &BoundedCsg) -> Option<BRep> {
         }
 
         // Fields for cut-node tangents and the fragment-midpoint activity test.
+        // In partial mode an unliftable field here (the record traced but its
+        // branch is non-analytic for the split test) means we cannot split — emit
+        // the record whole rather than abort the body.
         let (Some(fa), Some(fb)) = (
             branch_field(&halfspaces, &leaf_map, rec.a.as_u32()),
             branch_field(&halfspaces, &leaf_map, rec.b.as_u32()),
         ) else {
+            if mode == SeedMode::Partial {
+                let geom = EdgeGeometry::Hermite(rec.samples.clone());
+                if rec.closed {
+                    brep.add_edge(Edge::new(geom, rec.a, rec.b, None, None));
+                } else {
+                    brep.add_edge(Edge::new(geom, rec.a, rec.b, start, end));
+                }
+                continue;
+            }
             return None;
         };
         let cut_node = |pos: [f64; 3], seg: usize| -> HermiteSample {
@@ -697,7 +787,7 @@ mod tests {
         // two rim circles — closed-loop edges with NO bounding vertices (the two
         // cap∩wall seams never reach a third surface, so no trim occurs).
         let body = BoundedCsg::from_csg(&cylinder_leaf(1, [0.0, 0.0, 0.0], 5.0, 8.0));
-        let wf = build_seed_wireframe(&body).expect("cylinder is seed-weavable");
+        let wf = build_seed_wireframe(&body, SeedMode::Strict).expect("cylinder is seed-weavable");
         assert_eq!(wf.edges.len(), 2, "two rims");
         assert_eq!(wf.vertices.len(), 0, "no corner vertices on a plain cylinder");
         for e in &wf.edges {
@@ -712,7 +802,7 @@ mod tests {
         // so all 8 vertices must land precisely on the box corners (±10).
         let h = 10.0f32;
         let body = BoundedCsg::from_csg(&box_leaf(1, [0.0, 0.0, 0.0], [h, h, h]));
-        let wf = build_seed_wireframe(&body).expect("box is seed-weavable");
+        let wf = build_seed_wireframe(&body, SeedMode::Strict).expect("box is seed-weavable");
         assert_eq!(wf.vertices.len(), 8, "eight box corners");
         assert_eq!(wf.edges.len(), 12, "twelve box edges");
 
@@ -743,7 +833,7 @@ mod tests {
     #[test]
     fn box_corner_branch_sets_are_triples() {
         let body = BoundedCsg::from_csg(&box_leaf(3, [0.0, 0.0, 0.0], [10.0, 10.0, 10.0]));
-        let wf = build_seed_wireframe(&body).expect("box is seed-weavable");
+        let wf = build_seed_wireframe(&body, SeedMode::Strict).expect("box is seed-weavable");
         for v in &wf.vertices {
             assert_eq!(v.branches.len(), 3, "a box corner joins exactly three faces");
             for b in &v.branches {
@@ -1169,6 +1259,93 @@ mod tests {
         );
         let body = BoundedCsg::from_csg(&csg);
         assert_seed_matches_octree(&body, 0.5);
+    }
+
+    #[test]
+    fn partial_seed_recovers_operand_edges_when_strict_bails() {
+        // Stufe A+B (tickets 7vbe/qmvn): a Union of a fully seed-weavable
+        // operand (a box) with an operand whose walls are NON-analytic (a torus
+        // — its tube wall has no closed-form half-space carrier, so every
+        // box×torus cross pair is `unresolved`). The torus pokes its tube
+        // (major 8 + minor 3 = outer radius 11 > box half-extent 10) out of the
+        // box's ±x/±z faces, so the bodies genuinely intersect.
+        //
+        // The STRICT all-or-nothing seed path bails on the very first
+        // unresolvable cross pair → the WHOLE body would be octree-woven
+        // (coarse, tessellated, no parametric edge structure). The GRACEFUL
+        // path skips only the unresolvable torus transition seams and keeps the
+        // box operand's full analytic wireframe — exactly the user's ask "der
+        // BRep soll weiter über die parametrischen Einzelkörper laufen".
+        let body = BoundedCsg::from_csg(&CsgNode::Union(
+            Box::new(box_leaf(1, [0.0, 0.0, 0.0], [10.0, 10.0, 10.0])),
+            Box::new(CsgNode::Leaf {
+                id: FeatureId::from_u32(2),
+                primitive: Primitive::Torus {
+                    center: [0.0, 0.0, 0.0],
+                    major_radius: 8.0,
+                    minor_radius: 3.0,
+                },
+            }),
+        ));
+
+        // Premise: the body really does bail the strict path (otherwise this
+        // test would not exercise the graceful fallback at all).
+        let res = seed_branch_pairs(&body);
+        assert!(
+            !res.unresolved.is_empty(),
+            "premise: the torus cross pairs must be unresolved (got {} unresolved)",
+            res.unresolved.len()
+        );
+        assert!(
+            weave_branch_seeds(&body).is_none(),
+            "premise: strict seed weave must bail (all-or-nothing) for this body"
+        );
+
+        // The graceful path recovers a real B-Rep instead of nothing.
+        let partial =
+            weave_branch_seeds_partial(&body).expect("graceful seed weave must yield a B-Rep");
+
+        // It carries the box operand's FULL parametric wireframe: 8 corner
+        // vertices + 12 straight edges, all tagged with the box feature (id 1).
+        // The strict path delivered ZERO of these (it returned None); these are
+        // the "parametrischen Einzelkörper" edges the ticket wants kept.
+        let box_edges = partial
+            .edges
+            .iter()
+            .filter(|e| e.signature.0.feature_id() == 1 && e.signature.1.feature_id() == 1)
+            .count();
+        assert_eq!(box_edges, 12, "all 12 analytic box edges must be present");
+
+        let box_corners = partial
+            .vertices
+            .iter()
+            .filter(|v| v.branches.iter().all(|b| b.feature_id() == 1) && v.branches.len() == 3)
+            .count();
+        assert_eq!(box_corners, 8, "all 8 analytic box corners must be present");
+
+        // Each box corner sits exactly on a ±10 box corner (analytic precision,
+        // not the octree's sampled approximation).
+        for v in partial.vertices.iter().filter(|v| {
+            v.branches.iter().all(|b| b.feature_id() == 1) && v.branches.len() == 3
+        }) {
+            for &c in &v.position {
+                assert!(
+                    (c.abs() - 10.0).abs() < 1e-3,
+                    "box corner coord {c} not ±10 (analytic precision lost)"
+                );
+            }
+        }
+
+        // The recovered wireframe is structurally richer than the bare octree
+        // fallback the strict bail would otherwise force: at least the 12 exact
+        // box edges, every one a 2-point Polyline / NURBS the octree route never
+        // produces (it tessellates). We assert the parametric provenance rather
+        // than a raw edge count (the octree may over- or under-count).
+        assert!(
+            partial.edges.len() >= 12,
+            "partial weave must keep at least the 12 box edges, had {}",
+            partial.edges.len()
+        );
     }
 
     #[test]

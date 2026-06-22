@@ -197,6 +197,22 @@ impl Body {
                 // tens of thousands of non-Lipschitz seam cells, a wasm stall);
                 // the renderer covers the shape.
                 BRep::new()
+            } else if let Some(partial) = parametric
+                .then(|| crate::brep::seed_weaver::weave_branch_seeds_partial(&bounded))
+                .flatten()
+            {
+                // Graceful branch-seed weave (Stufe A+B, tickets 7vbe/qmvn): the
+                // strict `weave_parametric` above bailed on a single unresolvable
+                // transition seam, which previously threw the WHOLE body onto the
+                // octree (degenerate/coarse). Instead, keep every analytically
+                // resolvable edge — each operand's own edges AND the analytic
+                // Boolean boundary (SSI cross-pair) edges — and skip only the
+                // genuine transition seams. The result is a *partial* (non-
+                // watertight) B-Rep that still shows the parametric single bodies;
+                // only the transition zones lack edges (filling them locally from
+                // the octree is Stufe C, not yet implemented). Returns `None` for
+                // out-of-scope bodies and when nothing resolved → octree below.
+                partial
             } else {
                 let min_cell = topology_min_cell_size(&self.aabb);
                 let octree = Octree::build(&bounded, min_cell);
@@ -1263,6 +1279,70 @@ mod tests {
             PrimitiveModifiers::NONE,
             vec![],
         )
+    }
+
+    fn torus_feat(
+        id: u32,
+        op: BoolOp,
+        target: u32,
+        center: [f32; 3],
+        major: f32,
+        minor: f32,
+    ) -> DecodedFeature {
+        DecodedFeature::from_parts(
+            FeatureId::from_u32(id),
+            format!("Torus {id}"),
+            op,
+            Primitive::Torus { center, major_radius: major, minor_radius: minor },
+            Transform::IDENTITY,
+            PrimitiveModifiers::NONE,
+            vec![FeatureId::from_u32(target)],
+        )
+    }
+
+    #[test]
+    fn graceful_partial_seed_keeps_operand_edges_in_ensure_brep() {
+        // Tickets 7vbe/qmvn (Stufe A+B): a Union of a fully seed-weavable box
+        // with a torus whose tube wall is non-analytic. The strict branch-seed
+        // path bails (every box×torus cross pair is unresolved), which used to
+        // throw the WHOLE body onto the coarse octree. `ensure_brep` now falls
+        // back to the GRACEFUL partial seed weave, so the box operand's exact
+        // 12 analytic edges + 8 corners survive — driven through the real
+        // user-facing `weave_all` → `ensure_brep` path, not the unit weaver.
+        let bodies = weave_all(&[
+            box_feat(1, BoolOp::New, [0.0, 0.0, 0.0], [10.0, 10.0, 10.0]),
+            // outer tube radius 8+3 = 11 > box half-extent 10 → real overlap;
+            // a TARGETED Add (→ box id 1) docks them into one body (the product
+            // rule forbids implicit merge by mere contact).
+            torus_feat(2, BoolOp::Add, 1, [0.0, 0.0, 0.0], 8.0, 3.0),
+        ]);
+        assert_eq!(bodies.len(), 1, "box ∪ torus is one connected body");
+        let brep = &bodies[0].0;
+
+        // The box operand's full analytic wireframe is present.
+        let box_edges = brep
+            .edges
+            .iter()
+            .filter(|e| e.signature.0.feature_id() == 1 && e.signature.1.feature_id() == 1)
+            .count();
+        assert_eq!(box_edges, 12, "all 12 analytic box edges survive the graceful weave");
+
+        // Every box corner lands on an exact ±10 box corner — analytic
+        // precision the octree fallback would have lost.
+        let box_corners: Vec<_> = brep
+            .vertices
+            .iter()
+            .filter(|v| v.branches.len() == 3 && v.branches.iter().all(|b| b.feature_id() == 1))
+            .collect();
+        assert_eq!(box_corners.len(), 8, "all 8 analytic box corners survive");
+        for v in &box_corners {
+            for &c in &v.position {
+                assert!(
+                    (c.abs() - 10.0).abs() < 1e-3,
+                    "box corner coord {c} not ±10 — analytic precision lost"
+                );
+            }
+        }
     }
 
     fn gyroid_feat(id: u32, op: BoolOp, target: u32, cell_size: f32, thickness: f32) -> DecodedFeature {
