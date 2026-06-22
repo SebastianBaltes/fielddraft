@@ -50,6 +50,9 @@ const _right = new THREE.Vector3();
 const _up = new THREE.Vector3();
 const _c = new THREE.Vector3();
 const _ndc = new THREE.Vector3();
+const _viewDir = new THREE.Vector3();
+const _rayDir = new THREE.Vector3();
+const _focus = new THREE.Vector3();
 const _q = new THREE.Quaternion();
 const _qa = new THREE.Quaternion();
 const _qb = new THREE.Quaternion();
@@ -98,6 +101,29 @@ export function rotationDelta(
   _qa.setFromAxisAngle(yawAxis, -yawAngle);
   _qb.setFromAxisAngle(right, -pitchAngle);
   return out.multiplyQuaternions(_qa, _qb);
+}
+
+/**
+ * Focus point for cursor-zoom: where the cursor ray (`rayDir`, a unit vector
+ * from `camPos`) crosses the plane through `target` perpendicular to the view
+ * direction. Scaling both camera and target about this point keeps it pinned
+ * under the cursor — a uniform scale leaves the view direction unchanged, so
+ * the focus projects to the same pixel. Returns `null` when the ray grazes the
+ * plane (≈parallel) or the camera sits on the target.
+ */
+export function cursorZoomFocus(
+  camPos: THREE.Vector3,
+  target: THREE.Vector3,
+  rayDir: THREE.Vector3,
+  out: THREE.Vector3,
+): THREE.Vector3 | null {
+  _viewDir.copy(target).sub(camPos);
+  const dist = _viewDir.length();
+  if (dist < 1e-9) return null;
+  _viewDir.multiplyScalar(1 / dist);
+  const denom = rayDir.dot(_viewDir);
+  if (Math.abs(denom) < 1e-6) return null;
+  return out.copy(camPos).addScaledVector(rayDir, dist / denom);
 }
 
 export interface OnshapeMouseButtons {
@@ -201,7 +227,7 @@ export class OnshapeControls extends THREE.Controls {
     this.py = e.clientY;
     if (this.action === "rotate") this.rotate(dx, dy);
     else if (this.action === "pan") this.pan(dx, dy);
-    else this.dolly(dy);
+    else this.dolly(dy, e.clientX, e.clientY);
     e.stopPropagation();
   };
 
@@ -215,7 +241,7 @@ export class OnshapeControls extends THREE.Controls {
   private onWheel = (e: WheelEvent) => {
     if (!this.enabled) return;
     e.preventDefault();
-    this.dolly(e.deltaY);
+    this.dolly(e.deltaY, e.clientX, e.clientY);
   };
 
   /** Decide the rotate pivot via the sticky-bounding-sphere rule. */
@@ -272,16 +298,36 @@ export class OnshapeControls extends THREE.Controls {
     this.onChange?.();
   }
 
-  /** `amount > 0` (scroll/drag down) zooms OUT; `< 0` zooms IN. */
-  private dolly(amount: number): void {
+  /** `amount > 0` (scroll/drag down) zooms OUT; `< 0` zooms IN. Zooms toward
+   *  the cursor: the world point under the pointer stays put on screen. */
+  private dolly(amount: number, clientX: number, clientY: number): void {
     const cam = this.cam;
-    const factor = Math.pow(0.95, (-amount / 100) * this.zoomSpeed);
-    _offset.copy(cam.position).sub(this.target);
-    const len = Math.min(
-      Math.max(_offset.length() * factor, this.minDistance),
+    cam.updateMatrixWorld();
+    const dist = cam.position.distanceTo(this.target);
+    let factor = Math.pow(0.95, (-amount / 100) * this.zoomSpeed);
+    // Clamp the factor so the orbit distance stays within [min, max].
+    const clamped = Math.min(
+      Math.max(dist * factor, this.minDistance),
       this.maxDistance,
     );
-    _offset.setLength(len);
+    factor = dist > 1e-9 ? clamped / dist : 1;
+
+    const rect = (this.domElement as HTMLElement | null)?.getBoundingClientRect();
+    if (rect && rect.width > 0 && rect.height > 0) {
+      const ndcX = ((clientX - rect.left) / rect.width) * 2 - 1;
+      const ndcY = -((clientY - rect.top) / rect.height) * 2 + 1;
+      _rayDir.set(ndcX, ndcY, 0.5).unproject(cam).sub(cam.position).normalize();
+      if (cursorZoomFocus(cam.position, this.target, _rayDir, _focus)) {
+        // Scale camera + target uniformly about the cursor focus point.
+        cam.position.sub(_focus).multiplyScalar(factor).add(_focus);
+        this.target.sub(_focus).multiplyScalar(factor).add(_focus);
+        cam.updateMatrixWorld();
+        this.onChange?.();
+        return;
+      }
+    }
+    // Fallback: zoom toward the target (centre) when no canvas rect / grazing.
+    _offset.copy(cam.position).sub(this.target).multiplyScalar(factor);
     cam.position.copy(this.target).add(_offset);
     cam.updateMatrixWorld();
     this.onChange?.();

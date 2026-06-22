@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import * as THREE from "three";
-import { sphereFitsViewport, rotationDelta } from "./onshapeControls";
+import { sphereFitsViewport, rotationDelta, cursorZoomFocus } from "./onshapeControls";
 
 function cameraLookingAt(
   pos: [number, number, number],
@@ -84,5 +84,47 @@ describe("rotationDelta", () => {
   it("returns a unit quaternion", () => {
     const q = rotationDelta("free", 0.3, -0.2, right, up, new THREE.Quaternion());
     expect(q.length()).toBeCloseTo(1, 6);
+  });
+});
+
+describe("cursorZoomFocus", () => {
+  const camPos = new THREE.Vector3(0, 0, 10);
+  const target = new THREE.Vector3(0, 0, 0);
+
+  it("a centred ray (toward target) focuses on the target itself", () => {
+    const rayDir = new THREE.Vector3(0, 0, -1);
+    const f = cursorZoomFocus(camPos, target, rayDir, new THREE.Vector3());
+    expect(f).not.toBeNull();
+    expect(f!.distanceTo(target)).toBeCloseTo(0, 5);
+  });
+
+  it("an off-centre ray focuses on the target plane under the cursor", () => {
+    // 45° ray → hits the z=0 plane (through target ⊥ view) at x = dist·tan45 = 10.
+    const rayDir = new THREE.Vector3(1, 0, -1).normalize();
+    const f = cursorZoomFocus(camPos, target, rayDir, new THREE.Vector3());
+    expect(f).not.toBeNull();
+    expect(f!.x).toBeCloseTo(10, 4);
+    expect(f!.z).toBeCloseTo(0, 4); // on the target plane
+  });
+
+  it("scaling camera+target about the focus keeps the focus pinned", () => {
+    const rayDir = new THREE.Vector3(0.3, -0.2, -1).normalize();
+    const f = cursorZoomFocus(camPos, target, rayDir, new THREE.Vector3())!;
+    // The cursor ray from the camera must still pass through the focus after a
+    // uniform scale of both camera and target about that focus.
+    const factor = 0.5;
+    const newCam = camPos.clone().sub(f).multiplyScalar(factor).add(f);
+    const newTarget = target.clone().sub(f).multiplyScalar(factor).add(f);
+    // View direction unchanged (parallel) and focus still on the ray cam→focus.
+    const oldDir = target.clone().sub(camPos).normalize();
+    const newDir = newTarget.clone().sub(newCam).normalize();
+    expect(newDir.dot(oldDir)).toBeCloseTo(1, 6);
+    const toFocus = f.clone().sub(newCam).normalize();
+    expect(toFocus.dot(rayDir)).toBeCloseTo(1, 6);
+  });
+
+  it("returns null for a grazing ray and a degenerate camera", () => {
+    expect(cursorZoomFocus(camPos, target, new THREE.Vector3(1, 0, 0), new THREE.Vector3())).toBeNull();
+    expect(cursorZoomFocus(target, target, new THREE.Vector3(0, 0, -1), new THREE.Vector3())).toBeNull();
   });
 });
