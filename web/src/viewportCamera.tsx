@@ -264,10 +264,18 @@ export function ViewCommandConsumer() {
 
     if (cmd.kind === "preset") {
       const preset = VIEW_PRESETS[cmd.preset];
-      camera.position.set(...preset.position);
+      // Frame the scene's bounding sphere from the preset's direction, centred
+      // on the sphere — NOT the world origin. The ViewCube always references
+      // the model so a body sitting away from the origin stays framed.
+      const b = getSceneBounds();
+      const center = new THREE.Vector3(...(b && b.radius > 0 ? b.center : [0, 0, 0]));
+      const radius = b && b.radius > 0 ? Math.max(b.radius, 1) : 100;
+      const dir = new THREE.Vector3(...preset.position).normalize();
+      const dist = fitDistance(camera as THREE.PerspectiveCamera, radius);
       camera.up.set(...preset.up);
-      camera.lookAt(0, 0, 0);
-      target.set(0, 0, 0);
+      camera.position.copy(center).addScaledVector(dir, dist);
+      camera.lookAt(center);
+      target.copy(center);
     } else if (cmd.kind === "fit") {
       const b = getSceneBounds() ?? { center: [0, 0, 0] as [number, number, number], radius: 100 };
       const center = new THREE.Vector3(...b.center);
