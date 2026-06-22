@@ -39,7 +39,7 @@ import { GRID_WORLD_SIZE } from "./sceneBoundsBridge";
 import { OVERLAY_LAYER } from "./viewportSdfOverlays";
 import { disposeAfterGpuIdle } from "./sdfPipelineCommon";
 import { resolveMaterials, type MaterialProps } from "./materialBridge";
-import { DEFAULT_ROUGHNESS, DEFAULT_METALNESS } from "./pbrShading";
+import { DEFAULT_ROUGHNESS, DEFAULT_METALNESS, LIGHTS, AMBIENT } from "./pbrShading";
 import {
   BODY_COLORS,
   applyLeafTransform,
@@ -3677,20 +3677,52 @@ const WEBGL_DEFAULT_ROUGHNESS = DEFAULT_ROUGHNESS;
 const WEBGL_DEFAULT_METALNESS = DEFAULT_METALNESS;
 
 /**
- * Scene lighting for the classic-WebGL render paths, approximating the WebGPU
- * SDF shader's 3-directional-light + 0.25 ambient setup (pbrShading.ts LIGHTS /
- * AMBIENT) so materials read similarly across renderers (ticket gcvz). The SDF
- * light dirs are view-space radiances; here we place equivalent world-space
- * directionals (key/fill/rim) and scale the raw radiances down for Three.js's
- * BRDF. Exact pixel parity isn't expected — only a close visual match.
+ * Scene lighting for the classic-WebGL render paths. Uses the SAME light setup
+ * as the SDF (WebGPU) shader — `LIGHTS` / `AMBIENT` from pbrShading.ts as the
+ * single source of truth. The SDF dirs/radiances are VIEW-space (camera-space),
+ * so here we mount the directionals as children of the camera: each light sits
+ * at `dir` in the camera-local frame with its target at the camera-local origin,
+ * making the three.js light direction `normalize(position - target) =
+ * normalize(dir)` exactly match the SDF view-space `L`. The lights therefore
+ * move with the camera (headlight-like), identical to the SDF renderer. Exact
+ * pixel parity isn't expected (three's MeshStandardMaterial BRDF differs from
+ * the SDF Cook-Torrance), only an identical light configuration.
  */
 export function WebGLSceneLights() {
+  const camera = useThree((s) => s.camera);
+  const groupRef = useRef<THREE.Group>(null);
+
+  // Stable per-light targets (at the camera-local origin) so each directional's
+  // direction is `normalize(position - target) = normalize(dir)`.
+  const targets = useMemo(() => LIGHTS.map(() => new THREE.Object3D()), []);
+
+  // Mount the camera-local light rig as a child of the camera so the light
+  // directions stay fixed in view-space (and thus move with the camera).
+  useEffect(() => {
+    const group = groupRef.current;
+    if (!group) return;
+    camera.add(group);
+    return () => {
+      camera.remove(group);
+    };
+  }, [camera]);
+
   return (
     <>
-      <ambientLight intensity={0.25} />
-      <directionalLight position={[200, 300, 1000]} intensity={1.5} />
-      <directionalLight position={[-500, 100, 600]} intensity={0.45} />
-      <directionalLight position={[0, -200, -1000]} intensity={0.3} />
+      <ambientLight intensity={AMBIENT} />
+      {/* Attached to the camera in the effect above; `dir` is camera-local. */}
+      <group ref={groupRef}>
+        {LIGHTS.map(({ dir, radiance }, i) => (
+          <directionalLight
+            key={i}
+            position={[dir[0], dir[1], dir[2]]}
+            intensity={radiance}
+            target={targets[i]}
+          >
+            <primitive object={targets[i]} position={[0, 0, 0]} />
+          </directionalLight>
+        ))}
+      </group>
     </>
   );
 }

@@ -15,13 +15,19 @@ export const DEFAULT_ROUGHNESS = 0.35;
 export const DEFAULT_METALNESS = 0.0;
 export const DEFAULT_BASE_COLOR: [number, number, number] = [0.55, 0.65, 0.85];
 
-const LIGHTS = [
+/**
+ * Camera/view-space directional lights — the single source of truth for BOTH
+ * the SDF (WebGPU) shader here and the classic WebGL render path
+ * (`WebGLSceneLights` in viewportOverlays.tsx). `dir` is the view-space
+ * direction TOWARD the light; `radiance` is its intensity.
+ */
+export const LIGHTS: { dir: [number, number, number]; radiance: number }[] = [
   { dir: [0.2, 0.3, 1.0], radiance: 3.0 },
   { dir: [-0.5, 0.1, 0.6], radiance: 0.5 },
   { dir: [0.0, -0.2, -1.0], radiance: 0.3 },
 ];
 
-const AMBIENT = 0.25;
+export const AMBIENT = 0.25;
 
 /**
  * PBR shade a surface point (Cook-Torrance BRDF).
