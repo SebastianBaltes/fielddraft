@@ -129,3 +129,18 @@ export function createAutoSave(options: CreateAutoSaveOptions = {}): AutoSaveHan
     },
   };
 }
+
+/**
+ * An inert auto-save handle — every method is a no-op. Used by the ClaudeDraft
+ * "open ticket" deep-link tab (`?project=`), which must never write to the
+ * origin-wide persisted project: that localStorage slot is shared across all
+ * tabs, so a repro tab autosaving the ticket would clobber the user's real
+ * work-in-progress in their other tabs.
+ */
+export function createNoopAutoSave(): AutoSaveHandle {
+  return {
+    schedule() {},
+    flush() {},
+    cancel() {},
+  };
+}

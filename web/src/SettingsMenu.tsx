@@ -284,6 +284,42 @@ function parseUnits(raw: string | null): WorkspaceUnits {
   }
 }
 
+// ClaudeDraft "open ticket" deep-link (`?project=`): the ticket's settings.json
+// is applied as a ONE-SHOT, in-memory override of the first loadSettings() call
+// (React mount) — never written to localStorage. localStorage is origin-wide,
+// so persisting a ticket's per-device settings would clobber the user's real
+// settings in their other tabs; an in-memory override keeps the repro tab
+// isolated. bootProject.ts sets this before the app mounts.
+let bootOverride: Partial<SettingsState> | null = null;
+const BOOT_SETTING_KEYS: (keyof SettingsState)[] = [
+  "compact",
+  "units",
+  "theme",
+  "renderMode",
+  "meshAlgorithm",
+  "brepEdgeMode",
+  "frameLoop",
+  "parametricWeave",
+  "dragBrepRecompute",
+  "liveExtrudeDrag",
+  "showEdgePoints",
+  "controlsPreset",
+  "autoReload",
+];
+
+/** Stage a settings.json snapshot as the next loadSettings() result (one-shot,
+ *  in-memory; see {@link bootOverride}). Unknown keys are ignored;
+ *  `showOctreeCells` is excluded by design (session-only, never restored). */
+export function setBootSettings(raw: Record<string, unknown>): void {
+  const picked: Partial<SettingsState> = {};
+  for (const k of BOOT_SETTING_KEYS) {
+    if (raw[k] !== undefined) {
+      (picked as Record<string, unknown>)[k] = raw[k];
+    }
+  }
+  bootOverride = picked;
+}
+
 /** Load all settings from localStorage with safe fallbacks. */
 export function loadSettings(): SettingsState {
   let compact = false;
@@ -331,7 +367,13 @@ export function loadSettings(): SettingsState {
   } catch {
     // localStorage may be unavailable
   }
-  return { compact, units, theme, renderMode, meshAlgorithm, brepEdgeMode, frameLoop, parametricWeave, dragBrepRecompute, liveExtrudeDrag, showEdgePoints, showOctreeCells, controlsPreset, autoReload };
+  const loaded: SettingsState = { compact, units, theme, renderMode, meshAlgorithm, brepEdgeMode, frameLoop, parametricWeave, dragBrepRecompute, liveExtrudeDrag, showEdgePoints, showOctreeCells, controlsPreset, autoReload };
+  if (bootOverride) {
+    const merged = { ...loaded, ...bootOverride };
+    bootOverride = null; // one-shot: only the first read (React mount) honors it
+    return merged;
+  }
+  return loaded;
 }
 
 function saveSetting(key: string, value: string): void {

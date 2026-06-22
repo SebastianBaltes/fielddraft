@@ -22,9 +22,11 @@ import {
 } from "./kernel";
 import {
   createAutoSave,
+  createNoopAutoSave,
   loadPersisted,
   type AutoSaveHandle,
 } from "./persistence";
+import { bootProjectPath } from "./bootParams";
 import {
   parseVariableInput,
   resolveVariableTable,
@@ -5676,8 +5678,18 @@ export async function getStore(): Promise<KernelStore> {
     // kernel). Feeding it straight to `kernel.loadJson` here was the
     // MT-A leftover that threw "missing field schema_version" and, worse,
     // dropped the persisted project on every reload.
-    const autosave = createAutoSave();
-    const store = new KernelStore(kernel, autosave, loadPersisted());
+    // ClaudeDraft "open ticket" deep-link (`?project=`): a repro tab must not
+    // touch the user's shared (origin-wide) persisted project — bootProject.ts
+    // replaces the doc with the ticket's. Use an inert autosave and a clean
+    // start so opening a ticket can never clobber a live work session in
+    // another tab.
+    const deepLink = bootProjectPath() !== null;
+    const autosave = deepLink ? createNoopAutoSave() : createAutoSave();
+    const store = new KernelStore(
+      kernel,
+      autosave,
+      deepLink ? null : loadPersisted(),
+    );
 
     // Stale-WASM guard (UI side): `Kernel.create` already logs a console
     // warning on a version mismatch; also surface it as a toast so it's

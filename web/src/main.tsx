@@ -2,6 +2,8 @@ import { createRoot } from "react-dom/client";
 import { App } from "./App";
 import { installRawInputCapture } from "./userActionLog";
 import { LS_AUTO_RELOAD } from "./SettingsMenu";
+import { bootProjectPath } from "./bootParams";
+import { applyBootSettings, loadBootProject } from "./bootProject";
 import "./styles/index.css";
 
 // Ticket cztw: let the user keep a running session across edits. When Vite has
@@ -42,13 +44,27 @@ console.warn = (...args: unknown[]) => {
   _origWarn(...args);
 };
 
-const container = document.getElementById("root");
-if (!container) throw new Error("#root not found");
+// ClaudeDraft "open ticket" deep-link (`/?project=<repo-rel>`): when present,
+// stage the ticket's settings.json BEFORE mounting (so the first loadSettings()
+// opens the tab in the reported render mode), then load the project.fdraft once
+// the store exists. `getStore()` already routes this tab to an inert autosave +
+// clean start (see store.ts) so a repro tab can't clobber the user's session.
+async function boot(): Promise<void> {
+  const container = document.getElementById("root");
+  if (!container) throw new Error("#root not found");
 
-// NOTE: StrictMode is applied per-region INSIDE App (around the UI chrome,
-// outliner, toolbar, script editor) — but NOT around the 3D <Viewport>. Its
-// dev double-mount (mount→unmount→mount) breaks the WebGPU/WebGL canvas: R3F's
-// react-use-measure ResizeObserver misses the re-observed initial size, so the
-// canvas stays blank until a manual window resize (a known R3F+StrictMode
-// issue), and the renderer/device init runs twice. See App.tsx.
-createRoot(container).render(<App />);
+  const projectPath = bootProjectPath();
+  if (projectPath) await applyBootSettings(projectPath);
+
+  // NOTE: StrictMode is applied per-region INSIDE App (around the UI chrome,
+  // outliner, toolbar, script editor) — but NOT around the 3D <Viewport>. Its
+  // dev double-mount (mount→unmount→mount) breaks the WebGPU/WebGL canvas: R3F's
+  // react-use-measure ResizeObserver misses the re-observed initial size, so the
+  // canvas stays blank until a manual window resize (a known R3F+StrictMode
+  // issue), and the renderer/device init runs twice. See App.tsx.
+  createRoot(container).render(<App />);
+
+  if (projectPath) void loadBootProject(projectPath);
+}
+
+void boot();

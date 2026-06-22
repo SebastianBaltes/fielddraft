@@ -1,7 +1,7 @@
 import { defineConfig, loadEnv, type Plugin } from "vite";
 import react from "@vitejs/plugin-react";
 import { existsSync, readFileSync, mkdirSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve, isAbsolute, sep } from "node:path";
 import { homedir } from "node:os";
 
 const pkg = JSON.parse(readFileSync("package.json", "utf-8"));
@@ -279,6 +279,66 @@ const certFile = join(certDir, "sorokan-xps-8960.tailnet.example.ts.net.crt");
 const keyFile = join(certDir, "sorokan-xps-8960.tailnet.example.ts.net.key");
 const hasTailscaleCert = existsSync(certFile) && existsSync(keyFile);
 
+// Dev-only same-origin file read for the ClaudeDraft "open ticket" deep-link
+// (`/?project=tickets/open/<id>/project.fdraft`). The webapp's boot loader
+// (bootProject.ts) fetches `/api/file?path=<repo-root-relative>` to pull the
+// project.fdraft + sibling settings.json out of the slave's OWN filesystem —
+// same origin, no CORS, no ClaudeDraft round-trip. The tickets dir lives at the
+// repo root (sibling of web/), OUTSIDE Vite's static `fs.allow`, so a middleware
+// (which bypasses that gate) is the clean way to serve it. Sandboxed to the repo
+// root with a path-traversal guard. No-op in a production build (the build has
+// no server; the Go backend would mirror this route if ever needed in prod).
+function fileReader(): Plugin {
+  const repoRoot = resolve(process.cwd(), "..");
+  const rootPrefix = repoRoot.endsWith(sep) ? repoRoot : repoRoot + sep;
+  return {
+    name: "file-reader",
+    configureServer(server) {
+      server.middlewares.use("/api/file", (req, res) => {
+        if (req.method !== "GET") {
+          res.statusCode = 405;
+          res.end();
+          return;
+        }
+        let rel: string | null = null;
+        try {
+          rel = new URL(req.url ?? "", "http://localhost").searchParams.get(
+            "path",
+          );
+        } catch {
+          rel = null;
+        }
+        if (!rel || isAbsolute(rel)) {
+          res.statusCode = 400;
+          res.end("bad path");
+          return;
+        }
+        const resolved = resolve(repoRoot, rel);
+        if (resolved !== repoRoot && !resolved.startsWith(rootPrefix)) {
+          res.statusCode = 403;
+          res.end("outside repo");
+          return;
+        }
+        if (!existsSync(resolved)) {
+          res.statusCode = 404;
+          res.end("not found");
+          return;
+        }
+        try {
+          const data = readFileSync(resolved);
+          res.statusCode = 200;
+          res.setHeader("Content-Type", "application/octet-stream");
+          res.setHeader("Cache-Control", "no-store");
+          res.end(data);
+        } catch (err) {
+          res.statusCode = 500;
+          res.end(String(err));
+        }
+      });
+    },
+  };
+}
+
 // Per-instance dev-server port: lets `fielddraft` and `fielddraft-a` run side
 // by side. Sourced (in order) from the recipe env (e.g. `just dev`, which
 // dotenv-loads the repo-root .env), then the repo-root .env directly (so a bare
@@ -293,7 +353,7 @@ function webPort(mode: string): number {
 
 // https://vitejs.dev/config/
 export default defineConfig(({ mode }) => ({
-  plugins: [react(), liveVersion(), kernelStamp(), ticketWriter()],
+  plugins: [react(), liveVersion(), kernelStamp(), ticketWriter(), fileReader()],
   server: {
     port: webPort(mode),
     strictPort: true,
