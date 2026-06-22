@@ -1982,8 +1982,9 @@ export function BRepEdgeOverlay({
     obj.renderOrder = 998;
     obj.layers.enable(OVERLAY_LAYER);
     setBaseObj(obj);
-    return () => geom.dispose();
-  }, [edges, isWebGPU]);
+    // Same fg9o race on a kernel rebuild while a submit is in flight — defer.
+    return () => disposeAfterGpuIdle(gl, () => geom.dispose());
+  }, [edges, isWebGPU, gl]);
 
   // Screen-space edge hover. The kernel sphere-trace pick reports the face
   // *behind* the thin edge (1 contributor → "face"), so it can never light up
@@ -2142,8 +2143,14 @@ export function BRepEdgeOverlay({
     obj.renderOrder = 999;
     obj.layers.enable(OVERLAY_LAYER);
     setHoverObj(obj);
-    return () => geom.dispose();
-  }, [hoveredIdx, edges, isWebGPU]);
+    // Ticket fg9o/o6hx: hovering sweeps `hoveredIdx` every frame, so this
+    // fat-line geometry is torn down a frame later while an in-flight WebGPU
+    // submit may still reference it. Destroying it synchronously trips
+    // "[Buffer] used in submit while destroyed" (counting up until the device
+    // wedges and the overlay/datum pass stops drawing). Defer until the GPU
+    // queue drains (falls back to sync on the WebGL backend).
+    return () => disposeAfterGpuIdle(gl, () => geom.dispose());
+  }, [hoveredIdx, edges, isWebGPU, gl]);
 
   useEffect(() => {
     const mats = [
@@ -2901,8 +2908,9 @@ export function BRepSelectionOverlay({
     obj.layers.enable(OVERLAY_LAYER);
     setOutlineObj(obj);
     invalidate();
-    return () => geometry.dispose();
-  }, [hoverFace, bodies, invalidate, isWebGPU]);
+    // Same fg9o race: hovering sweeps `hoverFace` every frame — defer disposal.
+    return () => disposeAfterGpuIdle(gl, () => geometry.dispose());
+  }, [hoverFace, bodies, invalidate, isWebGPU, gl]);
 
   useFrame(() => {
     const picker = getActiveQueryPicker();
