@@ -24,7 +24,6 @@ import type { BRepEdgeMode, FrameLoopMode } from "./SettingsMenu";
 import {
   SdfVmOverlay,
   SdfDeferredOverlay,
-  OVERLAY_LAYER,
 } from "./viewportSdfOverlays";
 import {
   CameraBridgePublisher,
@@ -62,7 +61,6 @@ import {
   MateConnectorOverlay,
   DatumOverlay,
   pickDatumAtRay,
-  WorldGrid,
   ReferenceMesh,
   PickHud,
   PerfProbe,
@@ -107,8 +105,6 @@ import {
   type NdcRect,
   type ProjectFn,
 } from "./boxSelect";
-
-const BUILD_VOLUME_SIZE = 600;
 
 interface PickProbeProps {
   ndc: { x: number; y: number; active: boolean };
@@ -179,21 +175,6 @@ function Scene({ ndc, onPick, renderMode, brepEdgeMode }: SceneProps) {
       <DatumOverlay />
       <Invalidator ndc={ndc} />
       <PerfProbe renderMode={renderMode} />
-      {/* Ticket p8dp: the ground grid must ALSO live on OVERLAY_LAYER so the
-          SDF overlay-on-top pass re-draws it AFTER the deferred shade quad —
-          otherwise the shade's opaque background fill on miss pixels paints
-          straight over the grid that the main-scene pass drew underneath it
-          (in sdf-vm the quad is transparent on miss, so the grid showed; in
-          sdf-deferred it didn't). depthWrite stays off so the grid is occluded
-          BY bodies (depthTest) without occluding other overlays. */}
-      <gridHelper
-        ref={(o: THREE.GridHelper | null) => {
-          if (!o) return;
-          o.layers.enable(OVERLAY_LAYER);
-          (o.material as THREE.Material).depthWrite = false;
-        }}
-        args={[BUILD_VOLUME_SIZE, 30, "#b8b8ae", "#d6d6ce"]}
-      />
     </>
   );
 }
@@ -713,7 +694,6 @@ function WebGLViewport({
             <SweepPathGizmo />
           </>
         )}
-        <gridHelper args={[BUILD_VOLUME_SIZE, 30, "#b8b8ae", "#d6d6ce"]} />
         {/* Ticket owia: use the SAME preset-aware controls as the WebGPU path
             (CameraRig applies the active controlsPreset's mouseButtons). A bare
             <OrbitControls> defaulted to LEFT=rotate / MIDDLE=dolly / RIGHT=pan,
@@ -1567,7 +1547,6 @@ export function Viewport({
                 )}
                 <MateConnectorOverlay />
                 <AssemblyParts />
-                <WorldGrid />
                 <CameraRig preset={controlsPreset} />
                 <ViewCommandConsumer />
                 <CameraQuaternionBridge />
