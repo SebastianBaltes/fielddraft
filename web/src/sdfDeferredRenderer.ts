@@ -2,15 +2,18 @@
  * Deferred Raymarching SDF renderer -- 3-pass dual-mesh pipeline.
  *
  * Pipeline per frame:
- *   1. OPAQUE RASTER:      Non-inflated hull-meshes -> opaqueRT (worldPos+tag)
- *   2. TRANSPARENT COLLECT: Inflated/volume hull-meshes -> transparentRT
+ *   1. OPAQUE RASTER:      Exact (non-offset) hull-meshes -> opaqueRT (worldPos+tag)
+ *   2. TRANSPARENT COLLECT: Offset/volume hull-meshes -> transparentRT
  *  2b. BACK-FACE COLLECT:  Same hulls, BackSide -> transparentBackRT (exit worldPos)
  *   3. UNIFIED SHADE:      Fullscreen quad reads all RTs; sphere-traces
  *                           transparent volumes; shades via VM SDF normals.
  *
  * Dual-mesh: each body provides opaque AND/OR transparent hull-meshes.
- * Box -> opaque only.  Sphere/Cylinder/Torus etc. -> opaque + transparent
- * (inflated HULL_INFLATE).  Gyroid/DomainWarp -> transparent only (AABB).
+ * Box -> opaque only.  Sphere/Cylinder/Torus etc. -> opaque + transparent.
+ * The transparent/back meshes are pushed outward by HULL_OFFSET ALONG their
+ * outward vertex normal (a true outer offset, NOT a uniform scale — so concave
+ * faces don't migrate INTO the material, Ticket vlhp).  Gyroid/DomainWarp ->
+ * transparent only (AABB).
  */
 
 // @ts-nocheck -- TSL's TypeScript surface in three r183 is intentionally loose.
@@ -83,7 +86,14 @@ const DEFERRED_MAX_OPCODES = 16384;
 const MAX_BODIES = 256;
 const DEFERRED_MARCH_STEPS = 512;
 const SURFACE_EPS = 0.002;
-const HULL_INFLATE = 1.01;
+// mm, Auswärts-Offset entlang der Vertex-Normale für die Coverage/Klammer-Meshes
+// (Transparent + Back). Ersetzt die fehlerhafte Uniform-Skalierung (Ticket vlhp).
+// TODO(perf/robust): pro Körper aus Bounding-Radius·(1−cos(π/N_tess)) statt fester
+// Konstante.
+const HULL_OFFSET = 0.5;
+// mm, Strahl-Rückversatz des March-Starts in Richtung Kamera, damit auch an
+// streifenden Silhouetten der erste Sample im Freiraum liegt.
+const MARCH_START_BACKOFF = 0.25;
 const MAX_PIXELS = 4096 * 2160;
 const BODY_ID_WORDS_PER_PIXEL = 2;
 
@@ -184,6 +194,30 @@ function createRevolveGeometry(
   const geo = new THREE.LatheGeometry(points, 48);
   ensureOutwardOrientation(geo);
   return geo;
+}
+
+/**
+ * Verschiebt jeden Vertex einer indizierten BufferGeometry um `delta` entlang
+ * seiner Vertex-Normale (mutiert in-place). Im Gegensatz zur Uniform-Skalierung
+ * (die entlang Radius-vom-Ursprung schiebt und an KONKAVEN Flächen — Bohrung,
+ * Innenkegel — INS Material wandert) bläht ein Offset entlang der Normale die
+ * Hülle IMMER auswärts auf, konvex wie konkav — ein billiges Minkowski-Hüllmesh
+ * (Ticket vlhp). Vorhandene Normalen werden NICHT neu berechnet, da sie ggf. von
+ * `ensureOutwardOrientation` bereits auswärts geflippt wurden.
+ */
+function offsetAlongNormal(geo: THREE.BufferGeometry, delta: number): void {
+  if (!geo.getAttribute("normal")) geo.computeVertexNormals();
+  const pos = geo.getAttribute("position");
+  const nrm = geo.getAttribute("normal");
+  for (let i = 0; i < pos.count; i++) {
+    pos.setXYZ(
+      i,
+      pos.getX(i) + nrm.getX(i) * delta,
+      pos.getY(i) + nrm.getY(i) * delta,
+      pos.getZ(i) + nrm.getZ(i) * delta,
+    );
+  }
+  pos.needsUpdate = true;
 }
 
 function createHelixGeometry(
@@ -505,7 +539,12 @@ function createShadeMaterial(
           );
         });
 
-        const t = float(0).toVar();
+        // Strahl-Rückversatz: Start leicht in Richtung Kamera, damit auch an
+        // streifenden Silhouetten der erste Sample im Freiraum liegt. transWorldPos
+        // liegt durch den Normal-Offset (HULL_OFFSET) bereits außerhalb der wahren
+        // Fläche; früher startete der March auf der facettierten Uniform-Scale-Hülle,
+        // die an Konkaven ins Material wanderte → Speichen/Abdunklung (Ticket vlhp).
+        const t = float(-MARCH_START_BACKOFF).toVar();
         const hitPos = vec3(0, 0, 0).toVar();
         const hit = float(0).toVar();
         const hitBody = int(0).toVar();
@@ -972,7 +1011,11 @@ export function rebuildDeferredBodies(
 
           const tGeo = createPrimitiveGeometry(leaf);
           if (tGeo) {
-            tGeo.scale(HULL_INFLATE, HULL_INFLATE, HULL_INFLATE);
+            // Auswärts-Offset entlang der Normale statt Uniform-Scale: letztere
+            // schob an konkaven Flächen (Bohrung/Innenkegel) die Hülle INS
+            // Material → facetten-periodische Speichen-Normale beim March-Start
+            // (Ticket vlhp).
+            offsetAlongNormal(tGeo, HULL_OFFSET);
             const tMesh = new THREE.Mesh(tGeo, transMat);
             applyLeafTransform(tMesh, leaf);
             tMesh.frustumCulled = false;
@@ -983,7 +1026,10 @@ export function rebuildDeferredBodies(
 
           const bGeo = createPrimitiveGeometry(leaf);
           if (bGeo) {
-            bGeo.scale(HULL_INFLATE, HULL_INFLATE, HULL_INFLATE);
+            // Back-Mesh symmetrisch zum Transparent-Mesh auswärts versetzen,
+            // damit tMax = backDist − frontDist die wahre Wand voll überspannt
+            // (Ticket vlhp).
+            offsetAlongNormal(bGeo, HULL_OFFSET);
             const bMesh = new THREE.Mesh(bGeo, state.backFaceMaterial);
             applyLeafTransform(bMesh, leaf);
             bMesh.frustumCulled = false;
