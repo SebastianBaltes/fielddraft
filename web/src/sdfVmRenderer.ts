@@ -35,6 +35,7 @@ import {
   createOpcodeBuffers,
   disposeAfterGpuIdle,
   packOpcodes,
+  packMarchRelax,
   updateVolumeData,
   rebuildVolumeTextures,
   MAT_STRIDE,
@@ -74,6 +75,12 @@ export interface VmPipelineState {
   volumeBaseData: Float32Array;
   volumeBaseAttr: StorageBufferAttribute;
   volumeBaseBuf: ReturnType<typeof storage>;
+  // Per-body conservative raymarch step factor (≤1), 1.0 = full step. The
+  // march does `t += max(minD · marchRelax[closestBody], ε)` so a non-Lipschitz
+  // SDF (revolve, gyroid) isn't overshot — matches the deferred path.
+  marchRelaxData: Float32Array;
+  marchRelaxAttr: StorageBufferAttribute;
+  marchRelaxBuf: ReturnType<typeof storage>;
   viewMatU: ReturnType<typeof uniform>;
   nearU: ReturnType<typeof uniform>;
   farU: ReturnType<typeof uniform>;
@@ -114,6 +121,7 @@ export function updateVmData(
   bodies: {
     bodyIndex: number;
     opcodes: Float32Array;
+    marchRelax?: number;
     volumes?: { data: Float32Array; dims: [number, number, number] }[];
   }[],
 ): void {
@@ -126,6 +134,8 @@ export function updateVmData(
   );
   state.opcodeAttr.needsUpdate = true;
   state.offsetAttr.needsUpdate = true;
+  packMarchRelax(state.marchRelaxData, bodies, MAX_BODIES);
+  state.marchRelaxAttr.needsUpdate = true;
   updateVolumeData(
     state.volumeTextures,
     state.volumeBaseData,
@@ -143,6 +153,7 @@ export function rebuildVmBodies(
   bodies: {
     bodyIndex: number;
     opcodes: Float32Array;
+    marchRelax?: number;
     volumes?: { data: Float32Array; dims: [number, number, number] }[];
   }[],
   renderer?: THREE.WebGPURenderer,
@@ -156,6 +167,8 @@ export function rebuildVmBodies(
   );
   state.opcodeAttr.needsUpdate = true;
   state.offsetAttr.needsUpdate = true;
+  packMarchRelax(state.marchRelaxData, bodies, MAX_BODIES);
+  state.marchRelaxAttr.needsUpdate = true;
 
   // Ticket fg9o: capture the resources this rebuild retires and dispose them
   // only once the GPU confirms it's done with every in-flight submit that may
@@ -270,7 +283,16 @@ function createVmMaterial(state: VmPipelineState): MeshBasicNodeMaterial {
         hitBody.assign(closestBody);
         Break();
       });
-      t.addAssign(max(minD, float(SURFACE_EPS)));
+      // Per-body conservative step (Ticket 1wnm): a non-Lipschitz SDF
+      // (revolve march_relax 0.7, gyroid, …) overestimates distance and a full
+      // step would tunnel through thin walls; simple primitives keep 1.0. Same
+      // factor the deferred march applies.
+      t.addAssign(
+        max(
+          minD.mul(state.marchRelaxBuf.element(closestBody)),
+          float(SURFACE_EPS),
+        ),
+      );
       // Stop at the camera far plane (now adapted to the scene each frame,
       // ticket lbzq) instead of a fixed 3000 mm cap that hid large/zoomed-out
       // scenes.

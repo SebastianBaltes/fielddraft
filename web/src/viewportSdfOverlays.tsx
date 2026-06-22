@@ -188,6 +188,7 @@ export function SdfVmOverlay({ brepEdgeMode }: { brepEdgeMode: BRepEdgeMode }) {
         bodies.push({
           bodyIndex: i,
           opcodes: copyOpcodes(k, i),
+          marchRelax: k.bodySdfMarchRelax(i),
           volumes: collectBodyVolumes(k, i),
         });
       }
@@ -224,6 +225,7 @@ export function SdfVmOverlay({ brepEdgeMode }: { brepEdgeMode: BRepEdgeMode }) {
         bodies.push({
           bodyIndex: i,
           opcodes: copyOpcodes(k, i),
+          marchRelax: k.bodySdfMarchRelax(i),
           volumes: collectBodyVolumes(k, i),
         });
       }
