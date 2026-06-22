@@ -66,6 +66,7 @@ import {
   PerfProbe,
 } from "./viewportOverlays";
 import { PerfHud } from "./perfMonitor";
+import { ScreenSpaceCsgPass } from "./screenSpaceCsgPass";
 import { SketchCanvas2d } from "./SketchCanvas2d";
 import { invalidateCanvas } from "./viewCommands";
 import {
@@ -519,6 +520,7 @@ function WebGLViewport({
   controlsPreset,
   brepEdgeMode,
   ndc,
+  screenSpaceCsg,
 }: {
   controlsPreset: ControlsPresetId;
   brepEdgeMode: BRepEdgeMode;
@@ -528,6 +530,10 @@ function WebGLViewport({
   // which is what makes Measure / element selection / body selection work on
   // this backend exactly like on WebGPU.
   ndc: { x: number; y: number; active: boolean };
+  // Opt-in experiment (default off): when true, mount the experimental
+  // Screen-Space-CSG A−B pass (docs/ADAPTIVE-RENDERING-PLAN.md, Achse 3,
+  // Phase 3). Off → the WebGL path renders exactly as before.
+  screenSpaceCsg: boolean;
 }) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const { state } = useKernelStore();
@@ -650,6 +656,12 @@ function WebGLViewport({
         ) : (
           <WebGLBodies />
         )}
+        {/* Opt-in experiment (default off): Screen-Space-CSG Stage 1
+            (docs/ADAPTIVE-RENDERING-PLAN.md, Achse 3, Phase 3). Mounts an
+            extra A−B composite pass over the parametric hulls. When the flag is
+            off this is NOT rendered, so the WebGL path is byte-for-byte
+            unchanged. VISUELL UNVERIFIZIERT — Experiment. */}
+        {screenSpaceCsg && <ScreenSpaceCsgPass />}
         {/* Default datum planes/origin (ticket 59c2) + committed sketches
             (ticket jjmv) — all plain-material meshes, so they render on the
             WebGL path just like in WebGPU. */}
@@ -747,6 +759,7 @@ export function Viewport({
   frameLoop,
   showEdgePoints,
   showOctreeCells,
+  screenSpaceCsg,
   controlsPreset,
 }: {
   renderMode: string;
@@ -754,6 +767,9 @@ export function Viewport({
   frameLoop: FrameLoopMode;
   showEdgePoints: boolean;
   showOctreeCells: boolean;
+  /** Opt-in experiment (default off): mount the Screen-Space-CSG pass in the
+   *  WebGL render path. Off → exact current behaviour. */
+  screenSpaceCsg: boolean;
   controlsPreset: ControlsPresetId;
 }) {
   const { store, state } = useKernelStore();
@@ -1404,6 +1420,7 @@ export function Viewport({
           controlsPreset={controlsPreset}
           brepEdgeMode={brepEdgeMode}
           ndc={ndc}
+          screenSpaceCsg={screenSpaceCsg}
         />
       )}
       {!isWebGL && (

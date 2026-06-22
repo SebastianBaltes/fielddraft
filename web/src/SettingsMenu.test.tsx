@@ -48,6 +48,7 @@ function setup() {
     liveExtrudeDrag: true,
     showEdgePoints: false,
     showOctreeCells: false,
+    screenSpaceCsg: false,
     controlsPreset: "onshape",
     autoReload: true,
   };
@@ -397,6 +398,7 @@ describe("loadSettings", () => {
       liveExtrudeDrag: true,
       showEdgePoints: false,
       showOctreeCells: false,
+      screenSpaceCsg: false,
       controlsPreset: "onshape",
       autoReload: true,
     });
@@ -430,6 +432,7 @@ describe("loadSettings", () => {
       liveExtrudeDrag: true,
       showEdgePoints: false,
       showOctreeCells: false,
+      screenSpaceCsg: false,
       controlsPreset: "onshape",
       autoReload: true,
     });

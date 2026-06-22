@@ -23,6 +23,7 @@ const LS_DRAG_BREP_RECOMPUTE = "fielddraft.dragBrepRecompute";
 const LS_LIVE_EXTRUDE_DRAG = "fielddraft.liveExtrudeDrag";
 const LS_SHOW_EDGE_POINTS = "fielddraft.showEdgePoints";
 const LS_SHOW_OCTREE_CELLS = "fielddraft.showOctreeCells";
+const LS_SCREEN_SPACE_CSG = "fielddraft.screenSpaceCsg";
 const LS_CONTROLS_PRESET = "fielddraft.controlsPreset";
 /** Shared with main.tsx's HMR guard — kept here so all localStorage keys live
  *  in one place. */
@@ -236,6 +237,12 @@ export interface SettingsState {
    * and can take minutes on complex bodies — persisting it would re-freeze the
    * tab on every reload with no way to recover. */
   showOctreeCells: boolean;
+  /** EXPERIMENTELL & OPT-IN (default AUS): Screen-Space-CSG Stage 1
+   * (docs/ADAPTIVE-RENDERING-PLAN.md, Achse 3, Phase 3). Nur im WebGL-Renderpfad
+   * wirksam; rendert einen einstufigen A−B-Composite-Pass über die
+   * parametrischen Hüllmeshes. Visuell unverifiziertes Experiment — der normale
+   * WebGL-/WebGPU-Pfad bleibt bei AUS unverändert. */
+  screenSpaceCsg: boolean;
   /** Mouse/keyboard control scheme (docs/UX-PRESETS.md) — which CAD
    * package's habits the camera, selection and view keys follow. */
   controlsPreset: ControlsPresetId;
@@ -303,6 +310,7 @@ const BOOT_SETTING_KEYS: (keyof SettingsState)[] = [
   "dragBrepRecompute",
   "liveExtrudeDrag",
   "showEdgePoints",
+  "screenSpaceCsg",
   "controlsPreset",
   "autoReload",
 ];
@@ -334,6 +342,7 @@ export function loadSettings(): SettingsState {
   let liveExtrudeDrag = true;
   let showEdgePoints = false;
   const showOctreeCells = false;
+  let screenSpaceCsg = false;
   let controlsPreset: ControlsPresetId = DEFAULT_CONTROLS_PRESET;
   let autoReload = true;
   try {
@@ -358,6 +367,8 @@ export function loadSettings(): SettingsState {
     dragBrepRecompute = localStorage.getItem(LS_DRAG_BREP_RECOMPUTE) === "true";
     liveExtrudeDrag = localStorage.getItem(LS_LIVE_EXTRUDE_DRAG) !== "false";
     showEdgePoints = localStorage.getItem(LS_SHOW_EDGE_POINTS) === "true";
+    // Opt-in experiment, default off — only "true" turns it on.
+    screenSpaceCsg = localStorage.getItem(LS_SCREEN_SPACE_CSG) === "true";
     // showOctreeCells is deliberately NOT read back — drop any stale key so a
     // tab frozen by the overlay recovers on reload.
     localStorage.removeItem(LS_SHOW_OCTREE_CELLS);
@@ -367,7 +378,7 @@ export function loadSettings(): SettingsState {
   } catch {
     // localStorage may be unavailable
   }
-  const loaded: SettingsState = { compact, units, theme, renderMode, meshAlgorithm, brepEdgeMode, frameLoop, parametricWeave, dragBrepRecompute, liveExtrudeDrag, showEdgePoints, showOctreeCells, controlsPreset, autoReload };
+  const loaded: SettingsState = { compact, units, theme, renderMode, meshAlgorithm, brepEdgeMode, frameLoop, parametricWeave, dragBrepRecompute, liveExtrudeDrag, showEdgePoints, showOctreeCells, screenSpaceCsg, controlsPreset, autoReload };
   if (bootOverride) {
     const merged = { ...loaded, ...bootOverride };
     bootOverride = null; // one-shot: only the first read (React mount) honors it
@@ -988,6 +999,12 @@ function SettingsDialog({
     onSettingsChange(next);
   };
 
+  const toggleScreenSpaceCsg = () => {
+    const next = { ...settings, screenSpaceCsg: !settings.screenSpaceCsg };
+    saveSetting(LS_SCREEN_SPACE_CSG, String(next.screenSpaceCsg));
+    onSettingsChange(next);
+  };
+
   const toggleAutoReload = () => {
     const next = { ...settings, autoReload: !settings.autoReload };
     saveSetting(LS_AUTO_RELOAD, String(next.autoReload));
@@ -1259,6 +1276,22 @@ function SettingsDialog({
                   onClick={toggleShowOctreeCells}
                 >
                   {settings.showOctreeCells ? "On" : "Off"}
+                </button>
+              </div>
+
+              <div className="setting-row" data-testid="setting-screen-space-csg">
+                <span className="setting-label" title="Experiment (nur WebGL-Renderpfad): einstufiger Screen-Space-CSG-Subtraktionspass (A−B) über die parametrischen Hüllmeshes, statt den Subtrahenden wegzulassen. Visuell unverifiziertes Stage-1-Experiment — Default aus; mit Aus bleibt der Renderpfad unverändert.">
+                  Screen-Space-CSG (experimentell)
+                </span>
+                <button
+                  type="button"
+                  className={"toggle" + (settings.screenSpaceCsg ? " is-on" : "")}
+                  role="switch"
+                  aria-checked={settings.screenSpaceCsg}
+                  data-testid="setting-screen-space-csg-toggle"
+                  onClick={toggleScreenSpaceCsg}
+                >
+                  {settings.screenSpaceCsg ? "On" : "Off"}
                 </button>
               </div>
 
