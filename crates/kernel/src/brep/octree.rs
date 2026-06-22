@@ -25,13 +25,24 @@
 //! - `f_min` / `diag`: the smallest `|value|` over the corners and the
 //!   cell's space diagonal length (the Lipschitz / Nyquist guard term).
 //!
-//! | class       | condition                                              |
-//! | ----------- | ------------------------------------------------------ |
-//! | **Empty**   | signs equal ∧ `branches ≤ 1` ∧ `f_min > diag`          |
-//! | **Edge**    | exactly 2 distinct branches                            |
-//! | **Vertex**  | ≥3 distinct branches                                   |
-//! | **Face**    | sign change ∧ `branches ≤ 1`                           |
-//! | **Uncertain** | signs+branches equal ∧ `f_min ≤ diag` → refine more  |
+//! The surface-proximity guard `f_min ≤ diag` below assumes a Lipschitz-1
+//! field (`|∇sdf| ≤ 1`), so that a corner within `diag` of the surface really
+//! bounds a surface crossing through the cell. Some fields VIOLATE this and
+//! over-estimate the distance — chiefly Revolve, whose 2D-(r,y) profile field
+//! lacks the radial correction and reports `f_min > diag` for cells the
+//! surface actually threads. We therefore widen the bracket by the body-wide
+//! `march_relax` factor (≤ 1, Revolve = 0.7): `bracket = diag / relax`, so an
+//! over-estimating revolve cell is no longer wrongly pruned as `Empty`
+//! (Ticket qmvn). With a Lipschitz field (`relax = 1`) the bracket is
+//! unchanged.
+//!
+//! | class       | condition                                                |
+//! | ----------- | -------------------------------------------------------- |
+//! | **Empty**   | signs equal ∧ `branches ≤ 1` ∧ `f_min > bracket`         |
+//! | **Edge**    | exactly 2 distinct branches ∧ `f_min ≤ bracket`          |
+//! | **Vertex**  | ≥3 distinct branches ∧ `f_min ≤ bracket`                 |
+//! | **Face**    | sign change ∧ `branches ≤ 1`                             |
+//! | **Uncertain** | signs+branches equal ∧ `f_min ≤ bracket` → refine more |
 //!
 //! `Empty` cells are discarded (never stored, never recursed). `Uncertain`
 //! is purely an internal "keep refining" state; it is never a *stored* leaf
@@ -219,8 +230,44 @@ impl Octree {
         // so their shared wall classifies as Face instead of smearing into
         // edge cells along the whole contact (the oa9h/vyee mechanic).
         let registry = crate::brep::coincidence::CoincidenceRegistry::build(body);
+
+        // Lipschitz-Korrektur (Ticket qmvn): Die Klassifikation unten setzt
+        // eine Lipschitz-1-Distanz voraus (|∇sdf| ≤ 1), damit die
+        // Oberflächen-Näheschranke `f_min ≤ diag` zuverlässig ist. Der
+        // Revolve-SDF überschätzt aber die Distanz (2D-(r,y)-Profilabstand
+        // ohne Radialkorrektur), genau dafür existiert der körperweite
+        // `march_relax`-Faktor (≤ 1, Revolve = 0.7). Wir reichen ihn durch und
+        // weiten die Schranke um `1/relax`, sodass überschätzte Oberflächen-
+        // zellen nicht fälschlich als `Empty` weggeschnitten werden.
+        let relax = crate::sdf_compiler::march_relax(body).clamp(f32::MIN_POSITIVE, 1.0);
         let root_samples = gather_samples(body, &cfg, root);
-        recurse(body, &cfg, &registry, root, 0, &mut leaves, &root_samples);
+        recurse(body, &cfg, &registry, root, 0, relax, &mut leaves, &root_samples);
+        Octree { leaves }
+    }
+
+    /// Test-only: build with an explicitly forced Lipschitz-bracket relax
+    /// factor instead of the body-derived [`crate::sdf_compiler::march_relax`].
+    /// Used by the Ticket-qmvn regression test to reconstruct the *uncorrected*
+    /// (`relax = 1`) classification on a body whose true relax is `< 1`, proving
+    /// the correction recovers strictly more surface cells.
+    #[cfg(test)]
+    pub fn build_with_bracket_relax_for_test(
+        body: &BoundedCsg,
+        cfg: OctreeConfig,
+        relax: f32,
+    ) -> Octree {
+        let mut leaves = Vec::new();
+        let aabb = body.aabb();
+        if aabb.is_empty() {
+            return Octree { leaves };
+        }
+        let size = aabb.size();
+        let largest = size[0].max(size[1]).max(size[2]).max(1.0);
+        let root = aabb.expanded(largest * cfg.root_margin_factor);
+        let registry = crate::brep::coincidence::CoincidenceRegistry::build(body);
+        let relax = relax.clamp(f32::MIN_POSITIVE, 1.0);
+        let root_samples = gather_samples(body, &cfg, root);
+        recurse(body, &cfg, &registry, root, 0, relax, &mut leaves, &root_samples);
         Octree { leaves }
     }
 
@@ -287,10 +334,11 @@ fn recurse(
     registry: &crate::brep::coincidence::CoincidenceRegistry,
     cell: Aabb,
     depth: u32,
+    relax: f32,
     out: &mut Vec<OctreeCell>,
     samples: &[Sample; 9],
 ) {
-    let class = classify(registry, cell, samples);
+    let class = classify(registry, cell, relax, samples);
 
     let size = cell.size();
     let largest_edge = size[0].max(size[1]).max(size[2]);
@@ -315,7 +363,7 @@ fn recurse(
                     branches,
                 });
             } else {
-                subdivide(body, cfg, registry, cell, depth, out);
+                subdivide(body, cfg, registry, cell, depth, relax, out);
             }
         }
         Classification::Uncertain => {
@@ -326,7 +374,7 @@ fn recurse(
                 // ever bracketed a surface, so there is nothing to seed.
                 // Drop it (do not store an `Uncertain` leaf).
             } else {
-                subdivide(body, cfg, registry, cell, depth, out);
+                subdivide(body, cfg, registry, cell, depth, relax, out);
             }
         }
     }
@@ -348,6 +396,7 @@ fn subdivide(
     registry: &crate::brep::coincidence::CoincidenceRegistry,
     cell: Aabb,
     depth: u32,
+    relax: f32,
     out: &mut Vec<OctreeCell>,
 ) {
     let size = cell.size();
@@ -421,7 +470,7 @@ fn subdivide(
             child_eps,
         ));
         let samples: [Sample; 9] = samples.try_into().ok().expect("9 samples");
-        recurse(body, cfg, registry, child, depth + 1, out, &samples);
+        recurse(body, cfg, registry, child, depth + 1, relax, out, &samples);
     }
 }
 
@@ -459,10 +508,21 @@ fn gather_samples(body: &BoundedCsg, cfg: &OctreeConfig, cell: Aabb) -> [Sample;
 fn classify(
     registry: &crate::brep::coincidence::CoincidenceRegistry,
     cell: Aabb,
+    relax: f32,
     samples: &[Sample; 9],
 ) -> Classification {
     let size = cell.size();
     let diag = (size[0] * size[0] + size[1] * size[1] + size[2] * size[2]).sqrt();
+
+    // Lipschitz-Bracket (Ticket qmvn): Die Näheschranke unten geht davon aus,
+    // dass `|sdf|` eine echte Distanz ist (Lipschitz-1). Felder wie Revolve
+    // ÜBERSCHÄTZEN die Distanz und melden `f_min > diag`, obwohl die Fläche
+    // durch die Zelle läuft — sie würden fälschlich als `Empty` weggeschnitten.
+    // Der körperweite `march_relax` (≤ 1) quantifiziert die Überschätzung
+    // (Revolve = 0.7 ⇒ Feld ist um Faktor ~1/0.7 zu groß); wir weiten die
+    // Schranke entsprechend: `bracket = diag / relax`. relax = 1 (Lipschitz)
+    // lässt die Schranke unverändert.
+    let bracket = diag / relax;
 
     // Distinct branch set across all samples.
     let mut branches: Vec<BranchId> = Vec::new();
@@ -526,16 +586,16 @@ fn classify(
     let sign_change = any_pos && any_neg;
 
     // A *feature* must straddle the zero level-set: at least one corner
-    // lies within a cell diagonal of the surface (`f_min <= diag`, the
-    // Lipschitz bracket). Multi-branch ties that are *deep* inside the
-    // solid (`f_min > diag`) are medial-axis artifacts — e.g. the centre
-    // of a cube, where all 6 face half-spaces tie at the inradius — and
-    // are NOT topological edges/vertices. Such interior cells carry no
-    // surface to seed, so they are pruned like `Empty`. This is the
+    // lies within a cell diagonal of the surface (`f_min <= bracket`, the
+    // relax-korrigierte Lipschitz bracket). Multi-branch ties that are
+    // *deep* inside the solid (`f_min > bracket`) are medial-axis artifacts
+    // — e.g. the centre of a cube, where all 6 face half-spaces tie at the
+    // inradius — and are NOT topological edges/vertices. Such interior cells
+    // carry no surface to seed, so they are pruned like `Empty`. This is the
     // surface-proximity guard that keeps a clean cube at exactly its 12
     // edges + 8 vertices instead of sprouting a spurious 6-branch cell
     // at the body centre.
-    let near_surface = f_min <= diag;
+    let near_surface = f_min <= bracket;
 
     // Classification table.
     if n_branches >= 3 {
@@ -554,7 +614,7 @@ fn classify(
         // ≤1 distinct branch.
         if sign_change {
             Classification::Leaf(CellClass::Face, branches)
-        } else if f_min > diag {
+        } else if f_min > bracket {
             Classification::Empty
         } else {
             // Lipschitz guard: a surface might still thread through

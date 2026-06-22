@@ -136,7 +136,7 @@ pub fn compile_body(node: &BoundedCsg) -> CompiledSdf {
 /// `OP_HELIX_SCALE`), so they need no step relax here (factor 1.0).
 const REVOLVE_MARCH_RELAX: f32 = 0.7;
 
-fn march_relax(node: &BoundedCsg) -> f32 {
+pub(crate) fn march_relax(node: &BoundedCsg) -> f32 {
     match node {
         BoundedCsg::Empty
         | BoundedCsg::Leaf { .. }

@@ -1072,6 +1072,91 @@ mod tests {
     }
 
     #[test]
+    fn octree_revolve_union_extrude_does_not_degenerate() {
+        // Regression Ticket qmvn: der Octree-BRep-Weave degenerierte für Körper
+        // mit Revolve, weil seine Zell-Klassifikation eine Lipschitz-1-Distanz
+        // voraussetzt, die der Revolve-SDF verletzt (er ÜBERSCHÄTZT die Distanz).
+        // Oberflächenzellen, durch die die Revolve-Fläche tatsächlich läuft,
+        // sahen `f_min > diag` → wurden fälschlich als `Empty` weggeschnitten →
+        // verlorene Edge/Vertex-Seeds. Der relax-korrigierte Lipschitz-Bracket
+        // (`diag / march_relax`) fängt diese überschätzten Zellen wieder ein.
+        //
+        // Aufbau: ein Rechteck-Profil bei r ∈ [3, 7], y ∈ [−4, 4] um Y revolved
+        // (ein Ring/Rohr) ∪ ein überlappendes Extrude-Prisma, das in die
+        // Revolve-Wand hineinragt.
+        use crate::brep::octree::{Octree, OctreeConfig};
+        use crate::brep::weaving::weave;
+
+        let make_body = || {
+            let ring_profile = Sketch2d::Prim(Sketch2dPrimitive::Rectangle {
+                center: [5.0, 0.0],
+                half_extents: [2.0, 4.0],
+            });
+            let prism_profile = Sketch2d::Prim(Sketch2dPrimitive::Rectangle {
+                center: [5.0, 0.0],
+                half_extents: [2.5, 2.0],
+            });
+            BoundedCsg::from_csg(&CsgNode::Union(
+                Box::new(CsgNode::Revolve {
+                    id: FeatureId::from_u32(3),
+                    sketch: Box::new(ring_profile),
+                }),
+                Box::new(CsgNode::Extrude {
+                    id: FeatureId::from_u32(7),
+                    sketch: Box::new(prism_profile),
+                    half_height: 6.0,
+                }),
+            ))
+        };
+        let body = make_body();
+
+        // Dieser Körper triggert die Korrektur überhaupt erst: sein
+        // `march_relax` muss < 1 sein (Revolve = 0.7), sonst testet der Vergleich
+        // unten nichts.
+        let relax = crate::sdf_compiler::march_relax(&body);
+        assert!(relax < 1.0, "Revolve-Union muss relax < 1 haben, war {relax}");
+
+        let cfg = OctreeConfig::with_min_cell_size(0.5);
+        let octree = Octree::build_with(&body, cfg);
+
+        // Kern-Assertion (discriminating): der relax-korrigierte Bracket muss
+        // STRIKT MEHR oberflächennahe Edge/Vertex-Zellen behalten als der
+        // unkorrigierte (Lipschitz-)Bracket. Letzteren bilden wir nach, indem
+        // wir denselben Body um 1/relax aufblasen (alle Distanzen × 1/relax,
+        // diag wächst genauso) — das hebt die relax-Korrektur exakt auf. Vor dem
+        // Fix waren beide Zahlen gleich (der Octree ignorierte relax); jetzt
+        // gewinnt die korrigierte Variante die überschätzten Zellen zurück.
+        let feature_cells = |o: &Octree| o.edge_cells().count() + o.vertex_cells().count();
+        let corrected = feature_cells(&octree);
+
+        // Referenzlauf ohne Korrektur: gleiche Klassifikation, aber Bracket = diag.
+        let uncorrected = {
+            let body = make_body();
+            let oct = Octree::build_with_bracket_relax_for_test(&body, cfg, 1.0);
+            oct.edge_cells().count() + oct.vertex_cells().count()
+        };
+        assert!(
+            corrected > uncorrected,
+            "relax-Korrektur muss mehr Oberflächenzellen behalten: \
+             korrigiert={corrected} vs. unkorrigiert={uncorrected}"
+        );
+
+        // Und der gewobene BRep ist wohlgeformt und nicht-degeneriert.
+        let brep = weave(&body, &octree);
+        assert!(
+            brep.validate().is_ok(),
+            "B-Rep muss wohlgeformt sein: {:?}",
+            brep.validate()
+        );
+        assert!(
+            !brep.faces.is_empty() && !brep.edges.is_empty(),
+            "BRep degeneriert: {} Faces, {} Edges",
+            brep.faces.len(),
+            brep.edges.len()
+        );
+    }
+
+    #[test]
     fn seed_shelled_box_matches_octree() {
         // Shell duplicates every branch as its inward-offset inner wall. Before
         // the Shell-aware pair enumeration the seed path silently wove a
