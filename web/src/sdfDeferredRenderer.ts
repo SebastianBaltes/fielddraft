@@ -2,15 +2,22 @@
  * Deferred Raymarching SDF renderer -- 3-pass dual-mesh pipeline.
  *
  * Pipeline per frame:
- *   1. OPAQUE RASTER:      Non-inflated hull-meshes -> opaqueRT (worldPos+tag)
- *   2. TRANSPARENT COLLECT: Inflated/volume hull-meshes -> transparentRT
+ *   1. OPAQUE RASTER:      Exact hull-meshes -> opaqueRT (worldPos+tag)
+ *   2. TRANSPARENT COLLECT: Same exact hull-meshes -> transparentRT
  *  2b. BACK-FACE COLLECT:  Same hulls, BackSide -> transparentBackRT (exit worldPos)
  *   3. UNIFIED SHADE:      Fullscreen quad reads all RTs; sphere-traces
  *                           transparent volumes; shades via VM SDF normals.
  *
  * Dual-mesh: each body provides opaque AND/OR transparent hull-meshes.
- * Box -> opaque only.  Sphere/Cylinder/Torus etc. -> opaque + transparent
- * (inflated HULL_INFLATE).  Gyroid/DomainWarp -> transparent only (AABB).
+ * Box -> opaque only.  Sphere/Cylinder/Torus etc. -> opaque + transparent.
+ * Gyroid/DomainWarp -> transparent only (AABB).
+ *
+ * Alle drei Pässe (opaque, transparent, back) nutzen dasselbe EXAKTE
+ * parametrische Mesh (createPrimitiveGeometry) -- keine Inflation. Der
+ * March-Start ist stattdessen um MARCH_START_BACKOFF in Kamera-Richtung
+ * zurückversetzt, damit der Trace garantiert im Freiraum beginnt (Ticket vlhp).
+ * TODO: konservative Coverage (Silhouetten-Aufweitung im Screenspace) ist ein
+ * noch offener, späterer Schritt.
  */
 
 // @ts-nocheck -- TSL's TypeScript surface in three r183 is intentionally loose.
@@ -83,7 +90,7 @@ const DEFERRED_MAX_OPCODES = 16384;
 const MAX_BODIES = 256;
 const DEFERRED_MARCH_STEPS = 512;
 const SURFACE_EPS = 0.002;
-const HULL_INFLATE = 1.01;
+const MARCH_START_BACKOFF = 1.0; // mm -- Z-Offset ±1 mm in Kamera-Richtung: March-Start liegt 1 mm vor der exakten Front-Fläche (Richtung Kamera), tMax entsprechend +1 mm hinter der Rückwand. Damit startet der Trace garantiert im Freiraum (Ticket vlhp).
 const MAX_PIXELS = 4096 * 2160;
 const BODY_ID_WORDS_PER_PIXEL = 2;
 
@@ -485,7 +492,7 @@ function createShadeMaterial(
 
         const backDist = texture(transBackTex, texUv).x;
         const frontDist = transWorldPos.sub(camPosU).length();
-        const tMax = backDist.sub(frontDist).toVar();
+        const tMax = backDist.sub(frontDist).add(MARCH_START_BACKOFF).toVar();
 
         If(hasOpaque, () => {
           const opaqueDist = opaqueGbuf.xyz.sub(transWorldPos).dot(rd);
@@ -505,7 +512,9 @@ function createShadeMaterial(
           );
         });
 
-        const t = float(0).toVar();
+        // Z-Offset ±1 mm: March-Start 1 mm Richtung Kamera zurückversetzt,
+        // damit der Trace garantiert im Freiraum beginnt (Ticket vlhp).
+        const t = float(-MARCH_START_BACKOFF).toVar();
         const hitPos = vec3(0, 0, 0).toVar();
         const hit = float(0).toVar();
         const hitBody = int(0).toVar();
@@ -970,9 +979,13 @@ export function rebuildDeferredBodies(
           state.opaqueScene.add(mesh);
           opaqueMeshes.push(mesh);
 
+          // Transparent- und Back-Pass nutzen dasselbe EXAKTE parametrische
+          // Mesh wie der Opaque-Pass (createPrimitiveGeometry(leaf)) -- keine
+          // Inflation. Drei separate Instanzen, damit die Disposal-Logik unten
+          // jede Mesh-Geometrie einzeln freigeben kann. Konservative
+          // Coverage-Aufweitung (Silhouetten-Dilatation) folgt in späterem Schritt.
           const tGeo = createPrimitiveGeometry(leaf);
           if (tGeo) {
-            tGeo.scale(HULL_INFLATE, HULL_INFLATE, HULL_INFLATE);
             const tMesh = new THREE.Mesh(tGeo, transMat);
             applyLeafTransform(tMesh, leaf);
             tMesh.frustumCulled = false;
@@ -983,7 +996,6 @@ export function rebuildDeferredBodies(
 
           const bGeo = createPrimitiveGeometry(leaf);
           if (bGeo) {
-            bGeo.scale(HULL_INFLATE, HULL_INFLATE, HULL_INFLATE);
             const bMesh = new THREE.Mesh(bGeo, state.backFaceMaterial);
             applyLeafTransform(bMesh, leaf);
             bMesh.frustumCulled = false;
