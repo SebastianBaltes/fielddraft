@@ -2,8 +2,11 @@ import { describe, it, expect } from "vitest";
 import {
   classifySubtractionPixel,
   classifyUnionPixel,
+  classifyIntersectionPixel,
   collectCsgOperands,
+  collectIntersectionOperands,
   bodyNeedsSubtractionPass,
+  bodyNeedsIntersectionPass,
   viewZToNdcDepth,
   type DepthInterval,
 } from "./screenSpaceCsg";
@@ -130,6 +133,88 @@ describe("bodyNeedsSubtractionPass — lohnt sich ein A−B-Pass?", () => {
 
   it("false bei leerem Body", () => {
     expect(bodyNeedsSubtractionPass([])).toBe(false);
+  });
+});
+
+describe("classifyIntersectionPixel — A ∩ B Intervall-Klassifikation", () => {
+  it("show: überlappende Intervalle → Eintritt = max(Front), useA wenn A-Front weiter hinten", () => {
+    // A [5,15], B [8,20] → entry=8 (B-Front), exit=15. B-Front > A-Front → useA=false.
+    const r = classifyIntersectionPixel(5, 15, 8, 20);
+    expect(r.action).toBe("show");
+    expect(r.depth).toBe(8);
+    expect(r.useA).toBe(false);
+  });
+
+  it("show: A-Front weiter hinten → useA = true", () => {
+    // A [9,20], B [5,15] → entry=9 (A-Front), exit=15. A-Front >= B-Front → useA=true.
+    const r = classifyIntersectionPixel(9, 20, 5, 15);
+    expect(r.action).toBe("show");
+    expect(r.depth).toBe(9);
+    expect(r.useA).toBe(true);
+  });
+
+  it("discard: kein Treffer in A (aFront <= 0)", () => {
+    expect(classifyIntersectionPixel(0, 0, 8, 20).action).toBe("discard");
+  });
+
+  it("discard: kein Treffer in B (bFront <= 0)", () => {
+    expect(classifyIntersectionPixel(5, 15, 0, 0).action).toBe("discard");
+  });
+
+  it("discard: disjunkte Intervalle (leerer Schnitt)", () => {
+    // A [2,5], B [10,14] → entry=10, exit=5 → entry >= exit → leer.
+    expect(classifyIntersectionPixel(2, 5, 10, 14).action).toBe("discard");
+  });
+
+  it("discard: berührende Intervalle (entry == exit, Epsilon-tolerant)", () => {
+    // A [2,8], B [8,14] → entry=8, exit=8 → entry >= exit - EPS → leer.
+    expect(classifyIntersectionPixel(2, 8, 8, 14).action).toBe("discard");
+  });
+
+  it("show: A komplett in B → Eintritt = A-Front, useA", () => {
+    // A [6,9] ⊂ B [3,20] → entry=6 (A-Front), exit=9. A-Front >= B-Front → useA=true.
+    const r = classifyIntersectionPixel(6, 9, 3, 20);
+    expect(r.action).toBe("show");
+    expect(r.depth).toBe(6);
+    expect(r.useA).toBe(true);
+  });
+});
+
+describe("collectIntersectionOperands — Aufteilung der zwei skip-Leaves", () => {
+  it("a = [leaf0], b = [leaf1]", () => {
+    const l0 = leaf("skip", "box");
+    const l1 = leaf("skip", "cylinder");
+    const { a, b } = collectIntersectionOperands([l0, l1]);
+    expect(a).toEqual([l0]);
+    expect(b).toEqual([l1]);
+  });
+});
+
+describe("bodyNeedsIntersectionPass — binärer Schnitt erkannt?", () => {
+  it("true bei genau zwei skip-Leaves (Intersection-Fingerabdruck)", () => {
+    expect(bodyNeedsIntersectionPass([leaf("skip"), leaf("skip")])).toBe(true);
+  });
+
+  it("false bei Difference (ein mesh-Leaf vorhanden)", () => {
+    expect(bodyNeedsIntersectionPass([leaf("mesh"), leaf("skip")])).toBe(false);
+  });
+
+  it("false bei nur einem skip-Leaf", () => {
+    expect(bodyNeedsIntersectionPass([leaf("skip")])).toBe(false);
+  });
+
+  it("false bei drei skip-Leaves (nicht binär)", () => {
+    expect(
+      bodyNeedsIntersectionPass([leaf("skip"), leaf("skip"), leaf("skip")]),
+    ).toBe(false);
+  });
+
+  it("false bei leerem Body", () => {
+    expect(bodyNeedsIntersectionPass([])).toBe(false);
+  });
+
+  it("false bei zwei mesh-Leaves (reine Union)", () => {
+    expect(bodyNeedsIntersectionPass([leaf("mesh"), leaf("mesh")])).toBe(false);
   });
 });
 

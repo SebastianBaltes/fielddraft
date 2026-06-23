@@ -1,24 +1,25 @@
 /**
  * Screen-Space-CSG R3F-Pass — die OPT-IN-Verdrahtung von {@link
  * ScreenSpaceCsgCompositor} in den WebGL-Renderpfad.
- * docs/ADAPTIVE-RENDERING-PLAN.md → Achse 3, Phase 3 (Stufe 1, einstufige A−B).
+ * docs/ADAPTIVE-RENDERING-PLAN.md → Achse 3, Phase 3 (Stufe 1, binäre A−B / A∩B).
  *
  * Mounten NUR wenn das Setting `fielddraft.screenSpaceCsg` an ist (default AUS).
  * Mit Flag AUS wird diese Komponente vom WebGL-Viewport gar nicht gerendert, der
  * bestehende Pfad bleibt unverändert.
  *
- * EHRLICHKEIT: Dieser Pass führt je Subtraktions-Body einen G-Buffer-Capture +
- * geshadeten Composite (A − B) aus und komponiert das Ergebnis tiefenkorrekt über
- * den übrigen Scene-Render. Er ist VISUELL UNVERIFIZIERT (kein Browser/GPU im
- * Build); ob die Schnittflächen + Normalen korrekt erscheinen, muss der User
- * prüfen. Headless belegt ist nur die reine Klassifikation + Tiefenformel
- * (screenSpaceCsg.test.ts). Der Pass ist absichtlich robust: jeder Fehler wird
- * geschluckt, der Viewport friert dadurch nicht ein.
+ * EHRLICHKEIT: Dieser Pass führt je CSG-Body (Subtraktion A−B ODER binäre
+ * Intersection A∩B) einen G-Buffer-Capture + geshadeten Composite aus und
+ * komponiert das Ergebnis tiefenkorrekt über den übrigen Scene-Render. Er ist
+ * VISUELL UNVERIFIZIERT (kein Browser/GPU im Build); ob die Schnittflächen +
+ * Normalen korrekt erscheinen, muss der User prüfen. Headless belegt ist nur die
+ * reine Klassifikation + Tiefenformel (screenSpaceCsg.test.ts). Der Pass ist
+ * absichtlich robust: jeder Fehler wird geschluckt, der Viewport friert nicht ein.
  *
- * WICHTIG (kein Doppel-Draw): Difference-Bodys, die hier komponiert werden,
- * dürfen NICHT zusätzlich ihr DC-Mesh zeichnen. `MeshPreview` überspringt bei
- * aktivem SS-CSG-Flag genau die `bodyNeedsSubtractionPass`-Bodys (siehe
- * viewportOverlays.tsx) — bei Flag AUS bleibt alles unverändert.
+ * WICHTIG (kein Doppel-Draw): CSG-Bodys, die hier komponiert werden, dürfen NICHT
+ * zusätzlich ihr DC-Mesh zeichnen. `MeshPreview`/`WebGLBodies` überspringen bei
+ * aktivem SS-CSG-Flag genau die `bodyNeedsSubtractionPass`/
+ * `bodyNeedsIntersectionPass`-Bodys (siehe viewportOverlays.tsx) — bei Flag AUS
+ * bleibt alles unverändert.
  */
 
 import { useEffect, useMemo, useRef } from "react";
@@ -27,12 +28,15 @@ import { useFrame, useThree } from "@react-three/fiber";
 import { useKernelStore } from "./store";
 import { resolveMaterials } from "./materialBridge";
 import { BODY_COLORS } from "./sdfDeferredRenderer";
-import type { FeatureSummary } from "./kernel";
+import type { FeatureSummary, HybridLeafInfo } from "./kernel";
 import {
   ScreenSpaceCsgCompositor,
   collectCsgOperands,
+  collectIntersectionOperands,
   bodyNeedsSubtractionPass,
-  type CsgOperands,
+  bodyNeedsIntersectionPass,
+  type CsgMode,
+  type CsgRenderOperands,
 } from "./screenSpaceCsg";
 
 /** Body-Versionierung — Rebuild der Operanden, wenn sich Geometrie ändert. */
@@ -50,28 +54,32 @@ function useScsBodyFingerprint(): string {
   }, [store, state]);
 }
 
-interface SubtractionBody {
+interface CsgBody {
   bodyIndex: number;
-  operands: CsgOperands;
+  operands: CsgRenderOperands;
+  mode: CsgMode;
   color: THREE.Color;
 }
 
 /**
- * Sammelt die A−B-Operanden + Body-Farbe aller Bodys mit Subtrahend. Bodys ohne
- * Subtrahend werden ausgelassen — der bestehende WebGL-Pfad rendert die korrekt.
+ * Sammelt die CSG-Operanden + Modus + Body-Farbe aller Bodys, die der
+ * Screen-Space-Pass komponiert: Subtraktions-Bodys (mode 'subtract', operands
+ * {minuend, subtrahend}) UND binäre Intersection-Bodys (mode 'intersect',
+ * operands {a, b}). Alle anderen Bodys (reine Union, einfache Primitive) werden
+ * ausgelassen — der bestehende WebGL-Pfad rendert die korrekt.
  *
  * Die Farbe wird IDENTISCH zu `WebGLBodies` bestimmt: User-Material (falls
  * gesetzt) über `resolveMaterials`, sonst die Part-Palette `BODY_COLORS`. So
  * trifft der CSG-Compositor optisch denselben Ton wie der übrige Scene-Render.
  */
-function collectSubtractionBodies(
+function collectCsgBodies(
   kernel: {
     bodyCount(): number;
-    bodyHybridInfo(i: number): { leaves: CsgOperands["minuend"] };
+    bodyHybridInfo(i: number): { leaves: HybridLeafInfo[] };
   },
   features: FeatureSummary[] | undefined,
-): SubtractionBody[] {
-  const out: SubtractionBody[] = [];
+): CsgBody[] {
+  const out: CsgBody[] = [];
   let count = 0;
   try {
     count = kernel.bodyCount();
@@ -84,18 +92,29 @@ function collectSubtractionBodies(
     ? resolveMaterials(kernel as never, features)
     : new Map();
   for (let i = 0; i < count; i++) {
-    let leaves;
+    let leaves: HybridLeafInfo[];
     try {
       leaves = kernel.bodyHybridInfo(i).leaves;
     } catch {
       continue;
     }
-    if (!bodyNeedsSubtractionPass(leaves)) continue;
+    let operands: CsgRenderOperands;
+    let mode: CsgMode;
+    if (bodyNeedsSubtractionPass(leaves)) {
+      operands = collectCsgOperands(leaves);
+      mode = "subtract";
+    } else if (bodyNeedsIntersectionPass(leaves)) {
+      operands = collectIntersectionOperands(leaves);
+      mode = "intersect";
+    } else {
+      continue;
+    }
     const um = userMats.get(i);
     const [r, g, b] = um ? um.color : BODY_COLORS[i % BODY_COLORS.length];
     out.push({
       bodyIndex: i,
-      operands: collectCsgOperands(leaves),
+      operands,
+      mode,
       color: new THREE.Color(r, g, b),
     });
   }
@@ -133,7 +152,7 @@ export function ScreenSpaceCsgPass() {
 
   const bodies = useMemo(() => {
     if (!store) return [];
-    return collectSubtractionBodies(store.kernel, state?.features);
+    return collectCsgBodies(store.kernel, state?.features);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [store, fingerprint, state?.features]);
 
@@ -143,8 +162,8 @@ export function ScreenSpaceCsgPass() {
     const comp = compositorRef.current;
     if (!comp || bodies.length === 0) return;
     try {
-      for (const { operands, color } of bodies) {
-        comp.render(gl, camera, operands, color);
+      for (const { operands, color, mode } of bodies) {
+        comp.render(gl, camera, operands, color, mode);
       }
     } catch {
       // Defensiv: ein Fehler hier darf den Viewport nicht einfrieren.

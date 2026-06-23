@@ -46,7 +46,20 @@ import {
   buildWarpedLeafGeometry,
 } from "./sdfDeferredRenderer";
 import { triangulatePlanarFace } from "./faceFill";
-import { bodyNeedsSubtractionPass } from "./screenSpaceCsg";
+import {
+  bodyNeedsSubtractionPass,
+  bodyNeedsIntersectionPass,
+} from "./screenSpaceCsg";
+import type { HybridLeafInfo as ScsLeafInfo } from "./kernel";
+
+/**
+ * SS-CSG-Skip-Prädikat: ein Body wird vom Screen-Space-CSG-Pass komponiert (und
+ * darf daher NICHT zusätzlich als DC-Mesh/Hülle zeichnen), wenn er entweder eine
+ * Subtraktion (A−B) oder eine binäre Intersection (A∩B) ist.
+ */
+function bodyHandledByScsPass(leaves: ScsLeafInfo[]): boolean {
+  return bodyNeedsSubtractionPass(leaves) || bodyNeedsIntersectionPass(leaves);
+}
 import { collectAnalyticBodyMeshes, type BrepMeshKernel } from "./brepMesh";
 import { resolvePlaneFrame } from "./sketchPlaneFrame";
 // Extracted to sketchOutline.ts (DOM-free) — shared with the extrude
@@ -3910,7 +3923,7 @@ export function MeshPreview({
       // DC-Mesh. bodyHybridInfo kann werfen → defensiv überspringen-Entscheidung.
       if (skipSubtractionBodies && store) {
         try {
-          if (bodyNeedsSubtractionPass(store.kernel.bodyHybridInfo(i).leaves))
+          if (bodyHandledByScsPass(store.kernel.bodyHybridInfo(i).leaves))
             return false;
         } catch {
           /* im Zweifel zeichnen (heutiges Verhalten) */
@@ -4077,8 +4090,9 @@ export function WebGLBodies({
       } catch {
         continue;
       }
-      // SS-CSG an: Difference-Bodys kommen ausschließlich aus dem CSG-Pass.
-      if (skipSubtractionBodies && bodyNeedsSubtractionPass(info.leaves))
+      // SS-CSG an: Difference- UND Intersection-Bodys kommen ausschließlich aus
+      // dem CSG-Pass.
+      if (skipSubtractionBodies && bodyHandledByScsPass(info.leaves))
         continue;
       const mat = materialForBody(i);
       for (const leaf of info.leaves) {

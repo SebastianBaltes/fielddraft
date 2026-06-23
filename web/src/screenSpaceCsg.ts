@@ -158,6 +158,92 @@ export function bodyNeedsSubtractionPass(leaves: HybridLeafInfo[]): boolean {
   return minuend.length > 0 && subtrahend.length > 0;
 }
 
+/* ──────────────────────────────────────────────────────────────────────────
+ * Intersection A ∩ B (Stage 1, NUR binär).
+ *
+ * Am echten Körper verifiziert (siehe Ticket): ein `Intersection(A,B)` hat in
+ * `bodyHybridInfo` GENAU zwei Leaves, BEIDE mit `role:"skip"` — KEIN mesh-Leaf,
+ * `is_union_only=false`, `needs_full_sdf=false`. Das ist der eindeutige
+ * Fingerabdruck: Difference hat ein mesh-Leaf (Minuend), Union ist
+ * `is_union_only` und kommt hier gar nicht her.
+ * ────────────────────────────────────────────────────────────────────────── */
+
+/** Operanden eines binären Schnitts A ∩ B (beide skip-Leaves, je ein Leaf). */
+export interface IntersectionOperands {
+  a: HybridLeafInfo[];
+  b: HybridLeafInfo[];
+}
+
+/** CSG-Modus für den GPU-Compositor. */
+export type CsgMode = "subtract" | "intersect";
+
+/**
+ * Operanden-Union für `ScreenSpaceCsgCompositor.render`: entweder ein A−B-Satz
+ * ({minuend, subtrahend}) oder ein A∩B-Satz ({a, b}). A-Slot = minuend bzw. a,
+ * B-Slot = subtrahend bzw. b.
+ */
+export type CsgRenderOperands = CsgOperands | IntersectionOperands;
+
+/**
+ * Erkennt einen binären Intersection-Body: genau zwei Leaves, BEIDE `skip`
+ * (kein mesh-Leaf). Difference hat ein mesh-Leaf → false; Union ist
+ * `is_union_only` und landet nicht hier.
+ */
+export function bodyNeedsIntersectionPass(leaves: HybridLeafInfo[]): boolean {
+  return (
+    leaves.length === 2 && leaves.every((leaf) => leaf.role === "skip")
+  );
+}
+
+/** Splittet die zwei skip-Leaves in a=[leaf0], b=[leaf1]. */
+export function collectIntersectionOperands(
+  leaves: HybridLeafInfo[],
+): IntersectionOperands {
+  return { a: [leaves[0]], b: [leaves[1]] };
+}
+
+/**
+ * Stage-1-Klassifikation für A ∩ B an EINEM Pixel. Der sichtbare Schnitt ist
+ * das Intervall [entry, exit] mit `entry = max(aFront, bFront)` und
+ * `exit = min(aBack, bBack)`. Die sichtbare Fläche ist die Frontfläche des
+ * Operanden, dessen Front WEITER hinten liegt (= die Schnittgrenze, die den
+ * Eintritt bestimmt).
+ *
+ * Tiefenkonvention identisch zur Subtraktion (lineare Sichttiefe, größer =
+ * weiter weg; Front <= 0 = kein Treffer). Reine Funktion → headless testbar;
+ * der Composite-Shader wertet dieselbe Logik inline aus.
+ *
+ * @returns
+ *   - `action:"discard"` : kein Treffer in A oder B, oder leerer Schnitt.
+ *   - `action:"show"`    : sichtbar bei `depth=entry`; `useA` wählt, welche
+ *                          Front-Normale die Schnittgrenze liefert.
+ */
+export interface IntersectionResult {
+  action: "show" | "discard";
+  depth: number;
+  useA: boolean;
+}
+
+export function classifyIntersectionPixel(
+  aFront: number,
+  aBack: number,
+  bFront: number,
+  bBack: number,
+): IntersectionResult {
+  // Kein Treffer in einem der beiden Operanden → nichts zu zeigen.
+  if (aFront <= 0 || bFront <= 0) {
+    return { action: "discard", depth: 0, useA: false };
+  }
+  const entry = Math.max(aFront, bFront);
+  const exit = Math.min(aBack, bBack);
+  // Leeres Schnittintervall (Eintritt nicht echt vor dem Austritt).
+  if (entry >= exit - EPS) {
+    return { action: "discard", depth: 0, useA: false };
+  }
+  // Sichtbare Grenze = der Operand mit der weiter hinten liegenden Frontfläche.
+  return { action: "show", depth: entry, useA: aFront >= bFront };
+}
+
 /* ════════════════════════════════════════════════════════════════════════
  * TEIL 2 — GPU-Compositor (WebGL2-G-Buffer-Capture + Fullscreen-A−B-Shader).
  *
@@ -244,37 +330,44 @@ const GBUFFER_VS = /* glsl */ `
 `;
 
 /**
- * G-Buffer-Fragment-Shader (GLSL3). `uWriteNormal` entscheidet, ob die Normale in
- * gba geschrieben wird (Minuend-Front, Subtrahend-Back) oder nur die Tiefe in r
- * (Minuend-Back, Subtrahend-Front). r = viewZ (> 0 ⇒ Treffer).
+ * G-Buffer-Fragment-Shader (GLSL3). Schreibt IMMER r = viewZ (> 0 ⇒ Treffer)
+ * UND die View-Space-Normale in gba. Die Subtraktion nutzt aFront+bBack-Normale,
+ * die Intersection aFront+bFront-Normale — daher wird die Normale auf ALLEN VIER
+ * RTs geschrieben (kein Rollen-Gate mehr; ungenutzte Normalen kosten nur etwas
+ * Bandbreite, vermeiden aber, dass ein zweiter Modus eine fehlende Normale findet).
  */
 const GBUFFER_FS = /* glsl */ `
   precision highp float;
   in float vViewZ;
   in vec3 vViewNormal;
-  uniform float uWriteNormal; // 1.0 → Normale schreiben, 0.0 → nur Tiefe
   out vec4 fragColor;
   void main() {
-    vec3 n = uWriteNormal > 0.5 ? vViewNormal : vec3(0.0);
-    fragColor = vec4(vViewZ, n);
+    fragColor = vec4(vViewZ, vViewNormal);
   }
 `;
 
 /**
- * Fullscreen-A−B-Compositor (GLSL3). Liest die vier G-Buffer und klassifiziert
- * jeden Pixel exakt wie `classifySubtractionPixel`, beleuchtet die sichtbare
- * Fläche (Lambert, View-Space-Licht) und schreibt Farbe + gl_FragDepth.
+ * Fullscreen-CSG-Compositor (GLSL3). Liest die vier G-Buffer und klassifiziert
+ * jeden Pixel je nach `uMode`:
+ *   - uMode 0 (subtract): exakt wie `classifySubtractionPixel` (UNVERÄNDERT).
+ *   - uMode 1 (intersect): exakt wie `classifyIntersectionPixel`.
+ * Beleuchtet die sichtbare Fläche (Lambert, View-Space-Licht) und schreibt Farbe
+ * + gl_FragDepth (identische uM10/uM14-Formel in beiden Modi).
+ *
+ * Slot-Belegung: A-Slot = Minuend bzw. Schnitt-Operand A (tAFront/tABack),
+ * B-Slot = Subtrahend bzw. Schnitt-Operand B (tBFront/tBBack).
  */
 const COMPOSITE_FS = /* glsl */ `
   precision highp float;
   in vec2 vUv;
-  uniform sampler2D tAFront; // r=viewZ, gba=Minuend-Front-Normale
-  uniform sampler2D tABack;  // r=viewZ
-  uniform sampler2D tBFront; // r=viewZ
-  uniform sampler2D tBBack;  // r=viewZ, gba=Subtrahend-Back-Normale (Schnittfläche)
+  uniform sampler2D tAFront; // r=viewZ, gba=A-Front-Normale
+  uniform sampler2D tABack;  // r=viewZ, gba=A-Back-Normale
+  uniform sampler2D tBFront; // r=viewZ, gba=B-Front-Normale
+  uniform sampler2D tBBack;  // r=viewZ, gba=B-Back-Normale (Subtraktions-Schnittfläche)
   uniform vec3 uBodyColor;   // lineare Body-Farbe
   uniform float uM10;        // projectionMatrix.elements[10]
   uniform float uM14;        // projectionMatrix.elements[14]
+  uniform float uMode;       // 0.0 = subtract (A−B), 1.0 = intersect (A∩B)
   out vec4 fragColor;
 
   const float CSG_EPS = 1e-5;
@@ -291,34 +384,50 @@ const COMPOSITE_FS = /* glsl */ `
   void main() {
     vec4 aF = texture(tAFront, vUv);
     float aFrontZ = aF.r;
-    // Kein Minuend an diesem Pixel → Hintergrund/andere Bodys durchlassen.
-    if (aFrontZ <= 0.0) { discard; }
 
     float aBackZ = texture(tABack, vUv).r;
+    vec4 bF = texture(tBFront, vUv);
     vec4 bB = texture(tBBack, vUv);
-    float bFrontZ = texture(tBFront, vUv).r;
+    float bFrontZ = bF.r;
     float bBackZ = bB.r;
-
-    bool hasB = (bFrontZ > 0.0 && bBackZ > 0.0);
 
     float viewZ;
     vec3 N;
-    // classifySubtractionPixel(): keep, wenn kein Subtrahend ODER A-Front vor dem
-    // Subtrahend-Eintritt ODER hinter dem Subtrahend-Austritt liegt.
-    if (!hasB || aFrontZ <= bFrontZ + CSG_EPS || aFrontZ >= bBackZ - CSG_EPS) {
-      // keep: sichtbare Fläche ist die Minuend-Front.
-      viewZ = aFrontZ;
-      N = aF.gba;
+
+    if (uMode > 0.5) {
+      // ── Intersection A ∩ B (spiegelt classifyIntersectionPixel) ───────────
+      if (aFrontZ <= 0.0 || bFrontZ <= 0.0) { discard; }
+      float entry = max(aFrontZ, bFrontZ);
+      float exit = min(aBackZ, bBackZ);
+      if (entry >= exit - CSG_EPS) { discard; }
+      viewZ = entry;
+      // Sichtbare Grenze = Front-Normale des Operanden mit der weiter hinten
+      // liegenden Frontfläche.
+      N = (aFrontZ >= bFrontZ) ? aF.gba : bF.gba;
     } else {
-      // aFrontZ liegt echt in (bFrontZ, bBackZ): vorderer Teil von A weggeschnitten.
-      if (bBackZ >= aBackZ - CSG_EPS) {
-        // discard: Subtrahend frisst durch den Minuend-Austritt → kein Material.
-        discard;
+      // ── Subtraction A − B (UNVERÄNDERT) ───────────────────────────────────
+      // Kein Minuend an diesem Pixel → Hintergrund/andere Bodys durchlassen.
+      if (aFrontZ <= 0.0) { discard; }
+
+      bool hasB = (bFrontZ > 0.0 && bBackZ > 0.0);
+
+      // classifySubtractionPixel(): keep, wenn kein Subtrahend ODER A-Front vor
+      // dem Subtrahend-Eintritt ODER hinter dem Subtrahend-Austritt liegt.
+      if (!hasB || aFrontZ <= bFrontZ + CSG_EPS || aFrontZ >= bBackZ - CSG_EPS) {
+        // keep: sichtbare Fläche ist die Minuend-Front.
+        viewZ = aFrontZ;
+        N = aF.gba;
+      } else {
+        // aFrontZ liegt echt in (bFrontZ, bBackZ): vorderer Teil von A weggeschnitten.
+        if (bBackZ >= aBackZ - CSG_EPS) {
+          // discard: Subtrahend frisst durch den Minuend-Austritt → kein Material.
+          discard;
+        }
+        // cut: sichtbare Fläche ist die Subtrahend-Backface (Schnittfläche) bei bBack.
+        // Normale = invertierte Subtrahend-Außennormale (zeigt ins entfernte Volumen).
+        viewZ = bBackZ;
+        N = -bB.gba;
       }
-      // cut: sichtbare Fläche ist die Subtrahend-Backface (Schnittfläche) bei bBack.
-      // Normale = invertierte Subtrahend-Außennormale (zeigt ins entfernte Volumen).
-      viewZ = bBackZ;
-      N = -bB.gba;
     }
 
     vec3 color = shade(uBodyColor, N);
@@ -365,12 +474,13 @@ export class ScreenSpaceCsgCompositor {
   private readonly bFrontRT: THREE.WebGLRenderTarget;
   private readonly bBackRT: THREE.WebGLRenderTarget;
 
-  // Vier Capture-Materialien: Front/Back × mit/ohne Normale. Geteilt über alle
+  // Vier Capture-Materialien: A/B × Front/Back. Alle schreiben Tiefe UND Normale
+  // (beide CSG-Modi brauchen unterschiedliche Normalen-Slots). Geteilt über alle
   // Bodys (zustandslos je Pixel), nur die Geometrien werden pro Body neu gebaut.
-  private readonly aFrontMat: THREE.ShaderMaterial; // FrontSide, Normale
-  private readonly aBackMat: THREE.ShaderMaterial; // BackSide, nur Tiefe
-  private readonly bFrontMat: THREE.ShaderMaterial; // FrontSide, nur Tiefe
-  private readonly bBackMat: THREE.ShaderMaterial; // BackSide, Normale (Schnitt)
+  private readonly aFrontMat: THREE.ShaderMaterial; // FrontSide
+  private readonly aBackMat: THREE.ShaderMaterial; // BackSide
+  private readonly bFrontMat: THREE.ShaderMaterial; // FrontSide
+  private readonly bBackMat: THREE.ShaderMaterial; // BackSide
   private readonly compositeMat: THREE.ShaderMaterial;
 
   private readonly fsScene: THREE.Scene;
@@ -389,10 +499,7 @@ export class ScreenSpaceCsgCompositor {
     this.bFrontRT = makeGBufferTarget(this.width, this.height);
     this.bBackRT = makeGBufferTarget(this.width, this.height);
 
-    const captureMat = (
-      side: THREE.Side,
-      writeNormal: boolean,
-    ): THREE.ShaderMaterial =>
+    const captureMat = (side: THREE.Side): THREE.ShaderMaterial =>
       new THREE.ShaderMaterial({
         glslVersion: THREE.GLSL3,
         vertexShader: GBUFFER_VS,
@@ -400,16 +507,16 @@ export class ScreenSpaceCsgCompositor {
         side,
         depthTest: true,
         depthWrite: true,
-        uniforms: { uWriteNormal: { value: writeNormal ? 1 : 0 } },
       });
 
     // Konvex: genau eine Front-/eine Rückfläche je Operand. Default-DepthFunc
     // (LessEqual) liefert für FrontSide die NÄCHSTE Fläche (= viewZ-Minimum) und
     // — da BackSide-Culling die Frontflächen entfernt — für BackSide die HINTERE.
-    this.aFrontMat = captureMat(THREE.FrontSide, true); // Minuend-Front + Normale
-    this.aBackMat = captureMat(THREE.BackSide, false); // Minuend-Back, nur Tiefe
-    this.bFrontMat = captureMat(THREE.FrontSide, false); // Subtrahend-Front, Tiefe
-    this.bBackMat = captureMat(THREE.BackSide, true); // Subtrahend-Back + Normale
+    // Alle vier schreiben Tiefe + Normale (beide Modi brauchen je andere Normalen).
+    this.aFrontMat = captureMat(THREE.FrontSide); // A-Front
+    this.aBackMat = captureMat(THREE.BackSide); // A-Back
+    this.bFrontMat = captureMat(THREE.FrontSide); // B-Front
+    this.bBackMat = captureMat(THREE.BackSide); // B-Back
 
     this.compositeMat = new THREE.ShaderMaterial({
       glslVersion: THREE.GLSL3,
@@ -427,6 +534,7 @@ export class ScreenSpaceCsgCompositor {
         uBodyColor: { value: new THREE.Color(0.7, 0.7, 0.72) },
         uM10: { value: 0 },
         uM14: { value: 0 },
+        uMode: { value: 0 },
       },
     });
 
@@ -455,30 +563,43 @@ export class ScreenSpaceCsgCompositor {
   }
 
   /**
-   * Rendert die geshadete A − B Komposition eines Bodys: captured die vier
-   * G-Buffer aus den Operanden-Meshes und blendet anschließend das Fullscreen-
-   * Quad (Farbe + gl_FragDepth) ins AKTUELL gebundene Ziel (Default-Framebuffer
-   * = Haupt-Scene).
+   * Rendert die geshadete CSG-Komposition eines Bodys (A − B oder A ∩ B): captured
+   * die vier G-Buffer aus den Operanden-Meshes und blendet anschließend das
+   * Fullscreen-Quad (Farbe + gl_FragDepth) ins AKTUELL gebundene Ziel
+   * (Default-Framebuffer = Haupt-Scene).
+   *
+   * Operanden-Slots: A-Slot = `operands.minuend` (subtract) bzw. `operands.a`
+   * (intersect) → aFront/aBack-RTs; B-Slot = `operands.subtrahend` bzw.
+   * `operands.b` → bFront/bBack-RTs. `mode` setzt `uMode` (subtract: bestehende
+   * Logik UNVERÄNDERT; intersect: classifyIntersectionPixel).
    *
    * VISUELL UNVERIFIZIERT.
    */
   render(
     renderer: THREE.WebGLRenderer,
     camera: THREE.Camera,
-    operands: CsgOperands,
+    operands: CsgRenderOperands,
     bodyColor: THREE.Color,
+    mode: CsgMode,
   ): void {
-    // Composite-Uniforms aus Kamera + Body-Farbe.
+    // Operanden auf A/B-Slots mappen — egal welcher Modus.
+    const aLeaves =
+      "minuend" in operands ? operands.minuend : operands.a;
+    const bLeaves =
+      "minuend" in operands ? operands.subtrahend : operands.b;
+
+    // Composite-Uniforms aus Kamera + Body-Farbe + Modus.
     const proj = (camera as THREE.PerspectiveCamera).projectionMatrix;
     this.compositeMat.uniforms.uM10.value = proj.elements[10];
     this.compositeMat.uniforms.uM14.value = proj.elements[14];
+    this.compositeMat.uniforms.uMode.value = mode === "intersect" ? 1 : 0;
     (this.compositeMat.uniforms.uBodyColor.value as THREE.Color).copy(bodyColor);
 
     // ── G-Buffer-Capture ────────────────────────────────────────────────────
-    const aMeshesFront = buildOperandMeshes(operands.minuend, this.aFrontMat);
-    const aMeshesBack = buildOperandMeshes(operands.minuend, this.aBackMat);
-    const bMeshesFront = buildOperandMeshes(operands.subtrahend, this.bFrontMat);
-    const bMeshesBack = buildOperandMeshes(operands.subtrahend, this.bBackMat);
+    const aMeshesFront = buildOperandMeshes(aLeaves, this.aFrontMat);
+    const aMeshesBack = buildOperandMeshes(aLeaves, this.aBackMat);
+    const bMeshesFront = buildOperandMeshes(bLeaves, this.bFrontMat);
+    const bMeshesBack = buildOperandMeshes(bLeaves, this.bBackMat);
 
     const prevTarget = renderer.getRenderTarget();
     const prevClear = renderer.getClearColor(new THREE.Color());
