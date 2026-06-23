@@ -29,6 +29,13 @@ import { resolveMaterials, applyMaterials } from "./materialBridge";
 import type { BRepEdgeMode } from "./SettingsMenu";
 
 export const OVERLAY_LAYER = 1;
+// Datum planes / origin live on their OWN layer so the SDF path can re-draw
+// them AFTER the body shade pass but BEFORE the x-ray depth-clear that lets
+// B-Rep edges shine through solids. That way datums share the bodies' depth
+// buffer (a solid in front occludes the datum behind it — ticket 1m8g) while
+// edges keep their see-through x-ray behaviour. Datums also stay on layer 0 so
+// the plain WebGL path keeps drawing them with no extra orchestration.
+export const DATUM_LAYER = 2;
 
 type BodyVolumes = { data: Float32Array; dims: [number, number, number] }[];
 
@@ -119,12 +126,21 @@ function renderOverlayLayer(
   const savedBg = scene.background;
   scene.background = null;
   const savedMask = camera.layers.mask;
+
+  // Datum planes/origin first, with the body depth the shade pass just wrote
+  // STILL INTACT — so a solid in front occludes the datum behind it and both
+  // live in one shared z-buffer (ticket 1m8g). The datum plane meshes
+  // depth-test (depthWrite is off, they're translucent) against the bodies.
+  camera.layers.set(DATUM_LAYER);
+  wgpuRenderer.render(scene, camera);
+
+  // Then the rest of the overlay (B-Rep edges, sketches, gizmos, selection).
+  // X-Ray/Hidden: wipe depth so these draw on top of solids. "Visible only"
+  // (occlude): keep the SDF depth so edges behind a face are depth-rejected.
   camera.layers.set(OVERLAY_LAYER);
-  // X-Ray/Hidden: wipe depth so overlay edges always draw on top. "Visible
-  // only" (occlude): keep the depth the SDF shade pass just wrote, so edges
-  // behind a face are depth-rejected.
   if (!occlude) wgpuRenderer.clearDepth();
   wgpuRenderer.render(scene, camera);
+
   camera.layers.mask = savedMask;
   scene.background = savedBg;
 

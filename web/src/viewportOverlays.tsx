@@ -35,7 +35,7 @@ import {
 } from "./kernel";
 import type { BRepEdgeMode } from "./SettingsMenu";
 import { PerfProbe } from "./perfMonitor";
-import { OVERLAY_LAYER } from "./viewportSdfOverlays";
+import { OVERLAY_LAYER, DATUM_LAYER } from "./viewportSdfOverlays";
 import { disposeAfterGpuIdle } from "./sdfPipelineCommon";
 import { resolveMaterials, type MaterialProps } from "./materialBridge";
 import { DEFAULT_ROUGHNESS, DEFAULT_METALNESS, LIGHTS, AMBIENT } from "./pbrShading";
@@ -4414,14 +4414,18 @@ export function DatumOverlay() {
     invalidate();
   }, [hidden, selectedDatum, invalidate]);
 
-  // Ticket p8dp: the datum origin/planes share the grid's fate — the deferred
-  // shade quad's opaque miss-fill paints over anything the main-scene pass drew
-  // underneath it. Put them on OVERLAY_LAYER so the SDF overlay-on-top pass
-  // re-draws them AFTER the shade (depth-tested against the bodies). Re-runs
-  // whenever the visible set changes so freshly mounted meshes get the layer.
+  // Ticket p8dp: the deferred shade quad's opaque miss-fill paints over
+  // anything the main-scene (layer-0) pass drew underneath it, so in the SDF
+  // path datums must be re-drawn AFTER the shade. Ticket 1m8g: do that on a
+  // DEDICATED datum layer (not the shared OVERLAY_LAYER) so renderOverlayLayer
+  // can draw datums with the body depth still intact — a solid in front
+  // occludes the datum behind it — separately from the B-Rep edges, which
+  // x-ray through solids on OVERLAY_LAYER. `enable` (not `set`) keeps datums on
+  // layer 0 too, so the plain WebGL path still draws them with no extra work.
+  // Re-runs whenever the visible set changes so freshly mounted meshes get it.
   const groupRef = useRef<THREE.Group>(null);
   useEffect(() => {
-    groupRef.current?.traverse((o) => o.layers.enable(OVERLAY_LAYER));
+    groupRef.current?.traverse((o) => o.layers.enable(DATUM_LAYER));
   }, [originVisible, visiblePlanes.length, selectedDatum]);
 
   if (!originVisible && visiblePlanes.length === 0) return null;
