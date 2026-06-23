@@ -694,7 +694,7 @@ export class KernelStore {
       undoDepth: kernel.undoDepth(),
       canRedo: kernel.canRedo(),
       redoDepth: kernel.redoDepth(),
-      nextOp: BoolOpTag.Add,
+      nextOp: BoolOpTag.New,
       meshedBodies: [],
       brepVersion: 0,
       measureMode: false,
@@ -770,9 +770,9 @@ export class KernelStore {
     nextSelection?: ReadonlySet<number>,
     nextAnchor?: number | null,
   ): void {
-    // A mutation that moves the selection away from the pending ghost
-    // feature confirms it first (e.g. creating the next feature while the
-    // ghost's dialog is still open) — see the pending-feature section.
+    // A mutation that moves the selection away from the pending extrude
+    // confirms it first (e.g. creating the next feature while its dialog is
+    // still open) — see the pending-feature section.
     if (
       this.pendingFeature !== null &&
       nextSelection !== undefined &&
@@ -1963,48 +1963,37 @@ export class KernelStore {
 
   // ── pending feature (ticket x7af) ─────────────────────────────────
   //
-  // A feature created as a suppressed GHOST awaiting confirmation: the
-  // body keeps its pre-feature shape and the gizmo previews the result
-  // translucently. Confirmation (unsuppress → the kernel applies it for
-  // real) fires when the feature stops being the edited selection — the
-  // dialog's OK, a click elsewhere, or the creation of another feature.
-  // Cancel drops the ghost feature entirely.
+  // A freshly-created extrude that still has its detail dialog open
+  // (ticket x7af). Since yx5h the feature is UNSUPPRESSED — the real body
+  // is woven and rendered solid right away, no translucent ghost. "Pending"
+  // is now purely a UI lifecycle marker: Cancel drops the feature, and
+  // confirmation (dialog OK, a click elsewhere, or the creation of another
+  // feature) just clears this flag.
 
   private pendingFeature: number | null = null;
 
-  /** Is `id` the not-yet-confirmed ghost feature? The extrude gizmo uses
-   *  this to keep working on a suppressed-but-pending feature. */
+  /** Is `id` the freshly-created, dialog-open extrude? The extrude gizmo
+   *  uses this to know it is still in the create/edit lifecycle. */
   isPendingFeature(id: number): boolean {
     return this.pendingFeature === id;
   }
 
-  /** Unsuppress the pending ghost WITHOUT committing — shared by
+  /** Clear the pending flag WITHOUT committing — shared by
    *  {@link confirmPendingFeature} and `commit()` (which refreshes state
-   *  itself right after). No-op when nothing is pending or the feature
-   *  has already been removed (undo, delete). */
+   *  itself right after). The feature is already unsuppressed and rendered
+   *  (ticket yx5h), so confirming just ends its edit lifecycle. */
   private confirmPendingInline(): void {
-    const id = this.pendingFeature;
-    if (id === null) return;
     this.pendingFeature = null;
-    if (!this.state.features.some((f) => f.id === id)) return;
-    try {
-      this.kernel.setFeatureSuppressed(id, false);
-    } catch (err) {
-      console.error("fielddraft: confirm pending feature failed", err);
-      this.setTransientError(formatKernelError(err, "Feature failed"));
-    }
   }
 
-  /** Confirm the pending ghost: the kernel regenerates with the feature
-   *  active and the body renders it for real. */
+  /** Confirm the pending extrude: end its edit lifecycle and refresh. */
   confirmPendingFeature(): void {
     if (this.pendingFeature === null) return;
     this.confirmPendingInline();
     this.commit();
   }
 
-  /** Cancel the pending ghost: remove the feature without it ever having
-   *  contributed geometry. */
+  /** Cancel the pending extrude: remove the feature it created. */
   cancelPendingFeature(): void {
     const id = this.pendingFeature;
     if (id === null) return;
@@ -2306,16 +2295,17 @@ export class KernelStore {
     // with no profile and the dialog's query picker fills it afterwards.
     let id: number;
     try {
-      // Created as a PENDING ghost (ticket x7af): the call lands suppressed,
-      // so the body keeps its pre-extrude shape — the gizmo renders the
-      // would-be prism translucently against the ORIGINAL body — until the
-      // detail dialog confirms (OK / deselect). Cancel drops the feature.
+      // Created as a PENDING feature (ticket x7af) but UNSUPPRESSED
+      // (ticket yx5h): the real extruded body weaves and renders solid
+      // straight away instead of a translucent preview prism. The feature
+      // stays "pending" only for the dialog lifecycle (gizmo edits it,
+      // Cancel drops it, OK / deselect clears the flag).
       id = this.kernel.addExtrudeFaces(
         faceQueries.join(","),
         depthMm,
         false,
         0,
-        true,
+        false,
       );
     } catch (err) {
       console.error("fielddraft: addExtrudeFaces failed", err);
@@ -5001,17 +4991,18 @@ export class KernelStore {
     if (sketchId === null) return null;
     let id: number;
     try {
-      // Created as a PENDING ghost (ticket x7af), exactly like face
-      // extrudes: the call lands SUPPRESSED, so the scene keeps its
-      // pre-extrude shape — the gizmo renders the would-be prism from
-      // the SKETCH-PLANE anchor — until the detail dialog confirms
-      // (OK / deselect). Cancel drops the feature.
+      // Created as a PENDING feature (ticket x7af), but UNSUPPRESSED
+      // (ticket yx5h): the real body is woven and rendered solid/opaque
+      // straight away — no light-blue translucent preview prism. The
+      // feature stays "pending" only for the dialog lifecycle: the depth
+      // gizmo keeps editing it and Cancel drops it; confirming (OK /
+      // deselect) just clears the pending flag.
       id = this.kernel.addExtrude(
         sketchId,
         depthMm,
         this.state.nextOp,
         0,
-        true,
+        false,
       );
     } catch (err) {
       // eslint-disable-next-line no-console

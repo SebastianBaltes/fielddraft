@@ -3,21 +3,22 @@
  *
  * While a single extrude feature is selected, an arrow sits on the
  * extrude's tip face pointing along its outward normal:
- *   - the extruded slab renders as a translucent prism (tip outline
- *     swept back by the current depth) so the affected region reads
- *     at a glance;
+ *   - the extruded body itself renders solid/opaque at all times —
+ *     even a freshly-created (still dialog-open) extrude is unsuppressed
+ *     and woven for real, so there is NO translucent ghost prism at rest
+ *     (ticket yx5h; this also fixes qg50, where geometry behind a
+ *     see-through preview showed through);
  *   - dragging the arrow adjusts the `depth` param strictly along the
  *     normal. With the "Live extrude drag" setting ON (default), the
  *     depth commits throttled (50ms, like the transform gizmo) WHILE
  *     the pointer is down — the renderer shows the real body live, no
  *     preview prism, and the heavy B-Rep weave is suppressed for the
- *     drag via begin/endGizmoDrag. With the setting OFF (and always
- *     for a PENDING ghost, whose kernel body excludes the extrude),
- *     nothing commits during the drag: the arrow and a local preview
- *     prism follow the pointer every frame and the new depth commits
- *     ONCE on pointerup. Delta bands tint what gets added blue and
- *     what gets removed red; since the body stays frozen at its
- *     drag-start shape, the grown region is genuinely see-through.
+ *     drag via begin/endGizmoDrag. With the setting OFF, nothing commits
+ *     during the drag: the arrow and a local preview prism follow the
+ *     pointer every frame and the new depth commits ONCE on pointerup.
+ *     Delta bands tint what gets added blue and what gets removed red;
+ *     since the body stays frozen at its drag-start shape during the
+ *     drag, the grown region is genuinely see-through.
  *   - the arrow itself is black-and-white (white fill, dark outline),
  *     matching Onshape; grow/shrink is signalled by the bands only.
  *
@@ -35,14 +36,11 @@ import { findSingleSelectedFeature } from "./viewportOverlays";
 import { OVERLAY_LAYER } from "./viewportSdfOverlays";
 import {
   axisDepthParam,
-  faceQueryHashes,
   lengthParamToMm,
   lengthParamWithMm,
   previewBandRanges,
   prismBandTriangles,
   resolveExtrudeAnchor,
-  resolvePendingExtrudeAnchor,
-  resolvePendingSketchExtrudeAnchor,
   type ExtrudeAnchor,
 } from "./extrudeGizmo";
 
@@ -78,14 +76,13 @@ export function ExtrudeDepthGizmo() {
   const invalidate = useThree((s) => s.invalidate);
 
   const selected = findSingleSelectedFeature(state);
-  // A PENDING extrude (created suppressed, awaiting dialog confirmation —
-  // ticket x7af) keeps the gizmo alive: the ghost prism IS its preview.
-  const pending =
-    selected != null && store !== null && store.isPendingFeature(selected.id);
+  // The depth gizmo lives on any selected, active extrude — including a
+  // freshly-created PENDING one, which is now unsuppressed (ticket yx5h) so
+  // its real body is what the gizmo edits.
   const extrudeId =
     selected?.kind === "extrude" &&
     !selected.rolled_back &&
-    (!selected.suppressed || pending)
+    !selected.suppressed
       ? selected.id
       : null;
 
@@ -152,30 +149,20 @@ export function ExtrudeDepthGizmo() {
     if (frozenAnchorRef.current) return frozenAnchorRef.current;
     if (!store || extrudeId === null) return null;
     try {
-      if (pending) {
-        if (!depthInfo) return null;
-        const params = store.getFeatureParams(extrudeId);
-        const tipOff = depthInfo.symmetric
-          ? depthInfo.depthMm / 2
-          : depthInfo.rawMm;
-        const hashes = faceQueryHashes(params.faces);
-        // A face-driven ghost anchors on its profile faces; a
-        // SKETCH-driven ghost has no faces and anchors on the sketch
-        // plane + its drawable curves instead.
-        return hashes.length > 0
-          ? resolvePendingExtrudeAnchor(store.kernel, hashes, tipOff)
-          : resolvePendingSketchExtrudeAnchor(store.kernel, params, tipOff);
-      }
+      // A pending extrude is now UNSUPPRESSED (ticket yx5h): the real body
+      // is woven, so the gizmo anchors on the extrude's actual tip cap just
+      // like a committed extrude — no separate profile/sketch-plane ghost
+      // anchor path is needed.
       return resolveExtrudeAnchor(store.kernel, extrudeId, depthInfo?.depthMm);
     } catch {
       return null;
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [store, extrudeId, state, depthInfo, pending]);
+  }, [store, extrudeId, state, depthInfo]);
 
-  // Translucent preview bands: at rest, the whole extruded prism in
-  // light blue; during a drag, the would-be prism plus delta bands
-  // (blue = added, red = removed) — all driven locally, no commits.
+  // Translucent preview bands shown ONLY during a non-live depth drag: the
+  // would-be prism plus delta bands (blue = added, red = removed), driven
+  // locally with no commits. At rest the real body renders solid (yx5h).
   const bands = useMemo<
     Array<{ geom: THREE.BufferGeometry; color: number; opacity: number }>
   >(() => {
@@ -193,12 +180,13 @@ export function ExtrudeDepthGizmo() {
       g.computeBoundingSphere();
       out.push({ geom: g, color, opacity });
     };
-    if (!preview) {
-      // The at-rest prism: for a PENDING ghost this is the only rendering
-      // the extrude gets at all (the body excludes it), so it draws at the
-      // stronger delta opacity (ticket x7af).
-      push(-depthInfo.depthMm, 0, GROW_COLOR, pending ? DELTA_OPACITY : PRISM_OPACITY);
-    } else {
+    // At rest there are NO bands (ticket yx5h): the real extruded body —
+    // pending or committed — is woven and rendered solid, so a translucent
+    // prism would only double up on it (and let geometry behind shine
+    // through, ticket qg50). Bands appear only DURING a non-live drag, to
+    // tint what the depth change would add (blue) or remove (red) against
+    // the frozen drag-start body.
+    if (preview) {
       const ranges = previewBandRanges(
         preview.startDepthMm,
         preview.depthMm,
@@ -209,7 +197,7 @@ export function ExtrudeDepthGizmo() {
       for (const [a, b] of ranges.delta) push(a, b, tint, DELTA_OPACITY);
     }
     return out;
-  }, [anchor, depthInfo, preview, pending]);
+  }, [anchor, depthInfo, preview]);
 
   useEffect(
     () => () => {
@@ -350,9 +338,10 @@ export function ExtrudeDepthGizmo() {
       const t0 = axisParam(ray);
       if (t0 === null) return;
       drag.active = true;
-      // Live drag commits into the kernel — impossible for a PENDING
-      // ghost, whose body excludes the suppressed extrude entirely.
-      drag.live = store.isLiveExtrudeDrag() && !store.isPendingFeature(extrudeId);
+      // Live drag commits the depth into the kernel each move. A pending
+      // extrude is now unsuppressed (ticket yx5h), so its real body follows
+      // the drag too — the pending state no longer forces a deferred commit.
+      drag.live = store.isLiveExtrudeDrag();
       drag.startDepth = di.depthMm;
       drag.startT = t0;
       drag.lastDepth = di.depthMm;

@@ -7766,13 +7766,13 @@ mod tests {
                 {"type":"box","id":1,"params":{"half_extents":[50,50,50],"op":"new","translate":[0,0,0]}},
                 {"type":"boolean","id":10,"params":{"keep_tools":false,"operation":"Union","targets":"","tools":"qCreatedBy(2),qCreatedBy(1)"}},
                 {"type":"translate","id":11,"params":{"target_id":1,"translate":[-23.49043846130371,1.4090451002120972,5.554038047790527]}},
-                {"type":"extrude","id":15,"params":{"depth":{"unit":"mm","value":20},"depth_back":{"unit":"mm","value":0},"faces":"qFace(4315924989883055031)","profiles":"qEdge(923402582954313589)","symmetric":false}}
+                {"type":"extrude","id":15,"params":{"depth":{"unit":"mm","value":20},"depth_back":{"unit":"mm","value":0},"faces":"qFace(4315924989883055031)","profiles":"qEdge(923402582954313589)","symmetric":false,"operation":"add"}}
             ],
             "next_feature_id": 17
         }"#;
         k.load_json(json).unwrap();
-        // The face extrude defaults to `Add` (Onshape semantics), so the
-        // prism merges into the box body: ONE part, one taller cuboid.
+        // This face extrude is an explicit `Add` (the yx5h default is now New),
+        // so the prism merges into the box body: ONE part, one taller cuboid.
         assert_eq!(k.body_count(), 1, "face-extrude adds into the box body");
         for body in 0..1 {
             let counts: serde_json::Value =
@@ -7845,11 +7845,12 @@ mod tests {
         let mut k = Kernel::new();
         let json = r#"{"schema_version":1,"name":"Part","feature_calls":[
             {"type":"box","id":1,"params":{"half_extents":[50,50,50],"op":"new","translate":[0,0,0]}},
-            {"type":"extrude","id":5,"params":{"depth":{"unit":"mm","value":52.91257140451136},"depth_back":{"unit":"mm","value":0},"faces":"qFace(4315924989883055031)","profiles":"","symmetric":false}},
-            {"type":"extrude","id":17,"params":{"depth":{"unit":"mm","value":98.74537260854363},"depth_back":{"unit":"mm","value":0},"faces":"qFace(16665108990841144567)","profiles":"","symmetric":false}}
+            {"type":"extrude","id":5,"params":{"depth":{"unit":"mm","value":52.91257140451136},"depth_back":{"unit":"mm","value":0},"faces":"qFace(4315924989883055031)","profiles":"","symmetric":false,"operation":"add"}},
+            {"type":"extrude","id":17,"params":{"depth":{"unit":"mm","value":98.74537260854363},"depth_back":{"unit":"mm","value":0},"faces":"qFace(16665108990841144567)","profiles":"","symmetric":false,"operation":"add"}}
         ],"next_feature_id":18}"#;
         k.load_json(json).unwrap();
-        // Both face-extrudes default to Add and grow the box: ONE body.
+        // Both face-extrudes are explicit Add and grow the box: ONE body
+        // (the yx5h default is now New).
         assert_eq!(
             k.body_count(),
             1,
@@ -7921,8 +7922,8 @@ mod tests {
         let mut k = Kernel::new();
         let json = r#"{"schema_version":1,"name":"Part","feature_calls":[
             {"type":"box","id":1,"params":{"half_extents":[50,50,50],"op":"new","translate":[0,0,0]}},
-            {"type":"extrude","id":5,"params":{"depth":{"unit":"mm","value":52.91257140451136},"depth_back":{"unit":"mm","value":0},"faces":"qFace(4315924989883055031)","profiles":"","symmetric":false}},
-            {"type":"extrude","id":17,"params":{"depth":{"unit":"mm","value":98.74537260854363},"depth_back":{"unit":"mm","value":0},"faces":"qFace(16665108990841144567)","profiles":"","symmetric":false}}
+            {"type":"extrude","id":5,"params":{"depth":{"unit":"mm","value":52.91257140451136},"depth_back":{"unit":"mm","value":0},"faces":"qFace(4315924989883055031)","profiles":"","symmetric":false,"operation":"add"}},
+            {"type":"extrude","id":17,"params":{"depth":{"unit":"mm","value":98.74537260854363},"depth_back":{"unit":"mm","value":0},"faces":"qFace(16665108990841144567)","profiles":"","symmetric":false,"operation":"add"}}
         ],"next_feature_id":18}"#;
         k.load_json(json).unwrap();
         assert_eq!(k.body_count(), 1);
@@ -7952,7 +7953,7 @@ mod tests {
         };
         assert!(picks.len() >= 2, "need two abutting +Z faces to re-create the ticket, got {picks:?}");
         let params = format!(
-            r#"{{"depth":{{"unit":"mm","value":25}},"depth_back":{{"unit":"mm","value":0}},"faces":"qFace({}),qFace({})","profiles":"","symmetric":false}}"#,
+            r#"{{"depth":{{"unit":"mm","value":25}},"depth_back":{{"unit":"mm","value":0}},"faces":"qFace({}),qFace({})","profiles":"","symmetric":false,"operation":"add"}}"#,
             picks[0], picks[1]
         );
         k.add_feature_call("extrude", &params).unwrap();

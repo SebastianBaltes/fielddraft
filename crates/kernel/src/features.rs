@@ -2968,11 +2968,10 @@ pub struct ExtrudeDef {
     pub profile_half_y: f32,
 
     /// Boolean op used to fold the extruded body into the
-    /// running feature spine. Defaults to [`BoolOp::Add`]
-    /// (Onshape-style): the extrusion merges into the body it
-    /// touches, so e.g. extruding a box face grows that box
-    /// instead of stacking a second body onto it.
-    #[param(default = ::fielddraft_protocol::BoolOp::Add)]
+    /// running feature spine. Defaults to [`BoolOp::New`]
+    /// (ticket yx5h): a fresh extrude creates a separate body
+    /// rather than merging into whatever it touches.
+    #[param(default = ::fielddraft_protocol::BoolOp::New)]
     pub operation: BoolOp,
 
     /// Override for the extruded box origin in world space.
@@ -2997,12 +2996,11 @@ pub struct ExtrudeDef {
     #[param(name = "Faces", default = ::fielddraft_protocol::MultiQuery::new(""), entity_filter = "FACE")]
     pub faces: ::fielddraft_protocol::MultiQuery,
 
-    /// Direction mode. `true` (default) grows the profile symmetrically by
-    /// `±depth/2` about the plane — the established sketch-extrude behaviour.
-    /// `false` is a one-sided (blind) extrude `[−depth_back, +depth]` along the
-    /// plane normal; the web face-extrude tool sends `false` for the Onshape
-    /// default of growing outward from the picked face.
-    #[param(name = "Symmetric", default = true)]
+    /// Direction mode. `false` (default) is a one-sided (blind) extrude
+    /// `[−depth_back, +depth]` along the plane normal — the Onshape default of
+    /// growing outward from the profile plane (ticket yx5h). `true` grows the
+    /// profile symmetrically by `±depth/2` about the plane.
+    #[param(name = "Symmetric", default = false)]
     pub symmetric: bool,
 
     /// Backward depth for a two-sided (asymmetric) extrude, measured against the
@@ -5908,11 +5906,17 @@ mod tests {
         half_x: f32,
         half_y: f32,
     ) -> serde_json::Value {
+        // These executor-mechanics tests predate the yx5h default flip
+        // (symmetric → false, operation → New). They verify the centred /
+        // Add lowering specifically, so the helper pins those explicitly
+        // rather than riding on the schema defaults.
         json!({
             "profiles": profile_query,
             "depth": { "value": depth_mm, "unit": "mm" },
             "profile_half_x": half_x,
             "profile_half_y": half_y,
+            "symmetric": true,
+            "operation": "add",
         })
     }
 
@@ -6065,6 +6069,9 @@ mod tests {
             "profile_half_x": 2.0,
             "profile_half_y": 3.0,
             "operation": "remove",
+            // Centred extrude (symmetric) so `center` is the box centre
+            // exactly; the yx5h default is one-sided.
+            "symmetric": true,
             "center": [100.0, 50.0, 0.0],
         });
         feature.execute(&mut ctx, &id(7), &def).unwrap();
@@ -6188,6 +6195,7 @@ mod tests {
                 "depth": { "value": -5.0, "unit": "mm" },
                 "profile_half_x": 1.0,
                 "profile_half_y": 1.0,
+                "symmetric": true,
             });
             feature.execute(&mut ctx, &id(1), &def).unwrap();
             match &ctx.features[0].export_primitive().expect("primitive") {
@@ -6274,6 +6282,9 @@ mod tests {
                         "profile_half_y": 5.0,
                         "center": [(i as f32) * SPACING_MM, 0.0, 0.0],
                         "operation": "new",
+                        // Centred so `center` is the box centre (yx5h default
+                        // is one-sided, which would shift centre[2] by depth/2).
+                        "symmetric": true,
                     }),
                 )
             })
@@ -9935,6 +9946,8 @@ mod tests {
                     "faces": format!("qFace({top_hash})"),
                     "depth": { "value": 10.0, "unit": "mm" },
                     "symmetric": false,
+                    // Rim tube grows the vase body (Add); yx5h default is New.
+                    "operation": "add",
                 }),
             ),
         ];
@@ -10432,6 +10445,9 @@ mod tests {
                     "depth": { "value": 52.91257140451136, "unit": "mm" },
                     "depth_back": { "value": 0.0, "unit": "mm" },
                     "symmetric": false,
+                    // Face extrude that grows the parent box (Add); yx5h flips
+                    // the default to New, so pin Add to keep the merge.
+                    "operation": "add",
                 }),
             ),
         ];
