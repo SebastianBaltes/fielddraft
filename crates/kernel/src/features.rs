@@ -1165,6 +1165,7 @@ fn push_primitive(
     def: &Value,
     type_label: &str,
     op: BoolOp,
+    targets: &MultiQuery,
     primitive: Primitive,
     translate: [f32; 3],
     mods: PrimitiveModifiers,
@@ -1173,15 +1174,11 @@ fn push_primitive(
     let rotation = optional_rotation(def);
     let scale = optional_scale(def);
     // A primitive set to Remove/Intersect (or Add) needs an explicit scope —
-    // the body it acts on — just like the other booleans. Read it from the
-    // optional `targets` query (`qCreatedBy(...)`); with none, warn and let
-    // the partition pass seed a standalone (red preview) body. (New = a fresh
-    // standalone solid, never warned.)
-    let target_ids = def
-        .get("targets")
-        .and_then(|v| v.as_str())
-        .map(|s| target_ids_from_queries(&MultiQuery::new(s)))
-        .unwrap_or_default();
+    // the body it acts on — just like the other booleans. The `targets` query
+    // (`qCreatedBy(...)`) names the bodies it folds into; with none, warn and
+    // let the partition pass seed a standalone (red preview) body. (New = a
+    // fresh standalone solid, never warned.)
+    let target_ids = target_ids_from_queries(targets);
     if let Some(w) = ctx.merge_scope_warning(op, &target_ids) {
         ctx.warn_feature(id, w);
     }
@@ -1208,6 +1205,11 @@ pub struct BoxDef {
     pub translate: [f32; 3],
     #[param(name = "Op", default = ::fielddraft_protocol::BoolOp::New)]
     pub op: BoolOp,
+    /// Target bodies for the boolean op (Add/Remove/Intersect), as
+    /// `qCreatedBy(<seed_feature>)` queries. Empty for New (a fresh standalone
+    /// solid); required for the other ops (else warned + red preview).
+    #[param(name = "Targets", default = ::fielddraft_protocol::MultiQuery::new(""), entity_filter = "BODY")]
+    pub targets: ::fielddraft_protocol::MultiQuery,
     #[param(name = "Blend radius", default = 0.0)]
     pub blend_radius: f32,
     #[param(name = "Chamfer size", default = 0.0)]
@@ -1242,7 +1244,7 @@ impl FeatureKind for BoxPrimitive {
         def: &Value,
     ) -> Result<(), FeatureError> {
         let d = BoxDef::parse(def)?;
-        push_primitive(ctx, id, def, "Box", d.op,
+        push_primitive(ctx, id, def, "Box", d.op, &d.targets,
             Primitive::Box { center: d.center, half_extents: d.half_extents },
             d.translate,
             PrimitiveModifiers {
@@ -1268,6 +1270,10 @@ pub struct SphereDef {
     pub translate: [f32; 3],
     #[param(default = ::fielddraft_protocol::BoolOp::New)]
     pub op: BoolOp,
+    /// Target bodies for the boolean op (Add/Remove/Intersect), as
+    /// `qCreatedBy(<seed_feature>)` queries. Empty for New; required otherwise.
+    #[param(name = "Targets", default = ::fielddraft_protocol::MultiQuery::new(""), entity_filter = "BODY")]
+    pub targets: ::fielddraft_protocol::MultiQuery,
     #[param(name = "Blend radius", default = 0.0)]
     pub blend_radius: f32,
     #[param(name = "Chamfer size", default = 0.0)]
@@ -1303,7 +1309,7 @@ impl FeatureKind for SpherePrimitive {
     ) -> Result<(), FeatureError> {
         let d = SphereDef::parse(def)?;
         positive_f32(d.radius, SphereDef::TYPE_NAME, "radius")?;
-        push_primitive(ctx, id, def, "Sphere", d.op,
+        push_primitive(ctx, id, def, "Sphere", d.op, &d.targets,
             Primitive::Sphere { center: d.center, radius: d.radius },
             d.translate,
             PrimitiveModifiers {
@@ -1331,6 +1337,10 @@ pub struct CylinderDef {
     pub translate: [f32; 3],
     #[param(default = ::fielddraft_protocol::BoolOp::New)]
     pub op: BoolOp,
+    /// Target bodies for the boolean op (Add/Remove/Intersect), as
+    /// `qCreatedBy(<seed_feature>)` queries. Empty for New; required otherwise.
+    #[param(name = "Targets", default = ::fielddraft_protocol::MultiQuery::new(""), entity_filter = "BODY")]
+    pub targets: ::fielddraft_protocol::MultiQuery,
     #[param(name = "Blend radius", default = 0.0)]
     pub blend_radius: f32,
     #[param(name = "Chamfer size", default = 0.0)]
@@ -1367,7 +1377,7 @@ impl FeatureKind for CylinderPrimitive {
         let d = CylinderDef::parse(def)?;
         positive_f32(d.radius, CylinderDef::TYPE_NAME, "radius")?;
         positive_f32(d.half_height, CylinderDef::TYPE_NAME, "half_height")?;
-        push_primitive(ctx, id, def, "Cylinder", d.op,
+        push_primitive(ctx, id, def, "Cylinder", d.op, &d.targets,
             Primitive::Cylinder { center: d.center, radius: d.radius, half_height: d.half_height },
             d.translate,
             PrimitiveModifiers {
@@ -1397,6 +1407,10 @@ pub struct ConeDef {
     pub translate: [f32; 3],
     #[param(default = ::fielddraft_protocol::BoolOp::New)]
     pub op: BoolOp,
+    /// Target bodies for the boolean op (Add/Remove/Intersect), as
+    /// `qCreatedBy(<seed_feature>)` queries. Empty for New; required otherwise.
+    #[param(name = "Targets", default = ::fielddraft_protocol::MultiQuery::new(""), entity_filter = "BODY")]
+    pub targets: ::fielddraft_protocol::MultiQuery,
     #[param(name = "Blend radius", default = 0.0)]
     pub blend_radius: f32,
     #[param(name = "Chamfer size", default = 0.0)]
@@ -1430,7 +1444,7 @@ impl FeatureKind for ConePrimitive {
     ) -> Result<(), FeatureError> {
         let d = ConeDef::parse(def)?;
         positive_f32(d.half_height, ConeDef::TYPE_NAME, "half_height")?;
-        push_primitive(ctx, id, def, "Cone", d.op,
+        push_primitive(ctx, id, def, "Cone", d.op, &d.targets,
             Primitive::Cone { r_bottom: d.r_bottom, r_top: d.r_top, half_height: d.half_height },
             d.translate,
             PrimitiveModifiers {
@@ -1466,6 +1480,10 @@ pub struct ThreadDef {
     pub translate: [f32; 3],
     #[param(default = ::fielddraft_protocol::BoolOp::New)]
     pub op: BoolOp,
+    /// Target bodies for the boolean op (Add/Remove/Intersect), as
+    /// `qCreatedBy(<seed_feature>)` queries. Empty for New; required otherwise.
+    #[param(name = "Targets", default = ::fielddraft_protocol::MultiQuery::new(""), entity_filter = "BODY")]
+    pub targets: ::fielddraft_protocol::MultiQuery,
     #[param(name = "Blend radius", default = 0.0)]
     pub blend_radius: f32,
     #[param(name = "Chamfer size", default = 0.0)]
@@ -1494,7 +1512,7 @@ impl FeatureKind for ThreadFeature {
         positive_f32(d.pitch, ThreadDef::TYPE_NAME, "pitch")?;
         positive_f32(d.depth, ThreadDef::TYPE_NAME, "depth")?;
         positive_f32(d.half_height, ThreadDef::TYPE_NAME, "half_height")?;
-        push_primitive(ctx, id, def, "Thread", d.op,
+        push_primitive(ctx, id, def, "Thread", d.op, &d.targets,
             Primitive::Thread {
                 nominal_radius: d.nominal_radius, pitch: d.pitch,
                 depth: d.depth, half_height: d.half_height,
@@ -1529,6 +1547,10 @@ pub struct TorusDef {
     pub translate: [f32; 3],
     #[param(default = ::fielddraft_protocol::BoolOp::New)]
     pub op: BoolOp,
+    /// Target bodies for the boolean op (Add/Remove/Intersect), as
+    /// `qCreatedBy(<seed_feature>)` queries. Empty for New; required otherwise.
+    #[param(name = "Targets", default = ::fielddraft_protocol::MultiQuery::new(""), entity_filter = "BODY")]
+    pub targets: ::fielddraft_protocol::MultiQuery,
     #[param(name = "Blend radius", default = 0.0)]
     pub blend_radius: f32,
     #[param(name = "Chamfer size", default = 0.0)]
@@ -1565,7 +1587,7 @@ impl FeatureKind for TorusPrimitive {
         let d = TorusDef::parse(def)?;
         positive_f32(d.major_radius, TorusDef::TYPE_NAME, "major_radius")?;
         positive_f32(d.minor_radius, TorusDef::TYPE_NAME, "minor_radius")?;
-        push_primitive(ctx, id, def, "Torus", d.op,
+        push_primitive(ctx, id, def, "Torus", d.op, &d.targets,
             Primitive::Torus { center: d.center, major_radius: d.major_radius, minor_radius: d.minor_radius },
             d.translate,
             PrimitiveModifiers {
@@ -1595,6 +1617,10 @@ pub struct CapsuleDef {
     pub translate: [f32; 3],
     #[param(default = ::fielddraft_protocol::BoolOp::New)]
     pub op: BoolOp,
+    /// Target bodies for the boolean op (Add/Remove/Intersect), as
+    /// `qCreatedBy(<seed_feature>)` queries. Empty for New; required otherwise.
+    #[param(name = "Targets", default = ::fielddraft_protocol::MultiQuery::new(""), entity_filter = "BODY")]
+    pub targets: ::fielddraft_protocol::MultiQuery,
     #[param(name = "Blend radius", default = 0.0)]
     pub blend_radius: f32,
     #[param(name = "Chamfer size", default = 0.0)]
@@ -1631,7 +1657,7 @@ impl FeatureKind for CapsulePrimitive {
         let d = CapsuleDef::parse(def)?;
         positive_f32(d.radius, CapsuleDef::TYPE_NAME, "radius")?;
         positive_f32(d.half_height, CapsuleDef::TYPE_NAME, "half_height")?;
-        push_primitive(ctx, id, def, "Capsule", d.op,
+        push_primitive(ctx, id, def, "Capsule", d.op, &d.targets,
             Primitive::Capsule { radius: d.radius, half_height: d.half_height },
             d.translate,
             PrimitiveModifiers {
@@ -1659,6 +1685,10 @@ pub struct EllipsoidDef {
     pub translate: [f32; 3],
     #[param(default = ::fielddraft_protocol::BoolOp::New)]
     pub op: BoolOp,
+    /// Target bodies for the boolean op (Add/Remove/Intersect), as
+    /// `qCreatedBy(<seed_feature>)` queries. Empty for New; required otherwise.
+    #[param(name = "Targets", default = ::fielddraft_protocol::MultiQuery::new(""), entity_filter = "BODY")]
+    pub targets: ::fielddraft_protocol::MultiQuery,
     #[param(name = "Blend radius", default = 0.0)]
     pub blend_radius: f32,
     #[param(name = "Chamfer size", default = 0.0)]
@@ -1696,7 +1726,7 @@ impl FeatureKind for EllipsoidPrimitive {
         positive_f32(d.radii[0], EllipsoidDef::TYPE_NAME, "radii[0]")?;
         positive_f32(d.radii[1], EllipsoidDef::TYPE_NAME, "radii[1]")?;
         positive_f32(d.radii[2], EllipsoidDef::TYPE_NAME, "radii[2]")?;
-        push_primitive(ctx, id, def, "Ellipsoid", d.op,
+        push_primitive(ctx, id, def, "Ellipsoid", d.op, &d.targets,
             Primitive::Ellipsoid { radii: d.radii },
             d.translate,
             PrimitiveModifiers {
@@ -1725,6 +1755,10 @@ pub struct HexPrismDef {
     pub translate: [f32; 3],
     #[param(default = ::fielddraft_protocol::BoolOp::New)]
     pub op: BoolOp,
+    /// Target bodies for the boolean op (Add/Remove/Intersect), as
+    /// `qCreatedBy(<seed_feature>)` queries. Empty for New; required otherwise.
+    #[param(name = "Targets", default = ::fielddraft_protocol::MultiQuery::new(""), entity_filter = "BODY")]
+    pub targets: ::fielddraft_protocol::MultiQuery,
     #[param(name = "Blend radius", default = 0.0)]
     pub blend_radius: f32,
     #[param(name = "Chamfer size", default = 0.0)]
@@ -1761,7 +1795,7 @@ impl FeatureKind for HexPrismPrimitive {
         let d = HexPrismDef::parse(def)?;
         positive_f32(d.apothem, HexPrismDef::TYPE_NAME, "apothem")?;
         positive_f32(d.half_height, HexPrismDef::TYPE_NAME, "half_height")?;
-        push_primitive(ctx, id, def, "HexPrism", d.op,
+        push_primitive(ctx, id, def, "HexPrism", d.op, &d.targets,
             Primitive::HexPrism { apothem: d.apothem, half_height: d.half_height },
             d.translate,
             PrimitiveModifiers {
@@ -2559,6 +2593,10 @@ pub struct ImportedMeshDef {
     pub swap_yz: bool,
     #[param(default = ::fielddraft_protocol::BoolOp::New)]
     pub op: BoolOp,
+    /// Target bodies for the boolean op (Add/Remove/Intersect), as
+    /// `qCreatedBy(<seed_feature>)` queries. Empty for New; required otherwise.
+    #[param(name = "Targets", default = ::fielddraft_protocol::MultiQuery::new(""), entity_filter = "BODY")]
+    pub targets: ::fielddraft_protocol::MultiQuery,
 }
 
 pub struct ImportedMeshFeature;
@@ -2629,6 +2667,11 @@ impl FeatureKind for ImportedMeshFeature {
             base_rotation
         };
 
+        let target_ids = target_ids_from_queries(&d.targets);
+        if let Some(w) = ctx.merge_scope_warning(d.op, &target_ids) {
+            ctx.warn_feature(id, w);
+        }
+
         ctx.features.push(DecodedFeature::from_parts(
             id.clone(),
             name,
@@ -2642,7 +2685,7 @@ impl FeatureKind for ImportedMeshFeature {
                 scale,
             },
             PrimitiveModifiers::NONE,
-            vec![],
+            target_ids,
         ));
         Ok(())
     }
@@ -5612,12 +5655,14 @@ mod tests {
     #[test]
     fn box_def_schema_matches_the_k1_parameter_surface() {
         // Regression: the derive-generated schema for the box
-        // primitive should match the K4.5.2 hand-rolled surface
-        // exactly — eleven params after shell_thickness was added.
+        // primitive should match the K4.5.2 hand-rolled surface —
+        // twelve params after the boolean `targets` BODY picker was
+        // added alongside the existing `op` enum so a boolean
+        // primitive's op + target are editable in the dialog.
         let schema = BoxDef::schema_json();
         assert_eq!(schema["type"], json!("box"));
         let params = schema["params"].as_array().unwrap();
-        assert_eq!(params.len(), 11);
+        assert_eq!(params.len(), 12);
 
         assert_eq!(params[0]["key"], json!("half_extents"));
         assert_eq!(params[0]["required"], json!(true));
@@ -5630,7 +5675,15 @@ mod tests {
 
         assert_eq!(params[3]["key"], json!("op"));
         assert_eq!(params[3]["name"], json!("Op"));
+        assert_eq!(params[3]["type"], json!("enum"));
         assert_eq!(params[3]["required"], json!(false));
+
+        // The boolean target picker sits right after the op enum: a
+        // BODY multi_query, optional (empty for New).
+        assert_eq!(params[4]["key"], json!("targets"));
+        assert_eq!(params[4]["type"], json!("multi_query"));
+        assert_eq!(params[4]["entity_filter"], json!("BODY"));
+        assert_eq!(params[4]["required"], json!(false));
     }
 
     #[test]

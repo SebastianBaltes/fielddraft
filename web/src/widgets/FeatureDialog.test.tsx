@@ -305,3 +305,182 @@ describe("FeatureDialog — Onshape-structural parity (K6a.1)", () => {
     expect(container.querySelector(".header-actions")).toBeNull();
   });
 });
+
+// ─── boolean op + target editing on primitives ─────────────────
+//
+// A primitive (box, sphere, cylinder, …) can carry a boolean op +
+// target (e.g. a cylinder that subtracts from another body). The
+// derive emits an `op` enum (horizontal_enum) and a `targets`
+// BODY multi_query on every primitive struct. The dialog must
+// surface BOTH as editable controls — previously `op` was filtered
+// out of the primitive schema, so a boolean primitive rendered with
+// no way to see or change its op/target.
+
+/** Cylinder schema as the Rust derive now emits it: geometry +
+ *  the boolean `op` enum + a `targets` BODY multi_query + the
+ *  modifier "noise" params the dialog filters out. */
+const cylinderRaw = {
+  type: "cylinder",
+  params: [
+    { key: "radius", name: "Radius mm", type: "length", required: true, unit: "mm" },
+    { key: "half_height", name: "Half height mm", type: "length", required: true, unit: "mm" },
+    { key: "center", name: "Center", type: "vec3", required: false },
+    { key: "translate", name: "Translate", type: "vec3", required: false },
+    {
+      key: "op",
+      name: "Op",
+      type: "enum",
+      required: false,
+      ui_hint: "horizontal_enum",
+      variants: [
+        { key: "add", label: "Add" },
+        { key: "new", label: "New" },
+        { key: "remove", label: "Remove" },
+        { key: "intersect", label: "Intersect" },
+      ],
+      default: "new",
+    },
+    {
+      key: "targets",
+      name: "Targets",
+      type: "multi_query",
+      required: false,
+      entity_filter: "BODY",
+    },
+    { key: "blend_radius", name: "Blend radius", type: "f32", required: false, default: 0 },
+    { key: "shell_thickness", name: "Shell thickness", type: "f32", required: false, default: 0 },
+  ],
+};
+
+/** A feature with no boolean op at all (e.g. fillet) — the op
+ *  selector + target picker must NOT appear. */
+const filletRaw = {
+  type: "fillet_edge",
+  params: [
+    { key: "edges", name: "Edges", type: "multi_query", required: true, entity_filter: "EDGE" },
+    { key: "radius", name: "Radius mm", type: "length", required: true, unit: "mm" },
+  ],
+};
+
+describe("FeatureDialog — primitive boolean op + target editing", () => {
+  it("renders the op selector as a horizontal tab row for a primitive", () => {
+    const schema = parseFeatureSchema(cylinderRaw);
+    // `op` survives the primitive param filter.
+    expect(schema.params.some((p) => p.key === "op")).toBe(true);
+    const container = render(
+      <FeatureDialog
+        schema={schema}
+        definition={{ op: "remove", targets: "qCreatedBy(1)" }}
+        onChange={() => {}}
+      />,
+    );
+    const tabRow = container.querySelector(".tab-row")!;
+    expect(tabRow).toBeTruthy();
+    const tabs = [...tabRow.querySelectorAll(".tab")];
+    expect(tabs.map((t) => t.textContent)).toEqual([
+      "Add",
+      "New",
+      "Remove",
+      "Intersect",
+    ]);
+    // The supplied definition has op = "remove" → the Remove tab is active.
+    const remove = tabs.find((t) => t.textContent === "Remove")!;
+    expect(remove.classList.contains("is-active")).toBe(true);
+  });
+
+  it("renders the target picker showing the current query for a primitive", () => {
+    const schema = parseFeatureSchema(cylinderRaw);
+    expect(schema.params.some((p) => p.key === "targets")).toBe(true);
+    const container = render(
+      <FeatureDialog
+        schema={schema}
+        definition={{ op: "remove", targets: "qCreatedBy(1)" }}
+        onChange={() => {}}
+      />,
+    );
+    // The targets multi_query renders a chip for the current query. With no
+    // feature-name map (no store in the test env) the chip shows the resolved
+    // inner id "1" rather than the raw qCreatedBy(1) expression.
+    const chips = container.querySelector(".query-chips");
+    expect(chips).toBeTruthy();
+    const chip = container.querySelector(".query-chip");
+    expect(chip).toBeTruthy();
+    expect(chip!.textContent).toContain("1");
+  });
+
+  it("still filters out the modifier noise params for primitives", () => {
+    const schema = parseFeatureSchema(cylinderRaw);
+    const keys = schema.params.map((p) => p.key);
+    expect(keys).not.toContain("center");
+    expect(keys).not.toContain("translate");
+    expect(keys).not.toContain("blend_radius");
+    expect(keys).not.toContain("shell_thickness");
+    // …but keeps geometry, op and targets.
+    expect(keys).toContain("radius");
+    expect(keys).toContain("op");
+    expect(keys).toContain("targets");
+  });
+
+  it("gates out op selector + target picker for a feature without a boolean op", () => {
+    const schema = parseFeatureSchema(filletRaw);
+    expect(schema.params.some((p) => p.uiHint === "horizontal_enum")).toBe(false);
+    const container = render(
+      <FeatureDialog
+        schema={schema}
+        definition={buildDefaultDefinition(schema)}
+        onChange={() => {}}
+      />,
+    );
+    // No horizontal-enum tab row (that's the op selector) for fillet.
+    expect(container.querySelector(".tab-row")).toBeNull();
+  });
+
+  it("round-trips an op change through onChange", () => {
+    const schema = parseFeatureSchema(cylinderRaw);
+    let def: Record<string, unknown> = { op: "new", targets: "" };
+    const container = render(
+      <FeatureDialog
+        schema={schema}
+        definition={def}
+        onChange={(next) => {
+          def = next;
+        }}
+      />,
+    );
+    const tabRow = container.querySelector(".tab-row")!;
+    const removeTab = [...tabRow.querySelectorAll(".tab")].find(
+      (t) => t.textContent === "Remove",
+    ) as HTMLButtonElement;
+    act(() => {
+      removeTab.click();
+    });
+    expect(def.op).toBe("remove");
+    // targets is preserved across the op edit.
+    expect(def.targets).toBe("");
+  });
+
+  it("round-trips a target edit through onChange", () => {
+    const schema = parseFeatureSchema(cylinderRaw);
+    let def: Record<string, unknown> = { op: "remove", targets: "qCreatedBy(1)" };
+    const container = render(
+      <FeatureDialog
+        schema={schema}
+        definition={def}
+        onChange={(next) => {
+          def = next;
+        }}
+      />,
+    );
+    // Remove the only target chip → targets becomes empty (the
+    // missing-scope warning then applies kernel-side for Remove).
+    const removeChip = container.querySelector(
+      ".query-chip .chip-remove",
+    ) as HTMLButtonElement | null;
+    expect(removeChip).toBeTruthy();
+    act(() => {
+      removeChip!.click();
+    });
+    expect(def.targets).toBe("");
+    expect(def.op).toBe("remove");
+  });
+});

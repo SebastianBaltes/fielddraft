@@ -170,10 +170,18 @@ export interface FeatureSchema {
  * these "noise" parameters in its Rust struct so the derive macro
  * can emit them in the wire form and feed them back into the
  * kernel at regen time. But from the user's perspective a box
- * dialog should only show `half_extents` — the rest are managed
- * by dedicated tools (Transform for center/translate, Boolean for
- * op, Fillet/Chamfer/Shell for blend_radius/chamfer_size/shell,
- * Deform for twist/bend, Displace for displace_depth/freq).
+ * dialog should only show `half_extents` plus its boolean op —
+ * the rest are managed by dedicated tools (Transform for
+ * center/translate, Fillet/Chamfer/Shell for
+ * blend_radius/chamfer_size/shell, Deform for twist/bend, Displace
+ * for displace_depth/freq).
+ *
+ * The boolean `op` + its `targets` are NOT hidden: a primitive can
+ * carry an op (e.g. a cylinder that subtracts from another body),
+ * and that op + target must be visible AND editable in the dialog
+ * — otherwise the feature renders as a boolean for reasons the user
+ * can neither see nor change. They render via the standard
+ * horizontal-enum (op) and BODY multi_query (targets) widgets.
  *
  * Hiding is a pure rendering filter — the wire form still carries
  * the fields and the kernel still reads them. Setting them
@@ -182,7 +190,6 @@ export interface FeatureSchema {
 const HIDDEN_PRIMITIVE_PARAM_KEYS = new Set<string>([
   "center",
   "translate",
-  "op",
   "blend_radius",
   "chamfer_size",
   "twist_rate",
