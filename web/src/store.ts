@@ -283,6 +283,15 @@ export interface StoreState {
    *  the viewport — even though the contents only care about the
    *  delta per body id. */
   meshedBodies: readonly MeshedBody[];
+  /** Monotonic counter bumped whenever the async weaver installs freshly
+   *  woven B-Reps into the main-thread kernel (`importBodyBrep`). The mesher
+   *  publishes a fresh `meshedBodies` array to force a re-render; the weaver
+   *  produces no mesh, so it bumps this instead — overlays/picking read the
+   *  analytic B-Rep straight from the kernel and must refetch when it lands.
+   *  Without it `notify()` after a weave never changes the `getState()`
+   *  snapshot, so `useSyncExternalStore` bails and freshly-extruded bodies
+   *  render without their edges until some unrelated state change. */
+  brepVersion: number;
   /** K6b.2: active sketch session, or inactive-default. */
   sketchSession: SketchSessionState;
   /** K8.10 / 8ar9: document-level scalar variables, sorted by name
@@ -687,6 +696,7 @@ export class KernelStore {
       redoDepth: kernel.redoDepth(),
       nextOp: BoolOpTag.Add,
       meshedBodies: [],
+      brepVersion: 0,
       measureMode: false,
       measureSelection: [],
       filletMode: false,
@@ -787,6 +797,7 @@ export class KernelStore {
       redoDepth: this.kernel.redoDepth(),
       nextOp: this.state.nextOp,
       meshedBodies: this.state.meshedBodies,
+      brepVersion: this.state.brepVersion,
       measureMode: this.state.measureMode,
       measureSelection: this.state.measureSelection,
       filletMode: this.state.filletMode,
@@ -1095,7 +1106,16 @@ export class KernelStore {
         if (this.kernel.importBodyBrep(item.id, item.bytes)) imported = true;
       }
     }
-    if (imported) this.notify();
+    if (imported) {
+      // Publish a fresh snapshot so `useSyncExternalStore` actually re-renders
+      // — `notify()` alone leaves the `getState()` reference unchanged, and the
+      // viewport's edge overlay would keep its stale empty memo (the freshly
+      // extruded body would render without its B-Rep edges until an unrelated
+      // state change). The kernel already bumped each body's version on import;
+      // a new state reference is all the overlays need to refetch.
+      this.patch({ brepVersion: this.state.brepVersion + 1 });
+      this.notify();
+    }
     if (this.weaveQueued) {
       this.weaveQueued = false;
       this.scheduleWeave();
