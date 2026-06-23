@@ -3877,6 +3877,18 @@ function MeshPreviewBody({
         transparent={mat != null && mat.opacity < 1}
         wireframe={mat?.wireframe ?? false}
         side={THREE.DoubleSide}
+        // Ticket dkaa: FLAT shade the Dual-Contouring boolean mesh. The DC
+        // mesher emits ANGLE-AVERAGED vertex normals (a vertex on a box's hard
+        // edge gets e.g. (0,0.71,-0.71) — the mean of the two faces it touches).
+        // Smooth-shading those across a hard-edged solid bled dark gradient
+        // triangles from every corner/edge across the flat faces (the WebGL
+        // "render artifacts" the user saw — independent of projection and of
+        // DoubleSide). Deriving per-face normals in the shader (flatShading)
+        // ignores the bad smooth normals and renders the true facets, so hard
+        // edges read crisp. Only the boolean/non-parametric DC mesh comes
+        // through here; genuinely smooth parametric solids render via
+        // WebGLBodies (analytic hull, smooth normals) and keep their shading.
+        flatShading
       />
     </mesh>
   );
