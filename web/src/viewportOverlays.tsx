@@ -3778,32 +3778,41 @@ const WEBGL_PARAMETRIC_KINDS = new Set([
 ]);
 
 /**
- * Ticket 55ea: is WebGL body `i` a SINGLE parametric solid that needs no
- * boolean compositing? Such a body's analytic hull (createPrimitiveGeometry /
- * buildHelixGeometry / buildSweepGeometry) is BOTH boolean-correct AND much
- * finer than the coarse DC mesh in `meshedBodies`, so the WebGL path renders it
- * parametrically (`WebGLBodies`) instead of from the DC mesh (`MeshPreview`).
+ * Ticket 55ea/mdo0: should WebGL body `i` render from its parametric leaf hulls
+ * (`WebGLBodies`) instead of the coarse boolean DC mesh (`MeshPreview`)? True
+ * for a single parametric solid AND for a PURE UNION of parametric solids:
  *
- * Gate: exactly one non-skip leaf, no residual SDF regions, and a kind that
- * `createPrimitiveGeometry` handles. Multi-leaf / SDF-region / difference
- * bodies fail the gate and keep the boolean-correct DC mesh — WebGLBodies does
- * not composite booleans.
+ *   - Single primitive: its analytic hull IS the surface, far finer than DC.
+ *   - Pure union (mdo0): two+ closed opaque hulls rendered with depth-testing
+ *     show exactly the union boundary — the nearer solid's front face wins, and
+ *     a face interior to the other solid is correctly occluded by that solid's
+ *     front face. No screen-space CSG needed for UNION; the kernel already flags
+ *     it via `is_union_only` (false for Difference/Intersection/Smooth/Masked).
+ *
+ * Gate: not `needs_full_sdf`, no residual SDF regions, at least one non-skip
+ * leaf, all of a kind `createPrimitiveGeometry` handles, and — when multi-leaf —
+ * `is_union_only`. Difference/Intersection/Smooth/SDF-region bodies fail and
+ * keep the boolean-correct DC mesh (WebGLBodies does not composite non-unions).
  */
 export function isWebglParametricBody(
   kernel: {
     bodyHybridInfo(i: number): {
       leaves: HybridLeafInfo[];
       sdf_regions?: unknown[];
+      needs_full_sdf?: boolean;
+      is_union_only?: boolean;
     };
   },
   i: number,
 ): boolean {
   try {
     const info = kernel.bodyHybridInfo(i);
+    if (info.needs_full_sdf) return false;
     if (info.sdf_regions && info.sdf_regions.length > 0) return false;
     const real = info.leaves.filter((l) => l.role !== "skip");
-    if (real.length !== 1) return false;
-    return WEBGL_PARAMETRIC_KINDS.has(real[0].kind);
+    if (real.length === 0) return false;
+    if (real.length > 1 && info.is_union_only !== true) return false;
+    return real.every((l) => WEBGL_PARAMETRIC_KINDS.has(l.kind));
   } catch {
     return false;
   }
