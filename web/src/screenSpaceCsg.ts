@@ -112,6 +112,73 @@ export function classifySubtractionPixel(
 }
 
 /**
+ * Mehr-Intervall-Subtraktion für NICHT-KONVEXE Subtrahenden (Ticket yt4o).
+ *
+ * Ein konvexer Subtrahend wird vom Sicht-Strahl genau zweimal gekreuzt (ein
+ * Intervall). Ein nicht-konvexer Subtrahend (z.B. Torus als Ringnut) wird VIER
+ * Mal gekreuzt → zwei disjunkte Intervalle (nahe Röhre, ferne Röhre). Der
+ * Single-Interval-Walk klassifiziert die ferne Nutwand falsch als "keep", weil
+ * die Minuend-Front dort im ZWEITEN Intervall liegt, aber nur gegen das erste
+ * geprüft wird → die Box scheint durch.
+ *
+ * Diese Funktion betrachtet die Vereinigung R = I1 ∪ I2 (I2 optional) und ist
+ * exakt das, was der Composite-Shader im Subtraktions-Modus auswertet.
+ *
+ * KONSISTENZ: Mit `i2 === null` ergibt der Walk bit-genau dasselbe Resultat wie
+ * `classifySubtractionPixel` (siehe Tests). Der bestehende 1-Intervall-Fall
+ * bleibt damit erhalten.
+ *
+ * @param aFront  Minuend-Front-Tiefe (≤ 0 ⇒ kein Treffer, hier nicht behandelt:
+ *                der Aufrufer/Shader discardet vorher).
+ * @param aBack   Minuend-Back-Tiefe (Minuend-Austritt).
+ * @param i1      erstes Subtrahend-Intervall (oder null = kein Subtrahend).
+ * @param i2      zweites Subtrahend-Intervall jenseits von i1 (oder null).
+ */
+export function classifySubtractionPixelMulti(
+  aFront: number,
+  aBack: number,
+  i1: DepthInterval | null,
+  i2: DepthInterval | null,
+): SubtractionResult {
+  // Kein Subtrahend → Minuend unverändert.
+  if (!i1) return { action: "keep", replacementDepth: aFront };
+
+  const bF1 = i1.front;
+  const bB1 = i1.back;
+  const hasI2 = i2 !== null;
+  const bF2 = i2 ? i2.front : 0;
+  const bB2 = i2 ? i2.back : 0;
+
+  // Liegt aFront in der entfernten Vereinigung R = I1 ∪ I2?
+  const inI1 = aFront > bF1 + EPS && aFront < bB1 - EPS;
+  const inI2 = hasI2 && aFront > bF2 + EPS && aFront < bB2 - EPS;
+
+  // Weder in I1 noch I2 → keep (deckt auch "vor/hinter I1" ab).
+  if (!inI1 && !inI2) {
+    return { action: "keep", replacementDepth: aFront };
+  }
+
+  // aFront in R → Ende des zusammenhängenden entfernten Segments suchen.
+  let exitZ: number;
+  if (inI1) {
+    exitZ = bB1;
+    // I1 und I2 überlappen/berühren (verschmolzen) → Segment reicht bis bB2.
+    if (hasI2 && bF2 <= bB1 + EPS) {
+      exitZ = bB2;
+    }
+  } else {
+    // inI2 ohne inI1 (disjunkt, aFront in der fernen Röhre).
+    exitZ = bB2;
+  }
+
+  // Segment-Austritt hinter dem Minuend-Austritt → kein Material → discard.
+  if (exitZ >= aBack - EPS) {
+    return { action: "discard", replacementDepth: exitZ };
+  }
+  return { action: "cut", replacementDepth: exitZ };
+}
+
+/**
  * Stage-1 Union-Klassifikation (reine Logik, schon getestet; GPU-Pfad nutzt sie
  * noch NICHT — siehe Modul-Kopf). Für Union ist die sichtbare Tiefe schlicht das
  * Minimum der Operanden-Frontflächen (näher = sichtbar). Stellt sicher, dass
@@ -352,6 +419,38 @@ const GBUFFER_FS = /* glsl */ `
 `;
 
 /**
+ * Peel-Fragment-Shader (GLSL3) für Layer 2 des Subtrahenden (Ticket yt4o).
+ *
+ * Rendert die Subtrahend-Meshes ERNEUT und verwirft per Fragment alle Flächen,
+ * die NICHT echt jenseits der Layer-1-Backface (`bBack1`) liegen — d.h. Layer 1
+ * wird „weggepeelt". Unter den Überlebenden gewinnt wie üblich die Depth-Test-
+ * Funktion (LessEqual) die nächste Fläche: mit FrontSide-Culling die zweite
+ * Subtrahend-Front (bFront2), mit BackSide-Culling die zweite Backface (bBack2).
+ *
+ * `bBack1` wird an `gl_FragCoord.xy / uResolution` gesampelt (Screen-Space). Ein
+ * Fragment überlebt nur, wenn `vViewZ > bBack1 + EPS` (echt dahinter). Fragmente
+ * mit bBack1 == 0 (Layer 1 traf hier nicht) überleben ebenfalls — dann ist
+ * Layer 2 ohnehin leer/irrelevant, weil ein nicht-getroffener Subtrahend kein
+ * zweites Intervall hat. viewZ==0-Konvention (kein Treffer) wie GBUFFER_FS.
+ */
+const PEEL_FS = /* glsl */ `
+  precision highp float;
+  in float vViewZ;
+  in vec3 vWorldNormal;
+  uniform sampler2D uBBack1; // Layer-1-Backface (r=viewZ) zum Wegpeelen
+  uniform vec2 uResolution;  // RT-Größe für Screen-Space-Sample
+  out vec4 fragColor;
+  const float PEEL_EPS = 1e-5;
+  void main() {
+    float bBack1 = texture(uBBack1, gl_FragCoord.xy / uResolution).r;
+    // Fragmente bis einschließlich Layer-1-Austritt verwerfen (nur echt dahinter
+    // gehört zu Layer 2). bBack1 <= 0 ⇒ Layer 1 traf nicht ⇒ nichts wegzupeelen.
+    if (vViewZ <= bBack1 + PEEL_EPS) { discard; }
+    fragColor = vec4(vViewZ, vWorldNormal);
+  }
+`;
+
+/**
  * Fullscreen-CSG-Compositor (GLSL3). Liest die vier G-Buffer und klassifiziert
  * jeden Pixel je nach `uMode`:
  *   - uMode 0 (subtract): exakt wie `classifySubtractionPixel` (UNVERÄNDERT).
@@ -365,14 +464,16 @@ const GBUFFER_FS = /* glsl */ `
 const COMPOSITE_FS = /* glsl */ `
   precision highp float;
   in vec2 vUv;
-  uniform sampler2D tAFront; // r=viewZ, gba=A-Front-Normale
-  uniform sampler2D tABack;  // r=viewZ, gba=A-Back-Normale
-  uniform sampler2D tBFront; // r=viewZ, gba=B-Front-Normale
-  uniform sampler2D tBBack;  // r=viewZ, gba=B-Back-Normale (Subtraktions-Schnittfläche)
-  uniform vec3 uBodyColor;   // lineare Body-Farbe
-  uniform float uM10;        // projectionMatrix.elements[10]
-  uniform float uM14;        // projectionMatrix.elements[14]
-  uniform float uMode;       // 0.0 = subtract (A−B), 1.0 = intersect (A∩B)
+  uniform sampler2D tAFront;  // r=viewZ, gba=A-Front-Normale
+  uniform sampler2D tABack;   // r=viewZ, gba=A-Back-Normale
+  uniform sampler2D tBFront;  // r=viewZ, gba=B-Front-Normale (Layer 1)
+  uniform sampler2D tBBack;   // r=viewZ, gba=B-Back-Normale (Layer-1-Schnittfläche)
+  uniform sampler2D tBFront2; // r=viewZ (Layer-2-Subtrahend-Front jenseits bBack1)
+  uniform sampler2D tBBack2;  // r=viewZ, gba=B-Back-Normale (Layer-2-Schnittfläche)
+  uniform vec3 uBodyColor;    // lineare Body-Farbe
+  uniform float uM10;         // projectionMatrix.elements[10]
+  uniform float uM14;         // projectionMatrix.elements[14]
+  uniform float uMode;        // 0.0 = subtract (A−B), 1.0 = intersect (A∩B)
   out vec4 fragColor;
 
   const float CSG_EPS = 1e-5;
@@ -406,6 +507,8 @@ const COMPOSITE_FS = /* glsl */ `
 
     if (uMode > 0.5) {
       // ── Intersection A ∩ B (spiegelt classifyIntersectionPixel) ───────────
+      // Intersection UNVERÄNDERT: nutzt nur Layer 1 (tBFront/tBBack), keine
+      // Layer-2-Texturen.
       if (aFrontZ <= 0.0 || bFrontZ <= 0.0) { discard; }
       float entry = max(aFrontZ, bFrontZ);
       float exit = min(aBackZ, bBackZ);
@@ -415,28 +518,62 @@ const COMPOSITE_FS = /* glsl */ `
       // liegenden Frontfläche.
       N = (aFrontZ >= bFrontZ) ? aF.gba : bF.gba;
     } else {
-      // ── Subtraction A − B (UNVERÄNDERT) ───────────────────────────────────
+      // ── Subtraction A − B (Mehr-Intervall-Walk, spiegelt
+      //    classifySubtractionPixelMulti — Ticket yt4o) ───────────────────────
       // Kein Minuend an diesem Pixel → Hintergrund/andere Bodys durchlassen.
       if (aFrontZ <= 0.0) { discard; }
 
-      bool hasB = (bFrontZ > 0.0 && bBackZ > 0.0);
+      // Bis zu zwei Subtrahend-Intervalle: I1=[bF1,bB1] (Layer 1), I2=[bF2,bB2]
+      // (Layer 2, gepeelt jenseits bB1). Ii gültig gdw. bFi > 0 (UND bBi > 0).
+      vec4 bB2v = texture(tBBack2, vUv);
+      float bF1 = bFrontZ;
+      float bB1 = bBackZ;
+      float bF2 = texture(tBFront2, vUv).r;
+      float bB2 = bB2v.r;
 
-      // classifySubtractionPixel(): keep, wenn kein Subtrahend ODER A-Front vor
-      // dem Subtrahend-Eintritt ODER hinter dem Subtrahend-Austritt liegt.
-      if (!hasB || aFrontZ <= bFrontZ + CSG_EPS || aFrontZ >= bBackZ - CSG_EPS) {
-        // keep: sichtbare Fläche ist die Minuend-Front.
+      bool hasI1 = (bF1 > 0.0 && bB1 > 0.0);
+      bool hasI2 = (bF2 > 0.0 && bB2 > 0.0);
+
+      if (!hasI1) {
+        // Kein Subtrahend → Minuend unverändert (keep).
         viewZ = aFrontZ;
         N = aF.gba;
       } else {
-        // aFrontZ liegt echt in (bFrontZ, bBackZ): vorderer Teil von A weggeschnitten.
-        if (bBackZ >= aBackZ - CSG_EPS) {
-          // discard: Subtrahend frisst durch den Minuend-Austritt → kein Material.
-          discard;
+        // Liegt aFront in der entfernten Vereinigung R = I1 ∪ I2?
+        bool inI1 = (aFrontZ > bF1 + CSG_EPS && aFrontZ < bB1 - CSG_EPS);
+        bool inI2 = (hasI2 && aFrontZ > bF2 + CSG_EPS && aFrontZ < bB2 - CSG_EPS);
+
+        if (!inI1 && !inI2) {
+          // keep: sichtbare Fläche ist die Minuend-Front.
+          viewZ = aFrontZ;
+          N = aF.gba;
+        } else {
+          // aFront in R → Ende des zusammenhängenden entfernten Segments suchen.
+          float exitZ;
+          vec3 exitN;
+          if (inI1) {
+            exitZ = bB1;
+            exitN = -bB.gba;
+            // I1,I2 verschmolzen (überlappen/berühren) → Segment reicht bis bB2.
+            if (hasI2 && bF2 <= bB1 + CSG_EPS) {
+              exitZ = bB2;
+              exitN = -bB2v.gba;
+            }
+          } else {
+            // inI2 ohne inI1 (disjunkt, aFront in der fernen Röhre).
+            exitZ = bB2;
+            exitN = -bB2v.gba;
+          }
+
+          if (exitZ >= aBackZ - CSG_EPS) {
+            // discard: Segment-Austritt hinter Minuend-Austritt → kein Material.
+            discard;
+          }
+          // cut: sichtbare Fläche ist die Subtrahend-Backface (Schnittfläche).
+          // Normale = invertierte Subtrahend-Außennormale (zeigt ins entfernte Volumen).
+          viewZ = exitZ;
+          N = exitN;
         }
-        // cut: sichtbare Fläche ist die Subtrahend-Backface (Schnittfläche) bei bBack.
-        // Normale = invertierte Subtrahend-Außennormale (zeigt ins entfernte Volumen).
-        viewZ = bBackZ;
-        N = -bB.gba;
       }
     }
 
@@ -483,6 +620,9 @@ export class ScreenSpaceCsgCompositor {
   private readonly aBackRT: THREE.WebGLRenderTarget;
   private readonly bFrontRT: THREE.WebGLRenderTarget;
   private readonly bBackRT: THREE.WebGLRenderTarget;
+  // Layer-2-Peel des Subtrahenden (Ticket yt4o, nur Subtraktions-Modus).
+  private readonly bFront2RT: THREE.WebGLRenderTarget;
+  private readonly bBack2RT: THREE.WebGLRenderTarget;
 
   // Vier Capture-Materialien: A/B × Front/Back. Alle schreiben Tiefe UND Normale
   // (beide CSG-Modi brauchen unterschiedliche Normalen-Slots). Geteilt über alle
@@ -491,6 +631,10 @@ export class ScreenSpaceCsgCompositor {
   private readonly aBackMat: THREE.ShaderMaterial; // BackSide
   private readonly bFrontMat: THREE.ShaderMaterial; // FrontSide
   private readonly bBackMat: THREE.ShaderMaterial; // BackSide
+  // Layer-2-Peel-Materialien: gleicher Peel-Shader, FrontSide/BackSide. Beide
+  // sampeln bBack1, um Layer 1 wegzupeelen (Ticket yt4o).
+  private readonly bFront2Mat: THREE.ShaderMaterial; // FrontSide
+  private readonly bBack2Mat: THREE.ShaderMaterial; // BackSide
   private readonly compositeMat: THREE.ShaderMaterial;
 
   private readonly fsScene: THREE.Scene;
@@ -508,6 +652,8 @@ export class ScreenSpaceCsgCompositor {
     this.aBackRT = makeGBufferTarget(this.width, this.height);
     this.bFrontRT = makeGBufferTarget(this.width, this.height);
     this.bBackRT = makeGBufferTarget(this.width, this.height);
+    this.bFront2RT = makeGBufferTarget(this.width, this.height);
+    this.bBack2RT = makeGBufferTarget(this.width, this.height);
 
     const captureMat = (side: THREE.Side): THREE.ShaderMaterial =>
       new THREE.ShaderMaterial({
@@ -528,6 +674,27 @@ export class ScreenSpaceCsgCompositor {
     this.bFrontMat = captureMat(THREE.FrontSide); // B-Front
     this.bBackMat = captureMat(THREE.BackSide); // B-Back
 
+    // Peel-Materialien (Layer 2): gleicher Peel-Shader, je Seite eine Instanz.
+    // uBBack1 zeigt auf die Layer-1-Backface-Textur (zum Wegpeelen), uResolution
+    // wird pro render() auf die RT-Größe gesetzt.
+    const peelMat = (side: THREE.Side): THREE.ShaderMaterial =>
+      new THREE.ShaderMaterial({
+        glslVersion: THREE.GLSL3,
+        vertexShader: GBUFFER_VS,
+        fragmentShader: PEEL_FS,
+        side,
+        depthTest: true,
+        depthWrite: true,
+        uniforms: {
+          uBBack1: { value: this.bBackRT.texture },
+          uResolution: {
+            value: new THREE.Vector2(this.width, this.height),
+          },
+        },
+      });
+    this.bFront2Mat = peelMat(THREE.FrontSide); // B-Front Layer 2
+    this.bBack2Mat = peelMat(THREE.BackSide); // B-Back Layer 2
+
     this.compositeMat = new THREE.ShaderMaterial({
       glslVersion: THREE.GLSL3,
       vertexShader: FULLSCREEN_VS,
@@ -541,6 +708,8 @@ export class ScreenSpaceCsgCompositor {
         tABack: { value: this.aBackRT.texture },
         tBFront: { value: this.bFrontRT.texture },
         tBBack: { value: this.bBackRT.texture },
+        tBFront2: { value: this.bFront2RT.texture },
+        tBBack2: { value: this.bBack2RT.texture },
         uBodyColor: { value: new THREE.Color(0.7, 0.7, 0.72) },
         uM10: { value: 0 },
         uM14: { value: 0 },
@@ -570,6 +739,10 @@ export class ScreenSpaceCsgCompositor {
     this.aBackRT.setSize(w, h);
     this.bFrontRT.setSize(w, h);
     this.bBackRT.setSize(w, h);
+    this.bFront2RT.setSize(w, h);
+    this.bBack2RT.setSize(w, h);
+    (this.bFront2Mat.uniforms.uResolution.value as THREE.Vector2).set(w, h);
+    (this.bBack2Mat.uniforms.uResolution.value as THREE.Vector2).set(w, h);
   }
 
   /**
@@ -605,11 +778,20 @@ export class ScreenSpaceCsgCompositor {
     this.compositeMat.uniforms.uMode.value = mode === "intersect" ? 1 : 0;
     (this.compositeMat.uniforms.uBodyColor.value as THREE.Color).copy(bodyColor);
 
-    // ── G-Buffer-Capture ────────────────────────────────────────────────────
+    const isSubtract = mode !== "intersect";
+
+    // ── Layer-1-G-Buffer-Capture ─────────────────────────────────────────────
     const aMeshesFront = buildOperandMeshes(aLeaves, this.aFrontMat);
     const aMeshesBack = buildOperandMeshes(aLeaves, this.aBackMat);
     const bMeshesFront = buildOperandMeshes(bLeaves, this.bFrontMat);
     const bMeshesBack = buildOperandMeshes(bLeaves, this.bBackMat);
+    // Layer-2-Peel-Meshes NUR im Subtraktions-Modus (Intersection nutzt sie nicht).
+    const bMeshesFront2 = isSubtract
+      ? buildOperandMeshes(bLeaves, this.bFront2Mat)
+      : [];
+    const bMeshesBack2 = isSubtract
+      ? buildOperandMeshes(bLeaves, this.bBack2Mat)
+      : [];
 
     const prevTarget = renderer.getRenderTarget();
     const prevClear = renderer.getClearColor(new THREE.Color());
@@ -631,6 +813,11 @@ export class ScreenSpaceCsgCompositor {
     renderInto(this.aBackRT, aMeshesBack);
     renderInto(this.bFrontRT, bMeshesFront);
     renderInto(this.bBackRT, bMeshesBack);
+    // Layer-2-Peel: nach Layer 1 (sampelt bBackRT.texture als uBBack1). Im
+    // Intersection-Modus auf (0,0,0,0) geleert, damit kein Stale-Layer-2 im
+    // (vom Composite ohnehin ignorierten) Slot steht.
+    renderInto(this.bFront2RT, bMeshesFront2);
+    renderInto(this.bBack2RT, bMeshesBack2);
 
     // ── Composite ins zuvor gebundene Ziel ──────────────────────────────────
     renderer.setRenderTarget(prevTarget);
@@ -647,6 +834,8 @@ export class ScreenSpaceCsgCompositor {
       ...aMeshesBack,
       ...bMeshesFront,
       ...bMeshesBack,
+      ...bMeshesFront2,
+      ...bMeshesBack2,
     ]) {
       m.geometry.dispose();
     }
@@ -657,10 +846,14 @@ export class ScreenSpaceCsgCompositor {
     this.aBackRT.dispose();
     this.bFrontRT.dispose();
     this.bBackRT.dispose();
+    this.bFront2RT.dispose();
+    this.bBack2RT.dispose();
     this.aFrontMat.dispose();
     this.aBackMat.dispose();
     this.bFrontMat.dispose();
     this.bBackMat.dispose();
+    this.bFront2Mat.dispose();
+    this.bBack2Mat.dispose();
     this.compositeMat.dispose();
     this.fsQuad.geometry.dispose();
   }

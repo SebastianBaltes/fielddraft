@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   classifySubtractionPixel,
+  classifySubtractionPixelMulti,
   classifyUnionPixel,
   classifyIntersectionPixel,
   collectCsgOperands,
@@ -83,6 +84,85 @@ describe("classifySubtractionPixel — A − B Intervall-Klassifikation", () => 
   it("Randfall: aDepth exakt auf bBack bleibt keep (Epsilon-tolerant)", () => {
     const r = classifySubtractionPixel(12, interval(8, 12));
     expect(r.action).toBe("keep");
+  });
+});
+
+describe("classifySubtractionPixelMulti — nicht-konvexer Subtrahend (Ticket yt4o)", () => {
+  // (a) I2 ungültig → bit-genau wie classifySubtractionPixel.
+  describe("(a) I2 === null spiegelt classifySubtractionPixel exakt", () => {
+    const cases: Array<{
+      name: string;
+      aFront: number;
+      aBack: number;
+      i1: DepthInterval | null;
+    }> = [
+      { name: "kein Subtrahend", aFront: 10, aBack: 30, i1: null },
+      { name: "A-Front vor I1", aFront: 5, aBack: 30, i1: interval(8, 12) },
+      { name: "A-Front hinter I1", aFront: 20, aBack: 30, i1: interval(8, 12) },
+      { name: "A-Front in I1, cut", aFront: 10, aBack: 30, i1: interval(8, 14) },
+      { name: "A-Front in I1, discard", aFront: 10, aBack: 18, i1: interval(8, 25) },
+      { name: "Rand auf bFront", aFront: 8, aBack: 30, i1: interval(8, 12) },
+      { name: "Rand auf bBack", aFront: 12, aBack: 30, i1: interval(8, 12) },
+    ];
+    for (const c of cases) {
+      it(c.name, () => {
+        const single = classifySubtractionPixel(c.aFront, c.i1, c.aBack);
+        const multi = classifySubtractionPixelMulti(
+          c.aFront,
+          c.aBack,
+          c.i1,
+          null,
+        );
+        expect(multi.action).toBe(single.action);
+        if (single.action === "cut") {
+          expect(multi.replacementDepth).toBe(single.replacementDepth);
+        }
+      });
+    }
+  });
+
+  // (b) aFront in I2 (NICHT I1) → cut bei bB2. Das ist der Kern-Bug: ferne Nutwand.
+  it("(b) aFront in der fernen Röhre I2 → cut bei bB2 (Box scheint NICHT durch)", () => {
+    // I1=[8,10] (nahe Röhre), I2=[20,22] (ferne Röhre). aFront=21 liegt in I2.
+    const r = classifySubtractionPixelMulti(21, 40, interval(8, 10), interval(20, 22));
+    expect(r.action).toBe("cut");
+    expect(r.replacementDepth).toBe(22);
+  });
+
+  it("(b') aFront zwischen I1 und I2 (im Loch) → keep (Material vorhanden)", () => {
+    // I1=[8,10], I2=[20,22]. aFront=15 liegt im Zwischenraum → unberührt.
+    const r = classifySubtractionPixelMulti(15, 40, interval(8, 10), interval(20, 22));
+    expect(r.action).toBe("keep");
+    expect(r.replacementDepth).toBe(15);
+  });
+
+  // (c) verschmolzene Intervalle (überlappen/berühren) → cut bei bB2.
+  it("(c) verschmolzene Intervalle, aFront in I1 → Segment bis bB2", () => {
+    // I1=[8,15], I2=[14,20] (überlappen). aFront=10 in I1, Segment reicht bis 20.
+    const r = classifySubtractionPixelMulti(10, 40, interval(8, 15), interval(14, 20));
+    expect(r.action).toBe("cut");
+    expect(r.replacementDepth).toBe(20);
+  });
+
+  it("(c') berührende Intervalle (bF2 == bB1) verschmelzen → cut bei bB2", () => {
+    // I1=[8,15], I2=[15,20]. aFront=10 in I1; bF2 == bB1 → verschmolzen → bB2.
+    const r = classifySubtractionPixelMulti(10, 40, interval(8, 15), interval(15, 20));
+    expect(r.action).toBe("cut");
+    expect(r.replacementDepth).toBe(20);
+  });
+
+  // (d) disjunkt, aFront in I1 → cut bei bB1 (Segment endet vor dem Loch).
+  it("(d) disjunkte Intervalle, aFront in I1 → cut bei bB1", () => {
+    // I1=[8,10], I2=[20,22]. aFront=9 in I1; disjunkt → Segment endet bei bB1=10.
+    const r = classifySubtractionPixelMulti(9, 40, interval(8, 10), interval(20, 22));
+    expect(r.action).toBe("cut");
+    expect(r.replacementDepth).toBe(10);
+  });
+
+  it("discard: verschmolzenes Segment frisst durch den Minuend-Austritt", () => {
+    // I1=[8,15], I2=[14,30], aBack=25. Segment-Austritt 30 >= aBack 25 → kein Material.
+    const r = classifySubtractionPixelMulti(10, 25, interval(8, 15), interval(14, 30));
+    expect(r.action).toBe("discard");
   });
 });
 
