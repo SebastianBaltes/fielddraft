@@ -7,19 +7,27 @@
  * Mit Flag AUS wird diese Komponente vom WebGL-Viewport gar nicht gerendert, der
  * bestehende Pfad bleibt unverändert.
  *
- * EHRLICHKEIT: Dieser Pass führt den Tiefen-Capture + Composite je Body mit
- * Subtrahend aus. Er ist VISUELL UNVERIFIZIERT (kein Browser/GPU im Build); ob
- * die Schnittflächen korrekt erscheinen, muss der User prüfen. Headless belegt
- * ist nur die reine Klassifikation (screenSpaceCsg.test.ts). Das volle
- * Re-Shading der Schnittfläche fehlt noch (Stage-1-Feinschliff, im COMPOSITE_FS
- * als TODO). Der Pass ist absichtlich robust: jeder Fehler wird geschluckt, der
- * normale WebGL-Pfad zeichnet ohnehin parallel weiter.
+ * EHRLICHKEIT: Dieser Pass führt je Subtraktions-Body einen G-Buffer-Capture +
+ * geshadeten Composite (A − B) aus und komponiert das Ergebnis tiefenkorrekt über
+ * den übrigen Scene-Render. Er ist VISUELL UNVERIFIZIERT (kein Browser/GPU im
+ * Build); ob die Schnittflächen + Normalen korrekt erscheinen, muss der User
+ * prüfen. Headless belegt ist nur die reine Klassifikation + Tiefenformel
+ * (screenSpaceCsg.test.ts). Der Pass ist absichtlich robust: jeder Fehler wird
+ * geschluckt, der Viewport friert dadurch nicht ein.
+ *
+ * WICHTIG (kein Doppel-Draw): Difference-Bodys, die hier komponiert werden,
+ * dürfen NICHT zusätzlich ihr DC-Mesh zeichnen. `MeshPreview` überspringt bei
+ * aktivem SS-CSG-Flag genau die `bodyNeedsSubtractionPass`-Bodys (siehe
+ * viewportOverlays.tsx) — bei Flag AUS bleibt alles unverändert.
  */
 
 import { useEffect, useMemo, useRef } from "react";
 import * as THREE from "three";
 import { useFrame, useThree } from "@react-three/fiber";
 import { useKernelStore } from "./store";
+import { resolveMaterials } from "./materialBridge";
+import { BODY_COLORS } from "./sdfDeferredRenderer";
+import type { FeatureSummary } from "./kernel";
 import {
   ScreenSpaceCsgCompositor,
   collectCsgOperands,
@@ -42,24 +50,39 @@ function useScsBodyFingerprint(): string {
   }, [store, state]);
 }
 
+interface SubtractionBody {
+  bodyIndex: number;
+  operands: CsgOperands;
+  color: THREE.Color;
+}
+
 /**
- * Sammelt die A−B-Operanden aller Bodys, die einen Subtrahenden haben. Bodys
- * ohne Subtrahend werden ausgelassen — der bestehende WebGL-Pfad rendert die
- * korrekt (nichts wegzuschneiden).
+ * Sammelt die A−B-Operanden + Body-Farbe aller Bodys mit Subtrahend. Bodys ohne
+ * Subtrahend werden ausgelassen — der bestehende WebGL-Pfad rendert die korrekt.
+ *
+ * Die Farbe wird IDENTISCH zu `WebGLBodies` bestimmt: User-Material (falls
+ * gesetzt) über `resolveMaterials`, sonst die Part-Palette `BODY_COLORS`. So
+ * trifft der CSG-Compositor optisch denselben Ton wie der übrige Scene-Render.
  */
 function collectSubtractionBodies(
   kernel: {
     bodyCount(): number;
     bodyHybridInfo(i: number): { leaves: CsgOperands["minuend"] };
   },
-): { bodyIndex: number; operands: CsgOperands }[] {
-  const out: { bodyIndex: number; operands: CsgOperands }[] = [];
+  features: FeatureSummary[] | undefined,
+): SubtractionBody[] {
+  const out: SubtractionBody[] = [];
   let count = 0;
   try {
     count = kernel.bodyCount();
   } catch {
     return out;
   }
+  // resolveMaterials braucht den echten Kernel-Typ; der lokale Struktur-Typ oben
+  // ist ein Subset davon — cast nur für diesen Aufruf.
+  const userMats = features
+    ? resolveMaterials(kernel as never, features)
+    : new Map();
   for (let i = 0; i < count; i++) {
     let leaves;
     try {
@@ -68,20 +91,26 @@ function collectSubtractionBodies(
       continue;
     }
     if (!bodyNeedsSubtractionPass(leaves)) continue;
-    out.push({ bodyIndex: i, operands: collectCsgOperands(leaves) });
+    const um = userMats.get(i);
+    const [r, g, b] = um ? um.color : BODY_COLORS[i % BODY_COLORS.length];
+    out.push({
+      bodyIndex: i,
+      operands: collectCsgOperands(leaves),
+      color: new THREE.Color(r, g, b),
+    });
   }
   return out;
 }
 
 /**
- * Experimenteller A−B-Compositor-Pass. Läuft NACH dem normalen WebGL-Render
- * (kleinere `renderOrder`-/Frame-Reihenfolge via useFrame mit Priorität), führt
- * je Subtraktions-Body einen Tiefen-Capture + Composite aus.
+ * Experimenteller, geshadeter A−B-Compositor-Pass. Läuft NACH dem normalen
+ * WebGL-Render (useFrame-Priorität 1) und blendet je Subtraktions-Body Farbe +
+ * gl_FragDepth tiefenkorrekt über die Scene.
  *
  * VISUELL UNVERIFIZIERT. Mit Flag AUS nie gemountet.
  */
 export function ScreenSpaceCsgPass() {
-  const { store } = useKernelStore();
+  const { store, state } = useKernelStore();
   const fingerprint = useScsBodyFingerprint();
   const gl = useThree((s) => s.gl) as unknown as THREE.WebGLRenderer;
   const size = useThree((s) => s.size);
@@ -95,6 +124,7 @@ export function ScreenSpaceCsgPass() {
       comp.dispose();
       compositorRef.current = null;
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
@@ -103,9 +133,9 @@ export function ScreenSpaceCsgPass() {
 
   const bodies = useMemo(() => {
     if (!store) return [];
-    return collectSubtractionBodies(store.kernel);
+    return collectSubtractionBodies(store.kernel, state?.features);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [store, fingerprint]);
+  }, [store, fingerprint, state?.features]);
 
   // Priorität > 0 → R3F übernimmt NICHT das automatische Rendern dieses
   // Subscribers; wir rendern den Composite-Pass selbst, NACH dem Haupt-Render.
@@ -113,14 +143,11 @@ export function ScreenSpaceCsgPass() {
     const comp = compositorRef.current;
     if (!comp || bodies.length === 0) return;
     try {
-      for (const { operands } of bodies) {
-        comp.captureDepths(gl, camera, operands);
-        // Composite ins aktuelle (Default-)Framebuffer-Ziel mischen.
-        comp.composite(gl);
+      for (const { operands, color } of bodies) {
+        comp.render(gl, camera, operands, color);
       }
     } catch {
-      // Defensiv: der normale WebGL-Pfad zeichnet ohnehin; ein Fehler hier darf
-      // den Viewport nicht einfrieren.
+      // Defensiv: ein Fehler hier darf den Viewport nicht einfrieren.
     }
   }, 1);
 

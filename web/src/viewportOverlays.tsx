@@ -46,6 +46,7 @@ import {
   buildWarpedLeafGeometry,
 } from "./sdfDeferredRenderer";
 import { triangulatePlanarFace } from "./faceFill";
+import { bodyNeedsSubtractionPass } from "./screenSpaceCsg";
 import { collectAnalyticBodyMeshes, type BrepMeshKernel } from "./brepMesh";
 import { resolvePlaneFrame } from "./sketchPlaneFrame";
 // Extracted to sketchOutline.ts (DOM-free) — shared with the extrude
@@ -3875,11 +3876,20 @@ function MeshPreviewBody({
  *   mode, where the whole point is to show the DC mesher's output.
  * @param lights When false the caller provides shared `WebGLSceneLights` (so
  *   mounting MeshPreview + WebGLBodies together doesn't double the lighting).
+ * @param skipSubtractionBodies Opt-in Screen-Space-CSG (v0.6.306): when set, SKIP
+ *   every body that `bodyNeedsSubtractionPass` flags (a Difference with a real
+ *   subtrahend). Those are drawn EXCLUSIVELY by `ScreenSpaceCsgPass`, so their
+ *   coarse DC mesh must not also draw underneath. Off → exact current behaviour.
  */
 export function MeshPreview({
   parametricSplit = false,
   lights = true,
-}: { parametricSplit?: boolean; lights?: boolean } = {}) {
+  skipSubtractionBodies = false,
+}: {
+  parametricSplit?: boolean;
+  lights?: boolean;
+  skipSubtractionBodies?: boolean;
+} = {}) {
   const { store, state } = useKernelStore();
   const bodies = state?.meshedBodies;
   const features = state?.features;
@@ -3893,10 +3903,21 @@ export function MeshPreview({
 
   const rows = bodies
     .map((body, i) => ({ body, i }))
-    .filter(
-      ({ i }) =>
-        !parametricSplit || !store || !isWebglParametricBody(store.kernel, i),
-    );
+    .filter(({ i }) => {
+      if (parametricSplit && store && isWebglParametricBody(store.kernel, i))
+        return false;
+      // SS-CSG: Difference-Bodys kommen NUR aus dem CSG-Pass, nicht doppelt als
+      // DC-Mesh. bodyHybridInfo kann werfen → defensiv überspringen-Entscheidung.
+      if (skipSubtractionBodies && store) {
+        try {
+          if (bodyNeedsSubtractionPass(store.kernel.bodyHybridInfo(i).leaves))
+            return false;
+        } catch {
+          /* im Zweifel zeichnen (heutiges Verhalten) */
+        }
+      }
+      return true;
+    });
   if (rows.length === 0) return null;
 
   return (
@@ -3992,11 +4013,21 @@ export function BRepMeshPreview() {
  *   complement of what `MeshPreview parametricSplit` draws. When unset (the
  *   mesh-pending fallback) every body is drawn from its hulls.
  * @param lights When false the caller provides shared `WebGLSceneLights`.
+ * @param skipSubtractionBodies Opt-in Screen-Space-CSG (v0.6.306): when set, SKIP
+ *   every body that `bodyNeedsSubtractionPass` flags — those are composited
+ *   exclusively by `ScreenSpaceCsgPass`. Used in the mesh-pending fallback so a
+ *   Difference body doesn't briefly draw its non-boolean minuend hull underneath
+ *   the CSG composite. Off → exact current behaviour.
  */
 export function WebGLBodies({
   onlyParametric = false,
   lights = true,
-}: { onlyParametric?: boolean; lights?: boolean } = {}) {
+  skipSubtractionBodies = false,
+}: {
+  onlyParametric?: boolean;
+  lights?: boolean;
+  skipSubtractionBodies?: boolean;
+} = {}) {
   const { store, state } = useKernelStore();
   const fingerprint = useBodyFingerprint();
   // One material per body, so the WebGL path matches WebGPU: distinct part
@@ -4046,6 +4077,9 @@ export function WebGLBodies({
       } catch {
         continue;
       }
+      // SS-CSG an: Difference-Bodys kommen ausschließlich aus dem CSG-Pass.
+      if (skipSubtractionBodies && bodyNeedsSubtractionPass(info.leaves))
+        continue;
       const mat = materialForBody(i);
       for (const leaf of info.leaves) {
         if (leaf.role === "skip") continue;
@@ -4065,7 +4099,7 @@ export function WebGLBodies({
     }
     return out;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [store, fingerprint, state?.features, onlyParametric]);
+  }, [store, fingerprint, state?.features, onlyParametric, skipSubtractionBodies]);
 
   useEffect(() => {
     return () => {

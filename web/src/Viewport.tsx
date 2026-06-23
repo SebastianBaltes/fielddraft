@@ -650,11 +650,17 @@ function WebGLViewport({
         {hasMeshes ? (
           <>
             <WebGLSceneLights />
-            <MeshPreview parametricSplit lights={false} />
+            {/* SS-CSG an: Difference-Bodys NICHT als DC-Mesh zeichnen — die kommen
+                ausschließlich aus dem ScreenSpaceCsgPass. Flag aus → unverändert. */}
+            <MeshPreview
+              parametricSplit
+              lights={false}
+              skipSubtractionBodies={screenSpaceCsg}
+            />
             <WebGLBodies onlyParametric lights={false} />
           </>
         ) : (
-          <WebGLBodies />
+          <WebGLBodies skipSubtractionBodies={screenSpaceCsg} />
         )}
         {/* Opt-in experiment (default off): Screen-Space-CSG Stage 1
             (docs/ADAPTIVE-RENDERING-PLAN.md, Achse 3, Phase 3). Mounts an

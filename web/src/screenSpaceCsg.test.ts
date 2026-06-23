@@ -4,6 +4,7 @@ import {
   classifyUnionPixel,
   collectCsgOperands,
   bodyNeedsSubtractionPass,
+  viewZToNdcDepth,
   type DepthInterval,
 } from "./screenSpaceCsg";
 import type { HybridLeafInfo } from "./kernel";
@@ -129,5 +130,41 @@ describe("bodyNeedsSubtractionPass — lohnt sich ein A−B-Pass?", () => {
 
   it("false bei leerem Body", () => {
     expect(bodyNeedsSubtractionPass([])).toBe(false);
+  });
+});
+
+describe("viewZToNdcDepth — lineare Sichttiefe → gl_FragDepth", () => {
+  // Standard-Perspektiv-Projektion (rechtshändig, NDC z ∈ [-1, 1]):
+  //   m10 = -(far + near) / (far - near)
+  //   m14 = -2 * far * near / (far - near)
+  const near = 1;
+  const far = 100;
+  const m10 = -(far + near) / (far - near);
+  const m14 = (-2 * far * near) / (far - near);
+
+  it("Near-Plane (viewZ == near) → window depth 0", () => {
+    expect(viewZToNdcDepth(near, m10, m14)).toBeCloseTo(0, 6);
+  });
+
+  it("Far-Plane (viewZ == far) → window depth 1", () => {
+    expect(viewZToNdcDepth(far, m10, m14)).toBeCloseTo(1, 6);
+  });
+
+  it("monoton wachsend mit der Tiefe (näher = kleinere Depth)", () => {
+    const dNear = viewZToNdcDepth(2, m10, m14);
+    const dMid = viewZToNdcDepth(20, m10, m14);
+    const dFar = viewZToNdcDepth(80, m10, m14);
+    expect(dNear).toBeLessThan(dMid);
+    expect(dMid).toBeLessThan(dFar);
+  });
+
+  it("alle Tiefen im gültigen Window-Bereich [0, 1]", () => {
+    // Toleranz für Float-Rundung an den Clip-Plane-Rändern (z.B. near → -1e-16).
+    const tol = 1e-9;
+    for (const z of [1, 5, 25, 50, 100]) {
+      const d = viewZToNdcDepth(z, m10, m14);
+      expect(d).toBeGreaterThanOrEqual(-tol);
+      expect(d).toBeLessThanOrEqual(1 + tol);
+    }
   });
 });
