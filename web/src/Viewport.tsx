@@ -30,6 +30,7 @@ import {
   CameraRig,
   ViewCommandConsumer,
   CameraQuaternionBridge,
+  ViewportCamera,
   publishCameraQuat,
   ViewCube,
   ClearColorSync,
@@ -521,6 +522,7 @@ function WebGLViewport({
   brepEdgeMode,
   ndc,
   screenSpaceCsg,
+  perspective,
 }: {
   controlsPreset: ControlsPresetId;
   brepEdgeMode: BRepEdgeMode;
@@ -534,6 +536,8 @@ function WebGLViewport({
   // Screen-Space-CSG A−B pass (docs/ADAPTIVE-RENDERING-PLAN.md, Achse 3,
   // Phase 3). Off → the WebGL path renders exactly as before.
   screenSpaceCsg: boolean;
+  // Camera projection: false (default) → orthographic, true → perspective.
+  perspective: boolean;
 }) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const { state } = useKernelStore();
@@ -550,7 +554,11 @@ function WebGLViewport({
   const stateRef = useRef<{
     gl: THREE.WebGLRenderer;
     scene: THREE.Scene;
-    camera: THREE.Camera;
+    // Live R3F state accessor — `get().camera` always returns the CURRENT
+    // default camera, which ViewportCamera swaps when the projection setting
+    // flips. Reading it per frame (instead of caching the camera) keeps the
+    // clip-plane / pick / ViewCube publishes pointed at the active camera.
+    get: () => { camera: THREE.Camera };
     // R3F's per-root loop driver. Calling it runs every `useFrame` subscriber
     // in THIS root (the B-Rep hover overlays — ticket 814w) and then renders.
     advance: (timestamp: number, runGlobalEffects?: boolean) => void;
@@ -571,12 +579,15 @@ function WebGLViewport({
     const tick = (timestamp: number) => {
       const st = stateRef.current;
       if (st) {
+        // The active camera (ViewportCamera may have swapped ortho⇄persp since
+        // mount) — read it live each frame, never the cached one.
+        const camera = st.get().camera;
         // Adapt the clip planes to the scene each frame (ticket lbzq) — the
         // WebGL root bypasses <CameraBridgePublisher>'s useFrame.
-        adaptClipPlanes(st.camera);
+        adaptClipPlanes(camera);
         // useFrame doesn't tick this manual-loop root, so feed the ViewCube
         // the live WebGL camera orientation here (ticket r8b4).
-        publishCameraQuat(st.camera.quaternion);
+        publishCameraQuat(camera.quaternion);
         // Ticket sqif: the WebGL root has no <CameraBridgePublisher> (that
         // lives only in the WebGPU <Scene>), so getPublishedPickCamera() was
         // null on this backend. rayAtMouse() then returned null, and the
@@ -584,7 +595,7 @@ function WebGLViewport({
         // hovering a datum still highlighted it (R3F's own canvas raycaster),
         // but clicking it never fired picker.onPick. Publish the live WebGL
         // camera here so the host-div click path rays through the SAME camera.
-        publishPickCamera(st.camera);
+        publishPickCamera(camera);
         // Ticket x941: the WebGL root has no <CameraBridgePublisher> either, so
         // the 2D sketch overlay (SketchCanvas2d) never received a sketch-camera
         // publish — its bridge width/height/zoom/version stayed stale and its
@@ -631,11 +642,14 @@ function WebGLViewport({
           stateRef.current = {
             gl: st.gl as unknown as THREE.WebGLRenderer,
             scene: st.scene,
-            camera: st.camera,
+            get: st.get as unknown as () => { camera: THREE.Camera },
             advance: st.advance,
           };
         }}
       >
+        {/* Owns the active camera — swaps ortho (default) ⇄ perspective when
+            the setting flips, on this WebGL root too. */}
+        <ViewportCamera perspective={perspective} />
         {/* ticket xqp3: Szene ist weiß, nicht grau. */}
         <color attach="background" args={["#ffffff"]} />
         {/* Boolean-correct DC meshes once meshed; per-leaf hulls while the
@@ -766,6 +780,7 @@ export function Viewport({
   showEdgePoints,
   showOctreeCells,
   screenSpaceCsg,
+  perspective,
   controlsPreset,
 }: {
   renderMode: string;
@@ -776,6 +791,8 @@ export function Viewport({
   /** Opt-in experiment (default off): mount the Screen-Space-CSG pass in the
    *  WebGL render path. Off → exact current behaviour. */
   screenSpaceCsg: boolean;
+  /** Camera projection: false (default) → orthographic, true → perspective. */
+  perspective: boolean;
   controlsPreset: ControlsPresetId;
 }) {
   const { store, state } = useKernelStore();
@@ -1427,6 +1444,7 @@ export function Viewport({
           brepEdgeMode={brepEdgeMode}
           ndc={ndc}
           screenSpaceCsg={screenSpaceCsg}
+          perspective={perspective}
         />
       )}
       {!isWebGL && (
@@ -1546,6 +1564,7 @@ export function Viewport({
           >
             {canvasReady && (
               <>
+                <ViewportCamera perspective={perspective} />
                 <ClearColorSync />
                 <Scene
                   ndc={ndc}

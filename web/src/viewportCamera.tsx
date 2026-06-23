@@ -31,7 +31,10 @@ import {
  */
 export function adaptClipPlanes(camera: THREE.Camera): boolean {
   const persp = camera as THREE.PerspectiveCamera;
-  if (!persp.isPerspectiveCamera) return false;
+  const ortho = camera as THREE.OrthographicCamera;
+  const isPersp = persp.isPerspectiveCamera === true;
+  const isOrtho = ortho.isOrthographicCamera === true;
+  if (!isPersp && !isOrtho) return false;
   // Bracket near/far around EVERY drawn thing, not just the bodies: the world
   // grid extends well past a small model and its foreground edge sits far
   // closer to the camera, so bracketing the bodies alone clipped it (xv9c).
@@ -51,19 +54,148 @@ export function adaptClipPlanes(camera: THREE.Camera): boolean {
     far = Math.max(far, d + s.radius + pad);
     near = Math.min(near, d - s.radius - pad);
   }
-  // Never put near behind the camera, below a small floor, or past a 1e-4
-  // ratio to far (the f32 depth-buffer limit).
-  near = Math.max(near, far * 1e-4, 0.05);
+  // Perspective: never put near behind the camera, below a small floor, or
+  // past a 1e-4 ratio to far (the f32 reciprocal-z precision limit). Ortho
+  // depth is LINEAR, so it has no such ratio limit — only keep near a hair
+  // ahead of the camera (it may still be small) and below far.
+  near = isOrtho
+    ? Math.max(near, 0.05)
+    : Math.max(near, far * 1e-4, 0.05);
+  // `near`/`far`/`updateProjectionMatrix` live on both camera subclasses.
+  const clip = camera as THREE.OrthographicCamera;
   if (
-    Math.abs(persp.near - near) > near * 1e-3 ||
-    Math.abs(persp.far - far) > far * 1e-3
+    Math.abs(clip.near - near) > near * 1e-3 ||
+    Math.abs(clip.far - far) > far * 1e-3
   ) {
-    persp.near = near;
-    persp.far = far;
-    persp.updateProjectionMatrix();
+    clip.near = near;
+    clip.far = far;
+    clip.updateProjectionMatrix();
     return true;
   }
   return false;
+}
+
+/**
+ * Orthographic zoom that frames a sphere of `radius` like a perspective camera
+ * would at distance `dist`: a perspective view sees a world height of
+ * `2·tan(fov/2)·dist` at the target depth, and an ortho camera with our
+ * pixel-frustum convention (`top−bottom = viewportHeight`) sees `height / zoom`,
+ * so equating the two gives this zoom. Used both to derive an ortho zoom when
+ * toggling from perspective and to zoom-to-fit in ortho.
+ */
+function orthoZoomForWorldHeight(viewportHeightPx: number, worldHeight: number): number {
+  if (worldHeight <= 1e-9 || viewportHeightPx <= 0) return 1;
+  return viewportHeightPx / worldHeight;
+}
+
+/**
+ * Lay an OrthographicCamera's frustum over the canvas in PIXEL units
+ * (`left/right/top/bottom` = ±half the canvas size) so `zoom` reads as
+ * pixels-per-world-unit and `1/zoom` is the world span of one device pixel —
+ * the same quantity the pan/dolly math wants. Re-applied on every resize.
+ */
+export function setOrthoFrustum(
+  cam: THREE.OrthographicCamera,
+  widthPx: number,
+  heightPx: number,
+): void {
+  cam.left = -widthPx / 2;
+  cam.right = widthPx / 2;
+  cam.top = heightPx / 2;
+  cam.bottom = -heightPx / 2;
+  cam.updateProjectionMatrix();
+}
+
+/**
+ * Owns the viewport camera and swaps its PROJECTION between orthographic
+ * (default — parallel, isometric-style, no foreshortening) and perspective
+ * (fov 45) when the `perspective` setting flips, WITHOUT remounting the Canvas
+ * (a WebGPU remount re-compiles every SDF shader). Both cameras are created
+ * once; on a flip we copy the live pose (position / orientation / up) onto the
+ * incoming camera, match its framing to the outgoing one, and register it as
+ * R3F's default via `set({ camera })`. CameraRig keys its OnshapeControls on the
+ * R3F camera identity, so the controls automatically rebind to the new camera.
+ */
+export function ViewportCamera({ perspective }: { perspective: boolean }) {
+  const set = useThree((s) => s.set);
+  const size = useThree((s) => s.size);
+  const camerasRef = useRef<{
+    persp: THREE.PerspectiveCamera;
+    ortho: THREE.OrthographicCamera;
+  } | null>(null);
+
+  if (!camerasRef.current) {
+    const aspect = size.width > 0 && size.height > 0 ? size.width / size.height : 1;
+    const persp = new THREE.PerspectiveCamera(45, aspect, 1, 4000);
+    persp.position.set(350, 280, 350);
+    persp.lookAt(0, 0, 0);
+    const ortho = new THREE.OrthographicCamera(-1, 1, 1, -1, 1, 4000);
+    setOrthoFrustum(ortho, size.width || 1, size.height || 1);
+    // Frame the same default view as the perspective camera: at the default
+    // 350·√3 ≈ 575 mm distance with fov 45, the world height is ~476 mm.
+    const dist = persp.position.length();
+    const worldH = 2 * Math.tan((45 * Math.PI) / 360) * dist;
+    ortho.zoom = orthoZoomForWorldHeight(size.height || 1, worldH);
+    ortho.position.copy(persp.position);
+    ortho.quaternion.copy(persp.quaternion);
+    ortho.up.copy(persp.up);
+    ortho.updateProjectionMatrix();
+    camerasRef.current = { persp, ortho };
+  }
+
+  // Keep BOTH cameras' aspect/frustum current on resize, regardless of which
+  // is active — so a toggle never shows a stretched frame for a frame.
+  useEffect(() => {
+    const cams = camerasRef.current;
+    if (!cams || size.width <= 0 || size.height <= 0) return;
+    cams.persp.aspect = size.width / size.height;
+    cams.persp.updateProjectionMatrix();
+    setOrthoFrustum(cams.ortho, size.width, size.height);
+  }, [size.width, size.height]);
+
+  // Swap the active camera when the projection setting flips. Copy the live
+  // pose off the OUTGOING camera so the view doesn't jump, and match the
+  // incoming camera's framing (ortho zoom ⇄ perspective distance) about the
+  // current pivot so the model keeps the same on-screen size.
+  useEffect(() => {
+    const cams = camerasRef.current;
+    if (!cams) return;
+    const from = perspective ? cams.ortho : cams.persp;
+    const to = perspective ? cams.persp : cams.ortho;
+    to.position.copy(from.position);
+    to.quaternion.copy(from.quaternion);
+    to.up.copy(from.up);
+
+    // Match framing about the scene pivot (or origin) so the toggle is a pure
+    // projection change, not a zoom. `dist` = camera→pivot distance.
+    const b = getSceneBounds();
+    const pivot = new THREE.Vector3(...(b && b.radius > 0 ? b.center : [0, 0, 0]));
+    const dist = Math.max(from.position.distanceTo(pivot), 1e-3);
+    if (perspective) {
+      // ortho→persp: choose distance so the perspective world-height at the
+      // pivot equals the ortho world-height the user currently sees.
+      const orthoWorldH = (size.height || 1) / (cams.ortho.zoom || 1);
+      const halfFov = ((cams.persp.fov || 45) * Math.PI) / 360;
+      const newDist = orthoWorldH / (2 * Math.tan(halfFov));
+      const dir = from.position.clone().sub(pivot);
+      if (dir.lengthSq() > 1e-9) {
+        dir.normalize();
+        to.position.copy(pivot).addScaledVector(dir, Math.max(newDist, 1e-3));
+      }
+      to.updateProjectionMatrix();
+    } else {
+      // persp→ortho: set the zoom so the ortho world-height equals what the
+      // perspective camera frames at the pivot distance.
+      const halfFov = ((cams.persp.fov || 45) * Math.PI) / 360;
+      const perspWorldH = 2 * Math.tan(halfFov) * dist;
+      cams.ortho.zoom = orthoZoomForWorldHeight(size.height || 1, perspWorldH);
+      setOrthoFrustum(cams.ortho, size.width || 1, size.height || 1);
+    }
+    to.updateMatrixWorld();
+    set({ camera: to });
+  }, [perspective, set, size.width, size.height]);
+
+  return null;
 }
 
 export function CameraBridgePublisher() {
@@ -271,22 +403,18 @@ export function ViewCommandConsumer() {
       const center = new THREE.Vector3(...(b && b.radius > 0 ? b.center : [0, 0, 0]));
       const radius = b && b.radius > 0 ? Math.max(b.radius, 1) : 100;
       const dir = new THREE.Vector3(...preset.position).normalize();
-      const dist = fitDistance(camera as THREE.PerspectiveCamera, radius);
       camera.up.set(...preset.up);
-      camera.position.copy(center).addScaledVector(dir, dist);
-      camera.lookAt(center);
+      frameSphere(camera, center, radius, dir);
       target.copy(center);
     } else if (cmd.kind === "fit") {
       const b = getSceneBounds() ?? { center: [0, 0, 0] as [number, number, number], radius: 100 };
       const center = new THREE.Vector3(...b.center);
       const radius = Math.max(b.radius, 1);
-      // Keep the current view direction; only dolly to frame the bounds.
+      // Keep the current view direction; only dolly/zoom to frame the bounds.
       const dir = camera.position.clone().sub(target);
       if (dir.lengthSq() < 1e-9) dir.set(0, 0, 1);
       dir.normalize();
-      const dist = fitDistance(camera as THREE.PerspectiveCamera, radius);
-      camera.position.copy(center).addScaledVector(dir, dist);
-      camera.lookAt(center);
+      frameSphere(camera, center, radius, dir);
       target.copy(center);
     } else if (cmd.kind === "normal") {
       const frame = getSketchPlaneFrame();
@@ -299,9 +427,6 @@ export function ViewCommandConsumer() {
       // view doesn't flip 180° when looking "normal to" the sketch.
       if (camera.position.clone().sub(origin).dot(normal) < 0) normal.negate();
       const b = getSceneBounds();
-      const dist = b && b.radius > 0
-        ? fitDistance(camera as THREE.PerspectiveCamera, b.radius)
-        : Math.max(camera.position.distanceTo(origin), 1);
       // Respect the camera's CURRENT up as much as possible (ticket s8l0):
       // project the live view-up onto the plane ⊥ normal so we only rotate to
       // face the sketch, without rolling to the plane's own Y axis. Fall back
@@ -312,8 +437,15 @@ export function ViewCommandConsumer() {
         .projectOnPlane(normal);
       if (up.lengthSq() < 1e-6) up.set(...frame.yAxis).projectOnPlane(normal);
       camera.up.copy(up.normalize());
-      camera.position.copy(origin).addScaledVector(normal, dist);
-      camera.lookAt(origin);
+      if (b && b.radius > 0) {
+        // Frame the model from straight on (ortho zooms, perspective dollies).
+        frameSphere(camera, origin, Math.max(b.radius, 1), normal);
+      } else {
+        // Empty scene: keep the current standoff and just face the plane.
+        const dist = Math.max(camera.position.distanceTo(origin), 1);
+        camera.position.copy(origin).addScaledVector(normal, dist);
+        camera.lookAt(origin);
+      }
       target.copy(origin);
     }
 
@@ -335,6 +467,43 @@ function fitDistance(camera: THREE.PerspectiveCamera, radius: number): number {
   const hFov = 2 * Math.atan(Math.tan(vFov / 2) * aspect);
   const half = Math.min(vFov, hFov) / 2;
   return (radius / Math.sin(half)) * 1.15;
+}
+
+/**
+ * Place `camera` so it frames a sphere of `radius` centred at `center`, looking
+ * from direction `dir` (a unit vector from centre toward the camera). Works for
+ * both projections: a perspective camera dollies to {@link fitDistance}; an
+ * orthographic camera keeps a fixed standoff (so the scene stays inside its
+ * near/far) and instead sets `zoom` to fit the sphere into the narrower frustum
+ * extent. Leaves `camera.up` untouched — callers set it before calling.
+ */
+function frameSphere(
+  camera: THREE.Camera,
+  center: THREE.Vector3,
+  radius: number,
+  dir: THREE.Vector3,
+): void {
+  const ortho = camera as THREE.OrthographicCamera;
+  if (ortho.isOrthographicCamera) {
+    // Stand off far enough that the whole sphere stays within near/far, then
+    // zoom to fit. Half the smaller frustum span (in world units, before zoom)
+    // is (extent/2); we want radius·1.15 to equal that ÷ zoom.
+    const standoff = Math.max(radius * 4, 1);
+    camera.position.copy(center).addScaledVector(dir, standoff);
+    camera.lookAt(center);
+    const halfExtent = Math.min(
+      (ortho.right - ortho.left) / 2,
+      (ortho.top - ortho.bottom) / 2,
+    );
+    if (halfExtent > 1e-6 && radius > 1e-9) {
+      ortho.zoom = halfExtent / (radius * 1.15);
+    }
+    ortho.updateProjectionMatrix();
+    return;
+  }
+  const dist = fitDistance(camera as THREE.PerspectiveCamera, radius);
+  camera.position.copy(center).addScaledVector(dir, dist);
+  camera.lookAt(center);
 }
 
 const cameraQuatState = { x: 0, y: 0, z: 0, w: 1, listeners: new Set<() => void>() };

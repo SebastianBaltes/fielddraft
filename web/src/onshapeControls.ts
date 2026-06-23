@@ -59,25 +59,37 @@ const _qb = new THREE.Quaternion();
 
 /**
  * Does the bounding sphere (centre `center`, `radius`) sit fully inside the
- * perspective camera's viewport? True only when the sphere is both far enough
- * to fit the narrower field of view (angular size) AND its centre projects
- * inside the frame (so panning the model off to one side also counts as "no
- * longer fits"). The camera's world/projection matrices must be current.
+ * camera's viewport? For a PERSPECTIVE camera the sphere must be far enough to
+ * fit the narrower field of view (angular size); for an ORTHOGRAPHIC camera the
+ * sphere's world diameter must fit the (zoom-scaled) frustum extents. In both
+ * cases the centre must also project inside the frame, so panning the model off
+ * to one side also counts as "no longer fits". The camera's world/projection
+ * matrices must be current.
  */
 export function sphereFitsViewport(
-  camera: THREE.PerspectiveCamera,
+  camera: THREE.Camera,
   center: THREE.Vector3,
   radius: number,
 ): boolean {
   if (radius <= 0) return false;
-  const dist = camera.position.distanceTo(center);
-  const vFov = (camera.fov * Math.PI) / 180;
-  const aspect = camera.aspect || 1;
-  const hFov = 2 * Math.atan(Math.tan(vFov / 2) * aspect);
-  const half = Math.min(vFov, hFov) / 2;
-  // Distance at which the sphere exactly touches the frame edges.
-  const fitDist = radius / Math.sin(half);
-  if (dist < fitDist) return false;
+  const ortho = camera as THREE.OrthographicCamera;
+  if (ortho.isOrthographicCamera) {
+    // Visible world half-extents = half the frustum span divided by zoom.
+    const zoom = ortho.zoom || 1;
+    const halfW = (ortho.right - ortho.left) / 2 / zoom;
+    const halfH = (ortho.top - ortho.bottom) / 2 / zoom;
+    if (radius > Math.min(halfW, halfH)) return false;
+  } else {
+    const persp = camera as THREE.PerspectiveCamera;
+    const dist = persp.position.distanceTo(center);
+    const vFov = (persp.fov * Math.PI) / 180;
+    const aspect = persp.aspect || 1;
+    const hFov = 2 * Math.atan(Math.tan(vFov / 2) * aspect);
+    const half = Math.min(vFov, hFov) / 2;
+    // Distance at which the sphere exactly touches the frame edges.
+    const fitDist = radius / Math.sin(half);
+    if (dist < fitDist) return false;
+  }
   _ndc.copy(center).project(camera);
   if (_ndc.z > 1) return false; // behind the camera / past the far plane
   return Math.abs(_ndc.x) <= 1 && Math.abs(_ndc.y) <= 1;
@@ -191,6 +203,12 @@ export class OnshapeControls extends THREE.Controls {
     return this.object as THREE.PerspectiveCamera;
   }
 
+  /** Whether the active camera is orthographic — pan/dolly differ from the
+   *  perspective path (parallel projection: dolly = zoom, not distance). */
+  private get isOrtho(): boolean {
+    return (this.object as THREE.OrthographicCamera).isOrthographicCamera === true;
+  }
+
   private onContextMenu = (e: Event) => {
     // A right-drag rotate must not pop the browser menu on release. Only
     // swallow it when the right button is actually bound to a camera action.
@@ -282,10 +300,20 @@ export class OnshapeControls extends THREE.Controls {
     const cam = this.cam;
     const h = (this.domElement as HTMLElement | null)?.clientHeight || 1;
     cam.updateMatrixWorld();
-    const dist = cam.position.distanceTo(this.target);
-    const vFov = (cam.fov * Math.PI) / 180;
-    // World units spanned by one device pixel at the target's depth.
-    const perPixel = ((2 * Math.tan(vFov / 2) * dist) / h) * this.panSpeed;
+    // World units spanned by one device pixel. Perspective: scales with the
+    // target depth and the field of view. Orthographic: depth-independent —
+    // with our pixel-frustum convention (`top−bottom = canvasHeightPx`), one
+    // device pixel maps to exactly `1 / zoom` world units.
+    let perPixel: number;
+    if (this.isOrtho) {
+      const ortho = this.object as THREE.OrthographicCamera;
+      const frustumH = (ortho.top - ortho.bottom) / (ortho.zoom || 1);
+      perPixel = (frustumH / h) * this.panSpeed;
+    } else {
+      const dist = cam.position.distanceTo(this.target);
+      const vFov = (cam.fov * Math.PI) / 180;
+      perPixel = ((2 * Math.tan(vFov / 2) * dist) / h) * this.panSpeed;
+    }
     _right.setFromMatrixColumn(cam.matrixWorld, 0).normalize();
     _up.setFromMatrixColumn(cam.matrixWorld, 1).normalize();
     _offset
@@ -303,8 +331,43 @@ export class OnshapeControls extends THREE.Controls {
   private dolly(amount: number, clientX: number, clientY: number): void {
     const cam = this.cam;
     cam.updateMatrixWorld();
+    const factorRaw = Math.pow(0.95, (-amount / 100) * this.zoomSpeed);
+
+    // Orthographic: there is no perspective foreshortening, so a "dolly" must
+    // change the camera's ZOOM, not its distance — moving the camera in/out
+    // leaves an ortho image identical. `factorRaw < 1` means zoom IN (objects
+    // grow), so the zoom scalar is its reciprocal. Cursor-zoom is preserved by
+    // panning camera+target so the world point under the pointer keeps its
+    // pixel: in ortho, scaling zoom by `s` magnifies the cursor point's screen
+    // offset from centre by `s`, so we slide the view by that point's view-plane
+    // offset times `(1 − 1/s)` to cancel it.
+    if (this.isOrtho) {
+      const ortho = this.object as THREE.OrthographicCamera;
+      const s = 1 / factorRaw;
+      ortho.zoom = Math.max(ortho.zoom * s, 1e-4);
+      const rect = (this.domElement as HTMLElement | null)?.getBoundingClientRect();
+      if (rect && rect.width > 0 && rect.height > 0) {
+        // World point under the cursor, on the plane through the target ⊥ view.
+        const ndcX = ((clientX - rect.left) / rect.width) * 2 - 1;
+        const ndcY = -((clientY - rect.top) / rect.height) * 2 + 1;
+        _focus.set(ndcX, ndcY, 0).unproject(cam);
+        // Project that point's offset-from-target onto the camera view plane
+        // (drop the view-direction component — irrelevant under parallel proj).
+        _viewDir.setFromMatrixColumn(cam.matrixWorld, 2).normalize();
+        _offset.copy(_focus).sub(this.target);
+        _offset.addScaledVector(_viewDir, -_offset.dot(_viewDir));
+        _offset.multiplyScalar(1 - 1 / s);
+        cam.position.add(_offset);
+        this.target.add(_offset);
+      }
+      ortho.updateProjectionMatrix();
+      cam.updateMatrixWorld();
+      this.onChange?.();
+      return;
+    }
+
     const dist = cam.position.distanceTo(this.target);
-    let factor = Math.pow(0.95, (-amount / 100) * this.zoomSpeed);
+    let factor = factorRaw;
     // Clamp the factor so the orbit distance stays within [min, max].
     const clamped = Math.min(
       Math.max(dist * factor, this.minDistance),

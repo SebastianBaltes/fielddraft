@@ -49,6 +49,7 @@ function setup() {
     showEdgePoints: false,
     showOctreeCells: false,
     screenSpaceCsg: false,
+    perspective: false,
     controlsPreset: "onshape",
     autoReload: true,
   };
@@ -277,6 +278,29 @@ describe("SettingsMenu", () => {
     t.cleanup();
   });
 
+  it("toggles perspective projection in settings dialog (default off)", () => {
+    const t = setup();
+    openSettingsDialog(t.container);
+
+    const toggle = t.container.querySelector(
+      '[data-testid="setting-perspective-toggle"]',
+    )!;
+    expect(toggle.getAttribute("aria-checked")).toBe("false");
+    expect(toggle.textContent).toBe("Off");
+
+    click(toggle);
+    expect(t.onChange).toHaveBeenCalledWith(
+      expect.objectContaining({ perspective: true }),
+    );
+    expect(localStorage.getItem("fielddraft.perspective")).toBe("true");
+
+    const toggleAfter = t.container.querySelector(
+      '[data-testid="setting-perspective-toggle"]',
+    )!;
+    expect(toggleAfter.textContent).toBe("On");
+    t.cleanup();
+  });
+
   it("switches controls preset in settings dialog", () => {
     const t = setup();
     openSettingsDialog(t.container);
@@ -399,6 +423,7 @@ describe("loadSettings", () => {
       showEdgePoints: false,
       showOctreeCells: false,
       screenSpaceCsg: false,
+      perspective: false,
       controlsPreset: "onshape",
       autoReload: true,
     });
@@ -433,6 +458,7 @@ describe("loadSettings", () => {
       showEdgePoints: false,
       showOctreeCells: false,
       screenSpaceCsg: false,
+      perspective: false,
       controlsPreset: "onshape",
       autoReload: true,
     });

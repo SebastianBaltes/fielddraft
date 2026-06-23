@@ -24,8 +24,10 @@ import {
   positionGeometry,
   storage,
   uniform,
+  select,
   vec3,
   vec4,
+  viewZToOrthographicDepth,
   viewZToPerspectiveDepth,
 } from "three/tsl";
 import { MeshBasicNodeMaterial, StorageBufferAttribute } from "three/webgpu";
@@ -84,6 +86,9 @@ export interface VmPipelineState {
   viewMatU: ReturnType<typeof uniform>;
   nearU: ReturnType<typeof uniform>;
   farU: ReturnType<typeof uniform>;
+  /** 1.0 → orthographic scene camera (default), 0.0 → perspective. Selects
+   *  parallel vs converging primary rays AND the depth-write formula. */
+  isOrthoU: ReturnType<typeof uniform>;
 }
 
 // ── Init ────────────────────────────────────────────────────────────
@@ -111,6 +116,7 @@ export function initVmPipeline(): VmPipelineState {
     viewMatU: uniform(new THREE.Matrix4()),
     nearU: uniform(1),
     farU: uniform(4000),
+    isOrthoU: uniform(1),
   };
 }
 
@@ -238,13 +244,23 @@ function createVmMaterial(state: VmPipelineState): MeshBasicNodeMaterial {
 
   const material = new MeshBasicNodeMaterial();
   material.outputNode = Fn(() => {
-    // Reconstruct world-space ray from fullscreen UV
+    // Reconstruct the world-space primary ray from the fullscreen UV. The world
+    // point on the near plane under this pixel is the same for both
+    // projections: invView · (invProj · clip), after the perspective divide.
     const ndc = positionGeometry.xy;
     const clipPos = vec4(ndc, float(-1), float(1));
-    const eyeDir4 = state.invProjU.mul(clipPos);
-    const eyeDir = eyeDir4.xyz.div(eyeDir4.w);
-    const rd = normalize(state.invViewU.mul(vec4(eyeDir, 0)).xyz);
-    const ro = state.camPosU.toVar();
+    const eyePos4 = state.invProjU.mul(clipPos);
+    const eyePos = eyePos4.xyz.div(eyePos4.w);
+    const nearWorld = state.invViewU.mul(vec4(eyePos, 1)).xyz;
+    // PERSPECTIVE: all rays diverge from the camera position, so the direction
+    // is camera→near-point and the origin is the camera. ORTHOGRAPHIC: rays are
+    // PARALLEL — one shared world direction (the camera's −Z), with a distinct
+    // per-pixel origin sitting on the near plane.
+    const camFwd = normalize(state.invViewU.mul(vec4(0, 0, -1, 0)).xyz);
+    const perspDir = normalize(nearWorld.sub(state.camPosU));
+    const isOrtho = state.isOrthoU.greaterThan(float(0.5));
+    const rd = select(isOrtho, camFwd, perspDir).toVar();
+    const ro = select(isOrtho, nearWorld, state.camPosU).toVar();
 
     const bodyCount = int(state.bodyCountU);
     const hit = float(0).toVar();
@@ -319,8 +335,16 @@ function createVmMaterial(state: VmPipelineState): MeshBasicNodeMaterial {
     // 0.1% depth bias behind the true surface so on-surface B-Rep edges
     // win the depth test instead of z-fighting the face (ticket b9xz).
     const viewZHit = state.viewMatU.mul(vec4(hitPos, 1.0)).z.mul(1.001);
+    // Linear (ortho) vs reciprocal (perspective) depth encoding, matching the
+    // active scene camera so the B-Rep edge overlay occludes correctly.
     depth
-      .assign(viewZToPerspectiveDepth(viewZHit, state.nearU, state.farU))
+      .assign(
+        select(
+          state.isOrthoU.greaterThan(float(0.5)),
+          viewZToOrthographicDepth(viewZHit, state.nearU, state.farU),
+          viewZToPerspectiveDepth(viewZHit, state.nearU, state.farU),
+        ),
+      )
       .toStack();
 
     // Shade the hit (normal → PBR → wireframe) via the shared SDF pipeline.
@@ -378,12 +402,19 @@ function updateCameraUniforms(
   const cam = camera as THREE.PerspectiveCamera;
   if (cam.parent) cam.updateMatrixWorld();
   state.camPosU.value.setFromMatrixPosition(cam.matrixWorld);
+  // projectionMatrixInverse is valid for both projections — it reconstructs the
+  // near-plane world point either way; the shader picks parallel vs converging
+  // rays from isOrthoU.
   state.invProjU.value.copy(cam.projectionMatrixInverse);
   // invView is the camera's world matrix (the inverse of the view matrix).
   state.invViewU.value.copy(cam.matrixWorld);
   state.viewMatU.value.copy(cam.matrixWorldInverse);
   state.nearU.value = cam.near;
   state.farU.value = cam.far;
+  state.isOrthoU.value = (cam as unknown as THREE.OrthographicCamera)
+    .isOrthographicCamera
+    ? 1
+    : 0;
 }
 
 // ── GPU probe (dev / parity testing) ────────────────────────────────

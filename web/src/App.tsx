@@ -344,7 +344,7 @@ export function App() {
           </StrictMode>
         ) : null}
         <main className="main">
-          <Viewport renderMode={settings.renderMode} brepEdgeMode={settings.brepEdgeMode} frameLoop={settings.frameLoop} showEdgePoints={settings.showEdgePoints} showOctreeCells={settings.showOctreeCells} screenSpaceCsg={settings.screenSpaceCsg} controlsPreset={settings.controlsPreset} />
+          <Viewport renderMode={settings.renderMode} brepEdgeMode={settings.brepEdgeMode} frameLoop={settings.frameLoop} showEdgePoints={settings.showEdgePoints} showOctreeCells={settings.showOctreeCells} screenSpaceCsg={settings.screenSpaceCsg} perspective={settings.perspective} controlsPreset={settings.controlsPreset} />
           {mobileNavOpen ? (
             <div
               className="fd-nav-scrim"

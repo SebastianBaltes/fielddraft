@@ -51,7 +51,9 @@ import {
   vec2,
   vec3,
   vec4,
+  select,
   viewZToPerspectiveDepth,
+  viewZToOrthographicDepth,
   modelWorldMatrix,
   positionGeometry,
 } from "three/tsl";
@@ -309,6 +311,9 @@ export interface DeferredPipelineState {
   bgColorU: ReturnType<typeof uniform>;
   nearU: ReturnType<typeof uniform>;
   farU: ReturnType<typeof uniform>;
+  /** 1.0 when the scene camera is orthographic, 0.0 perspective — selects the
+   *  linear vs reciprocal depth formula when writing canvas depth. */
+  isOrthoU: ReturnType<typeof uniform>;
   bodyOpaqueMeshes: Map<number, THREE.Mesh[]>;
   bodyTransparentMeshes: Map<number, THREE.Mesh[]>;
   bodyBackMeshes: Map<number, THREE.Mesh[]>;
@@ -411,6 +416,7 @@ function createShadeMaterial(
   nearU: ReturnType<typeof uniform>,
   farU: ReturnType<typeof uniform>,
   bgColorU: ReturnType<typeof uniform>,
+  isOrthoU: ReturnType<typeof uniform>,
   volumeTextures: THREE.Data3DTexture[] = [],
 ): MeshBasicNodeMaterial {
   const sdfEvalRaw = buildVmSdfEvalFn(opcodeBuf, {
@@ -631,7 +637,18 @@ function createShadeMaterial(
       // bias they z-fight the face and render ragged/washed-out in
       // "visible" mode (ticket b9xz).
       const viewZ = viewMatU.mul(vec4(shadePos, 1.0)).z.mul(1.001);
-      depth.assign(viewZToPerspectiveDepth(viewZ, nearU, farU)).toStack();
+      // Perspective depth is reciprocal in view-Z; orthographic depth is
+      // linear. Pick the matching encoder so the B-Rep edge overlay's depth
+      // test stays correct under both projections (default = orthographic).
+      depth
+        .assign(
+          select(
+            isOrthoU.greaterThan(float(0.5)),
+            viewZToOrthographicDepth(viewZ, nearU, farU),
+            viewZToPerspectiveDepth(viewZ, nearU, farU),
+          ),
+        )
+        .toStack();
     }).Else(() => {
       depth.assign(float(1.0)).toStack();
     });
@@ -695,6 +712,9 @@ export function initDeferredPipeline(
   const widthU = uniform(width);
   const nearU = uniform(1);
   const farU = uniform(4000);
+  // 1.0 → orthographic scene camera (the default), 0.0 → perspective. Set per
+  // frame in renderDeferredFrame; selects the depth-write formula.
+  const isOrthoU = uniform(1);
   // Viewport background colour for SDF miss pixels (ticket a2ps); set each frame
   // from the renderer's clear colour (ClearColorSync). White by default.
   const bgColorU = uniform(new THREE.Color(1, 1, 1));
@@ -724,6 +744,7 @@ export function initDeferredPipeline(
     nearU,
     farU,
     bgColorU,
+    isOrthoU,
   );
 
   const shadeMesh = new THREE.Mesh(
@@ -760,6 +781,7 @@ export function initDeferredPipeline(
     nearU,
     farU,
     bgColorU,
+    isOrthoU,
     bodyOpaqueMeshes: new Map(),
     bodyTransparentMeshes: new Map(),
     bodyBackMeshes: new Map(),
@@ -1172,9 +1194,12 @@ export function renderDeferredFrame(
   camera.getWorldPosition(_camWorldPos);
   state.camPosUniform.value.copy(_camWorldPos);
   state.viewMatU.value.copy(camera.matrixWorldInverse);
-  const persp = camera as THREE.PerspectiveCamera;
-  state.nearU.value = persp.near;
-  state.farU.value = persp.far;
+  // Both PerspectiveCamera and OrthographicCamera expose near/far; the depth
+  // formula differs (reciprocal vs linear) and is selected by isOrthoU.
+  const clip = camera as THREE.OrthographicCamera;
+  state.nearU.value = clip.near;
+  state.farU.value = clip.far;
+  state.isOrthoU.value = clip.isOrthographicCamera ? 1 : 0;
 
   renderer.getClearColor(_savedClearColor);
   const savedClearAlpha = renderer.getClearAlpha();

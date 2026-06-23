@@ -24,6 +24,7 @@ const LS_LIVE_EXTRUDE_DRAG = "fielddraft.liveExtrudeDrag";
 const LS_SHOW_EDGE_POINTS = "fielddraft.showEdgePoints";
 const LS_SHOW_OCTREE_CELLS = "fielddraft.showOctreeCells";
 const LS_SCREEN_SPACE_CSG = "fielddraft.screenSpaceCsg";
+const LS_PERSPECTIVE = "fielddraft.perspective";
 const LS_CONTROLS_PRESET = "fielddraft.controlsPreset";
 /** Shared with main.tsx's HMR guard — kept here so all localStorage keys live
  *  in one place. */
@@ -243,6 +244,11 @@ export interface SettingsState {
    * parametrischen Hüllmeshes. Visuell unverifiziertes Experiment — der normale
    * WebGL-/WebGPU-Pfad bleibt bei AUS unverändert. */
   screenSpaceCsg: boolean;
+  /** Camera projection. Default OFF → an orthographic (isometric-style)
+   *  viewport: parallel projection, no foreshortening — the CAD default, where
+   *  equal lengths read as equal at every depth. ON → a perspective camera
+   *  (fov 45) for a more photographic look. */
+  perspective: boolean;
   /** Mouse/keyboard control scheme (docs/UX-PRESETS.md) — which CAD
    * package's habits the camera, selection and view keys follow. */
   controlsPreset: ControlsPresetId;
@@ -311,6 +317,7 @@ const BOOT_SETTING_KEYS: (keyof SettingsState)[] = [
   "liveExtrudeDrag",
   "showEdgePoints",
   "screenSpaceCsg",
+  "perspective",
   "controlsPreset",
   "autoReload",
 ];
@@ -343,6 +350,7 @@ export function loadSettings(): SettingsState {
   let showEdgePoints = false;
   const showOctreeCells = false;
   let screenSpaceCsg = false;
+  let perspective = false;
   let controlsPreset: ControlsPresetId = DEFAULT_CONTROLS_PRESET;
   let autoReload = true;
   try {
@@ -369,6 +377,8 @@ export function loadSettings(): SettingsState {
     showEdgePoints = localStorage.getItem(LS_SHOW_EDGE_POINTS) === "true";
     // Opt-in experiment, default off — only "true" turns it on.
     screenSpaceCsg = localStorage.getItem(LS_SCREEN_SPACE_CSG) === "true";
+    // Default off → orthographic; only an explicit "true" enables perspective.
+    perspective = localStorage.getItem(LS_PERSPECTIVE) === "true";
     // showOctreeCells is deliberately NOT read back — drop any stale key so a
     // tab frozen by the overlay recovers on reload.
     localStorage.removeItem(LS_SHOW_OCTREE_CELLS);
@@ -378,7 +388,7 @@ export function loadSettings(): SettingsState {
   } catch {
     // localStorage may be unavailable
   }
-  const loaded: SettingsState = { compact, units, theme, renderMode, meshAlgorithm, brepEdgeMode, frameLoop, parametricWeave, dragBrepRecompute, liveExtrudeDrag, showEdgePoints, showOctreeCells, screenSpaceCsg, controlsPreset, autoReload };
+  const loaded: SettingsState = { compact, units, theme, renderMode, meshAlgorithm, brepEdgeMode, frameLoop, parametricWeave, dragBrepRecompute, liveExtrudeDrag, showEdgePoints, showOctreeCells, screenSpaceCsg, perspective, controlsPreset, autoReload };
   if (bootOverride) {
     const merged = { ...loaded, ...bootOverride };
     bootOverride = null; // one-shot: only the first read (React mount) honors it
@@ -1005,6 +1015,12 @@ function SettingsDialog({
     onSettingsChange(next);
   };
 
+  const togglePerspective = () => {
+    const next = { ...settings, perspective: !settings.perspective };
+    saveSetting(LS_PERSPECTIVE, String(next.perspective));
+    onSettingsChange(next);
+  };
+
   const toggleAutoReload = () => {
     const next = { ...settings, autoReload: !settings.autoReload };
     saveSetting(LS_AUTO_RELOAD, String(next.autoReload));
@@ -1127,6 +1143,25 @@ function SettingsDialog({
                     <option key={o.key} value={o.key}>{o.label}</option>
                   ))}
                 </select>
+              </div>
+
+              <div className="setting-row" data-testid="setting-perspective">
+                <span
+                  className="setting-label"
+                  title="Perspective projection (fov 45) instead of the default orthographic view. Off (default) keeps an isometric-style parallel projection where equal lengths read as equal at every depth — the CAD default."
+                >
+                  Perspective projection
+                </span>
+                <button
+                  type="button"
+                  className={"toggle" + (settings.perspective ? " is-on" : "")}
+                  role="switch"
+                  aria-checked={settings.perspective}
+                  data-testid="setting-perspective-toggle"
+                  onClick={togglePerspective}
+                >
+                  {settings.perspective ? "On" : "Off"}
+                </button>
               </div>
 
               <div className="setting-row" data-testid="setting-render-mode">
