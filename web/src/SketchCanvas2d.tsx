@@ -132,11 +132,22 @@ const LABEL_OFFSET_PX = 18;
 /** Click radius (CSS px) around the dimension readout that opens the
  *  exact-length editor on the most recently placed line. */
 const DIM_LABEL_HIT_PX = 24;
-/** Snap radius in sketch-plane millimetres. Generous enough to
- *  catch ordinary cursor jitter but tight enough that the user
- *  can still place free points near a committed entity without
- *  unwanted magnetism. Can be tuned later. */
-const SNAP_RADIUS_MM = 10;
+/** Snap radius in CSS pixels. Divided by the camera zoom (px-per-mm) to
+ *  get the sketch-plane tolerance, so snapping feels identical at every
+ *  zoom level — the way Onshape works. A fixed-mm radius (the old
+ *  `SNAP_RADIUS_MM = 10`) collapsed to ~3 px when zoomed out, which made
+ *  closing a polygon by snapping onto its start point practically
+ *  impossible (ticket zuw9). Generous enough to catch ordinary cursor
+ *  jitter, tight enough to still place free points near an entity. */
+export const SNAP_RADIUS_PX = 12;
+
+/** Resolve the snap radius from CSS pixels to sketch-plane millimetres
+ *  for the current camera zoom (mirrors the `SELECT_PICK_PX` pattern).
+ *  `cam.zoom` is px-per-mm, so the on-screen snap radius stays a constant
+ *  `SNAP_RADIUS_PX` at every zoom — exported for the regression test. */
+export function snapRadiusMmFor(cam: { zoom: number }): number {
+  return SNAP_RADIUS_PX / Math.max(cam.zoom, 1e-6);
+}
 /** Snap indicator radius in CSS pixels, drawn as an open ring
  *  around the snap anchor. */
 const SNAP_RING_PX = 8;
@@ -787,6 +798,7 @@ function resolveSnap(
   cursor: [number, number],
   session: SketchSessionState,
   dragStart: [number, number] | null,
+  snapRadiusMm: number,
   suppress = false,
   projectedEdges: ProjectedEdge[] = [],
 ): SnapResolution {
@@ -806,7 +818,7 @@ function resolveSnap(
     state,
     cursor: { x: cursor[0], y: cursor[1] },
     drawingLineFrom: dragStart ? DRAFT_DRAG_START_ID : undefined,
-    snapDistanceMm: SNAP_RADIUS_MM,
+    snapDistanceMm: snapRadiusMm,
   });
 
   // Tickets pgyf / ymbp: snap onto an existing SKETCH LINE segment (project the
@@ -817,7 +829,7 @@ function resolveSnap(
   // line. The in-flight draft line isn't a committed entity, so we never snap
   // onto the line being drawn.
   const lineSnap = ((): SnapResolution | null => {
-    let bestD = SNAP_RADIUS_MM;
+    let bestD = snapRadiusMm;
     let bestPt: [number, number] | null = null;
     for (const e of state.entities) {
       if (e.kind !== "line") continue;
@@ -851,7 +863,7 @@ function resolveSnap(
   // centre is itself a coincident target so the commit binds to it. The draft
   // curve isn't a committed entity, so we never snap onto what's being drawn.
   const circleSnap = ((): SnapResolution | null => {
-    const hit = snapToCircles(snapCirclesOf(state), cursor, SNAP_RADIUS_MM);
+    const hit = snapToCircles(snapCirclesOf(state), cursor, snapRadiusMm);
     if (!hit) return null;
     // A centre snap is a coincident-to-point relationship; rim / quadrant land
     // ON the curve, so the commit emits point-on-object (classifyLineAnchor).
@@ -879,7 +891,7 @@ function resolveSnap(
   // Edge snap is lower priority than entity snap (coincident/H/V) but
   // higher priority than no snap at all.
   if (cands.length === 0 && projectedEdges.length > 0) {
-    let bestDist = SNAP_RADIUS_MM;
+    let bestDist = snapRadiusMm;
     let bestPt: [number, number] | null = null;
     for (const edge of projectedEdges) {
       // Snap to edge endpoints (vertices)
@@ -1898,6 +1910,7 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
       [u, v],
       session,
       null,
+      snapRadiusMmFor(cam),
       e.shiftKey,
       projectedEdgesRef.current,
     );
@@ -2483,6 +2496,7 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
         [u, v],
         session,
         dragRef.current.start,
+        snapRadiusMmFor(cam),
         e.shiftKey,
         projectedEdgesRef.current,
       );
@@ -2495,6 +2509,7 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
         [u, v],
         session,
         dragRef.current.start,
+        snapRadiusMmFor(cam),
         e.shiftKey,
         projectedEdgesRef.current,
       );
@@ -2575,6 +2590,7 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
         [u, v],
         session,
         null,
+        snapRadiusMmFor(cam),
         e.shiftKey,
         projectedEdgesRef.current,
       );
@@ -2588,6 +2604,7 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
         [u, v],
         session,
         null,
+        snapRadiusMmFor(cam),
         e.shiftKey,
         projectedEdgesRef.current,
       );
@@ -3066,6 +3083,7 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
       [u, v],
       session,
       dragRef.current.start,
+      snapRadiusMmFor(cam),
       e.shiftKey,
       projectedEdgesRef.current,
     );
