@@ -251,7 +251,8 @@ export function classifyIntersectionPixel(
  * Render-Targets fangen pro Pixel die lineare Sichttiefe `viewZ` UND die
  * View-Space-Normale der relevanten Flächen, ein Fullscreen-Shader klassifiziert
  * jeden Pixel exakt wie `classifySubtractionPixel`, beleuchtet die sichtbare
- * Fläche (Lambert, View-Space-Licht) und schreibt Farbe + `gl_FragDepth`, sodass
+ * Fläche (Lambert mit demselben WELT-fixen Szenen-Lichtrig wie der übrige
+ * WebGL-Pfad, für Material-Parität) und schreibt Farbe + `gl_FragDepth`, sodass
  * das Ergebnis tiefenkorrekt mit dem übrigen Scene-Render verschmilzt.
  *
  * VISUELL UNVERIFIZIERT (kein Browser/GPU im Build). Headless geprüft ist nur die
@@ -320,11 +321,15 @@ export function viewZToNdcDepth(viewZ: number, m10: number, m14: number): number
  */
 const GBUFFER_VS = /* glsl */ `
   out float vViewZ;
-  out vec3 vViewNormal;
+  out vec3 vWorldNormal;
   void main() {
     vec4 viewPos = modelViewMatrix * vec4(position, 1.0);
     vViewZ = -viewPos.z; // Kamera blickt -Z → vor der Kamera = positiv
-    vViewNormal = normalize(normalMatrix * normal);
+    // WELT-Raum-Normale (für Parität mit dem Szenen-Lichtrig, das welt-fixe
+    // Lichter nutzt — so driftet die Schnittflächen-Beleuchtung beim Orbiten
+    // NICHT gegenüber den übrigen Körperflächen). mat3(modelMatrix) genügt für
+    // starre/uniform-skalierte Leaf-Transforms (CAD-Primitive).
+    vWorldNormal = normalize(mat3(modelMatrix) * normal);
     gl_Position = projectionMatrix * viewPos;
   }
 `;
@@ -339,10 +344,10 @@ const GBUFFER_VS = /* glsl */ `
 const GBUFFER_FS = /* glsl */ `
   precision highp float;
   in float vViewZ;
-  in vec3 vViewNormal;
+  in vec3 vWorldNormal;
   out vec4 fragColor;
   void main() {
-    fragColor = vec4(vViewZ, vViewNormal);
+    fragColor = vec4(vViewZ, vWorldNormal);
   }
 `;
 
@@ -371,14 +376,19 @@ const COMPOSITE_FS = /* glsl */ `
   out vec4 fragColor;
 
   const float CSG_EPS = 1e-5;
-  const float AMBIENT = 0.35;
-  // Feste View-Space-Lichtrichtung. Kamera blickt -Z, also Licht aus +Z (zur
-  // Kamera) leicht von oben/rechts — entspricht grob dem WebGL-Headlight-Look.
-  const vec3 L = normalize(vec3(0.3, 0.5, 1.0));
+  // Material-/Shading-Parität zum übrigen WebGL-Pfad (WebGLBodies/MeshPreview):
+  // dasselbe WELT-fixe Lichtrig wie die Szene — ambientLight 0.5 + zwei
+  // DirectionalLights [200,400,300]·0.8 und [-100,200,-200]·0.3. Lambert genügt
+  // (matte MeshStandardMaterial-Körper). Diffus-Summe auf [0,1] geklemmt, damit
+  // die Schnittfläche nicht über die Körperflächen hinaus überstrahlt.
+  const float AMBIENT = 0.5;
+  const vec3 L1 = normalize(vec3(200.0, 400.0, 300.0));
+  const vec3 L2 = normalize(vec3(-100.0, 200.0, -200.0));
 
   vec3 shade(vec3 color, vec3 n) {
-    float diff = max(0.0, dot(normalize(n), L));
-    return color * (AMBIENT + (1.0 - AMBIENT) * diff);
+    vec3 N = normalize(n);
+    float diff = 0.8 * max(0.0, dot(N, L1)) + 0.3 * max(0.0, dot(N, L2));
+    return color * (AMBIENT + (1.0 - AMBIENT) * clamp(diff, 0.0, 1.0));
   }
 
   void main() {
