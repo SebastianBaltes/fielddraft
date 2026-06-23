@@ -24,6 +24,7 @@ import {
   elementQueryString,
   type PickedElement,
 } from "./elementQuery";
+import { resolveFaceWorldGeometry } from "./faceGeometry";
 
 /** German label for each element kind. */
 const KIND_LABEL: Record<PickedElement["kind"], string> = {
@@ -41,23 +42,6 @@ const SURFACE_LABEL: Record<BRepFace["surfaceKind"], string> = {
   torus: "Torus",
   tessellated: "Tesselliert",
 };
-
-/** Rotate a body-local direction by a placement's quaternion (no translation,
- *  no scale) to get its world-space orientation. */
-function rotateByPlacement(
-  d: [number, number, number],
-  pl: Placement,
-): [number, number, number] {
-  const [qx, qy, qz, qw] = pl.rotation;
-  const tx = 2 * (qy * d[2] - qz * d[1]);
-  const ty = 2 * (qz * d[0] - qx * d[2]);
-  const tz = 2 * (qx * d[1] - qy * d[0]);
-  return [
-    d[0] + qw * tx + qy * tz - qz * ty,
-    d[1] + qw * ty + qz * tx - qx * tz,
-    d[2] + qw * tz + qx * ty - qy * tx,
-  ];
-}
 
 function fmt(n: number): string {
   return n.toFixed(2);
@@ -82,25 +66,14 @@ function resolveElement(store: KernelStore, el: PickedElement): Resolved {
   const count = k.bodyCount();
 
   if (el.kind === "face") {
-    for (let i = 0; i < count; i++) {
-      let faces: BRepFace[];
-      let placement: Placement;
-      try {
-        faces = k.bodyBrepFaces(i);
-        placement = k.bodyPlacement(i);
-      } catch {
-        continue;
-      }
-      const face = faces.find((f) => f.idHash === el.idHash);
-      if (!face) continue;
-      return {
-        kind: "face",
-        surface: SURFACE_LABEL[face.surfaceKind] ?? face.surfaceKind,
-        centroid: localToWorld(face.centroidLocal, placement),
-        normal: rotateByPlacement(face.normalLocal, placement),
-      };
-    }
-    return null;
+    const geom = resolveFaceWorldGeometry(k, el.idHash);
+    if (!geom) return null;
+    return {
+      kind: "face",
+      surface: SURFACE_LABEL[geom.surfaceKind] ?? geom.surfaceKind,
+      centroid: geom.centroid,
+      normal: geom.normal,
+    };
   }
 
   if (el.kind === "edge") {

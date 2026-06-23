@@ -419,34 +419,15 @@ export function ViewCommandConsumer() {
     } else if (cmd.kind === "normal") {
       const frame = getSketchPlaneFrame();
       if (!frame) return;
-      const origin = new THREE.Vector3(...frame.origin);
-      let normal = new THREE.Vector3(...frame.normal);
-      if (normal.lengthSq() < 1e-9) return;
-      normal.normalize();
-      // Stay on whichever side of the plane the camera is already on so the
-      // view doesn't flip 180° when looking "normal to" the sketch.
-      if (camera.position.clone().sub(origin).dot(normal) < 0) normal.negate();
-      const b = getSceneBounds();
-      // Respect the camera's CURRENT up as much as possible (ticket s8l0):
-      // project the live view-up onto the plane ⊥ normal so we only rotate to
-      // face the sketch, without rolling to the plane's own Y axis. Fall back
-      // to the plane yAxis only when the current up is parallel to the normal
-      // (degenerate projection — nothing sensible to preserve).
-      const up = new THREE.Vector3(0, 1, 0)
-        .applyQuaternion(camera.quaternion)
-        .projectOnPlane(normal);
-      if (up.lengthSq() < 1e-6) up.set(...frame.yAxis).projectOnPlane(normal);
-      camera.up.copy(up.normalize());
-      if (b && b.radius > 0) {
-        // Frame the model from straight on (ortho zooms, perspective dollies).
-        frameSphere(camera, origin, Math.max(b.radius, 1), normal);
-      } else {
-        // Empty scene: keep the current standoff and just face the plane.
-        const dist = Math.max(camera.position.distanceTo(origin), 1);
-        camera.position.copy(origin).addScaledVector(normal, dist);
-        camera.lookAt(origin);
-      }
-      target.copy(origin);
+      if (!orientNormalTo(camera, frame.origin, frame.normal, frame.yAxis)) return;
+      target.set(...frame.origin);
+    } else if (cmd.kind === "normalToFace") {
+      // Face analogue of "normal" (ticket z0vk): same orientation + fit math,
+      // driven by the selected planar face's world normal/centroid instead of
+      // the sketch plane frame. No in-plane yAxis to fall back to, so the only
+      // fallback up is world Y (handled inside orientNormalTo).
+      if (!orientNormalTo(camera, cmd.centroid, cmd.normal)) return;
+      target.set(...cmd.centroid);
     }
 
     camera.updateProjectionMatrix();
@@ -456,6 +437,51 @@ export function ViewCommandConsumer() {
     invalidate();
   });
   return null;
+}
+
+/**
+ * Orient `camera` to look straight down `rawNormal` at `origin`, then frame the
+ * scene's bounding sphere from straight on (ortho zooms, perspective dollies).
+ * Shared by the sketch-plane "normal" and face "normalToFace" view commands so
+ * both follow identical camera math (ticket z0vk).
+ *
+ * - Stays on whichever side of the plane the camera is already on, so the view
+ *   never flips 180°.
+ * - Preserves the camera's current up as much as possible by projecting it onto
+ *   the plane ⊥ normal (ticket s8l0); falls back to `fallbackUp` (the sketch
+ *   plane's yAxis) and then world Y when the current up is parallel to normal.
+ * - Empty scene: keeps the current standoff and just faces the plane.
+ *
+ * `origin`, `rawNormal`, `fallbackUp` are world-space tuples. Returns false
+ * (leaving the camera untouched) when `rawNormal` is degenerate.
+ */
+export function orientNormalTo(
+  camera: THREE.Camera,
+  origin: [number, number, number],
+  rawNormal: [number, number, number],
+  fallbackUp: [number, number, number] = [0, 1, 0],
+): boolean {
+  const o = new THREE.Vector3(...origin);
+  const normal = new THREE.Vector3(...rawNormal);
+  if (normal.lengthSq() < 1e-9) return false;
+  normal.normalize();
+  if (camera.position.clone().sub(o).dot(normal) < 0) normal.negate();
+  const up = new THREE.Vector3(0, 1, 0)
+    .applyQuaternion(camera.quaternion)
+    .projectOnPlane(normal);
+  if (up.lengthSq() < 1e-6) up.set(...fallbackUp).projectOnPlane(normal);
+  if (up.lengthSq() < 1e-6) up.set(0, 1, 0).projectOnPlane(normal);
+  if (up.lengthSq() < 1e-6) up.set(1, 0, 0).projectOnPlane(normal);
+  camera.up.copy(up.normalize());
+  const b = getSceneBounds();
+  if (b && b.radius > 0) {
+    frameSphere(camera, o, Math.max(b.radius, 1), normal);
+  } else {
+    const dist = Math.max(camera.position.distanceTo(o), 1);
+    camera.position.copy(o).addScaledVector(normal, dist);
+    camera.lookAt(o);
+  }
+  return true;
 }
 
 /** Distance at which a perspective camera frames a sphere of `radius`,

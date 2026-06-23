@@ -9,11 +9,17 @@ export type ViewPreset = "front" | "back" | "top" | "bottom" | "right" | "left" 
 
 /** A camera move request. `preset` snaps to a standard view; `fit` frames
  *  the whole scene along the current view direction; `normal` looks straight
- *  at the active sketch plane. */
+ *  at the active sketch plane; `normalToFace` looks straight at a selected
+ *  planar face given its world-space normal + centroid. */
 export type ViewCommand =
   | { kind: "preset"; preset: ViewPreset }
   | { kind: "fit" }
-  | { kind: "normal" };
+  | { kind: "normal" }
+  | {
+      kind: "normalToFace";
+      normal: [number, number, number];
+      centroid: [number, number, number];
+    };
 
 const state: { pending: ViewCommand | null; invalidate: (() => void) | null } = {
   pending: null,
@@ -45,6 +51,16 @@ export function requestViewFit(): void {
 /** Orient the camera to look straight down the active sketch plane's normal. */
 export function requestViewNormal(): void {
   request({ kind: "normal" });
+}
+
+/** Orient the camera to look straight down a selected planar face's normal,
+ *  framing the scene from straight on — the face analogue of
+ *  {@link requestViewNormal} (ticket z0vk). `normal`/`centroid` are world space. */
+export function requestViewNormalToFace(
+  normal: [number, number, number],
+  centroid: [number, number, number],
+): void {
+  request({ kind: "normalToFace", normal, centroid });
 }
 
 export function peekViewCommand(): ViewCommand | null {

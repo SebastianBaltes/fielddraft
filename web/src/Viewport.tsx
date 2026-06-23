@@ -40,7 +40,12 @@ import { ExtrudeDepthGizmo } from "./ExtrudeGizmo";
 import { SweepPathGizmo } from "./SweepGizmo";
 import { ToolHint } from "./ToolHint";
 import { ContextMenu, type ContextMenuItem } from "./ContextMenu";
-import { requestViewFit, requestViewNormal } from "./viewCommands";
+import {
+  requestViewFit,
+  requestViewNormal,
+  requestViewNormalToFace,
+} from "./viewCommands";
+import { resolveFaceWorldGeometry } from "./faceGeometry";
 import {
   SketchOverlay3D,
   SketchSession3D,
@@ -862,6 +867,20 @@ export function Viewport({
     e.preventDefault();
   };
   const inSketch = state?.sketchSession.active ?? false;
+  // "View Normal to Face" (ticket z0vk): only for a single, PLANAR selected
+  // face — a curved face has no single normal to look down. Resolve the face's
+  // world geometry up front so the menu both gates on planarity and captures
+  // the normal/centroid to drive the same camera command sketches use.
+  const selectedFaces = state?.selectedElements ?? [];
+  const singleFace =
+    !inSketch && selectedFaces.length === 1 && selectedFaces[0].kind === "face"
+      ? selectedFaces[0]
+      : null;
+  const faceGeom =
+    singleFace && store
+      ? resolveFaceWorldGeometry(store.kernel, singleFace.idHash)
+      : null;
+  const planarFace = faceGeom?.surfaceKind === "plane" ? faceGeom : null;
   const contextMenuItems: ContextMenuItem[] = [
     ...(inSketch
       ? [
@@ -889,6 +908,16 @@ export function Viewport({
             label: "View Normal to Sketch plane",
             testId: "ctx-view-normal",
             onSelect: () => requestViewNormal(),
+          },
+        ]
+      : []),
+    ...(planarFace
+      ? [
+          {
+            label: "View Normal to Face",
+            testId: "ctx-view-normal-face",
+            onSelect: () =>
+              requestViewNormalToFace(planarFace.normal, planarFace.centroid),
           },
         ]
       : []),
