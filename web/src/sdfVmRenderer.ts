@@ -263,61 +263,73 @@ function createVmMaterial(state: VmPipelineState): MeshBasicNodeMaterial {
     const ro = select(isOrtho, nearWorld, state.camPosU).toVar();
 
     const bodyCount = int(state.bodyCountU);
+    const t = float(0).toVar();
     const hit = float(0).toVar();
     const hitPos = vec3(0).toVar();
     const hitBody = int(0).toVar();
-    // Distance along the ray to the nearest body surface found so far. The
-    // winner per pixel is the body whose own surface is hit FIRST — i.e. the
-    // body that occludes via the hardware depth buffer, exactly as two
-    // separate opaque solids should.
-    const bestT = float(1e30).toVar();
 
-    // Each body is sphere-traced INDEPENDENTLY against its own SDF; we keep the
-    // nearest hit across bodies.  Deliberately NOT a `min()` over all bodies'
-    // SDFs in a single march — that is a boolean UNION and would fuse two
-    // separate bodies that merely overlap in space into one surface (tickets
-    // deeg/9ljc). Separate bodies must occlude, never merge; only an EXPLICIT
-    // boolean (encoded inside a single body's opcode stream) fuses geometry.
-    Loop(int(MAX_BODIES), ({ i: bodyIdx }) => {
-      If(bodyIdx.lessThan(bodyCount), () => {
-        const offLen = state.offsetBuf.element(bodyIdx.mul(2).add(1));
-        If(int(offLen).greaterThan(int(0)), () => {
-          const baseOff = int(state.offsetBuf.element(bodyIdx.mul(2)));
-          const volBase = int(state.volumeBaseBuf.element(bodyIdx));
-          const relax = state.marchRelaxBuf.element(bodyIdx);
-          const t = float(0).toVar();
+    // SINGLE adaptive sphere-trace down the primary ray. Each step evaluates
+    // every body's own SDF and keeps the SMALLEST distance (`minD`) together
+    // with which body produced it (`closestBody`); the ray then steps by that
+    // conservative distance. On a hit the pixel is shaded for `closestBody` —
+    // i.e. the body whose own surface is nearest along the ray, exactly the
+    // depth-buffer occlusion two separate opaque solids must have.
+    //
+    // NOTE on the "implicit boolean" concern (tickets deeg/9ljc): for OPAQUE
+    // primary visibility this union march and a per-body nearest-hit march
+    // produce the SAME image — both show the nearest surface and record
+    // `closestBody`, so separate solids occlude, they do NOT fuse. The earlier
+    // per-body NESTED march (Loop(MAX_BODIES){Loop(MARCH_STEPS)}, commit
+    // e4e5727) gave no visual benefit but sliced bodies (each body got its own
+    // capped step budget and a shared `bestT` early-out cut marches short) and
+    // — in the deferred renderer — exploded the shader so it never finished
+    // compiling. Reverted to this single union march (ticket 6yin).
+    Loop(int(MARCH_STEPS), () => {
+      const p = ro.add(rd.mul(t));
+      const minD = float(1e30).toVar();
+      const closestBody = int(0).toVar();
 
-          Loop(int(MARCH_STEPS), () => {
-            const p = ro.add(rd.mul(t));
+      Loop(int(MAX_BODIES), ({ i: bodyIdx }) => {
+        If(bodyIdx.lessThan(bodyCount), () => {
+          const offLen = state.offsetBuf.element(bodyIdx.mul(2).add(1));
+          If(int(offLen).greaterThan(int(0)), () => {
+            const baseOff = int(state.offsetBuf.element(bodyIdx.mul(2)));
+            const volBase = int(state.volumeBaseBuf.element(bodyIdx));
             const d = sdfEval({
               p,
               baseOffset: baseOff,
               volumeBaseIdx: volBase,
               bodyIdx,
             });
-            If(d.lessThan(float(SURFACE_EPS)), () => {
-              // This body's surface is here — claim the pixel only if it is
-              // nearer than any body already hit (depth-buffer semantics).
-              If(t.lessThan(bestT), () => {
-                bestT.assign(t);
-                hit.assign(1);
-                hitPos.assign(p);
-                hitBody.assign(bodyIdx);
-              });
-              Break();
-            });
-            // Per-body conservative step (Ticket 1wnm): a non-Lipschitz SDF
-            // (revolve march_relax 0.7, gyroid, …) overestimates distance and a
-            // full step would tunnel through thin walls; simple primitives keep
-            // 1.0. Same factor the deferred march applies.
-            t.addAssign(max(d.mul(relax), float(SURFACE_EPS)));
-            // No point marching past a closer body's surface, nor past the
-            // camera far plane (adapted per frame, ticket lbzq).
-            If(t.greaterThan(bestT).or(t.greaterThan(state.farU)), () => {
-              Break();
+            If(d.lessThan(minD), () => {
+              minD.assign(d);
+              closestBody.assign(bodyIdx);
             });
           });
         });
+      });
+
+      If(minD.lessThan(float(SURFACE_EPS)), () => {
+        hit.assign(1);
+        hitPos.assign(p);
+        hitBody.assign(closestBody);
+        Break();
+      });
+      // Per-body conservative step (Ticket 1wnm): a non-Lipschitz SDF
+      // (revolve march_relax 0.7, gyroid, …) overestimates distance and a full
+      // step would tunnel through thin walls; simple primitives keep 1.0. Same
+      // factor the deferred march applies.
+      t.addAssign(
+        max(
+          minD.mul(state.marchRelaxBuf.element(closestBody)),
+          float(SURFACE_EPS),
+        ),
+      );
+      // Stop at the camera far plane (now adapted to the scene each frame,
+      // ticket lbzq) instead of a fixed 3000 mm cap that hid large/zoomed-out
+      // scenes.
+      If(t.greaterThan(state.farU), () => {
+        Break();
       });
     });
 

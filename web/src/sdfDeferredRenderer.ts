@@ -448,6 +448,30 @@ function createShadeMaterial(
     return d.sub(depth.mul(disp));
   };
 
+  // Evaluate one transparent body's SDF at `p` and keep the running minimum
+  // across the (≤2) transparent bodies present at this pixel, recording which
+  // body is currently closest. A single union march over these bodies renders
+  // the NEAREST transparent surface per pixel (so two overlapping transparent
+  // bodies occlude, never fuse — same depth-buffer semantics as opaque
+  // bodies). Only at most two bodies are unioned here, and only ever the ones
+  // actually flagged at this pixel, so this is NOT an implicit boolean of
+  // unrelated bodies (tickets deeg/9ljc). See the VM renderer for the full
+  // rationale on why the per-body nested march (e4e5727) was reverted.
+  const evalBodySdf = (p: any, bodyIdx: any, minD: any, closestBody: any) => {
+    const baseOff = int(offsetBuf.element(bodyIdx.mul(2)));
+    const volBase = int(volumeBaseBuf.element(bodyIdx));
+    const d = sdfEval({
+      p,
+      baseOffset: baseOff,
+      volumeBaseIdx: volBase,
+      bodyIdx,
+    });
+    If(d.lessThan(minD), () => {
+      minD.assign(d);
+      closestBody.assign(bodyIdx);
+    });
+  };
+
   const material = new MeshBasicNodeMaterial();
   material.outputNode = Fn(() => {
     const texUv = vec2(uv().x, float(1).sub(uv().y));
@@ -503,63 +527,49 @@ function createShadeMaterial(
           );
         });
 
+        // Z-Offset ±1 mm: March-Start 1 mm Richtung Kamera zurückversetzt,
+        // damit der Trace garantiert im Freiraum beginnt (Ticket vlhp).
+        const t = float(-MARCH_START_BACKOFF).toVar();
         const hitPos = vec3(0, 0, 0).toVar();
         const hit = float(0).toVar();
         const hitBody = int(0).toVar();
-        // Distance along the ray to the nearest transparent body surface found
-        // so far. The winner per pixel is the body whose own surface is hit
-        // FIRST, so two overlapping transparent bodies OCCLUDE (nearest wins),
-        // never fuse. Marching `min()` of both bodies' SDFs in one walk would be
-        // a boolean UNION → implicit merge of separate bodies (tickets
-        // deeg/9ljc). Only an EXPLICIT boolean (inside one body's opcode stream)
-        // fuses geometry.
-        const bestT = tMax.add(float(1)).toVar();
 
-        // Sphere-trace each transparent body present at this pixel
-        // INDEPENDENTLY against its own SDF and keep the nearest hit.
-        const marchBody = (bodyIdx: any) => {
-          // Z-Offset ±1 mm: March-Start 1 mm Richtung Kamera zurückversetzt,
-          // damit der Trace garantiert im Freiraum beginnt (Ticket vlhp).
-          const t = float(-MARCH_START_BACKOFF).toVar();
-          const relax = marchRelaxBuf.element(bodyIdx);
-          Loop(int(DEFERRED_MARCH_STEPS), () => {
-            const p = transWorldPos.add(rd.mul(t));
-            const baseOff = int(offsetBuf.element(bodyIdx.mul(2)));
-            const volBase = int(volumeBaseBuf.element(bodyIdx));
-            const d = sdfEval({
-              p,
-              baseOffset: baseOff,
-              volumeBaseIdx: volBase,
-              bodyIdx,
-            });
-            If(d.lessThan(float(SURFACE_EPS)), () => {
-              If(t.lessThan(bestT), () => {
-                bestT.assign(t);
-                hit.assign(1);
-                hitPos.assign(p);
-                hitBody.assign(bodyIdx);
-              });
-              Break();
-            });
-            // Per-body conservative step (Ticket 1wnm): a thin-walled
-            // revolve/shell declares march_relax < 1 so the ray doesn't overshoot
-            // its wall at grazing angles; simple primitives keep 1.0.
-            t.addAssign(max(d.mul(relax), float(SURFACE_EPS)));
-            // Stop past a closer body's surface or past this pixel's exit depth.
-            If(t.greaterThan(bestT).or(t.greaterThan(tMax)), () => {
-              Break();
-            });
+        // SINGLE adaptive sphere-trace through the (≤2) transparent bodies at
+        // this pixel: each step keeps the smallest distance + which body owns
+        // it, steps by that distance, and on a hit shades the NEAREST trans
+        // surface. Reverted from the per-body nested march (e4e5727) that
+        // sliced bodies and exploded the deferred shader (ticket 6yin).
+        Loop(int(DEFERRED_MARCH_STEPS), () => {
+          const p = transWorldPos.add(rd.mul(t));
+          const minD = float(1e30).toVar();
+          const closestBody = int(0).toVar();
+
+          If(transCount.greaterThanEqual(uint(1)), () => {
+            evalBodySdf(p, int(transId0.sub(uint(1))), minD, closestBody);
           });
-        };
+          If(transCount.greaterThanEqual(uint(2)), () => {
+            evalBodySdf(p, int(transId1.sub(uint(1))), minD, closestBody);
+          });
 
-        If(transCount.greaterThanEqual(uint(1)), () => {
-          marchBody(int(transId0.sub(uint(1))));
+          If(minD.lessThan(float(SURFACE_EPS)), () => {
+            hit.assign(1);
+            hitPos.assign(p);
+            hitBody.assign(closestBody);
+            Break();
+          });
+          // Per-body conservative step (Ticket 1wnm): a thin-walled
+          // revolve/shell declares march_relax < 1 so the ray doesn't overshoot
+          // its wall at grazing angles; simple primitives keep 1.0.
+          t.addAssign(
+            max(
+              minD.mul(marchRelaxBuf.element(closestBody)),
+              float(SURFACE_EPS),
+            ),
+          );
+          If(t.greaterThan(tMax), () => {
+            Break();
+          });
         });
-        If(transCount.greaterThanEqual(uint(2)), () => {
-          marchBody(int(transId1.sub(uint(1))));
-        });
-        // `t` below (opaque-vs-trans depth compare) is the nearest trans hit.
-        const t = bestT;
 
         const opaqueBodyEncoded2 = uint(int(opaqueTag.sub(0.5)).add(1));
         const opaqueIsAlsoTrans = transId0
