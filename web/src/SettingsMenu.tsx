@@ -1140,8 +1140,8 @@ function SettingsDialog({
                   <option value="sdf-vm">SDF VM</option>
                   <option value="sdf-deferred">SDF Deferred</option>
                   <option value="mesh">Mesh</option>
-                  <option value="brep">B-Rep (exp., planar)</option>
-                  <option value="webgl">WebGL (exp., kein WebGPU)</option>
+                  <option value="brep">B-Rep</option>
+                  <option value="webgl">WebGL</option>
                 </select>
               </div>
 

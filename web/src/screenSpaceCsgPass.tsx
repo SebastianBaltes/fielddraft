@@ -156,9 +156,18 @@ export function ScreenSpaceCsgPass() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [store, fingerprint, state?.features]);
 
-  // Priorität > 0 → R3F übernimmt NICHT das automatische Rendern dieses
-  // Subscribers; wir rendern den Composite-Pass selbst, NACH dem Haupt-Render.
-  useFrame(({ camera }) => {
+  // Priorität > 0 → R3F unterdrückt sein automatisches Szenen-Rendering (es
+  // erwartet, dass der höchstpriorisierte Subscriber selbst rendert). Wir sind
+  // dieser Subscriber und treiben deshalb den GANZEN Frame: ZUERST die normale
+  // Szene (Datum-Planes, Sketch, Nicht-CSG-Körper), DANN den CSG-Composite
+  // tiefenkorrekt darüber.
+  //
+  // Tickets 257b/xq87: Vorher rief dieser Callback NUR den Composite und kehrte
+  // bei 0 Körpern früh zurück — dann blieb die Szene (Datum-Planes/Sketch) im
+  // WebGL-Modus mit aktivem Flag komplett ungerendert. Daher jetzt IMMER zuerst
+  // `gl.render(scene, camera)` (auch ohne Subtraktions-Körper).
+  useFrame(({ scene, camera }) => {
+    gl.render(scene, camera);
     const comp = compositorRef.current;
     if (!comp || bodies.length === 0) return;
     try {
