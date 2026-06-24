@@ -1989,6 +1989,9 @@ export function BRepEdgeOverlay({
   useEffect(() => {
     if (edges.length === 0) {
       setBaseObj(null);
+      // The edge set going empty (a body removed, or a load that started with
+      // none) still needs a frame so the old wireframe is cleared on screen.
+      invalidate();
       return;
     }
     let total = 0;
@@ -2016,9 +2019,19 @@ export function BRepEdgeOverlay({
     obj.renderOrder = 998;
     obj.layers.enable(OVERLAY_LAYER);
     setBaseObj(obj);
+    // Request a repaint: the WebGPU root runs in DEMAND mode, so mounting this
+    // fresh edge object into the scene does NOT itself trigger a frame. On the
+    // EDIT path an unrelated invalidate (mesh rebuild / camera tick) happened to
+    // paint it; on the LOAD path the async weaver imports the B-Rep AFTER the
+    // first (surface-only) frame and bumps `brepVersion`, which re-runs this
+    // effect with the freshly-woven edges — without this invalidate the new
+    // wireframe sat in the scene unpainted until the next resize/orbit/edit, so
+    // a loaded box-with-hole showed its faces but no B-Rep edges (tickets
+    // 1do9/zhfy). One invalidate per edge-set change paints them immediately.
+    invalidate();
     // Same fg9o race on a kernel rebuild while a submit is in flight — defer.
     return () => disposeAfterGpuIdle(gl, () => geom.dispose());
-  }, [edges, isWebGPU, gl]);
+  }, [edges, isWebGPU, gl, invalidate]);
 
   // Screen-space edge hover. The kernel sphere-trace pick reports the face
   // *behind* the thin edge (1 contributor → "face"), so it can never light up
