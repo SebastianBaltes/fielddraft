@@ -306,13 +306,27 @@ export const DISPLACE_FREQ_Z = 0.7;
 // Dividing by the ray count instead would need every ray of the
 // hemisphere blocked for full effect — real cavities (vase floor:
 // occ ≈ 0.4) would never get past a ~10% dim.
+// Finer, more closely-spaced tap distances than the original [4,12,36]: with
+// only 3 taps the per-tap occlusion contribution switches on/off at discrete
+// depths as a ray starts/stops hitting the opposite bore wall or the concave
+// rim, quantising a smooth cylindrical bore into visible horizontal AO bands
+// (ticket km43). More taps spread those transitions out into a smooth gradient.
+// Cheap: the AO loop is a single runtime `Loop` (one sdfEval call site), so
+// extra taps are just loop iterations, NOT extra inlined VM copies. Weights
+// sum to 1 per ray.
 export const SDF_AO_TAPS: [number, number][] = [
-  [4, 0.3],
-  [12, 0.35],
-  [36, 0.35],
+  [3, 0.12],
+  [6, 0.16],
+  [11, 0.18],
+  [18, 0.18],
+  [28, 0.18],
+  [44, 0.18],
 ];
 export const SDF_AO_STRENGTH = 0.85;
-export const SDF_AO_FLOOR = 0.2;
+// Brighter cavity floor (was 0.2): the floor multiplies the ambient term too,
+// so 0.2 drove deep bores to ~ambient·0.2 ≈ 5% → near black (ticket km43). 0.5
+// keeps cavities readable while still reading as interiors.
+export const SDF_AO_FLOOR = 0.5;
 
 // ── Shared hit shading ─────────────────────────────────────────────
 
