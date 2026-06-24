@@ -1460,6 +1460,14 @@ export function Toolbar({ store, state }: ToolbarProps) {
           label="Fillet"
         />
         <FeatureButton
+          kind="thicken"
+          title="Click a curved face to thicken it into a wall"
+          testId="thicken-toggle"
+          active={state.thickenMode}
+          onClick={() => store.toggleThickenMode()}
+          label="Thicken"
+        />
+        <FeatureButton
           kind="shell"
           title="Hollow a body — pick faces to open in the dialog"
           testId="add-shell"

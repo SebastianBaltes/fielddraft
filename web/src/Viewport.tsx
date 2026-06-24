@@ -469,6 +469,29 @@ function handleFilletClick(
   store.addFilletAtEdge(query);
 }
 
+function handleThickenClick(
+  store: {
+    addThicken(faceQueries: string[]): number | null;
+    showTransientError(msg: string): void;
+  },
+  _click: PickResult | null,
+): void {
+  // Thicken selects a B-Rep FACE by query and folds it into a thin wall —
+  // one thicken feature per click, the face analogue of the edge-click
+  // fillet flow. The kernel rejects planar / cone / partial / tessellated
+  // faces; `store.addThicken` surfaces that as a transient error, so a bad
+  // pick just shows a message.
+  const face = getHoveredElementOfKind("face");
+  const query = face ? elementQueryString(face) : null;
+  if (!query) {
+    store.showTransientError(
+      "Thicken needs a curved face — hover a cylinder/sphere/torus face and click.",
+    );
+    return;
+  }
+  store.addThicken([query]);
+}
+
 function handleMeasureClick(store: {
   addMeasureEntity(el: PickedElement): void;
 }): void {
@@ -1019,6 +1042,7 @@ export function Viewport({
       state?.sketchSession.active ||
       state?.measureMode ||
       state?.filletMode ||
+      state?.thickenMode ||
       state?.mateMode ||
       state?.ikMode ||
       getActiveQueryPicker()
@@ -1225,6 +1249,10 @@ export function Viewport({
     }
     if (state?.filletMode) {
       handleFilletClick(store, click);
+      return;
+    }
+    if (state?.thickenMode) {
+      handleThickenClick(store, click);
       return;
     }
     if (state?.measureMode) {

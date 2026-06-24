@@ -314,6 +314,9 @@ export interface StoreState {
   measureSelection: readonly PickedElement[];
   /** K10.6: fillet mode — clicks on edges create fillet_edge features. */
   filletMode: boolean;
+  /** Thicken mode — clicks on curved faces create thicken features (one per
+   *  click), mirroring the edge-click fillet flow. */
+  thickenMode: boolean;
   /** F10: sketch-fillet radius (mm) used by the two-click `sketch_fillet`
    *  tool to round the corner between two picked lines. */
   sketchFilletRadius: number;
@@ -700,6 +703,7 @@ export class KernelStore {
       measureMode: false,
       measureSelection: [],
       filletMode: false,
+      thickenMode: false,
       sketchFilletRadius: 5,
       sketchChamferDistance: 5,
       sketchOffsetDistance: 5,
@@ -801,6 +805,7 @@ export class KernelStore {
       measureMode: this.state.measureMode,
       measureSelection: this.state.measureSelection,
       filletMode: this.state.filletMode,
+      thickenMode: this.state.thickenMode,
       sketchFilletRadius: this.state.sketchFilletRadius,
       sketchChamferDistance: this.state.sketchChamferDistance,
       sketchOffsetDistance: this.state.sketchOffsetDistance,
@@ -1294,6 +1299,7 @@ export class KernelStore {
       modes: {
         measure: s.measureMode,
         fillet: s.filletMode,
+        thicken: s.thickenMode,
         mate: s.mateMode,
         ik: s.ikMode,
       },
@@ -2353,6 +2359,7 @@ export class KernelStore {
       measureMode: !this.state.measureMode,
       measureSelection: [],
       filletMode: false,
+      thickenMode: false,
       mateMode: false,
     });
     for (const listener of this.listeners) listener();
@@ -2396,6 +2403,21 @@ export class KernelStore {
   toggleFilletMode(): void {
     this.patch({
       filletMode: !this.state.filletMode,
+      thickenMode: false,
+      measureMode: false,
+      measureSelection: [],
+      mateMode: false,
+    });
+    for (const listener of this.listeners) listener();
+  }
+
+  /** Thicken mode toggle — mirrors `toggleFilletMode`. While active, a
+   *  viewport click on a curved face creates one thicken feature. Mutually
+   *  exclusive with the fillet / mate / measure modes. */
+  toggleThickenMode(): void {
+    this.patch({
+      thickenMode: !this.state.thickenMode,
+      filletMode: false,
       measureMode: false,
       measureSelection: [],
       mateMode: false,
@@ -2407,6 +2429,7 @@ export class KernelStore {
     this.patch({
       mateMode: !this.state.mateMode,
       filletMode: false,
+      thickenMode: false,
       measureMode: false,
       measureSelection: [],
     });
