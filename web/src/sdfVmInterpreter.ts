@@ -632,25 +632,27 @@ export function buildVmSdfEvalFn(
     return result;
   });
 
-  // CRITICAL for compile time (ticket 21ws): give the eval a LAYOUT so TSL
-  // emits it as ONE real WGSL function and every call site becomes a `call`,
-  // instead of RE-RUNNING the JS body (and inlining the whole opcode VM) at
-  // each call site. The shade pass alone calls this 7× (central-difference
-  // normal + AO) plus the march, so a layout-less Fn baked the ~512-step
-  // opcode interpreter into the module 8× → a ~1.6 MB WGSL fragment shader the
-  // driver took >1 min to compile. With the layout the module shrinks ~8× and
-  // init is back to seconds. The opcode storage buffer and the volume 3D
-  // textures stay module-global bindings (captured by the builder), so only
-  // the per-call values (p, baseOffset, volumeBaseIdx) are function params.
-  evalFn.setLayout({
-    name: "fd_vm_sdf_eval",
-    type: "float",
-    inputs: [
-      { name: "p", type: "vec3" },
-      { name: "baseOffset", type: "int" },
-      { name: "volumeBaseIdx", type: "int" },
-    ],
-  });
-
+  // NOTE (regression o6ia, reverts ticket 21ws's setLayout from 93bb212):
+  // We deliberately do NOT call evalFn.setLayout(...) here. 93bb212 added a
+  // layout so TSL would emit the eval as ONE WGSL `fn` (call sites = `call`)
+  // instead of inlining the whole ~512-step opcode VM at every call site,
+  // aiming to cut the >1min compile. On real hardware that did NOT pay off:
+  //   - The driver cost is dominated by the body itself (VM_MAX_OPCODES ×
+  //     MARCH_STEPS × ~40-branch switch), not by text multiplicity. Measured:
+  //     with the layout the FULL eval never finished compiling even after
+  //     200s, while a trivial-stub eval (same layout) compiled in ~45s — so
+  //     the body, not the emit form, is the choke. The layout is neither the
+  //     cause nor the cure of the slow compile.
+  //   - Worse, the single-`fn` form — a function that does dynamic storage
+  //     indexing inside its own 512-iteration loop AND is then called from
+  //     inside the fragment's 512-step march loop (nested non-uniform loops)
+  //     — is the shape ANGLE/GLES (the user's WebGPU "compatibility mode")
+  //     mis-translates, yielding a body that compiles but renders black:
+  //     ONLY the B-Rep edges remained, no shaded SDF surfaces (ticket o6ia).
+  //     7ce9e19 (inlined form) was verified rendering; 93bb212 regressed it.
+  // The inlined form is what every GPU path (incl. ANGLE) already accepted, so
+  // we restore it. The legitimate compile-speed goal of 21ws must be pursued
+  // by SHRINKING the shader (lower MARCH_STEPS/VM_MAX_OPCODES, fewer shade-pass
+  // eval calls), not by toggling the emit form — tracked separately.
   return evalFn;
 }
