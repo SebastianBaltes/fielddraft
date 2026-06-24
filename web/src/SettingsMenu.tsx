@@ -1245,7 +1245,7 @@ function SettingsDialog({
                 {settings.renderMode === "webgl" && (
                   <div className="setting-row" data-testid="setting-screen-space-csg">
                     <span className="setting-label" title="Experiment (nur WebGL-Renderpfad): einstufiger Screen-Space-CSG-Subtraktionspass (A−B) über die parametrischen Hüllmeshes, statt den Subtrahenden wegzulassen. Visuell unverifiziertes Stage-1-Experiment — Default aus; mit Aus bleibt der Renderpfad unverändert.">
-                      Screen-Space-CSG (experimentell)
+                      Screen-Space-CSG
                     </span>
                     <button
                       type="button"
