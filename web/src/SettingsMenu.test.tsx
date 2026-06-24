@@ -320,6 +320,42 @@ describe("SettingsMenu", () => {
     t.cleanup();
   });
 
+  it("shows the Screen-Space-CSG row only in the WebGL render mode", () => {
+    const t = setup();
+    openSettingsDialog(t.container);
+
+    // Default render mode is sdf-deferred → CSG row hidden.
+    expect(
+      t.container.querySelector('[data-testid="setting-screen-space-csg"]'),
+    ).toBeNull();
+
+    const select = t.container.querySelector<HTMLSelectElement>(
+      '[data-testid="setting-render-mode-select"]',
+    )!;
+    act(() => {
+      select.value = "webgl";
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+
+    // WebGL render mode → CSG row visible.
+    expect(
+      t.container.querySelector('[data-testid="setting-screen-space-csg"]'),
+    ).not.toBeNull();
+
+    // Switching away hides it again.
+    const selectAfter = t.container.querySelector<HTMLSelectElement>(
+      '[data-testid="setting-render-mode-select"]',
+    )!;
+    act(() => {
+      selectAfter.value = "sdf-deferred";
+      selectAfter.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    expect(
+      t.container.querySelector('[data-testid="setting-screen-space-csg"]'),
+    ).toBeNull();
+    t.cleanup();
+  });
+
   it("shortcuts table shows the preset's view keys", () => {
     const t = setup();
     openSettingsDialog(t.container);

@@ -1090,261 +1090,281 @@ function SettingsDialog({
         <div className="dialog-body">
           {activeTab === "ui" && (
             <>
-              <div className="setting-row" data-testid="setting-compact">
-                <span className="setting-label">Compact toolbar</span>
-                <button
-                  type="button"
-                  className={"toggle" + (settings.compact ? " is-on" : "")}
-                  role="switch"
-                  aria-checked={settings.compact}
-                  data-testid="setting-compact-toggle"
-                  onClick={toggleCompact}
-                >
-                  {settings.compact ? "On" : "Off"}
-                </button>
-              </div>
+              <div className="setting-group">
+                <div className="setting-group-title">Interface</div>
+                <div className="setting-row" data-testid="setting-compact">
+                  <span className="setting-label">Compact toolbar</span>
+                  <button
+                    type="button"
+                    className={"toggle" + (settings.compact ? " is-on" : "")}
+                    role="switch"
+                    aria-checked={settings.compact}
+                    data-testid="setting-compact-toggle"
+                    onClick={toggleCompact}
+                  >
+                    {settings.compact ? "On" : "Off"}
+                  </button>
+                </div>
 
-              <div className="setting-row" data-testid="setting-theme">
-                <span className="setting-label">Theme</span>
-                <div className="segmented">
-                  <button
-                    type="button"
-                    className={"seg" + (settings.theme === "light" ? " is-active" : "")}
-                    data-testid="setting-theme-light"
-                    onClick={() => setTheme("light")}
-                  >
-                    Light
-                  </button>
-                  <button
-                    type="button"
-                    className={"seg" + (settings.theme === "dark" ? " is-active" : "")}
-                    data-testid="setting-theme-dark"
-                    onClick={() => setTheme("dark")}
-                  >
-                    Dark
-                  </button>
+                <div className="setting-row" data-testid="setting-theme">
+                  <span className="setting-label">Theme</span>
+                  <div className="segmented">
+                    <button
+                      type="button"
+                      className={"seg" + (settings.theme === "light" ? " is-active" : "")}
+                      data-testid="setting-theme-light"
+                      onClick={() => setTheme("light")}
+                    >
+                      Light
+                    </button>
+                    <button
+                      type="button"
+                      className={"seg" + (settings.theme === "dark" ? " is-active" : "")}
+                      data-testid="setting-theme-dark"
+                      onClick={() => setTheme("dark")}
+                    >
+                      Dark
+                    </button>
+                  </div>
                 </div>
               </div>
 
-              <div className="setting-row" data-testid="setting-controls-preset">
-                <span
-                  className="setting-label"
-                  title="Mouse and keyboard scheme of another CAD package — orbit/pan buttons, multi-select modifiers and view keys follow that program's habits."
-                >
-                  Controls preset
-                </span>
-                <select
-                  className="mode-select"
-                  value={settings.controlsPreset}
-                  data-testid="setting-controls-preset-select"
-                  onChange={(e) => setControlsPreset(e.target.value as ControlsPresetId)}
-                >
-                  {CONTROLS_PRESET_OPTIONS.map((o) => (
-                    <option key={o.key} value={o.key}>{o.label}</option>
-                  ))}
-                </select>
-              </div>
-
-              <div className="setting-row" data-testid="setting-perspective">
-                <span
-                  className="setting-label"
-                  title="Perspective projection (fov 45) instead of the default orthographic view. Off (default) keeps an isometric-style parallel projection where equal lengths read as equal at every depth — the CAD default."
-                >
-                  Perspective projection
-                </span>
-                <button
-                  type="button"
-                  className={"toggle" + (settings.perspective ? " is-on" : "")}
-                  role="switch"
-                  aria-checked={settings.perspective}
-                  data-testid="setting-perspective-toggle"
-                  onClick={togglePerspective}
-                >
-                  {settings.perspective ? "On" : "Off"}
-                </button>
-              </div>
-
-              <div className="setting-row" data-testid="setting-render-mode">
-                <span className="setting-label">Render</span>
-                <select
-                  className="mode-select"
-                  value={settings.renderMode}
-                  data-testid="setting-render-mode-select"
-                  onChange={(e) => setRenderMode(e.target.value as RenderMode)}
-                >
-                  <option value="sdf-vm">SDF VM</option>
-                  <option value="sdf-deferred">SDF Deferred</option>
-                  <option value="mesh">Mesh</option>
-                  <option value="brep">B-Rep</option>
-                  <option value="webgl">WebGL</option>
-                </select>
-              </div>
-
-              {settings.renderMode === "mesh" && (
-                <div className="setting-row" data-testid="setting-mesh-algorithm">
-                  <span className="setting-label">Mesh algorithm</span>
+              <div className="setting-group">
+                <div className="setting-group-title">Camera</div>
+                <div className="setting-row" data-testid="setting-controls-preset">
+                  <span
+                    className="setting-label"
+                    title="Mouse and keyboard scheme of another CAD package — orbit/pan buttons, multi-select modifiers and view keys follow that program's habits."
+                  >
+                    Controls preset
+                  </span>
                   <select
                     className="mode-select"
-                    value={settings.meshAlgorithm}
-                    data-testid="setting-mesh-algorithm-select"
-                    onChange={(e) => setMeshAlgorithm(e.target.value as MeshAlgorithm)}
+                    value={settings.controlsPreset}
+                    data-testid="setting-controls-preset-select"
+                    onChange={(e) => setControlsPreset(e.target.value as ControlsPresetId)}
                   >
-                    <option value="mdc">MDC</option>
-                    <option value="rfta">RFTA</option>
-                    <option value="mt">Marching Tetrahedra</option>
+                    {CONTROLS_PRESET_OPTIONS.map((o) => (
+                      <option key={o.key} value={o.key}>{o.label}</option>
+                    ))}
                   </select>
                 </div>
-              )}
 
-              <div className="setting-row" data-testid="setting-brep-edges">
-                <span className="setting-label">B-Rep edges</span>
-                <select
-                  className="mode-select"
-                  value={settings.brepEdgeMode}
-                  data-testid="setting-brep-edges-select"
-                  onChange={(e) => setBRepEdgeMode(e.target.value as BRepEdgeMode)}
-                >
-                  <option value="xray">X-Ray</option>
-                  <option value="visible">Visible only</option>
-                  <option value="none">Hidden</option>
-                </select>
-              </div>
-
-              <div className="setting-row" data-testid="setting-frame-loop">
-                <span className="setting-label">Render loop</span>
-                <div className="segmented">
-                  <button
-                    type="button"
-                    className={"seg" + (settings.frameLoop === "demand" ? " is-active" : "")}
-                    data-testid="setting-frame-loop-demand"
-                    title="Render only when the scene changes (idle GPU when static)"
-                    onClick={() => setFrameLoop("demand")}
+                <div className="setting-row" data-testid="setting-perspective">
+                  <span
+                    className="setting-label"
+                    title="Perspective projection (fov 45) instead of the default orthographic view. Off (default) keeps an isometric-style parallel projection where equal lengths read as equal at every depth — the CAD default."
                   >
-                    On demand
-                  </button>
-                  <button
-                    type="button"
-                    className={"seg" + (settings.frameLoop === "always" ? " is-active" : "")}
-                    data-testid="setting-frame-loop-always"
-                    title="Render every frame — diagnostic: if a view only updates here, its on-demand invalidate is missing"
-                    onClick={() => setFrameLoop("always")}
-                  >
-                    Always
-                  </button>
-                </div>
-              </div>
-
-              <div className="setting-row" data-testid="setting-parametric-weave">
-                <span className="setting-label" title="Exact analytic B-Rep for pure grundforms (Box) — skips the octree. Falls back automatically for anything not yet supported.">
-                  Parametric weaving
-                </span>
-                <button
-                  type="button"
-                  className={"toggle" + (settings.parametricWeave ? " is-on" : "")}
-                  role="switch"
-                  aria-checked={settings.parametricWeave}
-                  data-testid="setting-parametric-weave-toggle"
-                  onClick={toggleParametricWeave}
-                >
-                  {settings.parametricWeave ? "On" : "Off"}
-                </button>
-              </div>
-
-              <div className="setting-row" data-testid="setting-drag-brep">
-                <span className="setting-label" title="Re-weave and display the exact B-Rep live during gizmo drags. Off: the drag updates only the render mesh — affected B-Rep edges hide while dragging and re-weave once on release. Keeps drags fluid on weave-heavy models.">
-                  B-Rep rebuild while dragging
-                </span>
-                <button
-                  type="button"
-                  className={"toggle" + (settings.dragBrepRecompute ? " is-on" : "")}
-                  role="switch"
-                  aria-checked={settings.dragBrepRecompute}
-                  data-testid="setting-drag-brep-toggle"
-                  onClick={toggleDragBrepRecompute}
-                >
-                  {settings.dragBrepRecompute ? "On" : "Off"}
-                </button>
-              </div>
-
-              <div className="setting-row" data-testid="setting-live-extrude">
-                <span className="setting-label" title="Commit the extrude depth live while the arrow drag runs — the renderer shows the real body instead of an approximate preview prism. The exact B-Rep still weaves once on release (see 'B-Rep rebuild while dragging').">
-                  Live extrude drag
-                </span>
-                <button
-                  type="button"
-                  className={"toggle" + (settings.liveExtrudeDrag ? " is-on" : "")}
-                  role="switch"
-                  aria-checked={settings.liveExtrudeDrag}
-                  data-testid="setting-live-extrude-toggle"
-                  onClick={toggleLiveExtrudeDrag}
-                >
-                  {settings.liveExtrudeDrag ? "On" : "Off"}
-                </button>
-              </div>
-
-              <div className="setting-row" data-testid="setting-edge-points">
-                <span className="setting-label" title="Highlight each B-Rep edge's individual sample points — reveals whether a NURBS edge is tessellated into many points or few.">
-                  Edge sample points
-                </span>
-                <button
-                  type="button"
-                  className={"toggle" + (settings.showEdgePoints ? " is-on" : "")}
-                  role="switch"
-                  aria-checked={settings.showEdgePoints}
-                  data-testid="setting-edge-points-toggle"
-                  onClick={toggleShowEdgePoints}
-                >
-                  {settings.showEdgePoints ? "On" : "Off"}
-                </button>
-              </div>
-
-              <div className="setting-row" data-testid="setting-octree-cells">
-                <span className="setting-label" title="Draw the topology octree's leaf cells as a wireframe grid, colour-coded by class (face / edge / vertex) — inspect the adaptive resolution the B-Rep weave used. Rebuilds the octree on the spot and can stall for minutes on complex bodies; resets to Off on reload.">
-                  Octree cells
-                </span>
-                <button
-                  type="button"
-                  className={"toggle" + (settings.showOctreeCells ? " is-on" : "")}
-                  role="switch"
-                  aria-checked={settings.showOctreeCells}
-                  data-testid="setting-octree-cells-toggle"
-                  onClick={toggleShowOctreeCells}
-                >
-                  {settings.showOctreeCells ? "On" : "Off"}
-                </button>
-              </div>
-
-              <div className="setting-row" data-testid="setting-screen-space-csg">
-                <span className="setting-label" title="Experiment (nur WebGL-Renderpfad): einstufiger Screen-Space-CSG-Subtraktionspass (A−B) über die parametrischen Hüllmeshes, statt den Subtrahenden wegzulassen. Visuell unverifiziertes Stage-1-Experiment — Default aus; mit Aus bleibt der Renderpfad unverändert.">
-                  Screen-Space-CSG (experimentell)
-                </span>
-                <button
-                  type="button"
-                  className={"toggle" + (settings.screenSpaceCsg ? " is-on" : "")}
-                  role="switch"
-                  aria-checked={settings.screenSpaceCsg}
-                  data-testid="setting-screen-space-csg-toggle"
-                  onClick={toggleScreenSpaceCsg}
-                >
-                  {settings.screenSpaceCsg ? "On" : "Off"}
-                </button>
-              </div>
-
-              {import.meta.hot && (
-                <div className="setting-row" data-testid="setting-auto-reload">
-                  <span className="setting-label" title="Dev only: when off, a code change that Vite can't hot-swap no longer reloads the page — your running session and in-progress project stay alive. Reload manually (F5) to pick the change up.">
-                    Auto-reload on code change
+                    Perspective projection
                   </span>
                   <button
                     type="button"
-                    className={"toggle" + (settings.autoReload ? " is-on" : "")}
+                    className={"toggle" + (settings.perspective ? " is-on" : "")}
                     role="switch"
-                    aria-checked={settings.autoReload}
-                    data-testid="setting-auto-reload-toggle"
-                    onClick={toggleAutoReload}
+                    aria-checked={settings.perspective}
+                    data-testid="setting-perspective-toggle"
+                    onClick={togglePerspective}
                   >
-                    {settings.autoReload ? "On" : "Off"}
+                    {settings.perspective ? "On" : "Off"}
                   </button>
+                </div>
+              </div>
+
+              <div className="setting-group">
+                <div className="setting-group-title">Rendering</div>
+                <div className="setting-row" data-testid="setting-render-mode">
+                  <span className="setting-label">Render</span>
+                  <select
+                    className="mode-select"
+                    value={settings.renderMode}
+                    data-testid="setting-render-mode-select"
+                    onChange={(e) => setRenderMode(e.target.value as RenderMode)}
+                  >
+                    <option value="sdf-vm">SDF VM</option>
+                    <option value="sdf-deferred">SDF Deferred</option>
+                    <option value="mesh">Mesh</option>
+                    <option value="brep">B-Rep</option>
+                    <option value="webgl">WebGL</option>
+                  </select>
+                </div>
+
+                {settings.renderMode === "mesh" && (
+                  <div className="setting-row" data-testid="setting-mesh-algorithm">
+                    <span className="setting-label">Mesh algorithm</span>
+                    <select
+                      className="mode-select"
+                      value={settings.meshAlgorithm}
+                      data-testid="setting-mesh-algorithm-select"
+                      onChange={(e) => setMeshAlgorithm(e.target.value as MeshAlgorithm)}
+                    >
+                      <option value="mdc">MDC</option>
+                      <option value="rfta">RFTA</option>
+                      <option value="mt">Marching Tetrahedra</option>
+                    </select>
+                  </div>
+                )}
+
+                <div className="setting-row" data-testid="setting-brep-edges">
+                  <span className="setting-label">B-Rep edges</span>
+                  <select
+                    className="mode-select"
+                    value={settings.brepEdgeMode}
+                    data-testid="setting-brep-edges-select"
+                    onChange={(e) => setBRepEdgeMode(e.target.value as BRepEdgeMode)}
+                  >
+                    <option value="xray">X-Ray</option>
+                    <option value="visible">Visible only</option>
+                    <option value="none">Hidden</option>
+                  </select>
+                </div>
+
+                <div className="setting-row" data-testid="setting-frame-loop">
+                  <span className="setting-label">Render loop</span>
+                  <div className="segmented">
+                    <button
+                      type="button"
+                      className={"seg" + (settings.frameLoop === "demand" ? " is-active" : "")}
+                      data-testid="setting-frame-loop-demand"
+                      title="Render only when the scene changes (idle GPU when static)"
+                      onClick={() => setFrameLoop("demand")}
+                    >
+                      On demand
+                    </button>
+                    <button
+                      type="button"
+                      className={"seg" + (settings.frameLoop === "always" ? " is-active" : "")}
+                      data-testid="setting-frame-loop-always"
+                      title="Render every frame — diagnostic: if a view only updates here, its on-demand invalidate is missing"
+                      onClick={() => setFrameLoop("always")}
+                    >
+                      Always
+                    </button>
+                  </div>
+                </div>
+
+                {settings.renderMode === "webgl" && (
+                  <div className="setting-row" data-testid="setting-screen-space-csg">
+                    <span className="setting-label" title="Experiment (nur WebGL-Renderpfad): einstufiger Screen-Space-CSG-Subtraktionspass (A−B) über die parametrischen Hüllmeshes, statt den Subtrahenden wegzulassen. Visuell unverifiziertes Stage-1-Experiment — Default aus; mit Aus bleibt der Renderpfad unverändert.">
+                      Screen-Space-CSG (experimentell)
+                    </span>
+                    <button
+                      type="button"
+                      className={"toggle" + (settings.screenSpaceCsg ? " is-on" : "")}
+                      role="switch"
+                      aria-checked={settings.screenSpaceCsg}
+                      data-testid="setting-screen-space-csg-toggle"
+                      onClick={toggleScreenSpaceCsg}
+                    >
+                      {settings.screenSpaceCsg ? "On" : "Off"}
+                    </button>
+                  </div>
+                )}
+              </div>
+
+              <div className="setting-group">
+                <div className="setting-group-title">Modeling</div>
+                <div className="setting-row" data-testid="setting-parametric-weave">
+                  <span className="setting-label" title="Exact analytic B-Rep for pure grundforms (Box) — skips the octree. Falls back automatically for anything not yet supported.">
+                    Parametric weaving
+                  </span>
+                  <button
+                    type="button"
+                    className={"toggle" + (settings.parametricWeave ? " is-on" : "")}
+                    role="switch"
+                    aria-checked={settings.parametricWeave}
+                    data-testid="setting-parametric-weave-toggle"
+                    onClick={toggleParametricWeave}
+                  >
+                    {settings.parametricWeave ? "On" : "Off"}
+                  </button>
+                </div>
+
+                <div className="setting-row" data-testid="setting-drag-brep">
+                  <span className="setting-label" title="Re-weave and display the exact B-Rep live during gizmo drags. Off: the drag updates only the render mesh — affected B-Rep edges hide while dragging and re-weave once on release. Keeps drags fluid on weave-heavy models.">
+                    B-Rep rebuild while dragging
+                  </span>
+                  <button
+                    type="button"
+                    className={"toggle" + (settings.dragBrepRecompute ? " is-on" : "")}
+                    role="switch"
+                    aria-checked={settings.dragBrepRecompute}
+                    data-testid="setting-drag-brep-toggle"
+                    onClick={toggleDragBrepRecompute}
+                  >
+                    {settings.dragBrepRecompute ? "On" : "Off"}
+                  </button>
+                </div>
+
+                <div className="setting-row" data-testid="setting-live-extrude">
+                  <span className="setting-label" title="Commit the extrude depth live while the arrow drag runs — the renderer shows the real body instead of an approximate preview prism. The exact B-Rep still weaves once on release (see 'B-Rep rebuild while dragging').">
+                    Live extrude drag
+                  </span>
+                  <button
+                    type="button"
+                    className={"toggle" + (settings.liveExtrudeDrag ? " is-on" : "")}
+                    role="switch"
+                    aria-checked={settings.liveExtrudeDrag}
+                    data-testid="setting-live-extrude-toggle"
+                    onClick={toggleLiveExtrudeDrag}
+                  >
+                    {settings.liveExtrudeDrag ? "On" : "Off"}
+                  </button>
+                </div>
+              </div>
+
+              <div className="setting-group">
+                <div className="setting-group-title">Debug</div>
+                <div className="setting-row" data-testid="setting-edge-points">
+                  <span className="setting-label" title="Highlight each B-Rep edge's individual sample points — reveals whether a NURBS edge is tessellated into many points or few.">
+                    Edge sample points
+                  </span>
+                  <button
+                    type="button"
+                    className={"toggle" + (settings.showEdgePoints ? " is-on" : "")}
+                    role="switch"
+                    aria-checked={settings.showEdgePoints}
+                    data-testid="setting-edge-points-toggle"
+                    onClick={toggleShowEdgePoints}
+                  >
+                    {settings.showEdgePoints ? "On" : "Off"}
+                  </button>
+                </div>
+
+                <div className="setting-row" data-testid="setting-octree-cells">
+                  <span className="setting-label" title="Draw the topology octree's leaf cells as a wireframe grid, colour-coded by class (face / edge / vertex) — inspect the adaptive resolution the B-Rep weave used. Rebuilds the octree on the spot and can stall for minutes on complex bodies; resets to Off on reload.">
+                    Octree cells
+                  </span>
+                  <button
+                    type="button"
+                    className={"toggle" + (settings.showOctreeCells ? " is-on" : "")}
+                    role="switch"
+                    aria-checked={settings.showOctreeCells}
+                    data-testid="setting-octree-cells-toggle"
+                    onClick={toggleShowOctreeCells}
+                  >
+                    {settings.showOctreeCells ? "On" : "Off"}
+                  </button>
+                </div>
+              </div>
+
+              {import.meta.hot && (
+                <div className="setting-group">
+                  <div className="setting-group-title">Developer</div>
+                  <div className="setting-row" data-testid="setting-auto-reload">
+                    <span className="setting-label" title="Dev only: when off, a code change that Vite can't hot-swap no longer reloads the page — your running session and in-progress project stay alive. Reload manually (F5) to pick the change up.">
+                      Auto-reload on code change
+                    </span>
+                    <button
+                      type="button"
+                      className={"toggle" + (settings.autoReload ? " is-on" : "")}
+                      role="switch"
+                      aria-checked={settings.autoReload}
+                      data-testid="setting-auto-reload-toggle"
+                      onClick={toggleAutoReload}
+                    >
+                      {settings.autoReload ? "On" : "Off"}
+                    </button>
+                  </div>
                 </div>
               )}
             </>
