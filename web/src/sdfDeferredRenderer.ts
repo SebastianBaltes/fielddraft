@@ -306,13 +306,19 @@ export interface DeferredPipelineState {
   volumeBaseData: Float32Array;
   volumeBaseAttr: StorageBufferAttribute;
   camPosUniform: ReturnType<typeof uniform>;
+  /** World-space camera forward (−Z) direction. In ORTHOGRAPHIC mode this is
+   *  the SHARED parallel ray direction for every pixel; the along-ray distance
+   *  of a world point is `dot(p − camPos, camFwd)`. Unused in perspective (rays
+   *  diverge from camPos and the radial distance is the ray parameter). */
+  camFwdU: ReturnType<typeof uniform>;
   viewMatU: ReturnType<typeof uniform>;
   widthU: ReturnType<typeof uniform>;
   bgColorU: ReturnType<typeof uniform>;
   nearU: ReturnType<typeof uniform>;
   farU: ReturnType<typeof uniform>;
   /** 1.0 when the scene camera is orthographic, 0.0 perspective — selects the
-   *  linear vs reciprocal depth formula when writing canvas depth. */
+   *  parallel-vs-converging march ray AND the linear-vs-reciprocal depth
+   *  formula when writing canvas depth. */
   isOrthoU: ReturnType<typeof uniform>;
   bodyOpaqueMeshes: Map<number, THREE.Mesh[]>;
   bodyTransparentMeshes: Map<number, THREE.Mesh[]>;
@@ -379,11 +385,26 @@ function createTransparentGBufferMaterial(
 
 function createBackFaceMaterial(
   camPosU: ReturnType<typeof uniform>,
+  camFwdU: ReturnType<typeof uniform>,
+  isOrthoU: ReturnType<typeof uniform>,
 ): MeshBasicNodeMaterial {
   const material = new MeshBasicNodeMaterial();
   material.outputNode = Fn(() => {
     const worldPos = modelWorldMatrix.mul(vec4(positionGeometry, 1)).xyz;
-    const dist = worldPos.sub(camPosU).length();
+    // MAX-blended exit distance ALONG the primary ray, so the shade pass can
+    // clamp the march at the body's far hull. PERSPECTIVE: rays diverge from
+    // camPos, so the ray parameter is the radial distance |p − camPos|.
+    // ORTHOGRAPHIC: rays are parallel along camFwd, so the ray parameter is the
+    // projection dot(p − camPos, camFwd). Using the radial distance in ortho
+    // (the old code) over-estimated the exit depth toward the silhouette and,
+    // combined with a perspective march ray, drilled the parallel hole rays
+    // into the bore wall → dark concentric rings (ticket g2ox).
+    const rel = worldPos.sub(camPosU);
+    const dist = select(
+      isOrthoU.greaterThan(float(0.5)),
+      rel.dot(camFwdU),
+      rel.length(),
+    );
     return vec4(dist, 0, 0, 1);
   })();
   material.side = THREE.BackSide;
@@ -411,6 +432,7 @@ function createShadeMaterial(
   volumeBaseBuf: ReturnType<typeof storage>,
   marchRelaxBuf: ReturnType<typeof storage>,
   camPosU: ReturnType<typeof uniform>,
+  camFwdU: ReturnType<typeof uniform>,
   viewMatU: ReturnType<typeof uniform>,
   widthU: ReturnType<typeof uniform>,
   nearU: ReturnType<typeof uniform>,
@@ -503,10 +525,24 @@ function createShadeMaterial(
     If(hasOpaque.or(hasTrans), () => {
       If(hasTrans, () => {
         const transWorldPos = transGbuf.xyz;
-        const rd = normalize(transWorldPos.sub(camPosU));
+        // PERSPECTIVE: the primary ray diverges from the camera, so its
+        // direction is camera→surface and the ray parameter is the radial
+        // distance. ORTHOGRAPHIC: every ray is PARALLEL along camFwd, so the
+        // shared direction is camFwd and the ray parameter is the projection
+        // dot(p − camPos, camFwd). The old code always used the perspective
+        // ray; in ortho top-views that tilted the per-pixel hole rays outward
+        // so they drilled into the bore wall → dark concentric rings (ticket
+        // g2ox). Matches the VM renderer's select(isOrtho, camFwd, perspDir).
+        const isOrtho = isOrthoU.greaterThan(float(0.5));
+        const rd = select(
+          isOrtho,
+          camFwdU,
+          normalize(transWorldPos.sub(camPosU)),
+        ).toVar();
 
         const backDist = texture(transBackTex, texUv).x;
-        const frontDist = transWorldPos.sub(camPosU).length();
+        const relFront = transWorldPos.sub(camPosU);
+        const frontDist = select(isOrtho, relFront.dot(camFwdU), relFront.length());
         const tMax = backDist.sub(frontDist).add(MARCH_START_BACKOFF).toVar();
 
         If(hasOpaque, () => {
@@ -718,17 +754,24 @@ export function initDeferredPipeline(
   const selectionBuf = uniformArray(selectionData, "float");
 
   const camPosUniform = uniform(new THREE.Vector3(0, 0, 100));
+  // Camera forward (−Z) in world space; the shared parallel march direction in
+  // orthographic mode. Set per frame in renderDeferredFrame.
+  const camFwdU = uniform(new THREE.Vector3(0, 0, -1));
   const viewMatU = uniform(new THREE.Matrix4());
   const widthU = uniform(width);
   const nearU = uniform(1);
   const farU = uniform(4000);
   // 1.0 → orthographic scene camera (the default), 0.0 → perspective. Set per
-  // frame in renderDeferredFrame; selects the depth-write formula.
+  // frame in renderDeferredFrame; selects the march ray and the depth formula.
   const isOrthoU = uniform(1);
   // Viewport background colour for SDF miss pixels (ticket a2ps); set each frame
   // from the renderer's clear colour (ClearColorSync). White by default.
   const bgColorU = uniform(new THREE.Color(1, 1, 1));
-  const backFaceMaterial = createBackFaceMaterial(camPosUniform);
+  const backFaceMaterial = createBackFaceMaterial(
+    camPosUniform,
+    camFwdU,
+    isOrthoU,
+  );
 
   const bodyIdCount = MAX_PIXELS * BODY_ID_WORDS_PER_PIXEL;
   const bodyIdAttr = new StorageBufferAttribute(bodyIdCount, 1, Uint32Array);
@@ -749,6 +792,7 @@ export function initDeferredPipeline(
     opBufs.volumeBaseBuf,
     opBufs.marchRelaxBuf,
     camPosUniform,
+    camFwdU,
     viewMatU,
     widthU,
     nearU,
@@ -786,6 +830,7 @@ export function initDeferredPipeline(
     selectionBuf,
     selectionData,
     camPosUniform,
+    camFwdU,
     viewMatU,
     widthU,
     nearU,
@@ -1156,10 +1201,13 @@ export function rebuildShadeMaterialIfNeeded(
     state.volumeBaseBuf,
     state.marchRelaxBuf,
     state.camPosUniform,
+    state.camFwdU,
     state.viewMatU,
     state.widthU,
     state.nearU,
     state.farU,
+    state.bgColorU,
+    state.isOrthoU,
     state.volumeTextures,
   );
 
@@ -1194,6 +1242,7 @@ export function resizeDeferredPipeline(
 }
 
 const _camWorldPos = new THREE.Vector3();
+const _camWorldDir = new THREE.Vector3();
 const _savedClearColor = new THREE.Color();
 
 export function renderDeferredFrame(
@@ -1203,6 +1252,10 @@ export function renderDeferredFrame(
 ): void {
   camera.getWorldPosition(_camWorldPos);
   state.camPosUniform.value.copy(_camWorldPos);
+  // World-space camera forward (−Z); the shared parallel march direction in
+  // orthographic mode (ticket g2ox). getWorldDirection already normalises.
+  camera.getWorldDirection(_camWorldDir);
+  state.camFwdU.value.copy(_camWorldDir);
   state.viewMatU.value.copy(camera.matrixWorldInverse);
   // Both PerspectiveCamera and OrthographicCamera expose near/far; the depth
   // formula differs (reciprocal vs linear) and is selected by isOrthoU.
