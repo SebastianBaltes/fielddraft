@@ -1045,7 +1045,23 @@ export function rebuildDeferredBodies(
         const geo = createPrimitiveGeometry(leaf);
         if (!geo) continue;
 
-        if (leaf.kind === "box") {
+        // A convex box hull's front face IS its surface, so for a PURE-UNION
+        // body we can rasterize the box as opaque only and skip the sphere-trace
+        // (the shade pass's opaque-only branch shades that surface directly).
+        // BUT when the body is NOT union-only (it carries a Difference/
+        // Intersect — `is_union_only=false`), the opcode SDF carves the box: its
+        // raw hull is NOT the final surface. Such a box leaf MUST get a
+        // transparent + back-face march proxy like every other leaf, so the
+        // shade pass sphere-traces the boolean SDF and the hole gets carved.
+        // Without this, box-minus-cylinder rendered as a SOLID box — the
+        // subtracted bore was invisible in the deferred SDF (ticket 87bf;
+        // regression surfaced once orthographic became the default camera in
+        // 0cdb6c1, but the opaque-box-only shortcut had been unsound for
+        // non-union bodies since the renderer's inception).
+        const boxOpaqueOnly =
+          leaf.kind === "box" && hybridInfo.is_union_only;
+
+        if (boxOpaqueOnly) {
           const mesh = new THREE.Mesh(geo, gbufMaterial);
           applyLeafTransform(mesh, leaf);
           mesh.frustumCulled = false;
