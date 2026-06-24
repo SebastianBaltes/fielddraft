@@ -79,7 +79,7 @@ export function buildVmSdfEvalFn(
   const useBaseOffset = options?.withBaseOffset ?? false;
   const volTextures = options?.volumeTextures ?? [];
   const useVolumeBaseIdx = options?.withVolumeBaseIdx ?? false;
-  return Fn(({ p: pIn, baseOffset, volumeBaseIdx }: any) => {
+  const evalFn = Fn(({ p: pIn, baseOffset, volumeBaseIdx }: any) => {
     const pc = useBaseOffset ? int(baseOffset).toVar() : int(0).toVar();
 
     const vs0 = float(0).toVar(), vs1 = float(0).toVar();
@@ -631,4 +631,26 @@ export function buildVmSdfEvalFn(
     });
     return result;
   });
+
+  // CRITICAL for compile time (ticket 21ws): give the eval a LAYOUT so TSL
+  // emits it as ONE real WGSL function and every call site becomes a `call`,
+  // instead of RE-RUNNING the JS body (and inlining the whole opcode VM) at
+  // each call site. The shade pass alone calls this 7× (central-difference
+  // normal + AO) plus the march, so a layout-less Fn baked the ~512-step
+  // opcode interpreter into the module 8× → a ~1.6 MB WGSL fragment shader the
+  // driver took >1 min to compile. With the layout the module shrinks ~8× and
+  // init is back to seconds. The opcode storage buffer and the volume 3D
+  // textures stay module-global bindings (captured by the builder), so only
+  // the per-call values (p, baseOffset, volumeBaseIdx) are function params.
+  evalFn.setLayout({
+    name: "fd_vm_sdf_eval",
+    type: "float",
+    inputs: [
+      { name: "p", type: "vec3" },
+      { name: "baseOffset", type: "int" },
+      { name: "volumeBaseIdx", type: "int" },
+    ],
+  });
+
+  return evalFn;
 }
