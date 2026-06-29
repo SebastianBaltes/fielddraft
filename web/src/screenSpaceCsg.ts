@@ -362,13 +362,19 @@ function buildOperandMeshes(
 
 /**
  * Lineare Sichttiefe `viewZ` (positiv vor der Kamera) → NDC-z, identisch zur
- * Fixed-Function-Projektion: aus der Projektionsmatrix gilt für einen Punkt mit
- * Sicht-z = -viewZ:
- *   clip.z = m10 * (-viewZ) + m14 * 1
- *   clip.w = -(-viewZ)? …  → für die übliche perspektivische Matrix ist
- *   clip.w = viewZ (m23 = -1 projiziert -z_view auf +w).
- * Damit ndc.z = clip.z / clip.w = (m10 * (-viewZ) + m14) / viewZ.
- * Die Window-Depth (gl_FragDepth) ist 0.5*ndc.z + 0.5 (default depth-range 0..1).
+ * Fixed-Function-Projektion und gültig für BEIDE Projektionsarten (perspektiv
+ * UND orthographisch). Aus der Projektionsmatrix gilt für einen Punkt mit
+ * Sicht-z = -viewZ (Spalten-major elements):
+ *   clip.z = m10 * (-viewZ) + m14
+ *   clip.w = m11 * (-viewZ) + m15      (elements[11], elements[15])
+ *     perspektivisch: m11 = -1, m15 =  0  → clip.w =  viewZ   (alte Formel)
+ *     orthographisch: m11 =  0, m15 =  1  → clip.w =  1       (kein Divide-by-viewZ)
+ * Damit ndc.z = clip.z / clip.w; die Window-Depth (gl_FragDepth) ist
+ * 0.5*ndc.z + 0.5 (default depth-range 0..1).
+ *
+ * WICHTIG: Vor dem Ortho-Default (Ticket m62b / 0cdb6c1) teilte diese Formel fix
+ * durch viewZ und brach so die Tiefen-Komposition (gl_FragDepth) der SS-CSG-Körper
+ * im Ortho-Modus → reguläre Mesh-Körper wurden nicht mehr verdeckt (Ticket sa0k).
  *
  * Reine Funktion → headless testbar (screenSpaceCsg.test.ts deckt sie ab); der
  * Composite-Shader rechnet dieselbe Formel inline.
@@ -376,9 +382,17 @@ function buildOperandMeshes(
  * @param viewZ  lineare Sichttiefe (> 0)
  * @param m10    projectionMatrix.elements[10]
  * @param m14    projectionMatrix.elements[14]
+ * @param m11    projectionMatrix.elements[11]  (clip.w-Skala für -viewZ)
+ * @param m15    projectionMatrix.elements[15]  (clip.w-Offset)
  */
-export function viewZToNdcDepth(viewZ: number, m10: number, m14: number): number {
-  const zndc = (m10 * -viewZ + m14) / viewZ;
+export function viewZToNdcDepth(
+  viewZ: number,
+  m10: number,
+  m14: number,
+  m11: number,
+  m15: number,
+): number {
+  const zndc = (m10 * -viewZ + m14) / (m11 * -viewZ + m15);
   return 0.5 * zndc + 0.5;
 }
 
@@ -472,8 +486,10 @@ const COMPOSITE_FS = /* glsl */ `
   uniform sampler2D tBFront2; // r=viewZ (Layer-2-Subtrahend-Front jenseits bBack1)
   uniform sampler2D tBBack2;  // r=viewZ, gba=B-Back-Normale (Layer-2-Schnittfläche)
   uniform vec3 uBodyColor;    // lineare Body-Farbe
-  uniform float uM10;         // projectionMatrix.elements[10]
-  uniform float uM14;         // projectionMatrix.elements[14]
+  uniform float uM10;         // projectionMatrix.elements[10]  (clip.z-Skala)
+  uniform float uM14;         // projectionMatrix.elements[14]  (clip.z-Offset)
+  uniform float uM11;         // projectionMatrix.elements[11]  (clip.w-Skala für -viewZ)
+  uniform float uM15;         // projectionMatrix.elements[15]  (clip.w-Offset)
   uniform float uMode;        // 0.0 = subtract (A−B), 1.0 = intersect (A∩B)
   // Live-Lichtrig (Parität mit WebGLSceneLights/pbrShading.ts), pro Frame aus dem
   // Compositor gesetzt: WELT-Raum-Lichtrichtungen (view-space LIGHTS dirs, mit der
@@ -632,7 +648,8 @@ const COMPOSITE_FS = /* glsl */ `
     vec3 color = shade(uBodyColor, N);
 
     // gl_FragDepth aus linearer Sichttiefe (siehe viewZToNdcDepth in TS).
-    float zndc = (uM10 * (-viewZ) + uM14) / viewZ;
+    // Allgemeiner clip.w-Nenner → korrekt für perspektiv UND ortho (Ticket sa0k).
+    float zndc = (uM10 * (-viewZ) + uM14) / (uM11 * (-viewZ) + uM15);
     gl_FragDepth = 0.5 * zndc + 0.5;
     fragColor = vec4(color, 1.0);
   }
@@ -765,6 +782,8 @@ export class ScreenSpaceCsgCompositor {
         uBodyColor: { value: new THREE.Color(0.7, 0.7, 0.72) },
         uM10: { value: 0 },
         uM14: { value: 0 },
+        uM11: { value: 0 },
+        uM15: { value: 0 },
         uMode: { value: 0 },
         // Live-Lichtrig (pro Frame in render() aus der Kamera gesetzt). Werte hier
         // sind nur Platzhalter; uAmbient ist die einzige fixe Konstante (AMBIENT).
@@ -838,6 +857,9 @@ export class ScreenSpaceCsgCompositor {
     const proj = (camera as THREE.PerspectiveCamera).projectionMatrix;
     this.compositeMat.uniforms.uM10.value = proj.elements[10];
     this.compositeMat.uniforms.uM14.value = proj.elements[14];
+    // clip.w-Koeffizienten → ortho-tauglicher Tiefen-Nenner (Ticket sa0k).
+    this.compositeMat.uniforms.uM11.value = proj.elements[11];
+    this.compositeMat.uniforms.uM15.value = proj.elements[15];
     this.compositeMat.uniforms.uMode.value = mode === "intersect" ? 1 : 0;
     (this.compositeMat.uniforms.uBodyColor.value as THREE.Color).copy(bodyColor);
 

@@ -298,27 +298,30 @@ describe("bodyNeedsIntersectionPass — binärer Schnitt erkannt?", () => {
   });
 });
 
-describe("viewZToNdcDepth — lineare Sichttiefe → gl_FragDepth", () => {
+describe("viewZToNdcDepth — lineare Sichttiefe → gl_FragDepth (PERSPEKTIVISCH)", () => {
   // Standard-Perspektiv-Projektion (rechtshändig, NDC z ∈ [-1, 1]):
   //   m10 = -(far + near) / (far - near)
   //   m14 = -2 * far * near / (far - near)
+  //   clip.w = viewZ  →  m11 = -1, m15 = 0  (Divide-by-viewZ aktiv)
   const near = 1;
   const far = 100;
   const m10 = -(far + near) / (far - near);
   const m14 = (-2 * far * near) / (far - near);
+  const m11 = -1;
+  const m15 = 0;
 
   it("Near-Plane (viewZ == near) → window depth 0", () => {
-    expect(viewZToNdcDepth(near, m10, m14)).toBeCloseTo(0, 6);
+    expect(viewZToNdcDepth(near, m10, m14, m11, m15)).toBeCloseTo(0, 6);
   });
 
   it("Far-Plane (viewZ == far) → window depth 1", () => {
-    expect(viewZToNdcDepth(far, m10, m14)).toBeCloseTo(1, 6);
+    expect(viewZToNdcDepth(far, m10, m14, m11, m15)).toBeCloseTo(1, 6);
   });
 
   it("monoton wachsend mit der Tiefe (näher = kleinere Depth)", () => {
-    const dNear = viewZToNdcDepth(2, m10, m14);
-    const dMid = viewZToNdcDepth(20, m10, m14);
-    const dFar = viewZToNdcDepth(80, m10, m14);
+    const dNear = viewZToNdcDepth(2, m10, m14, m11, m15);
+    const dMid = viewZToNdcDepth(20, m10, m14, m11, m15);
+    const dFar = viewZToNdcDepth(80, m10, m14, m11, m15);
     expect(dNear).toBeLessThan(dMid);
     expect(dMid).toBeLessThan(dFar);
   });
@@ -327,7 +330,53 @@ describe("viewZToNdcDepth — lineare Sichttiefe → gl_FragDepth", () => {
     // Toleranz für Float-Rundung an den Clip-Plane-Rändern (z.B. near → -1e-16).
     const tol = 1e-9;
     for (const z of [1, 5, 25, 50, 100]) {
-      const d = viewZToNdcDepth(z, m10, m14);
+      const d = viewZToNdcDepth(z, m10, m14, m11, m15);
+      expect(d).toBeGreaterThanOrEqual(-tol);
+      expect(d).toBeLessThanOrEqual(1 + tol);
+    }
+  });
+});
+
+describe("viewZToNdcDepth — lineare Sichttiefe → gl_FragDepth (ORTHOGRAPHISCH)", () => {
+  // Standard-Ortho-Projektion (rechtshändig, NDC z ∈ [-1, 1]):
+  //   m10 = -2 / (far - near)
+  //   m14 = -(far + near) / (far - near)
+  //   clip.w = 1  →  m11 = 0, m15 = 1  (KEIN Divide-by-viewZ — Regression sa0k)
+  const near = 1;
+  const far = 100;
+  const m10 = -2 / (far - near);
+  const m14 = -(far + near) / (far - near);
+  const m11 = 0;
+  const m15 = 1;
+
+  it("Near-Plane (viewZ == near) → window depth 0", () => {
+    expect(viewZToNdcDepth(near, m10, m14, m11, m15)).toBeCloseTo(0, 6);
+  });
+
+  it("Far-Plane (viewZ == far) → window depth 1", () => {
+    expect(viewZToNdcDepth(far, m10, m14, m11, m15)).toBeCloseTo(1, 6);
+  });
+
+  it("ortho: lineare Tiefe → linearer Window-Verlauf (Mitte = 0.5)", () => {
+    // Bei clip.w == 1 ist die Window-Depth affin in viewZ → die Mitte des
+    // Frustums (viewZ == (near+far)/2) liegt exakt bei 0.5. Das ist genau die
+    // Eigenschaft, die die fix-durch-viewZ-Formel im Ortho-Modus verletzte.
+    const mid = (near + far) / 2;
+    expect(viewZToNdcDepth(mid, m10, m14, m11, m15)).toBeCloseTo(0.5, 6);
+  });
+
+  it("monoton wachsend mit der Tiefe (näher = kleinere Depth)", () => {
+    const dNear = viewZToNdcDepth(2, m10, m14, m11, m15);
+    const dMid = viewZToNdcDepth(20, m10, m14, m11, m15);
+    const dFar = viewZToNdcDepth(80, m10, m14, m11, m15);
+    expect(dNear).toBeLessThan(dMid);
+    expect(dMid).toBeLessThan(dFar);
+  });
+
+  it("alle Tiefen im gültigen Window-Bereich [0, 1]", () => {
+    const tol = 1e-9;
+    for (const z of [1, 5, 25, 50, 100]) {
+      const d = viewZToNdcDepth(z, m10, m14, m11, m15);
       expect(d).toBeGreaterThanOrEqual(-tol);
       expect(d).toBeLessThanOrEqual(1 + tol);
     }
