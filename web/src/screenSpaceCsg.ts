@@ -39,6 +39,7 @@ import {
   applyLeafTransform,
 } from "./sdfDeferredRenderer";
 import type { HybridLeafInfo } from "./kernel";
+import { LIGHTS, AMBIENT } from "./pbrShading";
 
 /* ════════════════════════════════════════════════════════════════════════
  * TEIL 1 — REINE LOGIK (headless testbar, KEINE GPU/THREE-Abhängigkeit für die
@@ -474,22 +475,73 @@ const COMPOSITE_FS = /* glsl */ `
   uniform float uM10;         // projectionMatrix.elements[10]
   uniform float uM14;         // projectionMatrix.elements[14]
   uniform float uMode;        // 0.0 = subtract (A−B), 1.0 = intersect (A∩B)
+  // Live-Lichtrig (Parität mit WebGLSceneLights/pbrShading.ts), pro Frame aus dem
+  // Compositor gesetzt: WELT-Raum-Lichtrichtungen (view-space LIGHTS dirs, mit der
+  // Kamera-Quaternion in Weltraum rotiert) + zugehörige Radianzen, plus Ambient.
+  uniform vec3 uLightDirs[3]; // normalisierte Welt-Richtungen ZUM Licht hin
+  uniform vec3 uLightRads[3]; // Radianzen je Licht (LIGHTS[i].radiance)
+  uniform float uAmbient;     // ambientLight-Intensität (AMBIENT)
   out vec4 fragColor;
 
   const float CSG_EPS = 1e-5;
-  // Material-/Shading-Parität zum übrigen WebGL-Pfad (WebGLBodies/MeshPreview):
-  // dasselbe WELT-fixe Lichtrig wie die Szene — ambientLight 0.5 + zwei
-  // DirectionalLights [200,400,300]·0.8 und [-100,200,-200]·0.3. Lambert genügt
-  // (matte MeshStandardMaterial-Körper). Diffus-Summe auf [0,1] geklemmt, damit
-  // die Schnittfläche nicht über die Körperflächen hinaus überstrahlt.
-  const float AMBIENT = 0.5;
-  const vec3 L1 = normalize(vec3(200.0, 400.0, 300.0));
-  const vec3 L2 = normalize(vec3(-100.0, 200.0, -200.0));
+
+  // Material-/Shading-Parität zum übrigen WebGL-Pfad: die Szenenkörper sind matte
+  // MeshStandardMaterial (DEFAULT_ROUGHNESS, metalness 0), durch three's
+  // ACES-Tonemapping + sRGB-Output gerendert. Wir spiegeln das hier: Lambert-
+  // Diffus mit demselben Lichtrig (HDR, key=3.0 → würde roh überstrahlen), dann
+  // dieselbe ACES-Tonemap + sRGB-Encodierung wie three sie auf die Körper anwendet.
+  // SO matcht die Schnittfläche Helligkeit UND Farbton der Plain-WebGL-Körper.
+
+  // three.js ACESFilmicToneMapping (RRTAndODTFit-Approximation, identisch zu
+  // tonemapping_pars_fragment.glsl.js → ACESFilmicToneMapping).
+  vec3 acesFilmic(vec3 color) {
+    const mat3 ACESInputMat = mat3(
+      0.59719, 0.07600, 0.02840,
+      0.35458, 0.90834, 0.13383,
+      0.04823, 0.01566, 0.83777
+    );
+    const mat3 ACESOutputMat = mat3(
+       1.60475, -0.10208, -0.00327,
+      -0.53108,  1.10813, -0.07276,
+      -0.07367, -0.00605,  1.07602
+    );
+    color = ACESInputMat * color;
+    vec3 a = color * (color + 0.0245786) - 0.000090537;
+    vec3 b = color * (0.983729 * color + 0.4329510) + 0.238081;
+    color = a / b;
+    color = ACESOutputMat * color;
+    return clamp(color, 0.0, 1.0);
+  }
+
+  // Linear → sRGB (three's outputColorSpace = SRGBColorSpace), identisch zur
+  // sRGBTransferOETF in three's color-space-Shader.
+  vec3 linearToSRGB(vec3 c) {
+    return mix(
+      c * 12.92,
+      1.055 * pow(c, vec3(0.41666)) - 0.055,
+      step(0.0031308, c)
+    );
+  }
+
+  const float RECIPROCAL_PI = 0.3183098861837907;
 
   vec3 shade(vec3 color, vec3 n) {
     vec3 N = normalize(n);
-    float diff = 0.8 * max(0.0, dot(N, L1)) + 0.3 * max(0.0, dot(N, L2));
-    return color * (AMBIENT + (1.0 - AMBIENT) * clamp(diff, 0.0, 1.0));
+    // Lambert-Diffus mit dem Live-Lichtrig (gleiche Richtungen/Radianzen wie die
+    // Szenenkörper). Spiegelt three's RE_Direct_Physical/IndirectDiffuse für ein
+    // mattes MeshStandardMaterial (metalness 0): diffuse = BRDF_Lambert(color) ·
+    // (ambient + Σ radiance·NdotL), BRDF_Lambert = color/PI. three multipliziert
+    // Licht-Intensitäten NICHT mit PI (WebGLLights), daher MUSS hier das 1/PI aus
+    // dem Lambert-BRDF stehen — sonst wäre die Schnittfläche ~π× zu hell.
+    // Spekular vernachlässigt (roughness 0.35, diffus-dominiert → Helligkeits-/
+    // Tonparität zählt, nicht der Glanzpunkt).
+    float weight = uAmbient;
+    for (int i = 0; i < 3; i++) {
+      weight += uLightRads[i].x * max(0.0, dot(N, uLightDirs[i]));
+    }
+    vec3 lit = color * RECIPROCAL_PI * weight;
+    // HDR → LDR exakt wie three es auf die Körper anwendet (ACES + sRGB).
+    return linearToSRGB(acesFilmic(lit));
   }
 
   void main() {
@@ -714,6 +766,17 @@ export class ScreenSpaceCsgCompositor {
         uM10: { value: 0 },
         uM14: { value: 0 },
         uMode: { value: 0 },
+        // Live-Lichtrig (pro Frame in render() aus der Kamera gesetzt). Werte hier
+        // sind nur Platzhalter; uAmbient ist die einzige fixe Konstante (AMBIENT).
+        uLightDirs: {
+          value: LIGHTS.map(() => new THREE.Vector3(0, 0, 1)),
+        },
+        uLightRads: {
+          value: LIGHTS.map(
+            (l) => new THREE.Vector3(l.radiance, l.radiance, l.radiance),
+          ),
+        },
+        uAmbient: { value: AMBIENT },
       },
     });
 
@@ -777,6 +840,21 @@ export class ScreenSpaceCsgCompositor {
     this.compositeMat.uniforms.uM14.value = proj.elements[14];
     this.compositeMat.uniforms.uMode.value = mode === "intersect" ? 1 : 0;
     (this.compositeMat.uniforms.uBodyColor.value as THREE.Color).copy(bodyColor);
+
+    // Live-Lichtrig in Weltraum: die view-space LIGHTS-Richtungen mit der Kamera-
+    // Quaternion rotieren — EXAKT wie WebGLSceneLights die DirectionalLights je
+    // Frame platziert. So beleuchtet die Schnittfläche identisch zu den übrigen
+    // (camera-following) Körperflächen; `vWorldNormal` ist welt-fix, daher hier
+    // die Welt-Lichtrichtung (kein View-Space-Mix).
+    const dirUniform = this.compositeMat.uniforms.uLightDirs
+      .value as THREE.Vector3[];
+    for (let i = 0; i < LIGHTS.length; i++) {
+      const d = LIGHTS[i].dir;
+      dirUniform[i]
+        .set(d[0], d[1], d[2])
+        .applyQuaternion(camera.quaternion)
+        .normalize();
+    }
 
     const isSubtract = mode !== "intersect";
 
