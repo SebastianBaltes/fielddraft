@@ -3270,8 +3270,11 @@ pub struct ExtrudeDef {
     /// region of it (`qRegion`/`qRegions`) — ticket tgdg. The `SKETCHREGION`
     /// entity filter tells the viewport's profile picker to resolve a clicked
     /// filled region to a `qRegion` query instead of the whole sketch (it is
-    /// the same picker path Revolve uses, ticket dhjn).
-    #[param(entity_filter = "SKETCHREGION")]
+    /// the same picker path Revolve uses, ticket dhjn). Ticket 20fc: a planar
+    /// B-Rep `qFace(...)` is accepted here too — picking a solid's side face as
+    /// the "profile" routes through the face-extrude path, so the user need not
+    /// know the separate `faces` field.
+    #[param(entity_filter = "SKETCHREGION, FACE")]
     pub profiles: ::fielddraft_protocol::Query,
 
     /// Extrude depth along the local Z axis. Any supported
@@ -3408,8 +3411,18 @@ impl FeatureKind for ExtrudeFeature {
         // precedence over `profiles`. The selected faces' boundary loops are
         // projected into their shared plane, unioned, and swept exactly like a
         // sketch profile; the face frame places that profile back onto the plane.
-        let face_queries: Vec<String> =
+        let mut face_queries: Vec<String> =
             d.faces.queries().iter().map(|s| s.to_string()).collect();
+        // Ticket 20fc: a planar `qFace(...)` dropped in the `profiles` field is
+        // the natural "extrude this side face" gesture — route it through the
+        // face-extrude path instead of failing as a non-resolvable sketch.
+        if face_queries.is_empty() {
+            if let Ok(crate::queries::QueryExpr::Face(_)) =
+                crate::queries::parse_query(d.profiles.as_str())
+            {
+                face_queries.push(d.profiles.as_str().to_string());
+            }
+        }
         if !face_queries.is_empty() {
             let (sketch, frame) =
                 ctx.resolve_extrude_faces(&face_queries).map_err(|message| {
@@ -8292,6 +8305,49 @@ mod tests {
         assert!((bb.min[1] + 10.0).abs() < 1e-2 && (bb.max[1] - 10.0).abs() < 1e-2, "aabb {bb:?}");
         assert!(sketch.sdf([0.0, 0.0]) < 0.0, "centre inside the profile");
         assert!(sketch.sdf([30.0, 0.0]) > 0.0, "far point outside");
+    }
+
+    #[test]
+    fn extrude_routes_qface_profiles_to_face_extrude() {
+        // Ticket 20fc: a planar `qFace(...)` placed in the `profiles` field (the
+        // natural "pick a side face as the profile" gesture) must extrude that
+        // face, not fail as a non-resolvable sketch.
+        let registry = FeatureRegistry::with_builtins();
+        let mut doc = empty_ctx();
+        let mut ctx = Context::new(&mut doc);
+        registry
+            .regenerate(&mut ctx, std::slice::from_ref(&box_call(1, 10.0)), None)
+            .unwrap();
+        let brep = weave_first(&mut ctx);
+        let hash = planar_face_hash(&brep, [0.0, 0.0, 1.0]).expect("a +Z face");
+
+        let mut doc2 = empty_ctx();
+        let mut ctx2 = Context::new(&mut doc2);
+        registry
+            .regenerate(
+                &mut ctx2,
+                &[
+                    box_call(1, 10.0),
+                    FeatureCall::new(
+                        "extrude",
+                        id(2),
+                        json!({
+                            "profiles": format!("qFace({hash})"),
+                            "depth": { "value": 5.0, "unit": "mm" },
+                        }),
+                    ),
+                ],
+                None,
+            )
+            .unwrap();
+        // A failed feature is skipped (no geometry), so finding the extrude with
+        // a real Extrude primitive proves the qFace profile routed correctly.
+        let ex = ctx2.features.iter().find(|f| f.id == id(2)).expect("extrude built");
+        let Primitive::Extrude { sketch, .. } = ex.export_primitive().expect("primitive") else {
+            panic!("expected a face-profile Extrude");
+        };
+        let bb = sketch.aabb();
+        assert!((bb.max[0] - 10.0).abs() < 1e-2, "20mm top face profile, aabb {bb:?}");
     }
 
     #[test]
