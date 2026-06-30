@@ -1,0 +1,79 @@
+# Release pipeline — a `v*` tag builds and pushes both production images to
+# GHCR (private), tagged with the version AND `latest`.
+#
+# These are exactly the images the deploy side pulls:
+#   * docker-compose.prod.yml -> image: "${REGISTRY:-ghcr.io/sorokan/fielddraft}/server:${TAG}"
+#                                        "${REGISTRY:-ghcr.io/sorokan/fielddraft}/web:${TAG}"
+#   * deploy/ansible/deploy.yml -e version=<tag>   (pulls REGISTRY/{server,web}:<tag>)
+#
+# The image namespace therefore MUST be `<registry>/<owner>/fielddraft` with the
+# component path `/server` and `/web` — NOT a flat `fielddraft-server` name —
+# so the produced refs equal what compose/ansible/.env.prod.example resolve to.
+# REGISTRY in the deploy config defaults to ghcr.io/sorokan/fielddraft; we build
+# that same base here (owner lower-cased per GHCR rules).
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  images:
+    name: build + push GHCR images
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # The tag without the leading refs/tags/ — e.g. v0.6.339. The deploy side
+      # passes this same string as `-e version=<tag>` / TAG=<tag>.
+      - name: Resolve image base + tag
+        id: meta
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          OWNER="$(echo "${GITHUB_REPOSITORY_OWNER}" | tr '[:upper:]' '[:lower:]')"
+          BASE="ghcr.io/${OWNER}/fielddraft"
+          echo "tag=${TAG}"   >> "$GITHUB_OUTPUT"
+          echo "base=${BASE}" >> "$GITHUB_OUTPUT"
+          echo "Building ${BASE}/{server,web}:${TAG} (+ :latest)"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # --- server image: static Go binary (context = ./server) --------------
+      - name: Build + push server image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./server
+          file: server/Dockerfile
+          push: true
+          tags: |
+            ${{ steps.meta.outputs.base }}/server:${{ steps.meta.outputs.tag }}
+            ${{ steps.meta.outputs.base }}/server:latest
+          cache-from: type=gha,scope=server
+          cache-to: type=gha,scope=server,mode=max
+
+      # --- web image: wasm → vite → caddy (context = repo root) -------------
+      # Context MUST be the repo root so the wasm stage can see crates/ +
+      # Cargo.toml (see web/Dockerfile.prod header).
+      - name: Build + push web image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: web/Dockerfile.prod
+          push: true
+          tags: |
+            ${{ steps.meta.outputs.base }}/web:${{ steps.meta.outputs.tag }}
+            ${{ steps.meta.outputs.base }}/web:latest
+          cache-from: type=gha,scope=web
+          cache-to: type=gha,scope=web,mode=max

@@ -78,19 +78,84 @@ Persistent volumes: `db-data`, `blob-data` (`/data/blobs`), `caddy-data`
 
 The Go server image is the existing static-binary `server/Dockerfile`.
 
-### Build → push → deploy (PLATFORM-ARCHITECTURE §10.2)
+### Continuous Integration (test gate)
 
-On the **desktop** (the only host with source):
+`.github/workflows/ci.yml` runs on **every push and pull request** to
+`agents/fielddraft-a-platform` and `main`. Three jobs run in parallel:
+
+| Job | What it runs |
+|---|---|
+| `server` | `cd server && go vet ./... && go test ./...` (Go 1.26) |
+| `web` | builds the WASM kernel (`just build-wasm` equivalent), then `npm ci && tsc -b && npm test` (Node 23, vitest) |
+| `agents` | `cd agents && node --test` (zero-dep Node ESM) |
+
+The `web` job must compile `crates/kernel` → `web/src/wasm/` first: that output
+is gitignored (a build artifact), but both `tsc -b` and vitest need the
+generated kernel types. CI installs `wasm-pack` pinned to the same version as
+`web/Dockerfile.prod` (`0.13.1`) and runs the exact commands `just build-wasm`
+uses, with cargo/target caching. **CI red ⇒ no release** (PLATFORM-ARCHITECTURE
+§10.1: „Rot ⇒ kein Deploy").
+
+### Release (tag → GHCR) (PLATFORM-ARCHITECTURE §10.2)
+
+Releases are **tag-driven**, not branch-driven. Pushing a `v*` tag triggers
+`.github/workflows/release.yml`, which logs in to GHCR with the workflow's
+`GITHUB_TOKEN` (`packages: write`) and uses `docker/build-push-action` to build
+**and push both images private to GHCR**, each tagged with the version **and**
+`latest`:
+
+| Image | Built from | Context | Pushed as |
+|---|---|---|---|
+| server | `server/Dockerfile` (static Go binary) | `./server` | `ghcr.io/<owner>/fielddraft/server:<tag>` |
+| web | `web/Dockerfile.prod` (wasm → vite → caddy) | repo root `.` | `ghcr.io/<owner>/fielddraft/web:<tag>` |
+
+The owner is lower-cased per GHCR rules; with `REGISTRY` left at its default the
+refs equal `ghcr.io/sorokan/fielddraft/{server,web}:<tag>` — exactly what
+`docker-compose.prod.yml` and `deploy/ansible/deploy.yml -e version=<tag>` pull.
+
+**Why tags, not a release branch?** A tag is an immutable, named point in
+history. It maps 1:1 onto the deploy's `version` var (`deploy.yml -e
+version=vX.Y.Z`, `TAG=vX.Y.Z`) and onto the `deploys(version, git_sha, …)`
+record (PLATFORM-ARCHITECTURE §10.3) — the image tag, the deployed version, and
+the git SHA are all the same coordinate. A moving branch ref could not give that
+immutable mapping, and rollback (“deploy the previous tag”) needs each release
+to stay individually addressable.
+
+#### Cut a release
 
 ```bash
-# 1. Build + push both images to GHCR (private), tagged with the app version.
+# 0. Land the change; CI on the branch must be green (test gate above).
+
+# 1. Bump the single source of truth and commit.
+#    web/package.json "version" feeds both the WASM stamp and the deploy tag.
+$EDITOR web/package.json            # e.g. 0.6.339 → 0.6.340
+
+git commit -am "release: v0.6.340"
+
+# 2. Tag and push the tag — this fires release.yml (build + push to GHCR).
+git tag v0.6.340
+git push origin HEAD --tags
+
+# 3. Wait for the Release workflow to finish (both images on GHCR), then deploy.
+cd deploy/ansible
+ansible-playbook -i inventory.ini deploy.yml --ask-vault-pass -e version=v0.6.340
+```
+
+> **Tag = `v` + the `web/package.json` version.** Keep them in lock-step so the
+> WASM build stamp, the image tag, and the deploy `version` all agree.
+
+### Manual build → push → deploy (no CI / break-glass)
+
+The desktop is the only host with source, so a release can also be cut by hand
+(produces the **same** image refs the deploy side pulls):
+
+```bash
 TAG=v$(node -p "require('./web/package.json').version")
 docker build -f web/Dockerfile.prod -t ghcr.io/sorokan/fielddraft/web:$TAG .
 docker build -f server/Dockerfile  -t ghcr.io/sorokan/fielddraft/server:$TAG ./server
 docker push ghcr.io/sorokan/fielddraft/web:$TAG
 docker push ghcr.io/sorokan/fielddraft/server:$TAG
 
-# 2. Deploy to the V-server (pulls the tag, brings the stack up, healthchecks).
 cd deploy/ansible
 ansible-playbook -i inventory.ini deploy.yml --ask-vault-pass -e version=$TAG
 ```
@@ -140,12 +205,17 @@ Point the domain's A/AAAA record at the V-server first. For local testing set
 
 ### Rollback (1 command)
 
-Every deploy is a tagged image; the previous tag stays in GHCR. Roll back by
-re-deploying the prior version:
+Every release is an immutable `v*` tag and a matching pair of GHCR images; the
+previous tag's images stay in GHCR. **Rollback = deploy the previous tag** — no
+rebuild, no revert commit, just point `version` at the prior release:
 
 ```bash
 ansible-playbook -i inventory.ini deploy.yml --ask-vault-pass -e version=<previous-tag>
 ```
+
+This works precisely because releases are tag-driven (above): the prior image
+tag is still addressable and still in the registry, so `deploy.yml` re-pulls it
+and brings the stack back to that exact state.
 
 ### Backups (PLATFORM-ARCHITECTURE §12)
 
