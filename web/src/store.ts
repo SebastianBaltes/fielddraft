@@ -804,7 +804,12 @@ export class KernelStore {
       canRedo: this.kernel.canRedo(),
       redoDepth: this.kernel.redoDepth(),
       nextOp: this.state.nextOp,
-      meshedBodies: this.state.meshedBodies,
+      // An empty document must show NO meshes immediately (ticket vy3t): the
+      // mesher worker skips posting for a body-less doc, so the stale meshes
+      // would otherwise linger (e.g. after Menu → New). Clear synchronously
+      // when the kernel has no bodies; otherwise the worker rebuild updates.
+      meshedBodies:
+        this.kernel.bodyCount() === 0 ? [] : this.state.meshedBodies,
       brepVersion: this.state.brepVersion,
       measureMode: this.state.measureMode,
       measureSelection: this.state.measureSelection,
