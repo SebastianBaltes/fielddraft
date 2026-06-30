@@ -286,7 +286,16 @@ export function App() {
       <StrictMode>
       <header className="topbar">
         <div className="title">
-          FieldDraft <span className="version">v{__APP_VERSION__}</span>
+          FieldDraft{" "}
+          <button
+            type="button"
+            className="version"
+            title="Release Notes anzeigen"
+            data-testid="version-badge"
+            onClick={() => window.dispatchEvent(new Event("fd:release-notes"))}
+          >
+            v{__APP_VERSION__}
+          </button>
           <SettingsMenu
             store={store}
             state={state}

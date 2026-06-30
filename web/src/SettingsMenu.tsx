@@ -1,6 +1,7 @@
 import { createContext, useContext, useEffect, useRef, useState, useCallback } from "react";
 import type { KernelStore, StoreState } from "./store";
 import { ReportDialog } from "./ReportDialog";
+import { ReleaseNotesDialog } from "./ReleaseNotesDialog";
 import {
   CONTROLS_PRESETS,
   CONTROLS_PRESET_OPTIONS,
@@ -447,6 +448,7 @@ export function SettingsMenu({
   const [open, setOpen] = useState(false);
   const [settingsDialogOpen, setSettingsDialogOpen] = useState(false);
   const [reportDialogOpen, setReportDialogOpen] = useState(false);
+  const [releaseNotesOpen, setReleaseNotesOpen] = useState(false);
   const popoverRef = useRef<HTMLDivElement>(null);
   const buttonRef = useRef<HTMLButtonElement>(null);
 
@@ -457,6 +459,13 @@ export function SettingsMenu({
     const openReport = () => setReportDialogOpen(true);
     window.addEventListener("fd:report-issue", openReport);
     return () => window.removeEventListener("fd:report-issue", openReport);
+  }, []);
+
+  // The version badge in the topbar dispatches this to open the release notes.
+  useEffect(() => {
+    const openNotes = () => setReleaseNotesOpen(true);
+    window.addEventListener("fd:release-notes", openNotes);
+    return () => window.removeEventListener("fd:release-notes", openNotes);
   }, []);
 
   useEffect(() => {
@@ -659,6 +668,16 @@ export function SettingsMenu({
             type="button"
             role="menuitem"
             className="menu-item"
+            data-testid="menu-release-notes"
+            onClick={() => menuAction(() => setReleaseNotesOpen(true))}
+          >
+            Release Notes…
+          </button>
+
+          <button
+            type="button"
+            role="menuitem"
+            className="menu-item"
             data-testid="menu-report"
             onClick={() => menuAction(() => setReportDialogOpen(true))}
           >
@@ -730,6 +749,10 @@ export function SettingsMenu({
           store={store}
           onClose={() => setReportDialogOpen(false)}
         />
+      )}
+
+      {releaseNotesOpen && (
+        <ReleaseNotesDialog onClose={() => setReleaseNotesOpen(false)} />
       )}
     </div>
   );

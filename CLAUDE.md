@@ -15,6 +15,10 @@ Wir sind in einer frühen Dev-Phase. Schnelles Entwickeln und sauberer Code habe
 
 Volle Deployment-Anleitung in `DEPLOY.md`.
 
+## Release Notes pflegen
+
+Bei jedem Versions-Bump (`web/package.json`) **einen Eintrag oben** in `web/src/releaseNotes.ts` ergänzen (neueste Version zuerst): `{ kind: "feat" | "fix" | "perf", text, scope?, tickets? }`. Diese Datei ist die handgepflegte SSOT für die In-App-Release-Notes (Menü „Release Notes…" + Klick aufs Versions-Badge). Die Historie wurde einmalig aus den Commits geseedet (`web/scripts/genReleaseNotes.mjs`) — das Skript nur zum kompletten Neu-Aufbau erneut laufen lassen, nicht im Build.
+
 ## Tickets abarbeiten (wenn nichts anderes ansteht)
 
 User melden Fehler/Feature-Wünsche in-App über **Report Issue…** (Menü oben links). Jedes Ticket landet unter `tickets/open/<id>/` (Screenshot, `project.fdraft`, `ticket.md`). Format und Ablauf: `tickets/README.md`.
