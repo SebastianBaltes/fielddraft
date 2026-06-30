@@ -65,6 +65,7 @@ import {
   MeshPreview,
   AssemblyParts,
   MateConnectorOverlay,
+  MateInferenceOverlay,
   DatumOverlay,
   pickDatumAtRay,
   ReferenceMesh,
@@ -84,6 +85,7 @@ import { getPublishedPickCamera, publishPickCamera } from "./pickCameraBridge";
 import { publishSketchCamera } from "./sketchCameraBridge";
 import { requestOverlayRedraw } from "./sketchOverlayBridge";
 import { getHoveredElement, getHoveredElementOfKind } from "./brepPickBridge";
+import { getMateInferenceSnap } from "./mateInferenceBridge";
 import type { PickedElement } from "./elementQuery";
 import { MeasurePanel } from "./MeasurePanel";
 import { pickSketchAtRay } from "./sketchPickBridge";
@@ -428,24 +430,27 @@ function handleIkClick(
   });
 }
 
-function handleMateClick(
-  store: {
-    addMateConnectorAtFace(faceQuery: string): void;
-    showTransientError(msg: string): void;
-  },
-  _click: PickHit,
-): void {
-  // C2: a mate connector anchors to a B-Rep face. Use the face the
-  // overlays published to the pick bridge; emit `qFace(<idHash>)` for it.
-  const hovered = getHoveredElement();
-  const query = hovered ? mapPickToQuery(hovered, "FACE") : null;
-  if (!query) {
+function handleMateClick(store: {
+  addMateConnectorAt(
+    anchor: string,
+    opts?: { t?: number; primary?: string; flip?: boolean },
+  ): void;
+  showTransientError(msg: string): void;
+}): void {
+  // The MateInferenceOverlay snaps a connector to the connection point nearest
+  // the cursor (vertex / edge midpoint / face centre) and publishes it to the
+  // bridge; placing it just commits that snap.
+  const snap = getMateInferenceSnap();
+  if (!snap) {
     store.showTransientError(
-      "Mate connector needs a face — hover a B-Rep face and click.",
+      "Mate connector needs geometry — hover a vertex, edge, or face and click.",
     );
     return;
   }
-  store.addMateConnectorAtFace(query);
+  store.addMateConnectorAt(snap.anchorQuery, {
+    t: snap.t,
+    primary: snap.primaryQuery ?? "",
+  });
 }
 
 function handleFilletClick(
@@ -739,6 +744,11 @@ function WebGLViewport({
             <BodyHighlightOverlay />
           </>
         )}
+        {/* Mate-connector triads + the inference preview render on the WebGL
+            fallback too (classic materials); the user's WebGPU runs in
+            Compatibility mode where WebGL is the reliable path. */}
+        <MateConnectorOverlay />
+        {state?.mateMode && <MateInferenceOverlay ndc={ndc} />}
         {/* Ticket 7hk3: the Move/transform gizmos must render on the WebGL
             fallback too. They were only mounted in the WebGPU <Scene>, so in
             WebGL mode arming Move + selecting a body (via scene click → host
@@ -1243,8 +1253,11 @@ export function Viewport({
       handleIkClick(store, state, click);
       return;
     }
-    if (state?.mateMode && click?.hit) {
-      handleMateClick(store, click);
+    if (state?.mateMode) {
+      // The tool owns every click while active: place at the inferred snap
+      // (which can sit on a corner/edge just off the silhouette, where the
+      // kernel raycast reports no `hit`), else hint.
+      handleMateClick(store);
       return;
     }
     if (state?.filletMode) {
@@ -1645,6 +1658,7 @@ export function Viewport({
                   </>
                 )}
                 <MateConnectorOverlay />
+                {state?.mateMode && <MateInferenceOverlay ndc={ndc} />}
                 <AssemblyParts />
                 <CameraRig preset={controlsPreset} />
                 <ViewCommandConsumer />
@@ -1675,7 +1689,8 @@ export function Viewport({
       <MeasurePanel />
       {state?.mateMode && (
         <div className="face-pick-hud" data-testid="mate-mode-hud">
-          Click a surface to place a mate connector
+          Hover a vertex, edge, or face — click to place a mate connector ·
+          R: cycle orientation
         </div>
       )}
       {state?.ikMode && (

@@ -768,6 +768,51 @@ impl<'a> Context<'a> {
         out
     }
 
+    /// Resolve a mate-connector anchor query to its CSYS origin and, for an
+    /// edge anchor, the unit tangent at arc-length fraction `t`. Faces resolve
+    /// to their centroid, vertices to their world position, edges to the point
+    /// at `t` along the sampled polyline. `None` if nothing matches.
+    pub fn resolve_mate_anchor(
+        &mut self,
+        expr: &crate::queries::QueryExpr,
+        t: f32,
+    ) -> Option<([f32; 3], Option<[f32; 3]>)> {
+        use crate::queries::QueryExpr;
+        match expr {
+            QueryExpr::Edge(_) | QueryExpr::EdgeBetween(_, _) => {
+                let polylines = self.resolve_edge_polylines(expr);
+                let poly = polylines.into_iter().find(|p| !p.is_empty())?;
+                let (p, tan) = polyline_point_tangent(&poly, t)?;
+                Some((p, Some(tan)))
+            }
+            QueryExpr::Vertex(hash) => {
+                use crate::brep::naming::TopoRef;
+                use crate::brep::VertexId;
+                let woven = self.brep_cache.ensure(&self.features);
+                for (brep, placement) in woven {
+                    for i in 0..brep.vertices.len() {
+                        let vid = VertexId(i as u32);
+                        if TopoRef::from_vertex(brep, vid).id_hash == *hash {
+                            let v = brep.vertex(vid);
+                            let p = place_point(
+                                placement,
+                                [
+                                    v.position[0] as f32,
+                                    v.position[1] as f32,
+                                    v.position[2] as f32,
+                                ],
+                            );
+                            return Some((p, None));
+                        }
+                    }
+                }
+                None
+            }
+            // Face / created-by / face-of: the anchor IS a face, use its frame.
+            _ => self.resolve_face_frame(expr).map(|f| (f.origin, None)),
+        }
+    }
+
     /// Resolve an axis-line query to a single world-space segment
     /// `(start, end)`. Two query shapes are honoured, both used by the
     /// Revolve tool's axis field:
@@ -869,6 +914,94 @@ fn place_point(placement: &fielddraft_protocol::Transform, p: [f32; 3]) -> [f32;
         r[1] + placement.translate[1],
         r[2] + placement.translate[2],
     ]
+}
+
+// ─── Mate-connector CSYS helpers ─────────────────────────────────
+//
+// These mirror `crate::sketch_features::face_plane_frame` exactly (same
+// seed-cross convention) so a connector's web-side inference preview and the
+// kernel's authoritative resolve agree to f32 on the X spin.
+
+fn cross3(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
+    [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    ]
+}
+
+fn normalize3v(v: [f32; 3]) -> [f32; 3] {
+    let n = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+    if n > 1e-9 {
+        [v[0] / n, v[1] / n, v[2] / n]
+    } else {
+        [0.0, 0.0, 1.0]
+    }
+}
+
+/// In-plane X basis for a normal `n`: cross `n` with the world axis least
+/// aligned with it (the `face_plane_frame` convention).
+fn seed_cross_x(n: [f32; 3]) -> [f32; 3] {
+    let ax = n[0].abs();
+    let ay = n[1].abs();
+    let az = n[2].abs();
+    let seed = if ax <= ay && ax <= az {
+        [1.0, 0.0, 0.0]
+    } else if ay <= az {
+        [0.0, 1.0, 0.0]
+    } else {
+        [0.0, 0.0, 1.0]
+    };
+    normalize3v(cross3(seed, n))
+}
+
+/// Project `v` onto the plane ⟂ `n` and normalise; falls back to the
+/// seed-cross basis if `v` is (near-)parallel to `n`.
+fn project_perp(v: [f32; 3], n: [f32; 3]) -> [f32; 3] {
+    let d = v[0] * n[0] + v[1] * n[1] + v[2] * n[2];
+    let p = [v[0] - d * n[0], v[1] - d * n[1], v[2] - d * n[2]];
+    if p[0] * p[0] + p[1] * p[1] + p[2] * p[2] > 1e-12 {
+        normalize3v(p)
+    } else {
+        seed_cross_x(n)
+    }
+}
+
+/// Point + unit tangent at arc-length fraction `t ∈ [0, 1]` along a world
+/// polyline. Returns `None` for an empty polyline.
+fn polyline_point_tangent(poly: &[[f32; 3]], t: f32) -> Option<([f32; 3], [f32; 3])> {
+    if poly.is_empty() {
+        return None;
+    }
+    if poly.len() == 1 {
+        return Some((poly[0], [1.0, 0.0, 0.0]));
+    }
+    let seg = |a: [f32; 3], b: [f32; 3]| -> f32 {
+        ((b[0] - a[0]).powi(2) + (b[1] - a[1]).powi(2) + (b[2] - a[2]).powi(2)).sqrt()
+    };
+    let total: f32 = poly.windows(2).map(|w| seg(w[0], w[1])).sum();
+    if total <= 1e-9 {
+        return Some((poly[0], [1.0, 0.0, 0.0]));
+    }
+    let target = t.clamp(0.0, 1.0) * total;
+    let mut acc = 0.0f32;
+    for i in 0..poly.len() - 1 {
+        let a = poly[i];
+        let b = poly[i + 1];
+        let l = seg(a, b);
+        if acc + l >= target || i == poly.len() - 2 {
+            let local = if l > 1e-9 { (target - acc) / l } else { 0.0 };
+            let p = [
+                a[0] + (b[0] - a[0]) * local,
+                a[1] + (b[1] - a[1]) * local,
+                a[2] + (b[2] - a[2]) * local,
+            ];
+            let tan = normalize3v([b[0] - a[0], b[1] - a[1], b[2] - a[2]]);
+            return Some((p, tan));
+        }
+        acc += l;
+    }
+    None
 }
 
 /// The behaviour of one feature type.
@@ -2102,22 +2235,40 @@ impl FeatureKind for SweepFeature {
 // in the viewport as a small axis triad. Used by assemblies
 // (P1) to define attachment points.
 
-/// `mate_connector` — local coordinate system on a surface.
+/// `mate_connector` — local coordinate system on the model.
 ///
-/// C2: the connector is now anchored to a B-Rep **face** (resolved
-/// mid-loop against the live geometry) rather than carrying a baked
-/// world origin/normal. Its CSYS origin is the face centroid shifted by
-/// `offset` in the face's in-plane basis; its Z-axis is the face normal.
+/// C2: the connector is anchored to a B-Rep element (face, edge, or
+/// vertex), resolved mid-loop against the live geometry rather than
+/// carrying a baked world origin/normal. The CSYS is derived from queries
+/// only, so it follows the geometry parametrically across edits:
+///   * **origin** — the anchor's point: a face centroid, a point at
+///     arc-length `t` along an edge, or the vertex itself.
+///   * **+Z (primary)** — the outward normal of the `primary` reference
+///     face. Empty `primary` means "use the anchor face's own normal"
+///     (only valid for a face anchor). For edge/vertex anchors `primary`
+///     selects which adjacent face orients the CSYS — Onshape's "primary
+///     axis entity"; cycling the orientation = a different adjacent face.
+///   * **+X (secondary)** — the edge tangent (projected ⟂ Z) for an edge
+///     anchor, else the seed-cross in-plane basis (matching
+///     [`crate::sketch_features::face_plane_frame`]).
 #[derive(FeatureSchema)]
 #[schema(type = "mate_connector")]
 pub struct MateConnectorDef {
-    /// Face this connector attaches to (e.g. `qFace(<id_hash>)`).
-    #[param(entity_filter = "FACE")]
-    pub face: ::fielddraft_protocol::Query,
-    /// In-plane `(u, v)` offset from the face centroid, in the face's
-    /// synthesised `x_axis`/`y_axis` basis. Defaults to no offset.
-    #[param(default = [0.0, 0.0])]
-    pub offset: [f32; 2],
+    /// What the connector anchors to: a B-Rep face, edge, or vertex
+    /// (`qFace`/`qEdge`/`qVertex`).
+    #[param(entity_filter = "FACE, EDGE, VERTEX")]
+    pub anchor: ::fielddraft_protocol::Query,
+    /// Arc-length parameter along an edge anchor, `[0, 1]` (midpoint =
+    /// 0.5). Ignored for face/vertex anchors.
+    #[param(default = 0.5)]
+    pub t: f32,
+    /// Orientation reference FACE whose outward normal defines +Z. Empty
+    /// for a face anchor (it uses its own normal).
+    #[param(default = ::fielddraft_protocol::Query::new(""), entity_filter = "FACE")]
+    pub primary: ::fielddraft_protocol::Query,
+    /// Flip the primary (Z) axis 180°.
+    #[param(default = false)]
+    pub flip: bool,
 }
 
 /// C2: the resolved coordinate system of a placed `mate_connector`,
@@ -2149,32 +2300,56 @@ impl FeatureKind for MateConnectorFeature {
         def: &Value,
     ) -> Result<(), FeatureError> {
         // Mate connectors don't produce spine geometry — they're datum
-        // features. C2: resolve the `face` query against the live
+        // features. Resolve the anchor + orientation queries against the live
         // geometry, derive the CSYS, and stash it for the viewport.
         let d = MateConnectorDef::parse(def)?;
-        let expr = crate::queries::parse_query(d.face.as_str()).map_err(|e| {
-            FeatureError::InvalidParameter {
-                feature: MateConnectorDef::TYPE_NAME,
-                name: "face",
-                message: format!("could not parse face query: {e}"),
-            }
-        })?;
-        let frame = ctx.resolve_face_frame(&expr).ok_or(FeatureError::InvalidParameter {
+        let inval = |name: &'static str, message: String| FeatureError::InvalidParameter {
             feature: MateConnectorDef::TYPE_NAME,
-            name: "face",
-            message: "face query resolved to no face".to_string(),
-        })?;
-        // Shift the centroid by the in-plane offset.
-        let origin = [
-            frame.origin[0] + d.offset[0] * frame.x_axis[0] + d.offset[1] * frame.y_axis[0],
-            frame.origin[1] + d.offset[0] * frame.x_axis[1] + d.offset[1] * frame.y_axis[1],
-            frame.origin[2] + d.offset[0] * frame.x_axis[2] + d.offset[1] * frame.y_axis[2],
-        ];
+            name,
+            message,
+        };
+        let anchor = crate::queries::parse_query(d.anchor.as_str())
+            .map_err(|e| inval("anchor", format!("could not parse anchor query: {e}")))?;
+
+        // Origin (+ the edge tangent when the anchor is an edge).
+        let (origin, tangent) = ctx
+            .resolve_mate_anchor(&anchor, d.t)
+            .ok_or_else(|| inval("anchor", "anchor query resolved to nothing".into()))?;
+
+        // +Z = the primary reference face's normal, or the anchor face's own
+        // normal when `primary` is empty (only a face anchor has one).
+        let primary_str = d.primary.as_str();
+        let mut normal = if primary_str.is_empty() {
+            ctx.resolve_face_frame(&anchor).map(|f| f.normal).ok_or_else(|| {
+                inval(
+                    "primary",
+                    "non-face anchor needs a primary orientation face".into(),
+                )
+            })?
+        } else {
+            let p = crate::queries::parse_query(primary_str)
+                .map_err(|e| inval("primary", format!("could not parse primary query: {e}")))?;
+            ctx.resolve_face_frame(&p)
+                .map(|f| f.normal)
+                .ok_or_else(|| inval("primary", "primary query resolved to no face".into()))?
+        };
+        if d.flip {
+            normal = [-normal[0], -normal[1], -normal[2]];
+        }
+
+        // +X: an edge tangent projected into the plane, else the seed-cross
+        // basis (identical to `face_plane_frame`, so a face anchor's CSYS is
+        // unchanged and a vertex/edge anchor stays well-conditioned).
+        let x_axis = match tangent {
+            Some(t) => project_perp(t, normal),
+            None => seed_cross_x(normal),
+        };
+
         ctx.mate_connectors.push(ResolvedMateConnector {
             id: id.clone(),
             origin,
-            normal: frame.normal,
-            x_axis: frame.x_axis,
+            normal,
+            x_axis,
         });
         Ok(())
     }
@@ -9193,14 +9368,14 @@ mod tests {
         }
         let top_hash = top_hash.expect("box has a +Z face");
 
-        // Place a mate connector on that face; assert resolved CSYS.
+        // Face anchor, no `primary` → CSYS from the face's own frame.
         registry
             .regenerate(
                 &mut ctx,
                 &[FeatureCall::new(
                     "mate_connector",
                     id(2),
-                    json!({ "face": format!("qFace({top_hash})"), "offset": [0.0, 0.0] }),
+                    json!({ "anchor": format!("qFace({top_hash})") }),
                 )],
                 None,
             )
@@ -9212,8 +9387,7 @@ mod tests {
         assert!((mc_origin[2] - 10.0).abs() < 1e-2, "origin on the +Z face, got {mc_origin:?}");
         assert!(mc_origin[0].abs() < 1e-2 && mc_origin[1].abs() < 1e-2, "centroid centred");
 
-        // Offset shifts the origin in-plane (x_axis/y_axis), never along
-        // the normal.
+        // `flip` reverses the primary (Z) axis, leaving the origin alone.
         ctx.mate_connectors.clear();
         registry
             .regenerate(
@@ -9221,17 +9395,121 @@ mod tests {
                 &[FeatureCall::new(
                     "mate_connector",
                     id(3),
-                    json!({ "face": format!("qFace({top_hash})"), "offset": [3.0, 0.0] }),
+                    json!({ "anchor": format!("qFace({top_hash})"), "flip": true }),
                 )],
                 None,
             )
             .unwrap();
-        let shifted = ctx.mate_connectors[0].origin;
-        assert!((shifted[2] - 10.0).abs() < 1e-2, "offset stays in-plane (z unchanged)");
-        let in_plane_shift = ((shifted[0] - mc_origin[0]).powi(2)
-            + (shifted[1] - mc_origin[1]).powi(2))
-        .sqrt();
-        assert!((in_plane_shift - 3.0).abs() < 1e-2, "offset magnitude 3, got {in_plane_shift}");
+        let flipped = &ctx.mate_connectors[0];
+        assert!((flipped.normal[2] + 1.0).abs() < 1e-3, "flip → -Z, got {:?}", flipped.normal);
+        assert!((flipped.origin[2] - 10.0).abs() < 1e-2, "flip keeps the origin");
+    }
+
+    #[test]
+    fn mate_connector_anchors_to_edge_midpoint_and_vertex() {
+        let registry = FeatureRegistry::with_builtins();
+        let mut doc = empty_ctx();
+        let mut ctx = Context::new(&mut doc);
+        registry
+            .regenerate(&mut ctx, std::slice::from_ref(&box_call(1, 10.0)), None)
+            .unwrap();
+
+        let woven = crate::body::weave_all(&ctx.features);
+        let (brep, _placement) = &woven[0];
+
+        // The +Z face (for orientation) and a TOP edge (both endpoints z≈10).
+        let mut top_face_hash = None;
+        for i in 0..brep.face_count() {
+            let f = brep.face(crate::brep::FaceId(i as u32));
+            if let crate::brep::SurfaceGeometry::Analytic {
+                surface: fielddraft_protocol::HalfSpace::Plane { normal, .. },
+                ..
+            } = &f.surface
+            {
+                if (normal[2] - 1.0).abs() < 1e-4 {
+                    top_face_hash = Some(
+                        crate::brep::naming::TopoRef::from_face(brep, crate::brep::FaceId(i as u32))
+                            .id_hash,
+                    );
+                }
+            }
+        }
+        let top_face_hash = top_face_hash.expect("box +Z face");
+
+        let mut top_edge_hash = None;
+        for i in 0..brep.edges.len() {
+            let eid = crate::brep::EdgeId(i as u32);
+            let poly = crate::brep::edge_sampling::sample_edge(&brep.edge(eid).geometry);
+            if poly.len() >= 2 && poly.iter().all(|p| (p[2] - 10.0).abs() < 1e-3) {
+                top_edge_hash =
+                    Some(crate::brep::naming::TopoRef::from_edge(brep, eid).id_hash);
+                break;
+            }
+        }
+        let top_edge_hash = top_edge_hash.expect("box has a top edge");
+
+        // A top corner vertex (z≈10).
+        let mut corner_hash = None;
+        for i in 0..brep.vertices.len() {
+            let vid = crate::brep::VertexId(i as u32);
+            if (brep.vertex(vid).position[2] - 10.0).abs() < 1e-3 {
+                corner_hash =
+                    Some(crate::brep::naming::TopoRef::from_vertex(brep, vid).id_hash);
+                break;
+            }
+        }
+        let corner_hash = corner_hash.expect("box has a top vertex");
+
+        // Edge midpoint anchor oriented by the +Z face: origin on the top edge
+        // (z≈10), Z = +Z, X ⟂ Z (the projected edge tangent stays in-plane).
+        registry
+            .regenerate(
+                &mut ctx,
+                &[FeatureCall::new(
+                    "mate_connector",
+                    id(2),
+                    json!({
+                        "anchor": format!("qEdge({top_edge_hash})"),
+                        "t": 0.5,
+                        "primary": format!("qFace({top_face_hash})"),
+                    }),
+                )],
+                None,
+            )
+            .unwrap();
+        let edge_mc = &ctx.mate_connectors[0];
+        assert!((edge_mc.origin[2] - 10.0).abs() < 1e-2, "edge origin on top, got {:?}", edge_mc.origin);
+        assert!((edge_mc.normal[2] - 1.0).abs() < 1e-3, "edge Z from primary +Z face");
+        let xz = edge_mc.x_axis[0] * edge_mc.normal[0]
+            + edge_mc.x_axis[1] * edge_mc.normal[1]
+            + edge_mc.x_axis[2] * edge_mc.normal[2];
+        assert!(xz.abs() < 1e-4, "X ⟂ Z, got dot {xz}");
+
+        // Vertex anchor oriented by the +Z face: origin at the corner, Z = +Z.
+        ctx.mate_connectors.clear();
+        registry
+            .regenerate(
+                &mut ctx,
+                &[FeatureCall::new(
+                    "mate_connector",
+                    id(3),
+                    json!({
+                        "anchor": format!("qVertex({corner_hash})"),
+                        "primary": format!("qFace({top_face_hash})"),
+                    }),
+                )],
+                None,
+            )
+            .unwrap();
+        let vtx_mc = &ctx.mate_connectors[0];
+        assert!((vtx_mc.origin[2] - 10.0).abs() < 1e-2, "vertex origin at corner z=10");
+        assert!(
+            (vtx_mc.origin[0].abs() - 10.0).abs() < 1e-2
+                && (vtx_mc.origin[1].abs() - 10.0).abs() < 1e-2,
+            "vertex origin at a ±10/±10 corner, got {:?}",
+            vtx_mc.origin
+        );
+        assert!((vtx_mc.normal[2] - 1.0).abs() < 1e-3, "vertex Z from primary +Z face");
     }
 
     // ─── DL-61: fillet edge query → SMin polyline tube ──────────────

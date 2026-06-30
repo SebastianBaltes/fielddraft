@@ -51,6 +51,8 @@ import {
   buildMateGizmo,
   disposeMateGizmo,
 } from "./mateGizmo";
+import { enumerateConnectionPoints } from "./mateConnectionPoints";
+import { setMateInferenceSnap } from "./mateInferenceBridge";
 import {
   bodyNeedsSubtractionPass,
   bodyNeedsIntersectionPass,
@@ -4263,6 +4265,262 @@ export function MateConnectorOverlay() {
     }
     return clear;
   }, [store, state?.features]);
+
+  return <group ref={groupRef} />;
+}
+
+// ─── Mate-connector inference (hover preview) ────────────────────
+//
+// While the Mate Connector tool is active, this overlay snaps a translucent
+// preview gizmo to the connection point nearest the cursor (vertices, edge
+// midpoints, planar face centres) and renders small dot markers for the points
+// nearby — the Onshape inference experience. The snapped point + its chosen
+// orientation are published to `mateInferenceBridge` so a viewport click can
+// place the connector there.
+//
+// Orientation (option b): each point carries one CSYS per adjacent face. The
+// default follows the face under the cursor (move across an edge → the
+// connector's +Z flips to that side's normal); `R` cycles the variants
+// manually until the cursor moves to a different point.
+
+const MATE_DOT_RADIUS_MM = 0.9;
+const MATE_DOT_COLOR = 0x4a4a3a;
+const MATE_SNAP_DOT_COLOR = 0xf5c542;
+/** Snap/preview only when the nearest point is within this cursor radius. */
+const MATE_SHOW_RADIUS_PX = 130;
+/** Points within this cursor radius get a visible dot marker. */
+const MATE_DOT_RADIUS_PX = 75;
+const MATE_MAX_DOTS = 256;
+
+export function MateInferenceOverlay({
+  ndc,
+}: {
+  ndc: { x: number; y: number; active: boolean };
+}) {
+  const { store, state } = useKernelStore();
+  const camera = useThree((s) => s.camera);
+  const size = useThree((s) => s.size);
+  const invalidate = useThree((s) => s.invalidate);
+  const mateMode = state?.mateMode === true;
+
+  const groupRef = useRef<THREE.Group>(null);
+  const gizmoRef = useRef<THREE.Group | null>(null);
+  const lastGizmoKey = useRef("");
+  // Per-anchor orientation cursor: `manual` sticks the user's R-cycle choice
+  // until the cursor moves to a different connection point.
+  const variantRef = useRef<{
+    anchor: string | null;
+    index: number;
+    manual: boolean;
+  }>({ anchor: null, index: 0, manual: false });
+
+  const dotsRef = useRef<THREE.InstancedMesh | null>(null);
+  if (!dotsRef.current) {
+    const g = new THREE.SphereGeometry(MATE_DOT_RADIUS_MM, 8, 6);
+    const m = new THREE.MeshBasicMaterial({
+      depthTest: false,
+      depthWrite: false,
+      transparent: true,
+      opacity: 0.9,
+    });
+    const inst = new THREE.InstancedMesh(g, m, MATE_MAX_DOTS);
+    inst.frustumCulled = false;
+    inst.renderOrder = 998;
+    inst.count = 0;
+    dotsRef.current = inst;
+  }
+
+  const bodyFingerprint = useMemo(() => {
+    if (!store || !mateMode) return "";
+    const n = store.kernel.bodyCount();
+    let fp = String(n);
+    for (let i = 0; i < n; i++)
+      fp += `:${store.kernel.bodyId(i)}.${store.kernel.bodyVersion(i)}`;
+    return fp;
+    // state in deps so a regen (new features) re-enumerates.
+  }, [store, mateMode, state]);
+
+  const candidates = useMemo(
+    () => (store && mateMode ? enumerateConnectionPoints(store.kernel) : []),
+    [store, mateMode, bodyFingerprint],
+  );
+
+  // Mount the dot instances once.
+  useEffect(() => {
+    const grp = groupRef.current;
+    const dots = dotsRef.current;
+    if (grp && dots && dots.parent !== grp) grp.add(dots);
+  }, []);
+
+  // R cycles the orientation variant while the tool is active. Capture phase +
+  // stopImmediatePropagation so it wins over global view shortcuts during the
+  // (transient) tool mode.
+  useEffect(() => {
+    if (!mateMode) return;
+    const onKey = (e: KeyboardEvent) => {
+      const t = e.target as HTMLElement | null;
+      if (
+        t &&
+        (t.isContentEditable ||
+          t.tagName === "INPUT" ||
+          t.tagName === "TEXTAREA" ||
+          t.tagName === "SELECT")
+      )
+        return; // don't hijack typing
+      if (e.key === "r" || e.key === "R") {
+        variantRef.current.index += 1;
+        variantRef.current.manual = true;
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        invalidate();
+      }
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [mateMode, invalidate]);
+
+  // Dispose GPU resources on unmount.
+  useEffect(
+    () => () => {
+      setMateInferenceSnap(null);
+      if (gizmoRef.current) disposeMateGizmo(gizmoRef.current);
+      const dots = dotsRef.current;
+      if (dots) {
+        dots.geometry.dispose();
+        (dots.material as THREE.Material).dispose();
+      }
+    },
+    [],
+  );
+
+  const dummy = useMemo(() => new THREE.Object3D(), []);
+  const proj = useMemo(() => new THREE.Vector3(), []);
+  const view = useMemo(() => new THREE.Vector3(), []);
+  const snapColor = useMemo(() => new THREE.Color(MATE_SNAP_DOT_COLOR), []);
+  const dotColor = useMemo(() => new THREE.Color(MATE_DOT_COLOR), []);
+
+  useFrame(() => {
+    const grp = groupRef.current;
+    const dots = dotsRef.current;
+    if (!grp || !dots) return;
+
+    const clearGizmo = () => {
+      if (gizmoRef.current) {
+        grp.remove(gizmoRef.current);
+        disposeMateGizmo(gizmoRef.current);
+        gizmoRef.current = null;
+        lastGizmoKey.current = "";
+      }
+    };
+
+    if (!mateMode || !ndc.active || candidates.length === 0) {
+      grp.visible = false;
+      dots.count = 0;
+      clearGizmo();
+      setMateInferenceSnap(null);
+      return;
+    }
+    grp.visible = true;
+
+    const w = size.width;
+    const h = size.height;
+    camera.updateMatrixWorld();
+    const cx = (ndc.x * 0.5 + 0.5) * w;
+    const cy = (0.5 - ndc.y * 0.5) * h;
+
+    // Project every candidate; track the nearest in-front one.
+    const sx: number[] = new Array(candidates.length);
+    const sy: number[] = new Array(candidates.length);
+    const front: boolean[] = new Array(candidates.length);
+    let best = -1;
+    let bestD = Infinity;
+    for (let i = 0; i < candidates.length; i++) {
+      const c = candidates[i];
+      view.set(c.world[0], c.world[1], c.world[2]).applyMatrix4(
+        camera.matrixWorldInverse,
+      );
+      front[i] = view.z < 0; // camera looks down -Z in view space
+      proj.set(c.world[0], c.world[1], c.world[2]).project(camera);
+      sx[i] = (proj.x * 0.5 + 0.5) * w;
+      sy[i] = (0.5 - proj.y * 0.5) * h;
+      if (!front[i]) continue;
+      const d = Math.hypot(sx[i] - cx, sy[i] - cy);
+      if (d < bestD) {
+        bestD = d;
+        best = i;
+      }
+    }
+    const snapIndex = best >= 0 && bestD <= MATE_SHOW_RADIUS_PX ? best : -1;
+
+    // Dot markers: points near the cursor (+ the snapped one).
+    let n = 0;
+    for (let i = 0; i < candidates.length && n < MATE_MAX_DOTS; i++) {
+      if (!front[i]) continue;
+      const d = Math.hypot(sx[i] - cx, sy[i] - cy);
+      if (d > MATE_DOT_RADIUS_PX && i !== snapIndex) continue;
+      const c = candidates[i];
+      dummy.position.set(c.world[0], c.world[1], c.world[2]);
+      dummy.scale.setScalar(i === snapIndex ? 1.7 : 1);
+      dummy.updateMatrix();
+      dots.setMatrixAt(n, dummy.matrix);
+      dots.setColorAt(n, i === snapIndex ? snapColor : dotColor);
+      n++;
+    }
+    dots.count = n;
+    dots.instanceMatrix.needsUpdate = true;
+    if (dots.instanceColor) dots.instanceColor.needsUpdate = true;
+
+    if (snapIndex < 0) {
+      clearGizmo();
+      setMateInferenceSnap(null);
+      return;
+    }
+
+    const cand = candidates[snapIndex];
+    // Orientation variant: reset on a new anchor; otherwise follow the hovered
+    // face unless the user manually cycled (R).
+    const vr = variantRef.current;
+    if (vr.anchor !== cand.anchorQuery) {
+      vr.anchor = cand.anchorQuery;
+      vr.index = 0;
+      vr.manual = false;
+    }
+    let index = vr.index;
+    if (!vr.manual) {
+      const hf = getHoveredElementOfKind("face");
+      if (hf) {
+        const want = `qFace(${hf.idHash})`;
+        const m = cand.orientations.findIndex((o) => o.primaryQuery === want);
+        if (m >= 0) index = m;
+      }
+    }
+    const len = cand.orientations.length;
+    index = ((index % len) + len) % len;
+    const o = cand.orientations[index];
+
+    setMateInferenceSnap({
+      anchorQuery: cand.anchorQuery,
+      t: cand.t,
+      primaryQuery: o.primaryQuery,
+      world: cand.world,
+    });
+
+    const key = `${cand.anchorQuery}|${index}|${o.primaryQuery}`;
+    if (key !== lastGizmoKey.current) {
+      clearGizmo();
+      const frame = orthonormalMateFrame({
+        origin: cand.world,
+        z: o.z,
+        x: o.x,
+      });
+      if (frame) {
+        const giz = buildMateGizmo(frame, { size: 11, ghost: true });
+        grp.add(giz);
+        gizmoRef.current = giz;
+      }
+      lastGizmoKey.current = key;
+    }
+  });
 
   return <group ref={groupRef} />;
 }

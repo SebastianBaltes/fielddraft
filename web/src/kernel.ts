@@ -1254,13 +1254,20 @@ export class Kernel {
   }
 
   /**
-   * K9.6 / C2: add a mate connector anchored to a B-Rep face. `face` is
-   * an element query string (e.g. `qFace(<idHash>)`); the connector's
-   * CSYS is resolved from that face by the kernel during regeneration.
-   * `ou`/`ov` shift the origin in the face's in-plane basis.
+   * Add a mate connector anchored to a B-Rep element. `anchor` is an element
+   * query (`qFace`/`qEdge`/`qVertex`); `t` is the edge arc-length param
+   * (0.5 = midpoint, ignored for face/vertex); `primary` is the orientation
+   * reference FACE query whose normal defines +Z (empty for a face anchor,
+   * which uses its own normal); `flip` reverses +Z. The CSYS is resolved
+   * from these queries by the kernel during regeneration (C2 / option b).
    */
-  addMateConnector(face: string, ou = 0, ov = 0): number {
-    return this.inner.addMateConnector(face, ou, ov);
+  addMateConnector(
+    anchor: string,
+    t = 0.5,
+    primary = "",
+    flip = false,
+  ): number {
+    return this.inner.addMateConnector(anchor, t, primary, flip);
   }
 
   /**

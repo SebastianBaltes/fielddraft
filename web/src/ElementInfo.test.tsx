@@ -17,12 +17,12 @@ import type { KernelStore, StoreState } from "./store";
 interface StoreCalls {
   cleared: number;
   enterSketch: string[];
-  addMateConnectorAtFace: string[];
+  addMateConnectorAt: string[];
   addFilletAtEdge: string[];
 }
 
 function makeCalls(): StoreCalls {
-  return { cleared: 0, enterSketch: [], addMateConnectorAtFace: [], addFilletAtEdge: [] };
+  return { cleared: 0, enterSketch: [], addMateConnectorAt: [], addFilletAtEdge: [] };
 }
 
 function makeStore(calls: StoreCalls): KernelStore {
@@ -32,7 +32,7 @@ function makeStore(calls: StoreCalls): KernelStore {
       calls.cleared += 1;
     },
     enterSketch: (q: string) => calls.enterSketch.push(q),
-    addMateConnectorAtFace: (q: string) => calls.addMateConnectorAtFace.push(q),
+    addMateConnectorAt: (q: string) => calls.addMateConnectorAt.push(q),
     addFilletAtEdge: (q: string) => calls.addFilletAtEdge.push(q),
   } as unknown as KernelStore;
 }
@@ -108,7 +108,7 @@ describe("ElementInfo", () => {
     expect(calls.cleared).toBe(1);
 
     click(container, "element-action-mate");
-    expect(calls.addMateConnectorAtFace).toEqual(["qFace(4242)"]);
+    expect(calls.addMateConnectorAt).toEqual(["qFace(4242)"]);
     expect(calls.cleared).toBe(2);
     act(() => root.unmount());
   });

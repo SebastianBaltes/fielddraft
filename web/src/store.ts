@@ -2250,14 +2250,24 @@ export class KernelStore {
   }
 
   /**
-   * K9.6 / C2: add a mate connector anchored to a picked B-Rep face.
-   * `faceQuery` is an element query string (e.g. `qFace(<idHash>)`) — the
-   * kernel resolves the face's CSYS during regeneration.
+   * Add a mate connector anchored to a picked B-Rep element. `anchor` is an
+   * element query (`qFace`/`qEdge`/`qVertex`); `opts.t` is the edge
+   * arc-length param (midpoint = 0.5); `opts.primary` is the orientation
+   * reference FACE query (empty → the anchor face's own normal); `opts.flip`
+   * reverses +Z. The kernel resolves the CSYS during regeneration (C2).
    */
-  addMateConnectorAtFace(faceQuery: string): number | null {
+  addMateConnectorAt(
+    anchor: string,
+    opts: { t?: number; primary?: string; flip?: boolean } = {},
+  ): number | null {
     let id: number;
     try {
-      id = this.kernel.addMateConnector(faceQuery, 0, 0);
+      id = this.kernel.addMateConnector(
+        anchor,
+        opts.t ?? 0.5,
+        opts.primary ?? "",
+        opts.flip ?? false,
+      );
     } catch (err) {
       // eslint-disable-next-line no-console
       console.error("fielddraft: addMateConnector failed", err);

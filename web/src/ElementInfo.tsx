@@ -259,7 +259,7 @@ function ElementActions({
               type="button"
               className="action"
               data-testid="element-action-mate"
-              onClick={() => fire(() => store.addMateConnectorAtFace(elementQueryString(el)))}
+              onClick={() => fire(() => store.addMateConnectorAt(elementQueryString(el)))}
             >
               Mate-Connector
             </button>
