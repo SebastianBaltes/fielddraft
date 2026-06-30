@@ -380,6 +380,9 @@ export interface StoreState {
   /** K9: mate connector placement mode — the next viewport click
    *  places a mate connector at the surface hit point. */
   mateMode: boolean;
+  /** Hide all committed mate-connector triads in the viewport (toggled by
+   *  the `K` shortcut, Onshape parity). */
+  mateConnectorsHidden: boolean;
   /** P1: assembly state — manages multi-part scene graph. */
   assembly: import("./assembly").AssemblyState;
   /** P2: IK mode — clicking in viewport sets the IK target. */
@@ -726,6 +729,7 @@ export class KernelStore {
       visibleSketches: loadVisibleSketchesFromStorage(),
       transientError: null,
       mateMode: false,
+      mateConnectorsHidden: false,
       assembly: initialAssembly,
       ikMode: false,
       gizmoMode: "translate" as const,
@@ -828,6 +832,7 @@ export class KernelStore {
       visibleSketches: this.state.visibleSketches,
       transientError: null, // successful commit clears any transient error
       mateMode: false,
+      mateConnectorsHidden: this.state.mateConnectorsHidden,
       assembly: this.state.assembly,
       ikMode: false,
       gizmoMode: this.state.gizmoMode,
@@ -2450,6 +2455,13 @@ export class KernelStore {
       measureMode: false,
       measureSelection: [],
     });
+    for (const listener of this.listeners) listener();
+  }
+
+  /** Toggle visibility of all committed mate-connector triads (Onshape's `K`
+   *  shortcut). Pure UI state — does not touch the document. */
+  toggleMateConnectorVisibility(): void {
+    this.patch({ mateConnectorsHidden: !this.state.mateConnectorsHidden });
     for (const listener of this.listeners) listener();
   }
 

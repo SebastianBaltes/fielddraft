@@ -1477,7 +1477,7 @@ export function Toolbar({ store, state }: ToolbarProps) {
         />
         <FeatureButton
           kind="mate_connector"
-          title="Place a mate connector"
+          title="Place a mate connector (Ctrl+M)"
           testId="add-mate-connector"
           disabled={!hasFeatures}
           active={state.mateMode}

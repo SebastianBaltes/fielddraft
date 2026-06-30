@@ -4253,7 +4253,7 @@ export function MateConnectorOverlay() {
       }
     };
     clear();
-    if (!store || !state) return;
+    if (!store || !state || state.mateConnectorsHidden) return;
     // C2: the kernel resolves each connector's CSYS from its anchor/orientation
     // queries during regeneration; we render the full gizmo it hands back.
     const connectors = store.kernel.resolvedMateConnectors();
@@ -4269,7 +4269,7 @@ export function MateConnectorOverlay() {
       group.add(buildMateGizmo(frame, { size: 14, layer: OVERLAY_LAYER }));
     }
     return clear;
-  }, [store, state?.features]);
+  }, [store, state?.features, state?.mateConnectorsHidden]);
 
   return <group ref={groupRef} />;
 }
@@ -4317,6 +4317,9 @@ export function MateInferenceOverlay({
     anchor: null,
     reorient: 0,
   });
+  // Shift LOCKS the inference: while held, the snapped connector stays put even
+  // as the cursor moves (Onshape parity).
+  const shiftLockRef = useRef(false);
 
   const dotsRef = useRef<THREE.InstancedMesh | null>(null);
   if (!dotsRef.current) {
@@ -4380,8 +4383,20 @@ export function MateInferenceOverlay({
         invalidate();
       }
     };
+    const onShift = (e: KeyboardEvent) => {
+      if (e.key !== "Shift") return;
+      shiftLockRef.current = e.type === "keydown";
+      invalidate();
+    };
     window.addEventListener("keydown", onKey, true);
-    return () => window.removeEventListener("keydown", onKey, true);
+    window.addEventListener("keydown", onShift);
+    window.addEventListener("keyup", onShift);
+    return () => {
+      window.removeEventListener("keydown", onKey, true);
+      window.removeEventListener("keydown", onShift);
+      window.removeEventListener("keyup", onShift);
+      shiftLockRef.current = false;
+    };
   }, [mateMode, invalidate]);
 
   // Dispose GPU resources on unmount.
@@ -4426,6 +4441,10 @@ export function MateInferenceOverlay({
       return;
     }
     grp.visible = true;
+
+    // Shift locks the inference: keep the current snap + gizmo + dots frozen
+    // while the user moves the cursor (the bridge snap persists too).
+    if (shiftLockRef.current && gizmoRef.current) return;
 
     const w = size.width;
     const h = size.height;

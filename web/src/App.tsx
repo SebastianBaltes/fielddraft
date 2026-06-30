@@ -225,6 +225,12 @@ export function App() {
             store.setGizmoMode("rotate");
             e.preventDefault();
             return;
+          case "k":
+            // Onshape parity: K toggles mate-connector visibility.
+            if (cur2.sketchSession.active) return;
+            store.toggleMateConnectorVisibility();
+            e.preventDefault();
+            return;
         }
         // View keys come from the controls preset (docs/UX-PRESETS.md) —
         // e.g. FreeCAD binds 1–6 + 0 to all six standard views.
@@ -234,6 +240,13 @@ export function App() {
           e.preventDefault();
           return;
         }
+      }
+
+      // Ctrl+M = toggle the Mate Connector tool (Onshape parity).
+      if (ctrl && (e.key === "m" || e.key === "M")) {
+        store.toggleMateMode();
+        e.preventDefault();
+        return;
       }
 
       // Ctrl+A = select all features.

@@ -1696,7 +1696,7 @@ export function Viewport({
       {state?.mateMode && (
         <div className="face-pick-hud" data-testid="mate-mode-hud">
           Hover a vertex, edge, or face — click to place a mate connector ·
-          R: cycle orientation
+          R: reorient · Shift: lock · K: hide connectors
         </div>
       )}
       {state?.ikMode && (
