@@ -776,14 +776,53 @@ impl<'a> Context<'a> {
         &mut self,
         expr: &crate::queries::QueryExpr,
         t: f32,
-    ) -> Option<([f32; 3], Option<[f32; 3]>)> {
+    ) -> Option<MateAnchorFrame> {
         use crate::queries::QueryExpr;
         match expr {
             QueryExpr::Edge(_) | QueryExpr::EdgeBetween(_, _) => {
-                let polylines = self.resolve_edge_polylines(expr);
-                let poly = polylines.into_iter().find(|p| !p.is_empty())?;
-                let (p, tan) = polyline_point_tangent(&poly, t)?;
-                Some((p, Some(tan)))
+                use crate::brep::naming::TopoRef;
+                use crate::brep::EdgeId;
+                let woven = self.brep_cache.ensure(&self.features);
+                for (brep, placement) in woven {
+                    for i in 0..brep.edges.len() {
+                        let eid = EdgeId(i as u32);
+                        let edge = brep.edge(eid);
+                        let hit = match expr {
+                            QueryExpr::Edge(hash) => {
+                                TopoRef::from_edge(brep, eid).id_hash == *hash
+                            }
+                            QueryExpr::EdgeBetween(a, b) => {
+                                let s0 = edge.signature.0.feature_id();
+                                let s1 = edge.signature.1.feature_id();
+                                let (fa, fb) = (a.as_u32_or_root(), b.as_u32_or_root());
+                                matches!((fa, fb), (Some(fa), Some(fb))
+                                    if (s0 == fa && s1 == fb) || (s0 == fb && s1 == fa))
+                            }
+                            _ => false,
+                        };
+                        if !hit {
+                            continue;
+                        }
+                        let poly: Vec<[f32; 3]> =
+                            crate::brep::edge_sampling::sample_edge(&edge.geometry)
+                                .iter()
+                                .map(|p| {
+                                    place_point(placement, [p[0] as f32, p[1] as f32, p[2] as f32])
+                                })
+                                .collect();
+                        let (origin, tan) = polyline_point_tangent(&poly, t)?;
+                        // Ticket o3er/5j9l: the edge IS the primary (+Z) axis;
+                        // an adjacent face orients the secondary axis (auto).
+                        let auto_secondary = face_normal_for_branch(brep, placement, edge.signature.0)
+                            .or_else(|| face_normal_for_branch(brep, placement, edge.signature.1));
+                        return Some(MateAnchorFrame {
+                            origin,
+                            primary: Some(tan),
+                            auto_secondary,
+                        });
+                    }
+                }
+                None
             }
             QueryExpr::Vertex(hash) => {
                 use crate::brep::naming::TopoRef;
@@ -794,22 +833,32 @@ impl<'a> Context<'a> {
                         let vid = VertexId(i as u32);
                         if TopoRef::from_vertex(brep, vid).id_hash == *hash {
                             let v = brep.vertex(vid);
-                            let p = place_point(
+                            let origin = place_point(
                                 placement,
-                                [
-                                    v.position[0] as f32,
-                                    v.position[1] as f32,
-                                    v.position[2] as f32,
-                                ],
+                                [v.position[0] as f32, v.position[1] as f32, v.position[2] as f32],
                             );
-                            return Some((p, None));
+                            // A vertex has no intrinsic axis; an adjacent face
+                            // normal defines +Z (Onshape: "normal to the face").
+                            let auto_secondary = v
+                                .branches
+                                .iter()
+                                .find_map(|b| face_normal_for_branch(brep, placement, *b));
+                            return Some(MateAnchorFrame {
+                                origin,
+                                primary: None,
+                                auto_secondary,
+                            });
                         }
                     }
                 }
                 None
             }
-            // Face / created-by / face-of: the anchor IS a face, use its frame.
-            _ => self.resolve_face_frame(expr).map(|f| (f.origin, None)),
+            // Face / created-by / face-of: the anchor IS a face; its normal is +Z.
+            _ => self.resolve_face_frame(expr).map(|f| MateAnchorFrame {
+                origin: f.origin,
+                primary: Some(f.normal),
+                auto_secondary: None,
+            }),
         }
     }
 
@@ -936,6 +985,49 @@ fn normalize3v(v: [f32; 3]) -> [f32; 3] {
         [v[0] / n, v[1] / n, v[2] / n]
     } else {
         [0.0, 0.0, 1.0]
+    }
+}
+
+/// Resolved geometry of a mate-connector anchor: its origin, an optional
+/// intrinsic primary (+Z) axis (edge tangent or face normal — `None` for a
+/// vertex), and an auto-picked adjacent-face normal that orients the secondary
+/// axis (edge) or defines +Z (vertex).
+pub struct MateAnchorFrame {
+    pub origin: [f32; 3],
+    pub primary: Option<[f32; 3]>,
+    pub auto_secondary: Option<[f32; 3]>,
+}
+
+/// World-space normal of the first planar face on `branch`, or `None`.
+fn face_normal_for_branch(
+    brep: &crate::brep::BRep,
+    placement: &fielddraft_protocol::Transform,
+    branch: crate::csg::BranchId,
+) -> Option<[f32; 3]> {
+    for i in 0..brep.faces.len() {
+        if brep.faces[i].branch_id == branch {
+            return Some(
+                crate::sketch_features::face_plane_frame(
+                    brep,
+                    crate::brep::FaceId(i as u32),
+                    placement,
+                )
+                .normal,
+            );
+        }
+    }
+    None
+}
+
+/// Rotate the in-plane axis `x` (⟂ `z`) by `steps`·90° about `z`. Trig-free:
+/// `z × x` is the +90° image, so each quarter turn is a sign/swap.
+fn reorient_secondary(x: [f32; 3], z: [f32; 3], steps: u32) -> [f32; 3] {
+    let perp = cross3(z, x); // +90°
+    match steps & 3 {
+        0 => x,
+        1 => perp,
+        2 => [-x[0], -x[1], -x[2]],
+        _ => [-perp[0], -perp[1], -perp[2]],
     }
 }
 
@@ -2255,18 +2347,24 @@ impl FeatureKind for SweepFeature {
 #[schema(type = "mate_connector")]
 pub struct MateConnectorDef {
     /// What the connector anchors to: a B-Rep face, edge, or vertex
-    /// (`qFace`/`qEdge`/`qVertex`).
+    /// (`qFace`/`qEdge`/`qVertex`). The anchor also defines the primary (+Z)
+    /// axis: an EDGE's direction, a FACE's normal. A VERTEX has none, so +Z
+    /// comes from the secondary reference face.
     #[param(entity_filter = "FACE, EDGE, VERTEX")]
     pub anchor: ::fielddraft_protocol::Query,
-    /// Arc-length parameter along an edge anchor, `[0, 1]` (midpoint =
-    /// 0.5). Ignored for face/vertex anchors.
-    #[param(default = 0.5)]
+    /// Position along an edge anchor, `[0, 1]` (0.5 = midpoint). Ignored for
+    /// face/vertex anchors.
+    #[param(name = "Position along edge", default = 0.5)]
     pub t: f32,
-    /// Orientation reference FACE whose outward normal defines +Z. Empty
-    /// for a face anchor (it uses its own normal).
-    #[param(default = ::fielddraft_protocol::Query::new(""), entity_filter = "FACE")]
-    pub primary: ::fielddraft_protocol::Query,
-    /// Flip the primary (Z) axis 180°.
+    /// Reference FACE that orients the SECONDARY axes (an edge's adjacent face)
+    /// or, for a VERTEX anchor, defines +Z. Empty → auto-picked from the
+    /// anchor's adjacent geometry. Unused for a face anchor.
+    #[param(name = "Secondary reference", default = ::fielddraft_protocol::Query::new(""), entity_filter = "FACE")]
+    pub secondary: ::fielddraft_protocol::Query,
+    /// Reorient the secondary axes in 90° steps about +Z (0..3 cycles).
+    #[param(name = "Reorient secondary", default = 0.0, ui_hint = "cycle90")]
+    pub reorient: f32,
+    /// Flip the primary (+Z) axis 180°.
     #[param(default = false)]
     pub flip: bool,
 }
@@ -2311,43 +2409,50 @@ impl FeatureKind for MateConnectorFeature {
         let anchor = crate::queries::parse_query(d.anchor.as_str())
             .map_err(|e| inval("anchor", format!("could not parse anchor query: {e}")))?;
 
-        // Origin (+ the edge tangent when the anchor is an edge).
-        let (origin, tangent) = ctx
+        let anc = ctx
             .resolve_mate_anchor(&anchor, d.t)
             .ok_or_else(|| inval("anchor", "anchor query resolved to nothing".into()))?;
 
-        // +Z = the primary reference face's normal, or the anchor face's own
-        // normal when `primary` is empty (only a face anchor has one).
-        let primary_str = d.primary.as_str();
-        let mut normal = if primary_str.is_empty() {
-            ctx.resolve_face_frame(&anchor).map(|f| f.normal).ok_or_else(|| {
-                inval(
-                    "primary",
-                    "non-face anchor needs a primary orientation face".into(),
-                )
-            })?
+        // The secondary reference face normal: explicit query, else the
+        // anchor's auto-picked adjacent face. An EDGE orients its secondary
+        // axes by it; a VERTEX derives +Z from it.
+        let secondary_str = d.secondary.as_str();
+        let sec_normal = if secondary_str.is_empty() {
+            anc.auto_secondary
         } else {
-            let p = crate::queries::parse_query(primary_str)
-                .map_err(|e| inval("primary", format!("could not parse primary query: {e}")))?;
-            ctx.resolve_face_frame(&p)
-                .map(|f| f.normal)
-                .ok_or_else(|| inval("primary", "primary query resolved to no face".into()))?
+            let p = crate::queries::parse_query(secondary_str)
+                .map_err(|e| inval("secondary", format!("could not parse secondary query: {e}")))?;
+            ctx.resolve_face_frame(&p).map(|f| f.normal)
         };
+
+        // +Z: the anchor's intrinsic axis (edge tangent / face normal), else
+        // the secondary face normal (a vertex has no intrinsic axis). No
+        // anchor type errors for a missing reference any more (ticket 5j9l).
+        let mut normal = anc.primary.or(sec_normal).ok_or_else(|| {
+            inval("secondary", "vertex anchor needs an adjacent or reference face".into())
+        })?;
         if d.flip {
             normal = [-normal[0], -normal[1], -normal[2]];
         }
 
-        // +X: an edge tangent projected into the plane, else the seed-cross
-        // basis (identical to `face_plane_frame`, so a face anchor's CSYS is
-        // unchanged and a vertex/edge anchor stays well-conditioned).
-        let x_axis = match tangent {
-            Some(t) => project_perp(t, normal),
-            None => seed_cross_x(normal),
+        // Base +X (before reorient): for an anchor WITH an intrinsic +Z
+        // (edge/face) the secondary face normal projected into the plane orients
+        // it; otherwise (vertex, whose +Z already came from that face) the
+        // seed-cross basis. Falls back to seed-cross when no reference exists.
+        let x0 = if anc.primary.is_some() {
+            match sec_normal {
+                Some(n) => project_perp(n, normal),
+                None => seed_cross_x(normal),
+            }
+        } else {
+            seed_cross_x(normal)
         };
+        let steps = (d.reorient.round() as i64).rem_euclid(4) as u32;
+        let x_axis = reorient_secondary(x0, normal, steps);
 
         ctx.mate_connectors.push(ResolvedMateConnector {
             id: id.clone(),
-            origin,
+            origin: anc.origin,
             normal,
             x_axis,
         });
@@ -9460,32 +9565,56 @@ mod tests {
         }
         let corner_hash = corner_hash.expect("box has a top vertex");
 
-        // Edge midpoint anchor oriented by the +Z face: origin on the top edge
-        // (z≈10), Z = +Z, X ⟂ Z (the projected edge tangent stays in-plane).
+        // Edge anchor WITHOUT a secondary face (ticket 5j9l: an edge alone
+        // suffices, no "needs primary face" error). The edge IS +Z (ticket
+        // o3er): a top edge is horizontal, so its tangent has ~zero z. The
+        // secondary face is auto-picked; X stays ⟂ Z and unit.
         registry
             .regenerate(
                 &mut ctx,
                 &[FeatureCall::new(
                     "mate_connector",
                     id(2),
-                    json!({
-                        "anchor": format!("qEdge({top_edge_hash})"),
-                        "t": 0.5,
-                        "primary": format!("qFace({top_face_hash})"),
-                    }),
+                    json!({ "anchor": format!("qEdge({top_edge_hash})"), "t": 0.5 }),
                 )],
                 None,
             )
             .unwrap();
-        let edge_mc = &ctx.mate_connectors[0];
+        let edge_mc = ctx.mate_connectors[0].clone();
         assert!((edge_mc.origin[2] - 10.0).abs() < 1e-2, "edge origin on top, got {:?}", edge_mc.origin);
-        assert!((edge_mc.normal[2] - 1.0).abs() < 1e-3, "edge Z from primary +Z face");
-        let xz = edge_mc.x_axis[0] * edge_mc.normal[0]
-            + edge_mc.x_axis[1] * edge_mc.normal[1]
-            + edge_mc.x_axis[2] * edge_mc.normal[2];
-        assert!(xz.abs() < 1e-4, "X ⟂ Z, got dot {xz}");
+        let zlen = (edge_mc.normal[0].powi(2) + edge_mc.normal[1].powi(2) + edge_mc.normal[2].powi(2)).sqrt();
+        assert!((zlen - 1.0).abs() < 1e-3, "Z unit");
+        assert!(edge_mc.normal[2].abs() < 1e-3, "edge Z = horizontal tangent, got {:?}", edge_mc.normal);
+        let dot = |a: [f32; 3], b: [f32; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+        assert!(dot(edge_mc.x_axis, edge_mc.normal).abs() < 1e-4, "X ⟂ Z");
+        let xlen = (edge_mc.x_axis[0].powi(2) + edge_mc.x_axis[1].powi(2) + edge_mc.x_axis[2].powi(2)).sqrt();
+        assert!((xlen - 1.0).abs() < 1e-3, "X unit");
 
-        // Vertex anchor oriented by the +Z face: origin at the corner, Z = +Z.
+        // reorient=1 rotates the secondary axis 90° about Z → X' = Z × X.
+        ctx.mate_connectors.clear();
+        registry
+            .regenerate(
+                &mut ctx,
+                &[FeatureCall::new(
+                    "mate_connector",
+                    id(2),
+                    json!({ "anchor": format!("qEdge({top_edge_hash})"), "t": 0.5, "reorient": 1 }),
+                )],
+                None,
+            )
+            .unwrap();
+        let rot = &ctx.mate_connectors[0];
+        let expect = [
+            edge_mc.normal[1] * edge_mc.x_axis[2] - edge_mc.normal[2] * edge_mc.x_axis[1],
+            edge_mc.normal[2] * edge_mc.x_axis[0] - edge_mc.normal[0] * edge_mc.x_axis[2],
+            edge_mc.normal[0] * edge_mc.x_axis[1] - edge_mc.normal[1] * edge_mc.x_axis[0],
+        ];
+        for k in 0..3 {
+            assert!((rot.x_axis[k] - expect[k]).abs() < 1e-3, "reorient 90°: {:?} vs {:?}", rot.x_axis, expect);
+        }
+
+        // Vertex anchor with an explicit secondary face: origin at the corner,
+        // +Z = the +Z face normal.
         ctx.mate_connectors.clear();
         registry
             .regenerate(
@@ -9495,7 +9624,7 @@ mod tests {
                     id(3),
                     json!({
                         "anchor": format!("qVertex({corner_hash})"),
-                        "primary": format!("qFace({top_face_hash})"),
+                        "secondary": format!("qFace({top_face_hash})"),
                     }),
                 )],
                 None,
@@ -9504,12 +9633,28 @@ mod tests {
         let vtx_mc = &ctx.mate_connectors[0];
         assert!((vtx_mc.origin[2] - 10.0).abs() < 1e-2, "vertex origin at corner z=10");
         assert!(
-            (vtx_mc.origin[0].abs() - 10.0).abs() < 1e-2
-                && (vtx_mc.origin[1].abs() - 10.0).abs() < 1e-2,
-            "vertex origin at a ±10/±10 corner, got {:?}",
-            vtx_mc.origin
+            (vtx_mc.origin[0].abs() - 10.0).abs() < 1e-2 && (vtx_mc.origin[1].abs() - 10.0).abs() < 1e-2,
+            "vertex origin at a ±10/±10 corner, got {:?}", vtx_mc.origin
         );
-        assert!((vtx_mc.normal[2] - 1.0).abs() < 1e-3, "vertex Z from primary +Z face");
+        assert!((vtx_mc.normal[2] - 1.0).abs() < 1e-3, "vertex Z from secondary +Z face");
+
+        // Vertex anchor WITHOUT a secondary: auto-picks an adjacent face normal
+        // (a box corner's faces are the ±X/±Y/±Z axes) — no error.
+        ctx.mate_connectors.clear();
+        registry
+            .regenerate(
+                &mut ctx,
+                &[FeatureCall::new(
+                    "mate_connector",
+                    id(3),
+                    json!({ "anchor": format!("qVertex({corner_hash})") }),
+                )],
+                None,
+            )
+            .unwrap();
+        let auto = &ctx.mate_connectors[0];
+        let zl = (auto.normal[0].powi(2) + auto.normal[1].powi(2) + auto.normal[2].powi(2)).sqrt();
+        assert!((zl - 1.0).abs() < 1e-3, "auto vertex Z unit, got {:?}", auto.normal);
     }
 
     // ─── DL-61: fillet edge query → SMin polyline tube ──────────────

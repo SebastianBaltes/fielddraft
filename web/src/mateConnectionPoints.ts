@@ -7,14 +7,16 @@
  *   - **edge midpoints** — the arc-length centre of every edge
  *   - **face centres** — the centroid of every planar face
  *
- * Each point carries one or more **orientation variants** (option b): the
- * connector's +Z can align to any adjacent face's normal, and the user cycles
- * through them. A variant records the *primary* reference face query so the
- * placement is fully query-driven (kernel-resolved, regen-stable — C2): the
- * kernel re-derives the exact same CSYS from `anchorQuery` + `t` + the
- * variant's `primaryQuery`. This module is pure (no THREE, no DOM) so it is
- * unit-testable; it only mirrors the kernel's CSYS convention so the live
- * preview matches the committed connector to f32.
+ * CSYS convention (tickets o3er + 5j9l), mirrored exactly by the kernel so the
+ * preview matches the committed connector to f32:
+ *   - **+Z (primary)** is the anchor's intrinsic axis: an EDGE's direction or a
+ *     FACE's normal. A VERTEX has none, so +Z comes from a reference face.
+ *   - **secondary axes** are oriented by a reference FACE (an edge's adjacent
+ *     face; the face that defines a vertex's +Z), then rotated in 90° steps by
+ *     `reorient`. A face anchor uses the seed-cross in-plane basis.
+ *
+ * Each point carries the reference-face options to cycle/snap through. Pure
+ * (no THREE, no DOM) so it stays unit-testable.
  */
 
 import {
@@ -31,18 +33,13 @@ type Vec3 = [number, number, number];
 /** The kind of geometry a connection point sits on (drives the marker glyph). */
 export type MatePointKind = "vertex" | "edge-mid" | "face-center";
 
-/** One orientation the connector's +Z can take at a connection point. */
-export interface MateOrientation {
-  /** Primary axis (+Z), world unit. */
-  z: Vec3;
-  /** Secondary in-plane axis (+X), world unit. */
-  x: Vec3;
-  /** `qFace(idHash)` of the face whose normal defines +Z, or `null` when the
-   *  anchor IS that face (a face-centre point — the kernel uses the anchor
-   *  face's own normal, so `primary` stays empty). */
-  primaryQuery: string | null;
-  /** Surface kind of the orienting face, for the HUD. */
-  label: string;
+/** A reference face that can orient a connector's secondary axis (or define a
+ *  vertex's +Z). */
+export interface MateSecondaryRef {
+  /** `qFace(idHash)`. */
+  faceQuery: string;
+  /** World-space outward normal. */
+  normal: Vec3;
 }
 
 /** A candidate the inference overlay can snap to. */
@@ -54,8 +51,12 @@ export interface MateConnectionPoint {
   anchorQuery: string;
   /** Edge arc-length param `[0,1]` (0.5 = midpoint); ignored for non-edges. */
   t: number;
-  /** Orientation variants to cycle through (≥1). */
-  orientations: MateOrientation[];
+  /** The anchor's intrinsic +Z axis (edge tangent / face normal), or `null`
+   *  for a vertex (whose +Z comes from a reference face). */
+  primaryAxis: Vec3 | null;
+  /** Reference faces orienting the secondary axes (edge) or defining +Z
+   *  (vertex). Empty for a face anchor (the seed-cross basis is used). */
+  secondaryRefs: MateSecondaryRef[];
 }
 
 /** The minimal kernel surface this module reads (so tests can fake it). */
@@ -82,7 +83,7 @@ function normalize(a: Vec3): Vec3 {
   const n = len(a);
   return n > 1e-9 ? [a[0] / n, a[1] / n, a[2] / n] : [0, 0, 1];
 }
-function cross(a: Vec3, b: Vec3): Vec3 {
+export function cross(a: Vec3, b: Vec3): Vec3 {
   return [
     a[1] * b[2] - a[2] * b[1],
     a[2] * b[0] - a[0] * b[2],
@@ -103,10 +104,49 @@ export function seedCrossX(n: Vec3): Vec3 {
 
 /** Project `v` onto the plane ⟂ `n`, normalise; fall back to seed-cross when
  *  `v` is parallel to `n`. Matches the kernel's `project_perp`. */
-function projectPerp(v: Vec3, n: Vec3): Vec3 {
+export function projectPerp(v: Vec3, n: Vec3): Vec3 {
   const d = dot(v, n);
   const p: Vec3 = [v[0] - d * n[0], v[1] - d * n[1], v[2] - d * n[2]];
   return len(p) > 1e-6 ? normalize(p) : seedCrossX(n);
+}
+
+/** Rotate the in-plane axis `x` (⟂ `z`) by `steps`·90° about `z`. Matches the
+ *  kernel's `reorient_secondary`. */
+export function reorientSecondary(x: Vec3, z: Vec3, steps: number): Vec3 {
+  const perp = cross(z, x); // +90°
+  switch (((steps % 4) + 4) % 4) {
+    case 1:
+      return perp;
+    case 2:
+      return [-x[0], -x[1], -x[2]];
+    case 3:
+      return [-perp[0], -perp[1], -perp[2]];
+    default:
+      return x;
+  }
+}
+
+/**
+ * Build the connector frame `(z, x)` for a candidate given the chosen secondary
+ * reference normal, reorient steps and flip — the SAME computation the kernel
+ * performs, so the live preview equals the committed connector.
+ */
+export function mateFrameFor(
+  cand: MateConnectionPoint,
+  secNormal: Vec3 | null,
+  reorient: number,
+  flip: boolean,
+): { z: Vec3; x: Vec3 } {
+  let z = cand.primaryAxis ?? secNormal ?? [0, 0, 1];
+  z = normalize(z);
+  if (flip) z = [-z[0], -z[1], -z[2]];
+  let x0: Vec3;
+  if (cand.primaryAxis) {
+    x0 = secNormal ? projectPerp(secNormal, z) : seedCrossX(z);
+  } else {
+    x0 = seedCrossX(z); // vertex: +Z already came from secNormal
+  }
+  return { z, x: reorientSecondary(x0, z, reorient) };
 }
 
 /** Arc-length midpoint + unit tangent of a flat `[x,y,z,…]` world polyline. */
@@ -151,20 +191,12 @@ interface FaceWorld {
   normal: Vec3;
 }
 
-/** Build orientation variants from a set of adjacent faces, deterministically
- *  ordered by idHash so the cycle order is stable across regenerations. */
-function orientationsFromFaces(
-  faces: FaceWorld[],
-  tangent: Vec3 | null,
-): MateOrientation[] {
+/** Build secondary-ref options from adjacent faces, deterministically ordered
+ *  by idHash so the cycle order is stable across regenerations. */
+function refsFromFaces(faces: FaceWorld[]): MateSecondaryRef[] {
   return [...faces]
     .sort((a, b) => a.idHash.localeCompare(b.idHash))
-    .map((f) => ({
-      z: f.normal,
-      x: tangent ? projectPerp(tangent, f.normal) : seedCrossX(f.normal),
-      primaryQuery: `qFace(${f.idHash})`,
-      label: f.surfaceKind,
-    }));
+    .map((f) => ({ faceQuery: `qFace(${f.idHash})`, normal: f.normal }));
 }
 
 /**
@@ -202,7 +234,7 @@ export function enumerateConnectionPoints(
       });
     }
 
-    // ── Face centres (planar only) ──────────────────────────────
+    // ── Face centres (planar only): +Z = face normal ────────────
     for (const fw of faceByIndex.values()) {
       if (fw.surfaceKind !== "plane") continue;
       out.push({
@@ -210,43 +242,34 @@ export function enumerateConnectionPoints(
         world: fw.centroid,
         anchorQuery: `qFace(${fw.idHash})`,
         t: 0,
-        // The anchor IS the orienting face → primaryQuery stays null.
-        orientations: [
-          {
-            z: fw.normal,
-            x: seedCrossX(fw.normal),
-            primaryQuery: null,
-            label: fw.surfaceKind,
-          },
-        ],
+        primaryAxis: fw.normal,
+        secondaryRefs: [], // seed-cross basis; reorient still applies
       });
     }
 
-    // ── Edge midpoints ──────────────────────────────────────────
+    // ── Edge midpoints: +Z = edge tangent, secondary from a face ─
     for (const e of edges) {
       const mid = polylineMidpoint(e.points);
       if (!mid) continue;
       const adj = e.faces
         .map((fi) => faceByIndex.get(fi))
         .filter((f): f is FaceWorld => !!f);
-      const orientations = orientationsFromFaces(adj, mid.tangent);
-      if (orientations.length === 0) continue; // can't orient → skip
       out.push({
         kind: "edge-mid",
         world: mid.p,
         anchorQuery: `qEdge(${e.idHash})`,
         t: 0.5,
-        orientations,
+        primaryAxis: mid.tangent,
+        secondaryRefs: refsFromFaces(adj),
       });
     }
 
-    // ── Vertices ────────────────────────────────────────────────
+    // ── Vertices: +Z = a reference face normal ──────────────────
     const vWorld = verts.map((v) => ({
       idHash: v.idHash,
       world: localToWorld(v.positionLocal, pl) as Vec3,
     }));
     for (const v of vWorld) {
-      // Adjacent faces = union over edges touching this vertex.
       const adjIdx = new Set<number>();
       for (const e of edges) {
         const n = Math.floor(e.points.length / 3);
@@ -267,14 +290,14 @@ export function enumerateConnectionPoints(
       const adj = [...adjIdx]
         .map((fi) => faceByIndex.get(fi))
         .filter((f): f is FaceWorld => !!f);
-      const orientations = orientationsFromFaces(adj, null);
-      if (orientations.length === 0) continue;
+      if (adj.length === 0) continue; // no face to define +Z → skip
       out.push({
         kind: "vertex",
         world: v.world,
         anchorQuery: `qVertex(${v.idHash})`,
         t: 0,
-        orientations,
+        primaryAxis: null,
+        secondaryRefs: refsFromFaces(adj),
       });
     }
   }

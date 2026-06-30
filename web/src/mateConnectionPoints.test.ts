@@ -2,7 +2,10 @@ import { describe, it, expect } from "vitest";
 import {
   enumerateConnectionPoints,
   seedCrossX,
+  mateFrameFor,
+  reorientSecondary,
   type ConnectionKernel,
+  type MateConnectionPoint,
 } from "./mateConnectionPoints";
 import type { BRepFace, BRepVertex, BRepEdge, Placement } from "./kernel";
 
@@ -13,7 +16,7 @@ const IDENTITY: Placement = {
 };
 
 /** A toy single-body kernel: one +Z planar face (centroid 0,0,10), one top
- *  edge along Y at x=10 (faces=[0]), one top corner vertex at (10,10,10). */
+ *  edge along +Y at x=10 (faces=[0]), one top corner vertex at (10,10,10). */
 function toyKernel(): ConnectionKernel {
   const faces: BRepFace[] = [
     {
@@ -31,8 +34,7 @@ function toyKernel(): ConnectionKernel {
     {
       a: 0,
       b: 0,
-      // (10,-10,10) → (10,10,10): tangent +Y, midpoint (10,0,10).
-      points: [10, -10, 10, 10, 10, 10],
+      points: [10, -10, 10, 10, 10, 10], // tangent +Y, midpoint (10,0,10)
       controlPoints: [],
       degree: 1,
       idHash: "200",
@@ -59,45 +61,75 @@ function toyKernel(): ConnectionKernel {
 
 describe("enumerateConnectionPoints", () => {
   const pts = enumerateConnectionPoints(toyKernel());
+  const byKind = (k: MateConnectionPoint["kind"]) =>
+    pts.find((p) => p.kind === k)!;
 
-  it("emits a face-centre with a null primary (uses the anchor face's normal)", () => {
-    const fc = pts.find((p) => p.kind === "face-center")!;
-    expect(fc).toBeTruthy();
+  it("face-centre: +Z = face normal, no secondary refs", () => {
+    const fc = byKind("face-center");
     expect(fc.world).toEqual([0, 0, 10]);
     expect(fc.anchorQuery).toBe("qFace(100)");
-    expect(fc.orientations).toHaveLength(1);
-    expect(fc.orientations[0].primaryQuery).toBeNull();
-    expect(fc.orientations[0].z).toEqual([0, 0, 1]);
+    expect(fc.primaryAxis).toEqual([0, 0, 1]);
+    expect(fc.secondaryRefs).toHaveLength(0);
   });
 
-  it("emits an edge midpoint with a +Z-oriented variant and X along the edge", () => {
-    const em = pts.find((p) => p.kind === "edge-mid")!;
-    expect(em).toBeTruthy();
+  it("edge midpoint: +Z = edge tangent, adjacent face as secondary ref", () => {
+    const em = byKind("edge-mid");
     expect(em.anchorQuery).toBe("qEdge(200)");
     expect(em.t).toBe(0.5);
     expect(em.world[0]).toBeCloseTo(10);
     expect(em.world[1]).toBeCloseTo(0);
     expect(em.world[2]).toBeCloseTo(10);
-    expect(em.orientations).toHaveLength(1);
-    const o = em.orientations[0];
-    expect(o.primaryQuery).toBe("qFace(100)");
-    expect(o.z).toEqual([0, 0, 1]);
-    // Tangent +Y projected ⟂ +Z stays +Y.
-    expect(o.x[0]).toBeCloseTo(0);
-    expect(Math.abs(o.x[1])).toBeCloseTo(1);
-    expect(o.x[2]).toBeCloseTo(0);
-    // X ⟂ Z.
-    expect(o.x[0] * o.z[0] + o.x[1] * o.z[1] + o.x[2] * o.z[2]).toBeCloseTo(0);
+    // Primary +Z is the edge direction (+Y), NOT the face normal (ticket o3er).
+    expect(em.primaryAxis![1]).toBeCloseTo(1);
+    expect(Math.abs(em.primaryAxis![0])).toBeCloseTo(0);
+    expect(Math.abs(em.primaryAxis![2])).toBeCloseTo(0);
+    expect(em.secondaryRefs).toHaveLength(1);
+    expect(em.secondaryRefs[0].faceQuery).toBe("qFace(100)");
+    expect(em.secondaryRefs[0].normal).toEqual([0, 0, 1]);
   });
 
-  it("emits a vertex with the adjacent face's orientation", () => {
-    const v = pts.find((p) => p.kind === "vertex")!;
-    expect(v).toBeTruthy();
+  it("vertex: no intrinsic axis, adjacent face as secondary ref", () => {
+    const v = byKind("vertex");
     expect(v.anchorQuery).toBe("qVertex(300)");
     expect(v.world).toEqual([10, 10, 10]);
-    expect(v.orientations).toHaveLength(1);
-    expect(v.orientations[0].primaryQuery).toBe("qFace(100)");
-    expect(v.orientations[0].z).toEqual([0, 0, 1]);
+    expect(v.primaryAxis).toBeNull();
+    expect(v.secondaryRefs).toHaveLength(1);
+    expect(v.secondaryRefs[0].faceQuery).toBe("qFace(100)");
+  });
+});
+
+describe("mateFrameFor", () => {
+  const pts = enumerateConnectionPoints(toyKernel());
+  const edge = pts.find((p) => p.kind === "edge-mid")!;
+
+  it("edge: +Z = tangent, X ⟂ Z; reorient rotates X 90°", () => {
+    const f0 = mateFrameFor(edge, edge.secondaryRefs[0].normal, 0, false);
+    // Z = +Y (tangent), X = the face normal projected ⟂ Z = +Z.
+    expect(f0.z[1]).toBeCloseTo(1);
+    expect(Math.abs(f0.z[2])).toBeCloseTo(0);
+    expect(f0.x[0] * f0.z[0] + f0.x[1] * f0.z[1] + f0.x[2] * f0.z[2]).toBeCloseTo(0);
+    expect(f0.x[2]).toBeCloseTo(1);
+
+    const f1 = mateFrameFor(edge, edge.secondaryRefs[0].normal, 1, false);
+    // 90°: X' = Z × X = +Y × +Z = +X.
+    expect(f1.x[0]).toBeCloseTo(1);
+  });
+
+  it("flip reverses +Z", () => {
+    const f = mateFrameFor(edge, edge.secondaryRefs[0].normal, 0, true);
+    expect(f.z[1]).toBeCloseTo(-1);
+  });
+});
+
+describe("reorientSecondary", () => {
+  const z: [number, number, number] = [0, 0, 1];
+  const x: [number, number, number] = [1, 0, 0];
+  it("cycles back after 4 steps", () => {
+    expect(reorientSecondary(x, z, 0)).toEqual(x);
+    expect(reorientSecondary(x, z, 4)).toEqual(x);
+    expect(reorientSecondary(x, z, 2)).toEqual([-1, -0, -0]);
+    // 90°: Z × X = +Y.
+    expect(reorientSecondary(x, z, 1)).toEqual([0, 1, 0]);
   });
 });
 

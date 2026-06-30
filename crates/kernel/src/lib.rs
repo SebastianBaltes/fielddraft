@@ -1935,22 +1935,26 @@ impl Kernel {
     /// connector's CSYS is resolved from that face during regeneration.
     /// `ou`/`ov` shift the origin in the face's in-plane basis.
     /// Add a `mate_connector` anchored to a B-Rep element. `anchor` is a
-    /// `qFace`/`qEdge`/`qVertex` query; `t` is the arc-length parameter for an
-    /// edge anchor (0.5 = midpoint, ignored otherwise); `primary` is the
-    /// orientation reference face query whose normal defines +Z (empty for a
-    /// face anchor, which uses its own normal); `flip` reverses +Z.
+    /// `qFace`/`qEdge`/`qVertex` query; the anchor defines +Z (edge direction /
+    /// face normal). `t` positions an edge anchor (0.5 = midpoint, ignored
+    /// otherwise). `secondary` is a reference face query that orients the
+    /// secondary axes (edge) or defines +Z (vertex); empty → auto-picked.
+    /// `reorient` rotates the secondary axes in 90° steps about +Z (0..3).
+    /// `flip` reverses +Z.
     #[wasm_bindgen(js_name = addMateConnector)]
     pub fn add_mate_connector(
         &mut self,
         anchor: &str,
         t: f32,
-        primary: &str,
+        secondary: &str,
+        reorient: u32,
         flip: bool,
     ) -> Result<u32, JsError> {
         self.push_feature_call("mate_connector", serde_json::json!({
             "anchor": anchor,
             "t": t,
-            "primary": primary,
+            "secondary": secondary,
+            "reorient": reorient,
             "flip": flip,
         }))
     }

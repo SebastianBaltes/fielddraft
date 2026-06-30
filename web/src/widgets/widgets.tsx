@@ -948,6 +948,35 @@ export function FlipButton({
   );
 }
 
+// ─── cycle90 (reorient secondary axis in 90° steps) ────────────
+
+/** A 0..3 value rendered as a button that cycles +90° per click and shows the
+ *  resulting rotation. Used by the mate connector's "Reorient secondary" param
+ *  (ticket 5j9l): four clicks return to the start. */
+export function CycleWidget({
+  label,
+  value,
+  onChange,
+  error,
+  required,
+}: WidgetProps<number>) {
+  const id = useId();
+  const steps = ((Math.round(Number.isFinite(value) ? value : 0) % 4) + 4) % 4;
+  return (
+    <Field label={label} htmlFor={id} error={error} required={required}>
+      <button
+        id={id}
+        type="button"
+        className="cycle-button"
+        title="Reorient the secondary axis 90° (4 clicks = full turn)"
+        onClick={() => onChange((steps + 1) % 4)}
+      >
+        ↻ {steps * 90}°
+      </button>
+    </Field>
+  );
+}
+
 // ─── slider (number with slider hint) ──────────────────────────
 
 export function SliderWidget({

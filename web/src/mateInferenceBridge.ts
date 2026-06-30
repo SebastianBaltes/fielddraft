@@ -14,8 +14,11 @@ export interface MateInferenceSnap {
   anchorQuery: string;
   /** Edge arc-length param (0.5 = midpoint); 0 for vertex/face. */
   t: number;
-  /** Orientation reference FACE query (+Z), or `null` for a face anchor. */
-  primaryQuery: string | null;
+  /** Secondary reference FACE query (orients secondary axes / defines a
+   *  vertex's +Z), or `null` to let the kernel auto-pick. */
+  secondary: string | null;
+  /** Reorient steps about +Z (0..3). */
+  reorient: number;
   /** World origin, for debugging / readouts. */
   world: [number, number, number];
 }

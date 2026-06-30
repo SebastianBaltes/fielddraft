@@ -51,7 +51,10 @@ import {
   buildMateGizmo,
   disposeMateGizmo,
 } from "./mateGizmo";
-import { enumerateConnectionPoints } from "./mateConnectionPoints";
+import {
+  enumerateConnectionPoints,
+  mateFrameFor,
+} from "./mateConnectionPoints";
 import { setMateInferenceSnap } from "./mateInferenceBridge";
 import {
   bodyNeedsSubtractionPass,
@@ -4308,13 +4311,12 @@ export function MateInferenceOverlay({
   const groupRef = useRef<THREE.Group>(null);
   const gizmoRef = useRef<THREE.Group | null>(null);
   const lastGizmoKey = useRef("");
-  // Per-anchor orientation cursor: `manual` sticks the user's R-cycle choice
-  // until the cursor moves to a different connection point.
-  const variantRef = useRef<{
-    anchor: string | null;
-    index: number;
-    manual: boolean;
-  }>({ anchor: null, index: 0, manual: false });
+  // Per-anchor reorient cursor (R-cycled, ×90° about +Z). Resets when the
+  // cursor moves to a different connection point.
+  const variantRef = useRef<{ anchor: string | null; reorient: number }>({
+    anchor: null,
+    reorient: 0,
+  });
 
   const dotsRef = useRef<THREE.InstancedMesh | null>(null);
   if (!dotsRef.current) {
@@ -4372,8 +4374,7 @@ export function MateInferenceOverlay({
       )
         return; // don't hijack typing
       if (e.key === "r" || e.key === "R") {
-        variantRef.current.index += 1;
-        variantRef.current.manual = true;
+        variantRef.current.reorient = (variantRef.current.reorient + 1) % 4;
         e.preventDefault();
         e.stopImmediatePropagation();
         invalidate();
@@ -4481,41 +4482,40 @@ export function MateInferenceOverlay({
     }
 
     const cand = candidates[snapIndex];
-    // Orientation variant: reset on a new anchor; otherwise follow the hovered
-    // face unless the user manually cycled (R).
     const vr = variantRef.current;
     if (vr.anchor !== cand.anchorQuery) {
       vr.anchor = cand.anchorQuery;
-      vr.index = 0;
-      vr.manual = false;
+      vr.reorient = 0;
     }
-    let index = vr.index;
-    if (!vr.manual) {
-      const hf = getHoveredElementOfKind("face");
-      if (hf) {
-        const want = `qFace(${hf.idHash})`;
-        const m = cand.orientations.findIndex((o) => o.primaryQuery === want);
-        if (m >= 0) index = m;
-      }
+    // Secondary reference: the hovered face if it is one of the anchor's
+    // adjacent faces (so moving across an edge flips the secondary axis to
+    // that side / picks a vertex's +Z), else the first deterministic ref.
+    let secRef = cand.secondaryRefs[0] ?? null;
+    const hf = getHoveredElementOfKind("face");
+    if (hf) {
+      const want = `qFace(${hf.idHash})`;
+      const m = cand.secondaryRefs.find((r) => r.faceQuery === want);
+      if (m) secRef = m;
     }
-    const len = cand.orientations.length;
-    index = ((index % len) + len) % len;
-    const o = cand.orientations[index];
+    const secNormal = secRef ? secRef.normal : null;
+    const reorient = vr.reorient;
+    const f3 = mateFrameFor(cand, secNormal, reorient, false);
 
     setMateInferenceSnap({
       anchorQuery: cand.anchorQuery,
       t: cand.t,
-      primaryQuery: o.primaryQuery,
+      secondary: secRef ? secRef.faceQuery : null,
+      reorient,
       world: cand.world,
     });
 
-    const key = `${cand.anchorQuery}|${index}|${o.primaryQuery}`;
+    const key = `${cand.anchorQuery}|${secRef?.faceQuery ?? ""}|${reorient}`;
     if (key !== lastGizmoKey.current) {
       clearGizmo();
       const frame = orthonormalMateFrame({
         origin: cand.world,
-        z: o.z,
-        x: o.x,
+        z: f3.z,
+        x: f3.x,
       });
       if (frame) {
         const giz = buildMateGizmo(frame, {

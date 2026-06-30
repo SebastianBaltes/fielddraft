@@ -95,6 +95,9 @@ export interface MateGizmoOptions {
   /** World-space length of the axis arms (the circle/sector use a fraction of
    *  this). Defaults to 12 mm. */
   size?: number;
+  /** World-space tube radius of the axis/ring strokes. Defaults to 3% of
+   *  `size` — wide enough to read like a selected edge (ticket wepu). */
+  thickness?: number;
   /** Preview ("ghost") look while placing — slightly more translucent. */
   ghost?: boolean;
   /** Render order base; the gizmo always draws over geometry (depthTest off). */
@@ -137,8 +140,9 @@ export function buildMateGizmo(
   );
   tag(group, layer, baseOrder);
 
-  const lineMat = (color: number, opacity = 1) =>
-    new THREE.LineBasicMaterial({
+  const thickness = opts.thickness ?? size * 0.03;
+  const meshMat = (color: number, opacity = 1) =>
+    new THREE.MeshBasicMaterial({
       color,
       transparent: true,
       opacity: ghost ? opacity * 0.85 : opacity,
@@ -146,36 +150,28 @@ export function buildMateGizmo(
       depthWrite: false,
     });
 
-  // ── Axis triad (positive arms only, Onshape style) ──────────────
-  const axes: [number, THREE.Vector3][] = [
-    [MATE_GIZMO_COLORS.x, new THREE.Vector3(size, 0, 0)],
-    [MATE_GIZMO_COLORS.y, new THREE.Vector3(0, size, 0)],
-    [MATE_GIZMO_COLORS.z, new THREE.Vector3(0, 0, size)],
-  ];
-  for (const [color, end] of axes) {
-    const g = new THREE.BufferGeometry();
-    g.setAttribute(
-      "position",
-      new THREE.Float32BufferAttribute([0, 0, 0, end.x, end.y, end.z], 3),
-    );
-    const line = new THREE.LineSegments(g, lineMat(color));
-    tag(line, layer, baseOrder + 2);
-    group.add(line);
-  }
+  // ── Axis triad (positive arms only) as thin cylinders — fat lines
+  //    need a per-frame `.resolution`, tubes give a constant, renderer-
+  //    agnostic stroke as wide as a selected edge (ticket wepu). ──────
+  const axisCyl = (color: number, dir: THREE.Vector3) => {
+    // Cylinder runs along local +Y; shift to the arm midpoint, then aim it.
+    const g = new THREE.CylinderGeometry(thickness, thickness, size, 10);
+    g.translate(0, size / 2, 0);
+    const m = new THREE.Mesh(g, meshMat(color));
+    m.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir);
+    tag(m, layer, baseOrder + 2);
+    group.add(m);
+  };
+  axisCyl(MATE_GIZMO_COLORS.x, new THREE.Vector3(1, 0, 0));
+  axisCyl(MATE_GIZMO_COLORS.y, new THREE.Vector3(0, 1, 0));
+  axisCyl(MATE_GIZMO_COLORS.z, new THREE.Vector3(0, 0, 1));
 
-  // ── Rotation-plane circle (local X/Y plane, radius r) ───────────
+  // ── Rotation-plane circle (local X/Y plane) as a thin torus ─────
   {
-    const seg = 48;
-    const pts: number[] = [];
-    for (let i = 0; i <= seg; i++) {
-      const a = (i / seg) * Math.PI * 2;
-      pts.push(Math.cos(a) * r, Math.sin(a) * r, 0);
-    }
-    const g = new THREE.BufferGeometry();
-    g.setAttribute("position", new THREE.Float32BufferAttribute(pts, 3));
-    const loop = new THREE.Line(g, lineMat(MATE_GIZMO_COLORS.ring, 0.9));
-    tag(loop, layer, baseOrder + 1);
-    group.add(loop);
+    const g = new THREE.TorusGeometry(r, thickness * 0.85, 8, 56);
+    const ring = new THREE.Mesh(g, meshMat(MATE_GIZMO_COLORS.ring, 0.9));
+    tag(ring, layer, baseOrder + 1);
+    group.add(ring);
   }
 
   // ── Filled quarter sector spanning +X → +Y of the rotation plane ─

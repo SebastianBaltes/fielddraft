@@ -51,6 +51,7 @@ import {
   MultiQueryWidget,
   QueryWidget,
   SliderWidget,
+  CycleWidget,
   StringWidget,
   ColorWidget,
   UnknownWidget,
@@ -460,6 +461,16 @@ function WidgetFor({
         <FlipButton
           label={param.label}
           value={value as boolean}
+          required={param.required}
+          error={error}
+          onChange={emit}
+        />
+      );
+    case "cycle90":
+      return (
+        <CycleWidget
+          label={param.label}
+          value={value as number}
           required={param.required}
           error={error}
           onChange={emit}

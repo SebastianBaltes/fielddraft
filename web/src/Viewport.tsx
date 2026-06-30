@@ -433,7 +433,12 @@ function handleIkClick(
 function handleMateClick(store: {
   addMateConnectorAt(
     anchor: string,
-    opts?: { t?: number; primary?: string; flip?: boolean },
+    opts?: {
+      t?: number;
+      secondary?: string;
+      reorient?: number;
+      flip?: boolean;
+    },
   ): void;
   showTransientError(msg: string): void;
 }): void {
@@ -449,7 +454,8 @@ function handleMateClick(store: {
   }
   store.addMateConnectorAt(snap.anchorQuery, {
     t: snap.t,
-    primary: snap.primaryQuery ?? "",
+    secondary: snap.secondary ?? "",
+    reorient: snap.reorient,
   });
 }
 

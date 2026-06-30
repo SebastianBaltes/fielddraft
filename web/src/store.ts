@@ -2251,21 +2251,28 @@ export class KernelStore {
 
   /**
    * Add a mate connector anchored to a picked B-Rep element. `anchor` is an
-   * element query (`qFace`/`qEdge`/`qVertex`); `opts.t` is the edge
-   * arc-length param (midpoint = 0.5); `opts.primary` is the orientation
-   * reference FACE query (empty → the anchor face's own normal); `opts.flip`
-   * reverses +Z. The kernel resolves the CSYS during regeneration (C2).
+   * element query (`qFace`/`qEdge`/`qVertex`) and defines +Z. `opts.t` is the
+   * edge position (midpoint = 0.5); `opts.secondary` is the reference FACE
+   * query orienting the secondary axes / defining +Z for a vertex (empty →
+   * auto); `opts.reorient` rotates the secondary axes ×90° about +Z (0..3);
+   * `opts.flip` reverses +Z. The kernel resolves the CSYS during regen (C2).
    */
   addMateConnectorAt(
     anchor: string,
-    opts: { t?: number; primary?: string; flip?: boolean } = {},
+    opts: {
+      t?: number;
+      secondary?: string;
+      reorient?: number;
+      flip?: boolean;
+    } = {},
   ): number | null {
     let id: number;
     try {
       id = this.kernel.addMateConnector(
         anchor,
         opts.t ?? 0.5,
-        opts.primary ?? "",
+        opts.secondary ?? "",
+        opts.reorient ?? 0,
         opts.flip ?? false,
       );
     } catch (err) {

@@ -101,13 +101,19 @@ export type WidgetKind =
   | "multi_query"
   | "slider"
   | "flip"
+  | "cycle90"
   | "group"
   | "tabs"
   | "expandable"
   | "material_preset"
   | "unknown";
 
-export type UiHint = "horizontal_enum" | "opposite_direction" | "slider" | "color";
+export type UiHint =
+  | "horizontal_enum"
+  | "opposite_direction"
+  | "slider"
+  | "color"
+  | "cycle90";
 
 export interface EnumVariant {
   key: string;
@@ -454,7 +460,8 @@ function parseUiHint(value: unknown, where: string): UiHint | undefined {
     value === "horizontal_enum" ||
     value === "opposite_direction" ||
     value === "slider" ||
-    value === "color"
+    value === "color" ||
+    value === "cycle90"
   ) {
     return value;
   }
@@ -499,6 +506,7 @@ export function widgetKindFor(
   if (rawType === "enum") return "enum";
   if (rawType === "bool" && uiHint === "opposite_direction") return "flip";
   if (rawType === "f32" && uiHint === "slider") return "slider";
+  if (rawType === "f32" && uiHint === "cycle90") return "cycle90";
   if (rawType === "vec3" && uiHint === "color") return "color";
   switch (rawType) {
     case "f32":
@@ -581,6 +589,7 @@ export function defaultForParam(p: FeatureParamDescriptor): unknown {
   if (p.defaultValue !== undefined) return p.defaultValue;
   switch (p.widget) {
     case "number":
+    case "cycle90":
       return 0;
     case "vec2":
       return [0, 0];
@@ -690,6 +699,10 @@ export function validateParamValue(
   value: unknown,
 ): string | null {
   switch (param.widget) {
+    case "cycle90":
+      return typeof value === "number" && Number.isFinite(value)
+        ? null
+        : `${param.label} must be a number`;
     case "number":
     case "slider":
       // Ticket x2m7: a formula string (`"=Seitenlänge"`) is a valid value —
