@@ -47,6 +47,11 @@ import {
 } from "./sdfDeferredRenderer";
 import { triangulatePlanarFace } from "./faceFill";
 import {
+  orthonormalMateFrame,
+  buildMateGizmo,
+  disposeMateGizmo,
+} from "./mateGizmo";
+import {
   bodyNeedsSubtractionPass,
   bodyNeedsIntersectionPass,
 } from "./screenSpaceCsg";
@@ -4234,72 +4239,29 @@ export function MateConnectorOverlay() {
 
   useEffect(() => {
     const group = groupRef.current;
-    if (!group || !state) return;
-    while (group.children.length > 0) {
-      const child = group.children[0];
-      group.remove(child);
-      if (child instanceof THREE.LineSegments) {
-        child.geometry.dispose();
-        (child.material as THREE.Material).dispose();
-      }
-    }
-    if (!store) return;
-    // C2: the kernel resolves each connector's CSYS from its face query
-    // during regeneration; we just render the triads it hands back.
-    const connectors = store.kernel.resolvedMateConnectors();
-    if (connectors.length === 0) return;
-    for (const c of connectors) {
-      try {
-        const origin = c.origin;
-        const size = 15;
-
-        // CSYS: Z = face normal, X = the kernel's in-plane basis vector,
-        // Y = Z × X (right-handed).
-        const nLen = Math.hypot(c.normal[0], c.normal[1], c.normal[2]) || 1;
-        const nz = [c.normal[0] / nLen, c.normal[1] / nLen, c.normal[2] / nLen];
-        const xLen = Math.hypot(c.x_axis[0], c.x_axis[1], c.x_axis[2]) || 1;
-        const nx = [c.x_axis[0] / xLen, c.x_axis[1] / xLen, c.x_axis[2] / xLen];
-        const ny = [
-          nz[1] * nx[2] - nz[2] * nx[1],
-          nz[2] * nx[0] - nz[0] * nx[2],
-          nz[0] * nx[1] - nz[1] * nx[0],
-        ];
-
-        const axes: [number[], number][] = [
-          [nx, 0xe74c3c],
-          [ny, 0x2ecc71],
-          [nz, 0x3498db],
-        ];
-        for (const [dir, color] of axes) {
-          const positions = new Float32Array([
-            origin[0],
-            origin[1],
-            origin[2],
-            origin[0] + dir[0] * size,
-            origin[1] + dir[1] * size,
-            origin[2] + dir[2] * size,
-          ]);
-          const geo = new THREE.BufferGeometry();
-          geo.setAttribute("position", new THREE.BufferAttribute(positions, 3));
-          const mat = new THREE.LineBasicMaterial({ color });
-          const line = new THREE.LineSegments(geo, mat);
-          group.add(line);
-        }
-      } catch {
-        // Skip if a connector can't be rendered.
-      }
-    }
-    return () => {
-      if (!group) return;
+    if (!group) return;
+    const clear = () => {
       while (group.children.length > 0) {
-        const child = group.children[0];
+        const child = group.children[0] as THREE.Group;
         group.remove(child);
-        if (child instanceof THREE.LineSegments) {
-          child.geometry.dispose();
-          (child.material as THREE.Material).dispose();
-        }
+        disposeMateGizmo(child);
       }
     };
+    clear();
+    if (!store || !state) return;
+    // C2: the kernel resolves each connector's CSYS from its anchor/orientation
+    // queries during regeneration; we render the full gizmo it hands back.
+    const connectors = store.kernel.resolvedMateConnectors();
+    for (const c of connectors) {
+      const frame = orthonormalMateFrame({
+        origin: c.origin,
+        z: c.normal,
+        x: c.x_axis,
+      });
+      if (!frame) continue;
+      group.add(buildMateGizmo(frame, { size: 14 }));
+    }
+    return clear;
   }, [store, state?.features]);
 
   return <group ref={groupRef} />;
