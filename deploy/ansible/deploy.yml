@@ -1,0 +1,83 @@
+---
+# FieldDraft — deploy / rollback.
+#
+#   ansible-playbook -i inventory.ini deploy.yml --ask-vault-pass -e version=v0.6.339
+#   ansible-playbook -i inventory.ini deploy.yml --ask-vault-pass -e version=<prev>  # 1-command rollback
+#
+# Ships the compose file + Caddyfile + a rendered .env.prod, logs in to GHCR,
+# pulls the tagged images, brings the stack up, and healthchecks the API.
+#
+# DB migrations: the Go server runs its EMBEDDED migrations on startup
+# (server/migrations.go) — bringing `server` up IS the migration step. There is
+# no separate migrate task.
+#
+# `version` selects the image tag; pointing it at a previous tag is the rollback
+# path (the prior image stays in GHCR / in the local cache).
+
+- name: Deploy FieldDraft
+  hosts: vserver
+  become: true
+  vars:
+    compose_file: "{{ app_dir }}/docker-compose.prod.yml"
+  vars_files:
+    - group_vars/vault.yml
+
+  tasks:
+    - name: Sync compose file + Caddyfile to the V-server
+      ansible.builtin.copy:
+        src: "{{ item.src }}"
+        dest: "{{ item.dest }}"
+        owner: "{{ deploy_user }}"
+        group: "{{ deploy_user }}"
+        mode: "0640"
+      loop:
+        - { src: "../../docker-compose.prod.yml", dest: "{{ compose_file }}" }
+        - { src: "../../Caddyfile", dest: "{{ app_dir }}/Caddyfile" }
+
+    - name: Render .env.prod from vault secrets
+      ansible.builtin.template:
+        src: templates/env.prod.j2
+        dest: "{{ app_dir }}/.env.prod"
+        owner: "{{ deploy_user }}"
+        group: "{{ deploy_user }}"
+        mode: "0600"
+
+    - name: Log in to GHCR (private registry pull)
+      community.docker.docker_login:
+        registry_url: ghcr.io
+        username: "{{ vault_ghcr_user }}"
+        password: "{{ vault_ghcr_token }}"
+
+    - name: Pull images and bring the stack up
+      community.docker.docker_compose_v2:
+        project_src: "{{ app_dir }}"
+        files:
+          - docker-compose.prod.yml
+        env_files:
+          - "{{ app_dir }}/.env.prod"
+        pull: always
+        state: present
+        remove_orphans: true
+      register: compose_up
+
+    - name: Record the deployed version
+      ansible.builtin.debug:
+        msg: "FieldDraft {{ version }} deployed ({{ compose_up.changed | ternary('changed', 'no change') }})"
+
+    # ── Healthcheck — the API must answer through Caddy ──────────────────────
+    - name: Wait for the API to respond
+      ansible.builtin.uri:
+        url: "https://{{ domain }}/api/me"
+        method: GET
+        # /api/me returns 401 when unauthenticated — that still proves the API
+        # and the DB are up and the reverse-proxy works.
+        status_code: [200, 401]
+        validate_certs: true
+      register: health
+      until: health.status in [200, 401]
+      retries: 30
+      delay: 5
+
+    - name: Healthcheck result
+      ansible.builtin.debug:
+        msg: "API healthy (HTTP {{ health.status }})"

@@ -1,0 +1,10 @@
+# Managed by Ansible (backup.yml).
+[Unit]
+Description=FieldDraft nightly backup (mysqldump + restic)
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+Environment=DB_ROOT_PASSWORD={{ vault_db_root_password }}
+ExecStart={{ app_dir }}/backup.sh

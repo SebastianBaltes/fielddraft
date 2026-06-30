@@ -1,0 +1,101 @@
+# FieldDraft — PRODUCTION stack (V-server).
+#
+# Topology (PLATFORM-ARCHITECTURE.md §3, §11):
+#
+#   Browser ──TLS──▶ caddy (80/443) ──┬──▶ server :8080 (Go API)  ──▶ db :3306
+#                                      └──▶ /srv  (static SPA bundle)
+#
+#   * db     — MariaDB, NO host-exposed port (in-network only).
+#   * server — Go API, NO host-exposed port (Caddy proxies /api/* to it).
+#   * caddy  — the ONLY public service; auto-TLS, serves the SPA, proxies the API.
+#
+# Images are pulled from GHCR by tag on the V-server (§10.2 deploy flow). The
+# `build:` blocks let an operator build locally too; `ansible-playbook deploy.yml`
+# pulls the tagged images instead.
+#
+# Secrets come from the environment (an Ansible-Vault–decrypted .env on the
+# V-server, or `--env-file .env.prod`). NOTHING is hardcoded — see
+# .env.prod.example for the full list.
+#
+# Validate without a live server:
+#   set -a; . ./.env.prod.example; set +a
+#   docker compose -f docker-compose.prod.yml config
+
+services:
+  db:
+    image: mariadb:11
+    restart: unless-stopped
+    environment:
+      MARIADB_ROOT_PASSWORD: "${DB_ROOT_PASSWORD:?DB_ROOT_PASSWORD is required}"
+      MARIADB_DATABASE: "${DB_NAME:-fielddraft}"
+      MARIADB_USER: "${DB_USER:-fielddraft}"
+      MARIADB_PASSWORD: "${DB_PASSWORD:?DB_PASSWORD is required}"
+    volumes:
+      - db-data:/var/lib/mysql
+    # NO `ports:` — the database is never reachable from the public network.
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+    networks:
+      - internal
+
+  server:
+    image: "${REGISTRY:-ghcr.io/sorokan/fielddraft}/server:${TAG:-latest}"
+    build:
+      context: ./server
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      # The Go server runs its embedded migrations on startup (server/migrations.go),
+      # so no separate migration step is needed — bringing `server` up migrates the DB.
+      DB_DSN: "${DB_USER:-fielddraft}:${DB_PASSWORD:?DB_PASSWORD is required}@tcp(db:3306)/${DB_NAME:-fielddraft}?parseTime=true"
+      BLOB_DIR: "/data/blobs"
+      # Seeds the operator admin on first boot (only if no admin exists yet).
+      ADMIN_EMAIL: "${ADMIN_EMAIL:?ADMIN_EMAIL is required}"
+      ADMIN_PASSWORD: "${ADMIN_PASSWORD:?ADMIN_PASSWORD is required}"
+      # Behind Caddy/TLS → session cookies must carry the Secure attribute.
+      SECURE_COOKIES: "1"
+    volumes:
+      - blob-data:/data/blobs
+    # NO `ports:` — only Caddy reaches the API (reverse_proxy server:8080).
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - internal
+
+  caddy:
+    image: "${REGISTRY:-ghcr.io/sorokan/fielddraft}/web:${TAG:-latest}"
+    build:
+      context: .
+      dockerfile: web/Dockerfile.prod
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp" # HTTP/3
+    environment:
+      DOMAIN: "${DOMAIN:?DOMAIN is required (e.g. fielddraft.example.com)}"
+      TLS_EMAIL: "${TLS_EMAIL:-}"
+    volumes:
+      # Bind the Caddyfile so DOMAIN/TLS can change without rebuilding the image.
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      # Persist ACME certs + Caddy state across restarts/deploys.
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      - server
+    networks:
+      - internal
+
+volumes:
+  db-data:
+  blob-data:
+  caddy-data:
+  caddy-config:
+
+networks:
+  internal:
+    driver: bridge

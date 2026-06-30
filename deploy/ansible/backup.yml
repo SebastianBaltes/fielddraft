@@ -1,0 +1,58 @@
+---
+# FieldDraft — install the nightly backup (systemd timer).
+#
+#   ansible-playbook -i inventory.ini backup.yml --ask-vault-pass
+#
+# Installs the backup script + a systemd timer that runs it nightly:
+#   * mysqldump (gzip) of MariaDB
+#   * restic snapshot of the dump + /data/blobs to an offsite repo
+#   * retention prune (daily/weekly)
+# See PLATFORM-ARCHITECTURE.md §12. Run a periodic RESTORE DRILL — an untested
+# backup does not count.
+
+- name: Install FieldDraft backups
+  hosts: vserver
+  become: true
+  vars_files:
+    - group_vars/vault.yml
+
+  tasks:
+    - name: Ensure restic is installed
+      ansible.builtin.apt:
+        name: restic
+        state: present
+        update_cache: true
+
+    - name: Install the backup script
+      ansible.builtin.template:
+        src: templates/backup.sh.j2
+        dest: "{{ app_dir }}/backup.sh"
+        owner: root
+        group: root
+        mode: "0700"
+
+    - name: Install the systemd service unit
+      ansible.builtin.template:
+        src: templates/fielddraft-backup.service.j2
+        dest: /etc/systemd/system/fielddraft-backup.service
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: Install the systemd timer unit
+      ansible.builtin.template:
+        src: templates/fielddraft-backup.timer.j2
+        dest: /etc/systemd/system/fielddraft-backup.timer
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: Reload systemd
+      ansible.builtin.systemd:
+        daemon_reload: true
+
+    - name: Enable and start the backup timer
+      ansible.builtin.systemd:
+        name: fielddraft-backup.timer
+        enabled: true
+        state: started

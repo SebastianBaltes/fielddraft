@@ -1,0 +1,5 @@
+# Build context = ./server for the Go image (server/Dockerfile).
+server
+*.log
+.env
+.env.*

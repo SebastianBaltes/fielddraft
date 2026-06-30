@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+# Managed by Ansible (backup.yml). Nightly FieldDraft backup:
+#   1. mysqldump (gzip) of the MariaDB container → {{ backup_dir }}
+#   2. restic snapshot of {{ data_root }}/blobs + the DB dump → offsite repo
+#   3. retention prune (daily/weekly)
+# 3-2-1 per PLATFORM-ARCHITECTURE.md §12.
+set -euo pipefail
+
+BACKUP_DIR="{{ backup_dir }}"
+DATA_BLOBS="{{ data_root }}/blobs"
+STAMP="$(date +%Y%m%d-%H%M%S)"
+DUMP="${BACKUP_DIR}/fielddraft-${STAMP}.sql.gz"
+
+mkdir -p "${BACKUP_DIR}"
+
+# ── 1. DB dump from inside the running db container (no host port exposed) ───
+docker exec -i "$(docker ps -qf name=db)" \
+  mariadb-dump --single-transaction --routines --triggers \
+  -u root -p"${DB_ROOT_PASSWORD}" "{{ db_name }}" \
+  | gzip > "${DUMP}"
+
+# Keep only the last 2 local dumps; restic holds the real history offsite.
+ls -1t "${BACKUP_DIR}"/fielddraft-*.sql.gz | tail -n +3 | xargs -r rm -f
+
+# ── 2. restic snapshot (DB dump + blob dir) → offsite repo ──────────────────
+export RESTIC_PASSWORD="{{ vault_restic_password }}"
+export RESTIC_REPOSITORY="{{ vault_restic_repo }}"
+{% for k, v in (vault_restic_env | default({})).items() %}
+export {{ k }}="{{ v }}"
+{% endfor %}
+
+# Initialise the repo on first run (idempotent).
+restic snapshots >/dev/null 2>&1 || restic init
+
+restic backup --tag fielddraft --host fielddraft "${DUMP}" "${DATA_BLOBS}"
+
+# ── 3. Retention: {{ backup_keep_daily }} daily / {{ backup_keep_weekly }} weekly ─
+restic forget --prune \
+  --keep-daily {{ backup_keep_daily }} \
+  --keep-weekly {{ backup_keep_weekly }}
+
+echo "backup ok: ${DUMP}"

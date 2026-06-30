@@ -1,0 +1,25 @@
+# Build context = repo root for the prod web image (web/Dockerfile.prod).
+# Keep the context lean and exclude artifacts the image rebuilds from source.
+.git
+.github
+.claude
+target
+**/target
+node_modules
+**/node_modules
+web/dist
+web/src/wasm
+crates/kernel/pkg
+**/*.log
+.env
+.env.*
+!.env.prod.example
+tickets/open
+tickets/done
+docs/Literatur
+.uploads
+test-results
+web/coverage
+web/playwright-report
+web/test-results
+**/*.tsbuildinfo

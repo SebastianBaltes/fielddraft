@@ -1,0 +1,44 @@
+# FieldDraft — Ansible group vars (example, NON-secret defaults).
+#
+# Copy to `group_vars/all.yml`. NON-secret config can live here in plaintext.
+# SECRETS go in `group_vars/vault.yml`, encrypted with Ansible-Vault:
+#
+#   cp group_vars/all.example.yml group_vars/all.yml
+#   ansible-vault create group_vars/vault.yml        # paste the vault_* block below
+#   ansible-playbook -i inventory.ini deploy.yml --ask-vault-pass -e version=<tag>
+#
+# vault.yml MUST define (these feed .env.prod via deploy.yml's template):
+#   vault_db_root_password: "..."
+#   vault_db_password:      "..."
+#   vault_admin_email:      "admin@example.com"
+#   vault_admin_password:   "..."
+#   vault_ghcr_user:        "..."        # GHCR username for `docker login`
+#   vault_ghcr_token:       "ghp_..."    # GHCR read:packages PAT
+#   vault_restic_password:  "..."        # backup repo encryption password
+#   vault_restic_repo:      "s3:s3.amazonaws.com/fielddraft-backups"
+#   vault_restic_env: { AWS_ACCESS_KEY_ID: "...", AWS_SECRET_ACCESS_KEY: "..." }
+# NEVER commit vault.yml decrypted, and NEVER put real secrets in this file.
+
+# ── Identity / paths ────────────────────────────────────────────────────────
+deploy_user: fielddraft
+app_dir: /opt/fielddraft          # holds compose file, Caddyfile, .env.prod
+data_root: /data                  # bind base for blobs/db backups
+
+# ── Domain / TLS ────────────────────────────────────────────────────────────
+domain: fielddraft.example.com
+tls_email: ops@example.com
+
+# ── Image registry / version ────────────────────────────────────────────────
+registry: ghcr.io/sorokan/fielddraft
+# Default tag; override per run with `-e version=<tag>` (also used for rollback).
+version: latest
+
+# ── Database (non-secret parts) ─────────────────────────────────────────────
+db_name: fielddraft
+db_user: fielddraft
+
+# ── Backups ─────────────────────────────────────────────────────────────────
+backup_dir: /data/backups          # local staging for nightly dumps
+backup_keep_daily: 7
+backup_keep_weekly: 4
+backup_hour: 3                     # nightly cron hour (server local time)

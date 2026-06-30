@@ -1,0 +1,66 @@
+# Production web image — FieldDraft SPA served by Caddy.
+#
+# This is a SELF-CONTAINED multi-stage build. A clean checkout does NOT carry
+# the WASM kernel (web/src/wasm/ is gitignored) nor web/dist/, so this image
+# rebuilds both from source:
+#
+#   1. `wasm`  — Rust + wasm-pack compiles crates/kernel → web/src/wasm/
+#   2. `web`   — Node runs `tsc -b && vite build` (prod config, sourcemaps OFF)
+#                → web/dist/
+#   3. final   — Caddy serves web/dist/ and reverse-proxies /api/* to `server`
+#                (the Caddyfile is supplied by the compose stack, not baked, so
+#                 the domain/TLS config can change without rebuilding the image).
+#
+# Build context = the REPO ROOT (so the wasm stage can see crates/ + Cargo.toml).
+# See docker-compose.prod.yml: `context: .` / `dockerfile: web/Dockerfile.prod`.
+
+# ─── Stage 1: build the WASM kernel ─────────────────────────────────────────
+FROM rust:1-bookworm AS wasm
+WORKDIR /src
+
+# wasm-pack + the wasm32 target. wasm-pack vendors its own wasm-bindgen, so a
+# pinned version keeps builds reproducible.
+RUN rustup target add wasm32-unknown-unknown \
+ && cargo install wasm-pack --version 0.13.1 --locked
+
+# Copy the workspace. Cargo.lock is gitignored, so it may be absent in a clean
+# context — cargo resolves fresh in that case.
+COPY Cargo.toml ./
+COPY crates ./crates
+
+# Stamp the kernel with the web app version (single source of truth =
+# web/package.json) exactly like `just build-wasm` does.
+COPY web/package.json /tmp/web-package.json
+RUN VERSION="$(grep -m1 '"version"' /tmp/web-package.json | sed -E 's/.*: *"([^"]+)".*/\1/')" \
+ && cd crates/kernel \
+ && FIELDDRAFT_VERSION="$VERSION" wasm-pack build \
+      --release --target web \
+      --out-dir /out/wasm --out-name fielddraft_kernel \
+ && printf '%s' "$VERSION" > /out/wasm/.kernel-version
+
+# ─── Stage 2: build the SPA bundle ──────────────────────────────────────────
+FROM node:22-bookworm AS web
+WORKDIR /app/web
+
+# Install deps first for layer caching. `postinstall` runs patch-package, which
+# needs the patches/ dir present — copy it alongside the manifests.
+COPY web/package.json web/package-lock.json ./
+COPY web/patches ./patches
+RUN npm ci
+
+# The rest of the web sources + the freshly built kernel from stage 1.
+COPY web ./
+COPY --from=wasm /out/wasm ./src/wasm
+
+# Production build: tsc type-check + Vite bundle with sourcemaps OFF
+# (vite.config.prod.ts sets build.sourcemap: false explicitly). Output: dist/.
+RUN npx tsc -b && npx vite build --config vite.config.prod.ts
+
+# ─── Stage 3: runtime — Caddy serving the static SPA ────────────────────────
+FROM caddy:2-alpine
+# The built SPA. Caddy's file_server (configured in the Caddyfile) serves this
+# with SPA fallback to index.html.
+COPY --from=web /app/web/dist /srv
+# The Caddyfile is bind-mounted by the compose stack (see docker-compose.prod.yml)
+# so the operator can change DOMAIN/TLS without rebuilding. EXPOSE for clarity.
+EXPOSE 80 443
