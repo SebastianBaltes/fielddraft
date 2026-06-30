@@ -4425,7 +4425,18 @@ export class KernelStore {
             ? tool
             : null;
     if (!resolved) return;
+    // Ticket 32az: for a BINARY constraint applied via the tool, keep the
+    // FIRST-picked entity as a persistent anchor. The user can then keep
+    // clicking entities and they all chain into the constraint — every line
+    // parallel to the reference, every point coincident with it, etc. — instead
+    // of having to re-pick in pairs (which left consecutive lines unrelated).
+    // Dimensional tools open a value editor on apply, so they don't chain.
+    const anchor =
+      session.selection.length === 2 && tool !== CONSTRAINT_DIMENSION_TOOL
+        ? session.selection[0]
+        : null;
     this.applySketchConstraint(resolved);
+    if (anchor !== null) this.toggleSketchSelection(anchor);
   }
 
   toggleConstraintDriven(index: number): void {
