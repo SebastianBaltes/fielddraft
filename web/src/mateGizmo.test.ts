@@ -66,7 +66,7 @@ describe("buildMateGizmo", () => {
       z: [0, 1, 0],
       x: [1, 0, 0],
     })!;
-    const g = buildMateGizmo(frame);
+    const g = buildMateGizmo(frame, { webgpu: false });
     expect(g.position.toArray()).toEqual([5, 6, 7]);
     // Local +Z maps to the frame's world Z (=world +Y here).
     const worldZ = new THREE.Vector3(0, 0, 1).applyQuaternion(g.quaternion);

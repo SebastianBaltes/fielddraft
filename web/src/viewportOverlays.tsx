@@ -4240,6 +4240,7 @@ export function AssemblyParts() {
 
 export function MateConnectorOverlay() {
   const { store, state } = useKernelStore();
+  const webgpu = isWebGPURenderer(useThree((s) => s.gl));
   const groupRef = useRef<THREE.Group>(null);
 
   useEffect(() => {
@@ -4266,10 +4267,12 @@ export function MateConnectorOverlay() {
       if (!frame) continue;
       // OVERLAY_LAYER so the deferred renderer's overlay pass draws it — the
       // body pass only renders DATUM/OVERLAY layers, never plain layer 0.
-      group.add(buildMateGizmo(frame, { size: 14, layer: OVERLAY_LAYER }));
+      group.add(
+        buildMateGizmo(frame, { size: 14, layer: OVERLAY_LAYER, webgpu }),
+      );
     }
     return clear;
-  }, [store, state?.features, state?.mateConnectorsHidden]);
+  }, [store, state?.features, state?.mateConnectorsHidden, webgpu]);
 
   return <group ref={groupRef} />;
 }
@@ -4306,6 +4309,7 @@ export function MateInferenceOverlay({
   const camera = useThree((s) => s.camera);
   const size = useThree((s) => s.size);
   const invalidate = useThree((s) => s.invalidate);
+  const webgpu = isWebGPURenderer(useThree((s) => s.gl));
   const mateMode = state?.mateMode === true;
 
   const groupRef = useRef<THREE.Group>(null);
@@ -4541,6 +4545,7 @@ export function MateInferenceOverlay({
           size: 11,
           ghost: true,
           layer: OVERLAY_LAYER,
+          webgpu,
         });
         grp.add(giz);
         gizmoRef.current = giz;

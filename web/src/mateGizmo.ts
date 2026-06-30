@@ -4,11 +4,13 @@
  * a circle in the X/Y rotation plane, and a translucent filled quarter sector
  * spanning the +X→+Y quadrant of that plane.
  *
- * The builder is renderer-agnostic on purpose: it uses classic THREE materials
- * (`LineBasicMaterial` / `MeshBasicMaterial`), which render under BOTH the
- * WebGPU and the classic WebGL backend in this app (the same way the datum
- * labels and the legacy connector triad already do). No node materials, no
- * per-frame `.resolution`, so the same `THREE.Group` works in every viewport.
+ * Stroke width is SCREEN-SPACE (constant pixels, depth-independent) — a gizmo
+ * line must read the same width however far away it is. The axes + circle are
+ * therefore fat lines via the shared `overlayLineMaterials` helper
+ * (`Line2NodeMaterial`, `worldUnits: false` on WebGPU; classic thin
+ * `LineBasicMaterial` on the WebGL fallback) — NEVER world-space tubes, which
+ * would scale with distance. Only the filled sector (a fill, not a stroke)
+ * stays a mesh.
  *
  * A connector's CSYS is handed to us as a raw `(origin, z, x)` triple (z = the
  * primary/face-normal axis, x = an in-plane reference). `orthonormalMateFrame`
@@ -17,6 +19,11 @@
  */
 
 import * as THREE from "three";
+import {
+  createFatLineMaterials,
+  makeFatLine,
+  type FatLineMaterials,
+} from "./overlayLineMaterials";
 
 /** Axis + accent colours of the gizmo. Kept here (not in `tokens.css`) because
  *  these drive 3D material colours, not DOM styling. */
@@ -95,15 +102,26 @@ export interface MateGizmoOptions {
   /** World-space length of the axis arms (the circle/sector use a fraction of
    *  this). Defaults to 12 mm. */
   size?: number;
-  /** World-space tube radius of the axis/ring strokes. Defaults to 3% of
-   *  `size` — wide enough to read like a selected edge (ticket wepu). */
-  thickness?: number;
+  /** Live backend: `true` selects the WebGPU fat-line material, `false` the
+   *  classic WebGL one (from {@link makeFatLine}). Required so the gizmo
+   *  renders on the live renderer without crashing the other. */
+  webgpu: boolean;
+  /** Screen-space stroke width in px (honoured on WebGPU; ≥ a selected edge,
+   *  ticket wepu). Defaults to 3.5. */
+  linewidth?: number;
   /** Preview ("ghost") look while placing — slightly more translucent. */
   ghost?: boolean;
   /** Render order base; the gizmo always draws over geometry (depthTest off). */
   renderOrder?: number;
   /** Extra Object3D layers to enable (e.g. the overlay pass). */
   layer?: number;
+}
+
+/** Disposables tracked on the group's userData so {@link disposeMateGizmo} can
+ *  free BOTH materials of every fat-line pair (only one is rendered) plus the
+ *  geometries — a plain scene-graph traversal would miss the unused pair half. */
+interface GizmoDisposables {
+  items: { dispose(): void }[];
 }
 
 /** Tag set on every object the builder creates, so a caller can dispose the
@@ -125,7 +143,7 @@ function tag(o: THREE.Object3D, layer?: number, order = 0): void {
  */
 export function buildMateGizmo(
   frame: MateGizmoFrame,
-  opts: MateGizmoOptions = {},
+  opts: MateGizmoOptions,
 ): THREE.Group {
   const size = opts.size ?? 12;
   const r = size * 0.7;
@@ -140,38 +158,49 @@ export function buildMateGizmo(
   );
   tag(group, layer, baseOrder);
 
-  const thickness = opts.thickness ?? size * 0.03;
-  const meshMat = (color: number, opacity = 1) =>
-    new THREE.MeshBasicMaterial({
+  const webgpu = opts.webgpu;
+  const lw = opts.linewidth ?? 3.5;
+  const lineOpacity = ghost ? 0.85 : 1;
+  const disposables: { dispose(): void }[] = [];
+
+  // A fat (screen-space, depth-independent) stroke from a flat segment-pair
+  // buffer; both backend materials are tracked for disposal.
+  const addFatLine = (
+    positions: number[],
+    color: number,
+    width: number,
+    order: number,
+    opacity: number,
+  ): void => {
+    const mats: FatLineMaterials = createFatLineMaterials({
       color,
-      transparent: true,
-      opacity: ghost ? opacity * 0.85 : opacity,
+      linewidth: width,
       depthTest: false,
-      depthWrite: false,
     });
-
-  // ── Axis triad (positive arms only) as thin cylinders — fat lines
-  //    need a per-frame `.resolution`, tubes give a constant, renderer-
-  //    agnostic stroke as wide as a selected edge (ticket wepu). ──────
-  const axisCyl = (color: number, dir: THREE.Vector3) => {
-    // Cylinder runs along local +Y; shift to the arm midpoint, then aim it.
-    const g = new THREE.CylinderGeometry(thickness, thickness, size, 10);
-    g.translate(0, size / 2, 0);
-    const m = new THREE.Mesh(g, meshMat(color));
-    m.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir);
-    tag(m, layer, baseOrder + 2);
-    group.add(m);
+    mats.node.opacity = opacity;
+    mats.classic.opacity = opacity;
+    const { object, geometry } = makeFatLine(positions, mats, webgpu);
+    tag(object, layer, order);
+    group.add(object);
+    disposables.push(mats.node, mats.classic, geometry);
   };
-  axisCyl(MATE_GIZMO_COLORS.x, new THREE.Vector3(1, 0, 0));
-  axisCyl(MATE_GIZMO_COLORS.y, new THREE.Vector3(0, 1, 0));
-  axisCyl(MATE_GIZMO_COLORS.z, new THREE.Vector3(0, 0, 1));
 
-  // ── Rotation-plane circle (local X/Y plane) as a thin torus ─────
+  // ── Axis triad (positive arms only): three fat strokes ──────────
+  addFatLine([0, 0, 0, size, 0, 0], MATE_GIZMO_COLORS.x, lw, baseOrder + 2, lineOpacity);
+  addFatLine([0, 0, 0, 0, size, 0], MATE_GIZMO_COLORS.y, lw, baseOrder + 2, lineOpacity);
+  addFatLine([0, 0, 0, 0, 0, size], MATE_GIZMO_COLORS.z, lw, baseOrder + 2, lineOpacity);
+
+  // ── Rotation-plane circle (local X/Y plane): a fat-line loop ────
   {
-    const g = new THREE.TorusGeometry(r, thickness * 0.85, 8, 56);
-    const ring = new THREE.Mesh(g, meshMat(MATE_GIZMO_COLORS.ring, 0.9));
-    tag(ring, layer, baseOrder + 1);
-    group.add(ring);
+    const seg = 48;
+    const pts: number[] = [];
+    for (let i = 0; i < seg; i++) {
+      const a0 = (i / seg) * Math.PI * 2;
+      const a1 = ((i + 1) / seg) * Math.PI * 2;
+      pts.push(Math.cos(a0) * r, Math.sin(a0) * r, 0);
+      pts.push(Math.cos(a1) * r, Math.sin(a1) * r, 0);
+    }
+    addFatLine(pts, MATE_GIZMO_COLORS.ring, lw * 0.8, baseOrder + 1, lineOpacity * 0.9);
   }
 
   // ── Filled quarter sector spanning +X → +Y of the rotation plane ─
@@ -190,20 +219,19 @@ export function buildMateGizmo(
     const sector = new THREE.Mesh(g, mat);
     tag(sector, layer, baseOrder);
     group.add(sector);
+    disposables.push(g, mat);
   }
 
+  (group.userData as { disposables?: GizmoDisposables }).disposables = {
+    items: disposables,
+  };
   return group;
 }
 
 /** Dispose every geometry + material the gizmo allocated and clear the group. */
 export function disposeMateGizmo(group: THREE.Group): void {
-  group.traverse((o) => {
-    const mesh = o as THREE.Mesh | THREE.Line | THREE.LineSegments;
-    if ("geometry" in mesh && mesh.geometry) mesh.geometry.dispose();
-    const mat = (mesh as { material?: THREE.Material | THREE.Material[] })
-      .material;
-    if (Array.isArray(mat)) mat.forEach((m) => m.dispose());
-    else if (mat) mat.dispose();
-  });
+  const tracked = (group.userData as { disposables?: GizmoDisposables })
+    .disposables;
+  if (tracked) for (const d of tracked.items) d.dispose();
   group.clear();
 }
