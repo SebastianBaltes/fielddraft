@@ -54,7 +54,7 @@ const ITEM = {
   },
 };
 
-test("success path: claim → implement → recordDeploy → complete", async () => {
+test("success path: claim → implement → recordDeploy → deploying → complete", async () => {
   const { client, effects } = codingFixture([ITEM]);
 
   // The fake `implement` stands in for the ClaudeDraft coding agent. It returns
@@ -80,9 +80,10 @@ test("success path: claim → implement → recordDeploy → complete", async ()
   assert.equal(effects.completed.length, 1);
   assert.equal(effects.completed[0].deploy_id, "deploy-1");
   assert.equal(effects.completed[0].next_state, "resolved");
-  // No failure comment / state change on the happy path.
+  // No failure comment on the happy path; exactly one state hop: → deploying
+  // (the state machine requires in_progress → deploying → resolved, §7.2).
   assert.equal(effects.comments.length, 0);
-  assert.equal(effects.states.length, 0);
+  assert.deepEqual(effects.states, ["deploying"]);
 });
 
 test("deploy ticketIds defaults to the ticket when omitted", async () => {

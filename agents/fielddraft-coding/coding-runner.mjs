@@ -63,7 +63,7 @@ export async function runCodingOnce({ client, implement, log = noop }) {
   return results;
 }
 
-/** Claim → implement → recordDeploy → complete for a single work-order. */
+/** Claim → implement → recordDeploy → deploying → complete for a single work-order. */
 async function handleWorkOrder({ client, implement, item, log }) {
   const ticketId = item.id;
   const workOrder = item.work_order;
@@ -82,8 +82,7 @@ async function handleWorkOrder({ client, implement, item, log }) {
     throw new Error("implement() must return { deploy: { version, … } } on success");
   }
 
-  // 3. Record the deploy first (audit trail / rollback target, §10.3), then
-  //    complete the work-order linking that deploy id.
+  // 3. Record the deploy first (audit trail / rollback target, §10.3).
   const deployRecord = await client.recordDeploy({
     version: deploy.version,
     gitSha: deploy.gitSha,
@@ -93,7 +92,12 @@ async function handleWorkOrder({ client, implement, item, log }) {
   const deployId = deployRecord?.id;
   log(`coding: recorded deploy ${deployId} (${deploy.version})`);
 
-  // 4. Complete: links the deploy + transitions the ticket (default → resolved).
+  // 4. Roll out: the state machine requires in_progress → deploying → resolved
+  //    (§7.2 / §10.1 step 5), so mark the ticket "deploying" before completing —
+  //    completing straight from in_progress is an illegal transition.
+  await client.patchState(ticketId, "deploying", "coding");
+
+  // 5. Complete: links the deploy + transitions deploying → resolved.
   await client.complete(ticketId, {
     deployId,
     nextState: result.nextState, // optional override (else server → resolved)
