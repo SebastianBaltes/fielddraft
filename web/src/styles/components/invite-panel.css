@@ -1,0 +1,168 @@
+/* InvitePanel.tsx — admin-only invite management.
+ *
+ * One top-level class `.fd-invite-panel`; children nest unprefixed. Tokens
+ * only; light mode; font-size ≥ 1rem. */
+
+.fd-invite-panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  width: 100%;
+  max-width: 60rem;
+  margin: 0 auto;
+  padding: var(--space-6) var(--space-5);
+  font-size: var(--fs-base);
+  color: var(--color-text);
+
+  & .invite-bar {
+    display: flex;
+    align-items: center;
+    gap: var(--space-3);
+  }
+
+  & .invite-title {
+    margin: 0;
+    flex: 1;
+    font-size: var(--fs-2xl);
+    font-weight: var(--fw-semibold);
+  }
+
+  & .close {
+    font-family: inherit;
+    font-size: var(--fs-lg);
+    line-height: 1;
+    width: 2.25rem;
+    height: 2.25rem;
+    padding: 0;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-sm);
+    background: var(--color-bg-elevated);
+    color: var(--color-text-muted);
+    cursor: pointer;
+
+    &:hover {
+      background: var(--color-bg-hover);
+      color: var(--color-text);
+    }
+  }
+
+  & .invite-create {
+    display: flex;
+    gap: var(--space-2);
+  }
+
+  & .input {
+    flex: 1;
+    font-family: var(--font-family-sans);
+    font-size: var(--fs-base);
+    padding: var(--space-2) var(--space-3);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-sm);
+    background: var(--color-bg);
+    color: var(--color-text);
+
+    &:focus {
+      outline: 2px solid var(--color-accent);
+      outline-offset: 1px;
+    }
+  }
+
+  & .primary {
+    font-family: inherit;
+    font-size: var(--fs-base);
+    padding: var(--space-2) var(--space-4);
+    border: 1px solid var(--color-accent);
+    border-radius: var(--radius-sm);
+    background: var(--color-accent);
+    color: var(--color-text-on-accent);
+    cursor: pointer;
+
+    &:disabled {
+      opacity: 0.6;
+      cursor: default;
+    }
+
+    &:not(:disabled):hover {
+      background: var(--color-accent-hover);
+    }
+  }
+
+  & .error {
+    margin: 0;
+    font-size: var(--fs-base);
+    color: var(--color-error-text);
+  }
+
+  & .empty {
+    margin: var(--space-5) 0;
+    font-size: var(--fs-md);
+    color: var(--color-text-muted);
+    text-align: center;
+  }
+
+  & .invite-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: var(--fs-base);
+
+    & th,
+    & td {
+      text-align: left;
+      padding: var(--space-2) var(--space-3);
+      border-bottom: 1px solid var(--color-divider);
+    }
+
+    & th {
+      font-weight: var(--fw-semibold);
+      color: var(--color-text-muted);
+    }
+
+    & .muted {
+      color: var(--color-text-subtle);
+    }
+
+    & .status {
+      padding: 0 var(--space-2);
+      border-radius: var(--radius-pill);
+      font-size: var(--fs-base);
+    }
+
+    & .status-open {
+      background: var(--color-accent-soft);
+      color: var(--color-accent);
+    }
+
+    & .status-used {
+      background: var(--color-union-soft);
+      color: var(--color-success-text);
+    }
+
+    & .status-expired {
+      background: var(--color-bg-sunken);
+      color: var(--color-text-muted);
+    }
+
+    & .link {
+      font-family: inherit;
+      font-size: var(--fs-base);
+      padding: 0;
+      border: none;
+      background: transparent;
+      color: var(--color-accent);
+      cursor: pointer;
+
+      &.danger {
+        color: var(--color-error-text);
+      }
+
+      &:disabled {
+        opacity: 0.6;
+        cursor: default;
+      }
+
+      &:not(:disabled):hover {
+        text-decoration: underline;
+      }
+    }
+  }
+}

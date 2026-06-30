@@ -2208,8 +2208,56 @@ export class KernelStore {
     for (const listener of this.listeners) listener();
   }
 
-  /** M12: sync the current document to the server. No-op in
-   *  offline mode. */
+  /** WP3: the live workspace serialized as the full multi-tab Project blob —
+   *  the same payload localStorage and `.fdraft` carry. This is what a
+   *  server-side project's `document` field stores, so opening a server
+   *  project restores the WHOLE workspace (all tabs), not just one part. */
+  serializeProjectJson(): string {
+    return this.serializeProject();
+  }
+
+  /** WP3: load a server project into the live workspace and bind it for sync.
+   *  `documentJson` is the Project blob previously saved via
+   *  {@link serializeProjectJson}. A freshly-created server project carries an
+   *  empty document (`{}` / `""`) — that's not a valid Project blob, so we
+   *  start a fresh default workspace and bind the id instead of failing. Marks
+   *  the session clean (just-loaded), so the next edit flips it to "dirty".
+   *  Returns `false` only on a genuinely malformed (non-empty) blob. */
+  loadServerProject(id: string, documentJson: string): boolean {
+    const trimmed = documentJson.trim();
+    const isEmpty = trimmed === "" || trimmed === "{}" || trimmed === "null";
+    if (isEmpty) {
+      this.newProject();
+    } else if (!this.loadProjectFromJson(documentJson)) {
+      return false;
+    }
+    this.state = {
+      ...this.state,
+      projectId: id,
+      syncState: "clean",
+    };
+    for (const listener of this.listeners) listener();
+    return true;
+  }
+
+  /** WP3: detach from any server project, returning to guest/offline mode
+   *  (e.g. after the bound project is deleted, or on logout). The live
+   *  workspace document is left untouched. */
+  detachServerProject(): void {
+    if (this.state.projectId === null && this.state.syncState === "offline") {
+      return;
+    }
+    this.state = {
+      ...this.state,
+      projectId: null,
+      syncState: "offline",
+    };
+    for (const listener of this.listeners) listener();
+  }
+
+  /** M12: sync the current workspace to the bound server project. No-op in
+   *  offline mode. Sends the full Project blob (see
+   *  {@link serializeProjectJson}). */
   async syncToServer(): Promise<boolean> {
     if (!this.state.projectId || this.state.syncState === "offline") {
       return false;
@@ -2222,7 +2270,7 @@ export class KernelStore {
         credentials: "include",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          document: JSON.parse(this.kernel.toJson()),
+          document: JSON.parse(this.serializeProject()),
         }),
       });
       if (!res.ok) throw new Error(`sync failed: ${res.status}`);

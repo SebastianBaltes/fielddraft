@@ -14,6 +14,10 @@ import { isTextEntryTarget } from "./keyboardTarget";
 import { SettingsMenu, loadSettings, WorkspaceUnitsContext } from "./SettingsMenu";
 import type { SettingsState } from "./SettingsMenu";
 import { CONTROLS_PRESETS, viewShortcutRow } from "./controlsPreset";
+import { useAccount } from "./account/useAccount";
+import { AccountButton } from "./account/AccountButton";
+import { AccountLayer } from "./account/AccountLayer";
+import type { Project as ServerProject } from "./api/platform";
 
 export function App() {
   const { store, state, error } = useKernelStore();
@@ -23,6 +27,49 @@ export function App() {
   // a no-op.
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [settings, setSettings] = useState<SettingsState>(() => loadSettings());
+
+  // WP3: account session (login/dashboard/gallery/invites). Additive — guest
+  // mode stays the default; this only resolves `/api/me` once and surfaces the
+  // account UI on demand. The modeling app is never gated on it.
+  const account = useAccount();
+
+  // Bridge: load a server project's document into the live workspace and bind
+  // it for sync. The server stores the full multi-tab Project blob, so this
+  // restores the whole workspace.
+  const openServerProject = (project: ServerProject) => {
+    if (!store) return;
+    const json =
+      typeof project.document === "string"
+        ? project.document
+        : JSON.stringify(project.document ?? {});
+    store.loadServerProject(project.id, json);
+  };
+
+  // Bridge: open a public/gallery project as a fresh UNBOUND copy (no server
+  // binding — it's not the viewer's project).
+  const openServerCopy = (project: ServerProject) => {
+    if (!store) return;
+    const json =
+      typeof project.document === "string"
+        ? project.document
+        : JSON.stringify(project.document ?? {});
+    const trimmed = json.trim();
+    if (trimmed === "" || trimmed === "{}" || trimmed === "null") {
+      store.newProject();
+      store.detachServerProject();
+    } else if (store.loadProjectFromJson(json)) {
+      store.detachServerProject();
+    }
+  };
+
+  const currentDocument = (): unknown | null => {
+    if (!store) return null;
+    try {
+      return JSON.parse(store.serializeProjectJson());
+    } catch {
+      return null;
+    }
+  };
 
   const compact = settings.compact;
 
@@ -329,6 +376,10 @@ export function App() {
             <span>loading…</span>
           )}
         </div>
+        <AccountButton
+          account={account}
+          onLoggedOut={() => store?.detachServerProject()}
+        />
         {/* Ticket qh4l: the feature-panel toggle lives on the RIGHT (where the
             panel docks) and reads as a collapse chevron, not a third ☰ that
             looks identical to the settings menu. ◀ pulls the panel out, ▶
@@ -441,6 +492,17 @@ export function App() {
         </div>
       ) : null}
       </StrictMode>
+      {/* WP3: account overlay (login / dashboard / gallery / invites). Renders
+          nothing unless an account screen is open, so the modeling app and
+          guest mode are undisturbed. Kept OUTSIDE StrictMode's double-mount to
+          avoid duplicate `/api/me`-driven effects. */}
+      <AccountLayer
+        account={account}
+        onOpenProject={openServerProject}
+        onOpenCopy={openServerCopy}
+        getCurrentDocument={currentDocument}
+        boundProjectId={state?.projectId ?? null}
+      />
     </div>
     </WorkspaceUnitsContext.Provider>
   );

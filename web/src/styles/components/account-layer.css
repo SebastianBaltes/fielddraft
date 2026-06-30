@@ -1,0 +1,16 @@
+/* AccountLayer.tsx — the full-screen host for dashboard / gallery / invites.
+ *
+ * One top-level class `.fd-account-overlay`; the auth screens use their own
+ * `.fd-auth` (auth-screen.css). Tokens only; light mode. */
+
+.fd-account-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1200;
+  display: flex;
+  flex-direction: column;
+  background: var(--color-bg);
+  color: var(--color-text);
+  overflow: auto;
+  font-size: var(--fs-base);
+}

@@ -1,0 +1,225 @@
+/* Dashboard.tsx — the logged-in user's server projects.
+ *
+ * One top-level class `.fd-dashboard`; all children nest unprefixed. Tokens
+ * only; light mode; font-size ≥ 1rem. */
+
+.fd-dashboard {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+  width: 100%;
+  max-width: 72rem;
+  margin: 0 auto;
+  padding: var(--space-6) var(--space-5);
+  font-size: var(--fs-base);
+  color: var(--color-text);
+
+  & .dashboard-bar {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: var(--space-3);
+  }
+
+  & .dashboard-title {
+    margin: 0;
+    flex: 1;
+    font-size: var(--fs-2xl);
+    font-weight: var(--fw-semibold);
+  }
+
+  & .dashboard-actions {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: var(--space-2);
+  }
+
+  & .primary,
+  & .secondary {
+    font-family: inherit;
+    font-size: var(--fs-base);
+    padding: var(--space-2) var(--space-4);
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--color-border);
+    cursor: pointer;
+
+    &:disabled {
+      opacity: 0.6;
+      cursor: default;
+    }
+  }
+
+  & .primary {
+    background: var(--color-accent);
+    color: var(--color-text-on-accent);
+    border-color: var(--color-accent);
+
+    &:not(:disabled):hover {
+      background: var(--color-accent-hover);
+    }
+  }
+
+  & .secondary {
+    background: var(--color-bg-elevated);
+    color: var(--color-text);
+
+    &:not(:disabled):hover {
+      background: var(--color-bg-hover);
+    }
+  }
+
+  & .close {
+    font-family: inherit;
+    font-size: var(--fs-lg);
+    line-height: 1;
+    width: 2.25rem;
+    height: 2.25rem;
+    padding: 0;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-sm);
+    background: var(--color-bg-elevated);
+    color: var(--color-text-muted);
+    cursor: pointer;
+
+    &:hover {
+      background: var(--color-bg-hover);
+      color: var(--color-text);
+    }
+  }
+
+  & .error {
+    margin: 0;
+    font-size: var(--fs-base);
+    color: var(--color-error-text);
+  }
+
+  & .empty {
+    margin: var(--space-6) 0;
+    font-size: var(--fs-md);
+    color: var(--color-text-muted);
+    text-align: center;
+  }
+
+  & .project-grid {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(15rem, 1fr));
+    gap: var(--space-4);
+  }
+
+  & .project-card {
+    display: flex;
+    flex-direction: column;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+    background: var(--color-bg-elevated);
+    box-shadow: var(--shadow-sm);
+    overflow: hidden;
+
+    &.is-bound {
+      border-color: var(--color-accent);
+      box-shadow: 0 0 0 1px var(--color-accent);
+    }
+  }
+
+  & .thumb {
+    display: block;
+    width: 100%;
+    aspect-ratio: 4 / 3;
+    padding: 0;
+    border: none;
+    border-bottom: 1px solid var(--color-divider);
+    background: var(--color-bg-sunken);
+    cursor: pointer;
+
+    & img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+    }
+  }
+
+  & .card-body {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+    padding: var(--space-3);
+  }
+
+  & .card-head {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+  }
+
+  & .name {
+    flex: 1;
+    font-size: var(--fs-md);
+    font-weight: var(--fw-medium);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  & .badge {
+    font-family: inherit;
+    font-size: var(--fs-base);
+    padding: 0 var(--space-2);
+    border-radius: var(--radius-pill);
+    border: 1px solid transparent;
+    cursor: pointer;
+
+    &.is-public {
+      background: var(--color-union-soft);
+      color: var(--color-success-text);
+      border-color: var(--color-union-soft);
+    }
+
+    &.is-private {
+      background: var(--color-bg-sunken);
+      color: var(--color-text-muted);
+      border-color: var(--color-border);
+    }
+
+    &:disabled {
+      opacity: 0.6;
+      cursor: default;
+    }
+  }
+
+  & .meta {
+    font-size: var(--fs-base);
+    color: var(--color-text-subtle);
+  }
+
+  & .card-actions {
+    display: flex;
+    gap: var(--space-3);
+  }
+
+  & .link {
+    font-family: inherit;
+    font-size: var(--fs-base);
+    padding: 0;
+    border: none;
+    background: transparent;
+    color: var(--color-accent);
+    cursor: pointer;
+
+    &.danger {
+      color: var(--color-error-text);
+    }
+
+    &:disabled {
+      opacity: 0.6;
+      cursor: default;
+    }
+
+    &:not(:disabled):hover {
+      text-decoration: underline;
+    }
+  }
+}

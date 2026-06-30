@@ -25,3 +25,11 @@
 @import "./components/sketchLiveInput.css";
 @import "./components/tool-hint.css";
 @import "./components/measure-panel.css";
+
+/* WP3 — account / platform UI (login, dashboard, gallery, invites). */
+@import "./components/account-layer.css";
+@import "./components/account-button.css";
+@import "./components/auth-screen.css";
+@import "./components/dashboard.css";
+@import "./components/gallery.css";
+@import "./components/invite-panel.css";

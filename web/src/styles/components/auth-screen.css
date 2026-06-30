@@ -1,0 +1,155 @@
+/* AuthScreen.tsx — login / register / password-reset card.
+ *
+ * One top-level class `.fd-auth` (a centered full-screen scrim) with the card
+ * and form nested unprefixed. Tokens only; light mode; font-size ≥ 1rem. */
+
+.fd-auth {
+  position: fixed;
+  inset: 0;
+  z-index: 1300;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-4);
+  background: rgba(20, 20, 24, 0.28);
+  font-size: var(--fs-base);
+  color: var(--color-text);
+
+  & .auth-card {
+    width: min(26rem, 100%);
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-4);
+    padding: var(--space-6);
+    background: var(--color-bg-elevated);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-lg);
+  }
+
+  & .auth-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: var(--space-2);
+  }
+
+  & .auth-title {
+    margin: 0;
+    font-size: var(--fs-xl);
+    font-weight: var(--fw-semibold);
+  }
+
+  & .auth-close {
+    font-family: inherit;
+    font-size: var(--fs-lg);
+    line-height: 1;
+    width: 2rem;
+    height: 2rem;
+    padding: 0;
+    border: none;
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: var(--color-text-muted);
+    cursor: pointer;
+
+    &:hover {
+      background: var(--color-bg-hover);
+      color: var(--color-text);
+    }
+  }
+
+  & .auth-form {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3);
+  }
+
+  & .field {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+  }
+
+  & .label {
+    font-size: var(--fs-base);
+    font-weight: var(--fw-medium);
+    color: var(--color-text-muted);
+  }
+
+  & .input {
+    font-family: var(--font-family-sans);
+    font-size: var(--fs-base);
+    padding: var(--space-2) var(--space-3);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-sm);
+    background: var(--color-bg);
+    color: var(--color-text);
+
+    &:focus {
+      outline: 2px solid var(--color-accent);
+      outline-offset: 1px;
+    }
+  }
+
+  & .hint {
+    margin: 0;
+    font-size: var(--fs-base);
+    color: var(--color-text-subtle);
+  }
+
+  & .error {
+    margin: 0;
+    font-size: var(--fs-base);
+    color: var(--color-error-text);
+  }
+
+  & .success {
+    margin: 0;
+    font-size: var(--fs-base);
+    color: var(--color-success-text);
+  }
+
+  & .primary {
+    font-family: inherit;
+    font-size: var(--fs-base);
+    font-weight: var(--fw-medium);
+    padding: var(--space-2) var(--space-4);
+    border: 1px solid var(--color-accent);
+    border-radius: var(--radius-sm);
+    background: var(--color-accent);
+    color: var(--color-text-on-accent);
+    cursor: pointer;
+
+    &:disabled {
+      opacity: 0.6;
+      cursor: default;
+    }
+
+    &:not(:disabled):hover {
+      background: var(--color-accent-hover);
+    }
+  }
+
+  & .auth-switch {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+    align-items: flex-start;
+  }
+
+  & .link {
+    font-family: inherit;
+    font-size: var(--fs-base);
+    padding: 0;
+    border: none;
+    background: transparent;
+    color: var(--color-accent);
+    cursor: pointer;
+    text-align: left;
+
+    &:hover {
+      text-decoration: underline;
+    }
+  }
+}
