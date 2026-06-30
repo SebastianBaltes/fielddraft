@@ -24,6 +24,16 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    "version": "0.6.345",
+    "entries": [
+      {
+        "kind": "fix",
+        "text": "Versionsnummer in der Titelzeile als Link erkennbar (dezente Unterstreichung) — Klick öffnet die Release Notes",
+        "scope": "release-notes"
+      }
+    ]
+  },
+  {
     "version": "0.6.343",
     "entries": [
       {

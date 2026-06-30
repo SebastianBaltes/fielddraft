@@ -60,18 +60,23 @@
         font-weight: var(--fw-normal, 400);
         color: var(--color-text-muted);
         /* Reset the button chrome — it reads as a subtle text badge but opens
-           the release notes on click. */
+           the release notes on click. A faint permanent underline signals it's
+           a link; hover promotes it to the accent colour. */
         background: none;
         border: none;
         padding: 0;
         font-family: inherit;
         cursor: pointer;
         border-radius: var(--radius-sm);
-        transition: color var(--motion-fast);
+        text-decoration: underline;
+        text-decoration-color: var(--color-text-subtle);
+        text-underline-offset: 0.15em;
+        transition: color var(--motion-fast),
+          text-decoration-color var(--motion-fast);
 
         &:hover {
           color: var(--color-accent);
-          text-decoration: underline;
+          text-decoration-color: var(--color-accent);
         }
       }
     }
