@@ -24,6 +24,17 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    "version": "0.6.346",
+    "entries": [
+      {
+        "kind": "feat",
+        "text": "Extrude: mehrere coplanare Flächen im Profiles-Feld auswählen — Profiles ist jetzt ein Multi-Picker (Flächen sammeln sich an), das separate Faces-Feld entfällt",
+        "scope": "extrude",
+        "tickets": ["k280"]
+      }
+    ]
+  },
+  {
     "version": "0.6.345",
     "entries": [
       {

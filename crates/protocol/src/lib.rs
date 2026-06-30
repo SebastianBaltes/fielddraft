@@ -657,11 +657,29 @@ impl MultiQuery {
     }
 
     pub fn queries(&self) -> Vec<&str> {
+        // Split on TOP-LEVEL commas only — a query expression may carry its own
+        // commas inside parentheses (e.g. `qRegion(1, 3)`, `qRegions(1, 2, 5)`),
+        // which must NOT be mistaken for the list separator. Entries without
+        // internal commas (`qFace(h)`, `qCreatedBy(id)`) split exactly as before.
         if self.expr.is_empty() {
-            Vec::new()
-        } else {
-            self.expr.split(',').map(|s| s.trim()).collect()
+            return Vec::new();
         }
+        let mut out = Vec::new();
+        let mut depth = 0i32;
+        let mut start = 0usize;
+        for (i, ch) in self.expr.char_indices() {
+            match ch {
+                '(' => depth += 1,
+                ')' => depth -= 1,
+                ',' if depth == 0 => {
+                    out.push(self.expr[start..i].trim());
+                    start = i + 1;
+                }
+                _ => {}
+            }
+        }
+        out.push(self.expr[start..].trim());
+        out.into_iter().filter(|s| !s.is_empty()).collect()
     }
 }
 
@@ -931,6 +949,29 @@ mod tests {
         assert_eq!(doc.schema_version, SCHEMA_VERSION);
         assert!(doc.feature_calls.is_empty());
         assert_eq!(doc.next_feature_id, 1);
+    }
+
+    #[test]
+    fn multiquery_splits_on_top_level_commas_only() {
+        // Plain entries split exactly as before.
+        assert_eq!(MultiQuery::new("").queries(), Vec::<&str>::new());
+        assert_eq!(
+            MultiQuery::new("qFace(1),qFace(2)").queries(),
+            vec!["qFace(1)", "qFace(2)"]
+        );
+        // Ticket k280: commas INSIDE parens (qRegion) are not separators.
+        assert_eq!(
+            MultiQuery::new("qRegion(1, 3)").queries(),
+            vec!["qRegion(1, 3)"]
+        );
+        assert_eq!(
+            MultiQuery::new("qFace(7), qRegion(1, 3)").queries(),
+            vec!["qFace(7)", "qRegion(1, 3)"]
+        );
+        assert_eq!(
+            MultiQuery::new("qRegions(1, 2, 5)").queries(),
+            vec!["qRegions(1, 2, 5)"]
+        );
     }
 
     // ─── Document.feature_calls (K4.5.4c) ──────────────────────

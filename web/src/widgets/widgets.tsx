@@ -1291,10 +1291,23 @@ export function QueryWidget({
 
 function parseMultiQuery(raw: string): string[] {
   if (!raw) return [];
-  return raw
-    .split(",")
-    .map((s) => s.trim())
-    .filter(Boolean);
+  // Split on TOP-LEVEL commas only — a query may carry its own commas inside
+  // parentheses (e.g. `qRegion(1, 3)`), which must not be read as the list
+  // separator. Mirrors the kernel's `MultiQuery::queries` (ticket k280).
+  const out: string[] = [];
+  let depth = 0;
+  let start = 0;
+  for (let i = 0; i < raw.length; i++) {
+    const ch = raw[i];
+    if (ch === "(") depth++;
+    else if (ch === ")") depth--;
+    else if (ch === "," && depth === 0) {
+      out.push(raw.slice(start, i).trim());
+      start = i + 1;
+    }
+  }
+  out.push(raw.slice(start).trim());
+  return out.filter(Boolean);
 }
 
 function serializeMultiQuery(items: string[]): string {

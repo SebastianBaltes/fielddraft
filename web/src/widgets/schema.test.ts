@@ -20,7 +20,7 @@ import {
 const extrudeRaw = {
   type: "extrude",
   params: [
-    { key: "profiles", name: "Profiles", type: "query", required: true },
+    { key: "profiles", name: "Profiles", type: "multi_query", required: true },
     { key: "depth", name: "Depth", type: "length", required: true },
     { key: "profile_half_x", name: "Profile half x", type: "f32", required: true },
     { key: "profile_half_y", name: "Profile half y", type: "f32", required: true },
@@ -58,9 +58,9 @@ describe("parseFeatureSchema", () => {
     expect(schema.params[0]).toMatchObject({
       key: "profiles",
       label: "Profiles",
-      widget: "query",
+      widget: "multi_query",
       required: true,
-      rawType: "query",
+      rawType: "multi_query",
     });
     expect(schema.params[1].widget).toBe("length");
     expect(schema.params[2].widget).toBe("enum");
