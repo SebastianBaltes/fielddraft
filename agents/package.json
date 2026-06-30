@@ -1,0 +1,13 @@
+{
+  "name": "fielddraft-agents",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Desktop ClaudeDraft agents for FieldDraft (Phase 1b): fielddraft-po (triage/verdict gateway) and fielddraft-coding (work-order implement/deploy). Zero-dependency Node ESM. NOT part of the web/ workspace.",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "test": "node --test"
+  }
+}
