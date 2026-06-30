@@ -22,9 +22,17 @@ nvm_use := '. "$HOME/.nvm/nvm.sh" 2>/dev/null && nvm use 2>/dev/null || true'
 default:
     @just --list
 
-# Install web dependencies.
-install:
+# Install web dependencies and activate the repo's git hooks.
+install: setup-hooks
     cd web && {{nvm_use}} && npm install
+
+# Point git at the tracked .githooks dir so the commit-msg hook runs. The hook
+# blocks a feat/fix/perf commit that bumps the version but forgot the matching
+# web/src/releaseNotes.ts entry (see CLAUDE.md → "Release Notes pflegen").
+# Idempotent — safe to re-run; shared across this repo's worktrees.
+setup-hooks:
+    git config core.hooksPath .githooks
+    @echo "git hooks active (.githooks)"
 
 # Build the Rust kernel to WASM and drop the output into web/src/wasm.
 # Stamp the binary with the web app version (single source of truth =

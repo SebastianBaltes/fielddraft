@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+# Ensure user-facing versioned commits also ship a release note.
+#
+# When a commit subject is a feat/fix/perf change carrying a version token
+# (`… vX.Y.Z`), web/src/releaseNotes.ts must contain a matching entry. Other
+# commit types (docs/chore/refactor/test/style/build/revert/merge) and
+# version-less subjects are exempt — they are not release-note-worthy.
+#
+# Activate once per checkout: `just setup-hooks` (or `git config core.hooksPath
+# .githooks`). See CLAUDE.md → "Release Notes pflegen".
+set -euo pipefail
+
+subject="$(sed -n '1p' "$1")"
+
+# Only enforce for feat/fix/perf subjects that carry a version token. The
+# trailing `v(MAJOR.MINOR.PATCH)` is captured as group 3.
+if [[ ! "$subject" =~ ^(feat|fix|perf)(\([^\)]*\))?:.*v([0-9]+\.[0-9]+\.[0-9]+) ]]; then
+  exit 0
+fi
+version="${BASH_REMATCH[3]}"
+
+# Check the STAGED releaseNotes (what this commit records). If the file is not
+# staged, `:path` resolves to the index = current HEAD content, which won't
+# carry the new entry → the check correctly fails.
+notes="$(git show ":web/src/releaseNotes.ts" 2>/dev/null || true)"
+[[ -z "$notes" ]] && notes="$(cat web/src/releaseNotes.ts 2>/dev/null || true)"
+
+if ! grep -q "\"version\": \"$version\"" <<< "$notes"; then
+  cat >&2 <<EOF
+✖ Release-Notes-Eintrag für v$version fehlt.
+
+  Das ist ein feat/fix/perf-Commit — web/src/releaseNotes.ts braucht oben in
+  RELEASE_NOTES einen Eintrag:
+
+      {
+        "version": "$version",
+        "entries": [
+          { "kind": "feat|fix|perf", "text": "…", "scope": "…", "tickets": ["…"] }
+        ]
+      }
+
+  Eintrag ergänzen, Datei stagen (git add), erneut committen.
+  (Siehe CLAUDE.md → "Release Notes pflegen".)
+EOF
+  exit 1
+fi
