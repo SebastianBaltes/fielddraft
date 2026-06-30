@@ -111,6 +111,27 @@ export const BODY_COLORS: [number, number, number][] = [
 
 // ── Primitive mesh factory ─────────────────────────────────────────
 
+/** A cheap fingerprint of everything {@link createPrimitiveGeometry} bakes into
+ *  a leaf's mesh — its kind, shape params (box size, extrude depth, …) and
+ *  contour (extrude/revolve profile). Used by {@link updateDeferredData} to
+ *  rebuild a stale proxy mesh when the GEOMETRY changed (e.g. an extrude depth
+ *  edit, ticket c9ic) while skipping pure-transform changes (translate). */
+export function leafGeoKey(leaf: HybridLeafInfo): string {
+  let key = `${leaf.kind}|${leaf.params.join(",")}`;
+  const c = leaf.contour;
+  if (c) {
+    let sum = 0;
+    const fold = (pts: [number, number][]) => {
+      for (const [x, y] of pts)
+        sum = (Math.imul(sum, 31) + Math.round(x * 1e3) + Math.round(y * 1e4)) | 0;
+    };
+    fold(c.outer);
+    for (const h of c.holes) fold(h);
+    key += `|${c.outer.length}:${c.holes.length}:${sum}`;
+  }
+  return key;
+}
+
 export function createPrimitiveGeometry(
   leaf: HybridLeafInfo,
 ): THREE.BufferGeometry | null {
@@ -911,7 +932,25 @@ export function updateDeferredData(
             );
           }
         } else if (m.userData.leafIdx !== undefined) {
-          applyLeafTransform(m, hybridInfo.leaves[m.userData.leafIdx]);
+          const leaf = hybridInfo.leaves[m.userData.leafIdx];
+          // An extrude/revolve/sweep/box bakes its SHAPE (depth, profile, size)
+          // into the mesh geometry — NOT the transform — so a depth/size edit
+          // needs a fresh proxy mesh, else the SDF march stays clamped to the
+          // stale hull and the body renders at its OLD depth (ticket c9ic). Only
+          // rebuild when the geometry key actually changed (a pure translate
+          // keeps it, so it stays cheap). Defer the old geometry's GPU disposal
+          // (the sgzw "Buffer used in submit while destroyed" race).
+          const key = leafGeoKey(leaf);
+          if (m.userData.geoKey !== key) {
+            const fresh = createPrimitiveGeometry(leaf);
+            if (fresh) {
+              const retiredGeo = m.geometry;
+              m.geometry = fresh;
+              m.userData.geoKey = key;
+              disposeAfterGpuIdle(renderer, () => retiredGeo.dispose());
+            }
+          }
+          applyLeafTransform(m, leaf);
         }
       }
     };
@@ -1044,6 +1083,9 @@ export function rebuildDeferredBodies(
         if (leaf.role === "skip") continue;
         const geo = createPrimitiveGeometry(leaf);
         if (!geo) continue;
+        // Record the geometry key so a later data-only update (ticket c9ic)
+        // can tell a shape edit (depth/profile) from a pure transform.
+        const gKey = leafGeoKey(leaf);
 
         // A convex box hull's front face IS its surface, so for a PURE-UNION
         // body we can rasterize the box as opaque only and skip the sphere-trace
@@ -1066,6 +1108,7 @@ export function rebuildDeferredBodies(
           applyLeafTransform(mesh, leaf);
           mesh.frustumCulled = false;
           mesh.userData.leafIdx = leafIdx;
+          mesh.userData.geoKey = gKey;
           state.opaqueScene.add(mesh);
           opaqueMeshes.push(mesh);
         } else {
@@ -1073,6 +1116,7 @@ export function rebuildDeferredBodies(
           applyLeafTransform(mesh, leaf);
           mesh.frustumCulled = false;
           mesh.userData.leafIdx = leafIdx;
+          mesh.userData.geoKey = gKey;
           state.opaqueScene.add(mesh);
           opaqueMeshes.push(mesh);
 
@@ -1087,6 +1131,7 @@ export function rebuildDeferredBodies(
             applyLeafTransform(tMesh, leaf);
             tMesh.frustumCulled = false;
             tMesh.userData.leafIdx = leafIdx;
+            tMesh.userData.geoKey = gKey;
             state.transparentScene.add(tMesh);
             transMeshes.push(tMesh);
           }
@@ -1097,6 +1142,7 @@ export function rebuildDeferredBodies(
             applyLeafTransform(bMesh, leaf);
             bMesh.frustumCulled = false;
             bMesh.userData.leafIdx = leafIdx;
+            bMesh.userData.geoKey = gKey;
             state.transparentBackScene.add(bMesh);
             backMeshes.push(bMesh);
           }
