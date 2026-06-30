@@ -1,0 +1,117 @@
+# CI test gate — runs on every push / PR to the platform line and main.
+#
+# Three independent jobs (server / web / agents) run in parallel. The web job
+# must compile the Rust kernel to WASM first: web/src/wasm/ is gitignored (it is
+# a build artifact, see web/Dockerfile.prod) and BOTH `tsc -b` and vitest need
+# the generated TypeScript types under web/src/wasm/. We build it with the exact
+# commands `just build-wasm` runs, pinning wasm-pack to the same version as
+# web/Dockerfile.prod so CI and the prod image stay reproducible.
+name: CI
+
+on:
+  push:
+    branches: [agents/fielddraft-a-platform, main]
+  pull_request:
+    branches: [agents/fielddraft-a-platform, main]
+
+# A newer push to the same ref cancels the in-flight run for that ref.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  server:
+    name: server (go vet + test)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: server
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go 1.26
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+          cache-dependency-path: server/go.sum
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: go test
+        run: go test ./...
+
+  web:
+    name: web (wasm + tsc + vitest)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # --- Rust → WASM kernel (mirrors `just build-wasm`) -------------------
+      # web/src/wasm/ is gitignored, but tsc/vitest can't resolve the kernel
+      # types without it. The rust-toolchain.toml at the repo root pins the
+      # channel + the wasm32-unknown-unknown target, so a plain rustup install
+      # picks them up.
+      - name: Install Rust toolchain (from rust-toolchain.toml)
+        run: rustup show
+
+      - name: Cache cargo + target
+        uses: Swatinem/rust-cache@v2
+        with:
+          # wasm-pack builds crates/kernel under crates/kernel/target by default
+          # via the workspace target dir; cache the whole workspace target.
+          workspaces: . -> target
+
+      - name: Install wasm-pack (pinned, matches web/Dockerfile.prod)
+        run: cargo install wasm-pack --version 0.13.1 --locked
+
+      - name: Set up Node 23
+        uses: actions/setup-node@v4
+        with:
+          node-version: "23"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Build WASM kernel into web/src/wasm (just build-wasm)
+        run: |
+          V="$(node -p "require('./web/package.json').version")"
+          cd crates/kernel
+          FIELDDRAFT_VERSION="$V" wasm-pack build \
+            --target web \
+            --out-dir ../../web/src/wasm \
+            --out-name fielddraft_kernel
+          printf '%s' "$V" > ../../web/src/wasm/.kernel-version
+
+      - name: Install web deps
+        working-directory: web
+        run: npm ci
+
+      - name: Type-check (tsc -b)
+        working-directory: web
+        run: npx tsc -b
+
+      - name: Unit tests (vitest)
+        working-directory: web
+        run: npm test
+
+  agents:
+    name: agents (node --test)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: agents
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node 23
+        uses: actions/setup-node@v4
+        with:
+          node-version: "23"
+
+      # agents/ is zero-dependency Node ESM (no package-lock, no install step):
+      # tests live in agents/test/*.test.mjs and run via the built-in runner.
+      - name: Run agent tests
+        run: node --test
