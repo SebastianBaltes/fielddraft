@@ -3518,6 +3518,22 @@ impl FeatureKind for ExtrudeFeature {
             });
         }
 
+        // Ticket r2zx: the profile query named nothing extrudable (e.g. a solid
+        // FACE or a whole-body `qCreatedBy(extrude_id)` was picked instead of a
+        // sketch region) and no legacy half-extents were given. Fail with a
+        // clear, actionable message instead of falling through to the box
+        // fallback's cryptic "profile_half_x must be > 0".
+        if resolved_sketch.is_none()
+            && d.profile_half_x == 0.0
+            && d.profile_half_y == 0.0
+        {
+            return Err(FeatureError::InvalidParameter {
+                feature: ExtrudeDef::TYPE_NAME,
+                name: "profiles",
+                message: "select a closed sketch region to extrude — to extrude a solid face, use the Extrude Face tool (click the face, then Extrude)".to_string(),
+            });
+        }
+
         // Direction mode folds into `center[2]` (along local Z / plane normal).
         let center = [d.center[0], d.center[1], d.center[2] + dz];
         let primitive = match resolved_sketch {
