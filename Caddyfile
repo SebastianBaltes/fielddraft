@@ -1,0 +1,58 @@
+# FieldDraft — production Caddyfile.
+#
+# Caddy terminates TLS (auto Let's Encrypt for {$DOMAIN}), reverse-proxies the
+# API to the Go server, and serves the static SPA bundle (web/dist, baked into
+# this image at /srv) with SPA fallback.
+#
+# Env substitution: {$DOMAIN} and {$TLS_EMAIL} come from the compose `caddy`
+# service environment (see docker-compose.prod.yml / .env.prod). For purely
+# local testing without a real domain, set DOMAIN=localhost and leave TLS_EMAIL
+# UNSET (the default below applies; Caddy then uses its internal CA).
+{
+	# ACME account email for Let's Encrypt. A default keeps the Caddyfile valid
+	# when TLS_EMAIL is unset (e.g. local `DOMAIN=localhost` testing, where Caddy
+	# uses its internal CA and the email is unused anyway).
+	email {$TLS_EMAIL:admin@localhost}
+}
+
+{$DOMAIN} {
+	# ── API → Go server (in-network, not host-exposed) ──────────────────────
+	handle /api/* {
+		reverse_proxy server:8080
+	}
+
+	# ── Static SPA with history-API fallback ────────────────────────────────
+	handle {
+		root * /srv
+		encode zstd gzip
+		# Serve the requested file, else fall back to index.html so client-side
+		# routing (deep links) works.
+		try_files {path} /index.html
+		file_server
+	}
+
+	# ── Security headers ────────────────────────────────────────────────────
+	header {
+		# HSTS — 1 year, include subdomains. Only sent over HTTPS.
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		# Cross-origin isolation: required for SharedArrayBuffer / WASM threads.
+		Cross-Origin-Opener-Policy "same-origin"
+		Cross-Origin-Embedder-Policy "require-corp"
+		# Drop the server banner.
+		-Server
+	}
+
+	# Long-cache hashed build assets; never cache the HTML shell.
+	@hashedAssets path /assets/*
+	header @hashedAssets Cache-Control "public, max-age=31536000, immutable"
+	@html path / /index.html
+	header @html Cache-Control "no-cache"
+
+	log {
+		output stdout
+		format console
+	}
+}
