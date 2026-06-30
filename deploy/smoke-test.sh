@@ -101,6 +101,35 @@ chk "clean PO comment visible to user" "$(curl -s -b user.jar "$API/api/tickets/
 chk "leaky PO comment hidden from user" "$(curl -s -b user.jar "$API/api/tickets/$TID" | jq '[.comments[]|select(.body|test("func fix"))]|length')" "0"
 chk "leaky PO comment visible to admin" "$(curl -s -b admin.jar "$API/api/tickets/$TID" | jq '[.comments[]|select(.body|test("func fix"))]|length')" "1"
 
+echo "── 11. PO moderates a user message (post-moderation) ──"
+curl -s -o /dev/null -b user.jar -X POST "$API/api/tickets/$TID/comments" \
+  -H 'Content-Type: application/json' -d '{"body":"BUY CHEAP FOLLOWERS at spam.example"}'
+chk "unreviewed comment surfaces (resolved) ticket in PO queue" \
+  "$(curl -s -H "Authorization: Bearer $PO" "$API/api/agent/queue" | jq "[.items[]?|select(.id==\"$TID\")]|length")" "1"
+CID=$(curl -s -b user.jar "$API/api/tickets/$TID" | jq -r '[.comments[]|select(.body|test("BUY CHEAP"))][0].id')
+chk "comment moderation http" \
+  "$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $PO" -X POST "$API/api/tickets/$TID/comments/$CID/verdict" -H 'Content-Type: application/json' -d '{"spam":true,"malicious":false,"reason":"advertising"}')" "200"
+chk "spam comment hidden from user" "$(curl -s -b user.jar "$API/api/tickets/$TID" | jq '[.comments[]|select(.body|test("BUY CHEAP"))]|length')" "0"
+chk "spam comment visible to admin" "$(curl -s -b admin.jar "$API/api/tickets/$TID" | jq '[.comments[]|select(.body|test("BUY CHEAP"))]|length')" "1"
+chk "moderated ticket leaves PO queue" \
+  "$(curl -s -H "Authorization: Bearer $PO" "$API/api/agent/queue" | jq "[.items[]?|select(.id==\"$TID\")]|length")" "0"
+
+echo "── 12. admin alerts (real notify) ──"
+chk "admin alerts non-empty" "$([ "$(curl -s -b admin.jar "$API/api/admin/alerts" | jq 'length')" -ge 1 ] && echo yes)" "yes"
+chk "non-admin cannot read alerts → 403" "$(curl -s -o /dev/null -w '%{http_code}' -b user.jar "$API/api/admin/alerts")" "403"
+chk "guest cannot read alerts → 401" "$(curl -s -o /dev/null -w '%{http_code}' "$API/api/admin/alerts")" "401"
+ALERT=$(curl -s -b admin.jar "$API/api/admin/alerts?unseen=1" | jq -r '.[0].id')
+chk "mark alert seen http" "$(curl -s -o /dev/null -w '%{http_code}' -b admin.jar -X POST "$API/api/admin/alerts/$ALERT/seen")" "200"
+
+echo "── 13. user ban / unban + last-admin guard ──"
+U_ID=$(J .id reg.json); A_ID=$(J .id admin.json)
+chk "ban user http" "$(curl -s -o /dev/null -w '%{http_code}' -b admin.jar -X POST "$API/api/admin/users/$U_ID/ban")" "200"
+chk "banned user session invalid → 401" "$(curl -s -o /dev/null -w '%{http_code}' -b user.jar "$API/api/me")" "401"
+chk "banned user login blocked → 401" "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$API/api/auth/login" -H 'Content-Type: application/json' -d "{\"email\":\"$USER_EMAIL\",\"password\":\"userpass123\"}")" "401"
+chk "unban user http" "$(curl -s -o /dev/null -w '%{http_code}' -b admin.jar -X POST "$API/api/admin/users/$U_ID/unban")" "200"
+chk "unbanned user can log in" "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$API/api/auth/login" -H 'Content-Type: application/json' -d "{\"email\":\"$USER_EMAIL\",\"password\":\"userpass123\"}")" "200"
+chk "last-admin ban guarded (4xx)" "$([ "$(curl -s -o /dev/null -w '%{http_code}' -b admin.jar -X POST "$API/api/admin/users/$A_ID/ban")" -ge 400 ] && echo yes)" "yes"
+
 echo ""
 echo "════════ SMOKE TEST: $PASS passed, $FAIL failed ════════"
 exit $FAIL
