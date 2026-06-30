@@ -1,7 +1,11 @@
 /* AuthScreen.tsx — login / register / password-reset card.
  *
  * One top-level class `.fd-auth` (a centered full-screen scrim) with the card
- * and form nested unprefixed. Tokens only; light mode; font-size ≥ 1rem. */
+ * and form nested unprefixed. Tokens only; light mode; font-size ≥ 1rem.
+ *
+ * The `.fd-auth-full` modifier (WP11 login gate, AuthGate.tsx) makes it an
+ * OPAQUE full-page view rather than a dismissable scrim over the app: there is
+ * no app behind the gate, so the translucent overlay would reveal nothing. */
 
 .fd-auth {
   position: fixed;
@@ -151,5 +155,37 @@
     &:hover {
       text-decoration: underline;
     }
+  }
+}
+
+/* WP11 full-page login gate: opaque app background (no app behind it to show
+ * through) and a slightly stronger card shadow so it reads as the whole view. */
+.fd-auth.fd-auth-full {
+  z-index: 1400;
+  background: var(--color-bg);
+
+  & .auth-card {
+    box-shadow: var(--shadow-lg);
+  }
+}
+
+/* WP11 gate boot state: a centered spinner shown full-page while the boot
+ * `/api/me` is still resolving (before we know guest vs. authed). */
+.fd-auth-loading {
+  position: fixed;
+  inset: 0;
+  z-index: 1400;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--color-bg);
+
+  & .spinner {
+    width: 2.5rem;
+    height: 2.5rem;
+    border: 3px solid var(--color-border);
+    border-top-color: var(--color-accent);
+    border-radius: 50%;
+    animation: fd-spin 0.8s linear infinite;
   }
 }

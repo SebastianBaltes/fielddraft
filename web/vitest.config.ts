@@ -5,6 +5,14 @@ import { defineConfig } from "vitest/config";
 // are pure TS (no JSX), so we keep this config plugin-free and let the tsc
 // pre-check run via `tsc -b` in the build step.
 export default defineConfig({
+  // The build-time `define` globals (injected by vite.config.ts in dev/build)
+  // are not present in vitest. The App shell reads __APP_VERSION__/
+  // __KERNEL_EXPECTED__ at render, so provide inert literals here — without them
+  // any test that renders the shell throws "__APP_VERSION__ is not defined".
+  define: {
+    __APP_VERSION__: JSON.stringify("test"),
+    __KERNEL_EXPECTED__: JSON.stringify("test"),
+  },
   test: {
     environment: "jsdom",
     globals: true,

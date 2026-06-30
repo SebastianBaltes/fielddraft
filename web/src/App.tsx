@@ -18,14 +18,76 @@ import {
 } from "./SettingsMenu";
 import type { SettingsState } from "./SettingsMenu";
 import { CONTROLS_PRESETS, viewShortcutRow } from "./controlsPreset";
-import { useAccount } from "./account/useAccount";
+import { useAccount, type UseAccountOptions } from "./account/useAccount";
+import type { UseAccount } from "./account/useAccount";
 import { AccountButton } from "./account/AccountButton";
 import { AccountLayer } from "./account/AccountLayer";
+import { AuthGate } from "./account/AuthGate";
 import { GuestImportBanner } from "./account/GuestImportBanner";
 import { shouldOfferGuestImport } from "./account/guestImport";
 import { platformApi, type Project as ServerProject } from "./api/platform";
 
-export function App() {
+// WP11: the deployed build gates the whole app behind login. The gate is a
+// build flag (default OFF) so local `just dev`, the Playwright e2e and offline
+// modeling stay ungated; the production config (vite.config.prod.ts) bakes it
+// ON, making the shipped image unusable without a session.
+//
+// Session persistence is the existing HttpOnly, 7-day session cookie — sent
+// automatically, restored by `getMe()` on boot. We deliberately do NOT mirror
+// the session/token into localStorage: an HttpOnly cookie is unreadable by
+// page JS, so an XSS payload cannot exfiltrate it; a token in localStorage
+// would be trivially stealable. No extra persistence code is needed beyond the
+// `/api/me` boot call already in useAccount.
+//
+// Read at render time (not a module-level const) so the value is the live
+// `import.meta.env` — keeps the flag stubbable in tests and dead-code-eliminated
+// to a literal in the prod build (vite.config.prod.ts bakes "1").
+function requireLogin(): boolean {
+  return import.meta.env.VITE_REQUIRE_LOGIN === "1";
+}
+
+/**
+ * App — the gate boundary. Owns the account session (one `/api/me` per load)
+ * and, when the login gate is on, decides whether the modeling app mounts at
+ * all:
+ *   - session still resolving → a small full-page loading state,
+ *   - no session (incl. network error → treated as not authed) → ONLY the
+ *     full-page AuthGate; none of the modeling app / toolbar / viewport /
+ *     dashboard / account button mounts,
+ *   - authed → the full app (AppShell) exactly as before.
+ * After login/register the session flips to authed and the app mounts; after
+ * logout it returns to the gate.
+ *
+ * When the gate is off (default) boot is unchanged: AppShell mounts immediately
+ * and account features stay optional.
+ *
+ * `accountOptions` is a test seam — production passes nothing, so useAccount
+ * hits the real `/api/me`; tests inject a fake api + search.
+ */
+export function App({
+  accountOptions,
+}: {
+  accountOptions?: UseAccountOptions;
+} = {}) {
+  const account = useAccount(accountOptions);
+
+  if (requireLogin()) {
+    if (account.state.status === "loading") {
+      return (
+        <div className="fd-auth-loading" data-testid="auth-gate-loading">
+          <div className="spinner" />
+        </div>
+      );
+    }
+    if (account.state.status !== "authed") {
+      return <AuthGate account={account} />;
+    }
+  }
+
+  return <AppShell account={account} />;
+}
+
+function AppShell({ account }: { account: UseAccount }) {
   const { store, state, error } = useKernelStore();
   const [showHelp, setShowHelp] = useState(false);
   // Mobile-only: the outliner is an off-canvas drawer toggled from the
@@ -35,9 +97,9 @@ export function App() {
   const [settings, setSettings] = useState<SettingsState>(() => loadSettings());
 
   // WP3: account session (login/dashboard/gallery/invites). Additive — guest
-  // mode stays the default; this only resolves `/api/me` once and surfaces the
-  // account UI on demand. The modeling app is never gated on it.
-  const account = useAccount();
+  // mode stays the default; the account UI surfaces on demand. The session is
+  // owned by the outer App (one `/api/me` per load) and passed in, so the WP11
+  // login gate and this shell share exactly one resolution.
 
   // Bridge: load a server project's document into the live workspace and bind
   // it for sync. The server stores the full multi-tab Project blob, so this

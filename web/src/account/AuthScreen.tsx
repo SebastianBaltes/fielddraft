@@ -35,6 +35,10 @@ interface AuthScreenProps {
   /** Switch to another auth screen (e.g. "no account? register"). */
   onSwitch(mode: AccountOverlay): void;
   onClose(): void;
+  /** WP11 full-page login gate: render as a centered, opaque, full-screen view
+   *  (no dismiss button) instead of the dismissable overlay card. There is no
+   *  app behind the gate to close to, so the × is suppressed. */
+  fullPage?: boolean;
 }
 
 const TITLES: Record<AuthScreenProps["mode"], string> = {
@@ -52,6 +56,7 @@ export function AuthScreen({
   onRegister,
   onSwitch,
   onClose,
+  fullPage = false,
 }: AuthScreenProps) {
   const [email, setEmail] = useState("");
   const [displayName, setDisplayName] = useState("");
@@ -97,19 +102,28 @@ export function AuthScreen({
   };
 
   return (
-    <div className="fd-auth" data-testid="auth-screen" data-mode={mode}>
+    <div
+      className={"fd-auth" + (fullPage ? " fd-auth-full" : "")}
+      data-testid="auth-screen"
+      data-mode={mode}
+    >
       <div className="auth-card" role="dialog" aria-label={TITLES[mode]}>
         <div className="auth-header">
           <h2 className="auth-title">{TITLES[mode]}</h2>
-          <button
-            type="button"
-            className="auth-close"
-            data-testid="auth-close"
-            aria-label="Close"
-            onClick={onClose}
-          >
-            &times;
-          </button>
+          {/* In the full-page gate there is no app behind the screen, so the
+              dismiss control is suppressed — the only way forward is to log in
+              or register. */}
+          {!fullPage && (
+            <button
+              type="button"
+              className="auth-close"
+              data-testid="auth-close"
+              aria-label="Close"
+              onClick={onClose}
+            >
+              &times;
+            </button>
+          )}
         </div>
 
         <form className="auth-form" onSubmit={submit}>

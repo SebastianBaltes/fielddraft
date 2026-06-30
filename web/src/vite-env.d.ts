@@ -18,3 +18,10 @@ declare module "*?raw" {
 
 declare const __APP_VERSION__: string;
 declare const __KERNEL_EXPECTED__: string;
+
+interface ImportMetaEnv {
+  /** WP11 login gate. `"1"` enforces the full-page login gate (set by the
+   *  production build, vite.config.prod.ts). Undefined/`"0"` → ungated (local
+   *  dev, e2e, offline modeling). */
+  readonly VITE_REQUIRE_LOGIN?: string;
+}

@@ -22,6 +22,14 @@ export default defineConfig(async (env) => {
   )(env)) as UserConfig;
 
   return mergeConfig(base, {
+    // WP11: enforce the login gate in the deployed image. The base config
+    // (vite.config.ts) leaves VITE_REQUIRE_LOGIN unset → local `just dev`, the
+    // Playwright e2e and offline modeling all stay ungated. Only this prod path
+    // bakes "1" into the bundle, so the shipped FieldDraft is unusable without a
+    // session. `import.meta.env.VITE_REQUIRE_LOGIN` reads this constant.
+    define: {
+      "import.meta.env.VITE_REQUIRE_LOGIN": JSON.stringify("1"),
+    },
     build: {
       sourcemap: false,
       minify: "esbuild",
