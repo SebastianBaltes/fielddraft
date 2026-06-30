@@ -152,21 +152,26 @@ func (s *sqlStore) CreateUser(email, displayName, password string, role Role) (*
 	return u, nil
 }
 
-func (s *sqlStore) scanUser(row *sql.Row) *User {
+// userCols is the canonical user projection (B3 adds `disabled`).
+const userCols = `id, email, display_name, password_hash, salt, role, disabled, created_at`
+
+func (s *sqlStore) scanUserRow(scan func(...any) error) *User {
 	u := &User{}
 	var role string
-	err := row.Scan(&u.ID, &u.Email, &u.DisplayName, &u.PasswordHash, &u.Salt, &role, &u.CreatedAt)
-	if err != nil {
+	if err := scan(&u.ID, &u.Email, &u.DisplayName, &u.PasswordHash, &u.Salt, &role, &u.Disabled, &u.CreatedAt); err != nil {
 		return nil
 	}
 	u.Role = Role(role)
 	return u
 }
 
+func (s *sqlStore) scanUser(row *sql.Row) *User {
+	return s.scanUserRow(row.Scan)
+}
+
 func (s *sqlStore) AuthenticateUser(email, password string) (*User, error) {
 	u := s.scanUser(s.db.QueryRow(
-		`SELECT id, email, display_name, password_hash, salt, role, created_at
-		 FROM users WHERE email = ?`, email))
+		`SELECT `+userCols+` FROM users WHERE email = ?`, email))
 	if u == nil {
 		return nil, errNotFound
 	}
@@ -174,19 +179,21 @@ func (s *sqlStore) AuthenticateUser(email, password string) (*User, error) {
 	if !bytesEqual(hash, u.PasswordHash) {
 		return nil, errUnauthorized
 	}
+	// A banned user cannot authenticate (B3, §4.4).
+	if u.Disabled {
+		return nil, errUserDisabled
+	}
 	return u, nil
 }
 
 func (s *sqlStore) GetUser(id string) *User {
 	return s.scanUser(s.db.QueryRow(
-		`SELECT id, email, display_name, password_hash, salt, role, created_at
-		 FROM users WHERE id = ?`, id))
+		`SELECT `+userCols+` FROM users WHERE id = ?`, id))
 }
 
 func (s *sqlStore) GetUserByEmail(email string) *User {
 	return s.scanUser(s.db.QueryRow(
-		`SELECT id, email, display_name, password_hash, salt, role, created_at
-		 FROM users WHERE email = ?`, email))
+		`SELECT `+userCols+` FROM users WHERE email = ?`, email))
 }
 
 func (s *sqlStore) UpdatePassword(userID, newPassword string) {
@@ -207,6 +214,52 @@ func (s *sqlStore) HasAdmin() bool {
 		return false
 	}
 	return n > 0
+}
+
+// ─── user administration / ban (B3) ─────────────────────────────
+
+func (s *sqlStore) ListUsers() []*User {
+	rows, err := s.db.Query(`SELECT ` + userCols + ` FROM users ORDER BY created_at DESC`)
+	if err != nil {
+		log.Printf("sqlStore: ListUsers: %v", err)
+		return nil
+	}
+	defer rows.Close()
+	var out []*User
+	for rows.Next() {
+		if u := s.scanUserRow(rows.Scan); u != nil {
+			out = append(out, u)
+		}
+	}
+	return out
+}
+
+func (s *sqlStore) SetUserDisabled(userID string, disabled bool) *User {
+	if _, err := s.db.Exec(
+		`UPDATE users SET disabled = ? WHERE id = ?`, disabled, userID); err != nil {
+		log.Printf("sqlStore: SetUserDisabled: %v", err)
+		return nil
+	}
+	return s.GetUser(userID)
+}
+
+// AdminCount returns the number of enabled admins not counting excludeUserID
+// (the last-admin-ban guard, B3).
+func (s *sqlStore) AdminCount(excludeUserID string) int {
+	var n int
+	if err := s.db.QueryRow(
+		`SELECT COUNT(*) FROM users WHERE role = 'admin' AND disabled = 0 AND id <> ?`,
+		excludeUserID).Scan(&n); err != nil {
+		log.Printf("sqlStore: AdminCount: %v", err)
+		return 0
+	}
+	return n
+}
+
+func (s *sqlStore) DeleteUserSessions(userID string) {
+	if _, err := s.db.Exec(`DELETE FROM sessions WHERE user_id = ?`, userID); err != nil {
+		log.Printf("sqlStore: DeleteUserSessions: %v", err)
+	}
 }
 
 // ─── sessions ───────────────────────────────────────────────────
@@ -838,6 +891,23 @@ func (s *sqlStore) DeleteTicket(id string) bool {
 	return n > 0
 }
 
+// commentCols is the canonical comment projection (B1 adds `po_reviewed`).
+const commentCols = `id, ticket_id, author_type, author_id, internal, body, created_at, withheld, po_reviewed`
+
+func (s *sqlStore) scanComment(scan func(...any) error) *TicketComment {
+	c := &TicketComment{}
+	var at string
+	var aid sql.NullString
+	if err := scan(&c.ID, &c.TicketID, &at, &aid, &c.Internal, &c.Body, &c.CreatedAt, &c.Withheld, &c.POReviewed); err != nil {
+		return nil
+	}
+	c.AuthorType = AuthorType(at)
+	if aid.Valid {
+		c.AuthorID = &aid.String
+	}
+	return c
+}
+
 func (s *sqlStore) AddComment(ticketID string, authorType AuthorType, authorID *string, body string, internal bool) *TicketComment {
 	c := &TicketComment{
 		ID:         newID(),
@@ -847,15 +917,18 @@ func (s *sqlStore) AddComment(ticketID string, authorType AuthorType, authorID *
 		Internal:   internal,
 		Body:       body,
 		CreatedAt:  time.Now().UTC(),
+		// Only user comments need PO post-moderation; po/dev/system are inherently
+		// reviewed (B1, §4.2).
+		POReviewed: authorType != AuthorUser,
 	}
 	var aid any
 	if authorID != nil {
 		aid = *authorID
 	}
 	if _, err := s.db.Exec(
-		`INSERT INTO ticket_comments (id, ticket_id, author_type, author_id, internal, body, created_at, withheld)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, 0)`,
-		c.ID, c.TicketID, string(c.AuthorType), aid, c.Internal, c.Body, c.CreatedAt); err != nil {
+		`INSERT INTO ticket_comments (id, ticket_id, author_type, author_id, internal, body, created_at, withheld, po_reviewed)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)`,
+		c.ID, c.TicketID, string(c.AuthorType), aid, c.Internal, c.Body, c.CreatedAt, c.POReviewed); err != nil {
 		log.Printf("sqlStore: AddComment: %v", err)
 		return nil
 	}
@@ -866,7 +939,7 @@ func (s *sqlStore) AddComment(ticketID string, authorType AuthorType, authorID *
 
 func (s *sqlStore) ListComments(ticketID string) []*TicketComment {
 	rows, err := s.db.Query(
-		`SELECT id, ticket_id, author_type, author_id, internal, body, created_at, withheld
+		`SELECT `+commentCols+`
 		 FROM ticket_comments WHERE ticket_id = ? ORDER BY created_at ASC`, ticketID)
 	if err != nil {
 		log.Printf("sqlStore: ListComments: %v", err)
@@ -875,17 +948,60 @@ func (s *sqlStore) ListComments(ticketID string) []*TicketComment {
 	defer rows.Close()
 	var out []*TicketComment
 	for rows.Next() {
-		c := &TicketComment{}
-		var at string
-		var aid sql.NullString
-		if err := rows.Scan(&c.ID, &c.TicketID, &at, &aid, &c.Internal, &c.Body, &c.CreatedAt, &c.Withheld); err != nil {
-			continue
+		if c := s.scanComment(rows.Scan); c != nil {
+			out = append(out, c)
 		}
-		c.AuthorType = AuthorType(at)
-		if aid.Valid {
-			c.AuthorID = &aid.String
+	}
+	return out
+}
+
+func (s *sqlStore) GetComment(ticketID, commentID string) *TicketComment {
+	row := s.db.QueryRow(
+		`SELECT `+commentCols+` FROM ticket_comments WHERE id = ? AND ticket_id = ?`,
+		commentID, ticketID)
+	return s.scanComment(row.Scan)
+}
+
+// SetCommentReviewed marks a comment PO-reviewed and, when withheld, hides it
+// (B1, §4.2). Withheld is sticky: it is set, never cleared, here.
+func (s *sqlStore) SetCommentReviewed(commentID string, withheld bool) *TicketComment {
+	var q string
+	if withheld {
+		q = `UPDATE ticket_comments SET po_reviewed = 1, withheld = 1 WHERE id = ?`
+	} else {
+		q = `UPDATE ticket_comments SET po_reviewed = 1 WHERE id = ?`
+	}
+	if _, err := s.db.Exec(q, commentID); err != nil {
+		log.Printf("sqlStore: SetCommentReviewed: %v", err)
+		return nil
+	}
+	row := s.db.QueryRow(`SELECT `+commentCols+` FROM ticket_comments WHERE id = ?`, commentID)
+	return s.scanComment(row.Scan)
+}
+
+// ListTicketsWithUnreviewedComments returns every ticket (any state) with at
+// least one unreviewed USER comment, hydrated with thread + artifacts (B1).
+func (s *sqlStore) ListTicketsWithUnreviewedComments() []*Ticket {
+	rows, err := s.db.Query(
+		`SELECT ` + ticketCols + ` FROM tickets t
+		 WHERE EXISTS (
+		     SELECT 1 FROM ticket_comments c
+		     WHERE c.ticket_id = t.id AND c.author_type = 'user' AND c.po_reviewed = 0)
+		 ORDER BY t.created_at DESC`)
+	if err != nil {
+		log.Printf("sqlStore: ListTicketsWithUnreviewedComments: %v", err)
+		return nil
+	}
+	defer rows.Close()
+	var out []*Ticket
+	for rows.Next() {
+		if t := s.scanTicket(rows.Scan); t != nil {
+			out = append(out, t)
 		}
-		out = append(out, c)
+	}
+	for _, t := range out {
+		t.Comments = s.ListComments(t.ID)
+		t.Artifacts = s.listArtifacts(t.ID)
 	}
 	return out
 }
@@ -1127,10 +1243,11 @@ func (s *sqlStore) AddAgentComment(ticketID string, authorType AuthorType, body 
 		Body:       body,
 		CreatedAt:  time.Now().UTC(),
 		Withheld:   withheld,
+		POReviewed: true, // po/dev are authored by the agents — inherently reviewed
 	}
 	if _, err := s.db.Exec(
-		`INSERT INTO ticket_comments (id, ticket_id, author_type, author_id, internal, body, created_at, withheld)
-		 VALUES (?, ?, ?, NULL, ?, ?, ?, ?)`,
+		`INSERT INTO ticket_comments (id, ticket_id, author_type, author_id, internal, body, created_at, withheld, po_reviewed)
+		 VALUES (?, ?, ?, NULL, ?, ?, ?, ?, 1)`,
 		c.ID, c.TicketID, string(c.AuthorType), c.Internal, c.Body, c.CreatedAt, c.Withheld); err != nil {
 		log.Printf("sqlStore: AddAgentComment: %v", err)
 		return nil
@@ -1166,6 +1283,78 @@ func (s *sqlStore) ListAcceptedWithOpenWorkOrder() []*Ticket {
 		t.Artifacts = s.listArtifacts(t.ID)
 	}
 	return out
+}
+
+// ─── admin alerts (B2, §4.4) ────────────────────────────────────
+
+const adminAlertCols = `id, kind, ticket_id, detail, created_at, seen`
+
+func (s *sqlStore) scanAdminAlert(scan func(...any) error) *AdminAlert {
+	a := &AdminAlert{}
+	var kind string
+	var ticketID sql.NullString
+	if err := scan(&a.ID, &kind, &ticketID, &a.Detail, &a.CreatedAt, &a.Seen); err != nil {
+		return nil
+	}
+	a.Kind = AlertKind(kind)
+	if ticketID.Valid {
+		a.TicketID = &ticketID.String
+	}
+	return a
+}
+
+func (s *sqlStore) CreateAdminAlert(kind AlertKind, ticketID *string, detail string) *AdminAlert {
+	a := &AdminAlert{
+		ID:        newID(),
+		Kind:      kind,
+		Detail:    detail,
+		CreatedAt: time.Now().UTC(),
+	}
+	var tid any
+	if ticketID != nil {
+		tid = *ticketID
+		t := *ticketID
+		a.TicketID = &t
+	}
+	if _, err := s.db.Exec(
+		`INSERT INTO admin_alerts (id, kind, ticket_id, detail, created_at, seen)
+		 VALUES (?, ?, ?, ?, ?, 0)`,
+		a.ID, string(a.Kind), tid, a.Detail, a.CreatedAt); err != nil {
+		log.Printf("sqlStore: CreateAdminAlert: %v", err)
+		return nil
+	}
+	return a
+}
+
+func (s *sqlStore) ListAdminAlerts(unseenOnly bool) []*AdminAlert {
+	q := `SELECT ` + adminAlertCols + ` FROM admin_alerts`
+	if unseenOnly {
+		q += ` WHERE seen = 0`
+	}
+	q += ` ORDER BY created_at DESC, id DESC`
+	rows, err := s.db.Query(q)
+	if err != nil {
+		log.Printf("sqlStore: ListAdminAlerts: %v", err)
+		return nil
+	}
+	defer rows.Close()
+	var out []*AdminAlert
+	for rows.Next() {
+		if a := s.scanAdminAlert(rows.Scan); a != nil {
+			out = append(out, a)
+		}
+	}
+	return out
+}
+
+func (s *sqlStore) MarkAdminAlertSeen(id string) bool {
+	res, err := s.db.Exec(`UPDATE admin_alerts SET seen = 1 WHERE id = ?`, id)
+	if err != nil {
+		log.Printf("sqlStore: MarkAdminAlertSeen: %v", err)
+		return false
+	}
+	n, _ := res.RowsAffected()
+	return n > 0
 }
 
 // ─── helpers ────────────────────────────────────────────────────

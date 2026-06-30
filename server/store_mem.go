@@ -36,6 +36,10 @@ type memStore struct {
 	workOrders map[string]*WorkOrder // ticket ID → work-order
 	deploys    map[string]*Deploy    // deploy ID → deploy
 	deploySeq  []string              // deploy IDs, insertion order (for stable list)
+
+	alerts   map[string]*AdminAlert // alert ID → admin alert
+	alertSeq []string               // alert IDs, insertion order (newest = last)
+	userSeq  []string               // user IDs, insertion order (for stable list)
 }
 
 // NewStore returns the in-memory store (test fixture).
@@ -55,6 +59,7 @@ func NewStore() Store {
 		blobs:       make(map[string][]byte),
 		workOrders:  make(map[string]*WorkOrder),
 		deploys:     make(map[string]*Deploy),
+		alerts:      make(map[string]*AdminAlert),
 	}
 }
 
@@ -82,6 +87,7 @@ func (s *memStore) CreateUser(email, displayName, password string, role Role) (*
 	}
 	s.users[id] = user
 	s.emails[email] = id
+	s.userSeq = append(s.userSeq, id)
 	return user, nil
 }
 
@@ -97,6 +103,10 @@ func (s *memStore) AuthenticateUser(email, password string) (*User, error) {
 	hash := argon2.IDKey([]byte(password), user.Salt, 1, 64*1024, 4, 32)
 	if !bytesEqual(hash, user.PasswordHash) {
 		return nil, errUnauthorized
+	}
+	// A banned user cannot authenticate (B3, §4.4).
+	if user.Disabled {
+		return nil, errUserDisabled
 	}
 	return user, nil
 }
@@ -139,6 +149,65 @@ func (s *memStore) HasAdmin() bool {
 		}
 	}
 	return false
+}
+
+// ─── user administration / ban (B3) ─────────────────────────────
+
+// cloneUser returns a copy so callers can't mutate stored state.
+func cloneUser(u *User) *User {
+	c := *u
+	return &c
+}
+
+func (s *memStore) ListUsers() []*User {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]*User, 0, len(s.userSeq))
+	// Newest first.
+	for i := len(s.userSeq) - 1; i >= 0; i-- {
+		if u := s.users[s.userSeq[i]]; u != nil {
+			out = append(out, cloneUser(u))
+		}
+	}
+	return out
+}
+
+func (s *memStore) SetUserDisabled(userID string, disabled bool) *User {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	u, ok := s.users[userID]
+	if !ok {
+		return nil
+	}
+	u.Disabled = disabled
+	return cloneUser(u)
+}
+
+// AdminCount returns the number of (enabled) admins, not counting excludeUserID.
+// Used to guard against removing the last admin (B3).
+func (s *memStore) AdminCount(excludeUserID string) int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	n := 0
+	for _, u := range s.users {
+		if u.ID == excludeUserID {
+			continue
+		}
+		if u.Role == RoleAdmin && !u.Disabled {
+			n++
+		}
+	}
+	return n
+}
+
+func (s *memStore) DeleteUserSessions(userID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for tok, sess := range s.sessions {
+		if sess.UserID == userID {
+			delete(s.sessions, tok)
+		}
+	}
 }
 
 func (s *memStore) CreateResetToken(userID string) string {
@@ -577,6 +646,9 @@ func (s *memStore) AddComment(ticketID string, authorType AuthorType, authorID *
 		Internal:   internal,
 		Body:       body,
 		CreatedAt:  time.Now().UTC(),
+		// Only user comments need PO post-moderation; po/dev/system are inherently
+		// reviewed (B1, §4.2).
+		POReviewed: authorType != AuthorUser,
 	}
 	s.comments[ticketID] = append(s.comments[ticketID], c)
 	if t := s.tickets[ticketID]; t != nil {
@@ -584,6 +656,71 @@ func (s *memStore) AddComment(ticketID string, authorType AuthorType, authorID *
 	}
 	cc := *c
 	return &cc
+}
+
+func (s *memStore) GetComment(ticketID, commentID string) *TicketComment {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, c := range s.comments[ticketID] {
+		if c.ID == commentID {
+			cc := *c
+			return &cc
+		}
+	}
+	return nil
+}
+
+// SetCommentReviewed marks a comment PO-reviewed and, when withheld, hides it
+// (B1, §4.2). Returns the updated comment (nil if unknown).
+func (s *memStore) SetCommentReviewed(commentID string, withheld bool) *TicketComment {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, list := range s.comments {
+		for _, c := range list {
+			if c.ID == commentID {
+				c.POReviewed = true
+				if withheld {
+					c.Withheld = true
+				}
+				cc := *c
+				return &cc
+			}
+		}
+	}
+	return nil
+}
+
+// ListTicketsWithUnreviewedComments returns every ticket (any state) that has
+// at least one unreviewed USER comment — so spam on a resolved ticket still
+// reaches the PO (B1, §4.2). Hydrated with comments + artifacts.
+func (s *memStore) ListTicketsWithUnreviewedComments() []*Ticket {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var out []*Ticket
+	for id, t := range s.tickets {
+		has := false
+		for _, c := range s.comments[id] {
+			if c.AuthorType == AuthorUser && !c.POReviewed {
+				has = true
+				break
+			}
+		}
+		if !has {
+			continue
+		}
+		full := cloneTicket(t)
+		for _, c := range s.comments[id] {
+			cc := *c
+			full.Comments = append(full.Comments, &cc)
+		}
+		for _, a := range s.artifacts[id] {
+			aa := *a
+			full.Artifacts = append(full.Artifacts, &aa)
+		}
+		out = append(out, full)
+	}
+	sortTicketsDesc(out)
+	return out
 }
 
 func (s *memStore) ListComments(ticketID string) []*TicketComment {
@@ -771,6 +908,7 @@ func (s *memStore) AddAgentComment(ticketID string, authorType AuthorType, body 
 		Body:       body,
 		CreatedAt:  time.Now().UTC(),
 		Withheld:   withheld,
+		POReviewed: true, // po/dev are authored by the agents — inherently reviewed
 	}
 	s.comments[ticketID] = append(s.comments[ticketID], c)
 	if t := s.tickets[ticketID]; t != nil {
@@ -807,4 +945,59 @@ func (s *memStore) ListAcceptedWithOpenWorkOrder() []*Ticket {
 	}
 	sortTicketsDesc(out)
 	return out
+}
+
+// ─── admin alerts (B2, §4.4) ────────────────────────────────────
+
+func cloneAlert(a *AdminAlert) *AdminAlert {
+	c := *a
+	if a.TicketID != nil {
+		tid := *a.TicketID
+		c.TicketID = &tid
+	}
+	return &c
+}
+
+func (s *memStore) CreateAdminAlert(kind AlertKind, ticketID *string, detail string) *AdminAlert {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	a := &AdminAlert{
+		ID:        newID(),
+		Kind:      kind,
+		Detail:    detail,
+		CreatedAt: time.Now().UTC(),
+	}
+	if ticketID != nil {
+		tid := *ticketID
+		a.TicketID = &tid
+	}
+	s.alerts[a.ID] = a
+	s.alertSeq = append(s.alertSeq, a.ID)
+	return cloneAlert(a)
+}
+
+func (s *memStore) ListAdminAlerts(unseenOnly bool) []*AdminAlert {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]*AdminAlert, 0, len(s.alertSeq))
+	// Newest first.
+	for i := len(s.alertSeq) - 1; i >= 0; i-- {
+		a := s.alerts[s.alertSeq[i]]
+		if a == nil || (unseenOnly && a.Seen) {
+			continue
+		}
+		out = append(out, cloneAlert(a))
+	}
+	return out
+}
+
+func (s *memStore) MarkAdminAlertSeen(id string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	a, ok := s.alerts[id]
+	if !ok {
+		return false
+	}
+	a.Seen = true
+	return true
 }

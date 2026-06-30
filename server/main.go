@@ -58,6 +58,12 @@ func NewServer(store Store) *Server {
 	s.mux.HandleFunc("POST /api/invites", s.handleCreateInvite)
 	s.mux.HandleFunc("GET /api/invites", s.handleListInvites)
 	s.mux.HandleFunc("DELETE /api/invites/{token}", s.handleDeleteInvite)
+	// Admin moderation: alert feed + user ban (WP8, §4.4).
+	s.mux.HandleFunc("GET /api/admin/alerts", s.handleListAdminAlerts)
+	s.mux.HandleFunc("POST /api/admin/alerts/{id}/seen", s.handleMarkAdminAlertSeen)
+	s.mux.HandleFunc("GET /api/admin/users", s.handleListUsers)
+	s.mux.HandleFunc("POST /api/admin/users/{id}/ban", s.handleBanUser)
+	s.mux.HandleFunc("POST /api/admin/users/{id}/unban", s.handleUnbanUser)
 	// Tickets (DB-backed, authenticated; §7).
 	s.mux.HandleFunc("POST /api/tickets", s.handleCreateTicket)
 	s.mux.HandleFunc("GET /api/tickets", s.handleListTickets)
@@ -67,6 +73,8 @@ func NewServer(store Store) *Server {
 	s.mux.HandleFunc("GET /api/tickets/{id}/comments", s.handleListComments)
 	s.mux.HandleFunc("POST /api/tickets/{id}/comments", s.handleAddComment)
 	s.mux.HandleFunc("GET /api/tickets/{id}/artifacts/{artifactId}", s.handleGetArtifact)
+	// PO per-comment moderation (Service-Token, po scope; WP8 §4.2/§8).
+	s.mux.HandleFunc("POST /api/tickets/{ticketId}/comments/{commentId}/verdict", s.handleCommentVerdict)
 	// Agent / work-order API (Service-Token auth; WP6, §8–§11).
 	s.mux.HandleFunc("GET /api/agent/queue", s.handleAgentQueue)
 	s.mux.HandleFunc("POST /api/tickets/{id}/verdict", s.handleVerdict)

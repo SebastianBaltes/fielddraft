@@ -129,12 +129,14 @@ type queueResponse struct {
 }
 
 // agentQueueTicket is one ticket in the queue, hydrated with thread + artifacts
-// (and, for the coding scope, its work-order).
+// (and, for the coding scope, its work-order). UnreviewedComments surfaces the
+// not-yet-PO-moderated user comments so the PO can judge them (B1).
 type agentQueueTicket struct {
 	*Ticket
-	Comments  []*TicketComment  `json:"comments"`
-	Artifacts []*TicketArtifact `json:"artifacts"`
-	WorkOrder *WorkOrder        `json:"work_order,omitempty"`
+	Comments           []*TicketComment  `json:"comments"`
+	Artifacts          []*TicketArtifact `json:"artifacts"`
+	WorkOrder          *WorkOrder        `json:"work_order,omitempty"`
+	UnreviewedComments []*TicketComment  `json:"unreviewed_comments,omitempty"`
 }
 
 func (s *Server) handleAgentQueue(w http.ResponseWriter, r *http.Request) {
@@ -156,21 +158,54 @@ func (s *Server) handleAgentQueue(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(queueResponse{Scope: string(scope), Items: items})
 }
 
-// poQueue: tickets in `triage`, plus tickets in `needs_info`/`declined` whose
-// most recent comment is a user reply (i.e. awaiting PO attention, §8.1).
+// poQueue: everything awaiting PO attention (§8.1) —
+//   - tickets in `triage` (always the PO's job),
+//   - tickets in `needs_info`/`declined` whose most recent comment is a user
+//     reply (the dialogic states),
+//   - ANY ticket (any state, even `resolved`) carrying an unreviewed user
+//     comment, so post-moderation reaches spam on closed threads too (B1).
+//
+// Each ticket appears at most once; its unreviewed user comments are attached
+// so the PO can moderate them directly.
 func (s *Server) poQueue() []agentQueueTicket {
 	var out []agentQueueTicket
+	seen := map[string]bool{}
+	add := func(t *Ticket) {
+		if seen[t.ID] {
+			return
+		}
+		seen[t.ID] = true
+		item := s.hydrateQueueTicket(t, false)
+		item.UnreviewedComments = unreviewedUserComments(item.Comments)
+		out = append(out, item)
+	}
 	// triage — always the PO's job.
 	for _, t := range s.store.ListTickets(TicketFilter{State: StateTriage, ViewerIsAdmin: true}) {
-		out = append(out, s.hydrateQueueTicket(t, false))
+		add(t)
 	}
 	// needs_info / declined with a new user comment since the last po/system one.
 	for _, st := range []TicketState{StateNeedsInfo, StateDeclined} {
 		for _, t := range s.store.ListTickets(TicketFilter{State: st, ViewerIsAdmin: true}) {
 			full := s.store.GetTicket(t.ID)
 			if full != nil && hasNewUserComment(full.Comments) {
-				out = append(out, s.hydrateQueueTicket(full, false))
+				add(full)
 			}
+		}
+	}
+	// Any ticket (any state) with an unreviewed user comment — post-moderation.
+	for _, t := range s.store.ListTicketsWithUnreviewedComments() {
+		add(t)
+	}
+	return out
+}
+
+// unreviewedUserComments filters a thread to the user comments still awaiting
+// PO post-moderation (B1).
+func unreviewedUserComments(comments []*TicketComment) []*TicketComment {
+	var out []*TicketComment
+	for _, c := range comments {
+		if c.AuthorType == AuthorUser && !c.POReviewed {
+			out = append(out, c)
 		}
 	}
 	return out
@@ -308,6 +343,13 @@ func (s *Server) handleVerdict(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// A malicious verdict notifies the admin (§4.4 admin-awareness).
+	if req.Malicious {
+		tid := id
+		s.store.CreateAdminAlert(AlertMaliciousTicket, &tid,
+			"ticket flagged malicious by PO verdict"+reasonSuffix(req.Reason))
+	}
+
 	// ── public reply, through the leak filter (§4.2) ──
 	var replyComment *TicketComment
 	if strings.TrimSpace(req.PublicReply) != "" {
@@ -337,15 +379,77 @@ func (s *Server) handleVerdict(w http.ResponseWriter, r *http.Request) {
 }
 
 // postPOComment writes a user-facing `po` comment through the leak filter
-// (§4.2). If it trips, the comment is stored withheld=1 (invisible to users)
-// and flagged for the admin; a clean comment is visible.
+// (§4.2). If it trips, the comment is stored withheld=1 (invisible to users),
+// logged, AND written to the admin alert feed for review (§4.4); a clean
+// comment is visible.
 func (s *Server) postPOComment(ticketID, body string) *TicketComment {
 	clean, reasons := leakScan(body)
 	c := s.store.AddAgentComment(ticketID, AuthorPO, body, false, !clean)
 	if !clean {
 		logLeakHold(ticketID, reasons)
+		tid := ticketID
+		s.store.CreateAdminAlert(AlertWithheldComment, &tid,
+			"withheld outgoing po comment: "+strings.Join(reasons, ", "))
 	}
 	return c
+}
+
+// reasonSuffix appends a "(reason)" clause to an alert detail when a reason is
+// given, else "".
+func reasonSuffix(reason string) string {
+	if strings.TrimSpace(reason) == "" {
+		return ""
+	}
+	return " (" + reason + ")"
+}
+
+// ─── POST /api/tickets/{ticketId}/comments/{commentId}/verdict (po) ──
+
+// commentVerdictRequest is the §8 per-comment PO moderation verdict (B1).
+type commentVerdictRequest struct {
+	Spam      bool   `json:"spam"`
+	Malicious bool   `json:"malicious"`
+	Reason    string `json:"reason"`
+}
+
+// handleCommentVerdict lets the PO post-moderate a single user comment (B1).
+// Effect: the comment is always marked po_reviewed; spam OR malicious also
+// withholds it (hidden from non-admins via visibleComments) and raises an admin
+// alert (§4.4). The comment must belong to the named ticket.
+func (s *Server) handleCommentVerdict(w http.ResponseWriter, r *http.Request) {
+	if _, res := s.requireAgent(r, scopePO); writeAgentAuth(w, res) {
+		return
+	}
+	ticketID := r.PathValue("ticketId")
+	commentID := r.PathValue("commentId")
+	// Validate the comment belongs to the ticket.
+	c := s.store.GetComment(ticketID, commentID)
+	if c == nil {
+		http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
+		return
+	}
+
+	var req commentVerdictRequest
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxAgentBodyBytes)).Decode(&req); err != nil {
+		http.Error(w, `{"error":"invalid JSON"}`, http.StatusBadRequest)
+		return
+	}
+
+	bad := req.Spam || req.Malicious
+	updated := s.store.SetCommentReviewed(commentID, bad)
+	if updated == nil {
+		http.Error(w, `{"error":"could not moderate comment"}`, http.StatusInternalServerError)
+		return
+	}
+	if bad {
+		tid := ticketID
+		label := "comment withheld as spam"
+		if req.Malicious {
+			label = "comment withheld as malicious"
+		}
+		s.store.CreateAdminAlert(AlertMaliciousComment, &tid, label+reasonSuffix(req.Reason))
+	}
+	json.NewEncoder(w).Encode(updated)
 }
 
 // ─── POST /api/tickets/{id}/agent-comment (po | coding) ─────────

@@ -22,11 +22,17 @@ import (
 type Store interface {
 	// Users & auth.
 	CreateUser(email, displayName, password string, role Role) (*User, error)
-	AuthenticateUser(email, password string) (*User, error)
+	AuthenticateUser(email, password string) (*User, error) // rejects disabled users
 	GetUser(id string) *User
 	GetUserByEmail(email string) *User
 	UpdatePassword(userID, newPassword string)
 	HasAdmin() bool
+
+	// User administration / ban (B3, §4.4).
+	ListUsers() []*User // all users, newest first
+	SetUserDisabled(userID string, disabled bool) *User
+	AdminCount(excludeUserID string) int // # of admins not counting excludeUserID
+	DeleteUserSessions(userID string)    // purge a user's sessions on ban
 
 	// Sessions (DB-backed in prod so they survive restarts).
 	CreateSession(userID string) *Session
@@ -74,6 +80,11 @@ type Store interface {
 	AddComment(ticketID string, authorType AuthorType, authorID *string, body string, internal bool) *TicketComment
 	ListComments(ticketID string) []*TicketComment
 
+	// Comment moderation (B1, §4.2/§8): the PO post-moderates user comments.
+	GetComment(ticketID, commentID string) *TicketComment // nil if not on that ticket
+	SetCommentReviewed(commentID string, withheld bool) *TicketComment
+	ListTicketsWithUnreviewedComments() []*Ticket // hydrated; any state
+
 	// Ticket artifacts (content-addressed repro blobs).
 	AddArtifact(ticketID string, kind ArtifactKind, name, mime string, data []byte) *TicketArtifact
 	GetArtifactBlob(ticketID, artifactID string) (*TicketArtifact, []byte)
@@ -95,12 +106,19 @@ type Store interface {
 	// Queue helper: tickets in `accepted` that still have an open work-order
 	// (for the coding agent's queue, §10.1).
 	ListAcceptedWithOpenWorkOrder() []*Ticket
+
+	// Admin alerts (B2, §4.4 admin-awareness): real notify records for malicious
+	// tickets/comments, withheld outgoing comments, and user bans.
+	CreateAdminAlert(kind AlertKind, ticketID *string, detail string) *AdminAlert
+	ListAdminAlerts(unseenOnly bool) []*AdminAlert // newest first
+	MarkAdminAlertSeen(id string) bool
 }
 
 var (
 	errConflict      = &httpError{http.StatusConflict, "email already registered"}
 	errNotFound      = &httpError{http.StatusNotFound, "not found"}
 	errUnauthorized  = &httpError{http.StatusUnauthorized, "invalid credentials"}
+	errUserDisabled  = &httpError{http.StatusForbidden, "account disabled"}
 	errInviteInvalid = &httpError{http.StatusBadRequest, "invalid or expired invite"}
 	errInviteUsed    = &httpError{http.StatusBadRequest, "invite already used"}
 	errTicketMissing = &httpError{http.StatusNotFound, "ticket not found"}

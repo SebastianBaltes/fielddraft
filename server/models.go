@@ -25,6 +25,7 @@ type User struct {
 	Email        string    `json:"email"`
 	DisplayName  string    `json:"display_name"`
 	Role         Role      `json:"role"`
+	Disabled     bool      `json:"disabled"` // banned: no login, sessions invalid (§4.4)
 	PasswordHash []byte    `json:"-"`
 	Salt         []byte    `json:"-"`
 	CreatedAt    time.Time `json:"created_at"`
@@ -155,7 +156,8 @@ type TicketComment struct {
 	Internal   bool       `json:"internal"`  // dev notes: admin only, never user
 	Body       string     `json:"body"`
 	CreatedAt  time.Time  `json:"created_at"`
-	Withheld   bool       `json:"withheld"` // leak-filter hold (§4.2)
+	Withheld   bool       `json:"withheld"`    // leak-filter hold (§4.2)
+	POReviewed bool       `json:"po_reviewed"` // PO post-moderation done (§4.2/§8)
 }
 
 // TicketArtifact is a content-addressed repro blob attached to a ticket.
@@ -240,4 +242,27 @@ type Deploy struct {
 	TicketIDs  []string     `json:"ticket_ids"`
 	Status     DeployStatus `json:"status"`
 	DeployedAt time.Time    `json:"deployed_at"`
+}
+
+// ─── admin alerts (§4.4 admin-awareness) ────────────────────────
+
+// AlertKind classifies an admin alert.
+type AlertKind string
+
+const (
+	AlertMaliciousTicket  AlertKind = "malicious_ticket"  // a verdict flagged a ticket malicious
+	AlertMaliciousComment AlertKind = "malicious_comment" // a comment moderated spam/malicious
+	AlertWithheldComment  AlertKind = "withheld_comment"  // leak filter held an outgoing po comment
+	AlertUserBanned       AlertKind = "user_banned"       // an admin banned a user
+)
+
+// AdminAlert is a real admin-notify record (§4.4) — the durable side of the
+// "Push/Notify bei malicious-Flag und zurückgehaltenen Kommentaren" net.
+type AdminAlert struct {
+	ID        string    `json:"id"`
+	Kind      AlertKind `json:"kind"`
+	TicketID  *string   `json:"ticket_id"` // nil when not ticket-scoped (e.g. a ban)
+	Detail    string    `json:"detail"`
+	CreatedAt time.Time `json:"created_at"`
+	Seen      bool      `json:"seen"`
 }

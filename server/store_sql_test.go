@@ -296,3 +296,121 @@ func TestSQLStoreAgentLayer(t *testing.T) {
 		t.Fatal("work-order survived ticket delete")
 	}
 }
+
+// TestSQLStoreModeration exercises the WP8 methods (comment po_reviewed,
+// admin alerts, user disable/list + session purge) against a live MariaDB.
+// Auto-skips without TEST_DB_DSN/DB_DSN.
+func TestSQLStoreModeration(t *testing.T) {
+	store := newTestSQLStore(t)
+
+	author, err := store.CreateUser("modsql-"+newID()+"@test.com", "A", "pass12345", RoleUser)
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	tk := store.CreateTicket(author.ID, "Mod test", "body", "bug")
+	if tk == nil {
+		t.Fatal("CreateTicket nil")
+	}
+
+	// B1 — a user comment starts unreviewed; po/dev comments are reviewed.
+	uid := author.ID
+	uc := store.AddComment(tk.ID, AuthorUser, &uid, "user reply", false)
+	if uc == nil || uc.POReviewed {
+		t.Fatalf("user comment should start po_reviewed=0: %+v", uc)
+	}
+	poc := store.AddAgentComment(tk.ID, AuthorPO, "po reply", false, false)
+	if poc == nil || !poc.POReviewed {
+		t.Fatalf("po comment should be po_reviewed=1: %+v", poc)
+	}
+
+	// The ticket surfaces in the unreviewed-comment query while uc is unreviewed.
+	un := store.ListTicketsWithUnreviewedComments()
+	if !containsTicket(un, tk.ID) {
+		t.Fatal("ticket with unreviewed comment not surfaced")
+	}
+
+	// GetComment is ticket-scoped.
+	if store.GetComment(tk.ID, uc.ID) == nil {
+		t.Fatal("GetComment missed an existing comment")
+	}
+	if store.GetComment("nope", uc.ID) != nil {
+		t.Fatal("GetComment matched a comment on the wrong ticket")
+	}
+
+	// Moderate the comment spam → reviewed + withheld.
+	mod := store.SetCommentReviewed(uc.ID, true)
+	if mod == nil || !mod.POReviewed || !mod.Withheld {
+		t.Fatalf("SetCommentReviewed: %+v", mod)
+	}
+	if containsTicket(store.ListTicketsWithUnreviewedComments(), tk.ID) {
+		t.Fatal("ticket still unreviewed after moderation")
+	}
+
+	// B2 — admin alerts CRUD.
+	tid := tk.ID
+	a1 := store.CreateAdminAlert(AlertMaliciousComment, &tid, "spam")
+	a2 := store.CreateAdminAlert(AlertUserBanned, nil, "banned x")
+	if a1 == nil || a2 == nil {
+		t.Fatal("CreateAdminAlert nil")
+	}
+	all := store.ListAdminAlerts(false)
+	if len(all) < 2 {
+		t.Fatalf("ListAdminAlerts: %d, want >=2", len(all))
+	}
+	if !store.MarkAdminAlertSeen(a2.ID) {
+		t.Fatal("MarkAdminAlertSeen returned false")
+	}
+	for _, a := range store.ListAdminAlerts(true) {
+		if a.ID == a2.ID {
+			t.Fatal("seen alert still in unseen list")
+		}
+	}
+
+	// B3 — user disable + session purge + last-admin count.
+	admin, err := store.CreateUser("modadmin-"+newID()+"@test.com", "Adm", "adminpass1", RoleAdmin)
+	if err != nil {
+		t.Fatalf("CreateUser admin: %v", err)
+	}
+	sess := store.CreateSession(author.ID)
+	if sess == nil {
+		t.Fatal("CreateSession nil")
+	}
+	if store.SetUserDisabled(author.ID, true) == nil {
+		t.Fatal("SetUserDisabled nil")
+	}
+	// A disabled user can't authenticate.
+	if _, err := store.AuthenticateUser(author.Email, "pass12345"); err == nil {
+		t.Fatal("AuthenticateUser accepted a disabled user")
+	}
+	store.DeleteUserSessions(author.ID)
+	if store.GetSession(sess.Token) != nil {
+		t.Fatal("session survived DeleteUserSessions")
+	}
+	// AdminCount excludes the named admin (last-admin guard).
+	if n := store.AdminCount(admin.ID); n < 0 {
+		t.Fatalf("AdminCount negative: %d", n)
+	}
+	if !containsUser(store.ListUsers(), admin.ID) {
+		t.Fatal("ListUsers missing the admin")
+	}
+
+	store.DeleteTicket(tk.ID)
+}
+
+func containsTicket(ts []*Ticket, id string) bool {
+	for _, t := range ts {
+		if t.ID == id {
+			return true
+		}
+	}
+	return false
+}
+
+func containsUser(us []*User, id string) bool {
+	for _, u := range us {
+		if u.ID == id {
+			return true
+		}
+	}
+	return false
+}
