@@ -1,0 +1,563 @@
+// Agent / work-order API (WP6, §8–§11).
+//
+// The machine-to-machine layer the two desktop ClaudeDraft agents drive. Both
+// authenticate with a least-privilege Service-Token (Authorization: Bearer …),
+// NOT a user session (§11):
+//
+//   - scope "po"     — fielddraft-po: read the queue/tickets/threads, post `po`
+//     comments (leak-filtered), write verdicts, transition state.
+//   - scope "coding" — fielddraft-coding: read its work queue, claim/complete
+//     work-orders, post internal `dev` notes, transition state, write deploys.
+//
+// Tokens come from PO_SERVICE_TOKEN / CODING_SERVICE_TOKEN. An empty/unset token
+// disables that scope (the agent API is off until tokens are configured), so a
+// missing-secret deploy never silently grants access.
+
+package main
+
+import (
+	"crypto/subtle"
+	"encoding/json"
+	"log"
+	"net/http"
+	"os"
+	"strings"
+)
+
+// agentScope identifies which Service-Token authenticated a request.
+type agentScope string
+
+const (
+	scopePO     agentScope = "po"
+	scopeCoding agentScope = "coding"
+)
+
+// agentTokens holds the configured Service-Tokens. An empty token disables that
+// scope entirely (constant-time compare never matches "").
+type agentTokens struct {
+	po     string
+	coding string
+}
+
+// loadAgentTokens reads the Service-Tokens from the environment.
+func loadAgentTokens() agentTokens {
+	return agentTokens{
+		po:     os.Getenv("PO_SERVICE_TOKEN"),
+		coding: os.Getenv("CODING_SERVICE_TOKEN"),
+	}
+}
+
+// bearerToken extracts the token from an "Authorization: Bearer <token>" header.
+func bearerToken(r *http.Request) string {
+	h := r.Header.Get("Authorization")
+	const prefix = "Bearer "
+	if len(h) <= len(prefix) || !strings.EqualFold(h[:len(prefix)], prefix) {
+		return ""
+	}
+	return strings.TrimSpace(h[len(prefix):])
+}
+
+// constEq compares two strings in constant time. An empty configured token
+// never matches (disabled scope).
+func constEq(presented, configured string) bool {
+	if configured == "" {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(presented), []byte(configured)) == 1
+}
+
+// authResult is the outcome of requireAgent.
+type authResult int
+
+const (
+	authOK         authResult = iota // token valid AND scope allowed
+	authNoToken                      // missing/unknown token → 401
+	authWrongScope                   // valid token, wrong scope → 403
+)
+
+// requireAgent authenticates the request's Bearer token and checks it carries
+// one of the allowed scopes. It returns the resolved scope and a result code so
+// the caller can answer 401 (no/unknown token) vs 403 (wrong scope).
+func (s *Server) requireAgent(r *http.Request, allowed ...agentScope) (agentScope, authResult) {
+	tok := bearerToken(r)
+	if tok == "" {
+		return "", authNoToken
+	}
+	var resolved agentScope
+	switch {
+	case constEq(tok, s.agentTokens.po):
+		resolved = scopePO
+	case constEq(tok, s.agentTokens.coding):
+		resolved = scopeCoding
+	default:
+		return "", authNoToken
+	}
+	for _, a := range allowed {
+		if a == resolved {
+			return resolved, authOK
+		}
+	}
+	return resolved, authWrongScope
+}
+
+// writeAgentAuth writes the appropriate error for a failed requireAgent, and
+// reports whether the caller should stop (true = not authorized).
+func writeAgentAuth(w http.ResponseWriter, res authResult) bool {
+	switch res {
+	case authNoToken:
+		http.Error(w, `{"error":"agent unauthorized"}`, http.StatusUnauthorized)
+		return true
+	case authWrongScope:
+		http.Error(w, `{"error":"agent scope forbidden"}`, http.StatusForbidden)
+		return true
+	default:
+		return false
+	}
+}
+
+// maxAgentBodyBytes caps an agent request body (verdicts/comments are small).
+const maxAgentBodyBytes = 1 << 20
+
+// ─── GET /api/agent/queue (po | coding, scope-aware) ────────────
+
+// queueResponse is the agent queue: a scope-aware list of actionable tickets,
+// each with its thread + artifact refs so the agent can act without extra round
+// trips.
+type queueResponse struct {
+	Scope string             `json:"scope"`
+	Items []agentQueueTicket `json:"items"`
+}
+
+// agentQueueTicket is one ticket in the queue, hydrated with thread + artifacts
+// (and, for the coding scope, its work-order).
+type agentQueueTicket struct {
+	*Ticket
+	Comments  []*TicketComment  `json:"comments"`
+	Artifacts []*TicketArtifact `json:"artifacts"`
+	WorkOrder *WorkOrder        `json:"work_order,omitempty"`
+}
+
+func (s *Server) handleAgentQueue(w http.ResponseWriter, r *http.Request) {
+	scope, res := s.requireAgent(r, scopePO, scopeCoding)
+	if writeAgentAuth(w, res) {
+		return
+	}
+
+	var items []agentQueueTicket
+	switch scope {
+	case scopePO:
+		items = s.poQueue()
+	case scopeCoding:
+		items = s.codingQueue()
+	}
+	if items == nil {
+		items = []agentQueueTicket{}
+	}
+	json.NewEncoder(w).Encode(queueResponse{Scope: string(scope), Items: items})
+}
+
+// poQueue: tickets in `triage`, plus tickets in `needs_info`/`declined` whose
+// most recent comment is a user reply (i.e. awaiting PO attention, §8.1).
+func (s *Server) poQueue() []agentQueueTicket {
+	var out []agentQueueTicket
+	// triage — always the PO's job.
+	for _, t := range s.store.ListTickets(TicketFilter{State: StateTriage, ViewerIsAdmin: true}) {
+		out = append(out, s.hydrateQueueTicket(t, false))
+	}
+	// needs_info / declined with a new user comment since the last po/system one.
+	for _, st := range []TicketState{StateNeedsInfo, StateDeclined} {
+		for _, t := range s.store.ListTickets(TicketFilter{State: st, ViewerIsAdmin: true}) {
+			full := s.store.GetTicket(t.ID)
+			if full != nil && hasNewUserComment(full.Comments) {
+				out = append(out, s.hydrateQueueTicket(full, false))
+			}
+		}
+	}
+	return out
+}
+
+// codingQueue: accepted tickets with an open (unclaimed/incomplete) work-order.
+func (s *Server) codingQueue() []agentQueueTicket {
+	var out []agentQueueTicket
+	for _, t := range s.store.ListAcceptedWithOpenWorkOrder() {
+		out = append(out, s.hydrateQueueTicket(t, true))
+	}
+	return out
+}
+
+// hydrateQueueTicket builds a queue entry. If withWorkOrder, the ticket's
+// work-order is attached (for the coding agent).
+func (s *Server) hydrateQueueTicket(t *Ticket, withWorkOrder bool) agentQueueTicket {
+	full := t
+	if full.Comments == nil && full.Artifacts == nil {
+		if hydrated := s.store.GetTicket(t.ID); hydrated != nil {
+			full = hydrated
+		}
+	}
+	comments := full.Comments
+	if comments == nil {
+		comments = []*TicketComment{}
+	}
+	artifacts := full.Artifacts
+	if artifacts == nil {
+		artifacts = []*TicketArtifact{}
+	}
+	item := agentQueueTicket{Ticket: full, Comments: comments, Artifacts: artifacts}
+	if withWorkOrder {
+		item.WorkOrder = s.store.GetWorkOrder(t.ID)
+	}
+	return item
+}
+
+// hasNewUserComment reports whether the latest non-system comment is a user
+// reply — i.e. the PO owes the user an answer. System (audit) comments are
+// ignored so a state-change entry doesn't mask a pending user reply.
+func hasNewUserComment(comments []*TicketComment) bool {
+	for i := len(comments) - 1; i >= 0; i-- {
+		switch comments[i].AuthorType {
+		case AuthorSystem:
+			continue // audit noise — keep looking
+		case AuthorUser:
+			return true
+		default: // po / dev — the PO already responded after the user
+			return false
+		}
+	}
+	return false
+}
+
+// ─── POST /api/tickets/{id}/verdict (po) ────────────────────────
+
+// verdictRequest is the §8.3 PO verdict JSON.
+type verdictRequest struct {
+	Spam        bool            `json:"spam"`
+	Malicious   bool            `json:"malicious"`
+	VisionFit   string          `json:"vision_fit"`   // fit|partial|off|""
+	Confidence  float64         `json:"confidence"`   // advisory, logged in reason context
+	Category    string          `json:"category"`     // bug|feature|question|other|""
+	Reason      string          `json:"reason"`       // internal
+	PublicReply string          `json:"public_reply"` // user-facing, leak-filtered
+	NextState   string          `json:"next_state"`
+	WorkOrder   json.RawMessage `json:"work_order"` // required iff next_state==accepted
+}
+
+func (s *Server) handleVerdict(w http.ResponseWriter, r *http.Request) {
+	if _, res := s.requireAgent(r, scopePO); writeAgentAuth(w, res) {
+		return
+	}
+	id := r.PathValue("id")
+	t := s.store.GetTicket(id)
+	if t == nil {
+		http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
+		return
+	}
+
+	var req verdictRequest
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxAgentBodyBytes)).Decode(&req); err != nil {
+		http.Error(w, `{"error":"invalid JSON"}`, http.StatusBadRequest)
+		return
+	}
+
+	// ── validation ──
+	next := TicketState(req.NextState)
+	if !validState(next) {
+		http.Error(w, `{"error":"unknown next_state"}`, http.StatusBadRequest)
+		return
+	}
+	if err := validateTransition(t.State, next); err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	if !validVisionFit(req.VisionFit) {
+		http.Error(w, `{"error":"invalid vision_fit"}`, http.StatusBadRequest)
+		return
+	}
+	if !validCategory(req.Category) {
+		http.Error(w, `{"error":"invalid category"}`, http.StatusBadRequest)
+		return
+	}
+	// work_order present iff accepting.
+	hasWO := isJSONPresent(req.WorkOrder)
+	if next == StateAccepted && !hasWO {
+		http.Error(w, `{"error":"work_order required when next_state is accepted"}`, http.StatusBadRequest)
+		return
+	}
+	if next != StateAccepted && hasWO {
+		http.Error(w, `{"error":"work_order only allowed when next_state is accepted"}`, http.StatusBadRequest)
+		return
+	}
+
+	// ── apply verdict (sets po_* fields + category + transitions state) ──
+	verdict := POVerdict{
+		Spam:      req.Spam,
+		Malicious: req.Malicious,
+		Reason:    req.Reason,
+		State:     next,
+	}
+	if req.VisionFit != "" {
+		vf := req.VisionFit
+		verdict.VisionFit = &vf
+	}
+	// Category is part of the verdict (§8.3): classify before the state move so
+	// the audit comment reflects a fully-classified ticket.
+	if req.Category != "" {
+		s.store.SetTicketCategory(id, req.Category)
+	}
+	if _, err := s.store.SetPOVerdict(id, verdict); err != nil {
+		writeStoreError(w, err)
+		return
+	}
+
+	// ── public reply, through the leak filter (§4.2) ──
+	var replyComment *TicketComment
+	if strings.TrimSpace(req.PublicReply) != "" {
+		replyComment = s.postPOComment(id, req.PublicReply)
+	}
+
+	// ── on accepted: create the work-order from the payload ──
+	var wo *WorkOrder
+	if next == StateAccepted {
+		created, err := s.store.CreateWorkOrder(id, req.WorkOrder)
+		if err != nil {
+			writeStoreError(w, err)
+			return
+		}
+		wo = created
+	}
+
+	full := s.store.GetTicket(id)
+	resp := map[string]any{
+		"ticket":     full,
+		"work_order": wo,
+	}
+	if replyComment != nil {
+		resp["public_reply"] = replyComment
+	}
+	json.NewEncoder(w).Encode(resp)
+}
+
+// postPOComment writes a user-facing `po` comment through the leak filter
+// (§4.2). If it trips, the comment is stored withheld=1 (invisible to users)
+// and flagged for the admin; a clean comment is visible.
+func (s *Server) postPOComment(ticketID, body string) *TicketComment {
+	clean, reasons := leakScan(body)
+	c := s.store.AddAgentComment(ticketID, AuthorPO, body, false, !clean)
+	if !clean {
+		logLeakHold(ticketID, reasons)
+	}
+	return c
+}
+
+// ─── POST /api/tickets/{id}/agent-comment (po | coding) ─────────
+
+type agentCommentRequest struct {
+	Body string `json:"body"`
+	Kind string `json:"kind"` // "po" (public, leak-filtered) | "dev" (internal)
+}
+
+func (s *Server) handleAgentComment(w http.ResponseWriter, r *http.Request) {
+	scope, res := s.requireAgent(r, scopePO, scopeCoding)
+	if writeAgentAuth(w, res) {
+		return
+	}
+	id := r.PathValue("id")
+	if s.store.GetTicket(id) == nil {
+		http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
+		return
+	}
+	var req agentCommentRequest
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxAgentBodyBytes)).Decode(&req); err != nil {
+		http.Error(w, `{"error":"invalid JSON"}`, http.StatusBadRequest)
+		return
+	}
+	if strings.TrimSpace(req.Body) == "" {
+		http.Error(w, `{"error":"comment body required"}`, http.StatusBadRequest)
+		return
+	}
+
+	// Resolve the kind. Default per scope: po→po, coding→dev.
+	kind := req.Kind
+	if kind == "" {
+		if scope == scopePO {
+			kind = "po"
+		} else {
+			kind = "dev"
+		}
+	}
+
+	var c *TicketComment
+	switch kind {
+	case "po":
+		// Only the PO authors public comments (§4.1: single public author).
+		if scope != scopePO {
+			http.Error(w, `{"error":"only the po scope may post po comments"}`, http.StatusForbidden)
+			return
+		}
+		c = s.postPOComment(id, req.Body)
+	case "dev":
+		// Internal dev note (admin-only). Both scopes may post one, but in
+		// practice the coding agent does.
+		c = s.store.AddAgentComment(id, AuthorDev, req.Body, true, false)
+	default:
+		http.Error(w, `{"error":"kind must be po or dev"}`, http.StatusBadRequest)
+		return
+	}
+	if c == nil {
+		http.Error(w, `{"error":"could not add comment"}`, http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusCreated)
+	json.NewEncoder(w).Encode(c)
+}
+
+// ─── PATCH /api/tickets/{id}/agent-state (po | coding) ──────────
+
+func (s *Server) handleAgentState(w http.ResponseWriter, r *http.Request) {
+	if _, res := s.requireAgent(r, scopePO, scopeCoding); writeAgentAuth(w, res) {
+		return
+	}
+	id := r.PathValue("id")
+	if s.store.GetTicket(id) == nil {
+		http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
+		return
+	}
+	var body struct {
+		State string `json:"state"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxAgentBodyBytes)).Decode(&body); err != nil {
+		http.Error(w, `{"error":"invalid JSON"}`, http.StatusBadRequest)
+		return
+	}
+	to := TicketState(body.State)
+	if _, err := s.store.SetTicketState(id, to); err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	json.NewEncoder(w).Encode(s.store.GetTicket(id))
+}
+
+// ─── POST /api/work-orders/{ticketId}/claim (coding) ────────────
+
+func (s *Server) handleClaimWorkOrder(w http.ResponseWriter, r *http.Request) {
+	if _, res := s.requireAgent(r, scopeCoding); writeAgentAuth(w, res) {
+		return
+	}
+	ticketID := r.PathValue("ticketId")
+	wo, err := s.store.ClaimWorkOrder(ticketID)
+	if err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	// Drive the ticket accepted→in_progress (§10.1). If it's already moved on,
+	// keep the claim but don't fail.
+	if _, terr := s.store.SetTicketState(ticketID, StateInProgress); terr != nil {
+		logStateNote(ticketID, "claim", terr)
+	}
+	json.NewEncoder(w).Encode(map[string]any{
+		"work_order": wo,
+		"ticket":     s.store.GetTicket(ticketID),
+	})
+}
+
+// ─── POST /api/work-orders/{ticketId}/complete (coding) ─────────
+
+type completeRequest struct {
+	DeployID  string `json:"deploy_id"`  // optional link to the resolving deploy
+	NextState string `json:"next_state"` // optional override; default resolved
+}
+
+func (s *Server) handleCompleteWorkOrder(w http.ResponseWriter, r *http.Request) {
+	if _, res := s.requireAgent(r, scopeCoding); writeAgentAuth(w, res) {
+		return
+	}
+	ticketID := r.PathValue("ticketId")
+	var req completeRequest
+	// Body is optional.
+	json.NewDecoder(http.MaxBytesReader(w, r.Body, maxAgentBodyBytes)).Decode(&req)
+
+	wo, err := s.store.CompleteWorkOrder(ticketID, req.DeployID)
+	if err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	// Transition the ticket. Default target is `resolved`; the body may pick
+	// another legal state (e.g. needs_info if the dev needs clarification).
+	target := StateResolved
+	if req.NextState != "" {
+		target = TicketState(req.NextState)
+	}
+	if _, terr := s.store.SetTicketState(ticketID, target); terr != nil {
+		writeStoreError(w, terr)
+		return
+	}
+	json.NewEncoder(w).Encode(map[string]any{
+		"work_order": wo,
+		"ticket":     s.store.GetTicket(ticketID),
+	})
+}
+
+// ─── deploys (coding write, admin|coding read) ──────────────────
+
+type deployRequest struct {
+	Version   string   `json:"version"`
+	GitSHA    string   `json:"git_sha"`
+	TicketIDs []string `json:"ticket_ids"`
+	Status    string   `json:"status"`
+}
+
+func (s *Server) handleCreateDeploy(w http.ResponseWriter, r *http.Request) {
+	if _, res := s.requireAgent(r, scopeCoding); writeAgentAuth(w, res) {
+		return
+	}
+	var req deployRequest
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxAgentBodyBytes)).Decode(&req); err != nil {
+		http.Error(w, `{"error":"invalid JSON"}`, http.StatusBadRequest)
+		return
+	}
+	status := req.Status
+	if status == "" {
+		status = string(DeployBuilding)
+	}
+	if !validDeployStatus(status) {
+		http.Error(w, `{"error":"invalid deploy status"}`, http.StatusBadRequest)
+		return
+	}
+	d, err := s.store.CreateDeploy(req.Version, req.GitSHA, req.TicketIDs, DeployStatus(status))
+	if err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusCreated)
+	json.NewEncoder(w).Encode(d)
+}
+
+// handleListDeploys serves the deploy audit list to either an admin user
+// session OR the coding agent token (for its own rollback decisions).
+func (s *Server) handleListDeploys(w http.ResponseWriter, r *http.Request) {
+	if s.requireAdmin(r) == nil {
+		// Not an admin session — allow the coding agent token instead.
+		if _, res := s.requireAgent(r, scopeCoding); res != authOK {
+			http.Error(w, `{"error":"admin or coding agent only"}`, http.StatusForbidden)
+			return
+		}
+	}
+	deploys := s.store.ListDeploys()
+	if deploys == nil {
+		deploys = []*Deploy{}
+	}
+	json.NewEncoder(w).Encode(deploys)
+}
+
+// ─── logging hooks (admin-awareness, §4.4) ──────────────────────
+
+// logLeakHold records a withheld outgoing comment for admin review (§4.4
+// admin-awareness: a held comment is something the admin should see).
+func logLeakHold(ticketID string, reasons []string) {
+	log.Printf("leak-filter: HELD po comment on ticket %s — %s", ticketID, strings.Join(reasons, ", "))
+}
+
+// logStateNote records a non-fatal state-transition note (e.g. a claim where
+// the ticket has already moved past accepted).
+func logStateNote(ticketID, op string, err error) {
+	log.Printf("agent: %s on ticket %s skipped state move: %v", op, ticketID, err)
+}

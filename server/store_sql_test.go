@@ -196,3 +196,103 @@ func TestSQLStoreTickets(t *testing.T) {
 		t.Fatal("ticket still present after delete")
 	}
 }
+
+// TestSQLStoreAgentLayer exercises the WP6 work-order / deploy / agent-comment
+// methods against a live MariaDB. Auto-skips without TEST_DB_DSN/DB_DSN.
+func TestSQLStoreAgentLayer(t *testing.T) {
+	store := newTestSQLStore(t)
+
+	author, err := store.CreateUser("agentsql-"+newID()+"@test.com", "A", "pass12345", RoleUser)
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	tk := store.CreateTicket(author.ID, "WO test", "body", "bug")
+	if tk == nil {
+		t.Fatal("CreateTicket nil")
+	}
+
+	// Category verdict-classification path.
+	if c := store.SetTicketCategory(tk.ID, "feature"); c == nil || c.Category == nil || *c.Category != "feature" {
+		t.Fatalf("SetTicketCategory: %v", c)
+	}
+
+	// Move to accepted so the queue picks it up.
+	if _, err := store.SetTicketState(tk.ID, StateAccepted); err != nil {
+		t.Fatalf("to accepted: %v", err)
+	}
+
+	// Work-order create (single per ticket) + duplicate rejection.
+	payload := json.RawMessage(`{"summary":"do the thing","acceptance_criteria":["works"]}`)
+	wo, err := store.CreateWorkOrder(tk.ID, payload)
+	if err != nil || wo == nil {
+		t.Fatalf("CreateWorkOrder: %v", err)
+	}
+	if _, err := store.CreateWorkOrder(tk.ID, payload); err == nil {
+		t.Fatal("CreateWorkOrder allowed a duplicate")
+	}
+	if got := store.GetWorkOrder(tk.ID); got == nil || string(got.Payload) == "" {
+		t.Fatalf("GetWorkOrder: %v", got)
+	}
+
+	// Accepted-with-open-work-order queue surfaces it (hydrated).
+	q := store.ListAcceptedWithOpenWorkOrder()
+	if len(q) != 1 || q[0].ID != tk.ID {
+		t.Fatalf("ListAcceptedWithOpenWorkOrder: %d items", len(q))
+	}
+
+	// Claim (idempotent guard) then double-claim rejected.
+	if _, err := store.ClaimWorkOrder(tk.ID); err != nil {
+		t.Fatalf("ClaimWorkOrder: %v", err)
+	}
+	if _, err := store.ClaimWorkOrder(tk.ID); err == nil {
+		t.Fatal("ClaimWorkOrder allowed a double claim")
+	}
+	if got := store.GetWorkOrder(tk.ID); got == nil || got.PickedUpAt == nil {
+		t.Fatalf("picked_up_at not set: %v", got)
+	}
+
+	// Deploy round-trip.
+	dep, err := store.CreateDeploy("1.2", "abc123", []string{tk.ID}, DeployLive)
+	if err != nil || dep == nil {
+		t.Fatalf("CreateDeploy: %v", err)
+	}
+	deploys := store.ListDeploys()
+	if len(deploys) == 0 {
+		t.Fatal("ListDeploys empty")
+	}
+	if len(deploys[0].TicketIDs) != 1 || deploys[0].TicketIDs[0] != tk.ID {
+		t.Fatalf("deploy ticket_ids round-trip: %+v", deploys[0].TicketIDs)
+	}
+
+	// Complete with deploy link.
+	done, err := store.CompleteWorkOrder(tk.ID, dep.ID)
+	if err != nil || done.CompletedAt == nil || done.DeployID == nil || *done.DeployID != dep.ID {
+		t.Fatalf("CompleteWorkOrder: %v / %+v", err, done)
+	}
+	// No longer in the open-work-order queue.
+	if len(store.ListAcceptedWithOpenWorkOrder()) != 0 {
+		t.Fatal("completed work-order still in queue")
+	}
+
+	// Agent comments: po (visible) and dev (internal), both author-id NULL.
+	po := store.AddAgentComment(tk.ID, AuthorPO, "public ok", false, false)
+	if po == nil || po.AuthorType != AuthorPO || po.AuthorID != nil {
+		t.Fatalf("AddAgentComment po: %+v", po)
+	}
+	dev := store.AddAgentComment(tk.ID, AuthorDev, "internal note", true, false)
+	if dev == nil || !dev.Internal {
+		t.Fatalf("AddAgentComment dev: %+v", dev)
+	}
+	withheld := store.AddAgentComment(tk.ID, AuthorPO, "server/main.go leak", false, true)
+	if withheld == nil || !withheld.Withheld {
+		t.Fatalf("AddAgentComment withheld: %+v", withheld)
+	}
+
+	// Deleting the ticket cascades the work-order away.
+	if !store.DeleteTicket(tk.ID) {
+		t.Fatal("DeleteTicket false")
+	}
+	if store.GetWorkOrder(tk.ID) != nil {
+		t.Fatal("work-order survived ticket delete")
+	}
+}

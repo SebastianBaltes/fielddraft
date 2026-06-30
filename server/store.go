@@ -66,6 +66,7 @@ type Store interface {
 	ListTickets(f TicketFilter) []*Ticket
 	UpdateTicket(id, title, body string) *Ticket // author edit of title/body
 	SetTicketState(id string, to TicketState) (*Ticket, error)
+	SetTicketCategory(id, category string) *Ticket // PO verdict classification (§8.3)
 	SetPOVerdict(id string, v POVerdict) (*Ticket, error)
 	DeleteTicket(id string) bool
 
@@ -76,6 +77,24 @@ type Store interface {
 	// Ticket artifacts (content-addressed repro blobs).
 	AddArtifact(ticketID string, kind ArtifactKind, name, mime string, data []byte) *TicketArtifact
 	GetArtifactBlob(ticketID, artifactID string) (*TicketArtifact, []byte)
+
+	// Work-orders (PO→Coding handoff, §9). One per ticket.
+	CreateWorkOrder(ticketID string, payload json.RawMessage) (*WorkOrder, error)
+	GetWorkOrder(ticketID string) *WorkOrder
+	ClaimWorkOrder(ticketID string) (*WorkOrder, error)              // sets picked_up_at
+	CompleteWorkOrder(ticketID, deployID string) (*WorkOrder, error) // sets completed_at + deploy link
+
+	// Deploys (rollout audit / rollback, §10.3).
+	CreateDeploy(version, gitSHA string, ticketIDs []string, status DeployStatus) (*Deploy, error)
+	ListDeploys() []*Deploy
+
+	// Agent-authored comments: leak-filtered `po` comment (withheld iff it
+	// trips the filter §4.2) or an internal `dev` note (admin-only).
+	AddAgentComment(ticketID string, authorType AuthorType, body string, internal, withheld bool) *TicketComment
+
+	// Queue helper: tickets in `accepted` that still have an open work-order
+	// (for the coding agent's queue, §10.1).
+	ListAcceptedWithOpenWorkOrder() []*Ticket
 }
 
 var (
@@ -85,6 +104,11 @@ var (
 	errInviteInvalid = &httpError{http.StatusBadRequest, "invalid or expired invite"}
 	errInviteUsed    = &httpError{http.StatusBadRequest, "invite already used"}
 	errTicketMissing = &httpError{http.StatusNotFound, "ticket not found"}
+
+	errWorkOrderExists  = &httpError{http.StatusConflict, "work-order already exists"}
+	errWorkOrderMissing = &httpError{http.StatusNotFound, "work-order not found"}
+	errWorkOrderClaimed = &httpError{http.StatusConflict, "work-order already claimed"}
+	errDeployMissing    = &httpError{http.StatusNotFound, "deploy not found"}
 )
 
 type httpError struct {

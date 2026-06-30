@@ -32,6 +32,10 @@ type memStore struct {
 	comments  map[string][]*TicketComment  // ticket ID → comments (in order)
 	artifacts map[string][]*TicketArtifact // ticket ID → artifacts (in order)
 	blobs     map[string][]byte            // sha256 hex → blob bytes
+
+	workOrders map[string]*WorkOrder // ticket ID → work-order
+	deploys    map[string]*Deploy    // deploy ID → deploy
+	deploySeq  []string              // deploy IDs, insertion order (for stable list)
 }
 
 // NewStore returns the in-memory store (test fixture).
@@ -49,6 +53,8 @@ func NewStore() Store {
 		comments:    make(map[string][]*TicketComment),
 		artifacts:   make(map[string][]*TicketArtifact),
 		blobs:       make(map[string][]byte),
+		workOrders:  make(map[string]*WorkOrder),
+		deploys:     make(map[string]*Deploy),
 	}
 }
 
@@ -473,6 +479,23 @@ func (s *memStore) UpdateTicket(id, title, body string) *Ticket {
 	return cloneTicket(t)
 }
 
+func (s *memStore) SetTicketCategory(id, category string) *Ticket {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	t, ok := s.tickets[id]
+	if !ok {
+		return nil
+	}
+	if category != "" {
+		c := category
+		t.Category = &c
+	} else {
+		t.Category = nil
+	}
+	t.UpdatedAt = time.Now().UTC()
+	return cloneTicket(t)
+}
+
 func (s *memStore) SetTicketState(id string, to TicketState) (*Ticket, error) {
 	s.mu.Lock()
 	t, ok := s.tickets[id]
@@ -531,6 +554,7 @@ func (s *memStore) DeleteTicket(id string) bool {
 	delete(s.tickets, id)
 	delete(s.comments, id)
 	delete(s.artifacts, id)
+	delete(s.workOrders, id)
 	return true
 }
 
@@ -619,4 +643,168 @@ func sortTicketsDesc(ts []*Ticket) {
 			ts[j], ts[j-1] = ts[j-1], ts[j]
 		}
 	}
+}
+
+// ─── work-orders ────────────────────────────────────────────────
+
+// cloneWorkOrder returns a copy so callers can't mutate stored state.
+func cloneWorkOrder(wo *WorkOrder) *WorkOrder {
+	c := *wo
+	return &c
+}
+
+func (s *memStore) CreateWorkOrder(ticketID string, payload json.RawMessage) (*WorkOrder, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.tickets[ticketID]; !ok {
+		return nil, errTicketMissing
+	}
+	if _, exists := s.workOrders[ticketID]; exists {
+		return nil, errWorkOrderExists
+	}
+	wo := &WorkOrder{
+		TicketID:  ticketID,
+		Payload:   append(json.RawMessage(nil), payload...),
+		CreatedAt: time.Now().UTC(),
+	}
+	s.workOrders[ticketID] = wo
+	return cloneWorkOrder(wo), nil
+}
+
+func (s *memStore) GetWorkOrder(ticketID string) *WorkOrder {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	wo, ok := s.workOrders[ticketID]
+	if !ok {
+		return nil
+	}
+	return cloneWorkOrder(wo)
+}
+
+func (s *memStore) ClaimWorkOrder(ticketID string) (*WorkOrder, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	wo, ok := s.workOrders[ticketID]
+	if !ok {
+		return nil, errWorkOrderMissing
+	}
+	if wo.PickedUpAt != nil {
+		return nil, errWorkOrderClaimed
+	}
+	now := time.Now().UTC()
+	wo.PickedUpAt = &now
+	return cloneWorkOrder(wo), nil
+}
+
+func (s *memStore) CompleteWorkOrder(ticketID, deployID string) (*WorkOrder, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	wo, ok := s.workOrders[ticketID]
+	if !ok {
+		return nil, errWorkOrderMissing
+	}
+	if deployID != "" {
+		if _, ok := s.deploys[deployID]; !ok {
+			return nil, errDeployMissing
+		}
+	}
+	now := time.Now().UTC()
+	wo.CompletedAt = &now
+	if deployID != "" {
+		d := deployID
+		wo.DeployID = &d
+	}
+	return cloneWorkOrder(wo), nil
+}
+
+// ─── deploys ────────────────────────────────────────────────────
+
+func cloneDeploy(d *Deploy) *Deploy {
+	c := *d
+	c.TicketIDs = append([]string(nil), d.TicketIDs...)
+	return &c
+}
+
+func (s *memStore) CreateDeploy(version, gitSHA string, ticketIDs []string, status DeployStatus) (*Deploy, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	d := &Deploy{
+		ID:         newID(),
+		Version:    version,
+		GitSHA:     gitSHA,
+		TicketIDs:  append([]string(nil), ticketIDs...),
+		Status:     status,
+		DeployedAt: time.Now().UTC(),
+	}
+	s.deploys[d.ID] = d
+	s.deploySeq = append(s.deploySeq, d.ID)
+	return cloneDeploy(d), nil
+}
+
+func (s *memStore) ListDeploys() []*Deploy {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	// Newest first.
+	out := make([]*Deploy, 0, len(s.deploySeq))
+	for i := len(s.deploySeq) - 1; i >= 0; i-- {
+		if d := s.deploys[s.deploySeq[i]]; d != nil {
+			out = append(out, cloneDeploy(d))
+		}
+	}
+	return out
+}
+
+// ─── agent comments ─────────────────────────────────────────────
+
+func (s *memStore) AddAgentComment(ticketID string, authorType AuthorType, body string, internal, withheld bool) *TicketComment {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.tickets[ticketID]; !ok {
+		return nil
+	}
+	c := &TicketComment{
+		ID:         newID(),
+		TicketID:   ticketID,
+		AuthorType: authorType,
+		AuthorID:   nil, // po/dev/system have no user id
+		Internal:   internal,
+		Body:       body,
+		CreatedAt:  time.Now().UTC(),
+		Withheld:   withheld,
+	}
+	s.comments[ticketID] = append(s.comments[ticketID], c)
+	if t := s.tickets[ticketID]; t != nil {
+		t.UpdatedAt = c.CreatedAt
+	}
+	cc := *c
+	return &cc
+}
+
+// ListAcceptedWithOpenWorkOrder returns accepted tickets that still carry an
+// open (uncompleted) work-order — the coding agent's queue (§10.1).
+func (s *memStore) ListAcceptedWithOpenWorkOrder() []*Ticket {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var out []*Ticket
+	for _, t := range s.tickets {
+		if t.State != StateAccepted {
+			continue
+		}
+		wo, ok := s.workOrders[t.ID]
+		if !ok || !wo.Open() {
+			continue
+		}
+		full := cloneTicket(t)
+		for _, c := range s.comments[t.ID] {
+			cc := *c
+			full.Comments = append(full.Comments, &cc)
+		}
+		for _, a := range s.artifacts[t.ID] {
+			aa := *a
+			full.Artifacts = append(full.Artifacts, &aa)
+		}
+		out = append(out, full)
+	}
+	sortTicketsDesc(out)
+	return out
 }

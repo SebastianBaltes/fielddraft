@@ -191,3 +191,53 @@ type POVerdict struct {
 	Reason    string
 	State     TicketState // resulting state
 }
+
+// ─── agent / work-order layer (§9, §10) ─────────────────────────
+
+// WorkOrder is the PO→Coding handoff for an accepted ticket (§9). One per
+// ticket (TicketID is the primary key). Payload is the verbatim §9 Work-Order
+// JSON (PO task + directly-forwarded untrusted ticket data); the server keeps
+// it opaque. The lifecycle timestamps drive the coding agent's queue.
+type WorkOrder struct {
+	TicketID    string          `json:"ticket_id"`
+	Payload     json.RawMessage `json:"payload"`
+	CreatedAt   time.Time       `json:"created_at"`
+	PickedUpAt  *time.Time      `json:"picked_up_at"` // nil while unclaimed
+	CompletedAt *time.Time      `json:"completed_at"` // nil while in progress
+	DeployID    *string         `json:"deploy_id"`    // nil until a deploy resolves it
+}
+
+// Open reports whether the work-order is still actionable for the coding agent:
+// it exists and has not yet been completed (claimed-but-incomplete counts).
+func (wo *WorkOrder) Open() bool {
+	return wo != nil && wo.CompletedAt == nil
+}
+
+// DeployStatus is a deploy record's lifecycle bucket.
+type DeployStatus string
+
+const (
+	DeployBuilding   DeployStatus = "building"
+	DeployLive       DeployStatus = "live"
+	DeployRolledBack DeployStatus = "rolled_back"
+)
+
+// validDeployStatus reports whether s is an allowed deploy status.
+func validDeployStatus(s string) bool {
+	switch DeployStatus(s) {
+	case DeployBuilding, DeployLive, DeployRolledBack:
+		return true
+	}
+	return false
+}
+
+// Deploy is a recorded rollout (§10.3) — a getaggtes Image plus the tickets it
+// shipped. The audit trail for reversibility/rollback.
+type Deploy struct {
+	ID         string       `json:"id"`
+	Version    string       `json:"version"`
+	GitSHA     string       `json:"git_sha"`
+	TicketIDs  []string     `json:"ticket_ids"`
+	Status     DeployStatus `json:"status"`
+	DeployedAt time.Time    `json:"deployed_at"`
+}

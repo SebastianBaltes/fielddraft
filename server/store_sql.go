@@ -737,6 +737,30 @@ func (s *sqlStore) UpdateTicket(id, title, body string) *Ticket {
 	return t
 }
 
+func (s *sqlStore) SetTicketCategory(id, category string) *Ticket {
+	t := s.getTicketRow(id)
+	if t == nil {
+		return nil
+	}
+	now := time.Now().UTC()
+	var cat any
+	if category != "" {
+		cat = category
+		c := category
+		t.Category = &c
+	} else {
+		t.Category = nil
+	}
+	if _, err := s.db.Exec(
+		`UPDATE tickets SET category = ?, updated_at = ? WHERE id = ?`,
+		cat, now, id); err != nil {
+		log.Printf("sqlStore: SetTicketCategory: %v", err)
+		return nil
+	}
+	t.UpdatedAt = now
+	return t
+}
+
 // getTicketRow fetches a bare ticket (no comments/artifacts).
 func (s *sqlStore) getTicketRow(id string) *Ticket {
 	row := s.db.QueryRow(`SELECT `+ticketCols+` FROM tickets WHERE id = ?`, id)
@@ -934,6 +958,214 @@ func (s *sqlStore) GetArtifactBlob(ticketID, artifactID string) (*TicketArtifact
 		return a, nil
 	}
 	return a, data
+}
+
+// ─── work-orders (§9) ───────────────────────────────────────────
+
+const workOrderCols = `ticket_id, payload, created_at, picked_up_at, completed_at, deploy_id`
+
+func (s *sqlStore) scanWorkOrder(scan func(...any) error) *WorkOrder {
+	wo := &WorkOrder{}
+	var payload []byte
+	var pickedUp, completed sql.NullTime
+	var deployID sql.NullString
+	if err := scan(&wo.TicketID, &payload, &wo.CreatedAt, &pickedUp, &completed, &deployID); err != nil {
+		return nil
+	}
+	wo.Payload = json.RawMessage(payload)
+	if pickedUp.Valid {
+		t := pickedUp.Time
+		wo.PickedUpAt = &t
+	}
+	if completed.Valid {
+		t := completed.Time
+		wo.CompletedAt = &t
+	}
+	if deployID.Valid {
+		wo.DeployID = &deployID.String
+	}
+	return wo
+}
+
+func (s *sqlStore) CreateWorkOrder(ticketID string, payload json.RawMessage) (*WorkOrder, error) {
+	// The work-order PK is the ticket id, and the FK enforces the ticket exists.
+	if s.getTicketRow(ticketID) == nil {
+		return nil, errTicketMissing
+	}
+	wo := &WorkOrder{
+		TicketID:  ticketID,
+		Payload:   payload,
+		CreatedAt: time.Now().UTC(),
+	}
+	if _, err := s.db.Exec(
+		`INSERT INTO work_orders (ticket_id, payload, created_at) VALUES (?, ?, ?)`,
+		wo.TicketID, []byte(payload), wo.CreatedAt); err != nil {
+		if isDuplicate(err) {
+			return nil, errWorkOrderExists
+		}
+		log.Printf("sqlStore: CreateWorkOrder: %v", err)
+		return nil, err
+	}
+	return wo, nil
+}
+
+func (s *sqlStore) GetWorkOrder(ticketID string) *WorkOrder {
+	row := s.db.QueryRow(`SELECT `+workOrderCols+` FROM work_orders WHERE ticket_id = ?`, ticketID)
+	return s.scanWorkOrder(row.Scan)
+}
+
+func (s *sqlStore) ClaimWorkOrder(ticketID string) (*WorkOrder, error) {
+	now := time.Now().UTC()
+	// Atomic claim: only sets picked_up_at if still NULL.
+	res, err := s.db.Exec(
+		`UPDATE work_orders SET picked_up_at = ? WHERE ticket_id = ? AND picked_up_at IS NULL`,
+		now, ticketID)
+	if err != nil {
+		log.Printf("sqlStore: ClaimWorkOrder: %v", err)
+		return nil, err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		// Either it doesn't exist or it's already claimed — disambiguate.
+		if s.GetWorkOrder(ticketID) == nil {
+			return nil, errWorkOrderMissing
+		}
+		return nil, errWorkOrderClaimed
+	}
+	return s.GetWorkOrder(ticketID), nil
+}
+
+func (s *sqlStore) CompleteWorkOrder(ticketID, deployID string) (*WorkOrder, error) {
+	if s.GetWorkOrder(ticketID) == nil {
+		return nil, errWorkOrderMissing
+	}
+	now := time.Now().UTC()
+	var did any
+	if deployID != "" {
+		did = deployID
+	}
+	if _, err := s.db.Exec(
+		`UPDATE work_orders SET completed_at = ?, deploy_id = COALESCE(?, deploy_id) WHERE ticket_id = ?`,
+		now, did, ticketID); err != nil {
+		log.Printf("sqlStore: CompleteWorkOrder: %v", err)
+		return nil, err
+	}
+	return s.GetWorkOrder(ticketID), nil
+}
+
+// ─── deploys (§10.3) ────────────────────────────────────────────
+
+const deployCols = `id, version, git_sha, ticket_ids, status, deployed_at`
+
+func (s *sqlStore) scanDeploy(scan func(...any) error) *Deploy {
+	d := &Deploy{}
+	var ticketIDs []byte
+	var status string
+	if err := scan(&d.ID, &d.Version, &d.GitSHA, &ticketIDs, &status, &d.DeployedAt); err != nil {
+		return nil
+	}
+	d.Status = DeployStatus(status)
+	if len(ticketIDs) > 0 {
+		json.Unmarshal(ticketIDs, &d.TicketIDs)
+	}
+	if d.TicketIDs == nil {
+		d.TicketIDs = []string{}
+	}
+	return d
+}
+
+func (s *sqlStore) CreateDeploy(version, gitSHA string, ticketIDs []string, status DeployStatus) (*Deploy, error) {
+	if ticketIDs == nil {
+		ticketIDs = []string{}
+	}
+	d := &Deploy{
+		ID:         newID(),
+		Version:    version,
+		GitSHA:     gitSHA,
+		TicketIDs:  ticketIDs,
+		Status:     status,
+		DeployedAt: time.Now().UTC(),
+	}
+	idsJSON, err := json.Marshal(ticketIDs)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := s.db.Exec(
+		`INSERT INTO deploys (id, version, git_sha, ticket_ids, status, deployed_at)
+		 VALUES (?, ?, ?, ?, ?, ?)`,
+		d.ID, d.Version, d.GitSHA, idsJSON, string(d.Status), d.DeployedAt); err != nil {
+		log.Printf("sqlStore: CreateDeploy: %v", err)
+		return nil, err
+	}
+	return d, nil
+}
+
+func (s *sqlStore) ListDeploys() []*Deploy {
+	rows, err := s.db.Query(`SELECT ` + deployCols + ` FROM deploys ORDER BY deployed_at DESC, id DESC`)
+	if err != nil {
+		log.Printf("sqlStore: ListDeploys: %v", err)
+		return nil
+	}
+	defer rows.Close()
+	var out []*Deploy
+	for rows.Next() {
+		if d := s.scanDeploy(rows.Scan); d != nil {
+			out = append(out, d)
+		}
+	}
+	return out
+}
+
+// ─── agent comments ─────────────────────────────────────────────
+
+func (s *sqlStore) AddAgentComment(ticketID string, authorType AuthorType, body string, internal, withheld bool) *TicketComment {
+	c := &TicketComment{
+		ID:         newID(),
+		TicketID:   ticketID,
+		AuthorType: authorType,
+		AuthorID:   nil, // po/dev/system have no user id
+		Internal:   internal,
+		Body:       body,
+		CreatedAt:  time.Now().UTC(),
+		Withheld:   withheld,
+	}
+	if _, err := s.db.Exec(
+		`INSERT INTO ticket_comments (id, ticket_id, author_type, author_id, internal, body, created_at, withheld)
+		 VALUES (?, ?, ?, NULL, ?, ?, ?, ?)`,
+		c.ID, c.TicketID, string(c.AuthorType), c.Internal, c.Body, c.CreatedAt, c.Withheld); err != nil {
+		log.Printf("sqlStore: AddAgentComment: %v", err)
+		return nil
+	}
+	s.db.Exec(`UPDATE tickets SET updated_at = ? WHERE id = ?`, c.CreatedAt, ticketID)
+	return c
+}
+
+// ListAcceptedWithOpenWorkOrder returns accepted tickets that still carry an
+// open (uncompleted) work-order — the coding agent's queue (§10.1).
+func (s *sqlStore) ListAcceptedWithOpenWorkOrder() []*Ticket {
+	rows, err := s.db.Query(
+		`SELECT ` + ticketCols + ` FROM tickets t
+		 WHERE t.state = 'accepted'
+		   AND EXISTS (
+		       SELECT 1 FROM work_orders w
+		       WHERE w.ticket_id = t.id AND w.completed_at IS NULL)
+		 ORDER BY t.created_at DESC`)
+	if err != nil {
+		log.Printf("sqlStore: ListAcceptedWithOpenWorkOrder: %v", err)
+		return nil
+	}
+	defer rows.Close()
+	var out []*Ticket
+	for rows.Next() {
+		if t := s.scanTicket(rows.Scan); t != nil {
+			out = append(out, t)
+		}
+	}
+	// Hydrate thread + artifacts so the agent has full repro context.
+	for _, t := range out {
+		t.Comments = s.ListComments(t.ID)
+		t.Artifacts = s.listArtifacts(t.ID)
+	}
+	return out
 }
 
 // ─── helpers ────────────────────────────────────────────────────

@@ -28,6 +28,7 @@ type Server struct {
 	store       Store
 	mux         *http.ServeMux
 	rateLimiter *RateLimiter
+	agentTokens agentTokens // least-privilege Service-Tokens (§11)
 }
 
 func NewServer(store Store) *Server {
@@ -35,6 +36,7 @@ func NewServer(store Store) *Server {
 		store:       store,
 		mux:         http.NewServeMux(),
 		rateLimiter: NewRateLimiter(1.0, 60), // 60 burst, 1/sec refill
+		agentTokens: loadAgentTokens(),
 	}
 	s.mux.HandleFunc("POST /api/auth/register", s.handleRegister)
 	s.mux.HandleFunc("POST /api/auth/login", s.handleLogin)
@@ -65,6 +67,15 @@ func NewServer(store Store) *Server {
 	s.mux.HandleFunc("GET /api/tickets/{id}/comments", s.handleListComments)
 	s.mux.HandleFunc("POST /api/tickets/{id}/comments", s.handleAddComment)
 	s.mux.HandleFunc("GET /api/tickets/{id}/artifacts/{artifactId}", s.handleGetArtifact)
+	// Agent / work-order API (Service-Token auth; WP6, §8–§11).
+	s.mux.HandleFunc("GET /api/agent/queue", s.handleAgentQueue)
+	s.mux.HandleFunc("POST /api/tickets/{id}/verdict", s.handleVerdict)
+	s.mux.HandleFunc("POST /api/tickets/{id}/agent-comment", s.handleAgentComment)
+	s.mux.HandleFunc("PATCH /api/tickets/{id}/agent-state", s.handleAgentState)
+	s.mux.HandleFunc("POST /api/work-orders/{ticketId}/claim", s.handleClaimWorkOrder)
+	s.mux.HandleFunc("POST /api/work-orders/{ticketId}/complete", s.handleCompleteWorkOrder)
+	s.mux.HandleFunc("POST /api/deploys", s.handleCreateDeploy)
+	s.mux.HandleFunc("GET /api/deploys", s.handleListDeploys)
 	return s
 }
 
