@@ -7,7 +7,10 @@ package main
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"strings"
 	"sync"
 	"time"
 
@@ -24,6 +27,11 @@ type memStore struct {
 	thumbnails  map[string][]byte      // project ID → PNG data
 	snapshots   map[string]*Snapshot   // snapshot ID → snapshot
 	invites     map[string]*Invite     // token → invite
+
+	tickets   map[string]*Ticket           // ticket ID → ticket
+	comments  map[string][]*TicketComment  // ticket ID → comments (in order)
+	artifacts map[string][]*TicketArtifact // ticket ID → artifacts (in order)
+	blobs     map[string][]byte            // sha256 hex → blob bytes
 }
 
 // NewStore returns the in-memory store (test fixture).
@@ -37,6 +45,10 @@ func NewStore() Store {
 		thumbnails:  make(map[string][]byte),
 		snapshots:   make(map[string]*Snapshot),
 		invites:     make(map[string]*Invite),
+		tickets:     make(map[string]*Ticket),
+		comments:    make(map[string][]*TicketComment),
+		artifacts:   make(map[string][]*TicketArtifact),
+		blobs:       make(map[string][]byte),
 	}
 }
 
@@ -360,4 +372,251 @@ func (s *memStore) DeleteProject(id, ownerID string) bool {
 	}
 	delete(s.projects, id)
 	return true
+}
+
+// ─── tickets ────────────────────────────────────────────────────
+
+// cloneTicket returns a shallow copy so callers can't mutate stored state
+// (and so concurrent reads stay race-free under the RWMutex contract).
+func cloneTicket(t *Ticket) *Ticket {
+	c := *t
+	c.Comments = nil
+	c.Artifacts = nil
+	return &c
+}
+
+func (s *memStore) CreateTicket(authorID, title, body, category string) *Ticket {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := time.Now().UTC()
+	t := &Ticket{
+		ID:        newID(),
+		AuthorID:  authorID,
+		Title:     title,
+		Body:      body,
+		State:     StateTriage,
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	if category != "" {
+		c := category
+		t.Category = &c
+	}
+	s.tickets[t.ID] = t
+	return cloneTicket(t)
+}
+
+func (s *memStore) GetTicket(id string) *Ticket {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	t, ok := s.tickets[id]
+	if !ok {
+		return nil
+	}
+	out := cloneTicket(t)
+	for _, c := range s.comments[id] {
+		cc := *c
+		out.Comments = append(out.Comments, &cc)
+	}
+	for _, a := range s.artifacts[id] {
+		aa := *a
+		out.Artifacts = append(out.Artifacts, &aa)
+	}
+	return out
+}
+
+func (s *memStore) ListTickets(f TicketFilter) []*Ticket {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var out []*Ticket
+	q := strings.ToLower(f.Query)
+	for _, t := range s.tickets {
+		if f.AuthorID != "" && t.AuthorID != f.AuthorID {
+			continue
+		}
+		if f.State != "" && t.State != f.State {
+			continue
+		}
+		if f.Category != "" && (t.Category == nil || *t.Category != f.Category) {
+			continue
+		}
+		if q != "" && !strings.Contains(strings.ToLower(t.Title), q) &&
+			!strings.Contains(strings.ToLower(t.Body), q) {
+			continue
+		}
+		// Visibility (§7.3): hide rejected tickets unless caller is admin or
+		// the ticket's own author.
+		if isRejected(t.State) && !f.ViewerIsAdmin && t.AuthorID != f.ViewerID {
+			continue
+		}
+		out = append(out, cloneTicket(t))
+	}
+	// Newest first (chronological by creation).
+	sortTicketsDesc(out)
+	return out
+}
+
+func (s *memStore) UpdateTicket(id, title, body string) *Ticket {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	t, ok := s.tickets[id]
+	if !ok {
+		return nil
+	}
+	if title != "" {
+		t.Title = title
+	}
+	if body != "" {
+		t.Body = body
+	}
+	t.UpdatedAt = time.Now().UTC()
+	return cloneTicket(t)
+}
+
+func (s *memStore) SetTicketState(id string, to TicketState) (*Ticket, error) {
+	s.mu.Lock()
+	t, ok := s.tickets[id]
+	if !ok {
+		s.mu.Unlock()
+		return nil, errTicketMissing
+	}
+	if err := validateTransition(t.State, to); err != nil {
+		s.mu.Unlock()
+		return nil, err
+	}
+	from := t.State
+	t.State = to
+	t.UpdatedAt = time.Now().UTC()
+	out := cloneTicket(t)
+	s.mu.Unlock()
+	s.appendSystemComment(id, "state: "+string(from)+" → "+string(to))
+	return out, nil
+}
+
+func (s *memStore) SetPOVerdict(id string, v POVerdict) (*Ticket, error) {
+	s.mu.Lock()
+	t, ok := s.tickets[id]
+	if !ok {
+		s.mu.Unlock()
+		return nil, errTicketMissing
+	}
+	if err := validateTransition(t.State, v.State); err != nil {
+		s.mu.Unlock()
+		return nil, err
+	}
+	from := t.State
+	now := time.Now().UTC()
+	t.POSpam = v.Spam
+	t.POMalicious = v.Malicious
+	t.POVisionFit = v.VisionFit
+	if v.Reason != "" {
+		r := v.Reason
+		t.POReason = &r
+	}
+	t.POVerdictAt = &now
+	t.State = v.State
+	t.UpdatedAt = now
+	out := cloneTicket(t)
+	s.mu.Unlock()
+	s.appendSystemComment(id, "po verdict: "+string(from)+" → "+string(v.State))
+	return out, nil
+}
+
+func (s *memStore) DeleteTicket(id string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.tickets[id]; !ok {
+		return false
+	}
+	delete(s.tickets, id)
+	delete(s.comments, id)
+	delete(s.artifacts, id)
+	return true
+}
+
+// appendSystemComment records a state-change audit entry. Locks internally.
+func (s *memStore) appendSystemComment(ticketID, body string) {
+	s.AddComment(ticketID, AuthorSystem, nil, body, false)
+}
+
+func (s *memStore) AddComment(ticketID string, authorType AuthorType, authorID *string, body string, internal bool) *TicketComment {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.tickets[ticketID]; !ok {
+		return nil
+	}
+	c := &TicketComment{
+		ID:         newID(),
+		TicketID:   ticketID,
+		AuthorType: authorType,
+		AuthorID:   authorID,
+		Internal:   internal,
+		Body:       body,
+		CreatedAt:  time.Now().UTC(),
+	}
+	s.comments[ticketID] = append(s.comments[ticketID], c)
+	if t := s.tickets[ticketID]; t != nil {
+		t.UpdatedAt = c.CreatedAt
+	}
+	cc := *c
+	return &cc
+}
+
+func (s *memStore) ListComments(ticketID string) []*TicketComment {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var out []*TicketComment
+	for _, c := range s.comments[ticketID] {
+		cc := *c
+		out = append(out, &cc)
+	}
+	return out
+}
+
+func (s *memStore) AddArtifact(ticketID string, kind ArtifactKind, name, mime string, data []byte) *TicketArtifact {
+	if len(data) == 0 {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.tickets[ticketID]; !ok {
+		return nil
+	}
+	sum := sha256.Sum256(data)
+	ref := hex.EncodeToString(sum[:])
+	s.blobs[ref] = data
+	a := &TicketArtifact{
+		ID:        newID(),
+		TicketID:  ticketID,
+		Kind:      kind,
+		BlobRef:   ref,
+		Mime:      mime,
+		Size:      int64(len(data)),
+		Name:      name,
+		CreatedAt: time.Now().UTC(),
+	}
+	s.artifacts[ticketID] = append(s.artifacts[ticketID], a)
+	return a
+}
+
+func (s *memStore) GetArtifactBlob(ticketID, artifactID string) (*TicketArtifact, []byte) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, a := range s.artifacts[ticketID] {
+		if a.ID == artifactID {
+			aa := *a
+			return &aa, s.blobs[a.BlobRef]
+		}
+	}
+	return nil, nil
+}
+
+// sortTicketsDesc sorts tickets newest-first by CreatedAt (insertion sort —
+// ticket counts are small).
+func sortTicketsDesc(ts []*Ticket) {
+	for i := 1; i < len(ts); i++ {
+		for j := i; j > 0 && ts[j].CreatedAt.After(ts[j-1].CreatedAt); j-- {
+			ts[j], ts[j-1] = ts[j-1], ts[j]
+		}
+	}
 }

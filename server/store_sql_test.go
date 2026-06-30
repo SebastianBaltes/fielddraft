@@ -126,3 +126,73 @@ func TestSQLStoreRoundTrip(t *testing.T) {
 		t.Fatal("DeleteProject returned false")
 	}
 }
+
+// TestSQLStoreTickets exercises the ticket methods against a live MariaDB.
+// Auto-skips when no TEST_DB_DSN/DB_DSN is reachable.
+func TestSQLStoreTickets(t *testing.T) {
+	store := newTestSQLStore(t)
+
+	author, err := store.CreateUser("tkauthor-"+newID()+"@test.com", "Author", "pass12345", RoleUser)
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+
+	// Create + read back with category.
+	tk := store.CreateTicket(author.ID, "Crash", "it crashes", "bug")
+	if tk == nil || tk.State != StateTriage {
+		t.Fatalf("CreateTicket: %v", tk)
+	}
+	got := store.GetTicket(tk.ID)
+	if got == nil || got.Category == nil || *got.Category != "bug" {
+		t.Fatalf("GetTicket category: %v", got)
+	}
+
+	// Artifact blob round-trip.
+	art := store.AddArtifact(tk.ID, ArtifactScreenshot, "screenshot.png", "image/png", []byte{0x89, 0x50, 0x4E, 0x47})
+	if art == nil {
+		t.Fatal("AddArtifact nil")
+	}
+	gotArt, data := store.GetArtifactBlob(tk.ID, art.ID)
+	if gotArt == nil || len(data) != 4 {
+		t.Fatalf("GetArtifactBlob: %v / %d bytes", gotArt, len(data))
+	}
+
+	// Comment round-trip.
+	uid := author.ID
+	if store.AddComment(tk.ID, AuthorUser, &uid, "a reply", false) == nil {
+		t.Fatal("AddComment nil")
+	}
+	if cs := store.ListComments(tk.ID); len(cs) != 1 {
+		t.Fatalf("ListComments: %d, want 1", len(cs))
+	}
+
+	// Legal transition appends a system audit comment.
+	if _, err := store.SetTicketState(tk.ID, StateAccepted); err != nil {
+		t.Fatalf("SetTicketState legal: %v", err)
+	}
+	// Illegal transition is rejected.
+	if _, err := store.SetTicketState(tk.ID, StateResolved); err == nil {
+		t.Fatal("SetTicketState accepted an illegal accepted→resolved move")
+	}
+	full := store.GetTicket(tk.ID)
+	if full.State != StateAccepted {
+		t.Fatalf("state = %q, want accepted", full.State)
+	}
+	// reply + audit system comment.
+	if len(full.Comments) != 2 {
+		t.Fatalf("comments after transition: %d, want 2", len(full.Comments))
+	}
+
+	// Filtered list (author + state) and rejected visibility.
+	mine := store.ListTickets(TicketFilter{AuthorID: author.ID, State: StateAccepted, ViewerID: author.ID})
+	if len(mine) != 1 {
+		t.Fatalf("filtered list: %d, want 1", len(mine))
+	}
+
+	if !store.DeleteTicket(tk.ID) {
+		t.Fatal("DeleteTicket returned false")
+	}
+	if store.GetTicket(tk.ID) != nil {
+		t.Fatal("ticket still present after delete")
+	}
+}

@@ -83,3 +83,111 @@ func (i *Invite) Status(now time.Time) string {
 		return "open"
 	}
 }
+
+// ─── tickets ────────────────────────────────────────────────────
+
+// TicketState is a ticket's position in the §7.2 state machine.
+type TicketState string
+
+const (
+	StateTriage            TicketState = "triage" // initial
+	StateNeedsInfo         TicketState = "needs_info"
+	StateAccepted          TicketState = "accepted"
+	StateInProgress        TicketState = "in_progress"
+	StateDeploying         TicketState = "deploying"
+	StateResolved          TicketState = "resolved"
+	StateClosed            TicketState = "closed"
+	StateDeclined          TicketState = "declined"
+	StateRejectedSpam      TicketState = "rejected_spam"
+	StateRejectedMalicious TicketState = "rejected_malicious"
+)
+
+// AuthorType is who wrote a ticket comment (§4 security context).
+type AuthorType string
+
+const (
+	AuthorUser   AuthorType = "user"
+	AuthorPO     AuthorType = "po"
+	AuthorDev    AuthorType = "dev"
+	AuthorSystem AuthorType = "system"
+)
+
+// ArtifactKind classifies a ticket's repro blob.
+type ArtifactKind string
+
+const (
+	ArtifactScreenshot ArtifactKind = "screenshot"
+	ArtifactFdraft     ArtifactKind = "fdraft"
+	ArtifactActions    ArtifactKind = "actions"
+	ArtifactSettings   ArtifactKind = "settings"
+	ArtifactUIState    ArtifactKind = "ui_state"
+	ArtifactAttachment ArtifactKind = "attachment"
+)
+
+// Ticket is a user-authored issue (bug / feature / question). Repro artifacts
+// hang off it as TicketArtifact; the discussion is a TicketComment thread.
+type Ticket struct {
+	ID          string      `json:"id"`
+	AuthorID    string      `json:"author_id"`
+	Title       string      `json:"title"`
+	Body        string      `json:"body"`
+	State       TicketState `json:"state"`
+	Category    *string     `json:"category"` // bug|feature|question|other, or nil
+	POSpam      bool        `json:"po_spam"`
+	POMalicious bool        `json:"po_malicious"`
+	POVisionFit *string     `json:"po_vision_fit"` // fit|partial|off, or nil
+	POReason    *string     `json:"po_reason"`
+	POVerdictAt *time.Time  `json:"po_verdict_at"`
+	CreatedAt   time.Time   `json:"created_at"`
+	UpdatedAt   time.Time   `json:"updated_at"`
+
+	// Hydrated on GetTicket; nil on list rows.
+	Comments  []*TicketComment  `json:"comments,omitempty"`
+	Artifacts []*TicketArtifact `json:"artifacts,omitempty"`
+}
+
+// TicketComment is one entry in a ticket's discussion thread.
+type TicketComment struct {
+	ID         string     `json:"id"`
+	TicketID   string     `json:"ticket_id"`
+	AuthorType AuthorType `json:"author_type"`
+	AuthorID   *string    `json:"author_id"` // nil for po/dev/system
+	Internal   bool       `json:"internal"`  // dev notes: admin only, never user
+	Body       string     `json:"body"`
+	CreatedAt  time.Time  `json:"created_at"`
+	Withheld   bool       `json:"withheld"` // leak-filter hold (§4.2)
+}
+
+// TicketArtifact is a content-addressed repro blob attached to a ticket.
+type TicketArtifact struct {
+	ID        string       `json:"id"`
+	TicketID  string       `json:"ticket_id"`
+	Kind      ArtifactKind `json:"kind"`
+	BlobRef   string       `json:"blob_ref"`
+	Mime      string       `json:"mime"`
+	Size      int64        `json:"size"`
+	Name      string       `json:"name"`
+	CreatedAt time.Time    `json:"created_at"`
+}
+
+// TicketFilter narrows a ticket listing (§7.3).
+type TicketFilter struct {
+	AuthorID string // exact author; "" = any
+	State    TicketState
+	Category string
+	Query    string // free-text over title/body
+	// IncludeRejected lets admins see rejected_spam/malicious in the list;
+	// for non-admins the store still surfaces the caller's OWN rejected tickets
+	// (handled by the visibility filter in the store).
+	ViewerID      string
+	ViewerIsAdmin bool
+}
+
+// POVerdict carries the PO's classification + reason for a ticket.
+type POVerdict struct {
+	Spam      bool
+	Malicious bool
+	VisionFit *string // fit|partial|off, or nil
+	Reason    string
+	State     TicketState // resulting state
+}

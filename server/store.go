@@ -59,6 +59,23 @@ type Store interface {
 	// Snapshots (published, shareable copies).
 	CreateSnapshot(projectID string, doc json.RawMessage) *Snapshot
 	GetSnapshot(id string) *Snapshot
+
+	// Tickets (GitHub-Issues-like, §7).
+	CreateTicket(authorID, title, body, category string) *Ticket
+	GetTicket(id string) *Ticket // hydrated with comments + artifacts
+	ListTickets(f TicketFilter) []*Ticket
+	UpdateTicket(id, title, body string) *Ticket // author edit of title/body
+	SetTicketState(id string, to TicketState) (*Ticket, error)
+	SetPOVerdict(id string, v POVerdict) (*Ticket, error)
+	DeleteTicket(id string) bool
+
+	// Ticket comments.
+	AddComment(ticketID string, authorType AuthorType, authorID *string, body string, internal bool) *TicketComment
+	ListComments(ticketID string) []*TicketComment
+
+	// Ticket artifacts (content-addressed repro blobs).
+	AddArtifact(ticketID string, kind ArtifactKind, name, mime string, data []byte) *TicketArtifact
+	GetArtifactBlob(ticketID, artifactID string) (*TicketArtifact, []byte)
 }
 
 var (
@@ -67,6 +84,7 @@ var (
 	errUnauthorized  = &httpError{http.StatusUnauthorized, "invalid credentials"}
 	errInviteInvalid = &httpError{http.StatusBadRequest, "invalid or expired invite"}
 	errInviteUsed    = &httpError{http.StatusBadRequest, "invite already used"}
+	errTicketMissing = &httpError{http.StatusNotFound, "ticket not found"}
 )
 
 type httpError struct {

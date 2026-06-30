@@ -603,6 +603,339 @@ func (s *sqlStore) GetSnapshot(id string) *Snapshot {
 	return snap
 }
 
+// ─── tickets ────────────────────────────────────────────────────
+
+const ticketCols = `id, author_id, title, body, state, category, po_spam, po_malicious,
+	po_vision_fit, po_reason, po_verdict_at, created_at, updated_at`
+
+func (s *sqlStore) scanTicket(scan func(...any) error) *Ticket {
+	t := &Ticket{}
+	var state string
+	var category, visionFit, reason sql.NullString
+	var verdictAt sql.NullTime
+	if err := scan(&t.ID, &t.AuthorID, &t.Title, &t.Body, &state, &category,
+		&t.POSpam, &t.POMalicious, &visionFit, &reason, &verdictAt,
+		&t.CreatedAt, &t.UpdatedAt); err != nil {
+		return nil
+	}
+	t.State = TicketState(state)
+	if category.Valid {
+		t.Category = &category.String
+	}
+	if visionFit.Valid {
+		t.POVisionFit = &visionFit.String
+	}
+	if reason.Valid {
+		t.POReason = &reason.String
+	}
+	if verdictAt.Valid {
+		v := verdictAt.Time
+		t.POVerdictAt = &v
+	}
+	return t
+}
+
+func (s *sqlStore) CreateTicket(authorID, title, body, category string) *Ticket {
+	now := time.Now().UTC()
+	t := &Ticket{
+		ID:        newID(),
+		AuthorID:  authorID,
+		Title:     title,
+		Body:      body,
+		State:     StateTriage,
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	var cat any
+	if category != "" {
+		cat = category
+		c := category
+		t.Category = &c
+	}
+	if _, err := s.db.Exec(
+		`INSERT INTO tickets (id, author_id, title, body, state, category, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, 'triage', ?, ?, ?)`,
+		t.ID, t.AuthorID, t.Title, t.Body, cat, t.CreatedAt, t.UpdatedAt); err != nil {
+		log.Printf("sqlStore: CreateTicket: %v", err)
+		return nil
+	}
+	return t
+}
+
+func (s *sqlStore) GetTicket(id string) *Ticket {
+	row := s.db.QueryRow(`SELECT `+ticketCols+` FROM tickets WHERE id = ?`, id)
+	t := s.scanTicket(row.Scan)
+	if t == nil {
+		return nil
+	}
+	t.Comments = s.ListComments(id)
+	t.Artifacts = s.listArtifacts(id)
+	return t
+}
+
+func (s *sqlStore) ListTickets(f TicketFilter) []*Ticket {
+	q := `SELECT ` + ticketCols + ` FROM tickets WHERE 1=1`
+	var args []any
+	if f.AuthorID != "" {
+		q += ` AND author_id = ?`
+		args = append(args, f.AuthorID)
+	}
+	if f.State != "" {
+		q += ` AND state = ?`
+		args = append(args, string(f.State))
+	}
+	if f.Category != "" {
+		q += ` AND category = ?`
+		args = append(args, f.Category)
+	}
+	if f.Query != "" {
+		q += ` AND (title LIKE ? OR body LIKE ?)`
+		like := "%" + f.Query + "%"
+		args = append(args, like, like)
+	}
+	// Visibility (§7.3): rejected tickets are visible only to admins or the
+	// ticket's own author.
+	if !f.ViewerIsAdmin {
+		q += ` AND (state NOT IN ('rejected_spam','rejected_malicious') OR author_id = ?)`
+		args = append(args, f.ViewerID)
+	}
+	q += ` ORDER BY created_at DESC`
+
+	rows, err := s.db.Query(q, args...)
+	if err != nil {
+		log.Printf("sqlStore: ListTickets: %v", err)
+		return nil
+	}
+	defer rows.Close()
+	var out []*Ticket
+	for rows.Next() {
+		if t := s.scanTicket(rows.Scan); t != nil {
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
+func (s *sqlStore) UpdateTicket(id, title, body string) *Ticket {
+	t := s.getTicketRow(id)
+	if t == nil {
+		return nil
+	}
+	if title != "" {
+		t.Title = title
+	}
+	if body != "" {
+		t.Body = body
+	}
+	t.UpdatedAt = time.Now().UTC()
+	if _, err := s.db.Exec(
+		`UPDATE tickets SET title = ?, body = ?, updated_at = ? WHERE id = ?`,
+		t.Title, t.Body, t.UpdatedAt, id); err != nil {
+		log.Printf("sqlStore: UpdateTicket: %v", err)
+		return nil
+	}
+	return t
+}
+
+// getTicketRow fetches a bare ticket (no comments/artifacts).
+func (s *sqlStore) getTicketRow(id string) *Ticket {
+	row := s.db.QueryRow(`SELECT `+ticketCols+` FROM tickets WHERE id = ?`, id)
+	return s.scanTicket(row.Scan)
+}
+
+func (s *sqlStore) SetTicketState(id string, to TicketState) (*Ticket, error) {
+	t := s.getTicketRow(id)
+	if t == nil {
+		return nil, errTicketMissing
+	}
+	if err := validateTransition(t.State, to); err != nil {
+		return nil, err
+	}
+	from := t.State
+	now := time.Now().UTC()
+	if _, err := s.db.Exec(
+		`UPDATE tickets SET state = ?, updated_at = ? WHERE id = ?`,
+		string(to), now, id); err != nil {
+		log.Printf("sqlStore: SetTicketState: %v", err)
+		return nil, err
+	}
+	t.State = to
+	t.UpdatedAt = now
+	s.AddComment(id, AuthorSystem, nil, "state: "+string(from)+" → "+string(to), false)
+	return t, nil
+}
+
+func (s *sqlStore) SetPOVerdict(id string, v POVerdict) (*Ticket, error) {
+	t := s.getTicketRow(id)
+	if t == nil {
+		return nil, errTicketMissing
+	}
+	if err := validateTransition(t.State, v.State); err != nil {
+		return nil, err
+	}
+	from := t.State
+	now := time.Now().UTC()
+	var visionFit any
+	if v.VisionFit != nil {
+		visionFit = *v.VisionFit
+	}
+	var reason any
+	if v.Reason != "" {
+		reason = v.Reason
+	}
+	if _, err := s.db.Exec(
+		`UPDATE tickets SET po_spam = ?, po_malicious = ?, po_vision_fit = ?,
+		 po_reason = ?, po_verdict_at = ?, state = ?, updated_at = ? WHERE id = ?`,
+		v.Spam, v.Malicious, visionFit, reason, now, string(v.State), now, id); err != nil {
+		log.Printf("sqlStore: SetPOVerdict: %v", err)
+		return nil, err
+	}
+	t.POSpam = v.Spam
+	t.POMalicious = v.Malicious
+	t.POVisionFit = v.VisionFit
+	if v.Reason != "" {
+		r := v.Reason
+		t.POReason = &r
+	}
+	t.POVerdictAt = &now
+	t.State = v.State
+	t.UpdatedAt = now
+	s.AddComment(id, AuthorSystem, nil, "po verdict: "+string(from)+" → "+string(v.State), false)
+	return t, nil
+}
+
+func (s *sqlStore) DeleteTicket(id string) bool {
+	res, err := s.db.Exec(`DELETE FROM tickets WHERE id = ?`, id)
+	if err != nil {
+		log.Printf("sqlStore: DeleteTicket: %v", err)
+		return false
+	}
+	n, _ := res.RowsAffected()
+	return n > 0
+}
+
+func (s *sqlStore) AddComment(ticketID string, authorType AuthorType, authorID *string, body string, internal bool) *TicketComment {
+	c := &TicketComment{
+		ID:         newID(),
+		TicketID:   ticketID,
+		AuthorType: authorType,
+		AuthorID:   authorID,
+		Internal:   internal,
+		Body:       body,
+		CreatedAt:  time.Now().UTC(),
+	}
+	var aid any
+	if authorID != nil {
+		aid = *authorID
+	}
+	if _, err := s.db.Exec(
+		`INSERT INTO ticket_comments (id, ticket_id, author_type, author_id, internal, body, created_at, withheld)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, 0)`,
+		c.ID, c.TicketID, string(c.AuthorType), aid, c.Internal, c.Body, c.CreatedAt); err != nil {
+		log.Printf("sqlStore: AddComment: %v", err)
+		return nil
+	}
+	// Bump the ticket's activity timestamp.
+	s.db.Exec(`UPDATE tickets SET updated_at = ? WHERE id = ?`, c.CreatedAt, ticketID)
+	return c
+}
+
+func (s *sqlStore) ListComments(ticketID string) []*TicketComment {
+	rows, err := s.db.Query(
+		`SELECT id, ticket_id, author_type, author_id, internal, body, created_at, withheld
+		 FROM ticket_comments WHERE ticket_id = ? ORDER BY created_at ASC`, ticketID)
+	if err != nil {
+		log.Printf("sqlStore: ListComments: %v", err)
+		return nil
+	}
+	defer rows.Close()
+	var out []*TicketComment
+	for rows.Next() {
+		c := &TicketComment{}
+		var at string
+		var aid sql.NullString
+		if err := rows.Scan(&c.ID, &c.TicketID, &at, &aid, &c.Internal, &c.Body, &c.CreatedAt, &c.Withheld); err != nil {
+			continue
+		}
+		c.AuthorType = AuthorType(at)
+		if aid.Valid {
+			c.AuthorID = &aid.String
+		}
+		out = append(out, c)
+	}
+	return out
+}
+
+func (s *sqlStore) AddArtifact(ticketID string, kind ArtifactKind, name, mime string, data []byte) *TicketArtifact {
+	if len(data) == 0 {
+		return nil
+	}
+	ref, err := s.putBlob(data)
+	if err != nil {
+		log.Printf("sqlStore: AddArtifact putBlob: %v", err)
+		return nil
+	}
+	a := &TicketArtifact{
+		ID:        newID(),
+		TicketID:  ticketID,
+		Kind:      kind,
+		BlobRef:   ref,
+		Mime:      mime,
+		Size:      int64(len(data)),
+		Name:      name,
+		CreatedAt: time.Now().UTC(),
+	}
+	if _, err := s.db.Exec(
+		`INSERT INTO ticket_artifacts (id, ticket_id, kind, blob_ref, mime, size, name, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		a.ID, a.TicketID, string(a.Kind), a.BlobRef, a.Mime, a.Size, a.Name, a.CreatedAt); err != nil {
+		log.Printf("sqlStore: AddArtifact: %v", err)
+		return nil
+	}
+	return a
+}
+
+func (s *sqlStore) listArtifacts(ticketID string) []*TicketArtifact {
+	rows, err := s.db.Query(
+		`SELECT id, ticket_id, kind, blob_ref, mime, size, name, created_at
+		 FROM ticket_artifacts WHERE ticket_id = ? ORDER BY created_at ASC`, ticketID)
+	if err != nil {
+		log.Printf("sqlStore: listArtifacts: %v", err)
+		return nil
+	}
+	defer rows.Close()
+	var out []*TicketArtifact
+	for rows.Next() {
+		a := &TicketArtifact{}
+		var kind string
+		if err := rows.Scan(&a.ID, &a.TicketID, &kind, &a.BlobRef, &a.Mime, &a.Size, &a.Name, &a.CreatedAt); err != nil {
+			continue
+		}
+		a.Kind = ArtifactKind(kind)
+		out = append(out, a)
+	}
+	return out
+}
+
+func (s *sqlStore) GetArtifactBlob(ticketID, artifactID string) (*TicketArtifact, []byte) {
+	a := &TicketArtifact{}
+	var kind string
+	err := s.db.QueryRow(
+		`SELECT id, ticket_id, kind, blob_ref, mime, size, name, created_at
+		 FROM ticket_artifacts WHERE id = ? AND ticket_id = ?`, artifactID, ticketID).
+		Scan(&a.ID, &a.TicketID, &kind, &a.BlobRef, &a.Mime, &a.Size, &a.Name, &a.CreatedAt)
+	if err != nil {
+		return nil, nil
+	}
+	a.Kind = ArtifactKind(kind)
+	data, err := s.getBlob(a.BlobRef)
+	if err != nil {
+		log.Printf("sqlStore: GetArtifactBlob getBlob: %v", err)
+		return a, nil
+	}
+	return a, data
+}
+
 // ─── helpers ────────────────────────────────────────────────────
 
 // nullIfEmpty returns nil for an empty ref so the DB column is NULL, else the ref.

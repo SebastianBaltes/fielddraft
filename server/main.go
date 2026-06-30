@@ -9,9 +9,7 @@
 package main
 
 import (
-	"bytes"
 	"crypto/rand"
-	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -19,7 +17,6 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -59,7 +56,15 @@ func NewServer(store Store) *Server {
 	s.mux.HandleFunc("POST /api/invites", s.handleCreateInvite)
 	s.mux.HandleFunc("GET /api/invites", s.handleListInvites)
 	s.mux.HandleFunc("DELETE /api/invites/{token}", s.handleDeleteInvite)
+	// Tickets (DB-backed, authenticated; §7).
 	s.mux.HandleFunc("POST /api/tickets", s.handleCreateTicket)
+	s.mux.HandleFunc("GET /api/tickets", s.handleListTickets)
+	s.mux.HandleFunc("GET /api/tickets/{id}", s.handleGetTicket)
+	s.mux.HandleFunc("PATCH /api/tickets/{id}", s.handlePatchTicket)
+	s.mux.HandleFunc("DELETE /api/tickets/{id}", s.handleDeleteTicket)
+	s.mux.HandleFunc("GET /api/tickets/{id}/comments", s.handleListComments)
+	s.mux.HandleFunc("POST /api/tickets/{id}/comments", s.handleAddComment)
+	s.mux.HandleFunc("GET /api/tickets/{id}/artifacts/{artifactId}", s.handleGetArtifact)
 	return s
 }
 
@@ -488,27 +493,7 @@ func (s *Server) handleViewSnapshot(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(snap)
 }
 
-// ─── tickets (file-based; WP2 will move these to the DB) ─────────
-
-// ticketRequest is the payload POSTed by the in-app "Report Issue" dialog.
-type ticketRequest struct {
-	Description string `json:"description"`
-	// ProjectFdraft: the live project as a base64-encoded .fdraft ZIP,
-	// written to disk verbatim as project.fdraft.
-	ProjectFdraft string             `json:"projectFdraft"`
-	Screenshot    string             `json:"screenshot"` // PNG data URL, or empty
-	Attachments   []ticketAttachment `json:"attachments"`
-	Version       string             `json:"version"`
-	Timestamp     string             `json:"timestamp"`
-	UserAgent     string             `json:"userAgent"`
-	URL           string             `json:"url"`
-	// Settings: per-device app/UI settings (renderMode, controlsPreset, …).
-	Settings json.RawMessage `json:"settings"`
-	// UIState: ephemeral live UI state (camera, selection, active tool/mode).
-	UIState json.RawMessage `json:"uiState"`
-	// ActionLog: replayable user-action trace.
-	ActionLog json.RawMessage `json:"actionLog"`
-}
+// ─── tickets (DB-backed; handlers live in tickets_handlers.go) ──
 
 // ticketAttachment is one user-attached file, transported as a data URL.
 type ticketAttachment struct {
@@ -556,105 +541,6 @@ func ticketHeading(id, description string) string {
 		}
 	}
 	return "Issue " + id
-}
-
-// ticketsDir is where filed tickets are written. Override with TICKETS_DIR.
-func ticketsDir() string {
-	if d := os.Getenv("TICKETS_DIR"); d != "" {
-		return d
-	}
-	return "tickets"
-}
-
-// handleCreateTicket persists a bug / feature-request ticket to
-// <ticketsDir>/open/<id>/. Anonymous but rate-limited (60/min per IP).
-func (s *Server) handleCreateTicket(w http.ResponseWriter, r *http.Request) {
-	var req ticketRequest
-	if err := json.NewDecoder(io.LimitReader(r.Body, 25<<20)).Decode(&req); err != nil {
-		http.Error(w, `{"error":"invalid JSON"}`, http.StatusBadRequest)
-		return
-	}
-	if strings.TrimSpace(req.Description) == "" {
-		http.Error(w, `{"error":"description required"}`, http.StatusBadRequest)
-		return
-	}
-
-	id := time.Now().UTC().Format("20060102-150405") + "-" + newID()[:4]
-	dir := filepath.Join(ticketsDir(), "open", id)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		http.Error(w, `{"error":"could not create ticket"}`, http.StatusInternalServerError)
-		return
-	}
-
-	ts := req.Timestamp
-	if ts == "" {
-		ts = time.Now().UTC().Format(time.RFC3339)
-	}
-
-	var attachmentNames []string
-	for i, a := range req.Attachments {
-		ci := strings.IndexByte(a.DataURL, ',')
-		if !strings.HasPrefix(a.DataURL, "data:") || ci < 0 {
-			continue
-		}
-		blob, err := base64.StdEncoding.DecodeString(a.DataURL[ci+1:])
-		if err != nil {
-			continue
-		}
-		fname := attachmentFilename(i, a.Name)
-		if os.WriteFile(filepath.Join(dir, fname), blob, 0o644) == nil {
-			attachmentNames = append(attachmentNames, fname)
-		}
-	}
-
-	md := fmt.Sprintf("# %s\n\n- **ID:** %s\n- **Version:** %s\n- **Time:** %s\n- **URL:** %s\n- **UA:** %s\n\n## Description\n\n%s\n",
-		ticketHeading(id, req.Description), id, req.Version, ts, req.URL, req.UserAgent, req.Description)
-	if len(attachmentNames) > 0 {
-		md += "\n## Attachments\n\n"
-		for _, n := range attachmentNames {
-			md += "- " + n + "\n"
-		}
-	}
-	os.WriteFile(filepath.Join(dir, "ticket.md"), []byte(md), 0o644)
-
-	if len(req.Settings) > 0 && string(req.Settings) != "null" {
-		var pretty bytes.Buffer
-		if json.Indent(&pretty, req.Settings, "", "  ") == nil {
-			os.WriteFile(filepath.Join(dir, "settings.json"), pretty.Bytes(), 0o644)
-		}
-	}
-
-	if len(req.UIState) > 0 && string(req.UIState) != "null" {
-		var pretty bytes.Buffer
-		if json.Indent(&pretty, req.UIState, "", "  ") == nil {
-			os.WriteFile(filepath.Join(dir, "ui_state.json"), pretty.Bytes(), 0o644)
-		}
-	}
-
-	if len(req.ActionLog) > 0 && string(req.ActionLog) != "null" {
-		var pretty bytes.Buffer
-		if json.Indent(&pretty, req.ActionLog, "", "  ") == nil {
-			os.WriteFile(filepath.Join(dir, "actions.json"), pretty.Bytes(), 0o644)
-		}
-	}
-
-	if req.ProjectFdraft != "" {
-		if blob, err := base64.StdEncoding.DecodeString(req.ProjectFdraft); err == nil {
-			os.WriteFile(filepath.Join(dir, "project.fdraft"), blob, 0o644)
-		}
-	}
-
-	if strings.HasPrefix(req.Screenshot, "data:image/") {
-		if i := strings.IndexByte(req.Screenshot, ','); i >= 0 {
-			if png, err := base64.StdEncoding.DecodeString(req.Screenshot[i+1:]); err == nil {
-				os.WriteFile(filepath.Join(dir, "screenshot.png"), png, 0o644)
-			}
-		}
-	}
-
-	log.Printf("ticket saved: %s — %s", id, ticketHeading(id, req.Description))
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{"ticket_id": id})
 }
 
 // ─── main ───────────────────────────────────────────────────────
