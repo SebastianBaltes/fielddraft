@@ -4261,7 +4261,9 @@ export function MateConnectorOverlay() {
         x: c.x_axis,
       });
       if (!frame) continue;
-      group.add(buildMateGizmo(frame, { size: 14 }));
+      // OVERLAY_LAYER so the deferred renderer's overlay pass draws it — the
+      // body pass only renders DATUM/OVERLAY layers, never plain layer 0.
+      group.add(buildMateGizmo(frame, { size: 14, layer: OVERLAY_LAYER }));
     }
     return clear;
   }, [store, state?.features]);
@@ -4327,6 +4329,8 @@ export function MateInferenceOverlay({
     inst.frustumCulled = false;
     inst.renderOrder = 998;
     inst.count = 0;
+    // Deferred mode only renders the OVERLAY/DATUM layers over the body.
+    inst.layers.enable(OVERLAY_LAYER);
     dotsRef.current = inst;
   }
 
@@ -4514,7 +4518,11 @@ export function MateInferenceOverlay({
         x: o.x,
       });
       if (frame) {
-        const giz = buildMateGizmo(frame, { size: 11, ghost: true });
+        const giz = buildMateGizmo(frame, {
+          size: 11,
+          ghost: true,
+          layer: OVERLAY_LAYER,
+        });
         grp.add(giz);
         gizmoRef.current = giz;
       }
