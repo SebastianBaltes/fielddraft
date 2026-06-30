@@ -68,6 +68,114 @@ export interface PublishResult {
   view_url: string;
 }
 
+/* ── tickets (WP4) ─────────────────────────────────────────────── */
+
+/** A ticket's position in the §7.2 state machine. Mirrors server `TicketState`. */
+export type TicketState =
+  | "triage"
+  | "needs_info"
+  | "accepted"
+  | "in_progress"
+  | "deploying"
+  | "resolved"
+  | "closed"
+  | "declined"
+  | "rejected_spam"
+  | "rejected_malicious";
+
+/** Who wrote a ticket comment (§4 security context). Mirrors server `AuthorType`.
+ *  `user` / `po` / `system` are user-visible; `dev` is admin-only. */
+export type AuthorType = "user" | "po" | "dev" | "system";
+
+/** A ticket's issue category (or `null` when unset). */
+export type TicketCategory = "bug" | "feature" | "question" | "other";
+
+/** A repro blob attached to a ticket. Mirrors server `ArtifactKind`. */
+export type ArtifactKind =
+  "screenshot" | "fdraft" | "actions" | "settings" | "ui_state" | "attachment";
+
+/** A list row: no thread, no body blob (mirrors server `ticketSummary`). */
+export interface TicketSummary {
+  id: string;
+  author_id: string;
+  title: string;
+  state: TicketState;
+  category: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+/** One entry in a ticket's discussion thread (mirrors server `TicketComment`).
+ *  The backend already drops `internal`/`withheld` comments for non-admins; the
+ *  UI guards again as defense-in-depth. */
+export interface TicketComment {
+  id: string;
+  ticket_id: string;
+  author_type: AuthorType;
+  author_id: string | null;
+  internal: boolean;
+  body: string;
+  created_at: string;
+  withheld: boolean;
+}
+
+/** A content-addressed repro blob (mirrors server `TicketArtifact`). */
+export interface TicketArtifact {
+  id: string;
+  ticket_id: string;
+  kind: ArtifactKind;
+  blob_ref: string;
+  mime: string;
+  size: number;
+  name: string;
+  created_at: string;
+}
+
+/** The full ticket view: the ticket + a visibility-filtered thread + artifacts
+ *  (mirrors server `ticketDetailResponse`, which embeds the `Ticket`). */
+export interface TicketDetail {
+  id: string;
+  author_id: string;
+  title: string;
+  body: string;
+  state: TicketState;
+  category: string | null;
+  po_spam: boolean;
+  po_malicious: boolean;
+  po_vision_fit: string | null;
+  po_reason: string | null;
+  po_verdict_at: string | null;
+  created_at: string;
+  updated_at: string;
+  comments: TicketComment[];
+  artifacts: TicketArtifact[];
+}
+
+/** Filters for {@link PlatformApi.listTickets} (§7.3). All optional; an empty
+ *  field is omitted from the query string. `author: "me"` is the "only mine"
+ *  toggle. */
+export interface TicketListFilter {
+  author?: "me" | string;
+  state?: TicketState | "";
+  category?: TicketCategory | "";
+  q?: string;
+}
+
+/** Body for the plain (GitHub-style) ticket-creation path (§7.1). */
+export interface CreateTicketInput {
+  title: string;
+  body: string;
+  category?: TicketCategory | "";
+}
+
+/** Fields the ticket PATCH endpoint accepts. The author may edit title/body and
+ *  close (state → "closed"); admins may drive any validated transition. */
+export interface TicketPatch {
+  title?: string;
+  body?: string;
+  state?: TicketState;
+}
+
 /** A non-2xx API response, carrying the HTTP status and server message. */
 export class ApiError extends Error {
   readonly status: number;
@@ -173,6 +281,18 @@ export interface PlatformApi {
   listInvites(): Promise<Invite[]>;
   createInvite(note?: string, expiresAt?: string): Promise<Invite>;
   deleteInvite(token: string): Promise<void>;
+
+  // Tickets (WP4 — GitHub-Issues-like). Listing/reading is auth-only on the
+  // backend; creating/commenting requires a session too.
+  listTickets(filter?: TicketListFilter): Promise<TicketSummary[]>;
+  getTicket(id: string): Promise<TicketDetail>;
+  createTicket(input: CreateTicketInput): Promise<TicketDetail>;
+  updateTicket(id: string, patch: TicketPatch): Promise<TicketDetail>;
+  deleteTicket(id: string): Promise<void>;
+  listComments(id: string): Promise<TicketComment[]>;
+  addComment(id: string, body: string): Promise<TicketComment>;
+  /** Fetch an artifact blob's raw bytes (e.g. the `.fdraft` ZIP to load). */
+  fetchArtifact(ticketId: string, artifactId: string): Promise<ArrayBuffer>;
 }
 
 /** Fields the project PATCH endpoint accepts. Any subset; the server treats an
@@ -263,7 +383,82 @@ export const platformApi: PlatformApi = {
     request<void>(`/api/invites/${encodeURIComponent(token)}`, {
       method: "DELETE",
     }),
+
+  listTickets: (filter) =>
+    request<TicketSummary[]>(`/api/tickets${ticketQuery(filter)}`, {
+      method: "GET",
+    }),
+
+  getTicket: (id) =>
+    request<TicketDetail>(`/api/tickets/${encodeURIComponent(id)}`, {
+      method: "GET",
+    }),
+
+  createTicket: (input) =>
+    request<TicketDetail>("/api/tickets", {
+      method: "POST",
+      body: {
+        title: input.title,
+        body: input.body,
+        category: input.category ?? "",
+      },
+    }),
+
+  updateTicket: (id, patch) =>
+    request<TicketDetail>(`/api/tickets/${encodeURIComponent(id)}`, {
+      method: "PATCH",
+      body: patch,
+    }),
+
+  deleteTicket: (id) =>
+    request<void>(`/api/tickets/${encodeURIComponent(id)}`, {
+      method: "DELETE",
+    }),
+
+  listComments: (id) =>
+    request<TicketComment[]>(
+      `/api/tickets/${encodeURIComponent(id)}/comments`,
+      { method: "GET" },
+    ),
+
+  addComment: (id, body) =>
+    request<TicketComment>(`/api/tickets/${encodeURIComponent(id)}/comments`, {
+      method: "POST",
+      body: { body },
+    }),
+
+  async fetchArtifact(ticketId, artifactId) {
+    const res = await fetch(artifactUrl(ticketId, artifactId), {
+      credentials: "include",
+    });
+    if (!res.ok) {
+      throw new ApiError(res.status, await extractError(res));
+    }
+    return res.arrayBuffer();
+  },
 };
+
+/** Build the `?author=&state=&category=&q=` query string, omitting empty
+ *  fields so the backend treats them as "any". Returns "" for no filter. */
+function ticketQuery(filter?: TicketListFilter): string {
+  if (!filter) return "";
+  const params = new URLSearchParams();
+  if (filter.author) params.set("author", filter.author);
+  if (filter.state) params.set("state", filter.state);
+  if (filter.category) params.set("category", filter.category);
+  if (filter.q && filter.q.trim()) params.set("q", filter.q.trim());
+  const qs = params.toString();
+  return qs ? `?${qs}` : "";
+}
+
+/** The download URL for a ticket artifact blob (served by
+ *  `GET /api/tickets/{id}/artifacts/{artifactId}`). Use directly as an `<img>`
+ *  src for screenshots, or via {@link PlatformApi.fetchArtifact} for bytes. */
+export function artifactUrl(ticketId: string, artifactId: string): string {
+  return `/api/tickets/${encodeURIComponent(ticketId)}/artifacts/${encodeURIComponent(
+    artifactId,
+  )}`;
+}
 
 /** The thumbnail URL for a project (served by `GET /api/projects/{id}/thumbnail`).
  *  Returns a 404 image when none exists — callers should handle `onError`. */

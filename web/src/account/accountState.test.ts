@@ -97,6 +97,31 @@ describe("accountReducer", () => {
     const closed = accountReducer(opened, { type: "close" });
     expect(closed.overlay).toBeNull();
   });
+
+  it("open-ticket opens the tickets overlay deep-linked to an id", () => {
+    const s = accountReducer(base, { type: "open-ticket", ticketId: "t9" });
+    expect(s.overlay).toBe("tickets");
+    expect(s.ticketPrefill).toBe("t9");
+  });
+
+  it("open-ticket with null opens the list (no deep-link)", () => {
+    const s = accountReducer(base, { type: "open-ticket", ticketId: null });
+    expect(s.overlay).toBe("tickets");
+    expect(s.ticketPrefill).toBeNull();
+  });
+
+  it("opening a non-tickets overlay clears a stale ticket deep-link", () => {
+    const deep = accountReducer(base, { type: "open-ticket", ticketId: "t9" });
+    const s = accountReducer(deep, { type: "open", overlay: "dashboard" });
+    expect(s.ticketPrefill).toBeNull();
+  });
+
+  it("close clears the ticket deep-link", () => {
+    const deep = accountReducer(base, { type: "open-ticket", ticketId: "t9" });
+    const s = accountReducer(deep, { type: "close" });
+    expect(s.overlay).toBeNull();
+    expect(s.ticketPrefill).toBeNull();
+  });
 });
 
 describe("isAdmin", () => {

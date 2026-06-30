@@ -123,6 +123,18 @@ export function AccountButton({ account, onLoggedOut }: AccountButtonProps) {
           >
             Public gallery
           </button>
+          <button
+            type="button"
+            role="menuitem"
+            className="menu-item"
+            data-testid="account-tickets"
+            onClick={() => {
+              open("tickets");
+              close();
+            }}
+          >
+            Issues
+          </button>
           {isAdmin && (
             <button
               type="button"

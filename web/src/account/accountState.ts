@@ -28,7 +28,8 @@ export type AccountOverlay =
   | "reset-confirm"
   | "dashboard"
   | "gallery"
-  | "invites";
+  | "invites"
+  | "tickets";
 
 export interface AccountState {
   status: SessionStatus;
@@ -39,6 +40,9 @@ export interface AccountState {
   invitePrefill: string;
   /** Reset token prefilled into the reset-confirm form (from `?reset=`). */
   resetPrefill: string;
+  /** Ticket id to deep-link into when the tickets overlay opens (e.g. straight
+   *  from a filed report), or null to open the list. One-shot. */
+  ticketPrefill: string | null;
 }
 
 export type AccountAction =
@@ -50,6 +54,9 @@ export type AccountAction =
   | { type: "logged-out" }
   /** Open a specific account screen. */
   | { type: "open"; overlay: AccountOverlay }
+  /** Open the tickets overlay deep-linked to a specific ticket (or null for
+   *  the list). */
+  | { type: "open-ticket"; ticketId: string | null }
   /** Close the current overlay (back to the modeling app). */
   | { type: "close" };
 
@@ -77,6 +84,7 @@ export function initialAccountState(search = ""): AccountState {
     overlay,
     invitePrefill,
     resetPrefill,
+    ticketPrefill: null,
   };
 }
 
@@ -109,11 +117,25 @@ export function accountReducer(
         resetPrefill: "",
       };
     case "logged-out":
-      return { ...state, status: "guest", user: null, overlay: null };
+      return {
+        ...state,
+        status: "guest",
+        user: null,
+        overlay: null,
+        ticketPrefill: null,
+      };
     case "open":
-      return { ...state, overlay: action.overlay };
+      // Opening any non-tickets screen clears a stale ticket deep-link.
+      return {
+        ...state,
+        overlay: action.overlay,
+        ticketPrefill:
+          action.overlay === "tickets" ? state.ticketPrefill : null,
+      };
+    case "open-ticket":
+      return { ...state, overlay: "tickets", ticketPrefill: action.ticketId };
     case "close":
-      return { ...state, overlay: null };
+      return { ...state, overlay: null, ticketPrefill: null };
     default:
       return state;
   }

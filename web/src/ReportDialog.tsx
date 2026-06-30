@@ -27,7 +27,7 @@ interface ReportDialogProps {
   onClose: () => void;
 }
 
-type Phase = "edit" | "sending" | "error";
+type Phase = "edit" | "sending" | "error" | "sent";
 
 export function ReportDialog({ store, onClose }: ReportDialogProps) {
   const [description, setDescription] = useState("");
@@ -38,6 +38,9 @@ export function ReportDialog({ store, onClose }: ReportDialogProps) {
   const [attachError, setAttachError] = useState("");
   const [phase, setPhase] = useState<Phase>("edit");
   const [errorMsg, setErrorMsg] = useState("");
+  // The id of the created ticket (set on success) so the "sent" view can link
+  // to it via the account layer.
+  const [ticketId, setTicketId] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const pasteCounter = useRef(0);
   // ticket ttzl: the dialog is a non-modal, draggable, minimizable panel so
@@ -178,12 +181,26 @@ export function ReportDialog({ store, onClose }: ReportDialogProps) {
     };
     const result = await submitTicket(payload);
     if (result.ok) {
-      // No confirmation step — the report is filed, just close the dialog.
-      onClose();
+      // Surface a confirmation with a link to the freshly-created issue (WP4):
+      // the DB-backed endpoint returns the ticket id, so the user can jump
+      // straight to the thread instead of the report vanishing silently.
+      setTicketId(result.ticketId ?? null);
+      setPhase("sent");
     } else {
       setErrorMsg(result.error ?? "unknown error");
       setPhase("error");
     }
+  };
+
+  // Open the created issue in the account layer's tickets overlay (App.tsx
+  // listens for this event and deep-links via account.openTicket).
+  const viewTicket = () => {
+    if (ticketId) {
+      window.dispatchEvent(
+        new CustomEvent("fd:open-ticket", { detail: ticketId }),
+      );
+    }
+    onClose();
   };
 
   return (
@@ -227,6 +244,32 @@ export function ReportDialog({ store, onClose }: ReportDialogProps) {
         </div>
 
         <div className="body" hidden={minimized}>
+          {phase === "sent" ? (
+            <div className="sent" data-testid="report-sent">
+              <p className="sent-msg">Thanks — your issue has been filed.</p>
+              <div className="actions">
+                <button
+                  type="button"
+                  className="secondary"
+                  data-testid="report-sent-close"
+                  onClick={onClose}
+                >
+                  Close
+                </button>
+                {ticketId ? (
+                  <button
+                    type="button"
+                    className="primary"
+                    data-testid="report-view-ticket"
+                    onClick={viewTicket}
+                  >
+                    View issue
+                  </button>
+                ) : null}
+              </div>
+            </div>
+          ) : (
+          <>
           <label className="field">
             <span className="label">
               Description<span className="required">*</span>
@@ -364,6 +407,8 @@ export function ReportDialog({ store, onClose }: ReportDialogProps) {
               {phase === "sending" ? "Sending…" : "Send report"}
             </button>
           </div>
+          </>
+          )}
         </div>
       </div>
     </div>

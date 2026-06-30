@@ -62,6 +62,16 @@ export function App() {
     }
   };
 
+  // Bridge: load a ticket's `.fdraft` artifact (raw ZIP bytes) into the live
+  // workspace as a fresh UNBOUND copy — it's repro material, not the viewer's
+  // server project, so we don't bind it for sync.
+  const loadFdraftBytes = (bytes: ArrayBuffer) => {
+    if (!store) return;
+    if (store.loadProjectFromBytes(bytes)) {
+      store.detachServerProject();
+    }
+  };
+
   const currentDocument = (): unknown | null => {
     if (!store) return null;
     try {
@@ -98,6 +108,18 @@ export function App() {
   useEffect(() => {
     if (store) store.setLiveExtrudeDrag(settings.liveExtrudeDrag);
   }, [store, settings.liveExtrudeDrag]);
+
+  // WP4: the Report dialog (owned by SettingsMenu) emits `fd:open-ticket` with
+  // the created ticket id after a successful submit — open it in the tickets
+  // overlay. Decoupled via a window event so the shell isn't restructured.
+  useEffect(() => {
+    const onOpenTicket = (e: Event) => {
+      const id = (e as CustomEvent<string>).detail;
+      account.openTicket(typeof id === "string" && id ? id : null);
+    };
+    window.addEventListener("fd:open-ticket", onOpenTicket);
+    return () => window.removeEventListener("fd:open-ticket", onOpenTicket);
+  }, [account]);
 
   // Global keyboard shortcuts: Del = remove selection, Ctrl+Z = undo,
   // Ctrl+Shift+Z (or Ctrl+Y) = redo. Skipped if focus is in an input.
@@ -500,6 +522,7 @@ export function App() {
         account={account}
         onOpenProject={openServerProject}
         onOpenCopy={openServerCopy}
+        onLoadFdraft={loadFdraftBytes}
         getCurrentDocument={currentDocument}
         boundProjectId={state?.projectId ?? null}
       />

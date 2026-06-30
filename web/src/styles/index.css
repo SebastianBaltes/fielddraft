@@ -33,3 +33,6 @@
 @import "./components/dashboard.css";
 @import "./components/gallery.css";
 @import "./components/invite-panel.css";
+
+/* WP4 — ticket / issues UI (list, detail, create, thread). */
+@import "./components/tickets.css";

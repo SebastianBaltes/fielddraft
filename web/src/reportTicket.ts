@@ -151,13 +151,22 @@ export async function submitTicket(
     const res = await fetch("/api/tickets", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
+      // The DB-backed ticket endpoint authenticates via the session cookie.
+      credentials: "include",
       body: JSON.stringify(payload),
     });
     if (!res.ok) {
+      // The DB-backed endpoint requires a session; surface that distinctly so
+      // the dialog can prompt the user to log in.
+      if (res.status === 401) {
+        return { ok: false, error: "Please log in to file a report." };
+      }
       return { ok: false, error: `server returned ${res.status}` };
     }
-    const data = (await res.json().catch(() => ({}))) as { ticket_id?: string };
-    return { ok: true, ticketId: data.ticket_id };
+    // The create endpoint returns the full ticket (server `ticketDetailResponse`
+    // embeds the Ticket → `id`, not `ticket_id`), so the dialog can link to it.
+    const data = (await res.json().catch(() => ({}))) as { id?: string };
+    return { ok: true, ticketId: data.id };
   } catch (err) {
     return {
       ok: false,

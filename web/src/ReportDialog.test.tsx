@@ -64,7 +64,9 @@ beforeEach(() => {
     "fetch",
     vi.fn(async () => ({
       ok: true,
-      json: async () => ({ ticket_id: "20260609-000000-test" }),
+      // The DB-backed create endpoint returns the full ticket (embeds the
+      // Ticket → `id`), which the dialog links to.
+      json: async () => ({ id: "20260609-000000-test" }),
     })),
   );
 });
@@ -88,7 +90,7 @@ describe("ReportDialog", () => {
     expect(submit.disabled).toBe(false);
   });
 
-  it("POSTs a ticket and closes without a confirmation step", async () => {
+  it("POSTs a ticket and confirms with a link to the created issue", async () => {
     const onClose = render();
     typeInto('[data-testid="report-description"]', "Repro steps here");
 
@@ -102,6 +104,8 @@ describe("ReportDialog", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const [url, opts] = fetchMock.mock.calls[0];
     expect(url).toBe("/api/tickets");
+    // WP4: the DB-backed endpoint authenticates via the session cookie.
+    expect((opts as RequestInit).credentials).toBe("include");
     const body = JSON.parse((opts as RequestInit).body as string);
     // ticket xqll: no title is sent anymore.
     expect(body.title).toBeUndefined();
@@ -112,7 +116,24 @@ describe("ReportDialog", () => {
     expect(typeof body.version).toBe("string");
     expect(typeof body.timestamp).toBe("string");
 
-    // No "Ticket saved" panel — the dialog closes straight away.
+    // WP4: the report no longer vanishes — it confirms and offers a link to
+    // the freshly-created issue (the dialog stays open until dismissed).
+    expect(container.querySelector('[data-testid="report-sent"]')).not.toBeNull();
+    expect(onClose).not.toHaveBeenCalled();
+
+    // Clicking "View issue" emits the deep-link event and closes the dialog.
+    let openedTicket: string | null = null;
+    const onOpenTicket = (e: Event) => {
+      openedTicket = (e as CustomEvent<string>).detail;
+    };
+    window.addEventListener("fd:open-ticket", onOpenTicket);
+    await act(async () => {
+      container
+        .querySelector<HTMLButtonElement>('[data-testid="report-view-ticket"]')!
+        .click();
+    });
+    window.removeEventListener("fd:open-ticket", onOpenTicket);
+    expect(openedTicket).toBe("20260609-000000-test");
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 

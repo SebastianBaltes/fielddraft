@@ -30,6 +30,8 @@ export interface UseAccount {
   state: AccountState;
   isAdmin: boolean;
   open(overlay: AccountOverlay): void;
+  /** Open the tickets overlay, optionally deep-linked to a ticket id. */
+  openTicket(ticketId?: string | null): void;
   close(): void;
   login(email: string, password: string): Promise<void>;
   register(input: {
@@ -94,6 +96,10 @@ export function useAccount(options: UseAccountOptions = {}): UseAccount {
     dispatch({ type: "open", overlay });
   }, []);
 
+  const openTicket = useCallback((ticketId: string | null = null) => {
+    dispatch({ type: "open-ticket", ticketId });
+  }, []);
+
   const close = useCallback(() => {
     dispatch({ type: "close" });
   }, []);
@@ -143,6 +149,7 @@ export function useAccount(options: UseAccountOptions = {}): UseAccount {
     state,
     isAdmin: isAdmin(state),
     open,
+    openTicket,
     close,
     login,
     register,

@@ -246,6 +246,19 @@
     color: var(--color-error);
   }
 
+  /* WP4: post-submit confirmation with a link to the created issue. */
+  & .sent {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3);
+  }
+
+  & .sent-msg {
+    margin: 0;
+    font-size: var(--fs-md);
+    color: var(--color-text);
+  }
+
   & .actions {
     display: flex;
     justify-content: flex-end;

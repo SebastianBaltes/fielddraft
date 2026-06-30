@@ -20,6 +20,7 @@ import { AuthScreen } from "./AuthScreen";
 import { Dashboard } from "./Dashboard";
 import { Gallery } from "./Gallery";
 import { InvitePanel } from "./InvitePanel";
+import { TicketsView } from "./TicketsView";
 import type { UseAccount } from "./useAccount";
 import type { Project } from "../api/platform";
 
@@ -29,6 +30,9 @@ interface AccountLayerProps {
   onOpenProject(project: Project): void;
   /** Open a public/gallery project as a fresh unbound copy. */
   onOpenCopy(project: Project): void;
+  /** Load a ticket's `.fdraft` artifact (raw ZIP bytes) into the live workspace
+   *  as a fresh unbound copy. */
+  onLoadFdraft(bytes: ArrayBuffer): void;
   /** Serialize the live workspace, or null when unavailable. */
   getCurrentDocument(): unknown | null;
   /** The bound server project id (highlights it in the dashboard). */
@@ -39,6 +43,7 @@ export function AccountLayer({
   account,
   onOpenProject,
   onOpenCopy,
+  onLoadFdraft,
   getCurrentDocument,
   boundProjectId,
 }: AccountLayerProps) {
@@ -50,7 +55,10 @@ export function AccountLayer({
   // screens (invite/reset) — never the dashboard, which needs a session.
   if (
     state.status === "loading" &&
-    (overlay === "dashboard" || overlay === "invites" || overlay === "gallery")
+    (overlay === "dashboard" ||
+      overlay === "invites" ||
+      overlay === "gallery" ||
+      overlay === "tickets")
   ) {
     return null;
   }
@@ -128,6 +136,23 @@ export function AccountLayer({
     return (
       <div className="fd-account-overlay" data-testid="account-overlay">
         <InvitePanel onClose={() => open("dashboard")} />
+      </div>
+    );
+  }
+
+  if (overlay === "tickets") {
+    return (
+      <div className="fd-account-overlay" data-testid="account-overlay">
+        <TicketsView
+          user={state.user}
+          isAdmin={isAdmin}
+          onLoadFdraft={(bytes) => {
+            onLoadFdraft(bytes);
+            close();
+          }}
+          onClose={close}
+          initialTicketId={state.ticketPrefill}
+        />
       </div>
     );
   }
