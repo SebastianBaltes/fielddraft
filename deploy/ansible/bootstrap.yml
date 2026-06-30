@@ -7,12 +7,21 @@
 # creates an unprivileged deploy user, and lays out the base directories. Uses
 # only ansible.builtin + apt/ufw (Debian/Ubuntu V-server assumed) so no extra
 # collections are required.
+#
+# NOTE: this pulls Docker from the OFFICIAL docker.com apt repo, which is
+# distribution-aware (linux/debian vs linux/ubuntu) below. On a brand-new
+# release Docker hasn't published a repo for yet (e.g. a fresh Ubuntu LTS),
+# this will 404 — in that case install the distro's own packages instead:
+#   apt-get install -y docker.io docker-compose-v2
+# (that is exactly how the first live bring-up was done on Ubuntu 26.04).
 
 - name: Bootstrap the FieldDraft V-server
   hosts: vserver
   become: true
   vars:
     docker_apt_arch: amd64
+    # linux/debian or linux/ubuntu — derived from the target, not hardcoded.
+    docker_apt_distro: "{{ ansible_distribution | lower }}"
     docker_apt_release: "{{ ansible_distribution_release | default('bookworm') }}"
 
   tasks:
@@ -37,7 +46,7 @@
 
     - name: Add Docker GPG key
       ansible.builtin.get_url:
-        url: https://download.docker.com/linux/debian/gpg
+        url: "https://download.docker.com/linux/{{ docker_apt_distro }}/gpg"
         dest: /etc/apt/keyrings/docker.asc
         mode: "0644"
 
@@ -45,7 +54,7 @@
       ansible.builtin.apt_repository:
         repo: >-
           deb [arch={{ docker_apt_arch }} signed-by=/etc/apt/keyrings/docker.asc]
-          https://download.docker.com/linux/debian {{ docker_apt_release }} stable
+          https://download.docker.com/linux/{{ docker_apt_distro }} {{ docker_apt_release }} stable
         filename: docker
         state: present
 

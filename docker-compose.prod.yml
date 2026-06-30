@@ -57,6 +57,10 @@ services:
       ADMIN_PASSWORD: "${ADMIN_PASSWORD:?ADMIN_PASSWORD is required}"
       # Behind Caddy/TLS → session cookies must carry the Secure attribute.
       SECURE_COOKIES: "1"
+      # Agent API service tokens (PO + coding desktop agents, WP6). Empty
+      # disables that scope; set both to enable the User→Agent loop.
+      PO_SERVICE_TOKEN: "${PO_SERVICE_TOKEN:-}"
+      CODING_SERVICE_TOKEN: "${CODING_SERVICE_TOKEN:-}"
     volumes:
       - blob-data:/data/blobs
     # NO `ports:` — only Caddy reaches the API (reverse_proxy server:8080).

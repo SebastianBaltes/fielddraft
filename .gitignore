@@ -59,3 +59,9 @@ CLAUDE.md.bak*
 
 # Compiled Go server binary (build artifact — was accidentally tracked)
 /server/server
+
+# Production secrets / real ansible config (never commit)
+.env.prod
+deploy/ansible/inventory.ini
+deploy/ansible/group_vars/all.yml
+deploy/ansible/group_vars/vault.yml
