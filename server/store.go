@@ -1,0 +1,77 @@
+// The Store interface and its shared errors.
+//
+// Two implementations back it:
+//   - memStore   (store_mem.go) — in-memory maps; a fast, hermetic test
+//     fixture. NewStore() returns it, so the handler tests run with no DB.
+//   - sqlStore   (store_sql.go) — MariaDB via database/sql + content-addressed
+//     blob files on disk. main() wires it up from DB_DSN.
+//
+// Documents/thumbnails cross this boundary as []byte / json.RawMessage exactly
+// as before; blob storage is a private detail of sqlStore. So handlers and API
+// shapes are unchanged regardless of which store is installed.
+
+package main
+
+import (
+	"encoding/json"
+	"net/http"
+	"time"
+)
+
+// Store is everything the HTTP layer needs from persistence.
+type Store interface {
+	// Users & auth.
+	CreateUser(email, displayName, password string, role Role) (*User, error)
+	AuthenticateUser(email, password string) (*User, error)
+	GetUser(id string) *User
+	GetUserByEmail(email string) *User
+	UpdatePassword(userID, newPassword string)
+	HasAdmin() bool
+
+	// Sessions (DB-backed in prod so they survive restarts).
+	CreateSession(userID string) *Session
+	GetSession(token string) *Session
+	DeleteSession(token string)
+
+	// Password reset.
+	CreateResetToken(userID string) string
+	ConsumeResetToken(token string) (string, bool)
+
+	// Invites (admin-gated registration).
+	CreateInvite(createdBy, note string, expiresAt time.Time) *Invite
+	GetInvite(token string) *Invite
+	ListInvites() []*Invite
+	ConsumeInvite(token, usedBy string) (*Invite, error)
+	DeleteInvite(token string) bool
+
+	// Projects.
+	CreateProject(ownerID, name string, doc json.RawMessage) *Project
+	ListProjects(ownerID string) []*Project
+	GetProject(id, ownerID string) *Project
+	UpdateProject(id, ownerID, name string, doc json.RawMessage, visibility string) *Project
+	DeleteProject(id, ownerID string) bool
+	ListPublicProjects() []*Project
+
+	// Thumbnails (content-addressed blobs in sqlStore).
+	SetThumbnail(projectID string, data []byte)
+	GetThumbnail(projectID string) []byte
+
+	// Snapshots (published, shareable copies).
+	CreateSnapshot(projectID string, doc json.RawMessage) *Snapshot
+	GetSnapshot(id string) *Snapshot
+}
+
+var (
+	errConflict      = &httpError{http.StatusConflict, "email already registered"}
+	errNotFound      = &httpError{http.StatusNotFound, "not found"}
+	errUnauthorized  = &httpError{http.StatusUnauthorized, "invalid credentials"}
+	errInviteInvalid = &httpError{http.StatusBadRequest, "invalid or expired invite"}
+	errInviteUsed    = &httpError{http.StatusBadRequest, "invite already used"}
+)
+
+type httpError struct {
+	Code    int
+	Message string
+}
+
+func (e *httpError) Error() string { return e.Message }

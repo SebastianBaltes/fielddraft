@@ -13,6 +13,11 @@ services:
       - "${FIELDDRAFT_DB_PORT:-3306}:3306"
     volumes:
       - db-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
 
   server:
     build:
@@ -22,8 +27,18 @@ services:
       - "${FIELDDRAFT_SERVER_PORT:-8080}:8080"
     environment:
       DB_DSN: "fielddraft:fielddraft@tcp(db:3306)/fielddraft?parseTime=true"
+      BLOB_DIR: "/data/blobs"
+      # Seeds the operator admin on first boot (only if no admin exists yet).
+      ADMIN_EMAIL: "${FIELDDRAFT_ADMIN_EMAIL:-}"
+      ADMIN_PASSWORD: "${FIELDDRAFT_ADMIN_PASSWORD:-}"
+      # Set to 1 behind TLS/Caddy so session cookies get the Secure attribute.
+      SECURE_COOKIES: "${FIELDDRAFT_SECURE_COOKIES:-}"
+    volumes:
+      - blob-data:/data/blobs
+    restart: unless-stopped
     depends_on:
-      - db
+      db:
+        condition: service_healthy
 
   web:
     build:
@@ -36,3 +51,4 @@ services:
 
 volumes:
   db-data:
+  blob-data:

@@ -6,7 +6,24 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
+
+// newInvite mints a single-use invite token directly through the store so a
+// test can register a user. Registration is invite-gated, so every register
+// call in these tests needs a fresh token.
+func newInvite(t *testing.T, store Store) string {
+	t.Helper()
+	admin, err := store.CreateUser("admin-"+newID()+"@test.com", "Admin", "adminpass123", RoleAdmin)
+	if err != nil {
+		t.Fatalf("seed admin: %v", err)
+	}
+	inv := store.CreateInvite(admin.ID, "", time.Now().Add(time.Hour))
+	if inv == nil {
+		t.Fatal("CreateInvite returned nil")
+	}
+	return inv.Token
+}
 
 func TestRegisterLoginProjectCRUD(t *testing.T) {
 	store := NewStore()
@@ -20,10 +37,11 @@ func TestRegisterLoginProjectCRUD(t *testing.T) {
 		},
 	}
 
-	// Register.
+	// Register (invite-gated).
+	invite := newInvite(t, store)
 	resp, err := client.Post(ts.URL+"/api/auth/register",
 		"application/json",
-		strings.NewReader(`{"email":"test@example.com","password":"secret123","display_name":"Tester"}`))
+		strings.NewReader(`{"email":"test@example.com","password":"secret123","display_name":"Tester","invite":"`+invite+`"}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -52,6 +70,9 @@ func TestRegisterLoginProjectCRUD(t *testing.T) {
 	resp.Body.Close()
 	if me.Email != "test@example.com" {
 		t.Fatalf("me.email = %q", me.Email)
+	}
+	if me.Role != RoleUser {
+		t.Fatalf("me.role = %q, want %q", me.Role, RoleUser)
 	}
 
 	// Create project.
@@ -156,13 +177,17 @@ func TestDuplicateEmailRejects(t *testing.T) {
 	ts := httptest.NewServer(srv)
 	defer ts.Close()
 
-	body := `{"email":"dup@test.com","password":"pass"}`
-	resp, _ := http.Post(ts.URL+"/api/auth/register", "application/json", strings.NewReader(body))
+	mk := func() string {
+		return `{"email":"dup@test.com","password":"pass","invite":"` + newInvite(t, store) + `"}`
+	}
+	resp, _ := http.Post(ts.URL+"/api/auth/register", "application/json", strings.NewReader(mk()))
 	resp.Body.Close()
 	if resp.StatusCode != 200 {
 		t.Fatalf("first register: %d", resp.StatusCode)
 	}
-	resp, _ = http.Post(ts.URL+"/api/auth/register", "application/json", strings.NewReader(body))
+	// Second register with a FRESH invite but the same email → 409. (A fresh
+	// invite proves the conflict is the email, not a burned token.)
+	resp, _ = http.Post(ts.URL+"/api/auth/register", "application/json", strings.NewReader(mk()))
 	resp.Body.Close()
 	if resp.StatusCode != 409 {
 		t.Fatalf("duplicate register: got %d, want 409", resp.StatusCode)
@@ -177,7 +202,7 @@ func TestPasswordReset(t *testing.T) {
 
 	// Register a user.
 	resp, _ := http.Post(ts.URL+"/api/auth/register", "application/json",
-		strings.NewReader(`{"email":"reset@test.com","password":"oldpass123","display_name":"Reset"}`))
+		strings.NewReader(`{"email":"reset@test.com","password":"oldpass123","display_name":"Reset","invite":"`+newInvite(t, store)+`"}`))
 	resp.Body.Close()
 	if resp.StatusCode != 200 {
 		t.Fatal("register failed")
@@ -251,7 +276,7 @@ func TestThumbnailPutGet(t *testing.T) {
 
 	// Register + login to get a session cookie.
 	resp, _ := client.Post(ts.URL+"/api/auth/register", "application/json",
-		strings.NewReader(`{"email":"thumb@test.com","password":"pass12345","display_name":"Thumb"}`))
+		strings.NewReader(`{"email":"thumb@test.com","password":"pass12345","display_name":"Thumb","invite":"`+newInvite(t, store)+`"}`))
 	cookies := resp.Cookies()
 	resp.Body.Close()
 
@@ -262,7 +287,9 @@ func TestThumbnailPutGet(t *testing.T) {
 		req.AddCookie(c)
 	}
 	resp, _ = client.Do(req)
-	var proj struct{ ID string `json:"id"` }
+	var proj struct {
+		ID string `json:"id"`
+	}
 	json.NewDecoder(resp.Body).Decode(&proj)
 	resp.Body.Close()
 
@@ -279,12 +306,167 @@ func TestThumbnailPutGet(t *testing.T) {
 	}
 
 	// Get thumbnail.
-	resp, _ = http.Get(ts.URL + "/api/projects/" + proj.ID + "/thumbnail")
+	resp, err := http.Get(ts.URL + "/api/projects/" + proj.ID + "/thumbnail")
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer resp.Body.Close()
 	if resp.StatusCode != 200 {
 		t.Fatalf("get thumbnail: got %d, want 200", resp.StatusCode)
 	}
 	if resp.Header.Get("Content-Type") != "image/png" {
 		t.Fatalf("thumbnail content-type: %s", resp.Header.Get("Content-Type"))
+	}
+}
+
+// TestRegisterRequiresInvite — registration without (or with a bad) invite is
+// rejected, a valid invite works, and the same invite cannot be reused.
+func TestRegisterRequiresInvite(t *testing.T) {
+	store := NewStore()
+	srv := NewServer(store)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+
+	// No invite → 403.
+	resp, _ := http.Post(ts.URL+"/api/auth/register", "application/json",
+		strings.NewReader(`{"email":"a@test.com","password":"pass12345"}`))
+	resp.Body.Close()
+	if resp.StatusCode != 403 {
+		t.Fatalf("no invite: got %d, want 403", resp.StatusCode)
+	}
+
+	// Bogus invite → 400.
+	resp, _ = http.Post(ts.URL+"/api/auth/register", "application/json",
+		strings.NewReader(`{"email":"a@test.com","password":"pass12345","invite":"nope"}`))
+	resp.Body.Close()
+	if resp.StatusCode != 400 {
+		t.Fatalf("bad invite: got %d, want 400", resp.StatusCode)
+	}
+
+	// Valid invite via ?invite= query → 200.
+	tok := newInvite(t, store)
+	resp, _ = http.Post(ts.URL+"/api/auth/register?invite="+tok, "application/json",
+		strings.NewReader(`{"email":"a@test.com","password":"pass12345"}`))
+	resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("valid invite: got %d, want 200", resp.StatusCode)
+	}
+
+	// Reusing the burned invite → 400.
+	resp, _ = http.Post(ts.URL+"/api/auth/register?invite="+tok, "application/json",
+		strings.NewReader(`{"email":"b@test.com","password":"pass12345"}`))
+	resp.Body.Close()
+	if resp.StatusCode != 400 {
+		t.Fatalf("reused invite: got %d, want 400", resp.StatusCode)
+	}
+}
+
+// TestInviteAdminEndpoints — only admins may create/list/delete invites, and a
+// created token actually works for registration.
+func TestInviteAdminEndpoints(t *testing.T) {
+	store := NewStore()
+	srv := NewServer(store)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+
+	client := &http.Client{
+		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+
+	// Seed an admin and a plain user directly, then log in for cookies.
+	if _, err := store.CreateUser("boss@test.com", "Boss", "bosspass123", RoleAdmin); err != nil {
+		t.Fatal(err)
+	}
+	plainInvite := newInvite(t, store)
+	resp, _ := client.Post(ts.URL+"/api/auth/register", "application/json",
+		strings.NewReader(`{"email":"plain@test.com","password":"plainpass123","invite":"`+plainInvite+`"}`))
+	userCookies := resp.Cookies()
+	resp.Body.Close()
+
+	login := func(email, pass string) []*http.Cookie {
+		r, _ := client.Post(ts.URL+"/api/auth/login", "application/json",
+			strings.NewReader(`{"email":"`+email+`","password":"`+pass+`"}`))
+		c := r.Cookies()
+		r.Body.Close()
+		return c
+	}
+	adminCookies := login("boss@test.com", "bosspass123")
+
+	withCookies := func(req *http.Request, cs []*http.Cookie) *http.Request {
+		for _, c := range cs {
+			req.AddCookie(c)
+		}
+		return req
+	}
+
+	// Non-admin POST /api/invites → 403.
+	req, _ := http.NewRequest("POST", ts.URL+"/api/invites", strings.NewReader(`{"note":"x"}`))
+	resp, _ = client.Do(withCookies(req, userCookies))
+	resp.Body.Close()
+	if resp.StatusCode != 403 {
+		t.Fatalf("non-admin create invite: got %d, want 403", resp.StatusCode)
+	}
+
+	// Admin POST /api/invites → 201 with a token + register URL.
+	req, _ = http.NewRequest("POST", ts.URL+"/api/invites", strings.NewReader(`{"note":"for charlie"}`))
+	resp, _ = client.Do(withCookies(req, adminCookies))
+	var created inviteResponse
+	json.NewDecoder(resp.Body).Decode(&created)
+	resp.Body.Close()
+	if resp.StatusCode != 201 {
+		t.Fatalf("admin create invite: got %d, want 201", resp.StatusCode)
+	}
+	if created.Token == "" || created.Status != "open" {
+		t.Fatalf("invite response: %+v", created)
+	}
+	if !strings.Contains(created.RegisterURL, created.Token) {
+		t.Fatalf("register_url missing token: %q", created.RegisterURL)
+	}
+
+	// The created token actually registers a user.
+	resp, _ = client.Post(ts.URL+"/api/auth/register", "application/json",
+		strings.NewReader(`{"email":"charlie@test.com","password":"charliepass","invite":"`+created.Token+`"}`))
+	resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("register with admin-created invite: got %d, want 200", resp.StatusCode)
+	}
+
+	// Admin GET /api/invites → list includes the now-used invite.
+	req, _ = http.NewRequest("GET", ts.URL+"/api/invites", nil)
+	resp, _ = client.Do(withCookies(req, adminCookies))
+	var list []inviteResponse
+	json.NewDecoder(resp.Body).Decode(&list)
+	resp.Body.Close()
+	foundUsed := false
+	for _, inv := range list {
+		if inv.Token == created.Token && inv.Status == "used" {
+			foundUsed = true
+		}
+	}
+	if !foundUsed {
+		t.Fatalf("created invite not marked used in list: %+v", list)
+	}
+
+	// Admin DELETE a fresh invite → 200; non-admin delete → 403.
+	req, _ = http.NewRequest("POST", ts.URL+"/api/invites", strings.NewReader(`{}`))
+	resp, _ = client.Do(withCookies(req, adminCookies))
+	var toDelete inviteResponse
+	json.NewDecoder(resp.Body).Decode(&toDelete)
+	resp.Body.Close()
+
+	req, _ = http.NewRequest("DELETE", ts.URL+"/api/invites/"+toDelete.Token, nil)
+	resp, _ = client.Do(withCookies(req, userCookies))
+	resp.Body.Close()
+	if resp.StatusCode != 403 {
+		t.Fatalf("non-admin delete invite: got %d, want 403", resp.StatusCode)
+	}
+
+	req, _ = http.NewRequest("DELETE", ts.URL+"/api/invites/"+toDelete.Token, nil)
+	resp, _ = client.Do(withCookies(req, adminCookies))
+	resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("admin delete invite: got %d, want 200", resp.StatusCode)
 	}
 }

@@ -1,9 +1,10 @@
-// M11: FieldDraft backend — Auth, User, Project CRUD.
+// FieldDraft backend — Auth, Invites, Roles, Projects, Gallery, Tickets.
 //
-// Minimal Go server with chi router, Argon2id password hashing,
-// session cookies, and a JSON project store. MariaDB comes in
-// M11.1; this first slice runs with an in-memory store so the
-// server is immediately testable without Docker.
+// HTTP layer: chi-free net/http with method-routed ServeMux, Argon2id
+// password hashing, DB-backed sessions, per-IP rate limiting. Persistence is
+// behind the Store interface (store.go): memStore for tests, sqlStore (MariaDB
+// + content-addressed blobs) in production. main() wires up sqlStore from
+// DB_DSN and seeds an admin from ADMIN_EMAIL/ADMIN_PASSWORD.
 
 package main
 
@@ -22,345 +23,17 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"golang.org/x/crypto/argon2"
 )
 
-// ─── models ─────────────────────────────────────────────────────
-
-type User struct {
-	ID           string    `json:"id"`
-	Email        string    `json:"email"`
-	DisplayName  string    `json:"display_name"`
-	PasswordHash []byte    `json:"-"`
-	Salt         []byte    `json:"-"`
-	CreatedAt    time.Time `json:"created_at"`
-}
-
-type Project struct {
-	ID         string          `json:"id"`
-	OwnerID    string          `json:"owner_id"`
-	Name       string          `json:"name"`
-	Visibility string          `json:"visibility"` // "private" | "public"
-	Document   json.RawMessage `json:"document"`
-	UpdatedAt  time.Time       `json:"updated_at"`
-	CreatedAt  time.Time       `json:"created_at"`
-}
-
-type Session struct {
-	Token   string
-	UserID  string
-	Expires time.Time
-}
-
-// ─── in-memory store (M11.0 — MariaDB comes in M11.1) ──────────
-
-// M13: password reset token.
-type ResetToken struct {
-	Token   string
-	UserID  string
-	Expires time.Time
-}
-
-// P2.5: published snapshot for shareable viewer.
-type Snapshot struct {
-	ID        string          `json:"id"`
-	ProjectID string          `json:"project_id"`
-	Document  json.RawMessage `json:"document"`
-	CreatedAt time.Time       `json:"created_at"`
-}
-
-type Store struct {
-	mu          sync.RWMutex
-	users       map[string]*User       // keyed by ID
-	emails      map[string]string      // email → user ID
-	projects    map[string]*Project    // keyed by ID
-	sessions    map[string]*Session    // token → session
-	resetTokens map[string]*ResetToken // token → reset
-	thumbnails  map[string][]byte      // project ID → PNG data
-	snapshots   map[string]*Snapshot   // snapshot ID → snapshot
-}
-
-func NewStore() *Store {
-	return &Store{
-		users:       make(map[string]*User),
-		emails:      make(map[string]string),
-		projects:    make(map[string]*Project),
-		sessions:    make(map[string]*Session),
-		resetTokens: make(map[string]*ResetToken),
-		thumbnails:  make(map[string][]byte),
-		snapshots:   make(map[string]*Snapshot),
-	}
-}
-
-func (s *Store) CreateUser(email, displayName, password string) (*User, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if _, exists := s.emails[email]; exists {
-		return nil, errConflict
-	}
-
-	salt := make([]byte, 16)
-	rand.Read(salt)
-	hash := argon2.IDKey([]byte(password), salt, 1, 64*1024, 4, 32)
-
-	id := newID()
-	user := &User{
-		ID:           id,
-		Email:        email,
-		DisplayName:  displayName,
-		PasswordHash: hash,
-		Salt:         salt,
-		CreatedAt:    time.Now(),
-	}
-	s.users[id] = user
-	s.emails[email] = id
-	return user, nil
-}
-
-func (s *Store) AuthenticateUser(email, password string) (*User, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	uid, ok := s.emails[email]
-	if !ok {
-		return nil, errNotFound
-	}
-	user := s.users[uid]
-	hash := argon2.IDKey([]byte(password), user.Salt, 1, 64*1024, 4, 32)
-	if !bytesEqual(hash, user.PasswordHash) {
-		return nil, errUnauthorized
-	}
-	return user, nil
-}
-
-func (s *Store) GetUserByEmail(email string) *User {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	uid, ok := s.emails[email]
-	if !ok {
-		return nil
-	}
-	return s.users[uid]
-}
-
-func (s *Store) UpdatePassword(userID, newPassword string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	user, ok := s.users[userID]
-	if !ok {
-		return
-	}
-	salt := make([]byte, 16)
-	rand.Read(salt)
-	user.PasswordHash = argon2.IDKey([]byte(newPassword), salt, 1, 64*1024, 4, 32)
-	user.Salt = salt
-}
-
-func (s *Store) CreateResetToken(userID string) string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	token := newID()
-	s.resetTokens[token] = &ResetToken{
-		Token:   token,
-		UserID:  userID,
-		Expires: time.Now().Add(1 * time.Hour),
-	}
-	return token
-}
-
-func (s *Store) ConsumeResetToken(token string) (string, bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	rt, ok := s.resetTokens[token]
-	if !ok || time.Now().After(rt.Expires) {
-		delete(s.resetTokens, token)
-		return "", false
-	}
-	delete(s.resetTokens, token)
-	return rt.UserID, true
-}
-
-func (s *Store) SetThumbnail(projectID string, data []byte) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.thumbnails[projectID] = data
-}
-
-func (s *Store) GetThumbnail(projectID string) []byte {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return s.thumbnails[projectID]
-}
-
-func (s *Store) CreateSnapshot(projectID string, doc json.RawMessage) *Snapshot {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	snap := &Snapshot{
-		ID:        newID(),
-		ProjectID: projectID,
-		Document:  doc,
-		CreatedAt: time.Now(),
-	}
-	s.snapshots[snap.ID] = snap
-	return snap
-}
-
-func (s *Store) GetSnapshot(id string) *Snapshot {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return s.snapshots[id]
-}
-
-func (s *Store) CreateSession(userID string) *Session {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	token := newID()
-	sess := &Session{
-		Token:   token,
-		UserID:  userID,
-		Expires: time.Now().Add(7 * 24 * time.Hour),
-	}
-	s.sessions[token] = sess
-	return sess
-}
-
-func (s *Store) GetSession(token string) *Session {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	sess, ok := s.sessions[token]
-	if !ok || time.Now().After(sess.Expires) {
-		return nil
-	}
-	return sess
-}
-
-func (s *Store) DeleteSession(token string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	delete(s.sessions, token)
-}
-
-func (s *Store) GetUser(id string) *User {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return s.users[id]
-}
-
-func (s *Store) CreateProject(ownerID, name string, doc json.RawMessage) *Project {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	id := newID()
-	now := time.Now()
-	p := &Project{
-		ID:         id,
-		OwnerID:    ownerID,
-		Name:       name,
-		Visibility: "private",
-		Document:   doc,
-		UpdatedAt:  now,
-		CreatedAt:  now,
-	}
-	s.projects[id] = p
-	return p
-}
-
-func (s *Store) ListProjects(ownerID string) []*Project {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	var result []*Project
-	for _, p := range s.projects {
-		if p.OwnerID == ownerID {
-			result = append(result, p)
-		}
-	}
-	return result
-}
-
-func (s *Store) GetProject(id, ownerID string) *Project {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	p, ok := s.projects[id]
-	if !ok || p.OwnerID != ownerID {
-		return nil
-	}
-	return p
-}
-
-func (s *Store) UpdateProject(id, ownerID string, name string, doc json.RawMessage, visibility string) *Project {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	p, ok := s.projects[id]
-	if !ok || p.OwnerID != ownerID {
-		return nil
-	}
-	if name != "" {
-		p.Name = name
-	}
-	if doc != nil {
-		p.Document = doc
-	}
-	if visibility == "public" || visibility == "private" {
-		p.Visibility = visibility
-	}
-	p.UpdatedAt = time.Now()
-	return p
-}
-
-func (s *Store) ListPublicProjects() []*Project {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	var result []*Project
-	for _, p := range s.projects {
-		if p.Visibility == "public" {
-			result = append(result, p)
-		}
-	}
-	return result
-}
-
-func (s *Store) DeleteProject(id, ownerID string) bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	p, ok := s.projects[id]
-	if !ok || p.OwnerID != ownerID {
-		return false
-	}
-	delete(s.projects, id)
-	return true
-}
-
-// ─── HTTP handlers ──────────────────────────────────────────────
-
-var (
-	errConflict     = &httpError{http.StatusConflict, "email already registered"}
-	errNotFound     = &httpError{http.StatusNotFound, "not found"}
-	errUnauthorized = &httpError{http.StatusUnauthorized, "invalid credentials"}
-)
-
-type httpError struct {
-	Code    int
-	Message string
-}
-
-func (e *httpError) Error() string { return e.Message }
+// ─── server ─────────────────────────────────────────────────────
 
 type Server struct {
-	store       *Store
+	store       Store
 	mux         *http.ServeMux
 	rateLimiter *RateLimiter
 }
 
-func NewServer(store *Store) *Server {
+func NewServer(store Store) *Server {
 	s := &Server{
 		store:       store,
 		mux:         http.NewServeMux(),
@@ -382,12 +55,16 @@ func NewServer(store *Store) *Server {
 	s.mux.HandleFunc("PUT /api/projects/{id}/thumbnail", s.handlePutThumbnail)
 	s.mux.HandleFunc("POST /api/projects/{id}/publish", s.handlePublish)
 	s.mux.HandleFunc("GET /api/v/{id}", s.handleViewSnapshot)
+	// Admin invite management.
+	s.mux.HandleFunc("POST /api/invites", s.handleCreateInvite)
+	s.mux.HandleFunc("GET /api/invites", s.handleListInvites)
+	s.mux.HandleFunc("DELETE /api/invites/{token}", s.handleDeleteInvite)
 	s.mux.HandleFunc("POST /api/tickets", s.handleCreateTicket)
 	return s
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	// M13: per-IP rate limiting (token bucket, 60 req/min).
+	// Per-IP rate limiting (token bucket, 60 req/min).
 	ip := r.RemoteAddr
 	if fwd := r.Header.Get("X-Forwarded-For"); fwd != "" {
 		ip = fwd
@@ -400,24 +77,14 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	s.mux.ServeHTTP(w, r)
 }
 
-func (s *Server) requireAuth(r *http.Request) (*Session, *User) {
-	cookie, err := r.Cookie("session")
-	if err != nil {
-		return nil, nil
-	}
-	sess := s.store.GetSession(cookie.Value)
-	if sess == nil {
-		return nil, nil
-	}
-	user := s.store.GetUser(sess.UserID)
-	return sess, user
-}
+// ─── auth handlers ──────────────────────────────────────────────
 
 func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Email       string `json:"email"`
 		DisplayName string `json:"display_name"`
 		Password    string `json:"password"`
+		Invite      string `json:"invite"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		http.Error(w, `{"error":"invalid JSON"}`, http.StatusBadRequest)
@@ -427,24 +94,43 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"email and password required"}`, http.StatusBadRequest)
 		return
 	}
-	user, err := s.store.CreateUser(body.Email, body.DisplayName, body.Password)
-	if err != nil {
-		if he, ok := err.(*httpError); ok {
-			http.Error(w, `{"error":"`+he.Message+`"}`, he.Code)
-			return
-		}
-		http.Error(w, `{"error":"internal"}`, http.StatusInternalServerError)
+
+	// Invite-gated registration: token from body or ?invite= query.
+	token := body.Invite
+	if token == "" {
+		token = r.URL.Query().Get("invite")
+	}
+	if token == "" {
+		http.Error(w, `{"error":"invite required"}`, http.StatusForbidden)
 		return
 	}
+	// Validate (exists, unused, not expired) before creating the user so a
+	// duplicate-email failure doesn't burn the token.
+	inv := s.store.GetInvite(token)
+	if inv == nil || time.Now().UTC().After(inv.ExpiresAt) {
+		writeStoreError(w, errInviteInvalid)
+		return
+	}
+	if inv.UsedBy != nil {
+		writeStoreError(w, errInviteUsed)
+		return
+	}
+
+	user, err := s.store.CreateUser(body.Email, body.DisplayName, body.Password, RoleUser)
+	if err != nil {
+		writeStoreError(w, err)
+		return
+	}
+
+	// Burn the invite atomically with the real user id. The single-use guard
+	// lives in ConsumeInvite; on a lost race we delete the just-created user.
+	if _, err := s.store.ConsumeInvite(token, user.ID); err != nil {
+		writeStoreError(w, err)
+		return
+	}
+
 	sess := s.store.CreateSession(user.ID)
-	http.SetCookie(w, &http.Cookie{
-		Name:     "session",
-		Value:    sess.Token,
-		Path:     "/",
-		HttpOnly: true,
-		SameSite: http.SameSiteLaxMode,
-		Expires:  sess.Expires,
-	})
+	setSessionCookie(w, sess)
 	json.NewEncoder(w).Encode(user)
 }
 
@@ -463,14 +149,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	sess := s.store.CreateSession(user.ID)
-	http.SetCookie(w, &http.Cookie{
-		Name:     "session",
-		Value:    sess.Token,
-		Path:     "/",
-		HttpOnly: true,
-		SameSite: http.SameSiteLaxMode,
-		Expires:  sess.Expires,
-	})
+	setSessionCookie(w, sess)
 	json.NewEncoder(w).Encode(user)
 }
 
@@ -479,13 +158,7 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 	if sess != nil {
 		s.store.DeleteSession(sess.Token)
 	}
-	http.SetCookie(w, &http.Cookie{
-		Name:     "session",
-		Value:    "",
-		Path:     "/",
-		HttpOnly: true,
-		MaxAge:   -1,
-	})
+	clearSessionCookie(w)
 	w.Write([]byte(`{"ok":true}`))
 }
 
@@ -497,6 +170,8 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 	}
 	json.NewEncoder(w).Encode(user)
 }
+
+// ─── project handlers ───────────────────────────────────────────
 
 func (s *Server) handleListProjects(w http.ResponseWriter, r *http.Request) {
 	_, user := s.requireAuth(r)
@@ -511,7 +186,7 @@ func (s *Server) handleListProjects(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(projects)
 }
 
-// M13: per-user quota — max projects.
+// Per-user quota — max projects.
 const maxProjectsPerUser = 100
 
 func (s *Server) handleCreateProject(w http.ResponseWriter, r *http.Request) {
@@ -520,7 +195,6 @@ func (s *Server) handleCreateProject(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"not authenticated"}`, http.StatusUnauthorized)
 		return
 	}
-	// M13: quota check.
 	existing := s.store.ListProjects(user.ID)
 	if len(existing) >= maxProjectsPerUser {
 		http.Error(w, `{"error":"project quota exceeded (max 100)"}`, http.StatusForbidden)
@@ -538,6 +212,10 @@ func (s *Server) handleCreateProject(w http.ResponseWriter, r *http.Request) {
 		body.Name = "Untitled"
 	}
 	p := s.store.CreateProject(user.ID, body.Name, body.Document)
+	if p == nil {
+		http.Error(w, `{"error":"could not create project"}`, http.StatusInternalServerError)
+		return
+	}
 	w.WriteHeader(http.StatusCreated)
 	json.NewEncoder(w).Encode(p)
 }
@@ -557,7 +235,7 @@ func (s *Server) handleGetProject(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(p)
 }
 
-// M13: max document size per project (50 MB).
+// Max document size per project (50 MB).
 const maxDocumentBytes = 50 * 1024 * 1024
 
 func (s *Server) handleUpdateProject(w http.ResponseWriter, r *http.Request) {
@@ -566,7 +244,6 @@ func (s *Server) handleUpdateProject(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"not authenticated"}`, http.StatusUnauthorized)
 		return
 	}
-	// M13: reject oversized payloads early.
 	if r.ContentLength > maxDocumentBytes {
 		http.Error(w, `{"error":"document too large (max 50 MB)"}`, http.StatusRequestEntityTooLarge)
 		return
@@ -603,8 +280,6 @@ func (s *Server) handleDeleteProject(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte(`{"ok":true}`))
 }
 
-// ─── helpers ────────────────────────────────────────────────────
-
 func (s *Server) handleGallery(w http.ResponseWriter, r *http.Request) {
 	// Public gallery — no auth required.
 	projects := s.store.ListPublicProjects()
@@ -616,10 +291,9 @@ func (s *Server) handleGallery(w http.ResponseWriter, r *http.Request) {
 
 // ─── rate limiter ───────────────────────────────────────────────
 
-// RateLimiter is a simple per-IP token bucket. Each IP gets
-// `burst` tokens; one is consumed per request. Tokens refill
-// at `rate` per second. When the bucket is empty, Allow returns
-// false and the server responds 429.
+// RateLimiter is a simple per-IP token bucket. Each IP gets `burst` tokens;
+// one is consumed per request. Tokens refill at `rate` per second. When the
+// bucket is empty, Allow returns false and the server responds 429.
 type RateLimiter struct {
 	mu      sync.Mutex
 	buckets map[string]*bucket
@@ -663,206 +337,39 @@ func (rl *RateLimiter) Allow(ip string) bool {
 	return true
 }
 
+// ─── shared helpers ─────────────────────────────────────────────
+
 func newID() string {
 	b := make([]byte, 16)
 	rand.Read(b)
 	return hex.EncodeToString(b)
 }
 
-// ─── tickets ────────────────────────────────────────────────────
-
-// ticketRequest is the payload POSTed by the in-app "Report Issue" dialog.
-// ticket xqll: no title field — all info lives in the description.
-type ticketRequest struct {
-	Description string `json:"description"`
-	// ProjectFdraft: the live project as a base64-encoded .fdraft ZIP (on3k),
-	// written to disk verbatim as project.fdraft.
-	ProjectFdraft string             `json:"projectFdraft"`
-	Screenshot    string             `json:"screenshot"` // PNG data URL, or empty
-	Attachments   []ticketAttachment `json:"attachments"`
-	Version       string             `json:"version"`
-	Timestamp     string             `json:"timestamp"`
-	UserAgent     string             `json:"userAgent"`
-	URL           string             `json:"url"`
-	// Settings: per-device app/UI settings (renderMode, controlsPreset, …).
-	// Captured raw so the ticket carries the environment that produced it;
-	// rendered as a JSON block in ticket.md.
-	Settings json.RawMessage `json:"settings"`
-	// UIState: ephemeral live UI state (camera, selection, active tool/mode)
-	// the project file doesn't carry (ticket uz5q); written as ui_state.json.
-	UIState json.RawMessage `json:"uiState"`
-	// ActionLog: replayable user-action trace (semantic actions + raw input)
-	// that led to the bug; written as actions.json.
-	ActionLog json.RawMessage `json:"actionLog"`
-}
-
-// ticketAttachment is one user-attached file (picked or pasted, ticket 8onw),
-// transported as a data URL inside the ticket JSON.
-type ticketAttachment struct {
-	Name    string `json:"name"`
-	Mime    string `json:"mime"`
-	DataURL string `json:"dataUrl"`
-}
-
-// attachmentFilename sanitizes a user-supplied attachment name into a safe
-// on-disk filename: basename only, conservative character set, indexed so
-// attachments never collide with each other or the ticket files.
-func attachmentFilename(index int, name string) string {
-	base := name
-	if i := strings.LastIndexAny(base, "/\\"); i >= 0 {
-		base = base[i+1:]
-	}
-	var b strings.Builder
-	for _, r := range base {
-		switch {
-		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9',
-			r == '.', r == '-', r == '_', r == ' ':
-			b.WriteRune(r)
-		default:
-			b.WriteRune('_')
-		}
-	}
-	safe := b.String()
-	if len(safe) > 80 {
-		safe = safe[len(safe)-80:]
-	}
-	if safe == "" {
-		safe = "file"
-	}
-	return fmt.Sprintf("attachment-%02d-%s", index+1, safe)
-}
-
-// ticketHeading derives the ticket.md `# ` heading from the description's
-// first non-empty line (ticket xqll — there is no user title anymore). Falls
-// back to a generic "Issue <id>" when the description is empty.
-func ticketHeading(id, description string) string {
-	for _, line := range strings.Split(description, "\n") {
-		if t := strings.TrimSpace(line); t != "" {
-			if len(t) > 80 {
-				t = strings.TrimSpace(t[:80]) + "…"
-			}
-			return t
-		}
-	}
-	return "Issue " + id
-}
-
-// ticketsDir is where filed tickets are written. Override with TICKETS_DIR;
-// defaults to "tickets" relative to the server's working directory.
-func ticketsDir() string {
-	if d := os.Getenv("TICKETS_DIR"); d != "" {
-		return d
-	}
-	return "tickets"
-}
-
-// handleCreateTicket persists a bug / feature-request ticket to
-// <ticketsDir>/open/<id>/ — the same layout the dev Vite plugin writes, so a
-// human or the agent processes both identically. Anonymous but rate-limited
-// (60/min per IP via ServeHTTP).
-func (s *Server) handleCreateTicket(w http.ResponseWriter, r *http.Request) {
-	var req ticketRequest
-	if err := json.NewDecoder(io.LimitReader(r.Body, 25<<20)).Decode(&req); err != nil {
-		http.Error(w, `{"error":"invalid JSON"}`, http.StatusBadRequest)
+// writeStoreError maps a store *httpError to an HTTP response.
+func writeStoreError(w http.ResponseWriter, err error) {
+	if he, ok := err.(*httpError); ok {
+		http.Error(w, `{"error":"`+he.Message+`"}`, he.Code)
 		return
 	}
-	if strings.TrimSpace(req.Description) == "" {
-		http.Error(w, `{"error":"description required"}`, http.StatusBadRequest)
-		return
-	}
-
-	id := time.Now().UTC().Format("20060102-150405") + "-" + newID()[:4]
-	dir := filepath.Join(ticketsDir(), "open", id)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		http.Error(w, `{"error":"could not create ticket"}`, http.StatusInternalServerError)
-		return
-	}
-
-	ts := req.Timestamp
-	if ts == "" {
-		ts = time.Now().UTC().Format(time.RFC3339)
-	}
-
-	// ticket xqll: ticket.json is gone — ticket.md (below) carries all the
-	// metadata (ID/version/time/URL/UA) plus the description and attachments.
-
-	// User attachments (ticket 8onw): each data URL becomes a file next to
-	// the screenshot, listed in ticket.md for whoever picks the ticket up.
-	var attachmentNames []string
-	for i, a := range req.Attachments {
-		ci := strings.IndexByte(a.DataURL, ',')
-		if !strings.HasPrefix(a.DataURL, "data:") || ci < 0 {
-			continue
-		}
-		blob, err := base64.StdEncoding.DecodeString(a.DataURL[ci+1:])
-		if err != nil {
-			continue
-		}
-		fname := attachmentFilename(i, a.Name)
-		if os.WriteFile(filepath.Join(dir, fname), blob, 0o644) == nil {
-			attachmentNames = append(attachmentNames, fname)
-		}
-	}
-
-	md := fmt.Sprintf("# %s\n\n- **ID:** %s\n- **Version:** %s\n- **Time:** %s\n- **URL:** %s\n- **UA:** %s\n\n## Description\n\n%s\n",
-		ticketHeading(id, req.Description), id, req.Version, ts, req.URL, req.UserAgent, req.Description)
-	if len(attachmentNames) > 0 {
-		md += "\n## Attachments\n\n"
-		for _, n := range attachmentNames {
-			md += "- " + n + "\n"
-		}
-	}
-	os.WriteFile(filepath.Join(dir, "ticket.md"), []byte(md), 0o644)
-
-	// ticket 478k: per-device settings (renderMode, controlsPreset, …) go into a
-	// separate settings.json, NOT inline in the markdown.
-	if len(req.Settings) > 0 && string(req.Settings) != "null" {
-		var pretty bytes.Buffer
-		if json.Indent(&pretty, req.Settings, "", "  ") == nil {
-			os.WriteFile(filepath.Join(dir, "settings.json"), pretty.Bytes(), 0o644)
-		}
-	}
-
-	// ticket uz5q: ephemeral live UI state (camera, selection, active
-	// tool/mode) goes into a separate ui_state.json so a report reproduces
-	// the exact view, not just the document.
-	if len(req.UIState) > 0 && string(req.UIState) != "null" {
-		var pretty bytes.Buffer
-		if json.Indent(&pretty, req.UIState, "", "  ") == nil {
-			os.WriteFile(filepath.Join(dir, "ui_state.json"), pretty.Bytes(), 0o644)
-		}
-	}
-
-	// Replayable user-action trace (semantic actions + raw input) goes into a
-	// separate actions.json so a report carries the steps that led to the bug.
-	if len(req.ActionLog) > 0 && string(req.ActionLog) != "null" {
-		var pretty bytes.Buffer
-		if json.Indent(&pretty, req.ActionLog, "", "  ") == nil {
-			os.WriteFile(filepath.Join(dir, "actions.json"), pretty.Bytes(), 0o644)
-		}
-	}
-
-	// on3k: decode the base64 .fdraft ZIP and write the real binary file.
-	if req.ProjectFdraft != "" {
-		if blob, err := base64.StdEncoding.DecodeString(req.ProjectFdraft); err == nil {
-			os.WriteFile(filepath.Join(dir, "project.fdraft"), blob, 0o644)
-		}
-	}
-
-	if strings.HasPrefix(req.Screenshot, "data:image/") {
-		if i := strings.IndexByte(req.Screenshot, ','); i >= 0 {
-			if png, err := base64.StdEncoding.DecodeString(req.Screenshot[i+1:]); err == nil {
-				os.WriteFile(filepath.Join(dir, "screenshot.png"), png, 0o644)
-			}
-		}
-	}
-
-	log.Printf("ticket saved: %s — %s", id, ticketHeading(id, req.Description))
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{"ticket_id": id})
+	http.Error(w, `{"error":"internal"}`, http.StatusInternalServerError)
 }
 
-// ─── M13: password reset ────────────────────────────────────────
+func readAll(r io.Reader) ([]byte, error) {
+	return io.ReadAll(r)
+}
+
+func bytesEqual(a, b []byte) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	var diff byte
+	for i := range a {
+		diff |= a[i] ^ b[i]
+	}
+	return diff == 0
+}
+
+// ─── password reset ─────────────────────────────────────────────
 
 func (s *Server) handlePasswordResetRequest(w http.ResponseWriter, r *http.Request) {
 	var body struct {
@@ -880,7 +387,7 @@ func (s *Server) handlePasswordResetRequest(w http.ResponseWriter, r *http.Reque
 	}
 	token := s.store.CreateResetToken(user.ID)
 	// In production, send via SMTP. For now, log the token.
-	log.Printf("M13: password reset token for %s: %s", body.Email, token)
+	log.Printf("password reset token for %s: %s", body.Email, token)
 	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 }
 
@@ -910,7 +417,7 @@ func (s *Server) handlePasswordReset(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 }
 
-// ─── M13: project thumbnails ────────────────────────────────────
+// ─── project thumbnails ─────────────────────────────────────────
 
 func (s *Server) handleGetThumbnail(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
@@ -935,7 +442,7 @@ func (s *Server) handlePutThumbnail(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
 		return
 	}
-	// Max 2MB thumbnail
+	// Max 2MB thumbnail.
 	r.Body = http.MaxBytesReader(w, r.Body, 2<<20)
 	data, err := readAll(r.Body)
 	if err != nil {
@@ -946,7 +453,7 @@ func (s *Server) handlePutThumbnail(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 }
 
-// ─── P2.5: publish + viewer ─────────────────────────────────────
+// ─── publish + viewer ───────────────────────────────────────────
 
 func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 	sess, _ := s.requireAuth(r)
@@ -961,6 +468,10 @@ func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	snap := s.store.CreateSnapshot(proj.ID, proj.Document)
+	if snap == nil {
+		http.Error(w, `{"error":"could not publish"}`, http.StatusInternalServerError)
+		return
+	}
 	json.NewEncoder(w).Encode(map[string]string{
 		"snapshot_id": snap.ID,
 		"view_url":    "/api/v/" + snap.ID,
@@ -977,28 +488,221 @@ func (s *Server) handleViewSnapshot(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(snap)
 }
 
-func readAll(r io.Reader) ([]byte, error) {
-	return io.ReadAll(r)
+// ─── tickets (file-based; WP2 will move these to the DB) ─────────
+
+// ticketRequest is the payload POSTed by the in-app "Report Issue" dialog.
+type ticketRequest struct {
+	Description string `json:"description"`
+	// ProjectFdraft: the live project as a base64-encoded .fdraft ZIP,
+	// written to disk verbatim as project.fdraft.
+	ProjectFdraft string             `json:"projectFdraft"`
+	Screenshot    string             `json:"screenshot"` // PNG data URL, or empty
+	Attachments   []ticketAttachment `json:"attachments"`
+	Version       string             `json:"version"`
+	Timestamp     string             `json:"timestamp"`
+	UserAgent     string             `json:"userAgent"`
+	URL           string             `json:"url"`
+	// Settings: per-device app/UI settings (renderMode, controlsPreset, …).
+	Settings json.RawMessage `json:"settings"`
+	// UIState: ephemeral live UI state (camera, selection, active tool/mode).
+	UIState json.RawMessage `json:"uiState"`
+	// ActionLog: replayable user-action trace.
+	ActionLog json.RawMessage `json:"actionLog"`
 }
 
-func bytesEqual(a, b []byte) bool {
-	if len(a) != len(b) {
-		return false
+// ticketAttachment is one user-attached file, transported as a data URL.
+type ticketAttachment struct {
+	Name    string `json:"name"`
+	Mime    string `json:"mime"`
+	DataURL string `json:"dataUrl"`
+}
+
+// attachmentFilename sanitizes a user-supplied attachment name into a safe
+// on-disk filename: basename only, conservative character set, indexed.
+func attachmentFilename(index int, name string) string {
+	base := name
+	if i := strings.LastIndexAny(base, "/\\"); i >= 0 {
+		base = base[i+1:]
 	}
-	var diff byte
-	for i := range a {
-		diff |= a[i] ^ b[i]
+	var b strings.Builder
+	for _, r := range base {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9',
+			r == '.', r == '-', r == '_', r == ' ':
+			b.WriteRune(r)
+		default:
+			b.WriteRune('_')
+		}
 	}
-	return diff == 0
+	safe := b.String()
+	if len(safe) > 80 {
+		safe = safe[len(safe)-80:]
+	}
+	if safe == "" {
+		safe = "file"
+	}
+	return fmt.Sprintf("attachment-%02d-%s", index+1, safe)
+}
+
+// ticketHeading derives the ticket.md heading from the description's first
+// non-empty line. Falls back to a generic "Issue <id>".
+func ticketHeading(id, description string) string {
+	for _, line := range strings.Split(description, "\n") {
+		if t := strings.TrimSpace(line); t != "" {
+			if len(t) > 80 {
+				t = strings.TrimSpace(t[:80]) + "…"
+			}
+			return t
+		}
+	}
+	return "Issue " + id
+}
+
+// ticketsDir is where filed tickets are written. Override with TICKETS_DIR.
+func ticketsDir() string {
+	if d := os.Getenv("TICKETS_DIR"); d != "" {
+		return d
+	}
+	return "tickets"
+}
+
+// handleCreateTicket persists a bug / feature-request ticket to
+// <ticketsDir>/open/<id>/. Anonymous but rate-limited (60/min per IP).
+func (s *Server) handleCreateTicket(w http.ResponseWriter, r *http.Request) {
+	var req ticketRequest
+	if err := json.NewDecoder(io.LimitReader(r.Body, 25<<20)).Decode(&req); err != nil {
+		http.Error(w, `{"error":"invalid JSON"}`, http.StatusBadRequest)
+		return
+	}
+	if strings.TrimSpace(req.Description) == "" {
+		http.Error(w, `{"error":"description required"}`, http.StatusBadRequest)
+		return
+	}
+
+	id := time.Now().UTC().Format("20060102-150405") + "-" + newID()[:4]
+	dir := filepath.Join(ticketsDir(), "open", id)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		http.Error(w, `{"error":"could not create ticket"}`, http.StatusInternalServerError)
+		return
+	}
+
+	ts := req.Timestamp
+	if ts == "" {
+		ts = time.Now().UTC().Format(time.RFC3339)
+	}
+
+	var attachmentNames []string
+	for i, a := range req.Attachments {
+		ci := strings.IndexByte(a.DataURL, ',')
+		if !strings.HasPrefix(a.DataURL, "data:") || ci < 0 {
+			continue
+		}
+		blob, err := base64.StdEncoding.DecodeString(a.DataURL[ci+1:])
+		if err != nil {
+			continue
+		}
+		fname := attachmentFilename(i, a.Name)
+		if os.WriteFile(filepath.Join(dir, fname), blob, 0o644) == nil {
+			attachmentNames = append(attachmentNames, fname)
+		}
+	}
+
+	md := fmt.Sprintf("# %s\n\n- **ID:** %s\n- **Version:** %s\n- **Time:** %s\n- **URL:** %s\n- **UA:** %s\n\n## Description\n\n%s\n",
+		ticketHeading(id, req.Description), id, req.Version, ts, req.URL, req.UserAgent, req.Description)
+	if len(attachmentNames) > 0 {
+		md += "\n## Attachments\n\n"
+		for _, n := range attachmentNames {
+			md += "- " + n + "\n"
+		}
+	}
+	os.WriteFile(filepath.Join(dir, "ticket.md"), []byte(md), 0o644)
+
+	if len(req.Settings) > 0 && string(req.Settings) != "null" {
+		var pretty bytes.Buffer
+		if json.Indent(&pretty, req.Settings, "", "  ") == nil {
+			os.WriteFile(filepath.Join(dir, "settings.json"), pretty.Bytes(), 0o644)
+		}
+	}
+
+	if len(req.UIState) > 0 && string(req.UIState) != "null" {
+		var pretty bytes.Buffer
+		if json.Indent(&pretty, req.UIState, "", "  ") == nil {
+			os.WriteFile(filepath.Join(dir, "ui_state.json"), pretty.Bytes(), 0o644)
+		}
+	}
+
+	if len(req.ActionLog) > 0 && string(req.ActionLog) != "null" {
+		var pretty bytes.Buffer
+		if json.Indent(&pretty, req.ActionLog, "", "  ") == nil {
+			os.WriteFile(filepath.Join(dir, "actions.json"), pretty.Bytes(), 0o644)
+		}
+	}
+
+	if req.ProjectFdraft != "" {
+		if blob, err := base64.StdEncoding.DecodeString(req.ProjectFdraft); err == nil {
+			os.WriteFile(filepath.Join(dir, "project.fdraft"), blob, 0o644)
+		}
+	}
+
+	if strings.HasPrefix(req.Screenshot, "data:image/") {
+		if i := strings.IndexByte(req.Screenshot, ','); i >= 0 {
+			if png, err := base64.StdEncoding.DecodeString(req.Screenshot[i+1:]); err == nil {
+				os.WriteFile(filepath.Join(dir, "screenshot.png"), png, 0o644)
+			}
+		}
+	}
+
+	log.Printf("ticket saved: %s — %s", id, ticketHeading(id, req.Description))
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"ticket_id": id})
 }
 
 // ─── main ───────────────────────────────────────────────────────
 
 func main() {
-	store := NewStore()
+	if os.Getenv("SECURE_COOKIES") == "1" {
+		cookieSecure = true
+	}
+
+	dsn := os.Getenv("DB_DSN")
+	if dsn == "" {
+		log.Fatal("DB_DSN is required (e.g. user:pass@tcp(host:3306)/db?parseTime=true)")
+	}
+	store, err := NewSQLStore(dsn)
+	if err != nil {
+		log.Fatalf("database init failed: %v", err)
+	}
+	defer store.Close()
+
+	seedAdmin(store)
+
 	srv := NewServer(store)
 
 	addr := ":8080"
 	log.Printf("fielddraft server listening on %s", addr)
 	log.Fatal(http.ListenAndServe(addr, srv))
+}
+
+// seedAdmin creates the operator admin from ADMIN_EMAIL/ADMIN_PASSWORD on
+// first boot, if no admin exists yet.
+func seedAdmin(store Store) {
+	email := os.Getenv("ADMIN_EMAIL")
+	password := os.Getenv("ADMIN_PASSWORD")
+	if email == "" || password == "" {
+		return
+	}
+	if store.HasAdmin() {
+		log.Printf("seed admin: an admin already exists, skipping")
+		return
+	}
+	if existing := store.GetUserByEmail(email); existing != nil {
+		log.Printf("seed admin: user %s already exists but is not admin; not modifying", email)
+		return
+	}
+	u, err := store.CreateUser(email, "Admin", password, RoleAdmin)
+	if err != nil {
+		log.Printf("seed admin: could not create admin %s: %v", email, err)
+		return
+	}
+	log.Printf("seed admin: created admin user %s (id=%s)", u.Email, u.ID)
 }
