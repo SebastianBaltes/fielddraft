@@ -119,6 +119,34 @@ export interface TicketComment {
   withheld: boolean;
 }
 
+/* ── admin moderation (WP8/WP9) ────────────────────────────────── */
+
+/** The classification of an admin alert. Mirrors server `AlertKind`. */
+export type AlertKind =
+  "malicious_ticket" | "malicious_comment" | "withheld_comment" | "user_banned";
+
+/** A durable admin-awareness record (§4.4). Mirrors server `AdminAlert`.
+ *  `ticket_id` is `null` for non-ticket-scoped alerts (e.g. a user ban). */
+export interface AdminAlert {
+  id: string;
+  kind: AlertKind;
+  ticket_id: string | null;
+  detail: string;
+  created_at: string;
+  seen: boolean;
+}
+
+/** A row in the admin user-management list (§6.2). Mirrors server `adminUser`.
+ *  `disabled` is the banned flag (no login, sessions invalidated). */
+export interface AdminUser {
+  id: string;
+  email: string;
+  display_name: string;
+  role: Role;
+  disabled: boolean;
+  created_at: string;
+}
+
 /** A content-addressed repro blob (mirrors server `TicketArtifact`). */
 export interface TicketArtifact {
   id: string;
@@ -293,6 +321,18 @@ export interface PlatformApi {
   addComment(id: string, body: string): Promise<TicketComment>;
   /** Fetch an artifact blob's raw bytes (e.g. the `.fdraft` ZIP to load). */
   fetchArtifact(ticketId: string, artifactId: string): Promise<ArrayBuffer>;
+
+  // Admin moderation (admin only — the backend re-checks the role on each).
+  /** List admin alerts, newest-first. `unseenOnly` adds `?unseen=1`. */
+  listAdminAlerts(unseenOnly?: boolean): Promise<AdminAlert[]>;
+  /** Mark a single alert seen (idempotent on the backend). */
+  markAdminAlertSeen(id: string): Promise<void>;
+  /** List all users for moderation (id/email/name/role/disabled/created). */
+  listAdminUsers(): Promise<AdminUser[]>;
+  /** Ban (disable) a user — kills their sessions; returns the updated user. */
+  banUser(id: string): Promise<AdminUser>;
+  /** Lift a ban — returns the updated user. */
+  unbanUser(id: string): Promise<AdminUser>;
 }
 
 /** Fields the project PATCH endpoint accepts. Any subset; the server treats an
@@ -436,6 +476,29 @@ export const platformApi: PlatformApi = {
     }
     return res.arrayBuffer();
   },
+
+  listAdminAlerts: (unseenOnly) =>
+    request<AdminAlert[]>(`/api/admin/alerts${unseenOnly ? "?unseen=1" : ""}`, {
+      method: "GET",
+    }),
+
+  markAdminAlertSeen: (id) =>
+    request<void>(`/api/admin/alerts/${encodeURIComponent(id)}/seen`, {
+      method: "POST",
+    }),
+
+  listAdminUsers: () =>
+    request<AdminUser[]>("/api/admin/users", { method: "GET" }),
+
+  banUser: (id) =>
+    request<AdminUser>(`/api/admin/users/${encodeURIComponent(id)}/ban`, {
+      method: "POST",
+    }),
+
+  unbanUser: (id) =>
+    request<AdminUser>(`/api/admin/users/${encodeURIComponent(id)}/unban`, {
+      method: "POST",
+    }),
 };
 
 /** Build the `?author=&state=&category=&q=` query string, omitting empty

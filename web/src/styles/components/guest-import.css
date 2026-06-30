@@ -1,0 +1,95 @@
+/* GuestImportBanner.tsx — first-login guest-project import offer.
+ *
+ * A slim, non-intrusive banner pinned to the bottom-centre of the viewport so
+ * the modeling app stays usable behind it. One top-level class
+ * `.fd-guest-import`; children nest unprefixed. Tokens only; light mode;
+ * font-size ≥ 1rem. */
+
+.fd-guest-import {
+  position: fixed;
+  left: 50%;
+  bottom: var(--space-5);
+  transform: translateX(-50%);
+  z-index: 1200;
+  display: flex;
+  align-items: center;
+  gap: var(--space-5);
+  max-width: min(40rem, calc(100vw - var(--space-5) * 2));
+  padding: var(--space-3) var(--space-4);
+  font-size: var(--fs-base);
+  color: var(--color-text);
+  background: var(--color-bg-elevated);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg);
+
+  & .message {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+    min-width: 0;
+  }
+
+  & .title {
+    font-size: var(--fs-base);
+    font-weight: var(--fw-semibold);
+  }
+
+  & .detail {
+    font-size: var(--fs-base);
+    color: var(--color-text-muted);
+  }
+
+  & .error {
+    font-size: var(--fs-base);
+    color: var(--color-error-text);
+  }
+
+  & .actions {
+    display: flex;
+    gap: var(--space-2);
+    flex: 0 0 auto;
+  }
+
+  & .primary {
+    font-family: inherit;
+    font-size: var(--fs-base);
+    white-space: nowrap;
+    padding: var(--space-2) var(--space-4);
+    border: 1px solid var(--color-accent);
+    border-radius: var(--radius-sm);
+    background: var(--color-accent);
+    color: var(--color-text-on-accent);
+    cursor: pointer;
+
+    &:disabled {
+      opacity: 0.6;
+      cursor: default;
+    }
+
+    &:not(:disabled):hover {
+      background: var(--color-accent-hover);
+    }
+  }
+
+  & .secondary {
+    font-family: inherit;
+    font-size: var(--fs-base);
+    white-space: nowrap;
+    padding: var(--space-2) var(--space-4);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-sm);
+    background: var(--color-bg-elevated);
+    color: var(--color-text);
+    cursor: pointer;
+
+    &:disabled {
+      opacity: 0.6;
+      cursor: default;
+    }
+
+    &:not(:disabled):hover {
+      background: var(--color-bg-hover);
+    }
+  }
+}

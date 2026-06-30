@@ -43,6 +43,10 @@ export interface UseAccount {
   logout(): Promise<void>;
   /** Re-fetch `/api/me` (e.g. after an external session change). */
   refresh(): Promise<void>;
+  /** Set the unseen-admin-alert badge count (driven by the alerts view). */
+  setUnseenAlerts(count: number): void;
+  /** Re-fetch the unseen-alert count for admins (no-op for non-admins). */
+  refreshAlertCount(): Promise<void>;
 }
 
 export interface UseAccountOptions {
@@ -76,8 +80,19 @@ export function useAccount(options: UseAccountOptions = {}): UseAccount {
         // modeling app keeps working offline.
         user = null;
       }
-      if (!signal?.cancelled) {
-        dispatch({ type: "session-resolved", user });
+      if (signal?.cancelled) return;
+      dispatch({ type: "session-resolved", user });
+      // Prime the unseen-alert badge for admins; failures are silently ignored
+      // (the badge is a convenience, never a gate).
+      if (user?.role === "admin") {
+        try {
+          const unseen = await api.listAdminAlerts(true);
+          if (!signal?.cancelled) {
+            dispatch({ type: "unseen-alerts", count: unseen.length });
+          }
+        } catch {
+          // ignore — leave the badge at 0
+        }
       }
     },
     [api],
@@ -145,6 +160,20 @@ export function useAccount(options: UseAccountOptions = {}): UseAccount {
     await resolveSession();
   }, [resolveSession]);
 
+  const setUnseenAlerts = useCallback((count: number) => {
+    dispatch({ type: "unseen-alerts", count });
+  }, []);
+
+  const refreshAlertCount = useCallback(async () => {
+    if (!isAdmin(state)) return;
+    try {
+      const unseen = await api.listAdminAlerts(true);
+      dispatch({ type: "unseen-alerts", count: unseen.length });
+    } catch {
+      // ignore — keep the previous badge value
+    }
+  }, [api, state]);
+
   return {
     state,
     isAdmin: isAdmin(state),
@@ -155,6 +184,8 @@ export function useAccount(options: UseAccountOptions = {}): UseAccount {
     register,
     logout,
     refresh,
+    setUnseenAlerts,
+    refreshAlertCount,
   };
 }
 

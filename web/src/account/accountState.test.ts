@@ -122,6 +122,40 @@ describe("accountReducer", () => {
     expect(s.overlay).toBeNull();
     expect(s.ticketPrefill).toBeNull();
   });
+
+  it("opens the admin overlays", () => {
+    const alerts = accountReducer(base, {
+      type: "open",
+      overlay: "admin-alerts",
+    });
+    expect(alerts.overlay).toBe("admin-alerts");
+    const users = accountReducer(base, {
+      type: "open",
+      overlay: "admin-users",
+    });
+    expect(users.overlay).toBe("admin-users");
+  });
+
+  it("unseen-alerts sets the badge count (clamped at 0)", () => {
+    expect(s0().unseenAlertCount).toBe(0);
+    const s = accountReducer(base, { type: "unseen-alerts", count: 3 });
+    expect(s.unseenAlertCount).toBe(3);
+    const cleared = accountReducer(s, { type: "unseen-alerts", count: -5 });
+    expect(cleared.unseenAlertCount).toBe(0);
+  });
+
+  it("logged-out resets the unseen-alert badge", () => {
+    const withBadge = accountReducer(base, {
+      type: "unseen-alerts",
+      count: 4,
+    });
+    const out = accountReducer(withBadge, { type: "logged-out" });
+    expect(out.unseenAlertCount).toBe(0);
+  });
+
+  function s0() {
+    return initialAccountState("");
+  }
 });
 
 describe("isAdmin", () => {

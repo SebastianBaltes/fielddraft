@@ -11,13 +11,19 @@ import {
   deactivate as deactivateQueryPicker,
 } from "./queryPickerBridge";
 import { isTextEntryTarget } from "./keyboardTarget";
-import { SettingsMenu, loadSettings, WorkspaceUnitsContext } from "./SettingsMenu";
+import {
+  SettingsMenu,
+  loadSettings,
+  WorkspaceUnitsContext,
+} from "./SettingsMenu";
 import type { SettingsState } from "./SettingsMenu";
 import { CONTROLS_PRESETS, viewShortcutRow } from "./controlsPreset";
 import { useAccount } from "./account/useAccount";
 import { AccountButton } from "./account/AccountButton";
 import { AccountLayer } from "./account/AccountLayer";
-import type { Project as ServerProject } from "./api/platform";
+import { GuestImportBanner } from "./account/GuestImportBanner";
+import { shouldOfferGuestImport } from "./account/guestImport";
+import { platformApi, type Project as ServerProject } from "./api/platform";
 
 export function App() {
   const { store, state, error } = useKernelStore();
@@ -81,6 +87,53 @@ export function App() {
     }
   };
 
+  // WP9 B4: first-login guest-project import. When a guest who has done real
+  // local work logs in (or registers) for the first time, offer — once — to
+  // import their localStorage guest project as a new server project. Declining
+  // keeps the guest project intact; guest mode is untouched when logged out.
+  const [importPrompt, setImportPrompt] = useState<"hidden" | "offer">(
+    "hidden",
+  );
+  // Guard so the offer is made at most once per app session (not re-shown on
+  // every re-render after dismissal).
+  const [importDecided, setImportDecided] = useState(false);
+
+  useEffect(() => {
+    if (importDecided || importPrompt !== "hidden") return;
+    if (!store) return;
+    const offer = shouldOfferGuestImport({
+      authed: account.state.status === "authed",
+      boundProjectId: state?.projectId ?? null,
+      guestDocument: currentDocument(),
+    });
+    if (offer) setImportPrompt("offer");
+    // currentDocument reads the live store; depend on the inputs that flip the
+    // decision (auth status + bound id), not the function identity.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    account.state.status,
+    state?.projectId,
+    store,
+    importDecided,
+    importPrompt,
+  ]);
+
+  const importGuestProject = async () => {
+    if (!store) return;
+    const doc = currentDocument();
+    const created = await platformApi.createProject("My project", doc ?? {});
+    // Bind the freshly-created project to the live workspace (it IS the current
+    // workspace) without reloading — same as the dashboard "save current" path.
+    store.setProjectId(created.id);
+    setImportPrompt("hidden");
+    setImportDecided(true);
+  };
+
+  const dismissGuestImport = () => {
+    setImportPrompt("hidden");
+    setImportDecided(true);
+  };
+
   const compact = settings.compact;
 
   useEffect(() => {
@@ -94,7 +147,10 @@ export function App() {
   const webGLFallbackActive = settings.renderMode === "webgl";
   useEffect(() => {
     if (store)
-      store.setDcMeshingEnabled(isMeshMode || webGLFallbackActive, settings.meshAlgorithm);
+      store.setDcMeshingEnabled(
+        isMeshMode || webGLFallbackActive,
+        settings.meshAlgorithm,
+      );
   }, [store, isMeshMode, webGLFallbackActive, settings.meshAlgorithm]);
 
   useEffect(() => {
@@ -236,11 +292,17 @@ export function App() {
             }
             if (cur.mateMode) {
               store.toggleMateMode();
-            } else if (cur.sketchSession.active && cur.sketchSession.selectedTool) {
+            } else if (
+              cur.sketchSession.active &&
+              cur.sketchSession.selectedTool
+            ) {
               // P0.1: in a sketch session, Esc drops the active drawing
               // tool and returns to select mode so geometry can be picked.
               store.selectSketchTool(null);
-            } else if (cur.sketchSession.active && cur.sketchSession.selection.length > 0) {
+            } else if (
+              cur.sketchSession.active &&
+              cur.sketchSession.selection.length > 0
+            ) {
               store.clearSketchSelection();
             } else {
               store.clearSelection();
@@ -250,7 +312,9 @@ export function App() {
           }
           case " ":
             // Onshape idiom (preset-gated): Space clears the selection.
-            if (CONTROLS_PRESETS[settings.controlsPreset].selection.spaceClears) {
+            if (
+              CONTROLS_PRESETS[settings.controlsPreset].selection.spaceClears
+            ) {
               store.clearSelection();
               e.preventDefault();
             }
@@ -303,7 +367,8 @@ export function App() {
         }
         // View keys come from the controls preset (docs/UX-PRESETS.md) —
         // e.g. FreeCAD binds 1–6 + 0 to all six standard views.
-        const view = CONTROLS_PRESETS[settings.controlsPreset].keys.views[e.key];
+        const view =
+          CONTROLS_PRESETS[settings.controlsPreset].keys.views[e.key];
         if (view) {
           requestView(view);
           e.preventDefault();
@@ -348,185 +413,293 @@ export function App() {
 
   return (
     <WorkspaceUnitsContext.Provider value={settings.units}>
-    <div className={"fd-shell" + (compact ? " fd-compact" : "")}>
-      {/* StrictMode wraps the UI chrome but NOT the 3D <Viewport> below — its
+      <div className={"fd-shell" + (compact ? " fd-compact" : "")}>
+        {/* StrictMode wraps the UI chrome but NOT the 3D <Viewport> below — its
           dev double-mount breaks the R3F canvas (blank-until-resize) and
           double-inits the renderer. See main.tsx. */}
-      <StrictMode>
-      <header className="topbar">
-        <div className="title">
-          FieldDraft <span className="version">v{__APP_VERSION__}</span>
-          <SettingsMenu
-            store={store}
-            state={state}
-            settings={settings}
-            onSettingsChange={setSettings}
-          />
-        </div>
-        <div className="meta">
-          {error ? (
-            <span className="error">kernel error: {error.message}</span>
-          ) : state ? (
-            <>
-              <span data-testid="feature-count">
-                {state.features.length} feature{state.features.length === 1 ? "" : "s"}
-              </span>
-              {isMeshMode && state.meshedBodies.length > 0 ? (
-                <span className="tri-count" data-testid="tri-count">
-                  {state.meshedBodies
-                    .reduce((sum, b) => sum + b.indices.length / 3, 0)
-                    .toLocaleString()}{" "}
-                  △
-                </span>
-              ) : null}
-              {state.sceneSize[0] > 0 || state.sceneSize[1] > 0 || state.sceneSize[2] > 0 ? (
-                <span className="scene-size" data-testid="scene-size">
-                  {state.sceneSize[0].toFixed(1)} × {state.sceneSize[1].toFixed(1)} × {state.sceneSize[2].toFixed(1)} mm
-                </span>
-              ) : null}
-              {state.transientError ? (
-                <span
-                  className="transient-error"
-                  data-testid="transient-error"
-                  role="alert"
-                >
-                  ⚠ {state.transientError}
-                </span>
-              ) : null}
-            </>
-          ) : (
-            <span>loading…</span>
-          )}
-        </div>
-        <AccountButton
-          account={account}
-          onLoggedOut={() => store?.detachServerProject()}
-        />
-        {/* Ticket qh4l: the feature-panel toggle lives on the RIGHT (where the
+        <StrictMode>
+          <header className="topbar">
+            <div className="title">
+              FieldDraft <span className="version">v{__APP_VERSION__}</span>
+              <SettingsMenu
+                store={store}
+                state={state}
+                settings={settings}
+                onSettingsChange={setSettings}
+              />
+            </div>
+            <div className="meta">
+              {error ? (
+                <span className="error">kernel error: {error.message}</span>
+              ) : state ? (
+                <>
+                  <span data-testid="feature-count">
+                    {state.features.length} feature
+                    {state.features.length === 1 ? "" : "s"}
+                  </span>
+                  {isMeshMode && state.meshedBodies.length > 0 ? (
+                    <span className="tri-count" data-testid="tri-count">
+                      {state.meshedBodies
+                        .reduce((sum, b) => sum + b.indices.length / 3, 0)
+                        .toLocaleString()}{" "}
+                      △
+                    </span>
+                  ) : null}
+                  {state.sceneSize[0] > 0 ||
+                  state.sceneSize[1] > 0 ||
+                  state.sceneSize[2] > 0 ? (
+                    <span className="scene-size" data-testid="scene-size">
+                      {state.sceneSize[0].toFixed(1)} ×{" "}
+                      {state.sceneSize[1].toFixed(1)} ×{" "}
+                      {state.sceneSize[2].toFixed(1)} mm
+                    </span>
+                  ) : null}
+                  {state.transientError ? (
+                    <span
+                      className="transient-error"
+                      data-testid="transient-error"
+                      role="alert"
+                    >
+                      ⚠ {state.transientError}
+                    </span>
+                  ) : null}
+                </>
+              ) : (
+                <span>loading…</span>
+              )}
+            </div>
+            <AccountButton
+              account={account}
+              onLoggedOut={() => store?.detachServerProject()}
+            />
+            {/* Ticket qh4l: the feature-panel toggle lives on the RIGHT (where the
             panel docks) and reads as a collapse chevron, not a third ☰ that
             looks identical to the settings menu. ◀ pulls the panel out, ▶
             collapses it. */}
-        <button
-          type="button"
-          className="nav-toggle"
-          data-testid="mobile-nav-toggle"
-          aria-label={mobileNavOpen ? "Collapse panel" : "Expand panel"}
-          aria-expanded={mobileNavOpen}
-          onClick={() => setMobileNavOpen((v) => !v)}
-        >
-          {mobileNavOpen ? "▶" : "◀"}
-        </button>
-      </header>
-      </StrictMode>
-      {/* MT-A: both workspaces stay mounted; we toggle visibility with
+            <button
+              type="button"
+              className="nav-toggle"
+              data-testid="mobile-nav-toggle"
+              aria-label={mobileNavOpen ? "Collapse panel" : "Expand panel"}
+              aria-expanded={mobileNavOpen}
+              onClick={() => setMobileNavOpen((v) => !v)}
+            >
+              {mobileNavOpen ? "▶" : "◀"}
+            </button>
+          </header>
+        </StrictMode>
+        {/* MT-A: both workspaces stay mounted; we toggle visibility with
           the `hidden` attr so the Viewport's GPU context and Monaco are
           never torn down on a tab switch. The active tab is derived from
           the project; part AND assembly both use the part workspace
           (Viewport + Outliner render the assembly when active). */}
-      <div className="fd-workspace" hidden={activeProjectTab?.kind === "script"}>
-        {store && state ? (
-          <StrictMode>
-            <Toolbar store={store} state={state} />
-          </StrictMode>
-        ) : null}
-        <main className="main">
-          <Viewport renderMode={settings.renderMode} brepEdgeMode={settings.brepEdgeMode} frameLoop={settings.frameLoop} showEdgePoints={settings.showEdgePoints} showOctreeCells={settings.showOctreeCells} screenSpaceCsg={settings.screenSpaceCsg} perspective={settings.perspective} controlsPreset={settings.controlsPreset} />
-          {mobileNavOpen ? (
-            <div
-              className="fd-nav-scrim"
-              data-testid="mobile-nav-scrim"
-              onClick={() => setMobileNavOpen(false)}
-            />
-          ) : null}
+        <div
+          className="fd-workspace"
+          hidden={activeProjectTab?.kind === "script"}
+        >
           {store && state ? (
             <StrictMode>
-              <Outliner store={store} state={state} mobileNavOpen={mobileNavOpen} />
+              <Toolbar store={store} state={state} />
             </StrictMode>
           ) : null}
-        </main>
-      </div>
-      <StrictMode>
-      <div className="fd-workspace fd-script-workspace" hidden={activeProjectTab?.kind !== "script"}>
-        {store && state && activeScriptTab ? (
-          <FieldSkriptEditor
-            store={store}
-            tab={activeScriptTab}
-            visible={activeProjectTab?.kind === "script"}
-          />
-        ) : null}
-      </div>
-      {store && state ? <BottomTabs store={store} state={state} /> : null}
-      {state?.loading ? (
-        <div className="fd-loading-overlay">
-          <div className="fd-loading-dialog">
-            <div className="spinner" />
-            <span className="phase">{state.loading.phase}</span>
-          </div>
+          <main className="main">
+            <Viewport
+              renderMode={settings.renderMode}
+              brepEdgeMode={settings.brepEdgeMode}
+              frameLoop={settings.frameLoop}
+              showEdgePoints={settings.showEdgePoints}
+              showOctreeCells={settings.showOctreeCells}
+              screenSpaceCsg={settings.screenSpaceCsg}
+              perspective={settings.perspective}
+              controlsPreset={settings.controlsPreset}
+            />
+            {mobileNavOpen ? (
+              <div
+                className="fd-nav-scrim"
+                data-testid="mobile-nav-scrim"
+                onClick={() => setMobileNavOpen(false)}
+              />
+            ) : null}
+            {store && state ? (
+              <StrictMode>
+                <Outliner
+                  store={store}
+                  state={state}
+                  mobileNavOpen={mobileNavOpen}
+                />
+              </StrictMode>
+            ) : null}
+          </main>
         </div>
-      ) : null}
-      {showHelp ? (
-        <div
-          className="fd-help-overlay"
-          onClick={() => setShowHelp(false)}
-        >
+        <StrictMode>
           <div
-            className="fd-help-panel"
-            onClick={(e) => e.stopPropagation()}
+            className="fd-workspace fd-script-workspace"
+            hidden={activeProjectTab?.kind !== "script"}
           >
-            <h2>Keyboard Shortcuts</h2>
-            <table>
-              <tbody>
-                <tr><td><kbd>B</kbd></td><td>Add Box</td></tr>
-                <tr><td><kbd>S</kbd></td><td>Add Sphere</td></tr>
-                <tr><td><kbd>C</kbd></td><td>Add Cylinder</td></tr>
-                <tr><td><kbd>T</kbd></td><td>Add Torus</td></tr>
-                <tr><td><kbd>H</kbd></td><td>Add Hole</td></tr>
-                <tr><td><kbd>Del</kbd></td><td>Delete selection</td></tr>
-                <tr><td><kbd>Esc</kbd></td><td>Clear selection</td></tr>
-                <tr><td><kbd>Ctrl+Z</kbd></td><td>Undo</td></tr>
-                <tr><td><kbd>Ctrl+Shift+Z</kbd></td><td>Redo</td></tr>
-                <tr><td><kbd>Ctrl+A</kbd></td><td>Select all</td></tr>
-                <tr><td><kbd>Ctrl+D</kbd></td><td>Duplicate</td></tr>
-                <tr><td><kbd>Ctrl+S</kbd></td><td>Save project</td></tr>
-                {(() => {
-                  const row = viewShortcutRow(CONTROLS_PRESETS[settings.controlsPreset]);
-                  return (
+            {store && state && activeScriptTab ? (
+              <FieldSkriptEditor
+                store={store}
+                tab={activeScriptTab}
+                visible={activeProjectTab?.kind === "script"}
+              />
+            ) : null}
+          </div>
+          {store && state ? <BottomTabs store={store} state={state} /> : null}
+          {state?.loading ? (
+            <div className="fd-loading-overlay">
+              <div className="fd-loading-dialog">
+                <div className="spinner" />
+                <span className="phase">{state.loading.phase}</span>
+              </div>
+            </div>
+          ) : null}
+          {showHelp ? (
+            <div className="fd-help-overlay" onClick={() => setShowHelp(false)}>
+              <div
+                className="fd-help-panel"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <h2>Keyboard Shortcuts</h2>
+                <table>
+                  <tbody>
                     <tr>
                       <td>
-                        {row.keys.split(" / ").map((k, i) => (
-                          <span key={k}>
-                            {i > 0 && " / "}
-                            <kbd>{k}</kbd>
-                          </span>
-                        ))}
+                        <kbd>B</kbd>
                       </td>
-                      <td>{row.action}</td>
+                      <td>Add Box</td>
                     </tr>
-                  );
-                })()}
-                <tr><td><kbd>Arrows</kbd></td><td>Nudge selection</td></tr>
-                <tr><td><kbd>F1</kbd></td><td>Toggle this help</td></tr>
-                <tr><td><kbd>F2</kbd></td><td>Report an issue</td></tr>
-              </tbody>
-            </table>
-            <button type="button" onClick={() => setShowHelp(false)}>Close</button>
-          </div>
-        </div>
-      ) : null}
-      </StrictMode>
-      {/* WP3: account overlay (login / dashboard / gallery / invites). Renders
+                    <tr>
+                      <td>
+                        <kbd>S</kbd>
+                      </td>
+                      <td>Add Sphere</td>
+                    </tr>
+                    <tr>
+                      <td>
+                        <kbd>C</kbd>
+                      </td>
+                      <td>Add Cylinder</td>
+                    </tr>
+                    <tr>
+                      <td>
+                        <kbd>T</kbd>
+                      </td>
+                      <td>Add Torus</td>
+                    </tr>
+                    <tr>
+                      <td>
+                        <kbd>H</kbd>
+                      </td>
+                      <td>Add Hole</td>
+                    </tr>
+                    <tr>
+                      <td>
+                        <kbd>Del</kbd>
+                      </td>
+                      <td>Delete selection</td>
+                    </tr>
+                    <tr>
+                      <td>
+                        <kbd>Esc</kbd>
+                      </td>
+                      <td>Clear selection</td>
+                    </tr>
+                    <tr>
+                      <td>
+                        <kbd>Ctrl+Z</kbd>
+                      </td>
+                      <td>Undo</td>
+                    </tr>
+                    <tr>
+                      <td>
+                        <kbd>Ctrl+Shift+Z</kbd>
+                      </td>
+                      <td>Redo</td>
+                    </tr>
+                    <tr>
+                      <td>
+                        <kbd>Ctrl+A</kbd>
+                      </td>
+                      <td>Select all</td>
+                    </tr>
+                    <tr>
+                      <td>
+                        <kbd>Ctrl+D</kbd>
+                      </td>
+                      <td>Duplicate</td>
+                    </tr>
+                    <tr>
+                      <td>
+                        <kbd>Ctrl+S</kbd>
+                      </td>
+                      <td>Save project</td>
+                    </tr>
+                    {(() => {
+                      const row = viewShortcutRow(
+                        CONTROLS_PRESETS[settings.controlsPreset],
+                      );
+                      return (
+                        <tr>
+                          <td>
+                            {row.keys.split(" / ").map((k, i) => (
+                              <span key={k}>
+                                {i > 0 && " / "}
+                                <kbd>{k}</kbd>
+                              </span>
+                            ))}
+                          </td>
+                          <td>{row.action}</td>
+                        </tr>
+                      );
+                    })()}
+                    <tr>
+                      <td>
+                        <kbd>Arrows</kbd>
+                      </td>
+                      <td>Nudge selection</td>
+                    </tr>
+                    <tr>
+                      <td>
+                        <kbd>F1</kbd>
+                      </td>
+                      <td>Toggle this help</td>
+                    </tr>
+                    <tr>
+                      <td>
+                        <kbd>F2</kbd>
+                      </td>
+                      <td>Report an issue</td>
+                    </tr>
+                  </tbody>
+                </table>
+                <button type="button" onClick={() => setShowHelp(false)}>
+                  Close
+                </button>
+              </div>
+            </div>
+          ) : null}
+        </StrictMode>
+        {/* WP3: account overlay (login / dashboard / gallery / invites). Renders
           nothing unless an account screen is open, so the modeling app and
           guest mode are undisturbed. Kept OUTSIDE StrictMode's double-mount to
           avoid duplicate `/api/me`-driven effects. */}
-      <AccountLayer
-        account={account}
-        onOpenProject={openServerProject}
-        onOpenCopy={openServerCopy}
-        onLoadFdraft={loadFdraftBytes}
-        getCurrentDocument={currentDocument}
-        boundProjectId={state?.projectId ?? null}
-      />
-    </div>
+        <AccountLayer
+          account={account}
+          onOpenProject={openServerProject}
+          onOpenCopy={openServerCopy}
+          onLoadFdraft={loadFdraftBytes}
+          getCurrentDocument={currentDocument}
+          boundProjectId={state?.projectId ?? null}
+        />
+        {/* WP9 B4: one-shot guest-project import offer (first login with local
+          work). Non-intrusive — the modeling app stays usable behind it. */}
+        {importPrompt === "offer" && (
+          <GuestImportBanner
+            onImport={importGuestProject}
+            onDismiss={dismissGuestImport}
+          />
+        )}
+      </div>
     </WorkspaceUnitsContext.Provider>
   );
 }

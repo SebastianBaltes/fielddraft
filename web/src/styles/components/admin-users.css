@@ -1,0 +1,138 @@
+/* AdminUsers.tsx — admin-only user management (ban / unban).
+ *
+ * One top-level class `.fd-admin-users`; children nest unprefixed. Tokens
+ * only; light mode; font-size ≥ 1rem. */
+
+.fd-admin-users {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  width: 100%;
+  max-width: 60rem;
+  margin: 0 auto;
+  padding: var(--space-6) var(--space-5);
+  font-size: var(--fs-base);
+  color: var(--color-text);
+
+  & .admin-bar {
+    display: flex;
+    align-items: center;
+    gap: var(--space-3);
+  }
+
+  & .admin-title {
+    margin: 0;
+    flex: 1;
+    font-size: var(--fs-2xl);
+    font-weight: var(--fw-semibold);
+  }
+
+  & .close {
+    font-family: inherit;
+    font-size: var(--fs-lg);
+    line-height: 1;
+    width: 2.25rem;
+    height: 2.25rem;
+    padding: 0;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-sm);
+    background: var(--color-bg-elevated);
+    color: var(--color-text-muted);
+    cursor: pointer;
+
+    &:hover {
+      background: var(--color-bg-hover);
+      color: var(--color-text);
+    }
+  }
+
+  & .error {
+    margin: 0;
+    font-size: var(--fs-base);
+    color: var(--color-error-text);
+  }
+
+  & .empty {
+    margin: var(--space-5) 0;
+    font-size: var(--fs-md);
+    color: var(--color-text-muted);
+    text-align: center;
+  }
+
+  & .users-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: var(--fs-base);
+
+    & th,
+    & td {
+      text-align: left;
+      padding: var(--space-2) var(--space-3);
+      border-bottom: 1px solid var(--color-divider);
+    }
+
+    & th {
+      font-weight: var(--fw-semibold);
+      color: var(--color-text-muted);
+    }
+
+    & .muted {
+      color: var(--color-text-subtle);
+    }
+
+    & .role {
+      padding: 0 var(--space-2);
+      border-radius: var(--radius-pill);
+      font-size: var(--fs-base);
+    }
+
+    & .role-admin {
+      background: var(--color-accent-soft);
+      color: var(--color-accent);
+    }
+
+    & .role-user {
+      background: var(--color-bg-sunken);
+      color: var(--color-text-muted);
+    }
+
+    & .status {
+      padding: 0 var(--space-2);
+      border-radius: var(--radius-pill);
+      font-size: var(--fs-base);
+    }
+
+    & .status.is-active {
+      background: var(--color-union-soft);
+      color: var(--color-success-text);
+    }
+
+    & .status.is-banned {
+      background: var(--color-difference-soft);
+      color: var(--color-error-text);
+    }
+
+    & .link {
+      font-family: inherit;
+      font-size: var(--fs-base);
+      padding: 0;
+      border: none;
+      background: transparent;
+      color: var(--color-accent);
+      cursor: pointer;
+
+      &.danger {
+        color: var(--color-error-text);
+      }
+
+      &:disabled {
+        opacity: 0.6;
+        cursor: default;
+      }
+
+      &:not(:disabled):hover {
+        text-decoration: underline;
+      }
+    }
+  }
+}

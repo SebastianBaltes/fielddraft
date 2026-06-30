@@ -136,18 +136,50 @@ export function AccountButton({ account, onLoggedOut }: AccountButtonProps) {
             Issues
           </button>
           {isAdmin && (
-            <button
-              type="button"
-              role="menuitem"
-              className="menu-item"
-              data-testid="account-invites"
-              onClick={() => {
-                open("invites");
-                close();
-              }}
-            >
-              Invites
-            </button>
+            <>
+              <div className="menu-separator" role="separator" />
+              <button
+                type="button"
+                role="menuitem"
+                className="menu-item"
+                data-testid="account-invites"
+                onClick={() => {
+                  open("invites");
+                  close();
+                }}
+              >
+                Invites
+              </button>
+              <button
+                type="button"
+                role="menuitem"
+                className="menu-item"
+                data-testid="account-alerts"
+                onClick={() => {
+                  open("admin-alerts");
+                  close();
+                }}
+              >
+                Alerts
+                {state.unseenAlertCount > 0 && (
+                  <span className="badge" data-testid="account-alerts-badge">
+                    {state.unseenAlertCount}
+                  </span>
+                )}
+              </button>
+              <button
+                type="button"
+                role="menuitem"
+                className="menu-item"
+                data-testid="account-users"
+                onClick={() => {
+                  open("admin-users");
+                  close();
+                }}
+              >
+                Users
+              </button>
+            </>
           )}
           <div className="menu-separator" role="separator" />
           <button

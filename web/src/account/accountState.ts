@@ -29,7 +29,9 @@ export type AccountOverlay =
   | "dashboard"
   | "gallery"
   | "invites"
-  | "tickets";
+  | "tickets"
+  | "admin-alerts"
+  | "admin-users";
 
 export interface AccountState {
   status: SessionStatus;
@@ -43,6 +45,9 @@ export interface AccountState {
   /** Ticket id to deep-link into when the tickets overlay opens (e.g. straight
    *  from a filed report), or null to open the list. One-shot. */
   ticketPrefill: string | null;
+  /** Count of unseen admin alerts, surfaced as a badge on the admin menu entry.
+   *  Always 0 for non-admins (never fetched). */
+  unseenAlertCount: number;
 }
 
 export type AccountAction =
@@ -57,6 +62,8 @@ export type AccountAction =
   /** Open the tickets overlay deep-linked to a specific ticket (or null for
    *  the list). */
   | { type: "open-ticket"; ticketId: string | null }
+  /** Update the unseen admin-alert badge count. */
+  | { type: "unseen-alerts"; count: number }
   /** Close the current overlay (back to the modeling app). */
   | { type: "close" };
 
@@ -85,6 +92,7 @@ export function initialAccountState(search = ""): AccountState {
     invitePrefill,
     resetPrefill,
     ticketPrefill: null,
+    unseenAlertCount: 0,
   };
 }
 
@@ -123,6 +131,7 @@ export function accountReducer(
         user: null,
         overlay: null,
         ticketPrefill: null,
+        unseenAlertCount: 0,
       };
     case "open":
       // Opening any non-tickets screen clears a stale ticket deep-link.
@@ -134,6 +143,8 @@ export function accountReducer(
       };
     case "open-ticket":
       return { ...state, overlay: "tickets", ticketPrefill: action.ticketId };
+    case "unseen-alerts":
+      return { ...state, unseenAlertCount: Math.max(0, action.count) };
     case "close":
       return { ...state, overlay: null, ticketPrefill: null };
     default:

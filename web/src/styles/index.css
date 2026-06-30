@@ -36,3 +36,8 @@
 
 /* WP4 — ticket / issues UI (list, detail, create, thread). */
 @import "./components/tickets.css";
+
+/* WP9 — admin moderation UI + guest-import banner. */
+@import "./components/admin-alerts.css";
+@import "./components/admin-users.css";
+@import "./components/guest-import.css";

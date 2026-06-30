@@ -91,6 +91,9 @@
   }
 
   & .menu-item {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
     text-align: left;
     font-family: inherit;
     font-size: var(--fs-base);
@@ -103,6 +106,19 @@
 
     &:hover {
       background: var(--color-bg-hover);
+    }
+
+    & .badge {
+      margin-left: auto;
+      min-width: 1.5rem;
+      padding: 0 var(--space-2);
+      font-size: var(--fs-base);
+      font-weight: var(--fw-semibold);
+      line-height: 1.5rem;
+      text-align: center;
+      color: var(--color-text-on-accent);
+      background: var(--color-error);
+      border-radius: var(--radius-pill);
     }
   }
 

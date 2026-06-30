@@ -21,6 +21,8 @@ import { Dashboard } from "./Dashboard";
 import { Gallery } from "./Gallery";
 import { InvitePanel } from "./InvitePanel";
 import { TicketsView } from "./TicketsView";
+import { AdminAlerts } from "./AdminAlerts";
+import { AdminUsers } from "./AdminUsers";
 import type { UseAccount } from "./useAccount";
 import type { Project } from "../api/platform";
 
@@ -47,7 +49,7 @@ export function AccountLayer({
   getCurrentDocument,
   boundProjectId,
 }: AccountLayerProps) {
-  const { state, isAdmin, open, close, login, register } = account;
+  const { state, isAdmin, open, openTicket, close, login, register } = account;
   const overlay = state.overlay;
   if (overlay === null) return null;
 
@@ -58,7 +60,9 @@ export function AccountLayer({
     (overlay === "dashboard" ||
       overlay === "invites" ||
       overlay === "gallery" ||
-      overlay === "tickets")
+      overlay === "tickets" ||
+      overlay === "admin-alerts" ||
+      overlay === "admin-users")
   ) {
     return null;
   }
@@ -152,6 +156,39 @@ export function AccountLayer({
           }}
           onClose={close}
           initialTicketId={state.ticketPrefill}
+        />
+      </div>
+    );
+  }
+
+  if (overlay === "admin-alerts") {
+    // Admin-only; a non-admin is bounced to the dashboard (the entry points
+    // already gate on role, this is defense in depth).
+    if (!isAdmin) {
+      open("dashboard");
+      return null;
+    }
+    return (
+      <div className="fd-account-overlay" data-testid="account-overlay">
+        <AdminAlerts
+          onClose={() => open("dashboard")}
+          onOpenTicket={(ticketId) => openTicket(ticketId)}
+          onSeenChange={(count) => account.setUnseenAlerts(count)}
+        />
+      </div>
+    );
+  }
+
+  if (overlay === "admin-users") {
+    if (!isAdmin) {
+      open("dashboard");
+      return null;
+    }
+    return (
+      <div className="fd-account-overlay" data-testid="account-overlay">
+        <AdminUsers
+          onClose={() => open("dashboard")}
+          selfId={state.user?.id ?? null}
         />
       </div>
     );
