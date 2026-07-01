@@ -24,6 +24,17 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.351",
+    entries: [
+      {
+        kind: "fix",
+        text: "Überstehende/überschießende Linien verhindern keine geschlossene Fläche mehr — ein Rechteck mit Fahnenmast-Überstand wird korrekt grau gefüllt (und ist extrudierbar)",
+        scope: "sketch",
+        tickets: ["mdye"],
+      },
+    ],
+  },
+  {
     version: "0.6.349",
     entries: [
       {

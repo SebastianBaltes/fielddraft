@@ -78,8 +78,14 @@ interface Extracted {
   edges: Vec2[][];
 }
 
-function samplePathContour(contour: unknown): { pts: Vec2[]; closed: boolean } | null {
-  const cc = contour as { start?: unknown; segments?: unknown; closed?: unknown };
+function samplePathContour(
+  contour: unknown,
+): { pts: Vec2[]; closed: boolean } | null {
+  const cc = contour as {
+    start?: unknown;
+    segments?: unknown;
+    closed?: unknown;
+  };
   const start = asVec2(cc.start);
   const segs = cc.segments;
   if (!start || !Array.isArray(segs)) return null;
@@ -130,7 +136,9 @@ function extract(subCalls: ReadonlyArray<SubCall>): Extracted {
       const c = asVec2(call.params.center);
       const r = asNum(call.params.radius);
       if (c && r !== null && r > 0) {
-        polygons.push(sampleArc(c, r, 0, TAU, TAU / CIRCLE_SAMPLES).slice(0, -1));
+        polygons.push(
+          sampleArc(c, r, 0, TAU, TAU / CIRCLE_SAMPLES).slice(0, -1),
+        );
       }
     } else if (call.type === "sketch_ellipse") {
       const c = asVec2(call.params.center);
@@ -145,7 +153,10 @@ function extract(subCalls: ReadonlyArray<SubCall>): Extracted {
           const t = (TAU * i) / CIRCLE_SAMPLES;
           const ex = rx * Math.cos(t);
           const ey = ry * Math.sin(t);
-          poly.push([c[0] + ex * cosR - ey * sinR, c[1] + ex * sinR + ey * cosR]);
+          poly.push([
+            c[0] + ex * cosR - ey * sinR,
+            c[1] + ex * sinR + ey * cosR,
+          ]);
         }
         polygons.push(poly);
       }
@@ -181,10 +192,16 @@ function extract(subCalls: ReadonlyArray<SubCall>): Extracted {
           polygons.push([
             o.aPlus,
             o.bPlus,
-            ...sampleArc(o.centerB, o.radius, o.capBStart, -Math.PI).slice(1, -1),
+            ...sampleArc(o.centerB, o.radius, o.capBStart, -Math.PI).slice(
+              1,
+              -1,
+            ),
             o.bMinus,
             o.aMinus,
-            ...sampleArc(o.centerA, o.radius, o.capAStart, -Math.PI).slice(1, -1),
+            ...sampleArc(o.centerA, o.radius, o.capAStart, -Math.PI).slice(
+              1,
+              -1,
+            ),
           ]);
         }
       }
@@ -217,7 +234,9 @@ function extract(subCalls: ReadonlyArray<SubCall>): Extracted {
       }
     }
   }
-  return { polygons, edges };
+  // Split overshooting/overhanging edges at T-junctions so a real loop that is
+  // only touched partway along another line still welds shut (ticket mdye).
+  return { polygons, edges: planarizeEdges(edges) };
 }
 
 // ── endpoint welding ─────────────────────────────────────────────────
@@ -252,6 +271,68 @@ class VertexPool {
   }
 }
 
+/**
+ * Planarize the open edges at T-junctions (ticket mdye). Where one edge's
+ * ENDPOINT lands on the INTERIOR of another edge — an overshooting / overhanging
+ * line whose corner is only touched partway along — split that edge there so the
+ * two meet at a real graph vertex. Without this the endpoint-only weld leaves
+ * the true loop open and it never shades. The overshoot beyond the junction
+ * survives as its own (dangling) edge, which bounds no positive-area face and is
+ * dropped exactly like a separate stub already is.
+ */
+export function planarizeEdges(edges: ReadonlyArray<Vec2[]>): Vec2[][] {
+  // Junction candidates: every edge's two endpoints.
+  const junctions: Vec2[] = [];
+  for (const e of edges) {
+    if (e.length >= 2) junctions.push(e[0], e[e.length - 1]);
+  }
+  const out: Vec2[][] = [];
+  for (const e of edges) {
+    if (e.length < 2) {
+      out.push(e.slice());
+      continue;
+    }
+    let current: Vec2[] = [e[0]];
+    for (let s = 0; s + 1 < e.length; s++) {
+      const p = e[s];
+      const q = e[s + 1];
+      const dx = q[0] - p[0];
+      const dy = q[1] - p[1];
+      const segLen2 = dx * dx + dy * dy;
+      const cuts: { t: number; pt: Vec2 }[] = [];
+      if (segLen2 > WELD_TOL_MM * WELD_TOL_MM) {
+        const segLen = Math.sqrt(segLen2);
+        for (const j of junctions) {
+          const t = ((j[0] - p[0]) * dx + (j[1] - p[1]) * dy) / segLen2;
+          if (t <= 0 || t >= 1) continue; // at or past an endpoint, not interior
+          // On the segment (perpendicular distance within weld tol)?
+          const projX = p[0] + t * dx;
+          const projY = p[1] + t * dy;
+          if (Math.hypot(j[0] - projX, j[1] - projY) > WELD_TOL_MM) continue;
+          // Not effectively at p or q.
+          if (t * segLen <= WELD_TOL_MM || (1 - t) * segLen <= WELD_TOL_MM)
+            continue;
+          cuts.push({ t, pt: [projX, projY] });
+        }
+      }
+      cuts.sort((a, b) => a.t - b.t);
+      for (const c of cuts) {
+        const last = current[current.length - 1];
+        if (Math.hypot(c.pt[0] - last[0], c.pt[1] - last[1]) <= WELD_TOL_MM)
+          continue;
+        current.push(c.pt);
+        out.push(current); // close the sub-edge at the junction …
+        current = [c.pt]; // … and start a new one from it
+      }
+      const last = current[current.length - 1];
+      if (Math.hypot(q[0] - last[0], q[1] - last[1]) > WELD_TOL_MM)
+        current.push(q);
+    }
+    if (current.length >= 2) out.push(current);
+  }
+  return out;
+}
+
 // ── planar face traversal ────────────────────────────────────────────
 
 /**
@@ -276,7 +357,10 @@ export function loopsFromEdges(edges: ReadonlyArray<Vec2[]>): Vec2[][] {
     if (u === v) {
       // Curve closes onto itself — already a loop.
       const loop = pts.slice(0, -1);
-      if (loop.length >= 3 && Math.abs(signedArea(loop)) > MIN_REGION_AREA_MM2) {
+      if (
+        loop.length >= 3 &&
+        Math.abs(signedArea(loop)) > MIN_REGION_AREA_MM2
+      ) {
         faces.push(loop);
       }
       continue;

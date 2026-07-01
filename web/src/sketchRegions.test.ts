@@ -74,6 +74,20 @@ describe("sketchRegions", () => {
     expect(Math.abs(signedArea(regions[0]))).toBeCloseTo(100, 2);
   });
 
+  it("an overshooting edge (T-junction) still forms the region (ticket mdye)", () => {
+    // The left edge runs PAST the bottom-left corner; the bottom edge meets it
+    // partway along (a T-junction, not a shared endpoint). The overhang must not
+    // stop the rectangle from shading — it is split at the junction.
+    const regions = closedRegionPolygons([
+      line([0, 0], [10, 0]), // bottom — its (0,0) sits on the left line's interior
+      line([10, 0], [10, 8]),
+      line([10, 8], [0, 8]),
+      line([0, 8], [0, -10]), // left edge overshoots below the corner
+    ]);
+    expect(regions).toHaveLength(1);
+    expect(Math.abs(signedArea(regions[0]))).toBeCloseTo(80, 2);
+  });
+
   it("welds endpoints within tolerance only", () => {
     const closeEnough = closedRegionPolygons([
       line([0, 0], [10, 0]),
@@ -95,7 +109,10 @@ describe("sketchRegions", () => {
   it("circles, rectangles and polygons are regions by themselves", () => {
     const regions = closedRegionPolygons([
       { type: "sketch_circle", params: { center: [0, 0], radius: 5 } },
-      { type: "sketch_rectangle", params: { corner_a: [20, 0], corner_b: [30, 10] } },
+      {
+        type: "sketch_rectangle",
+        params: { corner_a: [20, 0], corner_b: [30, 10] },
+      },
       { type: "sketch_polygon", params: { vertices: [50, 0, 60, 0, 55, 10] } },
     ]);
     expect(regions).toHaveLength(3);
@@ -110,7 +127,12 @@ describe("sketchRegions", () => {
     const regions = closedRegionPolygons([
       {
         type: "sketch_arc",
-        params: { center: [0, 0], radius: 5, start_angle: 0, sweep_angle: Math.PI },
+        params: {
+          center: [0, 0],
+          radius: 5,
+          start_angle: 0,
+          sweep_angle: Math.PI,
+        },
       },
       line([-5, 0], [5, 0]),
     ]);
@@ -123,8 +145,14 @@ describe("sketchRegions", () => {
       line([0, 0], [10, 0]),
       line([10, 0], [10, 10]),
       line([10, 10], [0, 10]),
-      { type: "sketch_line", params: { start: [0, 10], end: [0, 0], construction: true } },
-      { type: "sketch_circle", params: { center: [0, 0], radius: 5, construction: true } },
+      {
+        type: "sketch_line",
+        params: { start: [0, 10], end: [0, 0], construction: true },
+      },
+      {
+        type: "sketch_circle",
+        params: { center: [0, 0], radius: 5, construction: true },
+      },
     ]);
     expect(regions).toHaveLength(0);
   });
@@ -148,7 +176,10 @@ describe("sketchRegions", () => {
 
   it("slot produces a stadium region", () => {
     const regions = closedRegionPolygons([
-      { type: "sketch_slot", params: { center_a: [0, 0], center_b: [10, 0], radius: 2 } },
+      {
+        type: "sketch_slot",
+        params: { center_a: [0, 0], center_b: [10, 0], radius: 2 },
+      },
     ]);
     expect(regions).toHaveLength(1);
     // Stadium area = 2r·L + πr² = 40 + 4π.
