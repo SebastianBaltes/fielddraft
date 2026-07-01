@@ -359,6 +359,16 @@ export default defineConfig(({ mode }) => ({
     strictPort: true,
     allowedHosts: true,
     https: hasTailscaleCert ? { cert: certFile, key: keyFile } : undefined,
+    // Forward API calls to the local Go server (docker compose / `just dev-full`)
+    // so a dev running vite on :5173 gets real auth/invites/projects. The
+    // dev-only /api/tickets and /api/file middlewares register first and keep
+    // handling their own routes; everything else under /api hits the backend.
+    proxy: {
+      "/api": {
+        target: "http://localhost:8080",
+        changeOrigin: true,
+      },
+    },
   },
   optimizeDeps: {
     exclude: ["./src/wasm/fielddraft_kernel.js"],

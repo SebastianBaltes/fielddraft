@@ -76,28 +76,32 @@ func (s *Server) requireAdmin(r *http.Request) *User {
 
 // inviteResponse is the shape returned by GET/POST /api/invites.
 type inviteResponse struct {
-	Token       string     `json:"token"`
-	CreatedBy   string     `json:"created_by"`
-	Note        string     `json:"note"`
-	ExpiresAt   time.Time  `json:"expires_at"`
-	UsedBy      *string    `json:"used_by"`
-	UsedAt      *time.Time `json:"used_at"`
-	CreatedAt   time.Time  `json:"created_at"`
-	Status      string     `json:"status"`       // open | used | expired
-	RegisterURL string     `json:"register_url"` // …/register?invite=<token>
+	Token        string     `json:"token"`
+	CreatedBy    string     `json:"created_by"`
+	InviteeName  string     `json:"invitee_name"`
+	InviteeEmail string     `json:"invitee_email"`
+	Message      string     `json:"message"`
+	ExpiresAt    time.Time  `json:"expires_at"`
+	UsedBy       *string    `json:"used_by"`
+	UsedAt       *time.Time `json:"used_at"`
+	CreatedAt    time.Time  `json:"created_at"`
+	Status       string     `json:"status"`       // open | used | expired
+	RegisterURL  string     `json:"register_url"` // …/register?invite=<token>
 }
 
 func toInviteResponse(inv *Invite, now time.Time) inviteResponse {
 	return inviteResponse{
-		Token:       inv.Token,
-		CreatedBy:   inv.CreatedBy,
-		Note:        inv.Note,
-		ExpiresAt:   inv.ExpiresAt,
-		UsedBy:      inv.UsedBy,
-		UsedAt:      inv.UsedAt,
-		CreatedAt:   inv.CreatedAt,
-		Status:      inv.Status(now),
-		RegisterURL: "/register?invite=" + inv.Token,
+		Token:        inv.Token,
+		CreatedBy:    inv.CreatedBy,
+		InviteeName:  inv.InviteeName,
+		InviteeEmail: inv.InviteeEmail,
+		Message:      inv.Message,
+		ExpiresAt:    inv.ExpiresAt,
+		UsedBy:       inv.UsedBy,
+		UsedAt:       inv.UsedAt,
+		CreatedAt:    inv.CreatedAt,
+		Status:       inv.Status(now),
+		RegisterURL:  "/register?invite=" + inv.Token,
 	}
 }
 
@@ -108,8 +112,10 @@ func (s *Server) handleCreateInvite(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		Note      string `json:"note"`
-		ExpiresAt string `json:"expires_at"` // optional RFC3339; default +14d
+		InviteeName  string `json:"invitee_name"`
+		InviteeEmail string `json:"invitee_email"`
+		Message      string `json:"message"`
+		ExpiresAt    string `json:"expires_at"` // optional RFC3339; default +14d
 	}
 	// Body is optional — ignore decode errors on an empty body.
 	json.NewDecoder(r.Body).Decode(&body)
@@ -120,7 +126,7 @@ func (s *Server) handleCreateInvite(w http.ResponseWriter, r *http.Request) {
 			expires = t.UTC()
 		}
 	}
-	inv := s.store.CreateInvite(admin.ID, body.Note, expires)
+	inv := s.store.CreateInvite(admin.ID, body.InviteeName, body.InviteeEmail, body.Message, expires)
 	if inv == nil {
 		http.Error(w, `{"error":"could not create invite"}`, http.StatusInternalServerError)
 		return

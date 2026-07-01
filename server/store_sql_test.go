@@ -77,9 +77,13 @@ func TestSQLStoreRoundTrip(t *testing.T) {
 	if !store.HasAdmin() {
 		t.Fatal("HasAdmin false after creating an admin")
 	}
-	inv := store.CreateInvite(admin.ID, "note", time.Now().Add(time.Hour))
+	inv := store.CreateInvite(admin.ID, "Charlie", "charlie@test.com", "welcome", time.Now().Add(time.Hour))
 	if inv == nil {
 		t.Fatal("CreateInvite nil")
+	}
+	if got := store.GetInvite(inv.Token); got == nil ||
+		got.InviteeName != "Charlie" || got.InviteeEmail != "charlie@test.com" || got.Message != "welcome" {
+		t.Fatalf("GetInvite recipient fields: %+v", got)
 	}
 	if _, err := store.ConsumeInvite(inv.Token, u.ID); err != nil {
 		t.Fatalf("ConsumeInvite: %v", err)

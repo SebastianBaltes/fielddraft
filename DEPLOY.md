@@ -37,6 +37,27 @@ docker compose up --build -d
 
 Dev env vars (host port overrides) live in `.env` — see `.env.example`.
 
+### Full local stack with login (`just dev-full`)
+
+For a working local login, run the DB + Go server (via docker compose) and the
+Vite dev server together:
+
+```bash
+just dev-full
+```
+
+This brings up `db` + `server` in the background and starts Vite on
+`http://localhost:5173`. Vite proxies `/api` → `http://localhost:8080` (the Go
+server), so auth/invites/projects work end-to-end.
+
+A fresh dev DB seeds a default admin — **log in with `admin@local` / `admin`**
+(override via `FIELDDRAFT_ADMIN_EMAIL` / `FIELDDRAFT_ADMIN_PASSWORD` in `.env`).
+The agent API is enabled too, with dev Service-Tokens `dev-po` / `dev-coding`
+(override via `FIELDDRAFT_PO_SERVICE_TOKEN` / `FIELDDRAFT_CODING_SERVICE_TOKEN`).
+
+Stop the backend with `docker compose down` (add `-v` to also wipe the DB and
+re-seed the admin on the next boot).
+
 ---
 
 ## Production Deployment

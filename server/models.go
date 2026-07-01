@@ -62,15 +62,18 @@ type Snapshot struct {
 	CreatedAt time.Time       `json:"created_at"`
 }
 
-// Invite is a single-use, admin-issued registration token.
+// Invite is a single-use, admin-issued registration token. It carries the
+// intended recipient (name + email) and an optional invitation message.
 type Invite struct {
-	Token     string     `json:"token"`
-	CreatedBy string     `json:"created_by"`
-	Note      string     `json:"note"`
-	ExpiresAt time.Time  `json:"expires_at"`
-	UsedBy    *string    `json:"used_by"` // nil while open
-	UsedAt    *time.Time `json:"used_at"` // nil while open
-	CreatedAt time.Time  `json:"created_at"`
+	Token        string     `json:"token"`
+	CreatedBy    string     `json:"created_by"`
+	InviteeName  string     `json:"invitee_name"`
+	InviteeEmail string     `json:"invitee_email"`
+	Message      string     `json:"message"`
+	ExpiresAt    time.Time  `json:"expires_at"`
+	UsedBy       *string    `json:"used_by"` // nil while open
+	UsedAt       *time.Time `json:"used_at"` // nil while open
+	CreatedAt    time.Time  `json:"created_at"`
 }
 
 // Status reports an invite's lifecycle bucket for the admin list.

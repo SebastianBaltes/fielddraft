@@ -45,6 +45,25 @@ dev: build-wasm
     @echo "▶ ${FIELDDRAFT_INSTANCE:-fielddraft} dev server on port ${FIELDDRAFT_WEB_PORT:-5173}"
     cd web && {{nvm_use}} && npm run dev
 
+# Full local stack: MariaDB + Go server (docker compose) + Vite dev server.
+# Brings up db+server in the background (seeds admin@local / admin on a fresh
+# DB), waits for the server to be healthy, then runs vite — which proxies /api
+# to the local Go server (see web/vite.config.ts). Gives a working local login.
+# Stop the backend afterwards with `docker compose down`.
+dev-full: build-wasm
+    #!/usr/bin/env bash
+    set -euo pipefail
+    echo "▶ bringing up db + server (docker compose)…"
+    docker compose up --build -d db server
+    echo "▶ waiting for the Go server on :${FIELDDRAFT_SERVER_PORT:-8080}…"
+    # Any HTTP response (even 401/404) means the server is up and migrations ran.
+    for i in $(seq 1 60); do
+        if curl -s -o /dev/null "http://localhost:${FIELDDRAFT_SERVER_PORT:-8080}/api/me"; then break; fi
+        sleep 1
+    done
+    echo "▶ login: admin@local / admin — vite on port ${FIELDDRAFT_WEB_PORT:-5173}"
+    cd web && {{nvm_use}} && npm run dev
+
 # Build the full web bundle (WASM + Vite).
 build: build-wasm
     cd web && {{nvm_use}} && npm run build
