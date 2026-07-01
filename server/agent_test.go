@@ -18,6 +18,7 @@ const (
 // configured, plus a registered plain user who can author tickets.
 type agentEnv struct {
 	store   Store
+	tickets TicketStore // same underlying store, ticket-domain view (WP15)
 	srv     *httptest.Server
 	client  *http.Client
 	cookies []*http.Cookie
@@ -49,7 +50,7 @@ func newAgentEnv(t *testing.T) *agentEnv {
 	json.NewDecoder(resp.Body).Decode(&u)
 	cookies := resp.Cookies()
 	resp.Body.Close()
-	return &agentEnv{store: store, srv: ts, client: client, cookies: cookies, userID: u.ID}
+	return &agentEnv{store: store, tickets: store.(TicketStore), srv: ts, client: client, cookies: cookies, userID: u.ID}
 }
 
 // agentReq issues a request with an optional Bearer token and optional session
@@ -196,12 +197,12 @@ func TestVerdictAcceptedCreatesWorkOrder(t *testing.T) {
 	if out.WorkOrder == nil || out.WorkOrder.TicketID != id {
 		t.Fatalf("work-order not created: %+v", out.WorkOrder)
 	}
-	if e.store.GetWorkOrder(id) == nil {
+	if e.tickets.GetWorkOrder(id) == nil {
 		t.Fatal("work-order not in store")
 	}
 
 	// A visible po comment carries the public reply.
-	full := e.store.GetTicket(id)
+	full := e.tickets.GetTicket(id)
 	var foundPO bool
 	for _, c := range full.Comments {
 		if c.AuthorType == AuthorPO && !c.Withheld && strings.Contains(c.Body, "on it") {
@@ -238,10 +239,10 @@ func TestVerdictDeclined(t *testing.T) {
 		t.Fatalf("decline verdict: got %d, want 200", resp.StatusCode)
 	}
 	resp.Body.Close()
-	if e.store.GetTicket(id).State != StateDeclined {
+	if e.tickets.GetTicket(id).State != StateDeclined {
 		t.Fatal("state not declined")
 	}
-	if e.store.GetWorkOrder(id) != nil {
+	if e.tickets.GetWorkOrder(id) != nil {
 		t.Fatal("declined ticket should have no work-order")
 	}
 
@@ -268,7 +269,7 @@ func TestVerdictPublicReplyLeakFiltered(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("leak verdict: got %d, want 200", resp.StatusCode)
 	}
-	if !commentWithheld(e.store.GetTicket(id).Comments, AuthorPO) {
+	if !commentWithheld(e.tickets.GetTicket(id).Comments, AuthorPO) {
 		t.Fatal("leaky po reply was NOT withheld")
 	}
 	// The user (non-admin) must not see the withheld comment via the HTTP view.
@@ -287,7 +288,7 @@ func TestVerdictPublicReplyLeakFiltered(t *testing.T) {
 	clean := `{"next_state":"needs_info","public_reply":"Could you tell us which OS you are on?"}`
 	resp = e.agentReq(t, "POST", "/api/tickets/"+id2+"/verdict", testPOToken, clean, nil)
 	resp.Body.Close()
-	if commentWithheld(e.store.GetTicket(id2).Comments, AuthorPO) {
+	if commentWithheld(e.tickets.GetTicket(id2).Comments, AuthorPO) {
 		t.Fatal("clean po reply was wrongly withheld")
 	}
 }
@@ -332,10 +333,10 @@ func TestWorkOrderClaimComplete(t *testing.T) {
 		t.Fatalf("claim: got %d, want 200", resp.StatusCode)
 	}
 	resp.Body.Close()
-	if e.store.GetTicket(id).State != StateInProgress {
+	if e.tickets.GetTicket(id).State != StateInProgress {
 		t.Fatal("ticket not in_progress after claim")
 	}
-	if wo := e.store.GetWorkOrder(id); wo == nil || wo.PickedUpAt == nil {
+	if wo := e.tickets.GetWorkOrder(id); wo == nil || wo.PickedUpAt == nil {
 		t.Fatal("picked_up_at not set after claim")
 	}
 
@@ -364,11 +365,11 @@ func TestWorkOrderClaimComplete(t *testing.T) {
 		t.Fatalf("complete: got %d, want 200", resp.StatusCode)
 	}
 	resp.Body.Close()
-	wo := e.store.GetWorkOrder(id)
+	wo := e.tickets.GetWorkOrder(id)
 	if wo.CompletedAt == nil || wo.DeployID == nil || *wo.DeployID != dep.ID {
 		t.Fatalf("work-order not completed/linked: %+v", wo)
 	}
-	if e.store.GetTicket(id).State != StateDeploying {
+	if e.tickets.GetTicket(id).State != StateDeploying {
 		t.Fatal("ticket not deploying after complete")
 	}
 	// No longer in the coding queue.
@@ -469,7 +470,7 @@ func TestAgentCommentAndState(t *testing.T) {
 		t.Fatalf("agent-state: got %d, want 200", resp.StatusCode)
 	}
 	resp.Body.Close()
-	if e.store.GetTicket(id).State != StateNeedsInfo {
+	if e.tickets.GetTicket(id).State != StateNeedsInfo {
 		t.Fatal("state not needs_info")
 	}
 
@@ -499,7 +500,7 @@ func TestPOQueue(t *testing.T) {
 	}
 
 	// Move id2 to needs_info, then have the user reply → it should re-surface.
-	if _, err := e.store.SetTicketState(id2, StateNeedsInfo); err != nil {
+	if _, err := e.tickets.SetTicketState(id2, StateNeedsInfo); err != nil {
 		t.Fatalf("to needs_info: %v", err)
 	}
 	resp = e.agentReq(t, "GET", "/api/agent/queue", testPOToken, "", nil)
@@ -528,7 +529,7 @@ func TestPOQueue(t *testing.T) {
 func TestGetArtifactAgentToken(t *testing.T) {
 	e := newAgentEnv(t)
 	tid := e.createTicket(t, `{"title":"bug","body":"x","category":"bug"}`)
-	art := e.store.AddArtifact(tid, ArtifactScreenshot, "screenshot.png", "image/png", []byte("PNGDATA"))
+	art := e.tickets.AddArtifact(tid, ArtifactScreenshot, "screenshot.png", "image/png", []byte("PNGDATA"))
 	path := "/api/tickets/" + tid + "/artifacts/" + art.ID
 
 	// coding Bearer token → 200 + the raw bytes.

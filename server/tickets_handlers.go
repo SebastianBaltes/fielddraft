@@ -76,7 +76,7 @@ func (s *Server) handleCreateTicket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	t := s.store.CreateTicket(user.ID, title, body, req.Category)
+	t := s.tickets.CreateTicket(user.ID, title, body, req.Category)
 	if t == nil {
 		http.Error(w, `{"error":"could not create ticket"}`, http.StatusInternalServerError)
 		return
@@ -86,7 +86,7 @@ func (s *Server) handleCreateTicket(w http.ResponseWriter, r *http.Request) {
 	s.persistArtifacts(t.ID, &req)
 
 	// Re-fetch so the response carries any artifacts/category just written.
-	full := s.store.GetTicket(t.ID)
+	full := s.tickets.GetTicket(t.ID)
 	if full == nil {
 		full = t
 	}
@@ -98,21 +98,21 @@ func (s *Server) handleCreateTicket(w http.ResponseWriter, r *http.Request) {
 // Report-Issue payload. Invalid/empty fields are silently skipped.
 func (s *Server) persistArtifacts(ticketID string, req *createTicketRequest) {
 	if png := decodeDataURL(req.Screenshot); png != nil {
-		s.store.AddArtifact(ticketID, ArtifactScreenshot, "screenshot.png", "image/png", png)
+		s.tickets.AddArtifact(ticketID, ArtifactScreenshot, "screenshot.png", "image/png", png)
 	}
 	if req.ProjectFdraft != "" {
 		if blob, err := base64.StdEncoding.DecodeString(req.ProjectFdraft); err == nil && len(blob) > 0 {
-			s.store.AddArtifact(ticketID, ArtifactFdraft, "project.fdraft", "application/zip", blob)
+			s.tickets.AddArtifact(ticketID, ArtifactFdraft, "project.fdraft", "application/zip", blob)
 		}
 	}
 	if isJSONPresent(req.ActionLog) {
-		s.store.AddArtifact(ticketID, ArtifactActions, "actions.json", "application/json", req.ActionLog)
+		s.tickets.AddArtifact(ticketID, ArtifactActions, "actions.json", "application/json", req.ActionLog)
 	}
 	if isJSONPresent(req.Settings) {
-		s.store.AddArtifact(ticketID, ArtifactSettings, "settings.json", "application/json", req.Settings)
+		s.tickets.AddArtifact(ticketID, ArtifactSettings, "settings.json", "application/json", req.Settings)
 	}
 	if isJSONPresent(req.UIState) {
-		s.store.AddArtifact(ticketID, ArtifactUIState, "ui_state.json", "application/json", req.UIState)
+		s.tickets.AddArtifact(ticketID, ArtifactUIState, "ui_state.json", "application/json", req.UIState)
 	}
 	for i, a := range req.Attachments {
 		blob := decodeDataURL(a.DataURL)
@@ -124,7 +124,7 @@ func (s *Server) persistArtifacts(ticketID string, req *createTicketRequest) {
 		if mime == "" {
 			mime = "application/octet-stream"
 		}
-		s.store.AddArtifact(ticketID, ArtifactAttachment, name, mime, blob)
+		s.tickets.AddArtifact(ticketID, ArtifactAttachment, name, mime, blob)
 	}
 }
 
@@ -174,7 +174,7 @@ func (s *Server) handleListTickets(w http.ResponseWriter, r *http.Request) {
 	default:
 		f.AuthorID = author
 	}
-	tickets := s.store.ListTickets(f)
+	tickets := s.tickets.ListTickets(f)
 	out := make([]ticketSummary, 0, len(tickets))
 	for _, t := range tickets {
 		out = append(out, summarize(t))
@@ -188,7 +188,7 @@ func (s *Server) handleGetTicket(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"not authenticated"}`, http.StatusUnauthorized)
 		return
 	}
-	t := s.store.GetTicket(r.PathValue("id"))
+	t := s.tickets.GetTicket(r.PathValue("id"))
 	if t == nil {
 		http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
 		return
@@ -211,7 +211,7 @@ func (s *Server) handlePatchTicket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := r.PathValue("id")
-	t := s.store.GetTicket(id)
+	t := s.tickets.GetTicket(id)
 	if t == nil {
 		http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
 		return
@@ -242,7 +242,7 @@ func (s *Server) handlePatchTicket(w http.ResponseWriter, r *http.Request) {
 		if body.Body != nil {
 			newBody = *body.Body
 		}
-		if s.store.UpdateTicket(id, newTitle, newBody) == nil {
+		if s.tickets.UpdateTicket(id, newTitle, newBody) == nil {
 			http.Error(w, `{"error":"could not update ticket"}`, http.StatusInternalServerError)
 			return
 		}
@@ -258,13 +258,13 @@ func (s *Server) handlePatchTicket(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
-		if _, err := s.store.SetTicketState(id, to); err != nil {
+		if _, err := s.tickets.SetTicketState(id, to); err != nil {
 			writeStoreError(w, err)
 			return
 		}
 	}
 
-	full := s.store.GetTicket(id)
+	full := s.tickets.GetTicket(id)
 	json.NewEncoder(w).Encode(ticketDetail(full, user, isAdmin))
 }
 
@@ -275,7 +275,7 @@ func (s *Server) handleDeleteTicket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := r.PathValue("id")
-	t := s.store.GetTicket(id)
+	t := s.tickets.GetTicket(id)
 	if t == nil {
 		http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
 		return
@@ -284,7 +284,7 @@ func (s *Server) handleDeleteTicket(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"forbidden"}`, http.StatusForbidden)
 		return
 	}
-	if !s.store.DeleteTicket(id) {
+	if !s.tickets.DeleteTicket(id) {
 		http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
 		return
 	}
@@ -300,7 +300,7 @@ func (s *Server) handleListComments(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := r.PathValue("id")
-	t := s.store.GetTicket(id)
+	t := s.tickets.GetTicket(id)
 	if t == nil {
 		http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
 		return
@@ -310,7 +310,7 @@ func (s *Server) handleListComments(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
 		return
 	}
-	comments := s.store.ListComments(id)
+	comments := s.tickets.ListComments(id)
 	json.NewEncoder(w).Encode(visibleComments(comments, isAdmin))
 }
 
@@ -321,7 +321,7 @@ func (s *Server) handleAddComment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := r.PathValue("id")
-	t := s.store.GetTicket(id)
+	t := s.tickets.GetTicket(id)
 	if t == nil {
 		http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
 		return
@@ -344,7 +344,7 @@ func (s *Server) handleAddComment(w http.ResponseWriter, r *http.Request) {
 	}
 	// Any authenticated user comments as author_type='user'.
 	uid := user.ID
-	c := s.store.AddComment(id, AuthorUser, &uid, body.Body, false)
+	c := s.tickets.AddComment(id, AuthorUser, &uid, body.Body, false)
 	if c == nil {
 		http.Error(w, `{"error":"could not add comment"}`, http.StatusInternalServerError)
 		return
@@ -366,7 +366,7 @@ func (s *Server) handleGetArtifact(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, `{"error":"not authenticated"}`, http.StatusUnauthorized)
 			return
 		}
-		t := s.store.GetTicket(id)
+		t := s.tickets.GetTicket(id)
 		if t == nil {
 			http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
 			return
@@ -376,7 +376,7 @@ func (s *Server) handleGetArtifact(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	art, data := s.store.GetArtifactBlob(id, r.PathValue("artifactId"))
+	art, data := s.tickets.GetArtifactBlob(id, r.PathValue("artifactId"))
 	if art == nil || data == nil {
 		http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
 		return

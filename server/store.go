@@ -66,46 +66,12 @@ type Store interface {
 	CreateSnapshot(projectID string, doc json.RawMessage) *Snapshot
 	GetSnapshot(id string) *Snapshot
 
-	// Tickets (GitHub-Issues-like, §7).
-	CreateTicket(authorID, title, body, category string) *Ticket
-	GetTicket(id string) *Ticket // hydrated with comments + artifacts
-	ListTickets(f TicketFilter) []*Ticket
-	UpdateTicket(id, title, body string) *Ticket // author edit of title/body
-	SetTicketState(id string, to TicketState) (*Ticket, error)
-	SetTicketCategory(id, category string) *Ticket // PO verdict classification (§8.3)
-	SetPOVerdict(id string, v POVerdict) (*Ticket, error)
-	DeleteTicket(id string) bool
-
-	// Ticket comments.
-	AddComment(ticketID string, authorType AuthorType, authorID *string, body string, internal bool) *TicketComment
-	ListComments(ticketID string) []*TicketComment
-
-	// Comment moderation (B1, §4.2/§8): the PO post-moderates user comments.
-	GetComment(ticketID, commentID string) *TicketComment // nil if not on that ticket
-	SetCommentReviewed(commentID string, withheld bool) *TicketComment
-	ListTicketsWithUnreviewedComments() []*Ticket // hydrated; any state
-
-	// Ticket artifacts (content-addressed repro blobs).
-	AddArtifact(ticketID string, kind ArtifactKind, name, mime string, data []byte) *TicketArtifact
-	GetArtifactBlob(ticketID, artifactID string) (*TicketArtifact, []byte)
-
-	// Work-orders (PO→Coding handoff, §9). One per ticket.
-	CreateWorkOrder(ticketID string, payload json.RawMessage) (*WorkOrder, error)
-	GetWorkOrder(ticketID string) *WorkOrder
-	ClaimWorkOrder(ticketID string) (*WorkOrder, error)              // sets picked_up_at
-	CompleteWorkOrder(ticketID, deployID string) (*WorkOrder, error) // sets completed_at + deploy link
-
-	// Deploys (rollout audit / rollback, §10.3).
-	CreateDeploy(version, gitSHA string, ticketIDs []string, status DeployStatus) (*Deploy, error)
-	ListDeploys() []*Deploy
-
-	// Agent-authored comments: leak-filtered `po` comment (withheld iff it
-	// trips the filter §4.2) or an internal `dev` note (admin-only).
-	AddAgentComment(ticketID string, authorType AuthorType, body string, internal, withheld bool) *TicketComment
-
-	// Queue helper: tickets in `accepted` that still have an open work-order
-	// (for the coding agent's queue, §10.1).
-	ListAcceptedWithOpenWorkOrder() []*Ticket
+	// The ticket domain (tickets / comments / artifacts / work-orders / deploys)
+	// is factored out into the pluggable TicketStore interface (ticketstore.go)
+	// so it can be file-backed for local dev. Both memStore and sqlStore still
+	// implement every TicketStore method, so a *Store also satisfies TicketStore
+	// — the DB backend is simply the existing store's ticket methods (no behavior
+	// change). See Server.tickets and TICKET_BACKEND selection in NewServer.
 
 	// Admin alerts (B2, §4.4 admin-awareness): real notify records for malicious
 	// tickets/comments, withheld outgoing comments, and user bans.

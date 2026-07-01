@@ -26,6 +26,7 @@ import (
 
 type Server struct {
 	store       Store
+	tickets     TicketStore // pluggable ticket domain (WP15); see selectTicketStore
 	mux         *http.ServeMux
 	rateLimiter *RateLimiter
 	agentTokens agentTokens // least-privilege Service-Tokens (§11)
@@ -34,6 +35,7 @@ type Server struct {
 func NewServer(store Store) *Server {
 	s := &Server{
 		store:       store,
+		tickets:     selectTicketStore(store),
 		mux:         http.NewServeMux(),
 		rateLimiter: NewRateLimiter(1.0, 60), // 60 burst, 1/sec refill
 		agentTokens: loadAgentTokens(),
@@ -88,6 +90,42 @@ func NewServer(store Store) *Server {
 	s.mux.HandleFunc("POST /api/deploys", s.handleCreateDeploy)
 	s.mux.HandleFunc("GET /api/deploys", s.handleListDeploys)
 	return s
+}
+
+// selectTicketStore picks the ticket-domain backend from the environment (WP15):
+//
+//   - TICKET_BACKEND unset or "db" (the default, and the only prod path) → the
+//     existing DB/mem store's own ticket methods. Byte-identical to before the
+//     TicketStore split, so PROD IS UNAFFECTED.
+//   - TICKET_BACKEND=files → a file-backed store under TICKET_DIR (default
+//     ./tickets), for local dev. The materialized layout doubles as the on-disk
+//     tickets the desktop agents harvest (docs/TICKET-SYNC-AND-AGENTS.md §3.1).
+//
+// The same ticket CRUD/UI/API/agent-harvest runs unchanged over whichever
+// backend is installed.
+func selectTicketStore(store Store) TicketStore {
+	switch os.Getenv("TICKET_BACKEND") {
+	case "files":
+		dir := os.Getenv("TICKET_DIR")
+		if dir == "" {
+			dir = "./tickets"
+		}
+		fs, err := newFileTicketStore(dir)
+		if err != nil {
+			log.Fatalf("ticket store (files) init failed: %v", err)
+		}
+		log.Printf("ticket store: file backend at %s", dir)
+		return fs
+	default:
+		// db (default): the DB/mem store's own ticket methods. Both memStore and
+		// sqlStore implement every TicketStore method (see the compile-time
+		// assertions in ticketstore.go), so this assertion always holds.
+		ts, ok := store.(TicketStore)
+		if !ok {
+			log.Fatalf("ticket store (db): %T does not implement TicketStore", store)
+		}
+		return ts
+	}
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {

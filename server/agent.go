@@ -180,20 +180,20 @@ func (s *Server) poQueue() []agentQueueTicket {
 		out = append(out, item)
 	}
 	// triage — always the PO's job.
-	for _, t := range s.store.ListTickets(TicketFilter{State: StateTriage, ViewerIsAdmin: true}) {
+	for _, t := range s.tickets.ListTickets(TicketFilter{State: StateTriage, ViewerIsAdmin: true}) {
 		add(t)
 	}
 	// needs_info / declined with a new user comment since the last po/system one.
 	for _, st := range []TicketState{StateNeedsInfo, StateDeclined} {
-		for _, t := range s.store.ListTickets(TicketFilter{State: st, ViewerIsAdmin: true}) {
-			full := s.store.GetTicket(t.ID)
+		for _, t := range s.tickets.ListTickets(TicketFilter{State: st, ViewerIsAdmin: true}) {
+			full := s.tickets.GetTicket(t.ID)
 			if full != nil && hasNewUserComment(full.Comments) {
 				add(full)
 			}
 		}
 	}
 	// Any ticket (any state) with an unreviewed user comment — post-moderation.
-	for _, t := range s.store.ListTicketsWithUnreviewedComments() {
+	for _, t := range s.tickets.ListTicketsWithUnreviewedComments() {
 		add(t)
 	}
 	return out
@@ -214,7 +214,7 @@ func unreviewedUserComments(comments []*TicketComment) []*TicketComment {
 // codingQueue: accepted tickets with an open (unclaimed/incomplete) work-order.
 func (s *Server) codingQueue() []agentQueueTicket {
 	var out []agentQueueTicket
-	for _, t := range s.store.ListAcceptedWithOpenWorkOrder() {
+	for _, t := range s.tickets.ListAcceptedWithOpenWorkOrder() {
 		out = append(out, s.hydrateQueueTicket(t, true))
 	}
 	return out
@@ -225,7 +225,7 @@ func (s *Server) codingQueue() []agentQueueTicket {
 func (s *Server) hydrateQueueTicket(t *Ticket, withWorkOrder bool) agentQueueTicket {
 	full := t
 	if full.Comments == nil && full.Artifacts == nil {
-		if hydrated := s.store.GetTicket(t.ID); hydrated != nil {
+		if hydrated := s.tickets.GetTicket(t.ID); hydrated != nil {
 			full = hydrated
 		}
 	}
@@ -239,7 +239,7 @@ func (s *Server) hydrateQueueTicket(t *Ticket, withWorkOrder bool) agentQueueTic
 	}
 	item := agentQueueTicket{Ticket: full, Comments: comments, Artifacts: artifacts}
 	if withWorkOrder {
-		item.WorkOrder = s.store.GetWorkOrder(t.ID)
+		item.WorkOrder = s.tickets.GetWorkOrder(t.ID)
 	}
 	return item
 }
@@ -281,7 +281,7 @@ func (s *Server) handleVerdict(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := r.PathValue("id")
-	t := s.store.GetTicket(id)
+	t := s.tickets.GetTicket(id)
 	if t == nil {
 		http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
 		return
@@ -336,9 +336,9 @@ func (s *Server) handleVerdict(w http.ResponseWriter, r *http.Request) {
 	// Category is part of the verdict (§8.3): classify before the state move so
 	// the audit comment reflects a fully-classified ticket.
 	if req.Category != "" {
-		s.store.SetTicketCategory(id, req.Category)
+		s.tickets.SetTicketCategory(id, req.Category)
 	}
-	if _, err := s.store.SetPOVerdict(id, verdict); err != nil {
+	if _, err := s.tickets.SetPOVerdict(id, verdict); err != nil {
 		writeStoreError(w, err)
 		return
 	}
@@ -359,7 +359,7 @@ func (s *Server) handleVerdict(w http.ResponseWriter, r *http.Request) {
 	// ── on accepted: create the work-order from the payload ──
 	var wo *WorkOrder
 	if next == StateAccepted {
-		created, err := s.store.CreateWorkOrder(id, req.WorkOrder)
+		created, err := s.tickets.CreateWorkOrder(id, req.WorkOrder)
 		if err != nil {
 			writeStoreError(w, err)
 			return
@@ -367,7 +367,7 @@ func (s *Server) handleVerdict(w http.ResponseWriter, r *http.Request) {
 		wo = created
 	}
 
-	full := s.store.GetTicket(id)
+	full := s.tickets.GetTicket(id)
 	resp := map[string]any{
 		"ticket":     full,
 		"work_order": wo,
@@ -384,7 +384,7 @@ func (s *Server) handleVerdict(w http.ResponseWriter, r *http.Request) {
 // comment is visible.
 func (s *Server) postPOComment(ticketID, body string) *TicketComment {
 	clean, reasons := leakScan(body)
-	c := s.store.AddAgentComment(ticketID, AuthorPO, body, false, !clean)
+	c := s.tickets.AddAgentComment(ticketID, AuthorPO, body, false, !clean)
 	if !clean {
 		logLeakHold(ticketID, reasons)
 		tid := ticketID
@@ -423,7 +423,7 @@ func (s *Server) handleCommentVerdict(w http.ResponseWriter, r *http.Request) {
 	ticketID := r.PathValue("ticketId")
 	commentID := r.PathValue("commentId")
 	// Validate the comment belongs to the ticket.
-	c := s.store.GetComment(ticketID, commentID)
+	c := s.tickets.GetComment(ticketID, commentID)
 	if c == nil {
 		http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
 		return
@@ -436,7 +436,7 @@ func (s *Server) handleCommentVerdict(w http.ResponseWriter, r *http.Request) {
 	}
 
 	bad := req.Spam || req.Malicious
-	updated := s.store.SetCommentReviewed(commentID, bad)
+	updated := s.tickets.SetCommentReviewed(commentID, bad)
 	if updated == nil {
 		http.Error(w, `{"error":"could not moderate comment"}`, http.StatusInternalServerError)
 		return
@@ -465,7 +465,7 @@ func (s *Server) handleAgentComment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := r.PathValue("id")
-	if s.store.GetTicket(id) == nil {
+	if s.tickets.GetTicket(id) == nil {
 		http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
 		return
 	}
@@ -501,7 +501,7 @@ func (s *Server) handleAgentComment(w http.ResponseWriter, r *http.Request) {
 	case "dev":
 		// Internal dev note (admin-only). Both scopes may post one, but in
 		// practice the coding agent does.
-		c = s.store.AddAgentComment(id, AuthorDev, req.Body, true, false)
+		c = s.tickets.AddAgentComment(id, AuthorDev, req.Body, true, false)
 	default:
 		http.Error(w, `{"error":"kind must be po or dev"}`, http.StatusBadRequest)
 		return
@@ -521,7 +521,7 @@ func (s *Server) handleAgentState(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := r.PathValue("id")
-	if s.store.GetTicket(id) == nil {
+	if s.tickets.GetTicket(id) == nil {
 		http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
 		return
 	}
@@ -533,11 +533,11 @@ func (s *Server) handleAgentState(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	to := TicketState(body.State)
-	if _, err := s.store.SetTicketState(id, to); err != nil {
+	if _, err := s.tickets.SetTicketState(id, to); err != nil {
 		writeStoreError(w, err)
 		return
 	}
-	json.NewEncoder(w).Encode(s.store.GetTicket(id))
+	json.NewEncoder(w).Encode(s.tickets.GetTicket(id))
 }
 
 // ─── POST /api/work-orders/{ticketId}/claim (coding) ────────────
@@ -547,19 +547,19 @@ func (s *Server) handleClaimWorkOrder(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ticketID := r.PathValue("ticketId")
-	wo, err := s.store.ClaimWorkOrder(ticketID)
+	wo, err := s.tickets.ClaimWorkOrder(ticketID)
 	if err != nil {
 		writeStoreError(w, err)
 		return
 	}
 	// Drive the ticket accepted→in_progress (§10.1). If it's already moved on,
 	// keep the claim but don't fail.
-	if _, terr := s.store.SetTicketState(ticketID, StateInProgress); terr != nil {
+	if _, terr := s.tickets.SetTicketState(ticketID, StateInProgress); terr != nil {
 		logStateNote(ticketID, "claim", terr)
 	}
 	json.NewEncoder(w).Encode(map[string]any{
 		"work_order": wo,
-		"ticket":     s.store.GetTicket(ticketID),
+		"ticket":     s.tickets.GetTicket(ticketID),
 	})
 }
 
@@ -579,7 +579,7 @@ func (s *Server) handleCompleteWorkOrder(w http.ResponseWriter, r *http.Request)
 	// Body is optional.
 	json.NewDecoder(http.MaxBytesReader(w, r.Body, maxAgentBodyBytes)).Decode(&req)
 
-	wo, err := s.store.CompleteWorkOrder(ticketID, req.DeployID)
+	wo, err := s.tickets.CompleteWorkOrder(ticketID, req.DeployID)
 	if err != nil {
 		writeStoreError(w, err)
 		return
@@ -590,13 +590,13 @@ func (s *Server) handleCompleteWorkOrder(w http.ResponseWriter, r *http.Request)
 	if req.NextState != "" {
 		target = TicketState(req.NextState)
 	}
-	if _, terr := s.store.SetTicketState(ticketID, target); terr != nil {
+	if _, terr := s.tickets.SetTicketState(ticketID, target); terr != nil {
 		writeStoreError(w, terr)
 		return
 	}
 	json.NewEncoder(w).Encode(map[string]any{
 		"work_order": wo,
-		"ticket":     s.store.GetTicket(ticketID),
+		"ticket":     s.tickets.GetTicket(ticketID),
 	})
 }
 
@@ -626,7 +626,7 @@ func (s *Server) handleCreateDeploy(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"invalid deploy status"}`, http.StatusBadRequest)
 		return
 	}
-	d, err := s.store.CreateDeploy(req.Version, req.GitSHA, req.TicketIDs, DeployStatus(status))
+	d, err := s.tickets.CreateDeploy(req.Version, req.GitSHA, req.TicketIDs, DeployStatus(status))
 	if err != nil {
 		writeStoreError(w, err)
 		return
@@ -645,7 +645,7 @@ func (s *Server) handleListDeploys(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	deploys := s.store.ListDeploys()
+	deploys := s.tickets.ListDeploys()
 	if deploys == nil {
 		deploys = []*Deploy{}
 	}

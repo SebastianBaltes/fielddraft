@@ -51,7 +51,7 @@ func TestUnreviewedCommentSurfacesInPOQueue(t *testing.T) {
 
 	// Drive the ticket to resolved (PO-less path via the store, walking the SM).
 	for _, st := range []TicketState{StateAccepted, StateInProgress, StateDeploying, StateResolved} {
-		if _, err := e.store.SetTicketState(id, st); err != nil {
+		if _, err := e.tickets.SetTicketState(id, st); err != nil {
 			t.Fatalf("to %s: %v", st, err)
 		}
 	}
@@ -90,7 +90,7 @@ func TestModerateCommentSpamWithholds(t *testing.T) {
 	// Drive it out of triage so the ONLY reason it would be in the PO queue is an
 	// unreviewed comment (isolates the post-moderation behaviour).
 	for _, st := range []TicketState{StateAccepted, StateInProgress, StateDeploying, StateResolved} {
-		if _, err := e.store.SetTicketState(id, st); err != nil {
+		if _, err := e.tickets.SetTicketState(id, st); err != nil {
 			t.Fatalf("to %s: %v", st, err)
 		}
 	}
@@ -110,7 +110,7 @@ func TestModerateCommentSpamWithholds(t *testing.T) {
 	}
 
 	// In store: reviewed + withheld.
-	stored := e.store.GetComment(id, c.ID)
+	stored := e.tickets.GetComment(id, c.ID)
 	if stored == nil || !stored.POReviewed || !stored.Withheld {
 		t.Fatalf("stored comment state wrong: %+v", stored)
 	}
@@ -157,7 +157,7 @@ func TestModerateCommentCleanNoWithhold(t *testing.T) {
 	}
 	resp.Body.Close()
 
-	stored := e.store.GetComment(id, c.ID)
+	stored := e.tickets.GetComment(id, c.ID)
 	if stored == nil || !stored.POReviewed || stored.Withheld {
 		t.Fatalf("clean comment should be reviewed but not withheld: %+v", stored)
 	}
