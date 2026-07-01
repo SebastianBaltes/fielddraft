@@ -240,6 +240,38 @@ describe("platformApi invites", () => {
     expect(calls[0].url).toBe("/api/invites/T");
     expect(calls[0].init.method).toBe("DELETE");
   });
+
+  it("getInviteInfo GETs the public info route and returns the prefill", async () => {
+    mockFetch(() =>
+      json({
+        invitee_name: "Ada",
+        invitee_email: "ada@x.io",
+        valid: true,
+      }),
+    );
+    const info = await platformApi.getInviteInfo("T0k3n");
+    expect(calls[0].url).toBe("/api/invites/T0k3n/info");
+    expect(calls[0].init.method).toBe("GET");
+    expect(calls[0].init.credentials).toBe("include");
+    expect(info).toEqual({
+      invitee_name: "Ada",
+      invitee_email: "ada@x.io",
+      valid: true,
+    });
+  });
+
+  it("getInviteInfo surfaces an invalid invite as {valid:false}", async () => {
+    mockFetch(() => json({ valid: false }));
+    const info = await platformApi.getInviteInfo("gone");
+    expect(info.valid).toBe(false);
+    expect(info.invitee_email).toBeUndefined();
+  });
+
+  it("getInviteInfo URL-encodes the token", async () => {
+    mockFetch(() => json({ valid: false }));
+    await platformApi.getInviteInfo("a b/c");
+    expect(calls[0].url).toBe("/api/invites/a%20b%2Fc/info");
+  });
 });
 
 describe("thumbnailUrl", () => {

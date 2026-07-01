@@ -17,6 +17,7 @@ import {
   WorkspaceUnitsContext,
 } from "./SettingsMenu";
 import type { SettingsState } from "./SettingsMenu";
+import { ProjectTitle } from "./ProjectTitle";
 import { CONTROLS_PRESETS, viewShortcutRow } from "./controlsPreset";
 import { useAccount, type UseAccountOptions } from "./account/useAccount";
 import type { UseAccount } from "./account/useAccount";
@@ -25,6 +26,7 @@ import { Bell } from "./account/Bell";
 import { Overview } from "./account/Overview";
 import { AuthScreen } from "./account/AuthScreen";
 import { AuthGate } from "./account/AuthGate";
+import { InviteRegister } from "./account/InviteRegister";
 import { GuestImportBanner } from "./account/GuestImportBanner";
 import { shouldOfferGuestImport } from "./account/guestImport";
 import { platformApi, type Project as ServerProject } from "./api/platform";
@@ -72,6 +74,17 @@ export function App({
   accountOptions?: UseAccountOptions;
 } = {}) {
   const account = useAccount(accountOptions);
+
+  // Ticket A: an `?invite=<token>` link always lands on the self-registration
+  // form, ahead of BOTH the login gate and the mounted app — even for an
+  // already-authenticated visitor (registering issues a fresh session cookie,
+  // so they become the new user). The prefill is burned on a successful
+  // register, which drops us straight into the app as that user.
+  if (account.state.invitePrefill) {
+    return (
+      <InviteRegister account={account} token={account.state.invitePrefill} />
+    );
+  }
 
   if (requireLogin()) {
     if (account.state.status === "loading") {
@@ -512,6 +525,11 @@ function AppShell({ account }: { account: UseAccount }) {
                 settings={settings}
                 onSettingsChange={setSettings}
               />
+              {/* Ticket C: the current project's name next to the logo — click
+                  to rename inline (modeling view only). */}
+              {inProject && store && state ? (
+                <ProjectTitle store={store} name={state.project.name} />
+              ) : null}
             </div>
             {inProject ? (
               <div className="meta">

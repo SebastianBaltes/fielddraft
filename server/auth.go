@@ -72,6 +72,37 @@ func (s *Server) requireAdmin(r *http.Request) *User {
 	return user
 }
 
+// ─── public invite lookup (no auth) ─────────────────────────────
+
+// inviteInfoResponse is the PUBLIC, minimal view of an invite used to prefill
+// the self-registration form. For an open (unused, unexpired) invite it carries
+// the addressee's name + email and Valid=true; for a missing / used / expired
+// token it carries ONLY Valid=false — nothing else leaks about the invite.
+type inviteInfoResponse struct {
+	InviteeName  string `json:"invitee_name,omitempty"`
+	InviteeEmail string `json:"invitee_email,omitempty"`
+	Valid        bool   `json:"valid"`
+}
+
+// handleInviteInfo serves GET /api/invites/{token}/info. Public (no session):
+// the register link is followed by someone who isn't logged in yet, so the form
+// must be able to read the prefill fields. Only an OPEN invite exposes the
+// name/email; every other case (unknown token, already used, expired) returns
+// a bare {"valid": false} so the endpoint can't be used to probe invite state.
+func (s *Server) handleInviteInfo(w http.ResponseWriter, r *http.Request) {
+	token := r.PathValue("token")
+	inv := s.store.GetInvite(token)
+	if inv == nil || inv.Status(time.Now().UTC()) != "open" {
+		json.NewEncoder(w).Encode(inviteInfoResponse{Valid: false})
+		return
+	}
+	json.NewEncoder(w).Encode(inviteInfoResponse{
+		InviteeName:  inv.InviteeName,
+		InviteeEmail: inv.InviteeEmail,
+		Valid:        true,
+	})
+}
+
 // ─── invite endpoints (admin-only) ──────────────────────────────
 
 // inviteResponse is the shape returned by GET/POST /api/invites.

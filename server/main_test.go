@@ -478,3 +478,80 @@ func TestInviteAdminEndpoints(t *testing.T) {
 		t.Fatalf("admin delete invite: got %d, want 200", resp.StatusCode)
 	}
 }
+
+// TestInviteInfoPublic — the public GET /api/invites/{token}/info endpoint
+// prefills the self-registration form: an OPEN invite returns the invitee's
+// name + email with valid=true (no auth needed), while unknown / used / expired
+// tokens return a bare valid=false that leaks nothing else.
+func TestInviteInfoPublic(t *testing.T) {
+	store := NewStore()
+	srv := NewServer(store)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+
+	admin, err := store.CreateUser("boss@test.com", "Boss", "bosspass123", RoleAdmin)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Open invite → valid=true with the prefill fields, NO cookie/session sent.
+	open := store.CreateInvite(admin.ID, "Ada Lovelace", "ada@test.com", "welcome", time.Now().Add(time.Hour))
+	resp, err := http.Get(ts.URL + "/api/invites/" + open.Token + "/info")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != 200 {
+		t.Fatalf("open invite info: got %d, want 200", resp.StatusCode)
+	}
+	var info struct {
+		InviteeName  string `json:"invitee_name"`
+		InviteeEmail string `json:"invitee_email"`
+		Valid        bool   `json:"valid"`
+	}
+	json.NewDecoder(resp.Body).Decode(&info)
+	resp.Body.Close()
+	if !info.Valid {
+		t.Fatalf("open invite: valid=%v, want true", info.Valid)
+	}
+	if info.InviteeName != "Ada Lovelace" || info.InviteeEmail != "ada@test.com" {
+		t.Fatalf("open invite prefill: got %q / %q", info.InviteeName, info.InviteeEmail)
+	}
+
+	// Unknown token → valid=false, no prefill leaked.
+	resp, _ = http.Get(ts.URL + "/api/invites/does-not-exist/info")
+	info = struct {
+		InviteeName  string `json:"invitee_name"`
+		InviteeEmail string `json:"invitee_email"`
+		Valid        bool   `json:"valid"`
+	}{}
+	json.NewDecoder(resp.Body).Decode(&info)
+	resp.Body.Close()
+	if info.Valid || info.InviteeName != "" || info.InviteeEmail != "" {
+		t.Fatalf("unknown token: got %+v, want valid=false and no prefill", info)
+	}
+
+	// Used token → valid=false.
+	used := store.CreateInvite(admin.ID, "Grace", "grace@test.com", "", time.Now().Add(time.Hour))
+	if _, err := store.ConsumeInvite(used.Token, admin.ID); err != nil {
+		t.Fatal(err)
+	}
+	resp, _ = http.Get(ts.URL + "/api/invites/" + used.Token + "/info")
+	info.Valid = true
+	info.InviteeEmail = ""
+	json.NewDecoder(resp.Body).Decode(&info)
+	resp.Body.Close()
+	if info.Valid || info.InviteeEmail != "" {
+		t.Fatalf("used token: got %+v, want valid=false and no prefill", info)
+	}
+
+	// Expired token → valid=false.
+	expired := store.CreateInvite(admin.ID, "Alan", "alan@test.com", "", time.Now().Add(-time.Hour))
+	resp, _ = http.Get(ts.URL + "/api/invites/" + expired.Token + "/info")
+	info.Valid = true
+	info.InviteeEmail = ""
+	json.NewDecoder(resp.Body).Decode(&info)
+	resp.Body.Close()
+	if info.Valid || info.InviteeEmail != "" {
+		t.Fatalf("expired token: got %+v, want valid=false and no prefill", info)
+	}
+}

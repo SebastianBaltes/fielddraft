@@ -75,6 +75,17 @@ export interface CreateInviteInput {
   message: string;
 }
 
+/** The PUBLIC (no-auth) invite lookup used to prefill the self-registration
+ *  form from a `?invite=<token>` link. Mirrors server `inviteInfoResponse`:
+ *  an OPEN invite carries the invitee's name + email with `valid: true`; a
+ *  missing / used / expired token returns only `valid: false` (nothing else
+ *  leaks). Name/email are omitted (undefined) when invalid. */
+export interface InviteInfo {
+  invitee_name?: string;
+  invitee_email?: string;
+  valid: boolean;
+}
+
 /** The result of publishing a project to a shareable snapshot. */
 export interface PublishResult {
   snapshot_id: string;
@@ -322,6 +333,10 @@ export interface PlatformApi {
   listInvites(): Promise<Invite[]>;
   createInvite(input: CreateInviteInput): Promise<Invite>;
   deleteInvite(token: string): Promise<void>;
+  /** Public (no-auth) invite lookup — reads the invitee name/email to prefill
+   *  the self-registration form. Returns `{valid:false}` for a missing / used /
+   *  expired token. */
+  getInviteInfo(token: string): Promise<InviteInfo>;
 
   // Tickets (WP4 — GitHub-Issues-like). Listing/reading is auth-only on the
   // backend; creating/commenting requires a session too.
@@ -439,6 +454,11 @@ export const platformApi: PlatformApi = {
   deleteInvite: (token) =>
     request<void>(`/api/invites/${encodeURIComponent(token)}`, {
       method: "DELETE",
+    }),
+
+  getInviteInfo: (token) =>
+    request<InviteInfo>(`/api/invites/${encodeURIComponent(token)}/info`, {
+      method: "GET",
     }),
 
   listTickets: (filter) =>

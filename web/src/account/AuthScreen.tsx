@@ -25,6 +25,16 @@ interface AuthScreenProps {
   mode: AuthMode;
   invitePrefill: string;
   resetPrefill: string;
+  /** Register mode: email prefilled from the invite (`?invite=` info lookup).
+   *  Editable but seeded so the invitee doesn't re-type the address the invite
+   *  was addressed to. Defaults to empty. */
+  emailPrefill?: string;
+  /** Register mode: display name prefilled from the invite. Editable. */
+  namePrefill?: string;
+  /** An informational note rendered above the form — used by the invite flow to
+   *  tell an already-logged-in visitor that registering creates a NEW account.
+   *  `null`/absent renders nothing. */
+  note?: string | null;
   onLogin(email: string, password: string): Promise<void>;
   onRegister(input: {
     email: string;
@@ -52,14 +62,17 @@ export function AuthScreen({
   mode,
   invitePrefill,
   resetPrefill,
+  emailPrefill = "",
+  namePrefill = "",
+  note = null,
   onLogin,
   onRegister,
   onSwitch,
   onClose,
   fullPage = false,
 }: AuthScreenProps) {
-  const [email, setEmail] = useState("");
-  const [displayName, setDisplayName] = useState("");
+  const [email, setEmail] = useState(emailPrefill);
+  const [displayName, setDisplayName] = useState(namePrefill);
   const [password, setPassword] = useState("");
   const [invite, setInvite] = useState(invitePrefill);
   const [resetToken, setResetToken] = useState(resetPrefill);
@@ -125,6 +138,12 @@ export function AuthScreen({
             </button>
           )}
         </div>
+
+        {note && (
+          <p className="auth-note" data-testid="auth-note">
+            {note}
+          </p>
+        )}
 
         <form className="auth-form" onSubmit={submit}>
           {(mode === "login" ||

@@ -69,8 +69,7 @@ export class PerfMonitor {
   avgFps(): number {
     const all = this.samples();
     if (all.length === 0) return 0;
-    const avg =
-      all.reduce((a, s) => a + s.frameTimeMs, 0) / all.length;
+    const avg = all.reduce((a, s) => a + s.frameTimeMs, 0) / all.length;
     return avg > 0 ? 1000 / avg : 0;
   }
 
@@ -170,7 +169,12 @@ export function PerfProbe({ renderMode }: { renderMode: string }) {
       const sorted = [...active].sort((a, b) => a - b);
       const mean = active.reduce((a, b) => a + b, 0) / active.length;
       const pct = (p: number) =>
-        sorted[Math.min(sorted.length - 1, Math.max(0, Math.ceil((sorted.length * p) / 100) - 1))] ?? 0;
+        sorted[
+          Math.min(
+            sorted.length - 1,
+            Math.max(0, Math.ceil((sorted.length * p) / 100) - 1),
+          )
+        ] ?? 0;
       recordTelemetry(
         buildTelemetryRecord({
           renderMode,
@@ -229,8 +233,8 @@ export function benchmarkResultsToCSV(results: BenchmarkResult[]): string {
   for (const r of results) {
     lines.push(
       `${r.scene},${r.renderMode},${r.resolution},${r.samples},` +
-      `${r.avgFrameMs.toFixed(2)},${r.p50Ms.toFixed(2)},${r.p95Ms.toFixed(2)},` +
-      `${r.p99Ms.toFixed(2)},${r.avgFps.toFixed(1)}`,
+        `${r.avgFrameMs.toFixed(2)},${r.p50Ms.toFixed(2)},${r.p95Ms.toFixed(2)},` +
+        `${r.p99Ms.toFixed(2)},${r.avgFps.toFixed(1)}`,
     );
   }
   return lines.join("\n");
@@ -247,14 +251,16 @@ export function downloadCSV(csv: string, filename: string): void {
 }
 
 if (typeof window !== "undefined" && import.meta.env.DEV) {
-  (window as unknown as {
-    __fdBenchmark?: {
-      collect: typeof collectBenchmarkResult;
-      toCSV: typeof benchmarkResultsToCSV;
-      download: typeof downloadCSV;
-      monitor: PerfMonitor;
-    };
-  }).__fdBenchmark = {
+  (
+    window as unknown as {
+      __fdBenchmark?: {
+        collect: typeof collectBenchmarkResult;
+        toCSV: typeof benchmarkResultsToCSV;
+        download: typeof downloadCSV;
+        monitor: PerfMonitor;
+      };
+    }
+  ).__fdBenchmark = {
     collect: collectBenchmarkResult,
     toCSV: benchmarkResultsToCSV,
     download: downloadCSV,
@@ -268,7 +274,9 @@ export function PerfHud({ renderMode }: { renderMode: string }) {
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if (e.key === "F2") {
+      // Ticket B: the perf HUD toggles on F9 (moved off F2, which now belongs
+      // solely to the Report-Issue dialog). Close-button dismissal below.
+      if (e.key === "F9") {
         setVisible((v) => !v);
         e.preventDefault();
       }
@@ -296,16 +304,29 @@ export function PerfHud({ renderMode }: { renderMode: string }) {
 
   return (
     <div className="fd-perf-hud" data-testid="perf-hud">
+      {/* Ticket B: mouse-dismissable close (×) — the HUD no longer depends on a
+          keypress to go away. */}
+      <button
+        type="button"
+        className="close"
+        data-testid="perf-hud-close"
+        aria-label="Close performance monitor"
+        title="Close (F9 to toggle)"
+        onClick={() => setVisible(false)}
+      >
+        &times;
+      </button>
       <div>
-        FPS: {fps.toFixed(0)} | Frame:{" "}
-        {latest?.frameTimeMs.toFixed(1) ?? "—"}ms | p95:{" "}
-        {p95.toFixed(1)}ms | Mode: {renderMode} | Bodies:{" "}
+        FPS: {fps.toFixed(0)} | Frame: {latest?.frameTimeMs.toFixed(1) ?? "—"}ms
+        | p95: {p95.toFixed(1)}ms | Mode: {renderMode} | Bodies:{" "}
         {latest?.bodyCount ?? 0}
       </div>
       <div>
         GPU: {gpuLabel}
         {gpu?.isFallback ? " (software)" : ""} | Tier:{" "}
-        {telemetry ? `${telemetry.tier} @ ${telemetry.avgFps.toFixed(0)}fps` : "—"}
+        {telemetry
+          ? `${telemetry.tier} @ ${telemetry.avgFps.toFixed(0)}fps`
+          : "—"}
       </div>
     </div>
   );

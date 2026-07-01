@@ -54,6 +54,9 @@ func NewServer(store Store) *Server {
 	s.mux.HandleFunc("PUT /api/projects/{id}/thumbnail", s.handlePutThumbnail)
 	s.mux.HandleFunc("POST /api/projects/{id}/publish", s.handlePublish)
 	s.mux.HandleFunc("GET /api/v/{id}", s.handleViewSnapshot)
+	// Public invite lookup (no auth): the self-registration form reads the
+	// invitee's name/email to prefill the register screen from an invite link.
+	s.mux.HandleFunc("GET /api/invites/{token}/info", s.handleInviteInfo)
 	// Admin invite management.
 	s.mux.HandleFunc("POST /api/invites", s.handleCreateInvite)
 	s.mux.HandleFunc("GET /api/invites", s.handleListInvites)

@@ -77,11 +77,7 @@ import {
 import type { Vec2 } from "./sketchTrim";
 import { mirrorSubCall, isMirrorableSubCall } from "./sketchMirror";
 import { offsetCurve, offsetChain, buildChain } from "./sketchOffset";
-import {
-  patternLinear,
-  patternCircular,
-  rotateCurve,
-} from "./sketchPattern";
+import { patternLinear, patternCircular, rotateCurve } from "./sketchPattern";
 import {
   translateSubCall,
   isTranslatableSubCall,
@@ -3519,7 +3515,9 @@ export class KernelStore {
     const sources = subCallsForSelection(
       session.subCalls,
       session.selection,
-    ).filter((i) => i !== axisLineIndex && isMirrorableSubCall(session.subCalls[i]));
+    ).filter(
+      (i) => i !== axisLineIndex && isMirrorableSubCall(session.subCalls[i]),
+    );
     const appended = this.mirrorSubCallsAcrossAxis(axisLineIndex, sources);
     if (!appended) return;
     this.updateSketch(reduceClearSelection(this.state.sketchSession));
@@ -4297,7 +4295,9 @@ export class KernelStore {
     // rewrite (replaceSketchSubCallAt clears the selection; restored below).
     let next = session;
     for (const i of [...sources].sort((a, b) => b - a)) {
-      next = reduceReplaceAt(next, i, [translateSubCall(session.subCalls[i], dx, dy)]);
+      next = reduceReplaceAt(next, i, [
+        translateSubCall(session.subCalls[i], dx, dy),
+      ]);
     }
     // Equal-count replace keeps entity ids, so the original selection still
     // points at the moved geometry — restore it.
@@ -5504,6 +5504,44 @@ export class KernelStore {
     };
     this.setActiveTab(newTab.id);
     return newTab.id;
+  }
+
+  /** The current project's display name (shown next to the logo). */
+  projectName(): string {
+    return this.state.project.name;
+  }
+
+  /** Rename the whole project (Ticket C: editable title next to the logo).
+   *  Trims; ignores an empty or unchanged name. Always updates local store
+   *  state (and schedules the autosave). When the project is server-bound
+   *  (`projectId` set) it ALSO persists via `PATCH /api/projects/{id}` with
+   *  `{name}`; an unbound guest project renames locally only (the next sync
+   *  carries the new name). A failed PATCH is swallowed — the local rename
+   *  stands and the pending change syncs later. */
+  renameProject(name: string): void {
+    const trimmed = name.trim();
+    if (trimmed.length === 0 || trimmed === this.state.project.name) return;
+    this.state = {
+      ...this.state,
+      project: { ...this.state.project, name: trimmed },
+      // A bound project now has an unsynced local change.
+      syncState: this.state.projectId ? "dirty" : this.state.syncState,
+    };
+    this.notify();
+    this.autosave.schedule(this.serializeProject());
+
+    const id = this.state.projectId;
+    if (id) {
+      void fetch(`/api/projects/${id}`, {
+        method: "PATCH",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: trimmed }),
+      }).catch((err) => {
+        // eslint-disable-next-line no-console
+        console.error("fielddraft: project rename sync failed", err);
+      });
+    }
   }
 
   /** MT-A: rename a tab (trim; ignore empty). For a script tab the
