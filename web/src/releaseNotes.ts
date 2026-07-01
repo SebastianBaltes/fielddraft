@@ -24,6 +24,26 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    "version": "0.6.347",
+    "entries": [
+      {
+        "kind": "feat",
+        "text": "Mate-Connector-Realignment: Origin entlang eigener X/Y/Z-Achsen verschieben (Offset)",
+        "scope": "mate"
+      },
+      {
+        "kind": "feat",
+        "text": "Mate-Connector zwischen zwei Elementen platzieren (2. Anker → Mittelpunkt)",
+        "scope": "mate"
+      },
+      {
+        "kind": "feat",
+        "text": "Mate-Connector einem Owner-Part zuordnen",
+        "scope": "mate"
+      }
+    ]
+  },
+  {
     "version": "0.6.346",
     "entries": [
       {

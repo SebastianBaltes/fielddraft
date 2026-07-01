@@ -2356,6 +2356,15 @@ pub struct MateConnectorDef {
     /// face/vertex anchors.
     #[param(name = "Position along edge", default = 0.5)]
     pub t: f32,
+    /// Between-entities placement (Phase D): an optional SECOND anchor
+    /// (`qFace`/`qEdge`/`qVertex`). When set, the connector origin is the
+    /// MIDPOINT of the two anchors' points; the orientation still comes from the
+    /// first anchor. Empty → single-entity placement (the common case).
+    #[param(name = "Between (2nd anchor)", default = ::fielddraft_protocol::Query::new(""), entity_filter = "FACE, EDGE, VERTEX")]
+    pub anchor2: ::fielddraft_protocol::Query,
+    /// Position along the 2nd anchor if it is an edge, `[0, 1]` (0.5 = midpoint).
+    #[param(name = "2nd position along edge", default = 0.5)]
+    pub t2: f32,
     /// Reference FACE that orients the SECONDARY axes (an edge's adjacent face)
     /// or, for a VERTEX anchor, defines +Z. Empty → auto-picked from the
     /// anchor's adjacent geometry. Unused for a face anchor.
@@ -2367,6 +2376,16 @@ pub struct MateConnectorDef {
     /// Flip the primary (+Z) axis 180°.
     #[param(default = false)]
     pub flip: bool,
+    /// Realignment (Phase D): translate the origin along the connector's OWN
+    /// axes (X, Y, Z = normal), in millimetres. Applied after the CSYS is
+    /// derived, so `[0, 0, 5]` lifts the connector 5 mm along its own +Z.
+    #[param(name = "Offset (own axes)", default = [0.0, 0.0, 0.0])]
+    pub offset: [f32; 3],
+    /// Owner part (Phase D): the body this connector belongs to
+    /// (`qCreatedBy(<seed>)`). Organises the connector under a part in the UI
+    /// and travels with it. Empty → inferred from the anchor geometry.
+    #[param(name = "Owner part", default = ::fielddraft_protocol::Query::new(""), entity_filter = "BODY")]
+    pub owner: ::fielddraft_protocol::Query,
 }
 
 /// C2: the resolved coordinate system of a placed `mate_connector`,
@@ -2380,6 +2399,10 @@ pub struct ResolvedMateConnector {
     pub normal: [f32; 3],
     /// CSYS X-axis (the face's in-plane basis vector).
     pub x_axis: [f32; 3],
+    /// Owner part's seed feature id, if an explicit `owner` query was given
+    /// (Phase D). `None` → not assigned to a specific part.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub owner_id: Option<u32>,
 }
 
 pub struct MateConnectorFeature;
@@ -2450,11 +2473,53 @@ impl FeatureKind for MateConnectorFeature {
         let steps = (d.reorient.round() as i64).rem_euclid(4) as u32;
         let x_axis = reorient_secondary(x0, normal, steps);
 
+        // Between-entities (Phase D): a 2nd anchor moves the origin to the
+        // midpoint of the two anchor points. Orientation stays with the first.
+        let mut origin = anc.origin;
+        let anchor2_str = d.anchor2.as_str();
+        if !anchor2_str.is_empty() {
+            let a2 = crate::queries::parse_query(anchor2_str)
+                .map_err(|e| inval("anchor2", format!("could not parse 2nd anchor query: {e}")))?;
+            let anc2 = ctx
+                .resolve_mate_anchor(&a2, d.t2)
+                .ok_or_else(|| inval("anchor2", "2nd anchor query resolved to nothing".into()))?;
+            origin = [
+                (origin[0] + anc2.origin[0]) * 0.5,
+                (origin[1] + anc2.origin[1]) * 0.5,
+                (origin[2] + anc2.origin[2]) * 0.5,
+            ];
+        }
+
+        // Realignment offset (Phase D): translate along the connector's OWN
+        // axes. Y = Z × X keeps the frame right-handed.
+        if d.offset != [0.0, 0.0, 0.0] {
+            let y_axis = cross3(normal, x_axis);
+            for k in 0..3 {
+                origin[k] +=
+                    d.offset[0] * x_axis[k] + d.offset[1] * y_axis[k] + d.offset[2] * normal[k];
+            }
+        }
+
+        // Owner part (Phase D): a `qCreatedBy(<seed>)` names the body this
+        // connector belongs to. Capture the seed id for UI grouping.
+        let owner_id = {
+            let owner_str = d.owner.as_str();
+            if owner_str.is_empty() {
+                None
+            } else {
+                match crate::queries::parse_query(owner_str) {
+                    Ok(crate::queries::QueryExpr::CreatedBy(seed)) => seed.as_u32_or_root(),
+                    _ => None,
+                }
+            }
+        };
+
         ctx.mate_connectors.push(ResolvedMateConnector {
             id: id.clone(),
-            origin: anc.origin,
+            origin,
             normal,
             x_axis,
+            owner_id,
         });
         Ok(())
     }
@@ -9578,6 +9643,77 @@ mod tests {
         let flipped = &ctx.mate_connectors[0];
         assert!((flipped.normal[2] + 1.0).abs() < 1e-3, "flip → -Z, got {:?}", flipped.normal);
         assert!((flipped.origin[2] - 10.0).abs() < 1e-2, "flip keeps the origin");
+    }
+
+    #[test]
+    fn mate_connector_offset_between_and_owner() {
+        let registry = FeatureRegistry::with_builtins();
+        let mut doc = empty_ctx();
+        let mut ctx = Context::new(&mut doc);
+        registry
+            .regenerate(&mut ctx, std::slice::from_ref(&box_call(1, 10.0)), None)
+            .unwrap();
+
+        // +Z face (z=10) and -Z face (z=-10) hashes.
+        let woven = crate::body::weave_all(&ctx.features);
+        let (brep, placement) = &woven[0];
+        let (mut top_hash, mut bot_hash) = (None, None);
+        for i in 0..brep.face_count() {
+            let frame = crate::sketch_features::face_plane_frame(
+                brep,
+                crate::brep::FaceId(i as u32),
+                placement,
+            );
+            let hash = crate::brep::naming::TopoRef::from_face(brep, crate::brep::FaceId(i as u32)).id_hash;
+            if (frame.normal[2] - 1.0).abs() < 1e-4 {
+                top_hash = Some(hash);
+            } else if (frame.normal[2] + 1.0).abs() < 1e-4 {
+                bot_hash = Some(hash);
+            }
+        }
+        let (top_hash, bot_hash) = (top_hash.expect("+Z face"), bot_hash.expect("-Z face"));
+
+        // Realignment offset: +5 along the connector's own +Z lifts the origin
+        // from z=10 to z=15; owner qCreatedBy(1) → owner_id = Some(1).
+        registry
+            .regenerate(
+                &mut ctx,
+                &[FeatureCall::new(
+                    "mate_connector",
+                    id(2),
+                    json!({
+                        "anchor": format!("qFace({top_hash})"),
+                        "offset": [0.0, 0.0, 5.0],
+                        "owner": "qCreatedBy(1)",
+                    }),
+                )],
+                None,
+            )
+            .unwrap();
+        let mc = &ctx.mate_connectors[0];
+        assert!((mc.origin[2] - 15.0).abs() < 1e-2, "offset lifts +Z origin to 15, got {:?}", mc.origin);
+        assert_eq!(mc.owner_id, Some(1), "owner qCreatedBy(1) → seed id 1");
+
+        // Between-entities: midpoint of the +Z (z=10) and -Z (z=-10) face
+        // centroids sits at z=0.
+        ctx.mate_connectors.clear();
+        registry
+            .regenerate(
+                &mut ctx,
+                &[FeatureCall::new(
+                    "mate_connector",
+                    id(3),
+                    json!({
+                        "anchor": format!("qFace({top_hash})"),
+                        "anchor2": format!("qFace({bot_hash})"),
+                    }),
+                )],
+                None,
+            )
+            .unwrap();
+        let mid = &ctx.mate_connectors[0];
+        assert!(mid.origin[2].abs() < 1e-2, "between → midpoint z=0, got {:?}", mid.origin);
+        assert_eq!(mid.owner_id, None, "no owner query → None");
     }
 
     #[test]
