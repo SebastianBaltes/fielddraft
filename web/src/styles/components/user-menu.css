@@ -1,9 +1,9 @@
-/* AccountButton.tsx — topbar account entry point (Log in / user menu).
+/* UserMenu.tsx — the 👤 user menu in the topbar (WP13).
  *
- * One top-level class `.fd-account-button`; child selectors nest unprefixed.
- * Tokens only; light mode; every font-size ≥ 1rem. */
+ * One top-level class `.fd-user-menu`; children nest unprefixed. Tokens only;
+ * light mode; every font-size ≥ 1rem. */
 
-.fd-account-button {
+.fd-user-menu {
   position: relative;
   display: inline-flex;
   align-items: center;
@@ -11,6 +11,7 @@
   & .trigger {
     display: inline-flex;
     align-items: center;
+    justify-content: center;
     gap: var(--space-2);
     font-family: inherit;
     font-size: var(--fs-base);
@@ -32,6 +33,18 @@
     }
   }
 
+  & .trigger.person {
+    padding: var(--space-1) var(--space-2);
+  }
+
+  & .trigger.person .glyph {
+    /* A black person glyph, no name. Force the monochrome text presentation
+       so it reads as a solid black person, not a colourful emoji. */
+    font-size: var(--fs-md);
+    line-height: 1;
+    filter: grayscale(1) brightness(0);
+  }
+
   & .trigger.login {
     background: var(--color-accent);
     color: var(--color-text-on-accent);
@@ -42,32 +55,12 @@
     }
   }
 
-  & .avatar {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 1.5rem;
-    height: 1.5rem;
-    border-radius: 50%;
-    background: var(--color-accent);
-    color: var(--color-text-on-accent);
-    font-size: var(--fs-base);
-    font-weight: var(--fw-semibold);
-  }
-
-  & .who {
-    max-width: 12rem;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  & .account-popover {
+  & .user-popover {
     position: absolute;
     top: calc(100% + var(--space-2));
     right: 0;
     z-index: 1300;
-    min-width: 12rem;
+    min-width: 14rem;
     display: flex;
     flex-direction: column;
     padding: var(--space-1);
@@ -77,22 +70,32 @@
     box-shadow: var(--shadow-lg);
   }
 
-  & .role-tag {
-    align-self: flex-start;
-    margin: var(--space-1) var(--space-2);
-    padding: 0 var(--space-2);
-    font-size: var(--fs-base);
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-    color: var(--color-accent);
-    border: 1px solid var(--color-accent-soft);
-    border-radius: var(--radius-pill);
-    background: var(--color-accent-soft);
+  & .identity {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: var(--space-2) var(--space-3);
+
+    & .email {
+      font-size: var(--fs-base);
+      font-weight: var(--fw-medium);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    & .role {
+      font-size: var(--fs-base);
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      color: var(--color-accent);
+    }
   }
 
   & .menu-item {
     display: flex;
     align-items: center;
+    justify-content: space-between;
     gap: var(--space-2);
     text-align: left;
     font-family: inherit;
@@ -108,17 +111,9 @@
       background: var(--color-bg-hover);
     }
 
-    & .badge {
-      margin-left: auto;
-      min-width: 1.5rem;
-      padding: 0 var(--space-2);
+    & .menu-shortcut {
       font-size: var(--fs-base);
-      font-weight: var(--fw-semibold);
-      line-height: 1.5rem;
-      text-align: center;
-      color: var(--color-text-on-accent);
-      background: var(--color-error);
-      border-radius: var(--radius-pill);
+      color: var(--color-text-muted);
     }
   }
 

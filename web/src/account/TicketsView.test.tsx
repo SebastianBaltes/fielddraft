@@ -83,7 +83,6 @@ function mount(props: Partial<Parameters<typeof TicketsView>[0]> = {}) {
         user={USER}
         isAdmin={false}
         onLoadFdraft={() => {}}
-        onClose={() => {}}
         {...props}
       />,
     );
@@ -261,39 +260,13 @@ describe("TicketsView — detail", () => {
   });
 });
 
-describe("TicketsView — create", () => {
-  it("creates a plain issue and jumps to its detail", async () => {
+describe("TicketsView — list-only (WP13)", () => {
+  it("has no New-Issue button or create form (issues are filed via Report Issue)", async () => {
     vi.spyOn(platform.platformApi, "listTickets").mockResolvedValue([]);
-    const create = vi
-      .spyOn(platform.platformApi, "createTicket")
-      .mockResolvedValue(detail({ id: "fresh" }));
-    const get = vi
-      .spyOn(platform.platformApi, "getTicket")
-      .mockResolvedValue(detail({ id: "fresh" }));
     mount();
     await flush();
-    act(() => byTestId<HTMLButtonElement>("tickets-new")!.click());
-
-    const setInput = (id: string, value: string) => {
-      const el = byTestId<HTMLInputElement | HTMLTextAreaElement>(id)!;
-      const proto =
-        el instanceof HTMLTextAreaElement
-          ? HTMLTextAreaElement.prototype
-          : HTMLInputElement.prototype;
-      const setter = Object.getOwnPropertyDescriptor(proto, "value")!.set!;
-      act(() => {
-        setter.call(el, value);
-        el.dispatchEvent(new Event("input", { bubbles: true }));
-      });
-    };
-    setInput("create-title", "New bug");
-    setInput("create-body", "details here");
-    act(() => byTestId<HTMLButtonElement>("create-submit")!.click());
-    await flush();
-    expect(create).toHaveBeenCalledWith(
-      expect.objectContaining({ title: "New bug", body: "details here" }),
-    );
-    // After create → detail for the new id.
-    expect(get).toHaveBeenCalledWith("fresh");
+    expect(byTestId("tickets-new")).toBeNull();
+    expect(byTestId("create-title")).toBeNull();
+    expect(byTestId("create-submit")).toBeNull();
   });
 });

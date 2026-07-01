@@ -1,0 +1,52 @@
+/* Overview.tsx — the main-level tabbed browser (WP13).
+ *
+ * One top-level class `.fd-overview`; children nest unprefixed. Tokens only;
+ * light mode; font-size ≥ 1rem. It fills the space below the persistent
+ * topbar. */
+
+.fd-overview {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-size: var(--fs-base);
+
+  & .overview-tabs {
+    display: flex;
+    align-items: stretch;
+    gap: var(--space-1);
+    padding: 0 var(--space-5);
+    border-bottom: 1px solid var(--color-border);
+    background: var(--color-bg-elevated);
+    flex: 0 0 auto;
+
+    & .tab {
+      font-family: inherit;
+      font-size: var(--fs-md);
+      font-weight: var(--fw-medium);
+      padding: var(--space-3) var(--space-4);
+      border: none;
+      border-bottom: 2px solid transparent;
+      background: transparent;
+      color: var(--color-text-muted);
+      cursor: pointer;
+
+      &:hover {
+        color: var(--color-text);
+      }
+
+      &.is-active {
+        color: var(--color-accent);
+        border-bottom-color: var(--color-accent);
+      }
+    }
+  }
+
+  & .overview-body {
+    flex: 1;
+    min-height: 0;
+    overflow: auto;
+  }
+}

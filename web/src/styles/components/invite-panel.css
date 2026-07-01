@@ -14,45 +14,31 @@
   font-size: var(--fs-base);
   color: var(--color-text);
 
-  & .invite-bar {
+  & .invite-create {
     display: flex;
-    align-items: center;
+    flex-direction: column;
     gap: var(--space-3);
+    max-width: 32rem;
   }
 
-  & .invite-title {
-    margin: 0;
-    flex: 1;
-    font-size: var(--fs-2xl);
-    font-weight: var(--fw-semibold);
-  }
+  & .field {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
 
-  & .close {
-    font-family: inherit;
-    font-size: var(--fs-lg);
-    line-height: 1;
-    width: 2.25rem;
-    height: 2.25rem;
-    padding: 0;
-    border: 1px solid var(--color-border);
-    border-radius: var(--radius-sm);
-    background: var(--color-bg-elevated);
-    color: var(--color-text-muted);
-    cursor: pointer;
-
-    &:hover {
-      background: var(--color-bg-hover);
-      color: var(--color-text);
+    & .label {
+      font-size: var(--fs-base);
+      font-weight: var(--fw-medium);
+      color: var(--color-text-muted);
     }
   }
 
-  & .invite-create {
+  & .create-actions {
     display: flex;
-    gap: var(--space-2);
   }
 
-  & .input {
-    flex: 1;
+  & .input,
+  & .textarea {
     font-family: var(--font-family-sans);
     font-size: var(--fs-base);
     padding: var(--space-2) var(--space-3);
@@ -64,6 +50,49 @@
     &:focus {
       outline: 2px solid var(--color-accent);
       outline-offset: 1px;
+    }
+  }
+
+  & .textarea {
+    resize: vertical;
+  }
+
+  & .invite-created {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: var(--space-2);
+    padding: var(--space-3) var(--space-4);
+    border: 1px solid var(--color-accent-soft);
+    border-radius: var(--radius-sm);
+    background: var(--color-accent-soft);
+
+    & .created-label {
+      font-size: var(--fs-base);
+    }
+
+    & .created-link {
+      font-family: var(--font-family-mono, monospace);
+      font-size: var(--fs-base);
+      padding: var(--space-1) var(--space-2);
+      background: var(--color-bg);
+      border: 1px solid var(--color-border);
+      border-radius: var(--radius-sm);
+      overflow-wrap: anywhere;
+    }
+
+    & .link {
+      font-family: inherit;
+      font-size: var(--fs-base);
+      padding: 0;
+      border: none;
+      background: transparent;
+      color: var(--color-accent);
+      cursor: pointer;
+
+      &:hover {
+        text-decoration: underline;
+      }
     }
   }
 

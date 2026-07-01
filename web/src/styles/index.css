@@ -26,15 +26,18 @@
 @import "./components/tool-hint.css";
 @import "./components/measure-panel.css";
 
-/* WP3 — account / platform UI (login, dashboard, gallery, invites). */
-@import "./components/account-layer.css";
-@import "./components/account-button.css";
+/* WP3/WP13 — account / platform UI (login, overview, projects, invites). */
 @import "./components/auth-screen.css";
-@import "./components/dashboard.css";
-@import "./components/gallery.css";
 @import "./components/invite-panel.css";
 
-/* WP4 — ticket / issues UI (list, detail, create, thread). */
+/* WP13 — navigation shell (overview tabs, unified projects browser, user menu,
+   admin bell). */
+@import "./components/overview.css";
+@import "./components/projects-browser.css";
+@import "./components/user-menu.css";
+@import "./components/bell.css";
+
+/* WP4 — ticket / issues UI (list, detail, thread). */
 @import "./components/tickets.css";
 
 /* WP9 — admin moderation UI + guest-import banner. */

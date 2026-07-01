@@ -200,13 +200,15 @@ describe("platformApi projects", () => {
 });
 
 describe("platformApi invites", () => {
-  it("createInvite posts an optional note", async () => {
+  it("createInvite posts the invitee name + email + message", async () => {
     mockFetch(() =>
       json(
         {
           token: "T",
           created_by: "u1",
-          note: "for bob",
+          invitee_name: "Bob",
+          invitee_email: "bob@x.io",
+          message: "join us",
           expires_at: "2026-02-01T00:00:00Z",
           used_by: null,
           used_at: null,
@@ -217,9 +219,19 @@ describe("platformApi invites", () => {
         201,
       ),
     );
-    const inv = await platformApi.createInvite("for bob");
+    const inv = await platformApi.createInvite({
+      invitee_name: "Bob",
+      invitee_email: "bob@x.io",
+      message: "join us",
+    });
     expect(inv.register_url).toBe("/register?invite=T");
-    expect(JSON.parse(calls[0].init.body as string).note).toBe("for bob");
+    expect(inv.invitee_email).toBe("bob@x.io");
+    const body = JSON.parse(calls[0].init.body as string);
+    expect(body).toEqual({
+      invitee_name: "Bob",
+      invitee_email: "bob@x.io",
+      message: "join us",
+    });
   });
 
   it("deleteInvite revokes by token", async () => {

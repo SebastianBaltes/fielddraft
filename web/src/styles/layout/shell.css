@@ -60,6 +60,35 @@
         font-weight: var(--fw-normal, 400);
         color: var(--color-text-muted);
       }
+
+      /* WP13: the `◀` back-to-overview control shown only in the modeling
+         view — returns to the Overview (Projects tab). */
+      & .back-to-overview {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-width: 1.75rem;
+        height: 1.75rem;
+        padding: 0;
+        border: none;
+        border-radius: var(--radius-sm);
+        background: transparent;
+        color: var(--color-text-muted);
+        font-size: var(--fs-base);
+        line-height: 1;
+        cursor: pointer;
+
+        &:hover {
+          background: var(--color-bg-hover);
+          color: var(--color-text);
+        }
+      }
+    }
+
+    /* WP13: on the Overview there is no `.meta` block; this spacer keeps the
+       right-hand controls (bell + user menu) flush right. */
+    & .topbar-spacer {
+      flex: 1;
     }
 
     & .meta {

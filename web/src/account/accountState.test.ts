@@ -18,23 +18,25 @@ const adminUser: User = {
 const plainUser: User = { ...adminUser, id: "u2", role: "user" };
 
 describe("initialAccountState", () => {
-  it("starts loading, guest, no overlay with no deep-link", () => {
+  it("starts loading in the modeling view (guest default) with no deep-link", () => {
     const s = initialAccountState("");
     expect(s.status).toBe("loading");
     expect(s.user).toBeNull();
-    expect(s.overlay).toBeNull();
+    expect(s.page).toBe("project");
+    expect(s.overviewTab).toBe("projects");
+    expect(s.auth).toBeNull();
     expect(s.invitePrefill).toBe("");
   });
 
-  it("auto-opens register and prefills the invite from ?invite=", () => {
+  it("auto-opens the register auth screen and prefills the invite from ?invite=", () => {
     const s = initialAccountState("?invite=ABC123");
-    expect(s.overlay).toBe("register");
+    expect(s.auth).toBe("register");
     expect(s.invitePrefill).toBe("ABC123");
   });
 
   it("auto-opens reset-confirm and prefills from ?reset=, winning over invite", () => {
     const s = initialAccountState("?invite=ABC&reset=R9");
-    expect(s.overlay).toBe("reset-confirm");
+    expect(s.auth).toBe("reset-confirm");
     expect(s.resetPrefill).toBe("R9");
   });
 });
@@ -42,120 +44,142 @@ describe("initialAccountState", () => {
 describe("accountReducer", () => {
   const base = initialAccountState("");
 
-  it("session-resolved → guest when no user", () => {
+  it("session-resolved → guest keeps the modeling view", () => {
     const s = accountReducer(base, { type: "session-resolved", user: null });
     expect(s.status).toBe("guest");
     expect(s.user).toBeNull();
+    expect(s.page).toBe("project");
   });
 
-  it("session-resolved → authed with the user", () => {
+  it("session-resolved → authed lands on the Overview", () => {
     const s = accountReducer(base, {
       type: "session-resolved",
       user: plainUser,
     });
     expect(s.status).toBe("authed");
     expect(s.user).toEqual(plainUser);
+    expect(s.page).toBe("overview");
   });
 
-  it("session-resolved bounces a logged-in user off the login screen to the dashboard", () => {
-    const onLogin: AccountState = { ...base, overlay: "login" };
+  it("session-resolved dismisses the login auth screen for a logged-in user", () => {
+    const onLogin: AccountState = { ...base, auth: "login" };
     const s = accountReducer(onLogin, {
       type: "session-resolved",
       user: plainUser,
     });
-    expect(s.overlay).toBe("dashboard");
+    expect(s.auth).toBeNull();
   });
 
-  it("session-resolved keeps a deep-link register overlay for a guest", () => {
+  it("session-resolved keeps a deep-link register auth screen for a guest", () => {
     const withInvite = initialAccountState("?invite=Z");
     const s = accountReducer(withInvite, {
       type: "session-resolved",
       user: null,
     });
-    expect(s.overlay).toBe("register");
+    expect(s.auth).toBe("register");
   });
 
-  it("authed opens the dashboard and burns the prefills", () => {
+  it("authed lands on the overview/projects tab and burns the prefills", () => {
     const withInvite = initialAccountState("?invite=Z");
     const s = accountReducer(withInvite, { type: "authed", user: plainUser });
     expect(s.status).toBe("authed");
-    expect(s.overlay).toBe("dashboard");
+    expect(s.page).toBe("overview");
+    expect(s.overviewTab).toBe("projects");
+    expect(s.auth).toBeNull();
     expect(s.invitePrefill).toBe("");
   });
 
-  it("logged-out returns to guest with no overlay", () => {
+  it("logged-out returns to guest on the overview", () => {
     const authed = accountReducer(base, { type: "authed", user: plainUser });
     const s = accountReducer(authed, { type: "logged-out" });
     expect(s.status).toBe("guest");
     expect(s.user).toBeNull();
-    expect(s.overlay).toBeNull();
+    expect(s.page).toBe("overview");
+    expect(s.overviewTab).toBe("projects");
   });
 
-  it("open / close toggle the overlay", () => {
-    const opened = accountReducer(base, { type: "open", overlay: "gallery" });
-    expect(opened.overlay).toBe("gallery");
-    const closed = accountReducer(opened, { type: "close" });
-    expect(closed.overlay).toBeNull();
+  it("enter-project switches to the modeling view", () => {
+    const s = accountReducer(base, { type: "enter-project" });
+    expect(s.page).toBe("project");
   });
 
-  it("open-ticket opens the tickets overlay deep-linked to an id", () => {
+  it("show-overview returns to the overview, optionally selecting a tab", () => {
+    const inProject = accountReducer(base, { type: "enter-project" });
+    const s = accountReducer(inProject, {
+      type: "show-overview",
+      tab: "issues",
+    });
+    expect(s.page).toBe("overview");
+    expect(s.overviewTab).toBe("issues");
+  });
+
+  it("select-tab switches the overview tab (and forces the overview page)", () => {
+    const inProject = accountReducer(base, { type: "enter-project" });
+    const s = accountReducer(inProject, { type: "select-tab", tab: "invites" });
+    expect(s.page).toBe("overview");
+    expect(s.overviewTab).toBe("invites");
+  });
+
+  it("open-ticket opens the Issues tab deep-linked to an id", () => {
     const s = accountReducer(base, { type: "open-ticket", ticketId: "t9" });
-    expect(s.overlay).toBe("tickets");
+    expect(s.page).toBe("overview");
+    expect(s.overviewTab).toBe("issues");
     expect(s.ticketPrefill).toBe("t9");
   });
 
-  it("open-ticket with null opens the list (no deep-link)", () => {
+  it("open-ticket with null opens the Issues list (no deep-link)", () => {
     const s = accountReducer(base, { type: "open-ticket", ticketId: null });
-    expect(s.overlay).toBe("tickets");
+    expect(s.overviewTab).toBe("issues");
     expect(s.ticketPrefill).toBeNull();
   });
 
-  it("opening a non-tickets overlay clears a stale ticket deep-link", () => {
+  it("selecting a non-issues tab clears a stale ticket deep-link", () => {
     const deep = accountReducer(base, { type: "open-ticket", ticketId: "t9" });
-    const s = accountReducer(deep, { type: "open", overlay: "dashboard" });
+    const s = accountReducer(deep, { type: "select-tab", tab: "projects" });
     expect(s.ticketPrefill).toBeNull();
   });
 
-  it("close clears the ticket deep-link", () => {
+  it("entering a project clears the ticket deep-link", () => {
     const deep = accountReducer(base, { type: "open-ticket", ticketId: "t9" });
-    const s = accountReducer(deep, { type: "close" });
-    expect(s.overlay).toBeNull();
+    const s = accountReducer(deep, { type: "enter-project" });
     expect(s.ticketPrefill).toBeNull();
   });
 
-  it("opens the admin overlays", () => {
-    const alerts = accountReducer(base, {
-      type: "open",
-      overlay: "admin-alerts",
-    });
-    expect(alerts.overlay).toBe("admin-alerts");
-    const users = accountReducer(base, {
-      type: "open",
-      overlay: "admin-users",
-    });
-    expect(users.overlay).toBe("admin-users");
+  it("open-auth / close-auth toggle the standalone auth screen", () => {
+    const opened = accountReducer(base, { type: "open-auth", mode: "login" });
+    expect(opened.auth).toBe("login");
+    const closed = accountReducer(opened, { type: "close-auth" });
+    expect(closed.auth).toBeNull();
+  });
+
+  it("set-bell toggles the admin alerts panel", () => {
+    const open = accountReducer(base, { type: "set-bell", open: true });
+    expect(open.bellOpen).toBe(true);
+    const closed = accountReducer(open, { type: "set-bell", open: false });
+    expect(closed.bellOpen).toBe(false);
   });
 
   it("unseen-alerts sets the badge count (clamped at 0)", () => {
-    expect(s0().unseenAlertCount).toBe(0);
+    expect(initialAccountState("").unseenAlertCount).toBe(0);
     const s = accountReducer(base, { type: "unseen-alerts", count: 3 });
     expect(s.unseenAlertCount).toBe(3);
     const cleared = accountReducer(s, { type: "unseen-alerts", count: -5 });
     expect(cleared.unseenAlertCount).toBe(0);
   });
 
-  it("logged-out resets the unseen-alert badge", () => {
+  it("logged-out resets the unseen-alert badge and closes the bell", () => {
     const withBadge = accountReducer(base, {
       type: "unseen-alerts",
       count: 4,
     });
-    const out = accountReducer(withBadge, { type: "logged-out" });
+    const bellOpen = accountReducer(withBadge, {
+      type: "set-bell",
+      open: true,
+    });
+    const out = accountReducer(bellOpen, { type: "logged-out" });
     expect(out.unseenAlertCount).toBe(0);
+    expect(out.bellOpen).toBe(false);
   });
-
-  function s0() {
-    return initialAccountState("");
-  }
 });
 
 describe("isAdmin", () => {

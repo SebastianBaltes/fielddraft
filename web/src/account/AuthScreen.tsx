@@ -16,13 +16,13 @@
 import { useState } from "react";
 import { platformApi } from "../api/platform";
 import { useAsyncSubmit } from "./useAccount";
-import type { AccountOverlay } from "./accountState";
+import type { AuthScreenMode } from "./accountState";
+
+/** The four concrete auth screens (a non-null {@link AuthScreenMode}). */
+export type AuthMode = Exclude<AuthScreenMode, null>;
 
 interface AuthScreenProps {
-  mode: Extract<
-    AccountOverlay,
-    "login" | "register" | "reset-request" | "reset-confirm"
-  >;
+  mode: AuthMode;
   invitePrefill: string;
   resetPrefill: string;
   onLogin(email: string, password: string): Promise<void>;
@@ -33,7 +33,7 @@ interface AuthScreenProps {
     invite: string;
   }): Promise<void>;
   /** Switch to another auth screen (e.g. "no account? register"). */
-  onSwitch(mode: AccountOverlay): void;
+  onSwitch(mode: AuthMode): void;
   onClose(): void;
   /** WP11 full-page login gate: render as a centered, opaque, full-screen view
    *  (no dismiss button) instead of the dismissable overlay card. There is no

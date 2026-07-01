@@ -100,7 +100,7 @@ describe("useAccount", () => {
     expect(latest.state.status).toBe("guest");
   });
 
-  it("login transitions to authed and opens the dashboard", async () => {
+  it("login transitions to authed and lands on the overview/projects tab", async () => {
     const login = vi.fn(async () => user);
     await mount(fakeApi({ getMe: async () => null, login }));
     await act(async () => {
@@ -108,7 +108,8 @@ describe("useAccount", () => {
     });
     expect(login).toHaveBeenCalledWith({ email: "a@b.c", password: "pw" });
     expect(latest.state.status).toBe("authed");
-    expect(latest.state.overlay).toBe("dashboard");
+    expect(latest.state.page).toBe("overview");
+    expect(latest.state.overviewTab).toBe("projects");
   });
 
   it("logout returns to guest even if the server call fails", async () => {
@@ -135,9 +136,9 @@ describe("useAccount", () => {
     expect(latest.isAdmin).toBe(true);
   });
 
-  it("auto-opens register from a ?invite= deep-link", async () => {
+  it("auto-opens the register auth screen from a ?invite= deep-link", async () => {
     await mount(fakeApi({ getMe: async () => null }), "?invite=ABC");
-    expect(latest.state.overlay).toBe("register");
+    expect(latest.state.auth).toBe("register");
     expect(latest.state.invitePrefill).toBe("ABC");
   });
 });

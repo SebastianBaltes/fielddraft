@@ -1,23 +1,20 @@
 /**
- * InvitePanel — admin-only invite management (`/api/invites`).
+ * InvitePanel — admin-only invite management (`/api/invites`), WP13 Invites tab.
  *
  * Rendered only when `me.role === "admin"`. Lets an admin:
- *   - create an invite (optional note) → shows the copyable
- *     `/register?invite=<token>` link,
- *   - list invites with their status (open / used-by / expired),
+ *   - create an invite with **Invitee name + Invitee email + Invitation text**
+ *     → shows the shareable `/register?invite=<token>` link,
+ *   - list invites with their addressee + status (open / used / expired),
  *   - revoke (delete) an invite.
  *
  * The backend is the gate too (every endpoint re-checks admin), so this panel
- * is a convenience surface, not the security boundary.
+ * is a convenience surface, not the security boundary. It is a persistent
+ * Overview tab — there is NO close (×) button.
  */
 
 import { useCallback, useEffect, useState } from "react";
 import { platformApi, type Invite } from "../api/platform";
 import { accountErrorMessage } from "./useAccount";
-
-interface InvitePanelProps {
-  onClose(): void;
-}
 
 function formatDate(iso: string): string {
   const d = new Date(iso);
@@ -32,20 +29,21 @@ function formatDate(iso: string): string {
 /** Absolute register link for an invite token, anchored at the current origin. */
 function registerLink(invite: Invite): string {
   const origin = typeof window !== "undefined" ? window.location.origin : "";
-  // The backend already supplies a relative register_url; make it absolute so
-  // it is copy-paste shareable.
   return invite.register_url.startsWith("http")
     ? invite.register_url
     : `${origin}${invite.register_url}`;
 }
 
-export function InvitePanel({ onClose }: InvitePanelProps) {
+export function InvitePanel() {
   const [invites, setInvites] = useState<Invite[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [note, setNote] = useState("");
+  const [name, setName] = useState("");
+  const [email, setEmail] = useState("");
+  const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
   const [copied, setCopied] = useState<string | null>(null);
+  const [lastCreated, setLastCreated] = useState<Invite | null>(null);
 
   const reload = useCallback(async () => {
     setLoading(true);
@@ -65,12 +63,22 @@ export function InvitePanel({ onClose }: InvitePanelProps) {
     void reload();
   }, [reload]);
 
+  const canCreate = name.trim().length > 0 && email.trim().length > 0 && !busy;
+
   const create = async () => {
+    if (!canCreate) return;
     setBusy(true);
     setError(null);
     try {
-      await platformApi.createInvite(note.trim() || undefined);
-      setNote("");
+      const created = await platformApi.createInvite({
+        invitee_name: name.trim(),
+        invitee_email: email.trim(),
+        message: message.trim(),
+      });
+      setLastCreated(created);
+      setName("");
+      setEmail("");
+      setMessage("");
       await reload();
     } catch (err) {
       setError(accountErrorMessage(err, "Could not create an invite"));
@@ -85,6 +93,7 @@ export function InvitePanel({ onClose }: InvitePanelProps) {
     setError(null);
     try {
       await platformApi.deleteInvite(token);
+      if (lastCreated?.token === token) setLastCreated(null);
       await reload();
     } catch (err) {
       setError(accountErrorMessage(err, "Could not revoke the invite"));
@@ -106,38 +115,74 @@ export function InvitePanel({ onClose }: InvitePanelProps) {
 
   return (
     <div className="fd-invite-panel" data-testid="invite-panel">
-      <div className="invite-bar">
-        <h2 className="invite-title">Invites</h2>
-        <button
-          type="button"
-          className="close"
-          data-testid="invite-close"
-          aria-label="Close"
-          onClick={onClose}
-        >
-          &times;
-        </button>
+      <div className="invite-create" data-testid="invite-form">
+        <label className="field">
+          <span className="label">Invitee name</span>
+          <input
+            className="input"
+            type="text"
+            placeholder="Ada Lovelace"
+            data-testid="invite-name"
+            value={name}
+            disabled={busy}
+            onChange={(e) => setName(e.target.value)}
+          />
+        </label>
+        <label className="field">
+          <span className="label">Invitee email</span>
+          <input
+            className="input"
+            type="email"
+            placeholder="ada@example.com"
+            data-testid="invite-email"
+            value={email}
+            disabled={busy}
+            onChange={(e) => setEmail(e.target.value)}
+          />
+        </label>
+        <label className="field">
+          <span className="label">Invitation text</span>
+          <textarea
+            className="textarea"
+            rows={3}
+            placeholder="A personal note the recipient will see…"
+            data-testid="invite-message"
+            value={message}
+            disabled={busy}
+            onChange={(e) => setMessage(e.target.value)}
+          />
+        </label>
+        <div className="create-actions">
+          <button
+            type="button"
+            className="primary"
+            data-testid="invite-create"
+            disabled={!canCreate}
+            onClick={create}
+          >
+            {busy ? "Creating…" : "Create invite"}
+          </button>
+        </div>
       </div>
 
-      <div className="invite-create">
-        <input
-          className="input"
-          type="text"
-          placeholder="Note (who is this for?)"
-          data-testid="invite-note"
-          value={note}
-          onChange={(e) => setNote(e.target.value)}
-        />
-        <button
-          type="button"
-          className="primary"
-          data-testid="invite-create"
-          disabled={busy}
-          onClick={create}
-        >
-          Create invite
-        </button>
-      </div>
+      {lastCreated && (
+        <div className="invite-created" data-testid="invite-created">
+          <span className="created-label">
+            Share this link with {lastCreated.invitee_name}:
+          </span>
+          <code className="created-link" data-testid="invite-created-link">
+            {registerLink(lastCreated)}
+          </code>
+          <button
+            type="button"
+            className="link"
+            data-testid="invite-created-copy"
+            onClick={() => copy(lastCreated)}
+          >
+            {copied === lastCreated.token ? "Copied!" : "Copy link"}
+          </button>
+        </div>
+      )}
 
       {error && (
         <p className="error" role="alert" data-testid="invite-error">
@@ -157,7 +202,8 @@ export function InvitePanel({ onClose }: InvitePanelProps) {
         <table className="invite-table" data-testid="invite-list">
           <thead>
             <tr>
-              <th>Note</th>
+              <th>Invitee</th>
+              <th>Email</th>
               <th>Status</th>
               <th>Expires</th>
               <th>Link</th>
@@ -167,10 +213,11 @@ export function InvitePanel({ onClose }: InvitePanelProps) {
           <tbody>
             {invites.map((inv) => (
               <tr key={inv.token} data-testid={`invite-row-${inv.token}`}>
-                <td>{inv.note || <span className="muted">—</span>}</td>
+                <td>{inv.invitee_name || <span className="muted">—</span>}</td>
+                <td>{inv.invitee_email || <span className="muted">—</span>}</td>
                 <td>
                   <span className={`status status-${inv.status}`}>
-                    {inv.status === "used" && inv.used_by ? `used` : inv.status}
+                    {inv.status === "used" && inv.used_by ? "used" : inv.status}
                   </span>
                 </td>
                 <td>{formatDate(inv.expires_at)}</td>

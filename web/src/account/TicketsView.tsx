@@ -1,20 +1,22 @@
 /**
- * TicketsView — the GitHub-Issues-like ticket UI (WP4, §7.4).
+ * TicketsView — the GitHub-Issues-like ticket UI (WP4, §7.4; WP13 Issues tab).
  *
- * A self-contained master/detail overlay screen owned by {@link AccountLayer}:
+ * A self-contained master/detail screen (the Overview's Issues tab):
  *   - the LIST: filter bar (state / category / free-text) + an "only mine"
  *     toggle, state badges, category, author, last activity — sorted by
- *     activity (newest first);
- *   - the DETAIL: title + body, artifact previews (screenshot thumbnail +
- *     "Load project" for the `.fdraft`, other attachments listed), the comment
- *     thread (User / PO / System personas; internal `dev` notes only for
- *     admins — guarded again in the UI), and CRUD (edit/close your own ticket,
- *     post a comment);
- *   - the CREATE form: a plain title + body issue.
+ *     activity (newest first). It is LIST-ONLY: issues are filed via the
+ *     👤 menu's "Report Issue…", so there is no New-Issue button or create
+ *     form here — the PO agent assigns the title / category / status;
+ *   - the DETAIL: the PO-assigned title + category + state, the body, artifact
+ *     previews (screenshot thumbnail + "Load project" for the `.fdraft`, other
+ *     attachments listed), the comment thread (User / PO / System personas;
+ *     internal `dev` notes only for admins — guarded again in the UI), and a
+ *     comment box (edit/close your own ticket too).
  *
  * It never reaches into the kernel store directly: App.tsx passes `onLoadFdraft`
  * (load a ticket's `.fdraft` artifact into the live workspace), keeping guest
- * mode decoupled.
+ * mode decoupled. It is a persistent Overview tab — there is NO close (×)
+ * button.
  */
 
 import { useCallback, useEffect, useState } from "react";
@@ -42,13 +44,12 @@ import {
 } from "./ticketView";
 
 interface TicketsViewProps {
-  /** The logged-in user (null while guest — listing/creating need a session). */
+  /** The logged-in user (null while guest — listing needs a session). */
   user: User | null;
   isAdmin: boolean;
   /** Load a ticket's `.fdraft` artifact bytes into the live workspace as an
    *  unbound copy (App.tsx wires this to the kernel store). */
   onLoadFdraft(bytes: ArrayBuffer): void;
-  onClose(): void;
   /** Deep-link: open this ticket id on mount (e.g. straight from a report). */
   initialTicketId?: string | null;
 }
@@ -72,27 +73,17 @@ export function TicketsView({
   user,
   isAdmin,
   onLoadFdraft,
-  onClose,
   initialTicketId,
 }: TicketsViewProps) {
-  // Master/detail mode: list, a single ticket id, or the create form.
+  // Master/detail mode: the list or a single ticket id. There is no create
+  // mode — issues are filed via the 👤 "Report Issue…" flow.
   const [mode, setMode] = useState<
-    { kind: "list" } | { kind: "detail"; id: string } | { kind: "create" }
+    { kind: "list" } | { kind: "detail"; id: string }
   >(
     initialTicketId
       ? { kind: "detail", id: initialTicketId }
       : { kind: "list" },
   );
-
-  if (mode.kind === "create") {
-    return (
-      <TicketCreate
-        onClose={onClose}
-        onCancel={() => setMode({ kind: "list" })}
-        onCreated={(id) => setMode({ kind: "detail", id })}
-      />
-    );
-  }
 
   if (mode.kind === "detail") {
     return (
@@ -101,19 +92,13 @@ export function TicketsView({
         user={user}
         isAdmin={isAdmin}
         onLoadFdraft={onLoadFdraft}
-        onClose={onClose}
         onBack={() => setMode({ kind: "list" })}
       />
     );
   }
 
   return (
-    <TicketList
-      user={user}
-      onClose={onClose}
-      onOpen={(id) => setMode({ kind: "detail", id })}
-      onNew={() => setMode({ kind: "create" })}
-    />
+    <TicketList user={user} onOpen={(id) => setMode({ kind: "detail", id })} />
   );
 }
 
@@ -121,12 +106,10 @@ export function TicketsView({
 
 interface TicketListProps {
   user: User | null;
-  onClose(): void;
   onOpen(id: string): void;
-  onNew(): void;
 }
 
-function TicketList({ user, onClose, onOpen, onNew }: TicketListProps) {
+function TicketList({ user, onOpen }: TicketListProps) {
   const [tickets, setTickets] = useState<TicketSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -162,31 +145,6 @@ function TicketList({ user, onClose, onOpen, onNew }: TicketListProps) {
 
   return (
     <div className="fd-tickets" data-testid="tickets">
-      <div className="tickets-bar">
-        <h2 className="tickets-title">Issues</h2>
-        <div className="tickets-actions">
-          <button
-            type="button"
-            className="primary"
-            data-testid="tickets-new"
-            disabled={!user}
-            title={user ? "Create a new issue" : "Log in to create an issue"}
-            onClick={onNew}
-          >
-            New issue
-          </button>
-          <button
-            type="button"
-            className="close"
-            data-testid="tickets-close"
-            aria-label="Back to editor"
-            onClick={onClose}
-          >
-            &times;
-          </button>
-        </div>
-      </div>
-
       <div className="filter-bar" data-testid="tickets-filters">
         <label className="only-mine">
           <input
@@ -290,130 +248,6 @@ function TicketList({ user, onClose, onOpen, onNew }: TicketListProps) {
   );
 }
 
-/* ── create ─────────────────────────────────────────────────────── */
-
-interface TicketCreateProps {
-  onClose(): void;
-  onCancel(): void;
-  onCreated(id: string): void;
-}
-
-function TicketCreate({ onClose, onCancel, onCreated }: TicketCreateProps) {
-  const [title, setTitle] = useState("");
-  const [body, setBody] = useState("");
-  const [category, setCategory] = useState<TicketCategory | "">("");
-  const [pending, setPending] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  const canSubmit =
-    title.trim().length > 0 && body.trim().length > 0 && !pending;
-
-  const submit = async () => {
-    if (!canSubmit) return;
-    setPending(true);
-    setError(null);
-    try {
-      const created = await platformApi.createTicket({
-        title: title.trim(),
-        body: body.trim(),
-        category: category || "",
-      });
-      onCreated(created.id);
-    } catch (err) {
-      setError(accountErrorMessage(err, "Could not create the issue"));
-      setPending(false);
-    }
-  };
-
-  return (
-    <div className="fd-tickets" data-testid="ticket-create">
-      <div className="tickets-bar">
-        <h2 className="tickets-title">New issue</h2>
-        <div className="tickets-actions">
-          <button
-            type="button"
-            className="close"
-            aria-label="Back to editor"
-            onClick={onClose}
-          >
-            &times;
-          </button>
-        </div>
-      </div>
-
-      <div className="ticket-form">
-        <label className="field">
-          <span className="label">Title</span>
-          <input
-            className="text-input"
-            data-testid="create-title"
-            value={title}
-            autoFocus
-            disabled={pending}
-            placeholder="Short summary"
-            onChange={(e) => setTitle(e.target.value)}
-          />
-        </label>
-        <label className="field">
-          <span className="label">Category</span>
-          <select
-            className="filter-select"
-            data-testid="create-category"
-            value={category}
-            disabled={pending}
-            onChange={(e) => setCategory(e.target.value as TicketCategory | "")}
-          >
-            <option value="">Uncategorized</option>
-            {CATEGORIES.map((c) => (
-              <option key={c} value={c}>
-                {categoryLabel(c)}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label className="field">
-          <span className="label">Description</span>
-          <textarea
-            className="textarea"
-            data-testid="create-body"
-            value={body}
-            rows={8}
-            disabled={pending}
-            placeholder="What's the bug / request? Steps, expected vs. actual…"
-            onChange={(e) => setBody(e.target.value)}
-          />
-        </label>
-
-        {error && (
-          <p className="error" role="alert" data-testid="create-error">
-            {error}
-          </p>
-        )}
-
-        <div className="form-actions">
-          <button
-            type="button"
-            className="secondary"
-            disabled={pending}
-            onClick={onCancel}
-          >
-            Cancel
-          </button>
-          <button
-            type="button"
-            className="primary"
-            data-testid="create-submit"
-            disabled={!canSubmit}
-            onClick={submit}
-          >
-            {pending ? "Creating…" : "Create issue"}
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
 /* ── detail ─────────────────────────────────────────────────────── */
 
 interface TicketDetailPanelProps {
@@ -421,7 +255,6 @@ interface TicketDetailPanelProps {
   user: User | null;
   isAdmin: boolean;
   onLoadFdraft(bytes: ArrayBuffer): void;
-  onClose(): void;
   onBack(): void;
 }
 
@@ -430,7 +263,6 @@ function TicketDetailPanel({
   user,
   isAdmin,
   onLoadFdraft,
-  onClose,
   onBack,
 }: TicketDetailPanelProps) {
   const [ticket, setTicket] = useState<TicketDetail | null>(null);
@@ -476,7 +308,7 @@ function TicketDetailPanel({
   if (loading) {
     return (
       <div className="fd-tickets" data-testid="ticket-detail">
-        <DetailBar title="Issue" onBack={onBack} onClose={onClose} />
+        <DetailBar title="Issue" onBack={onBack} />
         <p className="empty" data-testid="detail-loading">
           Loading…
         </p>
@@ -487,7 +319,7 @@ function TicketDetailPanel({
   if (error && !ticket) {
     return (
       <div className="fd-tickets" data-testid="ticket-detail">
-        <DetailBar title="Issue" onBack={onBack} onClose={onClose} />
+        <DetailBar title="Issue" onBack={onBack} />
         <p className="error" role="alert" data-testid="detail-error">
           {error}
         </p>
@@ -499,7 +331,7 @@ function TicketDetailPanel({
 
   return (
     <div className="fd-tickets" data-testid="ticket-detail">
-      <DetailBar title="Issue" onBack={onBack} onClose={onClose} />
+      <DetailBar title="Issue" onBack={onBack} />
 
       {error && (
         <p className="error" role="alert" data-testid="detail-error">
@@ -580,15 +412,7 @@ function TicketDetailPanel({
   );
 }
 
-function DetailBar({
-  title,
-  onBack,
-  onClose,
-}: {
-  title: string;
-  onBack(): void;
-  onClose(): void;
-}) {
+function DetailBar({ title, onBack }: { title: string; onBack(): void }) {
   return (
     <div className="tickets-bar">
       <button
@@ -600,16 +424,6 @@ function DetailBar({
         ← Issues
       </button>
       <h2 className="tickets-title">{title}</h2>
-      <div className="tickets-actions">
-        <button
-          type="button"
-          className="close"
-          aria-label="Back to editor"
-          onClick={onClose}
-        >
-          &times;
-        </button>
-      </div>
     </div>
   );
 }

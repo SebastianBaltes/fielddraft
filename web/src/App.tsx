@@ -20,8 +20,10 @@ import type { SettingsState } from "./SettingsMenu";
 import { CONTROLS_PRESETS, viewShortcutRow } from "./controlsPreset";
 import { useAccount, type UseAccountOptions } from "./account/useAccount";
 import type { UseAccount } from "./account/useAccount";
-import { AccountButton } from "./account/AccountButton";
-import { AccountLayer } from "./account/AccountLayer";
+import { UserMenu } from "./account/UserMenu";
+import { Bell } from "./account/Bell";
+import { Overview } from "./account/Overview";
+import { AuthScreen } from "./account/AuthScreen";
 import { AuthGate } from "./account/AuthGate";
 import { GuestImportBanner } from "./account/GuestImportBanner";
 import { shouldOfferGuestImport } from "./account/guestImport";
@@ -101,9 +103,9 @@ function AppShell({ account }: { account: UseAccount }) {
   // owned by the outer App (one `/api/me` per load) and passed in, so the WP11
   // login gate and this shell share exactly one resolution.
 
-  // Bridge: load a server project's document into the live workspace and bind
-  // it for sync. The server stores the full multi-tab Project blob, so this
-  // restores the whole workspace.
+  // Bridge: load a server project's document into the live workspace, bind it
+  // for sync, and enter the modeling view. The server stores the full multi-tab
+  // Project blob, so this restores the whole workspace.
   const openServerProject = (project: ServerProject) => {
     if (!store) return;
     const json =
@@ -111,10 +113,11 @@ function AppShell({ account }: { account: UseAccount }) {
         ? project.document
         : JSON.stringify(project.document ?? {});
     store.loadServerProject(project.id, json);
+    account.enterProject();
   };
 
   // Bridge: open a public/gallery project as a fresh UNBOUND copy (no server
-  // binding — it's not the viewer's project).
+  // binding — it's not the viewer's project) and enter the modeling view.
   const openServerCopy = (project: ServerProject) => {
     if (!store) return;
     const json =
@@ -128,16 +131,18 @@ function AppShell({ account }: { account: UseAccount }) {
     } else if (store.loadProjectFromJson(json)) {
       store.detachServerProject();
     }
+    account.enterProject();
   };
 
   // Bridge: load a ticket's `.fdraft` artifact (raw ZIP bytes) into the live
   // workspace as a fresh UNBOUND copy — it's repro material, not the viewer's
-  // server project, so we don't bind it for sync.
+  // server project, so we don't bind it for sync — and enter the modeling view.
   const loadFdraftBytes = (bytes: ArrayBuffer) => {
     if (!store) return;
     if (store.loadProjectFromBytes(bytes)) {
       store.detachServerProject();
     }
+    account.enterProject();
   };
 
   const currentDocument = (): unknown | null => {
@@ -473,6 +478,12 @@ function AppShell({ account }: { account: UseAccount }) {
   const activeScriptTab =
     activeProjectTab?.kind === "script" ? activeProjectTab : null;
 
+  // WP13: two-level nav. `overview` = the tabbed browser (default landing);
+  // `project` = the modeling view. The topbar is a persistent shell element on
+  // both; the modeling chrome (toolbar/viewport/outliner/meta) mounts only in
+  // the project view.
+  const inProject = account.state.page === "project";
+
   return (
     <WorkspaceUnitsContext.Provider value={settings.units}>
       <div className={"fd-shell" + (compact ? " fd-compact" : "")}>
@@ -482,6 +493,18 @@ function AppShell({ account }: { account: UseAccount }) {
         <StrictMode>
           <header className="topbar">
             <div className="title">
+              {inProject ? (
+                <button
+                  type="button"
+                  className="back-to-overview"
+                  data-testid="back-to-overview"
+                  aria-label="Back to overview"
+                  title="Back to overview"
+                  onClick={() => account.showOverview("projects")}
+                >
+                  ◀
+                </button>
+              ) : null}
               FieldDraft <span className="version">v{__APP_VERSION__}</span>
               <SettingsMenu
                 store={store}
@@ -490,74 +513,95 @@ function AppShell({ account }: { account: UseAccount }) {
                 onSettingsChange={setSettings}
               />
             </div>
-            <div className="meta">
-              {error ? (
-                <span className="error">kernel error: {error.message}</span>
-              ) : state ? (
-                <>
-                  <span data-testid="feature-count">
-                    {state.features.length} feature
-                    {state.features.length === 1 ? "" : "s"}
-                  </span>
-                  {isMeshMode && state.meshedBodies.length > 0 ? (
-                    <span className="tri-count" data-testid="tri-count">
-                      {state.meshedBodies
-                        .reduce((sum, b) => sum + b.indices.length / 3, 0)
-                        .toLocaleString()}{" "}
-                      △
+            {inProject ? (
+              <div className="meta">
+                {error ? (
+                  <span className="error">kernel error: {error.message}</span>
+                ) : state ? (
+                  <>
+                    <span data-testid="feature-count">
+                      {state.features.length} feature
+                      {state.features.length === 1 ? "" : "s"}
                     </span>
-                  ) : null}
-                  {state.sceneSize[0] > 0 ||
-                  state.sceneSize[1] > 0 ||
-                  state.sceneSize[2] > 0 ? (
-                    <span className="scene-size" data-testid="scene-size">
-                      {state.sceneSize[0].toFixed(1)} ×{" "}
-                      {state.sceneSize[1].toFixed(1)} ×{" "}
-                      {state.sceneSize[2].toFixed(1)} mm
-                    </span>
-                  ) : null}
-                  {state.transientError ? (
-                    <span
-                      className="transient-error"
-                      data-testid="transient-error"
-                      role="alert"
-                    >
-                      ⚠ {state.transientError}
-                    </span>
-                  ) : null}
-                </>
-              ) : (
-                <span>loading…</span>
-              )}
-            </div>
-            <AccountButton
+                    {isMeshMode && state.meshedBodies.length > 0 ? (
+                      <span className="tri-count" data-testid="tri-count">
+                        {state.meshedBodies
+                          .reduce((sum, b) => sum + b.indices.length / 3, 0)
+                          .toLocaleString()}{" "}
+                        △
+                      </span>
+                    ) : null}
+                    {state.sceneSize[0] > 0 ||
+                    state.sceneSize[1] > 0 ||
+                    state.sceneSize[2] > 0 ? (
+                      <span className="scene-size" data-testid="scene-size">
+                        {state.sceneSize[0].toFixed(1)} ×{" "}
+                        {state.sceneSize[1].toFixed(1)} ×{" "}
+                        {state.sceneSize[2].toFixed(1)} mm
+                      </span>
+                    ) : null}
+                    {state.transientError ? (
+                      <span
+                        className="transient-error"
+                        data-testid="transient-error"
+                        role="alert"
+                      >
+                        ⚠ {state.transientError}
+                      </span>
+                    ) : null}
+                  </>
+                ) : (
+                  <span>loading…</span>
+                )}
+              </div>
+            ) : (
+              <div className="topbar-spacer" />
+            )}
+            <Bell account={account} />
+            <UserMenu
               account={account}
               onLoggedOut={() => store?.detachServerProject()}
             />
             {/* Ticket qh4l: the feature-panel toggle lives on the RIGHT (where the
             panel docks) and reads as a collapse chevron, not a third ☰ that
             looks identical to the settings menu. ◀ pulls the panel out, ▶
-            collapses it. */}
-            <button
-              type="button"
-              className="nav-toggle"
-              data-testid="mobile-nav-toggle"
-              aria-label={mobileNavOpen ? "Collapse panel" : "Expand panel"}
-              aria-expanded={mobileNavOpen}
-              onClick={() => setMobileNavOpen((v) => !v)}
-            >
-              {mobileNavOpen ? "▶" : "◀"}
-            </button>
+            collapses it. Modeling-view only. */}
+            {inProject ? (
+              <button
+                type="button"
+                className="nav-toggle"
+                data-testid="mobile-nav-toggle"
+                aria-label={mobileNavOpen ? "Collapse panel" : "Expand panel"}
+                aria-expanded={mobileNavOpen}
+                onClick={() => setMobileNavOpen((v) => !v)}
+              >
+                {mobileNavOpen ? "▶" : "◀"}
+              </button>
+            ) : null}
           </header>
         </StrictMode>
+        {/* WP13: the Overview (main level). Rendered only when NOT in the
+          modeling view. Kept OUTSIDE StrictMode's double-mount to avoid
+          duplicate `/api/me`-driven effects in its data-fetching children. */}
+        {!inProject ? (
+          <Overview
+            account={account}
+            onOpenProject={openServerProject}
+            onOpenCopy={openServerCopy}
+            onLoadFdraft={loadFdraftBytes}
+            boundProjectId={state?.projectId ?? null}
+          />
+        ) : null}
         {/* MT-A: both workspaces stay mounted; we toggle visibility with
           the `hidden` attr so the Viewport's GPU context and Monaco are
           never torn down on a tab switch. The active tab is derived from
           the project; part AND assembly both use the part workspace
-          (Viewport + Outliner render the assembly when active). */}
+          (Viewport + Outliner render the assembly when active). The whole
+          modeling stack is hidden on the Overview so the viewport GPU
+          context survives the round-trip. */}
         <div
           className="fd-workspace"
-          hidden={activeProjectTab?.kind === "script"}
+          hidden={!inProject || activeProjectTab?.kind === "script"}
         >
           {store && state ? (
             <StrictMode>
@@ -596,7 +640,7 @@ function AppShell({ account }: { account: UseAccount }) {
         <StrictMode>
           <div
             className="fd-workspace fd-script-workspace"
-            hidden={activeProjectTab?.kind !== "script"}
+            hidden={!inProject || activeProjectTab?.kind !== "script"}
           >
             {store && state && activeScriptTab ? (
               <FieldSkriptEditor
@@ -606,7 +650,9 @@ function AppShell({ account }: { account: UseAccount }) {
               />
             ) : null}
           </div>
-          {store && state ? <BottomTabs store={store} state={state} /> : null}
+          {inProject && store && state ? (
+            <BottomTabs store={store} state={state} />
+          ) : null}
           {state?.loading ? (
             <div className="fd-loading-overlay">
               <div className="fd-loading-dialog">
@@ -741,18 +787,21 @@ function AppShell({ account }: { account: UseAccount }) {
             </div>
           ) : null}
         </StrictMode>
-        {/* WP3: account overlay (login / dashboard / gallery / invites). Renders
-          nothing unless an account screen is open, so the modeling app and
-          guest mode are undisturbed. Kept OUTSIDE StrictMode's double-mount to
-          avoid duplicate `/api/me`-driven effects. */}
-        <AccountLayer
-          account={account}
-          onOpenProject={openServerProject}
-          onOpenCopy={openServerCopy}
-          onLoadFdraft={loadFdraftBytes}
-          getCurrentDocument={currentDocument}
-          boundProjectId={state?.projectId ?? null}
-        />
+        {/* WP13: the standalone auth screen (login / register / reset). Renders
+          nothing unless a guest opens one; the Overview + modeling views sit
+          behind it. Kept OUTSIDE StrictMode's double-mount to avoid duplicate
+          `/api/me`-driven effects. */}
+        {account.state.auth !== null && (
+          <AuthScreen
+            mode={account.state.auth}
+            invitePrefill={account.state.invitePrefill}
+            resetPrefill={account.state.resetPrefill}
+            onLogin={account.login}
+            onRegister={account.register}
+            onSwitch={(next) => account.openAuth(next)}
+            onClose={account.closeAuth}
+          />
+        )}
         {/* WP9 B4: one-shot guest-project import offer (first login with local
           work). Non-intrusive — the modeling app stays usable behind it. */}
         {importPrompt === "offer" && (

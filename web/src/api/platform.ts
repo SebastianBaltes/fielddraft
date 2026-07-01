@@ -47,11 +47,16 @@ export interface Project {
   created_at: string;
 }
 
-/** An admin-issued, single-use registration invite. Mirrors `inviteResponse`. */
+/** An admin-issued, single-use registration invite. Mirrors `inviteResponse`.
+ *  WP13: invites now carry the addressee (name + email) and a free-text
+ *  invitation `message` shown to the recipient, replacing the old private
+ *  `note`. */
 export interface Invite {
   token: string;
   created_by: string;
-  note: string;
+  invitee_name: string;
+  invitee_email: string;
+  message: string;
   expires_at: string;
   used_by: string | null;
   used_at: string | null;
@@ -60,6 +65,14 @@ export interface Invite {
   status: string;
   /** `/register?invite=<token>` — the copyable link. */
   register_url: string;
+}
+
+/** Body for {@link PlatformApi.createInvite} (WP13). The addressee's name +
+ *  email and the invitation message shown to them. */
+export interface CreateInviteInput {
+  invitee_name: string;
+  invitee_email: string;
+  message: string;
 }
 
 /** The result of publishing a project to a shareable snapshot. */
@@ -307,7 +320,7 @@ export interface PlatformApi {
 
   // Invites (admin only).
   listInvites(): Promise<Invite[]>;
-  createInvite(note?: string, expiresAt?: string): Promise<Invite>;
+  createInvite(input: CreateInviteInput): Promise<Invite>;
   deleteInvite(token: string): Promise<void>;
 
   // Tickets (WP4 — GitHub-Issues-like). Listing/reading is auth-only on the
@@ -413,10 +426,14 @@ export const platformApi: PlatformApi = {
 
   listInvites: () => request<Invite[]>("/api/invites", { method: "GET" }),
 
-  createInvite: (note, expiresAt) =>
+  createInvite: (input) =>
     request<Invite>("/api/invites", {
       method: "POST",
-      body: { note: note ?? "", expires_at: expiresAt ?? "" },
+      body: {
+        invitee_name: input.invitee_name,
+        invitee_email: input.invitee_email,
+        message: input.message,
+      },
     }),
 
   deleteInvite: (token) =>

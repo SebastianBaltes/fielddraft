@@ -1,9 +1,10 @@
-/* Dashboard.tsx — the logged-in user's server projects.
+/* ProjectsBrowser.tsx — the unified project browser (WP13 Projects tab).
  *
- * One top-level class `.fd-dashboard`; all children nest unprefixed. Tokens
- * only; light mode; font-size ≥ 1rem. */
+ * One top-level class `.fd-projects-browser`; children nest unprefixed. Tokens
+ * only; light mode; font-size ≥ 1rem. Merges the old dashboard + gallery card
+ * grid. */
 
-.fd-dashboard {
+.fd-projects-browser {
   display: flex;
   flex-direction: column;
   gap: var(--space-5);
@@ -14,77 +15,61 @@
   font-size: var(--fs-base);
   color: var(--color-text);
 
-  & .dashboard-bar {
+  & .browser-bar {
     display: flex;
     align-items: center;
     flex-wrap: wrap;
     gap: var(--space-3);
   }
 
-  & .dashboard-title {
-    margin: 0;
+  & .filter-toggle {
+    display: inline-flex;
     flex: 1;
-    font-size: var(--fs-2xl);
-    font-weight: var(--fw-semibold);
+    gap: var(--space-1);
+    padding: var(--space-1);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-pill);
+    background: var(--color-bg-elevated);
+
+    & .seg {
+      font-family: inherit;
+      font-size: var(--fs-base);
+      padding: var(--space-1) var(--space-4);
+      border: none;
+      border-radius: var(--radius-pill);
+      background: transparent;
+      color: var(--color-text-muted);
+      cursor: pointer;
+
+      &.is-active {
+        background: var(--color-accent);
+        color: var(--color-text-on-accent);
+      }
+
+      &:not(.is-active):hover {
+        background: var(--color-bg-hover);
+        color: var(--color-text);
+      }
+    }
   }
 
-  & .dashboard-actions {
-    display: flex;
-    align-items: center;
-    flex-wrap: wrap;
-    gap: var(--space-2);
-  }
-
-  & .primary,
-  & .secondary {
+  & .primary {
     font-family: inherit;
     font-size: var(--fs-base);
     padding: var(--space-2) var(--space-4);
     border-radius: var(--radius-sm);
-    border: 1px solid var(--color-border);
+    border: 1px solid var(--color-accent);
+    background: var(--color-accent);
+    color: var(--color-text-on-accent);
     cursor: pointer;
 
     &:disabled {
       opacity: 0.6;
       cursor: default;
     }
-  }
-
-  & .primary {
-    background: var(--color-accent);
-    color: var(--color-text-on-accent);
-    border-color: var(--color-accent);
 
     &:not(:disabled):hover {
       background: var(--color-accent-hover);
-    }
-  }
-
-  & .secondary {
-    background: var(--color-bg-elevated);
-    color: var(--color-text);
-
-    &:not(:disabled):hover {
-      background: var(--color-bg-hover);
-    }
-  }
-
-  & .close {
-    font-family: inherit;
-    font-size: var(--fs-lg);
-    line-height: 1;
-    width: 2.25rem;
-    height: 2.25rem;
-    padding: 0;
-    border: 1px solid var(--color-border);
-    border-radius: var(--radius-sm);
-    background: var(--color-bg-elevated);
-    color: var(--color-text-muted);
-    cursor: pointer;
-
-    &:hover {
-      background: var(--color-bg-hover);
-      color: var(--color-text);
     }
   }
 
@@ -171,6 +156,10 @@
     border-radius: var(--radius-pill);
     border: 1px solid transparent;
     cursor: pointer;
+
+    &.static {
+      cursor: default;
+    }
 
     &.is-public {
       background: var(--color-union-soft);

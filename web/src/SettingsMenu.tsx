@@ -652,19 +652,6 @@ export function SettingsMenu({
           >
             Settings…
           </button>
-
-          <div className="menu-separator" role="separator" />
-
-          <button
-            type="button"
-            role="menuitem"
-            className="menu-item"
-            data-testid="menu-report"
-            onClick={() => menuAction(() => setReportDialogOpen(true))}
-          >
-            <span>Report Issue…</span>
-            <span className="menu-shortcut">F2</span>
-          </button>
         </div>
       )}
 

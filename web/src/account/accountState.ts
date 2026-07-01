@@ -1,17 +1,22 @@
 /**
- * Account session state — a small, pure reducer that drives the WP3 auth UI.
+ * Account session state — a small, pure reducer that drives the account UI.
  *
- * It is deliberately decoupled from the kernel store: guest/localStorage mode
- * stays the app's default, and the account layer is an ADDITIVE overlay on top.
- * The reducer tracks three things:
+ * WP13 redesign: navigation is now two-level, not an overlay stack.
  *   1. the session lifecycle (`loading` until the boot `/api/me` resolves,
  *      then `guest` or `authed`),
- *   2. the current account user (when authed), and
- *   3. which account screen, if any, is open (`overlay`).
+ *   2. the current account user (when authed),
+ *   3. the top-level `page` — the **Overview** (a tabbed browser: Projects /
+ *      Issues / Invites / Users) or the **modeling** view (a single project
+ *      loaded into the kernel). After login the default landing is the
+ *      Overview; opening a project enters the modeling view; the topbar `◀`
+ *      returns to the Overview.
+ *   4. which Overview tab is active (`overviewTab`),
+ *   5. a standalone `auth` screen (login / register / reset) shown when a guest
+ *      needs to authenticate — orthogonal to the two pages,
+ *   6. the admin `bell` panel (alerts) toggled from the topbar bell.
  *
  * The reducer is synchronous and side-effect-free so it is trivially testable;
- * the async API calls live in the `useAccount` hook (accountHook.ts), which
- * dispatches into this reducer.
+ * the async API calls live in the `useAccount` hook, which dispatches here.
  */
 
 import type { User } from "../api/platform";
@@ -19,33 +24,38 @@ import type { User } from "../api/platform";
 /** Session lifecycle. `loading` is the pre-boot state before `/api/me`. */
 export type SessionStatus = "loading" | "guest" | "authed";
 
-/** Which account screen is open. `null` = the modeling app (no overlay). */
-export type AccountOverlay =
-  | null
-  | "login"
-  | "register"
-  | "reset-request"
-  | "reset-confirm"
-  | "dashboard"
-  | "gallery"
-  | "invites"
-  | "tickets"
-  | "admin-alerts"
-  | "admin-users";
+/** The top-level page. `overview` = the tabbed browser (the main level);
+ *  `project` = the modeling view (a project loaded into the kernel). */
+export type AccountPage = "overview" | "project";
+
+/** The Overview's active tab. Invites & Users render only for admins. */
+export type OverviewTab = "projects" | "issues" | "invites" | "users";
+
+/** A standalone auth screen, or `null` when none is open. Orthogonal to the
+ *  page — a guest can open login/register over either page. */
+export type AuthScreenMode =
+  null | "login" | "register" | "reset-request" | "reset-confirm";
 
 export interface AccountState {
   status: SessionStatus;
   /** The logged-in user, or `null` in guest/loading. */
   user: User | null;
-  overlay: AccountOverlay;
+  /** The top-level page (Overview vs. modeling). */
+  page: AccountPage;
+  /** The Overview's active tab. */
+  overviewTab: OverviewTab;
+  /** A standalone auth screen open over the current page, or null. */
+  auth: AuthScreenMode;
+  /** Whether the admin alerts (bell) panel is open. */
+  bellOpen: boolean;
   /** Invite token prefilled into the register form (from `?invite=`). */
   invitePrefill: string;
   /** Reset token prefilled into the reset-confirm form (from `?reset=`). */
   resetPrefill: string;
-  /** Ticket id to deep-link into when the tickets overlay opens (e.g. straight
-   *  from a filed report), or null to open the list. One-shot. */
+  /** Ticket id to deep-link into when the Issues tab opens (e.g. straight from
+   *  a filed report), or null for the list. One-shot. */
   ticketPrefill: string | null;
-  /** Count of unseen admin alerts, surfaced as a badge on the admin menu entry.
+  /** Count of unseen admin alerts, surfaced as a badge on the topbar bell.
    *  Always 0 for non-admins (never fetched). */
   unseenAlertCount: number;
 }
@@ -57,15 +67,23 @@ export type AccountAction =
   | { type: "authed"; user: User }
   /** Logout succeeded. */
   | { type: "logged-out" }
-  /** Open a specific account screen. */
-  | { type: "open"; overlay: AccountOverlay }
-  /** Open the tickets overlay deep-linked to a specific ticket (or null for
-   *  the list). */
+  /** Go to the Overview, optionally selecting a tab (default: keep current). */
+  | { type: "show-overview"; tab?: OverviewTab }
+  /** Select an Overview tab (implicitly on the Overview page). */
+  | { type: "select-tab"; tab: OverviewTab }
+  /** Enter the modeling view (a project was opened). */
+  | { type: "enter-project" }
+  /** Open the Issues tab deep-linked to a specific ticket (or null for the
+   *  list). */
   | { type: "open-ticket"; ticketId: string | null }
+  /** Open a standalone auth screen (login/register/reset). */
+  | { type: "open-auth"; mode: Exclude<AuthScreenMode, null> }
+  /** Close the standalone auth screen. */
+  | { type: "close-auth" }
+  /** Toggle / set the admin alerts (bell) panel. */
+  | { type: "set-bell"; open: boolean }
   /** Update the unseen admin-alert badge count. */
-  | { type: "unseen-alerts"; count: number }
-  /** Close the current overlay (back to the modeling app). */
-  | { type: "close" };
+  | { type: "unseen-alerts"; count: number };
 
 /** Build the initial state, reading any `?invite=` / `?reset=` deep-link from
  *  the URL search string. A `?invite=` link auto-opens the register screen; a
@@ -80,15 +98,22 @@ export function initialAccountState(search = ""): AccountState {
   } catch {
     // Malformed search — ignore, no prefill.
   }
-  // Pick the deep-link overlay to open once the session resolves. A reset link
-  // wins over an invite link (you're confirming a reset, not registering).
-  let overlay: AccountOverlay = null;
-  if (resetPrefill) overlay = "reset-confirm";
-  else if (invitePrefill) overlay = "register";
+  // Pick the deep-link auth screen to open once the session resolves. A reset
+  // link wins over an invite link (you're confirming a reset, not registering).
+  let auth: AuthScreenMode = null;
+  if (resetPrefill) auth = "reset-confirm";
+  else if (invitePrefill) auth = "register";
   return {
     status: "loading",
     user: null,
-    overlay,
+    // Default to the modeling view: a guest (login gate off) boots straight
+    // into the offline modeling app, and every ungated e2e / dev flow lands on
+    // the toolbar as before. Authenticating flips the landing to the Overview
+    // (see the `session-resolved` / `authed` cases).
+    page: "project",
+    overviewTab: "projects",
+    auth,
+    bellOpen: false,
     invitePrefill,
     resetPrefill,
     ticketPrefill: null,
@@ -106,20 +131,26 @@ export function accountReducer(
         ...state,
         status: action.user ? "authed" : "guest",
         user: action.user,
-        // A logged-in user landing on the login/register screen is bounced to
-        // the dashboard; otherwise keep any deep-link overlay (invite/reset).
-        overlay:
-          action.user &&
-          (state.overlay === "login" || state.overlay === "register")
-            ? "dashboard"
-            : state.overlay,
+        // An authenticated boot lands on the Overview (the main level); a guest
+        // stays in the modeling view (offline mode). Don't clobber an explicit
+        // deep-link that already moved us (e.g. ?ticket= via open-ticket).
+        page: action.user ? "overview" : state.page,
+        // A logged-in user landing on a login/register screen has it dismissed;
+        // otherwise keep any deep-link auth screen (invite/reset).
+        auth:
+          action.user && (state.auth === "login" || state.auth === "register")
+            ? null
+            : state.auth,
       };
     case "authed":
       return {
         ...state,
         status: "authed",
         user: action.user,
-        overlay: "dashboard",
+        // Land on the Overview after auth.
+        page: "overview",
+        overviewTab: "projects",
+        auth: null,
         // Burn the one-shot deep-link prefills once consumed.
         invitePrefill: "",
         resetPrefill: "",
@@ -129,30 +160,55 @@ export function accountReducer(
         ...state,
         status: "guest",
         user: null,
-        overlay: null,
+        page: "overview",
+        overviewTab: "projects",
+        auth: null,
+        bellOpen: false,
         ticketPrefill: null,
         unseenAlertCount: 0,
       };
-    case "open":
-      // Opening any non-tickets screen clears a stale ticket deep-link.
+    case "show-overview":
       return {
         ...state,
-        overlay: action.overlay,
+        page: "overview",
+        overviewTab: action.tab ?? state.overviewTab,
+        // Leaving for the Overview clears a stale ticket deep-link unless we're
+        // explicitly (re)opening the Issues tab.
         ticketPrefill:
-          action.overlay === "tickets" ? state.ticketPrefill : null,
+          (action.tab ?? state.overviewTab) === "issues"
+            ? state.ticketPrefill
+            : null,
       };
+    case "select-tab":
+      return {
+        ...state,
+        page: "overview",
+        overviewTab: action.tab,
+        ticketPrefill: action.tab === "issues" ? state.ticketPrefill : null,
+      };
+    case "enter-project":
+      return { ...state, page: "project", ticketPrefill: null };
     case "open-ticket":
-      return { ...state, overlay: "tickets", ticketPrefill: action.ticketId };
+      return {
+        ...state,
+        page: "overview",
+        overviewTab: "issues",
+        ticketPrefill: action.ticketId,
+      };
+    case "open-auth":
+      return { ...state, auth: action.mode };
+    case "close-auth":
+      return { ...state, auth: null };
+    case "set-bell":
+      return { ...state, bellOpen: action.open };
     case "unseen-alerts":
       return { ...state, unseenAlertCount: Math.max(0, action.count) };
-    case "close":
-      return { ...state, overlay: null, ticketPrefill: null };
     default:
       return state;
   }
 }
 
-/** True when the user holds the admin role (gates the invite panel). */
+/** True when the user holds the admin role (gates invites / users / alerts). */
 export function isAdmin(state: AccountState): boolean {
   return state.user?.role === "admin";
 }

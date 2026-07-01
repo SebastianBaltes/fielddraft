@@ -18,30 +18,27 @@
 
 import { useState } from "react";
 import { AuthScreen } from "./AuthScreen";
-import type { AccountOverlay } from "./accountState";
+import type { AuthScreenMode } from "./accountState";
 import type { UseAccount } from "./useAccount";
 
-type AuthMode = Extract<
-  AccountOverlay,
-  "login" | "register" | "reset-request" | "reset-confirm"
->;
+type AuthMode = Exclude<AuthScreenMode, null>;
 
-/** Seed the gate's starting screen from the URL-derived overlay (deep-links),
+/** Seed the gate's starting screen from the URL-derived auth mode (deep-links),
  *  defaulting to login. */
-function initialMode(overlay: AccountOverlay): AuthMode {
+function initialMode(auth: AuthScreenMode): AuthMode {
   if (
-    overlay === "register" ||
-    overlay === "reset-request" ||
-    overlay === "reset-confirm"
+    auth === "register" ||
+    auth === "reset-request" ||
+    auth === "reset-confirm"
   ) {
-    return overlay;
+    return auth;
   }
   return "login";
 }
 
 export function AuthGate({ account }: { account: UseAccount }) {
   const { state, login, register } = account;
-  const [mode, setMode] = useState<AuthMode>(() => initialMode(state.overlay));
+  const [mode, setMode] = useState<AuthMode>(() => initialMode(state.auth));
 
   return (
     <AuthScreen

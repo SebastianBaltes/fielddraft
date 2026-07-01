@@ -1,11 +1,12 @@
 /**
- * AdminUsers — admin-only user management (`/api/admin/users`).
+ * AdminUsers — admin-only user management (`/api/admin/users`), WP13 Users tab.
  *
  * Rendered only when `me.role === "admin"`. Lists every account (email, name,
  * role, active/banned status) and lets an admin ban (disable) or unban a user.
  * Banning is confirmed first and disabled on the admin's own row (the server
  * also refuses self-bans / the last admin, so this is convenience, not the
- * gate). A banned user shows a "Banned" badge and an "Unban" action.
+ * gate). A banned user shows a "Banned" badge and an "Unban" action. It is a
+ * persistent Overview tab — there is NO close (×) button.
  */
 
 import { useCallback, useEffect, useState } from "react";
@@ -13,7 +14,6 @@ import { platformApi, type AdminUser } from "../api/platform";
 import { accountErrorMessage } from "./useAccount";
 
 interface AdminUsersProps {
-  onClose(): void;
   /** The current admin's own id — its ban button is disabled. */
   selfId: string | null;
 }
@@ -28,7 +28,7 @@ function formatDate(iso: string): string {
   });
 }
 
-export function AdminUsers({ onClose, selfId }: AdminUsersProps) {
+export function AdminUsers({ selfId }: AdminUsersProps) {
   const [users, setUsers] = useState<AdminUser[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -93,19 +93,6 @@ export function AdminUsers({ onClose, selfId }: AdminUsersProps) {
 
   return (
     <div className="fd-admin-users" data-testid="admin-users">
-      <div className="admin-bar">
-        <h2 className="admin-title">Users</h2>
-        <button
-          type="button"
-          className="close"
-          data-testid="admin-users-close"
-          aria-label="Close"
-          onClick={onClose}
-        >
-          &times;
-        </button>
-      </div>
-
       {error && (
         <p className="error" role="alert" data-testid="admin-users-error">
           {error}

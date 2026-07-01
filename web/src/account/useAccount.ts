@@ -22,17 +22,28 @@ import {
   accountReducer,
   initialAccountState,
   isAdmin,
-  type AccountOverlay,
   type AccountState,
+  type AuthScreenMode,
+  type OverviewTab,
 } from "./accountState";
 
 export interface UseAccount {
   state: AccountState;
   isAdmin: boolean;
-  open(overlay: AccountOverlay): void;
-  /** Open the tickets overlay, optionally deep-linked to a ticket id. */
+  /** Go to the Overview, optionally selecting a tab. */
+  showOverview(tab?: OverviewTab): void;
+  /** Select an Overview tab. */
+  selectTab(tab: OverviewTab): void;
+  /** Enter the modeling view (call after a project is loaded into the kernel). */
+  enterProject(): void;
+  /** Open the Issues tab, optionally deep-linked to a ticket id. */
   openTicket(ticketId?: string | null): void;
-  close(): void;
+  /** Open a standalone auth screen (login / register / reset). */
+  openAuth(mode: Exclude<AuthScreenMode, null>): void;
+  /** Close the standalone auth screen. */
+  closeAuth(): void;
+  /** Open / close the admin alerts (bell) panel. */
+  setBell(open: boolean): void;
   login(email: string, password: string): Promise<void>;
   register(input: {
     email: string;
@@ -107,16 +118,32 @@ export function useAccount(options: UseAccountOptions = {}): UseAccount {
     };
   }, [resolveSession]);
 
-  const open = useCallback((overlay: AccountOverlay) => {
-    dispatch({ type: "open", overlay });
+  const showOverview = useCallback((tab?: OverviewTab) => {
+    dispatch({ type: "show-overview", tab });
+  }, []);
+
+  const selectTab = useCallback((tab: OverviewTab) => {
+    dispatch({ type: "select-tab", tab });
+  }, []);
+
+  const enterProject = useCallback(() => {
+    dispatch({ type: "enter-project" });
   }, []);
 
   const openTicket = useCallback((ticketId: string | null = null) => {
     dispatch({ type: "open-ticket", ticketId });
   }, []);
 
-  const close = useCallback(() => {
-    dispatch({ type: "close" });
+  const openAuth = useCallback((mode: Exclude<AuthScreenMode, null>) => {
+    dispatch({ type: "open-auth", mode });
+  }, []);
+
+  const closeAuth = useCallback(() => {
+    dispatch({ type: "close-auth" });
+  }, []);
+
+  const setBell = useCallback((open: boolean) => {
+    dispatch({ type: "set-bell", open });
   }, []);
 
   const login = useCallback(
@@ -177,9 +204,13 @@ export function useAccount(options: UseAccountOptions = {}): UseAccount {
   return {
     state,
     isAdmin: isAdmin(state),
-    open,
+    showOverview,
+    selectTab,
+    enterProject,
     openTicket,
-    close,
+    openAuth,
+    closeAuth,
+    setBell,
     login,
     register,
     logout,

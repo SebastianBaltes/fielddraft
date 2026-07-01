@@ -29,7 +29,7 @@ function mount(selfId: string | null = null) {
   document.body.appendChild(container);
   root = createRoot(container);
   act(() => {
-    root.render(<AdminUsers onClose={() => {}} selfId={selfId} />);
+    root.render(<AdminUsers selfId={selfId} />);
   });
 }
 

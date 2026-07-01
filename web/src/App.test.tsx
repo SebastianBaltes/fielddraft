@@ -38,8 +38,9 @@ const user: User = {
   created_at: "2026-01-01T00:00:00Z",
 };
 
-/** A fake PlatformApi: only the methods the boot + gate touch matter; the rest
- *  throw so an accidental call is caught. */
+/** A fake PlatformApi. The boot + gate + Overview data fetches (projects /
+ *  gallery / alerts) resolve to empty; the rest throw so an accidental call is
+ *  caught. */
 function fakeApi(overrides: Partial<PlatformApi> = {}): PlatformApi {
   const notImpl = () => {
     throw new Error("not implemented in fake");
@@ -51,17 +52,18 @@ function fakeApi(overrides: Partial<PlatformApi> = {}): PlatformApi {
     logout: async () => {},
     requestPasswordReset: notImpl,
     resetPassword: notImpl,
-    listProjects: notImpl,
+    listProjects: async () => [],
     createProject: notImpl,
     getProject: notImpl,
     updateProject: notImpl,
     deleteProject: notImpl,
     setVisibility: notImpl,
     publishProject: notImpl,
-    listGallery: notImpl,
-    listInvites: notImpl,
+    listGallery: async () => [],
+    listInvites: async () => [],
     createInvite: notImpl,
     deleteInvite: notImpl,
+    listAdminAlerts: async () => [],
     ...overrides,
   } as PlatformApi;
 }
