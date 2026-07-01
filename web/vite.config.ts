@@ -131,10 +131,15 @@ function ticketWriter(): Plugin {
   return {
     name: "ticket-writer",
     configureServer(server) {
-      server.middlewares.use("/api/tickets", (req, res) => {
-        if (req.method !== "POST") {
-          res.statusCode = 405;
-          res.end();
+      server.middlewares.use("/api/tickets", (req, res, next) => {
+        // Only capture the EXACT create endpoint (POST /api/tickets) to the file
+        // sink. Everything else — GET /api/tickets (the Issues list), a ticket
+        // detail, and every sub-path (POST /{id}/comments, verdicts, …) — falls
+        // through to the proxy → Go backend (`just dev-full`). Without this, the
+        // Issues tab's GET /api/tickets hit this middleware and got a 405.
+        const path = (req.url || "/").split("?")[0];
+        if (req.method !== "POST" || (path !== "/" && path !== "")) {
+          next();
           return;
         }
         let raw = "";
