@@ -24,6 +24,17 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    "version": "0.6.348",
+    "entries": [
+      {
+        "kind": "fix",
+        "text": "Mate-Connector zeigt kein Translate/Rotate/Scale-Gizmo mehr — er wird über Anker & Offset positioniert, nicht per Freie-Transform",
+        "scope": "mate",
+        "tickets": ["zcwn"]
+      }
+    ]
+  },
+  {
     "version": "0.6.347",
     "entries": [
       {

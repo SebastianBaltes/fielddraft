@@ -1545,6 +1545,10 @@ const NO_GIZMO_KINDS: ReadonlySet<string> = new Set([
   "sketch",
   "fillet_edge",
   "extrude",
+  // mate_connector: a datum CSYS positioned by its anchor + offset params, not
+  // a free transform — a translate/rotate/scale gizmo would be meaningless and
+  // couldn't write back (ticket zcwn). It shows its own triad gizmo instead.
+  "mate_connector",
 ]);
 
 export function SelectionTransformGizmo() {
