@@ -351,6 +351,19 @@ function webPort(mode: string): number {
   return Number.isInteger(port) && port > 0 ? port : 5173;
 }
 
+// Per-instance backend port for the dev proxy — mirrors webPort. The Go server
+// (docker compose / `just dev-full`) is published on FIELDDRAFT_SERVER_PORT on
+// the host; defaults to 8080. This MUST track that port, or every /api call
+// (login, invites, projects, …) proxies to nothing — e.g. the `fielddraft-a`
+// instance offsets ports (+1) so its server is on 8081. See ../.env.example.
+function serverPort(mode: string): number {
+  const repoRoot = join(process.cwd(), "..");
+  const env = loadEnv(mode, repoRoot, "");
+  const raw = process.env.FIELDDRAFT_SERVER_PORT ?? env.FIELDDRAFT_SERVER_PORT;
+  const port = Number(raw);
+  return Number.isInteger(port) && port > 0 ? port : 8080;
+}
+
 // https://vitejs.dev/config/
 export default defineConfig(({ mode }) => ({
   plugins: [react(), liveVersion(), kernelStamp(), ticketWriter(), fileReader()],
@@ -365,7 +378,7 @@ export default defineConfig(({ mode }) => ({
     // handling their own routes; everything else under /api hits the backend.
     proxy: {
       "/api": {
-        target: "http://localhost:8080",
+        target: `http://localhost:${serverPort(mode)}`,
         changeOrigin: true,
       },
     },
