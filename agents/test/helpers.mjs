@@ -4,9 +4,10 @@
 /**
  * Build a fake fetch that records every call and replies from a route table.
  *
- * @param {Record<string, (req:{method:string,url:string,path:string,headers:object,body:any})=>{status?:number,json?:any,text?:string}>} routes
+ * @param {Record<string, (req:{method:string,url:string,path:string,headers:object,body:any})=>{status?:number,json?:any,text?:string,bytes?:Uint8Array|number[]}>} routes
  *   keyed by "METHOD /api/path" (path matched WITHOUT the base URL). The handler
- *   returns { status?, json?, text? }. A missing route → 404.
+ *   returns { status?, json?, text?, bytes? }. `bytes` drives the binary
+ *   (`arrayBuffer`) path for artifact downloads. A missing route → 404.
  * @returns {{ fetch: typeof fetch, calls: Array<object> }}
  */
 export function makeFakeFetch(routes = {}) {
@@ -29,12 +30,19 @@ export function makeFakeFetch(routes = {}) {
     const handler = routes[`${method} ${path}`];
     const res = handler ? handler(req) : { status: 404, json: { error: "not found" } };
     const status = res.status ?? 200;
+    const bytes = res.bytes !== undefined ? Uint8Array.from(res.bytes) : null;
     const text = res.text ?? (res.json !== undefined ? JSON.stringify(res.json) : "");
     return {
       ok: status >= 200 && status < 300,
       status,
       async text() {
         return text;
+      },
+      async arrayBuffer() {
+        // Serve the declared bytes; fall back to encoding the text body so a
+        // route that only set `text`/`json` still yields a usable buffer.
+        const src = bytes ?? new TextEncoder().encode(text);
+        return src.buffer.slice(src.byteOffset, src.byteOffset + src.byteLength);
       },
     };
   }

@@ -121,6 +121,36 @@ export function createApiClient(opts = {}) {
     return parsed;
   }
 
+  /**
+   * Binary request helper: like `request` but returns the raw response bytes
+   * (Uint8Array) instead of parsing JSON. Used for artifact-blob downloads,
+   * which are content-addressed binary (screenshots, project files, …). Attaches
+   * the scope's Bearer token just like `request`; on non-2xx it reads the body as
+   * text so the ApiError still carries a readable server message.
+   */
+  async function requestBytes(scope, method, path) {
+    const res = await fetchImpl(`${apiUrl}${path}`, {
+      method,
+      headers: { Authorization: `Bearer ${tokenFor(scope)}` },
+    });
+    if (!res.ok) {
+      let body = null;
+      try {
+        const text = await res.text();
+        try {
+          body = JSON.parse(text);
+        } catch {
+          body = text;
+        }
+      } catch {
+        /* body unreadable */
+      }
+      throw new ApiError(res.status, method, path, body);
+    }
+    const buf = await res.arrayBuffer();
+    return new Uint8Array(buf);
+  }
+
   return {
     /** Raw config (handy for logging which base URL the agent targets). */
     apiUrl,
@@ -135,6 +165,24 @@ export function createApiClient(opts = {}) {
         throw new Error(`getQueue: scope must be "po" or "coding", got ${scope}`);
       }
       return request(scope, "GET", "/api/agent/queue");
+    },
+
+    /**
+     * GET /api/tickets/{id}/artifacts/{artifactId} — download an artifact blob's
+     * raw BYTES (the queue only carries artifact REFS, not the bytes). Returns a
+     * Uint8Array. The `scope` picks the Bearer token — the PO uses "po" to pull a
+     * screenshot, the coding agent uses "coding" for the full bundle.
+     * @param {string} ticketId
+     * @param {string} artifactId
+     * @param {"po"|"coding"} [scope="coding"]
+     * @returns {Promise<Uint8Array>}
+     */
+    fetchArtifact(ticketId, artifactId, scope = "coding") {
+      return requestBytes(
+        scope,
+        "GET",
+        `/api/tickets/${enc(ticketId)}/artifacts/${enc(artifactId)}`,
+      );
     },
 
     /**

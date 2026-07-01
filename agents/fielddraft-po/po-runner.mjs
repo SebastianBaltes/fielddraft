@@ -16,12 +16,16 @@
 // public_reply, and — on accepted — creates the work-order from verdict.work_order.
 
 import { createApiClient } from "../lib/apiClient.mjs";
+import { materializeTicket } from "../lib/ticketSync.mjs";
 
 /** Default backoff/cadence (ms). Override per call for tests. */
 export const PO_DEFAULTS = {
   pollIntervalMs: 15_000, // §8.1: poll every ~N seconds
   maxBackoffMs: 5 * 60_000,
   backoffFactor: 2,
+  // The PO's source-less tickets dir (§4.1). Text + thread + screenshot are
+  // materialized here so the PO triages over files, never touching the repo.
+  ticketsDir: process.env.PO_TICKETS_DIR || "./po-tickets",
 };
 
 /**
@@ -32,11 +36,12 @@ export const PO_DEFAULTS = {
  *
  * @param {object} deps
  * @param {ReturnType<typeof createApiClient>} deps.client
- * @param {(item:object)=>Promise<object>|object} deps.decide  the model step.
+ * @param {(item:object, ctx:{ticketDir:string})=>Promise<object>|object} deps.decide  the model step.
+ * @param {string} [deps.ticketsDir]  PO tickets dir (default PO_DEFAULTS.ticketsDir).
  * @param {(...a:any)=>void} [deps.log]
  * @returns {Promise<Array<{ticketId:string, ok:boolean, verdict?:object, error?:Error}>>}
  */
-export async function runPoOnce({ client, decide, log = noop }) {
+export async function runPoOnce({ client, decide, ticketsDir = PO_DEFAULTS.ticketsDir, log = noop }) {
   const queue = await client.getQueue("po");
   const items = queue.items || [];
   log(`po: ${items.length} ticket(s) in queue`);
@@ -45,7 +50,15 @@ export async function runPoOnce({ client, decide, log = noop }) {
   for (const item of items) {
     const ticketId = item?.id;
     try {
-      const verdict = await decide(item);
+      // Materialize the item into the PO's own source-less dir (§4.1): ticket.md
+      // + comments.md + screenshot.png — enough to triage/answer/spam-judge. The
+      // PO reads FILES, never the repo. (Full item is fine; the PO won't open
+      // project.fdraft.)
+      const { dir: ticketDir } = await materializeTicket(ticketsDir + "/open", item, {
+        client,
+        scope: "po",
+      });
+      const verdict = await decide(item, { ticketDir });
       validateVerdict(verdict);
       await client.postVerdict(ticketId, verdict);
       log(
@@ -87,7 +100,7 @@ export async function runPoLoop({
   let backoff = opt.pollIntervalMs;
   while (!signal?.aborted) {
     try {
-      await runPoOnce({ client, decide, log });
+      await runPoOnce({ client, decide, ticketsDir: opt.ticketsDir, log });
       backoff = opt.pollIntervalMs; // reset on a clean poll
       await sleep(opt.pollIntervalMs);
     } catch (error) {

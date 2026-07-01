@@ -26,9 +26,10 @@ This is the important boundary. Read it before wiring anything up.
 
 | Layer | Who | Does |
 | --- | --- | --- |
-| **`lib/apiClient.mjs`** | script | HTTP plumbing: builds requests with the right Bearer token, parses JSON, throws `ApiError` on non-2xx. |
-| **`*-runner.mjs`** | script | The poll loop, backoff, per-ticket error isolation, and the §10.1 workflow skeleton (claim → record → complete → state; failure → dev note + needs_info). |
-| **`decide(item)` / `implement(workOrder, item)`** | **ClaudeDraft agent** | The **model step** — the actual reasoning, judgement, code, build, and deploy. |
+| **`lib/apiClient.mjs`** | script | HTTP plumbing: builds requests with the right Bearer token, parses JSON (or raw bytes for `fetchArtifact`), throws `ApiError` on non-2xx. |
+| **`lib/ticketSync.mjs`** | script | The **read side** ("snapshots down"): `materializeTicket` writes one queue item to the §3.1 on-disk layout (`ticket.md`/`comments.md`/`ticket.json` + downloaded artifact blobs); `pull` does a whole scope's queue into `open/`; `moveToDone` archives `open/<id>` → `done/<id>`. |
+| **`*-runner.mjs`** | script | The poll loop, backoff, per-ticket error isolation, and the §10.1 workflow skeleton (claim → **materialize** → record → complete → state → **move**; failure → dev note + needs_info). |
+| **`decide(item, {ticketDir})` / `implement(workOrder, item, {ticketDir})`** | **ClaudeDraft agent** | The **model step** — the actual reasoning, judgement, code, build, and deploy, working over the materialized files at `ticketDir`. |
 | **`send_to_agent`, `chat_history`, `agent_status`** | **ClaudeDraft agent at runtime** | Waking the sibling agent / reporting status. |
 
 **A standalone script cannot reason, cannot call `send_to_agent`, and cannot
@@ -64,6 +65,11 @@ Both runners read config from the environment (see `lib/apiClient.mjs`):
 | `FIELDDRAFT_API_URL` | both | Base URL of the backend API, e.g. `https://fielddraft.example` (no trailing slash needed). |
 | `PO_SERVICE_TOKEN` | po | The `po`-scope Service-Token. **Must match** the server's `PO_SERVICE_TOKEN` (`server/agent.go`). |
 | `CODING_SERVICE_TOKEN` | coding | The `coding`-scope Service-Token. Must match the server's `CODING_SERVICE_TOKEN`. |
+| `PO_TICKETS_DIR` | po | The PO's **source-less** tickets dir (default `./po-tickets`). Tickets materialize into `<dir>/open/<id>/`. |
+
+The coding agent's tickets dir is the repo worktree's `tickets/` (materialized to
+`tickets/open/<id>/`, archived to `tickets/done/<id>/`); it is not an env var
+because the coding agent is *defined* by running in the repo worktree.
 
 An **empty/unset token disables that scope server-side** (the server's
 constant-time compare never matches `""`). The client fails fast with a clear
@@ -80,6 +86,63 @@ export CODING_SERVICE_TOKEN="…"    # matches the server's coding token
 ```
 
 ---
+
+## Ticket-sync: snapshots down, commands up (`lib/ticketSync.mjs`)
+
+Prod tickets live in the DB + content-addressed blobs — there is no
+`tickets/<id>/` on the server (see `docs/TICKET-SYNC-AND-AGENTS.md`). The sync
+layer gives each agent the **file ergonomics of a local ticket** without a
+bidirectional file-sync:
+
+- **Down (read, idempotent):** `pull({scope, destDir, client})` calls
+  `GET /api/agent/queue`, then for each item `materializeTicket` writes the §3.1
+  layout into `destDir/open/<id>/` — `ticket.md` (title + meta + body),
+  `comments.md` (the thread), `ticket.json` (state/verdict/work-order + artifact
+  index), and each artifact blob to its canonical name (`screenshot.png`,
+  `project.fdraft`, `actions.json`, `settings.json`, `ui_state.json`,
+  `attachment-NN-<name>`) via `GET /api/tickets/{id}/artifacts/{aid}`. Text/thread
+  refresh every pull; content-addressed blobs already on disk (same size) are
+  skipped. The PO pulls text-only where it wants (`{artifacts:false}` or just not
+  opening the repro files); the coding agent pulls the full bundle.
+- **Up (write):** never files — the typed API ops in `apiClient.mjs`
+  (`postVerdict` / `postAgentComment` / `patchState` / `claim` / `complete` /
+  `recordDeploy`). The server applies them transactionally, so a user writing in
+  the thread in parallel can never cause a lost update.
+- `moveToDone(destDir, id)` archives `open/<id>` → `done/<id>` after completion.
+
+The runners wire this in: `runCodingOnce` materializes the full bundle to
+`tickets/open/<id>/` on `claim` and moves it to `tickets/done/<id>/` after
+`complete`; `runPoOnce` materializes text+thread+screenshot into
+`$PO_TICKETS_DIR/open/<id>/` before `decide`. Both pass the ticket's dir to the
+model step as `ctx.ticketDir`.
+
+## Running against prod
+
+Point both agents at the prod API and give each the token for its scope. The
+tokens come from prod's `.env.prod` (`PO_SERVICE_TOKEN` / `CODING_SERVICE_TOKEN`)
+and live **only on the desktop** — never in the repo, never on the V-Server.
+
+```bash
+export FIELDDRAFT_API_URL="https://203.0.113.10.sslip.io"   # prod
+
+# ── PO agent — source-less tickets dir ──
+export PO_SERVICE_TOKEN="…"            # from .env.prod
+export PO_TICKETS_DIR="$HOME/fd-po-tickets"
+# run the ClaudeDraft `fielddraft-po` agent HERE (cwd = $PO_TICKETS_DIR); it
+# reasons via fielddraft-po/prompt.md and drives runPoLoop's `decide`.
+
+# ── Coding agent — repo worktree ──
+export CODING_SERVICE_TOKEN="…"        # from .env.prod
+# run the ClaudeDraft `fielddraft-coding` agent in the repo worktree; its
+# `implement` has source/build/deploy and runs the real pipeline.
+```
+
+The **cycle** each poll: `pull` (materialize the queue) → **work** over the files
+(triage/verdict for the PO; reproduce/fix/test/build/deploy for coding) → **push**
+the semantic op (verdict/comment/state/claim/complete/deploy) → the coding agent
+also `moveToDone`. Keep the DB as the source of truth — materialization is the
+read side only. The **PO→coding wake** (`send_to_agent`) is a runtime ClaudeDraft
+tool, a notification on top of the DB work-order, never a replacement for it.
 
 ## Polling cadence (§8.1, §10.1)
 
@@ -138,10 +201,14 @@ node --test          # built-in runner; injects a fake fetch — no live server/
 source ~/.nvm/nvm.sh && nvm use 23 && node --test
 ```
 
-The tests cover the API client (correct URL / Bearer token / scope / parsing),
-the PO runner (verdict from a fake `decide`, incl. accepted-with-work_order and
-spam), and the coding runner (claim → implement → record-deploy → complete, plus
-the failure path that posts a `dev` note and sets `needs_info`). No network.
+The tests cover the API client (correct URL / Bearer token / scope / parsing,
+plus `fetchArtifact` bytes), the ticket-sync layer (`materializeTicket` writes
+the §3.1 files with the right names + content, idempotent blob-skip, `pull` into
+`open/`, `moveToDone`), the PO runner (materialize-before-`decide`; verdict from a
+fake `decide`, incl. accepted-with-work_order and spam), and the coding runner
+(claim → materialize → implement → record-deploy → complete → move, plus the
+failure path that posts a `dev` note and sets `needs_info`). No network — a fake
+`fetch` serves JSON and artifact bytes; temp dirs under `os.tmpdir()`.
 
 ## Layout
 
@@ -150,15 +217,17 @@ agents/
 ├── package.json                     # type:module, "test": "node --test", NO deps
 ├── README.md                        # this file
 ├── lib/
-│   └── apiClient.mjs                # thin client over the WP6 agent API
+│   ├── apiClient.mjs                # thin client over the WP6 agent API (+ fetchArtifact)
+│   └── ticketSync.mjs               # materialize / pull / moveToDone (read side, §3.1)
 ├── fielddraft-po/
 │   ├── prompt.md                    # PO system prompt (gateway + verdict + examples)
-│   └── po-runner.mjs                # PO poll loop (decide injection)
+│   └── po-runner.mjs                # PO poll loop (materialize → decide injection)
 ├── fielddraft-coding/
 │   ├── prompt.md                    # coding operating playbook (trusted/untrusted, build/deploy)
-│   └── coding-runner.mjs            # coding poll loop (implement injection)
+│   └── coding-runner.mjs            # coding poll loop (materialize → implement → move)
 └── test/
     ├── apiClient.test.mjs
+    ├── ticketSync.test.mjs
     ├── po-runner.test.mjs
     └── coding-runner.test.mjs
 ```

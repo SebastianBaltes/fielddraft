@@ -19,6 +19,7 @@
 // to `implement`, whose prompt enforces the same rule.
 
 import { createApiClient } from "../lib/apiClient.mjs";
+import { materializeTicket, moveToDone } from "../lib/ticketSync.mjs";
 
 /** Expected shape of a successful `implement` result. */
 // { deploy: { version, gitSha?, ticketIds?, status? }, summary?: string }
@@ -27,6 +28,9 @@ export const CODING_DEFAULTS = {
   pollIntervalMs: 30_000, // coding work is slower than triage; poll less often
   maxBackoffMs: 5 * 60_000,
   backoffFactor: 2,
+  // Where the full ticket bundle is materialized in the repo worktree (§4.2).
+  // open/<id>/ while working; moved to done/<id>/ on complete.
+  ticketsDir: "tickets",
 };
 
 /**
@@ -37,11 +41,12 @@ export const CODING_DEFAULTS = {
  *
  * @param {object} deps
  * @param {ReturnType<typeof createApiClient>} deps.client
- * @param {(workOrder:object, item:object)=>Promise<object>|object} deps.implement
+ * @param {(workOrder:object, item:object, ctx:{ticketDir:string})=>Promise<object>|object} deps.implement
+ * @param {string} [deps.ticketsDir]  repo tickets dir (default CODING_DEFAULTS.ticketsDir).
  * @param {(...a:any)=>void} [deps.log]
  * @returns {Promise<Array<{ticketId:string, ok:boolean, deployId?:string, error?:Error}>>}
  */
-export async function runCodingOnce({ client, implement, log = noop }) {
+export async function runCodingOnce({ client, implement, ticketsDir = CODING_DEFAULTS.ticketsDir, log = noop }) {
   const queue = await client.getQueue("coding");
   const items = queue.items || [];
   log(`coding: ${items.length} work-order(s) in queue`);
@@ -50,7 +55,7 @@ export async function runCodingOnce({ client, implement, log = noop }) {
   for (const item of items) {
     const ticketId = item?.id;
     try {
-      const result = await handleWorkOrder({ client, implement, item, log });
+      const result = await handleWorkOrder({ client, implement, item, ticketsDir, log });
       results.push({ ticketId, ok: true, deployId: result.deployId });
     } catch (error) {
       log(`coding: ticket ${ticketId} FAILED: ${error.message}`);
@@ -63,8 +68,8 @@ export async function runCodingOnce({ client, implement, log = noop }) {
   return results;
 }
 
-/** Claim → implement → recordDeploy → deploying → complete for a single work-order. */
-async function handleWorkOrder({ client, implement, item, log }) {
+/** Claim → materialize → implement → recordDeploy → deploying → complete → move. */
+async function handleWorkOrder({ client, implement, item, ticketsDir, log }) {
   const ticketId = item.id;
   const workOrder = item.work_order;
   if (!workOrder) {
@@ -75,8 +80,17 @@ async function handleWorkOrder({ client, implement, item, log }) {
   await client.claim(ticketId);
   log(`coding: claimed ${ticketId} (→ in_progress)`);
 
+  // 1b. Materialize the FULL bundle into the repo worktree (§4.2): text + thread
+  //     + project.fdraft + actions.json + screenshot + … so `implement` works
+  //     over real files (grep/cat/load/replay) exactly like a local ticket.
+  const { dir: ticketDir } = await materializeTicket(ticketsDir + "/open", item, {
+    client,
+    scope: "coding",
+  });
+  log(`coding: materialized ${ticketId} → ${ticketDir}`);
+
   // 2. Implement (model step). Throws on red tests / unbuildable / needs-info.
-  const result = await implement(workOrder, item);
+  const result = await implement(workOrder, item, { ticketDir });
   const deploy = result?.deploy;
   if (!deploy || !deploy.version) {
     throw new Error("implement() must return { deploy: { version, … } } on success");
@@ -103,6 +117,10 @@ async function handleWorkOrder({ client, implement, item, log }) {
     nextState: result.nextState, // optional override (else server → resolved)
   });
   log(`coding: completed ${ticketId} (deploy ${deployId})`);
+
+  // 6. Archive the materialized bundle: open/<id> → done/<id> (§3.1).
+  const moved = moveToDone(ticketsDir, ticketId);
+  if (moved.moved) log(`coding: archived ${ticketId} → ${moved.to}`);
 
   return { deployId };
 }
@@ -142,7 +160,7 @@ export async function runCodingLoop({
   let backoff = opt.pollIntervalMs;
   while (!signal?.aborted) {
     try {
-      await runCodingOnce({ client, implement, log });
+      await runCodingOnce({ client, implement, ticketsDir: opt.ticketsDir, log });
       backoff = opt.pollIntervalMs;
       await sleep(opt.pollIntervalMs);
     } catch (error) {
