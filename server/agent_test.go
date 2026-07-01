@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -518,5 +519,41 @@ func TestPOQueue(t *testing.T) {
 	resp.Body.Close()
 	if len(queue.Items) != 2 {
 		t.Fatalf("po queue after user reply: %d, want 2", len(queue.Items))
+	}
+}
+
+// TestGetArtifactAgentToken — the coding/po agents fetch any ticket's artifacts
+// with their Bearer token (materialize/repro flow); the user-session path + the
+// no-auth rejection still hold. Regression for the WP14 artifact-auth gap.
+func TestGetArtifactAgentToken(t *testing.T) {
+	e := newAgentEnv(t)
+	tid := e.createTicket(t, `{"title":"bug","body":"x","category":"bug"}`)
+	art := e.store.AddArtifact(tid, ArtifactScreenshot, "screenshot.png", "image/png", []byte("PNGDATA"))
+	path := "/api/tickets/" + tid + "/artifacts/" + art.ID
+
+	// coding Bearer token → 200 + the raw bytes.
+	resp := e.agentReq(t, "GET", path, testCodingToken, "", nil)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || string(body) != "PNGDATA" {
+		t.Fatalf("coding token: got %d %q", resp.StatusCode, body)
+	}
+	// po Bearer token → 200.
+	resp = e.agentReq(t, "GET", path, testPOToken, "", nil)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("po token: got %d", resp.StatusCode)
+	}
+	// no auth → 401.
+	resp = e.agentReq(t, "GET", path, "", "", nil)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("no auth: got %d", resp.StatusCode)
+	}
+	// user session (cookie) still works → 200.
+	resp = e.agentReq(t, "GET", path, "", "", e.cookies)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("user session: got %d", resp.StatusCode)
 	}
 }

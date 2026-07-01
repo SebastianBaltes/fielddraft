@@ -356,21 +356,25 @@ func (s *Server) handleAddComment(w http.ResponseWriter, r *http.Request) {
 // ─── artifact download ──────────────────────────────────────────
 
 func (s *Server) handleGetArtifact(w http.ResponseWriter, r *http.Request) {
-	_, user := s.requireAuth(r)
-	if user == nil {
-		http.Error(w, `{"error":"not authenticated"}`, http.StatusUnauthorized)
-		return
-	}
 	id := r.PathValue("id")
-	t := s.store.GetTicket(id)
-	if t == nil {
-		http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
-		return
-	}
-	isAdmin := user.Role == RoleAdmin
-	if isRejected(t.State) && !isAdmin && t.AuthorID != user.ID {
-		http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
-		return
+	// Agents (po/coding Bearer token) may fetch ANY ticket's artifacts — they
+	// materialize/reproduce every ticket they process (docs/TICKET-SYNC-AND-AGENTS.md).
+	// Otherwise require a user session and apply the normal visibility gate.
+	if _, res := s.requireAgent(r, scopePO, scopeCoding); res != authOK {
+		_, user := s.requireAuth(r)
+		if user == nil {
+			http.Error(w, `{"error":"not authenticated"}`, http.StatusUnauthorized)
+			return
+		}
+		t := s.store.GetTicket(id)
+		if t == nil {
+			http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
+			return
+		}
+		if isRejected(t.State) && user.Role != RoleAdmin && t.AuthorID != user.ID {
+			http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
+			return
+		}
 	}
 	art, data := s.store.GetArtifactBlob(id, r.PathValue("artifactId"))
 	if art == nil || data == nil {
