@@ -20,7 +20,7 @@ import {
 const extrudeRaw = {
   type: "extrude",
   params: [
-    { key: "profiles", name: "Profiles", type: "query", required: true },
+    { key: "profiles", name: "Profiles", type: "multi_query", required: true },
     { key: "depth", name: "Depth", type: "length", required: true },
     { key: "profile_half_x", name: "Profile half x", type: "f32", required: true },
     { key: "profile_half_y", name: "Profile half y", type: "f32", required: true },
@@ -47,25 +47,31 @@ describe("parseFeatureSchema", () => {
   it("parses the extrude schema shape into widget-aware descriptors", () => {
     const schema = parseFeatureSchema(extrudeRaw);
     expect(schema.type).toBe("extrude");
-    expect(schema.params).toHaveLength(6);
+    // Ticket r2zx: profile_half_x/y are hidden from the dialog → 4 of 6 shown.
+    expect(schema.params).toHaveLength(4);
+    expect(schema.params.map((p) => p.key)).toEqual([
+      "profiles",
+      "depth",
+      "operation",
+      "center",
+    ]);
     expect(schema.params[0]).toMatchObject({
       key: "profiles",
       label: "Profiles",
-      widget: "query",
+      widget: "multi_query",
       required: true,
-      rawType: "query",
+      rawType: "multi_query",
     });
     expect(schema.params[1].widget).toBe("length");
-    expect(schema.params[2].widget).toBe("number");
-    expect(schema.params[4].widget).toBe("enum");
-    expect(schema.params[4].uiHint).toBe("horizontal_enum");
-    expect(schema.params[4].variants).toEqual([
+    expect(schema.params[2].widget).toBe("enum");
+    expect(schema.params[2].uiHint).toBe("horizontal_enum");
+    expect(schema.params[2].variants).toEqual([
       { key: "add", label: "Add" },
       { key: "new", label: "New" },
       { key: "remove", label: "Remove" },
       { key: "intersect", label: "Intersect" },
     ]);
-    expect(schema.params[5].widget).toBe("vec3");
+    expect(schema.params[3].widget).toBe("vec3");
   });
 
   it("rejects missing fields with actionable errors", () => {
@@ -205,8 +211,10 @@ describe("buildDefaultDefinition", () => {
     const def = buildDefaultDefinition(schema);
     expect(def.profiles).toBe("");
     expect(def.depth).toEqual({ value: 1, unit: "mm" });
-    expect(def.profile_half_x).toBe(0);
-    expect(def.profile_half_y).toBe(0);
+    // profile_half_x/y are hidden (ticket r2zx) → not in the default def; the
+    // kernel falls back to their 0.0 param default.
+    expect(def.profile_half_x).toBeUndefined();
+    expect(def.profile_half_y).toBeUndefined();
     // Enum default is the first variant.
     expect(def.operation).toBe("add");
     expect(def.center).toEqual([0, 0, 0]);

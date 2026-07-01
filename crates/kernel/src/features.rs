@@ -2356,6 +2356,15 @@ pub struct MateConnectorDef {
     /// face/vertex anchors.
     #[param(name = "Position along edge", default = 0.5)]
     pub t: f32,
+    /// Between-entities placement (Phase D): an optional SECOND anchor
+    /// (`qFace`/`qEdge`/`qVertex`). When set, the connector origin is the
+    /// MIDPOINT of the two anchors' points; the orientation still comes from the
+    /// first anchor. Empty → single-entity placement (the common case).
+    #[param(name = "Between (2nd anchor)", default = ::fielddraft_protocol::Query::new(""), entity_filter = "FACE, EDGE, VERTEX")]
+    pub anchor2: ::fielddraft_protocol::Query,
+    /// Position along the 2nd anchor if it is an edge, `[0, 1]` (0.5 = midpoint).
+    #[param(name = "2nd position along edge", default = 0.5)]
+    pub t2: f32,
     /// Reference FACE that orients the SECONDARY axes (an edge's adjacent face)
     /// or, for a VERTEX anchor, defines +Z. Empty → auto-picked from the
     /// anchor's adjacent geometry. Unused for a face anchor.
@@ -2367,6 +2376,16 @@ pub struct MateConnectorDef {
     /// Flip the primary (+Z) axis 180°.
     #[param(default = false)]
     pub flip: bool,
+    /// Realignment (Phase D): translate the origin along the connector's OWN
+    /// axes (X, Y, Z = normal), in millimetres. Applied after the CSYS is
+    /// derived, so `[0, 0, 5]` lifts the connector 5 mm along its own +Z.
+    #[param(name = "Offset (own axes)", default = [0.0, 0.0, 0.0])]
+    pub offset: [f32; 3],
+    /// Owner part (Phase D): the body this connector belongs to
+    /// (`qCreatedBy(<seed>)`). Organises the connector under a part in the UI
+    /// and travels with it. Empty → inferred from the anchor geometry.
+    #[param(name = "Owner part", default = ::fielddraft_protocol::Query::new(""), entity_filter = "BODY")]
+    pub owner: ::fielddraft_protocol::Query,
 }
 
 /// C2: the resolved coordinate system of a placed `mate_connector`,
@@ -2380,6 +2399,10 @@ pub struct ResolvedMateConnector {
     pub normal: [f32; 3],
     /// CSYS X-axis (the face's in-plane basis vector).
     pub x_axis: [f32; 3],
+    /// Owner part's seed feature id, if an explicit `owner` query was given
+    /// (Phase D). `None` → not assigned to a specific part.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub owner_id: Option<u32>,
 }
 
 pub struct MateConnectorFeature;
@@ -2450,11 +2473,53 @@ impl FeatureKind for MateConnectorFeature {
         let steps = (d.reorient.round() as i64).rem_euclid(4) as u32;
         let x_axis = reorient_secondary(x0, normal, steps);
 
+        // Between-entities (Phase D): a 2nd anchor moves the origin to the
+        // midpoint of the two anchor points. Orientation stays with the first.
+        let mut origin = anc.origin;
+        let anchor2_str = d.anchor2.as_str();
+        if !anchor2_str.is_empty() {
+            let a2 = crate::queries::parse_query(anchor2_str)
+                .map_err(|e| inval("anchor2", format!("could not parse 2nd anchor query: {e}")))?;
+            let anc2 = ctx
+                .resolve_mate_anchor(&a2, d.t2)
+                .ok_or_else(|| inval("anchor2", "2nd anchor query resolved to nothing".into()))?;
+            origin = [
+                (origin[0] + anc2.origin[0]) * 0.5,
+                (origin[1] + anc2.origin[1]) * 0.5,
+                (origin[2] + anc2.origin[2]) * 0.5,
+            ];
+        }
+
+        // Realignment offset (Phase D): translate along the connector's OWN
+        // axes. Y = Z × X keeps the frame right-handed.
+        if d.offset != [0.0, 0.0, 0.0] {
+            let y_axis = cross3(normal, x_axis);
+            for k in 0..3 {
+                origin[k] +=
+                    d.offset[0] * x_axis[k] + d.offset[1] * y_axis[k] + d.offset[2] * normal[k];
+            }
+        }
+
+        // Owner part (Phase D): a `qCreatedBy(<seed>)` names the body this
+        // connector belongs to. Capture the seed id for UI grouping.
+        let owner_id = {
+            let owner_str = d.owner.as_str();
+            if owner_str.is_empty() {
+                None
+            } else {
+                match crate::queries::parse_query(owner_str) {
+                    Ok(crate::queries::QueryExpr::CreatedBy(seed)) => seed.as_u32_or_root(),
+                    _ => None,
+                }
+            }
+        };
+
         ctx.mate_connectors.push(ResolvedMateConnector {
             id: id.clone(),
-            origin: anc.origin,
+            origin,
             normal,
             x_axis,
+            owner_id,
         });
         Ok(())
     }
@@ -3270,9 +3335,17 @@ pub struct ExtrudeDef {
     /// region of it (`qRegion`/`qRegions`) — ticket tgdg. The `SKETCHREGION`
     /// entity filter tells the viewport's profile picker to resolve a clicked
     /// filled region to a `qRegion` query instead of the whole sketch (it is
-    /// the same picker path Revolve uses, ticket dhjn).
-    #[param(entity_filter = "SKETCHREGION")]
-    pub profiles: ::fielddraft_protocol::Query,
+    /// the same picker path Revolve uses, ticket dhjn). Ticket 20fc: a planar
+    /// B-Rep `qFace(...)` is accepted here too — picking a solid's side face as
+    /// the "profile" routes through the face-extrude path, so the user need not
+    /// know a separate field. Ticket k280: this is a `MultiQuery`, so several
+    /// coplanar faces (or regions) accumulate in one pick session and extrude
+    /// together — the single Onshape-style "faces and sketch regions to extrude"
+    /// input. Every `qFace(...)` entry routes through the face-extrude path
+    /// ([`Context::resolve_extrude_faces`], which unions their boundary loops);
+    /// a sketch entry resolves via [`crate::sketch_features::resolve_profile_query`].
+    #[param(entity_filter = "SKETCHREGION, FACE")]
+    pub profiles: ::fielddraft_protocol::MultiQuery,
 
     /// Extrude depth along the local Z axis. Any supported
     /// length unit works; the executor converts to millimetres
@@ -3310,14 +3383,6 @@ pub struct ExtrudeDef {
     /// [`PrimitiveModifiers`], producing a thin-walled closed shell.
     #[param(name = "Shell thickness", default = ::fielddraft_protocol::Length::mm(0.0))]
     pub shell_thickness: ::fielddraft_protocol::Length,
-
-    /// Planar B-Rep face(s) to extrude instead of a sketch — the face-extrude
-    /// path (P1). Comma-separated `qFace(<id_hash>)` selections; all faces must
-    /// be coplanar. When non-empty this takes precedence over `profiles`: the
-    /// faces' boundary loops are projected into their shared plane and unioned
-    /// into the extrude profile (see [`Context::resolve_extrude_faces`]).
-    #[param(name = "Faces", default = ::fielddraft_protocol::MultiQuery::new(""), entity_filter = "FACE")]
-    pub faces: ::fielddraft_protocol::MultiQuery,
 
     /// Direction mode. `false` (default) is a one-sided (blind) extrude
     /// `[−depth_back, +depth]` along the plane normal — the Onshape default of
@@ -3404,18 +3469,30 @@ impl FeatureKind for ExtrudeFeature {
         };
 
         // ── Face-extrude path (P1) ──────────────────────────────────────────
-        // A coplanar `qFace(...)` selection drives the profile and takes
-        // precedence over `profiles`. The selected faces' boundary loops are
-        // projected into their shared plane, unioned, and swept exactly like a
-        // sketch profile; the face frame places that profile back onto the plane.
-        let face_queries: Vec<String> =
-            d.faces.queries().iter().map(|s| s.to_string()).collect();
+        // `profiles` is the unified Onshape-style "faces and sketch regions"
+        // input (ticket k280): every `qFace(...)` entry drives the face-extrude
+        // path. Multiple coplanar faces accumulate in one pick session — their
+        // boundary loops are projected into the shared plane, unioned, and swept
+        // exactly like a sketch profile; the face frame places that profile back
+        // onto the plane. Any face entry takes precedence over a sketch entry.
+        let profile_qs: Vec<String> =
+            d.profiles.queries().iter().map(|s| s.to_string()).collect();
+        let face_queries: Vec<String> = profile_qs
+            .iter()
+            .filter(|q| {
+                matches!(
+                    crate::queries::parse_query(q),
+                    Ok(crate::queries::QueryExpr::Face(_))
+                )
+            })
+            .cloned()
+            .collect();
         if !face_queries.is_empty() {
             let (sketch, frame) =
                 ctx.resolve_extrude_faces(&face_queries).map_err(|message| {
                     FeatureError::InvalidParameter {
                         feature: ExtrudeDef::TYPE_NAME,
-                        name: "faces",
+                        name: "profiles",
                         message,
                     }
                 })?;
@@ -3479,8 +3556,12 @@ impl FeatureKind for ExtrudeFeature {
         // unresolvable query (→ legacy half-extent fallback) and for a sketch
         // that resolved but has no closed regions; distinguish those so the
         // "draw a closed region first" error still fires.
+        // No face entries → treat the first profile entry as the sketch source
+        // (a single sketch query — whole sketch or a region group — is the
+        // common case; multi-region is already one `qRegions(...)` expression).
+        let profile_str: &str = profile_qs.first().map(String::as_str).unwrap_or("");
         match crate::sketch_features::resolve_profile_query(
-            d.profiles.as_str(),
+            profile_str,
             &ctx.sketches,
         ) {
             Some((sketch2d, frame)) => {
@@ -3492,7 +3573,7 @@ impl FeatureKind for ExtrudeFeature {
                 // extrudable region is the "found but empty" case.
                 if let Ok(crate::queries::QueryExpr::CreatedBy(sketch_id))
                 | Ok(crate::queries::QueryExpr::AllRegions(sketch_id)) =
-                    crate::queries::parse_query(d.profiles.as_str())
+                    crate::queries::parse_query(profile_str)
                 {
                     if ctx.sketches.contains_key(&sketch_id) {
                         sketch_was_found_but_empty = true;
@@ -3515,6 +3596,22 @@ impl FeatureKind for ExtrudeFeature {
                 feature: ExtrudeDef::TYPE_NAME,
                 name: "profiles",
                 message: "sketch has no closed regions to extrude — draw a rectangle, circle or polygon first".to_string(),
+            });
+        }
+
+        // Ticket r2zx: the profile query named nothing extrudable (e.g. a solid
+        // FACE or a whole-body `qCreatedBy(extrude_id)` was picked instead of a
+        // sketch region) and no legacy half-extents were given. Fail with a
+        // clear, actionable message instead of falling through to the box
+        // fallback's cryptic "profile_half_x must be > 0".
+        if resolved_sketch.is_none()
+            && d.profile_half_x == 0.0
+            && d.profile_half_y == 0.0
+        {
+            return Err(FeatureError::InvalidParameter {
+                feature: ExtrudeDef::TYPE_NAME,
+                name: "profiles",
+                message: "select a closed sketch region or one or more coplanar planar faces to extrude".to_string(),
             });
         }
 
@@ -5350,7 +5447,7 @@ mod tests {
             .expect("extrude schema");
         assert_eq!(extrude_schema["type"], json!("extrude"));
         let params = extrude_schema["params"].as_array().unwrap();
-        assert_eq!(params.len(), 12);
+        assert_eq!(params.len(), 11);
     }
 
     #[test]
@@ -6258,13 +6355,13 @@ mod tests {
         let schema = ExtrudeDef::schema_json();
         assert_eq!(schema["type"], json!("extrude"));
         let params = schema["params"].as_array().unwrap();
-        assert_eq!(params.len(), 12);
+        assert_eq!(params.len(), 11);
 
         // Each key / type pair documents the K4.5.4f vocabulary
         // demonstrated in a single definition.
         let map: std::collections::HashMap<&str, &serde_json::Value> =
             params.iter().map(|p| (p["key"].as_str().unwrap(), p)).collect();
-        assert_eq!(map["profiles"]["type"], json!("query"));
+        assert_eq!(map["profiles"]["type"], json!("multi_query"));
         assert_eq!(map["profiles"]["required"], json!(true));
         assert_eq!(map["depth"]["type"], json!("length"));
         assert_eq!(map["depth"]["required"], json!(true));
@@ -6288,9 +6385,8 @@ mod tests {
         // #9: optional shell thickness hollows the extruded body.
         assert_eq!(map["shell_thickness"]["type"], json!("length"));
         assert_eq!(map["shell_thickness"]["required"], json!(false));
-        // Face-extrude (P1): an optional multi-face source + direction modes.
-        assert_eq!(map["faces"]["type"], json!("multi_query"));
-        assert_eq!(map["faces"]["required"], json!(false));
+        // Face-extrude (P1) now rides on `profiles` (ticket k280) — no separate
+        // `faces` field. Direction modes remain.
         assert_eq!(map["symmetric"]["type"], json!("bool"));
         assert_eq!(map["symmetric"]["required"], json!(false));
         assert_eq!(map["depth_back"]["type"], json!("length"));
@@ -8251,8 +8347,7 @@ mod tests {
                         "extrude",
                         id(2),
                         json!({
-                            "profiles": "",
-                            "faces": format!("qFace({hash})"),
+                            "profiles": format!("qFace({hash})"),
                             "depth": { "value": 5.0, "unit": "mm" },
                             "symmetric": false,
                         }),
@@ -8276,6 +8371,49 @@ mod tests {
         assert!((bb.min[1] + 10.0).abs() < 1e-2 && (bb.max[1] - 10.0).abs() < 1e-2, "aabb {bb:?}");
         assert!(sketch.sdf([0.0, 0.0]) < 0.0, "centre inside the profile");
         assert!(sketch.sdf([30.0, 0.0]) > 0.0, "far point outside");
+    }
+
+    #[test]
+    fn extrude_routes_qface_profiles_to_face_extrude() {
+        // Ticket 20fc: a planar `qFace(...)` placed in the `profiles` field (the
+        // natural "pick a side face as the profile" gesture) must extrude that
+        // face, not fail as a non-resolvable sketch.
+        let registry = FeatureRegistry::with_builtins();
+        let mut doc = empty_ctx();
+        let mut ctx = Context::new(&mut doc);
+        registry
+            .regenerate(&mut ctx, std::slice::from_ref(&box_call(1, 10.0)), None)
+            .unwrap();
+        let brep = weave_first(&mut ctx);
+        let hash = planar_face_hash(&brep, [0.0, 0.0, 1.0]).expect("a +Z face");
+
+        let mut doc2 = empty_ctx();
+        let mut ctx2 = Context::new(&mut doc2);
+        registry
+            .regenerate(
+                &mut ctx2,
+                &[
+                    box_call(1, 10.0),
+                    FeatureCall::new(
+                        "extrude",
+                        id(2),
+                        json!({
+                            "profiles": format!("qFace({hash})"),
+                            "depth": { "value": 5.0, "unit": "mm" },
+                        }),
+                    ),
+                ],
+                None,
+            )
+            .unwrap();
+        // A failed feature is skipped (no geometry), so finding the extrude with
+        // a real Extrude primitive proves the qFace profile routed correctly.
+        let ex = ctx2.features.iter().find(|f| f.id == id(2)).expect("extrude built");
+        let Primitive::Extrude { sketch, .. } = ex.export_primitive().expect("primitive") else {
+            panic!("expected a face-profile Extrude");
+        };
+        let bb = sketch.aabb();
+        assert!((bb.max[0] - 10.0).abs() < 1e-2, "20mm top face profile, aabb {bb:?}");
     }
 
     #[test]
@@ -8308,8 +8446,7 @@ mod tests {
                         "extrude",
                         id(2),
                         json!({
-                            "profiles": "",
-                            "faces": format!("qFace({hash})"),
+                            "profiles": format!("qFace({hash})"),
                             "depth": { "value": 2.0, "unit": "mm" },
                             "symmetric": false,
                         }),
@@ -8447,8 +8584,7 @@ mod tests {
                         "extrude",
                         id(2),
                         json!({
-                            "profiles": "",
-                            "faces": format!("qFace({top})"),
+                            "profiles": format!("qFace({top})"),
                             "depth": { "value": 5.0, "unit": "mm" },
                             "symmetric": false,
                         }),
@@ -8515,8 +8651,7 @@ mod tests {
         // first's top face, so they cannot share a spine).
         let half_centre = |extra: serde_json::Value| -> (f32, f32) {
             let mut params = json!({
-                "profiles": "",
-                "faces": face_q,
+                "profiles": face_q,
                 "depth": { "value": 6.0, "unit": "mm" },
             });
             let obj = params.as_object_mut().unwrap();
@@ -9511,6 +9646,77 @@ mod tests {
     }
 
     #[test]
+    fn mate_connector_offset_between_and_owner() {
+        let registry = FeatureRegistry::with_builtins();
+        let mut doc = empty_ctx();
+        let mut ctx = Context::new(&mut doc);
+        registry
+            .regenerate(&mut ctx, std::slice::from_ref(&box_call(1, 10.0)), None)
+            .unwrap();
+
+        // +Z face (z=10) and -Z face (z=-10) hashes.
+        let woven = crate::body::weave_all(&ctx.features);
+        let (brep, placement) = &woven[0];
+        let (mut top_hash, mut bot_hash) = (None, None);
+        for i in 0..brep.face_count() {
+            let frame = crate::sketch_features::face_plane_frame(
+                brep,
+                crate::brep::FaceId(i as u32),
+                placement,
+            );
+            let hash = crate::brep::naming::TopoRef::from_face(brep, crate::brep::FaceId(i as u32)).id_hash;
+            if (frame.normal[2] - 1.0).abs() < 1e-4 {
+                top_hash = Some(hash);
+            } else if (frame.normal[2] + 1.0).abs() < 1e-4 {
+                bot_hash = Some(hash);
+            }
+        }
+        let (top_hash, bot_hash) = (top_hash.expect("+Z face"), bot_hash.expect("-Z face"));
+
+        // Realignment offset: +5 along the connector's own +Z lifts the origin
+        // from z=10 to z=15; owner qCreatedBy(1) → owner_id = Some(1).
+        registry
+            .regenerate(
+                &mut ctx,
+                &[FeatureCall::new(
+                    "mate_connector",
+                    id(2),
+                    json!({
+                        "anchor": format!("qFace({top_hash})"),
+                        "offset": [0.0, 0.0, 5.0],
+                        "owner": "qCreatedBy(1)",
+                    }),
+                )],
+                None,
+            )
+            .unwrap();
+        let mc = &ctx.mate_connectors[0];
+        assert!((mc.origin[2] - 15.0).abs() < 1e-2, "offset lifts +Z origin to 15, got {:?}", mc.origin);
+        assert_eq!(mc.owner_id, Some(1), "owner qCreatedBy(1) → seed id 1");
+
+        // Between-entities: midpoint of the +Z (z=10) and -Z (z=-10) face
+        // centroids sits at z=0.
+        ctx.mate_connectors.clear();
+        registry
+            .regenerate(
+                &mut ctx,
+                &[FeatureCall::new(
+                    "mate_connector",
+                    id(3),
+                    json!({
+                        "anchor": format!("qFace({top_hash})"),
+                        "anchor2": format!("qFace({bot_hash})"),
+                    }),
+                )],
+                None,
+            )
+            .unwrap();
+        let mid = &ctx.mate_connectors[0];
+        assert!(mid.origin[2].abs() < 1e-2, "between → midpoint z=0, got {:?}", mid.origin);
+        assert_eq!(mid.owner_id, None, "no owner query → None");
+    }
+
+    #[test]
     fn mate_connector_anchors_to_edge_midpoint_and_vertex() {
         let registry = FeatureRegistry::with_builtins();
         let mut doc = empty_ctx();
@@ -10418,8 +10624,7 @@ mod tests {
                 "extrude",
                 id(4),
                 json!({
-                    "profiles": "",
-                    "faces": format!("qFace({top_hash})"),
+                    "profiles": format!("qFace({top_hash})"),
                     "depth": { "value": 10.0, "unit": "mm" },
                     "symmetric": false,
                     // Rim tube grows the vase body (Add); yx5h default is New.
@@ -10916,8 +11121,7 @@ mod tests {
                 "extrude",
                 id(5),
                 json!({
-                    "profiles": "qEdge(18417744930603108066)",
-                    "faces": "qFace(4315924989883055031)",
+                    "profiles": "qFace(4315924989883055031)",
                     "depth": { "value": 52.91257140451136, "unit": "mm" },
                     "depth_back": { "value": 0.0, "unit": "mm" },
                     "symmetric": false,
@@ -10974,8 +11178,7 @@ mod tests {
             "extrude",
             id(8),
             json!({
-                "profiles": "",
-                "faces": "qFace(6025886176426920981)",
+                "profiles": "qFace(6025886176426920981)",
                 "depth": { "value": 25.0, "unit": "mm" },
                 "depth_back": { "value": 0.0, "unit": "mm" },
                 "symmetric": false,

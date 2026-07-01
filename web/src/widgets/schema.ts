@@ -208,6 +208,12 @@ const HIDDEN_PRIMITIVE_PARAM_KEYS = new Set<string>([
 /** Primitive feature types that get the "size and shape only"
  *  treatment above. Other feature types (extrude, fillet, pattern,
  *  …) are unaffected — they already expose curated dialogs. */
+/** Per-feature-type params hidden from the dialog (still on the wire). Used
+ *  for internal/legacy fields a user should never set by hand (ticket r2zx). */
+const HIDDEN_PARAM_KEYS_BY_TYPE: Record<string, Set<string>> = {
+  extrude: new Set(["profile_half_x", "profile_half_y"]),
+};
+
 const PRIMITIVE_FEATURE_TYPES = new Set<string>([
   "box",
   "sphere",
@@ -241,6 +247,15 @@ export function parseFeatureSchema(value: unknown): FeatureSchema {
   if (PRIMITIVE_FEATURE_TYPES.has(typeField)) {
     params = params.filter(
       (p) => p.widget === "group" || !HIDDEN_PRIMITIVE_PARAM_KEYS.has(p.key),
+    );
+  }
+  // Ticket r2zx: `profile_half_x`/`profile_half_y` are internal legacy
+  // fallbacks (a box profile for extrudes that don't resolve a sketch) — they
+  // confuse users in the Extrude dialog. Hide them; the wire form keeps them.
+  const hiddenForType = HIDDEN_PARAM_KEYS_BY_TYPE[typeField];
+  if (hiddenForType) {
+    params = params.filter(
+      (p) => p.widget === "group" || !hiddenForType.has(p.key),
     );
   }
   if (typeField === "material") {
