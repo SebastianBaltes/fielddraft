@@ -158,13 +158,22 @@ export function createApiClient(opts = {}) {
     /**
      * GET /api/agent/queue — scope-aware actionable list (hydrated with thread +
      * artifacts; coding items also carry their work_order). Returns { scope, items }.
+     *
+     * With `{ wait }` (seconds, clamped server-side to ≤300) the request
+     * LONG-POLLS: it holds until an item appears or the wait elapses, then
+     * returns. A blocked request costs the desktop agent NO model tokens (tokens
+     * are per turn, not per wait-second), so a coarse re-arm cadence + a long wait
+     * gives near-instant, idle-cheap, event-driven pickup.
      * @param {"po"|"coding"} scope
+     * @param {{wait?: number}} [opts]
      */
-    getQueue(scope) {
+    getQueue(scope, opts = {}) {
       if (scope !== "po" && scope !== "coding") {
         throw new Error(`getQueue: scope must be "po" or "coding", got ${scope}`);
       }
-      return request(scope, "GET", "/api/agent/queue");
+      const q =
+        opts.wait > 0 ? `?wait=${encodeURIComponent(Math.floor(opts.wait))}` : "";
+      return request(scope, "GET", `/api/agent/queue${q}`);
     },
 
     /**

@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 const (
@@ -153,6 +154,59 @@ func TestAgentAuthDisabledWhenUnset(t *testing.T) {
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("empty token with disabled API: got %d, want 401", resp.StatusCode)
+	}
+}
+
+// ─── long-poll (?wait=) ─────────────────────────────────────────
+
+// TestAgentQueueLongPollTimeout — with an empty queue, `?wait=1` blocks for the
+// wait and then returns an empty list (200). It must actually hold, not answer
+// instantly.
+func TestAgentQueueLongPollTimeout(t *testing.T) {
+	e := newAgentEnv(t)
+	start := time.Now()
+	resp := e.agentReq(t, "GET", "/api/agent/queue?wait=1", testPOToken, "", nil)
+	defer resp.Body.Close()
+	elapsed := time.Since(start)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("long-poll timeout: got %d, want 200", resp.StatusCode)
+	}
+	var q queueResponse
+	json.NewDecoder(resp.Body).Decode(&q)
+	if len(q.Items) != 0 {
+		t.Fatalf("expected empty queue, got %d items", len(q.Items))
+	}
+	if elapsed < 900*time.Millisecond {
+		t.Fatalf("long-poll returned too early (%v); it should block ~1s", elapsed)
+	}
+}
+
+// TestAgentQueueLongPollWakes — a `?wait=` request returns as soon as a ticket
+// lands mid-wait (well before the deadline), carrying the new item. This is the
+// event-driven pickup: no busy polling, near-instant wake.
+func TestAgentQueueLongPollWakes(t *testing.T) {
+	e := newAgentEnv(t)
+
+	// Land a ticket shortly after the long-poll starts blocking.
+	go func() {
+		time.Sleep(200 * time.Millisecond)
+		e.createTicket(t, `{"title":"stale extrude","body":"depth edit ignored","category":"bug"}`)
+	}()
+
+	start := time.Now()
+	resp := e.agentReq(t, "GET", "/api/agent/queue?wait=10", testPOToken, "", nil)
+	defer resp.Body.Close()
+	elapsed := time.Since(start)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("long-poll wake: got %d, want 200", resp.StatusCode)
+	}
+	var q queueResponse
+	json.NewDecoder(resp.Body).Decode(&q)
+	if len(q.Items) == 0 {
+		t.Fatalf("expected the new ticket, got empty queue")
+	}
+	if elapsed > 3*time.Second {
+		t.Fatalf("long-poll woke too slowly (%v); expected pickup within ~1s of the ticket", elapsed)
 	}
 }
 

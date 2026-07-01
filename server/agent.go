@@ -21,7 +21,9 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
+	"time"
 )
 
 // agentScope identifies which Service-Token authenticated a request.
@@ -139,12 +141,50 @@ type agentQueueTicket struct {
 	UnreviewedComments []*TicketComment  `json:"unreviewed_comments,omitempty"`
 }
 
+// queueLongPollMax caps how long a `?wait=` request may block. A blocked curl
+// costs the agent NO tokens (tokens are per turn, not per wait-second), so a long
+// hold lets a coarse wake schedule catch tickets near-instantly while staying
+// idle-cheap. We cap it so a held connection can't live forever.
+const queueLongPollMax = 300 * time.Second
+
+// queueLongPollInterval is how often the handler re-checks the store while a
+// `?wait=` request blocks. With only a handful of agents this internal poll is
+// negligible; it never touches the model.
+const queueLongPollInterval = 1 * time.Second
+
 func (s *Server) handleAgentQueue(w http.ResponseWriter, r *http.Request) {
 	scope, res := s.requireAgent(r, scopePO, scopeCoding)
 	if writeAgentAuth(w, res) {
 		return
 	}
 
+	items := s.queueItemsFor(scope)
+
+	// Long-poll: if `?wait=<sec>` is set and the queue is currently empty, hold
+	// the connection until an item appears, the wait elapses, or the client
+	// disconnects — then return whatever the queue holds. This is the event-driven
+	// read primitive: one held connection wakes the instant a ticket lands, so the
+	// desktop agent needs only a coarse re-arm cadence (no busy polling, no idle
+	// model turns while blocked).
+	if wait := parseWaitSeconds(r); wait > 0 && len(items) == 0 {
+		deadline := time.Now().Add(wait)
+		ticker := time.NewTicker(queueLongPollInterval)
+		defer ticker.Stop()
+		for len(items) == 0 && time.Now().Before(deadline) {
+			select {
+			case <-r.Context().Done(): // client hung up
+				return
+			case <-ticker.C:
+				items = s.queueItemsFor(scope)
+			}
+		}
+	}
+
+	json.NewEncoder(w).Encode(queueResponse{Scope: string(scope), Items: items})
+}
+
+// queueItemsFor returns the scope's actionable queue, never nil.
+func (s *Server) queueItemsFor(scope agentScope) []agentQueueTicket {
 	var items []agentQueueTicket
 	switch scope {
 	case scopePO:
@@ -155,7 +195,25 @@ func (s *Server) handleAgentQueue(w http.ResponseWriter, r *http.Request) {
 	if items == nil {
 		items = []agentQueueTicket{}
 	}
-	json.NewEncoder(w).Encode(queueResponse{Scope: string(scope), Items: items})
+	return items
+}
+
+// parseWaitSeconds reads the `?wait=<sec>` long-poll hint, clamped to
+// [0, queueLongPollMax]. Absent/invalid/≤0 means "return immediately".
+func parseWaitSeconds(r *http.Request) time.Duration {
+	raw := r.URL.Query().Get("wait")
+	if raw == "" {
+		return 0
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n <= 0 {
+		return 0
+	}
+	d := time.Duration(n) * time.Second
+	if d > queueLongPollMax {
+		d = queueLongPollMax
+	}
+	return d
 }
 
 // poQueue: everything awaiting PO attention (§8.1) —
