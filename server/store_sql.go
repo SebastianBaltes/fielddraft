@@ -331,18 +331,20 @@ func (s *sqlStore) ConsumeResetToken(token string) (string, bool) {
 
 // ─── invites ────────────────────────────────────────────────────
 
-func (s *sqlStore) CreateInvite(createdBy, note string, expiresAt time.Time) *Invite {
+func (s *sqlStore) CreateInvite(createdBy, inviteeName, inviteeEmail, message string, expiresAt time.Time) *Invite {
 	inv := &Invite{
-		Token:     newID(),
-		CreatedBy: createdBy,
-		Note:      note,
-		ExpiresAt: expiresAt.UTC(),
-		CreatedAt: time.Now().UTC(),
+		Token:        newID(),
+		CreatedBy:    createdBy,
+		InviteeName:  inviteeName,
+		InviteeEmail: inviteeEmail,
+		Message:      message,
+		ExpiresAt:    expiresAt.UTC(),
+		CreatedAt:    time.Now().UTC(),
 	}
 	if _, err := s.db.Exec(
-		`INSERT INTO invites (token, created_by, note, expires_at, created_at)
-		 VALUES (?, ?, ?, ?, ?)`,
-		inv.Token, inv.CreatedBy, inv.Note, inv.ExpiresAt, inv.CreatedAt); err != nil {
+		`INSERT INTO invites (token, created_by, invitee_name, invitee_email, message, expires_at, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		inv.Token, inv.CreatedBy, inv.InviteeName, inv.InviteeEmail, inv.Message, inv.ExpiresAt, inv.CreatedAt); err != nil {
 		log.Printf("sqlStore: CreateInvite: %v", err)
 		return nil
 	}
@@ -353,9 +355,11 @@ func (s *sqlStore) scanInvite(scan func(...any) error) *Invite {
 	inv := &Invite{}
 	var usedBy sql.NullString
 	var usedAt sql.NullTime
-	if err := scan(&inv.Token, &inv.CreatedBy, &inv.Note, &inv.ExpiresAt, &usedBy, &usedAt, &inv.CreatedAt); err != nil {
+	var message sql.NullString
+	if err := scan(&inv.Token, &inv.CreatedBy, &inv.InviteeName, &inv.InviteeEmail, &message, &inv.ExpiresAt, &usedBy, &usedAt, &inv.CreatedAt); err != nil {
 		return nil
 	}
+	inv.Message = message.String
 	if usedBy.Valid {
 		inv.UsedBy = &usedBy.String
 	}
@@ -368,14 +372,14 @@ func (s *sqlStore) scanInvite(scan func(...any) error) *Invite {
 
 func (s *sqlStore) GetInvite(token string) *Invite {
 	row := s.db.QueryRow(
-		`SELECT token, created_by, note, expires_at, used_by, used_at, created_at
+		`SELECT token, created_by, invitee_name, invitee_email, message, expires_at, used_by, used_at, created_at
 		 FROM invites WHERE token = ?`, token)
 	return s.scanInvite(row.Scan)
 }
 
 func (s *sqlStore) ListInvites() []*Invite {
 	rows, err := s.db.Query(
-		`SELECT token, created_by, note, expires_at, used_by, used_at, created_at
+		`SELECT token, created_by, invitee_name, invitee_email, message, expires_at, used_by, used_at, created_at
 		 FROM invites ORDER BY created_at DESC`)
 	if err != nil {
 		log.Printf("sqlStore: ListInvites: %v", err)
@@ -401,13 +405,15 @@ func (s *sqlStore) ConsumeInvite(token, usedBy string) (*Invite, error) {
 	inv := &Invite{}
 	var dbUsedBy sql.NullString
 	var dbUsedAt sql.NullTime
+	var message sql.NullString
 	err = tx.QueryRow(
-		`SELECT token, created_by, note, expires_at, used_by, used_at, created_at
+		`SELECT token, created_by, invitee_name, invitee_email, message, expires_at, used_by, used_at, created_at
 		 FROM invites WHERE token = ? FOR UPDATE`, token).
-		Scan(&inv.Token, &inv.CreatedBy, &inv.Note, &inv.ExpiresAt, &dbUsedBy, &dbUsedAt, &inv.CreatedAt)
+		Scan(&inv.Token, &inv.CreatedBy, &inv.InviteeName, &inv.InviteeEmail, &message, &inv.ExpiresAt, &dbUsedBy, &dbUsedAt, &inv.CreatedAt)
 	if err != nil {
 		return nil, errInviteInvalid
 	}
+	inv.Message = message.String
 	if time.Now().UTC().After(inv.ExpiresAt) {
 		return nil, errInviteInvalid
 	}

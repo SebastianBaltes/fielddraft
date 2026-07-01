@@ -236,15 +236,17 @@ func (s *memStore) ConsumeResetToken(token string) (string, bool) {
 
 // ─── invites ────────────────────────────────────────────────────
 
-func (s *memStore) CreateInvite(createdBy, note string, expiresAt time.Time) *Invite {
+func (s *memStore) CreateInvite(createdBy, inviteeName, inviteeEmail, message string, expiresAt time.Time) *Invite {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	inv := &Invite{
-		Token:     newID(),
-		CreatedBy: createdBy,
-		Note:      note,
-		ExpiresAt: expiresAt,
-		CreatedAt: time.Now(),
+		Token:        newID(),
+		CreatedBy:    createdBy,
+		InviteeName:  inviteeName,
+		InviteeEmail: inviteeEmail,
+		Message:      message,
+		ExpiresAt:    expiresAt,
+		CreatedAt:    time.Now(),
 	}
 	s.invites[inv.Token] = inv
 	return inv

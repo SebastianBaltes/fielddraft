@@ -18,7 +18,7 @@ func newInvite(t *testing.T, store Store) string {
 	if err != nil {
 		t.Fatalf("seed admin: %v", err)
 	}
-	inv := store.CreateInvite(admin.ID, "", time.Now().Add(time.Hour))
+	inv := store.CreateInvite(admin.ID, "", "", "", time.Now().Add(time.Hour))
 	if inv == nil {
 		t.Fatal("CreateInvite returned nil")
 	}
@@ -402,15 +402,17 @@ func TestInviteAdminEndpoints(t *testing.T) {
 	}
 
 	// Non-admin POST /api/invites → 403.
-	req, _ := http.NewRequest("POST", ts.URL+"/api/invites", strings.NewReader(`{"note":"x"}`))
+	req, _ := http.NewRequest("POST", ts.URL+"/api/invites", strings.NewReader(`{"invitee_name":"x"}`))
 	resp, _ = client.Do(withCookies(req, userCookies))
 	resp.Body.Close()
 	if resp.StatusCode != 403 {
 		t.Fatalf("non-admin create invite: got %d, want 403", resp.StatusCode)
 	}
 
-	// Admin POST /api/invites → 201 with a token + register URL.
-	req, _ = http.NewRequest("POST", ts.URL+"/api/invites", strings.NewReader(`{"note":"for charlie"}`))
+	// Admin POST /api/invites → 201 with a token + register URL. The recipient
+	// fields (name/email/message) round-trip into the response.
+	req, _ = http.NewRequest("POST", ts.URL+"/api/invites", strings.NewReader(
+		`{"invitee_name":"Charlie","invitee_email":"charlie@test.com","message":"welcome aboard"}`))
 	resp, _ = client.Do(withCookies(req, adminCookies))
 	var created inviteResponse
 	json.NewDecoder(resp.Body).Decode(&created)
@@ -420,6 +422,9 @@ func TestInviteAdminEndpoints(t *testing.T) {
 	}
 	if created.Token == "" || created.Status != "open" {
 		t.Fatalf("invite response: %+v", created)
+	}
+	if created.InviteeName != "Charlie" || created.InviteeEmail != "charlie@test.com" || created.Message != "welcome aboard" {
+		t.Fatalf("invite recipient fields not returned: %+v", created)
 	}
 	if !strings.Contains(created.RegisterURL, created.Token) {
 		t.Fatalf("register_url missing token: %q", created.RegisterURL)
@@ -443,6 +448,9 @@ func TestInviteAdminEndpoints(t *testing.T) {
 	for _, inv := range list {
 		if inv.Token == created.Token && inv.Status == "used" {
 			foundUsed = true
+			if inv.InviteeName != "Charlie" || inv.InviteeEmail != "charlie@test.com" || inv.Message != "welcome aboard" {
+				t.Fatalf("list invite recipient fields lost: %+v", inv)
+			}
 		}
 	}
 	if !foundUsed {

@@ -44,7 +44,7 @@ type Store interface {
 	ConsumeResetToken(token string) (string, bool)
 
 	// Invites (admin-gated registration).
-	CreateInvite(createdBy, note string, expiresAt time.Time) *Invite
+	CreateInvite(createdBy, inviteeName, inviteeEmail, message string, expiresAt time.Time) *Invite
 	GetInvite(token string) *Invite
 	ListInvites() []*Invite
 	ConsumeInvite(token, usedBy string) (*Invite, error)

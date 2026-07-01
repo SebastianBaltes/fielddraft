@@ -29,8 +29,14 @@ services:
       DB_DSN: "fielddraft:fielddraft@tcp(db:3306)/fielddraft?parseTime=true"
       BLOB_DIR: "/data/blobs"
       # Seeds the operator admin on first boot (only if no admin exists yet).
-      ADMIN_EMAIL: "${FIELDDRAFT_ADMIN_EMAIL:-}"
-      ADMIN_PASSWORD: "${FIELDDRAFT_ADMIN_PASSWORD:-}"
+      # DEV DEFAULTS: a fresh dev DB seeds admin@local / admin so a developer
+      # can log in immediately. Override via .env for a real deployment.
+      ADMIN_EMAIL: "${FIELDDRAFT_ADMIN_EMAIL:-admin@local}"
+      ADMIN_PASSWORD: "${FIELDDRAFT_ADMIN_PASSWORD:-admin}"
+      # Agent (PO / coding) Service-Tokens. DEV DEFAULTS make the agent API
+      # usable locally; a missing/empty token disables that scope.
+      PO_SERVICE_TOKEN: "${FIELDDRAFT_PO_SERVICE_TOKEN:-dev-po}"
+      CODING_SERVICE_TOKEN: "${FIELDDRAFT_CODING_SERVICE_TOKEN:-dev-coding}"
       # Set to 1 behind TLS/Caddy so session cookies get the Secure attribute.
       SECURE_COOKIES: "${FIELDDRAFT_SECURE_COOKIES:-}"
     volumes:
