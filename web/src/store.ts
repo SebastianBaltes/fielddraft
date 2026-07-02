@@ -725,7 +725,12 @@ export class KernelStore {
     }
     const features = this.kernel.listFeatures();
     const rbRaw = this.kernel.getRollbackIndex();
+    // Spread the previous snapshot and overwrite ONLY the fields commit()
+    // actually derives/resets. Everything else carries over automatically —
+    // a newly added StoreState field can no longer be silently reset to
+    // `undefined` by a forgotten line here.
     this.state = {
+      ...this.state,
       features,
       selection: nextSelection ?? this.state.selection,
       selectionAnchor:
@@ -738,53 +743,19 @@ export class KernelStore {
       undoDepth: this.kernel.undoDepth(),
       canRedo: this.kernel.canRedo(),
       redoDepth: this.kernel.redoDepth(),
-      nextOp: this.state.nextOp,
       // An empty document must show NO meshes immediately (ticket vy3t): the
       // mesher worker skips posting for a body-less doc, so the stale meshes
       // would otherwise linger (e.g. after Menu → New). Clear synchronously
       // when the kernel has no bodies; otherwise the worker rebuild updates.
       meshedBodies:
         this.kernel.bodyCount() === 0 ? [] : this.state.meshedBodies,
-      brepVersion: this.state.brepVersion,
-      measureMode: this.state.measureMode,
-      measureSelection: this.state.measureSelection,
-      filletMode: this.state.filletMode,
-      thickenMode: this.state.thickenMode,
-      sketchFilletRadius: this.state.sketchFilletRadius,
-      sketchChamferDistance: this.state.sketchChamferDistance,
-      sketchOffsetDistance: this.state.sketchOffsetDistance,
-      sketchPatternCount: this.state.sketchPatternCount,
-      sketchPatternSpacing: this.state.sketchPatternSpacing,
-      sketchPatternAngle: this.state.sketchPatternAngle,
-      sketchRotateAngle: this.state.sketchRotateAngle,
-      sketchSplineMode: this.state.sketchSplineMode,
-      sketchTextValue: this.state.sketchTextValue,
-      sketchTextHeight: this.state.sketchTextHeight,
-      sketchTextFontId: this.state.sketchTextFontId,
-      sketchTextFontReady: this.state.sketchTextFontReady,
       syncState: this.state.projectId ? "dirty" : "offline",
-      projectId: this.state.projectId,
-      sketchSession: this.state.sketchSession,
       variables: this.kernel.listVariables(),
-      referenceMesh: this.state.referenceMesh,
       sceneSize: this.kernel.sceneAabb().size as [number, number, number],
-      folders: this.state.folders,
-      visibleSketches: this.state.visibleSketches,
       transientError: null, // successful commit clears any transient error
       mateMode: false,
-      mateConnectorsHidden: this.state.mateConnectorsHidden,
-      assembly: this.state.assembly,
       ikMode: false,
-      gizmoMode: this.state.gizmoMode,
-      gizmoArmed: this.state.gizmoArmed,
-      gizmoDragSuppressed: this.state.gizmoDragSuppressed,
-      threemfStash: this.state.threemfStash,
-      loading: this.state.loading,
-      hiddenDatums: this.state.hiddenDatums,
-      selectedDatum: this.state.selectedDatum,
-      highlightedBodyIndex: this.state.highlightedBodyIndex,
       rollbackIndex: rbRaw < 0 ? features.length : rbRaw,
-      project: this.state.project,
       scriptTypes: this.snapshotScriptTypes(),
     };
     // Drop selection entries pointing at deleted features.
