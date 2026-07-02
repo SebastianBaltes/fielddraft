@@ -11,7 +11,6 @@
 package main
 
 import (
-	"crypto/rand"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
@@ -24,7 +23,6 @@ import (
 	"time"
 
 	"github.com/go-sql-driver/mysql"
-	"golang.org/x/crypto/argon2"
 )
 
 type sqlStore struct {
@@ -126,10 +124,7 @@ func (s *sqlStore) getBlob(ref string) ([]byte, error) {
 // ─── users & auth ───────────────────────────────────────────────
 
 func (s *sqlStore) CreateUser(email, displayName, password string, role Role) (*User, error) {
-	salt := make([]byte, 16)
-	rand.Read(salt)
-	hash := argon2.IDKey([]byte(password), salt, 1, 64*1024, 4, 32)
-
+	hash, salt := hashPassword(password)
 	u := &User{
 		ID:           newID(),
 		Email:        email,
@@ -137,7 +132,7 @@ func (s *sqlStore) CreateUser(email, displayName, password string, role Role) (*
 		Role:         role,
 		PasswordHash: hash,
 		Salt:         salt,
-		CreatedAt:    time.Now().UTC(),
+		CreatedAt:    now(),
 	}
 	_, err := s.db.Exec(
 		`INSERT INTO users (id, email, display_name, password_hash, salt, role, created_at)
@@ -175,8 +170,7 @@ func (s *sqlStore) AuthenticateUser(email, password string) (*User, error) {
 	if u == nil {
 		return nil, errNotFound
 	}
-	hash := argon2.IDKey([]byte(password), u.Salt, 1, 64*1024, 4, 32)
-	if !bytesEqual(hash, u.PasswordHash) {
+	if !verifyPassword(password, u.Salt, u.PasswordHash) {
 		return nil, errUnauthorized
 	}
 	// A banned user cannot authenticate (B3, §4.4).
@@ -197,9 +191,7 @@ func (s *sqlStore) GetUserByEmail(email string) *User {
 }
 
 func (s *sqlStore) UpdatePassword(userID, newPassword string) {
-	salt := make([]byte, 16)
-	rand.Read(salt)
-	hash := argon2.IDKey([]byte(newPassword), salt, 1, 64*1024, 4, 32)
+	hash, salt := hashPassword(newPassword)
 	if _, err := s.db.Exec(
 		`UPDATE users SET password_hash = ?, salt = ? WHERE id = ?`,
 		hash, salt, userID); err != nil {
@@ -268,7 +260,7 @@ func (s *sqlStore) CreateSession(userID string) *Session {
 	sess := &Session{
 		Token:   newID(),
 		UserID:  userID,
-		Expires: time.Now().UTC().Add(7 * 24 * time.Hour),
+		Expires: now().Add(sessionTTL),
 	}
 	if _, err := s.db.Exec(
 		`INSERT INTO sessions (token, user_id, expires_at) VALUES (?, ?, ?)`,
@@ -287,7 +279,7 @@ func (s *sqlStore) GetSession(token string) *Session {
 	if err != nil {
 		return nil
 	}
-	if time.Now().UTC().After(sess.Expires) {
+	if now().After(sess.Expires) {
 		s.DeleteSession(token)
 		return nil
 	}
@@ -306,7 +298,7 @@ func (s *sqlStore) CreateResetToken(userID string) string {
 	token := newID()
 	if _, err := s.db.Exec(
 		`INSERT INTO reset_tokens (token, user_id, expires_at) VALUES (?, ?, ?)`,
-		token, userID, time.Now().UTC().Add(1*time.Hour)); err != nil {
+		token, userID, now().Add(resetTokenTTL)); err != nil {
 		log.Printf("sqlStore: CreateResetToken: %v", err)
 		return ""
 	}
@@ -323,7 +315,7 @@ func (s *sqlStore) ConsumeResetToken(token string) (string, bool) {
 		return "", false
 	}
 	s.db.Exec(`DELETE FROM reset_tokens WHERE token = ?`, token)
-	if time.Now().UTC().After(expires) {
+	if now().After(expires) {
 		return "", false
 	}
 	return userID, true
@@ -339,7 +331,7 @@ func (s *sqlStore) CreateInvite(createdBy, inviteeName, inviteeEmail, message st
 		InviteeEmail: inviteeEmail,
 		Message:      message,
 		ExpiresAt:    expiresAt.UTC(),
-		CreatedAt:    time.Now().UTC(),
+		CreatedAt:    now(),
 	}
 	if _, err := s.db.Exec(
 		`INSERT INTO invites (token, created_by, invitee_name, invitee_email, message, expires_at, created_at)
@@ -414,23 +406,23 @@ func (s *sqlStore) ConsumeInvite(token, usedBy string) (*Invite, error) {
 		return nil, errInviteInvalid
 	}
 	inv.Message = message.String
-	if time.Now().UTC().After(inv.ExpiresAt) {
+	if now().After(inv.ExpiresAt) {
 		return nil, errInviteInvalid
 	}
 	if dbUsedBy.Valid {
 		return nil, errInviteUsed
 	}
-	now := time.Now().UTC()
+	usedAt := now()
 	if _, err := tx.Exec(
 		`UPDATE invites SET used_by = ?, used_at = ? WHERE token = ?`,
-		usedBy, now, token); err != nil {
+		usedBy, usedAt, token); err != nil {
 		return nil, err
 	}
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
 	inv.UsedBy = &usedBy
-	inv.UsedAt = &now
+	inv.UsedAt = &usedAt
 	return inv, nil
 }
 
@@ -452,15 +444,15 @@ func (s *sqlStore) CreateProject(ownerID, name string, doc json.RawMessage) *Pro
 		log.Printf("sqlStore: CreateProject putBlob: %v", err)
 		return nil
 	}
-	now := time.Now().UTC()
+	at := now()
 	p := &Project{
 		ID:         newID(),
 		OwnerID:    ownerID,
 		Name:       name,
 		Visibility: "private",
 		Document:   doc,
-		CreatedAt:  now,
-		UpdatedAt:  now,
+		CreatedAt:  at,
+		UpdatedAt:  at,
 	}
 	if _, err := s.db.Exec(
 		`INSERT INTO projects (id, owner_id, name, visibility, document_ref, created_at, updated_at)
@@ -536,7 +528,7 @@ func (s *sqlStore) UpdateProject(id, ownerID, name string, doc json.RawMessage, 
 		docRef = nullIfEmpty(ref)
 		p.Document = doc
 	}
-	p.UpdatedAt = time.Now().UTC()
+	p.UpdatedAt = now()
 
 	if doc != nil {
 		_, err := s.db.Exec(
@@ -632,7 +624,7 @@ func (s *sqlStore) CreateSnapshot(projectID string, doc json.RawMessage) *Snapsh
 		ID:        newID(),
 		ProjectID: projectID,
 		Document:  doc,
-		CreatedAt: time.Now().UTC(),
+		CreatedAt: now(),
 	}
 	if _, err := s.db.Exec(
 		`INSERT INTO snapshots (id, project_id, document_ref, created_at) VALUES (?, ?, ?, ?)`,
@@ -695,15 +687,15 @@ func (s *sqlStore) scanTicket(scan func(...any) error) *Ticket {
 }
 
 func (s *sqlStore) CreateTicket(authorID, title, body, category string) *Ticket {
-	now := time.Now().UTC()
+	at := now()
 	t := &Ticket{
 		ID:        newID(),
 		AuthorID:  authorID,
 		Title:     title,
 		Body:      body,
 		State:     StateTriage,
-		CreatedAt: now,
-		UpdatedAt: now,
+		CreatedAt: at,
+		UpdatedAt: at,
 	}
 	var cat any
 	if category != "" {
@@ -748,8 +740,10 @@ func (s *sqlStore) ListTickets(f TicketFilter) []*Ticket {
 		args = append(args, f.Category)
 	}
 	if f.Query != "" {
+		// escapeLike keeps the query a literal substring match — parity with the
+		// strings.Contains semantics of memStore/fileTicketStore.
 		q += ` AND (title LIKE ? OR body LIKE ?)`
-		like := "%" + f.Query + "%"
+		like := "%" + escapeLike(f.Query) + "%"
 		args = append(args, like, like)
 	}
 	// Visibility (§7.3): rejected tickets are visible only to admins or the
@@ -786,7 +780,7 @@ func (s *sqlStore) UpdateTicket(id, title, body string) *Ticket {
 	if body != "" {
 		t.Body = body
 	}
-	t.UpdatedAt = time.Now().UTC()
+	t.UpdatedAt = now()
 	if _, err := s.db.Exec(
 		`UPDATE tickets SET title = ?, body = ?, updated_at = ? WHERE id = ?`,
 		t.Title, t.Body, t.UpdatedAt, id); err != nil {
@@ -801,7 +795,7 @@ func (s *sqlStore) SetTicketCategory(id, category string) *Ticket {
 	if t == nil {
 		return nil
 	}
-	now := time.Now().UTC()
+	at := now()
 	var cat any
 	if category != "" {
 		cat = category
@@ -812,11 +806,11 @@ func (s *sqlStore) SetTicketCategory(id, category string) *Ticket {
 	}
 	if _, err := s.db.Exec(
 		`UPDATE tickets SET category = ?, updated_at = ? WHERE id = ?`,
-		cat, now, id); err != nil {
+		cat, at, id); err != nil {
 		log.Printf("sqlStore: SetTicketCategory: %v", err)
 		return nil
 	}
-	t.UpdatedAt = now
+	t.UpdatedAt = at
 	return t
 }
 
@@ -831,20 +825,17 @@ func (s *sqlStore) SetTicketState(id string, to TicketState) (*Ticket, error) {
 	if t == nil {
 		return nil, errTicketMissing
 	}
-	if err := validateTransition(t.State, to); err != nil {
+	audit, err := applyStateChange(t, to, now())
+	if err != nil {
 		return nil, err
 	}
-	from := t.State
-	now := time.Now().UTC()
 	if _, err := s.db.Exec(
 		`UPDATE tickets SET state = ?, updated_at = ? WHERE id = ?`,
-		string(to), now, id); err != nil {
+		string(t.State), t.UpdatedAt, id); err != nil {
 		log.Printf("sqlStore: SetTicketState: %v", err)
 		return nil, err
 	}
-	t.State = to
-	t.UpdatedAt = now
-	s.AddComment(id, AuthorSystem, nil, "state: "+string(from)+" → "+string(to), false)
+	s.AddComment(id, AuthorSystem, nil, audit, false)
 	return t, nil
 }
 
@@ -853,37 +844,26 @@ func (s *sqlStore) SetPOVerdict(id string, v POVerdict) (*Ticket, error) {
 	if t == nil {
 		return nil, errTicketMissing
 	}
-	if err := validateTransition(t.State, v.State); err != nil {
+	audit, err := applyPOVerdict(t, v, now())
+	if err != nil {
 		return nil, err
 	}
-	from := t.State
-	now := time.Now().UTC()
 	var visionFit any
-	if v.VisionFit != nil {
-		visionFit = *v.VisionFit
+	if t.POVisionFit != nil {
+		visionFit = *t.POVisionFit
 	}
 	var reason any
-	if v.Reason != "" {
-		reason = v.Reason
+	if t.POReason != nil {
+		reason = *t.POReason
 	}
 	if _, err := s.db.Exec(
 		`UPDATE tickets SET po_spam = ?, po_malicious = ?, po_vision_fit = ?,
 		 po_reason = ?, po_verdict_at = ?, state = ?, updated_at = ? WHERE id = ?`,
-		v.Spam, v.Malicious, visionFit, reason, now, string(v.State), now, id); err != nil {
+		t.POSpam, t.POMalicious, visionFit, reason, t.POVerdictAt, string(t.State), t.UpdatedAt, id); err != nil {
 		log.Printf("sqlStore: SetPOVerdict: %v", err)
 		return nil, err
 	}
-	t.POSpam = v.Spam
-	t.POMalicious = v.Malicious
-	t.POVisionFit = v.VisionFit
-	if v.Reason != "" {
-		r := v.Reason
-		t.POReason = &r
-	}
-	t.POVerdictAt = &now
-	t.State = v.State
-	t.UpdatedAt = now
-	s.AddComment(id, AuthorSystem, nil, "po verdict: "+string(from)+" → "+string(v.State), false)
+	s.AddComment(id, AuthorSystem, nil, audit, false)
 	return t, nil
 }
 
@@ -915,31 +895,27 @@ func (s *sqlStore) scanComment(scan func(...any) error) *TicketComment {
 }
 
 func (s *sqlStore) AddComment(ticketID string, authorType AuthorType, authorID *string, body string, internal bool) *TicketComment {
-	c := &TicketComment{
-		ID:         newID(),
-		TicketID:   ticketID,
-		AuthorType: authorType,
-		AuthorID:   authorID,
-		Internal:   internal,
-		Body:       body,
-		CreatedAt:  time.Now().UTC(),
-		// Only user comments need PO post-moderation; po/dev/system are inherently
-		// reviewed (B1, §4.2).
-		POReviewed: authorType != AuthorUser,
-	}
+	// The PO-review rule (only user comments need moderation) lives in newComment.
+	c := newComment(ticketID, authorType, authorID, body, internal, false)
+	return s.insertComment(c)
+}
+
+// insertComment persists a prepared comment row and bumps the ticket's
+// activity timestamp. Shared by AddComment and AddAgentComment.
+func (s *sqlStore) insertComment(c *TicketComment) *TicketComment {
 	var aid any
-	if authorID != nil {
-		aid = *authorID
+	if c.AuthorID != nil {
+		aid = *c.AuthorID
 	}
 	if _, err := s.db.Exec(
 		`INSERT INTO ticket_comments (id, ticket_id, author_type, author_id, internal, body, created_at, withheld, po_reviewed)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)`,
-		c.ID, c.TicketID, string(c.AuthorType), aid, c.Internal, c.Body, c.CreatedAt, c.POReviewed); err != nil {
-		log.Printf("sqlStore: AddComment: %v", err)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		c.ID, c.TicketID, string(c.AuthorType), aid, c.Internal, c.Body, c.CreatedAt, c.Withheld, c.POReviewed); err != nil {
+		log.Printf("sqlStore: insertComment: %v", err)
 		return nil
 	}
 	// Bump the ticket's activity timestamp.
-	s.db.Exec(`UPDATE tickets SET updated_at = ? WHERE id = ?`, c.CreatedAt, ticketID)
+	s.db.Exec(`UPDATE tickets SET updated_at = ? WHERE id = ?`, c.CreatedAt, c.TicketID)
 	return c
 }
 
@@ -1029,7 +1005,7 @@ func (s *sqlStore) AddArtifact(ticketID string, kind ArtifactKind, name, mime st
 		Mime:      mime,
 		Size:      int64(len(data)),
 		Name:      name,
-		CreatedAt: time.Now().UTC(),
+		CreatedAt: now(),
 	}
 	if _, err := s.db.Exec(
 		`INSERT INTO ticket_artifacts (id, ticket_id, kind, blob_ref, mime, size, name, created_at)
@@ -1117,7 +1093,7 @@ func (s *sqlStore) CreateWorkOrder(ticketID string, payload json.RawMessage) (*W
 	wo := &WorkOrder{
 		TicketID:  ticketID,
 		Payload:   payload,
-		CreatedAt: time.Now().UTC(),
+		CreatedAt: now(),
 	}
 	if _, err := s.db.Exec(
 		`INSERT INTO work_orders (ticket_id, payload, created_at) VALUES (?, ?, ?)`,
@@ -1137,11 +1113,10 @@ func (s *sqlStore) GetWorkOrder(ticketID string) *WorkOrder {
 }
 
 func (s *sqlStore) ClaimWorkOrder(ticketID string) (*WorkOrder, error) {
-	now := time.Now().UTC()
 	// Atomic claim: only sets picked_up_at if still NULL.
 	res, err := s.db.Exec(
 		`UPDATE work_orders SET picked_up_at = ? WHERE ticket_id = ? AND picked_up_at IS NULL`,
-		now, ticketID)
+		now(), ticketID)
 	if err != nil {
 		log.Printf("sqlStore: ClaimWorkOrder: %v", err)
 		return nil, err
@@ -1160,18 +1135,28 @@ func (s *sqlStore) CompleteWorkOrder(ticketID, deployID string) (*WorkOrder, err
 	if s.GetWorkOrder(ticketID) == nil {
 		return nil, errWorkOrderMissing
 	}
-	now := time.Now().UTC()
+	// An unknown deploy link is a clean 404 — parity with memStore/fileTicketStore
+	// (previously the FK violation surfaced as a 500 here).
+	if deployID != "" && !s.hasDeploy(deployID) {
+		return nil, errDeployMissing
+	}
 	var did any
 	if deployID != "" {
 		did = deployID
 	}
 	if _, err := s.db.Exec(
 		`UPDATE work_orders SET completed_at = ?, deploy_id = COALESCE(?, deploy_id) WHERE ticket_id = ?`,
-		now, did, ticketID); err != nil {
+		now(), did, ticketID); err != nil {
 		log.Printf("sqlStore: CompleteWorkOrder: %v", err)
 		return nil, err
 	}
 	return s.GetWorkOrder(ticketID), nil
+}
+
+// hasDeploy reports whether a deploy row with the given id exists.
+func (s *sqlStore) hasDeploy(id string) bool {
+	var one int
+	return s.db.QueryRow(`SELECT 1 FROM deploys WHERE id = ?`, id).Scan(&one) == nil
 }
 
 // ─── deploys (§10.3) ────────────────────────────────────────────
@@ -1205,7 +1190,7 @@ func (s *sqlStore) CreateDeploy(version, gitSHA string, ticketIDs []string, stat
 		GitSHA:     gitSHA,
 		TicketIDs:  ticketIDs,
 		Status:     status,
-		DeployedAt: time.Now().UTC(),
+		DeployedAt: now(),
 	}
 	idsJSON, err := json.Marshal(ticketIDs)
 	if err != nil {
@@ -1240,26 +1225,9 @@ func (s *sqlStore) ListDeploys() []*Deploy {
 // ─── agent comments ─────────────────────────────────────────────
 
 func (s *sqlStore) AddAgentComment(ticketID string, authorType AuthorType, body string, internal, withheld bool) *TicketComment {
-	c := &TicketComment{
-		ID:         newID(),
-		TicketID:   ticketID,
-		AuthorType: authorType,
-		AuthorID:   nil, // po/dev/system have no user id
-		Internal:   internal,
-		Body:       body,
-		CreatedAt:  time.Now().UTC(),
-		Withheld:   withheld,
-		POReviewed: true, // po/dev are authored by the agents — inherently reviewed
-	}
-	if _, err := s.db.Exec(
-		`INSERT INTO ticket_comments (id, ticket_id, author_type, author_id, internal, body, created_at, withheld, po_reviewed)
-		 VALUES (?, ?, ?, NULL, ?, ?, ?, ?, 1)`,
-		c.ID, c.TicketID, string(c.AuthorType), c.Internal, c.Body, c.CreatedAt, c.Withheld); err != nil {
-		log.Printf("sqlStore: AddAgentComment: %v", err)
-		return nil
-	}
-	s.db.Exec(`UPDATE tickets SET updated_at = ? WHERE id = ?`, c.CreatedAt, ticketID)
-	return c
+	// po/dev/system have no user id and are inherently reviewed (newComment rule).
+	c := newComment(ticketID, authorType, nil, body, internal, withheld)
+	return s.insertComment(c)
 }
 
 // ListAcceptedWithOpenWorkOrder returns accepted tickets that still carry an
@@ -1314,7 +1282,7 @@ func (s *sqlStore) CreateAdminAlert(kind AlertKind, ticketID *string, detail str
 		ID:        newID(),
 		Kind:      kind,
 		Detail:    detail,
-		CreatedAt: time.Now().UTC(),
+		CreatedAt: now(),
 	}
 	var tid any
 	if ticketID != nil {

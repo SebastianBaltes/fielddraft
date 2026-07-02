@@ -6,15 +6,12 @@
 package main
 
 import (
-	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"strings"
 	"sync"
 	"time"
-
-	"golang.org/x/crypto/argon2"
 )
 
 type memStore struct {
@@ -70,11 +67,14 @@ func (s *memStore) CreateUser(email, displayName, password string, role Role) (*
 	if _, exists := s.emails[email]; exists {
 		return nil, errConflict
 	}
+	user := s.createUserLocked(email, displayName, password, role)
+	return user, nil
+}
 
-	salt := make([]byte, 16)
-	rand.Read(salt)
-	hash := argon2.IDKey([]byte(password), salt, 1, 64*1024, 4, 32)
-
+// createUserLocked builds and stores a user. Caller holds the write lock and
+// has already checked the email is free.
+func (s *memStore) createUserLocked(email, displayName, password string, role Role) *User {
+	hash, salt := hashPassword(password)
 	id := newID()
 	user := &User{
 		ID:           id,
@@ -83,12 +83,12 @@ func (s *memStore) CreateUser(email, displayName, password string, role Role) (*
 		Role:         role,
 		PasswordHash: hash,
 		Salt:         salt,
-		CreatedAt:    time.Now(),
+		CreatedAt:    now(),
 	}
 	s.users[id] = user
 	s.emails[email] = id
 	s.userSeq = append(s.userSeq, id)
-	return user, nil
+	return user
 }
 
 func (s *memStore) AuthenticateUser(email, password string) (*User, error) {
@@ -100,8 +100,7 @@ func (s *memStore) AuthenticateUser(email, password string) (*User, error) {
 		return nil, errNotFound
 	}
 	user := s.users[uid]
-	hash := argon2.IDKey([]byte(password), user.Salt, 1, 64*1024, 4, 32)
-	if !bytesEqual(hash, user.PasswordHash) {
+	if !verifyPassword(password, user.Salt, user.PasswordHash) {
 		return nil, errUnauthorized
 	}
 	// A banned user cannot authenticate (B3, §4.4).
@@ -134,10 +133,7 @@ func (s *memStore) UpdatePassword(userID, newPassword string) {
 	if !ok {
 		return
 	}
-	salt := make([]byte, 16)
-	rand.Read(salt)
-	user.PasswordHash = argon2.IDKey([]byte(newPassword), salt, 1, 64*1024, 4, 32)
-	user.Salt = salt
+	user.PasswordHash, user.Salt = hashPassword(newPassword)
 }
 
 func (s *memStore) HasAdmin() bool {
@@ -217,7 +213,7 @@ func (s *memStore) CreateResetToken(userID string) string {
 	s.resetTokens[token] = &ResetToken{
 		Token:   token,
 		UserID:  userID,
-		Expires: time.Now().Add(1 * time.Hour),
+		Expires: now().Add(resetTokenTTL),
 	}
 	return token
 }
@@ -226,7 +222,7 @@ func (s *memStore) ConsumeResetToken(token string) (string, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	rt, ok := s.resetTokens[token]
-	if !ok || time.Now().After(rt.Expires) {
+	if !ok || now().After(rt.Expires) {
 		delete(s.resetTokens, token)
 		return "", false
 	}
@@ -246,7 +242,7 @@ func (s *memStore) CreateInvite(createdBy, inviteeName, inviteeEmail, message st
 		InviteeEmail: inviteeEmail,
 		Message:      message,
 		ExpiresAt:    expiresAt,
-		CreatedAt:    time.Now(),
+		CreatedAt:    now(),
 	}
 	s.invites[inv.Token] = inv
 	return inv
@@ -271,16 +267,21 @@ func (s *memStore) ListInvites() []*Invite {
 func (s *memStore) ConsumeInvite(token, usedBy string) (*Invite, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.consumeInviteLocked(token, usedBy)
+}
+
+// consumeInviteLocked burns a single-use invite. Caller holds the write lock.
+func (s *memStore) consumeInviteLocked(token, usedBy string) (*Invite, error) {
 	inv, ok := s.invites[token]
-	if !ok || time.Now().After(inv.ExpiresAt) {
+	if !ok || now().After(inv.ExpiresAt) {
 		return nil, errInviteInvalid
 	}
 	if inv.UsedBy != nil {
 		return nil, errInviteUsed
 	}
-	now := time.Now()
+	usedAt := now()
 	inv.UsedBy = &usedBy
-	inv.UsedAt = &now
+	inv.UsedAt = &usedAt
 	return inv, nil
 }
 
@@ -315,7 +316,7 @@ func (s *memStore) CreateSnapshot(projectID string, doc json.RawMessage) *Snapsh
 		ID:        newID(),
 		ProjectID: projectID,
 		Document:  doc,
-		CreatedAt: time.Now(),
+		CreatedAt: now(),
 	}
 	s.snapshots[snap.ID] = snap
 	return snap
@@ -337,7 +338,7 @@ func (s *memStore) CreateSession(userID string) *Session {
 	sess := &Session{
 		Token:   token,
 		UserID:  userID,
-		Expires: time.Now().Add(7 * 24 * time.Hour),
+		Expires: now().Add(sessionTTL),
 	}
 	s.sessions[token] = sess
 	return sess
@@ -348,7 +349,7 @@ func (s *memStore) GetSession(token string) *Session {
 	defer s.mu.RUnlock()
 
 	sess, ok := s.sessions[token]
-	if !ok || time.Now().After(sess.Expires) {
+	if !ok || now().After(sess.Expires) {
 		return nil
 	}
 	return sess
@@ -367,15 +368,15 @@ func (s *memStore) CreateProject(ownerID, name string, doc json.RawMessage) *Pro
 	defer s.mu.Unlock()
 
 	id := newID()
-	now := time.Now()
+	at := now()
 	p := &Project{
 		ID:         id,
 		OwnerID:    ownerID,
 		Name:       name,
 		Visibility: "private",
 		Document:   doc,
-		UpdatedAt:  now,
-		CreatedAt:  now,
+		UpdatedAt:  at,
+		CreatedAt:  at,
 	}
 	s.projects[id] = p
 	return p
@@ -422,7 +423,7 @@ func (s *memStore) UpdateProject(id, ownerID, name string, doc json.RawMessage, 
 	if visibility == "public" || visibility == "private" {
 		p.Visibility = visibility
 	}
-	p.UpdatedAt = time.Now()
+	p.UpdatedAt = now()
 	return p
 }
 
@@ -465,15 +466,15 @@ func cloneTicket(t *Ticket) *Ticket {
 func (s *memStore) CreateTicket(authorID, title, body, category string) *Ticket {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	now := time.Now().UTC()
+	at := now()
 	t := &Ticket{
 		ID:        newID(),
 		AuthorID:  authorID,
 		Title:     title,
 		Body:      body,
 		State:     StateTriage,
-		CreatedAt: now,
-		UpdatedAt: now,
+		CreatedAt: at,
+		UpdatedAt: at,
 	}
 	if category != "" {
 		c := category
@@ -546,7 +547,7 @@ func (s *memStore) UpdateTicket(id, title, body string) *Ticket {
 	if body != "" {
 		t.Body = body
 	}
-	t.UpdatedAt = time.Now().UTC()
+	t.UpdatedAt = now()
 	return cloneTicket(t)
 }
 
@@ -563,7 +564,7 @@ func (s *memStore) SetTicketCategory(id, category string) *Ticket {
 	} else {
 		t.Category = nil
 	}
-	t.UpdatedAt = time.Now().UTC()
+	t.UpdatedAt = now()
 	return cloneTicket(t)
 }
 
@@ -574,16 +575,14 @@ func (s *memStore) SetTicketState(id string, to TicketState) (*Ticket, error) {
 		s.mu.Unlock()
 		return nil, errTicketMissing
 	}
-	if err := validateTransition(t.State, to); err != nil {
+	audit, err := applyStateChange(t, to, now())
+	if err != nil {
 		s.mu.Unlock()
 		return nil, err
 	}
-	from := t.State
-	t.State = to
-	t.UpdatedAt = time.Now().UTC()
 	out := cloneTicket(t)
 	s.mu.Unlock()
-	s.appendSystemComment(id, "state: "+string(from)+" → "+string(to))
+	s.appendSystemComment(id, audit)
 	return out, nil
 }
 
@@ -594,25 +593,14 @@ func (s *memStore) SetPOVerdict(id string, v POVerdict) (*Ticket, error) {
 		s.mu.Unlock()
 		return nil, errTicketMissing
 	}
-	if err := validateTransition(t.State, v.State); err != nil {
+	audit, err := applyPOVerdict(t, v, now())
+	if err != nil {
 		s.mu.Unlock()
 		return nil, err
 	}
-	from := t.State
-	now := time.Now().UTC()
-	t.POSpam = v.Spam
-	t.POMalicious = v.Malicious
-	t.POVisionFit = v.VisionFit
-	if v.Reason != "" {
-		r := v.Reason
-		t.POReason = &r
-	}
-	t.POVerdictAt = &now
-	t.State = v.State
-	t.UpdatedAt = now
 	out := cloneTicket(t)
 	s.mu.Unlock()
-	s.appendSystemComment(id, "po verdict: "+string(from)+" → "+string(v.State))
+	s.appendSystemComment(id, audit)
 	return out, nil
 }
 
@@ -640,18 +628,8 @@ func (s *memStore) AddComment(ticketID string, authorType AuthorType, authorID *
 	if _, ok := s.tickets[ticketID]; !ok {
 		return nil
 	}
-	c := &TicketComment{
-		ID:         newID(),
-		TicketID:   ticketID,
-		AuthorType: authorType,
-		AuthorID:   authorID,
-		Internal:   internal,
-		Body:       body,
-		CreatedAt:  time.Now().UTC(),
-		// Only user comments need PO post-moderation; po/dev/system are inherently
-		// reviewed (B1, §4.2).
-		POReviewed: authorType != AuthorUser,
-	}
+	// The PO-review rule (only user comments need moderation) lives in newComment.
+	c := newComment(ticketID, authorType, authorID, body, internal, false)
 	s.comments[ticketID] = append(s.comments[ticketID], c)
 	if t := s.tickets[ticketID]; t != nil {
 		t.UpdatedAt = c.CreatedAt
@@ -756,7 +734,7 @@ func (s *memStore) AddArtifact(ticketID string, kind ArtifactKind, name, mime st
 		Mime:      mime,
 		Size:      int64(len(data)),
 		Name:      name,
-		CreatedAt: time.Now().UTC(),
+		CreatedAt: now(),
 	}
 	s.artifacts[ticketID] = append(s.artifacts[ticketID], a)
 	return a
@@ -804,7 +782,7 @@ func (s *memStore) CreateWorkOrder(ticketID string, payload json.RawMessage) (*W
 	wo := &WorkOrder{
 		TicketID:  ticketID,
 		Payload:   append(json.RawMessage(nil), payload...),
-		CreatedAt: time.Now().UTC(),
+		CreatedAt: now(),
 	}
 	s.workOrders[ticketID] = wo
 	return cloneWorkOrder(wo), nil
@@ -830,8 +808,8 @@ func (s *memStore) ClaimWorkOrder(ticketID string) (*WorkOrder, error) {
 	if wo.PickedUpAt != nil {
 		return nil, errWorkOrderClaimed
 	}
-	now := time.Now().UTC()
-	wo.PickedUpAt = &now
+	at := now()
+	wo.PickedUpAt = &at
 	return cloneWorkOrder(wo), nil
 }
 
@@ -847,8 +825,8 @@ func (s *memStore) CompleteWorkOrder(ticketID, deployID string) (*WorkOrder, err
 			return nil, errDeployMissing
 		}
 	}
-	now := time.Now().UTC()
-	wo.CompletedAt = &now
+	at := now()
+	wo.CompletedAt = &at
 	if deployID != "" {
 		d := deployID
 		wo.DeployID = &d
@@ -873,7 +851,7 @@ func (s *memStore) CreateDeploy(version, gitSHA string, ticketIDs []string, stat
 		GitSHA:     gitSHA,
 		TicketIDs:  append([]string(nil), ticketIDs...),
 		Status:     status,
-		DeployedAt: time.Now().UTC(),
+		DeployedAt: now(),
 	}
 	s.deploys[d.ID] = d
 	s.deploySeq = append(s.deploySeq, d.ID)
@@ -901,17 +879,8 @@ func (s *memStore) AddAgentComment(ticketID string, authorType AuthorType, body 
 	if _, ok := s.tickets[ticketID]; !ok {
 		return nil
 	}
-	c := &TicketComment{
-		ID:         newID(),
-		TicketID:   ticketID,
-		AuthorType: authorType,
-		AuthorID:   nil, // po/dev/system have no user id
-		Internal:   internal,
-		Body:       body,
-		CreatedAt:  time.Now().UTC(),
-		Withheld:   withheld,
-		POReviewed: true, // po/dev are authored by the agents — inherently reviewed
-	}
+	// po/dev/system have no user id and are inherently reviewed (newComment rule).
+	c := newComment(ticketID, authorType, nil, body, internal, withheld)
 	s.comments[ticketID] = append(s.comments[ticketID], c)
 	if t := s.tickets[ticketID]; t != nil {
 		t.UpdatedAt = c.CreatedAt
@@ -967,7 +936,7 @@ func (s *memStore) CreateAdminAlert(kind AlertKind, ticketID *string, detail str
 		ID:        newID(),
 		Kind:      kind,
 		Detail:    detail,
-		CreatedAt: time.Now().UTC(),
+		CreatedAt: now(),
 	}
 	if ticketID != nil {
 		tid := *ticketID
