@@ -11,12 +11,9 @@ import {
   deactivate as deactivateQueryPicker,
 } from "./queryPickerBridge";
 import { isTextEntryTarget } from "./keyboardTarget";
-import {
-  SettingsMenu,
-  loadSettings,
-  WorkspaceUnitsContext,
-} from "./SettingsMenu";
-import type { SettingsState } from "./SettingsMenu";
+import { SettingsMenu } from "./SettingsMenu";
+import { loadSettings, WorkspaceUnitsContext } from "./settings";
+import type { SettingsState } from "./settings";
 import { ProjectTitle } from "./ProjectTitle";
 import { CONTROLS_PRESETS, viewShortcutRow } from "./controlsPreset";
 import { useAccount, type UseAccountOptions } from "./account/useAccount";

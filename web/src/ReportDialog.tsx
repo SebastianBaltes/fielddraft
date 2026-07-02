@@ -11,7 +11,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import type { KernelStore } from "./store";
-import { loadSettings } from "./SettingsMenu";
+import { loadSettings } from "./settings";
 import {
   bytesToBase64,
   captureWindow,

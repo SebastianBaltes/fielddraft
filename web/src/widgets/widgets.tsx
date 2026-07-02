@@ -41,7 +41,7 @@ import {
   subscribe as subscribeQueryPicker,
   deactivate as deactivateQueryPicker,
 } from "../queryPickerBridge";
-import { useWorkspaceUnits, decimalPlaces } from "../SettingsMenu";
+import { useWorkspaceUnits, decimalPlaces } from "../settings";
 import { LENGTH_TO_MM, isLengthUnit } from "../lengthUnits";
 import { looksLikeFormula } from "../variableInput";
 import { useKernelStore } from "../store";

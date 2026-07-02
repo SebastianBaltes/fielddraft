@@ -51,7 +51,7 @@ import {
 } from "./sketchSession";
 import { measuredLength, parseField } from "./sketchLiveInput";
 import { isConstraintTool } from "./sketchConstraints";
-import { useWorkspaceUnits, decimalPlaces } from "./SettingsMenu";
+import { useWorkspaceUnits, decimalPlaces } from "./settings";
 import {
   formatSketchLength,
   getSketchLengthUnit,

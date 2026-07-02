@@ -2,7 +2,7 @@ import { useMemo } from "react";
 import { useKernelStore } from "./store";
 import type { PickedElement } from "./elementQuery";
 import { formatLength } from "./lengthUnits";
-import { useWorkspaceUnits, decimalPlaces } from "./SettingsMenu";
+import { useWorkspaceUnits, decimalPlaces } from "./settings";
 import { resolveMeasureGeom } from "./measureResolve";
 import {
   measureSingle,

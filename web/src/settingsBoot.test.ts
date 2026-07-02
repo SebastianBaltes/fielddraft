@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import { loadSettings, setBootSettings } from "./SettingsMenu";
+import { loadSettings, setBootSettings } from "./settings";
 
 // The ClaudeDraft "open ticket" deep-link stages a settings.json snapshot as a
 // ONE-SHOT, in-memory override of the first loadSettings() (React mount) —
