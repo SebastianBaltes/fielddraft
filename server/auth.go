@@ -63,10 +63,19 @@ func (s *Server) requireAuth(r *http.Request) (*Session, *User) {
 	return sess, user
 }
 
-// requireAdmin resolves an authenticated admin user, or nil.
-func (s *Server) requireAdmin(r *http.Request) *User {
+// requireAdmin is THE admin gate: it resolves an authenticated admin and, on
+// failure, writes the correct error — 401 when there is no (valid) session at
+// all, 403 when the session user is not an admin. Returns nil after writing
+// the response on failure. (Formerly split across requireAdmin /
+// requireAdminOr401 with diverging 403-only semantics.)
+func (s *Server) requireAdmin(w http.ResponseWriter, r *http.Request) *User {
 	_, user := s.requireAuth(r)
-	if user == nil || user.Role != RoleAdmin {
+	if user == nil {
+		writeErr(w, http.StatusUnauthorized, "not authenticated")
+		return nil
+	}
+	if user.Role != RoleAdmin {
+		writeErr(w, http.StatusForbidden, "admin only")
 		return nil
 	}
 	return user
@@ -137,9 +146,8 @@ func toInviteResponse(inv *Invite, now time.Time) inviteResponse {
 }
 
 func (s *Server) handleCreateInvite(w http.ResponseWriter, r *http.Request) {
-	admin := s.requireAdmin(r)
+	admin := s.requireAdmin(w, r)
 	if admin == nil {
-		http.Error(w, `{"error":"admin only"}`, http.StatusForbidden)
 		return
 	}
 	var body struct {
@@ -159,7 +167,7 @@ func (s *Server) handleCreateInvite(w http.ResponseWriter, r *http.Request) {
 	}
 	inv := s.store.CreateInvite(admin.ID, body.InviteeName, body.InviteeEmail, body.Message, expires)
 	if inv == nil {
-		http.Error(w, `{"error":"could not create invite"}`, http.StatusInternalServerError)
+		writeErr(w, http.StatusInternalServerError, "could not create invite")
 		return
 	}
 	w.WriteHeader(http.StatusCreated)
@@ -167,8 +175,7 @@ func (s *Server) handleCreateInvite(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleListInvites(w http.ResponseWriter, r *http.Request) {
-	if s.requireAdmin(r) == nil {
-		http.Error(w, `{"error":"admin only"}`, http.StatusForbidden)
+	if s.requireAdmin(w, r) == nil {
 		return
 	}
 	now := time.Now().UTC()
@@ -181,38 +188,21 @@ func (s *Server) handleListInvites(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleDeleteInvite(w http.ResponseWriter, r *http.Request) {
-	if s.requireAdmin(r) == nil {
-		http.Error(w, `{"error":"admin only"}`, http.StatusForbidden)
+	if s.requireAdmin(w, r) == nil {
 		return
 	}
 	token := r.PathValue("token")
 	if !s.store.DeleteInvite(token) {
-		http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
+		writeErr(w, http.StatusNotFound, "not found")
 		return
 	}
 	w.Write([]byte(`{"ok":true}`))
 }
 
-// requireAdminOr401 resolves an authenticated admin, writing the correct error
-// for the failure: 401 when there is no session at all, 403 when the session is
-// a non-admin user. Returns nil (and has written the response) on failure.
-func (s *Server) requireAdminOr401(w http.ResponseWriter, r *http.Request) *User {
-	_, user := s.requireAuth(r)
-	if user == nil {
-		http.Error(w, `{"error":"not authenticated"}`, http.StatusUnauthorized)
-		return nil
-	}
-	if user.Role != RoleAdmin {
-		http.Error(w, `{"error":"admin only"}`, http.StatusForbidden)
-		return nil
-	}
-	return user
-}
-
 // ─── admin alerts (B2, §4.4 admin-awareness) ────────────────────
 
 func (s *Server) handleListAdminAlerts(w http.ResponseWriter, r *http.Request) {
-	if s.requireAdminOr401(w, r) == nil {
+	if s.requireAdmin(w, r) == nil {
 		return
 	}
 	unseenOnly := r.URL.Query().Get("unseen") == "1"
@@ -224,11 +214,11 @@ func (s *Server) handleListAdminAlerts(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleMarkAdminAlertSeen(w http.ResponseWriter, r *http.Request) {
-	if s.requireAdminOr401(w, r) == nil {
+	if s.requireAdmin(w, r) == nil {
 		return
 	}
 	if !s.store.MarkAdminAlertSeen(r.PathValue("id")) {
-		http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
+		writeErr(w, http.StatusNotFound, "not found")
 		return
 	}
 	w.Write([]byte(`{"ok":true}`))
@@ -247,7 +237,7 @@ type adminUser struct {
 }
 
 func (s *Server) handleListUsers(w http.ResponseWriter, r *http.Request) {
-	if s.requireAdminOr401(w, r) == nil {
+	if s.requireAdmin(w, r) == nil {
 		return
 	}
 	users := s.store.ListUsers()
@@ -266,25 +256,25 @@ func (s *Server) handleListUsers(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleBanUser(w http.ResponseWriter, r *http.Request) {
-	admin := s.requireAdminOr401(w, r)
+	admin := s.requireAdmin(w, r)
 	if admin == nil {
 		return
 	}
 	id := r.PathValue("id")
 	target := s.store.GetUser(id)
 	if target == nil {
-		http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
+		writeErr(w, http.StatusNotFound, "not found")
 		return
 	}
 	// Never ban the last remaining admin (§4.4: admin keeps control). The guard
 	// counts admins OTHER than the target; banning is refused if none remain.
 	if target.Role == RoleAdmin && s.store.AdminCount(target.ID) == 0 {
-		http.Error(w, `{"error":"cannot ban the last admin"}`, http.StatusForbidden)
+		writeErr(w, http.StatusForbidden, "cannot ban the last admin")
 		return
 	}
 	updated := s.store.SetUserDisabled(id, true)
 	if updated == nil {
-		http.Error(w, `{"error":"could not ban user"}`, http.StatusInternalServerError)
+		writeErr(w, http.StatusInternalServerError, "could not ban user")
 		return
 	}
 	// Invalidate every session the banned user holds (§4.4).
@@ -294,17 +284,17 @@ func (s *Server) handleBanUser(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleUnbanUser(w http.ResponseWriter, r *http.Request) {
-	if s.requireAdminOr401(w, r) == nil {
+	if s.requireAdmin(w, r) == nil {
 		return
 	}
 	id := r.PathValue("id")
 	if s.store.GetUser(id) == nil {
-		http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
+		writeErr(w, http.StatusNotFound, "not found")
 		return
 	}
 	updated := s.store.SetUserDisabled(id, false)
 	if updated == nil {
-		http.Error(w, `{"error":"could not unban user"}`, http.StatusInternalServerError)
+		writeErr(w, http.StatusInternalServerError, "could not unban user")
 		return
 	}
 	json.NewEncoder(w).Encode(updated)

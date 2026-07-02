@@ -425,6 +425,20 @@ func TestDeployRoundTrip(t *testing.T) {
 	if resp.StatusCode != http.StatusForbidden {
 		t.Fatalf("user list deploys: got %d, want 403", resp.StatusCode)
 	}
+
+	// A guest with NO credentials at all is unauthenticated → 401 (not 403).
+	resp = e.agentReq(t, "GET", "/api/deploys", "", "", nil)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("guest list deploys: got %d, want 401", resp.StatusCode)
+	}
+
+	// A valid PO token is authenticated but wrong-scope → 403.
+	resp = e.agentReq(t, "GET", "/api/deploys", testPOToken, "", nil)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("po token list deploys: got %d, want 403", resp.StatusCode)
+	}
 }
 
 // ─── agent-comment + agent-state ────────────────────────────────

@@ -173,6 +173,30 @@ func TestRateLimiterRejects(t *testing.T) {
 	}
 }
 
+// TestWriteErrEscapesJSON — writeErr must produce valid JSON even when the
+// message contains quotes/backslashes (the old hand-concatenation broke out of
+// the JSON string), and must keep the application/json content type.
+func TestWriteErrEscapesJSON(t *testing.T) {
+	rec := httptest.NewRecorder()
+	msg := `boom "quote" and \backslash`
+	writeErr(rec, http.StatusBadRequest, msg)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rec.Code)
+	}
+	if ct := rec.Header().Get("Content-Type"); ct != "application/json" {
+		t.Fatalf("content-type = %q, want application/json", ct)
+	}
+	var body struct {
+		Error string `json:"error"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("invalid JSON body %q: %v", rec.Body.String(), err)
+	}
+	if body.Error != msg {
+		t.Fatalf("error = %q, want %q", body.Error, msg)
+	}
+}
+
 // TestRateLimiterEviction — buckets idle for bucketIdleTTL are purged on
 // access; an active bucket survives the sweep.
 func TestRateLimiterEviction(t *testing.T) {

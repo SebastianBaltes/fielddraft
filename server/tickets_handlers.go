@@ -48,12 +48,12 @@ type createTicketRequest struct {
 func (s *Server) handleCreateTicket(w http.ResponseWriter, r *http.Request) {
 	_, user := s.requireAuth(r)
 	if user == nil {
-		http.Error(w, `{"error":"not authenticated"}`, http.StatusUnauthorized)
+		writeErr(w, http.StatusUnauthorized, "not authenticated")
 		return
 	}
 	var req createTicketRequest
 	if err := json.NewDecoder(io.LimitReader(r.Body, maxTicketBytes)).Decode(&req); err != nil {
-		http.Error(w, `{"error":"invalid JSON"}`, http.StatusBadRequest)
+		writeErr(w, http.StatusBadRequest, "invalid JSON")
 		return
 	}
 
@@ -65,20 +65,20 @@ func (s *Server) handleCreateTicket(w http.ResponseWriter, r *http.Request) {
 		body = req.Description
 	}
 	if strings.TrimSpace(body) == "" {
-		http.Error(w, `{"error":"body or description required"}`, http.StatusBadRequest)
+		writeErr(w, http.StatusBadRequest, "body or description required")
 		return
 	}
 	if title == "" {
 		title = ticketHeading("", body)
 	}
 	if !validCategory(req.Category) {
-		http.Error(w, `{"error":"invalid category"}`, http.StatusBadRequest)
+		writeErr(w, http.StatusBadRequest, "invalid category")
 		return
 	}
 
 	t := s.tickets.CreateTicket(user.ID, title, body, req.Category)
 	if t == nil {
-		http.Error(w, `{"error":"could not create ticket"}`, http.StatusInternalServerError)
+		writeErr(w, http.StatusInternalServerError, "could not create ticket")
 		return
 	}
 
@@ -155,7 +155,7 @@ func isJSONPresent(raw json.RawMessage) bool {
 func (s *Server) handleListTickets(w http.ResponseWriter, r *http.Request) {
 	_, user := s.requireAuth(r)
 	if user == nil {
-		http.Error(w, `{"error":"not authenticated"}`, http.StatusUnauthorized)
+		writeErr(w, http.StatusUnauthorized, "not authenticated")
 		return
 	}
 	q := r.URL.Query()
@@ -185,18 +185,18 @@ func (s *Server) handleListTickets(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleGetTicket(w http.ResponseWriter, r *http.Request) {
 	_, user := s.requireAuth(r)
 	if user == nil {
-		http.Error(w, `{"error":"not authenticated"}`, http.StatusUnauthorized)
+		writeErr(w, http.StatusUnauthorized, "not authenticated")
 		return
 	}
 	t := s.tickets.GetTicket(r.PathValue("id"))
 	if t == nil {
-		http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
+		writeErr(w, http.StatusNotFound, "not found")
 		return
 	}
 	isAdmin := user.Role == RoleAdmin
 	// Rejected tickets are visible only to admins or the author (§7.3).
 	if isRejected(t.State) && !isAdmin && t.AuthorID != user.ID {
-		http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
+		writeErr(w, http.StatusNotFound, "not found")
 		return
 	}
 	json.NewEncoder(w).Encode(ticketDetail(t, user, isAdmin))
@@ -207,19 +207,19 @@ func (s *Server) handleGetTicket(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handlePatchTicket(w http.ResponseWriter, r *http.Request) {
 	_, user := s.requireAuth(r)
 	if user == nil {
-		http.Error(w, `{"error":"not authenticated"}`, http.StatusUnauthorized)
+		writeErr(w, http.StatusUnauthorized, "not authenticated")
 		return
 	}
 	id := r.PathValue("id")
 	t := s.tickets.GetTicket(id)
 	if t == nil {
-		http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
+		writeErr(w, http.StatusNotFound, "not found")
 		return
 	}
 	isAdmin := user.Role == RoleAdmin
 	isAuthor := t.AuthorID == user.ID
 	if !isAdmin && !isAuthor {
-		http.Error(w, `{"error":"forbidden"}`, http.StatusForbidden)
+		writeErr(w, http.StatusForbidden, "forbidden")
 		return
 	}
 
@@ -229,7 +229,7 @@ func (s *Server) handlePatchTicket(w http.ResponseWriter, r *http.Request) {
 		State *string `json:"state"`
 	}
 	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&body); err != nil {
-		http.Error(w, `{"error":"invalid JSON"}`, http.StatusBadRequest)
+		writeErr(w, http.StatusBadRequest, "invalid JSON")
 		return
 	}
 
@@ -243,7 +243,7 @@ func (s *Server) handlePatchTicket(w http.ResponseWriter, r *http.Request) {
 			newBody = *body.Body
 		}
 		if s.tickets.UpdateTicket(id, newTitle, newBody) == nil {
-			http.Error(w, `{"error":"could not update ticket"}`, http.StatusInternalServerError)
+			writeErr(w, http.StatusInternalServerError, "could not update ticket")
 			return
 		}
 	}
@@ -254,7 +254,7 @@ func (s *Server) handlePatchTicket(w http.ResponseWriter, r *http.Request) {
 		to := TicketState(*body.State)
 		if !isAdmin {
 			if to != StateClosed {
-				http.Error(w, `{"error":"only admins may set this state"}`, http.StatusForbidden)
+				writeErr(w, http.StatusForbidden, "only admins may set this state")
 				return
 			}
 		}
@@ -271,21 +271,21 @@ func (s *Server) handlePatchTicket(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleDeleteTicket(w http.ResponseWriter, r *http.Request) {
 	_, user := s.requireAuth(r)
 	if user == nil {
-		http.Error(w, `{"error":"not authenticated"}`, http.StatusUnauthorized)
+		writeErr(w, http.StatusUnauthorized, "not authenticated")
 		return
 	}
 	id := r.PathValue("id")
 	t := s.tickets.GetTicket(id)
 	if t == nil {
-		http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
+		writeErr(w, http.StatusNotFound, "not found")
 		return
 	}
 	if user.Role != RoleAdmin && t.AuthorID != user.ID {
-		http.Error(w, `{"error":"forbidden"}`, http.StatusForbidden)
+		writeErr(w, http.StatusForbidden, "forbidden")
 		return
 	}
 	if !s.tickets.DeleteTicket(id) {
-		http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
+		writeErr(w, http.StatusNotFound, "not found")
 		return
 	}
 	w.Write([]byte(`{"ok":true}`))
@@ -296,18 +296,18 @@ func (s *Server) handleDeleteTicket(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleListComments(w http.ResponseWriter, r *http.Request) {
 	_, user := s.requireAuth(r)
 	if user == nil {
-		http.Error(w, `{"error":"not authenticated"}`, http.StatusUnauthorized)
+		writeErr(w, http.StatusUnauthorized, "not authenticated")
 		return
 	}
 	id := r.PathValue("id")
 	t := s.tickets.GetTicket(id)
 	if t == nil {
-		http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
+		writeErr(w, http.StatusNotFound, "not found")
 		return
 	}
 	isAdmin := user.Role == RoleAdmin
 	if isRejected(t.State) && !isAdmin && t.AuthorID != user.ID {
-		http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
+		writeErr(w, http.StatusNotFound, "not found")
 		return
 	}
 	comments := s.tickets.ListComments(id)
@@ -317,36 +317,36 @@ func (s *Server) handleListComments(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleAddComment(w http.ResponseWriter, r *http.Request) {
 	_, user := s.requireAuth(r)
 	if user == nil {
-		http.Error(w, `{"error":"not authenticated"}`, http.StatusUnauthorized)
+		writeErr(w, http.StatusUnauthorized, "not authenticated")
 		return
 	}
 	id := r.PathValue("id")
 	t := s.tickets.GetTicket(id)
 	if t == nil {
-		http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
+		writeErr(w, http.StatusNotFound, "not found")
 		return
 	}
 	isAdmin := user.Role == RoleAdmin
 	if isRejected(t.State) && !isAdmin && t.AuthorID != user.ID {
-		http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
+		writeErr(w, http.StatusNotFound, "not found")
 		return
 	}
 	var body struct {
 		Body string `json:"body"`
 	}
 	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&body); err != nil {
-		http.Error(w, `{"error":"invalid JSON"}`, http.StatusBadRequest)
+		writeErr(w, http.StatusBadRequest, "invalid JSON")
 		return
 	}
 	if strings.TrimSpace(body.Body) == "" {
-		http.Error(w, `{"error":"comment body required"}`, http.StatusBadRequest)
+		writeErr(w, http.StatusBadRequest, "comment body required")
 		return
 	}
 	// Any authenticated user comments as author_type='user'.
 	uid := user.ID
 	c := s.tickets.AddComment(id, AuthorUser, &uid, body.Body, false)
 	if c == nil {
-		http.Error(w, `{"error":"could not add comment"}`, http.StatusInternalServerError)
+		writeErr(w, http.StatusInternalServerError, "could not add comment")
 		return
 	}
 	w.WriteHeader(http.StatusCreated)
@@ -363,22 +363,22 @@ func (s *Server) handleGetArtifact(w http.ResponseWriter, r *http.Request) {
 	if _, res := s.requireAgent(r, scopePO, scopeCoding); res != authOK {
 		_, user := s.requireAuth(r)
 		if user == nil {
-			http.Error(w, `{"error":"not authenticated"}`, http.StatusUnauthorized)
+			writeErr(w, http.StatusUnauthorized, "not authenticated")
 			return
 		}
 		t := s.tickets.GetTicket(id)
 		if t == nil {
-			http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
+			writeErr(w, http.StatusNotFound, "not found")
 			return
 		}
 		if isRejected(t.State) && user.Role != RoleAdmin && t.AuthorID != user.ID {
-			http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
+			writeErr(w, http.StatusNotFound, "not found")
 			return
 		}
 	}
 	art, data := s.tickets.GetArtifactBlob(id, r.PathValue("artifactId"))
 	if art == nil || data == nil {
-		http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
+		writeErr(w, http.StatusNotFound, "not found")
 		return
 	}
 	mime := art.Mime
