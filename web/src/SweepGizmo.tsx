@@ -29,7 +29,7 @@ import {
   makeFatLine,
 } from "./overlayLineMaterials";
 import { useKernelStore } from "./store";
-import { findSingleSelectedFeature } from "./viewportOverlays";
+import { findSingleSelectedFeature } from "./transformGizmo";
 import { OVERLAY_LAYER } from "./viewportSdfOverlays";
 import { catmullRomSpline, polylineToSegments, type V3 } from "./sweepGizmo";
 

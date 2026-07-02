@@ -10,7 +10,7 @@ import { OVERLAY_LAYER } from "./viewportSdfOverlays";
 // is now a tiny CircleGeometry mesh.
 //
 // "Screen-constant" + "camera-facing" is solved exactly like the label sprites
-// in viewportOverlays.tsx (`SketchLabels3D`): on each render we scale the dot so
+// in sketchSceneOverlays.tsx (`SketchLabels3D`): on each render we scale the dot so
 // its diameter is a fixed number of CSS pixels regardless of zoom, and copy the
 // camera orientation so the disk always faces the viewer. One InstancedMesh
 // holds all vertices of a sketch; each instance is scaled per its own distance
@@ -113,7 +113,7 @@ export class SketchDots {
     const persp = camera as THREE.PerspectiveCamera;
     // World units per screen pixel at distance d (perspective): the view frustum
     // is 2·d·tan(fov/2) tall, spread over `viewportH` pixels. (Same derivation
-    // as the label sprites in viewportOverlays.tsx.) For an ortho camera the
+    // as the label sprites in sketchSceneOverlays.tsx.) For an ortho camera the
     // scale is depth-independent.
     const tanHalfFov = persp.isPerspectiveCamera
       ? Math.tan(persp.fov * 0.5 * THREE.MathUtils.DEG2RAD)

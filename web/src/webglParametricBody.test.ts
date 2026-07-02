@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { isWebglParametricBody } from "./viewportOverlays";
+import { isWebglParametricBody } from "./webglBodies";
 
 // Mock kernel returning a fixed hybrid info for body 0.
 function mk(info: unknown) {

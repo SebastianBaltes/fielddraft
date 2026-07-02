@@ -18,7 +18,7 @@ export const DEFAULT_BASE_COLOR: [number, number, number] = [0.55, 0.65, 0.85];
 /**
  * Camera/view-space directional lights — the single source of truth for BOTH
  * the SDF (WebGPU) shader here and the classic WebGL render path
- * (`WebGLSceneLights` in viewportOverlays.tsx). `dir` is the view-space
+ * (`WebGLSceneLights` in webglBodies.tsx). `dir` is the view-space
  * direction TOWARD the light; `radiance` is its intensity.
  */
 export const LIGHTS: { dir: [number, number, number]; radiance: number }[] = [

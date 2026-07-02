@@ -52,28 +52,32 @@ import {
   SketchSession3D,
   SketchHud3D,
   SketchLabels3D,
-  BRepMeshPreview,
-  WebGLBodies,
-  WebGLSceneLights,
-  SelectionTransformGizmo,
-  Invalidator,
+} from "./sketchSceneOverlays";
+import { SelectionTransformGizmo, Invalidator } from "./transformGizmo";
+import {
   BRepEdgeOverlay,
   BRepEdgePointsOverlay,
   OctreeCellOverlay,
+} from "./brepEdgeOverlays";
+import {
   BRepSelectionOverlay,
   BRepSelectedOverlay,
   BodyHighlightOverlay,
+} from "./brepSelectionOverlays";
+import {
+  BRepMeshPreview,
+  WebGLBodies,
+  WebGLSceneLights,
   MeshPreview,
+} from "./webglBodies";
+import {
   AssemblyParts,
   MateConnectorOverlay,
   MateInferenceOverlay,
-  DatumOverlay,
-  pickDatumAtRay,
-  ReferenceMesh,
-  PickHud,
-  PerfProbe,
-} from "./viewportOverlays";
-import { PerfHud } from "./perfMonitor";
+} from "./mateOverlays";
+import { DatumOverlay, pickDatumAtRay } from "./datumOverlay";
+import { ReferenceMesh, PickHud } from "./viewportHud";
+import { PerfHud, PerfProbe } from "./perfMonitor";
 import { ScreenSpaceCsgPass } from "./screenSpaceCsgPass";
 import { SketchCanvas2d } from "./SketchCanvas2d";
 import { invalidateCanvas } from "./viewCommands";

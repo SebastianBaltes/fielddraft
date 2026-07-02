@@ -18,7 +18,7 @@
  * WICHTIG (kein Doppel-Draw): CSG-Bodys, die hier komponiert werden, dürfen NICHT
  * zusätzlich ihr DC-Mesh zeichnen. `MeshPreview`/`WebGLBodies` überspringen bei
  * aktivem SS-CSG-Flag genau die `bodyNeedsSubtractionPass`/
- * `bodyNeedsIntersectionPass`-Bodys (siehe viewportOverlays.tsx) — bei Flag AUS
+ * `bodyNeedsIntersectionPass`-Bodys (siehe webglBodies.tsx) — bei Flag AUS
  * bleibt alles unverändert.
  */
 
