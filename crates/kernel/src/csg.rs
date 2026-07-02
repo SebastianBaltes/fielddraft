@@ -874,6 +874,15 @@ impl PrimitiveModifiers {
 }
 
 impl DecodedFeature {
+    /// `true` genau dann, wenn Placement, Blend-Radius und der gesamte
+    /// Geometrie-Teilbaum ([`CsgNode::all_finite`]) nur endliche Floats
+    /// tragen. Vorab-Guard des Weave-Einstiegs gegen NaN/∞ aus dem Web.
+    pub fn all_finite(&self) -> bool {
+        self.blend_radius.is_finite()
+            && crate::finite::all_finite(&self.transform)
+            && self.node.all_finite()
+    }
+
     /// Build a decoded feature from its flat construction parameters and
     /// lower it into the open IR. The primitive (with the extrude/revolve
     /// self-centering folded in) is wrapped in its domain-warp/shell
@@ -1110,6 +1119,78 @@ impl DecodedFeature {
 }
 
 impl CsgNode {
+    /// `true` genau dann, wenn jeder Float in diesem Teilbaum endlich ist —
+    /// Primitiv-Parameter, Sketch-Geometrie, Transforms, Modifier-Skalare.
+    /// Ein NaN/∞ (z.B. aus einer degenerierten Web-Sketch-Solver-Lösung)
+    /// würde sonst weit von der Quelle entfernt die Weave-/Mesh-Numerik
+    /// vergiften; der Weave-Einstieg ([`crate::body::Body::ensure_brep`])
+    /// prüft das vorab und liefert stattdessen ein leeres B-Rep.
+    pub fn all_finite(&self) -> bool {
+        use crate::finite::all_finite;
+        let finite3 = |p: &[f32; 3]| p.iter().all(|c| c.is_finite());
+        match self {
+            CsgNode::Empty => true,
+            CsgNode::Leaf { primitive, .. } => all_finite(primitive),
+            CsgNode::Transform(t, inner) => all_finite(t) && inner.all_finite(),
+            CsgNode::Union(a, b)
+            | CsgNode::Difference(a, b)
+            | CsgNode::Intersection(a, b) => a.all_finite() && b.all_finite(),
+            CsgNode::SmoothUnion(a, b, r, _) | CsgNode::SmoothDifference(a, b, r, _) => {
+                r.is_finite() && a.all_finite() && b.all_finite()
+            }
+            CsgNode::Twist(inner, rate)
+            | CsgNode::Bend(inner, rate)
+            | CsgNode::Offset(inner, rate) => rate.is_finite() && inner.all_finite(),
+            CsgNode::Displace(inner, depth, freq) => {
+                depth.is_finite() && freq.is_finite() && inner.all_finite()
+            }
+            CsgNode::Shell(inner, thickness, open_faces) => {
+                thickness.is_finite()
+                    && open_faces
+                        .iter()
+                        .all(|f| all_finite(&f.surface) && all_finite(&f.placement))
+                    && inner.all_finite()
+            }
+            CsgNode::Morph(a, b, t) => t.is_finite() && a.all_finite() && b.all_finite(),
+            CsgNode::MaskedBlend {
+                a,
+                b,
+                mask_polyline,
+                mask_radius,
+                blend_radius,
+                ..
+            } => {
+                mask_radius.is_finite()
+                    && blend_radius.is_finite()
+                    && mask_polyline.iter().all(finite3)
+                    && a.all_finite()
+                    && b.all_finite()
+            }
+            CsgNode::Extrude { sketch, half_height, .. } => {
+                half_height.is_finite() && all_finite(sketch.as_ref())
+            }
+            CsgNode::Revolve { sketch, .. } => all_finite(sketch.as_ref()),
+            CsgNode::Helix {
+                sketch,
+                pitch,
+                turns,
+                taper,
+                start_angle,
+                y_anchor,
+                r_inner,
+                ..
+            } => {
+                [pitch, turns, taper, start_angle, y_anchor, r_inner]
+                    .into_iter()
+                    .all(|v| v.is_finite())
+                    && all_finite(sketch.as_ref())
+            }
+            CsgNode::Sweep { sketch, path, twist, .. } => {
+                twist.is_finite() && path.iter().all(finite3) && all_finite(sketch.as_ref())
+            }
+        }
+    }
+
     /// Fold a decoded feature spine into a binary CSG tree.
     ///
     /// The first feature seeds the accumulator regardless of its op

@@ -168,6 +168,22 @@ impl Body {
         let key = hash_body_local_payload(features, &self.feature_indices, &self.placement);
         let stale = !matches!(&self.brep, Some((k, _)) if *k == key);
         if stale {
+            // NaN/∞-Guard (v0.6.355): ein nicht-endlicher Float in der
+            // Eingabe — z.B. ein NaN aus dem Web-Sketch-Solver — würde die
+            // Weave-Numerik weit von der Quelle entfernt vergiften und die
+            // WASM-Instanz per Panik abreißen (`catch_unwind` fängt auf
+            // wasm32 nichts). Stattdessen: leeres B-Rep unter dem aktuellen
+            // Key cachen; sobald ein Edit die Geometrie repariert, ändert
+            // sich der Key und es wird normal neu gewoben.
+            if !self.feature_indices.iter().all(|&i| features[i].all_finite()) {
+                eprintln!(
+                    "weave: body {:?} carries non-finite geometry (NaN/inf); \
+                     serving an empty B-Rep instead of weaving",
+                    self.id
+                );
+                self.brep = Some((key, BRep::new()));
+                return &self.brep.as_ref().unwrap().1;
+            }
             // Weave in the body-local frame: seed the build carry with
             // `inverse(placement)` so vertices + analytic face transforms
             // come out placement-free. The octree's `min_cell` is derived
@@ -1253,6 +1269,59 @@ mod tests {
     use super::*;
     use crate::csg::PrimitiveModifiers;
     use fielddraft_protocol::Transform;
+
+    /// v0.6.355: Ein NaN aus dem Sketch-Solver darf den Weave nicht mehr
+    /// paniken lassen (= WASM-Abort im Web). Der Weave-Einstieg erkennt die
+    /// nicht-endliche Geometrie vorab und cached ein leeres B-Rep unter dem
+    /// aktuellen Key — der nächste reparierende Edit webt normal neu.
+    #[test]
+    fn nan_sketch_weaves_to_empty_brep_instead_of_panicking() {
+        use fielddraft_protocol::{Sketch2d, Sketch2dPrimitive};
+        let sketch = Sketch2d::Prim(Sketch2dPrimitive::Polygon {
+            vertices: vec![[0.0, 0.0], [f32::NAN, 0.0], [10.0, 10.0]],
+        });
+        let f = DecodedFeature::from_parts(
+            FeatureId::from_u32(1),
+            "NaN-Extrude".into(),
+            BoolOp::New,
+            Primitive::Extrude { sketch, half_depth_z: 5.0, center: [0.0; 3] },
+            Transform::IDENTITY,
+            PrimitiveModifiers::NONE,
+            vec![],
+        );
+        assert!(!f.all_finite(), "NaN vertex must be detected in the decoded feature");
+
+        let woven = weave_all(&[f]);
+        assert_eq!(woven.len(), 1, "one body partition");
+        let (brep, _) = &woven[0];
+        assert_eq!(brep.face_count(), 0, "empty B-Rep instead of a NaN weave");
+        assert_eq!(brep.edge_count(), 0);
+        assert_eq!(brep.vertex_count(), 0);
+    }
+
+    /// Gegenprobe zum NaN-Guard: eine endliche Version desselben Features
+    /// webt weiterhin ein nicht-leeres B-Rep (der Guard greift nur bei
+    /// nicht-endlicher Geometrie).
+    #[test]
+    fn finite_sketch_still_weaves_normally() {
+        use fielddraft_protocol::{Sketch2d, Sketch2dPrimitive};
+        let sketch = Sketch2d::Prim(Sketch2dPrimitive::Polygon {
+            vertices: vec![[0.0, 0.0], [20.0, 0.0], [10.0, 10.0]],
+        });
+        let f = DecodedFeature::from_parts(
+            FeatureId::from_u32(1),
+            "Extrude".into(),
+            BoolOp::New,
+            Primitive::Extrude { sketch, half_depth_z: 5.0, center: [0.0; 3] },
+            Transform::IDENTITY,
+            PrimitiveModifiers::NONE,
+            vec![],
+        );
+        assert!(f.all_finite());
+        let woven = weave_all(&[f]);
+        assert_eq!(woven.len(), 1);
+        assert!(woven[0].0.face_count() > 0, "finite geometry must still weave");
+    }
 
     fn box_feat(id: u32, op: BoolOp, center: [f32; 3], half: [f32; 3]) -> DecodedFeature {
         DecodedFeature::from_parts(

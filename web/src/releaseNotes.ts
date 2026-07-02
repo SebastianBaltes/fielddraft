@@ -24,6 +24,16 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.355",
+    entries: [
+      {
+        kind: "fix",
+        scope: "kernel",
+        text: "Ein NaN aus dem Sketch-Solver kann den Kernel nicht mehr abstürzen lassen — der B-Rep-Weave prüft die Geometrie vorab und liefert bei nicht-endlichen Koordinaten ein leeres B-Rep statt zu paniken",
+      },
+    ],
+  },
+  {
     version: "0.6.354",
     entries: [
       {

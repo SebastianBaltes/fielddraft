@@ -34,6 +34,7 @@ pub mod sweep_gate;
 pub mod script_runtime;
 pub mod transform;
 pub mod sdf_eval;
+pub mod finite;
 
 use body::{
     build_bounded_for_body, build_bounded_with_primitives, detect_uniform_translation,
