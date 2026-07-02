@@ -14,14 +14,14 @@
 -- B1 — per-comment PO review flag. Backfill: every existing comment counts as
 -- already reviewed (the PO sweep only needs to see NEW user comments).
 ALTER TABLE ticket_comments
-    ADD COLUMN po_reviewed BOOL NOT NULL DEFAULT 1 AFTER withheld;
+    ADD COLUMN IF NOT EXISTS po_reviewed BOOL NOT NULL DEFAULT 1 AFTER withheld;
 
 -- B3 — user disable flag.
 ALTER TABLE users
-    ADD COLUMN disabled BOOL NOT NULL DEFAULT 0 AFTER role;
+    ADD COLUMN IF NOT EXISTS disabled BOOL NOT NULL DEFAULT 0 AFTER role;
 
 -- B2 — admin alert feed.
-CREATE TABLE admin_alerts (
+CREATE TABLE IF NOT EXISTS admin_alerts (
     id         CHAR(32) NOT NULL,
     kind       ENUM('malicious_ticket','malicious_comment','withheld_comment','user_banned') NOT NULL,
     ticket_id  CHAR(32) NULL,

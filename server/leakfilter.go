@@ -103,9 +103,11 @@ func leakScanPaths(text string) string {
 			}
 		}
 	}
-	// Any token (path or bare filename) with a source-file extension.
+	// Any token (path or bare filename) with a source-file extension. Trailing
+	// dots are sentence punctuation, not part of the filename ("… in main.go.")
+	// — strip them so a filename at sentence end still trips the rule.
 	for _, tok := range leakFileTokenRe.FindAllString(text, -1) {
-		t := strings.TrimSpace(tok)
+		t := strings.TrimRight(strings.TrimSpace(tok), ".")
 		for _, ext := range leakSourceExts {
 			if strings.HasSuffix(t, ext) && len(t) > len(ext) {
 				return "repo path"

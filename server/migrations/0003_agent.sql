@@ -9,7 +9,7 @@
 -- deploys is created BEFORE work_orders because work_orders.deploy_id has an FK
 -- into it.
 
-CREATE TABLE deploys (
+CREATE TABLE IF NOT EXISTS deploys (
     id          CHAR(32)     NOT NULL,
     version     VARCHAR(64)  NOT NULL DEFAULT '',
     git_sha     VARCHAR(64)  NOT NULL DEFAULT '',
@@ -21,7 +21,7 @@ CREATE TABLE deploys (
     KEY idx_deploys_deployed_at (deployed_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
-CREATE TABLE work_orders (
+CREATE TABLE IF NOT EXISTS work_orders (
     ticket_id    CHAR(32) NOT NULL,       -- one work-order per ticket (PK = FK)
     payload      JSON     NOT NULL,        -- the §9 Work-Order JSON
     created_at   DATETIME NOT NULL,

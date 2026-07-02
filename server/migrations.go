@@ -2,8 +2,15 @@
 //
 // Numbered *.sql files under migrations/ are embedded into the binary and
 // applied in lexical order on startup. A schema_migrations table tracks which
-// versions are applied; pending ones run inside their own transaction. No
-// heavyweight migration library — just enough to bring the schema up.
+// versions are applied. No heavyweight migration library — just enough to
+// bring the schema up.
+//
+// NOTE on atomicity: MySQL/MariaDB DDL causes an implicit COMMIT, so a
+// multi-statement migration is NOT atomic — if statement N fails, statements
+// 1..N-1 stay applied and the version is not recorded. That is why every
+// migration uses idempotent DDL (CREATE TABLE IF NOT EXISTS / ADD COLUMN IF
+// NOT EXISTS): a re-run after a partial failure converges instead of dying
+// on "already exists".
 
 package main
 
@@ -94,6 +101,9 @@ func runMigrations(db *sql.DB) error {
 			continue
 		}
 		log.Printf("migration: applying %s", m.name)
+		// The transaction groups the statements with the version bookkeeping,
+		// but offers NO rollback for DDL (implicit commits — see file header);
+		// recovery from partial failure relies on the idempotent DDL.
 		tx, err := db.Begin()
 		if err != nil {
 			return err
