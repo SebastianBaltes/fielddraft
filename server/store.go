@@ -94,14 +94,10 @@ var (
 	errUserDisabled  = &httpError{http.StatusForbidden, "account disabled"}
 	errInviteInvalid = &httpError{http.StatusBadRequest, "invalid or expired invite"}
 	errInviteUsed    = &httpError{http.StatusBadRequest, "invite already used"}
-	errTicketMissing = &httpError{http.StatusNotFound, "ticket not found"}
-
-	errWorkOrderExists    = &httpError{http.StatusConflict, "work-order already exists"}
-	errWorkOrderMissing   = &httpError{http.StatusNotFound, "work-order not found"}
-	errWorkOrderClaimed   = &httpError{http.StatusConflict, "work-order already claimed"}
-	errWorkOrderCompleted = &httpError{http.StatusConflict, "work-order already completed"}
-	errDeployMissing      = &httpError{http.StatusNotFound, "deploy not found"}
 )
+
+// The ticket-domain errors (errTicketMissing, errWorkOrder*, errDeployMissing)
+// live next to their interface in ticketstore.go.
 
 type httpError struct {
 	Code    int

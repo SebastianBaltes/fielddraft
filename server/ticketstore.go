@@ -19,6 +19,19 @@ package main
 
 import (
 	"encoding/json"
+	"net/http"
+)
+
+// The ticket-domain errors every TicketStore implementation returns (mapped to
+// HTTP responses by writeStoreError).
+var (
+	errTicketMissing = &httpError{http.StatusNotFound, "ticket not found"}
+
+	errWorkOrderExists    = &httpError{http.StatusConflict, "work-order already exists"}
+	errWorkOrderMissing   = &httpError{http.StatusNotFound, "work-order not found"}
+	errWorkOrderClaimed   = &httpError{http.StatusConflict, "work-order already claimed"}
+	errWorkOrderCompleted = &httpError{http.StatusConflict, "work-order already completed"}
+	errDeployMissing      = &httpError{http.StatusNotFound, "deploy not found"}
 )
 
 // TicketStore is the pluggable ticket domain (§7–§11). Both memStore/sqlStore
