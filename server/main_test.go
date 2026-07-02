@@ -173,6 +173,70 @@ func TestRateLimiterRejects(t *testing.T) {
 	}
 }
 
+// TestRateLimiterEviction — buckets idle for bucketIdleTTL are purged on
+// access; an active bucket survives the sweep.
+func TestRateLimiterEviction(t *testing.T) {
+	rl := NewRateLimiter(0, 3)
+	t0 := time.Now()
+	rl.allowAt("idle-ip", t0)
+	rl.allowAt("busy-ip", t0)
+	if len(rl.buckets) != 2 {
+		t.Fatalf("buckets = %d, want 2", len(rl.buckets))
+	}
+	// busy-ip keeps talking; idle-ip goes quiet.
+	rl.allowAt("busy-ip", t0.Add(9*time.Minute))
+	// Past the idle TTL (for idle-ip), the next access sweeps it away.
+	rl.allowAt("third-ip", t0.Add(10*time.Minute+time.Second))
+	if _, ok := rl.buckets["idle-ip"]; ok {
+		t.Fatal("idle bucket not evicted")
+	}
+	if _, ok := rl.buckets["busy-ip"]; !ok {
+		t.Fatal("active bucket wrongly evicted")
+	}
+	// The sweep is rate-limited: within the same sweep interval nothing runs.
+	rl.allowAt("fourth-ip", t0.Add(10*time.Minute+2*time.Second))
+	if _, ok := rl.buckets["third-ip"]; !ok {
+		t.Fatal("fresh bucket vanished")
+	}
+}
+
+// TestClientIPTrustProxy — X-Forwarded-For is only honored with TRUST_PROXY=1,
+// and then only its FIRST element; otherwise the TCP peer host (sans port) is
+// used, so a spoofed header cannot dodge the limiter.
+func TestClientIPTrustProxy(t *testing.T) {
+	mkReq := func(xff string) *http.Request {
+		r := httptest.NewRequest("GET", "/api/gallery", nil)
+		r.RemoteAddr = "203.0.113.7:54321"
+		if xff != "" {
+			r.Header.Set("X-Forwarded-For", xff)
+		}
+		return r
+	}
+
+	// Untrusted (default): the header is ignored entirely.
+	srv := NewServer(NewStore())
+	if got := srv.clientIP(mkReq("6.6.6.6")); got != "203.0.113.7" {
+		t.Fatalf("untrusted XFF: got %q, want peer host", got)
+	}
+	if got := srv.clientIP(mkReq("")); got != "203.0.113.7" {
+		t.Fatalf("no XFF: got %q, want peer host (no port)", got)
+	}
+
+	// Trusted (TRUST_PROXY=1): first element only, trimmed.
+	t.Setenv("TRUST_PROXY", "1")
+	trusted := NewServer(NewStore())
+	if got := trusted.clientIP(mkReq("198.51.100.9, 10.0.0.1")); got != "198.51.100.9" {
+		t.Fatalf("trusted XFF: got %q, want first element", got)
+	}
+	if got := trusted.clientIP(mkReq(" 198.51.100.9 ")); got != "198.51.100.9" {
+		t.Fatalf("trusted XFF trim: got %q", got)
+	}
+	// Empty header still falls back to the peer.
+	if got := trusted.clientIP(mkReq("")); got != "203.0.113.7" {
+		t.Fatalf("trusted, no XFF: got %q, want peer host", got)
+	}
+}
+
 func TestDuplicateEmailRejects(t *testing.T) {
 	store := NewStore()
 	srv := NewServer(store)

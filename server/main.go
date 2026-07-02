@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"strings"
@@ -30,6 +31,10 @@ type Server struct {
 	mux         *http.ServeMux
 	rateLimiter *RateLimiter
 	agentTokens agentTokens // least-privilege Service-Tokens (§11)
+	// trustProxy (TRUST_PROXY=1) enables reading the client IP from
+	// X-Forwarded-For. Only correct behind a trusted reverse proxy (Caddy in
+	// prod) — an untrusted client can spoof the header otherwise.
+	trustProxy bool
 }
 
 func NewServer(store Store) *Server {
@@ -39,6 +44,7 @@ func NewServer(store Store) *Server {
 		mux:         http.NewServeMux(),
 		rateLimiter: NewRateLimiter(1.0, 60), // 60 burst, 1/sec refill
 		agentTokens: loadAgentTokens(),
+		trustProxy:  os.Getenv("TRUST_PROXY") == "1",
 	}
 	s.mux.HandleFunc("POST /api/auth/register", s.handleRegister)
 	s.mux.HandleFunc("POST /api/auth/login", s.handleLogin)
@@ -130,16 +136,37 @@ func selectTicketStore(store Store) TicketStore {
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Per-IP rate limiting (token bucket, 60 req/min).
-	ip := r.RemoteAddr
-	if fwd := r.Header.Get("X-Forwarded-For"); fwd != "" {
-		ip = fwd
-	}
-	if !s.rateLimiter.Allow(ip) {
+	if !s.rateLimiter.Allow(s.clientIP(r)) {
 		http.Error(w, `{"error":"rate limit exceeded"}`, http.StatusTooManyRequests)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
 	s.mux.ServeHTTP(w, r)
+}
+
+// clientIP resolves the caller's IP for rate limiting. X-Forwarded-For is
+// attacker-controlled unless a trusted reverse proxy sets it, so it is only
+// honored with TRUST_PROXY=1 — and then only its FIRST element (Caddy ≥2.5
+// strips client-supplied XFF from untrusted peers, so the first element is
+// the real client). Without a proxy the TCP peer address (host only, no
+// port — one bucket per client, not per connection) is used.
+func (s *Server) clientIP(r *http.Request) string {
+	if s.trustProxy {
+		if fwd := r.Header.Get("X-Forwarded-For"); fwd != "" {
+			first := fwd
+			if i := strings.IndexByte(fwd, ','); i >= 0 {
+				first = fwd[:i]
+			}
+			if ip := strings.TrimSpace(first); ip != "" {
+				return ip
+			}
+		}
+	}
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
+	return host
 }
 
 // ─── auth handlers ──────────────────────────────────────────────
@@ -342,18 +369,29 @@ func (s *Server) handleGallery(w http.ResponseWriter, r *http.Request) {
 
 // RateLimiter is a simple per-IP token bucket. Each IP gets `burst` tokens;
 // one is consumed per request. Tokens refill at `rate` per second. When the
-// bucket is empty, Allow returns false and the server responds 429.
+// bucket is empty, Allow returns false and the server responds 429. Buckets
+// idle for bucketIdleTTL are evicted on access, so the map cannot grow without
+// bound across many client IPs.
 type RateLimiter struct {
-	mu      sync.Mutex
-	buckets map[string]*bucket
-	rate    float64
-	burst   int
+	mu        sync.Mutex
+	buckets   map[string]*bucket
+	rate      float64
+	burst     int
+	lastSweep time.Time
 }
 
 type bucket struct {
 	tokens float64
 	last   time.Time
 }
+
+// bucketIdleTTL is how long a bucket may sit untouched before eviction. Any
+// realistic refill completes well within this window, so eviction (= a fresh
+// full bucket on the next request) never grants extra tokens.
+const bucketIdleTTL = 10 * time.Minute
+
+// bucketSweepEvery caps how often the eviction sweep runs (it is O(#buckets)).
+const bucketSweepEvery = time.Minute
 
 func NewRateLimiter(ratePerSec float64, burst int) *RateLimiter {
 	return &RateLimiter{
@@ -364,10 +402,24 @@ func NewRateLimiter(ratePerSec float64, burst int) *RateLimiter {
 }
 
 func (rl *RateLimiter) Allow(ip string) bool {
+	return rl.allowAt(ip, time.Now())
+}
+
+// allowAt is Allow with an injectable clock (tests).
+func (rl *RateLimiter) allowAt(ip string, now time.Time) bool {
 	rl.mu.Lock()
 	defer rl.mu.Unlock()
 
-	now := time.Now()
+	// Opportunistic eviction of idle buckets, at most once per sweep interval.
+	if now.Sub(rl.lastSweep) >= bucketSweepEvery {
+		rl.lastSweep = now
+		for k, b := range rl.buckets {
+			if now.Sub(b.last) >= bucketIdleTTL {
+				delete(rl.buckets, k)
+			}
+		}
+	}
+
 	b, ok := rl.buckets[ip]
 	if !ok {
 		b = &bucket{tokens: float64(rl.burst), last: now}

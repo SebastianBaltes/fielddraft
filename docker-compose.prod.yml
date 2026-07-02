@@ -57,6 +57,10 @@ services:
       ADMIN_PASSWORD: "${ADMIN_PASSWORD:?ADMIN_PASSWORD is required}"
       # Behind Caddy/TLS → session cookies must carry the Secure attribute.
       SECURE_COOKIES: "1"
+      # Behind Caddy the client IP arrives via X-Forwarded-For; TRUST_PROXY=1
+      # lets the rate limiter read it (first element). Caddy strips client-
+      # supplied XFF from untrusted peers, so the header is trustworthy here.
+      TRUST_PROXY: "1"
       # Agent API service tokens (PO + coding desktop agents, WP6). Empty
       # disables that scope; set both to enable the User→Agent loop.
       PO_SERVICE_TOKEN: "${PO_SERVICE_TOKEN:-}"
