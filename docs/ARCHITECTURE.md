@@ -400,7 +400,7 @@ Mesh data is exposed as **zero-copy typed array views** into WASM linear memory 
 
 FieldDraft implements **two active SDF rendering modes**, both built on Three.js TSL and WebGPU. There are no hand-written shader files — all GPU code is generated dynamically.
 
-#### SDF-VM Mode (`sdfVmRenderer.ts`)
+#### SDF-VM Mode (`sdfVmRenderer.ts` + `sdfVmRenderer.shaders.ts`)
 
 Single-pass fullscreen ray marching:
 
@@ -414,7 +414,7 @@ graph LR
 - Per-body SDF evaluation, closest hit wins — **brute-force: every body evaluated at every pixel**
 - **Hard limits: max 8 bodies, 16384 opcodes total (storage buffer), 512 march steps, 512 opcodes/body (VM loop).** These are architectural constraints of the brute-force per-pixel approach, not tuning parameters.
 
-#### SDF-Deferred Mode (`sdfDeferredRenderer.ts`)
+#### SDF-Deferred Mode (`sdfDeferredRenderer.ts` + `sdfDeferredRenderer.shaders.ts`)
 
 Three-pass hybrid rasterization + deferred ray marching:
 
@@ -449,6 +449,19 @@ Simple primitives (box, sphere, cylinder, torus, cone, capsule) get rasterized o
 
 **Runtime VM** (`sdfVmInterpreter.ts`): TSL function interprets opcodes at runtime from a storage buffer. 8-slot value stack + 4-slot position stack. Single shader handles any opcode sequence up to 512 opcodes/body (~35 primitives). Used by both VM and Deferred modes. `sdfRenderer.ts` provides the shared opcode constants and WGSL primitive functions.
 
+**Module layout** (each pipeline file is fully typed; TSL shader builders live in `.shaders.ts` siblings under `@ts-nocheck`):
+
+| Module | Contents |
+|--------|----------|
+| `sdfPipelineCommon.ts` | Material/opcode buffer sets, march constants (`SURFACE_EPS`, `SDF_MARCH_STEPS`, `SDF_MAX_OPCODES`, `AABB_HULL_PAD`), `CameraUniformSet`, `disposeAfterGpuIdle` |
+| `sdfPipelineCommon.shaders.ts` | Shared TSL blocks: `emitUnionMarch` (the ONE union sphere-trace both pipelines march with), `emitSceneDepthWrite`, `makeDisplacedSdfEval`, `shadeSdfHit` |
+| `sdfVmRenderer[.shaders].ts` | VM pipeline state + fullscreen raymarch material (`VM_MAX_BODIES` = 8) |
+| `sdfDeferredRenderer[.shaders].ts` | Deferred pipeline state + G-buffer/shade materials (`DEFERRED_MAX_BODIES` = 256) |
+| `leafMeshFactory.ts` | `createPrimitiveGeometry`, `leafGeoKey`, `applyLeafTransform`, `buildWarpedLeafGeometry` — leaf hull meshes for deferred proxies, WebGL bodies, SS-CSG and selection highlights |
+| `bodyColors.ts` | `BODY_COLORS` part palette (SSOT for all render paths) |
+| `viewportLayers.ts` | `OVERLAY_LAYER` / `DATUM_LAYER` convention |
+| `bodyFingerprint.ts` | `computeBodyFingerprint`/`useBodyFingerprint` (id.version) + `computeSdfFingerprints` (SDF rebuild-vs-update split) |
+
 #### Material System
 
 Per-body PBR materials stored in a GPU storage buffer (12 floats/body stride):
@@ -464,12 +477,14 @@ Per-body PBR materials stored in a GPU storage buffer (12 floats/body stride):
 
 #### Synchronization (`viewportSdfOverlays.tsx`)
 
-Per-frame fingerprinting drives the rebuild/update cycle with three fingerprints:
+Both overlays run ONE shared lifecycle state machine, `useSdfPipelineOverlay(adapter)`: a pipeline adapter (`{init, dispose, collectBodies, fingerprintPolicy, rebuild, compile, updateData, renderFrame, onResize?, onSelection?}`) plugs the VM or deferred pipeline into the hook, which owns the StrictMode stale guard, the GPU-idle rebuild gate (ticket sgzw) and the error path exactly once.
+
+Per-frame fingerprinting (`computeSdfFingerprints` in `bodyFingerprint.ts`) drives the rebuild/update cycle:
 
 - `volumeFp` (total volume texture count) → shader rebuild (VM mode only — volume textures are baked into shader)
 - `structFp` (topology hash: body count, IDs, opcode lengths, volume counts) → full mesh rebuild (deferred) or data update (VM)
 - `dataFp` (data hash: body versions) → opcode/volume buffer upload only
-- Material application runs every frame regardless
+- Materials/selection re-upload only when the feature list / selection set changed (reference equality) or geometry rebuilt this frame
 
 Adding/removing bodies or changing opcodes triggers only a fast buffer update, not a shader recompile (unless volume texture count changes).
 
@@ -480,7 +495,7 @@ Adding/removing bodies or changing opcodes triggers only a fast buffer update, n
 | Max march steps | 512 (VM/Deferred) |
 | Surface epsilon | 0.002 mm |
 | Normal epsilon | 0.01 mm |
-| Max ray distance | 1200–3000 mm |
+| Max ray distance | VM: camera far plane (adaptive); Deferred: back-face exit depth |
 | March start backoff | ±1 mm along camera direction (deferred; hulls are exact meshes, NOT inflated — ticket vlhp) |
 | Build volume | 600 mm cubic |
 
@@ -555,7 +570,7 @@ graph TD
 
 **Sketch in 3D (tickets yx6a + bxoo):** A sketch session is no longer a separate top-down 2D view — the normal 3D scene and camera stay live (pan/zoom/rotate, face/edge/vertex picking). The sketch is anchored to an invisible plane resolved from the session's **Sketch plane** query (an ordinary feature property: a datum `qCreatedBy(origin_plane_*)` or a body face `qFace(hash)`, editable in the session panel and in a committed sketch's detail view via the QueryWidget face picker). `sketchPlaneFrame.ts` resolves the query to a world frame web-side, mirroring the kernel's `datum_plane_frame`/`face_plane_frame` **basis convention exactly** (seed = world axis least aligned with the normal, crossed twice — extrude profiles use the same; never invent a new one). `SketchCanvas2d` survives as a thin *projection layer* rather than a 2D viewport: `sketchCameraBridge.sketchToScreen` lifts (u,v) through the frame and projects with the real camera (`pickCameraBridge`), `screenToSketch` maps input back via camera-ray ∩ sketch-plane (unclamped t, so the mapping stays total). All ~20 sketch tools, snapping, grips, marquee and HUD run unchanged on those two functions; `cam.zoom` is the effective px/mm at the frame origin (tolerance/grid approximation under perspective). The grid is drawn as projected sketch-space segments (it visibly tilts with the plane); circles/ellipses sample sketch-space polylines instead of `ctx.arc` (on screen they are ellipses under tilt). Starting a sketch never enters a pick mode: the Sketch button opens the session immediately on a pre-selected face (`qFace`) or the XY datum, and re-anchoring the plane mid-session keeps the (u,v) sub-calls, re-projected onto the new plane.
 
-**Committed geometry as real 3D (v0.6.107–108):** All committed sketch geometry renders as genuine scene-graph geometry, not the CPU projection layer. `SketchSession3D` (`viewportOverlays.tsx`) builds fat lines (`LineSegments2`/`Line2NodeMaterial`), points (`THREE.Points`/`PointsNodeMaterial`) and a translucent region-fill mesh (`MeshBasicNodeMaterial`) on `OVERLAY_LAYER` from `collectSketchSessionGeometry` / `collectSketchRegionFill` (`sketchOutline.ts`, which lift each (u,v) through the plane frame into world space). The flattener splits the geometry into one bucket per material — `solid` (DOF-coloured), `construction` (dashed amber), `guide` (dashed grey: spline control polygons, path off-curve connectors), `legs` (accent: spline tangent legs), `points`, `handles` — so **every** drawable entity (line, point, rectangle, circle, polygon, arc, ellipse, slot, spline, path), the closed-region fill and the origin axes now live in 3D. The GPU transforms them with the exact camera matrix used for the rest of the scene, in the same frame, so they cannot lag behind during a camera pan/orbit. (The original bug: the overlay's own `requestAnimationFrame` loop polled `sketchCameraBridge.version`, which is bumped only when the **demand**-mode WebGPU `<Canvas>` actually renders, so the 2D raster was reliably one frame stale and read as a non-rigid "post-process" transform.) DOF status colour mirrors `drawOverlay`'s `committedColor`; the `Invalidator` watches `sketchSession.subCalls` so a commit repaints under demand frameloop. Picking is unaffected — it was always (u,v)-space (`screenToSketch` → `sketchHitTest`), independent of how the geometry is drawn, so the overlay `<canvas>` stays mounted to own gestures.
+**Committed geometry as real 3D (v0.6.107–108):** All committed sketch geometry renders as genuine scene-graph geometry, not the CPU projection layer. `SketchSession3D` (`sketchSceneOverlays.tsx`) builds fat lines (`LineSegments2`/`Line2NodeMaterial`), points (`THREE.Points`/`PointsNodeMaterial`) and a translucent region-fill mesh (`MeshBasicNodeMaterial`) on `OVERLAY_LAYER` from `collectSketchSessionGeometry` / `collectSketchRegionFill` (`sketchOutline.ts`, which lift each (u,v) through the plane frame into world space). The flattener splits the geometry into one bucket per material — `solid` (DOF-coloured), `construction` (dashed amber), `guide` (dashed grey: spline control polygons, path off-curve connectors), `legs` (accent: spline tangent legs), `points`, `handles` — so **every** drawable entity (line, point, rectangle, circle, polygon, arc, ellipse, slot, spline, path), the closed-region fill and the origin axes now live in 3D. The GPU transforms them with the exact camera matrix used for the rest of the scene, in the same frame, so they cannot lag behind during a camera pan/orbit. (The original bug: the overlay's own `requestAnimationFrame` loop polled `sketchCameraBridge.version`, which is bumped only when the **demand**-mode WebGPU `<Canvas>` actually renders, so the 2D raster was reliably one frame stale and read as a non-rigid "post-process" transform.) DOF status colour mirrors `drawOverlay`'s `committedColor`; the `Invalidator` watches `sketchSession.subCalls` so a commit repaints under demand frameloop. Picking is unaffected — it was always (u,v)-space (`screenToSketch` → `sketchHitTest`), independent of how the geometry is drawn, so the overlay `<canvas>` stays mounted to own gestures.
 
 `drawOverlay` now strokes **no** committed geometry — it owns only the transient/HUD layer: hover, snap, drag/rubber-band previews, the marquee, selection highlight + grips, and the text labels (dimension readouts, constraint glyphs).
 
@@ -564,8 +579,8 @@ graph TD
 Net result: every sketch visual — committed geometry (3D scene), region fill (3D mesh), origin axes (3D), and the transient/text HUD (frame-synced overlay) — tracks the camera without lag.
 
 **2D-overlay artifact removal (v0.6.110–111):** the overlay is being emptied of all drawn GEOMETRY, which now renders as real 3D scene objects:
-- *Selection highlight + grips* (v0.6.110): `collectSelectionGeometry` (`viewportOverlays.tsx`) turns `session.selection` + the solved `skState` into highlight outline segments + marker points, rendered by `SketchSession3D` in the selection colour.
-- *Drag/rubber-band previews, hover point, snap ring, projected B-Rep edge guides* (v0.6.111): `SketchCanvas2d` publishes them as (u,v) primitives to `sketchHudBridge` (`buildSketchHudUv` mirrors the old drag switch but as primitives, reusing `collectSketchSessionGeometry` for the shapes); `SketchHud3D` (`viewportOverlays.tsx`) rebuilds the 3D objects from the bridge on each version bump (a `useFrame` reader; `setHudInvalidate` drives a render so it updates during drawing under the demand frameloop). The shared flattener keeps preview shapes pixel-identical to the committed ones.
+- *Selection highlight + grips* (v0.6.110): `collectSelectionGeometry` (`sketchSceneOverlays.tsx`) turns `session.selection` + the solved `skState` into highlight outline segments + marker points, rendered by `SketchSession3D` in the selection colour.
+- *Drag/rubber-band previews, hover point, snap ring, projected B-Rep edge guides* (v0.6.111): `SketchCanvas2d` publishes them as (u,v) primitives to `sketchHudBridge` (`buildSketchHudUv` mirrors the old drag switch but as primitives, reusing `collectSketchSessionGeometry` for the shapes); `SketchHud3D` (`sketchSceneOverlays.tsx`) rebuilds the 3D objects from the bridge on each version bump (a `useFrame` reader; `setHudInvalidate` drives a render so it updates during drawing under the demand frameloop). The shared flattener keeps preview shapes pixel-identical to the committed ones.
 
 `drawOverlay` now strokes **only** the screen-space TEXT (constraint glyphs, dimension/size/radius readouts, snap label) and the marquee box — the last 2D artifacts. Final step (pending): move those to anchored HTML/CSS and drop the canvas's drawing path entirely (it stays only as the pointer-capture surface).
 
