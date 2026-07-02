@@ -22,8 +22,14 @@
  *
  * worker → main : { type: "breps",
  *                   requestId,
+ *                   ok: true,
  *                   items: [{ id, bytes: Uint8Array }, ...] }
+ *              | { type: "breps", requestId, ok: false, error }
  * ```
+ *
+ * A failed weave answers with `ok: false` and the error message — never a
+ * fabricated empty item list, which would mask the failure as "nothing to
+ * import" (the main-thread channel surfaces the error instead).
  *
  * Each `bytes` buffer is transferred (zero-copy). Bodies are woven and
  * RESPONDED ONE REQUEST AT A TIME — the store coalesces rapid-fire
@@ -72,11 +78,9 @@ export interface WeaveBrepPayload {
   bytes: Uint8Array;
 }
 
-export interface WeaveBrepsResponse {
-  type: "breps";
-  requestId: number;
-  items: WeaveBrepPayload[];
-}
+export type WeaveBrepsResponse =
+  | { type: "breps"; requestId: number; ok: true; items: WeaveBrepPayload[] }
+  | { type: "breps"; requestId: number; ok: false; error: string };
 
 let readyPromise: Promise<WasmKernel> | null = null;
 let scriptHost: ReturnType<typeof makeScriptHost> | null = null;
@@ -142,6 +146,7 @@ async function handleWeave(msg: WeaveRequest): Promise<void> {
   const response: WeaveBrepsResponse = {
     type: "breps",
     requestId: msg.requestId,
+    ok: true,
     items,
   };
   self.postMessage(response, transfers);
@@ -153,12 +158,14 @@ self.addEventListener("message", (event: MessageEvent<unknown>) => {
   handleWeave(msg).catch((err) => {
     // eslint-disable-next-line no-console
     console.error("fielddraft weaver worker: weave failed", err);
-    // Always answer — the store's inflight flag must clear even on
-    // failure, or weaving would wedge for the rest of the session.
+    // Always answer — the channel's inflight slot must clear even on
+    // failure, or weaving would wedge for the rest of the session. The
+    // error travels as-is instead of being masked as an empty item list.
     const response: WeaveBrepsResponse = {
       type: "breps",
       requestId: msg.requestId,
-      items: [],
+      ok: false,
+      error: err instanceof Error ? err.message : String(err),
     };
     self.postMessage(response);
   });

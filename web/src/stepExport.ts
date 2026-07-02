@@ -1,62 +1,34 @@
 /**
  * M14c: STEP export bridge.
  *
- * Wraps the OCCT Web Worker with a promise-based API. The worker
+ * Wraps the shared OCCT worker channel with a typed API. The worker
  * (and the ~25 MB opencascade.js WASM) is loaded lazily on the
- * first call to `exportStep()`.
+ * first call to `exportStep()`. Responses are correlated by
+ * requestId, so an export running in parallel with a STEP import
+ * (same worker) can't capture the import's answer.
  */
 
-import type {
-  StepCommand,
-  StepExportRequest,
-  StepWorkerMessage,
-} from "./occt.worker";
-import { getOcctWorker } from "./occtWorkerSingleton";
+import type { StepCommand, StepExportRequest } from "./occt.worker";
+import { getOcctChannel } from "./occtWorkerSingleton";
 
 export type StepProgress = (phase: string) => void;
 
-let inflight = false;
-
-export function exportStep(
+export async function exportStep(
   commands: StepCommand[],
   onProgress?: StepProgress,
 ): Promise<Uint8Array> {
-  if (inflight) {
-    return Promise.reject(new Error("A STEP export is already in progress"));
-  }
-  inflight = true;
-  let worker: Worker;
-  try {
-    worker = getOcctWorker();
-  } catch (e) {
-    inflight = false;
-    return Promise.reject(e);
-  }
-  return new Promise((resolve, reject) => {
-    const handler = (e: MessageEvent<StepWorkerMessage>) => {
-      switch (e.data.type) {
-        case "step-progress":
-          onProgress?.(e.data.phase);
-          break;
-        case "step-result":
-          worker.removeEventListener("message", handler);
-          inflight = false;
-          resolve(e.data.data);
-          break;
-        case "step-error":
-          worker.removeEventListener("message", handler);
-          inflight = false;
-          reject(new Error(e.data.message));
-          break;
-      }
-    };
-
-    worker.addEventListener("message", handler);
-
+  const result = await getOcctChannel().call((requestId) => {
     const request: StepExportRequest = {
       type: "export-step",
+      requestId,
       commands,
     };
-    worker.postMessage(request);
-  });
+    return { message: request };
+  }, onProgress);
+  if (result.type !== "step-result") {
+    throw new Error(
+      `OCCT worker answered a STEP export with "${result.type}"`,
+    );
+  }
+  return result.data;
 }

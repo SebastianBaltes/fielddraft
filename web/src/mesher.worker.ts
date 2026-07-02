@@ -20,12 +20,18 @@
  *
  * worker → main : { type: "bodies",
  *                   requestId,
+ *                   ok: true,
  *                   bodies: [{
  *                     id, version,
  *                     positions, normals, indices,
  *                     classifications, contributors,
  *                   }, ...] }
+ *              | { type: "bodies", requestId, ok: false, error }
  * ```
+ *
+ * A failed rebuild answers with `ok: false` and the error message — never a
+ * fabricated empty body list, which would silently clear the viewport and
+ * mask the failure (main-thread channel surfaces the error instead).
  *
  * Every TypedArray in the response is transferred via the
  * structured clone transfer list, so ownership of the underlying
@@ -97,11 +103,9 @@ export interface MesherRebuildRequest {
   meshAlgorithm?: string;
 }
 
-export interface MesherBodiesResponse {
-  type: "bodies";
-  requestId: number;
-  bodies: MesherBodyPayload[];
-}
+export type MesherBodiesResponse =
+  | { type: "bodies"; requestId: number; ok: true; bodies: MesherBodyPayload[] }
+  | { type: "bodies"; requestId: number; ok: false; error: string };
 
 export type MesherRequest = MesherRebuildRequest;
 export type MesherResponse = MesherBodiesResponse;
@@ -311,6 +315,7 @@ async function handleRebuild(msg: MesherRebuildRequest): Promise<void> {
   const response: MesherBodiesResponse = {
     type: "bodies",
     requestId: msg.requestId,
+    ok: true,
     bodies,
   };
   // `self.postMessage(message, transferables)` inside a dedicated
@@ -368,10 +373,14 @@ self.addEventListener("message", (event: MessageEvent<unknown>) => {
   handleRebuild(rebuild).catch((err) => {
     // eslint-disable-next-line no-console
     console.error("fielddraft mesher worker: rebuild failed", err);
+    // Always answer — the channel's inflight slot must clear even on
+    // failure. The error travels as-is; it must NOT be masked as an empty
+    // body list (which would silently blank the viewport).
     const errorResponse: MesherBodiesResponse = {
       type: "bodies",
-      requestId: (rebuild as MesherRebuildRequest).requestId,
-      bodies: [],
+      requestId: rebuild.requestId,
+      ok: false,
+      error: err instanceof Error ? err.message : String(err),
     };
     self.postMessage(errorResponse);
   });

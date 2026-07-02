@@ -176,6 +176,7 @@ describe("KernelStore — async-weave import publishes a fresh snapshot", () => 
     weaver.emit({
       type: "breps",
       requestId: lastReq.requestId,
+      ok: true,
       items: [{ id: 1, bytes: new Uint8Array([1]) }],
     });
 
@@ -201,6 +202,7 @@ describe("KernelStore — async-weave import publishes a fresh snapshot", () => 
     weaver.emit({
       type: "breps",
       requestId: lastReq.requestId,
+      ok: true,
       items: [{ id: 1, bytes: new Uint8Array([1]) }],
     });
     const afterFirst = store.getState();
@@ -213,6 +215,7 @@ describe("KernelStore — async-weave import publishes a fresh snapshot", () => 
     weaver.emit({
       type: "breps",
       requestId: lastReq.requestId,
+      ok: true,
       items: [{ id: 1, bytes: new Uint8Array([1]) }],
     });
     expect(store.getState()).toBe(afterFirst);

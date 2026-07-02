@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { installInnerApi, type FdInnerApi } from "./workerSandbox";
 import { handleFdCallRequest, isFdCallRequest } from "./workerRpc";
-import { OuterApiClient, type WorkerLike } from "./outerApi";
+import { OuterApiClient } from "./outerApi";
+import type { WorkerLike } from "./workerChannel";
 
 /**
  * A synchronous fake worker that loopbacks `fd_call` requests

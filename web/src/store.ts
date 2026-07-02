@@ -38,7 +38,16 @@ import type {
   MesherBodyPayload,
   MesherRebuildRequest,
 } from "./mesher.worker";
-import type { WeaveBrepsResponse, WeaveRequest } from "./weaver.worker";
+import type {
+  WeaveBrepPayload,
+  WeaveBrepsResponse,
+  WeaveRequest,
+} from "./weaver.worker";
+import {
+  CoalescingWorkerChannel,
+  type ChannelEvent,
+  type OutboundRequest,
+} from "./workerChannel";
 import {
   INACTIVE_SKETCH_SESSION as _INACTIVE,
   applySketchToolDraft as reduceApply,
@@ -481,6 +490,29 @@ const INACTIVE_SKETCH_SESSION: SketchSessionState = _INACTIVE;
 
 export type { MeshOverlayData } from "./meshIO";
 
+/** Map mesher-worker messages onto channel events. Other traffic on the
+ *  shared worker (`fd_result` responses for the Outer API) is ignored. */
+function parseMesherResponse(
+  data: unknown,
+): ChannelEvent<MesherBodyPayload[]> | null {
+  const msg = data as MesherBodiesResponse | null | undefined;
+  if (!msg || typeof msg !== "object" || msg.type !== "bodies") return null;
+  return msg.ok
+    ? { kind: "result", requestId: msg.requestId, value: msg.bodies }
+    : { kind: "error", requestId: msg.requestId, error: msg.error };
+}
+
+/** Map weaver-worker messages onto channel events. */
+function parseWeaverResponse(
+  data: unknown,
+): ChannelEvent<WeaveBrepPayload[]> | null {
+  const msg = data as WeaveBrepsResponse | null | undefined;
+  if (!msg || typeof msg !== "object" || msg.type !== "breps") return null;
+  return msg.ok
+    ? { kind: "result", requestId: msg.requestId, value: msg.items }
+    : { kind: "error", requestId: msg.requestId, error: msg.error };
+}
+
 export class KernelStore {
   readonly kernel: Kernel;
   private readonly autosave: AutoSaveHandle;
@@ -492,19 +524,12 @@ export class KernelStore {
   }
 
   private meshDataCache = new Map<number, MeshOverlayData>();
-  private worker: Worker | null = null;
-  private workerRequestCounter = 0;
-  /** Latest requestId handed to the worker. Responses with a lower
-   *  id are stale (the user mutated faster than the worker could
-   *  keep up) and get dropped on arrival. */
-  private latestWorkerRequestId = 0;
-  /** True while a worker request is in flight; set back to false on
-   *  response. Used to coalesce rapid-fire mutations into a single
-   *  worker job: we always post the *most recent* document, never a
-   *  stale one, by tracking whether another rebuild is queued while
-   *  the current one is still meshing. */
-  private workerInflight = false;
-  private workerRebuildQueued = false;
+  /** Latest-wins channel to the mesher worker: rapid-fire mutations
+   *  coalesce into one follow-up rebuild built against the freshest
+   *  document; stale responses are dropped; worker errors surface via
+   *  `reportWorkerError` instead of masking as an empty mesh set. */
+  private mesherChannel: CoalescingWorkerChannel<MesherBodyPayload[]> | null =
+    null;
   /** Fallback mode: when the Worker constructor throws (e.g. the
    *  bundler didn't emit the worker chunk), we keep sync meshing on
    *  the main-thread kernel and drive the meshedBodies cache from
@@ -517,13 +542,11 @@ export class KernelStore {
    *  main kernel's B-Rep exports stay PERMANENTLY suppressed
    *  (cache-or-empty, never a synchronous main-thread weave); after
    *  every commit the stale bodies are farmed out here and the woven
-   *  results come back as MessagePack buffers for `importBodyBrep`. */
-  private weaver: Worker | null = null;
+   *  results come back as MessagePack buffers for `importBodyBrep`.
+   *  Same latest-wins channel semantics as the mesher. */
+  private weaverChannel: CoalescingWorkerChannel<WeaveBrepPayload[]> | null =
+    null;
   private weaverAvailable = false;
-  private weaverRequestCounter = 0;
-  private latestWeaveRequestId = 0;
-  private weaverInflight = false;
-  private weaveQueued = false;
   /** Mirror of the parametric-weave setting for weave requests. */
   private parametricWeaveEnabled = true;
 
@@ -547,11 +570,20 @@ export class KernelStore {
     // projects (spline-revolve + shell). On failure, sync meshing stays on
     // (functionally correct, just blocks the UI on every mesh rebuild).
     try {
-      this.worker = new Worker(new URL("./mesher.worker.ts", import.meta.url), {
-        type: "module",
-      });
-      this.worker.addEventListener("message", (event) => {
-        this.handleWorkerMessage(event);
+      const mesher = new Worker(
+        new URL("./mesher.worker.ts", import.meta.url),
+        { type: "module" },
+      );
+      this.mesherChannel = new CoalescingWorkerChannel<MesherBodyPayload[]>({
+        worker: mesher,
+        parse: parseMesherResponse,
+        buildRequest: (requestId, pass) =>
+          this.buildMesherRequest(requestId, pass),
+        onResult: (bodies) => this.applyMesherBodies(bodies),
+        onError: (error) => this.reportWorkerError("Mesh rebuild", error),
+        // M13: progressive refinement — the initial pass runs at coarse
+        // resolution; its response auto-posts a full-resolution follow-up.
+        followUpAfterInitial: true,
       });
       this.workerAvailable = true;
       this.kernel.setSyncMeshing(false);
@@ -571,11 +603,16 @@ export class KernelStore {
     // On failure the legacy behaviour remains: overlays weave
     // synchronously on first fetch.
     try {
-      this.weaver = new Worker(new URL("./weaver.worker.ts", import.meta.url), {
-        type: "module",
-      });
-      this.weaver.addEventListener("message", (event) => {
-        this.handleWeaverMessage(event);
+      const weaver = new Worker(
+        new URL("./weaver.worker.ts", import.meta.url),
+        { type: "module" },
+      );
+      this.weaverChannel = new CoalescingWorkerChannel<WeaveBrepPayload[]>({
+        worker: weaver,
+        parse: parseWeaverResponse,
+        buildRequest: (requestId) => this.buildWeaveRequest(requestId),
+        onResult: (items) => this.applyWovenBreps(items),
+        onError: (error) => this.reportWorkerError("B-Rep weave", error),
       });
       this.weaverAvailable = true;
       this.kernel.setBrepSuppressed(true);
@@ -789,7 +826,7 @@ export class KernelStore {
    * asynchronously; in fallback mode (no worker) it snapshots the
    * main-thread kernel's already-synced body buffers right now.
    * Callers are responsible for notifying listeners after — the
-   * worker path notifies from inside `handleWorkerMessage`, the
+   * worker path notifies from inside `applyMesherBodies`, the
    * fallback path mutates state inline so the caller's post-call
    * listener sweep picks it up.
    */
@@ -804,17 +841,6 @@ export class KernelStore {
       meshedBodies: this.snapshotMainThreadBodies(),
     };
   }
-
-  /**
-   * Hand off the current document to the mesher worker. Rapid-fire
-   * mutations coalesce: while a rebuild is in flight, subsequent
-   * calls just flip the `workerRebuildQueued` flag; when the
-   * current rebuild's response lands, we post one new rebuild with
-   * the *latest* document instead of a backlog of stale ones.
-   */
-  /** M13: progressive refinement — after a coarse pass, auto-
-   *  schedule a fine pass at full resolution. */
-  private pendingRefine = false;
 
   private meshAlgorithm: string = "mdc";
 
@@ -918,114 +944,92 @@ export class KernelStore {
     }
   }
 
+  /** Hand off the current document to the mesher worker. Coalescing,
+   *  latest-wins and the coarse→refine ladder live in the channel;
+   *  this is just the trigger. */
   private scheduleWorkerRebuild(): void {
-    if (!this.worker || !this.workerAvailable) return;
     if (!this.dcMeshingEnabled) return;
-    if (this.workerInflight) {
-      this.workerRebuildQueued = true;
-      return;
-    }
-    // M13: start with a fast coarse pass (half resolution),
-    // then refine to full resolution on completion.
-    this.pendingRefine = true;
-    this.postWorkerRebuild(true);
+    this.mesherChannel?.schedule();
   }
 
-  private postWorkerRebuild(coarse = false): void {
-    if (!this.worker) return;
-    this.workerRequestCounter += 1;
-    this.latestWorkerRequestId = this.workerRequestCounter;
-    this.workerInflight = true;
-    this.workerRebuildQueued = false;
+  /** Channel callback: build the freshest rebuild request. The initial
+   *  pass of a burst runs at coarse (half) resolution for a fast first
+   *  paint (M13); the automatic follow-up refines at full resolution. */
+  private buildMesherRequest(
+    requestId: number,
+    pass: "initial" | "followup",
+  ): OutboundRequest | null {
+    if (!this.dcMeshingEnabled) return null;
     const fullRes = this.kernel.meshResolution();
     const coarseRes = Math.max(8, Math.floor(fullRes / 2));
     const request: MesherRebuildRequest = {
       type: "rebuild",
-      requestId: this.workerRequestCounter,
+      requestId,
       documentJson: this.kernel.toJson(),
-      activeMeshResolution: coarse ? coarseRes : fullRes,
+      activeMeshResolution: pass === "initial" ? coarseRes : fullRes,
       contextMeshResolution: this.kernel.contextMeshResolution(),
       activeBodyId: this.kernel.activeBodyId(),
       meshAlgorithm: this.meshAlgorithm,
     };
-    this.worker.postMessage(request);
+    return { message: request };
   }
 
-  private handleWorkerMessage(event: MessageEvent): void {
-    const data = event.data as MesherBodiesResponse | undefined;
-    if (!data || data.type !== "bodies") return;
-    if (data.requestId < this.latestWorkerRequestId) {
-      // Stale response — a newer rebuild is already in flight or queued. Drop
-      // it; we'll render the fresh one shortly. Crucially we keep
-      // workerInflight=true here: the newer request is still outstanding, so
-      // clearing the flag would let the next scheduleWorkerRebuild post a
-      // second concurrent job whose result could clobber the newer one.
-      this.pendingRefine = false;
-      if (this.workerRebuildQueued) {
-        this.postWorkerRebuild();
-      }
-      return;
-    }
-    this.workerInflight = false;
+  /** Channel callback: publish the latest mesh set from the worker. */
+  private applyMesherBodies(bodies: MesherBodyPayload[]): void {
     this.state = {
       ...this.state,
-      meshedBodies: data.bodies,
+      meshedBodies: bodies,
       sceneSize: this.kernel.sceneAabb().size as [number, number, number],
     };
     this.updateSceneBounds();
     for (const listener of this.listeners) listener();
-    if (this.workerRebuildQueued) {
-      this.pendingRefine = false;
-      this.postWorkerRebuild();
-    } else if (this.pendingRefine) {
-      this.pendingRefine = false;
-      this.postWorkerRebuild(false);
-    }
+  }
+
+  /** Channel callback: a worker job failed. Surface it — log + transient
+   *  error banner — instead of masking it as an empty result (which used
+   *  to silently blank the viewport / drop the weave). */
+  private reportWorkerError(job: string, error: string): void {
+    // eslint-disable-next-line no-console
+    console.error(`fielddraft: ${job} failed in worker: ${error}`);
+    this.patch({ transientError: `${job} failed: ${error}` });
+    this.notify();
   }
 
   /**
    * Farm the stale B-Rep weaves out to the weaver worker. Rapid-fire
-   * commits coalesce exactly like mesh rebuilds: while a weave is in
-   * flight, subsequent calls flip `weaveQueued`; the response handler
-   * posts one new request against the LATEST document. During a
-   * suppressed gizmo drag nothing is scheduled — `endGizmoDrag` runs
-   * the catch-up.
+   * commits coalesce exactly like mesh rebuilds (latest-wins channel).
+   * During a suppressed gizmo drag `buildWeaveRequest` returns null, so
+   * nothing is posted — `endGizmoDrag` runs the catch-up schedule.
    */
   private scheduleWeave(): void {
-    if (!this.weaver || !this.weaverAvailable) return;
-    if (this.gizmoDragActive && !this.dragBrepRecompute) return;
-    if (this.weaverInflight) {
-      this.weaveQueued = true;
-      return;
-    }
+    this.weaverChannel?.schedule();
+  }
+
+  /** Channel callback: build the freshest weave request, or null when
+   *  there is nothing to weave right now (no stale bodies, or a
+   *  suppressed gizmo drag is running). */
+  private buildWeaveRequest(requestId: number): OutboundRequest | null {
+    if (this.gizmoDragActive && !this.dragBrepRecompute) return null;
     const stale = this.kernel.bodyBrepStaleIds();
-    if (stale.length === 0) return;
-    this.weaverRequestCounter += 1;
-    this.latestWeaveRequestId = this.weaverRequestCounter;
-    this.weaverInflight = true;
-    this.weaveQueued = false;
+    if (stale.length === 0) return null;
     const request: WeaveRequest = {
       type: "weave",
-      requestId: this.weaverRequestCounter,
+      requestId,
       documentJson: this.kernel.toJson(),
       parametricWeave: this.parametricWeaveEnabled,
       bodyIds: stale,
     };
-    this.weaver.postMessage(request);
+    return { message: request };
   }
 
-  private handleWeaverMessage(event: MessageEvent): void {
-    const data = event.data as WeaveBrepsResponse | undefined;
-    if (!data || data.type !== "breps") return;
-    this.weaverInflight = false;
+  /** Channel callback: install freshly woven B-Reps into the main kernel. */
+  private applyWovenBreps(items: WeaveBrepPayload[]): void {
     let imported = false;
-    if (data.requestId === this.latestWeaveRequestId) {
-      for (const item of data.items) {
-        // Validated against the CURRENT placement-invariant key — a
-        // result that raced a newer edit misses here; the queued
-        // re-schedule below covers it against the latest document.
-        if (this.kernel.importBodyBrep(item.id, item.bytes)) imported = true;
-      }
+    for (const item of items) {
+      // Validated against the CURRENT placement-invariant key — a
+      // result that raced a newer edit misses here; the channel's
+      // queued re-schedule covers it against the latest document.
+      if (this.kernel.importBodyBrep(item.id, item.bytes)) imported = true;
     }
     if (imported) {
       // Publish a fresh snapshot so `useSyncExternalStore` actually re-renders
@@ -1036,10 +1040,6 @@ export class KernelStore {
       // a new state reference is all the overlays need to refetch.
       this.patch({ brepVersion: this.state.brepVersion + 1 });
       this.notify();
-    }
-    if (this.weaveQueued) {
-      this.weaveQueued = false;
-      this.scheduleWeave();
     }
   }
 
