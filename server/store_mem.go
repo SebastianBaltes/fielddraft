@@ -849,6 +849,9 @@ func (s *memStore) CompleteWorkOrder(ticketID, deployID string) (*WorkOrder, err
 	if !ok {
 		return nil, errWorkOrderMissing
 	}
+	if wo.CompletedAt != nil {
+		return nil, errWorkOrderCompleted
+	}
 	if deployID != "" {
 		if _, ok := s.deploys[deployID]; !ok {
 			return nil, errDeployMissing

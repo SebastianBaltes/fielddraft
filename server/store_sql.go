@@ -1187,8 +1187,13 @@ func (s *sqlStore) ClaimWorkOrder(ticketID string) (*WorkOrder, error) {
 }
 
 func (s *sqlStore) CompleteWorkOrder(ticketID, deployID string) (*WorkOrder, error) {
-	if s.GetWorkOrder(ticketID) == nil {
+	wo := s.GetWorkOrder(ticketID)
+	if wo == nil {
 		return nil, errWorkOrderMissing
+	}
+	// A second complete must not silently overwrite completed_at/deploy link.
+	if wo.CompletedAt != nil {
+		return nil, errWorkOrderCompleted
 	}
 	// An unknown deploy link is a clean 404 — parity with memStore/fileTicketStore
 	// (previously the FK violation surfaced as a 500 here).

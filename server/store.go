@@ -96,10 +96,11 @@ var (
 	errInviteUsed    = &httpError{http.StatusBadRequest, "invite already used"}
 	errTicketMissing = &httpError{http.StatusNotFound, "ticket not found"}
 
-	errWorkOrderExists  = &httpError{http.StatusConflict, "work-order already exists"}
-	errWorkOrderMissing = &httpError{http.StatusNotFound, "work-order not found"}
-	errWorkOrderClaimed = &httpError{http.StatusConflict, "work-order already claimed"}
-	errDeployMissing    = &httpError{http.StatusNotFound, "deploy not found"}
+	errWorkOrderExists    = &httpError{http.StatusConflict, "work-order already exists"}
+	errWorkOrderMissing   = &httpError{http.StatusNotFound, "work-order not found"}
+	errWorkOrderClaimed   = &httpError{http.StatusConflict, "work-order already claimed"}
+	errWorkOrderCompleted = &httpError{http.StatusConflict, "work-order already completed"}
+	errDeployMissing      = &httpError{http.StatusNotFound, "deploy not found"}
 )
 
 type httpError struct {

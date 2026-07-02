@@ -379,6 +379,52 @@ func TestWorkOrderClaimComplete(t *testing.T) {
 	if len(queue.Items) != 0 {
 		t.Fatalf("completed ticket still in coding queue: %+v", queue.Items)
 	}
+
+	// Double-complete → 409, and the original completion stays untouched.
+	resp = e.agentReq(t, "POST", "/api/work-orders/"+id+"/complete", testCodingToken,
+		`{"next_state":"resolved"}`, nil)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("double complete: got %d, want 409", resp.StatusCode)
+	}
+	after := e.tickets.GetWorkOrder(id)
+	if !after.CompletedAt.Equal(*wo.CompletedAt) || after.DeployID == nil || *after.DeployID != dep.ID {
+		t.Fatalf("double complete mutated the work-order: %+v", after)
+	}
+}
+
+// TestCompleteWorkOrderValidatesTransitionFirst — an invalid next_state is
+// rejected BEFORE the work-order is completed: the order stays open and the
+// ticket state is unchanged (the old handler completed first, then failed).
+func TestCompleteWorkOrderValidatesTransitionFirst(t *testing.T) {
+	e := newAgentEnv(t)
+	id := e.createTicket(t, `{"title":"x","body":"y"}`)
+	accept := `{"vision_fit":"fit","category":"bug","next_state":"accepted","work_order":{"summary":"do it"}}`
+	resp := e.agentReq(t, "POST", "/api/tickets/"+id+"/verdict", testPOToken, accept, nil)
+	resp.Body.Close()
+	resp = e.agentReq(t, "POST", "/api/work-orders/"+id+"/claim", testCodingToken, "", nil)
+	resp.Body.Close()
+
+	// in_progress → closed is not a legal move → 400, nothing mutated.
+	resp = e.agentReq(t, "POST", "/api/work-orders/"+id+"/complete", testCodingToken,
+		`{"next_state":"closed"}`, nil)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("invalid next_state: got %d, want 400", resp.StatusCode)
+	}
+	if wo := e.tickets.GetWorkOrder(id); wo.CompletedAt != nil {
+		t.Fatal("work-order was completed despite the invalid transition")
+	}
+	if e.tickets.GetTicket(id).State != StateInProgress {
+		t.Fatal("ticket state changed despite the invalid transition")
+	}
+
+	// Unknown work-order → 404.
+	resp = e.agentReq(t, "POST", "/api/work-orders/does-not-exist/complete", testCodingToken, "", nil)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("unknown ticket complete: got %d, want 404", resp.StatusCode)
+	}
 }
 
 // ─── deploy record round-trip + list authz ──────────────────────

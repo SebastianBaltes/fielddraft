@@ -675,6 +675,9 @@ func (s *fileTicketStore) CompleteWorkOrder(ticketID, deployID string) (*WorkOrd
 	if ft == nil || ft.WorkOrder == nil {
 		return nil, errWorkOrderMissing
 	}
+	if ft.WorkOrder.CompletedAt != nil {
+		return nil, errWorkOrderCompleted
+	}
 	if deployID != "" && !s.hasDeploy(deployID) {
 		return nil, errDeployMissing
 	}

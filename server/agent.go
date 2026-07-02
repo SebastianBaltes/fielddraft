@@ -579,20 +579,36 @@ func (s *Server) handleCompleteWorkOrder(w http.ResponseWriter, r *http.Request)
 	// Body is optional.
 	json.NewDecoder(http.MaxBytesReader(w, r.Body, maxAgentBodyBytes)).Decode(&req)
 
+	// Validate the ticket transition BEFORE completing the work-order: a bad
+	// next_state must not leave the order completed while the ticket move
+	// fails (the old order mutated first and errored after).
+	t := s.tickets.GetTicket(ticketID)
+	if t == nil {
+		writeErr(w, http.StatusNotFound, "not found")
+		return
+	}
+	// Default target is `resolved`; the body may pick another legal state
+	// (e.g. deploying, or needs_info if the dev needs clarification).
+	target := StateResolved
+	if req.NextState != "" {
+		target = TicketState(req.NextState)
+	}
+	if err := validateTransition(t.State, target); err != nil {
+		writeStoreError(w, err)
+		return
+	}
+
+	// Completing twice is a 409 (errWorkOrderCompleted) — never a silent
+	// overwrite of completed_at / the deploy link.
 	wo, err := s.tickets.CompleteWorkOrder(ticketID, req.DeployID)
 	if err != nil {
 		writeStoreError(w, err)
 		return
 	}
-	// Transition the ticket. Default target is `resolved`; the body may pick
-	// another legal state (e.g. needs_info if the dev needs clarification).
-	target := StateResolved
-	if req.NextState != "" {
-		target = TicketState(req.NextState)
-	}
+	// The move was validated above; if a concurrent actor won the race in
+	// between, keep the completion and just log — consistent with claim.
 	if _, terr := s.tickets.SetTicketState(ticketID, target); terr != nil {
-		writeStoreError(w, terr)
-		return
+		logStateNote(ticketID, "complete", terr)
 	}
 	json.NewEncoder(w).Encode(map[string]any{
 		"work_order": wo,

@@ -446,6 +446,14 @@ func testTicketStoreContract(t *testing.T, newFixture func(t *testing.T) ticketS
 		if done.Open() {
 			t.Fatal("completed work-order should not be Open()")
 		}
+		// A second complete is a conflict — completed_at / the deploy link are
+		// never silently overwritten.
+		if _, err := f.store.CompleteWorkOrder(tk.ID, ""); err != errWorkOrderCompleted {
+			t.Fatalf("double complete err = %v, want errWorkOrderCompleted", err)
+		}
+		if after := f.store.GetWorkOrder(tk.ID); !after.CompletedAt.Equal(*done.CompletedAt) || *after.DeployID != dep.ID {
+			t.Fatalf("double complete mutated the work-order: %+v", after)
+		}
 		if _, err := f.store.CompleteWorkOrder("does-not-exist", ""); err != errWorkOrderMissing {
 			t.Fatalf("complete missing err = %v", err)
 		}
@@ -475,19 +483,20 @@ func testTicketStoreContract(t *testing.T, newFixture func(t *testing.T) ticketS
 		if len(d2.TicketIDs) != 1 || d2.TicketIDs[0] != "tid" {
 			t.Fatalf("deploy ticket_ids: %+v", d2.TicketIDs)
 		}
-		// Newest first: d2 appears before d1 (containment + relative order only —
-		// a shared DB may hold other rows).
-		i1, i2 := -1, -1
-		for i, d := range f.store.ListDeploys() {
+		// Both deploys are listed. (No order assertion: sqlStore sorts by the
+		// second-precision deployed_at with an id tie-break, so same-second
+		// inserts have no portable order across backends.)
+		found1, found2 := false, false
+		for _, d := range f.store.ListDeploys() {
 			switch d.ID {
 			case d1.ID:
-				i1 = i
+				found1 = true
 			case d2.ID:
-				i2 = i
+				found2 = true
 			}
 		}
-		if i1 < 0 || i2 < 0 || i2 > i1 {
-			t.Fatalf("deploy order: d1@%d d2@%d (want d2 before d1)", i1, i2)
+		if !found1 || !found2 {
+			t.Fatalf("deploys missing from list: d1=%v d2=%v", found1, found2)
 		}
 	})
 
