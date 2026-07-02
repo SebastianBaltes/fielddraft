@@ -50,6 +50,13 @@ type Store interface {
 	ConsumeInvite(token, usedBy string) (*Invite, error)
 	DeleteInvite(token string) bool
 
+	// RegisterWithInvite validates + burns the invite and creates the user as
+	// ONE atomic operation (a transaction in sqlStore, one lock section in
+	// memStore) — two racing registrations with the same token can never both
+	// create a user, and a duplicate-email failure never burns the token.
+	// Errors: errInviteInvalid / errInviteUsed / errConflict.
+	RegisterWithInvite(email, displayName, password, inviteToken string) (*User, error)
+
 	// Projects.
 	CreateProject(ownerID, name string, doc json.RawMessage) *Project
 	ListProjects(ownerID string) []*Project

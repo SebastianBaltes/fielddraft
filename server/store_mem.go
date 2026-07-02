@@ -285,6 +285,35 @@ func (s *memStore) consumeInviteLocked(token, usedBy string) (*Invite, error) {
 	return inv, nil
 }
 
+// RegisterWithInvite validates + burns the invite and creates the user under
+// ONE lock section — the single-use guarantee and the user creation cannot
+// tear apart (fixes the register race, see Store interface).
+func (s *memStore) RegisterWithInvite(email, displayName, password, token string) (*User, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	// Invite first (a duplicate-email failure must not burn the token), then
+	// the email check, then create + burn.
+	inv, ok := s.invites[token]
+	if !ok || now().After(inv.ExpiresAt) {
+		return nil, errInviteInvalid
+	}
+	if inv.UsedBy != nil {
+		return nil, errInviteUsed
+	}
+	if _, exists := s.emails[email]; exists {
+		return nil, errConflict
+	}
+	user := s.createUserLocked(email, displayName, password, RoleUser)
+	if _, err := s.consumeInviteLocked(token, user.ID); err != nil {
+		// Unreachable: the invite was validated under this same lock.
+		delete(s.users, user.ID)
+		delete(s.emails, email)
+		s.userSeq = s.userSeq[:len(s.userSeq)-1]
+		return nil, err
+	}
+	return user, nil
+}
+
 func (s *memStore) DeleteInvite(token string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()

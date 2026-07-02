@@ -2,9 +2,11 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -358,6 +360,82 @@ func TestRegisterRequiresInvite(t *testing.T) {
 	resp.Body.Close()
 	if resp.StatusCode != 400 {
 		t.Fatalf("reused invite: got %d, want 400", resp.StatusCode)
+	}
+}
+
+// TestRegisterWithInviteRace — RegisterWithInvite is atomic: N parallel
+// registrations with the SAME invite yield exactly one user; every loser gets
+// errInviteUsed and leaves NO user behind (the old two-phase handler leaked a
+// user without a consumed invite on this race).
+func TestRegisterWithInviteRace(t *testing.T) {
+	store := NewStore()
+	admin, err := store.CreateUser("race-admin@test.com", "Admin", "adminpass123", RoleAdmin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inv := store.CreateInvite(admin.ID, "", "", "", time.Now().Add(time.Hour))
+
+	const n = 16
+	var wg sync.WaitGroup
+	errs := make([]error, n)
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			_, errs[i] = store.RegisterWithInvite(
+				fmt.Sprintf("racer-%d@test.com", i), "R", "pass12345", inv.Token)
+		}(i)
+	}
+	wg.Wait()
+
+	winners := 0
+	for i, err := range errs {
+		switch err {
+		case nil:
+			winners++
+		case errInviteUsed:
+			// The loser must NOT have left a user behind.
+			if store.GetUserByEmail(fmt.Sprintf("racer-%d@test.com", i)) != nil {
+				t.Fatalf("loser %d left a user without a consumed invite", i)
+			}
+		default:
+			t.Fatalf("racer %d: unexpected error %v", i, err)
+		}
+	}
+	if winners != 1 {
+		t.Fatalf("winners = %d, want exactly 1", winners)
+	}
+	if got := store.GetInvite(inv.Token); got == nil || got.UsedBy == nil {
+		t.Fatal("invite not burned by the winning registration")
+	}
+}
+
+// TestRegisterWithInviteConflictKeepsToken — a duplicate-email registration
+// fails with errConflict and does NOT burn the invite.
+func TestRegisterWithInviteConflictKeepsToken(t *testing.T) {
+	store := NewStore()
+	admin, err := store.CreateUser("keep-admin@test.com", "Admin", "adminpass123", RoleAdmin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CreateUser("taken@test.com", "T", "pass12345", RoleUser); err != nil {
+		t.Fatal(err)
+	}
+	inv := store.CreateInvite(admin.ID, "", "", "", time.Now().Add(time.Hour))
+
+	if _, err := store.RegisterWithInvite("taken@test.com", "X", "pass12345", inv.Token); err != errConflict {
+		t.Fatalf("duplicate email err = %v, want errConflict", err)
+	}
+	if got := store.GetInvite(inv.Token); got == nil || got.UsedBy != nil {
+		t.Fatal("invite burned by a failed (duplicate-email) registration")
+	}
+	// The token still works afterwards.
+	if _, err := store.RegisterWithInvite("fresh@test.com", "F", "pass12345", inv.Token); err != nil {
+		t.Fatalf("registration after conflict: %v", err)
+	}
+	// Bad tokens are rejected cleanly.
+	if _, err := store.RegisterWithInvite("x@test.com", "X", "pass12345", "bogus"); err != errInviteInvalid {
+		t.Fatalf("bogus token err = %v, want errInviteInvalid", err)
 	}
 }
 

@@ -169,27 +169,11 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"invite required"}`, http.StatusForbidden)
 		return
 	}
-	// Validate (exists, unused, not expired) before creating the user so a
-	// duplicate-email failure doesn't burn the token.
-	inv := s.store.GetInvite(token)
-	if inv == nil || time.Now().UTC().After(inv.ExpiresAt) {
-		writeStoreError(w, errInviteInvalid)
-		return
-	}
-	if inv.UsedBy != nil {
-		writeStoreError(w, errInviteUsed)
-		return
-	}
-
-	user, err := s.store.CreateUser(body.Email, body.DisplayName, body.Password, RoleUser)
+	// Validate + burn the invite and create the user as ONE atomic store
+	// operation — two racing registrations with the same token can never both
+	// create a user, and a duplicate email never burns the token.
+	user, err := s.store.RegisterWithInvite(body.Email, body.DisplayName, body.Password, token)
 	if err != nil {
-		writeStoreError(w, err)
-		return
-	}
-
-	// Burn the invite atomically with the real user id. The single-use guard
-	// lives in ConsumeInvite; on a lost race we delete the just-created user.
-	if _, err := s.store.ConsumeInvite(token, user.ID); err != nil {
 		writeStoreError(w, err)
 		return
 	}

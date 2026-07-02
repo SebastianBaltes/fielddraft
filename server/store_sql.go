@@ -426,6 +426,61 @@ func (s *sqlStore) ConsumeInvite(token, usedBy string) (*Invite, error) {
 	return inv, nil
 }
 
+// RegisterWithInvite validates + burns the invite and creates the user in ONE
+// transaction. The invite row is locked FOR UPDATE, so two racing registrations
+// with the same token serialize: the loser sees used_by set and no user row is
+// left behind. A duplicate email rolls the whole Tx back — the token survives.
+func (s *sqlStore) RegisterWithInvite(email, displayName, password, token string) (*User, error) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+
+	var expiresAt time.Time
+	var usedBy sql.NullString
+	if err := tx.QueryRow(
+		`SELECT expires_at, used_by FROM invites WHERE token = ? FOR UPDATE`, token).
+		Scan(&expiresAt, &usedBy); err != nil {
+		return nil, errInviteInvalid
+	}
+	if now().After(expiresAt) {
+		return nil, errInviteInvalid
+	}
+	if usedBy.Valid {
+		return nil, errInviteUsed
+	}
+
+	hash, salt := hashPassword(password)
+	u := &User{
+		ID:           newID(),
+		Email:        email,
+		DisplayName:  displayName,
+		Role:         RoleUser,
+		PasswordHash: hash,
+		Salt:         salt,
+		CreatedAt:    now(),
+	}
+	if _, err := tx.Exec(
+		`INSERT INTO users (id, email, display_name, password_hash, salt, role, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		u.ID, u.Email, u.DisplayName, u.PasswordHash, u.Salt, string(u.Role), u.CreatedAt); err != nil {
+		if isDuplicate(err) {
+			return nil, errConflict
+		}
+		return nil, err
+	}
+	if _, err := tx.Exec(
+		`UPDATE invites SET used_by = ?, used_at = ? WHERE token = ?`,
+		u.ID, now(), token); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return u, nil
+}
+
 func (s *sqlStore) DeleteInvite(token string) bool {
 	res, err := s.db.Exec(`DELETE FROM invites WHERE token = ?`, token)
 	if err != nil {

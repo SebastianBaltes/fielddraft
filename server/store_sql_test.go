@@ -11,7 +11,9 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
+	"sync"
 	"testing"
 	"time"
 )
@@ -128,6 +130,66 @@ func TestSQLStoreRoundTrip(t *testing.T) {
 
 	if !store.DeleteProject(p.ID, u.ID) {
 		t.Fatal("DeleteProject returned false")
+	}
+}
+
+// TestSQLStoreRegisterWithInvite — the transactional register path: parallel
+// registrations with the same token yield exactly one user (FOR UPDATE
+// serializes them; losers roll back), and a duplicate email keeps the token.
+// Auto-skips without TEST_DB_DSN/DB_DSN.
+func TestSQLStoreRegisterWithInvite(t *testing.T) {
+	store := newTestSQLStore(t)
+
+	admin, err := store.CreateUser("sqlrace-admin-"+newID()+"@test.com", "A", "adminpass1", RoleAdmin)
+	if err != nil {
+		t.Fatalf("CreateUser admin: %v", err)
+	}
+	inv := store.CreateInvite(admin.ID, "", "", "", time.Now().Add(time.Hour))
+	if inv == nil {
+		t.Fatal("CreateInvite nil")
+	}
+
+	// Parallel race on one token.
+	const n = 8
+	prefix := "sqlracer-" + newID()
+	var wg sync.WaitGroup
+	errs := make([]error, n)
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			_, errs[i] = store.RegisterWithInvite(
+				fmt.Sprintf("%s-%d@test.com", prefix, i), "R", "pass12345", inv.Token)
+		}(i)
+	}
+	wg.Wait()
+	winners := 0
+	for i, err := range errs {
+		switch err {
+		case nil:
+			winners++
+		case errInviteUsed:
+			if store.GetUserByEmail(fmt.Sprintf("%s-%d@test.com", prefix, i)) != nil {
+				t.Fatalf("loser %d left a user without a consumed invite", i)
+			}
+		default:
+			t.Fatalf("racer %d: unexpected error %v", i, err)
+		}
+	}
+	if winners != 1 {
+		t.Fatalf("winners = %d, want exactly 1", winners)
+	}
+
+	// Duplicate email → errConflict, token NOT burned.
+	inv2 := store.CreateInvite(admin.ID, "", "", "", time.Now().Add(time.Hour))
+	if _, err := store.RegisterWithInvite(admin.Email, "X", "pass12345", inv2.Token); err != errConflict {
+		t.Fatalf("duplicate email err = %v, want errConflict", err)
+	}
+	if got := store.GetInvite(inv2.Token); got == nil || got.UsedBy != nil {
+		t.Fatal("invite burned by a failed (duplicate-email) registration")
+	}
+	if _, err := store.RegisterWithInvite("x@test.com", "X", "pass12345", "bogus"); err != errInviteInvalid {
+		t.Fatalf("bogus token err = %v, want errInviteInvalid", err)
 	}
 }
 
