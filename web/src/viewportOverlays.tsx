@@ -15,6 +15,7 @@ import {
   SpriteNodeMaterial,
 } from "three/webgpu";
 import * as THREE from "three";
+import { ndcZVisible } from "./projectionSpace";
 import {
   createFatLineMaterials,
   isWebGPURenderer,
@@ -2110,7 +2111,7 @@ export function BRepEdgeOverlay({
         b.set(pos[i + 3], pos[i + 4], pos[i + 5]).project(camera);
         // Skip segments that cross or sit behind the near plane — projecting
         // those wraps the NDC coords and yields bogus distances.
-        if (a.z < -1 || a.z > 1 || b.z < -1 || b.z > 1) continue;
+        if (!ndcZVisible(camera, a.z) || !ndcZVisible(camera, b.z)) continue;
         // Closest point on the segment in NDC; `t` doubles as the lerp
         // parameter for the world-space occlusion probe point below (the
         // perspective error over one short tessellation segment is nil).
@@ -3100,7 +3101,7 @@ export function BRepSelectionOverlay({
           if (resolvedFace && camDist > resolvedFace.dist * 1.05 + 1e-3)
             continue;
           v.project(camera);
-          if (v.z < -1 || v.z > 1) continue;
+          if (!ndcZVisible(camera, v.z)) continue;
           const d = Math.hypot(v.x - ndc.x, v.y - ndc.y);
           if (d > VERTEX_PICK_NDC_RADIUS) continue;
           if (!resolvedVertex || d < resolvedVertex.ndcDist) {

@@ -24,6 +24,16 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.353",
+    entries: [
+      {
+        kind: "fix",
+        text: "Picking/Selektion kullt Punkte hinter der Kamera jetzt korrekt (Box-Select, Kanten-Snap, Vertex-Pick, Zoom-to-fit-Sichtbarkeit) — die NDC-Tiefenpr\u00fcfung nutzte die WebGL- statt der WebGPU-Clip-Space-Konvention",
+        scope: "viewport",
+      },
+    ],
+  },
+  {
     version: "0.6.352",
     entries: [
       {

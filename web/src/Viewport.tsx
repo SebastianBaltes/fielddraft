@@ -18,6 +18,7 @@ import {
 } from "react";
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
 import * as THREE from "three";
+import { ndcZVisible } from "./projectionSpace";
 import { useKernelStore } from "./store";
 import type { PickHit, PickResult } from "./kernel";
 import type { BRepEdgeMode, FrameLoopMode } from "./SettingsMenu";
@@ -1127,7 +1128,7 @@ export function Viewport({
     const v = new THREE.Vector3();
     const project: ProjectFn = (x, y, z) => {
       v.set(x, y, z).project(camera);
-      if (v.z < -1 || v.z > 1) return null;
+      if (!ndcZVisible(camera, v.z)) return null;
       return { x: v.x, y: v.y };
     };
     // Onshape's implicit multi-select accumulates box selections too; the
