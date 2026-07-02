@@ -1,19 +1,20 @@
 ---
-# FieldDraft — V-server bootstrap (one-time).
+# FieldDraft — V-server bootstrap (one-time, idempotent).
 #
 #   ansible-playbook -i inventory.ini bootstrap.yml
 #
-# Installs Docker + the compose plugin, locks the firewall down to 22/80/443,
-# creates an unprivileged deploy user, and lays out the base directories. Uses
-# only ansible.builtin + apt/ufw (Debian/Ubuntu V-server assumed) so no extra
-# collections are required.
+# Installs Docker + compose, locks the firewall to 22/80/443, makes Docker
+# respect UFW (ufw-docker), hardens SSH (key-only), enables unattended security
+# upgrades + fail2ban, creates an unprivileged deploy user, and lays out the base
+# dirs. Uses ansible.builtin + community.general (ufw).
 #
-# NOTE: this pulls Docker from the OFFICIAL docker.com apt repo, which is
-# distribution-aware (linux/debian vs linux/ubuntu) below. On a brand-new
-# release Docker hasn't published a repo for yet (e.g. a fresh Ubuntu LTS),
-# this will 404 — in that case install the distro's own packages instead:
-#   apt-get install -y docker.io docker-compose-v2
-# (that is exactly how the first live bring-up was done on Ubuntu 26.04).
+# This encodes the HARDENED BASELINE that is live on the production box
+# (203.0.113.10, Ubuntu 26.04). The first bring-up was done by hand because
+# Docker publishes no docker.com apt repo for 26.04 yet — so set
+# `use_distro_docker: true` (see group_vars) to install the distro's own
+# docker.io + docker-compose-v2 instead of the docker.com repo. The
+# SSH/fail2ban/unattended-upgrades/ufw-docker tasks below mirror what was applied
+# manually, so a rebuild reproduces the same posture.
 
 - name: Bootstrap the FieldDraft V-server
   hosts: vserver
@@ -23,9 +24,27 @@
     # linux/debian or linux/ubuntu — derived from the target, not hardcoded.
     docker_apt_distro: "{{ ansible_distribution | lower }}"
     docker_apt_release: "{{ ansible_distribution_release | default('bookworm') }}"
+    # Set true on releases Docker's apt repo doesn't cover yet (e.g. Ubuntu
+    # 26.04) → install the distro's own docker.io + docker-compose-v2.
+    use_distro_docker: false
+
+  handlers:
+    - name: Reload sshd
+      ansible.builtin.service:
+        name: ssh
+        state: reloaded
+
+    - name: Restart fail2ban
+      ansible.builtin.service:
+        name: fail2ban
+        state: restarted
+
+    - name: Reload ufw
+      community.general.ufw:
+        state: reloaded
 
   tasks:
-    - name: Install base packages
+    - name: Install base packages (incl. unattended-upgrades + fail2ban)
       ansible.builtin.apt:
         name:
           - ca-certificates
@@ -35,39 +54,54 @@
           - python3
           - rsync
           - restic
+          - unattended-upgrades
+          - fail2ban
         state: present
         update_cache: true
 
-    - name: Create Docker apt keyring dir
-      ansible.builtin.file:
-        path: /etc/apt/keyrings
-        state: directory
-        mode: "0755"
-
-    - name: Add Docker GPG key
-      ansible.builtin.get_url:
-        url: "https://download.docker.com/linux/{{ docker_apt_distro }}/gpg"
-        dest: /etc/apt/keyrings/docker.asc
-        mode: "0644"
-
-    - name: Add Docker apt repository
-      ansible.builtin.apt_repository:
-        repo: >-
-          deb [arch={{ docker_apt_arch }} signed-by=/etc/apt/keyrings/docker.asc]
-          https://download.docker.com/linux/{{ docker_apt_distro }} {{ docker_apt_release }} stable
-        filename: docker
-        state: present
-
-    - name: Install Docker Engine + compose plugin
+    # ── Docker: distro packages (new releases) OR the docker.com repo ────────
+    - name: Install Docker from distro packages (docker.io + compose-v2)
       ansible.builtin.apt:
         name:
-          - docker-ce
-          - docker-ce-cli
-          - containerd.io
-          - docker-buildx-plugin
-          - docker-compose-plugin
+          - docker.io
+          - docker-compose-v2
         state: present
         update_cache: true
+      when: use_distro_docker
+
+    - name: Install Docker from the docker.com apt repo
+      when: not use_distro_docker
+      block:
+        - name: Create Docker apt keyring dir
+          ansible.builtin.file:
+            path: /etc/apt/keyrings
+            state: directory
+            mode: "0755"
+
+        - name: Add Docker GPG key
+          ansible.builtin.get_url:
+            url: "https://download.docker.com/linux/{{ docker_apt_distro }}/gpg"
+            dest: /etc/apt/keyrings/docker.asc
+            mode: "0644"
+
+        - name: Add Docker apt repository
+          ansible.builtin.apt_repository:
+            repo: >-
+              deb [arch={{ docker_apt_arch }} signed-by=/etc/apt/keyrings/docker.asc]
+              https://download.docker.com/linux/{{ docker_apt_distro }} {{ docker_apt_release }} stable
+            filename: docker
+            state: present
+
+        - name: Install Docker Engine + compose plugin
+          ansible.builtin.apt:
+            name:
+              - docker-ce
+              - docker-ce-cli
+              - containerd.io
+              - docker-buildx-plugin
+              - docker-compose-plugin
+            state: present
+            update_cache: true
 
     - name: Enable and start Docker
       ansible.builtin.service:
@@ -96,7 +130,68 @@
         - "{{ data_root }}/blobs"
         - "{{ backup_dir }}"
 
-    # ── Firewall: only SSH + HTTP(S) ────────────────────────────────────────
+    # ── SSH hardening: key-only, no passwords, minimal surface ───────────────
+    # Drop-in is read before the main sshd_config lines (Include is at the top →
+    # first-match wins), so these override the distro defaults.
+    - name: Harden sshd (drop-in)
+      ansible.builtin.copy:
+        dest: /etc/ssh/sshd_config.d/00-hardening.conf
+        owner: root
+        group: root
+        mode: "0644"
+        content: |
+          # FieldDraft SSH hardening — key-only, no passwords, minimal surface.
+          PasswordAuthentication no
+          KbdInteractiveAuthentication no
+          X11Forwarding no
+          MaxAuthTries 3
+      notify: Reload sshd
+
+    # ── Unattended security upgrades ─────────────────────────────────────────
+    - name: Enable periodic unattended-upgrades
+      ansible.builtin.copy:
+        dest: /etc/apt/apt.conf.d/20auto-upgrades
+        owner: root
+        group: root
+        mode: "0644"
+        content: |
+          APT::Periodic::Update-Package-Lists "1";
+          APT::Periodic::Unattended-Upgrade "1";
+
+    - name: Enable and start unattended-upgrades
+      ansible.builtin.service:
+        name: unattended-upgrades
+        enabled: true
+        state: started
+
+    # ── fail2ban: SSH brute-force protection, banning via UFW ────────────────
+    - name: Configure the fail2ban sshd jail
+      ansible.builtin.copy:
+        dest: /etc/fail2ban/jail.local
+        owner: root
+        group: root
+        mode: "0644"
+        content: |
+          # FieldDraft fail2ban — SSH brute-force protection. Bans via ufw;
+          # reads sshd events from the systemd journal.
+          [DEFAULT]
+          bantime   = 1h
+          findtime  = 10m
+          maxretry  = 5
+          backend   = systemd
+          banaction = ufw
+
+          [sshd]
+          enabled = true
+      notify: Restart fail2ban
+
+    - name: Enable and start fail2ban
+      ansible.builtin.service:
+        name: fail2ban
+        enabled: true
+        state: started
+
+    # ── Firewall: only SSH + HTTP(S) ─────────────────────────────────────────
     - name: UFW default deny incoming
       community.general.ufw:
         direction: incoming
@@ -106,6 +201,11 @@
       community.general.ufw:
         direction: outgoing
         policy: allow
+
+    - name: UFW default deny routed
+      community.general.ufw:
+        direction: routed
+        policy: deny
 
     - name: UFW allow 22/80/443
       community.general.ufw:
@@ -120,3 +220,20 @@
     - name: Enable UFW
       community.general.ufw:
         state: enabled
+
+    # ── Make Docker respect UFW ──────────────────────────────────────────────
+    # Without this, host-PUBLISHED container ports bypass UFW entirely (Docker
+    # writes its own iptables rules). After install, published ports are DENIED
+    # by default; allow each intentionally-public one explicitly (deploy.yml does
+    # this for Caddy after the stack is up).
+    - name: Install the ufw-docker helper
+      ansible.builtin.get_url:
+        url: https://raw.githubusercontent.com/chaifeng/ufw-docker/master/ufw-docker
+        dest: /usr/local/bin/ufw-docker
+        mode: "0755"
+
+    - name: Apply the ufw-docker after.rules integration
+      ansible.builtin.command: /usr/local/bin/ufw-docker install
+      register: ufwd_install
+      changed_when: "'already' not in (ufwd_install.stdout | default(''))"
+      notify: Reload ufw

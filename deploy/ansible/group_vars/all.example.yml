@@ -28,6 +28,12 @@ data_root: /data                  # bind base for blobs/db backups
 domain: fielddraft.example.com
 tls_email: ops@example.com
 
+# ── Docker install source (bootstrap.yml) ───────────────────────────────────
+# false → docker.com apt repo (default). true → the distro's own docker.io +
+# docker-compose-v2, for releases Docker's repo doesn't cover yet (e.g. the live
+# box on Ubuntu 26.04). Set true there.
+use_distro_docker: false
+
 # ── Image registry / version ────────────────────────────────────────────────
 registry: ghcr.io/sorokan/fielddraft
 # Default tag; override per run with `-e version=<tag>` (also used for rollback).

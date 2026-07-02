@@ -60,6 +60,16 @@
         remove_orphans: true
       register: compose_up
 
+    # ufw-docker (installed in bootstrap) denies host-published container ports
+    # by default; re-assert Caddy as the sole public ingress. Idempotent.
+    - name: Allow Caddy's published ports through UFW (ufw-docker)
+      ansible.builtin.command: "/usr/local/bin/ufw-docker allow fielddraft-caddy-1 {{ item }}"
+      loop:
+        - "80/tcp"
+        - "443/tcp"
+        - "443/udp"
+      changed_when: false
+
     - name: Record the deployed version
       ansible.builtin.debug:
         msg: "FieldDraft {{ version }} deployed ({{ compose_up.changed | ternary('changed', 'no change') }})"
