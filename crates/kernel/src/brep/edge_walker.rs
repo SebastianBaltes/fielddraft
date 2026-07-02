@@ -1923,7 +1923,7 @@ const REFLEX_CELL_HALF_FACTOR: f32 = 3.0;
 /// spacing as its snap radius; an endpoint whose line-fit stopped a few cells
 /// short of a *convex* corner can fall just outside it, and a *reflex* corner
 /// has no extracted vertex to snap to at all (see below). Both leave the edge
-/// with a `None` endpoint, which forces `order_loops` onto its unordered
+/// with a `None` endpoint, which forces `order_loop_groups` onto its unordered
 /// fallback for every face that touches the gap. This pass closes both:
 ///
 /// 1. **Re-snap to an existing vertex** — for each dangling end, the nearest

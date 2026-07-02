@@ -174,8 +174,9 @@ pub(super) fn order_one_ring(
 /// using vertex positions. Positive = the ring winds counter-clockwise seen
 /// from the side `normal` points toward. Edges without bounding vertices (full
 /// circles) are skipped; a single closed-circle edge yields area 0 and is
-/// classified by length elsewhere. Production classification uses the sampled
-/// variant ([`sampled_area_plane`]); this chord version remains the tests'
+/// classified by length elsewhere. Production classification samples rings
+/// densely and takes the shoelace area in the tangent plane
+/// ([`group_rings_planar`]); this chord version remains the tests'
 /// winding oracle.
 #[cfg(test)]
 pub(super) fn ring_signed_area(brep: &BRep, ring: &[(EdgeId, bool)], normal: [f64; 3]) -> f64 {
@@ -270,27 +271,6 @@ pub(super) fn ring_sample_points(brep: &BRep, ring: &[(EdgeId, bool)]) -> Vec<[f
     pts
 }
 
-/// Sampled signed area of a ring in the tangent plane of `normal` (basis with
-/// `u × v = normal`). Positive = counter-clockwise seen from the side `normal`
-/// points toward. The sampled analogue of [`ring_signed_area`]; closed circle
-/// edges contribute their true ±πr² instead of 0.
-pub(super) fn sampled_area_plane(points: &[[f64; 3]], normal: [f64; 3]) -> f64 {
-    if points.len() < 3 {
-        return 0.0;
-    }
-    let (u, v) = plane_basis(normal);
-    let uv: Vec<(f64, f64)> = points
-        .iter()
-        .map(|p| {
-            (
-                p[0] * u[0] + p[1] * u[1] + p[2] * u[2],
-                p[0] * v[0] + p[1] * v[1] + p[2] * v[2],
-            )
-        })
-        .collect();
-    shoelace_area(&uv)
-}
-
 /// Winding metrics of a ring in the surface's `(u, v)` domain, with `u`
 /// unwrapped across the periodic seam (see [`ring_uv_metrics`]).
 ///
@@ -337,59 +317,12 @@ pub(super) fn ring_uv_metrics(points: &[[f64; 3]], surface: &SurfaceGeometry) ->
 
 /// Whether a ring is a single full-revolution circle edge (no bounding
 /// vertices) — the natural periodic boundary of a cylinder/cone/sphere/torus
-/// wall, peeled off whole at the start of [`order_loops`].
+/// wall, peeled off whole when assembling rings for [`order_loop_groups`].
 pub(super) fn is_full_revolution(brep: &BRep, ring: &[(EdgeId, bool)]) -> bool {
     ring.len() == 1 && {
         let e = brep.edge(ring[0].0);
         e.start.is_none() && e.end.is_none()
     }
-}
-
-/// Order a face's edges into one outer ring plus inner (hole) rings, with
-/// reflex-correct turning-angle ordering and outer/inner classification.
-///
-/// The face surface provides the outward normal that orients the tangent plane;
-/// `surface_normal_at` yields it per-vertex (constant for a plane). The seed
-/// ring is oriented so the OUTER loop winds counter-clockwise seen from outside
-/// the face (positive projected signed area), matching the STEP
-/// `ADVANCED_FACE(... .T.)` convention; holes are reversed to wind the opposite
-/// way. For planar faces classification is by signed-area magnitude (largest =
-/// outer); for curved faces a full-revolution trim circle wins by chord extent
-/// (DL-58), otherwise bounded loops are ranked by parametric (u, v) signed area.
-///
-/// Returns `None` only if the edges cannot be assembled into closed rings at all
-/// (degenerate topology) — the caller then keeps the unordered fallback.
-///
-/// `complemented` is the branch's complement parity ([`branch_is_complemented`]):
-/// the body-outward normal is the primitive-outward normal flipped, so every
-/// winding requirement negates. The F0-2 contract enforced here: walking any
-/// loop in stored order with the BODY-outward normal up keeps the face on the
-/// left — outer loops CCW, holes CW, on planar AND curved surfaces, closed
-/// rims included. That is exactly the `manifold_violations` fwd/rev convention.
-pub(super) fn order_loops(
-    brep: &BRep,
-    edge_ids: &[EdgeId],
-    surface: &SurfaceGeometry,
-    complemented: bool,
-) -> Option<FaceLoops> {
-    let rings = assemble_rings(brep, edge_ids, surface)?;
-
-    // The sign of a CORRECTLY wound outer loop: CCW seen along the
-    // body-outward normal. With a complemented branch the body-outward normal
-    // is the primitive normal flipped, so the required sign negates.
-    let s = if complemented { -1.0 } else { 1.0 };
-
-    let is_planar = matches!(
-        surface,
-        SurfaceGeometry::Analytic { surface: HalfSpace::Plane { .. }, .. }
-    );
-    if is_planar {
-        if let Some(loops) = classify_rings_planar(brep, &rings, surface, s) {
-            return Some(loops);
-        }
-        // No usable normal: fall through to the curved-path extent rules.
-    }
-    Some(classify_rings_curved(brep, rings, surface, s))
 }
 
 /// F0-1: order a branch's edges into one [`FaceLoops`] PER CONNECTED
@@ -404,9 +337,9 @@ pub(super) fn order_loops(
 /// Planar surfaces nest rings by even-odd containment depth in the
 /// tangent plane (even depth = a region's outer ring, odd depth = hole of
 /// its immediate container — smallest containing ring). Curved surfaces
-/// keep the single-face classification of [`order_loops`] (multi-region
-/// on curved carriers is a documented limitation; the periodic uv domain
-/// has no global containment order).
+/// keep a single-face classification ([`classify_rings_curved`]) —
+/// multi-region on curved carriers is a documented limitation; the
+/// periodic uv domain has no global containment order.
 pub(super) fn order_loop_groups(
     brep: &BRep,
     edge_ids: &[EdgeId],
@@ -450,10 +383,10 @@ fn point_in_polygon(p: (f64, f64), poly: &[(f64, f64)]) -> bool {
 /// Planar multi-region grouping (F0-1): nest the assembled rings by
 /// even-odd containment depth in the face's tangent plane and emit one
 /// [`FaceLoops`] per even-depth ring, with its odd-depth children as
-/// holes. Winding per group follows the planar convention of
-/// [`classify_rings_planar`]: outer CCW w.r.t. the body-outward normal
-/// (`area · s > 0`), holes the opposite way. `None` if no usable normal
-/// can be evaluated (caller falls through to the curved rules).
+/// holes. Winding per group follows the planar F0-2 convention: outer CCW
+/// w.r.t. the body-outward normal (`area · s > 0`), holes the opposite
+/// way. `None` if no usable normal can be evaluated (caller falls through
+/// to the curved rules).
 fn group_rings_planar(
     brep: &BRep,
     rings: &[Ring],
@@ -578,52 +511,6 @@ fn assemble_rings(
         return None;
     }
     Some(rings)
-}
-
-/// Planar outer/inner classification and winding: the largest-magnitude
-/// SAMPLED area is the outer ring (closed circle rings have real area, not
-/// 0 — F0-2); the outer must wind CCW w.r.t. the body-outward normal
-/// (`area · s > 0`), holes the opposite way. `None` if no usable normal can
-/// be evaluated (caller falls through to the curved rules).
-fn classify_rings_planar(
-    brep: &BRep,
-    rings: &[Ring],
-    surface: &SurfaceGeometry,
-    s: f64,
-) -> Option<FaceLoops> {
-    // Representative position: any ring vertex, else a sampled point.
-    let rep_pos = rings
-        .iter()
-        .flat_map(|ring| ring.iter())
-        .find_map(|&(eid, _)| brep.edge(eid).start.map(|v| brep.vertex(v).position))
-        .or_else(|| ring_sample_points(brep, &rings[0]).first().copied())?;
-    let n = surface_normal_at(surface, rep_pos)?;
-
-    let mut rings: Vec<Ring> = rings.to_vec();
-    let mut areas: Vec<f64> = rings
-        .iter()
-        .map(|r| sampled_area_plane(&ring_sample_points(brep, r), n))
-        .collect();
-    let outer_idx = (0..rings.len())
-        .max_by(|&a, &b| areas[a].abs().total_cmp(&areas[b].abs()))
-        .unwrap();
-    if areas[outer_idx] * s < 0.0 {
-        rings[outer_idx].reverse();
-        flip_orientations(&mut rings[outer_idx]);
-        areas[outer_idx] = -areas[outer_idx];
-    }
-    for (i, ring) in rings.iter_mut().enumerate() {
-        if i == outer_idx {
-            continue;
-        }
-        if areas[i] * s > 0.0 {
-            ring.reverse();
-            flip_orientations(ring);
-            areas[i] = -areas[i];
-        }
-    }
-    let outer = rings.remove(outer_idx);
-    Some(FaceLoops { outer, inner: rings })
 }
 
 /// Curved-face outer/inner classification and winding (also the planar
