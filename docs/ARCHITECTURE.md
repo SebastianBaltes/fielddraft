@@ -84,7 +84,7 @@ fielddraft/
 │   │   ├── api/           # Backend API client
 │   │   └── *.ts/tsx       # Application modules (~50 files)
 │   ├── tests/             # Playwright E2E tests
-│   └── package.json       # v0.3.55
+│   └── package.json       # app version (single source of truth)
 ├── server/
 │   └── main.go            # Optional Go backend
 ├── Cargo.toml             # Workspace: 4 crates, AGPL-3.0
@@ -421,7 +421,7 @@ graph TD
     end
 
     subgraph "Pass 2: Transparent G-Buffer"
-        P2a["Rasterize inflated hulls\n(scale 1.01)"]
+        P2a["Rasterize exact leaf meshes\n(Z-offset march backoff)"]
         P2b["Back-face distances\n(MAX blend)"]
         P2a --> P2out["Output: position + body tag\n+ exit depth"]
         P2b --> P2out
@@ -477,7 +477,7 @@ Adding/removing bodies or changing opcodes triggers only a fast buffer update, n
 | Surface epsilon | 0.002 mm |
 | Normal epsilon | 0.01 mm |
 | Max ray distance | 1200–3000 mm |
-| Hull inflate factor | 1.01 (deferred) |
+| March start backoff | ±1 mm along camera direction (deferred; hulls are exact meshes, NOT inflated — ticket vlhp) |
 | Build volume | 600 mm cubic |
 
 ### THREE.js Patches
@@ -677,7 +677,7 @@ The application runs purely in the browser with localStorage persistence. The Go
 
 **API endpoints** (16 routes): `/api/auth/*` (register/login/logout/reset), `/api/me`, `/api/projects/*` (CRUD + publish + thumbnail), `/api/gallery`, `/api/v/{id}`.
 
-Currently uses in-memory store; MariaDB integration planned.
+Storage backends: `store_sql.go` (MariaDB, production), `store_mem.go` (in-memory, tests/dev), plus a pluggable ticket store (`ticketstore.go`: SQL for prod, `ticketstore_file.go` for local dev, `TICKET_BACKEND=files`).
 
 ---
 
