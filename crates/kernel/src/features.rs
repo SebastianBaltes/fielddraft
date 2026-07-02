@@ -2587,36 +2587,6 @@ pub(crate) fn compose_placement(outer: &Transform, inner: &Transform) -> Transfo
     }
 }
 
-pub(crate) fn euler_xyz_to_quat(rx_deg: f32, ry_deg: f32, rz_deg: f32) -> [f32; 4] {
-    let (s1, c1) = (rx_deg.to_radians() * 0.5).sin_cos();
-    let (s2, c2) = (ry_deg.to_radians() * 0.5).sin_cos();
-    let (s3, c3) = (rz_deg.to_radians() * 0.5).sin_cos();
-    [
-        s1 * c2 * c3 + c1 * s2 * s3,
-        c1 * s2 * c3 - s1 * c2 * s3,
-        c1 * c2 * s3 + s1 * s2 * c3,
-        c1 * c2 * c3 - s1 * s2 * s3,
-    ]
-}
-
-pub(crate) fn quat_to_euler_xyz(qx: f32, qy: f32, qz: f32, qw: f32) -> [f32; 3] {
-    let m11 = 1.0 - 2.0 * (qy * qy + qz * qz);
-    let m12 = 2.0 * (qx * qy - qw * qz);
-    let m13 = 2.0 * (qx * qz + qw * qy);
-    let m23 = 2.0 * (qy * qz - qw * qx);
-    let m33 = 1.0 - 2.0 * (qx * qx + qy * qy);
-
-    let ry = m13.clamp(-1.0, 1.0).asin();
-    let (rx, rz) = if m13.abs() < 0.9999999 {
-        ((-m23).atan2(m33), (-m12).atan2(m11))
-    } else {
-        let m32 = 2.0 * (qy * qz + qw * qx);
-        let m22 = 1.0 - 2.0 * (qx * qx + qz * qz);
-        (m32.atan2(m22), 0.0)
-    };
-    [rx.to_degrees(), ry.to_degrees(), rz.to_degrees()]
-}
-
 // ── Translate ──────────────────────────────────────────────────
 
 pub struct TranslateFeature;
@@ -2667,7 +2637,7 @@ impl FeatureKind for RotateFeature {
         let euler = read_vec3(def, "rotation", [0.0, 0.0, 0.0]);
         let idx = find_target(ctx, read_target_id(def), "rotate")?;
         ctx.features[idx].transform.rotation =
-            euler_xyz_to_quat(euler[0], euler[1], euler[2]);
+            crate::transform::euler_xyz_to_quat(euler[0], euler[1], euler[2]);
         Ok(())
     }
 }

@@ -540,7 +540,7 @@ mod tests {
     fn place_point_round_trips_through_inverse() {
         let t = Transform {
             translate: [3.0, -2.0, 1.0],
-            rotation: crate::features::euler_xyz_to_quat(10.0, 25.0, -40.0),
+            rotation: crate::transform::euler_xyz_to_quat(10.0, 25.0, -40.0),
             scale: [1.0, 1.0, 1.0],
         };
         let p = [1.5, 0.5, -0.7];
