@@ -397,7 +397,11 @@ func (s *issuevaultStore) GetTicket(id string) *Ticket {
 }
 
 func (s *issuevaultStore) ListTickets(f TicketFilter) []*Ticket {
-	pred := map[string]any{"scope": "project"}
+	// scope=own: only THIS installation's tickets. The store's token is
+	// installation-bound, so it isolates FieldDraft instances from each other
+	// (a project-scoped token would leak all installations' tickets). Records
+	// (deploys) stay project-level below.
+	pred := map[string]any{"scope": "own"}
 	if f.State != "" {
 		pred["status"] = []string{string(f.State)} // search expects a status set
 	}
@@ -584,7 +588,7 @@ func (s *issuevaultStore) SetCommentReviewed(ticketID, commentID string, withhel
 
 func (s *issuevaultStore) ListTicketsWithUnreviewedComments() []*Ticket {
 	pred := map[string]any{
-		"scope": "project",
+		"scope": "own",
 		"has_comment": map[string]any{
 			"author_kind": "user",
 			"meta": []map[string]any{
@@ -745,7 +749,7 @@ func (s *issuevaultStore) CompleteWorkOrder(ticketID, deployID string) (*WorkOrd
 
 func (s *issuevaultStore) ListAcceptedWithOpenWorkOrder() []*Ticket {
 	pred := map[string]any{
-		"scope":  "project",
+		"scope":  "own",
 		"status": []string{string(StateAccepted)},
 		"meta": []map[string]any{
 			{"path": "work_order", "op": "notnull"},
