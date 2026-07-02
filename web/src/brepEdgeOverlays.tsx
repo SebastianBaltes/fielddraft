@@ -8,13 +8,13 @@ import { ndcZVisible } from "./projectionSpace";
 import { useKernelStore } from "./store";
 import type { BRepEdge, OctreeCells } from "./kernel";
 import type { BRepEdgeMode } from "./SettingsMenu";
-import { OVERLAY_LAYER } from "./viewportSdfOverlays";
+import { OVERLAY_LAYER } from "./viewportLayers";
 import { disposeAfterGpuIdle } from "./sdfPipelineCommon";
 import { setHoveredElementOfKind } from "./brepPickBridge";
 import { getActive as getActiveQueryPicker } from "./queryPickerBridge";
+import { useBodyFingerprint } from "./bodyFingerprint";
 import {
   polylineToSegments,
-  useBodyFingerprint,
   ELEMENT_HOVER_COLOR,
   ELEMENT_HOVER_LINEWIDTH,
 } from "./viewportOverlayShared";
@@ -141,23 +141,15 @@ export function BRepEdgeOverlay({
     }
   }, [mode]);
 
-  // Body fingerprint (count + per-body id.version). Bumps on any geometry edit
-  // and on a placement move (the body version increments), so the edge cache
-  // re-reads exactly when — and only when — the bodies actually change.
+  // Body fingerprint (count + per-body id.version) — the edge cache re-reads
+  // exactly when, and only when, the bodies actually change.
   //
   // Deliberately NOT driven by `meshedBodies`: DC meshing is enabled only in
   // mesh render mode (App gates `setDcMeshingEnabled` on it), so in the default
   // SDF modes `meshedBodies` is empty. The analytic B-Rep lives on the
   // main-thread kernel regardless of render mode, so we read it straight from
   // `bodyCount()` — that is what makes the edges appear in SDF modes too.
-  const bodyFingerprint = useMemo(() => {
-    if (!store) return "";
-    const n = store.kernel.bodyCount();
-    let fp = String(n);
-    for (let i = 0; i < n; i++)
-      fp += `:${store.kernel.bodyId(i)}.${store.kernel.bodyVersion(i)}`;
-    return fp;
-  }, [store, state]);
+  const bodyFingerprint = useBodyFingerprint();
 
   const edges = useMemo<AnalyticEdge[]>(() => {
     if (!store) return [];

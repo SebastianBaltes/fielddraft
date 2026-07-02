@@ -3,7 +3,8 @@ import { useFrame, useThree } from "@react-three/fiber";
 import * as THREE from "three";
 import { isWebGPURenderer } from "./overlayLineMaterials";
 import { useKernelStore } from "./store";
-import { OVERLAY_LAYER } from "./viewportSdfOverlays";
+import { computeBodyFingerprint } from "./bodyFingerprint";
+import { OVERLAY_LAYER } from "./viewportLayers";
 import {
   orthonormalMateFrame,
   buildMateGizmo,
@@ -191,15 +192,11 @@ export function MateInferenceOverlay({
     dotsRef.current = inst;
   }
 
-  const bodyFingerprint = useMemo(() => {
-    if (!store || !mateMode) return "";
-    const n = store.kernel.bodyCount();
-    let fp = String(n);
-    for (let i = 0; i < n; i++)
-      fp += `:${store.kernel.bodyId(i)}.${store.kernel.bodyVersion(i)}`;
-    return fp;
+  const bodyFingerprint = useMemo(
+    () => (store && mateMode ? computeBodyFingerprint(store.kernel) : ""),
     // state in deps so a regen (new features) re-enumerates.
-  }, [store, mateMode, state]);
+    [store, mateMode, state],
+  );
 
   const candidates = useMemo(
     () => (store && mateMode ? enumerateConnectionPoints(store.kernel) : []),

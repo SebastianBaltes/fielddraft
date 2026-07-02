@@ -33,7 +33,7 @@ import { useFrame, useThree } from "@react-three/fiber";
 import * as THREE from "three";
 import { useKernelStore } from "./store";
 import { findSingleSelectedFeature } from "./transformGizmo";
-import { OVERLAY_LAYER } from "./viewportSdfOverlays";
+import { OVERLAY_LAYER } from "./viewportLayers";
 import {
   axisDepthParam,
   lengthParamToMm,

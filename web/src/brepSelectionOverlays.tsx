@@ -18,13 +18,13 @@ import {
   type HybridLeafInfo,
   type Placement,
 } from "./kernel";
-import { OVERLAY_LAYER } from "./viewportSdfOverlays";
+import { OVERLAY_LAYER } from "./viewportLayers";
 import { disposeAfterGpuIdle } from "./sdfPipelineCommon";
 import {
   applyLeafTransform,
   createPrimitiveGeometry,
   buildWarpedLeafGeometry,
-} from "./sdfDeferredRenderer";
+} from "./leafMeshFactory";
 import { triangulatePlanarFace } from "./faceFill";
 import {
   getHoveredElementOfKind,
@@ -32,6 +32,7 @@ import {
 } from "./brepPickBridge";
 import { filterAllows } from "./elementQuery";
 import { getActive as getActiveQueryPicker } from "./queryPickerBridge";
+import { useBodyFingerprint } from "./bodyFingerprint";
 import {
   polylineToSegments,
   ELEMENT_SELECTION_COLOR,
@@ -282,14 +283,7 @@ export function BRepSelectionOverlay({
 
   // Same body fingerprint trick as BRepEdgeOverlay: rebuild the pick data only
   // when bodies actually change (count or per-body id.version).
-  const bodyFingerprint = useMemo(() => {
-    if (!store) return "";
-    const n = store.kernel.bodyCount();
-    let fp = String(n);
-    for (let i = 0; i < n; i++)
-      fp += `:${store.kernel.bodyId(i)}.${store.kernel.bodyVersion(i)}`;
-    return fp;
-  }, [store, state]);
+  const bodyFingerprint = useBodyFingerprint();
 
   const bodies = useMemo<BodyPickData[]>(() => {
     if (!store) return [];
@@ -759,14 +753,7 @@ export function BRepSelectedOverlay() {
 
   // Body fingerprint: re-resolve the highlight when bodies actually change
   // (same trick as the hover overlays), since a regen invalidates idHashes.
-  const bodyFingerprint = useMemo(() => {
-    if (!store) return "";
-    const n = store.kernel.bodyCount();
-    let fp = String(n);
-    for (let i = 0; i < n; i++)
-      fp += `:${store.kernel.bodyId(i)}.${store.kernel.bodyVersion(i)}`;
-    return fp;
-  }, [store, state]);
+  const bodyFingerprint = useBodyFingerprint();
 
   // Resolve the WHOLE multi-select set to renderable data (box select can
   // put many faces, edges and vertices in it at once): face triangles go
@@ -1088,14 +1075,7 @@ export function BodyHighlightOverlay() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const bodyFingerprint = useMemo(() => {
-    if (!store) return "";
-    const n = store.kernel.bodyCount();
-    let fp = String(n);
-    for (let i = 0; i < n; i++)
-      fp += `:${store.kernel.bodyId(i)}.${store.kernel.bodyVersion(i)}`;
-    return fp;
-  }, [store, state]);
+  const bodyFingerprint = useBodyFingerprint();
 
   const ready = useMemo(() => {
     if (!store || bodyIndex === null) return false;

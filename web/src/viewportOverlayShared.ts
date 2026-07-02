@@ -1,12 +1,10 @@
-import { useMemo } from "react";
-import { useKernelStore } from "./store";
-
 // ── Shared helpers of the viewport overlay modules ───────────────────
 //
 // Small common ground of the split overlay files (sketchSceneOverlays,
 // transformGizmo, brepEdgeOverlays, brepSelectionOverlays, webglBodies,
-// mateOverlays, datumOverlay, viewportHud): the body fingerprint hook,
-// polyline→segment decimation and the element highlight colours.
+// mateOverlays, datumOverlay, viewportHud): polyline→segment decimation
+// and the element highlight colours. (The body fingerprint hook lives in
+// bodyFingerprint.ts.)
 
 // Token-driven highlight colours. THREE material colours can't live in CSS
 // (they feed the WebGPU pipeline), so — like BRepEdgeOverlay's inline hex —
@@ -82,20 +80,4 @@ export function polylineToSegments(points: number[]): Float32Array {
     seg[s * 6 + 5] = pz(b);
   }
   return seg;
-}
-
-/** Fingerprint that bumps on any body geometry edit or placement move — count
- *  plus per-body `id.version`. Shared by the two debug overlays below so their
- *  kernel reads re-run exactly when (and only when) the bodies change. Mirrors
- *  {@link BRepEdgeOverlay}'s own `bodyFingerprint`. */
-export function useBodyFingerprint(): string {
-  const { store, state } = useKernelStore();
-  return useMemo(() => {
-    if (!store) return "";
-    const n = store.kernel.bodyCount();
-    let fp = String(n);
-    for (let i = 0; i < n; i++)
-      fp += `:${store.kernel.bodyId(i)}.${store.kernel.bodyVersion(i)}`;
-    return fp;
-  }, [store, state]);
 }

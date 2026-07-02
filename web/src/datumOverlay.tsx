@@ -2,7 +2,7 @@ import { useEffect, useRef } from "react";
 import { useThree } from "@react-three/fiber";
 import * as THREE from "three";
 import { useKernelStore } from "./store";
-import { DATUM_LAYER } from "./viewportSdfOverlays";
+import { DATUM_LAYER } from "./viewportLayers";
 import { ELEMENT_SELECTION_COLOR } from "./viewportOverlayShared";
 
 // ── Datum planes + origin ────────────────────────────────────────────

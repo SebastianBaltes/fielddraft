@@ -10,7 +10,7 @@ import {
 import * as THREE from "three";
 import { isWebGPURenderer } from "./overlayLineMaterials";
 import { useKernelStore } from "./store";
-import { OVERLAY_LAYER } from "./viewportSdfOverlays";
+import { OVERLAY_LAYER } from "./viewportLayers";
 import { disposeAfterGpuIdle } from "./sdfPipelineCommon";
 import {
   resolvePlaneFrame,

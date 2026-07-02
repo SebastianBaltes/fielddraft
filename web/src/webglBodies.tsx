@@ -10,18 +10,18 @@ import {
   LIGHTS,
   AMBIENT,
 } from "./pbrShading";
+import { BODY_COLORS } from "./bodyColors";
 import {
-  BODY_COLORS,
   applyLeafTransform,
   createPrimitiveGeometry,
   buildWarpedLeafGeometry,
-} from "./sdfDeferredRenderer";
+} from "./leafMeshFactory";
 import {
   bodyNeedsSubtractionPass,
   bodyNeedsIntersectionPass,
 } from "./screenSpaceCsg";
 import { collectAnalyticBodyMeshes, type BrepMeshKernel } from "./brepMesh";
-import { useBodyFingerprint } from "./viewportOverlayShared";
+import { useBodyFingerprint } from "./bodyFingerprint";
 
 // ── Classic-WebGL render path ────────────────────────────────────────
 //

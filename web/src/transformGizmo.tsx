@@ -4,7 +4,7 @@ import { TransformControls as ThreeTransformControls } from "three/examples/jsm/
 import * as THREE from "three";
 import { useKernelStore, type StoreState } from "./store";
 import type { FeatureSummary } from "./kernel";
-import { OVERLAY_LAYER } from "./viewportSdfOverlays";
+import { OVERLAY_LAYER } from "./viewportLayers";
 
 // ── Selection transform gizmo ────────────────────────────────────────
 //

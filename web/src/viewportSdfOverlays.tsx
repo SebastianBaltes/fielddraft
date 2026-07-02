@@ -26,25 +26,16 @@ import {
   type DeferredPipelineState,
 } from "./sdfDeferredRenderer";
 import { resolveMaterials, applyMaterials } from "./materialBridge";
+import { OVERLAY_LAYER, DATUM_LAYER } from "./viewportLayers";
+import {
+  computeSdfFingerprints,
+  type SdfFingerprintKernel,
+} from "./bodyFingerprint";
 import type { BRepEdgeMode } from "./SettingsMenu";
-
-export const OVERLAY_LAYER = 1;
-// Datum planes / origin live on their OWN layer so the SDF path can re-draw
-// them AFTER the body shade pass but BEFORE the x-ray depth-clear that lets
-// B-Rep edges shine through solids. That way datums share the bodies' depth
-// buffer (a solid in front occludes the datum behind it — ticket 1m8g) while
-// edges keep their see-through x-ray behaviour. Datums also stay on layer 0 so
-// the plain WebGL path keeps drawing them with no extra orchestration.
-export const DATUM_LAYER = 2;
 
 type BodyVolumes = { data: Float32Array; dims: [number, number, number] }[];
 
-interface KernelLike {
-  bodyCount(): number;
-  bodyId(i: number): number;
-  bodyVersion(i: number): number;
-  bodySdfOpcodesView(i: number): Float32Array;
-  bodyVolumeCount(i: number): number;
+interface KernelLike extends SdfFingerprintKernel {
   bodyVolumeDataView(i: number, v: number): Float32Array;
   bodyVolumeDims(i: number, v: number): [number, number, number];
 }
@@ -63,26 +54,6 @@ function collectBodyVolumes(
     });
   }
   return volumes;
-}
-
-function computeFingerprints(
-  k: KernelLike,
-  count: number,
-): { volumeFp: string; structFp: string; dataFp: string } {
-  let totalVolumes = 0;
-  const structParts: (string | number)[] = [count];
-  const dataParts: number[] = [];
-  for (let i = 0; i < count; i++) {
-    const volCount = k.bodyVolumeCount(i);
-    totalVolumes += volCount;
-    structParts.push(k.bodyId(i), k.bodySdfOpcodesView(i).length, volCount);
-    dataParts.push(k.bodyVersion(i));
-  }
-  return {
-    volumeFp: String(totalVolumes),
-    structFp: structParts.join(","),
-    dataFp: dataParts.join(","),
-  };
 }
 
 function showCompilationStatus(text: string): void {
@@ -191,7 +162,7 @@ export function SdfVmOverlay({ brepEdgeMode }: { brepEdgeMode: BRepEdgeMode }) {
     const k = store.kernel;
     const count = k.bodyCount();
 
-    const { volumeFp, structFp, dataFp } = computeFingerprints(k, count);
+    const { volumeFp, structFp, dataFp } = computeSdfFingerprints(k, count);
     const needsCompile = volumeFp !== volumeFpRef.current;
     const needsDataUpdate =
       !needsCompile && structFp + dataFp !== dataFpRef.current;
@@ -352,7 +323,7 @@ export function SdfDeferredOverlay({
     const k = store.kernel;
     const count = k.bodyCount();
 
-    const { structFp, dataFp } = computeFingerprints(k, count);
+    const { structFp, dataFp } = computeSdfFingerprints(k, count);
     const needsRebuild = structFp !== structFpRef.current;
     const needsDataUpdate = !needsRebuild && dataFp !== dataFpRef.current;
 

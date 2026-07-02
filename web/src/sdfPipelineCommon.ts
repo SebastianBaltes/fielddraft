@@ -23,7 +23,7 @@ import {
   vec4,
 } from "three/tsl";
 import { StorageBufferAttribute } from "three/webgpu";
-import { BODY_COLORS } from "./sdfDeferredRenderer";
+import { BODY_COLORS } from "./bodyColors";
 import { DEFAULT_ROUGHNESS, pbrShade } from "./pbrShading";
 import { NORMAL_EPS } from "./sdfRenderer";
 

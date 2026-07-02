@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import { OVERLAY_LAYER } from "./viewportSdfOverlays";
+import { OVERLAY_LAYER } from "./viewportLayers";
 
 // Sketch vertex DOTS as billboarded, screen-constant circle MESHES (ticket
 // tdq2). The earlier THREE.Points / PointsNodeMaterial dots (tickets n6hg/b78p)
