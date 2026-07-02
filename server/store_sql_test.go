@@ -131,179 +131,10 @@ func TestSQLStoreRoundTrip(t *testing.T) {
 	}
 }
 
-// TestSQLStoreTickets exercises the ticket methods against a live MariaDB.
-// Auto-skips when no TEST_DB_DSN/DB_DSN is reachable.
-func TestSQLStoreTickets(t *testing.T) {
-	store := newTestSQLStore(t)
-
-	author, err := store.CreateUser("tkauthor-"+newID()+"@test.com", "Author", "pass12345", RoleUser)
-	if err != nil {
-		t.Fatalf("CreateUser: %v", err)
-	}
-
-	// Create + read back with category.
-	tk := store.CreateTicket(author.ID, "Crash", "it crashes", "bug")
-	if tk == nil || tk.State != StateTriage {
-		t.Fatalf("CreateTicket: %v", tk)
-	}
-	got := store.GetTicket(tk.ID)
-	if got == nil || got.Category == nil || *got.Category != "bug" {
-		t.Fatalf("GetTicket category: %v", got)
-	}
-
-	// Artifact blob round-trip.
-	art := store.AddArtifact(tk.ID, ArtifactScreenshot, "screenshot.png", "image/png", []byte{0x89, 0x50, 0x4E, 0x47})
-	if art == nil {
-		t.Fatal("AddArtifact nil")
-	}
-	gotArt, data := store.GetArtifactBlob(tk.ID, art.ID)
-	if gotArt == nil || len(data) != 4 {
-		t.Fatalf("GetArtifactBlob: %v / %d bytes", gotArt, len(data))
-	}
-
-	// Comment round-trip.
-	uid := author.ID
-	if store.AddComment(tk.ID, AuthorUser, &uid, "a reply", false) == nil {
-		t.Fatal("AddComment nil")
-	}
-	if cs := store.ListComments(tk.ID); len(cs) != 1 {
-		t.Fatalf("ListComments: %d, want 1", len(cs))
-	}
-
-	// Legal transition appends a system audit comment.
-	if _, err := store.SetTicketState(tk.ID, StateAccepted); err != nil {
-		t.Fatalf("SetTicketState legal: %v", err)
-	}
-	// Illegal transition is rejected.
-	if _, err := store.SetTicketState(tk.ID, StateResolved); err == nil {
-		t.Fatal("SetTicketState accepted an illegal accepted→resolved move")
-	}
-	full := store.GetTicket(tk.ID)
-	if full.State != StateAccepted {
-		t.Fatalf("state = %q, want accepted", full.State)
-	}
-	// reply + audit system comment.
-	if len(full.Comments) != 2 {
-		t.Fatalf("comments after transition: %d, want 2", len(full.Comments))
-	}
-
-	// Filtered list (author + state) and rejected visibility.
-	mine := store.ListTickets(TicketFilter{AuthorID: author.ID, State: StateAccepted, ViewerID: author.ID})
-	if len(mine) != 1 {
-		t.Fatalf("filtered list: %d, want 1", len(mine))
-	}
-
-	if !store.DeleteTicket(tk.ID) {
-		t.Fatal("DeleteTicket returned false")
-	}
-	if store.GetTicket(tk.ID) != nil {
-		t.Fatal("ticket still present after delete")
-	}
-}
-
-// TestSQLStoreAgentLayer exercises the WP6 work-order / deploy / agent-comment
-// methods against a live MariaDB. Auto-skips without TEST_DB_DSN/DB_DSN.
-func TestSQLStoreAgentLayer(t *testing.T) {
-	store := newTestSQLStore(t)
-
-	author, err := store.CreateUser("agentsql-"+newID()+"@test.com", "A", "pass12345", RoleUser)
-	if err != nil {
-		t.Fatalf("CreateUser: %v", err)
-	}
-	tk := store.CreateTicket(author.ID, "WO test", "body", "bug")
-	if tk == nil {
-		t.Fatal("CreateTicket nil")
-	}
-
-	// Category verdict-classification path.
-	if c := store.SetTicketCategory(tk.ID, "feature"); c == nil || c.Category == nil || *c.Category != "feature" {
-		t.Fatalf("SetTicketCategory: %v", c)
-	}
-
-	// Move to accepted so the queue picks it up.
-	if _, err := store.SetTicketState(tk.ID, StateAccepted); err != nil {
-		t.Fatalf("to accepted: %v", err)
-	}
-
-	// Work-order create (single per ticket) + duplicate rejection.
-	payload := json.RawMessage(`{"summary":"do the thing","acceptance_criteria":["works"]}`)
-	wo, err := store.CreateWorkOrder(tk.ID, payload)
-	if err != nil || wo == nil {
-		t.Fatalf("CreateWorkOrder: %v", err)
-	}
-	if _, err := store.CreateWorkOrder(tk.ID, payload); err == nil {
-		t.Fatal("CreateWorkOrder allowed a duplicate")
-	}
-	if got := store.GetWorkOrder(tk.ID); got == nil || string(got.Payload) == "" {
-		t.Fatalf("GetWorkOrder: %v", got)
-	}
-
-	// Accepted-with-open-work-order queue surfaces it (hydrated).
-	q := store.ListAcceptedWithOpenWorkOrder()
-	if len(q) != 1 || q[0].ID != tk.ID {
-		t.Fatalf("ListAcceptedWithOpenWorkOrder: %d items", len(q))
-	}
-
-	// Claim (idempotent guard) then double-claim rejected.
-	if _, err := store.ClaimWorkOrder(tk.ID); err != nil {
-		t.Fatalf("ClaimWorkOrder: %v", err)
-	}
-	if _, err := store.ClaimWorkOrder(tk.ID); err == nil {
-		t.Fatal("ClaimWorkOrder allowed a double claim")
-	}
-	if got := store.GetWorkOrder(tk.ID); got == nil || got.PickedUpAt == nil {
-		t.Fatalf("picked_up_at not set: %v", got)
-	}
-
-	// Deploy round-trip.
-	dep, err := store.CreateDeploy("1.2", "abc123", []string{tk.ID}, DeployLive)
-	if err != nil || dep == nil {
-		t.Fatalf("CreateDeploy: %v", err)
-	}
-	deploys := store.ListDeploys()
-	if len(deploys) == 0 {
-		t.Fatal("ListDeploys empty")
-	}
-	if len(deploys[0].TicketIDs) != 1 || deploys[0].TicketIDs[0] != tk.ID {
-		t.Fatalf("deploy ticket_ids round-trip: %+v", deploys[0].TicketIDs)
-	}
-
-	// Complete with deploy link.
-	done, err := store.CompleteWorkOrder(tk.ID, dep.ID)
-	if err != nil || done.CompletedAt == nil || done.DeployID == nil || *done.DeployID != dep.ID {
-		t.Fatalf("CompleteWorkOrder: %v / %+v", err, done)
-	}
-	// No longer in the open-work-order queue.
-	if len(store.ListAcceptedWithOpenWorkOrder()) != 0 {
-		t.Fatal("completed work-order still in queue")
-	}
-
-	// Agent comments: po (visible) and dev (internal), both author-id NULL.
-	po := store.AddAgentComment(tk.ID, AuthorPO, "public ok", false, false)
-	if po == nil || po.AuthorType != AuthorPO || po.AuthorID != nil {
-		t.Fatalf("AddAgentComment po: %+v", po)
-	}
-	dev := store.AddAgentComment(tk.ID, AuthorDev, "internal note", true, false)
-	if dev == nil || !dev.Internal {
-		t.Fatalf("AddAgentComment dev: %+v", dev)
-	}
-	withheld := store.AddAgentComment(tk.ID, AuthorPO, "server/main.go leak", false, true)
-	if withheld == nil || !withheld.Withheld {
-		t.Fatalf("AddAgentComment withheld: %+v", withheld)
-	}
-
-	// Deleting the ticket cascades the work-order away.
-	if !store.DeleteTicket(tk.ID) {
-		t.Fatal("DeleteTicket false")
-	}
-	if store.GetWorkOrder(tk.ID) != nil {
-		t.Fatal("work-order survived ticket delete")
-	}
-}
-
-// TestSQLStoreModeration exercises the WP8 methods (comment po_reviewed,
-// admin alerts, user disable/list + session purge) against a live MariaDB.
-// Auto-skips without TEST_DB_DSN/DB_DSN.
+// TestSQLStoreModeration exercises the WP8 Store methods that are NOT part of
+// the TicketStore contract: admin alerts (B2) and user disable/list + session
+// purge (B3). Auto-skips without TEST_DB_DSN/DB_DSN. (The ticket/comment/work-
+// order behavior lives in the contract suite, ticketstore_contract_test.go.)
 func TestSQLStoreModeration(t *testing.T) {
 	store := newTestSQLStore(t)
 
@@ -314,40 +145,6 @@ func TestSQLStoreModeration(t *testing.T) {
 	tk := store.CreateTicket(author.ID, "Mod test", "body", "bug")
 	if tk == nil {
 		t.Fatal("CreateTicket nil")
-	}
-
-	// B1 — a user comment starts unreviewed; po/dev comments are reviewed.
-	uid := author.ID
-	uc := store.AddComment(tk.ID, AuthorUser, &uid, "user reply", false)
-	if uc == nil || uc.POReviewed {
-		t.Fatalf("user comment should start po_reviewed=0: %+v", uc)
-	}
-	poc := store.AddAgentComment(tk.ID, AuthorPO, "po reply", false, false)
-	if poc == nil || !poc.POReviewed {
-		t.Fatalf("po comment should be po_reviewed=1: %+v", poc)
-	}
-
-	// The ticket surfaces in the unreviewed-comment query while uc is unreviewed.
-	un := store.ListTicketsWithUnreviewedComments()
-	if !containsTicket(un, tk.ID) {
-		t.Fatal("ticket with unreviewed comment not surfaced")
-	}
-
-	// GetComment is ticket-scoped.
-	if store.GetComment(tk.ID, uc.ID) == nil {
-		t.Fatal("GetComment missed an existing comment")
-	}
-	if store.GetComment("nope", uc.ID) != nil {
-		t.Fatal("GetComment matched a comment on the wrong ticket")
-	}
-
-	// Moderate the comment spam → reviewed + withheld.
-	mod := store.SetCommentReviewed(uc.ID, true)
-	if mod == nil || !mod.POReviewed || !mod.Withheld {
-		t.Fatalf("SetCommentReviewed: %+v", mod)
-	}
-	if containsTicket(store.ListTicketsWithUnreviewedComments(), tk.ID) {
-		t.Fatal("ticket still unreviewed after moderation")
 	}
 
 	// B2 — admin alerts CRUD.
@@ -399,15 +196,6 @@ func TestSQLStoreModeration(t *testing.T) {
 	}
 
 	store.DeleteTicket(tk.ID)
-}
-
-func containsTicket(ts []*Ticket, id string) bool {
-	for _, t := range ts {
-		if t.ID == id {
-			return true
-		}
-	}
-	return false
 }
 
 func containsUser(us []*User, id string) bool {
