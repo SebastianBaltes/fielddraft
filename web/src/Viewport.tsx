@@ -21,7 +21,7 @@ import * as THREE from "three";
 import { ndcZVisible } from "./projectionSpace";
 import { useKernelStore } from "./store";
 import type { PickHit, PickResult } from "./kernel";
-import type { BRepEdgeMode, FrameLoopMode } from "./SettingsMenu";
+import type { BRepEdgeMode, FrameLoopMode, RenderMode } from "./settings";
 import {
   SdfVmOverlay,
   SdfDeferredOverlay,
@@ -148,7 +148,7 @@ function PickProbe({ ndc, onPick }: PickProbeProps) {
 interface SceneProps {
   ndc: { x: number; y: number; active: boolean };
   onPick: (result: PickResult | null) => void;
-  renderMode: string;
+  renderMode: RenderMode;
   brepEdgeMode: BRepEdgeMode;
 }
 /** Reactively tracks whether a query-by-click picker is armed. While a picker
@@ -832,7 +832,7 @@ export function Viewport({
   perspective,
   controlsPreset,
 }: {
-  renderMode: string;
+  renderMode: RenderMode;
   brepEdgeMode: BRepEdgeMode;
   frameLoop: FrameLoopMode;
   showEdgePoints: boolean;

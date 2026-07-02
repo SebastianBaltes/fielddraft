@@ -26,12 +26,13 @@ import {
   type DeferredPipelineState,
 } from "./sdfDeferredRenderer";
 import { resolveMaterials, applyMaterials } from "./materialBridge";
+import { disposeAfterGpuIdle } from "./sdfPipelineCommon";
 import { OVERLAY_LAYER, DATUM_LAYER } from "./viewportLayers";
 import {
   computeSdfFingerprints,
   type SdfFingerprintKernel,
 } from "./bodyFingerprint";
-import type { BRepEdgeMode } from "./SettingsMenu";
+import type { BRepEdgeMode } from "./settings";
 
 type BodyVolumes = { data: Float32Array; dims: [number, number, number] }[];
 
@@ -383,13 +384,9 @@ export function SdfDeferredOverlay({
             showGpuError(err);
           });
       };
-      const queue = (wgpu as unknown as { backend?: { device?: GPUDevice } })
-        .backend?.device?.queue;
-      if (queue && typeof queue.onSubmittedWorkDone === "function") {
-        queue.onSubmittedWorkDone().then(runRebuild, runRebuild);
-      } else {
-        runRebuild();
-      }
+      // disposeAfterGpuIdle is exactly "run this once the queue drained (or
+      // synchronously without a WebGPU queue)" — reused here for the rebuild.
+      disposeAfterGpuIdle(wgpu, runRebuild);
     }
 
     if (needsDataUpdate && readyRef.current && !compilingRef.current) {
