@@ -628,6 +628,9 @@ func main() {
 	srv := NewServer(store)
 
 	addr := ":8080"
+	if p := os.Getenv("PORT"); p != "" {
+		addr = ":" + p
+	}
 	log.Printf("fielddraft server listening on %s", addr)
 	log.Fatal(http.ListenAndServe(addr, srv))
 }
