@@ -970,18 +970,18 @@ func (s *sqlStore) GetComment(ticketID, commentID string) *TicketComment {
 
 // SetCommentReviewed marks a comment PO-reviewed and, when withheld, hides it
 // (B1, §4.2). Withheld is sticky: it is set, never cleared, here.
-func (s *sqlStore) SetCommentReviewed(commentID string, withheld bool) *TicketComment {
+func (s *sqlStore) SetCommentReviewed(ticketID, commentID string, withheld bool) *TicketComment {
 	var q string
 	if withheld {
-		q = `UPDATE ticket_comments SET po_reviewed = 1, withheld = 1 WHERE id = ?`
+		q = `UPDATE ticket_comments SET po_reviewed = 1, withheld = 1 WHERE id = ? AND ticket_id = ?`
 	} else {
-		q = `UPDATE ticket_comments SET po_reviewed = 1 WHERE id = ?`
+		q = `UPDATE ticket_comments SET po_reviewed = 1 WHERE id = ? AND ticket_id = ?`
 	}
-	if _, err := s.db.Exec(q, commentID); err != nil {
+	if _, err := s.db.Exec(q, commentID, ticketID); err != nil {
 		log.Printf("sqlStore: SetCommentReviewed: %v", err)
 		return nil
 	}
-	row := s.db.QueryRow(`SELECT `+commentCols+` FROM ticket_comments WHERE id = ?`, commentID)
+	row := s.db.QueryRow(`SELECT `+commentCols+` FROM ticket_comments WHERE id = ? AND ticket_id = ?`, commentID, ticketID)
 	return s.scanComment(row.Scan)
 }
 

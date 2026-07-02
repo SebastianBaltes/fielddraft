@@ -342,7 +342,7 @@ func TestSQLStoreModeration(t *testing.T) {
 	}
 
 	// Moderate the comment spam → reviewed + withheld.
-	mod := store.SetCommentReviewed(uc.ID, true)
+	mod := store.SetCommentReviewed(tk.ID, uc.ID, true)
 	if mod == nil || !mod.POReviewed || !mod.Withheld {
 		t.Fatalf("SetCommentReviewed: %+v", mod)
 	}

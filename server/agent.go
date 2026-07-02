@@ -494,7 +494,7 @@ func (s *Server) handleCommentVerdict(w http.ResponseWriter, r *http.Request) {
 	}
 
 	bad := req.Spam || req.Malicious
-	updated := s.tickets.SetCommentReviewed(commentID, bad)
+	updated := s.tickets.SetCommentReviewed(ticketID, commentID, bad)
 	if updated == nil {
 		http.Error(w, `{"error":"could not moderate comment"}`, http.StatusInternalServerError)
 		return

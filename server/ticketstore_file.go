@@ -521,22 +521,24 @@ func (s *fileTicketStore) GetComment(ticketID, commentID string) *TicketComment 
 	return nil
 }
 
-func (s *fileTicketStore) SetCommentReviewed(commentID string, withheld bool) *TicketComment {
+func (s *fileTicketStore) SetCommentReviewed(ticketID, commentID string, withheld bool) *TicketComment {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for _, ft := range s.allTickets() {
-		for _, c := range ft.Comments {
-			if c.ID == commentID {
-				c.POReviewed = true
-				if withheld {
-					c.Withheld = true
-				}
-				if err := s.save(ft); err != nil {
-					return nil
-				}
-				cc := *c
-				return &cc
+	ft := s.load(ticketID)
+	if ft == nil {
+		return nil
+	}
+	for _, c := range ft.Comments {
+		if c.ID == commentID {
+			c.POReviewed = true
+			if withheld {
+				c.Withheld = true
 			}
+			if err := s.save(ft); err != nil {
+				return nil
+			}
+			cc := *c
+			return &cc
 		}
 	}
 	return nil

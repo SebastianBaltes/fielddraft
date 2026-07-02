@@ -116,6 +116,9 @@ func selectTicketStore(store Store) TicketStore {
 		}
 		log.Printf("ticket store: file backend at %s", dir)
 		return fs
+	case "issuevault":
+		// External IssueVault service (store_issuevault.go) instead of MariaDB.
+		return newIssuevaultStore()
 	default:
 		// db (default): the DB/mem store's own ticket methods. Both memStore and
 		// sqlStore implement every TicketStore method (see the compile-time

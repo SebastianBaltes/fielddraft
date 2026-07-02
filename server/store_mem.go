@@ -674,19 +674,17 @@ func (s *memStore) GetComment(ticketID, commentID string) *TicketComment {
 
 // SetCommentReviewed marks a comment PO-reviewed and, when withheld, hides it
 // (B1, §4.2). Returns the updated comment (nil if unknown).
-func (s *memStore) SetCommentReviewed(commentID string, withheld bool) *TicketComment {
+func (s *memStore) SetCommentReviewed(ticketID, commentID string, withheld bool) *TicketComment {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for _, list := range s.comments {
-		for _, c := range list {
-			if c.ID == commentID {
-				c.POReviewed = true
-				if withheld {
-					c.Withheld = true
-				}
-				cc := *c
-				return &cc
+	for _, c := range s.comments[ticketID] {
+		if c.ID == commentID {
+			c.POReviewed = true
+			if withheld {
+				c.Withheld = true
 			}
+			cc := *c
+			return &cc
 		}
 	}
 	return nil

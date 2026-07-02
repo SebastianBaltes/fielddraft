@@ -169,7 +169,7 @@ func TestFileStoreComments(t *testing.T) {
 	if got := fs.ListTicketsWithUnreviewedComments(); len(got) != 1 {
 		t.Fatalf("unreviewed query before: got %d, want 1", len(got))
 	}
-	if upd := fs.SetCommentReviewed(uc.ID, true); upd == nil || !upd.POReviewed || !upd.Withheld {
+	if upd := fs.SetCommentReviewed(tk.ID, uc.ID, true); upd == nil || !upd.POReviewed || !upd.Withheld {
 		t.Fatalf("SetCommentReviewed bad: %+v", upd)
 	}
 	if got := fs.ListTicketsWithUnreviewedComments(); len(got) != 0 {

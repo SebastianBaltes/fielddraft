@@ -40,7 +40,7 @@ type TicketStore interface {
 
 	// Comment moderation (B1, §4.2/§8): the PO post-moderates user comments.
 	GetComment(ticketID, commentID string) *TicketComment // nil if not on that ticket
-	SetCommentReviewed(commentID string, withheld bool) *TicketComment
+	SetCommentReviewed(ticketID, commentID string, withheld bool) *TicketComment
 	ListTicketsWithUnreviewedComments() []*Ticket // hydrated; any state
 
 	// Agent-authored comments: leak-filtered `po` comment (withheld iff it
