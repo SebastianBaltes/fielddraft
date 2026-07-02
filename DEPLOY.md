@@ -25,14 +25,14 @@ No backend needed for local modeling — projects save to localStorage.
 ## Dev stack (Docker Compose)
 
 The committed `docker-compose.yml` is the **development** stack (MariaDB + Go
-server + a Vite dev container). It is NOT for production — the web service runs
-the Vite dev server and ports are exposed on the host for convenience.
+server). It is NOT for production — ports are exposed on the host for
+convenience. The frontend is not containerized in dev: run Vite on the host
+(`just dev` / `just dev-full`); it proxies `/api` to the Go server.
 
 ```bash
-docker compose up --build -d
+docker compose up --build -d db server
 # db:     MariaDB 11   (host :3306)
 # server: Go backend   (host :8080)
-# web:    Vite dev      (host :5173)
 ```
 
 Dev env vars (host port overrides) live in `.env` — see `.env.example`.

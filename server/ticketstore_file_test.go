@@ -79,6 +79,80 @@ func TestFileStoreCanonicalArtifactFilenames(t *testing.T) {
 	}
 }
 
+// TestFileStoreReadsViteMiddlewareTicket — dev-parity pin: the Vite dev-server
+// ticket middleware (web/vite.config.ts ticketWriter) writes ticket.json in
+// EXACTLY this shape so tickets filed via `just dev` (no Go server) are
+// visible under TICKET_BACKEND=files. If the fileTicketStore schema changes,
+// this fixture (and the middleware) must move with it.
+func TestFileStoreReadsViteMiddlewareTicket(t *testing.T) {
+	base := t.TempDir()
+	const id = "20260702-181530-ab3d"
+	dir := filepath.Join(base, "open", id)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	png := []byte("PNGDATA")
+	if err := os.WriteFile(filepath.Join(dir, "screenshot.png"), png, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Verbatim middleware output shape (sha256 of "PNGDATA" below).
+	ticketJSON := `{
+  "id": "` + id + `",
+  "author_id": "local-dev",
+  "title": "Extrude crashes",
+  "body": "Extrude crashes\nwhen depth is negative",
+  "state": "triage",
+  "category": null,
+  "po_spam": false,
+  "po_malicious": false,
+  "po_vision_fit": null,
+  "po_reason": null,
+  "po_verdict_at": null,
+  "created_at": "2026-07-02T18:15:30.123Z",
+  "updated_at": "2026-07-02T18:15:30.123Z",
+  "comments": [],
+  "artifacts": [
+    {
+      "id": "0123456789abcdef0123456789abcdef",
+      "ticket_id": "` + id + `",
+      "kind": "screenshot",
+      "blob_ref": "2d4566582844690f8634a8b2534ea5221560038c6c0650c99140759bad603ae2",
+      "mime": "image/png",
+      "size": 7,
+      "name": "screenshot.png",
+      "created_at": "2026-07-02T18:15:30.123Z"
+    }
+  ]
+}
+`
+	if err := os.WriteFile(filepath.Join(dir, "ticket.json"), []byte(ticketJSON), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	fs, err := newFileTicketStore(base)
+	if err != nil {
+		t.Fatalf("newFileTicketStore: %v", err)
+	}
+	got := fs.GetTicket(id)
+	if got == nil {
+		t.Fatal("middleware-written ticket invisible to fileTicketStore")
+	}
+	if got.Title != "Extrude crashes" || got.State != StateTriage || got.AuthorID != "local-dev" {
+		t.Fatalf("ticket fields: %+v", got)
+	}
+	if len(got.Artifacts) != 1 || got.Artifacts[0].Kind != ArtifactScreenshot {
+		t.Fatalf("artifacts: %+v", got.Artifacts)
+	}
+	// The list view sees it too.
+	if got := fs.ListTickets(TicketFilter{}); len(got) != 1 || got[0].ID != id {
+		t.Fatalf("ListTickets: %d", len(got))
+	}
+	// And the blob resolves via the artifact's on-disk name.
+	if _, data := fs.GetArtifactBlob(id, got.Artifacts[0].ID); string(data) != string(png) {
+		t.Fatalf("artifact bytes: %q", data)
+	}
+}
+
 // TestFileStorePersistsAcrossReopen — a fresh store instance over the same dir
 // reads back tickets, artifact bytes, and deploys.
 func TestFileStorePersistsAcrossReopen(t *testing.T) {

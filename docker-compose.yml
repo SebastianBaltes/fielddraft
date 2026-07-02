@@ -1,5 +1,7 @@
-# M11: dev stack — MariaDB + Go server + Vite frontend.
-# Usage: docker compose up (or `just dev` once the justfile is updated).
+# Dev stack — MariaDB + Go server. The frontend is NOT containerized in dev:
+# the real dev flow runs Vite on the host (`just dev` / `just dev-full`), which
+# proxies /api to the server below.
+# Usage: docker compose up --build -d db server
 
 services:
   db:
@@ -45,15 +47,6 @@ services:
     depends_on:
       db:
         condition: service_healthy
-
-  web:
-    build:
-      context: ./web
-      dockerfile: Dockerfile
-    ports:
-      - "${FIELDDRAFT_WEB_PORT:-5173}:5173"
-    depends_on:
-      - server
 
 volumes:
   db-data:

@@ -1,6 +1,7 @@
 import { defineConfig, loadEnv, type Plugin } from "vite";
 import react from "@vitejs/plugin-react";
 import { existsSync, readFileSync, mkdirSync, writeFileSync } from "node:fs";
+import { createHash, randomBytes } from "node:crypto";
 import { join, resolve, isAbsolute, sep } from "node:path";
 import { homedir } from "node:os";
 
@@ -171,13 +172,44 @@ function ticketWriter(): Plugin {
             const dir = join(ticketsRoot, id);
             mkdirSync(dir, { recursive: true });
 
-            // ticket xqll: no ticket.json and no title — ticket.md (below)
-            // carries all metadata plus the description and attachments.
             const description = t.description ?? "";
             const version = t.version ?? "";
             const timestamp = t.timestamp ?? new Date().toISOString();
             const userAgent = t.userAgent ?? "";
             const url = t.url ?? "";
+            const nowIso = new Date().toISOString();
+
+            // Artifact index for ticket.json — mirrors the Go fileTicketStore
+            // schema (server/ticketstore_file.go: TicketArtifact rows with a
+            // content-addressed blob_ref + the on-disk filename as name).
+            const artifacts: {
+              id: string;
+              ticket_id: string;
+              kind: string;
+              blob_ref: string;
+              mime: string;
+              size: number;
+              name: string;
+              created_at: string;
+            }[] = [];
+            const putArtifact = (
+              kind: string,
+              name: string,
+              mime: string,
+              data: Buffer,
+            ) => {
+              writeFileSync(join(dir, name), data);
+              artifacts.push({
+                id: randomBytes(16).toString("hex"),
+                ticket_id: id,
+                kind,
+                blob_ref: createHash("sha256").update(data).digest("hex"),
+                mime,
+                size: data.length,
+                name,
+                created_at: nowIso,
+              });
+            };
 
             // User attachments (ticket 8onw): each data URL becomes a file
             // next to the screenshot, listed in ticket.md for the agent.
@@ -190,12 +222,16 @@ function ticketWriter(): Plugin {
                 return;
               const fname = attachmentFilename(i, a.name ?? "");
               const b64 = a.dataUrl.slice(a.dataUrl.indexOf(",") + 1);
-              writeFileSync(join(dir, fname), Buffer.from(b64, "base64"));
+              putArtifact(
+                "attachment",
+                fname,
+                a.mime || "application/octet-stream",
+                Buffer.from(b64, "base64"),
+              );
               attachmentNames.push(fname);
             });
 
-            // Human-readable ticket — the single source of truth now that
-            // ticket.json is gone (ticket xqll). Heading derived from the
+            // Human-readable ticket for the agent. Heading derived from the
             // description's first line.
             const heading = ticketHeading(id, description);
             writeFileSync(
@@ -215,9 +251,11 @@ function ticketWriter(): Plugin {
             // ticket 478k: per-device settings (renderMode, controlsPreset, …)
             // live in a separate settings.json, NOT inline in the markdown.
             if (t.settings) {
-              writeFileSync(
-                join(dir, "settings.json"),
-                JSON.stringify(t.settings, null, 2),
+              putArtifact(
+                "settings",
+                "settings.json",
+                "application/json",
+                Buffer.from(JSON.stringify(t.settings, null, 2)),
               );
             }
 
@@ -225,9 +263,11 @@ function ticketWriter(): Plugin {
             // tool/mode) in a separate ui_state.json so a report reproduces
             // the exact view, not just the document.
             if (t.uiState) {
-              writeFileSync(
-                join(dir, "ui_state.json"),
-                JSON.stringify(t.uiState, null, 2),
+              putArtifact(
+                "ui_state",
+                "ui_state.json",
+                "application/json",
+                Buffer.from(JSON.stringify(t.uiState, null, 2)),
               );
             }
 
@@ -235,17 +275,21 @@ function ticketWriter(): Plugin {
             // separate actions.json so a report carries the steps that led to
             // the bug, not just the end state.
             if (t.actionLog) {
-              writeFileSync(
-                join(dir, "actions.json"),
-                JSON.stringify(t.actionLog, null, 2),
+              putArtifact(
+                "actions",
+                "actions.json",
+                "application/json",
+                Buffer.from(JSON.stringify(t.actionLog, null, 2)),
               );
             }
 
             // on3k: the project rides along as a base64 .fdraft ZIP — decode
             // and write the real binary file (document JSON + font assets).
             if (t.projectFdraft) {
-              writeFileSync(
-                join(dir, "project.fdraft"),
+              putArtifact(
+                "fdraft",
+                "project.fdraft",
+                "application/zip",
                 Buffer.from(t.projectFdraft, "base64"),
               );
             }
@@ -255,11 +299,43 @@ function ticketWriter(): Plugin {
               t.screenshot.startsWith("data:image/")
             ) {
               const b64 = t.screenshot.slice(t.screenshot.indexOf(",") + 1);
-              writeFileSync(
-                join(dir, "screenshot.png"),
+              putArtifact(
+                "screenshot",
+                "screenshot.png",
+                "image/png",
                 Buffer.from(b64, "base64"),
               );
             }
+
+            // Ticket-format parity: ADDITIONALLY write ticket.json in the
+            // exact schema the Go fileTicketStore (server/ticketstore_file.go)
+            // reads back — tickets filed via `just dev` (no Go server) are
+            // otherwise invisible under TICKET_BACKEND=files. Go stays the
+            // canonical writer; this is the minimal dev-parity shim.
+            writeFileSync(
+              join(dir, "ticket.json"),
+              JSON.stringify(
+                {
+                  id,
+                  author_id: "local-dev",
+                  title: heading,
+                  body: description,
+                  state: "triage",
+                  category: null,
+                  po_spam: false,
+                  po_malicious: false,
+                  po_vision_fit: null,
+                  po_reason: null,
+                  po_verdict_at: null,
+                  created_at: nowIso,
+                  updated_at: nowIso,
+                  comments: [],
+                  artifacts,
+                },
+                null,
+                2,
+              ) + "\n",
+            );
 
             server.config.logger.info(
               `ticket saved: tickets/open/${id} — ${heading}`,

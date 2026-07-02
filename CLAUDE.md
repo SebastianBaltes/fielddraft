@@ -11,7 +11,7 @@ Wir sind in einer frühen Dev-Phase. Schnelles Entwickeln und sauberer Code habe
 - **Web only:** `cd web && npm test`.
 - **Dev-Server:** `just dev` (baut WASM und startet Vite auf :5173).
 - **Voller Build:** `just build` (WASM + Vite Bundle).
-- **Backend** (optional): `docker compose up --build -d` oder `cd server && go run .`.
+- **Backend** (optional): `docker compose up --build -d db server` oder `cd server && go run .`.
 
 Volle Deployment-Anleitung in `DEPLOY.md`.
 
