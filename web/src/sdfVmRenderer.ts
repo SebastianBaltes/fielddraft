@@ -35,6 +35,8 @@ import { buildVmSdfEvalFn } from "./sdfVmInterpreter";
 import {
   createMaterialBuffers,
   createOpcodeBuffers,
+  createCameraUniforms,
+  updateCameraUniforms,
   disposeAfterGpuIdle,
   packOpcodes,
   packMarchRelax,
@@ -45,17 +47,20 @@ import {
   MAT_DISPLACE_FREQ,
   DISPLACE_FREQ_Y,
   DISPLACE_FREQ_Z,
+  SURFACE_EPS,
+  SDF_MARCH_STEPS,
+  SDF_MAX_OPCODES,
   shadeSdfHit,
+  type CameraUniformSet,
 } from "./sdfPipelineCommon";
 
-const MAX_BODIES = 8;
-const GLOBAL_MAX_OPCODES = 16384;
-const MARCH_STEPS = 512;
-const SURFACE_EPS = 0.002;
+/** This single fullscreen march unions ALL bodies in one shader — the body
+ *  cap sizes the per-pixel inner loop, so it stays small. */
+const VM_MAX_BODIES = 8;
 
 // ── Types ───────────────────────────────────────────────────────────
 
-export interface VmPipelineState {
+export interface VmPipelineState extends CameraUniformSet {
   scene: THREE.Scene;
   camera: THREE.OrthographicCamera;
   material: MeshBasicNodeMaterial | null;
@@ -70,9 +75,6 @@ export interface VmPipelineState {
   materialAttr: any;
   materialBuf: any;
   bodyCountU: ReturnType<typeof uniform>;
-  camPosU: ReturnType<typeof uniform>;
-  invProjU: ReturnType<typeof uniform>;
-  invViewU: ReturnType<typeof uniform>;
   volumeTextures: THREE.Data3DTexture[];
   volumeBaseData: Float32Array;
   volumeBaseAttr: StorageBufferAttribute;
@@ -83,19 +85,13 @@ export interface VmPipelineState {
   marchRelaxData: Float32Array;
   marchRelaxAttr: StorageBufferAttribute;
   marchRelaxBuf: ReturnType<typeof storage>;
-  viewMatU: ReturnType<typeof uniform>;
-  nearU: ReturnType<typeof uniform>;
-  farU: ReturnType<typeof uniform>;
-  /** 1.0 → orthographic scene camera (default), 0.0 → perspective. Selects
-   *  parallel vs converging primary rays AND the depth-write formula. */
-  isOrthoU: ReturnType<typeof uniform>;
 }
 
 // ── Init ────────────────────────────────────────────────────────────
 
 export function initVmPipeline(): VmPipelineState {
-  const matBufs = createMaterialBuffers(MAX_BODIES);
-  const opBufs = createOpcodeBuffers(GLOBAL_MAX_OPCODES, MAX_BODIES);
+  const matBufs = createMaterialBuffers(VM_MAX_BODIES);
+  const opBufs = createOpcodeBuffers(SDF_MAX_OPCODES, VM_MAX_BODIES);
 
   const scene = new THREE.Scene();
   const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 2);
@@ -109,14 +105,8 @@ export function initVmPipeline(): VmPipelineState {
     mesh: null,
     ...opBufs,
     ...matBufs,
+    ...createCameraUniforms(),
     bodyCountU: uniform(0),
-    camPosU: uniform(new THREE.Vector3()),
-    invProjU: uniform(new THREE.Matrix4()),
-    invViewU: uniform(new THREE.Matrix4()),
-    viewMatU: uniform(new THREE.Matrix4()),
-    nearU: uniform(1),
-    farU: uniform(4000),
-    isOrthoU: uniform(1),
   };
 }
 
@@ -135,18 +125,18 @@ export function updateVmData(
     state.opcodeData,
     state.offsetData,
     bodies,
-    GLOBAL_MAX_OPCODES,
-    MAX_BODIES,
+    SDF_MAX_OPCODES,
+    VM_MAX_BODIES,
   );
   state.opcodeAttr.needsUpdate = true;
   state.offsetAttr.needsUpdate = true;
-  packMarchRelax(state.marchRelaxData, bodies, MAX_BODIES);
+  packMarchRelax(state.marchRelaxData, bodies, VM_MAX_BODIES);
   state.marchRelaxAttr.needsUpdate = true;
   updateVolumeData(
     state.volumeTextures,
     state.volumeBaseData,
     bodies,
-    MAX_BODIES,
+    VM_MAX_BODIES,
   );
   state.volumeBaseAttr.needsUpdate = true;
   state.bodyCountU.value = bodies.length;
@@ -168,12 +158,12 @@ export function rebuildVmBodies(
     state.opcodeData,
     state.offsetData,
     bodies,
-    GLOBAL_MAX_OPCODES,
-    MAX_BODIES,
+    SDF_MAX_OPCODES,
+    VM_MAX_BODIES,
   );
   state.opcodeAttr.needsUpdate = true;
   state.offsetAttr.needsUpdate = true;
-  packMarchRelax(state.marchRelaxData, bodies, MAX_BODIES);
+  packMarchRelax(state.marchRelaxData, bodies, VM_MAX_BODIES);
   state.marchRelaxAttr.needsUpdate = true;
 
   // Ticket fg9o: capture the resources this rebuild retires and dispose them
@@ -189,7 +179,7 @@ export function rebuildVmBodies(
     state.volumeTextures,
     state.volumeBaseData,
     bodies,
-    MAX_BODIES,
+    VM_MAX_BODIES,
     false, // defer texture disposal until the GPU is idle (see below)
   );
   state.volumeTextures = textures;
@@ -292,12 +282,12 @@ function createVmMaterial(state: VmPipelineState): MeshBasicNodeMaterial {
     // capped step budget and a shared `bestT` early-out cut marches short) and
     // — in the deferred renderer — exploded the shader so it never finished
     // compiling. Reverted to this single union march (ticket 6yin).
-    Loop(int(MARCH_STEPS), () => {
+    Loop(int(SDF_MARCH_STEPS), () => {
       const p = ro.add(rd.mul(t));
       const minD = float(1e30).toVar();
       const closestBody = int(0).toVar();
 
-      Loop(int(MAX_BODIES), ({ i: bodyIdx }) => {
+      Loop(int(VM_MAX_BODIES), ({ i: bodyIdx }) => {
         If(bodyIdx.lessThan(bodyCount), () => {
           const offLen = state.offsetBuf.element(bodyIdx.mul(2).add(1));
           If(int(offLen).greaterThan(int(0)), () => {
@@ -413,28 +403,6 @@ export function renderVmFrame(
   if (!state.material) return;
   updateCameraUniforms(state, camera);
   renderer.render(state.scene, state.camera);
-}
-
-function updateCameraUniforms(
-  state: VmPipelineState,
-  camera: THREE.Camera,
-): void {
-  const cam = camera as THREE.PerspectiveCamera;
-  if (cam.parent) cam.updateMatrixWorld();
-  state.camPosU.value.setFromMatrixPosition(cam.matrixWorld);
-  // projectionMatrixInverse is valid for both projections — it reconstructs the
-  // near-plane world point either way; the shader picks parallel vs converging
-  // rays from isOrthoU.
-  state.invProjU.value.copy(cam.projectionMatrixInverse);
-  // invView is the camera's world matrix (the inverse of the view matrix).
-  state.invViewU.value.copy(cam.matrixWorld);
-  state.viewMatU.value.copy(cam.matrixWorldInverse);
-  state.nearU.value = cam.near;
-  state.farU.value = cam.far;
-  state.isOrthoU.value = (cam as unknown as THREE.OrthographicCamera)
-    .isOrthographicCamera
-    ? 1
-    : 0;
 }
 
 // ── GPU probe (dev / parity testing) ────────────────────────────────

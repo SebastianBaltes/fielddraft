@@ -19,6 +19,7 @@ import {
   sin,
   smoothstep,
   storage,
+  uniform,
   vec3,
   vec4,
 } from "three/tsl";
@@ -290,6 +291,94 @@ export const FRESNEL_EDGE_MIN = 0.65;
 export const FRESNEL_EDGE_MAX = 0.85;
 export const DISPLACE_FREQ_Y = 1.3;
 export const DISPLACE_FREQ_Z = 0.7;
+
+// ── Shared march/pipeline constants ────────────────────────────────
+//
+// One set of march parameters for BOTH SDF pipelines (VM single-pass and
+// deferred): identical hit epsilon, step budget and opcode budget. The
+// per-pipeline body caps stay renderer-specific (VM_MAX_BODIES = 8,
+// DEFERRED_MAX_BODIES = 256) because they size differently-shaped buffers.
+
+/** Sphere-trace hit epsilon (mm) — a step below this distance is a surface hit. */
+export const SURFACE_EPS = 0.002;
+/** Max sphere-trace iterations per primary ray. */
+export const SDF_MARCH_STEPS = 512;
+/** Packed opcode buffer budget (floats) shared by all bodies of a pipeline. */
+export const SDF_MAX_OPCODES = 16384;
+/** Padding (mm) around an AABB fallback hull so the march starts outside. */
+export const AABB_HULL_PAD = 0.5;
+
+// ── Shared camera uniforms ─────────────────────────────────────────
+
+/**
+ * The camera uniforms both SDF pipelines feed their shaders. A SUPERSET by
+ * design: the VM renderer additionally reads `invProjU`/`invViewU` (it
+ * reconstructs the primary ray from the fullscreen UV), the deferred
+ * renderer additionally reads `camFwdU` (parallel ortho march direction);
+ * an unused uniform costs nothing until a shader references it.
+ */
+export interface CameraUniformSet {
+  camPosU: ReturnType<typeof uniform>;
+  /** World-space camera forward (−Z) direction. In ORTHOGRAPHIC mode this is
+   *  the SHARED parallel ray direction for every pixel; the along-ray distance
+   *  of a world point is `dot(p − camPos, camFwd)`. Unused in perspective (rays
+   *  diverge from camPos and the radial distance is the ray parameter). */
+  camFwdU: ReturnType<typeof uniform>;
+  invProjU: ReturnType<typeof uniform>;
+  invViewU: ReturnType<typeof uniform>;
+  viewMatU: ReturnType<typeof uniform>;
+  nearU: ReturnType<typeof uniform>;
+  farU: ReturnType<typeof uniform>;
+  /** 1.0 when the scene camera is orthographic, 0.0 perspective — selects the
+   *  parallel-vs-converging march ray AND the linear-vs-reciprocal depth
+   *  formula when writing canvas depth. */
+  isOrthoU: ReturnType<typeof uniform>;
+}
+
+export function createCameraUniforms(): CameraUniformSet {
+  return {
+    camPosU: uniform(new THREE.Vector3(0, 0, 100)),
+    camFwdU: uniform(new THREE.Vector3(0, 0, -1)),
+    invProjU: uniform(new THREE.Matrix4()),
+    invViewU: uniform(new THREE.Matrix4()),
+    viewMatU: uniform(new THREE.Matrix4()),
+    nearU: uniform(1),
+    farU: uniform(4000),
+    // 1.0 → orthographic scene camera (the default), 0.0 → perspective.
+    isOrthoU: uniform(1),
+  };
+}
+
+/** Refresh every camera uniform from the live scene camera (called before
+ *  compile and per frame by both pipelines). */
+export function updateCameraUniforms(
+  u: CameraUniformSet,
+  camera: THREE.Camera,
+): void {
+  const cam = camera as THREE.PerspectiveCamera;
+  // getWorldPosition/getWorldDirection update the world-matrix chain (and,
+  // being a Camera, matrixWorldInverse) before reading — robust against a
+  // parented R3F camera.
+  cam.getWorldPosition(u.camPosU.value);
+  // World-space camera forward (−Z); the shared parallel march direction in
+  // orthographic mode (ticket g2ox). getWorldDirection already normalises.
+  cam.getWorldDirection(u.camFwdU.value);
+  // projectionMatrixInverse is valid for both projections — it reconstructs the
+  // near-plane world point either way; the shader picks parallel vs converging
+  // rays from isOrthoU.
+  u.invProjU.value.copy(cam.projectionMatrixInverse);
+  // invView is the camera's world matrix (the inverse of the view matrix).
+  u.invViewU.value.copy(cam.matrixWorld);
+  u.viewMatU.value.copy(cam.matrixWorldInverse);
+  // Both PerspectiveCamera and OrthographicCamera expose near/far; the depth
+  // formula differs (reciprocal vs linear) and is selected by isOrthoU.
+  u.nearU.value = cam.near;
+  u.farU.value = cam.far;
+  u.isOrthoU.value = (cam as unknown as THREE.OrthographicCamera)
+    .isOrthographicCamera
+    ? 1
+    : 0;
+}
 
 // ── Ambient occlusion ──────────────────────────────────────────────
 //

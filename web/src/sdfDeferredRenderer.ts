@@ -69,6 +69,8 @@ import type { HybridInfo, HybridLeafInfo } from "./kernel";
 import {
   createMaterialBuffers,
   createOpcodeBuffers,
+  createCameraUniforms,
+  updateCameraUniforms,
   disposeAfterGpuIdle,
   packOpcodes,
   packMarchRelax,
@@ -79,22 +81,26 @@ import {
   MAT_DISPLACE_FREQ,
   DISPLACE_FREQ_Y,
   DISPLACE_FREQ_Z,
+  SURFACE_EPS,
+  SDF_MARCH_STEPS,
+  SDF_MAX_OPCODES,
+  AABB_HULL_PAD,
   shadeSdfHit,
+  type CameraUniformSet,
 } from "./sdfPipelineCommon";
 
 // ── Constants ───────────────────────────────────────────────────────
 
-const DEFERRED_MAX_OPCODES = 16384;
-const MAX_BODIES = 256;
-const DEFERRED_MARCH_STEPS = 512;
-const SURFACE_EPS = 0.002;
+/** Every body gets its own raster proxy meshes, so the cap is generous —
+ *  unlike the VM renderer's 8-body fullscreen union march. */
+const DEFERRED_MAX_BODIES = 256;
 const MARCH_START_BACKOFF = 1.0; // mm -- Z-Offset ±1 mm in Kamera-Richtung: March-Start liegt 1 mm vor der exakten Front-Fläche (Richtung Kamera), tMax entsprechend +1 mm hinter der Rückwand. Damit startet der Trace garantiert im Freiraum (Ticket vlhp).
 const MAX_PIXELS = 4096 * 2160;
 const BODY_ID_WORDS_PER_PIXEL = 2;
 
 // ── Types ───────────────────────────────────────────────────────────
 
-export interface DeferredPipelineState {
+export interface DeferredPipelineState extends CameraUniformSet {
   opaqueRT: THREE.WebGLRenderTarget;
   transparentRT: THREE.WebGLRenderTarget;
   transparentBackRT: THREE.WebGLRenderTarget;
@@ -119,21 +125,8 @@ export interface DeferredPipelineState {
   volumeBaseBuf: ReturnType<typeof storage>;
   volumeBaseData: Float32Array;
   volumeBaseAttr: StorageBufferAttribute;
-  camPosUniform: ReturnType<typeof uniform>;
-  /** World-space camera forward (−Z) direction. In ORTHOGRAPHIC mode this is
-   *  the SHARED parallel ray direction for every pixel; the along-ray distance
-   *  of a world point is `dot(p − camPos, camFwd)`. Unused in perspective (rays
-   *  diverge from camPos and the radial distance is the ray parameter). */
-  camFwdU: ReturnType<typeof uniform>;
-  viewMatU: ReturnType<typeof uniform>;
   widthU: ReturnType<typeof uniform>;
   bgColorU: ReturnType<typeof uniform>;
-  nearU: ReturnType<typeof uniform>;
-  farU: ReturnType<typeof uniform>;
-  /** 1.0 when the scene camera is orthographic, 0.0 perspective — selects the
-   *  parallel-vs-converging march ray AND the linear-vs-reciprocal depth
-   *  formula when writing canvas depth. */
-  isOrthoU: ReturnType<typeof uniform>;
   bodyOpaqueMeshes: Map<number, THREE.Mesh[]>;
   bodyTransparentMeshes: Map<number, THREE.Mesh[]>;
   bodyBackMeshes: Map<number, THREE.Mesh[]>;
@@ -389,7 +382,7 @@ function createShadeMaterial(
         // it, steps by that distance, and on a hit shades the NEAREST trans
         // surface. Reverted from the per-body nested march (e4e5727) that
         // sliced bodies and exploded the deferred shader (ticket 6yin).
-        Loop(int(DEFERRED_MARCH_STEPS), () => {
+        Loop(int(SDF_MARCH_STEPS), () => {
           const p = transWorldPos.add(rd.mul(t));
           const minD = float(1e30).toVar();
           const closestBody = int(0).toVar();
@@ -561,30 +554,22 @@ export function initDeferredPipeline(
   const transparentScene = new THREE.Scene();
   const transparentBackScene = new THREE.Scene();
 
-  const opBufs = createOpcodeBuffers(DEFERRED_MAX_OPCODES, MAX_BODIES);
-  const matBufs = createMaterialBuffers(MAX_BODIES);
+  const opBufs = createOpcodeBuffers(SDF_MAX_OPCODES, DEFERRED_MAX_BODIES);
+  const matBufs = createMaterialBuffers(DEFERRED_MAX_BODIES);
 
-  const selectionData = new Float32Array(MAX_BODIES);
+  const selectionData = new Float32Array(DEFERRED_MAX_BODIES);
   const selectionBuf = uniformArray(selectionData, "float");
 
-  const camPosUniform = uniform(new THREE.Vector3(0, 0, 100));
-  // Camera forward (−Z) in world space; the shared parallel march direction in
-  // orthographic mode. Set per frame in renderDeferredFrame.
-  const camFwdU = uniform(new THREE.Vector3(0, 0, -1));
-  const viewMatU = uniform(new THREE.Matrix4());
+  // Shared camera uniform set; refreshed per frame in renderDeferredFrame.
+  const camU = createCameraUniforms();
   const widthU = uniform(width);
-  const nearU = uniform(1);
-  const farU = uniform(4000);
-  // 1.0 → orthographic scene camera (the default), 0.0 → perspective. Set per
-  // frame in renderDeferredFrame; selects the march ray and the depth formula.
-  const isOrthoU = uniform(1);
   // Viewport background colour for SDF miss pixels (ticket a2ps); set each frame
   // from the renderer's clear colour (ClearColorSync). White by default.
   const bgColorU = uniform(new THREE.Color(1, 1, 1));
   const backFaceMaterial = createBackFaceMaterial(
-    camPosUniform,
-    camFwdU,
-    isOrthoU,
+    camU.camPosU,
+    camU.camFwdU,
+    camU.isOrthoU,
   );
 
   const bodyIdCount = MAX_PIXELS * BODY_ID_WORDS_PER_PIXEL;
@@ -605,14 +590,14 @@ export function initDeferredPipeline(
     selectionBuf,
     opBufs.volumeBaseBuf,
     opBufs.marchRelaxBuf,
-    camPosUniform,
-    camFwdU,
-    viewMatU,
+    camU.camPosU,
+    camU.camFwdU,
+    camU.viewMatU,
     widthU,
-    nearU,
-    farU,
+    camU.nearU,
+    camU.farU,
     bgColorU,
-    isOrthoU,
+    camU.isOrthoU,
   );
 
   const shadeMesh = new THREE.Mesh(
@@ -641,16 +626,11 @@ export function initDeferredPipeline(
     backFaceMaterial,
     ...opBufs,
     ...matBufs,
+    ...camU,
     selectionBuf,
     selectionData,
-    camPosUniform,
-    camFwdU,
-    viewMatU,
     widthU,
-    nearU,
-    farU,
     bgColorU,
-    isOrthoU,
     bodyOpaqueMeshes: new Map(),
     bodyTransparentMeshes: new Map(),
     bodyBackMeshes: new Map(),
@@ -682,12 +662,12 @@ export function updateDeferredData(
     state.opcodeData,
     state.offsetData,
     bodies,
-    DEFERRED_MAX_OPCODES,
-    MAX_BODIES,
+    SDF_MAX_OPCODES,
+    DEFERRED_MAX_BODIES,
   );
   state.opcodeAttr.needsUpdate = true;
   state.offsetAttr.needsUpdate = true;
-  packMarchRelax(state.marchRelaxData, bodies, MAX_BODIES);
+  packMarchRelax(state.marchRelaxData, bodies, DEFERRED_MAX_BODIES);
   state.marchRelaxAttr.needsUpdate = true;
   for (const [bi, range] of ranges) state.bodyOpcodeRanges.set(bi, range);
 
@@ -705,7 +685,7 @@ export function updateDeferredData(
             ? ([aabb[0], aabb[1], aabb[2], aabb[3], aabb[4], aabb[5]] as const)
             : computeLeafAABB(hybridInfo.leaves);
           if (bodyAABB) {
-            const pad = 0.5;
+            const pad = AABB_HULL_PAD;
             // Ticket sgzw: defer the OLD geometry's GPU disposal until the
             // device is idle. Disposing it synchronously here races the
             // in-flight frame's submit → "Buffer used in submit while
@@ -756,7 +736,7 @@ export function updateDeferredData(
     state.volumeTextures,
     state.volumeBaseData,
     bodies,
-    MAX_BODIES,
+    DEFERRED_MAX_BODIES,
   );
   state.volumeBaseAttr.needsUpdate = true;
 }
@@ -767,7 +747,7 @@ export function updateDeferredSelection(
 ): void {
   state.selectionData.fill(0);
   for (const idx of selectedBodies) {
-    if (idx < MAX_BODIES) state.selectionData[idx] = 1;
+    if (idx < DEFERRED_MAX_BODIES) state.selectionData[idx] = 1;
   }
 }
 
@@ -834,15 +814,15 @@ export function rebuildDeferredBodies(
     state.opcodeData,
     state.offsetData,
     bodies,
-    DEFERRED_MAX_OPCODES,
-    MAX_BODIES,
+    SDF_MAX_OPCODES,
+    DEFERRED_MAX_BODIES,
   );
   state.opcodeAttr.needsUpdate = true;
   state.offsetAttr.needsUpdate = true;
   for (const [bi, range] of ranges) state.bodyOpcodeRanges.set(bi, range);
 
   for (const { bodyIndex, hybridInfo, opcodes, aabb } of bodies) {
-    if (bodyIndex >= MAX_BODIES) continue;
+    if (bodyIndex >= DEFERRED_MAX_BODIES) continue;
     if (!ranges.has(bodyIndex)) continue;
 
     const gbufMaterial = createGBufferMaterial(bodyIndex);
@@ -973,7 +953,7 @@ export function rebuildDeferredBodies(
     state.volumeTextures,
     state.volumeBaseData,
     bodies,
-    MAX_BODIES,
+    DEFERRED_MAX_BODIES,
     false, // old textures disposed via disposeAfterGpuIdle above (ticket fg9o)
   );
   state.volumeTextures = textures;
@@ -987,7 +967,7 @@ function addAabbBox(
   scene: THREE.Scene,
   meshes: THREE.Mesh[],
 ): void {
-  const pad = 0.5;
+  const pad = AABB_HULL_PAD;
   const sx = aabb[3] - aabb[0] + pad * 2;
   const sy = aabb[4] - aabb[1] + pad * 2;
   const sz = aabb[5] - aabb[2] + pad * 2;
@@ -1055,7 +1035,7 @@ export function rebuildShadeMaterialIfNeeded(
     state.selectionBuf,
     state.volumeBaseBuf,
     state.marchRelaxBuf,
-    state.camPosUniform,
+    state.camPosU,
     state.camFwdU,
     state.viewMatU,
     state.widthU,
@@ -1096,8 +1076,6 @@ export function resizeDeferredPipeline(
   state.height = height;
 }
 
-const _camWorldPos = new THREE.Vector3();
-const _camWorldDir = new THREE.Vector3();
 const _savedClearColor = new THREE.Color();
 
 export function renderDeferredFrame(
@@ -1105,19 +1083,7 @@ export function renderDeferredFrame(
   renderer: THREE.WebGPURenderer,
   camera: THREE.Camera,
 ): void {
-  camera.getWorldPosition(_camWorldPos);
-  state.camPosUniform.value.copy(_camWorldPos);
-  // World-space camera forward (−Z); the shared parallel march direction in
-  // orthographic mode (ticket g2ox). getWorldDirection already normalises.
-  camera.getWorldDirection(_camWorldDir);
-  state.camFwdU.value.copy(_camWorldDir);
-  state.viewMatU.value.copy(camera.matrixWorldInverse);
-  // Both PerspectiveCamera and OrthographicCamera expose near/far; the depth
-  // formula differs (reciprocal vs linear) and is selected by isOrthoU.
-  const clip = camera as THREE.OrthographicCamera;
-  state.nearU.value = clip.near;
-  state.farU.value = clip.far;
-  state.isOrthoU.value = clip.isOrthographicCamera ? 1 : 0;
+  updateCameraUniforms(state, camera);
 
   renderer.getClearColor(_savedClearColor);
   const savedClearAlpha = renderer.getClearAlpha();
