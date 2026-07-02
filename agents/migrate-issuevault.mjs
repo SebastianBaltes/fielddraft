@@ -179,6 +179,9 @@ const IV_URL = process.env.IV_URL || "https://issuevault.203.0.113.10.sslip.io/a
 const IV_TOKEN = process.env.IV_TOKEN || "";
 const IV_PROJECT = process.env.IV_PROJECT || "fielddraft";
 const IV_BLOB_TARGET = process.env.IV_BLOB_TARGET || "root@203.0.113.10:/data/issuevault/blobs/";
+// IssueVault's blob dir is owned by the container user (uid 10001); rsync runs
+// as root on the box, so force ownership or the container can't read the blobs.
+const IV_BLOB_OWNER = process.env.IV_BLOB_OWNER || "10001:10001";
 
 mkdirSync(join(outDir, "blobs"), { recursive: true });
 
@@ -215,8 +218,8 @@ if (!IV_TOKEN) {
   console.error("✗ --push needs IV_TOKEN (import-capable). Aborting.");
   process.exit(1);
 }
-console.log(`\n▶ rsync ${allBlobs.size} blobs → ${IV_BLOB_TARGET}`);
-execFileSync("rsync", ["-a", join(outDir, "blobs") + "/", IV_BLOB_TARGET], { stdio: "inherit" });
+console.log(`\n▶ rsync ${allBlobs.size} blobs → ${IV_BLOB_TARGET} (chown ${IV_BLOB_OWNER})`);
+execFileSync("rsync", ["-a", `--chown=${IV_BLOB_OWNER}`, join(outDir, "blobs") + "/", IV_BLOB_TARGET], { stdio: "inherit" });
 
 for (const { installationId, payload } of payloads) {
   const res = await fetch(`${IV_URL}/projects/${IV_PROJECT}/import/tickets`, {
