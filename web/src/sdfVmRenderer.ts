@@ -10,25 +10,19 @@
 
 import * as THREE from "three";
 import {
-  Break,
   Discard,
   Fn,
   If,
   Loop,
-  depth,
   float,
   instanceIndex,
   int,
-  max,
   normalize,
   positionGeometry,
   storage,
   uniform,
   select,
-  vec3,
   vec4,
-  viewZToOrthographicDepth,
-  viewZToPerspectiveDepth,
 } from "three/tsl";
 import { MeshBasicNodeMaterial, StorageBufferAttribute } from "three/webgpu";
 import { buildVmSdfEvalFn } from "./sdfVmInterpreter";
@@ -42,14 +36,11 @@ import {
   packMarchRelax,
   updateVolumeData,
   rebuildVolumeTextures,
-  MAT_STRIDE,
-  MAT_DISPLACE_DEPTH,
-  MAT_DISPLACE_FREQ,
-  DISPLACE_FREQ_Y,
-  DISPLACE_FREQ_Z,
-  SURFACE_EPS,
   SDF_MARCH_STEPS,
   SDF_MAX_OPCODES,
+  makeDisplacedSdfEval,
+  emitSceneDepthWrite,
+  emitUnionMarch,
   shadeSdfHit,
   type CameraUniformSet,
 } from "./sdfPipelineCommon";
@@ -209,28 +200,7 @@ function createVmMaterial(state: VmPipelineState): MeshBasicNodeMaterial {
     withVolumeBaseIdx: state.volumeTextures.length > 0,
   });
 
-  const sdfEval = (args: {
-    p: any;
-    baseOffset: any;
-    volumeBaseIdx: any;
-    bodyIdx?: any;
-  }) => {
-    const d = sdfEvalRaw({
-      p: args.p,
-      baseOffset: args.baseOffset,
-      volumeBaseIdx: args.volumeBaseIdx,
-    });
-    if (!args.bodyIdx) return d;
-    const matBase = args.bodyIdx.mul(MAT_STRIDE);
-    const depth = state.materialBuf.element(matBase.add(MAT_DISPLACE_DEPTH));
-    const freq = state.materialBuf.element(matBase.add(MAT_DISPLACE_FREQ));
-    const disp = args.p.x
-      .mul(freq)
-      .sin()
-      .mul(args.p.y.mul(freq).mul(DISPLACE_FREQ_Y).sin())
-      .mul(args.p.z.mul(freq).mul(DISPLACE_FREQ_Z).sin());
-    return d.sub(depth.mul(disp));
-  };
+  const sdfEval = makeDisplacedSdfEval(sdfEvalRaw, state.materialBuf);
 
   const material = new MeshBasicNodeMaterial();
   material.outputNode = Fn(() => {
@@ -261,101 +231,56 @@ function createVmMaterial(state: VmPipelineState): MeshBasicNodeMaterial {
     const ro = select(isOrtho, nearWorld, state.camPosU).toVar();
 
     const bodyCount = int(state.bodyCountU);
-    const t = float(0).toVar();
-    const hit = float(0).toVar();
-    const hitPos = vec3(0).toVar();
-    const hitBody = int(0).toVar();
 
-    // SINGLE adaptive sphere-trace down the primary ray. Each step evaluates
-    // every body's own SDF and keeps the SMALLEST distance (`minD`) together
-    // with which body produced it (`closestBody`); the ray then steps by that
-    // conservative distance. On a hit the pixel is shaded for `closestBody` —
-    // i.e. the body whose own surface is nearest along the ray, exactly the
-    // depth-buffer occlusion two separate opaque solids must have.
-    //
-    // NOTE on the "implicit boolean" concern (tickets deeg/9ljc): for OPAQUE
-    // primary visibility this union march and a per-body nearest-hit march
-    // produce the SAME image — both show the nearest surface and record
-    // `closestBody`, so separate solids occlude, they do NOT fuse. The earlier
-    // per-body NESTED march (Loop(MAX_BODIES){Loop(MARCH_STEPS)}, commit
-    // e4e5727) gave no visual benefit but sliced bodies (each body got its own
-    // capped step budget and a shared `bestT` early-out cut marches short) and
-    // — in the deferred renderer — exploded the shader so it never finished
-    // compiling. Reverted to this single union march (ticket 6yin).
-    Loop(int(SDF_MARCH_STEPS), () => {
-      const p = ro.add(rd.mul(t));
-      const minD = float(1e30).toVar();
-      const closestBody = int(0).toVar();
-
-      Loop(int(VM_MAX_BODIES), ({ i: bodyIdx }) => {
-        If(bodyIdx.lessThan(bodyCount), () => {
-          const offLen = state.offsetBuf.element(bodyIdx.mul(2).add(1));
-          If(int(offLen).greaterThan(int(0)), () => {
-            const baseOff = int(state.offsetBuf.element(bodyIdx.mul(2)));
-            const volBase = int(state.volumeBaseBuf.element(bodyIdx));
-            const d = sdfEval({
-              p,
-              baseOffset: baseOff,
-              volumeBaseIdx: volBase,
-              bodyIdx,
-            });
-            If(d.lessThan(minD), () => {
-              minD.assign(d);
-              closestBody.assign(bodyIdx);
+    // Shared union sphere-trace (see emitUnionMarch for the full march +
+    // deeg/9ljc/6yin rationale). tEnd = the camera far plane (adapted to the
+    // scene each frame, ticket lbzq) instead of a fixed 3000 mm cap that hid
+    // large/zoomed-out scenes.
+    const { hit, hitPos, hitBody } = emitUnionMarch({
+      ro,
+      rd,
+      tStart: 0,
+      steps: SDF_MARCH_STEPS,
+      marchRelaxBuf: state.marchRelaxBuf,
+      tEnd: state.farU,
+      evalBodies: (p: any, minD: any, closestBody: any) => {
+        Loop(int(VM_MAX_BODIES), ({ i: bodyIdx }) => {
+          If(bodyIdx.lessThan(bodyCount), () => {
+            const offLen = state.offsetBuf.element(bodyIdx.mul(2).add(1));
+            If(int(offLen).greaterThan(int(0)), () => {
+              const baseOff = int(state.offsetBuf.element(bodyIdx.mul(2)));
+              const volBase = int(state.volumeBaseBuf.element(bodyIdx));
+              const d = sdfEval({
+                p,
+                baseOffset: baseOff,
+                volumeBaseIdx: volBase,
+                bodyIdx,
+              });
+              If(d.lessThan(minD), () => {
+                minD.assign(d);
+                closestBody.assign(bodyIdx);
+              });
             });
           });
         });
-      });
-
-      If(minD.lessThan(float(SURFACE_EPS)), () => {
-        hit.assign(1);
-        hitPos.assign(p);
-        hitBody.assign(closestBody);
-        Break();
-      });
-      // Per-body conservative step (Ticket 1wnm): a non-Lipschitz SDF
-      // (revolve march_relax 0.7, gyroid, …) overestimates distance and a full
-      // step would tunnel through thin walls; simple primitives keep 1.0. Same
-      // factor the deferred march applies.
-      t.addAssign(
-        max(
-          minD.mul(state.marchRelaxBuf.element(closestBody)),
-          float(SURFACE_EPS),
-        ),
-      );
-      // Stop at the camera far plane (now adapted to the scene each frame,
-      // ticket lbzq) instead of a fixed 3000 mm cap that hid large/zoomed-out
-      // scenes.
-      If(t.greaterThan(state.farU), () => {
-        Break();
-      });
+      },
     });
 
     If(hit.lessThan(float(0.5)), () => {
       Discard();
     });
 
-    // Write per-pixel canvas depth so the B-Rep edge overlay can occlude in
-    // "visible" mode. `hitPos` is the true raymarched surface point;
-    // reconstruct its perspective depth via the scene camera's view matrix +
-    // near/far (the fullscreen quad is drawn with an ortho camera, so the
-    // rasterizer's own depth is meaningless). Misses already discarded above,
-    // so they never touch depth. Harmless in X-Ray/Hidden modes — there
-    // renderOverlayLayer clears depth before drawing the edges.
-    // 0.1% depth bias behind the true surface so on-surface B-Rep edges
-    // win the depth test instead of z-fighting the face (ticket b9xz).
-    const viewZHit = state.viewMatU.mul(vec4(hitPos, 1.0)).z.mul(1.001);
-    // Linear (ortho) vs reciprocal (perspective) depth encoding, matching the
-    // active scene camera so the B-Rep edge overlay occludes correctly.
-    depth
-      .assign(
-        select(
-          state.isOrthoU.greaterThan(float(0.5)),
-          viewZToOrthographicDepth(viewZHit, state.nearU, state.farU),
-          viewZToPerspectiveDepth(viewZHit, state.nearU, state.farU),
-        ),
-      )
-      .toStack();
+    // Canvas depth for the hit (emitSceneDepthWrite: shared reconstruction +
+    // b9xz edge bias). Misses already discarded above, so they never touch
+    // depth. Harmless in X-Ray/Hidden modes — there renderOverlayLayer clears
+    // depth before drawing the edges.
+    emitSceneDepthWrite({
+      hitPos,
+      viewMatU: state.viewMatU,
+      nearU: state.nearU,
+      farU: state.farU,
+      isOrthoU: state.isOrthoU,
+    });
 
     // Shade the hit (normal → PBR → wireframe) via the shared SDF pipeline.
     // The view direction is the negated ray direction (a unit vector

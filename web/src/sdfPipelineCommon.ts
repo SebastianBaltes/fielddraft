@@ -2,6 +2,7 @@
 
 import * as THREE from "three";
 import {
+  Break,
   If,
   Loop,
   abs,
@@ -18,10 +19,13 @@ import {
   select,
   sin,
   smoothstep,
+  depth,
   storage,
   uniform,
   vec3,
   vec4,
+  viewZToOrthographicDepth,
+  viewZToPerspectiveDepth,
 } from "three/tsl";
 import { StorageBufferAttribute } from "three/webgpu";
 import { BODY_COLORS } from "./bodyColors";
@@ -378,6 +382,139 @@ export function updateCameraUniforms(
     .isOrthographicCamera
     ? 1
     : 0;
+}
+
+// ── Shared TSL building blocks ─────────────────────────────────────
+
+/**
+ * Wrap a raw VM SDF eval with the per-body sine displacement from the
+ * material buffer (MAT_DISPLACE_DEPTH/FREQ). Callers that pass no `bodyIdx`
+ * get the raw distance — displacement is a per-body material property.
+ * Identical wrapper for both pipelines (VM material + deferred shade pass).
+ */
+export function makeDisplacedSdfEval(sdfEvalRaw: any, materialBuf: any) {
+  return (args: {
+    p: any;
+    baseOffset: any;
+    volumeBaseIdx: any;
+    bodyIdx?: any;
+  }) => {
+    const d = sdfEvalRaw({
+      p: args.p,
+      baseOffset: args.baseOffset,
+      volumeBaseIdx: args.volumeBaseIdx,
+    });
+    if (!args.bodyIdx) return d;
+    const matBase = args.bodyIdx.mul(MAT_STRIDE);
+    const dispDepth = materialBuf.element(matBase.add(MAT_DISPLACE_DEPTH));
+    const freq = materialBuf.element(matBase.add(MAT_DISPLACE_FREQ));
+    const disp = args.p.x
+      .mul(freq)
+      .sin()
+      .mul(args.p.y.mul(freq).mul(DISPLACE_FREQ_Y).sin())
+      .mul(args.p.z.mul(freq).mul(DISPLACE_FREQ_Z).sin());
+    return d.sub(dispDepth.mul(disp));
+  };
+}
+
+/** Depth written for a raymarched hit sits 0.1% of viewZ BEHIND the true
+ *  surface: the B-Rep edges lie EXACTLY on the surface, so without the bias
+ *  they z-fight the face and render ragged/washed-out in "visible" edge mode
+ *  (ticket b9xz). */
+export const DEPTH_EDGE_BIAS = 1.001;
+
+/**
+ * Write per-pixel canvas depth for a raymarched world-space hit, so the
+ * B-Rep edge overlay can occlude in "visible" mode. Both SDF pipelines draw
+ * their final shading with an ortho fullscreen quad, so the rasterizer's own
+ * depth is meaningless — the depth is reconstructed from the SCENE camera's
+ * view matrix + near/far instead. Perspective depth is reciprocal in view-Z,
+ * orthographic is linear; `isOrthoU` picks the matching encoder. Emits into
+ * the calling `Fn()`/`If()` scope.
+ */
+export function emitSceneDepthWrite({
+  hitPos,
+  viewMatU,
+  nearU,
+  farU,
+  isOrthoU,
+}: any): void {
+  const viewZ = viewMatU.mul(vec4(hitPos, 1.0)).z.mul(DEPTH_EDGE_BIAS);
+  depth
+    .assign(
+      select(
+        isOrthoU.greaterThan(float(0.5)),
+        viewZToOrthographicDepth(viewZ, nearU, farU),
+        viewZToPerspectiveDepth(viewZ, nearU, farU),
+      ),
+    )
+    .toStack();
+}
+
+/**
+ * Emit the SINGLE adaptive union sphere-trace both SDF pipelines march with:
+ * each step lets `evalBodies` evaluate every candidate body's own SDF at the
+ * current point and keep the SMALLEST distance (`minD`) plus which body
+ * produced it (`closestBody`); the ray then steps by that conservative
+ * distance, scaled by the per-body `marchRelax` factor (Ticket 1wnm: a
+ * thin-walled revolve/shell declares < 1 so grazing rays don't overshoot its
+ * wall; simple primitives keep 1.0). On a hit the pixel belongs to
+ * `hitBody` — the body whose own surface is nearest along the ray, exactly
+ * the depth-buffer occlusion two separate opaque solids must have.
+ *
+ * NOTE on the "implicit boolean" concern (tickets deeg/9ljc): for OPAQUE
+ * primary visibility this union march and a per-body nearest-hit march
+ * produce the SAME image — both show the nearest surface and record
+ * `closestBody`, so separate solids occlude, they do NOT fuse. The earlier
+ * per-body NESTED march (Loop(MAX_BODIES){Loop(MARCH_STEPS)}, commit
+ * e4e5727) gave no visual benefit but sliced bodies (each body got its own
+ * capped step budget and a shared `bestT` early-out cut marches short) and
+ * — in the deferred renderer — exploded the shader so it never finished
+ * compiling. Reverted to this single union march (ticket 6yin).
+ *
+ * @param ro          ray origin (vec3 node)
+ * @param rd          ray direction (vec3 node)
+ * @param tStart      initial ray parameter (number; deferred backs off 1 mm)
+ * @param steps       max iterations (number, SDF_MARCH_STEPS)
+ * @param marchRelaxBuf per-body conservative step factors (storage node)
+ * @param tEnd        abort criterion: march stops once `t` exceeds this node
+ *                    (VM: camera far plane; deferred: back-face exit depth)
+ * @param evalBodies  `(p, minD, closestBody) => void` — emits the per-body
+ *                    SDF evals of this pipeline and folds the running min
+ * @returns `{ t, hit, hitPos, hitBody }` node vars for the caller's shading
+ */
+export function emitUnionMarch({
+  ro,
+  rd,
+  tStart,
+  steps,
+  marchRelaxBuf,
+  tEnd,
+  evalBodies,
+}: any): { t: any; hit: any; hitPos: any; hitBody: any } {
+  const t = float(tStart).toVar();
+  const hit = float(0).toVar();
+  const hitPos = vec3(0, 0, 0).toVar();
+  const hitBody = int(0).toVar();
+  Loop(int(steps), () => {
+    const p = ro.add(rd.mul(t));
+    const minD = float(1e30).toVar();
+    const closestBody = int(0).toVar();
+    evalBodies(p, minD, closestBody);
+    If(minD.lessThan(float(SURFACE_EPS)), () => {
+      hit.assign(1);
+      hitPos.assign(p);
+      hitBody.assign(closestBody);
+      Break();
+    });
+    t.addAssign(
+      max(minD.mul(marchRelaxBuf.element(closestBody)), float(SURFACE_EPS)),
+    );
+    If(t.greaterThan(tEnd), () => {
+      Break();
+    });
+  });
+  return { t, hit, hitPos, hitBody };
 }
 
 // ── Ambient occlusion ──────────────────────────────────────────────

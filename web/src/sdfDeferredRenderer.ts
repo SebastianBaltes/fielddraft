@@ -24,10 +24,8 @@
 
 import * as THREE from "three";
 import {
-  Break,
   Fn,
   If,
-  Loop,
   atomicAdd,
   atomicLoad,
   atomicOr,
@@ -37,7 +35,6 @@ import {
   float,
   instanceIndex,
   int,
-  max,
   min,
   normalize,
   screenCoordinate,
@@ -52,8 +49,6 @@ import {
   vec3,
   vec4,
   select,
-  viewZToPerspectiveDepth,
-  viewZToOrthographicDepth,
   modelWorldMatrix,
   positionGeometry,
 } from "three/tsl";
@@ -76,15 +71,12 @@ import {
   packMarchRelax,
   updateVolumeData,
   rebuildVolumeTextures,
-  MAT_STRIDE,
-  MAT_DISPLACE_DEPTH,
-  MAT_DISPLACE_FREQ,
-  DISPLACE_FREQ_Y,
-  DISPLACE_FREQ_Z,
-  SURFACE_EPS,
   SDF_MARCH_STEPS,
   SDF_MAX_OPCODES,
   AABB_HULL_PAD,
+  makeDisplacedSdfEval,
+  emitSceneDepthWrite,
+  emitUnionMarch,
   shadeSdfHit,
   type CameraUniformSet,
 } from "./sdfPipelineCommon";
@@ -254,38 +246,13 @@ function createShadeMaterial(
     withVolumeBaseIdx: volumeTextures.length > 0,
   });
 
-  const sdfEval = (args: {
-    p: any;
-    baseOffset: any;
-    volumeBaseIdx: any;
-    bodyIdx?: any;
-  }) => {
-    const d = sdfEvalRaw({
-      p: args.p,
-      baseOffset: args.baseOffset,
-      volumeBaseIdx: args.volumeBaseIdx,
-    });
-    if (!args.bodyIdx) return d;
-    const matBase = args.bodyIdx.mul(MAT_STRIDE);
-    const depth = materialBuf.element(matBase.add(MAT_DISPLACE_DEPTH));
-    const freq = materialBuf.element(matBase.add(MAT_DISPLACE_FREQ));
-    const disp = args.p.x
-      .mul(freq)
-      .sin()
-      .mul(args.p.y.mul(freq).mul(DISPLACE_FREQ_Y).sin())
-      .mul(args.p.z.mul(freq).mul(DISPLACE_FREQ_Z).sin());
-    return d.sub(depth.mul(disp));
-  };
+  const sdfEval = makeDisplacedSdfEval(sdfEvalRaw, materialBuf);
 
   // Evaluate one transparent body's SDF at `p` and keep the running minimum
   // across the (≤2) transparent bodies present at this pixel, recording which
-  // body is currently closest. A single union march over these bodies renders
-  // the NEAREST transparent surface per pixel (so two overlapping transparent
-  // bodies occlude, never fuse — same depth-buffer semantics as opaque
-  // bodies). Only at most two bodies are unioned here, and only ever the ones
-  // actually flagged at this pixel, so this is NOT an implicit boolean of
-  // unrelated bodies (tickets deeg/9ljc). See the VM renderer for the full
-  // rationale on why the per-body nested march (e4e5727) was reverted.
+  // body is currently closest. Only ever the bodies actually flagged at this
+  // pixel are unioned, so this is NOT an implicit boolean of unrelated bodies
+  // (tickets deeg/9ljc) — full march rationale at emitUnionMarch.
   const evalBodySdf = (p: any, bodyIdx: any, minD: any, closestBody: any) => {
     const baseOff = int(offsetBuf.element(bodyIdx.mul(2)));
     const volBase = int(volumeBaseBuf.element(bodyIdx));
@@ -370,48 +337,26 @@ function createShadeMaterial(
           );
         });
 
-        // Z-Offset ±1 mm: March-Start 1 mm Richtung Kamera zurückversetzt,
-        // damit der Trace garantiert im Freiraum beginnt (Ticket vlhp).
-        const t = float(-MARCH_START_BACKOFF).toVar();
-        const hitPos = vec3(0, 0, 0).toVar();
-        const hit = float(0).toVar();
-        const hitBody = int(0).toVar();
-
-        // SINGLE adaptive sphere-trace through the (≤2) transparent bodies at
-        // this pixel: each step keeps the smallest distance + which body owns
-        // it, steps by that distance, and on a hit shades the NEAREST trans
-        // surface. Reverted from the per-body nested march (e4e5727) that
-        // sliced bodies and exploded the deferred shader (ticket 6yin).
-        Loop(int(SDF_MARCH_STEPS), () => {
-          const p = transWorldPos.add(rd.mul(t));
-          const minD = float(1e30).toVar();
-          const closestBody = int(0).toVar();
-
-          If(transCount.greaterThanEqual(uint(1)), () => {
-            evalBodySdf(p, int(transId0.sub(uint(1))), minD, closestBody);
-          });
-          If(transCount.greaterThanEqual(uint(2)), () => {
-            evalBodySdf(p, int(transId1.sub(uint(1))), minD, closestBody);
-          });
-
-          If(minD.lessThan(float(SURFACE_EPS)), () => {
-            hit.assign(1);
-            hitPos.assign(p);
-            hitBody.assign(closestBody);
-            Break();
-          });
-          // Per-body conservative step (Ticket 1wnm): a thin-walled
-          // revolve/shell declares march_relax < 1 so the ray doesn't overshoot
-          // its wall at grazing angles; simple primitives keep 1.0.
-          t.addAssign(
-            max(
-              minD.mul(marchRelaxBuf.element(closestBody)),
-              float(SURFACE_EPS),
-            ),
-          );
-          If(t.greaterThan(tMax), () => {
-            Break();
-          });
+        // Shared union sphere-trace through the (≤2) transparent bodies at
+        // this pixel (see emitUnionMarch for the full march + deeg/9ljc/6yin
+        // rationale). tStart: Z-Offset ±1 mm — March-Start 1 mm Richtung
+        // Kamera zurückversetzt, damit der Trace garantiert im Freiraum
+        // beginnt (Ticket vlhp). tEnd = back-face exit depth (tMax).
+        const { t, hit, hitPos, hitBody } = emitUnionMarch({
+          ro: transWorldPos,
+          rd,
+          tStart: -MARCH_START_BACKOFF,
+          steps: SDF_MARCH_STEPS,
+          marchRelaxBuf,
+          tEnd: tMax,
+          evalBodies: (p: any, minD: any, closestBody: any) => {
+            If(transCount.greaterThanEqual(uint(1)), () => {
+              evalBodySdf(p, int(transId0.sub(uint(1))), minD, closestBody);
+            });
+            If(transCount.greaterThanEqual(uint(2)), () => {
+              evalBodySdf(p, int(transId1.sub(uint(1))), minD, closestBody);
+            });
+          },
         });
 
         const opaqueBodyEncoded2 = uint(int(opaqueTag.sub(0.5)).add(1));
@@ -485,23 +430,8 @@ function createShadeMaterial(
     // plane so empty pixels never occlude. Harmless in X-Ray/Hidden modes —
     // there renderOverlayLayer clears depth before drawing the edges.
     If(hasHit.greaterThan(int(0)), () => {
-      // Push the written depth a hair (0.1% of viewZ) behind the true
-      // surface: the B-Rep edges lie EXACTLY on the surface, so without the
-      // bias they z-fight the face and render ragged/washed-out in
-      // "visible" mode (ticket b9xz).
-      const viewZ = viewMatU.mul(vec4(shadePos, 1.0)).z.mul(1.001);
-      // Perspective depth is reciprocal in view-Z; orthographic depth is
-      // linear. Pick the matching encoder so the B-Rep edge overlay's depth
-      // test stays correct under both projections (default = orthographic).
-      depth
-        .assign(
-          select(
-            isOrthoU.greaterThan(float(0.5)),
-            viewZToOrthographicDepth(viewZ, nearU, farU),
-            viewZToPerspectiveDepth(viewZ, nearU, farU),
-          ),
-        )
-        .toStack();
+      // Shared depth reconstruction + b9xz edge bias (emitSceneDepthWrite).
+      emitSceneDepthWrite({ hitPos: shadePos, viewMatU, nearU, farU, isOrthoU });
     }).Else(() => {
       depth.assign(float(1.0)).toStack();
     });
