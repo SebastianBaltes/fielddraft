@@ -24,6 +24,17 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.352",
+    entries: [
+      {
+        kind: "fix",
+        text: "SDF VM rendert Körper jetzt auch in der orthografischen Ansicht (Default) geshadet — der Ray-Origin wurde mit WebGL- statt WebGPU-Clip-Space rekonstruiert und lag ~far hinter der Kamera",
+        scope: "sdf-vm",
+        tickets: ["yl0p"],
+      },
+    ],
+  },
+  {
     version: "0.6.351",
     entries: [
       {

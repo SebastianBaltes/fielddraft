@@ -247,8 +247,16 @@ function createVmMaterial(state: VmPipelineState): MeshBasicNodeMaterial {
     // Reconstruct the world-space primary ray from the fullscreen UV. The world
     // point on the near plane under this pixel is the same for both
     // projections: invView · (invProj · clip), after the perspective divide.
+    // NDC z of the near plane is 0 — three.js builds the projection matrices in
+    // the WebGPU clip-space convention (z' ∈ [0, 1]), NOT WebGL's [-1, 1].
+    // With the GL-style z' = -1 the ORTHO inverse lands at z_eye = far - 2·near
+    // — a point ~far BEHIND the camera — so the march burned its t budget in
+    // dead space and broke on the far cap before reaching any body (ticket
+    // yl0p: ortho rendered nothing). Perspective survived the same mistake
+    // because there the point only feeds normalize(nearWorld - camPos), and the
+    // persp inverse maps z' = -1 to a POSITIVE multiple along the pixel ray.
     const ndc = positionGeometry.xy;
-    const clipPos = vec4(ndc, float(-1), float(1));
+    const clipPos = vec4(ndc, float(0), float(1));
     const eyePos4 = state.invProjU.mul(clipPos);
     const eyePos = eyePos4.xyz.div(eyePos4.w);
     const nearWorld = state.invViewU.mul(vec4(eyePos, 1)).xyz;
