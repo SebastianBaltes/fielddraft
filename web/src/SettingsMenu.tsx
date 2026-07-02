@@ -1,7 +1,16 @@
-import { useEffect, useRef, useState, useCallback } from "react";
+import { lazy, Suspense, useEffect, useRef, useState, useCallback } from "react";
 import type { KernelStore, StoreState } from "./store";
 import { ReportDialog } from "./ReportDialog";
-import { ReleaseNotesDialog } from "./ReleaseNotesDialog";
+
+// Lazy: the dialog pulls the full release-note history (releaseNotes.ts,
+// thousands of lines of data) — that belongs in an on-demand chunk, not in
+// the eager app bundle. The chunk loads on the first open (menu entry or
+// version-badge click).
+const ReleaseNotesDialog = lazy(() =>
+  import("./ReleaseNotesDialog").then((m) => ({
+    default: m.ReleaseNotesDialog,
+  })),
+);
 import {
   CONTROLS_PRESETS,
   CONTROLS_PRESET_OPTIONS,
@@ -372,7 +381,9 @@ export function SettingsMenu({
       )}
 
       {releaseNotesOpen && (
-        <ReleaseNotesDialog onClose={() => setReleaseNotesOpen(false)} />
+        <Suspense fallback={null}>
+          <ReleaseNotesDialog onClose={() => setReleaseNotesOpen(false)} />
+        </Suspense>
       )}
     </div>
   );
