@@ -61,6 +61,11 @@ FROM caddy:2-alpine
 # The built SPA. Caddy's file_server (configured in the Caddyfile) serves this
 # with SPA fallback to index.html.
 COPY --from=web /app/web/dist /srv
-# The Caddyfile is bind-mounted by the compose stack (see docker-compose.prod.yml)
-# so the operator can change DOMAIN/TLS without rebuilding. EXPOSE for clarity.
-EXPOSE 80 443
+# Bake the INTERNAL :80 Caddyfile into the image (central-ingress topology): the
+# app-specific, correctness-critical rules (COOP/COEP, SPA fallback, /api proxy,
+# asset caching) travel with the release; TLS/HSTS live at the edge Caddy.
+# See web/Caddyfile.internal. NOTE: the current (pre-cutover) compose still
+# bind-mounts the edge ./Caddyfile over this path, so it keeps winning until the
+# edge-ingress compose (no bind-mount) is deployed at the coordinated cutover.
+COPY web/Caddyfile.internal /etc/caddy/Caddyfile
+EXPOSE 80

@@ -76,6 +76,23 @@ dev-full: build-wasm
 build: build-wasm
     cd web && {{nvm_use}} && npm run build
 
+# Build the PROD Docker images and pack them into a single archive for the
+# archive-deploy path (devops IaC: `deploy.yml -e only_app=fielddraft`). Tags
+# both images at web/package.json's version and saves a gzipped tar under dist/.
+# See RELEASES.md. Version is the single source of truth = web/package.json.
+release-image:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    V="$(node -p "require('./web/package.json').version")"
+    echo "▶ building fielddraft/{server,web}:$V"
+    docker build -t "fielddraft/server:$V" -f server/Dockerfile server
+    docker build -t "fielddraft/web:$V"    -f web/Dockerfile.prod .
+    mkdir -p dist
+    OUT="dist/fielddraft-$V.image.tar.gz"
+    echo "▶ saving $OUT"
+    docker save "fielddraft/server:$V" "fielddraft/web:$V" | gzip > "$OUT"
+    echo "✔ $OUT ($(du -h "$OUT" | cut -f1)) — ship to the server, then devops runs deploy.yml -e only_app=fielddraft"
+
 # Run the fast local test suite: Rust unit tests + Vitest.
 # Playwright smoke tests are intentionally *not* included here —
 # they launch a headed Chromium with real WebGPU and are meant to

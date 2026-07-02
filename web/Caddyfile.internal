@@ -1,0 +1,60 @@
+# FieldDraft — INTERNAL web-image Caddyfile (baked into the prod image).
+#
+# Central-ingress topology: a standalone edge Caddy (owned by the devops IaC)
+# terminates TLS on 80/443 and reverse-proxies to this container on :80 over the
+# shared `edge` network. This inner Caddy therefore speaks plain HTTP and owns
+# ONLY the app-specific, correctness-critical behavior that must ship WITH the
+# image and travel with every release:
+#   * COOP/COEP cross-origin isolation (required for SharedArrayBuffer / WASM threads)
+#   * SPA history-API fallback to index.html
+#   * /api/* reverse-proxy to the Go server
+#   * static-asset caching
+#
+# TLS and HSTS are the EDGE's concern and are intentionally NOT set here — the
+# edge terminates TLS and adds HSTS. reverse_proxy passes this container's
+# response headers (incl. COOP/COEP) straight through to the browser.
+{
+	# No TLS / no ACME in the inner Caddy — the edge terminates TLS. Serving
+	# plain HTTP upstream; disable auto-HTTPS so Caddy never redirects/provisions.
+	auto_https off
+}
+
+:80 {
+	# ── API → Go server (in-network, not host-exposed) ──────────────────────
+	handle /api/* {
+		reverse_proxy server:8080
+	}
+
+	# ── Static SPA with history-API fallback ────────────────────────────────
+	handle {
+		root * /srv
+		encode zstd gzip
+		# Serve the requested file, else fall back to index.html so client-side
+		# routing (deep links) works.
+		try_files {path} /index.html
+		file_server
+	}
+
+	# ── Security headers (app-response semantics; HSTS is set at the edge) ───
+	header {
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		# Cross-origin isolation: required for SharedArrayBuffer / WASM threads.
+		Cross-Origin-Opener-Policy "same-origin"
+		Cross-Origin-Embedder-Policy "require-corp"
+		# Drop the server banner.
+		-Server
+	}
+
+	# Long-cache hashed build assets; never cache the HTML shell.
+	@hashedAssets path /assets/*
+	header @hashedAssets Cache-Control "public, max-age=31536000, immutable"
+	@html path / /index.html
+	header @html Cache-Control "no-cache"
+
+	log {
+		output stdout
+		format console
+	}
+}
