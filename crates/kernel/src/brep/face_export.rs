@@ -23,6 +23,7 @@ use fielddraft_protocol::{HalfSpace, Transform};
 use crate::brep::{BRep, Face, FaceId, SurfaceGeometry};
 use crate::csg::MAX_CONTRIBUTORS;
 use crate::dc::CONTRIBUTOR_SENTINEL;
+use super::vec3::normalize_or_zero as normalize;
 
 /// Sentinel written into a mesh vertex's face tag when no B-Rep face could be
 /// correlated to it (e.g. a smooth blend region with no sharp analytic face,
@@ -208,15 +209,6 @@ fn rotate_dir(q: [f32; 4], v: [f64; 3]) -> [f64; 3] {
         v[1] + qw * t[1] + qz * t[0] - qx * t[2],
         v[2] + qw * t[2] + qx * t[1] - qy * t[0],
     ]
-}
-
-fn normalize(v: [f64; 3]) -> [f64; 3] {
-    let n = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
-    if n > 1e-12 {
-        [v[0] / n, v[1] / n, v[2] / n]
-    } else {
-        [0.0, 0.0, 0.0]
-    }
 }
 
 /// Tag every render-mesh **triangle** with the arena index of the B-Rep

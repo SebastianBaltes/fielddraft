@@ -1230,7 +1230,7 @@ pub fn eval_opcodes_with_volumes(
                 // Mirror of `SweepPath::cross_section`: nearest spine point,
                 // project into the interpolated (n, b) frame → (u, v); the cap
                 // coordinate w rides along in pt[2] until OP_HELIX_SCALE.
-                use crate::sweep_path::{cross, dot, normalize, sub};
+                use crate::vec3f::{cross, dot, normalize, sub};
                 let n = rd!() as usize;
                 let closed = rd!() > 0.5;
                 let total_len = rd!();

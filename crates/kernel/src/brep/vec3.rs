@@ -43,6 +43,19 @@ pub(crate) fn normalize(a: [f64; 3]) -> [f64; 3] {
     }
 }
 
+/// Unit vector like [`normalize`], but a (near-)zero vector collapses to
+/// the ZERO vector instead of passing through — for consumers whose
+/// downstream math treats "no direction" as an explicit zero axis
+/// (naming's stable axes, face export normals).
+pub(crate) fn normalize_or_zero(a: [f64; 3]) -> [f64; 3] {
+    let n = norm(a);
+    if n > 1e-12 {
+        scale(a, 1.0 / n)
+    } else {
+        [0.0, 0.0, 0.0]
+    }
+}
+
 pub(crate) fn dist2(a: [f64; 3], b: [f64; 3]) -> f64 {
     let d = sub(a, b);
     dot(d, d)

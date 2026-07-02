@@ -27,7 +27,8 @@
 //! its two arms ≥ 1.1π·r ≈ 3.45·r apart in arclength — comfortably outside
 //! the 2.5·r exclusion band.
 
-use crate::sweep_path::{cross, dot, norm, sub, seg_seg_dist2, SweepPath};
+use crate::sweep_path::{seg_seg_dist2, SweepPath};
+use crate::vec3f::{cross, dot, norm, sub};
 
 /// Tuning knobs; every default rounds toward a conservative (fail) verdict.
 #[derive(Debug, Clone, Copy)]
@@ -175,7 +176,8 @@ fn self_intersection(path: &SweepPath, r: f32, cfg: &SweepGateConfig) -> SweepGa
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sweep_path::{SweepPath, V3};
+    use crate::sweep_path::SweepPath;
+    use crate::vec3f::V3;
 
     fn cfg() -> SweepGateConfig {
         SweepGateConfig::default()

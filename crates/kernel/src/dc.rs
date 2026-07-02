@@ -9,6 +9,7 @@
 
 use crate::bvh::BoundedCsg;
 use crate::csg::{EvalMode, MAX_CONTRIBUTORS};
+use crate::vec3f::{cross, dot};
 use crate::world_to_local;
 use fielddraft_protocol::{Primitive, Transform};
 use std::collections::HashMap;
@@ -219,9 +220,9 @@ fn is_region_planar(mesh: &Mesh, comp: &[usize], _ref_normal: [f32; 3]) -> bool 
     let mut first = true;
     for &vi in &verts_seen {
         let p = vtx_pos(mesh, vi as usize);
-        let d = dot3(p, plane_n);
-        let u = dot3(p, u_axis);
-        let v = dot3(p, v_axis);
+        let d = dot(p, plane_n);
+        let u = dot(p, u_axis);
+        let v = dot(p, v_axis);
         if first {
             min_d = d; max_d = d;
             min_u = u; max_u = u;
@@ -521,7 +522,7 @@ fn simplify_region(mesh: &Mesh, region: &PlanarRegion) -> Vec<u32> {
 
     let project = |vi: u32| -> [f32; 2] {
         let p = vtx_pos(mesh, vi as usize);
-        [dot3(p, u_axis), dot3(p, v_axis)]
+        [dot(p, u_axis), dot(p, v_axis)]
     };
 
     // Build merged vertex list: outer boundary + holes bridged in.
@@ -585,23 +586,11 @@ fn orthonormal_basis(n: [f32; 3]) -> ([f32; 3], [f32; 3]) {
     } else {
         [1.0, 0.0, 0.0]
     };
-    let u = cross3(up, n);
+    let u = cross(up, n);
     let u_len = (u[0] * u[0] + u[1] * u[1] + u[2] * u[2]).sqrt();
     let u = [u[0] / u_len, u[1] / u_len, u[2] / u_len];
-    let v = cross3(n, u);
+    let v = cross(n, u);
     (u, v)
-}
-
-fn cross3(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
-    [
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    ]
-}
-
-fn dot3(a: [f32; 3], b: [f32; 3]) -> f32 {
-    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 }
 
 fn tri_geometric_normal(mesh: &Mesh, t: usize) -> [f32; 3] {
@@ -610,7 +599,7 @@ fn tri_geometric_normal(mesh: &Mesh, t: usize) -> [f32; 3] {
     let p2 = vtx_pos(mesh, mesh.indices[t * 3 + 2] as usize);
     let e1 = [p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2]];
     let e2 = [p2[0] - p0[0], p2[1] - p0[1], p2[2] - p0[2]];
-    cross3(e1, e2)
+    cross(e1, e2)
 }
 
 /// Quantize a normal into one of 6 axis-aligned bins (±X, ±Y, ±Z).

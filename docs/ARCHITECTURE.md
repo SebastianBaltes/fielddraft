@@ -315,6 +315,10 @@ Each `Body` caches: compiled SDF opcodes, mesh, topology, payload hash (for incr
 
 | Module | Purpose |
 |--------|---------|
+| `transform.rs` | Quaternion & rigid-transform algebra (`quat_multiply`, `compose_transforms`, `world_to_local`, Euler-XYZ conversion); re-exported from `lib.rs` under the old paths |
+| `sdf_eval.rs` | Reference (pure-Rust) SDF evaluation: `sdf_primitive` plus the shared helix-profile math mirrored by BVH and GPU opcode emitters |
+| `finite.rs` | Serde-based finite-float check; the weave entry (`Body::ensure_brep`) rejects NaN/∞ geometry with an empty B-Rep instead of panicking |
+| `vec3f.rs` | Kernel-wide `[f32; 3]` vector algebra (f32 counterpart of `brep::vec3`) |
 | `sketch2d.rs` | BVH-wrapped 2D sketch profiles for SDF evaluation |
 | `sketch_features.rs` | Sketch feature execution, `SketchToolRegistry` with ~20 sketch tools |
 | `sketch_regions.rs` | Flood-fill region detection for extrude profile selection |

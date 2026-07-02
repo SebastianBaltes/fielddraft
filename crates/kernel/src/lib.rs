@@ -35,6 +35,7 @@ pub mod script_runtime;
 pub mod transform;
 pub mod sdf_eval;
 pub mod finite;
+pub mod vec3f;
 
 use body::{
     build_bounded_for_body, build_bounded_with_primitives, detect_uniform_translation,
