@@ -12,8 +12,7 @@
  * edit math is unit-testable without a canvas, kernel, or solver.
  */
 
-import { idsOfSubCall } from "./sketchSession";
-import type { SketchSessionState } from "./store";
+import { idsOfSubCall, type SketchSessionState } from "./sketchSession";
 
 /** One sketch sub-call (matches the spine entries the session stores). */
 export interface SubCall {

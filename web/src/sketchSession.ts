@@ -1,21 +1,80 @@
 /**
- * K6b.2: pure state reducers for the sketch session slice of the
- * store. Extracting them here keeps the `KernelStore` methods
- * small and gives the Vitest suite a way to exercise the session
- * transitions without booting a kernel / worker / autosave chain.
- *
- * The types live in `store.ts` to avoid an import cycle — this
- * module re-exports them for test convenience.
+ * K6b.2: the sketch-session state type and its pure reducers — the
+ * sketch slice of the store. Extracting them here keeps the
+ * `KernelStore` methods small and gives the Vitest suite a way to
+ * exercise the session transitions without booting a kernel /
+ * worker / autosave chain. `store.ts` imports the type from here
+ * (the sketch module owns its own state shape).
  */
 
-import type { SketchSessionState } from "./store";
 import {
   emptyDiagnostics,
   sketchWithOrigin,
   type ConstraintId,
   type EntityId,
+  type SketchDiagnostics,
   type SketchState,
 } from "./solver/types";
+
+/**
+ * Ephemeral per-sketch-session state. A sketch session is the
+ * period between the user clicking the "Sketch" toolbar button (and
+ * locking a plane) and clicking Finish/Cancel. While the session is
+ * active the UI switches into sketch mode: the top toolbar shows
+ * Finish/Cancel + a sketch-tool row instead of primitive-add buttons,
+ * the outliner shows the active sketch tool's FeatureDialog, and the
+ * viewport frames the locked plane.
+ *
+ * The session's draft geometry lives in a local `sub_calls` buffer —
+ * Finish assembles a `sketch` FeatureCall from the draft and
+ * regenerates the document; Cancel drops it.
+ */
+export interface SketchSessionState {
+  /** True while the user is inside sketch mode. */
+  active: boolean;
+  /** The query string locking the sketch plane. K6b.2 uses a
+   *  placeholder; K6b.3 will populate it from a face-click pick. */
+  planeQuery: string | null;
+  /** Currently selected sketch-tool type name, or `null` when the
+   *  user has entered sketch mode but not yet picked a tool. */
+  selectedTool: string | null;
+  /** Controlled-input working copy for the selected tool's
+   *  FeatureDialog. Resets when the tool changes. */
+  toolDraft: Record<string, unknown>;
+  /** Committed sub-spine calls for this session. K6b.2 appends to
+   *  this in-memory on Apply and drops it on Cancel/Finish; K6b.3
+   *  will flush it through the kernel. */
+  subCalls: ReadonlyArray<{
+    type: string;
+    params: Record<string, unknown>;
+  }>;
+  /** K6b.3b: feature id of the sketch being edited, or `null`
+   *  when the session is a fresh draft. When set, Finish goes
+   *  through `replaceSketch` instead of `addSketch` so the
+   *  outliner row keeps its id. */
+  editingFeatureId: number | null;
+  /** Ticket d9o9: true when this session MATERIALISED its sketch
+   *  feature on entry (Onshape style — the sketch shows in the tree
+   *  immediately). Cancel (✗) then deletes that fresh feature; an
+   *  edit-reentry of an existing sketch leaves this false so Cancel
+   *  only discards the in-session edits. */
+  createdThisSession: boolean;
+  /** Solver-entity ids of the committed geometry currently
+   *  selected in the canvas (select mode — no drawing tool
+   *  active). Drives the context-sensitive constraint palette
+   *  and, later, drag-edit. Ids are resolved against
+   *  `buildDraftSketchState(subCalls)`. Empty when nothing is
+   *  picked. */
+  selection: ReadonlyArray<number>;
+  /** F20: latest solve diagnostics for the session geometry —
+   *  which committed constraints the solver flagged as conflicting
+   *  or (partially) redundant. Written by the centralized solve
+   *  pass (`solveAndReplace`) after every successful solve; reset
+   *  to empty on session enter. Constraint ids live in the same id
+   *  space as `buildDraftSketchState(subCalls)`, so the Outliner can
+   *  map them back to constraint sub-call rows. */
+  diagnostics: SketchDiagnostics;
+}
 
 export const INACTIVE_SKETCH_SESSION: SketchSessionState = {
   active: false,

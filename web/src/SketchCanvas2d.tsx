@@ -32,7 +32,8 @@ import {
   getActive as getActiveQueryPicker,
   subscribe as subscribeQueryPicker,
 } from "./queryPickerBridge";
-import type { KernelStore, SketchSessionState } from "./store";
+import type { KernelStore } from "./store";
+import type { SketchSessionState } from "./sketchSession";
 import {
   getSketchPlaneFrame,
   readSketchCamera,
