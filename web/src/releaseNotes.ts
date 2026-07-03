@@ -24,6 +24,16 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.360",
+    entries: [
+      {
+        kind: "feat",
+        text: "Parametrischer Export für Revolve-Körper: Spline-/Arc-Profile (RevolvedProfile-Carrier) tessellieren direkt aus dem B-Rep — die Vase exportiert mit 9.700 statt 1,5 Mio. Dreiecken; Kuppeln (Profil endet auf der Achse) über Pol-Fächer; generisches Sag-Refinement ersetzt die Winkel-Heuristik",
+        scope: "export",
+      },
+    ],
+  },
+  {
     version: "0.6.359",
     entries: [
       {

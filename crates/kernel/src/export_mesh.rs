@@ -653,6 +653,175 @@ mod tests {
         assert!(check_node_analytic(&hard).is_ok());
     }
 
+    /// The canonical vase (same profile as the UI vase exercise and
+    /// `features_tests::vase_sketch_and_revolve_calls`): a spline-walled
+    /// revolve about the sketch's x=0 axis line. The spline wall weaves
+    /// as a `RevolvedProfile` carrier — the Phase-2b route.
+    fn vase_document() -> String {
+        serde_json::json!({
+            "schema_version": 2,
+            "name": "vase",
+            "next_feature_id": 3,
+            "feature_calls": [
+                {
+                    "type": "sketch",
+                    "id": "1",
+                    "params": {
+                        "plane": "qCreatedBy(origin_plane_xy)",
+                        "sub_calls": [
+                            { "type": "sketch_point", "id": "p1", "params": { "at": [0.0, -70.0] } },
+                            { "type": "sketch_point", "id": "p2", "params": { "at": [0.0, 68.0] } },
+                            { "type": "sketch_point", "id": "p3", "params": { "at": [45.0, 68.0] } },
+                            { "type": "sketch_point", "id": "p4", "params": { "at": [30.0, -62.0] } },
+                            { "type": "sketch_point", "id": "p5", "params": { "at": [26.0, -70.0] } },
+                            { "type": "sketch_line", "id": "l1", "params": { "start": [0.0, -70.0], "end": [0.0, 68.0] } },
+                            { "type": "sketch_line", "id": "l2", "params": { "start": [0.0, 68.0], "end": [45.0, 68.0] } },
+                            { "type": "sketch_line", "id": "l3", "params": { "start": [30.0, -62.0], "end": [26.0, -70.0] } },
+                            { "type": "sketch_line", "id": "l4", "params": { "start": [26.0, -70.0], "end": [0.0, -70.0] } },
+                            { "type": "sketch_spline", "id": "s1", "params": {
+                                "points": [45.0, 68.0, 33.044, 50.471, 26.707, 42.324, 38.476, 20.596, 50.245, -9.732, 44.360, -45.039, 30.0, -62.0],
+                                "closed": false, "mode": "interpolate" } }
+                        ]
+                    }
+                },
+                {
+                    "type": "revolve",
+                    "id": "2",
+                    "params": {
+                        "profiles": "qCreatedBy(1)",
+                        "axis": "qSketchLine(1, 8)"
+                    }
+                }
+            ]
+        })
+        .to_string()
+    }
+
+    #[test]
+    fn spline_revolve_vase_exports_parametric_watertight() {
+        let mut k = crate::Kernel::new();
+        // Native tests must avoid the wasm-bindgen `load_json` wrapper
+        // (JsError::new panics off-wasm) — drive the same internals.
+        k.document = serde_json::from_str(&vase_document()).unwrap();
+        k.bootstrap_features_from_calls().unwrap();
+        k.rebuild_packed();
+        let report = export_single(&mut k, 0.4);
+        assert_eq!(report["bodies"].as_array().unwrap().len(), 1, "{report}");
+        assert_eq!(report["all_watertight"], true, "{report}");
+        assert_eq!(report["bodies"][0]["parametric"], true, "{report}");
+        assert!(
+            report["max_deviation_mm"].as_f64().unwrap() < 0.15,
+            "{report}"
+        );
+        eprintln!("VASE REPORT: {report}");
+    }
+
+    /// A dome: spline profile touching the axis at the top, revolved —
+    /// the wall weaves as a `RevolvedProfile` whose face closes onto
+    /// the axis (pole-disk topology, one once-winding rim, no inner
+    /// loops).
+    #[test]
+    fn spline_dome_with_pole_exports_parametric_watertight() {
+        let mut k = crate::Kernel::new();
+        let doc = serde_json::json!({
+            "schema_version": 2,
+            "name": "dome",
+            "next_feature_id": 3,
+            "feature_calls": [
+                {
+                    "type": "sketch",
+                    "id": "1",
+                    "params": {
+                        "plane": "qCreatedBy(origin_plane_xy)",
+                        "sub_calls": [
+                            { "type": "sketch_line", "id": "l1", "params": { "start": [0.0, 0.0], "end": [0.0, 20.0] } },
+                            { "type": "sketch_arc", "id": "a1", "params": {
+                                "center": [0.0, 12.0], "radius": 8.0,
+                                "start_angle": 1.5707963, "sweep_angle": -1.5707963 } },
+                            { "type": "sketch_line", "id": "l2", "params": { "start": [8.0, 12.0], "end": [8.0, 0.0] } },
+                            { "type": "sketch_line", "id": "l3", "params": { "start": [8.0, 0.0], "end": [0.0, 0.0] } }
+                        ]
+                    }
+                },
+                {
+                    "type": "revolve",
+                    "id": "2",
+                    "params": { "profiles": "qCreatedBy(1)", "axis": "qSketchLine(1, 3)" }
+                }
+            ]
+        })
+        .to_string();
+        k.document = serde_json::from_str(&doc).unwrap();
+        k.bootstrap_features_from_calls().unwrap();
+        k.rebuild_packed();
+
+        let report = export_single(&mut k, 0.4);
+        eprintln!("DOME REPORT: {report}");
+        assert_eq!(report["all_watertight"], true, "{report}");
+        assert_eq!(report["bodies"][0]["parametric"], true, "{report}");
+        assert!(
+            report["max_deviation_mm"].as_f64().unwrap() < 0.15,
+            "{report}"
+        );
+    }
+
+    /// The HOLLOW vase: 2 mm shell opened on the planar top rim. The
+    /// inner wall weaves as an offset `RevolvedProfile` (the stadium
+    /// end-cap path). Watertight is the hard requirement; whether the
+    /// parametric route wins or the MDC fallback ships is reported.
+    ///
+    /// `#[ignore]`: the shelled-vase weave takes minutes in a debug
+    /// build (same reason `vase_weave_timing_probe` is ignored) — run
+    /// explicitly via `cargo test --release -- --ignored shelled_vase`.
+    #[test]
+    #[ignore]
+    fn shelled_vase_exports_watertight() {
+        let mut k = crate::Kernel::new();
+        k.document = serde_json::from_str(&vase_document()).unwrap();
+        k.bootstrap_features_from_calls().unwrap();
+        k.rebuild_packed();
+
+        // Find the planar top rim face's stable hash (same probe as
+        // features_tests::regen_shelled_vase) and append the shell.
+        let parametric = k.parametric_weave;
+        let decoded = k.decoded.clone();
+        k.bodies[0].ensure_brep(&decoded, parametric);
+        let brep = k.bodies[0].brep_cached().unwrap();
+        let mut top_hash = None;
+        for i in 0..brep.faces.len() {
+            let fid = crate::brep::FaceId(i as u32);
+            if let crate::brep::SurfaceGeometry::Analytic { surface, transform } =
+                &brep.faces[i].surface
+            {
+                if let fielddraft_protocol::HalfSpace::Plane { normal, .. } = surface {
+                    if normal[1] > 0.99 && (transform.translate[1] - 68.0).abs() < 1e-3 {
+                        top_hash =
+                            Some(crate::brep::naming::TopoRef::from_face(brep, fid).id_hash);
+                    }
+                }
+            }
+        }
+        let top_hash = top_hash.expect("weave exposes the planar top rim face");
+        k.document.feature_calls.push(fielddraft_protocol::FeatureCall::new(
+            "shell",
+            fielddraft_protocol::FeatureId::from_u32(3),
+            serde_json::json!({
+                "open_faces": format!("qFace({top_hash})"),
+                "thickness": { "value": 2.0, "unit": "mm" },
+            }),
+        ));
+        k.bootstrap_features_from_calls().unwrap();
+        k.rebuild_packed();
+
+        let report = export_single(&mut k, 0.4);
+        eprintln!("SHELLED VASE REPORT: {report}");
+        assert_eq!(report["all_watertight"], true, "{report}");
+        assert!(
+            report["max_deviation_mm"].as_f64().unwrap() < 0.2,
+            "{report}"
+        );
+    }
+
     #[test]
     fn mutation_invalidates_the_session() {
         let mut k = crate::Kernel::new();

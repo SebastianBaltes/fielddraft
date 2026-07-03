@@ -433,11 +433,33 @@ fn tessellate_face(
             builder,
         ),
         HalfSpace::Sphere { .. } | HalfSpace::Torus { .. } => {
-            Err("trimmed sphere/torus patch (Phase 2a limitation)".into())
+            Err("trimmed sphere/torus patch (not yet parametric)".into())
         }
         HalfSpace::Gyroid { .. } => Err("gyroid carrier".into()),
-        HalfSpace::RevolvedProfile { .. } => {
-            Err("revolved-profile carrier (Phase 2a limitation)".into())
+        HalfSpace::RevolvedProfile {
+            segments,
+            ccw,
+            offset,
+            extend_start,
+            extend_end,
+        } => {
+            let profile = build_profile_polyline(
+                segments,
+                *ccw,
+                *offset as f64,
+                *extend_start,
+                *extend_end,
+                tol,
+            )?;
+            tess_rotational(
+                RotationalKind::Revolved { profile },
+                transform,
+                scale,
+                &outer,
+                &inners,
+                tol,
+                builder,
+            )
         }
     }
 }
@@ -497,6 +519,103 @@ fn tess_plane(
 enum RotationalKind {
     Cylinder { r: f64 },
     Cone { tan_half: f64 },
+    /// Revolved sketch-profile group (vases, revolves of splines/arcs):
+    /// the surface is the revolution of an offset profile POLYLINE —
+    /// discretised once at build time, so eval/param are linear
+    /// interpolation / closest-point on the polyline. The polyline is
+    /// within the chord tolerance of the true profile; the final
+    /// SDF-deviation gate measures against the exact field anyway.
+    Revolved { profile: ProfilePolyline },
+}
+
+/// The discretised `(r, y)` profile of a [`RotationalKind::Revolved`]
+/// surface, parametrised by cumulative arc length `t`.
+struct ProfilePolyline {
+    pts: Vec<[f64; 2]>,
+    /// Cumulative arc length at each point (`cum[0] == 0`).
+    cum: Vec<f64>,
+}
+
+impl ProfilePolyline {
+    fn new(pts: Vec<[f64; 2]>) -> Self {
+        let mut cum = Vec::with_capacity(pts.len());
+        let mut acc = 0.0;
+        cum.push(0.0);
+        for w in pts.windows(2) {
+            let dx = w[1][0] - w[0][0];
+            let dy = w[1][1] - w[0][1];
+            acc += (dx * dx + dy * dy).sqrt();
+            cum.push(acc);
+        }
+        Self { pts, cum }
+    }
+
+    fn total_len(&self) -> f64 {
+        *self.cum.last().unwrap_or(&0.0)
+    }
+
+    /// Point at arc length `t` (clamped; linear extrapolation along the
+    /// end tangents for slight overshoots).
+    fn eval(&self, t: f64) -> [f64; 2] {
+        let n = self.pts.len();
+        if n == 1 {
+            return self.pts[0];
+        }
+        if t <= 0.0 {
+            let d = seg_dir(self.pts[0], self.pts[1]);
+            return [self.pts[0][0] + d[0] * t, self.pts[0][1] + d[1] * t];
+        }
+        if t >= self.total_len() {
+            let d = seg_dir(self.pts[n - 2], self.pts[n - 1]);
+            let over = t - self.total_len();
+            return [
+                self.pts[n - 1][0] + d[0] * over,
+                self.pts[n - 1][1] + d[1] * over,
+            ];
+        }
+        let i = match self
+            .cum
+            .binary_search_by(|c| c.partial_cmp(&t).unwrap_or(std::cmp::Ordering::Equal))
+        {
+            Ok(i) => i,
+            Err(i) => i - 1,
+        };
+        let i = i.min(n - 2);
+        let span = (self.cum[i + 1] - self.cum[i]).max(1e-12);
+        let f = (t - self.cum[i]) / span;
+        [
+            self.pts[i][0] + (self.pts[i + 1][0] - self.pts[i][0]) * f,
+            self.pts[i][1] + (self.pts[i + 1][1] - self.pts[i][1]) * f,
+        ]
+    }
+
+    /// Arc-length parameter of the closest polyline point to `p`.
+    fn closest_t(&self, p: [f64; 2]) -> f64 {
+        let mut best = (f64::INFINITY, 0.0);
+        for i in 0..self.pts.len().saturating_sub(1) {
+            let a = self.pts[i];
+            let b = self.pts[i + 1];
+            let ab = [b[0] - a[0], b[1] - a[1]];
+            let len2 = ab[0] * ab[0] + ab[1] * ab[1];
+            let f = if len2 > 1e-30 {
+                (((p[0] - a[0]) * ab[0] + (p[1] - a[1]) * ab[1]) / len2).clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+            let q = [a[0] + ab[0] * f, a[1] + ab[1] * f];
+            let d2 = (p[0] - q[0]).powi(2) + (p[1] - q[1]).powi(2);
+            if d2 < best.0 {
+                best = (d2, self.cum[i] + (self.cum[i + 1] - self.cum[i]) * f);
+            }
+        }
+        best.1
+    }
+}
+
+fn seg_dir(a: [f64; 2], b: [f64; 2]) -> [f64; 2] {
+    let d = [b[0] - a[0], b[1] - a[1]];
+    let l = (d[0] * d[0] + d[1] * d[1]).sqrt().max(1e-12);
+    [d[0] / l, d[1] / l]
 }
 
 impl RotationalKind {
@@ -504,6 +623,188 @@ impl RotationalKind {
         match self {
             RotationalKind::Cylinder { r } => *r,
             RotationalKind::Cone { tan_half } => v.abs() * tan_half,
+            RotationalKind::Revolved { profile } => profile.eval(v)[0],
+        }
+    }
+
+    /// Second surface parameter of a face-local point: axial height for
+    /// cylinder/cone, profile arc length for revolved profiles.
+    fn v_of(&self, p_local: [f64; 3]) -> f64 {
+        match self {
+            RotationalKind::Cylinder { .. } | RotationalKind::Cone { .. } => p_local[1],
+            RotationalKind::Revolved { profile } => {
+                let r = (p_local[0] * p_local[0] + p_local[2] * p_local[2]).sqrt();
+                profile.closest_t([r, p_local[1]])
+            }
+        }
+    }
+
+    /// Face-local surface point at `(theta, v)`.
+    fn point(&self, theta: f64, v: f64) -> [f64; 3] {
+        let (r, y) = match self {
+            RotationalKind::Cylinder { r } => (*r, v),
+            RotationalKind::Cone { tan_half } => (v.abs() * tan_half, v),
+            RotationalKind::Revolved { profile } => {
+                let p = profile.eval(v);
+                (p[0], p[1])
+            }
+        };
+        [r * theta.cos(), y, r * theta.sin()]
+    }
+
+    /// True when the surface is a straight line in `v` (a strip between
+    /// two rings needs no interior rows).
+    fn ruled_in_v(&self) -> bool {
+        !matches!(self, RotationalKind::Revolved { .. })
+    }
+}
+
+/// Build the offset profile polyline of a [`HalfSpace::RevolvedProfile`]:
+/// sample each segment, push every sample to signed distance `−offset`
+/// along the field normal (the surface is the zero set of `d + offset`),
+/// extend the ends (tangent ray for `extend=true`, numeric stadium arc
+/// for `extend=false` with a real offset), then decimate.
+fn build_profile_polyline(
+    segments: &[fielddraft_protocol::sketch2d::SketchSegment],
+    ccw: bool,
+    offset: f64,
+    extend_start: bool,
+    extend_end: bool,
+    tol: f64,
+) -> Result<ProfilePolyline, String> {
+    use fielddraft_protocol::sketch2d::{group_signed_distance_and_normal, SketchSegment};
+    if segments.is_empty() {
+        return Err("revolved profile with no segments".into());
+    }
+
+    // 1. raw chain samples (segments arrive in chain order).
+    let mut raw: Vec<[f32; 2]> = Vec::new();
+    for (si, seg) in segments.iter().enumerate() {
+        let n = match seg {
+            SketchSegment::Line { .. } => 1,
+            _ => 48,
+        };
+        for k in 0..=n {
+            if si > 0 && k == 0 {
+                continue; // C⁰ join duplicates the previous end point
+            }
+            raw.push(seg.point_at(k as f32 / n as f32));
+        }
+    }
+
+    // 2. offset each sample to the `d = −offset` level set.
+    let field = |p: [f32; 2]| -> (f64, [f64; 2]) {
+        let (d, n) =
+            group_signed_distance_and_normal(segments, ccw, p, extend_start, extend_end);
+        (d as f64, [n[0] as f64, n[1] as f64])
+    };
+    let mut pts: Vec<[f64; 2]> = raw
+        .iter()
+        .map(|&p| {
+            if offset == 0.0 {
+                [p[0] as f64, p[1] as f64]
+            } else {
+                let (_, n) = field(p);
+                [p[0] as f64 - offset * n[0], p[1] as f64 - offset * n[1]]
+            }
+        })
+        .collect();
+
+    // 3. axis guard BEFORE the end extensions: a profile that crosses
+    // to negative radius folds back on itself under revolution (the SDF
+    // sees |r|) — a double layer no single trimmed face can represent
+    // (interpolating spline fits can overshoot the axis). Tiny numeric
+    // negatives are clamped.
+    let min_r = pts.iter().map(|p| p[0]).fold(f64::INFINITY, f64::min);
+    if min_r < -(tol * 0.5) {
+        return Err(format!(
+            "profile crosses the revolve axis (min r = {min_r:.3})"
+        ));
+    }
+    for p in pts.iter_mut() {
+        p[0] = p[0].max(0.0);
+    }
+
+    // 4. end treatment. The tangent-ray extension (miter overshoot for
+    // `extend=true` faces) is clamped to r ≥ 0 — at an on-axis profile
+    // end the ray points across the axis, which is fine to cut off:
+    // there is no surface area at negative radius anyway.
+    let ext_len = offset.abs() * 3.0 + tol * 10.0 + 1.0;
+    if extend_end {
+        let n = pts.len();
+        let d = seg_dir(pts[n - 2], pts[n - 1]);
+        let p = [pts[n - 1][0] + d[0] * ext_len, pts[n - 1][1] + d[1] * ext_len];
+        pts.push([p[0].max(0.0), p[1]]);
+    } else if offset != 0.0 {
+        append_stadium_cap(&mut pts, raw[raw.len() - 1], offset, &field, false);
+    }
+    if extend_start {
+        let d = seg_dir(pts[1], pts[0]);
+        let p = [pts[0][0] + d[0] * ext_len, pts[0][1] + d[1] * ext_len];
+        pts.insert(0, [p[0].max(0.0), p[1]]);
+    } else if offset != 0.0 {
+        append_stadium_cap(&mut pts, raw[0], offset, &field, true);
+    }
+
+    // 5. decimate in 2D (same chord budget as the 3D edges).
+    let pts3: Vec<[f64; 3]> = pts.iter().map(|p| [p[0], p[1], 0.0]).collect();
+    let kept = douglas_peucker(&pts3, tol / 6.0);
+    let pts: Vec<[f64; 2]> = kept.iter().map(|&i| pts[i]).collect();
+    if pts.len() < 2 {
+        return Err("revolved profile collapsed to a point".into());
+    }
+    Ok(ProfilePolyline::new(pts))
+}
+
+/// The round end cap of an offset open profile: the `d = −offset` level
+/// set beyond a chain end is an arc of radius `|offset|` around the end
+/// point. Rather than reasoning about sign conventions, sample the full
+/// circle, keep the on-surface points, and greedily chain them onto the
+/// polyline end (`at_start` prepends, walking from the current first
+/// point).
+fn append_stadium_cap(
+    pts: &mut Vec<[f64; 2]>,
+    chain_end: [f32; 2],
+    offset: f64,
+    field: &dyn Fn([f32; 2]) -> (f64, [f64; 2]),
+    at_start: bool,
+) {
+    let e = [chain_end[0] as f64, chain_end[1] as f64];
+    let r = offset.abs();
+    let mut candidates: Vec<[f64; 2]> = Vec::new();
+    for j in 0..64 {
+        let phi = 2.0 * std::f64::consts::PI * j as f64 / 64.0;
+        let p = [e[0] + r * phi.cos(), e[1] + r * phi.sin()];
+        let (d, _) = field([p[0] as f32, p[1] as f32]);
+        if (d + offset).abs() < r * 0.05 + 1e-4 {
+            candidates.push(p);
+        }
+    }
+    let step = 2.0 * std::f64::consts::PI * r / 64.0;
+    let max_hop = step * 2.5;
+    let mut cursor = if at_start { pts[0] } else { pts[pts.len() - 1] };
+    let mut used = vec![false; candidates.len()];
+    loop {
+        let mut best: Option<(f64, usize)> = None;
+        for (i, c) in candidates.iter().enumerate() {
+            if used[i] {
+                continue;
+            }
+            let d2 = (c[0] - cursor[0]).powi(2) + (c[1] - cursor[1]).powi(2);
+            if best.map(|(bd, _)| d2 < bd).unwrap_or(true) {
+                best = Some((d2, i));
+            }
+        }
+        let Some((d2, i)) = best else { break };
+        if d2.sqrt() > max_hop {
+            break;
+        }
+        used[i] = true;
+        cursor = candidates[i];
+        if at_start {
+            pts.insert(0, candidates[i]);
+        } else {
+            pts.push(candidates[i]);
         }
     }
 }
@@ -551,7 +852,7 @@ fn tess_rotational(
                 prev_theta + d
             };
             prev_theta = theta;
-            out.push([theta, p[1]]);
+            out.push([theta, kind.v_of(p)]);
         }
         // Winding: the closing step back to the ring start.
         let first_raw = out[0][0].rem_euclid(2.0 * std::f64::consts::PI);
@@ -621,7 +922,7 @@ fn tess_rotational(
             .map(|[i, j, k]| [vids[i], vids[j], vids[k]])
             .collect();
         refine_rotational(
-            &kind, transform, du_max, &mut tris, &mut theta_of, &mut v_of, &boundary, builder,
+            &kind, transform, tol, &mut tris, &mut theta_of, &mut v_of, &boundary, builder,
         );
         for [a, b, c] in tris {
             builder.push_tri(a, b, c);
@@ -632,8 +933,13 @@ fn tess_rotational(
         // ── full band between two once-winding rings ──────────────
         let (inner_ring, (inner_tv, _)) = (&inners[0], &inner_unwrapped[0]);
         strip_band(
-            &kind, transform, outer, &outer_tv, inner_ring, inner_tv, builder,
+            &kind, transform, tol, du_max, outer, &outer_tv, inner_ring, inner_tv, builder,
         )
+    } else if outer_w.abs() > 0.5 && inners.is_empty() {
+        // ── disk with a pole: one once-winding rim, the surface
+        //    closes onto the axis (dome / inner wall of a closed
+        //    vessel). Rows toward the pole + a pole fan. ────────────
+        pole_disk(&kind, transform, tol, outer, &outer_tv, builder)
     } else {
         Err(format!(
             "unsupported winding configuration (outer {outer_w}, {} inner)",
@@ -653,20 +959,21 @@ fn mid_theta(tv: &[[f64; 2]]) -> f64 {
 
 /// Lift a rotational param point back to the body-local frame.
 fn lift_rotational(kind: &RotationalKind, transform: &Transform, theta: f64, v: f64) -> [f64; 3] {
-    let r = kind.radius_at(v);
-    xf_apply(transform, [r * theta.cos(), v, r * theta.sin()])
+    xf_apply(transform, kind.point(theta, v))
 }
 
 /// Longest-edge-style conformal refinement: split every non-boundary
-/// triangle edge whose angular extent exceeds `du_max`, lifting the
-/// midpoints onto the exact carrier. Splits are memoised per undirected
-/// edge, so adjacent triangles stay conforming; boundary edges (shared
-/// with neighbour faces) are never split.
+/// triangle edge whose 3D chord midpoint deviates more than `tol` from
+/// the carrier at the param midpoint (catches curvature in BOTH the
+/// angular and the profile direction), lifting the midpoints onto the
+/// exact carrier. Splits are memoised per undirected edge, so adjacent
+/// triangles stay conforming; boundary edges (shared with neighbour
+/// faces) are never split.
 #[allow(clippy::too_many_arguments)]
 fn refine_rotational(
     kind: &RotationalKind,
     transform: &Transform,
-    du_max: f64,
+    tol: f64,
     tris: &mut Vec<[u32; 3]>,
     theta_of: &mut HashMap<u32, f64>,
     v_of: &mut HashMap<u32, f64>,
@@ -684,11 +991,28 @@ fn refine_rotational(
                 if boundary.contains(&key) || split_mid.contains_key(&key) {
                     continue;
                 }
+                // Terminate on parametrically tiny edges no matter what
+                // the sag test says (numerical safety). Skip seam edges
+                // whose theta values live on opposite ends of the
+                // unwrapped period (their param midpoint would alias to
+                // the far side of the axis).
                 let dth = (theta_of[&a] - theta_of[&b]).abs();
-                if dth > du_max {
-                    let mt = (theta_of[&a] + theta_of[&b]) * 0.5;
-                    let mv = (v_of[&a] + v_of[&b]) * 0.5;
-                    let vid = builder.add_point(lift_rotational(kind, transform, mt, mv));
+                let dv = (v_of[&a] - v_of[&b]).abs();
+                if (dth < 1e-3 && dv < tol * 0.5) || dth > std::f64::consts::PI {
+                    continue;
+                }
+                let mt = (theta_of[&a] + theta_of[&b]) * 0.5;
+                let mv = (v_of[&a] + v_of[&b]) * 0.5;
+                let on_surface = lift_rotational(kind, transform, mt, mv);
+                let pa = builder.positions[a as usize];
+                let pb = builder.positions[b as usize];
+                let chord_mid = [
+                    (pa[0] + pb[0]) * 0.5,
+                    (pa[1] + pb[1]) * 0.5,
+                    (pa[2] + pb[2]) * 0.5,
+                ];
+                if norm(sub(chord_mid, on_surface)) > tol {
+                    let vid = builder.add_point(on_surface);
                     theta_of.insert(vid, mt);
                     v_of.insert(vid, mv);
                     split_mid.insert(key, vid);
@@ -748,20 +1072,24 @@ fn refine_rotational(
 }
 
 /// Triangulate the band between two rings that each wind the axis once
-/// (a cylinder/cone barrel between two rim curves). Both rings are
-/// normalised to ascending theta and merged with a two-pointer sweep —
-/// this consumes the rings' own (chord-tolerance) discretisations, so
-/// no interior refinement is needed: the surface is ruled in `v`.
+/// (a barrel between two rim curves). Both rings are normalised to
+/// ascending theta in a COMMON angular frame and connected with
+/// two-pointer sweeps. Ruled surfaces (cylinder/cone) need nothing in
+/// between; revolved profiles get interior rows at the profile
+/// polyline's own vertices (that is where the profile curvature lives),
+/// each row a fresh sag-driven circle.
+#[allow(clippy::too_many_arguments)]
 fn strip_band(
     kind: &RotationalKind,
-    _transform: &Transform,
+    transform: &Transform,
+    tol: f64,
+    du_max: f64,
     outer: &[u32],
     outer_tv: &[[f64; 2]],
     inner: &[u32],
     inner_tv: &[[f64; 2]],
     builder: &mut Builder,
 ) -> Result<(), String> {
-    let _ = kind;
     let two_pi = 2.0 * std::f64::consts::PI;
 
     // Normalise a ring to ascending theta over one period. A descending
@@ -770,7 +1098,7 @@ fn strip_band(
     // negating would mirror one ring against the other).
     let normalise = |ring: &[u32], tv: &[[f64; 2]]| -> Result<Vec<(f64, u32)>, String> {
         let ascending = tv[tv.len() - 1][0] >= tv[0][0];
-        let mut chain: Vec<(f64, u32)> = if ascending {
+        let chain: Vec<(f64, u32)> = if ascending {
             ring.iter().zip(tv).map(|(&vid, t)| (t[0], vid)).collect()
         } else {
             ring.iter()
@@ -779,51 +1107,291 @@ fn strip_band(
                 .map(|(&vid, t)| (t[0], vid))
                 .collect()
         };
-        // Shift so the chain starts at theta ∈ [0, 2π).
-        let base = chain[0].0;
-        for c in chain.iter_mut() {
-            c.0 -= base;
-        }
         // Monotonicity check (small numeric backsteps tolerated).
         for (i, w) in chain.windows(2).enumerate() {
             if w[1].0 < w[0].0 - 1e-9 {
                 return Err(format!(
-                    "band ring is not monotone in theta at {i}: {:.4} -> {:.4} (ring len {}, first {:.4}, last {:.4})",
-                    w[0].0,
-                    w[1].0,
-                    chain.len(),
-                    chain[0].0,
-                    chain[chain.len() - 1].0
+                    "band ring is not monotone in theta at {i}: {:.4} -> {:.4}",
+                    w[0].0, w[1].0,
                 ));
             }
         }
         Ok(chain)
     };
 
+    // Rebase a chain into [base, base+2π): map every theta with
+    // rem_euclid and rotate so the smallest comes first — a cyclic
+    // shift of an ascending one-period chain stays ascending.
+    let rebase = |chain: &[(f64, u32)], base: f64| -> Vec<(f64, u32)> {
+        let mut mapped: Vec<(f64, u32)> = chain
+            .iter()
+            .map(|&(t, vid)| (base + (t - base).rem_euclid(two_pi), vid))
+            .collect();
+        let min_i = mapped
+            .iter()
+            .enumerate()
+            .min_by(|a, b| a.1 .0.partial_cmp(&b.1 .0).unwrap_or(std::cmp::Ordering::Equal))
+            .map(|(i, _)| i)
+            .unwrap_or(0);
+        mapped.rotate_left(min_i);
+        mapped
+    };
+
     let a = normalise(outer, outer_tv)?;
     let b = normalise(inner, inner_tv)?;
+    let base = a[0].0;
+    let a = rebase(&a, base);
+    let b = rebase(&b, base);
 
-    // Align B's phase with A (both start near theta 0 after their own
-    // shifts; residual phase differences are fine — the sweep is cyclic).
-    // Extend both cyclically with their first point at +2π.
-    let mut ea: Vec<(f64, u32)> = a.clone();
-    ea.push((a[0].0 + two_pi, a[0].1));
-    let mut eb: Vec<(f64, u32)> = b.clone();
-    eb.push((b[0].0 + two_pi, b[0].1));
+    // Mean profile parameter of each rim (band rims of a revolved face
+    // sit at ~constant v — a G1 group boundary circle).
+    let mean_v = |tv: &[[f64; 2]]| tv.iter().map(|t| t[1]).sum::<f64>() / tv.len() as f64;
+    let (v_outer, v_inner) = (mean_v(outer_tv), mean_v(inner_tv));
 
-    // Two-pointer sweep: always advance the chain whose NEXT theta is
-    // smaller, emitting one triangle per step.
+    // Interior rows for non-ruled surfaces: one sag-driven circle per
+    // profile-polyline vertex strictly between the two rims (plus the
+    // midpoint when the rims span a single long segment).
+    let mut rows: Vec<Vec<(f64, u32)>> = vec![a];
+    if let RotationalKind::Revolved { profile } = kind {
+        let (lo, hi) = if v_outer <= v_inner {
+            (v_outer, v_inner)
+        } else {
+            (v_inner, v_outer)
+        };
+        let eps = tol.max(1e-6);
+        let mut ts: Vec<f64> = profile
+            .cum
+            .iter()
+            .copied()
+            .filter(|t| *t > lo + eps && *t < hi - eps)
+            .collect();
+        if v_outer > v_inner {
+            ts.reverse();
+        }
+        for t in ts {
+            let r = kind.radius_at(t).max(tol);
+            let n = ((two_pi / max_dtheta(r, tol)).ceil() as usize).max(8);
+            let mut row: Vec<(f64, u32)> = Vec::with_capacity(n);
+            for j in 0..n {
+                let th = base + two_pi * j as f64 / n as f64;
+                let vid = builder.add_point(lift_rotational(kind, transform, th, t));
+                row.push((th, vid));
+            }
+            rows.push(row);
+        }
+    }
+    let _ = du_max;
+    rows.push(b);
+
+    // Sweep every consecutive row pair, then sag-refine the strip
+    // (interior edges only; the two rims are shared face boundary).
+    let mut tris: Vec<[u32; 3]> = Vec::new();
+    for w in rows.windows(2) {
+        sweep_pair(&w[0], &w[1], &mut tris);
+    }
+    let mut theta_of: HashMap<u32, f64> = HashMap::new();
+    let mut v_of: HashMap<u32, f64> = HashMap::new();
+    for (row_i, row) in rows.iter().enumerate() {
+        // Interior rows sit at their construction t; rim rows carry the
+        // per-point profile parameter.
+        for &(th, vid) in row {
+            theta_of.insert(vid, th);
+            v_of.entry(vid).or_insert_with(|| {
+                let p = xf_unapply(transform, builder.positions[vid as usize]);
+                let _ = row_i;
+                kind.v_of(p)
+            });
+        }
+    }
+    let mut frozen: std::collections::HashSet<(u32, u32)> = std::collections::HashSet::new();
+    for rim in [rows.first().unwrap(), rows.last().unwrap()] {
+        for i in 0..rim.len() {
+            let a = rim[i].1;
+            let b = rim[(i + 1) % rim.len()].1;
+            frozen.insert(if a < b { (a, b) } else { (b, a) });
+        }
+    }
+    refine_rotational(
+        kind, transform, tol, &mut tris, &mut theta_of, &mut v_of, &frozen, builder,
+    );
+    for [x, y, z] in tris {
+        builder.push_tri(x, y, z);
+    }
+    Ok(())
+}
+
+/// Cyclic two-pointer sweep between two ascending one-period chains:
+/// always advance the chain whose NEXT theta is smaller, one triangle
+/// per step.
+fn sweep_pair(a: &[(f64, u32)], b: &[(f64, u32)], tris: &mut Vec<[u32; 3]>) {
+    let two_pi = 2.0 * std::f64::consts::PI;
+    let mut ea: Vec<(f64, u32)> = a.to_vec();
+    ea.push((ea[0].0 + two_pi, ea[0].1));
+    let mut eb: Vec<(f64, u32)> = b.to_vec();
+    eb.push((eb[0].0 + two_pi, eb[0].1));
     let (mut i, mut j) = (0usize, 0usize);
     while i < ea.len() - 1 || j < eb.len() - 1 {
         let next_a = if i < ea.len() - 1 { ea[i + 1].0 } else { f64::INFINITY };
         let next_b = if j < eb.len() - 1 { eb[j + 1].0 } else { f64::INFINITY };
         if next_a <= next_b {
-            builder.push_tri(ea[i].1, ea[i + 1].1, eb[j].1);
+            if ea[i].1 != ea[i + 1].1 {
+                tris.push([ea[i].1, ea[i + 1].1, eb[j].1]);
+            }
             i += 1;
         } else {
-            builder.push_tri(ea[i].1, eb[j + 1].1, eb[j].1);
+            if eb[j].1 != eb[j + 1].1 {
+                tris.push([ea[i].1, eb[j + 1].1, eb[j].1]);
+            }
             j += 1;
         }
+    }
+}
+
+/// Triangulate a rotational face whose single once-winding rim closes
+/// onto the axis (a dome): interior rows from the rim toward the pole,
+/// then a fan onto the pole vertex. Only meaningful for surfaces whose
+/// profile actually reaches the axis — the pole end must have a radius
+/// well under the tolerance.
+fn pole_disk(
+    kind: &RotationalKind,
+    transform: &Transform,
+    tol: f64,
+    rim: &[u32],
+    rim_tv: &[[f64; 2]],
+    builder: &mut Builder,
+) -> Result<(), String> {
+    let two_pi = 2.0 * std::f64::consts::PI;
+
+    // Ascending rim chain (same normalisation as the band case).
+    let ascending = rim_tv[rim_tv.len() - 1][0] >= rim_tv[0][0];
+    let chain: Vec<(f64, u32)> = if ascending {
+        rim.iter().zip(rim_tv).map(|(&vid, t)| (t[0], vid)).collect()
+    } else {
+        rim.iter()
+            .zip(rim_tv)
+            .rev()
+            .map(|(&vid, t)| (t[0], vid))
+            .collect()
+    };
+    for w in chain.windows(2) {
+        if w[1].0 < w[0].0 - 1e-9 {
+            return Err("pole-disk rim is not monotone in theta".into());
+        }
+    }
+    let base = chain[0].0;
+
+    // Locate the pole: the profile end (v extremum) with ~zero radius,
+    // on the far side of the rim.
+    let rim_v = rim_tv.iter().map(|t| t[1]).sum::<f64>() / rim_tv.len() as f64;
+    let candidates: Vec<f64> = match kind {
+        RotationalKind::Revolved { profile } => vec![0.0, profile.total_len()],
+        RotationalKind::Cone { .. } => vec![0.0], // apex sits at v = 0
+        RotationalKind::Cylinder { .. } => {
+            return Err("cylinder cannot close onto the axis".into())
+        }
+    };
+    let pole_v = candidates
+        .iter()
+        .copied()
+        .filter(|&v| kind.radius_at(v).abs() < tol.max(1e-3) * 2.0)
+        .max_by(|a, b| {
+            (a - rim_v)
+                .abs()
+                .partial_cmp(&(b - rim_v).abs())
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
+        .ok_or_else(|| {
+            format!(
+                "once-winding rim without a pole (candidate radii: {:?})",
+                candidates
+                    .iter()
+                    .map(|&v| kind.radius_at(v))
+                    .collect::<Vec<_>>()
+            )
+        })?;
+
+    // Interior rows between rim and pole (profile vertices for revolved
+    // surfaces; the ruled cone needs none).
+    let mut rows: Vec<Vec<(f64, u32)>> = vec![chain];
+    if let RotationalKind::Revolved { profile } = kind {
+        let (lo, hi) = if rim_v <= pole_v { (rim_v, pole_v) } else { (pole_v, rim_v) };
+        let eps = tol.max(1e-6);
+        let mut ts: Vec<f64> = profile
+            .cum
+            .iter()
+            .copied()
+            .filter(|t| *t > lo + eps && *t < hi - eps)
+            // Only genuinely on-axis rows collapse into the pole fan —
+            // near-pole rows must stay: an interpolating spline can
+            // overshoot past the axis point (a little "hat" above the
+            // pole), and dropping its rows makes the fan cut through it.
+            .filter(|t| kind.radius_at(*t) > 1e-6)
+            .collect();
+        if rim_v > pole_v {
+            ts.reverse();
+        }
+        for t in ts {
+            let r = kind.radius_at(t).max(tol);
+            let n = ((two_pi / max_dtheta(r, tol)).ceil() as usize).max(8);
+            let mut row: Vec<(f64, u32)> = Vec::with_capacity(n);
+            for j in 0..n {
+                let th = base + two_pi * j as f64 / n as f64;
+                row.push((th, builder.add_point(lift_rotational(kind, transform, th, t))));
+            }
+            rows.push(row);
+        }
+    }
+
+    // Sweep consecutive rows, add the pole fan, then sag-refine (rim
+    // edges and pole spokes stay frozen — the rim is shared face
+    // boundary, and a spoke's theta midpoint is meaningless at r≈0).
+    let mut tris: Vec<[u32; 3]> = Vec::new();
+    for w in rows.windows(2) {
+        sweep_pair(&w[0], &w[1], &mut tris);
+    }
+
+    let pole_local = {
+        // Exactly on the axis — the true pole point of the carrier.
+        let p = kind.point(0.0, pole_v);
+        [0.0, p[1], 0.0]
+    };
+    let pole_vid = builder.add_point(xf_apply(transform, pole_local));
+    let last = rows.last().unwrap().clone();
+    for i in 0..last.len() {
+        let j = (i + 1) % last.len();
+        if last[i].1 != last[j].1 {
+            tris.push([last[i].1, last[j].1, pole_vid]);
+        }
+    }
+
+    let mut theta_of: HashMap<u32, f64> = HashMap::new();
+    let mut v_of: HashMap<u32, f64> = HashMap::new();
+    for row in &rows {
+        for &(th, vid) in row {
+            theta_of.insert(vid, th);
+            v_of.entry(vid).or_insert_with(|| {
+                let p = xf_unapply(transform, builder.positions[vid as usize]);
+                kind.v_of(p)
+            });
+        }
+    }
+    theta_of.insert(pole_vid, base);
+    v_of.insert(pole_vid, pole_v);
+    let mut frozen: std::collections::HashSet<(u32, u32)> = std::collections::HashSet::new();
+    let rim_row = rows.first().unwrap();
+    for i in 0..rim_row.len() {
+        let a = rim_row[i].1;
+        let b = rim_row[(i + 1) % rim_row.len()].1;
+        frozen.insert(if a < b { (a, b) } else { (b, a) });
+    }
+    for &(_, vid) in &last {
+        frozen.insert(if vid < pole_vid { (vid, pole_vid) } else { (pole_vid, vid) });
+    }
+    refine_rotational(
+        kind, transform, tol, &mut tris, &mut theta_of, &mut v_of, &frozen, builder,
+    );
+    for [x, y, z] in tris {
+        builder.push_tri(x, y, z);
     }
     Ok(())
 }

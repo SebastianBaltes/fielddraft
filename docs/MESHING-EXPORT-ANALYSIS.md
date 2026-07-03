@@ -204,9 +204,28 @@ graph LR
   Tessellations-Erfolg, Validator (watertight + Deviation ≤ 4·tol gegen die
   exakte SDF). Gemessen: Box 12 Dreiecke, Zylinder 252 statt 28.084 (110×),
   Box−Zylinder-Loch und Box∪Zylinder-Patch parametrisch watertight ≤ 0,05 mm.
-  **Offen (Phase 2b):** getrimmte Kugel-/Torus-Patches, RevolvedProfile-
-  Carrier (Vase!), Mehrfach-Winding-Konfigurationen, Spline-Extrude-Wände
-  (Tessellated-Carrier).
+  **✅ Phase 2b (v0.6.360): RevolvedProfile-Carrier.** Revolves von
+  Spline-/Arc-Profilen tessellieren parametrisch: das Offset-Profil wird
+  einmal als Polyline diskretisiert (Segment-Samples → Offset über den
+  Feld-Normal → Achsen-Guard → Douglas-Peucker tol/6; Tangent-Ray-
+  Extension für `extend=true`, numerische Stadium-Kappe für
+  `extend=false` mit Offset), eval/param laufen über die Polyline
+  (closest-point-t). Bänder bekommen Innen-Reihen an den
+  Profil-Vertices, Pol-Scheiben (Profil endet auf der Achse, z. B.
+  Kuppeln) Reihen + Pol-Fächer. Das Refinement prüft jetzt generisch
+  den 3D-Chord-Midpoint-Sag gegen den Carrier (statt Winkel-Heuristik)
+  und läuft auch über Band-/Fächer-Strips. Messwerte: Vase (Spline-
+  Revolve) 9.700 Dreiecke statt 1,5 Mio. (MDC res 345) bei 0,063 mm;
+  Arc-Kuppel 1.038 Dreiecke, 0,060 mm. Achsen-kreuzende Profile
+  (Spline-Fit-Überschwinger → |r|-Faltung/Doppellage) gehen ehrlich per
+  Guard in den MDC-Fallback.
+
+  **Offen (Phase 2c):** getrimmte Kugel-/Torus-Patches, die geschellte
+  Vase (Innenwand-Face: einfach windender Rand ohne Pol — Rim-zu-Rim
+  über die Stadium-Kappe; fällt sauber auf MDC zurück, watertight),
+  Mehrfach-Winding-Konfigurationen, Spline-Extrude-Wände
+  (Tessellated-Carrier), Deviation-Messung ist einseitig (Mesh→SDF) —
+  fehlende Flächenstücke werden nur indirekt erkannt.
 - **Phase 3 (optional, nach Bedarf):** CGAL-Premium-Export/Referenz-Validierung;
   Manifold-Library für Mischkörper; SDF-CWF-artiger „Beautify"-Remesh nur falls je
   gewünscht.
