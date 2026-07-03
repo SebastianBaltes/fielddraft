@@ -17,10 +17,7 @@
  */
 
 import type { SketchSessionState } from "./sketchSession";
-import {
-  buildDraftSketchState,
-  regularPolygonVertices,
-} from "./sketchSession";
+import { buildDraftSketchState } from "./sketchSession";
 import { sketchToScreen, type SketchCameraState } from "./sketchCameraBridge";
 import {
   formatSketchLength,
@@ -174,7 +171,6 @@ export function radiusLabel(
  */
 function buildSketchHudUv(
   drag: DragState,
-  session: SketchSessionState,
   hover: [number, number] | null,
   snap: SnapResolution,
   projectedEdges: ProjectedEdge[],
@@ -201,46 +197,6 @@ function buildSketchHudUv(
     case "pending_line":
       C("sketch_line", { start: drag.start, end: drag.current });
       break;
-    case "rectangle":
-      C("sketch_rectangle", { corner_a: drag.start, corner_b: drag.current });
-      break;
-    case "circle": {
-      const r = Math.hypot(
-        drag.current[0] - drag.center[0],
-        drag.current[1] - drag.center[1],
-      );
-      C("sketch_circle", { center: drag.center, radius: r });
-      break;
-    }
-    case "ellipse": {
-      const rx = Math.abs(drag.current[0] - drag.center[0]);
-      const ry = Math.abs(drag.current[1] - drag.center[1]);
-      C("sketch_ellipse", {
-        center: drag.center,
-        radius_x: rx,
-        radius_y: ry,
-        rotation: Number(session.toolDraft?.rotation) || 0,
-      });
-      break;
-    }
-    case "slot": {
-      const radius = Number(session.toolDraft?.radius) || 8;
-      C("sketch_slot", {
-        center_a: drag.center_a,
-        center_b: drag.current,
-        radius,
-      });
-      break;
-    }
-    case "rect_center": {
-      const opp: [number, number] = [
-        2 * drag.center[0] - drag.current[0],
-        2 * drag.center[1] - drag.current[1],
-      ];
-      C("sketch_rectangle", { corner_a: opp, corner_b: drag.current });
-      previewPoints.push(drag.center);
-      break;
-    }
     case "circle_3p": {
       previewPoints.push(drag.p1);
       if (drag.p2 === null) {
@@ -267,35 +223,6 @@ function buildSketchHudUv(
         } else {
           previewLines.push([drag.p1, drag.p2]);
         }
-      }
-      break;
-    }
-    case "regular_polygon": {
-      const radius = Math.hypot(
-        drag.current[0] - drag.center[0],
-        drag.current[1] - drag.center[1],
-      );
-      const verts = regularPolygonVertices(
-        drag.center,
-        radius,
-        Number(session.toolDraft?.sides) || 6,
-        session.toolDraft?.inscribed !== false,
-      );
-      if (verts.length >= 3) {
-        C("sketch_polygon", { vertices: verts.flatMap((v) => [v[0], v[1]]) });
-        previewPoints.push(drag.center);
-      }
-      break;
-    }
-    case "polygon": {
-      const { vertices, current } = drag;
-      if (vertices.length > 0) {
-        for (let i = 0; i + 1 < vertices.length; i++) {
-          previewLines.push([vertices[i], vertices[i + 1]]);
-        }
-        previewLines.push([vertices[vertices.length - 1], current]);
-        previewGuides.push([current, vertices[0]]);
-        for (const v of vertices) previewPoints.push(v);
       }
       break;
     }
@@ -388,7 +315,6 @@ export function drawOverlay(
   publishSketchHud(
     buildSketchHudUv(
       drag,
-      session,
       hover,
       snap,
       projectedEdges ?? [],
@@ -440,10 +366,6 @@ export function drawOverlay(
 
   const pushDistance = (a: [number, number], b: [number, number]) => {
     const l = distanceLabel(a, b, cam);
-    if (l) labels.push(l);
-  };
-  const pushSize = (a: [number, number], b: [number, number]) => {
-    const l = sizeLabel(a, b);
     if (l) labels.push(l);
   };
   const pushRadius = (center: [number, number], r: number) => {
@@ -516,31 +438,11 @@ export function drawOverlay(
     }
   } else if (drag.kind === "line" || drag.kind === "pending_line") {
     pushDistance(drag.start, drag.current);
-  } else if (drag.kind === "rectangle") {
-    pushSize(drag.start, drag.current);
-  } else if (drag.kind === "circle") {
-    const r = Math.hypot(
-      drag.current[0] - drag.center[0],
-      drag.current[1] - drag.center[1],
-    );
-    pushRadius(drag.center, r);
-  } else if (drag.kind === "rect_center") {
-    const opp: [number, number] = [
-      2 * drag.center[0] - drag.current[0],
-      2 * drag.center[1] - drag.current[1],
-    ];
-    pushSize(opp, drag.current);
   } else if (drag.kind === "circle_3p") {
     if (drag.p2 !== null) {
       const res = circleThrough3(drag.p1, drag.p2, drag.current);
       if (res) pushRadius(res.center, res.radius);
     }
-  } else if (drag.kind === "regular_polygon") {
-    const r = Math.hypot(
-      drag.current[0] - drag.center[0],
-      drag.current[1] - drag.center[1],
-    );
-    pushRadius(drag.center, r);
   } else if (drag.kind === "arc") {
     const r =
       drag.start === null

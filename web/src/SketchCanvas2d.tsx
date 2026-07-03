@@ -73,11 +73,7 @@ import {
 } from "./sketchGrips";
 import { planSelectDrag } from "./sketchSelectDrag";
 import { angleAbout, buildArcSubCall, unwrapSweep } from "./sketchArc";
-import {
-  circleThrough3,
-  rectCenterCorners,
-  rect3pCorners,
-} from "./sketchPrimitiveVariants";
+import { circleThrough3, rect3pCorners } from "./sketchPrimitiveVariants";
 import { setOverlayRedraw } from "./sketchOverlayBridge";
 import { setToolHint } from "./toolHintBridge";
 import { setHoveredSketchEntity } from "./sketchEntityHoverBridge";
@@ -113,7 +109,10 @@ import {
   SELECT_PICK_PX,
   gridSnapped,
   type SketchToolController,
+  type ToolContext,
+  type ToolPointerEvent,
 } from "./sketchTools/toolTypes";
+import { controllerForTool } from "./sketchTools/registry";
 
 interface Props {
   store: KernelStore | null;
@@ -385,41 +384,6 @@ export type DragState =
       startAnchorId: number | null;
     }
   | {
-      kind: "rectangle";
-      start: [number, number];
-      current: [number, number];
-    }
-  | {
-      /** F7: rectangle-from-centre. Drag from the centre outward to a
-       *  corner; the axis-aligned rectangle spans center ∓ |delta|. On
-       *  drop we emit a single `sketch_rectangle` sub-call. */
-      kind: "rect_center";
-      center: [number, number];
-      current: [number, number];
-    }
-  | {
-      kind: "circle";
-      center: [number, number];
-      current: [number, number];
-    }
-  | {
-      /** F8: axis-aligned ellipse. Drag from the centre outward to a
-       *  corner; radius_x = |dx|, radius_y = |dy|. Rotation defaults to
-       *  0 and is adjustable via the FeatureDialog. On drop we emit a
-       *  single `sketch_ellipse` sub-call. */
-      kind: "ellipse";
-      center: [number, number];
-      current: [number, number];
-    }
-  | {
-      /** F9: centre-to-centre slot (stadium). Drag from end-centre A to
-       *  end-centre B; the radius comes from the FeatureDialog (default
-       *  8 mm). On drop we emit a single `sketch_slot` sub-call. */
-      kind: "slot";
-      center_a: [number, number];
-      current: [number, number];
-    }
-  | {
       /** F7: circle through three points. Click 1 and 2 fix two points
        *  on the circumference; the 3rd click fixes the third and commits
        *  the circumcircle as a `sketch_circle` (aborted if collinear).
@@ -437,20 +401,6 @@ export type DragState =
       kind: "rect_3p";
       p1: [number, number];
       p2: [number, number] | null;
-      current: [number, number];
-    }
-  | {
-      /** F6: regular N-gon. Drag from the centre outward to set the
-       *  radius; the side count + inscribed/circumscribed come from
-       *  the tool's parameter dialog. On drop we emit a single
-       *  `sketch_regular_polygon` sub-call. */
-      kind: "regular_polygon";
-      center: [number, number];
-      current: [number, number];
-    }
-  | {
-      kind: "polygon";
-      vertices: [number, number][];
       current: [number, number];
     }
   | {
@@ -628,6 +578,12 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
   // F17: the base point of the two-click Move / Copy flow (sketch mm),
   // pending the target click. Reset whenever the tool changes.
   const moveBaseRef = useRef<[number, number] | null>(null);
+  // Registry migration: per-tool-activation scratch state for controllers
+  // (mirror axis, move base). Cleared whenever the selected tool changes.
+  const toolStateRef = useRef<unknown>(null);
+  // The ToolContext handed to controllers — rebuilt every render (closes
+  // over the current session / editor state), used only at event time.
+  const ctxRef = useRef<ToolContext | null>(null);
   // Latest session, readable from imperative (non-React) listeners
   // like the native wheel handler below.
   const sessionRef = useRef<SketchSessionState>(session);
@@ -857,6 +813,11 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
   useEffect(() => {
     const drag = dragRef.current;
     const k = drag.kind;
+    // Registry migration: a controller-owned gesture is committed or
+    // dropped by its owner (spline finishes, multi-click drafts reset).
+    if (drag.kind === "owned" && ctxRef.current) {
+      drag.owner.onDeactivate?.(ctxRef.current);
+    }
     // Ticket egia: leaving the Spline tool (switching tool, Esc-to-select)
     // FINISHES the in-progress spline — its placed control points commit as an
     // open spline instead of vanishing. < 2 points has nothing to commit.
@@ -902,6 +863,9 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
     chamferFirstRef.current = null;
     // jq6i: drop a pending mirror axis when leaving the tool.
     mirrorAxisRef.current = null;
+    // Registry migration: drop the leaving controller's per-activation
+    // scratch state (mirror axis, move base).
+    toolStateRef.current = null;
     // o6hx: drop any mirror step-2 hover highlight when leaving the tool.
     setHoveredSketchEntity(null);
     // D1: surface the new tool's first-step instruction as the hint pill.
@@ -958,6 +922,39 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
       if (rafRef.current !== null) cancelAnimationFrame(rafRef.current);
     };
   }, [session]);
+
+  // Registry migration: resolve a pointer event into the ToolPointerEvent a
+  // controller receives — the cursor in raw / Ctrl-grid-snapped sketch mm and
+  // canvas-relative pixels. When `resolveSnapOnDown` is set the shared snap
+  // resolution runs at the gridded cursor and lands in the snap slot, exactly
+  // where the old inline flow resolved it before the late tool branches.
+  const toolPointerEvent = (
+    e: React.PointerEvent<HTMLCanvasElement>,
+    cam: Readonly<SketchCameraState>,
+    resolveSnapOnDown: boolean,
+  ): ToolPointerEvent => {
+    const rect = (e.currentTarget as HTMLCanvasElement).getBoundingClientRect();
+    const clickPx: [number, number] = [
+      e.clientX - rect.left,
+      e.clientY - rect.top,
+    ];
+    const raw = screenToSketchFromEvent(e, cam);
+    const gridded =
+      e.ctrlKey || e.metaKey ? gridSnapped(raw[0], raw[1], cam.zoom) : raw;
+    let snap: SnapResolution | null = null;
+    if (resolveSnapOnDown) {
+      snap = resolveSnap(
+        gridded,
+        sessionRef.current,
+        null,
+        snapRadiusMmFor(cam),
+        e.shiftKey,
+        projectedEdgesRef.current,
+      );
+      snapRef.current = snap;
+    }
+    return { e, cam, raw, gridded, clickPx, snap };
+  };
 
   // Pointer handlers — only fire while the canvas has
   // `pointer-events: auto`, which the CSS only sets when a
@@ -1202,6 +1199,18 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
     (e.currentTarget as HTMLCanvasElement).setPointerCapture(e.pointerId);
     const cam = readCamForCanvas(e.currentTarget as HTMLCanvasElement);
     let [u, v] = screenToSketchFromEvent(e, cam);
+    // Registry dispatch: a migrated tool handles the gesture through its
+    // controller; the if-chains below cover the not-yet-migrated rest.
+    {
+      const controller = controllerForTool(session.selectedTool);
+      if (controller && ctxRef.current) {
+        controller.onDown?.(
+          ctxRef.current,
+          toolPointerEvent(e, cam, controller.resolveSnapOnDown === true),
+        );
+        return;
+      }
+    }
     // Trim: not a drawing tool — a single click cuts the curve under the
     // cursor at its nearest intersections and drops the picked piece. No
     // drag, no snap, no grid; the raw click decides which segment dies.
@@ -1350,11 +1359,6 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
     );
     snapRef.current = snap;
     const [su, sv] = snap.snapped;
-    if (session.selectedTool === "sketch_point") {
-      store.setSketchToolDraft({ at: [su, sv] });
-      store.applySketchToolDraft();
-      return;
-    }
     if (session.selectedTool === "sketch_line") {
       // F18: a second click while a pending (click-started) line is in
       // flight commits it as a free line to the click point.
@@ -1420,102 +1424,6 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
         current: [su, sv],
         startAnchorId: snap.coincidentTargetId,
       };
-      lastCamVersionRef.current = -1;
-      return;
-    }
-    if (session.selectedTool === "sketch_rectangle") {
-      dragRef.current = {
-        kind: "rectangle",
-        start: [su, sv],
-        current: [su, sv],
-      };
-      lastCamVersionRef.current = -1;
-      return;
-    }
-    if (session.selectedTool === "sketch_circle") {
-      dragRef.current = {
-        kind: "circle",
-        center: [su, sv],
-        current: [su, sv],
-      };
-      lastCamVersionRef.current = -1;
-      return;
-    }
-    if (session.selectedTool === "sketch_ellipse") {
-      dragRef.current = {
-        kind: "ellipse",
-        center: [su, sv],
-        current: [su, sv],
-      };
-      lastCamVersionRef.current = -1;
-      return;
-    }
-    if (session.selectedTool === "sketch_slot") {
-      dragRef.current = {
-        kind: "slot",
-        center_a: [su, sv],
-        current: [su, sv],
-      };
-      lastCamVersionRef.current = -1;
-      return;
-    }
-    if (session.selectedTool === "sketch_rectangle_center") {
-      dragRef.current = {
-        kind: "rect_center",
-        center: [su, sv],
-        current: [su, sv],
-      };
-      lastCamVersionRef.current = -1;
-      return;
-    }
-    if (session.selectedTool === "sketch_regular_polygon") {
-      dragRef.current = {
-        kind: "regular_polygon",
-        center: [su, sv],
-        current: [su, sv],
-      };
-      lastCamVersionRef.current = -1;
-      return;
-    }
-    if (session.selectedTool === "sketch_polygon") {
-      // If the previous polygon was applied (draft cleared),
-      // start fresh rather than appending to the old one.
-      const draftVerts = session.toolDraft?.vertices;
-      const draftEmpty =
-        !draftVerts || (Array.isArray(draftVerts) && draftVerts.length === 0);
-      const existing =
-        dragRef.current.kind === "polygon" && !draftEmpty
-          ? dragRef.current.vertices
-          : [];
-
-      // Close-on-first-vertex: if we have ≥ 3 vertices and
-      // the click is within 8 px of the first vertex, auto-
-      // close and commit instead of adding another vertex.
-      if (existing.length >= 3) {
-        const cam = readCamForCanvas(e.currentTarget as HTMLCanvasElement);
-        const [fpx, fpy] = sketchToScreen(existing[0][0], existing[0][1], cam);
-        const [cpx, cpy] = sketchToScreen(su, sv, cam);
-        const dist = Math.hypot(cpx - fpx, cpy - fpy);
-        if (dist < 8) {
-          // Commit the polygon as-is (without the closing
-          // duplicate vertex).
-          store.setSketchToolDraft({ vertices: existing.flat() });
-          store.applySketchToolDraft();
-          dragRef.current = { kind: "idle" };
-          lastCamVersionRef.current = -1;
-          return;
-        }
-      }
-
-      const verts: [number, number][] = [...existing, [su, sv]];
-      dragRef.current = {
-        kind: "polygon",
-        vertices: verts,
-        current: [su, sv],
-      };
-      store.setSketchToolDraft({
-        vertices: verts.flat(),
-      });
       lastCamVersionRef.current = -1;
       return;
     }
@@ -1791,6 +1699,25 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
     // we stay inert until it too lifts, so no stray sketch action leaks out.
     if (touchPinchRef.current.onPointerMove(e)) return;
 
+    // Registry dispatch: a select-mode gesture controller (select, move/
+    // copy) owns its drag end-to-end — no hover fallback, no tool-mode
+    // postlude, mirroring the early-return legacy branches below.
+    if (
+      dragRef.current.kind === "owned" &&
+      dragRef.current.owner.selectionGesture
+    ) {
+      const d = dragRef.current;
+      d.owner.onMove?.(
+        ctxRef.current!,
+        toolPointerEvent(
+          e,
+          readCamForCanvas(e.currentTarget as HTMLCanvasElement),
+          false,
+        ),
+      );
+      return;
+    }
+
     // P0.3: grip drag lives in select mode (no tool active), so it
     // runs before the drawing-tool guard below. The controller solves
     // every frame (continuation model), so constraints stay satisfied
@@ -1898,7 +1825,24 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
     if (e.ctrlKey || e.metaKey) {
       [u, v] = gridSnapped(u, v, cam.zoom);
     }
-    if (dragRef.current.kind === "line") {
+    if (dragRef.current.kind === "owned") {
+      // Registry dispatch: the owning controller tracks its drag. Not
+      // consumed (defensive) → the shared hover-snap fallback below.
+      const d = dragRef.current;
+      const ev = toolPointerEvent(e, cam, false);
+      if (d.owner.onMove?.(ctxRef.current!, ev) !== true) {
+        const snap = resolveSnap(
+          [u, v],
+          session,
+          null,
+          snapRadiusMmFor(cam),
+          e.shiftKey,
+          projectedEdgesRef.current,
+        );
+        snapRef.current = snap;
+        hoverRef.current = snap.snapped;
+      }
+    } else if (dragRef.current.kind === "line") {
       const snap = resolveSnap(
         [u, v],
         session,
@@ -1922,45 +1866,11 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
       );
       snapRef.current = snap;
       dragRef.current = { ...dragRef.current, current: snap.snapped };
-    } else if (dragRef.current.kind === "rectangle") {
-      // Rectangles don't run inference at the drag endpoint —
-      // the H/V constraints are implicit in the tool itself, so
-      // an orientation snap would be redundant. Shift still
-      // suppresses; hover snap is also disabled while dragging.
-      dragRef.current = { ...dragRef.current, current: [u, v] };
-      snapRef.current = {
-        snapped: [u, v],
-        candidate: null,
-        anchor: null,
-        coincidentTargetId: null,
-      };
-    } else if (dragRef.current.kind === "circle") {
-      dragRef.current = { ...dragRef.current, current: [u, v] };
-    } else if (dragRef.current.kind === "ellipse") {
-      dragRef.current = { ...dragRef.current, current: [u, v] };
-    } else if (dragRef.current.kind === "slot") {
-      dragRef.current = { ...dragRef.current, current: [u, v] };
-    } else if (dragRef.current.kind === "rect_center") {
-      dragRef.current = { ...dragRef.current, current: [u, v] };
-      snapRef.current = {
-        snapped: [u, v],
-        candidate: null,
-        anchor: null,
-        coincidentTargetId: null,
-      };
     } else if (
       dragRef.current.kind === "circle_3p" ||
       dragRef.current.kind === "rect_3p"
     ) {
       dragRef.current = { ...dragRef.current, current: [u, v] };
-    } else if (dragRef.current.kind === "regular_polygon") {
-      dragRef.current = { ...dragRef.current, current: [u, v] };
-      snapRef.current = {
-        snapped: [u, v],
-        candidate: null,
-        anchor: null,
-        coincidentTargetId: null,
-      };
     } else if (dragRef.current.kind === "arc") {
       const d = dragRef.current;
       if (d.start === null) {
@@ -1975,14 +1885,6 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
         );
         dragRef.current = { ...d, current: [u, v], sweep };
       }
-      snapRef.current = {
-        snapped: [u, v],
-        candidate: null,
-        anchor: null,
-        coincidentTargetId: null,
-      };
-    } else if (dragRef.current.kind === "polygon") {
-      dragRef.current = { ...dragRef.current, current: [u, v] };
       snapRef.current = {
         snapped: [u, v],
         candidate: null,
@@ -2174,6 +2076,19 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
     // gesture only fully ends (and sketching resumes) once all fingers
     // are off the glass.
     if (touchPinchRef.current.onPointerUp(e)) return;
+    // Registry dispatch: a controller-owned drag finishes in its owner.
+    if (dragRef.current.kind === "owned") {
+      const d = dragRef.current;
+      d.owner.onUp?.(
+        ctxRef.current!,
+        toolPointerEvent(
+          e,
+          readCamForCanvas(e.currentTarget as HTMLCanvasElement),
+          false,
+        ),
+      );
+      return;
+    }
     // Ticket 3rz2: commit a direct Move/Copy click-drag. A real drag
     // translates the selection by (current − start); a release without drag was
     // just a select-click (the press already selected the entity).
@@ -2251,223 +2166,6 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
         const state = buildDraftSketchState(session.subCalls);
         store.setSketchSelection(entitiesInBox(state, min, max, mode));
       }
-      return;
-    }
-    if (dragRef.current.kind === "regular_polygon") {
-      (e.currentTarget as HTMLCanvasElement).releasePointerCapture(e.pointerId);
-      const { center, current } = dragRef.current;
-      dragRef.current = { kind: "idle" };
-      const radius = Math.hypot(current[0] - center[0], current[1] - center[1]);
-      if (radius < 1e-2) {
-        const canvas = canvasRef.current;
-        if (canvas) {
-          drawOverlay(
-            canvas,
-            session,
-            readCamForCanvas(canvas),
-            dragRef.current,
-            hoverRef.current,
-            snapRef.current,
-            projectedEdgesRef.current,
-            recentLineGeometry(),
-          );
-        }
-        return;
-      }
-      if (!store) return;
-      store.pushSketchSubCalls([
-        {
-          type: "sketch_regular_polygon",
-          params: {
-            center: [center[0], center[1]] as [number, number],
-            radius,
-            sides: Number(session.toolDraft?.sides) || 6,
-            inscribed: session.toolDraft?.inscribed ?? true,
-          },
-        },
-      ]);
-      scheduleSolverReplay();
-      return;
-    }
-    if (dragRef.current.kind === "ellipse") {
-      (e.currentTarget as HTMLCanvasElement).releasePointerCapture(e.pointerId);
-      const { center, current } = dragRef.current;
-      dragRef.current = { kind: "idle" };
-      const radiusX = Math.abs(current[0] - center[0]);
-      const radiusY = Math.abs(current[1] - center[1]);
-      if (radiusX < 1e-2 || radiusY < 1e-2) {
-        const canvas = canvasRef.current;
-        if (canvas) {
-          drawOverlay(
-            canvas,
-            session,
-            readCamForCanvas(canvas),
-            dragRef.current,
-            hoverRef.current,
-            snapRef.current,
-            projectedEdgesRef.current,
-            recentLineGeometry(),
-          );
-        }
-        return;
-      }
-      if (!store) return;
-      store.pushSketchSubCalls([
-        {
-          type: "sketch_ellipse",
-          params: {
-            center: [center[0], center[1]] as [number, number],
-            radius_x: radiusX,
-            radius_y: radiusY,
-            rotation: Number(session.toolDraft?.rotation) || 0,
-            segments: Number(session.toolDraft?.segments) || 0,
-          },
-        },
-      ]);
-      scheduleSolverReplay();
-      return;
-    }
-    if (dragRef.current.kind === "slot") {
-      (e.currentTarget as HTMLCanvasElement).releasePointerCapture(e.pointerId);
-      const { center_a, current } = dragRef.current;
-      dragRef.current = { kind: "idle" };
-      const len = Math.hypot(
-        current[0] - center_a[0],
-        current[1] - center_a[1],
-      );
-      if (len < 1e-2) {
-        const canvas = canvasRef.current;
-        if (canvas) {
-          drawOverlay(
-            canvas,
-            session,
-            readCamForCanvas(canvas),
-            dragRef.current,
-            hoverRef.current,
-            snapRef.current,
-            projectedEdgesRef.current,
-            recentLineGeometry(),
-          );
-        }
-        return;
-      }
-      if (!store) return;
-      const radius = Number(session.toolDraft?.radius) || 8;
-      store.pushSketchSubCalls([
-        {
-          type: "sketch_slot",
-          params: {
-            center_a: [center_a[0], center_a[1]] as [number, number],
-            center_b: [current[0], current[1]] as [number, number],
-            radius,
-          },
-        },
-      ]);
-      scheduleSolverReplay();
-      return;
-    }
-    if (dragRef.current.kind === "circle") {
-      (e.currentTarget as HTMLCanvasElement).releasePointerCapture(e.pointerId);
-      const { center, current } = dragRef.current;
-      dragRef.current = { kind: "idle" };
-      const dx = current[0] - center[0];
-      const dy = current[1] - center[1];
-      const radius = Math.hypot(dx, dy);
-      if (radius < 1e-2) {
-        const canvas = canvasRef.current;
-        if (canvas) {
-          drawOverlay(
-            canvas,
-            session,
-            readCamForCanvas(canvas),
-            dragRef.current,
-            hoverRef.current,
-            snapRef.current,
-            projectedEdgesRef.current,
-            recentLineGeometry(),
-          );
-        }
-        return;
-      }
-      if (!store) return;
-      store.pushSketchSubCalls([
-        {
-          type: "sketch_circle",
-          params: {
-            center: [center[0], center[1]] as [number, number],
-            radius,
-          },
-        },
-      ]);
-      scheduleSolverReplay();
-      return;
-    }
-    if (dragRef.current.kind === "rect_center") {
-      (e.currentTarget as HTMLCanvasElement).releasePointerCapture(e.pointerId);
-      const { center, current } = dragRef.current;
-      dragRef.current = { kind: "idle" };
-      const res = rectCenterCorners(center, current);
-      if (!res) {
-        const canvas = canvasRef.current;
-        if (canvas) {
-          drawOverlay(
-            canvas,
-            session,
-            readCamForCanvas(canvas),
-            dragRef.current,
-            hoverRef.current,
-            snapRef.current,
-            projectedEdgesRef.current,
-            recentLineGeometry(),
-          );
-        }
-        return;
-      }
-      if (!store) return;
-      store.pushSketchSubCalls([
-        {
-          type: "sketch_rectangle",
-          params: { corner_a: res.cornerA, corner_b: res.cornerB },
-        },
-      ]);
-      scheduleSolverReplay();
-      return;
-    }
-    if (dragRef.current.kind === "rectangle") {
-      (e.currentTarget as HTMLCanvasElement).releasePointerCapture(e.pointerId);
-      const { start, current } = dragRef.current;
-      dragRef.current = { kind: "idle" };
-      const [cx, cy] = current;
-      // Reject near-zero-area rectangles.
-      const dx = cx - start[0];
-      const dy = cy - start[1];
-      if (dx * dx + dy * dy < 1e-4) {
-        const canvas = canvasRef.current;
-        if (canvas) {
-          drawOverlay(
-            canvas,
-            session,
-            readCamForCanvas(canvas),
-            dragRef.current,
-            hoverRef.current,
-            snapRef.current,
-            projectedEdgesRef.current,
-            recentLineGeometry(),
-          );
-        }
-        return;
-      }
-      if (!store) return;
-      store.pushSketchSubCalls([
-        {
-          type: "sketch_rectangle",
-          params: {
-            corner_a: [start[0], start[1]] as [number, number],
-            corner_b: [cx, cy] as [number, number],
-          },
-        },
-      ]);
-      scheduleSolverReplay();
       return;
     }
     if (dragRef.current.kind !== "line") return;
@@ -2896,6 +2594,119 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
     setCornerEditor(null);
     lastCamVersionRef.current = -1;
   };
+
+  // Registry migration: the ToolContext handed to controllers. Rebuilt on
+  // every render so the ui facade closes over the current editor state; all
+  // gesture state lives in refs, so event-time reads stay current.
+  ctxRef.current =
+    store === null
+      ? null
+      : {
+          store,
+          session,
+          get projectedEdges() {
+            return projectedEdgesRef.current;
+          },
+          dragOf<T>(owner: SketchToolController): T | null {
+            const d = dragRef.current;
+            return d.kind === "owned" && d.owner === owner
+              ? (d.state as T)
+              : null;
+          },
+          setDrag(owner, state) {
+            dragRef.current = { kind: "owned", owner, state };
+          },
+          clearDrag() {
+            dragRef.current = { kind: "idle" };
+          },
+          toolState<T>(): T | null {
+            return toolStateRef.current as T | null;
+          },
+          setToolState(state) {
+            toolStateRef.current = state;
+          },
+          resolveSnapAt(ev, cursor, dragStart) {
+            return resolveSnap(
+              cursor,
+              sessionRef.current,
+              dragStart,
+              snapRadiusMmFor(ev.cam),
+              ev.e.shiftKey,
+              projectedEdgesRef.current,
+            );
+          },
+          setSnap(snap) {
+            snapRef.current = snap;
+          },
+          setHover(p) {
+            hoverRef.current = p;
+          },
+          setMirrorAxisHover(seg) {
+            mirrorAxisHoverRef.current = seg;
+          },
+          capturePointer(ev) {
+            (ev.e.currentTarget as HTMLCanvasElement).setPointerCapture(
+              ev.e.pointerId,
+            );
+          },
+          releasePointer(ev) {
+            (ev.e.currentTarget as HTMLCanvasElement).releasePointerCapture(
+              ev.e.pointerId,
+            );
+          },
+          requestRedraw() {
+            lastCamVersionRef.current = -1;
+          },
+          redrawNow() {
+            redrawRef.current?.();
+          },
+          scheduleSolverReplay,
+          gripDrag: dragControllerRef.current,
+          ui: {
+            dimEditorOpen: () => editor !== null,
+            dismissDimEditor: () => setEditor(null),
+            openLineLengthEditor: (index, anchorPx, lengthMm) => {
+              const unit = getSketchLengthUnit();
+              setEditor({
+                kind: "line",
+                index,
+                left: anchorPx[0],
+                top: anchorPx[1],
+                value: sketchDisplayLength(lengthMm).toFixed(unit.decimals),
+                unit: unit.unit,
+              });
+              requestAnimationFrame(() => {
+                lengthInputRef.current?.focus();
+                lengthInputRef.current?.select();
+              });
+            },
+            tryOpenDimensionEditor,
+            recentLine: () => recentLineRef.current,
+            setRecentLine: (index) => {
+              recentLineRef.current = index;
+            },
+            recentLineGeometry,
+            textEditorOpen: () => textEditor !== null,
+            commitTextEditor,
+            openTextEditorCreate: (clickPx, uv) => {
+              setTextEditor({
+                left: clickPx[0],
+                top: clickPx[1],
+                u: uv[0],
+                v: uv[1],
+                group: null,
+              });
+              requestAnimationFrame(() => {
+                textInputRef.current?.focus();
+                textInputRef.current?.select();
+              });
+            },
+            openTextEditorEdit: openTextEditor,
+            cornerEditorOpen: () => cornerEditor !== null,
+            dismissCornerEditor: () => setCornerEditor(null),
+            openCornerEditor,
+          },
+        };
 
   return (
     <>

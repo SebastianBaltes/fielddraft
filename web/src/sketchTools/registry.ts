@@ -9,9 +9,11 @@
  */
 
 import type { SketchToolController } from "./toolTypes";
+import { DRAW_TOOL_CONTROLLERS } from "./drawTools";
 
 export const SKETCH_TOOL_REGISTRY: Record<string, SketchToolController> = {
   // Controllers register here as the migration proceeds (steps 2–5).
+  ...DRAW_TOOL_CONTROLLERS,
 };
 
 /** The controller for a drawing/editing tool name, or null while the tool
