@@ -1,6 +1,10 @@
 use super::*;
 use serde_json::json;
 
+use fielddraft_protocol::{Primitive, Transform};
+
+use crate::csg::{CsgNode, PrimitiveModifiers};
+
 fn id(n: u32) -> FeatureId {
     FeatureId::from_u32(n)
 }

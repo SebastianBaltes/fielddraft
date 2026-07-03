@@ -96,7 +96,7 @@ pub fn thicken_face(
     // into the body, the body placement into the world. The cone arm folds its
     // axial centre into `world` (a `Primitive::Cone` is always origin-centred),
     // so it is mutable.
-    let mut world = crate::features::compose_placement(placement, transform);
+    let mut world = crate::features::transforms::compose_placement(placement, transform);
 
     // Eikonal-renormalise the offsets to world millimetres. The offset solids
     // are built in the surface-local frame and then placed by `world`, which may
@@ -176,7 +176,7 @@ pub fn thicken_face(
             // A `Primitive::Cone` is origin-centred (no `center` field), so fold
             // the frustum's axial centre into the placement: translate by `cy`
             // along the surface-local axis, then map to world.
-            world = crate::features::compose_placement(
+            world = crate::features::transforms::compose_placement(
                 &world,
                 &Transform { translate: [0.0, cy, 0.0], ..Transform::IDENTITY },
             );
@@ -255,7 +255,7 @@ fn world_surface(brep: &BRep, face_id: FaceId, placement: &Transform) -> Result<
     let SurfaceGeometry::Analytic { surface, transform } = &brep.face(face_id).surface else {
         return Err("face is tessellated (TPMS / non-analytic) — cannot use as a thicken target".to_string());
     };
-    let world = crate::features::compose_placement(placement, transform);
+    let world = crate::features::transforms::compose_placement(placement, transform);
     let s_abs = uniform_scale(&world)?.abs();
     Ok(WorldSurface { kind: surface.clone(), world, s_abs })
 }
