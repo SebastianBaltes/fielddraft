@@ -35,7 +35,6 @@ import {
 import type { KernelStore } from "./store";
 import type { SketchSessionState } from "./sketchSession";
 import {
-  getSketchPlaneFrame,
   readSketchCamera,
   screenToSketch,
   setSketchPlaneFrame,
@@ -46,15 +45,12 @@ import { resolvePlaneFrame } from "./sketchPlaneFrame";
 import { BUNDLED_FONTS, UPLOADED_FONT_PREFIX } from "./sketchTextFont";
 import {
   buildDraftSketchState,
-  DRAFT_DRAG_START_ID,
   predictNextLineIds,
-  regularPolygonVertices,
 } from "./sketchSession";
 import { measuredLength, parseField } from "./sketchLiveInput";
 import { isConstraintTool } from "./sketchConstraints";
 import { useWorkspaceUnits, decimalPlaces } from "./settings";
 import {
-  formatSketchLength,
   getSketchLengthUnit,
   setSketchLengthUnit,
   sketchDisplayLength,
@@ -85,84 +81,44 @@ import {
 import { setOverlayRedraw } from "./sketchOverlayBridge";
 import { setToolHint } from "./toolHintBridge";
 import { setHoveredSketchEntity } from "./sketchEntityHoverBridge";
-import { publishSketchHud, type SketchHudGeometry } from "./sketchHudBridge";
-import {
-  publishSketchLabels,
-  clearSketchLabels,
-  type SketchLabel,
-} from "./sketchLabelBridge";
-import { snapToCircles, type SnapCircle } from "./sketchCircleSnap";
-import { bsplinePoints, catmullRomPoints, type Vec2 } from "./sketchSpline";
+import { clearSketchLabels } from "./sketchLabelBridge";
 import { curveOfSubCall, distToCurve, nearestTrimTarget } from "./sketchTrim";
 import { nearestProjectedEdge } from "./sketchProject";
-import {
-  inferCandidates,
-  type InferenceCandidate,
-} from "./solver/inferenceEngine";
 import { solveAndReplace } from "./solver/replaySolve";
 import { DragController } from "./solver/dragController";
-import { displayDegreesOfFreedom } from "./solver/dofPreflight";
-import type { SketchState } from "./solver/types";
+import {
+  anchorConstraints,
+  classifyLineAnchor,
+  projectEdgesToSketchPlane,
+  resolveSnap,
+  snapRadiusMmFor,
+  type ProjectedEdge,
+  type SnapResolution,
+} from "./sketchSnapResolve";
+import {
+  DIM_LABEL_HIT_PX,
+  distanceLabelAnchorPx,
+  drawOverlay,
+  linearDimLabelPx,
+  resizeToContainer,
+  type RecentLineGeometry,
+} from "./sketchCanvasHud";
+import {
+  forwardPointerToViewport,
+  SketchTouchPinch,
+  viewportCanvas,
+} from "./sketchCanvasTouch";
+import {
+  GRIP_PICK_PX,
+  SELECT_PICK_PX,
+  gridSnapped,
+  type SketchToolController,
+} from "./sketchTools/toolTypes";
 
 interface Props {
   store: KernelStore | null;
   session: SketchSessionState;
 }
-
-/** Visual tokens. Keep in sync with `styles/tokens.css` if we
- *  ever add sketch colours there. */
-// K6b.6: 3-color DOF status.
-// Blue = underconstrained (default), Green = fully constrained,
-// Red = overconstrained.
-const COLOR_UNDER = "#2563eb";
-const COLOR_FULL = "#16a34a";
-const COLOR_OVER = "#dc2626";
-
-function dofColor(dof: number): string {
-  if (dof > 0) return COLOR_UNDER;
-  if (dof === 0) return COLOR_FULL;
-  return COLOR_OVER;
-}
-
-const COLOR_SNAP = "#f59e0b";
-/** Dimension readouts: unobtrusive plain text in the accent blue —
- *  no box, so the numbers never compete with the geometry. */
-const LABEL_DIM = "#3b82f6";
-/** Label offset in CSS pixels, along the line's left-normal. */
-const LABEL_OFFSET_PX = 18;
-/** Click radius (CSS px) around the dimension readout that opens the
- *  exact-length editor on the most recently placed line. */
-const DIM_LABEL_HIT_PX = 24;
-/** Snap radius in CSS pixels. Divided by the camera zoom (px-per-mm) to
- *  get the sketch-plane tolerance, so snapping feels identical at every
- *  zoom level — the way Onshape works. A fixed-mm radius (the old
- *  `SNAP_RADIUS_MM = 10`) collapsed to ~3 px when zoomed out, which made
- *  closing a polygon by snapping onto its start point practically
- *  impossible (ticket zuw9). Generous enough to catch ordinary cursor
- *  jitter, tight enough to still place free points near an entity. */
-export const SNAP_RADIUS_PX = 12;
-
-/** Resolve the snap radius from CSS pixels to sketch-plane millimetres
- *  for the current camera zoom (mirrors the `SELECT_PICK_PX` pattern).
- *  `cam.zoom` is px-per-mm, so the on-screen snap radius stays a constant
- *  `SNAP_RADIUS_PX` at every zoom — exported for the regression test. */
-export function snapRadiusMmFor(cam: { zoom: number }): number {
-  return SNAP_RADIUS_PX / Math.max(cam.zoom, 1e-6);
-}
-/** Snap indicator radius in CSS pixels, drawn as an open ring
- *  around the snap anchor. */
-const SNAP_RING_PX = 8;
-
-/** F4 marquee: enclosing ("window", left→right) = solid blue border;
- *  crossing (right→left) = dashed green border. Translucent fills. */
-const COLOR_MARQUEE_ENCLOSING = "#2563eb";
-const COLOR_MARQUEE_CROSSING = "#16a34a";
-const FILL_MARQUEE_ENCLOSING = "rgba(37, 99, 235, 0.12)";
-const FILL_MARQUEE_CROSSING = "rgba(22, 163, 74, 0.12)";
-const MARQUEE_CROSSING_DASH = [6, 4];
-/** Pick radius for select-mode hit-testing, in CSS pixels. Divided
- *  by the camera zoom to get the sketch-plane tolerance. */
-const SELECT_PICK_PX = 6;
 
 /**
  * F10 fillet pick: index of the line sub-call nearest `click` (within
@@ -187,100 +143,6 @@ function nearestLineSubCall(
     }
   });
   return bestIdx;
-}
-
-/** Grip handle half-size (drawn as a filled square) in CSS pixels. */
-/** Grip pick radius in CSS pixels — generous so the small handles
- *  are easy to grab. Beats the entity hit-test, so grabbing a grip
- *  starts a drag rather than re-toggling the selection. */
-const GRIP_PICK_PX = 9;
-
-/**
- * Find the WebGPU `<canvas>` sibling of the overlay so camera
- * gestures (wheel zoom, right-drag pan) can be forwarded to the
- * R3F OrbitControls underneath while the overlay owns left-click
- * selection in select mode.
- */
-function viewportCanvas(overlay: HTMLCanvasElement): HTMLCanvasElement | null {
-  const parent = overlay.parentElement;
-  if (!parent) return null;
-  for (const c of parent.querySelectorAll("canvas")) {
-    if (c !== overlay) return c as HTMLCanvasElement;
-  }
-  return null;
-}
-
-/** Re-dispatch a pointer event onto the WebGPU canvas so the
- *  OrbitControls pan gesture (right / middle drag) works while the
- *  overlay is capturing events in select mode. OrbitControls'
- *  pointerdown handler takes a pointer-capture on its own element,
- *  so forwarding just the initial down is enough for the drag to
- *  continue there. */
-function forwardPointerToViewport(
-  e: React.PointerEvent<HTMLCanvasElement>,
-): void {
-  const target = viewportCanvas(e.currentTarget as HTMLCanvasElement);
-  if (!target) return;
-  target.dispatchEvent(
-    new PointerEvent(e.nativeEvent.type, {
-      pointerId: e.pointerId,
-      pointerType: e.pointerType,
-      button: e.button,
-      buttons: e.buttons,
-      clientX: e.clientX,
-      clientY: e.clientY,
-      bubbles: true,
-      cancelable: true,
-    }),
-  );
-}
-
-/**
- * Touch pinch sensitivity: how many wheel `deltaY` units one CSS pixel of
- * finger-spread synthesises. Spreading the fingers zooms in (negative
- * deltaY by browser convention); the gain just keeps the dolly pacing the
- * gesture. Tuned to feel like the mouse wheel, not a hard requirement.
- */
-const PINCH_ZOOM_GAIN = 2.5;
-
-/** Euclidean distance between the first two tracked touch points (CSS px). */
-function touchSpan(pts: Map<number, { x: number; y: number }>): {
-  dist: number;
-  midX: number;
-  midY: number;
-} {
-  const it = pts.values();
-  const a = it.next().value;
-  const b = it.next().value;
-  if (!a || !b) return { dist: 0, midX: 0, midY: 0 };
-  return {
-    dist: Math.hypot(a.x - b.x, a.y - b.y),
-    midX: (a.x + b.x) / 2,
-    midY: (a.y + b.y) / 2,
-  };
-}
-
-/** Synthesize a wheel event on the WebGPU canvas so the existing
- *  OrbitControls dolly path handles the zoom — same route the mouse
- *  wheel already takes. Used by the two-finger pinch gesture. */
-function dispatchZoomWheel(
-  overlay: HTMLCanvasElement,
-  clientX: number,
-  clientY: number,
-  deltaY: number,
-): void {
-  const target = viewportCanvas(overlay);
-  if (!target) return;
-  target.dispatchEvent(
-    new WheelEvent("wheel", {
-      deltaY,
-      deltaMode: 0,
-      clientX,
-      clientY,
-      bubbles: true,
-      cancelable: true,
-    }),
-  );
 }
 
 /** Ticket pqoe: the slice of store state the in-scene text editor reads. */
@@ -324,16 +186,16 @@ function toolParamsSnapshot(store: KernelStore): ToolParams {
   const s = store.getState();
   const c = toolParamsCache;
   if (
-    c.filletRadius === s.sketchFilletRadius &&
-    c.chamferDistance === s.sketchChamferDistance &&
-    c.offsetDistance === s.sketchOffsetDistance
+    c.filletRadius === s.sketchToolParams.filletRadius &&
+    c.chamferDistance === s.sketchToolParams.chamferDistance &&
+    c.offsetDistance === s.sketchToolParams.offsetDistance
   ) {
     return c;
   }
   toolParamsCache = {
-    filletRadius: s.sketchFilletRadius,
-    chamferDistance: s.sketchChamferDistance,
-    offsetDistance: s.sketchOffsetDistance,
+    filletRadius: s.sketchToolParams.filletRadius,
+    chamferDistance: s.sketchToolParams.chamferDistance,
+    offsetDistance: s.sketchToolParams.offsetDistance,
   };
   return toolParamsCache;
 }
@@ -364,18 +226,18 @@ function transformParamsSnapshot(store: KernelStore): TransformParams {
   const s = store.getState();
   const c = transformParamsCache;
   if (
-    c.patternCount === s.sketchPatternCount &&
-    c.patternSpacing === s.sketchPatternSpacing &&
-    c.patternAngle === s.sketchPatternAngle &&
-    c.rotateAngle === s.sketchRotateAngle
+    c.patternCount === s.sketchToolParams.patternCount &&
+    c.patternSpacing === s.sketchToolParams.patternSpacing &&
+    c.patternAngle === s.sketchToolParams.patternAngle &&
+    c.rotateAngle === s.sketchToolParams.rotateAngle
   ) {
     return c;
   }
   transformParamsCache = {
-    patternCount: s.sketchPatternCount,
-    patternSpacing: s.sketchPatternSpacing,
-    patternAngle: s.sketchPatternAngle,
-    rotateAngle: s.sketchRotateAngle,
+    patternCount: s.sketchToolParams.patternCount,
+    patternSpacing: s.sketchToolParams.patternSpacing,
+    patternAngle: s.sketchToolParams.patternAngle,
+    rotateAngle: s.sketchToolParams.rotateAngle,
   };
   return transformParamsCache;
 }
@@ -440,116 +302,39 @@ function textParamsSnapshot(store: KernelStore): TextParams {
   const s = store.getState();
   const c = textParamsCache;
   if (
-    c.value === s.sketchTextValue &&
-    c.height === s.sketchTextHeight &&
-    c.fontId === s.sketchTextFontId &&
-    c.fontReady === s.sketchTextFontReady
+    c.value === s.sketchToolParams.textValue &&
+    c.height === s.sketchToolParams.textHeight &&
+    c.fontId === s.sketchToolParams.textFontId &&
+    c.fontReady === s.sketchToolParams.textFontReady
   ) {
     return c;
   }
   textParamsCache = {
-    value: s.sketchTextValue,
-    height: s.sketchTextHeight,
-    fontId: s.sketchTextFontId,
-    fontReady: s.sketchTextFontReady,
+    value: s.sketchToolParams.textValue,
+    height: s.sketchToolParams.textHeight,
+    fontId: s.sketchToolParams.textFontId,
+    fontReady: s.sketchToolParams.textFontReady,
   };
   return textParamsCache;
 }
 
-interface ProjectedEdge {
-  p0: [number, number];
-  p1: [number, number];
-  /** jcb7: the source B-Rep edge's stable id-hash, so the Project tool can
-   *  emit an ASSOCIATIVE `sketch_project { edge: qEdge(idHash) }` sub-call
-   *  rather than a frozen coordinate copy. Absent for guides whose edge has
-   *  no exported id-hash (older bodies) — those fall back to a plain copy. */
-  idHash?: string;
-}
-
-function projectEdgesToSketchPlane(
-  edges: { p0: number[]; p1: number[]; idHash?: string }[],
-): ProjectedEdge[] {
-  // Tickets yx6a/bxoo: drop each world point into the resolved plane
-  // frame (orthogonal projection along the plane normal).
-  const f = getSketchPlaneFrame();
-  const uv = (p: number[]): [number, number] => {
-    const dx = p[0] - f.origin[0];
-    const dy = p[1] - f.origin[1];
-    const dz = p[2] - f.origin[2];
-    return [
-      dx * f.xAxis[0] + dy * f.xAxis[1] + dz * f.xAxis[2],
-      dx * f.yAxis[0] + dy * f.yAxis[1] + dz * f.yAxis[2],
-    ];
-  };
-  return edges.map((e) => ({ p0: uv(e.p0), p1: uv(e.p1), idHash: e.idHash }));
-}
-
-function nearestPointOnSegment(
-  p: [number, number],
-  a: [number, number],
-  b: [number, number],
-): [number, number] {
-  const dx = b[0] - a[0];
-  const dy = b[1] - a[1];
-  const lenSq = dx * dx + dy * dy;
-  if (lenSq < 1e-10) return a;
-  const t = Math.max(
-    0,
-    Math.min(1, ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / lenSq),
-  );
-  return [a[0] + t * dx, a[1] + t * dy];
-}
-
-function dist2d(a: [number, number], b: [number, number]): number {
-  return Math.hypot(a[0] - b[0], a[1] - b[1]);
-}
-
 /**
- * Ticket fkig: collect the sketch's circles and arcs as resolved
- * [`SnapCircle`]s so a drawn endpoint can snap onto their rim / centre /
- * quadrants. Centres and arc endpoints are looked up from the entity list;
- * an arc's live span is recovered from the angles of its start/end points
- * about the centre (PlaneGCS stores arcs CCW from start to end).
+ * The in-flight pointer gesture. Tool controllers under `sketchTools/` own
+ * their drag state through the `owned` variant; the remaining variants are
+ * the legacy inline state machines, dissolved tool by tool as the migration
+ * proceeds (architecture review, Befund 2). Exported for the transitional
+ * `drawOverlay` signature in `sketchCanvasHud.ts`.
  */
-function snapCirclesOf(state: SketchState): SnapCircle[] {
-  const pointAt = (id: number): [number, number] | null => {
-    const e = state.entities.find((x) => x.id === id);
-    if (e?.kind === "point") return [e.at.x, e.at.y];
-    if (e?.kind === "origin") return [0, 0];
-    return null;
-  };
-  const out: SnapCircle[] = [];
-  for (const e of state.entities) {
-    if (e.kind === "circle") {
-      const c = pointAt(e.center);
-      if (c && e.radius > 1e-9) {
-        out.push({ id: e.id, centerId: e.center, center: c, radius: e.radius });
-      }
-    } else if (e.kind === "arc") {
-      const c = pointAt(e.center);
-      const s = pointAt(e.start);
-      const en = pointAt(e.end);
-      if (c && s && en && e.radius > 1e-9) {
-        const a0 = Math.atan2(s[1] - c[1], s[0] - c[0]);
-        const a1 = Math.atan2(en[1] - c[1], en[0] - c[0]);
-        let sweep = a1 - a0;
-        while (sweep <= 0) sweep += Math.PI * 2; // CCW span in (0, 2π]
-        out.push({
-          id: e.id,
-          centerId: e.center,
-          center: c,
-          radius: e.radius,
-          start: a0,
-          sweep,
-        });
-      }
-    }
-  }
-  return out;
-}
-
-type DragState =
+export type DragState =
   | { kind: "idle" }
+  | {
+      /** A drag owned by a tool controller from the registry. `state` is
+       *  the controller's private drag type; the canvas only routes events
+       *  and HUD requests to `owner`. */
+      kind: "owned";
+      owner: SketchToolController;
+      state: unknown;
+    }
   | {
       /** Ticket 3rz2: a direct click-drag of the current selection with the
        *  Move/Copy tool. Pressing an entity selects it (if needed) and arms
@@ -719,28 +504,6 @@ type DragState =
     };
 
 /**
- * Inference result for the current cursor: the raw cursor
- * position, the snapped cursor position (possibly equal), and
- * the inference candidate that drove the snap, if any. Feeds
- * both the preview drawing and the `onPointerUp` commit path.
- */
-interface SnapResolution {
-  snapped: [number, number];
-  candidate: InferenceCandidate | null;
-  /** Anchor in sketch coordinates where the snap indicator
-   *  should be drawn. For endpoint / origin snaps this is the
-   *  snap target itself; for horizontal / vertical / parallel
-   *  hints it's the snapped cursor. `null` skips the ring. */
-  anchor: [number, number] | null;
-  /** Real entity id the cursor snapped to, for coincident
-   *  snaps. Used by the commit path to emit a matching
-   *  constraint referencing the kernel-side entity. `null`
-   *  when the snap is orientation-only (horizontal/vertical/
-   *  parallel) or when there is no snap at all. */
-  coincidentTargetId: number | null;
-}
-
-/**
  * F7: expand a rotated rectangle (four corners) into the sub-calls that
  * realise it: four `sketch_line` edges around the loop, coincident
  * constraints joining adjacent corners so the loop stays closed under
@@ -795,231 +558,6 @@ function buildRect3pSubCalls(
   return calls;
 }
 
-function resolveSnap(
-  cursor: [number, number],
-  session: SketchSessionState,
-  dragStart: [number, number] | null,
-  snapRadiusMm: number,
-  suppress = false,
-  projectedEdges: ProjectedEdge[] = [],
-): SnapResolution {
-  if (suppress) {
-    return {
-      snapped: cursor,
-      candidate: null,
-      anchor: null,
-      coincidentTargetId: null,
-    };
-  }
-  const state: SketchState = buildDraftSketchState(
-    session.subCalls,
-    dragStart ?? undefined,
-  );
-  const cands = inferCandidates({
-    state,
-    cursor: { x: cursor[0], y: cursor[1] },
-    drawingLineFrom: dragStart ? DRAFT_DRAG_START_ID : undefined,
-    snapDistanceMm: snapRadiusMm,
-  });
-
-  // Tickets pgyf / ymbp: snap onto an existing SKETCH LINE segment (project the
-  // cursor onto the nearest committed line within the snap radius). Lower
-  // priority than an endpoint/origin coincident snap, so a vertex still wins;
-  // used as the fallback when no point-snap candidate applies. This is what
-  // lets the Point tool land on a line and a dragged endpoint land on another
-  // line. The in-flight draft line isn't a committed entity, so we never snap
-  // onto the line being drawn.
-  const lineSnap = ((): SnapResolution | null => {
-    let bestD = snapRadiusMm;
-    let bestPt: [number, number] | null = null;
-    for (const e of state.entities) {
-      if (e.kind !== "line") continue;
-      const a = state.entities.find((x) => x.id === e.start);
-      const b = state.entities.find((x) => x.id === e.end);
-      if (!a || !b || a.kind !== "point" || b.kind !== "point") continue;
-      const np = nearestPointOnSegment(
-        cursor,
-        [a.at.x, a.at.y],
-        [b.at.x, b.at.y],
-      );
-      const d = dist2d(cursor, np);
-      if (d < bestD) {
-        bestD = d;
-        bestPt = np;
-      }
-    }
-    return bestPt
-      ? {
-          snapped: bestPt,
-          candidate: null,
-          anchor: bestPt,
-          coincidentTargetId: null,
-        }
-      : null;
-  })();
-
-  // Ticket fkig: snap onto an existing SKETCH CIRCLE / ARC — rim projection,
-  // centre, or quadrant. Like the line snap above it's a fallback below the
-  // endpoint/origin coincident snaps (a real vertex still wins), but a circle
-  // centre is itself a coincident target so the commit binds to it. The draft
-  // curve isn't a committed entity, so we never snap onto what's being drawn.
-  const circleSnap = ((): SnapResolution | null => {
-    const hit = snapToCircles(snapCirclesOf(state), cursor, snapRadiusMm);
-    if (!hit) return null;
-    // A centre snap is a coincident-to-point relationship; rim / quadrant land
-    // ON the curve, so the commit emits point-on-object (classifyLineAnchor).
-    return {
-      snapped: hit.at,
-      candidate: null,
-      anchor: hit.at,
-      coincidentTargetId: hit.kind === "center" ? hit.curve.centerId : null,
-    };
-  })();
-
-  // Combined geometry fallback: whichever of the line / circle projection is
-  // closer to the cursor (both already passed their own snap radius). A circle
-  // centre wins outright — it carries a coincident target the line snap can't.
-  const curveSnap: SnapResolution | null = (() => {
-    if (circleSnap && circleSnap.coincidentTargetId !== null) return circleSnap;
-    if (!circleSnap) return lineSnap;
-    if (!lineSnap) return circleSnap;
-    const dC = dist2d(cursor, circleSnap.anchor ?? cursor);
-    const dL = dist2d(cursor, lineSnap.anchor ?? cursor);
-    return dC <= dL ? circleSnap : lineSnap;
-  })();
-
-  // K6b: check B-Rep edge snapping before falling through to no-snap.
-  // Edge snap is lower priority than entity snap (coincident/H/V) but
-  // higher priority than no snap at all.
-  if (cands.length === 0 && projectedEdges.length > 0) {
-    let bestDist = snapRadiusMm;
-    let bestPt: [number, number] | null = null;
-    for (const edge of projectedEdges) {
-      // Snap to edge endpoints (vertices)
-      const d0 = dist2d(cursor, edge.p0);
-      if (d0 < bestDist) {
-        bestDist = d0;
-        bestPt = edge.p0;
-      }
-      const d1 = dist2d(cursor, edge.p1);
-      if (d1 < bestDist) {
-        bestDist = d1;
-        bestPt = edge.p1;
-      }
-      // Snap to nearest point on edge segment
-      const np = nearestPointOnSegment(cursor, edge.p0, edge.p1);
-      const dn = dist2d(cursor, np);
-      if (dn < bestDist) {
-        bestDist = dn;
-        bestPt = np;
-      }
-    }
-    if (bestPt) {
-      return {
-        snapped: bestPt,
-        candidate: null,
-        anchor: bestPt,
-        coincidentTargetId: null,
-      };
-    }
-  }
-
-  if (cands.length === 0) {
-    // Fall back to a sketch line / circle projection snap before giving up
-    // (pgyf/ymbp for lines, fkig for circles & arcs).
-    if (curveSnap) return curveSnap;
-    return {
-      snapped: cursor,
-      candidate: null,
-      anchor: null,
-      coincidentTargetId: null,
-    };
-  }
-  const top = cands[0];
-  const c = top.constraint;
-  // Endpoint / origin snap: pull the cursor onto the target
-  // point's coordinates.
-  if (c.kind === "coincident") {
-    const target = state.entities.find((e) => e.id === c.b);
-    if (target && target.kind === "point") {
-      return {
-        snapped: [target.at.x, target.at.y],
-        candidate: top,
-        anchor: [target.at.x, target.at.y],
-        coincidentTargetId: target.id,
-      };
-    }
-    if (target && target.kind === "origin") {
-      return {
-        snapped: [0, 0],
-        candidate: top,
-        anchor: [0, 0],
-        coincidentTargetId: target.id,
-      };
-    }
-  }
-  // Horizontal/vertical: lock one axis to the drag-start axis.
-  if (c.kind === "horizontal" && dragStart) {
-    const snapped: [number, number] = [cursor[0], dragStart[1]];
-    return {
-      snapped,
-      candidate: top,
-      anchor: snapped,
-      coincidentTargetId: null,
-    };
-  }
-  if (c.kind === "vertical" && dragStart) {
-    const snapped: [number, number] = [dragStart[0], cursor[1]];
-    return {
-      snapped,
-      candidate: top,
-      anchor: snapped,
-      coincidentTargetId: null,
-    };
-  }
-  // Parallel to an existing line: project the cursor onto the
-  // parallel ray through the drag start.
-  if (c.kind === "parallel" && dragStart) {
-    const other = state.entities.find((e) => e.id === c.b);
-    if (other && other.kind === "line") {
-      const os = state.entities.find((e) => e.id === other.start);
-      const oe = state.entities.find((e) => e.id === other.end);
-      if (os && oe && os.kind === "point" && oe.kind === "point") {
-        const dx = oe.at.x - os.at.x;
-        const dy = oe.at.y - os.at.y;
-        const len = Math.hypot(dx, dy);
-        if (len > 1e-6) {
-          const ux = dx / len;
-          const uy = dy / len;
-          // Project (cursor - start) onto the unit direction.
-          const cdx = cursor[0] - dragStart[0];
-          const cdy = cursor[1] - dragStart[1];
-          const t = cdx * ux + cdy * uy;
-          const snapped: [number, number] = [
-            dragStart[0] + ux * t,
-            dragStart[1] + uy * t,
-          ];
-          return {
-            snapped,
-            candidate: top,
-            anchor: snapped,
-            coincidentTargetId: null,
-          };
-        }
-      }
-    }
-  }
-  // No endpoint / H-V / parallel snap applied — fall back to projecting onto a
-  // sketch line (pgyf/ymbp) or circle/arc (fkig) if the cursor is near one.
-  if (curveSnap) return curveSnap;
-  return {
-    snapped: cursor,
-    candidate: null,
-    anchor: null,
-    coincidentTargetId: null,
-  };
-}
-
 /**
  * K8.0 reliability fix: read the camera bridge state but
  * override `width/height` with the canvas element's real
@@ -1036,83 +574,6 @@ function readCamForCanvas(
   const rect = canvas.getBoundingClientRect();
   if (rect.width <= 0 || rect.height <= 0) return cam;
   return { ...cam, width: rect.width, height: rect.height };
-}
-
-/**
- * Ticket inej: classify where a committed line endpoint landed so the commit
- * can emit a *persistent* constraint, not just a one-off snapped position.
- * Snapping placed the point exactly on existing geometry, so:
- *   - on/at an existing point → coincident (the point IS that vertex);
- *   - on a line's interior     → point-on-object (slides along that line).
- * Without this the endpoint sits on the target visually but is unconstrained,
- * so a later dimension change drifts it off (the reported bug). Points are
- * checked before lines so an endpoint hit reads as coincident, not on-object.
- */
-type AnchorClass =
-  | { kind: "point"; id: number }
-  | { kind: "object"; id: number }
-  | null;
-
-// Tight tolerance: a snapped endpoint lands EXACTLY on its target, so we only
-// bind when the point is essentially on the geometry — not merely within the
-// (much larger) live snap radius, which would over-constrain a free endpoint
-// that just happens to pass near an unrelated line.
-const ANCHOR_ON_EPS_MM = 0.1;
-
-function classifyLineAnchor(
-  pt: [number, number],
-  state: SketchState,
-): AnchorClass {
-  for (const e of state.entities) {
-    if (e.kind === "point" && dist2d(pt, [e.at.x, e.at.y]) < ANCHOR_ON_EPS_MM) {
-      return { kind: "point", id: e.id };
-    }
-  }
-  for (const e of state.entities) {
-    if (e.kind !== "line") continue;
-    const a = state.entities.find((x) => x.id === e.start);
-    const b = state.entities.find((x) => x.id === e.end);
-    if (!a || !b || a.kind !== "point" || b.kind !== "point") continue;
-    const np = nearestPointOnSegment(pt, [a.at.x, a.at.y], [b.at.x, b.at.y]);
-    if (dist2d(pt, np) < ANCHOR_ON_EPS_MM) return { kind: "object", id: e.id };
-  }
-  // Ticket fkig: an endpoint snapped onto a circle / arc rim binds to that
-  // curve with point-on-object, so a later radius change keeps it on the rim.
-  // The snap already placed it exactly on the radius, so test radial distance.
-  for (const c of snapCirclesOf(state)) {
-    const radial = Math.abs(dist2d(pt, c.center) - c.radius);
-    if (radial >= ANCHOR_ON_EPS_MM) continue;
-    if (c.start !== undefined && c.sweep !== undefined) {
-      // Arc: only bind when the point's angle is on the live span.
-      let off = Math.atan2(pt[1] - c.center[1], pt[0] - c.center[0]) - c.start;
-      while (off < 0) off += Math.PI * 2;
-      if (off > c.sweep + 1e-6) continue;
-    }
-    return { kind: "object", id: c.id };
-  }
-  return null;
-}
-
-/** Constraint sub-calls binding a new line endpoint to whatever it landed on. */
-function anchorConstraints(
-  pointId: number,
-  anchor: AnchorClass,
-): Array<{ type: string; params: Record<string, unknown> }> {
-  if (anchor === null) return [];
-  if (anchor.kind === "point") {
-    return [
-      {
-        type: "sketch_constraint_coincident",
-        params: { a: pointId, b: anchor.id },
-      },
-    ];
-  }
-  return [
-    {
-      type: "sketch_constraint_point_on_object",
-      params: { point: pointId, curve: anchor.id },
-    },
-  ];
 }
 
 /** Ticket D1 (jq6i / 3rz2): the active sketch tool's first-step instruction for
@@ -1182,20 +643,9 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
     return () => setOverlayRedraw(null);
   }, []);
 
-  // Touch pinch-to-zoom — a two-finger gesture layered ON TOP of the
-  // single-finger sketch interaction. We track live touch pointers; once a
-  // second finger lands we abort any in-progress single-finger draft and
-  // hold a lockout (pinchRef.active) until EVERY finger lifts, so the
-  // leftover finger can't resume a stray sketch action mid-gesture. Zoom is
-  // driven by synthesising wheel events onto the WebGPU canvas, reusing the
-  // OrbitControls dolly path the mouse wheel already uses. Mouse pointers
-  // never enter any of this; single-finger sketching is unchanged. Two-finger
-  // PAN is a deliberate follow-up (see ARCHITECTURE.md).
-  const touchPtsRef = useRef<Map<number, { x: number; y: number }>>(new Map());
-  const pinchRef = useRef<{ active: boolean; lastDist: number }>({
-    active: false,
-    lastDist: 0,
-  });
+  // Touch pinch-to-zoom — the two-finger camera gesture with its lockout
+  // lives in `sketchCanvasTouch.ts`; one stable instance per canvas.
+  const touchPinchRef = useRef<SketchTouchPinch>(new SketchTouchPinch());
 
   // F18 (reworked): click-to-edit dimension. While drawing, the canvas
   // shows only the unobtrusive numeric readout; once a line is placed,
@@ -1517,29 +967,16 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
     // camera pinch. Abort whatever the first finger started, drop any
     // pointer capture it took, and let the pinch own the gesture until all
     // fingers lift.
-    if (e.pointerType === "touch") {
-      touchPtsRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
-      if (touchPtsRef.current.size >= 2) {
+    if (
+      touchPinchRef.current.onPointerDown(e, () => {
         if (dragRef.current.kind !== "idle") {
           dragRef.current = { kind: "idle" };
           hoverRef.current = null;
         }
-        const canvas = e.currentTarget as HTMLCanvasElement;
-        for (const id of touchPtsRef.current.keys()) {
-          try {
-            canvas.releasePointerCapture(id);
-          } catch {
-            /* this pointer wasn't captured — fine */
-          }
-        }
-        pinchRef.current = {
-          active: true,
-          lastDist: touchSpan(touchPtsRef.current).dist,
-        };
-        lastCamVersionRef.current = -1;
-        e.preventDefault();
-        return;
-      }
+      })
+    ) {
+      lastCamVersionRef.current = -1;
+      return;
     }
 
     // Select mode: no drawing tool active. Left-click hit-tests the
@@ -1838,7 +1275,7 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
     // (vertices are small targets).
     if (session.selectedTool === "sketch_fillet") {
       const tolMm = (SELECT_PICK_PX * 2.5) / Math.max(cam.zoom, 1e-6);
-      store.filletCornerAt([u, v], store.getState().sketchFilletRadius, tolMm);
+      store.filletCornerAt([u, v], store.getState().sketchToolParams.filletRadius, tolMm);
       lastCamVersionRef.current = -1;
       return;
     }
@@ -1848,7 +1285,7 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
       const tolMm = (SELECT_PICK_PX * 2.5) / Math.max(cam.zoom, 1e-6);
       store.chamferCornerAt(
         [u, v],
-        store.getState().sketchChamferDistance,
+        store.getState().sketchToolParams.chamferDistance,
         tolMm,
       );
       lastCamVersionRef.current = -1;
@@ -1898,11 +1335,7 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
     }
     // K6b.8: Ctrl = snap to grid. Round to nearest grid step.
     if (e.ctrlKey || e.metaKey) {
-      const minPxGap = 20;
-      let step = 1;
-      while (step * cam.zoom < minPxGap) step *= step < 5 ? 5 : 2;
-      u = Math.round(u / step) * step;
-      v = Math.round(v / step) * step;
+      [u, v] = gridSnapped(u, v, cam.zoom);
     }
     // Resolve snap at pointerdown so the placed point/line-start
     // respects endpoint / origin magnetism even on a dead-stop
@@ -2100,7 +1533,7 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
       const splineMode =
         dragRef.current.kind === "spline"
           ? dragRef.current.mode
-          : store.getState().sketchSplineMode;
+          : store.getState().sketchToolParams.splineMode;
       const cam2 = readCamForCanvas(e.currentTarget as HTMLCanvasElement);
       const [cpx, cpy] = sketchToScreen(su, sv, cam2);
       const commitSpline = (closed: boolean) => {
@@ -2304,7 +1737,7 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
         store.offsetSketchAt(
           pick,
           [u, v],
-          store.getState().sketchOffsetDistance,
+          store.getState().sketchToolParams.offsetDistance,
         );
       }
       lastCamVersionRef.current = -1;
@@ -2356,26 +1789,7 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
     // Pinch gesture owns the move while it's live. With both fingers down we
     // dolly by the change in finger spread; with one finger left (mid-lift)
     // we stay inert until it too lifts, so no stray sketch action leaks out.
-    if (pinchRef.current.active) {
-      if (e.pointerType === "touch" && touchPtsRef.current.has(e.pointerId)) {
-        touchPtsRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
-      }
-      if (touchPtsRef.current.size >= 2) {
-        const span = touchSpan(touchPtsRef.current);
-        const delta = span.dist - pinchRef.current.lastDist;
-        if (delta !== 0) {
-          dispatchZoomWheel(
-            e.currentTarget as HTMLCanvasElement,
-            span.midX,
-            span.midY,
-            -delta * PINCH_ZOOM_GAIN,
-          );
-          pinchRef.current.lastDist = span.dist;
-        }
-      }
-      e.preventDefault();
-      return;
-    }
+    if (touchPinchRef.current.onPointerMove(e)) return;
 
     // P0.3: grip drag lives in select mode (no tool active), so it
     // runs before the drawing-tool guard below. The controller solves
@@ -2385,11 +1799,7 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
       const cam = readCamForCanvas(e.currentTarget as HTMLCanvasElement);
       let [u, v] = screenToSketchFromEvent(e, cam);
       if (e.ctrlKey || e.metaKey) {
-        const minPxGap = 20;
-        let step = 1;
-        while (step * cam.zoom < minPxGap) step *= step < 5 ? 5 : 2;
-        u = Math.round(u / step) * step;
-        v = Math.round(v / step) * step;
+        [u, v] = gridSnapped(u, v, cam.zoom);
       }
       void dragControllerRef.current.update([u, v]);
       lastCamVersionRef.current = -1;
@@ -2486,11 +1896,7 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
     let [u, v] = screenToSketchFromEvent(e, cam);
     // K6b.8: Ctrl = snap to grid on move too.
     if (e.ctrlKey || e.metaKey) {
-      const minPxGap = 20;
-      let step = 1;
-      while (step * cam.zoom < minPxGap) step *= step < 5 ? 5 : 2;
-      u = Math.round(u / step) * step;
-      v = Math.round(v / step) * step;
+      [u, v] = gridSnapped(u, v, cam.zoom);
     }
     if (dragRef.current.kind === "line") {
       const snap = resolveSnap(
@@ -2675,10 +2081,7 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
   // The committed geometry of the most recently placed line, for the
   // click-to-edit dimension readout. Reads the (post-solve) sub-call
   // params, so it tracks solver rewrites. Clears a stale index.
-  const recentLineGeometry = (): {
-    start: [number, number];
-    end: [number, number];
-  } | null => {
+  const recentLineGeometry = (): RecentLineGeometry | null => {
     const index = recentLineRef.current;
     if (index === null) return null;
     const call = session.subCalls[index];
@@ -2767,19 +2170,10 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
   };
 
   const onPointerUp = (e: React.PointerEvent<HTMLCanvasElement>) => {
-    if (e.pointerType === "touch") {
-      touchPtsRef.current.delete(e.pointerId);
-      if (pinchRef.current.active) {
-        // Consume every touch-up for the duration of the pinch lockout; the
-        // gesture only fully ends (and sketching resumes) once all fingers
-        // are off the glass.
-        if (touchPtsRef.current.size === 0) {
-          pinchRef.current = { active: false, lastDist: 0 };
-        }
-        e.preventDefault();
-        return;
-      }
-    }
+    // Consume every touch-up for the duration of the pinch lockout; the
+    // gesture only fully ends (and sketching resumes) once all fingers
+    // are off the glass.
+    if (touchPinchRef.current.onPointerUp(e)) return;
     // Ticket 3rz2: commit a direct Move/Copy click-drag. A real drag
     // translates the selection by (current − start); a release without drag was
     // just a select-click (the press already selected the entity).
@@ -3189,12 +2583,7 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
   };
 
   const onPointerCancel = (e: React.PointerEvent<HTMLCanvasElement>) => {
-    if (e.pointerType === "touch") {
-      touchPtsRef.current.delete(e.pointerId);
-      if (touchPtsRef.current.size === 0) {
-        pinchRef.current = { active: false, lastDist: 0 };
-      }
-    }
+    touchPinchRef.current.onPointerCancel(e);
     dragRef.current = { kind: "idle" };
     hoverRef.current = null;
     snapRef.current = {
@@ -3419,7 +2808,7 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
     // click-away just dismisses (lycy). In EDIT mode (a group is set) the
     // user cleared an existing text, which now DELETES it: remove the group's
     // glyph sub-calls and re-solve, then dismiss (g91j).
-    if (store.getState().sketchTextValue.trim() === "") {
+    if (store.getState().sketchToolParams.textValue.trim() === "") {
       if (textEditor.group !== null) {
         store.deleteSketchTextGroup(textEditor.group);
       }
@@ -3433,9 +2822,9 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
       // loaded / empty text) leaves the old geometry untouched.
       const s = store.getState();
       store.updateSketchTextGroup(textEditor.group, {
-        value: s.sketchTextValue,
-        height: s.sketchTextHeight,
-        fontId: s.sketchTextFontId,
+        value: s.sketchToolParams.textValue,
+        height: s.sketchToolParams.textHeight,
+        fontId: s.sketchToolParams.textFontId,
       });
     } else {
       store.placeSketchText([textEditor.u, textEditor.v]);
@@ -3867,610 +3256,6 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
       )}
     </>
   );
-}
-
-// ─── drawing ────────────────────────────────────────────────────
-
-function resizeToContainer(canvas: HTMLCanvasElement): void {
-  const rect = canvas.getBoundingClientRect();
-  const dpr = window.devicePixelRatio || 1;
-  const w = Math.max(1, Math.round(rect.width * dpr));
-  const h = Math.max(1, Math.round(rect.height * dpr));
-  if (canvas.width !== w || canvas.height !== h) {
-    canvas.width = w;
-    canvas.height = h;
-  }
-}
-
-/**
- * Transient sketch HUD GEOMETRY (preview shapes, hover/snap markers,
- * projected-edge guides) in sketch (u,v) space, mirroring drawOverlay's
- * drag switch but as primitives instead of canvas strokes — published to
- * `sketchHudBridge` and rendered as real 3D geometry by `SketchHud3D`.
- * Text labels (dimensions, glyphs, snap label) stay on the overlay.
- */
-function buildSketchHudUv(
-  drag: DragState,
-  session: SketchSessionState,
-  hover: [number, number] | null,
-  snap: SnapResolution,
-  projectedEdges: ProjectedEdge[],
-  mirrorAxisHover: [[number, number], [number, number]] | null = null,
-): Omit<SketchHudGeometry, "version"> {
-  const previewCalls: Array<{ type: string; params: Record<string, unknown> }> =
-    [];
-  const previewLines: Array<[[number, number], [number, number]]> = [];
-  const previewPoints: Array<[number, number]> = [];
-  const previewGuides: Array<[[number, number], [number, number]]> = [];
-  const C = (type: string, params: Record<string, unknown>) =>
-    previewCalls.push({ type, params });
-
-  switch (drag.kind) {
-    case "line":
-    case "pending_line":
-      C("sketch_line", { start: drag.start, end: drag.current });
-      break;
-    case "rectangle":
-      C("sketch_rectangle", { corner_a: drag.start, corner_b: drag.current });
-      break;
-    case "circle": {
-      const r = Math.hypot(
-        drag.current[0] - drag.center[0],
-        drag.current[1] - drag.center[1],
-      );
-      C("sketch_circle", { center: drag.center, radius: r });
-      break;
-    }
-    case "ellipse": {
-      const rx = Math.abs(drag.current[0] - drag.center[0]);
-      const ry = Math.abs(drag.current[1] - drag.center[1]);
-      C("sketch_ellipse", {
-        center: drag.center,
-        radius_x: rx,
-        radius_y: ry,
-        rotation: Number(session.toolDraft?.rotation) || 0,
-      });
-      break;
-    }
-    case "slot": {
-      const radius = Number(session.toolDraft?.radius) || 8;
-      C("sketch_slot", {
-        center_a: drag.center_a,
-        center_b: drag.current,
-        radius,
-      });
-      break;
-    }
-    case "rect_center": {
-      const opp: [number, number] = [
-        2 * drag.center[0] - drag.current[0],
-        2 * drag.center[1] - drag.current[1],
-      ];
-      C("sketch_rectangle", { corner_a: opp, corner_b: drag.current });
-      previewPoints.push(drag.center);
-      break;
-    }
-    case "circle_3p": {
-      previewPoints.push(drag.p1);
-      if (drag.p2 === null) {
-        previewLines.push([drag.p1, drag.current]);
-      } else {
-        previewPoints.push(drag.p2, drag.current);
-        const res = circleThrough3(drag.p1, drag.p2, drag.current);
-        if (res) C("sketch_circle", { center: res.center, radius: res.radius });
-      }
-      break;
-    }
-    case "rect_3p": {
-      previewPoints.push(drag.p1);
-      if (drag.p2 === null) {
-        previewLines.push([drag.p1, drag.current]);
-      } else {
-        previewPoints.push(drag.p2);
-        const corners = rect3pCorners(drag.p1, drag.p2, drag.current);
-        if (corners) {
-          for (let i = 0; i < 4; i++) {
-            previewLines.push([corners[i], corners[(i + 1) % 4]]);
-            previewPoints.push(corners[i]);
-          }
-        } else {
-          previewLines.push([drag.p1, drag.p2]);
-        }
-      }
-      break;
-    }
-    case "regular_polygon": {
-      const radius = Math.hypot(
-        drag.current[0] - drag.center[0],
-        drag.current[1] - drag.center[1],
-      );
-      const verts = regularPolygonVertices(
-        drag.center,
-        radius,
-        Number(session.toolDraft?.sides) || 6,
-        session.toolDraft?.inscribed !== false,
-      );
-      if (verts.length >= 3) {
-        C("sketch_polygon", { vertices: verts.flatMap((v) => [v[0], v[1]]) });
-        previewPoints.push(drag.center);
-      }
-      break;
-    }
-    case "polygon": {
-      const { vertices, current } = drag;
-      if (vertices.length > 0) {
-        for (let i = 0; i + 1 < vertices.length; i++) {
-          previewLines.push([vertices[i], vertices[i + 1]]);
-        }
-        previewLines.push([vertices[vertices.length - 1], current]);
-        previewGuides.push([current, vertices[0]]);
-        for (const v of vertices) previewPoints.push(v);
-      }
-      break;
-    }
-    case "spline": {
-      const { points, current, mode } = drag;
-      if (points.length > 0) {
-        const ctrl: Vec2[] = [...points, current];
-        const isControl = mode === "control";
-        if (isControl) {
-          for (let i = 0; i + 1 < ctrl.length; i++) {
-            previewGuides.push([ctrl[i], ctrl[i + 1]]);
-          }
-        }
-        const sampled = isControl
-          ? bsplinePoints(ctrl, 3, false, 48)
-          : catmullRomPoints(ctrl, false, 16);
-        for (let i = 0; i + 1 < sampled.length; i++) {
-          previewLines.push([sampled[i], sampled[i + 1]]);
-        }
-        for (const p of points) previewPoints.push(p);
-      }
-      break;
-    }
-    case "arc": {
-      const { center, start, current, startAngle, sweep } = drag;
-      if (start === null) {
-        const r = Math.hypot(current[0] - center[0], current[1] - center[1]);
-        C("sketch_circle", { center, radius: r });
-        previewLines.push([center, current]);
-        previewPoints.push(center);
-      } else {
-        const r = Math.hypot(start[0] - center[0], start[1] - center[1]);
-        C("sketch_arc", {
-          center,
-          radius: r,
-          start_angle: startAngle,
-          sweep_angle: sweep,
-        });
-        previewLines.push([center, start]);
-        previewPoints.push(center, start);
-      }
-      break;
-    }
-    default:
-      // idle / grip / marquee: no 3D preview shapes.
-      break;
-  }
-
-  // Ticket czqf: highlight the hovered mirror-axis line in the preview colour.
-  if (mirrorAxisHover) previewLines.push(mirrorAxisHover);
-
-  return {
-    previewCalls,
-    previewLines,
-    previewPoints,
-    previewGuides,
-    hover: drag.kind === "idle" ? hover : null,
-    // Show the snap ring whenever the cursor is pulled onto a target — an
-    // inference candidate (endpoint/H/V/…) OR a geometry projection snap
-    // (line: pgyf/ymbp, circle/arc: fkig), which carry no candidate but do
-    // place the cursor exactly on geometry.
-    snap: snap.anchor,
-    projected: projectedEdges.map(
-      (e) => [e.p0, e.p1] as [[number, number], [number, number]],
-    ),
-  };
-}
-
-function drawOverlay(
-  canvas: HTMLCanvasElement,
-  session: SketchSessionState,
-  cam: Readonly<SketchCameraState>,
-  drag: DragState,
-  hover: [number, number] | null,
-  snap: SnapResolution,
-  projectedEdges: ProjectedEdge[] | null = null,
-  recentLine: {
-    start: [number, number];
-    end: [number, number];
-  } | null = null,
-  mirrorAxisHover: [[number, number], [number, number]] | null = null,
-): void {
-  // Publish the transient HUD GEOMETRY (previews/hover/snap-ring/projected)
-  // for the 3D layer (SketchHud3D); this overlay draws only text + marquee.
-  publishSketchHud(
-    buildSketchHudUv(
-      drag,
-      session,
-      hover,
-      snap,
-      projectedEdges ?? [],
-      mirrorAxisHover,
-    ),
-  );
-  const ctx = canvas.getContext("2d");
-  if (!ctx) return;
-  const dpr = cam.devicePixelRatio || window.devicePixelRatio || 1;
-
-  // Reset to identity and clear. The device-pixel-ratio scale
-  // goes on _after_ the clear so we can work in CSS pixels for
-  // everything below.
-  ctx.setTransform(1, 0, 0, 1, 0, 0);
-  ctx.clearRect(0, 0, canvas.width, canvas.height);
-  ctx.scale(dpr, dpr);
-
-  // A non-positive zoom is a degenerate camera: every screen transform
-  // divides by zoom and the adaptive-grid loop below would never terminate.
-  // Bail with a cleared canvas rather than freezing the tab.
-  if (!(cam.zoom > 0)) return;
-
-  // Projected B-Rep edge guides, drag previews, the hover point and the
-  // snap RING now render as 3D scene geometry (SketchHud3D); committed
-  // geometry + selection are 3D too (SketchSession3D). drawOverlay keeps
-  // only the screen-space TEXT/marquee HUD: constraint glyphs, dimension
-  // readouts, the snap label and the marquee box.
-
-  // Solved state + DOF colour for the constraint glyphs.
-  const skState = buildDraftSketchState(session.subCalls);
-  let committedColor = COLOR_UNDER;
-  try {
-    const over =
-      session.diagnostics.conflicting.length > 0 ||
-      session.diagnostics.malformed.length > 0;
-    const dof = displayDegreesOfFreedom(skState, session.diagnostics);
-    committedColor = over ? COLOR_OVER : dofColor(dof);
-  } catch {
-    // Solver not available — fall back to the underconstrained color.
-  }
-
-  // Text labels — constraint glyphs, dimension readouts, the snap label —
-  // render as 3D billboard sprites (SketchLabels3D): collected here in plane
-  // (u, v) space and published, drawn in-scene so they ride the camera in
-  // lockstep with the geometry instead of lagging on this 2D canvas. The
-  // marquee (below) stays here — it's a pure screen-space selection box.
-  const labels: SketchLabel[] = [];
-
-  // Screen-space perpendicular nudge (px, +x right +y up) that pushes a line's
-  // dimension readout off the line — the old canvas left-normal, recomputed in
-  // the same camera so the 3D label lands exactly where the readout used to.
-  const lineOffsetPx = (
-    a: [number, number],
-    b: [number, number],
-  ): [number, number] => {
-    const [sx, sy] = sketchToScreen(a[0], a[1], cam);
-    const [ex, ey] = sketchToScreen(b[0], b[1], cam);
-    const dx = ex - sx;
-    const dy = ey - sy;
-    const len = Math.hypot(dx, dy);
-    if (len < 1) return [0, LABEL_OFFSET_PX];
-    // Canvas left-normal (y-down); flip y for the sprite's y-up offset.
-    return [(dy / len) * LABEL_OFFSET_PX, (dx / len) * LABEL_OFFSET_PX];
-  };
-  const pushDistance = (a: [number, number], b: [number, number]) => {
-    const dist = Math.hypot(b[0] - a[0], b[1] - a[1]);
-    if (dist < 1e-4) return;
-    labels.push({
-      anchorUv: [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2],
-      text: formatSketchLength(dist),
-      style: "dimension",
-      color: LABEL_DIM,
-      offsetPx: lineOffsetPx(a, b),
-    });
-  };
-  const pushSize = (a: [number, number], b: [number, number]) => {
-    const w = Math.abs(b[0] - a[0]);
-    const h = Math.abs(b[1] - a[1]);
-    if (w < 1e-4 && h < 1e-4) return;
-    const u = getSketchLengthUnit();
-    labels.push({
-      anchorUv: [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2],
-      text: `${sketchDisplayLength(w).toFixed(u.decimals)} × ${sketchDisplayLength(h).toFixed(u.decimals)} ${u.unit}`,
-      style: "dimension",
-      color: LABEL_DIM,
-      offsetPx: [0, 0],
-    });
-  };
-  const pushRadius = (center: [number, number], r: number) => {
-    if (r < 1e-4) return;
-    labels.push({
-      anchorUv: center,
-      text: `R ${formatSketchLength(r)}`,
-      style: "dimension",
-      color: LABEL_DIM,
-      offsetPx: [LABEL_OFFSET_PX, LABEL_OFFSET_PX],
-    });
-  };
-
-  // Constraint glyphs anchored to the constrained geometry.
-  {
-    const entityPos = (entityId: number): [number, number] | null => {
-      const e = skState.entities.find((x) => x.id === entityId);
-      if (!e) return null;
-      if (e.kind === "point") return [e.at.x, e.at.y];
-      if (e.kind === "origin") return [0, 0];
-      return null;
-    };
-    const lineMidpoint = (lineId: number): [number, number] | null => {
-      const e = skState.entities.find((x) => x.id === lineId);
-      if (!e || e.kind !== "line") return null;
-      const s = entityPos(e.start);
-      const en = entityPos(e.end);
-      if (!s || !en) return null;
-      return [(s[0] + en[0]) / 2, (s[1] + en[1]) / 2];
-    };
-    for (const c of skState.constraints) {
-      let anchor: [number, number] | null = null;
-      let label = "C";
-      if (c.kind === "horizontal") {
-        anchor = lineMidpoint(c.line);
-        label = "H";
-      } else if (c.kind === "vertical") {
-        anchor = lineMidpoint(c.line);
-        label = "V";
-      } else if (c.kind === "coincident") {
-        anchor = entityPos(c.a);
-        label = "⊙";
-      }
-      if (!anchor) continue;
-      labels.push({
-        anchorUv: anchor,
-        text: label,
-        style: "constraint",
-        color: committedColor,
-        offsetPx: [0, 10],
-      });
-    }
-
-    // Ticket 7lxk: render every distance dimension as a Maßlinie — extension
-    // lines, an offset dimension line with arrowheads, and the value — so a
-    // dimension placed by the Dimension tool is actually visible (not just a
-    // DoF change). Onshape-style. Drawn on the 2D overlay in screen space.
-    for (const c of skState.constraints) {
-      if (c.kind !== "distance") continue;
-      const pa = entityPos(c.a);
-      const pb = entityPos(c.b);
-      if (!pa || !pb) continue;
-      drawLinearDimension(ctx, pa, pb, c.value_mm, cam);
-    }
-  }
-
-  // Dimension readouts. The recent-line readout is click-to-edit (hit-tested
-  // in onPointerDown); the others track the live drag.
-  if (recentLine !== null && drag.kind === "idle") {
-    pushDistance(recentLine.start, recentLine.end);
-  }
-  if (drag.kind === "line" || drag.kind === "pending_line") {
-    pushDistance(drag.start, drag.current);
-  } else if (drag.kind === "rectangle") {
-    pushSize(drag.start, drag.current);
-  } else if (drag.kind === "circle") {
-    const r = Math.hypot(
-      drag.current[0] - drag.center[0],
-      drag.current[1] - drag.center[1],
-    );
-    pushRadius(drag.center, r);
-  } else if (drag.kind === "rect_center") {
-    const opp: [number, number] = [
-      2 * drag.center[0] - drag.current[0],
-      2 * drag.center[1] - drag.current[1],
-    ];
-    pushSize(opp, drag.current);
-  } else if (drag.kind === "circle_3p") {
-    if (drag.p2 !== null) {
-      const res = circleThrough3(drag.p1, drag.p2, drag.current);
-      if (res) pushRadius(res.center, res.radius);
-    }
-  } else if (drag.kind === "regular_polygon") {
-    const r = Math.hypot(
-      drag.current[0] - drag.center[0],
-      drag.current[1] - drag.center[1],
-    );
-    pushRadius(drag.center, r);
-  } else if (drag.kind === "arc") {
-    const r =
-      drag.start === null
-        ? Math.hypot(
-            drag.current[0] - drag.center[0],
-            drag.current[1] - drag.center[1],
-          )
-        : Math.hypot(
-            drag.start[0] - drag.center[0],
-            drag.start[1] - drag.center[1],
-          );
-    pushRadius(drag.center, r);
-  } else if (drag.kind === "marquee") {
-    drawMarquee(ctx, drag.start, drag.current, cam);
-  }
-
-  // Snap label — a small pill up-and-right of the snap ring (the ring renders
-  // in 3D via SketchHud3D).
-  if (snap.anchor && snap.candidate) {
-    labels.push({
-      anchorUv: snap.anchor,
-      text: snap.candidate.label,
-      style: "snap",
-      color: COLOR_SNAP,
-      offsetPx: [SNAP_RING_PX + 6, SNAP_RING_PX + 6],
-    });
-  }
-
-  publishSketchLabels(labels);
-}
-
-/**
- * F4: draw the box-select marquee. The drag direction decides the
- * style — left→right (start.x ≤ current.x) is an enclosing "window"
- * select drawn with a solid blue border, right→left a crossing select
- * drawn with a dashed green border. Both get a faint matching fill.
- */
-function drawMarquee(
-  ctx: CanvasRenderingContext2D,
-  start: [number, number],
-  current: [number, number],
-  cam: Readonly<SketchCameraState>,
-): void {
-  const enclosing = start[0] <= current[0];
-  const [sx, sy] = sketchToScreen(start[0], start[1], cam);
-  const [cx, cy] = sketchToScreen(current[0], current[1], cam);
-  const x = Math.min(sx, cx);
-  const y = Math.min(sy, cy);
-  const w = Math.abs(cx - sx);
-  const h = Math.abs(cy - sy);
-  ctx.save();
-  ctx.fillStyle = enclosing ? FILL_MARQUEE_ENCLOSING : FILL_MARQUEE_CROSSING;
-  ctx.fillRect(x, y, w, h);
-  ctx.strokeStyle = enclosing
-    ? COLOR_MARQUEE_ENCLOSING
-    : COLOR_MARQUEE_CROSSING;
-  ctx.lineWidth = 1.5;
-  ctx.setLineDash(enclosing ? [] : MARQUEE_CROSSING_DASH);
-  ctx.strokeRect(x, y, w, h);
-  ctx.restore();
-}
-
-/**
- * Anchor (canvas CSS px) of a line's dimension readout: the midpoint,
- * pushed `LABEL_OFFSET_PX` along the line's visual left-normal. Used by the
- * click-to-edit hit test and to place the floating value-input pill (the 3D
- * label sprite mirrors the same offset). `null` for a (near) zero-length
- * screen segment.
- */
-/**
- * Ticket 7lxk: draw a linear dimension (Maßlinie) between two sketch points —
- * extension lines, an offset dimension line with arrowheads, and the value
- * label — directly on the 2D overlay in screen space. Onshape-style.
- */
-function drawLinearDimension(
-  ctx: CanvasRenderingContext2D,
-  aUv: [number, number],
-  bUv: [number, number],
-  valueMm: number,
-  cam: Readonly<SketchCameraState>,
-): void {
-  const [ax, ay] = sketchToScreen(aUv[0], aUv[1], cam);
-  const [bx, by] = sketchToScreen(bUv[0], bUv[1], cam);
-  const dx = bx - ax;
-  const dy = by - ay;
-  const len = Math.hypot(dx, dy);
-  if (len < 2) return;
-  const ux = dx / len;
-  const uy = dy / len;
-  // Perpendicular (screen-left of a→b); offset the dimension line outward.
-  const nx = -uy;
-  const ny = ux;
-  const OFF = 24;
-  const a2: [number, number] = [ax + nx * OFF, ay + ny * OFF];
-  const b2: [number, number] = [bx + nx * OFF, by + ny * OFF];
-
-  ctx.save();
-  ctx.strokeStyle = LABEL_DIM;
-  ctx.fillStyle = LABEL_DIM;
-  ctx.lineWidth = 1;
-
-  // Extension lines from each measured point, slightly past the dim line.
-  ctx.beginPath();
-  ctx.moveTo(ax + nx * 3, ay + ny * 3);
-  ctx.lineTo(a2[0] + nx * 4, a2[1] + ny * 4);
-  ctx.moveTo(bx + nx * 3, by + ny * 3);
-  ctx.lineTo(b2[0] + nx * 4, b2[1] + ny * 4);
-  ctx.stroke();
-
-  // Dimension line + arrowheads pointing outward at each end.
-  ctx.beginPath();
-  ctx.moveTo(a2[0], a2[1]);
-  ctx.lineTo(b2[0], b2[1]);
-  ctx.stroke();
-  const arrow = (p: [number, number], dirx: number, diry: number) => {
-    const s = 7;
-    const px = -diry;
-    const py = dirx;
-    ctx.beginPath();
-    ctx.moveTo(p[0], p[1]);
-    ctx.lineTo(p[0] + dirx * s + px * 2.6, p[1] + diry * s + py * 2.6);
-    ctx.lineTo(p[0] + dirx * s - px * 2.6, p[1] + diry * s - py * 2.6);
-    ctx.closePath();
-    ctx.fill();
-  };
-  arrow(a2, ux, uy);
-  arrow(b2, -ux, -uy);
-
-  // Value label at the dim-line midpoint, on a small readable background.
-  // Kept in lockstep with `linearDimLabelPx` (the click-to-edit hit test).
-  const text = formatSketchLength(valueMm);
-  const label = linearDimLabelPx(aUv, bUv, cam) ?? [
-    (a2[0] + b2[0]) / 2,
-    (a2[1] + b2[1]) / 2,
-  ];
-  const mx = label[0];
-  const my = label[1];
-  ctx.font = "12px system-ui, sans-serif";
-  ctx.textAlign = "center";
-  ctx.textBaseline = "middle";
-  const w = ctx.measureText(text).width + 8;
-  ctx.fillStyle = "rgba(255,255,255,0.85)";
-  ctx.fillRect(mx - w / 2, my - 9, w, 18);
-  ctx.fillStyle = LABEL_DIM;
-  ctx.fillText(text, mx, my);
-  ctx.restore();
-}
-
-/**
- * Screen-px centre of a linear dimension's value label (the readable number on
- * the Maßlinie). Matches `drawLinearDimension`'s placement exactly — midpoint of
- * the offset dimension line — so the click-to-edit hit test lands on what's
- * drawn. `null` for a (near) zero-length screen segment.
- */
-function linearDimLabelPx(
-  aUv: [number, number],
-  bUv: [number, number],
-  cam: Readonly<SketchCameraState>,
-): [number, number] | null {
-  const [ax, ay] = sketchToScreen(aUv[0], aUv[1], cam);
-  const [bx, by] = sketchToScreen(bUv[0], bUv[1], cam);
-  const dx = bx - ax;
-  const dy = by - ay;
-  const len = Math.hypot(dx, dy);
-  if (len < 2) return null;
-  const nx = -dy / len;
-  const ny = dx / len;
-  const OFF = 24;
-  return [(ax + bx) / 2 + nx * OFF, (ay + by) / 2 + ny * OFF];
-}
-
-function distanceLabelAnchorPx(
-  start: [number, number],
-  end: [number, number],
-  cam: Readonly<SketchCameraState>,
-): [number, number] | null {
-  const [sx, sy] = sketchToScreen(start[0], start[1], cam);
-  const [ex, ey] = sketchToScreen(end[0], end[1], cam);
-  const dxScreen = ex - sx;
-  const dyScreen = ey - sy;
-  const lenScreen = Math.hypot(dxScreen, dyScreen);
-  if (lenScreen < 1) return null;
-  // Left-normal in screen space: rotate the direction 90° CCW.
-  // Canvas has screen-Y pointing *down*, so "left as you face
-  // from start to end" maps to rotating the direction vector
-  // by -90° (CW) in canvas coordinates. `left = (-dy, dx)` is
-  // the mathematical CCW, which is visually "right" on a
-  // Y-down canvas — so we negate to get visual left.
-  const nx = dyScreen / lenScreen;
-  const ny = -dxScreen / lenScreen;
-  return [
-    (sx + ex) / 2 + nx * LABEL_OFFSET_PX,
-    (sy + ey) / 2 + ny * LABEL_OFFSET_PX,
-  ];
 }
 
 // ─── helpers ────────────────────────────────────────────────────

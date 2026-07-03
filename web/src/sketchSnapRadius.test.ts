@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { SNAP_RADIUS_PX, snapRadiusMmFor } from "./SketchCanvas2d";
+import { SNAP_RADIUS_PX, snapRadiusMmFor } from "./sketchSnapResolve";
 
 /**
  * Regression guard for ticket zuw9 ("can't close a sketch polygon — the end
