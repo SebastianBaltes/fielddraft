@@ -18,7 +18,6 @@ import {
   type FeatureSummary,
   type PrimitiveKindName,
   type VarKind,
-  type VariableEntry,
 } from "./kernel";
 import {
   createAutoSave,
@@ -108,7 +107,6 @@ import {
 import { extendLine } from "./sketchExtend";
 import { splitCurveAt } from "./sketchSplit";
 import { getPublishedPickCamera } from "./pickCameraBridge";
-import { publishSceneBounds } from "./sceneBoundsBridge";
 import { importVectorToSubCalls } from "./importVector";
 import { textToSubCalls, reeditTextGroup, removeTextGroup } from "./sketchText";
 import {
@@ -168,7 +166,6 @@ import {
   import3mf,
   export3mfRoundtrip,
   extractModelXml,
-  type ThreeMfStash,
 } from "./threemf";
 import {
   type MeshOverlayData,
@@ -179,312 +176,29 @@ import {
   buildObjExportText,
 } from "./meshIO";
 
-/**
- * One mesh-ready body as cached by the store after a worker response.
- * The TypedArrays are owned by the main thread (they were transferred
- * from the worker), so they're safe to retain across future kernel
- * mutations — unlike the WASM-aliased views you'd get from the
- * kernel's own `body*View` accessors.
- */
-export type MeshedBody = MesherBodyPayload;
+import {
+  StoreCore,
+  formatKernelError,
+  loadFoldersFromStorage,
+  persistFoldersToStorage,
+  loadVisibleSketchesFromStorage,
+  persistVisibleSketchesToStorage,
+  loadHiddenDatumsFromStorage,
+  persistHiddenDatumsToStorage,
+  type FeatureFolder,
+  type MeshedBody,
+  type SelectionOrigin,
+  type StoreState,
+} from "./storeCore";
 
-/**
- * Ticket 7hgr (a): where a feature-selection change originated.
- *  - "list": a deliberate outliner row action (default). Keeps the pqoe
- *    behaviour of selecting a sketch ⇒ editing it / switching commits the
- *    previous one.
- *  - "scene": a 3D viewport click (body / datum / sketch entity / empty
- *    space). These must NEVER end an active sketch session — the session is
- *    sticky and only the ✓/✗ buttons, the Extrude/Revolve sketch-toolbar
- *    buttons, delete (vev1) or New Project (5zd3) exit it.
- */
-export type SelectionOrigin = "list" | "scene";
-
-export interface StoreState {
-  features: FeatureSummary[];
-  selection: ReadonlySet<number>;
-  /** Anchor for shift-click range selection — id of the last single-clicked
-   *  feature. `null` while nothing has been clicked yet. */
-  selectionAnchor: number | null;
-  /** Chunk 3a: persistent, tool-free B-Rep element selection (a single
-   *  face / edge / vertex picked in the viewport with no active tool).
-   *  Ephemeral UI state — NOT persisted to the project. Mutually exclusive
-   *  with the feature-level `selection` set: setting one clears the other. */
-  selectedElement: PickedElement | null;
-  /** The full multi-select set (Shift/Ctrl-click accumulates faces for a
-   *  coplanar face-extrude). `selectedElement` is the primary (last-picked)
-   *  member; an empty array means nothing is element-selected. */
-  selectedElements: PickedElement[];
-  canUndo: boolean;
-  undoDepth: number;
-  canRedo: boolean;
-  redoDepth: number;
-  /** Default op applied when adding the next primitive. */
-  nextOp: BoolOpTagValue;
-  /** Latest per-body mesh cache streamed in from the mesher worker.
-   *  A fresh array object is written on every worker response so
-   *  React's useSyncExternalStore detects the change and re-renders
-   *  the viewport — even though the contents only care about the
-   *  delta per body id. */
-  meshedBodies: readonly MeshedBody[];
-  /** Monotonic counter bumped whenever the async weaver installs freshly
-   *  woven B-Reps into the main-thread kernel (`importBodyBrep`). The mesher
-   *  publishes a fresh `meshedBodies` array to force a re-render; the weaver
-   *  produces no mesh, so it bumps this instead — overlays/picking read the
-   *  analytic B-Rep straight from the kernel and must refetch when it lands.
-   *  Without it `notify()` after a weave never changes the `getState()`
-   *  snapshot, so `useSyncExternalStore` bails and freshly-extruded bodies
-   *  render without their edges until some unrelated state change. */
-  brepVersion: number;
-  /** K6b.2: active sketch session, or inactive-default. */
-  sketchSession: SketchSessionState;
-  /** K8.10 / 8ar9: document-level scalar variables, sorted by name
-   *  (the kernel's BTreeMap ordering). Each carries a kind
-   *  (number/length/angle) that drives its display unit. */
-  variables: readonly VariableEntry[];
-  /** K9.0: imported STL reference mesh. Ephemeral — not
-   *  persisted to the document. `null` when no import is
-   *  loaded. */
-  referenceMesh: {
-    positions: Float32Array;
-    normals: Float32Array;
-    indices: Uint32Array;
-  } | null;
-  /** K9.4: measure mode active — clicks pick B-Rep elements to measure
-   *  instead of selecting features. */
-  measureMode: boolean;
-  /** stv8: B-Rep elements picked for measurement (max 2: one → length/radius,
-   *  two → distance). Cleared when measure mode toggles. */
-  measureSelection: readonly PickedElement[];
-  /** K10.6: fillet mode — clicks on edges create fillet_edge features. */
-  filletMode: boolean;
-  /** Thicken mode — clicks on curved faces create thicken features (one per
-   *  click), mirroring the edge-click fillet flow. */
-  thickenMode: boolean;
-  /** F10: sketch-fillet radius (mm) used by the two-click `sketch_fillet`
-   *  tool to round the corner between two picked lines. */
-  sketchFilletRadius: number;
-  /** F11: sketch-chamfer setback distance (mm) used by the two-click
-   *  `sketch_chamfer` tool to bevel the corner between two picked lines. */
-  sketchChamferDistance: number;
-  /** F15: sketch-offset distance (mm) used by the single-click
-   *  `sketch_offset` tool to place a parallel copy of the picked curve. */
-  sketchOffsetDistance: number;
-  /** F16: number of instances (original + copies) for a sketch pattern. */
-  sketchPatternCount: number;
-  /** F16: per-step spacing (mm) for a linear sketch pattern. */
-  sketchPatternSpacing: number;
-  /** F16: total span (degrees) for a circular sketch pattern. */
-  sketchPatternAngle: number;
-  /** F17: rotation angle (degrees) used by the `rotateSketchSelection`
-   *  transform (rotates the selection about the sketch origin). */
-  sketchRotateAngle: number;
-  /** F23-full: which spline family the `sketch_spline` tool draws —
-   *  `"interpolate"` (Catmull-Rom through the points) or `"control"`
-   *  (real cubic B-spline with the points as control polygon). */
-  sketchSplineMode: "interpolate" | "control";
-  /** F24: the string the single-click `sketch_text` tool emits as
-   *  filled glyph geometry. */
-  sketchTextValue: string;
-  /** F24: cap/em height (mm) for the `sketch_text` tool. */
-  sketchTextHeight: number;
-  /** F24-full: id of the font the `sketch_text` tool renders with —
-   *  a bundled-font id (see sketchTextFont.BUNDLED_FONTS) or a synthetic
-   *  `uploaded:…` id for a user-supplied .ttf/.otf. */
-  sketchTextFontId: string;
-  /** F24-full: true once the currently-selected text font has finished
-   *  loading + parsing (drives the UI's "loading font…" hint and gates
-   *  placement). */
-  sketchTextFontReady: boolean;
-  /** M12: sync state machine for server-backed projects.
-   *  "clean" = in sync with server, "dirty" = local changes
-   *  pending, "syncing" = upload in flight, "error" = last
-   *  sync failed. */
-  syncState: "clean" | "dirty" | "syncing" | "error" | "offline";
-  /** M12: server-side project ID, null in guest/offline mode. */
-  projectId: string | null;
-  /** K9.1: overall scene extents in mm, refreshed on commit. */
-  sceneSize: [number, number, number];
-  /** K7.22 UX-fix (2): display-only feature folders. The feature
-   *  spine stays linear top-down; folders are a UI grouping layer
-   *  that lets the user collapse clumps of related features.
-   *  Persisted to localStorage, never touched by the kernel. */
-  folders: readonly FeatureFolder[];
-  /** K7.22 UX-fix (5): sketch feature ids that are rendered in
-   *  the 3D viewport as line overlays. Defaults to empty: a
-   *  freshly-created sketch is invisible in 3D. The Outliner's
-   *  per-row eye icon toggles membership. Persisted to
-   *  localStorage so the visibility survives reloads. */
-  visibleSketches: readonly number[];
-  /** K7.22 UX-fix (7): latest user-visible transient error message
-   *  from a kernel mutation (e.g. "sketch has no closed regions to
-   *  extrude"). Cleared automatically on the next successful
-   *  mutation. The App renders it as a toast in the topbar. */
-  transientError: string | null;
-  /** K9: mate connector placement mode — the next viewport click
-   *  places a mate connector at the surface hit point. */
-  mateMode: boolean;
-  /** Hide all committed mate-connector triads in the viewport (toggled by
-   *  the `K` shortcut, Onshape parity). */
-  mateConnectorsHidden: boolean;
-  /** P1: assembly state — manages multi-part scene graph. */
-  assembly: import("./assembly").AssemblyState;
-  /** P2: IK mode — clicking in viewport sets the IK target. */
-  ikMode: boolean;
-  /** K7.21h: transform gizmo mode. */
-  gizmoMode: "translate" | "rotate" | "scale";
-  /** Ticket D6/320t: "Move mode" — armed by the transform toolbar button. While
-   *  true, the next scene click on a body creates (or re-selects the most
-   *  recent) transform feature for that body and shows the gizmo, instead of a
-   *  plain feature select. Consumed (disarmed) by that click. */
-  gizmoArmed: boolean;
-  /** True while a transform-gizmo drag runs WITH B-Rep suppression
-   *  (setting "B-Rep rebuild while dragging" off). The viewport hides
-   *  every B-Rep overlay for the drag's duration — cached edges would
-   *  otherwise trail the live mesh at the 50ms commit cadence. */
-  gizmoDragSuppressed: boolean;
-  /** 3MF roundtrip: stashed slicer metadata from import, used on re-export. */
-  threemfStash: ThreeMfStash | null;
-  /** Rollback bar position: features at index >= this value are
-   *  skipped during regeneration. Equals features.length when the
-   *  bar sits at the bottom (all features active). */
-  rollbackIndex: number;
-  /** Loading overlay: non-null while an import or heavy operation is
-   *  in progress. The `phase` string is shown to the user. */
-  loading: { phase: string } | null;
-  /** Default datum geometry hidden set. Stores ids of datums the user
-   *  has toggled off ("origin", "top", "front", "right"). Datums not
-   *  in this set are visible. Persisted to localStorage. */
-  hiddenDatums: ReadonlySet<string>;
-  /** Selected default-geometry datum ("origin", "top", "front", "right"),
-   *  or null. Onshape-style tree/viewport selection of the default planes
-   *  (ticket r36f). Mutually exclusive with feature/element selection. */
-  selectedDatum: string | null;
-  highlightedBodyIndex: number | null;
-  /** MT-A: the multi-tab project model (part / script / assembly
-   *  tabs). Replaces the old two-way `activeTab` toggle — the active
-   *  tab is `project.tabs` filtered by `project.activeTabId`.
-   *  Persisted (via the store's serializeProject funnel) to
-   *  localStorage. */
-  project: Project;
-  /** FT-W: lightweight per-script-type meta the Part toolbar renders
-   *  as one button each (glyph = icon, label = name). Recomputed from
-   *  the kernel's `listScripts()` on every commit so newly saved /
-   *  deleted scripts appear or vanish immediately. */
-  scriptTypes: { id: string; name: string; icon: string }[];
-}
-
-/** K7.22 UX-fix (2): one folder entry in the outliner grouping
- *  layer. Folders are stable across reorder: `memberIds` is a
- *  set of feature ids, and features that disappear from the
- *  document (remove/undo) are filtered out lazily at render time
- *  rather than eagerly pruned. */
-export interface FeatureFolder {
-  id: string;
-  name: string;
-  memberIds: readonly number[];
-  collapsed: boolean;
-}
-
-const FOLDERS_STORAGE_KEY = "fielddraft.folders";
-
-function loadFoldersFromStorage(): FeatureFolder[] {
-  try {
-    const raw = localStorage.getItem(FOLDERS_STORAGE_KEY);
-    if (!raw) return [];
-    const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return [];
-    return parsed
-      .filter(
-        (f): f is FeatureFolder =>
-          typeof f === "object" &&
-          f !== null &&
-          typeof f.id === "string" &&
-          typeof f.name === "string" &&
-          Array.isArray(f.memberIds),
-      )
-      .map((f) => ({
-        id: f.id,
-        name: f.name,
-        memberIds: f.memberIds.filter((n: unknown) => typeof n === "number"),
-        collapsed: Boolean((f as { collapsed?: boolean }).collapsed),
-      }));
-  } catch {
-    return [];
-  }
-}
-
-function persistFoldersToStorage(folders: readonly FeatureFolder[]): void {
-  try {
-    localStorage.setItem(FOLDERS_STORAGE_KEY, JSON.stringify(folders));
-  } catch {
-    // localStorage quota exceeded or disabled — silently skip.
-  }
-}
-
-const VISIBLE_SKETCHES_STORAGE_KEY = "fielddraft.visibleSketches";
-
-function loadVisibleSketchesFromStorage(): number[] {
-  try {
-    const raw = localStorage.getItem(VISIBLE_SKETCHES_STORAGE_KEY);
-    if (!raw) return [];
-    const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return [];
-    return parsed.filter((n): n is number => typeof n === "number");
-  } catch {
-    return [];
-  }
-}
-
-function persistVisibleSketchesToStorage(ids: readonly number[]): void {
-  try {
-    localStorage.setItem(VISIBLE_SKETCHES_STORAGE_KEY, JSON.stringify(ids));
-  } catch {
-    // ignore
-  }
-}
-
-const HIDDEN_DATUMS_STORAGE_KEY = "fielddraft.hiddenDatums";
-
-function loadHiddenDatumsFromStorage(): Set<string> {
-  try {
-    const raw = localStorage.getItem(HIDDEN_DATUMS_STORAGE_KEY);
-    if (!raw) return new Set();
-    const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return new Set();
-    return new Set(parsed.filter((s): s is string => typeof s === "string"));
-  } catch {
-    return new Set();
-  }
-}
-
-function persistHiddenDatumsToStorage(ids: ReadonlySet<string>): void {
-  try {
-    localStorage.setItem(HIDDEN_DATUMS_STORAGE_KEY, JSON.stringify([...ids]));
-  } catch {
-    // ignore
-  }
-}
-
-/** Pull a user-readable message out of a wasm-bindgen-thrown error.
- *  The kernel emits strings like
- *  `"extrude regeneration failed: feature ‘extrude’: parameter
- *  ‘profiles’ invalid: sketch has no closed regions to extrude — …"`
- *  — we strip the machine-friendly prefix and keep the human tail. */
-function formatKernelError(err: unknown, fallback: string): string {
-  if (err instanceof Error) {
-    const raw = err.message ?? fallback;
-    // Trim the most common kernel prefixes to surface the actual
-    // cause first. Ordering matters — match the longest prefix
-    // first so shorter ones don't shadow.
-    const stripped = raw
-      .replace(/^.*?regeneration failed:\s*/, "")
-      .replace(/^feature\s*[`'"][^`'"]+[`'"]:\s*/, "")
-      .replace(/^parameter\s*[`'"][^`'"]+[`'"]\s*invalid:\s*/, "");
-    return stripped.length > 0 ? stripped : fallback;
-  }
-  return typeof err === "string" && err.length > 0 ? err : fallback;
-}
+// Re-export the shared store types from their new home so the many
+// existing `import { StoreState } from "./store"` sites keep working.
+export type {
+  FeatureFolder,
+  MeshedBody,
+  SelectionOrigin,
+  StoreState,
+} from "./storeCore";
 
 const INACTIVE_SKETCH_SESSION: SketchSessionState = _INACTIVE;
 
@@ -515,12 +229,23 @@ function parseWeaverResponse(
 
 export class KernelStore {
   readonly kernel: Kernel;
-  private readonly autosave: AutoSaveHandle;
-  private listeners = new Set<() => void>();
-  private state: StoreState;
+  /** Shared foundation: state snapshot, pub-sub, commit() tail, autosave.
+   *  The facade (and every domain controller) mutates state through it. */
+  private readonly core: StoreCore;
+
+  /** The current immutable state snapshot lives in the core. */
+  private get state(): StoreState {
+    return this.core.state;
+  }
+  private set state(next: StoreState) {
+    this.core.state = next;
+  }
+  private get autosave(): AutoSaveHandle {
+    return this.core.autosave;
+  }
 
   private patch(partial: Partial<StoreState>): void {
-    this.state = { ...this.state, ...partial };
+    this.core.patch(partial);
   }
 
   private meshDataCache = new Map<number, MeshOverlayData>();
@@ -560,7 +285,26 @@ export class KernelStore {
     persistedProjectJson: string | null = null,
   ) {
     this.kernel = kernel;
-    this.autosave = autosave;
+    this.core = new StoreCore(kernel, autosave);
+    // Late-bound commit hooks: the domain-specific pieces of the shared
+    // commit() tail (see StoreCoreHooks). Bound as closures so they always
+    // dispatch against the live facade methods.
+    this.core.setHooks({
+      beforeCommit: (nextSelection) => {
+        if (
+          this.pendingFeature !== null &&
+          nextSelection !== undefined &&
+          !nextSelection.has(this.pendingFeature)
+        ) {
+          this.confirmPendingInline();
+        }
+      },
+      syncActiveBody: () => this.syncActiveBody(),
+      serializeProject: () => this.serializeProject(),
+      refreshMeshCache: () => this.refreshMeshCache(),
+      scheduleWeave: () => this.scheduleWeave(),
+      snapshotScriptTypes: () => this.snapshotScriptTypes(),
+    });
 
     // Bring up the mesher worker BEFORE the initial document load: with the
     // worker available, sync meshing is disabled first, so `loadJson` below
@@ -737,88 +481,19 @@ export class KernelStore {
 
   // ── pub-sub ───────────────────────────────────────────────────────
 
-  subscribe = (listener: () => void): (() => void) => {
-    this.listeners.add(listener);
-    return () => {
-      this.listeners.delete(listener);
-    };
-  };
+  subscribe = (listener: () => void): (() => void) =>
+    this.core.subscribe(listener);
 
-  getState = (): StoreState => this.state;
+  getState = (): StoreState => this.core.state;
 
+  /** Shared post-mutation tail — see {@link StoreCore.commit}. */
   private commit(
     nextSelection?: ReadonlySet<number>,
     nextAnchor?: number | null,
   ): void {
-    // A mutation that moves the selection away from the pending extrude
-    // confirms it first (e.g. creating the next feature while its dialog is
-    // still open) — see the pending-feature section.
-    if (
-      this.pendingFeature !== null &&
-      nextSelection !== undefined &&
-      !nextSelection.has(this.pendingFeature)
-    ) {
-      this.confirmPendingInline();
-    }
-    const features = this.kernel.listFeatures();
-    const rbRaw = this.kernel.getRollbackIndex();
-    // Spread the previous snapshot and overwrite ONLY the fields commit()
-    // actually derives/resets. Everything else carries over automatically —
-    // a newly added StoreState field can no longer be silently reset to
-    // `undefined` by a forgotten line here.
-    this.state = {
-      ...this.state,
-      features,
-      selection: nextSelection ?? this.state.selection,
-      selectionAnchor:
-        nextAnchor !== undefined ? nextAnchor : this.state.selectionAnchor,
-      // A document mutation invalidates any picked element (its idHash may no
-      // longer resolve), and the two selection notions are mutually exclusive.
-      selectedElement: null,
-      selectedElements: [],
-      canUndo: this.kernel.canUndo(),
-      undoDepth: this.kernel.undoDepth(),
-      canRedo: this.kernel.canRedo(),
-      redoDepth: this.kernel.redoDepth(),
-      // An empty document must show NO meshes immediately (ticket vy3t): the
-      // mesher worker skips posting for a body-less doc, so the stale meshes
-      // would otherwise linger (e.g. after Menu → New). Clear synchronously
-      // when the kernel has no bodies; otherwise the worker rebuild updates.
-      meshedBodies:
-        this.kernel.bodyCount() === 0 ? [] : this.state.meshedBodies,
-      syncState: this.state.projectId ? "dirty" : "offline",
-      variables: this.kernel.listVariables(),
-      sceneSize: this.kernel.sceneAabb().size as [number, number, number],
-      transientError: null, // successful commit clears any transient error
-      mateMode: false,
-      ikMode: false,
-      rollbackIndex: rbRaw < 0 ? features.length : rbRaw,
-      scriptTypes: this.snapshotScriptTypes(),
-    };
-    // Drop selection entries pointing at deleted features.
-    if (this.state.selection.size > 0) {
-      const live = new Set(this.state.features.map((f) => f.id));
-      const filtered = new Set<number>();
-      for (const id of this.state.selection) {
-        if (live.has(id)) filtered.add(id);
-      }
-      if (filtered.size !== this.state.selection.size) {
-        this.patch({ selection: filtered });
-      }
-    }
-    // Anchor must point at a still-living feature, or be cleared.
-    if (
-      this.state.selectionAnchor !== null &&
-      !this.state.features.some((f) => f.id === this.state.selectionAnchor)
-    ) {
-      this.patch({ selectionAnchor: null });
-    }
-    this.syncActiveBody();
-    this.autosave.schedule(this.serializeProject());
-    this.refreshMeshCache();
-    this.scheduleWeave();
-    for (const listener of this.listeners) listener();
+    this.core.commit(nextSelection, nextAnchor);
   }
+
 
   /**
    * Pull the latest meshes into `state.meshedBodies`. In worker mode
@@ -981,8 +656,8 @@ export class KernelStore {
       meshedBodies: bodies,
       sceneSize: this.kernel.sceneAabb().size as [number, number, number],
     };
-    this.updateSceneBounds();
-    for (const listener of this.listeners) listener();
+    this.core.updateSceneBounds();
+    this.core.emit();
   }
 
   /** Channel callback: a worker job failed. Surface it — log + transient
@@ -1262,7 +937,7 @@ export class KernelStore {
   setNextOp(op: BoolOpTagValue): void {
     if (this.state.nextOp === op) return;
     this.patch({ nextOp: op });
-    for (const listener of this.listeners) listener();
+    this.core.emit();
   }
 
   // ── K9.0: STL reference import ──────────────────────────────
@@ -1940,7 +1615,7 @@ export class KernelStore {
     this.syncActiveBody();
     this.refreshMeshCache();
     this.syncSketchSessionToSelection(origin);
-    for (const listener of this.listeners) listener();
+    this.core.emit();
   }
 
   toggleSelect(id: number, origin: SelectionOrigin = "list"): void {
@@ -1959,7 +1634,7 @@ export class KernelStore {
     this.syncActiveBody();
     this.refreshMeshCache();
     this.syncSketchSessionToSelection(origin);
-    for (const listener of this.listeners) listener();
+    this.core.emit();
   }
 
   /**
@@ -2000,12 +1675,12 @@ export class KernelStore {
     this.syncActiveBody();
     this.refreshMeshCache();
     this.syncSketchSessionToSelection(origin);
-    for (const listener of this.listeners) listener();
+    this.core.emit();
   }
 
   highlightBody(index: number | null): void {
     this.patch({ highlightedBodyIndex: index });
-    for (const listener of this.listeners) listener();
+    this.core.emit();
   }
 
   /** Save the current project as a downloadable .fdraft file.
@@ -2111,7 +1786,7 @@ export class KernelStore {
       projectId: id,
       syncState: id ? "dirty" : "offline",
     };
-    for (const listener of this.listeners) listener();
+    this.core.emit();
   }
 
   /** WP3: the live workspace serialized as the full multi-tab Project blob —
@@ -2142,7 +1817,7 @@ export class KernelStore {
       projectId: id,
       syncState: "clean",
     };
-    for (const listener of this.listeners) listener();
+    this.core.emit();
     return true;
   }
 
@@ -2158,7 +1833,7 @@ export class KernelStore {
       projectId: null,
       syncState: "offline",
     };
-    for (const listener of this.listeners) listener();
+    this.core.emit();
   }
 
   /** M12: sync the current workspace to the bound server project. No-op in
@@ -2169,7 +1844,7 @@ export class KernelStore {
       return false;
     }
     this.patch({ syncState: "syncing" });
-    for (const listener of this.listeners) listener();
+    this.core.emit();
     try {
       const res = await fetch(`/api/projects/${this.state.projectId}`, {
         method: "PATCH",
@@ -2181,13 +1856,13 @@ export class KernelStore {
       });
       if (!res.ok) throw new Error(`sync failed: ${res.status}`);
       this.patch({ syncState: "clean" });
-      for (const listener of this.listeners) listener();
+      this.core.emit();
       return true;
     } catch (err) {
       // eslint-disable-next-line no-console
       console.error("fielddraft: sync failed", err);
       this.patch({ syncState: "error" });
-      for (const listener of this.listeners) listener();
+      this.core.emit();
       return false;
     }
   }
@@ -2343,7 +2018,7 @@ export class KernelStore {
       thickenMode: false,
       mateMode: false,
     });
-    for (const listener of this.listeners) listener();
+    this.core.emit();
   }
 
   /** stv8: add a picked B-Rep element to the measure set. A repeated pick of
@@ -2363,7 +2038,7 @@ export class KernelStore {
       next = [...sel, el];
     }
     this.patch({ measureSelection: next });
-    for (const listener of this.listeners) listener();
+    this.core.emit();
   }
 
   /** stv8: drop one measured element (panel "×" button). */
@@ -2373,12 +2048,12 @@ export class KernelStore {
         (e) => !(e.kind === el.kind && e.idHash === el.idHash),
       ),
     });
-    for (const listener of this.listeners) listener();
+    this.core.emit();
   }
 
   clearMeasureSelection(): void {
     this.patch({ measureSelection: [] });
-    for (const listener of this.listeners) listener();
+    this.core.emit();
   }
 
   toggleFilletMode(): void {
@@ -2389,7 +2064,7 @@ export class KernelStore {
       measureSelection: [],
       mateMode: false,
     });
-    for (const listener of this.listeners) listener();
+    this.core.emit();
   }
 
   /** Thicken mode toggle — mirrors `toggleFilletMode`. While active, a
@@ -2403,7 +2078,7 @@ export class KernelStore {
       measureSelection: [],
       mateMode: false,
     });
-    for (const listener of this.listeners) listener();
+    this.core.emit();
   }
 
   toggleMateMode(): void {
@@ -2414,14 +2089,14 @@ export class KernelStore {
       measureMode: false,
       measureSelection: [],
     });
-    for (const listener of this.listeners) listener();
+    this.core.emit();
   }
 
   /** Toggle visibility of all committed mate-connector triads (Onshape's `K`
    *  shortcut). Pure UI state — does not touch the document. */
   toggleMateConnectorVisibility(): void {
     this.patch({ mateConnectorsHidden: !this.state.mateConnectorsHidden });
-    for (const listener of this.listeners) listener();
+    this.core.emit();
   }
 
   // ── P1: Assembly management ────────────────────────────────────
@@ -2744,7 +2419,7 @@ export class KernelStore {
   selectAll(): void {
     const all = new Set(this.state.features.map((f) => f.id));
     this.patch({ selection: all, selectionAnchor: null });
-    for (const listener of this.listeners) listener();
+    this.core.emit();
   }
 
   clearSelection(origin: SelectionOrigin = "list"): void {
@@ -2767,7 +2442,7 @@ export class KernelStore {
     this.syncActiveBody();
     this.refreshMeshCache();
     this.syncSketchSessionToSelection(origin);
-    for (const listener of this.listeners) listener();
+    this.core.emit();
   }
 
   /**
@@ -2956,38 +2631,11 @@ export class KernelStore {
   // ── K6b.2: sketch session ────────────────────────────────────────
 
   private notify(): void {
-    this.updateSceneBounds();
-    for (const listener of this.listeners) listener();
-  }
-
-  /** Publish the scene's world AABB centre + bounding radius so the viewport
-   *  can adapt the camera near/far planes to it (ticket lbzq — bodies vanished
-   *  past a fixed far plane on zoom-out). Cheap (9 floats from the kernel) and
-   *  only runs on state changes, never per frame. */
-  private updateSceneBounds(): void {
-    try {
-      const a = this.kernel.sceneAabb();
-      const radius = 0.5 * Math.hypot(a.size[0], a.size[1], a.size[2]);
-      publishSceneBounds(
-        radius > 0
-          ? {
-              center: [
-                (a.min[0] + a.max[0]) / 2,
-                (a.min[1] + a.max[1]) / 2,
-                (a.min[2] + a.max[2]) / 2,
-              ],
-              radius,
-            }
-          : null,
-      );
-    } catch {
-      // Kernel not ready (mid-load) — keep the previous bounds.
-    }
+    this.core.notify();
   }
 
   setLoading(phase: string | null): void {
-    this.patch({ loading: phase ? { phase } : null });
-    this.notify();
+    this.core.setLoading(phase);
   }
 
   /**
@@ -3492,7 +3140,7 @@ export class KernelStore {
   setSketchFilletRadius(radius: number): void {
     if (!Number.isFinite(radius) || radius <= 0) return;
     this.patch({ sketchFilletRadius: radius });
-    for (const listener of this.listeners) listener();
+    this.core.emit();
   }
 
   /**
@@ -3604,7 +3252,7 @@ export class KernelStore {
   setSketchChamferDistance(dist: number): void {
     if (!Number.isFinite(dist) || dist <= 0) return;
     this.patch({ sketchChamferDistance: dist });
-    for (const listener of this.listeners) listener();
+    this.core.emit();
   }
 
   /**
@@ -3732,7 +3380,7 @@ export class KernelStore {
   setSketchOffsetDistance(dist: number): void {
     if (!Number.isFinite(dist) || dist <= 0) return;
     this.patch({ sketchOffsetDistance: dist });
-    for (const listener of this.listeners) listener();
+    this.core.emit();
   }
 
   /**
@@ -3801,13 +3449,13 @@ export class KernelStore {
   /** F23-full: choose the spline family the `sketch_spline` tool draws. */
   setSketchSplineMode(mode: "interpolate" | "control"): void {
     this.patch({ sketchSplineMode: mode });
-    for (const listener of this.listeners) listener();
+    this.core.emit();
   }
 
   /** F24: set the string the `sketch_text` tool emits. */
   setSketchTextValue(value: string): void {
     this.patch({ sketchTextValue: value });
-    for (const listener of this.listeners) listener();
+    this.core.emit();
   }
 
   /** F24: set the cap height (mm) for the `sketch_text` tool. No-op for a
@@ -3815,7 +3463,7 @@ export class KernelStore {
   setSketchTextHeight(height: number): void {
     if (!Number.isFinite(height) || height <= 0) return;
     this.patch({ sketchTextHeight: height });
-    for (const listener of this.listeners) listener();
+    this.core.emit();
   }
 
   /** F24-full: select the font the `sketch_text` tool renders with and
@@ -3826,7 +3474,7 @@ export class KernelStore {
       sketchTextFontId: id,
       sketchTextFontReady: cachedFont(id) !== undefined,
     });
-    for (const listener of this.listeners) listener();
+    this.core.emit();
     void this.ensureTextFontLoaded(id);
   }
 
@@ -3843,7 +3491,7 @@ export class KernelStore {
         !this.state.sketchTextFontReady
       ) {
         this.patch({ sketchTextFontReady: true });
-        for (const listener of this.listeners) listener();
+        this.core.emit();
       }
       return;
     }
@@ -3857,7 +3505,7 @@ export class KernelStore {
     // Only flip ready if the user hasn't switched fonts meanwhile.
     if (this.state.sketchTextFontId === id) {
       this.patch({ sketchTextFontReady: true });
-      for (const listener of this.listeners) listener();
+      this.core.emit();
     }
   }
 
@@ -3879,7 +3527,7 @@ export class KernelStore {
       return null;
     }
     this.patch({ sketchTextFontId: id, sketchTextFontReady: true });
-    for (const listener of this.listeners) listener();
+    this.core.emit();
     return id;
   }
 
@@ -3974,7 +3622,7 @@ export class KernelStore {
   setSketchPatternCount(count: number): void {
     if (!Number.isFinite(count) || count < 1) return;
     this.patch({ sketchPatternCount: Math.round(count) });
-    for (const listener of this.listeners) listener();
+    this.core.emit();
   }
 
   /** F16: set the per-step spacing (mm) for a linear pattern. May be
@@ -3982,7 +3630,7 @@ export class KernelStore {
   setSketchPatternSpacing(spacing: number): void {
     if (!Number.isFinite(spacing)) return;
     this.patch({ sketchPatternSpacing: spacing });
-    for (const listener of this.listeners) listener();
+    this.core.emit();
   }
 
   /** F16: set the total span (degrees) for a circular pattern. No-op for
@@ -3990,7 +3638,7 @@ export class KernelStore {
   setSketchPatternAngle(angleDeg: number): void {
     if (!Number.isFinite(angleDeg)) return;
     this.patch({ sketchPatternAngle: angleDeg });
-    for (const listener of this.listeners) listener();
+    this.core.emit();
   }
 
   /**
@@ -4098,7 +3746,7 @@ export class KernelStore {
   setSketchRotateAngle(angleDeg: number): void {
     if (!Number.isFinite(angleDeg)) return;
     this.patch({ sketchRotateAngle: angleDeg });
-    for (const listener of this.listeners) listener();
+    this.core.emit();
   }
 
   /**
@@ -4691,7 +4339,7 @@ export class KernelStore {
       : [...current, sketchId];
     this.patch({ visibleSketches: next });
     persistVisibleSketchesToStorage(next);
-    for (const listener of this.listeners) listener();
+    this.core.emit();
   }
 
   toggleDatumVisible(datumId: string): void {
@@ -4700,7 +4348,7 @@ export class KernelStore {
     else next.add(datumId);
     this.patch({ hiddenDatums: next });
     persistHiddenDatumsToStorage(next);
-    for (const listener of this.listeners) listener();
+    this.core.emit();
   }
 
   // ── K7.22 UX-fix (2): feature folders (display-only grouping) ──
@@ -4710,7 +4358,7 @@ export class KernelStore {
   private setFolders(next: readonly FeatureFolder[]): void {
     this.patch({ folders: next });
     persistFoldersToStorage(next);
-    for (const listener of this.listeners) listener();
+    this.core.emit();
   }
 
   /** Create a new empty folder with a default name. Returns the
@@ -5041,21 +4689,12 @@ export class KernelStore {
     return id;
   }
 
-  private transientErrorTimer: ReturnType<typeof setTimeout> | null = null;
-
   showTransientError(message: string): void {
-    this.setTransientError(message);
+    this.core.setTransientError(message);
   }
 
   private setTransientError(message: string): void {
-    if (this.transientErrorTimer) clearTimeout(this.transientErrorTimer);
-    this.patch({ transientError: message });
-    for (const listener of this.listeners) listener();
-    this.transientErrorTimer = setTimeout(() => {
-      this.transientErrorTimer = null;
-      this.patch({ transientError: null });
-      for (const listener of this.listeners) listener();
-    }, 5000);
+    this.core.setTransientError(message);
   }
 
   // ── K7.2.1: STL export ────────────────────────────────────────
