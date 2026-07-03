@@ -81,6 +81,7 @@ import {
 } from "./sketchCanvasTouch";
 import {
   gridSnapped,
+  type ActiveToolDrag,
   type SketchToolController,
   type ToolContext,
   type ToolPointerEvent,
@@ -268,24 +269,6 @@ function textParamsSnapshot(store: KernelStore): TextParams {
 }
 
 /**
- * The in-flight pointer gesture. Tool controllers under `sketchTools/` own
- * their drag state through the `owned` variant; the remaining variants are
- * the legacy inline state machines, dissolved tool by tool as the migration
- * proceeds (architecture review, Befund 2). Exported for the transitional
- * `drawOverlay` signature in `sketchCanvasHud.ts`.
- */
-export type DragState =
-  | { kind: "idle" }
-  | {
-      /** A drag owned by a tool controller from the registry. `state` is
-       *  the controller's private drag type; the canvas only routes events
-       *  and HUD requests to `owner`. */
-      kind: "owned";
-      owner: SketchToolController;
-      state: unknown;
-    };
-
-/**
  * K8.0 reliability fix: read the camera bridge state but
  * override `width/height` with the canvas element's real
  * `getBoundingClientRect()` dimensions. The R3F publisher
@@ -305,7 +288,10 @@ function readCamForCanvas(
 
 export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
-  const dragRef = useRef<DragState>({ kind: "idle" });
+  // The in-flight pointer gesture: the owning tool controller + its private
+  // drag state, or null when idle (Befund 2 — the old 16-variant DragState
+  // union dissolved into the controllers).
+  const dragRef = useRef<ActiveToolDrag | null>(null);
   // Live grip-drag solver: re-solves the sketch every pointer frame so
   // constraints hold visually while dragging (continuation model), not
   // just at drop. One stable instance for the component's lifetime.
@@ -559,12 +545,11 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
   // when the active tool changes, so a stale point can't get committed as
   // the first click of the next gesture.
   useEffect(() => {
-    // Registry migration: a controller-owned gesture is committed or
-    // dropped by its owner (spline finishes, multi-click drafts reset,
-    // a pending line is cancelled).
-    const drag = dragRef.current;
-    if (drag.kind === "owned" && ctxRef.current) {
-      drag.owner.onDeactivate?.(ctxRef.current);
+    // A controller-owned gesture is committed or dropped by its owner
+    // (spline finishes, multi-click drafts reset, a pending line is
+    // cancelled).
+    if (dragRef.current !== null && ctxRef.current) {
+      dragRef.current.owner.onDeactivate?.(ctxRef.current);
     }
     // The click-to-edit dimension belongs to the line tool — drop it
     // (and any open editor) on tool change.
@@ -687,8 +672,8 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
     // fingers lift.
     if (
       touchPinchRef.current.onPointerDown(e, () => {
-        if (dragRef.current.kind !== "idle") {
-          dragRef.current = { kind: "idle" };
+        if (dragRef.current !== null) {
+          dragRef.current = null;
           hoverRef.current = null;
         }
       })
@@ -744,35 +729,19 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
     e.preventDefault();
     (e.currentTarget as HTMLCanvasElement).setPointerCapture(e.pointerId);
     const cam = readCamForCanvas(e.currentTarget as HTMLCanvasElement);
-    let [u, v] = screenToSketchFromEvent(e, cam);
-    // Registry dispatch: a migrated tool handles the gesture through its
-    // controller; the if-chains below cover the not-yet-migrated rest.
-    {
-      const controller = controllerForTool(session.selectedTool);
-      if (controller && ctxRef.current) {
-        controller.onDown?.(
-          ctxRef.current,
-          toolPointerEvent(e, cam, controller.resolveSnapOnDown === true),
-        );
-        return;
-      }
+    // Registry dispatch: the active tool's controller handles the gesture.
+    const controller = controllerForTool(session.selectedTool);
+    if (controller && ctxRef.current) {
+      controller.onDown?.(
+        ctxRef.current,
+        toolPointerEvent(e, cam, controller.resolveSnapOnDown === true),
+      );
+      return;
     }
-    // K6b.8: Ctrl = snap to grid. Round to nearest grid step.
-    if (e.ctrlKey || e.metaKey) {
-      [u, v] = gridSnapped(u, v, cam.zoom);
-    }
-    // Resolve snap at pointerdown so the placed point/line-start
-    // respects endpoint / origin magnetism even on a dead-stop
-    // click (no prior move events).
-    const snap = resolveSnap(
-      [u, v],
-      session,
-      null,
-      snapRadiusMmFor(cam),
-      e.shiftKey,
-      projectedEdgesRef.current,
-    );
-    snapRef.current = snap;
+    // Unknown tool name (registry miss): mirror the old fall-through — the
+    // shared snap still resolves at the (grid-snapped) cursor so the HUD
+    // indicator behaves, but no gesture starts.
+    toolPointerEvent(e, cam, true);
   };
 
   const onPointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
@@ -784,10 +753,7 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
     // Registry dispatch: a select-mode gesture controller (select, move/
     // copy) owns its drag end-to-end — no hover fallback, no tool-mode
     // postlude, mirroring the early-return legacy branches below.
-    if (
-      dragRef.current.kind === "owned" &&
-      dragRef.current.owner.selectionGesture
-    ) {
+    if (dragRef.current !== null && dragRef.current.owner.selectionGesture) {
       const d = dragRef.current;
       d.owner.onMove?.(
         ctxRef.current!,
@@ -815,7 +781,7 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
     // The tool-mode pointer event: raw + Ctrl-grid-snapped cursor (K6b.8).
     const ev = toolPointerEvent(e, cam, false);
     const ownedMove =
-      dragRef.current.kind === "owned"
+      dragRef.current !== null
         ? dragRef.current.owner.onMove?.(ctxRef.current!, ev) === true
         : false;
     if (!ownedMove) {
@@ -908,7 +874,7 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
     // are off the glass.
     if (touchPinchRef.current.onPointerUp(e)) return;
     // Registry dispatch: a controller-owned drag finishes in its owner.
-    if (dragRef.current.kind === "owned") {
+    if (dragRef.current !== null) {
       const d = dragRef.current;
       d.owner.onUp?.(
         ctxRef.current!,
@@ -924,7 +890,7 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
 
   const onPointerCancel = (e: React.PointerEvent<HTMLCanvasElement>) => {
     touchPinchRef.current.onPointerCancel(e);
-    dragRef.current = { kind: "idle" };
+    dragRef.current = null;
     hoverRef.current = null;
     snapRef.current = {
       snapped: [0, 0],
@@ -1192,15 +1158,13 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
           },
           dragOf<T>(owner: SketchToolController): T | null {
             const d = dragRef.current;
-            return d.kind === "owned" && d.owner === owner
-              ? (d.state as T)
-              : null;
+            return d !== null && d.owner === owner ? (d.state as T) : null;
           },
           setDrag(owner, state) {
-            dragRef.current = { kind: "owned", owner, state };
+            dragRef.current = { owner, state };
           },
           clearDrag() {
-            dragRef.current = { kind: "idle" };
+            dragRef.current = null;
           },
           toolState<T>(): T | null {
             return toolStateRef.current as T | null;

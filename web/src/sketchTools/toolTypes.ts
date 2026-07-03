@@ -60,6 +60,15 @@ export function gridSnapped(
   return [Math.round(u / step) * step, Math.round(v / step) * step];
 }
 
+/** The canvas's in-flight pointer gesture: the owning controller plus its
+ *  private drag state (each controller defines its own type and reads it
+ *  back through {@link ToolContext.dragOf}). `null` in the canvas slot
+ *  means idle. */
+export interface ActiveToolDrag {
+  owner: SketchToolController;
+  state: unknown;
+}
+
 /** A pointer event as the canvas hands it to a controller: the original
  *  React event plus the cursor resolved into the coordinate spaces the old
  *  if-chains used at the equivalent point of their flow. */

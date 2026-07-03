@@ -10,10 +10,8 @@
  * the pure screen-space passes: linear dimensions (Maßlinien) and the
  * box-select marquee.
  *
- * Tool-controller drags (`drag.kind === "owned"`) contribute their preview
- * primitives / labels / screen pass through the owning controller's
- * {@link SketchToolController.hud}; the legacy `DragState` switch covers the
- * not-yet-migrated tools and disappears with the last migration step.
+ * The in-flight drag contributes its preview primitives / labels / screen
+ * pass through the owning tool controller's `hud` hook.
  */
 
 import type { SketchSessionState } from "./sketchSession";
@@ -28,8 +26,11 @@ import { publishSketchHud } from "./sketchHudBridge";
 import { publishSketchLabels, type SketchLabel } from "./sketchLabelBridge";
 import { displayDegreesOfFreedom } from "./solver/dofPreflight";
 import type { ProjectedEdge, SnapResolution } from "./sketchSnapResolve";
-import type { DragState } from "./SketchCanvas2d";
-import type { SketchSubCall, ToolHud } from "./sketchTools/toolTypes";
+import type {
+  ActiveToolDrag,
+  SketchSubCall,
+  ToolHud,
+} from "./sketchTools/toolTypes";
 
 /** Visual tokens. Keep in sync with `styles/tokens.css` if we
  *  ever add sketch colours there. */
@@ -168,7 +169,7 @@ export function radiusLabel(
  * Text labels (dimensions, glyphs, snap label) stay on the overlay.
  */
 function buildSketchHudUv(
-  drag: DragState,
+  drag: ActiveToolDrag | null,
   hover: [number, number] | null,
   snap: SnapResolution,
   projectedEdges: ProjectedEdge[],
@@ -180,18 +181,11 @@ function buildSketchHudUv(
   const previewPoints: Array<[number, number]> = [];
   const previewGuides: Array<[[number, number], [number, number]]> = [];
 
-  switch (drag.kind) {
-    case "owned":
-      if (owned) {
-        previewCalls.push(...(owned.previewCalls ?? []));
-        previewLines.push(...(owned.previewLines ?? []));
-        previewPoints.push(...(owned.previewPoints ?? []));
-        previewGuides.push(...(owned.previewGuides ?? []));
-      }
-      break;
-    default:
-      // idle / grip / marquee: no 3D preview shapes.
-      break;
+  if (drag !== null && owned) {
+    previewCalls.push(...(owned.previewCalls ?? []));
+    previewLines.push(...(owned.previewLines ?? []));
+    previewPoints.push(...(owned.previewPoints ?? []));
+    previewGuides.push(...(owned.previewGuides ?? []));
   }
 
   // Ticket czqf: highlight the hovered mirror-axis line in the preview colour.
@@ -202,7 +196,7 @@ function buildSketchHudUv(
     previewLines,
     previewPoints,
     previewGuides,
-    hover: drag.kind === "idle" ? hover : null,
+    hover: drag === null ? hover : null,
     // Show the snap ring whenever the cursor is pulled onto a target — an
     // inference candidate (endpoint/H/V/…) OR a geometry projection snap
     // (line: pgyf/ymbp, circle/arc: fkig), which carry no candidate but do
@@ -218,20 +212,18 @@ export function drawOverlay(
   canvas: HTMLCanvasElement,
   session: SketchSessionState,
   cam: Readonly<SketchCameraState>,
-  drag: DragState,
+  drag: ActiveToolDrag | null,
   hover: [number, number] | null,
   snap: SnapResolution,
   projectedEdges: ProjectedEdge[] | null = null,
   recentLine: RecentLineGeometry | null = null,
   mirrorAxisHover: [[number, number], [number, number]] | null = null,
 ): void {
-  // A controller-owned drag contributes its HUD through the owning
-  // controller — computed once, consumed by both the 3D-geometry publish
-  // below and the label / screen-space passes further down.
+  // The in-flight drag contributes its HUD through the owning controller —
+  // computed once, consumed by both the 3D-geometry publish below and the
+  // label / screen-space passes further down.
   const owned: ToolHud | null =
-    drag.kind === "owned"
-      ? (drag.owner.hud?.(drag.state, session, cam) ?? null)
-      : null;
+    drag !== null ? (drag.owner.hud?.(drag.state, session, cam) ?? null) : null;
 
   // Publish the transient HUD GEOMETRY (previews/hover/snap-ring/projected)
   // for the 3D layer (SketchHud3D); this overlay draws only text + marquee.
@@ -347,10 +339,10 @@ export function drawOverlay(
 
   // Dimension readouts. The recent-line readout is click-to-edit (hit-tested
   // in onPointerDown); the others track the live drag.
-  if (recentLine !== null && drag.kind === "idle") {
+  if (recentLine !== null && drag === null) {
     pushDistance(recentLine.start, recentLine.end);
   }
-  if (drag.kind === "owned" && owned) {
+  if (owned) {
     labels.push(...(owned.labels ?? []));
     owned.drawScreen?.(ctx, cam);
   }
