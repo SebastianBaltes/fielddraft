@@ -105,11 +105,16 @@ export const selectTool: SketchToolController = {
     // multi-selection) is decided by `planSelectDrag` below, once the broad
     // entity hit is also known. Searches ALL committed entities so a direct
     // pointer-down grabs without a prior selecting click (ticket t11x).
+    // Prefer a grip of the CURRENT selection — knowing the grabbed handle
+    // belongs to the selected entity is what lets a line-endpoint reshape win
+    // over a whole-line translate (the endpoint is its own point entity, so
+    // handleEntityId alone wouldn't match the selected line).
+    const selectionGrip = pickSelectionGrip(
+      ev,
+      gripsForSelection(session.subCalls, session.selection),
+    );
     const directGrip =
-      pickSelectionGrip(
-        ev,
-        gripsForSelection(session.subCalls, session.selection),
-      ) ??
+      selectionGrip ??
       pickGripAt(
         allGrips(session.subCalls),
         ev.clickPx,
@@ -183,6 +188,7 @@ export const selectTool: SketchToolController = {
       selection: session.selection,
       handleEntityId,
       hitEntityId: hit,
+      handleOnSelection: selectionGrip !== null,
     });
 
     if (plan.kind === "grip" && directGrip) {

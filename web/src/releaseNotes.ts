@@ -24,6 +24,16 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.356",
+    entries: [
+      {
+        kind: "fix",
+        scope: "sketch",
+        text: "Einen selektierten Linien-Endpunkt oder eine Rechteck-Ecke zu ziehen verschiebt jetzt nur diesen Griff (bzw. hält die Gegenecke fest), statt die ganze Form zu verschieben — der Endpunkt ist ein eigenes Punkt-Entity, das der Drag-Planer nun als Griff der selektierten Kurve erkennt",
+      },
+    ],
+  },
+  {
     version: "0.6.355",
     entries: [
       {
