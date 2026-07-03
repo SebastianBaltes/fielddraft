@@ -16,9 +16,9 @@
  * visibility, the Onshape-structural assertions below fail loudly.
  */
 
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { act } from "react";
-import { createRoot } from "react-dom/client";
+import { createRoot, type Root } from "react-dom/client";
 
 // React's createRoot path wants an explicit `IS_REACT_ACT_ENVIRONMENT`
 // flag set before the first render; without it React logs a
@@ -160,6 +160,14 @@ const extrudeDialogRaw = {
 };
 
 // ─── DOM rendering harness ─────────────────────────────────────
+//
+// Every rendered root is tracked and unmounted in afterEach. Without
+// the unmount, React keeps the tree mounted past the test file's end;
+// its scheduler then fires `performWorkUntilDeadline` after the jsdom
+// environment is torn down, throwing "window is not defined" as an
+// uncaught exception (harmless but noisy — 14 per full run).
+
+const mounted: { root: Root; container: HTMLElement }[] = [];
 
 function render(element: React.ReactElement): HTMLElement {
   const container = document.createElement("div");
@@ -168,8 +176,16 @@ function render(element: React.ReactElement): HTMLElement {
   act(() => {
     root.render(element);
   });
+  mounted.push({ root, container });
   return container;
 }
+
+afterEach(() => {
+  for (const { root, container } of mounted.splice(0)) {
+    act(() => root.unmount());
+    container.remove();
+  }
+});
 
 // ─── tests ─────────────────────────────────────────────────────
 
