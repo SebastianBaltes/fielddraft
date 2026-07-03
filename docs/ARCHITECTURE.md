@@ -170,7 +170,7 @@ Field annotations: `#[param(name = "...", default = expr, ui_hint = "slider"|"op
 
 **`crates/kernel`** — The core geometry engine. Compiled as `cdylib` (WASM) + `rlib` (Rust tests).
 
-#### Feature System (`features.rs`)
+#### Feature System (`features/`)
 
 Central dispatch for the parametric modeling timeline:
 
@@ -332,7 +332,7 @@ Each `Body` caches: compiled SDF opcodes, mesh, topology, payload hash (for incr
 | `edge_detect.rs` | Sharp edge detection / silhouette extraction |
 | `step_classifier.rs` | Step-by-step feature classification for STEP export |
 
-#### WASM API (`lib.rs`)
+#### WASM API (`lib.rs` + `kernel_core.rs` + `api/`)
 
 The `Kernel` struct is the main entry point exported to JavaScript via `wasm-bindgen`:
 
@@ -346,6 +346,13 @@ The `Kernel` struct is the main entry point exported to JavaScript via `wasm-bin
 - **Introspection:** `list_feature_types`, `schema_for_type`, `list_features`, `get_feature_call_params`
 
 Mesh data is exposed as **zero-copy typed array views** into WASM linear memory (pointers must be re-acquired after any mutating call due to potential memory reallocation).
+
+#### Modul-Layout der drei früheren Monolithe
+
+- `features/` — ein Modul pro Feature-Familie (`primitives`, `extrude`, `revolve`, `helix`, `sweep`, `hole`, `thicken`, `fillet_shell`, `patterns`, `boolean`, `mate_connector`, `transforms`, `gyroid`, `imported_mesh`, `material`, `merge_scope`); `mod.rs` hält `FeatureError`/`Context`/`FeatureKind`/`FeatureRegistry` plus Re-Exports (flache `features::*`-Pfade bleiben gültig), `context_resolve.rs` die Query-/B-Rep-Resolution auf `Context`.
+- `sketch/` (früher `sketch_features.rs`) — `frame` (SketchFrame/Plane-Frames), `tools` (Tool-Registry + Defs), `constraints`, `spline_math` (reine Numerik), `loops` (T-Junction-Split + Loop-Inferenz), `lower` (Sketch→`Sketch2d`), `feature` (das `sketch`-Top-Level-Feature).
+- `lib.rs` ist nur noch Fassade (mod-Deklarationen, Konstanten, Re-Exports, `wasm_version`); der `Kernel`-Struct samt interner Regen-/Meshing-Pipeline liegt in `kernel_core.rs`, die 127 wasm-bindgen-Methoden verteilen sich als `#[wasm_bindgen] impl Kernel`-Blöcke auf `api/{document,features,variables,gizmo,bodies_mesh,brep,queries_pick,sketch,export}.rs`.
+- Die Inline-Tests blieben je eine Datei (`features_tests.rs`, `sketch_features_tests.rs`, `lib_tests.rs`), eingebunden als `#[cfg(test)] #[path]`-Kindmodule.
 
 ---
 

@@ -3,8 +3,9 @@ use super::*;
 // surface (the kernel runs on call-first `feature_calls` +
 // `DecodedFeature`), but the test fixtures still build spine
 // features directly, so they decode through `from_parts` here.
-use crate::csg::PrimitiveModifiers;
-use fielddraft_protocol::Transform;
+use crate::csg::{DecodedFeature, PrimitiveModifiers};
+use crate::dc::Mesh;
+use fielddraft_protocol::{BoolOp, FeatureId, Primitive, Transform};
 
 fn box_feature(id: u32, op: BoolOp, center: [f32; 3], half: [f32; 3]) -> DecodedFeature {
     DecodedFeature::from_parts(
