@@ -33,11 +33,22 @@ export interface SelectDragInput {
   /** The current committed-entity selection (entity ids). */
   selection: ReadonlyArray<number>;
   /** Entity id of a precise handle directly under the pointer, or null. A
-   *  handle is a point/vertex/centre — a deliberate reshape target. */
+   *  handle is a point/vertex/centre — a deliberate reshape target.
+   *
+   *  Note: for a curve whose vertices are their OWN entities (a line's
+   *  endpoints are point entities distinct from the line), this resolves to
+   *  the most-specific handle — the endpoint POINT, not the owning line. That
+   *  differs from the selection a user makes by clicking the curve body, hence
+   *  {@link handleOnSelection} below. */
   handleEntityId: number | null;
   /** Entity id of whatever the broad entity hit-test found under the pointer
    *  (curve body, region, point), or null. */
   hitEntityId: number | null;
+  /** True when the grabbed handle is a grip of a currently-selected entity —
+   *  i.e. it was found among the selection's own grips. Grabbing the endpoint
+   *  of the selected line reshapes it even though the endpoint is a distinct
+   *  point entity from the line (`handleEntityId` won't equal the selection). */
+  handleOnSelection: boolean;
 }
 
 /**
@@ -58,7 +69,7 @@ export interface SelectDragInput {
  * pre-selected, so a first click-drag on a line moves that line.
  */
 export function planSelectDrag(input: SelectDragInput): SelectDragPlan {
-  const { selection, handleEntityId, hitEntityId } = input;
+  const { selection, handleEntityId, hitEntityId, handleOnSelection } = input;
 
   // The entity actually under the cursor: a precise handle wins as the drag
   // target identity, else the broad hit.
@@ -67,9 +78,8 @@ export function planSelectDrag(input: SelectDragInput): SelectDragPlan {
   // Dragging inside a live multi-selection moves the whole group — even when
   // the grab landed on a handle (the user grabbed the group, not one DoF).
   if (
-    targetId !== null &&
     selection.length > 1 &&
-    selection.includes(targetId)
+    ((targetId !== null && selection.includes(targetId)) || handleOnSelection)
   ) {
     return { kind: "translate", entityIds: [...selection], selectIds: [...selection] };
   }
@@ -78,8 +88,18 @@ export function planSelectDrag(input: SelectDragInput): SelectDragPlan {
   if (handleEntityId !== null) {
     const soleSelf =
       selection.length === 0 ||
-      (selection.length === 1 && selection[0] === handleEntityId);
-    if (soleSelf) return { kind: "grip", selectId: handleEntityId };
+      (selection.length === 1 &&
+        (selection[0] === handleEntityId || handleOnSelection));
+    // Keep the current selection when reshaping a handle that belongs to the
+    // already-selected curve (grabbing a line's endpoint shouldn't reselect
+    // the bare endpoint point); otherwise mark the handle's own entity.
+    if (soleSelf) {
+      const selectId =
+        selection.length === 1 && selection[0] !== handleEntityId
+          ? null
+          : handleEntityId;
+      return { kind: "grip", selectId };
+    }
   }
 
   // An entity body (curve / region) under the cursor: translate just it,

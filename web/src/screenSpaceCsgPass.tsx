@@ -18,7 +18,7 @@
  * WICHTIG (kein Doppel-Draw): CSG-Bodys, die hier komponiert werden, dürfen NICHT
  * zusätzlich ihr DC-Mesh zeichnen. `MeshPreview`/`WebGLBodies` überspringen bei
  * aktivem SS-CSG-Flag genau die `bodyNeedsSubtractionPass`/
- * `bodyNeedsIntersectionPass`-Bodys (siehe viewportOverlays.tsx) — bei Flag AUS
+ * `bodyNeedsIntersectionPass`-Bodys (siehe webglBodies.tsx) — bei Flag AUS
  * bleibt alles unverändert.
  */
 
@@ -27,7 +27,8 @@ import * as THREE from "three";
 import { useFrame, useThree } from "@react-three/fiber";
 import { useKernelStore } from "./store";
 import { resolveMaterials } from "./materialBridge";
-import { BODY_COLORS } from "./sdfDeferredRenderer";
+import { BODY_COLORS } from "./bodyColors";
+import { useBodyFingerprint } from "./bodyFingerprint";
 import type { FeatureSummary, HybridLeafInfo } from "./kernel";
 import {
   ScreenSpaceCsgCompositor,
@@ -38,21 +39,6 @@ import {
   type CsgMode,
   type CsgRenderOperands,
 } from "./screenSpaceCsg";
-
-/** Body-Versionierung — Rebuild der Operanden, wenn sich Geometrie ändert. */
-function useScsBodyFingerprint(): string {
-  const { store, state } = useKernelStore();
-  return useMemo(() => {
-    if (!store) return "";
-    const n = store.kernel.bodyCount();
-    let fp = String(n);
-    for (let i = 0; i < n; i++)
-      fp += `:${store.kernel.bodyId(i)}.${store.kernel.bodyVersion(i)}`;
-    return fp;
-    // store-Identität ist pro Session stabil; das Fingerprint treibt den Rebuild.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [store, state]);
-}
 
 interface CsgBody {
   bodyIndex: number;
@@ -130,7 +116,8 @@ function collectCsgBodies(
  */
 export function ScreenSpaceCsgPass() {
   const { store, state } = useKernelStore();
-  const fingerprint = useScsBodyFingerprint();
+  // Body-Versionierung — Rebuild der Operanden, wenn sich Geometrie ändert.
+  const fingerprint = useBodyFingerprint();
   const gl = useThree((s) => s.gl) as unknown as THREE.WebGLRenderer;
   const size = useThree((s) => s.size);
   const compositorRef = useRef<ScreenSpaceCsgCompositor | null>(null);

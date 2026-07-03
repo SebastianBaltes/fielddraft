@@ -27,7 +27,8 @@
 //!   * [`PathMethod::EquationDriven`]      — equation-driven space curve.
 //!   * [`PathMethod::AutoRoute`]           — Manhattan routing between points.
 
-use crate::sweep_path::{add, norm, scale, sub, SweepPath, V3};
+use crate::sweep_path::SweepPath;
+use crate::vec3f::{add, norm, scale, sub, V3};
 
 /// The sole contract handed downstream: a sampled spine polyline.
 #[derive(Debug, Clone, PartialEq)]

@@ -39,33 +39,22 @@ async function makeProjector(page: import("@playwright/test").Page) {
   const overlay = page.getByTestId("sketch-canvas-2d");
   const box = await overlay.boundingBox();
   expect(box).not.toBeNull();
+  const b = box!;
   const readCam = () =>
     page.evaluate(() => {
       const hook = (
         window as unknown as {
-          __fdSketchCamera?: () => {
-            zoom: number;
-            centerU: number;
-            centerV: number;
-            version: number;
-          };
+          __fdSketchCamera?: () => { zoom: number; version: number };
         }
       ).__fdSketchCamera;
       const c = hook?.();
-      return c
-        ? {
-            zoom: c.zoom,
-            centerU: c.centerU,
-            centerV: c.centerV,
-            version: c.version,
-          }
-        : null;
+      return c ? { zoom: c.zoom, version: c.version } : null;
     });
-  // The R3F ortho camera publishes its zoom asynchronously after the
-  // WebGPU canvas mounts. Project with a *settled* camera so the click
-  // maps to the same sketch coordinate the overlay hit-test will use:
-  // poll until two reads a frame apart agree and the camera has
-  // actually published (version > 0).
+  // The real viewport camera publishes its plane-frame zoom asynchronously
+  // after the WebGPU canvas mounts. Wait for a *settled, finite* zoom so the
+  // click maps to the same sketch coordinate the overlay hit-test will use:
+  // poll until two reads a frame apart agree, the camera has published
+  // (version > 0) and the zoom is finite & positive.
   let cam = await readCam();
   for (let i = 0; i < 40; i++) {
     await page.waitForTimeout(100);
@@ -74,9 +63,9 @@ async function makeProjector(page: import("@playwright/test").Page) {
       next &&
       cam &&
       next.version > 0 &&
-      next.zoom === cam.zoom &&
-      next.centerU === cam.centerU &&
-      next.centerV === cam.centerV
+      Number.isFinite(next.zoom) &&
+      next.zoom > 0 &&
+      next.zoom === cam.zoom
     ) {
       cam = next;
       break;
@@ -85,14 +74,34 @@ async function makeProjector(page: import("@playwright/test").Page) {
   }
   expect(cam).not.toBeNull();
   expect(cam!.version).toBeGreaterThan(0);
-  const b = box!;
-  const c = cam!;
-  // Mirror sketchToScreen() with the overlay's own measured size as
-  // the authoritative viewport (the bridge can publish stale dims).
-  return (u: number, v: number): [number, number] => {
-    const px = b.x + b.width / 2 + (u - c.centerU) * c.zoom;
-    const py = b.y + b.height / 2 - (v - c.centerV) * c.zoom;
-    return [px, py];
+  expect(Number.isFinite(cam!.zoom) && cam!.zoom > 0).toBe(true);
+  // Project through the REAL camera + plane frame (the exact inverse of the
+  // overlay's screen→sketch hit-test) via the bridge's dev hook. Use the
+  // BRIDGE's own dims (no override): the app's grip/entity hit-test projects
+  // with `ev.cam` = the bridge dims, so the test must too or the projected
+  // click lands a hair off each grip — inside the loose SELECT tolerance but
+  // OUTSIDE the tight GRIP_PICK_PX, which silently turns an endpoint reshape
+  // into a whole-line translate. `__fdSketchToScreen` returns canvas-local CSS
+  // px; add the box origin for absolute client px.
+  return async (u: number, v: number): Promise<[number, number]> => {
+    const local = await page.evaluate(
+      ([uu, vv]) => {
+        const hook = (
+          window as unknown as {
+            __fdSketchToScreen?: (u: number, v: number) => [number, number];
+          }
+        ).__fdSketchToScreen;
+        return hook ? hook(uu, vv) : null;
+      },
+      [u, v] as const,
+    );
+    expect(local, "__fdSketchToScreen hook missing").not.toBeNull();
+    const [lx, ly] = local!;
+    expect(
+      Number.isFinite(lx) && Number.isFinite(ly),
+      `projector produced non-finite px for (${u}, ${v})`,
+    ).toBe(true);
+    return [b.x + lx, b.y + ly];
   };
 }
 
@@ -102,7 +111,7 @@ async function drawLine(
   start: [number, number],
   end: [number, number],
 ) {
-  await page.getByTestId("sketch-tool-sketch_line").click();
+  await pickSketchTool(page, "sketch_line");
   // The per-tool edit block + Apply button live inside the collapsed-by-default
   // "Geometry & Constraints" sub-accordion (ticket 87a1).
   await expandGeometrySection(page);
@@ -111,6 +120,38 @@ async function drawLine(
   await page.getByLabel("End x").fill(String(end[0]));
   await page.getByLabel("End y").fill(String(end[1]));
   await page.getByTestId("sketch-tool-apply").click();
+}
+
+/**
+ * Select a sketch draw tool by its key.
+ *
+ * Flat tools (line, spline, …) carry the id `sketch-tool-<key>` directly.
+ * Rectangle/Circle variants (ticket pqoe) live inside a split-button flyout:
+ * their variant id is kept mounted but parked off-screen while the flyout is
+ * collapsed, so a direct `.click()` times out as "element is outside of the
+ * viewport". The group's primary button invokes the default variant — exactly
+ * what a user clicks to draw a default rectangle/circle — so route grouped
+ * defaults through it.
+ *
+ * Idempotent: re-clicking an ALREADY-active tool detaches it back to select
+ * mode (ticket daa8 toggle), so a second draw with the same tool would toggle
+ * it off and the edit fields would vanish. We therefore click only when the
+ * tool (or, for a group, its primary button) isn't already active.
+ */
+async function pickSketchTool(
+  page: import("@playwright/test").Page,
+  tool: string,
+) {
+  const group: Record<string, string> = {
+    sketch_rectangle: "sketch-tool-rectangle-group",
+    sketch_circle: "sketch-tool-circle-group",
+  };
+  const groupId = group[tool];
+  const button = groupId
+    ? page.getByTestId(groupId).locator("button.tool.primary")
+    : page.getByTestId(`sketch-tool-${tool}`);
+  const cls = (await button.getAttribute("class")) ?? "";
+  if (!cls.split(/\s+/).includes("is-active")) await button.click();
 }
 
 function readCommittedSubCalls(page: import("@playwright/test").Page) {
@@ -217,13 +258,15 @@ test.describe("Sketch editor smoke", () => {
     await page.waitForTimeout(500);
 
     // 6. Finish the sketch — K6b.3a commits the session as a
-    //    real `sketch` FeatureCall on the kernel, so the
-    //    outliner grows a new row with `data-feature-op="union"`
-    //    and the feature-count badge goes from 0 to 1. The
-    //    overlay canvas unmounts, the regular toolbar comes
-    //    back.
+    //    real `sketch` FeatureCall on the kernel, so the outliner
+    //    grows a new row and the feature-count badge goes from 0
+    //    to 1. The overlay canvas unmounts and the regular toolbar
+    //    comes back. The Detail panel itself is a persistent
+    //    Outliner section (ticket pqoe) — it does NOT close; the
+    //    signal that the session ended is that its in-session ✓
+    //    commit button and the 2D overlay are gone.
     await page.getByTestId("sketch-detail-accept").click();
-    await expect(page.getByTestId("detail-panel")).toHaveCount(0);
+    await expect(page.getByTestId("sketch-detail-accept")).toHaveCount(0);
     await expect(page.getByTestId("sketch-canvas-2d")).toHaveCount(0);
     await expect(page.getByTestId("primitive-split-button")).toBeVisible();
     await expect(page.getByTestId("feature-count")).toHaveText("1 feature");
@@ -449,24 +492,21 @@ test.describe("Sketch editor smoke", () => {
     // still fire because the vertical deviation is below the
     // 10 mm snap threshold, and the commit-time solver should
     // then flatten the line to end.y == start.y.
-    const overlay = page.getByTestId("sketch-canvas-2d");
-    const box = await overlay.boundingBox();
-    expect(box).not.toBeNull();
-    if (!box) return;
-    const cx = box.x + box.width / 2;
-    const cy = box.y + box.height / 2;
-    // Zero-wobble horizontal drag — the mouse lands on pixel
-    // boundaries so the inferred vertical delta is reliably
-    // below the 10 mm snap radius no matter what device
-    // pixel ratio the test host uses.
-    const startX = cx - 120;
-    const endX = cx + 120;
-    const y = cy + 120;
+    // Drive the drag through SKETCH coordinates, not raw screen pixels: since
+    // the sketch-in-3D rebuild the overlay projects through the real camera, so
+    // a screen-horizontal drag is NOT sketch-horizontal. A line with constant
+    // v (Δv == 0) is exactly horizontal in sketch space → the commit-time
+    // horizontal inference fires. Both endpoints sit 50 mm out on v = 30, well
+    // clear of the origin snap radius, and the line never crosses the origin.
+    const project = await makeProjector(page);
+    const [startX, startY] = await project(-50, 30);
+    const [midX, midY] = await project(0, 30);
+    const [endX, endY] = await project(50, 30);
 
-    await page.mouse.move(startX, y);
+    await page.mouse.move(startX, startY);
     await page.mouse.down();
-    await page.mouse.move((startX + endX) / 2, y, { steps: 5 });
-    await page.mouse.move(endX, y, { steps: 10 });
+    await page.mouse.move(midX, midY, { steps: 5 });
+    await page.mouse.move(endX, endY, { steps: 10 });
     await page.mouse.up();
 
     // The sub-spine grows by two entries: the line and the
@@ -532,7 +572,7 @@ test.describe("Sketch editor smoke", () => {
     await page.waitForTimeout(600);
 
     await page.getByTestId("enter-sketch").click();
-    await page.getByTestId("sketch-tool-sketch_rectangle").click();
+    await pickSketchTool(page, "sketch_rectangle");
     await expandGeometrySection(page); // ticket 87a1: gated geometry list
 
     // Drag a rectangle across the canvas. The rectangle tool's
@@ -618,7 +658,7 @@ test.describe("Sketch editor smoke", () => {
     await page.waitForTimeout(600);
 
     await page.getByTestId("enter-sketch").click();
-    await page.getByTestId("sketch-tool-sketch_circle").click();
+    await pickSketchTool(page, "sketch_circle");
     await expandGeometrySection(page); // ticket 87a1: gated geometry list
 
     const overlay = page.getByTestId("sketch-canvas-2d");
@@ -707,13 +747,13 @@ test.describe("Sketch editor smoke", () => {
     const cx = box.x + box.width / 2;
     const cy = box.y + box.height / 2;
 
-    await page.getByTestId("sketch-tool-sketch_rectangle").click();
+    await pickSketchTool(page, "sketch_rectangle");
     await page.mouse.move(cx - 150, cy - 60);
     await page.mouse.down();
     await page.mouse.move(cx - 30, cy + 60, { steps: 10 });
     await page.mouse.up();
 
-    await page.getByTestId("sketch-tool-sketch_circle").click();
+    await pickSketchTool(page, "sketch_circle");
     await page.mouse.move(cx + 80, cy);
     await page.mouse.down();
     await page.mouse.move(cx + 140, cy, { steps: 10 });
@@ -780,7 +820,7 @@ test.describe("Sketch editor smoke", () => {
 
     // Draw a rectangle via the dialog path (precise coords).
     await page.getByTestId("enter-sketch").click();
-    await page.getByTestId("sketch-tool-sketch_rectangle").click();
+    await pickSketchTool(page, "sketch_rectangle");
     await expandGeometrySection(page); // ticket 87a1: gated tool dialog + apply
     await page.getByLabel("Corner a x").fill("-20");
     await page.getByLabel("Corner a y").fill("-10");
@@ -864,20 +904,21 @@ test.describe("Sketch editor smoke", () => {
     // those depend on the ortho camera zoom — we only care
     // that (a) one sub-spine entry is produced, (b) nothing
     // crashes.
-    const overlay = page.getByTestId("sketch-canvas-2d");
-    const box = await overlay.boundingBox();
-    expect(box).not.toBeNull();
-    if (!box) return;
-    const startX = box.x + box.width / 2 - 80;
-    const startY = box.y + box.height / 2 - 40;
-    const endX = box.x + box.width / 2 + 80;
-    const endY = box.y + box.height / 2 + 40;
+    // Drive the drag through SKETCH coordinates (screen ≠ sketch axes since
+    // the 3D rebuild). Deliberately off-axis in sketch space (Δu 80, Δv -55 ≈
+    // 34°, clear of the H/V/parallel inference cone) and both endpoints clear
+    // of the origin, so exactly ONE sub-call is produced: the line, with no
+    // inferred orientation constraint.
+    const project = await makeProjector(page);
+    const [startX, startY] = await project(-40, 45);
+    const [midX, midY] = await project(0, 17.5);
+    const [endX, endY] = await project(40, -10);
 
     await page.mouse.move(startX, startY);
     await page.mouse.down();
     // A couple of intermediate moves exercise the live-preview
     // path in SketchCanvas2d's RAF loop.
-    await page.mouse.move(startX + 20, startY + 10, { steps: 5 });
+    await page.mouse.move(midX, midY, { steps: 5 });
     await page.mouse.move(endX, endY, { steps: 10 });
     await page.mouse.up();
 
@@ -995,8 +1036,8 @@ test.describe("Sketch constraint palette (P0.1)", () => {
     // Drop to select mode and pick both lines on their midpoints.
     await page.getByTestId("sketch-tool-select").click();
     const project = await makeProjector(page);
-    const [m1x, m1y] = project(50, 35); // midpoint of line 1
-    const [m2x, m2y] = project(50, -20); // midpoint of line 2
+    const [m1x, m1y] = await project(50, 35); // midpoint of line 1
+    const [m2x, m2y] = await project(50, -20); // midpoint of line 2
     await page.mouse.click(m1x, m1y);
     await page.waitForTimeout(120); // let the store/overlay settle the pick
     await page.mouse.click(m2x, m2y);
@@ -1060,11 +1101,11 @@ test.describe("Sketch constraint palette (P0.1)", () => {
     await expandGeometrySection(page); // ticket 87a1: gated tool dialog + list
 
     // Two free points a short distance apart, both off the origin.
-    await page.getByTestId("sketch-tool-sketch_point").click();
+    await pickSketchTool(page, "sketch_point");
     await page.getByLabel("At x").fill("40");
     await page.getByLabel("At y").fill("40");
     await page.getByTestId("sketch-tool-apply").click();
-    await page.getByTestId("sketch-tool-sketch_point").click();
+    await pickSketchTool(page, "sketch_point");
     await page.getByLabel("At x").fill("70");
     await page.getByLabel("At y").fill("55");
     await page.getByTestId("sketch-tool-apply").click();
@@ -1074,8 +1115,8 @@ test.describe("Sketch constraint palette (P0.1)", () => {
 
     await page.getByTestId("sketch-tool-select").click();
     const project = await makeProjector(page);
-    const [p1x, p1y] = project(40, 40);
-    const [p2x, p2y] = project(70, 55);
+    const [p1x, p1y] = await project(40, 40);
+    const [p2x, p2y] = await project(70, 55);
     await page.mouse.click(p1x, p1y);
     await page.waitForTimeout(120); // let the store/overlay settle the pick
     await page.mouse.click(p2x, p2y);
@@ -1135,14 +1176,14 @@ test.describe("Sketch constraint palette (P0.1)", () => {
         return store?.state.sketchSession.selection.length ?? -1;
       });
 
-    const [mx, my] = project(50, 35);
+    const [mx, my] = await project(50, 35);
     await page.mouse.click(mx, my);
     await page.waitForTimeout(120);
     // The line is selected.
     expect(await selectionCount()).toBe(1);
 
     // Click far-off empty space → the selection clears.
-    const [ex, ey] = project(-90, -90);
+    const [ex, ey] = await project(-90, -90);
     await page.mouse.click(ex, ey);
     await page.waitForTimeout(120);
     expect(await selectionCount()).toBe(0);
@@ -1192,7 +1233,7 @@ test.describe("Sketch dimensions (P0.2)", () => {
 
     await page.getByTestId("sketch-tool-select").click();
     const project = await makeProjector(page);
-    const [mx, my] = project(30, 0); // line midpoint
+    const [mx, my] = await project(30, 0); // line midpoint
     await page.mouse.click(mx, my);
 
     // The palette offers a Length dimension for a single line.
@@ -1255,8 +1296,8 @@ test.describe("Sketch dimensions (P0.2)", () => {
 
     await page.getByTestId("sketch-tool-select").click();
     const project = await makeProjector(page);
-    const [ax, ay] = project(30, 0); // midpoint of line A
-    const [bx, by] = project(30, 30); // midpoint of line B
+    const [ax, ay] = await project(30, 0); // midpoint of line A
+    const [bx, by] = await project(30, 30); // midpoint of line B
     await page.mouse.click(ax, ay);
     await page.waitForTimeout(120);
     await page.mouse.click(bx, by);
@@ -1367,25 +1408,29 @@ test.describe("Sketch grip-drag (P0.3)", () => {
     await page.waitForTimeout(600);
 
     await page.getByTestId("enter-sketch").click();
-    // A 40 mm horizontal line, off the origin so its endpoints don't
-    // collide with the origin grip.
-    await drawLine(page, [10, 0], [50, 0]);
+    // A DIAGONAL line (10,8)→(50,32), off the origin. Deliberately off-axis:
+    // a horizontal/vertical dialog line picks up an implicit H/V relationship
+    // whose live solver then drags the far endpoint along when a grip moves —
+    // here we want a pure single-DoF endpoint reshape, so the geometry must be
+    // unconstrained.
+    await drawLine(page, [10, 8], [50, 32]);
 
     // Select the line by clicking its midpoint. The palette's
     // single-line options confirm the line is selected (and so its
     // endpoint grips are now live).
     await page.getByTestId("sketch-tool-select").click();
     const project = await makeProjector(page);
-    const [mx, my] = project(30, 0);
+    const [mx, my] = await project(30, 20);
     await page.mouse.click(mx, my);
     await expect(
       page.getByTestId("sketch-constraint-horizontal"),
     ).toBeVisible();
 
-    // Grab the end-point grip at (50, 0) and drag it to (50, 40). The
-    // line is unconstrained, so the solver leaves the dragged point put.
-    const [ex, ey] = project(50, 0);
-    const [tx, ty] = project(50, 40);
+    // Grab the end-point grip at (50, 32) and drag it to (50, 60). The line is
+    // unconstrained, so the solver reshapes only the dragged endpoint and
+    // leaves the start put.
+    const [ex, ey] = await project(50, 32);
+    const [tx, ty] = await project(50, 60);
     await page.mouse.move(ex, ey);
     await page.mouse.down();
     await page.mouse.move((ex + tx) / 2, (ey + ty) / 2, { steps: 5 });
@@ -1404,11 +1449,11 @@ test.describe("Sketch grip-drag (P0.3)", () => {
       params: { start: [number, number]; end: [number, number] };
     };
     expect(line).toBeDefined();
-    // Start unchanged, end relocated to ~(50, 40) within pixel-rounding.
+    // Start unchanged, end relocated to ~(50, 60) within pixel-rounding.
     expect(Math.abs(line.params.start[0] - 10)).toBeLessThan(2);
-    expect(Math.abs(line.params.start[1] - 0)).toBeLessThan(2);
+    expect(Math.abs(line.params.start[1] - 8)).toBeLessThan(2);
     expect(Math.abs(line.params.end[0] - 50)).toBeLessThan(2);
-    expect(Math.abs(line.params.end[1] - 40)).toBeLessThan(2);
+    expect(Math.abs(line.params.end[1] - 60)).toBeLessThan(2);
 
     expect(
       pageErrors.map((e) => e.message),
@@ -1425,7 +1470,7 @@ test.describe("Sketch grip-drag (P0.3)", () => {
 
     await page.getByTestId("enter-sketch").click();
     // A circle at (40, 0) with radius 20, placed precisely via the dialog.
-    await page.getByTestId("sketch-tool-sketch_circle").click();
+    await pickSketchTool(page, "sketch_circle");
     await expandGeometrySection(page); // ticket 87a1: gated tool dialog + apply
     await page.getByLabel("Center x").fill("40");
     await page.getByLabel("Center y").fill("0");
@@ -1435,7 +1480,7 @@ test.describe("Sketch grip-drag (P0.3)", () => {
     // Select the circle by clicking its rightmost rim point (60, 0).
     await page.getByTestId("sketch-tool-select").click();
     const project = await makeProjector(page);
-    const [rimx, rimy] = project(60, 0);
+    const [rimx, rimy] = await project(60, 0);
     await page.mouse.click(rimx, rimy);
 
     // Confirm the circle is selected so the rim grip is live.
@@ -1444,7 +1489,7 @@ test.describe("Sketch grip-drag (P0.3)", () => {
     expect(sel!.selection.length).toBeGreaterThan(0);
 
     // Drag the rim grip from (60, 0) out to (80, 0): radius 20 → 40.
-    const [tx, ty] = project(80, 0);
+    const [tx, ty] = await project(80, 0);
     await page.mouse.move(rimx, rimy);
     await page.mouse.down();
     await page.mouse.move((rimx + tx) / 2, rimy, { steps: 5 });
@@ -1485,7 +1530,7 @@ test.describe("Sketch grip-drag (P0.3)", () => {
 
     await page.getByTestId("enter-sketch").click();
     // A precise rectangle (-20,-10)..(20,10) via the dialog.
-    await page.getByTestId("sketch-tool-sketch_rectangle").click();
+    await pickSketchTool(page, "sketch_rectangle");
     await expandGeometrySection(page); // ticket 87a1: gated tool dialog + apply
     await page.getByLabel("Corner a x").fill("-20");
     await page.getByLabel("Corner a y").fill("-10");
@@ -1497,7 +1542,7 @@ test.describe("Sketch grip-drag (P0.3)", () => {
     // (0, -10): an edge maps to all four corner grips.
     await page.getByTestId("sketch-tool-select").click();
     const project = await makeProjector(page);
-    const [ex, ey] = project(0, -10);
+    const [ex, ey] = await project(0, -10);
     await page.mouse.click(ex, ey);
     const sel = await readSketchSession(page);
     expect(sel).not.toBeNull();
@@ -1506,8 +1551,8 @@ test.describe("Sketch grip-drag (P0.3)", () => {
     // Grab the top-right corner grip (20, 10) and drag it to (40, 30).
     // The internal H/V constraints keep it axis-aligned; the opposite
     // corner (-20, -10) stays put.
-    const [trx, try_] = project(20, 10);
-    const [tx, ty] = project(40, 30);
+    const [trx, try_] = await project(20, 10);
+    const [tx, ty] = await project(40, 30);
     await page.mouse.move(trx, try_);
     await page.mouse.down();
     await page.mouse.move((trx + tx) / 2, (try_ + ty) / 2, { steps: 5 });

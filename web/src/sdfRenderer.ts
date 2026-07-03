@@ -5,9 +5,6 @@
  * (sdfVmRenderer.ts, sdfDeferredRenderer.ts).
  */
 
-// @ts-nocheck — TSL's TypeScript surface in three r183 is intentionally
-// loose; we keep this file un-typed.
-
 import {
   wgslFn,
 } from "three/tsl";

@@ -29,8 +29,8 @@ import {
   makeFatLine,
 } from "./overlayLineMaterials";
 import { useKernelStore } from "./store";
-import { findSingleSelectedFeature } from "./viewportOverlays";
-import { OVERLAY_LAYER } from "./viewportSdfOverlays";
+import { findSingleSelectedFeature } from "./transformGizmo";
+import { OVERLAY_LAYER } from "./viewportLayers";
 import { catmullRomSpline, polylineToSegments, type V3 } from "./sweepGizmo";
 
 /** Handle sphere radius in CSS pixels (constant screen size). */

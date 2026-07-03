@@ -1,31 +1,19 @@
-// @ts-nocheck — TSL's TypeScript surface in three r183 is intentionally loose.
+/**
+ * Shared SDF pipeline plumbing (fully typed): material/opcode buffer sets,
+ * opcode packing, race-free GPU disposal, volume textures, march constants
+ * and the camera uniform set. The TSL shader building blocks live in
+ * sdfPipelineCommon.shaders.ts (@ts-nocheck).
+ */
 
 import * as THREE from "three";
+import { storage, uniform } from "three/tsl";
 import {
-  If,
-  Loop,
-  abs,
-  clamp,
-  cos,
-  cross,
-  float,
-  fract,
-  int,
-  max,
-  min,
-  mix,
-  normalize,
-  select,
-  sin,
-  smoothstep,
-  storage,
-  vec3,
-  vec4,
-} from "three/tsl";
-import { StorageBufferAttribute } from "three/webgpu";
-import { BODY_COLORS } from "./sdfDeferredRenderer";
-import { DEFAULT_ROUGHNESS, pbrShade } from "./pbrShading";
-import { NORMAL_EPS } from "./sdfRenderer";
+  StorageBufferAttribute,
+  type StorageBufferNode,
+  type UniformNode,
+} from "three/webgpu";
+import { BODY_COLORS } from "./bodyColors";
+import { DEFAULT_ROUGHNESS } from "./pbrShading";
 
 // ── Per-body material struct layout (single storage buffer) ────────
 
@@ -48,25 +36,25 @@ export const MAT_DISPLACE_FREQ = 11;
 export interface MaterialBufferSet {
   materialData: Float32Array;
   materialAttr: StorageBufferAttribute;
-  materialBuf: ReturnType<typeof storage>;
+  materialBuf: StorageBufferNode<"float">;
 }
 
 export interface OpcodeBufferSet {
   opcodeData: Float32Array;
   opcodeAttr: StorageBufferAttribute;
-  opcodeBuf: ReturnType<typeof storage>;
+  opcodeBuf: StorageBufferNode<"float">;
   offsetData: Float32Array;
   offsetAttr: StorageBufferAttribute;
-  offsetBuf: ReturnType<typeof storage>;
+  offsetBuf: StorageBufferNode<"float">;
   volumeBaseData: Float32Array;
   volumeBaseAttr: StorageBufferAttribute;
-  volumeBaseBuf: ReturnType<typeof storage>;
+  volumeBaseBuf: StorageBufferNode<"float">;
   // Per-body conservative raymarch step factor (≤1), 1.0 = full step. The
   // renderer does `t += max(minD · marchRelax[closestBody], ε)` so a thin-walled
   // revolve/shell isn't overshot at grazing angles (Ticket 1wnm).
   marchRelaxData: Float32Array;
   marchRelaxAttr: StorageBufferAttribute;
-  marchRelaxBuf: ReturnType<typeof storage>;
+  marchRelaxBuf: StorageBufferNode<"float">;
   volumeTextures: THREE.Data3DTexture[];
 }
 
@@ -282,252 +270,91 @@ export function rebuildVolumeTextures(
   return { textures, countChanged: textures.length !== prevCount };
 }
 
-// ── Shared shader constants ────────────────────────────────────────
-
-export const WIREFRAME_GRID_SIZE = 10;
-export const WIREFRAME_GRID_THRESHOLD = 0.03;
-export const FRESNEL_EDGE_MIN = 0.65;
-export const FRESNEL_EDGE_MAX = 0.85;
-export const DISPLACE_FREQ_Y = 1.3;
-export const DISPLACE_FREQ_Z = 0.7;
-
-// ── Ambient occlusion ──────────────────────────────────────────────
+// ── Shared march/pipeline constants ────────────────────────────────
 //
-// Hemisphere AO over the SDF. A single ray along the normal cannot
-// darken WIDE cavities (straight out of a vase cavity is free space —
-// the occlusion comes from the walls all around), so we sample four
-// directions: the normal plus three rays tilted ~53° towards it,
-// spread 120° apart in azimuth. Tap distances are in model units (mm)
-// and reach feature scale so concave interiors read as interiors —
-// without AO a shell cavity is indistinguishable from a flat lid.
-// Per-tap weights sum to 1 PER RAY, and ray contributions add up
-// without renormalizing: a fully open hemisphere scores 0, while a
-// single fully-blocked ray already darkens by SDF_AO_STRENGTH·1.
-// Dividing by the ray count instead would need every ray of the
-// hemisphere blocked for full effect — real cavities (vase floor:
-// occ ≈ 0.4) would never get past a ~10% dim.
-// Finer, more closely-spaced tap distances than the original [4,12,36]: with
-// only 3 taps the per-tap occlusion contribution switches on/off at discrete
-// depths as a ray starts/stops hitting the opposite bore wall or the concave
-// rim, quantising a smooth cylindrical bore into visible horizontal AO bands
-// (ticket km43). More taps spread those transitions out into a smooth gradient.
-// Cheap: the AO loop is a single runtime `Loop` (one sdfEval call site), so
-// extra taps are just loop iterations, NOT extra inlined VM copies. Weights
-// sum to 1 per ray.
-export const SDF_AO_TAPS: [number, number][] = [
-  [3, 0.12],
-  [6, 0.16],
-  [11, 0.18],
-  [18, 0.18],
-  [28, 0.18],
-  [44, 0.18],
-];
-export const SDF_AO_STRENGTH = 0.85;
-// Brighter cavity floor (was 0.2): the floor multiplies the ambient term too,
-// so 0.2 drove deep bores to ~ambient·0.2 ≈ 5% → near black (ticket km43). 0.5
-// keeps cavities readable while still reading as interiors.
-export const SDF_AO_FLOOR = 0.5;
+// One set of march parameters for BOTH SDF pipelines (VM single-pass and
+// deferred): identical hit epsilon, step budget and opcode budget. The
+// per-pipeline body caps stay renderer-specific (VM_MAX_BODIES = 8,
+// DEFERRED_MAX_BODIES = 256) because they size differently-shaped buffers.
 
-// ── Shared hit shading ─────────────────────────────────────────────
+/** Sphere-trace hit epsilon (mm) — a step below this distance is a surface hit. */
+export const SURFACE_EPS = 0.002;
+/** Max sphere-trace iterations per primary ray. */
+export const SDF_MARCH_STEPS = 512;
+/** Packed opcode buffer budget (floats) shared by all bodies of a pipeline. */
+export const SDF_MAX_OPCODES = 16384;
+/** Padding (mm) around an AABB fallback hull so the march starts outside. */
+export const AABB_HULL_PAD = 0.5;
+
+// ── Shared camera uniforms ─────────────────────────────────────────
 
 /**
- * Shade a raymarched SDF surface hit: central-difference normal → PBR lighting
- * → selection tint and wireframe-grid alpha. Emits its nodes into the calling
- * `Fn()` body (it uses `If`), and returns the final `vec4(color, alpha)`.
- * Shared by the single-pass VM renderer and the deferred renderer so the
- * lighting/material/wireframe logic lives in one place.
- *
- * @param p              — world-space hit position (vec3 node)
- * @param bi             — body index (int node)
- * @param offsetBuf      — per-body opcode (offset,length) storage buffer
- * @param volumeBaseBuf  — per-body volume-texture base-index storage buffer
- * @param materialBuf    — per-body material storage buffer (MAT_* layout)
- * @param viewMatU       — view-matrix uniform (world → view)
- * @param viewDirWorld   — world-space direction toward the camera (vec3 node)
- * @param sdfEval        — compiled SDF eval node-fn
- * @param selectionBuf   — optional per-body selection-flag buffer; when given,
- *                         selected bodies (>0.5) get a blue highlight tint
+ * The camera uniforms both SDF pipelines feed their shaders. A SUPERSET by
+ * design: the VM renderer additionally reads `invProjU`/`invViewU` (it
+ * reconstructs the primary ray from the fullscreen UV), the deferred
+ * renderer additionally reads `camFwdU` (parallel ortho march direction);
+ * an unused uniform costs nothing until a shader references it.
  */
-export function shadeSdfHit({
-  p,
-  bi,
-  offsetBuf,
-  volumeBaseBuf,
-  materialBuf,
-  viewMatU,
-  viewDirWorld,
-  sdfEval,
-  selectionBuf,
-}: any) {
-  const baseOff = int(offsetBuf.element(bi.mul(2)));
-  const volBase = int(volumeBaseBuf.element(bi));
-
-  // Normal via central differences.
-  const eps = float(NORMAL_EPS);
-  const ex = vec3(eps, 0, 0);
-  const ey = vec3(0, eps, 0);
-  const ez = vec3(0, 0, eps);
-  const n = normalize(
-    vec3(
-      sdfEval({
-        p: p.add(ex),
-        baseOffset: baseOff,
-        volumeBaseIdx: volBase,
-        bodyIdx: bi,
-      }).sub(
-        sdfEval({
-          p: p.sub(ex),
-          baseOffset: baseOff,
-          volumeBaseIdx: volBase,
-          bodyIdx: bi,
-        }),
-      ),
-      sdfEval({
-        p: p.add(ey),
-        baseOffset: baseOff,
-        volumeBaseIdx: volBase,
-        bodyIdx: bi,
-      }).sub(
-        sdfEval({
-          p: p.sub(ey),
-          baseOffset: baseOff,
-          volumeBaseIdx: volBase,
-          bodyIdx: bi,
-        }),
-      ),
-      sdfEval({
-        p: p.add(ez),
-        baseOffset: baseOff,
-        volumeBaseIdx: volBase,
-        bodyIdx: bi,
-      }).sub(
-        sdfEval({
-          p: p.sub(ez),
-          baseOffset: baseOff,
-          volumeBaseIdx: volBase,
-          bodyIdx: bi,
-        }),
-      ),
-    ),
-  );
-
-  const nView = normalize(viewMatU.mul(vec4(n, 0.0)).xyz);
-  const viewDir = normalize(viewMatU.mul(vec4(viewDirWorld, 0.0)).xyz);
-
-  const matBase = bi.mul(MAT_STRIDE);
-  const cr = materialBuf.element(matBase.add(MAT_COLOR_R));
-  const cg = materialBuf.element(matBase.add(MAT_COLOR_G));
-  const cb = materialBuf.element(matBase.add(MAT_COLOR_B));
-  const baseColor = vec3(cr, cg, cb);
-  const roughness = materialBuf.element(matBase.add(MAT_ROUGHNESS));
-  const metalness = materialBuf.element(matBase.add(MAT_METALNESS));
-  const er = materialBuf.element(matBase.add(MAT_EMISSIVE_R));
-  const eg = materialBuf.element(matBase.add(MAT_EMISSIVE_G));
-  const eb = materialBuf.element(matBase.add(MAT_EMISSIVE_B));
-  const emissive = vec3(er, eg, eb);
-  const color = pbrShade({
-    nView,
-    viewDir,
-    baseColor,
-    roughness,
-    metalness,
-    emissive,
-  }).toVar();
-
-  // Hemisphere AO (see SDF_AO_TAPS): accumulate, per ray and tap, how
-  // far the SDF falls short of the UNOCCLUDED expectation. Over an
-  // infinite flat surface a ray tilted by θ from the normal sees
-  // sdf = dist·cos(θ), not dist — so that (not dist itself) is the
-  // zero-occlusion baseline; comparing against dist would darken
-  // every flat surface by a constant ~40% and wash out the cavity
-  // contrast this pass exists for.
-  //
-  // Both loops MUST be runtime TSL Loops so there is exactly ONE
-  // sdfEval call site here: every call site inlines the entire VM
-  // interpreter into the shader, and unrolling 4×3 copies blows the
-  // WGSL module up far enough to hang the shader compiler (observed
-  // as "WebGPU Device Lost" mid-compile on the vase).
-  const helper = select(
-    abs(n.y).greaterThan(float(0.9)),
-    vec3(1, 0, 0),
-    vec3(0, 1, 0),
-  );
-  const t1 = normalize(cross(n, helper));
-  const t2 = cross(n, t1);
-  const occ = float(0).toVar();
-  const rayCount = 4;
-  Loop(int(rayCount), ({ i: ray }) => {
-    const az = float(ray.sub(int(1))).mul((2 * Math.PI) / 3);
-    const tilted = normalize(
-      n
-        .mul(0.6)
-        .add(t1.mul(cos(az).mul(0.8)))
-        .add(t2.mul(sin(az).mul(0.8))),
-    );
-    const dir = select(ray.equal(int(0)), n, tilted).toVar();
-    Loop(int(SDF_AO_TAPS.length), ({ i: tap }) => {
-      const [dist, weight] = SDF_AO_TAPS.reduceRight(
-        ([accDist, accWeight], [tDist, tWeight], idx) => [
-          select(tap.equal(int(idx)), float(tDist), accDist),
-          select(tap.equal(int(idx)), float(tWeight), accWeight),
-        ],
-        [float(0), float(0)],
-      );
-      const d = sdfEval({
-        p: p.add(dir.mul(dist)),
-        baseOffset: baseOff,
-        volumeBaseIdx: volBase,
-        bodyIdx: bi,
-      });
-      const expected = dist.mul(dir.dot(n));
-      occ.addAssign(
-        clamp(expected.sub(d).div(expected), float(0), float(1)).mul(weight),
-      );
-    });
-  });
-  const ao = clamp(
-    float(1).sub(occ.mul(SDF_AO_STRENGTH)),
-    float(SDF_AO_FLOOR),
-    float(1),
-  );
-  color.assign(color.mul(ao));
-
-  if (selectionBuf) {
-    const sel = selectionBuf.element(bi);
-    If(sel.greaterThan(float(0.5)), () => {
-      color.assign(mix(color, vec3(0.541, 0.706, 0.973), float(0.35)));
-    });
-  }
-
-  const bodyOpacity = materialBuf.element(matBase.add(MAT_OPACITY));
-  const wf = materialBuf.element(matBase.add(MAT_WIREFRAME));
-  const alpha = bodyOpacity.toVar();
-  If(wf.greaterThan(float(0.5)), () => {
-    const fresnel = float(1).sub(abs(n.dot(viewDirWorld)));
-    const edgeFactor = smoothstep(
-      float(FRESNEL_EDGE_MIN),
-      float(FRESNEL_EDGE_MAX),
-      fresnel,
-    );
-    const gridSize = float(WIREFRAME_GRID_SIZE);
-    const gx = min(
-      fract(p.x.div(gridSize)),
-      float(1).sub(fract(p.x.div(gridSize))),
-    );
-    const gy = min(
-      fract(p.y.div(gridSize)),
-      float(1).sub(fract(p.y.div(gridSize))),
-    );
-    const gz = min(
-      fract(p.z.div(gridSize)),
-      float(1).sub(fract(p.z.div(gridSize))),
-    );
-    const minGrid = min(gx, min(gy, gz));
-    const gridAlpha = float(1).sub(
-      smoothstep(float(0), float(WIREFRAME_GRID_THRESHOLD), minGrid),
-    );
-    alpha.assign(max(edgeFactor, gridAlpha).mul(bodyOpacity));
-  });
-
-  return vec4(color, alpha);
+export interface CameraUniformSet {
+  camPosU: UniformNode<"vec3", THREE.Vector3>;
+  /** World-space camera forward (−Z) direction. In ORTHOGRAPHIC mode this is
+   *  the SHARED parallel ray direction for every pixel; the along-ray distance
+   *  of a world point is `dot(p − camPos, camFwd)`. Unused in perspective (rays
+   *  diverge from camPos and the radial distance is the ray parameter). */
+  camFwdU: UniformNode<"vec3", THREE.Vector3>;
+  invProjU: UniformNode<"mat4", THREE.Matrix4>;
+  invViewU: UniformNode<"mat4", THREE.Matrix4>;
+  viewMatU: UniformNode<"mat4", THREE.Matrix4>;
+  nearU: UniformNode<"float", number>;
+  farU: UniformNode<"float", number>;
+  /** 1.0 when the scene camera is orthographic, 0.0 perspective — selects the
+   *  parallel-vs-converging march ray AND the linear-vs-reciprocal depth
+   *  formula when writing canvas depth. */
+  isOrthoU: UniformNode<"float", number>;
 }
+
+export function createCameraUniforms(): CameraUniformSet {
+  return {
+    camPosU: uniform(new THREE.Vector3(0, 0, 100)),
+    camFwdU: uniform(new THREE.Vector3(0, 0, -1)),
+    invProjU: uniform(new THREE.Matrix4()),
+    invViewU: uniform(new THREE.Matrix4()),
+    viewMatU: uniform(new THREE.Matrix4()),
+    nearU: uniform(1),
+    farU: uniform(4000),
+    // 1.0 → orthographic scene camera (the default), 0.0 → perspective.
+    isOrthoU: uniform(1),
+  };
+}
+
+/** Refresh every camera uniform from the live scene camera (called before
+ *  compile and per frame by both pipelines). */
+export function updateCameraUniforms(
+  u: CameraUniformSet,
+  camera: THREE.Camera,
+): void {
+  const cam = camera as THREE.PerspectiveCamera;
+  // getWorldPosition/getWorldDirection update the world-matrix chain (and,
+  // being a Camera, matrixWorldInverse) before reading — robust against a
+  // parented R3F camera.
+  cam.getWorldPosition(u.camPosU.value);
+  // World-space camera forward (−Z); the shared parallel march direction in
+  // orthographic mode (ticket g2ox). getWorldDirection already normalises.
+  cam.getWorldDirection(u.camFwdU.value);
+  // projectionMatrixInverse is valid for both projections — it reconstructs the
+  // near-plane world point either way; the shader picks parallel vs converging
+  // rays from isOrthoU.
+  u.invProjU.value.copy(cam.projectionMatrixInverse);
+  // invView is the camera's world matrix (the inverse of the view matrix).
+  u.invViewU.value.copy(cam.matrixWorld);
+  u.viewMatU.value.copy(cam.matrixWorldInverse);
+  // Both PerspectiveCamera and OrthographicCamera expose near/far; the depth
+  // formula differs (reciprocal vs linear) and is selected by isOrthoU.
+  u.nearU.value = cam.near;
+  u.farU.value = cam.far;
+  u.isOrthoU.value = (cam as unknown as THREE.OrthographicCamera)
+    .isOrthographicCamera
+    ? 1
+    : 0;
+}
+

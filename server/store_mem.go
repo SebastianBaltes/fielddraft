@@ -6,15 +6,9 @@
 package main
 
 import (
-	"crypto/rand"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
-	"strings"
 	"sync"
 	"time"
-
-	"golang.org/x/crypto/argon2"
 )
 
 type memStore struct {
@@ -70,11 +64,14 @@ func (s *memStore) CreateUser(email, displayName, password string, role Role) (*
 	if _, exists := s.emails[email]; exists {
 		return nil, errConflict
 	}
+	user := s.createUserLocked(email, displayName, password, role)
+	return user, nil
+}
 
-	salt := make([]byte, 16)
-	rand.Read(salt)
-	hash := argon2.IDKey([]byte(password), salt, 1, 64*1024, 4, 32)
-
+// createUserLocked builds and stores a user. Caller holds the write lock and
+// has already checked the email is free.
+func (s *memStore) createUserLocked(email, displayName, password string, role Role) *User {
+	hash, salt := hashPassword(password)
 	id := newID()
 	user := &User{
 		ID:           id,
@@ -83,12 +80,12 @@ func (s *memStore) CreateUser(email, displayName, password string, role Role) (*
 		Role:         role,
 		PasswordHash: hash,
 		Salt:         salt,
-		CreatedAt:    time.Now(),
+		CreatedAt:    now(),
 	}
 	s.users[id] = user
 	s.emails[email] = id
 	s.userSeq = append(s.userSeq, id)
-	return user, nil
+	return user
 }
 
 func (s *memStore) AuthenticateUser(email, password string) (*User, error) {
@@ -100,8 +97,7 @@ func (s *memStore) AuthenticateUser(email, password string) (*User, error) {
 		return nil, errNotFound
 	}
 	user := s.users[uid]
-	hash := argon2.IDKey([]byte(password), user.Salt, 1, 64*1024, 4, 32)
-	if !bytesEqual(hash, user.PasswordHash) {
+	if !verifyPassword(password, user.Salt, user.PasswordHash) {
 		return nil, errUnauthorized
 	}
 	// A banned user cannot authenticate (B3, §4.4).
@@ -134,10 +130,7 @@ func (s *memStore) UpdatePassword(userID, newPassword string) {
 	if !ok {
 		return
 	}
-	salt := make([]byte, 16)
-	rand.Read(salt)
-	user.PasswordHash = argon2.IDKey([]byte(newPassword), salt, 1, 64*1024, 4, 32)
-	user.Salt = salt
+	user.PasswordHash, user.Salt = hashPassword(newPassword)
 }
 
 func (s *memStore) HasAdmin() bool {
@@ -217,7 +210,7 @@ func (s *memStore) CreateResetToken(userID string) string {
 	s.resetTokens[token] = &ResetToken{
 		Token:   token,
 		UserID:  userID,
-		Expires: time.Now().Add(1 * time.Hour),
+		Expires: now().Add(resetTokenTTL),
 	}
 	return token
 }
@@ -226,7 +219,7 @@ func (s *memStore) ConsumeResetToken(token string) (string, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	rt, ok := s.resetTokens[token]
-	if !ok || time.Now().After(rt.Expires) {
+	if !ok || now().After(rt.Expires) {
 		delete(s.resetTokens, token)
 		return "", false
 	}
@@ -246,7 +239,7 @@ func (s *memStore) CreateInvite(createdBy, inviteeName, inviteeEmail, message st
 		InviteeEmail: inviteeEmail,
 		Message:      message,
 		ExpiresAt:    expiresAt,
-		CreatedAt:    time.Now(),
+		CreatedAt:    now(),
 	}
 	s.invites[inv.Token] = inv
 	return inv
@@ -271,17 +264,51 @@ func (s *memStore) ListInvites() []*Invite {
 func (s *memStore) ConsumeInvite(token, usedBy string) (*Invite, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.consumeInviteLocked(token, usedBy)
+}
+
+// consumeInviteLocked burns a single-use invite. Caller holds the write lock.
+func (s *memStore) consumeInviteLocked(token, usedBy string) (*Invite, error) {
 	inv, ok := s.invites[token]
-	if !ok || time.Now().After(inv.ExpiresAt) {
+	if !ok || now().After(inv.ExpiresAt) {
 		return nil, errInviteInvalid
 	}
 	if inv.UsedBy != nil {
 		return nil, errInviteUsed
 	}
-	now := time.Now()
+	usedAt := now()
 	inv.UsedBy = &usedBy
-	inv.UsedAt = &now
+	inv.UsedAt = &usedAt
 	return inv, nil
+}
+
+// RegisterWithInvite validates + burns the invite and creates the user under
+// ONE lock section — the single-use guarantee and the user creation cannot
+// tear apart (fixes the register race, see Store interface).
+func (s *memStore) RegisterWithInvite(email, displayName, password, token string) (*User, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	// Invite first (a duplicate-email failure must not burn the token), then
+	// the email check, then create + burn.
+	inv, ok := s.invites[token]
+	if !ok || now().After(inv.ExpiresAt) {
+		return nil, errInviteInvalid
+	}
+	if inv.UsedBy != nil {
+		return nil, errInviteUsed
+	}
+	if _, exists := s.emails[email]; exists {
+		return nil, errConflict
+	}
+	user := s.createUserLocked(email, displayName, password, RoleUser)
+	if _, err := s.consumeInviteLocked(token, user.ID); err != nil {
+		// Unreachable: the invite was validated under this same lock.
+		delete(s.users, user.ID)
+		delete(s.emails, email)
+		s.userSeq = s.userSeq[:len(s.userSeq)-1]
+		return nil, err
+	}
+	return user, nil
 }
 
 func (s *memStore) DeleteInvite(token string) bool {
@@ -315,7 +342,7 @@ func (s *memStore) CreateSnapshot(projectID string, doc json.RawMessage) *Snapsh
 		ID:        newID(),
 		ProjectID: projectID,
 		Document:  doc,
-		CreatedAt: time.Now(),
+		CreatedAt: now(),
 	}
 	s.snapshots[snap.ID] = snap
 	return snap
@@ -337,7 +364,7 @@ func (s *memStore) CreateSession(userID string) *Session {
 	sess := &Session{
 		Token:   token,
 		UserID:  userID,
-		Expires: time.Now().Add(7 * 24 * time.Hour),
+		Expires: now().Add(sessionTTL),
 	}
 	s.sessions[token] = sess
 	return sess
@@ -348,7 +375,7 @@ func (s *memStore) GetSession(token string) *Session {
 	defer s.mu.RUnlock()
 
 	sess, ok := s.sessions[token]
-	if !ok || time.Now().After(sess.Expires) {
+	if !ok || now().After(sess.Expires) {
 		return nil
 	}
 	return sess
@@ -367,15 +394,15 @@ func (s *memStore) CreateProject(ownerID, name string, doc json.RawMessage) *Pro
 	defer s.mu.Unlock()
 
 	id := newID()
-	now := time.Now()
+	at := now()
 	p := &Project{
 		ID:         id,
 		OwnerID:    ownerID,
 		Name:       name,
 		Visibility: "private",
 		Document:   doc,
-		UpdatedAt:  now,
-		CreatedAt:  now,
+		UpdatedAt:  at,
+		CreatedAt:  at,
 	}
 	s.projects[id] = p
 	return p
@@ -422,7 +449,7 @@ func (s *memStore) UpdateProject(id, ownerID, name string, doc json.RawMessage, 
 	if visibility == "public" || visibility == "private" {
 		p.Visibility = visibility
 	}
-	p.UpdatedAt = time.Now()
+	p.UpdatedAt = now()
 	return p
 }
 
@@ -451,502 +478,6 @@ func (s *memStore) DeleteProject(id, ownerID string) bool {
 	return true
 }
 
-// ─── tickets ────────────────────────────────────────────────────
-
-// cloneTicket returns a shallow copy so callers can't mutate stored state
-// (and so concurrent reads stay race-free under the RWMutex contract).
-func cloneTicket(t *Ticket) *Ticket {
-	c := *t
-	c.Comments = nil
-	c.Artifacts = nil
-	return &c
-}
-
-func (s *memStore) CreateTicket(authorID, title, body, category string) *Ticket {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	now := time.Now().UTC()
-	t := &Ticket{
-		ID:        newID(),
-		AuthorID:  authorID,
-		Title:     title,
-		Body:      body,
-		State:     StateTriage,
-		CreatedAt: now,
-		UpdatedAt: now,
-	}
-	if category != "" {
-		c := category
-		t.Category = &c
-	}
-	s.tickets[t.ID] = t
-	return cloneTicket(t)
-}
-
-func (s *memStore) GetTicket(id string) *Ticket {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	t, ok := s.tickets[id]
-	if !ok {
-		return nil
-	}
-	out := cloneTicket(t)
-	for _, c := range s.comments[id] {
-		cc := *c
-		out.Comments = append(out.Comments, &cc)
-	}
-	for _, a := range s.artifacts[id] {
-		aa := *a
-		out.Artifacts = append(out.Artifacts, &aa)
-	}
-	return out
-}
-
-func (s *memStore) ListTickets(f TicketFilter) []*Ticket {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	var out []*Ticket
-	q := strings.ToLower(f.Query)
-	for _, t := range s.tickets {
-		if f.AuthorID != "" && t.AuthorID != f.AuthorID {
-			continue
-		}
-		if f.State != "" && t.State != f.State {
-			continue
-		}
-		if f.Category != "" && (t.Category == nil || *t.Category != f.Category) {
-			continue
-		}
-		if q != "" && !strings.Contains(strings.ToLower(t.Title), q) &&
-			!strings.Contains(strings.ToLower(t.Body), q) {
-			continue
-		}
-		// Visibility (§7.3): hide rejected tickets unless caller is admin or
-		// the ticket's own author.
-		if isRejected(t.State) && !f.ViewerIsAdmin && t.AuthorID != f.ViewerID {
-			continue
-		}
-		out = append(out, cloneTicket(t))
-	}
-	// Newest first (chronological by creation).
-	sortTicketsDesc(out)
-	return out
-}
-
-func (s *memStore) UpdateTicket(id, title, body string) *Ticket {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	t, ok := s.tickets[id]
-	if !ok {
-		return nil
-	}
-	if title != "" {
-		t.Title = title
-	}
-	if body != "" {
-		t.Body = body
-	}
-	t.UpdatedAt = time.Now().UTC()
-	return cloneTicket(t)
-}
-
-func (s *memStore) SetTicketCategory(id, category string) *Ticket {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	t, ok := s.tickets[id]
-	if !ok {
-		return nil
-	}
-	if category != "" {
-		c := category
-		t.Category = &c
-	} else {
-		t.Category = nil
-	}
-	t.UpdatedAt = time.Now().UTC()
-	return cloneTicket(t)
-}
-
-func (s *memStore) SetTicketState(id string, to TicketState) (*Ticket, error) {
-	s.mu.Lock()
-	t, ok := s.tickets[id]
-	if !ok {
-		s.mu.Unlock()
-		return nil, errTicketMissing
-	}
-	if err := validateTransition(t.State, to); err != nil {
-		s.mu.Unlock()
-		return nil, err
-	}
-	from := t.State
-	t.State = to
-	t.UpdatedAt = time.Now().UTC()
-	out := cloneTicket(t)
-	s.mu.Unlock()
-	s.appendSystemComment(id, "state: "+string(from)+" → "+string(to))
-	return out, nil
-}
-
-func (s *memStore) SetPOVerdict(id string, v POVerdict) (*Ticket, error) {
-	s.mu.Lock()
-	t, ok := s.tickets[id]
-	if !ok {
-		s.mu.Unlock()
-		return nil, errTicketMissing
-	}
-	if err := validateTransition(t.State, v.State); err != nil {
-		s.mu.Unlock()
-		return nil, err
-	}
-	from := t.State
-	now := time.Now().UTC()
-	t.POSpam = v.Spam
-	t.POMalicious = v.Malicious
-	t.POVisionFit = v.VisionFit
-	if v.Reason != "" {
-		r := v.Reason
-		t.POReason = &r
-	}
-	t.POVerdictAt = &now
-	t.State = v.State
-	t.UpdatedAt = now
-	out := cloneTicket(t)
-	s.mu.Unlock()
-	s.appendSystemComment(id, "po verdict: "+string(from)+" → "+string(v.State))
-	return out, nil
-}
-
-func (s *memStore) DeleteTicket(id string) bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if _, ok := s.tickets[id]; !ok {
-		return false
-	}
-	delete(s.tickets, id)
-	delete(s.comments, id)
-	delete(s.artifacts, id)
-	delete(s.workOrders, id)
-	return true
-}
-
-// appendSystemComment records a state-change audit entry. Locks internally.
-func (s *memStore) appendSystemComment(ticketID, body string) {
-	s.AddComment(ticketID, AuthorSystem, nil, body, false)
-}
-
-func (s *memStore) AddComment(ticketID string, authorType AuthorType, authorID *string, body string, internal bool) *TicketComment {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if _, ok := s.tickets[ticketID]; !ok {
-		return nil
-	}
-	c := &TicketComment{
-		ID:         newID(),
-		TicketID:   ticketID,
-		AuthorType: authorType,
-		AuthorID:   authorID,
-		Internal:   internal,
-		Body:       body,
-		CreatedAt:  time.Now().UTC(),
-		// Only user comments need PO post-moderation; po/dev/system are inherently
-		// reviewed (B1, §4.2).
-		POReviewed: authorType != AuthorUser,
-	}
-	s.comments[ticketID] = append(s.comments[ticketID], c)
-	if t := s.tickets[ticketID]; t != nil {
-		t.UpdatedAt = c.CreatedAt
-	}
-	cc := *c
-	return &cc
-}
-
-func (s *memStore) GetComment(ticketID, commentID string) *TicketComment {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	for _, c := range s.comments[ticketID] {
-		if c.ID == commentID {
-			cc := *c
-			return &cc
-		}
-	}
-	return nil
-}
-
-// SetCommentReviewed marks a comment PO-reviewed and, when withheld, hides it
-// (B1, §4.2). Returns the updated comment (nil if unknown).
-func (s *memStore) SetCommentReviewed(ticketID, commentID string, withheld bool) *TicketComment {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for _, c := range s.comments[ticketID] {
-		if c.ID == commentID {
-			c.POReviewed = true
-			if withheld {
-				c.Withheld = true
-			}
-			cc := *c
-			return &cc
-		}
-	}
-	return nil
-}
-
-// ListTicketsWithUnreviewedComments returns every ticket (any state) that has
-// at least one unreviewed USER comment — so spam on a resolved ticket still
-// reaches the PO (B1, §4.2). Hydrated with comments + artifacts.
-func (s *memStore) ListTicketsWithUnreviewedComments() []*Ticket {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	var out []*Ticket
-	for id, t := range s.tickets {
-		has := false
-		for _, c := range s.comments[id] {
-			if c.AuthorType == AuthorUser && !c.POReviewed {
-				has = true
-				break
-			}
-		}
-		if !has {
-			continue
-		}
-		full := cloneTicket(t)
-		for _, c := range s.comments[id] {
-			cc := *c
-			full.Comments = append(full.Comments, &cc)
-		}
-		for _, a := range s.artifacts[id] {
-			aa := *a
-			full.Artifacts = append(full.Artifacts, &aa)
-		}
-		out = append(out, full)
-	}
-	sortTicketsDesc(out)
-	return out
-}
-
-func (s *memStore) ListComments(ticketID string) []*TicketComment {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	var out []*TicketComment
-	for _, c := range s.comments[ticketID] {
-		cc := *c
-		out = append(out, &cc)
-	}
-	return out
-}
-
-func (s *memStore) AddArtifact(ticketID string, kind ArtifactKind, name, mime string, data []byte) *TicketArtifact {
-	if len(data) == 0 {
-		return nil
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if _, ok := s.tickets[ticketID]; !ok {
-		return nil
-	}
-	sum := sha256.Sum256(data)
-	ref := hex.EncodeToString(sum[:])
-	s.blobs[ref] = data
-	a := &TicketArtifact{
-		ID:        newID(),
-		TicketID:  ticketID,
-		Kind:      kind,
-		BlobRef:   ref,
-		Mime:      mime,
-		Size:      int64(len(data)),
-		Name:      name,
-		CreatedAt: time.Now().UTC(),
-	}
-	s.artifacts[ticketID] = append(s.artifacts[ticketID], a)
-	return a
-}
-
-func (s *memStore) GetArtifactBlob(ticketID, artifactID string) (*TicketArtifact, []byte) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	for _, a := range s.artifacts[ticketID] {
-		if a.ID == artifactID {
-			aa := *a
-			return &aa, s.blobs[a.BlobRef]
-		}
-	}
-	return nil, nil
-}
-
-// sortTicketsDesc sorts tickets newest-first by CreatedAt (insertion sort —
-// ticket counts are small).
-func sortTicketsDesc(ts []*Ticket) {
-	for i := 1; i < len(ts); i++ {
-		for j := i; j > 0 && ts[j].CreatedAt.After(ts[j-1].CreatedAt); j-- {
-			ts[j], ts[j-1] = ts[j-1], ts[j]
-		}
-	}
-}
-
-// ─── work-orders ────────────────────────────────────────────────
-
-// cloneWorkOrder returns a copy so callers can't mutate stored state.
-func cloneWorkOrder(wo *WorkOrder) *WorkOrder {
-	c := *wo
-	return &c
-}
-
-func (s *memStore) CreateWorkOrder(ticketID string, payload json.RawMessage) (*WorkOrder, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if _, ok := s.tickets[ticketID]; !ok {
-		return nil, errTicketMissing
-	}
-	if _, exists := s.workOrders[ticketID]; exists {
-		return nil, errWorkOrderExists
-	}
-	wo := &WorkOrder{
-		TicketID:  ticketID,
-		Payload:   append(json.RawMessage(nil), payload...),
-		CreatedAt: time.Now().UTC(),
-	}
-	s.workOrders[ticketID] = wo
-	return cloneWorkOrder(wo), nil
-}
-
-func (s *memStore) GetWorkOrder(ticketID string) *WorkOrder {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	wo, ok := s.workOrders[ticketID]
-	if !ok {
-		return nil
-	}
-	return cloneWorkOrder(wo)
-}
-
-func (s *memStore) ClaimWorkOrder(ticketID string) (*WorkOrder, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	wo, ok := s.workOrders[ticketID]
-	if !ok {
-		return nil, errWorkOrderMissing
-	}
-	if wo.PickedUpAt != nil {
-		return nil, errWorkOrderClaimed
-	}
-	now := time.Now().UTC()
-	wo.PickedUpAt = &now
-	return cloneWorkOrder(wo), nil
-}
-
-func (s *memStore) CompleteWorkOrder(ticketID, deployID string) (*WorkOrder, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	wo, ok := s.workOrders[ticketID]
-	if !ok {
-		return nil, errWorkOrderMissing
-	}
-	if deployID != "" {
-		if _, ok := s.deploys[deployID]; !ok {
-			return nil, errDeployMissing
-		}
-	}
-	now := time.Now().UTC()
-	wo.CompletedAt = &now
-	if deployID != "" {
-		d := deployID
-		wo.DeployID = &d
-	}
-	return cloneWorkOrder(wo), nil
-}
-
-// ─── deploys ────────────────────────────────────────────────────
-
-func cloneDeploy(d *Deploy) *Deploy {
-	c := *d
-	c.TicketIDs = append([]string(nil), d.TicketIDs...)
-	return &c
-}
-
-func (s *memStore) CreateDeploy(version, gitSHA string, ticketIDs []string, status DeployStatus) (*Deploy, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	d := &Deploy{
-		ID:         newID(),
-		Version:    version,
-		GitSHA:     gitSHA,
-		TicketIDs:  append([]string(nil), ticketIDs...),
-		Status:     status,
-		DeployedAt: time.Now().UTC(),
-	}
-	s.deploys[d.ID] = d
-	s.deploySeq = append(s.deploySeq, d.ID)
-	return cloneDeploy(d), nil
-}
-
-func (s *memStore) ListDeploys() []*Deploy {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	// Newest first.
-	out := make([]*Deploy, 0, len(s.deploySeq))
-	for i := len(s.deploySeq) - 1; i >= 0; i-- {
-		if d := s.deploys[s.deploySeq[i]]; d != nil {
-			out = append(out, cloneDeploy(d))
-		}
-	}
-	return out
-}
-
-// ─── agent comments ─────────────────────────────────────────────
-
-func (s *memStore) AddAgentComment(ticketID string, authorType AuthorType, body string, internal, withheld bool) *TicketComment {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if _, ok := s.tickets[ticketID]; !ok {
-		return nil
-	}
-	c := &TicketComment{
-		ID:         newID(),
-		TicketID:   ticketID,
-		AuthorType: authorType,
-		AuthorID:   nil, // po/dev/system have no user id
-		Internal:   internal,
-		Body:       body,
-		CreatedAt:  time.Now().UTC(),
-		Withheld:   withheld,
-		POReviewed: true, // po/dev are authored by the agents — inherently reviewed
-	}
-	s.comments[ticketID] = append(s.comments[ticketID], c)
-	if t := s.tickets[ticketID]; t != nil {
-		t.UpdatedAt = c.CreatedAt
-	}
-	cc := *c
-	return &cc
-}
-
-// ListAcceptedWithOpenWorkOrder returns accepted tickets that still carry an
-// open (uncompleted) work-order — the coding agent's queue (§10.1).
-func (s *memStore) ListAcceptedWithOpenWorkOrder() []*Ticket {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	var out []*Ticket
-	for _, t := range s.tickets {
-		if t.State != StateAccepted {
-			continue
-		}
-		wo, ok := s.workOrders[t.ID]
-		if !ok || !wo.Open() {
-			continue
-		}
-		full := cloneTicket(t)
-		for _, c := range s.comments[t.ID] {
-			cc := *c
-			full.Comments = append(full.Comments, &cc)
-		}
-		for _, a := range s.artifacts[t.ID] {
-			aa := *a
-			full.Artifacts = append(full.Artifacts, &aa)
-		}
-		out = append(out, full)
-	}
-	sortTicketsDesc(out)
-	return out
-}
-
 // ─── admin alerts (B2, §4.4) ────────────────────────────────────
 
 func cloneAlert(a *AdminAlert) *AdminAlert {
@@ -965,7 +496,7 @@ func (s *memStore) CreateAdminAlert(kind AlertKind, ticketID *string, detail str
 		ID:        newID(),
 		Kind:      kind,
 		Detail:    detail,
-		CreatedAt: time.Now().UTC(),
+		CreatedAt: now(),
 	}
 	if ticketID != nil {
 		tid := *ticketID

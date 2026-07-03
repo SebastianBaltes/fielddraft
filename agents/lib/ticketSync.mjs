@@ -63,28 +63,36 @@ export async function materializeTicket(destDir, item, { client, scope = "coding
   const comments = Array.isArray(item.comments) ? item.comments : [];
   const arts = Array.isArray(item.artifacts) ? item.artifacts : [];
 
+  // Precompute the artifact index (canonical local filenames) — ticket.md
+  // lists them, parity with the Go renderTicketMD Artifacts section.
+  let attachmentN = 0;
+  const index = arts.map((a) => ({
+    id: a.id,
+    kind: a.kind,
+    mime: a.mime,
+    size: a.size,
+    name: a.name,
+    file: artifactFilename(a, () => ++attachmentN),
+  }));
+
   // ── ticket.md — heading + meta + body (a fresh snapshot) ──
-  fs.writeFileSync(path.join(dir, "ticket.md"), renderTicketMd(item), "utf8");
+  fs.writeFileSync(path.join(dir, "ticket.md"), renderTicketMd(item, index), "utf8");
 
   // ── comments.md — the thread ──
-  fs.writeFileSync(path.join(dir, "comments.md"), renderCommentsMd(item, comments), "utf8");
+  fs.writeFileSync(path.join(dir, "comments.md"), renderCommentsMd(comments), "utf8");
 
   // ── artifact blobs (immutable, content-addressed) ──
   const written = [];
-  let attachmentN = 0;
-  const index = [];
-  for (const a of arts) {
-    const filename = artifactFilename(a, () => ++attachmentN);
-    index.push({ id: a.id, kind: a.kind, mime: a.mime, size: a.size, name: a.name, file: filename });
+  for (const entry of index) {
     if (!artifacts) continue;
-    const target = path.join(dir, filename);
-    if (isAlreadyMaterialized(target, a.size)) {
-      written.push(filename);
+    const target = path.join(dir, entry.file);
+    if (isAlreadyMaterialized(target, entry.size)) {
+      written.push(entry.file);
       continue;
     }
-    const bytes = await client.fetchArtifact(id, a.id, scope);
+    const bytes = await client.fetchArtifact(id, entry.id, scope);
     fs.writeFileSync(target, bytes);
-    written.push(filename);
+    written.push(entry.file);
   }
 
   // ── ticket.json — the push-context (state/category/verdict/author + index) ──
@@ -151,42 +159,50 @@ function artifactFilename(a, nextN) {
   return `artifact-${sanitizeName(a.id || a.kind || "blob")}`;
 }
 
-/** ticket.md: heading (title or first body line) + meta block + body. */
-function renderTicketMd(item) {
-  const title = (item.title && item.title.trim()) || firstLine(item.body) || `Ticket ${item.id}`;
-  const meta = [
-    ["ID", item.id],
-    ["State", item.state],
-    ["Category", item.category],
-    ["Version", pick(item, "version", "app_version")],
-    ["Time", item.created_at],
-    ["URL", pick(item, "url", "page_url")],
-    ["UA", pick(item, "user_agent", "ua")],
-    ["Author", item.author_id],
-  ].filter(([, v]) => v !== undefined && v !== null && v !== "");
-
-  const lines = [`# ${title}`, ""];
-  if (meta.length) {
-    lines.push("| Field | Value |", "| --- | --- |");
-    for (const [k, v] of meta) lines.push(`| ${k} | ${escapeCell(String(v))} |`);
-    lines.push("");
-  }
-  lines.push((item.body || "").trimEnd(), "");
-  return lines.join("\n");
+/** The ticket.md heading: first non-empty line of the title (fallback: first
+ *  body line, then "Issue <id>"), truncated at 80 chars — parity with the Go
+ *  ticketHeading (server/main.go). */
+function ticketHeading(item) {
+  const t = firstLine(item.title) || firstLine(item.body);
+  if (!t) return `Issue ${item.id}`;
+  return t.length > 80 ? `${t.slice(0, 80).trim()}…` : t;
 }
 
-/** comments.md: the thread, chronological, one section per comment. */
-function renderCommentsMd(item, comments) {
-  const lines = [`# Thread — ${item.id}`, ""];
+/** ticket.md: heading + meta list + body (+ artifact index) — the SAME format
+ *  the Go fileTicketStore renders (server/ticketstore_file.go renderTicketMD);
+ *  Go stays canonical, this mirrors it for the materialized read-view. */
+function renderTicketMd(item, artifactIndex = []) {
+  let out = `# ${ticketHeading(item)}\n\n`;
+  out += `- **ID:** ${item.id ?? ""}\n`;
+  out += `- **Author:** ${item.author_id ?? ""}\n`;
+  out += `- **State:** ${item.state ?? ""}\n`;
+  if (item.category) out += `- **Category:** ${item.category}\n`;
+  out += `- **Created:** ${item.created_at ?? ""}\n`;
+  out += `- **Updated:** ${item.updated_at ?? ""}\n\n`;
+  const body = String(item.body ?? "");
+  out += `## Description\n\n${body.trim() ? body : "_(none)_"}\n`;
+  if (artifactIndex.length) {
+    out += `\n## Artifacts\n\n`;
+    for (const a of artifactIndex) out += `- ${a.file} (${a.kind})\n`;
+  }
+  return out;
+}
+
+/** comments.md: the thread chronologically, tagged by author type with
+ *  [internal]/[withheld] labels — the SAME format the Go fileTicketStore
+ *  renders (server/ticketstore_file.go renderCommentsMD). */
+function renderCommentsMd(comments) {
+  let out = "# Comments\n\n";
   if (!comments.length) {
-    lines.push("_(no comments)_", "");
-    return lines.join("\n");
+    return out + "_(none)_\n";
   }
   for (const c of comments) {
-    const when = c.created_at ? ` · ${c.created_at}` : "";
-    lines.push(`## ${c.author_type || "unknown"}${when}`, "", (c.body || "").trimEnd(), "");
+    let tags = "";
+    if (c.internal) tags += " [internal]";
+    if (c.withheld) tags += " [withheld]";
+    out += `## ${c.author_type || "unknown"}${tags} — ${c.created_at ?? ""}\n\n${c.body || ""}\n\n`;
   }
-  return lines.join("\n");
+  return out;
 }
 
 /** ticket.json: the machine-readable push-context. */
@@ -231,14 +247,6 @@ function firstLine(s) {
   return "";
 }
 
-/** Read the first present key from an object (aliases for optional meta). */
-function pick(obj, ...keys) {
-  for (const k of keys) {
-    if (obj[k] !== undefined && obj[k] !== null && obj[k] !== "") return obj[k];
-  }
-  return undefined;
-}
-
 /** Keep a filename safe: strip path separators + control chars, collapse spaces. */
 function sanitizeName(name) {
   return String(name || "")
@@ -247,11 +255,6 @@ function sanitizeName(name) {
     .replace(/[^\w.\-]+/g, "-")
     .replace(/^-+|-+$/g, "")
     .slice(0, 120);
-}
-
-/** Escape a value for a single Markdown table cell. */
-function escapeCell(s) {
-  return s.replace(/\r?\n/g, " ").replace(/\|/g, "\\|");
 }
 
 export default { materializeTicket, pull, moveToDone };

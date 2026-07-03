@@ -14,28 +14,32 @@ müssen. Der Sphere-Tracer erzeugt dann das finale Bild.
 
 ### Dateien
 
-| Datei                               | Rolle                                                            |
-| ----------------------------------- | ---------------------------------------------------------------- |
-| `web/src/sdfDeferredRenderer.ts`    | Pipeline-Init, alle Passes, Materialien, Body-Rebuild            |
-| `web/src/sdfVmInterpreter.ts`       | GPU-bytecode VM — interpretiert Opcodes zur Laufzeit             |
-| `web/src/sdfPipelineCommon.ts`      | Shared Buffers: Opcode-Packing, Material-Layout, Volume-Texturen |
-| `web/src/sdfRenderer.ts`            | SDF-Primitive-Funktionen (WGSL), Opcode-Konstanten               |
-| `web/src/viewportSdfOverlays.tsx`   | React-Integration: `SdfDeferredOverlay`-Komponente               |
-| `web/src/pbrShading.ts`             | Cook-Torrance PBR (3 Directional Lights + Ambient)               |
-| `web/src/materialBridge.ts`         | Kernel → Pipeline Material-Mapping                               |
-| `crates/kernel/src/bvh.rs`          | `classify_for_hybrid()` → `HybridInfo` (Rust-seitig)             |
-| `crates/kernel/src/sdf_compiler.rs` | CSG-Baum → flacher Opcode-Buffer (RPN)                           |
+| Datei                                    | Rolle                                                            |
+| ---------------------------------------- | ---------------------------------------------------------------- |
+| `web/src/sdfDeferredRenderer.ts`         | Pipeline-Init, alle Passes, Body-Rebuild (voll typisiert)        |
+| `web/src/sdfDeferredRenderer.shaders.ts` | TSL-Shader-Builder: G-Buffer-/Back-Face-/Shade-Material, Body-ID-Buffer |
+| `web/src/sdfVmInterpreter.ts`            | GPU-bytecode VM — interpretiert Opcodes zur Laufzeit             |
+| `web/src/sdfPipelineCommon.ts`           | Shared Buffers: Opcode-Packing, Material-Layout, Volume-Texturen, March-Konstanten, CameraUniformSet |
+| `web/src/sdfPipelineCommon.shaders.ts`   | Geteilte TSL-Blöcke: `emitUnionMarch`, `emitSceneDepthWrite`, `makeDisplacedSdfEval`, `shadeSdfHit` |
+| `web/src/sdfRenderer.ts`                 | SDF-Primitive-Funktionen (WGSL), Opcode-Konstanten               |
+| `web/src/leafMeshFactory.ts`             | `createPrimitiveGeometry`, `leafGeoKey`, `applyLeafTransform` (Leaf-Hüll-Meshes) |
+| `web/src/bodyColors.ts`                  | `BODY_COLORS` Part-Palette (SSOT)                                |
+| `web/src/viewportSdfOverlays.tsx`        | React-Integration: `SdfDeferredOverlay` + `useSdfPipelineOverlay`-Hook |
+| `web/src/pbrShading.ts`                  | Cook-Torrance PBR (3 Directional Lights + Ambient)               |
+| `web/src/materialBridge.ts`              | Kernel → Pipeline Material-Mapping                               |
+| `crates/kernel/src/bvh.rs`               | `classify_for_hybrid()` → `HybridInfo` (Rust-seitig)             |
+| `crates/kernel/src/sdf_compiler.rs`      | CSG-Baum → flacher Opcode-Buffer (RPN)                           |
 
 ### Konstanten
 
-| Konstante              | Wert        | Bedeutung                                            |
-| ---------------------- | ----------- | ---------------------------------------------------- |
-| `DEFERRED_MAX_OPCODES`    | 16384       | Max. Opcodes im concatenated Buffer (storage buffer)       |
-| `MAX_BODIES`              | 256         | Max. Bodies für Buffer-Pre-Allokation                      |
-| `DEFERRED_MARCH_STEPS`    | 512         | Max. Sphere-Trace-Schritte pro Pixel                       |
-| `SURFACE_EPS`             | 0.002       | Konvergenz-Schwelle für Treffer                            |
-| `MAX_MARCH_DIST`          | 3000        | Raymarching-Distanzlimit                                   |
-| `HULL_INFLATE`            | 1.01        | Aufblasfaktor für transparente Hulls (1%)                  |
+| Konstante                 | Wert        | Bedeutung                                                  |
+| ------------------------- | ----------- | ---------------------------------------------------------- |
+| `SDF_MAX_OPCODES`         | 16384       | Max. Opcodes im concatenated Buffer (sdfPipelineCommon)    |
+| `DEFERRED_MAX_BODIES`     | 256         | Max. Bodies für Buffer-Pre-Allokation                      |
+| `SDF_MARCH_STEPS`         | 512         | Max. Sphere-Trace-Schritte pro Pixel (sdfPipelineCommon)   |
+| `SURFACE_EPS`             | 0.002       | Konvergenz-Schwelle für Treffer (sdfPipelineCommon)        |
+| `MARCH_START_BACKOFF`     | 1.0 mm      | March-Start-Rückversatz vor dem exakten Hüll-Mesh (vlhp); Hulls werden NICHT mehr aufgeblasen |
+| `AABB_HULL_PAD`           | 0.5 mm      | Padding der AABB-Fallback-Hülle (sdfPipelineCommon)        |
 | `MAX_PIXELS`              | 4096 × 2160 | Maximale Viewport-Auflösung für Body-ID-Buffer             |
 | `BODY_ID_WORDS_PER_PIXEL` | 2           | uint32-Wörter pro Pixel im Body-ID-Buffer                  |
 | `VM_MAX_OPCODES`          | 512         | Per-Body Opcode-Limit im VM-Interpreter (~35 Primitives)   |

@@ -34,29 +34,36 @@ mit minimal einem einzigen Auswertungsschritt.
 
 Jeder SDF-Term (oder jede Gruppe zusammengehöriger Terme) bekommt ein
 **Hüll-Mesh**: ein Dreiecksnetz, das den Raumbereich, in dem der Term
-gilt, vollständig umschließt. Hüll-Meshes werden um einen kleinen Faktor
-(**HULL_INFLATE = 0.1%**) aufgeblasen, um sicherzustellen, dass die
-tessellierte Polygon-Oberfläche die mathematische SDF-Fläche an allen
-Stellen überdeckt — insbesondere an Silhouetten-Kanten, wo die
-Polygon-Sehne kürzer ist als der Kreisbogen:
+gilt, umschließt. Alle drei Pässe (opaque, transparent, back) nutzen
+dasselbe **EXAKTE parametrische Mesh** (`createPrimitiveGeometry` in
+`leafMeshFactory.ts`) — **keine Inflation**. Statt aufgeblasener Hüllen
+wird der March-Start um **MARCH_START_BACKOFF (1 mm)** in Kamera-Richtung
+zurückversetzt (t startet bei −1 mm, tMax bekommt +1 mm hinter der
+Rückwand), damit der Trace garantiert im Freiraum beginnt (Ticket vlhp —
+die frühere Uniform-Scale-Inflation schob konkave Flächen INS Material
+und erzeugte Sofort-Fehltreffer/Speichen):
 
-- Ein Quader-Term bekommt ein leicht aufgeblasenes Quader-Mesh.
-- Ein Kugel-Term bekommt eine SphereGeometry (32 Segmente) × 1.001.
-- Ein Gyroid-Term bekommt ein Mesh (AABB-Box + Padding), das das gesamte
-  Volumen des Gyroids umschließt.
+- Ein Quader-Term bekommt ein exaktes Quader-Mesh.
+- Ein Kugel-Term bekommt eine SphereGeometry (32 Segmente).
+- Ein Gyroid-Term bekommt ein Mesh (AABB-Box + AABB_HULL_PAD), das das
+  gesamte Volumen des Gyroids umschließt.
+
+Konservative Coverage (Silhouetten-Aufweitung im Screenspace) ist ein
+noch offener, späterer Schritt — an Silhouetten, wo die Polygon-Sehne
+innerhalb des Kreisbogens liegt, kann ein Randpixel das Hüll-Mesh
+verfehlen.
 
 ### Opak und Transparent
 
 Hüll-Meshes werden in zwei Klassen eingeteilt:
 
 **Opake Hüll-Meshes** repräsentieren Raumbereiche, in denen ein einziger
-SDF-Term die Oberfläche vollständig bestimmt. Da die Meshes leicht
-aufgeblasen sind (HULL_INFLATE), liegt der Startpunkt des Rays knapp
-*außerhalb* der mathematischen Oberfläche. Der Sphere-Tracer konvergiert
-in 1–3 Schritten von der aufgeblasenen Mesh-Position zur echten
-SDF-Oberfläche. Für volumetrische Bodies (Gyroid, Thread) werden Rays,
-die keine SDF-Oberfläche finden, verworfen (discard) — so entstehen
-korrekte Durchsichten und Transparenzen.
+SDF-Term die Oberfläche vollständig bestimmt. Das exakte Mesh liegt AUF
+der mathematischen Oberfläche; der Sphere-Tracer startet dank
+MARCH_START_BACKOFF 1 mm davor im Freiraum und konvergiert in wenigen
+Schritten zur echten SDF-Oberfläche. Für volumetrische Bodies (Gyroid,
+Thread) werden Rays, die keine SDF-Oberfläche finden, verworfen
+(discard) — so entstehen korrekte Durchsichten und Transparenzen.
 
 **Transparente Hüll-Meshes** repräsentieren Raumbereiche, in denen mehrere
 SDF-Terme zusammenwirken müssen (Booleans, Fillets, Domain Warps). An Pixeln,
@@ -119,9 +126,9 @@ Hintergrund sichtbar bleibt.
    der Kamera. Typische Einsparung: 50–90% der Marching-Schritte.
 2. **Minimale SDF-Terme**: Pro Pixel werden nur die tatsächlich relevanten
    Terme evaluiert, nicht der gesamte CSG-Baum der Szene.
-3. **Einfache Körper sind fast kostenlos**: Durch die Hull-Inflation
-   startet der Ray knapp außerhalb der Oberfläche. Sphere-Tracing konvergiert
-   in 1–3 Schritten (+ 6 für Normale) = 7–9 SDF-Evaluationen pro Pixel.
+3. **Einfache Körper sind fast kostenlos**: Durch den 1-mm-Backoff vor
+   dem exakten Hüll-Mesh startet der Ray knapp außerhalb der Oberfläche.
+   Sphere-Tracing konvergiert in wenigen Schritten (+ 6 für Normale).
 4. **Hardware-Culling**: Die GPU verwirft transparente Hüll-Meshes hinter
    opaken Oberflächen automatisch per Z-Test (Early-Z).
 5. **Transparenz ohne Sorting**: Volumetrische Bodies (Gyroid, Thread)
@@ -136,31 +143,31 @@ Jeder Body liefert mindestens ein Hüll-Mesh — opak, transparent oder beides.
 Die Klassifikation erfolgt TypeScript-seitig beim Mesh-Aufbau und richtet
 sich nach der Geometrie des Leaf-Primitives:
 
-| Body-Typ | Opakes Mesh | Transparentes Mesh |
+| Body-Typ | Opakes Mesh | Transparentes + Back-Mesh |
 |---|---|---|
-| Box | BoxGeometry (exakt) | — |
-| Sphere | SphereGeometry (exakt) | SphereGeometry (inflated) |
-| Cylinder | CylinderGeometry (exakt) | CylinderGeometry (inflated) |
-| Torus | TorusGeometry (exakt, rotateX π/2) | TorusGeometry (inflated) |
-| Capsule | CapsuleGeometry (exakt) | CapsuleGeometry (inflated) |
-| Cone | CylinderGeometry (exakt) | CylinderGeometry (inflated) |
-| Extrude/Revolve | ContourMesh (exakt) | ContourMesh (inflated) |
-| Gyroid (needs_full_sdf) | — | BoxGeometry (AABB) |
-| Domain Warps (needs_full_sdf) | — | BoxGeometry (AABB) |
+| Box (Body `is_union_only`) | BoxGeometry (exakt) | — |
+| Box (Body mit Boolean) | BoxGeometry (exakt) | BoxGeometry (exakt) |
+| Sphere/Cylinder/Torus/Capsule/Cone | exakte Geometrie | dieselbe exakte Geometrie |
+| Extrude/Revolve/Helix/Sweep | ContourMesh (exakt) | dieselbe exakte Geometrie |
+| Gyroid / Domain Warps (needs_full_sdf) | — | BoxGeometry (AABB + AABB_HULL_PAD) |
 
 Regeln:
 - Jeder Body braucht mindestens ein Mesh (opak oder transparent).
-- **Box**: Nur opak — rein konvex, keine Silhouetten-Clipping-Gefahr.
-- **Alle anderen Primitiven**: Opak (exakte Geometrie) + transparent
-  (inflated × HULL_INFLATE). Der Sphere-Tracer konvergiert vom inflated
-  Rand in 1–3 Schritten zur exakten Fläche.
+- **Box eines reinen Union-Bodys**: Nur opak — die konvexe Front-Fläche
+  IST die Oberfläche. Trägt der Body dagegen ein Difference/Intersect
+  (`is_union_only=false`), schnitzt der Opcode-SDF die Box an: dann
+  bekommt auch sie March-Proxies, sonst bliebe die Bohrung unsichtbar
+  (Ticket 87bf).
+- **Alle anderen Primitiven**: Opak + transparent + back, alle drei mit
+  DEMSELBEN exakten parametrischen Mesh (drei Instanzen für die
+  Disposal-Logik). Der March startet MARCH_START_BACKOFF davor.
 - **Gyroid / Domain Warps**: Nur transparent (AABB-Box), da keine exakte
   Mesh-Geometrie darstellbar.
 
-Vorteile gegenüber nur-inflated Meshes:
-- **Kein Inflations-Halo**: Opake Meshes liefern exakte Silhouetten.
-  Am Rand, wo nur das transparente Mesh den Pixel trifft, findet der
-  Sphere-Tracer die SDF-Fläche oder discardet (dünner, kaum sichtbarer Rand).
+Vorteile der exakten Meshes:
+- **Kein Inflations-Artefakt**: Die frühere Uniform-Scale-Inflation schob
+  konkave Flächen (Revolve-Profil!) ins Material — Sofort-Fehltreffer,
+  sichtbar als Speichen/Abdunklung (Ticket vlhp).
 - **Gyroid-Durchsicht**: Gyroid-Löcher zeigen das opake Objekt dahinter,
   weil die opake Schicht (RT1) die Information bewahrt.
 - **Weniger SDF-Arbeit**: Für opak-only Pixel (Fall A) entfällt der
@@ -171,9 +178,9 @@ Vorteile gegenüber nur-inflated Meshes:
 Die Implementierung nutzt drei Render Targets plus einen
 Fragment-Shader-Atomic Body-ID-Buffer:
 
-- **RT1 (Opaque)**: Nicht-inflated Hüll-Meshes → `vec4(worldPos, bodyIndex+1)`.
+- **RT1 (Opaque)**: Exakte Hüll-Meshes → `vec4(worldPos, bodyIndex+1)`.
   Standard-Depth-Test, nächstes opakes Objekt gewinnt.
-- **RT2 (Transparent Front)**: Inflated/Volume Hüll-Meshes, FrontSide →
+- **RT2 (Transparent Front)**: Dieselben exakten/Volume-Hüll-Meshes, FrontSide →
   `vec4(worldPos, bodyIndex+1)`. Standard-Depth-Test, nächste Vorderseite = tMin.
 - **RT3 (Back-Face)**: Selbe Hulls, BackSide → `vec4(scalarCamDist, 0, 0, 1)`.
   MAX-Blending, kein Depth-Buffer. Fernste Rückseite = tMax-Basis.
@@ -272,25 +279,30 @@ n = normalize(vec3(
 
 ### Konstanten
 
-| Konstante | Wert | Zweck |
-|-----------|------|-------|
-| `DEFERRED_MAX_OPCODES` | 16384 | Max. Opcodes im concatenated Buffer |
-| `MAX_BODIES` | 256 | Max. Bodies (Buffer-Allokation, frei erhöhbar) |
-| `DEFERRED_MARCH_STEPS` | 512 | Max. Sphere-Trace-Schritte pro Pixel |
-| `SURFACE_EPS` | 0.002 | Konvergenz-Schwelle für Treffer |
-| `HULL_INFLATE` | 1.001 | Aufblasfaktor für transparente Hulls |
-| `MAX_PIXELS` | 4096 × 2160 | Max. Viewport-Auflösung für Body-ID-Buffer |
-| `BODY_ID_WORDS_PER_PIXEL` | 2 | uint32-Wörter pro Pixel im Body-ID-Buffer |
+| Konstante | Wert | Ort | Zweck |
+|-----------|------|-----|-------|
+| `SDF_MAX_OPCODES` | 16384 | sdfPipelineCommon | Max. Opcodes im concatenated Buffer (beide Pipelines) |
+| `SDF_MARCH_STEPS` | 512 | sdfPipelineCommon | Max. Sphere-Trace-Schritte pro Pixel (beide Pipelines) |
+| `SURFACE_EPS` | 0.002 | sdfPipelineCommon | Konvergenz-Schwelle für Treffer (beide Pipelines) |
+| `AABB_HULL_PAD` | 0.5 mm | sdfPipelineCommon | Padding der AABB-Fallback-Hülle |
+| `DEFERRED_MAX_BODIES` | 256 | sdfDeferredRenderer | Max. Bodies (Buffer-Allokation, frei erhöhbar) |
+| `MARCH_START_BACKOFF` | 1.0 mm | sdfDeferredRenderer.shaders | March-Start-Rückversatz in Kamera-Richtung (Ticket vlhp) |
+| `MAX_PIXELS` | 4096 × 2160 | sdfDeferredRenderer | Max. Viewport-Auflösung für Body-ID-Buffer |
+| `BODY_ID_WORDS_PER_PIXEL` | 2 | sdfDeferredRenderer.shaders | uint32-Wörter pro Pixel im Body-ID-Buffer |
 
 ### Dateien
 
 | Datei | Rolle |
 |-------|-------|
-| `web/src/sdfDeferredRenderer.ts` | Pipeline-State, alle Passes, Materialien |
+| `web/src/sdfDeferredRenderer.ts` | Pipeline-State, Body-/Buffer-Verwaltung, alle Passes (voll typisiert) |
+| `web/src/sdfDeferredRenderer.shaders.ts` | TSL-Shader-Builder: G-Buffer-/Back-Face-/Shade-Material, Body-ID-Buffer (@ts-nocheck) |
+| `web/src/sdfPipelineCommon.ts` | Geteilte Buffer-Sets, March-Konstanten, CameraUniformSet, disposeAfterGpuIdle |
+| `web/src/sdfPipelineCommon.shaders.ts` | Geteilte TSL-Blöcke: emitUnionMarch, emitSceneDepthWrite, makeDisplacedSdfEval, shadeSdfHit |
 | `web/src/sdfVmInterpreter.ts` | `buildVmSdfEvalFn()` mit `baseOffset` |
-| `web/src/sdfHybridRenderer.ts` | `createPrimitiveGeometry()`, `applyLeafTransform()`, `BODY_COLORS` |
-| `web/src/Viewport.tsx` | `SdfDeferredOverlay` Komponente |
-| `web/src/SettingsMenu.tsx` | RenderMode `"sdf-deferred"` |
+| `web/src/leafMeshFactory.ts` | `createPrimitiveGeometry()`, `leafGeoKey()`, `applyLeafTransform()`, `buildWarpedLeafGeometry()` |
+| `web/src/bodyColors.ts` | `BODY_COLORS` (Part-Palette, SSOT) |
+| `web/src/viewportSdfOverlays.tsx` | `SdfDeferredOverlay`/`SdfVmOverlay` + `useSdfPipelineOverlay`-Hook |
+| `web/src/settings.ts` | RenderMode `"sdf-deferred"` |
 | `crates/kernel/src/bvh.rs` | `classify_for_hybrid()` → `HybridLeafInfo` |
 | `crates/kernel/src/sdf_compiler.rs` | CSG → RPN Opcode-Kompilierung |
 
@@ -329,10 +341,10 @@ BackSide, kein depthTest/Write, `CustomBlending` mit `MaxEquation` +
 
 **Pass 0 — Compute Clear**: `atomicStore(bodyIdBuf[i], 0)` per Compute (2 Wörter pro Pixel).
 
-**Pass 1 — Opaque Raster**: Nicht-inflated Hüll-Meshes → opaqueRT.
+**Pass 1 — Opaque Raster**: Exakte Hüll-Meshes → opaqueRT.
 Standard-Depth-Test, nächstes opakes Objekt gewinnt.
 
-**Pass 2 — Transparent Front**: Inflated Hüll-Meshes (FrontSide) →
+**Pass 2 — Transparent Front**: Dieselben exakten Hüll-Meshes (FrontSide) →
 transparentRT. Standard-Depth-Test + Body-ID-Insertion in bodyIdBuf.
 Nächste Vorderseite = tMin.
 
@@ -352,13 +364,15 @@ Rückseite gewinnt.
 **Fall B** (`hasTrans`): Multi-Body Sphere-Trace.
 
 1. **tMin**: World-Position aus RT2 (nächste transparente Vorderseite).
-2. **tMax**: `backDist - frontDist` aus RT3 (fernste Rückseite minus
-   Vorderseiten-Abstand zur Kamera). Optional verengt durch Opaque-Depth
-   eines *anderen* Bodies aus RT1: `tMax = min(tMax, opaqueDist)`.
-   Same-Body-Opaques werden ignoriert.
-3. **March**: Loop über `DEFERRED_MARCH_STEPS`. Pro Schritt: evaluiere
-   SDF für die 1–2 Bodies aus dem Body-ID-Buffer, finde minimale Distanz.
-   Treffer bei `d < SURFACE_EPS`.
+2. **tMax**: `backDist - frontDist + MARCH_START_BACKOFF` aus RT3
+   (fernste Rückseite minus Vorderseiten-Abstand zur Kamera). Optional
+   verengt durch Opaque-Depth eines *anderen* Bodies aus RT1:
+   `tMax = min(tMax, opaqueDist)`. Same-Body-Opaques werden ignoriert.
+3. **March**: `emitUnionMarch` (sdfPipelineCommon.shaders, geteilt mit dem
+   VM-Renderer), Start bei `t = -MARCH_START_BACKOFF`, Loop über
+   `SDF_MARCH_STEPS`. Pro Schritt: evaluiere SDF für die 1–2 Bodies aus
+   dem Body-ID-Buffer, finde minimale Distanz. Treffer bei
+   `d < SURFACE_EPS`.
 4. **Ergebnis**:
    - Hit → Shade am Trefferpunkt.
    - Kein Hit + Opaque eines anderen Bodies → Shade am opaken Punkt (Fall A).
@@ -369,12 +383,13 @@ Rückseite gewinnt.
 Pro Body werden Opcode-Snippets in den concatenated Buffer kopiert und
 Hüll-Meshes erzeugt:
 
-- **Box**: Nur opakes Mesh (BoxGeometry, exakt).
-- **Sphere/Cylinder/Torus/Capsule/Cone/Extrude/Revolve**: Opakes Mesh
-  (exakte Geometrie) + transparentes Mesh (inflated × HULL_INFLATE) +
-  Back-Face Mesh (inflated, BackSide, shared backFaceMaterial).
+- **Box eines `is_union_only`-Bodys**: Nur opakes Mesh (BoxGeometry, exakt).
+- **Alle anderen Leaves (inkl. Box mit Boolean, Ticket 87bf)**: Opakes,
+  transparentes und Back-Face-Mesh — drei Instanzen DESSELBEN exakten
+  parametrischen Meshes (`createPrimitiveGeometry`); der March startet
+  MARCH_START_BACKOFF davor.
 - **Gyroid / needs_full_sdf**: Nur transparentes + Back-Face Mesh
-  (BoxGeometry über AABB).
+  (BoxGeometry über AABB + AABB_HULL_PAD).
 
 ---
 

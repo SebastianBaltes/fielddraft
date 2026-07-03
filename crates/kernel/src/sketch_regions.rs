@@ -226,7 +226,7 @@ pub fn region_index_at_point(sketch: &Sketch2d, p: [f32; 2], resolution: u32) ->
 
 /// Restrict a sketch profile to the connected region(s) containing the given
 /// sketch-space points (ticket dhjn). The profile that
-/// [`crate::sketch_features::build_sketch2d_from_sub_calls`] produces is a
+/// [`crate::sketch::build_sketch2d_from_sub_calls`] produces is a
 /// left-folded `Union` of every loop/primitive (holes encoded as
 /// `Difference`). We flatten that top-level `Union` chain into its branches,
 /// keep each branch whose own SDF is inside (< 0) at ANY of the points, and

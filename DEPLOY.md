@@ -25,14 +25,14 @@ No backend needed for local modeling — projects save to localStorage.
 ## Dev stack (Docker Compose)
 
 The committed `docker-compose.yml` is the **development** stack (MariaDB + Go
-server + a Vite dev container). It is NOT for production — the web service runs
-the Vite dev server and ports are exposed on the host for convenience.
+server). It is NOT for production — ports are exposed on the host for
+convenience. The frontend is not containerized in dev: run Vite on the host
+(`just dev` / `just dev-full`); it proxies `/api` to the Go server.
 
 ```bash
-docker compose up --build -d
+docker compose up --build -d db server
 # db:     MariaDB 11   (host :3306)
 # server: Go backend   (host :8080)
-# web:    Vite dev      (host :5173)
 ```
 
 Dev env vars (host port overrides) live in `.env` — see `.env.example`.
@@ -216,7 +216,10 @@ docker compose --env-file .env.prod -f docker-compose.prod.yml up -d
 Required env (full list in `.env.prod.example`): `DOMAIN`, `TLS_EMAIL`,
 `REGISTRY`, `TAG`, `DB_ROOT_PASSWORD`, `DB_NAME`, `DB_USER`, `DB_PASSWORD`,
 `ADMIN_EMAIL`, `ADMIN_PASSWORD`. The server gets `SECURE_COOKIES=1`
-(set in the compose file) so session cookies carry `Secure` behind TLS.
+(set in the compose file) so session cookies carry `Secure` behind TLS, and
+`TRUST_PROXY=1` so the per-IP rate limiter reads the client IP from
+`X-Forwarded-For` (correct behind Caddy, which strips client-supplied XFF;
+without a trusted proxy leave it unset — the header is client-spoofable).
 
 ### TLS / domain
 

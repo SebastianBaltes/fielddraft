@@ -5,14 +5,14 @@
 // OWN filesystem via the same-origin `/api/file?path=…` middleware
 // (web/vite.config.ts) — no CORS, no ClaudeDraft round-trip. The bytes feed
 // `store.loadProjectFromBytes`; the settings feed a one-shot in-memory override
-// (SettingsMenu.setBootSettings) so the repro tab opens in the reported render
+// (settings.ts setBootSettings) so the repro tab opens in the reported render
 // mode without touching the user's localStorage.
 //
 // Orchestrated by main.tsx: applyBootSettings() runs BEFORE React mounts (so
 // the first loadSettings() sees the override); loadBootProject() runs after.
 
 import { getStore } from "./store";
-import { setBootSettings } from "./SettingsMenu";
+import { setBootSettings } from "./settings";
 import { ticketDir, fileApiUrl } from "./bootParams";
 
 /**

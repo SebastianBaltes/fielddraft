@@ -180,7 +180,7 @@ fn sorted_eigen(cov: &Matrix3<f64>) -> [(f64, [f64; 3]); 3] {
             (eig.eigenvalues[i], [v[0], v[1], v[2]])
         })
         .collect();
-    pairs.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap());
+    pairs.sort_by(|a, b| b.0.total_cmp(&a.0));
     [pairs[0], pairs[1], pairs[2]]
 }
 
@@ -221,7 +221,7 @@ fn fit_line(points: &[EdgePoint], tol: f64) -> Option<Vec<HermiteSample>> {
     order.sort_by(|&i, &j| {
         let ti = dot(sub(pos[i], c), dir);
         let tj = dot(sub(pos[j], c), dir);
-        ti.partial_cmp(&tj).unwrap()
+        ti.total_cmp(&tj)
     });
     Some(orient_chain(points, &order))
 }
@@ -351,7 +351,7 @@ fn fit_circle(points: &[EdgePoint], tol: f64) -> Option<Vec<HermiteSample>> {
     // disjoint arcs (two large gaps) must fall back to per-arc gap-chaining.
     let mut order: Vec<usize> = (0..inlier_idx.len()).collect();
     let angle = |k: usize| (uv[k].1 - cy).atan2(uv[k].0 - cx);
-    order.sort_by(|&i, &j| angle(i).partial_cmp(&angle(j)).unwrap());
+    order.sort_by(|&i, &j| angle(i).total_cmp(&angle(j)));
 
     // Consecutive angular gaps along the sorted order, plus the wrap gap. Track
     // the two largest and where the single largest sits (it is the arc's open
@@ -382,7 +382,7 @@ fn fit_circle(points: &[EdgePoint], tol: f64) -> Option<Vec<HermiteSample>> {
     // mirroring the spatial gap-chaining rule. Two disjoint arcs leave a second
     // large gap and are rejected here so each arc chains on its own.
     let mut gaps: Vec<f64> = (0..n).map(gap_at).collect();
-    gaps.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    gaps.sort_by(|a, b| a.total_cmp(b));
     let median_gap = gaps[n / 2];
     if second_gap > (median_gap * ARC_GAP_FACTOR).max(CIRCLE_MAX_ANGULAR_GAP) {
         return None;
@@ -859,11 +859,7 @@ fn trace_seam_chains(
         // interior point, least likely to be a noisy fragment end.
         let c = centroid(&remaining);
         let si = (0..remaining.len())
-            .min_by(|&i, &j| {
-                dist2(remaining[i], c)
-                    .partial_cmp(&dist2(remaining[j], c))
-                    .unwrap()
-            })
+            .min_by(|&i, &j| dist2(remaining[i], c).total_cmp(&dist2(remaining[j], c)))
             .unwrap();
         let seed = remaining[si];
 
@@ -1357,7 +1353,7 @@ fn median_positive_spacing(points: &[[f64; 3]]) -> f64 {
     if nn.is_empty() {
         return 0.0;
     }
-    nn.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    nn.sort_by(|a, b| a.total_cmp(b));
     nn[nn.len() / 2]
 }
 
@@ -1923,7 +1919,7 @@ const REFLEX_CELL_HALF_FACTOR: f32 = 3.0;
 /// spacing as its snap radius; an endpoint whose line-fit stopped a few cells
 /// short of a *convex* corner can fall just outside it, and a *reflex* corner
 /// has no extracted vertex to snap to at all (see below). Both leave the edge
-/// with a `None` endpoint, which forces `order_loops` onto its unordered
+/// with a `None` endpoint, which forces `order_loop_groups` onto its unordered
 /// fallback for every face that touches the gap. This pass closes both:
 ///
 /// 1. **Re-snap to an existing vertex** — for each dangling end, the nearest

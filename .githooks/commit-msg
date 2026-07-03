@@ -25,7 +25,9 @@ version="${BASH_REMATCH[3]}"
 notes="$(git show ":web/src/releaseNotes.ts" 2>/dev/null || true)"
 [[ -z "$notes" ]] && notes="$(cat web/src/releaseNotes.ts 2>/dev/null || true)"
 
-if ! grep -q "\"version\": \"$version\"" <<< "$notes"; then
+# Match both the JSON-style (`"version": "…"`) and prettier's unquoted-key
+# (`version: "…"`) forms — releaseNotes.ts is prettier-normalised since v0.6.349.
+if ! grep -qE "\"?version\"?: \"$version\"" <<< "$notes"; then
   cat >&2 <<EOF
 ✖ Release-Notes-Eintrag für v$version fehlt.
 

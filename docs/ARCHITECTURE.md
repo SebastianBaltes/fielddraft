@@ -24,47 +24,47 @@ graph TB
     Server --> DB["MariaDB"]
 ```
 
----
+***
 
 ## Table of Contents
 
 1. [Technology Stack](#1-technology-stack)
 2. [Repository Layout](#2-repository-layout)
 3. [Rust Kernel](#3-rust-kernel)
-   - [Protocol Crate](#31-protocol-crate)
-   - [Solver Crate](#32-solver-crate)
-   - [Features-Macros Crate](#33-features-macros-crate)
-   - [Kernel Crate](#34-kernel-crate)
+   * [Protocol Crate](#31-protocol-crate)
+   * [Solver Crate](#32-solver-crate)
+   * [Features-Macros Crate](#33-features-macros-crate)
+   * [Kernel Crate](#34-kernel-crate)
 4. [Web Frontend](#4-web-frontend)
-   - [State Management](#41-state-management)
-   - [WASM Bridge](#42-wasm-bridge)
-   - [Rendering Pipeline](#43-rendering-pipeline)
-   - [B-Rep Element Selection & Picking](#44-b-rep-element-selection--picking)
-   - [Sketch System](#45-sketch-system)
-   - [Import/Export](#46-importexport)
-   - [CSS Architecture](#47-css-architecture)
+   * [State Management](#41-state-management)
+   * [WASM Bridge](#42-wasm-bridge)
+   * [Rendering Pipeline](#43-rendering-pipeline)
+   * [B-Rep Element Selection & Picking](#44-b-rep-element-selection--picking)
+   * [Sketch System](#45-sketch-system)
+   * [Import/Export](#46-importexport)
+   * [CSS Architecture](#47-css-architecture)
 5. [Go Server](#5-go-server)
 6. [Build System & Deployment](#6-build-system--deployment)
 7. [Testing Strategy](#7-testing-strategy)
 8. [Key Data Flows](#8-key-data-flows)
 
----
+***
 
 ## 1. Technology Stack
 
-| Layer | Technology | Purpose |
-|-------|-----------|---------|
-| Geometry Kernel | Rust → WebAssembly (wasm-pack) | SDF evaluation, CSG tree, Dual Contouring mesh |
-| Frontend | React 19, TypeScript 6, Vite 8 | UI components, state management |
-| 3D Rendering | Three.js 0.183 + @react-three/fiber 9 | WebGPU ray marching, mesh display |
-| Constraint Solver | @salusoft89/planegcs (WASM) | 2D sketch geometric constraint solving |
-| CAD Import | opencascade.js 2.0, occt-import-js | STEP/IGES file import via B-Rep tessellation |
-| Backend (optional) | Go 1.26, MariaDB 11 | Authentication, project sync, snapshots |
-| Testing | cargo test, Vitest, Playwright | Unit (Rust/TS), integration, E2E with real WebGPU |
+| Layer              | Technology                            | Purpose                                           |
+| ------------------ | ------------------------------------- | ------------------------------------------------- |
+| Geometry Kernel    | Rust → WebAssembly (wasm-pack)        | SDF evaluation, CSG tree, Dual Contouring mesh    |
+| Frontend           | React 19, TypeScript 6, Vite 8        | UI components, state management                   |
+| 3D Rendering       | Three.js 0.183 + @react-three/fiber 9 | WebGPU ray marching, mesh display                 |
+| Constraint Solver  | @salusoft89/planegcs (WASM)           | 2D sketch geometric constraint solving            |
+| CAD Import         | opencascade.js 2.0, occt-import-js    | STEP/IGES file import via B-Rep tessellation      |
+| Backend (optional) | Go 1.26, MariaDB 11                   | Authentication, project sync, snapshots           |
+| Testing            | cargo test, Vitest, Playwright        | Unit (Rust/TS), integration, E2E with real WebGPU |
 
 **Key design choice:** No hand-written shaders. All GPU code is generated dynamically via Three.js TSL (Texture Shading Language) node graphs.
 
----
+***
 
 ## 2. Repository Layout
 
@@ -84,7 +84,7 @@ fielddraft/
 │   │   ├── api/           # Backend API client
 │   │   └── *.ts/tsx       # Application modules (~50 files)
 │   ├── tests/             # Playwright E2E tests
-│   └── package.json       # v0.3.55
+│   └── package.json       # app version (single source of truth)
 ├── server/
 │   └── main.go            # Optional Go backend
 ├── Cargo.toml             # Workspace: 4 crates, AGPL-3.0
@@ -93,7 +93,7 @@ fielddraft/
 └── DEPLOY.md              # Production deployment guide
 ```
 
----
+***
 
 ## 3. Rust Kernel
 
@@ -118,15 +118,15 @@ Document
 
 **Primitive enum** — 14 geometric shape types:
 
-| Primitive | Description |
-|-----------|-------------|
-| `Box`, `Sphere`, `Cylinder`, `Torus`, `Cone`, `Capsule`, `HexPrism`, `Ellipsoid` | Direct SDF evaluation |
-| `Extrude` | 2D sketch profile swept along Z |
-| `Revolve` | 2D sketch profile revolved around Y |
-| `Helix` | 2D sketch profile swept HELICALLY around Y (real screw threads): pitch per turn, turn count, handedness, taper, start angle; the feature layer adds Onshape-style input modes (Pitch+Turns / Pitch+Height / Turns+Height — the third quantity is derived) and a merge-scope target-body query. Cylindrical unwrap `w = y − pitch·θ/2π` with nearest-pass rounding (profile axial extent must stay ≤ pitch); the finite sweep clamps the CONTINUOUS sweep parameter `t ∈ [0, 2π·turns]` — never a per-winding integer index, which would jump `w` by a full pitch across the atan2 seam at the ends (ticket vtyh's phantom ribbon). The end overshoot becomes a signed chord coordinate `ell` composed with the profile distance IQ-extrude-style, giving clean end caps (fractional turns end mid-winding). The result is divided by the per-feature constant Jacobian bound `√(2.25 + (pitch/2πr̃)² + taper²)` (r̃ from the profile's inner radius; the 2.25 covers the `ell` component) so the sphere-march never overshoots — the same self-normalisation family as Thread/Gyroid. Opcodes `OP_WARP_HELIX`/`OP_HELIX_SCALE` mirror this in both VMs (`ell` rides in the warped point's z slot). Weave-excluded (non-Lipschitz, DL-71): helix bodies render via the SDF, no B-Rep wireframe. |
-| `Gyroid` | TPMS lattice (`\|f\| - thickness`) |
-| `Thread` | Metric helix (legacy toy: fixed cosine groove — prefer the `helix` feature) |
-| `ImportedMesh` | CSG-participating triangle mesh (passthrough storage) |
+| Primitive                                                                        | Description                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| -------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `Box`, `Sphere`, `Cylinder`, `Torus`, `Cone`, `Capsule`, `HexPrism`, `Ellipsoid` | Direct SDF evaluation                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| `Extrude`                                                                        | 2D sketch profile swept along Z                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| `Revolve`                                                                        | 2D sketch profile revolved around Y                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| `Helix`                                                                          | 2D sketch profile swept HELICALLY around Y (real screw threads): pitch per turn, turn count, handedness, taper, start angle; the feature layer adds Onshape-style input modes (Pitch+Turns / Pitch+Height / Turns+Height — the third quantity is derived) and a merge-scope target-body query. Cylindrical unwrap `w = y − pitch·θ/2π` with nearest-pass rounding (profile axial extent must stay ≤ pitch); the finite sweep clamps the CONTINUOUS sweep parameter `t ∈ [0, 2π·turns]` — never a per-winding integer index, which would jump `w` by a full pitch across the atan2 seam at the ends (ticket vtyh's phantom ribbon). The end overshoot becomes a signed chord coordinate `ell` composed with the profile distance IQ-extrude-style, giving clean end caps (fractional turns end mid-winding). The result is divided by the per-feature constant Jacobian bound `√(2.25 + (pitch/2πr̃)² + taper²)` (r̃ from the profile's inner radius; the 2.25 covers the `ell` component) so the sphere-march never overshoots — the same self-normalisation family as Thread/Gyroid. Opcodes `OP_WARP_HELIX`/`OP_HELIX_SCALE` mirror this in both VMs (`ell` rides in the warped point's z slot). Weave-excluded (non-Lipschitz, DL-71): helix bodies render via the SDF, no B-Rep wireframe. |
+| `Gyroid`                                                                         | TPMS lattice (`\|f\| - thickness`)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| `Thread`                                                                         | Metric helix (legacy toy: fixed cosine groove — prefer the `helix` feature)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| `ImportedMesh`                                                                   | CSG-participating triangle mesh (passthrough storage)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 
 **Typed parameters** (K4.5.4f): `Length` (mm/cm/m/in → mm), `Angle` (deg/rad), `Query`, `MultiQuery`, `BoolOp` (`add`/`new`/`remove`/`intersect`, Onshape result-body vocabulary).
 
@@ -159,6 +159,7 @@ SketchDiagnostics
 **`crates/features-macros`** — Procedural macro `#[derive(FeatureSchema)]`.
 
 Generates from annotated structs:
+
 1. `const TYPE_NAME: &'static str` — registry key
 2. `fn type_name() → &'static str`
 3. `fn schema_json() → Value` — JSON schema with types, defaults, UI hints
@@ -170,7 +171,7 @@ Field annotations: `#[param(name = "...", default = expr, ui_hint = "slider"|"op
 
 **`crates/kernel`** — The core geometry engine. Compiled as `cdylib` (WASM) + `rlib` (Rust tests).
 
-#### Feature System (`features.rs`)
+#### Feature System (`features/`)
 
 Central dispatch for the parametric modeling timeline:
 
@@ -182,7 +183,7 @@ trait FeatureKind: Send + Sync {
 }
 ```
 
-`FeatureRegistry::with_builtins()` registers ~24 feature kinds: primitives, patterns (linear/circular/mirror), transforms (translate/rotate/scale), sketch, extrude, revolve, sweep, boolean, fillet, shell, material. `regenerate()` walks feature calls in document order, resolves formula variables, and dispatches to each feature's `execute()`. Regeneration is **error-tolerant** (Onshape semantics, ticket sx5a): a failing feature is recorded in the returned `RegenErrors` and skipped — it contributes no geometry while the rest of the document regenerates normally. The kernel keeps the messages in `feature_errors`, `listFeatures` exports them per feature (`error`), and the UI paints the row/dialog title red with the message as the tooltip. Mutations therefore never get rejected because a feature can't execute — creating an extrude with an empty or non-coplanar profile succeeds and the feature reports its error until the params are fixed.
+`FeatureRegistry::with_builtins()` registers \~24 feature kinds: primitives, patterns (linear/circular/mirror), transforms (translate/rotate/scale), sketch, extrude, revolve, sweep, boolean, fillet, shell, material. `regenerate()` walks feature calls in document order, resolves formula variables, and dispatches to each feature's `execute()`. Regeneration is **error-tolerant** (Onshape semantics, ticket sx5a): a failing feature is recorded in the returned `RegenErrors` and skipped — it contributes no geometry while the rest of the document regenerates normally. The kernel keeps the messages in `feature_errors`, `listFeatures` exports them per feature (`error`), and the UI paints the row/dialog title red with the message as the tooltip. Mutations therefore never get rejected because a feature can't execute — creating an extrude with an empty or non-coplanar profile succeeds and the feature reports its error until the params are fixed.
 
 `Context` holds the mutable document reference, solved sketch data (`HashMap<FeatureId, SketchData>`), and collected edge fillets.
 
@@ -190,12 +191,12 @@ trait FeatureKind: Send + Sync {
 
 The `CsgNode` enum (16 variants) represents the constructive solid geometry tree:
 
-- **Leaf:** `Leaf { id, primitive }` — terminal SDF evaluation
-- **Binary ops:** `Union`, `Difference`, `Intersection`, `SmoothUnion`, `SmoothDifference`
-- **Domain warps:** `Twist` (rotate XZ by rate*y), `Bend` (rotate XY by rate*x), `Displace` (sine-product bump)
-- **Modifiers:** `Shell` (inward wall `max(d, −(d_ret + t))`; opened faces are removed from the *retained-boundary* field `d_ret` — the leaf re-evaluates with the opened sub-faces' distance contributions dropped, so the wall keeps constant thickness right up to each opening and ends in a crisp annular rim), `Morph` (lerp between SDFs)
-- **Profile-based:** `Extrude { sketch, half_height }`, `Revolve { sketch }`
-- **Masked blend:** Capsule-masked smooth transition between two SDFs
+* **Leaf:** `Leaf { id, primitive }` — terminal SDF evaluation
+* **Binary ops:** `Union`, `Difference`, `Intersection`, `SmoothUnion`, `SmoothDifference`
+* **Domain warps:** `Twist` (rotate XZ by rate*y), `Bend` (rotate XY by rate*x), `Displace` (sine-product bump)
+* **Modifiers:** `Shell` (inward wall `max(d, −(d_ret + t))`; opened faces are removed from the *retained-boundary* field `d_ret` — the leaf re-evaluates with the opened sub-faces' distance contributions dropped, so the wall keeps constant thickness right up to each opening and ends in a crisp annular rim), `Morph` (lerp between SDFs)
+* **Profile-based:** `Extrude { sketch, half_height }`, `Revolve { sketch }`
+* **Masked blend:** Capsule-masked smooth transition between two SDFs
 
 `CsgNode::from_features()` folds the spine linearly: each feature becomes a leaf, wrapped in its transform and domain warps, then folded into the accumulator via the feature's boolean operation.
 
@@ -215,30 +216,30 @@ compile_body(node: &BoundedCsg) → CompiledSdf { opcodes: Vec<f32>, aabb, volum
 
 **Opcode set** (35 opcodes, postfix encoding):
 
-| Category | Opcodes |
-|----------|---------|
-| 3D Primitives | BOX, SPHERE, CYLINDER, TORUS, CONE, CAPSULE, HEX_PRISM, ELLIPSOID, CONST, GYROID, THREAD, TEX3D |
-| 2D Primitives | CIRCLE, RECT, POLY, SECTOR |
-| Binary Ops | UNION, DIFFERENCE, INTERSECT, SMOOTH_UNION, SMOOTH_DIFF |
-| Modifiers | SHELL, MORPH, DISPLACE_VAL, EXTRUDE, REVOLVE_SCALE, OFFSET_2D |
-| Domain Warps | WARP_PUSH, WARP_POP, WARP_TWIST, WARP_BEND, WARP_TRANSFORM, WARP_REVOLVE |
-| Masked Blend | MASKED_BLEND |
-| Control | END |
+| Category      | Opcodes                                                                                          |
+| ------------- | ------------------------------------------------------------------------------------------------ |
+| 3D Primitives | BOX, SPHERE, CYLINDER, TORUS, CONE, CAPSULE, HEX\_PRISM, ELLIPSOID, CONST, GYROID, THREAD, TEX3D |
+| 2D Primitives | CIRCLE, RECT, POLY, SECTOR                                                                       |
+| Binary Ops    | UNION, DIFFERENCE, INTERSECT, SMOOTH\_UNION, SMOOTH\_DIFF                                        |
+| Modifiers     | SHELL, MORPH, DISPLACE\_VAL, EXTRUDE, REVOLVE\_SCALE, OFFSET\_2D                                 |
+| Domain Warps  | WARP\_PUSH, WARP\_POP, WARP\_TWIST, WARP\_BEND, WARP\_TRANSFORM, WARP\_REVOLVE                   |
+| Masked Blend  | MASKED\_BLEND                                                                                    |
+| Control       | END                                                                                              |
 
-Leaf primitives encode: opcode tag + transform (3 translate + 4 quaternion + 3 scale) + shape parameters. This flat buffer is uploaded to the GPU as a storage buffer and interpreted by the VM shader at runtime. Typical per-body sizes: single primitive = 14–18 floats, 5 primitives + operators = ~100 floats, complex 20-primitive body = ~400 floats.
+Leaf primitives encode: opcode tag + transform (3 translate + 4 quaternion + 3 scale) + shape parameters. This flat buffer is uploaded to the GPU as a storage buffer and interpreted by the VM shader at runtime. Typical per-body sizes: single primitive \= 14–18 floats, 5 primitives + operators \= \~100 floats, complex 20-primitive body \= \~400 floats.
 
 #### Multi-Body Partitioning (`body.rs`)
 
 Features carry an Onshape-style result-body op (`BoolOp`: `add` / `new` /
 `remove` / `intersect`, protocol crate) that drives the partition:
 
-- **New:** always seeds a fresh body — spatial overlap alone never merges
-- **Add:** geometric union that merges into every body it touches (AABB
+* **New:** always seeds a fresh body — spatial overlap alone never merges
+* **Add:** geometric union that merges into every body it touches (AABB
   overlap), bridging several into one Part; explicit `target_ids` narrow
   the candidates. A contact-free Add falls back to seeding its own body
-- **Remove/Intersect:** attach via `target_ids` (preferred) or first AABB
+* **Remove/Intersect:** attach via `target_ids` (preferred) or first AABB
   overlap; dropped if nothing matches
-- Feature order within a body always matches document order (deterministic)
+* Feature order within a body always matches document order (deterministic)
 
 Defaults: primitives (box, sphere, …) and imported meshes seed `new`
 bodies; extrude/revolve/sweep/thicken default to `add` so e.g. a face
@@ -294,85 +295,128 @@ nearest-endpoint proximity, and filtered — non-closing rings (orphaned
 duplicate leftovers), micro-rings below 1e-4 of the profile extent and
 "holes" touching the outer boundary (corner squiggles from the seam
 tracer) are dropped; coincident rings deduplicate by area + extent +
-centroid. Largest surviving ring = outer profile, the rest subtract as
+centroid. Largest surviving ring \= outer profile, the rest subtract as
 holes. (This armor — duplicated in `faceFill.ts` on the web side — is a
 downstream mitigation of the missing classification stage above; once
 `BREP-CLASSIFICATION-PLAN.md` lands, both copies should become
 removable.)
 
-Each `Body` caches: compiled SDF opcodes, mesh, topology, payload hash (for incremental meshing), and a version counter for GPU buffer reuse.
+Each `Body` caches: compiled SDF opcodes, mesh, topology, payload hash (for incremental meshing), and a version counter for GPU buffer reuse. The payload/geometry cache keys are **not** hand-walked per variant: `body.rs::hash_feature_geometry` hashes the canonical rmp-serde bytes of each feature's `CsgNode` tree (+ junction blend), so new variants/fields enter the key automatically (B8); an `ImportedMesh` contributes its `MeshSdf::content_fingerprint()` (FNV over the triangle bits, computed once at construction) instead of its triangle buffer. Hashes are in-memory only — `Body` is never serialised.
 
 #### Meshing (`dc.rs`, `mdc.rs`)
 
 **Dual Contouring** (`dc.rs`) generates triangle meshes from the SDF:
-- Voxelizes the body's AABB at configurable resolution
-- Narrow-band optimization: only processes voxels near the surface
-- Per-vertex classification (face/edge/vertex) from contributor analysis
+
+* Voxelizes the body's AABB at configurable resolution
+* Narrow-band optimization: only processes voxels near the surface
+* Per-vertex classification (face/edge/vertex) from contributor analysis
 
 **Marching Cubes** variant (`mdc.rs`) available as alternative mesher.
 
 #### Additional Modules
 
-| Module | Purpose |
-|--------|---------|
-| `sketch2d.rs` | BVH-wrapped 2D sketch profiles for SDF evaluation |
-| `sketch_features.rs` | Sketch feature execution, `SketchToolRegistry` with ~20 sketch tools |
-| `sketch_regions.rs` | Flood-fill region detection for extrude profile selection |
-| `expr.rs` | Formula expression evaluator for parametric variables |
-| `export.rs` | STL export (ASCII + binary) |
-| `export_3mf.rs` | 3MF export with per-body colors |
-| `queries.rs` | Geometry reference queries (`qCreatedBy`, `qFaceOf`) |
-| `raycast.rs` | Ray-mesh intersection for viewport picking |
-| `topology.rs` | B-Rep-like edge/face tracking derived from SDF contributors |
-| `mesh_sdf.rs` | Triangle mesh as SDF primitive (imported geometry) |
-| `edge_detect.rs` | Sharp edge detection / silhouette extraction |
-| `step_classifier.rs` | Step-by-step feature classification for STEP export |
+| Module               | Purpose                                                                                                                                                             |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `transform.rs`       | Quaternion & rigid-transform algebra (`quat_multiply`, `compose_transforms`, `world_to_local`, Euler-XYZ conversion); re-exported from `lib.rs` under the old paths |
+| `sdf_eval.rs`        | Reference (pure-Rust) SDF evaluation: `sdf_primitive_generic<T: DualNum<F>, F>` is the ONE authoritative closed-form primitive eval (B7) — `sdf_primitive` is its `f32` instantiation, `sdf_dual` instantiates it with `DualSVec64<3>` for exact gradients; sketch/mesh variants stay f32 arms (dual path handles them at tree level). Plus the shared helix-profile math mirrored by BVH and GPU opcode emitters. `sdf_parity_tests.rs` (match-exhaustive over `Primitive`) guards f32 ≈ dual ≈ `eval_opcodes` parity, conservative AABBs and half-space carriers against drift |
+| `finite.rs`          | Serde-based finite-float check; the weave entry (`Body::ensure_brep`) rejects NaN/∞ geometry with an empty B-Rep instead of panicking                               |
+| `vec3f.rs`           | Kernel-wide `[f32; 3]` vector algebra (f32 counterpart of `brep::vec3`)                                                                                             |
+| `sketch2d.rs`        | BVH-wrapped 2D sketch profiles for SDF evaluation                                                                                                                   |
+| `sketch_features.rs` | Sketch feature execution, `SketchToolRegistry` with \~20 sketch tools                                                                                               |
+| `sketch_regions.rs`  | Flood-fill region detection for extrude profile selection                                                                                                           |
+| `expr.rs`            | Formula expression evaluator for parametric variables                                                                                                               |
+| `export.rs`          | STL export (ASCII + binary)                                                                                                                                         |
+| `export_3mf.rs`      | 3MF export with per-body colors                                                                                                                                     |
+| `queries.rs`         | Geometry reference queries (`qCreatedBy`, `qFaceOf`)                                                                                                                |
+| `raycast.rs`         | Ray-mesh intersection for viewport picking                                                                                                                          |
+| `topology.rs`        | B-Rep-like edge/face tracking derived from SDF contributors                                                                                                         |
+| `mesh_sdf.rs`        | Triangle mesh as SDF primitive (imported geometry)                                                                                                                  |
+| `edge_detect.rs`     | Sharp edge detection / silhouette extraction                                                                                                                        |
+| `step_classifier.rs` | Step-by-step feature classification for STEP export                                                                                                                 |
 
-#### WASM API (`lib.rs`)
+#### WASM API (`lib.rs` + `kernel_core.rs` + `api/`)
 
 The `Kernel` struct is the main entry point exported to JavaScript via `wasm-bindgen`:
 
-- **Document I/O:** `load_json`, `to_json`
-- **Feature mutations:** `add_primitive`, `add_boolean`, `duplicate_feature`, `remove_feature`, `reorder_feature`, `nudge_feature`, `set_feature_op`, `set_feature_rotation`, `set_feature_scale`
-- **Variables:** `set_variable`, `remove_variable`, `list_variables`
-- **Multi-body access:** `body_count`, per-body position/normal/index/classification buffer pointers
-- **SDF access:** `body_sdf_opcodes_ptr` (flat opcode buffer), `body_sdf_aabb` (world bounds)
-- **Mesh control:** `set_mesh_resolution`, `set_context_mesh_resolution`, `set_active_body_id`
-- **Undo/redo:** `can_undo`, `can_redo`, `undo()`, `redo()` (kernel holds document snapshots)
-- **Introspection:** `list_feature_types`, `schema_for_type`, `list_features`, `get_feature_call_params`
+* **Document I/O:** `load_json`, `to_json`
+* **Feature mutations:** `add_primitive`, `add_boolean`, `duplicate_feature`, `remove_feature`, `reorder_feature`, `nudge_feature`, `set_feature_op`, `set_feature_rotation`, `set_feature_scale`
+* **Variables:** `set_variable`, `remove_variable`, `list_variables`
+* **Multi-body access:** `body_count`, per-body position/normal/index/classification buffer pointers
+* **SDF access:** `body_sdf_opcodes_ptr` (flat opcode buffer), `body_sdf_aabb` (world bounds)
+* **Mesh control:** `set_mesh_resolution`, `set_context_mesh_resolution`, `set_active_body_id`
+* **Undo/redo:** `can_undo`, `can_redo`, `undo()`, `redo()` (kernel holds document snapshots)
+* **Introspection:** `list_feature_types`, `schema_for_type`, `list_features`, `get_feature_call_params`
 
 Mesh data is exposed as **zero-copy typed array views** into WASM linear memory (pointers must be re-acquired after any mutating call due to potential memory reallocation).
 
----
+#### Modul-Layout der drei früheren Monolithe
+
+* `features/` — ein Modul pro Feature-Familie (`primitives`, `extrude`, `revolve`, `helix`, `sweep`, `hole`, `thicken`, `fillet_shell`, `patterns`, `boolean`, `mate_connector`, `transforms`, `gyroid`, `imported_mesh`, `material`, `merge_scope`); `mod.rs` hält `FeatureError`/`Context`/`FeatureKind`/`FeatureRegistry` plus Re-Exports (flache `features::*`-Pfade bleiben gültig), `context_resolve.rs` die Query-/B-Rep-Resolution auf `Context`.
+* `sketch/` (früher `sketch_features.rs`) — `frame` (SketchFrame/Plane-Frames), `tools` (Tool-Registry + Defs), `constraints`, `spline_math` (reine Numerik), `loops` (T-Junction-Split + Loop-Inferenz), `lower` (Sketch→`Sketch2d`), `feature` (das `sketch`-Top-Level-Feature).
+* `lib.rs` ist nur noch Fassade (mod-Deklarationen, Konstanten, Re-Exports, `wasm_version`); der `Kernel`-Struct samt interner Regen-/Meshing-Pipeline liegt in `kernel_core.rs`, die 127 wasm-bindgen-Methoden verteilen sich als `#[wasm_bindgen] impl Kernel`-Blöcke auf `api/{document,features,variables,gizmo,bodies_mesh,brep,queries_pick,sketch,export}.rs`.
+* Die Inline-Tests blieben je eine Datei (`features_tests.rs`, `sketch_features_tests.rs`, `lib_tests.rs`), eingebunden als `#[cfg(test)] #[path]`-Kindmodule.
+
+***
 
 ## 4. Web Frontend
 
 ### 4.1 State Management
 
-**`store.ts`** — Central state via a custom pub-sub store (consumed by React's `useSyncExternalStore`).
+Central state lives in a **custom pub-sub store** (consumed by React's `useSyncExternalStore`), decomposed into a slim core, six domain controllers and a stable facade:
+
+```mermaid
+graph TD
+    UI["React components / tests"] --> KS["KernelStore (store.ts)\nfacade — delegates 1:1,\npublic API stays stable"]
+    KS --> SK["SketchStore\nsketchStore.ts"]
+    KS --> AS["AssemblyStore\nassemblyStore.ts"]
+    KS --> PS["ProjectStore\nprojectStore.ts"]
+    KS --> IO["IoStore\nioStore.ts"]
+    KS --> SEL["SelectionStore\nselectionStore.ts"]
+    KS --> WO["WorkerOrchestrator\nworkerOrchestration.ts"]
+    SK --> CORE["StoreCore (storeCore.ts)\nStoreState + pub-sub +\ncommit()-tail + autosave"]
+    AS --> CORE
+    PS --> CORE
+    IO --> CORE
+    SEL --> CORE
+    WO --> CORE
+    CORE --> K["WASM kernel"]
+```
+
+* **`storeCore.ts` — `StoreCore`**: owns the immutable `StoreState` snapshot, the kernel handle, `subscribe`/`getState`/`patch`/`emit`/`notify`, the shared `commit()` tail (derived fields, selection pruning, autosave scheduling, mesh/weave refresh) and the small cross-domain helpers (`setLoading`, `setTransientError`). Domain-specific pieces of `commit()` are injected via `StoreCoreHooks` (pending-feature confirm, `serializeProject`, `refreshMeshCache`, `scheduleWeave`, `syncActiveBody`, `snapshotScriptTypes`), so the core has no domain imports.
+* **`sketchStore.ts` — `SketchStore`**: the whole sketch domain — session lifecycle (enter/edit/exit/cancel/commit), drawing/modify tools (trim/split/extend/fillet/chamfer/offset/mirror/pattern/move/rotate/text), constraints, the JS-side sketch undo stack and the `solveAndReplace` hookup. Tool parameters are consolidated in the single `state.sketchToolParams` object (`SketchToolParams`).
+* **`assemblyStore.ts` — `AssemblyStore`**: parts, mates (angle/offset/joint limits), assembly script + IK, R3F export; `updateAssemblyDocument` is the single write path (active tab \= source of truth, `state.assembly` \= read view).
+* **`projectStore.ts` — `ProjectStore`**: multi-tab project model (`loadedPartTabId`, boot, tab create/rename/delete/switch), the persistence funnel `serializeProject`, `.fdraft` save/load (ZIP + legacy JSON), server binding/sync, FieldSkript records.
+* **`ioStore.ts` — `IoStore`**: reference-mesh import (STL/OBJ/GLB → SDF feature; GLB parsing in `glbImport.ts`), the retained mesh-overlay cache, exporters (STL, 3MF roundtrip, STEP via OCCT worker, GLB, OBJ).
+* **`selectionStore.ts` — `SelectionStore`**: the three mutually exclusive selection notions (feature set + shift-anchor, B-Rep element multi-select/box-select, datum), body highlight, `syncActiveBody`, sketch-session reconciliation (pqoe) and the outliner selectors `relatedFeatureIds()`/`relatedBodyIndex()`.
+* **`workerOrchestration.ts` — `WorkerOrchestrator`**: the two latest-wins channels (`workerChannel.ts`) to the mesher and weaver workers, bring-up/fallback, DC/parametric-weave toggles and the gizmo-drag B-Rep suppression.
+* **`store.ts` — `KernelStore`**: the facade. Keeps the remaining feature-domain methods (primitives, variables, folders, transforms, pending feature, undo/redo) and delegates everything else 1:1 to the controllers — method names/signatures and `useKernelStore` are unchanged, so components and the `store.*.test.ts` suites run against the same public API. Cross-domain needs are injected as explicit deps (e.g. `SketchStore` gets `removeFeature`, `SelectionStore` gets `commitSketch`/`editSketch`/`refreshMeshCache`).
+
+Components read derived data through **store selectors** (`listBodies()`, `relatedFeatureIds()`, `relatedBodyIndex()`) instead of touching `store.kernel` directly.
 
 **Key state slices:**
 
-| Slice | Type | Purpose |
-|-------|------|---------|
-| `features` | `FeatureSummary[]` | Feature spine mirror from kernel |
-| `selection` | `Set<number>` | Selected feature IDs |
-| `meshedBodies` | `MeshedBody[]` | Per-body mesh cache (from worker) |
-| `canUndo/canRedo` | `boolean` | Undo/redo availability |
-| `sketchSession` | `SketchSessionState` | Active sketch draft |
-| `variables` | `{name, value}[]` | Document-level scalar variables |
-| `assembly` | `AssemblyState` | Multi-body assembly data |
-| `rollbackIndex` | `number` | Feature timeline position |
-| `syncState` | `string` | Server sync state (clean/dirty/syncing/error/offline) |
+| Slice              | Type                 | Purpose                                                                                 |
+| ------------------ | -------------------- | --------------------------------------------------------------------------------------- |
+| `features`         | `FeatureSummary[]`   | Feature spine mirror from kernel                                                        |
+| `selection`        | `Set<number>`        | Selected feature IDs                                                                    |
+| `meshedBodies`     | `MeshedBody[]`       | Per-body mesh cache (from worker)                                                       |
+| `canUndo/canRedo`  | `boolean`            | Undo/redo availability                                                                  |
+| `sketchSession`    | `SketchSessionState` | Active sketch draft                                                                     |
+| `variables`        | `{name, value}[]`    | Document-level scalar variables                                                         |
+| `assembly`         | `AssemblyState`      | Multi-body assembly data                                                                |
+| `sketchToolParams` | `SketchToolParams`   | Consolidated sketch-tool parameters (fillet radius, pattern counts, text value/font, …) |
+| `rollbackIndex`    | `number`             | Feature timeline position                                                               |
+| `syncState`        | `string`             | Server sync state (clean/dirty/syncing/error/offline)                                   |
 
 **Undo/redo** is implemented in the WASM kernel (document snapshots, 64-deep stack). The store only caches availability flags and calls `kernel.undo()` / `kernel.redo()`.
 
 **Mutation flow:**
-1. Store method calls kernel mutation (e.g., `kernel.addBox()`)
-2. `commit()` refreshes all derived state (features, undo flags, variables, scene bounds)
-3. `syncActiveBody()` updates LOD hint for the selected body
-4. `autosave.schedule()` debounces localStorage write (500ms)
-5. `scheduleWorkerRebuild()` triggers mesh regeneration in worker
+
+1. Controller/facade method calls kernel mutation (e.g., `kernel.addBox()`)
+2. `StoreCore.commit()` refreshes all derived state (features, undo flags, variables, scene bounds)
+3. `syncActiveBody()` hook (SelectionStore) updates the LOD hint for the selected body
+4. `autosave.schedule(serializeProject())` hook (ProjectStore) debounces the localStorage write (500ms)
+5. `refreshMeshCache()`/`scheduleWeave()` hooks (WorkerOrchestrator) trigger mesh rebuild + B-Rep weave in the workers
 6. Listeners notified → React re-renders
 
 **Persistence** (`persistence.ts`): Auto-save to `localStorage["fielddraft.project.v1"]` with 500ms debounce. UI state (folders, visible sketches, hidden datums, outliner width) persisted separately in individual keys.
@@ -382,21 +426,22 @@ Mesh data is exposed as **zero-copy typed array views** into WASM linear memory 
 **`kernel.ts`** — TypeScript wrapper around the Rust WASM kernel.
 
 **Worker architecture** (`mesher.worker.ts`, `weaver.worker.ts`):
-- Main thread kernel: document state + undo history + picking (sync meshing disabled — the worker is brought up BEFORE the initial document load, so booting a persisted project never runs the DC pass or the mesh face-tagging weave on the main thread)
-- Worker kernel: independent copy with Dual Contouring enabled, and B-Rep weaving permanently suppressed (`setBrepSuppressed(true)`): the worker only ships render meshes, so the eager face-tagging weave would build a B-Rep nobody reads. Regen-internal weaves (element queries during regenerate) are unaffected.
-- **Weaver worker** (`weaver.worker.ts`): a third kernel instance (sync meshing off) that runs the analytic B-Rep weave OFF the main thread. While it's up, the main kernel's B-Rep exports stay PERMANENTLY suppressed (cache-or-empty — no synchronous overlay weave on first frame, ever). After every commit the store polls `bodyBrepStaleIds()` and posts `{type:"weave", documentJson, bodyIds}`; the worker weaves each body (`weaveBodyBrep`) and ships MessagePack `(placement-invariant key, BRep)` buffers back (the B-Rep arenas are serde-complete; msgpack named mode because `SurfaceGeometry` is an internally-tagged enum). `importBodyBrep` validates the key against the CURRENT document — a result that raced a newer edit misses and the coalesced re-schedule covers it — then installs the cache, bumps the body version and notifies, so overlays refetch the now-cheap exports. Requests coalesce latest-wins like mesh rebuilds; during a suppressed gizmo drag nothing is scheduled and `endGizmoDrag` runs the catch-up off-thread (the legacy synchronous un-suppress weave only remains as fallback when the weaver worker failed to start). Regen-internal element-query weaves still run synchronously on the main thread (correctness requires them in-regen).
-- **Drag B-Rep suppression**: while a transform gizmo drags (setting "B-Rep rebuild while dragging", default off), the main-thread kernel is also put in `setBrepSuppressed(true)` — the throttled drag commits only re-mesh; B-Rep exports (`bodyBrepEdges`/`Faces`/`Vertices`/`Counts`) serve a still-current cache (pure moves keep their placement-invariant weave) or empty payloads. On release the kernel un-suppresses, weaves each stale body exactly once and bumps its version so the overlays refetch (`store.beginGizmoDrag()`/`endGizmoDrag()`). The drag additionally sets `state.gizmoDragSuppressed`, on which the Viewport unmounts ALL B-Rep overlays (edge wireframe, element selection, body highlight, debug overlays) for the drag's duration — even cached (pure-move) edges only refresh at the 50ms commit cadence and would visibly trail the live mesh.
-- **Live extrude drag** (setting "Live extrude drag", default ON): the extrude depth gizmo commits the depth throttled (50ms) WHILE the pointer is down instead of once on release — the renderer shows the real body live, no approximate preview prism. It reuses `beginGizmoDrag`/`endGizmoDrag` (B-Rep suppression + overlay hiding as above) and freezes its anchor at drag start (the suppressed B-Rep can't be re-resolved mid-drag). Undo stays ONE step per drag: the first commit snapshots normally, every further one passes `coalesce=true` to `replaceFeatureCallParams`, which skips the snapshot (mirroring `apply_gizmo_feature`'s last-call merge) and restores the previous params in place if a coalesced regen fails. A PENDING extrude ghost always uses the old local-preview path — its suppressed feature contributes no kernel geometry to render live.
-- Communication: `{type: "rebuild", documentJson, resolutions, activeBodyId}` → `{type: "bodies", bodies: [{id, positions, normals, indices, ...}]}`
-- TypedArrays transferred (zero-copy) via structured clone
-- Progressive refinement: initial coarse pass (half-res), then auto-refine to full resolution
-- Coalescing: `workerInflight` flag prevents backlog of stale mesh requests
+
+* Main thread kernel: document state + undo history + picking (sync meshing disabled — the worker is brought up BEFORE the initial document load, so booting a persisted project never runs the DC pass or the mesh face-tagging weave on the main thread)
+* Worker kernel: independent copy with Dual Contouring enabled, and B-Rep weaving permanently suppressed (`setBrepSuppressed(true)`): the worker only ships render meshes, so the eager face-tagging weave would build a B-Rep nobody reads. Regen-internal weaves (element queries during regenerate) are unaffected.
+* **Weaver worker** (`weaver.worker.ts`): a third kernel instance (sync meshing off) that runs the analytic B-Rep weave OFF the main thread. While it's up, the main kernel's B-Rep exports stay PERMANENTLY suppressed (cache-or-empty — no synchronous overlay weave on first frame, ever). After every commit the store polls `bodyBrepStaleIds()` and posts `{type:"weave", documentJson, bodyIds}`; the worker weaves each body (`weaveBodyBrep`) and ships MessagePack `(placement-invariant key, BRep)` buffers back (the B-Rep arenas are serde-complete; msgpack named mode because `SurfaceGeometry` is an internally-tagged enum). `importBodyBrep` validates the key against the CURRENT document — a result that raced a newer edit misses and the coalesced re-schedule covers it — then installs the cache, bumps the body version and notifies, so overlays refetch the now-cheap exports. Requests coalesce latest-wins like mesh rebuilds; during a suppressed gizmo drag nothing is scheduled and `endGizmoDrag` runs the catch-up off-thread (the legacy synchronous un-suppress weave only remains as fallback when the weaver worker failed to start). Regen-internal element-query weaves still run synchronously on the main thread (correctness requires them in-regen).
+* **Drag B-Rep suppression**: while a transform gizmo drags (setting "B-Rep rebuild while dragging", default off), the main-thread kernel is also put in `setBrepSuppressed(true)` — the throttled drag commits only re-mesh; B-Rep exports (`bodyBrepEdges`/`Faces`/`Vertices`/`Counts`) serve a still-current cache (pure moves keep their placement-invariant weave) or empty payloads. On release the kernel un-suppresses, weaves each stale body exactly once and bumps its version so the overlays refetch (`store.beginGizmoDrag()`/`endGizmoDrag()`). The drag additionally sets `state.gizmoDragSuppressed`, on which the Viewport unmounts ALL B-Rep overlays (edge wireframe, element selection, body highlight, debug overlays) for the drag's duration — even cached (pure-move) edges only refresh at the 50ms commit cadence and would visibly trail the live mesh.
+* **Live extrude drag** (setting "Live extrude drag", default ON): the extrude depth gizmo commits the depth throttled (50ms) WHILE the pointer is down instead of once on release — the renderer shows the real body live, no approximate preview prism. It reuses `beginGizmoDrag`/`endGizmoDrag` (B-Rep suppression + overlay hiding as above) and freezes its anchor at drag start (the suppressed B-Rep can't be re-resolved mid-drag). Undo stays ONE step per drag: the first commit snapshots normally, every further one passes `coalesce=true` to `replaceFeatureCallParams`, which skips the snapshot (mirroring `apply_gizmo_feature`'s last-call merge) and restores the previous params in place if a coalesced regen fails. A PENDING extrude ghost always uses the old local-preview path — its suppressed feature contributes no kernel geometry to render live.
+* Communication: `{type: "rebuild", documentJson, resolutions, activeBodyId}` → `{type: "bodies", bodies: [{id, positions, normals, indices, ...}]}`
+* TypedArrays transferred (zero-copy) via structured clone
+* Progressive refinement: initial coarse pass (half-res), then auto-refine to full resolution
+* Coalescing: `workerInflight` flag prevents backlog of stale mesh requests
 
 ### 4.3 Rendering Pipeline
 
 FieldDraft implements **two active SDF rendering modes**, both built on Three.js TSL and WebGPU. There are no hand-written shader files — all GPU code is generated dynamically.
 
-#### SDF-VM Mode (`sdfVmRenderer.ts`)
+#### SDF-VM Mode (`sdfVmRenderer.ts` + `sdfVmRenderer.shaders.ts`)
 
 Single-pass fullscreen ray marching:
 
@@ -405,12 +450,12 @@ graph LR
     A["Screen Quad"] --> B["Reconstruct Ray"] --> C["Sphere-Trace\nAll Bodies"] --> D["PBR Shade"]
 ```
 
-- Fullscreen `PlaneGeometry(2, 2)` with orthographic camera
-- GPU bytecode VM interprets opcode stream at shader invocation time
-- Per-body SDF evaluation, closest hit wins — **brute-force: every body evaluated at every pixel**
-- **Hard limits: max 8 bodies, 16384 opcodes total (storage buffer), 512 march steps, 512 opcodes/body (VM loop).** These are architectural constraints of the brute-force per-pixel approach, not tuning parameters.
+* Fullscreen `PlaneGeometry(2, 2)` with orthographic camera
+* GPU bytecode VM interprets opcode stream at shader invocation time
+* Per-body SDF evaluation, closest hit wins — **brute-force: every body evaluated at every pixel**
+* **Hard limits: max 8 bodies, 16384 opcodes total (storage buffer), 512 march steps, 512 opcodes/body (VM loop).** These are architectural constraints of the brute-force per-pixel approach, not tuning parameters.
 
-#### SDF-Deferred Mode (`sdfDeferredRenderer.ts`)
+#### SDF-Deferred Mode (`sdfDeferredRenderer.ts` + `sdfDeferredRenderer.shaders.ts`)
 
 Three-pass hybrid rasterization + deferred ray marching:
 
@@ -421,7 +466,7 @@ graph TD
     end
 
     subgraph "Pass 2: Transparent G-Buffer"
-        P2a["Rasterize inflated hulls\n(scale 1.01)"]
+        P2a["Rasterize exact leaf meshes\n(Z-offset march backoff)"]
         P2b["Back-face distances\n(MAX blend)"]
         P2a --> P2out["Output: position + body tag\n+ exit depth"]
         P2b --> P2out
@@ -443,7 +488,20 @@ Simple primitives (box, sphere, cylinder, torus, cone, capsule) get rasterized o
 
 #### Opcode Interpretation
 
-**Runtime VM** (`sdfVmInterpreter.ts`): TSL function interprets opcodes at runtime from a storage buffer. 8-slot value stack + 4-slot position stack. Single shader handles any opcode sequence up to 512 opcodes/body (~35 primitives). Used by both VM and Deferred modes. `sdfRenderer.ts` provides the shared opcode constants and WGSL primitive functions.
+**Runtime VM** (`sdfVmInterpreter.ts`): TSL function interprets opcodes at runtime from a storage buffer. 8-slot value stack + 4-slot position stack. Single shader handles any opcode sequence up to 512 opcodes/body (\~35 primitives). Used by both VM and Deferred modes. `sdfRenderer.ts` provides the shared opcode constants and WGSL primitive functions.
+
+**Module layout** (each pipeline file is fully typed; TSL shader builders live in `.shaders.ts` siblings under `@ts-nocheck`):
+
+| Module                             | Contents                                                                                                                                                                        |
+| ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `sdfPipelineCommon.ts`             | Material/opcode buffer sets, march constants (`SURFACE_EPS`, `SDF_MARCH_STEPS`, `SDF_MAX_OPCODES`, `AABB_HULL_PAD`), `CameraUniformSet`, `disposeAfterGpuIdle`                  |
+| `sdfPipelineCommon.shaders.ts`     | Shared TSL blocks: `emitUnionMarch` (the ONE union sphere-trace both pipelines march with), `emitSceneDepthWrite`, `makeDisplacedSdfEval`, `shadeSdfHit`                        |
+| `sdfVmRenderer[.shaders].ts`       | VM pipeline state + fullscreen raymarch material (`VM_MAX_BODIES` \= 8)                                                                                                         |
+| `sdfDeferredRenderer[.shaders].ts` | Deferred pipeline state + G-buffer/shade materials (`DEFERRED_MAX_BODIES` \= 256)                                                                                               |
+| `leafMeshFactory.ts`               | `createPrimitiveGeometry`, `leafGeoKey`, `applyLeafTransform`, `buildWarpedLeafGeometry` — leaf hull meshes for deferred proxies, WebGL bodies, SS-CSG and selection highlights |
+| `bodyColors.ts`                    | `BODY_COLORS` part palette (SSOT for all render paths)                                                                                                                          |
+| `viewportLayers.ts`                | `OVERLAY_LAYER` / `DATUM_LAYER` convention                                                                                                                                      |
+| `bodyFingerprint.ts`               | `computeBodyFingerprint`/`useBodyFingerprint` (id.version) + `computeSdfFingerprints` (SDF rebuild-vs-update split)                                                             |
 
 #### Material System
 
@@ -460,32 +518,34 @@ Per-body PBR materials stored in a GPU storage buffer (12 floats/body stride):
 
 #### Synchronization (`viewportSdfOverlays.tsx`)
 
-Per-frame fingerprinting drives the rebuild/update cycle with three fingerprints:
+Both overlays run ONE shared lifecycle state machine, `useSdfPipelineOverlay(adapter)`: a pipeline adapter (`{init, dispose, collectBodies, fingerprintPolicy, rebuild, compile, updateData, renderFrame, onResize?, onSelection?}`) plugs the VM or deferred pipeline into the hook, which owns the StrictMode stale guard, the GPU-idle rebuild gate (ticket sgzw) and the error path exactly once.
 
-- `volumeFp` (total volume texture count) → shader rebuild (VM mode only — volume textures are baked into shader)
-- `structFp` (topology hash: body count, IDs, opcode lengths, volume counts) → full mesh rebuild (deferred) or data update (VM)
-- `dataFp` (data hash: body versions) → opcode/volume buffer upload only
-- Material application runs every frame regardless
+Per-frame fingerprinting (`computeSdfFingerprints` in `bodyFingerprint.ts`) drives the rebuild/update cycle:
+
+* `volumeFp` (total volume texture count) → shader rebuild (VM mode only — volume textures are baked into shader)
+* `structFp` (topology hash: body count, IDs, opcode lengths, volume counts) → full mesh rebuild (deferred) or data update (VM)
+* `dataFp` (data hash: body versions) → opcode/volume buffer upload only
+* Materials/selection re-upload only when the feature list / selection set changed (reference equality) or geometry rebuilt this frame
 
 Adding/removing bodies or changing opcodes triggers only a fast buffer update, not a shader recompile (unless volume texture count changes).
 
 #### Rendering Parameters
 
-| Parameter | Value |
-|-----------|-------|
-| Max march steps | 512 (VM/Deferred) |
-| Surface epsilon | 0.002 mm |
-| Normal epsilon | 0.01 mm |
-| Max ray distance | 1200–3000 mm |
-| Hull inflate factor | 1.01 (deferred) |
-| Build volume | 600 mm cubic |
+| Parameter           | Value                                                                                       |
+| ------------------- | ------------------------------------------------------------------------------------------- |
+| Max march steps     | 512 (VM/Deferred)                                                                           |
+| Surface epsilon     | 0.002 mm                                                                                    |
+| Normal epsilon      | 0.01 mm                                                                                     |
+| Max ray distance    | VM: camera far plane (adaptive); Deferred: back-face exit depth                             |
+| March start backoff | ±1 mm along camera direction (deferred; hulls are exact meshes, NOT inflated — ticket vlhp) |
+| Build volume        | 600 mm cubic                                                                                |
 
 ### THREE.js Patches
 
-The WebGPU spec allows `GPUBufferBindingType.Storage` (read_write) in fragment shaders, but Three.js r183 blocks this. Two patches in `web/patches/three+0.183.2.patch` (applied via `patch-package` postinstall):
+The WebGPU spec allows `GPUBufferBindingType.Storage` (read\_write) in fragment shaders, but Three.js r183 blocks this. Two patches in `web/patches/three+0.183.2.patch` (applied via `patch-package` postinstall):
 
-- **`WGSLNodeBuilder.getNodeAccess()`** — Removes the warning that rejects atomics in non-compute stages, allowing `READ_WRITE` access in fragment shaders
-- **`WebGPUBindingUtils`** — Respects `binding.access` for all shader stages, not just compute. Without this, storage buffers in fragment shaders are always downgraded to `ReadOnlyStorage`.
+* **`WGSLNodeBuilder.getNodeAccess()`** — Removes the warning that rejects atomics in non-compute stages, allowing `READ_WRITE` access in fragment shaders
+* **`WebGPUBindingUtils`** — Respects `binding.access` for all shader stages, not just compute. Without this, storage buffers in fragment shaders are always downgraded to `ReadOnlyStorage`.
 
 Both patches are required for the deferred renderer's per-pixel atomic body-tag buffer. Upstream PR: `mrdoob/three.js#33626` — once merged into a Three.js release, the patch file and `patch-package` dependency can be removed.
 
@@ -493,11 +553,11 @@ Both patches are required for the deferred renderer's per-pixel atomic body-tag 
 
 Tool-free viewport selection of B-Rep elements (faces, edges, vertices, bodies), independent of the render mode (ticket evq2):
 
-- **Hover resolution** runs per frame in two overlays and publishes to the `brepPickBridge` singleton: `BRepEdgeOverlay` snaps the cursor to analytic edge polylines in screen space; `BRepSelectionOverlay` resolves faces and vertices. Faces resolve via the triangle pick mesh where this kernel instance holds one (mesh render mode), and via the kernel's analytic `pick()` raycast everywhere else — SDF modes keep main-thread meshes empty, the hit's packed branch ids map onto `BRepFace.branchId`. Vertices come from `bodyBrepVertices` (analytic, mesh-free) with a screen-space snap radius and an occlusion gate against the face-hit distance, so back-side corners don't steal the click.
-- **Merge priority** in `getHoveredElement` is vertex > edge > face — the most specific element under the cursor wins (the face is hit almost everywhere and would otherwise shadow both).
-- **Click semantics** (`resolveElementClick` in `elementQuery.ts`): plain click selects the hovered element; an additive click (the controls preset's multi-select modifier) toggles it in the multi-select set; a second plain click on the already-selected face escalates to the whole body (`highlightedBodyIndex` in the store, shared with the Parts list) — presets can disable this idiom.
-- **Highlight rendering** is mesh-free where it must be: face hover draws the face's boundary outline (every analytic edge whose signature contains the face's branch id) in addition to the triangle tint where a mesh exists. A SELECTED planar face additionally fills mesh-free (ticket por8): `faceFill.ts` triangulates the boundary edges in the face plane — chains are coverage-deduplicated, assembled into rings by endpoint proximity and filtered (a TS port of the kernel's `face_profile.rs` robustness against coplanar-seam duplicates), then `ShapeUtils.triangulateShape` fills outer − holes; curved faces keep the outline. The selected body renders all of its B-Rep edges as 2 px fat lines (`BodyHighlightOverlay`); a body with NO analytic edges (a bare sphere/torus) tints its hybrid leaf primitives — the same hull shapes the deferred renderer rasterises — instead of an AABB wireframe (ticket por8), with the AABB box only as last resort for non-analytic bodies.
-- **Controls presets** (`controlsPreset.ts`, setting `fielddraft.controlsPreset`): one registry object per supported CAD package (FieldDraft, Three.js editor, Onshape, FreeCAD, Fusion 360, TinkerCAD) bundles the OrbitControls `mouseButtons` mapping + speeds (consumed by `CameraRig` in `viewportCamera.tsx`, incl. Fusion's Shift+MMB orbit swap), the selection idiom (multi-select modifiers, body escalation, object-only mode) consumed by `Viewport.tsx`, and bare-key view shortcuts consumed by `App.tsx`. Design rationale and open items: `docs/UX-PRESETS.md`.
+* **Hover resolution** runs per frame in two overlays and publishes to the `brepPickBridge` singleton: `BRepEdgeOverlay` snaps the cursor to analytic edge polylines in screen space; `BRepSelectionOverlay` resolves faces and vertices. Faces resolve via the triangle pick mesh where this kernel instance holds one (mesh render mode), and via the kernel's analytic `pick()` raycast everywhere else — SDF modes keep main-thread meshes empty, the hit's packed branch ids map onto `BRepFace.branchId`. Vertices come from `bodyBrepVertices` (analytic, mesh-free) with a screen-space snap radius and an occlusion gate against the face-hit distance, so back-side corners don't steal the click.
+* **Merge priority** in `getHoveredElement` is vertex > edge > face — the most specific element under the cursor wins (the face is hit almost everywhere and would otherwise shadow both).
+* **Click semantics** (`resolveElementClick` in `elementQuery.ts`): plain click selects the hovered element; an additive click (the controls preset's multi-select modifier) toggles it in the multi-select set; a second plain click on the already-selected face escalates to the whole body (`highlightedBodyIndex` in the store, shared with the Parts list) — presets can disable this idiom.
+* **Highlight rendering** is mesh-free where it must be: face hover draws the face's boundary outline (every analytic edge whose signature contains the face's branch id) in addition to the triangle tint where a mesh exists. A SELECTED planar face additionally fills mesh-free (ticket por8): `faceFill.ts` triangulates the boundary edges in the face plane — chains are coverage-deduplicated, assembled into rings by endpoint proximity and filtered (a TS port of the kernel's `face_profile.rs` robustness against coplanar-seam duplicates), then `ShapeUtils.triangulateShape` fills outer − holes; curved faces keep the outline. The selected body renders all of its B-Rep edges as 2 px fat lines (`BodyHighlightOverlay`); a body with NO analytic edges (a bare sphere/torus) tints its hybrid leaf primitives — the same hull shapes the deferred renderer rasterises — instead of an AABB wireframe (ticket por8), with the AABB box only as last resort for non-analytic bodies.
+* **Controls presets** (`controlsPreset.ts`, setting `fielddraft.controlsPreset`): one registry object per supported CAD package (FieldDraft, Three.js editor, Onshape, FreeCAD, Fusion 360, TinkerCAD) bundles the OrbitControls `mouseButtons` mapping + speeds (consumed by `CameraRig` in `viewportCamera.tsx`, incl. Fusion's Shift+MMB orbit swap), the selection idiom (multi-select modifiers, body escalation, object-only mode) consumed by `Viewport.tsx`, and bare-key view shortcuts consumed by `App.tsx`. Design rationale and open items: `docs/UX-PRESETS.md`.
 
 ### 4.5 Sketch System
 
@@ -537,21 +597,23 @@ graph TD
 3. **Sub-calls accumulated** in `sketchSession.subCalls` (geometry + constraints as `FeatureCall[]`)
 4. **Solver replay** (`planegcs.ts`): Translates entities/constraints to PlaneGCS format, runs DogLeg solver, reads back solved positions + diagnostics
 5. **Drag controller** (`dragController.ts`): On each pointer frame it moves the grabbed grip to the cursor and re-solves, feeding the dragged geometry as the solver's initial guess. PlaneGCS' numerical continuation keeps hard constraints satisfied *during* the drag (not just at drop). Solves are coalesced — only the latest cursor is solved — so the gesture stays responsive on large sketches; drop runs one authoritative final solve.
-6. **Diagnostics pipeline**: Maps solver output to per-entity visual states (blue = underconstrained, black = fully constrained, red = overconstrained)
+6. **Diagnostics pipeline**: Maps solver output to per-entity visual states (blue \= underconstrained, black \= fully constrained, red \= overconstrained)
 7. **Commit**: `kernel.addSketch(planeQuery, subCalls)` stores solved state in `Context::sketches`
 8. **Extrude/Revolve** features reference sketch via query, evaluate 2D SDF profile from `Sketch2d`
 
+**Tool-Controller-Registry (`sketchTools/`):** `SketchCanvas2d.tsx` ist seit dem Registry-Umbau (Architektur-Review Befund 2) eine reine Event-/Infrastruktur-Schicht (\~1600 Zeilen statt \~4500): Pointer-Capture und Event-Plumbing, Kamera-Forwarding (Wheel/Buttons an den WebGPU-Canvas), Touch-Pinch-Lockout (`sketchCanvasTouch.ts`), Snap-Infrastruktur (`sketchSnapResolve.ts`: `resolveSnap`, Anker-Klassifikation, Projektions-Guides), HUD-Zeichnung (`sketchCanvasHud.ts`: `drawOverlay`, Maßlinien, Marquee, Label-Builder) sowie die In-Scene-DOM-Editoren (Maßwert, Text, Ecken-Radius). Die eigentlichen Gesten-Zustandsmaschinen der \~25 Werkzeuge leben in je einem Controller-Modul unter `web/src/sketchTools/` und implementieren das Interface `SketchToolController` (`toolTypes.ts`): `onDown/onMove/onUp` (mit `ToolPointerEvent`: Roh- + Ctrl-Grid-Cursor, Klick-Pixel, optional zentral aufgelöster Snap), `onKey` (Spline-Finish, Mirror-Esc, Pending-Line-Cancel), `onHover` (Achsen-/Constraint-Kandidaten-Highlight), `hud` (Preview-Primitive + Labels + Screen-Pass des laufenden Drags), `initialHint` und `onDeactivate` (Commit/Abbruch beim Tool-Wechsel). Der Canvas löst den Controller über `registry.ts` (`SKETCH_TOOL_REGISTRY[toolName]`) auf; die Pseudo-Tools *Select-Modus* (`selectTool.ts`: Hover, Grips, Rigid-Translate, Marquee, Editor-Hit-Tests) und *Constraint-Pick* (`constraintPickTool.ts`, für alle `sketch_constraint_*`-Namen) werden explizit aufgelöst. Jeder Controller definiert seinen privaten Drag-Zustandstyp; der Canvas hält nur den generischen Slot `dragRef: ActiveToolDrag | null` (Owner + `state: unknown`) und routet Move/Up an den Drag-Owner — die frühere 16-Varianten-`DragState`-Union und die tool-spezifischen Refs (mirrorAxis/moveBase/…) sind aufgelöst (Mirror-Achse und Move-Basispunkt leben im per-Aktivierung geleerten `toolState`-Slot des `ToolContext`). Komponenten-gekoppelte Dienste erreichen die Controller über den `ToolContext` (Store/Session-Zugriff, Snap/Hover-Slots, Redraw, Solver-Replay, Grip-DragController, `ui`-Fassade für die Editoren); reine Geometrie bleibt in den bestehenden `sketch*.ts`-Modulen.
+
 **Select-mode editing (P0.1–P0.3):** With a sketch open and no drawing tool active, the overlay is in *select mode*. Left-clicks hit-test committed geometry (`sketchHitTest.ts`) and toggle it in `sketchSession.selection`. The toolbar palette offers the constraints/dimensions applicable to the current pick (`sketchConstraints.ts`): geometric constraints (P0.1) and dimensions seeded from the current measurement (P0.2, editable in the constraint manager). Supported geometric picks include horizontal/vertical (one line), parallel/perpendicular (two lines), coincident (two points), equal (two curves), tangent (line + curve), **midpoint** (a point + a line — pins the point at the line's centre) and **symmetric** (two points + an axis line — mirrors them across it). Midpoint and symmetric have no single PlaneGCS primitive matching FieldDraft's entity shapes, so `planegcs.ts` maps them onto `p2p_symmetric_ppp` (line endpoints symmetric about the point ⇒ point is their midpoint) and `p2p_symmetric_ppl` respectively. A single circle or arc also takes a **radius** or **diameter** dimension (seeded from the current measurement, editable like distance/angle); these map to PlaneGCS' `circle_radius`/`arc_radius` and `circle_diameter`/`arc_diameter`, dispatched by entity kind. Diameter stores the diameter value so the annotation round-trips while the solver pins `2·radius`. Selected entities expose draggable grip handles (`sketchGrips.ts`, P0.3): line endpoints, free points, a circle's centre + radius rim, rectangle corners (axis-aligned resize against the fixed diagonal corner), polygon vertices and an arc's centre + radius. Dragging a grip re-solves the sketch *every pointer frame* (`dragController.ts`, continuation model), so constraints stay satisfied visually throughout the drag rather than snapping back only at drop; the geometry the user sees is already solved. Solves are coalesced to the latest cursor and drop runs one authoritative final solve. All edits route through the same solve-and-replace pipeline as drawing.
 
-**Extrude depth gizmo (tickets jn3t + qqgo):** While a single extrude feature is selected, `ExtrudeGizmo.tsx` shows an Onshape-style black-and-white arrow (white fill, BackSide outline shell) on the extrude's *tip face* pointing along its outward normal, plus a translucent prism over the extruded slab; the generic translate gizmo is suppressed for extrudes (`NO_GIZMO_KINDS`). Dragging the arrow adjusts the `depth` param strictly along the normal, but commits NOTHING while the drag runs — the arrow position (a ref read in `useFrame`) and local preview bands follow the pointer every frame, and the depth is committed once on pointerup, so the kernel recompute can never stall the gizmo. The preview bands (`previewBandRanges`/`prismBandTriangles` in `extrudeGizmo.ts`) show the would-be prism plus delta slices: blue = material added, red = material removed; since the body stays frozen at its drag-start shape, the grown region is genuinely see-through. The tip face is the planar face owned by the extrude (`BRepFace.featureId`) with the most perpendicular owned siblings — the original base face is consumed by the boolean, so the tip anchors both create and re-select; the drag solves the classic line–line closest-point param between pointer ray and gizmo axis, frozen at drag start. Pointer handling is an imperative capture-phase listener on the WebGPU canvas (the SDF pipeline bypasses R3F event raycasting); the synthetic `click` after a drag is swallowed so the viewport click handler can't replace the extrude selection. New extrudes default to 25 mm depth.
+**Extrude depth gizmo (tickets jn3t + qqgo):** While a single extrude feature is selected, `ExtrudeGizmo.tsx` shows an Onshape-style black-and-white arrow (white fill, BackSide outline shell) on the extrude's *tip face* pointing along its outward normal, plus a translucent prism over the extruded slab; the generic translate gizmo is suppressed for extrudes (`NO_GIZMO_KINDS`). Dragging the arrow adjusts the `depth` param strictly along the normal, but commits NOTHING while the drag runs — the arrow position (a ref read in `useFrame`) and local preview bands follow the pointer every frame, and the depth is committed once on pointerup, so the kernel recompute can never stall the gizmo. The preview bands (`previewBandRanges`/`prismBandTriangles` in `extrudeGizmo.ts`) show the would-be prism plus delta slices: blue \= material added, red \= material removed; since the body stays frozen at its drag-start shape, the grown region is genuinely see-through. The tip face is the planar face owned by the extrude (`BRepFace.featureId`) with the most perpendicular owned siblings — the original base face is consumed by the boolean, so the tip anchors both create and re-select; the drag solves the classic line–line closest-point param between pointer ray and gizmo axis, frozen at drag start. Pointer handling is an imperative capture-phase listener on the WebGPU canvas (the SDF pipeline bypasses R3F event raycasting); the synthetic `click` after a drag is swallowed so the viewport click handler can't replace the extrude selection. New extrudes default to 25 mm depth.
 
-**Pending face-extrude — ghost until confirmed (ticket x7af):** A face-extrude is created as a **suppressed** feature call in one undo step (`addExtrudeFaces(..., suppressed=true)` → `push_feature_call_with`); the store tracks it as `pendingFeature`. While pending, the body keeps its pre-extrude shape — the ONLY rendering the extrude gets is the gizmo's translucent prism (drawn at the stronger delta opacity), so the result never reads as "already committed". Because the ghost contributes no B-Rep faces, the gizmo anchor resolves through `resolvePendingExtrudeAnchor`: the PROFILE faces named by the `faces` qFace queries still exist unchanged on the original body, and that body is the depth's true reference (a depth drag measures from the original face, never from a previously committed partial extrude). Confirmation = unsuppress: the dialog's OK, any selection moving away (a viewport click, another feature's creation — funnelled through `commit()` and the selection mutators), all call `confirmPendingFeature()`; the dialog's Cancel calls `cancelPendingFeature()`, which removes the feature without it ever having contributed geometry. Blind extrudes also accept a **negative depth** (kernel: the prism spans the sorted interval over `{−depth_back, +depth}`): the gizmo works with the positive axial extent along the tip-out normal plus a `sign` that maps back to the wire param, so a drag may cross the base plane and grow the body in the −normal direction (Onshape semantics); only the degenerate zero extent is skipped. Sketch-based extrudes keep the immediate-commit flow for now.
+**Pending face-extrude — ghost until confirmed (ticket x7af):** A face-extrude is created as a **suppressed** feature call in one undo step (`addExtrudeFaces(..., suppressed=true)` → `push_feature_call_with`); the store tracks it as `pendingFeature`. While pending, the body keeps its pre-extrude shape — the ONLY rendering the extrude gets is the gizmo's translucent prism (drawn at the stronger delta opacity), so the result never reads as "already committed". Because the ghost contributes no B-Rep faces, the gizmo anchor resolves through `resolvePendingExtrudeAnchor`: the PROFILE faces named by the `faces` qFace queries still exist unchanged on the original body, and that body is the depth's true reference (a depth drag measures from the original face, never from a previously committed partial extrude). Confirmation \= unsuppress: the dialog's OK, any selection moving away (a viewport click, another feature's creation — funnelled through `commit()` and the selection mutators), all call `confirmPendingFeature()`; the dialog's Cancel calls `cancelPendingFeature()`, which removes the feature without it ever having contributed geometry. Blind extrudes also accept a **negative depth** (kernel: the prism spans the sorted interval over `{−depth_back, +depth}`): the gizmo works with the positive axial extent along the tip-out normal plus a `sign` that maps back to the wire param, so a drag may cross the base plane and grow the body in the −normal direction (Onshape semantics); only the degenerate zero extent is skipped. Sketch-based extrudes keep the immediate-commit flow for now.
 
 **Region shading (ticket 7x4v):** Closed sketch contours render with a translucent gray fill (Onshape-style) so the user sees which loops will extrude. `sketchRegions.ts` is a pure module: intrinsically closed primitives (circle, ellipse, rectangle, polygon, slot, closed spline/path) are sampled directly into polygons; open curves (lines, arcs, open splines) are welded into a planar graph by their endpoints (1e-3 mm tolerance, spatial hash) and the bounded faces are extracted via DCEL face traversal (outgoing half-edges sorted CCW per vertex, `next = clockwise-most turn after the twin`; the unbounded face traces with negative area and is dropped). Construction geometry never contributes. `drawOverlay` fills all region polygons (normalized CCW) as ONE canvas path with the nonzero rule — overlapping loops shade uniformly instead of double-darkening or punching holes, matching the kernel's union-of-primitives extrude semantics. Results are memoized per sub-call array identity (`closedRegionsCached`).
 
-**Sketch in 3D (tickets yx6a + bxoo):** A sketch session is no longer a separate top-down 2D view — the normal 3D scene and camera stay live (pan/zoom/rotate, face/edge/vertex picking). The sketch is anchored to an invisible plane resolved from the session's **Sketch plane** query (an ordinary feature property: a datum `qCreatedBy(origin_plane_*)` or a body face `qFace(hash)`, editable in the session panel and in a committed sketch's detail view via the QueryWidget face picker). `sketchPlaneFrame.ts` resolves the query to a world frame web-side, mirroring the kernel's `datum_plane_frame`/`face_plane_frame` **basis convention exactly** (seed = world axis least aligned with the normal, crossed twice — extrude profiles use the same; never invent a new one). `SketchCanvas2d` survives as a thin *projection layer* rather than a 2D viewport: `sketchCameraBridge.sketchToScreen` lifts (u,v) through the frame and projects with the real camera (`pickCameraBridge`), `screenToSketch` maps input back via camera-ray ∩ sketch-plane (unclamped t, so the mapping stays total). All ~20 sketch tools, snapping, grips, marquee and HUD run unchanged on those two functions; `cam.zoom` is the effective px/mm at the frame origin (tolerance/grid approximation under perspective). The grid is drawn as projected sketch-space segments (it visibly tilts with the plane); circles/ellipses sample sketch-space polylines instead of `ctx.arc` (on screen they are ellipses under tilt). Starting a sketch never enters a pick mode: the Sketch button opens the session immediately on a pre-selected face (`qFace`) or the XY datum, and re-anchoring the plane mid-session keeps the (u,v) sub-calls, re-projected onto the new plane.
+**Sketch in 3D (tickets yx6a + bxoo):** A sketch session is no longer a separate top-down 2D view — the normal 3D scene and camera stay live (pan/zoom/rotate, face/edge/vertex picking). The sketch is anchored to an invisible plane resolved from the session's **Sketch plane** query (an ordinary feature property: a datum `qCreatedBy(origin_plane_*)` or a body face `qFace(hash)`, editable in the session panel and in a committed sketch's detail view via the QueryWidget face picker). `sketchPlaneFrame.ts` resolves the query to a world frame web-side, mirroring the kernel's `datum_plane_frame`/`face_plane_frame` **basis convention exactly** (seed \= world axis least aligned with the normal, crossed twice — extrude profiles use the same; never invent a new one). `SketchCanvas2d` survives as a thin *projection layer* rather than a 2D viewport: `sketchCameraBridge.sketchToScreen` lifts (u,v) through the frame and projects with the real camera (`pickCameraBridge`), `screenToSketch` maps input back via camera-ray ∩ sketch-plane (unclamped t, so the mapping stays total). All \~20 sketch tools, snapping, grips, marquee and HUD run unchanged on those two functions; `cam.zoom` is the effective px/mm at the frame origin (tolerance/grid approximation under perspective). The grid is drawn as projected sketch-space segments (it visibly tilts with the plane); circles/ellipses sample sketch-space polylines instead of `ctx.arc` (on screen they are ellipses under tilt). Starting a sketch never enters a pick mode: the Sketch button opens the session immediately on a pre-selected face (`qFace`) or the XY datum, and re-anchoring the plane mid-session keeps the (u,v) sub-calls, re-projected onto the new plane.
 
-**Committed geometry as real 3D (v0.6.107–108):** All committed sketch geometry renders as genuine scene-graph geometry, not the CPU projection layer. `SketchSession3D` (`viewportOverlays.tsx`) builds fat lines (`LineSegments2`/`Line2NodeMaterial`), points (`THREE.Points`/`PointsNodeMaterial`) and a translucent region-fill mesh (`MeshBasicNodeMaterial`) on `OVERLAY_LAYER` from `collectSketchSessionGeometry` / `collectSketchRegionFill` (`sketchOutline.ts`, which lift each (u,v) through the plane frame into world space). The flattener splits the geometry into one bucket per material — `solid` (DOF-coloured), `construction` (dashed amber), `guide` (dashed grey: spline control polygons, path off-curve connectors), `legs` (accent: spline tangent legs), `points`, `handles` — so **every** drawable entity (line, point, rectangle, circle, polygon, arc, ellipse, slot, spline, path), the closed-region fill and the origin axes now live in 3D. The GPU transforms them with the exact camera matrix used for the rest of the scene, in the same frame, so they cannot lag behind during a camera pan/orbit. (The original bug: the overlay's own `requestAnimationFrame` loop polled `sketchCameraBridge.version`, which is bumped only when the **demand**-mode WebGPU `<Canvas>` actually renders, so the 2D raster was reliably one frame stale and read as a non-rigid "post-process" transform.) DOF status colour mirrors `drawOverlay`'s `committedColor`; the `Invalidator` watches `sketchSession.subCalls` so a commit repaints under demand frameloop. Picking is unaffected — it was always (u,v)-space (`screenToSketch` → `sketchHitTest`), independent of how the geometry is drawn, so the overlay `<canvas>` stays mounted to own gestures.
+**Committed geometry as real 3D (v0.6.107–108):** All committed sketch geometry renders as genuine scene-graph geometry, not the CPU projection layer. `SketchSession3D` (`sketchSceneOverlays.tsx`) builds fat lines (`LineSegments2`/`Line2NodeMaterial`), points (`THREE.Points`/`PointsNodeMaterial`) and a translucent region-fill mesh (`MeshBasicNodeMaterial`) on `OVERLAY_LAYER` from `collectSketchSessionGeometry` / `collectSketchRegionFill` (`sketchOutline.ts`, which lift each (u,v) through the plane frame into world space). The flattener splits the geometry into one bucket per material — `solid` (DOF-coloured), `construction` (dashed amber), `guide` (dashed grey: spline control polygons, path off-curve connectors), `legs` (accent: spline tangent legs), `points`, `handles` — so **every** drawable entity (line, point, rectangle, circle, polygon, arc, ellipse, slot, spline, path), the closed-region fill and the origin axes now live in 3D. The GPU transforms them with the exact camera matrix used for the rest of the scene, in the same frame, so they cannot lag behind during a camera pan/orbit. (The original bug: the overlay's own `requestAnimationFrame` loop polled `sketchCameraBridge.version`, which is bumped only when the **demand**-mode WebGPU `<Canvas>` actually renders, so the 2D raster was reliably one frame stale and read as a non-rigid "post-process" transform.) DOF status colour mirrors `drawOverlay`'s `committedColor`; the `Invalidator` watches `sketchSession.subCalls` so a commit repaints under demand frameloop. Picking is unaffected — it was always (u,v)-space (`screenToSketch` → `sketchHitTest`), independent of how the geometry is drawn, so the overlay `<canvas>` stays mounted to own gestures.
 
 `drawOverlay` now strokes **no** committed geometry — it owns only the transient/HUD layer: hover, snap, drag/rubber-band previews, the marquee, selection highlight + grips, and the text labels (dimension readouts, constraint glyphs).
 
@@ -560,8 +622,9 @@ graph TD
 Net result: every sketch visual — committed geometry (3D scene), region fill (3D mesh), origin axes (3D), and the transient/text HUD (frame-synced overlay) — tracks the camera without lag.
 
 **2D-overlay artifact removal (v0.6.110–111):** the overlay is being emptied of all drawn GEOMETRY, which now renders as real 3D scene objects:
-- *Selection highlight + grips* (v0.6.110): `collectSelectionGeometry` (`viewportOverlays.tsx`) turns `session.selection` + the solved `skState` into highlight outline segments + marker points, rendered by `SketchSession3D` in the selection colour.
-- *Drag/rubber-band previews, hover point, snap ring, projected B-Rep edge guides* (v0.6.111): `SketchCanvas2d` publishes them as (u,v) primitives to `sketchHudBridge` (`buildSketchHudUv` mirrors the old drag switch but as primitives, reusing `collectSketchSessionGeometry` for the shapes); `SketchHud3D` (`viewportOverlays.tsx`) rebuilds the 3D objects from the bridge on each version bump (a `useFrame` reader; `setHudInvalidate` drives a render so it updates during drawing under the demand frameloop). The shared flattener keeps preview shapes pixel-identical to the committed ones.
+
+* *Selection highlight + grips* (v0.6.110): `collectSelectionGeometry` (`sketchSceneOverlays.tsx`) turns `session.selection` + the solved `skState` into highlight outline segments + marker points, rendered by `SketchSession3D` in the selection colour.
+* *Drag/rubber-band previews, hover point, snap ring, projected B-Rep edge guides* (v0.6.111): `SketchCanvas2d` publishes them as (u,v) primitives to `sketchHudBridge` (`buildSketchHudUv` mirrors the old drag switch but as primitives, reusing `collectSketchSessionGeometry` for the shapes); `SketchHud3D` (`sketchSceneOverlays.tsx`) rebuilds the 3D objects from the bridge on each version bump (a `useFrame` reader; `setHudInvalidate` drives a render so it updates during drawing under the demand frameloop). The shared flattener keeps preview shapes pixel-identical to the committed ones.
 
 `drawOverlay` now strokes **only** the screen-space TEXT (constraint glyphs, dimension/size/radius readouts, snap label) and the marquee box — the last 2D artifacts. Final step (pending): move those to anchored HTML/CSS and drop the canvas's drawing path entirely (it stays only as the pointer-capture surface).
 
@@ -590,7 +653,7 @@ graph LR
     A["Feature Tree"] --> B["StepCommand[]"] --> C["OCCT Worker"] --> D["opencascade.js\nB-Rep"] --> E["STEP File"]
 ```
 
-The OCCT worker (`occt.worker.ts`) loads opencascade.js (~25 MB WASM) and executes CSG operations (box, sphere, cylinder, cone, torus, hexprism, extrude, revolve, union/difference/intersect, transform) as B-Rep geometry via OCCT's `BRepAlgoAPI`. Only root shapes (not consumed operands) are written to STEP via `STEPControl_Writer`.
+The OCCT worker (`occt.worker.ts`) loads opencascade.js (\~25 MB WASM) and executes CSG operations (box, sphere, cylinder, cone, torus, hexprism, extrude, revolve, union/difference/intersect, transform) as B-Rep geometry via OCCT's `BRepAlgoAPI`. Only root shapes (not consumed operands) are written to STEP via `STEPControl_Writer`.
 
 #### STEP Import
 
@@ -603,13 +666,13 @@ Configurable deflection (0.02 mm linear, 0.1 rad angular). AP242 fallback extrac
 
 #### STL/OBJ
 
-- **Rust kernel** (`export.rs`): STL ASCII + binary export, normals via cross product
-- **TypeScript** (`meshIO.ts`): STL binary import (parser), OBJ import/export
+* **Rust kernel** (`export.rs`): STL ASCII + binary export, normals via cross product
+* **TypeScript** (`meshIO.ts`): STL binary import (parser), OBJ import/export
 
 #### 3MF
 
-- **Rust kernel** (`export_3mf.rs`): Multi-body 3MF with per-body color palette (8 colors)
-- **TypeScript** (`threemf.ts`): 3MF roundtrip preserving slicer metadata (Bambu, Prusa, Cura, OrcaSlicer)
+* **Rust kernel** (`export_3mf.rs`): Multi-body 3MF with per-body color palette (8 colors)
+* **TypeScript** (`threemf.ts`): 3MF roundtrip preserving slicer metadata (Bambu, Prusa, Cura, OrcaSlicer)
 
 ### 4.7 CSS Architecture
 
@@ -631,12 +694,12 @@ styles/
     └── ...            # One file per component
 ```
 
-- No BEM, no CSS-in-JS — native CSS nesting
-- Each component has one top-level class with `fd-` prefix (`.fd-toolbar`, `.fd-outliner`, ...)
-- Child selectors are short and unprefixed, scoped by nesting
-- Custom properties from `tokens.css` used extensively
-- Light mode only
-- Minimum font size: 1rem
+* No BEM, no CSS-in-JS — native CSS nesting
+* Each component has one top-level class with `fd-` prefix (`.fd-toolbar`, `.fd-outliner`, ...)
+* Child selectors are short and unprefixed, scoped by nesting
+* Custom properties from `tokens.css` used extensively
+* Light mode only
+* Minimum font size: 1rem
 
 **Responsive layout.** Below the 768px phone breakpoint the docked Outliner
 becomes an off-canvas drawer (absolutely positioned in `.main`, parked at
@@ -654,12 +717,12 @@ per-frame style recalc, so the drawer toggles instantly with no transition.
 The same 768px breakpoint also up-sizes interactive controls to a comfortable
 touch target. The `--touch-target` token (≈44px) raises the toolbar `.tool`
 buttons (lifting their desktop `max-height` cap) and the bottom-tab strip's
-add button, tabs, labels and carets — all otherwise ~32–40px. These rules live
+add button, tabs, labels and carets — all otherwise \~32–40px. These rules live
 in plain `@media (max-width: 768px)` blocks at the foot of `toolbar.css` and
 `bottom-tabs.css` and stay scoped to mobile (a desktop E2E guards that the
 toolbar keeps its compact height).
 
----
+***
 
 ## 5. Go Server
 
@@ -667,36 +730,36 @@ toolbar keeps its compact height).
 
 The application runs purely in the browser with localStorage persistence. The Go server adds:
 
-- **Authentication:** Argon2id password hashing (t=1, m=64MB, p=4), HttpOnly session cookies (7-day TTL, SameSite=Lax)
-- **Project CRUD:** Create, read, update, delete projects (50 MB document limit, 100 project quota/user)
-- **Visibility:** Private or public projects; public gallery endpoint
-- **Snapshots:** Frozen read-only copies for sharing (`/api/v/{id}`)
-- **Thumbnails:** Per-project PNG upload/serve (2 MB limit)
-- **Rate limiting:** Per-IP token bucket (60 burst, 1 req/sec refill)
-- **Password reset:** 1-hour token, CLI-logged (SMTP integration TBD)
+* **Authentication:** Argon2id password hashing (t\=1, m\=64MB, p\=4), HttpOnly session cookies (7-day TTL, SameSite\=Lax)
+* **Project CRUD:** Create, read, update, delete projects (50 MB document limit, 100 project quota/user)
+* **Visibility:** Private or public projects; public gallery endpoint
+* **Snapshots:** Frozen read-only copies for sharing (`/api/v/{id}`)
+* **Thumbnails:** Per-project PNG upload/serve (2 MB limit)
+* **Rate limiting:** Per-IP token bucket (60 burst, 1 req/sec refill)
+* **Password reset:** 1-hour token, CLI-logged (SMTP integration TBD)
 
 **API endpoints** (16 routes): `/api/auth/*` (register/login/logout/reset), `/api/me`, `/api/projects/*` (CRUD + publish + thumbnail), `/api/gallery`, `/api/v/{id}`.
 
-Currently uses in-memory store; MariaDB integration planned.
+Storage backends: `store_sql.go` (MariaDB, production), `store_mem.go` (in-memory, tests/dev), plus a pluggable ticket store (`ticketstore.go`: SQL for prod, `ticketstore_file.go` for local dev, `TICKET_BACKEND=files`).
 
----
+***
 
 ## 6. Build System & Deployment
 
 ### Justfile (Developer Commands)
 
-| Command | Description |
-|---------|-------------|
-| `just install` | npm install web dependencies |
+| Command           | Description                                                  |
+| ----------------- | ------------------------------------------------------------ |
+| `just install`    | npm install web dependencies                                 |
 | `just build-wasm` | Compile Rust kernel to WASM (`wasm-pack build --target web`) |
-| `just dev` | Build WASM + start Vite dev server (:5173) |
-| `just build` | Full production bundle (WASM + Vite) |
-| `just test` | Rust unit tests + Vitest |
-| `just test-rust` | `cargo test --workspace` |
-| `just test-web` | Build WASM + Vitest |
-| `just test-e2e` | Playwright E2E (headed Chromium + real WebGPU) |
-| `just fmt` | cargo fmt + prettier |
-| `just clean` | Remove all build artifacts |
+| `just dev`        | Build WASM + start Vite dev server (:5173)                   |
+| `just build`      | Full production bundle (WASM + Vite)                         |
+| `just test`       | Rust unit tests + Vitest                                     |
+| `just test-rust`  | `cargo test --workspace`                                     |
+| `just test-web`   | Build WASM + Vitest                                          |
+| `just test-e2e`   | Playwright E2E (headed Chromium + real WebGPU)               |
+| `just fmt`        | cargo fmt + prettier                                         |
+| `just clean`      | Remove all build artifacts                                   |
 
 ### Docker Deployment
 
@@ -711,28 +774,28 @@ Server Dockerfile: Multi-stage `golang:1.26-alpine` build + `alpine:3` runtime. 
 
 Environment: `DB_DSN` (MariaDB connection), `PORT` (default 8080), `SESSION_TTL` (default 168h).
 
----
+***
 
 ## 7. Testing Strategy
 
 ### Unit Tests
 
-- **Rust:** `cargo test --workspace` — kernel logic, CSG operations, SDF evaluation, meshing, export
-- **TypeScript:** Vitest — solver integration, inference engine, drag controller, diagnostics pipeline, persistence, worker RPC, 3MF roundtrip, tooltips, settings
+* **Rust:** `cargo test --workspace` — kernel logic, CSG operations, SDF evaluation, meshing, export
+* **TypeScript:** Vitest — solver integration, inference engine, drag controller, diagnostics pipeline, persistence, worker RPC, 3MF roundtrip, tooltips, settings
 
 ### E2E Tests (Playwright)
 
 Runs headed Chromium with real WebGPU (no headless — requires GPU):
 
-| Test Suite | Coverage |
-|------------|----------|
-| `smoke.spec.ts` | Full feature stack: add/undo/redo/delete, boolean ops, patterns, sketches, revolve, rename, reorder, suppress, duplicate, variables, formulas, fillet, STL/STEP/3MF export, STEP import, persistence |
-| `renderer.spec.ts` | SDF renderer mode switching (VM ↔ Deferred), shader compilation, body count preservation, multi-primitive rendering |
-| `visual.spec.ts` | Screenshot regression at 3 viewports (600/900/1440px), 2% pixel diff tolerance |
+| Test Suite         | Coverage                                                                                                                                                                                             |
+| ------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `smoke.spec.ts`    | Full feature stack: add/undo/redo/delete, boolean ops, patterns, sketches, revolve, rename, reorder, suppress, duplicate, variables, formulas, fillet, STL/STEP/3MF export, STEP import, persistence |
+| `renderer.spec.ts` | SDF renderer mode switching (VM ↔ Deferred), shader compilation, body count preservation, multi-primitive rendering                                                                                  |
+| `visual.spec.ts`   | Screenshot regression at 3 viewports (600/900/1440px), 2% pixel diff tolerance                                                                                                                       |
 
 Configuration: 1 worker (serial), 30s timeout, trace on failure, Vite dev server auto-started.
 
----
+***
 
 ## 8. Key Data Flows
 

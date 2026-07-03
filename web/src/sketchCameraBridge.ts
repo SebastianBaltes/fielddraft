@@ -104,13 +104,31 @@ export function readSketchCamera(): Readonly<SketchCameraState> {
   return bridge;
 }
 
-// Dev-mode window hook so Playwright tests can peek the
-// current camera state without having to set up a
-// side-channel export.
+// Dev-mode window hooks so Playwright tests can peek the current camera
+// state and, crucially, project a sketch (u, v) to overlay pixels through
+// the SAME real-camera + plane-frame path the overlay hit-test uses.
+// (Reimplementing the projection test-side drifts: the old top-down
+// centerU/centerV model is long gone, so a hand-rolled ortho formula
+// yields NaN clicks.) The projector hook takes optional width/height so a
+// caller that measured its own canvas box can override the bridge's
+// possibly-stale dims — see the note on `sketchToScreen`.
 if (typeof window !== "undefined" && import.meta.env?.DEV) {
-  (
-    window as unknown as { __fdSketchCamera?: () => Readonly<SketchCameraState> }
-  ).__fdSketchCamera = () => bridge;
+  const w = window as unknown as {
+    __fdSketchCamera?: () => Readonly<SketchCameraState>;
+    __fdSketchToScreen?: (
+      u: number,
+      v: number,
+      width?: number,
+      height?: number,
+    ) => [number, number];
+  };
+  w.__fdSketchCamera = () => bridge;
+  w.__fdSketchToScreen = (u, v, width, height) =>
+    sketchToScreen(
+      u,
+      v,
+      width && height ? { ...bridge, width, height } : bridge,
+    );
 }
 
 /**

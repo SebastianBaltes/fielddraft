@@ -11,14 +11,17 @@
  * — it is NOT part of the initial app bundle. This keeps the dev
  * build fast and the initial page load unaffected.
  *
- * Wire format:
+ * Wire format (every message carries the caller's `requestId`, echoed on all
+ * responses — export and import share this worker, so responses are matched
+ * by id, never by message type; a parallel export+import can't capture each
+ * other's answers):
  *
- *   main → worker : { type: "export-step", commands: StepCommand[] }
- *                  | { type: "import-step", data: Uint8Array }
- *   worker → main : { type: "step-result", data: Uint8Array }
- *                  | { type: "step-error", message: string }
- *                  | { type: "step-progress", phase: string }
- *                  | { type: "import-result", positions: Float32Array, normals: Float32Array, indices: Uint32Array }
+ *   main → worker : { type: "export-step", requestId, commands: StepCommand[] }
+ *                  | { type: "import-step", requestId, data: Uint8Array }
+ *   worker → main : { type: "step-result", requestId, data: Uint8Array }
+ *                  | { type: "step-error", requestId, message: string }
+ *                  | { type: "step-progress", requestId, phase: string }
+ *                  | { type: "import-result", requestId, positions: Float32Array, normals: Float32Array, indices: Uint32Array }
  */
 
 // ─── Command protocol ──────────────────────────────────────────
@@ -43,60 +46,78 @@ export type StepCommand =
 
 export interface StepExportRequest {
   type: "export-step";
+  requestId: number;
   commands: StepCommand[];
 }
 
 export interface StepImportRequest {
   type: "import-step";
+  requestId: number;
   data: Uint8Array;
 }
 
 export type StepWorkerRequest = StepExportRequest | StepImportRequest;
 
 export type StepWorkerMessage =
-  | { type: "step-result"; data: Uint8Array }
-  | { type: "step-error"; message: string }
-  | { type: "step-progress"; phase: string }
-  | { type: "import-result"; positions: Float32Array; normals: Float32Array; indices: Uint32Array };
+  | { type: "step-result"; requestId: number; data: Uint8Array }
+  | { type: "step-error"; requestId: number; message: string }
+  | { type: "step-progress"; requestId: number; phase: string }
+  | { type: "import-result"; requestId: number; positions: Float32Array; normals: Float32Array; indices: Uint32Array };
 
 // ─── Worker implementation ─────────────────────────────────────
 
+type Progress = (phase: string) => void;
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let oc: any = null;
+let ocReady: Promise<void> | null = null;
 
-async function ensureOcct(): Promise<void> {
-  if (oc) return;
-  post({ type: "step-progress", phase: "Loading OpenCASCADE (~25 MB)..." });
-  try {
-    // @ts-ignore — optional dynamic dependency
-    const initOpenCascade = (await import("opencascade.js")).default;
-    oc = await initOpenCascade();
-  } catch (e) {
-    throw new Error(
-      `Failed to load OpenCASCADE WASM. Install it with: npm install opencascade.js@beta\n${e}`,
-    );
+/** Load opencascade.js once. Promise-cached so concurrent requests
+ *  (export racing another export) share one load instead of double-
+ *  initialising the module. */
+function ensureOcct(onProgress: Progress): Promise<void> {
+  if (!ocReady) {
+    onProgress("Loading OpenCASCADE (~25 MB)...");
+    ocReady = (async () => {
+      try {
+        // @ts-ignore — optional dynamic dependency
+        const initOpenCascade = (await import("opencascade.js")).default;
+        oc = await initOpenCascade();
+      } catch (e) {
+        ocReady = null; // allow a retry on the next request
+        throw new Error(
+          `Failed to load OpenCASCADE WASM. Install it with: npm install opencascade.js@beta\n${e}`,
+        );
+      }
+    })();
   }
+  return ocReady;
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-let occtImporter: any = null;
+let occtImporterReady: Promise<any> | null = null;
 
-async function ensureOcctImporter(): Promise<any> {
-  if (occtImporter) return occtImporter;
-  post({ type: "step-progress", phase: "Loading occt-import-js (~12 MB)..." });
-  try {
-    // @ts-ignore — optional dynamic dependency
-    const init = (await import("occt-import-js")).default;
-    occtImporter = await init({
-      locateFile: (name: string) =>
-        name.endsWith(".wasm") ? "/occt-import-js.wasm" : name,
-    });
-    return occtImporter;
-  } catch (e) {
-    throw new Error(
-      `Failed to load occt-import-js WASM. Install it with: npm install occt-import-js\n${e}`,
-    );
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function ensureOcctImporter(onProgress: Progress): Promise<any> {
+  if (!occtImporterReady) {
+    onProgress("Loading occt-import-js (~12 MB)...");
+    occtImporterReady = (async () => {
+      try {
+        // @ts-ignore — optional dynamic dependency
+        const init = (await import("occt-import-js")).default;
+        return await init({
+          locateFile: (name: string) =>
+            name.endsWith(".wasm") ? "/occt-import-js.wasm" : name,
+        });
+      } catch (e) {
+        occtImporterReady = null; // allow a retry on the next request
+        throw new Error(
+          `Failed to load occt-import-js WASM. Install it with: npm install occt-import-js\n${e}`,
+        );
+      }
+    })();
   }
+  return occtImporterReady;
 }
 
 function post(msg: StepWorkerMessage, transfer?: Transferable[]): void {
@@ -104,11 +125,14 @@ function post(msg: StepWorkerMessage, transfer?: Transferable[]): void {
 }
 
 self.onmessage = async (e: MessageEvent<StepWorkerRequest>) => {
+  const { requestId } = e.data;
+  const progress: Progress = (phase) =>
+    post({ type: "step-progress", requestId, phase });
   if (e.data.type === "export-step") {
     const shapes = new Map<string, unknown>();
     try {
-      await ensureOcct();
-      post({ type: "step-progress", phase: "Building B-Rep geometry..." });
+      await ensureOcct(progress);
+      progress("Building B-Rep geometry...");
 
       for (const cmd of e.data.commands) {
         const shape = executeCommand(cmd, shapes);
@@ -122,16 +146,17 @@ self.onmessage = async (e: MessageEvent<StepWorkerRequest>) => {
         if ("source" in cmd) consumed.add((cmd as { source: string }).source);
       }
 
-      post({ type: "step-progress", phase: "Writing STEP file..." });
+      progress("Writing STEP file...");
       const stepBytes = writeStep(shapes, consumed);
 
       post(
-        { type: "step-result", data: stepBytes },
+        { type: "step-result", requestId, data: stepBytes },
         [stepBytes.buffer],
       );
     } catch (err) {
       post({
         type: "step-error",
+        requestId,
         message: err instanceof Error ? err.message : String(err),
       });
     } finally {
@@ -141,14 +166,15 @@ self.onmessage = async (e: MessageEvent<StepWorkerRequest>) => {
     }
   } else if (e.data.type === "import-step") {
     try {
-      const result = await importStepViaOcctImportJs(e.data.data);
+      const result = await importStepViaOcctImportJs(e.data.data, progress);
       post(
-        { type: "import-result", ...result },
+        { type: "import-result", requestId, ...result },
         [result.positions.buffer, result.normals.buffer, result.indices.buffer],
       );
     } catch (err) {
       post({
         type: "step-error",
+        requestId,
         message: err instanceof Error ? err.message : String(err),
       });
     }
@@ -401,11 +427,12 @@ function writeStep(shapes: Map<string, unknown>, consumed: Set<string>): Uint8Ar
 
 async function importStepViaOcctImportJs(
   fileBytes: Uint8Array,
+  progress: Progress,
 ): Promise<{ positions: Float32Array; normals: Float32Array; indices: Uint32Array }> {
-  post({ type: "step-progress", phase: "Reading STEP file..." });
-  const occtImp = await ensureOcctImporter();
+  progress("Reading STEP file...");
+  const occtImp = await ensureOcctImporter(progress);
 
-  post({ type: "step-progress", phase: "Tessellating B-Rep..." });
+  progress("Tessellating B-Rep...");
   const result = occtImp.ReadStepFile(fileBytes, {
     linearUnit: "millimeter",
     linearDeflectionType: "absolute_value",
@@ -417,7 +444,7 @@ async function importStepViaOcctImportJs(
     throw new Error("Failed to parse STEP file (invalid format or empty).");
   }
 
-  post({ type: "step-progress", phase: "Extracting triangles..." });
+  progress("Extracting triangles...");
 
   const allPositions: number[] = [];
   const allNormals: number[] = [];
@@ -445,7 +472,7 @@ async function importStepViaOcctImportJs(
   // (convergent bodies / embedded meshes) that occt-import-js skips.
   const stepText = new TextDecoder().decode(fileBytes);
   if (stepText.includes("COMPLEX_TRIANGULATED_FACE")) {
-    post({ type: "step-progress", phase: "Extracting embedded meshes..." });
+    progress("Extracting embedded meshes...");
     const tess = extractTessellatedGeometry(stepText);
     if (tess) {
       for (let i = 0; i < tess.positions.length; i++) allPositions.push(tess.positions[i]);

@@ -37,7 +37,7 @@ import {
   createPrimitiveGeometry,
   buildWarpedLeafGeometry,
   applyLeafTransform,
-} from "./sdfDeferredRenderer";
+} from "./leafMeshFactory";
 import type { HybridLeafInfo } from "./kernel";
 import { LIGHTS, AMBIENT } from "./pbrShading";
 

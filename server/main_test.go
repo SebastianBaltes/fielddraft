@@ -2,9 +2,11 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -168,6 +170,94 @@ func TestRateLimiterRejects(t *testing.T) {
 	// Different IP should still pass.
 	if !rl.Allow("5.6.7.8") {
 		t.Fatal("different IP should pass")
+	}
+}
+
+// TestWriteErrEscapesJSON — writeErr must produce valid JSON even when the
+// message contains quotes/backslashes (the old hand-concatenation broke out of
+// the JSON string), and must keep the application/json content type.
+func TestWriteErrEscapesJSON(t *testing.T) {
+	rec := httptest.NewRecorder()
+	msg := `boom "quote" and \backslash`
+	writeErr(rec, http.StatusBadRequest, msg)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rec.Code)
+	}
+	if ct := rec.Header().Get("Content-Type"); ct != "application/json" {
+		t.Fatalf("content-type = %q, want application/json", ct)
+	}
+	var body struct {
+		Error string `json:"error"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("invalid JSON body %q: %v", rec.Body.String(), err)
+	}
+	if body.Error != msg {
+		t.Fatalf("error = %q, want %q", body.Error, msg)
+	}
+}
+
+// TestRateLimiterEviction — buckets idle for bucketIdleTTL are purged on
+// access; an active bucket survives the sweep.
+func TestRateLimiterEviction(t *testing.T) {
+	rl := NewRateLimiter(0, 3)
+	t0 := time.Now()
+	rl.allowAt("idle-ip", t0)
+	rl.allowAt("busy-ip", t0)
+	if len(rl.buckets) != 2 {
+		t.Fatalf("buckets = %d, want 2", len(rl.buckets))
+	}
+	// busy-ip keeps talking; idle-ip goes quiet.
+	rl.allowAt("busy-ip", t0.Add(9*time.Minute))
+	// Past the idle TTL (for idle-ip), the next access sweeps it away.
+	rl.allowAt("third-ip", t0.Add(10*time.Minute+time.Second))
+	if _, ok := rl.buckets["idle-ip"]; ok {
+		t.Fatal("idle bucket not evicted")
+	}
+	if _, ok := rl.buckets["busy-ip"]; !ok {
+		t.Fatal("active bucket wrongly evicted")
+	}
+	// The sweep is rate-limited: within the same sweep interval nothing runs.
+	rl.allowAt("fourth-ip", t0.Add(10*time.Minute+2*time.Second))
+	if _, ok := rl.buckets["third-ip"]; !ok {
+		t.Fatal("fresh bucket vanished")
+	}
+}
+
+// TestClientIPTrustProxy — X-Forwarded-For is only honored with TRUST_PROXY=1,
+// and then only its FIRST element; otherwise the TCP peer host (sans port) is
+// used, so a spoofed header cannot dodge the limiter.
+func TestClientIPTrustProxy(t *testing.T) {
+	mkReq := func(xff string) *http.Request {
+		r := httptest.NewRequest("GET", "/api/gallery", nil)
+		r.RemoteAddr = "203.0.113.7:54321"
+		if xff != "" {
+			r.Header.Set("X-Forwarded-For", xff)
+		}
+		return r
+	}
+
+	// Untrusted (default): the header is ignored entirely.
+	srv := NewServer(NewStore())
+	if got := srv.clientIP(mkReq("6.6.6.6")); got != "203.0.113.7" {
+		t.Fatalf("untrusted XFF: got %q, want peer host", got)
+	}
+	if got := srv.clientIP(mkReq("")); got != "203.0.113.7" {
+		t.Fatalf("no XFF: got %q, want peer host (no port)", got)
+	}
+
+	// Trusted (TRUST_PROXY=1): first element only, trimmed.
+	t.Setenv("TRUST_PROXY", "1")
+	trusted := NewServer(NewStore())
+	if got := trusted.clientIP(mkReq("198.51.100.9, 10.0.0.1")); got != "198.51.100.9" {
+		t.Fatalf("trusted XFF: got %q, want first element", got)
+	}
+	if got := trusted.clientIP(mkReq(" 198.51.100.9 ")); got != "198.51.100.9" {
+		t.Fatalf("trusted XFF trim: got %q", got)
+	}
+	// Empty header still falls back to the peer.
+	if got := trusted.clientIP(mkReq("")); got != "203.0.113.7" {
+		t.Fatalf("trusted, no XFF: got %q, want peer host", got)
 	}
 }
 
@@ -358,6 +448,82 @@ func TestRegisterRequiresInvite(t *testing.T) {
 	resp.Body.Close()
 	if resp.StatusCode != 400 {
 		t.Fatalf("reused invite: got %d, want 400", resp.StatusCode)
+	}
+}
+
+// TestRegisterWithInviteRace — RegisterWithInvite is atomic: N parallel
+// registrations with the SAME invite yield exactly one user; every loser gets
+// errInviteUsed and leaves NO user behind (the old two-phase handler leaked a
+// user without a consumed invite on this race).
+func TestRegisterWithInviteRace(t *testing.T) {
+	store := NewStore()
+	admin, err := store.CreateUser("race-admin@test.com", "Admin", "adminpass123", RoleAdmin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inv := store.CreateInvite(admin.ID, "", "", "", time.Now().Add(time.Hour))
+
+	const n = 16
+	var wg sync.WaitGroup
+	errs := make([]error, n)
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			_, errs[i] = store.RegisterWithInvite(
+				fmt.Sprintf("racer-%d@test.com", i), "R", "pass12345", inv.Token)
+		}(i)
+	}
+	wg.Wait()
+
+	winners := 0
+	for i, err := range errs {
+		switch err {
+		case nil:
+			winners++
+		case errInviteUsed:
+			// The loser must NOT have left a user behind.
+			if store.GetUserByEmail(fmt.Sprintf("racer-%d@test.com", i)) != nil {
+				t.Fatalf("loser %d left a user without a consumed invite", i)
+			}
+		default:
+			t.Fatalf("racer %d: unexpected error %v", i, err)
+		}
+	}
+	if winners != 1 {
+		t.Fatalf("winners = %d, want exactly 1", winners)
+	}
+	if got := store.GetInvite(inv.Token); got == nil || got.UsedBy == nil {
+		t.Fatal("invite not burned by the winning registration")
+	}
+}
+
+// TestRegisterWithInviteConflictKeepsToken — a duplicate-email registration
+// fails with errConflict and does NOT burn the invite.
+func TestRegisterWithInviteConflictKeepsToken(t *testing.T) {
+	store := NewStore()
+	admin, err := store.CreateUser("keep-admin@test.com", "Admin", "adminpass123", RoleAdmin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CreateUser("taken@test.com", "T", "pass12345", RoleUser); err != nil {
+		t.Fatal(err)
+	}
+	inv := store.CreateInvite(admin.ID, "", "", "", time.Now().Add(time.Hour))
+
+	if _, err := store.RegisterWithInvite("taken@test.com", "X", "pass12345", inv.Token); err != errConflict {
+		t.Fatalf("duplicate email err = %v, want errConflict", err)
+	}
+	if got := store.GetInvite(inv.Token); got == nil || got.UsedBy != nil {
+		t.Fatal("invite burned by a failed (duplicate-email) registration")
+	}
+	// The token still works afterwards.
+	if _, err := store.RegisterWithInvite("fresh@test.com", "F", "pass12345", inv.Token); err != nil {
+		t.Fatalf("registration after conflict: %v", err)
+	}
+	// Bad tokens are rejected cleanly.
+	if _, err := store.RegisterWithInvite("x@test.com", "X", "pass12345", "bogus"); err != errInviteInvalid {
+		t.Fatalf("bogus token err = %v, want errInviteInvalid", err)
 	}
 }
 

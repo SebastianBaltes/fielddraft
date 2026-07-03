@@ -1,5 +1,5 @@
 import type { Kernel, FeatureSummary } from "./kernel";
-import { BODY_COLORS } from "./sdfDeferredRenderer";
+import { BODY_COLORS } from "./bodyColors";
 import { DEFAULT_ROUGHNESS, DEFAULT_METALNESS, DEFAULT_BASE_COLOR } from "./pbrShading";
 import {
   MAT_STRIDE,

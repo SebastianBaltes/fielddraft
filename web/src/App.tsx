@@ -5,18 +5,10 @@ import { Viewport } from "./Viewport";
 import { FieldSkriptEditor } from "./FieldSkriptEditor";
 import { BottomTabs } from "./BottomTabs";
 import { useKernelStore } from "./store";
-import { requestView } from "./viewCommands";
-import {
-  getActive as getActiveQueryPicker,
-  deactivate as deactivateQueryPicker,
-} from "./queryPickerBridge";
-import { isTextEntryTarget } from "./keyboardTarget";
-import {
-  SettingsMenu,
-  loadSettings,
-  WorkspaceUnitsContext,
-} from "./SettingsMenu";
-import type { SettingsState } from "./SettingsMenu";
+import { dispatchKeyboardCommand } from "./keyboardCommands";
+import { SettingsMenu } from "./SettingsMenu";
+import { loadSettings, WorkspaceUnitsContext } from "./settings";
+import type { SettingsState } from "./settings";
 import { ProjectTitle } from "./ProjectTitle";
 import { CONTROLS_PRESETS, viewShortcutRow } from "./controlsPreset";
 import { useAccount, type UseAccountOptions } from "./account/useAccount";
@@ -257,230 +249,18 @@ function AppShell({ account }: { account: UseAccount }) {
     return () => window.removeEventListener("fd:open-ticket", onOpenTicket);
   }, [account]);
 
-  // Global keyboard shortcuts: Del = remove selection, Ctrl+Z = undo,
-  // Ctrl+Shift+Z (or Ctrl+Y) = redo. Skipped if focus is in an input.
+  // Global keyboard shortcuts. The routing table (key→command + context
+  // gates: text-entry guard, script-tab gate, sketch-session scoping,
+  // preset view keys) lives in keyboardCommands.ts — the shell only
+  // registers the listener and supplies the context.
   useEffect(() => {
     if (!store) return;
-    const onKey = (e: KeyboardEvent) => {
-      // F1 toggles help overlay — always, on every tab, even in inputs.
-      if (e.key === "F1") {
-        setShowHelp((v) => !v);
-        e.preventDefault();
-        return;
-      }
-      // F2 opens the Report Issue dialog — also global, even in inputs, so it
-      // works mid-task. SettingsMenu owns the dialog; bridge via a window event.
-      if (e.key === "F2") {
-        window.dispatchEvent(new Event("fd:report-issue"));
-        e.preventDefault();
-        return;
-      }
-      // Never steal keystrokes from a focused text surface (form fields,
-      // and the Monaco script editor).
-      if (isTextEntryTarget(e.target)) return;
-
-      const ctrl = e.ctrlKey || e.metaKey;
-
-      // Ctrl+S saves the whole project — an app-level action valid in
-      // any workspace.
-      if (ctrl && (e.key === "s" || e.key === "S")) {
-        store.saveProjectToFile();
-        e.preventDefault();
-        return;
-      }
-
-      // Everything below edits the active part/assembly model, so it is
-      // only valid in the modelling workspace — NOT while a FieldSkript
-      // (script) tab is open, which has its own editor that owns the
-      // keyboard there. The window listener is global, so we gate on the
-      // active tab kind rather than on focus heuristics: a bare `b` on
-      // the script tab is text the user is typing, not "add box".
-      const cur = store.getState();
-      const activeTab = cur.project.tabs.find(
-        (t) => t.id === cur.project.activeTabId,
-      );
-      if (activeTab?.kind === "script") return;
-
-      if (e.key === "Delete" || e.key === "Backspace") {
-        // In a sketch session Delete acts on the SKETCH selection only —
-        // never on 3D features, which would vanish invisibly behind the
-        // sketch plane.
-        if (store.getState().sketchSession.active) {
-          if (store.deleteSketchSelection()) e.preventDefault();
-          return;
-        }
-        if (store.removeSelected()) e.preventDefault();
-        return;
-      }
-      // In a sketch session, undo/redo act on the SKETCH history only —
-      // never on 3D features behind the sketch plane (ticket r3ci; mirrors
-      // how Delete is scoped to the sketch selection above). Routed here
-      // unconditionally so an empty sketch history is a no-op, not a fall-
-      // through to the kernel undo.
-      const inSketch = store.getState().sketchSession.active;
-      if (ctrl && (e.key === "z" || e.key === "Z")) {
-        if (inSketch) {
-          if (e.shiftKey ? store.sketchRedo() : store.sketchUndo())
-            e.preventDefault();
-        } else if (e.shiftKey) {
-          if (store.redo()) e.preventDefault();
-        } else {
-          if (store.undo()) e.preventDefault();
-        }
-        return;
-      }
-      if (ctrl && (e.key === "y" || e.key === "Y")) {
-        if (inSketch ? store.sketchRedo() : store.redo()) e.preventDefault();
-        return;
-      }
-
-      // Arrow keys nudge the selection along the world axes. Shift =
-      // larger step. Alt = move along Z (up the world Y in CAD parlance
-      // is screen-up; Z lifts the part). Plain arrows move on the XY
-      // plane: Right/Left = X, Up/Down = Y.
-      const step = e.shiftKey ? 10 : 1;
-      let dx = 0,
-        dy = 0,
-        dz = 0;
-      if (e.key === "ArrowRight") dx = step;
-      else if (e.key === "ArrowLeft") dx = -step;
-      else if (e.key === "ArrowUp") {
-        if (e.altKey) dz = step;
-        else dy = step;
-      } else if (e.key === "ArrowDown") {
-        if (e.altKey) dz = -step;
-        else dy = -step;
-      }
-      if (dx !== 0 || dy !== 0 || dz !== 0) {
-        if (store.nudgeSelected(dx, dy, dz)) e.preventDefault();
-        return;
-      }
-
-      // Single-key shortcuts (no modifier). Skipped when
-      // focus is in an input (guard at the top of onKey).
-      if (!ctrl && !e.shiftKey && !e.altKey) {
-        const cur2 = store.getState();
-        switch (e.key) {
-          case "Escape": {
-            const cur = store.getState();
-            // An armed query picker owns the viewport clicks — Escape
-            // releases it first, before any mode/tool fallbacks.
-            if (getActiveQueryPicker()) {
-              deactivateQueryPicker();
-              e.preventDefault();
-              return;
-            }
-            if (cur.mateMode) {
-              store.toggleMateMode();
-            } else if (
-              cur.sketchSession.active &&
-              cur.sketchSession.selectedTool
-            ) {
-              // P0.1: in a sketch session, Esc drops the active drawing
-              // tool and returns to select mode so geometry can be picked.
-              store.selectSketchTool(null);
-            } else if (
-              cur.sketchSession.active &&
-              cur.sketchSession.selection.length > 0
-            ) {
-              store.clearSketchSelection();
-            } else {
-              store.clearSelection();
-            }
-            e.preventDefault();
-            return;
-          }
-          case " ":
-            // Onshape idiom (preset-gated): Space clears the selection.
-            if (
-              CONTROLS_PRESETS[settings.controlsPreset].selection.spaceClears
-            ) {
-              store.clearSelection();
-              e.preventDefault();
-            }
-            return;
-          // Primitive/gizmo keys are modelling-workspace shortcuts —
-          // inside a sketch session they would silently add 3D features
-          // (or flip gizmo modes) behind the sketch. View keys below
-          // stay live: orienting the camera is useful while sketching.
-          case "b":
-            if (cur2.sketchSession.active) return;
-            store.addPrimitive("box");
-            e.preventDefault();
-            return;
-          case "s":
-            if (cur2.sketchSession.active) return;
-            store.addPrimitive("sphere");
-            e.preventDefault();
-            return;
-          case "c":
-            if (cur2.sketchSession.active) return;
-            store.addPrimitive("cylinder");
-            e.preventDefault();
-            return;
-          case "t":
-            if (cur2.sketchSession.active) return;
-            store.addPrimitive("torus");
-            e.preventDefault();
-            return;
-          case "h":
-            if (cur2.sketchSession.active) return;
-            store.addHole();
-            e.preventDefault();
-            return;
-          case "g":
-            if (cur2.sketchSession.active) return;
-            store.setGizmoMode("translate");
-            e.preventDefault();
-            return;
-          case "r":
-            if (cur2.sketchSession.active) return;
-            store.setGizmoMode("rotate");
-            e.preventDefault();
-            return;
-          case "k":
-            // Onshape parity: K toggles mate-connector visibility.
-            if (cur2.sketchSession.active) return;
-            store.toggleMateConnectorVisibility();
-            e.preventDefault();
-            return;
-        }
-        // View keys come from the controls preset (docs/UX-PRESETS.md) —
-        // e.g. FreeCAD binds 1–6 + 0 to all six standard views.
-        const view =
-          CONTROLS_PRESETS[settings.controlsPreset].keys.views[e.key];
-        if (view) {
-          requestView(view);
-          e.preventDefault();
-          return;
-        }
-      }
-
-      // Ctrl+M = toggle the Mate Connector tool (Onshape parity).
-      if (ctrl && (e.key === "m" || e.key === "M")) {
-        store.toggleMateMode();
-        e.preventDefault();
-        return;
-      }
-
-      // Ctrl+A = select all features.
-      if (ctrl && (e.key === "a" || e.key === "A")) {
-        store.selectAll();
-        e.preventDefault();
-        return;
-      }
-
-      // Ctrl+D = duplicate selected feature.
-      if (ctrl && (e.key === "d" || e.key === "D")) {
-        const sel = store.getState().selection;
-        if (sel.size === 1) {
-          const id = sel.values().next().value;
-          if (id !== undefined) store.duplicateFeature(id);
-          e.preventDefault();
-        }
-        return;
-      }
-    };
+    const onKey = (e: KeyboardEvent) =>
+      dispatchKeyboardCommand(e, {
+        store,
+        controlsPreset: settings.controlsPreset,
+        toggleHelp: () => setShowHelp((v) => !v),
+      });
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [store, settings.controlsPreset]);

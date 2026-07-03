@@ -945,10 +945,10 @@ export function Toolbar({ store, state }: ToolbarProps) {
                 type="button"
                 className={
                   "tool" +
-                  (state.sketchSplineMode === "interpolate" ? " is-active" : "")
+                  (state.sketchToolParams.splineMode === "interpolate" ? " is-active" : "")
                 }
                 data-testid="sketch-spline-mode-interpolate"
-                aria-pressed={state.sketchSplineMode === "interpolate"}
+                aria-pressed={state.sketchToolParams.splineMode === "interpolate"}
                 title="Interpolating spline (passes through points)"
                 onClick={() => store.setSketchSplineMode("interpolate")}
               >
@@ -958,10 +958,10 @@ export function Toolbar({ store, state }: ToolbarProps) {
                 type="button"
                 className={
                   "tool" +
-                  (state.sketchSplineMode === "control" ? " is-active" : "")
+                  (state.sketchToolParams.splineMode === "control" ? " is-active" : "")
                 }
                 data-testid="sketch-spline-mode-control"
-                aria-pressed={state.sketchSplineMode === "control"}
+                aria-pressed={state.sketchToolParams.splineMode === "control"}
                 title="Control-point cubic B-spline"
                 onClick={() => store.setSketchSplineMode("control")}
               >

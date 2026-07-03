@@ -1,7 +1,7 @@
 import { createRoot } from "react-dom/client";
 import { App } from "./App";
 import { installRawInputCapture } from "./userActionLog";
-import { LS_AUTO_RELOAD } from "./SettingsMenu";
+import { LS_AUTO_RELOAD } from "./settings";
 import { bootProjectPath } from "./bootParams";
 import { applyBootSettings, loadBootProject } from "./bootProject";
 import "./styles/index.css";

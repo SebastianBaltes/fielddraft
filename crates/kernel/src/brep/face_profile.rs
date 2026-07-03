@@ -24,7 +24,8 @@
 use fielddraft_protocol::{HalfSpace, Sketch2d, Sketch2dPrimitive, SketchSegment, Transform};
 
 use crate::brep::{BRep, FaceId, Loop, SurfaceGeometry};
-use crate::sketch_features::SketchFrame;
+use crate::sketch::SketchFrame;
+use crate::vec3f::dot;
 
 /// Project a planar face's boundary into `frame`'s 2D coordinates and build the
 /// filled [`Sketch2d`] region (outer loop minus inner hole loops).
@@ -367,10 +368,6 @@ fn place_point(placement: &Transform, p: [f64; 3]) -> [f32; 3] {
 fn project(p: [f32; 3], frame: &SketchFrame) -> [f32; 2] {
     let d = [p[0] - frame.origin[0], p[1] - frame.origin[1], p[2] - frame.origin[2]];
     [dot(d, frame.x_axis), dot(d, frame.y_axis)]
-}
-
-fn dot(a: [f32; 3], b: [f32; 3]) -> f32 {
-    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 }
 
 fn dist2(a: [f32; 2], b: [f32; 2]) -> f32 {

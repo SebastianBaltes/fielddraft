@@ -32,8 +32,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useFrame, useThree } from "@react-three/fiber";
 import * as THREE from "three";
 import { useKernelStore } from "./store";
-import { findSingleSelectedFeature } from "./viewportOverlays";
-import { OVERLAY_LAYER } from "./viewportSdfOverlays";
+import { findSingleSelectedFeature } from "./transformGizmo";
+import { OVERLAY_LAYER } from "./viewportLayers";
 import {
   axisDepthParam,
   lengthParamToMm,

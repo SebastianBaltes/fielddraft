@@ -187,18 +187,9 @@ fn cmp_axis_order(a: [f64; 3], b: [f64; 3]) -> std::cmp::Ordering {
 }
 
 // ─── geometry helpers ─────────────────────────────────────────────────────
-// Shared algebra lives in brep::vec3; `normalize` is kept local because the
-// naming pass returns a zero axis (not the input) for a degenerate vector.
-use super::vec3::{add, dot, norm, scale, sub};
-
-fn normalize(a: [f64; 3]) -> [f64; 3] {
-    let n = norm(a);
-    if n > 1e-12 {
-        scale(a, 1.0 / n)
-    } else {
-        [0.0, 0.0, 0.0]
-    }
-}
+// Shared algebra lives in brep::vec3; the naming pass wants a zero axis
+// (not the input) for a degenerate vector, hence `normalize_or_zero`.
+use super::vec3::{add, dot, norm, normalize_or_zero as normalize, scale, sub};
 
 /// The ordered point chain of an edge, whatever its geometry representation.
 fn edge_points(geom: &EdgeGeometry) -> Vec<[f64; 3]> {

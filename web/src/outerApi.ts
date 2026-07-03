@@ -7,60 +7,58 @@
  * call is serialised as an `fd_call` message, posted to the
  * worker, and resolved by a matching `fd_result` response.
  *
- * The client is deliberately narrow in K4.5.6 — it exposes only
- * the probe methods (`version`, `ping`, `echo`) that the Inner
+ * The correlation/promise plumbing lives in the generic
+ * {@link CorrelatedWorkerChannel} (workerChannel.ts) — this module
+ * only contributes the `fd_call`/`fd_result` wire mapping and the
+ * typed probe methods (`version`, `ping`, `echo`) that the Inner
  * API stub currently implements. Real methods (`sketch`,
- * `extrude`, `query`, …) hang on this same client as K4.5.8 lands
- * the feature dispatch path; no protocol change is needed.
+ * `extrude`, `query`, …) hang on this same client as the feature
+ * dispatch path lands; no protocol change is needed.
  *
  * The class takes a `WorkerLike` in its constructor rather than
  * calling `new Worker(...)` itself, so tests can inject a mock
- * worker that runs the dispatcher inline. Production callers in
- * the React store pass the real `Worker` instance they already
- * own (the one that's also doing mesh rebuilds), so a single
- * worker serves both jobs — mesh snapshots *and* Inner-API
- * round-trips share the same JS runtime.
+ * worker that runs the dispatcher inline. Production callers pass
+ * the real `Worker` instance they already own (the one that's also
+ * doing mesh rebuilds), so a single worker serves both jobs —
+ * mesh snapshots *and* Inner-API round-trips share the same JS
+ * runtime.
  */
 
 import type { FdCallRequest, FdCallResponse } from "./workerRpc";
+import {
+  CorrelatedWorkerChannel,
+  type ChannelEvent,
+  type WorkerLike,
+} from "./workerChannel";
 
-/**
- * Minimal view of a Web Worker that the client actually touches.
- * Narrower than the DOM `Worker` type so tests can supply mocks
- * without implementing `terminate`, `onerror`, etc.
- */
-export interface WorkerLike {
-  postMessage(message: unknown): void;
-  addEventListener(
-    type: "message",
-    listener: (event: MessageEvent<unknown>) => void,
-  ): void;
-  removeEventListener(
-    type: "message",
-    listener: (event: MessageEvent<unknown>) => void,
-  ): void;
-}
-
-interface PendingCall {
-  resolve: (value: unknown) => void;
-  reject: (reason: Error) => void;
+/** Map raw worker messages onto channel events; non-`fd_result`
+ *  traffic (mesh rebuild responses on the shared worker) is ignored. */
+function parseFdResult(data: unknown): ChannelEvent<unknown> | null {
+  if (!data || typeof data !== "object") return null;
+  const rec = data as Record<string, unknown>;
+  if (rec.type !== "fd_result" || typeof rec.requestId !== "number") {
+    return null;
+  }
+  const response = rec as unknown as FdCallResponse;
+  return response.ok
+    ? { kind: "result", requestId: response.requestId, value: response.value }
+    : { kind: "error", requestId: response.requestId, error: response.error };
 }
 
 /**
  * Async proxy for `globalThis.fd` running in a Regeneration
- * Worker. One instance per worker; internally correlates
- * requests by a monotonic `requestId` so multiple in-flight
- * calls can resolve in any order.
+ * Worker. One instance per worker; requests are correlated by
+ * requestId so multiple in-flight calls can resolve in any order.
  */
 export class OuterApiClient {
-  private nextRequestId = 1;
-  private readonly pending = new Map<number, PendingCall>();
-  private readonly messageListener = (event: MessageEvent<unknown>): void => {
-    this.onMessage(event.data);
-  };
+  private readonly channel: CorrelatedWorkerChannel<unknown>;
 
-  constructor(private readonly worker: WorkerLike) {
-    worker.addEventListener("message", this.messageListener);
+  constructor(worker: WorkerLike) {
+    this.channel = new CorrelatedWorkerChannel(
+      worker,
+      parseFdResult,
+      "OuterApiClient",
+    );
   }
 
   /**
@@ -70,11 +68,7 @@ export class OuterApiClient {
    * are rejected with an explicit cancellation error.
    */
   dispose(): void {
-    this.worker.removeEventListener("message", this.messageListener);
-    for (const { reject } of this.pending.values()) {
-      reject(new Error("OuterApiClient disposed with in-flight calls"));
-    }
-    this.pending.clear();
+    this.channel.dispose();
   }
 
   /** Round-trip the Inner API version marker. */
@@ -104,38 +98,14 @@ export class OuterApiClient {
    * drive it directly.
    */
   call(method: string, args: unknown[]): Promise<unknown> {
-    const requestId = this.nextRequestId++;
-    const request: FdCallRequest = {
-      type: "fd_call",
-      requestId,
-      method,
-      args,
-    };
-    return new Promise<unknown>((resolve, reject) => {
-      this.pending.set(requestId, { resolve, reject });
-      this.worker.postMessage(request);
+    return this.channel.call((requestId) => {
+      const request: FdCallRequest = {
+        type: "fd_call",
+        requestId,
+        method,
+        args,
+      };
+      return { message: request };
     });
-  }
-
-  private onMessage(data: unknown): void {
-    if (!data || typeof data !== "object") return;
-    const rec = data as Record<string, unknown>;
-    if (rec.type !== "fd_result") return;
-    const response = rec as unknown as FdCallResponse;
-    const entry = this.pending.get(response.requestId);
-    if (!entry) {
-      // Response for a request we don't know about — either a
-      // stale message after dispose, or a bug in the worker.
-      // Drop silently rather than throwing; throwing from a
-      // message listener is hard to observe and would break
-      // well-behaved callers.
-      return;
-    }
-    this.pending.delete(response.requestId);
-    if (response.ok) {
-      entry.resolve(response.value);
-    } else {
-      entry.reject(new Error(response.error));
-    }
   }
 }

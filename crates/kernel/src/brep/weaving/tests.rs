@@ -1037,8 +1037,10 @@ fn order_loop_walks_four_cube_face_edges_into_a_cycle() {
         surface: HalfSpace::Plane { normal: [0.0, 0.0, 1.0], offset: 0.0 },
         transform: Transform::IDENTITY,
     };
-    let loops = order_loops(&brep, &[e0, e2, e3, e1], &surface, false)
+    let mut groups = order_loop_groups(&brep, &[e0, e2, e3, e1], &surface, false)
         .expect("should close into a cycle");
+    assert_eq!(groups.len(), 1, "one connected boundary region");
+    let loops = groups.remove(0);
     assert!(loops.inner.is_empty(), "a single square has no holes");
     let ring = loops.outer;
     assert_eq!(ring.len(), 4);
@@ -1515,7 +1517,7 @@ fn l_polygon_extrude_weaves_watertight_eight_planes() {
     // is mis-read as a 2-branch Edge cell at this resolution. The reflex-
     // vertex reconstruction post-pass (DL-60) recovers the two missing
     // corners (top + bottom of the reflex edge) analytically from the three
-    // incident edges, so the full 12 corners are present and `order_loops`
+    // incident edges, so the full 12 corners are present and `order_loop_groups`
     // no longer needs its unordered fallback for the touching faces.
     assert_eq!(
         brep.vertex_count(),
@@ -1539,7 +1541,7 @@ fn l_polygon_extrude_weaves_watertight_eight_planes() {
     // planes (4+2 from the 6 walls split into the L's straight runs + 2
     // caps). Each edge appears in exactly two face loops. With all 12
     // corners present every face now orders into a proper ring — no
-    // `order_loops` unordered fallback is emitted (DL-60).
+    // `order_loop_groups` unordered fallback is emitted (DL-60).
     for f in &brep.faces {
         assert!(
             is_analytic_plane(f),
@@ -2361,7 +2363,7 @@ fn cone_surface() -> SurfaceGeometry {
 
 /// Build a BRep whose edges form the given closed rings (each an ordered
 /// vertex-position list), one straight NURBS edge between consecutive
-/// vertices. The rings are disjoint (share no vertices), so `order_loops`
+/// vertices. The rings are disjoint (share no vertices), so `order_loop_groups`
 /// recovers them independently — what we then exercise is its outer/inner
 /// classification. Returns the BRep and the flat edge-id list.
 fn curved_face_rings(rings: &[Vec<[f64; 3]>]) -> (BRep, Vec<EdgeId>) {
@@ -2395,7 +2397,7 @@ fn curved_face_rings(rings: &[Vec<[f64; 3]>]) -> (BRep, Vec<EdgeId>) {
 }
 
 #[test]
-fn order_loops_tapered_cone_classifies_by_parametric_area_not_chord_length() {
+fn order_loop_groups_tapered_cone_classifies_by_parametric_area_not_chord_length() {
     // THE TAPERED-TRIM CASE the chord-length proxy gets wrong (#8). On a
     // cone (radius ≈ 0.05·y, apex at origin) we place two disjoint bounded
     // loops:
@@ -2432,8 +2434,10 @@ fn order_loops_tapered_cone_classifies_by_parametric_area_not_chord_length() {
     ];
 
     let (brep, eids) = curved_face_rings(&[outer, hole]);
-    let loops =
-        order_loops(&brep, &eids, &cone_surface(), false).expect("must order into rings");
+    let mut groups =
+        order_loop_groups(&brep, &eids, &cone_surface(), false).expect("must order into rings");
+    assert_eq!(groups.len(), 1, "curved carriers classify into a single face");
+    let loops = groups.remove(0);
 
     // The fix: the radially small but parametrically large loop is the outer
     // bound; the physically large hole is inner.
@@ -2460,7 +2464,7 @@ fn order_loops_tapered_cone_classifies_by_parametric_area_not_chord_length() {
 }
 
 #[test]
-fn order_loops_reflex_polygon_is_one_connected_ring() {
+fn order_loop_groups_reflex_polygon_is_one_connected_ring() {
     // An L-shaped hexagon in the z=0 plane (CCW), with a REFLEX vertex at
     // (1,1). Edges are added scrambled and with mixed directions; the new
     // turning-angle walk must thread the reflex vertex and recover ONE
@@ -2484,8 +2488,10 @@ fn order_loops_reflex_polygon_is_one_connected_ring() {
     ];
     let (brep, eids) = planar_face_edges(&verts, &edges);
 
-    let loops =
-        order_loops(&brep, &eids, &plane_xy(), false).expect("reflex polygon must order into a ring");
+    let mut groups = order_loop_groups(&brep, &eids, &plane_xy(), false)
+        .expect("reflex polygon must order into a ring");
+    assert_eq!(groups.len(), 1, "one connected boundary region");
+    let loops = groups.remove(0);
     assert!(loops.inner.is_empty(), "a simple polygon has no holes");
     assert_eq!(loops.outer.len(), 6, "all 6 boundary edges in the ring");
 
@@ -2510,9 +2516,9 @@ fn order_loops_reflex_polygon_is_one_connected_ring() {
 }
 
 #[test]
-fn order_loops_square_with_square_hole_splits_outer_and_inner() {
+fn order_loop_groups_square_with_square_hole_splits_outer_and_inner() {
     // A planar face = big CCW square [0,4]² with a smaller square hole
-    // around the centre. The two rings are disjoint; order_loops must
+    // around the centre. The two rings are disjoint; order_loop_groups must
     // return one outer + one inner, both connected, with OPPOSITE winding
     // (outer CCW, hole CW) seen from +z.
     let verts = [
@@ -2540,7 +2546,10 @@ fn order_loops_square_with_square_hole_splits_outer_and_inner() {
     ];
     let (brep, eids) = planar_face_edges(&verts, &edges);
 
-    let loops = order_loops(&brep, &eids, &plane_xy(), false).expect("must order into rings");
+    let mut groups =
+        order_loop_groups(&brep, &eids, &plane_xy(), false).expect("must order into rings");
+    assert_eq!(groups.len(), 1, "hole nests under the outer ring, not a second region");
+    let loops = groups.remove(0);
     assert_eq!(loops.outer.len(), 4, "outer square has 4 edges");
     assert_eq!(loops.inner.len(), 1, "exactly one inner hole loop");
     assert_eq!(loops.inner[0].len(), 4, "inner square has 4 edges");

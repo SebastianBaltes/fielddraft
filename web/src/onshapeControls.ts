@@ -29,6 +29,7 @@
  */
 import * as THREE from "three";
 import { getSceneBounds } from "./sceneBoundsBridge";
+import { ndcZVisible } from "./projectionSpace";
 
 export type RotateMode = "free" | "upright";
 
@@ -91,7 +92,9 @@ export function sphereFitsViewport(
     if (dist < fitDist) return false;
   }
   _ndc.copy(center).project(camera);
-  if (_ndc.z > 1) return false; // behind the camera / past the far plane
+  // Behind the camera / past the far plane — the valid range depends on the
+  // clip-space convention (WebGPU [0,1] vs WebGL [-1,1]), see projectionSpace.
+  if (!ndcZVisible(camera, _ndc.z)) return false;
   return Math.abs(_ndc.x) <= 1 && Math.abs(_ndc.y) <= 1;
 }
 

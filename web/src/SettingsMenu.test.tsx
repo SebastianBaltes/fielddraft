@@ -1,8 +1,9 @@
 import { describe, expect, it, beforeEach, vi } from "vitest";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
-import { SettingsMenu, loadSettings } from "./SettingsMenu";
-import type { SettingsState, WorkspaceUnits } from "./SettingsMenu";
+import { SettingsMenu } from "./SettingsMenu";
+import { loadSettings } from "./settings";
+import type { SettingsState, WorkspaceUnits } from "./settings";
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean })
   .IS_REACT_ACT_ENVIRONMENT = true;

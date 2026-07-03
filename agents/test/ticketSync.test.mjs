@@ -104,20 +104,29 @@ test("materializeTicket writes the §3.1 layout with canonical filenames", async
   assert.ok(exists(tdir, "comments.md"));
   assert.ok(exists(tdir, "ticket.json"));
 
-  // ticket.md — heading + meta + body.
+  // ticket.md — heading + meta list + body, in the Go renderTicketMD format
+  // (server/ticketstore_file.go; Go is the canonical writer).
   const md = read(tdir, "ticket.md");
   assert.match(md, /^# Extrude depth doesn't update the solid/);
-  assert.match(md, /\| ID \| t-bug \|/);
-  assert.match(md, /\| State \| accepted \|/);
-  assert.match(md, /\| Version \| 0\.5\.81 \|/);
-  assert.match(md, /\| URL \| https:\/\/app\.test\/p\/abc \|/);
+  assert.match(md, /- \*\*ID:\*\* t-bug/);
+  assert.match(md, /- \*\*Author:\*\* u42/);
+  assert.match(md, /- \*\*State:\*\* accepted/);
+  assert.match(md, /- \*\*Category:\*\* bug/);
+  assert.match(md, /- \*\*Created:\*\* 2026-06-30T10:00:00Z/);
+  assert.match(md, /- \*\*Updated:\*\* 2026-06-30T10:05:00Z/);
+  assert.match(md, /## Description/);
   assert.match(md, /the body keeps the old height/);
+  // Artifact index (local canonical filenames) — parity with Go's section.
+  assert.match(md, /## Artifacts/);
+  assert.match(md, /- screenshot\.png \(screenshot\)/);
+  assert.match(md, /- attachment-01-my-notes\.txt \(attachment\)/);
 
-  // comments.md — chronological thread.
+  // comments.md — chronological thread in the Go renderCommentsMD format.
   const cmts = read(tdir, "comments.md");
-  assert.match(cmts, /## user · 2026-06-30T10:00:00Z/);
+  assert.match(cmts, /^# Comments/);
+  assert.match(cmts, /## user — 2026-06-30T10:00:00Z/);
   assert.match(cmts, /See repro\./);
-  assert.match(cmts, /## po · 2026-06-30T10:03:00Z/);
+  assert.match(cmts, /## po — 2026-06-30T10:03:00Z/);
   assert.ok(cmts.indexOf("See repro") < cmts.indexOf("passed on"));
 
   // Canonical artifact filenames.
@@ -190,7 +199,26 @@ test("materializeTicket falls back to first body line for the heading when no ti
   const item = { id: "t2", body: "first line\nsecond line", comments: [], artifacts: [] };
   await materializeTicket(dir, item, { client });
   assert.match(read(path.join(dir, "t2"), "ticket.md"), /^# first line/);
-  assert.match(read(path.join(dir, "t2"), "comments.md"), /_\(no comments\)_/);
+  assert.match(read(path.join(dir, "t2"), "comments.md"), /_\(none\)_/);
+});
+
+test("comments.md tags internal/withheld comments like the Go renderer", async (t) => {
+  const dir = tmp(t);
+  const { client } = fakeClient();
+  const item = {
+    id: "t3",
+    title: "tagged",
+    body: "b",
+    artifacts: [],
+    comments: [
+      { author_type: "dev", internal: true, created_at: "2026-06-30T11:00:00Z", body: "internal note" },
+      { author_type: "po", withheld: true, created_at: "2026-06-30T11:01:00Z", body: "held reply" },
+    ],
+  };
+  await materializeTicket(dir, item, { client });
+  const cmts = read(path.join(dir, "t3"), "comments.md");
+  assert.match(cmts, /## dev \[internal\] — 2026-06-30T11:00:00Z/);
+  assert.match(cmts, /## po \[withheld\] — 2026-06-30T11:01:00Z/);
 });
 
 test("materializeTicket throws without an id", async () => {

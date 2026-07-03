@@ -1,0 +1,773 @@
+//! Query-/B-Rep-Resolution auf [`Context`]: `resolve_face_frame`,
+//! `resolve_extrude_faces`, `resolve_fillet_edges`, `resolve_mate_anchor`
+//! & Co. — aus dem features.rs-Monolithen ausgegliedert.
+
+use fielddraft_protocol::{FeatureId, Transform};
+
+use crate::csg::{CsgNode};
+
+use super::mate_connector::{face_normal_for_branch, polyline_point_tangent, MateAnchorFrame};
+use super::transforms::compose_placement;
+use super::thicken::thicken_diff_node;
+use super::Context;
+impl<'a> Context<'a> {
+    /// C0/C1: resolve a face-yielding query to the first matching face,
+    /// returning its [`SketchFrame`](crate::sketch::SketchFrame)
+    /// in **world** space (the woven B-Rep is body-local; the paired
+    /// placement is applied for us).
+    ///
+    /// Walks the woven solids in body order and, for each, scans for the
+    /// faces the query selects (by `id_hash` for `qFace`, by branch
+    /// feature id for `qCreatedBy`/`qFaceOf`), returning the first hit.
+    pub fn resolve_face_frame(
+        &mut self,
+        expr: &crate::queries::QueryExpr,
+    ) -> Option<crate::sketch::SketchFrame> {
+        use crate::brep::naming::TopoRef;
+        use crate::brep::FaceId;
+        use crate::queries::QueryExpr;
+
+        let woven = self.brep_cache.ensure(&self.features);
+        for (brep, placement) in woven {
+            for i in 0..brep.faces.len() {
+                let fid = FaceId(i as u32);
+                let hit = match expr {
+                    QueryExpr::Face(hash) => {
+                        TopoRef::from_face(brep, fid).id_hash == *hash
+                    }
+                    QueryExpr::CreatedBy(f) | QueryExpr::FaceOf(f) => f
+                        .as_u32_or_root()
+                        .is_some_and(|t| brep.faces[i].branch_id.feature_id() == t),
+                    _ => false,
+                };
+                if hit {
+                    return Some(crate::sketch::face_plane_frame(
+                        brep, fid, placement,
+                    ));
+                }
+            }
+        }
+        None
+    }
+
+    /// Resolve a B-Rep face query to the world-space [`OpenSurface`] that removes
+    /// it from a shell, paired with the feature id that owns the face (its
+    /// branch). Works for any analytic face — Plane, Cylinder, Sphere, Cone,
+    /// Torus — by composing the face's local `transform` with the body
+    /// `placement` into a rigid world placement and pairing it with the face's
+    /// own [`HalfSpace`]; the shell gate then evaluates that surface's SDF
+    /// (`sdf_halfspace`) in world space, opening flush with the (possibly
+    /// curved) face. Returns `None` for a non-matching query or a tessellated
+    /// (TPMS / non-analytic) face, which has no closed-form gate.
+    pub fn resolve_open_face(
+        &mut self,
+        expr: &crate::queries::QueryExpr,
+    ) -> Option<(crate::csg::OpenSurface, FeatureId)> {
+        use crate::brep::naming::TopoRef;
+        use crate::brep::{FaceId, SurfaceGeometry};
+        use crate::queries::QueryExpr;
+
+        let woven = self.brep_cache.ensure(&self.features);
+        for (brep, placement) in woven {
+            for i in 0..brep.faces.len() {
+                let fid = FaceId(i as u32);
+                let hit = match expr {
+                    QueryExpr::Face(hash) => TopoRef::from_face(brep, fid).id_hash == *hash,
+                    QueryExpr::CreatedBy(f) | QueryExpr::FaceOf(f) => f
+                        .as_u32_or_root()
+                        .is_some_and(|t| brep.faces[i].branch_id.feature_id() == t),
+                    _ => false,
+                };
+                if !hit {
+                    continue;
+                }
+                let SurfaceGeometry::Analytic { surface, transform } = &brep.face(fid).surface
+                else {
+                    // Tessellated (TPMS / non-analytic) face — no closed-form gate.
+                    return None;
+                };
+                // World placement = body placement ∘ face transform (rigid).
+                let world = compose_placement(placement, transform);
+                let owner = FeatureId::from_u32(brep.faces[i].branch_id.feature_id());
+                return Some((
+                    crate::csg::OpenSurface {
+                        branch: brep.faces[i].branch_id.as_u32(),
+                        surface: surface.clone(),
+                        placement: world,
+                    },
+                    owner,
+                ));
+            }
+        }
+        None
+    }
+
+    /// Resolve a coplanar set of `qFace(...)` queries into a single 2D extrude
+    /// profile plus the shared world [`SketchFrame`] it sits on (face extrude,
+    /// P1). Every selected face must be planar and coplanar with the first; the
+    /// boundary loops are projected into the first face's frame and unioned, so
+    /// a multi-face selection extrudes as one merged profile (see
+    /// [`crate::brep::face_profile`]).
+    ///
+    /// Errors are returned as a message the caller wraps in a [`FeatureError`]:
+    /// a non-`qFace` query, an unresolvable handle, a non-planar (curved) face,
+    /// or a face not coplanar with the first.
+    pub fn resolve_extrude_faces(
+        &mut self,
+        queries: &[String],
+    ) -> Result<(::fielddraft_protocol::Sketch2d, crate::sketch::SketchFrame), String> {
+        use crate::brep::naming::TopoRef;
+        use crate::brep::FaceId;
+        use crate::queries::QueryExpr;
+
+        let woven = self.brep_cache.ensure(&self.features);
+
+        // Locate each requested face → (brep index, FaceId, world frame).
+        let mut hits: Vec<(usize, FaceId, crate::sketch::SketchFrame)> = Vec::new();
+        for q in queries {
+            let expr = crate::queries::parse_query(q)
+                .map_err(|e| format!("invalid face query `{q}`: {e:?}"))?;
+            let QueryExpr::Face(hash) = expr else {
+                return Err(format!(
+                    "extrude faces must be `qFace(<id_hash>)` selections; got `{q}`"
+                ));
+            };
+            let mut found = false;
+            'scan: for (bi, (brep, placement)) in woven.iter().enumerate() {
+                for i in 0..brep.faces.len() {
+                    let fid = FaceId(i as u32);
+                    if TopoRef::from_face(brep, fid).id_hash == hash {
+                        hits.push((
+                            bi,
+                            fid,
+                            crate::sketch::face_plane_frame(brep, fid, placement),
+                        ));
+                        found = true;
+                        break 'scan;
+                    }
+                }
+            }
+            if !found {
+                return Err(format!("face {hash} not found in the current model"));
+            }
+        }
+        if hits.is_empty() {
+            return Err("no faces selected to extrude".to_string());
+        }
+
+        // First face's frame is the shared (u, v) plane for the whole group.
+        let frame = hits[0].2;
+        for (_, _, f) in &hits[1..] {
+            if !coplanar(&frame, f) {
+                return Err("all selected faces must be coplanar (curved / multi-plane extrude is not supported yet)".to_string());
+            }
+        }
+
+        // Project each face's loops into the shared frame and union the regions.
+        let mut region: Option<::fielddraft_protocol::Sketch2d> = None;
+        for (bi, fid, _) in &hits {
+            let (brep, placement) = &woven[*bi];
+            let r = crate::brep::face_profile::face_region_2d(brep, *fid, &frame, placement)
+                .ok_or_else(|| {
+                    "face has no planar extrudable profile (curved faces deferred)".to_string()
+                })?;
+            region = Some(match region {
+                None => r,
+                Some(acc) => ::fielddraft_protocol::Sketch2d::Union(Box::new(acc), Box::new(r)),
+            });
+        }
+        Ok((region.unwrap(), frame))
+    }
+
+    /// Feature ids of the body that owns the first resolvable `qFace(...)` in
+    /// `queries` — the explicit target a face-driven feature (extrude grown from
+    /// a body face) docks into. A face-extrude is flush with its parent by
+    /// construction, so an `Add` must grow *that* body; without the target it
+    /// falls back to AABB overlap, which both misses the parent (the shared
+    /// plane is mesh-derived and lands a fraction of a micron off the parent's
+    /// exact bound) and can spuriously fuse an unrelated body whose loose AABB
+    /// happens to overlap the prism (ticket px2o). Empty if no face resolves, so
+    /// the caller keeps the legacy AABB docking.
+    pub fn face_owner_target_ids(&mut self, queries: &[String]) -> Vec<FeatureId> {
+        use crate::brep::naming::TopoRef;
+        use crate::brep::FaceId;
+        use crate::queries::QueryExpr;
+
+        // Locate the woven body (partition order) that carries any picked face.
+        let mut owner_bi: Option<usize> = None;
+        {
+            let woven = self.brep_cache.ensure(&self.features);
+            'scan: for q in queries {
+                let Ok(QueryExpr::Face(hash)) = crate::queries::parse_query(q) else {
+                    continue;
+                };
+                for (bi, (brep, _)) in woven.iter().enumerate() {
+                    for i in 0..brep.faces.len() {
+                        if TopoRef::from_face(brep, FaceId(i as u32)).id_hash == hash {
+                            owner_bi = Some(bi);
+                            break 'scan;
+                        }
+                    }
+                }
+            }
+        }
+        // `ensure` weaves via `weave_all` → `partition`, so the woven body index
+        // is the partition index: map it straight back to that group's features.
+        let Some(bi) = owner_bi else {
+            return Vec::new();
+        };
+        crate::body::partition(&self.features)
+            .get(bi)
+            .map(|p| {
+                p.feature_indices
+                    .iter()
+                    .map(|&fi| self.features[fi].id.clone())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Resolve a set of `qFace(...)` queries into per-face thickened-wall solids
+    /// (face thicken — the curved counterpart to [`Context::resolve_extrude_faces`]).
+    /// Each face's analytic surface is offset by `outer_off` along +normal and
+    /// `inner_off` along −normal into a [`ThickenSolid`](crate::brep::face_thicken::ThickenSolid)
+    /// pair (see [`crate::brep::face_thicken`]). The caller differences and
+    /// unions them into one feature.
+    ///
+    /// Errors (returned as a message the caller wraps in a [`FeatureError`]): a
+    /// non-`qFace` query, an unresolvable handle, or a face the surface layer
+    /// refuses to thicken (planar / cone / partial cylinder / tessellated).
+    pub fn resolve_thicken_faces(
+        &mut self,
+        id: &FeatureId,
+        queries: &[String],
+        outer_off: f32,
+        inner_off: f32,
+    ) -> Result<Vec<(CsgNode, Transform)>, String> {
+        use crate::brep::naming::TopoRef;
+        use crate::brep::{FaceId, SurfaceGeometry};
+        use crate::queries::QueryExpr;
+
+        // Pass 1 (woven borrowed): resolve analytic walls in place; for a
+        // non-analytic (Tessellated) face record a deferred band request — the
+        // general band needs the source feature node from `self.features`, which
+        // cannot be borrowed while the woven cache is alive.
+        struct BandReq {
+            qi: usize,
+            feature_id: u32,
+            placement: Transform,
+            /// The picked face's edge-loops (body-local) for the M1 lateral trim.
+            loops: crate::brep::face_lateral_trim::FaceLoops,
+        }
+        let mut walls: Vec<(usize, CsgNode, Transform)> = Vec::new();
+        let mut bands: Vec<BandReq> = Vec::new();
+        {
+            let woven = self.brep_cache.ensure(&self.features);
+            for (qi, q) in queries.iter().enumerate() {
+                let expr = crate::queries::parse_query(q)
+                    .map_err(|e| format!("invalid face query `{q}`: {e:?}"))?;
+                let QueryExpr::Face(hash) = expr else {
+                    return Err(format!(
+                        "thicken faces must be `qFace(<id_hash>)` selections; got `{q}`"
+                    ));
+                };
+                let mut found = false;
+                'scan: for (brep, placement) in woven.iter() {
+                    for i in 0..brep.faces.len() {
+                        let fid = FaceId(i as u32);
+                        if TopoRef::from_face(brep, fid).id_hash == hash {
+                            let face = brep.face(fid);
+                            match &face.surface {
+                                // A revolved-profile carrier is analytic for the
+                                // weaver but has no parameter-shift offset, so it
+                                // thickens via the general field-offset band —
+                                // the same route these faces took when they were
+                                // still tessellated.
+                                SurfaceGeometry::Analytic {
+                                    surface: fielddraft_protocol::HalfSpace::RevolvedProfile { .. },
+                                    ..
+                                }
+                                | SurfaceGeometry::Tessellated { .. } => bands.push(BandReq {
+                                    qi,
+                                    feature_id: face.branch_id.feature_id(),
+                                    placement: *placement,
+                                    loops: crate::brep::face_lateral_trim::sample_face_loops(
+                                        brep, fid,
+                                    ),
+                                }),
+                                SurfaceGeometry::Analytic { .. } => {
+                                    let s = crate::brep::face_thicken::thicken_face(
+                                        brep, fid, placement, outer_off, inner_off,
+                                    )?;
+                                    walls.push((qi, thicken_diff_node(id, qi, &s), s.world));
+                                }
+                            }
+                            found = true;
+                            break 'scan;
+                        }
+                    }
+                }
+                if !found {
+                    return Err(format!("face {hash} not found in the current model"));
+                }
+            }
+        }
+
+        // Pass 2 (woven dropped): build the general field-offset band for each
+        // non-analytic face from its source feature's closed carrier.
+        for req in bands {
+            let source = self
+                .features
+                .iter()
+                .find(|f| crate::csg::BranchId::from_feature(&f.id).feature_id() == req.feature_id)
+                .ok_or_else(|| {
+                    "selected face has no source feature in the spine — cannot thicken".to_string()
+                })?;
+            let carrier = crate::brep::face_offset::single_primitive_carrier(&source.node)
+                .ok_or_else(|| {
+                    "face's carrier is a composite (boolean) body — general thicken of a \
+                     non-analytic boolean result is deferred past M0"
+                        .to_string()
+                })?;
+            // Pre-remap carrier drives the M1 wall-normal field (the sweep
+            // direction); the remapped clone carries the band's fresh ids.
+            let trim_base = id.child(format!("{}", req.qi));
+            let carrier_for_norm = carrier.clone();
+            let carrier = crate::brep::face_offset::remap_leaf_ids(carrier, &trim_base);
+            let world = compose_placement(&req.placement, &source.transform);
+            let band =
+                crate::brep::face_offset::offset_band(carrier, outer_off, inner_off, world)?;
+            // M1 lateral trim: bound the (possibly whole-carrier) band to exactly
+            // the picked face by intersecting with its swept edge-loop prism. A
+            // closed face / non-extrude carrier returns `None` → plain M0 band.
+            let trim = crate::brep::face_lateral_trim::lateral_trim_node(
+                &carrier_for_norm,
+                &band.world,
+                &req.placement,
+                &req.loops,
+                outer_off,
+                inner_off,
+                &trim_base,
+            );
+            let node = match trim {
+                Some(t) => CsgNode::Intersection(Box::new(band.node), Box::new(t)),
+                None => band.node,
+            };
+            walls.push((req.qi, node, band.world));
+        }
+
+        if walls.is_empty() {
+            return Err("no faces selected to thicken".to_string());
+        }
+        // Deterministic order regardless of analytic/band interleaving.
+        walls.sort_by_key(|(qi, _, _)| *qi);
+        Ok(walls.into_iter().map(|(_, node, world)| (node, world)).collect())
+    }
+
+    /// Thicken each source face **up to** a coaxial `target` face: the wall grows
+    /// from the source surface until it reaches the target (concentric sphere,
+    /// coaxial cylinder, coaxial torus). The signed normal gap
+    /// ([`offset_to_target`](crate::brep::face_thicken::offset_to_target)) sets
+    /// the thickness *and* direction per source face, then the same
+    /// [`thicken_face`](crate::brep::face_thicken::thicken_face) reduction builds
+    /// the offset-solid pair — so up-to-face reuses the whole solid pipeline.
+    ///
+    /// Errors on a non-`qFace` query, an unresolvable handle, a source the
+    /// surface layer refuses to thicken, or a target that is not a coaxial
+    /// same-kind surface (a cone / mismatched / non-coaxial target is deferred).
+    pub fn resolve_thicken_to_face(
+        &mut self,
+        id: &FeatureId,
+        face_queries: &[String],
+        target_query: &str,
+    ) -> Result<Vec<(CsgNode, Transform)>, String> {
+        use crate::brep::naming::TopoRef;
+        use crate::brep::FaceId;
+        use crate::queries::QueryExpr;
+
+        let woven = self.brep_cache.ensure(&self.features);
+
+        // Locate a `qFace(<hash>)` selection → (body index, FaceId).
+        let find_face = |q: &str| -> Result<(usize, FaceId), String> {
+            let expr = crate::queries::parse_query(q)
+                .map_err(|e| format!("invalid face query `{q}`: {e:?}"))?;
+            let QueryExpr::Face(hash) = expr else {
+                return Err(format!("thicken faces must be `qFace(<id_hash>)` selections; got `{q}`"));
+            };
+            for (bi, (brep, _placement)) in woven.iter().enumerate() {
+                for i in 0..brep.faces.len() {
+                    let fid = FaceId(i as u32);
+                    if TopoRef::from_face(brep, fid).id_hash == hash {
+                        return Ok((bi, fid));
+                    }
+                }
+            }
+            Err(format!("face {hash} not found in the current model"))
+        };
+
+        let (tgt_bi, tgt_fid) = find_face(target_query)?;
+        let mut out = Vec::new();
+        for (qi, q) in face_queries.iter().enumerate() {
+            let (src_bi, src_fid) = find_face(q)?;
+            let (src_brep, src_placement) = &woven[src_bi];
+            let (tgt_brep, tgt_placement) = &woven[tgt_bi];
+            let (outer_off, inner_off) = crate::brep::face_thicken::offset_to_target(
+                src_brep, src_fid, src_placement, tgt_brep, tgt_fid, tgt_placement,
+            )?;
+            let s = crate::brep::face_thicken::thicken_face(
+                src_brep, src_fid, src_placement, outer_off, inner_off,
+            )?;
+            out.push((thicken_diff_node(id, qi, &s), s.world));
+        }
+        if out.is_empty() {
+            return Err("no faces selected to thicken".to_string());
+        }
+        Ok(out)
+    }
+
+    /// Resolve a *plane* query to a world-space [`SketchFrame`],
+    /// accepting both the well-known datum planes
+    /// (`qCreatedBy(origin_plane_xy|xz|yz)`) and real B-Rep faces.
+    /// Datum planes short-circuit before touching the woven B-Rep;
+    /// everything else defers to [`Context::resolve_face_frame`].
+    /// Returns `None` when the query resolves to neither.
+    pub fn resolve_plane_frame(
+        &mut self,
+        expr: &crate::queries::QueryExpr,
+    ) -> Option<crate::sketch::SketchFrame> {
+        if let crate::queries::QueryExpr::CreatedBy(d) = expr {
+            if let Some(datum) = crate::sketch::datum_plane_frame(d) {
+                return Some(datum);
+            }
+        }
+        self.resolve_face_frame(expr)
+    }
+
+    /// DL-61: resolve an edge-yielding query into per-edge fillet inputs:
+    /// `(feature_a, feature_b, world-space polyline)`.
+    ///
+    /// COORDINATE SPACE: the woven B-Reps are **body-local** (DL-56); the
+    /// paired `placement` maps body-local → world. The CSG tree that the
+    /// MaskedBlend lives in evaluates in **world** space — every leaf is
+    /// wrapped in `CsgNode::Transform(feature.transform, …)` by
+    /// [`from_decoded`](crate::csg::CsgNode::from_decoded), and a feature's
+    /// `transform` is its world placement. So the mask must sit on the
+    /// edge in world space: we apply `placement` (rotate·scale + translate,
+    /// same math as [`crate::sketch::face_plane_frame`]) to every
+    /// polyline point. The non-identity-placement test proves this — with
+    /// identity placement a missing transform would pass undetected.
+    ///
+    /// The feature pair comes from the edge's branch-pair `signature`:
+    /// each [`BranchId`](crate::csg::BranchId)'s `feature_id()` is exactly
+    /// the junction operand id [`find_matching_fillet`] keys on.
+    pub fn resolve_fillet_edges(
+        &mut self,
+        expr: &crate::queries::QueryExpr,
+    ) -> Vec<(FeatureId, FeatureId, Vec<[f32; 3]>)> {
+        use crate::brep::naming::TopoRef;
+        use crate::brep::{EdgeGeometry, EdgeId};
+
+        let woven = self.brep_cache.ensure(&self.features);
+        let mut out = Vec::new();
+        for (brep, placement) in woven {
+            for i in 0..brep.edges.len() {
+                let id = EdgeId(i as u32);
+                let edge = brep.edge(id);
+                // Match the edge against the query. `qEdge(hash)` matches
+                // by id_hash; `qEdgeBetween(a, b)` matches by the (unordered)
+                // signature feature pair. Reuse the existing hashing /
+                // signature logic rather than duplicating it.
+                let hit = match expr {
+                    crate::queries::QueryExpr::Edge(hash) => {
+                        TopoRef::from_edge(brep, id).id_hash == *hash
+                    }
+                    crate::queries::QueryExpr::EdgeBetween(a, b) => {
+                        let s0 = edge.signature.0.feature_id();
+                        let s1 = edge.signature.1.feature_id();
+                        let fa = a.as_u32_or_root();
+                        let fb = b.as_u32_or_root();
+                        matches!((fa, fb), (Some(fa), Some(fb))
+                            if (s0 == fa && s1 == fb) || (s0 == fb && s1 == fa))
+                    }
+                    _ => false,
+                };
+                if !hit {
+                    continue;
+                }
+
+                // Extract the body-local polyline from the edge geometry.
+                let local: Vec<[f32; 3]> = match &edge.geometry {
+                    EdgeGeometry::Polyline(pts) => {
+                        pts.iter().map(|p| [p[0] as f32, p[1] as f32, p[2] as f32]).collect()
+                    }
+                    EdgeGeometry::Hermite(samples) => samples
+                        .iter()
+                        .map(|s| [s.point[0] as f32, s.point[1] as f32, s.point[2] as f32])
+                        .collect(),
+                    // First approximation: use the NURBS control polygon.
+                    // Control points bound the curve and give a tube that
+                    // safely encloses it; exact arc-length sampling is a
+                    // later refinement.
+                    EdgeGeometry::Nurbs(curve) => curve
+                        .control_points
+                        .iter()
+                        .map(|p| [p[0] as f32, p[1] as f32, p[2] as f32])
+                        .collect(),
+                };
+
+                // Body-local → world via the placement.
+                let world: Vec<[f32; 3]> = local
+                    .iter()
+                    .map(|p| place_point(placement, *p))
+                    .collect();
+
+                let feature_a = FeatureId::from_u32(edge.signature.0.feature_id());
+                let feature_b = FeatureId::from_u32(edge.signature.1.feature_id());
+                out.push((feature_a, feature_b, world));
+            }
+        }
+        out
+    }
+
+    /// Resolve an edge-yielding query into per-edge world-space SAMPLED curve
+    /// polylines (dense tessellation via [`sample_edge`], NOT the NURBS control
+    /// polygon `resolve_fillet_edges` uses) — the spine for an edge-chain sweep.
+    /// A circle's control polygon has sharp corners that would trip the sweep
+    /// Gatekeeper's kink check; the sampled curve is smooth.
+    pub fn resolve_edge_polylines(
+        &mut self,
+        expr: &crate::queries::QueryExpr,
+    ) -> Vec<Vec<[f32; 3]>> {
+        use crate::brep::naming::TopoRef;
+        use crate::brep::EdgeId;
+
+        let woven = self.brep_cache.ensure(&self.features);
+        let mut out = Vec::new();
+        for (brep, placement) in woven {
+            for i in 0..brep.edges.len() {
+                let id = EdgeId(i as u32);
+                let edge = brep.edge(id);
+                let hit = match expr {
+                    crate::queries::QueryExpr::Edge(hash) => {
+                        TopoRef::from_edge(brep, id).id_hash == *hash
+                    }
+                    crate::queries::QueryExpr::EdgeBetween(a, b) => {
+                        let s0 = edge.signature.0.feature_id();
+                        let s1 = edge.signature.1.feature_id();
+                        let fa = a.as_u32_or_root();
+                        let fb = b.as_u32_or_root();
+                        matches!((fa, fb), (Some(fa), Some(fb))
+                            if (s0 == fa && s1 == fb) || (s0 == fb && s1 == fa))
+                    }
+                    _ => false,
+                };
+                if !hit {
+                    continue;
+                }
+                let world: Vec<[f32; 3]> = crate::brep::edge_sampling::sample_edge(&edge.geometry)
+                    .iter()
+                    .map(|p| place_point(placement, [p[0] as f32, p[1] as f32, p[2] as f32]))
+                    .collect();
+                out.push(world);
+            }
+        }
+        out
+    }
+
+    /// Resolve a mate-connector anchor query to its CSYS origin and, for an
+    /// edge anchor, the unit tangent at arc-length fraction `t`. Faces resolve
+    /// to their centroid, vertices to their world position, edges to the point
+    /// at `t` along the sampled polyline. `None` if nothing matches.
+    pub fn resolve_mate_anchor(
+        &mut self,
+        expr: &crate::queries::QueryExpr,
+        t: f32,
+    ) -> Option<MateAnchorFrame> {
+        use crate::queries::QueryExpr;
+        match expr {
+            QueryExpr::Edge(_) | QueryExpr::EdgeBetween(_, _) => {
+                use crate::brep::naming::TopoRef;
+                use crate::brep::EdgeId;
+                let woven = self.brep_cache.ensure(&self.features);
+                for (brep, placement) in woven {
+                    for i in 0..brep.edges.len() {
+                        let eid = EdgeId(i as u32);
+                        let edge = brep.edge(eid);
+                        let hit = match expr {
+                            QueryExpr::Edge(hash) => {
+                                TopoRef::from_edge(brep, eid).id_hash == *hash
+                            }
+                            QueryExpr::EdgeBetween(a, b) => {
+                                let s0 = edge.signature.0.feature_id();
+                                let s1 = edge.signature.1.feature_id();
+                                let (fa, fb) = (a.as_u32_or_root(), b.as_u32_or_root());
+                                matches!((fa, fb), (Some(fa), Some(fb))
+                                    if (s0 == fa && s1 == fb) || (s0 == fb && s1 == fa))
+                            }
+                            _ => false,
+                        };
+                        if !hit {
+                            continue;
+                        }
+                        let poly: Vec<[f32; 3]> =
+                            crate::brep::edge_sampling::sample_edge(&edge.geometry)
+                                .iter()
+                                .map(|p| {
+                                    place_point(placement, [p[0] as f32, p[1] as f32, p[2] as f32])
+                                })
+                                .collect();
+                        let (origin, tan) = polyline_point_tangent(&poly, t)?;
+                        // Ticket o3er/5j9l: the edge IS the primary (+Z) axis;
+                        // an adjacent face orients the secondary axis (auto).
+                        let auto_secondary = face_normal_for_branch(brep, placement, edge.signature.0)
+                            .or_else(|| face_normal_for_branch(brep, placement, edge.signature.1));
+                        return Some(MateAnchorFrame {
+                            origin,
+                            primary: Some(tan),
+                            auto_secondary,
+                        });
+                    }
+                }
+                None
+            }
+            QueryExpr::Vertex(hash) => {
+                use crate::brep::naming::TopoRef;
+                use crate::brep::VertexId;
+                let woven = self.brep_cache.ensure(&self.features);
+                for (brep, placement) in woven {
+                    for i in 0..brep.vertices.len() {
+                        let vid = VertexId(i as u32);
+                        if TopoRef::from_vertex(brep, vid).id_hash == *hash {
+                            let v = brep.vertex(vid);
+                            let origin = place_point(
+                                placement,
+                                [v.position[0] as f32, v.position[1] as f32, v.position[2] as f32],
+                            );
+                            // A vertex has no intrinsic axis; an adjacent face
+                            // normal defines +Z (Onshape: "normal to the face").
+                            let auto_secondary = v
+                                .branches
+                                .iter()
+                                .find_map(|b| face_normal_for_branch(brep, placement, *b));
+                            return Some(MateAnchorFrame {
+                                origin,
+                                primary: None,
+                                auto_secondary,
+                            });
+                        }
+                    }
+                }
+                None
+            }
+            // Face / created-by / face-of: the anchor IS a face; its normal is +Z.
+            _ => self.resolve_face_frame(expr).map(|f| MateAnchorFrame {
+                origin: f.origin,
+                primary: Some(f.normal),
+                auto_secondary: None,
+            }),
+        }
+    }
+
+    /// Resolve an axis-line query to a single world-space segment
+    /// `(start, end)`. Two query shapes are honoured, both used by the
+    /// Revolve tool's axis field:
+    ///
+    /// * `qEdge(hash)` / `qEdgeBetween(a, b)` — a B-Rep edge. Its sampled
+    ///   world polyline's first and last points become the segment
+    ///   endpoints (a straight edge round-trips exactly; a curved edge
+    ///   degrades to its chord, which is the only sensible axis anyway).
+    /// * `qSketchLine(sketch_id, line_id)` — a raw `sketch_line` sub-call
+    ///   (including construction lines, which never reach the B-Rep). Its
+    ///   2D endpoints are lifted to world through the owning sketch's
+    ///   placement frame.
+    ///
+    /// Returns `None` when the query names nothing resolvable (so the
+    /// caller falls back to the default local-Y axis).
+    pub fn resolve_axis_world_segment(
+        &mut self,
+        expr: &crate::queries::QueryExpr,
+    ) -> Option<([f32; 3], [f32; 3])> {
+        match expr {
+            crate::queries::QueryExpr::Edge(_)
+            | crate::queries::QueryExpr::EdgeBetween(_, _) => {
+                let polylines = self.resolve_edge_polylines(expr);
+                let poly = polylines.into_iter().find(|p| p.len() >= 2)?;
+                Some((poly[0], poly[poly.len() - 1]))
+            }
+            crate::queries::QueryExpr::SketchLine(sketch_id, line_id) => {
+                let sketch = self.sketches.get(sketch_id)?;
+                let frame = &sketch.frame;
+                let lift = |uv: [f32; 2]| -> [f32; 3] {
+                    [
+                        frame.origin[0] + uv[0] * frame.x_axis[0] + uv[1] * frame.y_axis[0],
+                        frame.origin[1] + uv[0] * frame.x_axis[1] + uv[1] * frame.y_axis[1],
+                        frame.origin[2] + uv[0] * frame.x_axis[2] + uv[1] * frame.y_axis[2],
+                    ]
+                };
+                // Ticket pr8a: resolve ANY straight line entity by id from the
+                // solved sketch state — not just raw `sketch_line` sub-calls.
+                // Rectangle / polygon edges are line entities too, so this lets
+                // them serve as a revolve axis like a free-standing line.
+                use fielddraft_solver::Entity;
+                let state = &sketch.state;
+                let point_at = |id: fielddraft_solver::EntityId| -> Option<[f32; 2]> {
+                    state.entities.iter().find_map(|e| match e {
+                        Entity::Point { id: pid, at } if *pid == id => {
+                            Some([at.x as f32, at.y as f32])
+                        }
+                        _ => None,
+                    })
+                };
+                for e in &state.entities {
+                    if let Entity::Line { id, start, end } = e {
+                        if id.0 == *line_id {
+                            let a = point_at(*start)?;
+                            let b = point_at(*end)?;
+                            return Some((lift(a), lift(b)));
+                        }
+                    }
+                }
+                None
+            }
+            _ => None,
+        }
+    }
+}
+
+/// Two world [`SketchFrame`](crate::sketch::SketchFrame)s are coplanar
+/// iff their normals are (anti)parallel and the second origin lies in the first
+/// frame's plane. Used to gate a coplanar multi-face extrude selection.
+fn coplanar(
+    a: &crate::sketch::SketchFrame,
+    b: &crate::sketch::SketchFrame,
+) -> bool {
+    let dn = a.normal[0] * b.normal[0] + a.normal[1] * b.normal[1] + a.normal[2] * b.normal[2];
+    if dn.abs() < 0.999 {
+        return false;
+    }
+    let d = [
+        b.origin[0] - a.origin[0],
+        b.origin[1] - a.origin[1],
+        b.origin[2] - a.origin[2],
+    ];
+    let off = d[0] * a.normal[0] + d[1] * a.normal[1] + d[2] * a.normal[2];
+    off.abs() < 1e-2
+}
+
+
+/// Apply a body `placement` (rotate·scale then translate) to a point.
+/// Mirrors the centroid mapping in
+/// [`crate::sketch::face_plane_frame`].
+pub(crate) fn place_point(placement: &fielddraft_protocol::Transform, p: [f32; 3]) -> [f32; 3] {
+    let scaled = [
+        p[0] * placement.scale[0],
+        p[1] * placement.scale[1],
+        p[2] * placement.scale[2],
+    ];
+    let r = crate::quat_rotate(placement.rotation, scaled);
+    [
+        r[0] + placement.translate[0],
+        r[1] + placement.translate[1],
+        r[2] + placement.translate[2],
+    ]
+}

@@ -18,9 +18,10 @@ import {
 } from "react";
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
 import * as THREE from "three";
+import { ndcZVisible } from "./projectionSpace";
 import { useKernelStore } from "./store";
 import type { PickHit, PickResult } from "./kernel";
-import type { BRepEdgeMode, FrameLoopMode } from "./SettingsMenu";
+import type { BRepEdgeMode, FrameLoopMode, RenderMode } from "./settings";
 import {
   SdfVmOverlay,
   SdfDeferredOverlay,
@@ -51,28 +52,32 @@ import {
   SketchSession3D,
   SketchHud3D,
   SketchLabels3D,
-  BRepMeshPreview,
-  WebGLBodies,
-  WebGLSceneLights,
-  SelectionTransformGizmo,
-  Invalidator,
+} from "./sketchSceneOverlays";
+import { SelectionTransformGizmo, Invalidator } from "./transformGizmo";
+import {
   BRepEdgeOverlay,
   BRepEdgePointsOverlay,
   OctreeCellOverlay,
+} from "./brepEdgeOverlays";
+import {
   BRepSelectionOverlay,
   BRepSelectedOverlay,
   BodyHighlightOverlay,
+} from "./brepSelectionOverlays";
+import {
+  BRepMeshPreview,
+  WebGLBodies,
+  WebGLSceneLights,
   MeshPreview,
+} from "./webglBodies";
+import {
   AssemblyParts,
   MateConnectorOverlay,
   MateInferenceOverlay,
-  DatumOverlay,
-  pickDatumAtRay,
-  ReferenceMesh,
-  PickHud,
-  PerfProbe,
-} from "./viewportOverlays";
-import { PerfHud } from "./perfMonitor";
+} from "./mateOverlays";
+import { DatumOverlay, pickDatumAtRay } from "./datumOverlay";
+import { ReferenceMesh, PickHud } from "./viewportHud";
+import { PerfHud, PerfProbe } from "./perfMonitor";
 import { ScreenSpaceCsgPass } from "./screenSpaceCsgPass";
 import { SketchCanvas2d } from "./SketchCanvas2d";
 import { invalidateCanvas } from "./viewCommands";
@@ -143,7 +148,7 @@ function PickProbe({ ndc, onPick }: PickProbeProps) {
 interface SceneProps {
   ndc: { x: number; y: number; active: boolean };
   onPick: (result: PickResult | null) => void;
-  renderMode: string;
+  renderMode: RenderMode;
   brepEdgeMode: BRepEdgeMode;
 }
 /** Reactively tracks whether a query-by-click picker is armed. While a picker
@@ -827,7 +832,7 @@ export function Viewport({
   perspective,
   controlsPreset,
 }: {
-  renderMode: string;
+  renderMode: RenderMode;
   brepEdgeMode: BRepEdgeMode;
   frameLoop: FrameLoopMode;
   showEdgePoints: boolean;
@@ -1127,7 +1132,7 @@ export function Viewport({
     const v = new THREE.Vector3();
     const project: ProjectFn = (x, y, z) => {
       v.set(x, y, z).project(camera);
-      if (v.z < -1 || v.z > 1) return null;
+      if (!ndcZVisible(camera, v.z)) return null;
       return { x: v.x, y: v.y };
     };
     // Onshape's implicit multi-select accumulates box selections too; the

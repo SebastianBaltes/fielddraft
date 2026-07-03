@@ -45,7 +45,7 @@ use fielddraft_protocol::{Document, FeatureId};
 use crate::body::BrepCache;
 use crate::csg::{DecodedFeature, EdgeFillet};
 use crate::features::{Context, FeatureError, FeatureRegistry};
-use crate::sketch_features::SketchData;
+use crate::sketch::SketchData;
 
 /// The geometry a script's `build()` accumulates across its `fd.op*`
 /// calls — exactly the fields a regeneration [`Context`] owns, minus

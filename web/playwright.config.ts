@@ -48,8 +48,12 @@ export default defineConfig({
   // Real-GPU runs average ~33 s/test (WebGPU shader compile + first-paint),
   // so a 30 s cap sat right on the edge — under load, tests randomly crossed
   // it and failed with `mouse.move: Test timeout` (page unresponsive, not a
-  // logic bug). 60 s gives the compile headroom; the suite is still serial.
-  timeout: 60_000,
+  // logic bug). Multi-step sketch flows (draw → select → grip-drag → solve →
+  // accept) chain many real-GPU roundtrips and, under sustained full-suite
+  // load, still crossed 60 s (e.g. grip-drag tests timing out mid-wait while
+  // passing comfortably in isolation). 90 s gives that headroom; the suite is
+  // serial so wall-clock only grows for tests that actually need it.
+  timeout: 90_000,
   expect: { timeout: 5_000 },
   use: {
     baseURL,

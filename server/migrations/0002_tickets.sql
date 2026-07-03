@@ -8,7 +8,7 @@
 -- content-addressed blob files on disk (the same sha256 mechanism WP1 uses for
 -- documents/thumbnails); ticket_artifacts rows carry only the ref + metadata.
 
-CREATE TABLE tickets (
+CREATE TABLE IF NOT EXISTS tickets (
     id            CHAR(32)     NOT NULL,
     author_id     CHAR(32)     NOT NULL,
     title         VARCHAR(255) NOT NULL DEFAULT '',
@@ -31,7 +31,7 @@ CREATE TABLE tickets (
     CONSTRAINT fk_tickets_author FOREIGN KEY (author_id) REFERENCES users(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
-CREATE TABLE ticket_comments (
+CREATE TABLE IF NOT EXISTS ticket_comments (
     id          CHAR(32) NOT NULL,
     ticket_id   CHAR(32) NOT NULL,
     author_type ENUM('user','po','dev','system') NOT NULL,
@@ -46,7 +46,7 @@ CREATE TABLE ticket_comments (
     CONSTRAINT fk_comments_author FOREIGN KEY (author_id) REFERENCES users(id) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
-CREATE TABLE ticket_artifacts (
+CREATE TABLE IF NOT EXISTS ticket_artifacts (
     id         CHAR(32) NOT NULL,
     ticket_id  CHAR(32) NOT NULL,
     kind       ENUM('screenshot','fdraft','actions','settings','ui_state','attachment') NOT NULL,

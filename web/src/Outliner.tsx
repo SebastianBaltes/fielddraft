@@ -31,7 +31,6 @@ import { SketchSubCalls, SKETCH_SUB_LABEL } from "./SketchSubCalls";
 import { getActive as getActivePicker } from "./queryPickerBridge";
 import { DATUM_PLANE_QUERIES } from "./queryLabels";
 import { filterAllows } from "./elementQuery";
-import { bodyFeatureIds, resolveSelectionLinks } from "./selectionLinks";
 import { QueryWidget } from "./widgets/widgets";
 import { ElementInfo } from "./ElementInfo";
 
@@ -180,12 +179,7 @@ export function Outliner({
   // geometry in the viewport always shows WHERE it came from in the tree.
   const relatedFeatureIds = useMemo<ReadonlySet<number>>(() => {
     if (!store) return new Set<number>();
-    if (state.selectedElements.length > 0)
-      return resolveSelectionLinks(store.kernel, state.selectedElements)
-        .featureIds;
-    if (state.highlightedBodyIndex !== null)
-      return bodyFeatureIds(store.kernel, state.highlightedBodyIndex);
-    return new Set<number>();
+    return store.relatedFeatureIds();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     store,
@@ -1607,43 +1601,25 @@ function PartTree({
   collapsed: boolean;
   onToggle: () => void;
 }) {
-  // Source the part list straight from the kernel body list, not from
-  // `meshedBodies`: DC meshing (and thus `meshedBodies`) only runs in mesh
-  // render mode, so a body added while in an SDF mode would never show up as
-  // a part. `bodyCount()`/`bodySeedFeatureId()` reflect the partitioned
-  // bodies in every render mode. Triangle counts are only meaningful once a
-  // mesh exists, so they default to 0 in SDF modes. Keyed on `state.features`
-  // so it recomputes on every document edit (add/remove/move).
-  const bodies = useMemo(() => {
-    const k = store.kernel;
-    const n = k.bodyCount();
-    // Triangle counts live on the worker-meshed bodies (the main-thread
-    // kernel keeps empty meshes in worker mode); look them up by body id and
-    // fall back to 0 when no mesh exists yet (any SDF mode).
-    const triById = new Map<number, number>(
-      state.meshedBodies.map((b) => [b.id, Math.round(b.indices.length / 3)]),
-    );
-    const out: { id: number; seedId: number; triangleCount: number }[] = [];
-    for (let i = 0; i < n; i++) {
-      const id = k.bodyId(i);
-      out.push({
-        id,
-        seedId: k.bodySeedFeatureId(i),
-        triangleCount: triById.get(id) ?? 0,
-      });
-    }
-    return out;
+  // Part list via the store selector (Review-Befund 8): sourced from the
+  // kernel body list, not from `meshedBodies` — DC meshing only runs in
+  // mesh render mode, so a body added while in an SDF mode would never
+  // show up as a part otherwise. Triangle counts default to 0 in SDF
+  // modes. Keyed on `state.features` so it recomputes on every document
+  // edit (add/remove/move).
+  const bodies = useMemo(
+    () => store.listBodies(),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [store, state.features, state.meshedBodies]);
+    [store, state.features, state.meshedBodies],
+  );
   const highlighted = state.highlightedBodyIndex;
 
   // The body owning the selected B-Rep element renders as selected too
   // (ticket r36f) — same GUI selection colour as an explicitly highlighted
   // body, so viewport picks always locate their part in the list.
   const relatedBodyIndex = useMemo<number | null>(() => {
-    if (!store || state.selectedElements.length === 0) return null;
-    return resolveSelectionLinks(store.kernel, state.selectedElements)
-      .bodyIndex;
+    if (!store) return null;
+    return store.relatedBodyIndex();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [store, state.selectedElements, state.features]);
 

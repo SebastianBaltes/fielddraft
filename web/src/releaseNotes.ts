@@ -24,6 +24,68 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.356",
+    entries: [
+      {
+        kind: "fix",
+        scope: "sketch",
+        text: "Einen selektierten Linien-Endpunkt oder eine Rechteck-Ecke zu ziehen verschiebt jetzt nur diesen Griff (bzw. hält die Gegenecke fest), statt die ganze Form zu verschieben — der Endpunkt ist ein eigenes Punkt-Entity, das der Drag-Planer nun als Griff der selektierten Kurve erkennt",
+      },
+    ],
+  },
+  {
+    version: "0.6.355",
+    entries: [
+      {
+        kind: "fix",
+        scope: "kernel",
+        text: "Ein NaN aus dem Sketch-Solver kann den Kernel nicht mehr abstürzen lassen — der B-Rep-Weave prüft die Geometrie vorab und liefert bei nicht-endlichen Koordinaten ein leeres B-Rep statt zu paniken",
+      },
+    ],
+  },
+  {
+    version: "0.6.354",
+    entries: [
+      {
+        kind: "fix",
+        text: "STEP-Export und -Import können nicht mehr gegenseitig ihre Antworten kapern (Antworten werden per Request-Id zugeordnet statt per Nachrichtentyp); Fehler aus den Mesh-/Weave-/STEP-Workern werden gemeldet statt als leeres Ergebnis maskiert",
+        scope: "step",
+      },
+    ],
+  },
+  {
+    version: "0.6.353",
+    entries: [
+      {
+        kind: "fix",
+        text: "Picking/Selektion kullt Punkte hinter der Kamera jetzt korrekt (Box-Select, Kanten-Snap, Vertex-Pick, Zoom-to-fit-Sichtbarkeit) — die NDC-Tiefenpr\u00fcfung nutzte die WebGL- statt der WebGPU-Clip-Space-Konvention",
+        scope: "viewport",
+      },
+    ],
+  },
+  {
+    version: "0.6.352",
+    entries: [
+      {
+        kind: "fix",
+        text: "SDF VM rendert Körper jetzt auch in der orthografischen Ansicht (Default) geshadet — der Ray-Origin wurde mit WebGL- statt WebGPU-Clip-Space rekonstruiert und lag ~far hinter der Kamera",
+        scope: "sdf-vm",
+        tickets: ["yl0p"],
+      },
+    ],
+  },
+  {
+    version: "0.6.351",
+    entries: [
+      {
+        kind: "fix",
+        text: "Überstehende/überschießende Linien verhindern keine geschlossene Fläche mehr — ein Rechteck mit Fahnenmast-Überstand wird korrekt grau gefüllt (und ist extrudierbar)",
+        scope: "sketch",
+        tickets: ["mdye"],
+      },
+    ],
+  },
+  {
     version: "0.6.349",
     entries: [
       {

@@ -14,7 +14,7 @@
  * list; section headers are non-`.row` list items.
  */
 
-import type { SketchSessionState } from "./store";
+import type { SketchSessionState } from "./sketchSession";
 import type { SketchDiagnostics } from "./solver/types";
 import {
   constraintRefIds,

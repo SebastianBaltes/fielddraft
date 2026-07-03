@@ -26,11 +26,13 @@
 //!   face — even fully transversal crossings are non-manifold today, on both
 //!   routes identically. No coincidence involved; same attribution stage,
 //!   same fix locus (face materialisation must split per region).
-//! - **F0-2 curved-face loop orientation**: `order_loops` pushes closed rim
-//!   circles with a fixed `reversed = false` for every consumer and leaves
-//!   curved-face winding "as ordered", so the fwd/rev manifold convention is
-//!   violated by a PLAIN CYLINDER (2 violations). Pre-existing and invisible
-//!   until now because mesh/render never read the B-Rep.
+//! - **F0-2 curved-face loop orientation** (FIXED): loop ordering used to
+//!   push closed rim circles with a fixed `reversed = false` for every
+//!   consumer and leave curved-face winding "as ordered", so the fwd/rev
+//!   manifold convention was violated by a PLAIN CYLINDER (2 violations).
+//!   Fixed by winding enforcement in `order_loop_groups` (sampled ring
+//!   areas + uv winding metrics + complement parity); `gate_plain_cylinder`
+//!   below is the regression guard.
 
 use super::naming::TopoRef;
 use super::octree::Octree;
@@ -185,7 +187,7 @@ fn gate_union_overlapping_boxes() {
 fn gate_plain_cylinder() {
     // F0-2 regression guard: a lone cylinder used to violate the manifold
     // orientation convention (both rim circles consumed `reversed = false` by
-    // wall AND cap). Fixed by winding enforcement in `order_loops` — sampled
+    // wall AND cap). Fixed by winding enforcement in `order_loop_groups` — sampled
     // ring areas + uv winding metrics + complement parity.
     let body = BoundedCsg::from_csg(&cylinder_leaf(1, [0.0; 3], 5.0, 4.0));
     assert_gate(&body, 0.4, 0, "plain cylinder");

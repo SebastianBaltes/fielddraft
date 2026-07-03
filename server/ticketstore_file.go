@@ -282,15 +282,15 @@ func cloneArtifacts(in []*TicketArtifact) []*TicketArtifact {
 func (s *fileTicketStore) CreateTicket(authorID, title, body, category string) *Ticket {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	now := time.Now().UTC()
+	at := now()
 	ft := &fileTicket{Ticket: Ticket{
 		ID:        newID(),
 		AuthorID:  authorID,
 		Title:     title,
 		Body:      body,
 		State:     StateTriage,
-		CreatedAt: now,
-		UpdatedAt: now,
+		CreatedAt: at,
+		UpdatedAt: at,
 	}}
 	if category != "" {
 		c := category
@@ -356,7 +356,7 @@ func (s *fileTicketStore) UpdateTicket(id, title, body string) *Ticket {
 	if body != "" {
 		ft.Body = body
 	}
-	ft.UpdatedAt = time.Now().UTC()
+	ft.UpdatedAt = now()
 	if err := s.save(ft); err != nil {
 		return nil
 	}
@@ -376,7 +376,7 @@ func (s *fileTicketStore) SetTicketCategory(id, category string) *Ticket {
 	} else {
 		ft.Category = nil
 	}
-	ft.UpdatedAt = time.Now().UTC()
+	ft.UpdatedAt = now()
 	if err := s.save(ft); err != nil {
 		return nil
 	}
@@ -390,13 +390,11 @@ func (s *fileTicketStore) SetTicketState(id string, to TicketState) (*Ticket, er
 	if ft == nil {
 		return nil, errTicketMissing
 	}
-	if err := validateTransition(ft.State, to); err != nil {
+	audit, err := applyStateChange(&ft.Ticket, to, now())
+	if err != nil {
 		return nil, err
 	}
-	from := ft.State
-	ft.State = to
-	ft.UpdatedAt = time.Now().UTC()
-	s.appendComment(ft, AuthorSystem, nil, "state: "+string(from)+" → "+string(to), false, false)
+	s.appendComment(ft, AuthorSystem, nil, audit, false, false)
 	if err := s.save(ft); err != nil {
 		return nil, err
 	}
@@ -410,22 +408,11 @@ func (s *fileTicketStore) SetPOVerdict(id string, v POVerdict) (*Ticket, error) 
 	if ft == nil {
 		return nil, errTicketMissing
 	}
-	if err := validateTransition(ft.State, v.State); err != nil {
+	audit, err := applyPOVerdict(&ft.Ticket, v, now())
+	if err != nil {
 		return nil, err
 	}
-	from := ft.State
-	now := time.Now().UTC()
-	ft.POSpam = v.Spam
-	ft.POMalicious = v.Malicious
-	ft.POVisionFit = v.VisionFit
-	if v.Reason != "" {
-		r := v.Reason
-		ft.POReason = &r
-	}
-	ft.POVerdictAt = &now
-	ft.State = v.State
-	ft.UpdatedAt = now
-	s.appendComment(ft, AuthorSystem, nil, "po verdict: "+string(from)+" → "+string(v.State), false, false)
+	s.appendComment(ft, AuthorSystem, nil, audit, false, false)
 	if err := s.save(ft); err != nil {
 		return nil, err
 	}
@@ -444,20 +431,10 @@ func (s *fileTicketStore) DeleteTicket(id string) bool {
 
 // ─── comments ───────────────────────────────────────────────────
 
-// appendComment adds a comment to ft in memory (caller saves). POReviewed
-// follows the same rule as the DB backend: only user comments need review.
+// appendComment adds a comment to ft in memory (caller saves). The PO-review
+// rule (only user comments need moderation) lives in newComment.
 func (s *fileTicketStore) appendComment(ft *fileTicket, authorType AuthorType, authorID *string, body string, internal, withheld bool) *TicketComment {
-	c := &TicketComment{
-		ID:         newID(),
-		TicketID:   ft.ID,
-		AuthorType: authorType,
-		AuthorID:   authorID,
-		Internal:   internal,
-		Body:       body,
-		CreatedAt:  time.Now().UTC(),
-		Withheld:   withheld,
-		POReviewed: authorType != AuthorUser,
-	}
+	c := newComment(ft.ID, authorType, authorID, body, internal, withheld)
 	ft.Comments = append(ft.Comments, c)
 	ft.UpdatedAt = c.CreatedAt
 	return c
@@ -485,9 +462,8 @@ func (s *fileTicketStore) AddAgentComment(ticketID string, authorType AuthorType
 	if ft == nil {
 		return nil
 	}
-	// po/dev/system have no user id and are inherently reviewed.
+	// po/dev/system have no user id and are inherently reviewed (newComment rule).
 	c := s.appendComment(ft, authorType, nil, body, internal, withheld)
-	c.POReviewed = true
 	if err := s.save(ft); err != nil {
 		return nil
 	}
@@ -610,7 +586,7 @@ func (s *fileTicketStore) AddArtifact(ticketID string, kind ArtifactKind, name, 
 		Mime:      mime,
 		Size:      int64(len(data)),
 		Name:      fname,
-		CreatedAt: time.Now().UTC(),
+		CreatedAt: now(),
 	}
 	ft.Artifacts = append(ft.Artifacts, a)
 	if err := s.save(ft); err != nil {
@@ -657,7 +633,7 @@ func (s *fileTicketStore) CreateWorkOrder(ticketID string, payload json.RawMessa
 	wo := &WorkOrder{
 		TicketID:  ticketID,
 		Payload:   append(json.RawMessage(nil), payload...),
-		CreatedAt: time.Now().UTC(),
+		CreatedAt: now(),
 	}
 	ft.WorkOrder = wo
 	if err := s.save(ft); err != nil {
@@ -686,8 +662,8 @@ func (s *fileTicketStore) ClaimWorkOrder(ticketID string) (*WorkOrder, error) {
 	if ft.WorkOrder.PickedUpAt != nil {
 		return nil, errWorkOrderClaimed
 	}
-	now := time.Now().UTC()
-	ft.WorkOrder.PickedUpAt = &now
+	at := now()
+	ft.WorkOrder.PickedUpAt = &at
 	if err := s.save(ft); err != nil {
 		return nil, err
 	}
@@ -701,11 +677,14 @@ func (s *fileTicketStore) CompleteWorkOrder(ticketID, deployID string) (*WorkOrd
 	if ft == nil || ft.WorkOrder == nil {
 		return nil, errWorkOrderMissing
 	}
+	if ft.WorkOrder.CompletedAt != nil {
+		return nil, errWorkOrderCompleted
+	}
 	if deployID != "" && !s.hasDeploy(deployID) {
 		return nil, errDeployMissing
 	}
-	now := time.Now().UTC()
-	ft.WorkOrder.CompletedAt = &now
+	at := now()
+	ft.WorkOrder.CompletedAt = &at
 	if deployID != "" {
 		d := deployID
 		ft.WorkOrder.DeployID = &d
@@ -778,7 +757,7 @@ func (s *fileTicketStore) CreateDeploy(version, gitSHA string, ticketIDs []strin
 		GitSHA:     gitSHA,
 		TicketIDs:  append([]string(nil), ticketIDs...),
 		Status:     status,
-		DeployedAt: time.Now().UTC(),
+		DeployedAt: now(),
 	}
 	s.deploys = append(s.deploys, d)
 	if err := s.saveDeploys(); err != nil {

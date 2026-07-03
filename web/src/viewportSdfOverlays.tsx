@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, type RefObject } from "react";
 import { useFrame, useThree } from "@react-three/fiber";
 import * as THREE from "three";
 import type { WebGPURenderer } from "three/webgpu";
@@ -26,27 +26,25 @@ import {
   type DeferredPipelineState,
 } from "./sdfDeferredRenderer";
 import { resolveMaterials, applyMaterials } from "./materialBridge";
-import type { BRepEdgeMode } from "./SettingsMenu";
-
-export const OVERLAY_LAYER = 1;
-// Datum planes / origin live on their OWN layer so the SDF path can re-draw
-// them AFTER the body shade pass but BEFORE the x-ray depth-clear that lets
-// B-Rep edges shine through solids. That way datums share the bodies' depth
-// buffer (a solid in front occludes the datum behind it — ticket 1m8g) while
-// edges keep their see-through x-ray behaviour. Datums also stay on layer 0 so
-// the plain WebGL path keeps drawing them with no extra orchestration.
-export const DATUM_LAYER = 2;
+import { disposeAfterGpuIdle } from "./sdfPipelineCommon";
+import { OVERLAY_LAYER, DATUM_LAYER } from "./viewportLayers";
+import {
+  computeSdfFingerprints,
+  type SdfFingerprintKernel,
+} from "./bodyFingerprint";
+import type { BRepEdgeMode } from "./settings";
+import type { HybridInfo } from "./kernel";
+import type { MaterialBufferTarget } from "./materialBridge";
 
 type BodyVolumes = { data: Float32Array; dims: [number, number, number] }[];
 
-interface KernelLike {
-  bodyCount(): number;
-  bodyId(i: number): number;
-  bodyVersion(i: number): number;
-  bodySdfOpcodesView(i: number): Float32Array;
-  bodyVolumeCount(i: number): number;
+interface KernelLike extends SdfFingerprintKernel {
   bodyVolumeDataView(i: number, v: number): Float32Array;
   bodyVolumeDims(i: number, v: number): [number, number, number];
+  bodySdfMarchRelax(i: number): number;
+  bodyHybridInfo(i: number): HybridInfo;
+  bodySdfAabb(i: number): Float32Array;
+  bodySeedFeatureId(i: number): number;
 }
 
 function collectBodyVolumes(
@@ -63,26 +61,6 @@ function collectBodyVolumes(
     });
   }
   return volumes;
-}
-
-function computeFingerprints(
-  k: KernelLike,
-  count: number,
-): { volumeFp: string; structFp: string; dataFp: string } {
-  let totalVolumes = 0;
-  const structParts: (string | number)[] = [count];
-  const dataParts: number[] = [];
-  for (let i = 0; i < count; i++) {
-    const volCount = k.bodyVolumeCount(i);
-    totalVolumes += volCount;
-    structParts.push(k.bodyId(i), k.bodySdfOpcodesView(i).length, volCount);
-    dataParts.push(k.bodyVersion(i));
-  }
-  return {
-    volumeFp: String(totalVolumes),
-    structFp: structParts.join(","),
-    dataFp: dataParts.join(","),
-  };
 }
 
 function showCompilationStatus(text: string): void {
@@ -152,164 +130,86 @@ function copyOpcodes(k: KernelLike, bodyIndex: number): Float32Array {
   return view.length > 0 ? view.slice() : new Float32Array(0);
 }
 
-export function SdfVmOverlay({ brepEdgeMode }: { brepEdgeMode: BRepEdgeMode }) {
-  const { store } = useKernelStore();
-  const scene = useThree((s) => s.scene);
-  const invalidate = useThree((s) => s.invalidate);
+// ── Shared pipeline lifecycle (hook + adapters) ─────────────────────
 
-  const pipelineRef = useRef<VmPipelineState | null>(null);
-  const volumeFpRef = useRef("");
-  const dataFpRef = useRef("");
-  const compilingRef = useRef(false);
-  const readyRef = useRef(false);
-  const matFeaturesRef = useRef<unknown>(null);
-  // Captured from useFrame so the unmount cleanup can defer the pipeline's GPU
-  // disposal until the device is idle (ticket 323i).
-  const rendererRef = useRef<WebGPURenderer | null>(null);
-
-  useEffect(() => {
-    pipelineRef.current = initVmPipeline();
-    volumeFpRef.current = "";
-    dataFpRef.current = "";
-    matFeaturesRef.current = null;
-    compilingRef.current = false;
-    readyRef.current = false;
-    showCompilationStatus("Initializing…");
-
-    return () => {
-      if (pipelineRef.current) {
-        disposeVmPipeline(pipelineRef.current, rendererRef.current ?? undefined);
-        pipelineRef.current = null;
-      }
-    };
-  }, []);
-
-  useFrame(({ gl: renderer, camera }) => {
-    if (!store || !pipelineRef.current) return;
-    rendererRef.current = renderer as unknown as WebGPURenderer;
-    const pipeline = pipelineRef.current;
-    const k = store.kernel;
-    const count = k.bodyCount();
-
-    const { volumeFp, structFp, dataFp } = computeFingerprints(k, count);
-    const needsCompile = volumeFp !== volumeFpRef.current;
-    const needsDataUpdate =
-      !needsCompile && structFp + dataFp !== dataFpRef.current;
-
-    if (needsCompile && !compilingRef.current) {
-      showCompilationStatus("Building SDF…");
-
-      const bodies = [];
-      for (let i = 0; i < count; i++) {
-        bodies.push({
-          bodyIndex: i,
-          opcodes: copyOpcodes(k, i),
-          marchRelax: k.bodySdfMarchRelax(i),
-          volumes: collectBodyVolumes(k, i),
-        });
-      }
-      rebuildVmBodies(pipeline, bodies, renderer as unknown as WebGPURenderer);
-      volumeFpRef.current = volumeFp;
-      dataFpRef.current = structFp + dataFp;
-
-      showCompilationStatus("Compiling shader…");
-      compilingRef.current = true;
-      const wgpu = renderer as unknown as WebGPURenderer;
-      compileVmPipeline(pipeline, wgpu, camera)
-        .then(() => {
-          // Ignore a compile that finished for a pipeline we've since
-          // replaced (StrictMode remounts dispose the old pipeline while
-          // its async compile is still in flight). Acting on a stale
-          // result would flip `readyRef` true for a disposed pipeline and
-          // wedge the loop on a blank frame.
-          if (pipeline !== pipelineRef.current) return;
-          compilingRef.current = false;
-          readyRef.current = true;
-          hideCompilationOverlay();
-          invalidate();
-        })
-        .catch((err) => {
-          if (pipeline !== pipelineRef.current) return;
-          compilingRef.current = false;
-          showGpuError(err);
-        });
-    }
-
-    if (needsDataUpdate && readyRef.current && !compilingRef.current) {
-      const bodies = [];
-      for (let i = 0; i < count; i++) {
-        bodies.push({
-          bodyIndex: i,
-          opcodes: copyOpcodes(k, i),
-          marchRelax: k.bodySdfMarchRelax(i),
-          volumes: collectBodyVolumes(k, i),
-        });
-      }
-      updateVmData(pipeline, bodies);
-      dataFpRef.current = structFp + dataFp;
-    }
-
-    // Materials only change when the feature list changes (any edit commits a
-    // fresh array) or when geometry rebuilt/updated this frame. Gate the
-    // resolve+GPU upload behind that so a static scene doesn't re-upload the
-    // material buffer every frame.
-    const featuresArr = store.getState().features;
-    if (
-      featuresArr !== matFeaturesRef.current ||
-      needsCompile ||
-      needsDataUpdate
-    ) {
-      const vmMaterials = resolveMaterials(k, featuresArr);
-      applyMaterials(pipeline, vmMaterials, count);
-      matFeaturesRef.current = featuresArr;
-    }
-
-    if (!readyRef.current || compilingRef.current) return;
-
-    const wgpuRenderer = renderer as unknown as WebGPURenderer;
-
-    // Dev/E2E parity hook: evaluate the live GPU interpreter at world points
-    // and compare against the CPU mirror (`eval_opcodes`). See probeVmSdf.
-    (window as unknown as Record<string, unknown>).__fdSdfVmProbe = (
-      points: [number, number, number][],
-      bodyIndex = 0,
-    ) => probeVmSdf(pipeline, wgpuRenderer, points, bodyIndex);
-
-    try {
-      renderOverlayLayer(
-        wgpuRenderer,
-        scene,
-        camera,
-        () => renderVmFrame(pipeline, wgpuRenderer, camera),
-        brepEdgeMode === "visible",
-      );
-    } catch (err) {
-      readyRef.current = false;
-      showGpuError(err);
-    }
-
-    // No trailing invalidate(): this overlay is demand-driven. Re-renders are
-    // triggered by events — kernel mutations via <Invalidator> (it watches the
-    // `features`/`selection` refs that commit() replaces), camera moves via
-    // OrbitControls, and compile completion via the .then() above. Self-driving
-    // the loop here would force a continuous 60 fps render of a static scene.
-  }, 1);
-
-  return null;
+/** What a concrete SDF pipeline (VM / deferred) plugs into the shared
+ *  lifecycle hook. `P` is the pipeline state, `B` its body payload. */
+interface SdfPipelineAdapter<P extends MaterialBufferTarget, B> {
+  init(): P;
+  dispose(pipeline: P, renderer: WebGPURenderer | undefined): void;
+  /** Read everything the pipeline needs per body from the kernel. */
+  collectBodies(k: KernelLike, count: number): B[];
+  /** Split the kernel fingerprints into the part that forces a full rebuild
+   *  + shader recompile (`rebuildFp`) and the part a data re-upload covers
+   *  (`dataFp`). VM: only a volume-texture-count change recompiles (texture
+   *  bindings are baked into the pipeline) — opcode changes are data.
+   *  Deferred: any structural change rebuilds (proxy meshes + buffer layout). */
+  fingerprintPolicy(fps: {
+    volumeFp: string;
+    structFp: string;
+    dataFp: string;
+  }): { rebuildFp: string; dataFp: string };
+  rebuild(pipeline: P, bodies: B[], renderer: WebGPURenderer): void;
+  compile(
+    pipeline: P,
+    renderer: WebGPURenderer,
+    camera: THREE.Camera,
+  ): Promise<void>;
+  updateData(pipeline: P, bodies: B[], renderer: WebGPURenderer): void;
+  renderFrame(
+    pipeline: P,
+    renderer: WebGPURenderer,
+    camera: THREE.Camera,
+  ): void;
+  /** Track the canvas size (deferred render targets); VM has no targets. */
+  onResize?(pipeline: P, width: number, height: number): void;
+  /** Upload the per-body selection flags (deferred highlight tint). */
+  onSelection?(
+    pipeline: P,
+    k: KernelLike,
+    count: number,
+    selection: ReadonlySet<number>,
+  ): void;
 }
 
-export function SdfDeferredOverlay({
-  brepEdgeMode,
-}: {
-  brepEdgeMode: BRepEdgeMode;
-}) {
+/**
+ * The ONE lifecycle state machine both SDF overlays run: fingerprint-driven
+ * rebuild/recompile vs. data re-upload, material + selection uploads, and
+ * the composited per-frame render (base scene → SDF pass → datum → overlay).
+ *
+ * Baked in exactly once for both pipelines:
+ *   - StrictMode stale guard: an async compile/rebuild that finishes for a
+ *     pipeline we've since disposed (double-mount) is ignored — acting on it
+ *     would flip `readyRef` for a dead pipeline and wedge the loop.
+ *   - GPU-idle gate (ticket sgzw): the DESTRUCTIVE rebuild runs only after
+ *     the device drained all in-flight submits. Rebuilding mid-submit lets
+ *     three.js destroy an internal render-context buffer → "Buffer used in
+ *     submit while destroyed" → persistent GPU corruption. The
+ *     disposeAfterGpuIdle guard inside the pipelines covers OUR resources,
+ *     the gate here covers three's own per-pass buffers too.
+ *   - Error path: a failed compile or a throwing render pass parks the
+ *     overlay (`readyRef=false`) and surfaces the GPU error banner.
+ *
+ * No trailing invalidate(): the overlays are demand-driven. Re-renders are
+ * triggered by events — kernel mutations via <Invalidator>, camera moves via
+ * the controls, resize via the effect, compile completion via .then().
+ * Self-driving the loop would force a continuous 60 fps render of a static
+ * scene.
+ */
+function useSdfPipelineOverlay<P extends MaterialBufferTarget, B>(
+  adapter: SdfPipelineAdapter<P, B>,
+  brepEdgeMode: BRepEdgeMode,
+): {
+  pipelineRef: RefObject<P | null>;
+  rendererRef: RefObject<WebGPURenderer | null>;
+} {
   const { store } = useKernelStore();
   const scene = useThree((s) => s.scene);
   const size = useThree((s) => s.size);
   const invalidate = useThree((s) => s.invalidate);
 
-  const pipelineRef = useRef<DeferredPipelineState | null>(null);
-  const structFpRef = useRef("");
+  const pipelineRef = useRef<P | null>(null);
+  const rebuildFpRef = useRef("");
   const dataFpRef = useRef("");
   const compilingRef = useRef(false);
   const readyRef = useRef(false);
@@ -320,8 +220,8 @@ export function SdfDeferredOverlay({
   const rendererRef = useRef<WebGPURenderer | null>(null);
 
   useEffect(() => {
-    pipelineRef.current = initDeferredPipeline(1, 1);
-    structFpRef.current = "";
+    pipelineRef.current = adapter.init();
+    rebuildFpRef.current = "";
     dataFpRef.current = "";
     matFeaturesRef.current = null;
     selectionRef.current = null;
@@ -331,75 +231,53 @@ export function SdfDeferredOverlay({
 
     return () => {
       if (pipelineRef.current) {
-        disposeDeferredPipeline(pipelineRef.current, rendererRef.current ?? undefined);
+        adapter.dispose(pipelineRef.current, rendererRef.current ?? undefined);
         pipelineRef.current = null;
       }
     };
-  }, []);
+  }, [adapter]);
 
   useEffect(() => {
-    if (!pipelineRef.current) return;
-    const w = Math.max(size.width, 1);
-    const h = Math.max(size.height, 1);
-    resizeDeferredPipeline(pipelineRef.current, w, h);
+    if (!pipelineRef.current || !adapter.onResize) return;
+    adapter.onResize(
+      pipelineRef.current,
+      Math.max(size.width, 1),
+      Math.max(size.height, 1),
+    );
     invalidate();
-  }, [size.width, size.height]);
+  }, [adapter, size.width, size.height, invalidate]);
 
   useFrame(({ gl: renderer, camera }) => {
     if (!store || !pipelineRef.current) return;
     rendererRef.current = renderer as unknown as WebGPURenderer;
+    const wgpu = renderer as unknown as WebGPURenderer;
     const pipeline = pipelineRef.current;
     const k = store.kernel;
     const count = k.bodyCount();
 
-    const { structFp, dataFp } = computeFingerprints(k, count);
-    const needsRebuild = structFp !== structFpRef.current;
+    const { rebuildFp, dataFp } = adapter.fingerprintPolicy(
+      computeSdfFingerprints(k, count),
+    );
+    const needsRebuild = rebuildFp !== rebuildFpRef.current;
     const needsDataUpdate = !needsRebuild && dataFp !== dataFpRef.current;
-
-    const collectDeferredBodies = () => {
-      const bodies = [];
-      for (let i = 0; i < count; i++) {
-        bodies.push({
-          bodyIndex: i,
-          hybridInfo: k.bodyHybridInfo(i),
-          opcodes: copyOpcodes(k, i),
-          aabb: k.bodySdfAabb(i),
-          volumes: collectBodyVolumes(k, i),
-          marchRelax: k.bodySdfMarchRelax(i),
-        });
-      }
-      return bodies;
-    };
 
     if (needsRebuild && !compilingRef.current) {
       showCompilationStatus("Building SDF…");
       // Gate the render loop NOW (before any await) so no new frame submits
-      // while we tear down and rebuild the pipeline below.
+      // while the pipeline is torn down and rebuilt below.
       compilingRef.current = true;
-      structFpRef.current = structFp;
+      rebuildFpRef.current = rebuildFp;
       dataFpRef.current = dataFp;
-      const wgpu = renderer as unknown as WebGPURenderer;
-      const bodies = collectDeferredBodies();
+      const bodies = adapter.collectBodies(k, count);
 
-      // Ticket sgzw: do the DESTRUCTIVE rebuild (mesh swap + shader recompile)
-      // only after the device is idle. Rebuilding while the previous frame's
-      // submit is still in flight lets three.js destroy an internal
-      // render-context buffer mid-submit → "Buffer used in submit while
-      // destroyed" → persistent GPU corruption (the smeared revolve). The
-      // disposeAfterGpuIdle guard covers OUR THREE resources but not three's
-      // own per-pass buffers; waiting for idle here covers both.
       const runRebuild = () => {
+        // StrictMode stale guard (see hook doc).
         if (pipeline !== pipelineRef.current) return;
-        rebuildDeferredBodies(pipeline, bodies, wgpu);
-        rebuildShadeMaterialIfNeeded(pipeline, wgpu);
+        adapter.rebuild(pipeline, bodies, wgpu);
         showCompilationStatus("Compiling shader…");
-        compileDeferredPipeline(pipeline, wgpu, camera)
+        adapter
+          .compile(pipeline, wgpu, camera)
           .then(() => {
-            // Ignore a compile that finished for a pipeline we've since
-            // replaced (StrictMode remounts dispose the old pipeline while
-            // its async compile is still in flight). Acting on a stale
-            // result would flip `readyRef` true for a disposed pipeline and
-            // wedge the loop on a blank frame.
             if (pipeline !== pipelineRef.current) return;
             compilingRef.current = false;
             readyRef.current = true;
@@ -412,59 +290,50 @@ export function SdfDeferredOverlay({
             showGpuError(err);
           });
       };
-      const queue = (wgpu as unknown as { backend?: { device?: GPUDevice } })
-        .backend?.device?.queue;
-      if (queue && typeof queue.onSubmittedWorkDone === "function") {
-        queue.onSubmittedWorkDone().then(runRebuild, runRebuild);
-      } else {
-        runRebuild();
-      }
+      // GPU-idle gate (ticket sgzw, see hook doc): disposeAfterGpuIdle is
+      // exactly "run this once the queue drained (or synchronously without a
+      // WebGPU queue)".
+      disposeAfterGpuIdle(wgpu, runRebuild);
     }
 
     if (needsDataUpdate && readyRef.current && !compilingRef.current) {
-      updateDeferredData(
-        pipeline,
-        collectDeferredBodies(),
-        renderer as unknown as WebGPURenderer,
-      );
+      adapter.updateData(pipeline, adapter.collectBodies(k, count), wgpu);
       dataFpRef.current = dataFp;
     }
 
     const storeState = store.getState();
 
-    // Re-resolve + re-upload materials only when the feature list changed or
-    // geometry rebuilt/updated this frame — not on every static frame.
+    // Materials only change when the feature list changes (any edit commits a
+    // fresh array) or when geometry rebuilt/updated this frame. Gate the
+    // resolve+GPU upload behind that so a static scene doesn't re-upload the
+    // material buffer every frame.
     if (
       storeState.features !== matFeaturesRef.current ||
       needsRebuild ||
       needsDataUpdate
     ) {
-      const materials = resolveMaterials(k, storeState.features);
-      applyMaterials(pipeline, materials, count);
+      applyMaterials(pipeline, resolveMaterials(k, storeState.features), count);
       matFeaturesRef.current = storeState.features;
     }
 
     // Selection likewise only changes via a fresh selection Set (or when the
     // body set rebuilt).
-    const selection = storeState.selection;
-    if (selection !== selectionRef.current || needsRebuild) {
-      const selectedBodies = new Set<number>();
-      for (let i = 0; i < count; i++) {
-        if (selection.has(k.bodySeedFeatureId(i))) selectedBodies.add(i);
+    if (adapter.onSelection) {
+      const selection = storeState.selection;
+      if (selection !== selectionRef.current || needsRebuild) {
+        adapter.onSelection(pipeline, k, count, selection);
+        selectionRef.current = selection;
       }
-      updateDeferredSelection(pipeline, selectedBodies);
-      selectionRef.current = selection;
     }
 
     if (!readyRef.current || compilingRef.current) return;
 
-    const wgpuRenderer = renderer as unknown as WebGPURenderer;
     try {
       renderOverlayLayer(
-        wgpuRenderer,
+        wgpu,
         scene,
         camera,
-        () => renderDeferredFrame(pipeline, wgpuRenderer, camera),
+        () => adapter.renderFrame(pipeline, wgpu, camera),
         brepEdgeMode === "visible",
       );
     } catch (err) {
@@ -472,11 +341,134 @@ export function SdfDeferredOverlay({
       readyRef.current = false;
       showGpuError(err);
     }
-
-    // No trailing invalidate(): demand-driven. See the note in SdfVmOverlay —
-    // re-renders come from <Invalidator>, OrbitControls, the resize effect, and
-    // the compile .then(), not from self-driving the loop every frame.
   }, 1);
 
+  return { pipelineRef, rendererRef };
+}
+
+// ── VM adapter + overlay ────────────────────────────────────────────
+
+interface VmBody {
+  bodyIndex: number;
+  opcodes: Float32Array;
+  marchRelax: number;
+  volumes?: BodyVolumes;
+}
+
+const vmAdapter: SdfPipelineAdapter<VmPipelineState, VmBody> = {
+  init: initVmPipeline,
+  dispose: disposeVmPipeline,
+  collectBodies: (k, count) => {
+    const bodies: VmBody[] = [];
+    for (let i = 0; i < count; i++) {
+      bodies.push({
+        bodyIndex: i,
+        opcodes: copyOpcodes(k, i),
+        marchRelax: k.bodySdfMarchRelax(i),
+        volumes: collectBodyVolumes(k, i),
+      });
+    }
+    return bodies;
+  },
+  // Only a volume-texture-count change bakes new bindings → recompile; any
+  // opcode/structure change is a plain buffer re-upload for the VM.
+  fingerprintPolicy: ({ volumeFp, structFp, dataFp }) => ({
+    rebuildFp: volumeFp,
+    dataFp: structFp + dataFp,
+  }),
+  rebuild: rebuildVmBodies,
+  compile: compileVmPipeline,
+  updateData: (pipeline, bodies) => updateVmData(pipeline, bodies),
+  renderFrame: renderVmFrame,
+};
+
+export function SdfVmOverlay({ brepEdgeMode }: { brepEdgeMode: BRepEdgeMode }) {
+  const { pipelineRef, rendererRef } = useSdfPipelineOverlay(
+    vmAdapter,
+    brepEdgeMode,
+  );
+
+  // Dev/E2E parity hook: evaluate the live GPU interpreter at world points
+  // and compare against the CPU mirror (`eval_opcodes`). Installed ONCE per
+  // mount (not per frame); resolves lazily against the current pipeline.
+  useEffect(() => {
+    const w = window as unknown as Record<string, unknown>;
+    w.__fdSdfVmProbe = (
+      points: [number, number, number][],
+      bodyIndex = 0,
+    ) => {
+      const pipeline = pipelineRef.current;
+      const renderer = rendererRef.current;
+      if (!pipeline || !renderer) {
+        return Promise.reject(new Error("VM pipeline not ready"));
+      }
+      return probeVmSdf(pipeline, renderer, points, bodyIndex);
+    };
+    return () => {
+      delete w.__fdSdfVmProbe;
+    };
+  }, [pipelineRef, rendererRef]);
+
+  return null;
+}
+
+// ── Deferred adapter + overlay ──────────────────────────────────────
+
+interface DeferredBody {
+  bodyIndex: number;
+  hybridInfo: HybridInfo;
+  opcodes: Float32Array;
+  aabb: Float32Array;
+  volumes?: BodyVolumes;
+  marchRelax: number;
+}
+
+const deferredAdapter: SdfPipelineAdapter<DeferredPipelineState, DeferredBody> =
+  {
+    init: () => initDeferredPipeline(1, 1),
+    dispose: disposeDeferredPipeline,
+    collectBodies: (k, count) => {
+      const bodies: DeferredBody[] = [];
+      for (let i = 0; i < count; i++) {
+        bodies.push({
+          bodyIndex: i,
+          hybridInfo: k.bodyHybridInfo(i),
+          opcodes: copyOpcodes(k, i),
+          aabb: k.bodySdfAabb(i),
+          volumes: collectBodyVolumes(k, i),
+          marchRelax: k.bodySdfMarchRelax(i),
+        });
+      }
+      return bodies;
+    },
+    // Any structural change (opcode layout, hybrid leaf set) moves the proxy
+    // meshes + packed buffers → full rebuild; version bumps are data updates.
+    fingerprintPolicy: ({ structFp, dataFp }) => ({
+      rebuildFp: structFp,
+      dataFp,
+    }),
+    rebuild: (pipeline, bodies, renderer) => {
+      rebuildDeferredBodies(pipeline, bodies, renderer);
+      rebuildShadeMaterialIfNeeded(pipeline, renderer);
+    },
+    compile: compileDeferredPipeline,
+    updateData: updateDeferredData,
+    renderFrame: renderDeferredFrame,
+    onResize: resizeDeferredPipeline,
+    onSelection: (pipeline, k, count, selection) => {
+      const selectedBodies = new Set<number>();
+      for (let i = 0; i < count; i++) {
+        if (selection.has(k.bodySeedFeatureId(i))) selectedBodies.add(i);
+      }
+      updateDeferredSelection(pipeline, selectedBodies);
+    },
+  };
+
+export function SdfDeferredOverlay({
+  brepEdgeMode,
+}: {
+  brepEdgeMode: BRepEdgeMode;
+}) {
+  useSdfPipelineOverlay(deferredAdapter, brepEdgeMode);
   return null;
 }

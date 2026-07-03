@@ -18,290 +18,66 @@
  * zurückversetzt, damit der Trace garantiert im Freiraum beginnt (Ticket vlhp).
  * TODO: konservative Coverage (Silhouetten-Aufweitung im Screenspace) ist ein
  * noch offener, späterer Schritt.
+ *
+ * Die TSL-Shader-Builder leben in sdfDeferredRenderer.shaders.ts
+ * (@ts-nocheck); diese Datei ist voll typisiert.
  */
 
-// @ts-nocheck -- TSL's TypeScript surface in three r183 is intentionally loose.
-
 import * as THREE from "three";
+import { uniform, uniformArray } from "three/tsl";
 import {
-  Break,
-  Fn,
-  If,
-  Loop,
-  atomicAdd,
-  atomicLoad,
-  atomicOr,
-  atomicStore,
-  bitAnd,
-  depth,
-  float,
-  instanceIndex,
-  int,
-  max,
-  min,
-  normalize,
-  screenCoordinate,
-  shiftRight,
-  storage,
-  texture,
-  uint,
-  uniform,
-  uniformArray,
-  uv,
-  vec2,
-  vec3,
-  vec4,
-  select,
-  viewZToPerspectiveDepth,
-  viewZToOrthographicDepth,
-  modelWorldMatrix,
-  positionGeometry,
-} from "three/tsl";
-import { MeshBasicNodeMaterial, StorageBufferAttribute } from "three/webgpu";
+  StorageBufferAttribute,
+  type ComputeNode,
+  type MeshBasicNodeMaterial,
+  type UniformArrayNode,
+  type UniformNode,
+  type WebGPURenderer,
+} from "three/webgpu";
 
-import { buildVmSdfEvalFn } from "./sdfVmInterpreter";
-import { buildHelixGeometry, decodeHelixParams } from "./helixMesh";
-import { buildSweepGeometry } from "./sweepMesh";
-import { ensureOutwardOrientation } from "./sweptShell";
 import {
-  subdivideAlongAxis,
-  applyWarp,
-  warpAxis,
-  maxStepForWarp,
-} from "./warpMesh";
+  leafGeoKey,
+  createPrimitiveGeometry,
+  applyLeafTransform,
+} from "./leafMeshFactory";
 import type { HybridInfo, HybridLeafInfo } from "./kernel";
 import {
   createMaterialBuffers,
   createOpcodeBuffers,
+  createCameraUniforms,
+  updateCameraUniforms,
   disposeAfterGpuIdle,
   packOpcodes,
   packMarchRelax,
   updateVolumeData,
   rebuildVolumeTextures,
-  MAT_STRIDE,
-  MAT_DISPLACE_DEPTH,
-  MAT_DISPLACE_FREQ,
-  DISPLACE_FREQ_Y,
-  DISPLACE_FREQ_Z,
-  shadeSdfHit,
+  SDF_MAX_OPCODES,
+  AABB_HULL_PAD,
+  type CameraUniformSet,
+  type MaterialBufferSet,
+  type OpcodeBufferSet,
 } from "./sdfPipelineCommon";
+import {
+  BODY_ID_WORDS_PER_PIXEL,
+  createBodyIdBuffer,
+  createGBufferMaterial,
+  createTransparentGBufferMaterial,
+  createBackFaceMaterial,
+  createShadeMaterial,
+} from "./sdfDeferredRenderer.shaders";
 
 // ── Constants ───────────────────────────────────────────────────────
 
-const DEFERRED_MAX_OPCODES = 16384;
-const MAX_BODIES = 256;
-const DEFERRED_MARCH_STEPS = 512;
-const SURFACE_EPS = 0.002;
-const MARCH_START_BACKOFF = 1.0; // mm -- Z-Offset ±1 mm in Kamera-Richtung: March-Start liegt 1 mm vor der exakten Front-Fläche (Richtung Kamera), tMax entsprechend +1 mm hinter der Rückwand. Damit startet der Trace garantiert im Freiraum (Ticket vlhp).
+/** Every body gets its own raster proxy meshes, so the cap is generous —
+ *  unlike the VM renderer's 8-body fullscreen union march. */
+const DEFERRED_MAX_BODIES = 256;
 const MAX_PIXELS = 4096 * 2160;
-const BODY_ID_WORDS_PER_PIXEL = 2;
-
-// ── Body colors ────────────────────────────────────────────────────
-
-export const BODY_COLORS: [number, number, number][] = [
-  [0.55, 0.65, 0.85],
-  [0.65, 0.85, 0.55],
-  [0.85, 0.55, 0.65],
-  [0.85, 0.75, 0.5],
-  [0.55, 0.8, 0.8],
-  [0.75, 0.55, 0.85],
-  [0.85, 0.85, 0.55],
-  [0.55, 0.7, 0.7],
-];
-
-// ── Primitive mesh factory ─────────────────────────────────────────
-
-/** A cheap fingerprint of everything {@link createPrimitiveGeometry} bakes into
- *  a leaf's mesh — its kind, shape params (box size, extrude depth, …) and
- *  contour (extrude/revolve profile). Used by {@link updateDeferredData} to
- *  rebuild a stale proxy mesh when the GEOMETRY changed (e.g. an extrude depth
- *  edit, ticket c9ic) while skipping pure-transform changes (translate). */
-export function leafGeoKey(leaf: HybridLeafInfo): string {
-  let key = `${leaf.kind}|${leaf.params.join(",")}`;
-  const c = leaf.contour;
-  if (c) {
-    let sum = 0;
-    const fold = (pts: [number, number][]) => {
-      for (const [x, y] of pts)
-        sum = (Math.imul(sum, 31) + Math.round(x * 1e3) + Math.round(y * 1e4)) | 0;
-    };
-    fold(c.outer);
-    for (const h of c.holes) fold(h);
-    key += `|${c.outer.length}:${c.holes.length}:${sum}`;
-  }
-  return key;
-}
-
-export function createPrimitiveGeometry(
-  leaf: HybridLeafInfo,
-): THREE.BufferGeometry | null {
-  const p = leaf.params;
-  switch (leaf.kind) {
-    case "box":
-      return new THREE.BoxGeometry(p[0] * 2, p[1] * 2, p[2] * 2);
-    case "sphere":
-      return new THREE.SphereGeometry(p[0], 32, 24);
-    case "cylinder":
-      return new THREE.CylinderGeometry(p[0], p[0], p[1] * 2, 32);
-    case "torus": {
-      const tgeo = new THREE.TorusGeometry(p[0], p[1], 24, 48);
-      tgeo.rotateX(Math.PI / 2);
-      return tgeo;
-    }
-    case "cone":
-      return new THREE.CylinderGeometry(p[1], p[0], p[2] * 2, 32);
-    case "capsule":
-      return new THREE.CapsuleGeometry(p[0], p[1] * 2, 16, 24);
-    case "extrude":
-      return createExtrudeGeometry(leaf);
-    case "revolve":
-      return createRevolveGeometry(leaf);
-    case "helix":
-      return createHelixGeometry(leaf);
-    case "sweep":
-      return createSweepGeometry(leaf);
-    default:
-      return null;
-  }
-}
-
-function createExtrudeGeometry(
-  leaf: HybridLeafInfo,
-): THREE.BufferGeometry | null {
-  const contour = leaf.contour;
-  if (!contour || contour.outer.length < 3) return null;
-  const halfHeight = leaf.params[0];
-  const shape = new THREE.Shape(
-    contour.outer.map(([x, y]) => new THREE.Vector2(x, y)),
-  );
-  for (const hole of contour.holes) {
-    shape.holes.push(
-      new THREE.Path(hole.map(([x, y]) => new THREE.Vector2(x, y))),
-    );
-  }
-  // ExtrudeGeometry self-normalises the shape orientation (ShapeUtils orients
-  // outer CCW / holes CW regardless of the input loop direction), so its
-  // winding + normals are already outward — no ensureOutwardOrientation needed
-  // here (verified: signed volume > 0 for both CW and CCW input contours).
-  const geo = new THREE.ExtrudeGeometry(shape, {
-    depth: 2 * halfHeight,
-    bevelEnabled: false,
-  });
-  geo.translate(0, 0, -halfHeight);
-  return geo;
-}
-
-function createRevolveGeometry(
-  leaf: HybridLeafInfo,
-): THREE.BufferGeometry | null {
-  const contour = leaf.contour;
-  if (!contour || contour.outer.length < 3) return null;
-  // The kernel's contour is an IMPLICITLY-CLOSED loop — its last vertex
-  // connects back to the first to bound a solid cross-section (that's why the
-  // SDF, which fills that region, is correct: a204 "SDF VM korrekt").
-  // LatheGeometry only links CONSECUTIVE profile points though, so without an
-  // explicit closing vertex the lathe is left OPEN: the annular wall between the
-  // last and first rings is missing. The opaque G-buffer captures nothing across
-  // that hole, so those pixels read straight through to the background — the
-  // deferred "inside-out"/see-through (tickets ceat/0b8m/a72n). It surfaces on
-  // the user's ANGLE/GLES WebGPU but not on native Vulkan because backends
-  // raster/cull the open seam differently — which is exactly why it never
-  // reproduced in automation. Close the loop so the proxy is a complete solid.
-  const points = contour.outer.map(([x, y]) => new THREE.Vector2(x, y));
-  const firstP = points[0];
-  const lastP = points[points.length - 1];
-  if (firstP.distanceTo(lastP) > 1e-5) points.push(firstP.clone());
-  const geo = new THREE.LatheGeometry(points, 48);
-  ensureOutwardOrientation(geo);
-  return geo;
-}
-
-function createHelixGeometry(
-  leaf: HybridLeafInfo,
-): THREE.BufferGeometry | null {
-  if (!leaf.contour) return null;
-  return buildHelixGeometry(leaf.contour, decodeHelixParams(leaf.params));
-}
-
-function createSweepGeometry(
-  leaf: HybridLeafInfo,
-): THREE.BufferGeometry | null {
-  if (!leaf.contour || !leaf.sweep) return null;
-  return buildSweepGeometry(leaf.sweep.points, leaf.contour, {
-    closed: leaf.sweep.closed,
-    twist: leaf.sweep.twist,
-  });
-}
-
-/** The leaf's local→world placement matrix (quat·scale + center offset). */
-export function leafWorldMatrix(leaf: HybridLeafInfo): THREE.Matrix4 {
-  const t = leaf.transform;
-  const translate = new THREE.Vector3(t[0], t[1], t[2]);
-  const quat = new THREE.Quaternion(t[3], t[4], t[5], t[6]);
-  const scale = new THREE.Vector3(t[7], t[8], t[9]);
-  const centerOffset = getCenterOffset(leaf);
-  if (centerOffset) {
-    const localOffset = new THREE.Vector3(
-      centerOffset[0] * scale.x,
-      centerOffset[1] * scale.y,
-      centerOffset[2] * scale.z,
-    );
-    localOffset.applyQuaternion(quat);
-    translate.add(localOffset);
-  }
-  return new THREE.Matrix4().compose(translate, quat, scale);
-}
-
-export function applyLeafTransform(
-  mesh: THREE.Mesh,
-  leaf: HybridLeafInfo,
-): void {
-  mesh.matrixAutoUpdate = false;
-  mesh.matrix.copy(leafWorldMatrix(leaf));
-  mesh.matrixWorldNeedsUpdate = true;
-}
-
-/**
- * Build a Twist/Bend leaf's geometry already in WORLD space and deformed:
- * the primitive is baked through `leafWorldMatrix`, subdivided along the
- * warp axis for smoothness, then warped per-vertex. The resulting mesh
- * carries an IDENTITY transform (do NOT call applyLeafTransform on it).
- * Returns null for a leaf with no warp or no meshable primitive.
- */
-export function buildWarpedLeafGeometry(
-  leaf: HybridLeafInfo,
-): THREE.BufferGeometry | null {
-  if (!leaf.warp) return null;
-  const geo = createPrimitiveGeometry(leaf);
-  if (!geo) return null;
-  geo.applyMatrix4(leafWorldMatrix(leaf));
-  subdivideAlongAxis(geo, warpAxis(leaf.warp), maxStepForWarp(leaf.warp));
-  applyWarp(geo, leaf.warp);
-  geo.computeVertexNormals();
-  return geo;
-}
-
-function getCenterOffset(
-  leaf: HybridLeafInfo,
-): [number, number, number] | null {
-  const p = leaf.params;
-  switch (leaf.kind) {
-    case "box":
-      return [p[3], p[4], p[5]];
-    case "sphere":
-      return [p[1], p[2], p[3]];
-    case "cylinder":
-      return [p[2], p[3], p[4]];
-    case "torus":
-      return [p[2], p[3], p[4]];
-    default:
-      return null;
-  }
-}
 
 // ── Types ───────────────────────────────────────────────────────────
 
-export interface DeferredPipelineState {
+export interface DeferredPipelineState
+  extends CameraUniformSet,
+    OpcodeBufferSet,
+    MaterialBufferSet {
   opaqueRT: THREE.WebGLRenderTarget;
   transparentRT: THREE.WebGLRenderTarget;
   transparentBackRT: THREE.WebGLRenderTarget;
@@ -312,422 +88,22 @@ export interface DeferredPipelineState {
   shadeCamera: THREE.OrthographicCamera;
   shadeMaterial: MeshBasicNodeMaterial;
   backFaceMaterial: MeshBasicNodeMaterial;
-  opcodeBuf: ReturnType<typeof storage>;
-  opcodeData: Float32Array;
-  opcodeAttr: StorageBufferAttribute;
-  offsetBuf: ReturnType<typeof storage>;
-  offsetData: Float32Array;
-  offsetAttr: StorageBufferAttribute;
-  materialData: Float32Array;
-  materialAttr: any;
-  materialBuf: any;
-  selectionBuf: ReturnType<typeof uniformArray>;
+  selectionBuf: UniformArrayNode<"float">;
   selectionData: Float32Array;
-  volumeBaseBuf: ReturnType<typeof storage>;
-  volumeBaseData: Float32Array;
-  volumeBaseAttr: StorageBufferAttribute;
-  camPosUniform: ReturnType<typeof uniform>;
-  /** World-space camera forward (−Z) direction. In ORTHOGRAPHIC mode this is
-   *  the SHARED parallel ray direction for every pixel; the along-ray distance
-   *  of a world point is `dot(p − camPos, camFwd)`. Unused in perspective (rays
-   *  diverge from camPos and the radial distance is the ray parameter). */
-  camFwdU: ReturnType<typeof uniform>;
-  viewMatU: ReturnType<typeof uniform>;
-  widthU: ReturnType<typeof uniform>;
-  bgColorU: ReturnType<typeof uniform>;
-  nearU: ReturnType<typeof uniform>;
-  farU: ReturnType<typeof uniform>;
-  /** 1.0 when the scene camera is orthographic, 0.0 perspective — selects the
-   *  parallel-vs-converging march ray AND the linear-vs-reciprocal depth
-   *  formula when writing canvas depth. */
-  isOrthoU: ReturnType<typeof uniform>;
+  widthU: UniformNode<"float", number>;
+  bgColorU: UniformNode<"color", THREE.Color>;
   bodyOpaqueMeshes: Map<number, THREE.Mesh[]>;
   bodyTransparentMeshes: Map<number, THREE.Mesh[]>;
   bodyBackMeshes: Map<number, THREE.Mesh[]>;
   bodyOpcodeRanges: Map<number, { start: number; length: number }>;
-  bodyIdAttr: any;
-  bodyIdBuf: any;
-  clearNode: any;
+  bodyIdAttr: StorageBufferAttribute;
+  /** Atomic uint storage node (built in the shaders module); only threaded
+   *  through to the shader builders, never dereferenced here. */
+  bodyIdBuf: unknown;
+  clearNode: ComputeNode;
   width: number;
   height: number;
-  volumeTextures: THREE.Data3DTexture[];
   needsShadeRebuild: boolean;
-}
-
-// ── G-Buffer material ───────────────────────────────────────────────
-
-function createGBufferMaterial(bodyIndex: number): MeshBasicNodeMaterial {
-  const material = new MeshBasicNodeMaterial();
-  material.outputNode = Fn(() => {
-    const worldPos = modelWorldMatrix.mul(vec4(positionGeometry, 1)).xyz;
-    return vec4(worldPos, float(bodyIndex + 1));
-  })();
-  material.depthWrite = true;
-  material.depthTest = true;
-  material.side = THREE.FrontSide;
-  material.toneMapped = false;
-  return material;
-}
-
-// ── Transparent G-Buffer material (+ packed body-ID insertion) ─────
-
-function createTransparentGBufferMaterial(
-  bodyIndex: number,
-  bodyIdBuf: any,
-  widthU: ReturnType<typeof uniform>,
-): MeshBasicNodeMaterial {
-  const material = new MeshBasicNodeMaterial();
-  material.outputNode = Fn(() => {
-    const worldPos = modelWorldMatrix.mul(vec4(positionGeometry, 1)).xyz;
-    const px = int(screenCoordinate.x);
-    const py = int(screenCoordinate.y);
-    const pixelIdx = py.mul(int(widthU)).add(px);
-    const word0Idx = pixelIdx.mul(BODY_ID_WORDS_PER_PIXEL);
-    const word1Idx = word0Idx.add(1);
-    const encodedId = uint(bodyIndex + 1);
-    const oldWord0 = atomicAdd(bodyIdBuf.element(word0Idx), uint(0x10000));
-    const oldCount = bitAnd(shiftRight(oldWord0, uint(16)), uint(0xffff));
-    If(oldCount.equal(uint(0)), () => {
-      atomicOr(bodyIdBuf.element(word0Idx), encodedId);
-    });
-    If(oldCount.equal(uint(1)), () => {
-      atomicOr(bodyIdBuf.element(word1Idx), encodedId);
-    });
-    return vec4(worldPos, float(bodyIndex + 1));
-  })();
-  material.depthWrite = true;
-  material.depthTest = true;
-  material.side = THREE.FrontSide;
-  material.toneMapped = false;
-  return material;
-}
-
-// ── Back-face material (BackSide → worldPos for exit depth) ────────
-
-function createBackFaceMaterial(
-  camPosU: ReturnType<typeof uniform>,
-  camFwdU: ReturnType<typeof uniform>,
-  isOrthoU: ReturnType<typeof uniform>,
-): MeshBasicNodeMaterial {
-  const material = new MeshBasicNodeMaterial();
-  material.outputNode = Fn(() => {
-    const worldPos = modelWorldMatrix.mul(vec4(positionGeometry, 1)).xyz;
-    // MAX-blended exit distance ALONG the primary ray, so the shade pass can
-    // clamp the march at the body's far hull. PERSPECTIVE: rays diverge from
-    // camPos, so the ray parameter is the radial distance |p − camPos|.
-    // ORTHOGRAPHIC: rays are parallel along camFwd, so the ray parameter is the
-    // projection dot(p − camPos, camFwd). Using the radial distance in ortho
-    // (the old code) over-estimated the exit depth toward the silhouette and,
-    // combined with a perspective march ray, drilled the parallel hole rays
-    // into the bore wall → dark concentric rings (ticket g2ox).
-    const rel = worldPos.sub(camPosU);
-    const dist = select(
-      isOrthoU.greaterThan(float(0.5)),
-      rel.dot(camFwdU),
-      rel.length(),
-    );
-    return vec4(dist, 0, 0, 1);
-  })();
-  material.side = THREE.BackSide;
-  material.depthTest = false;
-  material.depthWrite = false;
-  material.blending = THREE.CustomBlending;
-  material.blendEquation = THREE.MaxEquation;
-  material.blendSrc = THREE.OneFactor;
-  material.blendDst = THREE.OneFactor;
-  material.toneMapped = false;
-  return material;
-}
-
-// ── Shade material (reads all G-buffers, sphere-traces, lights) ────
-
-function createShadeMaterial(
-  opaqueGbufTex: THREE.Texture,
-  transGbufTex: THREE.Texture,
-  transBackTex: THREE.Texture,
-  bodyIdBuf: any,
-  opcodeBuf: ReturnType<typeof storage>,
-  offsetBuf: ReturnType<typeof storage>,
-  materialBuf: any,
-  selectionBuf: ReturnType<typeof uniformArray>,
-  volumeBaseBuf: ReturnType<typeof storage>,
-  marchRelaxBuf: ReturnType<typeof storage>,
-  camPosU: ReturnType<typeof uniform>,
-  camFwdU: ReturnType<typeof uniform>,
-  viewMatU: ReturnType<typeof uniform>,
-  widthU: ReturnType<typeof uniform>,
-  nearU: ReturnType<typeof uniform>,
-  farU: ReturnType<typeof uniform>,
-  bgColorU: ReturnType<typeof uniform>,
-  isOrthoU: ReturnType<typeof uniform>,
-  volumeTextures: THREE.Data3DTexture[] = [],
-): MeshBasicNodeMaterial {
-  const sdfEvalRaw = buildVmSdfEvalFn(opcodeBuf, {
-    withBaseOffset: true,
-    volumeTextures,
-    withVolumeBaseIdx: volumeTextures.length > 0,
-  });
-
-  const sdfEval = (args: {
-    p: any;
-    baseOffset: any;
-    volumeBaseIdx: any;
-    bodyIdx?: any;
-  }) => {
-    const d = sdfEvalRaw({
-      p: args.p,
-      baseOffset: args.baseOffset,
-      volumeBaseIdx: args.volumeBaseIdx,
-    });
-    if (!args.bodyIdx) return d;
-    const matBase = args.bodyIdx.mul(MAT_STRIDE);
-    const depth = materialBuf.element(matBase.add(MAT_DISPLACE_DEPTH));
-    const freq = materialBuf.element(matBase.add(MAT_DISPLACE_FREQ));
-    const disp = args.p.x
-      .mul(freq)
-      .sin()
-      .mul(args.p.y.mul(freq).mul(DISPLACE_FREQ_Y).sin())
-      .mul(args.p.z.mul(freq).mul(DISPLACE_FREQ_Z).sin());
-    return d.sub(depth.mul(disp));
-  };
-
-  // Evaluate one transparent body's SDF at `p` and keep the running minimum
-  // across the (≤2) transparent bodies present at this pixel, recording which
-  // body is currently closest. A single union march over these bodies renders
-  // the NEAREST transparent surface per pixel (so two overlapping transparent
-  // bodies occlude, never fuse — same depth-buffer semantics as opaque
-  // bodies). Only at most two bodies are unioned here, and only ever the ones
-  // actually flagged at this pixel, so this is NOT an implicit boolean of
-  // unrelated bodies (tickets deeg/9ljc). See the VM renderer for the full
-  // rationale on why the per-body nested march (e4e5727) was reverted.
-  const evalBodySdf = (p: any, bodyIdx: any, minD: any, closestBody: any) => {
-    const baseOff = int(offsetBuf.element(bodyIdx.mul(2)));
-    const volBase = int(volumeBaseBuf.element(bodyIdx));
-    const d = sdfEval({
-      p,
-      baseOffset: baseOff,
-      volumeBaseIdx: volBase,
-      bodyIdx,
-    });
-    If(d.lessThan(minD), () => {
-      minD.assign(d);
-      closestBody.assign(bodyIdx);
-    });
-  };
-
-  const material = new MeshBasicNodeMaterial();
-  material.outputNode = Fn(() => {
-    const texUv = vec2(uv().x, float(1).sub(uv().y));
-    const opaqueGbuf = texture(opaqueGbufTex, texUv);
-    const transGbuf = texture(transGbufTex, texUv);
-
-    const opaqueTag = opaqueGbuf.w;
-    const hasOpaque = opaqueTag.greaterThan(float(0.5));
-
-    const px = int(screenCoordinate.x);
-    const py = int(screenCoordinate.y);
-    const pixelIdx = py.mul(int(widthU)).add(px);
-    const word0Idx = pixelIdx.mul(BODY_ID_WORDS_PER_PIXEL);
-    const word1Idx = word0Idx.add(1);
-    const word0 = atomicLoad(bodyIdBuf.element(word0Idx)).toVar();
-    const word1 = atomicLoad(bodyIdBuf.element(word1Idx)).toVar();
-    const transCount = min(
-      bitAnd(shiftRight(word0, uint(16)), uint(0xffff)),
-      uint(2),
-    ).toVar();
-    const transId0 = bitAnd(word0, uint(0xffff)).toVar();
-    const transId1 = bitAnd(word1, uint(0xffff)).toVar();
-    const hasTrans = transCount.greaterThan(uint(0));
-
-    const shadePos = vec3(0, 0, 0).toVar();
-    const shadeBodyIdx = int(0).toVar();
-    const hasHit = int(0).toVar();
-
-    If(hasOpaque.or(hasTrans), () => {
-      If(hasTrans, () => {
-        const transWorldPos = transGbuf.xyz;
-        // PERSPECTIVE: the primary ray diverges from the camera, so its
-        // direction is camera→surface and the ray parameter is the radial
-        // distance. ORTHOGRAPHIC: every ray is PARALLEL along camFwd, so the
-        // shared direction is camFwd and the ray parameter is the projection
-        // dot(p − camPos, camFwd). The old code always used the perspective
-        // ray; in ortho top-views that tilted the per-pixel hole rays outward
-        // so they drilled into the bore wall → dark concentric rings (ticket
-        // g2ox). Matches the VM renderer's select(isOrtho, camFwd, perspDir).
-        const isOrtho = isOrthoU.greaterThan(float(0.5));
-        const rd = select(
-          isOrtho,
-          camFwdU,
-          normalize(transWorldPos.sub(camPosU)),
-        ).toVar();
-
-        const backDist = texture(transBackTex, texUv).x;
-        const relFront = transWorldPos.sub(camPosU);
-        const frontDist = select(isOrtho, relFront.dot(camFwdU), relFront.length());
-        const tMax = backDist.sub(frontDist).add(MARCH_START_BACKOFF).toVar();
-
-        If(hasOpaque, () => {
-          const opaqueDist = opaqueGbuf.xyz.sub(transWorldPos).dot(rd);
-          const opaqueBodyEncoded = uint(int(opaqueTag.sub(0.5)).add(1));
-          const opaqueIsAlsoTrans = transId0
-            .equal(opaqueBodyEncoded)
-            .or(
-              transCount
-                .greaterThanEqual(uint(2))
-                .and(transId1.equal(opaqueBodyEncoded)),
-            );
-          If(
-            opaqueDist.greaterThan(float(0)).and(opaqueIsAlsoTrans.not()),
-            () => {
-              tMax.assign(min(tMax, opaqueDist));
-            },
-          );
-        });
-
-        // Z-Offset ±1 mm: March-Start 1 mm Richtung Kamera zurückversetzt,
-        // damit der Trace garantiert im Freiraum beginnt (Ticket vlhp).
-        const t = float(-MARCH_START_BACKOFF).toVar();
-        const hitPos = vec3(0, 0, 0).toVar();
-        const hit = float(0).toVar();
-        const hitBody = int(0).toVar();
-
-        // SINGLE adaptive sphere-trace through the (≤2) transparent bodies at
-        // this pixel: each step keeps the smallest distance + which body owns
-        // it, steps by that distance, and on a hit shades the NEAREST trans
-        // surface. Reverted from the per-body nested march (e4e5727) that
-        // sliced bodies and exploded the deferred shader (ticket 6yin).
-        Loop(int(DEFERRED_MARCH_STEPS), () => {
-          const p = transWorldPos.add(rd.mul(t));
-          const minD = float(1e30).toVar();
-          const closestBody = int(0).toVar();
-
-          If(transCount.greaterThanEqual(uint(1)), () => {
-            evalBodySdf(p, int(transId0.sub(uint(1))), minD, closestBody);
-          });
-          If(transCount.greaterThanEqual(uint(2)), () => {
-            evalBodySdf(p, int(transId1.sub(uint(1))), minD, closestBody);
-          });
-
-          If(minD.lessThan(float(SURFACE_EPS)), () => {
-            hit.assign(1);
-            hitPos.assign(p);
-            hitBody.assign(closestBody);
-            Break();
-          });
-          // Per-body conservative step (Ticket 1wnm): a thin-walled
-          // revolve/shell declares march_relax < 1 so the ray doesn't overshoot
-          // its wall at grazing angles; simple primitives keep 1.0.
-          t.addAssign(
-            max(
-              minD.mul(marchRelaxBuf.element(closestBody)),
-              float(SURFACE_EPS),
-            ),
-          );
-          If(t.greaterThan(tMax), () => {
-            Break();
-          });
-        });
-
-        const opaqueBodyEncoded2 = uint(int(opaqueTag.sub(0.5)).add(1));
-        const opaqueIsAlsoTrans = transId0
-          .equal(opaqueBodyEncoded2)
-          .or(
-            transCount
-              .greaterThanEqual(uint(2))
-              .and(transId1.equal(opaqueBodyEncoded2)),
-          );
-        const opaqueDist2 = opaqueGbuf.xyz.sub(transWorldPos).dot(rd);
-
-        If(hit.greaterThan(float(0.5)), () => {
-          If(
-            hasOpaque.and(opaqueIsAlsoTrans.not()).and(opaqueDist2.lessThan(t)),
-            () => {
-              shadePos.assign(opaqueGbuf.xyz);
-              shadeBodyIdx.assign(int(opaqueTag.sub(0.5)));
-            },
-          ).Else(() => {
-            shadePos.assign(hitPos);
-            shadeBodyIdx.assign(hitBody);
-          });
-          hasHit.assign(int(1));
-        }).Else(() => {
-          If(hasOpaque.and(opaqueIsAlsoTrans.not()), () => {
-            shadePos.assign(opaqueGbuf.xyz);
-            shadeBodyIdx.assign(int(opaqueTag.sub(0.5)));
-            hasHit.assign(int(1));
-          });
-        });
-      }).Else(() => {
-        shadePos.assign(opaqueGbuf.xyz);
-        shadeBodyIdx.assign(int(opaqueTag.sub(0.5)));
-        hasHit.assign(int(1));
-      });
-    });
-
-    // Ticket a2ps/qz52: miss pixels paint the viewport background OPAQUELY (was
-    // vec4(0,0,0,0) transparent, which let the grey page body show through →
-    // scene read grey). Done in-shader (not via a screen clear before the shade
-    // pass — that broke SDF body rendering, ticket qz52). `bgColorU` tracks the
-    // ClearColorSync viewport colour.
-    const result = vec4(bgColorU, 1.0).toVar();
-
-    If(hasHit.greaterThan(int(0)), () => {
-      // Shade the hit (normal → PBR → selection tint → wireframe) via the
-      // shared SDF pipeline. The view direction points from the shaded
-      // surface point back to the camera.
-      const viewDirWorld = normalize(camPosU.sub(shadePos));
-      result.assign(
-        shadeSdfHit({
-          p: shadePos,
-          bi: shadeBodyIdx,
-          offsetBuf,
-          volumeBaseBuf,
-          materialBuf,
-          viewMatU,
-          viewDirWorld,
-          sdfEval,
-          selectionBuf,
-        }),
-      );
-    });
-
-    // Write per-pixel canvas depth so the B-Rep edge overlay can occlude in
-    // "visible" mode. `shadePos` is the true raymarched (or opaque) surface
-    // point; reconstruct its perspective depth via the scene camera's view
-    // matrix + near/far (the shade quad itself is drawn with an ortho camera,
-    // so the rasterizer's own depth is meaningless here). Misses write the far
-    // plane so empty pixels never occlude. Harmless in X-Ray/Hidden modes —
-    // there renderOverlayLayer clears depth before drawing the edges.
-    If(hasHit.greaterThan(int(0)), () => {
-      // Push the written depth a hair (0.1% of viewZ) behind the true
-      // surface: the B-Rep edges lie EXACTLY on the surface, so without the
-      // bias they z-fight the face and render ragged/washed-out in
-      // "visible" mode (ticket b9xz).
-      const viewZ = viewMatU.mul(vec4(shadePos, 1.0)).z.mul(1.001);
-      // Perspective depth is reciprocal in view-Z; orthographic depth is
-      // linear. Pick the matching encoder so the B-Rep edge overlay's depth
-      // test stays correct under both projections (default = orthographic).
-      depth
-        .assign(
-          select(
-            isOrthoU.greaterThan(float(0.5)),
-            viewZToOrthographicDepth(viewZ, nearU, farU),
-            viewZToPerspectiveDepth(viewZ, nearU, farU),
-          ),
-        )
-        .toStack();
-    }).Else(() => {
-      depth.assign(float(1.0)).toStack();
-    });
-
-    return result;
-  })();
-
-  material.depthWrite = true;
-  material.depthTest = false;
-  material.toneMapped = false;
-  material.transparent = true;
-  return material;
 }
 
 // ── Pipeline init ───────────────────────────────────────────────────
@@ -768,38 +144,33 @@ export function initDeferredPipeline(
   const transparentScene = new THREE.Scene();
   const transparentBackScene = new THREE.Scene();
 
-  const opBufs = createOpcodeBuffers(DEFERRED_MAX_OPCODES, MAX_BODIES);
-  const matBufs = createMaterialBuffers(MAX_BODIES);
+  const opBufs = createOpcodeBuffers(SDF_MAX_OPCODES, DEFERRED_MAX_BODIES);
+  const matBufs = createMaterialBuffers(DEFERRED_MAX_BODIES);
 
-  const selectionData = new Float32Array(MAX_BODIES);
-  const selectionBuf = uniformArray(selectionData, "float");
+  const selectionData = new Float32Array(DEFERRED_MAX_BODIES);
+  // uniformArray's typing wants unknown[]; it accepts typed arrays at runtime.
+  const selectionBuf = uniformArray<"float">(
+    selectionData as unknown as unknown[],
+    "float",
+  );
 
-  const camPosUniform = uniform(new THREE.Vector3(0, 0, 100));
-  // Camera forward (−Z) in world space; the shared parallel march direction in
-  // orthographic mode. Set per frame in renderDeferredFrame.
-  const camFwdU = uniform(new THREE.Vector3(0, 0, -1));
-  const viewMatU = uniform(new THREE.Matrix4());
+  // Shared camera uniform set; refreshed per frame in renderDeferredFrame.
+  const camU = createCameraUniforms();
   const widthU = uniform(width);
-  const nearU = uniform(1);
-  const farU = uniform(4000);
-  // 1.0 → orthographic scene camera (the default), 0.0 → perspective. Set per
-  // frame in renderDeferredFrame; selects the march ray and the depth formula.
-  const isOrthoU = uniform(1);
   // Viewport background colour for SDF miss pixels (ticket a2ps); set each frame
   // from the renderer's clear colour (ClearColorSync). White by default.
   const bgColorU = uniform(new THREE.Color(1, 1, 1));
   const backFaceMaterial = createBackFaceMaterial(
-    camPosUniform,
-    camFwdU,
-    isOrthoU,
+    camU.camPosU,
+    camU.camFwdU,
+    camU.isOrthoU,
   );
 
-  const bodyIdCount = MAX_PIXELS * BODY_ID_WORDS_PER_PIXEL;
-  const bodyIdAttr = new StorageBufferAttribute(bodyIdCount, 1, Uint32Array);
-  const bodyIdBuf = storage(bodyIdAttr, "uint", bodyIdCount).toAtomic();
-  const clearNode = Fn(() => {
-    atomicStore(bodyIdBuf.element(instanceIndex), uint(0));
-  })().compute(width * height * BODY_ID_WORDS_PER_PIXEL);
+  const { bodyIdAttr, bodyIdBuf, clearNode } = createBodyIdBuffer(
+    MAX_PIXELS,
+    width,
+    height,
+  );
 
   const shadeMaterial = createShadeMaterial(
     opaqueRT.texture,
@@ -812,14 +183,14 @@ export function initDeferredPipeline(
     selectionBuf,
     opBufs.volumeBaseBuf,
     opBufs.marchRelaxBuf,
-    camPosUniform,
-    camFwdU,
-    viewMatU,
+    camU.camPosU,
+    camU.camFwdU,
+    camU.viewMatU,
     widthU,
-    nearU,
-    farU,
+    camU.nearU,
+    camU.farU,
     bgColorU,
-    isOrthoU,
+    camU.isOrthoU,
   );
 
   const shadeMesh = new THREE.Mesh(
@@ -848,16 +219,11 @@ export function initDeferredPipeline(
     backFaceMaterial,
     ...opBufs,
     ...matBufs,
+    ...camU,
     selectionBuf,
     selectionData,
-    camPosUniform,
-    camFwdU,
-    viewMatU,
     widthU,
-    nearU,
-    farU,
     bgColorU,
-    isOrthoU,
     bodyOpaqueMeshes: new Map(),
     bodyTransparentMeshes: new Map(),
     bodyBackMeshes: new Map(),
@@ -883,18 +249,18 @@ export function updateDeferredData(
     volumes?: { data: Float32Array; dims: [number, number, number] }[];
     marchRelax?: number;
   }[],
-  renderer?: THREE.WebGPURenderer,
+  renderer?: WebGPURenderer,
 ): void {
   const ranges = packOpcodes(
     state.opcodeData,
     state.offsetData,
     bodies,
-    DEFERRED_MAX_OPCODES,
-    MAX_BODIES,
+    SDF_MAX_OPCODES,
+    DEFERRED_MAX_BODIES,
   );
   state.opcodeAttr.needsUpdate = true;
   state.offsetAttr.needsUpdate = true;
-  packMarchRelax(state.marchRelaxData, bodies, MAX_BODIES);
+  packMarchRelax(state.marchRelaxData, bodies, DEFERRED_MAX_BODIES);
   state.marchRelaxAttr.needsUpdate = true;
   for (const [bi, range] of ranges) state.bodyOpcodeRanges.set(bi, range);
 
@@ -912,7 +278,7 @@ export function updateDeferredData(
             ? ([aabb[0], aabb[1], aabb[2], aabb[3], aabb[4], aabb[5]] as const)
             : computeLeafAABB(hybridInfo.leaves);
           if (bodyAABB) {
-            const pad = 0.5;
+            const pad = AABB_HULL_PAD;
             // Ticket sgzw: defer the OLD geometry's GPU disposal until the
             // device is idle. Disposing it synchronously here races the
             // in-flight frame's submit → "Buffer used in submit while
@@ -963,7 +329,7 @@ export function updateDeferredData(
     state.volumeTextures,
     state.volumeBaseData,
     bodies,
-    MAX_BODIES,
+    DEFERRED_MAX_BODIES,
   );
   state.volumeBaseAttr.needsUpdate = true;
 }
@@ -974,7 +340,7 @@ export function updateDeferredSelection(
 ): void {
   state.selectionData.fill(0);
   for (const idx of selectedBodies) {
-    if (idx < MAX_BODIES) state.selectionData[idx] = 1;
+    if (idx < DEFERRED_MAX_BODIES) state.selectionData[idx] = 1;
   }
 }
 
@@ -989,7 +355,7 @@ export function rebuildDeferredBodies(
     aabb?: Float32Array;
     volumes?: { data: Float32Array; dims: [number, number, number] }[];
   }[],
-  renderer?: THREE.WebGPURenderer,
+  renderer?: WebGPURenderer,
 ): void {
   // Ticket fg9o: detach the retired meshes from their scenes NOW (they stop
   // rendering immediately) but defer the geometry/material/texture GPU disposal
@@ -1041,15 +407,15 @@ export function rebuildDeferredBodies(
     state.opcodeData,
     state.offsetData,
     bodies,
-    DEFERRED_MAX_OPCODES,
-    MAX_BODIES,
+    SDF_MAX_OPCODES,
+    DEFERRED_MAX_BODIES,
   );
   state.opcodeAttr.needsUpdate = true;
   state.offsetAttr.needsUpdate = true;
   for (const [bi, range] of ranges) state.bodyOpcodeRanges.set(bi, range);
 
   for (const { bodyIndex, hybridInfo, opcodes, aabb } of bodies) {
-    if (bodyIndex >= MAX_BODIES) continue;
+    if (bodyIndex >= DEFERRED_MAX_BODIES) continue;
     if (!ranges.has(bodyIndex)) continue;
 
     const gbufMaterial = createGBufferMaterial(bodyIndex);
@@ -1180,7 +546,7 @@ export function rebuildDeferredBodies(
     state.volumeTextures,
     state.volumeBaseData,
     bodies,
-    MAX_BODIES,
+    DEFERRED_MAX_BODIES,
     false, // old textures disposed via disposeAfterGpuIdle above (ticket fg9o)
   );
   state.volumeTextures = textures;
@@ -1194,7 +560,7 @@ function addAabbBox(
   scene: THREE.Scene,
   meshes: THREE.Mesh[],
 ): void {
-  const pad = 0.5;
+  const pad = AABB_HULL_PAD;
   const sx = aabb[3] - aabb[0] + pad * 2;
   const sy = aabb[4] - aabb[1] + pad * 2;
   const sz = aabb[5] - aabb[2] + pad * 2;
@@ -1236,7 +602,7 @@ function computeLeafAABB(
 
 export function rebuildShadeMaterialIfNeeded(
   state: DeferredPipelineState,
-  renderer?: THREE.WebGPURenderer,
+  renderer?: WebGPURenderer,
 ): void {
   if (!state.needsShadeRebuild) return;
   state.needsShadeRebuild = false;
@@ -1262,7 +628,7 @@ export function rebuildShadeMaterialIfNeeded(
     state.selectionBuf,
     state.volumeBaseBuf,
     state.marchRelaxBuf,
-    state.camPosUniform,
+    state.camPosU,
     state.camFwdU,
     state.viewMatU,
     state.widthU,
@@ -1303,30 +669,20 @@ export function resizeDeferredPipeline(
   state.height = height;
 }
 
-const _camWorldPos = new THREE.Vector3();
-const _camWorldDir = new THREE.Vector3();
 const _savedClearColor = new THREE.Color();
 
 export function renderDeferredFrame(
   state: DeferredPipelineState,
-  renderer: THREE.WebGPURenderer,
+  renderer: WebGPURenderer,
   camera: THREE.Camera,
 ): void {
-  camera.getWorldPosition(_camWorldPos);
-  state.camPosUniform.value.copy(_camWorldPos);
-  // World-space camera forward (−Z); the shared parallel march direction in
-  // orthographic mode (ticket g2ox). getWorldDirection already normalises.
-  camera.getWorldDirection(_camWorldDir);
-  state.camFwdU.value.copy(_camWorldDir);
-  state.viewMatU.value.copy(camera.matrixWorldInverse);
-  // Both PerspectiveCamera and OrthographicCamera expose near/far; the depth
-  // formula differs (reciprocal vs linear) and is selected by isOrthoU.
-  const clip = camera as THREE.OrthographicCamera;
-  state.nearU.value = clip.near;
-  state.farU.value = clip.far;
-  state.isOrthoU.value = clip.isOrthographicCamera ? 1 : 0;
+  updateCameraUniforms(state, camera);
 
-  renderer.getClearColor(_savedClearColor);
+  // getClearColor's typing wants the renderer-internal Color4; a plain Color
+  // receives the rgb components just fine.
+  renderer.getClearColor(
+    _savedClearColor as Parameters<WebGPURenderer["getClearColor"]>[0],
+  );
   const savedClearAlpha = renderer.getClearAlpha();
   // Feed the viewport background (ClearColorSync) into the shade shader so SDF
   // miss pixels paint it opaquely (ticket a2ps).
@@ -1362,7 +718,7 @@ export function renderDeferredFrame(
 
 export async function compileDeferredPipeline(
   state: DeferredPipelineState,
-  renderer: THREE.WebGPURenderer,
+  renderer: WebGPURenderer,
   camera: THREE.Camera,
 ): Promise<void> {
   const device = (renderer as any).backend?.device as GPUDevice | undefined;
@@ -1406,7 +762,7 @@ export async function compileDeferredPipeline(
 
 export function disposeDeferredPipeline(
   state: DeferredPipelineState,
-  renderer?: THREE.WebGPURenderer,
+  renderer?: WebGPURenderer,
 ): void {
   // Ticket 323i: free the GPU resources only AFTER the device confirms it's
   // done with every in-flight submit. Tearing the pipeline down synchronously

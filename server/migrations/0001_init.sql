@@ -7,7 +7,7 @@
 -- Large/binary payloads (project documents, snapshot documents, thumbnails)
 -- are content-addressed blob files on disk; rows carry only the sha256 ref.
 
-CREATE TABLE users (
+CREATE TABLE IF NOT EXISTS users (
     id            CHAR(32)     NOT NULL,
     email         VARCHAR(320) NOT NULL,
     display_name  VARCHAR(255) NOT NULL DEFAULT '',
@@ -19,7 +19,7 @@ CREATE TABLE users (
     UNIQUE KEY uq_users_email (email)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
-CREATE TABLE invites (
+CREATE TABLE IF NOT EXISTS invites (
     token      CHAR(32)     NOT NULL,
     created_by CHAR(32)     NOT NULL,
     note       VARCHAR(512) NOT NULL DEFAULT '',
@@ -33,7 +33,7 @@ CREATE TABLE invites (
     CONSTRAINT fk_invites_used_by   FOREIGN KEY (used_by)   REFERENCES users(id) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
-CREATE TABLE sessions (
+CREATE TABLE IF NOT EXISTS sessions (
     token      CHAR(32) NOT NULL,
     user_id    CHAR(32) NOT NULL,
     expires_at DATETIME NOT NULL,
@@ -42,7 +42,7 @@ CREATE TABLE sessions (
     CONSTRAINT fk_sessions_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
-CREATE TABLE reset_tokens (
+CREATE TABLE IF NOT EXISTS reset_tokens (
     token      CHAR(32) NOT NULL,
     user_id    CHAR(32) NOT NULL,
     expires_at DATETIME NOT NULL,
@@ -51,7 +51,7 @@ CREATE TABLE reset_tokens (
     CONSTRAINT fk_reset_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
-CREATE TABLE projects (
+CREATE TABLE IF NOT EXISTS projects (
     id            CHAR(32)     NOT NULL,
     owner_id      CHAR(32)     NOT NULL,
     name          VARCHAR(255) NOT NULL DEFAULT 'Untitled',
@@ -66,7 +66,7 @@ CREATE TABLE projects (
     CONSTRAINT fk_projects_owner FOREIGN KEY (owner_id) REFERENCES users(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
-CREATE TABLE snapshots (
+CREATE TABLE IF NOT EXISTS snapshots (
     id           CHAR(32) NOT NULL,
     project_id   CHAR(32) NOT NULL,
     document_ref CHAR(64) NULL,   -- sha256 hex of the snapshot document blob

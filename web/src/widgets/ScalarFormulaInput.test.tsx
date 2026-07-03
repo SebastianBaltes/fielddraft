@@ -56,7 +56,9 @@ describe("ScalarFormulaInput", () => {
     render();
 
     const before = host.querySelector("input") as HTMLInputElement;
-    before.focus();
+    // focus() fires onFocus → setEditing(true); wrap it so the state update
+    // is flushed inside act() (else React warns about an un-acted update).
+    act(() => before.focus());
     expect(document.activeElement).toBe(before);
 
     // Type "W" — the text now reads as a formula, which previously swapped the

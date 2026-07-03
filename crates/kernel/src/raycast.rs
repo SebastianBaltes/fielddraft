@@ -54,15 +54,6 @@ impl Default for RaycastParams {
     }
 }
 
-fn normalize(v: [f32; 3]) -> Option<[f32; 3]> {
-    let len = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
-    if len < 1e-12 {
-        None
-    } else {
-        Some([v[0] / len, v[1] / len, v[2] / len])
-    }
-}
-
 /// Sphere-trace a ray through `node` and return the first hit, if any.
 ///
 /// The ray direction is normalised internally — callers can hand in
@@ -80,7 +71,7 @@ pub fn raycast(
     direction: [f32; 3],
     params: RaycastParams,
 ) -> Option<RayHit> {
-    let dir = normalize(direction)?;
+    let dir = crate::vec3f::try_normalize(direction)?;
     let mut t: f32 = 0.0;
     for _ in 0..params.max_steps {
         let p = [

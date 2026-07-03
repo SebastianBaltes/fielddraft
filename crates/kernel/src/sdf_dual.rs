@@ -1,7 +1,10 @@
 //! Dual-number SDF evaluation for exact analytical gradients.
 //!
 //! This module provides three layers:
-//!   A) Generic primitive SDF functions over `T: DualNum<f64>`
+//!   A) Generic SDF functions over `T: DualNum<f64>` (half-spaces, sketch
+//!      segments, blends — the closed-form PRIMITIVE eval lives in
+//!      `sdf_eval::sdf_primitive_generic` since B7 and is instantiated
+//!      here with dual numbers)
 //!   B) Concrete BVH tree traversal using `DualSVec64<3>`
 //!   C) Public API: `sdf_gradient`
 
@@ -17,200 +20,13 @@ use crate::sketch2d::{distance_point_to_aabb2, Sketch2dPrimitive};
 // ─── Type alias ──────────────────────────────────────────────────────
 type D3 = DualSVec64<3>;
 
-/// `sqrt` that avoids NaN derivatives at zero. Many SDF primitives
-/// use `sqrt(x² + z²)` for radial distance, which has an undefined
-/// gradient on the axis (x=z=0). Adding a tiny epsilon keeps the
-/// derivative well-defined without measurably changing the SDF value.
-#[inline]
-fn safe_sqrt<T: DualNum<f64> + Copy>(x: T) -> T {
-    (x + T::from(1e-20)).sqrt()
-}
+// `safe_sqrt` and the authoritative generic primitive eval live in
+// `sdf_eval` (B7) — this module instantiates them with dual numbers.
+use crate::sdf_eval::{safe_sqrt, sdf_primitive_generic};
 
 // ═══════════════════════════════════════════════════════════════════════
 // Layer A: Generic primitive SDF functions
 // ═══════════════════════════════════════════════════════════════════════
-
-/// Generic SDF of a single primitive at point `p`.
-/// Mirrors `crate::sdf_primitive` but works with any `T: DualNum<f64>`.
-///
-/// Extrude, Revolve, and ImportedMesh return a zero-derivative fallback
-/// (`T::from(f32_result as f64)`) **only on this bare-primitive path**, which
-/// real bodies never take: an extrude/revolve always reaches the kernel as a
-/// `BoundedCsg::{Extrude,Revolve}` carrying its `BoundedSketch2d`, and that is
-/// evaluated at the tree level (Layer B, `eval_bounded_d3`) with an EXACT dual
-/// gradient — the sketch SDF is fully `DualNum`-generic (Layer A.5/A.6), with
-/// the closest-point parameter and the inside/outside sign frozen on the real
-/// parts (exact a.e. by the envelope theorem). Only `ImportedMesh` truly has no
-/// analytic gradient and falls back to finite differences (`fd_fallback_3d`).
-fn sdf_primitive_generic<T: DualNum<f64> + Copy + PartialOrd>(
-    prim: &Primitive,
-    p: [T; 3],
-) -> T {
-    match prim {
-        Primitive::Box { center, half_extents } => {
-            let q = [
-                (p[0] - T::from(center[0] as f64)).abs() - T::from(half_extents[0] as f64),
-                (p[1] - T::from(center[1] as f64)).abs() - T::from(half_extents[1] as f64),
-                (p[2] - T::from(center[2] as f64)).abs() - T::from(half_extents[2] as f64),
-            ];
-            let zero = T::from(0.0);
-            let q0 = if q[0] > zero { q[0] } else { zero };
-            let q1 = if q[1] > zero { q[1] } else { zero };
-            let q2 = if q[2] > zero { q[2] } else { zero };
-            let outside = safe_sqrt(q0 * q0 + q1 * q1 + q2 * q2);
-            // inside = min(max(q[0], q[1], q[2]), 0)
-            let qmax = if q[0] > q[1] { q[0] } else { q[1] };
-            let qmax = if qmax > q[2] { qmax } else { q[2] };
-            let inside = if qmax < zero { qmax } else { zero };
-            outside + inside
-        }
-        Primitive::Sphere { center, radius } => {
-            let dx = p[0] - T::from(center[0] as f64);
-            let dy = p[1] - T::from(center[1] as f64);
-            let dz = p[2] - T::from(center[2] as f64);
-            safe_sqrt(dx * dx + dy * dy + dz * dz) - T::from(*radius as f64)
-        }
-        Primitive::Cylinder { center, radius, half_height } => {
-            let dx = p[0] - T::from(center[0] as f64);
-            let dy = p[1] - T::from(center[1] as f64);
-            let dz = p[2] - T::from(center[2] as f64);
-            let radial = safe_sqrt(dx * dx + dz * dz) - T::from(*radius as f64);
-            let axial = dy.abs() - T::from(*half_height as f64);
-            let zero = T::from(0.0);
-            let r_clamped = if radial > zero { radial } else { zero };
-            let a_clamped = if axial > zero { axial } else { zero };
-            let outside = safe_sqrt(r_clamped * r_clamped + a_clamped * a_clamped);
-            let inside_max = if radial > axial { radial } else { axial };
-            let inside = if inside_max < zero { inside_max } else { zero };
-            outside + inside
-        }
-        Primitive::Torus { center, major_radius, minor_radius } => {
-            let dx = p[0] - T::from(center[0] as f64);
-            let dy = p[1] - T::from(center[1] as f64);
-            let dz = p[2] - T::from(center[2] as f64);
-            let q0 = safe_sqrt(dx * dx + dz * dz) - T::from(*major_radius as f64);
-            let q1 = dy;
-            safe_sqrt(q0 * q0 + q1 * q1) - T::from(*minor_radius as f64)
-        }
-        Primitive::Gyroid { cell_size, thickness } => {
-            let s = T::from(*cell_size as f64);
-            let x = p[0] / s;
-            let y = p[1] / s;
-            let z = p[2] / s;
-            let f = x.sin() * y.cos() + y.sin() * z.cos() + z.sin() * x.cos();
-            (f.abs() - T::from(*thickness as f64)) * s * T::from(0.2887)
-        }
-        Primitive::Thread { nominal_radius, pitch, depth, half_height } => {
-            let r = safe_sqrt(p[0] * p[0] + p[2] * p[2]);
-            // Axis guard: ∂θ/∂(x,z) = (-z, x)/r² diverges as r→0 and produces NaN
-            // dual gradients on the helix axis. The axis is deep interior
-            // (r ≪ nominal_radius), so the surface never depends on θ there —
-            // freeze θ's derivative below eps_axis to keep the gradient finite.
-            let theta = if r.re() > 1e-4 {
-                p[2].atan2(p[0])
-            } else {
-                T::from(p[2].re().atan2(p[0].re()))
-            };
-            let tau = T::from(std::f64::consts::TAU);
-            let y_unwrapped = p[1] - T::from(*pitch as f64) * theta / tau;
-            let phase = (y_unwrapped / T::from(*pitch as f64)) * tau;
-            let r_profile = T::from(*nominal_radius as f64)
-                - T::from(*depth as f64) * T::from(0.5) * (T::from(1.0) - phase.cos());
-            let d_radial = r - r_profile;
-            let d_axial = p[1].abs() - T::from(*half_height as f64);
-            let d = if d_radial > d_axial { d_radial } else { d_axial };
-            // Lipschitz normalization (constant in p → preserves gradient
-            // direction, scales magnitude to ≤1): the helix folds y into
-            // r_profile's phase, so ∂r_profile/∂y = π·depth/pitch and |∇f| peaks
-            // at sqrt(1 + (π·depth/pitch)²) ≈ 1.86 for the default thread. The raw
-            // Chebyshev max overestimates distance; dividing by the exact bound
-            // makes it a conservative distance so the sphere-march stops
-            // overshooting the groove walls (cf. Gyroid 0.2887, Cone wall_scale).
-            let pitch64 = (*pitch as f64).max(1e-6);
-            let lip = (1.0 + (std::f64::consts::PI * (*depth as f64) / pitch64).powi(2)).sqrt();
-            d * T::from(1.0 / lip)
-        }
-        Primitive::Cone { r_bottom, r_top, half_height } => {
-            let r = safe_sqrt(p[0] * p[0] + p[2] * p[2]);
-            let hh = T::from(*half_height as f64);
-            let two_hh = hh * T::from(2.0);
-            // t = clamp((p[1] + hh) / (2*hh), 0, 1) — use re() for branch
-            let t_raw = (p[1] + hh) / two_hh;
-            let zero = T::from(0.0);
-            let one = T::from(1.0);
-            let t = if t_raw.re() < 0.0 {
-                zero
-            } else if t_raw.re() > 1.0 {
-                one
-            } else {
-                t_raw
-            };
-            let r_at_y = T::from(*r_bottom as f64) * (one - t) + T::from(*r_top as f64) * t;
-            // Project the radial gap onto the inclined wall normal (constant
-            // scalar factor) so the field is the true perpendicular distance
-            // and stays Lipschitz-1. For a cylinder (dr == 0) the factor is 1.
-            let dr = (*r_bottom - *r_top) as f64;
-            let slant_len = (dr * dr + (2.0 * *half_height as f64) * (2.0 * *half_height as f64)).sqrt();
-            let wall_scale = if slant_len > 1e-9 { (2.0 * *half_height as f64) / slant_len } else { 1.0 };
-            let d_wall = (r - r_at_y) * T::from(wall_scale);
-            let d_axial = p[1].abs() - hh;
-            // Branch on real parts
-            if d_wall.re() > 0.0 && d_axial.re() > 0.0 {
-                safe_sqrt(d_wall * d_wall + d_axial * d_axial)
-            } else {
-                if d_wall > d_axial { d_wall } else { d_axial }
-            }
-        }
-        Primitive::Capsule { radius, half_height } => {
-            let r = safe_sqrt(p[0] * p[0] + p[2] * p[2]);
-            let hh = T::from(*half_height as f64);
-            let neg_hh = T::from(-*half_height as f64);
-            let y_clamped = if p[1].re() < (-*half_height as f64) {
-                neg_hh
-            } else if p[1].re() > (*half_height as f64) {
-                hh
-            } else {
-                p[1]
-            };
-            let dy = p[1] - y_clamped;
-            (r * r + dy * dy).sqrt() - T::from(*radius as f64)
-        }
-        Primitive::HexPrism { apothem, half_height } => {
-            let qx = p[0].abs();
-            let qz = p[2].abs();
-            let hex_term = qx * T::from(0.866_025_4_f64) + qz * T::from(0.5);
-            let d_hex = (if hex_term > qz { hex_term } else { qz })
-                - T::from(*apothem as f64);
-            let d_axial = p[1].abs() - T::from(*half_height as f64);
-            if d_hex.re() > 0.0 && d_axial.re() > 0.0 {
-                safe_sqrt(d_hex * d_hex + d_axial * d_axial)
-            } else {
-                if d_hex > d_axial { d_hex } else { d_axial }
-            }
-        }
-        Primitive::Ellipsoid { radii } => {
-            let r_min = radii[0].min(radii[1]).min(radii[2]);
-            let q = [
-                p[0] / T::from(radii[0] as f64),
-                p[1] / T::from(radii[1] as f64),
-                p[2] / T::from(radii[2] as f64),
-            ];
-            let len = safe_sqrt(q[0] * q[0] + q[1] * q[1] + q[2] * q[2]);
-            (len - T::from(1.0)) * T::from(r_min as f64)
-        }
-        // Fallback for Extrude/Revolve/ImportedMesh: evaluate with f32 and
-        // lift to T without derivative. Proper dual-number handling for
-        // these happens at the tree level (Layer B).
-        Primitive::Extrude { .. }
-        | Primitive::Revolve { .. }
-        | Primitive::Helix { .. }
-        | Primitive::ImportedMesh { .. } => {
-            let p_f32 = [p[0].re() as f32, p[1].re() as f32, p[2].re() as f32];
-            let d = crate::sdf_primitive(prim, p_f32);
-            T::from(d as f64)
-        }
-    }
-}
 
 pub(crate) fn sdf_halfspace_generic<T: DualNum<f64> + Copy + PartialOrd>(
     hs: &HalfSpace,
@@ -1355,7 +1171,7 @@ mod tests {
         let px = seed_d3(p[0], 0);
         let py = seed_d3(p[1], 1);
         let pz = seed_d3(p[2], 2);
-        let result = sdf_primitive_generic::<D3>(&prim, [px, py, pz]);
+        let result = sdf_primitive_generic::<D3, f64>(&prim, [px, py, pz]);
         // Distance should be 5 - 10 = -5
         assert!(
             (result.re - (-5.0)).abs() < 1e-10,
@@ -1400,7 +1216,7 @@ mod tests {
             [1e-6, -0.03, 1e-6],    // sub-eps_axis
             [1e-5, 0.0, -2e-5],     // sub-eps_axis, mixed signs
         ] {
-            let d = sdf_primitive_generic::<D3>(
+            let d = sdf_primitive_generic::<D3, f64>(
                 &prim,
                 [seed_d3(p[0], 0), seed_d3(p[1], 1), seed_d3(p[2], 2)],
             );
@@ -1437,7 +1253,7 @@ mod tests {
                 let (x, z) = (r * theta.cos(), r * theta.sin());
                 for yi in -4..=4 {
                     let y = 0.12 * yi as f64;
-                    let d = sdf_primitive_generic::<D3>(
+                    let d = sdf_primitive_generic::<D3, f64>(
                         &prim,
                         [seed_d3(x, 0), seed_d3(y, 1), seed_d3(z, 2)],
                     );
@@ -1466,7 +1282,7 @@ mod tests {
         let px = seed_d3(p[0], 0);
         let py = seed_d3(p[1], 1);
         let pz = seed_d3(p[2], 2);
-        let result = sdf_primitive_generic::<D3>(&prim, [px, py, pz]);
+        let result = sdf_primitive_generic::<D3, f64>(&prim, [px, py, pz]);
         let eps = result
             .eps
             .unwrap_generic(nalgebra::Const::<3>, nalgebra::Const::<1>);

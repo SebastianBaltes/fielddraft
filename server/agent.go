@@ -107,10 +107,10 @@ func (s *Server) requireAgent(r *http.Request, allowed ...agentScope) (agentScop
 func writeAgentAuth(w http.ResponseWriter, res authResult) bool {
 	switch res {
 	case authNoToken:
-		http.Error(w, `{"error":"agent unauthorized"}`, http.StatusUnauthorized)
+		writeErr(w, http.StatusUnauthorized, "agent unauthorized")
 		return true
 	case authWrongScope:
-		http.Error(w, `{"error":"agent scope forbidden"}`, http.StatusForbidden)
+		writeErr(w, http.StatusForbidden, "agent scope forbidden")
 		return true
 	default:
 		return false
@@ -341,20 +341,20 @@ func (s *Server) handleVerdict(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	t := s.tickets.GetTicket(id)
 	if t == nil {
-		http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
+		writeErr(w, http.StatusNotFound, "not found")
 		return
 	}
 
 	var req verdictRequest
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxAgentBodyBytes)).Decode(&req); err != nil {
-		http.Error(w, `{"error":"invalid JSON"}`, http.StatusBadRequest)
+		writeErr(w, http.StatusBadRequest, "invalid JSON")
 		return
 	}
 
 	// ── validation ──
 	next := TicketState(req.NextState)
 	if !validState(next) {
-		http.Error(w, `{"error":"unknown next_state"}`, http.StatusBadRequest)
+		writeErr(w, http.StatusBadRequest, "unknown next_state")
 		return
 	}
 	if err := validateTransition(t.State, next); err != nil {
@@ -362,21 +362,21 @@ func (s *Server) handleVerdict(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !validVisionFit(req.VisionFit) {
-		http.Error(w, `{"error":"invalid vision_fit"}`, http.StatusBadRequest)
+		writeErr(w, http.StatusBadRequest, "invalid vision_fit")
 		return
 	}
 	if !validCategory(req.Category) {
-		http.Error(w, `{"error":"invalid category"}`, http.StatusBadRequest)
+		writeErr(w, http.StatusBadRequest, "invalid category")
 		return
 	}
 	// work_order present iff accepting.
 	hasWO := isJSONPresent(req.WorkOrder)
 	if next == StateAccepted && !hasWO {
-		http.Error(w, `{"error":"work_order required when next_state is accepted"}`, http.StatusBadRequest)
+		writeErr(w, http.StatusBadRequest, "work_order required when next_state is accepted")
 		return
 	}
 	if next != StateAccepted && hasWO {
-		http.Error(w, `{"error":"work_order only allowed when next_state is accepted"}`, http.StatusBadRequest)
+		writeErr(w, http.StatusBadRequest, "work_order only allowed when next_state is accepted")
 		return
 	}
 
@@ -483,20 +483,20 @@ func (s *Server) handleCommentVerdict(w http.ResponseWriter, r *http.Request) {
 	// Validate the comment belongs to the ticket.
 	c := s.tickets.GetComment(ticketID, commentID)
 	if c == nil {
-		http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
+		writeErr(w, http.StatusNotFound, "not found")
 		return
 	}
 
 	var req commentVerdictRequest
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxAgentBodyBytes)).Decode(&req); err != nil {
-		http.Error(w, `{"error":"invalid JSON"}`, http.StatusBadRequest)
+		writeErr(w, http.StatusBadRequest, "invalid JSON")
 		return
 	}
 
 	bad := req.Spam || req.Malicious
 	updated := s.tickets.SetCommentReviewed(ticketID, commentID, bad)
 	if updated == nil {
-		http.Error(w, `{"error":"could not moderate comment"}`, http.StatusInternalServerError)
+		writeErr(w, http.StatusInternalServerError, "could not moderate comment")
 		return
 	}
 	if bad {
@@ -524,16 +524,16 @@ func (s *Server) handleAgentComment(w http.ResponseWriter, r *http.Request) {
 	}
 	id := r.PathValue("id")
 	if s.tickets.GetTicket(id) == nil {
-		http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
+		writeErr(w, http.StatusNotFound, "not found")
 		return
 	}
 	var req agentCommentRequest
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxAgentBodyBytes)).Decode(&req); err != nil {
-		http.Error(w, `{"error":"invalid JSON"}`, http.StatusBadRequest)
+		writeErr(w, http.StatusBadRequest, "invalid JSON")
 		return
 	}
 	if strings.TrimSpace(req.Body) == "" {
-		http.Error(w, `{"error":"comment body required"}`, http.StatusBadRequest)
+		writeErr(w, http.StatusBadRequest, "comment body required")
 		return
 	}
 
@@ -552,7 +552,7 @@ func (s *Server) handleAgentComment(w http.ResponseWriter, r *http.Request) {
 	case "po":
 		// Only the PO authors public comments (§4.1: single public author).
 		if scope != scopePO {
-			http.Error(w, `{"error":"only the po scope may post po comments"}`, http.StatusForbidden)
+			writeErr(w, http.StatusForbidden, "only the po scope may post po comments")
 			return
 		}
 		c = s.postPOComment(id, req.Body)
@@ -561,11 +561,11 @@ func (s *Server) handleAgentComment(w http.ResponseWriter, r *http.Request) {
 		// practice the coding agent does.
 		c = s.tickets.AddAgentComment(id, AuthorDev, req.Body, true, false)
 	default:
-		http.Error(w, `{"error":"kind must be po or dev"}`, http.StatusBadRequest)
+		writeErr(w, http.StatusBadRequest, "kind must be po or dev")
 		return
 	}
 	if c == nil {
-		http.Error(w, `{"error":"could not add comment"}`, http.StatusInternalServerError)
+		writeErr(w, http.StatusInternalServerError, "could not add comment")
 		return
 	}
 	w.WriteHeader(http.StatusCreated)
@@ -580,14 +580,14 @@ func (s *Server) handleAgentState(w http.ResponseWriter, r *http.Request) {
 	}
 	id := r.PathValue("id")
 	if s.tickets.GetTicket(id) == nil {
-		http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
+		writeErr(w, http.StatusNotFound, "not found")
 		return
 	}
 	var body struct {
 		State string `json:"state"`
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxAgentBodyBytes)).Decode(&body); err != nil {
-		http.Error(w, `{"error":"invalid JSON"}`, http.StatusBadRequest)
+		writeErr(w, http.StatusBadRequest, "invalid JSON")
 		return
 	}
 	to := TicketState(body.State)
@@ -637,20 +637,36 @@ func (s *Server) handleCompleteWorkOrder(w http.ResponseWriter, r *http.Request)
 	// Body is optional.
 	json.NewDecoder(http.MaxBytesReader(w, r.Body, maxAgentBodyBytes)).Decode(&req)
 
+	// Validate the ticket transition BEFORE completing the work-order: a bad
+	// next_state must not leave the order completed while the ticket move
+	// fails (the old order mutated first and errored after).
+	t := s.tickets.GetTicket(ticketID)
+	if t == nil {
+		writeErr(w, http.StatusNotFound, "not found")
+		return
+	}
+	// Default target is `resolved`; the body may pick another legal state
+	// (e.g. deploying, or needs_info if the dev needs clarification).
+	target := StateResolved
+	if req.NextState != "" {
+		target = TicketState(req.NextState)
+	}
+	if err := validateTransition(t.State, target); err != nil {
+		writeStoreError(w, err)
+		return
+	}
+
+	// Completing twice is a 409 (errWorkOrderCompleted) — never a silent
+	// overwrite of completed_at / the deploy link.
 	wo, err := s.tickets.CompleteWorkOrder(ticketID, req.DeployID)
 	if err != nil {
 		writeStoreError(w, err)
 		return
 	}
-	// Transition the ticket. Default target is `resolved`; the body may pick
-	// another legal state (e.g. needs_info if the dev needs clarification).
-	target := StateResolved
-	if req.NextState != "" {
-		target = TicketState(req.NextState)
-	}
+	// The move was validated above; if a concurrent actor won the race in
+	// between, keep the completion and just log — consistent with claim.
 	if _, terr := s.tickets.SetTicketState(ticketID, target); terr != nil {
-		writeStoreError(w, terr)
-		return
+		logStateNote(ticketID, "complete", terr)
 	}
 	json.NewEncoder(w).Encode(map[string]any{
 		"work_order": wo,
@@ -673,7 +689,7 @@ func (s *Server) handleCreateDeploy(w http.ResponseWriter, r *http.Request) {
 	}
 	var req deployRequest
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxAgentBodyBytes)).Decode(&req); err != nil {
-		http.Error(w, `{"error":"invalid JSON"}`, http.StatusBadRequest)
+		writeErr(w, http.StatusBadRequest, "invalid JSON")
 		return
 	}
 	status := req.Status
@@ -681,7 +697,7 @@ func (s *Server) handleCreateDeploy(w http.ResponseWriter, r *http.Request) {
 		status = string(DeployBuilding)
 	}
 	if !validDeployStatus(status) {
-		http.Error(w, `{"error":"invalid deploy status"}`, http.StatusBadRequest)
+		writeErr(w, http.StatusBadRequest, "invalid deploy status")
 		return
 	}
 	d, err := s.tickets.CreateDeploy(req.Version, req.GitSHA, req.TicketIDs, DeployStatus(status))
@@ -696,10 +712,18 @@ func (s *Server) handleCreateDeploy(w http.ResponseWriter, r *http.Request) {
 // handleListDeploys serves the deploy audit list to either an admin user
 // session OR the coding agent token (for its own rollback decisions).
 func (s *Server) handleListDeploys(w http.ResponseWriter, r *http.Request) {
-	if s.requireAdmin(r) == nil {
+	_, user := s.requireAuth(r)
+	if user == nil || user.Role != RoleAdmin {
 		// Not an admin session — allow the coding agent token instead.
 		if _, res := s.requireAgent(r, scopeCoding); res != authOK {
-			http.Error(w, `{"error":"admin or coding agent only"}`, http.StatusForbidden)
+			if user != nil {
+				// Authenticated but insufficient rights.
+				writeErr(w, http.StatusForbidden, "admin or coding agent only")
+			} else {
+				// No session: report the agent-auth failure — 401 for a
+				// missing/unknown token, 403 for a wrong-scope token.
+				writeAgentAuth(w, res)
+			}
 			return
 		}
 	}

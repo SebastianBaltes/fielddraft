@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"strings"
@@ -30,6 +31,10 @@ type Server struct {
 	mux         *http.ServeMux
 	rateLimiter *RateLimiter
 	agentTokens agentTokens // least-privilege Service-Tokens (§11)
+	// trustProxy (TRUST_PROXY=1) enables reading the client IP from
+	// X-Forwarded-For. Only correct behind a trusted reverse proxy (Caddy in
+	// prod) — an untrusted client can spoof the header otherwise.
+	trustProxy bool
 }
 
 func NewServer(store Store) *Server {
@@ -39,6 +44,7 @@ func NewServer(store Store) *Server {
 		mux:         http.NewServeMux(),
 		rateLimiter: NewRateLimiter(1.0, 60), // 60 burst, 1/sec refill
 		agentTokens: loadAgentTokens(),
+		trustProxy:  os.Getenv("TRUST_PROXY") == "1",
 	}
 	s.mux.HandleFunc("POST /api/auth/register", s.handleRegister)
 	s.mux.HandleFunc("POST /api/auth/login", s.handleLogin)
@@ -133,16 +139,37 @@ func selectTicketStore(store Store) TicketStore {
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Per-IP rate limiting (token bucket, 60 req/min).
-	ip := r.RemoteAddr
-	if fwd := r.Header.Get("X-Forwarded-For"); fwd != "" {
-		ip = fwd
-	}
-	if !s.rateLimiter.Allow(ip) {
-		http.Error(w, `{"error":"rate limit exceeded"}`, http.StatusTooManyRequests)
+	if !s.rateLimiter.Allow(s.clientIP(r)) {
+		writeErr(w, http.StatusTooManyRequests, "rate limit exceeded")
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
 	s.mux.ServeHTTP(w, r)
+}
+
+// clientIP resolves the caller's IP for rate limiting. X-Forwarded-For is
+// attacker-controlled unless a trusted reverse proxy sets it, so it is only
+// honored with TRUST_PROXY=1 — and then only its FIRST element (Caddy ≥2.5
+// strips client-supplied XFF from untrusted peers, so the first element is
+// the real client). Without a proxy the TCP peer address (host only, no
+// port — one bucket per client, not per connection) is used.
+func (s *Server) clientIP(r *http.Request) string {
+	if s.trustProxy {
+		if fwd := r.Header.Get("X-Forwarded-For"); fwd != "" {
+			first := fwd
+			if i := strings.IndexByte(fwd, ','); i >= 0 {
+				first = fwd[:i]
+			}
+			if ip := strings.TrimSpace(first); ip != "" {
+				return ip
+			}
+		}
+	}
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
+	return host
 }
 
 // ─── auth handlers ──────────────────────────────────────────────
@@ -155,11 +182,11 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		Invite      string `json:"invite"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		http.Error(w, `{"error":"invalid JSON"}`, http.StatusBadRequest)
+		writeErr(w, http.StatusBadRequest, "invalid JSON")
 		return
 	}
 	if body.Email == "" || body.Password == "" {
-		http.Error(w, `{"error":"email and password required"}`, http.StatusBadRequest)
+		writeErr(w, http.StatusBadRequest, "email and password required")
 		return
 	}
 
@@ -169,30 +196,14 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		token = r.URL.Query().Get("invite")
 	}
 	if token == "" {
-		http.Error(w, `{"error":"invite required"}`, http.StatusForbidden)
+		writeErr(w, http.StatusForbidden, "invite required")
 		return
 	}
-	// Validate (exists, unused, not expired) before creating the user so a
-	// duplicate-email failure doesn't burn the token.
-	inv := s.store.GetInvite(token)
-	if inv == nil || time.Now().UTC().After(inv.ExpiresAt) {
-		writeStoreError(w, errInviteInvalid)
-		return
-	}
-	if inv.UsedBy != nil {
-		writeStoreError(w, errInviteUsed)
-		return
-	}
-
-	user, err := s.store.CreateUser(body.Email, body.DisplayName, body.Password, RoleUser)
+	// Validate + burn the invite and create the user as ONE atomic store
+	// operation — two racing registrations with the same token can never both
+	// create a user, and a duplicate email never burns the token.
+	user, err := s.store.RegisterWithInvite(body.Email, body.DisplayName, body.Password, token)
 	if err != nil {
-		writeStoreError(w, err)
-		return
-	}
-
-	// Burn the invite atomically with the real user id. The single-use guard
-	// lives in ConsumeInvite; on a lost race we delete the just-created user.
-	if _, err := s.store.ConsumeInvite(token, user.ID); err != nil {
 		writeStoreError(w, err)
 		return
 	}
@@ -208,12 +219,12 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		Password string `json:"password"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		http.Error(w, `{"error":"invalid JSON"}`, http.StatusBadRequest)
+		writeErr(w, http.StatusBadRequest, "invalid JSON")
 		return
 	}
 	user, err := s.store.AuthenticateUser(body.Email, body.Password)
 	if err != nil {
-		http.Error(w, `{"error":"invalid credentials"}`, http.StatusUnauthorized)
+		writeErr(w, http.StatusUnauthorized, "invalid credentials")
 		return
 	}
 	sess := s.store.CreateSession(user.ID)
@@ -233,7 +244,7 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 	_, user := s.requireAuth(r)
 	if user == nil {
-		http.Error(w, `{"error":"not authenticated"}`, http.StatusUnauthorized)
+		writeErr(w, http.StatusUnauthorized, "not authenticated")
 		return
 	}
 	json.NewEncoder(w).Encode(user)
@@ -244,7 +255,7 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleListProjects(w http.ResponseWriter, r *http.Request) {
 	_, user := s.requireAuth(r)
 	if user == nil {
-		http.Error(w, `{"error":"not authenticated"}`, http.StatusUnauthorized)
+		writeErr(w, http.StatusUnauthorized, "not authenticated")
 		return
 	}
 	projects := s.store.ListProjects(user.ID)
@@ -260,12 +271,12 @@ const maxProjectsPerUser = 100
 func (s *Server) handleCreateProject(w http.ResponseWriter, r *http.Request) {
 	_, user := s.requireAuth(r)
 	if user == nil {
-		http.Error(w, `{"error":"not authenticated"}`, http.StatusUnauthorized)
+		writeErr(w, http.StatusUnauthorized, "not authenticated")
 		return
 	}
 	existing := s.store.ListProjects(user.ID)
 	if len(existing) >= maxProjectsPerUser {
-		http.Error(w, `{"error":"project quota exceeded (max 100)"}`, http.StatusForbidden)
+		writeErr(w, http.StatusForbidden, "project quota exceeded (max 100)")
 		return
 	}
 	var body struct {
@@ -273,7 +284,7 @@ func (s *Server) handleCreateProject(w http.ResponseWriter, r *http.Request) {
 		Document json.RawMessage `json:"document"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		http.Error(w, `{"error":"invalid JSON"}`, http.StatusBadRequest)
+		writeErr(w, http.StatusBadRequest, "invalid JSON")
 		return
 	}
 	if body.Name == "" {
@@ -281,7 +292,7 @@ func (s *Server) handleCreateProject(w http.ResponseWriter, r *http.Request) {
 	}
 	p := s.store.CreateProject(user.ID, body.Name, body.Document)
 	if p == nil {
-		http.Error(w, `{"error":"could not create project"}`, http.StatusInternalServerError)
+		writeErr(w, http.StatusInternalServerError, "could not create project")
 		return
 	}
 	w.WriteHeader(http.StatusCreated)
@@ -291,13 +302,13 @@ func (s *Server) handleCreateProject(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleGetProject(w http.ResponseWriter, r *http.Request) {
 	_, user := s.requireAuth(r)
 	if user == nil {
-		http.Error(w, `{"error":"not authenticated"}`, http.StatusUnauthorized)
+		writeErr(w, http.StatusUnauthorized, "not authenticated")
 		return
 	}
 	id := r.PathValue("id")
 	p := s.store.GetProject(id, user.ID)
 	if p == nil {
-		http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
+		writeErr(w, http.StatusNotFound, "not found")
 		return
 	}
 	json.NewEncoder(w).Encode(p)
@@ -309,11 +320,11 @@ const maxDocumentBytes = 50 * 1024 * 1024
 func (s *Server) handleUpdateProject(w http.ResponseWriter, r *http.Request) {
 	_, user := s.requireAuth(r)
 	if user == nil {
-		http.Error(w, `{"error":"not authenticated"}`, http.StatusUnauthorized)
+		writeErr(w, http.StatusUnauthorized, "not authenticated")
 		return
 	}
 	if r.ContentLength > maxDocumentBytes {
-		http.Error(w, `{"error":"document too large (max 50 MB)"}`, http.StatusRequestEntityTooLarge)
+		writeErr(w, http.StatusRequestEntityTooLarge, "document too large (max 50 MB)")
 		return
 	}
 	id := r.PathValue("id")
@@ -323,12 +334,12 @@ func (s *Server) handleUpdateProject(w http.ResponseWriter, r *http.Request) {
 		Visibility string          `json:"visibility"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		http.Error(w, `{"error":"invalid JSON"}`, http.StatusBadRequest)
+		writeErr(w, http.StatusBadRequest, "invalid JSON")
 		return
 	}
 	p := s.store.UpdateProject(id, user.ID, body.Name, body.Document, body.Visibility)
 	if p == nil {
-		http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
+		writeErr(w, http.StatusNotFound, "not found")
 		return
 	}
 	json.NewEncoder(w).Encode(p)
@@ -337,12 +348,12 @@ func (s *Server) handleUpdateProject(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleDeleteProject(w http.ResponseWriter, r *http.Request) {
 	_, user := s.requireAuth(r)
 	if user == nil {
-		http.Error(w, `{"error":"not authenticated"}`, http.StatusUnauthorized)
+		writeErr(w, http.StatusUnauthorized, "not authenticated")
 		return
 	}
 	id := r.PathValue("id")
 	if !s.store.DeleteProject(id, user.ID) {
-		http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
+		writeErr(w, http.StatusNotFound, "not found")
 		return
 	}
 	w.Write([]byte(`{"ok":true}`))
@@ -361,18 +372,29 @@ func (s *Server) handleGallery(w http.ResponseWriter, r *http.Request) {
 
 // RateLimiter is a simple per-IP token bucket. Each IP gets `burst` tokens;
 // one is consumed per request. Tokens refill at `rate` per second. When the
-// bucket is empty, Allow returns false and the server responds 429.
+// bucket is empty, Allow returns false and the server responds 429. Buckets
+// idle for bucketIdleTTL are evicted on access, so the map cannot grow without
+// bound across many client IPs.
 type RateLimiter struct {
-	mu      sync.Mutex
-	buckets map[string]*bucket
-	rate    float64
-	burst   int
+	mu        sync.Mutex
+	buckets   map[string]*bucket
+	rate      float64
+	burst     int
+	lastSweep time.Time
 }
 
 type bucket struct {
 	tokens float64
 	last   time.Time
 }
+
+// bucketIdleTTL is how long a bucket may sit untouched before eviction. Any
+// realistic refill completes well within this window, so eviction (= a fresh
+// full bucket on the next request) never grants extra tokens.
+const bucketIdleTTL = 10 * time.Minute
+
+// bucketSweepEvery caps how often the eviction sweep runs (it is O(#buckets)).
+const bucketSweepEvery = time.Minute
 
 func NewRateLimiter(ratePerSec float64, burst int) *RateLimiter {
 	return &RateLimiter{
@@ -383,10 +405,24 @@ func NewRateLimiter(ratePerSec float64, burst int) *RateLimiter {
 }
 
 func (rl *RateLimiter) Allow(ip string) bool {
+	return rl.allowAt(ip, time.Now())
+}
+
+// allowAt is Allow with an injectable clock (tests).
+func (rl *RateLimiter) allowAt(ip string, now time.Time) bool {
 	rl.mu.Lock()
 	defer rl.mu.Unlock()
 
-	now := time.Now()
+	// Opportunistic eviction of idle buckets, at most once per sweep interval.
+	if now.Sub(rl.lastSweep) >= bucketSweepEvery {
+		rl.lastSweep = now
+		for k, b := range rl.buckets {
+			if now.Sub(b.last) >= bucketIdleTTL {
+				delete(rl.buckets, k)
+			}
+		}
+	}
+
 	b, ok := rl.buckets[ip]
 	if !ok {
 		b = &bucket{tokens: float64(rl.burst), last: now}
@@ -413,13 +449,28 @@ func newID() string {
 	return hex.EncodeToString(b)
 }
 
+// writeErr writes the canonical JSON error body {"error": msg} with the given
+// status. ALL handler error responses go through here: the message is
+// json.Marshal-escaped (a `"` in a store message can no longer break out of
+// the JSON string), and the Content-Type stays application/json (http.Error
+// forced text/plain).
+func writeErr(w http.ResponseWriter, code int, msg string) {
+	body, err := json.Marshal(map[string]string{"error": msg})
+	if err != nil {
+		body = []byte(`{"error":"internal"}`)
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(code)
+	w.Write(body)
+}
+
 // writeStoreError maps a store *httpError to an HTTP response.
 func writeStoreError(w http.ResponseWriter, err error) {
 	if he, ok := err.(*httpError); ok {
-		http.Error(w, `{"error":"`+he.Message+`"}`, he.Code)
+		writeErr(w, he.Code, he.Message)
 		return
 	}
-	http.Error(w, `{"error":"internal"}`, http.StatusInternalServerError)
+	writeErr(w, http.StatusInternalServerError, "internal")
 }
 
 func readAll(r io.Reader) ([]byte, error) {
@@ -444,7 +495,7 @@ func (s *Server) handlePasswordResetRequest(w http.ResponseWriter, r *http.Reque
 		Email string `json:"email"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Email == "" {
-		http.Error(w, `{"error":"email required"}`, http.StatusBadRequest)
+		writeErr(w, http.StatusBadRequest, "email required")
 		return
 	}
 	user := s.store.GetUserByEmail(body.Email)
@@ -465,20 +516,20 @@ func (s *Server) handlePasswordReset(w http.ResponseWriter, r *http.Request) {
 		NewPassword string `json:"new_password"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		http.Error(w, `{"error":"invalid JSON"}`, http.StatusBadRequest)
+		writeErr(w, http.StatusBadRequest, "invalid JSON")
 		return
 	}
 	if body.Token == "" || body.NewPassword == "" {
-		http.Error(w, `{"error":"token and new_password required"}`, http.StatusBadRequest)
+		writeErr(w, http.StatusBadRequest, "token and new_password required")
 		return
 	}
 	if len(body.NewPassword) < 8 {
-		http.Error(w, `{"error":"password must be at least 8 characters"}`, http.StatusBadRequest)
+		writeErr(w, http.StatusBadRequest, "password must be at least 8 characters")
 		return
 	}
 	userID, ok := s.store.ConsumeResetToken(body.Token)
 	if !ok {
-		http.Error(w, `{"error":"invalid or expired token"}`, http.StatusBadRequest)
+		writeErr(w, http.StatusBadRequest, "invalid or expired token")
 		return
 	}
 	s.store.UpdatePassword(userID, body.NewPassword)
@@ -491,7 +542,7 @@ func (s *Server) handleGetThumbnail(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	data := s.store.GetThumbnail(id)
 	if data == nil {
-		http.Error(w, `{"error":"no thumbnail"}`, http.StatusNotFound)
+		writeErr(w, http.StatusNotFound, "no thumbnail")
 		return
 	}
 	w.Header().Set("Content-Type", "image/png")
@@ -501,20 +552,20 @@ func (s *Server) handleGetThumbnail(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handlePutThumbnail(w http.ResponseWriter, r *http.Request) {
 	sess, _ := s.requireAuth(r)
 	if sess == nil {
-		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+		writeErr(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}
 	id := r.PathValue("id")
 	proj := s.store.GetProject(id, sess.UserID)
 	if proj == nil {
-		http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
+		writeErr(w, http.StatusNotFound, "not found")
 		return
 	}
 	// Max 2MB thumbnail.
 	r.Body = http.MaxBytesReader(w, r.Body, 2<<20)
 	data, err := readAll(r.Body)
 	if err != nil {
-		http.Error(w, `{"error":"thumbnail too large (max 2MB)"}`, http.StatusBadRequest)
+		writeErr(w, http.StatusBadRequest, "thumbnail too large (max 2MB)")
 		return
 	}
 	s.store.SetThumbnail(id, data)
@@ -526,18 +577,18 @@ func (s *Server) handlePutThumbnail(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 	sess, _ := s.requireAuth(r)
 	if sess == nil {
-		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+		writeErr(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}
 	id := r.PathValue("id")
 	proj := s.store.GetProject(id, sess.UserID)
 	if proj == nil {
-		http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
+		writeErr(w, http.StatusNotFound, "not found")
 		return
 	}
 	snap := s.store.CreateSnapshot(proj.ID, proj.Document)
 	if snap == nil {
-		http.Error(w, `{"error":"could not publish"}`, http.StatusInternalServerError)
+		writeErr(w, http.StatusInternalServerError, "could not publish")
 		return
 	}
 	json.NewEncoder(w).Encode(map[string]string{
@@ -550,7 +601,7 @@ func (s *Server) handleViewSnapshot(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	snap := s.store.GetSnapshot(id)
 	if snap == nil {
-		http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
+		writeErr(w, http.StatusNotFound, "not found")
 		return
 	}
 	json.NewEncoder(w).Encode(snap)

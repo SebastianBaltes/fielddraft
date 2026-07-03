@@ -9,7 +9,7 @@ import {
 } from "./sketchSession";
 import { curveOfSubCall, subCallOfCurve } from "./sketchTrim";
 import { translateCurve, rotateCurve } from "./sketchPattern";
-import type { SketchSessionState } from "./store";
+import type { SketchSessionState } from "./sketchSession";
 
 /**
  * F17 (Move / Copy / Rotate): the store applies a selection transform by
