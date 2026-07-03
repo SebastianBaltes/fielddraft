@@ -26,8 +26,6 @@ import {
 } from "./sketchUnitsBridge";
 import { publishSketchHud } from "./sketchHudBridge";
 import { publishSketchLabels, type SketchLabel } from "./sketchLabelBridge";
-import { circleThrough3, rect3pCorners } from "./sketchPrimitiveVariants";
-import { bsplinePoints, catmullRomPoints, type Vec2 } from "./sketchSpline";
 import { displayDegreesOfFreedom } from "./solver/dofPreflight";
 import type { ProjectedEdge, SnapResolution } from "./sketchSnapResolve";
 import type { DragState } from "./SketchCanvas2d";
@@ -181,8 +179,6 @@ function buildSketchHudUv(
   const previewLines: Array<[[number, number], [number, number]]> = [];
   const previewPoints: Array<[number, number]> = [];
   const previewGuides: Array<[[number, number], [number, number]]> = [];
-  const C = (type: string, params: Record<string, unknown>) =>
-    previewCalls.push({ type, params });
 
   switch (drag.kind) {
     case "owned":
@@ -193,79 +189,6 @@ function buildSketchHudUv(
         previewGuides.push(...(owned.previewGuides ?? []));
       }
       break;
-    case "line":
-    case "pending_line":
-      C("sketch_line", { start: drag.start, end: drag.current });
-      break;
-    case "circle_3p": {
-      previewPoints.push(drag.p1);
-      if (drag.p2 === null) {
-        previewLines.push([drag.p1, drag.current]);
-      } else {
-        previewPoints.push(drag.p2, drag.current);
-        const res = circleThrough3(drag.p1, drag.p2, drag.current);
-        if (res) C("sketch_circle", { center: res.center, radius: res.radius });
-      }
-      break;
-    }
-    case "rect_3p": {
-      previewPoints.push(drag.p1);
-      if (drag.p2 === null) {
-        previewLines.push([drag.p1, drag.current]);
-      } else {
-        previewPoints.push(drag.p2);
-        const corners = rect3pCorners(drag.p1, drag.p2, drag.current);
-        if (corners) {
-          for (let i = 0; i < 4; i++) {
-            previewLines.push([corners[i], corners[(i + 1) % 4]]);
-            previewPoints.push(corners[i]);
-          }
-        } else {
-          previewLines.push([drag.p1, drag.p2]);
-        }
-      }
-      break;
-    }
-    case "spline": {
-      const { points, current, mode } = drag;
-      if (points.length > 0) {
-        const ctrl: Vec2[] = [...points, current];
-        const isControl = mode === "control";
-        if (isControl) {
-          for (let i = 0; i + 1 < ctrl.length; i++) {
-            previewGuides.push([ctrl[i], ctrl[i + 1]]);
-          }
-        }
-        const sampled = isControl
-          ? bsplinePoints(ctrl, 3, false, 48)
-          : catmullRomPoints(ctrl, false, 16);
-        for (let i = 0; i + 1 < sampled.length; i++) {
-          previewLines.push([sampled[i], sampled[i + 1]]);
-        }
-        for (const p of points) previewPoints.push(p);
-      }
-      break;
-    }
-    case "arc": {
-      const { center, start, current, startAngle, sweep } = drag;
-      if (start === null) {
-        const r = Math.hypot(current[0] - center[0], current[1] - center[1]);
-        C("sketch_circle", { center, radius: r });
-        previewLines.push([center, current]);
-        previewPoints.push(center);
-      } else {
-        const r = Math.hypot(start[0] - center[0], start[1] - center[1]);
-        C("sketch_arc", {
-          center,
-          radius: r,
-          start_angle: startAngle,
-          sweep_angle: sweep,
-        });
-        previewLines.push([center, start]);
-        previewPoints.push(center, start);
-      }
-      break;
-    }
     default:
       // idle / grip / marquee: no 3D preview shapes.
       break;
@@ -368,10 +291,6 @@ export function drawOverlay(
     const l = distanceLabel(a, b, cam);
     if (l) labels.push(l);
   };
-  const pushRadius = (center: [number, number], r: number) => {
-    const l = radiusLabel(center, r);
-    if (l) labels.push(l);
-  };
 
   // Constraint glyphs anchored to the constrained geometry.
   {
@@ -436,25 +355,6 @@ export function drawOverlay(
       labels.push(...(owned.labels ?? []));
       owned.drawScreen?.(ctx, cam);
     }
-  } else if (drag.kind === "line" || drag.kind === "pending_line") {
-    pushDistance(drag.start, drag.current);
-  } else if (drag.kind === "circle_3p") {
-    if (drag.p2 !== null) {
-      const res = circleThrough3(drag.p1, drag.p2, drag.current);
-      if (res) pushRadius(res.center, res.radius);
-    }
-  } else if (drag.kind === "arc") {
-    const r =
-      drag.start === null
-        ? Math.hypot(
-            drag.current[0] - drag.center[0],
-            drag.current[1] - drag.center[1],
-          )
-        : Math.hypot(
-            drag.start[0] - drag.center[0],
-            drag.start[1] - drag.center[1],
-          );
-    pushRadius(drag.center, r);
   } else if (drag.kind === "marquee") {
     drawMarquee(ctx, drag.start, drag.current, cam);
   }

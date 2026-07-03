@@ -10,10 +10,19 @@
 
 import type { SketchToolController } from "./toolTypes";
 import { DRAW_TOOL_CONTROLLERS } from "./drawTools";
+import { lineTool } from "./lineTool";
+import { splineTool } from "./splineTool";
+import { arcTool } from "./arcTool";
+import { circle3pTool, rect3pTool } from "./threePointTools";
 
 export const SKETCH_TOOL_REGISTRY: Record<string, SketchToolController> = {
   // Controllers register here as the migration proceeds (steps 2–5).
   ...DRAW_TOOL_CONTROLLERS,
+  sketch_line: lineTool,
+  sketch_spline: splineTool,
+  sketch_arc: arcTool,
+  sketch_circle_3p: circle3pTool,
+  sketch_rectangle_3p: rect3pTool,
 };
 
 /** The controller for a drawing/editing tool name, or null while the tool

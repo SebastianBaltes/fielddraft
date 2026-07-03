@@ -43,11 +43,8 @@ import {
 } from "./sketchCameraBridge";
 import { resolvePlaneFrame } from "./sketchPlaneFrame";
 import { BUNDLED_FONTS, UPLOADED_FONT_PREFIX } from "./sketchTextFont";
-import {
-  buildDraftSketchState,
-  predictNextLineIds,
-} from "./sketchSession";
-import { measuredLength, parseField } from "./sketchLiveInput";
+import { buildDraftSketchState } from "./sketchSession";
+import { parseField } from "./sketchLiveInput";
 import { isConstraintTool } from "./sketchConstraints";
 import { useWorkspaceUnits, decimalPlaces } from "./settings";
 import {
@@ -72,8 +69,6 @@ import {
   type Grip,
 } from "./sketchGrips";
 import { planSelectDrag } from "./sketchSelectDrag";
-import { angleAbout, buildArcSubCall, unwrapSweep } from "./sketchArc";
-import { circleThrough3, rect3pCorners } from "./sketchPrimitiveVariants";
 import { setOverlayRedraw } from "./sketchOverlayBridge";
 import { setToolHint } from "./toolHintBridge";
 import { setHoveredSketchEntity } from "./sketchEntityHoverBridge";
@@ -83,8 +78,6 @@ import { nearestProjectedEdge } from "./sketchProject";
 import { solveAndReplace } from "./solver/replaySolve";
 import { DragController } from "./solver/dragController";
 import {
-  anchorConstraints,
-  classifyLineAnchor,
   projectEdgesToSketchPlane,
   resolveSnap,
   snapRadiusMmFor,
@@ -93,7 +86,6 @@ import {
 } from "./sketchSnapResolve";
 import {
   DIM_LABEL_HIT_PX,
-  distanceLabelAnchorPx,
   drawOverlay,
   linearDimLabelPx,
   resizeToContainer,
@@ -364,73 +356,6 @@ export type DragState =
       moved: boolean;
     }
   | {
-      kind: "line";
-      start: [number, number];
-      current: [number, number];
-      /** Entity id the start snapped to at pointerdown time, if
-       *  the snap was a coincident-to-point hit. Used by the
-       *  commit path to emit a matching coincident constraint. */
-      startAnchorId: number | null;
-    }
-  | {
-      /** F18: a click-without-drag started a line; it now rubber-bands
-       *  to the cursor with NO button held, and a HUD lets the user type
-       *  an exact length / angle. A second click OR Enter commits; Esc
-       *  cancels. `startAnchorId` carries any coincident-to-point hit
-       *  from the first click, same as the drag path. */
-      kind: "pending_line";
-      start: [number, number];
-      current: [number, number];
-      startAnchorId: number | null;
-    }
-  | {
-      /** F7: circle through three points. Click 1 and 2 fix two points
-       *  on the circumference; the 3rd click fixes the third and commits
-       *  the circumcircle as a `sketch_circle` (aborted if collinear).
-       *  `p2` is null until the 2nd click. */
-      kind: "circle_3p";
-      p1: [number, number];
-      p2: [number, number] | null;
-      current: [number, number];
-    }
-  | {
-      /** F7: rotated rectangle from three points. p1→p2 is one edge;
-       *  the 3rd click sets the perpendicular width. On the 3rd click we
-       *  emit four `sketch_line` sub-calls forming the loop plus
-       *  perpendicular constraints. `p2` is null until the 2nd click. */
-      kind: "rect_3p";
-      p1: [number, number];
-      p2: [number, number] | null;
-      current: [number, number];
-    }
-  | {
-      /** F23: interpolating spline. Click to drop control points; the
-       *  smooth Catmull-Rom curve is previewed live. Finish by double-
-       *  clicking (or clicking within 8 px of) the last point for an
-       *  OPEN spline, or by clicking within 8 px of the FIRST point to
-       *  CLOSE it. On finish we emit one `sketch_spline` sub-call with
-       *  the flat `points` array and the `closed` flag. */
-      kind: "spline";
-      points: [number, number][];
-      current: [number, number];
-      /** F23-full: `interpolate` (Catmull-Rom) or `control` (cubic
-       *  B-spline control polygon). Snapshotted when the gesture
-       *  starts so the live preview + commit stay consistent. */
-      mode: "interpolate" | "control";
-    }
-  | {
-      /** Arc: a centre → start → end three-click gesture. `start` is
-       *  null until the 2nd click fixes the radius + start angle; after
-       *  that the 3rd click fixes the sweep. `sweep` is unwrapped live
-       *  (see `sketchArc.unwrapSweep`) so arcs past 180° are reachable. */
-      kind: "arc";
-      center: [number, number];
-      start: [number, number] | null;
-      current: [number, number];
-      startAngle: number;
-      sweep: number;
-    }
-  | {
       /** P0.3: dragging a grip handle on committed geometry. The
        *  geometry follows the cursor live; the solver re-runs only
        *  on drop so existing constraints snap the sketch back. */
@@ -452,61 +377,6 @@ export type DragState =
       startPx: [number, number];
       currentPx: [number, number];
     };
-
-/**
- * F7: expand a rotated rectangle (four corners) into the sub-calls that
- * realise it: four `sketch_line` edges around the loop, coincident
- * constraints joining adjacent corners so the loop stays closed under
- * solving, and perpendicular constraints on adjacent edges so the right
- * angles are locked (three suffice to fix all four corners). Entity ids
- * are predicted the way the line-commit path does — each `sketch_line`
- * allocates start, end, line in that order — so the constraints reference
- * the lines/points the kernel is about to create.
- */
-function buildRect3pSubCalls(
-  corners: [
-    [number, number],
-    [number, number],
-    [number, number],
-    [number, number],
-  ],
-  subCalls: SketchSessionState["subCalls"],
-): Array<{ type: string; params: Record<string, unknown> }> {
-  const base = predictNextLineIds(subCalls).start;
-  // Per line i: startPt = base + 3i, endPt = base + 3i + 1, line = base + 3i + 2.
-  const startPt = (i: number) => base + 3 * i;
-  const endPt = (i: number) => base + 3 * i + 1;
-  const lineId = (i: number) => base + 3 * i + 2;
-
-  const calls: Array<{ type: string; params: Record<string, unknown> }> = [];
-  for (let i = 0; i < 4; i++) {
-    const a = corners[i];
-    const b = corners[(i + 1) % 4];
-    calls.push({
-      type: "sketch_line",
-      params: {
-        start: [a[0], a[1]] as [number, number],
-        end: [b[0], b[1]] as [number, number],
-      },
-    });
-  }
-  // Close the loop: line i's end coincides with line (i+1)'s start.
-  for (let i = 0; i < 4; i++) {
-    calls.push({
-      type: "sketch_constraint_coincident",
-      params: { a: endPt(i), b: startPt((i + 1) % 4) },
-    });
-  }
-  // Lock the right angles: perpendicular between consecutive edges. Three
-  // constraints pin all four corners (the fourth angle follows).
-  for (let i = 0; i < 3; i++) {
-    calls.push({
-      type: "sketch_constraint_perpendicular",
-      params: { line_a: lineId(i), line_b: lineId(i + 1) },
-    });
-  }
-  return calls;
-}
 
 /**
  * K8.0 reliability fix: read the camera bridge state but
@@ -811,39 +681,12 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
   // when the active tool changes, so a stale point can't get committed as
   // the first click of the next gesture.
   useEffect(() => {
-    const drag = dragRef.current;
-    const k = drag.kind;
     // Registry migration: a controller-owned gesture is committed or
-    // dropped by its owner (spline finishes, multi-click drafts reset).
+    // dropped by its owner (spline finishes, multi-click drafts reset,
+    // a pending line is cancelled).
+    const drag = dragRef.current;
     if (drag.kind === "owned" && ctxRef.current) {
       drag.owner.onDeactivate?.(ctxRef.current);
-    }
-    // Ticket egia: leaving the Spline tool (switching tool, Esc-to-select)
-    // FINISHES the in-progress spline — its placed control points commit as an
-    // open spline instead of vanishing. < 2 points has nothing to commit.
-    if (k === "spline" && drag.points.length >= 2 && store) {
-      store.pushSketchSubCalls([
-        {
-          type: "sketch_spline",
-          params: {
-            points: drag.points.flat(),
-            closed: false,
-            mode: drag.mode,
-          },
-        },
-      ]);
-      scheduleSolverReplay();
-      dragRef.current = { kind: "idle" };
-      lastCamVersionRef.current = -1;
-    }
-    if (k === "arc" || k === "circle_3p" || k === "rect_3p") {
-      dragRef.current = { kind: "idle" };
-      lastCamVersionRef.current = -1;
-    }
-    // F18: drop an in-flight pending line when leaving the tool.
-    if (k === "pending_line") {
-      dragRef.current = { kind: "idle" };
-      lastCamVersionRef.current = -1;
     }
     // The click-to-edit dimension belongs to the line tool — drop it
     // (and any open editor) on tool change.
@@ -1358,250 +1201,6 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
       projectedEdgesRef.current,
     );
     snapRef.current = snap;
-    const [su, sv] = snap.snapped;
-    if (session.selectedTool === "sketch_line") {
-      // F18: a second click while a pending (click-started) line is in
-      // flight commits it as a free line to the click point.
-      if (dragRef.current.kind === "pending_line") {
-        const pending: Extract<DragState, { kind: "pending_line" }> = {
-          ...dragRef.current,
-          current: [su, sv],
-        };
-        const committed = commitPendingLine(pending);
-        if (!committed) {
-          // Degenerate (clicked the start again): keep the pending line
-          // alive rather than dropping it silently.
-          dragRef.current = pending;
-        }
-        lastCamVersionRef.current = -1;
-        return;
-      }
-      // Click on the recent line's dimension readout → open the editor
-      // instead of starting a new line. A click anywhere else while the
-      // editor is open only dismisses it.
-      const canvas = e.currentTarget as HTMLCanvasElement;
-      const rect = canvas.getBoundingClientRect();
-      const clickPx: [number, number] = [
-        e.clientX - rect.left,
-        e.clientY - rect.top,
-      ];
-      if (editor !== null) {
-        setEditor(null);
-        lastCamVersionRef.current = -1;
-        return;
-      }
-      const recent = recentLineGeometry();
-      if (recent !== null) {
-        const anchor = distanceLabelAnchorPx(recent.start, recent.end, cam);
-        if (
-          anchor !== null &&
-          Math.hypot(clickPx[0] - anchor[0], clickPx[1] - anchor[1]) <=
-            DIM_LABEL_HIT_PX
-        ) {
-          const u = getSketchLengthUnit();
-          setEditor({
-            kind: "line",
-            index: recentLineRef.current!,
-            left: anchor[0],
-            top: anchor[1],
-            value: sketchDisplayLength(
-              measuredLength(recent.start, recent.end),
-            ).toFixed(u.decimals),
-            unit: u.unit,
-          });
-          requestAnimationFrame(() => {
-            lengthInputRef.current?.focus();
-            lengthInputRef.current?.select();
-          });
-          return;
-        }
-      }
-      // Starting a new line retires the previous line's readout.
-      recentLineRef.current = null;
-      dragRef.current = {
-        kind: "line",
-        start: [su, sv],
-        current: [su, sv],
-        startAnchorId: snap.coincidentTargetId,
-      };
-      lastCamVersionRef.current = -1;
-      return;
-    }
-    if (session.selectedTool === "sketch_spline") {
-      // Multi-click control-point placement (mirrors the polygon
-      // gesture). Finish gestures:
-      //   • click within 8 px of the FIRST point (≥ 3 pts) → CLOSE
-      //   • double-click, or click within 8 px of the LAST point
-      //     (≥ 2 pts) → finish OPEN
-      const existing =
-        dragRef.current.kind === "spline" ? dragRef.current.points : [];
-      // Mode is locked in when the gesture begins (first click); a
-      // mid-gesture toggle would desync the preview, so reuse the
-      // in-flight drag's mode if one exists.
-      const splineMode =
-        dragRef.current.kind === "spline"
-          ? dragRef.current.mode
-          : store.getState().sketchToolParams.splineMode;
-      const cam2 = readCamForCanvas(e.currentTarget as HTMLCanvasElement);
-      const [cpx, cpy] = sketchToScreen(su, sv, cam2);
-      const commitSpline = (closed: boolean) => {
-        store.pushSketchSubCalls([
-          {
-            type: "sketch_spline",
-            params: { points: existing.flat(), closed, mode: splineMode },
-          },
-        ]);
-        scheduleSolverReplay();
-        dragRef.current = { kind: "idle" };
-        lastCamVersionRef.current = -1;
-      };
-      // Close on first point.
-      if (existing.length >= 3) {
-        const [fpx, fpy] = sketchToScreen(existing[0][0], existing[0][1], cam2);
-        if (Math.hypot(cpx - fpx, cpy - fpy) < 8) {
-          commitSpline(true);
-          return;
-        }
-      }
-      // Finish open: double-click, or click near the last point.
-      if (existing.length >= 2) {
-        const last = existing[existing.length - 1];
-        const [lpx, lpy] = sketchToScreen(last[0], last[1], cam2);
-        if (e.detail >= 2 || Math.hypot(cpx - lpx, cpy - lpy) < 8) {
-          commitSpline(false);
-          return;
-        }
-      }
-      const points: [number, number][] = [...existing, [su, sv]];
-      dragRef.current = {
-        kind: "spline",
-        points,
-        current: [su, sv],
-        mode: splineMode,
-      };
-      lastCamVersionRef.current = -1;
-      return;
-    }
-    if (session.selectedTool === "sketch_arc") {
-      const drag = dragRef.current;
-      if (drag.kind !== "arc") {
-        // Click 1 — place the centre.
-        dragRef.current = {
-          kind: "arc",
-          center: [su, sv],
-          start: null,
-          current: [su, sv],
-          startAngle: 0,
-          sweep: 0,
-        };
-      } else if (drag.start === null) {
-        // Click 2 — fix radius + start angle.
-        dragRef.current = {
-          ...drag,
-          start: [su, sv],
-          current: [su, sv],
-          startAngle: angleAbout(drag.center, [su, sv]),
-          sweep: 0,
-        };
-      } else {
-        // Click 3 — fix the sweep and commit (or discard if degenerate).
-        const call = buildArcSubCall(
-          drag.center,
-          drag.start,
-          [su, sv],
-          drag.sweep,
-        );
-        dragRef.current = { kind: "idle" };
-        if (call) {
-          store.pushSketchSubCalls([call]);
-          scheduleSolverReplay();
-        }
-      }
-      lastCamVersionRef.current = -1;
-      return;
-    }
-    if (session.selectedTool === "sketch_circle_3p") {
-      const drag = dragRef.current;
-      if (drag.kind !== "circle_3p") {
-        // Click 1 — first point on the circumference.
-        dragRef.current = {
-          kind: "circle_3p",
-          p1: [su, sv],
-          p2: null,
-          current: [su, sv],
-        };
-      } else if (drag.p2 === null) {
-        // Click 2 — second point.
-        dragRef.current = { ...drag, p2: [su, sv], current: [su, sv] };
-      } else {
-        // Click 3 — solve the circumcircle and commit (or discard if
-        // the three points are collinear).
-        const res = circleThrough3(drag.p1, drag.p2, [su, sv]);
-        dragRef.current = { kind: "idle" };
-        if (res) {
-          // Ticket ybnl: keep the three defining points as real entities (so
-          // they render as draggable dots) and bind the circle through them
-          // with point-on-object constraints, instead of collapsing to a bare
-          // centre+radius circle. Dragging any point re-fits the circle.
-          // Id allocation order (mirrors buildDraftSketchState): three points,
-          // then the circle's centre + entity.
-          const base = predictNextLineIds(session.subCalls).start;
-          const circleId = base + 4; // base..+2 points, +3 centre, +4 circle
-          store.pushSketchSubCalls([
-            { type: "sketch_point", params: { at: drag.p1 } },
-            { type: "sketch_point", params: { at: drag.p2 } },
-            { type: "sketch_point", params: { at: [su, sv] } },
-            {
-              type: "sketch_circle",
-              params: { center: res.center, radius: res.radius },
-            },
-            {
-              type: "sketch_constraint_point_on_object",
-              params: { point: base, curve: circleId },
-            },
-            {
-              type: "sketch_constraint_point_on_object",
-              params: { point: base + 1, curve: circleId },
-            },
-            {
-              type: "sketch_constraint_point_on_object",
-              params: { point: base + 2, curve: circleId },
-            },
-          ]);
-          scheduleSolverReplay();
-        }
-      }
-      lastCamVersionRef.current = -1;
-      return;
-    }
-    if (session.selectedTool === "sketch_rectangle_3p") {
-      const drag = dragRef.current;
-      if (drag.kind !== "rect_3p") {
-        // Click 1 — first edge endpoint.
-        dragRef.current = {
-          kind: "rect_3p",
-          p1: [su, sv],
-          p2: null,
-          current: [su, sv],
-        };
-      } else if (drag.p2 === null) {
-        // Click 2 — second edge endpoint (fixes the edge direction).
-        dragRef.current = { ...drag, p2: [su, sv], current: [su, sv] };
-      } else {
-        // Click 3 — the perpendicular width; commit four lines + two
-        // perpendicular constraints (or discard if degenerate).
-        const corners = rect3pCorners(drag.p1, drag.p2, [su, sv]);
-        dragRef.current = { kind: "idle" };
-        if (corners) {
-          store.pushSketchSubCalls(
-            buildRect3pSubCalls(corners, session.subCalls),
-          );
-          scheduleSolverReplay();
-        }
-      }
-      lastCamVersionRef.current = -1;
-      return;
-    }
     // F14: Mirror is an interactive editing mode, not a kernel tool. The
     // user first selects the source geometry (Select mode: click / box-
     // select), then picks the Mirror tool, then clicks the AXIS LINE here.
@@ -1842,69 +1441,6 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
         snapRef.current = snap;
         hoverRef.current = snap.snapped;
       }
-    } else if (dragRef.current.kind === "line") {
-      const snap = resolveSnap(
-        [u, v],
-        session,
-        dragRef.current.start,
-        snapRadiusMmFor(cam),
-        e.shiftKey,
-        projectedEdgesRef.current,
-      );
-      snapRef.current = snap;
-      dragRef.current = { ...dragRef.current, current: snap.snapped };
-    } else if (dragRef.current.kind === "pending_line") {
-      // F18: rubber-band the click-started line to the cursor (no button
-      // held). The length readout is canvas-drawn (drawDistanceLabel).
-      const snap = resolveSnap(
-        [u, v],
-        session,
-        dragRef.current.start,
-        snapRadiusMmFor(cam),
-        e.shiftKey,
-        projectedEdgesRef.current,
-      );
-      snapRef.current = snap;
-      dragRef.current = { ...dragRef.current, current: snap.snapped };
-    } else if (
-      dragRef.current.kind === "circle_3p" ||
-      dragRef.current.kind === "rect_3p"
-    ) {
-      dragRef.current = { ...dragRef.current, current: [u, v] };
-    } else if (dragRef.current.kind === "arc") {
-      const d = dragRef.current;
-      if (d.start === null) {
-        // Stage 1: rubber-band the radius/start point.
-        dragRef.current = { ...d, current: [u, v] };
-      } else {
-        // Stage 2: sweep, unwrapped so it tracks past ±180°.
-        const sweep = unwrapSweep(
-          d.startAngle,
-          angleAbout(d.center, [u, v]),
-          d.sweep,
-        );
-        dragRef.current = { ...d, current: [u, v], sweep };
-      }
-      snapRef.current = {
-        snapped: [u, v],
-        candidate: null,
-        anchor: null,
-        coincidentTargetId: null,
-      };
-    } else if (dragRef.current.kind === "spline") {
-      // Ticket 8vpe: rubber-band the spline preview to the cursor on EVERY
-      // move — including while dragging (button held) after the first point —
-      // so the curve continuously follows the pointer, not only between clicks.
-      const snap = resolveSnap(
-        [u, v],
-        session,
-        null,
-        snapRadiusMmFor(cam),
-        e.shiftKey,
-        projectedEdgesRef.current,
-      );
-      snapRef.current = snap;
-      dragRef.current = { ...dragRef.current, current: snap.snapped };
     } else {
       // Hover path: show a preview point with snap magnetism so
       // the user sees the same feedback a click-to-place would
@@ -1974,12 +1510,6 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
     void solveAndReplace(store);
   };
 
-  // F18: tear down the pending-line draft without committing.
-  const cancelPendingLine = () => {
-    dragRef.current = { kind: "idle" };
-    lastCamVersionRef.current = -1;
-  };
-
   // The committed geometry of the most recently placed line, for the
   // click-to-edit dimension readout. Reads the (post-solve) sub-call
   // params, so it tracks solver rewrites. Clears a stale index.
@@ -2013,62 +1543,6 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
       recentLineGeometry(),
       mirrorAxisHoverRef.current,
     );
-  };
-
-  // F18: commit the in-flight pending line as a free line. Returns true
-  // when something was committed. The placed line becomes the
-  // click-to-edit dimension target.
-  const commitPendingLine = (
-    drag: Extract<DragState, { kind: "pending_line" }>,
-  ): boolean => {
-    if (!store) return false;
-    const { start, current, startAnchorId } = drag;
-    // Reject a degenerate zero-length line.
-    if (measuredLength(start, current) < 1e-3) return false;
-    const ids = predictNextLineIds(session.subCalls);
-    const state = buildDraftSketchState(session.subCalls);
-    const calls: Array<{ type: string; params: Record<string, unknown> }> = [
-      {
-        type: "sketch_line",
-        params: {
-          start: [start[0], start[1]] as [number, number],
-          end: [current[0], current[1]] as [number, number],
-        },
-      },
-    ];
-    // Start: an explicit coincident captured at pointerdown (the chain / a
-    // point snap) wins; otherwise classify where it landed (ticket inej).
-    if (startAnchorId !== null) {
-      calls.push({
-        type: "sketch_constraint_coincident",
-        params: { a: ids.start, b: startAnchorId },
-      });
-    } else {
-      calls.push(
-        ...anchorConstraints(ids.start, classifyLineAnchor(start, state)),
-      );
-    }
-    // End: bind it to whatever it snapped onto — a vertex (coincident, e.g.
-    // closing a loop) or a line interior (point-on-object). Without this the
-    // endpoint drifts off the target when the sketch is later dimensioned.
-    calls.push(
-      ...anchorConstraints(ids.end, classifyLineAnchor(current, state)),
-    );
-    recentLineRef.current = session.subCalls.length;
-    store.pushSketchSubCalls(calls);
-    // Ticket daa8: chain — instead of ending, start a NEW rubber-band line from
-    // the just-placed endpoint, coincident with it, so clicking repeatedly draws
-    // a connected polyline (Esc / tool switch / re-clicking Line ends it via the
-    // tool-change effect + the spline/line Escape handlers).
-    dragRef.current = {
-      kind: "pending_line",
-      start: [current[0], current[1]],
-      current: [current[0], current[1]],
-      startAnchorId: ids.end,
-    };
-    lastCamVersionRef.current = -1;
-    scheduleSolverReplay();
-    return true;
   };
 
   const onPointerUp = (e: React.PointerEvent<HTMLCanvasElement>) => {
@@ -2168,116 +1642,6 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
       }
       return;
     }
-    if (dragRef.current.kind !== "line") return;
-    (e.currentTarget as HTMLCanvasElement).releasePointerCapture(e.pointerId);
-    const cam = readCamForCanvas(e.currentTarget as HTMLCanvasElement);
-    const [u, v] = screenToSketchFromEvent(e, cam);
-    const snap = resolveSnap(
-      [u, v],
-      session,
-      dragRef.current.start,
-      snapRadiusMmFor(cam),
-      e.shiftKey,
-      projectedEdgesRef.current,
-    );
-    snapRef.current = snap;
-    const { start, startAnchorId } = dragRef.current;
-    dragRef.current = { kind: "idle" };
-    const [su, sv] = snap.snapped;
-    // F18: a click-without-drag (the pointer barely moved between down and
-    // up) starts a PENDING line that rubber-bands to the cursor; a second
-    // click commits, Esc cancels. A real drag (moved past the pixel
-    // threshold) commits a free line below, exactly as before.
-    const [sx0, sy0] = sketchToScreen(start[0], start[1], cam);
-    const [sx1, sy1] = sketchToScreen(su, sv, cam);
-    const movedPx = Math.hypot(sx1 - sx0, sy1 - sy0);
-    if (movedPx < 4) {
-      dragRef.current = {
-        kind: "pending_line",
-        start: [start[0], start[1]],
-        current: [start[0], start[1]],
-        startAnchorId,
-      };
-      lastCamVersionRef.current = -1;
-      return;
-    }
-    if (!store) return;
-
-    // K6b.3d: emit the sketch_line call plus any constraint
-    // calls that materialise from the snap candidate at the
-    // END of the drag (horizontal / vertical / endpoint) and
-    // from the anchor match at the START of the drag (another
-    // endpoint coincident hit). Entity ids are predicted by
-    // replicating the kernel's allocation order so the
-    // constraint calls reference the correct line/point.
-    const predictedIds = predictNextLineIds(session.subCalls);
-    const priorState = buildDraftSketchState(session.subCalls);
-    const lineCall = {
-      type: "sketch_line",
-      params: {
-        start: [start[0], start[1]] as [number, number],
-        end: [su, sv] as [number, number],
-      },
-    };
-    const newCalls: Array<{ type: string; params: Record<string, unknown> }> = [
-      lineCall,
-    ];
-
-    // Start: an explicit coincident captured at pointerdown wins; otherwise
-    // classify where the start landed (vertex → coincident, line interior →
-    // point-on-object) so it stays put under later edits (ticket inej).
-    if (startAnchorId !== null) {
-      newCalls.push({
-        type: "sketch_constraint_coincident",
-        params: { a: predictedIds.start, b: startAnchorId },
-      });
-    } else {
-      newCalls.push(
-        ...anchorConstraints(
-          predictedIds.start,
-          classifyLineAnchor(start, priorState),
-        ),
-      );
-    }
-
-    // End snap: orientation (horizontal / vertical) plus a binding. The live
-    // candidate covers H/V and an inferred vertex coincident; anything else
-    // (a line-interior snap, or a snap the inference missed) is bound by
-    // classifying the landed position — ticket inej.
-    let endBound = false;
-    if (snap.candidate) {
-      const c = snap.candidate.constraint;
-      if (c.kind === "horizontal") {
-        newCalls.push({
-          type: "sketch_constraint_horizontal",
-          params: { line: predictedIds.line },
-        });
-      } else if (c.kind === "vertical") {
-        newCalls.push({
-          type: "sketch_constraint_vertical",
-          params: { line: predictedIds.line },
-        });
-      } else if (c.kind === "coincident" && snap.coincidentTargetId !== null) {
-        newCalls.push({
-          type: "sketch_constraint_coincident",
-          params: { a: predictedIds.end, b: snap.coincidentTargetId },
-        });
-        endBound = true;
-      }
-    }
-    if (!endBound) {
-      newCalls.push(
-        ...anchorConstraints(
-          predictedIds.end,
-          classifyLineAnchor([su, sv], priorState),
-        ),
-      );
-    }
-
-    // The placed line becomes the click-to-edit dimension target.
-    recentLineRef.current = session.subCalls.length;
-    store.pushSketchSubCalls(newCalls);
-    scheduleSolverReplay();
   };
 
   const onPointerCancel = (e: React.PointerEvent<HTMLCanvasElement>) => {
@@ -2315,33 +1679,37 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
     lastCamVersionRef.current = -1;
   };
 
-  // F18: Esc dismisses an open dimension editor, else cancels an
-  // in-flight pending line. Window-level so it works even when the
-  // canvas has focus; the editor input wires its own key handler too.
+  // F18: Esc dismisses an open in-scene editor first (dimension value, text,
+  // corner radius/distance) — window-level so it works even when the canvas
+  // has focus; the editor inputs wire their own key handlers too. Everything
+  // else routes to the active tool controller's onKey (pending-line cancel,
+  // spline finish, …).
   useEffect(() => {
     if (!session.active) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key !== "Escape") return;
-      if (editor !== null) {
-        e.preventDefault();
-        setEditor(null);
-        return;
+      if (e.key === "Escape") {
+        if (editor !== null) {
+          e.preventDefault();
+          setEditor(null);
+          return;
+        }
+        // Ticket pqoe: Esc dismisses an open in-scene text editor first.
+        if (textEditor !== null) {
+          e.preventDefault();
+          setTextEditor(null);
+          return;
+        }
+        // Plan item 4: Esc dismisses an open corner radius / distance editor.
+        if (cornerEditor !== null) {
+          e.preventDefault();
+          setCornerEditor(null);
+          return;
+        }
       }
-      // Ticket pqoe: Esc dismisses an open in-scene text editor first.
-      if (textEditor !== null) {
-        e.preventDefault();
-        setTextEditor(null);
-        return;
-      }
-      // Plan item 4: Esc dismisses an open corner radius / distance editor.
-      if (cornerEditor !== null) {
-        e.preventDefault();
-        setCornerEditor(null);
-        return;
-      }
-      if (dragRef.current.kind === "pending_line") {
-        e.preventDefault();
-        cancelPendingLine();
+      // Registry dispatch: keys route to the active tool's controller.
+      const controller = controllerForTool(sessionRef.current.selectedTool);
+      if (controller?.onKey && ctxRef.current) {
+        controller.onKey(ctxRef.current, e);
       }
     };
     window.addEventListener("keydown", onKey);
@@ -2366,45 +1734,6 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
         setToolHint(initialToolHint("sketch_mirror"));
       } else {
         store.selectSketchTool(null);
-      }
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [store, session.selectedTool]);
-
-  // F23: keyboard finish for the spline gesture — Enter commits the
-  // in-progress spline (open, needs ≥ 2 control points); Escape cancels
-  // it. Mirrors the click/double-click finish in onPointerDown.
-  useEffect(() => {
-    if (!store || session.selectedTool !== "sketch_spline") return;
-    const onKey = (e: KeyboardEvent) => {
-      const drag = dragRef.current;
-      if (drag.kind !== "spline") return;
-      // Ticket egia: BOTH Enter and Escape FINISH the spline — they commit the
-      // control points placed so far as an open spline instead of discarding
-      // them. Only an Escape with too few points (< 2) cancels outright.
-      if (
-        (e.key === "Enter" || e.key === "Escape") &&
-        drag.points.length >= 2
-      ) {
-        e.preventDefault();
-        store.pushSketchSubCalls([
-          {
-            type: "sketch_spline",
-            params: {
-              points: drag.points.flat(),
-              closed: false,
-              mode: drag.mode,
-            },
-          },
-        ]);
-        scheduleSolverReplay();
-        dragRef.current = { kind: "idle" };
-        lastCamVersionRef.current = -1;
-      } else if (e.key === "Escape") {
-        e.preventDefault();
-        dragRef.current = { kind: "idle" };
-        lastCamVersionRef.current = -1;
       }
     };
     window.addEventListener("keydown", onKey);
