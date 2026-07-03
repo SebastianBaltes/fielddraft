@@ -1440,7 +1440,15 @@ fn sdf_cone_local(p: [f32; 3], rb: f32, rt: f32, hh: f32) -> f32 {
     let r = (p[0] * p[0] + p[2] * p[2]).sqrt();
     let t = ((p[1] + hh) / (2.0 * hh)).clamp(0.0, 1.0);
     let r_at_y = rb * (1.0 - t) + rt * t;
-    let dr = r - r_at_y;
+    // Project the radial gap onto the inclined wall normal so the field is
+    // the true perpendicular distance (Lipschitz-1); cylinder (rb == rt) → 1.
+    // Mirrors `fd_sdf_cone` in web/src/sdfRenderer.ts — this mirror had
+    // DRIFTED from the shader (missing wall_scale, caught by the B7 parity
+    // test): for a 45° cone the unprojected gap overestimates by ~40%.
+    let drr = rb - rt;
+    let slant_len = (drr * drr + (2.0 * hh) * (2.0 * hh)).sqrt();
+    let wall_scale = if slant_len > 1e-9 { (2.0 * hh) / slant_len } else { 1.0 };
+    let dr = (r - r_at_y) * wall_scale;
     let da = p[1].abs() - hh;
     if dr > 0.0 && da > 0.0 {
         (dr * dr + da * da).sqrt()
