@@ -857,15 +857,22 @@ test.describe("Sketch editor smoke", () => {
     expect(shape!.some((f) => f.kind === "extrude")).toBe(true);
 
     // Download the STL and check it contains real triangles. Export
-    // now lives in the ☰ settings menu under an Export submenu:
-    // open the menu, hover Export to reveal the submenu, click STL.
+    // lives in the ☰ settings menu under an Export submenu and opens
+    // the export dialog (Meshing Phase 0): the tolerance-driven pass
+    // runs in the mesher worker, shows a validation report, and Save
+    // hands the bytes to the browser download.
+    await page.getByTestId("settings-menu-trigger").click();
+    await page.getByTestId("menu-export").hover();
+    await page.getByTestId("menu-export-stl").click();
+    await expect(page.getByTestId("export-dialog")).toBeVisible();
+    // The export pass meshes at export resolution — allow it time.
+    const saveButton = page.getByTestId("export-save");
+    await expect(saveButton).toBeEnabled({ timeout: 60_000 });
+    // The report must render with a verdict line.
+    await expect(page.getByTestId("export-verdict")).toBeVisible();
     const [download] = await Promise.all([
       page.waitForEvent("download"),
-      (async () => {
-        await page.getByTestId("settings-menu-trigger").click();
-        await page.getByTestId("menu-export").hover();
-        await page.getByTestId("menu-export-stl").click();
-      })(),
+      saveButton.click(),
     ]);
     const path = await download.path();
     expect(path).not.toBeNull();

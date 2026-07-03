@@ -664,15 +664,39 @@ graph LR
 
 Configurable deflection (0.02 mm linear, 0.1 rad angular). AP242 fallback extracts `COMPLEX_TRIANGULATED_FACE` entities via regex parser for convergent geometry.
 
-#### STL/OBJ
+#### Mesh-Export (STL/3MF) — toleranzgetriebener Export-Pass
 
-* **Rust kernel** (`export.rs`): STL ASCII + binary export, normals via cross product
-* **TypeScript** (`meshIO.ts`): STL binary import (parser), OBJ import/export
+Meshing Phase 0 (`docs/MESHING-EXPORT-ANALYSIS.md` §5): der STL/3MF-Export
+schreibt **nicht** das Viewport-Mesh raus, sondern fährt eine eigene
+Export-Session im Mesher-Worker:
 
-#### 3MF
+```mermaid
+graph LR
+    A["ExportDialog"] --> B["exportMeshed()\n(WorkerOrchestrator)"] --> C["mesher.worker\nexport-Request"] --> D["Kernel-Session\nexportMeshBegin/Body/…"] --> E["STL/3MF-Bytes\n+ ExportReport"]
+```
 
-* **Rust kernel** (`export_3mf.rs`): Multi-body 3MF with per-body color palette (8 colors)
-* **TypeScript** (`threemf.ts`): 3MF roundtrip preserving slicer metadata (Bambu, Prusa, Cura, OrcaSlicer)
+* **Rust kernel** (`export_mesh.rs`): Session-Protokoll `exportMeshBegin(cellMm)`
+  → N× `exportMeshBody(i)` (Progress) → `exportMeshStl()/exportMesh3mf()` +
+  `exportMeshReport()`. Pro Body wird die Auflösung aus der Zellgröße und der
+  Body-AABB abgeleitet (Memory-Guard kappt bei ~24M Grid-Ecken), roh
+  gemesht (MDC + Newton-Projektion), die Orientierung repariert
+  (`mesh_validate::fix_orientation` — MDC wickelt an scharfen Kanten
+  inkonsistent, im DoubleSide-Viewport unsichtbar) und die
+  planare/developable Simplifikation nur übernommen, wenn sie die
+  Wasserdichtheit nicht bricht.
+* **Validator** (`mesh_validate.rs`): watertight/manifold/Orientierung/
+  Komponenten strukturell (positions-geweldete Kanten-Inzidenz) plus
+  gemessene Abweichung gegen die exakte SDF (Zentroid + Kantenmitten,
+  Sample-Budget). Ergebnis erscheint als Report im Export-Dialog.
+* **Encoder**: `export.rs` (STL ASCII/binär, Normalen per Kreuzprodukt),
+  `export_3mf.rs` (Multi-Body-3MF mit 8-Farben-Palette) arbeiten auf den
+  Session-Meshes.
+* **TypeScript**: `ExportDialog.tsx` (Zellgröße, Fortschritt, Report, Save),
+  `exportTypes.ts` (Wire-Typen), `workerOrchestration.ts#exportMeshed`
+  (CorrelatedWorkerChannel auf dem Mesher-Worker, sync Fallback ohne Worker),
+  `ioStore.ts#downloadExport` (3MF-Roundtrip-Stash), `meshIO.ts` (STL-Import,
+  OBJ-Import/-Export), `threemf.ts` (Slicer-Metadaten-Roundtrip: Bambu,
+  Prusa, Cura, OrcaSlicer).
 
 ### 4.7 CSS Architecture
 

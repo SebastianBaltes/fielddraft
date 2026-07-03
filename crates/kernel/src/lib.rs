@@ -22,6 +22,8 @@ pub mod sketch_regions;
 pub mod queries;
 pub mod export;
 pub mod export_3mf;
+pub mod export_mesh;
+pub mod mesh_validate;
 pub mod raycast;
 pub mod step_classifier;
 pub mod step_commands;

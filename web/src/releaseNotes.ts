@@ -24,6 +24,16 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.358",
+    entries: [
+      {
+        kind: "feat",
+        text: "STL/3MF-Export komplett neu: eigener toleranz-getriebener Mesh-Pass (Zellgröße einstellbar, unabhängig von der Viewport-Auflösung) mit Watertight-Validierung, Orientierungs-Reparatur und Qualitätsreport im neuen Export-Dialog",
+        scope: "export",
+      },
+    ],
+  },
+  {
     version: "0.6.356",
     entries: [
       {

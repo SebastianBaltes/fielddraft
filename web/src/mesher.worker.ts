@@ -69,6 +69,12 @@ import {
   isFdCallRequest,
   type FdCallResponse,
 } from "./workerRpc";
+import type {
+  ExportReport,
+  MesherExportProgressMsg,
+  MesherExportRequest,
+  MesherExportResponse,
+} from "./exportTypes";
 
 interface WasmExports {
   memory: WebAssembly.Memory;
@@ -107,8 +113,8 @@ export type MesherBodiesResponse =
   | { type: "bodies"; requestId: number; ok: true; bodies: MesherBodyPayload[] }
   | { type: "bodies"; requestId: number; ok: false; error: string };
 
-export type MesherRequest = MesherRebuildRequest;
-export type MesherResponse = MesherBodiesResponse;
+export type MesherRequest = MesherRebuildRequest | MesherExportRequest;
+export type MesherResponse = MesherBodiesResponse | MesherExportResponse;
 
 let readyPromise: Promise<ReadyKernel> | null = null;
 
@@ -324,6 +330,55 @@ async function handleRebuild(msg: MesherRebuildRequest): Promise<void> {
   self.postMessage(response, transfers);
 }
 
+/**
+ * Meshing Phase 0: run a tolerance-driven export pass. The whole
+ * session loop is synchronous after the initial awaits — no other
+ * message (viewport rebuild, fd_call) can interleave and mutate the
+ * kernel mid-session; they queue behind us on the worker's message
+ * loop. Progress posts stream one message per finished body.
+ */
+async function handleExport(msg: MesherExportRequest): Promise<void> {
+  const { kernel } = await ensureKernel();
+  reseedRandom(
+    self as unknown as SandboxScope,
+    hashDocumentJson(msg.documentJson),
+  );
+  scriptHost?.sync(scriptRecordsFrom(msg.documentJson));
+  // Load the document (cache hit when it matches the last rebuild —
+  // the kernel's per-body payload hashes skip unchanged meshes).
+  kernel.loadJson(msg.documentJson);
+
+  const total = kernel.exportMeshBegin(msg.cellSizeMm);
+  const progress = (done: number): void => {
+    const p: MesherExportProgressMsg = {
+      type: "export_progress",
+      requestId: msg.requestId,
+      done,
+      total,
+    };
+    self.postMessage(p);
+  };
+  progress(0);
+  for (let i = 0; i < total; i++) {
+    kernel.exportMeshBody(i);
+    progress(i + 1);
+  }
+
+  const bytes: Uint8Array =
+    msg.format === "3mf" ? kernel.exportMesh3mf() : kernel.exportMeshStl();
+  const report = JSON.parse(kernel.exportMeshReport()) as ExportReport;
+  kernel.exportMeshEnd();
+
+  const response: MesherExportResponse = {
+    type: "export_result",
+    requestId: msg.requestId,
+    ok: true,
+    bytes,
+    report,
+  };
+  self.postMessage(response, [bytes.buffer]);
+}
+
 async function handleFdCall(
   msg: import("./workerRpc").FdCallRequest,
 ): Promise<void> {
@@ -368,7 +423,23 @@ self.addEventListener("message", (event: MessageEvent<unknown>) => {
     return;
   }
 
-  const rebuild = msg as MesherRequest;
+  const request = msg as MesherRequest;
+  if (request.type === "export") {
+    handleExport(request).catch((err) => {
+      // eslint-disable-next-line no-console
+      console.error("fielddraft mesher worker: export failed", err);
+      const errorResponse: MesherExportResponse = {
+        type: "export_result",
+        requestId: request.requestId,
+        ok: false,
+        error: err instanceof Error ? err.message : String(err),
+      };
+      self.postMessage(errorResponse);
+    });
+    return;
+  }
+
+  const rebuild = request;
   if (rebuild.type !== "rebuild") return;
   handleRebuild(rebuild).catch((err) => {
     // eslint-disable-next-line no-console

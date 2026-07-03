@@ -1,6 +1,7 @@
 import { lazy, Suspense, useEffect, useRef, useState, useCallback } from "react";
 import type { KernelStore, StoreState } from "./store";
 import { ReportDialog } from "./ReportDialog";
+import { ExportDialog } from "./ExportDialog";
 
 // Lazy: the dialog pulls the full release-note history (releaseNotes.ts,
 // thousands of lines of data) — that belongs in an on-demand chunk, not in
@@ -89,6 +90,7 @@ export function SettingsMenu({
   const [settingsDialogOpen, setSettingsDialogOpen] = useState(false);
   const [reportDialogOpen, setReportDialogOpen] = useState(false);
   const [releaseNotesOpen, setReleaseNotesOpen] = useState(false);
+  const [exportDialog, setExportDialog] = useState<"stl" | "3mf" | null>(null);
   const popoverRef = useRef<HTMLDivElement>(null);
   const buttonRef = useRef<HTMLButtonElement>(null);
 
@@ -244,6 +246,7 @@ export function SettingsMenu({
             state={state}
             disabled={!hasFeatures}
             onClose={close}
+            onExportDialog={setExportDialog}
           />
 
           <div className="menu-separator" role="separator" />
@@ -385,6 +388,14 @@ export function SettingsMenu({
           <ReleaseNotesDialog onClose={() => setReleaseNotesOpen(false)} />
         </Suspense>
       )}
+
+      {exportDialog && store && (
+        <ExportDialog
+          store={store}
+          format={exportDialog}
+          onClose={() => setExportDialog(null)}
+        />
+      )}
     </div>
   );
 }
@@ -396,11 +407,13 @@ function ExportSubmenu({
   state,
   disabled,
   onClose,
+  onExportDialog,
 }: {
   store: KernelStore | null;
   state: StoreState | null;
   disabled: boolean;
   onClose: () => void;
+  onExportDialog: (format: "stl" | "3mf") => void;
 }) {
   const action = (fn: () => void) => {
     fn();
@@ -430,9 +443,9 @@ function ExportSubmenu({
           role="menuitem"
           className="menu-item"
           data-testid="menu-export-stl"
-          onClick={() => action(() => store?.downloadStl())}
+          onClick={() => action(() => onExportDialog("stl"))}
         >
-          STL
+          STL…
         </button>
         <button
           type="button"
@@ -457,9 +470,9 @@ function ExportSubmenu({
           role="menuitem"
           className="menu-item"
           data-testid="menu-export-3mf"
-          onClick={() => action(() => store?.download3mfRoundtrip())}
+          onClick={() => action(() => onExportDialog("3mf"))}
         >
-          3MF
+          3MF…
         </button>
         <button
           type="button"

@@ -18,6 +18,7 @@
 @import "./components/feature-dialog.css";
 @import "./components/settings-menu.css";
 @import "./components/report-dialog.css";
+@import "./components/export-dialog.css";
 @import "./components/release-notes.css";
 @import "./components/perf-hud.css";
 @import "./components/loading-overlay.css";

@@ -118,6 +118,11 @@ pub struct Kernel {
     /// hit is impossible; without it, loading a weave-heavy document
     /// (spline-revolve + shell) re-wove from scratch every time.
     pub(crate) regen_brep_cache: body::BrepCache,
+    /// In-flight export meshing session (Meshing Phase 0): the
+    /// tolerance-driven export meshes + validation reports built by
+    /// `exportMeshBegin`/`exportMeshBody`. Dropped on every mesh
+    /// rebuild — a mutation invalidates the pass. Runtime-only.
+    pub(crate) export_session: Option<crate::export_mesh::ExportSession>,
 }
 
 impl Kernel {
@@ -161,6 +166,9 @@ impl Kernel {
     /// correctly re-meshes the two bodies that changed LOD and
     /// leaves the rest untouched.
     pub(crate) fn rebuild_mesh_internal(&mut self) {
+        // Any remesh invalidates an in-flight export session — its
+        // meshes/reports were built against the previous body list.
+        self.export_session = None;
         // DL-61 C2b: `self.decoded` is produced solely by
         // `bootstrap_features_from_calls`; every path that changes
         // `feature_calls` (mutators, undo/redo, load) re-bootstraps

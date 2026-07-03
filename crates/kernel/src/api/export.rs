@@ -4,64 +4,72 @@
 use wasm_bindgen::prelude::*;
 
 use crate::Kernel;
-use crate::dc::Mesh;
 use crate::export;
 use crate::export_3mf;
 use crate::step_classifier;
 use crate::step_commands;
 #[wasm_bindgen]
 impl Kernel {
-    // ── K7.2: STL export ─────────────────────────────────────────
+    // ── Meshing Phase 0: tolerance-driven export meshing ─────────
+    //
+    // The mesh export no longer ships the viewport mesh: a session
+    // builds every body at its own cell-size-derived resolution and
+    // validates the result (watertight + measured SDF deviation).
+    // Protocol: `exportMeshBegin(cellMm)` → N× `exportMeshBody(i)`
+    // (the caller loops and reports progress) → `exportMeshStl()` /
+    // `exportMesh3mf()` + `exportMeshReport()` → `exportMeshEnd()`.
+    // Any document mutation between calls drops the session.
 
-    /// Export the current scene as an ASCII STL string.
-    /// Iterates every body's DC mesh in the order `bodies`
-    /// holds them; downstream slicers treat the whole blob as
-    /// one `solid`.
-    ///
-    /// Takes `&mut self` because the worker-mode kernel keeps
-    /// its main-thread `bodies` cache empty (the worker owns
-    /// the meshes). Export temporarily forces a sync rebuild
-    /// so the bytes come out non-empty, then leaves the sync
-    /// state exactly as it found it.
-    #[wasm_bindgen(js_name = exportStlAscii)]
-    pub fn export_stl_ascii(&mut self) -> String {
-        let prev = self.ensure_bodies_for_export();
-        let out = {
-            let meshes: Vec<&Mesh> = self.bodies.iter().map(|b| &b.mesh).collect();
-            export::export_ascii(&meshes)
-        };
-        self.restore_sync_meshing(prev);
-        out
+    /// Start an export meshing pass at `cell_size_mm`. Returns the
+    /// number of bodies the caller must feed through
+    /// [`Kernel::export_mesh_body`].
+    #[wasm_bindgen(js_name = exportMeshBegin)]
+    pub fn export_mesh_begin(&mut self, cell_size_mm: f32) -> usize {
+        self.export_mesh_begin_internal(cell_size_mm)
     }
 
-    /// Export the current scene as binary STL. Returns a
-    /// JavaScript `Uint8Array` by virtue of wasm-bindgen's
-    /// auto-conversion for `Vec<u8>`.
-    ///
-    /// Same `&mut self` + sync-rebuild dance as
-    /// [`export_stl_ascii`].
-    #[wasm_bindgen(js_name = exportStlBinary)]
-    pub fn export_stl_binary(&mut self) -> Vec<u8> {
-        let prev = self.ensure_bodies_for_export();
-        let out = {
-            let meshes: Vec<&Mesh> = self.bodies.iter().map(|b| &b.mesh).collect();
-            export::export_binary(&meshes)
-        };
-        self.restore_sync_meshing(prev);
-        out
+    /// Mesh + validate body `i` for the running session. Returns the
+    /// per-body report as JSON (`""` when no session is active).
+    #[wasm_bindgen(js_name = exportMeshBody)]
+    pub fn export_mesh_body(&mut self, i: usize) -> String {
+        match self.export_mesh_body_internal(i) {
+            Some(report) => serde_json::to_string(&report).unwrap_or_default(),
+            None => String::new(),
+        }
     }
 
-    // ── M14a: 3MF export ────────────────────────────────────────
+    /// Binary STL of the session's export meshes.
+    #[wasm_bindgen(js_name = exportMeshStl)]
+    pub fn export_mesh_stl(&self) -> Vec<u8> {
+        export::export_binary(&self.export_session_meshes())
+    }
 
-    #[wasm_bindgen(js_name = export3mf)]
-    pub fn export_3mf(&mut self) -> Vec<u8> {
-        let prev = self.ensure_bodies_for_export();
-        let out = {
-            let meshes: Vec<&Mesh> = self.bodies.iter().map(|b| &b.mesh).collect();
-            export_3mf::export_3mf(&meshes)
-        };
-        self.restore_sync_meshing(prev);
-        out
+    /// ASCII STL of the session's export meshes (debug / diffing).
+    #[wasm_bindgen(js_name = exportMeshStlAscii)]
+    pub fn export_mesh_stl_ascii(&self) -> String {
+        export::export_ascii(&self.export_session_meshes())
+    }
+
+    /// 3MF archive of the session's export meshes.
+    #[wasm_bindgen(js_name = exportMesh3mf)]
+    pub fn export_mesh_3mf(&self) -> Vec<u8> {
+        export_3mf::export_3mf(&self.export_session_meshes())
+    }
+
+    /// Aggregate report of the session as JSON
+    /// (see [`crate::export_mesh::ExportReport`]).
+    #[wasm_bindgen(js_name = exportMeshReport)]
+    pub fn export_mesh_report(&self) -> String {
+        match &self.export_session {
+            Some(s) => serde_json::to_string(&s.report()).unwrap_or_default(),
+            None => String::new(),
+        }
+    }
+
+    /// Drop the session and free its meshes.
+    #[wasm_bindgen(js_name = exportMeshEnd)]
+    pub fn export_mesh_end(&mut self) {
+        self.export_session = None;
     }
 
     // ── M14b: STEP classification ─────────────────────────────────
@@ -77,35 +85,6 @@ impl Kernel {
         let cmds = step_commands::build_step_commands(&self.decoded);
         cmds.to_string()
     }
-
-    /// Force the main-thread body cache to be populated so
-    /// the STL exporter has something to walk. Returns the
-    /// previous `sync_meshing` value so the caller can
-    /// restore it after the export.
-    fn ensure_bodies_for_export(&mut self) -> bool {
-        let prev = self.sync_meshing;
-        if !prev {
-            self.sync_meshing = true;
-            self.bodies.clear();
-            self.rebuild_mesh_internal();
-        }
-        prev
-    }
-
-    /// Flip sync meshing back to whatever it was before
-    /// [`ensure_bodies_for_export`] ran. When worker-mode was
-    /// active, we drop the bodies we just built so the next
-    /// mutation's worker response isn't shadowed by stale
-    /// cache data.
-    fn restore_sync_meshing(&mut self, prev: bool) {
-        if prev != self.sync_meshing {
-            self.sync_meshing = prev;
-            if !prev {
-                self.bodies.clear();
-            }
-        }
-    }
-
 
     /// Serialise body `i`'s feature-based B-Rep as an ISO-10303-21
     /// (STEP) AP214 advanced-B-Rep file. Reuses the same lazily-woven,

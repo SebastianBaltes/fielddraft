@@ -188,42 +188,37 @@ export class IoStore {
     return result;
   }
 
-  // ── K7.2.1: STL export ────────────────────────────────────────
+  // ── Meshing Phase 0: mesh export download ─────────────────────
 
-  /** Serialise the current scene as ASCII STL. Mostly useful
-   *  for debug / diffing — the Download button uses the binary
-   *  path below. */
-  exportStlAscii(): string {
-    return this.kernel.exportStlAscii();
-  }
-
-  /** Serialise the current scene as binary STL bytes. */
-  exportStlBinary(): Uint8Array {
-    return this.kernel.exportStlBinary();
-  }
-
-  /** Fire a browser download of the current scene as a binary
-   *  STL file. No-op outside the browser (the store is also
-   *  used in Vitest where `document`/`URL` may not exist). */
-  downloadStl(filename = "fielddraft.stl"): void {
+  /** Fire a browser download of an already-built export (bytes from
+   *  `exportMeshed`). For 3MF, slicer metadata stashed by the last 3MF
+   *  import is re-wrapped around the fresh model (roundtrip). No-op
+   *  outside the browser (Vitest has no `document`/`URL`). */
+  downloadExport(
+    bytes: Uint8Array,
+    format: "stl" | "3mf",
+    filename?: string,
+  ): void {
     if (!canTriggerDownload()) return;
-    const bytes = this.kernel.exportStlBinary();
-    const copy = new Uint8Array(bytes.length);
-    copy.set(bytes);
-    triggerDownload(copy, "model/stl", filename);
-  }
-
-  /** M14a: export the current scene as a 3MF archive with
-   *  per-body colors. Same WASM→Blob→download pattern as STL. */
-  download3mf(filename = "fielddraft.3mf"): void {
-    if (!canTriggerDownload()) return;
-    const bytes = this.kernel.export3mf();
-    const copy = new Uint8Array(bytes.length);
-    copy.set(bytes);
+    if (format === "stl") {
+      // Copy into a fresh (non-shared) buffer for the Blob API.
+      triggerDownload(
+        new Uint8Array(bytes),
+        "model/stl",
+        filename ?? "fielddraft.stl",
+      );
+      return;
+    }
+    const stash = this.state.threemfStash;
+    let out = new Uint8Array(bytes);
+    if (stash) {
+      const modelXmlOnly = extractModelXml(out);
+      out = new Uint8Array(export3mfRoundtrip(modelXmlOnly, stash));
+    }
     triggerDownload(
-      copy,
+      out,
       "application/vnd.ms-package.3dmanufacturing-3dmodel+xml",
-      filename,
+      filename ?? "fielddraft.3mf",
     );
   }
 
@@ -270,29 +265,6 @@ export class IoStore {
       alert(`3MF import failed: ${e instanceof Error ? e.message : e}`);
       return [];
     }
-  }
-
-  /** Re-export as 3MF, preserving stashed slicer metadata from the
-   *  last import. Falls back to normal 3MF export if no stash exists. */
-  download3mfRoundtrip(filename = "fielddraft.3mf"): void {
-    if (!canTriggerDownload()) return;
-    const stash = this.state.threemfStash;
-    if (!stash) {
-      this.download3mf(filename);
-      return;
-    }
-    const kernelZip = this.kernel.export3mf();
-    const copy = new Uint8Array(kernelZip.length);
-    copy.set(kernelZip);
-    const modelXmlOnly = extractModelXml(copy);
-    const bytes = export3mfRoundtrip(modelXmlOnly, stash);
-    const blobData = new Uint8Array(bytes.length);
-    blobData.set(bytes);
-    triggerDownload(
-      blobData,
-      "application/vnd.ms-package.3dmanufacturing-3dmodel+xml",
-      filename,
-    );
   }
 
   /** M14c: export the mechanical core of the scene as STEP via

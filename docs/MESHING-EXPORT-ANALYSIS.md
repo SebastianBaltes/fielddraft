@@ -161,6 +161,28 @@ graph LR
   Auflösung (unabhängig vom Viewport-Budget; Kontext-Bodies nicht mehr mit res 32
   exportieren!) + Validator/Report. Noch ohne neue Algorithmik — dieselbe MDC-Pipeline,
   nur richtig dimensioniert und geprüft, im Worker mit Fortschrittsanzeige.
+
+  **✅ UMGESETZT (v0.6.358):** Kernel-Session `export_mesh.rs` (Zellgröße →
+  per-Body-Auflösung, Memory-Guard ~24M Ecken), Validator `mesh_validate.rs`
+  (watertight/manifold/Orientierung/Komponenten + gemessene SDF-Abweichung),
+  Export-Request im Mesher-Worker mit per-Body-Progress, `ExportDialog` mit
+  Report (Verdict, max. Abweichung, Dreiecke, per-Body-Detail). Zwei Befunde,
+  die der Validator sofort ans Licht brachte:
+  1. **MDC wickelt an scharfen Kanten inkonsistent** — eine Box bei res 80 hat
+     im rohen MDC-Output ~474 Kanten, deren zwei Dreiecke die Kante in
+     derselben Richtung durchlaufen (≙ geflippte Dreiecke entlang der 12
+     Box-Kanten). Im Viewport unsichtbar (DoubleSide), im STL ein
+     Orientierungs-Defekt. Phase 0 repariert per
+     `fix_orientation` (BFS-Orientierungspropagation + Komponenten-Vote gegen
+     den SDF-Gradienten); Wurzelursache im MDC-Quad-Winding ist ein
+     Phase-1-Thema.
+  2. **Die planare Simplifikation ist nichtdeterministisch und erzeugt
+     manchmal non-manifold Kanten** (Box: 0–90 je Lauf bei identischem Input —
+     `HashMap`-Iterationsreihenfolge). Phase 0 behandelt sie deshalb als
+     Kandidaten: übernommen nur, wenn die Wasserdichtheit des rohen Meshes
+     erhalten bleibt, sonst Fallback aufs rohe Mesh
+     (`simplification_rejected` im Report). Determinismus-Fix ebenfalls
+     Phase 1.
 - **Phase 1 (M, der eigentliche Hub):** Option A vollständig — Octree-Clustering
   (Schaefer 07) auf `mdc.rs` aufsetzen, exakte Hermite-Daten, B-Rep-Kanten-Pinning,
   Selbstschnitt-Check. Erfüllt alle vier Kriterien generisch.

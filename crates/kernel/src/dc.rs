@@ -93,6 +93,17 @@ pub fn dual_contour_with_primitives(
     resolution: u32,
     leaf_primitives: &HashMap<u32, &Primitive>,
 ) -> Mesh {
+    let mut mesh = dual_contour_unsimplified(node, resolution);
+    simplify_dc_mesh(&mut mesh, node, leaf_primitives);
+    mesh
+}
+
+/// Grid setup + Manifold-DC + Newton projection of the face vertices
+/// onto the exact SDF — *without* the simplification post-pass. The
+/// export mesher consumes this directly so it can validate the
+/// simplification step separately and fall back to the raw mesh when
+/// simplifying would break watertightness.
+pub fn dual_contour_unsimplified(node: &BoundedCsg, resolution: u32) -> Mesh {
     if resolution == 0 {
         return Mesh::default();
     }
@@ -117,16 +128,24 @@ pub fn dual_contour_with_primitives(
     let normal_eps = cell * 0.25;
 
     let mut mesh = crate::mdc::manifold_dc(node, grid.min, cell, nx, ny, nz);
-
     project_face_vertices(&mut mesh, node, normal_eps);
-    simplify_planar_faces(&mut mesh);
+    mesh
+}
+
+/// The simplification post-pass shared by the viewport pipeline and the
+/// export mesher: planar + developable simplification, then the
+/// feature-normal fix.
+pub fn simplify_dc_mesh(
+    mesh: &mut Mesh,
+    node: &BoundedCsg,
+    leaf_primitives: &HashMap<u32, &Primitive>,
+) {
+    simplify_planar_faces(mesh);
     if !leaf_primitives.is_empty() {
         let leaf_transforms = node.leaf_world_transforms();
-        simplify_developable_faces(&mut mesh, leaf_primitives, &leaf_transforms);
+        simplify_developable_faces(mesh, leaf_primitives, &leaf_transforms);
     }
-    fix_feature_normals(&mut mesh);
-
-    mesh
+    fix_feature_normals(mesh);
 }
 
 // ── K3.5 Phase B: planar face simplification ────────────────────────

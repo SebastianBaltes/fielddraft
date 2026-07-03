@@ -1,0 +1,191 @@
+.fd-export-dialog-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  background: rgba(0, 0, 0, 0.25);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.fd-export-dialog {
+  background: var(--color-bg-elevated);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg);
+  width: 34rem;
+  max-width: 92vw;
+  max-height: 82vh;
+  display: flex;
+  flex-direction: column;
+
+  & .dialog-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: var(--space-4) var(--space-4) var(--space-2);
+  }
+
+  & .dialog-title {
+    margin: 0;
+    font-size: var(--fs-md);
+    font-weight: var(--fw-semibold);
+    color: var(--color-text);
+  }
+
+  & .dialog-close {
+    background: none;
+    border: none;
+    cursor: pointer;
+    font-size: var(--fs-lg);
+    color: var(--color-text-muted);
+    padding: var(--space-1);
+    border-radius: var(--radius-sm);
+    line-height: 1;
+
+    &:hover {
+      background: var(--color-bg-hover);
+      color: var(--color-text);
+    }
+  }
+
+  & .settings-row {
+    display: grid;
+    grid-template-columns: auto 6rem;
+    align-items: center;
+    column-gap: var(--space-3);
+    row-gap: var(--space-1);
+    padding: var(--space-2) var(--space-4);
+    border-bottom: 1px solid var(--color-divider);
+
+    & label {
+      font-size: var(--fs-base);
+      color: var(--color-text);
+    }
+
+    & input {
+      font-family: inherit;
+      font-size: var(--fs-base);
+      color: var(--color-text);
+      background: var(--color-bg-sunken);
+      border: 1px solid var(--color-border);
+      border-radius: var(--radius-md);
+      padding: var(--space-1) var(--space-2);
+      text-align: right;
+
+      &:focus {
+        outline: none;
+        border-color: var(--color-accent);
+      }
+    }
+
+    & .hint {
+      grid-column: 1 / -1;
+      font-size: var(--fs-base);
+      color: var(--color-text-muted);
+    }
+  }
+
+  & .progress-block {
+    display: flex;
+    align-items: center;
+    gap: var(--space-3);
+    padding: var(--space-4);
+    font-size: var(--fs-base);
+    color: var(--color-text-muted);
+
+    & progress {
+      flex: 1;
+      accent-color: var(--color-accent);
+    }
+  }
+
+  & .error-block {
+    padding: var(--space-4);
+    font-size: var(--fs-base);
+    color: var(--color-error-text);
+  }
+
+  & .report {
+    overflow-y: auto;
+    padding: var(--space-3) var(--space-4);
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3);
+
+    & .verdict {
+      font-size: var(--fs-base);
+      font-weight: var(--fw-semibold);
+
+      &.ok {
+        color: var(--color-success-text);
+      }
+
+      &.warn {
+        color: var(--color-warning);
+      }
+    }
+
+    & .body-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: var(--fs-base);
+      color: var(--color-text);
+
+      & th {
+        text-align: left;
+        font-weight: var(--fw-semibold);
+        color: var(--color-text-muted);
+        padding: var(--space-1) var(--space-2);
+        border-bottom: 1px solid var(--color-divider);
+      }
+
+      & td {
+        padding: var(--space-1) var(--space-2);
+        border-bottom: 1px solid var(--color-divider);
+        white-space: nowrap;
+      }
+    }
+  }
+
+  & .dialog-footer {
+    display: flex;
+    justify-content: flex-end;
+    gap: var(--space-2);
+    padding: var(--space-3) var(--space-4) var(--space-4);
+    border-top: 1px solid var(--color-divider);
+
+    & button {
+      font-family: inherit;
+      font-size: var(--fs-base);
+      border-radius: var(--radius-md);
+      padding: var(--space-2) var(--space-4);
+      cursor: pointer;
+
+      &.secondary {
+        background: var(--color-bg-sunken);
+        border: 1px solid var(--color-border);
+        color: var(--color-text);
+
+        &:hover {
+          background: var(--color-bg-hover);
+        }
+      }
+
+      &.primary {
+        background: var(--color-accent);
+        border: 1px solid var(--color-accent);
+        color: var(--color-text-on-accent);
+
+        &:hover:not(:disabled) {
+          filter: brightness(1.05);
+        }
+
+        &:disabled {
+          opacity: 0.5;
+          cursor: default;
+        }
+      }
+    }
+  }
+}

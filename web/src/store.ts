@@ -44,6 +44,11 @@ import type { MateType, IKTarget } from "./assembly";
 import type { FieldSkriptRecord } from "./fieldskript/record";
 import type { TabKind } from "./project";
 import type { MeshOverlayData } from "./meshIO";
+import type {
+  ExportFormat,
+  ExportOutcome,
+  ExportProgress,
+} from "./exportTypes";
 
 import {
   StoreCore,
@@ -2057,28 +2062,28 @@ export class KernelStore {
 
   // ── K7.2.1: import/export — implementation in IoStore ─────────────
 
-  exportStlAscii(): string {
-    return this.io.exportStlAscii();
+  /** Meshing Phase 0: run the tolerance-driven export pass (worker
+   *  when available) and get bytes + validation report back. */
+  exportMeshed(
+    format: ExportFormat,
+    cellSizeMm: number,
+    onProgress?: (p: ExportProgress) => void,
+  ): Promise<ExportOutcome> {
+    return this.workers.exportMeshed(format, cellSizeMm, onProgress);
   }
 
-  exportStlBinary(): Uint8Array {
-    return this.io.exportStlBinary();
-  }
-
-  downloadStl(filename = "fielddraft.stl"): void {
-    this.io.downloadStl(filename);
-  }
-
-  download3mf(filename = "fielddraft.3mf"): void {
-    this.io.download3mf(filename);
+  /** Download an already-built export (3MF re-wraps stashed slicer
+   *  metadata from the last import). */
+  downloadExport(
+    bytes: Uint8Array,
+    format: ExportFormat,
+    filename?: string,
+  ): void {
+    this.io.downloadExport(bytes, format, filename);
   }
 
   import3mfFile(buffer: ArrayBuffer): number[] {
     return this.io.import3mfFile(buffer);
-  }
-
-  download3mfRoundtrip(filename = "fielddraft.3mf"): void {
-    this.io.download3mfRoundtrip(filename);
   }
 
   downloadStep(filename = "fielddraft.step"): Promise<void> {

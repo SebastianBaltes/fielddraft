@@ -1013,22 +1013,41 @@ export class Kernel {
     );
   }
 
-  /** K7.2: serialise the current scene as ASCII STL. */
-  exportStlAscii(): string {
-    return this.inner.exportStlAscii();
+  // ── Meshing Phase 0: tolerance-driven export meshing session ──
+  // Protocol: exportMeshBegin(cellMm) → N× exportMeshBody(i) (loop +
+  // progress) → exportMeshStl()/exportMesh3mf() + exportMeshReport()
+  // → exportMeshEnd(). Any document mutation drops the session.
+
+  /** Start an export meshing pass; returns the body count to loop. */
+  exportMeshBegin(cellSizeMm: number): number {
+    return this.inner.exportMeshBegin(cellSizeMm);
   }
 
-  /** K7.2: serialise the current scene as binary STL.
-   *  Returns a `Uint8Array` owned by the main thread (the
-   *  wasm-bindgen bridge copies the bytes out of the linear
-   *  memory before returning). */
-  exportStlBinary(): Uint8Array {
-    return this.inner.exportStlBinary();
+  /** Mesh + validate body `i`; returns its report JSON ("" without a
+   *  running session). */
+  exportMeshBody(i: number): string {
+    return this.inner.exportMeshBody(i);
   }
 
-  /** M14a: serialise the current scene as a 3MF ZIP archive. */
-  export3mf(): Uint8Array {
-    return this.inner.export3mf();
+  /** Binary STL of the session's export meshes. */
+  exportMeshStl(): Uint8Array {
+    return this.inner.exportMeshStl();
+  }
+
+  /** 3MF archive of the session's export meshes. */
+  exportMesh3mf(): Uint8Array {
+    return this.inner.exportMesh3mf();
+  }
+
+  /** Aggregate session report as JSON (see ExportReport in
+   *  exportTypes.ts). */
+  exportMeshReport(): string {
+    return this.inner.exportMeshReport();
+  }
+
+  /** Drop the session and free its meshes. */
+  exportMeshEnd(): void {
+    this.inner.exportMeshEnd();
   }
 
   /** M14b: classify features for STEP export capability. */

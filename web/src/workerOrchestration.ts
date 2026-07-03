@@ -25,9 +25,19 @@ import type {
 } from "./weaver.worker";
 import {
   CoalescingWorkerChannel,
+  CorrelatedWorkerChannel,
   type ChannelEvent,
   type OutboundRequest,
 } from "./workerChannel";
+import type {
+  ExportFormat,
+  ExportOutcome,
+  ExportProgress,
+  ExportReport,
+  MesherExportRequest,
+  MesherExportResponse,
+  MesherExportProgressMsg,
+} from "./exportTypes";
 import {
   StoreCore,
   type MeshedBody,
@@ -43,6 +53,35 @@ function parseMesherResponse(
   if (!msg || typeof msg !== "object" || msg.type !== "bodies") return null;
   return msg.ok
     ? { kind: "result", requestId: msg.requestId, value: msg.bodies }
+    : { kind: "error", requestId: msg.requestId, error: msg.error };
+}
+
+/** Map export traffic on the mesher worker onto channel events —
+ *  rebuild/`fd_result` messages belong to the other channels and are
+ *  ignored (`null`). */
+function parseExportResponse(
+  data: unknown,
+): ChannelEvent<ExportOutcome, ExportProgress> | null {
+  const msg = data as
+    | MesherExportResponse
+    | MesherExportProgressMsg
+    | null
+    | undefined;
+  if (!msg || typeof msg !== "object") return null;
+  if (msg.type === "export_progress") {
+    return {
+      kind: "progress",
+      requestId: msg.requestId,
+      progress: { done: msg.done, total: msg.total },
+    };
+  }
+  if (msg.type !== "export_result") return null;
+  return msg.ok
+    ? {
+        kind: "result",
+        requestId: msg.requestId,
+        value: { bytes: msg.bytes, report: msg.report },
+      }
     : { kind: "error", requestId: msg.requestId, error: msg.error };
 }
 
@@ -88,6 +127,15 @@ export class WorkerOrchestrator {
   private mesherAvailable = false;
   private dcMeshingEnabled = true;
 
+  /** Meshing Phase 0: promise-per-request channel for export passes,
+   *  sharing the mesher worker with the rebuild channel (the parsers
+   *  discriminate by message type). Export requests queue behind an
+   *  in-flight rebuild on the worker's message loop — no interleaving. */
+  private exportChannel: CorrelatedWorkerChannel<
+    ExportOutcome,
+    ExportProgress
+  > | null = null;
+
   /** B-Rep weaver worker (third kernel instance). While it's up, the
    *  main kernel's B-Rep exports stay PERMANENTLY suppressed
    *  (cache-or-empty, never a synchronous main-thread weave); after
@@ -126,6 +174,11 @@ export class WorkerOrchestrator {
           // resolution; its response auto-posts a full-resolution follow-up.
           followUpAfterInitial: true,
         });
+        this.exportChannel = new CorrelatedWorkerChannel(
+          mesher,
+          parseExportResponse,
+          "export channel",
+        );
         this.mesherAvailable = true;
         this.kernel.setSyncMeshing(false);
       } catch (err) {
@@ -293,6 +346,48 @@ export class WorkerOrchestrator {
     } else if (kernelChanged) {
       this.notify();
     }
+  }
+
+  /**
+   * Meshing Phase 0: run a tolerance-driven export pass (STL/3MF) and
+   * return the encoded bytes plus the validation report. Runs in the
+   * mesher worker when available (with per-body progress); falls back
+   * to a synchronous session on the main-thread kernel otherwise
+   * (Vitest / worker bring-up failure).
+   */
+  async exportMeshed(
+    format: ExportFormat,
+    cellSizeMm: number,
+    onProgress?: (p: ExportProgress) => void,
+  ): Promise<ExportOutcome> {
+    if (this.exportChannel) {
+      const documentJson = this.kernel.toJson();
+      return this.exportChannel.call((requestId) => {
+        const message: MesherExportRequest = {
+          type: "export",
+          requestId,
+          documentJson,
+          cellSizeMm,
+          format,
+        };
+        return { message };
+      }, onProgress);
+    }
+
+    // Synchronous fallback on the main-thread kernel. The session API
+    // builds its own meshes, so this works even with sync meshing off.
+    const kernel = this.kernel;
+    const total = kernel.exportMeshBegin(cellSizeMm);
+    onProgress?.({ done: 0, total });
+    for (let i = 0; i < total; i++) {
+      kernel.exportMeshBody(i);
+      onProgress?.({ done: i + 1, total });
+    }
+    const bytes =
+      format === "3mf" ? kernel.exportMesh3mf() : kernel.exportMeshStl();
+    const report = JSON.parse(kernel.exportMeshReport()) as ExportReport;
+    kernel.exportMeshEnd();
+    return { bytes, report };
   }
 
   /** Hand off the current document to the mesher worker. Coalescing,
