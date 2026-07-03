@@ -476,6 +476,13 @@ export class StoreCore {
     this.emit();
   }
 
+  /** Schedule a debounced autosave of the serialized project — for
+   *  domain writes that persist without running the full commit()
+   *  tail (e.g. assembly-document edits, tab renames). */
+  scheduleAutosave(): void {
+    this.autosave.schedule(this.hooks.serializeProject());
+  }
+
   // ── small cross-domain UI helpers ─────────────────────────────────
 
   setLoading(phase: string | null): void {

@@ -62,18 +62,9 @@ import {
 import type { SketchDiagnostics } from "./solver/types";
 import {
   INACTIVE_ASSEMBLY,
-  allocateAssemblyId,
-  IDENTITY_TRANSFORM,
-  solveAssembly,
-  solveIK,
-  type AssemblyDocument,
-  type AssemblyPartInstance,
-  type AssemblyMeshedBody,
-  type Mate,
   type MateType,
   type IKTarget,
 } from "./assembly";
-import { executeScript } from "./fieldscript";
 import {
   createRecord,
   reviseRecord,
@@ -133,6 +124,7 @@ import {
   SketchStore,
   initialSketchToolParams,
 } from "./sketchStore";
+import { AssemblyStore } from "./assemblyStore";
 
 // Re-export the shared store types from their new home so the many
 // existing `import { StoreState } from "./store"` sites keep working.
@@ -178,6 +170,8 @@ export class KernelStore {
   private readonly core: StoreCore;
   /** Sketch domain controller — see sketchStore.ts. */
   private readonly sketch: SketchStore;
+  /** Assembly domain controller — see assemblyStore.ts. */
+  private readonly assembly: AssemblyStore;
 
   /** The current immutable state snapshot lives in the core. */
   private get state(): StoreState {
@@ -255,6 +249,11 @@ export class KernelStore {
     // feature removal stays a facade concern, injected as a dep.
     this.sketch = new SketchStore(this.core, {
       removeFeature: (id) => this.removeFeature(id),
+    });
+    // exitAssembly switches back to the first part tab — tab management
+    // stays a project-domain concern, injected as a dep.
+    this.assembly = new AssemblyStore(this.core, {
+      setActiveTab: (id) => this.setActiveTab(id),
     });
 
     // Bring up the mesher worker BEFORE the initial document load: with the
@@ -1976,143 +1975,25 @@ export class KernelStore {
     this.core.emit();
   }
 
-  // ── P1: Assembly management ────────────────────────────────────
+  // ── P1: Assembly management — implementation in AssemblyStore ─────
 
-  /** Single write path for assembly-document edits. Writes `next` into the
-   *  active assembly tab (the source of truth) AND mirrors it into the
-   *  derived `state.assembly` read-view (same object reference), then
-   *  notifies + schedules autosave. No-op if the active tab isn't an
-   *  assembly tab. */
-  private updateAssemblyDocument(next: AssemblyDocument): void {
-    const activeId = this.state.project.activeTabId;
-    const tabs = this.state.project.tabs.map((t) =>
-      t.id === activeId && t.kind === "assembly" ? { ...t, document: next } : t,
-    );
-    this.state = {
-      ...this.state,
-      project: { ...this.state.project, tabs },
-      assembly: { ...this.state.assembly, document: next },
-    };
-    this.notify();
-    this.autosave.schedule(this.serializeProject());
-  }
-
-  /** MT-A: leave the active assembly tab by switching to the first
-   *  part tab. Drives the Outliner's "exit assembly" button. */
   exitAssembly(): void {
-    const partTab = this.state.project.tabs.find((t) => t.kind === "part");
-    if (partTab) this.setActiveTab(partTab.id);
+    this.assembly.exitAssembly();
   }
 
-  /** Import a `.fdraft` part into the active assembly. Accepts a document
-   *  JSON string or raw `.fdraft` bytes (wu2v: ZIP container → its
-   *  `document.json` is extracted; legacy JSON bytes pass through). */
   addPartToAssembly(
     source: string | Uint8Array | ArrayBuffer,
     name?: string,
   ): void {
-    const asm = this.state.assembly;
-    if (!asm.active) return;
-
-    let documentJson: string;
-    if (typeof source === "string") {
-      documentJson = source;
-    } else {
-      const u8 = source instanceof Uint8Array ? source : new Uint8Array(source);
-      const isZip = u8.length >= 2 && u8[0] === 0x50 && u8[1] === 0x4b;
-      if (isZip) {
-        const parsed = parseProjectBytes(u8);
-        if (!parsed) return;
-        documentJson = serializeProjectJson(parsed.project);
-      } else {
-        documentJson = new TextDecoder().decode(u8);
-      }
-    }
-
-    const id = allocateAssemblyId();
-    // Derive the default name from the highest existing "Part N" so removing a
-    // part and adding another doesn't reuse a name that's still in use.
-    const maxPartNumber = asm.document.parts.reduce((max, p) => {
-      const m = /^Part (\d+)$/.exec(p.name);
-      return m ? Math.max(max, Number(m[1])) : max;
-    }, 0);
-    const partName = name ?? `Part ${maxPartNumber + 1}`;
-
-    const meshBodies: AssemblyMeshedBody[] = [];
-    const mateConnectors: import("./assembly").MateConnectorDef[] = [];
-    const savedJson = this.kernel.toJson();
-    const syncChanged = this.kernel.setSyncMeshing(true);
-    try {
-      this.kernel.loadJson(documentJson);
-      const bodyCount = this.kernel.bodyCount();
-      for (let i = 0; i < bodyCount; i++) {
-        meshBodies.push({
-          positions: this.kernel.bodyPositionsView(i).slice(),
-          normals: this.kernel.bodyNormalsView(i).slice(),
-          indices: this.kernel.bodyIndicesView(i).slice(),
-        });
-      }
-      // C2: mate-connector CSYS is resolved by the kernel from the
-      // face query during the regeneration triggered by loadJson above.
-      for (const c of this.kernel.resolvedMateConnectors()) {
-        mateConnectors.push({
-          featureId: c.id ?? 0,
-          origin: [c.origin[0], c.origin[1], c.origin[2]],
-          normal: [c.normal[0], c.normal[1], c.normal[2]],
-        });
-      }
-    } catch {
-      // Meshing failed — add the part with empty meshes
-    } finally {
-      // Restore the live document. If this ever throws the main kernel state
-      // would be lost, so surface it loudly rather than swallowing it.
-      try {
-        this.kernel.loadJson(savedJson);
-      } catch (err) {
-        console.error(
-          "fielddraft: failed to restore document after addPartToAssembly",
-          err,
-        );
-      }
-      if (syncChanged) this.kernel.setSyncMeshing(false);
-    }
-
-    const newPart: AssemblyPartInstance = {
-      id,
-      name: partName,
-      documentJson,
-      transform: IDENTITY_TRANSFORM,
-      meshBodies,
-      mateConnectors,
-    };
-
-    this.updateAssemblyDocument({
-      ...asm.document,
-      parts: [...asm.document.parts, newPart],
-    });
+    this.assembly.addPartToAssembly(source, name);
   }
 
   removePartFromAssembly(partId: string): void {
-    const asm = this.state.assembly;
-    if (!asm.active) return;
-    this.updateAssemblyDocument({
-      ...asm.document,
-      parts: asm.document.parts.filter((p) => p.id !== partId),
-      mates: asm.document.mates.filter(
-        (m) => m.connectorA.partId !== partId && m.connectorB.partId !== partId,
-      ),
-    });
-    if (asm.selectedPartId === partId) this.selectAssemblyPart(null);
+    this.assembly.removePartFromAssembly(partId);
   }
 
   selectAssemblyPart(partId: string | null): void {
-    const asm = this.state.assembly;
-    if (!asm.active) return;
-    this.state = {
-      ...this.state,
-      assembly: { ...asm, selectedPartId: partId },
-    };
-    this.notify();
+    this.assembly.selectAssemblyPart(partId);
   }
 
   setPartTransform(
@@ -2120,14 +2001,7 @@ export class KernelStore {
     translate: [number, number, number],
     rotate: [number, number, number],
   ): void {
-    const asm = this.state.assembly;
-    if (!asm.active) return;
-    this.updateAssemblyDocument({
-      ...asm.document,
-      parts: asm.document.parts.map((p) =>
-        p.id === partId ? { ...p, transform: { translate, rotate } } : p,
-      ),
-    });
+    this.assembly.setPartTransform(partId, translate, rotate);
   }
 
   addMate(
@@ -2137,49 +2011,19 @@ export class KernelStore {
     partBId: string,
     connBFeatureId: number,
   ): void {
-    const asm = this.state.assembly;
-    if (!asm.active) return;
-    const mate: Mate = {
-      id: allocateAssemblyId(),
-      name: `${type} mate`,
-      type,
-      connectorA: { partId: partAId, connectorFeatureId: connAFeatureId },
-      connectorB: { partId: partBId, connectorFeatureId: connBFeatureId },
-      angle: type === "revolute" ? 0 : undefined,
-      offset: type === "prismatic" ? 0 : undefined,
-    };
-    const newDoc = {
-      ...asm.document,
-      mates: [...asm.document.mates, mate],
-    };
-    const solved = solveAssembly({ ...newDoc, parts: asm.document.parts });
-    this.updateAssemblyDocument({ ...newDoc, parts: solved });
+    this.assembly.addMate(type, partAId, connAFeatureId, partBId, connBFeatureId);
   }
 
   removeMate(mateId: string): void {
-    const asm = this.state.assembly;
-    if (!asm.active) return;
-    this.updateAssemblyDocument({
-      ...asm.document,
-      mates: asm.document.mates.filter((m) => m.id !== mateId),
-    });
+    this.assembly.removeMate(mateId);
   }
 
   setMateAngle(mateId: string, angleDeg: number): void {
-    const asm = this.state.assembly;
-    if (!asm.active) return;
-    const newMates = asm.document.mates.map((m) =>
-      m.id === mateId ? { ...m, angle: angleDeg } : m,
-    );
-    const newDoc = { ...asm.document, mates: newMates };
-    const solved = solveAssembly({ ...newDoc, parts: asm.document.parts });
-    this.updateAssemblyDocument({ ...newDoc, parts: solved });
+    this.assembly.setMateAngle(mateId, angleDeg);
   }
 
   setAssemblyScript(source: string): void {
-    const asm = this.state.assembly;
-    if (!asm.active) return;
-    this.updateAssemblyDocument({ ...asm.document, script: source });
+    this.assembly.setAssemblyScript(source);
   }
 
   runFieldScript(
@@ -2187,48 +2031,11 @@ export class KernelStore {
     time: number,
     dt: number,
   ): string | null {
-    const asm = this.state.assembly;
-    if (!asm.active || !asm.document.script) return null;
-
-    const currentAngles = new Map<string, number>();
-    for (const mate of asm.document.mates) {
-      if (mate.type === "revolute") {
-        currentAngles.set(mate.id, mate.angle ?? 0);
-      }
-    }
-
-    const result = executeScript(
-      asm.document.script,
-      params,
-      time,
-      dt,
-      currentAngles,
-    );
-
-    if (!result.success) return result.error ?? "script error";
-
-    if (result.jointUpdates.size > 0) {
-      let newMates = [...asm.document.mates];
-      for (const [mateId, angle] of result.jointUpdates) {
-        newMates = newMates.map((m) => (m.id === mateId ? { ...m, angle } : m));
-      }
-      const newDoc = { ...asm.document, mates: newMates };
-      const solved = solveAssembly({ ...newDoc, parts: asm.document.parts });
-      this.updateAssemblyDocument({ ...newDoc, parts: solved });
-    }
-
-    return null;
+    return this.assembly.runFieldScript(params, time, dt);
   }
 
   exportR3F(): void {
-    if (!this.state.assembly.active) return;
-    import("./exportR3F")
-      .then(({ downloadR3FExport }) => {
-        downloadR3FExport(this.state.assembly.document);
-      })
-      .catch((err) => {
-        console.error("fielddraft: R3F export failed", err);
-      });
+    this.assembly.exportR3F();
   }
 
   async publishProject(): Promise<string | null> {
@@ -2257,40 +2064,19 @@ export class KernelStore {
   }
 
   toggleIKMode(): void {
-    this.patch({ ikMode: !this.state.ikMode });
-    this.notify();
+    this.assembly.toggleIKMode();
   }
 
   runIK(target: IKTarget): void {
-    const asm = this.state.assembly;
-    if (!asm.active) return;
-    const solved = solveIK(asm.document, target);
-    if (!solved) return;
-    const newDoc = { ...asm.document, mates: solved };
-    const parts = solveAssembly({ ...newDoc, parts: asm.document.parts });
-    this.updateAssemblyDocument({ ...newDoc, parts });
+    this.assembly.runIK(target);
   }
 
   setMateOffset(mateId: string, offsetMm: number): void {
-    const asm = this.state.assembly;
-    if (!asm.active) return;
-    const newMates = asm.document.mates.map((m) =>
-      m.id === mateId ? { ...m, offset: offsetMm } : m,
-    );
-    const newDoc = { ...asm.document, mates: newMates };
-    const solved = solveAssembly({ ...newDoc, parts: asm.document.parts });
-    this.updateAssemblyDocument({ ...newDoc, parts: solved });
+    this.assembly.setMateOffset(mateId, offsetMm);
   }
 
   setMateJointLimits(mateId: string, minAngle: number, maxAngle: number): void {
-    const asm = this.state.assembly;
-    if (!asm.active) return;
-    this.updateAssemblyDocument({
-      ...asm.document,
-      mates: asm.document.mates.map((m) =>
-        m.id === mateId ? { ...m, minAngle, maxAngle } : m,
-      ),
-    });
+    this.assembly.setMateJointLimits(mateId, minAngle, maxAngle);
   }
 
   selectAll(): void {
