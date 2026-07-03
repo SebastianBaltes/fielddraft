@@ -113,6 +113,33 @@ async function drawLine(
   await page.getByTestId("sketch-tool-apply").click();
 }
 
+/**
+ * Select a sketch draw tool by its key.
+ *
+ * Flat tools (line, spline, …) carry the id `sketch-tool-<key>` directly.
+ * Rectangle/Circle variants (ticket pqoe) live inside a split-button flyout:
+ * their variant id is kept mounted but parked off-screen while the flyout is
+ * collapsed, so a direct `.click()` times out as "element is outside of the
+ * viewport". The group's primary button invokes the default variant — exactly
+ * what a user clicks to draw a default rectangle/circle — so route grouped
+ * defaults through it.
+ */
+async function pickSketchTool(
+  page: import("@playwright/test").Page,
+  tool: string,
+) {
+  const group: Record<string, string> = {
+    sketch_rectangle: "sketch-tool-rectangle-group",
+    sketch_circle: "sketch-tool-circle-group",
+  };
+  const groupId = group[tool];
+  if (groupId) {
+    await page.getByTestId(groupId).locator("button.tool.primary").click();
+  } else {
+    await page.getByTestId(`sketch-tool-${tool}`).click();
+  }
+}
+
 function readCommittedSubCalls(page: import("@playwright/test").Page) {
   return page.evaluate(() => {
     const kernel = (
@@ -217,13 +244,15 @@ test.describe("Sketch editor smoke", () => {
     await page.waitForTimeout(500);
 
     // 6. Finish the sketch — K6b.3a commits the session as a
-    //    real `sketch` FeatureCall on the kernel, so the
-    //    outliner grows a new row with `data-feature-op="union"`
-    //    and the feature-count badge goes from 0 to 1. The
-    //    overlay canvas unmounts, the regular toolbar comes
-    //    back.
+    //    real `sketch` FeatureCall on the kernel, so the outliner
+    //    grows a new row and the feature-count badge goes from 0
+    //    to 1. The overlay canvas unmounts and the regular toolbar
+    //    comes back. The Detail panel itself is a persistent
+    //    Outliner section (ticket pqoe) — it does NOT close; the
+    //    signal that the session ended is that its in-session ✓
+    //    commit button and the 2D overlay are gone.
     await page.getByTestId("sketch-detail-accept").click();
-    await expect(page.getByTestId("detail-panel")).toHaveCount(0);
+    await expect(page.getByTestId("sketch-detail-accept")).toHaveCount(0);
     await expect(page.getByTestId("sketch-canvas-2d")).toHaveCount(0);
     await expect(page.getByTestId("primitive-split-button")).toBeVisible();
     await expect(page.getByTestId("feature-count")).toHaveText("1 feature");
@@ -532,7 +561,7 @@ test.describe("Sketch editor smoke", () => {
     await page.waitForTimeout(600);
 
     await page.getByTestId("enter-sketch").click();
-    await page.getByTestId("sketch-tool-sketch_rectangle").click();
+    await pickSketchTool(page, "sketch_rectangle");
     await expandGeometrySection(page); // ticket 87a1: gated geometry list
 
     // Drag a rectangle across the canvas. The rectangle tool's
@@ -618,7 +647,7 @@ test.describe("Sketch editor smoke", () => {
     await page.waitForTimeout(600);
 
     await page.getByTestId("enter-sketch").click();
-    await page.getByTestId("sketch-tool-sketch_circle").click();
+    await pickSketchTool(page, "sketch_circle");
     await expandGeometrySection(page); // ticket 87a1: gated geometry list
 
     const overlay = page.getByTestId("sketch-canvas-2d");
@@ -707,13 +736,13 @@ test.describe("Sketch editor smoke", () => {
     const cx = box.x + box.width / 2;
     const cy = box.y + box.height / 2;
 
-    await page.getByTestId("sketch-tool-sketch_rectangle").click();
+    await pickSketchTool(page, "sketch_rectangle");
     await page.mouse.move(cx - 150, cy - 60);
     await page.mouse.down();
     await page.mouse.move(cx - 30, cy + 60, { steps: 10 });
     await page.mouse.up();
 
-    await page.getByTestId("sketch-tool-sketch_circle").click();
+    await pickSketchTool(page, "sketch_circle");
     await page.mouse.move(cx + 80, cy);
     await page.mouse.down();
     await page.mouse.move(cx + 140, cy, { steps: 10 });
@@ -780,7 +809,7 @@ test.describe("Sketch editor smoke", () => {
 
     // Draw a rectangle via the dialog path (precise coords).
     await page.getByTestId("enter-sketch").click();
-    await page.getByTestId("sketch-tool-sketch_rectangle").click();
+    await pickSketchTool(page, "sketch_rectangle");
     await expandGeometrySection(page); // ticket 87a1: gated tool dialog + apply
     await page.getByLabel("Corner a x").fill("-20");
     await page.getByLabel("Corner a y").fill("-10");
@@ -1425,7 +1454,7 @@ test.describe("Sketch grip-drag (P0.3)", () => {
 
     await page.getByTestId("enter-sketch").click();
     // A circle at (40, 0) with radius 20, placed precisely via the dialog.
-    await page.getByTestId("sketch-tool-sketch_circle").click();
+    await pickSketchTool(page, "sketch_circle");
     await expandGeometrySection(page); // ticket 87a1: gated tool dialog + apply
     await page.getByLabel("Center x").fill("40");
     await page.getByLabel("Center y").fill("0");
@@ -1485,7 +1514,7 @@ test.describe("Sketch grip-drag (P0.3)", () => {
 
     await page.getByTestId("enter-sketch").click();
     // A precise rectangle (-20,-10)..(20,10) via the dialog.
-    await page.getByTestId("sketch-tool-sketch_rectangle").click();
+    await pickSketchTool(page, "sketch_rectangle");
     await expandGeometrySection(page); // ticket 87a1: gated tool dialog + apply
     await page.getByLabel("Corner a x").fill("-20");
     await page.getByLabel("Corner a y").fill("-10");
