@@ -23,6 +23,7 @@ import type { AutoSaveHandle } from "./persistence";
 import type { PickedElement } from "./elementQuery";
 import type { MesherBodyPayload } from "./mesher.worker";
 import type { SketchSessionState } from "./sketchSession";
+import type { SketchToolParams } from "./sketchStore";
 import type { ThreeMfStash } from "./threemf";
 import type { Project } from "./project";
 import type { AssemblyState } from "./assembly";
@@ -110,41 +111,11 @@ export interface StoreState {
   /** Thicken mode — clicks on curved faces create thicken features (one per
    *  click), mirroring the edge-click fillet flow. */
   thickenMode: boolean;
-  /** F10: sketch-fillet radius (mm) used by the two-click `sketch_fillet`
-   *  tool to round the corner between two picked lines. */
-  sketchFilletRadius: number;
-  /** F11: sketch-chamfer setback distance (mm) used by the two-click
-   *  `sketch_chamfer` tool to bevel the corner between two picked lines. */
-  sketchChamferDistance: number;
-  /** F15: sketch-offset distance (mm) used by the single-click
-   *  `sketch_offset` tool to place a parallel copy of the picked curve. */
-  sketchOffsetDistance: number;
-  /** F16: number of instances (original + copies) for a sketch pattern. */
-  sketchPatternCount: number;
-  /** F16: per-step spacing (mm) for a linear sketch pattern. */
-  sketchPatternSpacing: number;
-  /** F16: total span (degrees) for a circular sketch pattern. */
-  sketchPatternAngle: number;
-  /** F17: rotation angle (degrees) used by the `rotateSketchSelection`
-   *  transform (rotates the selection about the sketch origin). */
-  sketchRotateAngle: number;
-  /** F23-full: which spline family the `sketch_spline` tool draws —
-   *  `"interpolate"` (Catmull-Rom through the points) or `"control"`
-   *  (real cubic B-spline with the points as control polygon). */
-  sketchSplineMode: "interpolate" | "control";
-  /** F24: the string the single-click `sketch_text` tool emits as
-   *  filled glyph geometry. */
-  sketchTextValue: string;
-  /** F24: cap/em height (mm) for the `sketch_text` tool. */
-  sketchTextHeight: number;
-  /** F24-full: id of the font the `sketch_text` tool renders with —
-   *  a bundled-font id (see sketchTextFont.BUNDLED_FONTS) or a synthetic
-   *  `uploaded:…` id for a user-supplied .ttf/.otf. */
-  sketchTextFontId: string;
-  /** F24-full: true once the currently-selected text font has finished
-   *  loading + parsing (drives the UI's "loading font…" hint and gates
-   *  placement). */
-  sketchTextFontReady: boolean;
+  /** Parameters of the interactive sketch tools (fillet radius, pattern
+   *  counts, text value/font, …) consolidated into one object — every
+   *  setter in the sketch domain is a one-line patch of this slice.
+   *  See {@link SketchToolParams}. */
+  sketchToolParams: SketchToolParams;
   /** M12: sync state machine for server-backed projects.
    *  "clean" = in sync with server, "dirty" = local changes
    *  pending, "syncing" = upload in flight, "error" = last
