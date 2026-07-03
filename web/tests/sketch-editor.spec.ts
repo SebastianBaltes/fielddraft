@@ -39,33 +39,22 @@ async function makeProjector(page: import("@playwright/test").Page) {
   const overlay = page.getByTestId("sketch-canvas-2d");
   const box = await overlay.boundingBox();
   expect(box).not.toBeNull();
+  const b = box!;
   const readCam = () =>
     page.evaluate(() => {
       const hook = (
         window as unknown as {
-          __fdSketchCamera?: () => {
-            zoom: number;
-            centerU: number;
-            centerV: number;
-            version: number;
-          };
+          __fdSketchCamera?: () => { zoom: number; version: number };
         }
       ).__fdSketchCamera;
       const c = hook?.();
-      return c
-        ? {
-            zoom: c.zoom,
-            centerU: c.centerU,
-            centerV: c.centerV,
-            version: c.version,
-          }
-        : null;
+      return c ? { zoom: c.zoom, version: c.version } : null;
     });
-  // The R3F ortho camera publishes its zoom asynchronously after the
-  // WebGPU canvas mounts. Project with a *settled* camera so the click
-  // maps to the same sketch coordinate the overlay hit-test will use:
-  // poll until two reads a frame apart agree and the camera has
-  // actually published (version > 0).
+  // The real viewport camera publishes its plane-frame zoom asynchronously
+  // after the WebGPU canvas mounts. Wait for a *settled, finite* zoom so the
+  // click maps to the same sketch coordinate the overlay hit-test will use:
+  // poll until two reads a frame apart agree, the camera has published
+  // (version > 0) and the zoom is finite & positive.
   let cam = await readCam();
   for (let i = 0; i < 40; i++) {
     await page.waitForTimeout(100);
@@ -74,9 +63,9 @@ async function makeProjector(page: import("@playwright/test").Page) {
       next &&
       cam &&
       next.version > 0 &&
-      next.zoom === cam.zoom &&
-      next.centerU === cam.centerU &&
-      next.centerV === cam.centerV
+      Number.isFinite(next.zoom) &&
+      next.zoom > 0 &&
+      next.zoom === cam.zoom
     ) {
       cam = next;
       break;
@@ -85,14 +74,35 @@ async function makeProjector(page: import("@playwright/test").Page) {
   }
   expect(cam).not.toBeNull();
   expect(cam!.version).toBeGreaterThan(0);
-  const b = box!;
-  const c = cam!;
-  // Mirror sketchToScreen() with the overlay's own measured size as
-  // the authoritative viewport (the bridge can publish stale dims).
-  return (u: number, v: number): [number, number] => {
-    const px = b.x + b.width / 2 + (u - c.centerU) * c.zoom;
-    const py = b.y + b.height / 2 - (v - c.centerV) * c.zoom;
-    return [px, py];
+  expect(Number.isFinite(cam!.zoom) && cam!.zoom > 0).toBe(true);
+  // Project through the REAL camera + plane frame (the exact inverse of the
+  // overlay's screen→sketch hit-test) via the bridge's dev hook, overriding
+  // its dims with the overlay's own measured box. `__fdSketchToScreen`
+  // returns canvas-local CSS px; add the box origin for absolute client px.
+  return async (u: number, v: number): Promise<[number, number]> => {
+    const local = await page.evaluate(
+      ([uu, vv, w, h]) => {
+        const hook = (
+          window as unknown as {
+            __fdSketchToScreen?: (
+              u: number,
+              v: number,
+              width?: number,
+              height?: number,
+            ) => [number, number];
+          }
+        ).__fdSketchToScreen;
+        return hook ? hook(uu, vv, w, h) : null;
+      },
+      [u, v, b.width, b.height] as const,
+    );
+    expect(local, "__fdSketchToScreen hook missing").not.toBeNull();
+    const [lx, ly] = local!;
+    expect(
+      Number.isFinite(lx) && Number.isFinite(ly),
+      `projector produced non-finite px for (${u}, ${v})`,
+    ).toBe(true);
+    return [b.x + lx, b.y + ly];
   };
 }
 
@@ -1024,8 +1034,8 @@ test.describe("Sketch constraint palette (P0.1)", () => {
     // Drop to select mode and pick both lines on their midpoints.
     await page.getByTestId("sketch-tool-select").click();
     const project = await makeProjector(page);
-    const [m1x, m1y] = project(50, 35); // midpoint of line 1
-    const [m2x, m2y] = project(50, -20); // midpoint of line 2
+    const [m1x, m1y] = await project(50, 35); // midpoint of line 1
+    const [m2x, m2y] = await project(50, -20); // midpoint of line 2
     await page.mouse.click(m1x, m1y);
     await page.waitForTimeout(120); // let the store/overlay settle the pick
     await page.mouse.click(m2x, m2y);
@@ -1103,8 +1113,8 @@ test.describe("Sketch constraint palette (P0.1)", () => {
 
     await page.getByTestId("sketch-tool-select").click();
     const project = await makeProjector(page);
-    const [p1x, p1y] = project(40, 40);
-    const [p2x, p2y] = project(70, 55);
+    const [p1x, p1y] = await project(40, 40);
+    const [p2x, p2y] = await project(70, 55);
     await page.mouse.click(p1x, p1y);
     await page.waitForTimeout(120); // let the store/overlay settle the pick
     await page.mouse.click(p2x, p2y);
@@ -1164,14 +1174,14 @@ test.describe("Sketch constraint palette (P0.1)", () => {
         return store?.state.sketchSession.selection.length ?? -1;
       });
 
-    const [mx, my] = project(50, 35);
+    const [mx, my] = await project(50, 35);
     await page.mouse.click(mx, my);
     await page.waitForTimeout(120);
     // The line is selected.
     expect(await selectionCount()).toBe(1);
 
     // Click far-off empty space → the selection clears.
-    const [ex, ey] = project(-90, -90);
+    const [ex, ey] = await project(-90, -90);
     await page.mouse.click(ex, ey);
     await page.waitForTimeout(120);
     expect(await selectionCount()).toBe(0);
@@ -1221,7 +1231,7 @@ test.describe("Sketch dimensions (P0.2)", () => {
 
     await page.getByTestId("sketch-tool-select").click();
     const project = await makeProjector(page);
-    const [mx, my] = project(30, 0); // line midpoint
+    const [mx, my] = await project(30, 0); // line midpoint
     await page.mouse.click(mx, my);
 
     // The palette offers a Length dimension for a single line.
@@ -1284,8 +1294,8 @@ test.describe("Sketch dimensions (P0.2)", () => {
 
     await page.getByTestId("sketch-tool-select").click();
     const project = await makeProjector(page);
-    const [ax, ay] = project(30, 0); // midpoint of line A
-    const [bx, by] = project(30, 30); // midpoint of line B
+    const [ax, ay] = await project(30, 0); // midpoint of line A
+    const [bx, by] = await project(30, 30); // midpoint of line B
     await page.mouse.click(ax, ay);
     await page.waitForTimeout(120);
     await page.mouse.click(bx, by);
@@ -1405,7 +1415,7 @@ test.describe("Sketch grip-drag (P0.3)", () => {
     // endpoint grips are now live).
     await page.getByTestId("sketch-tool-select").click();
     const project = await makeProjector(page);
-    const [mx, my] = project(30, 0);
+    const [mx, my] = await project(30, 0);
     await page.mouse.click(mx, my);
     await expect(
       page.getByTestId("sketch-constraint-horizontal"),
@@ -1413,8 +1423,8 @@ test.describe("Sketch grip-drag (P0.3)", () => {
 
     // Grab the end-point grip at (50, 0) and drag it to (50, 40). The
     // line is unconstrained, so the solver leaves the dragged point put.
-    const [ex, ey] = project(50, 0);
-    const [tx, ty] = project(50, 40);
+    const [ex, ey] = await project(50, 0);
+    const [tx, ty] = await project(50, 40);
     await page.mouse.move(ex, ey);
     await page.mouse.down();
     await page.mouse.move((ex + tx) / 2, (ey + ty) / 2, { steps: 5 });
@@ -1464,7 +1474,7 @@ test.describe("Sketch grip-drag (P0.3)", () => {
     // Select the circle by clicking its rightmost rim point (60, 0).
     await page.getByTestId("sketch-tool-select").click();
     const project = await makeProjector(page);
-    const [rimx, rimy] = project(60, 0);
+    const [rimx, rimy] = await project(60, 0);
     await page.mouse.click(rimx, rimy);
 
     // Confirm the circle is selected so the rim grip is live.
@@ -1473,7 +1483,7 @@ test.describe("Sketch grip-drag (P0.3)", () => {
     expect(sel!.selection.length).toBeGreaterThan(0);
 
     // Drag the rim grip from (60, 0) out to (80, 0): radius 20 → 40.
-    const [tx, ty] = project(80, 0);
+    const [tx, ty] = await project(80, 0);
     await page.mouse.move(rimx, rimy);
     await page.mouse.down();
     await page.mouse.move((rimx + tx) / 2, rimy, { steps: 5 });
@@ -1526,7 +1536,7 @@ test.describe("Sketch grip-drag (P0.3)", () => {
     // (0, -10): an edge maps to all four corner grips.
     await page.getByTestId("sketch-tool-select").click();
     const project = await makeProjector(page);
-    const [ex, ey] = project(0, -10);
+    const [ex, ey] = await project(0, -10);
     await page.mouse.click(ex, ey);
     const sel = await readSketchSession(page);
     expect(sel).not.toBeNull();
@@ -1535,8 +1545,8 @@ test.describe("Sketch grip-drag (P0.3)", () => {
     // Grab the top-right corner grip (20, 10) and drag it to (40, 30).
     // The internal H/V constraints keep it axis-aligned; the opposite
     // corner (-20, -10) stays put.
-    const [trx, try_] = project(20, 10);
-    const [tx, ty] = project(40, 30);
+    const [trx, try_] = await project(20, 10);
+    const [tx, ty] = await project(40, 30);
     await page.mouse.move(trx, try_);
     await page.mouse.down();
     await page.mouse.move((trx + tx) / 2, (try_ + ty) / 2, { steps: 5 });
