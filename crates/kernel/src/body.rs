@@ -21,13 +21,13 @@
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 
-use fielddraft_protocol::{BoolOp, FeatureId, HalfSpace, Primitive, Transform};
+use fielddraft_protocol::{BoolOp, FeatureId, Transform};
 
 use crate::brep::octree::Octree;
 use crate::brep::weaving::{weave, weave_parametric};
 use crate::brep::BRep;
 use crate::bvh::BoundedCsg;
-use crate::csg::{Aabb, BlendMode, CsgNode, DecodedFeature};
+use crate::csg::{Aabb, CsgNode, DecodedFeature};
 use crate::dc::Mesh;
 use crate::sdf_compiler::CompiledSdf;
 
@@ -620,9 +620,7 @@ pub fn hash_body_payload_split(
         f.op.tag().hash(&mut geo);
         // The local geometry node already encodes the primitive and
         // every domain-warp/shell modifier, placement-free.
-        hash_node(&f.node, &mut geo);
-        f.blend_radius.to_bits().hash(&mut geo);
-        hash_blend_mode(&f.blend_mode, &mut geo);
+        hash_feature_geometry(f, &mut geo);
 
         f.id.hash(&mut xform);
         for v in f.transform.translate {
@@ -750,470 +748,34 @@ pub fn detect_uniform_translation(
     Some(d)
 }
 
-fn hash_blend_mode(mode: &BlendMode, hasher: &mut DefaultHasher) {
-    (match mode {
-        BlendMode::Fillet => 0u8,
-        BlendMode::Chamfer => 1u8,
-    })
-    .hash(hasher);
-}
-
-/// Structural hash of a feature's local geometry subtree. Placement-free
-/// (the outer transform is hashed separately in
-/// [`hash_body_payload_split`]), so a pure move leaves this unchanged.
-/// Covers primitives, the extrude/revolve self-centering, and every
-/// domain-warp/shell modifier.
-/// Structural hash of an analytic [`HalfSpace`]: a kind tag plus its scalar
-/// parameters. Used to fold a shell's curved/planar open faces into the body
-/// hash so an opening change invalidates the cache.
-fn hash_halfspace(hs: &HalfSpace, hasher: &mut DefaultHasher) {
-    match hs {
-        HalfSpace::Plane { normal, offset } => {
-            0u8.hash(hasher);
-            for v in normal {
-                v.to_bits().hash(hasher);
-            }
-            offset.to_bits().hash(hasher);
-        }
-        HalfSpace::InfiniteCylinder { radius } => {
-            1u8.hash(hasher);
-            radius.to_bits().hash(hasher);
-        }
-        HalfSpace::Sphere { radius } => {
-            2u8.hash(hasher);
-            radius.to_bits().hash(hasher);
-        }
-        HalfSpace::Cone { half_angle } => {
-            3u8.hash(hasher);
-            half_angle.to_bits().hash(hasher);
-        }
-        HalfSpace::Torus { major_radius, minor_radius } => {
-            4u8.hash(hasher);
-            major_radius.to_bits().hash(hasher);
-            minor_radius.to_bits().hash(hasher);
-        }
-        HalfSpace::Gyroid { cell_size, thickness } => {
-            5u8.hash(hasher);
-            cell_size.to_bits().hash(hasher);
-            thickness.to_bits().hash(hasher);
-        }
-        HalfSpace::RevolvedProfile { segments, ccw, offset, extend_start, extend_end } => {
-            6u8.hash(hasher);
-            ccw.hash(hasher);
-            offset.to_bits().hash(hasher);
-            extend_start.hash(hasher);
-            extend_end.hash(hasher);
-            segments.len().hash(hasher);
-            for s in segments {
-                for p in [s.start_point(), s.end_point()] {
-                    p[0].to_bits().hash(hasher);
-                    p[1].to_bits().hash(hasher);
-                }
-            }
-        }
-    }
-}
-
-fn hash_node(node: &CsgNode, hasher: &mut DefaultHasher) {
-    match node {
-        CsgNode::Empty => 0u8.hash(hasher),
-        CsgNode::Leaf { id, primitive } => {
-            1u8.hash(hasher);
-            id.hash(hasher);
-            hash_primitive(primitive, hasher);
-        }
-        CsgNode::Transform(t, inner) => {
-            2u8.hash(hasher);
-            for v in t.translate {
-                v.to_bits().hash(hasher);
-            }
-            for v in t.rotation {
-                v.to_bits().hash(hasher);
-            }
-            for v in t.scale {
-                v.to_bits().hash(hasher);
-            }
-            hash_node(inner, hasher);
-        }
-        CsgNode::Union(a, b) => {
-            3u8.hash(hasher);
-            hash_node(a, hasher);
-            hash_node(b, hasher);
-        }
-        CsgNode::Difference(a, b) => {
-            4u8.hash(hasher);
-            hash_node(a, hasher);
-            hash_node(b, hasher);
-        }
-        CsgNode::Intersection(a, b) => {
-            5u8.hash(hasher);
-            hash_node(a, hasher);
-            hash_node(b, hasher);
-        }
-        CsgNode::SmoothUnion(a, b, r, m) => {
-            6u8.hash(hasher);
-            hash_node(a, hasher);
-            hash_node(b, hasher);
-            r.to_bits().hash(hasher);
-            hash_blend_mode(m, hasher);
-        }
-        CsgNode::SmoothDifference(a, b, r, m) => {
-            7u8.hash(hasher);
-            hash_node(a, hasher);
-            hash_node(b, hasher);
-            r.to_bits().hash(hasher);
-            hash_blend_mode(m, hasher);
-        }
-        CsgNode::Twist(a, rate) => {
-            8u8.hash(hasher);
-            hash_node(a, hasher);
-            rate.to_bits().hash(hasher);
-        }
-        CsgNode::Bend(a, rate) => {
-            9u8.hash(hasher);
-            hash_node(a, hasher);
-            rate.to_bits().hash(hasher);
-        }
-        CsgNode::Displace(a, depth, freq) => {
-            10u8.hash(hasher);
-            hash_node(a, hasher);
-            depth.to_bits().hash(hasher);
-            freq.to_bits().hash(hasher);
-        }
-        CsgNode::Shell(a, thickness, open) => {
-            11u8.hash(hasher);
-            hash_node(a, hasher);
-            thickness.to_bits().hash(hasher);
-            for f in open {
-                hash_halfspace(&f.surface, hasher);
-                for v in f.placement.translate {
-                    v.to_bits().hash(hasher);
-                }
-                for v in f.placement.rotation {
-                    v.to_bits().hash(hasher);
-                }
-                for v in f.placement.scale {
-                    v.to_bits().hash(hasher);
-                }
-            }
-        }
-        CsgNode::Morph(a, b, t) => {
-            12u8.hash(hasher);
-            hash_node(a, hasher);
-            hash_node(b, hasher);
-            t.to_bits().hash(hasher);
-        }
-        CsgNode::Offset(a, delta) => {
-            14u8.hash(hasher);
-            hash_node(a, hasher);
-            delta.to_bits().hash(hasher);
-        }
-        CsgNode::MaskedBlend {
-            a,
-            b,
-            mask_polyline,
-            mask_radius,
-            blend_radius,
-            blend_mode,
-            is_difference,
-        } => {
-            13u8.hash(hasher);
-            hash_node(a, hasher);
-            hash_node(b, hasher);
-            mask_polyline.len().hash(hasher);
-            for pt in mask_polyline {
-                for v in pt {
-                    v.to_bits().hash(hasher);
-                }
-            }
-            mask_radius.to_bits().hash(hasher);
-            blend_radius.to_bits().hash(hasher);
-            hash_blend_mode(blend_mode, hasher);
-            is_difference.hash(hasher);
-        }
-        CsgNode::Extrude {
-            id,
-            sketch,
-            half_height,
-        } => {
-            14u8.hash(hasher);
-            id.hash(hasher);
-            hash_sketch2d(sketch, hasher);
-            half_height.to_bits().hash(hasher);
-        }
-        CsgNode::Revolve { id, sketch } => {
-            15u8.hash(hasher);
-            id.hash(hasher);
-            hash_sketch2d(sketch, hasher);
-        }
-        CsgNode::Helix { id, sketch, pitch, turns, left_handed, taper, .. } => {
-            17u8.hash(hasher);
-            id.hash(hasher);
-            pitch.to_bits().hash(hasher);
-            turns.to_bits().hash(hasher);
-            left_handed.hash(hasher);
-            taper.to_bits().hash(hasher);
-            hash_sketch2d(sketch, hasher);
-        }
-        CsgNode::Sweep { id, sketch, path, closed, twist } => {
-            18u8.hash(hasher);
-            id.hash(hasher);
-            closed.hash(hasher);
-            twist.to_bits().hash(hasher);
-            for q in path {
-                for c in q {
-                    c.to_bits().hash(hasher);
-                }
-            }
-            hash_sketch2d(sketch, hasher);
-        }
-    }
-}
-
-fn hash_primitive(primitive: &Primitive, hasher: &mut DefaultHasher) {
-    match primitive {
-        Primitive::Box { center, half_extents } => {
-            0u8.hash(hasher);
-            for v in center {
-                v.to_bits().hash(hasher);
-            }
-            for v in half_extents {
-                v.to_bits().hash(hasher);
-            }
-        }
-        Primitive::Sphere { center, radius } => {
-            1u8.hash(hasher);
-            for v in center {
-                v.to_bits().hash(hasher);
-            }
-            radius.to_bits().hash(hasher);
-        }
-        Primitive::Cylinder {
-            center,
-            radius,
-            half_height,
-        } => {
-            2u8.hash(hasher);
-            for v in center {
-                v.to_bits().hash(hasher);
-            }
-            radius.to_bits().hash(hasher);
-            half_height.to_bits().hash(hasher);
-        }
-        // K7.3: hash the full sketch payload so a profile
-        // edit bumps the body cache and triggers a remesh.
-        Primitive::Extrude {
-            sketch,
-            half_depth_z,
-            center,
-        } => {
-            3u8.hash(hasher);
-            for v in center {
-                v.to_bits().hash(hasher);
-            }
-            half_depth_z.to_bits().hash(hasher);
-            hash_sketch2d(sketch, hasher);
-        }
-        // K8.4: same reasoning as Extrude — any profile edit
-        // must bump the body-cache hash so the remesh fires.
-        Primitive::Revolve { sketch, center } => {
-            4u8.hash(hasher);
-            for v in center {
-                v.to_bits().hash(hasher);
-            }
-            hash_sketch2d(sketch, hasher);
-        }
-        Primitive::Helix {
-            sketch, center, pitch, turns, left_handed, taper, start_angle,
-        } => {
-            16u8.hash(hasher);
-            for v in center {
-                v.to_bits().hash(hasher);
-            }
-            pitch.to_bits().hash(hasher);
-            turns.to_bits().hash(hasher);
-            left_handed.hash(hasher);
-            taper.to_bits().hash(hasher);
-            start_angle.to_bits().hash(hasher);
-            hash_sketch2d(sketch, hasher);
-        }
-        Primitive::Torus { center, major_radius, minor_radius } => {
-            6u8.hash(hasher);
-            for v in center {
-                v.to_bits().hash(hasher);
-            }
-            major_radius.to_bits().hash(hasher);
-            minor_radius.to_bits().hash(hasher);
-        }
-        Primitive::Gyroid { cell_size, thickness } => {
-            5u8.hash(hasher);
-            cell_size.to_bits().hash(hasher);
-            thickness.to_bits().hash(hasher);
-        }
-        Primitive::Thread { nominal_radius, pitch, depth, half_height } => {
-            7u8.hash(hasher);
-            nominal_radius.to_bits().hash(hasher);
-            pitch.to_bits().hash(hasher);
-            depth.to_bits().hash(hasher);
-            half_height.to_bits().hash(hasher);
-        }
-        Primitive::Cone { r_bottom, r_top, half_height } => {
-            8u8.hash(hasher);
-            r_bottom.to_bits().hash(hasher);
-            r_top.to_bits().hash(hasher);
-            half_height.to_bits().hash(hasher);
-        }
-        Primitive::Capsule { radius, half_height } => {
-            9u8.hash(hasher);
-            radius.to_bits().hash(hasher);
-            half_height.to_bits().hash(hasher);
-        }
-        Primitive::HexPrism { apothem, half_height } => {
-            10u8.hash(hasher);
-            apothem.to_bits().hash(hasher);
-            half_height.to_bits().hash(hasher);
-        }
-        Primitive::ImportedMesh { mesh } => {
-            11u8.hash(hasher);
-            for v in &mesh.aabb_min {
-                v.to_bits().hash(hasher);
-            }
-            for v in &mesh.aabb_max {
-                v.to_bits().hash(hasher);
-            }
-        }
-        Primitive::Ellipsoid { radii } => {
-            12u8.hash(hasher);
-            for v in radii {
-                v.to_bits().hash(hasher);
-            }
-        }
-    }
-}
-
-/// K7.3: walk a [`Sketch2d`] tree and push every leaf's
-/// coordinates into the hasher. Used by [`hash_primitive`] so
-/// the body-cache reuse check notices profile edits.
-fn hash_sketch2d(
-    sketch: &fielddraft_protocol::Sketch2d,
-    hasher: &mut DefaultHasher,
-) {
-    use fielddraft_protocol::{Sketch2d, Sketch2dPrimitive};
-    match sketch {
-        Sketch2d::Empty => 0u8.hash(hasher),
-        Sketch2d::Prim(prim) => {
-            1u8.hash(hasher);
-            match prim {
-                Sketch2dPrimitive::Circle { center, radius } => {
-                    0u8.hash(hasher);
-                    for v in center {
-                        v.to_bits().hash(hasher);
-                    }
-                    radius.to_bits().hash(hasher);
-                }
-                Sketch2dPrimitive::Rectangle {
-                    center,
-                    half_extents,
-                } => {
-                    1u8.hash(hasher);
-                    for v in center {
-                        v.to_bits().hash(hasher);
-                    }
-                    for v in half_extents {
-                        v.to_bits().hash(hasher);
-                    }
-                }
-                Sketch2dPrimitive::Polygon { vertices } => {
-                    2u8.hash(hasher);
-                    vertices.len().hash(hasher);
-                    for vert in vertices {
-                        for v in vert {
-                            v.to_bits().hash(hasher);
-                        }
-                    }
-                }
-                Sketch2dPrimitive::Sector {
-                    center,
-                    radius,
-                    start_angle,
-                    sweep_angle,
-                } => {
-                    3u8.hash(hasher);
-                    for v in center {
-                        v.to_bits().hash(hasher);
-                    }
-                    radius.to_bits().hash(hasher);
-                    start_angle.to_bits().hash(hasher);
-                    sweep_angle.to_bits().hash(hasher);
-                }
-                Sketch2dPrimitive::Path { segments, closed } => {
-                    4u8.hash(hasher);
-                    closed.hash(hasher);
-                    segments.len().hash(hasher);
-                    for seg in segments {
-                        hash_sketch_segment(seg, hasher);
-                    }
-                }
-            }
-        }
-        Sketch2d::Union(a, b) => {
-            2u8.hash(hasher);
-            hash_sketch2d(a, hasher);
-            hash_sketch2d(b, hasher);
-        }
-        Sketch2d::Difference(a, b) => {
-            3u8.hash(hasher);
-            hash_sketch2d(a, hasher);
-            hash_sketch2d(b, hasher);
-        }
-        Sketch2d::Intersection(a, b) => {
-            4u8.hash(hasher);
-            hash_sketch2d(a, hasher);
-            hash_sketch2d(b, hasher);
-        }
-        Sketch2d::Offset { inner, distance } => {
-            5u8.hash(hasher);
-            hash_sketch2d(inner, hasher);
-            distance.to_bits().hash(hasher);
-        }
-    }
-}
-
-fn hash_sketch_segment(
-    seg: &fielddraft_protocol::SketchSegment,
-    hasher: &mut DefaultHasher,
-) {
-    use fielddraft_protocol::SketchSegment;
-    let hash_pt = |pt: &[f32; 2], h: &mut DefaultHasher| {
-        for v in pt {
-            v.to_bits().hash(h);
-        }
-    };
-    match seg {
-        SketchSegment::Line { start, end } => {
-            0u8.hash(hasher);
-            hash_pt(start, hasher);
-            hash_pt(end, hasher);
-        }
-        SketchSegment::QuadBezier { p0, p1, p2 } => {
-            1u8.hash(hasher);
-            hash_pt(p0, hasher);
-            hash_pt(p1, hasher);
-            hash_pt(p2, hasher);
-        }
-        SketchSegment::Arc {
-            center,
-            radius,
-            start_angle,
-            sweep_angle,
-        } => {
-            2u8.hash(hasher);
-            hash_pt(center, hasher);
-            radius.to_bits().hash(hasher);
-            start_angle.to_bits().hash(hasher);
-            sweep_angle.to_bits().hash(hasher);
-        }
-    }
+/// Canonical geometry contribution of one feature to the body hash: the
+/// rmp-serde byte serialisation of its local [`CsgNode`] tree plus the
+/// junction blend, fed into the hasher as one length-prefixed byte string.
+///
+/// This replaces ~520 lines of hand-mirrored per-variant hashing
+/// (`hash_node`/`hash_primitive`/`hash_sketch2d`/…): every `CsgNode` /
+/// `Primitive` / `Sketch2d` variant and every future field now enters the
+/// hash automatically through serde, so a forgotten variant can no longer
+/// cause a silent stale cache. (The hand-walk had already accumulated a
+/// real tag collision: `CsgNode::Offset` and `CsgNode::Extrude` both
+/// hashed discriminant `14u8`.)
+///
+/// Properties relied on:
+/// * rmp writes f32/f64 **bit-exactly** (`-0.0 ≠ 0.0`, NaN payloads kept),
+///   matching the old `to_bits()` semantics.
+/// * The hashed types contain no `HashMap`/`HashSet` (checked transitively:
+///   only `Vec`s, arrays and scalars), so the byte form is deterministic.
+/// * An imported mesh contributes its precomputed content fingerprint
+///   instead of its triangle buffer (see
+///   `csg::serialize_primitive_for_hash`), keeping this O(tree), not
+///   O(mesh) — and *more* correct than the old AABB-only stand-in.
+/// * Hashes are in-memory cache keys only (`Body` is never serialised),
+///   so cross-run stability is not load-bearing; determinism within a
+///   build is guaranteed (`DefaultHasher::new()` uses fixed keys).
+fn hash_feature_geometry(f: &DecodedFeature, hasher: &mut DefaultHasher) {
+    let bytes = rmp_serde::to_vec(&(&f.node, f.blend_radius.to_bits(), f.blend_mode))
+        .expect("CsgNode hash serialisation is infallible");
+    bytes.hash(hasher);
 }
 
 /// Build the `BoundedCsg` that the mesher and raycaster actually
@@ -1268,7 +830,7 @@ pub fn build_bounded_with_primitives(
 mod tests {
     use super::*;
     use crate::csg::PrimitiveModifiers;
-    use fielddraft_protocol::Transform;
+    use fielddraft_protocol::{Primitive, Transform};
 
     /// v0.6.355: Ein NaN aus dem Sketch-Solver darf den Weave nicht mehr
     /// paniken lassen (= WASM-Abort im Web). Der Weave-Einstieg erkennt die
@@ -1875,6 +1437,166 @@ mod tests {
         use fielddraft_protocol::Transform;
         let t = vec![Transform { translate: [1.0, 2.0, 3.0], rotation: [0.0, 0.0, 0.0, 1.0], scale: [1.0, 1.0, 1.0] }];
         assert_eq!(detect_uniform_translation(&t, &t), None);
+    }
+
+    /// Serde-Hashing (B8): ein strukturell identisch aufgebauter Baum —
+    /// inklusive Sketch-Profil und Junction-Blend — ergibt denselben Hash,
+    /// unabhängig davon, ob er dieselbe oder eine frisch konstruierte
+    /// Instanz ist.
+    #[test]
+    fn serde_hash_identical_tree_gives_identical_hash() {
+        use fielddraft_protocol::{Sketch2d, Sketch2dPrimitive};
+        let build = || {
+            let sketch = Sketch2d::Prim(Sketch2dPrimitive::Polygon {
+                vertices: vec![[0.0, 0.0], [20.0, 0.0], [10.0, 10.0]],
+            });
+            let mut f = DecodedFeature::from_parts(
+                FeatureId::from_u32(1),
+                "Extrude".into(),
+                BoolOp::New,
+                Primitive::Extrude { sketch, half_depth_z: 5.0, center: [1.0, 2.0, 3.0] },
+                Transform::IDENTITY,
+                PrimitiveModifiers { blend_radius: 1.5, ..PrimitiveModifiers::NONE },
+                vec![],
+            );
+            f.blend_radius = 1.5;
+            f
+        };
+        let a = hash_body_payload(&[build()], &[0]);
+        let b = hash_body_payload(&[build()], &[0]);
+        assert_eq!(a, b, "identical trees must hash identically");
+    }
+
+    /// Serde-Hashing (B8): Feld-Änderungen in exemplarischen Varianten
+    /// (Extrude-Sketch-Vertex, Helix-Taper, Shell-Open-Face-HalfSpace)
+    /// müssen den Hash bewegen — genau die Fälle, in denen ein vergessenes
+    /// Feld im alten Hand-Hashing einen stillen Stale-Cache erzeugt hätte.
+    #[test]
+    fn serde_hash_field_changes_change_hash() {
+        use fielddraft_protocol::{HalfSpace, Sketch2d, Sketch2dPrimitive};
+
+        // 1) Extrude: ein einzelner Sketch-Vertex bewegt sich.
+        let extrude = |x: f32| {
+            let sketch = Sketch2d::Prim(Sketch2dPrimitive::Polygon {
+                vertices: vec![[0.0, 0.0], [x, 0.0], [10.0, 10.0]],
+            });
+            DecodedFeature::from_parts(
+                FeatureId::from_u32(1),
+                "Extrude".into(),
+                BoolOp::New,
+                Primitive::Extrude { sketch, half_depth_z: 5.0, center: [0.0; 3] },
+                Transform::IDENTITY,
+                PrimitiveModifiers::NONE,
+                vec![],
+            )
+        };
+        assert_ne!(
+            hash_body_payload(&[extrude(20.0)], &[0]),
+            hash_body_payload(&[extrude(20.5)], &[0]),
+            "a moved sketch vertex must change the hash"
+        );
+
+        // 2) Helix: der Taper-Parameter ändert sich.
+        let helix = |taper: f32| {
+            let sketch = Sketch2d::Prim(Sketch2dPrimitive::Circle {
+                center: [8.0, 0.0],
+                radius: 1.0,
+            });
+            DecodedFeature::from_parts(
+                FeatureId::from_u32(1),
+                "Helix".into(),
+                BoolOp::New,
+                Primitive::Helix {
+                    sketch,
+                    center: [0.0; 3],
+                    pitch: 2.0,
+                    turns: 5.0,
+                    left_handed: false,
+                    taper,
+                    start_angle: 0.0,
+                },
+                Transform::IDENTITY,
+                PrimitiveModifiers::NONE,
+                vec![],
+            )
+        };
+        assert_ne!(
+            hash_body_payload(&[helix(0.0)], &[0]),
+            hash_body_payload(&[helix(0.1)], &[0]),
+            "a changed helix taper must change the hash"
+        );
+
+        // 3) Shell mit Open-Face: der analytische HalfSpace der Öffnung
+        //    ändert sich (Plane-Offset). Baut den Knoten direkt, da
+        //    Open-Faces nicht über `from_parts` laufen.
+        let shell = |offset: f32| {
+            let open = crate::csg::OpenSurface {
+                branch: 42,
+                surface: HalfSpace::Plane { normal: [0.0, 1.0, 0.0], offset },
+                placement: Transform::IDENTITY,
+            };
+            DecodedFeature {
+                id: FeatureId::from_u32(1),
+                name: "Shell".into(),
+                op: BoolOp::New,
+                blend_radius: 0.0,
+                blend_mode: crate::csg::BlendMode::Fillet,
+                target_ids: vec![],
+                transform: Transform::IDENTITY,
+                node: CsgNode::Shell(
+                    Box::new(CsgNode::Leaf {
+                        id: FeatureId::from_u32(1),
+                        primitive: Primitive::Box { center: [0.0; 3], half_extents: [5.0; 3] },
+                    }),
+                    2.0,
+                    vec![open],
+                ),
+            }
+        };
+        assert_ne!(
+            hash_body_payload(&[shell(5.0)], &[0]),
+            hash_body_payload(&[shell(6.0)], &[0]),
+            "a changed open-face half-space must change the hash"
+        );
+    }
+
+    /// Serde-Hashing (B8): der Mesh-INHALT eines ImportedMesh geht über den
+    /// Content-Fingerprint in den Hash ein. Zwei Meshes mit identischer AABB,
+    /// aber verschiedenen Dreiecken, kollidieren nicht mehr (das alte
+    /// Hand-Hashing hashte nur die AABB — stiller Stale-Cache).
+    #[test]
+    fn serde_hash_imported_mesh_content_enters_hash() {
+        use fielddraft_protocol::MeshSdf;
+        // Ein Dreieck spannt die AABB auf; ein zweites, inneres Dreieck
+        // unterscheidet die beiden Meshes, ohne die AABB zu bewegen.
+        let mesh = |inner_x: f32| {
+            #[rustfmt::skip]
+            let positions = vec![
+                0.0, 0.0, 0.0,  10.0, 0.0, 0.0,  0.0, 10.0, 10.0, // AABB-Spanner
+                1.0, 1.0, 1.0,  inner_x, 1.0, 1.0,  1.0, 2.0, 1.0, // inneres Dreieck
+            ];
+            let indices = vec![0u32, 1, 2, 3, 4, 5];
+            let m = MeshSdf::from_buffers(&positions, &indices);
+            DecodedFeature::from_parts(
+                FeatureId::from_u32(1),
+                "Import".into(),
+                BoolOp::New,
+                Primitive::ImportedMesh { mesh: Box::new(m) },
+                Transform::IDENTITY,
+                PrimitiveModifiers::NONE,
+                vec![],
+            )
+        };
+        let a = mesh(2.0);
+        let b = mesh(3.0);
+        // Gleiche AABB — der alte AABB-only-Hash hätte kollidiert.
+        assert_eq!(feature_world_aabb(&a).min, feature_world_aabb(&b).min);
+        assert_eq!(feature_world_aabb(&a).max, feature_world_aabb(&b).max);
+        assert_ne!(
+            hash_body_payload(&[a], &[0]),
+            hash_body_payload(&[b], &[0]),
+            "differing mesh content behind an identical AABB must change the hash"
+        );
     }
 
     #[test]

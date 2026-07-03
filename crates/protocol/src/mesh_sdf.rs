@@ -118,6 +118,14 @@ pub struct MeshSdf {
     sign_flip: bool,
     /// Fast Winding Number data per BVH node (Barill et al. 2018).
     fwn_nodes: Vec<FwnNode>,
+    /// Content fingerprint over the triangle buffer (FNV-1a over the
+    /// f32 bit patterns), computed once at construction — the mesh is
+    /// immutable afterwards. Lets cache keys (the kernel's body
+    /// payload hash) cover the actual mesh content in O(1) instead of
+    /// re-serialising megabytes of triangles per hash, and instead of
+    /// the old AABB-only stand-in (two different meshes with the same
+    /// AABB no longer collide). Not part of the wire form.
+    content_fp: u64,
 }
 
 // ─── Custom Serialize/Deserialize ────────────────────────────
@@ -149,6 +157,7 @@ impl<'de> Deserialize<'de> for MeshSdf {
         let (bvh_nodes, tri_order) = build_bvh(&raw.tris, &raw.bboxes, tri_count);
         let sign_flip = compute_sign_flip(&raw.tris);
         let fwn_nodes = build_fwn_data(&raw.tris, &bvh_nodes, &tri_order);
+        let content_fp = fingerprint_tris(&raw.tris);
         Ok(Self {
             tris: raw.tris,
             bboxes: raw.bboxes,
@@ -158,8 +167,24 @@ impl<'de> Deserialize<'de> for MeshSdf {
             tri_order,
             sign_flip,
             fwn_nodes,
+            content_fp,
         })
     }
+}
+
+/// FNV-1a over the triangle buffer's f32 bit patterns. Deterministic
+/// across runs and platforms; O(N) once at construction.
+fn fingerprint_tris(tris: &[f32]) -> u64 {
+    const FNV_OFFSET: u64 = 0xcbf29ce484222325;
+    const FNV_PRIME: u64 = 0x100000001b3;
+    let mut h = FNV_OFFSET;
+    for v in tris {
+        for b in v.to_bits().to_le_bytes() {
+            h ^= b as u64;
+            h = h.wrapping_mul(FNV_PRIME);
+        }
+    }
+    h
 }
 
 impl MeshSdf {
@@ -287,6 +312,7 @@ impl MeshSdf {
         let (bvh_nodes, tri_order) = build_bvh(&tris, &bboxes, actual_tri_count);
         let sign_flip = compute_sign_flip(&tris);
         let fwn_nodes = build_fwn_data(&tris, &bvh_nodes, &tri_order);
+        let content_fp = fingerprint_tris(&tris);
 
         Self {
             tris,
@@ -297,7 +323,14 @@ impl MeshSdf {
             tri_order,
             sign_flip,
             fwn_nodes,
+            content_fp,
         }
+    }
+
+    /// Precomputed content fingerprint over the triangle buffer — see
+    /// the field docs. Stable for the lifetime of the (immutable) mesh.
+    pub fn content_fingerprint(&self) -> u64 {
+        self.content_fp
     }
 
     /// K13.3: manifold check.

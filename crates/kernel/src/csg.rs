@@ -572,7 +572,7 @@ pub enum BlendMode {
 /// `surface`/`placement` keep the face's analytic geometry (local [`HalfSpace`]
 /// + rigid local→world transform) for consumers that need the opening's shape
 /// — e.g. the weave's open-face annulus classification.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct OpenSurface {
     pub branch: u32,
     pub surface: HalfSpace,
@@ -668,11 +668,18 @@ pub fn shell_wall_sdf(d: f32, d_ret: f32, thickness: f32) -> f32 {
     d.max(-(d_ret + thickness))
 }
 
-#[derive(Debug, Clone, PartialEq)]
+/// `Serialize` exists for **content hashing only** (the body cache keys in
+/// `body::hash_body_payload_split` feed the rmp-serde bytes of this tree into
+/// the hasher) — it is NOT a persistence format and there is deliberately no
+/// `Deserialize`: the `Leaf.primitive` field substitutes an imported mesh's
+/// precomputed content fingerprint for its full triangle buffer (see
+/// [`serialize_primitive_for_hash`]), so the byte form does not round-trip.
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub enum CsgNode {
     Empty,
     Leaf {
         id: FeatureId,
+        #[serde(serialize_with = "serialize_primitive_for_hash")]
         primitive: Primitive,
     },
     Transform(Transform, Box<CsgNode>),
@@ -807,6 +814,32 @@ pub enum CsgNode {
         /// Total profile twist (radians) about the spine, linear in arclength.
         twist: f32,
     },
+}
+
+/// Hashing-only stand-in serialisation for a leaf's [`Primitive`]: an
+/// imported mesh contributes its precomputed content fingerprint (plus its
+/// AABB) instead of the full triangle buffer — [`MeshSdf`] is immutable
+/// after construction, so the fingerprint is exact, and hashing stays O(1)
+/// in the mesh size (a raw serialisation would re-emit megabytes of
+/// triangles on every cache-key check). Every other primitive passes
+/// through its canonical serde form, so new variants and new fields enter
+/// the hash automatically.
+///
+/// [`MeshSdf`]: fielddraft_protocol::MeshSdf
+fn serialize_primitive_for_hash<S: serde::Serializer>(
+    p: &Primitive,
+    s: S,
+) -> Result<S::Ok, S::Error> {
+    match p {
+        Primitive::ImportedMesh { mesh } => (
+            "imported_mesh_fp",
+            mesh.content_fingerprint(),
+            mesh.aabb_min,
+            mesh.aabb_max,
+        )
+            .serialize(s),
+        other => other.serialize(s),
+    }
 }
 
 /// DL-61 Stage B: the decoded runtime IR of one feature.
