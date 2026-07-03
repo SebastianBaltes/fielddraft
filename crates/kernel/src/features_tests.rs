@@ -1127,7 +1127,7 @@ fn extrude_qregion_extrudes_only_the_picked_region() {
     // whole sketch. Before the fix the executor honoured only
     // `qCreatedBy(sketch)` and a `qRegion` fell through to the half-extent
     // fallback (a wrong box / no body).
-    use crate::sketch_features::{SketchData, SketchFrame};
+    use crate::sketch::{SketchData, SketchFrame};
     use fielddraft_solver::SketchState;
     let mut doc = empty_ctx();
     let mut ctx = Context::new(&mut doc);
@@ -1153,7 +1153,7 @@ fn extrude_qregion_extrudes_only_the_picked_region() {
     );
 
     // Find which region index is the circle (centre x ≈ 40).
-    let whole = crate::sketch_features::build_sketch2d_from_sub_calls(&sketch_calls);
+    let whole = crate::sketch::build_sketch2d_from_sub_calls(&sketch_calls);
     let regions = crate::sketch_regions::find_regions(&whole, 96);
     let circle = regions.iter().find(|r| r.centroid[0] > 20.0).unwrap();
 
@@ -4200,7 +4200,7 @@ fn mate_connector_resolves_face_query_to_origin_and_normal() {
     let (brep, placement) = &woven[0];
     let mut top_hash = None;
     for i in 0..brep.face_count() {
-        let frame = crate::sketch_features::face_plane_frame(
+        let frame = crate::sketch::face_plane_frame(
             brep,
             crate::brep::FaceId(i as u32),
             placement,
@@ -4263,7 +4263,7 @@ fn mate_connector_offset_between_and_owner() {
     let (brep, placement) = &woven[0];
     let (mut top_hash, mut bot_hash) = (None, None);
     for i in 0..brep.face_count() {
-        let frame = crate::sketch_features::face_plane_frame(
+        let frame = crate::sketch::face_plane_frame(
             brep,
             crate::brep::FaceId(i as u32),
             placement,

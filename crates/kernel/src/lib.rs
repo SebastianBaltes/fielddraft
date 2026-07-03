@@ -27,7 +27,7 @@ pub mod step_classifier;
 pub mod step_commands;
 pub mod sdf_compiler;
 pub mod sketch2d;
-pub mod sketch_features;
+pub mod sketch;
 pub mod path_provider;
 pub mod sweep_path;
 pub mod sweep_gate;
@@ -1019,13 +1019,13 @@ impl Kernel {
 
     /// K6b.2: list every sketch-tool type name the kernel knows
     /// about. Sketch tools live in a separate
-    /// [`sketch_features::SketchToolRegistry`] that the UI's
+    /// [`sketch::SketchToolRegistry`] that the UI's
     /// sketch-mode toolbar queries to decide which tool buttons
     /// to render. JSON array of strings, sorted alphabetically
     /// for deterministic rendering.
     #[wasm_bindgen(js_name = listSketchToolTypes)]
     pub fn list_sketch_tool_types(&self) -> Result<String, JsError> {
-        let tools = sketch_features::SketchToolRegistry::with_builtins();
+        let tools = sketch::SketchToolRegistry::with_builtins();
         let mut names = tools.type_names();
         names.sort();
         serde_json::to_string(&names).map_err(|e| JsError::new(&e.to_string()))
@@ -1040,7 +1040,7 @@ impl Kernel {
         &self,
         type_name: &str,
     ) -> Result<String, JsError> {
-        let tools = sketch_features::SketchToolRegistry::with_builtins();
+        let tools = sketch::SketchToolRegistry::with_builtins();
         let value = tools
             .schema_for(type_name)
             .ok_or_else(|| JsError::new(&format!("unknown sketch tool `{type_name}`")))?;
@@ -1679,7 +1679,7 @@ impl Kernel {
             .and_then(|v| serde_json::from_value(v.clone()).ok())
             .unwrap_or_default();
 
-        let sketch2d = crate::sketch_features::build_sketch2d_from_sub_calls_raw(&sub_calls);
+        let sketch2d = crate::sketch::build_sketch2d_from_sub_calls_raw(&sub_calls);
         let regions = sketch_regions::find_regions(&sketch2d, resolution);
         serde_json::to_string(&regions).map_err(|e| JsError::new(&e.to_string()))
     }
@@ -1709,8 +1709,8 @@ impl Kernel {
             .get("sub_calls")
             .and_then(|v| serde_json::from_value(v.clone()).ok())
             .unwrap_or_default();
-        let sketch2d = crate::sketch_features::build_sketch2d_from_sub_calls_raw(&sub_calls);
-        let res = crate::sketch_features::PROFILE_REGION_RESOLUTION;
+        let sketch2d = crate::sketch::build_sketch2d_from_sub_calls_raw(&sub_calls);
+        let res = crate::sketch::PROFILE_REGION_RESOLUTION;
         match sketch_regions::region_index_at_point(&sketch2d, [u, v], res) {
             Some(i) => Ok(format!("qRegion({sketch_id}, {i})")),
             None => Ok(String::new()),

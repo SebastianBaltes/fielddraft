@@ -8,7 +8,7 @@ use fielddraft_protocol::FeatureId;
 use super::{Context, FeatureError, FeatureKind, FeatureSchema};
 // ─── Mate-connector CSYS helpers ─────────────────────────────────
 //
-// These mirror `crate::sketch_features::face_plane_frame` exactly (same
+// These mirror `crate::sketch::face_plane_frame` exactly (same
 // seed-cross convention) so a connector's web-side inference preview and the
 // kernel's authoritative resolve agree to f32 on the X spin.
 
@@ -48,7 +48,7 @@ pub(crate) fn face_normal_for_branch(
     for i in 0..brep.faces.len() {
         if brep.faces[i].branch_id == branch {
             return Some(
-                crate::sketch_features::face_plane_frame(
+                crate::sketch::face_plane_frame(
                     brep,
                     crate::brep::FaceId(i as u32),
                     placement,
@@ -161,7 +161,7 @@ pub(crate) fn polyline_point_tangent(poly: &[[f32; 3]], t: f32) -> Option<([f32;
 ///     axis entity"; cycling the orientation = a different adjacent face.
 ///   * **+X (secondary)** — the edge tangent (projected ⟂ Z) for an edge
 ///     anchor, else the seed-cross in-plane basis (matching
-///     [`crate::sketch_features::face_plane_frame`]).
+///     [`crate::sketch::face_plane_frame`]).
 #[derive(FeatureSchema)]
 #[schema(type = "mate_connector")]
 pub struct MateConnectorDef {

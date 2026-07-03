@@ -75,9 +75,9 @@ pub struct SweepDef {
 /// loop if it bounds a region, else the open drawn curve) plus the sketch's
 /// plane frame. Shared by the Sketch2d and OrthogonalSketches path sources.
 fn resolve_sketch_curve_2d(
-    sketches: &std::collections::HashMap<FeatureId, crate::sketch_features::SketchData>,
+    sketches: &std::collections::HashMap<FeatureId, crate::sketch::SketchData>,
     query: &::fielddraft_protocol::Query,
-) -> Result<(Vec<[f32; 2]>, bool, crate::sketch_features::SketchFrame), FeatureError> {
+) -> Result<(Vec<[f32; 2]>, bool, crate::sketch::SketchFrame), FeatureError> {
     let id = match crate::queries::parse_query(query.as_str()) {
         Ok(crate::queries::QueryExpr::CreatedBy(s)) => s,
         _ => {
@@ -93,7 +93,7 @@ fn resolve_sketch_curve_2d(
         name: "path",
     })?;
     let bounded = crate::sketch2d::BoundedSketch2d::from_sketch(
-        &crate::sketch_features::build_sketch2d_from_sub_calls(&sk.sub_calls),
+        &crate::sketch::build_sketch2d_from_sub_calls(&sk.sub_calls),
     );
     let closed_loop = crate::sketch2d::extract_contours(&bounded, crate::sketch2d::CONTOUR_RESOLUTION)
         .into_iter()
@@ -103,7 +103,7 @@ fn resolve_sketch_curve_2d(
     let (curve, closed) = match closed_loop {
         Some(loop_curve) => (loop_curve, true),
         None => (
-            crate::sketch_features::open_path_curve_from_sub_calls(&sk.sub_calls).ok_or(
+            crate::sketch::open_path_curve_from_sub_calls(&sk.sub_calls).ok_or(
                 FeatureError::InvalidParameter {
                     feature: SweepDef::TYPE_NAME,
                     name: "path",
@@ -140,7 +140,7 @@ impl FeatureKind for SweepFeature {
                 return None;
             };
             let sketch_data = ctx.sketches.get(&sketch_id)?;
-            let s = crate::sketch_features::build_sketch2d_from_sub_calls(
+            let s = crate::sketch::build_sketch2d_from_sub_calls(
                 &sketch_data.sub_calls,
             );
             if matches!(s, ::fielddraft_protocol::Sketch2d::Empty) {
@@ -188,7 +188,7 @@ impl FeatureKind for SweepFeature {
                     },
                 )?;
                 let bounded = crate::sketch2d::BoundedSketch2d::from_sketch(
-                    &crate::sketch_features::build_sketch2d_from_sub_calls(&sk.sub_calls),
+                    &crate::sketch::build_sketch2d_from_sub_calls(&sk.sub_calls),
                 );
                 // A closed loop sweeps around itself; otherwise fall back to
                 // the open drawn curve (a path from A to B).
@@ -203,7 +203,7 @@ impl FeatureKind for SweepFeature {
                 let (curve, closed) = match closed_loop {
                     Some(loop_curve) => (loop_curve, true),
                     None => {
-                        let open = crate::sketch_features::open_path_curve_from_sub_calls(
+                        let open = crate::sketch::open_path_curve_from_sub_calls(
                             &sk.sub_calls,
                         )
                         .ok_or_else(|| {

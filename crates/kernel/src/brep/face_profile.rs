@@ -24,7 +24,7 @@
 use fielddraft_protocol::{HalfSpace, Sketch2d, Sketch2dPrimitive, SketchSegment, Transform};
 
 use crate::brep::{BRep, FaceId, Loop, SurfaceGeometry};
-use crate::sketch_features::SketchFrame;
+use crate::sketch::SketchFrame;
 use crate::vec3f::dot;
 
 /// Project a planar face's boundary into `frame`'s 2D coordinates and build the

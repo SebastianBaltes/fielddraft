@@ -99,7 +99,7 @@ impl FeatureKind for RevolveFeature {
         // invalid with a clear warning — never a garbage solid. A missing /
         // unresolvable profile is exactly that, so we warn and bail out
         // (return Ok without pushing a feature) instead of erroring out.
-        let Some((sketch, sketch_frame)) = crate::sketch_features::resolve_profile_query(
+        let Some((sketch, sketch_frame)) = crate::sketch::resolve_profile_query(
             d.profiles.as_str(),
             &ctx.sketches,
         ) else {
@@ -193,7 +193,7 @@ impl FeatureKind for RevolveFeature {
         // (shell would otherwise keep a phantom rod along the axis). Runs
         // AFTER `M`, so the picked axis line (now at `x = 0`) is the one
         // that gets stripped.
-        let sketch = crate::sketch_features::strip_revolve_axis_segments(sketch);
+        let sketch = crate::sketch::strip_revolve_axis_segments(sketch);
 
         let target_ids = resolve_merge_scope(
             ctx,
@@ -246,7 +246,7 @@ enum RevolveAxis {
 /// segment → [`RevolveAxis::OffPlane`]; otherwise the in-plane 2D endpoints.
 fn classify_revolve_axis(
     ctx: &mut Context<'_>,
-    sketch_frame: &crate::sketch_features::SketchFrame,
+    sketch_frame: &crate::sketch::SketchFrame,
     axis_query: &str,
 ) -> RevolveAxis {
     let Some((w0, w1)) = crate::queries::parse_query(axis_query)
@@ -270,7 +270,7 @@ fn classify_revolve_axis(
 /// be coplanar with the profile (the profile rotates/winds around it); an
 /// off-plane pick is rejected (ticket dnfe).
 pub(crate) fn axis_in_sketch_plane(
-    frame: &crate::sketch_features::SketchFrame,
+    frame: &crate::sketch::SketchFrame,
     w0: [f32; 3],
     w1: [f32; 3],
 ) -> bool {

@@ -182,7 +182,7 @@ pub struct Context<'a> {
     /// `features` field — `feature_calls` is the sole persisted form.
     pub features: Vec<DecodedFeature>,
     /// K6b.1: solved sketch state per sketch feature id.
-    pub sketches: HashMap<FeatureId, crate::sketch_features::SketchData>,
+    pub sketches: HashMap<FeatureId, crate::sketch::SketchData>,
     /// K10.4: edge fillets collected during regen, applied as a
     /// post-processing pass on the CsgNode tree.
     pub edge_fillets: Vec<crate::csg::EdgeFillet>,
@@ -344,7 +344,7 @@ impl FeatureRegistry {
         r.register(Box::new(LinearPatternFeature));
         r.register(Box::new(CircularPatternFeature));
         r.register(Box::new(MirrorFeature));
-        r.register(Box::new(crate::sketch_features::SketchFeature::new()));
+        r.register(Box::new(crate::sketch::SketchFeature::new()));
         r.register(Box::new(TranslateFeature));
         r.register(Box::new(RotateFeature));
         r.register(Box::new(ScaleFeature));

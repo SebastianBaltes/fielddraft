@@ -12,7 +12,7 @@ use super::thicken::thicken_diff_node;
 use super::Context;
 impl<'a> Context<'a> {
     /// C0/C1: resolve a face-yielding query to the first matching face,
-    /// returning its [`SketchFrame`](crate::sketch_features::SketchFrame)
+    /// returning its [`SketchFrame`](crate::sketch::SketchFrame)
     /// in **world** space (the woven B-Rep is body-local; the paired
     /// placement is applied for us).
     ///
@@ -22,7 +22,7 @@ impl<'a> Context<'a> {
     pub fn resolve_face_frame(
         &mut self,
         expr: &crate::queries::QueryExpr,
-    ) -> Option<crate::sketch_features::SketchFrame> {
+    ) -> Option<crate::sketch::SketchFrame> {
         use crate::brep::naming::TopoRef;
         use crate::brep::FaceId;
         use crate::queries::QueryExpr;
@@ -41,7 +41,7 @@ impl<'a> Context<'a> {
                     _ => false,
                 };
                 if hit {
-                    return Some(crate::sketch_features::face_plane_frame(
+                    return Some(crate::sketch::face_plane_frame(
                         brep, fid, placement,
                     ));
                 }
@@ -115,7 +115,7 @@ impl<'a> Context<'a> {
     pub fn resolve_extrude_faces(
         &mut self,
         queries: &[String],
-    ) -> Result<(::fielddraft_protocol::Sketch2d, crate::sketch_features::SketchFrame), String> {
+    ) -> Result<(::fielddraft_protocol::Sketch2d, crate::sketch::SketchFrame), String> {
         use crate::brep::naming::TopoRef;
         use crate::brep::FaceId;
         use crate::queries::QueryExpr;
@@ -123,7 +123,7 @@ impl<'a> Context<'a> {
         let woven = self.brep_cache.ensure(&self.features);
 
         // Locate each requested face → (brep index, FaceId, world frame).
-        let mut hits: Vec<(usize, FaceId, crate::sketch_features::SketchFrame)> = Vec::new();
+        let mut hits: Vec<(usize, FaceId, crate::sketch::SketchFrame)> = Vec::new();
         for q in queries {
             let expr = crate::queries::parse_query(q)
                 .map_err(|e| format!("invalid face query `{q}`: {e:?}"))?;
@@ -140,7 +140,7 @@ impl<'a> Context<'a> {
                         hits.push((
                             bi,
                             fid,
-                            crate::sketch_features::face_plane_frame(brep, fid, placement),
+                            crate::sketch::face_plane_frame(brep, fid, placement),
                         ));
                         found = true;
                         break 'scan;
@@ -434,9 +434,9 @@ impl<'a> Context<'a> {
     pub fn resolve_plane_frame(
         &mut self,
         expr: &crate::queries::QueryExpr,
-    ) -> Option<crate::sketch_features::SketchFrame> {
+    ) -> Option<crate::sketch::SketchFrame> {
         if let crate::queries::QueryExpr::CreatedBy(d) = expr {
-            if let Some(datum) = crate::sketch_features::datum_plane_frame(d) {
+            if let Some(datum) = crate::sketch::datum_plane_frame(d) {
                 return Some(datum);
             }
         }
@@ -453,7 +453,7 @@ impl<'a> Context<'a> {
     /// [`from_decoded`](crate::csg::CsgNode::from_decoded), and a feature's
     /// `transform` is its world placement. So the mask must sit on the
     /// edge in world space: we apply `placement` (rotate·scale + translate,
-    /// same math as [`crate::sketch_features::face_plane_frame`]) to every
+    /// same math as [`crate::sketch::face_plane_frame`]) to every
     /// polyline point. The non-identity-placement test proves this — with
     /// identity placement a missing transform would pass undetected.
     ///
@@ -734,12 +734,12 @@ impl<'a> Context<'a> {
     }
 }
 
-/// Two world [`SketchFrame`](crate::sketch_features::SketchFrame)s are coplanar
+/// Two world [`SketchFrame`](crate::sketch::SketchFrame)s are coplanar
 /// iff their normals are (anti)parallel and the second origin lies in the first
 /// frame's plane. Used to gate a coplanar multi-face extrude selection.
 fn coplanar(
-    a: &crate::sketch_features::SketchFrame,
-    b: &crate::sketch_features::SketchFrame,
+    a: &crate::sketch::SketchFrame,
+    b: &crate::sketch::SketchFrame,
 ) -> bool {
     let dn = a.normal[0] * b.normal[0] + a.normal[1] * b.normal[1] + a.normal[2] * b.normal[2];
     if dn.abs() < 0.999 {
@@ -757,7 +757,7 @@ fn coplanar(
 
 /// Apply a body `placement` (rotate·scale then translate) to a point.
 /// Mirrors the centroid mapping in
-/// [`crate::sketch_features::face_plane_frame`].
+/// [`crate::sketch::face_plane_frame`].
 pub(crate) fn place_point(placement: &fielddraft_protocol::Transform, p: [f32; 3]) -> [f32; 3] {
     let scaled = [
         p[0] * placement.scale[0],

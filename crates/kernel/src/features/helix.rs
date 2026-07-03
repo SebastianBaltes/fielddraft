@@ -110,14 +110,14 @@ impl FeatureKind for HelixFeature {
         // Resolve the `profiles` query against the sketch table —
         // identical to RevolveFeature (a helix without a real profile
         // produces no geometry at all).
-        let mut sketch_frame = crate::sketch_features::SketchFrame::IDENTITY;
+        let mut sketch_frame = crate::sketch::SketchFrame::IDENTITY;
         let sketch = (|| -> Option<::fielddraft_protocol::Sketch2d> {
             let expr = crate::queries::parse_query(d.profiles.as_str()).ok()?;
             let crate::queries::QueryExpr::CreatedBy(sketch_id) = expr else {
                 return None;
             };
             let sketch_data = ctx.sketches.get(&sketch_id)?;
-            let sketch2d = crate::sketch_features::build_sketch2d_from_sub_calls(
+            let sketch2d = crate::sketch::build_sketch2d_from_sub_calls(
                 &sketch_data.sub_calls,
             );
             if matches!(sketch2d, ::fielddraft_protocol::Sketch2d::Empty) {

@@ -5,7 +5,13 @@ use std::str::FromStr;
 use fielddraft_protocol::{Document, FeatureCall, FeatureId};
 use serde_json::json;
 
+use std::collections::HashMap;
+
+use fielddraft_solver::{Constraint, ConstraintId, EntityId};
+use serde_json::Value;
+
 use crate::features::{Context, FeatureError, FeatureRegistry};
+use crate::sketch2d::{Sketch2d, Sketch2dPrimitive, SketchSegment};
 
 #[test]
 fn open_path_curve_chains_drawn_lines_in_order() {

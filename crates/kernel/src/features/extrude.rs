@@ -81,7 +81,7 @@ use super::{Context, FeatureError, FeatureKind, FeatureSchema, optional_display_
 pub struct ExtrudeDef {
     /// Sketch profile this extrude consumes. Evaluated against
     /// [`Context::sketches`] at regeneration time via
-    /// [`crate::sketch_features::resolve_profile_query`]. Accepts the WHOLE
+    /// [`crate::sketch::resolve_profile_query`]. Accepts the WHOLE
     /// sketch (`qCreatedBy(sketch_id)` / `qAllRegions`) or a single closed
     /// region of it (`qRegion`/`qRegions`) — ticket tgdg. The `SKETCHREGION`
     /// entity filter tells the viewport's profile picker to resolve a clicked
@@ -94,7 +94,7 @@ pub struct ExtrudeDef {
     /// together — the single Onshape-style "faces and sketch regions to extrude"
     /// input. Every `qFace(...)` entry routes through the face-extrude path
     /// ([`Context::resolve_extrude_faces`], which unions their boundary loops);
-    /// a sketch entry resolves via [`crate::sketch_features::resolve_profile_query`].
+    /// a sketch entry resolves via [`crate::sketch::resolve_profile_query`].
     #[param(entity_filter = "SKETCHREGION, FACE")]
     pub profiles: ::fielddraft_protocol::MultiQuery,
 
@@ -298,7 +298,7 @@ impl FeatureKind for ExtrudeFeature {
         // three states explicitly: resolved-and-extrudable,
         // resolved-but-empty, no-resolve-use-fallback.
         let mut resolved_sketch: Option<::fielddraft_protocol::Sketch2d> = None;
-        let mut sketch_frame = crate::sketch_features::SketchFrame::IDENTITY;
+        let mut sketch_frame = crate::sketch::SketchFrame::IDENTITY;
         let mut sketch_was_found_but_empty = false;
         // Ticket tgdg: resolve `qCreatedBy`/`qAllRegions`/`qRegion`/`qRegions`
         // through the same path Revolve uses (ticket dhjn) so a single picked
@@ -311,7 +311,7 @@ impl FeatureKind for ExtrudeFeature {
         // (a single sketch query — whole sketch or a region group — is the
         // common case; multi-region is already one `qRegions(...)` expression).
         let profile_str: &str = profile_qs.first().map(String::as_str).unwrap_or("");
-        match crate::sketch_features::resolve_profile_query(
+        match crate::sketch::resolve_profile_query(
             profile_str,
             &ctx.sketches,
         ) {
