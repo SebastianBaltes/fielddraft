@@ -51,6 +51,13 @@ pub struct BodyExportReport {
     /// exported verbatim (no re-mesh, no deviation sampling — the mesh
     /// IS the ground truth).
     pub passthrough: bool,
+    /// True when this body shipped the parametric per-face B-Rep
+    /// tessellation (Meshing Phase 2, Option B) — watertight by
+    /// construction, exact edges, minimal triangles. False = generic
+    /// MDC pass.
+    pub parametric: bool,
+    /// Why the parametric route was not taken (empty when it was).
+    pub parametric_skip_reason: String,
     /// Triangles whose winding the orientation-repair pass flipped.
     pub orientation_repaired: usize,
     /// True when the planar/developable simplification made the cut;
@@ -185,6 +192,8 @@ impl crate::Kernel {
                 resolution: 0,
                 cell_limited: false,
                 passthrough: true,
+                parametric: false,
+                parametric_skip_reason: String::new(),
                 orientation_repaired: 0,
                 simplified: false,
                 simplification_rejected: false,
@@ -192,61 +201,40 @@ impl crate::Kernel {
             };
             (mesh, report)
         } else {
-            let (resolution, actual_cell, cell_limited) =
-                derive_export_resolution(size, cell_mm);
-            let (bounded, prims) =
-                crate::body::build_bounded_with_primitives(&self.decoded, &feature_indices);
-            let prim_refs: std::collections::HashMap<u32, &Primitive> =
-                prims.iter().map(|(k, v)| (*k, v)).collect();
-            let sdf = |p: [f32; 3]| bounded.sdf(p, crate::csg::EvalMode::Visual);
-
-            // Raw pass: Manifold-DC + Newton projection, then winding
-            // repair (MDC emits inconsistently-wound triangles along
-            // sharp feature edges — invisible in the DoubleSide
-            // viewport, fatal in an STL).
-            let mut raw = crate::dc::dual_contour_unsimplified(&bounded, resolution);
-            let raw_flips = mesh_validate::fix_orientation(&mut raw, &sdf);
-
-            // Simplification candidate: the planar/developable pass cuts
-            // the triangle count dramatically (box: ~40×), but its
-            // re-triangulation can break topology — so it must EARN the
-            // export by staying watertight when the raw mesh was.
-            let mut candidate = raw.clone();
-            crate::dc::simplify_dc_mesh(&mut candidate, &bounded, &prim_refs);
-            let candidate_flips = mesh_validate::fix_orientation(&mut candidate, &sdf);
-
-            let v_raw = mesh_validate::validate_topology(&raw);
-            let v_candidate = mesh_validate::validate_topology(&candidate);
-            let reject_simplified = v_raw.watertight && !v_candidate.watertight;
-            let (mut mesh, mut validation, simplified, orientation_repaired) =
-                if reject_simplified {
-                    (raw, v_raw, false, raw_flips)
-                } else {
-                    (candidate, v_candidate, true, raw_flips + candidate_flips)
-                };
-
-            let (max_dev, p95_dev, samples) =
-                mesh_validate::measure_deviation(&mesh, DEVIATION_SAMPLE_BUDGET, &sdf);
-            validation.max_deviation_mm = max_dev;
-            validation.p95_deviation_mm = p95_dev;
-            validation.deviation_samples = samples;
-            // Drop the viewport-only sidecar channels; the exporters
-            // only read positions/indices.
-            mesh.face_index = Vec::new();
-
-            let report = BodyExportReport {
-                body_id,
-                requested_cell_mm: cell_mm,
-                actual_cell_mm: actual_cell,
-                resolution,
-                cell_limited,
-                passthrough: false,
-                orientation_repaired,
-                simplified,
-                simplification_rejected: reject_simplified,
-                validation,
-            };
-            (mesh, report)
+            // ── Parametric route first (Meshing Phase 2, Option B) ──
+            // Per-face B-Rep tessellation: watertight by construction,
+            // exact edges, minimal triangles. It must EARN the export —
+            // the same validator gates it; any failure falls back to
+            // the generic MDC pass below.
+            match self.try_parametric_export(i, cell_mm) {
+                Ok((mesh, validation)) => {
+                    let report = BodyExportReport {
+                        body_id,
+                        requested_cell_mm: cell_mm,
+                        actual_cell_mm: 0.0,
+                        resolution: 0,
+                        cell_limited: false,
+                        passthrough: false,
+                        parametric: true,
+                        parametric_skip_reason: String::new(),
+                        orientation_repaired: 0,
+                        simplified: false,
+                        simplification_rejected: false,
+                        validation,
+                    };
+                    (mesh, report)
+                }
+                Err(skip_reason) => {
+                    let (mesh, report) = self.mdc_export_body(
+                        body_id,
+                        &feature_indices,
+                        size,
+                        cell_mm,
+                        skip_reason,
+                    );
+                    (mesh, report)
+                }
+            }
         };
 
         let session = self.export_session.as_mut()?;
@@ -255,11 +243,199 @@ impl crate::Kernel {
         Some(report)
     }
 
+    /// The generic MDC export pass for one body (the Phase-0 route):
+    /// raw Manifold-DC + Newton projection at cell-derived resolution,
+    /// winding repair, simplification-as-candidate, deviation sampling.
+    fn mdc_export_body(
+        &self,
+        body_id: u32,
+        feature_indices: &[usize],
+        size: [f32; 3],
+        cell_mm: f32,
+        parametric_skip_reason: String,
+    ) -> (Mesh, BodyExportReport) {
+        let (resolution, actual_cell, cell_limited) = derive_export_resolution(size, cell_mm);
+        let (bounded, prims) =
+            crate::body::build_bounded_with_primitives(&self.decoded, feature_indices);
+        let prim_refs: std::collections::HashMap<u32, &Primitive> =
+            prims.iter().map(|(k, v)| (*k, v)).collect();
+        let sdf = |p: [f32; 3]| bounded.sdf(p, crate::csg::EvalMode::Visual);
+
+        // Raw pass: Manifold-DC + Newton projection, then winding
+        // repair (MDC emits inconsistently-wound triangles along
+        // sharp feature edges — invisible in the DoubleSide
+        // viewport, fatal in an STL).
+        let mut raw = crate::dc::dual_contour_unsimplified(&bounded, resolution);
+        let raw_flips = mesh_validate::fix_orientation(&mut raw, &sdf);
+
+        // Simplification candidate: the planar/developable pass cuts
+        // the triangle count dramatically (box: ~40×), but its
+        // re-triangulation can break topology — so it must EARN the
+        // export by staying watertight when the raw mesh was.
+        let mut candidate = raw.clone();
+        crate::dc::simplify_dc_mesh(&mut candidate, &bounded, &prim_refs);
+        let candidate_flips = mesh_validate::fix_orientation(&mut candidate, &sdf);
+
+        let v_raw = mesh_validate::validate_topology(&raw);
+        let v_candidate = mesh_validate::validate_topology(&candidate);
+        let reject_simplified = v_raw.watertight && !v_candidate.watertight;
+        let (mut mesh, mut validation, simplified, orientation_repaired) = if reject_simplified {
+            (raw, v_raw, false, raw_flips)
+        } else {
+            (candidate, v_candidate, true, raw_flips + candidate_flips)
+        };
+
+        let (max_dev, p95_dev, samples) =
+            mesh_validate::measure_deviation(&mesh, DEVIATION_SAMPLE_BUDGET, &sdf);
+        validation.max_deviation_mm = max_dev;
+        validation.p95_deviation_mm = p95_dev;
+        validation.deviation_samples = samples;
+        // Drop the viewport-only sidecar channels; the exporters
+        // only read positions/indices.
+        mesh.face_index = Vec::new();
+
+        let report = BodyExportReport {
+            body_id,
+            requested_cell_mm: cell_mm,
+            actual_cell_mm: actual_cell,
+            resolution,
+            cell_limited,
+            passthrough: false,
+            parametric: false,
+            parametric_skip_reason,
+            orientation_repaired,
+            simplified,
+            simplification_rejected: reject_simplified,
+            validation,
+        };
+        (mesh, report)
+    }
+
+    /// Attempt the parametric per-face B-Rep tessellation for body `i`.
+    /// `Err(reason)` sends the body down the generic MDC route.
+    ///
+    /// Three gates, in order:
+    /// 1. **CSG scan** — the body's tree must be analytically exact
+    ///    (no blends/warps/fillets whose geometry the woven B-Rep does
+    ///    not carry; a sparse deviation sample could miss a small
+    ///    fillet, so this is checked structurally).
+    /// 2. **Tessellation** — every face must sit on a supported
+    ///    analytic carrier and every loop must chain (see
+    ///    [`crate::brep::tessellate`]).
+    /// 3. **Validation** — the mesh must measure watertight and inside
+    ///    tolerance against the exact SDF.
+    fn try_parametric_export(
+        &mut self,
+        i: usize,
+        cell_mm: f32,
+    ) -> Result<(Mesh, MeshValidation), String> {
+        let feature_indices = self.bodies[i].feature_indices.clone();
+        self.check_analytically_exact(&feature_indices)?;
+
+        // Chord tolerance for edges + face sag, derived from the dialog
+        // cell size (a 0.4 mm grid targets ~0.1 mm chords).
+        let tol = (cell_mm as f64 / 4.0).clamp(0.01, 0.1);
+
+        let parametric = self.parametric_weave;
+        self.bodies[i].ensure_brep(&self.decoded, parametric);
+        let placement = self.bodies[i].placement;
+        let brep = self.bodies[i]
+            .brep_cached()
+            .ok_or_else(|| "no woven B-Rep".to_string())?;
+        let mut mesh = crate::brep::tessellate::tessellate_brep(brep, &placement, tol)?;
+
+        // Validation gate — identical instruments as the MDC route.
+        let bounded = crate::body::build_bounded_for_body(&self.decoded, &feature_indices);
+        let sdf = |p: [f32; 3]| bounded.sdf(p, crate::csg::EvalMode::Visual);
+        let flips = mesh_validate::fix_orientation(&mut mesh, &sdf);
+        let mut validation = mesh_validate::validate_topology(&mesh);
+        if !validation.watertight {
+            return Err(format!(
+                "parametric mesh not watertight ({} boundary, {} non-manifold, {} misoriented)",
+                validation.boundary_edges,
+                validation.non_manifold_edges,
+                validation.misoriented_edges
+            ));
+        }
+        let (max_dev, p95_dev, samples) =
+            mesh_validate::measure_deviation(&mesh, DEVIATION_SAMPLE_BUDGET, &sdf);
+        // The B-Rep and the SDF describe the same analytic solid; the
+        // measured deviation is chord sag only. Anything beyond a small
+        // multiple of the tolerance means the B-Rep disagrees with the
+        // field — do not ship it.
+        let dev_gate = (tol * 4.0).max(0.05) as f32;
+        if max_dev > dev_gate {
+            return Err(format!(
+                "parametric mesh deviates {max_dev:.4} mm from the SDF (gate {dev_gate:.4})"
+            ));
+        }
+        let _ = flips;
+        validation.max_deviation_mm = max_dev;
+        validation.p95_deviation_mm = p95_dev;
+        validation.deviation_samples = samples;
+        Ok((mesh, validation))
+    }
+
+    /// Gate 1 of the parametric route: every CSG node in the body must
+    /// be exactly representable by its woven B-Rep. Blends, warps and
+    /// edge fillets shape the SDF but not the woven faces — a parametric
+    /// mesh would silently miss them.
+    fn check_analytically_exact(&self, feature_indices: &[usize]) -> Result<(), String> {
+        if !self.edge_fillets.is_empty() {
+            return Err("document has edge fillets (SDF-only geometry)".into());
+        }
+        for &fi in feature_indices {
+            check_node_analytic(&self.decoded[fi].node)?;
+        }
+        Ok(())
+    }
+
     pub(crate) fn export_session_meshes(&self) -> Vec<&Mesh> {
         self.export_session
             .as_ref()
             .map(|s| s.meshes.iter().collect())
             .unwrap_or_default()
+    }
+}
+
+/// Walk a body's CSG tree and reject any node whose geometry the woven
+/// B-Rep does not carry exactly. Hard booleans, transforms and the
+/// analytic leaves pass; blend/warp operators and non-Lipschitz or
+/// mesh-import leaves do not. Shell/Offset/Extrude/Revolve weave
+/// analytically (their carriers fold the operation in) and pass — a
+/// carrier the weave could NOT lift (spline extrude wall) shows up as a
+/// tessellated face and is rejected by gate 2 instead.
+fn check_node_analytic(node: &crate::csg::CsgNode) -> Result<(), String> {
+    use crate::csg::CsgNode as N;
+    match node {
+        N::Leaf { primitive, .. } => {
+            if primitive.is_non_lipschitz() {
+                return Err(format!(
+                    "non-Lipschitz primitive {}",
+                    primitive.default_name()
+                ));
+            }
+            if matches!(primitive, Primitive::ImportedMesh { .. }) {
+                return Err("imported-mesh leaf inside a multi-feature body".into());
+            }
+            Ok(())
+        }
+        N::Transform(_, a) | N::Shell(a, _, _) | N::Offset(a, _) => check_node_analytic(a),
+        N::Union(a, b) | N::Difference(a, b) | N::Intersection(a, b) => {
+            check_node_analytic(a)?;
+            check_node_analytic(b)
+        }
+        N::Empty | N::Extrude { .. } | N::Revolve { .. } => Ok(()),
+        N::SmoothUnion(..) | N::SmoothDifference(..) => {
+            Err("smooth boolean (blend zone is SDF-only)".into())
+        }
+        N::MaskedBlend { .. } => Err("masked blend (SDF-only)".into()),
+        N::Twist(..) | N::Bend(..) | N::Displace(..) | N::Morph(..) => {
+            Err("warp/morph operator (SDF-only)".into())
+        }
+        N::Helix { .. } | N::Sweep { .. } => {
+            Err("helix/sweep (weave-excluded geometry)".into())
+        }
     }
 }
 
@@ -301,9 +477,10 @@ mod tests {
             "max deviation {}",
             report["max_deviation_mm"]
         );
-        // Cell size 0.5 mm on a 40 mm box (half extents 20) → res 80,
-        // far beyond the viewport's 64.
-        assert_eq!(report["bodies"][0]["resolution"], 80);
+        // Phase 2: a plain box takes the parametric per-face route —
+        // 6 planar faces tessellate to exactly 12 triangles.
+        assert_eq!(report["bodies"][0]["parametric"], true, "{report}");
+        assert_eq!(report["total_triangles"].as_u64().unwrap(), 12);
 
         let stl = k.export_mesh_stl();
         let tri_count =
@@ -319,6 +496,161 @@ mod tests {
 
         k.export_mesh_end();
         assert!(k.export_mesh_report().is_empty());
+    }
+
+    /// Run one body through the session and return its report JSON.
+    fn export_single(k: &mut crate::Kernel, cell: f32) -> serde_json::Value {
+        let n = k.export_mesh_begin(cell);
+        assert!(n >= 1, "expected at least one body");
+        for i in 0..n {
+            k.export_mesh_body(i);
+        }
+        let report: serde_json::Value =
+            serde_json::from_str(&k.export_mesh_report()).unwrap();
+        report
+    }
+
+    #[test]
+    fn cylinder_exports_parametric_watertight() {
+        let mut k = crate::Kernel::new();
+        k.add_primitive(
+            Primitive::KIND_CYLINDER,
+            BoolOp::TAG_NEW,
+            0.0,
+            0.0,
+            0.0,
+            8.0,
+            15.0,
+            0.0,
+        )
+        .unwrap();
+        let report = export_single(&mut k, 0.4);
+        assert_eq!(report["bodies"][0]["parametric"], true, "{report}");
+        assert_eq!(report["all_watertight"], true, "{report}");
+        assert!(
+            report["max_deviation_mm"].as_f64().unwrap() < 0.1,
+            "{report}"
+        );
+        // Sag-driven barrel + two earcut caps: far below any voxel mesh.
+        let tris = report["total_triangles"].as_u64().unwrap();
+        assert!(tris < 2000, "triangles {tris}");
+    }
+
+    #[test]
+    fn sphere_exports_parametric_watertight() {
+        let mut k = crate::Kernel::new();
+        k.add_primitive(
+            Primitive::KIND_SPHERE,
+            BoolOp::TAG_NEW,
+            0.0,
+            0.0,
+            0.0,
+            10.0,
+            0.0,
+            0.0,
+        )
+        .unwrap();
+        let report = export_single(&mut k, 0.4);
+        assert_eq!(report["bodies"][0]["parametric"], true, "{report}");
+        assert_eq!(report["all_watertight"], true, "{report}");
+        assert!(
+            report["max_deviation_mm"].as_f64().unwrap() < 0.1,
+            "{report}"
+        );
+    }
+
+    #[test]
+    fn box_minus_cylinder_hole_exports_parametric_watertight() {
+        let mut k = crate::Kernel::new();
+        k.add_primitive(
+            Primitive::KIND_BOX,
+            BoolOp::TAG_NEW,
+            0.0,
+            0.0,
+            0.0,
+            15.0,
+            10.0,
+            15.0,
+        )
+        .unwrap();
+        // Cylinder axis is local Y — a through-hole in the box top face.
+        k.add_primitive(
+            Primitive::KIND_CYLINDER,
+            BoolOp::TAG_REMOVE,
+            0.0,
+            0.0,
+            0.0,
+            4.0,
+            25.0,
+            0.0,
+        )
+        .unwrap();
+        let report = export_single(&mut k, 0.4);
+        // Planes with an inner circular loop (hole bridging) + a full
+        // cylinder band between the two rim circles.
+        assert_eq!(report["bodies"][0]["parametric"], true, "{report}");
+        assert_eq!(report["all_watertight"], true, "{report}");
+        assert!(
+            report["max_deviation_mm"].as_f64().unwrap() < 0.1,
+            "{report}"
+        );
+    }
+
+    #[test]
+    fn union_box_cylinder_partial_patch_exports_watertight() {
+        let mut k = crate::Kernel::new();
+        k.add_primitive(
+            Primitive::KIND_BOX,
+            BoolOp::TAG_NEW,
+            0.0,
+            0.0,
+            0.0,
+            10.0,
+            10.0,
+            10.0,
+        )
+        .unwrap();
+        // Overlapping cylinder sticking out of the box side: the barrel
+        // is a boolean-trimmed partial patch (winding 0 → earcut +
+        // refinement route).
+        k.add_primitive(
+            Primitive::KIND_CYLINDER,
+            BoolOp::TAG_ADD,
+            8.0,
+            0.0,
+            0.0,
+            5.0,
+            8.0,
+            0.0,
+        )
+        .unwrap();
+        let report = export_single(&mut k, 0.4);
+        // Watertight is the hard requirement; the route may fall back
+        // to MDC if the weave leaves this configuration incomplete.
+        assert_eq!(report["all_watertight"], true, "{report}");
+        assert!(
+            report["max_deviation_mm"].as_f64().unwrap() < 0.15,
+            "{report}"
+        );
+    }
+
+    #[test]
+    fn analytic_gate_rejects_sdf_only_operators() {
+        use crate::csg::{BlendMode, CsgNode};
+        let smooth = CsgNode::SmoothUnion(
+            Box::new(CsgNode::Empty),
+            Box::new(CsgNode::Empty),
+            2.0,
+            BlendMode::Fillet,
+        );
+        assert!(check_node_analytic(&smooth)
+            .unwrap_err()
+            .contains("smooth"));
+        let twist = CsgNode::Twist(Box::new(CsgNode::Empty), 0.5);
+        assert!(check_node_analytic(&twist).unwrap_err().contains("warp"));
+        // Hard booleans over Empty pass the structural gate.
+        let hard = CsgNode::Union(Box::new(CsgNode::Empty), Box::new(CsgNode::Empty));
+        assert!(check_node_analytic(&hard).is_ok());
     }
 
     #[test]

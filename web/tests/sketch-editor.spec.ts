@@ -877,10 +877,15 @@ test.describe("Sketch editor smoke", () => {
     const path = await download.path();
     expect(path).not.toBeNull();
     const fs = await import("node:fs/promises");
-    const stat = await fs.stat(path);
-    // Header (80) + count (4) + several hundred triangles at 50
-    // bytes each — much larger than the 84-byte empty stub.
-    expect(stat.size).toBeGreaterThan(1000);
+    const bytes = await fs.readFile(path);
+    // Binary STL: 80-byte header + u32 triangle count + 50 bytes per
+    // triangle. The parametric export path (Meshing Phase 2) reduces a
+    // plain extruded rectangle to its exact 12 box triangles — so
+    // assert structure + a real solid, not a magic byte size.
+    expect(bytes.length).toBeGreaterThanOrEqual(84 + 12 * 50);
+    const triCount = bytes.readUInt32LE(80);
+    expect(triCount).toBeGreaterThanOrEqual(12);
+    expect(bytes.length).toBe(84 + triCount * 50);
 
     expect(
       pageErrors.map((e) => e.message),

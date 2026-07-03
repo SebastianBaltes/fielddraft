@@ -17,6 +17,10 @@ export interface ExportBodyReport {
   resolution: number;
   cell_limited: boolean;
   passthrough: boolean;
+  /** Meshing Phase 2: true = parametric per-face B-Rep tessellation
+   *  (exact edges, minimal triangles); false = generic MDC pass. */
+  parametric: boolean;
+  parametric_skip_reason: string;
   orientation_repaired: number;
   simplified: boolean;
   simplification_rejected: boolean;

@@ -39,39 +39,48 @@ pub fn edge_control_structure(geometry: &EdgeGeometry) -> (Vec<[f64; 3]>, usize)
 /// edge). Returns the raw point chain; consecutive duplicate join points
 /// between Bézier spans are dropped.
 pub fn sample_edge(geometry: &EdgeGeometry) -> Vec<[f64; 3]> {
+    sample_edge_dense(geometry, SAMPLES_PER_SPAN)
+}
+
+/// Like [`sample_edge`], but with a caller-chosen per-span sample count.
+/// The export tessellator (Meshing Phase 2) oversamples (then decimates by
+/// chord tolerance) so large arcs stay inside the export tolerance — the
+/// viewport default of 16/span is a *visual* density, not a metric one.
+pub fn sample_edge_dense(geometry: &EdgeGeometry, samples_per_span: usize) -> Vec<[f64; 3]> {
     match geometry {
         EdgeGeometry::Polyline(pts) => pts.clone(),
         // Hermite must not survive weaving (it is converted to NURBS), but a
         // hand-built or pre-weave edge may carry it — use the sample points.
         EdgeGeometry::Hermite(samples) => samples.iter().map(|s| s.point).collect(),
-        EdgeGeometry::Nurbs(curve) => sample_nurbs(curve),
+        EdgeGeometry::Nurbs(curve) => sample_nurbs(curve, samples_per_span),
     }
 }
 
 /// Sample a clamped Bézier-chain NURBS (the only kind the weaver produces) by
 /// de Casteljau per span. Falls back to the control polygon if the knot/control
 /// structure is not a clean `degree`-multiplicity Bézier chain.
-fn sample_nurbs(curve: &NurbsCurve) -> Vec<[f64; 3]> {
+fn sample_nurbs(curve: &NurbsCurve, samples_per_span: usize) -> Vec<[f64; 3]> {
     let d = curve.degree;
     let n = curve.control_points.len();
+    let per_span = samples_per_span.max(1);
     // A clamped Bézier chain has `d * n_seg + 1` control points; bail to the
     // control polygon for anything that doesn't fit that shape.
     if d == 0 || n < d + 1 || !(n - 1).is_multiple_of(d) || curve.weights.len() != n {
         return curve.control_points.clone();
     }
     let n_seg = (n - 1) / d;
-    let mut out: Vec<[f64; 3]> = Vec::with_capacity(n_seg * SAMPLES_PER_SPAN + 1);
+    let mut out: Vec<[f64; 3]> = Vec::with_capacity(n_seg * per_span + 1);
     for seg in 0..n_seg {
         let lo = d * seg;
         let cps = &curve.control_points[lo..=lo + d];
         let ws = &curve.weights[lo..=lo + d];
-        for i in 0..=SAMPLES_PER_SPAN {
+        for i in 0..=per_span {
             // Skip the first point of every span after the first: it equals the
             // previous span's last point (C⁰ join), so emit it only once.
             if seg > 0 && i == 0 {
                 continue;
             }
-            let t = i as f64 / SAMPLES_PER_SPAN as f64;
+            let t = i as f64 / per_span as f64;
             out.push(de_casteljau(cps, ws, t));
         }
     }

@@ -242,7 +242,7 @@ function ReportView({
           <thead>
             <tr>
               <th>Body</th>
-              <th>Cell</th>
+              <th>Mesh</th>
               <th>Triangles</th>
               <th>Watertight</th>
               <th>Max dev.</th>
@@ -252,10 +252,18 @@ function ReportView({
             {report.bodies.map((b) => (
               <tr key={b.body_id}>
                 <td>{featureName(b.body_id)}</td>
-                <td>
+                <td
+                  title={
+                    b.parametric_skip_reason
+                      ? `Parametric route skipped: ${b.parametric_skip_reason}`
+                      : undefined
+                  }
+                >
                   {b.passthrough
                     ? "source mesh"
-                    : `${formatMm(b.actual_cell_mm)} mm`}
+                    : b.parametric
+                      ? "parametric"
+                      : `grid ${formatMm(b.actual_cell_mm)} mm`}
                   {b.cell_limited ? " (limited)" : ""}
                 </td>
                 <td>{b.triangles.toLocaleString()}</td>

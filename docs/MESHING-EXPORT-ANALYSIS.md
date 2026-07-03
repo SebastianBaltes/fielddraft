@@ -189,6 +189,24 @@ graph LR
 - **Phase 2 (M):** Option B für weave-vollständige Bodies — der Qualitäts- und
   Ökonomiesprung für klassische CAD-Teile (und erledigt Ticket-Klasse 55ea/mdo0
   strukturell: Helix-`parametric_brep`-Pfad kann hier ebenfalls exakt tessellieren).
+
+  **✅ UMGESETZT (v0.6.359, Phase 2a):** `brep/tessellate.rs` — jede Kantenkurve
+  wird EINMAL diskretisiert (dichte NURBS-Samples + Douglas-Peucker bei tol/6,
+  Endpunkte auf geteilte topologische Vertices gesnappt); beide Nachbarflächen
+  konsumieren dieselbe Polyline → watertight by construction. Flächenrouten:
+  Ebenen per Earcut mit korrektem Hole-Bridging (Sichtbarkeits-Bridge statt
+  Nächster-Vertex — der dc.rs-Slit war die non-manifold-Quelle); Zylinder/Kegel
+  als Rotationsflächen: Winding-0-Patches per Unwrap→Earcut→konformem
+  Sag-Refinement (nur Innenkanten splitten), Voll-Bänder per Zwei-Zeiger-Sweep
+  zwischen den beiden Randringen; freie Kugel/Torus als Strukturgitter
+  (Sag-Formel mit tol/2-Diagonalbudget). Drei Gates: CSG-Scan
+  (`check_node_analytic` — Blends/Warps/Fillets/non-Lipschitz → MDC),
+  Tessellations-Erfolg, Validator (watertight + Deviation ≤ 4·tol gegen die
+  exakte SDF). Gemessen: Box 12 Dreiecke, Zylinder 252 statt 28.084 (110×),
+  Box−Zylinder-Loch und Box∪Zylinder-Patch parametrisch watertight ≤ 0,05 mm.
+  **Offen (Phase 2b):** getrimmte Kugel-/Torus-Patches, RevolvedProfile-
+  Carrier (Vase!), Mehrfach-Winding-Konfigurationen, Spline-Extrude-Wände
+  (Tessellated-Carrier).
 - **Phase 3 (optional, nach Bedarf):** CGAL-Premium-Export/Referenz-Validierung;
   Manifold-Library für Mischkörper; SDF-CWF-artiger „Beautify"-Remesh nur falls je
   gewünscht.

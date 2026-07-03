@@ -677,13 +677,20 @@ graph LR
 
 * **Rust kernel** (`export_mesh.rs`): Session-Protokoll `exportMeshBegin(cellMm)`
   → N× `exportMeshBody(i)` (Progress) → `exportMeshStl()/exportMesh3mf()` +
-  `exportMeshReport()`. Pro Body wird die Auflösung aus der Zellgröße und der
-  Body-AABB abgeleitet (Memory-Guard kappt bei ~24M Grid-Ecken), roh
-  gemesht (MDC + Newton-Projektion), die Orientierung repariert
+  `exportMeshReport()`. Pro Body zuerst der **parametrische Pfad**
+  (Meshing Phase 2, `brep/tessellate.rs`): per-Face-Tessellation des
+  gewobenen B-Rep — jede Kantenkurve einmal diskretisiert, Nachbarflächen
+  teilen die Polyline (watertight by construction); Ebenen per Earcut mit
+  Hole-Bridging, Zylinder/Kegel per Unwrap+Sag-Refinement bzw.
+  Band-Strip, freie Kugel/Torus als Gitter. Drei Gates (CSG-Scan gegen
+  SDF-only-Geometrie, Tessellations-Erfolg, Validator) — jeder Fehlschlag
+  fällt auf den generischen MDC-Pfad zurück: Auflösung aus Zellgröße und
+  Body-AABB (Memory-Guard ~24M Grid-Ecken), roh gemesht (MDC +
+  Newton-Projektion), Orientierung repariert
   (`mesh_validate::fix_orientation` — MDC wickelt an scharfen Kanten
-  inkonsistent, im DoubleSide-Viewport unsichtbar) und die
-  planare/developable Simplifikation nur übernommen, wenn sie die
-  Wasserdichtheit nicht bricht.
+  inkonsistent, im DoubleSide-Viewport unsichtbar), planare/developable
+  Simplifikation nur übernommen, wenn sie die Wasserdichtheit nicht
+  bricht.
 * **Validator** (`mesh_validate.rs`): watertight/manifold/Orientierung/
   Komponenten strukturell (positions-geweldete Kanten-Inzidenz) plus
   gemessene Abweichung gegen die exakte SDF (Zentroid + Kantenmitten,

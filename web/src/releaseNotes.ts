@@ -24,6 +24,16 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.359",
+    entries: [
+      {
+        kind: "feat",
+        text: "Parametrischer Mesh-Export (Meshing Phase 2): analytisch weavbare Körper (Box/Zylinder/Kugel/Kegel/Torus-Booleans) tessellieren direkt aus dem B-Rep — watertight by construction, exakte Kanten, drastisch weniger Dreiecke (Zylinder: 252 statt 28.000); automatischer Fallback aufs generische Meshing, Report zeigt die Route pro Körper",
+        scope: "export",
+      },
+    ],
+  },
+  {
     version: "0.6.358",
     entries: [
       {
