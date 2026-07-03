@@ -14,6 +14,7 @@
 import type { Kernel } from "./kernel";
 import type { PickedElement } from "./elementQuery";
 import { logUserAction } from "./userActionLog";
+import { bodyFeatureIds, resolveSelectionLinks } from "./selectionLinks";
 import {
   StoreCore,
   type SelectionOrigin,
@@ -370,5 +371,30 @@ export class SelectionStore {
       highlightedBodyIndex: null,
     };
     this.notify();
+  }
+
+  // ── selectors (Review-Befund 8): components read these instead of
+  //    touching store.kernel directly ─────────────────────────────────
+
+  /** Features owning the selected B-Rep elements (or contributing to the
+   *  highlighted body) — drives the outliner's related-row highlight
+   *  (ticket r36f). */
+  relatedFeatureIds(): ReadonlySet<number> {
+    if (this.state.selectedElements.length > 0) {
+      return resolveSelectionLinks(this.kernel, this.state.selectedElements)
+        .featureIds;
+    }
+    if (this.state.highlightedBodyIndex !== null) {
+      return bodyFeatureIds(this.kernel, this.state.highlightedBodyIndex);
+    }
+    return new Set<number>();
+  }
+
+  /** Body index owning the primary selected element, or `null` when no
+   *  element is selected / the hash is unknown (mid-regen). */
+  relatedBodyIndex(): number | null {
+    if (this.state.selectedElements.length === 0) return null;
+    return resolveSelectionLinks(this.kernel, this.state.selectedElements)
+      .bodyIndex;
   }
 }

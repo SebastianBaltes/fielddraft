@@ -1178,6 +1178,41 @@ export class KernelStore {
     this.sel.selectDatum(datumId);
   }
 
+  // ── selectors (Review-Befund 8) ────────────────────────────────────
+
+  /** The partitioned body list for the Parts tree — id / seed feature /
+   *  triangle count. Sourced from the kernel body list (present in every
+   *  render mode, unlike `meshedBodies`) with triangle counts looked up
+   *  in the worker mesh cache (0 in SDF modes). */
+  listBodies(): { id: number; seedId: number; triangleCount: number }[] {
+    const k = this.kernel;
+    const n = k.bodyCount();
+    const triById = new Map<number, number>(
+      this.state.meshedBodies.map((b) => [
+        b.id,
+        Math.round(b.indices.length / 3),
+      ]),
+    );
+    const out: { id: number; seedId: number; triangleCount: number }[] = [];
+    for (let i = 0; i < n; i++) {
+      const id = k.bodyId(i);
+      out.push({
+        id,
+        seedId: k.bodySeedFeatureId(i),
+        triangleCount: triById.get(id) ?? 0,
+      });
+    }
+    return out;
+  }
+
+  relatedFeatureIds(): ReadonlySet<number> {
+    return this.sel.relatedFeatureIds();
+  }
+
+  relatedBodyIndex(): number | null {
+    return this.sel.relatedBodyIndex();
+  }
+
   // ── K6b.2: sketch session ────────────────────────────────────────
 
   private notify(): void {
