@@ -73,8 +73,6 @@ import { setOverlayRedraw } from "./sketchOverlayBridge";
 import { setToolHint } from "./toolHintBridge";
 import { setHoveredSketchEntity } from "./sketchEntityHoverBridge";
 import { clearSketchLabels } from "./sketchLabelBridge";
-import { curveOfSubCall, distToCurve, nearestTrimTarget } from "./sketchTrim";
-import { nearestProjectedEdge } from "./sketchProject";
 import { solveAndReplace } from "./solver/replaySolve";
 import { DragController } from "./solver/dragController";
 import {
@@ -105,35 +103,11 @@ import {
   type ToolPointerEvent,
 } from "./sketchTools/toolTypes";
 import { controllerForTool } from "./sketchTools/registry";
+import { constraintPickTool } from "./sketchTools/constraintPickTool";
 
 interface Props {
   store: KernelStore | null;
   session: SketchSessionState;
-}
-
-/**
- * F10 fillet pick: index of the line sub-call nearest `click` (within
- * `tolMm`), or null. Restricted to `sketch_line` calls — fillet only
- * rounds the corner between two plain lines, so composites and curves
- * are skipped. Mirrors `nearestTrimTarget` but line-only.
- */
-function nearestLineSubCall(
-  subCalls: ReadonlyArray<{ type: string; params: Record<string, unknown> }>,
-  click: [number, number],
-  tolMm: number,
-): number | null {
-  let bestIdx: number | null = null;
-  let bestDist = tolMm;
-  subCalls.forEach((call, i) => {
-    const cv = curveOfSubCall(call);
-    if (!cv || cv.kind !== "line") return;
-    const d = distToCurve(click, cv);
-    if (d < bestDist) {
-      bestDist = d;
-      bestIdx = i;
-    }
-  });
-  return bestIdx;
 }
 
 /** Ticket pqoe: the slice of store state the in-scene text editor reads. */
@@ -327,18 +301,6 @@ export type DragState =
       state: unknown;
     }
   | {
-      /** Ticket 3rz2: a direct click-drag of the current selection with the
-       *  Move/Copy tool. Pressing an entity selects it (if needed) and arms
-       *  this; dragging past a small threshold and releasing translates the
-       *  selection by (current − start). A release without drag is a plain
-       *  select. `copy` distinguishes Move (in place) from Copy (appended). */
-      kind: "move_drag";
-      start: [number, number];
-      current: [number, number];
-      copy: boolean;
-      moved: boolean;
-    }
-  | {
       /** Ticket matf: a plain Select-mode click-drag that rigidly translates
        *  geometry — a single entity body (line / circle / arc / region) or a
        *  whole multi-selection grabbed and dragged together. `entityIds` are
@@ -396,21 +358,6 @@ function readCamForCanvas(
   return { ...cam, width: rect.width, height: rect.height };
 }
 
-/** Ticket D1 (jq6i / 3rz2): the active sketch tool's first-step instruction for
- *  the floating ToolHint pill, or null for tools that need no guidance. */
-function initialToolHint(tool: string | null): string | null {
-  switch (tool) {
-    case "sketch_mirror":
-      return "Spiegeln: Spiegelachse anklicken.";
-    case "sketch_move":
-      return "Verschieben: selektierte Geometrie ziehen, oder Basis- dann Zielpunkt anklicken.";
-    case "sketch_copy":
-      return "Kopieren: Basispunkt anklicken, dann Zielpunkt.";
-    default:
-      return null;
-  }
-}
-
 export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const dragRef = useRef<DragState>({ kind: "idle" });
@@ -434,20 +381,6 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
   const mirrorAxisHoverRef = useRef<
     [[number, number], [number, number]] | null
   >(null);
-  // Ticket jq6i: the Mirror tool is a two-step Onshape flow now — first click
-  // picks the axis (sub-call index stored here), then clicks toggle the objects
-  // to mirror into the sketch selection; Enter applies, Esc cancels. `null`
-  // means "no axis yet" (step 1).
-  const mirrorAxisRef = useRef<number | null>(null);
-  // F10: the first line picked in the two-click fillet flow (sub-call
-  // index), pending the second pick. Reset whenever the tool changes.
-  const filletFirstRef = useRef<number | null>(null);
-  // F11: the first line picked in the two-click chamfer flow (sub-call
-  // index), pending the second pick. Reset whenever the tool changes.
-  const chamferFirstRef = useRef<number | null>(null);
-  // F17: the base point of the two-click Move / Copy flow (sketch mm),
-  // pending the target click. Reset whenever the tool changes.
-  const moveBaseRef = useRef<[number, number] | null>(null);
   // Registry migration: per-tool-activation scratch state for controllers
   // (mirror axis, move base). Cleared whenever the selected tool changes.
   const toolStateRef = useRef<unknown>(null);
@@ -698,21 +631,21 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
     // Plan item 4: the corner editor belongs to Select mode — drop it on
     // any tool change.
     setCornerEditor(null);
-    // F10: drop a pending first fillet pick when leaving the tool.
-    filletFirstRef.current = null;
-    // F17: drop a pending Move / Copy base point when leaving the tool.
-    moveBaseRef.current = null;
-    // F11: drop a pending first chamfer pick when leaving the tool.
-    chamferFirstRef.current = null;
-    // jq6i: drop a pending mirror axis when leaving the tool.
-    mirrorAxisRef.current = null;
     // Registry migration: drop the leaving controller's per-activation
-    // scratch state (mirror axis, move base).
+    // scratch state (mirror axis jq6i, move base F17).
     toolStateRef.current = null;
     // o6hx: drop any mirror step-2 hover highlight when leaving the tool.
     setHoveredSketchEntity(null);
-    // D1: surface the new tool's first-step instruction as the hint pill.
-    setToolHint(initialToolHint(session.selectedTool));
+    // D1: surface the new tool's first-step instruction as the hint pill
+    // (jq6i / 3rz2) — the active controller supplies it.
+    const tool = session.selectedTool;
+    const controller =
+      tool === null
+        ? null
+        : isConstraintTool(tool)
+          ? constraintPickTool
+          : controllerForTool(tool);
+    setToolHint(controller?.initialHint?.(tool!) ?? null);
   }, [session.selectedTool]);
 
   // D1: clear the tool hint when the sketch canvas unmounts (session exit).
@@ -835,33 +768,12 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
       }
       e.preventDefault();
       const cam = readCamForCanvas(e.currentTarget as HTMLCanvasElement);
-      const [u, v] = screenToSketchFromEvent(e, cam);
-      // A click on an existing dimension's value label edits it (constraint),
-      // rather than starting a new constraint pick. A click while the editor
-      // is open just dismisses it.
-      const rect = (e.currentTarget as HTMLCanvasElement).getBoundingClientRect();
-      const clickPx: [number, number] = [
-        e.clientX - rect.left,
-        e.clientY - rect.top,
-      ];
-      if (editor !== null) {
-        setEditor(null);
-        lastCamVersionRef.current = -1;
-        return;
+      if (ctxRef.current) {
+        constraintPickTool.onDown?.(
+          ctxRef.current,
+          toolPointerEvent(e, cam, false),
+        );
       }
-      if (tryOpenDimensionEditor(clickPx, cam)) {
-        lastCamVersionRef.current = -1;
-        return;
-      }
-      const tolMm = SELECT_PICK_PX / Math.max(cam.zoom, 1e-6);
-      const state = buildDraftSketchState(session.subCalls);
-      const hit = hitTestSketchEntity(state, [u, v], tolMm);
-      if (hit === null) {
-        store.clearSketchSelection();
-      } else {
-        store.pickSketchConstraintEntity(hit);
-      }
-      lastCamVersionRef.current = -1;
       return;
     }
     if (store && session.active && !session.selectedTool) {
@@ -1054,137 +966,6 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
         return;
       }
     }
-    // Trim: not a drawing tool — a single click cuts the curve under the
-    // cursor at its nearest intersections and drops the picked piece. No
-    // drag, no snap, no grid; the raw click decides which segment dies.
-    if (session.selectedTool === "sketch_trim") {
-      const tolMm = SELECT_PICK_PX / Math.max(cam.zoom, 1e-6);
-      store.trimSketchAt([u, v], tolMm);
-      lastCamVersionRef.current = -1;
-      return;
-    }
-    // Text (ticket pqoe): not a drawing tool — a click opens an in-scene
-    // input field + param popover at the click point so the user types /
-    // tweaks the text right where it lands instead of in the toolbar.
-    // Enter / blur commits the placement via store.placeSketchText with the
-    // baseline-left at this sketch-plane location (see the JSX below and
-    // sketchText.ts). A second click while the editor is open just moves it
-    // to the new location.
-    if (session.selectedTool === "sketch_text") {
-      // A click while an editor is already open commits the current text
-      // first, then re-opens at the new location (Onshape-style).
-      if (textEditor !== null) {
-        commitTextEditor();
-      }
-      // Ticket lycy: every fresh create-mode open starts with an EMPTY
-      // value — the persisted store value must not leak the previously
-      // typed text into a new drop (clicking elsewhere would otherwise
-      // re-place the last string). Edit mode (openTextEditor) still seeds
-      // the clicked text's value, unaffected.
-      store.setSketchTextValue("");
-      const canvas = e.currentTarget as HTMLCanvasElement;
-      const rect = canvas.getBoundingClientRect();
-      setTextEditor({
-        left: e.clientX - rect.left,
-        top: e.clientY - rect.top,
-        u,
-        v,
-        group: null,
-      });
-      requestAnimationFrame(() => {
-        textInputRef.current?.focus();
-        textInputRef.current?.select();
-      });
-      lastCamVersionRef.current = -1;
-      return;
-    }
-    // Split: keep-both sibling of Trim — also a single-click editing mode
-    // (not a kernel tool). The click picks the nearest curve under the
-    // cursor and cuts it into two pieces meeting at the click point; both
-    // halves survive (see store.splitSketchAt / sketchSplit.ts).
-    if (session.selectedTool === "sketch_split") {
-      const tolMm = SELECT_PICK_PX / Math.max(cam.zoom, 1e-6);
-      const pick = nearestTrimTarget(session.subCalls, [u, v], tolMm);
-      if (pick !== null) store.splitSketchAt(pick, [u, v], tolMm);
-      lastCamVersionRef.current = -1;
-      return;
-    }
-    // Extend: complement of Trim, also a single-click editing mode (not a
-    // kernel tool). The click picks the nearest LINE under the cursor and
-    // lengthens its grabbed end (the one nearer the click) toward the
-    // nearest other curve (see store.extendSketchAt / sketchExtend.ts).
-    if (session.selectedTool === "sketch_extend") {
-      const tolMm = SELECT_PICK_PX / Math.max(cam.zoom, 1e-6);
-      const pick = nearestLineSubCall(session.subCalls, [u, v], tolMm);
-      if (pick !== null) store.extendSketchAt(pick, [u, v], tolMm);
-      lastCamVersionRef.current = -1;
-      return;
-    }
-    // Fillet (tickets tqi4/chfp): single CLICK on a CORNER rounds it. The
-    // corner under the cursor resolves to the two line edges meeting there —
-    // exploding a Polygon / N-gon / Rectangle into lines first if needed — and
-    // the fillet applies with the current radius. A generous corner tolerance
-    // (vertices are small targets).
-    if (session.selectedTool === "sketch_fillet") {
-      const tolMm = (SELECT_PICK_PX * 2.5) / Math.max(cam.zoom, 1e-6);
-      store.filletCornerAt([u, v], store.getState().sketchToolParams.filletRadius, tolMm);
-      lastCamVersionRef.current = -1;
-      return;
-    }
-    // Chamfer (tickets tqi4/chfp): single CLICK on a corner bevels it — same
-    // corner resolution as fillet, applied with the current setback distance.
-    if (session.selectedTool === "sketch_chamfer") {
-      const tolMm = (SELECT_PICK_PX * 2.5) / Math.max(cam.zoom, 1e-6);
-      store.chamferCornerAt(
-        [u, v],
-        store.getState().sketchToolParams.chamferDistance,
-        tolMm,
-      );
-      lastCamVersionRef.current = -1;
-      return;
-    }
-    // F17: Move / Copy — two-click transform of the current selection (not a
-    // kernel tool). The user selects geometry first (Select mode), picks
-    // Move or Copy, then clicks a BASE point and a TARGET point: the
-    // selection is translated by (target − base), in place for Move or as
-    // appended copies for Copy. The first click records the base in
-    // `moveBaseRef`; the second click applies the delta and clears it.
-    if (
-      session.selectedTool === "sketch_move" ||
-      session.selectedTool === "sketch_copy"
-    ) {
-      const copy = session.selectedTool === "sketch_copy";
-      // Ticket 3rz2: if a base point is already pending (Onshape base→target
-      // path), the second click applies the delta. Otherwise, a press ON an
-      // entity selects it (if needed) and arms a direct click-drag; a press on
-      // empty space records the base point for the two-click path.
-      const base = moveBaseRef.current;
-      if (base !== null) {
-        store.moveSketchSelection(u - base[0], v - base[1], copy);
-        moveBaseRef.current = null;
-        lastCamVersionRef.current = -1;
-        return;
-      }
-      const tolMm = SELECT_PICK_PX / Math.max(cam.zoom, 1e-6);
-      const state = buildDraftSketchState(session.subCalls);
-      const hit = hitTestSketchEntity(state, [u, v], tolMm);
-      if (hit !== null) {
-        if (!session.selection.includes(hit)) store.setSketchSelection([hit]);
-        (e.currentTarget as HTMLCanvasElement).setPointerCapture(e.pointerId);
-        dragRef.current = {
-          kind: "move_drag",
-          start: [u, v],
-          current: [u, v],
-          copy,
-          moved: false,
-        };
-      } else {
-        // Empty space → start the two-click base→target transform.
-        moveBaseRef.current = [u, v];
-      }
-      lastCamVersionRef.current = -1;
-      return;
-    }
     // K6b.8: Ctrl = snap to grid. Round to nearest grid step.
     if (e.ctrlKey || e.metaKey) {
       [u, v] = gridSnapped(u, v, cam.zoom);
@@ -1201,95 +982,6 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
       projectedEdgesRef.current,
     );
     snapRef.current = snap;
-    // F14: Mirror is an interactive editing mode, not a kernel tool. The
-    // user first selects the source geometry (Select mode: click / box-
-    // select), then picks the Mirror tool, then clicks the AXIS LINE here.
-    // The click resolves the nearest line sub-call and reflects every
-    // selected simple-geometry sub-call across it, appending editable
-    // mirrored copies (see store.mirrorSketchSelection / sketchMirror.ts).
-    if (session.selectedTool === "sketch_mirror") {
-      // Ticket jq6i: Onshape-style two-step flow.
-      // Step 1 (no axis yet): the click picks the mirror axis line.
-      if (mirrorAxisRef.current === null) {
-        const tolMm = (SELECT_PICK_PX * 2.5) / Math.max(cam.zoom, 1e-6);
-        const axis = nearestLineSubCall(session.subCalls, [u, v], tolMm);
-        if (axis !== null) {
-          mirrorAxisRef.current = axis;
-          store.clearSketchSelection();
-          setToolHint("Spiegeln: Teile anklicken zum Spiegeln · Esc beendet.");
-        }
-        lastCamVersionRef.current = -1;
-        return;
-      }
-      // Step 2 (axis set): ticket ps21 — each click on a part mirrors it
-      // LIVE across the axis (Onshape pick-to-apply), no Enter, no
-      // selection collecting. Esc ends the tool (keyboard handler below).
-      const tolMm = SELECT_PICK_PX / Math.max(cam.zoom, 1e-6);
-      const state = buildDraftSketchState(session.subCalls);
-      const hit = hitTestSketchEntity(state, [u, v], tolMm);
-      if (hit !== null) store.mirrorSketchEntityAt(mirrorAxisRef.current, hit);
-      lastCamVersionRef.current = -1;
-      return;
-    }
-    // F15: Offset is an interactive editing mode, not a kernel tool. A
-    // single click picks the nearest curve and appends a parallel copy at
-    // the toolbar distance toward the clicked side — the click point
-    // doubles as the side selector (a line offsets to the click's side; a
-    // circle/arc grows if the click is outside its rim, shrinks if inside).
-    // See store.offsetSketchAt / sketchOffset.ts.
-    if (session.selectedTool === "sketch_offset") {
-      const tolMm = SELECT_PICK_PX / Math.max(cam.zoom, 1e-6);
-      const pick = nearestTrimTarget(session.subCalls, [u, v], tolMm);
-      if (pick !== null) {
-        store.offsetSketchAt(
-          pick,
-          [u, v],
-          store.getState().sketchToolParams.offsetDistance,
-        );
-      }
-      lastCamVersionRef.current = -1;
-      return;
-    }
-    // F21 / jcb7: Project / Use external geometry. The faint guides drawn from
-    // existing bodies' B-Rep edges (projected onto the sketch plane in
-    // `projectedEdgesRef`) are inert reference lines. A single click adopts the
-    // nearest guide as an ASSOCIATIVE CONSTRUCTION projection: a `sketch_project`
-    // sub-call that stores the edge QUERY (`qEdge(idHash)`), not a frozen copy,
-    // so the kernel re-resolves it every regen and the line FOLLOWS the body.
-    // Construction matches the CAD "projected reference" convention (visible +
-    // snappable, excluded from the profile). A guide whose edge has no exported
-    // id-hash falls back to a frozen `sketch_line` (non-associative, but still
-    // usable) rather than failing the pick.
-    if (session.selectedTool === "sketch_project") {
-      const tolMm = SELECT_PICK_PX / Math.max(cam.zoom, 1e-6);
-      const idx = nearestProjectedEdge(
-        projectedEdgesRef.current,
-        [u, v],
-        tolMm,
-      );
-      if (idx !== null) {
-        const edge = projectedEdgesRef.current[idx];
-        store.pushSketchSubCalls([
-          edge.idHash
-            ? {
-                type: "sketch_project",
-                params: {
-                  edge: `qEdge(${edge.idHash})`,
-                  start: edge.p0,
-                  end: edge.p1,
-                  construction: true,
-                },
-              }
-            : {
-                type: "sketch_line",
-                params: { start: edge.p0, end: edge.p1, construction: true },
-              },
-        ]);
-        scheduleSolverReplay();
-      }
-      lastCamVersionRef.current = -1;
-      return;
-    }
   };
 
   const onPointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
@@ -1328,24 +1020,6 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
         [u, v] = gridSnapped(u, v, cam.zoom);
       }
       void dragControllerRef.current.update([u, v]);
-      lastCamVersionRef.current = -1;
-      return;
-    }
-    // Ticket 3rz2: direct click-drag of the Move/Copy selection. Track the
-    // cursor; the actual translate lands on release (onPointerUp) so the
-    // constraint solver runs once, not per frame. The `moved` flag separates a
-    // real drag from a plain select-click.
-    if (dragRef.current.kind === "move_drag") {
-      const cam = readCamForCanvas(e.currentTarget as HTMLCanvasElement);
-      const [u, v] = screenToSketchFromEvent(e, cam);
-      const { start } = dragRef.current;
-      const movedPx =
-        Math.hypot(u - start[0], v - start[1]) * Math.max(cam.zoom, 1e-6);
-      dragRef.current = {
-        ...dragRef.current,
-        current: [u, v],
-        moved: dragRef.current.moved || movedPx > 4,
-      };
       lastCamVersionRef.current = -1;
       return;
     }
@@ -1419,34 +1093,18 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
     }
     if (!session.active || !session.selectedTool) return;
     const cam = readCamForCanvas(e.currentTarget as HTMLCanvasElement);
-    let [u, v] = screenToSketchFromEvent(e, cam);
-    // K6b.8: Ctrl = snap to grid on move too.
-    if (e.ctrlKey || e.metaKey) {
-      [u, v] = gridSnapped(u, v, cam.zoom);
-    }
-    if (dragRef.current.kind === "owned") {
-      // Registry dispatch: the owning controller tracks its drag. Not
-      // consumed (defensive) → the shared hover-snap fallback below.
-      const d = dragRef.current;
-      const ev = toolPointerEvent(e, cam, false);
-      if (d.owner.onMove?.(ctxRef.current!, ev) !== true) {
-        const snap = resolveSnap(
-          [u, v],
-          session,
-          null,
-          snapRadiusMmFor(cam),
-          e.shiftKey,
-          projectedEdgesRef.current,
-        );
-        snapRef.current = snap;
-        hoverRef.current = snap.snapped;
-      }
-    } else {
+    // The tool-mode pointer event: raw + Ctrl-grid-snapped cursor (K6b.8).
+    const ev = toolPointerEvent(e, cam, false);
+    const ownedMove =
+      dragRef.current.kind === "owned"
+        ? dragRef.current.owner.onMove?.(ctxRef.current!, ev) === true
+        : false;
+    if (!ownedMove) {
       // Hover path: show a preview point with snap magnetism so
       // the user sees the same feedback a click-to-place would
       // land on.
       const snap = resolveSnap(
-        [u, v],
+        ev.gridded,
         session,
         null,
         snapRadiusMmFor(cam),
@@ -1456,38 +1114,18 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
       snapRef.current = snap;
       hoverRef.current = snap.snapped;
     }
-    // Highlight the line under the cursor as a pick candidate while the Mirror
-    // tool (czqf) OR a constraint tool — e.g. Dimension (7lxk) — is armed, so
-    // the user sees what a click will target. (Point hover comes from the snap
-    // dot above.)
-    //
-    // Ticket o6hx: the Mirror flow has two steps. STEP 1 (no axis yet) the
-    // candidate is the AXIS LINE → highlight the nearest line. STEP 2 (axis
-    // set) the candidate is the OBJECT TO MIRROR (point / line / polygon) →
-    // highlight the entity under the cursor (same hover as Select mode), and
-    // drop the axis-line highlight.
-    if (session.selectedTool === "sketch_mirror" && mirrorAxisRef.current !== null) {
-      // Step 2: hover the mirror-source entity under the cursor.
-      const tolMm = SELECT_PICK_PX / Math.max(cam.zoom, 1e-6);
-      const hovered = hitTestSketchEntity(
-        buildDraftSketchState(session.subCalls),
-        [u, v],
-        tolMm,
-      );
-      setHoveredSketchEntity(hovered);
-      mirrorAxisHoverRef.current = null;
-    } else if (
-      session.selectedTool === "sketch_mirror" ||
-      isConstraintTool(session.selectedTool)
-    ) {
-      const tolMm = (SELECT_PICK_PX * 2.5) / Math.max(cam.zoom, 1e-6);
-      const idx = nearestLineSubCall(session.subCalls, [u, v], tolMm);
-      const cv = idx !== null ? curveOfSubCall(session.subCalls[idx]) : null;
-      mirrorAxisHoverRef.current =
-        cv && cv.kind === "line" ? [cv.a, cv.b] : null;
-      setHoveredSketchEntity(null);
-    } else {
-      mirrorAxisHoverRef.current = null;
+    // Tool-specific hover highlight — the mirror axis / constraint pick
+    // candidate (czqf / 7lxk / o6hx). Routed to the active controller;
+    // without a hook the highlight clears (the old else-branch).
+    {
+      const hoverController = isConstraintTool(session.selectedTool)
+        ? constraintPickTool
+        : controllerForTool(session.selectedTool);
+      if (hoverController?.onHover && ctxRef.current) {
+        hoverController.onHover(ctxRef.current, ev);
+      } else {
+        mirrorAxisHoverRef.current = null;
+      }
     }
     const canvas = canvasRef.current;
     if (canvas) {
@@ -1561,19 +1199,6 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
           false,
         ),
       );
-      return;
-    }
-    // Ticket 3rz2: commit a direct Move/Copy click-drag. A real drag
-    // translates the selection by (current − start); a release without drag was
-    // just a select-click (the press already selected the entity).
-    if (dragRef.current.kind === "move_drag") {
-      (e.currentTarget as HTMLCanvasElement).releasePointerCapture(e.pointerId);
-      const { start, current, copy, moved } = dragRef.current;
-      dragRef.current = { kind: "idle" };
-      if (moved && store) {
-        store.moveSketchSelection(current[0] - start[0], current[1] - start[1], copy);
-      }
-      lastCamVersionRef.current = -1;
       return;
     }
     // Ticket matf: commit a plain Select-mode rigid translate. A real drag
@@ -1715,30 +1340,6 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [session.active, editor, textEditor, cornerEditor]);
-
-  // Ticket ps21: Mirror tool — pick-to-apply. Clicks on parts mirror them
-  // live across the picked axis (pointerdown handler), so there is no
-  // Enter-applies step. Esc ENDS the tool: with an axis set it drops back
-  // to the pick-axis step; pressed again (no axis) it leaves Mirror for the
-  // default Select tool. Switching to another toolbar button also ends it
-  // (the selectedTool effect resets mirrorAxisRef).
-  useEffect(() => {
-    if (!store || session.selectedTool !== "sketch_mirror") return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key !== "Escape") return;
-      e.preventDefault();
-      if (mirrorAxisRef.current !== null) {
-        mirrorAxisRef.current = null;
-        store.clearSketchSelection();
-        setHoveredSketchEntity(null); // o6hx: drop step-2 hover highlight
-        setToolHint(initialToolHint("sketch_mirror"));
-      } else {
-        store.selectSketchTool(null);
-      }
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [store, session.selectedTool]);
 
   if (!session.active) return null;
 
