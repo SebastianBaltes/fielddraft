@@ -350,13 +350,9 @@ export function drawOverlay(
   if (recentLine !== null && drag.kind === "idle") {
     pushDistance(recentLine.start, recentLine.end);
   }
-  if (drag.kind === "owned") {
-    if (owned) {
-      labels.push(...(owned.labels ?? []));
-      owned.drawScreen?.(ctx, cam);
-    }
-  } else if (drag.kind === "marquee") {
-    drawMarquee(ctx, drag.start, drag.current, cam);
+  if (drag.kind === "owned" && owned) {
+    labels.push(...(owned.labels ?? []));
+    owned.drawScreen?.(ctx, cam);
   }
 
   // Snap label — a small pill up-and-right of the snap ring (the ring renders
