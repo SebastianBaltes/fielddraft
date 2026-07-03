@@ -353,7 +353,36 @@ Mesh data is exposed as **zero-copy typed array views** into WASM linear memory 
 
 ### 4.1 State Management
 
-**`store.ts`** — Central state via a custom pub-sub store (consumed by React's `useSyncExternalStore`).
+Central state lives in a **custom pub-sub store** (consumed by React's `useSyncExternalStore`), decomposed into a slim core, six domain controllers and a stable facade:
+
+```mermaid
+graph TD
+    UI["React components / tests"] --> KS["KernelStore (store.ts)\nfacade — delegates 1:1,\npublic API stays stable"]
+    KS --> SK["SketchStore\nsketchStore.ts"]
+    KS --> AS["AssemblyStore\nassemblyStore.ts"]
+    KS --> PS["ProjectStore\nprojectStore.ts"]
+    KS --> IO["IoStore\nioStore.ts"]
+    KS --> SEL["SelectionStore\nselectionStore.ts"]
+    KS --> WO["WorkerOrchestrator\nworkerOrchestration.ts"]
+    SK --> CORE["StoreCore (storeCore.ts)\nStoreState + pub-sub +\ncommit()-tail + autosave"]
+    AS --> CORE
+    PS --> CORE
+    IO --> CORE
+    SEL --> CORE
+    WO --> CORE
+    CORE --> K["WASM kernel"]
+```
+
+- **`storeCore.ts` — `StoreCore`**: owns the immutable `StoreState` snapshot, the kernel handle, `subscribe`/`getState`/`patch`/`emit`/`notify`, the shared `commit()` tail (derived fields, selection pruning, autosave scheduling, mesh/weave refresh) and the small cross-domain helpers (`setLoading`, `setTransientError`). Domain-specific pieces of `commit()` are injected via `StoreCoreHooks` (pending-feature confirm, `serializeProject`, `refreshMeshCache`, `scheduleWeave`, `syncActiveBody`, `snapshotScriptTypes`), so the core has no domain imports.
+- **`sketchStore.ts` — `SketchStore`**: the whole sketch domain — session lifecycle (enter/edit/exit/cancel/commit), drawing/modify tools (trim/split/extend/fillet/chamfer/offset/mirror/pattern/move/rotate/text), constraints, the JS-side sketch undo stack and the `solveAndReplace` hookup. Tool parameters are consolidated in the single `state.sketchToolParams` object (`SketchToolParams`).
+- **`assemblyStore.ts` — `AssemblyStore`**: parts, mates (angle/offset/joint limits), assembly script + IK, R3F export; `updateAssemblyDocument` is the single write path (active tab = source of truth, `state.assembly` = read view).
+- **`projectStore.ts` — `ProjectStore`**: multi-tab project model (`loadedPartTabId`, boot, tab create/rename/delete/switch), the persistence funnel `serializeProject`, `.fdraft` save/load (ZIP + legacy JSON), server binding/sync, FieldSkript records.
+- **`ioStore.ts` — `IoStore`**: reference-mesh import (STL/OBJ/GLB → SDF feature; GLB parsing in `glbImport.ts`), the retained mesh-overlay cache, exporters (STL, 3MF roundtrip, STEP via OCCT worker, GLB, OBJ).
+- **`selectionStore.ts` — `SelectionStore`**: the three mutually exclusive selection notions (feature set + shift-anchor, B-Rep element multi-select/box-select, datum), body highlight, `syncActiveBody`, sketch-session reconciliation (pqoe) and the outliner selectors `relatedFeatureIds()`/`relatedBodyIndex()`.
+- **`workerOrchestration.ts` — `WorkerOrchestrator`**: the two latest-wins channels (`workerChannel.ts`) to the mesher and weaver workers, bring-up/fallback, DC/parametric-weave toggles and the gizmo-drag B-Rep suppression.
+- **`store.ts` — `KernelStore`**: the facade. Keeps the remaining feature-domain methods (primitives, variables, folders, transforms, pending feature, undo/redo) and delegates everything else 1:1 to the controllers — method names/signatures and `useKernelStore` are unchanged, so components and the `store.*.test.ts` suites run against the same public API. Cross-domain needs are injected as explicit deps (e.g. `SketchStore` gets `removeFeature`, `SelectionStore` gets `commitSketch`/`editSketch`/`refreshMeshCache`).
+
+Components read derived data through **store selectors** (`listBodies()`, `relatedFeatureIds()`, `relatedBodyIndex()`) instead of touching `store.kernel` directly.
 
 **Key state slices:**
 
@@ -366,17 +395,18 @@ Mesh data is exposed as **zero-copy typed array views** into WASM linear memory 
 | `sketchSession` | `SketchSessionState` | Active sketch draft |
 | `variables` | `{name, value}[]` | Document-level scalar variables |
 | `assembly` | `AssemblyState` | Multi-body assembly data |
+| `sketchToolParams` | `SketchToolParams` | Consolidated sketch-tool parameters (fillet radius, pattern counts, text value/font, …) |
 | `rollbackIndex` | `number` | Feature timeline position |
 | `syncState` | `string` | Server sync state (clean/dirty/syncing/error/offline) |
 
 **Undo/redo** is implemented in the WASM kernel (document snapshots, 64-deep stack). The store only caches availability flags and calls `kernel.undo()` / `kernel.redo()`.
 
 **Mutation flow:**
-1. Store method calls kernel mutation (e.g., `kernel.addBox()`)
-2. `commit()` refreshes all derived state (features, undo flags, variables, scene bounds)
-3. `syncActiveBody()` updates LOD hint for the selected body
-4. `autosave.schedule()` debounces localStorage write (500ms)
-5. `scheduleWorkerRebuild()` triggers mesh regeneration in worker
+1. Controller/facade method calls kernel mutation (e.g., `kernel.addBox()`)
+2. `StoreCore.commit()` refreshes all derived state (features, undo flags, variables, scene bounds)
+3. `syncActiveBody()` hook (SelectionStore) updates the LOD hint for the selected body
+4. `autosave.schedule(serializeProject())` hook (ProjectStore) debounces the localStorage write (500ms)
+5. `refreshMeshCache()`/`scheduleWeave()` hooks (WorkerOrchestrator) trigger mesh rebuild + B-Rep weave in the workers
 6. Listeners notified → React re-renders
 
 **Persistence** (`persistence.ts`): Auto-save to `localStorage["fielddraft.project.v1"]` with 500ms debounce. UI state (folders, visible sketches, hidden datums, outliner width) persisted separately in individual keys.
