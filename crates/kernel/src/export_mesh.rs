@@ -79,6 +79,20 @@ pub enum MeshMethod {
     /// reconstruction method (capped internal resolution) — previously
     /// only available in the mesh viewer.
     Rfta,
+    /// Marching Cubes 33 (`marching_cubes33`, Lewiner 2003): topologically-
+    /// controlled MC that tests each ambiguous face/interior against the
+    /// trilinear surface → manifold, consistent, watertight for any field
+    /// (a truer "Marching Cubes" than the tet mesher, without its extra
+    /// triangles). Dense grid; then decimation.
+    MarchingCubes33,
+    /// Dual Marching Cubes (`dual_marching_cubes`, Nielson 2004): the dual of
+    /// MC — one dual point per MC patch, joined into quads (manifold variant).
+    /// Fewer sliver triangles than MC. Dense grid; then decimation.
+    DualMarchingCubes,
+    /// Extended Marching Cubes (`marching_cubes33::extended`, Kobbelt 2001):
+    /// MC33 base plus a QEF feature vertex inserted in cells carrying a sharp
+    /// CSG edge, recovering crisp boolean edges MC rounds off. Dense grid.
+    ExtendedMarchingCubes,
 }
 
 impl MeshMethod {
@@ -90,6 +104,9 @@ impl MeshMethod {
             "interval-dc" => MeshMethod::IntervalDc,
             "uniform-dc" => MeshMethod::UniformDc,
             "marching-cubes" => MeshMethod::MarchingCubes,
+            "marching-cubes-33" => MeshMethod::MarchingCubes33,
+            "dual-marching-cubes" => MeshMethod::DualMarchingCubes,
+            "extended-marching-cubes" => MeshMethod::ExtendedMarchingCubes,
             "manifold-dc" => MeshMethod::ManifoldDc,
             "rfta" => MeshMethod::Rfta,
             _ => MeshMethod::Adaptive,
@@ -106,6 +123,9 @@ impl MeshMethod {
         matches!(
             self,
             MeshMethod::MarchingCubes
+                | MeshMethod::MarchingCubes33
+                | MeshMethod::DualMarchingCubes
+                | MeshMethod::ExtendedMarchingCubes
                 | MeshMethod::UniformDc
                 | MeshMethod::ManifoldDc
                 | MeshMethod::SurfaceNets
@@ -315,6 +335,15 @@ fn raw_dense_mesh(
                 prims.iter().map(|(k, v)| (*k, v)).collect();
             crate::dc::dual_contour_with_primitives(bounded, resolution, &prim_refs)
         }
+        MeshMethod::MarchingCubes33 => {
+            crate::marching_cubes33::marching_cubes33(bounded, resolution)
+        }
+        MeshMethod::ExtendedMarchingCubes => {
+            crate::marching_cubes33::extended_marching_cubes(bounded, resolution)
+        }
+        MeshMethod::DualMarchingCubes => {
+            crate::dual_marching_cubes::dual_marching_cubes(bounded, resolution)
+        }
         // MarchingCubes (and any non-dense method that slips through).
         _ => crate::marching_tets::marching_tets(bounded, resolution),
     }
@@ -480,11 +509,15 @@ impl crate::Kernel {
             method,
             MeshMethod::UniformDc
                 | MeshMethod::MarchingCubes
+                | MeshMethod::MarchingCubes33
+                | MeshMethod::DualMarchingCubes
+                | MeshMethod::ExtendedMarchingCubes
                 | MeshMethod::ManifoldDc
                 | MeshMethod::Rfta
         ) {
             // ── Generic dense meshers: uniform DC (QEF), Marching
-            // Tetrahedra, the viewport Manifold-DC, Reach-for-the-Arcs.
+            // Tetrahedra, MC33 / Dual-MC / Extended-MC, the viewport
+            // Manifold-DC, Reach-for-the-Arcs.
             self.generic_dense_export_body(body_id, &feature_indices, size, cell_mm, method)
         } else {
             // ── Parametric route first (Meshing Phase 2, Option B) ──
@@ -982,6 +1015,21 @@ impl crate::Kernel {
                 crate::rfta::reach_for_the_arcs(&bounded, resolution),
                 "reach-for-the-arcs",
                 false,
+            ),
+            MeshMethod::MarchingCubes33 => (
+                crate::marching_cubes33::marching_cubes33(&bounded, resolution),
+                "marching cubes 33",
+                true,
+            ),
+            MeshMethod::ExtendedMarchingCubes => (
+                crate::marching_cubes33::extended_marching_cubes(&bounded, resolution),
+                "extended marching cubes",
+                false,
+            ),
+            MeshMethod::DualMarchingCubes => (
+                crate::dual_marching_cubes::dual_marching_cubes(&bounded, resolution),
+                "dual marching cubes",
+                true,
             ),
             _ => (
                 crate::marching_tets::marching_tets(&bounded, resolution),

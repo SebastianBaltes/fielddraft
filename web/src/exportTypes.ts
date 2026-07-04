@@ -27,6 +27,9 @@ export type MeshMethod =
   | "interval-dc"
   | "uniform-dc"
   | "marching-cubes"
+  | "marching-cubes-33"
+  | "dual-marching-cubes"
+  | "extended-marching-cubes"
   | "manifold-dc"
   | "rfta";
 

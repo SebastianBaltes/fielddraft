@@ -24,11 +24,26 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.381",
+    entries: [
+      {
+        kind: "feat",
+        text: "Drei neue Meshing-Verfahren im Export-Dialog: Marching Cubes 33 (Lewiner 2003 — topologisch korrekt, manifold & watertight für beliebige Felder, gute Wahl für Gyroid/TPMS), Dual Marching Cubes (Nielson 2004 — quad-dominant, wenige Slivers) und Extended Marching Cubes (Kobbelt 2001 — setzt in Zellen mit scharfer CSG-Kante einen QEF-Feature-Punkt und stellt so knackige Boolean-Kanten wieder her). MC33 & DMC sind per Konstruktion geschlossen (verifiziert auf Kugel und CSG-Schnitt)",
+        scope: "export",
+      },
+      {
+        kind: "fix",
+        text: "Release-Notes-Datei ließ sich nicht mehr typprüfen: im vorigen SDF-Plane-Eintrag schloss ein ASCII-Anführungszeichen den String vorzeitig — auf ein typografisches „ “ korrigiert",
+        scope: "build",
+      },
+    ],
+  },
+  {
     version: "0.6.380",
     entries: [
       {
         kind: "feat",
-        text: "Debug-Werkzeug: Menü „Debug ▸ SDF-Plane…" öffnet einen kleinen Dialog (Punkt + Normale + Größe). Solange er offen ist, wird eine Schnitt-Ebene im Raum angezeigt, die das exakte SDF-Feld der Szene farbcodiert (innen/außen, Iso-Distanz-Bänder, Null-Oberflächen-Linie) — zum Debuggen von Meshing-/Rasterungs-Artefakten direkt im Feld",
+        text: "Debug-Werkzeug: Menü „Debug ▸ SDF-Plane…“ öffnet einen kleinen Dialog (Punkt + Normale + Größe). Solange er offen ist, wird eine Schnitt-Ebene im Raum angezeigt, die das exakte SDF-Feld der Szene farbcodiert (innen/außen, Iso-Distanz-Bänder, Null-Oberflächen-Linie) — zum Debuggen von Meshing-/Rasterungs-Artefakten direkt im Feld",
         scope: "debug",
       },
     ],
