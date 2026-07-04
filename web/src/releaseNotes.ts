@@ -24,6 +24,17 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.375",
+    entries: [
+      {
+        kind: "fix",
+        text: "Marching Cubes (robust) exportiert wieder watertight — ein Vorzeichenwechsel wurde je nach Zelle von unterschiedlichen Ecken interpoliert, sodass geteilte Kreuzungspunkte nicht verschmolzen (eine Kugel verlor 14.672 offene Kanten). Gyroid & Co. sind damit watertight ohne Löcher; an CSG-Schnittnähten bleiben wenige Non-Manifold-Kanten",
+        scope: "export",
+        tickets: ["9ocx"],
+      },
+    ],
+  },
+  {
     version: "0.6.374",
     entries: [
       {

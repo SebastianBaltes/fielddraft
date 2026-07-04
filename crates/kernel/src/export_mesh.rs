@@ -1331,6 +1331,94 @@ mod tests {
         report
     }
 
+    /// Reproduce ticket 9ocx: sphere r50 ∩ gyroid(cell 10, thick 1) − cyl r30.
+    fn ticket_9ocx_kernel() -> crate::Kernel {
+        let mut k = crate::Kernel::new();
+        let sphere = k
+            .add_primitive(Primitive::KIND_SPHERE, BoolOp::TAG_NEW, 0.0, 0.0, 0.0, 50.0, 0.0, 0.0)
+            .unwrap();
+        k.add_feature_call(
+            "gyroid",
+            &format!(
+                r#"{{ "cell_size": {{ "value": 10.0, "unit": "mm" }},
+                      "thickness": {{ "value": 1.0, "unit": "mm" }},
+                      "op": "intersect", "targets": "qCreatedBy({sphere})" }}"#
+            ),
+        )
+        .unwrap();
+        k.add_feature_call(
+            "cylinder",
+            &format!(
+                r#"{{ "radius": 30.0, "half_height": 60.0,
+                      "op": "remove", "targets": "qCreatedBy({sphere})" }}"#
+            ),
+        )
+        .unwrap();
+        assert!(k.feature_errors.is_empty(), "feature errors {:?}", k.feature_errors);
+        k
+    }
+
+    /// A gyroid shell ∩ box: same non-1-Lipschitz field as the ticket, made
+    /// finite by the box. Shared by the marching-tets regression test.
+    fn gyroid_in_box() -> crate::Kernel {
+        let mut k = crate::Kernel::new();
+        let b = k
+            .add_primitive(Primitive::KIND_BOX, BoolOp::TAG_NEW, 0.0, 0.0, 0.0, 40.0, 40.0, 40.0)
+            .unwrap();
+        k.add_feature_call(
+            "gyroid",
+            &format!(
+                r#"{{ "cell_size": {{ "value": 10.0, "unit": "mm" }},
+                      "thickness": {{ "value": 1.0, "unit": "mm" }},
+                      "op": "intersect", "targets": "qCreatedBy({b})" }}"#
+            ),
+        )
+        .unwrap();
+        k
+    }
+
+    /// Ticket 9ocx: Marching Tetrahedra is watertight + 2-manifold **by
+    /// construction** — every zero-crossing shared between two cells must
+    /// weld. It didn't: the marching cases interpolate a crossing from the
+    /// "singleton" corner, whose local identity flips between the two cells
+    /// sharing a face diagonal, so one computed `edge(a,b)` and the other
+    /// `edge(b,a)`; since `t = va/(va−vb)` isn't symmetric in floating point
+    /// the two points differed in the last bit and never welded — a plain
+    /// sphere leaked 14 672 open edges. Interpolating from the
+    /// position-canonical lower end fixes it field-agnostically.
+    #[test]
+    fn marching_tets_is_watertight_by_construction() {
+        // Smooth solid — must be fully watertight AND 2-manifold.
+        let mut sphere = crate::Kernel::new();
+        sphere
+            .add_primitive(Primitive::KIND_SPHERE, BoolOp::TAG_NEW, 0.0, 0.0, 0.0, 50.0, 0.0, 0.0)
+            .unwrap();
+        let r = export_single_method(&mut sphere, 2.5, "marching-cubes");
+        let b = &r["bodies"][0];
+        assert_eq!(b["boundary_edges"], 0, "sphere leaked open edges: {r}");
+        assert_eq!(b["non_manifold_edges"], 0, "sphere non-manifold: {r}");
+        assert_eq!(b["watertight"], true, "sphere not watertight: {r}");
+
+        // The gyroid shell the ticket is about — the fix is field-agnostic, so
+        // even this strongly non-1-Lipschitz field meshes watertight.
+        let mut gb = gyroid_in_box();
+        let r = export_single_method(&mut gb, 2.0, "marching-cubes");
+        let b = &r["bodies"][0];
+        assert_eq!(b["boundary_edges"], 0, "gyroid∩box leaked open edges: {r}");
+        assert_eq!(b["watertight"], true, "gyroid∩box not watertight: {r}");
+
+        // The full ticket model (sphere ∩ gyroid − cylinder). CSG trim seams
+        // still leave a few non-manifold weld junctions (distinct surface
+        // sheets rounding to identical bits), but there must be NO holes — the
+        // ticket reported 27 494 open edges here.
+        let mut full = ticket_9ocx_kernel();
+        let r = export_single_method(&mut full, 2.0, "marching-cubes");
+        assert_eq!(
+            r["bodies"][0]["boundary_edges"], 0,
+            "full ticket model still has holes: {r}"
+        );
+    }
+
     #[test]
     fn surface_nets_meshes_a_gyroid_watertight() {
         // The motivating case: a TPMS gyroid is a strongly non-1-Lipschitz
