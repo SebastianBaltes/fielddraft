@@ -54,6 +54,10 @@ function initialMethod(): MeshMethod {
       stored === "surface-nets" ||
       stored === "surface-nets-builtin" ||
       stored === "interval-dc" ||
+      stored === "uniform-dc" ||
+      stored === "marching-cubes" ||
+      stored === "manifold-dc" ||
+      stored === "rfta" ||
       stored === "adaptive"
     ) {
       return stored;
@@ -286,6 +290,8 @@ export function ExportDialog({ store, format, onClose }: ExportDialogProps) {
           <option value="interval-dc">Interval-octree DC (fidget)</option>
           <option value="uniform-dc">Uniform Dual Contouring (QEF)</option>
           <option value="marching-cubes">Marching cubes (robust)</option>
+          <option value="manifold-dc">Manifold DC (viewport)</option>
+          <option value="rfta">Reach for the Arcs</option>
         </select>
         <span className="hint">
           {method === "surface-nets"
@@ -298,7 +304,11 @@ export function ExportDialog({ store, format, onClose }: ExportDialogProps) {
                   ? "Dense uniform grid with QEF vertex placement — watertight by construction AND feature-preserving (keeps sharp edges), non-1-Lipschitz-safe, then QEM decimation. The all-rounder for sharp-edged solids."
                   : method === "marching-cubes"
                     ? "Marching tetrahedra: unambiguous cases → watertight + 2-manifold by construction for ANY field (the robust baseline). Rounds sharp edges; then QEM decimation."
-                    : "Parametric-first, then adaptive Manifold-DC — exact edges and the fewest triangles for regular CAD solids."}
+                    : method === "manifold-dc"
+                      ? "The viewport's own uniform Manifold Dual Contouring with planar-face simplification — now exportable too."
+                      : method === "rfta"
+                        ? "Reach for the Arcs (Sellán et al. 2024): spheres → tangent points → screened Poisson reconstruction. A sampled-grid reconstruction (internal resolution capped) — robust on blurry/imperfect fields."
+                        : "Parametric-first, then adaptive Manifold-DC — exact edges and the fewest triangles for regular CAD solids."}
         </span>
       </div>
 

@@ -26,7 +26,9 @@ export type MeshMethod =
   | "surface-nets-builtin"
   | "interval-dc"
   | "uniform-dc"
-  | "marching-cubes";
+  | "marching-cubes"
+  | "manifold-dc"
+  | "rfta";
 
 /** Per-body slice of the export report (kernel: `BodyExportReport`,
  *  with the `MeshValidation` fields flattened in). */

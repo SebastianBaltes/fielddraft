@@ -71,6 +71,14 @@ pub enum MeshMethod {
     /// mesher: unambiguous tetrahedral cases → watertight + 2-manifold by
     /// construction for any field. Rounds edges; then decimation.
     MarchingCubes,
+    /// The viewport's uniform Manifold Dual Contouring (`dc.rs`) with its
+    /// planar/developable simplification — now exposed for export too.
+    ManifoldDc,
+    /// Reach-for-the-Arcs (`rfta`, Sellán et al. 2024): spheres →
+    /// tangent points → screened Poisson reconstruction. A sampled-grid
+    /// reconstruction method (capped internal resolution) — previously
+    /// only available in the mesh viewer.
+    Rfta,
 }
 
 impl MeshMethod {
@@ -82,6 +90,8 @@ impl MeshMethod {
             "interval-dc" => MeshMethod::IntervalDc,
             "uniform-dc" => MeshMethod::UniformDc,
             "marching-cubes" => MeshMethod::MarchingCubes,
+            "manifold-dc" => MeshMethod::ManifoldDc,
+            "rfta" => MeshMethod::Rfta,
             _ => MeshMethod::Adaptive,
         }
     }
@@ -320,9 +330,15 @@ impl crate::Kernel {
             // ── Interval-octree Manifold DC (fidget) ── topology-safe for
             // non-1-Lipschitz fields, feature-preserving, no B-Rep needed.
             self.interval_dc_export_body(body_id, &feature_indices, size, cell_mm)
-        } else if matches!(method, MeshMethod::UniformDc | MeshMethod::MarchingCubes) {
-            // ── Built-in uniform DC (QEF) / Marching Tetrahedra ── dense,
-            // non-1-Lipschitz-safe generic meshers, then QEM decimation.
+        } else if matches!(
+            method,
+            MeshMethod::UniformDc
+                | MeshMethod::MarchingCubes
+                | MeshMethod::ManifoldDc
+                | MeshMethod::Rfta
+        ) {
+            // ── Generic dense meshers: uniform DC (QEF), Marching
+            // Tetrahedra, the viewport Manifold-DC, Reach-for-the-Arcs.
             self.generic_dense_export_body(body_id, &feature_indices, size, cell_mm, method)
         } else {
             // ── Parametric route first (Meshing Phase 2, Option B) ──
@@ -737,10 +753,11 @@ impl crate::Kernel {
         (mesh, report)
     }
 
-    /// Built-in uniform Dual Contouring (QEF) / Marching Tetrahedra
-    /// route: a dense generic mesh (non-1-Lipschitz-safe) + QEM
-    /// decimation (baby_shark), then validate/measure like the other
-    /// dense routes.
+    /// The generic dense-mesh routes selected in the dialog: built-in
+    /// uniform DC (QEF), Marching Tetrahedra, the viewport's uniform
+    /// Manifold-DC, and Reach-for-the-Arcs. Each produces a dense mesh
+    /// (non-1-Lipschitz-safe), optionally QEM-decimates it, then
+    /// validates/measures like the other routes.
     fn generic_dense_export_body(
         &mut self,
         body_id: u32,
@@ -750,29 +767,58 @@ impl crate::Kernel {
         method: MeshMethod,
     ) -> (Mesh, BodyExportReport) {
         let (resolution, actual_cell, cell_limited) = derive_export_resolution(size, cell_mm);
-        let (bounded, _prims) =
+        let (bounded, prims) =
             crate::body::build_bounded_with_primitives(&self.decoded, feature_indices);
         let sdf = |p: [f32; 3]| bounded.sdf(p, crate::csg::EvalMode::Visual);
 
-        let mut mesh = match method {
-            MeshMethod::UniformDc => {
-                crate::uniform_contour::dual_contour_uniform(&bounded, resolution)
+        // `decimate` = follow the dense mesh with QEM. RFTA and the
+        // viewport Manifold-DC already emit reconstructed / simplified
+        // meshes, so they skip it.
+        let (mut mesh, label, decimate) = match method {
+            MeshMethod::UniformDc => (
+                crate::uniform_contour::dual_contour_uniform(&bounded, resolution),
+                "uniform DC",
+                true,
+            ),
+            MeshMethod::ManifoldDc => {
+                let prim_refs: std::collections::HashMap<u32, &Primitive> =
+                    prims.iter().map(|(k, v)| (*k, v)).collect();
+                (
+                    crate::dc::dual_contour_with_primitives(&bounded, resolution, &prim_refs),
+                    "manifold DC",
+                    false,
+                )
             }
-            _ => crate::marching_tets::marching_tets(&bounded, resolution),
+            MeshMethod::Rfta => (
+                crate::rfta::reach_for_the_arcs(&bounded, resolution),
+                "reach-for-the-arcs",
+                false,
+            ),
+            _ => (
+                crate::marching_tets::marching_tets(&bounded, resolution),
+                "marching cubes",
+                true,
+            ),
         };
         let dense_triangles = mesh.triangle_count();
-        let route = if method == MeshMethod::UniformDc {
-            format!("uniform DC {actual_cell:.3} mm")
-        } else {
-            format!("marching cubes {actual_cell:.3} mm")
-        };
+        let route = format!("{label} {actual_cell:.3} mm");
 
         // Our own QEM decimator (not baby_shark): it tolerates the
         // occasional non-manifold edge these dense grids can carry —
         // baby_shark's corner-table build panics on such input — and its
         // sliver guard keeps the result degenerate-free.
         let tol = (cell_mm / 4.0).clamp(0.01, 0.1);
-        let stats = crate::decimate_builtin::simplify_qem_builtin(&mut mesh, tol * tol);
+        let stats = if decimate {
+            crate::decimate_builtin::simplify_qem_builtin(&mut mesh, tol * tol)
+        } else {
+            crate::decimate::DecimateStats {
+                collapses: 0,
+                triangles_before: dense_triangles,
+                triangles_after: dense_triangles,
+            }
+        };
+        // Only report a dense→decimated reduction when we actually decimated.
+        let dense_reported = if decimate { dense_triangles } else { 0 };
 
         let flips = mesh_validate::fix_orientation(&mut mesh, &sdf);
         let mut validation = mesh_validate::validate_topology(&mesh);
@@ -805,7 +851,7 @@ impl crate::Kernel {
             surface_nets: false,
             interval_dc: false,
             route,
-            dense_triangles,
+            dense_triangles: dense_reported,
             validation,
         };
         (mesh, report)
@@ -1332,6 +1378,52 @@ mod tests {
         let tris = report["total_triangles"].as_u64().unwrap();
         assert!(tris > 500, "gyroid too sparse: {tris}");
         assert!(dense >= tris, "dense {dense} < decimated {tris}");
+    }
+
+    /// RFTA (screened Poisson) is slow in a debug build (super-linear
+    /// solver); run in release: `cargo test --release rfta_route -- --ignored`.
+    #[test]
+    #[ignore]
+    fn rfta_route_produces_solid() {
+        let mut k = crate::Kernel::new();
+        k.add_primitive(
+            Primitive::KIND_SPHERE,
+            BoolOp::TAG_NEW,
+            0.0,
+            0.0,
+            0.0,
+            10.0,
+            0.0,
+            0.0,
+        )
+        .unwrap();
+        let report = export_single_method(&mut k, 0.5, "rfta");
+        let body = &report["bodies"][0];
+        assert!(
+            body["route"].as_str().unwrap().starts_with("reach-for-the-arcs"),
+            "{report}"
+        );
+        assert!(report["total_triangles"].as_u64().unwrap() > 50, "{report}");
+    }
+
+    #[test]
+    fn manifold_dc_sphere_is_watertight() {
+        // The viewport's uniform Manifold-DC, now exported, stays
+        // watertight on a plain sphere (raw MDC winding is consistent).
+        let mut k = crate::Kernel::new();
+        k.add_primitive(
+            Primitive::KIND_SPHERE,
+            BoolOp::TAG_NEW,
+            0.0,
+            0.0,
+            0.0,
+            10.0,
+            0.0,
+            0.0,
+        )
+        .unwrap();
+        let report = export_single_method(&mut k, 0.5, "manifold-dc");
+        assert_eq!(report["all_watertight"], true, "{report}");
     }
 
     #[test]

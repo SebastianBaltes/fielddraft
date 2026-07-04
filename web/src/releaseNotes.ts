@@ -24,6 +24,16 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.371",
+    entries: [
+      {
+        kind: "feat",
+        text: "Zwei bisher nur im Mesh-Viewer verfügbare Verfahren sind jetzt auch für den Export wählbar: Manifold DC (viewport) — das uniforme Manifold Dual Contouring des Viewports mit Planar-Face-Simplifikation; und Reach for the Arcs (Sellán et al. 2024) — Kugeln → Tangentenpunkte → Screened-Poisson-Rekonstruktion, robust auf unscharfen/unvollständigen Feldern (interne Auflösung gedeckelt). Damit deckt der Export-Dialog alle vorhandenen Rust-Mesher ab",
+        scope: "export",
+      },
+    ],
+  },
+  {
     version: "0.6.370",
     entries: [
       {
