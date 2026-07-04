@@ -695,11 +695,37 @@ impl crate::Kernel {
         let v_raw = mesh_validate::validate_topology(&raw);
         let v_candidate = mesh_validate::validate_topology(&candidate);
         let reject_simplified = v_raw.watertight && !v_candidate.watertight;
-        let (mut mesh, mut validation, simplified, orientation_repaired) = if reject_simplified {
+        let (mut mesh, mut validation, mut simplified, orientation_repaired) = if reject_simplified {
             (raw, v_raw, false, raw_flips)
         } else {
             (candidate, v_candidate, true, raw_flips + candidate_flips)
         };
+
+        // Guaranteed-watertight safety net (ticket 9ocx follow-up). The uniform
+        // Manifold-DC can leave HOLES on strongly non-1-Lipschitz fields — a
+        // gyroid shell shipped here with 882 boundary edges plus a stray vertex
+        // 17 mm off the surface, because this terminal fallback had no gate and
+        // shipped whatever it produced. Marching Tetrahedra is watertight (zero
+        // boundary) by construction for ANY field, so when the MDC mesh is not
+        // watertight, mesh with marching_tets and keep whichever has the fewer
+        // (boundary + non-manifold) defects. On a clean CAD solid the MDC mesh
+        // is already watertight and this never runs.
+        let mut net_route = String::new();
+        if !validation.watertight {
+            let defects =
+                |v: &mesh_validate::MeshValidation| v.boundary_edges + v.non_manifold_edges;
+            let mut mt = crate::marching_tets::marching_tets(bounded, resolution);
+            mesh_validate::fix_orientation(&mut mt, &sdf);
+            let tol = (cell_mm / 4.0).clamp(0.01, 0.1);
+            crate::decimate_builtin::simplify_qem_builtin(&mut mt, tol * tol);
+            let v_mt = mesh_validate::validate_topology(&mt);
+            if defects(&v_mt) < defects(&validation) {
+                mesh = mt;
+                validation = v_mt;
+                simplified = false;
+                net_route = format!("marching tets {actual_cell:.3} mm (watertight net)");
+            }
+        }
 
         let (max_dev, p95_dev, samples) =
             mesh_validate::measure_deviation(&mesh, DEVIATION_SAMPLE_BUDGET, &sdf);
@@ -724,7 +750,9 @@ impl crate::Kernel {
             adaptive: false,
             adaptive_skip_reason,
             orientation_repaired,
-            edges_pinned,
+            // Pinning/simplification stats belong to the MDC mesh; once the
+            // marching-tets net replaces it they no longer describe the output.
+            edges_pinned: if net_route.is_empty() { edges_pinned } else { 0 },
             simplified,
             simplification_rejected: reject_simplified,
             thin_cells: 0,
@@ -732,7 +760,7 @@ impl crate::Kernel {
             self_intersections_complete: si_complete,
             surface_nets: false,
             interval_dc: false,
-            route: String::new(),
+            route: net_route,
             dense_triangles: 0,
             validation,
         };
@@ -1527,6 +1555,29 @@ mod tests {
             est.total_est_triangles,
         );
         let _ = &mut k;
+    }
+
+    /// Ticket 9ocx follow-up: the DEFAULT (adaptive) route's terminal uniform
+    /// Manifold-DC fallback must never SHIP holes. On the full gyroid model at
+    /// a resolution where the adaptive pass fails its watertight gate, the old
+    /// fallback shipped 882 boundary edges + a vertex 17 mm off the surface;
+    /// the marching-tets safety net now guarantees a hole-free mesh (zero
+    /// boundary edges) — at worst a few non-manifold seam junctions.
+    #[test]
+    fn adaptive_route_never_ships_holes_on_gyroid() {
+        // cell 0.7 mm is where the adaptive pass was rejected and the old
+        // uniform fallback leaked >1000 boundary edges.
+        let mut k = ticket_9ocx_kernel();
+        let rep = export_single_method(&mut k, 0.7, "adaptive");
+        let b = &rep["bodies"][0];
+        assert_eq!(
+            b["boundary_edges"], 0,
+            "the adaptive route's fallback still ships holes: {rep}"
+        );
+        // The measured deviation must be a fraction of a mm, not the 7-17 mm
+        // stray-vertex blow-up the broken uniform fallback produced.
+        let max_dev = b["max_deviation_mm"].as_f64().unwrap();
+        assert!(max_dev < 2.0, "stray far vertex remains: max_dev={max_dev} mm");
     }
 
     /// A gyroid shell ∩ box: same non-1-Lipschitz field as the ticket, made

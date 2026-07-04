@@ -24,6 +24,17 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.377",
+    entries: [
+      {
+        kind: "fix",
+        text: "Standard-Export (Adaptive) verschifft beim Gyroid keine Löcher mehr: der uniforme Fallback lieferte auf stark nicht-lipschitz Feldern bis zu 1471 offene Kanten + einen 17 mm daneben liegenden Ausreißer-Vertex. Neu greift ein garantiert lochfreies Marching-Tets-Netz, das den defektärmeren Mesh behält",
+        scope: "export",
+        tickets: ["9ocx"],
+      },
+    ],
+  },
+  {
     version: "0.6.376",
     entries: [
       {
