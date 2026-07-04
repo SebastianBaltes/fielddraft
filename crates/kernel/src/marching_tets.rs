@@ -145,17 +145,36 @@ pub fn marching_tets(node: &BoundedCsg, resolution: u32) -> Mesh {
     }
 }
 
+/// Lexicographic order on world positions (exact grid coordinates, never
+/// NaN). Gives every zero-crossing edge a single canonical direction that is
+/// identical across the cells sharing it.
+fn pos_lt(a: [f32; 3], b: [f32; 3]) -> bool {
+    (a[0], a[1], a[2]) < (b[0], b[1], b[2])
+}
+
 /// Emit the (unambiguous) surface triangles of one tetrahedron into the
 /// soup. Winding is left to the export pass's `fix_orientation`.
 fn march_tet(corners: [[f32; 3]; 4], vals: [f32; 4], soup: &mut Vec<[f32; 3]>) {
     let inside = [vals[0] < 0.0, vals[1] < 0.0, vals[2] < 0.0, vals[3] < 0.0];
     let inl: Vec<usize> = (0..4).filter(|&i| inside[i]).collect();
     let outl: Vec<usize> = (0..4).filter(|&i| !inside[i]).collect();
+    // A crossing on a tet edge must weld with the SAME crossing computed by
+    // every neighbouring tet/cell that shares that edge. The marching cases
+    // interpolate from the "singleton" corner, whose local identity flips
+    // between the two cells sharing a face diagonal — so `edge(0,3)` in one
+    // cell and `edge(3,0)` in the next produce bit-different points (a/(a−b)
+    // isn't symmetric in floating point), leaving hairline cracks (ticket
+    // 9ocx: 14 672 open edges on a plain sphere). Interpolate from the
+    // position-canonical lower endpoint instead, so both cells compute the
+    // identical crossing bits → the weld closes the mesh.
     let edge = |i: usize, j: usize| -> [f32; 3] {
-        let (a, b) = (vals[i], vals[j]);
-        let denom = a - b;
-        let t = if denom.abs() < 1e-20 { 0.5 } else { a / denom };
-        let (pa, pb) = (corners[i], corners[j]);
+        let (pa, va, pb, vb) = if pos_lt(corners[i], corners[j]) {
+            (corners[i], vals[i], corners[j], vals[j])
+        } else {
+            (corners[j], vals[j], corners[i], vals[i])
+        };
+        let denom = va - vb;
+        let t = if denom.abs() < 1e-20 { 0.5 } else { va / denom };
         [
             pa[0] + t * (pb[0] - pa[0]),
             pa[1] + t * (pb[1] - pa[1]),

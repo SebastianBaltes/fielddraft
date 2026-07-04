@@ -24,4 +24,11 @@ interface ImportMetaEnv {
    *  production build, vite.config.prod.ts). Undefined/`"0"` → ungated (local
    *  dev, e2e, offline modeling). */
   readonly VITE_REQUIRE_LOGIN?: string;
+  /** Dev auto-login (ticket oyx8): credentials the `vite dev` boot signs in with
+   *  when `/api/me` resolved to no session, so the account features are reachable
+   *  without a manual login. Default `admin@local` / `admin` (the `just dev-full`
+   *  seed). Only read in `import.meta.env.MODE === "development"`; never in the
+   *  test or production bundles. Override via `.env.development.local`. */
+  readonly VITE_DEV_AUTOLOGIN_EMAIL?: string;
+  readonly VITE_DEV_AUTOLOGIN_PASSWORD?: string;
 }

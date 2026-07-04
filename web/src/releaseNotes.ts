@@ -24,6 +24,28 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.375",
+    entries: [
+      {
+        kind: "fix",
+        text: "Marching Cubes (robust) exportiert wieder watertight — ein Vorzeichenwechsel wurde je nach Zelle von unterschiedlichen Ecken interpoliert, sodass geteilte Kreuzungspunkte nicht verschmolzen (eine Kugel verlor 14.672 offene Kanten). Gyroid & Co. sind damit watertight ohne Löcher; an CSG-Schnittnähten bleiben wenige Non-Manifold-Kanten",
+        scope: "export",
+        tickets: ["9ocx"],
+      },
+    ],
+  },
+  {
+    version: "0.6.374",
+    entries: [
+      {
+        kind: "feat",
+        text: "Dev-Modus: automatischer Login als Seed-Admin (admin@local) beim Start des `vite dev`-Servers — Account-Features sind ohne manuelles Einloggen erreichbar. Nur im Dev-Browser aktiv (nicht in Prod, Tests oder e2e); Zugangsdaten via VITE_DEV_AUTOLOGIN_EMAIL/PASSWORD überschreibbar",
+        scope: "account",
+        tickets: ["oyx8"],
+      },
+    ],
+  },
+  {
     version: "0.6.373",
     entries: [
       {

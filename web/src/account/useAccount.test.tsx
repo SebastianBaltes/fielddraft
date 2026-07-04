@@ -74,6 +74,7 @@ beforeEach(() => {
 afterEach(() => {
   act(() => root.unmount());
   container.remove();
+  vi.unstubAllEnvs();
 });
 
 describe("useAccount", () => {
@@ -98,6 +99,53 @@ describe("useAccount", () => {
       }),
     );
     expect(latest.state.status).toBe("guest");
+  });
+
+  // Ticket oyx8: dev auto-login. The suite normally runs with MODE "test", so
+  // the gate never fires (the guest tests above prove that). Stub MODE to
+  // "development" to exercise the `vite dev` path; jsdom's navigator.webdriver
+  // is false, so the automation exclusion doesn't block it.
+  it("dev mode + no session: auto-logs-in as the seeded dev admin", async () => {
+    vi.stubEnv("MODE", "development");
+    const login = vi.fn(async () => user);
+    await mount(fakeApi({ getMe: async () => null, login }));
+    expect(login).toHaveBeenCalledWith({
+      email: "admin@local",
+      password: "admin",
+    });
+    expect(latest.state.status).toBe("authed");
+    expect(latest.state.user?.id).toBe("u1");
+  });
+
+  it("dev auto-login failure leaves guest mode (offline-safe)", async () => {
+    vi.stubEnv("MODE", "development");
+    const login = vi.fn(async () => {
+      throw new Error("no dev backend");
+    });
+    await mount(fakeApi({ getMe: async () => null, login }));
+    expect(login).toHaveBeenCalled();
+    expect(latest.state.status).toBe("guest");
+    expect(latest.state.user).toBeNull();
+  });
+
+  it("dev auto-login honours VITE_DEV_AUTOLOGIN_* overrides", async () => {
+    vi.stubEnv("MODE", "development");
+    vi.stubEnv("VITE_DEV_AUTOLOGIN_EMAIL", "dev@example.com");
+    vi.stubEnv("VITE_DEV_AUTOLOGIN_PASSWORD", "hunter2");
+    const login = vi.fn(async () => user);
+    await mount(fakeApi({ getMe: async () => null, login }));
+    expect(login).toHaveBeenCalledWith({
+      email: "dev@example.com",
+      password: "hunter2",
+    });
+  });
+
+  it("dev mode does NOT auto-login when getMe already returned a session", async () => {
+    vi.stubEnv("MODE", "development");
+    const login = vi.fn(async () => user);
+    await mount(fakeApi({ getMe: async () => user, login }));
+    expect(login).not.toHaveBeenCalled();
+    expect(latest.state.status).toBe("authed");
   });
 
   it("login transitions to authed and lands on the overview/projects tab", async () => {
