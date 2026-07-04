@@ -119,6 +119,12 @@ export function setOrthoFrustum(
 export function ViewportCamera({ perspective }: { perspective: boolean }) {
   const set = useThree((s) => s.set);
   const size = useThree((s) => s.size);
+  // The projection-swap effect below needs the CURRENT viewport size for its
+  // framing math, but must NOT re-run on resize (that would copy the inactive
+  // camera's default pose onto the active one — ticket flzq). Read the size
+  // from a live ref so the swap stays keyed on `perspective` alone.
+  const sizeRef = useRef(size);
+  sizeRef.current = size;
   const camerasRef = useRef<{
     persp: THREE.PerspectiveCamera;
     ortho: THREE.OrthographicCamera;
@@ -156,10 +162,14 @@ export function ViewportCamera({ perspective }: { perspective: boolean }) {
   // Swap the active camera when the projection setting flips. Copy the live
   // pose off the OUTGOING camera so the view doesn't jump, and match the
   // incoming camera's framing (ortho zoom ⇄ perspective distance) about the
-  // current pivot so the model keeps the same on-screen size.
+  // current pivot so the model keeps the same on-screen size. Keyed on
+  // `perspective` ONLY — a resize must never trigger this pose copy (it would
+  // stamp the untouched inactive camera's default pose onto the active one,
+  // resetting the view; ticket flzq). The current size comes from `sizeRef`.
   useEffect(() => {
     const cams = camerasRef.current;
     if (!cams) return;
+    const size = sizeRef.current;
     const from = perspective ? cams.ortho : cams.persp;
     const to = perspective ? cams.persp : cams.ortho;
     to.position.copy(from.position);
@@ -193,7 +203,7 @@ export function ViewportCamera({ perspective }: { perspective: boolean }) {
     }
     to.updateMatrixWorld();
     set({ camera: to });
-  }, [perspective, set, size.width, size.height]);
+  }, [perspective, set]);
 
   return null;
 }

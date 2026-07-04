@@ -24,6 +24,17 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.373",
+    entries: [
+      {
+        kind: "fix",
+        text: "Fenster-Resize setzt die Kamera nicht mehr zurück — die aktuelle Ansicht (Position, Ausrichtung, Zoom) bleibt beim Ändern der Fenstergröße erhalten",
+        scope: "viewport",
+        tickets: ["flzq"],
+      },
+    ],
+  },
+  {
     version: "0.6.372",
     entries: [
       {
