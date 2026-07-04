@@ -2099,6 +2099,18 @@ export class KernelStore {
     }
   }
 
+  /** Debug SDF-plane sampler: the scene SDF on a `resolution`² grid over the
+   *  plane at `origin`/`normal` spanning ±`halfExtent`. Synchronous main-thread
+   *  eval of the exact mesher field. */
+  sdfPlaneSample(
+    origin: [number, number, number],
+    normal: [number, number, number],
+    halfExtent: number,
+    resolution: number,
+  ): Float32Array {
+    return this.kernel.sdfPlaneSample(origin, normal, halfExtent, resolution);
+  }
+
   /** Download an already-built export (3MF re-wraps stashed slicer
    *  metadata from the last import). */
   downloadExport(

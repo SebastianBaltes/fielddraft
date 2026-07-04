@@ -1085,6 +1085,27 @@ export class Kernel {
     return this.inner.exportEstimate(cellSizeMm, method);
   }
 
+  /** Debug: sample the scene SDF on a `resolution`×`resolution` grid over a
+   *  plane at `origin` with `normal`, spanning ±`halfExtent`. Row-major
+   *  (v outer, u inner) mm distances — the same field the meshers see. */
+  sdfPlaneSample(
+    origin: [number, number, number],
+    normal: [number, number, number],
+    halfExtent: number,
+    resolution: number,
+  ): Float32Array {
+    return this.inner.sdfPlaneSample(
+      origin[0],
+      origin[1],
+      origin[2],
+      normal[0],
+      normal[1],
+      normal[2],
+      halfExtent,
+      resolution,
+    );
+  }
+
   /** Mesh + validate body `i`; returns its report JSON ("" without a
    *  running session). */
   exportMeshBody(i: number): string {

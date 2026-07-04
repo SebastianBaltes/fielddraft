@@ -2,6 +2,7 @@ import { lazy, Suspense, useEffect, useRef, useState, useCallback } from "react"
 import type { KernelStore, StoreState } from "./store";
 import { ReportDialog } from "./ReportDialog";
 import { ExportDialog } from "./ExportDialog";
+import { SdfPlaneDialog } from "./SdfPlaneDialog";
 
 // Lazy: the dialog pulls the full release-note history (releaseNotes.ts,
 // thousands of lines of data) — that belongs in an on-demand chunk, not in
@@ -91,6 +92,7 @@ export function SettingsMenu({
   const [reportDialogOpen, setReportDialogOpen] = useState(false);
   const [releaseNotesOpen, setReleaseNotesOpen] = useState(false);
   const [exportDialog, setExportDialog] = useState<"stl" | "3mf" | null>(null);
+  const [sdfPlaneOpen, setSdfPlaneOpen] = useState(false);
   const popoverRef = useRef<HTMLDivElement>(null);
   const buttonRef = useRef<HTMLButtonElement>(null);
 
@@ -316,6 +318,32 @@ export function SettingsMenu({
           >
             Release Notes…
           </button>
+
+          <div className="menu-separator" role="separator" />
+
+          <div className="submenu-wrapper">
+            <button
+              type="button"
+              role="menuitem"
+              className="menu-item submenu-trigger"
+              aria-haspopup="menu"
+              data-testid="menu-debug"
+            >
+              <span>Debug</span>
+              <span className="menu-chevron">&#9656;</span>
+            </button>
+            <div className="submenu" role="menu">
+              <button
+                type="button"
+                role="menuitem"
+                className="menu-item"
+                data-testid="menu-debug-sdf-plane"
+                onClick={() => menuAction(() => setSdfPlaneOpen(true))}
+              >
+                SDF-Plane…
+              </button>
+            </div>
+          </div>
         </div>
       )}
 
@@ -396,6 +424,8 @@ export function SettingsMenu({
           onClose={() => setExportDialog(null)}
         />
       )}
+
+      {sdfPlaneOpen && <SdfPlaneDialog onClose={() => setSdfPlaneOpen(false)} />}
     </div>
   );
 }

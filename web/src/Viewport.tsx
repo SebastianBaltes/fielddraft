@@ -75,6 +75,7 @@ import {
 import { DatumOverlay, pickDatumAtRay } from "./datumOverlay";
 import { ReferenceMesh, PickHud } from "./viewportHud";
 import { ExportPreviewMesh } from "./exportPreviewMesh";
+import { SdfPlaneOverlay } from "./SdfPlaneOverlay";
 import { PREVIEW_LAYER } from "./viewportLayers";
 import { PerfHud, PerfProbe } from "./perfMonitor";
 import { ScreenSpaceCsgPass } from "./screenSpaceCsgPass";
@@ -727,6 +728,9 @@ function WebGLViewport({
             enables), transparent so the crossfade slider blends it over the
             body meshes; returns null when no export preview is published. */}
         <ExportPreviewMesh />
+        {/* Debug ▸ SDF-Plane overlay (on OVERLAY_LAYER); null unless the
+            dialog published a plane. */}
+        <SdfPlaneOverlay />
         {/* Opt-in experiment (default off): Screen-Space-CSG Stage 1
             (docs/ADAPTIVE-RENDERING-PLAN.md, Achse 3, Phase 3). Mounts an
             extra A−B composite pass over the parametric hulls. When the flag is
@@ -1666,6 +1670,9 @@ export function Viewport({
                 {/* Export dialog open + meshed: the exact export solid,
                     rendered in place of the suppressed SDF body pass. */}
                 <ExportPreviewMesh />
+                {/* Debug ▸ SDF-Plane overlay (OVERLAY_LAYER); null unless a
+                    plane is published by the dialog. */}
+                <SdfPlaneOverlay />
                 {/* All B-Rep overlays hide during a suppressed gizmo drag:
                   the kernel serves no fresh weave then, and even cached
                   edges only refresh per 50ms commit — they'd trail the

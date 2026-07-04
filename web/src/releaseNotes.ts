@@ -24,6 +24,16 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.380",
+    entries: [
+      {
+        kind: "feat",
+        text: "Debug-Werkzeug: Menü „Debug ▸ SDF-Plane…" öffnet einen kleinen Dialog (Punkt + Normale + Größe). Solange er offen ist, wird eine Schnitt-Ebene im Raum angezeigt, die das exakte SDF-Feld der Szene farbcodiert (innen/außen, Iso-Distanz-Bänder, Null-Oberflächen-Linie) — zum Debuggen von Meshing-/Rasterungs-Artefakten direkt im Feld",
+        scope: "debug",
+      },
+    ],
+  },
+  {
     version: "0.6.379",
     entries: [
       {

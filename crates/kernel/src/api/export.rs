@@ -29,6 +29,79 @@ impl Kernel {
         self.export_mesh_begin_internal(cell_size_mm, method)
     }
 
+    /// Debug: sample the scene SDF on a `resolution`×`resolution` grid over a
+    /// plane centred at `(ox,oy,oz)` with `(nx,ny,nz)` normal, spanning
+    /// ±`half_extent` in each in-plane axis. Row-major (v outer, u inner). The
+    /// scene SDF is the min over all bodies of each body's exact mesher SDF
+    /// (`EvalMode::Visual`) — the same field the meshers see — so the SDF-plane
+    /// overlay shows exactly what is being contoured. Empty scene → all `MAX`.
+    #[wasm_bindgen(js_name = sdfPlaneSample)]
+    #[allow(clippy::too_many_arguments)]
+    pub fn sdf_plane_sample(
+        &self,
+        ox: f32,
+        oy: f32,
+        oz: f32,
+        nx: f32,
+        ny: f32,
+        nz: f32,
+        half_extent: f32,
+        resolution: u32,
+    ) -> Vec<f32> {
+        let res = (resolution.max(2)) as usize;
+        // Orthonormal in-plane frame (u, v) from the normal.
+        let mut n = [nx, ny, nz];
+        let nl = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
+        if nl < 1e-9 {
+            n = [0.0, 0.0, 1.0];
+        } else {
+            n = [n[0] / nl, n[1] / nl, n[2] / nl];
+        }
+        let up = if n[1].abs() < 0.9 { [0.0, 1.0, 0.0] } else { [1.0, 0.0, 0.0] };
+        let cross = |a: [f32; 3], b: [f32; 3]| {
+            [
+                a[1] * b[2] - a[2] * b[1],
+                a[2] * b[0] - a[0] * b[2],
+                a[0] * b[1] - a[1] * b[0],
+            ]
+        };
+        let norm = |a: [f32; 3]| {
+            let l = (a[0] * a[0] + a[1] * a[1] + a[2] * a[2]).sqrt().max(1e-9);
+            [a[0] / l, a[1] / l, a[2] / l]
+        };
+        let u = norm(cross(up, n));
+        let v = cross(n, u);
+
+        // Build each body's bounded CSG once; the scene field is their union.
+        let bodies: Vec<crate::bvh::BoundedCsg> = self
+            .bodies
+            .iter()
+            .map(|b| {
+                crate::body::build_bounded_with_primitives(&self.decoded, &b.feature_indices).0
+            })
+            .collect();
+
+        let step = if res > 1 { (2.0 * half_extent) / (res as f32 - 1.0) } else { 0.0 };
+        let mut out = Vec::with_capacity(res * res);
+        for j in 0..res {
+            let tv = -half_extent + j as f32 * step;
+            for i in 0..res {
+                let tu = -half_extent + i as f32 * step;
+                let p = [
+                    ox + u[0] * tu + v[0] * tv,
+                    oy + u[1] * tu + v[1] * tv,
+                    oz + u[2] * tu + v[2] * tv,
+                ];
+                let mut d = f32::MAX;
+                for b in &bodies {
+                    d = d.min(b.sdf(p, crate::csg::EvalMode::Visual));
+                }
+                out.push(d);
+            }
+        }
+        out
+    }
+
     /// Pre-mesh estimate for the export dialog: for dense-grid methods, the
     /// finest achievable cell size (memory-guard lower bound) and a rough
     /// raw-grid triangle count at `cell_size_mm`, as JSON
