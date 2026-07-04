@@ -11,13 +11,16 @@
  * download. Changing the cell size returns to the confirm step.
  */
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type PointerEvent as ReactPointerEvent,
+} from "react";
 import type { KernelStore } from "./store";
-import type {
-  ExportFormat,
-  ExportProgress,
-  ExportReport,
-} from "./exportTypes";
+import type { ExportFormat, ExportProgress, ExportReport } from "./exportTypes";
+import { setExportPreview } from "./exportPreviewStore";
 
 const CELL_SIZE_STORAGE_KEY = "fielddraft.export.cellSizeMm";
 const DEFAULT_CELL_MM = 0.4;
@@ -91,9 +94,16 @@ export function ExportDialog({ store, format, onClose }: ExportDialogProps) {
           setPhase({ kind: "running", progress });
         }
       })
-      .then(({ bytes, report }) => {
+      .then(({ bytes, report, preview }) => {
         if (runIdRef.current === runId) {
           setPhase({ kind: "done", report, bytes });
+          // Show the exact export triangles as a solid in the viewport
+          // while the (non-modal) dialog stays open.
+          setExportPreview(
+            preview.positions.length > 0
+              ? { positions: preview.positions, indices: preview.indices }
+              : null,
+          );
         }
       })
       .catch((err: unknown) => {
@@ -109,14 +119,50 @@ export function ExportDialog({ store, format, onClose }: ExportDialogProps) {
   // Editing the cell size after a run discards the stale mesh so the
   // user must re-confirm (Prio: never save a mesh for a size the user
   // no longer sees).
-  const onCellInputChange = useCallback(
-    (value: string) => {
-      setCellInput(value);
-      runIdRef.current++; // invalidate any in-flight run
-      setPhase({ kind: "idle" });
-    },
-    [],
-  );
+  const onCellInputChange = useCallback((value: string) => {
+    setCellInput(value);
+    runIdRef.current++; // invalidate any in-flight run
+    setPhase({ kind: "idle" });
+    setExportPreview(null); // drop the stale solid from the viewport
+  }, []);
+
+  // The preview lives only while the dialog is open — clear it on close
+  // so the normal renderer takes over again.
+  useEffect(() => () => setExportPreview(null), []);
+
+  // Free-floating (non-modal) window position; null = CSS default anchor
+  // (top-right). Dragging the header sets an explicit left/top.
+  const [pos, setPos] = useState<{ x: number; y: number } | null>(null);
+  const dragRef = useRef<{ dx: number; dy: number } | null>(null);
+
+  const onHeaderPointerDown = useCallback((e: ReactPointerEvent) => {
+    if ((e.target as HTMLElement).closest("button")) return; // not the ×
+    const dialog = e.currentTarget.parentElement as HTMLElement | null;
+    if (!dialog) return;
+    const rect = dialog.getBoundingClientRect();
+    dragRef.current = { dx: e.clientX - rect.left, dy: e.clientY - rect.top };
+    setPos({ x: rect.left, y: rect.top });
+    e.currentTarget.setPointerCapture(e.pointerId);
+  }, []);
+
+  const onHeaderPointerMove = useCallback((e: ReactPointerEvent) => {
+    const drag = dragRef.current;
+    if (!drag) return;
+    const x = Math.max(
+      0,
+      Math.min(window.innerWidth - 80, e.clientX - drag.dx),
+    );
+    const y = Math.max(
+      0,
+      Math.min(window.innerHeight - 40, e.clientY - drag.dy),
+    );
+    setPos({ x, y });
+  }, []);
+
+  const onHeaderPointerUp = useCallback((e: ReactPointerEvent) => {
+    dragRef.current = null;
+    e.currentTarget.releasePointerCapture(e.pointerId);
+  }, []);
 
   const save = useCallback(() => {
     if (phase.kind !== "done") return;
@@ -125,9 +171,7 @@ export function ExportDialog({ store, format, onClose }: ExportDialogProps) {
 
   const featureName = useCallback(
     (bodyId: number): string => {
-      const f = store
-        .getState()
-        .features.find((feat) => feat.id === bodyId);
+      const f = store.getState().features.find((feat) => feat.id === bodyId);
       return f?.name ?? `Body ${bodyId}`;
     },
     [store],
@@ -135,110 +179,108 @@ export function ExportDialog({ store, format, onClose }: ExportDialogProps) {
 
   return (
     <div
-      className="fd-export-dialog-overlay"
-      data-testid="export-dialog-overlay"
-      onClick={(e) => {
-        if (e.target === e.currentTarget) onClose();
-      }}
+      className="fd-export-dialog"
+      role="dialog"
+      aria-label={`Export ${format.toUpperCase()}`}
+      data-testid="export-dialog"
+      style={pos ? { left: pos.x, top: pos.y, right: "auto" } : undefined}
     >
       <div
-        className="fd-export-dialog"
-        role="dialog"
-        aria-label={`Export ${format.toUpperCase()}`}
-        data-testid="export-dialog"
+        className="dialog-header"
+        onPointerDown={onHeaderPointerDown}
+        onPointerMove={onHeaderPointerMove}
+        onPointerUp={onHeaderPointerUp}
       >
-        <div className="dialog-header">
-          <h2 className="dialog-title">Export {format.toUpperCase()}</h2>
-          <button
-            type="button"
-            className="dialog-close"
-            aria-label="Close"
-            onClick={onClose}
-          >
-            ×
-          </button>
-        </div>
+        <h2 className="dialog-title">Export {format.toUpperCase()}</h2>
+        <button
+          type="button"
+          className="dialog-close"
+          aria-label="Close"
+          onClick={onClose}
+        >
+          ×
+        </button>
+      </div>
 
-        <div className="settings-row">
-          <label htmlFor="export-cell-size">Cell size (mm)</label>
-          <input
-            id="export-cell-size"
-            data-testid="export-cell-size"
-            type="number"
-            min={0.05}
-            max={5}
-            step={0.05}
-            value={cellInput}
-            onChange={(e) => onCellInputChange(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && phase.kind !== "running") runExport();
-            }}
+      <div className="settings-row">
+        <label htmlFor="export-cell-size">Cell size (mm)</label>
+        <input
+          id="export-cell-size"
+          data-testid="export-cell-size"
+          type="number"
+          min={0.05}
+          max={5}
+          step={0.05}
+          value={cellInput}
+          onChange={(e) => onCellInputChange(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && phase.kind !== "running") runExport();
+          }}
+        />
+        <span className="hint">
+          Grid cell edge per body — smaller is finer. Vertices sit on the exact
+          surface; the report shows the measured deviation.
+        </span>
+      </div>
+
+      {phase.kind === "idle" && (
+        <div className="hint-block" data-testid="export-idle">
+          Confirm the cell size, then <strong>Mesh</strong> to build the export
+          mesh and check it before saving.
+        </div>
+      )}
+
+      {phase.kind === "running" && (
+        <div className="progress-block" data-testid="export-progress">
+          <progress
+            max={phase.progress?.total ?? 1}
+            value={phase.progress?.done ?? 0}
           />
-          <span className="hint">
-            Grid cell edge per body — smaller is finer. Vertices sit on
-            the exact surface; the report shows the measured deviation.
+          <span>
+            Meshing body {phase.progress?.done ?? 0} /{" "}
+            {phase.progress?.total ?? "…"}
           </span>
         </div>
+      )}
 
-        {phase.kind === "idle" && (
-          <div className="hint-block" data-testid="export-idle">
-            Confirm the cell size, then <strong>Mesh</strong> to build the
-            export mesh and check it before saving.
-          </div>
-        )}
-
-        {phase.kind === "running" && (
-          <div className="progress-block" data-testid="export-progress">
-            <progress
-              max={phase.progress?.total ?? 1}
-              value={phase.progress?.done ?? 0}
-            />
-            <span>
-              Meshing body {phase.progress?.done ?? 0} /{" "}
-              {phase.progress?.total ?? "…"}
-            </span>
-          </div>
-        )}
-
-        {phase.kind === "error" && (
-          <div className="error-block" data-testid="export-error">
-            Export failed: {phase.message}
-          </div>
-        )}
-
-        {phase.kind === "done" && (
-          <ReportView report={phase.report} featureName={featureName} />
-        )}
-
-        <div className="dialog-footer">
-          <button type="button" className="secondary" onClick={onClose}>
-            Cancel
-          </button>
-          {phase.kind === "done" ? (
-            <button
-              type="button"
-              className="primary"
-              data-testid="export-save"
-              onClick={save}
-            >
-              Save {format.toUpperCase()}
-            </button>
-          ) : (
-            <button
-              type="button"
-              className="primary"
-              data-testid="export-mesh"
-              disabled={phase.kind === "running"}
-              onClick={runExport}
-            >
-              {phase.kind === "running"
-                ? "Meshing…"
-                : phase.kind === "error"
-                  ? "Retry"
-                  : "Mesh"}
-            </button>
-          )}
+      {phase.kind === "error" && (
+        <div className="error-block" data-testid="export-error">
+          Export failed: {phase.message}
         </div>
+      )}
+
+      {phase.kind === "done" && (
+        <ReportView report={phase.report} featureName={featureName} />
+      )}
+
+      <div className="dialog-footer">
+        <button type="button" className="secondary" onClick={onClose}>
+          Cancel
+        </button>
+        {phase.kind === "done" ? (
+          <button
+            type="button"
+            className="primary"
+            data-testid="export-save"
+            onClick={save}
+          >
+            Save {format.toUpperCase()}
+          </button>
+        ) : (
+          <button
+            type="button"
+            className="primary"
+            data-testid="export-mesh"
+            disabled={phase.kind === "running"}
+            onClick={runExport}
+          >
+            {phase.kind === "running"
+              ? "Meshing…"
+              : phase.kind === "error"
+                ? "Retry"
+                : "Mesh"}
+          </button>
+        )}
       </div>
     </div>
   );
@@ -344,8 +386,10 @@ function defects(b: {
 }): string {
   const parts: string[] = [];
   if (b.boundary_edges > 0) parts.push(`${b.boundary_edges} open`);
-  if (b.non_manifold_edges > 0) parts.push(`${b.non_manifold_edges} non-manifold`);
+  if (b.non_manifold_edges > 0)
+    parts.push(`${b.non_manifold_edges} non-manifold`);
   if (b.misoriented_edges > 0) parts.push(`${b.misoriented_edges} misoriented`);
-  if (b.degenerate_triangles > 0) parts.push(`${b.degenerate_triangles} degenerate`);
+  if (b.degenerate_triangles > 0)
+    parts.push(`${b.degenerate_triangles} degenerate`);
   return parts.length > 0 ? `✗ ${parts.join(", ")}` : "✗";
 }

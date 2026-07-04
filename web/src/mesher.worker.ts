@@ -147,7 +147,9 @@ async function ensureKernel(): Promise<ReadyKernel> {
       // the loader and break the worker on boot.
       const exports = (await initWasm()) as WasmExports;
       if (!exports?.memory) {
-        throw new Error("fielddraft mesher worker: wasm memory export not found");
+        throw new Error(
+          "fielddraft mesher worker: wasm memory export not found",
+        );
       }
       const kernel = new WasmKernel();
       // The worker kernel keeps sync meshing enabled — it's the
@@ -192,8 +194,9 @@ async function ensureKernel(): Promise<ReadyKernel> {
         resolveQuery: (query) =>
           JSON.parse(fdResolveQuery(query)) as QueryHandle[],
       });
-      installScriptRunner((scriptId: string, instanceId: string, paramsJson: string) =>
-        scriptHost!.run(scriptId, instanceId, paramsJson),
+      installScriptRunner(
+        (scriptId: string, instanceId: string, paramsJson: string) =>
+          scriptHost!.run(scriptId, instanceId, paramsJson),
       );
 
       return { kernel, memory: exports.memory };
@@ -367,6 +370,10 @@ async function handleExport(msg: MesherExportRequest): Promise<void> {
   const bytes: Uint8Array =
     msg.format === "3mf" ? kernel.exportMesh3mf() : kernel.exportMeshStl();
   const report = JSON.parse(kernel.exportMeshReport()) as ExportReport;
+  // Raw merged export triangles for the in-app solid preview — read
+  // while the session still holds the meshes (before exportMeshEnd).
+  const previewPositions: Float32Array = kernel.exportMeshPreviewPositions();
+  const previewIndices: Uint32Array = kernel.exportMeshPreviewIndices();
   kernel.exportMeshEnd();
 
   const response: MesherExportResponse = {
@@ -375,8 +382,14 @@ async function handleExport(msg: MesherExportRequest): Promise<void> {
     ok: true,
     bytes,
     report,
+    previewPositions,
+    previewIndices,
   };
-  self.postMessage(response, [bytes.buffer]);
+  self.postMessage(response, [
+    bytes.buffer,
+    previewPositions.buffer,
+    previewIndices.buffer,
+  ]);
 }
 
 async function handleFdCall(

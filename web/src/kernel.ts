@@ -10,7 +10,10 @@
  */
 
 // eslint-disable-next-line import/no-unresolved
-import initWasm, { Kernel as WasmKernel, wasmVersion } from "./wasm/fielddraft_kernel.js";
+import initWasm, {
+  Kernel as WasmKernel,
+  wasmVersion,
+} from "./wasm/fielddraft_kernel.js";
 import type { FieldSkriptRecord } from "./fieldskript/record";
 import { installMainScriptHost, syncMainScriptHost } from "./mainScriptHost";
 import { scriptRecordsFrom } from "./workerScriptHost";
@@ -137,7 +140,8 @@ export interface BRepFace {
   branchId: number;
   /** Flat feature id (sub stripped). */
   featureId: number;
-  surfaceKind: "plane" | "cylinder" | "sphere" | "cone" | "torus" | "tessellated";
+  surfaceKind:
+    "plane" | "cylinder" | "sphere" | "cone" | "torus" | "tessellated";
   /** Body-local analytic surface parameters for the hybrid renderer's
    *  parametric tessellation; absent (`null`) for planar (uses
    *  centroid/normal) and tessellated (gyroid/revolved) faces. The axis of
@@ -149,10 +153,26 @@ export interface BRepFace {
 }
 
 export type SurfaceParams =
-  | { kind: "cylinder"; origin: [number, number, number]; axis: [number, number, number]; radius: number }
+  | {
+      kind: "cylinder";
+      origin: [number, number, number];
+      axis: [number, number, number];
+      radius: number;
+    }
   | { kind: "sphere"; origin: [number, number, number]; radius: number }
-  | { kind: "cone"; origin: [number, number, number]; axis: [number, number, number]; halfAngle: number }
-  | { kind: "torus"; origin: [number, number, number]; axis: [number, number, number]; majorRadius: number; minorRadius: number };
+  | {
+      kind: "cone";
+      origin: [number, number, number];
+      axis: [number, number, number];
+      halfAngle: number;
+    }
+  | {
+      kind: "torus";
+      origin: [number, number, number];
+      axis: [number, number, number];
+      majorRadius: number;
+      minorRadius: number;
+    };
 
 /** One selectable B-Rep vertex of a body, in the body-LOCAL frame. `idHash` is
  *  the stable `TopoRef` vertex id as a decimal string. */
@@ -190,7 +210,11 @@ export function localToWorld(
     s[2] + qw * tz + qx * ty - qy * tx,
   ];
   // + t
-  return [r[0] + pl.translate[0], r[1] + pl.translate[1], r[2] + pl.translate[2]];
+  return [
+    r[0] + pl.translate[0],
+    r[1] + pl.translate[1],
+    r[2] + pl.translate[2],
+  ];
 }
 
 /** Numeric tags for primitive kinds. Mirror `Primitive::KIND_*` in protocol. */
@@ -205,7 +229,8 @@ export const PrimitiveKind = {
   HexPrism: 10,
   Ellipsoid: 12,
 } as const;
-export type PrimitiveKindTag = (typeof PrimitiveKind)[keyof typeof PrimitiveKind];
+export type PrimitiveKindTag =
+  (typeof PrimitiveKind)[keyof typeof PrimitiveKind];
 
 /** Numeric tags for boolean ops (Onshape result-body vocabulary).
  *  Mirror `BoolOp::TAG_*` in protocol: Add merges into the touching
@@ -219,7 +244,19 @@ export const BoolOpTag = {
 export type BoolOpTagValue = (typeof BoolOpTag)[keyof typeof BoolOpTag];
 
 export type BoolOpName = "add" | "new" | "remove" | "intersect";
-export type PrimitiveKindName = "box" | "sphere" | "cylinder" | "torus" | "thread" | "cone" | "capsule" | "hex_prism" | "ellipsoid" | "hole" | "linear_pattern" | "circular_pattern";
+export type PrimitiveKindName =
+  | "box"
+  | "sphere"
+  | "cylinder"
+  | "torus"
+  | "thread"
+  | "cone"
+  | "capsule"
+  | "hex_prism"
+  | "ellipsoid"
+  | "hole"
+  | "linear_pattern"
+  | "circular_pattern";
 /** K6b.3a: the kernel's `listFeatures` can now return entries
  *  whose kind is a non-primitive feature type like "sketch" or
  *  "extrude". The outliner handles them generically by keying
@@ -267,8 +304,7 @@ export interface ContourData {
  *  geometry (Twist about Y, Bend about Z). Emitted by the kernel on every
  *  descendant leaf of a Twist/Bend node; see `bvh.rs` `LeafWarp`. */
 export type LeafWarp =
-  | { kind: "twist"; rate: number }
-  | { kind: "bend"; rate: number };
+  { kind: "twist"; rate: number } | { kind: "bend"; rate: number };
 
 /** Spine payload for a parametric `"sweep"` leaf: `buildSweepGeometry` sweeps
  *  the leaf's `contour` along these (local-space) points; `transform` places
@@ -283,7 +319,18 @@ export interface SweepLeafData {
 export interface HybridLeafInfo {
   kind: string;
   aabb: [number, number, number, number, number, number];
-  transform: [number, number, number, number, number, number, number, number, number, number];
+  transform: [
+    number,
+    number,
+    number,
+    number,
+    number,
+    number,
+    number,
+    number,
+    number,
+    number,
+  ];
   params: number[];
   role: "mesh" | "skip";
   contour?: ContourData;
@@ -350,7 +397,9 @@ export class Kernel {
 
   private guardMut<T>(fn: () => T): T {
     if (this.mutating) {
-      throw new Error("Kernel: re-entrant mutation rejected (would cause WASM RefCell panic)");
+      throw new Error(
+        "Kernel: re-entrant mutation rejected (would cause WASM RefCell panic)",
+      );
     }
     this.mutating = true;
     try {
@@ -515,7 +564,11 @@ export class Kernel {
   bodyContributorsView(i: number): Uint32Array {
     const ptr = this.inner.bodyContributorsPtr(i);
     const count = this.inner.bodyVertexCount(i);
-    return new Uint32Array(this.memory.buffer, ptr, count * MESH_CONTRIBUTOR_STRIDE);
+    return new Uint32Array(
+      this.memory.buffer,
+      ptr,
+      count * MESH_CONTRIBUTOR_STRIDE,
+    );
   }
 
   bodySdfOpcodesView(i: number): Float32Array {
@@ -932,18 +985,16 @@ export class Kernel {
 
   /** K8.9: append a hole feature — a parametric cylinder
    *  subtract with `Length`-typed diameter and depth. */
-  addHole(
-    diameterMm: number,
-    depthMm: number,
-    tx = 0,
-    ty = 0,
-    tz = 0,
-  ): number {
+  addHole(diameterMm: number, depthMm: number, tx = 0, ty = 0, tz = 0): number {
     return this.inner.addHole(diameterMm, depthMm, tx, ty, tz);
   }
 
   /** K11.0: append a gyroid TPMS infill feature. */
-  addGyroid(cellSizeMm: number, thicknessMm: number, op: BoolOpTagValue): number {
+  addGyroid(
+    cellSizeMm: number,
+    thicknessMm: number,
+    op: BoolOpTagValue,
+  ): number {
     return this.inner.addGyroid(cellSizeMm, thicknessMm, op);
   }
 
@@ -973,7 +1024,9 @@ export class Kernel {
     pitchMm = 2,
     turns = 8,
   ): number {
-    return this.guardMut(() => this.inner.addHelix(sketchId, op, pitchMm, turns));
+    return this.guardMut(() =>
+      this.inner.addHelix(sketchId, op, pitchMm, turns),
+    );
   }
 
   /** Append a sweep: `profileSketchId` swept along `pathSketchId` (a planar
@@ -1037,6 +1090,17 @@ export class Kernel {
   /** 3MF archive of the session's export meshes. */
   exportMesh3mf(): Uint8Array {
     return this.inner.exportMesh3mf();
+  }
+
+  /** Merged export-mesh vertex positions (xyz-interleaved) for the
+   *  in-app solid preview. Pairs with `exportMeshPreviewIndices`. */
+  exportMeshPreviewPositions(): Float32Array {
+    return this.inner.exportMeshPreviewPositions();
+  }
+
+  /** Merged export-mesh triangle indices (rebased) for the preview. */
+  exportMeshPreviewIndices(): Uint32Array {
+    return this.inner.exportMeshPreviewIndices();
   }
 
   /** Aggregate session report as JSON (see ExportReport in
@@ -1332,7 +1396,13 @@ export class Kernel {
     depthBackMm: number,
     suppressed = false,
   ): number {
-    return this.inner.addExtrudeFaces(faces, depthMm, symmetric, depthBackMm, suppressed);
+    return this.inner.addExtrudeFaces(
+      faces,
+      depthMm,
+      symmetric,
+      depthBackMm,
+      suppressed,
+    );
   }
 
   /** Thicken one or more curved faces into a thin solid wall offset along the
@@ -1351,7 +1421,13 @@ export class Kernel {
     thicknessBackMm: number,
     upToFace = "",
   ): number {
-    return this.inner.addThicken(faces, thicknessMm, symmetric, thicknessBackMm, upToFace);
+    return this.inner.addThicken(
+      faces,
+      thicknessMm,
+      symmetric,
+      thicknessBackMm,
+      upToFace,
+    );
   }
 
   /** K9.1: overall scene AABB in mm. */
@@ -1420,7 +1496,13 @@ export class Kernel {
     return this.inner.setFeatureTranslate(id, x, y, z);
   }
 
-  setFeatureRotation(id: number, rx: number, ry: number, rz: number, rw: number): boolean {
+  setFeatureRotation(
+    id: number,
+    rx: number,
+    ry: number,
+    rz: number,
+    rw: number,
+  ): boolean {
     return this.inner.setFeatureRotation(id, rx, ry, rz, rw);
   }
 
@@ -1432,7 +1514,13 @@ export class Kernel {
     return this.inner.applyGizmoTranslate(id, tx, ty, tz);
   }
 
-  applyGizmoRotate(id: number, rx: number, ry: number, rz: number, rw: number): boolean {
+  applyGizmoRotate(
+    id: number,
+    rx: number,
+    ry: number,
+    rz: number,
+    rw: number,
+  ): boolean {
     return this.inner.applyGizmoRotate(id, rx, ry, rz, rw);
   }
 

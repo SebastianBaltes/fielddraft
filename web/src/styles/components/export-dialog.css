@@ -1,14 +1,12 @@
-.fd-export-dialog-overlay {
-  position: fixed;
-  inset: 0;
-  z-index: 200;
-  background: rgba(0, 0, 0, 0.25);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
+/* Non-modal, draggable export window: no backdrop so the viewport
+ * behind it stays interactive (orbit around the solid preview while the
+ * dialog is open). Anchored top-right by default; the header drag sets
+ * an explicit left/top inline. */
 .fd-export-dialog {
+  position: fixed;
+  top: var(--space-4);
+  right: var(--space-4);
+  z-index: 200;
   background: var(--color-bg-elevated);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-lg);
@@ -24,6 +22,9 @@
     align-items: center;
     justify-content: space-between;
     padding: var(--space-4) var(--space-4) var(--space-2);
+    cursor: move;
+    touch-action: none;
+    user-select: none;
   }
 
   & .dialog-title {

@@ -1,4 +1,4 @@
-import { useEffect, useRef, type RefObject } from "react";
+import { useEffect, useRef, useSyncExternalStore, type RefObject } from "react";
 import { useFrame, useThree } from "@react-three/fiber";
 import * as THREE from "three";
 import type { WebGPURenderer } from "three/webgpu";
@@ -33,6 +33,7 @@ import {
   type SdfFingerprintKernel,
 } from "./bodyFingerprint";
 import type { BRepEdgeMode } from "./settings";
+import { getExportPreview, subscribeExportPreview } from "./exportPreviewStore";
 import type { HybridInfo } from "./kernel";
 import type { MaterialBufferTarget } from "./materialBridge";
 
@@ -95,11 +96,15 @@ function renderOverlayLayer(
   camera: THREE.Camera,
   renderSdf: () => void,
   occlude: boolean,
+  skipSdf: boolean,
 ): void {
   wgpuRenderer.render(scene, camera);
   const prevAutoClear = (wgpuRenderer as any).autoClear;
   (wgpuRenderer as any).autoClear = false;
-  renderSdf();
+  // Export preview: the base-scene pass already drew the solid export
+  // mesh (layer 0) in the body's place — skip the SDF body pass so the
+  // two don't fight over the z-buffer. Datum + overlays still draw.
+  if (!skipSdf) renderSdf();
 
   const savedBg = scene.background;
   scene.background = null;
@@ -207,6 +212,17 @@ function useSdfPipelineOverlay<P extends MaterialBufferTarget, B>(
   const scene = useThree((s) => s.scene);
   const size = useThree((s) => s.size);
   const invalidate = useThree((s) => s.invalidate);
+
+  // While the export dialog shows a solid preview, the SDF body pass is
+  // suppressed (the preview mesh takes its place). Re-render on toggle —
+  // the overlay is demand-driven, so a state change alone won't repaint.
+  const previewActive = useSyncExternalStore(
+    subscribeExportPreview,
+    () => getExportPreview() !== null,
+  );
+  useEffect(() => {
+    invalidate();
+  }, [previewActive, invalidate]);
 
   const pipelineRef = useRef<P | null>(null);
   const rebuildFpRef = useRef("");
@@ -335,6 +351,7 @@ function useSdfPipelineOverlay<P extends MaterialBufferTarget, B>(
         camera,
         () => adapter.renderFrame(pipeline, wgpu, camera),
         brepEdgeMode === "visible",
+        getExportPreview() !== null,
       );
     } catch (err) {
       console.error("SDF render error:", err);
@@ -393,10 +410,7 @@ export function SdfVmOverlay({ brepEdgeMode }: { brepEdgeMode: BRepEdgeMode }) {
   // mount (not per frame); resolves lazily against the current pipeline.
   useEffect(() => {
     const w = window as unknown as Record<string, unknown>;
-    w.__fdSdfVmProbe = (
-      points: [number, number, number][],
-      bodyIndex = 0,
-    ) => {
+    w.__fdSdfVmProbe = (points: [number, number, number][], bodyIndex = 0) => {
       const pipeline = pipelineRef.current;
       const renderer = rendererRef.current;
       if (!pipeline || !renderer) {

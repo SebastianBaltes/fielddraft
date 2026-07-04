@@ -22,10 +22,7 @@ import { ndcZVisible } from "./projectionSpace";
 import { useKernelStore } from "./store";
 import type { PickHit, PickResult } from "./kernel";
 import type { BRepEdgeMode, FrameLoopMode, RenderMode } from "./settings";
-import {
-  SdfVmOverlay,
-  SdfDeferredOverlay,
-} from "./viewportSdfOverlays";
+import { SdfVmOverlay, SdfDeferredOverlay } from "./viewportSdfOverlays";
 import {
   CameraBridgePublisher,
   CameraRig,
@@ -77,6 +74,8 @@ import {
 } from "./mateOverlays";
 import { DatumOverlay, pickDatumAtRay } from "./datumOverlay";
 import { ReferenceMesh, PickHud } from "./viewportHud";
+import { ExportPreviewMesh } from "./exportPreviewMesh";
+import { getExportPreview, subscribeExportPreview } from "./exportPreviewStore";
 import { PerfHud, PerfProbe } from "./perfMonitor";
 import { ScreenSpaceCsgPass } from "./screenSpaceCsgPass";
 import { SketchCanvas2d } from "./SketchCanvas2d";
@@ -158,6 +157,15 @@ function useQueryPickerActive(): boolean {
   return useSyncExternalStore(
     subscribeQueryPicker,
     () => getActiveQueryPicker() !== null,
+  );
+}
+
+/** Reactively tracks whether the export dialog is showing a solid preview.
+ *  While it is, the WebGL body meshes are swapped for the export solid. */
+function useExportPreviewActive(): boolean {
+  return useSyncExternalStore(
+    subscribeExportPreview,
+    () => getExportPreview() !== null,
   );
 }
 
@@ -595,6 +603,8 @@ function WebGLViewport({
   // async mesh arrives we fall back to the per-leaf parametric hulls so the view
   // isn't blank (ticket gcvz). Never both at once — no double-draw.
   const hasMeshes = (state?.meshedBodies?.length ?? 0) > 0;
+  // Export preview swaps the body meshes for the exact export solid.
+  const exportPreviewActive = useExportPreviewActive();
   const stateRef = useRef<{
     gl: THREE.WebGLRenderer;
     scene: THREE.Scene;
@@ -705,7 +715,11 @@ function WebGLViewport({
             bodies — a helix DC-meshes far too coarsely. Shared lights so the
             two paths don't double the scene lighting. Before meshing finishes,
             the hull fallback still draws every body. */}
-        {hasMeshes ? (
+        {exportPreviewActive ? (
+          // Export dialog open + meshed: show the exact export solid
+          // instead of the normal body meshes (its own lights included).
+          <ExportPreviewMesh />
+        ) : hasMeshes ? (
           <>
             <WebGLSceneLights />
             {/* SS-CSG an: Difference-Bodys NICHT als DC-Mesh zeichnen — die kommen
@@ -888,7 +902,10 @@ export function Viewport({
     const down = { x: e.clientX, y: e.clientY };
     let moved = false;
     const onMove = (ev: PointerEvent) => {
-      if (Math.abs(ev.clientX - down.x) > 4 || Math.abs(ev.clientY - down.y) > 4)
+      if (
+        Math.abs(ev.clientX - down.x) > 4 ||
+        Math.abs(ev.clientY - down.y) > 4
+      )
         moved = true;
     };
     const cleanup = () => {
@@ -1252,8 +1269,7 @@ export function Viewport({
       // already handled by the swallow. We still report it so the routing keeps
       // its own invariant (`plane-pick` ⇒ not a fall-through to selection).
       planeQueryArmed: getActiveQueryPicker() !== null,
-      projectToolActive:
-        state?.sketchSession.selectedTool === "sketch_project",
+      projectToolActive: state?.sketchSession.selectedTool === "sketch_project",
     });
     if (sketchRouting !== "default") {
       invalidateCanvas();
@@ -1654,6 +1670,9 @@ export function Viewport({
                   brepEdgeMode={brepEdgeMode}
                 />
                 <ReferenceMesh />
+                {/* Export dialog open + meshed: the exact export solid,
+                    rendered in place of the suppressed SDF body pass. */}
+                <ExportPreviewMesh />
                 {/* All B-Rep overlays hide during a suppressed gizmo drag:
                   the kernel serves no fresh weave then, and even cached
                   edges only refresh per 50ms commit — they'd trail the
@@ -1700,8 +1719,8 @@ export function Viewport({
       <MeasurePanel />
       {state?.mateMode && (
         <div className="face-pick-hud" data-testid="mate-mode-hud">
-          Hover a vertex, edge, or face — click to place a mate connector ·
-          R: reorient · Shift: lock · K: hide connectors
+          Hover a vertex, edge, or face — click to place a mate connector · R:
+          reorient · Shift: lock · K: hide connectors
         </div>
       )}
       {state?.ikMode && (

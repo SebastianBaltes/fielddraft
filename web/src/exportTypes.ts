@@ -59,10 +59,19 @@ export interface ExportReport {
   bodies: ExportBodyReport[];
 }
 
-/** The finished export: encoded bytes plus the validation report. */
+/** Merged export-mesh triangles for the in-app solid preview
+ *  (xyz-interleaved positions + rebased triangle indices). */
+export interface ExportPreviewMesh {
+  positions: Float32Array;
+  indices: Uint32Array;
+}
+
+/** The finished export: encoded bytes, the validation report, and the
+ *  raw merged triangles for the solid preview. */
 export interface ExportOutcome {
   bytes: Uint8Array;
   report: ExportReport;
+  preview: ExportPreviewMesh;
 }
 
 export interface ExportProgress {
@@ -94,5 +103,7 @@ export type MesherExportResponse =
       ok: true;
       bytes: Uint8Array;
       report: ExportReport;
+      previewPositions: Float32Array;
+      previewIndices: Uint32Array;
     }
   | { type: "export_result"; requestId: number; ok: false; error: string };

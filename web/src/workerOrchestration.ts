@@ -38,11 +38,7 @@ import type {
   MesherExportResponse,
   MesherExportProgressMsg,
 } from "./exportTypes";
-import {
-  StoreCore,
-  type MeshedBody,
-  type StoreState,
-} from "./storeCore";
+import { StoreCore, type MeshedBody, type StoreState } from "./storeCore";
 
 /** Map mesher-worker messages onto channel events. Other traffic on the
  *  shared worker (`fd_result` responses for the Outer API) is ignored. */
@@ -63,10 +59,7 @@ function parseExportResponse(
   data: unknown,
 ): ChannelEvent<ExportOutcome, ExportProgress> | null {
   const msg = data as
-    | MesherExportResponse
-    | MesherExportProgressMsg
-    | null
-    | undefined;
+    MesherExportResponse | MesherExportProgressMsg | null | undefined;
   if (!msg || typeof msg !== "object") return null;
   if (msg.type === "export_progress") {
     return {
@@ -80,7 +73,14 @@ function parseExportResponse(
     ? {
         kind: "result",
         requestId: msg.requestId,
-        value: { bytes: msg.bytes, report: msg.report },
+        value: {
+          bytes: msg.bytes,
+          report: msg.report,
+          preview: {
+            positions: msg.previewPositions,
+            indices: msg.previewIndices,
+          },
+        },
       }
     : { kind: "error", requestId: msg.requestId, error: msg.error };
 }
@@ -151,73 +151,73 @@ export class WorkerOrchestrator {
   private meshAlgorithm: string = "mdc";
 
   constructor(private readonly core: StoreCore) {
-      // Bring up the mesher worker BEFORE the initial document load: with the
-      // worker available, sync meshing is disabled first, so `loadJson` below
-      // neither runs the Dual-Contouring pass on the main thread nor enters
-      // the kernel's mesh face-tagging loop — which would weave every body's
-      // B-Rep synchronously and freeze the tab for minutes on weave-heavy
-      // projects (spline-revolve + shell). On failure, sync meshing stays on
-      // (functionally correct, just blocks the UI on every mesh rebuild).
-      try {
-        const mesher = new Worker(
-          new URL("./mesher.worker.ts", import.meta.url),
-          { type: "module" },
-        );
-        this.mesherChannel = new CoalescingWorkerChannel<MesherBodyPayload[]>({
-          worker: mesher,
-          parse: parseMesherResponse,
-          buildRequest: (requestId, pass) =>
-            this.buildMesherRequest(requestId, pass),
-          onResult: (bodies) => this.applyMesherBodies(bodies),
-          onError: (error) => this.reportWorkerError("Mesh rebuild", error),
-          // M13: progressive refinement — the initial pass runs at coarse
-          // resolution; its response auto-posts a full-resolution follow-up.
-          followUpAfterInitial: true,
-        });
-        this.exportChannel = new CorrelatedWorkerChannel(
-          mesher,
-          parseExportResponse,
-          "export channel",
-        );
-        this.mesherAvailable = true;
-        this.kernel.setSyncMeshing(false);
-      } catch (err) {
-        // eslint-disable-next-line no-console
-        console.warn(
-          "fielddraft: could not start mesher worker, falling back to sync meshing on the main thread",
-          err,
-        );
-        this.mesherAvailable = false;
-      }
+    // Bring up the mesher worker BEFORE the initial document load: with the
+    // worker available, sync meshing is disabled first, so `loadJson` below
+    // neither runs the Dual-Contouring pass on the main thread nor enters
+    // the kernel's mesh face-tagging loop — which would weave every body's
+    // B-Rep synchronously and freeze the tab for minutes on weave-heavy
+    // projects (spline-revolve + shell). On failure, sync meshing stays on
+    // (functionally correct, just blocks the UI on every mesh rebuild).
+    try {
+      const mesher = new Worker(
+        new URL("./mesher.worker.ts", import.meta.url),
+        { type: "module" },
+      );
+      this.mesherChannel = new CoalescingWorkerChannel<MesherBodyPayload[]>({
+        worker: mesher,
+        parse: parseMesherResponse,
+        buildRequest: (requestId, pass) =>
+          this.buildMesherRequest(requestId, pass),
+        onResult: (bodies) => this.applyMesherBodies(bodies),
+        onError: (error) => this.reportWorkerError("Mesh rebuild", error),
+        // M13: progressive refinement — the initial pass runs at coarse
+        // resolution; its response auto-posts a full-resolution follow-up.
+        followUpAfterInitial: true,
+      });
+      this.exportChannel = new CorrelatedWorkerChannel(
+        mesher,
+        parseExportResponse,
+        "export channel",
+      );
+      this.mesherAvailable = true;
+      this.kernel.setSyncMeshing(false);
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.warn(
+        "fielddraft: could not start mesher worker, falling back to sync meshing on the main thread",
+        err,
+      );
+      this.mesherAvailable = false;
+    }
 
-      // Bring up the B-Rep weaver worker. With it available, the main
-      // kernel never weaves synchronously for an export again: exports are
-      // permanently suppressed to cache-or-empty, and `scheduleWeave`
-      // (called after every commit) keeps the caches fresh off-thread.
-      // On failure the legacy behaviour remains: overlays weave
-      // synchronously on first fetch.
-      try {
-        const weaver = new Worker(
-          new URL("./weaver.worker.ts", import.meta.url),
-          { type: "module" },
-        );
-        this.weaverChannel = new CoalescingWorkerChannel<WeaveBrepPayload[]>({
-          worker: weaver,
-          parse: parseWeaverResponse,
-          buildRequest: (requestId) => this.buildWeaveRequest(requestId),
-          onResult: (items) => this.applyWovenBreps(items),
-          onError: (error) => this.reportWorkerError("B-Rep weave", error),
-        });
-        this.weaverAvailable = true;
-        this.kernel.setBrepSuppressed(true);
-      } catch (err) {
-        // eslint-disable-next-line no-console
-        console.warn(
-          "fielddraft: could not start weaver worker, falling back to synchronous B-Rep weaving",
-          err,
-        );
-        this.weaverAvailable = false;
-      }
+    // Bring up the B-Rep weaver worker. With it available, the main
+    // kernel never weaves synchronously for an export again: exports are
+    // permanently suppressed to cache-or-empty, and `scheduleWeave`
+    // (called after every commit) keeps the caches fresh off-thread.
+    // On failure the legacy behaviour remains: overlays weave
+    // synchronously on first fetch.
+    try {
+      const weaver = new Worker(
+        new URL("./weaver.worker.ts", import.meta.url),
+        { type: "module" },
+      );
+      this.weaverChannel = new CoalescingWorkerChannel<WeaveBrepPayload[]>({
+        worker: weaver,
+        parse: parseWeaverResponse,
+        buildRequest: (requestId) => this.buildWeaveRequest(requestId),
+        onResult: (items) => this.applyWovenBreps(items),
+        onError: (error) => this.reportWorkerError("B-Rep weave", error),
+      });
+      this.weaverAvailable = true;
+      this.kernel.setBrepSuppressed(true);
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.warn(
+        "fielddraft: could not start weaver worker, falling back to synchronous B-Rep weaving",
+        err,
+      );
+      this.weaverAvailable = false;
+    }
   }
 
   /** False when the mesher worker could not start — the store then runs
@@ -386,8 +386,12 @@ export class WorkerOrchestrator {
     const bytes =
       format === "3mf" ? kernel.exportMesh3mf() : kernel.exportMeshStl();
     const report = JSON.parse(kernel.exportMeshReport()) as ExportReport;
+    const preview = {
+      positions: kernel.exportMeshPreviewPositions(),
+      indices: kernel.exportMeshPreviewIndices(),
+    };
     kernel.exportMeshEnd();
-    return { bytes, report };
+    return { bytes, report, preview };
   }
 
   /** Hand off the current document to the mesher worker. Coalescing,

@@ -24,6 +24,16 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.365",
+    entries: [
+      {
+        kind: "feat",
+        text: "Export-Dialog zeigt eine Solid-Vorschau des gemeshten Objekts: nach „Mesh\" wird im Viewport das exakte Export-Mesh (flat-shaded) statt des normalen Renderers angezeigt — solange der Dialog offen ist. Der Dialog ist jetzt non-modal und am Titelbalken verschiebbar, sodass man frei um das Mesh herum navigieren kann; beim Schließen übernimmt wieder der Original-Renderer",
+        scope: "export",
+      },
+    ],
+  },
+  {
     version: "0.6.364",
     entries: [
       {

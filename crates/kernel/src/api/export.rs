@@ -56,6 +56,34 @@ impl Kernel {
         export_3mf::export_3mf(&self.export_session_meshes())
     }
 
+    /// Merged vertex positions (xyz-interleaved) of ALL session export
+    /// meshes, for the in-app solid preview. Pairs with
+    /// [`Kernel::export_mesh_preview_indices`] (indices are rebased per
+    /// body). Flat shading derives face normals in the viewer, so no
+    /// normal buffer crosses the boundary.
+    #[wasm_bindgen(js_name = exportMeshPreviewPositions)]
+    pub fn export_mesh_preview_positions(&self) -> Vec<f32> {
+        let mut out = Vec::new();
+        for m in self.export_session_meshes() {
+            out.extend_from_slice(&m.positions);
+        }
+        out
+    }
+
+    /// Merged triangle indices of ALL session export meshes, rebased so
+    /// they index into the concatenated
+    /// [`Kernel::export_mesh_preview_positions`] buffer.
+    #[wasm_bindgen(js_name = exportMeshPreviewIndices)]
+    pub fn export_mesh_preview_indices(&self) -> Vec<u32> {
+        let mut out = Vec::new();
+        let mut base = 0u32;
+        for m in self.export_session_meshes() {
+            out.extend(m.indices.iter().map(|&idx| idx + base));
+            base += (m.positions.len() / 3) as u32;
+        }
+        out
+    }
+
     /// Aggregate report of the session as JSON
     /// (see [`crate::export_mesh::ExportReport`]).
     #[wasm_bindgen(js_name = exportMeshReport)]
