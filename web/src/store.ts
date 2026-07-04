@@ -48,6 +48,7 @@ import type {
   ExportFormat,
   ExportOutcome,
   ExportProgress,
+  MeshMethod,
 } from "./exportTypes";
 
 import {
@@ -63,10 +64,7 @@ import {
   type SelectionOrigin,
   type StoreState,
 } from "./storeCore";
-import {
-  SketchStore,
-  initialSketchToolParams,
-} from "./sketchStore";
+import { SketchStore, initialSketchToolParams } from "./sketchStore";
 import { AssemblyStore } from "./assemblyStore";
 import { ProjectStore } from "./projectStore";
 import { IoStore } from "./ioStore";
@@ -86,7 +84,6 @@ export type { SketchToolParams } from "./sketchStore";
 const INACTIVE_SKETCH_SESSION: SketchSessionState = _INACTIVE;
 
 export type { MeshOverlayData } from "./meshIO";
-
 
 export class KernelStore {
   readonly kernel: Kernel;
@@ -255,7 +252,6 @@ export class KernelStore {
   ): void {
     this.core.commit(nextSelection, nextAnchor);
   }
-
 
   // ── worker orchestration — implementation in WorkerOrchestrator ───
 
@@ -1102,7 +1098,13 @@ export class KernelStore {
     partBId: string,
     connBFeatureId: number,
   ): void {
-    this.assembly.addMate(type, partAId, connAFeatureId, partBId, connBFeatureId);
+    this.assembly.addMate(
+      type,
+      partAId,
+      connAFeatureId,
+      partBId,
+      connBFeatureId,
+    );
   }
 
   removeMate(mateId: string): void {
@@ -1334,7 +1336,11 @@ export class KernelStore {
     this.sketch.setSketchFilletRadius(radius);
   }
 
-  filletSketchAt(firstIndex: number, secondIndex: number, radius: number): void {
+  filletSketchAt(
+    firstIndex: number,
+    secondIndex: number,
+    radius: number,
+  ): void {
     this.sketch.filletSketchAt(firstIndex, secondIndex, radius);
   }
 
@@ -1366,7 +1372,11 @@ export class KernelStore {
     this.sketch.setSketchOffsetDistance(dist);
   }
 
-  offsetSketchAt(targetIndex: number, clickPoint: Vec2, distance: number): void {
+  offsetSketchAt(
+    targetIndex: number,
+    clickPoint: Vec2,
+    distance: number,
+  ): void {
     this.sketch.offsetSketchAt(targetIndex, clickPoint, distance);
   }
 
@@ -2067,9 +2077,10 @@ export class KernelStore {
   exportMeshed(
     format: ExportFormat,
     cellSizeMm: number,
+    method: MeshMethod,
     onProgress?: (p: ExportProgress) => void,
   ): Promise<ExportOutcome> {
-    return this.workers.exportMeshed(format, cellSizeMm, onProgress);
+    return this.workers.exportMeshed(format, cellSizeMm, method, onProgress);
   }
 
   /** Download an already-built export (3MF re-wraps stashed slicer

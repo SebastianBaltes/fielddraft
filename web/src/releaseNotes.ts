@@ -24,11 +24,21 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.366",
+    entries: [
+      {
+        kind: "feat",
+        text: "Export-Dialog hat ein Dropdown für das Meshing-Verfahren. Neben dem bisherigen (Adaptive Dual Contouring) gibt es Surface Nets + Decimation: ein dichtes Gitter wertet jede Zelle aus (keine Lipschitz-Annahme) und findet so die Topologie nicht-1-Lipschitz-Geometrien (Gyroid, TPMS, dichte Helix-Windungen) zuverlässig; anschließend dezimiert QEM-Kantenkollaps das Mesh watertight-erhaltend. Zwei Umsetzungen wählbar: „library“ (fast-surface-nets + baby_shark) und „built-in“ (eigene, abhängigkeitsfreie Implementierung). Der Report zeigt die Dreiecks-Reduktion (dicht → dezimiert)",
+        scope: "export",
+      },
+    ],
+  },
+  {
     version: "0.6.365",
     entries: [
       {
         kind: "feat",
-        text: "Export-Dialog zeigt eine Solid-Vorschau des gemeshten Objekts: nach „Mesh\" wird im Viewport das exakte Export-Mesh (flat-shaded) statt des normalen Renderers angezeigt — solange der Dialog offen ist. Der Dialog ist jetzt non-modal und am Titelbalken verschiebbar, sodass man frei um das Mesh herum navigieren kann; beim Schließen übernimmt wieder der Original-Renderer",
+        text: 'Export-Dialog zeigt eine Solid-Vorschau des gemeshten Objekts: nach „Mesh" wird im Viewport das exakte Export-Mesh (flat-shaded) statt des normalen Renderers angezeigt — solange der Dialog offen ist. Der Dialog ist jetzt non-modal und am Titelbalken verschiebbar, sodass man frei um das Mesh herum navigieren kann; beim Schließen übernimmt wieder der Original-Renderer',
         scope: "export",
       },
     ],
@@ -38,7 +48,7 @@ export const RELEASE_NOTES: ReleaseNote[] = [
     entries: [
       {
         kind: "fix",
-        text: "Export-Dialog zweistufig: erst Zellgröße setzen und mit „Mesh\" bestätigen, dann meshen und Speichern — das (bei Gyroiden/Blends teure) Meshing startet nicht mehr automatisch beim Öffnen und nicht bei jedem Tastendruck; Zellgröße ändern verwirft das alte Mesh und verlangt erneutes Bestätigen",
+        text: 'Export-Dialog zweistufig: erst Zellgröße setzen und mit „Mesh" bestätigen, dann meshen und Speichern — das (bei Gyroiden/Blends teure) Meshing startet nicht mehr automatisch beim Öffnen und nicht bei jedem Tastendruck; Zellgröße ändern verwirft das alte Mesh und verlangt erneutes Bestätigen',
         scope: "export",
         tickets: ["0xir"],
       },

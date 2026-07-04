@@ -865,8 +865,10 @@ test.describe("Sketch editor smoke", () => {
     await page.getByTestId("menu-export").hover();
     await page.getByTestId("menu-export-stl").click();
     await expect(page.getByTestId("export-dialog")).toBeVisible();
-    // Step 1: no meshing yet — confirm the cell size with the Mesh button.
+    // Step 1: no meshing yet — the method dropdown + cell size are shown;
+    // confirm with the Mesh button.
     await expect(page.getByTestId("export-idle")).toBeVisible();
+    await expect(page.getByTestId("export-method")).toBeVisible();
     await page.getByTestId("export-mesh").click();
     // Step 2: the export pass meshes at export resolution — allow it time.
     const saveButton = page.getByTestId("export-save");
@@ -1334,8 +1336,7 @@ test.describe("Sketch dimensions (P0.2)", () => {
     const committed = await readCommittedSubCalls(page);
     expect(committed).not.toBeNull();
     const ang = committed!.find((c) => c.type === "sketch_constraint_angle") as
-      | { params: { value_deg: number } }
-      | undefined;
+      { params: { value_deg: number } } | undefined;
     expect(ang).toBeDefined();
     expect(ang!.params.value_deg).toBeCloseTo(90, 3);
 

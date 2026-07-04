@@ -8,6 +8,15 @@
 
 export type ExportFormat = "stl" | "3mf";
 
+/** Generic mesher selected in the export dialog.
+ *  - `adaptive` — parametric-first + adaptive Manifold-DC (default).
+ *  - `surface-nets` — dense Surface Nets + QEM decimation via libraries
+ *    (fast-surface-nets + baby_shark); robust for non-1-Lipschitz fields
+ *    like gyroid/TPMS/helix.
+ *  - `surface-nets-builtin` — the same pipeline with our own from-scratch
+ *    implementations (dependency-free alternative). */
+export type MeshMethod = "adaptive" | "surface-nets" | "surface-nets-builtin";
+
 /** Per-body slice of the export report (kernel: `BodyExportReport`,
  *  with the `MeshValidation` fields flattened in). */
 export interface ExportBodyReport {
@@ -36,6 +45,12 @@ export interface ExportBodyReport {
   /** Proper triangle-triangle self-intersections (measured, not gated). */
   self_intersections: number;
   self_intersections_complete: boolean;
+  /** True when this body shipped the dense Surface Nets + QEM
+   *  decimation route. */
+  surface_nets: boolean;
+  /** Triangle count of the dense Surface Nets mesh before decimation
+   *  (0 off that route) — the report shows the reduction. */
+  dense_triangles: number;
   vertices: number;
   triangles: number;
   degenerate_triangles: number;
@@ -86,6 +101,7 @@ export interface MesherExportRequest {
   requestId: number;
   documentJson: string;
   cellSizeMm: number;
+  method: MeshMethod;
   format: ExportFormat;
 }
 

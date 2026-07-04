@@ -19,10 +19,16 @@ import {
   type PointerEvent as ReactPointerEvent,
 } from "react";
 import type { KernelStore } from "./store";
-import type { ExportFormat, ExportProgress, ExportReport } from "./exportTypes";
+import type {
+  ExportFormat,
+  ExportProgress,
+  ExportReport,
+  MeshMethod,
+} from "./exportTypes";
 import { setExportPreview } from "./exportPreviewStore";
 
 const CELL_SIZE_STORAGE_KEY = "fielddraft.export.cellSizeMm";
+const METHOD_STORAGE_KEY = "fielddraft.export.method";
 const DEFAULT_CELL_MM = 0.4;
 
 function initialCellSize(): number {
@@ -35,6 +41,22 @@ function initialCellSize(): number {
     // no localStorage (tests) — use the default
   }
   return DEFAULT_CELL_MM;
+}
+
+function initialMethod(): MeshMethod {
+  try {
+    const stored = localStorage.getItem(METHOD_STORAGE_KEY);
+    if (
+      stored === "surface-nets" ||
+      stored === "surface-nets-builtin" ||
+      stored === "adaptive"
+    ) {
+      return stored;
+    }
+  } catch {
+    // no localStorage (tests) — use the default
+  }
+  return "adaptive";
 }
 
 interface ExportDialogProps {
@@ -51,6 +73,7 @@ type Phase =
 
 export function ExportDialog({ store, format, onClose }: ExportDialogProps) {
   const [cellInput, setCellInput] = useState(String(initialCellSize()));
+  const [method, setMethod] = useState<MeshMethod>(initialMethod);
   const [phase, setPhase] = useState<Phase>({ kind: "idle" });
   // Monotonic run id — a re-run must not let a stale response overwrite
   // the fresh one (or one from a cancelled run).
@@ -89,7 +112,7 @@ export function ExportDialog({ store, format, onClose }: ExportDialogProps) {
     const runId = ++runIdRef.current;
     setPhase({ kind: "running", progress: null });
     store
-      .exportMeshed(format, cellSize, (progress) => {
+      .exportMeshed(format, cellSize, method, (progress) => {
         if (runIdRef.current === runId) {
           setPhase({ kind: "running", progress });
         }
@@ -114,17 +137,37 @@ export function ExportDialog({ store, format, onClose }: ExportDialogProps) {
           });
         }
       });
-  }, [commitCellSize, store, format]);
+  }, [commitCellSize, store, format, method]);
 
-  // Editing the cell size after a run discards the stale mesh so the
-  // user must re-confirm (Prio: never save a mesh for a size the user
-  // no longer sees).
-  const onCellInputChange = useCallback((value: string) => {
-    setCellInput(value);
+  // Editing the cell size (or method) after a run discards the stale
+  // mesh so the user must re-confirm (Prio: never save/preview a mesh
+  // for settings the user no longer sees).
+  const resetToIdle = useCallback(() => {
     runIdRef.current++; // invalidate any in-flight run
     setPhase({ kind: "idle" });
     setExportPreview(null); // drop the stale solid from the viewport
   }, []);
+
+  const onCellInputChange = useCallback(
+    (value: string) => {
+      setCellInput(value);
+      resetToIdle();
+    },
+    [resetToIdle],
+  );
+
+  const onMethodChange = useCallback(
+    (value: MeshMethod) => {
+      setMethod(value);
+      try {
+        localStorage.setItem(METHOD_STORAGE_KEY, value);
+      } catch {
+        // ignore
+      }
+      resetToIdle();
+    },
+    [resetToIdle],
+  );
 
   // The preview lives only while the dialog is open — clear it on close
   // so the normal renderer takes over again.
@@ -200,6 +243,32 @@ export function ExportDialog({ store, format, onClose }: ExportDialogProps) {
         >
           ×
         </button>
+      </div>
+
+      <div className="settings-row">
+        <label htmlFor="export-method">Meshing method</label>
+        <select
+          id="export-method"
+          data-testid="export-method"
+          className="method-select"
+          value={method}
+          onChange={(e) => onMethodChange(e.target.value as MeshMethod)}
+        >
+          <option value="adaptive">Adaptive dual contouring</option>
+          <option value="surface-nets">
+            Surface Nets + decimation (library)
+          </option>
+          <option value="surface-nets-builtin">
+            Surface Nets + decimation (built-in)
+          </option>
+        </select>
+        <span className="hint">
+          {method === "surface-nets"
+            ? "Dense grid (every cell evaluated) then QEM decimation, via fast-surface-nets + baby_shark — robust for non-1-Lipschitz fields: gyroid, TPMS, dense helix windings."
+            : method === "surface-nets-builtin"
+              ? "Same dense-grid + QEM pipeline, but our own from-scratch implementations — dependency-free alternative to diff against the library path."
+              : "Parametric-first, then adaptive Manifold-DC — exact edges and the fewest triangles for regular CAD solids."}
+        </span>
       </div>
 
       <div className="settings-row">
@@ -359,10 +428,15 @@ function ReportView({
                     ? "source mesh"
                     : b.parametric
                       ? "parametric"
-                      : b.adaptive
-                        ? `adaptive ${formatMm(b.actual_cell_mm)} mm`
-                        : `grid ${formatMm(b.actual_cell_mm)} mm`}
+                      : b.surface_nets
+                        ? `surface nets ${formatMm(b.actual_cell_mm)} mm`
+                        : b.adaptive
+                          ? `adaptive ${formatMm(b.actual_cell_mm)} mm`
+                          : `grid ${formatMm(b.actual_cell_mm)} mm`}
                   {b.cell_limited ? " (limited)" : ""}
+                  {b.surface_nets && b.dense_triangles > 0
+                    ? ` (${b.dense_triangles.toLocaleString()} → ${b.triangles.toLocaleString()})`
+                    : ""}
                 </td>
                 <td>{b.triangles.toLocaleString()}</td>
                 <td>{b.watertight ? "✓" : defects(b)}</td>

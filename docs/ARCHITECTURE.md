@@ -691,6 +691,27 @@ graph LR
   inkonsistent, im DoubleSide-Viewport unsichtbar), planare/developable
   Simplifikation nur übernommen, wenn sie die Wasserdichtheit nicht
   bricht.
+* **Verfahren-Auswahl** (`exportMeshBegin(cellMm, method)`, Dropdown im
+  Dialog): Der generische Pfad ist umschaltbar. Default *Adaptive*
+  (parametrisch-first → Manifold-DC). Alternativ *Surface Nets +
+  Decimation* für **nicht-1-Lipschitz** Felder (Gyroid/TPMS, dichte
+  Helix): Das dichte Surface Nets wertet **jede** Zelle aus (keine
+  Lipschitz-Prunung wie der Narrow-Band-Octree → Topologie sicher
+  erfasst), Vertices per Newton auf die Iso-Fläche projiziert; danach
+  **QEM-Kantenkollaps** (Garland-Heckbert, fehlerbeschränkt auf ≈tol²,
+  Link-Condition + Normal-Flip- + Sliver-Guard → manifold/watertight-
+  erhaltend) auf handhabbare Dreieckszahl. Zwei Umsetzungen wählbar
+  (User-Direktive „eigene Implementierungen als Alternative behalten"):
+  *library* (`surface_nets.rs` = Crate `fast-surface-nets`, `decimate.rs`
+  = Crate `baby_shark`) und *built-in* (`surface_nets_builtin.rs` +
+  `decimate_builtin.rs`, abhängigkeitsfrei, deterministisch via
+  BTreeSet-Ring). Report zeigt `surface_nets` + `dense_triangles`
+  (dicht → dezimiert). Dieser Modus überspringt den parametrischen Pfad.
+* **Export-Vorschau** (`exportPreviewStore.ts`, `exportPreviewMesh.tsx`):
+  Nach „Mesh" publiziert der Dialog die zusammengeführten Export-Dreiecke
+  (`exportMeshPreviewPositions/Indices`); der Viewport unterdrückt den
+  SDF-Body-Pass (`renderOverlayLayer`, `skipSdf`) und zeigt stattdessen das
+  exakte Solid (flat-shaded). Der Dialog ist dafür non-modal + verschiebbar.
 * **Validator** (`mesh_validate.rs`): watertight/manifold/Orientierung/
   Komponenten strukturell (positions-geweldete Kanten-Inzidenz) plus
   gemessene Abweichung gegen die exakte SDF (Zentroid + Kantenmitten,

@@ -351,7 +351,7 @@ async function handleExport(msg: MesherExportRequest): Promise<void> {
   // the kernel's per-body payload hashes skip unchanged meshes).
   kernel.loadJson(msg.documentJson);
 
-  const total = kernel.exportMeshBegin(msg.cellSizeMm);
+  const total = kernel.exportMeshBegin(msg.cellSizeMm, msg.method);
   const progress = (done: number): void => {
     const p: MesherExportProgressMsg = {
       type: "export_progress",

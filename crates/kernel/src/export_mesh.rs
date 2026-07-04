@@ -35,6 +35,39 @@ pub const DEVIATION_SAMPLE_BUDGET: usize = 120_000;
 /// Pair budget for the self-intersection scan per body.
 pub const SELF_INTERSECT_PAIR_BUDGET: usize = 2_000_000;
 
+/// Which generic mesher the export pass uses when the parametric route
+/// doesn't apply. Selected in the export dialog.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MeshMethod {
+    /// Parametric-first, then adaptive Manifold-DC on a narrow-band
+    /// octree (default). Optimal triangle counts; the octree's Lipschitz
+    /// distance bound assumes a roughly 1-Lipschitz field.
+    Adaptive,
+    /// Dense Surface Nets + QEM decimation via battle-tested libraries
+    /// (`fast-surface-nets` mesher + `baby_shark` decimator). Every cell
+    /// is evaluated (no Lipschitz pruning), so the topology of
+    /// non-1-Lipschitz fields — gyroid / TPMS shells, dense helix
+    /// windings — is captured reliably; decimation then brings the
+    /// triangle count back down. Skips the parametric route.
+    SurfaceNets,
+    /// Same pipeline as [`MeshMethod::SurfaceNets`] but our own
+    /// from-scratch implementations (`surface_nets_builtin` +
+    /// `decimate_builtin`) — dependency-free alternative, selectable to
+    /// diff against the library path.
+    SurfaceNetsBuiltin,
+}
+
+impl MeshMethod {
+    /// Parse the wire string from the export dialog.
+    pub fn from_wire(s: &str) -> Self {
+        match s {
+            "surface-nets" => MeshMethod::SurfaceNets,
+            "surface-nets-builtin" => MeshMethod::SurfaceNetsBuiltin,
+            _ => MeshMethod::Adaptive,
+        }
+    }
+}
+
 /// Per-body slice of the export report.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct BodyExportReport {
@@ -89,6 +122,12 @@ pub struct BodyExportReport {
     pub self_intersections: usize,
     /// False when the pair budget truncated the self-intersection scan.
     pub self_intersections_complete: bool,
+    /// True when this body shipped the dense Surface Nets + QEM
+    /// decimation route (robust for non-1-Lipschitz fields).
+    pub surface_nets: bool,
+    /// Triangle count of the dense Surface Nets mesh BEFORE decimation
+    /// (0 off the Surface Nets route) — the report shows the reduction.
+    pub dense_triangles: usize,
     #[serde(flatten)]
     pub validation: MeshValidation,
 }
@@ -109,6 +148,7 @@ pub struct ExportReport {
 /// every rebuild).
 pub struct ExportSession {
     pub cell_size_mm: f32,
+    pub method: MeshMethod,
     pub meshes: Vec<Mesh>,
     pub reports: Vec<BodyExportReport>,
 }
@@ -170,10 +210,15 @@ impl crate::Kernel {
     /// Start an export pass at the given cell size. Clears any previous
     /// session and returns the number of bodies to mesh (the caller
     /// loops `export_mesh_body_internal(0..n)` and reports progress).
-    pub(crate) fn export_mesh_begin_internal(&mut self, cell_size_mm: f32) -> usize {
+    pub(crate) fn export_mesh_begin_internal(
+        &mut self,
+        cell_size_mm: f32,
+        method: MeshMethod,
+    ) -> usize {
         let n = self.bodies.len();
         self.export_session = Some(ExportSession {
             cell_size_mm,
+            method,
             meshes: Vec::with_capacity(n),
             reports: Vec::with_capacity(n),
         });
@@ -184,7 +229,9 @@ impl crate::Kernel {
     /// be processed in order (0..n); each call appends to the session.
     /// Returns the per-body report, or `None` without a session.
     pub(crate) fn export_mesh_body_internal(&mut self, i: usize) -> Option<BodyExportReport> {
-        let cell_mm = self.export_session.as_ref()?.cell_size_mm;
+        let session = self.export_session.as_ref()?;
+        let cell_mm = session.cell_size_mm;
+        let method = session.method;
         let body = self.bodies.get(i)?;
         let body_id = body.id.as_u32_or_root().unwrap_or(0);
         let feature_indices = body.feature_indices.clone();
@@ -226,9 +273,22 @@ impl crate::Kernel {
                 thin_cells: 0,
                 self_intersections: 0,
                 self_intersections_complete: true,
+                surface_nets: false,
+                dense_triangles: 0,
                 validation,
             };
             (mesh, report)
+        } else if matches!(
+            method,
+            MeshMethod::SurfaceNets | MeshMethod::SurfaceNetsBuiltin
+        ) {
+            // ── Surface Nets + decimation (robust generic route) ──
+            // The user picked the dense mesher for non-1-Lipschitz
+            // geometry; skip the parametric/adaptive routes entirely.
+            // `builtin` selects our own implementations over the library
+            // ones (fast-surface-nets / baby_shark).
+            let builtin = method == MeshMethod::SurfaceNetsBuiltin;
+            self.surface_nets_export_body(i, body_id, &feature_indices, size, cell_mm, builtin)
         } else {
             // ── Parametric route first (Meshing Phase 2, Option B) ──
             // Per-face B-Rep tessellation: watertight by construction,
@@ -257,6 +317,8 @@ impl crate::Kernel {
                         thin_cells: 0,
                         self_intersections: si,
                         self_intersections_complete: si_complete,
+                        surface_nets: false,
+                        dense_triangles: 0,
                         validation,
                     };
                     (mesh, report)
@@ -368,6 +430,8 @@ impl crate::Kernel {
                     thin_cells: result.thin_cells,
                     self_intersections: si,
                     self_intersections_complete: si_complete,
+                    surface_nets: false,
+                    dense_triangles: 0,
                     validation,
                 };
                 return (result.mesh, report);
@@ -475,6 +539,87 @@ impl crate::Kernel {
             thin_cells: 0,
             self_intersections: si,
             self_intersections_complete: si_complete,
+            surface_nets: false,
+            dense_triangles: 0,
+            validation,
+        };
+        (mesh, report)
+    }
+
+    /// The Surface Nets + QEM decimation route (user-selected). A dense
+    /// uniform Surface Nets pass captures the topology of a
+    /// non-1-Lipschitz field reliably (every cell evaluated, no octree
+    /// pruning); QEM edge collapse then decimates it back down under a
+    /// deviation-derived error budget while staying watertight.
+    #[allow(clippy::too_many_arguments)]
+    fn surface_nets_export_body(
+        &mut self,
+        body_index: usize,
+        body_id: u32,
+        feature_indices: &[usize],
+        size: [f32; 3],
+        cell_mm: f32,
+        builtin: bool,
+    ) -> (Mesh, BodyExportReport) {
+        let (resolution, actual_cell, cell_limited) = derive_export_resolution(size, cell_mm);
+        let (bounded, _prims) =
+            crate::body::build_bounded_with_primitives(&self.decoded, feature_indices);
+        let sdf = |p: [f32; 3]| bounded.sdf(p, crate::csg::EvalMode::Visual);
+        let _ = body_index;
+
+        // Library path (fast-surface-nets + baby_shark) vs our own
+        // from-scratch implementations, per the dropdown selection.
+        let mut mesh = if builtin {
+            crate::surface_nets_builtin::surface_nets_builtin(&bounded, resolution)
+        } else {
+            crate::surface_nets::surface_nets(&bounded, resolution)
+        };
+        let dense_triangles = mesh.triangle_count();
+
+        // Error budget: the QEM cost is the summed squared distance to
+        // the incident planes ≈ (chordal deviation)². Bound it by the
+        // same tol the adaptive path targets.
+        let tol = (cell_mm / 4.0).clamp(0.01, 0.1);
+        let stats = if builtin {
+            crate::decimate_builtin::simplify_qem_builtin(&mut mesh, tol * tol)
+        } else {
+            crate::decimate::simplify_qem(&mut mesh, tol * tol)
+        };
+
+        let flips = mesh_validate::fix_orientation(&mut mesh, &sdf);
+        let mut validation = mesh_validate::validate_topology(&mesh);
+        let (max_dev, p95_dev, samples) =
+            mesh_validate::measure_deviation(&mesh, DEVIATION_SAMPLE_BUDGET, &sdf);
+        validation.max_deviation_mm = max_dev;
+        validation.p95_deviation_mm = p95_dev;
+        validation.deviation_samples = samples;
+        let (si, si_complete) =
+            mesh_validate::count_self_intersections(&mesh, SELF_INTERSECT_PAIR_BUDGET);
+
+        let report = BodyExportReport {
+            body_id,
+            requested_cell_mm: cell_mm,
+            actual_cell_mm: actual_cell,
+            resolution,
+            cell_limited,
+            passthrough: false,
+            parametric: false,
+            parametric_skip_reason: if builtin {
+                "surface nets (built-in) selected".into()
+            } else {
+                "surface nets (library) selected".into()
+            },
+            adaptive: false,
+            adaptive_skip_reason: "surface nets selected".into(),
+            orientation_repaired: flips,
+            edges_pinned: 0,
+            simplified: stats.collapses > 0,
+            simplification_rejected: false,
+            thin_cells: 0,
+            self_intersections: si,
+            self_intersections_complete: si_complete,
+            surface_nets: true,
+            dense_triangles,
             validation,
         };
         (mesh, report)
@@ -897,7 +1042,7 @@ mod tests {
         )
         .unwrap();
 
-        let n = k.export_mesh_begin(0.5);
+        let n = k.export_mesh_begin(0.5, "adaptive".into());
         assert_eq!(n, 1);
         let body_json = k.export_mesh_body(0);
         assert!(body_json.contains("\"watertight\":true"), "{body_json}");
@@ -936,7 +1081,15 @@ mod tests {
 
     /// Run one body through the session and return its report JSON.
     fn export_single(k: &mut crate::Kernel, cell: f32) -> serde_json::Value {
-        let n = k.export_mesh_begin(cell);
+        export_single_method(k, cell, "adaptive")
+    }
+
+    fn export_single_method(
+        k: &mut crate::Kernel,
+        cell: f32,
+        method: &str,
+    ) -> serde_json::Value {
+        let n = k.export_mesh_begin(cell, method.into());
         assert!(n >= 1, "expected at least one body");
         for i in 0..n {
             k.export_mesh_body(i);
@@ -944,6 +1097,142 @@ mod tests {
         let report: serde_json::Value =
             serde_json::from_str(&k.export_mesh_report()).unwrap();
         report
+    }
+
+    #[test]
+    fn surface_nets_meshes_a_gyroid_watertight() {
+        // The motivating case: a TPMS gyroid is a strongly non-1-Lipschitz
+        // field the adaptive octree's distance bound can misjudge. Dense
+        // Surface Nets evaluates every cell, so a gyroid lattice clipped to
+        // a box must mesh watertight. (Intersecting with the box makes the
+        // otherwise-infinite lattice a finite solid.)
+        let mut k = crate::Kernel::new();
+        let box_id = k
+            .add_primitive(
+                Primitive::KIND_BOX,
+                BoolOp::TAG_NEW,
+                0.0,
+                0.0,
+                0.0,
+                12.0,
+                12.0,
+                12.0,
+            )
+            .unwrap();
+        k.add_feature_call(
+            "gyroid",
+            &format!(
+                r#"{{
+                    "cell_size": {{ "value": 6.0, "unit": "mm" }},
+                    "thickness": {{ "value": 1.5, "unit": "mm" }},
+                    "op": "intersect",
+                    "targets": "qCreatedBy({box_id})"
+                }}"#
+            ),
+        )
+        .unwrap();
+        assert!(
+            k.feature_errors.is_empty(),
+            "feature errors {:?}",
+            k.feature_errors
+        );
+        let report = export_single_method(&mut k, 0.5, "surface-nets");
+        let body = &report["bodies"][0];
+        assert_eq!(body["surface_nets"], true, "{report}");
+        assert_eq!(report["all_watertight"], true, "{report}");
+        // A gyroid lattice has lots of surface — many triangles even after
+        // decimation, and the dense mesh was much larger still.
+        let dense = body["dense_triangles"].as_u64().unwrap();
+        let tris = report["total_triangles"].as_u64().unwrap();
+        assert!(tris > 500, "gyroid too sparse: {tris}");
+        assert!(dense >= tris, "dense {dense} < decimated {tris}");
+    }
+
+    #[test]
+    fn surface_nets_builtin_route_is_watertight_and_deterministic() {
+        // The from-scratch alternative (own Surface Nets + own QEM) must
+        // also produce a watertight, decimated solid — and be
+        // deterministic (identical triangle count on a re-run), which the
+        // export requires.
+        let mut k = crate::Kernel::new();
+        k.add_primitive(
+            Primitive::KIND_SPHERE,
+            BoolOp::TAG_NEW,
+            0.0,
+            0.0,
+            0.0,
+            10.0,
+            0.0,
+            0.0,
+        )
+        .unwrap();
+        let report = export_single_method(&mut k, 0.5, "surface-nets-builtin");
+        let body = &report["bodies"][0];
+        assert_eq!(body["surface_nets"], true, "{report}");
+        assert_eq!(report["all_watertight"], true, "{report}");
+        let dense = body["dense_triangles"].as_u64().unwrap();
+        let tris = report["total_triangles"].as_u64().unwrap();
+        assert!(dense > 0 && tris < dense, "decimation reduced: {report}");
+        assert!(tris > 100, "too few triangles: {tris}");
+
+        // Re-run: identical triangle count ⇒ deterministic pipeline.
+        let mut k2 = crate::Kernel::new();
+        k2.add_primitive(
+            Primitive::KIND_SPHERE,
+            BoolOp::TAG_NEW,
+            0.0,
+            0.0,
+            0.0,
+            10.0,
+            0.0,
+            0.0,
+        )
+        .unwrap();
+        let report2 = export_single_method(&mut k2, 0.5, "surface-nets-builtin");
+        assert_eq!(
+            report2["total_triangles"], report["total_triangles"],
+            "built-in pipeline must be deterministic"
+        );
+    }
+
+    #[test]
+    fn surface_nets_route_is_watertight_and_decimates() {
+        // A sphere would normally take the exact parametric route; forcing
+        // the Surface Nets method exercises the dense-mesh + QEM path and
+        // must still produce a watertight solid under the deviation bound,
+        // with decimation cutting the dense triangle count substantially.
+        let mut k = crate::Kernel::new();
+        k.add_primitive(
+            Primitive::KIND_SPHERE,
+            BoolOp::TAG_NEW,
+            0.0,
+            0.0,
+            0.0,
+            10.0,
+            0.0,
+            0.0,
+        )
+        .unwrap();
+        let report = export_single_method(&mut k, 0.5, "surface-nets");
+        let body = &report["bodies"][0];
+        assert_eq!(body["surface_nets"], true, "{report}");
+        assert_eq!(report["all_watertight"], true, "{report}");
+        // Dense Surface Nets + decimation is looser than the parametric
+        // route but must still respect the export tolerance envelope.
+        assert!(
+            report["max_deviation_mm"].as_f64().unwrap() < 0.4,
+            "max deviation {}",
+            report["max_deviation_mm"]
+        );
+        let dense = body["dense_triangles"].as_u64().unwrap();
+        let tris = report["total_triangles"].as_u64().unwrap();
+        assert!(dense > 0, "dense triangle count reported: {report}");
+        assert!(
+            tris < dense,
+            "decimation should reduce triangles: {tris} vs dense {dense}"
+        );
+        // Watertight ⇒ a genuinely closed solid, not a fragment.
+        assert!(tris > 100, "too few triangles for a sphere: {tris}");
     }
 
     #[test]
@@ -1502,7 +1791,7 @@ mod tests {
             5.0,
         )
         .unwrap();
-        k.export_mesh_begin(0.5);
+        k.export_mesh_begin(0.5, "adaptive".into());
         k.export_mesh_body(0);
         // Any document mutation re-meshes and must drop the session.
         k.add_primitive(

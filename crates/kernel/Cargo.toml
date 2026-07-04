@@ -20,6 +20,15 @@ serde-wasm-bindgen = "0.6"
 poisson_reconstruction = "0.4"
 nalgebra = "0.33"
 num-dual = "0.11"
+# Dense Surface Nets meshing for the export path (robust generic mesher
+# for non-1-Lipschitz fields: gyroid/TPMS/helix). Battle-tested
+# reference implementation; we own only the QEM decimation that follows
+# it (see decimate.rs). Pure Rust, wasm-safe.
+fast-surface-nets = "0.2"
+ndshape = "0.3"
+# Deterministic QEM edge-collapse decimation for the export path (see
+# decimate.rs). Replaces our hand-written QEM. Pure Rust, wasm-safe.
+baby_shark = "0.3"
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 console_error_panic_hook = "0.1"

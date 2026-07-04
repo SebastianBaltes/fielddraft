@@ -34,6 +34,7 @@ import type {
   ExportOutcome,
   ExportProgress,
   ExportReport,
+  MeshMethod,
   MesherExportRequest,
   MesherExportResponse,
   MesherExportProgressMsg,
@@ -358,6 +359,7 @@ export class WorkerOrchestrator {
   async exportMeshed(
     format: ExportFormat,
     cellSizeMm: number,
+    method: MeshMethod,
     onProgress?: (p: ExportProgress) => void,
   ): Promise<ExportOutcome> {
     if (this.exportChannel) {
@@ -368,6 +370,7 @@ export class WorkerOrchestrator {
           requestId,
           documentJson,
           cellSizeMm,
+          method,
           format,
         };
         return { message };
@@ -377,7 +380,7 @@ export class WorkerOrchestrator {
     // Synchronous fallback on the main-thread kernel. The session API
     // builds its own meshes, so this works even with sync meshing off.
     const kernel = this.kernel;
-    const total = kernel.exportMeshBegin(cellSizeMm);
+    const total = kernel.exportMeshBegin(cellSizeMm, method);
     onProgress?.({ done: 0, total });
     for (let i = 0; i < total; i++) {
       kernel.exportMeshBody(i);

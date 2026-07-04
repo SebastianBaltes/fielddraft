@@ -24,8 +24,9 @@ impl Kernel {
     /// number of bodies the caller must feed through
     /// [`Kernel::export_mesh_body`].
     #[wasm_bindgen(js_name = exportMeshBegin)]
-    pub fn export_mesh_begin(&mut self, cell_size_mm: f32) -> usize {
-        self.export_mesh_begin_internal(cell_size_mm)
+    pub fn export_mesh_begin(&mut self, cell_size_mm: f32, method: String) -> usize {
+        let method = crate::export_mesh::MeshMethod::from_wire(&method);
+        self.export_mesh_begin_internal(cell_size_mm, method)
     }
 
     /// Mesh + validate body `i` for the running session. Returns the

@@ -1071,9 +1071,11 @@ export class Kernel {
   // progress) → exportMeshStl()/exportMesh3mf() + exportMeshReport()
   // → exportMeshEnd(). Any document mutation drops the session.
 
-  /** Start an export meshing pass; returns the body count to loop. */
-  exportMeshBegin(cellSizeMm: number): number {
-    return this.inner.exportMeshBegin(cellSizeMm);
+  /** Start an export meshing pass; returns the body count to loop.
+   *  `method` selects the generic mesher (`"adaptive"` or
+   *  `"surface-nets"`). */
+  exportMeshBegin(cellSizeMm: number, method: string): number {
+    return this.inner.exportMeshBegin(cellSizeMm, method);
   }
 
   /** Mesh + validate body `i`; returns its report JSON ("" without a
