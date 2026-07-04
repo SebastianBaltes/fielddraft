@@ -133,6 +133,14 @@ function ticketWriter(): Plugin {
     name: "ticket-writer",
     configureServer(server) {
       server.middlewares.use("/api/tickets", (req, res, next) => {
+        // When a real backend is present (`just dev-full` sets FIELDDRAFT_DEV_BACKEND=1),
+        // route ticket creation to it (→ the server's ticket store: db / issuevault),
+        // exactly like production. The FS sink below is only for pure `just dev`,
+        // where there is no backend to reach and the agent harvests tickets/open/.
+        if (process.env.FIELDDRAFT_DEV_BACKEND === "1") {
+          next();
+          return;
+        }
         // Only capture the EXACT create endpoint (POST /api/tickets) to the file
         // sink. Everything else — GET /api/tickets (the Issues list), a ticket
         // detail, and every sub-path (POST /{id}/comments, verdicts, …) — falls

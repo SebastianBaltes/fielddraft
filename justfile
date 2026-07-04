@@ -70,7 +70,11 @@ dev-full: build-wasm
         sleep 1
     done
     echo "▶ login: admin@local / admin — vite on port ${FIELDDRAFT_WEB_PORT:-5173}"
-    cd web && {{nvm_use}} && npm run dev
+    # FIELDDRAFT_DEV_BACKEND=1 tells the vite ticketWriter plugin to STOP shadowing
+    # POST /api/tickets to the FS sink and let creates proxy to the Go server (→ its
+    # ticket store: db / issuevault), like prod. Pure `just dev` (no backend) keeps
+    # the FS sink.
+    cd web && {{nvm_use}} && FIELDDRAFT_DEV_BACKEND=1 npm run dev
 
 # Build the full web bundle (WASM + Vite).
 build: build-wasm
