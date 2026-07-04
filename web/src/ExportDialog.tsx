@@ -25,7 +25,11 @@ import type {
   ExportReport,
   MeshMethod,
 } from "./exportTypes";
-import { setExportPreview } from "./exportPreviewStore";
+import {
+  setExportPreview,
+  setExportPreviewOpacity,
+  setExportPreviewWireframe,
+} from "./exportPreviewStore";
 
 const CELL_SIZE_STORAGE_KEY = "fielddraft.export.cellSizeMm";
 const METHOD_STORAGE_KEY = "fielddraft.export.method";
@@ -76,6 +80,9 @@ export function ExportDialog({ store, format, onClose }: ExportDialogProps) {
   const [cellInput, setCellInput] = useState(String(initialCellSize()));
   const [method, setMethod] = useState<MeshMethod>(initialMethod);
   const [phase, setPhase] = useState<Phase>({ kind: "idle" });
+  // Preview display controls (crossfade mesh↔SDF solid, wireframe overlay).
+  const [meshOpacity, setMeshOpacity] = useState(1);
+  const [wireframe, setWireframe] = useState(false);
   // Monotonic run id — a re-run must not let a stale response overwrite
   // the fresh one (or one from a cancelled run).
   const runIdRef = useRef(0);
@@ -147,6 +154,20 @@ export function ExportDialog({ store, format, onClose }: ExportDialogProps) {
     runIdRef.current++; // invalidate any in-flight run
     setPhase({ kind: "idle" });
     setExportPreview(null); // drop the stale solid from the viewport
+    // setExportPreview(null) resets the store's display controls; mirror
+    // that in the local UI so the slider/checkbox match on the next mesh.
+    setMeshOpacity(1);
+    setWireframe(false);
+  }, []);
+
+  const onMeshOpacityChange = useCallback((value: number) => {
+    setMeshOpacity(value);
+    setExportPreviewOpacity(value);
+  }, []);
+
+  const onWireframeChange = useCallback((value: boolean) => {
+    setWireframe(value);
+    setExportPreviewWireframe(value);
   }, []);
 
   const onCellInputChange = useCallback(
@@ -323,7 +344,34 @@ export function ExportDialog({ store, format, onClose }: ExportDialogProps) {
       )}
 
       {phase.kind === "done" && (
-        <ReportView report={phase.report} featureName={featureName} />
+        <>
+          <ReportView report={phase.report} featureName={featureName} />
+          <div
+            className="preview-controls"
+            data-testid="export-preview-controls"
+          >
+            <label htmlFor="export-preview-opacity">SDF ↔ mesh</label>
+            <input
+              id="export-preview-opacity"
+              data-testid="export-preview-opacity"
+              type="range"
+              min={0}
+              max={1}
+              step={0.01}
+              value={meshOpacity}
+              onChange={(e) => onMeshOpacityChange(Number(e.target.value))}
+            />
+            <label className="checkbox">
+              <input
+                type="checkbox"
+                data-testid="export-preview-wireframe"
+                checked={wireframe}
+                onChange={(e) => onWireframeChange(e.target.checked)}
+              />
+              Wireframe
+            </label>
+          </div>
+        </>
       )}
 
       <div className="dialog-footer">

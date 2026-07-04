@@ -27,13 +27,17 @@ import {
 } from "./sdfDeferredRenderer";
 import { resolveMaterials, applyMaterials } from "./materialBridge";
 import { disposeAfterGpuIdle } from "./sdfPipelineCommon";
-import { OVERLAY_LAYER, DATUM_LAYER } from "./viewportLayers";
+import { OVERLAY_LAYER, DATUM_LAYER, PREVIEW_LAYER } from "./viewportLayers";
 import {
   computeSdfFingerprints,
   type SdfFingerprintKernel,
 } from "./bodyFingerprint";
 import type { BRepEdgeMode } from "./settings";
-import { getExportPreview, subscribeExportPreview } from "./exportPreviewStore";
+import {
+  getExportPreview,
+  getExportPreviewOpacity,
+  subscribeExportPreview,
+} from "./exportPreviewStore";
 import type { HybridInfo } from "./kernel";
 import type { MaterialBufferTarget } from "./materialBridge";
 
@@ -96,19 +100,31 @@ function renderOverlayLayer(
   camera: THREE.Camera,
   renderSdf: () => void,
   occlude: boolean,
-  skipSdf: boolean,
 ): void {
   wgpuRenderer.render(scene, camera);
   const prevAutoClear = (wgpuRenderer as any).autoClear;
   (wgpuRenderer as any).autoClear = false;
-  // Export preview: the base-scene pass already drew the solid export
-  // mesh (layer 0) in the body's place — skip the SDF body pass so the
-  // two don't fight over the z-buffer. Datum + overlays still draw.
-  if (!skipSdf) renderSdf();
+
+  // Export preview crossfade: when a preview mesh is published, render it
+  // on top of (or instead of) the SDF body. The mesh lives on
+  // PREVIEW_LAYER so it draws AFTER the shade pass and blends over the
+  // body by its opacity. Skip the SDF pass only when the mesh is fully
+  // opaque (nothing would show through anyway).
+  const previewActive = getExportPreview() !== null;
+  const previewOpacity = getExportPreviewOpacity();
+  if (!(previewActive && previewOpacity >= 0.99)) {
+    renderSdf();
+  }
 
   const savedBg = scene.background;
   scene.background = null;
   const savedMask = camera.layers.mask;
+
+  if (previewActive) {
+    // The mesh solid, blended over the body just shaded.
+    camera.layers.set(PREVIEW_LAYER);
+    wgpuRenderer.render(scene, camera);
+  }
 
   // Datum planes/origin first, with the body depth the shade pass just wrote
   // STILL INTACT — so a solid in front occludes the datum behind it and both
@@ -351,7 +367,6 @@ function useSdfPipelineOverlay<P extends MaterialBufferTarget, B>(
         camera,
         () => adapter.renderFrame(pipeline, wgpu, camera),
         brepEdgeMode === "visible",
-        getExportPreview() !== null,
       );
     } catch (err) {
       console.error("SDF render error:", err);

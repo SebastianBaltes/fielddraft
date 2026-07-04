@@ -19,3 +19,10 @@ export const OVERLAY_LAYER = 1;
 // edges keep their see-through x-ray behaviour. Datums also stay on layer 0 so
 // the plain WebGL path keeps drawing them with no extra orchestration.
 export const DATUM_LAYER = 2;
+
+// The export-preview solid lives on its own layer so the SDF path can draw it
+// AFTER the body shade pass — that lets the mesh blend transparently OVER the
+// SDF-rendered solid (the crossfade slider), instead of the base pass drawing
+// it before the body paints over it. The WebGL root enables this layer on its
+// camera so the same mesh renders there too.
+export const PREVIEW_LAYER = 3;

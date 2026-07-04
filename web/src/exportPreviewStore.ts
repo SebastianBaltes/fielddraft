@@ -25,6 +25,10 @@ export interface ExportPreview {
 }
 
 let preview: ExportPreview | null = null;
+/** Crossfade: mesh-solid opacity (1 = mesh only, 0 = SDF body only). */
+let opacity = 1;
+/** Overlay the mesh triangle wireframe. */
+let wireframe = false;
 const listeners = new Set<() => void>();
 
 function notify(): void {
@@ -32,9 +36,26 @@ function notify(): void {
 }
 
 /** Publish the export preview (dialog meshed a body). Replaces any
- *  previous preview. */
+ *  previous preview; passing `null` clears it and resets the display
+ *  controls to their defaults. */
 export function setExportPreview(next: ExportPreview | null): void {
   preview = next;
+  if (next === null) {
+    opacity = 1;
+    wireframe = false;
+  }
+  notify();
+}
+
+/** Set the crossfade opacity of the mesh solid over the SDF body. */
+export function setExportPreviewOpacity(value: number): void {
+  opacity = Math.min(1, Math.max(0, value));
+  notify();
+}
+
+/** Toggle the mesh wireframe overlay. */
+export function setExportPreviewWireframe(value: boolean): void {
+  wireframe = value;
   notify();
 }
 
@@ -44,7 +65,15 @@ export function getExportPreview(): ExportPreview | null {
   return preview;
 }
 
-/** Subscribe to preview changes. Returns unsubscribe. */
+export function getExportPreviewOpacity(): number {
+  return opacity;
+}
+
+export function getExportPreviewWireframe(): boolean {
+  return wireframe;
+}
+
+/** Subscribe to any preview change (mesh, opacity or wireframe). */
 export function subscribeExportPreview(listener: () => void): () => void {
   listeners.add(listener);
   return () => {

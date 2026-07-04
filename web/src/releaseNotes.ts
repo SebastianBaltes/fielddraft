@@ -24,6 +24,16 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.369",
+    entries: [
+      {
+        kind: "feat",
+        text: "Export-Vorschau: ein Schieberegler blendet das Mesh-Solid transparent über den SDF-gerenderten Körper (Crossfade von SDF ↔ Mesh), und eine Checkbox zeigt das Mesh-Wireframe. So lassen sich Mesh und Original direkt überlagern und die Tessellierung inspizieren, solange der Export-Dialog offen ist",
+        scope: "export",
+      },
+    ],
+  },
+  {
     version: "0.6.368",
     entries: [
       {

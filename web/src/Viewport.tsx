@@ -75,7 +75,7 @@ import {
 import { DatumOverlay, pickDatumAtRay } from "./datumOverlay";
 import { ReferenceMesh, PickHud } from "./viewportHud";
 import { ExportPreviewMesh } from "./exportPreviewMesh";
-import { getExportPreview, subscribeExportPreview } from "./exportPreviewStore";
+import { PREVIEW_LAYER } from "./viewportLayers";
 import { PerfHud, PerfProbe } from "./perfMonitor";
 import { ScreenSpaceCsgPass } from "./screenSpaceCsgPass";
 import { SketchCanvas2d } from "./SketchCanvas2d";
@@ -157,15 +157,6 @@ function useQueryPickerActive(): boolean {
   return useSyncExternalStore(
     subscribeQueryPicker,
     () => getActiveQueryPicker() !== null,
-  );
-}
-
-/** Reactively tracks whether the export dialog is showing a solid preview.
- *  While it is, the WebGL body meshes are swapped for the export solid. */
-function useExportPreviewActive(): boolean {
-  return useSyncExternalStore(
-    subscribeExportPreview,
-    () => getExportPreview() !== null,
   );
 }
 
@@ -603,8 +594,6 @@ function WebGLViewport({
   // async mesh arrives we fall back to the per-leaf parametric hulls so the view
   // isn't blank (ticket gcvz). Never both at once — no double-draw.
   const hasMeshes = (state?.meshedBodies?.length ?? 0) > 0;
-  // Export preview swaps the body meshes for the exact export solid.
-  const exportPreviewActive = useExportPreviewActive();
   const stateRef = useRef<{
     gl: THREE.WebGLRenderer;
     scene: THREE.Scene;
@@ -636,6 +625,10 @@ function WebGLViewport({
         // The active camera (ViewportCamera may have swapped ortho⇄persp since
         // mount) — read it live each frame, never the cached one.
         const camera = st.get().camera;
+        // The export-preview solid lives on PREVIEW_LAYER; enable it on the
+        // WebGL camera so it renders in this root's single scene pass
+        // (transparent → crossfades over the body meshes).
+        camera.layers.enable(PREVIEW_LAYER);
         // Adapt the clip planes to the scene each frame (ticket lbzq) — the
         // WebGL root bypasses <CameraBridgePublisher>'s useFrame.
         adaptClipPlanes(camera);
@@ -715,11 +708,7 @@ function WebGLViewport({
             bodies — a helix DC-meshes far too coarsely. Shared lights so the
             two paths don't double the scene lighting. Before meshing finishes,
             the hull fallback still draws every body. */}
-        {exportPreviewActive ? (
-          // Export dialog open + meshed: show the exact export solid
-          // instead of the normal body meshes (its own lights included).
-          <ExportPreviewMesh />
-        ) : hasMeshes ? (
+        {hasMeshes ? (
           <>
             <WebGLSceneLights />
             {/* SS-CSG an: Difference-Bodys NICHT als DC-Mesh zeichnen — die kommen
@@ -734,6 +723,10 @@ function WebGLViewport({
         ) : (
           <WebGLBodies skipSubtractionBodies={screenSpaceCsg} />
         )}
+        {/* Export preview solid — on PREVIEW_LAYER (which the WebGL camera
+            enables), transparent so the crossfade slider blends it over the
+            body meshes; returns null when no export preview is published. */}
+        <ExportPreviewMesh />
         {/* Opt-in experiment (default off): Screen-Space-CSG Stage 1
             (docs/ADAPTIVE-RENDERING-PLAN.md, Achse 3, Phase 3). Mounts an
             extra A−B composite pass over the parametric hulls. When the flag is

@@ -115,6 +115,34 @@
     }
   }
 
+  & .preview-controls {
+    display: flex;
+    align-items: center;
+    gap: var(--space-3);
+    padding: var(--space-2) var(--space-4) var(--space-3);
+    font-size: var(--fs-base);
+    color: var(--color-text);
+    border-top: 1px solid var(--color-divider);
+
+    & > label {
+      white-space: nowrap;
+      color: var(--color-text-muted);
+    }
+
+    & input[type="range"] {
+      flex: 1;
+      accent-color: var(--color-accent);
+    }
+
+    & .checkbox {
+      display: flex;
+      align-items: center;
+      gap: var(--space-1);
+      white-space: nowrap;
+      cursor: pointer;
+    }
+  }
+
   & .progress-block {
     display: flex;
     align-items: center;
