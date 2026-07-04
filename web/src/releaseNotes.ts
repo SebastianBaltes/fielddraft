@@ -24,6 +24,16 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.367",
+    entries: [
+      {
+        kind: "fix",
+        text: "Dialoge (Feature-, Export-, Report-Dialog, Measure-Panel) heben sich mit einem etwas kräftigeren, zweilagigen Schlagschatten (neues --shadow-dialog-Token) klarer vom Viewport ab; der Feature-Dialog hatte bisher gar keinen Schatten",
+        scope: "ui",
+      },
+    ],
+  },
+  {
     version: "0.6.366",
     entries: [
       {
