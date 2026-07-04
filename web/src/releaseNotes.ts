@@ -24,6 +24,16 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.370",
+    entries: [
+      {
+        kind: "feat",
+        text: "Zwei weitere Export-Meshing-Verfahren im Dropdown: Uniform Dual Contouring (QEF) — dichtes Gitter mit QEF-Vertex-Platzierung: watertight by construction UND kantentreu (behält scharfe Kanten), nicht-1-Lipschitz-sicher, dann QEM-Decimation (der Allrounder für scharfkantige Körper). Und Marching cubes (robust) — Marching Tetrahedra: ambiguitätsfreie Fälle liefern watertight + 2-manifold by construction für JEDES Feld (die robuste Basislinie, u. a. watertight beim Gyroid, wo das Intervall-DC ein paar non-manifold-Kanten ließ). Die Report-Zeile zeigt jetzt das Verfahren als Klartext-Label",
+        scope: "export",
+      },
+    ],
+  },
+  {
     version: "0.6.369",
     entries: [
       {

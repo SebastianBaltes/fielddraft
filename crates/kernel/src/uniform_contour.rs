@@ -1,32 +1,63 @@
-//! Built-in dense Surface Nets — the from-scratch alternative to the
-//! `fast-surface-nets`-backed [`crate::surface_nets`] path.
+//! Shared uniform-grid dual contouring for the built-in generic meshers.
 //!
-//! Same idea (one dual vertex per sign-changing cell on a uniform grid,
-//! a quad per interior sign-changing edge → watertight by construction),
-//! implemented directly against our SDF so the export dialog can offer a
-//! dependency-free alternative and diff it against the library mesher.
-//! Vertex placement is the naive centroid of the cell's edge crossings,
-//! then a few Newton steps onto the exact isosurface.
+//! One dual vertex per sign-changing cell on a uniform grid, one quad per
+//! interior sign-changing grid edge → watertight by construction (no
+//! T-junctions). Nothing is pruned, so the topology of a non-1-Lipschitz
+//! field is captured reliably. The two placements differ only in where
+//! each cell's vertex lands:
+//!
+//! * [`Placement::Centroid`] — the average of the cell's edge crossings,
+//!   then a few Newton steps onto the isosurface. Smooth; rounds sharp
+//!   edges. This is the built-in **Surface Nets** mesher.
+//! * [`Placement::Qef`] — minimise the summed squared distance to the
+//!   crossing tangent planes (Hermite data: crossing point + SDF gradient
+//!   normal), reusing [`crate::mdc::QefData`]. Preserves sharp feature
+//!   edges. This is the built-in **Dual Contouring** mesher. Crossings are
+//!   regula-falsi-refined on the exact field (not a single linear guess),
+//!   so the zero is located correctly even where the field isn't
+//!   1-Lipschitz.
+//!
+//! Both feed the export pass's decimation + validation like the other
+//! dense meshers.
 
 use crate::bvh::BoundedCsg;
 use crate::csg::EvalMode;
 use crate::dc::{Mesh, DC_MARGIN_CELLS};
 
-/// The 12 edges of a cell as (corner_a, corner_b) indices into the
-/// 8-corner cube, corner index = dx | dy<<1 | dz<<2.
+/// How a cell's dual vertex is placed.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Placement {
+    /// Average of edge crossings + Newton projection (Surface Nets).
+    Centroid,
+    /// QEF minimiser of the crossing tangent planes (Dual Contouring).
+    Qef,
+}
+
+/// Built-in Surface Nets (centroid placement).
+pub fn surface_nets_builtin(node: &BoundedCsg, resolution: u32) -> Mesh {
+    contour_uniform(node, resolution, Placement::Centroid)
+}
+
+/// Built-in feature-preserving Dual Contouring (QEF placement).
+pub fn dual_contour_uniform(node: &BoundedCsg, resolution: u32) -> Mesh {
+    contour_uniform(node, resolution, Placement::Qef)
+}
+
+/// The 12 edges of a cell as (corner_a, corner_b) into the 8-corner cube,
+/// corner index = dx | dy<<1 | dz<<2.
 const CUBE_EDGES: [(usize, usize); 12] = [
     (0, 1),
     (2, 3),
     (4, 5),
-    (6, 7), // x-aligned
+    (6, 7),
     (0, 2),
     (1, 3),
     (4, 6),
-    (5, 7), // y-aligned
+    (5, 7),
     (0, 4),
     (1, 5),
     (2, 6),
-    (3, 7), // z-aligned
+    (3, 7),
 ];
 
 /// Corner offset (dx, dy, dz) for each of the 8 cube corners.
@@ -41,9 +72,7 @@ const CUBE_CORNERS: [[usize; 3]; 8] = [
     [1, 1, 1],
 ];
 
-/// Mesh a body with dense uniform Surface Nets at `resolution` cells
-/// along the longest AABB axis. Empty scene → empty mesh.
-pub fn surface_nets_builtin(node: &BoundedCsg, resolution: u32) -> Mesh {
+pub fn contour_uniform(node: &BoundedCsg, resolution: u32, placement: Placement) -> Mesh {
     if resolution == 0 {
         return Mesh::default();
     }
@@ -64,7 +93,7 @@ pub fn surface_nets_builtin(node: &BoundedCsg, resolution: u32) -> Mesh {
     let nx = (gsize[0] / cell).ceil().max(1.0) as usize;
     let ny = (gsize[1] / cell).ceil().max(1.0) as usize;
     let nz = (gsize[2] / cell).ceil().max(1.0) as usize;
-    let (cx, cy, _cz) = (nx + 1, ny + 1, nz + 1);
+    let (cx, cy) = (nx + 1, ny + 1);
 
     let corner_pos = |x: usize, y: usize, z: usize| -> [f32; 3] {
         [
@@ -111,27 +140,64 @@ pub fn surface_nets_builtin(node: &BoundedCsg, resolution: u32) -> Mesh {
 
                 let mut sum = [0.0f32; 3];
                 let mut count = 0.0f32;
+                let mut qef = crate::mdc::QefData::new();
                 for &(a, b) in CUBE_EDGES.iter() {
                     let va = corner_v[a];
                     let vb = corner_v[b];
                     if (va < 0.0) == (vb < 0.0) {
                         continue;
                     }
-                    let t = va / (va - vb);
                     let oa = CUBE_CORNERS[a];
                     let ob = CUBE_CORNERS[b];
                     let pa = corner_pos(x + oa[0], y + oa[1], z + oa[2]);
                     let pb = corner_pos(x + ob[0], y + ob[1], z + ob[2]);
+                    let cross = match placement {
+                        Placement::Centroid => {
+                            let t = va / (va - vb);
+                            [
+                                pa[0] + t * (pb[0] - pa[0]),
+                                pa[1] + t * (pb[1] - pa[1]),
+                                pa[2] + t * (pb[2] - pa[2]),
+                            ]
+                        }
+                        // Locate the zero on the true field, then feed the
+                        // crossing + its gradient normal to the QEF.
+                        Placement::Qef => refine_crossing(node, pa, va, pb, vb),
+                    };
+                    if placement == Placement::Qef {
+                        let n = crate::dc::sdf_normal(node, cross, cell * 0.25);
+                        qef.add(cross, n);
+                    }
                     for d in 0..3 {
-                        sum[d] += pa[d] + t * (pb[d] - pa[d]);
+                        sum[d] += cross[d];
                     }
                     count += 1.0;
                 }
                 if count == 0.0 {
                     continue;
                 }
-                let mut p = [sum[0] / count, sum[1] / count, sum[2] / count];
-                project_to_surface(node, &mut p, cell);
+                let centroid = [sum[0] / count, sum[1] / count, sum[2] / count];
+                let p = match placement {
+                    Placement::Centroid => {
+                        let mut p = centroid;
+                        project_to_surface(node, &mut p, cell);
+                        p
+                    }
+                    Placement::Qef => {
+                        // Keep the QEF minimiser unless it flew far outside
+                        // its cell (an ill-conditioned near-planar set) — then
+                        // fall back to the centroid. Do NOT hard-clamp onto the
+                        // cell faces: that would snap neighbouring cells' points
+                        // onto the shared boundary and weld them into degenerate
+                        // (zero-area) dual quads.
+                        let cc = [
+                            0.5 * (corner_pos(x, y, z)[0] + corner_pos(x + 1, y + 1, z + 1)[0]),
+                            0.5 * (corner_pos(x, y, z)[1] + corner_pos(x + 1, y + 1, z + 1)[1]),
+                            0.5 * (corner_pos(x, y, z)[2] + corner_pos(x + 1, y + 1, z + 1)[2]),
+                        ];
+                        qef_or_centroid(qef.solve(), cc, cell, centroid)
+                    }
+                };
 
                 cell_vertex[cell_idx(x, y, z)] = (positions.len() / 3) as u32;
                 positions.extend_from_slice(&p);
@@ -221,8 +287,6 @@ pub fn surface_nets_builtin(node: &BoundedCsg, resolution: u32) -> Mesh {
     }
 }
 
-/// Split a dual quad into two triangles (winding by the crossing
-/// direction; `fix_orientation` corrects any residual inconsistency).
 fn push_quad(indices: &mut Vec<u32>, q: [u32; 4], flip: bool) {
     if q.iter().any(|&v| v == u32::MAX) {
         return;
@@ -249,5 +313,56 @@ fn project_to_surface(node: &BoundedCsg, p: &mut [f32; 3], cell: f32) {
         p[0] -= step * g[0];
         p[1] -= step * g[1];
         p[2] -= step * g[2];
+    }
+}
+
+/// Regula-falsi refine the zero crossing between corner `pa` (value `va`)
+/// and `pb` (value `vb`, opposite sign) on the exact field — accuracy
+/// independent of the field's Lipschitz constant.
+fn refine_crossing(
+    node: &BoundedCsg,
+    pa: [f32; 3],
+    va: f32,
+    pb: [f32; 3],
+    vb: f32,
+) -> [f32; 3] {
+    let (mut a, mut fa, mut b, mut fb) = (pa, va, pb, vb);
+    let lerp = |a: [f32; 3], b: [f32; 3], t: f32| {
+        [
+            a[0] + t * (b[0] - a[0]),
+            a[1] + t * (b[1] - a[1]),
+            a[2] + t * (b[2] - a[2]),
+        ]
+    };
+    for _ in 0..5 {
+        let denom = fa - fb;
+        let t = if denom.abs() < 1e-20 { 0.5 } else { fa / denom };
+        let m = lerp(a, b, t.clamp(0.0, 1.0));
+        let fm = node.sdf(m, EvalMode::Visual);
+        if fm.abs() < 1e-6 {
+            return m;
+        }
+        if (fm < 0.0) == (fa < 0.0) {
+            a = m;
+            fa = fm;
+        } else {
+            b = m;
+            fb = fm;
+        }
+    }
+    let denom = fa - fb;
+    let t = if denom.abs() < 1e-20 { 0.5 } else { fa / denom };
+    lerp(a, b, t.clamp(0.0, 1.0))
+}
+
+/// Keep the QEF minimiser `p` unless it is more than one cell away from
+/// the cell centre `cc` (ill-conditioned); then use `fallback` (the
+/// centroid). No hard clamp — see the call site.
+fn qef_or_centroid(p: [f32; 3], cc: [f32; 3], cell: f32, fallback: [f32; 3]) -> [f32; 3] {
+    let d2 = (p[0] - cc[0]).powi(2) + (p[1] - cc[1]).powi(2) + (p[2] - cc[2]).powi(2);
+    if d2 > (cell * 1.0) * (cell * 1.0) {
+        fallback
+    } else {
+        p
     }
 }

@@ -63,6 +63,14 @@ pub enum MeshMethod {
     /// B-Rep. Only closed-form bodies qualify; sketch/data carriers fall
     /// back.
     IntervalDc,
+    /// Built-in uniform Dual Contouring with QEF vertex placement
+    /// (`uniform_contour`). Dense grid (non-1-Lipschitz-safe), sharp
+    /// feature edges preserved via QEF, then QEM decimation.
+    UniformDc,
+    /// Marching Tetrahedra (`marching_tets`) — the robust MC-family
+    /// mesher: unambiguous tetrahedral cases → watertight + 2-manifold by
+    /// construction for any field. Rounds edges; then decimation.
+    MarchingCubes,
 }
 
 impl MeshMethod {
@@ -72,6 +80,8 @@ impl MeshMethod {
             "surface-nets" => MeshMethod::SurfaceNets,
             "surface-nets-builtin" => MeshMethod::SurfaceNetsBuiltin,
             "interval-dc" => MeshMethod::IntervalDc,
+            "uniform-dc" => MeshMethod::UniformDc,
+            "marching-cubes" => MeshMethod::MarchingCubes,
             _ => MeshMethod::Adaptive,
         }
     }
@@ -137,6 +147,9 @@ pub struct BodyExportReport {
     /// True when this body shipped the interval-octree Manifold-DC route
     /// (fidget) — feature-preserving, interval-safe topology.
     pub interval_dc: bool,
+    /// Short human label of the mesher route for the report row (e.g.
+    /// "uniform DC", "marching cubes"); empty falls back to the flags.
+    pub route: String,
     /// Triangle count of the dense Surface Nets mesh BEFORE decimation
     /// (0 off the Surface Nets route) — the report shows the reduction.
     pub dense_triangles: usize,
@@ -287,6 +300,7 @@ impl crate::Kernel {
                 self_intersections_complete: true,
                 surface_nets: false,
                 interval_dc: false,
+                route: String::new(),
                 dense_triangles: 0,
                 validation,
             };
@@ -306,6 +320,10 @@ impl crate::Kernel {
             // ── Interval-octree Manifold DC (fidget) ── topology-safe for
             // non-1-Lipschitz fields, feature-preserving, no B-Rep needed.
             self.interval_dc_export_body(body_id, &feature_indices, size, cell_mm)
+        } else if matches!(method, MeshMethod::UniformDc | MeshMethod::MarchingCubes) {
+            // ── Built-in uniform DC (QEF) / Marching Tetrahedra ── dense,
+            // non-1-Lipschitz-safe generic meshers, then QEM decimation.
+            self.generic_dense_export_body(body_id, &feature_indices, size, cell_mm, method)
         } else {
             // ── Parametric route first (Meshing Phase 2, Option B) ──
             // Per-face B-Rep tessellation: watertight by construction,
@@ -336,6 +354,7 @@ impl crate::Kernel {
                         self_intersections_complete: si_complete,
                         surface_nets: false,
                         interval_dc: false,
+                        route: String::new(),
                         dense_triangles: 0,
                         validation,
                     };
@@ -450,6 +469,7 @@ impl crate::Kernel {
                     self_intersections_complete: si_complete,
                     surface_nets: false,
                     interval_dc: false,
+                    route: String::new(),
                     dense_triangles: 0,
                     validation,
                 };
@@ -560,6 +580,7 @@ impl crate::Kernel {
             self_intersections_complete: si_complete,
             surface_nets: false,
             interval_dc: false,
+            route: String::new(),
             dense_triangles: 0,
             validation,
         };
@@ -590,7 +611,7 @@ impl crate::Kernel {
         // Library path (fast-surface-nets + baby_shark) vs our own
         // from-scratch implementations, per the dropdown selection.
         let mut mesh = if builtin {
-            crate::surface_nets_builtin::surface_nets_builtin(&bounded, resolution)
+            crate::uniform_contour::surface_nets_builtin(&bounded, resolution)
         } else {
             crate::surface_nets::surface_nets(&bounded, resolution)
         };
@@ -640,6 +661,7 @@ impl crate::Kernel {
             self_intersections_complete: si_complete,
             surface_nets: true,
             interval_dc: false,
+            route: String::new(),
             dense_triangles,
             validation,
         };
@@ -708,7 +730,82 @@ impl crate::Kernel {
             self_intersections_complete: si_complete,
             surface_nets: false,
             interval_dc: true,
+            route: String::new(),
             dense_triangles: 0,
+            validation,
+        };
+        (mesh, report)
+    }
+
+    /// Built-in uniform Dual Contouring (QEF) / Marching Tetrahedra
+    /// route: a dense generic mesh (non-1-Lipschitz-safe) + QEM
+    /// decimation (baby_shark), then validate/measure like the other
+    /// dense routes.
+    fn generic_dense_export_body(
+        &mut self,
+        body_id: u32,
+        feature_indices: &[usize],
+        size: [f32; 3],
+        cell_mm: f32,
+        method: MeshMethod,
+    ) -> (Mesh, BodyExportReport) {
+        let (resolution, actual_cell, cell_limited) = derive_export_resolution(size, cell_mm);
+        let (bounded, _prims) =
+            crate::body::build_bounded_with_primitives(&self.decoded, feature_indices);
+        let sdf = |p: [f32; 3]| bounded.sdf(p, crate::csg::EvalMode::Visual);
+
+        let mut mesh = match method {
+            MeshMethod::UniformDc => {
+                crate::uniform_contour::dual_contour_uniform(&bounded, resolution)
+            }
+            _ => crate::marching_tets::marching_tets(&bounded, resolution),
+        };
+        let dense_triangles = mesh.triangle_count();
+        let route = if method == MeshMethod::UniformDc {
+            format!("uniform DC {actual_cell:.3} mm")
+        } else {
+            format!("marching cubes {actual_cell:.3} mm")
+        };
+
+        // Our own QEM decimator (not baby_shark): it tolerates the
+        // occasional non-manifold edge these dense grids can carry —
+        // baby_shark's corner-table build panics on such input — and its
+        // sliver guard keeps the result degenerate-free.
+        let tol = (cell_mm / 4.0).clamp(0.01, 0.1);
+        let stats = crate::decimate_builtin::simplify_qem_builtin(&mut mesh, tol * tol);
+
+        let flips = mesh_validate::fix_orientation(&mut mesh, &sdf);
+        let mut validation = mesh_validate::validate_topology(&mesh);
+        let (max_dev, p95_dev, samples) =
+            mesh_validate::measure_deviation(&mesh, DEVIATION_SAMPLE_BUDGET, &sdf);
+        validation.max_deviation_mm = max_dev;
+        validation.p95_deviation_mm = p95_dev;
+        validation.deviation_samples = samples;
+        let (si, si_complete) =
+            mesh_validate::count_self_intersections(&mesh, SELF_INTERSECT_PAIR_BUDGET);
+
+        let report = BodyExportReport {
+            body_id,
+            requested_cell_mm: cell_mm,
+            actual_cell_mm: actual_cell,
+            resolution,
+            cell_limited,
+            passthrough: false,
+            parametric: false,
+            parametric_skip_reason: route.clone(),
+            adaptive: false,
+            adaptive_skip_reason: route.clone(),
+            orientation_repaired: flips,
+            edges_pinned: 0,
+            simplified: stats.collapses > 0,
+            simplification_rejected: false,
+            thin_cells: 0,
+            self_intersections: si,
+            self_intersections_complete: si_complete,
+            surface_nets: false,
+            interval_dc: false,
+            route,
+            dense_triangles,
             validation,
         };
         (mesh, report)
@@ -1235,6 +1332,60 @@ mod tests {
         let tris = report["total_triangles"].as_u64().unwrap();
         assert!(tris > 500, "gyroid too sparse: {tris}");
         assert!(dense >= tris, "dense {dense} < decimated {tris}");
+    }
+
+    #[test]
+    fn uniform_dc_sharp_edged_solid_is_watertight() {
+        // Built-in uniform Dual Contouring on a box with a cylindrical
+        // hole: the uniform grid keeps it watertight (unlike fidget's
+        // adaptive DC at sharp edges) and QEF places vertices accurately.
+        let mut k = box_with_hole();
+        let report = export_single_method(&mut k, 0.5, "uniform-dc");
+        let body = &report["bodies"][0];
+        assert_eq!(report["all_watertight"], true, "{report}");
+        assert_eq!(body["route"], "uniform DC 0.500 mm", "{report}");
+        assert!(body["p95_deviation_mm"].as_f64().unwrap() < 0.05, "{report}");
+    }
+
+    #[test]
+    fn marching_cubes_meshes_a_gyroid_watertight() {
+        // Marching Tetrahedra is watertight/manifold by construction for
+        // ANY field — including the non-1-Lipschitz TPMS gyroid∩box that
+        // fidget's DC leaves a few non-manifold edges on.
+        let mut k = crate::Kernel::new();
+        let box_id = k
+            .add_primitive(
+                Primitive::KIND_BOX,
+                BoolOp::TAG_NEW,
+                0.0,
+                0.0,
+                0.0,
+                12.0,
+                12.0,
+                12.0,
+            )
+            .unwrap();
+        k.add_feature_call(
+            "gyroid",
+            &format!(
+                r#"{{
+                    "cell_size": {{ "value": 6.0, "unit": "mm" }},
+                    "thickness": {{ "value": 1.5, "unit": "mm" }},
+                    "op": "intersect",
+                    "targets": "qCreatedBy({box_id})"
+                }}"#
+            ),
+        )
+        .unwrap();
+        assert!(k.feature_errors.is_empty(), "{:?}", k.feature_errors);
+        let report = export_single_method(&mut k, 0.5, "marching-cubes");
+        let body = &report["bodies"][0];
+        assert_eq!(report["all_watertight"], true, "{report}");
+        assert_eq!(body["route"], "marching cubes 0.500 mm", "{report}");
+        assert!(
+            report["total_triangles"].as_u64().unwrap() > 500,
+            "gyroid too sparse: {report}"
+        );
     }
 
     #[test]

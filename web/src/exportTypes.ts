@@ -21,7 +21,12 @@ export type ExportFormat = "stl" | "3mf";
  *    smooth solids, a few non-manifold edges at sharp/dense feature
  *    edges. */
 export type MeshMethod =
-  "adaptive" | "surface-nets" | "surface-nets-builtin" | "interval-dc";
+  | "adaptive"
+  | "surface-nets"
+  | "surface-nets-builtin"
+  | "interval-dc"
+  | "uniform-dc"
+  | "marching-cubes";
 
 /** Per-body slice of the export report (kernel: `BodyExportReport`,
  *  with the `MeshValidation` fields flattened in). */
@@ -57,6 +62,9 @@ export interface ExportBodyReport {
   /** True when this body shipped the interval-octree Manifold-DC route
    *  (fidget). */
   interval_dc: boolean;
+  /** Short human label of the mesher route (e.g. "uniform DC 0.5 mm",
+   *  "marching cubes 0.5 mm"); empty falls back to the flags. */
+  route: string;
   /** Triangle count of the dense Surface Nets mesh before decimation
    *  (0 off that route) — the report shows the reduction. */
   dense_triangles: number;

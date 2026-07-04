@@ -717,6 +717,15 @@ graph LR
   Körpern (p95 ~0,01 mm); an scharfen/dichten Feature-Kanten hinterlässt
   das adaptive DC ein paar non-manifold-Kanten (Report zeigt es) →
   garantiert-watertight bleibt Surface Nets' Domäne.
+  Zwei weitere Built-in-Verfahren: *Uniform Dual Contouring (QEF)*
+  (`uniform_contour.rs`, geteilt mit dem Built-in-Surface-Nets über einen
+  `Placement`-Param) — dichtes Gitter, QEF-Vertices (`mdc::QefData`) +
+  regula-falsi-Crossings: watertight by construction UND kantentreu; und
+  *Marching cubes (robust)* = Marching Tetrahedra (`marching_tets.rs`,
+  6-Tet-Freudenthal-Zerlegung, ambiguitätsfrei → watertight+2-manifold für
+  jedes Feld). Beide dezimieren mit dem eigenen QEM (`decimate_builtin`;
+  baby_shark paniced auf dem MT-Mesh). Der Report trägt ein
+  `route`-Klartext-Label pro Body.
 * **Export-Vorschau** (`exportPreviewStore.ts`, `exportPreviewMesh.tsx`):
   Nach „Mesh" publiziert der Dialog die zusammengeführten Export-Dreiecke
   (`exportMeshPreviewPositions/Indices`); der Viewport unterdrückt den

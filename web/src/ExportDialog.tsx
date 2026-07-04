@@ -284,6 +284,8 @@ export function ExportDialog({ store, format, onClose }: ExportDialogProps) {
             Surface Nets + decimation (built-in)
           </option>
           <option value="interval-dc">Interval-octree DC (fidget)</option>
+          <option value="uniform-dc">Uniform Dual Contouring (QEF)</option>
+          <option value="marching-cubes">Marching cubes (robust)</option>
         </select>
         <span className="hint">
           {method === "surface-nets"
@@ -292,7 +294,11 @@ export function ExportDialog({ store, format, onClose }: ExportDialogProps) {
               ? "Same dense-grid + QEM pipeline, but our own from-scratch implementations — dependency-free alternative to diff against the library path."
               : method === "interval-dc"
                 ? "Interval-arithmetic octree + Manifold DC (fidget): topology-safe subdivision (no Lipschitz assumption) and QEF sharp-edge preservation for closed-form solids. Watertight on smooth solids; sharp/dense feature edges may leave a few non-manifold edges (see the report) — use Surface Nets for guaranteed watertight."
-                : "Parametric-first, then adaptive Manifold-DC — exact edges and the fewest triangles for regular CAD solids."}
+                : method === "uniform-dc"
+                  ? "Dense uniform grid with QEF vertex placement — watertight by construction AND feature-preserving (keeps sharp edges), non-1-Lipschitz-safe, then QEM decimation. The all-rounder for sharp-edged solids."
+                  : method === "marching-cubes"
+                    ? "Marching tetrahedra: unambiguous cases → watertight + 2-manifold by construction for ANY field (the robust baseline). Rounds sharp edges; then QEM decimation."
+                    : "Parametric-first, then adaptive Manifold-DC — exact edges and the fewest triangles for regular CAD solids."}
         </span>
       </div>
 
@@ -476,19 +482,21 @@ function ReportView({
                       : undefined
                   }
                 >
-                  {b.passthrough
-                    ? "source mesh"
-                    : b.parametric
-                      ? "parametric"
-                      : b.interval_dc
-                        ? `interval-DC ${formatMm(b.actual_cell_mm)} mm`
-                        : b.surface_nets
-                          ? `surface nets ${formatMm(b.actual_cell_mm)} mm`
-                          : b.adaptive
-                            ? `adaptive ${formatMm(b.actual_cell_mm)} mm`
-                            : `grid ${formatMm(b.actual_cell_mm)} mm`}
+                  {b.route
+                    ? b.route
+                    : b.passthrough
+                      ? "source mesh"
+                      : b.parametric
+                        ? "parametric"
+                        : b.interval_dc
+                          ? `interval-DC ${formatMm(b.actual_cell_mm)} mm`
+                          : b.surface_nets
+                            ? `surface nets ${formatMm(b.actual_cell_mm)} mm`
+                            : b.adaptive
+                              ? `adaptive ${formatMm(b.actual_cell_mm)} mm`
+                              : `grid ${formatMm(b.actual_cell_mm)} mm`}
                   {b.cell_limited ? " (limited)" : ""}
-                  {b.surface_nets && b.dense_triangles > 0
+                  {(b.surface_nets || b.route) && b.dense_triangles > 0
                     ? ` (${b.dense_triangles.toLocaleString()} → ${b.triangles.toLocaleString()})`
                     : ""}
                 </td>
