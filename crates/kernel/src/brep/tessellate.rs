@@ -652,11 +652,6 @@ impl RotationalKind {
         [r * theta.cos(), y, r * theta.sin()]
     }
 
-    /// True when the surface is a straight line in `v` (a strip between
-    /// two rings needs no interior rows).
-    fn ruled_in_v(&self) -> bool {
-        !matches!(self, RotationalKind::Revolved { .. })
-    }
 }
 
 /// Build the offset profile polyline of a [`HalfSpace::RevolvedProfile`]:
@@ -1487,7 +1482,7 @@ fn signed_area(uv: &[[f64; 2]], ring: &[usize]) -> f64 {
 /// Triangulate a polygon with holes given as index ranges into `uv`
 /// (`rings[0]` is the outer ring, the rest are holes). Returns triangles
 /// as indices into `uv`, CCW in the (u,v) chart.
-fn triangulate_polygon_with_holes(
+pub(crate) fn triangulate_polygon_with_holes(
     uv: &[[f64; 2]],
     rings: &[(usize, usize)],
 ) -> Result<Vec<[usize; 3]>, String> {

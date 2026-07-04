@@ -22,6 +22,8 @@ export interface ExportBodyReport {
   parametric: boolean;
   parametric_skip_reason: string;
   orientation_repaired: number;
+  /** Phase 1b: vertices pinned onto exact B-Rep edge curves (MDC route). */
+  edges_pinned: number;
   simplified: boolean;
   simplification_rejected: boolean;
   vertices: number;

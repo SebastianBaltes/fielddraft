@@ -276,7 +276,10 @@ fn find_planar_regions(mesh: &Mesh) -> Vec<PlanarRegion> {
     // Using geometric triangle normals (cross product of edges) is more
     // stable than vertex normals for box-like shapes where the SDF
     // gradient is discontinuous at edges.
-    let mut tri_groups: HashMap<(u32, i8), Vec<usize>> = HashMap::new();
+    // BTreeMap: region discovery order feeds the output triangle order —
+    // HashMap iteration made rebuilds nondeterministic (Phase 1a).
+    let mut tri_groups: std::collections::BTreeMap<(u32, i8), Vec<usize>> =
+        std::collections::BTreeMap::new();
     for t in 0..tc {
         let [i0, i1, i2] = [
             mesh.indices[t * 3] as usize,
@@ -418,11 +421,14 @@ fn extract_boundary_loops(mesh: &Mesh, tris: &[usize]) -> Vec<Vec<u32>> {
         }
     }
 
-    let boundary: Vec<(u32, u32)> = edge_count
+    let mut boundary: Vec<(u32, u32)> = edge_count
         .into_iter()
         .filter(|&(_, c)| c == 1)
         .map(|(e, _)| e)
         .collect();
+    // Deterministic loop start + walk direction (HashMap order leaked
+    // into the output otherwise — Phase 1a).
+    boundary.sort_unstable();
 
     if boundary.is_empty() {
         return Vec::new();
@@ -486,11 +492,12 @@ fn extract_boundary_loop(mesh: &Mesh, tris: &[usize]) -> Option<Vec<u32>> {
         }
     }
 
-    let boundary: Vec<(u32, u32)> = edge_count
+    let mut boundary: Vec<(u32, u32)> = edge_count
         .into_iter()
         .filter(|&(_, c)| c == 1)
         .map(|(e, _)| e)
         .collect();
+    boundary.sort_unstable();
 
     if boundary.is_empty() {
         return None;
@@ -539,62 +546,39 @@ fn extract_boundary_loop(mesh: &Mesh, tris: &[usize]) -> Option<Vec<u32>> {
 fn simplify_region(mesh: &Mesh, region: &PlanarRegion) -> Vec<u32> {
     let (u_axis, v_axis) = orthonormal_basis(region.normal);
 
-    let project = |vi: u32| -> [f32; 2] {
+    let project = |vi: u32| -> [f64; 2] {
         let p = vtx_pos(mesh, vi as usize);
-        [dot(p, u_axis), dot(p, v_axis)]
+        [dot(p, u_axis) as f64, dot(p, v_axis) as f64]
     };
 
-    // Build merged vertex list: outer boundary + holes bridged in.
-    let mut all_verts: Vec<u32> = region.boundary.clone();
-    let mut all_pts: Vec<[f32; 2]> = all_verts.iter().map(|&vi| project(vi)).collect();
-
-    // Bridge each hole into the outer polygon.
+    // Shared with the parametric tessellator: visibility-based hole
+    // bridging + ear clipping. The old nearest-vertex slit bridging
+    // could pick a crossing bridge and emit overlapping/non-manifold
+    // triangles (the Phase-0 nondeterministic watertight failures).
+    let mut vids: Vec<u32> = region.boundary.clone();
+    let mut uv: Vec<[f64; 2]> = vids.iter().map(|&vi| project(vi)).collect();
+    let mut rings: Vec<(usize, usize)> = vec![(0, vids.len())];
     for hole in &region.holes {
-        if hole.len() < 3 { continue; }
-        let hole_pts: Vec<[f32; 2]> = hole.iter().map(|&vi| project(vi)).collect();
-
-        // Find the rightmost hole vertex
-        let (hole_start, _) = hole_pts.iter().enumerate()
-            .max_by(|a, b| a.1[0].partial_cmp(&b.1[0]).unwrap())
-            .unwrap();
-
-        let hole_start_pt = hole_pts[hole_start];
-
-        // Find the nearest outer vertex to the bridge point
-        let (outer_idx, _) = all_pts.iter().enumerate()
-            .min_by(|a, b| {
-                let da = (a.1[0] - hole_start_pt[0]).powi(2) + (a.1[1] - hole_start_pt[1]).powi(2);
-                let db = (b.1[0] - hole_start_pt[0]).powi(2) + (b.1[1] - hole_start_pt[1]).powi(2);
-                da.partial_cmp(&db).unwrap()
-            })
-            .unwrap();
-
-        // Insert hole vertices into the outer polygon at the bridge point.
-        // Pattern: ...outer[bridge] → hole[start] → ... → hole[start] → outer[bridge]...
-        let n = hole.len();
-        let mut bridge: Vec<u32> = Vec::with_capacity(n + 2);
-        let mut bridge_pts: Vec<[f32; 2]> = Vec::with_capacity(n + 2);
-        bridge.push(all_verts[outer_idx]);
-        bridge_pts.push(all_pts[outer_idx]);
-        for i in 0..=n {
-            let hi = (hole_start + i) % n;
-            bridge.push(hole[hi]);
-            bridge_pts.push(hole_pts[hi]);
+        if hole.len() < 3 {
+            continue;
         }
-        bridge.push(all_verts[outer_idx]);
-        bridge_pts.push(all_pts[outer_idx]);
-
-        all_verts.splice(outer_idx + 1..outer_idx + 1, bridge);
-        all_pts.splice(outer_idx + 1..outer_idx + 1, bridge_pts);
+        let s = vids.len();
+        vids.extend_from_slice(hole);
+        uv.extend(hole.iter().map(|&vi| project(vi)));
+        rings.push((s, hole.len()));
     }
 
-    let tris = earcut_2d(&all_pts);
+    let Ok(tris) = crate::brep::tessellate::triangulate_polygon_with_holes(&uv, &rings) else {
+        // Triangulation refused (degenerate ring, crossing geometry):
+        // keep the region unsimplified rather than emit garbage.
+        return Vec::new();
+    };
 
     let mut indices = Vec::with_capacity(tris.len() * 3);
     for [a, b, c] in tris {
-        indices.push(all_verts[a]);
-        indices.push(all_verts[b]);
-        indices.push(all_verts[c]);
+        indices.push(vids[a]);
+        indices.push(vids[b]);
+        indices.push(vids[c]);
     }
     indices
 }
@@ -758,7 +742,9 @@ fn simplify_developable_faces(
 
     // Find face triangles on cylinder/cone surfaces.
     // Group by (contributor, surface_type).
-    let mut cyl_tris: HashMap<u32, Vec<usize>> = HashMap::new();
+    // BTreeMap for deterministic per-contributor processing order (Phase 1a).
+    let mut cyl_tris: std::collections::BTreeMap<u32, Vec<usize>> =
+        std::collections::BTreeMap::new();
 
     for t in 0..tc {
         let [i0, i1, i2] = [

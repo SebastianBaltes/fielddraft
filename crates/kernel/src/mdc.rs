@@ -579,13 +579,42 @@ pub fn manifold_dc(
 
                     let (v00, v10, v11, v01) = (vi[0], vi[1], vi[2], vi[3]);
 
-                    let flip = axis == 1;
-                    if (da > 0.0) ^ flip {
-                        indices.extend_from_slice(&[v00, v01, v11]);
-                        indices.extend_from_slice(&[v00, v11, v10]);
+                    // Winding: the dual quad patches the surface where this
+                    // grid edge pierces it, so its normal must align with
+                    // the piercing direction — along the edge from inside
+                    // (d<0) to outside (d>0), i.e. `sign(db−da)·axis`.
+                    // Deriving this GEOMETRICALLY (quad area vector vs. the
+                    // wanted direction) keeps the orientation globally
+                    // consistent across quads of different axes; the old
+                    // per-axis table rule `(da>0) ^ (axis==1)` disagreed
+                    // exactly along sharp feature edges, where quads of two
+                    // axes share a vertex pair (measured: a box emitted
+                    // ~90–474 same-direction shared edges).
+                    let p = |i: u32| vertices[i as usize].pos;
+                    let (p00, p10, p11, p01) = (p(v00), p(v10), p(v11), p(v01));
+                    // Area vector of the quad in order v00→v10→v11→v01 is
+                    // ½·(diag1 × diag2).
+                    let d1 = [p11[0] - p00[0], p11[1] - p00[1], p11[2] - p00[2]];
+                    let d2 = [p01[0] - p10[0], p01[1] - p10[1], p01[2] - p10[2]];
+                    let n_quad = [
+                        d1[1] * d2[2] - d1[2] * d2[1],
+                        d1[2] * d2[0] - d1[0] * d2[2],
+                        d1[0] * d2[1] - d1[1] * d2[0],
+                    ];
+                    let want = n_quad[axis] * (db - da);
+                    let forward = if want.abs() > 1e-20 {
+                        want > 0.0
                     } else {
+                        // Degenerate (folded/zero-area) quad: fall back to
+                        // the historical sign rule.
+                        !((da > 0.0) ^ (axis == 1))
+                    };
+                    if forward {
                         indices.extend_from_slice(&[v00, v10, v11]);
                         indices.extend_from_slice(&[v00, v11, v01]);
+                    } else {
+                        indices.extend_from_slice(&[v00, v01, v11]);
+                        indices.extend_from_slice(&[v00, v11, v10]);
                     }
                 }
             }
@@ -844,5 +873,49 @@ mod tests {
             "x should be ~5, got {}",
             pos[0]
         );
+    }
+}
+
+#[cfg(test)]
+mod winding_consistency {
+    use crate::csg::{CsgNode, DecodedFeature, PrimitiveModifiers};
+    use fielddraft_protocol::{BoolOp, FeatureId, Primitive, Transform};
+    use std::collections::HashMap;
+
+    /// Regression for the quad-winding root cause (Meshing Phase 1a):
+    /// the old per-axis sign rule emitted same-direction shared edges
+    /// exactly along sharp feature edges (box at res 16: 90). The
+    /// geometric winding (quad area vector vs. piercing direction)
+    /// must produce zero — no repair pass involved.
+    #[test]
+    fn raw_mdc_box_has_consistent_winding() {
+        let f = DecodedFeature::from_parts(
+            FeatureId::from_u32(1),
+            "box".into(),
+            BoolOp::New,
+            Primitive::Box { center: [0.0; 3], half_extents: [10.0, 10.0, 10.0] },
+            Transform::IDENTITY,
+            PrimitiveModifiers::default(),
+            Vec::new(),
+        );
+        let csg = CsgNode::from_decoded(&[f]);
+        let bounded = crate::bvh::BoundedCsg::from_csg(&csg);
+        let mesh = crate::dc::dual_contour_unsimplified(&bounded, 16);
+
+        let mut edges: HashMap<(u32, u32), (u32, i32)> = HashMap::new();
+        for tri in mesh.indices.chunks_exact(3) {
+            for e in 0..3 {
+                let a = tri[e];
+                let b = tri[(e + 1) % 3];
+                let (key, dir) = if a < b { ((a, b), 1) } else { ((b, a), -1) };
+                let ent = edges.entry(key).or_insert((0, 0));
+                ent.0 += 1;
+                ent.1 += dir;
+            }
+        }
+        let misoriented = edges.values().filter(|&&(c, b)| c == 2 && b != 0).count();
+        let boundary = edges.values().filter(|&&(c, _)| c == 1).count();
+        assert_eq!(misoriented, 0, "same-direction shared edges");
+        assert_eq!(boundary, 0, "open edges");
     }
 }

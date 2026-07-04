@@ -24,6 +24,16 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.361",
+    entries: [
+      {
+        kind: "fix",
+        text: "Generisches Export-Meshing gehärtet (Meshing Phase 1a/1b): MDC-Quad-Winding an scharfen Kanten an der Wurzel gefixt (geometrische Orientierung statt Achsen-Tabelle), Simplifikation deterministisch (kein Watertight-Würfeln mehr zwischen Läufen) mit sauberem Loch-Bridging, und B-Rep-Kanten-Pinning: Kanten-Vertices landen exakt auf den echten Kantenkurven",
+        scope: "export",
+      },
+    ],
+  },
+  {
     version: "0.6.360",
     entries: [
       {

@@ -186,6 +186,35 @@ graph LR
 - **Phase 1 (M, der eigentliche Hub):** Option A vollständig — Octree-Clustering
   (Schaefer 07) auf `mdc.rs` aufsetzen, exakte Hermite-Daten, B-Rep-Kanten-Pinning,
   Selbstschnitt-Check. Erfüllt alle vier Kriterien generisch.
+
+  **✅ Phase 1a (v0.6.361): Fundament.** (1) MDC-Quad-Winding-Wurzelursache
+  gefixt: das Winding wird jetzt GEOMETRISCH bestimmt (Quad-Flächenvektor
+  gegen die Durchstoßrichtung `sign(db−da)·axis`) statt über die
+  achsen-abhängige Vorzeichen-Tabelle — die an scharfen Kanten, wo Quads
+  zweier Achsen ein Vertex-Paar teilen, inkonsistent war (Box res 16:
+  90 gleichgerichtete Kanten → 0). `fix_orientation` bleibt als
+  Belt-and-braces. (2) Simplifikation deterministisch: `tri_groups`/
+  `cyl_tris` auf BTreeMap, Boundary-Kantenlisten sortiert (Loop-Start
+  und -Richtung waren HashMap-Seed-abhängig), und das
+  Nächster-Vertex-Slit-Bridging durch die Sichtbarkeits-Triangulierung
+  des Tessellators ersetzt (`triangulate_polygon_with_holes`) — der
+  Watertight-Würfelwurf zwischen identischen Läufen ist weg
+  (Regressionstest: 5 frische Prozesse, bitidentische Meshes).
+
+  **✅ Phase 1b (v0.6.361): B-Rep-Kanten-Pinning.** Klassisches
+  DC-Kriterium: ein MDC-Vertex wird gepinnt, gdw. seine EIGENE Grid-Zelle
+  von einer gewobenen Kantenkurve gekreuzt wird (nächster Kurvenpunkt in
+  der Zelle) — pro gekreuzter Zelle entsteht ein exakter Ketten-Vertex,
+  Nachbarflächen kollabieren nicht auf die Kante. Ecken-Vertices pinnen
+  bevorzugt auf topologische B-Rep-Ecken; Occupancy-Guard gegen
+  Doppel-Pins auf denselben Punkt. Wichtig: die Mesh-KLASSIFIKATION kann
+  das Kriterium nicht treiben (Feature-Granularität — intrinsische
+  Primitiv-Kanten sind Face-klassifiziert). Gemessen: Box−Zylinder-Loch,
+  Rim-Kreis r=4 — >30 Vertices exakt (≤2 µm-Klasse) auf der Kurve.
+
+  **Offen (Phase 1c):** Octree-Adaptivität (Schaefer-Clustering, die
+  bewusste Voll-Variante) + krümmungsgesteuerte Zellgröße +
+  Wandstärken-Heuristik + Selbstschnitt-Check.
 - **Phase 2 (M):** Option B für weave-vollständige Bodies — der Qualitäts- und
   Ökonomiesprung für klassische CAD-Teile (und erledigt Ticket-Klasse 55ea/mdo0
   strukturell: Helix-`parametric_brep`-Pfad kann hier ebenfalls exakt tessellieren).

@@ -60,6 +60,10 @@ pub struct BodyExportReport {
     pub parametric_skip_reason: String,
     /// Triangles whose winding the orientation-repair pass flipped.
     pub orientation_repaired: usize,
+    /// Edge/corner-classified vertices pinned onto the exact woven
+    /// B-Rep edge curves (Phase 1b; 0 on the parametric route, whose
+    /// edges are exact by construction).
+    pub edges_pinned: usize,
     /// True when the planar/developable simplification made the cut;
     /// false when the raw (dense) mesh shipped instead.
     pub simplified: bool,
@@ -195,6 +199,7 @@ impl crate::Kernel {
                 parametric: false,
                 parametric_skip_reason: String::new(),
                 orientation_repaired: 0,
+                edges_pinned: 0,
                 simplified: false,
                 simplification_rejected: false,
                 validation,
@@ -218,6 +223,7 @@ impl crate::Kernel {
                         parametric: true,
                         parametric_skip_reason: String::new(),
                         orientation_repaired: 0,
+                        edges_pinned: 0,
                         simplified: false,
                         simplification_rejected: false,
                         validation,
@@ -226,6 +232,7 @@ impl crate::Kernel {
                 }
                 Err(skip_reason) => {
                     let (mesh, report) = self.mdc_export_body(
+                        i,
                         body_id,
                         &feature_indices,
                         size,
@@ -243,11 +250,15 @@ impl crate::Kernel {
         Some(report)
     }
 
-    /// The generic MDC export pass for one body (the Phase-0 route):
+    /// The generic MDC export pass for one body (the Phase-0/1 route):
     /// raw Manifold-DC + Newton projection at cell-derived resolution,
-    /// winding repair, simplification-as-candidate, deviation sampling.
+    /// B-Rep edge pinning, simplification-as-candidate, deviation
+    /// sampling. `body_index` selects the body for the edge-pinning
+    /// weave lookup.
+    #[allow(clippy::too_many_arguments)]
     fn mdc_export_body(
-        &self,
+        &mut self,
+        body_index: usize,
         body_id: u32,
         feature_indices: &[usize],
         size: [f32; 3],
@@ -262,11 +273,26 @@ impl crate::Kernel {
         let sdf = |p: [f32; 3]| bounded.sdf(p, crate::csg::EvalMode::Visual);
 
         // Raw pass: Manifold-DC + Newton projection, then winding
-        // repair (MDC emits inconsistently-wound triangles along
-        // sharp feature edges — invisible in the DoubleSide
-        // viewport, fatal in an STL).
+        // repair (belt and braces — the geometric quad winding should
+        // already be consistent since Phase 1a).
         let mut raw = crate::dc::dual_contour_unsimplified(&bounded, resolution);
         let raw_flips = mesh_validate::fix_orientation(&mut raw, &sdf);
+
+        // Phase 1b — edge pinning: MDC classifies each QEF vertex as
+        // face/edge/corner from its contributor set, and the Newton
+        // pass deliberately projects only FACE vertices onto the SDF.
+        // Here the edge/corner vertices get their exact positions: the
+        // nearest point on the woven B-Rep edge curves (µm-accurate)
+        // resp. the nearest topological corner. Faces interpolate
+        // between exact boundary and Newton-projected interior — sharp
+        // edges land on the true curves instead of wiggling cell-sized.
+        let grid_min = {
+            let aabb = bounded.aabb();
+            let g = aabb.expanded(actual_cell * crate::dc::DC_MARGIN_CELLS);
+            g.min
+        };
+        let edges_pinned =
+            self.pin_mesh_to_brep_edges(body_index, &mut raw, grid_min, actual_cell);
 
         // Simplification candidate: the planar/developable pass cuts
         // the triangle count dramatically (box: ~40×), but its
@@ -304,11 +330,192 @@ impl crate::Kernel {
             parametric: false,
             parametric_skip_reason,
             orientation_repaired,
+            edges_pinned,
             simplified,
             simplification_rejected: reject_simplified,
             validation,
         };
         (mesh, report)
+    }
+
+    /// Phase 1b: snap MDC vertices onto the exact woven B-Rep edge
+    /// curves / topological corners, using the classic DC pinning
+    /// criterion — a vertex is pinned iff its OWN grid cell is crossed
+    /// by an edge curve (the nearest curve point lies inside that
+    /// cell). One vertex per crossed cell forms an exact polyline
+    /// chain along every sharp edge; neighbouring face vertices whose
+    /// cells do not touch the curve stay untouched, so faces cannot
+    /// collapse onto the edge. (The mesh CLASSIFICATION channel cannot
+    /// drive this: it works at feature granularity, so a primitive's
+    /// intrinsic edges — all six box edge loops — are face-classified.)
+    ///
+    /// Returns the number of pinned vertices. No-op when the body has
+    /// no woven B-Rep (blend/warp bodies — their surfaces have no
+    /// sharp edges to pin) or no edges.
+    fn pin_mesh_to_brep_edges(
+        &mut self,
+        body_index: usize,
+        mesh: &mut Mesh,
+        grid_min: [f32; 3],
+        cell: f32,
+    ) -> usize {
+        let parametric = self.parametric_weave;
+        self.bodies[body_index].ensure_brep(&self.decoded, parametric);
+        let placement = self.bodies[body_index].placement;
+        let Some(brep) = self.bodies[body_index].brep_cached() else {
+            return 0;
+        };
+        if brep.edges.is_empty() {
+            return 0;
+        }
+
+        let place = |p: [f64; 3]| -> [f32; 3] {
+            let scaled = [
+                p[0] * placement.scale[0] as f64,
+                p[1] * placement.scale[1] as f64,
+                p[2] * placement.scale[2] as f64,
+            ];
+            let r = crate::quat_rotate(
+                placement.rotation,
+                [scaled[0] as f32, scaled[1] as f32, scaled[2] as f32],
+            );
+            [
+                r[0] + placement.translate[0],
+                r[1] + placement.translate[1],
+                r[2] + placement.translate[2],
+            ]
+        };
+
+        // World-space edge polylines + per-edge AABB for cheap pruning.
+        struct EdgePoly {
+            pts: Vec<[f32; 3]>,
+            min: [f32; 3],
+            max: [f32; 3],
+        }
+        let mut polys: Vec<EdgePoly> = Vec::with_capacity(brep.edges.len());
+        for edge in &brep.edges {
+            let pts: Vec<[f32; 3]> =
+                crate::brep::edge_sampling::sample_edge_dense(&edge.geometry, 32)
+                    .into_iter()
+                    .map(place)
+                    .collect();
+            if pts.len() < 2 {
+                continue;
+            }
+            let mut min = [f32::INFINITY; 3];
+            let mut max = [f32::NEG_INFINITY; 3];
+            for p in &pts {
+                for k in 0..3 {
+                    min[k] = min[k].min(p[k]);
+                    max[k] = max[k].max(p[k]);
+                }
+            }
+            polys.push(EdgePoly { pts, min, max });
+        }
+        let corners: Vec<[f32; 3]> = brep.vertices.iter().map(|v| place(v.position)).collect();
+
+        // A cell can only be crossed by a curve whose distance to the
+        // cell-clamped vertex is under one cell diagonal.
+        let tau = cell * 1.75;
+        let tau2 = tau * tau;
+        // Cell membership slack: the curve counts as crossing the cell
+        // when its nearest point lies inside the cell expanded by this.
+        let slack = cell * 0.05;
+
+        // The vertex's own cell bounds (vertices are clamped into their
+        // cell by the MDC pass, so this reconstruction is exact).
+        let cell_bounds = |p: [f32; 3]| -> ([f32; 3], [f32; 3]) {
+            let mut lo = [0.0f32; 3];
+            let mut hi = [0.0f32; 3];
+            for k in 0..3 {
+                let i = ((p[k] - grid_min[k]) / cell).floor();
+                lo[k] = grid_min[k] + i * cell - slack;
+                hi[k] = grid_min[k] + (i + 1.0) * cell + slack;
+            }
+            (lo, hi)
+        };
+        let inside = |q: [f32; 3], lo: [f32; 3], hi: [f32; 3]| -> bool {
+            (0..3).all(|k| q[k] >= lo[k] && q[k] <= hi[k])
+        };
+
+        // Nearest curve point to `p` that lies INSIDE the given cell.
+        let nearest_in_cell = |p: [f32; 3], lo: [f32; 3], hi: [f32; 3]| -> Option<([f32; 3], f32)> {
+            let mut best: Option<([f32; 3], f32)> = None;
+            for poly in &polys {
+                let mut d2 = 0.0f32;
+                for k in 0..3 {
+                    let d = (poly.min[k] - tau - p[k]).max(p[k] - poly.max[k] - tau).max(0.0);
+                    d2 += d * d;
+                }
+                if d2 > tau2 {
+                    continue;
+                }
+                for w in poly.pts.windows(2) {
+                    let (a, b) = (w[0], w[1]);
+                    let ab = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+                    let len2 = ab[0] * ab[0] + ab[1] * ab[1] + ab[2] * ab[2];
+                    let t = if len2 > 1e-20 {
+                        (((p[0] - a[0]) * ab[0] + (p[1] - a[1]) * ab[1] + (p[2] - a[2]) * ab[2])
+                            / len2)
+                            .clamp(0.0, 1.0)
+                    } else {
+                        0.0
+                    };
+                    let q = [a[0] + ab[0] * t, a[1] + ab[1] * t, a[2] + ab[2] * t];
+                    if !inside(q, lo, hi) {
+                        continue;
+                    }
+                    let dq = [p[0] - q[0], p[1] - q[1], p[2] - q[2]];
+                    let d2 = dq[0] * dq[0] + dq[1] * dq[1] + dq[2] * dq[2];
+                    if best.map(|(_, bd)| d2 < bd).unwrap_or(true) {
+                        best = Some((q, d2));
+                    }
+                }
+            }
+            best
+        };
+
+        // Occupancy guard: two neighbouring cell vertices snapping onto
+        // the SAME point (both clamped to a corner) would create a
+        // degenerate/welded pair — first pin wins, later ones skip.
+        let mut occupied: std::collections::HashSet<[u32; 3]> = std::collections::HashSet::new();
+        let quantize = |p: [f32; 3]| -> [u32; 3] {
+            [
+                ((p[0] * 8192.0).round() as i32) as u32,
+                ((p[1] * 8192.0).round() as i32) as u32,
+                ((p[2] * 8192.0).round() as i32) as u32,
+            ]
+        };
+
+        let mut pinned = 0usize;
+        for v in 0..mesh.vertex_count() {
+            let p = [
+                mesh.positions[v * 3],
+                mesh.positions[v * 3 + 1],
+                mesh.positions[v * 3 + 2],
+            ];
+            let (lo, hi) = cell_bounds(p);
+            // A topological corner inside the cell takes priority over
+            // the edge curves running through it.
+            let corner = corners
+                .iter()
+                .filter(|&&q| inside(q, lo, hi))
+                .map(|&q| {
+                    let d = [p[0] - q[0], p[1] - q[1], p[2] - q[2]];
+                    (q, d[0] * d[0] + d[1] * d[1] + d[2] * d[2])
+                })
+                .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+            let target = corner.or_else(|| nearest_in_cell(p, lo, hi));
+            let Some((q, _)) = target else { continue };
+            if !occupied.insert(quantize(q)) {
+                continue;
+            }
+            mesh.positions[v * 3] = q[0];
+            mesh.positions[v * 3 + 1] = q[1];
+            mesh.positions[v * 3 + 2] = q[2];
+            pinned += 1;
+        }
+        pinned
     }
 
     /// Attempt the parametric per-face B-Rep tessellation for body `i`.
@@ -820,6 +1027,104 @@ mod tests {
             report["max_deviation_mm"].as_f64().unwrap() < 0.2,
             "{report}"
         );
+    }
+
+    /// A 30×20×30 box with a real through-hole: the cylinder REMOVE
+    /// carries an explicit merge scope (`targets`) — touching solids
+    /// never boolean implicitly.
+    fn box_with_hole() -> crate::Kernel {
+        let mut k = crate::Kernel::new();
+        let box_id = k
+            .add_primitive(
+                Primitive::KIND_BOX,
+                BoolOp::TAG_NEW,
+                0.0,
+                0.0,
+                0.0,
+                15.0,
+                10.0,
+                15.0,
+            )
+            .unwrap();
+        k.add_feature_call(
+            "cylinder",
+            &format!(
+                r#"{{
+                    "radius": 4.0,
+                    "half_height": 25.0,
+                    "op": "remove",
+                    "targets": "qCreatedBy({box_id})"
+                }}"#
+            ),
+        )
+        .unwrap();
+        assert_eq!(k.bodies.len(), 1, "remove must fuse into one body");
+        assert!(
+            k.feature_errors.is_empty() && k.feature_warnings.is_empty(),
+            "feature errors {:?} warnings {:?}",
+            k.feature_errors,
+            k.feature_warnings
+        );
+        k
+    }
+
+    /// Phase 1b edge pinning: on the generic MDC route, vertices whose
+    /// grid cell is crossed by a B-Rep edge curve must land ON the
+    /// exact curve. A box with a cylindrical through-hole has two
+    /// circular rim edges (r = 4 at y = ±10) — before pinning the QEF
+    /// vertices wiggled cell-sized around them.
+    #[test]
+    fn mdc_edge_pinning_snaps_rim_vertices_onto_the_circle() {
+        let mut k = box_with_hole();
+        let idx = k.bodies[0].feature_indices.clone();
+        let size = k.bodies[0].aabb.size();
+        // Force the generic MDC route.
+        let (mesh, report) = k.mdc_export_body(0, 1, &idx, size, 0.6, String::new());
+        assert!(report.edges_pinned > 50, "pinned {}", report.edges_pinned);
+        assert!(report.validation.watertight, "{:?}", report.validation);
+
+        // An exact chain of vertices must now sit on the top rim circle
+        // (|sqrt(x²+z²) − 4| ≈ 0 at y ≈ 10) — roughly one per crossed
+        // cell (circumference ≈ 25 mm / 0.44 mm cells ≈ 57).
+        let mut exact_on_rim = 0;
+        for v in 0..mesh.vertex_count() {
+            let p = [
+                mesh.positions[v * 3],
+                mesh.positions[v * 3 + 1],
+                mesh.positions[v * 3 + 2],
+            ];
+            let radial = ((p[0] * p[0] + p[2] * p[2]).sqrt() - 4.0).abs();
+            if (p[1] - 10.0).abs() < 2e-3 && radial < 2e-3 {
+                exact_on_rim += 1;
+            }
+        }
+        assert!(exact_on_rim > 30, "exact rim vertices: {exact_on_rim}");
+    }
+
+    /// Phase 1a determinism: identical input must produce a bit-identical
+    /// simplified export mesh across repeated fresh runs — the planar
+    /// simplification used to leak HashMap iteration order into region
+    /// processing (and its slit bridging could emit crossing bridges),
+    /// making watertightness flip between runs of the SAME document.
+    #[test]
+    fn mdc_export_is_deterministic_and_watertight_across_runs() {
+        let build = || {
+            // Real through-hole → planar regions WITH holes (bridging).
+            let mut k = box_with_hole();
+            // Force the generic MDC route (bypass the parametric path) by
+            // running the internal MDC body export directly.
+            let idx = k.bodies[0].feature_indices.clone();
+            let size = k.bodies[0].aabb.size();
+            let (mesh, report) = k.mdc_export_body(0, 1, &idx, size, 0.6, String::new());
+            (mesh, report)
+        };
+        let (m1, r1) = build();
+        let (m2, r2) = build();
+        assert!(r1.validation.watertight, "run 1 not watertight: {r1:?}");
+        assert!(r2.validation.watertight, "run 2 not watertight");
+        assert!(r1.simplified, "simplification must have been accepted");
+        assert_eq!(m1.indices, m2.indices, "indices differ between runs");
+        assert_eq!(m1.positions, m2.positions, "positions differ between runs");
     }
 
     #[test]
