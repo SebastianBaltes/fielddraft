@@ -20,6 +20,7 @@ import {
 } from "react";
 import type { KernelStore } from "./store";
 import type {
+  ExportBodyReport,
   ExportFormat,
   ExportProgress,
   ExportReport,
@@ -33,7 +34,27 @@ import {
 
 const CELL_SIZE_STORAGE_KEY = "fielddraft.export.cellSizeMm";
 const METHOD_STORAGE_KEY = "fielddraft.export.method";
+const OPACITY_STORAGE_KEY = "fielddraft.export.previewOpacity";
+const WIREFRAME_STORAGE_KEY = "fielddraft.export.previewWireframe";
 const DEFAULT_CELL_MM = 0.4;
+
+function initialOpacity(): number {
+  try {
+    const stored = Number(localStorage.getItem(OPACITY_STORAGE_KEY));
+    if (Number.isFinite(stored) && stored >= 0 && stored <= 1) return stored;
+  } catch {
+    // no localStorage (tests) — use the default
+  }
+  return 1;
+}
+
+function initialWireframe(): boolean {
+  try {
+    return localStorage.getItem(WIREFRAME_STORAGE_KEY) === "true";
+  } catch {
+    return false;
+  }
+}
 
 function initialCellSize(): number {
   try {
@@ -84,9 +105,10 @@ export function ExportDialog({ store, format, onClose }: ExportDialogProps) {
   const [cellInput, setCellInput] = useState(String(initialCellSize()));
   const [method, setMethod] = useState<MeshMethod>(initialMethod);
   const [phase, setPhase] = useState<Phase>({ kind: "idle" });
-  // Preview display controls (crossfade mesh↔SDF solid, wireframe overlay).
-  const [meshOpacity, setMeshOpacity] = useState(1);
-  const [wireframe, setWireframe] = useState(false);
+  // Preview display controls (crossfade mesh↔SDF solid, wireframe overlay),
+  // persisted across sessions.
+  const [meshOpacity, setMeshOpacity] = useState(initialOpacity);
+  const [wireframe, setWireframe] = useState(initialWireframe);
   // Monotonic run id — a re-run must not let a stale response overwrite
   // the fresh one (or one from a cancelled run).
   const runIdRef = useRef(0);
@@ -133,12 +155,15 @@ export function ExportDialog({ store, format, onClose }: ExportDialogProps) {
         if (runIdRef.current === runId) {
           setPhase({ kind: "done", report, bytes });
           // Show the exact export triangles as a solid in the viewport
-          // while the (non-modal) dialog stays open.
+          // while the (non-modal) dialog stays open — with the persisted
+          // crossfade opacity + wireframe state applied.
           setExportPreview(
             preview.positions.length > 0
               ? { positions: preview.positions, indices: preview.indices }
               : null,
           );
+          setExportPreviewOpacity(meshOpacity);
+          setExportPreviewWireframe(wireframe);
         }
       })
       .catch((err: unknown) => {
@@ -149,29 +174,36 @@ export function ExportDialog({ store, format, onClose }: ExportDialogProps) {
           });
         }
       });
-  }, [commitCellSize, store, format, method]);
+  }, [commitCellSize, store, format, method, meshOpacity, wireframe]);
 
   // Editing the cell size (or method) after a run discards the stale
   // mesh so the user must re-confirm (Prio: never save/preview a mesh
-  // for settings the user no longer sees).
+  // for settings the user no longer sees). The crossfade/wireframe
+  // preferences are intentionally KEPT (they're persisted user settings).
   const resetToIdle = useCallback(() => {
     runIdRef.current++; // invalidate any in-flight run
     setPhase({ kind: "idle" });
     setExportPreview(null); // drop the stale solid from the viewport
-    // setExportPreview(null) resets the store's display controls; mirror
-    // that in the local UI so the slider/checkbox match on the next mesh.
-    setMeshOpacity(1);
-    setWireframe(false);
   }, []);
 
   const onMeshOpacityChange = useCallback((value: number) => {
     setMeshOpacity(value);
     setExportPreviewOpacity(value);
+    try {
+      localStorage.setItem(OPACITY_STORAGE_KEY, String(value));
+    } catch {
+      // ignore
+    }
   }, []);
 
   const onWireframeChange = useCallback((value: boolean) => {
     setWireframe(value);
     setExportPreviewWireframe(value);
+    try {
+      localStorage.setItem(WIREFRAME_STORAGE_KEY, String(value));
+    } catch {
+      // ignore
+    }
   }, []);
 
   const onCellInputChange = useCallback(
@@ -342,6 +374,7 @@ export function ExportDialog({ store, format, onClose }: ExportDialogProps) {
 
       {phase.kind === "running" && (
         <div className="progress-block" data-testid="export-progress">
+          <span className="spinner" aria-hidden="true" />
           <progress
             max={phase.progress?.total ?? 1}
             value={phase.progress?.done ?? 0}
@@ -471,57 +504,74 @@ function ReportView({
       )}
 
       {!empty && (
+        // Transposed: attributes down the side, one column per body — so a
+        // long "Mesh" label wraps in its cell instead of forcing a
+        // horizontal scroll.
         <table className="body-table">
-          <thead>
+          <tbody>
             <tr>
               <th>Body</th>
-              <th>Mesh</th>
-              <th>Triangles</th>
-              <th>Watertight</th>
-              <th>Max dev.</th>
+              {report.bodies.map((b) => (
+                <td key={b.body_id}>{featureName(b.body_id)}</td>
+              ))}
             </tr>
-          </thead>
-          <tbody>
-            {report.bodies.map((b) => (
-              <tr key={b.body_id}>
-                <td>{featureName(b.body_id)}</td>
-                <td
-                  title={
-                    b.parametric_skip_reason
-                      ? `Parametric route skipped: ${b.parametric_skip_reason}`
-                      : undefined
-                  }
-                >
-                  {b.route
-                    ? b.route
-                    : b.passthrough
-                      ? "source mesh"
-                      : b.parametric
-                        ? "parametric"
-                        : b.interval_dc
-                          ? `interval-DC ${formatMm(b.actual_cell_mm)} mm`
-                          : b.surface_nets
-                            ? `surface nets ${formatMm(b.actual_cell_mm)} mm`
-                            : b.adaptive
-                              ? `adaptive ${formatMm(b.actual_cell_mm)} mm`
-                              : `grid ${formatMm(b.actual_cell_mm)} mm`}
-                  {b.cell_limited ? " (limited)" : ""}
-                  {(b.surface_nets || b.route) && b.dense_triangles > 0
-                    ? ` (${b.dense_triangles.toLocaleString()} → ${b.triangles.toLocaleString()})`
-                    : ""}
+            <tr>
+              <th>Mesh</th>
+              {report.bodies.map((b) => (
+                <td key={b.body_id} className="mesh-cell">
+                  {meshLabel(b)}
                 </td>
-                <td>{b.triangles.toLocaleString()}</td>
-                <td>{b.watertight ? "✓" : defects(b)}</td>
-                <td>
+              ))}
+            </tr>
+            <tr>
+              <th>Triangles</th>
+              {report.bodies.map((b) => (
+                <td key={b.body_id}>{b.triangles.toLocaleString()}</td>
+              ))}
+            </tr>
+            <tr>
+              <th>Watertight</th>
+              {report.bodies.map((b) => (
+                <td key={b.body_id}>{b.watertight ? "✓" : defects(b)}</td>
+              ))}
+            </tr>
+            <tr>
+              <th>Max dev.</th>
+              {report.bodies.map((b) => (
+                <td key={b.body_id}>
                   {b.passthrough ? "—" : `${formatMm(b.max_deviation_mm)} mm`}
                 </td>
-              </tr>
-            ))}
+              ))}
+            </tr>
           </tbody>
         </table>
       )}
     </div>
   );
+}
+
+/** The mesher-route label for a body's report row. */
+function meshLabel(b: ExportBodyReport): string {
+  const cell = formatMm(b.actual_cell_mm);
+  const base = b.route
+    ? b.route
+    : b.passthrough
+      ? "source mesh"
+      : b.parametric
+        ? "parametric"
+        : b.interval_dc
+          ? `interval-DC ${cell} mm`
+          : b.surface_nets
+            ? `surface nets ${cell} mm`
+            : b.adaptive
+              ? `adaptive ${cell} mm`
+              : `grid ${cell} mm`;
+  const limited = b.cell_limited ? " (limited)" : "";
+  const reduction =
+    (b.surface_nets || b.route) && b.dense_triangles > 0
+      ? ` (${b.dense_triangles.toLocaleString()} → ${b.triangles.toLocaleString()})`
+      : "";
+  return `${base}${limited}${reduction}`;
 }
 
 function defects(b: {

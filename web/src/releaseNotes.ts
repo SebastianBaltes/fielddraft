@@ -24,6 +24,16 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.372",
+    entries: [
+      {
+        kind: "fix",
+        text: "Export-Dialog aufgeräumt: Spinner während des Meshens; die Body-Report-Tabelle ist transponiert (Attribute als Zeilen, ein Body je Spalte) und läuft nicht mehr horizontal über — die lange Mesh-Bezeichnung umbricht jetzt in der Zelle; die Vorschau-Einstellungen (Crossfade SDF↔Mesh, Wireframe) werden in localStorage gespeichert",
+        scope: "export",
+      },
+    ],
+  },
+  {
     version: "0.6.371",
     entries: [
       {

@@ -155,6 +155,16 @@
       flex: 1;
       accent-color: var(--color-accent);
     }
+
+    & .spinner {
+      flex: none;
+      width: 1rem;
+      height: 1rem;
+      border: 2px solid var(--color-border);
+      border-top-color: var(--color-accent);
+      border-radius: 50%;
+      animation: fd-export-spin 0.7s linear infinite;
+    }
   }
 
   & .error-block {
@@ -165,6 +175,7 @@
 
   & .report {
     overflow-y: auto;
+    overflow-x: hidden;
     padding: var(--space-3) var(--space-4);
     display: flex;
     flex-direction: column;
@@ -183,24 +194,34 @@
       }
     }
 
+    /* Transposed: row-header label in the first column, one column per
+       body. No horizontal scroll — the wide Mesh label wraps in-cell. */
     & .body-table {
       width: 100%;
+      table-layout: fixed;
       border-collapse: collapse;
       font-size: var(--fs-base);
       color: var(--color-text);
 
       & th {
+        width: 6rem;
         text-align: left;
+        vertical-align: top;
         font-weight: var(--fw-semibold);
         color: var(--color-text-muted);
         padding: var(--space-1) var(--space-2);
         border-bottom: 1px solid var(--color-divider);
+        white-space: nowrap;
       }
 
       & td {
         padding: var(--space-1) var(--space-2);
         border-bottom: 1px solid var(--color-divider);
-        white-space: nowrap;
+        overflow-wrap: anywhere;
+      }
+
+      & .mesh-cell {
+        line-height: 1.35;
       }
     }
   }
@@ -244,5 +265,11 @@
         }
       }
     }
+  }
+}
+
+@keyframes fd-export-spin {
+  to {
+    transform: rotate(360deg);
   }
 }
