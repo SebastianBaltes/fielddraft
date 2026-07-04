@@ -81,6 +81,7 @@ function initialMethod(): MeshMethod {
       stored === "marching-cubes-33" ||
       stored === "dual-marching-cubes" ||
       stored === "extended-marching-cubes" ||
+      stored === "macet" ||
       stored === "manifold-dc" ||
       stored === "rfta" ||
       stored === "adaptive"
@@ -354,6 +355,7 @@ export function ExportDialog({ store, format, onClose }: ExportDialogProps) {
           <option value="extended-marching-cubes">
             Extended Marching Cubes (features)
           </option>
+          <option value="macet">MACET (edge transforms, quality)</option>
           <option value="manifold-dc">Manifold DC (viewport)</option>
           <option value="rfta">Reach for the Arcs</option>
         </select>
@@ -374,7 +376,9 @@ export function ExportDialog({ store, format, onClose }: ExportDialogProps) {
                         ? "Dual Marching Cubes (Nielson 2004): the dual of MC — one point per MC patch joined into quads (manifold variant). Fewer sliver triangles than MC, closed by construction. Then QEM decimation."
                         : method === "extended-marching-cubes"
                           ? "Extended Marching Cubes (Kobbelt 2001): MC33 base plus a QEF feature vertex inserted in cells that carry a sharp CSG edge (clamped into the cell against spikes) — recovers crisp boolean edges MC rounds off, while staying watertight."
-                          : method === "manifold-dc"
+                          : method === "macet"
+                            ? "MACET (Dietrich/Scheidegger 2009): MC33 topology, but each active edge is transformed to be perpendicular to the surface (gradient + tangential, using the analytic ∇f) and the crossing is re-found by bisection — eliminates skinny/degenerate triangles while staying watertight. Slower (root-finding per edge)."
+                            : method === "manifold-dc"
                             ? "The viewport's own uniform Manifold Dual Contouring with planar-face simplification — now exportable too."
                             : method === "rfta"
                               ? "Reach for the Arcs (Sellán et al. 2024): spheres → tangent points → screened Poisson reconstruction. A sampled-grid reconstruction (internal resolution capped) — robust on blurry/imperfect fields."

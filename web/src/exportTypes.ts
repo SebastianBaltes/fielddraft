@@ -30,6 +30,7 @@ export type MeshMethod =
   | "marching-cubes-33"
   | "dual-marching-cubes"
   | "extended-marching-cubes"
+  | "macet"
   | "manifold-dc"
   | "rfta";
 

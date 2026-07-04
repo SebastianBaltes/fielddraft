@@ -38,17 +38,35 @@ const EPS: f32 = f32::EPSILON;
 /// ~90° dihedral of a CSG boolean edge.
 const EMC_FEATURE_COS: f32 = 0.8;
 
+/// Which MC33 variant the core runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Variant {
+    /// Plain topologically-controlled MC33.
+    Plain,
+    /// Extended MC — QEF feature tents in sharp cells.
+    Emc,
+    /// MACET — edge-transformed crossing placement for better triangle shape.
+    Macet,
+}
+
 /// Marching Cubes 33 at `resolution` cells along the longest AABB axis.
 pub fn marching_cubes33(node: &BoundedCsg, resolution: u32) -> Mesh {
-    run(node, resolution, false)
+    run(node, resolution, Variant::Plain)
 }
 
 /// Extended Marching Cubes (feature-sensitive) — MC33 base + QEF feature tents.
 pub fn extended_marching_cubes(node: &BoundedCsg, resolution: u32) -> Mesh {
-    run(node, resolution, true)
+    run(node, resolution, Variant::Emc)
 }
 
-fn run(node: &BoundedCsg, resolution: u32, emc: bool) -> Mesh {
+/// MACET (Dietrich, Scheidegger et al., IEEE TVCG 2009) — MC33 topology with
+/// edge-transformed crossings for high-quality triangles (no skinny/degenerate
+/// triangles). Keeps the exact MC33 connectivity, so it stays watertight.
+pub fn macet(node: &BoundedCsg, resolution: u32) -> Mesh {
+    run(node, resolution, Variant::Macet)
+}
+
+fn run(node: &BoundedCsg, resolution: u32, variant: Variant) -> Mesh {
     if resolution == 0 {
         return Mesh::default();
     }
@@ -84,7 +102,7 @@ fn run(node: &BoundedCsg, resolution: u32, emc: bool) -> Mesh {
         cube: [0.0; 8],
         tribuf: [-1; 3],
         cube_tris: Vec::with_capacity(16),
-        emc,
+        variant,
     };
 
     // Sample the field at every grid corner.
@@ -152,7 +170,7 @@ struct Ctx<'a> {
     tribuf: [i32; 3],
     /// Triangles emitted for the current cube (vertex ids), before flush.
     cube_tris: Vec<[u32; 3]>,
-    emc: bool,
+    variant: Variant,
 }
 
 #[inline]
@@ -196,12 +214,23 @@ impl<'a> Ctx<'a> {
     }
 
     /// Add an edge-crossing vertex on the `axis` edge out of grid point (i,j,k).
-    /// `a`,`b` are the (adjusted) field values at the two endpoints.
+    /// `a`,`b` are the (adjusted) field values at the two endpoints. Plain MC33
+    /// places it by linear interpolation on the straight grid edge; MACET first
+    /// transforms the (detached) edge so it is more perpendicular to the surface
+    /// and root-finds the crossing there — same edge, same shared vertex, so the
+    /// mesh stays watertight, but the triangles are far better shaped.
     fn add_edge_vertex(&mut self, axis: usize, i: usize, j: usize, k: usize, a: f32, b: f32) {
-        let u = a / (a - b);
         let p0 = self.corner_pos(i, j, k);
-        let mut p = p0;
-        p[axis] += u * self.cell;
+        let mut pw = p0;
+        pw[axis] += self.cell;
+        let p = if self.variant == Variant::Macet {
+            macet_crossing(self.node, p0, pw, self.cell)
+        } else {
+            let u = a / (a - b);
+            let mut q = p0;
+            q[axis] += u * self.cell;
+            q
+        };
         let id = (self.positions.len() / 3) as i32;
         self.positions.extend_from_slice(&p);
         let slot = self.vslot(axis, i, j, k);
@@ -519,7 +548,7 @@ impl<'a> Ctx<'a> {
             return;
         }
         let tris = std::mem::take(&mut self.cube_tris);
-        if self.emc {
+        if self.variant == Variant::Emc {
             if let Some(fid) = self.feature_vertex(i, j, k, &tris) {
                 for tri in &tris {
                     let [a, b, c] = *tri;
@@ -750,6 +779,150 @@ fn test_face(cb: &[f32; 8], face: i8) -> bool {
     }
 }
 
+// ── MACET edge transformations (Dietrich, Scheidegger et al., TVCG 2009) ──────
+
+#[inline]
+fn dot(a: [f32; 3], b: [f32; 3]) -> f32 {
+    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+}
+#[inline]
+fn sub(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
+    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
+}
+#[inline]
+fn mid(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
+    [0.5 * (a[0] + b[0]), 0.5 * (a[1] + b[1]), 0.5 * (a[2] + b[2])]
+}
+#[inline]
+fn lerp(a: [f32; 3], b: [f32; 3], u: f32) -> [f32; 3] {
+    [a[0] + u * (b[0] - a[0]), a[1] + u * (b[1] - a[1]), a[2] + u * (b[2] - a[2])]
+}
+#[inline]
+fn normalized(a: [f32; 3]) -> [f32; 3] {
+    let l = (a[0] * a[0] + a[1] * a[1] + a[2] * a[2]).sqrt();
+    if l < 1e-20 {
+        [0.0, 0.0, 0.0]
+    } else {
+        [a[0] / l, a[1] / l, a[2] / l]
+    }
+}
+
+/// MACET crossing of the active grid edge (pv,pw): move the detached endpoints
+/// so the edge is more perpendicular to the isosurface, then root-find the
+/// crossing on the transformed edge. Two candidate transforms are tried and the
+/// one whose edge is more perpendicular to ∇f wins (the paper's quality choice,
+/// resolved per shared edge so every cell agrees → watertight). The analytic
+/// SDF + gradient replace the paper's spline reconstruction.
+fn macet_crossing(node: &BoundedCsg, pv: [f32; 3], pw: [f32; 3], cell: f32) -> [f32; 3] {
+    let eps = cell * 0.25;
+    let fv = node.sdf(pv, EvalMode::Visual);
+    let fw = node.sdf(pw, EvalMode::Visual);
+    if (fv <= 0.0) == (fw <= 0.0) {
+        return mid(pv, pw); // not actually straddling → safe midpoint
+    }
+    let gv = sdf_normal(node, pv, eps);
+    let gw = sdf_normal(node, pw, eps);
+    let max_disp = 0.5 * cell;
+
+    // A — gradient transform: push each endpoint away from the surface along ±∇f.
+    let va = move_away(node, pv, fv, gv, max_disp, eps);
+    let wa = move_away(node, pw, fw, gw, max_disp, eps);
+    let (ca, perp_a) = crossing_and_perp(node, va, wa, pv, pw, eps);
+
+    // B — tangential transform: slide each endpoint parallel to the surface along
+    // the tangential part of the edge direction (α = 0.5).
+    let vt = move_tangent(pv, pw, gv, 0.5);
+    let wt = move_tangent(pw, pv, gw, 0.5);
+    let (ct, perp_t) = crossing_and_perp(node, vt, wt, pv, pw, eps);
+
+    if perp_a >= perp_t {
+        ca
+    } else {
+        ct
+    }
+}
+
+/// Move endpoint `p` away from the isosurface along ±∇f (increasing |f|), the
+/// largest step ≤ `max_disp` that keeps its sign and a coherent gradient
+/// (⟨∇f(q),∇f(p)⟩ > 0 — the paper's weighting guard).
+fn move_away(
+    node: &BoundedCsg,
+    p: [f32; 3],
+    f: f32,
+    g: [f32; 3],
+    max_disp: f32,
+    eps: f32,
+) -> [f32; 3] {
+    if f == 0.0 {
+        return p;
+    }
+    let s = f.signum(); // +1 outside → move +∇f; −1 inside → move −∇f
+    let dir = [g[0] * s, g[1] * s, g[2] * s];
+    let mut alpha = max_disp;
+    for _ in 0..6 {
+        let q = [p[0] + dir[0] * alpha, p[1] + dir[1] * alpha, p[2] + dir[2] * alpha];
+        let fq = node.sdf(q, EvalMode::Visual);
+        if (fq > 0.0) == (f > 0.0) && dot(sdf_normal(node, q, eps), g) > 0.0 {
+            return q;
+        }
+        alpha *= 0.5;
+    }
+    p
+}
+
+/// Move endpoint `p` tangentially: `α · (I − ĝĝᵀ)(p − other)`, the projection of
+/// the edge direction onto the surface tangent plane at `p`.
+fn move_tangent(p: [f32; 3], other: [f32; 3], g: [f32; 3], alpha: f32) -> [f32; 3] {
+    let e = sub(p, other);
+    let d0 = dot(e, g);
+    let t = [e[0] - d0 * g[0], e[1] - d0 * g[1], e[2] - d0 * g[2]];
+    [p[0] + alpha * t[0], p[1] + alpha * t[1], p[2] + alpha * t[2]]
+}
+
+/// Root-find the crossing on the transformed edge (a,b); if the transform broke
+/// the straddle, fall back to the plain linear crossing on the original edge.
+/// Returns (crossing, perpendicularity = |⟨∇̂f, edgeDir⟩|).
+fn crossing_and_perp(
+    node: &BoundedCsg,
+    a: [f32; 3],
+    b: [f32; 3],
+    pv: [f32; 3],
+    pw: [f32; 3],
+    eps: f32,
+) -> ([f32; 3], f32) {
+    let fa = node.sdf(a, EvalMode::Visual);
+    let fb = node.sdf(b, EvalMode::Visual);
+    let (cross, edge_dir) = if (fa <= 0.0) != (fb <= 0.0) {
+        (bisection(node, a, fa, b, fb), normalized(sub(b, a)))
+    } else {
+        let fv = node.sdf(pv, EvalMode::Visual);
+        let fw = node.sdf(pw, EvalMode::Visual);
+        let u = if (fv - fw).abs() < 1e-20 {
+            0.5
+        } else {
+            fv / (fv - fw)
+        };
+        (lerp(pv, pw, u), normalized(sub(pw, pv)))
+    };
+    let g = sdf_normal(node, cross, eps);
+    (cross, dot(g, edge_dir).abs())
+}
+
+/// Bisection root-find of the isosurface on segment (a,b), which straddle it.
+fn bisection(node: &BoundedCsg, a: [f32; 3], fa: f32, b: [f32; 3], _fb: f32) -> [f32; 3] {
+    // `lo` = inside (f ≤ 0) end, `hi` = outside end.
+    let (mut lo, mut hi) = if fa <= 0.0 { (a, b) } else { (b, a) };
+    for _ in 0..18 {
+        let m = mid(lo, hi);
+        if node.sdf(m, EvalMode::Visual) <= 0.0 {
+            lo = m;
+        } else {
+            hi = m;
+        }
+    }
+    mid(lo, hi)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -840,9 +1013,60 @@ mod tests {
         assert_eq!(v.boundary_edges, 0, "EMC keeps the mesh closed");
     }
 
+    fn min_triangle_area(mesh: &Mesh) -> f32 {
+        let mut min = f32::MAX;
+        for t in mesh.indices.chunks_exact(3) {
+            let p = |i: u32| {
+                let b = i as usize * 3;
+                [
+                    mesh.positions[b],
+                    mesh.positions[b + 1],
+                    mesh.positions[b + 2],
+                ]
+            };
+            let (a, b, c) = (p(t[0]), p(t[1]), p(t[2]));
+            let ab = sub(b, a);
+            let ac = sub(c, a);
+            let cr = [
+                ab[1] * ac[2] - ab[2] * ac[1],
+                ab[2] * ac[0] - ab[0] * ac[2],
+                ab[0] * ac[1] - ab[1] * ac[0],
+            ];
+            let area = 0.5 * (cr[0] * cr[0] + cr[1] * cr[1] + cr[2] * cr[2]).sqrt();
+            min = min.min(area);
+        }
+        min
+    }
+
+    #[test]
+    fn macet_sphere_is_watertight_without_degenerate_triangles() {
+        let b = bounded(&[feat(
+            1,
+            BoolOp::New,
+            Primitive::Sphere {
+                center: [0.0, 0.0, 0.0],
+                radius: 10.0,
+            },
+        )]);
+        let mesh = macet(&b, 24);
+        assert!(mesh.triangle_count() > 100, "sphere should mesh");
+        let v = validate_topology(&mesh);
+        // Same connectivity as MC33 → watertight by construction, only the
+        // vertex positions differ.
+        assert_eq!(v.boundary_edges, 0, "MACET keeps the mesh closed");
+        assert_eq!(v.non_manifold_edges, 0, "manifold");
+        // MACET's whole point: no near-zero-area (degenerate) triangles.
+        assert!(
+            min_triangle_area(&mesh) > 1e-4,
+            "MACET should not emit degenerate triangles (min area {})",
+            min_triangle_area(&mesh)
+        );
+    }
+
     #[test]
     fn empty_scene_empty_mesh() {
         assert!(marching_cubes33(&BoundedCsg::Empty, 16).is_empty());
         assert!(extended_marching_cubes(&BoundedCsg::Empty, 16).is_empty());
+        assert!(macet(&BoundedCsg::Empty, 16).is_empty());
     }
 }

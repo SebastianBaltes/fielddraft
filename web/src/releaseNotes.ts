@@ -24,6 +24,16 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.382",
+    entries: [
+      {
+        kind: "feat",
+        text: "Neues Meshing-Verfahren MACET (Dietrich/Scheidegger, IEEE TVCG 2009): behält die Marching-Cubes-33-Topologie, verschiebt aber jede aktive Gitterkante so, dass sie senkrecht auf der Isofläche steht (Gradient- + Tangential-Transform mit dem analytischen ∇f) und findet den Schnitt per Bisektion neu — beseitigt schlanke/entartete Dreiecke und bleibt per Konstruktion watertight. Etwas langsamer (Nullstellensuche pro Kante). Verifiziert: Kugel geschlossen und ohne entartete Dreiecke",
+        scope: "export",
+      },
+    ],
+  },
+  {
     version: "0.6.381",
     entries: [
       {

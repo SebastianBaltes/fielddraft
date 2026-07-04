@@ -93,6 +93,11 @@ pub enum MeshMethod {
     /// MC33 base plus a QEF feature vertex inserted in cells carrying a sharp
     /// CSG edge, recovering crisp boolean edges MC rounds off. Dense grid.
     ExtendedMarchingCubes,
+    /// MACET (`marching_cubes33::macet`, Dietrich/Scheidegger 2009): MC33
+    /// topology with edge-transformed crossings — moves each active edge to be
+    /// perpendicular to the surface (gradient/tangential, analytic ∇f) so the
+    /// triangles are well-shaped (no skinny/degenerate ones), staying watertight.
+    Macet,
 }
 
 impl MeshMethod {
@@ -107,6 +112,7 @@ impl MeshMethod {
             "marching-cubes-33" => MeshMethod::MarchingCubes33,
             "dual-marching-cubes" => MeshMethod::DualMarchingCubes,
             "extended-marching-cubes" => MeshMethod::ExtendedMarchingCubes,
+            "macet" => MeshMethod::Macet,
             "manifold-dc" => MeshMethod::ManifoldDc,
             "rfta" => MeshMethod::Rfta,
             _ => MeshMethod::Adaptive,
@@ -126,6 +132,7 @@ impl MeshMethod {
                 | MeshMethod::MarchingCubes33
                 | MeshMethod::DualMarchingCubes
                 | MeshMethod::ExtendedMarchingCubes
+                | MeshMethod::Macet
                 | MeshMethod::UniformDc
                 | MeshMethod::ManifoldDc
                 | MeshMethod::SurfaceNets
@@ -344,6 +351,7 @@ fn raw_dense_mesh(
         MeshMethod::DualMarchingCubes => {
             crate::dual_marching_cubes::dual_marching_cubes(bounded, resolution)
         }
+        MeshMethod::Macet => crate::marching_cubes33::macet(bounded, resolution),
         // MarchingCubes (and any non-dense method that slips through).
         _ => crate::marching_tets::marching_tets(bounded, resolution),
     }
@@ -512,6 +520,7 @@ impl crate::Kernel {
                 | MeshMethod::MarchingCubes33
                 | MeshMethod::DualMarchingCubes
                 | MeshMethod::ExtendedMarchingCubes
+                | MeshMethod::Macet
                 | MeshMethod::ManifoldDc
                 | MeshMethod::Rfta
         ) {
@@ -1029,6 +1038,11 @@ impl crate::Kernel {
             MeshMethod::DualMarchingCubes => (
                 crate::dual_marching_cubes::dual_marching_cubes(&bounded, resolution),
                 "dual marching cubes",
+                true,
+            ),
+            MeshMethod::Macet => (
+                crate::marching_cubes33::macet(&bounded, resolution),
+                "macet",
                 true,
             ),
             _ => (
