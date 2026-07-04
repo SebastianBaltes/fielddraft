@@ -406,7 +406,17 @@ impl crate::Kernel {
         let body = self.bodies.get(i)?;
         let body_id = body.id.as_u32_or_root().unwrap_or(0);
         let feature_indices = body.feature_indices.clone();
-        let size = body.aabb.size();
+        // Grid extent from the TIGHT CSG bound, not the body's loose union
+        // AABB. `body.aabb` is the union of all the body's feature AABBs, so a
+        // small `∩ box` clip of a large body still reports the large body's
+        // extent — and `derive_export_resolution` then clamps the cell for the
+        // whole body, leaving the few-mm clipped region coarse (ticket 8l06).
+        // The BoundedCsg AABB now tightens intersections, so it's the real
+        // extent the export must grid.
+        let size = crate::body::build_bounded_with_primitives(&self.decoded, &feature_indices)
+            .0
+            .aabb()
+            .size();
 
         // ImportedMesh passthrough — identical to the viewport rule in
         // `build_mesh_for`: the source triangles ARE the body.
@@ -1578,6 +1588,54 @@ mod tests {
         // stray-vertex blow-up the broken uniform fallback produced.
         let max_dev = b["max_deviation_mm"].as_f64().unwrap();
         assert!(max_dev < 2.0, "stray far vertex remains: max_dev={max_dev} mm");
+    }
+
+    /// Ticket 8l06: the exact box-isolated broken region — sphere r50 ∩
+    /// gyroid(10,1) − cyl r30 ∩ a 6×8×6 box centred on a boolean-cut tooth.
+    fn ticket_8l06_kernel() -> crate::Kernel {
+        let mut k = ticket_9ocx_kernel();
+        k.add_feature_call(
+            "box",
+            r#"{ "half_extents": [3.0, 4.0, 3.0], "op": "intersect",
+                 "translate": [7.970110677489131, 22.314295, 29.869688],
+                 "targets": "qCreatedBy(1)" }"#,
+        )
+        .unwrap();
+        assert!(k.feature_errors.is_empty(), "feature errors {:?}", k.feature_errors);
+        k
+    }
+
+    /// Ticket 8l06: an intersection AABB must tighten to the CLIP, not report
+    /// the whole body. A big sphere ∩ gyroid − cyl clipped by a 6×8×6 mm box
+    /// must grid the few-mm clip at the requested cell — before the fix its
+    /// AABB stayed the sphere's 100 mm, so the export clamped the cell for the
+    /// whole body and the clipped region came out as a coarse, toothy
+    /// staircase. The SDF itself is clean there (well-defined inside/outside,
+    /// |grad| ~ 1 at the analytic faces), so at the true resolution Marching
+    /// Tets is watertight and defect-free.
+    #[test]
+    fn intersection_aabb_tightens_to_the_clip() {
+        let k = ticket_8l06_kernel();
+        let idx = k.bodies[0].feature_indices.clone();
+        let (bounded, _) = crate::body::build_bounded_with_primitives(&k.decoded, &idx);
+        let size = bounded.aabb().size();
+        assert!(
+            size[0] < 7.0 && size[1] < 9.0 && size[2] < 7.0,
+            "intersection AABB not tightened to the box: {size:?}"
+        );
+
+        // At 0.05 mm the clip meshes UN-clamped and comes out perfectly clean.
+        let mut kk = ticket_8l06_kernel();
+        let rep = export_single_method(&mut kk, 0.05, "marching-cubes");
+        let b = &rep["bodies"][0];
+        assert_eq!(b["cell_limited"], false, "clip still clamped: {rep}");
+        assert!(
+            (b["actual_cell_mm"].as_f64().unwrap() - 0.05).abs() < 0.01,
+            "clip not meshed at 0.05 mm: {rep}"
+        );
+        assert_eq!(b["boundary_edges"], 0, "clip meshed with holes: {rep}");
+        assert_eq!(b["non_manifold_edges"], 0, "clip meshed non-manifold: {rep}");
+        assert_eq!(b["watertight"], true, "clip not watertight: {rep}");
     }
 
     /// A gyroid shell ∩ box: same non-1-Lipschitz field as the ticket, made

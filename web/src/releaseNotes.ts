@@ -24,6 +24,17 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.378",
+    entries: [
+      {
+        kind: "fix",
+        text: "Export-Auflösung wird nicht mehr fälschlich gekappt, wenn ein Körper per Boolean-Intersect (z. B. ∩ Box) auf wenige Millimeter beschnitten ist: die Schnitt-AABB verengt sich jetzt auf den tatsächlichen Überlappungsbereich, sodass der beschnittene Bereich bei der gewünschten Zellgröße gemesht wird — an den Boolean-Kanten verschwinden dadurch die zellgroßen Zacken/Löcher (die SDF dort ist sauber, es war reine Unterauflösung)",
+        scope: "export",
+        tickets: ["8l06"],
+      },
+    ],
+  },
+  {
     version: "0.6.377",
     entries: [
       {

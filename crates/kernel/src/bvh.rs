@@ -933,10 +933,23 @@ fn build(csg: &CsgNode, carry: &Transform) -> BoundedCsg {
         CsgNode::Intersection(a, b) => {
             let left = build(a, carry);
             let right = build(b, carry);
-            // Intersection is a subset of either child; use the left
-            // so the bound stays well-defined even when the right is
-            // empty or unbounded.
-            let aabb = left.aabb();
+            // A∩B is a subset of BOTH children, so the intersection of the two
+            // child AABBs is a valid — and much tighter — bound. Tightening
+            // matters a lot for meshing: a small `∩ box` clip of a huge body
+            // (ticket 8l06) must report the box's few-mm extent, not the
+            // body's, or the export grid is sized for the whole body and the
+            // clipped region gets a coarse cell (the resolution "clamp"). An
+            // unbounded/space-filling child (gyroid, half-space) reports an
+            // EMPTY sentinel AABB — intersecting with that would wrongly
+            // collapse the bound to nothing, so fall back to the finite side.
+            let (la, ra) = (left.aabb(), right.aabb());
+            let aabb = if la.is_empty() {
+                ra
+            } else if ra.is_empty() {
+                la
+            } else {
+                Aabb::intersect(la, ra)
+            };
             BoundedCsg::Intersection {
                 left: Box::new(left),
                 right: Box::new(right),
