@@ -30,6 +30,12 @@ export interface ExportBodyReport {
   edges_pinned: number;
   simplified: boolean;
   simplification_rejected: boolean;
+  /** Phase 1d: band cells whose sub-cell feature (thin wall/slit)
+   *  slipped between the sampling planes — shrink the cell size. */
+  thin_cells: number;
+  /** Proper triangle-triangle self-intersections (measured, not gated). */
+  self_intersections: number;
+  self_intersections_complete: boolean;
   vertices: number;
   triangles: number;
   degenerate_triangles: number;

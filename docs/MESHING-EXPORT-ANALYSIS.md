@@ -251,9 +251,27 @@ graph LR
   Box−Zylinder 1.152 Dreiecke mit exakter Rim-Kette. Uniform-Grid
   bleibt als Fallback bei Validator-Fail.
 
-  **Offen (Phase 1d, klein):** Wandstärken-Heuristik (Features <
-  Zellgröße), expliziter Selbstschnitt-Check (BVH), Band-Guard für
-  stark nicht-Lipschitz-Felder (aktuell Faktor 1,6 + Validator-Netz).
+  **✅ Phase 1d + 2c-Kugel (v0.6.363):** (1) Getrimmte Kugel-Patches
+  tessellieren parametrisch: die Kugel ist eine Rotationsfläche —
+  ein synthetisches Halbkreis-Profil speist die komplette
+  RevolvedProfile-Maschinerie (Patches, Bänder, Pol-Scheiben gratis;
+  Kugel−Box: 804 Dreiecke, 0,079 mm). (2) Dünnwand-Erkennung im
+  adaptiven Pass: Band-Zellen mit |f(center)| < Zelle/2 (Fläche
+  beweisbar in der Zelle) aber leerem MC-Case = Sub-Zellen-Feature
+  zwischen den Abtastebenen; plus Multi-Zyklus-Zellen (Wand ≈ 1 Zelle).
+  Report `thin_cells` + Dialog-Warnung „reduce the cell size". (3)
+  Selbstschnitt-Zählung: Grid-Hash + Möller-Tri-Tri über positions-
+  geweldete Nicht-Nachbarn, Paar-Budget 2M, gemessen-nicht-gated
+  (geschellte Vase: 17 echte Selbstdurchdringungen — die bekannte
+  MDC-Limitation, jetzt sichtbar statt verschwiegen). (4) Band-Guard
+  1,6→3,0 für Bodies, die das Analytik-Gate ablehnt (Blends/Warps/
+  non-Lipschitz).
+
+  **Bewusst offen:** Torus-Patches + geschellte-Vase-Innenwand
+  (geschlossene Profil-Schleifen — „Wurst-Topologie"; fällt sauber auf
+  den adaptiven Pfad), Spline-Extrude-Wände (Tessellated-Carrier),
+  Selbstschnitt-POLITIK (Reparatur/Vermeidung — erst Nutzerbedarf
+  abwarten, Werte sind jetzt messbar), beidseitige Hausdorff-Messung.
 - **Phase 2 (M):** Option B für weave-vollständige Bodies — der Qualitäts- und
   Ökonomiesprung für klassische CAD-Teile (und erledigt Ticket-Klasse 55ea/mdo0
   strukturell: Helix-`parametric_brep`-Pfad kann hier ebenfalls exakt tessellieren).

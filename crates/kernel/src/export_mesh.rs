@@ -32,6 +32,9 @@ pub const EXPORT_MAX_CORNERS: f64 = 24_000_000.0;
 /// Sample budget for the deviation measurement per body.
 pub const DEVIATION_SAMPLE_BUDGET: usize = 120_000;
 
+/// Pair budget for the self-intersection scan per body.
+pub const SELF_INTERSECT_PAIR_BUDGET: usize = 2_000_000;
+
 /// Per-body slice of the export report.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct BodyExportReport {
@@ -76,6 +79,16 @@ pub struct BodyExportReport {
     /// True when simplification was rejected because it broke a
     /// watertight raw mesh.
     pub simplification_rejected: bool,
+    /// Finest cells with >1 contour sheet (adaptive route): walls
+    /// thinner than one cell live there and may be under-resolved —
+    /// shrink the cell size to resolve them.
+    pub thin_cells: usize,
+    /// Proper triangle-triangle self-intersections (Manifold DC is
+    /// topologically 2-manifold but not intersection-free — paper
+    /// limitation). Measured, not gated.
+    pub self_intersections: usize,
+    /// False when the pair budget truncated the self-intersection scan.
+    pub self_intersections_complete: bool,
     #[serde(flatten)]
     pub validation: MeshValidation,
 }
@@ -210,6 +223,9 @@ impl crate::Kernel {
                 edges_pinned: 0,
                 simplified: false,
                 simplification_rejected: false,
+                thin_cells: 0,
+                self_intersections: 0,
+                self_intersections_complete: true,
                 validation,
             };
             (mesh, report)
@@ -221,6 +237,8 @@ impl crate::Kernel {
             // the generic MDC pass below.
             match self.try_parametric_export(i, cell_mm) {
                 Ok((mesh, validation)) => {
+                    let (si, si_complete) =
+                        mesh_validate::count_self_intersections(&mesh, SELF_INTERSECT_PAIR_BUDGET);
                     let report = BodyExportReport {
                         body_id,
                         requested_cell_mm: cell_mm,
@@ -236,6 +254,9 @@ impl crate::Kernel {
                         edges_pinned: 0,
                         simplified: false,
                         simplification_rejected: false,
+                        thin_cells: 0,
+                        self_intersections: si,
+                        self_intersections_complete: si_complete,
                         validation,
                     };
                     (mesh, report)
@@ -290,8 +311,17 @@ impl crate::Kernel {
         // failure falls through to the uniform pass below.
         let tol = (cell_mm / 4.0).clamp(0.01, 0.1);
         let pin_geo = self.build_pin_geometry(body_index, &sdf);
+        // Wider band for bodies whose field may be far from 1-Lipschitz:
+        // exactly the bodies the analytic gate rejects (blends, warps,
+        // helix/sweep, non-Lipschitz leaves). The wider band costs a few
+        // extra evals; a too-narrow band would cost holes.
+        let guard = if self.check_analytically_exact(&feature_indices).is_ok() {
+            crate::mdc_adaptive::LIPSCHITZ_GUARD_DEFAULT
+        } else {
+            crate::mdc_adaptive::LIPSCHITZ_GUARD_NON_LIPSCHITZ
+        };
         let adaptive_attempt =
-            crate::mdc_adaptive::adaptive_mdc(&bounded, cell_mm, tol, &pin_geo).and_then(
+            crate::mdc_adaptive::adaptive_mdc(&bounded, cell_mm, tol, guard, &pin_geo).and_then(
                 |mut result| {
                     let flips = mesh_validate::fix_orientation(&mut result.mesh, &sdf);
                     let mut validation = mesh_validate::validate_topology(&result.mesh);
@@ -316,6 +346,10 @@ impl crate::Kernel {
             );
         match adaptive_attempt {
             Ok((result, validation, flips)) => {
+                let (si, si_complete) = mesh_validate::count_self_intersections(
+                    &result.mesh,
+                    SELF_INTERSECT_PAIR_BUDGET,
+                );
                 let report = BodyExportReport {
                     body_id,
                     requested_cell_mm: cell_mm,
@@ -331,6 +365,9 @@ impl crate::Kernel {
                     edges_pinned: result.edges_pinned,
                     simplified: true,
                     simplification_rejected: false,
+                    thin_cells: result.thin_cells,
+                    self_intersections: si,
+                    self_intersections_complete: si_complete,
                     validation,
                 };
                 return (result.mesh, report);
@@ -414,6 +451,8 @@ impl crate::Kernel {
         validation.max_deviation_mm = max_dev;
         validation.p95_deviation_mm = p95_dev;
         validation.deviation_samples = samples;
+        let (si, si_complete) =
+            mesh_validate::count_self_intersections(&mesh, SELF_INTERSECT_PAIR_BUDGET);
         // Drop the viewport-only sidecar channels; the exporters
         // only read positions/indices.
         mesh.face_index = Vec::new();
@@ -433,6 +472,9 @@ impl crate::Kernel {
             edges_pinned,
             simplified,
             simplification_rejected: reject_simplified,
+            thin_cells: 0,
+            self_intersections: si,
+            self_intersections_complete: si_complete,
             validation,
         };
         (mesh, report)
@@ -1289,6 +1331,89 @@ mod tests {
         // QEF collapses collinear runs up to the chord tolerance) — the
         // remaining support vertices must still sit EXACTLY on the curve.
         assert!(exact_on_rim > 12, "exact rim vertices: {exact_on_rim}");
+    }
+
+    /// Phase 1d: a feature thinner than the sampling lattice must be
+    /// flagged. A 0.28 mm SLIT inside a solid box (cells 0.6 mm): the
+    /// box AABB pins the grid, the slit sits between two corner
+    /// planes — every corner samples inside material, the MC case is
+    /// empty, yet the band centre proves the surface passes through.
+    #[test]
+    fn sub_cell_slit_is_flagged_as_thin_cells() {
+        let mut k = crate::Kernel::new();
+        let box_id = k
+            .add_primitive(
+                Primitive::KIND_BOX,
+                BoolOp::TAG_NEW,
+                0.0,
+                0.0,
+                0.0,
+                5.0,
+                5.0,
+                5.0,
+            )
+            .unwrap();
+        k.add_feature_call(
+            "box",
+            &format!(
+                r#"{{
+                    "half_extents": [6.0, 0.14, 6.0],
+                    "center": [0.0, 0.3, 0.0],
+                    "op": "remove",
+                    "targets": "qCreatedBy({box_id})"
+                }}"#
+            ),
+        )
+        .unwrap();
+        let idx = k.bodies[0].feature_indices.clone();
+        let size = k.bodies[0].aabb.size();
+        // Force the generic MDC route (the parametric route would
+        // resolve the slit exactly and needs no flag).
+        let (_, report) = k.mdc_export_body(0, 1, &idx, size, 0.6, String::new());
+        assert!(report.adaptive, "{report:?}");
+        assert!(report.thin_cells > 50, "thin_cells {}", report.thin_cells);
+    }
+
+    /// Phase 2c: a hard-cut sphere — the spherical patch is trimmed by
+    /// a plane (one once-winding rim, closes onto the pole) and must
+    /// tessellate parametrically via the synthetic semicircle profile.
+    #[test]
+    fn sphere_cut_by_box_exports_parametric_watertight() {
+        let mut k = crate::Kernel::new();
+        let sphere_id = k
+            .add_primitive(
+                Primitive::KIND_SPHERE,
+                BoolOp::TAG_NEW,
+                0.0,
+                0.0,
+                0.0,
+                10.0,
+                0.0,
+                0.0,
+            )
+            .unwrap();
+        // Cut away everything above y = 4 (box remove with scope).
+        k.add_feature_call(
+            "box",
+            &format!(
+                r#"{{
+                    "half_extents": [20.0, 8.0, 20.0],
+                    "center": [0.0, 12.0, 0.0],
+                    "op": "remove",
+                    "targets": "qCreatedBy({sphere_id})"
+                }}"#
+            ),
+        )
+        .unwrap();
+        assert_eq!(k.bodies.len(), 1);
+        let report = export_single(&mut k, 0.4);
+        eprintln!("SPHERE-CUT REPORT: {report}");
+        assert_eq!(report["all_watertight"], true, "{report}");
+        assert_eq!(report["bodies"][0]["parametric"], true, "{report}");
+        assert!(
+            report["max_deviation_mm"].as_f64().unwrap() < 0.12,
+            "{report}"
+        );
     }
 
     /// Phase 1c on SDF-only geometry: a smooth-blended union has no

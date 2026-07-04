@@ -372,6 +372,215 @@ pub fn measure_deviation(
     (max, p95, n)
 }
 
+/// Count PROPER self-intersections: pairs of non-adjacent triangles
+/// (no shared welded vertex) that geometrically intersect. Broad phase
+/// is a uniform grid hash over triangle AABBs; narrow phase is the
+/// Möller segment-interval test. Coplanar overlaps are not counted
+/// (they surface as duplicate/degenerate topology instead). Returns
+/// `(intersections, fully_checked)` — the pair budget keeps worst-case
+/// meshes from stalling the export; a truncated check is reported
+/// honestly.
+pub fn count_self_intersections(mesh: &Mesh, pair_budget: usize) -> (usize, bool) {
+    let tc = mesh.triangle_count();
+    if tc < 2 {
+        return (0, true);
+    }
+    let (weld, _) = weld_by_position(mesh);
+    let vert = |i: u32| -> [f64; 3] {
+        let b = i as usize * 3;
+        [
+            mesh.positions[b] as f64,
+            mesh.positions[b + 1] as f64,
+            mesh.positions[b + 2] as f64,
+        ]
+    };
+
+    // Grid cell = ~2× the median edge length (sampled).
+    let mut sample_len = 0.0f64;
+    let mut samples = 0usize;
+    let stride = (tc / 512).max(1);
+    for t in (0..tc).step_by(stride) {
+        let a = vert(mesh.indices[t * 3]);
+        let b = vert(mesh.indices[t * 3 + 1]);
+        let d = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+        sample_len += (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+        samples += 1;
+    }
+    let cell = (sample_len / samples.max(1) as f64).max(1e-6) * 2.0;
+
+    let key_of = |p: [f64; 3]| -> [i64; 3] {
+        [
+            (p[0] / cell).floor() as i64,
+            (p[1] / cell).floor() as i64,
+            (p[2] / cell).floor() as i64,
+        ]
+    };
+    let mut grid: HashMap<[i64; 3], Vec<u32>> = HashMap::new();
+    for t in 0..tc {
+        let (a, b, c) = (
+            vert(mesh.indices[t * 3]),
+            vert(mesh.indices[t * 3 + 1]),
+            vert(mesh.indices[t * 3 + 2]),
+        );
+        let lo = key_of([
+            a[0].min(b[0]).min(c[0]),
+            a[1].min(b[1]).min(c[1]),
+            a[2].min(b[2]).min(c[2]),
+        ]);
+        let hi = key_of([
+            a[0].max(b[0]).max(c[0]),
+            a[1].max(b[1]).max(c[1]),
+            a[2].max(b[2]).max(c[2]),
+        ]);
+        for x in lo[0]..=hi[0] {
+            for y in lo[1]..=hi[1] {
+                for z in lo[2]..=hi[2] {
+                    grid.entry([x, y, z]).or_default().push(t as u32);
+                }
+            }
+        }
+    }
+
+    let shares_vertex = |t1: usize, t2: usize| -> bool {
+        for i in 0..3 {
+            for j in 0..3 {
+                if weld[mesh.indices[t1 * 3 + i] as usize]
+                    == weld[mesh.indices[t2 * 3 + j] as usize]
+                {
+                    return true;
+                }
+            }
+        }
+        false
+    };
+
+    let mut tested: std::collections::HashSet<(u32, u32)> = std::collections::HashSet::new();
+    let mut hits = 0usize;
+    let mut complete = true;
+    'outer: for bucket in grid.values() {
+        for i in 0..bucket.len() {
+            for j in (i + 1)..bucket.len() {
+                let (t1, t2) = (bucket[i].min(bucket[j]), bucket[i].max(bucket[j]));
+                if !tested.insert((t1, t2)) {
+                    continue;
+                }
+                if tested.len() > pair_budget {
+                    complete = false;
+                    break 'outer;
+                }
+                let (t1, t2) = (t1 as usize, t2 as usize);
+                if shares_vertex(t1, t2) {
+                    continue;
+                }
+                let tri1 = [
+                    vert(mesh.indices[t1 * 3]),
+                    vert(mesh.indices[t1 * 3 + 1]),
+                    vert(mesh.indices[t1 * 3 + 2]),
+                ];
+                let tri2 = [
+                    vert(mesh.indices[t2 * 3]),
+                    vert(mesh.indices[t2 * 3 + 1]),
+                    vert(mesh.indices[t2 * 3 + 2]),
+                ];
+                if tri_tri_intersect(&tri1, &tri2) {
+                    hits += 1;
+                }
+            }
+        }
+    }
+    (hits, complete)
+}
+
+/// Möller-style triangle-triangle intersection (proper crossings only;
+/// coplanar pairs return false).
+fn tri_tri_intersect(t1: &[[f64; 3]; 3], t2: &[[f64; 3]; 3]) -> bool {
+    fn sub3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
+        [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
+    }
+    fn cross3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
+        [
+            a[1] * b[2] - a[2] * b[1],
+            a[2] * b[0] - a[0] * b[2],
+            a[0] * b[1] - a[1] * b[0],
+        ]
+    }
+    fn dot3(a: [f64; 3], b: [f64; 3]) -> f64 {
+        a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+    }
+    const EPS: f64 = 1e-12;
+
+    // Signed distances of t2's vertices to t1's plane.
+    let n1 = cross3(sub3(t1[1], t1[0]), sub3(t1[2], t1[0]));
+    let d2: Vec<f64> = t2.iter().map(|&p| dot3(n1, sub3(p, t1[0]))).collect();
+    if (d2[0] > EPS && d2[1] > EPS && d2[2] > EPS)
+        || (d2[0] < -EPS && d2[1] < -EPS && d2[2] < -EPS)
+    {
+        return false;
+    }
+    // And vice versa.
+    let n2 = cross3(sub3(t2[1], t2[0]), sub3(t2[2], t2[0]));
+    let d1: Vec<f64> = t1.iter().map(|&p| dot3(n2, sub3(p, t2[0]))).collect();
+    if (d1[0] > EPS && d1[1] > EPS && d1[2] > EPS)
+        || (d1[0] < -EPS && d1[1] < -EPS && d1[2] < -EPS)
+    {
+        return false;
+    }
+    // Coplanar: skip (handled by topology/degeneracy checks).
+    if d1.iter().all(|d| d.abs() <= EPS) || d2.iter().all(|d| d.abs() <= EPS) {
+        return false;
+    }
+
+    // Interval overlap on the intersection line L = n1 × n2.
+    let dir = cross3(n1, n2);
+    let axis = {
+        let a = [dir[0].abs(), dir[1].abs(), dir[2].abs()];
+        if a[0] >= a[1] && a[0] >= a[2] {
+            0
+        } else if a[1] >= a[2] {
+            1
+        } else {
+            2
+        }
+    };
+    // Projected interval of a triangle on L.
+    let interval = |t: &[[f64; 3]; 3], d: &[f64]| -> Option<(f64, f64)> {
+        // Find the lone vertex on one side; the two crossing edges give
+        // the interval endpoints.
+        let mut lo = f64::INFINITY;
+        let mut hi = f64::NEG_INFINITY;
+        let mut found = false;
+        for i in 0..3 {
+            for j in (i + 1)..3 {
+                if (d[i] > EPS && d[j] < -EPS) || (d[i] < -EPS && d[j] > EPS) {
+                    let f = d[i] / (d[i] - d[j]);
+                    let p = t[i][axis] + f * (t[j][axis] - t[i][axis]);
+                    lo = lo.min(p);
+                    hi = hi.max(p);
+                    found = true;
+                } else if d[i].abs() <= EPS {
+                    lo = lo.min(t[i][axis]);
+                    hi = hi.max(t[i][axis]);
+                    found = true;
+                } else if d[j].abs() <= EPS {
+                    lo = lo.min(t[j][axis]);
+                    hi = hi.max(t[j][axis]);
+                    found = true;
+                }
+            }
+        }
+        if found {
+            Some((lo, hi))
+        } else {
+            None
+        }
+    };
+    let (Some((a0, a1)), Some((b0, b1))) = (interval(t1, &d1), interval(t2, &d2)) else {
+        return false;
+    };
+    // Proper overlap (touching at a point does not count).
+    a0.max(b0) + EPS < a1.min(b1)
+}
+
 // ─── tests ──────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -515,6 +724,32 @@ mod tests {
         let flat = |_: [f32; 3]| 0.0_f32;
         let (_, _, n) = measure_deviation(&mesh, 4, &flat);
         assert!(n <= 8, "stride must cap samples, got {n}");
+    }
+
+    #[test]
+    fn self_intersection_detects_a_piercing_triangle() {
+        // Closed tetrahedron + a lone triangle stabbing through one of
+        // its faces (no shared vertices).
+        let mut mesh = tetrahedron();
+        let n = mesh.vertex_count() as u32;
+        mesh.positions.extend_from_slice(&[
+            0.25, -0.5, 0.25, // below the base
+            0.25, 0.9, 0.25, // up through the interior
+            0.3, -0.5, 0.35,
+        ]);
+        mesh.indices.extend_from_slice(&[n, n + 1, n + 2]);
+        mesh.classifications = vec![1; mesh.vertex_count()];
+        let (hits, complete) = count_self_intersections(&mesh, 1_000_000);
+        assert!(complete);
+        // The spike crosses the base and one slanted face.
+        assert!(hits >= 1, "hits {hits}");
+    }
+
+    #[test]
+    fn self_intersection_clean_on_closed_tetrahedron() {
+        let (hits, complete) = count_self_intersections(&tetrahedron(), 1_000_000);
+        assert!(complete);
+        assert_eq!(hits, 0);
     }
 
     #[test]

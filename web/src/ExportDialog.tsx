@@ -234,6 +234,23 @@ function ReportView({
           {" · "}max deviation {formatMm(report.max_deviation_mm)} mm
           {" · "}
           {report.total_triangles.toLocaleString()} triangles
+          {report.bodies.some((b) => b.self_intersections > 0) && (
+            <>
+              {" · "}⚠{" "}
+              {report.bodies.reduce((s, b) => s + b.self_intersections, 0)}
+              {report.bodies.some((b) => !b.self_intersections_complete)
+                ? "+"
+                : ""}
+              {" self-intersections"}
+            </>
+          )}
+          {report.bodies.some((b) => b.thin_cells > 0) && (
+            <>
+              {" · "}⚠ thin features under-resolved (
+              {report.bodies.reduce((s, b) => s + b.thin_cells, 0)} cells) —
+              reduce the cell size
+            </>
+          )}
         </div>
       )}
 

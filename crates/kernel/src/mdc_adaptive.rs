@@ -62,12 +62,17 @@ use crate::mdc::{
 };
 use fielddraft_protocol::mc_tables::EDGE_TABLE;
 
-/// Safety factor on the Lipschitz bound of the SDF for the band test.
-/// The exact primitives and hard booleans are 1-Lipschitz; warp
-/// operators (Twist/Bend) and blend fields stretch gradients, so the
-/// band is widened. A missed band cell would surface as a hole — the
-/// validator catches it and the caller falls back to the uniform pass.
-const LIPSCHITZ_GUARD: f32 = 1.6;
+/// Default safety factor on the Lipschitz bound of the SDF for the
+/// band test. The exact primitives and hard booleans are 1-Lipschitz;
+/// warp operators and blend fields stretch gradients, so the band is
+/// widened. Bodies containing non-Lipschitz primitives (Thread/Gyroid/
+/// Helix, |∇f| far from 1) pass a larger guard via
+/// [`adaptive_mdc`]'s `lipschitz_guard`. A missed band cell would
+/// surface as a hole — the validator catches it and the caller falls
+/// back to the uniform pass.
+pub const LIPSCHITZ_GUARD_DEFAULT: f32 = 1.6;
+/// Guard for bodies with non-Lipschitz primitives.
+pub const LIPSCHITZ_GUARD_NON_LIPSCHITZ: f32 = 3.0;
 
 /// Hard cap on band cells (memory/time guard). At the default export
 /// cell this is far beyond any realistic part; the guard exists so a
@@ -140,6 +145,11 @@ pub struct AdaptiveResult {
     pub edges_pinned: usize,
     /// Vertex-tree statistics: (finest vertices, output vertices).
     pub finest_vertices: usize,
+    /// Finest cells carrying MORE than one contour cycle — the wall
+    /// between two sheets is thinner than one cell there. A cheap,
+    /// free-of-charge thin-feature indicator: the export dialog warns
+    /// that sub-cell walls may be under-resolved.
+    pub thin_cells: usize,
 }
 
 /// Pinning geometry shared with the uniform pass (Phase 1b): world-space
@@ -167,6 +177,7 @@ pub fn adaptive_mdc(
     node: &BoundedCsg,
     cell_target: f32,
     tol_mm: f32,
+    lipschitz_guard: f32,
     pin: &PinGeometry,
 ) -> Result<AdaptiveResult, String> {
     let aabb = node.aabb();
@@ -203,7 +214,7 @@ pub fn adaptive_mdc(
     let sdf = |p: [f32; 3]| node.sdf(p, EvalMode::Visual);
 
     // ── 1. Narrow band: descend the implicit octree ────────────────
-    let mut leaves: Vec<[i32; 3]> = Vec::new();
+    let mut leaves: Vec<([i32; 3], f32)> = Vec::new();
     let mut stack: Vec<(u32, [i32; 3])> = vec![(0, [0, 0, 0])];
     while let Some((l, c)) = stack.pop() {
         let s = root_size / (1u32 << l) as f32;
@@ -213,11 +224,11 @@ pub fn adaptive_mdc(
             origin[2] + (c[2] as f32 + 0.5) * s,
         ];
         let d = sdf(cc);
-        if d.abs() > 0.8661 * s * LIPSCHITZ_GUARD + 1e-4 {
+        if d.abs() > 0.8661 * s * lipschitz_guard + 1e-4 {
             continue; // cell provably clear of the surface
         }
         if l == level {
-            leaves.push(c);
+            leaves.push((c, d));
             if leaves.len() > MAX_BAND_CELLS {
                 return Err(format!("band exceeds {MAX_BAND_CELLS} cells"));
             }
@@ -238,7 +249,7 @@ pub fn adaptive_mdc(
         return Err("no band cells (surface not found)".into());
     }
     // Deterministic processing order.
-    leaves.sort_unstable();
+    leaves.sort_unstable_by_key(|(c, _)| *c);
 
     // ── 2. Corner sampling (shared, memoised) ──────────────────────
     let mut corners: HashMap<[i32; 3], f32> = HashMap::with_capacity(leaves.len() * 2);
@@ -249,7 +260,7 @@ pub fn adaptive_mdc(
             origin[2] + g[2] as f32 * cell,
         ]
     };
-    for c in &leaves {
+    for (c, _) in &leaves {
         for oct in 0..8i32 {
             let g = [
                 c[0] + (oct & 1),
@@ -262,10 +273,11 @@ pub fn adaptive_mdc(
 
     // ── 3. Finest-level vertices (one per contour cycle) ───────────
     let normal_eps = cell * 0.25;
+    let mut thin_cells = 0usize;
     let mut nodes: Vec<VertexNode> = Vec::new();
     let mut cell_info: HashMap<[i32; 3], CellInfo> = HashMap::with_capacity(leaves.len());
 
-    for c in &leaves {
+    for (c, centre_d) in &leaves {
         let corner_val = |v: usize| -> f32 {
             let g = [
                 c[0] + MC_CORNER_POS[v][0] as i32,
@@ -282,9 +294,23 @@ pub fn adaptive_mdc(
             }
         }
         if EDGE_TABLE[case as usize] == 0 {
+            // The surface provably passes through this cell whenever
+            // |f(centre)| is under the inscribed-sphere radius — an
+            // empty MC case there means a feature THINNER than the
+            // sampling lattice slipped between the corner planes (thin
+            // wall or thin slit). Count it: the report warns the user
+            // to shrink the cell size.
+            if centre_d.abs() < 0.5 * cell - 1e-5 {
+                thin_cells += 1;
+            }
             continue;
         }
         let (edge_cycle, num_cycles) = compute_edge_cycles(case);
+        if num_cycles > 1 {
+            // Two contour sheets in one cell: the wall between them is
+            // resolved, but only just — flag it as thin as well.
+            thin_cells += 1;
+        }
         let cell_min = corner_point(*c);
         let mut edge_vertex = [u32::MAX; 12];
 
@@ -379,7 +405,7 @@ pub fn adaptive_mdc(
     let mut seen: HashMap<(usize, [i32; 3]), ()> = HashMap::new();
     let mut fine_edges: Vec<FineEdge> = Vec::new();
     let mut pair_buckets: Vec<Vec<(u32, u32)>> = vec![Vec::new(); level as usize + 1];
-    for c in &leaves {
+    for (c, _) in &leaves {
         for ei in 0..12 {
             let (axis, di, dj, dk) = MC_EDGE_TO_GRID[ei];
             let g = [c[0] + di as i32, c[1] + dj as i32, c[2] + dk as i32];
@@ -867,6 +893,7 @@ pub fn adaptive_mdc(
         actual_cell_mm: cell,
         edges_pinned,
         finest_vertices,
+        thin_cells,
     })
 }
 

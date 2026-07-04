@@ -24,6 +24,16 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.363",
+    entries: [
+      {
+        kind: "feat",
+        text: "Export-Meshing-Restposten: getrimmte Kugel-Patches tessellieren parametrisch (synthetisches Halbkreis-Profil speist die Rotations-Maschinerie), Selbstschnitt-Prüfung (Dreieck-Dreieck über Grid-Hash) und Dünnwand-Erkennung (Sub-Zellen-Features zwischen den Abtastebenen) im Export-Report mit Dialog-Warnungen; breiteres Narrow-Band für nicht-Lipschitz-Felder",
+        scope: "export",
+      },
+    ],
+  },
+  {
     version: "0.6.362",
     entries: [
       {

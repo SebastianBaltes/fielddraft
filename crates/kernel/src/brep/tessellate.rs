@@ -432,8 +432,37 @@ fn tessellate_face(
             tol,
             builder,
         ),
-        HalfSpace::Sphere { .. } | HalfSpace::Torus { .. } => {
-            Err("trimmed sphere/torus patch (not yet parametric)".into())
+        HalfSpace::Sphere { radius } => {
+            // A sphere is a surface of revolution: profile = semicircle
+            // from the north pole (r=0, y=+R) to the south pole
+            // (r=0, y=−R). The synthetic profile polyline feeds the
+            // full rotational machinery — trimmed patches (winding 0),
+            // bands between two rim circles, and pole disks all come
+            // for free, chord-sampled at the shared tolerance.
+            let r = *radius as f64;
+            if r <= 0.0 {
+                return Err("degenerate sphere radius".into());
+            }
+            let step = max_dtheta(r, tol / 1.5);
+            let n = ((std::f64::consts::PI / step).ceil() as usize).max(8);
+            let pts: Vec<[f64; 2]> = (0..=n)
+                .map(|i| {
+                    let phi = std::f64::consts::PI * i as f64 / n as f64;
+                    [r * phi.sin(), r * phi.cos()]
+                })
+                .collect();
+            tess_rotational(
+                RotationalKind::Revolved { profile: ProfilePolyline::new(pts) },
+                transform,
+                scale,
+                &outer,
+                &inners,
+                tol,
+                builder,
+            )
+        }
+        HalfSpace::Torus { .. } => {
+            Err("trimmed torus patch (closed profile loop — not yet parametric)".into())
         }
         HalfSpace::Gyroid { .. } => Err("gyroid carrier".into()),
         HalfSpace::RevolvedProfile {
