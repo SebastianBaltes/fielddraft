@@ -24,6 +24,17 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.364",
+    entries: [
+      {
+        kind: "fix",
+        text: "Export-Dialog zweistufig: erst Zellgröße setzen und mit „Mesh\" bestätigen, dann meshen und Speichern — das (bei Gyroiden/Blends teure) Meshing startet nicht mehr automatisch beim Öffnen und nicht bei jedem Tastendruck; Zellgröße ändern verwirft das alte Mesh und verlangt erneutes Bestätigen",
+        scope: "export",
+        tickets: ["0xir"],
+      },
+    ],
+  },
+  {
     version: "0.6.363",
     entries: [
       {

@@ -858,14 +858,17 @@ test.describe("Sketch editor smoke", () => {
 
     // Download the STL and check it contains real triangles. Export
     // lives in the ☰ settings menu under an Export submenu and opens
-    // the export dialog (Meshing Phase 0): the tolerance-driven pass
-    // runs in the mesher worker, shows a validation report, and Save
-    // hands the bytes to the browser download.
+    // the export dialog (Meshing Phase 0). Two-step flow: confirm the
+    // cell size, click Mesh to run the tolerance-driven pass in the
+    // mesher worker, then Save hands the bytes to the browser download.
     await page.getByTestId("settings-menu-trigger").click();
     await page.getByTestId("menu-export").hover();
     await page.getByTestId("menu-export-stl").click();
     await expect(page.getByTestId("export-dialog")).toBeVisible();
-    // The export pass meshes at export resolution — allow it time.
+    // Step 1: no meshing yet — confirm the cell size with the Mesh button.
+    await expect(page.getByTestId("export-idle")).toBeVisible();
+    await page.getByTestId("export-mesh").click();
+    // Step 2: the export pass meshes at export resolution — allow it time.
     const saveButton = page.getByTestId("export-save");
     await expect(saveButton).toBeEnabled({ timeout: 60_000 });
     // The report must render with a verdict line.

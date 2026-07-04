@@ -86,6 +86,17 @@
     }
   }
 
+  & .hint-block {
+    padding: var(--space-4);
+    font-size: var(--fs-base);
+    color: var(--color-text-muted);
+
+    & strong {
+      color: var(--color-text);
+      font-weight: var(--fw-semibold);
+    }
+  }
+
   & .progress-block {
     display: flex;
     align-items: center;

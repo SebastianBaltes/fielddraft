@@ -1,12 +1,14 @@
 /**
  * Export dialog (Meshing Phase 0) — the STL/3MF export front-end.
  *
- * Opening the dialog immediately runs the tolerance-driven export pass
- * in the mesher worker (per-body progress), then shows the validation
- * report the kernel measured: watertight verdict, measured max
- * deviation against the exact SDF, triangle counts, per-body detail.
- * Save only hands the already-encoded bytes to the browser download.
- * Changing the cell size re-runs the pass.
+ * Two-step flow: the dialog first asks for the cell size and waits.
+ * Meshing (potentially expensive for gyroids/blends) only starts when
+ * the user confirms with "Mesh". The tolerance-driven export pass then
+ * runs in the mesher worker (per-body progress) and shows the
+ * validation report the kernel measured: watertight verdict, measured
+ * max deviation against the exact SDF, triangle counts, per-body
+ * detail. Save only hands the already-encoded bytes to the browser
+ * download. Changing the cell size returns to the confirm step.
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -39,19 +41,16 @@ interface ExportDialogProps {
 }
 
 type Phase =
+  | { kind: "idle" }
   | { kind: "running"; progress: ExportProgress | null }
   | { kind: "done"; report: ExportReport; bytes: Uint8Array }
   | { kind: "error"; message: string };
 
 export function ExportDialog({ store, format, onClose }: ExportDialogProps) {
-  const [cellSize, setCellSize] = useState(initialCellSize);
   const [cellInput, setCellInput] = useState(String(initialCellSize()));
-  const [phase, setPhase] = useState<Phase>({
-    kind: "running",
-    progress: null,
-  });
-  // Monotonic run id — a re-run (cell-size change) must not let a
-  // stale response overwrite the fresh one.
+  const [phase, setPhase] = useState<Phase>({ kind: "idle" });
+  // Monotonic run id — a re-run must not let a stale response overwrite
+  // the fresh one (or one from a cancelled run).
   const runIdRef = useRef(0);
 
   useEffect(() => {
@@ -65,7 +64,25 @@ export function ExportDialog({ store, format, onClose }: ExportDialogProps) {
     return () => window.removeEventListener("keydown", handleKey, true);
   }, [onClose]);
 
-  useEffect(() => {
+  // Reads the current cell-size input, clamps + persists it, returns the
+  // usable value (or null if unparseable).
+  const commitCellSize = useCallback((): number | null => {
+    const parsed = Number(cellInput.replace(",", "."));
+    if (!Number.isFinite(parsed)) return null;
+    const clamped = Math.min(5, Math.max(0.05, parsed));
+    setCellInput(String(clamped));
+    try {
+      localStorage.setItem(CELL_SIZE_STORAGE_KEY, String(clamped));
+    } catch {
+      // ignore
+    }
+    return clamped;
+  }, [cellInput]);
+
+  // Step 2: run the meshing pass for the confirmed cell size.
+  const runExport = useCallback(() => {
+    const cellSize = commitCellSize();
+    if (cellSize === null) return;
     const runId = ++runIdRef.current;
     setPhase({ kind: "running", progress: null });
     store
@@ -87,20 +104,19 @@ export function ExportDialog({ store, format, onClose }: ExportDialogProps) {
           });
         }
       });
-  }, [store, format, cellSize]);
+  }, [commitCellSize, store, format]);
 
-  const applyCellSize = useCallback(() => {
-    const parsed = Number(cellInput.replace(",", "."));
-    if (!Number.isFinite(parsed)) return;
-    const clamped = Math.min(5, Math.max(0.05, parsed));
-    setCellInput(String(clamped));
-    try {
-      localStorage.setItem(CELL_SIZE_STORAGE_KEY, String(clamped));
-    } catch {
-      // ignore
-    }
-    setCellSize(clamped);
-  }, [cellInput]);
+  // Editing the cell size after a run discards the stale mesh so the
+  // user must re-confirm (Prio: never save a mesh for a size the user
+  // no longer sees).
+  const onCellInputChange = useCallback(
+    (value: string) => {
+      setCellInput(value);
+      runIdRef.current++; // invalidate any in-flight run
+      setPhase({ kind: "idle" });
+    },
+    [],
+  );
 
   const save = useCallback(() => {
     if (phase.kind !== "done") return;
@@ -153,17 +169,23 @@ export function ExportDialog({ store, format, onClose }: ExportDialogProps) {
             max={5}
             step={0.05}
             value={cellInput}
-            onChange={(e) => setCellInput(e.target.value)}
+            onChange={(e) => onCellInputChange(e.target.value)}
             onKeyDown={(e) => {
-              if (e.key === "Enter") applyCellSize();
+              if (e.key === "Enter" && phase.kind !== "running") runExport();
             }}
-            onBlur={applyCellSize}
           />
           <span className="hint">
             Grid cell edge per body — smaller is finer. Vertices sit on
             the exact surface; the report shows the measured deviation.
           </span>
         </div>
+
+        {phase.kind === "idle" && (
+          <div className="hint-block" data-testid="export-idle">
+            Confirm the cell size, then <strong>Mesh</strong> to build the
+            export mesh and check it before saving.
+          </div>
+        )}
 
         {phase.kind === "running" && (
           <div className="progress-block" data-testid="export-progress">
@@ -192,15 +214,30 @@ export function ExportDialog({ store, format, onClose }: ExportDialogProps) {
           <button type="button" className="secondary" onClick={onClose}>
             Cancel
           </button>
-          <button
-            type="button"
-            className="primary"
-            data-testid="export-save"
-            disabled={phase.kind !== "done"}
-            onClick={save}
-          >
-            Save {format.toUpperCase()}
-          </button>
+          {phase.kind === "done" ? (
+            <button
+              type="button"
+              className="primary"
+              data-testid="export-save"
+              onClick={save}
+            >
+              Save {format.toUpperCase()}
+            </button>
+          ) : (
+            <button
+              type="button"
+              className="primary"
+              data-testid="export-mesh"
+              disabled={phase.kind === "running"}
+              onClick={runExport}
+            >
+              {phase.kind === "running"
+                ? "Meshing…"
+                : phase.kind === "error"
+                  ? "Retry"
+                  : "Mesh"}
+            </button>
+          )}
         </div>
       </div>
     </div>
