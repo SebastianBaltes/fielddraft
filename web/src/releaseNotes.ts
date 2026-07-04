@@ -24,6 +24,17 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.374",
+    entries: [
+      {
+        kind: "feat",
+        text: "Dev-Modus: automatischer Login als Seed-Admin (admin@local) beim Start des `vite dev`-Servers — Account-Features sind ohne manuelles Einloggen erreichbar. Nur im Dev-Browser aktiv (nicht in Prod, Tests oder e2e); Zugangsdaten via VITE_DEV_AUTOLOGIN_EMAIL/PASSWORD überschreibbar",
+        scope: "account",
+        tickets: ["oyx8"],
+      },
+    ],
+  },
+  {
     version: "0.6.373",
     entries: [
       {

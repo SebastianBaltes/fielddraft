@@ -92,6 +92,34 @@ export function useAccount(options: UseAccountOptions = {}): UseAccount {
         user = null;
       }
       if (signal?.cancelled) return;
+      // Ticket oyx8: dev auto-login. When the `vite dev` boot resolved to no
+      // session, sign in as the seeded dev admin so the account features
+      // (Overview / Projects / Issues) are reachable without a manual login.
+      // Gated hard so it can only ever fire on a developer's own `vite dev`
+      // browser:
+      //   · `MODE === "development"` excludes the production bundle
+      //     (MODE "production", where it's dead-code-eliminated) AND the vitest
+      //     suite (MODE "test"),
+      //   · `!navigator.webdriver` excludes the Playwright e2e (which also runs
+      //     `vite dev`, but every automation driver sets navigator.webdriver).
+      // Best-effort: a failure (backend down, wrong creds) leaves guest mode and
+      // the offline modeling app intact. Defaults match the `just dev-full` seed.
+      if (
+        !user &&
+        import.meta.env.MODE === "development" &&
+        typeof navigator !== "undefined" &&
+        !navigator.webdriver
+      ) {
+        try {
+          user = await api.login({
+            email: import.meta.env.VITE_DEV_AUTOLOGIN_EMAIL || "admin@local",
+            password: import.meta.env.VITE_DEV_AUTOLOGIN_PASSWORD || "admin",
+          });
+        } catch {
+          user = null; // keep guest — no dev backend, or wrong creds
+        }
+        if (signal?.cancelled) return;
+      }
       dispatch({ type: "session-resolved", user });
       // Prime the unseen-alert badge for admins; failures are silently ignored
       // (the badge is a convenience, never a gate).
