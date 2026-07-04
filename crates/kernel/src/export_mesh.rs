@@ -95,6 +95,53 @@ impl MeshMethod {
             _ => MeshMethod::Adaptive,
         }
     }
+
+    /// True for the dense uniform-grid meshers whose triangle count grows as
+    /// ~1/cell² and whose finest cell is bounded by [`EXPORT_MAX_CORNERS`].
+    /// These are the ones the export dialog can show a cell-size lower bound
+    /// and a triangle estimate for. The octree/parametric routes (adaptive,
+    /// interval-DC) size themselves differently, and RFTA reconstructs at a
+    /// capped internal resolution — none scale cleanly with the cell size.
+    pub fn is_dense_grid(self) -> bool {
+        matches!(
+            self,
+            MeshMethod::MarchingCubes
+                | MeshMethod::UniformDc
+                | MeshMethod::ManifoldDc
+                | MeshMethod::SurfaceNets
+                | MeshMethod::SurfaceNetsBuiltin
+        )
+    }
+}
+
+/// Pre-mesh estimate for the export dialog: the finest achievable cell size
+/// (the memory-guard lower bound) and a rough dense-grid triangle count, so
+/// the user can judge cost before committing to a mesh. Only meaningful for
+/// dense-grid methods ([`MeshMethod::is_dense_grid`]).
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ExportEstimate {
+    /// Whether the selected method is a dense-grid mesher (else the other
+    /// fields are inert and the dialog shows nothing).
+    pub dense: bool,
+    /// Coarsest (binding) finest-cell across all bodies — the practical lower
+    /// bound the dialog surfaces.
+    pub min_cell_mm: f32,
+    /// Summed raw-grid (pre-decimation) triangle estimate across bodies.
+    pub total_est_triangles: u64,
+    /// True when the requested cell size is finer than at least one body's
+    /// achievable minimum (it will be clamped).
+    pub cell_limited: bool,
+    pub bodies: Vec<BodyEstimate>,
+}
+
+/// Per-body slice of [`ExportEstimate`].
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct BodyEstimate {
+    pub body_id: u32,
+    pub min_cell_mm: f32,
+    pub actual_cell_mm: f32,
+    pub cell_limited: bool,
+    pub est_triangles: u64,
 }
 
 /// Per-body slice of the export report.
@@ -241,7 +288,96 @@ pub fn derive_export_resolution(size: [f32; 3], requested_cell_mm: f32) -> (u32,
     (resolution, actual_cell, limited)
 }
 
+/// Coarse reference resolution for the triangle estimate. The dense-grid
+/// triangle count grows as ~res², so we mesh once at this cheap resolution
+/// (~40³ evals, milliseconds even for a gyroid) and scale by (res_target /
+/// res_coarse)² — self-calibrating per method, no magic per-mesher constant.
+const ESTIMATE_COARSE_RES: u32 = 40;
+
+/// Raw (pre-decimation) dense mesh for one bounded body at `resolution`,
+/// dispatched by method. Mirrors the raw-mesher selection in
+/// `generic_dense_export_body` / `surface_nets_export_body`; used only by the
+/// triangle estimate, so it skips decimation / validation.
+fn raw_dense_mesh(
+    bounded: &crate::bvh::BoundedCsg,
+    prims: &std::collections::HashMap<u32, Primitive>,
+    method: MeshMethod,
+    resolution: u32,
+) -> Mesh {
+    match method {
+        MeshMethod::UniformDc => crate::uniform_contour::dual_contour_uniform(bounded, resolution),
+        MeshMethod::SurfaceNets => crate::surface_nets::surface_nets(bounded, resolution),
+        MeshMethod::SurfaceNetsBuiltin => {
+            crate::uniform_contour::surface_nets_builtin(bounded, resolution)
+        }
+        MeshMethod::ManifoldDc => {
+            let prim_refs: std::collections::HashMap<u32, &Primitive> =
+                prims.iter().map(|(k, v)| (*k, v)).collect();
+            crate::dc::dual_contour_with_primitives(bounded, resolution, &prim_refs)
+        }
+        // MarchingCubes (and any non-dense method that slips through).
+        _ => crate::marching_tets::marching_tets(bounded, resolution),
+    }
+}
+
 impl crate::Kernel {
+    /// Pre-mesh estimate for the export dialog (dense-grid methods only):
+    /// the finest achievable cell size per body and a raw-grid triangle
+    /// estimate at the requested cell size. Read-only and cheap — meshes each
+    /// body once at [`ESTIMATE_COARSE_RES`] and scales, so it can run live as
+    /// the user edits the cell size / method.
+    pub(crate) fn export_estimate_internal(
+        &self,
+        cell_size_mm: f32,
+        method: MeshMethod,
+    ) -> ExportEstimate {
+        if !method.is_dense_grid() {
+            return ExportEstimate {
+                dense: false,
+                min_cell_mm: 0.0,
+                total_est_triangles: 0,
+                cell_limited: false,
+                bodies: Vec::new(),
+            };
+        }
+        let mut bodies = Vec::with_capacity(self.bodies.len());
+        let mut total = 0u64;
+        let mut min_cell_overall = 0f32;
+        let mut any_limited = false;
+        for body in &self.bodies {
+            let size = body.aabb.size();
+            let (res_t, actual_cell, limited) = derive_export_resolution(size, cell_size_mm);
+            // The finest cell the corner budget allows (request an
+            // effectively-zero cell → the guard clamps to the floor).
+            let (_, min_cell, _) = derive_export_resolution(size, 1e-4);
+            min_cell_overall = min_cell_overall.max(min_cell);
+            any_limited |= limited;
+
+            let (bounded, prims) =
+                crate::body::build_bounded_with_primitives(&self.decoded, &body.feature_indices);
+            let res_c = res_t.min(ESTIMATE_COARSE_RES);
+            let coarse = raw_dense_mesh(&bounded, &prims, method, res_c);
+            let scale = (res_t as f64 / res_c.max(1) as f64).powi(2);
+            let est = (coarse.triangle_count() as f64 * scale).round() as u64;
+            total += est;
+
+            bodies.push(BodyEstimate {
+                body_id: body.id.as_u32_or_root().unwrap_or(0),
+                min_cell_mm: min_cell,
+                actual_cell_mm: actual_cell,
+                cell_limited: limited,
+                est_triangles: est,
+            });
+        }
+        ExportEstimate {
+            dense: true,
+            min_cell_mm: min_cell_overall,
+            total_est_triangles: total,
+            cell_limited: any_limited,
+            bodies,
+        }
+    }
+
     /// Start an export pass at the given cell size. Clears any previous
     /// session and returns the number of bodies to mesh (the caller
     /// loops `export_mesh_body_internal(0..n)` and reports progress).
@@ -1356,6 +1492,41 @@ mod tests {
         .unwrap();
         assert!(k.feature_errors.is_empty(), "feature errors {:?}", k.feature_errors);
         k
+    }
+
+    /// The pre-mesh estimate must (a) report a sensible finest-cell lower
+    /// bound and (b) predict the raw-grid triangle count within a small factor
+    /// of the real dense mesh — it is scaled from a coarse pass, so it only
+    /// needs to be in the right ballpark.
+    #[test]
+    fn export_estimate_predicts_dense_triangles() {
+        let mut k = gyroid_in_box();
+        let cell = 0.5_f32;
+        let est = k.export_estimate_internal(cell, MeshMethod::MarchingCubes);
+        assert!(est.dense, "marching cubes is a dense method");
+        assert_eq!(est.bodies.len(), 1);
+        let b = &est.bodies[0];
+        assert!(b.min_cell_mm > 0.0, "min cell must be positive: {b:?}");
+        assert!(
+            b.min_cell_mm < cell,
+            "0.5 mm is coarser than the corner-budget floor {}",
+            b.min_cell_mm
+        );
+        assert!(est.total_est_triangles > 1000, "gyroid is triangle-heavy: {est:?}");
+
+        // Ground truth: the real raw marching_tets at the target resolution.
+        let idx = k.bodies[0].feature_indices.clone();
+        let size = k.bodies[0].aabb.size();
+        let (res_t, _, _) = derive_export_resolution(size, cell);
+        let (bounded, _) = crate::body::build_bounded_with_primitives(&k.decoded, &idx);
+        let truth = crate::marching_tets::marching_tets(&bounded, res_t).triangle_count() as f64;
+        let ratio = est.total_est_triangles as f64 / truth.max(1.0);
+        assert!(
+            (0.5..2.0).contains(&ratio),
+            "estimate {} vs truth {truth} (ratio {ratio:.2}) out of band",
+            est.total_est_triangles,
+        );
+        let _ = &mut k;
     }
 
     /// A gyroid shell ∩ box: same non-1-Lipschitz field as the ticket, made

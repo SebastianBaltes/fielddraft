@@ -45,6 +45,7 @@ import type { FieldSkriptRecord } from "./fieldskript/record";
 import type { TabKind } from "./project";
 import type { MeshOverlayData } from "./meshIO";
 import type {
+  ExportEstimate,
   ExportFormat,
   ExportOutcome,
   ExportProgress,
@@ -2081,6 +2082,21 @@ export class KernelStore {
     onProgress?: (p: ExportProgress) => void,
   ): Promise<ExportOutcome> {
     return this.workers.exportMeshed(format, cellSizeMm, method, onProgress);
+  }
+
+  /** Cheap, synchronous pre-mesh estimate for the export dialog (dense-grid
+   *  methods only): the finest achievable cell size and a rough triangle
+   *  count at `cellSizeMm`. Runs on the main-thread kernel (it only needs the
+   *  decoded features + AABBs), so the dialog can call it live. Returns null
+   *  on a parse failure or when no session-capable kernel is present. */
+  exportEstimate(cellSizeMm: number, method: MeshMethod): ExportEstimate | null {
+    try {
+      const json = this.kernel.exportEstimate(cellSizeMm, method);
+      if (!json) return null;
+      return JSON.parse(json) as ExportEstimate;
+    } catch {
+      return null;
+    }
   }
 
   /** Download an already-built export (3MF re-wraps stashed slicer

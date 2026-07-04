@@ -84,6 +84,32 @@ export interface ExportBodyReport {
   deviation_samples: number;
 }
 
+/** Per-body slice of the pre-mesh estimate (kernel: `BodyEstimate`). */
+export interface ExportBodyEstimate {
+  body_id: number;
+  /** Finest cell the memory guard allows for this body. */
+  min_cell_mm: number;
+  /** Cell actually used at the requested size (clamped to the guard). */
+  actual_cell_mm: number;
+  cell_limited: boolean;
+  /** Rough raw-grid (pre-decimation) triangle count at the requested cell. */
+  est_triangles: number;
+}
+
+/** Pre-mesh estimate for the export dialog (kernel: `ExportEstimate`).
+ *  Only meaningful for dense-grid methods (`dense: true`); the octree /
+ *  parametric / RFTA routes return `dense: false` and the dialog shows
+ *  nothing. */
+export interface ExportEstimate {
+  dense: boolean;
+  /** Coarsest (binding) finest-cell across bodies — the lower bound shown. */
+  min_cell_mm: number;
+  total_est_triangles: number;
+  /** True when the requested cell is finer than some body's achievable min. */
+  cell_limited: boolean;
+  bodies: ExportBodyEstimate[];
+}
+
 /** Aggregate export report (kernel: `ExportReport`). */
 export interface ExportReport {
   cell_size_mm: number;

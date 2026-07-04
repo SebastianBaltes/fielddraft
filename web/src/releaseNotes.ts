@@ -24,6 +24,16 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.376",
+    entries: [
+      {
+        kind: "feat",
+        text: "Export-Dialog zeigt bei den dichten Meshern schon vor dem Meshen die erreichbare Zellgrößen-Untergrenze (Speicher-Budget) und eine Dreiecks-Abschätzung — so ist der Aufwand vorab sichtbar. Aktualisiert sich live beim Ändern von Zellgröße/Verfahren",
+        scope: "export",
+      },
+    ],
+  },
+  {
     version: "0.6.375",
     entries: [
       {

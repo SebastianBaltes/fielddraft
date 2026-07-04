@@ -21,6 +21,7 @@ import {
 import type { KernelStore } from "./store";
 import type {
   ExportBodyReport,
+  ExportEstimate,
   ExportFormat,
   ExportProgress,
   ExportReport,
@@ -109,9 +110,30 @@ export function ExportDialog({ store, format, onClose }: ExportDialogProps) {
   // persisted across sessions.
   const [meshOpacity, setMeshOpacity] = useState(initialOpacity);
   const [wireframe, setWireframe] = useState(initialWireframe);
+  // Pre-mesh estimate for dense-grid methods: the finest achievable cell size
+  // (memory-guard lower bound) and a rough triangle count at the chosen cell,
+  // so cost is visible BEFORE committing to a mesh. Recomputed (debounced) as
+  // the cell size / method changes; null for non-dense methods.
+  const [estimate, setEstimate] = useState<ExportEstimate | null>(null);
   // Monotonic run id — a re-run must not let a stale response overwrite
   // the fresh one (or one from a cancelled run).
   const runIdRef = useRef(0);
+
+  // Live estimate: debounced so it doesn't mesh a coarse grid on every
+  // keystroke. The kernel returns `dense: false` for octree / parametric /
+  // RFTA routes, and the hint below renders nothing for those.
+  useEffect(() => {
+    const parsed = Number(cellInput.replace(",", "."));
+    if (!Number.isFinite(parsed)) {
+      setEstimate(null);
+      return;
+    }
+    const clamped = Math.min(5, Math.max(0.05, parsed));
+    const handle = setTimeout(() => {
+      setEstimate(store.exportEstimate(clamped, method));
+    }, 250);
+    return () => clearTimeout(handle);
+  }, [cellInput, method, store]);
 
   useEffect(() => {
     const handleKey = (e: KeyboardEvent) => {
@@ -363,6 +385,16 @@ export function ExportDialog({ store, format, onClose }: ExportDialogProps) {
           Grid cell edge per body — smaller is finer. Vertices sit on the exact
           surface; the report shows the measured deviation.
         </span>
+        {estimate?.dense && (
+          <span className="hint estimate" data-testid="export-estimate">
+            Lower bound {formatMm(estimate.min_cell_mm)} mm · ≈{" "}
+            {estimate.total_est_triangles.toLocaleString()} triangles (raw grid,
+            before decimation)
+            {estimate.cell_limited && (
+              <> — cell clamped to the memory budget</>
+            )}
+          </span>
+        )}
       </div>
 
       {phase.kind === "idle" && (

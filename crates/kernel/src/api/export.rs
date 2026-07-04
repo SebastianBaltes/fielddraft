@@ -29,6 +29,18 @@ impl Kernel {
         self.export_mesh_begin_internal(cell_size_mm, method)
     }
 
+    /// Pre-mesh estimate for the export dialog: for dense-grid methods, the
+    /// finest achievable cell size (memory-guard lower bound) and a rough
+    /// raw-grid triangle count at `cell_size_mm`, as JSON
+    /// ([`crate::export_mesh::ExportEstimate`]). Read-only and cheap, so the
+    /// dialog can call it live while the user edits the cell size / method.
+    #[wasm_bindgen(js_name = exportEstimate)]
+    pub fn export_estimate(&self, cell_size_mm: f32, method: String) -> String {
+        let method = crate::export_mesh::MeshMethod::from_wire(&method);
+        serde_json::to_string(&self.export_estimate_internal(cell_size_mm, method))
+            .unwrap_or_default()
+    }
+
     /// Mesh + validate body `i` for the running session. Returns the
     /// per-body report as JSON (`""` when no session is active).
     #[wasm_bindgen(js_name = exportMeshBody)]

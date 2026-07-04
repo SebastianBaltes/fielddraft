@@ -86,6 +86,13 @@
       color: var(--color-text-muted);
     }
 
+    /* Pre-mesh cost estimate — a touch more prominent than the plain hint,
+       with aligned digits since the numbers update live. */
+    & .estimate {
+      color: var(--color-text);
+      font-variant-numeric: tabular-nums;
+    }
+
     & .method-select {
       grid-column: 1 / -1;
       font-family: inherit;

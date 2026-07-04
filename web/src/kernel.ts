@@ -1078,6 +1078,13 @@ export class Kernel {
     return this.inner.exportMeshBegin(cellSizeMm, method);
   }
 
+  /** Pre-mesh estimate (dense-grid methods only): finest achievable cell
+   *  size + rough raw-grid triangle count at `cellSizeMm`, as JSON
+   *  (`ExportEstimate`). Read-only + cheap, for a live dialog hint. */
+  exportEstimate(cellSizeMm: number, method: string): string {
+    return this.inner.exportEstimate(cellSizeMm, method);
+  }
+
   /** Mesh + validate body `i`; returns its report JSON ("" without a
    *  running session). */
   exportMeshBody(i: number): string {
