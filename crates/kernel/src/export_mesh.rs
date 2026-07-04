@@ -814,7 +814,22 @@ impl crate::Kernel {
         let stats = if builtin {
             crate::decimate_builtin::simplify_qem_builtin(&mut mesh, tol * tol)
         } else {
-            crate::decimate::simplify_qem(&mut mesh, tol * tol)
+            // baby_shark's QEM TEARS a non-manifold mesh into holes: dense
+            // Surface Nets leaves non-manifold junctions along CSG creases
+            // (a gyroid clipped by a cylinder — ticket 8l06 — left 67, which
+            // baby_shark ripped into 236 boundary edges while barely
+            // decimating at all). Our hole-safe QEM keeps the mesh closed and
+            // decimates far more, so keep the raw dense mesh and swap in
+            // decimate_builtin whenever baby_shark opened holes. On a clean
+            // manifold solid baby_shark tears nothing and this never triggers.
+            let raw = mesh.clone();
+            let s = crate::decimate::simplify_qem(&mut mesh, tol * tol);
+            if mesh_validate::validate_topology(&mesh).boundary_edges > 0 {
+                mesh = raw;
+                crate::decimate_builtin::simplify_qem_builtin(&mut mesh, tol * tol)
+            } else {
+                s
+            }
         };
 
         let flips = mesh_validate::fix_orientation(&mut mesh, &sdf);
@@ -1636,6 +1651,21 @@ mod tests {
         assert_eq!(b["boundary_edges"], 0, "clip meshed with holes: {rep}");
         assert_eq!(b["non_manifold_edges"], 0, "clip meshed non-manifold: {rep}");
         assert_eq!(b["watertight"], true, "clip not watertight: {rep}");
+    }
+
+    /// Ticket 8l06: baby_shark's QEM tears a non-manifold Surface-Nets mesh
+    /// into holes when it decimates — a gyroid clipped by a cylinder leaves
+    /// non-manifold junctions along the cut crease that baby_shark ripped into
+    /// 236 boundary edges (while barely decimating). The hole-safe fallback to
+    /// our own decimator must keep the shipped mesh closed.
+    #[test]
+    fn surface_nets_decimation_stays_hole_free_at_csg_crease() {
+        let mut k = ticket_8l06_kernel();
+        let rep = export_single_method(&mut k, 0.05, "surface-nets");
+        assert_eq!(
+            rep["bodies"][0]["boundary_edges"], 0,
+            "surface nets shipped holes at the CSG crease: {rep}"
+        );
     }
 
     /// A gyroid shell ∩ box: same non-1-Lipschitz field as the ticket, made

@@ -24,6 +24,17 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.379",
+    entries: [
+      {
+        kind: "fix",
+        text: "Surface-Nets-Export reißt keine Löcher mehr an Boolean-Schnittkanten: der QEM-Dezimierer der Bibliothek (baby_shark) zerriss einen an CSG-Nähten leicht non-manifolden Mesh in hunderte offene Kanten (statt zu dezimieren). Neu erkennt der Export das und weicht dort auf den loch-sicheren eigenen Dezimierer aus — der Mesh bleibt geschlossen und wird zudem stärker reduziert",
+        scope: "export",
+        tickets: ["8l06"],
+      },
+    ],
+  },
+  {
     version: "0.6.378",
     entries: [
       {
