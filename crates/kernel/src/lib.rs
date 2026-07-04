@@ -23,6 +23,7 @@ pub mod queries;
 pub mod export;
 pub mod export_3mf;
 pub mod export_mesh;
+pub mod mdc_adaptive;
 pub mod mesh_validate;
 pub mod raycast;
 pub mod step_classifier;

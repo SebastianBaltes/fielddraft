@@ -24,6 +24,16 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.362",
+    entries: [
+      {
+        kind: "feat",
+        text: "Adaptives generisches Export-Meshing (Manifold Dual Contouring nach Schaefer/Ju/Warren auf Narrow-Band-Octree): topologie-erhaltendes Vertex-Clustering + konformes Sag-Refinement + Geisterkanten-Filter fürs Pinning — die hohle Vase exportiert mit 100k statt 1,5 Mio. Dreiecken, watertight, 0,07 mm Abweichung; Blend-Körper (SDF-only) 2.100 Dreiecke bei 0,05 mm",
+        scope: "export",
+      },
+    ],
+  },
+  {
     version: "0.6.361",
     entries: [
       {

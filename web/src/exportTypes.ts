@@ -21,6 +21,10 @@ export interface ExportBodyReport {
    *  (exact edges, minimal triangles); false = generic MDC pass. */
   parametric: boolean;
   parametric_skip_reason: string;
+  /** Phase 1c: true = adaptive Manifold-DC (Schaefer clustering on a
+   *  narrow-band octree); false = uniform-grid fallback. */
+  adaptive: boolean;
+  adaptive_skip_reason: string;
   orientation_repaired: number;
   /** Phase 1b: vertices pinned onto exact B-Rep edge curves (MDC route). */
   edges_pinned: number;

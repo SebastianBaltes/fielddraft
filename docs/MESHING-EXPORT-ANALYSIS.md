@@ -212,9 +212,48 @@ graph LR
   Primitiv-Kanten sind Face-klassifiziert). Gemessen: Box−Zylinder-Loch,
   Rim-Kreis r=4 — >30 Vertices exakt (≤2 µm-Klasse) auf der Kurve.
 
-  **Offen (Phase 1c):** Octree-Adaptivität (Schaefer-Clustering, die
-  bewusste Voll-Variante) + krümmungsgesteuerte Zellgröße +
-  Wandstärken-Heuristik + Selbstschnitt-Check.
+  **✅ Phase 1c (v0.6.362): Adaptives Manifold-DC — die Voll-Variante.**
+  `mdc_adaptive.rs` implementiert Schaefer/Ju/Warren vollständig auf
+  einem Narrow-Band-Octree: (1) feinste Ebene = Nielson-Multi-Vertex-DC
+  nur im Band (|f(center)| > (√3/2)·size·1,6 ⇒ Zelle schnittfrei,
+  Lipschitz-Argument); (2) Vertex-Tree-Clustering bottom-up mit
+  Immer-Promotion (jeder Root lebt stets auf der aktuellen Ebene →
+  Kind-Kanten-Klassifikation bleibt lokal); (3) Manifold-Kriterium
+  Prop. 1 inkrementell über die 13 Zahlen (χ + 12 Kanten-Schnittzahlen,
+  Rekursion χ=Σχ−Σe_int/4, χ-Gültigkeits-Flag gegen degenerierte
+  Kreuzungen); (4) Emission über die feinsten Kanten mit oberstem
+  collapsible Vorfahren, geometrischem Winding, Verwerfen kollabierter
+  Polygone. Kanten-Pinning integriert zweistufig (feinste Vertices +
+  Repräsentanten-Re-Snap, `pinned` propagiert im Tree).
+
+  Drei Erkenntnisse aus der Verifikation, alle gelöst:
+  1. **Konnektivität läuft über Ring-PAARE** (Mesh-Kanten dual zu
+     Gitterflächen), je Paar auf seiner Paar-LCA-Ebene — nicht über das
+     4er-Gespann der dualen Kante. Erst damit sind alle Teilhaber jedes
+     internen Schnittpunkts beweisbar im selben Cluster und Formel 2
+     (×2 Flächen-Mittellinien / ×4 Zentrallinien) exakt; Single-Cluster
+     haben by construction e_int = 0.
+  2. **QEF-Schwelle begrenzt den Sehnen-Sag nicht** — ein riesiger
+     flacher Cluster (Residual 0) neben einer Krümmungszone erzeugt
+     Sehnen, die 0,5 mm unter die Fläche tauchen. Lösung: konformes
+     Sag-Refinement auf dem fertigen 2-Manifold (Kanten-Midpoint gegen
+     SDF, memoisierte Splits, Newton-Projektion; gepinnte Kanten auf
+     die B-Rep-Kurve). Kantensplits erhalten die Manifold-Garantie.
+  3. **Geisterkanten-Filter fürs Pinning:** Der Weave beschreibt das
+     Hart-Boolean-Skelett; bei Blends/Fillets existieren dessen Kanten
+     im Feld nicht (echte Fläche einen Blend-Radius entfernt). Pin-
+     Kurven werden gegen die SDF validiert (≤ 0,02 mm), sonst zog das
+     Pinning Vertices 0,5 mm ins Material.
+
+  Messwerte (cell 0,4–0,6 mm): geschellte Vase **100.516 statt
+  1.525.280 Dreiecke** (15×), watertight, 0,072 mm; Blend-Körper
+  (Box ∪ Kugel, r=3-Blend, SDF-only) 2.104 Dreiecke, 0,046 mm;
+  Box−Zylinder 1.152 Dreiecke mit exakter Rim-Kette. Uniform-Grid
+  bleibt als Fallback bei Validator-Fail.
+
+  **Offen (Phase 1d, klein):** Wandstärken-Heuristik (Features <
+  Zellgröße), expliziter Selbstschnitt-Check (BVH), Band-Guard für
+  stark nicht-Lipschitz-Felder (aktuell Faktor 1,6 + Validator-Netz).
 - **Phase 2 (M):** Option B für weave-vollständige Bodies — der Qualitäts- und
   Ökonomiesprung für klassische CAD-Teile (und erledigt Ticket-Klasse 55ea/mdo0
   strukturell: Helix-`parametric_brep`-Pfad kann hier ebenfalls exakt tessellieren).

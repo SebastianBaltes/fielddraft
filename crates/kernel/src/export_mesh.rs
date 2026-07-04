@@ -58,6 +58,12 @@ pub struct BodyExportReport {
     pub parametric: bool,
     /// Why the parametric route was not taken (empty when it was).
     pub parametric_skip_reason: String,
+    /// True when the adaptive Manifold-DC pass (Phase 1c, Schaefer
+    /// clustering on a narrow-band octree) produced this mesh; false =
+    /// uniform-grid fallback.
+    pub adaptive: bool,
+    /// Why the adaptive pass was skipped (empty when it ran).
+    pub adaptive_skip_reason: String,
     /// Triangles whose winding the orientation-repair pass flipped.
     pub orientation_repaired: usize,
     /// Edge/corner-classified vertices pinned onto the exact woven
@@ -198,6 +204,8 @@ impl crate::Kernel {
                 passthrough: true,
                 parametric: false,
                 parametric_skip_reason: String::new(),
+                adaptive: false,
+                adaptive_skip_reason: String::new(),
                 orientation_repaired: 0,
                 edges_pinned: 0,
                 simplified: false,
@@ -222,6 +230,8 @@ impl crate::Kernel {
                         passthrough: false,
                         parametric: true,
                         parametric_skip_reason: String::new(),
+                        adaptive: false,
+                        adaptive_skip_reason: String::new(),
                         orientation_repaired: 0,
                         edges_pinned: 0,
                         simplified: false,
@@ -272,10 +282,98 @@ impl crate::Kernel {
             prims.iter().map(|(k, v)| (*k, v)).collect();
         let sdf = |p: [f32; 3]| bounded.sdf(p, crate::csg::EvalMode::Visual);
 
+        // ── Phase 1c: adaptive Manifold-DC first ───────────────────
+        // Narrow-band octree + Schaefer vertex clustering: the full
+        // requested cell size everywhere on the surface, simplified by
+        // the manifold-preserving cluster pass instead of the planar
+        // heuristics. Must EARN the export via the same validator; any
+        // failure falls through to the uniform pass below.
+        let tol = (cell_mm / 4.0).clamp(0.01, 0.1);
+        let pin_geo = self.build_pin_geometry(body_index, &sdf);
+        let adaptive_attempt =
+            crate::mdc_adaptive::adaptive_mdc(&bounded, cell_mm, tol, &pin_geo).and_then(
+                |mut result| {
+                    let flips = mesh_validate::fix_orientation(&mut result.mesh, &sdf);
+                    let mut validation = mesh_validate::validate_topology(&result.mesh);
+                    if !validation.watertight {
+                        return Err(format!(
+                            "adaptive mesh not watertight ({} boundary, {} non-manifold, {} misoriented)",
+                            validation.boundary_edges,
+                            validation.non_manifold_edges,
+                            validation.misoriented_edges
+                        ));
+                    }
+                    let (max_dev, p95_dev, samples) = mesh_validate::measure_deviation(
+                        &result.mesh,
+                        DEVIATION_SAMPLE_BUDGET,
+                        &sdf,
+                    );
+                    validation.max_deviation_mm = max_dev;
+                    validation.p95_deviation_mm = p95_dev;
+                    validation.deviation_samples = samples;
+                    Ok((result, validation, flips))
+                },
+            );
+        match adaptive_attempt {
+            Ok((result, validation, flips)) => {
+                let report = BodyExportReport {
+                    body_id,
+                    requested_cell_mm: cell_mm,
+                    actual_cell_mm: result.actual_cell_mm,
+                    resolution: result.resolution,
+                    cell_limited: false,
+                    passthrough: false,
+                    parametric: false,
+                    parametric_skip_reason,
+                    adaptive: true,
+                    adaptive_skip_reason: String::new(),
+                    orientation_repaired: flips,
+                    edges_pinned: result.edges_pinned,
+                    simplified: true,
+                    simplification_rejected: false,
+                    validation,
+                };
+                return (result.mesh, report);
+            }
+            Err(reason) => {
+                return self.mdc_uniform_export_body(
+                    body_index,
+                    body_id,
+                    &bounded,
+                    &prim_refs,
+                    resolution,
+                    actual_cell,
+                    cell_limited,
+                    cell_mm,
+                    parametric_skip_reason,
+                    reason,
+                );
+            }
+        }
+    }
+
+    /// The uniform-grid MDC pass (Phase 0/1a/1b) — the fallback when
+    /// the adaptive pass fails its gates.
+    #[allow(clippy::too_many_arguments)]
+    fn mdc_uniform_export_body(
+        &mut self,
+        body_index: usize,
+        body_id: u32,
+        bounded: &crate::bvh::BoundedCsg,
+        prim_refs: &std::collections::HashMap<u32, &Primitive>,
+        resolution: u32,
+        actual_cell: f32,
+        cell_limited: bool,
+        cell_mm: f32,
+        parametric_skip_reason: String,
+        adaptive_skip_reason: String,
+    ) -> (Mesh, BodyExportReport) {
+        let sdf = |p: [f32; 3]| bounded.sdf(p, crate::csg::EvalMode::Visual);
+
         // Raw pass: Manifold-DC + Newton projection, then winding
         // repair (belt and braces — the geometric quad winding should
         // already be consistent since Phase 1a).
-        let mut raw = crate::dc::dual_contour_unsimplified(&bounded, resolution);
+        let mut raw = crate::dc::dual_contour_unsimplified(bounded, resolution);
         let raw_flips = mesh_validate::fix_orientation(&mut raw, &sdf);
 
         // Phase 1b — edge pinning: MDC classifies each QEF vertex as
@@ -292,14 +390,14 @@ impl crate::Kernel {
             g.min
         };
         let edges_pinned =
-            self.pin_mesh_to_brep_edges(body_index, &mut raw, grid_min, actual_cell);
+            self.pin_mesh_to_brep_edges(body_index, &mut raw, grid_min, actual_cell, &sdf);
 
         // Simplification candidate: the planar/developable pass cuts
         // the triangle count dramatically (box: ~40×), but its
         // re-triangulation can break topology — so it must EARN the
         // export by staying watertight when the raw mesh was.
         let mut candidate = raw.clone();
-        crate::dc::simplify_dc_mesh(&mut candidate, &bounded, &prim_refs);
+        crate::dc::simplify_dc_mesh(&mut candidate, bounded, prim_refs);
         let candidate_flips = mesh_validate::fix_orientation(&mut candidate, &sdf);
 
         let v_raw = mesh_validate::validate_topology(&raw);
@@ -329,6 +427,8 @@ impl crate::Kernel {
             passthrough: false,
             parametric: false,
             parametric_skip_reason,
+            adaptive: false,
+            adaptive_skip_reason,
             orientation_repaired,
             edges_pinned,
             simplified,
@@ -336,6 +436,74 @@ impl crate::Kernel {
             validation,
         };
         (mesh, report)
+    }
+
+    /// World-space pin geometry (B-Rep edge polylines + corners) for
+    /// the adaptive pass. Empty when the body has no woven B-Rep.
+    ///
+    /// Every curve is VALIDATED against the exact SDF before it may
+    /// pin: the weave describes the hard-boolean skeleton, so bodies
+    /// with blends (or fillets) carry ghost edges where the blended
+    /// field has no sharp feature at all — the real surface can sit a
+    /// blend radius away. Pinning onto such a curve would drag mesh
+    /// vertices INTO the material (measured: 0.5 mm on a blended
+    /// box∪sphere). A curve pins only if it lies on the field surface.
+    fn build_pin_geometry(
+        &mut self,
+        body_index: usize,
+        sdf: &dyn Fn([f32; 3]) -> f32,
+    ) -> crate::mdc_adaptive::PinGeometry {
+        let parametric = self.parametric_weave;
+        self.bodies[body_index].ensure_brep(&self.decoded, parametric);
+        let placement = self.bodies[body_index].placement;
+        let Some(brep) = self.bodies[body_index].brep_cached() else {
+            return crate::mdc_adaptive::PinGeometry::empty();
+        };
+        let place = |p: [f64; 3]| -> [f32; 3] {
+            let scaled = [
+                p[0] * placement.scale[0] as f64,
+                p[1] * placement.scale[1] as f64,
+                p[2] * placement.scale[2] as f64,
+            ];
+            let r = crate::quat_rotate(
+                placement.rotation,
+                [scaled[0] as f32, scaled[1] as f32, scaled[2] as f32],
+            );
+            [
+                r[0] + placement.translate[0],
+                r[1] + placement.translate[1],
+                r[2] + placement.translate[2],
+            ]
+        };
+        // A woven curve is trusted to ~µm; anything beyond this off the
+        // field surface is a ghost edge (blend/fillet zone) and must
+        // not attract vertices.
+        const ON_SURFACE_TOL: f32 = 0.02;
+        let on_surface = |pts: &[[f32; 3]]| -> bool {
+            let stride = (pts.len() / 16).max(1);
+            pts.iter()
+                .step_by(stride)
+                .chain(pts.last())
+                .all(|&p| sdf(p).abs() <= ON_SURFACE_TOL)
+        };
+        let polylines: Vec<Vec<[f32; 3]>> = brep
+            .edges
+            .iter()
+            .map(|e| {
+                crate::brep::edge_sampling::sample_edge_dense(&e.geometry, 32)
+                    .into_iter()
+                    .map(place)
+                    .collect::<Vec<[f32; 3]>>()
+            })
+            .filter(|p: &Vec<[f32; 3]>| p.len() >= 2 && on_surface(p))
+            .collect();
+        let corners: Vec<[f32; 3]> = brep
+            .vertices
+            .iter()
+            .map(|v| place(v.position))
+            .filter(|&p| sdf(p).abs() <= ON_SURFACE_TOL)
+            .collect();
+        crate::mdc_adaptive::PinGeometry { polylines, corners }
     }
 
     /// Phase 1b: snap MDC vertices onto the exact woven B-Rep edge
@@ -358,6 +526,7 @@ impl crate::Kernel {
         mesh: &mut Mesh,
         grid_min: [f32; 3],
         cell: f32,
+        sdf: &dyn Fn([f32; 3]) -> f32,
     ) -> usize {
         let parametric = self.parametric_weave;
         self.bodies[body_index].ensure_brep(&self.decoded, parametric);
@@ -392,6 +561,10 @@ impl crate::Kernel {
             min: [f32; 3],
             max: [f32; 3],
         }
+        // Ghost-edge validation (see build_pin_geometry): blend/fillet
+        // bodies carry hard-boolean weave edges the field has rounded
+        // away — those must not attract vertices into the material.
+        const ON_SURFACE_TOL: f32 = 0.02;
         let mut polys: Vec<EdgePoly> = Vec::with_capacity(brep.edges.len());
         for edge in &brep.edges {
             let pts: Vec<[f32; 3]> =
@@ -400,6 +573,15 @@ impl crate::Kernel {
                     .map(place)
                     .collect();
             if pts.len() < 2 {
+                continue;
+            }
+            let stride = (pts.len() / 16).max(1);
+            if !pts
+                .iter()
+                .step_by(stride)
+                .chain(pts.last())
+                .all(|&p| sdf(p).abs() <= ON_SURFACE_TOL)
+            {
                 continue;
             }
             let mut min = [f32::INFINITY; 3];
@@ -412,7 +594,12 @@ impl crate::Kernel {
             }
             polys.push(EdgePoly { pts, min, max });
         }
-        let corners: Vec<[f32; 3]> = brep.vertices.iter().map(|v| place(v.position)).collect();
+        let corners: Vec<[f32; 3]> = brep
+            .vertices
+            .iter()
+            .map(|v| place(v.position))
+            .filter(|&p| sdf(p).abs() <= ON_SURFACE_TOL)
+            .collect();
 
         // A cell can only be crossed by a curve whose distance to the
         // cell-clamped vertex is under one cell diagonal.
@@ -1098,7 +1285,56 @@ mod tests {
                 exact_on_rim += 1;
             }
         }
-        assert!(exact_on_rim > 30, "exact rim vertices: {exact_on_rim}");
+        // The adaptive cluster pass thins the chain along the edge (the
+        // QEF collapses collinear runs up to the chord tolerance) — the
+        // remaining support vertices must still sit EXACTLY on the curve.
+        assert!(exact_on_rim > 12, "exact rim vertices: {exact_on_rim}");
+    }
+
+    /// Phase 1c on SDF-only geometry: a smooth-blended union has no
+    /// parametric route and no woven B-Rep edges — the adaptive pass
+    /// alone must deliver watertight + in-tolerance + economical.
+    #[test]
+    fn smooth_blend_exports_adaptive_watertight() {
+        let mut k = crate::Kernel::new();
+        let box_id = k
+            .add_primitive(
+                Primitive::KIND_BOX,
+                BoolOp::TAG_NEW,
+                0.0,
+                0.0,
+                0.0,
+                10.0,
+                10.0,
+                10.0,
+            )
+            .unwrap();
+        k.add_feature_call(
+            "sphere",
+            &format!(
+                r#"{{
+                    "radius": 7.0,
+                    "center": [10.0, 8.0, 0.0],
+                    "op": "add",
+                    "targets": "qCreatedBy({box_id})",
+                    "blend_radius": 3.0
+                }}"#
+            ),
+        )
+        .unwrap();
+        assert_eq!(k.bodies.len(), 1);
+        let report = export_single(&mut k, 0.5);
+        eprintln!("BLEND REPORT: {report}");
+        assert_eq!(report["bodies"][0]["parametric"], false, "{report}");
+        assert_eq!(report["bodies"][0]["adaptive"], true, "{report}");
+        assert_eq!(report["all_watertight"], true, "{report}");
+        assert!(
+            report["max_deviation_mm"].as_f64().unwrap() < 0.12,
+            "{report}"
+        );
+        // Economy: flat box faces must collapse to coarse clusters.
+        let tris = report["total_triangles"].as_u64().unwrap();
+        assert!(tris < 25_000, "triangles {tris}");
     }
 
     /// Phase 1a determinism: identical input must produce a bit-identical

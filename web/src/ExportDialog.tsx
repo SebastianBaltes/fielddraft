@@ -263,7 +263,9 @@ function ReportView({
                     ? "source mesh"
                     : b.parametric
                       ? "parametric"
-                      : `grid ${formatMm(b.actual_cell_mm)} mm`}
+                      : b.adaptive
+                        ? `adaptive ${formatMm(b.actual_cell_mm)} mm`
+                        : `grid ${formatMm(b.actual_cell_mm)} mm`}
                   {b.cell_limited ? " (limited)" : ""}
                 </td>
                 <td>{b.triangles.toLocaleString()}</td>

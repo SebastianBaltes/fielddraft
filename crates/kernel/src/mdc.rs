@@ -29,7 +29,7 @@ use std::collections::HashMap;
 //     0=(0,0,0)  1=(1,0,0)  2=(1,1,0)  3=(0,1,0)
 //     4=(0,0,1)  5=(1,0,1)  6=(1,1,1)  7=(0,1,1)
 
-const MC_CORNER_POS: [[f32; 3]; 8] = [
+pub(crate) const MC_CORNER_POS: [[f32; 3]; 8] = [
     [0.0, 0.0, 0.0], // 0
     [1.0, 0.0, 0.0], // 1
     [1.0, 1.0, 0.0], // 2
@@ -40,7 +40,7 @@ const MC_CORNER_POS: [[f32; 3]; 8] = [
     [0.0, 1.0, 1.0], // 7
 ];
 
-const MC_EDGE_VERTS: [[usize; 2]; 12] = [
+pub(crate) const MC_EDGE_VERTS: [[usize; 2]; 12] = [
     [0, 1], [1, 2], [2, 3], [3, 0], // bottom ring
     [4, 5], [5, 6], [6, 7], [7, 4], // top ring
     [0, 4], [1, 5], [2, 6], [3, 7], // vertical pillars
@@ -49,7 +49,7 @@ const MC_EDGE_VERTS: [[usize; 2]; 12] = [
 /// Maps each MC edge of a cell to the grid edge it corresponds to.
 /// (axis, di, dj, dk) — grid edge at (ci+di, cj+dj, ck+dk) along axis.
 #[allow(dead_code)]
-const MC_EDGE_TO_GRID: [(usize, usize, usize, usize); 12] = [
+pub(crate) const MC_EDGE_TO_GRID: [(usize, usize, usize, usize); 12] = [
     (0, 0, 0, 0), // MC 0:  X-edge at (ci,   cj,   ck)
     (1, 1, 0, 0), // MC 1:  Y-edge at (ci+1, cj,   ck)
     (0, 0, 1, 0), // MC 2:  X-edge at (ci,   cj+1, ck)
@@ -69,7 +69,7 @@ const MC_EDGE_TO_GRID: [(usize, usize, usize, usize); 12] = [
 ///
 /// For axis A grid-edge at (ei, ej, ek), cell is at
 /// (ei + off[0], ej + off[1], ek + off[2]).
-const QUAD_CELLS: [[(i32, i32, i32, usize); 4]; 3] = [
+pub(crate) const QUAD_CELLS: [[(i32, i32, i32, usize); 4]; 3] = [
     // X-edges: 4 cells in the YZ plane
     [
         (0, -1, -1, 6), // v00
@@ -97,16 +97,16 @@ use fielddraft_protocol::mc_tables::{EDGE_TABLE, TRI_TABLE};
 
 // ── QEF Solver ──────────────────────────────────────────────────────
 
-struct QefData {
+pub(crate) struct QefData {
     ata: [f64; 6],
     atb: [f64; 3],
     btb: f64,
     mass_point: [f64; 3],
-    num_points: u32,
+    pub(crate) num_points: u32,
 }
 
 impl QefData {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             ata: [0.0; 6],
             atb: [0.0; 3],
@@ -116,7 +116,7 @@ impl QefData {
         }
     }
 
-    fn add(&mut self, p: [f32; 3], n: [f32; 3]) {
+    pub(crate) fn add(&mut self, p: [f32; 3], n: [f32; 3]) {
         let (px, py, pz) = (p[0] as f64, p[1] as f64, p[2] as f64);
         let (nx, ny, nz) = (n[0] as f64, n[1] as f64, n[2] as f64);
 
@@ -139,7 +139,36 @@ impl QefData {
         self.num_points += 1;
     }
 
-    fn solve(&self) -> [f32; 3] {
+    /// Merge another QEF into this one (the additive normal-equation
+    /// representation makes cluster QEFs a plain sum — Schaefer 07 §IV.A).
+    pub(crate) fn merge(&mut self, other: &QefData) {
+        for i in 0..6 {
+            self.ata[i] += other.ata[i];
+        }
+        for i in 0..3 {
+            self.atb[i] += other.atb[i];
+            self.mass_point[i] += other.mass_point[i];
+        }
+        self.btb += other.btb;
+        self.num_points += other.num_points;
+    }
+
+    /// QEF residual E(x) = xᵀAᵀAx − 2·Aᵀb·x + bᵀb at `pos` — the summed
+    /// squared distance to all constraint planes. Drives the collapsible
+    /// threshold during clustering.
+    pub(crate) fn residual(&self, pos: [f32; 3]) -> f64 {
+        let x = [pos[0] as f64, pos[1] as f64, pos[2] as f64];
+        let ax = [
+            self.ata[0] * x[0] + self.ata[1] * x[1] + self.ata[2] * x[2],
+            self.ata[1] * x[0] + self.ata[3] * x[1] + self.ata[4] * x[2],
+            self.ata[2] * x[0] + self.ata[4] * x[1] + self.ata[5] * x[2],
+        ];
+        let xax = x[0] * ax[0] + x[1] * ax[1] + x[2] * ax[2];
+        let bx = self.atb[0] * x[0] + self.atb[1] * x[1] + self.atb[2] * x[2];
+        (xax - 2.0 * bx + self.btb).max(0.0)
+    }
+
+    pub(crate) fn solve(&self) -> [f32; 3] {
         if self.num_points == 0 {
             return [0.0; 3];
         }
@@ -243,7 +272,7 @@ fn jacobi_rotation(a: &mut [[f64; 3]; 3], v: &mut [[f64; 3]; 3], p: usize, q: us
 ///
 /// Returns (edge_to_cycle, num_cycles) where edge_to_cycle[e] is the
 /// cycle index for MC edge e, or -1 if the edge has no sign change.
-fn compute_edge_cycles(case: u8) -> ([i8; 12], usize) {
+pub(crate) fn compute_edge_cycles(case: u8) -> ([i8; 12], usize) {
     let mut parent = [0u8; 12];
     for (i, p) in parent.iter_mut().enumerate() {
         *p = i as u8;
