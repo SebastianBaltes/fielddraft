@@ -707,6 +707,16 @@ graph LR
   `decimate_builtin.rs`, abhängigkeitsfrei, deterministisch via
   BTreeSet-Ring). Report zeigt `surface_nets` + `dense_triangles`
   (dicht → dezimiert). Dieser Modus überspringt den parametrischen Pfad.
+  Viertes Verfahren *Interval-octree DC (fidget)* (`fidget_bridge.rs`):
+  übersetzt `BoundedCsg` → `fidget::context::Tree` (op-für-op-Spiegel der
+  SDF-Semantik) und meshet per **Intervall-Arithmetik-Octree + Manifold
+  DC** (Crate `fidget`, ohne `jit` für wasm). Intervall-Schranken
+  zertifizieren die Zell-Unterteilung (keine Lipschitz-Annahme), QEF
+  bewahrt scharfe Kanten ohne B-Rep. Nur closed-form-Körper; Sketch/Daten-
+  Carrier fallen auf Surface Nets zurück. Watertight auf glatten
+  Körpern (p95 ~0,01 mm); an scharfen/dichten Feature-Kanten hinterlässt
+  das adaptive DC ein paar non-manifold-Kanten (Report zeigt es) →
+  garantiert-watertight bleibt Surface Nets' Domäne.
 * **Export-Vorschau** (`exportPreviewStore.ts`, `exportPreviewMesh.tsx`):
   Nach „Mesh" publiziert der Dialog die zusammengeführten Export-Dreiecke
   (`exportMeshPreviewPositions/Indices`); der Viewport unterdrückt den

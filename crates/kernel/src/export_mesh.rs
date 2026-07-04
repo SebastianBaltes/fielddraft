@@ -55,6 +55,14 @@ pub enum MeshMethod {
     /// `decimate_builtin`) — dependency-free alternative, selectable to
     /// diff against the library path.
     SurfaceNetsBuiltin,
+    /// Interval-arithmetic octree + Manifold Dual Contouring via the
+    /// `fidget` crate (`fidget_bridge`). Certifies octree subdivision by
+    /// interval bounds on the actual expression (no Lipschitz
+    /// assumption → topology-safe for non-1-Lipschitz fields) and
+    /// recovers sharp feature edges from the field (QEF) without a
+    /// B-Rep. Only closed-form bodies qualify; sketch/data carriers fall
+    /// back.
+    IntervalDc,
 }
 
 impl MeshMethod {
@@ -63,6 +71,7 @@ impl MeshMethod {
         match s {
             "surface-nets" => MeshMethod::SurfaceNets,
             "surface-nets-builtin" => MeshMethod::SurfaceNetsBuiltin,
+            "interval-dc" => MeshMethod::IntervalDc,
             _ => MeshMethod::Adaptive,
         }
     }
@@ -125,6 +134,9 @@ pub struct BodyExportReport {
     /// True when this body shipped the dense Surface Nets + QEM
     /// decimation route (robust for non-1-Lipschitz fields).
     pub surface_nets: bool,
+    /// True when this body shipped the interval-octree Manifold-DC route
+    /// (fidget) — feature-preserving, interval-safe topology.
+    pub interval_dc: bool,
     /// Triangle count of the dense Surface Nets mesh BEFORE decimation
     /// (0 off the Surface Nets route) — the report shows the reduction.
     pub dense_triangles: usize,
@@ -274,6 +286,7 @@ impl crate::Kernel {
                 self_intersections: 0,
                 self_intersections_complete: true,
                 surface_nets: false,
+                interval_dc: false,
                 dense_triangles: 0,
                 validation,
             };
@@ -289,6 +302,10 @@ impl crate::Kernel {
             // ones (fast-surface-nets / baby_shark).
             let builtin = method == MeshMethod::SurfaceNetsBuiltin;
             self.surface_nets_export_body(i, body_id, &feature_indices, size, cell_mm, builtin)
+        } else if method == MeshMethod::IntervalDc {
+            // ── Interval-octree Manifold DC (fidget) ── topology-safe for
+            // non-1-Lipschitz fields, feature-preserving, no B-Rep needed.
+            self.interval_dc_export_body(body_id, &feature_indices, size, cell_mm)
         } else {
             // ── Parametric route first (Meshing Phase 2, Option B) ──
             // Per-face B-Rep tessellation: watertight by construction,
@@ -318,6 +335,7 @@ impl crate::Kernel {
                         self_intersections: si,
                         self_intersections_complete: si_complete,
                         surface_nets: false,
+                        interval_dc: false,
                         dense_triangles: 0,
                         validation,
                     };
@@ -431,6 +449,7 @@ impl crate::Kernel {
                     self_intersections: si,
                     self_intersections_complete: si_complete,
                     surface_nets: false,
+                    interval_dc: false,
                     dense_triangles: 0,
                     validation,
                 };
@@ -540,6 +559,7 @@ impl crate::Kernel {
             self_intersections: si,
             self_intersections_complete: si_complete,
             surface_nets: false,
+            interval_dc: false,
             dense_triangles: 0,
             validation,
         };
@@ -619,7 +639,76 @@ impl crate::Kernel {
             self_intersections: si,
             self_intersections_complete: si_complete,
             surface_nets: true,
+            interval_dc: false,
             dense_triangles,
+            validation,
+        };
+        (mesh, report)
+    }
+
+    /// The interval-octree Manifold-DC route (fidget). Translates the
+    /// body's field to a fidget `Tree` and meshes it with interval
+    /// arithmetic + DC. Only closed-form bodies qualify; a body with a
+    /// sketch/data carrier can't be expressed symbolically and falls back
+    /// to the (robust) library Surface Nets path.
+    fn interval_dc_export_body(
+        &mut self,
+        body_id: u32,
+        feature_indices: &[usize],
+        size: [f32; 3],
+        cell_mm: f32,
+    ) -> (Mesh, BodyExportReport) {
+        let (bounded, _prims) =
+            crate::body::build_bounded_with_primitives(&self.decoded, feature_indices);
+        let aabb = bounded.aabb();
+        let (resolution, actual_cell, cell_limited) = derive_export_resolution(size, cell_mm);
+
+        let mut mesh = match crate::fidget_bridge::mesh_body_fidget(
+            &bounded, aabb.min, aabb.max, cell_mm,
+        ) {
+            Ok(m) => m,
+            Err(reason) => {
+                // Not closed-form — fall back to the robust dense mesher so
+                // the export still produces a solid, and record why.
+                let (mesh, mut report) =
+                    self.surface_nets_export_body(0, body_id, feature_indices, size, cell_mm, false);
+                report.adaptive_skip_reason = format!("interval-DC fell back: {reason}");
+                return (mesh, report);
+            }
+        };
+
+        let sdf = |p: [f32; 3]| bounded.sdf(p, crate::csg::EvalMode::Visual);
+        let flips = mesh_validate::fix_orientation(&mut mesh, &sdf);
+        let mut validation = mesh_validate::validate_topology(&mesh);
+        let (max_dev, p95_dev, samples) =
+            mesh_validate::measure_deviation(&mesh, DEVIATION_SAMPLE_BUDGET, &sdf);
+        validation.max_deviation_mm = max_dev;
+        validation.p95_deviation_mm = p95_dev;
+        validation.deviation_samples = samples;
+        let (si, si_complete) =
+            mesh_validate::count_self_intersections(&mesh, SELF_INTERSECT_PAIR_BUDGET);
+
+        let report = BodyExportReport {
+            body_id,
+            requested_cell_mm: cell_mm,
+            actual_cell_mm: actual_cell,
+            resolution,
+            cell_limited,
+            passthrough: false,
+            parametric: false,
+            parametric_skip_reason: "interval-DC selected".into(),
+            adaptive: false,
+            adaptive_skip_reason: "interval-DC selected".into(),
+            orientation_repaired: flips,
+            edges_pinned: 0,
+            simplified: false,
+            simplification_rejected: false,
+            thin_cells: 0,
+            self_intersections: si,
+            self_intersections_complete: si_complete,
+            surface_nets: false,
+            interval_dc: true,
+            dense_triangles: 0,
             validation,
         };
         (mesh, report)
@@ -1146,6 +1235,101 @@ mod tests {
         let tris = report["total_triangles"].as_u64().unwrap();
         assert!(tris > 500, "gyroid too sparse: {tris}");
         assert!(dense >= tris, "dense {dense} < decimated {tris}");
+    }
+
+    #[test]
+    fn interval_dc_sharp_edged_solid_is_accurate() {
+        // A closed-form solid with sharp edges (box with a cylindrical
+        // through-hole). fidget's QEF preserves the sharp rim edges and the
+        // interval octree keeps the faces on-surface (p95 well under the
+        // tolerance). CAVEAT: adaptive DC leaves a few non-manifold edges
+        // where the sharp rim crosses cell boundaries — for guaranteed
+        // watertight use Surface Nets; here we assert accuracy + that the
+        // defects are a tiny fraction.
+        let mut k = box_with_hole();
+        let report = export_single_method(&mut k, 0.5, "interval-dc");
+        let body = &report["bodies"][0];
+        assert!(
+            body["p95_deviation_mm"].as_f64().unwrap() < 0.05,
+            "p95 deviation {}",
+            body["p95_deviation_mm"]
+        );
+        let tris = body["triangles"].as_u64().unwrap();
+        let defects = body["boundary_edges"].as_u64().unwrap()
+            + body["non_manifold_edges"].as_u64().unwrap();
+        assert!(defects * 500 < tris, "defects {defects} for {tris} tris");
+    }
+
+    #[test]
+    fn interval_dc_meshes_a_gyroid() {
+        // The interval octree meshes the non-1-Lipschitz TPMS gyroid∩box
+        // feature-preservingly. NOTE: where the thin sheets meet the sharp
+        // box clip, adaptive DC leaves a handful of boundary/non-manifold
+        // edges (the classic DC-vs-manifold tension) — for guaranteed-
+        // watertight TPMS use Surface Nets. Here we assert it produces a
+        // substantial solid and that the defects stay a tiny fraction.
+        let mut k = crate::Kernel::new();
+        let box_id = k
+            .add_primitive(
+                Primitive::KIND_BOX,
+                BoolOp::TAG_NEW,
+                0.0,
+                0.0,
+                0.0,
+                12.0,
+                12.0,
+                12.0,
+            )
+            .unwrap();
+        k.add_feature_call(
+            "gyroid",
+            &format!(
+                r#"{{
+                    "cell_size": {{ "value": 6.0, "unit": "mm" }},
+                    "thickness": {{ "value": 1.5, "unit": "mm" }},
+                    "op": "intersect",
+                    "targets": "qCreatedBy({box_id})"
+                }}"#
+            ),
+        )
+        .unwrap();
+        assert!(k.feature_errors.is_empty(), "{:?}", k.feature_errors);
+        let report = export_single_method(&mut k, 0.5, "interval-dc");
+        let body = &report["bodies"][0];
+        let tris = body["triangles"].as_u64().unwrap();
+        assert!(tris > 5000, "gyroid too sparse via interval-DC: {tris}");
+        let defects = body["boundary_edges"].as_u64().unwrap()
+            + body["non_manifold_edges"].as_u64().unwrap();
+        assert!(
+            defects * 1000 < tris,
+            "interval-DC gyroid defects {defects} too high for {tris} tris"
+        );
+    }
+
+    #[test]
+    fn interval_dc_meshes_a_sphere_watertight_and_accurate() {
+        // A closed-form sphere via interval-DC: watertight and — thanks to
+        // interval sampling of the exact expression — well under the export
+        // tolerance envelope.
+        let mut k = crate::Kernel::new();
+        k.add_primitive(
+            Primitive::KIND_SPHERE,
+            BoolOp::TAG_NEW,
+            0.0,
+            0.0,
+            0.0,
+            10.0,
+            0.0,
+            0.0,
+        )
+        .unwrap();
+        let report = export_single_method(&mut k, 0.4, "interval-dc");
+        assert_eq!(report["all_watertight"], true, "{report}");
+        assert!(
+            report["max_deviation_mm"].as_f64().unwrap() < 0.4,
+            "deviation {}",
+            report["max_deviation_mm"]
+        );
     }
 
     #[test]

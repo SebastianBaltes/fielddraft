@@ -29,6 +29,12 @@ ndshape = "0.3"
 # Deterministic QEM edge-collapse decimation for the export path (see
 # decimate.rs). Replaces our hand-written QEM. Pure Rust, wasm-safe.
 baby_shark = "0.3"
+# Interval-arithmetic octree + Manifold Dual Contouring (fidget_bridge.rs): implicit-surface meshing via interval arithmetic +
+# Manifold Dual Contouring. NOTE: v0.3.x has no "mesh" feature — the mesh
+# module is always compiled; we only disable the default jit/rhai features
+# (jit is native-asm and breaks wasm). Its own Cargo.toml already wires the
+# wasm getrandom js shims.
+fidget = { version = "0.3", default-features = false }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 console_error_panic_hook = "0.1"

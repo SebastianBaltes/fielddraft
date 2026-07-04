@@ -14,8 +14,14 @@ export type ExportFormat = "stl" | "3mf";
  *    (fast-surface-nets + baby_shark); robust for non-1-Lipschitz fields
  *    like gyroid/TPMS/helix.
  *  - `surface-nets-builtin` — the same pipeline with our own from-scratch
- *    implementations (dependency-free alternative). */
-export type MeshMethod = "adaptive" | "surface-nets" | "surface-nets-builtin";
+ *    implementations (dependency-free alternative).
+ *  - `interval-dc` — interval-arithmetic octree + Manifold Dual Contouring
+ *    (fidget). Topology-safe subdivision (no Lipschitz assumption) and
+ *    QEF sharp-edge preservation for closed-form solids; watertight on
+ *    smooth solids, a few non-manifold edges at sharp/dense feature
+ *    edges. */
+export type MeshMethod =
+  "adaptive" | "surface-nets" | "surface-nets-builtin" | "interval-dc";
 
 /** Per-body slice of the export report (kernel: `BodyExportReport`,
  *  with the `MeshValidation` fields flattened in). */
@@ -48,6 +54,9 @@ export interface ExportBodyReport {
   /** True when this body shipped the dense Surface Nets + QEM
    *  decimation route. */
   surface_nets: boolean;
+  /** True when this body shipped the interval-octree Manifold-DC route
+   *  (fidget). */
+  interval_dc: boolean;
   /** Triangle count of the dense Surface Nets mesh before decimation
    *  (0 off that route) — the report shows the reduction. */
   dense_triangles: number;

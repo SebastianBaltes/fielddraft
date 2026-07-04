@@ -49,6 +49,7 @@ function initialMethod(): MeshMethod {
     if (
       stored === "surface-nets" ||
       stored === "surface-nets-builtin" ||
+      stored === "interval-dc" ||
       stored === "adaptive"
     ) {
       return stored;
@@ -261,13 +262,16 @@ export function ExportDialog({ store, format, onClose }: ExportDialogProps) {
           <option value="surface-nets-builtin">
             Surface Nets + decimation (built-in)
           </option>
+          <option value="interval-dc">Interval-octree DC (fidget)</option>
         </select>
         <span className="hint">
           {method === "surface-nets"
             ? "Dense grid (every cell evaluated) then QEM decimation, via fast-surface-nets + baby_shark — robust for non-1-Lipschitz fields: gyroid, TPMS, dense helix windings."
             : method === "surface-nets-builtin"
               ? "Same dense-grid + QEM pipeline, but our own from-scratch implementations — dependency-free alternative to diff against the library path."
-              : "Parametric-first, then adaptive Manifold-DC — exact edges and the fewest triangles for regular CAD solids."}
+              : method === "interval-dc"
+                ? "Interval-arithmetic octree + Manifold DC (fidget): topology-safe subdivision (no Lipschitz assumption) and QEF sharp-edge preservation for closed-form solids. Watertight on smooth solids; sharp/dense feature edges may leave a few non-manifold edges (see the report) — use Surface Nets for guaranteed watertight."
+                : "Parametric-first, then adaptive Manifold-DC — exact edges and the fewest triangles for regular CAD solids."}
         </span>
       </div>
 
@@ -428,11 +432,13 @@ function ReportView({
                     ? "source mesh"
                     : b.parametric
                       ? "parametric"
-                      : b.surface_nets
-                        ? `surface nets ${formatMm(b.actual_cell_mm)} mm`
-                        : b.adaptive
-                          ? `adaptive ${formatMm(b.actual_cell_mm)} mm`
-                          : `grid ${formatMm(b.actual_cell_mm)} mm`}
+                      : b.interval_dc
+                        ? `interval-DC ${formatMm(b.actual_cell_mm)} mm`
+                        : b.surface_nets
+                          ? `surface nets ${formatMm(b.actual_cell_mm)} mm`
+                          : b.adaptive
+                            ? `adaptive ${formatMm(b.actual_cell_mm)} mm`
+                            : `grid ${formatMm(b.actual_cell_mm)} mm`}
                   {b.cell_limited ? " (limited)" : ""}
                   {b.surface_nets && b.dense_triangles > 0
                     ? ` (${b.dense_triangles.toLocaleString()} → ${b.triangles.toLocaleString()})`

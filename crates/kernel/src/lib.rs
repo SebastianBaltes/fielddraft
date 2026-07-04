@@ -43,6 +43,7 @@ pub mod transform;
 pub mod sdf_eval;
 pub mod finite;
 pub mod vec3f;
+pub mod fidget_bridge;
 
 mod api;
 mod kernel_core;

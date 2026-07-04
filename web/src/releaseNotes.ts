@@ -24,6 +24,16 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.368",
+    entries: [
+      {
+        kind: "feat",
+        text: "Viertes Export-Meshing-Verfahren: „Interval-octree DC (fidget)“. Übersetzt das Körperfeld in einen fidget-Ausdrucksbaum und meshet es per Intervall-Arithmetik-Octree + Manifold Dual Contouring: die Zell-Unterteilung wird per Intervall-Schranken auf dem echten Ausdruck zertifiziert (keine Lipschitz-Annahme → topologie-sicher für nicht-1-Lipschitz-Felder) und QEF bewahrt scharfe Kanten ohne B-Rep. Watertight auf glatten closed-form-Körpern und sehr genau (p95 ~0,01 mm); an scharfen/dichten Feature-Kanten hinterlässt das adaptive DC ein paar non-manifold-Kanten (Report zeigt es) — für garantiert watertight Surface Nets nutzen. Nur closed-form-Körper; Sketch-/Daten-Carrier fallen auf Surface Nets zurück",
+        scope: "export",
+      },
+    ],
+  },
+  {
     version: "0.6.367",
     entries: [
       {
