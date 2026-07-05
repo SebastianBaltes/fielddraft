@@ -2221,6 +2221,13 @@ export class KernelStore {
 let singleton: KernelStore | null = null;
 let storePromise: Promise<KernelStore> | null = null;
 
+/** Synchronous, non-subscribing peek at the loaded store singleton (or `null`
+ *  before it boots). For imperative call-sites that must not re-render on state
+ *  changes — e.g. the camera controller's cursor-pick pivot. */
+export function peekStore(): KernelStore | null {
+  return singleton;
+}
+
 export async function getStore(): Promise<KernelStore> {
   if (singleton) return singleton;
   if (storePromise) return storePromise;

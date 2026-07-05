@@ -15,6 +15,7 @@ import {
 import { publishPickCamera } from "./pickCameraBridge";
 import { getCameraPose, saveCameraPose } from "./cameraPoseBridge";
 import { getSceneBounds, GRID_BOUNDS } from "./sceneBoundsBridge";
+import { peekStore } from "./store";
 import {
   CONTROLS_PRESETS,
   ORBIT_ACTION_CODE,
@@ -312,6 +313,26 @@ export function CameraRig({ preset }: { preset: ControlsPresetId }) {
     // moves the camera must request a frame (the WebGL root's own rAF loop
     // ticks regardless, but the extra invalidate is harmless there).
     controls.onChange = () => invalidate();
+    // Onshape orbit-pivot heuristic (ticket ohtn): on rotate-start, sphere-trace
+    // the cursor ray through the CSG and pivot on the hit point; a miss returns
+    // null → the controller falls back to the scene centre. `kernel.pick` is
+    // renderer-independent (works in every SDF / WebGL mode). `peekStore` avoids
+    // subscribing this rig to store-state changes.
+    const host = gl.domElement as HTMLElement;
+    controls.pickPivot = (clientX, clientY) => {
+      const st = peekStore();
+      if (!st) return null;
+      const rect = host.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) return null;
+      const ndcX = ((clientX - rect.left) / rect.width) * 2 - 1;
+      const ndcY = -(((clientY - rect.top) / rect.height) * 2 - 1);
+      const rc = new THREE.Raycaster();
+      rc.setFromCamera(new THREE.Vector2(ndcX, ndcY), cam);
+      const o = rc.ray.origin;
+      const d = rc.ray.direction;
+      const res = st.kernel.pick([o.x, o.y, o.z], [d.x, d.y, d.z]);
+      return res.hit ? res.point : null;
+    };
     controlsRef.current = controls;
     const previous = get().controls;
     set({ controls: controls as unknown as THREE.Controls });

@@ -24,6 +24,17 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.404",
+    entries: [
+      {
+        kind: "feat",
+        text: "Kamera-Pivot wie in Onshape: Beim Start der Rotation wird ein Strahl vom Cursor in die Szene geschossen — trifft er Geometrie, dreht die Ansicht um genau diesen Punkt; trifft er ins Leere, um das Zentrum der sichtbaren Szene. Ersetzt die bisherige AABB-Sticky-Heuristik; man dreht jetzt um das, was unter dem Mauszeiger liegt (Maus + Touch)",
+        scope: "camera",
+        tickets: ["ohtn"],
+      },
+    ],
+  },
+  {
     version: "0.6.403",
     entries: [
       {

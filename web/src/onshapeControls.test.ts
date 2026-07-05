@@ -189,35 +189,42 @@ describe("OnshapeControls touch gestures", () => {
     c.dispose();
   });
 
-  it("rotate re-centres on the VISIBLE pivot, not the conservative centre (f88u)", () => {
-    // The conservative `center` still sits on the phantom original primitive
-    // after a boolean carve; the pivot must follow the tight visible centre.
-    publishSceneBounds({ center: [0, 0, 0], radius: 5, pivot: [5, 6, 7] });
-    const cam = cameraLookingAt([0, 0, 100], [0, 0, 0]); // far → part fits
+  // A right-button mouse event (button 2 → ROTATE in the Onshape preset).
+  const mouse = (button: number, x: number, y: number) =>
+    ({
+      pointerType: "mouse",
+      pointerId: 1,
+      button,
+      clientX: x,
+      clientY: y,
+      stopPropagation: () => {},
+    }) as unknown as PointerEvent;
+
+  it("rotate pivots on the cursor-raycast HIT point (ohtn)", () => {
+    // Onshape heuristic: the surface point under the cursor becomes the pivot.
+    const cam = cameraLookingAt([0, 0, 100], [0, 0, 0]);
     const c = new OnshapeControls(cam, makeEl());
+    c.pickPivot = () => [1, 2, 3]; // cursor ray hits geometry at (1,2,3)
     const h = handlers(c);
-    h.onPointerDown(touch(1, 100, 100));
-    h.onPointerMove(touch(1, 160, 100)); // past threshold → rotate → recentre
+    h.onPointerDown(mouse(2, 100, 100)); // right button → rotate begins
+    expect(c.target.x).toBeCloseTo(1, 5);
+    expect(c.target.y).toBeCloseTo(2, 5);
+    expect(c.target.z).toBeCloseTo(3, 5);
+    c.dispose();
+  });
+
+  it("rotate falls back to the scene centre on a raycast MISS (ohtn)", () => {
+    // Empty space under the cursor → pivot on the visible scene centre
+    // (the tight `pivot` when the kernel has it, else the AABB centre).
+    publishSceneBounds({ center: [0, 0, 0], radius: 5, pivot: [5, 6, 7] });
+    const cam = cameraLookingAt([0, 0, 100], [0, 0, 0]);
+    const c = new OnshapeControls(cam, makeEl());
+    c.pickPivot = () => null; // miss
+    const h = handlers(c);
+    h.onPointerDown(mouse(2, 100, 100));
     expect(c.target.x).toBeCloseTo(5, 5);
     expect(c.target.y).toBeCloseTo(6, 5);
     expect(c.target.z).toBeCloseTo(7, 5);
-    c.dispose();
-    publishSceneBounds(null);
-  });
-
-  it("rotate keeps the pivot STICKY when the part no longer fits the viewport (f88u)", () => {
-    // A huge part seen from close up cannot frame → the pivot must stay put
-    // (at its last fitting position, here the origin) instead of lurching onto
-    // an off-screen centre.
-    publishSceneBounds({ center: [0, 0, 0], radius: 500, pivot: [9, 9, 9] });
-    const cam = cameraLookingAt([0, 0, 50], [0, 0, 0]);
-    const c = new OnshapeControls(cam, makeEl());
-    const h = handlers(c);
-    h.onPointerDown(touch(1, 100, 100));
-    h.onPointerMove(touch(1, 160, 100)); // rotate, but the part does not fit
-    expect(c.target.x).toBeCloseTo(0, 5); // sticky → unchanged
-    expect(c.target.y).toBeCloseTo(0, 5);
-    expect(c.target.z).toBeCloseTo(0, 5);
     c.dispose();
     publishSceneBounds(null);
   });

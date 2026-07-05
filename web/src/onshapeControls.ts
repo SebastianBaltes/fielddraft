@@ -49,7 +49,6 @@ const WORLD_UP = /*@__PURE__*/ new THREE.Vector3(0, 1, 0);
 const _offset = new THREE.Vector3();
 const _right = new THREE.Vector3();
 const _up = new THREE.Vector3();
-const _c = new THREE.Vector3();
 const _ndc = new THREE.Vector3();
 const _viewDir = new THREE.Vector3();
 const _rayDir = new THREE.Vector3();
@@ -170,6 +169,16 @@ export class OnshapeControls extends THREE.Controls {
   rotateMode: RotateMode = "free";
   /** Invoked after every camera change so a demand-mode root can invalidate. */
   onChange: (() => void) | null = null;
+  /**
+   * Onshape orbit-pivot heuristic (ticket ohtn): on rotate-start, raycast from
+   * the cursor into the scene. Given the cursor's client coords, this returns
+   * the world-space hit point on the geometry, or `null` on a miss (empty
+   * space). Supplied by the viewport layer (it owns the kernel picker). When
+   * unset, or on a miss, the pivot falls back to the scene centre.
+   */
+  pickPivot:
+    | ((clientX: number, clientY: number) => [number, number, number] | null)
+    | null = null;
 
   private action: Action = null;
   private px = 0;
@@ -253,7 +262,7 @@ export class OnshapeControls extends THREE.Controls {
     this.action = action;
     this.px = e.clientX;
     this.py = e.clientY;
-    if (action === "rotate") this.recentrePivot();
+    if (action === "rotate") this.setRotatePivot(e.clientX, e.clientY);
     (this.domElement as HTMLElement | null)?.setPointerCapture?.(e.pointerId);
     this.startWindowTracking();
     e.stopPropagation();
@@ -340,7 +349,7 @@ export class OnshapeControls extends THREE.Controls {
       );
       if (moved <= TOUCH_ROTATE_THRESHOLD) return; // still a potential tap
       this.touchMode = "rotate";
-      this.recentrePivot();
+      this.setRotatePivot(cur.x, cur.y);
     }
 
     if (this.touchMode === "rotate" && this.touches.size === 1) {
@@ -363,10 +372,12 @@ export class OnshapeControls extends THREE.Controls {
     this.touches.delete(e.pointerId);
     (this.domElement as HTMLElement | null)?.releasePointerCapture?.(e.pointerId);
     if (this.touches.size === 1) {
-      // Dropped from a pinch to one finger → resume rotating cleanly.
+      // Dropped from a pinch to one finger → resume rotating cleanly, pivoting
+      // under the remaining finger.
       this.touchMode = "rotate";
       this.pinchPrev = null;
-      this.recentrePivot();
+      const rest = [...this.touches.values()][0];
+      if (rest) this.setRotatePivot(rest.x, rest.y);
     } else if (this.touches.size === 0) {
       this.touchMode = "none";
       this.pinchPrev = null;
@@ -380,26 +391,30 @@ export class OnshapeControls extends THREE.Controls {
     this.dolly(e.deltaY, e.clientX, e.clientY);
   };
 
-  /** Decide the rotate pivot via the sticky-bounding-sphere rule. */
-  private recentrePivot(): void {
-    const cam = this.cam;
-    cam.updateMatrixWorld();
+  /**
+   * Onshape orbit-pivot heuristic (ticket ohtn). At rotate-start, raycast from
+   * the cursor: a HIT makes that exact surface point the pivot; a MISS falls
+   * back to the geometric centre of the visible scene. The pivot then stays
+   * fixed for the whole drag (rotate() orbits about `this.target`). This
+   * replaces the earlier sticky-bounding-sphere rule — you spin about whatever
+   * is under the cursor, exactly like Onshape.
+   */
+  private setRotatePivot(clientX: number, clientY: number): void {
+    const hit = this.pickPivot?.(clientX, clientY) ?? null;
+    if (hit) {
+      this.target.set(hit[0], hit[1], hit[2]);
+      return;
+    }
+    this.recentreOnSceneCentre();
+  }
+
+  /** Miss fallback: pivot on the visible scene centre (tight `pivot` when the
+   *  kernel could compute it, else the conservative AABB `center`). */
+  private recentreOnSceneCentre(): void {
     const b = getSceneBounds();
     if (!b || b.radius <= 0) return; // nothing drawn → keep the current pivot
-    // Ticket f88u: re-centre on the *visible* solid's tight AABB centre
-    // (`pivot`), never the conservative `center` — after a boolean carve that
-    // still sits on the phantom original primitive (a half-cut sphere would
-    // spin about the vanished sphere centre otherwise).
     const c = b.pivot ?? b.center;
-    _c.set(c[0], c[1], c[2]);
-    // Sticky-bounding-sphere rule: only re-centre while the part still frames
-    // in the viewport; once zoomed in so it no longer fits, keep the pivot at
-    // its last fitting position so a rotate doesn't lurch to an off-screen
-    // centre.
-    if (sphereFitsViewport(cam, _c, b.radius)) {
-      this.target.copy(_c);
-    }
-    // else: sticky — leave the pivot at its last fitting position.
+    this.target.set(c[0], c[1], c[2]);
   }
 
   private rotate(dx: number, dy: number): void {
