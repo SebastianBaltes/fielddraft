@@ -24,6 +24,16 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.389",
+    entries: [
+      {
+        kind: "fix",
+        text: "App-Menü (Hamburger) lief auf schmalen/mobilen Bildschirmen rechts aus dem Viewport (Shortcuts und Submenu-Pfeil abgeschnitten). Auf Telefonen ist die Dropdown-Liste jetzt am rechten Rand des Buttons verankert (öffnet nach links) und maximal viewport-breit — sie bleibt vollständig sichtbar",
+        scope: "ui",
+      },
+    ],
+  },
+  {
     version: "0.6.388",
     entries: [
       {
