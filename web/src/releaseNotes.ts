@@ -24,6 +24,17 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.401",
+    entries: [
+      {
+        kind: "fix",
+        text: "Part-AABB-Panel: Schließen-× oben rechts ergänzt und das dekorative cyan-Kästchen vor dem Titel entfernt. Die Anzeige wechselt jetzt korrekt vom Leer-Hinweis auf die Maße des selektierten Parts (zusammen mit dem AABB-Fix ipnx)",
+        scope: "debug",
+        tickets: ["5egt"],
+      },
+    ],
+  },
+  {
     version: "0.6.400",
     entries: [
       {

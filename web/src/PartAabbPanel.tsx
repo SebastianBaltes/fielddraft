@@ -9,7 +9,11 @@
 
 import { useMemo, useSyncExternalStore } from "react";
 import { useKernelStore } from "./store";
-import { getPartAabbVisible, subscribePartAabb } from "./partAabbStore";
+import {
+  getPartAabbVisible,
+  subscribePartAabb,
+  setPartAabbVisible,
+} from "./partAabbStore";
 import { selectedPartAabbs, type PartAabb } from "./partAabb";
 
 const f2 = (n: number) => n.toFixed(2);
@@ -32,7 +36,18 @@ export function PartAabbPanel() {
 
   return (
     <div className="fd-part-aabb-panel" data-testid="part-aabb-panel">
-      <div className="title">Part-AABB</div>
+      <div className="header">
+        <span className="title">Part-AABB</span>
+        <button
+          type="button"
+          className="close"
+          title="Part-AABB ausblenden"
+          aria-label="Close"
+          onClick={() => setPartAabbVisible(false)}
+        >
+          ×
+        </button>
+      </div>
       {boxes.length === 0 ? (
         <div className="hint">Kein Part selektiert.</div>
       ) : (
