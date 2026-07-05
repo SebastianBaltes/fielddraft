@@ -24,6 +24,17 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.403",
+    entries: [
+      {
+        kind: "fix",
+        text: "Auto-reload-Off-Unterdrückung robuster gemacht: statt sich auf die Listener-Reihenfolge zu verlassen (stopImmediatePropagation, brach wiederholt), umschließt der HMR-Socket-Patch jetzt Vites eigene message/close-Handler direkt und blendet full-reload-Payloads sowie den Server-Restart-Close aus, solange Auto-reload aus ist",
+        scope: "dev",
+        tickets: ["y2b8"],
+      },
+    ],
+  },
+  {
     version: "0.6.402",
     entries: [
       {

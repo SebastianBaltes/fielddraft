@@ -10,17 +10,21 @@
     />
     <title>FieldDraft</title>
     <script>
-      // Ticket cztw/4kky: the "Auto-reload on code change" setting (off) must
-      // survive BOTH ways Vite reloads the page. main.tsx cancels the
-      // `vite:beforeFullReload` MESSAGE path; but a server restart (e.g. a WASM
-      // rebuild) reloads via a different route — Vite's HMR socket closes, its
-      // close handler fires `vite:ws:disconnect`, and that calls
-      // `location.reload()` (which browsers won't let us override). We catch it
-      // at the source: this inline classic script runs BEFORE the deferred
-      // `@vite/client` module, so our `close` listener on the HMR socket
-      // (protocol "vite-hmr") is registered first and, when the setting is off,
-      // `stopImmediatePropagation()` blocks Vite's reconnect-reload handler.
-      // Dev-only in effect: no "vite-hmr" socket exists in a production build.
+      // Ticket cztw/4kky/0u31/y2b8: the "Auto-reload on code change" setting
+      // (off) must survive EVERY way Vite reloads the page — a `full-reload`
+      // message (a non-HMR code change) AND a server restart (e.g. a WASM
+      // rebuild), which closes the HMR socket → Vite dispatches
+      // `vite:ws:disconnect` → `location.reload()` (browsers won't let us
+      // override `location.reload`). Both go through Vite's OWN "message" /
+      // "close" listeners on the HMR socket (protocol "vite-hmr").
+      //
+      // Earlier fixes registered our own listeners first and relied on
+      // `stopImmediatePropagation()` to block Vite's — but that depends on
+      // listener ORDER, which kept regressing. Instead we now WRAP the socket's
+      // `addEventListener`, so we gate Vite's own message/close handlers
+      // directly (order-independent): when the setting is off we simply don't
+      // forward a `full-reload` payload or the socket `close` to them.
+      // Dev-only: no "vite-hmr" socket exists in a production build.
       (function () {
         var KEY = "fielddraft.autoReload";
         function isOff() {
@@ -38,38 +42,52 @@
             protocols === "vite-hmr" ||
             (Array.isArray(protocols) && protocols.indexOf("vite-hmr") !== -1);
           if (isViteHmr) {
-            ws.addEventListener("close", function (ev) {
-              if (isOff()) {
-                ev.stopImmediatePropagation();
-                console.info(
-                  "[FieldDraft] HMR auto-reload suppressed (off in Settings). Press F5 to pick up server/code changes.",
-                );
-              }
+            var opened = false;
+            var origAdd = ws.addEventListener.bind(ws);
+            origAdd("open", function () {
+              opened = true;
             });
-            // Vite 8 hardened its HMR dispatch to CATCH listener errors, so
-            // main.tsx's `throw` in `vite:beforeFullReload` no longer cancels the
-            // reload (ticket 0u31). Drop the `full-reload` message here, at the
-            // socket, before Vite's client parses it — this listener is added
-            // before Vite's, so `stopImmediatePropagation()` blocks its handler.
-            ws.addEventListener("message", function (ev) {
-              if (!isOff() || typeof ev.data !== "string") return;
-              var isFullReload = false;
-              try {
-                var msg = JSON.parse(ev.data);
-                var arr = Array.isArray(msg) ? msg : [msg];
-                for (var i = 0; i < arr.length; i++) {
-                  if (arr[i] && arr[i].type === "full-reload") isFullReload = true;
+            // Wrap Vite's own message/close listeners so, while off, they never
+            // see a full-reload payload or an (established-connection) close.
+            ws.addEventListener = function (type, listener, opts) {
+              if (
+                typeof listener !== "function" ||
+                (type !== "message" && type !== "close")
+              ) {
+                return origAdd(type, listener, opts);
+              }
+              var wrapped = function (ev) {
+                if (isOff()) {
+                  if (type === "close") {
+                    // Only swallow once the connection had opened — a pre-open
+                    // failure must still reach Vite (its reconnect handling).
+                    if (opened) {
+                      console.info(
+                        "[FieldDraft] HMR disconnect→reload suppressed (Auto-reload off). Press F5 to reconnect.",
+                      );
+                      return;
+                    }
+                  } else if (typeof ev.data === "string") {
+                    try {
+                      var msg = JSON.parse(ev.data);
+                      var arr = Array.isArray(msg) ? msg : [msg];
+                      for (var i = 0; i < arr.length; i++) {
+                        if (arr[i] && arr[i].type === "full-reload") {
+                          console.info(
+                            "[FieldDraft] full-reload suppressed (Auto-reload off). Press F5 to apply code/WASM changes.",
+                          );
+                          return; // hide this payload from Vite's handler
+                        }
+                      }
+                    } catch (e) {
+                      /* not JSON — pass through */
+                    }
+                  }
                 }
-              } catch (e) {
-                return;
-              }
-              if (isFullReload) {
-                ev.stopImmediatePropagation();
-                console.info(
-                  "[FieldDraft] full-reload suppressed (Auto-reload off in Settings). Press F5 to apply code/WASM changes.",
-                );
-              }
-            });
+                return listener.apply(this, arguments);
+              };
+              return origAdd(type, wrapped, opts);
+            };
           }
           return ws;
         }
