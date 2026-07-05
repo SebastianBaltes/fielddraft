@@ -2,9 +2,9 @@
  * Debug SDF-plane overlay.
  *
  * When the "Debug ▸ SDF-Plane" dialog publishes a plane (point + normal +
- * half-extent) to `sdfPlaneStore`, this samples the scene SDF on that plane
- * (kernel `sdfPlaneSample`, the exact field the meshers contour) and draws a
- * colour-coded quad:
+ * half-extent + resolution + iso-band count) to `sdfPlaneStore`, this samples
+ * the scene SDF on that plane (kernel `sdfPlaneSample`, the exact field the
+ * meshers contour) and draws a colour-coded quad:
  *   · blue inside (SDF < 0), red outside (SDF > 0), value → saturation;
  *   · dark iso-contour bands at regular distances (a topographic map of the
  *     field — reveals thin channels and how the surface is approached);
@@ -13,17 +13,24 @@
  * The quad is built with the SAME (u, v) in-plane frame the kernel samples in,
  * so the texture aligns exactly. It lives on OVERLAY_LAYER so the SDF render
  * paths composite it, and re-samples whenever the plane params or the geometry
- * (`brepVersion`) change. Returns null when no plane is published.
+ * (`brepVersion`) change. It also projects the mouse onto the plane and
+ * publishes the SDF value there for the dialog's readout. Returns null when no
+ * plane is published.
  */
 
-import { useEffect, useMemo, useSyncExternalStore } from "react";
+import { useEffect, useMemo, useRef, useSyncExternalStore } from "react";
 import { useThree } from "@react-three/fiber";
 import * as THREE from "three";
 import { useKernelStore } from "./store";
-import { getSdfPlane, subscribeSdfPlane } from "./sdfPlaneStore";
+import {
+  getSdfPlane,
+  subscribeSdfPlane,
+  setSdfPlaneHover,
+} from "./sdfPlaneStore";
 import { OVERLAY_LAYER } from "./viewportLayers";
 
-const RES = 256;
+const DEFAULT_RES = 256;
+const MAX_RES = 1024;
 
 /** Unit-normalise, falling back to +Z for a degenerate normal. */
 function unit(n: [number, number, number]): [number, number, number] {
@@ -90,17 +97,35 @@ function colorFor(d: number, band: number, out: Uint8Array, o: number): void {
   out[o + 3] = 255;
 }
 
+/** In-plane frame the sampling used, cached for the hover projection. */
+interface HoverFrame {
+  point: [number, number, number];
+  n: [number, number, number];
+  u: [number, number, number];
+  v: [number, number, number];
+  he: number;
+  res: number;
+  samples: Float32Array;
+}
+
 export function SdfPlaneOverlay() {
   const { store, state } = useKernelStore();
   const plane = useSyncExternalStore(subscribeSdfPlane, getSdfPlane);
   const invalidate = useThree((s) => s.invalidate);
+  const camera = useThree((s) => s.camera);
+  const gl = useThree((s) => s.gl);
+
+  const res = Math.max(
+    16,
+    Math.min(MAX_RES, Math.round(plane?.resolution ?? DEFAULT_RES)),
+  );
 
   const geometry = useMemo(() => new THREE.BufferGeometry(), []);
   const texture = useMemo(() => {
     const t = new THREE.DataTexture(
-      new Uint8Array(RES * RES * 4),
-      RES,
-      RES,
+      new Uint8Array(res * res * 4),
+      res,
+      res,
       THREE.RGBAFormat,
     );
     t.minFilter = THREE.NearestFilter;
@@ -109,27 +134,32 @@ export function SdfPlaneOverlay() {
     // linear and the debug palette washes out.
     t.colorSpace = THREE.SRGBColorSpace;
     return t;
-  }, []);
+  }, [res]);
 
   useEffect(
     () => () => {
       geometry.dispose();
-      texture.dispose();
     },
-    [geometry, texture],
+    [geometry],
   );
+  useEffect(() => () => texture.dispose(), [texture]);
+
+  // Frame + samples the hover projection reads (kept in a ref so the pointer
+  // handler always sees the latest without re-binding).
+  const hoverRef = useRef<HoverFrame | null>(null);
 
   // Re-sample the field + rebuild the quad whenever the plane params or the
   // geometry change. `state?.brepVersion` bumps on every kernel edit/weave.
   const brepVersion = state?.brepVersion ?? 0;
+  const bands = Math.max(1, Math.round(plane?.bands ?? 16));
   useEffect(() => {
     if (!plane || !store) return;
     const { point, normal, halfExtent } = plane;
     const he = Math.max(halfExtent, 1e-3);
-    const { u, v } = planeFrame(normal);
+    const { n, u, v } = planeFrame(normal);
 
     // Quad corners at point ± u·he ± v·he, UVs matching the sample grid
-    // (texel (i,j) at u=i/(RES-1), v=j/(RES-1); (0,0) = point − u·he − v·he).
+    // (texel (i,j) at u=i/(res-1), v=j/(res-1); (0,0) = point − u·he − v·he).
     const corner = (su: number, sv: number): [number, number, number] => [
       point[0] + u[0] * su * he + v[0] * sv * he,
       point[1] + u[1] * su * he + v[1] * sv * he,
@@ -147,15 +177,86 @@ export function SdfPlaneOverlay() {
     geometry.setIndex([0, 1, 2, 0, 2, 3]);
     geometry.computeBoundingSphere();
 
-    const samples = store.sdfPlaneSample(point, normal, he, RES);
-    const band = Math.max(he / 8, 0.05); // iso-band spacing
+    const samples = store.sdfPlaneSample(point, normal, he, res);
+    const band = Math.max(he / bands, 1e-4); // iso-band spacing
     const data = texture.image.data as Uint8Array;
-    for (let k = 0; k < RES * RES; k++) {
+    for (let k = 0; k < res * res; k++) {
       colorFor(samples[k] ?? Number.MAX_VALUE, band, data, k * 4);
     }
     texture.needsUpdate = true;
+    hoverRef.current = { point, n, u, v, he, res, samples };
     invalidate();
-  }, [plane, store, brepVersion, geometry, texture, invalidate]);
+  }, [plane, store, brepVersion, res, bands, geometry, texture, invalidate]);
+
+  // Project the mouse onto the plane and publish the SDF value there (bilinear
+  // in the sampled grid, so it matches exactly what is drawn).
+  useEffect(() => {
+    if (!plane) return;
+    const el = gl.domElement;
+    const raycaster = new THREE.Raycaster();
+    const ndc = new THREE.Vector2();
+    const hitPlane = new THREE.Plane();
+    const nrm = new THREE.Vector3();
+    const pt = new THREE.Vector3();
+    const hit = new THREE.Vector3();
+    const rel = new THREE.Vector3();
+
+    const onMove = (e: PointerEvent) => {
+      const f = hoverRef.current;
+      if (!f) return;
+      const rect = el.getBoundingClientRect();
+      if (rect.width === 0 || rect.height === 0) return;
+      ndc.set(
+        ((e.clientX - rect.left) / rect.width) * 2 - 1,
+        -((e.clientY - rect.top) / rect.height) * 2 + 1,
+      );
+      raycaster.setFromCamera(ndc, camera);
+      nrm.set(f.n[0], f.n[1], f.n[2]);
+      pt.set(f.point[0], f.point[1], f.point[2]);
+      hitPlane.setFromNormalAndCoplanarPoint(nrm, pt);
+      if (!raycaster.ray.intersectPlane(hitPlane, hit)) {
+        setSdfPlaneHover(null);
+        return;
+      }
+      rel.copy(hit).sub(pt);
+      const lu = rel.x * f.u[0] + rel.y * f.u[1] + rel.z * f.u[2];
+      const lv = rel.x * f.v[0] + rel.y * f.v[1] + rel.z * f.v[2];
+      if (Math.abs(lu) > f.he || Math.abs(lv) > f.he) {
+        setSdfPlaneHover(null); // outside the drawn quad
+        return;
+      }
+      // Bilinear lookup in the sampled grid (v outer, u inner).
+      const R = f.res;
+      const fx = ((lu / f.he + 1) / 2) * (R - 1);
+      const fy = ((lv / f.he + 1) / 2) * (R - 1);
+      const i0 = Math.max(0, Math.min(R - 1, Math.floor(fx)));
+      const j0 = Math.max(0, Math.min(R - 1, Math.floor(fy)));
+      const i1 = Math.min(R - 1, i0 + 1);
+      const j1 = Math.min(R - 1, j0 + 1);
+      const tx = fx - i0;
+      const ty = fy - j0;
+      const s = f.samples;
+      const s00 = s[j0 * R + i0] ?? 0;
+      const s10 = s[j0 * R + i1] ?? 0;
+      const s01 = s[j1 * R + i0] ?? 0;
+      const s11 = s[j1 * R + i1] ?? 0;
+      const value =
+        s00 * (1 - tx) * (1 - ty) +
+        s10 * tx * (1 - ty) +
+        s01 * (1 - tx) * ty +
+        s11 * tx * ty;
+      setSdfPlaneHover({ value, point: [hit.x, hit.y, hit.z] });
+    };
+    const onLeave = () => setSdfPlaneHover(null);
+
+    el.addEventListener("pointermove", onMove);
+    el.addEventListener("pointerleave", onLeave);
+    return () => {
+      el.removeEventListener("pointermove", onMove);
+      el.removeEventListener("pointerleave", onLeave);
+      setSdfPlaneHover(null);
+    };
+  }, [plane, gl, camera]);
 
   if (!plane) return null;
 

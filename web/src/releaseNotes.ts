@@ -24,6 +24,17 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.383",
+    entries: [
+      {
+        kind: "feat",
+        text: "SDF-Plane-Debug-Dialog erweitert: einstellbare Iso-Band-Anzahl (feinere Höhenlinien) und einstellbare Sampling-Auflösung der Farbkodierung; die Punkt-/Normalen-Felder sind breiter und ohne Labels; und der numerische SDF-Wert an der auf die Ebene projizierten Mausposition wird live im Dialog angezeigt",
+        scope: "debug",
+        tickets: ["iepg"],
+      },
+    ],
+  },
+  {
     version: "0.6.382",
     entries: [
       {

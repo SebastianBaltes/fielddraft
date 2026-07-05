@@ -10,7 +10,7 @@
   border: 1px solid var(--color-border);
   border-radius: var(--radius-lg);
   box-shadow: var(--shadow-dialog);
-  width: 20rem;
+  width: 23rem;
   max-width: 92vw;
   display: flex;
   flex-direction: column;
@@ -105,6 +105,26 @@
       &:hover {
         background: var(--color-bg-hover);
       }
+    }
+  }
+
+  & .readout {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: var(--space-3);
+    padding: var(--space-2) var(--space-4) 0;
+
+    & .k {
+      font-size: var(--fs-base);
+      color: var(--color-text-muted);
+    }
+    & .v {
+      font-family: var(--font-mono, monospace);
+      font-size: var(--fs-base);
+      font-weight: var(--fw-semibold);
+      color: var(--color-text);
+      font-variant-numeric: tabular-nums;
     }
   }
 

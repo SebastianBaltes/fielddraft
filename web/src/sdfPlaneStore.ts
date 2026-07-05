@@ -22,6 +22,10 @@ export interface SdfPlane {
   normal: [number, number, number];
   /** Half the plane's side length, in mm. */
   halfExtent: number;
+  /** Colour-coding sampling resolution (grid is `resolution × resolution`). */
+  resolution: number;
+  /** Number of iso-distance bands across the half-extent (spacing = he / bands). */
+  bands: number;
 }
 
 let plane: SdfPlane | null = null;
@@ -46,5 +50,38 @@ export function subscribeSdfPlane(listener: () => void): () => void {
   listeners.add(listener);
   return () => {
     listeners.delete(listener);
+  };
+}
+
+// ── Hover readout ────────────────────────────────────────────────────
+// The overlay projects the mouse onto the plane and publishes the SDF value
+// there; the dialog subscribes and shows it. Separate slice so a moving cursor
+// doesn't re-render the plane geometry.
+
+export interface SdfPlaneHover {
+  /** Sampled SDF value at the cursor's projection onto the plane (mm). */
+  value: number;
+  /** World point on the plane under the cursor. */
+  point: [number, number, number];
+}
+
+let hover: SdfPlaneHover | null = null;
+const hoverListeners = new Set<() => void>();
+
+export function setSdfPlaneHover(next: SdfPlaneHover | null): void {
+  // Skip no-op updates so `useSyncExternalStore` stays stable when idle.
+  if (next === null && hover === null) return;
+  hover = next;
+  for (const listener of hoverListeners) listener();
+}
+
+export function getSdfPlaneHover(): SdfPlaneHover | null {
+  return hover;
+}
+
+export function subscribeSdfPlaneHover(listener: () => void): () => void {
+  hoverListeners.add(listener);
+  return () => {
+    hoverListeners.delete(listener);
   };
 }
