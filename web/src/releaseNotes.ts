@@ -24,6 +24,17 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.397",
+    entries: [
+      {
+        kind: "fix",
+        text: "Body-AABB wird jetzt analytisch pro Feature durch die Pipeline gepflegt (wie das SDF): eine Remove-Operation zieht die Bound hinter die vom Werkzeug abgedeckte Schicht zurück, ein Intersect klippt sie auf das Werkzeug. Der Rotier-Pivot kommt aus dieser Body-AABB statt aus einer SDF-Abtastung — sauberer und ohne Sampling-Heuristik",
+        scope: "kernel",
+        tickets: ["f88u"],
+      },
+    ],
+  },
+  {
     version: "0.6.396",
     entries: [
       {
