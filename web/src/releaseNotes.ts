@@ -24,6 +24,17 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.396",
+    entries: [
+      {
+        kind: "fix",
+        text: "Sticky-Pivot-Verhalten wiederhergestellt: solange der Part ins Bild passt, folgt der Rotier-Pivot seinem (jetzt korrekten, engen) Mittelpunkt; ist so weit hineingezoomt, dass der Part nicht mehr ganz ins Bild passt, bleibt der Pivot an seiner letzten passenden Stelle statt auf einen Punkt außerhalb des Bildes zu springen",
+        scope: "viewport",
+        tickets: ["f88u"],
+      },
+    ],
+  },
+  {
     version: "0.6.395",
     entries: [
       {

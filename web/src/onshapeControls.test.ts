@@ -189,9 +189,11 @@ describe("OnshapeControls touch gestures", () => {
     c.dispose();
   });
 
-  it("rotate always re-centres the pivot on the part AABB centre (f88u)", () => {
-    publishSceneBounds({ center: [5, 6, 7], radius: 10 });
-    const cam = cameraLookingAt([0, 0, 100], [0, 0, 0]);
+  it("rotate re-centres on the VISIBLE pivot, not the conservative centre (f88u)", () => {
+    // The conservative `center` still sits on the phantom original primitive
+    // after a boolean carve; the pivot must follow the tight visible centre.
+    publishSceneBounds({ center: [0, 0, 0], radius: 5, pivot: [5, 6, 7] });
+    const cam = cameraLookingAt([0, 0, 100], [0, 0, 0]); // far → part fits
     const c = new OnshapeControls(cam, makeEl());
     const h = handlers(c);
     h.onPointerDown(touch(1, 100, 100));
@@ -199,6 +201,23 @@ describe("OnshapeControls touch gestures", () => {
     expect(c.target.x).toBeCloseTo(5, 5);
     expect(c.target.y).toBeCloseTo(6, 5);
     expect(c.target.z).toBeCloseTo(7, 5);
+    c.dispose();
+    publishSceneBounds(null);
+  });
+
+  it("rotate keeps the pivot STICKY when the part no longer fits the viewport (f88u)", () => {
+    // A huge part seen from close up cannot frame → the pivot must stay put
+    // (at its last fitting position, here the origin) instead of lurching onto
+    // an off-screen centre.
+    publishSceneBounds({ center: [0, 0, 0], radius: 500, pivot: [9, 9, 9] });
+    const cam = cameraLookingAt([0, 0, 50], [0, 0, 0]);
+    const c = new OnshapeControls(cam, makeEl());
+    const h = handlers(c);
+    h.onPointerDown(touch(1, 100, 100));
+    h.onPointerMove(touch(1, 160, 100)); // rotate, but the part does not fit
+    expect(c.target.x).toBeCloseTo(0, 5); // sticky → unchanged
+    expect(c.target.y).toBeCloseTo(0, 5);
+    expect(c.target.z).toBeCloseTo(0, 5);
     c.dispose();
     publishSceneBounds(null);
   });

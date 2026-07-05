@@ -49,6 +49,7 @@ const WORLD_UP = /*@__PURE__*/ new THREE.Vector3(0, 1, 0);
 const _offset = new THREE.Vector3();
 const _right = new THREE.Vector3();
 const _up = new THREE.Vector3();
+const _c = new THREE.Vector3();
 const _ndc = new THREE.Vector3();
 const _viewDir = new THREE.Vector3();
 const _rayDir = new THREE.Vector3();
@@ -381,16 +382,24 @@ export class OnshapeControls extends THREE.Controls {
 
   /** Decide the rotate pivot via the sticky-bounding-sphere rule. */
   private recentrePivot(): void {
-    // Ticket f88u: the orbit pivot is ALWAYS the centre of the displayed part's
-    // AABB — no history, no sticky-when-it-fits logic. A rotate that starts
-    // after a pan/zoom re-centres on the part every time. Prefer the tight
-    // *visible* centre (`pivot`): the conservative `center` still sits on the
-    // phantom original primitive after a boolean carve (a half-cut sphere spins
-    // about the vanished sphere centre otherwise).
+    const cam = this.cam;
+    cam.updateMatrixWorld();
     const b = getSceneBounds();
     if (!b || b.radius <= 0) return; // nothing drawn → keep the current pivot
+    // Ticket f88u: re-centre on the *visible* solid's tight AABB centre
+    // (`pivot`), never the conservative `center` — after a boolean carve that
+    // still sits on the phantom original primitive (a half-cut sphere would
+    // spin about the vanished sphere centre otherwise).
     const c = b.pivot ?? b.center;
-    this.target.set(c[0], c[1], c[2]);
+    _c.set(c[0], c[1], c[2]);
+    // Sticky-bounding-sphere rule: only re-centre while the part still frames
+    // in the viewport; once zoomed in so it no longer fits, keep the pivot at
+    // its last fitting position so a rotate doesn't lurch to an off-screen
+    // centre.
+    if (sphereFitsViewport(cam, _c, b.radius)) {
+      this.target.copy(_c);
+    }
+    // else: sticky — leave the pivot at its last fitting position.
   }
 
   private rotate(dx: number, dy: number): void {
