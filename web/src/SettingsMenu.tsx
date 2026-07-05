@@ -1,5 +1,18 @@
-import { lazy, Suspense, useEffect, useRef, useState, useCallback } from "react";
+import {
+  lazy,
+  Suspense,
+  useEffect,
+  useRef,
+  useState,
+  useCallback,
+  useSyncExternalStore,
+} from "react";
 import type { KernelStore, StoreState } from "./store";
+import {
+  getPartAabbVisible,
+  subscribePartAabb,
+  togglePartAabbVisible,
+} from "./partAabbStore";
 import { ReportDialog } from "./ReportDialog";
 import { ExportDialog } from "./ExportDialog";
 import { SdfPlaneDialog } from "./SdfPlaneDialog";
@@ -95,6 +108,10 @@ export function SettingsMenu({
   const [exportDialog, setExportDialog] = useState<"stl" | "3mf" | null>(null);
   const [sdfPlaneOpen, setSdfPlaneOpen] = useState(false);
   const [mesherOpen, setMesherOpen] = useState(false);
+  const partAabbVisible = useSyncExternalStore(
+    subscribePartAabb,
+    getPartAabbVisible,
+  );
   const popoverRef = useRef<HTMLDivElement>(null);
   const buttonRef = useRef<HTMLButtonElement>(null);
 
@@ -362,6 +379,16 @@ export function SettingsMenu({
                 onClick={() => menuAction(() => setMesherOpen(true))}
               >
                 Mesher…
+              </button>
+              <button
+                type="button"
+                role="menuitemcheckbox"
+                aria-checked={partAabbVisible}
+                className="menu-item"
+                data-testid="menu-debug-part-aabb"
+                onClick={() => menuAction(togglePartAabbVisible)}
+              >
+                {partAabbVisible ? "✓ " : " "}Part-AABB
               </button>
             </div>
           </div>

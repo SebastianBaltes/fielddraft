@@ -78,6 +78,8 @@ import { ReferenceMesh, PickHud } from "./viewportHud";
 import { ExportPreviewMesh } from "./exportPreviewMesh";
 import { SdfPlaneOverlay } from "./SdfPlaneOverlay";
 import { MesherOverlay } from "./MesherOverlay";
+import { PartAabbOverlay } from "./PartAabbOverlay";
+import { PartAabbPanel } from "./PartAabbPanel";
 import { PREVIEW_LAYER } from "./viewportLayers";
 import { PerfHud, PerfProbe } from "./perfMonitor";
 import { ScreenSpaceCsgPass } from "./screenSpaceCsgPass";
@@ -734,6 +736,7 @@ function WebGLViewport({
             dialog published a plane. */}
         <SdfPlaneOverlay />
         <MesherOverlay />
+        <PartAabbOverlay />
         {/* Opt-in experiment (default off): Screen-Space-CSG Stage 1
             (docs/ADAPTIVE-RENDERING-PLAN.md, Achse 3, Phase 3). Mounts an
             extra A−B composite pass over the parametric hulls. When the flag is
@@ -1678,6 +1681,7 @@ export function Viewport({
                     plane is published by the dialog. */}
                 <SdfPlaneOverlay />
                 <MesherOverlay />
+                <PartAabbOverlay />
                 {/* All B-Rep overlays hide during a suppressed gizmo drag:
                   the kernel serves no fresh weave then, and even cached
                   edges only refresh per 50ms commit — they'd trail the
@@ -1723,6 +1727,7 @@ export function Viewport({
       <PerfHud renderMode={renderMode} />
       <PickHud result={pickResult} />
       <MeasurePanel />
+      <PartAabbPanel />
       {state?.mateMode && (
         <div className="face-pick-hud" data-testid="mate-mode-hud">
           Hover a vertex, edge, or face — click to place a mate connector · R:

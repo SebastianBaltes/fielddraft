@@ -1,0 +1,74 @@
+/* Debug ▸ Part-AABB readout. A compact floating panel (bottom-left, clear of
+ * the top-right Measure panel) listing the selected part's bounding box: size
+ * and min/max corner in mm. Toggled from the Debug menu. */
+.fd-part-aabb-panel {
+  position: absolute;
+  left: var(--space-3);
+  bottom: var(--space-3);
+  z-index: 20;
+  min-width: 15rem;
+  max-width: 22rem;
+  background: var(--color-bg-elevated);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-dialog);
+  font-size: 1rem;
+  color: var(--color-text);
+  padding: var(--space-2) var(--space-3);
+
+  & .title {
+    font-weight: var(--fw-semibold);
+    margin-bottom: var(--space-1);
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+
+    &::before {
+      content: "";
+      width: 0.85rem;
+      height: 0.85rem;
+      border: 2px solid rgb(51, 214, 255);
+      border-radius: 2px;
+    }
+  }
+
+  & .hint {
+    color: var(--color-text-muted);
+  }
+
+  & .parts {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+  }
+
+  & .part + .part {
+    border-top: 1px solid var(--color-border);
+    padding-top: var(--space-2);
+  }
+
+  & .part-name {
+    font-weight: var(--fw-semibold);
+    color: var(--color-text-muted);
+    margin-bottom: var(--space-1);
+  }
+
+  & .row {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: var(--space-3);
+
+    & .k {
+      color: var(--color-text-muted);
+    }
+    & .v {
+      font-family: var(--font-mono, monospace);
+      font-variant-numeric: tabular-nums;
+      text-align: right;
+    }
+  }
+}

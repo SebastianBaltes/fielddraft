@@ -582,6 +582,14 @@ export class Kernel {
     return new Float32Array(this.inner.bodySdfAabb(i));
   }
 
+  /** Analytic world AABB `[minx,miny,minz, maxx,maxy,maxz]` of the body that
+   *  contains `featureId` (the pipeline-maintained tight `Body.aabb`, ticket
+   *  f88u), or `[]` when the feature isn't in any body. Feeds the Debug ▸
+   *  Part-AABB overlay for the selected part. */
+  bodyAabbForFeature(featureId: number): number[] {
+    return Array.from(this.inner.bodyAabbForFeature(featureId));
+  }
+
   /** Conservative raymarch step factor (≤1) for this body — the SDF renderer
    *  multiplies its march step by it so a thin-walled revolve/shell isn't
    *  overshot at grazing angles (Ticket 1wnm). 1.0 = full step. */

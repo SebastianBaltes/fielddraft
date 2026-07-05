@@ -29,6 +29,7 @@
 @import "./components/sketchLiveInput.css";
 @import "./components/tool-hint.css";
 @import "./components/measure-panel.css";
+@import "./components/part-aabb-panel.css";
 
 /* WP3/WP13 — account / platform UI (login, overview, projects, invites). */
 @import "./components/auth-screen.css";

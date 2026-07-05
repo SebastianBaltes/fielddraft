@@ -213,6 +213,28 @@ impl Kernel {
             })
     }
 
+    /// Analytic world AABB of the body that *contains* `feature_id`, packed
+    /// `[minx, miny, minz, maxx, maxy, maxz]`, or `[]` when the feature isn't
+    /// in any body (or its body is empty). This is the pipeline-maintained
+    /// `Body.aabb` — tight for boolean cuts (ticket f88u), unlike the
+    /// conservative [`Kernel::body_sdf_aabb`] CSG bound — so the Debug ▸
+    /// Part-AABB overlay boxes exactly the selected part's extent.
+    #[wasm_bindgen(js_name = bodyAabbForFeature)]
+    pub fn body_aabb_for_feature(&self, feature_id: u32) -> Vec<f32> {
+        let fid = FeatureId::from_u32(feature_id);
+        let idx = match self.decoded.iter().position(|f| f.id == fid) {
+            Some(i) => i,
+            None => return Vec::new(),
+        };
+        match self.bodies.iter().find(|b| b.feature_indices.contains(&idx)) {
+            Some(b) if !b.aabb.is_empty() => vec![
+                b.aabb.min[0], b.aabb.min[1], b.aabb.min[2],
+                b.aabb.max[0], b.aabb.max[1], b.aabb.max[2],
+            ],
+            _ => Vec::new(),
+        }
+    }
+
     #[wasm_bindgen(js_name = bodyVolumeCount)]
     pub fn body_volume_count(&self, i: usize) -> usize {
         self.bodies[i]

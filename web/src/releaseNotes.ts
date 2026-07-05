@@ -24,6 +24,16 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.398",
+    entries: [
+      {
+        kind: "feat",
+        text: "Debug ▸ Part-AABB: blendet die achsenparallele Bounding-Box des selektierten Parts als Wireframe im Viewport ein, plus ein Panel mit Größe (X × Y × Z) und Min/Max-Ecke. Nutzt die analytische, pipeline-gepflegte Body-AABB (eng nach Boolean-Schnitten)",
+        scope: "debug",
+      },
+    ],
+  },
+  {
     version: "0.6.397",
     entries: [
       {
