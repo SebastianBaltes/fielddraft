@@ -24,6 +24,17 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.385",
+    entries: [
+      {
+        kind: "feat",
+        text: "SDF-Plane-Dialog merkt sich seine Einstellungen (Punkt, Normale, Größe, Auflösung, Iso-Bänder, Step) in localStorage — sie überleben Schließen/Öffnen und Seiten-Reload",
+        scope: "debug",
+        tickets: ["iepg"],
+      },
+    ],
+  },
+  {
     version: "0.6.384",
     entries: [
       {

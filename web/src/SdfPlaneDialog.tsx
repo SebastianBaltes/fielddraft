@@ -13,6 +13,7 @@
 import {
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
   useSyncExternalStore,
@@ -32,15 +33,76 @@ const AXES: { key: "x" | "y" | "z"; i: number }[] = [
   { key: "z", i: 2 },
 ];
 
+// ── Settings persistence (localStorage) ──────────────────────────────
+interface SdfPlaneSettings {
+  point: Vec3;
+  normal: Vec3;
+  halfExtent: number;
+  resolution: number;
+  bands: number;
+  step: number;
+}
+
+const SETTINGS_KEY = "fielddraft.debug.sdfPlane";
+const DEFAULT_SETTINGS: SdfPlaneSettings = {
+  point: [0, 0, 0],
+  normal: [0, 0, 1],
+  halfExtent: 50,
+  resolution: 256,
+  bands: 16,
+  step: 1,
+};
+
+const isVec3 = (v: unknown): v is Vec3 =>
+  Array.isArray(v) && v.length === 3 && v.every((n) => Number.isFinite(n));
+const posOr = (v: unknown, lo: number, hi: number, fallback: number): number =>
+  typeof v === "number" && Number.isFinite(v) && v > 0
+    ? Math.min(hi, Math.max(lo, v))
+    : fallback;
+
+/** Load persisted settings, falling back to defaults for anything missing or
+ *  malformed (and when localStorage is unavailable, e.g. tests). */
+function loadSettings(): SdfPlaneSettings {
+  try {
+    const raw = localStorage.getItem(SETTINGS_KEY);
+    if (!raw) return DEFAULT_SETTINGS;
+    const p = JSON.parse(raw) as Partial<SdfPlaneSettings>;
+    return {
+      point: isVec3(p.point) ? p.point : DEFAULT_SETTINGS.point,
+      normal: isVec3(p.normal) ? p.normal : DEFAULT_SETTINGS.normal,
+      halfExtent: posOr(p.halfExtent, 1e-3, 1e6, DEFAULT_SETTINGS.halfExtent),
+      resolution: Math.round(posOr(p.resolution, 16, 1024, DEFAULT_SETTINGS.resolution)),
+      bands: Math.round(posOr(p.bands, 1, 256, DEFAULT_SETTINGS.bands)),
+      step: posOr(p.step, 1e-6, 1e6, DEFAULT_SETTINGS.step),
+    };
+  } catch {
+    return DEFAULT_SETTINGS;
+  }
+}
+
 export function SdfPlaneDialog({ onClose }: { onClose: () => void }) {
-  const [point, setPoint] = useState<Vec3>([0, 0, 0]);
-  const [normal, setNormal] = useState<Vec3>([0, 0, 1]);
-  const [halfExtent, setHalfExtent] = useState(50);
-  const [resolution, setResolution] = useState(256);
-  const [bands, setBands] = useState(16);
+  // Restore persisted settings once on mount.
+  const initial = useMemo(loadSettings, []);
+  const [point, setPoint] = useState<Vec3>(initial.point);
+  const [normal, setNormal] = useState<Vec3>(initial.normal);
+  const [halfExtent, setHalfExtent] = useState(initial.halfExtent);
+  const [resolution, setResolution] = useState(initial.resolution);
+  const [bands, setBands] = useState(initial.bands);
   // Spinner/arrow-key increment for the Point & Normal xyz fields (settable so
   // the plane can be scanned through the model in coarse or fine steps).
-  const [step, setStep] = useState(1);
+  const [step, setStep] = useState(initial.step);
+
+  // Persist on any change so the settings survive close/reopen and reload.
+  useEffect(() => {
+    try {
+      localStorage.setItem(
+        SETTINGS_KEY,
+        JSON.stringify({ point, normal, halfExtent, resolution, bands, step }),
+      );
+    } catch {
+      // no localStorage (tests) — non-persistent is fine
+    }
+  }, [point, normal, halfExtent, resolution, bands, step]);
 
   const hover = useSyncExternalStore(subscribeSdfPlaneHover, getSdfPlaneHover);
 
