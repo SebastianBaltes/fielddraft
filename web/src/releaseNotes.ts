@@ -24,6 +24,16 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.387",
+    entries: [
+      {
+        kind: "fix",
+        text: "Der Wechsel des Render-Shaders (WebGPU ⇄ WebGL) setzt die Kamera nicht mehr zurück: der Wechsel remountet den Canvas mit einer frischen Kamera auf der Standard-Ansicht — jetzt wird die Kamera-Pose (Position, Blickrichtung, Zoom, Orbit-Pivot) über den Wechsel hinweg erhalten",
+        scope: "viewport",
+      },
+    ],
+  },
+  {
     version: "0.6.386",
     entries: [
       {

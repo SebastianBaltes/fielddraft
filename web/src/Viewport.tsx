@@ -26,6 +26,7 @@ import { SdfVmOverlay, SdfDeferredOverlay } from "./viewportSdfOverlays";
 import {
   CameraBridgePublisher,
   CameraRig,
+  CameraPoseSync,
   ViewCommandConsumer,
   CameraQuaternionBridge,
   ViewportCamera,
@@ -792,6 +793,7 @@ function WebGLViewport({
             ignoring the Onshape preset (MIDDLE=pan, RIGHT=rotate) — so the mouse
             felt wrong in the WebGL fallback, including in sketch mode. */}
         <CameraRig preset={controlsPreset} />
+        <CameraPoseSync />
         {/* Ticket 10cl: the view-command consumer (ViewCube clicks, standard
             views, zoom-to-fit, view-normal) was mounted ONLY in the WebGPU
             <Canvas>. In WebGL mode the shared HTML <ViewCube> still rendered and
@@ -1691,6 +1693,7 @@ export function Viewport({
                 {state?.mateMode && <MateInferenceOverlay ndc={ndc} />}
                 <AssemblyParts />
                 <CameraRig preset={controlsPreset} />
+                <CameraPoseSync />
                 <ViewCommandConsumer />
                 <CameraQuaternionBridge />
               </>

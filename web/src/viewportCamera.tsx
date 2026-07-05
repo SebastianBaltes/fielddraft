@@ -13,6 +13,7 @@ import {
   type ViewPreset,
 } from "./viewCommands";
 import { publishPickCamera } from "./pickCameraBridge";
+import { getCameraPose, saveCameraPose } from "./cameraPoseBridge";
 import { getSceneBounds, GRID_BOUNDS } from "./sceneBoundsBridge";
 import {
   CONTROLS_PRESETS,
@@ -205,6 +206,56 @@ export function ViewportCamera({ perspective }: { perspective: boolean }) {
     set({ camera: to });
   }, [perspective, set]);
 
+  return null;
+}
+
+/**
+ * Carries the camera pose across a render-shader switch. Switching between a
+ * WebGPU shader and the WebGL fallback remounts the `<Canvas>` with a fresh
+ * camera at the default view; this keeps the pose in `cameraPoseBridge` current
+ * every frame and restores it ONCE on the new canvas's mount, so the viewpoint
+ * survives the switch. Mounted in both canvas trees, next to `CameraRig`.
+ */
+export function CameraPoseSync() {
+  const camera = useThree((s) => s.camera);
+  const controls = useThree(
+    (s) => s.controls,
+  ) as unknown as OnshapeControls | null;
+  const invalidate = useThree((s) => s.invalidate);
+  const didRestore = useRef(false);
+  const ready = useRef(false);
+
+  // Restore exactly once, when the controls first exist on this canvas. Keyed
+  // so it does NOT re-run on the perspective⇄ortho swap (which changes the
+  // camera identity but does its own pose-preserving framing) — that would undo
+  // the framing and stamp a stale zoom.
+  useEffect(() => {
+    if (!controls) return;
+    if (!didRestore.current) {
+      const p = getCameraPose();
+      if (p) {
+        camera.position.fromArray(p.position);
+        camera.quaternion.fromArray(p.quaternion);
+        camera.up.fromArray(p.up);
+        const proj = camera as THREE.OrthographicCamera;
+        if (proj.isOrthographicCamera) {
+          proj.zoom = p.zoom;
+          proj.updateProjectionMatrix();
+        }
+        controls.target.fromArray(p.target);
+        camera.updateMatrixWorld();
+        invalidate();
+      }
+      didRestore.current = true;
+    }
+    ready.current = true; // gate saving until the restore has run (no clobber)
+  }, [camera, controls, invalidate]);
+
+  // Keep the bridge current with the live camera on every rendered frame, so
+  // the next canvas restores exactly where we left off.
+  useFrame(() => {
+    if (controls && ready.current) saveCameraPose(camera, controls.target);
+  });
   return null;
 }
 
