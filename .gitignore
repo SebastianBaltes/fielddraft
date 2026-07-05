@@ -37,6 +37,7 @@ dist-ssr/
 # the format is documented in tickets/README.md (tracked).
 /tickets/open/
 /tickets/done/
+/tickets/later/
 
 # Test artifacts
 /web/coverage/

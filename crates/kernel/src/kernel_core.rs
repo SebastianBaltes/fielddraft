@@ -123,6 +123,15 @@ pub struct Kernel {
     /// `exportMeshBegin`/`exportMeshBody`. Dropped on every mesh
     /// rebuild — a mutation invalidates the pass. Runtime-only.
     pub(crate) export_session: Option<crate::export_mesh::ExportSession>,
+    /// Cached tight world AABB of the *visible* solid — the union of the
+    /// bodies' SDF isosurface — used as the orbit pivot (ticket f88u: a
+    /// half-carved sphere must spin about the centre of what remains, not the
+    /// phantom original primitive that `sceneAabb`'s conservative CSG bound
+    /// still reports). SDF-grid sampling is too costly to run on every
+    /// selection-driven `notify()`, so it is memoised on `mesh_version` — the
+    /// geometry-change counter — and only recomputed when geometry actually
+    /// changes. `Cell` so the `sceneVisibleCenter` query stays `&self`.
+    pub(crate) visible_aabb_cache: std::cell::Cell<Option<(u32, crate::csg::Aabb)>>,
 }
 
 impl Kernel {

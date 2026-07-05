@@ -122,6 +122,28 @@ impl Kernel {
         octree_leaf_samples(&bodies, max_depth, band_guard)
     }
 
+    /// World-space centre of the *visible* solid's tight AABB — the orbit
+    /// pivot (ticket f88u). Unlike [`Kernel::scene_aabb`], whose Difference /
+    /// Intersection bound is deliberately the conservative *left-operand* box
+    /// (a sphere carved in half still reports the whole sphere, so its centre
+    /// lands on the phantom original, not the visible remainder), this samples
+    /// the actual min-over-bodies SDF field and returns the centre of what is
+    /// really there. `[]` for an empty / unbounded scene → the caller keeps the
+    /// conservative centre. Memoised on `mesh_version`, so repeated
+    /// selection-driven calls are free between geometry edits.
+    #[wasm_bindgen(js_name = sceneVisibleCenter)]
+    pub fn scene_visible_center(&self) -> Vec<f32> {
+        let bb = self.cached_visible_aabb();
+        if bb.is_empty() {
+            return Vec::new();
+        }
+        vec![
+            0.5 * (bb.min[0] + bb.max[0]),
+            0.5 * (bb.min[1] + bb.max[1]),
+            0.5 * (bb.min[2] + bb.max[2]),
+        ]
+    }
+
     /// Pre-mesh estimate for the export dialog: for dense-grid methods, the
     /// finest achievable cell size (memory-guard lower bound) and a rough
     /// raw-grid triangle count at `cell_size_mm`, as JSON
@@ -256,6 +278,89 @@ impl Kernel {
         crate::brep::step_export::export_step_scene_placed(&breps, "scene")
     }
 
+}
+
+impl Kernel {
+    /// Memoised tight AABB of the visible solid (see `scene_visible_center`).
+    /// Recomputed only when `mesh_version` changed since the last query.
+    fn cached_visible_aabb(&self) -> crate::csg::Aabb {
+        if let Some((v, bb)) = self.visible_aabb_cache.get() {
+            if v == self.mesh_version {
+                return bb;
+            }
+        }
+        // Conservative CSG bound = the sampling domain (identical to what
+        // `scene_aabb` reports), then tightened against the real SDF field.
+        let conservative = crate::csg::CsgNode::from_decoded(&self.decoded)
+            .apply_edge_fillets(&self.edge_fillets)
+            .aabb();
+        let bodies: Vec<crate::bvh::BoundedCsg> = self
+            .bodies
+            .iter()
+            .map(|b| {
+                crate::body::build_bounded_with_primitives(&self.decoded, &b.feature_indices).0
+            })
+            .collect();
+        let bb = scene_tight_aabb(&bodies, conservative);
+        self.visible_aabb_cache.set(Some((self.mesh_version, bb)));
+        bb
+    }
+}
+
+/// Tighten a `conservative` domain box to the actual union-of-bodies SDF
+/// isosurface (ticket f88u). A uniform sample grid over the domain collects
+/// every point that is inside or within half a cell of the surface
+/// (`sdf ≤ ½·cell-diagonal`); their AABB is the solid's tight bound. The grid
+/// carries `~40` samples along the longest axis (fewer on the others,
+/// proportional to extent), so the cost is bounded and this is cheap enough to
+/// memoise per geometry edit. Empty / degenerate domains pass through
+/// unchanged. Kept free of the wasm boundary so it is unit-testable.
+pub(crate) fn scene_tight_aabb(
+    bodies: &[crate::bvh::BoundedCsg],
+    conservative: crate::csg::Aabb,
+) -> crate::csg::Aabb {
+    use crate::csg::{Aabb, EvalMode};
+    if bodies.is_empty() || conservative.is_empty() {
+        return conservative;
+    }
+    let scene_sdf = |p: [f32; 3]| {
+        let mut d = f32::MAX;
+        for b in bodies {
+            d = d.min(b.sdf(p, EvalMode::Visual));
+        }
+        d
+    };
+    let size = conservative.size();
+    let longest = size[0].max(size[1]).max(size[2]);
+    if !(longest > 0.0) {
+        return conservative;
+    }
+    const BUDGET: f32 = 40.0;
+    let axis_n = |s: f32| ((s / longest * BUDGET).round() as i32).max(2) as usize;
+    let (nx, ny, nz) = (axis_n(size[0]), axis_n(size[1]), axis_n(size[2]));
+    let step = |s: f32, n: usize| if n > 1 { s / (n as f32 - 1.0) } else { 0.0 };
+    let (sx, sy, sz) = (step(size[0], nx), step(size[1], ny), step(size[2], nz));
+    // A sample cell straddles the surface when |sdf| ≤ half its diagonal;
+    // collecting inside + surface samples (sdf ≤ +band) bounds the solid.
+    let band = 0.5 * (sx * sx + sy * sy + sz * sz).sqrt();
+    let mut tight = Aabb::EMPTY;
+    for iz in 0..nz {
+        let z = conservative.min[2] + iz as f32 * sz;
+        for iy in 0..ny {
+            let y = conservative.min[1] + iy as f32 * sy;
+            for ix in 0..nx {
+                let x = conservative.min[0] + ix as f32 * sx;
+                if scene_sdf([x, y, z]) <= band {
+                    tight = Aabb::union(tight, Aabb { min: [x, y, z], max: [x, y, z] });
+                }
+            }
+        }
+    }
+    if tight.is_empty() {
+        conservative
+    } else {
+        tight
+    }
 }
 
 /// Debug ▸ Mesher core (kept free of the wasm boundary so it is unit-testable):
@@ -408,5 +513,63 @@ mod mesher_octree_tests {
     #[test]
     fn empty_scene_yields_no_cells() {
         assert!(octree_leaf_samples(&[], 5, 1.0).is_empty());
+    }
+
+    fn leaf(primitive: Primitive) -> CsgNode {
+        let f = DecodedFeature::from_parts(
+            FeatureId::from_u32(1),
+            "x".into(),
+            BoolOp::New,
+            primitive,
+            Transform::IDENTITY,
+            PrimitiveModifiers::NONE,
+            vec![],
+        );
+        CsgNode::from_decoded(&[f])
+    }
+
+    #[test]
+    fn tight_aabb_follows_the_carved_result_not_the_original_sphere() {
+        // f88u: a sphere with its whole x > 0 half carved away. The visible
+        // solid is the LEFT hemisphere, centred well into −x — but the
+        // conservative CSG bound (a Difference keeps the left-operand box) is
+        // still the full sphere, centred on the cut plane at x = 0.
+        let sph = leaf(Primitive::Sphere {
+            center: [0.0, 0.0, 0.0],
+            radius: 10.0,
+        });
+        let cut = leaf(Primitive::Box {
+            center: [10.0, 0.0, 0.0],
+            half_extents: [10.0, 20.0, 20.0],
+        });
+        let tree = CsgNode::Difference(Box::new(sph), Box::new(cut));
+        let conservative = tree.aabb();
+        let body = BoundedCsg::from_csg(&tree);
+        let tight = super::scene_tight_aabb(&[body], conservative);
+
+        // Conservative centre sits on the phantom sphere centre (the bug).
+        let conserv_cx = 0.5 * (conservative.min[0] + conservative.max[0]);
+        assert!(conserv_cx.abs() < 1e-3, "conservative cx={conserv_cx}");
+
+        // Tight centre follows the visible hemisphere, deep in −x.
+        let cx = 0.5 * (tight.min[0] + tight.max[0]);
+        assert!(cx < -3.0, "tight centre should be in the −x hemisphere, cx={cx}");
+
+        // The carve is symmetric in y and z → those centres stay ~0.
+        assert!((0.5 * (tight.min[1] + tight.max[1])).abs() < 1.0);
+        assert!((0.5 * (tight.min[2] + tight.max[2])).abs() < 1.0);
+
+        // A tightened box is always a subset of the conservative domain.
+        assert!(tight.min[0] >= conservative.min[0] - 1e-3);
+        assert!(tight.max[0] <= conservative.max[0] + 1e-3);
+    }
+
+    #[test]
+    fn tight_aabb_of_no_bodies_is_the_conservative_bound() {
+        let conservative = crate::csg::Aabb {
+            min: [-1.0; 3],
+            max: [1.0; 3],
+        };
+        assert_eq!(super::scene_tight_aabb(&[], conservative), conservative);
     }
 }

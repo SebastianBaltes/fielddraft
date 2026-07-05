@@ -1466,13 +1466,20 @@ export class Kernel {
     );
   }
 
-  /** K9.1: overall scene AABB in mm. */
+  /** K9.1: overall scene AABB in mm (conservative CSG bound). */
   sceneAabb(): { min: number[]; max: number[]; size: number[] } {
     return JSON.parse(this.inner.sceneAabb()) as {
       min: number[];
       max: number[];
       size: number[];
     };
+  }
+
+  /** Ticket f88u: world-space centre of the *visible* solid's tight AABB — the
+   *  orbit pivot. `[x,y,z]`, or `[]` when the kernel can't tighten the field
+   *  (empty / unbounded scene). Memoised kernel-side on the geometry version. */
+  sceneVisibleCenter(): number[] {
+    return Array.from(this.inner.sceneVisibleCenter());
   }
 
   /** K8.7: toggle the suppressed flag of a feature call. */

@@ -24,6 +24,17 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.395",
+    entries: [
+      {
+        kind: "fix",
+        text: "Rotier-Pivot lag nach Boolean-Schnitten auf dem Zentrum des ursprünglichen Körpers (z.B. der ganzen Kugel) statt auf dem sichtbaren Rest. Der Pivot ist jetzt der Mittelpunkt der engen AABB des tatsächlich gerenderten Solids (aus dem SDF-Feld abgetastet), nicht mehr der konservativen CSG-Hülle",
+        scope: "viewport",
+        tickets: ["f88u"],
+      },
+    ],
+  },
+  {
     version: "0.6.394",
     entries: [
       {

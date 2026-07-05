@@ -388,6 +388,18 @@ export class StoreCore {
     try {
       const a = this.kernel.sceneAabb();
       const radius = 0.5 * Math.hypot(a.size[0], a.size[1], a.size[2]);
+      // Tight centre of the *visible* solid for the orbit pivot (ticket f88u).
+      // Memoised kernel-side on the geometry version, so calling it on every
+      // (selection-driven) notify costs nothing between edits. `[]` when the
+      // kernel can't tighten → omit `pivot`, callers fall back to `center`.
+      // Feature-detected so test doubles without the method still publish
+      // their conservative bounds.
+      const vc =
+        typeof this.kernel.sceneVisibleCenter === "function"
+          ? this.kernel.sceneVisibleCenter()
+          : [];
+      const pivot: [number, number, number] | undefined =
+        vc.length === 3 ? [vc[0], vc[1], vc[2]] : undefined;
       publishSceneBounds(
         radius > 0
           ? {
@@ -397,6 +409,7 @@ export class StoreCore {
                 (a.min[2] + a.max[2]) / 2,
               ],
               radius,
+              pivot,
             }
           : null,
       );

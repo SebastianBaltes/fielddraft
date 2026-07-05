@@ -383,10 +383,14 @@ export class OnshapeControls extends THREE.Controls {
   private recentrePivot(): void {
     // Ticket f88u: the orbit pivot is ALWAYS the centre of the displayed part's
     // AABB — no history, no sticky-when-it-fits logic. A rotate that starts
-    // after a pan/zoom re-centres on the part every time.
+    // after a pan/zoom re-centres on the part every time. Prefer the tight
+    // *visible* centre (`pivot`): the conservative `center` still sits on the
+    // phantom original primitive after a boolean carve (a half-cut sphere spins
+    // about the vanished sphere centre otherwise).
     const b = getSceneBounds();
     if (!b || b.radius <= 0) return; // nothing drawn → keep the current pivot
-    this.target.set(b.center[0], b.center[1], b.center[2]);
+    const c = b.pivot ?? b.center;
+    this.target.set(c[0], c[1], c[2]);
   }
 
   private rotate(dx: number, dy: number): void {
