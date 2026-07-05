@@ -24,6 +24,17 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.402",
+    entries: [
+      {
+        kind: "fix",
+        text: "Feature-Details-Panel hat keinen Schlagschatten mehr — es ist in der Seitenleiste angedockt, kein schwebendes Fenster. Der Schatten bleibt den verschiebbaren/modalen Dialogen vorbehalten",
+        scope: "ui",
+        tickets: ["35np"],
+      },
+    ],
+  },
+  {
     version: "0.6.401",
     entries: [
       {
