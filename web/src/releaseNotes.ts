@@ -24,6 +24,17 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.393",
+    entries: [
+      {
+        kind: "fix",
+        text: "Einstellung „Auto-reload on code change = off“ wird wieder respektiert: Vite 8 verschluckt (via Promise.allSettled) den Fehler, mit dem wir bisher den Full-Reload abbrachen — die Seite lud trotzdem neu (und verwarf das ungespeicherte Projekt). Neu wird die Vite-„full-reload“-Nachricht direkt am HMR-Socket abgefangen, bevor Vite sie verarbeitet",
+        scope: "dev",
+        tickets: ["0u31"],
+      },
+    ],
+  },
+  {
     version: "0.6.392",
     entries: [
       {

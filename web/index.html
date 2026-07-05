@@ -46,6 +46,30 @@
                 );
               }
             });
+            // Vite 8 hardened its HMR dispatch to CATCH listener errors, so
+            // main.tsx's `throw` in `vite:beforeFullReload` no longer cancels the
+            // reload (ticket 0u31). Drop the `full-reload` message here, at the
+            // socket, before Vite's client parses it — this listener is added
+            // before Vite's, so `stopImmediatePropagation()` blocks its handler.
+            ws.addEventListener("message", function (ev) {
+              if (!isOff() || typeof ev.data !== "string") return;
+              var isFullReload = false;
+              try {
+                var msg = JSON.parse(ev.data);
+                var arr = Array.isArray(msg) ? msg : [msg];
+                for (var i = 0; i < arr.length; i++) {
+                  if (arr[i] && arr[i].type === "full-reload") isFullReload = true;
+                }
+              } catch (e) {
+                return;
+              }
+              if (isFullReload) {
+                ev.stopImmediatePropagation();
+                console.info(
+                  "[FieldDraft] full-reload suppressed (Auto-reload off in Settings). Press F5 to apply code/WASM changes.",
+                );
+              }
+            });
           }
           return ws;
         }
