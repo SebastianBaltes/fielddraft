@@ -49,7 +49,6 @@ const WORLD_UP = /*@__PURE__*/ new THREE.Vector3(0, 1, 0);
 const _offset = new THREE.Vector3();
 const _right = new THREE.Vector3();
 const _up = new THREE.Vector3();
-const _c = new THREE.Vector3();
 const _ndc = new THREE.Vector3();
 const _viewDir = new THREE.Vector3();
 const _rayDir = new THREE.Vector3();
@@ -382,15 +381,12 @@ export class OnshapeControls extends THREE.Controls {
 
   /** Decide the rotate pivot via the sticky-bounding-sphere rule. */
   private recentrePivot(): void {
-    const cam = this.cam;
-    cam.updateMatrixWorld();
+    // Ticket f88u: the orbit pivot is ALWAYS the centre of the displayed part's
+    // AABB — no history, no sticky-when-it-fits logic. A rotate that starts
+    // after a pan/zoom re-centres on the part every time.
     const b = getSceneBounds();
     if (!b || b.radius <= 0) return; // nothing drawn → keep the current pivot
-    _c.set(b.center[0], b.center[1], b.center[2]);
-    if (sphereFitsViewport(cam, _c, b.radius)) {
-      this.target.copy(_c); // sphere still frames → re-centre on the model
-    }
-    // else: sticky — leave the pivot at its last fitting position
+    this.target.set(b.center[0], b.center[1], b.center[2]);
   }
 
   private rotate(dx: number, dy: number): void {

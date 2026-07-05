@@ -6,6 +6,7 @@ import {
   cursorZoomFocus,
   OnshapeControls,
 } from "./onshapeControls";
+import { publishSceneBounds } from "./sceneBoundsBridge";
 
 function cameraLookingAt(
   pos: [number, number, number],
@@ -186,6 +187,20 @@ describe("OnshapeControls touch gestures", () => {
     h.onPointerUp(touch(1, 102, 101));
     expect(cam.position.distanceTo(before)).toBe(0);
     c.dispose();
+  });
+
+  it("rotate always re-centres the pivot on the part AABB centre (f88u)", () => {
+    publishSceneBounds({ center: [5, 6, 7], radius: 10 });
+    const cam = cameraLookingAt([0, 0, 100], [0, 0, 0]);
+    const c = new OnshapeControls(cam, makeEl());
+    const h = handlers(c);
+    h.onPointerDown(touch(1, 100, 100));
+    h.onPointerMove(touch(1, 160, 100)); // past threshold → rotate → recentre
+    expect(c.target.x).toBeCloseTo(5, 5);
+    expect(c.target.y).toBeCloseTo(6, 5);
+    expect(c.target.z).toBeCloseTo(7, 5);
+    c.dispose();
+    publishSceneBounds(null);
   });
 
   it("two-finger spread zooms in (perspective camera moves closer)", () => {

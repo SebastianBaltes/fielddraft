@@ -24,6 +24,17 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.394",
+    entries: [
+      {
+        kind: "fix",
+        text: "Rotieren dreht jetzt immer um den Mittelpunkt der AABB des angezeigten Parts — die frühere „sticky pivot“-Logik (Pivot bleibt an der letzten passenden Stelle, wenn der Körper nicht ganz ins Bild passt) ist entfallen. Auch nach Verschieben/Zoomen zentriert ein Rotieren wieder auf den Part",
+        scope: "viewport",
+        tickets: ["f88u"],
+      },
+    ],
+  },
+  {
     version: "0.6.393",
     entries: [
       {
