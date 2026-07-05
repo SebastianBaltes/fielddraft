@@ -30,7 +30,9 @@ const DEFAULTS: MesherDebug = {
   maxDepth: 6,
   bandGuard: 1,
   normalScale: 0.6,
-  pointSize: 5,
+  strokeWidth: 2,
+  nearSurfaceOnly: false,
+  nearSurfaceDist: 1,
 };
 
 const clampNum = (v: unknown, lo: number, hi: number, fallback: number): number =>
@@ -47,7 +49,12 @@ function loadSettings(): MesherDebug {
       maxDepth: Math.round(clampNum(p.maxDepth, 1, 10, DEFAULTS.maxDepth)),
       bandGuard: clampNum(p.bandGuard, 0.1, 8, DEFAULTS.bandGuard),
       normalScale: clampNum(p.normalScale, 0, 4, DEFAULTS.normalScale),
-      pointSize: clampNum(p.pointSize, 1, 20, DEFAULTS.pointSize),
+      strokeWidth: clampNum(p.strokeWidth, 0.5, 12, DEFAULTS.strokeWidth),
+      nearSurfaceOnly:
+        typeof p.nearSurfaceOnly === "boolean"
+          ? p.nearSurfaceOnly
+          : DEFAULTS.nearSurfaceOnly,
+      nearSurfaceDist: clampNum(p.nearSurfaceDist, 0, 1e6, DEFAULTS.nearSurfaceDist),
     };
   } catch {
     return DEFAULTS;
@@ -59,22 +66,29 @@ export function MesherDialog({ onClose }: { onClose: () => void }) {
   const [maxDepth, setMaxDepth] = useState(initial.maxDepth);
   const [bandGuard, setBandGuard] = useState(initial.bandGuard);
   const [normalScale, setNormalScale] = useState(initial.normalScale);
-  const [pointSize, setPointSize] = useState(initial.pointSize);
+  const [strokeWidth, setStrokeWidth] = useState(initial.strokeWidth);
+  const [nearSurfaceOnly, setNearSurfaceOnly] = useState(initial.nearSurfaceOnly);
+  const [nearSurfaceDist, setNearSurfaceDist] = useState(initial.nearSurfaceDist);
 
   const stats = useSyncExternalStore(subscribeMesherStats, getMesherStats);
 
   // Publish while open; persist; clear on unmount.
   useEffect(() => {
-    setMesherDebug({ maxDepth, bandGuard, normalScale, pointSize });
+    const s: MesherDebug = {
+      maxDepth,
+      bandGuard,
+      normalScale,
+      strokeWidth,
+      nearSurfaceOnly,
+      nearSurfaceDist,
+    };
+    setMesherDebug(s);
     try {
-      localStorage.setItem(
-        SETTINGS_KEY,
-        JSON.stringify({ maxDepth, bandGuard, normalScale, pointSize }),
-      );
+      localStorage.setItem(SETTINGS_KEY, JSON.stringify(s));
     } catch {
       // no localStorage (tests) — non-persistent is fine
     }
-  }, [maxDepth, bandGuard, normalScale, pointSize]);
+  }, [maxDepth, bandGuard, normalScale, strokeWidth, nearSurfaceOnly, nearSurfaceDist]);
   useEffect(() => () => setMesherDebug(null), []);
 
   useEffect(() => {
@@ -181,12 +195,28 @@ export function MesherDialog({ onClose }: { onClose: () => void }) {
         max: 4,
         step: 0.1,
       })}
-      {numRow("Point size", pointSize, setPointSize, {
-        min: 1,
-        max: 20,
-        step: 1,
-        round: true,
+      {numRow("Stroke width", strokeWidth, setStrokeWidth, {
+        min: 0.5,
+        max: 12,
+        step: 0.5,
       })}
+
+      <div className="vec-row check-row">
+        <label htmlFor="mesher-near-surface">Near surface only</label>
+        <input
+          id="mesher-near-surface"
+          type="checkbox"
+          data-testid="mesher-near-surface"
+          checked={nearSurfaceOnly}
+          onChange={(e) => setNearSurfaceOnly(e.target.checked)}
+        />
+      </div>
+      {nearSurfaceOnly &&
+        numRow("Distance (mm)", nearSurfaceDist, setNearSurfaceDist, {
+          min: 0,
+          max: 1e6,
+          step: 0.5,
+        })}
 
       <div className="readout">
         <span className="k">Leaf cells</span>

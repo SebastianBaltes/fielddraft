@@ -24,6 +24,17 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.392",
+    entries: [
+      {
+        kind: "feat",
+        text: "Mesher-Debug-Ansicht verfeinert: die Normalen-Linien sind jetzt in der SDF-Farbe kodiert (innen/Oberfläche/außen) und haben eine einstellbare Stroke-Width; der Zell-Mittelpunkt ist ein runder Punkt (Durchmesser 3× Stroke-Width) in derselben Farbe. Neu: Checkbox „Near surface only“ mit Distanz-Eingabe blendet nur Octree-Zellen nahe der Oberfläche ein",
+        scope: "debug",
+        tickets: ["lbb3"],
+      },
+    ],
+  },
+  {
     version: "0.6.391",
     entries: [
       {

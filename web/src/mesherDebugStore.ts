@@ -19,8 +19,12 @@ export interface MesherDebug {
   bandGuard: number;
   /** Normal line length as a fraction of the cell size. */
   normalScale: number;
-  /** Point size in pixels. */
-  pointSize: number;
+  /** Screen-space stroke width (px) of the normal lines; the centre dot is 3×. */
+  strokeWidth: number;
+  /** Only show leaf cells within `nearSurfaceDist` of the surface. */
+  nearSurfaceOnly: boolean;
+  /** |sdf| threshold (mm) for `nearSurfaceOnly`. */
+  nearSurfaceDist: number;
 }
 
 let params: MesherDebug | null = null;
