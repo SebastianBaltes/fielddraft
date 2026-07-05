@@ -120,6 +120,7 @@ export function setOrthoFrustum(
  */
 export function ViewportCamera({ perspective }: { perspective: boolean }) {
   const set = useThree((s) => s.set);
+  const get = useThree((s) => s.get);
   const size = useThree((s) => s.size);
   // The projection-swap effect below needs the CURRENT viewport size for its
   // framing math, but must NOT re-run on resize (that would copy the inactive
@@ -178,10 +179,19 @@ export function ViewportCamera({ perspective }: { perspective: boolean }) {
     to.quaternion.copy(from.quaternion);
     to.up.copy(from.up);
 
-    // Match framing about the scene pivot (or origin) so the toggle is a pure
-    // projection change, not a zoom. `dist` = camera→pivot distance.
+    // Match framing about the CURRENT view pivot so the toggle is a pure
+    // projection change, not a jump. `dist` = camera→pivot distance. The pivot
+    // must be what the camera actually looks at — the controls' orbit target
+    // (ticket q3bb: the framing used the scene-AABB centre instead, which
+    // differs from the target after a boolean carve or an ohtn cursor-pivot, so
+    // the model lurched on toggle). Fall back to the scene centre / origin
+    // before the controls exist.
+    const controls = get().controls as unknown as OnshapeControls | null;
     const b = getSceneBounds();
-    const pivot = new THREE.Vector3(...(b && b.radius > 0 ? b.center : [0, 0, 0]));
+    const pivot =
+      controls && controls.target
+        ? controls.target.clone()
+        : new THREE.Vector3(...(b && b.radius > 0 ? b.center : [0, 0, 0]));
     const dist = Math.max(from.position.distanceTo(pivot), 1e-3);
     if (perspective) {
       // ortho→persp: choose distance so the perspective world-height at the
@@ -205,7 +215,7 @@ export function ViewportCamera({ perspective }: { perspective: boolean }) {
     }
     to.updateMatrixWorld();
     set({ camera: to });
-  }, [perspective, set]);
+  }, [perspective, set, get]);
 
   return null;
 }
@@ -333,6 +343,14 @@ export function CameraRig({ preset }: { preset: ControlsPresetId }) {
       const res = st.kernel.pick([o.x, o.y, o.z], [d.x, d.y, d.z]);
       return res.hit ? res.point : null;
     };
+    // Inherit the last-known orbit target (ticket q3bb): the perspective toggle
+    // swaps the active camera, which recreates these controls with a default
+    // (origin) target — and CameraPoseSync only restores once per canvas mount,
+    // not on the swap. Seed the target from the pose bridge so a rotate right
+    // after a toggle still orbits the same point (and the toggle's framing,
+    // which reads this target, stays correct across repeated toggles).
+    const savedPose = getCameraPose();
+    if (savedPose) controls.target.fromArray(savedPose.target);
     controlsRef.current = controls;
     const previous = get().controls;
     set({ controls: controls as unknown as THREE.Controls });

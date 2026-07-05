@@ -24,6 +24,17 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.405",
+    entries: [
+      {
+        kind: "fix",
+        text: "Umschalten Perspektive ⇄ Orthografisch springt nicht mehr: das Framing gleicht die Bildgröße jetzt um den tatsächlichen Blickmittelpunkt (Orbit-Target) ab statt um das Szenen-AABB-Zentrum — bei geschnittenen/versetzten Teilen wichen die auseinander. Zusätzlich erben die beim Umschalten neu erzeugten Kamera-Controls das letzte Orbit-Target, sodass ein Rotieren direkt nach dem Umschalten weiter um denselben Punkt dreht",
+        scope: "camera",
+        tickets: ["q3bb"],
+      },
+    ],
+  },
+  {
     version: "0.6.404",
     entries: [
       {
