@@ -38,6 +38,9 @@ export function SdfPlaneDialog({ onClose }: { onClose: () => void }) {
   const [halfExtent, setHalfExtent] = useState(50);
   const [resolution, setResolution] = useState(256);
   const [bands, setBands] = useState(16);
+  // Spinner/arrow-key increment for the Point & Normal xyz fields (settable so
+  // the plane can be scanned through the model in coarse or fine steps).
+  const [step, setStep] = useState(1);
 
   const hover = useSyncExternalStore(subscribeSdfPlaneHover, getSdfPlaneHover);
 
@@ -132,7 +135,7 @@ export function SdfPlaneDialog({ onClose }: { onClose: () => void }) {
             <input
               key={key}
               type="number"
-              step={1}
+              step={step}
               aria-label={`point ${key}`}
               value={point[i]}
               onChange={(e) => setAxis(setPoint, point, i, e.target.value)}
@@ -147,7 +150,7 @@ export function SdfPlaneDialog({ onClose }: { onClose: () => void }) {
             <input
               key={key}
               type="number"
-              step={0.1}
+              step={step}
               aria-label={`normal ${key}`}
               value={normal[i]}
               onChange={(e) => setAxis(setNormal, normal, i, e.target.value)}
@@ -166,6 +169,23 @@ export function SdfPlaneDialog({ onClose }: { onClose: () => void }) {
         <button type="button" onClick={() => presetNormal([0, 0, 1])}>
           Z
         </button>
+      </div>
+
+      <div className="vec-row">
+        <label>Step</label>
+        <div className="fields">
+          <input
+            type="number"
+            min={0}
+            step={0.1}
+            aria-label="step"
+            value={step}
+            onChange={(e) => {
+              const n = Number(e.target.value.replace(",", "."));
+              if (Number.isFinite(n) && n > 0) setStep(n);
+            }}
+          />
+        </div>
       </div>
 
       <div className="vec-row">

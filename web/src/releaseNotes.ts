@@ -24,6 +24,17 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.384",
+    entries: [
+      {
+        kind: "feat",
+        text: "SDF-Plane-Dialog: die Schrittweite der Punkt-/Normalen-XYZ-Felder (Pfeiltasten/Spinner) ist über ein eigenes „Step“-Feld einstellbar — so lässt sich die Ebene grob oder fein durch das Modell schieben",
+        scope: "debug",
+        tickets: ["iepg"],
+      },
+    ],
+  },
+  {
     version: "0.6.383",
     entries: [
       {
