@@ -24,6 +24,17 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.400",
+    entries: [
+      {
+        kind: "fix",
+        text: "Rotier-Pivot lag bei Körpern mit einem Gyroid-Intersect wieder im Ursprung: ein space-filling Werkzeug (Gyroid) meldet eine leere AABB, wodurch der Intersect die Body-AABB fälschlich auf leer kollabierte. Ein unbegrenztes Intersect-Werkzeug schränkt die Box jetzt nicht mehr ein — der Pivot folgt wieder dem sichtbaren Part",
+        scope: "kernel",
+        tickets: ["ipnx"],
+      },
+    ],
+  },
+  {
     version: "0.6.399",
     entries: [
       {

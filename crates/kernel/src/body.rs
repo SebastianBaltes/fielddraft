@@ -465,7 +465,15 @@ pub fn partition(features: &[DecodedFeature]) -> Vec<BodyPartition> {
                                 if let Some(inner) = inner {
                                     groups[idx].aabb = subtract_cap(groups[idx].aabb, inner);
                                 }
-                            } else {
+                            } else if !feat_aabb.is_empty() {
+                                // A bounded Intersect tool clips the body to it.
+                                // An UNBOUNDED / space-filling one (gyroid → an
+                                // empty AABB sentinel, csg.rs) imposes no box
+                                // constraint — keep the body's current bound
+                                // rather than collapsing it to empty (ticket
+                                // ipnx: a Sphere ∩ Gyroid ∩ Box otherwise lost
+                                // its whole AABB, dropping the orbit pivot back
+                                // to the origin).
                                 groups[idx].aabb =
                                     Aabb::intersect(groups[idx].aabb, feat_aabb);
                             }
@@ -1257,6 +1265,47 @@ mod tests {
                 "axis {k} shrank but the cutter does not span the cross-section"
             );
         }
+    }
+
+    #[test]
+    fn intersect_with_a_space_filling_tool_keeps_the_body_aabb() {
+        // Ticket ipnx: Sphere ∩ Gyroid ∩ small offset Box. The gyroid is
+        // space-filling and reports an EMPTY AABB sentinel — it must NOT
+        // collapse the body's bound to empty (which dropped the orbit pivot to
+        // the origin). The final box then clips the AABB to its own extent.
+        let features = vec![
+            sphere_feat(1, BoolOp::New, [0.0, 0.0, 0.0], 50.0),
+            gyroid_feat(2, BoolOp::Intersect, 1, 10.0, 1.0),
+            DecodedFeature::from_parts(
+                FeatureId::from_u32(3),
+                "Box".into(),
+                BoolOp::Intersect,
+                Primitive::Box {
+                    center: [0.0, 0.0, 0.0],
+                    half_extents: [3.0, 4.0, 3.0],
+                },
+                Transform {
+                    translate: [8.0, 22.0, 30.0],
+                    ..Transform::IDENTITY
+                },
+                PrimitiveModifiers::NONE,
+                vec![FeatureId::from_u32(1)],
+            ),
+        ];
+        let bodies = partition(&features);
+        assert_eq!(bodies.len(), 1);
+        let bb = bodies[0].aabb;
+        assert!(!bb.is_empty(), "gyroid intersect wrongly emptied the body AABB");
+        // Clipped to the translated box → centre ≈ (8, 22, 30).
+        let c = [
+            0.5 * (bb.min[0] + bb.max[0]),
+            0.5 * (bb.min[1] + bb.max[1]),
+            0.5 * (bb.min[2] + bb.max[2]),
+        ];
+        assert!(
+            (c[0] - 8.0).abs() < 0.5 && (c[1] - 22.0).abs() < 0.5 && (c[2] - 30.0).abs() < 0.5,
+            "AABB centre should follow the box intersect, got {c:?}"
+        );
     }
 
     #[test]
