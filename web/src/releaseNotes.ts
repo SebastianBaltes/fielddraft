@@ -24,6 +24,16 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.388",
+    entries: [
+      {
+        kind: "feat",
+        text: "Neues Debug-Werkzeug „Mesher“ (Menü Debug ▸ Mesher…) als Gerüst für ein eigenes Meshing-Verfahren. Schritt 1: ein adaptiver Narrow-Band-Octree — jeder Blattzell-Mittelpunkt wird gegen SDF und Gradient ausgewertet und als Punkt gezeichnet (Farbe kodiert die SDF: innen blau, außen rot, an der Oberfläche grün) mit einer kurzen Linie entlang der Normale. Parameter: Max-Tiefe, Band-Breite, Normalen-Länge, Punktgröße; Zellzahl-Anzeige; Einstellungen in localStorage",
+        scope: "debug",
+      },
+    ],
+  },
+  {
     version: "0.6.387",
     entries: [
       {

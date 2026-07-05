@@ -102,6 +102,26 @@ impl Kernel {
         out
     }
 
+    /// Debug ▸ Mesher, step 1: build a narrow-band adaptive octree over the
+    /// scene and return, for every leaf cell, its centre sample packed as
+    /// `[x, y, z, sdf, nx, ny, nz, cellSize]` (8 floats). A cell subdivides
+    /// while its centre lies within the surface band (`|sdf| ≤ halfDiagonal ·
+    /// guard`) and `depth < max_depth`; otherwise it is a leaf. `sdf` is the
+    /// min-over-bodies field (`EvalMode::Visual`), `n` its normalised gradient
+    /// (central differences). This is the scaffold a custom mesher will grow
+    /// from — the overlay colour-codes `sdf` and draws `n` as a short line.
+    #[wasm_bindgen(js_name = mesherOctreeSamples)]
+    pub fn mesher_octree_samples(&self, max_depth: u32, band_guard: f32) -> Vec<f32> {
+        let bodies: Vec<crate::bvh::BoundedCsg> = self
+            .bodies
+            .iter()
+            .map(|b| {
+                crate::body::build_bounded_with_primitives(&self.decoded, &b.feature_indices).0
+            })
+            .collect();
+        octree_leaf_samples(&bodies, max_depth, band_guard)
+    }
+
     /// Pre-mesh estimate for the export dialog: for dense-grid methods, the
     /// finest achievable cell size (memory-guard lower bound) and a rough
     /// raw-grid triangle count at `cell_size_mm`, as JSON
@@ -236,4 +256,157 @@ impl Kernel {
         crate::brep::step_export::export_step_scene_placed(&breps, "scene")
     }
 
+}
+
+/// Debug ▸ Mesher core (kept free of the wasm boundary so it is unit-testable):
+/// build a narrow-band adaptive octree over the union of `bodies` and return
+/// every leaf cell centre packed `[x, y, z, sdf, nx, ny, nz, cellSize]`.
+pub(crate) fn octree_leaf_samples(
+    bodies: &[crate::bvh::BoundedCsg],
+    max_depth: u32,
+    band_guard: f32,
+) -> Vec<f32> {
+    if bodies.is_empty() {
+        return Vec::new();
+    }
+    let scene_sdf = |p: [f32; 3]| {
+        let mut d = f32::MAX;
+        for b in bodies {
+            d = d.min(b.sdf(p, crate::csg::EvalMode::Visual));
+        }
+        d
+    };
+
+    // Root cube = the union of the bodies' AABBs, squared up (with a small
+    // margin). Space-filling bodies (gyroid) can report an empty AABB — fall
+    // back to a default box so the tool still shows something.
+    let mut mn = [f32::MAX; 3];
+    let mut mx = [f32::MIN; 3];
+    let mut any = false;
+    for b in bodies {
+        let a = b.aabb();
+        if !a.is_empty() {
+            any = true;
+            for k in 0..3 {
+                mn[k] = mn[k].min(a.min[k]);
+                mx[k] = mx[k].max(a.max[k]);
+            }
+        }
+    }
+    if !any {
+        mn = [-50.0; 3];
+        mx = [50.0; 3];
+    }
+    let center0 = [
+        0.5 * (mn[0] + mx[0]),
+        0.5 * (mn[1] + mx[1]),
+        0.5 * (mn[2] + mx[2]),
+    ];
+    let ext = (mx[0] - mn[0]).max(mx[1] - mn[1]).max(mx[2] - mn[2]);
+    let root_size = (ext * 1.1).max(1e-3);
+    let eps = (root_size * 0.005).clamp(1e-3, 1.0);
+    let guard = band_guard.max(0.1);
+    let max_depth = max_depth.min(10);
+    const MAX_LEAVES: usize = 200_000;
+    const SQRT3: f32 = 1.732_050_8;
+
+    let mut out: Vec<f32> = Vec::new();
+    let mut stack: Vec<([f32; 3], f32, u32)> = vec![(center0, root_size, 0)];
+    while let Some((c, size, depth)) = stack.pop() {
+        if out.len() / 8 >= MAX_LEAVES {
+            break;
+        }
+        let d = scene_sdf(c);
+        let half_diag = size * 0.5 * SQRT3;
+        let in_band = d.abs() <= half_diag * guard;
+        if depth < max_depth && in_band {
+            let h = size * 0.25; // child centre offset = quarter of parent size
+            for &sz in &[-1.0f32, 1.0] {
+                for &sy in &[-1.0f32, 1.0] {
+                    for &sx in &[-1.0f32, 1.0] {
+                        stack.push((
+                            [c[0] + sx * h, c[1] + sy * h, c[2] + sz * h],
+                            size * 0.5,
+                            depth + 1,
+                        ));
+                    }
+                }
+            }
+        } else {
+            // Leaf: centre sample + gradient (central differences).
+            let gx = scene_sdf([c[0] + eps, c[1], c[2]]) - scene_sdf([c[0] - eps, c[1], c[2]]);
+            let gy = scene_sdf([c[0], c[1] + eps, c[2]]) - scene_sdf([c[0], c[1] - eps, c[2]]);
+            let gz = scene_sdf([c[0], c[1], c[2] + eps]) - scene_sdf([c[0], c[1], c[2] - eps]);
+            let gl = (gx * gx + gy * gy + gz * gz).sqrt();
+            let n = if gl > 1e-12 {
+                [gx / gl, gy / gl, gz / gl]
+            } else {
+                [0.0, 0.0, 1.0]
+            };
+            out.extend_from_slice(&[c[0], c[1], c[2], d, n[0], n[1], n[2], size]);
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod mesher_octree_tests {
+    use super::octree_leaf_samples;
+    use crate::bvh::BoundedCsg;
+    use crate::csg::{CsgNode, DecodedFeature, PrimitiveModifiers};
+    use fielddraft_protocol::{BoolOp, FeatureId, Primitive, Transform};
+
+    fn sphere(radius: f32) -> BoundedCsg {
+        let f = DecodedFeature::from_parts(
+            FeatureId::from_u32(1),
+            "s".into(),
+            BoolOp::New,
+            Primitive::Sphere {
+                center: [0.0, 0.0, 0.0],
+                radius,
+            },
+            Transform::IDENTITY,
+            PrimitiveModifiers::NONE,
+            vec![],
+        );
+        BoundedCsg::from_csg(&CsgNode::from_decoded(&[f]))
+    }
+
+    #[test]
+    fn octree_is_adaptive_with_outward_normals_on_a_sphere() {
+        let bodies = [sphere(10.0)];
+        let out = octree_leaf_samples(&bodies, 5, 1.0);
+        assert!(!out.is_empty() && out.len() % 8 == 0);
+        let n = out.len() / 8;
+
+        // Adaptive: cells near the surface are the FINEST, cells far away stay
+        // coarse — so more than one distinct cell size appears.
+        let mut sizes: Vec<f32> = (0..n).map(|k| out[k * 8 + 7]).collect();
+        sizes.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        assert!(
+            *sizes.last().unwrap() > *sizes.first().unwrap() * 1.5,
+            "expected a range of cell sizes (adaptive), got {sizes:?}"
+        );
+
+        // The finest cells cluster on the surface; the gradient there points
+        // radially outward (n · p̂ ≈ 1 for a sphere).
+        let mut checked = 0;
+        for k in 0..n {
+            let b = k * 8;
+            let (x, y, z, d) = (out[b], out[b + 1], out[b + 2], out[b + 3]);
+            let (nx, ny, nz) = (out[b + 4], out[b + 5], out[b + 6]);
+            let r = (x * x + y * y + z * z).sqrt();
+            if d.abs() < 1.0 && r > 1e-3 {
+                let dot = (nx * x + ny * y + nz * z) / r;
+                assert!(dot > 0.9, "surface normal should point outward, dot={dot}");
+                checked += 1;
+            }
+        }
+        assert!(checked > 0, "expected some near-surface leaf cells");
+    }
+
+    #[test]
+    fn empty_scene_yields_no_cells() {
+        assert!(octree_leaf_samples(&[], 5, 1.0).is_empty());
+    }
 }

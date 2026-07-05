@@ -3,6 +3,7 @@ import type { KernelStore, StoreState } from "./store";
 import { ReportDialog } from "./ReportDialog";
 import { ExportDialog } from "./ExportDialog";
 import { SdfPlaneDialog } from "./SdfPlaneDialog";
+import { MesherDialog } from "./MesherDialog";
 
 // Lazy: the dialog pulls the full release-note history (releaseNotes.ts,
 // thousands of lines of data) — that belongs in an on-demand chunk, not in
@@ -93,6 +94,7 @@ export function SettingsMenu({
   const [releaseNotesOpen, setReleaseNotesOpen] = useState(false);
   const [exportDialog, setExportDialog] = useState<"stl" | "3mf" | null>(null);
   const [sdfPlaneOpen, setSdfPlaneOpen] = useState(false);
+  const [mesherOpen, setMesherOpen] = useState(false);
   const popoverRef = useRef<HTMLDivElement>(null);
   const buttonRef = useRef<HTMLButtonElement>(null);
 
@@ -342,6 +344,15 @@ export function SettingsMenu({
               >
                 SDF-Plane…
               </button>
+              <button
+                type="button"
+                role="menuitem"
+                className="menu-item"
+                data-testid="menu-debug-mesher"
+                onClick={() => menuAction(() => setMesherOpen(true))}
+              >
+                Mesher…
+              </button>
             </div>
           </div>
         </div>
@@ -426,6 +437,7 @@ export function SettingsMenu({
       )}
 
       {sdfPlaneOpen && <SdfPlaneDialog onClose={() => setSdfPlaneOpen(false)} />}
+      {mesherOpen && <MesherDialog onClose={() => setMesherOpen(false)} />}
     </div>
   );
 }

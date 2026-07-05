@@ -2111,6 +2111,12 @@ export class KernelStore {
     return this.kernel.sdfPlaneSample(origin, normal, halfExtent, resolution);
   }
 
+  /** Debug ▸ Mesher (step 1): narrow-band adaptive octree leaf centres, packed
+   *  `[x,y,z, sdf, nx,ny,nz, cellSize]` per leaf. Synchronous main-thread eval. */
+  mesherOctreeSamples(maxDepth: number, bandGuard: number): Float32Array {
+    return this.kernel.mesherOctreeSamples(maxDepth, bandGuard);
+  }
+
   /** Download an already-built export (3MF re-wraps stashed slicer
    *  metadata from the last import). */
   downloadExport(
