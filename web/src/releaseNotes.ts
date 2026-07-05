@@ -24,6 +24,17 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.391",
+    entries: [
+      {
+        kind: "fix",
+        text: "Kamera lässt sich jetzt per Touch bedienen: ein Finger rotiert (nach kurzer Bewegung, ein Tippen selektiert weiterhin), zwei Finger zoomen (Pinch) und schieben (Pan). Vorher fingen Browser die Gesten ab und zoomten/verschoben die ganze Seite — die OnshapeControls hatten keine Touch-Verarbeitung, und dem Viewport fehlte touch-action:none samt user-scalable=no",
+        scope: "viewport",
+        tickets: ["0m1l"],
+      },
+    ],
+  },
+  {
     version: "0.6.390",
     entries: [
       {

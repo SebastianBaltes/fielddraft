@@ -2,7 +2,12 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- maximum-scale/user-scalable=no: a CAD viewport handles pinch/drag as
+         camera gestures; the browser must not zoom/pan the whole page on touch. -->
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"
+    />
     <title>FieldDraft</title>
     <script>
       // Ticket cztw/4kky: the "Auto-reload on code change" setting (off) must

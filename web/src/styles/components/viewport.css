@@ -11,6 +11,14 @@
   position: relative;
   /* ticket xqp3: 3D-Szene ist weiß, nicht grau (eigener Viewport-Token). */
   background: var(--color-viewport-bg);
+  /* Touch belongs to the camera controls (rotate/pinch/pan), not the browser —
+   * without this a touch-drag scrolled the page and pinch zoomed it (ticket
+   * 0m1l). Must sit on the canvas too, since touch-action is per-hit-element. */
+  touch-action: none;
+
+  & canvas {
+    touch-action: none;
+  }
 
   /* Box-select rectangle (rectangle drag from empty space). Window mode
    * draws the accent-blue box; right→left crossing mode (Onshape/Fusion

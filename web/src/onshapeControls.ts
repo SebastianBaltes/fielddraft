@@ -147,6 +147,12 @@ export interface OnshapeMouseButtons {
   RIGHT: number | null;
 }
 
+/** Finger travel (px) before a one-finger touch becomes a rotate (so a tap
+ *  still falls through to selection). */
+const TOUCH_ROTATE_THRESHOLD = 6;
+/** Pinch distance change (px) → dolly `amount` scale (≈ a wheel notch is 100). */
+const PINCH_DOLLY_SCALE = 2;
+
 export class OnshapeControls extends THREE.Controls {
   /** Pivot of orbit; pan moves it, the sticky-sphere logic re-centres it. */
   readonly target = new THREE.Vector3();
@@ -168,6 +174,16 @@ export class OnshapeControls extends THREE.Controls {
   private action: Action = null;
   private px = 0;
   private py = 0;
+
+  // ── Touch state ──────────────────────────────────────────────────
+  // Active touch pointers by id → last client position. One finger rotates
+  // (after a small move so a tap can still select), two fingers pinch-zoom +
+  // pan. Kept separate from the mouse-button mapping (touch reports button 0,
+  // which is `LEFT` = usually unbound in the Onshape preset).
+  private touches = new Map<number, { x: number; y: number }>();
+  private touchMode: "none" | "pending" | "rotate" | "pinch" = "none";
+  private touchStart = { x: 0, y: 0 };
+  private pinchPrev: { dist: number; cx: number; cy: number } | null = null;
 
   constructor(object: THREE.Camera, domElement: HTMLElement | null = null) {
     super(object, domElement);
@@ -220,6 +236,10 @@ export class OnshapeControls extends THREE.Controls {
 
   private onPointerDown = (e: PointerEvent) => {
     if (!this.enabled) return;
+    if (e.pointerType === "touch") {
+      this.onTouchDown(e);
+      return;
+    }
     const code =
       e.button === 0
         ? this.mouseButtons.LEFT
@@ -235,13 +255,17 @@ export class OnshapeControls extends THREE.Controls {
     this.py = e.clientY;
     if (action === "rotate") this.recentrePivot();
     (this.domElement as HTMLElement | null)?.setPointerCapture?.(e.pointerId);
-    window.addEventListener("pointermove", this.onPointerMove);
-    window.addEventListener("pointerup", this.onPointerUp);
+    this.startWindowTracking();
     e.stopPropagation();
   };
 
   private onPointerMove = (e: PointerEvent) => {
-    if (!this.enabled || this.action === null) return;
+    if (!this.enabled) return;
+    if (this.touches.has(e.pointerId)) {
+      this.onTouchMove(e);
+      return;
+    }
+    if (this.action === null) return;
     const dx = e.clientX - this.px;
     const dy = e.clientY - this.py;
     this.px = e.clientX;
@@ -253,11 +277,102 @@ export class OnshapeControls extends THREE.Controls {
   };
 
   private onPointerUp = (e: PointerEvent) => {
+    if (this.touches.has(e.pointerId)) {
+      this.onTouchUp(e);
+      return;
+    }
     this.action = null;
     (this.domElement as HTMLElement | null)?.releasePointerCapture?.(e.pointerId);
-    window.removeEventListener("pointermove", this.onPointerMove);
-    window.removeEventListener("pointerup", this.onPointerUp);
+    this.stopWindowTrackingIfIdle();
   };
+
+  // ── Touch gestures ───────────────────────────────────────────────
+
+  private startWindowTracking(): void {
+    // Same-reference listeners → the browser dedups repeated adds.
+    window.addEventListener("pointermove", this.onPointerMove);
+    window.addEventListener("pointerup", this.onPointerUp);
+  }
+
+  private stopWindowTrackingIfIdle(): void {
+    if (this.action === null && this.touches.size === 0) {
+      window.removeEventListener("pointermove", this.onPointerMove);
+      window.removeEventListener("pointerup", this.onPointerUp);
+    }
+  }
+
+  /** Distance + midpoint of the first two active touches. */
+  private pinchState(): { dist: number; cx: number; cy: number } {
+    const it = this.touches.values();
+    const a = it.next().value as { x: number; y: number };
+    const b = it.next().value as { x: number; y: number };
+    return {
+      dist: Math.hypot(b.x - a.x, b.y - a.y),
+      cx: 0.5 * (a.x + b.x),
+      cy: 0.5 * (a.y + b.y),
+    };
+  }
+
+  private onTouchDown(e: PointerEvent): void {
+    this.touches.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    (this.domElement as HTMLElement | null)?.setPointerCapture?.(e.pointerId);
+    this.startWindowTracking();
+    if (this.touches.size === 1) {
+      this.touchMode = "pending"; // wait for movement so a tap can select
+      this.touchStart = { x: e.clientX, y: e.clientY };
+    } else if (this.touches.size === 2) {
+      this.touchMode = "pinch";
+      this.pinchPrev = this.pinchState();
+      e.stopPropagation(); // a two-finger gesture is never a tap
+    }
+  }
+
+  private onTouchMove(e: PointerEvent): void {
+    const prev = this.touches.get(e.pointerId);
+    if (!prev) return;
+    const cur = { x: e.clientX, y: e.clientY };
+    this.touches.set(e.pointerId, cur);
+
+    if (this.touchMode === "pending") {
+      const moved = Math.hypot(
+        e.clientX - this.touchStart.x,
+        e.clientY - this.touchStart.y,
+      );
+      if (moved <= TOUCH_ROTATE_THRESHOLD) return; // still a potential tap
+      this.touchMode = "rotate";
+      this.recentrePivot();
+    }
+
+    if (this.touchMode === "rotate" && this.touches.size === 1) {
+      this.rotate(cur.x - prev.x, cur.y - prev.y);
+      e.stopPropagation();
+    } else if (this.touchMode === "pinch" && this.touches.size >= 2) {
+      const st = this.pinchState();
+      if (this.pinchPrev) {
+        const ddist = st.dist - this.pinchPrev.dist;
+        // Spreading fingers (dist grows) zooms IN → negative dolly amount.
+        if (ddist !== 0) this.dolly(-ddist * PINCH_DOLLY_SCALE, st.cx, st.cy);
+        this.pan(st.cx - this.pinchPrev.cx, st.cy - this.pinchPrev.cy);
+      }
+      this.pinchPrev = st;
+      e.stopPropagation();
+    }
+  }
+
+  private onTouchUp(e: PointerEvent): void {
+    this.touches.delete(e.pointerId);
+    (this.domElement as HTMLElement | null)?.releasePointerCapture?.(e.pointerId);
+    if (this.touches.size === 1) {
+      // Dropped from a pinch to one finger → resume rotating cleanly.
+      this.touchMode = "rotate";
+      this.pinchPrev = null;
+      this.recentrePivot();
+    } else if (this.touches.size === 0) {
+      this.touchMode = "none";
+      this.pinchPrev = null;
+    }
+    this.stopWindowTrackingIfIdle();
+  }
 
   private onWheel = (e: WheelEvent) => {
     if (!this.enabled) return;

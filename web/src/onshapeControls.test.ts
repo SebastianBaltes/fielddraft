@@ -1,6 +1,11 @@
 import { describe, it, expect } from "vitest";
 import * as THREE from "three";
-import { sphereFitsViewport, rotationDelta, cursorZoomFocus } from "./onshapeControls";
+import {
+  sphereFitsViewport,
+  rotationDelta,
+  cursorZoomFocus,
+  OnshapeControls,
+} from "./onshapeControls";
 
 function cameraLookingAt(
   pos: [number, number, number],
@@ -126,5 +131,72 @@ describe("cursorZoomFocus", () => {
   it("returns null for a grazing ray and a degenerate camera", () => {
     expect(cursorZoomFocus(camPos, target, new THREE.Vector3(1, 0, 0), new THREE.Vector3())).toBeNull();
     expect(cursorZoomFocus(target, target, new THREE.Vector3(0, 0, -1), new THREE.Vector3())).toBeNull();
+  });
+});
+
+describe("OnshapeControls touch gestures", () => {
+  const touch = (id: number, x: number, y: number) =>
+    ({
+      pointerType: "touch",
+      pointerId: id,
+      clientX: x,
+      clientY: y,
+      button: 0,
+      stopPropagation: () => {},
+    }) as unknown as PointerEvent;
+
+  // The private pointer handlers are the gesture entry points; call them
+  // directly (jsdom PointerEvent is flaky) with the fields they read.
+  const handlers = (c: OnshapeControls) =>
+    c as unknown as {
+      onPointerDown: (e: PointerEvent) => void;
+      onPointerMove: (e: PointerEvent) => void;
+      onPointerUp: (e: PointerEvent) => void;
+    };
+
+  // jsdom reports clientHeight 0 and an empty rect; give the element realistic
+  // metrics so rotate (∝ dx/clientHeight) and cursor-zoom aren't degenerate.
+  const makeEl = (): HTMLElement => {
+    const el = document.createElement("div");
+    Object.defineProperty(el, "clientHeight", { value: 600, configurable: true });
+    el.getBoundingClientRect = () =>
+      ({ left: 0, top: 0, right: 800, bottom: 600, width: 800, height: 600, x: 0, y: 0, toJSON: () => ({}) }) as DOMRect;
+    return el;
+  };
+
+  it("one-finger drag past the tap threshold rotates the camera", () => {
+    const cam = cameraLookingAt([0, 0, 100], [0, 0, 0]);
+    const c = new OnshapeControls(cam, makeEl());
+    const h = handlers(c);
+    const before = cam.position.clone();
+    h.onPointerDown(touch(1, 100, 100));
+    h.onPointerMove(touch(1, 160, 100)); // 60px > threshold → rotate
+    h.onPointerUp(touch(1, 160, 100));
+    expect(cam.position.distanceTo(before)).toBeGreaterThan(0.1);
+    c.dispose();
+  });
+
+  it("a one-finger tap (below threshold) leaves the camera untouched", () => {
+    const cam = cameraLookingAt([0, 0, 100], [0, 0, 0]);
+    const c = new OnshapeControls(cam, makeEl());
+    const h = handlers(c);
+    const before = cam.position.clone();
+    h.onPointerDown(touch(1, 100, 100));
+    h.onPointerMove(touch(1, 102, 101)); // < threshold → still a tap
+    h.onPointerUp(touch(1, 102, 101));
+    expect(cam.position.distanceTo(before)).toBe(0);
+    c.dispose();
+  });
+
+  it("two-finger spread zooms in (perspective camera moves closer)", () => {
+    const cam = cameraLookingAt([0, 0, 100], [0, 0, 0]);
+    const c = new OnshapeControls(cam, makeEl());
+    const h = handlers(c);
+    const distBefore = cam.position.distanceTo(c.target);
+    h.onPointerDown(touch(1, 100, 100));
+    h.onPointerDown(touch(2, 200, 100)); // pinch begins, dist 100
+    h.onPointerMove(touch(2, 300, 100)); // dist 200 → spread → zoom in
+    expect(cam.position.distanceTo(c.target)).toBeLessThan(distBefore);
+    c.dispose();
   });
 });
