@@ -11,11 +11,17 @@
  *   · a bright green zero-surface line (the contour the meshers chase).
  *
  * The quad is built with the SAME (u, v) in-plane frame the kernel samples in,
- * so the texture aligns exactly. It lives on OVERLAY_LAYER so the SDF render
- * paths composite it, and re-samples whenever the plane params or the geometry
- * (`brepVersion`) change. It also projects the mouse onto the plane and
- * publishes the SDF value there for the dialog's readout. Returns null when no
- * plane is published.
+ * so the texture aligns exactly. It lives on DATUM_LAYER (not OVERLAY_LAYER):
+ * `renderOverlayLayer` draws DATUM_LAYER *before* it clears depth for the x-ray
+ * B-Rep edges, so — like a datum plane — the raymarched solid's depth is still
+ * intact and a solid in front correctly OCCLUDES the plane. On OVERLAY_LAYER the
+ * quad floated over the solid and slid with the camera (ticket iwgq parallax);
+ * the field on the plane and the raymarched surface disagreed by a view-
+ * dependent offset even though both evaluate the identical SDF. `enable` (not
+ * `set`) keeps the quad on layer 0 too, so the plain WebGL path draws it against
+ * the rasterised body depth. It re-samples whenever the plane params or the
+ * geometry (`brepVersion`) change, and projects the mouse onto the plane to
+ * publish the SDF value for the dialog's readout. Returns null when no plane.
  */
 
 import { useEffect, useMemo, useRef, useSyncExternalStore } from "react";
@@ -27,7 +33,7 @@ import {
   subscribeSdfPlane,
   setSdfPlaneHover,
 } from "./sdfPlaneStore";
-import { OVERLAY_LAYER } from "./viewportLayers";
+import { DATUM_LAYER } from "./viewportLayers";
 
 const DEFAULT_RES = 256;
 const MAX_RES = 1024;
@@ -262,7 +268,7 @@ export function SdfPlaneOverlay() {
 
   return (
     <mesh
-      ref={(o) => o?.layers.set(OVERLAY_LAYER)}
+      ref={(o) => o?.layers.enable(DATUM_LAYER)}
       geometry={geometry}
       renderOrder={4}
     >

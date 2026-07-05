@@ -24,6 +24,17 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.386",
+    entries: [
+      {
+        kind: "fix",
+        text: "SDF-Plane wird jetzt vom raymarching-Solid korrekt verdeckt und wandert nicht mehr blickwinkelabhängig: das Overlay-Quad lag auf dem Kanten-Layer, dessen Pass die Solid-Tiefe für den Röntgen-Effekt der B-Rep-Kanten löscht — dadurch schwebte die Ebene über dem Körper und zeigte einen Parallaxe-Versatz. Jetzt liegt sie (wie eine Datum-Ebene) auf dem Datum-Layer, der vor dem Tiefen-Löschen gezeichnet wird, sodass die grüne Null-Linie exakt auf der Körperoberfläche sitzt. Die SDF-Formeln (auch Gyroid) waren identisch — es war kein Feld-, sondern ein reiner Tiefen-/Rendering-Versatz. Nebenbei rendert die Ebene jetzt auch im WebGL-Modus",
+        scope: "debug",
+        tickets: ["iwgq"],
+      },
+    ],
+  },
+  {
     version: "0.6.385",
     entries: [
       {
