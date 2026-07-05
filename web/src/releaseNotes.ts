@@ -24,6 +24,16 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.390",
+    entries: [
+      {
+        kind: "feat",
+        text: "„Report Issue…“ ist jetzt auch im Haupt-Hamburger-Menü (neben Settings) — so lassen sich Fehler/Wünsche auch im nicht eingeloggten Zustand (Dev-Server) melden, nicht nur über das Benutzermenü",
+        scope: "ui",
+      },
+    ],
+  },
+  {
     version: "0.6.389",
     entries: [
       {

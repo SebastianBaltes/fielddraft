@@ -309,6 +309,16 @@ export function SettingsMenu({
             Settings…
           </button>
 
+          <button
+            type="button"
+            role="menuitem"
+            className="menu-item"
+            data-testid="menu-report-issue"
+            onClick={() => menuAction(() => setReportDialogOpen(true))}
+          >
+            Report Issue…
+          </button>
+
           <div className="menu-separator" role="separator" />
 
           <button
