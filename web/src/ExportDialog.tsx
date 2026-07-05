@@ -19,6 +19,7 @@ import {
   type PointerEvent as ReactPointerEvent,
 } from "react";
 import type { KernelStore } from "./store";
+import { NumberInput } from "./NumberInput";
 import type {
   ExportBodyReport,
   ExportEstimate,
@@ -107,7 +108,7 @@ type Phase =
   | { kind: "error"; message: string };
 
 export function ExportDialog({ store, format, onClose }: ExportDialogProps) {
-  const [cellInput, setCellInput] = useState(String(initialCellSize()));
+  const [cellSizeMm, setCellSizeMm] = useState(initialCellSize());
   const [method, setMethod] = useState<MeshMethod>(initialMethod);
   const [phase, setPhase] = useState<Phase>({ kind: "idle" });
   // Preview display controls (crossfade mesh↔SDF solid, wireframe overlay),
@@ -127,17 +128,11 @@ export function ExportDialog({ store, format, onClose }: ExportDialogProps) {
   // keystroke. The kernel returns `dense: false` for octree / parametric /
   // RFTA routes, and the hint below renders nothing for those.
   useEffect(() => {
-    const parsed = Number(cellInput.replace(",", "."));
-    if (!Number.isFinite(parsed)) {
-      setEstimate(null);
-      return;
-    }
-    const clamped = Math.min(5, Math.max(0.05, parsed));
     const handle = setTimeout(() => {
-      setEstimate(store.exportEstimate(clamped, method));
+      setEstimate(store.exportEstimate(cellSizeMm, method));
     }, 250);
     return () => clearTimeout(handle);
-  }, [cellInput, method, store]);
+  }, [cellSizeMm, method, store]);
 
   useEffect(() => {
     const handleKey = (e: KeyboardEvent) => {
@@ -150,25 +145,20 @@ export function ExportDialog({ store, format, onClose }: ExportDialogProps) {
     return () => window.removeEventListener("keydown", handleKey, true);
   }, [onClose]);
 
-  // Reads the current cell-size input, clamps + persists it, returns the
-  // usable value (or null if unparseable).
-  const commitCellSize = useCallback((): number | null => {
-    const parsed = Number(cellInput.replace(",", "."));
-    if (!Number.isFinite(parsed)) return null;
-    const clamped = Math.min(5, Math.max(0.05, parsed));
-    setCellInput(String(clamped));
+  // Persist the current (already-clamped by NumberInput) cell size and return
+  // it for the meshing pass.
+  const commitCellSize = useCallback((): number => {
     try {
-      localStorage.setItem(CELL_SIZE_STORAGE_KEY, String(clamped));
+      localStorage.setItem(CELL_SIZE_STORAGE_KEY, String(cellSizeMm));
     } catch {
       // ignore
     }
-    return clamped;
-  }, [cellInput]);
+    return cellSizeMm;
+  }, [cellSizeMm]);
 
   // Step 2: run the meshing pass for the confirmed cell size.
   const runExport = useCallback(() => {
     const cellSize = commitCellSize();
-    if (cellSize === null) return;
     const runId = ++runIdRef.current;
     setPhase({ kind: "running", progress: null });
     store
@@ -232,9 +222,9 @@ export function ExportDialog({ store, format, onClose }: ExportDialogProps) {
     }
   }, []);
 
-  const onCellInputChange = useCallback(
-    (value: string) => {
-      setCellInput(value);
+  const onCellSizeChange = useCallback(
+    (value: number) => {
+      setCellSizeMm(value);
       resetToIdle();
     },
     [resetToIdle],
@@ -388,15 +378,14 @@ export function ExportDialog({ store, format, onClose }: ExportDialogProps) {
 
       <div className="settings-row">
         <label htmlFor="export-cell-size">Cell size (mm)</label>
-        <input
+        <NumberInput
           id="export-cell-size"
           data-testid="export-cell-size"
-          type="number"
           min={0.05}
           max={5}
           step={0.05}
-          value={cellInput}
-          onChange={(e) => onCellInputChange(e.target.value)}
+          value={cellSizeMm}
+          onChange={onCellSizeChange}
           onKeyDown={(e) => {
             if (e.key === "Enter" && phase.kind !== "running") runExport();
           }}

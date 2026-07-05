@@ -24,6 +24,16 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.399",
+    entries: [
+      {
+        kind: "fix",
+        text: "Zahlenfelder sind jetzt durchgängig eine relaxte, text-basierte Eingabe (NumberInput) statt des nativen type=number: Zwischenzustände beim Tippen (führendes Minus, ein hängender Punkt, ein Dezimalkomma) sind erlaubt, kein Zurückspringen auf 0, kein aufgezwungener Spinner. Ersetzt alle rohen Number-Felder (Sketch-Werkzeuge, SDF-Plane, Mesher, Export, Sketch-Bemaßung)",
+        scope: "ui",
+      },
+    ],
+  },
+  {
     version: "0.6.398",
     entries: [
       {

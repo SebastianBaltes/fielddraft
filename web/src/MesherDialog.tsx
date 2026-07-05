@@ -24,6 +24,7 @@ import {
   getMesherStats,
   type MesherDebug,
 } from "./mesherDebugStore";
+import { NumberInput } from "./NumberInput";
 
 const SETTINGS_KEY = "fielddraft.debug.mesher";
 const DEFAULTS: MesherDebug = {
@@ -136,19 +137,14 @@ export function MesherDialog({ onClose }: { onClose: () => void }) {
     <div className="vec-row">
       <label>{label}</label>
       <div className="fields">
-        <input
-          type="number"
+        <NumberInput
           min={opts.min}
           max={opts.max}
           step={opts.step}
+          integer={opts.round}
           aria-label={label}
           value={value}
-          onChange={(e) => {
-            const raw = Number(e.target.value.replace(",", "."));
-            if (!Number.isFinite(raw)) return;
-            const n = opts.round ? Math.round(raw) : raw;
-            set(Math.min(opts.max, Math.max(opts.min, n)));
-          }}
+          onChange={set}
         />
       </div>
     </div>

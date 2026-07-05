@@ -14,6 +14,7 @@ import {
   type PointerEvent as ReactPointerEvent,
 } from "react";
 import { type FeatureSummary } from "./kernel";
+import { NumberInput } from "./NumberInput";
 import { baseUnitLabel, variableDisplayText } from "./variableInput";
 import type { FeatureFolder, KernelStore, StoreState } from "./store";
 import { createFdApi } from "./api/fd";
@@ -2301,32 +2302,21 @@ function ConstraintManagerPanel({
               </span>
               {isDimensional && (
                 <span className="value">
-                  <input
-                    key={dimValue}
+                  <NumberInput
                     className="dim-input"
-                    type="number"
-                    inputMode="decimal"
                     aria-label={`Dimension value (${dimUnit})`}
                     data-testid={`constraint-value-${index}`}
-                    defaultValue={Number.isFinite(dimValue) ? dimValue : ""}
+                    value={Number.isFinite(dimValue) ? dimValue : 0}
                     disabled={isDriven}
+                    // Re-solving the sketch on every keystroke would be jarring;
+                    // commit only on blur / Enter.
+                    commitOnChange={false}
                     title={
                       isDriven
                         ? "Driven dimension (read-only)"
                         : "Edit to drive the geometry"
                     }
-                    onBlur={(e) => {
-                      const n = Number(e.currentTarget.value);
-                      if (Number.isFinite(n)) {
-                        store.setSketchConstraintValue(index, n);
-                      }
-                    }}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter") {
-                        e.preventDefault();
-                        (e.currentTarget as HTMLInputElement).blur();
-                      }
-                    }}
+                    onChange={(n) => store.setSketchConstraintValue(index, n)}
                   />
                   <span className="unit">{dimUnit}</span>
                 </span>
