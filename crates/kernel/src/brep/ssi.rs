@@ -28,8 +28,13 @@
 //!   march the zero-contour, union-find the contour cells into connected
 //!   components (wrapping the periodic θ seam), and emit one bisection-refined
 //!   seed per component.
-//! - **Unsupported** (torus / gyroid as either operand): caller falls back to
-//!   the octree route.
+//! - **Unsupported** (torus as either operand; gyroid∩gyroid): caller falls
+//!   back to the octree route. A **gyroid** works as the IMPLICIT operand `B`
+//!   under any parametrisable `A` (its shell field `(|f|−t)·s·0.2887` is a
+//!   signed implicit like every other `sdf_halfspace`); the scan resolution
+//!   scales with the gyroid's lattice period and shell width so the zero
+//!   ribbons are resolved. It can never be the parametrised side (a TPMS has
+//!   no (u,v) chart), which is what keeps gyroid∩gyroid unsupported.
 
 use std::collections::HashMap;
 
@@ -50,8 +55,8 @@ pub enum SsiResult {
     /// collapse the redundant ones (the plan's "never miss a real edge"
     /// contract). Empty outer ⇒ the surfaces do not meet inside the box.
     Components(Vec<Vec<[f32; 3]>>),
-    /// Torus / Gyroid operand, or a configuration the scan cannot parametrise
-    /// — the caller should fall back to the octree route.
+    /// Torus operand, gyroid∩gyroid, or a configuration the scan cannot
+    /// parametrise — the caller should fall back to the octree route.
     Unsupported,
 }
 
@@ -93,7 +98,9 @@ pub fn ssi_seeds(
     tb: &Transform,
     overlap: &Aabb,
 ) -> SsiResult {
-    // Torus / Gyroid have no clean parametrisation here — bail to the octree.
+    // Torus has no support at all yet — bail to the octree. A gyroid is fine
+    // as the IMPLICIT side of the scan; it only fails as the parametrised
+    // side, which `choose_param` reports (gyroid∩gyroid → Unsupported below).
     if is_unsupported(a) || is_unsupported(b) {
         return SsiResult::Unsupported;
     }
@@ -472,7 +479,7 @@ fn coaxial_revolution(
 // ─── world-space helpers ─────────────────────────────────────────────────────
 
 fn is_unsupported(h: &HalfSpace) -> bool {
-    matches!(h, HalfSpace::Torus { .. } | HalfSpace::Gyroid { .. })
+    matches!(h, HalfSpace::Torus { .. })
 }
 
 /// Local → world point transform `s·R·p + t` (mirror of [`world_to_local`]).
@@ -797,7 +804,9 @@ impl ParamA<'_> {
                 [q[0] * u.cos(), q[1], q[0] * u.sin()]
             }
             HalfSpace::Torus { .. } | HalfSpace::Gyroid { .. } => {
-                unreachable!("filtered earlier")
+                // Torus is bailed in `ssi_seeds`; a gyroid can be the IMPLICIT
+                // operand but never the parametrised side (`build_param` → None).
+                unreachable!("never parametrised")
             }
         };
         local_to_world(self.t, local)
@@ -957,6 +966,28 @@ fn pad_aabb(b: &Aabb) -> Aabb {
     Aabb { min, max }
 }
 
+/// Largest scale component of a transform (world stretch upper bound).
+fn tb_max_scale(t: &Transform) -> f32 {
+    t.scale[0].abs().max(t.scale[1].abs()).max(t.scale[2].abs()).max(1e-6)
+}
+
+/// Approximate world-space (mm) extents of A's `(u,v)` domain, measured by
+/// metric probes at the domain centre (u/v can be angles or piece parameters,
+/// so the param-space spans alone say nothing about arc length).
+fn domain_extents_mm(param: &ParamA) -> (f32, f32) {
+    let (u0, u1) = param.u_range;
+    let (v0, v1) = param.v_range;
+    let (uc, vc) = (0.5 * (u0 + u1), 0.5 * (v0 + v1));
+    let (du, dv) = ((u1 - u0).max(1e-9), (v1 - v0).max(1e-9));
+    let (eu, ev) = (du * 1e-3, dv * 1e-3);
+    let c = param.point(uc, vc);
+    let pu = param.point(uc + eu, vc);
+    let pv = param.point(uc, vc + ev);
+    let ext_u = vlen(vsub(pu, c)) / eu * du;
+    let ext_v = vlen(vsub(pv, c)) / ev * dv;
+    (ext_u, ext_v)
+}
+
 fn box_corners(b: &Aabb) -> [[f32; 3]; 8] {
     [
         [b.min[0], b.min[1], b.min[2]],
@@ -990,6 +1021,24 @@ fn scan_components(
     let mut n = param.grid_res();
     if let HalfSpace::RevolvedProfile { segments, .. } = other {
         n = n.max((4 * segments.len()).clamp(SCAN_RES, 256));
+    }
+    if let HalfSpace::Gyroid { cell_size, thickness } = other {
+        // A gyroid zero set wiggles at the LATTICE scale and its shell forms
+        // ribbons on A whose narrowest transversal width is bounded below by
+        // 2·t·s·0.2887 (the shell implicit has |∇| ≤ 1 after normalisation, so
+        // the ± dip can never be thinner). Sample finer than both scales or
+        // whole ribbons slip between grid rows: spacing ≤ min(period/8,
+        // half the minimum ribbon width). Domain extents are measured in mm
+        // via a metric probe (u/v may be angles, e.g. cylinder θ). Capped —
+        // beyond the cap thin shells on huge overlaps may miss ribbons; the
+        // cap keeps the grid ≤ ~260k samples (sub-ms native, few ms wasm).
+        let scale = tb_max_scale(ot);
+        let period = std::f32::consts::TAU * cell_size * scale;
+        let ribbon_half = (thickness * cell_size * 0.2887 * scale).max(1e-4);
+        let h = (period / 8.0).min(ribbon_half);
+        let (ext_u, ext_v) = domain_extents_mm(&param);
+        let needed = (ext_u.max(ext_v) / h).ceil() as usize;
+        n = n.max(needed.clamp(SCAN_RES, 512));
     }
     let (u0, u1) = param.u_range;
     let (v0, v1) = param.v_range;
@@ -1367,6 +1416,151 @@ mod tests {
         if let SsiResult::Components(v) = &r {
             assert_seeds_on_both(v, &cyl, &id, &cyl, &rot_z90);
         }
+    }
+
+    // ── gyroid as the implicit operand (spike: SSI feasibility for TPMS) ──
+
+    /// Looser on-surface tolerance for gyroid seeds: the shell implicit is a
+    /// normalised (non-Euclidean) field, so a bisected root carries a slightly
+    /// larger residual than the exact closed-form surfaces.
+    const ON_GYROID: f32 = 1e-3;
+
+    fn assert_gyroid_seeds(
+        comps: &[Vec<[f32; 3]>],
+        a: &HalfSpace,
+        ta: &Transform,
+        gy: &HalfSpace,
+        tg: &Transform,
+        overlap: &Aabb,
+    ) -> (usize, usize) {
+        let mut total = 0usize;
+        for comp in comps {
+            assert!(!comp.is_empty(), "a component must carry at least one seed");
+            for &s in comp {
+                let da = implicit_world(a, ta, s).abs();
+                let dg = implicit_world(gy, tg, s).abs();
+                assert!(da < ON_SURF, "seed {s:?} not on A: |implicit_A|={da}");
+                assert!(dg < ON_GYROID, "seed {s:?} not on gyroid: |implicit_G|={dg}");
+                assert!(in_box(&pad_aabb(overlap), s), "seed {s:?} escaped the box");
+                total += 1;
+            }
+        }
+        (comps.len(), total)
+    }
+
+    /// A box face plane cutting a gyroid shell — the user-visible case (every
+    /// edge of a gyroid-CSG body is a Boolean rim like this one). The zero set
+    /// on the face is a family of closed ribbon-boundary curves; the scan must
+    /// find a plausible number of components and every seed must lie on BOTH
+    /// surfaces.
+    #[test]
+    fn plane_gyroid_box_face_components() {
+        let gy = HalfSpace::Gyroid { cell_size: 4.0, thickness: 0.3 };
+        let pl = HalfSpace::Plane { normal: [0.0, 1.0, 0.0], offset: 0.0 };
+        let id = Transform::IDENTITY;
+        // A 40×40 face patch: ~1.6 lattice periods (2π·4 ≈ 25.1) per axis.
+        let box_ = aabb([-20.0, -0.5, -20.0], [20.0, 0.5, 20.0]);
+        let r = ssi_seeds(&pl, &id, &gy, &id, &box_);
+        let SsiResult::Components(v) = &r else {
+            panic!("plane∩gyroid must be supported now");
+        };
+        let (comps, seeds) = assert_gyroid_seeds(v, &pl, &id, &gy, &id, &box_);
+        println!("plane∩gyroid 40×40 (s=4, t=0.3): {comps} components, {seeds} seeds");
+        assert!(
+            (2..=80).contains(&comps),
+            "component count out of plausible range: {comps}"
+        );
+    }
+
+    /// Same face, THIN shell (t=0.1 → min ribbon width ≈ 0.23mm): the
+    /// resolution scaling must keep catching the ± dips of the shell field.
+    #[test]
+    fn plane_gyroid_thin_shell_still_found() {
+        let gy = HalfSpace::Gyroid { cell_size: 4.0, thickness: 0.1 };
+        let pl = HalfSpace::Plane { normal: [0.0, 1.0, 0.0], offset: 0.0 };
+        let id = Transform::IDENTITY;
+        let box_ = aabb([-20.0, -0.5, -20.0], [20.0, 0.5, 20.0]);
+        let r = ssi_seeds(&pl, &id, &gy, &id, &box_);
+        let SsiResult::Components(v) = &r else {
+            panic!("plane∩gyroid must be supported");
+        };
+        let (comps, seeds) = assert_gyroid_seeds(v, &pl, &id, &gy, &id, &box_);
+        println!("plane∩gyroid thin (s=4, t=0.1): {comps} components, {seeds} seeds");
+        assert!(comps >= 2, "thin shell ribbons were missed entirely");
+    }
+
+    /// Gyroid under a parametrised CYLINDER — the curved-carrier case (a hole
+    /// drilled through a gyroid lattice).
+    #[test]
+    fn cylinder_gyroid_components() {
+        let gy = HalfSpace::Gyroid { cell_size: 4.0, thickness: 0.3 };
+        let cyl = HalfSpace::InfiniteCylinder { radius: 6.0 };
+        let id = Transform::IDENTITY;
+        let box_ = aabb([-8.0, -8.0, -8.0], [8.0, 8.0, 8.0]);
+        let r = ssi_seeds(&cyl, &id, &gy, &id, &box_);
+        let SsiResult::Components(v) = &r else {
+            panic!("cylinder∩gyroid must be supported");
+        };
+        let (comps, seeds) = assert_gyroid_seeds(v, &cyl, &id, &gy, &id, &box_);
+        println!("cylinder∩gyroid (r=6, s=4, t=0.3): {comps} components, {seeds} seeds");
+        assert!(comps >= 1, "no rim curves found on the cylinder wall");
+    }
+
+    /// The user's scenario end-to-end: all 6 face planes of a 40mm box cutting
+    /// one gyroid lattice — the complete Boolean rim set of Box∩Gyroid. Prints
+    /// the per-face survey (the spike's feasibility data) and asserts every
+    /// face finds its rims.
+    #[test]
+    fn box_gyroid_full_survey() {
+        let gy = HalfSpace::Gyroid { cell_size: 4.0, thickness: 0.3 };
+        let id = Transform::IDENTITY;
+        let hx = 20.0f32;
+        let faces: [([f32; 3], f32); 6] = [
+            ([1.0, 0.0, 0.0], hx),
+            ([-1.0, 0.0, 0.0], hx),
+            ([0.0, 1.0, 0.0], hx),
+            ([0.0, -1.0, 0.0], hx),
+            ([0.0, 0.0, 1.0], hx),
+            ([0.0, 0.0, -1.0], hx),
+        ];
+        let mut grand_comps = 0usize;
+        let mut grand_seeds = 0usize;
+        for (i, (normal, offset)) in faces.iter().enumerate() {
+            let pl = HalfSpace::Plane { normal: *normal, offset: *offset };
+            // Overlap: the face slab, ±0.5 across the face.
+            let mut min = [-hx, -hx, -hx];
+            let mut max = [hx, hx, hx];
+            for k in 0..3 {
+                if normal[k] > 0.5 {
+                    min[k] = hx - 0.5;
+                } else if normal[k] < -0.5 {
+                    max[k] = -hx + 0.5;
+                }
+            }
+            let box_ = aabb(min, max);
+            let r = ssi_seeds(&pl, &id, &gy, &id, &box_);
+            let SsiResult::Components(v) = &r else {
+                panic!("face {i}: plane∩gyroid must be supported");
+            };
+            let (comps, seeds) = assert_gyroid_seeds(v, &pl, &id, &gy, &id, &box_);
+            println!("box face {i}: {comps} components, {seeds} seeds");
+            assert!(comps >= 1, "face {i} found no rim curves");
+            grand_comps += comps;
+            grand_seeds += seeds;
+        }
+        println!("box∩gyroid TOTAL: {grand_comps} components, {grand_seeds} seeds");
+    }
+
+    /// Two gyroids cannot be parametrised against each other — still bails.
+    #[test]
+    fn gyroid_gyroid_stays_unsupported() {
+        let gy = HalfSpace::Gyroid { cell_size: 4.0, thickness: 0.3 };
+        let id = Transform::IDENTITY;
+        let box_ = aabb([-5.0, -5.0, -5.0], [5.0, 5.0, 5.0]);
+        assert_eq!(
+            ssi_seeds(&gy, &id, &gy, &id, &box_),
+            SsiResult::Unsupported
+        );
     }
 
     #[test]

@@ -24,6 +24,16 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.427",
+    entries: [
+      {
+        kind: "feat",
+        text: "Kernel-Spike: Der SSI-Kurven-Seeder unterstützt jetzt Gyroide als Implicit-Operand (Ebene/Zylinder ∩ Gyroid) — Machbarkeitsnachweis für exakte Boolean-Kanten an TPMS-Körpern (Box∩Gyroid: 66 Rim-Kurven, ~9k Seeds, wenige ms). Noch nicht im B-Rep-Weave aktiv; Gyroid-Bodies bleiben vorerst ohne Kanten (DL-71)",
+        scope: "kernel",
+      },
+    ],
+  },
+  {
     version: "0.6.426",
     entries: [
       {
