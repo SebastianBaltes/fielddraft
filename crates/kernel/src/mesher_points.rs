@@ -225,6 +225,9 @@ pub(crate) fn optimize_leaf_points(
                 let p = points[i];
                 let (kx, ky, kz) = key(&p);
                 let mut f = [0.0f32; 3];
+                // Distance to the closest neighbour — the stability scale for
+                // the explicit step below.
+                let mut nearest = f32::MAX;
                 for dz in -1..=1 {
                     for dy in -1..=1 {
                         for dx in -1..=1 {
@@ -243,6 +246,7 @@ pub(crate) fn optimize_leaf_points(
                                 if dist >= r || dist < 1e-9 {
                                     continue;
                                 }
+                                nearest = nearest.min(dist);
                                 // Inverse-square repulsion (`∝ 1/d²`, like
                                 // equally-charged monopoles): magnitude
                                 // normalised to 1 at the cutoff radius `r`
@@ -267,7 +271,27 @@ pub(crate) fn optimize_leaf_points(
                     let n = grad(p);
                     let fn_dot = f[0] * n[0] + f[1] * n[1] + f[2] * n[2];
                     let ft = [f[0] - fn_dot * n[0], f[1] - fn_dot * n[1], f[2] - fn_dot * n[2]];
-                    np = [p[0] + ft[0] * strength, p[1] + ft[1] * strength, p[2] + ft[2] * strength];
+                    let mut step_vec = [ft[0] * strength, ft[1] * strength, ft[2] * strength];
+                    // Stability clamp (ticket l45r): never move a point more
+                    // than HALF the distance to its nearest neighbour. The 1/d²
+                    // force is stiff — a plain explicit-Euler step at high
+                    // strength leaps a point clean past its neighbours, off the
+                    // surface, where only-on-surface then drops it; the cluster
+                    // CORE (whose forces cancel by symmetry, net ≈ 0) never
+                    // moves, so the pile stays put ("clump in the corner"). The
+                    // half-neighbour cap guarantees a point can never overshoot
+                    // a neighbour, making the relaxation stable for ANY strength
+                    // — clumps expand monotonically toward even spacing.
+                    let step_len = (step_vec[0] * step_vec[0]
+                        + step_vec[1] * step_vec[1]
+                        + step_vec[2] * step_vec[2])
+                        .sqrt();
+                    let max_step = 0.5 * nearest;
+                    if step_len > max_step && step_len > 1e-12 {
+                        let k = max_step / step_len;
+                        step_vec = [step_vec[0] * k, step_vec[1] * k, step_vec[2] * k];
+                    }
+                    np = [p[0] + step_vec[0], p[1] + step_vec[1], p[2] + step_vec[2]];
                 }
                 // Fit (single Newton step): nudge back onto the surface after
                 // the tangential move.
@@ -545,6 +569,66 @@ mod tests {
         assert!(dist > 0.3, "points did not separate: {dist}");
         for p in &pts {
             assert!(sphere_sdf(*p).abs() < 0.1);
+        }
+    }
+
+    /// Ticket l45r: a tight clump with a HUGE strength (the reported
+    /// strength=100). The relaxation must stay STABLE — spread the clump
+    /// toward even spacing while keeping every point in its local
+    /// neighbourhood. Without per-step displacement limiting the stiff 1/d²
+    /// force ejects points off the surface (they leap across the sphere),
+    /// which in the app reads as the cluster "collapsing into the corner"
+    /// once only-on-surface drops the ejected ones.
+    #[test]
+    fn strong_repulsion_stays_local_and_spreads_without_ejecting() {
+        let mut clump = Vec::new();
+        for iy in 0..4 {
+            for iz in 0..4 {
+                let c = [10.0, (iy as f32 - 1.5) * 0.2, (iz as f32 - 1.5) * 0.2];
+                let g = sphere_grad(c);
+                let d = sphere_sdf(c);
+                clump.push([c[0] - d * g[0], c[1] - d * g[1], c[2] - d * g[2]]);
+            }
+        }
+        let leaves: Vec<Leaf> = clump.iter().map(|&c| leaf_at(c, 8.0)).collect();
+        let pair = |pts: &[[f32; 3]], want_min: bool| {
+            let mut m = if want_min { f32::MAX } else { 0.0 };
+            for i in 0..pts.len() {
+                for j in (i + 1)..pts.len() {
+                    let d = [pts[i][0] - pts[j][0], pts[i][1] - pts[j][1], pts[i][2] - pts[j][2]];
+                    let dl = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+                    m = if want_min { m.min(dl) } else { m.max(dl) };
+                }
+            }
+            m
+        };
+        let starts: Vec<[f32; 3]> = leaves.iter().map(|l| l.center).collect();
+        let before_min = pair(&starts, true);
+        let opts = MesherPointOptions {
+            repulsion: true,
+            iterations: 10,
+            interaction_radius: 3.0,
+            repulsion_strength: 100.0,
+            fit_on_surface: true,
+            fit_target_epsilon: 1e-4,
+            constrain_to_cell: false,
+            ..Default::default()
+        };
+        let (pts, _, _) = optimize_leaf_points(&leaves, &opts, &sphere_sdf, &sphere_grad);
+        assert!(
+            pair(&pts, true) > before_min,
+            "clump did not spread: min {before_min} -> {}",
+            pair(&pts, true)
+        );
+        // A stable, local relaxation keeps the cluster compact; an unstable
+        // blow-up + refit scatters points ~a sphere diameter apart.
+        assert!(
+            pair(&pts, false) < 4.0,
+            "points ejected/scattered across the surface: max pairwise {}",
+            pair(&pts, false)
+        );
+        for p in &pts {
+            assert!(sphere_sdf(*p).abs() < 0.2, "drifted off surface: {p:?} d={}", sphere_sdf(*p));
         }
     }
 

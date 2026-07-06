@@ -24,6 +24,17 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.425",
+    entries: [
+      {
+        kind: "fix",
+        text: "Debug ▸ Mesher: Punkte verklumpten trotz starker 1/d²-Repulsion in einer Ecke — Ursache war eine numerische Instabilität: der explizite Schritt konnte bei hoher „Strength“ einen Punkt komplett über seine Nachbarn hinweg und von der Oberfläche schleudern (wo „Only on surface“ ihn verwarf), während der symmetrische Cluster-Kern (Netto-Kraft ≈ 0) liegen blieb. Der Repulsions-Schritt wird jetzt auf die halbe Distanz zum nächsten Nachbarn begrenzt → stabil für JEDE Strength, Klumpen dehnen sich monoton zu gleichmäßigem Abstand",
+        scope: "debug",
+        tickets: ["l45r"],
+      },
+    ],
+  },
+  {
     version: "0.6.424",
     entries: [
       {

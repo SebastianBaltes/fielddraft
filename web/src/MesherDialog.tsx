@@ -465,11 +465,17 @@ export function MesherDialog({ onClose }: { onClose: () => void }) {
       </div>
       {repulsion && (
         <>
-          {numRow("Interaction radius (mm)", interactionRadius, setInteractionRadius, {
-            min: 0,
-            max: 1e6,
-            step: 0.5,
-          })}
+          {numRow(
+            "Interaction radius (mm)",
+            interactionRadius,
+            setInteractionRadius,
+            { min: 0, max: 1e6, step: 0.5 },
+            "Neighbourhood each point repels within — keep it LOCAL, roughly the " +
+              "target point spacing (a few cells). A radius much larger than the " +
+              "part makes the repulsion global: like charge on a conductor the " +
+              "points then concentrate at edges/corners instead of spreading " +
+              "evenly. Small radius = uniform spacing.",
+          )}
           {numRow(
             "Strength (initial)",
             repulsionStrength,
