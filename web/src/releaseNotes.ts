@@ -24,6 +24,17 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.430",
+    entries: [
+      {
+        kind: "fix",
+        text: "B-Rep: fehlende vertikale Kanten, wo eine große Zylinderwand eine kleine Box-Seitenfläche schneidet (Gyroid-Sliver). Drei Wurzelursachen behoben: (1) der SSI-Scan verwarf Schnitt-Zellen mit Eckpunkt knapp außerhalb der Overlap-Box — die Ecken-Maske wird jetzt um eine Zell-Diagonale erweitert (Seeds bleiben strikt in der Box); (2) die Co-Component-Dedup fraß parallel laufende Zwillings-Kanten — Radius von 0.1·diag auf 10× Sagitta-Toleranz verkleinert, Trim-Termini zählen zur Dedup-Polyline; (3) ein langer adaptiver Trace-Schritt konnte eine weggetrimmte Lücke komplett überspringen und zwei getrennte Kantenbögen überbrücken — neuer Mittelpunkts-Gap-Guard im March plus halbierte Seed-Routen-Schrittkappe",
+        scope: "kernel",
+        tickets: ["7sp1"],
+      },
+    ],
+  },
+  {
     version: "0.6.429",
     entries: [
       {

@@ -263,7 +263,12 @@ fn build_seed_wireframe(body: &BoundedCsg, mode: SeedMode) -> Option<BRep> {
     // (e.g. a plane parallel to an infinite cylinder) that must stall → `Open`.
     let tol = ADAPT_TOL_FRACTION * diag;
     let min_step = ADAPT_MIN_FRACTION * diag;
-    let max_step = (ADAPT_MAX_FRACTION * diag).max(min_step);
+    // Half the shared max fraction (ticket 7sp1): together with the march's
+    // midpoint gap guard this bounds the smallest trimmed-away stretch a
+    // stride can leap over to ~2.5% of the model diagonal (the g4rr lens gap
+    // is 4.2%). Costs a few extra points on long straight edges, nothing on
+    // curved ones (there the sagitta tolerance governs).
+    let max_step = (0.5 * ADAPT_MAX_FRACTION * diag).max(min_step);
     // Deviation from the spec's `from_step(max_step)`: the *initial* predictor
     // (and hence `close_tol`) must be small. The octree route seeds this from its
     // small octree `spacing`; with no octree we seed it from `min_step`. Starting
@@ -293,11 +298,16 @@ fn build_seed_wireframe(body: &BoundedCsg, mode: SeedMode) -> Option<BRep> {
     let eps = (1e-5 * diag) as f32;
 
     // Co-component seed dedup radius and corner-cluster gap, both scaled to the
-    // model. `near_tol = max_step`: any second seed lying within a step of an
-    // already-traced polyline is the SAME component (SSI can emit several seeds
-    // per curve) and is dropped; a seed on a genuinely disjoint component lies
-    // far off the polyline and survives to trace its own edge.
-    let near_tol = max_step;
+    // model. A second seed of the SAME component (SSI emits several per curve)
+    // lies within the polyline's chord sagitta (≤ the adaptive tol — the dedup
+    // measures SEGMENT distance via `near_traced`, so the stride length is
+    // irrelevant) plus the seed's own bisection residual; 10× the adaptive tol
+    // covers both with headroom. It must NOT be any larger: `max_step`
+    // (= 0.1·diag) as the old radius swallowed genuinely DISTINCT parallel
+    // edges — a gyroid shell's twin rims run ~2·t·s·0.2887 apart, so on the
+    // 7sp1 sliver every second sheet rim was "covered" by the first sheet's
+    // polyline and half the Boolean rim edges silently vanished (ticket 7sp1).
+    let near_tol = 10.0 * ADAPT_TOL_FRACTION * diag;
     // `gap = 0.1·diag` is the *gather* scale: large enough to collect all of one
     // corner's edge termini — each ~`eps`-overshot along its free axis, and at a
     // grazing crossing overshot by `eps/sinθ` (which can reach a few ·1e-2·diag)
@@ -407,15 +417,34 @@ fn build_seed_wireframe(body: &BoundedCsg, mode: SeedMode) -> Option<BRep> {
             // A seed on a genuinely disjoint component lies off the polyline and
             // survives to trace its own edge.
             covered[idx] = true;
+            // The dedup polyline includes the TRIM TERMINI: the march's last
+            // emitted point undershoots the true end by up to one adaptive
+            // stride, and a same-arc seed inside that gap would otherwise
+            // escape the (deliberately tight) radius and re-trace the arc —
+            // the historical reason `near_tol` had to be a whole `max_step`.
+            let mut dedup_poly = traced.points.clone();
+            if let EdgeEnd::Trim(p) = traced.ends.0 {
+                dedup_poly.insert(0, p);
+            }
+            if let EdgeEnd::Trim(p) = traced.ends.1 {
+                dedup_poly.push(p);
+            }
             for other in 0..members.len() {
                 if covered[other] {
                     continue;
                 }
                 let p = &seeds[members[other]].point;
                 let q = [p[0] as f64, p[1] as f64, p[2] as f64];
-                if near_traced(q, &traced.points, traced.closed, near_tol) {
+                if near_traced(q, &dedup_poly, traced.closed, near_tol) {
                     covered[other] = true;
                 }
+            }
+            if std::env::var("FD_DBG_DEDUP").is_ok() && a.as_u32() == 4097 && b.as_u32() == 4100 {
+                eprintln!("TRACE from {:?}: {} pts y {:.3}..{:.3} ends={:?}", seed.point,
+                    traced.points.len(),
+                    traced.points.iter().map(|p| p[1]).fold(f64::INFINITY, f64::min),
+                    traced.points.iter().map(|p| p[1]).fold(f64::NEG_INFINITY, f64::max),
+                    traced.ends);
             }
 
             records.push(EdgeRecord {
@@ -883,6 +912,42 @@ mod tests {
             }
         }
         assert!(checked > 100, "suspiciously few edge samples: {checked}");
+    }
+
+    /// Ticket 7sp1: the l45r gyroid sliver was missing its two vertical
+    /// cylinder×box-side-face seams (the SSI scan masked away crossings lying
+    /// on the overlap wall). Both must now be woven.
+    #[test]
+    fn ticket_7sp1_cylinder_box_side_seams_are_woven() {
+        let gy = CsgNode::Leaf {
+            id: FeatureId::from_u32(2),
+            primitive: Primitive::Gyroid { cell_size: 10.0, thickness: 1.0 },
+        };
+        let sph = CsgNode::Leaf {
+            id: FeatureId::from_u32(1),
+            primitive: Primitive::Sphere { center: [0.0; 3], radius: 50.0 },
+        };
+        let cyl = cylinder_leaf(3, [0.0, 0.0, 0.0], 30.0, 60.0);
+        let bx = box_leaf(4, [7.970110677489131, 22.314295, 29.869688], [3.0, 4.0, 3.0]);
+        let csg = CsgNode::Intersection(
+            Box::new(CsgNode::Difference(
+                Box::new(CsgNode::Intersection(Box::new(sph), Box::new(gy))),
+                Box::new(cyl),
+            )),
+            Box::new(bx),
+        );
+        let body = BoundedCsg::from_csg(&csg);
+        let brep = weave_branch_seeds_partial(&body).expect("sliver must weave");
+        let has = |fa: u32, sa: u32, fb: u32, sb: u32| {
+            brep.edges.iter().any(|e| {
+                let (a, b) = e.signature;
+                (a.feature_id() == fa && a.sub() == sa && b.feature_id() == fb && b.sub() == sb)
+                    || (a.feature_id() == fb && a.sub() == sb && b.feature_id() == fa && b.sub() == sa)
+            })
+        };
+        assert!(has(3, 0, 4, 1), "middle vertical seam (cylinder × box −x) missing");
+        assert!(has(3, 0, 4, 0), "right vertical seam (cylinder × box +x) missing");
+        assert!(brep.edges.len() >= 12, "expected the full sliver edge set, got {}", brep.edges.len());
     }
 
     #[test]
@@ -1464,5 +1529,6 @@ mod tests {
         let body = BoundedCsg::from_csg(&csg);
         assert!(weave_branch_seeds(&body).is_none());
     }
+
 
 }

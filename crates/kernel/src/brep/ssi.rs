@@ -955,6 +955,14 @@ fn pad(lo: f32, hi: f32) -> (f32, f32) {
 /// Expand an AABB by 5 % of each axis extent (with a small absolute floor) for
 /// the scan in-box mask, so a curve lying exactly on the overlap-box boundary is
 /// still captured. See the call site in [`scan_components`] for why.
+/// Expand an AABB by an absolute margin on every axis.
+fn expand_aabb(b: &Aabb, m: f32) -> Aabb {
+    Aabb {
+        min: [b.min[0] - m, b.min[1] - m, b.min[2] - m],
+        max: [b.max[0] + m, b.max[1] + m, b.max[2] + m],
+    }
+}
+
 fn pad_aabb(b: &Aabb) -> Aabb {
     let mut min = b.min;
     let mut max = b.max;
@@ -1055,6 +1063,20 @@ fn scan_components(
     // march rejects any that aren't real body edges — which is the safe
     // direction per the plan's "never miss a real edge" contract.
     let mbox = pad_aabb(overlap);
+    // The CORNER mask is additionally expanded by one grid-cell world
+    // diagonal (ticket 7sp1): when the parametrised surface is much larger
+    // than the overlap (a giant cylinder wall × a small box side face), a
+    // crossing lying ON the overlap wall — exactly where the other surface
+    // IS that wall — sits in a cell whose outer corner falls beyond the 5%
+    // pad, and the both-endpoints-in-box rule then kills the only cells
+    // carrying the sign change: the pair silently seeds nothing. Widening
+    // ONLY the mask is safe ("never miss a real edge"): every refined seed
+    // still passes the tight `mbox` gate below, so nothing outside the
+    // overlap is ever emitted.
+    let (ext_u, ext_v) = domain_extents_mm(&param);
+    let cell_diag =
+        ((ext_u / n as f32).powi(2) + (ext_v / n as f32).powi(2)).sqrt();
+    let mask_box = expand_aabb(&mbox, cell_diag);
 
     // Sample grid: world point, in-box mask, and signed value g.
     let mut g = vec![0.0f32; n * n];
@@ -1064,7 +1086,7 @@ fn scan_components(
             let u = u0 + du * i as f32;
             let v = v0 + dv * j as f32;
             let p = param.point(u, v);
-            inbox[j * n + i] = in_box(&mbox, p);
+            inbox[j * n + i] = in_box(&mask_box, p);
             g[j * n + i] = implicit_world(other, ot, p);
         }
     }
@@ -1689,4 +1711,35 @@ mod tests {
             assert_seeds_on_both(v, &fat, &id, &thin, &rot_z90);
         }
     }
+
+    /// Ticket 7sp1: a GIANT cylinder wall meeting a small box's side face —
+    /// the intersection line lies exactly ON the overlap wall (the box face IS
+    /// the other operand), and the whole in-box arc spans only ~2 cells of the
+    /// θ-grid. Without the cell-diagonal mask expansion the crossing cells had
+    /// an out-of-box corner and the pair silently seeded NOTHING (two missing
+    /// vertical edges in the app).
+    #[test]
+    fn giant_cylinder_small_box_side_face_seeds() {
+        let cyl = HalfSpace::InfiniteCylinder { radius: 30.0 };
+        let txp = Transform {
+            translate: [7.970110677489131, 22.314295, 29.869688],
+            ..Transform::IDENTITY
+        };
+        let id = Transform::IDENTITY;
+        let overlap = aabb([4.970111, 18.314295, 26.870415], [10.970111, 26.314295, 30.0]);
+        for (normal, expect_z) in [([-1.0f32, 0.0, 0.0], 29.585), ([1.0, 0.0, 0.0], 27.93)] {
+            let pl = HalfSpace::Plane { normal, offset: 3.0 };
+            let SsiResult::Components(v) = ssi_seeds(&cyl, &id, &pl, &txp, &overlap) else {
+                panic!("cylinder∩plane must be supported");
+            };
+            assert_eq!(v.len(), 1, "one seam line for face normal {normal:?}");
+            for s in &v[0] {
+                let dc = implicit_world(&cyl, &id, *s).abs();
+                let dp = implicit_world(&pl, &txp, *s).abs();
+                assert!(dc < 1e-3 && dp < 1e-3, "seed {s:?} off-surface: {dc}/{dp}");
+                assert!((s[2] - expect_z).abs() < 0.01, "seed {s:?} not on the seam line");
+            }
+        }
+    }
+
 }

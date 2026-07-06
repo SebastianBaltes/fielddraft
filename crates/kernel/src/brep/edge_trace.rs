@@ -533,6 +533,25 @@ fn march(
                 pts.push(boundary);
                 return (pts, MarchEnd::Trimmed(boundary));
             }
+            // Gap guard (ticket 7sp1): a long adaptive stride can leap clean
+            // OVER a trimmed-away stretch — both endpoints active, the covered
+            // gap between them never sampled — and the march then bridges two
+            // arcs that a third surface separates (the g4rr lens gap). Test
+            // the stride midpoint too, REPROJECTED onto the edge first: the
+            // raw chord midpoint sits up to the sagitta off the curve, which
+            // exceeds the activity band and would fake inactivity on every
+            // curved edge. Halves the smallest leapable gap; the seed route
+            // additionally caps its `max_step` for the same reason.
+            if p.adapt.is_some() {
+                let chord_mid = scale(add(cur, np), 0.5);
+                if let Some(mid) = project_to_edge(fa, fb, chord_mid) {
+                    if !f(mid) {
+                        let boundary = bisect_active(fa, fb, f, cur, mid);
+                        pts.push(boundary);
+                        return (pts, MarchEnd::Trimmed(boundary));
+                    }
+                }
+            }
         }
 
         // Loop closure: back near the seed after genuinely leaving it.
