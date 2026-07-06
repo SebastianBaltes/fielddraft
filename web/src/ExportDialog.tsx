@@ -336,7 +336,7 @@ export function ExportDialog({ store, format, onClose }: ExportDialogProps) {
           </option>
           <option value="interval-dc">Interval-octree DC (fidget)</option>
           <option value="uniform-dc">Uniform Dual Contouring (QEF)</option>
-          <option value="marching-cubes">Marching cubes (robust)</option>
+          <option value="marching-cubes">Marching Tetrahedra (robust)</option>
           <option value="marching-cubes-33">Marching Cubes 33 (Lewiner)</option>
           <option value="dual-marching-cubes">
             Dual Marching Cubes (Nielson)

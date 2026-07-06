@@ -550,15 +550,34 @@ impl<'a> Ctx<'a> {
         let tris = std::mem::take(&mut self.cube_tris);
         if self.variant == Variant::Emc {
             if let Some(fid) = self.feature_vertex(i, j, k, &tris) {
+                // Tent ONLY the patch's border loop onto the feature vertex.
+                // The border edges are the directed edges without a reverse
+                // partner inside the patch; fanning every triangle over all
+                // three of its edges instead (the old code) re-covers each
+                // interior edge from both sides and made every feature cell a
+                // non-manifold pincushion (12 650 non-manifold edges on the
+                // gyroid ticket model).
+                let mut edges: Vec<(u32, u32)> = Vec::with_capacity(tris.len() * 3);
                 for tri in &tris {
                     let [a, b, c] = *tri;
-                    self.indices.extend_from_slice(&[a, b, fid]);
-                    self.indices.extend_from_slice(&[b, c, fid]);
-                    self.indices.extend_from_slice(&[c, a, fid]);
+                    edges.push((a, b));
+                    edges.push((b, c));
+                    edges.push((c, a));
                 }
-                self.cube_tris = tris;
-                self.cube_tris.clear();
-                return;
+                let mut tented = false;
+                for &(a, b) in &edges {
+                    if !edges.contains(&(b, a)) {
+                        self.indices.extend_from_slice(&[a, b, fid]);
+                        tented = true;
+                    }
+                }
+                if tented {
+                    self.cube_tris = tris;
+                    self.cube_tris.clear();
+                    return;
+                }
+                // Closed patch inside one cube (no border): tenting is
+                // meaningless — fall through and emit it as-is.
             }
         }
         for tri in &tris {

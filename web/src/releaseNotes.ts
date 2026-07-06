@@ -24,6 +24,29 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.412",
+    entries: [
+      {
+        kind: "fix",
+        text: "Extended Marching Cubes: Feature-Zellen zelteten jedes Patch-Dreieck über alle drei Kanten auf den Feature-Vertex — jetzt nur noch über den Patch-Rand (Gyroid-Kugel: 12.650 → 24 non-manifold-Kanten, Abweichung 0,43 → 0,34 mm)",
+        scope: "export",
+        tickets: ["4m67"],
+      },
+      {
+        kind: "fix",
+        text: "Loch-Sicherheitsnetz auch für explizit gewählte Dense-Mesher: Manifold DC lieferte auf der Gyroid-Kugel 1.471 offene Kanten und 7,6 mm Ausreißer — bei Löchern ersetzt jetzt ein Marching-Tets-Netz das Ergebnis (im route-Label ausgewiesen)",
+        scope: "export",
+        tickets: ["4m67"],
+      },
+      {
+        kind: "fix",
+        text: "Export-Verfahren „Marching cubes (robust)“ heißt jetzt ehrlich „Marching Tetrahedra (robust)“ — Titel und Beschreibung widersprachen sich",
+        scope: "export",
+        tickets: ["agco"],
+      },
+    ],
+  },
+  {
     version: "0.6.411",
     entries: [
       {

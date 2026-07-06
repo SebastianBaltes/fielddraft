@@ -226,7 +226,7 @@ pub struct BodyExportReport {
     /// (fidget) — feature-preserving, interval-safe topology.
     pub interval_dc: bool,
     /// Short human label of the mesher route for the report row (e.g.
-    /// "uniform DC", "marching cubes"); empty falls back to the flags.
+    /// "uniform DC", "marching tets"); empty falls back to the flags.
     pub route: String,
     /// Triangle count of the dense Surface Nets mesh BEFORE decimation
     /// (0 off the Surface Nets route) — the report shows the reduction.
@@ -1035,12 +1035,12 @@ impl crate::Kernel {
             ),
             _ => (
                 crate::marching_tets::marching_tets(&bounded, resolution),
-                "marching cubes",
+                "marching tets",
                 true,
             ),
         };
         let dense_triangles = mesh.triangle_count();
-        let route = format!("{label} {actual_cell:.3} mm");
+        let mut route = format!("{label} {actual_cell:.3} mm");
 
         // Our own QEM decimator (not baby_shark): it tolerates the
         // occasional non-manifold edge these dense grids can carry —
@@ -1061,6 +1061,30 @@ impl crate::Kernel {
 
         let flips = mesh_validate::fix_orientation(&mut mesh, &sdf);
         let mut validation = mesh_validate::validate_topology(&mesh);
+
+        // Hole safety net (same rationale as the adaptive route's, ticket
+        // 9ocx): an explicitly chosen dense mesher must still never SHIP
+        // holes — the viewport Manifold-DC leaked 1471 boundary edges plus
+        // a 7.6 mm stray vertex on the gyroid ticket model. Only HOLES
+        // trigger it (boundary edges = missing surface); non-manifold seams
+        // stay the chosen mesher's honest, reported output — otherwise every
+        // dual-family method would silently degrade to marching tets and the
+        // method comparison would be meaningless. The route label reports
+        // the replacement.
+        if validation.boundary_edges > 0 {
+            let defects =
+                |v: &mesh_validate::MeshValidation| v.boundary_edges + v.non_manifold_edges;
+            let mut mt = crate::marching_tets::marching_tets(&bounded, resolution);
+            mesh_validate::fix_orientation(&mut mt, &sdf);
+            crate::decimate_builtin::simplify_qem_builtin(&mut mt, tol * tol);
+            let v_mt = mesh_validate::validate_topology(&mt);
+            if defects(&v_mt) < defects(&validation) {
+                mesh = mt;
+                validation = v_mt;
+                route = format!("marching tets {actual_cell:.3} mm (hole-free net)");
+            }
+        }
+
         let (max_dev, p95_dev, samples) =
             mesh_validate::measure_deviation(&mesh, DEVIATION_SAMPLE_BUDGET, &sdf);
         validation.max_deviation_mm = max_dev;
@@ -1895,7 +1919,7 @@ mod tests {
         let report = export_single_method(&mut k, 0.5, "marching-cubes");
         let body = &report["bodies"][0];
         assert_eq!(report["all_watertight"], true, "{report}");
-        assert_eq!(body["route"], "marching cubes 0.500 mm", "{report}");
+        assert_eq!(body["route"], "marching tets 0.500 mm", "{report}");
         assert!(
             report["total_triangles"].as_u64().unwrap() > 500,
             "gyroid too sparse: {report}"
@@ -2684,9 +2708,39 @@ mod tests {
         assert!(n * n * n <= EXPORT_MAX_CORNERS * 1.05, "res {res} cell {cell}");
     }
 
-    /// TEMP survey harness (tickets agco/gy6u/jm62/bff9/rk4v/4m67/tihw):
+    /// Ticket 4m67: EMC's feature-cell tenting used to fan EVERY patch
+    /// triangle over all three of its edges onto the feature vertex,
+    /// re-covering interior edges from both sides — 12 650 non-manifold
+    /// edges on the gyroid ticket model. Tenting only the patch border
+    /// keeps the mesh manifold (a residual handful at CSG seams is the
+    /// dual-grid's honest output, not the fan bug).
+    #[test]
+    fn extended_mc_feature_tenting_stays_manifold() {
+        let mut k = gyroid_in_box();
+        let rep = export_single_method(&mut k, 1.5, "extended-marching-cubes");
+        let b = &rep["bodies"][0];
+        assert_eq!(b["boundary_edges"], 0, "EMC leaked holes: {rep}");
+        let nm = b["non_manifold_edges"].as_u64().unwrap();
+        assert!(nm < 50, "EMC tenting non-manifold blow-up is back: {nm} ({rep})");
+    }
+
+    /// Ticket 4m67: the explicitly chosen Manifold-DC export must never
+    /// SHIP holes — on the gyroid ticket model it leaked 1471 boundary
+    /// edges and a 7.6 mm stray vertex; the hole-free marching-tets net
+    /// now replaces such a result (reported via the route label).
+    #[test]
+    fn manifold_dc_export_never_ships_holes_on_gyroid() {
+        let mut k = ticket_9ocx_kernel();
+        let rep = export_single_method(&mut k, 1.2, "manifold-dc");
+        let b = &rep["bodies"][0];
+        assert_eq!(b["boundary_edges"], 0, "manifold-dc shipped holes: {rep}");
+        let max_dev = b["max_deviation_mm"].as_f64().unwrap();
+        assert!(max_dev < 2.0, "stray far vertex remains: {max_dev} mm ({rep})");
+    }
+
+    /// Survey harness (tickets agco/gy6u/jm62/bff9/rk4v/4m67/tihw):
     /// run every mesh method on the ticket geometry and print a defect table.
-    /// `cargo test --release -p kernel ticket_survey -- --ignored --nocapture`
+    /// `cargo test --release -p fielddraft-kernel ticket_survey -- --ignored --nocapture`
     #[test]
     #[ignore]
     fn ticket_survey_all_methods() {

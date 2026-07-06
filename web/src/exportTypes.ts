@@ -68,7 +68,7 @@ export interface ExportBodyReport {
    *  (fidget). */
   interval_dc: boolean;
   /** Short human label of the mesher route (e.g. "uniform DC 0.5 mm",
-   *  "marching cubes 0.5 mm"); empty falls back to the flags. */
+   *  "marching tets 0.5 mm"); empty falls back to the flags. */
   route: string;
   /** Triangle count of the dense Surface Nets mesh before decimation
    *  (0 off that route) — the report shows the reduction. */
