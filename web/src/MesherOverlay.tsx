@@ -53,28 +53,21 @@ const C_SURFACE = [0.16, 1.0, 0.47];
 const C_INSIDE = [0.24, 0.51, 0.9];
 const C_OUTSIDE = [0.88, 0.43, 0.24];
 
-/** SDF value → RGB. Samples with `|d| ≤ threshold` are pure green (surface);
- *  beyond it the colour ramps green→blue (inside) / green→red (outside),
- *  auto-ranged to `maxAbs`. */
+/** SDF value → RGB, a SHARP 3-way classification so `threshold` (Surface ±)
+ *  directly controls the green band: `|d| ≤ threshold` = green (surface),
+ *  `d < −threshold` = blue (inside), `d > threshold` = red (outside). No
+ *  distance-magnitude ramp — a maxAbs-relative gradient made near-surface
+ *  samples look green regardless of the threshold (ticket 0ly1). */
 function sdfColor(
   d: number,
-  maxAbs: number,
   threshold: number,
   o: Float32Array,
   i: number,
 ): void {
-  const ad = Math.abs(d);
-  if (ad <= threshold) {
-    o[i] = C_SURFACE[0];
-    o[i + 1] = C_SURFACE[1];
-    o[i + 2] = C_SURFACE[2];
-    return;
-  }
-  const t = Math.min(1, (ad - threshold) / Math.max(1e-6, maxAbs - threshold));
-  const to = d < 0 ? C_INSIDE : C_OUTSIDE;
-  o[i] = C_SURFACE[0] + (to[0] - C_SURFACE[0]) * t;
-  o[i + 1] = C_SURFACE[1] + (to[1] - C_SURFACE[1]) * t;
-  o[i + 2] = C_SURFACE[2] + (to[2] - C_SURFACE[2]) * t;
+  const c = Math.abs(d) <= threshold ? C_SURFACE : d < 0 ? C_INSIDE : C_OUTSIDE;
+  o[i] = c[0];
+  o[i + 1] = c[1];
+  o[i + 2] = c[2];
 }
 
 function disposeChildren(group: THREE.Group): void {
@@ -132,8 +125,6 @@ export function MesherOverlay() {
       return;
     }
 
-    let maxAbs = 1e-6;
-    for (const k of keep) maxAbs = Math.max(maxAbs, Math.abs(data[k * 8 + 3]));
 
     const pos = new Float32Array(n * 3);
     const col = new Float32Array(n * 3);
@@ -152,7 +143,7 @@ export function MesherOverlay() {
       pos[idx * 3] = x;
       pos[idx * 3 + 1] = y;
       pos[idx * 3 + 2] = z;
-      sdfColor(d, maxAbs, params.surfaceThreshold, col, idx * 3);
+      sdfColor(d, params.surfaceThreshold, col, idx * 3);
       const len = size * params.normalScale;
       linePos[idx * 6] = x;
       linePos[idx * 6 + 1] = y;
@@ -160,8 +151,8 @@ export function MesherOverlay() {
       linePos[idx * 6 + 3] = x + nx * len;
       linePos[idx * 6 + 4] = y + ny * len;
       linePos[idx * 6 + 5] = z + nz * len;
-      sdfColor(d, maxAbs, params.surfaceThreshold, lineCol, idx * 6);
-      sdfColor(d, maxAbs, params.surfaceThreshold, lineCol, idx * 6 + 3);
+      sdfColor(d, params.surfaceThreshold, lineCol, idx * 6);
+      sdfColor(d, params.surfaceThreshold, lineCol, idx * 6 + 3);
     }
 
     // ── Centre dots (round, SDF-coloured, diameter = 3× stroke width) ──

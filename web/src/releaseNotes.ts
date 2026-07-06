@@ -24,6 +24,17 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.409",
+    entries: [
+      {
+        kind: "fix",
+        text: "Mesher: die Surface-Farbschwelle wirkte kaum — die frühere graduelle, auf den Maximalwert normierte Farbrampe ließ oberflächennahe Samples fast immer grün wirken. Jetzt scharfe 3-Wege-Klassifikation: |SDF| ≤ Schwelle = grün, sonst blau (innen) / rot (außen). Der Schwellwert steuert das Grün nun direkt (kleiner Wert = wenig grün)",
+        scope: "debug",
+        tickets: ["0ly1"],
+      },
+    ],
+  },
+  {
     version: "0.6.408",
     entries: [
       {
