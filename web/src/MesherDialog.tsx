@@ -25,7 +25,7 @@ import {
   type MesherDebug,
 } from "./mesherDebugStore";
 import { NumberInput } from "./NumberInput";
-import type { MesherWeighting, MesherDampingCurve } from "./mesherDebugStore";
+import type { MesherDampingCurve } from "./mesherDebugStore";
 
 const SETTINGS_KEY = "fielddraft.debug.mesher";
 const DEFAULTS: MesherDebug = {
@@ -47,7 +47,6 @@ const DEFAULTS: MesherDebug = {
   repulsion: false,
   interactionRadius: 2,
   repulsionStrength: 0.5,
-  weightingFunction: "linear",
   repulsionDamping: 0.2,
   dampingCurve: "linear",
   meshPoints: false,
@@ -92,8 +91,6 @@ function loadSettings(): MesherDebug {
       repulsion: typeof p.repulsion === "boolean" ? p.repulsion : DEFAULTS.repulsion,
       interactionRadius: clampNum(p.interactionRadius, 0, 1e6, DEFAULTS.interactionRadius),
       repulsionStrength: clampNum(p.repulsionStrength, 0, 100, DEFAULTS.repulsionStrength),
-      weightingFunction:
-        p.weightingFunction === "inverse-square" ? "inverse-square" : DEFAULTS.weightingFunction,
       repulsionDamping: clampNum(p.repulsionDamping, 0, 1, DEFAULTS.repulsionDamping),
       dampingCurve:
         p.dampingCurve === "exponential" ? "exponential" : DEFAULTS.dampingCurve,
@@ -128,9 +125,6 @@ export function MesherDialog({ onClose }: { onClose: () => void }) {
   const [repulsion, setRepulsion] = useState(initial.repulsion);
   const [interactionRadius, setInteractionRadius] = useState(initial.interactionRadius);
   const [repulsionStrength, setRepulsionStrength] = useState(initial.repulsionStrength);
-  const [weightingFunction, setWeightingFunction] = useState<MesherWeighting>(
-    initial.weightingFunction,
-  );
   const [repulsionDamping, setRepulsionDamping] = useState(initial.repulsionDamping);
   const [dampingCurve, setDampingCurve] = useState<MesherDampingCurve>(initial.dampingCurve);
   const [meshPoints, setMeshPoints] = useState(initial.meshPoints);
@@ -159,7 +153,6 @@ export function MesherDialog({ onClose }: { onClose: () => void }) {
       repulsion,
       interactionRadius,
       repulsionStrength,
-      weightingFunction,
       repulsionDamping,
       dampingCurve,
       meshPoints,
@@ -190,7 +183,6 @@ export function MesherDialog({ onClose }: { onClose: () => void }) {
     repulsion,
     interactionRadius,
     repulsionStrength,
-    weightingFunction,
     repulsionDamping,
     dampingCurve,
     meshPoints,
@@ -483,7 +475,10 @@ export function MesherDialog({ onClose }: { onClose: () => void }) {
             repulsionStrength,
             setRepulsionStrength,
             { min: 0, max: 100, step: 0.05 },
-            "Repulsion strength at the FIRST iteration; it is then annealed down.",
+            "Repulsion strength at the FIRST iteration; it is then annealed down. " +
+              "The pairwise force follows an inverse-square law (∝ 1/d², like " +
+              "equally-charged monopoles): closer points repel far harder, so " +
+              "clusters break up and the spread stays even and local — start low.",
           )}
           {sliderRow(
             "Damping",
@@ -510,22 +505,6 @@ export function MesherDialog({ onClose }: { onClose: () => void }) {
               >
                 <option value="linear">Linear</option>
                 <option value="exponential">Exponential</option>
-              </select>
-            </div>
-          </div>
-          <div className="vec-row">
-            <label htmlFor="mesher-weighting" title="Distance weighting of the repulsion force per neighbour.">
-              Weighting
-            </label>
-            <div className="fields">
-              <select
-                id="mesher-weighting"
-                data-testid="mesher-weighting"
-                value={weightingFunction}
-                onChange={(e) => setWeightingFunction(e.target.value as MesherWeighting)}
-              >
-                <option value="linear">Linear</option>
-                <option value="inverse-square">Inverse Square</option>
               </select>
             </div>
           </div>

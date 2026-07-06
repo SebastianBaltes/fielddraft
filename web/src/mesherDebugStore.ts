@@ -54,9 +54,9 @@ export interface MesherDebug {
   /** Repulsion inside surface: tangential relaxation, annealed. */
   repulsion: boolean;
   interactionRadius: number;
+  /** Repulsion strength at the first iteration; the pairwise force follows an
+   *  inverse-square law (∝ 1/d², like equally-charged monopoles). */
   repulsionStrength: number;
-  /** Force-vs-distance weighting of the neighbour repulsion. */
-  weightingFunction: MesherWeighting;
   /** Annealing: fraction of repulsion strength lost per iteration
    *  (0 = constant, 1 = gone after one linear step). */
   repulsionDamping: number;
@@ -72,7 +72,6 @@ export interface MesherDebug {
   balanceOctree: boolean;
 }
 
-export type MesherWeighting = "linear" | "inverse-square";
 export type MesherDampingCurve = "linear" | "exponential";
 
 let params: MesherDebug | null = null;

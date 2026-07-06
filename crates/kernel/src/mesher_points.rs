@@ -12,7 +12,10 @@
 //!  - **Clamp to Cell** — clamp `p` to its origin leaf's bounds.
 //!  - **Repulsion inside Surface** — tangential neighbour-repulsion step
 //!    (uniform-grid hash within `interactionRadius`, force projected into the
-//!    surface tangent plane).
+//!    surface tangent plane). The pairwise force follows an inverse-square law
+//!    (`∝ 1/d²`, like equally-charged monopoles): closer points repel far
+//!    harder, so clusters break up and the interaction stays local — an even,
+//!    clump-free spread rather than a global drift into the corners.
 //!
 //! ONE interleaved relaxation loop (ticket yanv): per iteration
 //! **Repulsion → Fit → Clamp**, for `iterations`, with the repulsion
@@ -69,8 +72,6 @@ pub struct MesherPointOptions {
     pub repulsion: bool,
     pub interaction_radius: f32,
     pub repulsion_strength: f32,
-    /// Force-vs-distance weighting of the neighbour repulsion.
-    pub weighting_function: WeightingFunction,
     /// Annealing: fraction of repulsion strength lost per iteration
     /// (`0` = constant, `1` = gone after one linear step). Same meaning for
     /// both damping curves.
@@ -82,13 +83,6 @@ pub struct MesherPointOptions {
     /// Enforce the 2:1 octree balance before meshing (bounded depth
     /// contrast between face neighbours → more even triangle sizes).
     pub balance_octree: bool,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum WeightingFunction {
-    Linear,
-    InverseSquare,
 }
 
 /// How the repulsion strength decays over the relaxation iterations.
@@ -118,7 +112,6 @@ impl Default for MesherPointOptions {
             repulsion: false,
             interaction_radius: 2.0,
             repulsion_strength: 0.5,
-            weighting_function: WeightingFunction::Linear,
             repulsion_damping: 0.2,
             damping_curve: DampingCurve::Linear,
             mesh_points: false,
@@ -250,14 +243,14 @@ pub(crate) fn optimize_leaf_points(
                                 if dist >= r || dist < 1e-9 {
                                     continue;
                                 }
-                                let w = match opts.weighting_function {
-                                    WeightingFunction::Linear => 1.0 - dist / r,
-                                    // Normalised so w→1 at dist=r; capped so
-                                    // near-coincident points can't explode.
-                                    WeightingFunction::InverseSquare => {
-                                        ((r / dist) * (r / dist)).min(100.0)
-                                    }
-                                };
+                                // Inverse-square repulsion (`∝ 1/d²`, like
+                                // equally-charged monopoles): magnitude
+                                // normalised to 1 at the cutoff radius `r`
+                                // (scale-relative) and capped so near-coincident
+                                // points can't explode. Closer points repel far
+                                // harder → clusters break up, the far field
+                                // stays negligible → even, local spread.
+                                let w = ((r / dist) * (r / dist)).min(100.0);
                                 let s = w / dist;
                                 f[0] += dvec[0] * s;
                                 f[1] += dvec[1] * s;
@@ -501,7 +494,6 @@ mod tests {
             iterations: 8,
             interaction_radius: 3.0,
             repulsion_strength: 0.2,
-            weighting_function: WeightingFunction::Linear,
             fit_on_surface: true,
             fit_target_epsilon: 1e-4,
             constrain_to_cell: false,
@@ -526,7 +518,7 @@ mod tests {
     }
 
     #[test]
-    fn inverse_square_weighting_also_spreads_and_stays_on_surface() {
+    fn repulsion_separates_a_close_pair_on_the_surface() {
         let leaves = vec![
             leaf_at([10.0, 0.0, 0.0], 8.0),
             leaf_at([9.995, 0.3, 0.0], 8.0),
@@ -536,7 +528,6 @@ mod tests {
             iterations: 4,
             interaction_radius: 2.0,
             repulsion_strength: 0.1,
-            weighting_function: WeightingFunction::InverseSquare,
             // Repulsion's per-step Fit keeps the points on the surface
             // (ticket yanv: Repulsion → Fit → Clamp).
             fit_on_surface: true,

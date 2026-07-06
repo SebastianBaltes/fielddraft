@@ -24,6 +24,16 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.424",
+    entries: [
+      {
+        kind: "fix",
+        text: "Debug ▸ Mesher: Repulsions-Kraftgesetz ist jetzt durchgängig invers-quadratisch (∝ 1/d², wie gleich geladene Monopole) — nähere Punkte stoßen sich viel stärker ab, dadurch bleiben Cluster nicht bestehen und die Verteilung bleibt lokal und gleichmäßig statt global in die Ecken zu driften. Die „Weighting“-Auswahl (Linear/Inverse Square) entfällt, 1/d² ist das einzige Gesetz",
+        scope: "debug",
+      },
+    ],
+  },
+  {
     version: "0.6.423",
     entries: [
       {
