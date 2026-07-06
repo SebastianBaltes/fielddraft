@@ -486,7 +486,7 @@ export function MesherDialog({ onClose }: { onClose: () => void }) {
               "equally-charged monopoles): closer points repel far harder, so " +
               "clusters break up and the spread stays even and local — start low.",
           )}
-          {sliderRow(
+          {numRow(
             "Damping",
             repulsionDamping,
             setRepulsionDamping,

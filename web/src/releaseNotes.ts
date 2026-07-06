@@ -24,6 +24,16 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.426",
+    entries: [
+      {
+        kind: "fix",
+        text: "Debug ▸ Mesher: „Damping“ ist jetzt ein direktes Zahlenfeld statt eines Sliders",
+        scope: "debug",
+      },
+    ],
+  },
+  {
     version: "0.6.425",
     entries: [
       {
