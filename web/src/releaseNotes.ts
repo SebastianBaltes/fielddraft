@@ -24,6 +24,17 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.416",
+    entries: [
+      {
+        kind: "fix",
+        text: "Export-Vorschau: SDF ↔ Mesh-Crossfade blendet wieder graduell — nach dem jüngsten Tiefen-Fix verlor das exakt auf der Fläche liegende Preview-Mesh den Depth-Test gegen den SDF-Körper; es zieht sich jetzt per polygonOffset nach vorn",
+        scope: "export",
+        tickets: ["rfm6"],
+      },
+    ],
+  },
+  {
     version: "0.6.415",
     entries: [
       {

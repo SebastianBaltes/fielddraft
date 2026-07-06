@@ -84,6 +84,13 @@ export function ExportPreviewMesh() {
         position={[-150, -100, -200]}
         intensity={0.25}
       />
+      {/* The preview solid coincides with the SDF surface, so it must WIN
+          the depth test against the body depth the shade pass wrote — since
+          that depth is the exact surface (ticket iw6f removed the former
+          0.1% push-back), the mesh z-fights and vanishes at opacity < 1
+          without a bias of its own (ticket rfm6). polygonOffset pulls the
+          preview fragments toward the camera; the wireframe gets a slightly
+          stronger pull so it also beats the preview solid. */}
       <mesh ref={onPreviewLayer} geometry={geometry} renderOrder={1}>
         <meshStandardMaterial
           color="#b3bcc9"
@@ -92,6 +99,9 @@ export function ExportPreviewMesh() {
           transparent={opacity < 1}
           opacity={opacity}
           depthWrite={opacity > 0.98}
+          polygonOffset
+          polygonOffsetFactor={-2}
+          polygonOffsetUnits={-4}
         />
       </mesh>
       {wireframe && (
@@ -102,6 +112,9 @@ export function ExportPreviewMesh() {
             transparent
             opacity={Math.max(opacity, 0.35)}
             depthWrite={false}
+            polygonOffset
+            polygonOffsetFactor={-3}
+            polygonOffsetUnits={-6}
           />
         </mesh>
       )}
