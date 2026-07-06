@@ -24,6 +24,17 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.421",
+    entries: [
+      {
+        kind: "feat",
+        text: "Debug ▸ Mesher: Punktverteilung läuft jetzt als 2-Phasen-Iteration aus atomaren Schritten — Phase 1 pro Schritt Fit-on-Surface → Clamp-to-Cell (bis Target-ε oder Max-Iterationen), Phase 2 pro Schritt Repulsion → Fit → Clamp (für Repulsion-Iterationen); jeder Schritt nur, wenn die zugehörige Checkbox gesetzt ist",
+        scope: "debug",
+        tickets: ["yanv"],
+      },
+    ],
+  },
+  {
     version: "0.6.420",
     entries: [
       {

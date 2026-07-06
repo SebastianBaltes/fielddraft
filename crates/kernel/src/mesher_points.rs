@@ -2,22 +2,27 @@
 //! (ticket jq2t).
 //!
 //! The octree scaffold (`api::export::octree_leaves`) yields exactly one
-//! point per leaf cell (its centre). This module runs two optional, iterative
-//! optimisers over a FILTERED subset of those points, entirely kernel-side
-//! (a JS round-trip per SDF eval would be hopeless at 200k points):
+//! point per leaf cell (its centre). This module distributes a FILTERED
+//! subset of those points in TWO iterative phases (ticket yanv), each a
+//! composition of atomic ops applied only when its checkbox is set, entirely
+//! kernel-side (a JS round-trip per SDF eval would be hopeless at 200k pts):
 //!
-//!  1. **Fit on Surface** — damped Newton projection onto the SDF zero set:
-//!     `p ← p − stepMultiplier · d · ∇f/|∇f|` until `|d| < targetEpsilon` or
-//!     `maxIterations`.
-//!  2. **Repulsion inside Surface** — tangential relaxation: per iteration a
-//!     repulsion force from all neighbours within `interactionRadius`
-//!     (uniform-grid hash), projected into the tangent plane, applied, then
-//!     re-pinned to the surface with a short Newton fit (≤3 steps).
+//!  - **Fit on Surface** (one op) — damped Newton step toward the SDF zero
+//!    set: `p ← p − stepMultiplier · d · ∇f/|∇f|`.
+//!  - **Clamp to Cell** (one op) — clamp `p` to its origin leaf's bounds.
+//!  - **Repulsion inside Surface** (one op) — tangential neighbour-repulsion
+//!    step (uniform-grid hash within `interactionRadius`, force projected
+//!    into the surface tangent plane).
 //!
-//! Cross-cutting constraints:
-//!  - `constrainToCell`: after EVERY position update the point is clamped to
-//!    its origin leaf cell's bounds (topological protection — one point per
-//!    cell stays one point per cell).
+//!  Phase 1 (`fitOnSurface`): per step  **Fit → Clamp**, until
+//!    `|sdf| < targetEpsilon` or `fitMaxIterations`.
+//!  Phase 2 (`repulsion`): per step  **Repulsion → Fit → Clamp**, for
+//!    `repulsionIterations` (Fit only if `fitOnSurface`, Clamp only if
+//!    `constrainToCell`).
+//!
+//! Cross-cutting:
+//!  - `constrainToCell` keeps one point per cell one point per cell
+//!    (topological protection) — the Clamp op in both phases.
 //!  - Processing filters (AND when both active): `nearSurfaceOnly`
 //!    (`|sdf| ≤ nearSurfaceDist`) and `signChangeNeighboursOnly` — only cells
 //!    where the field sign flips towards a direct neighbour. The neighbour
@@ -108,33 +113,20 @@ fn clamp_to_cell(p: &mut [f32; 3], leaf: &Leaf) {
     }
 }
 
-/// Damped Newton projection of `p` onto the zero set (feature 1; also the
-/// re-pin step of feature 2). `grad_eps` is the central-difference step.
-#[allow(clippy::too_many_arguments)]
-fn newton_fit(
+/// One damped-Newton "Fit on Surface" step: move `p` toward the SDF zero set
+/// by `stepMultiplier · d · ∇f`. The atomic operation both phases compose.
+fn fit_step_once(
     p: &mut [f32; 3],
-    leaf: &Leaf,
     sdf: &dyn Fn([f32; 3]) -> f32,
     grad: &dyn Fn([f32; 3]) -> [f32; 3],
-    max_iterations: u32,
-    target_epsilon: f32,
     step_multiplier: f32,
-    constrain_to_cell: bool,
 ) {
-    for _ in 0..max_iterations {
-        let d = sdf(*p);
-        if d.abs() < target_epsilon {
-            break;
-        }
-        let n = grad(*p);
-        let step = step_multiplier * d;
-        p[0] -= step * n[0];
-        p[1] -= step * n[1];
-        p[2] -= step * n[2];
-        if constrain_to_cell {
-            clamp_to_cell(p, leaf);
-        }
-    }
+    let d = sdf(*p);
+    let n = grad(*p);
+    let step = step_multiplier * d;
+    p[0] -= step * n[0];
+    p[1] -= step * n[1];
+    p[2] -= step * n[2];
 }
 
 /// Run the jq2t point pipeline over the leaves. Returns the final position of
@@ -177,35 +169,41 @@ pub(crate) fn optimize_leaf_points(
         process.push(ok);
     }
 
-    // ── Feature 1: Fit on Surface ──
+    // The point pipeline runs in two iterative phases (ticket yanv), each a
+    // composition of the atomic ops, applied ONLY when their checkbox is on:
+    //
+    //   Phase 1 (fit_on_surface): per step  Fit → Clamp, until |sdf| <
+    //     targetEpsilon or fit_max_iterations.
+    //   Phase 2 (repulsion): per step  Repulsion → Fit → Clamp, for
+    //     repulsion_iterations. (Fit/Clamp only if their checkbox is on.)
+    let step = opts.fit_step_multiplier.clamp(0.1, 1.0);
+    let eps = opts.fit_target_epsilon.max(0.0);
+
+    // ── Phase 1: Fit on Surface (Fit → Clamp per step) ──
     if opts.fit_on_surface {
-        let step = opts.fit_step_multiplier.clamp(0.1, 1.0);
         for (i, leaf) in leaves.iter().enumerate() {
             if !process[i] {
                 continue;
             }
-            newton_fit(
-                &mut points[i],
-                leaf,
-                sdf,
-                grad,
-                opts.fit_max_iterations,
-                opts.fit_target_epsilon.max(0.0),
-                step,
-                opts.constrain_to_cell,
-            );
-            // The fit's own convergence criterion decides "reached": a point
-            // clamped at its cell bounds (surface out of reach) stays with
-            // |sdf| above the target epsilon and falls out of the set.
-            if opts.only_on_surface
-                && sdf(points[i]).abs() >= opts.fit_target_epsilon.max(1e-6)
-            {
+            for _ in 0..opts.fit_max_iterations {
+                if sdf(points[i]).abs() < eps {
+                    break;
+                }
+                fit_step_once(&mut points[i], sdf, grad, step);
+                if opts.constrain_to_cell {
+                    clamp_to_cell(&mut points[i], leaf);
+                }
+            }
+            // "Only on surface": a point clamped short of the zero set (surface
+            // out of its cell) never reaches epsilon → drops out of the set,
+            // so it doesn't skew the phase-2 repulsion below.
+            if opts.only_on_surface && sdf(points[i]).abs() >= eps.max(1e-6) {
                 alive[i] = false;
             }
         }
     }
 
-    // ── Feature 2: Repulsion inside Surface (tangential relaxation) ──
+    // ── Phase 2: Repulsion inside Surface (Repulsion → Fit → Clamp per step) ──
     if opts.repulsion && opts.interaction_radius > 0.0 {
         let r = opts.interaction_radius;
         let inv_cell = 1.0 / r;
@@ -220,8 +218,6 @@ pub(crate) fn optimize_leaf_points(
         // ignored by the algorithms entirely, per the ticket.
         let active: Vec<usize> =
             (0..leaves.len()).filter(|&i| process[i] && alive[i]).collect();
-        // The re-pin after each tangential move (ticket: "2-3 iterations").
-        let repin_iters = 3u32.min(opts.fit_max_iterations.max(1));
         for _ in 0..opts.repulsion_iterations {
             // Grid hash over the CURRENT positions of the active points.
             let mut grid: std::collections::HashMap<(i32, i32, i32), Vec<usize>> =
@@ -268,34 +264,31 @@ pub(crate) fn optimize_leaf_points(
                         }
                     }
                 }
-                if f == [0.0, 0.0, 0.0] {
-                    continue;
-                }
-                // Project the force into the tangent plane of the surface.
-                let n = grad(p);
-                let fn_dot = f[0] * n[0] + f[1] * n[1] + f[2] * n[2];
-                let ft = [f[0] - fn_dot * n[0], f[1] - fn_dot * n[1], f[2] - fn_dot * n[2]];
                 let leaf = &leaves[i];
-                let mut np = [
-                    p[0] + ft[0] * opts.repulsion_strength,
-                    p[1] + ft[1] * opts.repulsion_strength,
-                    p[2] + ft[2] * opts.repulsion_strength,
-                ];
+                let mut np = p;
+                // Step 1 — Repulsion inside surface: apply the tangential
+                // component of the neighbour force (so the point stays on the
+                // surface tangent plane rather than being pushed off it).
+                if f != [0.0, 0.0, 0.0] {
+                    let n = grad(p);
+                    let fn_dot = f[0] * n[0] + f[1] * n[1] + f[2] * n[2];
+                    let ft = [f[0] - fn_dot * n[0], f[1] - fn_dot * n[1], f[2] - fn_dot * n[2]];
+                    np = [
+                        p[0] + ft[0] * opts.repulsion_strength,
+                        p[1] + ft[1] * opts.repulsion_strength,
+                        p[2] + ft[2] * opts.repulsion_strength,
+                    ];
+                }
+                // Step 2 — Fit on Surface (single Newton step), if enabled:
+                // the tangential move drifts off the exact zero set on curved
+                // geometry, so nudge back.
+                if opts.fit_on_surface {
+                    fit_step_once(&mut np, sdf, grad, step);
+                }
+                // Step 3 — Clamp to Cell, if enabled.
                 if opts.constrain_to_cell {
                     clamp_to_cell(&mut np, leaf);
                 }
-                // Re-pin to the surface — the tangential move drifts off the
-                // exact zero set on curved geometry.
-                newton_fit(
-                    &mut np,
-                    leaf,
-                    sdf,
-                    grad,
-                    repin_iters,
-                    opts.fit_target_epsilon.max(0.0),
-                    opts.fit_step_multiplier.clamp(0.1, 1.0),
-                    opts.constrain_to_cell,
-                );
                 moved[i] = np;
             }
             points = moved;
@@ -413,6 +406,41 @@ mod tests {
         assert_eq!(pts[1], inside.center);
     }
 
+    /// Ticket yanv — phase gating: Phase 2 (repulsion) must apply its inner
+    /// Fit-on-Surface step ONLY when that checkbox is on. With repulsion on
+    /// but fit OFF, a single point (no neighbours → no repulsion force, no
+    /// fit) stays exactly at its start; with fit ON it is nudged onto the
+    /// surface even though there is no repulsion force.
+    #[test]
+    fn phase2_fit_step_is_gated_by_the_fit_checkbox() {
+        let start = [8.0f32, 0.0, 0.0]; // sdf = -2, off the surface
+        let leaf = leaf_at(start, 20.0); // generous cell, no clamping pressure
+        let base = MesherPointOptions {
+            repulsion: true,
+            repulsion_iterations: 5,
+            interaction_radius: 3.0,
+            repulsion_strength: 0.5,
+            fit_step_multiplier: 0.8,
+            fit_target_epsilon: 1e-4,
+            constrain_to_cell: false,
+            ..Default::default()
+        };
+
+        // Fit OFF → no fit step, lone point, no neighbours → unchanged.
+        let no_fit = MesherPointOptions { fit_on_surface: false, ..base.clone() };
+        let (p_nofit, _, _) = optimize_leaf_points(&[leaf], &no_fit, &sphere_sdf, &sphere_grad);
+        assert_eq!(p_nofit[0], start, "no fit + no neighbours must not move");
+
+        // Fit ON → the phase-2 fit step pulls it onto the surface.
+        let with_fit = MesherPointOptions { fit_on_surface: true, ..base };
+        let (p_fit, _, _) = optimize_leaf_points(&[leaf], &with_fit, &sphere_sdf, &sphere_grad);
+        assert!(
+            sphere_sdf(p_fit[0]).abs() < 0.1,
+            "phase-2 fit step should reach the surface: sdf={}",
+            sphere_sdf(p_fit[0])
+        );
+    }
+
     #[test]
     fn repulsion_spreads_clustered_points_along_the_surface() {
         // Four points bunched together on the sphere; repulsion must increase
@@ -465,9 +493,12 @@ mod tests {
             "repulsion did not spread the cluster: {before} → {after}"
         );
         for p in &pts {
+            // Phase 2 does ONE fit step per repulsion iteration (ticket yanv),
+            // so points stay NEAR the surface (a small fraction of the cell),
+            // not exactly on it — a full re-pin is no longer performed.
             assert!(
-                sphere_sdf(*p).abs() < 1e-2,
-                "repulsion left the surface: {p:?} (d={})",
+                sphere_sdf(*p).abs() < 0.1,
+                "repulsion drifted far off the surface: {p:?} (d={})",
                 sphere_sdf(*p)
             );
         }
@@ -485,6 +516,9 @@ mod tests {
             interaction_radius: 2.0,
             repulsion_strength: 0.1,
             weighting_function: WeightingFunction::InverseSquare,
+            // Repulsion's per-step Fit keeps the points on the surface
+            // (ticket yanv: Repulsion → Fit → Clamp).
+            fit_on_surface: true,
             fit_target_epsilon: 1e-4,
             constrain_to_cell: false,
             ..Default::default()
@@ -498,7 +532,7 @@ mod tests {
         let dist = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
         assert!(dist > 0.3, "points did not separate: {dist}");
         for p in &pts {
-            assert!(sphere_sdf(*p).abs() < 1e-2);
+            assert!(sphere_sdf(*p).abs() < 0.1);
         }
     }
 
