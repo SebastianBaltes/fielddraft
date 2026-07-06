@@ -62,6 +62,12 @@ export interface MesherDebug {
   repulsionDamping: number;
   /** Annealing curve of the repulsion strength over the iterations. */
   dampingCurve: MesherDampingCurve;
+  /** Feature snapping: detect edge/corner creases via normal probes, snap
+   *  points onto them and lock them there (edge = 1D slide, corner = pinned)
+   *  — isotropic repulsion alone never lands points on 0D/1D features. */
+  featureSnap: boolean;
+  /** Normals differing by more than this angle (°) count as distinct sheets. */
+  featureAngleDeg: number;
   /** Mesh the shown (filtered) points: connect them along the octree's edge
    *  relationships into triangles (one vertex per leaf, a quad per minimal
    *  octree edge whose 4 cells are all shown). NOT dual contouring — no

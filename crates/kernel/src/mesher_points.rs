@@ -78,6 +78,17 @@ pub struct MesherPointOptions {
     pub repulsion_damping: f32,
     /// Annealing curve of the repulsion strength over the iterations.
     pub damping_curve: DampingCurve,
+    // Feature snapping (edges/corners) — ticket-less follow-up of l45r:
+    // isotropic repulsion NEVER lands points on 0D/1D features (they have
+    // measure zero and the tangential projection surfs around the crease),
+    // so features are snapped actively: probe the normal field around each
+    // point, detect distinct sheets, pull the point onto the sheets'
+    // intersection (edge line / corner point) and LOCK it there — edge
+    // points then relax 1D along their edge, corners freeze.
+    pub feature_snap: bool,
+    /// Two probed normals differing by MORE than this angle (degrees) count
+    /// as distinct sheets (edge/corner detection threshold).
+    pub feature_angle_deg: f32,
     // Meshing over the optimised points (octree-edge connectivity).
     pub mesh_points: bool,
     /// Enforce the 2:1 octree balance before meshing (bounded depth
@@ -114,10 +125,192 @@ impl Default for MesherPointOptions {
             repulsion_strength: 0.5,
             repulsion_damping: 0.2,
             damping_curve: DampingCurve::Linear,
+            feature_snap: false,
+            feature_angle_deg: 30.0,
             mesh_points: false,
             balance_octree: true,
         }
     }
+}
+
+/// Motion constraint of a point after feature snapping.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum PointLock {
+    /// Repulsion moves the point in its surface tangent plane (2D).
+    Free,
+    /// On an edge: moves only along the edge tangent `n1×n2` (1D), re-snapped
+    /// onto the two sheets' intersection after every move.
+    Edge,
+    /// On a corner (≥3 sheets): fully pinned (0D). Still repels neighbours.
+    Corner,
+}
+
+/// One detected sheet cluster around a point: averaged unit normal plus a
+/// surface anchor (a probe point projected onto that sheet) — together they
+/// define the sheet's tangent plane for the intersection solve.
+struct SheetCluster {
+    normal: [f32; 3],
+    anchor: [f32; 3],
+    count: f32,
+}
+
+fn v_add(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
+    [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
+}
+fn v_sub(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
+    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
+}
+fn v_scale(a: [f32; 3], s: f32) -> [f32; 3] {
+    [a[0] * s, a[1] * s, a[2] * s]
+}
+fn v_dot(a: [f32; 3], b: [f32; 3]) -> f32 {
+    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+}
+fn v_cross(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
+    [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    ]
+}
+fn v_len(a: [f32; 3]) -> f32 {
+    v_dot(a, a).sqrt()
+}
+fn v_norm(a: [f32; 3]) -> [f32; 3] {
+    let l = v_len(a);
+    if l > 1e-12 { v_scale(a, 1.0 / l) } else { a }
+}
+
+/// Probe the normal field in the tangent plane around `p` (8 directions at
+/// `probe_r`, each probe Newton-projected back onto the surface) and greedily
+/// cluster the normals by `cos_thresh`. One cluster = smooth sheet; two =
+/// edge; three or more = corner.
+fn detect_sheets(
+    p: [f32; 3],
+    probe_r: f32,
+    cos_thresh: f32,
+    sdf: &dyn Fn([f32; 3]) -> f32,
+    grad: &dyn Fn([f32; 3]) -> [f32; 3],
+) -> Vec<SheetCluster> {
+    let n0 = grad(p);
+    // Tangent basis.
+    let pick = if n0[0].abs() < 0.9 { [1.0, 0.0, 0.0] } else { [0.0, 1.0, 0.0] };
+    let u = v_norm(v_cross(n0, pick));
+    let v = v_norm(v_cross(n0, u));
+    let s = std::f32::consts::FRAC_1_SQRT_2;
+    let dirs = [
+        u,
+        v_scale(u, -1.0),
+        v,
+        v_scale(v, -1.0),
+        v_norm(v_add(v_scale(u, s), v_scale(v, s))),
+        v_norm(v_add(v_scale(u, -s), v_scale(v, s))),
+        v_norm(v_add(v_scale(u, s), v_scale(v, -s))),
+        v_norm(v_add(v_scale(u, -s), v_scale(v, -s))),
+    ];
+    // Cluster ONLY the projected probes: they land on the smooth sheets. The
+    // point's own normal `n0` is deliberately excluded — exactly ON a crease
+    // the (FD) gradient is a blend of the adjacent sheets (e.g. the diagonal
+    // at a box corner) and would seed a phantom sheet that corrupts the
+    // intersection solve.
+    let mut clusters: Vec<SheetCluster> = Vec::new();
+    for d in dirs {
+        let mut q = v_add(p, v_scale(d, probe_r));
+        // Newton-project the probe back onto the surface.
+        for _ in 0..3 {
+            let dq = sdf(q);
+            let g = grad(q);
+            q = v_sub(q, v_scale(g, dq));
+        }
+        // A probe that wandered far off (open space / other sheet across a
+        // thin wall) is not a local sheet sample.
+        if v_len(v_sub(q, p)) > 2.5 * probe_r || sdf(q).abs() > 0.25 * probe_r {
+            continue;
+        }
+        let n = grad(q);
+        match clusters
+            .iter_mut()
+            .find(|c| v_dot(v_norm(c.normal), n) > cos_thresh)
+        {
+            Some(c) => {
+                let w = c.count;
+                c.normal = v_norm(v_add(v_scale(c.normal, w), n));
+                c.anchor = v_scale(v_add(v_scale(c.anchor, w), q), 1.0 / (w + 1.0));
+                c.count = w + 1.0;
+            }
+            None => clusters.push(SheetCluster { normal: n, anchor: q, count: 1.0 }),
+        }
+    }
+    // Strongest sheets first, and drop single-probe clusters: a probe landing
+    // ON a crease carries a blended (FD) normal that matches no real sheet —
+    // as a phantom cluster it would corrupt the intersection solve (a box
+    // corner then "snaps" onto a blend plane instead of the third face). A
+    // real sheet catches ≥2 of the 8 probes at every edge/corner geometry.
+    clusters.sort_by(|a, b| b.count.total_cmp(&a.count));
+    clusters.retain(|c| c.count >= 2.0);
+    clusters
+}
+
+/// Pull `p` onto the intersection of the clusters' tangent planes — the
+/// minimal-norm correction `x = p + Aᵀ(AAᵀ)⁻¹(b − Ap)` over 2 (edge line) or
+/// 3 (corner point) planes. Returns `None` when the system is ill-conditioned
+/// (near-parallel sheets — no real feature) or the correction exceeds
+/// `max_step` (spurious detection). Curvature error is cleaned by the caller's
+/// following fit step.
+fn snap_to_sheet_intersection(
+    p: [f32; 3],
+    sheets: &[SheetCluster],
+    max_step: f32,
+) -> Option<[f32; 3]> {
+    let k = sheets.len().min(3);
+    let n: Vec<[f32; 3]> = sheets[..k].iter().map(|c| v_norm(c.normal)).collect();
+    let r: Vec<f32> = sheets[..k]
+        .iter()
+        .zip(&n)
+        .map(|(c, ni)| v_dot(*ni, v_sub(c.anchor, p)))
+        .collect();
+    let correction = if k == 2 {
+        // 2×2 Gram solve; det = |n1×n2|² (the squared edge-tangent length).
+        let (a, b, c) = (v_dot(n[0], n[0]), v_dot(n[0], n[1]), v_dot(n[1], n[1]));
+        let det = a * c - b * b;
+        if det < 1e-4 {
+            return None;
+        }
+        let l0 = (c * r[0] - b * r[1]) / det;
+        let l1 = (a * r[1] - b * r[0]) / det;
+        v_add(v_scale(n[0], l0), v_scale(n[1], l1))
+    } else {
+        // 3×3 Gram solve via cofactors.
+        let g = [
+            [v_dot(n[0], n[0]), v_dot(n[0], n[1]), v_dot(n[0], n[2])],
+            [v_dot(n[1], n[0]), v_dot(n[1], n[1]), v_dot(n[1], n[2])],
+            [v_dot(n[2], n[0]), v_dot(n[2], n[1]), v_dot(n[2], n[2])],
+        ];
+        let det = g[0][0] * (g[1][1] * g[2][2] - g[1][2] * g[2][1])
+            - g[0][1] * (g[1][0] * g[2][2] - g[1][2] * g[2][0])
+            + g[0][2] * (g[1][0] * g[2][1] - g[1][1] * g[2][0]);
+        if det.abs() < 1e-6 {
+            return None;
+        }
+        let inv = |i: usize, j: usize| -> f32 {
+            // Cofactor expansion of the symmetric Gram inverse.
+            let (i1, i2) = ((i + 1) % 3, (i + 2) % 3);
+            let (j1, j2) = ((j + 1) % 3, (j + 2) % 3);
+            (g[i1][j1] * g[i2][j2] - g[i1][j2] * g[i2][j1]) / det
+        };
+        let mut l = [0.0f32; 3];
+        for (i, li) in l.iter_mut().enumerate() {
+            *li = (0..3).map(|j| inv(j, i) * r[j]).sum();
+        }
+        v_add(
+            v_add(v_scale(n[0], l[0]), v_scale(n[1], l[1])),
+            v_scale(n[2], l[2]),
+        )
+    };
+    if v_len(correction) > max_step {
+        return None;
+    }
+    Some(v_add(p, correction))
 }
 
 fn clamp_to_cell(p: &mut [f32; 3], leaf: &Leaf) {
@@ -141,6 +334,173 @@ fn fit_step_once(
     p[0] -= step * n[0];
     p[1] -= step * n[1];
     p[2] -= step * n[2];
+}
+
+/// One annealed repulsion relaxation (ticket yanv/l45r): per iteration a grid
+/// hash over the current positions, 1/d² neighbour forces with the
+/// half-nearest-neighbour stability clamp, then Fit → Clamp. `feature`
+/// constrains motion after feature snapping: `Free` points move in their
+/// surface tangent plane (2D), `Edge` points only along their edge tangent
+/// (1D, re-detected each step and re-snapped onto the sheet intersection),
+/// `Corner` points are pinned — but all of them still repel their neighbours.
+/// `None` = every point Free (the plain relaxation).
+fn relaxation_pass(
+    points: &mut Vec<[f32; 3]>,
+    leaves: &[Leaf],
+    active: &[usize],
+    opts: &MesherPointOptions,
+    sdf: &dyn Fn([f32; 3]) -> f32,
+    grad: &dyn Fn([f32; 3]) -> [f32; 3],
+    feature: Option<(&[PointLock], f32)>,
+) {
+    let step = opts.fit_step_multiplier.clamp(0.1, 1.0);
+    let r = opts.interaction_radius;
+    let inv_cell = 1.0 / r;
+    let key = |p: &[f32; 3]| -> (i32, i32, i32) {
+        (
+            (p[0] * inv_cell).floor() as i32,
+            (p[1] * inv_cell).floor() as i32,
+            (p[2] * inv_cell).floor() as i32,
+        )
+    };
+    let iters = opts.iterations.max(1);
+    let damping = opts.repulsion_damping.clamp(0.0, 1.0);
+    for t in 0..iters {
+        // Anneal: repulsion strongest first, decaying by the chosen curve.
+        let tf = t as f32;
+        let anneal = match opts.damping_curve {
+            DampingCurve::Linear => (1.0 - damping * tf).max(0.0),
+            DampingCurve::Exponential => (1.0 - damping).powi(t as i32),
+        };
+        let strength = opts.repulsion_strength * anneal;
+        // Grid hash over the CURRENT positions of the active points.
+        let mut grid: std::collections::HashMap<(i32, i32, i32), Vec<usize>> =
+            std::collections::HashMap::new();
+        for &i in active {
+            grid.entry(key(&points[i])).or_default().push(i);
+        }
+        let mut moved = points.clone();
+        for &i in active {
+            let lock = feature.map_or(PointLock::Free, |(l, _)| l[i]);
+            if lock == PointLock::Corner {
+                continue; // pinned (0D) — stays in the grid, repels others
+            }
+            let p = points[i];
+            let (kx, ky, kz) = key(&p);
+            let mut f = [0.0f32; 3];
+            // Distance to the closest neighbour — the stability scale for
+            // the explicit step below.
+            let mut nearest = f32::MAX;
+            for dz in -1..=1 {
+                for dy in -1..=1 {
+                    for dx in -1..=1 {
+                        let Some(bucket) = grid.get(&(kx + dx, ky + dy, kz + dz)) else {
+                            continue;
+                        };
+                        for &j in bucket {
+                            if j == i {
+                                continue;
+                            }
+                            let q = points[j];
+                            let dvec = [p[0] - q[0], p[1] - q[1], p[2] - q[2]];
+                            let dist = (dvec[0] * dvec[0]
+                                + dvec[1] * dvec[1]
+                                + dvec[2] * dvec[2])
+                                .sqrt();
+                            if dist >= r || dist < 1e-9 {
+                                continue;
+                            }
+                            nearest = nearest.min(dist);
+                            // Inverse-square repulsion (`∝ 1/d²`, like
+                            // equally-charged monopoles): magnitude
+                            // normalised to 1 at the cutoff radius `r`
+                            // (scale-relative) and capped so near-coincident
+                            // points can't explode. Closer points repel far
+                            // harder → clusters break up, the far field
+                            // stays negligible → even, local spread.
+                            let w = ((r / dist) * (r / dist)).min(100.0);
+                            let s = w / dist;
+                            f[0] += dvec[0] * s;
+                            f[1] += dvec[1] * s;
+                            f[2] += dvec[2] * s;
+                        }
+                    }
+                }
+            }
+            let leaf = &leaves[i];
+            let mut np = p;
+            let mut resnapped = false;
+            // Repulsion: the neighbour force projected into the point's
+            // allowed motion space, scaled by the annealed strength.
+            if f != [0.0, 0.0, 0.0] {
+                let ft = match lock {
+                    PointLock::Free => {
+                        // Tangential component (stays on the surface plane).
+                        let n = grad(p);
+                        let fn_dot = v_dot(f, n);
+                        v_sub(f, v_scale(n, fn_dot))
+                    }
+                    PointLock::Edge => {
+                        // 1D: along the freshly detected edge tangent n1×n2 —
+                        // re-detecting each step follows CURVED edges instead
+                        // of sliding off a stale chord direction.
+                        let (_, cos_t) = feature.expect("edge lock implies feature");
+                        let sheets = detect_sheets(p, 0.5 * leaf.size, cos_t, sdf, grad);
+                        if sheets.len() >= 2 {
+                            let tdir = v_norm(v_cross(sheets[0].normal, sheets[1].normal));
+                            v_scale(tdir, v_dot(f, tdir))
+                        } else {
+                            // Feature vanished under the point (drifted off a
+                            // rounded region) — fall back to the tangent plane.
+                            let n = grad(p);
+                            v_sub(f, v_scale(n, v_dot(f, n)))
+                        }
+                    }
+                    PointLock::Corner => unreachable!("pinned above"),
+                };
+                let mut step_vec = v_scale(ft, strength);
+                // Stability clamp (ticket l45r): never move a point more
+                // than HALF the distance to its nearest neighbour. The 1/d²
+                // force is stiff — a plain explicit-Euler step at high
+                // strength leaps a point clean past its neighbours, off the
+                // surface, where only-on-surface then drops it; the cluster
+                // CORE (whose forces cancel by symmetry, net ≈ 0) never
+                // moves, so the pile stays put ("clump in the corner"). The
+                // half-neighbour cap guarantees a point can never overshoot
+                // a neighbour, making the relaxation stable for ANY strength
+                // — clumps expand monotonically toward even spacing.
+                let step_len = v_len(step_vec);
+                let max_step = 0.5 * nearest;
+                if step_len > max_step && step_len > 1e-12 {
+                    step_vec = v_scale(step_vec, max_step / step_len);
+                }
+                np = v_add(p, step_vec);
+                // Edge points: re-snap onto the (moved-to) sheet intersection
+                // so they STAY on the crease while sliding along it.
+                if lock == PointLock::Edge {
+                    let (_, cos_t) = feature.expect("edge lock implies feature");
+                    let sheets = detect_sheets(np, 0.5 * leaf.size, cos_t, sdf, grad);
+                    if sheets.len() >= 2 {
+                        if let Some(x) = snap_to_sheet_intersection(np, &sheets, leaf.size) {
+                            np = x;
+                            resnapped = true;
+                        }
+                    }
+                }
+            }
+            // Fit (single Newton step): nudge back onto the surface after
+            // the tangential move. Skipped for a just-re-snapped edge point —
+            // the fit would pull it off the crease onto the nearest sheet.
+            if opts.fit_on_surface && !resnapped {
+                fit_step_once(&mut np, sdf, grad, step);
+            }
+            if opts.constrain_to_cell {
+                clamp_to_cell(&mut np, leaf);
+            }
+            moved[i] = np;
+        }
+        *points = moved;
+    }
 }
 
 /// Run the jq2t point pipeline over the leaves. Returns the final position of
@@ -191,120 +551,11 @@ pub(crate) fn optimize_leaf_points(
     // is ANNEALED from full down to (nearly) zero across the iterations, so
     // early steps spread the points aggressively while later steps let the fit
     // dominate. Fit only if `fitOnSurface`, Clamp only if `constrainToCell`.
+    // Only processed points repel (and get repelled) — rigid points are
+    // ignored by the algorithms entirely.
+    let active: Vec<usize> = (0..leaves.len()).filter(|&i| process[i]).collect();
     if opts.repulsion && opts.interaction_radius > 0.0 {
-        let r = opts.interaction_radius;
-        let inv_cell = 1.0 / r;
-        let key = |p: &[f32; 3]| -> (i32, i32, i32) {
-            (
-                (p[0] * inv_cell).floor() as i32,
-                (p[1] * inv_cell).floor() as i32,
-                (p[2] * inv_cell).floor() as i32,
-            )
-        };
-        // Only processed points repel (and get repelled) — rigid points are
-        // ignored by the algorithms entirely.
-        let active: Vec<usize> = (0..leaves.len()).filter(|&i| process[i]).collect();
-        let iters = opts.iterations.max(1);
-        let damping = opts.repulsion_damping.clamp(0.0, 1.0);
-        for t in 0..iters {
-            // Anneal: repulsion strongest first, decaying by the chosen curve.
-            let tf = t as f32;
-            let anneal = match opts.damping_curve {
-                DampingCurve::Linear => (1.0 - damping * tf).max(0.0),
-                DampingCurve::Exponential => (1.0 - damping).powi(t as i32),
-            };
-            let strength = opts.repulsion_strength * anneal;
-            // Grid hash over the CURRENT positions of the active points.
-            let mut grid: std::collections::HashMap<(i32, i32, i32), Vec<usize>> =
-                std::collections::HashMap::new();
-            for &i in &active {
-                grid.entry(key(&points[i])).or_default().push(i);
-            }
-            let mut moved = points.clone();
-            for &i in &active {
-                let p = points[i];
-                let (kx, ky, kz) = key(&p);
-                let mut f = [0.0f32; 3];
-                // Distance to the closest neighbour — the stability scale for
-                // the explicit step below.
-                let mut nearest = f32::MAX;
-                for dz in -1..=1 {
-                    for dy in -1..=1 {
-                        for dx in -1..=1 {
-                            let Some(bucket) = grid.get(&(kx + dx, ky + dy, kz + dz)) else {
-                                continue;
-                            };
-                            for &j in bucket {
-                                if j == i {
-                                    continue;
-                                }
-                                let q = points[j];
-                                let dvec = [p[0] - q[0], p[1] - q[1], p[2] - q[2]];
-                                let dist =
-                                    (dvec[0] * dvec[0] + dvec[1] * dvec[1] + dvec[2] * dvec[2])
-                                        .sqrt();
-                                if dist >= r || dist < 1e-9 {
-                                    continue;
-                                }
-                                nearest = nearest.min(dist);
-                                // Inverse-square repulsion (`∝ 1/d²`, like
-                                // equally-charged monopoles): magnitude
-                                // normalised to 1 at the cutoff radius `r`
-                                // (scale-relative) and capped so near-coincident
-                                // points can't explode. Closer points repel far
-                                // harder → clusters break up, the far field
-                                // stays negligible → even, local spread.
-                                let w = ((r / dist) * (r / dist)).min(100.0);
-                                let s = w / dist;
-                                f[0] += dvec[0] * s;
-                                f[1] += dvec[1] * s;
-                                f[2] += dvec[2] * s;
-                            }
-                        }
-                    }
-                }
-                let leaf = &leaves[i];
-                let mut np = p;
-                // Repulsion: tangential component of the neighbour force,
-                // scaled by the annealed strength (stays on the surface plane).
-                if f != [0.0, 0.0, 0.0] {
-                    let n = grad(p);
-                    let fn_dot = f[0] * n[0] + f[1] * n[1] + f[2] * n[2];
-                    let ft = [f[0] - fn_dot * n[0], f[1] - fn_dot * n[1], f[2] - fn_dot * n[2]];
-                    let mut step_vec = [ft[0] * strength, ft[1] * strength, ft[2] * strength];
-                    // Stability clamp (ticket l45r): never move a point more
-                    // than HALF the distance to its nearest neighbour. The 1/d²
-                    // force is stiff — a plain explicit-Euler step at high
-                    // strength leaps a point clean past its neighbours, off the
-                    // surface, where only-on-surface then drops it; the cluster
-                    // CORE (whose forces cancel by symmetry, net ≈ 0) never
-                    // moves, so the pile stays put ("clump in the corner"). The
-                    // half-neighbour cap guarantees a point can never overshoot
-                    // a neighbour, making the relaxation stable for ANY strength
-                    // — clumps expand monotonically toward even spacing.
-                    let step_len = (step_vec[0] * step_vec[0]
-                        + step_vec[1] * step_vec[1]
-                        + step_vec[2] * step_vec[2])
-                        .sqrt();
-                    let max_step = 0.5 * nearest;
-                    if step_len > max_step && step_len > 1e-12 {
-                        let k = max_step / step_len;
-                        step_vec = [step_vec[0] * k, step_vec[1] * k, step_vec[2] * k];
-                    }
-                    np = [p[0] + step_vec[0], p[1] + step_vec[1], p[2] + step_vec[2]];
-                }
-                // Fit (single Newton step): nudge back onto the surface after
-                // the tangential move.
-                if opts.fit_on_surface {
-                    fit_step_once(&mut np, sdf, grad, step);
-                }
-                if opts.constrain_to_cell {
-                    clamp_to_cell(&mut np, leaf);
-                }
-                moved[i] = np;
-            }
-            points = moved;
-        }
+        relaxation_pass(&mut points, leaves, &active, opts, sdf, grad, None);
     }
 
     // ── Final snap to the surface ──
@@ -329,6 +580,99 @@ pub(crate) fn optimize_leaf_points(
             }
             if opts.only_on_surface && sdf(points[i]).abs() >= eps.max(1e-6) {
                 alive[i] = false;
+            }
+        }
+    }
+
+    // ── Feature snapping (edges/corners) ──
+    // AFTER the surface convergence — the sheet detection probes the normal
+    // field around an ON-surface point; a point still en route would sample
+    // garbage. Isotropic repulsion never lands a point on a 0D/1D feature
+    // (measure zero; the tangential projection surfs around the crease), so
+    // features are captured actively: detect distinct normal sheets around
+    // each point, snap it onto their intersection, LOCK it (edge = 1D,
+    // corner = pinned), then re-relax so edge points spread ALONG their edge
+    // and free points re-equalise around the now-anchored ones.
+    if opts.feature_snap {
+        let cos_t = opts.feature_angle_deg.clamp(1.0, 89.0).to_radians().cos();
+        let mut locks: Vec<PointLock> = vec![PointLock::Free; leaves.len()];
+        let mut snapped = false;
+        for &i in &active {
+            if !alive[i] {
+                continue;
+            }
+            let leaf = &leaves[i];
+            let probe_r = 0.5 * leaf.size;
+            // Two snap rounds = one Newton refinement on the feature: the
+            // first round's anchors carry first-order probe error (FD normals
+            // tilt near the crease), the re-detection at the snapped point
+            // sees cleaner sheets and lands within tolerance.
+            let mut kind = PointLock::Free;
+            for _ in 0..2 {
+                let sheets = detect_sheets(points[i], probe_r, cos_t, sdf, grad);
+                let cls = match sheets.len() {
+                    0 | 1 => PointLock::Free,
+                    2 => PointLock::Edge,
+                    _ => PointLock::Corner,
+                };
+                // Never DOWNGRADE: sitting exactly on the feature after round
+                // 1, the probe geometry sometimes catches one sheet less —
+                // re-applying the weaker snap would drag a pinned corner onto
+                // an edge line. Keep the round-1 position and class instead.
+                if cls == PointLock::Free || (kind == PointLock::Corner && cls == PointLock::Edge)
+                {
+                    break;
+                }
+                // Correction budget: one cell size — a genuine nearby feature
+                // is never farther, anything beyond is a spurious detection.
+                let Some(x) = snap_to_sheet_intersection(points[i], &sheets, leaf.size) else {
+                    break;
+                };
+                points[i] = x;
+                kind = cls;
+            }
+            if kind == PointLock::Free {
+                continue;
+            }
+            locks[i] = kind;
+            snapped = true;
+            if opts.constrain_to_cell {
+                clamp_to_cell(&mut points[i], leaf);
+            }
+        }
+        if snapped {
+            // Lock-aware smoothing round (same annealed schedule, restarted):
+            // edge points slide 1D along their crease, corners stay pinned,
+            // free points re-equalise around the anchors.
+            if opts.repulsion && opts.interaction_radius > 0.0 {
+                relaxation_pass(
+                    &mut points,
+                    leaves,
+                    &active,
+                    opts,
+                    sdf,
+                    grad,
+                    Some((&locks, cos_t)),
+                );
+            }
+            // Re-converge the FREE points onto the surface (the smoothing
+            // round moved them; locked points sit on their feature already —
+            // a fit step would drag them off the crease).
+            if opts.fit_on_surface {
+                for &i in &active {
+                    if locks[i] != PointLock::Free || !alive[i] {
+                        continue;
+                    }
+                    for _ in 0..opts.iterations.max(1) {
+                        if sdf(points[i]).abs() < eps {
+                            break;
+                        }
+                        fit_step_once(&mut points[i], sdf, grad, step);
+                        if opts.constrain_to_cell {
+                            clamp_to_cell(&mut points[i], &leaves[i]);
+                        }
+                    }
+                }
             }
         }
     }
@@ -569,6 +913,148 @@ mod tests {
         assert!(dist > 0.3, "points did not separate: {dist}");
         for p in &pts {
             assert!(sphere_sdf(*p).abs() < 0.1);
+        }
+    }
+
+    // ── Feature snapping (edges/corners) ──
+
+    /// Exact Euclidean box SDF, half-extent `h`, centred at origin.
+    fn box_sdf(p: [f32; 3], h: f32) -> f32 {
+        let q = [p[0].abs() - h, p[1].abs() - h, p[2].abs() - h];
+        let outside = [q[0].max(0.0), q[1].max(0.0), q[2].max(0.0)];
+        let out_len =
+            (outside[0] * outside[0] + outside[1] * outside[1] + outside[2] * outside[2]).sqrt();
+        out_len + q[0].max(q[1]).max(q[2]).min(0.0)
+    }
+    fn box5_sdf(p: [f32; 3]) -> f32 {
+        box_sdf(p, 5.0)
+    }
+    /// Central-difference gradient of the box field (the probes sample the
+    /// smooth sheets away from the crease, so FD is fine).
+    fn box5_grad(p: [f32; 3]) -> [f32; 3] {
+        let e = 1e-3;
+        let g = [
+            box5_sdf([p[0] + e, p[1], p[2]]) - box5_sdf([p[0] - e, p[1], p[2]]),
+            box5_sdf([p[0], p[1] + e, p[2]]) - box5_sdf([p[0], p[1] - e, p[2]]),
+            box5_sdf([p[0], p[1], p[2] + e]) - box5_sdf([p[0], p[1], p[2] - e]),
+        ];
+        let l = (g[0] * g[0] + g[1] * g[1] + g[2] * g[2]).sqrt().max(1e-12);
+        [g[0] / l, g[1] / l, g[2] / l]
+    }
+    fn box_leaf_at(c: [f32; 3], size: f32) -> Leaf {
+        Leaf { center: c, sdf: box5_sdf(c), normal: box5_grad(c), size }
+    }
+
+    /// Points fitted near a box edge / corner must SNAP exactly onto them:
+    /// two coordinates at ±5 for the edge point, all three for the corner —
+    /// the anti-chamfer guarantee isotropic repulsion can never give.
+    #[test]
+    fn feature_snap_lands_points_on_box_edges_and_corners() {
+        let near_edge = box_leaf_at([4.4, 4.4, 0.3], 2.0); // near edge x=y=5
+        let near_corner = box_leaf_at([4.4, 4.4, 4.4], 2.0); // near corner (5,5,5)
+        let mid_face = box_leaf_at([0.5, 0.3, 4.2], 2.0); // plain face point
+        let opts = MesherPointOptions {
+            fit_on_surface: true,
+            iterations: 20,
+            fit_target_epsilon: 1e-4,
+            constrain_to_cell: false,
+            feature_snap: true,
+            feature_angle_deg: 30.0,
+            ..Default::default()
+        };
+        let (pts, _, _) =
+            optimize_leaf_points(&[near_edge, near_corner, mid_face], &opts, &box5_sdf, &box5_grad);
+
+        let tol = 0.05;
+        // Edge point: x and y pinned to the crease, z stays interior.
+        assert!(
+            (pts[0][0] - 5.0).abs() < tol && (pts[0][1] - 5.0).abs() < tol,
+            "edge point not on the crease: {:?}",
+            pts[0]
+        );
+        assert!(pts[0][2].abs() < 4.0, "edge point escaped along the edge: {:?}", pts[0]);
+        // Corner point: all three coordinates at +5.
+        for a in 0..3 {
+            assert!(
+                (pts[1][a] - 5.0).abs() < tol,
+                "corner point not on the corner: {:?}",
+                pts[1]
+            );
+        }
+        // Face point: NOT snapped anywhere, just on the surface (z = 5).
+        assert!((pts[2][2] - 5.0).abs() < 1e-3, "face point off surface: {:?}", pts[2]);
+        assert!(pts[2][0].abs() < 2.0 && pts[2][1].abs() < 2.0, "face point dragged: {:?}", pts[2]);
+    }
+
+    /// A smooth surface has no features — enabling the snap must not move
+    /// anything beyond what the plain pipeline does.
+    #[test]
+    fn feature_snap_is_inert_on_a_smooth_sphere() {
+        let leaves = vec![leaf_at([9.2, 0.5, -0.5], 4.0), leaf_at([0.3, 9.4, 0.4], 4.0)];
+        let base = MesherPointOptions {
+            fit_on_surface: true,
+            iterations: 20,
+            fit_target_epsilon: 1e-4,
+            constrain_to_cell: false,
+            ..Default::default()
+        };
+        let with_snap = MesherPointOptions {
+            feature_snap: true,
+            feature_angle_deg: 30.0,
+            ..base.clone()
+        };
+        let (plain, _, _) = optimize_leaf_points(&leaves, &base, &sphere_sdf, &sphere_grad);
+        let (snapped, _, _) = optimize_leaf_points(&leaves, &with_snap, &sphere_sdf, &sphere_grad);
+        for (a, b) in plain.iter().zip(&snapped) {
+            let d = [(a[0] - b[0]), (a[1] - b[1]), (a[2] - b[2])];
+            let dist = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+            assert!(dist < 1e-4, "snap moved a smooth-surface point: {a:?} -> {b:?}");
+        }
+    }
+
+    /// With repulsion on, edge-locked points spread ALONG the crease (1D)
+    /// while staying on it, and a corner point stays pinned.
+    #[test]
+    fn edge_locked_points_spread_along_the_crease() {
+        // Three points bunched on the edge x=y=5, plus the corner (5,5,5).
+        let leaves = vec![
+            box_leaf_at([4.5, 4.5, -0.4], 3.0),
+            box_leaf_at([4.5, 4.5, 0.0], 3.0),
+            box_leaf_at([4.5, 4.5, 0.4], 3.0),
+            box_leaf_at([4.6, 4.6, 4.6], 3.0),
+        ];
+        let opts = MesherPointOptions {
+            fit_on_surface: true,
+            iterations: 12,
+            fit_target_epsilon: 1e-4,
+            constrain_to_cell: false,
+            repulsion: true,
+            interaction_radius: 3.0,
+            repulsion_strength: 0.5,
+            repulsion_damping: 0.2,
+            feature_snap: true,
+            feature_angle_deg: 30.0,
+            ..Default::default()
+        };
+        let (pts, _, _) = optimize_leaf_points(&leaves, &opts, &box5_sdf, &box5_grad);
+        let tol = 0.08;
+        // All three edge points still ON the crease…
+        for p in &pts[..3] {
+            assert!(
+                (p[0] - 5.0).abs() < tol && (p[1] - 5.0).abs() < tol,
+                "edge point left the crease: {p:?}"
+            );
+        }
+        // …but spread apart along z compared to the 0.4 start spacing.
+        let mut zs: Vec<f32> = pts[..3].iter().map(|p| p[2]).collect();
+        zs.sort_by(f32::total_cmp);
+        assert!(
+            zs[1] - zs[0] > 0.45 && zs[2] - zs[1] > 0.45,
+            "edge points did not spread along the edge: {zs:?}"
+        );
+        // Corner point pinned at (5,5,5).
+        for a in 0..3 {
+            assert!((pts[3][a] - 5.0).abs() < tol, "corner point moved: {:?}", pts[3]);
         }
     }
 

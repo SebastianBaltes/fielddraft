@@ -49,6 +49,8 @@ const DEFAULTS: MesherDebug = {
   repulsionStrength: 0.5,
   repulsionDamping: 0.2,
   dampingCurve: "linear",
+  featureSnap: false,
+  featureAngleDeg: 30,
   meshPoints: false,
   balanceOctree: true,
 };
@@ -94,6 +96,8 @@ function loadSettings(): MesherDebug {
       repulsionDamping: clampNum(p.repulsionDamping, 0, 1, DEFAULTS.repulsionDamping),
       dampingCurve:
         p.dampingCurve === "exponential" ? "exponential" : DEFAULTS.dampingCurve,
+      featureSnap: typeof p.featureSnap === "boolean" ? p.featureSnap : DEFAULTS.featureSnap,
+      featureAngleDeg: clampNum(p.featureAngleDeg, 1, 89, DEFAULTS.featureAngleDeg),
       meshPoints: typeof p.meshPoints === "boolean" ? p.meshPoints : DEFAULTS.meshPoints,
       balanceOctree:
         typeof p.balanceOctree === "boolean" ? p.balanceOctree : DEFAULTS.balanceOctree,
@@ -127,6 +131,8 @@ export function MesherDialog({ onClose }: { onClose: () => void }) {
   const [repulsionStrength, setRepulsionStrength] = useState(initial.repulsionStrength);
   const [repulsionDamping, setRepulsionDamping] = useState(initial.repulsionDamping);
   const [dampingCurve, setDampingCurve] = useState<MesherDampingCurve>(initial.dampingCurve);
+  const [featureSnap, setFeatureSnap] = useState(initial.featureSnap);
+  const [featureAngleDeg, setFeatureAngleDeg] = useState(initial.featureAngleDeg);
   const [meshPoints, setMeshPoints] = useState(initial.meshPoints);
   const [balanceOctree, setBalanceOctree] = useState(initial.balanceOctree);
 
@@ -155,6 +161,8 @@ export function MesherDialog({ onClose }: { onClose: () => void }) {
       repulsionStrength,
       repulsionDamping,
       dampingCurve,
+      featureSnap,
+      featureAngleDeg,
       meshPoints,
       balanceOctree,
     };
@@ -185,6 +193,8 @@ export function MesherDialog({ onClose }: { onClose: () => void }) {
     repulsionStrength,
     repulsionDamping,
     dampingCurve,
+    featureSnap,
+    featureAngleDeg,
     meshPoints,
     balanceOctree,
   ]);
@@ -516,6 +526,33 @@ export function MesherDialog({ onClose }: { onClose: () => void }) {
           </div>
         </>
       )}
+
+      <div className="vec-row check-row">
+        <label
+          htmlFor="mesher-feature-snap"
+          title="Detect edge/corner creases via normal probes around each point, snap points onto them and LOCK them there (edge points slide 1D along their crease, corners are pinned). Isotropic repulsion alone never lands points on 0D/1D features — they have measure zero and the tangential projection surfs around the crease."
+        >
+          Feature snap (edges/corners)
+        </label>
+        <input
+          id="mesher-feature-snap"
+          type="checkbox"
+          data-testid="mesher-feature-snap"
+          checked={featureSnap}
+          onChange={(e) => setFeatureSnap(e.target.checked)}
+        />
+      </div>
+      {featureSnap &&
+        numRow(
+          "Feature angle (°)",
+          featureAngleDeg,
+          setFeatureAngleDeg,
+          { min: 1, max: 89, step: 1 },
+          "Two probed normals differing by MORE than this angle count as " +
+            "distinct sheets → the point sits near an edge (2 sheets) or " +
+            "corner (3+). Lower = more sensitive (rounds fillets count as " +
+            "features), higher = only hard creases.",
+        )}
 
       <div className="vec-row check-row">
         <label
