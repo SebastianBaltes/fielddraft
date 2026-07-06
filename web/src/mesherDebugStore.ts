@@ -41,6 +41,10 @@ export interface MesherDebug {
   constrainToCell: boolean;
   /** Feature 1: damped Newton projection onto the SDF zero set. */
   fitOnSurface: boolean;
+  /** Drop points that did not actually REACH the surface after the fit
+   *  (clamped at their cell bounds): removed from the point set, the
+   *  repulsion and the mesh. */
+  onlyOnSurface: boolean;
   fitMaxIterations: number;
   fitTargetEpsilon: number;
   /** Newton damping, 0.1–1.0. */

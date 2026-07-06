@@ -40,6 +40,7 @@ const DEFAULTS: MesherDebug = {
   signChangeNeighboursOnly: false,
   constrainToCell: true,
   fitOnSurface: false,
+  onlyOnSurface: false,
   fitMaxIterations: 8,
   fitTargetEpsilon: 0.001,
   fitStepMultiplier: 0.8,
@@ -82,6 +83,8 @@ function loadSettings(): MesherDebug {
         typeof p.constrainToCell === "boolean" ? p.constrainToCell : DEFAULTS.constrainToCell,
       fitOnSurface:
         typeof p.fitOnSurface === "boolean" ? p.fitOnSurface : DEFAULTS.fitOnSurface,
+      onlyOnSurface:
+        typeof p.onlyOnSurface === "boolean" ? p.onlyOnSurface : DEFAULTS.onlyOnSurface,
       fitMaxIterations: Math.round(clampNum(p.fitMaxIterations, 1, 100, DEFAULTS.fitMaxIterations)),
       fitTargetEpsilon: clampNum(p.fitTargetEpsilon, 0, 1e6, DEFAULTS.fitTargetEpsilon),
       fitStepMultiplier: clampNum(p.fitStepMultiplier, 0.1, 1, DEFAULTS.fitStepMultiplier),
@@ -117,6 +120,7 @@ export function MesherDialog({ onClose }: { onClose: () => void }) {
   );
   const [constrainToCell, setConstrainToCell] = useState(initial.constrainToCell);
   const [fitOnSurface, setFitOnSurface] = useState(initial.fitOnSurface);
+  const [onlyOnSurface, setOnlyOnSurface] = useState(initial.onlyOnSurface);
   const [fitMaxIterations, setFitMaxIterations] = useState(initial.fitMaxIterations);
   const [fitTargetEpsilon, setFitTargetEpsilon] = useState(initial.fitTargetEpsilon);
   const [fitStepMultiplier, setFitStepMultiplier] = useState(initial.fitStepMultiplier);
@@ -146,6 +150,7 @@ export function MesherDialog({ onClose }: { onClose: () => void }) {
       signChangeNeighboursOnly,
       constrainToCell,
       fitOnSurface,
+      onlyOnSurface,
       fitMaxIterations,
       fitTargetEpsilon,
       fitStepMultiplier,
@@ -175,6 +180,7 @@ export function MesherDialog({ onClose }: { onClose: () => void }) {
     signChangeNeighboursOnly,
     constrainToCell,
     fitOnSurface,
+    onlyOnSurface,
     fitMaxIterations,
     fitTargetEpsilon,
     fitStepMultiplier,
@@ -407,6 +413,21 @@ export function MesherDialog({ onClose }: { onClose: () => void }) {
       </div>
       {fitOnSurface && (
         <>
+          <div className="vec-row check-row">
+            <label
+              htmlFor="mesher-only-on-surface"
+              title="Keep only cells whose point actually REACHED the surface after the projection: a point clamped at its cell bounds (surface out of reach) drops out of the set entirely — not drawn, not repelled, no mesh vertex."
+            >
+              Only on surface
+            </label>
+            <input
+              id="mesher-only-on-surface"
+              type="checkbox"
+              data-testid="mesher-only-on-surface"
+              checked={onlyOnSurface}
+              onChange={(e) => setOnlyOnSurface(e.target.checked)}
+            />
+          </div>
           {numRow("Max iterations", fitMaxIterations, setFitMaxIterations, {
             min: 1,
             max: 100,

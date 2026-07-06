@@ -49,6 +49,10 @@ pub struct MesherPointOptions {
     pub constrain_to_cell: bool,
     // Feature 1: Newton projection.
     pub fit_on_surface: bool,
+    /// Drop points that did NOT actually reach the surface after the fit
+    /// (typically clamped at their cell bounds): they leave the point set
+    /// entirely — not drawn, not repelled, their cells emit no mesh vertex.
+    pub only_on_surface: bool,
     pub fit_max_iterations: u32,
     pub fit_target_epsilon: f32,
     pub fit_step_multiplier: f32,
@@ -82,6 +86,7 @@ impl Default for MesherPointOptions {
             sign_change_neighbours_only: false,
             constrain_to_cell: true,
             fit_on_surface: false,
+            only_on_surface: false,
             fit_max_iterations: 8,
             fit_target_epsilon: 0.001,
             fit_step_multiplier: 0.8,
@@ -140,8 +145,11 @@ pub(crate) fn optimize_leaf_points(
     opts: &MesherPointOptions,
     sdf: &dyn Fn([f32; 3]) -> f32,
     grad: &dyn Fn([f32; 3]) -> [f32; 3],
-) -> (Vec<[f32; 3]>, Vec<bool>) {
+) -> (Vec<[f32; 3]>, Vec<bool>, Vec<bool>) {
     let mut points: Vec<[f32; 3]> = leaves.iter().map(|l| l.center).collect();
+    // "Only on surface": points that fail to reach the zero set drop OUT of
+    // the set entirely (jq2t follow-up filter). All alive until proven not.
+    let mut alive: Vec<bool> = vec![true; leaves.len()];
 
     // ── Processing filter (AND of the active ones) ──
     let mut process: Vec<bool> = Vec::with_capacity(leaves.len());
@@ -186,6 +194,14 @@ pub(crate) fn optimize_leaf_points(
                 step,
                 opts.constrain_to_cell,
             );
+            // The fit's own convergence criterion decides "reached": a point
+            // clamped at its cell bounds (surface out of reach) stays with
+            // |sdf| above the target epsilon and falls out of the set.
+            if opts.only_on_surface
+                && sdf(points[i]).abs() >= opts.fit_target_epsilon.max(1e-6)
+            {
+                alive[i] = false;
+            }
         }
     }
 
@@ -202,7 +218,8 @@ pub(crate) fn optimize_leaf_points(
         };
         // Only processed points repel (and get repelled) — rigid points are
         // ignored by the algorithms entirely, per the ticket.
-        let active: Vec<usize> = (0..leaves.len()).filter(|&i| process[i]).collect();
+        let active: Vec<usize> =
+            (0..leaves.len()).filter(|&i| process[i] && alive[i]).collect();
         // The re-pin after each tangential move (ticket: "2-3 iterations").
         let repin_iters = 3u32.min(opts.fit_max_iterations.max(1));
         for _ in 0..opts.repulsion_iterations {
@@ -285,7 +302,7 @@ pub(crate) fn optimize_leaf_points(
         }
     }
 
-    (points, process)
+    (points, process, alive)
 }
 
 #[cfg(test)]
@@ -321,7 +338,7 @@ mod tests {
             constrain_to_cell: false,
             ..Default::default()
         };
-        let (pts, process) = optimize_leaf_points(&leaves, &opts, &sphere_sdf, &sphere_grad);
+        let (pts, process, _) = optimize_leaf_points(&leaves, &opts, &sphere_sdf, &sphere_grad);
         assert!(process.iter().all(|&b| b));
         for p in &pts {
             assert!(sphere_sdf(*p).abs() < 1e-3, "not on surface: {p:?}");
@@ -341,7 +358,7 @@ mod tests {
             constrain_to_cell: true,
             ..Default::default()
         };
-        let (pts, _) = optimize_leaf_points(&[leaf], &opts, &sphere_sdf, &sphere_grad);
+        let (pts, _, _) = optimize_leaf_points(&[leaf], &opts, &sphere_sdf, &sphere_grad);
         let p = pts[0];
         for a in 0..3 {
             assert!(
@@ -368,7 +385,7 @@ mod tests {
             constrain_to_cell: false,
             ..Default::default()
         };
-        let (pts, process) =
+        let (pts, process, _) =
             optimize_leaf_points(&[near, deep], &opts, &sphere_sdf, &sphere_grad);
         assert!(process[0] && !process[1]);
         assert!(sphere_sdf(pts[0]).abs() < 1e-3);
@@ -388,7 +405,7 @@ mod tests {
             constrain_to_cell: false,
             ..Default::default()
         };
-        let (pts, process) =
+        let (pts, process, _) =
             optimize_leaf_points(&[straddling, inside], &opts, &sphere_sdf, &sphere_grad);
         assert!(process[0], "straddling cell must be processed");
         assert!(!process[1], "interior cell must be rigid");
@@ -441,7 +458,7 @@ mod tests {
             constrain_to_cell: false,
             ..Default::default()
         };
-        let (pts, _) = optimize_leaf_points(&leaves, &opts, &sphere_sdf, &sphere_grad);
+        let (pts, _, _) = optimize_leaf_points(&leaves, &opts, &sphere_sdf, &sphere_grad);
         let after = min_dist(&pts);
         assert!(
             after > before * 2.0,
@@ -472,7 +489,7 @@ mod tests {
             constrain_to_cell: false,
             ..Default::default()
         };
-        let (pts, _) = optimize_leaf_points(&leaves, &opts, &sphere_sdf, &sphere_grad);
+        let (pts, _, _) = optimize_leaf_points(&leaves, &opts, &sphere_sdf, &sphere_grad);
         let d = [
             pts[0][0] - pts[1][0],
             pts[0][1] - pts[1][1],
@@ -583,8 +600,8 @@ mod tests {
             constrain_to_cell: true,
             ..Default::default()
         };
-        let (points, _) = optimize_leaf_points(&leaves, &opts, &sphere_sdf, &sphere_grad);
-        let indices = polygonize(&root, &points, &sphere_sdf);
+        let (points, _, alive) = optimize_leaf_points(&leaves, &opts, &sphere_sdf, &sphere_grad);
+        let indices = polygonize(&root, &points, &alive, &sphere_sdf);
         assert!(indices.len() >= 3 * 100, "too few triangles: {}", indices.len() / 3);
         let (boundary, nonmanifold) = edge_defects(&indices);
         assert_eq!(boundary, 0, "dual contour left open edges");
@@ -597,6 +614,28 @@ mod tests {
         );
     }
 
+    /// "Only on surface": a cell whose point cannot reach the zero set
+    /// (clamped at its bounds) drops OUT of the set; a reaching cell stays.
+    #[test]
+    fn only_on_surface_drops_clamped_points() {
+        let reaching = leaf_at([9.5, 0.0, 0.0], 2.0); // surface within bounds
+        let deep = leaf_at([2.0, 0.0, 0.0], 2.0); // surface out of reach
+        let opts = MesherPointOptions {
+            fit_on_surface: true,
+            only_on_surface: true,
+            fit_max_iterations: 30,
+            fit_target_epsilon: 1e-4,
+            fit_step_multiplier: 1.0,
+            constrain_to_cell: true,
+            ..Default::default()
+        };
+        let (pts, _, alive) =
+            optimize_leaf_points(&[reaching, deep], &opts, &sphere_sdf, &sphere_grad);
+        assert!(alive[0], "reaching point must survive");
+        assert!(!alive[1], "clamped point must drop out");
+        assert!(sphere_sdf(pts[0]).abs() < 1e-3);
+    }
+
     /// Even on an UNBALANCED octree the recursion must stay crack-free (the
     /// 2:1 pass improves quality, not correctness).
     #[test]
@@ -604,7 +643,8 @@ mod tests {
         let mut root = sphere_octree(5);
         let leaves = collect_leaves(&mut root, &sphere_grad);
         let points: Vec<[f32; 3]> = leaves.iter().map(|l| l.center).collect();
-        let indices = polygonize(&root, &points, &sphere_sdf);
+        let alive = vec![true; points.len()];
+        let indices = polygonize(&root, &points, &alive, &sphere_sdf);
         let (boundary, nonmanifold) = edge_defects(&indices);
         assert_eq!(boundary, 0, "unbalanced dual contour left open edges");
         assert_eq!(nonmanifold, 0, "unbalanced dual contour non-manifold");
@@ -865,6 +905,9 @@ pub(crate) fn collect_leaves(
 
 struct MeshCtx<'a> {
     points: &'a [[f32; 3]],
+    /// Per-leaf liveness ("only on surface" filter) — a quad touching a
+    /// dropped cell is skipped: that cell contributes no vertex.
+    alive: &'a [bool],
     sdf: &'a dyn Fn([f32; 3]) -> f32,
     indices: Vec<u32>,
 }
@@ -1034,6 +1077,9 @@ fn emit_edge_quad(nodes: [&OctreeNode; 4], axis: usize, ctx: &mut MeshCtx) {
     p0[axis] -= h;
     p1[axis] += h;
 
+    if nodes.iter().any(|n| !ctx.alive[n.leaf_idx]) {
+        return;
+    }
     let d0 = (ctx.sdf)(p0);
     let d1 = (ctx.sdf)(p1);
     if (d0 >= 0.0) == (d1 >= 0.0) {
@@ -1061,10 +1107,12 @@ fn emit_edge_quad(nodes: [&OctreeNode; 4], axis: usize, ctx: &mut MeshCtx) {
 pub(crate) fn polygonize(
     root: &OctreeNode,
     points: &[[f32; 3]],
+    alive: &[bool],
     sdf: &dyn Fn([f32; 3]) -> f32,
 ) -> Vec<u32> {
     let mut ctx = MeshCtx {
         points,
+        alive,
         sdf,
         indices: Vec::new(),
     };

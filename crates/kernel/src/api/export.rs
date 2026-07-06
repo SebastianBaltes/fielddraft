@@ -166,18 +166,32 @@ impl Kernel {
         if leaves.is_empty() {
             return vec![0.0, 0.0];
         }
-        let (points, processed) =
+        let (points, processed, alive) =
             crate::mesher_points::optimize_leaf_points(&leaves, &opts, &scene_sdf, &grad);
         let indices = if opts.mesh_points {
-            crate::mesher_points::polygonize(&root, &points, &scene_sdf)
+            crate::mesher_points::polygonize(&root, &points, &alive, &scene_sdf)
         } else {
             Vec::new()
         };
 
-        let mut out = Vec::with_capacity(2 + leaves.len() * 8 + indices.len());
-        out.push(leaves.len() as f32);
+        // "Only on surface" drops points from the SET: dead leaves are
+        // omitted from the output and the mesh indices remapped onto the
+        // surviving points.
+        let mut remap = vec![u32::MAX; leaves.len()];
+        let mut n_alive = 0u32;
+        for (i, &a) in alive.iter().enumerate() {
+            if a {
+                remap[i] = n_alive;
+                n_alive += 1;
+            }
+        }
+        let mut out = Vec::with_capacity(2 + n_alive as usize * 8 + indices.len());
+        out.push(n_alive as f32);
         out.push((indices.len() / 3) as f32);
         for (i, leaf) in leaves.iter().enumerate() {
+            if !alive[i] {
+                continue;
+            }
             let p = points[i];
             let (d, n) = if processed[i] && (opts.fit_on_surface || opts.repulsion) {
                 (scene_sdf(p), grad(p))
@@ -186,7 +200,7 @@ impl Kernel {
             };
             out.extend_from_slice(&[p[0], p[1], p[2], d, n[0], n[1], n[2], leaf.size]);
         }
-        out.extend(indices.iter().map(|&i| i as f32));
+        out.extend(indices.iter().map(|&i| remap[i as usize] as f32));
         out
     }
 
