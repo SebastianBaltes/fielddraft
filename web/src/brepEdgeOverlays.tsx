@@ -126,6 +126,14 @@ export function BRepEdgeOverlay({
   // depth-test. "xray" (default) and "none" keep depthTest off. Depth comes
   // from the meshes in mesh render mode; the SDF overlays additionally write
   // depth and skip the depth-clear in "visible" mode (see renderOverlayLayer).
+  //
+  // The edges lie EXACTLY on the surface, so against the true surface depth
+  // they z-fight (ragged/washed-out, ticket b9xz). The fix is polygonOffset
+  // pulling the edge fragments slightly toward the camera — LineSegments2
+  // rasterizes triangles, so the offset applies on WebGPU too (depthBias).
+  // Biasing the edges forward is side-effect-free, unlike the previous
+  // approach of pushing the whole SDF scene depth BACK, which skewed the
+  // depth test against rasterized geometry (SDF-plane crescent, ticket iw6f).
   useEffect(() => {
     const depthTest = mode === "visible";
     for (const m of [
@@ -136,6 +144,12 @@ export function BRepEdgeOverlay({
     ]) {
       if (m.depthTest !== depthTest) {
         m.depthTest = depthTest;
+        m.needsUpdate = true;
+      }
+      if (depthTest && !m.polygonOffset) {
+        m.polygonOffset = true;
+        m.polygonOffsetFactor = -2;
+        m.polygonOffsetUnits = -4;
         m.needsUpdate = true;
       }
     }

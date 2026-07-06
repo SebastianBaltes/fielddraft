@@ -365,7 +365,7 @@ export function createShadeMaterial(
     // plane so empty pixels never occlude. Harmless in X-Ray/Hidden modes —
     // there renderOverlayLayer clears depth before drawing the edges.
     If(hasHit.greaterThan(int(0)), () => {
-      // Shared depth reconstruction + b9xz edge bias (emitSceneDepthWrite).
+      // Shared true-surface depth reconstruction (emitSceneDepthWrite).
       emitSceneDepthWrite({ hitPos: shadePos, viewMatU, nearU, farU, isOrthoU });
     }).Else(() => {
       depth.assign(float(1.0)).toStack();

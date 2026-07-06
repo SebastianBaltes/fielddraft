@@ -117,8 +117,8 @@ export function createVmMaterial(state: VmPipelineState): MeshBasicNodeMaterial 
       Discard();
     });
 
-    // Canvas depth for the hit (emitSceneDepthWrite: shared reconstruction +
-    // b9xz edge bias). Misses already discarded above, so they never touch
+    // Canvas depth for the hit (emitSceneDepthWrite: shared true-surface
+    // reconstruction). Misses already discarded above, so they never touch
     // depth. Harmless in X-Ray/Hidden modes — there renderOverlayLayer clears
     // depth before drawing the edges.
     emitSceneDepthWrite({

@@ -24,6 +24,17 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.413",
+    entries: [
+      {
+        kind: "fix",
+        text: "SDF-Renderer: blickwinkelabhängige Parallaxe zwischen Solid und SDF-Plane behoben — die Szenen-Tiefe wurde 0,1 % hinter die Oberfläche geschoben (Kanten-Bias), was an flach geschnittenen Ebenen zur Sichel verstärkte; B-Rep-Kanten ziehen sich jetzt selbst per polygonOffset nach vorn",
+        scope: "render",
+        tickets: ["iw6f"],
+      },
+    ],
+  },
+  {
     version: "0.6.412",
     entries: [
       {
