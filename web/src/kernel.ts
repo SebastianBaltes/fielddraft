@@ -430,7 +430,7 @@ export class Kernel {
     // the live package.json) means a cosmetic version bump without a rebuild
     // never trips this — only a genuinely stale module does, i.e. a long-open
     // tab whose worker booted before the last `just build-wasm`. Warn loudly
-    // so it's never silent (e.g. MDC and RFTA returning the same triangle
+    // so it's never silent (e.g. two meshers returning the same triangle
     // count because the new mesher code never loaded).
     const wasmV = wasmVersion();
     if (wasmV !== __KERNEL_EXPECTED__) {

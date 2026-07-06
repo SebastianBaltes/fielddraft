@@ -725,13 +725,15 @@ graph LR
   6-Tet-Freudenthal-Zerlegung, ambiguitätsfrei → watertight+2-manifold für
   jedes Feld). Beide dezimieren mit dem eigenen QEM (`decimate_builtin`;
   baby_shark paniced auf dem MT-Mesh). Der Report trägt ein
-  `route`-Klartext-Label pro Body. Zwei zuvor nur im **Mesh-Viewer**
-  (`meshAlgorithm`, `kernel_core::build_mesh_for`) verfügbare Mesher sind
-  ebenfalls exportierbar: *Manifold DC (viewport)* (`dc::dual_contour_with_primitives`,
-  uniform Manifold-DC + Planar-Simplifikation) und *Reach for the Arcs*
-  (`rfta::reach_for_the_arcs`, Sellán 2024 — sPSR, interne Auflösung
-  gedeckelt). Damit deckt der Export alle Rust-Mesher ab (der Viewport-
-  `mt.rs` ist redundant zu `marching_tets.rs`). CGAL/libfive/OpenVDB sind
+  `route`-Klartext-Label pro Body. Der zuvor nur im **Mesh-Viewer**
+  (`meshAlgorithm`, `kernel_core::build_mesh_for`) verfügbare Mesher
+  *Manifold DC (viewport)* (`dc::dual_contour_with_primitives`, uniform
+  Manifold-DC + Planar-Simplifikation) ist ebenfalls exportierbar; der
+  Viewport-`mt.rs` ist redundant zu `marching_tets.rs`. *Reach for the
+  Arcs* wurde entfernt (Ticket tihw: die sPSR-Rekonstruktion der
+  poisson_reconstruction-Crate hat selbst auf einer perfekten Kugel-
+  Punktwolke >10 % Formfehler und ist superlinear langsam — in
+  FieldDraft, wo das exakte SDF vorliegt, ohne Anwendungsfall). CGAL/libfive/OpenVDB sind
   nicht auf `main`: CGAL-Spike liegt auf Branch `feat/cgal-mesher`
   (emscripten-Mesh_3), libfive ist über fidget (interval-dc) abgedeckt.
 * **Export-Vorschau** (`exportPreviewStore.ts`, `exportPreviewMesh.tsx`):

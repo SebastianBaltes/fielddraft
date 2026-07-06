@@ -24,6 +24,17 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.411",
+    entries: [
+      {
+        kind: "fix",
+        text: "Meshing-Verfahren „Reach for the Arcs“ entfernt — die sPSR-Rekonstruktion lieferte prinzipbedingt entartete Netze (625 Dreiecke, >5 mm Abweichung) und ist nicht rettbar",
+        scope: "export",
+        tickets: ["tihw"],
+      },
+    ],
+  },
+  {
     version: "0.6.410",
     entries: [
       {

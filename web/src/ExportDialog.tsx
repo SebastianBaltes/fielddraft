@@ -84,7 +84,6 @@ function initialMethod(): MeshMethod {
       stored === "extended-marching-cubes" ||
       stored === "macet" ||
       stored === "manifold-dc" ||
-      stored === "rfta" ||
       stored === "adaptive"
     ) {
       return stored;
@@ -126,7 +125,7 @@ export function ExportDialog({ store, format, onClose }: ExportDialogProps) {
 
   // Live estimate: debounced so it doesn't mesh a coarse grid on every
   // keystroke. The kernel returns `dense: false` for octree / parametric /
-  // RFTA routes, and the hint below renders nothing for those.
+  // routes, and the hint below renders nothing for those.
   useEffect(() => {
     const handle = setTimeout(() => {
       setEstimate(store.exportEstimate(cellSizeMm, method));
@@ -347,7 +346,6 @@ export function ExportDialog({ store, format, onClose }: ExportDialogProps) {
           </option>
           <option value="macet">MACET (edge transforms, quality)</option>
           <option value="manifold-dc">Manifold DC (viewport)</option>
-          <option value="rfta">Reach for the Arcs</option>
         </select>
         <span className="hint">
           {method === "surface-nets"
@@ -370,9 +368,7 @@ export function ExportDialog({ store, format, onClose }: ExportDialogProps) {
                             ? "MACET (Dietrich/Scheidegger 2009): MC33 topology, but each active edge is transformed to be perpendicular to the surface (gradient + tangential, using the analytic ∇f) and the crossing is re-found by bisection — eliminates skinny/degenerate triangles while staying watertight. Slower (root-finding per edge)."
                             : method === "manifold-dc"
                             ? "The viewport's own uniform Manifold Dual Contouring with planar-face simplification — now exportable too."
-                            : method === "rfta"
-                              ? "Reach for the Arcs (Sellán et al. 2024): spheres → tangent points → screened Poisson reconstruction. A sampled-grid reconstruction (internal resolution capped) — robust on blurry/imperfect fields."
-                              : "Parametric-first, then adaptive Manifold-DC — exact edges and the fewest triangles for regular CAD solids."}
+                            : "Parametric-first, then adaptive Manifold-DC — exact edges and the fewest triangles for regular CAD solids."}
         </span>
       </div>
 

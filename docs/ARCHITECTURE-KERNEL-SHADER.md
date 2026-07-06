@@ -35,7 +35,7 @@ als **Dreiecksnetz** (Mesh-Modus, Export).
 │   │BoolOp   │       │  └─ undo/redo: Vec<Document>               │                            │
 │   └─────────┘       │                                            │                            │
 │                     │   CSG-Baum ──► SDF (sdf_compiler.rs, sdf_dual.rs)                       │
-│                     │            └─► B-Rep (brep/*.rs)   └─► Mesh (dc.rs, mdc.rs, rfta/*)     │
+│                     │            └─► B-Rep (brep/*.rs)   └─► Mesh (dc.rs, mdc.rs, mt.rs)      │
 │                     └──────────────────────────────────────────┘                            │
 └──────────────────────────────────────────────│──────────────────────────────────────────────┘
                                                 │ wasm-bindgen (JSON + Zero-Copy-Views)
@@ -658,7 +658,6 @@ Undo/Redo arbeitet mit Voll-Snapshots des `Document` (`Kernel::undo/redo`).
 | `sketch2d.rs`, `sketch_regions.rs`, `sketch_features.rs` | 2D-Sketch-Modell, Regionen, Sketch-Features |
 | `raycast.rs`, `queries.rs` | SDF-Raycast (Picking), Geometrie-Queries |
 | `dc.rs`, `mdc.rs`, `mt.rs` | Dual Contouring / Manifold-DC / Marching-Tetrahedra (Meshing) |
-| `rfta/*` | Alternativer Mesher (Sphere-Tree/Poisson/Rasterize) |
 | `brep/octree.rs` | ① adaptiver Octree + Zellklassifikation |
 | `brep/projection.rs` | ② Newton/Taubin-Projektion |
 | `brep/extraction.rs` | ③ Edge-/Vertex-Solve + Phantom-Filter |

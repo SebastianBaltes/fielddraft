@@ -12,7 +12,6 @@ pub mod sdf_dual;
 pub mod dc;
 pub mod mdc;
 pub mod mt;
-pub mod rfta;
 pub mod expr;
 pub mod features;
 // K13: mesh_sdf moved to the protocol crate so

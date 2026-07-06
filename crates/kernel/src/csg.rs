@@ -183,7 +183,7 @@ impl Contributors {
     /// Collapse to per-*feature* granularity: every contained branch is
     /// reduced to its owning feature (sub-index dropped) and duplicates
     /// merged. The analytic per-face decomposition stays in
-    /// [`expand_evaluate_leaf`]; the mesh-level proxy (DC/MDC/RFTA
+    /// [`expand_evaluate_leaf`]; the mesh-level proxy (DC/MDC
     /// classification + the flat contributor buffer + the topology
     /// extractor) consumes this collapsed view, so a single box still
     /// reads as one Face-classified contributor rather than splitting

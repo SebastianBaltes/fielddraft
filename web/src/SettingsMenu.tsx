@@ -861,7 +861,6 @@ function SettingsDialog({
                       onChange={(e) => set("meshAlgorithm", e.target.value as MeshAlgorithm)}
                     >
                       <option value="mdc">MDC</option>
-                      <option value="rfta">RFTA</option>
                       <option value="mt">Marching Tetrahedra</option>
                     </select>
                   </div>

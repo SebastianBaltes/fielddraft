@@ -31,8 +31,7 @@ export type MeshMethod =
   | "dual-marching-cubes"
   | "extended-marching-cubes"
   | "macet"
-  | "manifold-dc"
-  | "rfta";
+  | "manifold-dc";
 
 /** Per-body slice of the export report (kernel: `BodyExportReport`,
  *  with the `MeshValidation` fields flattened in). */
@@ -102,7 +101,7 @@ export interface ExportBodyEstimate {
 
 /** Pre-mesh estimate for the export dialog (kernel: `ExportEstimate`).
  *  Only meaningful for dense-grid methods (`dense: true`); the octree /
- *  parametric / RFTA routes return `dense: false` and the dialog shows
+ *  parametric routes return `dense: false` and the dialog shows
  *  nothing. */
 export interface ExportEstimate {
   dense: boolean;

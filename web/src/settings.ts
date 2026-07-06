@@ -193,7 +193,7 @@ export function useWorkspaceUnits(): WorkspaceUnits {
 
 export type ThemeChoice = "light" | "dark";
 export type RenderMode = "sdf-vm" | "sdf-deferred" | "mesh" | "brep" | "webgl";
-export type MeshAlgorithm = "mdc" | "rfta" | "mt";
+export type MeshAlgorithm = "mdc" | "mt";
 /** R3F render scheduling:
  *   - "demand": render only when something invalidates the canvas (default,
  *               idle GPU when the scene is static)
@@ -208,7 +208,7 @@ export type FrameLoopMode = "demand" | "always";
 export type BRepEdgeMode = "xray" | "visible" | "none";
 
 const VALID_RENDER_MODES: RenderMode[] = ["sdf-vm", "sdf-deferred", "mesh", "brep", "webgl"];
-const VALID_MESH_ALGORITHMS: MeshAlgorithm[] = ["mdc", "rfta", "mt"];
+const VALID_MESH_ALGORITHMS: MeshAlgorithm[] = ["mdc", "mt"];
 const VALID_BREP_EDGE_MODES: BRepEdgeMode[] = ["xray", "visible", "none"];
 
 export interface SettingsState {

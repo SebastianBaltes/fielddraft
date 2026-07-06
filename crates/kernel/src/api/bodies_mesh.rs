@@ -328,7 +328,6 @@ impl Kernel {
     #[wasm_bindgen(js_name = setMeshAlgorithm)]
     pub fn set_mesh_algorithm(&mut self, name: &str) -> bool {
         let algo = match name {
-            "rfta" => 1,
             "mt" => 2,
             _ => 0,
         };
