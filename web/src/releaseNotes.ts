@@ -24,6 +24,17 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.432",
+    entries: [
+      {
+        kind: "fix",
+        text: "Schmale Flächen waren nicht hoverbar (nur einzelne Kanten leuchteten): der Kanten-Pick-Radius war in NDC definiert und wuchs mit der Fenstergröße auf ~15px — breit genug, um eine schmale Seitenfläche von beiden Silhouetten her komplett abzudecken, sodass per Edge-vor-Face-Priorität nie die Fläche gewann. Kanten- (8px) und Vertex-Pick-Radius (11px) sind jetzt pixel-basiert und fenstergrößen-stabil",
+        scope: "viewport",
+        tickets: ["7cv2"],
+      },
+    ],
+  },
+  {
     version: "0.6.431",
     entries: [
       {

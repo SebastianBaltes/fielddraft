@@ -1154,6 +1154,42 @@ mod tests {
         assert!(brep.edges.len() >= 12, "expected the full sliver edge set, got {}", brep.edges.len());
     }
 
+    /// Ticket 7cv2 diagnostic: face loops of the sliver.
+    #[test]
+    #[ignore]
+    fn ticket_7cv2_face_loops_dump() {
+        let gy = CsgNode::Leaf {
+            id: FeatureId::from_u32(2),
+            primitive: Primitive::Gyroid { cell_size: 10.0, thickness: 1.0 },
+        };
+        let sph = CsgNode::Leaf {
+            id: FeatureId::from_u32(1),
+            primitive: Primitive::Sphere { center: [0.0; 3], radius: 50.0 },
+        };
+        let cyl = cylinder_leaf(3, [0.0, 0.0, 0.0], 30.0, 60.0);
+        let bx = box_leaf(4, [7.970110677489131, 22.314295, 29.869688], [3.0, 4.0, 3.0]);
+        let csg = CsgNode::Intersection(
+            Box::new(CsgNode::Difference(
+                Box::new(CsgNode::Intersection(Box::new(sph), Box::new(gy))),
+                Box::new(cyl),
+            )),
+            Box::new(bx),
+        );
+        let body = BoundedCsg::from_csg(&csg);
+        let brep = weave_branch_seeds_partial(&body).expect("must weave");
+        for (k, e) in brep.edges.iter().enumerate() {
+            println!("edge {k}: {}.{} x {}.{}", e.signature.0.feature_id(), e.signature.0.sub(),
+                e.signature.1.feature_id(), e.signature.1.sub());
+        }
+        for (fk, f) in brep.faces.iter().enumerate() {
+            let fmt_loop = |lp: &crate::brep::Loop| lp.edges.iter().map(|(e, r)| format!("{}{}", e.0, if *r {"r"} else {""})).collect::<Vec<_>>().join(",");
+            println!("face {fk}: branch {}.{} outer=[{}] inner={}",
+                f.branch_id.feature_id(), f.branch_id.sub(),
+                fmt_loop(&f.outer),
+                f.inner.iter().map(|l| format!("[{}]", fmt_loop(l))).collect::<Vec<_>>().join(" "));
+        }
+    }
+
     /// Ticket p6pv diagnostic: full Sphere ∩ Gyroid (the holey ball).
     #[test]
     #[ignore]

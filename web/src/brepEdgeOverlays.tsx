@@ -36,17 +36,20 @@ interface AnalyticEdge {
   positions: Float32Array;
 }
 
-/** NDC pick band for edges — the cursor snaps to an edge within this radius
- *  (in normalised device coords, like {@link VERTEX_PICK_NDC_RADIUS}). A touch
- *  tighter than the vertex radius so a corner still wins over its edges. */
-const EDGE_PICK_NDC_RADIUS = 0.022;
+/** Pixel pick band for edges — the cursor snaps to an edge within this many
+ *  SCREEN pixels (converted to NDC per frame; a fixed NDC radius scales with
+ *  the window and reached ~15px on full-HD — wide enough to blanket a narrow
+ *  face from both silhouettes, so its middle could never face-hover, ticket
+ *  7cv2). A touch tighter than the vertex band so a corner still wins over
+ *  its edges. */
+const EDGE_PICK_PX = 8;
 
 /**
  * Draws the analytic B-Rep edges (from the woven, cached kernel B-Rep — *not*
  * the mesh) as a dark wireframe overlay, and highlights the edge the cursor is
  * over. The hovered edge is found by projecting every analytic polyline to the
  * screen and snapping the cursor to the nearest one within
- * {@link EDGE_PICK_NDC_RADIUS} — the same screen-space approach
+ * {@link EDGE_PICK_PX} — the same screen-space approach
  * {@link BRepSelectionOverlay} uses for faces/vertices. (The kernel sphere-trace
  * pick almost always reports the face *behind* the thin edge, so it can't drive
  * edge hover on its own.) The matched edge carries the stable `id_hash` that
@@ -66,6 +69,7 @@ export function BRepEdgeOverlay({
   const camera = useThree((s) => s.camera);
   const invalidate = useThree((s) => s.invalidate);
   const gl = useThree((s) => s.gl);
+  const viewportSize = useThree((s) => s.size);
   // The fat-line (Line2NodeMaterial) path only renders on the WebGPU backend;
   // the classic THREE.WebGLRenderer fallback needs plain LineBasicMaterial
   // LineSegments, or B-Rep edges don't show at all there (ticket jnej).
@@ -240,7 +244,7 @@ export function BRepEdgeOverlay({
   // *behind* the thin edge (1 contributor → "face"), so it can never light up
   // an edge on its own. Instead we project every analytic polyline to NDC each
   // frame and snap the cursor to the nearest segment within
-  // EDGE_PICK_NDC_RADIUS — front-most wins on near-ties. Mirrors how
+  // the pixel pick band — front-most wins on near-ties. Mirrors how
   // BRepSelectionOverlay screen-space-picks vertices.
   const [hoveredIdx, setHoveredIdx] = useState(-1);
   const projA = useRef(new THREE.Vector3());
@@ -289,9 +293,12 @@ export function BRepEdgeOverlay({
       depth: number;
       world: [number, number, number];
     }[] = [];
+    // Pixel → NDC (y spans 2 over the viewport height), per frame so window
+    // resizes keep the band at a constant on-screen width.
+    const pickNdc = (2 * EDGE_PICK_PX) / Math.max(1, viewportSize.height);
     for (let ei = 0; ei < edges.length; ei++) {
       const pos = edges[ei].positions;
-      let bestD = EDGE_PICK_NDC_RADIUS;
+      let bestD = pickNdc;
       let bestDepth = Infinity;
       let bestWorld: [number, number, number] | null = null;
       for (let i = 0; i + 5 < pos.length; i += 6) {
@@ -309,7 +316,7 @@ export function BRepEdgeOverlay({
         let t = len2 > 0 ? ((ndc.x - a.x) * sx + (ndc.y - a.y) * sy) / len2 : 0;
         t = Math.max(0, Math.min(1, t));
         const d = Math.hypot(ndc.x - (a.x + t * sx), ndc.y - (a.y + t * sy));
-        if (d > EDGE_PICK_NDC_RADIUS) continue;
+        if (d > pickNdc) continue;
         const depth = Math.min(a.z, b.z);
         if (d < bestD - 1e-4 || (d <= bestD + 1e-4 && depth < bestDepth)) {
           bestD = d;
