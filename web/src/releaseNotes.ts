@@ -24,6 +24,17 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.407",
+    entries: [
+      {
+        kind: "fix",
+        text: "Mesher-Debug: Parameter Band guard in Band width umbenannt und mit Erklär-Tooltip versehen — er steuert die Narrow-Band-Breite der Octree-Unterteilung (nicht die Inside/Outside-Farbtrennung). Oberhalb ~1 gesättigt (1 bis 8 ohne sichtbaren Effekt), unter 1 engere Band, also weniger oberflächennahe Zellen/Normalen",
+        scope: "debug",
+        tickets: ["dbmy"],
+      },
+    ],
+  },
+  {
     version: "0.6.406",
     entries: [
       {

@@ -133,9 +133,10 @@ export function MesherDialog({ onClose }: { onClose: () => void }) {
     value: number,
     set: (n: number) => void,
     opts: { min: number; max: number; step: number; round?: boolean },
+    title?: string,
   ) => (
     <div className="vec-row">
-      <label>{label}</label>
+      <label title={title}>{label}</label>
       <div className="fields">
         <NumberInput
           min={opts.min}
@@ -181,11 +182,18 @@ export function MesherDialog({ onClose }: { onClose: () => void }) {
         step: 1,
         round: true,
       })}
-      {numRow("Band guard", bandGuard, setBandGuard, {
-        min: 0.1,
-        max: 8,
-        step: 0.1,
-      })}
+      {numRow(
+        "Band width",
+        bandGuard,
+        setBandGuard,
+        { min: 0.1, max: 8, step: 0.1 },
+        "Narrow-band width for octree subdivision (NOT an inside/outside colour " +
+          "threshold). A cell keeps subdividing while |SDF| ≤ ½·cell-diagonal × " +
+          "this value. Larger = a wider shell around the surface is refined — but " +
+          "it saturates above ~1 (the surface band is already fully refined), so " +
+          "1→8 looks the same. Below 1 the band tightens, so fewer near-surface " +
+          "cells (and normals) appear.",
+      )}
       {numRow("Normal length", normalScale, setNormalScale, {
         min: 0,
         max: 4,
