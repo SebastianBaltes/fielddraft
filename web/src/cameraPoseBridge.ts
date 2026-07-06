@@ -9,7 +9,10 @@
  * and restores it once on the next canvas's mount, so the shader switch keeps
  * the exact viewpoint.
  *
- * In-memory only (per session) — a page reload starts from the default view.
+ * Ticket pxff: the pose is also serialised into the project file (`Project.view`)
+ * so re-opening a project restores the exact viewpoint — `requestCameraRestore`
+ * seeds this bridge from a loaded project and notifies `CameraPoseSync` to apply
+ * it to the live camera.
  */
 
 import * as THREE from "three";
@@ -25,6 +28,42 @@ export interface CameraPose {
 }
 
 let pose: CameraPose | null = null;
+const restoreListeners = new Set<() => void>();
+
+/** Seed the bridge from a loaded project's saved view and ask the live
+ *  `CameraPoseSync` to apply it now (ticket pxff). No-op for `null`. */
+export function requestCameraRestore(next: CameraPose | null): void {
+  if (!next) return;
+  pose = next;
+  for (const l of restoreListeners) l();
+}
+
+/** Subscribe to camera-restore requests (project load). */
+export function subscribeCameraRestore(listener: () => void): () => void {
+  restoreListeners.add(listener);
+  return () => {
+    restoreListeners.delete(listener);
+  };
+}
+
+/** Validate an untrusted object as a `CameraPose` (loading a project file). */
+export function parseCameraPose(raw: unknown): CameraPose | null {
+  if (typeof raw !== "object" || raw === null) return null;
+  const p = raw as Record<string, unknown>;
+  const num3 = (v: unknown): v is [number, number, number] =>
+    Array.isArray(v) && v.length === 3 && v.every((n) => typeof n === "number" && Number.isFinite(n));
+  const num4 = (v: unknown): v is [number, number, number, number] =>
+    Array.isArray(v) && v.length === 4 && v.every((n) => typeof n === "number" && Number.isFinite(n));
+  if (!num3(p.position) || !num4(p.quaternion) || !num3(p.up) || !num3(p.target)) return null;
+  if (typeof p.zoom !== "number" || !Number.isFinite(p.zoom)) return null;
+  return {
+    position: p.position,
+    quaternion: p.quaternion,
+    up: p.up,
+    zoom: p.zoom,
+    target: p.target,
+  };
+}
 
 export function saveCameraPose(camera: THREE.Camera, target: THREE.Vector3): void {
   const proj = camera as THREE.OrthographicCamera & THREE.PerspectiveCamera;

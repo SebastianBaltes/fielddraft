@@ -13,7 +13,11 @@ import {
   type ViewPreset,
 } from "./viewCommands";
 import { publishPickCamera } from "./pickCameraBridge";
-import { getCameraPose, saveCameraPose } from "./cameraPoseBridge";
+import {
+  getCameraPose,
+  saveCameraPose,
+  subscribeCameraRestore,
+} from "./cameraPoseBridge";
 import { getSceneBounds, GRID_BOUNDS } from "./sceneBoundsBridge";
 import { peekStore } from "./store";
 import {
@@ -260,6 +264,28 @@ export function CameraPoseSync() {
       didRestore.current = true;
     }
     ready.current = true; // gate saving until the restore has run (no clobber)
+  }, [camera, controls, invalidate]);
+
+  // Ticket pxff: apply a saved viewpoint when a project load requests it (the
+  // canvas does NOT remount on load, so the once-per-mount restore above never
+  // fires — this listener re-applies the pose the bridge was just seeded with).
+  useEffect(() => {
+    return subscribeCameraRestore(() => {
+      if (!controls) return;
+      const p = getCameraPose();
+      if (!p) return;
+      camera.position.fromArray(p.position);
+      camera.quaternion.fromArray(p.quaternion);
+      camera.up.fromArray(p.up);
+      const proj = camera as THREE.OrthographicCamera;
+      if (proj.isOrthographicCamera) {
+        proj.zoom = p.zoom;
+        proj.updateProjectionMatrix();
+      }
+      controls.target.fromArray(p.target);
+      camera.updateMatrixWorld();
+      invalidate();
+    });
   }, [camera, controls, invalidate]);
 
   // Keep the bridge current with the live camera on every rendered frame, so

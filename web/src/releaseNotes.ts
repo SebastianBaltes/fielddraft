@@ -24,6 +24,17 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.410",
+    entries: [
+      {
+        kind: "feat",
+        text: "Kamera-Blickwinkel (Position, Ausrichtung, Orbit-Ziel, Zoom) wird jetzt im Projekt gespeichert und beim Öffnen/Neuladen wiederhergestellt — statt immer auf die Default-Ansicht zu springen",
+        scope: "viewport",
+        tickets: ["pxff"],
+      },
+    ],
+  },
+  {
     version: "0.6.409",
     entries: [
       {

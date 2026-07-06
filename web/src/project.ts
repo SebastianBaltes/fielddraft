@@ -23,6 +23,7 @@
 import { unzipSync, zipSync, type Zippable } from "fflate";
 import type { FieldSkriptRecord } from "./fieldskript/record";
 import { type AssemblyDocument, createEmptyAssembly } from "./assembly";
+import { type CameraPose, parseCameraPose } from "./cameraPoseBridge";
 
 export const PROJECT_SCHEMA_VERSION = 1;
 
@@ -82,6 +83,10 @@ export interface Project {
   name: string;
   tabs: ProjectTab[];
   activeTabId: string;
+  /** Ticket pxff: saved camera pose (position / orientation / target / zoom)
+   *  so re-opening the project restores the exact viewpoint. Optional — legacy
+   *  files and freshly-created projects have none. */
+  view?: CameraPose;
 }
 
 // ── tab id allocation ───────────────────────────────────────────
@@ -340,5 +345,8 @@ export function parseProject(json: string): Project | null {
     name: p.name,
     tabs,
     activeTabId: p.activeTabId,
+    // Optional saved viewpoint (ticket pxff); a malformed view is dropped, not
+    // fatal, so an otherwise-valid project still loads.
+    ...(parseCameraPose(p.view) ? { view: parseCameraPose(p.view)! } : {}),
   };
 }
