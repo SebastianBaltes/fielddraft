@@ -1181,6 +1181,13 @@ mod tests {
             println!("edge {k}: {}.{} x {}.{}", e.signature.0.feature_id(), e.signature.0.sub(),
                 e.signature.1.feature_id(), e.signature.1.sub());
         }
+        for (k, e) in brep.edges.iter().enumerate() {
+            let pts = crate::brep::edge_sampling::sample_edge(&e.geometry);
+            let coords: Vec<String> = pts.iter().map(|p| format!("[{:.4},{:.4},{:.4}]", p[0], p[1], p[2])).collect();
+            println!("POLY {k} {}.{}x{}.{} [{}]",
+                e.signature.0.feature_id(), e.signature.0.sub(),
+                e.signature.1.feature_id(), e.signature.1.sub(), coords.join(","));
+        }
         for (fk, f) in brep.faces.iter().enumerate() {
             let fmt_loop = |lp: &crate::brep::Loop| lp.edges.iter().map(|(e, r)| format!("{}{}", e.0, if *r {"r"} else {""})).collect::<Vec<_>>().join(",");
             println!("face {fk}: branch {}.{} outer=[{}] inner={}",
