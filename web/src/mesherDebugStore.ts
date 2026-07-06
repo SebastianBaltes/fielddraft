@@ -39,22 +39,29 @@ export interface MesherDebug {
   signChangeNeighboursOnly: boolean;
   /** Topological protection: clamp every point update to its leaf cell. */
   constrainToCell: boolean;
-  /** Feature 1: damped Newton projection onto the SDF zero set. */
+  /** Iterations of the single relaxation loop (and the final fit snap's max
+   *  budget). One loop now — not two separate counts. */
+  iterations: number;
+  /** Fit on Surface: damped Newton projection onto the SDF zero set. */
   fitOnSurface: boolean;
   /** Drop points that did not actually REACH the surface after the fit
    *  (clamped at their cell bounds): removed from the point set, the
    *  repulsion and the mesh. */
   onlyOnSurface: boolean;
-  fitMaxIterations: number;
   fitTargetEpsilon: number;
   /** Newton damping, 0.1–1.0. */
   fitStepMultiplier: number;
-  /** Feature 2: tangential repulsion relaxation (with surface re-pinning). */
+  /** Repulsion inside surface: tangential relaxation, annealed. */
   repulsion: boolean;
-  repulsionIterations: number;
   interactionRadius: number;
   repulsionStrength: number;
+  /** Force-vs-distance weighting of the neighbour repulsion. */
   weightingFunction: MesherWeighting;
+  /** Annealing: fraction of repulsion strength lost per iteration
+   *  (0 = constant, 1 = gone after one linear step). */
+  repulsionDamping: number;
+  /** Annealing curve of the repulsion strength over the iterations. */
+  dampingCurve: MesherDampingCurve;
   /** Mesh the shown (filtered) points: connect them along the octree's edge
    *  relationships into triangles (one vertex per leaf, a quad per minimal
    *  octree edge whose 4 cells are all shown). NOT dual contouring — no
@@ -66,6 +73,7 @@ export interface MesherDebug {
 }
 
 export type MesherWeighting = "linear" | "inverse-square";
+export type MesherDampingCurve = "linear" | "exponential";
 
 let params: MesherDebug | null = null;
 const listeners = new Set<() => void>();

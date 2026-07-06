@@ -24,6 +24,17 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.423",
+    entries: [
+      {
+        kind: "feat",
+        text: "Debug ▸ Mesher: UI an das Ein-Schleifen-Verfahren angepasst — die zwei alten Iterations-Felder durch ein einziges „Iterations“ ersetzt; neu: Repulsion-„Damping“ (Abkling-Faktor der Repulsion pro Iteration) und „Damping curve“ (Linear/Exponential) für das Annealing",
+        scope: "debug",
+        tickets: ["yanv"],
+      },
+    ],
+  },
+  {
     version: "0.6.422",
     entries: [
       {

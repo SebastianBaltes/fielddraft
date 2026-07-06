@@ -15,10 +15,10 @@
 //!    surface tangent plane).
 //!
 //! ONE interleaved relaxation loop (ticket yanv): per iteration
-//! **Repulsion → Fit → Clamp**, for `repulsionIterations`, with the repulsion
+//! **Repulsion → Fit → Clamp**, for `iterations`, with the repulsion
 //! strength ANNEALED from full down to ~0 across the iterations — early steps
 //! spread aggressively, the fit dominates at the end. A final **Fit → Clamp**
-//! convergence (to `targetEpsilon` / `fitMaxIterations`) then snaps each point
+//! convergence (to `targetEpsilon` / `iterations`) then snaps each point
 //! ONTO the surface within its cell. With repulsion off, that final pass IS
 //! the pure Fit-on-Surface.
 //!
@@ -54,25 +54,33 @@ pub struct MesherPointOptions {
     pub sign_change_neighbours_only: bool,
     // Topological protection.
     pub constrain_to_cell: bool,
-    // Feature 1: Newton projection.
+    /// Total iterations of the single relaxation loop (also the max budget of
+    /// the final fit-to-surface snap). One loop now — not two separate counts.
+    pub iterations: u32,
+    // Fit on Surface.
     pub fit_on_surface: bool,
     /// Drop points that did NOT actually reach the surface after the fit
     /// (typically clamped at their cell bounds): they leave the point set
     /// entirely — not drawn, not repelled, their cells emit no mesh vertex.
     pub only_on_surface: bool,
-    pub fit_max_iterations: u32,
     pub fit_target_epsilon: f32,
     pub fit_step_multiplier: f32,
-    // Feature 2: tangential relaxation.
+    // Repulsion inside surface (tangential relaxation).
     pub repulsion: bool,
-    pub repulsion_iterations: u32,
     pub interaction_radius: f32,
     pub repulsion_strength: f32,
+    /// Force-vs-distance weighting of the neighbour repulsion.
     pub weighting_function: WeightingFunction,
-    // Meshing over the optimised points (adaptive dual contouring).
+    /// Annealing: fraction of repulsion strength lost per iteration
+    /// (`0` = constant, `1` = gone after one linear step). Same meaning for
+    /// both damping curves.
+    pub repulsion_damping: f32,
+    /// Annealing curve of the repulsion strength over the iterations.
+    pub damping_curve: DampingCurve,
+    // Meshing over the optimised points (octree-edge connectivity).
     pub mesh_points: bool,
     /// Enforce the 2:1 octree balance before meshing (bounded depth
-    /// contrast between face neighbours → bounded triangle quality).
+    /// contrast between face neighbours → more even triangle sizes).
     pub balance_octree: bool,
 }
 
@@ -81,6 +89,16 @@ pub struct MesherPointOptions {
 pub enum WeightingFunction {
     Linear,
     InverseSquare,
+}
+
+/// How the repulsion strength decays over the relaxation iterations.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum DampingCurve {
+    /// `strength · max(0, 1 − damping · t)` — vanishes after `1/damping` steps.
+    Linear,
+    /// `strength · (1 − damping)^t` — geometric, asymptotic to 0.
+    Exponential,
 }
 
 impl Default for MesherPointOptions {
@@ -92,16 +110,17 @@ impl Default for MesherPointOptions {
             near_surface_dist: 1.0,
             sign_change_neighbours_only: false,
             constrain_to_cell: true,
+            iterations: 12,
             fit_on_surface: false,
             only_on_surface: false,
-            fit_max_iterations: 8,
             fit_target_epsilon: 0.001,
             fit_step_multiplier: 0.8,
             repulsion: false,
-            repulsion_iterations: 4,
             interaction_radius: 2.0,
             repulsion_strength: 0.5,
             weighting_function: WeightingFunction::Linear,
+            repulsion_damping: 0.2,
+            damping_curve: DampingCurve::Linear,
             mesh_points: false,
             balance_octree: true,
         }
@@ -192,10 +211,15 @@ pub(crate) fn optimize_leaf_points(
         // Only processed points repel (and get repelled) — rigid points are
         // ignored by the algorithms entirely.
         let active: Vec<usize> = (0..leaves.len()).filter(|&i| process[i]).collect();
-        let iters = opts.repulsion_iterations.max(1);
+        let iters = opts.iterations.max(1);
+        let damping = opts.repulsion_damping.clamp(0.0, 1.0);
         for t in 0..iters {
-            // Anneal: repulsion is strongest first, fading linearly toward 0.
-            let anneal = 1.0 - t as f32 / iters as f32;
+            // Anneal: repulsion strongest first, decaying by the chosen curve.
+            let tf = t as f32;
+            let anneal = match opts.damping_curve {
+                DampingCurve::Linear => (1.0 - damping * tf).max(0.0),
+                DampingCurve::Exponential => (1.0 - damping).powi(t as i32),
+            };
             let strength = opts.repulsion_strength * anneal;
             // Grid hash over the CURRENT positions of the active points.
             let mut grid: std::collections::HashMap<(i32, i32, i32), Vec<usize>> =
@@ -268,7 +292,7 @@ pub(crate) fn optimize_leaf_points(
 
     // ── Final snap to the surface ──
     // Converge each processed point onto the SDF zero set (Fit → Clamp until
-    // |sdf| < targetEpsilon or fitMaxIterations) so it really finishes ON the
+    // |sdf| < targetEpsilon or iterations) so it really finishes ON the
     // surface, within its cell — the goal of the relaxation. With repulsion
     // off this IS the pure Fit-on-Surface. Also decides "only on surface":
     // a point clamped short of the zero set never reaches epsilon and drops.
@@ -277,7 +301,7 @@ pub(crate) fn optimize_leaf_points(
             if !process[i] {
                 continue;
             }
-            for _ in 0..opts.fit_max_iterations {
+            for _ in 0..opts.iterations.max(1) {
                 if sdf(points[i]).abs() < eps {
                     break;
                 }
@@ -322,7 +346,7 @@ mod tests {
         let leaves = vec![leaf_at([9.0, 0.5, -0.5], 4.0), leaf_at([11.5, 1.0, 0.0], 4.0)];
         let opts = MesherPointOptions {
             fit_on_surface: true,
-            fit_max_iterations: 20,
+            iterations: 20,
             fit_target_epsilon: 1e-4,
             fit_step_multiplier: 0.8,
             constrain_to_cell: false,
@@ -342,7 +366,7 @@ mod tests {
         let leaf = leaf_at([2.0, 0.0, 0.0], 2.0);
         let opts = MesherPointOptions {
             fit_on_surface: true,
-            fit_max_iterations: 50,
+            iterations: 50,
             fit_target_epsilon: 1e-4,
             fit_step_multiplier: 1.0,
             constrain_to_cell: true,
@@ -370,7 +394,7 @@ mod tests {
             near_surface_only: true,
             near_surface_dist: 2.0,
             fit_on_surface: true,
-            fit_max_iterations: 20,
+            iterations: 20,
             fit_target_epsilon: 1e-4,
             constrain_to_cell: false,
             ..Default::default()
@@ -390,7 +414,7 @@ mod tests {
         let opts = MesherPointOptions {
             sign_change_neighbours_only: true,
             fit_on_surface: true,
-            fit_max_iterations: 20,
+            iterations: 20,
             fit_target_epsilon: 1e-4,
             constrain_to_cell: false,
             ..Default::default()
@@ -414,7 +438,7 @@ mod tests {
         let leaf = leaf_at(start, 20.0); // generous cell, no clamping pressure
         let base = MesherPointOptions {
             repulsion: true,
-            repulsion_iterations: 5,
+            iterations: 5,
             interaction_radius: 3.0,
             repulsion_strength: 0.5,
             fit_step_multiplier: 0.8,
@@ -474,11 +498,11 @@ mod tests {
         let before = min_dist(&leaves.iter().map(|l| l.center).collect::<Vec<_>>());
         let opts = MesherPointOptions {
             repulsion: true,
-            repulsion_iterations: 8,
+            iterations: 8,
             interaction_radius: 3.0,
             repulsion_strength: 0.2,
             weighting_function: WeightingFunction::Linear,
-            fit_max_iterations: 8,
+            fit_on_surface: true,
             fit_target_epsilon: 1e-4,
             constrain_to_cell: false,
             ..Default::default()
@@ -509,7 +533,7 @@ mod tests {
         ];
         let opts = MesherPointOptions {
             repulsion: true,
-            repulsion_iterations: 4,
+            iterations: 4,
             interaction_radius: 2.0,
             repulsion_strength: 0.1,
             weighting_function: WeightingFunction::InverseSquare,
@@ -621,7 +645,7 @@ mod tests {
         let opts = MesherPointOptions {
             fit_on_surface: true,
             only_on_surface: true,
-            fit_max_iterations: 30,
+            iterations: 30,
             fit_target_epsilon: 1e-4,
             fit_step_multiplier: 1.0,
             constrain_to_cell: true,

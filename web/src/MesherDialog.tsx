@@ -25,7 +25,7 @@ import {
   type MesherDebug,
 } from "./mesherDebugStore";
 import { NumberInput } from "./NumberInput";
-import type { MesherWeighting } from "./mesherDebugStore";
+import type { MesherWeighting, MesherDampingCurve } from "./mesherDebugStore";
 
 const SETTINGS_KEY = "fielddraft.debug.mesher";
 const DEFAULTS: MesherDebug = {
@@ -39,16 +39,17 @@ const DEFAULTS: MesherDebug = {
   nearSurfaceDist: 1,
   signChangeNeighboursOnly: false,
   constrainToCell: true,
+  iterations: 12,
   fitOnSurface: false,
   onlyOnSurface: false,
-  fitMaxIterations: 8,
   fitTargetEpsilon: 0.001,
   fitStepMultiplier: 0.8,
   repulsion: false,
-  repulsionIterations: 4,
   interactionRadius: 2,
   repulsionStrength: 0.5,
   weightingFunction: "linear",
+  repulsionDamping: 0.2,
+  dampingCurve: "linear",
   meshPoints: false,
   balanceOctree: true,
 };
@@ -81,21 +82,21 @@ function loadSettings(): MesherDebug {
           : DEFAULTS.signChangeNeighboursOnly,
       constrainToCell:
         typeof p.constrainToCell === "boolean" ? p.constrainToCell : DEFAULTS.constrainToCell,
+      iterations: Math.round(clampNum(p.iterations, 1, 200, DEFAULTS.iterations)),
       fitOnSurface:
         typeof p.fitOnSurface === "boolean" ? p.fitOnSurface : DEFAULTS.fitOnSurface,
       onlyOnSurface:
         typeof p.onlyOnSurface === "boolean" ? p.onlyOnSurface : DEFAULTS.onlyOnSurface,
-      fitMaxIterations: Math.round(clampNum(p.fitMaxIterations, 1, 100, DEFAULTS.fitMaxIterations)),
       fitTargetEpsilon: clampNum(p.fitTargetEpsilon, 0, 1e6, DEFAULTS.fitTargetEpsilon),
       fitStepMultiplier: clampNum(p.fitStepMultiplier, 0.1, 1, DEFAULTS.fitStepMultiplier),
       repulsion: typeof p.repulsion === "boolean" ? p.repulsion : DEFAULTS.repulsion,
-      repulsionIterations: Math.round(
-        clampNum(p.repulsionIterations, 1, 100, DEFAULTS.repulsionIterations),
-      ),
       interactionRadius: clampNum(p.interactionRadius, 0, 1e6, DEFAULTS.interactionRadius),
       repulsionStrength: clampNum(p.repulsionStrength, 0, 100, DEFAULTS.repulsionStrength),
       weightingFunction:
         p.weightingFunction === "inverse-square" ? "inverse-square" : DEFAULTS.weightingFunction,
+      repulsionDamping: clampNum(p.repulsionDamping, 0, 1, DEFAULTS.repulsionDamping),
+      dampingCurve:
+        p.dampingCurve === "exponential" ? "exponential" : DEFAULTS.dampingCurve,
       meshPoints: typeof p.meshPoints === "boolean" ? p.meshPoints : DEFAULTS.meshPoints,
       balanceOctree:
         typeof p.balanceOctree === "boolean" ? p.balanceOctree : DEFAULTS.balanceOctree,
@@ -119,18 +120,19 @@ export function MesherDialog({ onClose }: { onClose: () => void }) {
     initial.signChangeNeighboursOnly,
   );
   const [constrainToCell, setConstrainToCell] = useState(initial.constrainToCell);
+  const [iterations, setIterations] = useState(initial.iterations);
   const [fitOnSurface, setFitOnSurface] = useState(initial.fitOnSurface);
   const [onlyOnSurface, setOnlyOnSurface] = useState(initial.onlyOnSurface);
-  const [fitMaxIterations, setFitMaxIterations] = useState(initial.fitMaxIterations);
   const [fitTargetEpsilon, setFitTargetEpsilon] = useState(initial.fitTargetEpsilon);
   const [fitStepMultiplier, setFitStepMultiplier] = useState(initial.fitStepMultiplier);
   const [repulsion, setRepulsion] = useState(initial.repulsion);
-  const [repulsionIterations, setRepulsionIterations] = useState(initial.repulsionIterations);
   const [interactionRadius, setInteractionRadius] = useState(initial.interactionRadius);
   const [repulsionStrength, setRepulsionStrength] = useState(initial.repulsionStrength);
   const [weightingFunction, setWeightingFunction] = useState<MesherWeighting>(
     initial.weightingFunction,
   );
+  const [repulsionDamping, setRepulsionDamping] = useState(initial.repulsionDamping);
+  const [dampingCurve, setDampingCurve] = useState<MesherDampingCurve>(initial.dampingCurve);
   const [meshPoints, setMeshPoints] = useState(initial.meshPoints);
   const [balanceOctree, setBalanceOctree] = useState(initial.balanceOctree);
 
@@ -149,16 +151,17 @@ export function MesherDialog({ onClose }: { onClose: () => void }) {
       nearSurfaceDist,
       signChangeNeighboursOnly,
       constrainToCell,
+      iterations,
       fitOnSurface,
       onlyOnSurface,
-      fitMaxIterations,
       fitTargetEpsilon,
       fitStepMultiplier,
       repulsion,
-      repulsionIterations,
       interactionRadius,
       repulsionStrength,
       weightingFunction,
+      repulsionDamping,
+      dampingCurve,
       meshPoints,
       balanceOctree,
     };
@@ -179,16 +182,17 @@ export function MesherDialog({ onClose }: { onClose: () => void }) {
     nearSurfaceDist,
     signChangeNeighboursOnly,
     constrainToCell,
+    iterations,
     fitOnSurface,
     onlyOnSurface,
-    fitMaxIterations,
     fitTargetEpsilon,
     fitStepMultiplier,
     repulsion,
-    repulsionIterations,
     interactionRadius,
     repulsionStrength,
     weightingFunction,
+    repulsionDamping,
+    dampingCurve,
     meshPoints,
     balanceOctree,
   ]);
@@ -396,6 +400,15 @@ export function MesherDialog({ onClose }: { onClose: () => void }) {
         />
       </div>
 
+      {numRow(
+        "Iterations",
+        iterations,
+        setIterations,
+        { min: 1, max: 200, step: 1, round: true },
+        "Iterations of the single relaxation loop (Repulsion → Fit → Clamp), " +
+          "and the max budget of the final fit-to-surface snap. One loop now.",
+      )}
+
       <div className="vec-row check-row">
         <label
           htmlFor="mesher-fit-surface"
@@ -428,12 +441,6 @@ export function MesherDialog({ onClose }: { onClose: () => void }) {
               onChange={(e) => setOnlyOnSurface(e.target.checked)}
             />
           </div>
-          {numRow("Max iterations", fitMaxIterations, setFitMaxIterations, {
-            min: 1,
-            max: 100,
-            step: 1,
-            round: true,
-          })}
           {numRow("Target ε (mm)", fitTargetEpsilon, setFitTargetEpsilon, {
             min: 0,
             max: 1e6,
@@ -452,7 +459,7 @@ export function MesherDialog({ onClose }: { onClose: () => void }) {
       <div className="vec-row check-row">
         <label
           htmlFor="mesher-repulsion"
-          title="Tangential relaxation: per iteration the neighbours within the interaction radius repel each point in the surface tangent plane, then a short Newton fit re-pins it to the surface."
+          title="Tangential relaxation over the single loop: per iteration the neighbours within the interaction radius repel each point in the surface tangent plane, then a Fit step re-pins it. The repulsion strength is annealed down across the iterations (strong first, fading), so points spread early and settle onto the surface at the end."
         >
           Repulsion inside surface
         </label>
@@ -466,22 +473,46 @@ export function MesherDialog({ onClose }: { onClose: () => void }) {
       </div>
       {repulsion && (
         <>
-          {numRow("Iterations", repulsionIterations, setRepulsionIterations, {
-            min: 1,
-            max: 100,
-            step: 1,
-            round: true,
-          })}
           {numRow("Interaction radius (mm)", interactionRadius, setInteractionRadius, {
             min: 0,
             max: 1e6,
             step: 0.5,
           })}
-          {numRow("Strength", repulsionStrength, setRepulsionStrength, {
-            min: 0,
-            max: 100,
-            step: 0.05,
-          })}
+          {numRow(
+            "Strength (initial)",
+            repulsionStrength,
+            setRepulsionStrength,
+            { min: 0, max: 100, step: 0.05 },
+            "Repulsion strength at the FIRST iteration; it is then annealed down.",
+          )}
+          {sliderRow(
+            "Damping",
+            repulsionDamping,
+            setRepulsionDamping,
+            { min: 0, max: 1, step: 0.05 },
+            "Annealing: fraction of the repulsion strength lost per iteration " +
+              "(0 = constant, 1 = gone after one linear step). Higher = the fit " +
+              "takes over sooner, so points settle onto the surface earlier.",
+          )}
+          <div className="vec-row">
+            <label
+              htmlFor="mesher-damping-curve"
+              title="How the repulsion strength decays over the iterations: Linear = strength·max(0, 1 − damping·t); Exponential = strength·(1 − damping)^t."
+            >
+              Damping curve
+            </label>
+            <div className="fields">
+              <select
+                id="mesher-damping-curve"
+                data-testid="mesher-damping-curve"
+                value={dampingCurve}
+                onChange={(e) => setDampingCurve(e.target.value as MesherDampingCurve)}
+              >
+                <option value="linear">Linear</option>
+                <option value="exponential">Exponential</option>
+              </select>
+            </div>
+          </div>
           <div className="vec-row">
             <label htmlFor="mesher-weighting" title="Distance weighting of the repulsion force per neighbour.">
               Weighting
