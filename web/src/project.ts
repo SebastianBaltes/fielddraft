@@ -24,6 +24,7 @@ import { unzipSync, zipSync, type Zippable } from "fflate";
 import type { FieldSkriptRecord } from "./fieldskript/record";
 import { type AssemblyDocument, createEmptyAssembly } from "./assembly";
 import { type CameraPose, parseCameraPose } from "./cameraPoseBridge";
+import { type ProjectDebug, parseProjectDebug } from "./projectDebug";
 
 export const PROJECT_SCHEMA_VERSION = 1;
 
@@ -87,6 +88,10 @@ export interface Project {
    *  so re-opening the project restores the exact viewpoint. Optional — legacy
    *  files and freshly-created projects have none. */
   view?: CameraPose;
+  /** Debug-tool state (open dialogs + their parameters, overlays) so a saved
+   *  project — especially a ticket repro — re-opens with the exact debug
+   *  setup it was captured with. Optional; absent when nothing is active. */
+  debug?: ProjectDebug;
 }
 
 // ── tab id allocation ───────────────────────────────────────────
@@ -348,5 +353,7 @@ export function parseProject(json: string): Project | null {
     // Optional saved viewpoint (ticket pxff); a malformed view is dropped, not
     // fatal, so an otherwise-valid project still loads.
     ...(parseCameraPose(p.view) ? { view: parseCameraPose(p.view)! } : {}),
+    // Optional debug-tool state; malformed blobs are dropped the same way.
+    ...(parseProjectDebug(p.debug) ? { debug: parseProjectDebug(p.debug) } : {}),
   };
 }

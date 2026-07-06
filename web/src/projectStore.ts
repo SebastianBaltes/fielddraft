@@ -16,6 +16,7 @@ import {
 } from "./assembly";
 import { INACTIVE_SKETCH_SESSION } from "./sketchSession";
 import { getCameraPose, requestCameraRestore } from "./cameraPoseBridge";
+import { applyProjectDebug, collectProjectDebug } from "./projectDebug";
 import { logUserAction } from "./userActionLog";
 import {
   registerUploadedFontFromBytes,
@@ -97,6 +98,8 @@ export class ProjectStore {
     // Ticket pxff: seed the pose bridge so the first CameraPoseSync mount
     // restores the persisted viewpoint (page reload), not the default view.
     requestCameraRestore(project.view ?? null);
+    // Restore the project's debug-tool state (dialogs, overlays).
+    applyProjectDebug(project.debug);
 
     // Mirror every project script into the live kernel so the loaded
     // part regenerates against them.
@@ -162,7 +165,13 @@ export class ProjectStore {
       return t;
     });
     // Ticket pxff: persist the current viewpoint so re-opening restores it.
-    return { ...this.state.project, tabs, view: getCameraPose() ?? undefined };
+    // Debug-tool state travels with the project too (repro during dev).
+    return {
+      ...this.state.project,
+      tabs,
+      view: getCameraPose() ?? undefined,
+      debug: collectProjectDebug(),
+    };
   }
 
   /**
@@ -320,6 +329,8 @@ export class ProjectStore {
     this.core.autosave.flush();
     // Ticket pxff: restore the saved viewpoint (if any) onto the live camera.
     requestCameraRestore(project.view ?? null);
+    // Restore the project's debug-tool state (dialogs, overlays).
+    applyProjectDebug(project.debug);
     return true;
   }
 

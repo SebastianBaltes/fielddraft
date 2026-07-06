@@ -17,8 +17,11 @@ export interface StorageLike {
 }
 
 export interface AutoSaveHandle {
-  /** Schedule a save; coalesces with any pending save on the same handle. */
-  schedule(json: string): void;
+  /** Schedule a save; coalesces with any pending save on the same handle.
+   *  A function is resolved lazily at WRITE time — dirty markers that fire
+   *  often (camera drags mark once per changed frame) pass a producer so the
+   *  project is serialized once per actual write, not once per marker. */
+  schedule(json: string | (() => string)): void;
   /** Flush a pending save immediately. No-op if nothing is pending. */
   flush(): void;
   /** Cancel any pending save without writing. */
@@ -28,7 +31,9 @@ export interface AutoSaveHandle {
 export interface CreateAutoSaveOptions {
   storage?: StorageLike;
   key?: string;
-  debounceMs?: number;
+  /** Debounce; a getter is re-read on every schedule so a live settings
+   *  change (autosaveDebounceSec) takes effect without recreating the handle. */
+  debounceMs?: number | (() => number);
   /** Clock override, primarily for tests. */
   now?: () => number;
   /** Scheduler override, primarily for tests. */
@@ -83,19 +88,21 @@ export function clearPersisted(
 export function createAutoSave(options: CreateAutoSaveOptions = {}): AutoSaveHandle {
   const storage = options.storage ?? safeStorage();
   const key = options.key ?? STORAGE_KEY;
-  const debounceMs = options.debounceMs ?? DEFAULT_DEBOUNCE_MS;
+  const debounce = options.debounceMs ?? DEFAULT_DEBOUNCE_MS;
+  const debounceNow = () => (typeof debounce === "function" ? debounce() : debounce);
   const setTimeoutFn = options.setTimeoutImpl ?? setTimeout;
   const clearTimeoutFn = options.clearTimeoutImpl ?? clearTimeout;
 
-  let pendingJson: string | null = null;
+  let pendingJson: string | (() => string) | null = null;
   let timer: ReturnType<typeof setTimeout> | null = null;
 
   const writeNow = () => {
     if (pendingJson === null) return;
-    const json = pendingJson;
+    const pending = pendingJson;
     pendingJson = null;
     if (!storage) return;
     try {
+      const json = typeof pending === "function" ? pending() : pending;
       storage.setItem(key, json);
     } catch (err) {
       // Quota exceeded, private mode, disk full — swallow but surface on the
@@ -105,13 +112,13 @@ export function createAutoSave(options: CreateAutoSaveOptions = {}): AutoSaveHan
   };
 
   return {
-    schedule(json: string) {
+    schedule(json: string | (() => string)) {
       pendingJson = json;
       if (timer !== null) clearTimeoutFn(timer);
       timer = setTimeoutFn(() => {
         timer = null;
         writeNow();
-      }, debounceMs);
+      }, debounceNow());
     },
     flush() {
       if (timer !== null) {

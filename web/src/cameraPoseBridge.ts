@@ -65,9 +65,40 @@ export function parseCameraPose(raw: unknown): CameraPose | null {
   };
 }
 
+// ── Change detection (dirty tracking) ────────────────────────────────
+// `saveCameraPose` runs every rendered frame; the project autosave must only
+// be marked dirty when the pose ACTUALLY changed (an orbit/pan/zoom), not per
+// frame. Listeners are registered by the store bootstrap.
+
+const changeListeners = new Set<() => void>();
+
+/** Subscribe to real camera-pose changes (fires once per changed frame,
+ *  never for an identical pose). Used to mark the project dirty. */
+export function subscribeCameraPoseChanged(listener: () => void): () => void {
+  changeListeners.add(listener);
+  return () => {
+    changeListeners.delete(listener);
+  };
+}
+
+function samePose(a: CameraPose, b: CameraPose): boolean {
+  const eq3 = (x: number[], y: number[]) =>
+    x[0] === y[0] && x[1] === y[1] && x[2] === y[2];
+  return (
+    eq3(a.position, b.position) &&
+    a.quaternion[0] === b.quaternion[0] &&
+    a.quaternion[1] === b.quaternion[1] &&
+    a.quaternion[2] === b.quaternion[2] &&
+    a.quaternion[3] === b.quaternion[3] &&
+    eq3(a.up, b.up) &&
+    a.zoom === b.zoom &&
+    eq3(a.target, b.target)
+  );
+}
+
 export function saveCameraPose(camera: THREE.Camera, target: THREE.Vector3): void {
   const proj = camera as THREE.OrthographicCamera & THREE.PerspectiveCamera;
-  pose = {
+  const next: CameraPose = {
     position: camera.position.toArray() as [number, number, number],
     quaternion: [
       camera.quaternion.x,
@@ -79,6 +110,9 @@ export function saveCameraPose(camera: THREE.Camera, target: THREE.Vector3): voi
     zoom: proj.zoom ?? 1,
     target: target.toArray() as [number, number, number],
   };
+  const changed = pose === null || !samePose(pose, next);
+  pose = next;
+  if (changed) for (const l of changeListeners) l();
 }
 
 export function getCameraPose(): CameraPose | null {

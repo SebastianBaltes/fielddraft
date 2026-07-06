@@ -24,6 +24,21 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.414",
+    entries: [
+      {
+        kind: "feat",
+        text: "Debug-Dialoge (SDF-Plane, Mesher, Part-AABB) persistieren im Projekt — ein gespeichertes Projekt oder Ticket öffnet mit exakt dem Debug-Setup (offene Dialoge + Parameter), mit dem es erfasst wurde",
+        scope: "debug",
+      },
+      {
+        kind: "feat",
+        text: "Projekt-Autosave per Dirty-Tracking: auch reine Kamera-Bewegungen und Debug-Dialog-Änderungen speichern jetzt (debounced); Debounce als Einstellung „Autosave-Debounce (s)“ (Default 5 s), beim Schließen des Tabs wird sofort geschrieben",
+        scope: "viewport",
+      },
+    ],
+  },
+  {
     version: "0.6.413",
     entries: [
       {

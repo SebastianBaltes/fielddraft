@@ -297,6 +297,22 @@
     }
   }
 
+  & .setting-number {
+    background: var(--color-bg);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+    padding: var(--space-1) var(--space-3);
+    font-size: var(--fs-base);
+    color: var(--color-text);
+    width: 5rem;
+    text-align: right;
+
+    &:focus {
+      outline: 2px solid var(--color-accent);
+      outline-offset: 1px;
+    }
+  }
+
   & .mode-select {
     background: var(--color-bg);
     border: 1px solid var(--color-border);

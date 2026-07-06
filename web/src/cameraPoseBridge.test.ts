@@ -6,6 +6,7 @@ import {
   parseCameraPose,
   requestCameraRestore,
   subscribeCameraRestore,
+  subscribeCameraPoseChanged,
 } from "./cameraPoseBridge";
 
 describe("cameraPoseBridge", () => {
@@ -71,6 +72,25 @@ describe("cameraPoseBridge", () => {
     expect(getCameraPose()).toEqual(pose);
     // Null request is a no-op (legacy project without a view).
     requestCameraRestore(null);
+    expect(fired).toBe(1);
+    unsub();
+  });
+  it("fires the change listener only on a REAL pose change (dirty tracking)", () => {
+    const cam = new THREE.PerspectiveCamera(45, 1, 1, 4000);
+    cam.position.set(5, 5, 5);
+    const target = new THREE.Vector3(0, 0, 0);
+    saveCameraPose(cam, target); // establish a baseline before subscribing
+
+    let fired = 0;
+    const unsub = subscribeCameraPoseChanged(() => fired++);
+    saveCameraPose(cam, target); // identical pose — per-frame no-op
+    saveCameraPose(cam, target);
+    expect(fired).toBe(0);
+
+    cam.position.set(6, 5, 5); // an actual orbit/pan
+    saveCameraPose(cam, target);
+    expect(fired).toBe(1);
+    saveCameraPose(cam, target); // settled again
     expect(fired).toBe(1);
     unsub();
   });

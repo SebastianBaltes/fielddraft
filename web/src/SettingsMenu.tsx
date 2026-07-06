@@ -15,8 +15,15 @@ import {
 } from "./partAabbStore";
 import { ReportDialog } from "./ReportDialog";
 import { ExportDialog } from "./ExportDialog";
+import { NumberInput } from "./NumberInput";
 import { SdfPlaneDialog } from "./SdfPlaneDialog";
 import { MesherDialog } from "./MesherDialog";
+import {
+  getDebugDialogs,
+  setMesherDialogOpen,
+  setSdfPlaneDialogOpen,
+  subscribeDebugDialogs,
+} from "./projectDebug";
 
 // Lazy: the dialog pulls the full release-note history (releaseNotes.ts,
 // thousands of lines of data) — that belongs in an on-demand chunk, not in
@@ -106,8 +113,10 @@ export function SettingsMenu({
   const [reportDialogOpen, setReportDialogOpen] = useState(false);
   const [releaseNotesOpen, setReleaseNotesOpen] = useState(false);
   const [exportDialog, setExportDialog] = useState<"stl" | "3mf" | null>(null);
-  const [sdfPlaneOpen, setSdfPlaneOpen] = useState(false);
-  const [mesherOpen, setMesherOpen] = useState(false);
+  // Debug-dialog open flags live in projectDebug (module store), not local
+  // state: a project load restores them (Project.debug), and the revision
+  // keys remount open dialogs onto freshly-restored settings.
+  const debugDialogs = useSyncExternalStore(subscribeDebugDialogs, getDebugDialogs);
   const partAabbVisible = useSyncExternalStore(
     subscribePartAabb,
     getPartAabbVisible,
@@ -367,7 +376,7 @@ export function SettingsMenu({
                 role="menuitem"
                 className="menu-item"
                 data-testid="menu-debug-sdf-plane"
-                onClick={() => menuAction(() => setSdfPlaneOpen(true))}
+                onClick={() => menuAction(() => setSdfPlaneDialogOpen(true))}
               >
                 SDF-Plane…
               </button>
@@ -376,7 +385,7 @@ export function SettingsMenu({
                 role="menuitem"
                 className="menu-item"
                 data-testid="menu-debug-mesher"
-                onClick={() => menuAction(() => setMesherOpen(true))}
+                onClick={() => menuAction(() => setMesherDialogOpen(true))}
               >
                 Mesher…
               </button>
@@ -475,8 +484,18 @@ export function SettingsMenu({
         />
       )}
 
-      {sdfPlaneOpen && <SdfPlaneDialog onClose={() => setSdfPlaneOpen(false)} />}
-      {mesherOpen && <MesherDialog onClose={() => setMesherOpen(false)} />}
+      {debugDialogs.sdfPlaneOpen && (
+        <SdfPlaneDialog
+          key={`sdf-plane-${debugDialogs.revision}`}
+          onClose={() => setSdfPlaneDialogOpen(false)}
+        />
+      )}
+      {debugDialogs.mesherOpen && (
+        <MesherDialog
+          key={`mesher-${debugDialogs.revision}`}
+          onClose={() => setMesherDialogOpen(false)}
+        />
+      )}
     </div>
   );
 }
@@ -1012,6 +1031,19 @@ function SettingsDialog({
               {import.meta.hot && (
                 <div className="setting-group">
                   <div className="setting-group-title">Developer</div>
+                  <div className="setting-row" data-testid="setting-autosave-debounce">
+                    <span className="setting-label" title="Änderungen (Dokument, Kamera, Debug-Dialoge) markieren das Projekt dirty; gespeichert wird, sobald so lange Ruhe war. Beim Schließen des Tabs wird immer sofort gespeichert.">
+                      Autosave-Debounce (s)
+                    </span>
+                    <NumberInput
+                      className="setting-number"
+                      value={settings.autosaveDebounceSec}
+                      min={0.5}
+                      max={60}
+                      onChange={(v) => set("autosaveDebounceSec", v)}
+                      data-testid="setting-autosave-debounce-input"
+                    />
+                  </div>
                   <div className="setting-row" data-testid="setting-auto-reload">
                     <span className="setting-label" title="Dev only: when off, a code change that Vite can't hot-swap no longer reloads the page — your running session and in-progress project stay alive. Reload manually (F5) to pick the change up.">
                       Auto-reload on code change

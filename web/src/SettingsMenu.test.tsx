@@ -53,6 +53,7 @@ function setup() {
     perspective: false,
     controlsPreset: "onshape",
     autoReload: true,
+    autosaveDebounceSec: 5,
   };
 
   const onChange = vi.fn((next: SettingsState) => {
@@ -463,6 +464,7 @@ describe("loadSettings", () => {
       perspective: false,
       controlsPreset: "onshape",
       autoReload: true,
+    autosaveDebounceSec: 5,
     });
   });
 
@@ -498,6 +500,7 @@ describe("loadSettings", () => {
       perspective: false,
       controlsPreset: "onshape",
       autoReload: true,
+    autosaveDebounceSec: 5,
     });
   });
 

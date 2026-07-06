@@ -26,6 +26,12 @@ import {
   type AutoSaveHandle,
 } from "./persistence";
 import { bootProjectPath } from "./bootParams";
+import { getAutosaveDebounceMs } from "./settings";
+import { subscribeCameraPoseChanged } from "./cameraPoseBridge";
+import { subscribeDebugDialogs } from "./projectDebug";
+import { subscribePartAabb } from "./partAabbStore";
+import { subscribeSdfPlane } from "./sdfPlaneStore";
+import { subscribeMesherDebug } from "./mesherDebugStore";
 import {
   parseVariableInput,
   resolveVariableTable,
@@ -2067,6 +2073,15 @@ export class KernelStore {
     this.core.setTransientError(message);
   }
 
+  /** Mark the persisted project dirty WITHOUT a document commit: camera
+   *  moves and debug-dialog changes route here. Serialisation is lazy (the
+   *  producer runs once at write time), so high-frequency markers (a camera
+   *  drag marks once per changed frame) cost nothing until the debounce
+   *  fires. */
+  markProjectDirty(): void {
+    this.core.autosave.schedule(() => this.project.serializeProject());
+  }
+
   private setTransientError(message: string): void {
     this.core.setTransientError(message);
   }
@@ -2247,12 +2262,25 @@ export async function getStore(): Promise<KernelStore> {
     // start so opening a ticket can never clobber a live work session in
     // another tab.
     const deepLink = bootProjectPath() !== null;
-    const autosave = deepLink ? createNoopAutoSave() : createAutoSave();
+    const autosave = deepLink
+      ? createNoopAutoSave()
+      : createAutoSave({ debounceMs: getAutosaveDebounceMs });
     const store = new KernelStore(
       kernel,
       autosave,
       deepLink ? null : loadPersisted(),
     );
+
+    // Dirty tracking beyond document commits: camera moves and debug-tool
+    // changes also persist into the project (Project.view / Project.debug),
+    // debounced through the same autosave handle. The camera source fires
+    // only on REAL pose changes (cameraPoseBridge deduplicates per frame).
+    const markDirty = () => store.markProjectDirty();
+    subscribeCameraPoseChanged(markDirty);
+    subscribeDebugDialogs(markDirty);
+    subscribePartAabb(markDirty);
+    subscribeSdfPlane(markDirty);
+    subscribeMesherDebug(markDirty);
 
     // Stale-WASM guard (UI side): `Kernel.create` already logs a console
     // warning on a version mismatch; also surface it as a toast so it's
