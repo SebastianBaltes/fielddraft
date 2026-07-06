@@ -3,26 +3,28 @@
 //!
 //! The octree scaffold (`api::export::octree_leaves`) yields exactly one
 //! point per leaf cell (its centre). This module distributes a FILTERED
-//! subset of those points in TWO iterative phases (ticket yanv), each a
-//! composition of atomic ops applied only when its checkbox is set, entirely
-//! kernel-side (a JS round-trip per SDF eval would be hopeless at 200k pts):
+//! subset of those points, entirely kernel-side (a JS round-trip per SDF eval
+//! would be hopeless at 200k pts). The atomic ops (each applied only when its
+//! checkbox is set):
 //!
-//!  - **Fit on Surface** (one op) — damped Newton step toward the SDF zero
-//!    set: `p ← p − stepMultiplier · d · ∇f/|∇f|`.
-//!  - **Clamp to Cell** (one op) — clamp `p` to its origin leaf's bounds.
-//!  - **Repulsion inside Surface** (one op) — tangential neighbour-repulsion
-//!    step (uniform-grid hash within `interactionRadius`, force projected
-//!    into the surface tangent plane).
+//!  - **Fit on Surface** — damped Newton step toward the SDF zero set:
+//!    `p ← p − stepMultiplier · d · ∇f/|∇f|`.
+//!  - **Clamp to Cell** — clamp `p` to its origin leaf's bounds.
+//!  - **Repulsion inside Surface** — tangential neighbour-repulsion step
+//!    (uniform-grid hash within `interactionRadius`, force projected into the
+//!    surface tangent plane).
 //!
-//!  Phase 1 (`fitOnSurface`): per step  **Fit → Clamp**, until
-//!    `|sdf| < targetEpsilon` or `fitMaxIterations`.
-//!  Phase 2 (`repulsion`): per step  **Repulsion → Fit → Clamp**, for
-//!    `repulsionIterations` (Fit only if `fitOnSurface`, Clamp only if
-//!    `constrainToCell`).
+//! ONE interleaved relaxation loop (ticket yanv): per iteration
+//! **Repulsion → Fit → Clamp**, for `repulsionIterations`, with the repulsion
+//! strength ANNEALED from full down to ~0 across the iterations — early steps
+//! spread aggressively, the fit dominates at the end. A final **Fit → Clamp**
+//! convergence (to `targetEpsilon` / `fitMaxIterations`) then snaps each point
+//! ONTO the surface within its cell. With repulsion off, that final pass IS
+//! the pure Fit-on-Surface.
 //!
 //! Cross-cutting:
 //!  - `constrainToCell` keeps one point per cell one point per cell
-//!    (topological protection) — the Clamp op in both phases.
+//!    (topological protection) — the Clamp op in the loop and the snap.
 //!  - Processing filters (AND when both active): `nearSurfaceOnly`
 //!    (`|sdf| ≤ nearSurfaceDist`) and `signChangeNeighboursOnly` — only cells
 //!    where the field sign flips towards a direct neighbour. The neighbour
@@ -114,7 +116,7 @@ fn clamp_to_cell(p: &mut [f32; 3], leaf: &Leaf) {
 }
 
 /// One damped-Newton "Fit on Surface" step: move `p` toward the SDF zero set
-/// by `stepMultiplier · d · ∇f`. The atomic operation both phases compose.
+/// by `stepMultiplier · d · ∇f`. The atomic Fit op used throughout.
 fn fit_step_once(
     p: &mut [f32; 3],
     sdf: &dyn Fn([f32; 3]) -> f32,
@@ -169,41 +171,14 @@ pub(crate) fn optimize_leaf_points(
         process.push(ok);
     }
 
-    // The point pipeline runs in two iterative phases (ticket yanv), each a
-    // composition of the atomic ops, applied ONLY when their checkbox is on:
-    //
-    //   Phase 1 (fit_on_surface): per step  Fit → Clamp, until |sdf| <
-    //     targetEpsilon or fit_max_iterations.
-    //   Phase 2 (repulsion): per step  Repulsion → Fit → Clamp, for
-    //     repulsion_iterations. (Fit/Clamp only if their checkbox is on.)
     let step = opts.fit_step_multiplier.clamp(0.1, 1.0);
     let eps = opts.fit_target_epsilon.max(0.0);
 
-    // ── Phase 1: Fit on Surface (Fit → Clamp per step) ──
-    if opts.fit_on_surface {
-        for (i, leaf) in leaves.iter().enumerate() {
-            if !process[i] {
-                continue;
-            }
-            for _ in 0..opts.fit_max_iterations {
-                if sdf(points[i]).abs() < eps {
-                    break;
-                }
-                fit_step_once(&mut points[i], sdf, grad, step);
-                if opts.constrain_to_cell {
-                    clamp_to_cell(&mut points[i], leaf);
-                }
-            }
-            // "Only on surface": a point clamped short of the zero set (surface
-            // out of its cell) never reaches epsilon → drops out of the set,
-            // so it doesn't skew the phase-2 repulsion below.
-            if opts.only_on_surface && sdf(points[i]).abs() >= eps.max(1e-6) {
-                alive[i] = false;
-            }
-        }
-    }
-
-    // ── Phase 2: Repulsion inside Surface (Repulsion → Fit → Clamp per step) ──
+    // ── Interleaved relaxation (ticket yanv) ──
+    // ONE loop, per iteration: Repulsion → Fit → Clamp. The repulsion strength
+    // is ANNEALED from full down to (nearly) zero across the iterations, so
+    // early steps spread the points aggressively while later steps let the fit
+    // dominate. Fit only if `fitOnSurface`, Clamp only if `constrainToCell`.
     if opts.repulsion && opts.interaction_radius > 0.0 {
         let r = opts.interaction_radius;
         let inv_cell = 1.0 / r;
@@ -215,10 +190,13 @@ pub(crate) fn optimize_leaf_points(
             )
         };
         // Only processed points repel (and get repelled) — rigid points are
-        // ignored by the algorithms entirely, per the ticket.
-        let active: Vec<usize> =
-            (0..leaves.len()).filter(|&i| process[i] && alive[i]).collect();
-        for _ in 0..opts.repulsion_iterations {
+        // ignored by the algorithms entirely.
+        let active: Vec<usize> = (0..leaves.len()).filter(|&i| process[i]).collect();
+        let iters = opts.repulsion_iterations.max(1);
+        for t in 0..iters {
+            // Anneal: repulsion is strongest first, fading linearly toward 0.
+            let anneal = 1.0 - t as f32 / iters as f32;
+            let strength = opts.repulsion_strength * anneal;
             // Grid hash over the CURRENT positions of the active points.
             let mut grid: std::collections::HashMap<(i32, i32, i32), Vec<usize>> =
                 std::collections::HashMap::new();
@@ -266,32 +244,51 @@ pub(crate) fn optimize_leaf_points(
                 }
                 let leaf = &leaves[i];
                 let mut np = p;
-                // Step 1 — Repulsion inside surface: apply the tangential
-                // component of the neighbour force (so the point stays on the
-                // surface tangent plane rather than being pushed off it).
+                // Repulsion: tangential component of the neighbour force,
+                // scaled by the annealed strength (stays on the surface plane).
                 if f != [0.0, 0.0, 0.0] {
                     let n = grad(p);
                     let fn_dot = f[0] * n[0] + f[1] * n[1] + f[2] * n[2];
                     let ft = [f[0] - fn_dot * n[0], f[1] - fn_dot * n[1], f[2] - fn_dot * n[2]];
-                    np = [
-                        p[0] + ft[0] * opts.repulsion_strength,
-                        p[1] + ft[1] * opts.repulsion_strength,
-                        p[2] + ft[2] * opts.repulsion_strength,
-                    ];
+                    np = [p[0] + ft[0] * strength, p[1] + ft[1] * strength, p[2] + ft[2] * strength];
                 }
-                // Step 2 — Fit on Surface (single Newton step), if enabled:
-                // the tangential move drifts off the exact zero set on curved
-                // geometry, so nudge back.
+                // Fit (single Newton step): nudge back onto the surface after
+                // the tangential move.
                 if opts.fit_on_surface {
                     fit_step_once(&mut np, sdf, grad, step);
                 }
-                // Step 3 — Clamp to Cell, if enabled.
                 if opts.constrain_to_cell {
                     clamp_to_cell(&mut np, leaf);
                 }
                 moved[i] = np;
             }
             points = moved;
+        }
+    }
+
+    // ── Final snap to the surface ──
+    // Converge each processed point onto the SDF zero set (Fit → Clamp until
+    // |sdf| < targetEpsilon or fitMaxIterations) so it really finishes ON the
+    // surface, within its cell — the goal of the relaxation. With repulsion
+    // off this IS the pure Fit-on-Surface. Also decides "only on surface":
+    // a point clamped short of the zero set never reaches epsilon and drops.
+    if opts.fit_on_surface {
+        for (i, leaf) in leaves.iter().enumerate() {
+            if !process[i] {
+                continue;
+            }
+            for _ in 0..opts.fit_max_iterations {
+                if sdf(points[i]).abs() < eps {
+                    break;
+                }
+                fit_step_once(&mut points[i], sdf, grad, step);
+                if opts.constrain_to_cell {
+                    clamp_to_cell(&mut points[i], leaf);
+                }
+            }
+            if opts.only_on_surface && sdf(points[i]).abs() >= eps.max(1e-6) {
+                alive[i] = false;
+            }
         }
     }
 
@@ -406,13 +403,13 @@ mod tests {
         assert_eq!(pts[1], inside.center);
     }
 
-    /// Ticket yanv — phase gating: Phase 2 (repulsion) must apply its inner
-    /// Fit-on-Surface step ONLY when that checkbox is on. With repulsion on
-    /// but fit OFF, a single point (no neighbours → no repulsion force, no
-    /// fit) stays exactly at its start; with fit ON it is nudged onto the
-    /// surface even though there is no repulsion force.
+    /// Ticket yanv — Fit gating: the Fit op runs ONLY when its checkbox is
+    /// on. With repulsion on but fit OFF, a single point (no neighbours → no
+    /// repulsion force, and no fit + no final snap) stays exactly at its
+    /// start; with fit ON the final snap lands it on the surface even without
+    /// any repulsion force.
     #[test]
-    fn phase2_fit_step_is_gated_by_the_fit_checkbox() {
+    fn fit_is_gated_by_the_fit_checkbox() {
         let start = [8.0f32, 0.0, 0.0]; // sdf = -2, off the surface
         let leaf = leaf_at(start, 20.0); // generous cell, no clamping pressure
         let base = MesherPointOptions {

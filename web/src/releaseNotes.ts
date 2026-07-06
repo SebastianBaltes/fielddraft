@@ -24,6 +24,17 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.422",
+    entries: [
+      {
+        kind: "feat",
+        text: "Debug ▸ Mesher: Punktverteilung jetzt eine EINZIGE interleavte Schleife (Repulsion → Fit → Clamp pro Iteration) mit von stark nach null abklingender Repulsion, plus abschließendem Fit-to-Surface — die Punkte spreizen sich früh und liegen am Ende wirklich auf der Oberfläche (im Rahmen des Clamps)",
+        scope: "debug",
+        tickets: ["yanv"],
+      },
+    ],
+  },
+  {
     version: "0.6.421",
     entries: [
       {
