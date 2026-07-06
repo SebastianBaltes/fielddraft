@@ -209,10 +209,17 @@ impl Body {
                 parametric_brep
             } else if bounded_contains_space_filling(&bounded) {
                 // Space-filling (gyroid TPMS) or a non-constructible Helix/Sweep
-                // profile: skip the octree+weave outright (it would refine on
-                // tens of thousands of non-Lipschitz seam cells, a wasm stall);
-                // the renderer covers the shape.
-                BRep::new()
+                // profile: the OCTREE stays excluded outright (it would refine
+                // on tens of thousands of cells — the DL-71 wasm stall). But the
+                // octree-free graceful seed path CAN weave a gyroid's Boolean
+                // rim seams (SSI seeds the gyroid as implicit operand, the dual
+                // field traces them) — so try it; Helix/Sweep and other
+                // non-gyroid non-Lipschitz bodies fail its scope gate and stay
+                // edgeless as before, the renderer covers the shape.
+                parametric
+                    .then(|| crate::brep::seed_weaver::weave_branch_seeds_partial(&bounded))
+                    .flatten()
+                    .unwrap_or_default()
             } else if let Some(partial) = parametric
                 .then(|| crate::brep::seed_weaver::weave_branch_seeds_partial(&bounded))
                 .flatten()
@@ -1142,20 +1149,21 @@ mod tests {
     }
 
     #[test]
-    fn space_filling_body_skips_weave() {
-        // DL-71: a body containing a gyroid (space-filling) gets NO B-Rep — the
-        // octree would refine over the whole volume (a 30s wasm move-stall) to
-        // weave a wireframe of non-Lipschitz seams we discard anyway. A plain
-        // box, by contrast, still weaves its 12 edges.
+    fn space_filling_body_weaves_rim_edges_octree_free() {
+        // DL-71 (lifted for gyroids): the OCTREE stays excluded for a
+        // space-filling body (it would refine over the whole volume — the 30s
+        // wasm move-stall), but the octree-free graceful seed path now weaves
+        // the gyroid's Boolean rim seams (SSI seeds the gyroid as implicit
+        // operand, the dual field traces). A plain box still weaves its 12
+        // edges through the strict path.
         let gyroid_body = weave_all(&[
             box_feat(1, BoolOp::New, [0.0, 0.0, 0.0], [1.0, 1.0, 1.0]),
             gyroid_feat(2, BoolOp::Intersect, 1, 0.5, 0.15),
         ]);
         assert_eq!(gyroid_body.len(), 1);
-        assert_eq!(
-            gyroid_body[0].0.edge_count(),
-            0,
-            "a space-filling body must weave an empty B-Rep"
+        assert!(
+            gyroid_body[0].0.edge_count() > 0,
+            "a gyroid body must weave its Boolean rim edges via the seed path"
         );
 
         let plain_box = weave_all(&[box_feat(1, BoolOp::New, [0.0, 0.0, 0.0], [1.0, 1.0, 1.0])]);

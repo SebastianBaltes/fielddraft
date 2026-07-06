@@ -54,10 +54,29 @@ pub(super) fn collect_halfspaces(node: &BoundedCsg, out: &mut BranchSurfaceMap) 
                     let branch = BranchId::from_feature_sub(id, f.sub);
                     out.insert(branch.as_u32(), (f.half_space.clone(), face_xf));
                 }
+            } else if let fielddraft_protocol::Primitive::Gyroid { cell_size, thickness } =
+                primitive
+            {
+                // A gyroid is ONE closed analytic face (sub 0, matching the
+                // branch `leaf_branches` enumerates and the hot path's
+                // whole-feature attribution). Registered here directly —
+                // NOT via `primitive_halfspaces` — to leave the hot-SDF SSOT
+                // untouched. No centre fold: the primitive has no `center`
+                // param, the world transform places the lattice.
+                out.insert(
+                    BranchId::from_feature_sub(id, 0).as_u32(),
+                    (
+                        fielddraft_protocol::HalfSpace::Gyroid {
+                            cell_size: *cell_size,
+                            thickness: *thickness,
+                        },
+                        *world_transform,
+                    ),
+                );
             }
-            // Primitives without a half-space split (Sphere/Torus/Gyroid/...)
-            // and sketch sweeps (Extrude/Revolve) get no analytic entry; their
-            // faces fall back to Tessellated in the weaver (DL-25).
+            // Other primitives without a half-space split and sketch sweeps
+            // (Extrude/Revolve) get no analytic entry; their faces fall back
+            // to Tessellated in the weaver (DL-25).
         }
         BoundedCsg::Union { left, right, .. }
         | BoundedCsg::Difference { left, right, .. }

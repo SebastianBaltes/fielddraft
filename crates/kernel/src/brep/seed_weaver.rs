@@ -90,7 +90,7 @@ pub fn weave_branch_seeds(body: &BoundedCsg) -> Option<BRep> {
 /// fill those — Stufe C, not implemented here). Returns `None` only for
 /// out-of-scope bodies or when not a single seam resolved (→ whole-body octree).
 pub fn weave_branch_seeds_partial(body: &BoundedCsg) -> Option<BRep> {
-    if !scope_supported(body) {
+    if !scope_supported_partial(body) {
         return None;
     }
     let wireframe = build_seed_wireframe(body, SeedMode::Partial)?;
@@ -142,6 +142,43 @@ fn scope_supported(body: &BoundedCsg) -> bool {
         return false;
     }
     true
+}
+
+/// Scope gate of the PARTIAL path: like [`scope_supported`], but a **gyroid**
+/// is admitted — its Boolean rim seams seed via SSI (gyroid as implicit
+/// operand) and trace via the dual field, both proven; every seam a gyroid
+/// pair cannot resolve is gracefully skipped by `Partial` mode anyway. The
+/// other non-Lipschitz features (Thread / Helix / Sweep) stay rejected: they
+/// have no analytic half-space carrier at all, so nothing would resolve.
+fn scope_supported_partial(body: &BoundedCsg) -> bool {
+    !body_has_warp(body) && !has_non_gyroid_non_lipschitz(body)
+}
+
+/// Any Thread leaf, Helix or Sweep under `node` (the non-Lipschitz features
+/// WITHOUT an analytic carrier — gyroids are deliberately not counted).
+fn has_non_gyroid_non_lipschitz(node: &BoundedCsg) -> bool {
+    use fielddraft_protocol::Primitive;
+    match node {
+        BoundedCsg::Leaf { primitive, .. } => {
+            primitive.is_non_lipschitz() && !matches!(primitive, Primitive::Gyroid { .. })
+        }
+        BoundedCsg::Helix { .. } | BoundedCsg::Sweep { .. } => true,
+        BoundedCsg::Union { left, right, .. }
+        | BoundedCsg::Difference { left, right, .. }
+        | BoundedCsg::Intersection { left, right, .. }
+        | BoundedCsg::SmoothUnion { left, right, .. }
+        | BoundedCsg::SmoothDifference { left, right, .. }
+        | BoundedCsg::MaskedBlend { left, right, .. }
+        | BoundedCsg::Morph { left, right, .. } => {
+            has_non_gyroid_non_lipschitz(left) || has_non_gyroid_non_lipschitz(right)
+        }
+        BoundedCsg::Twist { inner, .. }
+        | BoundedCsg::Bend { inner, .. }
+        | BoundedCsg::Displace { inner, .. }
+        | BoundedCsg::Offset { inner, .. }
+        | BoundedCsg::Shell { inner, .. } => has_non_gyroid_non_lipschitz(inner),
+        BoundedCsg::Extrude { .. } | BoundedCsg::Revolve { .. } | BoundedCsg::Empty => false,
+    }
 }
 
 // Curvature-adaptive trace fractions — shared with the octree route via
@@ -781,6 +818,73 @@ mod tests {
         assert!(!scope_supported(&body));
     }
 
+    /// A gyroid body stays out of the STRICT scope (id_hash toggle-invariance)
+    /// but is admitted by the PARTIAL gate.
+    #[test]
+    fn partial_scope_admits_gyroid_but_strict_does_not() {
+        let csg = CsgNode::Intersection(
+            Box::new(box_leaf(1, [0.0, 0.0, 0.0], [10.0, 10.0, 10.0])),
+            Box::new(CsgNode::Leaf {
+                id: FeatureId::from_u32(2),
+                primitive: Primitive::Gyroid { cell_size: 4.0, thickness: 0.3 },
+            }),
+        );
+        let body = BoundedCsg::from_csg(&csg);
+        assert!(!scope_supported(&body), "strict scope must keep rejecting gyroid");
+        assert!(scope_supported_partial(&body), "partial scope must admit gyroid");
+    }
+
+    /// End-to-end: Box∩Gyroid through the graceful partial weave — the DL-71
+    /// lift. The result must carry real edges: the box's own 12 edges (where
+    /// they survive the intersection) plus the gyroid rim seams on the box
+    /// faces, every sampled point ON the body boundary.
+    #[test]
+    fn partial_weave_box_intersect_gyroid_has_rim_edges() {
+        let csg = CsgNode::Intersection(
+            Box::new(box_leaf(1, [0.0, 0.0, 0.0], [10.0, 10.0, 10.0])),
+            Box::new(CsgNode::Leaf {
+                id: FeatureId::from_u32(2),
+                primitive: Primitive::Gyroid { cell_size: 4.0, thickness: 0.3 },
+            }),
+        );
+        let body = BoundedCsg::from_csg(&csg);
+        let brep = weave_branch_seeds_partial(&body).expect("gyroid body must partial-weave");
+        assert!(!brep.edges.is_empty(), "no edges woven");
+
+        // At least one seam must involve the gyroid branch (feature 2).
+        let gyroid_edges = brep
+            .edges
+            .iter()
+            .filter(|e| e.signature.0.feature_id() == 2 || e.signature.1.feature_id() == 2)
+            .count();
+        assert!(gyroid_edges > 0, "no gyroid rim seams woven");
+        println!(
+            "box∩gyroid partial weave: {} edges total, {} gyroid rim seams, {} vertices",
+            brep.edges.len(),
+            gyroid_edges,
+            brep.vertices.len()
+        );
+
+        // Every sampled edge point lies on the body boundary (Visual mode, the
+        // renderer's field): |f| within a loose band — the samples are exact
+        // f64 on their two carrier surfaces, the body eval is f32.
+        let mut checked = 0usize;
+        for e in &brep.edges {
+            // finish_weave fits Hermite chains to NURBS — sample via the
+            // shared tessellator (same path body_brep_edges exports).
+            let pts = crate::brep::edge_sampling::sample_edge(&e.geometry);
+            for q in pts {
+                let f = body.sdf(
+                    [q[0] as f32, q[1] as f32, q[2] as f32],
+                    crate::csg::EvalMode::Logical,
+                );
+                assert!(f.abs() < 1e-2, "edge point {q:?} off the body boundary: {f}");
+                checked += 1;
+            }
+        }
+        assert!(checked > 100, "suspiciously few edge samples: {checked}");
+    }
+
     #[test]
     fn cylinder_yields_two_closed_rim_rings() {
         // A plain cylinder weaves into a wall plus two caps, joined at exactly
@@ -1360,4 +1464,5 @@ mod tests {
         let body = BoundedCsg::from_csg(&csg);
         assert!(weave_branch_seeds(&body).is_none());
     }
+
 }

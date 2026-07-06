@@ -24,6 +24,16 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.428",
+    entries: [
+      {
+        kind: "feat",
+        text: "Gyroid-Körper haben jetzt B-Rep-Kanten: die Boolean-Rim-Kurven (wo Box/Zylinder/Kugel-Flächen die Gyroid-Shell schneiden) werden über den octree-freien Seed-Pfad exakt getraced (SSI-Seeds + Dual-Field-Tracing) und als partielles Wireframe gewebt. Der Octree bleibt für Space-Filling-Körper weiterhin ausgeschlossen (kein DL-71-Stall); Helix/Sweep-Körper bleiben unverändert kantenlos",
+        scope: "kernel",
+      },
+    ],
+  },
+  {
     version: "0.6.427",
     entries: [
       {

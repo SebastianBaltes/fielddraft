@@ -171,7 +171,7 @@ fn leaf_branches(node: &BoundedCsg) -> Vec<Branch> {
         BoundedCsg::Leaf { id, primitive, aabb, .. } => {
             // Analytic primitives decompose via the shared half-space source of
             // truth. Primitives with no closed-form split (Sphere/Torus return
-            // a single face here; Thread/Gyroid/Ellipsoid/… return `None`) emit
+            // a single face here; Thread/Ellipsoid/… return `None`) emit
             // only what `primitive_halfspaces` yields — no invented branches.
             if let Some(hs) = primitive_halfspaces(primitive) {
                 for f in hs.faces() {
@@ -181,8 +181,31 @@ fn leaf_branches(node: &BoundedCsg) -> Vec<Branch> {
                         aabb: *aabb,
                     });
                 }
+            } else if matches!(primitive, fielddraft_protocol::Primitive::Gyroid { .. }) {
+                // A gyroid is ONE closed analytic face (Sphere/Torus topology,
+                // SA-6), enumerated here directly instead of extending
+                // `primitive_halfspaces` — that is also the hot-SDF SSOT, whose
+                // `_` attribution arm already reports the whole feature as
+                // `BranchId::from_feature` == sub 0, so branch identity matches
+                // without touching the hot path. Its rim seams seed via SSI
+                // (gyroid as implicit operand) and trace via the dual field.
+                //
+                // The branch AABB is INFINITE, not the leaf's: the lattice is
+                // space-filling, so `Aabb::of_primitive(Gyroid)` is the EMPTY
+                // sentinel — which would fail every `aabb_overlap` and prune
+                // all its cross pairs. An infinite box overlaps everything and
+                // the pair's overlap collapses to the OTHER operand's AABB,
+                // exactly the region where rim seams can live.
+                out.push(Branch {
+                    id: BranchId::from_feature_sub(id, 0),
+                    kind: SurfaceKind::Tessellated,
+                    aabb: Aabb {
+                        min: [f32::NEG_INFINITY; 3],
+                        max: [f32::INFINITY; 3],
+                    },
+                });
             }
-            // else: out-of-scope primitive (Thread/Gyroid/Ellipsoid/Capsule/
+            // else: out-of-scope primitive (Thread/Ellipsoid/Capsule/
             // HexPrism/ImportedMesh) → octree fallback, no branches.
         }
 
