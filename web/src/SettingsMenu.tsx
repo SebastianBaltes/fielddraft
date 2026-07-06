@@ -388,7 +388,9 @@ export function SettingsMenu({
                 data-testid="menu-debug-part-aabb"
                 onClick={() => menuAction(togglePartAabbVisible)}
               >
-                {partAabbVisible ? "✓ " : " "}Part-AABB
+                {/* Ticket cvii: left-aligned with the sibling items (no leading
+                    char/space); the on-state shows a TRAILING check, never indents. */}
+                Part-AABB{partAabbVisible ? " ✓" : ""}
               </button>
             </div>
           </div>

@@ -24,6 +24,17 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.406",
+    entries: [
+      {
+        kind: "fix",
+        text: "Menüpunkt Debug ▸ Part-AABB war nach rechts eingerückt (ein unsichtbares EM-Space-Zeichen als Zustands-Platzhalter). Der Eintrag steht jetzt linksbündig wie die Nachbarn; der Aktiv-Zustand zeigt ein nachgestelltes Häkchen",
+        scope: "ui",
+        tickets: ["cvii"],
+      },
+    ],
+  },
+  {
     version: "0.6.405",
     entries: [
       {
