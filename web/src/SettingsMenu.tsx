@@ -417,7 +417,9 @@ export function SettingsMenu({
           if (!file) return;
           // wu2v: read bytes so ZIP `.fdraft` containers load; the byte
           // loader falls back to JSON for legacy plain-text files.
-          file.arrayBuffer().then((buf) => store?.loadProjectFromBytes(buf));
+          // Ticket 4z37: the explicit-open path persists + graduates a
+          // deep-link repro tab so a reload restores the opened project.
+          file.arrayBuffer().then((buf) => store?.openUserProjectFromBytes(buf));
           e.currentTarget.value = "";
         }}
       />

@@ -114,10 +114,13 @@ impl Kernel {
     ///     (one vertex per leaf; quads at sign-changing minimal octree
     ///     edges), after an optional 2:1 balance pass (`balanceOctree`).
     ///
-    /// Returns `[nPoints, nTris, points…, indices…]`: per leaf 8 floats
-    /// `[x, y, z, sdf, nx, ny, nz, cellSize]` with the FINAL point position
-    /// (sdf/normal re-evaluated there), then 3 indices per triangle into the
-    /// point list. Points failing the processing filters stay rigid.
+    /// Returns `[nPoints, nTris, points…, indices…]`: per leaf 9 floats
+    /// `[x, y, z, sdf, nx, ny, nz, cellSize, shown]` with the FINAL point
+    /// position (sdf/normal re-evaluated there) and a `shown` display flag
+    /// (1 = passed the near-surface/sign-change filters), then 3 indices per
+    /// triangle into the point list. Points failing the processing filters
+    /// stay rigid and `shown = 0`; "only on surface" escapees are dropped
+    /// from the point list entirely.
     #[wasm_bindgen(js_name = mesherPoints)]
     pub fn mesher_points(&self, options_json: String) -> Vec<f32> {
         let opts: crate::mesher_points::MesherPointOptions =
@@ -185,7 +188,14 @@ impl Kernel {
                 n_alive += 1;
             }
         }
-        let mut out = Vec::with_capacity(2 + n_alive as usize * 8 + indices.len());
+        // Per point 9 floats: [x, y, z, sdf, nx, ny, nz, size, shown]. `shown`
+        // (1/0) = passed the DISPLAY filters (near-surface AND sign-change) —
+        // the overlay draws normals/dots only for shown points, so toggling a
+        // processing filter visibly culls the cloud (tickets jt76/gjuu). The
+        // MESH still uses every emitted point as a vertex (crack-free DC), so
+        // `shown` is display-only; only "only-on-surface" escapees are gone
+        // from the vertex set entirely (dropped above via `alive`).
+        let mut out = Vec::with_capacity(2 + n_alive as usize * 9 + indices.len());
         out.push(n_alive as f32);
         out.push((indices.len() / 3) as f32);
         for (i, leaf) in leaves.iter().enumerate() {
@@ -198,7 +208,8 @@ impl Kernel {
             } else {
                 (leaf.sdf, leaf.normal)
             };
-            out.extend_from_slice(&[p[0], p[1], p[2], d, n[0], n[1], n[2], leaf.size]);
+            let shown = if processed[i] { 1.0 } else { 0.0 };
+            out.extend_from_slice(&[p[0], p[1], p[2], d, n[0], n[1], n[2], leaf.size, shown]);
         }
         out.extend(indices.iter().map(|&i| remap[i as usize] as f32));
         out

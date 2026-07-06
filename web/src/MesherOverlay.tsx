@@ -107,22 +107,17 @@ export function MesherOverlay() {
     const data = store.mesherPoints(JSON.stringify(params));
     const total = data.length >= 2 ? data[0] : 0;
     const triCount = data.length >= 2 ? data[1] : 0;
+    const STRIDE = 9; // [x,y,z,sdf,nx,ny,nz,size,shown]
     const P = 2; // points offset
-    const I = 2 + total * 8; // indices offset
-    // Keep leaf indices that pass the near-surface filter. When the part is
-    // faded (partOpacity < 1) the interior is visible, so interior samples
-    // (sdf < 0) are kept even beyond the near-surface distance.
-    const showInterior = params.partOpacity < 1;
+    const I = 2 + total * STRIDE; // indices offset
+    // Display filter: draw normals/dots only for points the kernel marks as
+    // `shown` (index 8 = 1). That flag folds in ALL processing filters
+    // (near-surface AND sign-change), so toggling any of them visibly culls
+    // the cloud — the kernel owns the filter logic, the overlay just reads
+    // the verdict (tickets jt76/gjuu). The mesh still uses every point.
     const keep: number[] = [];
     for (let k = 0; k < total; k++) {
-      const d = data[P + k * 8 + 3];
-      if (
-        params.nearSurfaceOnly &&
-        Math.abs(d) > params.nearSurfaceDist &&
-        !(showInterior && d < 0)
-      )
-        continue;
-      keep.push(k);
+      if (data[P + k * STRIDE + 8] > 0.5) keep.push(k);
     }
     const n = keep.length;
     setMesherStats({ cells: n, capped: total >= MAX_LEAVES, tris: triCount });
@@ -135,9 +130,9 @@ export function MesherOverlay() {
     if (triCount > 0) {
       const mpos = new Float32Array(total * 3);
       for (let k = 0; k < total; k++) {
-        mpos[k * 3] = data[P + k * 8];
-        mpos[k * 3 + 1] = data[P + k * 8 + 1];
-        mpos[k * 3 + 2] = data[P + k * 8 + 2];
+        mpos[k * 3] = data[P + k * STRIDE];
+        mpos[k * 3 + 1] = data[P + k * STRIDE + 1];
+        mpos[k * 3 + 2] = data[P + k * STRIDE + 2];
       }
       const midx = new Uint32Array(triCount * 3);
       for (let t = 0; t < triCount * 3; t++) midx[t] = data[I + t];
@@ -173,7 +168,7 @@ export function MesherOverlay() {
     const linePos = new Float32Array(n * 6);
     const lineCol = new Float32Array(n * 6);
     for (let idx = 0; idx < n; idx++) {
-      const b = P + keep[idx] * 8;
+      const b = P + keep[idx] * STRIDE;
       const x = data[b],
         y = data[b + 1],
         z = data[b + 2],

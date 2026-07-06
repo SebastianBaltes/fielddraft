@@ -24,6 +24,23 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.419",
+    entries: [
+      {
+        kind: "fix",
+        text: "Debug ▸ Mesher: die Filter „Neighbour sign change only“ und „Only on surface“ blenden die Normalen/Punkte jetzt sichtbar aus — der Kernel liefert pro Punkt ein shown-Flag, das alle Prozess-Filter berücksichtigt (vorher wirkten sie nur intern auf Fit/Repulsion/Mesh)",
+        scope: "debug",
+        tickets: ["jt76", "gjuu"],
+      },
+      {
+        kind: "fix",
+        text: "Von Disk geöffnetes Projekt überlebt jetzt einen Reload: ein „Projekt öffnen“ persistiert sofort in localStorage und holt einen Deep-Link-Repro-Tab (?project=) aus dem Repro-Modus (echter Autosave, URL-Parameter entfernt), statt beim Reload leer zu sein",
+        scope: "project",
+        tickets: ["4z37"],
+      },
+    ],
+  },
+  {
     version: "0.6.418",
     entries: [
       {

@@ -123,12 +123,19 @@ export class KernelStore {
    *  toggles) — see workerOrchestration.ts. */
   private readonly workers: WorkerOrchestrator;
 
+  /** True in a deep-link repro tab (`?project=`), which boots with an inert
+   *  autosave so it can't clobber another tab's persisted project. An
+   *  explicit user Open clears this via {@link graduateFromDeepLink}. */
+  private deepLink = false;
+
   constructor(
     kernel: Kernel,
     autosave: AutoSaveHandle,
     persistedProjectJson: string | null = null,
+    deepLink = false,
   ) {
     this.kernel = kernel;
+    this.deepLink = deepLink;
     this.core = new StoreCore(kernel, autosave);
     // Late-bound commit hooks: the domain-specific pieces of the shared
     // commit() tail (see StoreCoreHooks). Bound as closures so they always
@@ -832,6 +839,51 @@ export class KernelStore {
 
   loadProjectFromBytes(bytes: Uint8Array | ArrayBuffer): boolean {
     return this.project.loadProjectFromBytes(bytes);
+  }
+
+  /** Explicit user "Open project" (File → Open, drag-drop): loads the bytes
+   *  AND makes the result durable across a reload. Ticket 4z37: a deep-link
+   *  repro tab boots with an inert autosave and a `?project=` URL that
+   *  re-fetches the ticket on reload — so a disk project opened there
+   *  vanished on reload. Opening a project is a deliberate "work on THIS"
+   *  action, so it graduates the tab out of repro mode (real autosave, URL
+   *  param stripped) and force-writes the loaded project now. The automated
+   *  ticket-repro boot never calls this, so it can't clobber another tab. */
+  openUserProjectFromBytes(bytes: Uint8Array | ArrayBuffer): boolean {
+    const ok = this.project.loadProjectFromBytes(bytes);
+    if (!ok) return false;
+    this.graduateFromDeepLink();
+    // Persist immediately (deep-link tabs' load-time flush hit the noop).
+    this.core.autosave.schedule(this.project.serializeProject());
+    this.core.autosave.flush();
+    return true;
+  }
+
+  /** Flush any pending autosave immediately (beforeunload). Reads the LIVE
+   *  core handle so a graduated deep-link tab flushes its real autosave. */
+  flushAutosave(): void {
+    this.core.autosave.flush();
+  }
+
+  /** Turn a deep-link repro tab into a normal working tab: swap in a real
+   *  debounced autosave and drop the `?project=` param so a reload restores
+   *  the now-persisted project instead of re-fetching the ticket. No-op in a
+   *  tab that was already a normal one. */
+  private graduateFromDeepLink(): void {
+    if (!this.deepLink) return;
+    this.deepLink = false;
+    this.core.replaceAutosave(createAutoSave({ debounceMs: getAutosaveDebounceMs }));
+    if (typeof window !== "undefined") {
+      try {
+        const url = new URL(window.location.href);
+        if (url.searchParams.has("project")) {
+          url.searchParams.delete("project");
+          window.history.replaceState(null, "", url.toString());
+        }
+      } catch {
+        // history/URL unavailable (tests) — the autosave swap alone suffices.
+      }
+    }
   }
 
   setProjectId(id: string | null): void {
@@ -2269,6 +2321,7 @@ export async function getStore(): Promise<KernelStore> {
       kernel,
       autosave,
       deepLink ? null : loadPersisted(),
+      deepLink,
     );
 
     // Dirty tracking beyond document commits: camera moves and debug-tool
@@ -2293,7 +2346,10 @@ export async function getStore(): Promise<KernelStore> {
     }
 
     if (typeof window !== "undefined") {
-      window.addEventListener("beforeunload", () => autosave.flush());
+      // Flush the LIVE autosave (a deep-link tab graduates its handle on an
+      // explicit Open, ticket 4z37) — not the captured boot handle, or a
+      // pending edit after graduation would be lost on unload.
+      window.addEventListener("beforeunload", () => store.flushAutosave());
       // Dev-mode test hook: expose the kernel + store handles on
       // window so Playwright specs can peek non-UI state (current
       // sub-spine, diagnostics, raw feature calls) without

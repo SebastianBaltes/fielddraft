@@ -333,7 +333,10 @@ export interface StoreCoreHooks {
 
 export class StoreCore {
   readonly kernel: Kernel;
-  readonly autosave: AutoSaveHandle;
+  /** Not `readonly`: a deep-link repro tab boots with an inert (noop)
+   *  autosave, but an explicit user "Open project" graduates it to a real
+   *  persisting one (ticket 4z37) via {@link replaceAutosave}. */
+  autosave: AutoSaveHandle;
   readonly listeners = new Set<() => void>();
   /** The current immutable state snapshot. Assigned by the facade
    *  constructor once the initial document is loaded; every mutation
@@ -344,6 +347,14 @@ export class StoreCore {
   constructor(kernel: Kernel, autosave: AutoSaveHandle) {
     this.kernel = kernel;
     this.autosave = autosave;
+  }
+
+  /** Swap the autosave handle (ticket 4z37: a deep-link repro tab upgrades
+   *  its inert autosave to a real one on an explicit user Open). Cancels any
+   *  pending write on the old handle first. */
+  replaceAutosave(next: AutoSaveHandle): void {
+    this.autosave.cancel();
+    this.autosave = next;
   }
 
   /** Late-bind the domain hooks (the facade wires them after the domain
