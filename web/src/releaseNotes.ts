@@ -24,6 +24,17 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.415",
+    entries: [
+      {
+        kind: "feat",
+        text: "Debug ▸ Mesher: iterative Punkt-Optimierer — „Fit on Surface“ (gedämpfte Newton-Projektion auf die SDF-Nullfläche) und „Repulsion inside Surface“ (tangentiale Relaxation mit Re-Pinning), mit Zell-Clamping (constrainToCell), Vorzeichenwechsel-Nachbar-Filter und Gewichtungsfunktion Linear/Inverse Square — komplett im Kernel (31k Punkte fitten in ~70 ms)",
+        scope: "debug",
+        tickets: ["jq2t"],
+      },
+    ],
+  },
+  {
     version: "0.6.414",
     entries: [
       {

@@ -27,11 +27,33 @@ export interface MesherDebug {
   /** Opacity of the rendered part (1 = opaque). Below 1 the solid turns
    *  see-through so the interior octree samples/normals are visible. */
   partOpacity: number;
-  /** Only show leaf cells within `nearSurfaceDist` of the surface. */
+  /** Only show leaf cells within `nearSurfaceDist` of the surface. Also
+   *  processing filter A of the jq2t point pipeline. */
   nearSurfaceOnly: boolean;
   /** |sdf| threshold (mm) for `nearSurfaceOnly`. */
   nearSurfaceDist: number;
+
+  // ── jq2t: iterative point optimisation ──
+  /** Processing filter B: only cells whose field sign flips towards a direct
+   *  neighbour. ANDed with filter A when both are on. */
+  signChangeNeighboursOnly: boolean;
+  /** Topological protection: clamp every point update to its leaf cell. */
+  constrainToCell: boolean;
+  /** Feature 1: damped Newton projection onto the SDF zero set. */
+  fitOnSurface: boolean;
+  fitMaxIterations: number;
+  fitTargetEpsilon: number;
+  /** Newton damping, 0.1–1.0. */
+  fitStepMultiplier: number;
+  /** Feature 2: tangential repulsion relaxation (with surface re-pinning). */
+  repulsion: boolean;
+  repulsionIterations: number;
+  interactionRadius: number;
+  repulsionStrength: number;
+  weightingFunction: MesherWeighting;
 }
+
+export type MesherWeighting = "linear" | "inverse-square";
 
 let params: MesherDebug | null = null;
 const listeners = new Set<() => void>();

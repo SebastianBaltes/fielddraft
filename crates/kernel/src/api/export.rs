@@ -102,16 +102,21 @@ impl Kernel {
         out
     }
 
-    /// Debug ▸ Mesher, step 1: build a narrow-band adaptive octree over the
-    /// scene and return, for every leaf cell, its centre sample packed as
-    /// `[x, y, z, sdf, nx, ny, nz, cellSize]` (8 floats). A cell subdivides
-    /// while its centre lies within the surface band (`|sdf| ≤ halfDiagonal ·
-    /// guard`) and `depth < max_depth`; otherwise it is a leaf. `sdf` is the
-    /// min-over-bodies field (`EvalMode::Visual`), `n` its normalised gradient
-    /// (central differences). This is the scaffold a custom mesher will grow
-    /// from — the overlay colour-codes `sdf` and draws `n` as a short line.
-    #[wasm_bindgen(js_name = mesherOctreeSamples)]
-    pub fn mesher_octree_samples(&self, max_depth: u32, band_guard: f32) -> Vec<f32> {
+    /// Debug ▸ Mesher: build the narrow-band adaptive octree over the scene
+    /// (one point per leaf cell = its centre) and run the OPTIONAL iterative
+    /// point optimisers of ticket jq2t over it (Newton "Fit on Surface",
+    /// tangential "Repulsion inside Surface", cell-clamping, processing
+    /// filters) — all controlled by `options_json`
+    /// ([`crate::mesher_points::MesherPointOptions`], camelCase; unknown
+    /// fields ignored, malformed JSON → defaults = plain octree samples).
+    /// Returns, per leaf, `[x, y, z, sdf, nx, ny, nz, cellSize]` (8 floats)
+    /// with `x,y,z` the FINAL point position and `sdf`/`n` re-evaluated
+    /// there, so the overlay's colour coding directly shows the fit quality.
+    /// Points failing the processing filters stay rigid at the cell centre.
+    #[wasm_bindgen(js_name = mesherPoints)]
+    pub fn mesher_points(&self, options_json: String) -> Vec<f32> {
+        let opts: crate::mesher_points::MesherPointOptions =
+            serde_json::from_str(&options_json).unwrap_or_default();
         let bodies: Vec<crate::bvh::BoundedCsg> = self
             .bodies
             .iter()
@@ -119,7 +124,47 @@ impl Kernel {
                 crate::body::build_bounded_with_primitives(&self.decoded, &b.feature_indices).0
             })
             .collect();
-        octree_leaf_samples(&bodies, max_depth, band_guard)
+        let leaves = octree_leaves(&bodies, opts.max_depth, opts.band_guard);
+        if leaves.is_empty() {
+            return Vec::new();
+        }
+        let scene_sdf = |p: [f32; 3]| {
+            let mut d = f32::MAX;
+            for b in &bodies {
+                d = d.min(b.sdf(p, crate::csg::EvalMode::Visual));
+            }
+            d
+        };
+        // Gradient step scaled like the octree sampler's (root-size based
+        // would need the root here; a per-eval fraction of the finest cell is
+        // equivalent in practice and stays local).
+        let min_size = leaves.iter().map(|l| l.size).fold(f32::MAX, f32::min);
+        let eps = (min_size * 0.05).clamp(1e-3, 1.0);
+        let grad = |p: [f32; 3]| -> [f32; 3] {
+            let gx = scene_sdf([p[0] + eps, p[1], p[2]]) - scene_sdf([p[0] - eps, p[1], p[2]]);
+            let gy = scene_sdf([p[0], p[1] + eps, p[2]]) - scene_sdf([p[0], p[1] - eps, p[2]]);
+            let gz = scene_sdf([p[0], p[1], p[2] + eps]) - scene_sdf([p[0], p[1], p[2] - eps]);
+            let l = (gx * gx + gy * gy + gz * gz).sqrt();
+            if l > 1e-12 {
+                [gx / l, gy / l, gz / l]
+            } else {
+                [0.0, 0.0, 1.0]
+            }
+        };
+        let (points, processed) =
+            crate::mesher_points::optimize_leaf_points(&leaves, &opts, &scene_sdf, &grad);
+        let mut out = Vec::with_capacity(leaves.len() * 8);
+        for (i, leaf) in leaves.iter().enumerate() {
+            let p = points[i];
+            // Re-evaluate only where the point could have moved.
+            let (d, n) = if processed[i] && (opts.fit_on_surface || opts.repulsion) {
+                (scene_sdf(p), grad(p))
+            } else {
+                (leaf.sdf, leaf.normal)
+            };
+            out.extend_from_slice(&[p[0], p[1], p[2], d, n[0], n[1], n[2], leaf.size]);
+        }
+        out
     }
 
     /// World-space centre of the *visible* solids' AABB — the orbit pivot
@@ -286,11 +331,30 @@ impl Kernel {
 /// Debug ▸ Mesher core (kept free of the wasm boundary so it is unit-testable):
 /// build a narrow-band adaptive octree over the union of `bodies` and return
 /// every leaf cell centre packed `[x, y, z, sdf, nx, ny, nz, cellSize]`.
+#[cfg(test)]
 pub(crate) fn octree_leaf_samples(
     bodies: &[crate::bvh::BoundedCsg],
     max_depth: u32,
     band_guard: f32,
 ) -> Vec<f32> {
+    octree_leaves(bodies, max_depth, band_guard)
+        .into_iter()
+        .flat_map(|l| {
+            [
+                l.center[0], l.center[1], l.center[2], l.sdf, l.normal[0], l.normal[1],
+                l.normal[2], l.size,
+            ]
+        })
+        .collect()
+}
+
+/// The leaf structs behind [`octree_leaf_samples`] — the jq2t point pipeline
+/// needs the cells (centre + size = clamp bounds), not just packed floats.
+pub(crate) fn octree_leaves(
+    bodies: &[crate::bvh::BoundedCsg],
+    max_depth: u32,
+    band_guard: f32,
+) -> Vec<crate::mesher_points::Leaf> {
     if bodies.is_empty() {
         return Vec::new();
     }
@@ -335,10 +399,10 @@ pub(crate) fn octree_leaf_samples(
     const MAX_LEAVES: usize = 200_000;
     const SQRT3: f32 = 1.732_050_8;
 
-    let mut out: Vec<f32> = Vec::new();
+    let mut out: Vec<crate::mesher_points::Leaf> = Vec::new();
     let mut stack: Vec<([f32; 3], f32, u32)> = vec![(center0, root_size, 0)];
     while let Some((c, size, depth)) = stack.pop() {
-        if out.len() / 8 >= MAX_LEAVES {
+        if out.len() >= MAX_LEAVES {
             break;
         }
         let d = scene_sdf(c);
@@ -368,7 +432,12 @@ pub(crate) fn octree_leaf_samples(
             } else {
                 [0.0, 0.0, 1.0]
             };
-            out.extend_from_slice(&[c[0], c[1], c[2], d, n[0], n[1], n[2], size]);
+            out.push(crate::mesher_points::Leaf {
+                center: c,
+                sdf: d,
+                normal: n,
+                size,
+            });
         }
     }
     out

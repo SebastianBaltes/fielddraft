@@ -2128,8 +2128,8 @@ export class KernelStore {
 
   /** Debug ▸ Mesher (step 1): narrow-band adaptive octree leaf centres, packed
    *  `[x,y,z, sdf, nx,ny,nz, cellSize]` per leaf. Synchronous main-thread eval. */
-  mesherOctreeSamples(maxDepth: number, bandGuard: number): Float32Array {
-    return this.kernel.mesherOctreeSamples(maxDepth, bandGuard);
+  mesherPoints(optionsJson: string): Float32Array {
+    return this.kernel.mesherPoints(optionsJson);
   }
 
   /** Download an already-built export (3MF re-wraps stashed slicer

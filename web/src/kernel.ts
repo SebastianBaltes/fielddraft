@@ -1116,8 +1116,8 @@ export class Kernel {
 
   /** Debug ▸ Mesher: narrow-band adaptive octree over the scene. Returns leaf
    *  cell centres packed `[x,y,z, sdf, nx,ny,nz, cellSize]` (8 floats each). */
-  mesherOctreeSamples(maxDepth: number, bandGuard: number): Float32Array {
-    return this.inner.mesherOctreeSamples(maxDepth, bandGuard);
+  mesherPoints(optionsJson: string): Float32Array {
+    return this.inner.mesherPoints(optionsJson);
   }
 
   /** Mesh + validate body `i`; returns its report JSON ("" without a

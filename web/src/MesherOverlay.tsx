@@ -101,7 +101,10 @@ export function MesherOverlay() {
       return;
     }
 
-    const data = store.mesherOctreeSamples(params.maxDepth, params.bandGuard);
+    // The kernel runs the whole jq2t point pipeline (octree → filters →
+    // Newton fit → tangential repulsion); extra fields in the options JSON
+    // are ignored by serde, so the debug params pass through verbatim.
+    const data = store.mesherPoints(JSON.stringify(params));
     const total = Math.floor(data.length / 8);
     // Keep leaf indices that pass the near-surface filter. When the part is
     // faded (partOpacity < 1) the interior is visible, so interior samples
