@@ -24,6 +24,16 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.420",
+    entries: [
+      {
+        kind: "feat",
+        text: "Debug ▸ Mesher „Mesh points“ verbindet jetzt die angezeigten (gefilterten) Punkte entlang der Octree-Kantenbeziehungen zu Dreiecken — kein Dual Contouring, kein Vorzeichenwechsel-Test, Löcher/falsche Facetten sind bewusst erlaubt; das Ergebnis wird nur als Wireframe gezeichnet",
+        scope: "debug",
+      },
+    ],
+  },
+  {
     version: "0.6.419",
     entries: [
       {

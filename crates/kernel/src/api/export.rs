@@ -171,8 +171,12 @@ impl Kernel {
         }
         let (points, processed, alive) =
             crate::mesher_points::optimize_leaf_points(&leaves, &opts, &scene_sdf, &grad);
+        // The mesh connects exactly the SHOWN points (passed the display
+        // filters = processed AND survived only-on-surface): one vertex per
+        // shown leaf, triangles by octree-edge adjacency (no sign-change).
+        let shown: Vec<bool> = (0..leaves.len()).map(|i| processed[i] && alive[i]).collect();
         let indices = if opts.mesh_points {
-            crate::mesher_points::polygonize(&root, &points, &alive, &scene_sdf)
+            crate::mesher_points::connect_octree_edges(&root, &shown)
         } else {
             Vec::new()
         };

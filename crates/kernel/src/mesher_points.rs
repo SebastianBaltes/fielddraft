@@ -560,58 +560,25 @@ mod tests {
         }
     }
 
-    /// Undirected-edge census of a triangle soup: (boundary, non-manifold).
-    fn edge_defects(indices: &[u32]) -> (usize, usize) {
-        let mut m: std::collections::HashMap<(u32, u32), i32> = std::collections::HashMap::new();
-        for t in indices.chunks(3) {
-            for (a, b) in [(t[0], t[1]), (t[1], t[2]), (t[2], t[0])] {
-                *m.entry((a.min(b), a.max(b))).or_insert(0) += 1;
-            }
-        }
-        let boundary = m.values().filter(|&&c| c == 1).count();
-        let nonmanifold = m.values().filter(|&&c| c > 2).count();
-        (boundary, nonmanifold)
-    }
-
-    /// Signed volume — positive for a consistently outward-wound closed mesh.
-    fn signed_volume(points: &[[f32; 3]], indices: &[u32]) -> f32 {
-        let mut v = 0.0f64;
-        for t in indices.chunks(3) {
-            let a = points[t[0] as usize];
-            let b = points[t[1] as usize];
-            let c = points[t[2] as usize];
-            v += (a[0] as f64 * (b[1] as f64 * c[2] as f64 - b[2] as f64 * c[1] as f64)
-                - a[1] as f64 * (b[0] as f64 * c[2] as f64 - b[2] as f64 * c[0] as f64)
-                + a[2] as f64 * (b[0] as f64 * c[1] as f64 - b[1] as f64 * c[0] as f64))
-                / 6.0;
-        }
-        v as f32
-    }
-
+    /// The octree-edge connectivity mesher connects ONLY shown leaves and
+    /// makes no watertightness claim (holes/wrong facets are expected). Here
+    /// the near-surface leaves are shown: adjacent ones must connect, and no
+    /// triangle may reference a hidden leaf.
     #[test]
-    fn dual_contour_sphere_is_closed_and_outward() {
+    fn octree_connect_uses_only_shown_leaves() {
         let mut root = sphere_octree(5);
         balance_2to1(&mut root, &sphere_sdf);
         let leaves = collect_leaves(&mut root, &sphere_grad);
-        let opts = MesherPointOptions {
-            fit_on_surface: true,
-            fit_max_iterations: 12,
-            fit_target_epsilon: 1e-4,
-            constrain_to_cell: true,
-            ..Default::default()
-        };
-        let (points, _, alive) = optimize_leaf_points(&leaves, &opts, &sphere_sdf, &sphere_grad);
-        let indices = polygonize(&root, &points, &alive, &sphere_sdf);
-        assert!(indices.len() >= 3 * 100, "too few triangles: {}", indices.len() / 3);
-        let (boundary, nonmanifold) = edge_defects(&indices);
-        assert_eq!(boundary, 0, "dual contour left open edges");
-        assert_eq!(nonmanifold, 0, "dual contour produced non-manifold edges");
-        let vol = signed_volume(&points, &indices);
-        let expected = 4.0 / 3.0 * std::f32::consts::PI * 1000.0;
-        assert!(
-            (vol - expected).abs() < expected * 0.1,
-            "volume {vol} far from sphere volume {expected} (winding/geometry wrong)"
-        );
+        let shown: Vec<bool> = leaves.iter().map(|l| l.sdf.abs() < 3.0).collect();
+        let indices = connect_octree_edges(&root, &shown);
+        assert!(!indices.is_empty(), "adjacent shown leaves must connect");
+        for &i in &indices {
+            assert!(shown[i as usize], "triangle referenced a hidden leaf");
+        }
+        // Every triangle is non-degenerate (3 distinct leaf vertices).
+        for t in indices.chunks(3) {
+            assert!(t[0] != t[1] && t[1] != t[2] && t[2] != t[0], "degenerate tri");
+        }
     }
 
     /// "Only on surface": a cell whose point cannot reach the zero set
@@ -636,18 +603,13 @@ mod tests {
         assert!(sphere_sdf(pts[0]).abs() < 1e-3);
     }
 
-    /// Even on an UNBALANCED octree the recursion must stay crack-free (the
-    /// 2:1 pass improves quality, not correctness).
+    /// No shown leaves → no triangles (the mesh spans only displayed points).
     #[test]
-    fn dual_contour_stays_closed_without_balancing() {
-        let mut root = sphere_octree(5);
+    fn octree_connect_empty_without_shown_leaves() {
+        let mut root = sphere_octree(4);
         let leaves = collect_leaves(&mut root, &sphere_grad);
-        let points: Vec<[f32; 3]> = leaves.iter().map(|l| l.center).collect();
-        let alive = vec![true; points.len()];
-        let indices = polygonize(&root, &points, &alive, &sphere_sdf);
-        let (boundary, nonmanifold) = edge_defects(&indices);
-        assert_eq!(boundary, 0, "unbalanced dual contour left open edges");
-        assert_eq!(nonmanifold, 0, "unbalanced dual contour non-manifold");
+        let shown = vec![false; leaves.len()];
+        assert!(connect_octree_edges(&root, &shown).is_empty());
     }
 }
 
@@ -895,20 +857,24 @@ pub(crate) fn collect_leaves(
     out
 }
 
-// ── Dual-contour polygonisation (Ju et al. 2002 recursion) ──────────
+// ── Octree-edge connectivity mesher ─────────────────────────────────
 //
-// One vertex per leaf (the optimised point); for every MINIMAL octree edge
-// whose endpoints straddle the surface, the (up to) 4 leaves sharing that
-// edge contribute a quad. The recursion enumerates exactly the minimal
-// edges, crack-free on an adaptive octree; the 2:1 balance keeps the
-// depth contrast (and thus triangle quality) bounded.
+// NOT dual contouring. One vertex per leaf (the filtered/optimised point);
+// for every MINIMAL octree edge, the (up to) 4 leaves sharing that edge are
+// connected into a quad (two triangles) — PURELY by octree adjacency, with
+// NO sign-change test. Only edges whose 4 leaves are all "shown" (survived
+// the display filters) contribute, so the mesh is built over exactly the
+// displayed points. It deliberately makes no watertightness/orientation
+// guarantees (holes and wrong facets are expected) — it is a raw
+// visualisation of the octree edge graph over the filtered point set, drawn
+// as a wireframe. The recursion (`cell_proc`/`face_proc`/`edge_proc`) is the
+// standard adaptive-octree minimal-edge enumeration.
 
 struct MeshCtx<'a> {
-    points: &'a [[f32; 3]],
-    /// Per-leaf liveness ("only on surface" filter) — a quad touching a
-    /// dropped cell is skipped: that cell contributes no vertex.
-    alive: &'a [bool],
-    sdf: &'a dyn Fn([f32; 3]) -> f32,
+    /// Per-leaf display flag (= passed the filters). A quad is emitted only
+    /// when all 4 of its leaves are shown, so the mesh spans exactly the
+    /// displayed points.
+    shown: &'a [bool],
     indices: Vec<u32>,
 }
 
@@ -1049,51 +1015,22 @@ fn edge_proc(nodes: [&OctreeNode; 4], axis: usize, ctx: &mut MeshCtx) {
     }
 }
 
-/// The 4 leaves around a minimal edge: sign-test the edge endpoints, emit
-/// the quad of their representative points on a crossing.
-fn emit_edge_quad(nodes: [&OctreeNode; 4], axis: usize, ctx: &mut MeshCtx) {
-    // The deepest leaf owns the minimal edge.
-    let deepest = nodes
-        .iter()
-        .enumerate()
-        .max_by_key(|(_, n)| n.depth)
-        .map(|(i, _)| i)
-        .unwrap();
-    let dn = nodes[deepest];
-    let h = dn.size * 0.5;
-    // The shared edge line: at the corner of the deepest node facing the
-    // OPPOSITE of its cyclic position (node at (u−,v−) → edge at (u+,v+)).
-    let (u_axis, v_axis) = ((axis + 1) % 3, (axis + 2) % 3);
-    let (du, dv) = match deepest {
-        0 => (1.0f32, 1.0f32),
-        1 => (-1.0, 1.0),
-        2 => (-1.0, -1.0),
-        _ => (1.0, -1.0),
-    };
-    let mut p0 = dn.center;
-    p0[u_axis] += du * h;
-    p0[v_axis] += dv * h;
-    let mut p1 = p0;
-    p0[axis] -= h;
-    p1[axis] += h;
-
-    if nodes.iter().any(|n| !ctx.alive[n.leaf_idx]) {
+/// Connect the 4 leaves around a minimal octree edge into a quad (two
+/// triangles), by pure adjacency — no sign-change test. Emitted only when
+/// every one of the 4 leaves is shown, so the mesh spans exactly the
+/// displayed points. Winding is irrelevant (drawn as a wireframe);
+/// degenerate triangles (a coarse leaf spanning two quadrants makes cells
+/// coincide) are skipped.
+fn emit_edge_quad(nodes: [&OctreeNode; 4], _axis: usize, ctx: &mut MeshCtx) {
+    if nodes.iter().any(|n| !ctx.shown[n.leaf_idx]) {
         return;
     }
-    let d0 = (ctx.sdf)(p0);
-    let d1 = (ctx.sdf)(p1);
-    if (d0 >= 0.0) == (d1 >= 0.0) {
-        return;
-    }
-    // Winding: flip so triangles face outward (empirically anchored by the
-    // orientation test on a sphere; the sign of the lower endpoint decides).
-    let order: [usize; 4] = if d0 < 0.0 { [0, 1, 2, 3] } else { [3, 2, 1, 0] };
-    let idx: Vec<u32> = order
-        .iter()
-        .map(|&i| nodes[i].leaf_idx as u32)
-        .collect();
-    // Adjacent cells can coincide (a coarse leaf spans two quadrants) —
-    // emit the fan, skipping degenerate triangles.
+    let idx = [
+        nodes[0].leaf_idx as u32,
+        nodes[1].leaf_idx as u32,
+        nodes[2].leaf_idx as u32,
+        nodes[3].leaf_idx as u32,
+    ];
     let tris = [[idx[0], idx[1], idx[2]], [idx[0], idx[2], idx[3]]];
     for t in tris {
         if t[0] != t[1] && t[1] != t[2] && t[2] != t[0] {
@@ -1102,22 +1039,14 @@ fn emit_edge_quad(nodes: [&OctreeNode; 4], axis: usize, ctx: &mut MeshCtx) {
     }
 }
 
-/// Polygonise the (optionally balanced) octree over the given per-leaf
-/// points. Returns triangle indices into the leaf/point list.
-pub(crate) fn polygonize(
-    root: &OctreeNode,
-    points: &[[f32; 3]],
-    alive: &[bool],
-    sdf: &dyn Fn([f32; 3]) -> f32,
-) -> Vec<u32> {
+/// Connect the (optionally balanced) octree's minimal-edge neighbourhoods
+/// over the shown leaves into triangles (see the module note). Returns
+/// triangle indices into the leaf/point list.
+pub(crate) fn connect_octree_edges(root: &OctreeNode, shown: &[bool]) -> Vec<u32> {
     let mut ctx = MeshCtx {
-        points,
-        alive,
-        sdf,
+        shown,
         indices: Vec::new(),
     };
     cell_proc(root, &mut ctx);
-    let _ = ctx.points;
     ctx.indices
-
 }

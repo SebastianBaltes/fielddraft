@@ -122,40 +122,51 @@ export function MesherOverlay() {
     const n = keep.length;
     setMesherStats({ cells: n, capped: total >= MAX_LEAVES, tris: triCount });
 
-    // Debug dual-contour mesh over the optimised points (jq2t follow-up):
-    // MeshNormalMaterial is light-independent and its normal colouring makes
-    // flipped/degenerate patches jump out. Pulled toward the camera via
-    // polygonOffset -- the mesh sits exactly ON the SDF surface and would
-    // otherwise lose the depth test against the body (cf. iw6f/rfm6).
+    // Debug octree-edge connectivity mesh over the SHOWN points — the
+    // triangles connect filtered leaves by octree adjacency (NOT dual
+    // contouring; holes/wrong facets are expected by design). Drawn as a
+    // WIREFRAME: each triangle edge is one line segment, deduplicated, in the
+    // WebGPU-visible fat-line path (Line2NodeMaterial), so it reads as the raw
+    // octree edge graph over the point set.
     if (triCount > 0) {
-      const mpos = new Float32Array(total * 3);
-      for (let k = 0; k < total; k++) {
-        mpos[k * 3] = data[P + k * STRIDE];
-        mpos[k * 3 + 1] = data[P + k * STRIDE + 1];
-        mpos[k * 3 + 2] = data[P + k * STRIDE + 2];
+      const seen = new Set<number>();
+      const seg: number[] = [];
+      const px = (i: number) => data[P + i * STRIDE];
+      const py = (i: number) => data[P + i * STRIDE + 1];
+      const pz = (i: number) => data[P + i * STRIDE + 2];
+      const pushEdge = (a: number, b: number) => {
+        const lo = Math.min(a, b);
+        const hi = Math.max(a, b);
+        const key = lo * total + hi; // unique per undirected edge
+        if (seen.has(key)) return;
+        seen.add(key);
+        seg.push(px(a), py(a), pz(a), px(b), py(b), pz(b));
+      };
+      for (let t = 0; t < triCount; t++) {
+        const a = data[I + t * 3];
+        const b = data[I + t * 3 + 1];
+        const c = data[I + t * 3 + 2];
+        pushEdge(a, b);
+        pushEdge(b, c);
+        pushEdge(c, a);
       }
-      const midx = new Uint32Array(triCount * 3);
-      for (let t = 0; t < triCount * 3; t++) midx[t] = data[I + t];
-      const mg = new THREE.BufferGeometry();
-      mg.setAttribute("position", new THREE.BufferAttribute(mpos, 3));
-      mg.setIndex(new THREE.BufferAttribute(midx, 1));
-      mg.computeVertexNormals();
-      mg.computeBoundingSphere();
-      const solid = new THREE.Mesh(
-        mg,
-        new THREE.MeshNormalMaterial({
-          flatShading: true,
-          side: THREE.DoubleSide,
-          transparent: true,
-          opacity: 0.9,
-          polygonOffset: true,
-          polygonOffsetFactor: -2,
-          polygonOffsetUnits: -4,
-        }),
-      );
-      solid.layers.enable(OVERLAY_LAYER);
-      solid.renderOrder = 4;
-      group.add(solid);
+      if (seg.length > 0) {
+        const lg = new LineSegmentsGeometry();
+        lg.setPositions(new Float32Array(seg));
+        const wire = new LineSegments2(
+          lg,
+          new Line2NodeMaterial({
+            color: 0x111827,
+            linewidth: Math.max(1, params.strokeWidth * 0.6),
+            worldUnits: false,
+            transparent: true,
+            depthWrite: false,
+          }),
+        );
+        wire.layers.enable(OVERLAY_LAYER);
+        wire.renderOrder = 4;
+        group.add(wire);
+      }
     }
     if (n === 0) {
       invalidate();

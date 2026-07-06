@@ -55,11 +55,13 @@ export interface MesherDebug {
   interactionRadius: number;
   repulsionStrength: number;
   weightingFunction: MesherWeighting;
-  /** Mesh the optimised points: adaptive dual contouring over the octree
-   *  (one vertex per leaf, quads at sign-changing minimal edges). */
+  /** Mesh the shown (filtered) points: connect them along the octree's edge
+   *  relationships into triangles (one vertex per leaf, a quad per minimal
+   *  octree edge whose 4 cells are all shown). NOT dual contouring — no
+   *  sign-change test; drawn as a wireframe. */
   meshPoints: boolean;
   /** 2:1-balance the octree before meshing (bounded neighbour depth
-   *  contrast → bounded triangle quality). */
+   *  contrast → more even triangle sizes). */
   balanceOctree: boolean;
 }
 
