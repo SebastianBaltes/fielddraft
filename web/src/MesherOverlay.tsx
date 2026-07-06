@@ -47,18 +47,34 @@ function makeCircleTexture(): THREE.Texture {
   return tex;
 }
 
-/** SDF value → RGB: green at the surface, blue inside, red outside. */
-function sdfColor(d: number, maxAbs: number, o: Float32Array, i: number): void {
-  const t = Math.min(1, Math.abs(d) / maxAbs);
-  if (d < 0) {
-    o[i] = 0.2;
-    o[i + 1] = 1.0 - 0.5 * t;
-    o[i + 2] = 0.4 + 0.6 * t;
-  } else {
-    o[i] = 0.2 + 0.8 * t;
-    o[i + 1] = 1.0 - 0.6 * t;
-    o[i + 2] = 0.4 - 0.2 * t;
+// Legend colours (match the dialog swatches): surface green, inside blue,
+// outside red.
+const C_SURFACE = [0.16, 1.0, 0.47];
+const C_INSIDE = [0.24, 0.51, 0.9];
+const C_OUTSIDE = [0.88, 0.43, 0.24];
+
+/** SDF value → RGB. Samples with `|d| ≤ threshold` are pure green (surface);
+ *  beyond it the colour ramps green→blue (inside) / green→red (outside),
+ *  auto-ranged to `maxAbs`. */
+function sdfColor(
+  d: number,
+  maxAbs: number,
+  threshold: number,
+  o: Float32Array,
+  i: number,
+): void {
+  const ad = Math.abs(d);
+  if (ad <= threshold) {
+    o[i] = C_SURFACE[0];
+    o[i + 1] = C_SURFACE[1];
+    o[i + 2] = C_SURFACE[2];
+    return;
   }
+  const t = Math.min(1, (ad - threshold) / Math.max(1e-6, maxAbs - threshold));
+  const to = d < 0 ? C_INSIDE : C_OUTSIDE;
+  o[i] = C_SURFACE[0] + (to[0] - C_SURFACE[0]) * t;
+  o[i + 1] = C_SURFACE[1] + (to[1] - C_SURFACE[1]) * t;
+  o[i + 2] = C_SURFACE[2] + (to[2] - C_SURFACE[2]) * t;
 }
 
 function disposeChildren(group: THREE.Group): void {
@@ -94,10 +110,18 @@ export function MesherOverlay() {
 
     const data = store.mesherOctreeSamples(params.maxDepth, params.bandGuard);
     const total = Math.floor(data.length / 8);
-    // Keep leaf indices that pass the near-surface filter.
+    // Keep leaf indices that pass the near-surface filter. When the part is
+    // faded (partOpacity < 1) the interior is visible, so interior samples
+    // (sdf < 0) are kept even beyond the near-surface distance.
+    const showInterior = params.partOpacity < 1;
     const keep: number[] = [];
     for (let k = 0; k < total; k++) {
-      if (params.nearSurfaceOnly && Math.abs(data[k * 8 + 3]) > params.nearSurfaceDist)
+      const d = data[k * 8 + 3];
+      if (
+        params.nearSurfaceOnly &&
+        Math.abs(d) > params.nearSurfaceDist &&
+        !(showInterior && d < 0)
+      )
         continue;
       keep.push(k);
     }
@@ -128,7 +152,7 @@ export function MesherOverlay() {
       pos[idx * 3] = x;
       pos[idx * 3 + 1] = y;
       pos[idx * 3 + 2] = z;
-      sdfColor(d, maxAbs, col, idx * 3);
+      sdfColor(d, maxAbs, params.surfaceThreshold, col, idx * 3);
       const len = size * params.normalScale;
       linePos[idx * 6] = x;
       linePos[idx * 6 + 1] = y;
@@ -136,8 +160,8 @@ export function MesherOverlay() {
       linePos[idx * 6 + 3] = x + nx * len;
       linePos[idx * 6 + 4] = y + ny * len;
       linePos[idx * 6 + 5] = z + nz * len;
-      sdfColor(d, maxAbs, lineCol, idx * 6);
-      sdfColor(d, maxAbs, lineCol, idx * 6 + 3);
+      sdfColor(d, maxAbs, params.surfaceThreshold, lineCol, idx * 6);
+      sdfColor(d, maxAbs, params.surfaceThreshold, lineCol, idx * 6 + 3);
     }
 
     // ── Centre dots (round, SDF-coloured, diameter = 3× stroke width) ──

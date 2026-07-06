@@ -21,6 +21,12 @@ export interface MesherDebug {
   normalScale: number;
   /** Screen-space stroke width (px) of the normal lines; the centre dot is 3×. */
   strokeWidth: number;
+  /** |sdf| threshold (mm) at/below which a sample is coloured green (surface).
+   *  Beyond it the colour ramps to blue (inside) / red (outside). */
+  surfaceThreshold: number;
+  /** Opacity of the rendered part (1 = opaque). Below 1 the solid turns
+   *  see-through so the interior octree samples/normals are visible. */
+  partOpacity: number;
   /** Only show leaf cells within `nearSurfaceDist` of the surface. */
   nearSurfaceOnly: boolean;
   /** |sdf| threshold (mm) for `nearSurfaceOnly`. */
@@ -37,6 +43,13 @@ export function setMesherDebug(next: MesherDebug | null): void {
 
 export function getMesherDebug(): MesherDebug | null {
   return params;
+}
+
+/** Global part-opacity multiplier for the body renderers (SDF + WebGL): the
+ *  Mesher dialog's `partOpacity` while it is open, else 1 (fully opaque). Read
+ *  imperatively each frame by the material-apply path — no subscription. */
+export function getMesherPartOpacity(): number {
+  return params ? params.partOpacity : 1;
 }
 
 export function subscribeMesherDebug(listener: () => void): () => void {

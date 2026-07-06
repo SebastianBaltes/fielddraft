@@ -133,6 +133,9 @@ export function applyMaterials(
   target: MaterialBufferTarget,
   materials: Map<number, MaterialProps>,
   bodyCount: number,
+  /** Global opacity multiplier applied to every body (Debug ▸ Mesher part-
+   *  visibility slider; 1 = unchanged). */
+  opacityScale = 1,
 ): void {
   const d = target.materialData;
   for (let i = 0; i < bodyCount; i++) {
@@ -147,7 +150,7 @@ export function applyMaterials(
       d[base + MAT_EMISSIVE_R] = mat.emissive[0];
       d[base + MAT_EMISSIVE_G] = mat.emissive[1];
       d[base + MAT_EMISSIVE_B] = mat.emissive[2];
-      d[base + MAT_OPACITY] = mat.opacity;
+      d[base + MAT_OPACITY] = mat.opacity * opacityScale;
       d[base + MAT_WIREFRAME] = mat.wireframe ? 1 : 0;
       d[base + MAT_DISPLACE_DEPTH] = mat.displaceDepth;
       d[base + MAT_DISPLACE_FREQ] = mat.displaceFreq;
@@ -161,7 +164,7 @@ export function applyMaterials(
       d[base + MAT_EMISSIVE_R] = 0;
       d[base + MAT_EMISSIVE_G] = 0;
       d[base + MAT_EMISSIVE_B] = 0;
-      d[base + MAT_OPACITY] = 1;
+      d[base + MAT_OPACITY] = opacityScale;
       d[base + MAT_WIREFRAME] = 0;
       d[base + MAT_DISPLACE_DEPTH] = 0;
       d[base + MAT_DISPLACE_FREQ] = 0;

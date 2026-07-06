@@ -24,6 +24,17 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.408",
+    entries: [
+      {
+        kind: "feat",
+        text: "Mesher-Debug erweitert: ein Parameter Surface ± für den Grün-/Surface-Schwellwert der Farbcodierung (|SDF| darunter = grün, darüber Rampe nach blau/rot) und ein Part-opacity-Slider, der den Solid durchscheinend macht — im transparenten Modus werden auch die innenliegenden Normalen gezeigt",
+        scope: "debug",
+        tickets: ["dbmy"],
+      },
+    ],
+  },
+  {
     version: "0.6.407",
     entries: [
       {

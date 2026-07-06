@@ -32,6 +32,8 @@ const DEFAULTS: MesherDebug = {
   bandGuard: 1,
   normalScale: 0.6,
   strokeWidth: 2,
+  surfaceThreshold: 0.05,
+  partOpacity: 1,
   nearSurfaceOnly: false,
   nearSurfaceDist: 1,
 };
@@ -51,6 +53,8 @@ function loadSettings(): MesherDebug {
       bandGuard: clampNum(p.bandGuard, 0.1, 8, DEFAULTS.bandGuard),
       normalScale: clampNum(p.normalScale, 0, 4, DEFAULTS.normalScale),
       strokeWidth: clampNum(p.strokeWidth, 0.5, 12, DEFAULTS.strokeWidth),
+      surfaceThreshold: clampNum(p.surfaceThreshold, 0, 1e6, DEFAULTS.surfaceThreshold),
+      partOpacity: clampNum(p.partOpacity, 0, 1, DEFAULTS.partOpacity),
       nearSurfaceOnly:
         typeof p.nearSurfaceOnly === "boolean"
           ? p.nearSurfaceOnly
@@ -68,6 +72,8 @@ export function MesherDialog({ onClose }: { onClose: () => void }) {
   const [bandGuard, setBandGuard] = useState(initial.bandGuard);
   const [normalScale, setNormalScale] = useState(initial.normalScale);
   const [strokeWidth, setStrokeWidth] = useState(initial.strokeWidth);
+  const [surfaceThreshold, setSurfaceThreshold] = useState(initial.surfaceThreshold);
+  const [partOpacity, setPartOpacity] = useState(initial.partOpacity);
   const [nearSurfaceOnly, setNearSurfaceOnly] = useState(initial.nearSurfaceOnly);
   const [nearSurfaceDist, setNearSurfaceDist] = useState(initial.nearSurfaceDist);
 
@@ -80,6 +86,8 @@ export function MesherDialog({ onClose }: { onClose: () => void }) {
       bandGuard,
       normalScale,
       strokeWidth,
+      surfaceThreshold,
+      partOpacity,
       nearSurfaceOnly,
       nearSurfaceDist,
     };
@@ -89,7 +97,16 @@ export function MesherDialog({ onClose }: { onClose: () => void }) {
     } catch {
       // no localStorage (tests) — non-persistent is fine
     }
-  }, [maxDepth, bandGuard, normalScale, strokeWidth, nearSurfaceOnly, nearSurfaceDist]);
+  }, [
+    maxDepth,
+    bandGuard,
+    normalScale,
+    strokeWidth,
+    surfaceThreshold,
+    partOpacity,
+    nearSurfaceOnly,
+    nearSurfaceDist,
+  ]);
   useEffect(() => () => setMesherDebug(null), []);
 
   useEffect(() => {
@@ -151,6 +168,30 @@ export function MesherDialog({ onClose }: { onClose: () => void }) {
     </div>
   );
 
+  const sliderRow = (
+    label: string,
+    value: number,
+    set: (n: number) => void,
+    opts: { min: number; max: number; step: number },
+    title?: string,
+  ) => (
+    <div className="vec-row">
+      <label title={title}>{label}</label>
+      <div className="fields">
+        <input
+          type="range"
+          min={opts.min}
+          max={opts.max}
+          step={opts.step}
+          aria-label={label}
+          value={value}
+          onChange={(e) => set(Number(e.currentTarget.value))}
+        />
+        <span className="slider-val">{value.toFixed(2)}</span>
+      </div>
+    </div>
+  );
+
   return (
     <div
       className="fd-mesher-dialog"
@@ -204,6 +245,22 @@ export function MesherDialog({ onClose }: { onClose: () => void }) {
         max: 12,
         step: 0.5,
       })}
+      {numRow(
+        "Surface ± (mm)",
+        surfaceThreshold,
+        setSurfaceThreshold,
+        { min: 0, max: 100, step: 0.01 },
+        "Colour threshold: samples with |SDF| ≤ this are green (surface); " +
+          "beyond it the colour ramps to blue (inside) / red (outside).",
+      )}
+      {sliderRow(
+        "Part opacity",
+        partOpacity,
+        setPartOpacity,
+        { min: 0, max: 1, step: 0.01 },
+        "Fade the solid so you can see inside. Below 1 the interior octree " +
+          "samples/normals are shown too.",
+      )}
 
       <div className="vec-row check-row">
         <label htmlFor="mesher-near-surface">Near surface only</label>
