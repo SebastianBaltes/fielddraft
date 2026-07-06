@@ -78,6 +78,12 @@ pub struct MesherPointOptions {
     pub repulsion_damping: f32,
     /// Annealing curve of the repulsion strength over the iterations.
     pub damping_curve: DampingCurve,
+    /// Hybrid-PASM P1 (docs/HYBRID-PASM-MESHING-PLAN.md, ticket nwmi): sample
+    /// the body's woven B-Rep edges into FIXED skeleton particles (corners
+    /// pinned exactly, edge chains at the target spacing). They repel the
+    /// free surface particles but never move — sharp features become
+    /// boundary conditions instead of a detection problem.
+    pub brep_skeleton: bool,
     // Feature snapping (edges/corners) — ticket-less follow-up of l45r:
     // isotropic repulsion NEVER lands points on 0D/1D features (they have
     // measure zero and the tangential projection surfs around the crease),
@@ -125,6 +131,7 @@ impl Default for MesherPointOptions {
             repulsion_strength: 0.5,
             repulsion_damping: 0.2,
             damping_curve: DampingCurve::Linear,
+            brep_skeleton: false,
             feature_snap: false,
             feature_angle_deg: 30.0,
             mesh_points: false,
@@ -313,6 +320,45 @@ fn snap_to_sheet_intersection(
     Some(v_add(p, correction))
 }
 
+/// Resample a polyline by arc length at spacing `h`: both endpoints exact,
+/// interior points at uniform arc-length steps (the last interval absorbs the
+/// remainder, so spacing stays within [h/2, 1.5h] instead of emitting a
+/// sliver point next to the end). Degenerate/short chains yield the endpoints.
+pub(crate) fn resample_polyline(pts: &[[f32; 3]], h: f32) -> Vec<[f32; 3]> {
+    if pts.len() < 2 {
+        return pts.to_vec();
+    }
+    let seg = |a: [f32; 3], b: [f32; 3]| {
+        ((b[0] - a[0]).powi(2) + (b[1] - a[1]).powi(2) + (b[2] - a[2]).powi(2)).sqrt()
+    };
+    let total: f32 = pts.windows(2).map(|w| seg(w[0], w[1])).sum();
+    let h = h.max(1e-6);
+    let steps = (total / h).round().max(1.0) as usize;
+    let step = total / steps as f32;
+    let mut out = Vec::with_capacity(steps + 1);
+    out.push(pts[0]);
+    let mut acc = 0.0f32;
+    let mut next = step;
+    for w in pts.windows(2) {
+        let l = seg(w[0], w[1]);
+        if l <= 1e-12 {
+            continue;
+        }
+        while next <= acc + l && out.len() < steps {
+            let t = (next - acc) / l;
+            out.push([
+                w[0][0] + t * (w[1][0] - w[0][0]),
+                w[0][1] + t * (w[1][1] - w[0][1]),
+                w[0][2] + t * (w[1][2] - w[0][2]),
+            ]);
+            next += step;
+        }
+        acc += l;
+    }
+    out.push(*pts.last().expect("len >= 2"));
+    out
+}
+
 fn clamp_to_cell(p: &mut [f32; 3], leaf: &Leaf) {
     let h = leaf.size * 0.5;
     for a in 0..3 {
@@ -352,6 +398,7 @@ fn relaxation_pass(
     sdf: &dyn Fn([f32; 3]) -> f32,
     grad: &dyn Fn([f32; 3]) -> [f32; 3],
     feature: Option<(&[PointLock], f32)>,
+    anchors: &[[f32; 3]],
 ) {
     let step = opts.fit_step_multiplier.clamp(0.1, 1.0);
     let r = opts.interaction_radius;
@@ -373,11 +420,20 @@ fn relaxation_pass(
             DampingCurve::Exponential => (1.0 - damping).powi(t as i32),
         };
         let strength = opts.repulsion_strength * anneal;
-        // Grid hash over the CURRENT positions of the active points.
+        // Grid hash over the CURRENT positions of the active points, plus the
+        // FIXED anchors (B-Rep skeleton) as virtual indices ≥ points.len() —
+        // they repel every free particle but are never themselves moved.
+        let n_pts = points.len();
+        let at = |j: usize| -> [f32; 3] {
+            if j < n_pts { points[j] } else { anchors[j - n_pts] }
+        };
         let mut grid: std::collections::HashMap<(i32, i32, i32), Vec<usize>> =
             std::collections::HashMap::new();
         for &i in active {
             grid.entry(key(&points[i])).or_default().push(i);
+        }
+        for (a, p) in anchors.iter().enumerate() {
+            grid.entry(key(p)).or_default().push(n_pts + a);
         }
         let mut moved = points.clone();
         for &i in active {
@@ -401,7 +457,7 @@ fn relaxation_pass(
                             if j == i {
                                 continue;
                             }
-                            let q = points[j];
+                            let q = at(j);
                             let dvec = [p[0] - q[0], p[1] - q[1], p[2] - q[2]];
                             let dist = (dvec[0] * dvec[0]
                                 + dvec[1] * dvec[1]
@@ -511,6 +567,7 @@ pub(crate) fn optimize_leaf_points(
     opts: &MesherPointOptions,
     sdf: &dyn Fn([f32; 3]) -> f32,
     grad: &dyn Fn([f32; 3]) -> [f32; 3],
+    skeleton: &[[f32; 3]],
 ) -> (Vec<[f32; 3]>, Vec<bool>, Vec<bool>) {
     let mut points: Vec<[f32; 3]> = leaves.iter().map(|l| l.center).collect();
     // "Only on surface": points that fail to reach the zero set drop OUT of
@@ -555,7 +612,7 @@ pub(crate) fn optimize_leaf_points(
     // ignored by the algorithms entirely.
     let active: Vec<usize> = (0..leaves.len()).filter(|&i| process[i]).collect();
     if opts.repulsion && opts.interaction_radius > 0.0 {
-        relaxation_pass(&mut points, leaves, &active, opts, sdf, grad, None);
+        relaxation_pass(&mut points, leaves, &active, opts, sdf, grad, None, skeleton);
     }
 
     // ── Final snap to the surface ──
@@ -653,6 +710,7 @@ pub(crate) fn optimize_leaf_points(
                     sdf,
                     grad,
                     Some((&locks, cos_t)),
+                    skeleton,
                 );
             }
             // Re-converge the FREE points onto the surface (the smoothing
@@ -713,7 +771,7 @@ mod tests {
             constrain_to_cell: false,
             ..Default::default()
         };
-        let (pts, process, _) = optimize_leaf_points(&leaves, &opts, &sphere_sdf, &sphere_grad);
+        let (pts, process, _) = optimize_leaf_points(&leaves, &opts, &sphere_sdf, &sphere_grad, &[]);
         assert!(process.iter().all(|&b| b));
         for p in &pts {
             assert!(sphere_sdf(*p).abs() < 1e-3, "not on surface: {p:?}");
@@ -733,7 +791,7 @@ mod tests {
             constrain_to_cell: true,
             ..Default::default()
         };
-        let (pts, _, _) = optimize_leaf_points(&[leaf], &opts, &sphere_sdf, &sphere_grad);
+        let (pts, _, _) = optimize_leaf_points(&[leaf], &opts, &sphere_sdf, &sphere_grad, &[]);
         let p = pts[0];
         for a in 0..3 {
             assert!(
@@ -761,7 +819,7 @@ mod tests {
             ..Default::default()
         };
         let (pts, process, _) =
-            optimize_leaf_points(&[near, deep], &opts, &sphere_sdf, &sphere_grad);
+            optimize_leaf_points(&[near, deep], &opts, &sphere_sdf, &sphere_grad, &[]);
         assert!(process[0] && !process[1]);
         assert!(sphere_sdf(pts[0]).abs() < 1e-3);
         assert_eq!(pts[1], deep.center, "rigid point moved");
@@ -781,7 +839,7 @@ mod tests {
             ..Default::default()
         };
         let (pts, process, _) =
-            optimize_leaf_points(&[straddling, inside], &opts, &sphere_sdf, &sphere_grad);
+            optimize_leaf_points(&[straddling, inside], &opts, &sphere_sdf, &sphere_grad, &[]);
         assert!(process[0], "straddling cell must be processed");
         assert!(!process[1], "interior cell must be rigid");
         assert!(sphere_sdf(pts[0]).abs() < 1e-3);
@@ -810,12 +868,12 @@ mod tests {
 
         // Fit OFF → no fit step, lone point, no neighbours → unchanged.
         let no_fit = MesherPointOptions { fit_on_surface: false, ..base.clone() };
-        let (p_nofit, _, _) = optimize_leaf_points(&[leaf], &no_fit, &sphere_sdf, &sphere_grad);
+        let (p_nofit, _, _) = optimize_leaf_points(&[leaf], &no_fit, &sphere_sdf, &sphere_grad, &[]);
         assert_eq!(p_nofit[0], start, "no fit + no neighbours must not move");
 
         // Fit ON → the phase-2 fit step pulls it onto the surface.
         let with_fit = MesherPointOptions { fit_on_surface: true, ..base };
-        let (p_fit, _, _) = optimize_leaf_points(&[leaf], &with_fit, &sphere_sdf, &sphere_grad);
+        let (p_fit, _, _) = optimize_leaf_points(&[leaf], &with_fit, &sphere_sdf, &sphere_grad, &[]);
         assert!(
             sphere_sdf(p_fit[0]).abs() < 0.1,
             "phase-2 fit step should reach the surface: sdf={}",
@@ -867,7 +925,7 @@ mod tests {
             constrain_to_cell: false,
             ..Default::default()
         };
-        let (pts, _, _) = optimize_leaf_points(&leaves, &opts, &sphere_sdf, &sphere_grad);
+        let (pts, _, _) = optimize_leaf_points(&leaves, &opts, &sphere_sdf, &sphere_grad, &[]);
         let after = min_dist(&pts);
         assert!(
             after > before * 2.0,
@@ -903,7 +961,7 @@ mod tests {
             constrain_to_cell: false,
             ..Default::default()
         };
-        let (pts, _, _) = optimize_leaf_points(&leaves, &opts, &sphere_sdf, &sphere_grad);
+        let (pts, _, _) = optimize_leaf_points(&leaves, &opts, &sphere_sdf, &sphere_grad, &[]);
         let d = [
             pts[0][0] - pts[1][0],
             pts[0][1] - pts[1][1],
@@ -963,7 +1021,7 @@ mod tests {
             ..Default::default()
         };
         let (pts, _, _) =
-            optimize_leaf_points(&[near_edge, near_corner, mid_face], &opts, &box5_sdf, &box5_grad);
+            optimize_leaf_points(&[near_edge, near_corner, mid_face], &opts, &box5_sdf, &box5_grad, &[]);
 
         let tol = 0.05;
         // Edge point: x and y pinned to the crease, z stays interior.
@@ -1003,8 +1061,8 @@ mod tests {
             feature_angle_deg: 30.0,
             ..base.clone()
         };
-        let (plain, _, _) = optimize_leaf_points(&leaves, &base, &sphere_sdf, &sphere_grad);
-        let (snapped, _, _) = optimize_leaf_points(&leaves, &with_snap, &sphere_sdf, &sphere_grad);
+        let (plain, _, _) = optimize_leaf_points(&leaves, &base, &sphere_sdf, &sphere_grad, &[]);
+        let (snapped, _, _) = optimize_leaf_points(&leaves, &with_snap, &sphere_sdf, &sphere_grad, &[]);
         for (a, b) in plain.iter().zip(&snapped) {
             let d = [(a[0] - b[0]), (a[1] - b[1]), (a[2] - b[2])];
             let dist = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
@@ -1036,7 +1094,7 @@ mod tests {
             feature_angle_deg: 30.0,
             ..Default::default()
         };
-        let (pts, _, _) = optimize_leaf_points(&leaves, &opts, &box5_sdf, &box5_grad);
+        let (pts, _, _) = optimize_leaf_points(&leaves, &opts, &box5_sdf, &box5_grad, &[]);
         let tol = 0.08;
         // All three edge points still ON the crease…
         for p in &pts[..3] {
@@ -1056,6 +1114,63 @@ mod tests {
         for a in 0..3 {
             assert!((pts[3][a] - 5.0).abs() < tol, "corner point moved: {:?}", pts[3]);
         }
+    }
+
+    // ── B-Rep skeleton (Hybrid-PASM P1, ticket nwmi) ──
+
+    #[test]
+    fn resample_polyline_uniform_spacing_exact_endpoints() {
+        // Straight 10mm line at h=1 → 11 points, exact ends, ~1mm spacing.
+        let line = vec![[0.0f32, 0.0, 0.0], [4.0, 0.0, 0.0], [10.0, 0.0, 0.0]];
+        let r = resample_polyline(&line, 1.0);
+        assert_eq!(r.len(), 11);
+        assert_eq!(r[0], [0.0, 0.0, 0.0]);
+        assert_eq!(*r.last().unwrap(), [10.0, 0.0, 0.0]);
+        for w in r.windows(2) {
+            let d = (w[1][0] - w[0][0]).abs();
+            assert!((d - 1.0).abs() < 1e-4, "spacing {d}");
+        }
+        // Coarser than the chain → endpoints only (plus midpoint at h=5).
+        let r2 = resample_polyline(&line, 20.0);
+        assert_eq!(r2.len(), 2);
+    }
+
+    /// Fixed skeleton anchors repel free particles but never move: a free
+    /// point squeezed between two anchors on the sphere slides away along the
+    /// surface; the anchors stay bit-identical.
+    #[test]
+    fn skeleton_anchors_repel_but_never_move() {
+        let g = sphere_grad([10.0, 0.0, 0.0]);
+        let _ = g;
+        let free = leaf_at([9.9, 0.05, 0.0], 6.0);
+        let anchors = [[10.0f32, 0.0, 0.0]];
+        let opts = MesherPointOptions {
+            repulsion: true,
+            iterations: 10,
+            interaction_radius: 3.0,
+            repulsion_strength: 0.3,
+            fit_on_surface: true,
+            fit_target_epsilon: 1e-4,
+            constrain_to_cell: false,
+            ..Default::default()
+        };
+        let (pts, _, _) =
+            optimize_leaf_points(&[free], &opts, &sphere_sdf, &sphere_grad, &anchors);
+        // Contract: the anchor repels — the free point (0.11 away at start)
+        // must be pushed clearly off while staying on the surface. The anchor
+        // itself is immutable by construction (a shared slice).
+        let d = |a: [f32; 3], b: [f32; 3]| {
+            ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt()
+        };
+        let start = [9.9f32, 0.05, 0.0];
+        let before = d(start, anchors[0]);
+        let after = d(pts[0], anchors[0]);
+        assert!(
+            after > before + 0.2,
+            "anchor did not repel: {before} -> {after}, p={:?}",
+            pts[0]
+        );
+        assert!(sphere_sdf(pts[0]).abs() < 0.1, "left the surface: {:?}", pts[0]);
     }
 
     /// Ticket l45r: a tight clump with a HUGE strength (the reported
@@ -1100,7 +1215,7 @@ mod tests {
             constrain_to_cell: false,
             ..Default::default()
         };
-        let (pts, _, _) = optimize_leaf_points(&leaves, &opts, &sphere_sdf, &sphere_grad);
+        let (pts, _, _) = optimize_leaf_points(&leaves, &opts, &sphere_sdf, &sphere_grad, &[]);
         assert!(
             pair(&pts, true) > before_min,
             "clump did not spread: min {before_min} -> {}",
@@ -1213,7 +1328,7 @@ mod tests {
             ..Default::default()
         };
         let (pts, _, alive) =
-            optimize_leaf_points(&[reaching, deep], &opts, &sphere_sdf, &sphere_grad);
+            optimize_leaf_points(&[reaching, deep], &opts, &sphere_sdf, &sphere_grad, &[]);
         assert!(alive[0], "reaching point must survive");
         assert!(!alive[1], "clamped point must drop out");
         assert!(sphere_sdf(pts[0]).abs() < 1e-3);

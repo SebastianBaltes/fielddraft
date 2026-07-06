@@ -191,7 +191,20 @@ export function MesherOverlay() {
       pos[idx * 3] = x;
       pos[idx * 3 + 1] = y;
       pos[idx * 3 + 2] = z;
-      sdfColor(d, params.surfaceThreshold, col, idx * 3);
+      const flag = data[b + 8];
+      if (flag >= 2.5) {
+        // Skeleton corner (pinned): red.
+        col[idx * 3] = 0.85;
+        col[idx * 3 + 1] = 0.1;
+        col[idx * 3 + 2] = 0.1;
+      } else if (flag >= 1.5) {
+        // Skeleton edge chain (fixed): orange.
+        col[idx * 3] = 0.95;
+        col[idx * 3 + 1] = 0.55;
+        col[idx * 3 + 2] = 0.1;
+      } else {
+        sdfColor(d, params.surfaceThreshold, col, idx * 3);
+      }
       const len = size * params.normalScale;
       linePos[idx * 6] = x;
       linePos[idx * 6 + 1] = y;

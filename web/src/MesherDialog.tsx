@@ -49,6 +49,7 @@ const DEFAULTS: MesherDebug = {
   repulsionStrength: 0.5,
   repulsionDamping: 0.2,
   dampingCurve: "linear",
+  brepSkeleton: false,
   featureSnap: false,
   featureAngleDeg: 30,
   meshPoints: false,
@@ -96,6 +97,8 @@ function loadSettings(): MesherDebug {
       repulsionDamping: clampNum(p.repulsionDamping, 0, 1, DEFAULTS.repulsionDamping),
       dampingCurve:
         p.dampingCurve === "exponential" ? "exponential" : DEFAULTS.dampingCurve,
+      brepSkeleton:
+        typeof p.brepSkeleton === "boolean" ? p.brepSkeleton : DEFAULTS.brepSkeleton,
       featureSnap: typeof p.featureSnap === "boolean" ? p.featureSnap : DEFAULTS.featureSnap,
       featureAngleDeg: clampNum(p.featureAngleDeg, 1, 89, DEFAULTS.featureAngleDeg),
       meshPoints: typeof p.meshPoints === "boolean" ? p.meshPoints : DEFAULTS.meshPoints,
@@ -131,6 +134,7 @@ export function MesherDialog({ onClose }: { onClose: () => void }) {
   const [repulsionStrength, setRepulsionStrength] = useState(initial.repulsionStrength);
   const [repulsionDamping, setRepulsionDamping] = useState(initial.repulsionDamping);
   const [dampingCurve, setDampingCurve] = useState<MesherDampingCurve>(initial.dampingCurve);
+  const [brepSkeleton, setBrepSkeleton] = useState(initial.brepSkeleton);
   const [featureSnap, setFeatureSnap] = useState(initial.featureSnap);
   const [featureAngleDeg, setFeatureAngleDeg] = useState(initial.featureAngleDeg);
   const [meshPoints, setMeshPoints] = useState(initial.meshPoints);
@@ -161,6 +165,7 @@ export function MesherDialog({ onClose }: { onClose: () => void }) {
       repulsionStrength,
       repulsionDamping,
       dampingCurve,
+      brepSkeleton,
       featureSnap,
       featureAngleDeg,
       meshPoints,
@@ -193,6 +198,7 @@ export function MesherDialog({ onClose }: { onClose: () => void }) {
     repulsionStrength,
     repulsionDamping,
     dampingCurve,
+    brepSkeleton,
     featureSnap,
     featureAngleDeg,
     meshPoints,
@@ -526,6 +532,22 @@ export function MesherDialog({ onClose }: { onClose: () => void }) {
           </div>
         </>
       )}
+
+      <div className="vec-row check-row">
+        <label
+          htmlFor="mesher-brep-skeleton"
+          title="Hybrid-PASM P1: the body's woven B-Rep edges become FIXED skeleton particles — corners pinned exactly (red), edge chains resampled at the interaction radius (orange). They repel the free particles but never move, so sharp features are boundary conditions instead of detection targets."
+        >
+          B-Rep skeleton (edges/corners)
+        </label>
+        <input
+          id="mesher-brep-skeleton"
+          type="checkbox"
+          data-testid="mesher-brep-skeleton"
+          checked={brepSkeleton}
+          onChange={(e) => setBrepSkeleton(e.target.checked)}
+        />
+      </div>
 
       <div className="vec-row check-row">
         <label

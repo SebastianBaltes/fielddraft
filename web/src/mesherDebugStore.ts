@@ -62,6 +62,10 @@ export interface MesherDebug {
   repulsionDamping: number;
   /** Annealing curve of the repulsion strength over the iterations. */
   dampingCurve: MesherDampingCurve;
+  /** Hybrid-PASM P1: sample the woven B-Rep edges into FIXED skeleton
+   *  particles (corners pinned, chains at the interaction radius) that repel
+   *  the free particles — sharp features as boundary conditions. */
+  brepSkeleton: boolean;
   /** Feature snapping: detect edge/corner creases via normal probes, snap
    *  points onto them and lock them there (edge = 1D slide, corner = pinned)
    *  — isotropic repulsion alone never lands points on 0D/1D features. */

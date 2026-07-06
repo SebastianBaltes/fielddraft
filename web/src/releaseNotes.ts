@@ -24,6 +24,17 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.433",
+    entries: [
+      {
+        kind: "feat",
+        text: "Hybrid-PASM-Meshing Phase 1 (Konzept-SSOT docs/HYBRID-PASM-MESHING-PLAN.md): Debug ▸ Mesher kann die gewebten B-Rep-Kanten als FIXES Partikel-Skelett einspannen — Ecken exakt gepinnt (rot), Kantenketten bogenlängen-gesampelt am Interaktionsradius (orange); sie stoßen die freien Flächen-Partikel ab, bewegen sich aber nie. Scharfe Features werden Randbedingung statt Detektionsaufgabe — die konstruktive Basis für kantenexaktes, wasserdichtes Meshing",
+        scope: "debug",
+        tickets: ["nwmi"],
+      },
+    ],
+  },
+  {
     version: "0.6.432",
     entries: [
       {

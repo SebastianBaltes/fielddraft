@@ -122,7 +122,7 @@ impl Kernel {
     /// stay rigid and `shown = 0`; "only on surface" escapees are dropped
     /// from the point list entirely.
     #[wasm_bindgen(js_name = mesherPoints)]
-    pub fn mesher_points(&self, options_json: String) -> Vec<f32> {
+    pub fn mesher_points(&mut self, options_json: String) -> Vec<f32> {
         let opts: crate::mesher_points::MesherPointOptions =
             serde_json::from_str(&options_json).unwrap_or_default();
         let bodies: Vec<crate::bvh::BoundedCsg> = self
@@ -169,8 +169,61 @@ impl Kernel {
         if leaves.is_empty() {
             return vec![0.0, 0.0];
         }
+
+        // ── B-Rep skeleton (Hybrid-PASM P1, ticket nwmi) ──
+        // The woven edges become FIXED particle chains: corners exactly at the
+        // B-Rep vertices (flag 3), edge interiors resampled by arc length at
+        // the interaction radius (flag 2). They repel the free particles but
+        // never move — sharp features are boundary conditions, not detection
+        // targets. Positions fold the body placement (mirror body_brep_edges).
+        let mut skeleton: Vec<[f32; 3]> = Vec::new();
+        let mut skeleton_corner: Vec<bool> = Vec::new();
+        if opts.brep_skeleton {
+            let h = if opts.interaction_radius > 0.0 {
+                opts.interaction_radius
+            } else {
+                min_size_est
+            };
+            for bi in 0..self.bodies.len() {
+                self.bodies[bi].ensure_brep(&self.decoded, true);
+                let placement = self.bodies[bi].placement;
+                let Some(brep) = self.bodies[bi].brep_cached() else { continue };
+                let s = placement.scale[0];
+                let to_world = |p: [f64; 3]| -> [f32; 3] {
+                    let scaled = [p[0] as f32 * s, p[1] as f32 * s, p[2] as f32 * s];
+                    let r = crate::quat_rotate(placement.rotation, scaled);
+                    [
+                        r[0] + placement.translate[0],
+                        r[1] + placement.translate[1],
+                        r[2] + placement.translate[2],
+                    ]
+                };
+                for v in &brep.vertices {
+                    skeleton.push(to_world(v.position));
+                    skeleton_corner.push(true);
+                }
+                for e in &brep.edges {
+                    let pts: Vec<[f32; 3]> = crate::brep::edge_sampling::sample_edge(&e.geometry)
+                        .into_iter()
+                        .map(to_world)
+                        .collect();
+                    let chain = crate::mesher_points::resample_polyline(&pts, h);
+                    // Interior points only: chain endpoints coincide with the
+                    // corner vertices already emitted above (open edges) or
+                    // wrap onto the chain itself (closed rings — keep the seam
+                    // point once as a plain edge sample).
+                    let start = if e.start.is_some() { 1 } else { 0 };
+                    let end = chain.len().saturating_sub(usize::from(e.end.is_some()));
+                    for p in &chain[start.min(chain.len())..end] {
+                        skeleton.push(*p);
+                        skeleton_corner.push(false);
+                    }
+                }
+            }
+        }
+
         let (points, processed, alive) =
-            crate::mesher_points::optimize_leaf_points(&leaves, &opts, &scene_sdf, &grad);
+            crate::mesher_points::optimize_leaf_points(&leaves, &opts, &scene_sdf, &grad, &skeleton);
         // The mesh connects exactly the SHOWN points (passed the display
         // filters = processed AND survived only-on-surface): one vertex per
         // shown leaf, triangles by octree-edge adjacency (no sign-change).
@@ -199,8 +252,9 @@ impl Kernel {
         // MESH still uses every emitted point as a vertex (crack-free DC), so
         // `shown` is display-only; only "only-on-surface" escapees are gone
         // from the vertex set entirely (dropped above via `alive`).
-        let mut out = Vec::with_capacity(2 + n_alive as usize * 9 + indices.len());
-        out.push(n_alive as f32);
+        let mut out =
+            Vec::with_capacity(2 + (n_alive as usize + skeleton.len()) * 9 + indices.len());
+        out.push((n_alive as usize + skeleton.len()) as f32);
         out.push((indices.len() / 3) as f32);
         for (i, leaf) in leaves.iter().enumerate() {
             if !alive[i] {
@@ -214,6 +268,13 @@ impl Kernel {
             };
             let shown = if processed[i] { 1.0 } else { 0.0 };
             out.extend_from_slice(&[p[0], p[1], p[2], d, n[0], n[1], n[2], leaf.size, shown]);
+        }
+        // Skeleton points: flag 2 = edge chain, 3 = corner (drawn distinctly
+        // by the overlay; the octree mesh never references them, so appending
+        // after the leaf points keeps every triangle index valid).
+        for (k, p) in skeleton.iter().enumerate() {
+            let flag = if skeleton_corner[k] { 3.0 } else { 2.0 };
+            out.extend_from_slice(&[p[0], p[1], p[2], 0.0, 0.0, 0.0, 1.0, 0.0, flag]);
         }
         out.extend(indices.iter().map(|&i| remap[i as usize] as f32));
         out
@@ -526,4 +587,48 @@ mod mesher_octree_tests {
         assert!(octree_leaf_samples(&[], 5, 1.0).is_empty());
     }
 
+    /// Hybrid-PASM P1 (ticket nwmi): with `brepSkeleton` on, a box body emits
+    /// its 8 corners as pinned flag-3 particles EXACTLY at the corner
+    /// positions plus arc-length-resampled flag-2 chains along the 12 edges.
+    #[test]
+    fn mesher_points_emits_brep_skeleton_for_a_box() {
+        use fielddraft_protocol::{BoolOp, Primitive};
+        let mut k = crate::Kernel::new();
+        k.add_primitive(
+            Primitive::KIND_BOX,
+            BoolOp::TAG_NEW,
+            0.0,
+            0.0,
+            0.0,
+            10.0,
+            10.0,
+            10.0,
+        )
+        .unwrap();
+        let out = k.mesher_points(
+            r#"{"maxDepth":3,"brepSkeleton":true,"interactionRadius":2.0}"#.into(),
+        );
+        let total = out[0] as usize;
+        let mut corners = Vec::new();
+        let mut chain = 0usize;
+        for i in 0..total {
+            let b = 2 + i * 9;
+            match out[b + 8] as i32 {
+                3 => corners.push([out[b], out[b + 1], out[b + 2]]),
+                2 => chain += 1,
+                _ => {}
+            }
+        }
+        assert_eq!(corners.len(), 8, "eight pinned box corners");
+        for c in &corners {
+            for a in 0..3 {
+                assert!(
+                    (c[a].abs() - 10.0).abs() < 1e-3,
+                    "corner coordinate off ±10: {c:?}"
+                );
+            }
+        }
+        // 12 edges of length 20 at h=2 → 9 interior points each = 108.
+        assert_eq!(chain, 12 * 9, "arc-length chains at the interaction radius");
+    }
 }
