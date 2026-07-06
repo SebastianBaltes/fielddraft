@@ -48,6 +48,8 @@ const DEFAULTS: MesherDebug = {
   interactionRadius: 2,
   repulsionStrength: 0.5,
   weightingFunction: "linear",
+  meshPoints: false,
+  balanceOctree: true,
 };
 
 const clampNum = (v: unknown, lo: number, hi: number, fallback: number): number =>
@@ -91,6 +93,9 @@ function loadSettings(): MesherDebug {
       repulsionStrength: clampNum(p.repulsionStrength, 0, 100, DEFAULTS.repulsionStrength),
       weightingFunction:
         p.weightingFunction === "inverse-square" ? "inverse-square" : DEFAULTS.weightingFunction,
+      meshPoints: typeof p.meshPoints === "boolean" ? p.meshPoints : DEFAULTS.meshPoints,
+      balanceOctree:
+        typeof p.balanceOctree === "boolean" ? p.balanceOctree : DEFAULTS.balanceOctree,
     };
   } catch {
     return DEFAULTS;
@@ -122,6 +127,8 @@ export function MesherDialog({ onClose }: { onClose: () => void }) {
   const [weightingFunction, setWeightingFunction] = useState<MesherWeighting>(
     initial.weightingFunction,
   );
+  const [meshPoints, setMeshPoints] = useState(initial.meshPoints);
+  const [balanceOctree, setBalanceOctree] = useState(initial.balanceOctree);
 
   const stats = useSyncExternalStore(subscribeMesherStats, getMesherStats);
 
@@ -147,6 +154,8 @@ export function MesherDialog({ onClose }: { onClose: () => void }) {
       interactionRadius,
       repulsionStrength,
       weightingFunction,
+      meshPoints,
+      balanceOctree,
     };
     setMesherDebug(s);
     try {
@@ -174,6 +183,8 @@ export function MesherDialog({ onClose }: { onClose: () => void }) {
     interactionRadius,
     repulsionStrength,
     weightingFunction,
+    meshPoints,
+    balanceOctree,
   ]);
   useEffect(() => () => setMesherDebug(null), []);
 
@@ -469,12 +480,53 @@ export function MesherDialog({ onClose }: { onClose: () => void }) {
         </>
       )}
 
+      <div className="vec-row check-row">
+        <label
+          htmlFor="mesher-mesh-points"
+          title="Adaptive dual contouring over the optimised points: one vertex per leaf cell, a quad wherever a minimal octree edge crosses the surface (crack-free on the adaptive octree via the recursive cell/face/edge walk)."
+        >
+          Mesh points (dual contour)
+        </label>
+        <input
+          id="mesher-mesh-points"
+          type="checkbox"
+          data-testid="mesher-mesh-points"
+          checked={meshPoints}
+          onChange={(e) => setMeshPoints(e.target.checked)}
+        />
+      </div>
+      {meshPoints && (
+        <div className="vec-row check-row">
+          <label
+            htmlFor="mesher-balance"
+            title="Enforce the 2:1 rule before meshing: face-adjacent leaves differ by at most one depth level — bounds the size contrast of neighbouring triangles."
+          >
+            Balance octree (2:1)
+          </label>
+          <input
+            id="mesher-balance"
+            type="checkbox"
+            data-testid="mesher-balance"
+            checked={balanceOctree}
+            onChange={(e) => setBalanceOctree(e.target.checked)}
+          />
+        </div>
+      )}
+
       <div className="readout">
         <span className="k">Leaf cells</span>
         <span className="v" data-testid="mesher-cells">
           {stats ? stats.cells.toLocaleString() + (stats.capped ? " (capped)" : "") : "—"}
         </span>
       </div>
+      {meshPoints && (
+        <div className="readout">
+          <span className="k">Triangles</span>
+          <span className="v" data-testid="mesher-tris">
+            {stats ? stats.tris.toLocaleString() : "—"}
+          </span>
+        </div>
+      )}
 
       <div className="legend">
         <span className="in">inside</span>

@@ -51,6 +51,12 @@ export interface MesherDebug {
   interactionRadius: number;
   repulsionStrength: number;
   weightingFunction: MesherWeighting;
+  /** Mesh the optimised points: adaptive dual contouring over the octree
+   *  (one vertex per leaf, quads at sign-changing minimal edges). */
+  meshPoints: boolean;
+  /** 2:1-balance the octree before meshing (bounded neighbour depth
+   *  contrast → bounded triangle quality). */
+  balanceOctree: boolean;
 }
 
 export type MesherWeighting = "linear" | "inverse-square";
@@ -88,6 +94,8 @@ export function subscribeMesherDebug(listener: () => void): () => void {
 export interface MesherStats {
   cells: number;
   capped: boolean;
+  /** Triangles of the debug dual-contour mesh (0 when meshing is off). */
+  tris: number;
 }
 
 let stats: MesherStats | null = null;

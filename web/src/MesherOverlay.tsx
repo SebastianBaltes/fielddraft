@@ -105,14 +105,17 @@ export function MesherOverlay() {
     // Newton fit → tangential repulsion); extra fields in the options JSON
     // are ignored by serde, so the debug params pass through verbatim.
     const data = store.mesherPoints(JSON.stringify(params));
-    const total = Math.floor(data.length / 8);
+    const total = data.length >= 2 ? data[0] : 0;
+    const triCount = data.length >= 2 ? data[1] : 0;
+    const P = 2; // points offset
+    const I = 2 + total * 8; // indices offset
     // Keep leaf indices that pass the near-surface filter. When the part is
     // faded (partOpacity < 1) the interior is visible, so interior samples
     // (sdf < 0) are kept even beyond the near-surface distance.
     const showInterior = params.partOpacity < 1;
     const keep: number[] = [];
     for (let k = 0; k < total; k++) {
-      const d = data[k * 8 + 3];
+      const d = data[P + k * 8 + 3];
       if (
         params.nearSurfaceOnly &&
         Math.abs(d) > params.nearSurfaceDist &&
@@ -122,7 +125,43 @@ export function MesherOverlay() {
       keep.push(k);
     }
     const n = keep.length;
-    setMesherStats({ cells: n, capped: total >= MAX_LEAVES });
+    setMesherStats({ cells: n, capped: total >= MAX_LEAVES, tris: triCount });
+
+    // Debug dual-contour mesh over the optimised points (jq2t follow-up):
+    // MeshNormalMaterial is light-independent and its normal colouring makes
+    // flipped/degenerate patches jump out. Pulled toward the camera via
+    // polygonOffset -- the mesh sits exactly ON the SDF surface and would
+    // otherwise lose the depth test against the body (cf. iw6f/rfm6).
+    if (triCount > 0) {
+      const mpos = new Float32Array(total * 3);
+      for (let k = 0; k < total; k++) {
+        mpos[k * 3] = data[P + k * 8];
+        mpos[k * 3 + 1] = data[P + k * 8 + 1];
+        mpos[k * 3 + 2] = data[P + k * 8 + 2];
+      }
+      const midx = new Uint32Array(triCount * 3);
+      for (let t = 0; t < triCount * 3; t++) midx[t] = data[I + t];
+      const mg = new THREE.BufferGeometry();
+      mg.setAttribute("position", new THREE.BufferAttribute(mpos, 3));
+      mg.setIndex(new THREE.BufferAttribute(midx, 1));
+      mg.computeVertexNormals();
+      mg.computeBoundingSphere();
+      const solid = new THREE.Mesh(
+        mg,
+        new THREE.MeshNormalMaterial({
+          flatShading: true,
+          side: THREE.DoubleSide,
+          transparent: true,
+          opacity: 0.9,
+          polygonOffset: true,
+          polygonOffsetFactor: -2,
+          polygonOffsetUnits: -4,
+        }),
+      );
+      solid.layers.enable(OVERLAY_LAYER);
+      solid.renderOrder = 4;
+      group.add(solid);
+    }
     if (n === 0) {
       invalidate();
       return;
@@ -134,7 +173,7 @@ export function MesherOverlay() {
     const linePos = new Float32Array(n * 6);
     const lineCol = new Float32Array(n * 6);
     for (let idx = 0; idx < n; idx++) {
-      const b = keep[idx] * 8;
+      const b = P + keep[idx] * 8;
       const x = data[b],
         y = data[b + 1],
         z = data[b + 2],

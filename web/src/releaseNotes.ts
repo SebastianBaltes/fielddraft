@@ -24,6 +24,16 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.417",
+    entries: [
+      {
+        kind: "feat",
+        text: "Debug ▸ Mesher: „Mesh points (dual contour)“ — adaptives Dual Contouring über den gefilterten/projizierten/abgestoßenen Punkten (ein Vertex pro Octree-Blattzelle, Quads an vorzeichenwechselnden Minimal-Kanten, crack-frei per rekursivem cell/face/edge-Walk), optional mit 2:1-balanciertem Octree; Dreieckszahl im Dialog",
+        scope: "debug",
+      },
+    ],
+  },
+  {
     version: "0.6.416",
     entries: [
       {

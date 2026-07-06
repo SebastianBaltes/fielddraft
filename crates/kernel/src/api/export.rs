@@ -103,16 +103,21 @@ impl Kernel {
     }
 
     /// Debug ▸ Mesher: build the narrow-band adaptive octree over the scene
-    /// (one point per leaf cell = its centre) and run the OPTIONAL iterative
-    /// point optimisers of ticket jq2t over it (Newton "Fit on Surface",
-    /// tangential "Repulsion inside Surface", cell-clamping, processing
-    /// filters) — all controlled by `options_json`
+    /// (one point per leaf cell = its centre) and run the OPTIONAL stages of
+    /// the debug meshing pipeline, all controlled by `options_json`
     /// ([`crate::mesher_points::MesherPointOptions`], camelCase; unknown
-    /// fields ignored, malformed JSON → defaults = plain octree samples).
-    /// Returns, per leaf, `[x, y, z, sdf, nx, ny, nz, cellSize]` (8 floats)
-    /// with `x,y,z` the FINAL point position and `sdf`/`n` re-evaluated
-    /// there, so the overlay's colour coding directly shows the fit quality.
-    /// Points failing the processing filters stay rigid at the cell centre.
+    /// fields ignored, malformed JSON → defaults):
+    ///
+    ///  1. jq2t point optimisers (processing filters, Newton "Fit on
+    ///     Surface", tangential "Repulsion inside Surface", cell clamping),
+    ///  2. `meshPoints`: adaptive dual contouring over the optimised points
+    ///     (one vertex per leaf; quads at sign-changing minimal octree
+    ///     edges), after an optional 2:1 balance pass (`balanceOctree`).
+    ///
+    /// Returns `[nPoints, nTris, points…, indices…]`: per leaf 8 floats
+    /// `[x, y, z, sdf, nx, ny, nz, cellSize]` with the FINAL point position
+    /// (sdf/normal re-evaluated there), then 3 indices per triangle into the
+    /// point list. Points failing the processing filters stay rigid.
     #[wasm_bindgen(js_name = mesherPoints)]
     pub fn mesher_points(&self, options_json: String) -> Vec<f32> {
         let opts: crate::mesher_points::MesherPointOptions =
@@ -124,10 +129,9 @@ impl Kernel {
                 crate::body::build_bounded_with_primitives(&self.decoded, &b.feature_indices).0
             })
             .collect();
-        let leaves = octree_leaves(&bodies, opts.max_depth, opts.band_guard);
-        if leaves.is_empty() {
+        let Some((center, root_size)) = octree_root(&bodies) else {
             return Vec::new();
-        }
+        };
         let scene_sdf = |p: [f32; 3]| {
             let mut d = f32::MAX;
             for b in &bodies {
@@ -135,11 +139,18 @@ impl Kernel {
             }
             d
         };
-        // Gradient step scaled like the octree sampler's (root-size based
-        // would need the root here; a per-eval fraction of the finest cell is
-        // equivalent in practice and stays local).
-        let min_size = leaves.iter().map(|l| l.size).fold(f32::MAX, f32::min);
-        let eps = (min_size * 0.05).clamp(1e-3, 1.0);
+        let mut root = crate::mesher_points::build_octree(
+            center,
+            root_size,
+            opts.max_depth,
+            opts.band_guard,
+            &scene_sdf,
+        );
+        if opts.mesh_points && opts.balance_octree {
+            crate::mesher_points::balance_2to1(&mut root, &scene_sdf);
+        }
+        let min_size_est = root_size / (1u32 << opts.max_depth.min(10)) as f32;
+        let eps = (min_size_est * 0.05).clamp(1e-3, 1.0);
         let grad = |p: [f32; 3]| -> [f32; 3] {
             let gx = scene_sdf([p[0] + eps, p[1], p[2]]) - scene_sdf([p[0] - eps, p[1], p[2]]);
             let gy = scene_sdf([p[0], p[1] + eps, p[2]]) - scene_sdf([p[0], p[1] - eps, p[2]]);
@@ -151,12 +162,23 @@ impl Kernel {
                 [0.0, 0.0, 1.0]
             }
         };
+        let leaves = crate::mesher_points::collect_leaves(&mut root, &grad);
+        if leaves.is_empty() {
+            return vec![0.0, 0.0];
+        }
         let (points, processed) =
             crate::mesher_points::optimize_leaf_points(&leaves, &opts, &scene_sdf, &grad);
-        let mut out = Vec::with_capacity(leaves.len() * 8);
+        let indices = if opts.mesh_points {
+            crate::mesher_points::polygonize(&root, &points, &scene_sdf)
+        } else {
+            Vec::new()
+        };
+
+        let mut out = Vec::with_capacity(2 + leaves.len() * 8 + indices.len());
+        out.push(leaves.len() as f32);
+        out.push((indices.len() / 3) as f32);
         for (i, leaf) in leaves.iter().enumerate() {
             let p = points[i];
-            // Re-evaluate only where the point could have moved.
             let (d, n) = if processed[i] && (opts.fit_on_surface || opts.repulsion) {
                 (scene_sdf(p), grad(p))
             } else {
@@ -164,6 +186,7 @@ impl Kernel {
             };
             out.extend_from_slice(&[p[0], p[1], p[2], d, n[0], n[1], n[2], leaf.size]);
         }
+        out.extend(indices.iter().map(|&i| i as f32));
         out
     }
 
@@ -350,25 +373,11 @@ pub(crate) fn octree_leaf_samples(
 
 /// The leaf structs behind [`octree_leaf_samples`] — the jq2t point pipeline
 /// needs the cells (centre + size = clamp bounds), not just packed floats.
-pub(crate) fn octree_leaves(
-    bodies: &[crate::bvh::BoundedCsg],
-    max_depth: u32,
-    band_guard: f32,
-) -> Vec<crate::mesher_points::Leaf> {
+/// Root sizing lives here; construction is `mesher_points::build_octree`.
+pub(crate) fn octree_root(bodies: &[crate::bvh::BoundedCsg]) -> Option<([f32; 3], f32)> {
     if bodies.is_empty() {
-        return Vec::new();
+        return None;
     }
-    let scene_sdf = |p: [f32; 3]| {
-        let mut d = f32::MAX;
-        for b in bodies {
-            d = d.min(b.sdf(p, crate::csg::EvalMode::Visual));
-        }
-        d
-    };
-
-    // Root cube = the union of the bodies' AABBs, squared up (with a small
-    // margin). Space-filling bodies (gyroid) can report an empty AABB — fall
-    // back to a default box so the tool still shows something.
     let mut mn = [f32::MAX; 3];
     let mut mx = [f32::MIN; 3];
     let mut any = false;
@@ -386,61 +395,45 @@ pub(crate) fn octree_leaves(
         mn = [-50.0; 3];
         mx = [50.0; 3];
     }
-    let center0 = [
+    let center = [
         0.5 * (mn[0] + mx[0]),
         0.5 * (mn[1] + mx[1]),
         0.5 * (mn[2] + mx[2]),
     ];
     let ext = (mx[0] - mn[0]).max(mx[1] - mn[1]).max(mx[2] - mn[2]);
-    let root_size = (ext * 1.1).max(1e-3);
-    let eps = (root_size * 0.005).clamp(1e-3, 1.0);
-    let guard = band_guard.max(0.1);
-    let max_depth = max_depth.min(10);
-    const MAX_LEAVES: usize = 200_000;
-    const SQRT3: f32 = 1.732_050_8;
+    Some((center, (ext * 1.1).max(1e-3)))
+}
 
-    let mut out: Vec<crate::mesher_points::Leaf> = Vec::new();
-    let mut stack: Vec<([f32; 3], f32, u32)> = vec![(center0, root_size, 0)];
-    while let Some((c, size, depth)) = stack.pop() {
-        if out.len() >= MAX_LEAVES {
-            break;
+pub(crate) fn octree_leaves(
+    bodies: &[crate::bvh::BoundedCsg],
+    max_depth: u32,
+    band_guard: f32,
+) -> Vec<crate::mesher_points::Leaf> {
+    let Some((center, root_size)) = octree_root(bodies) else {
+        return Vec::new();
+    };
+    let scene_sdf = |p: [f32; 3]| {
+        let mut d = f32::MAX;
+        for b in bodies {
+            d = d.min(b.sdf(p, crate::csg::EvalMode::Visual));
         }
-        let d = scene_sdf(c);
-        let half_diag = size * 0.5 * SQRT3;
-        let in_band = d.abs() <= half_diag * guard;
-        if depth < max_depth && in_band {
-            let h = size * 0.25; // child centre offset = quarter of parent size
-            for &sz in &[-1.0f32, 1.0] {
-                for &sy in &[-1.0f32, 1.0] {
-                    for &sx in &[-1.0f32, 1.0] {
-                        stack.push((
-                            [c[0] + sx * h, c[1] + sy * h, c[2] + sz * h],
-                            size * 0.5,
-                            depth + 1,
-                        ));
-                    }
-                }
-            }
+        d
+    };
+    let eps = (root_size * 0.005).clamp(1e-3, 1.0);
+    let grad = |p: [f32; 3]| -> [f32; 3] {
+        let gx = scene_sdf([p[0] + eps, p[1], p[2]]) - scene_sdf([p[0] - eps, p[1], p[2]]);
+        let gy = scene_sdf([p[0], p[1] + eps, p[2]]) - scene_sdf([p[0], p[1] - eps, p[2]]);
+        let gz = scene_sdf([p[0], p[1], p[2] + eps]) - scene_sdf([p[0], p[1], p[2] - eps]);
+        let gl = (gx * gx + gy * gy + gz * gz).sqrt();
+        if gl > 1e-12 {
+            [gx / gl, gy / gl, gz / gl]
         } else {
-            // Leaf: centre sample + gradient (central differences).
-            let gx = scene_sdf([c[0] + eps, c[1], c[2]]) - scene_sdf([c[0] - eps, c[1], c[2]]);
-            let gy = scene_sdf([c[0], c[1] + eps, c[2]]) - scene_sdf([c[0], c[1] - eps, c[2]]);
-            let gz = scene_sdf([c[0], c[1], c[2] + eps]) - scene_sdf([c[0], c[1], c[2] - eps]);
-            let gl = (gx * gx + gy * gy + gz * gz).sqrt();
-            let n = if gl > 1e-12 {
-                [gx / gl, gy / gl, gz / gl]
-            } else {
-                [0.0, 0.0, 1.0]
-            };
-            out.push(crate::mesher_points::Leaf {
-                center: c,
-                sdf: d,
-                normal: n,
-                size,
-            });
+            [0.0, 0.0, 1.0]
         }
-    }
-    out
+    };
+    let mut root =
+        crate::mesher_points::build_octree(center, root_size, max_depth, band_guard, &scene_sdf);
+    crate::mesher_points::collect_leaves(&mut root, &grad)
 }
 
 #[cfg(test)]
