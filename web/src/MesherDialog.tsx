@@ -49,6 +49,8 @@ const DEFAULTS: MesherDebug = {
   repulsionStrength: 0.5,
   repulsionDamping: 0.2,
   dampingCurve: "linear",
+  pasmKernel: false,
+  cdtFaces: false,
   brepSkeleton: false,
   featureSnap: false,
   featureAngleDeg: 30,
@@ -97,6 +99,8 @@ function loadSettings(): MesherDebug {
       repulsionDamping: clampNum(p.repulsionDamping, 0, 1, DEFAULTS.repulsionDamping),
       dampingCurve:
         p.dampingCurve === "exponential" ? "exponential" : DEFAULTS.dampingCurve,
+      pasmKernel: typeof p.pasmKernel === "boolean" ? p.pasmKernel : DEFAULTS.pasmKernel,
+      cdtFaces: typeof p.cdtFaces === "boolean" ? p.cdtFaces : DEFAULTS.cdtFaces,
       brepSkeleton:
         typeof p.brepSkeleton === "boolean" ? p.brepSkeleton : DEFAULTS.brepSkeleton,
       featureSnap: typeof p.featureSnap === "boolean" ? p.featureSnap : DEFAULTS.featureSnap,
@@ -134,6 +138,8 @@ export function MesherDialog({ onClose }: { onClose: () => void }) {
   const [repulsionStrength, setRepulsionStrength] = useState(initial.repulsionStrength);
   const [repulsionDamping, setRepulsionDamping] = useState(initial.repulsionDamping);
   const [dampingCurve, setDampingCurve] = useState<MesherDampingCurve>(initial.dampingCurve);
+  const [pasmKernel, setPasmKernel] = useState(initial.pasmKernel);
+  const [cdtFaces, setCdtFaces] = useState(initial.cdtFaces);
   const [brepSkeleton, setBrepSkeleton] = useState(initial.brepSkeleton);
   const [featureSnap, setFeatureSnap] = useState(initial.featureSnap);
   const [featureAngleDeg, setFeatureAngleDeg] = useState(initial.featureAngleDeg);
@@ -165,6 +171,8 @@ export function MesherDialog({ onClose }: { onClose: () => void }) {
       repulsionStrength,
       repulsionDamping,
       dampingCurve,
+      pasmKernel,
+      cdtFaces,
       brepSkeleton,
       featureSnap,
       featureAngleDeg,
@@ -198,6 +206,8 @@ export function MesherDialog({ onClose }: { onClose: () => void }) {
     repulsionStrength,
     repulsionDamping,
     dampingCurve,
+    pasmKernel,
+    cdtFaces,
     brepSkeleton,
     featureSnap,
     featureAngleDeg,
@@ -532,6 +542,38 @@ export function MesherDialog({ onClose }: { onClose: () => void }) {
           </div>
         </>
       )}
+
+      <div className="vec-row check-row">
+        <label
+          htmlFor="mesher-pasm-kernel"
+          title="Hybrid-PASM P2: Gauß-Paar-Kernel des Papers (Kraft (xi−xj)/2σ²·exp(−d²/4σ²), σ = Interaktionsradius/5 — der Radius bleibt die 5σ-Trunkierung). Glattes Gleichgewicht bei uniformem Abstand statt 1/d²-Monopol; Iterationen enden früh bei Konvergenz."
+        >
+          PASM kernel (Gaussian)
+        </label>
+        <input
+          id="mesher-pasm-kernel"
+          type="checkbox"
+          data-testid="mesher-pasm-kernel"
+          checked={pasmKernel}
+          onChange={(e) => setPasmKernel(e.target.checked)}
+        />
+      </div>
+
+      <div className="vec-row check-row">
+        <label
+          htmlFor="mesher-cdt-faces"
+          title="Hybrid-PASM P3: planare Faces werden per Constrained Delaunay in der Face-Ebene vernetzt — die B-Rep-Skelett-Loops als Constraint-Kanten, die freien Partikel als Innenpunkte. Nähte sind wasserdicht, weil beide Nachbar-Faces dieselben Ketten-Punkte teilen. Braucht das B-Rep-Skelett; ersetzt das Octree-Debug-Netz."
+        >
+          CDT faces (planar)
+        </label>
+        <input
+          id="mesher-cdt-faces"
+          type="checkbox"
+          data-testid="mesher-cdt-faces"
+          checked={cdtFaces}
+          onChange={(e) => setCdtFaces(e.target.checked)}
+        />
+      </div>
 
       <div className="vec-row check-row">
         <label

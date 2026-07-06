@@ -34,6 +34,7 @@ baby_shark = "0.3"
 # (jit is native-asm and breaks wasm). Its own Cargo.toml already wires the
 # wasm getrandom js shims.
 fidget = { version = "0.3", default-features = false }
+spade = "2.15"
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 console_error_panic_hook = "0.1"

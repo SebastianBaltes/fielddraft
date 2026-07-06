@@ -78,6 +78,18 @@ pub struct MesherPointOptions {
     pub repulsion_damping: f32,
     /// Annealing curve of the repulsion strength over the iterations.
     pub damping_curve: DampingCurve,
+    /// Hybrid-PASM P2: use the paper's isotropic Gaussian pair kernel instead
+    /// of the 1/d² monopole — force `(xi−xj)/2σ² · exp(−d²/4σ²)` with
+    /// `σ = interactionRadius/5` (the paper truncates the kernel at 5σ, so
+    /// the existing grid cutoff keeps its meaning). Smooth equilibrium at
+    /// uniform spacing; pairs beyond ~3σ contribute almost nothing.
+    pub pasm_kernel: bool,
+    /// Hybrid-PASM P3: triangulate PLANAR faces with a constrained Delaunay
+    /// triangulation in the face plane — the skeleton loops as constraints,
+    /// the free particles as interior vertices. Watertight across seams by
+    /// construction (adjacent faces share the same chain slots). Requires
+    /// `brep_skeleton`; replaces the octree-connectivity debug mesh.
+    pub cdt_faces: bool,
     /// Hybrid-PASM P1 (docs/HYBRID-PASM-MESHING-PLAN.md, ticket nwmi): sample
     /// the body's woven B-Rep edges into FIXED skeleton particles (corners
     /// pinned exactly, edge chains at the target spacing). They repel the
@@ -131,6 +143,8 @@ impl Default for MesherPointOptions {
             repulsion_strength: 0.5,
             repulsion_damping: 0.2,
             damping_curve: DampingCurve::Linear,
+            pasm_kernel: false,
+            cdt_faces: false,
             brep_skeleton: false,
             feature_snap: false,
             feature_angle_deg: 30.0,
@@ -436,6 +450,7 @@ fn relaxation_pass(
             grid.entry(key(p)).or_default().push(n_pts + a);
         }
         let mut moved = points.clone();
+        let mut max_disp = 0.0f32;
         for &i in active {
             let lock = feature.map_or(PointLock::Free, |(l, _)| l[i]);
             if lock == PointLock::Corner {
@@ -467,15 +482,27 @@ fn relaxation_pass(
                                 continue;
                             }
                             nearest = nearest.min(dist);
-                            // Inverse-square repulsion (`∝ 1/d²`, like
-                            // equally-charged monopoles): magnitude
-                            // normalised to 1 at the cutoff radius `r`
-                            // (scale-relative) and capped so near-coincident
-                            // points can't explode. Closer points repel far
-                            // harder → clusters break up, the far field
-                            // stays negligible → even, local spread.
-                            let w = ((r / dist) * (r / dist)).min(100.0);
-                            let s = w / dist;
+                            let s = if opts.pasm_kernel {
+                                // PASM isotropic Gaussian kernel (paper Eq. 6,
+                                // M = I): F = (xi−xj)/2σ²·exp(−d²/4σ²) with
+                                // σ = r/5 so the grid cutoff = the paper's 5σ
+                                // truncation. Smooth, principled equilibrium —
+                                // no cap needed (the force VANISHES towards
+                                // coincidence instead of exploding; cell-centre
+                                // initialisation never starts coincident).
+                                let sigma = r / 5.0;
+                                (-(dist * dist) / (4.0 * sigma * sigma)).exp()
+                                    / (2.0 * sigma * sigma)
+                            } else {
+                                // Inverse-square repulsion (`∝ 1/d²`, like
+                                // equally-charged monopoles): magnitude
+                                // normalised to 1 at the cutoff radius `r`
+                                // (scale-relative) and capped so near-coincident
+                                // points can't explode. Closer points repel far
+                                // harder → clusters break up, the far field
+                                // stays negligible → even, local spread.
+                                ((r / dist) * (r / dist)).min(100.0) / dist
+                            };
                             f[0] += dvec[0] * s;
                             f[1] += dvec[1] * s;
                             f[2] += dvec[2] * s;
@@ -553,9 +580,19 @@ fn relaxation_pass(
             if opts.constrain_to_cell {
                 clamp_to_cell(&mut np, leaf);
             }
+            let dx = np[0] - points[i][0];
+            let dy = np[1] - points[i][1];
+            let dz = np[2] - points[i][2];
+            max_disp = max_disp.max(dx * dx + dy * dy + dz * dz);
             moved[i] = np;
         }
         *points = moved;
+        // Converged (PASM stopping condition): when the largest particle
+        // displacement drops below a thousandth of the interaction radius the
+        // system is in equilibrium — further iterations only burn time.
+        if max_disp.sqrt() < 1e-3 * r {
+            break;
+        }
     }
 }
 

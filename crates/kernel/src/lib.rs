@@ -26,6 +26,7 @@ pub mod mdc_adaptive;
 pub mod surface_nets;
 pub mod uniform_contour;
 pub mod marching_tets;
+pub mod mesher_cdt;
 pub mod mesher_points;
 pub mod marching_cubes33;
 pub mod marching_cubes33_tables;

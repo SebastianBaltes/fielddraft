@@ -178,6 +178,14 @@ impl Kernel {
         // targets. Positions fold the body placement (mirror body_brep_edges).
         let mut skeleton: Vec<[f32; 3]> = Vec::new();
         let mut skeleton_corner: Vec<bool> = Vec::new();
+        // Per (body, vertex idx) → skeleton slot; per (body, edge idx) → the
+        // FULL chain of skeleton slots (endpoints = corner slots for open
+        // edges) — the loop assembly of the CDT stage below re-uses exactly
+        // these slots, which is what makes seams watertight by construction.
+        let mut corner_slot: std::collections::HashMap<(usize, usize), usize> =
+            std::collections::HashMap::new();
+        let mut edge_chain: std::collections::HashMap<(usize, usize), Vec<usize>> =
+            std::collections::HashMap::new();
         if opts.brep_skeleton {
             let h = if opts.interaction_radius > 0.0 {
                 opts.interaction_radius
@@ -198,26 +206,39 @@ impl Kernel {
                         r[2] + placement.translate[2],
                     ]
                 };
-                for v in &brep.vertices {
+                for (vi, v) in brep.vertices.iter().enumerate() {
+                    corner_slot.insert((bi, vi), skeleton.len());
                     skeleton.push(to_world(v.position));
                     skeleton_corner.push(true);
                 }
-                for e in &brep.edges {
+                for (ei, e) in brep.edges.iter().enumerate() {
                     let pts: Vec<[f32; 3]> = crate::brep::edge_sampling::sample_edge(&e.geometry)
                         .into_iter()
                         .map(to_world)
                         .collect();
                     let chain = crate::mesher_points::resample_polyline(&pts, h);
+                    let mut slots: Vec<usize> = Vec::with_capacity(chain.len());
+                    if let Some(vs) = e.start {
+                        slots.push(corner_slot[&(bi, vs.0 as usize)]);
+                    }
                     // Interior points only: chain endpoints coincide with the
-                    // corner vertices already emitted above (open edges) or
-                    // wrap onto the chain itself (closed rings — keep the seam
-                    // point once as a plain edge sample).
+                    // corner vertices (open edges) or wrap onto the chain
+                    // itself (closed rings — drop the duplicated seam point).
                     let start = if e.start.is_some() { 1 } else { 0 };
-                    let end = chain.len().saturating_sub(usize::from(e.end.is_some()));
+                    let mut end = chain.len().saturating_sub(usize::from(e.end.is_some()));
+                    if e.start.is_none() && e.end.is_none() && chain.len() >= 2 {
+                        // Closed ring: resample keeps first == last; keep one.
+                        end = end.saturating_sub(1);
+                    }
                     for p in &chain[start.min(chain.len())..end] {
+                        slots.push(skeleton.len());
                         skeleton.push(*p);
                         skeleton_corner.push(false);
                     }
+                    if let Some(ve) = e.end {
+                        slots.push(corner_slot[&(bi, ve.0 as usize)]);
+                    }
+                    edge_chain.insert((bi, ei), slots);
                 }
             }
         }
@@ -228,7 +249,7 @@ impl Kernel {
         // filters = processed AND survived only-on-surface): one vertex per
         // shown leaf, triangles by octree-edge adjacency (no sign-change).
         let shown: Vec<bool> = (0..leaves.len()).map(|i| processed[i] && alive[i]).collect();
-        let indices = if opts.mesh_points {
+        let indices = if opts.mesh_points && !opts.cdt_faces {
             crate::mesher_points::connect_octree_edges(&root, &shown)
         } else {
             Vec::new()
@@ -252,10 +273,121 @@ impl Kernel {
         // MESH still uses every emitted point as a vertex (crack-free DC), so
         // `shown` is display-only; only "only-on-surface" escapees are gone
         // from the vertex set entirely (dropped above via `alive`).
-        let mut out =
-            Vec::with_capacity(2 + (n_alive as usize + skeleton.len()) * 9 + indices.len());
+        // ── CDT faces (Hybrid-PASM P3) ──
+        // Per PLANAR face: assemble its boundary loops from the shared
+        // skeleton chains (same slots on both adjacent faces → watertight
+        // seams), attribute the free shown particles by branch, and run the
+        // constrained Delaunay triangulation in the face plane. Triangles are
+        // emitted in OUTPUT indices (alive-remapped particles first, then the
+        // skeleton block), so they bypass the octree remap below.
+        let mut cdt_tris: Vec<[u32; 3]> = Vec::new();
+        if opts.cdt_faces && opts.brep_skeleton {
+            use crate::brep::SurfaceGeometry;
+            use fielddraft_protocol::HalfSpace;
+            // Output-space point table (mirror of the emission order below).
+            let mut flat: Vec<[f32; 3]> = Vec::with_capacity(n_alive as usize + skeleton.len());
+            for (i, _) in leaves.iter().enumerate() {
+                if alive[i] {
+                    flat.push(points[i]);
+                }
+            }
+            flat.extend(skeleton.iter().copied());
+            let skel_base = n_alive;
+
+            // Branch attribution of the free particles (shown only): the
+            // winning body's contributor set at the point names its face.
+            let eps_attr = (min_size_est * 0.1).max(1e-3);
+            let mut by_branch: std::collections::HashMap<(usize, u32), Vec<u32>> =
+                std::collections::HashMap::new();
+            for (i, _) in leaves.iter().enumerate() {
+                if !(alive[i] && processed[i]) {
+                    continue;
+                }
+                let p = points[i];
+                let mut best = (f32::MAX, usize::MAX);
+                for (bi, b) in bodies.iter().enumerate() {
+                    let d = b.sdf(p, crate::csg::EvalMode::Logical).abs();
+                    if d < best.0 {
+                        best = (d, bi);
+                    }
+                }
+                if best.1 == usize::MAX {
+                    continue;
+                }
+                let (_, contributors) =
+                    bodies[best.1].evaluate(p, eps_attr, crate::csg::EvalMode::Logical);
+                for br in contributors.as_slice() {
+                    by_branch
+                        .entry((best.1, br.as_u32()))
+                        .or_default()
+                        .push(remap[i]);
+                }
+            }
+
+            for (bi, _) in self.bodies.iter().enumerate() {
+                let Some(brep) = self.bodies[bi].brep_cached() else { continue };
+                for face in &brep.faces {
+                    let planar = matches!(
+                        &face.surface,
+                        SurfaceGeometry::Analytic { surface: HalfSpace::Plane { .. }, .. }
+                    );
+                    if !planar {
+                        continue;
+                    }
+                    // Assemble closed loops (outer first) as OUTPUT indices.
+                    let mut face_loops: Vec<Vec<u32>> = Vec::new();
+                    let mut ok = true;
+                    for lp in std::iter::once(&face.outer).chain(face.inner.iter()) {
+                        let mut ring: Vec<u32> = Vec::new();
+                        for &(eid, reversed) in &lp.edges {
+                            let Some(chain) = edge_chain.get(&(bi, eid.0 as usize)) else {
+                                ok = false;
+                                break;
+                            };
+                            let seq: Vec<usize> = if reversed {
+                                chain.iter().rev().copied().collect()
+                            } else {
+                                chain.clone()
+                            };
+                            for (k, slot) in seq.iter().enumerate() {
+                                let out_idx = skel_base + *slot as u32;
+                                if k == 0 && ring.last() == Some(&out_idx) {
+                                    continue; // junction shared with the previous chain
+                                }
+                                ring.push(out_idx);
+                            }
+                        }
+                        if !ok {
+                            break;
+                        }
+                        if ring.first() == ring.last() && ring.len() > 1 {
+                            ring.pop(); // the wrap point — the loop closes implicitly
+                        }
+                        if ring.len() >= 3 {
+                            face_loops.push(ring);
+                        }
+                    }
+                    if !ok || face_loops.is_empty() {
+                        continue;
+                    }
+                    let interior = by_branch
+                        .get(&(bi, face.branch_id.as_u32()))
+                        .map(Vec::as_slice)
+                        .unwrap_or(&[]);
+                    cdt_tris.extend(crate::mesher_cdt::triangulate_planar_face(
+                        &flat,
+                        &face_loops,
+                        interior,
+                    ));
+                }
+            }
+        }
+
+        let mut out = Vec::with_capacity(
+            2 + (n_alive as usize + skeleton.len()) * 9 + indices.len() + cdt_tris.len() * 3,
+        );
         out.push((n_alive as usize + skeleton.len()) as f32);
-        out.push((indices.len() / 3) as f32);
+        out.push((indices.len() / 3 + cdt_tris.len()) as f32);
         for (i, leaf) in leaves.iter().enumerate() {
             if !alive[i] {
                 continue;
@@ -277,6 +409,9 @@ impl Kernel {
             out.extend_from_slice(&[p[0], p[1], p[2], 0.0, 0.0, 0.0, 1.0, 0.0, flag]);
         }
         out.extend(indices.iter().map(|&i| remap[i as usize] as f32));
+        for t in &cdt_tris {
+            out.extend_from_slice(&[t[0] as f32, t[1] as f32, t[2] as f32]);
+        }
         out
     }
 
@@ -585,6 +720,63 @@ mod mesher_octree_tests {
     #[test]
     fn empty_scene_yields_no_cells() {
         assert!(octree_leaf_samples(&[], 5, 1.0).is_empty());
+    }
+
+    /// Hybrid-PASM P3 (ticket nwmi): skeleton + CDT on a box must produce a
+    /// CLOSED 2-manifold triangle mesh — every edge shared by exactly two
+    /// triangles, Euler characteristic V − E + F = 2. That is the structural
+    /// watertightness contract of the shared skeleton chains.
+    #[test]
+    fn mesher_points_cdt_box_is_watertight_manifold() {
+        use fielddraft_protocol::{BoolOp, Primitive};
+        let mut k = crate::Kernel::new();
+        k.add_primitive(
+            Primitive::KIND_BOX,
+            BoolOp::TAG_NEW,
+            0.0,
+            0.0,
+            0.0,
+            10.0,
+            10.0,
+            10.0,
+        )
+        .unwrap();
+        let out = k.mesher_points(
+            r#"{"maxDepth":4,"brepSkeleton":true,"cdtFaces":true,
+                "nearSurfaceOnly":true,"nearSurfaceDist":1.0,
+                "fitOnSurface":true,"onlyOnSurface":true,
+                "repulsion":true,"interactionRadius":3.0,"repulsionStrength":0.5,
+                "pasmKernel":true,"iterations":20}"#
+                .into(),
+        );
+        let total = out[0] as usize;
+        let tris = out[1] as usize;
+        assert!(tris >= 12, "expected a real triangulation, got {tris} tris");
+        let idx_base = 2 + total * 9;
+        // Edge → usage count over all triangles.
+        let mut edge_use: std::collections::HashMap<(u32, u32), u32> =
+            std::collections::HashMap::new();
+        let mut used: std::collections::HashSet<u32> = std::collections::HashSet::new();
+        for t in 0..tris {
+            let a = out[idx_base + t * 3] as u32;
+            let b = out[idx_base + t * 3 + 1] as u32;
+            let c3 = out[idx_base + t * 3 + 2] as u32;
+            assert!(a != b && b != c3 && c3 != a, "degenerate triangle");
+            for (x, y) in [(a, b), (b, c3), (c3, a)] {
+                *edge_use.entry((x.min(y), x.max(y))).or_default() += 1;
+                used.insert(x);
+                used.insert(y);
+            }
+        }
+        // Closed 2-manifold: EVERY edge exactly twice.
+        for (&(a, b), &n) in &edge_use {
+            assert_eq!(n, 2, "edge {a}-{b} used {n}× (open seam or fan)");
+        }
+        // Euler characteristic of a sphere-topology solid.
+        let v = used.len() as i64;
+        let e = edge_use.len() as i64;
+        let f = tris as i64;
+        assert_eq!(v - e + f, 2, "Euler characteristic broke: V={v} E={e} F={f}");
     }
 
     /// Hybrid-PASM P1 (ticket nwmi): with `brepSkeleton` on, a box body emits

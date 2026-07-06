@@ -24,6 +24,17 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.434",
+    entries: [
+      {
+        kind: "feat",
+        text: "Hybrid-PASM-Meshing Phasen 2+3: „PASM kernel (Gaussian)“ — der Paar-Kernel des Papers (σ = Interaktionsradius/5, 5σ-Trunkierung, Konvergenz-Abbruch) ersetzt wahlweise den 1/d²-Monopol; „CDT faces (planar)“ — planare Faces werden per Constrained Delaunay (spade) in der Face-Ebene vernetzt, mit den B-Rep-Skelett-Loops als Constraints und den freien Partikeln als Innenpunkten. Erster End-to-End-Beweis: die Box liefert ein GESCHLOSSENES 2-Manifold-Netz (jede Kante exakt 2×, Euler V−E+F=2) — kantenexakt und wasserdicht per Konstruktion",
+        scope: "debug",
+        tickets: ["nwmi"],
+      },
+    ],
+  },
+  {
     version: "0.6.433",
     entries: [
       {

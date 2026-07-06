@@ -62,6 +62,13 @@ export interface MesherDebug {
   repulsionDamping: number;
   /** Annealing curve of the repulsion strength over the iterations. */
   dampingCurve: MesherDampingCurve;
+  /** Hybrid-PASM P2: PASM Gaussian pair kernel (σ = interactionRadius/5,
+   *  paper-treue 5σ-Trunkierung) statt 1/d²-Monopol. */
+  pasmKernel: boolean;
+  /** Hybrid-PASM P3: planare Faces per Constrained Delaunay in der
+   *  Face-Ebene vernetzen — Skelett-Loops als Constraints, freie Partikel
+   *  als Innenpunkte; wasserdicht über geteilte Ketten-Slots. */
+  cdtFaces: boolean;
   /** Hybrid-PASM P1: sample the woven B-Rep edges into FIXED skeleton
    *  particles (corners pinned, chains at the interaction radius) that repel
    *  the free particles — sharp features as boundary conditions. */
