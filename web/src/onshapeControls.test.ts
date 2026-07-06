@@ -229,6 +229,43 @@ describe("OnshapeControls touch gestures", () => {
     publishSceneBounds(null);
   });
 
+  it("ortho wheel-zoom pins the cursor point even with an off-axis target (zc9b)", () => {
+    // The rotate pivot raycasts onto whatever sat under the cursor, so the
+    // target routinely ends up OFF the camera view axis. Cursor zoom must
+    // still keep the world point under the pointer fixed on screen — the pin
+    // offset is relative to the camera axis, not the target.
+    const cam = new THREE.OrthographicCamera(-400, 400, 300, -300, 0.05, 2000);
+    cam.position.set(0, 0, 100);
+    cam.zoom = 2;
+    cam.updateProjectionMatrix();
+    cam.updateMatrixWorld(true);
+    const el = makeEl();
+    const c = new OnshapeControls(cam, el);
+    c.target.set(30, -20, 0); // off-axis pivot, as after an ohtn raycast
+
+    // World point under the cursor before zooming.
+    const p = new THREE.Vector3(10, 5, 0);
+    const toPx = () => {
+      const ndc = p.clone().project(cam);
+      return { x: (ndc.x + 1) * 400, y: (1 - ndc.y) * 300 };
+    };
+    const before = toPx();
+
+    const wheel = (c as unknown as { onWheel: (e: WheelEvent) => void }).onWheel;
+    wheel({
+      deltaY: -300, // zoom IN three notches
+      clientX: before.x,
+      clientY: before.y,
+      preventDefault: () => {},
+    } as unknown as WheelEvent);
+
+    cam.updateMatrixWorld(true);
+    const after = toPx();
+    expect(Math.abs(after.x - before.x)).toBeLessThan(0.5);
+    expect(Math.abs(after.y - before.y)).toBeLessThan(0.5);
+    c.dispose();
+  });
+
   it("two-finger spread zooms in (perspective camera moves closer)", () => {
     const cam = cameraLookingAt([0, 0, 100], [0, 0, 0]);
     const c = new OnshapeControls(cam, makeEl());

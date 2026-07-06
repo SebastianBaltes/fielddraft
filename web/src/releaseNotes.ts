@@ -24,6 +24,22 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.431",
+    entries: [
+      {
+        kind: "feat",
+        text: "B-Rep: Vertex-Witnesses — Ecken (Tripelpunkte) werden VOR dem Kanten-Tracing analytisch gelöst und den Märschen als Snap-Ziele mitgegeben; ein Marsch endet exakt an der Ecke statt eine weggetrimmte Lücke zu überspringen (fundamentale Lösung des Gap-Leap-Problems). Schutzgitter: Aktivitäts-Gate über alle drei Flächenpaare, Spatprodukt-Rang-Gate gegen Phantom-Konkurrenzen entlang µm-gedrifteter Koplanar-Wände, Mikro-Stub-Filter; Branch-Union wie im Cluster-Pfad hält die Handle-Identität zur Octree-Route",
+        scope: "kernel",
+      },
+      {
+        kind: "fix",
+        text: "Zoom zum Mauszeiger (Ortho): der Pin-Offset wurde relativ zum Orbit-Pivot statt zur Kamera-Achse gerechnet — seit dem Onshape-Pivot-Raycast liegt der Pivot oft abseits der Blickachse, dann zoomte das Mausrad am Cursor vorbei (aufs Bildschirmzentrum). Jetzt bleibt der Punkt unterm Cursor exakt stehen",
+        scope: "camera",
+        tickets: ["zc9b"],
+      },
+    ],
+  },
+  {
     version: "0.6.430",
     entries: [
       {

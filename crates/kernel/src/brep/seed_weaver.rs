@@ -322,6 +322,124 @@ fn build_seed_wireframe(body: &BoundedCsg, mode: SeedMode) -> Option<BRep> {
     // this tight is a genuine phantom (DL-81) → octree.
     let min_gap = (eps as f64).max(1e-9);
 
+    // 2b. Vertex witnesses (ticket 7sp1 follow-up). The march samples the
+    //    active predicate only at (mid)points of its strides, so a stride can
+    //    still leap a trimmed-away stretch narrower than the resolution floor
+    //    and bridge two arcs a third surface separates. The gap BOUNDARIES,
+    //    however, are triple points — concurrences of the pair's two surfaces
+    //    with the trimming third — and those are solvable analytically BEFORE
+    //    tracing: for every branch triple whose three pairs all seeded, run
+    //    the corner Newton from that triple's seam seeds and keep every
+    //    concurrence that lies ON the body boundary. The marches get them as
+    //    bounding vertices, so a march SNAPS to the gap boundary instead of
+    //    leaping it — and the a-posteriori machinery (interior splitting,
+    //    trim clustering) keeps working as the backstop.
+    let witness_merge = (1e-3 * diag).max(64.0 * eps as f64);
+    let mut witnesses: Vec<([f64; 3], [BranchId; 3])> = Vec::new();
+    {
+        use std::collections::{BTreeSet, HashSet};
+        let ckey = |x: BranchId, y: BranchId| {
+            let (a32, b32) = (x.as_u32(), y.as_u32());
+            (a32.min(b32), a32.max(b32))
+        };
+        let seeded: HashSet<(u32, u32)> = seeds.iter().map(|s| ckey(s.a, s.b)).collect();
+        let mut partner: HashMap<u32, HashSet<u32>> = HashMap::new();
+        for &(x, y) in &seeded {
+            partner.entry(x).or_default().insert(y);
+            partner.entry(y).or_default().insert(x);
+        }
+        let mut triples: BTreeSet<[u32; 3]> = BTreeSet::new();
+        for &(x, y) in &seeded {
+            if let (Some(px), Some(py)) = (partner.get(&x), partner.get(&y)) {
+                for &z in px.intersection(py) {
+                    let mut t = [x, y, z];
+                    t.sort_unstable();
+                    triples.insert(t);
+                }
+            }
+        }
+        // Newton guesses: the triple's pair with the FEWEST seeds (any seam
+        // seed walks to the concurrence), capped — witnesses are corners, a
+        // handful of starts per triple finds them all.
+        const GUESS_CAP: usize = 48;
+        for t in triples {
+            let branches = [BranchId(t[0]), BranchId(t[1]), BranchId(t[2])];
+            let mut best: Option<Vec<[f32; 3]>> = None;
+            for (x, y) in [(t[0], t[1]), (t[0], t[2]), (t[1], t[2])] {
+                let list: Vec<[f32; 3]> = seeds
+                    .iter()
+                    .filter(|s| ckey(s.a, s.b) == (x, y))
+                    .map(|s| s.point)
+                    .collect();
+                if best.as_ref().is_none_or(|b| list.len() < b.len()) && !list.is_empty() {
+                    best = Some(list);
+                }
+            }
+            let Some(guesses) = best else { continue };
+            let stride = (guesses.len() / GUESS_CAP).max(1);
+            for g in guesses.iter().step_by(stride) {
+                let start = [g[0] as f64, g[1] as f64, g[2] as f64];
+                let TripleRefine::Refined(p) =
+                    refine_triple_vertex(&halfspaces, &branches, start)
+                else {
+                    continue;
+                };
+                // Only ACTIVE concurrences become witnesses: extended analytic
+                // surfaces concur outside the material too — far off (a cap
+                // plane crossing a box edge line) or even ON the body boundary
+                // (a shell inner wall\'s carrier plane reaches the outer face,
+                // where the wall itself does not exist). Snapping there would
+                // split real edges at phantom corners, so a witness must pass
+                // the SAME activity test the marches trim by, for ALL THREE of
+                // its pairs: every surface genuinely on the boundary here.
+                // Rank gate: a corner is a POINT only when the three surface
+                // normals genuinely span 3-space. Near-coincident carriers (a
+                // µm-drifted coplanar wall pair, o2j9) concur along a whole
+                // CURVE — the Newton "converges" anywhere on it and every
+                // start seed mints another phantom witness marching the seam.
+                // The scalar triple product of the unit normals is exactly
+                // that spanning volume; refuse anything close to flat.
+                {
+                    let mut n = [[0.0f64; 3]; 3];
+                    let mut ok = true;
+                    for (k, br) in branches.iter().enumerate() {
+                        let Some((hs, xf)) = halfspaces.get(&br.as_u32()) else {
+                            ok = false;
+                            break;
+                        };
+                        let (_, g) = crate::sdf_dual::halfspace_value_grad(hs, xf, p);
+                        let l = (g[0] * g[0] + g[1] * g[1] + g[2] * g[2]).sqrt();
+                        if l < 1e-9 {
+                            ok = false;
+                            break;
+                        }
+                        n[k] = [g[0] / l, g[1] / l, g[2] / l];
+                    }
+                    let vol = (n[0][0] * (n[1][1] * n[2][2] - n[1][2] * n[2][1])
+                        - n[0][1] * (n[1][0] * n[2][2] - n[1][2] * n[2][0])
+                        + n[0][2] * (n[1][0] * n[2][1] - n[1][1] * n[2][0]))
+                        .abs();
+                    if !ok || vol < 1e-2 {
+                        continue;
+                    }
+                }
+                let pf = [p[0] as f32, p[1] as f32, p[2] as f32];
+                let all_pairs_active = [(0usize, 1usize), (0, 2), (1, 2)]
+                    .iter()
+                    .all(|&(i, j)| {
+                        both_branches_active(body, pf, branches[i], branches[j], eps)
+                    });
+                if !all_pairs_active {
+                    continue;
+                }
+                if witnesses.iter().any(|(w, _)| dist3(*w, p) < witness_merge) {
+                    continue;
+                }
+                witnesses.push((p, branches));
+            }
+        }
+    }
+
     // 3. Group seeds by canonical (min, max) branch signature, then process each
     //    group, collapsing co-component seeds into a single traced edge.
     let mut groups: HashMap<(u32, u32), Vec<usize>> = HashMap::new();
@@ -340,6 +458,18 @@ fn build_seed_wireframe(body: &BoundedCsg, mode: SeedMode) -> Option<BRep> {
 
     let mut records: Vec<EdgeRecord> = Vec::new();
     for (_key, members) in group_list {
+        // This pair's vertex witnesses: triple points whose branch set contains
+        // BOTH branches (they lie exactly on this pair's seam curve). Handed to
+        // every trace of the group as bounding vertices; `wit_global` maps the
+        // per-group index a march reports back to the global witness id.
+        let (wit_global, wit_pos): (Vec<usize>, Vec<[f64; 3]>) = witnesses
+            .iter()
+            .enumerate()
+            .filter(|(_, (_, br))| {
+                br.iter().any(|x| x.as_u32() == _key.0) && br.iter().any(|x| x.as_u32() == _key.1)
+            })
+            .map(|(i, (p, _))| (i, *p))
+            .unzip();
         // `covered` marks group seeds already absorbed by an emitted polyline.
         let mut covered = vec![false; members.len()];
         for idx in 0..members.len() {
@@ -373,12 +503,11 @@ fn build_seed_wireframe(body: &BoundedCsg, mode: SeedMode) -> Option<BRep> {
                 seed.point[2] as f64,
             ];
 
-            // No caller vertices: only `Trim`/`Open` ends can occur.
-            let Some(traced) = trace_edge(
+            let Some(mut traced) = trace_edge(
                 &fa,
                 &fb,
                 seed_pt,
-                &[],
+                &wit_pos,
                 &params,
                 Some(&active as &dyn Fn([f64; 3]) -> bool),
             ) else {
@@ -402,6 +531,37 @@ fn build_seed_wireframe(body: &BoundedCsg, mode: SeedMode) -> Option<BRep> {
                     continue;
                 }
                 return None;
+            }
+
+            // Remap witness-vertex ends from the group-local list the march
+            // saw to GLOBAL witness ids (materialised as B-Rep vertices below).
+            for end in [&mut traced.ends.0, &mut traced.ends.1] {
+                if let EdgeEnd::Vertex(li) = end {
+                    *end = EdgeEnd::Vertex(wit_global[*li]);
+                }
+            }
+
+            // A seed sitting (numerically) ON a witness corner ends BOTH
+            // march directions right at that corner — one side snapped to the
+            // vertex, the other trim-bisected onto the same spot — a µm-scale
+            // self-loop stub, not an edge. Positions decide (the end KINDS
+            // vary): an open arc whose termini coincide within the corner
+            // merge radius and whose whole arc is a few march floors long is
+            // degenerate. A genuine same-vertex teardrop seam is orders of
+            // magnitude longer.
+            if !traced.closed && traced.points.len() >= 2 {
+                let first = traced.points[0];
+                let last = *traced.points.last().expect("nonempty");
+                if dist3(first, last) < witness_merge {
+                    let len: f64 = traced
+                        .points
+                        .windows(2)
+                        .map(|w| dist3(w[0], w[1]))
+                        .sum();
+                    if len < 8.0 * min_step {
+                        continue;
+                    }
+                }
             }
 
             // Convert to Hermite NOW, while the borrowing fields are alive, so
@@ -439,13 +599,6 @@ fn build_seed_wireframe(body: &BoundedCsg, mode: SeedMode) -> Option<BRep> {
                     covered[other] = true;
                 }
             }
-            if std::env::var("FD_DBG_DEDUP").is_ok() && a.as_u32() == 4097 && b.as_u32() == 4100 {
-                eprintln!("TRACE from {:?}: {} pts y {:.3}..{:.3} ends={:?}", seed.point,
-                    traced.points.len(),
-                    traced.points.iter().map(|p| p[1]).fold(f64::INFINITY, f64::min),
-                    traced.points.iter().map(|p| p[1]).fold(f64::NEG_INFINITY, f64::max),
-                    traced.ends);
-            }
 
             records.push(EdgeRecord {
                 a,
@@ -480,6 +633,24 @@ fn build_seed_wireframe(body: &BoundedCsg, mode: SeedMode) -> Option<BRep> {
     let mut brep = BRep::new();
     // Per (record, side) → the corner vertex it terminates at.
     let mut side_vertex: HashMap<(usize, usize), VertexId> = HashMap::new();
+
+    // Collect which (record, side) termini reference each witness. The
+    // vertices are materialised AFTER trim clustering: a witness vertex's
+    // branch set must be the union of every incident record's two branches —
+    // exactly what the cluster path builds — or the vertex id_hash diverges
+    // from the octree route and the handle-identity contract breaks (the
+    // flush-union classification gates). Trim clusters resolving onto a
+    // referenced witness merge INTO it below, so a corner reached by a
+    // vertex-snapped march on one edge and an activity-trimmed march on
+    // another still fuses into ONE vertex.
+    let mut witness_refs: HashMap<usize, Vec<(usize, usize)>> = HashMap::new();
+    for (ri, rec) in records.iter().enumerate() {
+        for (side, end) in [(0usize, rec.ends.0), (1, rec.ends.1)] {
+            if let EdgeEnd::Vertex(wi) = end {
+                witness_refs.entry(wi).or_default().push((ri, side));
+            }
+        }
+    }
 
     // Resolve corners with split-on-spurious. Each work item is a set of trim
     // termini (indices into `trim_*`) to cluster at gap `g`. A cluster that
@@ -579,10 +750,43 @@ fn build_seed_wireframe(body: &BoundedCsg, mode: SeedMode) -> Option<BRep> {
                 }
             };
 
+            // A corner that coincides with a REFERENCED witness must not be
+            // duplicated — loops chain by VertexId, and two vertices at one
+            // position break the ring connectivity. Merge this cluster's
+            // termini into the witness; its branch union picks them up when
+            // the witness vertices are materialised below.
+            let coincident = witness_refs
+                .keys()
+                .find(|wi| dist3(witnesses[**wi].0, pos) <= witness_merge)
+                .copied();
+            if let Some(wi) = coincident {
+                let refs = witness_refs.get_mut(&wi).expect("key just found");
+                for &m in &group {
+                    refs.push(trim_refs[m]);
+                }
+                continue;
+            }
             let vid = brep.add_vertex(Vertex::new(pos, branches));
             for &m in &group {
                 side_vertex.insert(trim_refs[m], vid);
             }
+        }
+    }
+
+    // Materialise the referenced witnesses (deterministic order), each with
+    // the branch UNION of every terminus that ends there — cluster-path
+    // semantics, so the vertex id_hash matches the octree route.
+    let mut wit_list: Vec<(usize, Vec<(usize, usize)>)> = witness_refs.into_iter().collect();
+    wit_list.sort_unstable_by_key(|(wi, _)| *wi);
+    for (wi, refs) in wit_list {
+        let mut branches: Vec<BranchId> = Vec::new();
+        for &(ri, _) in &refs {
+            branches.push(records[ri].a);
+            branches.push(records[ri].b);
+        }
+        let vid = brep.add_vertex(Vertex::new(witnesses[wi].0, branches));
+        for r in refs {
+            side_vertex.insert(r, vid);
         }
     }
 
@@ -948,6 +1152,36 @@ mod tests {
         assert!(has(3, 0, 4, 1), "middle vertical seam (cylinder × box −x) missing");
         assert!(has(3, 0, 4, 0), "right vertical seam (cylinder × box +x) missing");
         assert!(brep.edges.len() >= 12, "expected the full sliver edge set, got {}", brep.edges.len());
+    }
+
+    /// Ticket p6pv diagnostic: full Sphere ∩ Gyroid (the holey ball).
+    #[test]
+    #[ignore]
+    fn ticket_p6pv_sphere_gyroid_dump() {
+        let gy = CsgNode::Leaf {
+            id: FeatureId::from_u32(2),
+            primitive: Primitive::Gyroid { cell_size: 10.0, thickness: 1.0 },
+        };
+        let sph = CsgNode::Leaf {
+            id: FeatureId::from_u32(1),
+            primitive: Primitive::Sphere { center: [0.0; 3], radius: 50.0 },
+        };
+        let csg = CsgNode::Intersection(Box::new(sph), Box::new(gy));
+        let body = BoundedCsg::from_csg(&csg);
+        let res = crate::brep::branch_seed::seed_branch_pairs(&body);
+        println!("seeds: {} unresolved: {}", res.seeds.len(), res.unresolved.len());
+        let t0 = std::time::Instant::now();
+        let brep = weave_branch_seeds_partial(&body);
+        println!("weave took {:?}", t0.elapsed());
+        match &brep {
+            Some(b) => {
+                println!("edges: {} vertices: {}", b.edges.len(), b.vertices.len());
+                let mut closed = 0; let mut open = 0;
+                for e in &b.edges { if e.start.is_none() && e.end.is_none() { closed += 1; } else { open += 1; } }
+                println!("closed rings: {closed}, open arcs: {open}");
+            }
+            None => println!("weave returned NONE"),
+        }
     }
 
     #[test]

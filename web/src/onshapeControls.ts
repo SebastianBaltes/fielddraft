@@ -489,14 +489,20 @@ export class OnshapeControls extends THREE.Controls {
       ortho.zoom = Math.max(ortho.zoom * s, 1e-4);
       const rect = (this.domElement as HTMLElement | null)?.getBoundingClientRect();
       if (rect && rect.width > 0 && rect.height > 0) {
-        // World point under the cursor, on the plane through the target ⊥ view.
+        // World point under the cursor (depth irrelevant under parallel proj).
         const ndcX = ((clientX - rect.left) / rect.width) * 2 - 1;
         const ndcY = -((clientY - rect.top) / rect.height) * 2 + 1;
         _focus.set(ndcX, ndcY, 0).unproject(cam);
-        // Project that point's offset-from-target onto the camera view plane
-        // (drop the view-direction component — irrelevant under parallel proj).
+        // The pin offset is the cursor point's view-plane offset from the
+        // CAMERA AXIS — i.e. relative to `cam.position`, NOT `this.target`
+        // (ticket zc9b): the rotate pivot is raycast onto whatever was under
+        // the cursor, so the target routinely sits OFF the view axis, and a
+        // target-relative offset then pins the wrong point (target over the
+        // object → offset ≈ 0 → zoom about the screen centre instead of the
+        // cursor). Drop the view-direction component and slide camera+target
+        // by `offset·(1 − 1/s)` so the cursor point keeps its pixel.
         _viewDir.setFromMatrixColumn(cam.matrixWorld, 2).normalize();
-        _offset.copy(_focus).sub(this.target);
+        _offset.copy(_focus).sub(cam.position);
         _offset.addScaledVector(_viewDir, -_offset.dot(_viewDir));
         _offset.multiplyScalar(1 - 1 / s);
         cam.position.add(_offset);
