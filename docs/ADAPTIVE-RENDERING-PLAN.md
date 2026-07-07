@@ -170,10 +170,13 @@ Renderer-Module, damit beide Modi denselben Regler teilen.
 - **Refinement-Flackern.** Der Übergang grob→scharf im Stillstand kann
   „aufploppen". Mitigation: kurzes Crossfade oder progressives Refinement
   (erst `q=0.75`, dann `1.0`).
-- **Erster-Frame-Compile-Stall.** Orthogonales, bekanntes Problem
-  (Pipeline-JIT, „Compiling shader…"); der Regler darf Compile-Frames **nicht**
-  als „zu langsam" werten (Ausreißer per p95 statt max filtern, oder Frames
-  unmittelbar nach einem Pipeline-Build überspringen).
+- **Compile-Frames herausfiltern.** Shader-Kompilation ist asynchron und
+  modellunabhängig (die VM ist ein fixer Shader; Opcodes sind Daten,
+  Recompile nur bei geänderter Volume-Textur-Anzahl) und läuft hinter dem
+  „Compiling shader…"-Gate, bevor gerendert wird. Sollten dennoch einzelne
+  Pipeline-JIT-Ausreißer auftreten (z. B. Overlay-/Gizmo-Materialien beim
+  ersten Draw), darf der Regler sie **nicht** als „zu langsam" werten
+  (p95 statt max, oder Frames direkt nach einem Pipeline-Build überspringen).
 
 ## Achse 2: Hybrid-Renderer (exakte B-Rep-Flächen rastern, nur Implizites raymarchen)
 
