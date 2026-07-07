@@ -353,7 +353,8 @@ impl<'a> Context<'a> {
     ///
     /// Errors on a non-`qFace` query, an unresolvable handle, a source the
     /// surface layer refuses to thicken, or a target that is not a coaxial
-    /// same-kind surface (a cone / mismatched / non-coaxial target is deferred).
+    /// same-kind surface (mismatched kinds, differing cone half-angles and
+    /// non-coaxial targets are rejected with a descriptive message).
     pub fn resolve_thicken_to_face(
         &mut self,
         id: &FeatureId,

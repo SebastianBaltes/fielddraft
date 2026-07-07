@@ -52,14 +52,23 @@
 //! sphere, coaxial cylinder, coaxial torus) and turns it into the `(outer, inner)`
 //! offsets [`thicken_face`] already consumes — so the whole reduction above is
 //! reused verbatim. The gap's sign picks the direction (target outside → outward
-//! wall, inside → inward). A non-coaxial, type-mismatched or cone target is
-//! rejected (its normal gap is not a constant offset, so the wall would not be a
-//! difference of two coaxial primitives).
+//! wall, inside → inward). Cones pair with coaxial same-half-angle cones (their
+//! parallel surfaces have the constant gap `δ_apex·sin α`). A non-coaxial or
+//! type-mismatched target is rejected (its normal gap is not a constant offset,
+//! so the wall would not be a difference of two coaxial primitives).
 //!
-//! ## Out of scope (first throw) — each returns a descriptive `Err`
+//! ## Partial (cut) walls
 //!
-//! Partial/cut cylinders & cones, planar faces (use Extrude with `symmetric`),
-//! tessellated/TPMS faces, and cone up-to-face targets.
+//! A cut cylinder or cone wall (a half-pipe) is bounded by a [`SectorTrim`]:
+//! the rim azimuths reveal the angular gap, and the caller intersects the
+//! full-revolution difference with an extruded [`Sector`] prism over the
+//! wall's own interval. Partial spheres/tori remain out of scope (their cut
+//! boundary is not an axial wedge).
+//!
+//! ## Out of scope — each returns a descriptive `Err`
+//!
+//! Planar faces (use Extrude with `symmetric`), tessellated/TPMS faces,
+//! partial spheres/tori.
 
 use fielddraft_protocol::{HalfSpace, Primitive, Transform};
 
@@ -75,6 +84,31 @@ pub struct ThickenSolid {
     pub inner: Primitive,
     /// Surface-local → world placement (`placement ∘ face.transform`).
     pub world: Transform,
+    /// Angular trim for a PARTIAL (cut) cylinder / cone wall: `None` for a
+    /// full revolution. The caller intersects the wall with the sector prism
+    /// this describes (see [`SectorTrim`]), so a half-pipe thickens to a
+    /// half-tube instead of overshooting to the full ring.
+    pub sector: Option<SectorTrim>,
+}
+
+/// The angular wedge a partial revolution wall is trimmed to, in the same
+/// surface-local frame as [`ThickenSolid::outer`]/`inner` (azimuth measured
+/// around the local +Y axis, `θ = atan2(z, x)`). Realised as a
+/// [`Primitive::Extrude`] of a [`Sketch2dPrimitive::Sector`] whose extrude
+/// axis is rotated onto the surface-local +Y.
+#[derive(Debug, Clone, Copy)]
+pub struct SectorTrim {
+    /// Wall start azimuth (radians, `atan2(z, x)` in the surface frame).
+    pub start_angle: f32,
+    /// CCW angular extent of the wall (radians, `< τ`).
+    pub sweep_angle: f32,
+    /// Radial reach of the trim prism — comfortably beyond the outer solid.
+    pub radius: f32,
+    /// Axial slab centre (surface-local `y`).
+    pub center_y: f32,
+    /// Axial half-height of the prism — with slack beyond the wall's rims,
+    /// so the intersection never shaves the tube's own caps.
+    pub half_height: f32,
 }
 
 /// Build the offset-solid pair for a curved analytic face. `outer_off` grows
@@ -113,6 +147,7 @@ pub fn thicken_face(
         (outer_off / s, inner_off / s)
     };
 
+    let mut sector: Option<SectorTrim> = None;
     let (outer, inner) = match surface {
         HalfSpace::Plane { .. } => {
             return Err(
@@ -147,8 +182,17 @@ pub fn thicken_face(
             let r = *radius;
             guard_inner(r, inner_off)?;
             // The HalfSpace cylinder is infinite along local Y; the face's rim
-            // loops give the real axial slab to bound the tube.
-            let (cy, hh) = cylinder_axial_extent(brep, face_id, transform)?;
+            // loops give the real axial slab to bound the tube. A partial
+            // (cut) wall additionally reports its angular interval, realised
+            // below as a sector trim.
+            let (cy, hh, span) = cylinder_axial_extent(brep, face_id, transform)?;
+            sector = span.map(|(start_angle, sweep_angle)| SectorTrim {
+                start_angle,
+                sweep_angle,
+                radius: r + outer_off + 0.5 * r.max(1.0),
+                center_y: cy,
+                half_height: hh * 1.5 + 1.0,
+            });
             (
                 Primitive::Cylinder {
                     center: [0.0, cy, 0.0],
@@ -167,7 +211,7 @@ pub fn thicken_face(
             // give the axial slab and the two rim radii. A *normal* offset `t` is
             // a *radial* shift `Δ = t / cos α` of both rims (parallel cone, same
             // half-angle).
-            let (cy, hh, r_bottom, r_top) = cone_frustum_extent(brep, face_id, transform)?;
+            let (cy, hh, r_bottom, r_top, span) = cone_frustum_extent(brep, face_id, transform)?;
             let cos_a = half_angle.cos().abs().max(1e-4);
             let d_out = outer_off / cos_a;
             let d_in = inner_off / cos_a;
@@ -180,6 +224,15 @@ pub fn thicken_face(
                 &world,
                 &Transform { translate: [0.0, cy, 0.0], ..Transform::IDENTITY },
             );
+            // The frustum is re-centred by the fold above, so the sector trim
+            // (same folded frame) sits at axial centre 0.
+            sector = span.map(|(start_angle, sweep_angle)| SectorTrim {
+                start_angle,
+                sweep_angle,
+                radius: r_bottom.max(r_top) + d_out + 0.5 * r_bottom.max(r_top).max(1.0),
+                center_y: 0.0,
+                half_height: hh * 1.5 + 1.0,
+            });
             (
                 Primitive::Cone {
                     r_bottom: r_bottom + d_out,
@@ -202,7 +255,7 @@ pub fn thicken_face(
             return Err("revolved profile face cannot be thickened analytically".to_string());
         }
     };
-    Ok(ThickenSolid { outer, inner, world })
+    Ok(ThickenSolid { outer, inner, world, sector })
 }
 
 /// Reject an inward offset that would consume the surface (radius ≤ 0): the
@@ -264,8 +317,9 @@ fn world_surface(brep: &BRep, face_id: FaceId, placement: &Transform) -> Result<
 /// `source` face's surface up to a coaxial `target` face — the up-to-face thicken
 /// mode. Both surfaces must be the **same** analytic kind and coaxial; the signed
 /// normal gap decides the direction (target outside → outward wall, inside →
-/// inward). First throw: sphere, cylinder, torus. A cone target, a type mismatch,
-/// a non-coaxial target or a coincident target each returns a descriptive `Err`.
+/// inward). Supported: sphere, cylinder, torus, cone (same half-angle). A type
+/// mismatch, a non-coaxial target or a coincident target each returns a
+/// descriptive `Err`.
 ///
 /// The returned offsets are world millimetres, so the caller feeds them straight
 /// into [`thicken_face`] (which renormalises them by the source's own scale) — the
@@ -294,8 +348,8 @@ pub fn offset_to_target(
 }
 
 /// The signed world-mm normal gap `target − source` between two coaxial analytic
-/// surfaces of the same kind. Errors when the kinds differ, the target is a cone
-/// (deferred), or the two surfaces are not coaxial.
+/// surfaces of the same kind. Errors when the kinds differ, the half-angles of a
+/// cone pair differ, or the two surfaces are not coaxial.
 fn coaxial_gap(src: &WorldSurface, tgt: &WorldSurface) -> Result<f32, String> {
     match (&src.kind, &tgt.kind) {
         (HalfSpace::Sphere { radius: rs }, HalfSpace::Sphere { radius: rt }) => {
@@ -333,9 +387,45 @@ fn coaxial_gap(src: &WorldSurface, tgt: &WorldSurface) -> Result<f32, String> {
             }
             Ok(rt * tgt.s_abs - rs * src.s_abs)
         }
+        (HalfSpace::Cone { half_angle: aa }, HalfSpace::Cone { half_angle: ab }) => {
+            // Two coaxial cones with the SAME half-angle are parallel
+            // surfaces; the constant normal gap is the axial apex offset
+            // times sin α (radial gap Δr = δ·tan α at any height, normal gap
+            // = Δr·cos α). Different half-angles → non-constant gap → no
+            // uniform wall; honest error.
+            if (aa - ab).abs() > 1e-3 {
+                return Err(
+                    "source and target cones have different half-angles — their gap is not a                      constant wall thickness"
+                        .to_string(),
+                );
+            }
+            // Axes parallel, same opening direction, and colinear.
+            let ds = crate::quat_rotate(src.world.rotation, [0.0, 1.0, 0.0]);
+            let dt = crate::quat_rotate(tgt.world.rotation, [0.0, 1.0, 0.0]);
+            let dot = ds[0] * dt[0] + ds[1] * dt[1] + ds[2] * dt[2];
+            if dot < 1.0 - 1e-3 {
+                return Err(
+                    "source and target cone axes are not aligned — up-to-face needs a coaxial                      same-direction target"
+                        .to_string(),
+                );
+            }
+            let scale_hint = dist(src.world.translate, tgt.world.translate).max(1.0);
+            require_coaxial_axis(src, tgt, 1e-3 * scale_hint)?;
+            // Apexes are the surface-frame origins (DL-76); the surface
+            // frame's +Y points from the base toward the apex, so a target
+            // apex FURTHER ALONG +Y than the source's means a larger target
+            // radius at every height → outward gap (verified empirically by
+            // `cone_up_to_face_measures_the_parallel_gap`).
+            let w = [
+                tgt.world.translate[0] - src.world.translate[0],
+                tgt.world.translate[1] - src.world.translate[1],
+                tgt.world.translate[2] - src.world.translate[2],
+            ];
+            let delta_apex = w[0] * ds[0] + w[1] * ds[1] + w[2] * ds[2];
+            Ok(delta_apex * aa.sin().abs())
+        }
         (HalfSpace::Cone { .. }, _) | (_, HalfSpace::Cone { .. }) => Err(
-            "cone up-to-face targets are deferred — give the wall an explicit thickness instead"
-                .to_string(),
+            "source and target must both be cones for a conical up-to-face wall".to_string(),
         ),
         (HalfSpace::Plane { .. }, _) | (_, HalfSpace::Plane { .. }) => Err(
             "planar faces are not a curved thicken source/target — use Extrude".to_string(),
@@ -381,14 +471,14 @@ fn dist(a: [f32; 3], b: [f32; 3]) -> f32 {
 }
 
 /// Recover a cylindrical wall's axial centre + half-height (surface-local `y`)
-/// from its rim loops, and verify the wall is a **full** revolution. A cut /
-/// partial cylinder has axial boundary edges that leave an angular gap, which a
-/// difference of *full* cylinders would overshoot — so that case is deferred.
+/// from its rim loops, plus the wall's angular interval when it is a PARTIAL
+/// (cut) revolution (`None` for a full one). The partial interval feeds the
+/// [`SectorTrim`] so the wall difference is bounded to the actual cut.
 fn cylinder_axial_extent(
     brep: &BRep,
     face_id: FaceId,
     surf: &Transform,
-) -> Result<(f32, f32), String> {
+) -> Result<(f32, f32, Option<(f32, f32)>), String> {
     // body-local → surface-local (the frame the HalfSpace is centred in).
     let inv = crate::inverse(surf);
     let face = brep.face(face_id);
@@ -420,20 +510,21 @@ fn cylinder_axial_extent(
     if hh <= 1e-4 {
         return Err("cylindrical face is degenerate (zero axial height)".to_string());
     }
-    require_full_revolution(&mut thetas)?;
-    Ok(((lo + hi) * 0.5, hh))
+    let span = revolution_span(&mut thetas)?;
+    Ok(((lo + hi) * 0.5, hh, span))
 }
 
 /// Recover a conical wall's frustum parameters — axial centre + half-height and
 /// the two rim radii (`r_bottom` at the lower `y`, `r_top` at the upper) — in the
 /// **apex-local** surface frame (the cone's transform origin is its apex, DL-76),
-/// and verify the wall is a **full** revolution and does not straddle the apex.
-/// Returns `(center_y, half_height, r_bottom, r_top)`.
+/// and verify the wall does not straddle the apex. A PARTIAL (cut) wall
+/// additionally reports its angular interval for the [`SectorTrim`].
+/// Returns `(center_y, half_height, r_bottom, r_top, span)`.
 fn cone_frustum_extent(
     brep: &BRep,
     face_id: FaceId,
     surf: &Transform,
-) -> Result<(f32, f32, f32, f32), String> {
+) -> Result<(f32, f32, f32, f32, Option<(f32, f32)>), String> {
     // body-local → surface-local (apex-centred frame the HalfSpace is in).
     let inv = crate::inverse(surf);
     let face = brep.face(face_id);
@@ -477,33 +568,42 @@ fn cone_frustum_extent(
     if hh <= 1e-4 {
         return Err("conical face is degenerate (zero axial height)".to_string());
     }
-    require_full_revolution(&mut thetas)?;
-    Ok(((lo + hi) * 0.5, hh, r_at_lo, r_at_hi))
+    let span = revolution_span(&mut thetas)?;
+    Ok(((lo + hi) * 0.5, hh, r_at_lo, r_at_hi, span))
 }
 
-/// The rim azimuths must wrap the whole circle with no large gap; otherwise the
-/// face is a partial (cut) cylinder a full-cylinder difference would overshoot.
-fn require_full_revolution(thetas: &mut [f32]) -> Result<(), String> {
+/// Classify the rim azimuths: a full revolution (no large gap) → `None`; a
+/// partial (cut) wall with ONE clear angular gap → `Some((start, sweep))`,
+/// the wall's own angular interval (the complement of the gap). The gap
+/// endpoints come from the samples of the wall's axial boundary edges, which
+/// sit exactly on the cut planes, so the interval is as accurate as the
+/// tracer's refinement.
+fn revolution_span(thetas: &mut [f32]) -> Result<Option<(f32, f32)>, String> {
     if thetas.len() < 3 {
         return Err("cylindrical face boundary is too sparse to verify revolution".to_string());
     }
     thetas.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-    let mut max_gap = 0.0_f32;
-    for w in thetas.windows(2) {
-        max_gap = max_gap.max(w[1] - w[0]);
+    let n = thetas.len();
+    // Largest interior gap and the wrap-around gap between last and first.
+    let mut max_gap = std::f32::consts::TAU - (thetas[n - 1] - thetas[0]);
+    let mut gap_end = thetas[0]; // wall starts where the gap ends
+    let mut wrap = true;
+    for i in 0..n - 1 {
+        let g = thetas[i + 1] - thetas[i];
+        if g > max_gap {
+            max_gap = g;
+            gap_end = thetas[i + 1];
+            wrap = false;
+        }
     }
-    // Wrap-around gap between the largest and smallest angle.
-    let span = thetas[thetas.len() - 1] - thetas[0];
-    max_gap = max_gap.max(std::f32::consts::TAU - span);
     // ~34°: comfortably above the ~22.5° spacing of a 16-sample rim, well below
     // the ≥90° wedge a real cut would remove.
-    if max_gap > 0.6 {
-        return Err(
-            "partial (cut) cylindrical face — only full-revolution walls thicken for now"
-                .to_string(),
-        );
+    if max_gap <= 0.6 {
+        return Ok(None); // full revolution
     }
-    Ok(())
+    let sweep = std::f32::consts::TAU - max_gap;
+    let start = if wrap { thetas[0] } else { gap_end };
+    Ok(Some((start, sweep)))
 }
 
 /// Apply a [`Transform`] (scale → rotate → translate) to a point. Mirrors the
@@ -524,16 +624,167 @@ mod tests {
         let mut thetas: Vec<f32> = (0..24)
             .map(|i| (i as f32 / 24.0) * std::f32::consts::TAU - std::f32::consts::PI)
             .collect();
-        assert!(require_full_revolution(&mut thetas).is_ok());
+        assert_eq!(revolution_span(&mut thetas).unwrap(), None);
     }
 
     #[test]
-    fn full_revolution_rejects_a_quarter_wedge_gap() {
-        // A circle missing a 90° wedge: samples only over [0, 270°).
+    fn revolution_span_reports_a_quarter_wedge_gap() {
+        // A circle missing a 90° wedge: samples over [0°, 270°] inclusive —
+        // the wall spans 270°, the gap is the remaining 90°.
         let mut thetas: Vec<f32> = (0..=18)
             .map(|i| (i as f32 / 24.0) * std::f32::consts::TAU)
             .collect();
-        assert!(require_full_revolution(&mut thetas).is_err());
+        let (start, sweep) = revolution_span(&mut thetas).unwrap().expect("partial");
+        assert!((start - 0.0).abs() < 1e-5, "wall starts at 0°, got {start}");
+        assert!(
+            (sweep - 0.75 * std::f32::consts::TAU).abs() < 1e-5,
+            "wall sweeps 270°, got {sweep}"
+        );
+    }
+
+    #[test]
+    fn revolution_span_handles_a_wrap_straddling_wall() {
+        // Wall over [−45°, +45°] (crossing the ±π seam is the gap's job
+        // here: samples close around 0, the gap spans the far side).
+        let mut thetas: Vec<f32> = (0..=12)
+            .map(|i| -std::f32::consts::FRAC_PI_4 + (i as f32 / 12.0) * std::f32::consts::FRAC_PI_2)
+            .collect();
+        let (start, sweep) = revolution_span(&mut thetas).unwrap().expect("partial");
+        assert!(
+            (start + std::f32::consts::FRAC_PI_4).abs() < 1e-5,
+            "wall starts at −45°, got {start}"
+        );
+        assert!(
+            (sweep - std::f32::consts::FRAC_PI_2).abs() < 1e-5,
+            "wall sweeps 90°, got {sweep}"
+        );
+    }
+
+    use crate::brep::octree::Octree;
+    use crate::brep::weaving::weave;
+    use crate::bvh::BoundedCsg;
+    use crate::csg::CsgNode;
+    use fielddraft_protocol::FeatureId;
+
+    /// Weave a body and find its first face carrying the given surface test.
+    fn find_face(
+        brep: &BRep,
+        pred: impl Fn(&HalfSpace) -> bool,
+    ) -> Option<FaceId> {
+        (0..brep.faces.len()).map(|i| FaceId(i as u32)).find(|&fid| {
+            matches!(
+                &brep.face(fid).surface,
+                SurfaceGeometry::Analytic { surface, .. } if pred(surface)
+            )
+        })
+    }
+
+    #[test]
+    fn partial_cylinder_wall_thickens_with_sector_trim() {
+        // Half-pipe: a cylinder with its x < 0 half cut away. The outer wall
+        // is a 180° partial revolution — before the sector trim this was a
+        // descriptive error; now it thickens to a half-tube.
+        let cyl = CsgNode::Leaf {
+            id: FeatureId::from_u32(1),
+            primitive: Primitive::Cylinder {
+                center: [0.0, 0.0, 0.0],
+                radius: 10.0,
+                half_height: 10.0,
+            },
+        };
+        let cut = CsgNode::Leaf {
+            id: FeatureId::from_u32(2),
+            primitive: Primitive::Box {
+                center: [-20.0, 0.0, 0.0],
+                half_extents: [20.0, 25.0, 25.0],
+            },
+        };
+        let body = BoundedCsg::from_csg(&CsgNode::Difference(Box::new(cyl), Box::new(cut)));
+        let octree = Octree::build(&body, 0.5);
+        let brep = weave(&body, &octree);
+        let wall = find_face(&brep, |hs| matches!(hs, HalfSpace::InfiniteCylinder { .. }))
+            .expect("half-pipe must have a cylindrical wall face");
+
+        let s = thicken_face(&brep, wall, &Transform::IDENTITY, 2.0, 0.0)
+            .expect("partial wall must thicken");
+        let t = s.sector.expect("partial wall must carry a sector trim");
+        // The kept wall spans the x ≥ 0 half: θ ∈ [−90°, +90°].
+        assert!(
+            (t.sweep_angle - std::f32::consts::PI).abs() < 0.05,
+            "half-pipe sweeps ~180°, got {}",
+            t.sweep_angle
+        );
+        assert!(
+            (t.start_angle + std::f32::consts::FRAC_PI_2).abs() < 0.05,
+            "wall starts at ~−90°, got {}",
+            t.start_angle
+        );
+
+        // Field-level acceptance: material inside the kept half-wall,
+        // nothing on the cut-away side.
+        let node = crate::features::thicken::thicken_diff_node(
+            &FeatureId::from_u32(9),
+            0,
+            &s,
+        );
+        let solid =
+            BoundedCsg::from_csg(&CsgNode::Transform(s.world, Box::new(node)));
+        let f_wall = solid.sdf([11.0, 0.0, 0.0], crate::csg::EvalMode::Logical);
+        assert!(f_wall < 0.0, "wall material expected at (11,0,0), f = {f_wall}");
+        let f_cut = solid.sdf([-11.0, 0.0, 0.0], crate::csg::EvalMode::Logical);
+        assert!(f_cut > 0.0, "no material expected at (−11,0,0), f = {f_cut}");
+        // Axial caps intact: nothing far above the tube.
+        let f_above = solid.sdf([11.0, 12.0, 0.0], crate::csg::EvalMode::Logical);
+        assert!(f_above > 0.0, "no material above the tube, f = {f_above}");
+    }
+
+    #[test]
+    fn cone_up_to_face_measures_the_parallel_gap() {
+        // Two coaxial frustums with the SAME half-angle (slope 0.5): B's rims
+        // sit 2 mm radially outside A's, i.e. a normal gap of 2·cos α.
+        let mk = |id: u32, r_b: f32, r_t: f32| CsgNode::Leaf {
+            id: FeatureId::from_u32(id),
+            primitive: Primitive::Cone { r_bottom: r_b, r_top: r_t, half_height: 5.0 },
+        };
+        let body_a = BoundedCsg::from_csg(&mk(1, 10.0, 5.0));
+        let body_b = BoundedCsg::from_csg(&mk(2, 12.0, 7.0));
+        let brep_a = weave(&body_a, &Octree::build(&body_a, 0.4));
+        let brep_b = weave(&body_b, &Octree::build(&body_b, 0.4));
+        let face_a = find_face(&brep_a, |hs| matches!(hs, HalfSpace::Cone { .. }))
+            .expect("cone A wall");
+        let face_b = find_face(&brep_b, |hs| matches!(hs, HalfSpace::Cone { .. }))
+            .expect("cone B wall");
+
+        let (outer, inner) = offset_to_target(
+            &brep_a,
+            face_a,
+            &Transform::IDENTITY,
+            &brep_b,
+            face_b,
+            &Transform::IDENTITY,
+        )
+        .expect("coaxial same-angle cones must measure a gap");
+        // Δr = 2, slope tan α = 0.5 → cos α = 1/√1.25 → normal gap ≈ 1.7889.
+        let expect = 2.0 / (1.0_f32 + 0.25).sqrt();
+        assert!(
+            (outer - expect).abs() < 0.05 && inner == 0.0,
+            "outward gap ≈ {expect}, got ({outer}, {inner})"
+        );
+
+        // The reverse direction grows inward by the same amount.
+        let (outer_rev, inner_rev) = offset_to_target(
+            &brep_b,
+            face_b,
+            &Transform::IDENTITY,
+            &brep_a,
+            face_a,
+            &Transform::IDENTITY,
+        )
+        .expect("reverse gap");
+        assert!(
+            outer_rev == 0.0 && (inner_rev - expect).abs() < 0.05,
+            "inward gap ≈ {expect}, got ({outer_rev}, {inner_rev})"
+        );
     }
 
     #[test]

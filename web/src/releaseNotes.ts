@@ -24,6 +24,16 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.453",
+    entries: [
+      {
+        kind: "feat",
+        scope: "thicken",
+        text: "Partielle (geschnittene) Zylinder- und Kegelwände lassen sich verdicken: Der Winkel-Spann der Wand wird aus den Rim-Kanten gelesen und die Voll-Rotations-Differenz mit einem extrudierten Sektor-Prisma auf den tatsächlichen Ausschnitt begrenzt — eine Half-Pipe wird zur halben Röhre statt zum Fehler. Außerdem: Up-to-Face akzeptiert jetzt Kegel-Ziele (koaxial, gleicher Halbwinkel — konstanter Wandabstand δ·sin α).",
+      },
+    ],
+  },
+  {
     version: "0.6.452",
     entries: [
       {
