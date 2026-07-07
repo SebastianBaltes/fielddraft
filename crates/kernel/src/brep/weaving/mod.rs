@@ -325,7 +325,8 @@ fn canonicalize_coincident(
         })
         .collect();
     let mut culled: std::collections::HashSet<u32> = std::collections::HashSet::new();
-    if !registry.is_empty() {
+    let has_tangency = !registry.tangent_seams().is_empty();
+    if !registry.is_empty() || has_tangency {
         let aabb = body.aabb();
         let diag = norm([
             (aabb.max[0] - aabb.min[0]) as f64,
@@ -333,11 +334,20 @@ fn canonicalize_coincident(
             (aabb.max[2] - aabb.min[2]) as f64,
         ])
         .max(1.0);
-        drop_point_contact_edges(brep, &mut memberships, diag);
-        weld_seam_vertices(brep, &mut memberships, diag);
-        merge_coincident_edges(brep, &registry, &mut memberships, diag);
-        culled = cull_membrane_branches(body, brep, &registry, halfspaces, &memberships, diag);
-        drop_fin_edges(body, brep, &mut memberships, &culled, halfspaces, diag);
+        // Order-1 seams first: they REPLACE the tracer's output for their
+        // pairs, so every later step sees the symbolic circle instead of the
+        // degenerate fragments.
+        if has_tangency {
+            materialize_tangent_seams(body, brep, &registry, &mut memberships, diag);
+        }
+        if !registry.is_empty() {
+            drop_point_contact_edges(brep, &mut memberships, diag);
+            weld_seam_vertices(brep, &mut memberships, diag);
+            merge_coincident_edges(brep, &registry, &mut memberships, diag);
+            culled =
+                cull_membrane_branches(body, brep, &registry, halfspaces, &memberships, diag);
+            drop_fin_edges(body, brep, &mut memberships, &culled, halfspaces, diag);
+        }
     }
     (memberships, culled)
 }
@@ -516,26 +526,34 @@ fn align_ambiguous_ring_windings(brep: &mut BRep) {
             SurfaceGeometry::Tessellated { .. } => {
                 ambiguous.push((i, (0..loops.len()).collect()));
             }
-            SurfaceGeometry::Analytic {
-                surface:
+            SurfaceGeometry::Analytic { surface, .. }
+                if !matches!(surface, fielddraft_protocol::HalfSpace::Plane { .. }) =>
+            {
+                let closed_cross = matches!(
+                    surface,
                     fielddraft_protocol::HalfSpace::Sphere { .. }
-                    | fielddraft_protocol::HalfSpace::Torus { .. },
-                ..
-            } => {
+                        | fielddraft_protocol::HalfSpace::Torus { .. }
+                );
                 let idxs: Vec<usize> = (0..loops.len())
                     .filter(|&li| {
                         let ring = &loops[li].edges;
                         if !is_full_revolution(brep, ring) {
                             return false;
                         }
-                        // v-winding: closed but net u-turning below a half
-                        // revolution (mirrors the abstention in
-                        // `classify_rings_curved`).
-                        match ring_uv_metrics(&ring_sample_points(brep, ring), &face.surface)
-                        {
-                            Some(m) => m.net_du.abs() < std::f64::consts::PI,
-                            None => false,
-                        }
+                        // Ambiguity families on curved carriers:
+                        // - ANY full-revolution ring on a closed-cross
+                        //   carrier (sphere/torus): u-winding rims decided by
+                        //   the mean-v heuristic and v-winding punctures
+                        //   alike — pairwise partner parity outranks both
+                        //   (the alignment only flips on majority
+                        //   disagreement, so a correct intrinsic result is
+                        //   never disturbed);
+                        // - a LONE full-revolution rim on any curved carrier
+                        //   (single-loop face, e.g. a sphere cap's equator) —
+                        //   the F0-2 declared gap: no reference ring exists,
+                        //   so the intrinsic rules keep walk order.
+                        let lone_rim = loops.len() == 1;
+                        lone_rim || closed_cross
                     })
                     .collect();
                 if !idxs.is_empty() {

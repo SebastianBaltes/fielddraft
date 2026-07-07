@@ -932,3 +932,206 @@ pub(super) fn reattribute_coincident_memberships(
         compact_edges_and_vertices(brep, &keep, memberships);
     }
 }
+
+/// Materialise the registry's **order-1 (tangent) seams** symbolically
+/// (ARCHITECTURE-ROADMAP Punkt 2): for each detected tangent circle,
+///
+/// 1. drop every traced edge of the tangent PAIR's signature — those are
+///    the tracer's attempts at the degenerate curve (`∇f_a × ∇f_b → 0`
+///    along the whole seam): on the octree route a garbage star in the
+///    √-shaped tolerance tube, on the seed route usually nothing at all;
+/// 2. drop every other edge lying ON the circle (the coincident rim copies
+///    of a face pinched between the tangent partners — the ghost cap of a
+///    sphere-capped cylinder loses BOTH its circles here and thus never
+///    materialises, which is exactly right: it is interior);
+/// 3. add the EXACT parametric circle as the seam edge of the pair.
+///
+/// The circle is a rational quadratic NURBS (a true circle), so the seam is
+/// resolution-independent — the tracer is never pointed at the degenerate
+/// curve, per the plan's constructive-provenance directive.
+pub(super) fn materialize_tangent_seams(
+    body: &BoundedCsg,
+    brep: &mut BRep,
+    registry: &crate::brep::coincidence::CoincidenceRegistry,
+    memberships: &mut Vec<Vec<u32>>,
+    diag: f64,
+) {
+    for seam in registry.tangent_seams() {
+        // BOUNDARY gate: a tangent circle is a seam only when the two
+        // carriers SWAP the outward role across it (sphere cap on a
+        // cylinder: wall outside below, sphere outside above). An INTERIOR
+        // tangency — an inscribed sphere grazing the wall from inside —
+        // keeps one carrier outside on both sides and contributes no
+        // boundary edge at all. Decided by ±ε probes along each carrier's
+        // meridian at a known circle point (the sanctioned probe form); ε
+        // must clear the √-shaped separation tube (the surfaces separate
+        // QUADRATICALLY off the circle), so it scales with √(diag·tol).
+        if !tangent_seam_on_boundary(body, seam, diag) {
+            continue;
+        }
+        let (ka, kb) = (seam.a.as_u32(), seam.b.as_u32());
+        let inv = crate::inverse(&seam.frame);
+        // Local-frame tolerance: the world boundary tolerance divided by the
+        // frame scale (rim copies are traced to refinement noise, far below).
+        let scale = (seam.frame.scale[0].abs() as f64).max(1e-9);
+        let tol = 4.0 * super::super::tol::on_boundary(diag) / scale;
+
+        let on_circle = |e: &Edge| -> bool {
+            let pts = crate::brep::edge_sampling::sample_edge(&e.geometry);
+            !pts.is_empty()
+                && pts.iter().all(|p| {
+                    let l = crate::world_to_local(
+                        &seam.frame,
+                        [p[0] as f32, p[1] as f32, p[2] as f32],
+                    );
+                    let _ = &inv; // frame inversion is folded into world_to_local
+                    let r = ((l[0] as f64).powi(2) + (l[2] as f64).powi(2)).sqrt();
+                    (r - seam.radius as f64).abs() <= tol
+                        && (l[1] as f64 - seam.y_local as f64).abs() <= tol
+                })
+        };
+
+        let keep: Vec<bool> = brep
+            .edges
+            .iter()
+            .map(|e| {
+                let sig = (e.signature.0.as_u32(), e.signature.1.as_u32());
+                let is_pair = (sig.0 == ka && sig.1 == kb) || (sig.0 == kb && sig.1 == ka);
+                !(is_pair || on_circle(e))
+            })
+            .collect();
+        if keep.iter().any(|&k| !k) {
+            compact_edges_and_vertices(brep, &keep, memberships);
+        }
+
+        brep.add_edge(Edge::new(
+            EdgeGeometry::Nurbs(super::wireframes::nurbs_circle(
+                &seam.frame,
+                seam.radius,
+                seam.y_local,
+            )),
+            seam.a,
+            seam.b,
+            None,
+            None,
+        ));
+        memberships.push(vec![ka.min(kb), ka.max(kb)]);
+    }
+}
+
+/// The ±ε boundary probe behind [`materialize_tangent_seams`]: walk a small
+/// step along each carrier's meridian from a point on the tangent circle and
+/// read the body field. The circle is a boundary seam iff each carrier is on
+/// the boundary on EXACTLY one side and the two carriers cover OPPOSITE
+/// sides (the outward-role swap of a G1 join).
+fn tangent_seam_on_boundary(
+    body: &BoundedCsg,
+    seam: &crate::brep::coincidence::TangentSeam,
+    diag: f64,
+) -> bool {
+    use crate::csg::EvalMode;
+
+    let bnd = crate::brep::tol::on_boundary(diag);
+    // Quadratic separation: at arc-distance ε off the circle the two
+    // surfaces sit ~ε²/(2R) apart. ε = 4·√(diag·bnd) puts that gap at
+    // ~8·bnd·diag/R ≫ the on/off threshold for any feature-scale R.
+    let eps = 4.0 * (diag * bnd).sqrt();
+    let on_tol = 4.0 * bnd;
+
+    // A point on the circle, in the weave frame.
+    let p0 = place_point3(
+        &seam.frame,
+        [seam.radius as f64, seam.y_local as f64, 0.0],
+    );
+    // Meridian direction of a revolution carrier at p0: project the axis
+    // direction into the carrier's tangent plane. For BOTH carriers the
+    // meridian at the tangent circle is the same line (the surfaces are
+    // tangent there!) — so a single ± probe pair, evaluated per carrier
+    // FIELD, cannot distinguish them. Instead probe the BODY field only:
+    // the role swap manifests as "boundary on both sides of the circle
+    // along the COMMON tangent direction" vs. the interior case where one
+    // side dives into material. On-boundary on both sides → seam; interior
+    // tangency shows f < −on_tol on at least one side (the side where the
+    // grazing carrier runs under the surviving one).
+    let axis = {
+        let r = crate::quat_rotate(seam.frame.rotation, [0.0, 1.0, 0.0]);
+        let n = ((r[0] * r[0] + r[1] * r[1] + r[2] * r[2]) as f64).sqrt().max(1e-12);
+        [r[0] as f64 / n, r[1] as f64 / n, r[2] as f64 / n]
+    };
+    // The probe walks the common MERIDIAN of the two carriers at p0 — the
+    // axis direction projected into the shared tangent plane. Walking the
+    // raw axis is only right for cylinder-like walls; on a sloped cone wall
+    // it leaves the surface LINEARLY (ε·slope) and would misread every
+    // probe. The shared surface normal at p0 is well-conditioned (both
+    // carriers agree there — that is what tangency means) and comes from a
+    // central-difference gradient of the body field.
+    let grad = {
+        let h = (1e-4 * diag).max(1e-6) as f32;
+        let f = |p: [f32; 3]| body.sdf(p, EvalMode::Logical);
+        let b = [p0[0] as f32, p0[1] as f32, p0[2] as f32];
+        let g = [
+            (f([b[0] + h, b[1], b[2]]) - f([b[0] - h, b[1], b[2]])) as f64,
+            (f([b[0], b[1] + h, b[2]]) - f([b[0], b[1] - h, b[2]])) as f64,
+            (f([b[0], b[1], b[2] + h]) - f([b[0], b[1], b[2] - h])) as f64,
+        ];
+        let n = (g[0] * g[0] + g[1] * g[1] + g[2] * g[2]).sqrt().max(1e-12);
+        [g[0] / n, g[1] / n, g[2] / n]
+    };
+    let meridian = {
+        let an = axis[0] * grad[0] + axis[1] * grad[1] + axis[2] * grad[2];
+        let m = [
+            axis[0] - an * grad[0],
+            axis[1] - an * grad[1],
+            axis[2] - an * grad[2],
+        ];
+        let n = (m[0] * m[0] + m[1] * m[1] + m[2] * m[2]).sqrt().max(1e-12);
+        [m[0] / n, m[1] / n, m[2] / n]
+    };
+    // The decisive fact is the ROLE SWAP, read from the contributor sets:
+    // on a true seam (sphere cap on a cylinder) one side of the circle is
+    // bound by carrier `a` alone and the other by carrier `b` alone — the
+    // boundary hands over at the circle. On a grazing contact (an inscribed
+    // sphere, a sphere leaving through the CAP instead of the wall) the
+    // same carrier binds BOTH sides and the other never reaches the band.
+    // The quadratic separation puts the non-binding carrier ~ε²/(2R) ≈
+    // 8·ε²/diag off the probe — an order of magnitude beyond the `on_tol`
+    // band — so membership is well separated. (A field magnitude alone
+    // cannot decide this: along the common meridian the surviving wall
+    // reads ~0 on both sides in every case.)
+    let probe = |side: f64| -> (f64, bool, bool) {
+        let p = [
+            (p0[0] + meridian[0] * eps * side) as f32,
+            (p0[1] + meridian[1] * eps * side) as f32,
+            (p0[2] + meridian[2] * eps * side) as f32,
+        ];
+        let (f, contributors) = body.evaluate(p, on_tol as f32, crate::csg::EvalMode::Logical);
+        let slice = contributors.as_slice();
+        (
+            f as f64,
+            slice.contains(&seam.a),
+            slice.contains(&seam.b),
+        )
+    };
+    let (f_up, a_up, b_up) = probe(1.0);
+    let (f_dn, a_dn, b_dn) = probe(-1.0);
+    let on = |f: f64| f.abs() <= on_tol + (eps * eps / diag) * 8.0;
+    if !(on(f_up) && on(f_dn)) {
+        return false; // one side leaves the boundary entirely — no seam
+    }
+    (a_up && !b_up && b_dn && !a_dn) || (b_up && !a_up && a_dn && !b_dn)
+}
+
+/// `place_point` for f64 local coordinates (scale → rotate → translate).
+fn place_point3(t: &fielddraft_protocol::Transform, p: [f64; 3]) -> [f64; 3] {
+    let scaled = [
+        (p[0] * t.scale[0] as f64) as f32,
+        (p[1] * t.scale[1] as f64) as f32,
+        (p[2] * t.scale[2] as f64) as f32,
+    ];
+    let r = crate::quat_rotate(t.rotation, scaled);
+    [
+        r[0] as f64 + t.translate[0] as f64,
+        r[1] as f64 + t.translate[1] as f64,
+        r[2] as f64 + t.translate[2] as f64,
+    ]
+}

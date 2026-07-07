@@ -64,7 +64,23 @@ nötig (Naht-Kanten kommen aus den transversalen Paaren mit den berandenden
 Flächen). Offen: Phase 4 (Octree-Route auf Klassen — Produktionspfad ist die
 Seed-Route) und F0-1 (Face-pro-Region).
 
-## 2. Tangentialer Kontakt (Kontaktordnung 1) — ZURÜCKGESTELLT, Design-Direktive aktiv
+## 2. Tangentialer Kontakt (Kontaktordnung 1) — ANALYTISCH-KOAXIALE FÄLLE UMGESETZT
+
+**Status (2026-07-08, v0.6.458).** Der analytisch-koaxiale Teil ist gebaut,
+exakt nach der unten dokumentierten Lösungsrichtung: Die Registry erkennt
+Ordnung-1-Kontakt **symbolisch auf Konstruktionsdaten** (`tangent_circle`
+in coincidence.rs: Kugel↔Zylinder/Kegel/Torus, Ebene↔Torus, Zylinder↔Torus;
+eine Toleranz), `finish_weave` materialisiert den exakten NURBS-Kreis und
+verwirft alle Trace-Fragmente des degenerierten Paars — der Tracer wird nie
+auf die Kurve angesetzt. Ein ±ε-Kontributor-Rollenwechsel-Gate (Proben
+entlang des gemeinsamen Meridians, ε über der √-Separation dimensioniert)
+unterscheidet echte Boundary-Nähte vom Innen-Grazing (einbeschriebene
+Kugel → keine Kante). Gates: kugelgekappter Zylinder (beide Routen,
+Toggle-Invarianz), abgerundete Kegelspitze, zwei Grazing-Negativfälle.
+**Offen:** die konstruierten Profil-G1-Fälle (RevolvedProfile↔*, gestapelte
+Revolves mit geteiltem Profil-Endpunkt) — Andockstelle identisch, Profil-
+Endtangenten aus den 2D-Sketchdaten; sowie Nicht-Rotations-G1 (Extrude-
+Profile) und die ursprüngliche Fillet-B-Rep-Frage.
 
 **Problem.** Berühren sich zwei Trägerflächen G1-stetig entlang einer Kurve,
 degeneriert die SSI: die Marschrichtung des Tracers ist ∇f_a × ∇f_b, und die

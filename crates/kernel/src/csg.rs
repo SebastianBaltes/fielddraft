@@ -2610,8 +2610,16 @@ pub(crate) fn primitive_halfspaces(prim: &Primitive) -> Option<PrimitiveHalfSpac
             })],
         )),
         Primitive::Cone { r_bottom, r_top, half_height } => {
-            // Wall half-angle of the truncated cone (apex direction along Y).
-            let half_angle = ((r_bottom - r_top) / (2.0 * *half_height)).atan();
+            // Wall half-angle of the truncated cone. ALWAYS positive: the
+            // `HalfSpace::Cone` SDF (`r·cos α − |y|·sin α`) is a symmetric
+            // double cone about the apex — the OPENING direction lives in the
+            // apex offset below, not in the angle's sign. A signed angle (the
+            // old `atan` of the raw slope) silently negated the slope term
+            // for upward-widening frustums (`r_top > r_bottom`): the wall
+            // field read ~2·|y|·sin α instead of 0 on the wall, every rim
+            // seed "projected" nowhere, and the seed route emitted an
+            // edgeless frustum.
+            let half_angle = ((r_bottom - r_top) / (2.0 * *half_height)).atan().abs();
             let mut hs = mk(
                 [0.0, 0.0, 0.0],
                 &[

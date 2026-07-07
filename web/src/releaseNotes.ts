@@ -24,6 +24,21 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.458",
+    entries: [
+      {
+        kind: "feat",
+        scope: "kernel",
+        text: "Tangentialkontakt (Kontaktordnung 1) für koaxiale Rotationsflächen: Die Koinzidenz-Registry erkennt Tangentialkreise symbolisch auf Konstruktionsdaten (Kugel↔Zylinder, Kugel↔Kegel, Ebene↔Torus, Zylinder↔Torus, Kugel↔Torus) und der Weave materialisiert den EXAKTEN Kreis statt zu tracen — ein kugelgekappter Zylinder (abgerundeter Pfosten) webt jetzt sauber (vorher 241 Verletzungen auf der Octree-Route), ebenso die abgerundete Kegelspitze. Ein Kontributor-Rollenwechsel-Gate unterscheidet echte Nähte von Innen-Berührungen (einbeschriebene Kugel = keine Kante).",
+      },
+      {
+        kind: "fix",
+        scope: "kernel",
+        text: "Aufwärts breiter werdende Kegelstümpfe (r_top > r_bottom) verloren auf der Seed-Route ALLE Kanten: primitive_halfspaces erzeugte einen negativen Halbwinkel, der das Steigungs-Vorzeichen der Kegel-SDF drehte — jede Rim-Projektion lief ins Leere. Der Halbwinkel ist jetzt immer positiv (die Öffnungsrichtung trägt der Apex-Offset).",
+      },
+    ],
+  },
+  {
     version: "0.6.457",
     entries: [
       {
