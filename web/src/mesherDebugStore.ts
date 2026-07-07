@@ -94,6 +94,10 @@ export interface MesherDebug {
    *  and overrides `interactionRadius = h` (= 5σ kernel truncation). Only
    *  published by the dedicated Debug ▸ Mesher PASM dialog. */
   targetEdgeLength?: number;
+  /** Hybrid-PASM §6 F3: mesh chartless faces (Torus/Gyroid carriers,
+   *  tessellated sheets, fold-guard failures) as signed-DC octree patches
+   *  zipped to the exact skeleton rim chains. Needs brepSkeleton+cdtFaces. */
+  fallbackPatches?: boolean;
 }
 
 export type MesherDampingCurve = "linear" | "exponential";
@@ -133,6 +137,9 @@ export interface MesherStats {
   capped: boolean;
   /** Triangles of the debug dual-contour mesh (0 when meshing is off). */
   tris: number;
+  /** Of `tris`, how many came from the §6-F3 fallback (DC patch + zipper
+   *  on chartless faces) — drawn orange by the overlay. */
+  fallbackTris: number;
 }
 
 let stats: MesherStats | null = null;

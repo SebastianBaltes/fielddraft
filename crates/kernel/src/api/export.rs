@@ -114,13 +114,14 @@ impl Kernel {
     ///     (one vertex per leaf; quads at sign-changing minimal octree
     ///     edges), after an optional 2:1 balance pass (`balanceOctree`).
     ///
-    /// Returns `[nPoints, nTris, points…, indices…]`: per leaf 9 floats
-    /// `[x, y, z, sdf, nx, ny, nz, cellSize, shown]` with the FINAL point
-    /// position (sdf/normal re-evaluated there) and a `shown` display flag
-    /// (1 = passed the near-surface/sign-change filters), then 3 indices per
-    /// triangle into the point list. Points failing the processing filters
-    /// stay rigid and `shown = 0`; "only on surface" escapees are dropped
-    /// from the point list entirely.
+    /// Returns `[nPoints, nTris, nFallbackTris, points…, indices…]`: per
+    /// leaf 9 floats `[x, y, z, sdf, nx, ny, nz, cellSize, shown]` with the
+    /// FINAL point position (sdf/normal re-evaluated there) and a `shown`
+    /// display flag (1 = passed the near-surface/sign-change filters), then
+    /// 3 indices per triangle into the point list; the LAST `nFallbackTris`
+    /// triangles are the §6-F3 fallback patches/zippers (chartless faces).
+    /// Points failing the processing filters stay rigid and `shown = 0`;
+    /// "only on surface" escapees are dropped from the point list entirely.
     #[wasm_bindgen(js_name = mesherPoints)]
     pub fn mesher_points(&mut self, options_json: String) -> Vec<f32> {
         let mut opts: crate::mesher_points::MesherPointOptions =
@@ -159,7 +160,10 @@ impl Kernel {
             opts.band_guard,
             &scene_sdf,
         );
-        if opts.mesh_points && opts.balance_octree {
+        // Balance also for the fallback patches: their DC connectivity spans
+        // octree depth transitions exactly like the debug DC mesh.
+        if (opts.mesh_points || (opts.cdt_faces && opts.fallback_patches)) && opts.balance_octree
+        {
             crate::mesher_points::balance_2to1(&mut root, &scene_sdf);
         }
         let min_size_est = root_size / (1u32 << opts.max_depth.min(10)) as f32;
@@ -177,7 +181,7 @@ impl Kernel {
         };
         let leaves = crate::mesher_points::collect_leaves(&mut root, &grad);
         if leaves.is_empty() {
-            return vec![0.0, 0.0];
+            return vec![0.0, 0.0, 0.0];
         }
 
         // ── B-Rep skeleton (Hybrid-PASM P1, ticket nwmi) ──
@@ -291,6 +295,9 @@ impl Kernel {
         // emitted in OUTPUT indices (alive-remapped particles first, then the
         // skeleton block), so they bypass the octree remap below.
         let mut cdt_tris: Vec<[u32; 3]> = Vec::new();
+        // §6-F3 fallback triangles (DC patches + rim zippers of chartless
+        // faces) — emitted LAST so the overlay can colour them distinctly.
+        let mut fallback_tris: Vec<[u32; 3]> = Vec::new();
         // Seam Steiner vertices of periodic (unrolled) faces — appended to
         // the output point table after the skeleton block.
         let mut aux_points: Vec<[f32; 3]> = Vec::new();
@@ -311,6 +318,10 @@ impl Kernel {
             // winning body's contributor set at the point names its face.
             let eps_attr = (min_size_est * 0.1).max(1e-3);
             let mut by_branch: std::collections::HashMap<(usize, u32), Vec<u32>> =
+                std::collections::HashMap::new();
+            // Same attribution in LEAF index space — the fallback patches
+            // need the octree cells behind the particles (connectivity).
+            let mut by_branch_leaf: std::collections::HashMap<(usize, u32), Vec<usize>> =
                 std::collections::HashMap::new();
             for (i, _) in leaves.iter().enumerate() {
                 if !(alive[i] && processed[i]) {
@@ -334,6 +345,7 @@ impl Kernel {
                         .entry((best.1, br.as_u32()))
                         .or_default()
                         .push(remap[i]);
+                    by_branch_leaf.entry((best.1, br.as_u32())).or_default().push(i);
                 }
             }
 
@@ -344,25 +356,16 @@ impl Kernel {
             } else {
                 min_size_est
             };
+            // Faces WITHOUT a usable chart, deferred to the §6-F3 fallback
+            // pass below: (body, branch, rim loops as output-index rings).
+            let mut fallback_faces: Vec<(usize, u32, Vec<Vec<u32>>)> = Vec::new();
             for (bi, _) in self.bodies.iter().enumerate() {
                 let placement = self.bodies[bi].placement;
                 let Some(brep) = self.bodies[bi].brep_cached() else { continue };
                 for face in &brep.faces {
-                    let SurfaceGeometry::Analytic { surface, transform } = &face.surface
-                    else {
-                        continue; // tessellated (gyroid) — P4 sheet stage, open
-                    };
-                    if !matches!(
-                        surface,
-                        HalfSpace::Plane { .. }
-                            | HalfSpace::InfiniteCylinder { .. }
-                            | HalfSpace::Cone { .. }
-                            | HalfSpace::Sphere { .. }
-                            | HalfSpace::RevolvedProfile { .. }
-                    ) {
-                        continue;
-                    }
-                    // Assemble closed loops (outer first) as OUTPUT indices.
+                    // Assemble closed loops (outer first) as OUTPUT indices —
+                    // BEFORE the carrier dispatch: chartless faces need their
+                    // rims for the fallback patch too.
                     let mut face_loops: Vec<Vec<u32>> = Vec::new();
                     let mut ok = true;
                     for lp in std::iter::once(&face.outer).chain(face.inner.iter()) {
@@ -398,6 +401,31 @@ impl Kernel {
                     if !ok || face_loops.is_empty() {
                         continue;
                     }
+                    // Carrier dispatch: only these analytic surfaces carry a
+                    // chart for the per-face CDT. Everything else — Torus /
+                    // Gyroid halfspaces, tessellated gyroid sheets, future
+                    // custom-SDF carriers — goes to the DC-patch fallback.
+                    let chartable = match &face.surface {
+                        SurfaceGeometry::Analytic { surface, transform }
+                            if matches!(
+                                surface,
+                                HalfSpace::Plane { .. }
+                                    | HalfSpace::InfiniteCylinder { .. }
+                                    | HalfSpace::Cone { .. }
+                                    | HalfSpace::Sphere { .. }
+                                    | HalfSpace::RevolvedProfile { .. }
+                            ) =>
+                        {
+                            Some((surface, transform))
+                        }
+                        _ => None,
+                    };
+                    let Some((surface, transform)) = chartable else {
+                        if opts.fallback_patches {
+                            fallback_faces.push((bi, face.branch_id.as_u32(), face_loops));
+                        }
+                        continue;
+                    };
                     let interior = by_branch
                         .get(&(bi, face.branch_id.as_u32()))
                         .map(Vec::as_slice)
@@ -413,6 +441,10 @@ impl Kernel {
                     }
 
                     // ── P4: developable/periodic carriers ──
+                    // Chart failures (fold guard, pole-only loops, profile
+                    // pieces missing) drop out of this labelled block with
+                    // `meshed = false` and take the fallback path as well.
+                    let meshed = 'chart: {
                     // Unroll the face into its (θ·s, v·s) chart (u periodic)
                     // and let the periodic CDT cut + weld the seam. The chart
                     // lives in SURFACE-LOCAL coordinates: world → body local
@@ -443,7 +475,7 @@ impl Kernel {
                             let Some(pieces) =
                                 crate::brep::ssi::profile_pieces(surface, &total_t, &bb)
                             else {
-                                continue;
+                                break 'chart false;
                             };
                             let mut poly: Vec<[f32; 2]> = Vec::new();
                             for pc in &pieces {
@@ -459,7 +491,7 @@ impl Kernel {
                                 }
                             }
                             if poly.len() < 2 {
-                                continue;
+                                break 'chart false;
                             }
                             let mut arc = Vec::with_capacity(poly.len());
                             let mut acc = 0.0f32;
@@ -535,7 +567,7 @@ impl Kernel {
                         raw_loops.push(lp);
                     }
                     if !chart_ok {
-                        continue;
+                        break 'chart false;
                     }
                     // Projection-fold guard (RevolvedProfile): if v jumps by
                     // more than a quarter of the chain length between
@@ -550,7 +582,7 @@ impl Kernel {
                             })
                         });
                         if folded {
-                            continue;
+                            break 'chart false;
                         }
                     }
                     // Scale θ (and the sphere's polar angle) to arc length so
@@ -688,16 +720,214 @@ impl Kernel {
                     ) {
                         cdt_tris.extend(mesh.tris);
                         aux_points.extend(mesh.aux);
+                        break 'chart true;
+                    }
+                    false
+                    };
+                    if !meshed && opts.fallback_patches {
+                        fallback_faces.push((bi, face.branch_id.as_u32(), face_loops));
+                    }
+                }
+            }
+
+            // ── §6 F3: DC patch + rim zipper for the chartless faces ──
+            // Interior = the octree DC mesh over the face's attributed cells
+            // (same connectivity as the debug DC mesh); the rim seam reuses
+            // the exact shared skeleton indices via a greedy zipper — the
+            // watertightness stays structural, only the interior quality
+            // drops to DC level. Plan §6, path F3.
+            if !fallback_faces.is_empty() {
+                use crate::mesher_patch::{
+                    boundary_loops, dist_to_ring, tri_components, zip_rings,
+                };
+                // Single-layer guard: only cells whose corners straddle the
+                // surface carry the patch — the near-surface band can be two
+                // cells thick, and a second layer would fold the sheet.
+                let straddles = |leaf: &crate::mesher_points::Leaf| -> bool {
+                    let h2 = leaf.size * 0.5;
+                    let c = leaf.center;
+                    let (mut pos, mut neg) = (false, false);
+                    for dx in [-h2, h2] {
+                        for dy in [-h2, h2] {
+                            for dz in [-h2, h2] {
+                                let d = scene_sdf([c[0] + dx, c[1] + dy, c[2] + dz]);
+                                pos |= d > 0.0;
+                                neg |= d <= 0.0;
+                            }
+                        }
+                    }
+                    pos && neg
+                };
+                let clearance = 0.5 * h_seam;
+                for (bi, branch, loops) in &fallback_faces {
+                    let Some(leaf_ids) = by_branch_leaf.get(&(*bi, *branch)) else {
+                        continue;
+                    };
+                    let rims: Vec<Vec<[f32; 3]>> = loops
+                        .iter()
+                        .map(|r| r.iter().map(|&gi| flat[gi as usize]).collect())
+                        .collect();
+                    let near_rim = |p: [f32; 3]| -> f32 {
+                        rims.iter().map(|r| dist_to_ring(p, r)).fold(f32::MAX, f32::min)
+                    };
+                    let mut shown_region = vec![false; leaves.len()];
+                    for &li in leaf_ids {
+                        if shown_region[li] || !straddles(&leaves[li]) {
+                            continue;
+                        }
+                        // Clearance band: cells whose particle sits closer to
+                        // the rim than 0.5·h retreat — the zipper strip needs
+                        // room, and a particle ON the rim would duplicate a
+                        // chain vertex.
+                        if near_rim(points[li]) >= clearance {
+                            shown_region[li] = true;
+                        }
+                    }
+                    let idx = crate::mesher_points::connect_octree_edges_signed(
+                        &root,
+                        &shown_region,
+                        &scene_sdf,
+                    );
+                    let patch: Vec<[u32; 3]> = idx
+                        .chunks(3)
+                        .map(|c| {
+                            [
+                                remap[c[0] as usize],
+                                remap[c[1] as usize],
+                                remap[c[2] as usize],
+                            ]
+                        })
+                        .collect();
+                    if patch.is_empty() {
+                        continue;
+                    }
+                    // Keep only components near THIS face's rims: one branch
+                    // may carry several chartless faces (both torus bands,
+                    // both gyroid sheets) — each face keeps its own sheet.
+                    let comp = tri_components(&patch);
+                    let n_comp = comp.iter().copied().max().map_or(0, |m| m + 1);
+                    let mut comp_dist = vec![f32::MAX; n_comp];
+                    for (t, tri) in patch.iter().enumerate() {
+                        for &v in tri {
+                            let d = near_rim(flat[v as usize]);
+                            let slot = &mut comp_dist[comp[t]];
+                            *slot = slot.min(d);
+                        }
+                    }
+                    let mut kept: Vec<[u32; 3]> = Vec::new();
+                    let mut kept_comp: Vec<usize> = Vec::new();
+                    let mut vcomp: std::collections::HashMap<u32, usize> =
+                        std::collections::HashMap::new();
+                    for (t, tri) in patch.iter().enumerate() {
+                        if comp_dist[comp[t]] < 2.0 * h_seam {
+                            kept.push(*tri);
+                            kept_comp.push(comp[t]);
+                            for &v in tri {
+                                vcomp.insert(v, comp[t]);
+                            }
+                        }
+                    }
+                    if kept.is_empty() {
+                        continue;
+                    }
+                    // Zip each patch boundary loop to its best-matching rim
+                    // (mean vertex→rim distance, greedy 1:1). Unmatched loops
+                    // stay open — the watertightness gate reports the hole.
+                    let bls = boundary_loops(&kept);
+                    let mut pairs: Vec<(f32, usize, usize)> = Vec::new();
+                    for (li, bl) in bls.iter().enumerate() {
+                        for (ri, rim) in rims.iter().enumerate() {
+                            let sum: f32 = bl
+                                .iter()
+                                .map(|&v| dist_to_ring(flat[v as usize], rim))
+                                .sum();
+                            // Length-mismatch penalty: interior holes (a few
+                            // dropped sliver cells) are SHORT loops that can
+                            // sit as close to a rim as the true patch border
+                            // — the vertex-count ratio keeps them from
+                            // stealing the rim match.
+                            let ratio = bl.len() as f32 / rim.len().max(1) as f32;
+                            let penalty = ratio.max(1.0 / ratio.max(1e-3));
+                            pairs.push((penalty * sum / bl.len() as f32, li, ri));
+                        }
+                    }
+                    pairs.sort_by(|a, b| {
+                        a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal)
+                    });
+                    let pos_of = |i: u32| flat[i as usize];
+                    let mut zip_tris: Vec<[u32; 3]> = Vec::new();
+                    let mut zipped_comps: std::collections::HashSet<usize> =
+                        std::collections::HashSet::new();
+                    let mut used_bl = vec![false; bls.len()];
+                    let mut used_rim = vec![false; rims.len()];
+                    for (_, li, ri) in pairs {
+                        if used_bl[li] || used_rim[ri] {
+                            continue;
+                        }
+                        used_bl[li] = true;
+                        used_rim[ri] = true;
+                        if let Some(&c) = vcomp.get(&bls[li][0]) {
+                            zipped_comps.insert(c);
+                        }
+                        zip_tris.extend(zip_rings(&bls[li], &loops[ri], &pos_of));
+                    }
+                    // Only components that actually reached a rim survive:
+                    // stray straddle clusters near (but not on) the face
+                    // would otherwise close into floating "pillows" and
+                    // pollute the topology.
+                    for (t, tri) in kept.iter().enumerate() {
+                        if zipped_comps.contains(&kept_comp[t]) {
+                            fallback_tris.push(*tri);
+                        }
+                    }
+                    fallback_tris.extend(zip_tris);
+                    // Remaining boundary loops ON zipped components are
+                    // interior HOLES — cells the straddle test dropped
+                    // (tangential slivers have no corner sign change). Close
+                    // each with a fan around a NEW centroid vertex: a plain
+                    // fan re-uses loop diagonals that can already exist as
+                    // patch edges (the DC connectivity is that ragged),
+                    // while every centroid edge is new by construction.
+                    // Combinatorially watertight; DC-level geometry is this
+                    // path's contract.
+                    for (li, bl) in bls.iter().enumerate() {
+                        if used_bl[li] || bl.len() < 3 {
+                            continue;
+                        }
+                        if vcomp.get(&bl[0]).is_none_or(|c| !zipped_comps.contains(c)) {
+                            continue;
+                        }
+                        let mut c = [0.0f32; 3];
+                        for &v in bl {
+                            let p = flat[v as usize];
+                            for a in 0..3 {
+                                c[a] += p[a];
+                            }
+                        }
+                        let inv = 1.0 / bl.len() as f32;
+                        for a in &mut c {
+                            *a *= inv;
+                        }
+                        let centre =
+                            (n_alive as usize + skeleton.len() + aux_points.len()) as u32;
+                        aux_points.push(c);
+                        for k in 0..bl.len() {
+                            fallback_tris.push([centre, bl[k], bl[(k + 1) % bl.len()]]);
+                        }
                     }
                 }
             }
         }
 
         let n_total = n_alive as usize + skeleton.len() + aux_points.len();
-        let mut out =
-            Vec::with_capacity(2 + n_total * 9 + indices.len() + cdt_tris.len() * 3);
+        let mut out = Vec::with_capacity(
+            3 + n_total * 9 + indices.len() + (cdt_tris.len() + fallback_tris.len()) * 3,
+        );
         out.push(n_total as f32);
-        out.push((indices.len() / 3 + cdt_tris.len()) as f32);
+        out.push((indices.len() / 3 + cdt_tris.len() + fallback_tris.len()) as f32);
+        // §6-F3 patch/zipper triangles — they sit LAST in the index block so
+        // the overlay can colour them distinctly from the CDT wireframe.
+        out.push(fallback_tris.len() as f32);
         for (i, leaf) in leaves.iter().enumerate() {
             if !alive[i] {
                 continue;
@@ -724,7 +954,7 @@ impl Kernel {
             out.extend_from_slice(&[p[0], p[1], p[2], 0.0, 0.0, 0.0, 1.0, 0.0, 2.0]);
         }
         out.extend(indices.iter().map(|&i| remap[i as usize] as f32));
-        for t in &cdt_tris {
+        for t in cdt_tris.iter().chain(fallback_tris.iter()) {
             out.extend_from_slice(&[t[0] as f32, t[1] as f32, t[2] as f32]);
         }
         out
@@ -1080,7 +1310,7 @@ mod mesher_octree_tests {
         let total = out[0] as usize;
         let tris = out[1] as usize;
         assert!(tris >= 12, "expected a real triangulation, got {tris} tris");
-        let idx_base = 2 + total * 9;
+        let idx_base = 3 + total * 9;
         // Edge → usage count over all triangles.
         let mut edge_use: std::collections::HashMap<(u32, u32), u32> =
             std::collections::HashMap::new();
@@ -1137,7 +1367,7 @@ mod mesher_octree_tests {
         let total = out[0] as usize;
         let tris = out[1] as usize;
         assert!(tris >= 12, "expected a real triangulation, got {tris} tris");
-        let idx_base = 2 + total * 9;
+        let idx_base = 3 + total * 9;
         let mut edge_use: std::collections::HashMap<(u32, u32), u32> =
             std::collections::HashMap::new();
         let mut used: std::collections::HashSet<u32> = std::collections::HashSet::new();
@@ -1192,7 +1422,7 @@ mod mesher_octree_tests {
         let total = out[0] as usize;
         let tris = out[1] as usize;
         assert!(tris >= 12, "expected a real triangulation, got {tris} tris");
-        let idx_base = 2 + total * 9;
+        let idx_base = 3 + total * 9;
         let mut edge_use: std::collections::HashMap<(u32, u32), u32> =
             std::collections::HashMap::new();
         let mut used: std::collections::HashSet<u32> = std::collections::HashSet::new();
@@ -1265,7 +1495,7 @@ mod mesher_octree_tests {
         let total = out[0] as usize;
         let tris = out[1] as usize;
         assert!(tris >= 16, "expected a real triangulation, got {tris} tris");
-        let idx_base = 2 + total * 9;
+        let idx_base = 3 + total * 9;
         let mut edge_use: std::collections::HashMap<(u32, u32), u32> =
             std::collections::HashMap::new();
         let mut used: std::collections::HashSet<u32> = std::collections::HashSet::new();
@@ -1331,7 +1561,7 @@ mod mesher_octree_tests {
         let total = out[0] as usize;
         let tris = out[1] as usize;
         assert!(tris >= 12, "expected a real triangulation, got {tris} tris");
-        let idx_base = 2 + total * 9;
+        let idx_base = 3 + total * 9;
         let mut edge_use: std::collections::HashMap<(u32, u32), u32> =
             std::collections::HashMap::new();
         let mut used: std::collections::HashSet<u32> = std::collections::HashSet::new();
@@ -1353,6 +1583,88 @@ mod mesher_octree_tests {
         let e = edge_use.len() as i64;
         let f = tris as i64;
         assert_eq!(v - e + f, 2, "cap Euler characteristic broke: V={v} E={e} F={f}");
+    }
+
+    /// Hybrid-PASM §6 F3 (ticket nwmi): a TORUS ∩ y-slab exercises the
+    /// CHARTLESS fallback — `HalfSpace::Torus` has no chart in the CDT
+    /// dispatch, so both torus bands (outer + inner) are meshed as octree
+    /// DC patches retreated from the rim circles and ZIPPED to the exact
+    /// skeleton chains, while the two planar annuli take the CDT path. The
+    /// mixed mesh must still be closed and 2-manifold; the solid is a
+    /// (topological) torus, so Euler V − E + F = 0. Fallback triangles are
+    /// reported in the header (`out[2]`) and sit last in the index block.
+    #[test]
+    fn mesher_points_fallback_torus_slab_is_watertight_manifold() {
+        use fielddraft_protocol::{BoolOp, Primitive};
+        let mut k = crate::Kernel::new();
+        k.add_primitive(Primitive::KIND_TORUS, BoolOp::TAG_NEW, 0.0, 0.0, 0.0, 8.0, 3.0, 0.0)
+            .unwrap();
+        k.document = serde_json::from_str(
+            &serde_json::json!({
+                "schema_version": 2,
+                "name": "torus-slab",
+                "next_feature_id": 3,
+                "feature_calls": [
+                    { "type": "torus", "id": "1", "params": {
+                        "major_radius": 8.0, "minor_radius": 3.0,
+                        "translate": [0.0, 0.0, 0.0] } },
+                    { "type": "box", "id": "2", "params": {
+                        "half_extents": [20.0, 2.0, 20.0],
+                        "translate": [0.0, 0.0, 0.0],
+                        "op": "intersect", "targets": "qCreatedBy(1)" } }
+                ]
+            })
+            .to_string(),
+        )
+        .unwrap();
+        k.bootstrap_features_from_calls().unwrap();
+        k.rebuild_packed();
+        // F3 needs the chartless region to be a few cells WIDE at the chosen
+        // resolution (patch minus clearance band): torus bands of ~4.4 mm arc
+        // want h ≈ 1.2 — at h = 1.5 the inner band starves to a single cell
+        // row and cannot form a patch.
+        let out = k.mesher_points(
+            r#"{"maxDepth":6,"brepSkeleton":true,"cdtFaces":true,"fallbackPatches":true,
+                "nearSurfaceOnly":true,"nearSurfaceDist":1.0,
+                "fitOnSurface":true,"onlyOnSurface":true,
+                "repulsion":true,"interactionRadius":1.2,"repulsionStrength":0.5,
+                "pasmKernel":true,"iterations":20}"#
+                .into(),
+        );
+        let total = out[0] as usize;
+        let tris = out[1] as usize;
+        let fallback = out[2] as usize;
+        assert!(tris >= 16, "expected a real triangulation, got {tris} tris");
+        assert!(
+            fallback > 0 && fallback < tris,
+            "expected a MIX of CDT and fallback triangles, got {fallback}/{tris}"
+        );
+        let idx_base = 3 + total * 9;
+        let mut edge_use: std::collections::HashMap<(u32, u32), u32> =
+            std::collections::HashMap::new();
+        let mut used: std::collections::HashSet<u32> = std::collections::HashSet::new();
+        for t in 0..tris {
+            let a = out[idx_base + t * 3] as u32;
+            let b = out[idx_base + t * 3 + 1] as u32;
+            let c3 = out[idx_base + t * 3 + 2] as u32;
+            assert!(a != b && b != c3 && c3 != a, "degenerate triangle");
+            for (x, y) in [(a, b), (b, c3), (c3, a)] {
+                *edge_use.entry((x.min(y), x.max(y))).or_default() += 1;
+                used.insert(x);
+                used.insert(y);
+            }
+        }
+        for (&(a, b), &n) in &edge_use {
+            assert_eq!(n, 2, "edge {a}-{b} used {n}× (open seam or fan)");
+        }
+        let v = used.len() as i64;
+        let e = edge_use.len() as i64;
+        let f = tris as i64;
+        assert_eq!(
+            v - e + f,
+            0,
+            "torus Euler characteristic broke: V={v} E={e} F={f}"
+        );
     }
 
     /// Hybrid-PASM P1 (ticket nwmi): with `brepSkeleton` on, a box body emits
@@ -1380,7 +1692,7 @@ mod mesher_octree_tests {
         let mut corners = Vec::new();
         let mut chain = 0usize;
         for i in 0..total {
-            let b = 2 + i * 9;
+            let b = 3 + i * 9;
             match out[b + 8] as i32 {
                 3 => corners.push([out[b], out[b + 1], out[b + 2]]),
                 2 => chain += 1,

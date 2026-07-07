@@ -2,19 +2,22 @@
  * Debug ▸ Mesher PASM dialog — the DEDICATED front-end of the hybrid
  * PASM+B-Rep meshing pipeline (docs/HYBRID-PASM-MESHING-PLAN.md, ticket
  * nwmi). Unlike the generic Debug ▸ Mesher scaffold with its per-stage
- * checkboxes, this dialog always runs the full chain
+ * checkboxes, this dialog drives the one clean chain
  *
  *   B-Rep skeleton (corners pinned, chains on the exact curves)
  *   → PASM Gaussian relaxation (σ = h/5, tangential, convergence break)
  *   → per-face constrained Delaunay in the carrier charts
+ *   → §6-F3 fallback for chartless faces (signed-DC patch + rim zipper)
  *
  * and exposes only what the method actually needs: the target edge length h
  * (everything else — seed octree depth, kernel radius, chain spacing, seam
  * sampling, boundary clearance — is derived from h, mostly in the kernel via
- * `targetEdgeLength`) plus an iteration cap and display knobs. Both Mesher
- * dialogs publish into the same `mesherDebugStore`, so `projectDebug` keeps
- * them mutually exclusive. Non-modal + draggable; settings persist in
- * localStorage.
+ * `targetEdgeLength`) plus an iteration cap and display knobs. A STEP
+ * selector truncates the pipeline after any stage so each stage's output can
+ * be inspected in the scene (seeds → skeleton → relaxed particles → CDT
+ * wireframe → fallback patches in orange). Both Mesher dialogs publish into
+ * the same `mesherDebugStore`, so `projectDebug` keeps them mutually
+ * exclusive. Non-modal + draggable; settings persist in localStorage.
  */
 
 import {
@@ -36,11 +39,45 @@ import { NumberInput } from "./NumberInput";
 
 const SETTINGS_KEY = "fielddraft.debug.mesherPasm";
 
+/** Pipeline truncation for visual step-debugging — each step ADDS one stage
+ *  on top of the previous ones (the algorithm is a strict chain). */
+export type PasmStep = "seeds" | "skeleton" | "relax" | "cdt" | "full";
+
+const STEPS: { key: PasmStep; label: string; hint: string }[] = [
+  {
+    key: "seeds",
+    label: "Seeds",
+    hint: "Stufe 1 — rohe Seed-Punkte: Zentren der oberflächennahen Octree-Zellen (Band ±h).",
+  },
+  {
+    key: "skeleton",
+    label: "Skelett",
+    hint: "Stufe 2 — B-Rep-Skelett: Ecken exakt (rot), Kanten-Ketten bogenlängen-gesampelt (orange). Fixe Randbedingungen.",
+  },
+  {
+    key: "relax",
+    label: "Relax",
+    hint: "Stufe 3 — PASM-Relaxation: Gauß-Kernel (σ = h/5), tangential, auf die Fläche projiziert; Skelett stößt ab, bewegt sich nie.",
+  },
+  {
+    key: "cdt",
+    label: "CDT",
+    hint: "Stufe 4 — per-Face Constrained Delaunay im Träger-Chart (dunkles Drahtgitter); Nähte teilen globale Indizes → wasserdicht.",
+  },
+  {
+    key: "full",
+    label: "Fallback",
+    hint: "Stufe 5 — chartlose Flächen (Torus/Gyroid/Custom-SDF): signed-DC-Patch + Reißverschluss an die Rim-Ketten (oranges Drahtgitter).",
+  },
+];
+
 interface PasmSettings {
   /** Target edge length h (mm) — THE resolution parameter. */
   targetEdgeLength: number;
   /** Relaxation iteration cap (convergence usually breaks earlier). */
   iterations: number;
+  /** Run the pipeline only up to this stage (visual debugging). */
+  step: PasmStep;
   partOpacity: number;
   strokeWidth: number;
 }
@@ -48,6 +85,7 @@ interface PasmSettings {
 const DEFAULTS: PasmSettings = {
   targetEdgeLength: 2,
   iterations: 40,
+  step: "full",
   partOpacity: 0.4,
   strokeWidth: 2,
 };
@@ -70,6 +108,7 @@ function loadSettings(): PasmSettings {
         DEFAULTS.targetEdgeLength,
       ),
       iterations: Math.round(clampNum(p.iterations, 1, 200, DEFAULTS.iterations)),
+      step: STEPS.some((s) => s.key === p.step) ? (p.step as PasmStep) : DEFAULTS.step,
       partOpacity: clampNum(p.partOpacity, 0, 1, DEFAULTS.partOpacity),
       strokeWidth: clampNum(p.strokeWidth, 0.5, 12, DEFAULTS.strokeWidth),
     };
@@ -79,8 +118,10 @@ function loadSettings(): PasmSettings {
 }
 
 /** The fixed PASM pipeline preset around the few exposed knobs. The kernel
- *  derives `maxDepth` and `interactionRadius` from `targetEdgeLength`. */
+ *  derives `maxDepth` and `interactionRadius` from `targetEdgeLength`; the
+ *  STEP truncates the chain after a stage for visual debugging. */
 function pasmParams(s: PasmSettings): MesherDebug {
+  const at = STEPS.findIndex((st) => st.key === s.step);
   return {
     targetEdgeLength: s.targetEdgeLength,
     iterations: s.iterations,
@@ -89,16 +130,18 @@ function pasmParams(s: PasmSettings): MesherDebug {
     // Derived by the kernel from targetEdgeLength; values here are inert.
     maxDepth: 6,
     interactionRadius: s.targetEdgeLength,
-    // Pipeline: skeleton → PASM Gaussian relaxation → per-face CDT.
-    brepSkeleton: true,
-    pasmKernel: true,
-    cdtFaces: true,
-    repulsion: true,
+    // Pipeline: skeleton → PASM relaxation → per-face CDT → F3 fallback,
+    // cumulatively enabled up to the selected step.
+    brepSkeleton: at >= 1,
+    fitOnSurface: at >= 2,
+    onlyOnSurface: at >= 2,
+    repulsion: at >= 2,
+    pasmKernel: at >= 2,
+    cdtFaces: at >= 3,
+    fallbackPatches: at >= 4,
     repulsionStrength: 0.5,
     repulsionDamping: 0.2,
     dampingCurve: "linear",
-    fitOnSurface: true,
-    onlyOnSurface: true,
     fitTargetEpsilon: 0.001,
     fitStepMultiplier: 0.8,
     // Seeding: the near-surface band at the target spacing.
@@ -107,14 +150,14 @@ function pasmParams(s: PasmSettings): MesherDebug {
     nearSurfaceDist: s.targetEdgeLength,
     signChangeNeighboursOnly: false,
     constrainToCell: false,
-    // Display: particles + CDT wireframe, no gradient needles.
+    // Display: particles + wireframes, no gradient needles.
     normalScale: 0,
     surfaceThreshold: 0.05,
-    // Legacy scaffold stages stay off.
+    // Legacy scaffold stages stay off; balance serves the fallback DC.
     featureSnap: false,
     featureAngleDeg: 30,
     meshPoints: false,
-    balanceOctree: false,
+    balanceOctree: true,
   };
 }
 
@@ -122,6 +165,7 @@ export function MesherPasmDialog({ onClose }: { onClose: () => void }) {
   const initial = useMemo(loadSettings, []);
   const [targetEdgeLength, setTargetEdgeLength] = useState(initial.targetEdgeLength);
   const [iterations, setIterations] = useState(initial.iterations);
+  const [step, setStep] = useState<PasmStep>(initial.step);
   const [partOpacity, setPartOpacity] = useState(initial.partOpacity);
   const [strokeWidth, setStrokeWidth] = useState(initial.strokeWidth);
 
@@ -129,14 +173,20 @@ export function MesherPasmDialog({ onClose }: { onClose: () => void }) {
 
   // Publish while open; persist; clear on unmount.
   useEffect(() => {
-    const s: PasmSettings = { targetEdgeLength, iterations, partOpacity, strokeWidth };
+    const s: PasmSettings = {
+      targetEdgeLength,
+      iterations,
+      step,
+      partOpacity,
+      strokeWidth,
+    };
     setMesherDebug(pasmParams(s));
     try {
       localStorage.setItem(SETTINGS_KEY, JSON.stringify(s));
     } catch {
       // no localStorage (tests) — non-persistent is fine
     }
-  }, [targetEdgeLength, iterations, partOpacity, strokeWidth]);
+  }, [targetEdgeLength, iterations, step, partOpacity, strokeWidth]);
   useEffect(() => () => setMesherDebug(null), []);
 
   useEffect(() => {
@@ -223,6 +273,23 @@ export function MesherPasmDialog({ onClose }: { onClose: () => void }) {
         </div>
       </div>
 
+      <div className="step-row" role="radiogroup" aria-label="Pipeline step">
+        {STEPS.map((st, i) => (
+          <button
+            key={st.key}
+            type="button"
+            role="radio"
+            aria-checked={step === st.key}
+            className={`step${step === st.key ? " active" : ""}`}
+            title={st.hint}
+            data-testid={`mesher-pasm-step-${st.key}`}
+            onClick={() => setStep(st.key)}
+          >
+            {i + 1} {st.label}
+          </button>
+        ))}
+      </div>
+
       <div className="vec-row">
         <label
           title={
@@ -281,13 +348,20 @@ export function MesherPasmDialog({ onClose }: { onClose: () => void }) {
           {stats ? stats.tris.toLocaleString() : "—"}
         </span>
       </div>
+      <div className="readout">
+        <span className="k">Fallback tris</span>
+        <span className="v" data-testid="mesher-pasm-fallback-tris">
+          {stats ? (stats.fallbackTris ?? 0).toLocaleString() : "—"}
+        </span>
+      </div>
 
       <div className="legend">
         <span className="corner">corner (pinned)</span>
         <span className="chain">edge chain (fixed)</span>
         <span className="particle">surface particle</span>
+        <span className="fallback">fallback patch</span>
         <span className="hint">
-          skeleton → PASM relaxation (σ = h/5) → per-face CDT
+          skeleton → PASM relaxation (σ = h/5) → per-face CDT → DC fallback
         </span>
       </div>
     </div>

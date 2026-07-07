@@ -1,12 +1,42 @@
 /* Debug ▸ Mesher PASM: shares the fd-mesher-dialog window chrome (the
- * component carries both classes); this file only holds the PASM-specific
- * legend swatches — skeleton corners red, edge chains orange, free surface
- * particles green (matches MesherOverlay's point colours). */
+ * component carries both classes); this file holds the PASM-specific step
+ * selector and legend swatches — skeleton corners red, edge chains orange,
+ * free surface particles green, fallback-patch wireframe orange (matches
+ * MesherOverlay's colours). */
 .fd-mesher-pasm-dialog {
+  & .step-row {
+    display: flex;
+    gap: var(--space-1, 0.25rem);
+    margin-block: var(--space-2, 0.5rem);
+
+    & .step {
+      flex: 1;
+      padding: 0.3rem 0.4rem;
+      font-size: 1rem;
+      border: 1px solid var(--color-border);
+      border-radius: var(--radius-sm);
+      background: var(--color-bg-elevated);
+      color: var(--color-text);
+      cursor: pointer;
+      white-space: nowrap;
+
+      &:hover {
+        background: var(--color-bg-hover);
+      }
+
+      &.active {
+        background: var(--color-accent-soft);
+        border-color: var(--color-accent);
+        font-weight: 600;
+      }
+    }
+  }
+
   & .legend {
     & .corner::before,
     & .chain::before,
-    & .particle::before {
+    & .particle::before,
+    & .fallback::before {
       content: "";
       width: 0.8rem;
       height: 0.8rem;
@@ -20,6 +50,10 @@
     }
     & .particle::before {
       background: rgb(40, 255, 120);
+    }
+    & .fallback::before {
+      background: rgb(234, 140, 26);
+      border: 1px solid rgb(120, 60, 10);
     }
   }
 }

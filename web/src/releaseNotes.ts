@@ -24,6 +24,17 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.463",
+    entries: [
+      {
+        kind: "feat",
+        scope: "mesher",
+        tickets: ["nwmi"],
+        text: "Mesher PASM: Fallback für Flächen ohne Chart (Torus-/Gyroid-Träger, Custom-SDF) — die Region wird als Signed-DC-Octree-Patch vermascht, per Reißverschluss strukturell wasserdicht an die exakten B-Rep-Rim-Ketten genäht (geteilte Indizes, Loch-Füllung, Komponenten-Gate) und im Dialog orange dargestellt. Neuer Schritt-Selektor (Seeds → Skelett → Relax → CDT → Fallback) zeigt jede Pipeline-Stufe einzeln in der Szene; Kernel-Test: Torus ∩ Quader end-to-end geschlossen, 2-manifold, Euler 0.",
+      },
+    ],
+  },
+  {
     version: "0.6.462",
     entries: [
       {

@@ -105,11 +105,14 @@ export function MesherOverlay() {
     // Newton fit → tangential repulsion); extra fields in the options JSON
     // are ignored by serde, so the debug params pass through verbatim.
     const data = store.mesherPoints(JSON.stringify(params));
-    const total = data.length >= 2 ? data[0] : 0;
-    const triCount = data.length >= 2 ? data[1] : 0;
+    const total = data.length >= 3 ? data[0] : 0;
+    const triCount = data.length >= 3 ? data[1] : 0;
+    // The LAST fallbackTris triangles are the §6-F3 patches/zippers of
+    // chartless faces — drawn as a separate orange wireframe.
+    const fallbackTris = data.length >= 3 ? data[2] : 0;
     const STRIDE = 9; // [x,y,z,sdf,nx,ny,nz,size,shown]
-    const P = 2; // points offset
-    const I = 2 + total * STRIDE; // indices offset
+    const P = 3; // points offset
+    const I = 3 + total * STRIDE; // indices offset
     // Display filter: draw normals/dots only for points the kernel marks as
     // `shown` (index 8 = 1). That flag folds in ALL processing filters
     // (near-surface AND sign-change), so toggling any of them visibly culls
@@ -120,7 +123,12 @@ export function MesherOverlay() {
       if (data[P + k * STRIDE + 8] > 0.5) keep.push(k);
     }
     const n = keep.length;
-    setMesherStats({ cells: n, capped: total >= MAX_LEAVES, tris: triCount });
+    setMesherStats({
+      cells: n,
+      capped: total >= MAX_LEAVES,
+      tris: triCount,
+      fallbackTris,
+    });
 
     // Debug octree-edge connectivity mesh over the SHOWN points — the
     // triangles connect filtered leaves by octree adjacency (NOT dual
@@ -129,34 +137,37 @@ export function MesherOverlay() {
     // WebGPU-visible fat-line path (Line2NodeMaterial), so it reads as the raw
     // octree edge graph over the point set.
     if (triCount > 0) {
-      const seen = new Set<number>();
-      const seg: number[] = [];
       const px = (i: number) => data[P + i * STRIDE];
       const py = (i: number) => data[P + i * STRIDE + 1];
       const pz = (i: number) => data[P + i * STRIDE + 2];
-      const pushEdge = (a: number, b: number) => {
-        const lo = Math.min(a, b);
-        const hi = Math.max(a, b);
-        const key = lo * total + hi; // unique per undirected edge
-        if (seen.has(key)) return;
-        seen.add(key);
-        seg.push(px(a), py(a), pz(a), px(b), py(b), pz(b));
-      };
-      for (let t = 0; t < triCount; t++) {
-        const a = data[I + t * 3];
-        const b = data[I + t * 3 + 1];
-        const c = data[I + t * 3 + 2];
-        pushEdge(a, b);
-        pushEdge(b, c);
-        pushEdge(c, a);
-      }
-      if (seg.length > 0) {
+      // Two wireframes: CDT/DC triangles in ink, §6-F3 fallback patches in
+      // orange — the split is positional (fallback tris sit LAST).
+      const buildWire = (from: number, to: number, color: number) => {
+        const seen = new Set<number>();
+        const seg: number[] = [];
+        const pushEdge = (a: number, b: number) => {
+          const lo = Math.min(a, b);
+          const hi = Math.max(a, b);
+          const key = lo * total + hi; // unique per undirected edge
+          if (seen.has(key)) return;
+          seen.add(key);
+          seg.push(px(a), py(a), pz(a), px(b), py(b), pz(b));
+        };
+        for (let t = from; t < to; t++) {
+          const a = data[I + t * 3];
+          const b = data[I + t * 3 + 1];
+          const c = data[I + t * 3 + 2];
+          pushEdge(a, b);
+          pushEdge(b, c);
+          pushEdge(c, a);
+        }
+        if (seg.length === 0) return;
         const lg = new LineSegmentsGeometry();
         lg.setPositions(new Float32Array(seg));
         const wire = new LineSegments2(
           lg,
           new Line2NodeMaterial({
-            color: 0x111827,
+            color,
             linewidth: Math.max(1, params.strokeWidth * 0.6),
             worldUnits: false,
             transparent: true,
@@ -166,7 +177,9 @@ export function MesherOverlay() {
         wire.layers.enable(OVERLAY_LAYER);
         wire.renderOrder = 4;
         group.add(wire);
-      }
+      };
+      buildWire(0, triCount - fallbackTris, 0x111827);
+      buildWire(triCount - fallbackTris, triCount, 0xea8c1a);
     }
     if (n === 0) {
       invalidate();

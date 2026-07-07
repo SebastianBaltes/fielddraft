@@ -118,6 +118,13 @@ pub struct MesherPointOptions {
     /// `h`, and `interaction_radius = h` (= the 5σ Gaussian truncation, so
     /// σ = h/5). The dedicated PASM dialog exposes only this.
     pub target_edge_length: f32,
+    /// Hybrid-PASM §6 F3: mesh faces WITHOUT a usable chart (Torus/Gyroid
+    /// carriers, tessellated sheets, fold-guard failures) as an octree
+    /// DC patch over the face's attributed region, retreated from the rim
+    /// by a clearance band and ZIPPED to the exact skeleton rim chains —
+    /// watertight seam by shared indices, DC-quality interior. Needs
+    /// `cdt_faces` + `brep_skeleton`.
+    pub fallback_patches: bool,
 }
 
 /// How the repulsion strength decays over the relaxation iterations.
@@ -157,6 +164,7 @@ impl Default for MesherPointOptions {
             mesh_points: false,
             balance_octree: true,
             target_edge_length: 0.0,
+            fallback_patches: false,
         }
     }
 }
@@ -1651,6 +1659,13 @@ struct MeshCtx<'a> {
     /// displayed points.
     shown: &'a [bool],
     indices: Vec<u32>,
+    /// When set, a quad is emitted only if the minimal octree edge it
+    /// surrounds actually CROSSES the surface (opposite SDF signs at the
+    /// edge endpoints) — the true dual-contouring criterion. The plain
+    /// adjacency graph (None) connects every shown neighbourhood, which is
+    /// right for the debug point graph but produces fins/staircase
+    /// non-manifoldness on diagonal surfaces.
+    edge_sdf: Option<&'a dyn Fn([f32; 3]) -> f32>,
 }
 
 /// For each of the 4 nodes around an edge along `axis` (cyclic order), the
@@ -1796,9 +1811,32 @@ fn edge_proc(nodes: [&OctreeNode; 4], axis: usize, ctx: &mut MeshCtx) {
 /// displayed points. Winding is irrelevant (drawn as a wireframe);
 /// degenerate triangles (a coarse leaf spanning two quadrants makes cells
 /// coincide) are skipped.
-fn emit_edge_quad(nodes: [&OctreeNode; 4], _axis: usize, ctx: &mut MeshCtx) {
+fn emit_edge_quad(nodes: [&OctreeNode; 4], axis: usize, ctx: &mut MeshCtx) {
     if nodes.iter().any(|n| !ctx.shown[n.leaf_idx]) {
         return;
+    }
+    if let Some(sdf) = ctx.edge_sdf {
+        // The minimal edge shared by the 4 cells: on the two cross axes all
+        // cells meet at one coordinate (max of lower bounds == min of upper
+        // bounds); along `axis` the edge spans their overlap.
+        let mut lo = [f32::NEG_INFINITY; 3];
+        let mut hi = [f32::INFINITY; 3];
+        for n in &nodes {
+            for k in 0..3 {
+                lo[k] = lo[k].max(n.center[k] - 0.5 * n.size);
+                hi[k] = hi[k].min(n.center[k] + 0.5 * n.size);
+            }
+        }
+        let mut p0 = [0.0f32; 3];
+        let mut p1 = [0.0f32; 3];
+        for k in 0..3 {
+            let mid = 0.5 * (lo[k] + hi[k]);
+            p0[k] = if k == axis { lo[k] } else { mid };
+            p1[k] = if k == axis { hi[k] } else { mid };
+        }
+        if (sdf(p0) <= 0.0) == (sdf(p1) <= 0.0) {
+            return; // edge does not cross the surface — no dual quad
+        }
     }
     let idx = [
         nodes[0].leaf_idx as u32,
@@ -1821,6 +1859,25 @@ pub(crate) fn connect_octree_edges(root: &OctreeNode, shown: &[bool]) -> Vec<u32
     let mut ctx = MeshCtx {
         shown,
         indices: Vec::new(),
+        edge_sdf: None,
+    };
+    cell_proc(root, &mut ctx);
+    ctx.indices
+}
+
+/// Like [`connect_octree_edges`], but with the true dual-contouring gate: a
+/// quad is emitted only when its minimal octree edge changes SDF sign — one
+/// dual face per surface crossing, no staircase fins on diagonal sheets.
+/// This is the connectivity of the §6-F3 fallback patches.
+pub(crate) fn connect_octree_edges_signed(
+    root: &OctreeNode,
+    shown: &[bool],
+    sdf: &dyn Fn([f32; 3]) -> f32,
+) -> Vec<u32> {
+    let mut ctx = MeshCtx {
+        shown,
+        indices: Vec::new(),
+        edge_sdf: Some(sdf),
     };
     cell_proc(root, &mut ctx);
     ctx.indices
