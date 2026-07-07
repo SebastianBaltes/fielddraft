@@ -562,9 +562,9 @@ export function MesherDialog({ onClose }: { onClose: () => void }) {
       <div className="vec-row check-row">
         <label
           htmlFor="mesher-cdt-faces"
-          title="Hybrid-PASM P3: planare Faces werden per Constrained Delaunay in der Face-Ebene vernetzt — die B-Rep-Skelett-Loops als Constraint-Kanten, die freien Partikel als Innenpunkte. Nähte sind wasserdicht, weil beide Nachbar-Faces dieselben Ketten-Punkte teilen. Braucht das B-Rep-Skelett; ersetzt das Octree-Debug-Netz."
+          title="Hybrid-PASM P3+P4: Faces werden per Constrained Delaunay in ihrem 2D-Chart vernetzt — planar in der Face-Ebene, Zylinder/Kegel/Kugel-Bänder abgewickelt (periodische Naht wird über geteilte Steiner-Punkte verschweißt). B-Rep-Skelett-Loops als Constraint-Kanten, freie Partikel als Innenpunkte; Nähte wasserdicht, weil Nachbar-Faces dieselben Ketten-Punkte teilen. Braucht das B-Rep-Skelett; ersetzt das Octree-Debug-Netz."
         >
-          CDT faces (planar)
+          CDT faces (planar + abrollbar)
         </label>
         <input
           id="mesher-cdt-faces"

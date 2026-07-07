@@ -24,6 +24,17 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.435",
+    entries: [
+      {
+        kind: "feat",
+        scope: "debug",
+        tickets: ["nwmi"],
+        text: "Hybrid-PASM P4a: CDT auf abrollbaren Trägern — Zylinder/Kegel/Kugel-Bänder werden ins (θ·r, v)-Chart abgewickelt und periodisch vernetzt; die Schnitt-Naht teilt ihre Steiner-Punkte zwischen beiden Kopien und ist damit strukturell verschweißt. Voller Zylinder jetzt end-to-end geschlossen/2-Manifold (Band + Deckel, Euler=2). Dreiecks-Klassifikation jetzt kombinatorisch (Flood-Fill mit Constraint-Parität) statt Zentroid-Test — robust gegen Naht-Sliver; randnahe Partikel (<0,25·h) werden vor dem Einfügen verworfen, damit kein einseitiger Constraint-Split die Naht öffnet.",
+      },
+    ],
+  },
+  {
     version: "0.6.434",
     entries: [
       {

@@ -281,6 +281,9 @@ impl Kernel {
         // emitted in OUTPUT indices (alive-remapped particles first, then the
         // skeleton block), so they bypass the octree remap below.
         let mut cdt_tris: Vec<[u32; 3]> = Vec::new();
+        // Seam Steiner vertices of periodic (unrolled) faces — appended to
+        // the output point table after the skeleton block.
+        let mut aux_points: Vec<[f32; 3]> = Vec::new();
         if opts.cdt_faces && opts.brep_skeleton {
             use crate::brep::SurfaceGeometry;
             use fielddraft_protocol::HalfSpace;
@@ -324,14 +327,28 @@ impl Kernel {
                 }
             }
 
+            // Seam sampling spacing (world mm) — same law as the skeleton
+            // chains: the interaction radius, octree cell size as fallback.
+            let h_seam = if opts.interaction_radius > 0.0 {
+                opts.interaction_radius
+            } else {
+                min_size_est
+            };
             for (bi, _) in self.bodies.iter().enumerate() {
+                let placement = self.bodies[bi].placement;
                 let Some(brep) = self.bodies[bi].brep_cached() else { continue };
                 for face in &brep.faces {
-                    let planar = matches!(
-                        &face.surface,
-                        SurfaceGeometry::Analytic { surface: HalfSpace::Plane { .. }, .. }
-                    );
-                    if !planar {
+                    let SurfaceGeometry::Analytic { surface, transform } = &face.surface
+                    else {
+                        continue; // tessellated (gyroid) — P4 sheet stage, open
+                    };
+                    if !matches!(
+                        surface,
+                        HalfSpace::Plane { .. }
+                            | HalfSpace::InfiniteCylinder { .. }
+                            | HalfSpace::Cone { .. }
+                            | HalfSpace::Sphere { .. }
+                    ) {
                         continue;
                     }
                     // Assemble closed loops (outer first) as OUTPUT indices.
@@ -374,19 +391,158 @@ impl Kernel {
                         .get(&(bi, face.branch_id.as_u32()))
                         .map(Vec::as_slice)
                         .unwrap_or(&[]);
-                    cdt_tris.extend(crate::mesher_cdt::triangulate_planar_face(
-                        &flat,
-                        &face_loops,
-                        interior,
-                    ));
+                    if matches!(surface, HalfSpace::Plane { .. }) {
+                        cdt_tris.extend(crate::mesher_cdt::triangulate_planar_face(
+                            &flat,
+                            &face_loops,
+                            interior,
+                            0.25 * h_seam as f64,
+                        ));
+                        continue;
+                    }
+
+                    // ── P4: developable/periodic carriers ──
+                    // Unroll the face into its (θ·s, v·s) chart (u periodic)
+                    // and let the periodic CDT cut + weld the seam. The chart
+                    // lives in SURFACE-LOCAL coordinates: world → body local
+                    // (inverse placement) → surface local (inverse transform),
+                    // folded into one composed transform.
+                    let total_t = crate::compose_transforms(&placement, transform);
+                    let uv_raw = |p: [f32; 3]| -> Option<[f64; 2]> {
+                        let l = crate::world_to_local(&total_t, p);
+                        match surface {
+                            HalfSpace::InfiniteCylinder { .. } | HalfSpace::Cone { .. } => {
+                                Some([(l[2] as f64).atan2(l[0] as f64), l[1] as f64])
+                            }
+                            HalfSpace::Sphere { .. } => {
+                                let (x, y, z) = (l[0] as f64, l[1] as f64, l[2] as f64);
+                                let r = (x * x + y * y + z * z).sqrt();
+                                if r < 1e-9 {
+                                    None // a pole point has no azimuth
+                                } else {
+                                    Some([z.atan2(x), (y / r).clamp(-1.0, 1.0).acos()])
+                                }
+                            }
+                            _ => None,
+                        }
+                    };
+                    let mut raw_loops: Vec<Vec<(u32, [f64; 2])>> = Vec::new();
+                    let mut chart_ok = true;
+                    for ring in &face_loops {
+                        let mut lp = Vec::with_capacity(ring.len());
+                        for &gi in ring {
+                            match uv_raw(flat[gi as usize]) {
+                                Some(uv) => lp.push((gi, uv)),
+                                None => {
+                                    chart_ok = false;
+                                    break;
+                                }
+                            }
+                        }
+                        if !chart_ok {
+                            break;
+                        }
+                        raw_loops.push(lp);
+                    }
+                    if !chart_ok {
+                        continue;
+                    }
+                    // Scale θ (and the sphere's polar angle) to arc length so
+                    // both chart axes carry comparable units — a Delaunay
+                    // quality concern, not a correctness one. The cone uses
+                    // the mean loop radius as its reference.
+                    let (su, sv) = match surface {
+                        HalfSpace::InfiniteCylinder { radius } => (*radius as f64, 1.0),
+                        HalfSpace::Sphere { radius } => (*radius as f64, *radius as f64),
+                        HalfSpace::Cone { half_angle } => {
+                            let tan_a = (*half_angle as f64).tan().abs().max(1e-6);
+                            let n_pts: usize = raw_loops.iter().map(Vec::len).sum();
+                            let mean_v = raw_loops
+                                .iter()
+                                .flatten()
+                                .map(|&(_, [_, v])| v.abs())
+                                .sum::<f64>()
+                                / n_pts.max(1) as f64;
+                            ((mean_v * tan_a).max(1e-3), 1.0)
+                        }
+                        _ => (1.0, 1.0),
+                    };
+                    let period = std::f64::consts::TAU * su;
+                    let scaled: Vec<Vec<(u32, [f64; 2])>> = raw_loops
+                        .iter()
+                        .map(|lp| {
+                            lp.iter().map(|&(gi, [u, v])| (gi, [u * su, v * sv])).collect()
+                        })
+                        .collect();
+                    let scaled_interior: Vec<(u32, [f64; 2])> = interior
+                        .iter()
+                        .filter_map(|&gi| {
+                            uv_raw(flat[gi as usize]).map(|[u, v]| (gi, [u * su, v * sv]))
+                        })
+                        .collect();
+                    let world_of = |u: f64, v: f64| -> [f32; 3] {
+                        let (th, t) = (u / su, v / sv);
+                        let local = match surface {
+                            HalfSpace::InfiniteCylinder { radius } => {
+                                let r = *radius as f64;
+                                [(r * th.cos()) as f32, t as f32, (r * th.sin()) as f32]
+                            }
+                            HalfSpace::Cone { half_angle } => {
+                                let r = t.abs() * (*half_angle as f64).tan();
+                                [(r * th.cos()) as f32, t as f32, (r * th.sin()) as f32]
+                            }
+                            HalfSpace::Sphere { radius } => {
+                                let r = *radius as f64;
+                                let sp = t.sin();
+                                [
+                                    (r * sp * th.cos()) as f32,
+                                    (r * t.cos()) as f32,
+                                    (r * sp * th.sin()) as f32,
+                                ]
+                            }
+                            _ => [0.0; 3],
+                        };
+                        let sc = [
+                            local[0] * total_t.scale[0],
+                            local[1] * total_t.scale[1],
+                            local[2] * total_t.scale[2],
+                        ];
+                        let r = crate::quat_rotate(total_t.rotation, sc);
+                        [
+                            r[0] + total_t.translate[0],
+                            r[1] + total_t.translate[1],
+                            r[2] + total_t.translate[2],
+                        ]
+                    };
+                    // Seam spacing converted from world mm to local chart mm.
+                    let ms = total_t.scale[0]
+                        .abs()
+                        .max(total_t.scale[1].abs())
+                        .max(total_t.scale[2].abs())
+                        .max(1e-6);
+                    let aux_base =
+                        (n_alive as usize + skeleton.len() + aux_points.len()) as u32;
+                    let h_chart = (h_seam / ms) as f64;
+                    if let Some(mesh) = crate::mesher_cdt::triangulate_periodic_face(
+                        &scaled,
+                        &scaled_interior,
+                        period,
+                        h_chart,
+                        0.25 * h_chart,
+                        aux_base,
+                        &world_of,
+                    ) {
+                        cdt_tris.extend(mesh.tris);
+                        aux_points.extend(mesh.aux);
+                    }
                 }
             }
         }
 
-        let mut out = Vec::with_capacity(
-            2 + (n_alive as usize + skeleton.len()) * 9 + indices.len() + cdt_tris.len() * 3,
-        );
-        out.push((n_alive as usize + skeleton.len()) as f32);
+        let n_total = n_alive as usize + skeleton.len() + aux_points.len();
+        let mut out =
+            Vec::with_capacity(2 + n_total * 9 + indices.len() + cdt_tris.len() * 3);
+        out.push(n_total as f32);
         out.push((indices.len() / 3 + cdt_tris.len()) as f32);
         for (i, leaf) in leaves.iter().enumerate() {
             if !alive[i] {
@@ -407,6 +563,11 @@ impl Kernel {
         for (k, p) in skeleton.iter().enumerate() {
             let flag = if skeleton_corner[k] { 3.0 } else { 2.0 };
             out.extend_from_slice(&[p[0], p[1], p[2], 0.0, 0.0, 0.0, 1.0, 0.0, flag]);
+        }
+        // Periodic-face seam Steiner vertices: chain-coloured (flag 2), only
+        // referenced by the CDT triangles.
+        for p in &aux_points {
+            out.extend_from_slice(&[p[0], p[1], p[2], 0.0, 0.0, 0.0, 1.0, 0.0, 2.0]);
         }
         out.extend(indices.iter().map(|&i| remap[i as usize] as f32));
         for t in &cdt_tris {
@@ -773,6 +934,61 @@ mod mesher_octree_tests {
             assert_eq!(n, 2, "edge {a}-{b} used {n}× (open seam or fan)");
         }
         // Euler characteristic of a sphere-topology solid.
+        let v = used.len() as i64;
+        let e = edge_use.len() as i64;
+        let f = tris as i64;
+        assert_eq!(v - e + f, 2, "Euler characteristic broke: V={v} E={e} F={f}");
+    }
+
+    /// Hybrid-PASM P4 (ticket nwmi): a CYLINDER exercises the developable
+    /// carrier path — the barrel face unrolls into its (θ·r, y) chart, gets
+    /// cut open along a seam whose two copies share global vertex indices,
+    /// and must close up watertight against the two planar cap discs:
+    /// every edge in exactly two triangles, Euler V − E + F = 2.
+    #[test]
+    fn mesher_points_cdt_cylinder_is_watertight_manifold() {
+        use fielddraft_protocol::{BoolOp, Primitive};
+        let mut k = crate::Kernel::new();
+        k.add_primitive(
+            Primitive::KIND_CYLINDER,
+            BoolOp::TAG_NEW,
+            0.0,
+            0.0,
+            0.0,
+            10.0,
+            10.0,
+            0.0,
+        )
+        .unwrap();
+        let out = k.mesher_points(
+            r#"{"maxDepth":4,"brepSkeleton":true,"cdtFaces":true,
+                "nearSurfaceOnly":true,"nearSurfaceDist":1.0,
+                "fitOnSurface":true,"onlyOnSurface":true,
+                "repulsion":true,"interactionRadius":3.0,"repulsionStrength":0.5,
+                "pasmKernel":true,"iterations":20}"#
+                .into(),
+        );
+        let total = out[0] as usize;
+        let tris = out[1] as usize;
+        assert!(tris >= 12, "expected a real triangulation, got {tris} tris");
+        let idx_base = 2 + total * 9;
+        let mut edge_use: std::collections::HashMap<(u32, u32), u32> =
+            std::collections::HashMap::new();
+        let mut used: std::collections::HashSet<u32> = std::collections::HashSet::new();
+        for t in 0..tris {
+            let a = out[idx_base + t * 3] as u32;
+            let b = out[idx_base + t * 3 + 1] as u32;
+            let c3 = out[idx_base + t * 3 + 2] as u32;
+            assert!(a != b && b != c3 && c3 != a, "degenerate triangle");
+            for (x, y) in [(a, b), (b, c3), (c3, a)] {
+                *edge_use.entry((x.min(y), x.max(y))).or_default() += 1;
+                used.insert(x);
+                used.insert(y);
+            }
+        }
+        for (&(a, b), &n) in &edge_use {
+            assert_eq!(n, 2, "edge {a}-{b} used {n}× (open seam or fan)");
+        }
         let v = used.len() as i64;
         let e = edge_use.len() as i64;
         let f = tris as i64;

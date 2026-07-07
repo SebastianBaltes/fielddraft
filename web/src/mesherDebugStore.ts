@@ -65,9 +65,11 @@ export interface MesherDebug {
   /** Hybrid-PASM P2: PASM Gaussian pair kernel (σ = interactionRadius/5,
    *  paper-treue 5σ-Trunkierung) statt 1/d²-Monopol. */
   pasmKernel: boolean;
-  /** Hybrid-PASM P3: planare Faces per Constrained Delaunay in der
-   *  Face-Ebene vernetzen — Skelett-Loops als Constraints, freie Partikel
-   *  als Innenpunkte; wasserdicht über geteilte Ketten-Slots. */
+  /** Hybrid-PASM P3+P4: Faces per Constrained Delaunay im 2D-Chart
+   *  vernetzen — planar in der Face-Ebene, Zylinder/Kegel/Kugel-Bänder
+   *  abgewickelt (Naht über geteilte Steiner-Punkte verschweißt);
+   *  Skelett-Loops als Constraints, freie Partikel als Innenpunkte;
+   *  wasserdicht über geteilte Ketten-Slots. */
   cdtFaces: boolean;
   /** Hybrid-PASM P1: sample the woven B-Rep edges into FIXED skeleton
    *  particles (corners pinned, chains at the interaction radius) that repel
