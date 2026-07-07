@@ -514,7 +514,7 @@ fn materialize_faces(
 /// keep walk order — there is no anchor, and both sides flipping together
 /// would be a no-op anyway.
 fn align_ambiguous_ring_windings(brep: &mut BRep) {
-    use loop_ordering::{is_full_revolution, ring_sample_points, ring_uv_metrics};
+    use loop_ordering::is_full_revolution;
 
     // Per face: the loop indices (0 = outer, 1.. = inner) with no intrinsic
     // winding authority.

@@ -85,7 +85,70 @@ pub(crate) fn sdf_halfspace_generic<T: DualNum<f64> + Copy + PartialOrd>(
                 + (r_t - T::from(r0)) * T::from(n2[0] as f64)
                 + (p[1] - T::from(y0)) * T::from(n2[1] as f64)
         }
+        HalfSpace::Blend {
+            a,
+            a_transform,
+            a_flip,
+            b,
+            b_transform,
+            b_flip,
+            radius,
+            chamfer,
+            is_difference,
+        } => {
+            // Mirrors `csg::sdf_halfspace`'s Blend arm: each wall field in the
+            // body metric (uniform placement scale), complemented per flag.
+            let zero = T::from(0.0);
+            let wall = |hs: &HalfSpace, xf: &Transform, flip: bool| -> T {
+                let local = world_to_local_generic(xf, p);
+                let v = sdf_halfspace_generic(hs, local) * T::from(xf.min_scale() as f64);
+                if flip { zero - v } else { v }
+            };
+            let fa = wall(a, a_transform, *a_flip);
+            let fb = wall(b, b_transform, *b_flip);
+            let r = T::from(*radius as f64);
+            let mode = if *chamfer { BlendMode::Chamfer } else { BlendMode::Fillet };
+            if *is_difference {
+                zero - blend_min_generic(zero - fa, fb, r, mode)
+            } else {
+                blend_min_generic(fa, fb, r, mode)
+            }
+        }
     }
+}
+
+/// Generic world→local transform: untranslate, unrotate (conjugate
+/// quaternion), unscale. Mirrors `crate::world_to_local` /
+/// [`world_to_local_d3`] for any dual-number scalar.
+fn world_to_local_generic<T: DualNum<f64> + Copy + PartialOrd>(
+    xf: &Transform,
+    p: [T; 3],
+) -> [T; 3] {
+    let v = [
+        p[0] - T::from(xf.translate[0] as f64),
+        p[1] - T::from(xf.translate[1] as f64),
+        p[2] - T::from(xf.translate[2] as f64),
+    ];
+    // Conjugate rotation: v' = v + qw·u + q×u with u = 2·(q×v), q = (−x,−y,−z).
+    let qx = -(xf.rotation[0] as f64);
+    let qy = -(xf.rotation[1] as f64);
+    let qz = -(xf.rotation[2] as f64);
+    let qw = xf.rotation[3] as f64;
+    let u = [
+        (v[2] * qy - v[1] * qz) * T::from(2.0),
+        (v[0] * qz - v[2] * qx) * T::from(2.0),
+        (v[1] * qx - v[0] * qy) * T::from(2.0),
+    ];
+    let rotated = [
+        v[0] + u[0] * qw + u[2] * qy - u[1] * qz,
+        v[1] + u[1] * qw + u[0] * qz - u[2] * qx,
+        v[2] + u[2] * qw + u[1] * qx - u[0] * qy,
+    ];
+    [
+        rotated[0] / T::from(xf.scale[0] as f64),
+        rotated[1] / T::from(xf.scale[1] as f64),
+        rotated[2] / T::from(xf.scale[2] as f64),
+    ]
 }
 
 /// Generic extrude composition. Mirrors `crate::csg::sdf_extrude`.

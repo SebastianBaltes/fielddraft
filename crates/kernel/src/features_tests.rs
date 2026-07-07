@@ -4686,6 +4686,85 @@ fn fillet_edge_query_resolving_nothing_is_a_hard_error() {
     assert!(format!("{err:?}").contains("edge"), "error mentions the edge param: {err:?}");
 }
 
+/// c-M1: the procedural blend carrier. A filleted junction must weave the
+/// blend as its OWN analytic face — `HalfSpace::Blend`, keyed on the fillet
+/// feature's branch — not a phantom sharp edge (B-Rep = Logical CSG before)
+/// and not a nameless Tessellated patch. This is the fix for the Onshape
+/// "can't reference a fillet" pain: the blend face now has a stable identity.
+#[test]
+fn fillet_blend_weaves_as_its_own_analytic_face() {
+    use crate::brep::SurfaceGeometry;
+    use crate::csg::BranchId;
+    use fielddraft_protocol::HalfSpace;
+
+    let registry = FeatureRegistry::with_builtins();
+    let mut doc = empty_ctx();
+    let mut ctx = Context::new(&mut doc);
+    let (edge_hash, _mid) = step_geometry(&registry, &mut ctx, [0.0, 0.0, 0.0]);
+    registry
+        .regenerate(
+            &mut ctx,
+            &[FeatureCall::new(
+                "fillet_edge",
+                id(3),
+                json!({ "edge": format!("qEdge({edge_hash})"), "blend_radius": 3.0 }),
+            )],
+            None,
+        )
+        .unwrap();
+
+    let hard = crate::csg::CsgNode::from_decoded(&ctx.features);
+    let filleted = hard.apply_edge_fillets(&ctx.edge_fillets);
+    let body = crate::bvh::BoundedCsg::from_csg(&filleted);
+
+    // The surface registry detects the blend carrier, keyed on the fillet
+    // feature's own branch (sub 0).
+    let fillet_branch = BranchId::from_feature(&id(3)).as_u32();
+    let map = crate::brep::weaving::branch_halfspace_map(&body);
+    let entry = map.get(&fillet_branch).unwrap_or_else(|| {
+        panic!("no blend carrier registered for the fillet branch (keys: {:?})", map.keys())
+    });
+    assert!(
+        matches!(entry.0, HalfSpace::Blend { is_difference: true, .. }),
+        "carrier is a difference Blend, got {:?}",
+        entry.0
+    );
+
+    // The octree weave materialises a face on that carrier.
+    let bb = body.aabb();
+    let largest = bb.size().into_iter().fold(0.0_f32, f32::max);
+    let min_cell = (largest / 48.0).clamp(1e-3, 10.0);
+    let octree = crate::brep::octree::Octree::build(&body, min_cell);
+    let brep = crate::brep::weaving::weave(&body, &octree);
+
+    let blend_faces: Vec<_> = brep
+        .faces
+        .iter()
+        .filter(|f| {
+            matches!(&f.surface, SurfaceGeometry::Analytic { surface: HalfSpace::Blend { .. }, .. })
+        })
+        .collect();
+    assert!(
+        !blend_faces.is_empty(),
+        "at least one woven face lies on the blend carrier (face kinds: {:?})",
+        brep.faces
+            .iter()
+            .map(|f| crate::brep::face_export::surface_kind(&f.surface))
+            .collect::<Vec<_>>()
+    );
+
+    // Its persistent identity is the fillet branch — stable, provenance-based,
+    // not a sampled fingerprint.
+    for f in &blend_faces {
+        assert_eq!(
+            f.branch_id.feature_id(),
+            BranchId(fillet_branch).feature_id(),
+            "blend face carries the fillet branch identity, got {:?}",
+            f.branch_id
+        );
+    }
+}
+
 /// End-to-end regression for the UI vase exercise: a Front-plane
 /// sketch whose profile is FREE lines (axis, rim, foot, bottom) plus
 /// an OPEN interpolated spline (the wall), stitched into a region by

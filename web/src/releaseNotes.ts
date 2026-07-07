@@ -24,6 +24,16 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.460",
+    entries: [
+      {
+        kind: "feat",
+        scope: "kernel",
+        text: "Fillets als eigenständige, referenzierbare Fläche (Fundament): Ein kantenselektiver Fillet erzeugt jetzt einen prozeduralen Blend-Träger mit stabiler, provenienz-basierter Identität (Fillet-Feature + die zwei Wand-Kanten) statt einer namenlosen Ersatzfläche. Das abgeleitete B-Rep folgt der echten Rundung statt der scharfen Phantomkante, und die Blend-Fläche ist damit auswählbar und benennbar — die Grundlage dafür, Fillet-Geometrie später sauber weiterzuverwenden (Projektion in Sketches u.a.). Auswertung konsistent über alle Backends (Dual-Zahlen, Tape/GPU, CGAL-Mesher).",
+      },
+    ],
+  },
+  {
     version: "0.6.459",
     entries: [
       {

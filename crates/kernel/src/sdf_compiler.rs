@@ -542,6 +542,7 @@ fn emit_halfspace_record(surface: &HalfSpace, placement: &Transform, out: &mut V
         HalfSpace::Torus { .. } => OPEN_KIND_TORUS,
         HalfSpace::Gyroid { .. } => OPEN_KIND_NEVER,
         HalfSpace::RevolvedProfile { .. } => OPEN_KIND_NEVER,
+        HalfSpace::Blend { .. } => OPEN_KIND_NEVER,
     };
     out.push(op(OP_PRIM_HALFSPACE));
     out.push(kind);
@@ -558,7 +559,9 @@ fn emit_halfspace_record(surface: &HalfSpace, placement: &Transform, out: &mut V
         HalfSpace::Torus { major_radius, minor_radius } => {
             [*major_radius, *minor_radius, 0.0, 0.0]
         }
-        HalfSpace::Gyroid { .. } | HalfSpace::RevolvedProfile { .. } => [0.0; 4],
+        HalfSpace::Gyroid { .. } | HalfSpace::RevolvedProfile { .. } | HalfSpace::Blend { .. } => {
+            [0.0; 4]
+        }
     };
     out.extend_from_slice(&params);
 }

@@ -140,6 +140,10 @@ fn kind_of_halfspace(hs: &HalfSpace) -> SurfaceKind {
         // revolve walls are enumerated via `push_sketch_walls`), but the
         // honest kind for totality is the revolve wall.
         HalfSpace::RevolvedProfile { .. } => SurfaceKind::RevolveWall,
+        // Procedural fillet carrier — not a seed-route surface class (its SSI
+        // has no closed form); a body with a blend face weaves on the octree
+        // route.
+        HalfSpace::Blend { .. } => SurfaceKind::Tessellated,
     }
 }
 

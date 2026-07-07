@@ -254,6 +254,11 @@ pub fn thicken_face(
         HalfSpace::RevolvedProfile { .. } => {
             return Err("revolved profile face cannot be thickened analytically".to_string());
         }
+        // Blend offsets are not blends of offset walls — the general
+        // field-offset path (face_offset) owns procedural carriers.
+        HalfSpace::Blend { .. } => {
+            return Err("blend face cannot be thickened analytically".to_string());
+        }
     };
     Ok(ThickenSolid { outer, inner, world, sector })
 }

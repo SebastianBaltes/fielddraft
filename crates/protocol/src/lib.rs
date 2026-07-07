@@ -441,6 +441,30 @@ pub enum HalfSpace {
         extend_start: bool,
         extend_end: bool,
     },
+    /// Procedural fillet-blend carrier: the smooth-min blend surface between
+    /// two wall carriers at a filleted Boolean junction. Identity is fully
+    /// symbolic (the two wall carriers + radius); evaluation is the blend of
+    /// the embedded wall fields. Unlike the other variants this carrier is
+    /// registered with an IDENTITY placement — its "local" frame is the body
+    /// frame, and each embedded transform maps body → that wall's local frame
+    /// (uniform scale only; the registry rejects non-uniform placements).
+    ///
+    /// `a_flip`/`b_flip`: whether the wall field enters the blend complemented
+    /// (its feature sits under an odd number of subtractions *within* the
+    /// blend operand's subtree). `is_difference` selects the blended-difference
+    /// form `-blend(-fa, fb)`. `chamfer` selects the linear 45° cut instead of
+    /// the rounded polynomial.
+    Blend {
+        a: Box<HalfSpace>,
+        a_transform: Transform,
+        a_flip: bool,
+        b: Box<HalfSpace>,
+        b_transform: Transform,
+        b_flip: bool,
+        radius: f32,
+        chamfer: bool,
+        is_difference: bool,
+    },
 }
 
 impl Primitive {

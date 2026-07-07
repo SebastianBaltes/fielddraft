@@ -4,6 +4,17 @@
 
 use fielddraft_protocol::{FeatureId, Transform};
 
+/// One resolved fillet edge: the two junction operand features, their full
+/// wall [`crate::csg::BranchId`] u32s (edge signature, with sub) and the
+/// edge's world-space polyline for the mask tube.
+pub struct FilletEdgeHit {
+    pub feature_a: FeatureId,
+    pub feature_b: FeatureId,
+    pub branch_a: u32,
+    pub branch_b: u32,
+    pub polyline: Vec<[f32; 3]>,
+}
+
 use crate::csg::{CsgNode};
 
 use super::mate_connector::{face_normal_for_branch, polyline_point_tangent, MateAnchorFrame};
@@ -464,8 +475,9 @@ impl<'a> Context<'a> {
         self.resolve_face_frame(expr)
     }
 
-    /// DL-61: resolve an edge-yielding query into per-edge fillet inputs:
-    /// `(feature_a, feature_b, world-space polyline)`.
+    /// DL-61: resolve an edge-yielding query into per-edge fillet inputs
+    /// ([`FilletEdgeHit`]: operand features, full wall branch ids and the
+    /// world-space polyline).
     ///
     /// COORDINATE SPACE: the woven B-Reps are **body-local** (DL-56); the
     /// paired `placement` maps body-local → world. The CSG tree that the
@@ -484,7 +496,7 @@ impl<'a> Context<'a> {
     pub fn resolve_fillet_edges(
         &mut self,
         expr: &crate::queries::QueryExpr,
-    ) -> Vec<(FeatureId, FeatureId, Vec<[f32; 3]>)> {
+    ) -> Vec<FilletEdgeHit> {
         use crate::brep::{EdgeGeometry, EdgeId};
 
         let woven = self.brep_cache.ensure(&self.features);
@@ -547,7 +559,13 @@ impl<'a> Context<'a> {
 
                 let feature_a = FeatureId::from_u32(edge.signature.0.feature_id());
                 let feature_b = FeatureId::from_u32(edge.signature.1.feature_id());
-                out.push((feature_a, feature_b, world));
+                out.push(FilletEdgeHit {
+                    feature_a,
+                    feature_b,
+                    branch_a: edge.signature.0.as_u32(),
+                    branch_b: edge.signature.1.as_u32(),
+                    polyline: world,
+                });
             }
         }
         out

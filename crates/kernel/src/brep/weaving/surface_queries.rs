@@ -96,6 +96,18 @@ pub(super) fn surface_normal_at(surface: &SurfaceGeometry, p: [f64; 3]) -> Optio
             Some(rot_to_world(dir))
         }
         HalfSpace::Gyroid { .. } => None,
+        HalfSpace::Blend { .. } => {
+            // The blend's analytic gradient IS the surface normal (body-frame
+            // carrier: its map transform is identity, so local == body).
+            let l = to_local(p);
+            let g =
+                crate::csg::grad_halfspace(surface, [l[0] as f32, l[1] as f32, l[2] as f32]);
+            let dir = [g[0] as f64, g[1] as f64, g[2] as f64];
+            if norm(dir) < 1e-9 {
+                return None;
+            }
+            Some(rot_to_world(dir))
+        }
     }
 }
 
@@ -141,7 +153,7 @@ pub(super) fn surface_uv(surface: &SurfaceGeometry, p: [f64; 3]) -> Option<(f64,
             }
             Some((l[2].atan2(l[0]), l[1].atan2(r_xz - *major_radius as f64)))
         }
-        HalfSpace::Plane { .. } | HalfSpace::Gyroid { .. } => None,
+        HalfSpace::Plane { .. } | HalfSpace::Gyroid { .. } | HalfSpace::Blend { .. } => None,
     }
 }
 

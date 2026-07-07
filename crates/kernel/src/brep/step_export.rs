@@ -542,6 +542,10 @@ fn emit_surface(
             // emitting the swept profile curve is future work — fall back to the
             // mean-point plane like other unmapped surfaces (DL-43).
             HalfSpace::RevolvedProfile { .. } => fallback_plane(w, g, brep, placement, face),
+            // The procedural fillet-blend surface has no closed-form STEP
+            // entity; a NURBS fit is future work — fall back to the
+            // mean-point plane like other unmapped surfaces (DL-43).
+            HalfSpace::Blend { .. } => fallback_plane(w, g, brep, placement, face),
             }
         }
         // Tessellated (Gyroid/TPMS) faces have no closed-form surface; emit a

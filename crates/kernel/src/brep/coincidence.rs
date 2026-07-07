@@ -661,7 +661,8 @@ fn carrier_of(hs: &HalfSpace, xf: &Transform, complemented: bool) -> Option<Carr
         HalfSpace::Cone { .. }
         | HalfSpace::Torus { .. }
         | HalfSpace::Gyroid { .. }
-        | HalfSpace::RevolvedProfile { .. } => None,
+        | HalfSpace::RevolvedProfile { .. }
+        | HalfSpace::Blend { .. } => None,
     }
 }
 

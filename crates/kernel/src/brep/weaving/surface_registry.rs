@@ -83,10 +83,30 @@ pub(super) fn collect_halfspaces(node: &BoundedCsg, out: &mut BranchSurfaceMap) 
         | BoundedCsg::Intersection { left, right, .. }
         | BoundedCsg::SmoothUnion { left, right, .. }
         | BoundedCsg::SmoothDifference { left, right, .. }
-        | BoundedCsg::MaskedBlend { left, right, .. }
         | BoundedCsg::Morph { left, right, .. } => {
             collect_halfspaces(left, out);
             collect_halfspaces(right, out);
+        }
+        BoundedCsg::MaskedBlend {
+            left,
+            right,
+            blend_radius,
+            blend_mode,
+            is_difference,
+            provenance,
+            ..
+        } => {
+            collect_halfspaces(left, out);
+            collect_halfspaces(right, out);
+            register_blend_carrier(
+                left,
+                right,
+                *blend_radius,
+                *blend_mode,
+                *is_difference,
+                provenance,
+                out,
+            );
         }
         BoundedCsg::Twist { inner, .. }
         | BoundedCsg::Bend { inner, .. }
@@ -294,6 +314,59 @@ fn collect_revolve_profile_carriers(
 ///
 /// Shell inner walls flip too, but per *branch* (the [`BranchId::INNER_WALL_FLAG`]
 /// bit), see [`branch_is_complemented`].
+/// Register the procedural [`fielddraft_protocol::HalfSpace::Blend`] carrier
+/// of a masked-blend fillet: the two junction-wall carriers (looked up from
+/// the operand subtrees' just-collected entries), each with its complement
+/// parity WITHIN its operand subtree, plus the blend radius/mode. The carrier
+/// itself lives in the body frame (identity placement); evaluation blends the
+/// embedded wall fields. Skipped — the blend face degrades honestly to
+/// Tessellated — when a wall has no analytic entry or a non-uniform placement
+/// scale (the embedded fields must share the body metric).
+fn register_blend_carrier(
+    left: &BoundedCsg,
+    right: &BoundedCsg,
+    blend_radius: f32,
+    blend_mode: crate::csg::BlendMode,
+    is_difference: bool,
+    provenance: &crate::csg::BlendProvenance,
+    out: &mut BranchSurfaceMap,
+) {
+    if provenance.branch == 0 {
+        return;
+    }
+    let Some((hs_a, xf_a)) = out.get(&provenance.wall_a).cloned() else { return };
+    let Some((hs_b, xf_b)) = out.get(&provenance.wall_b).cloned() else { return };
+    let uniform = |xf: &Transform| {
+        let s = xf.scale;
+        let tol = 1e-6 * s[0].abs().max(1.0);
+        (s[0] - s[1]).abs() < tol && (s[0] - s[2]).abs() < tol
+    };
+    if !uniform(&xf_a) || !uniform(&xf_b) {
+        return;
+    }
+    let mut parity_left = std::collections::HashSet::new();
+    collect_parity(left, false, &mut parity_left);
+    let mut parity_right = std::collections::HashSet::new();
+    collect_parity(right, false, &mut parity_right);
+    out.insert(
+        provenance.branch,
+        (
+            fielddraft_protocol::HalfSpace::Blend {
+                a: Box::new(hs_a),
+                a_transform: xf_a,
+                a_flip: branch_is_complemented(BranchId(provenance.wall_a), &parity_left),
+                b: Box::new(hs_b),
+                b_transform: xf_b,
+                b_flip: branch_is_complemented(BranchId(provenance.wall_b), &parity_right),
+                radius: blend_radius,
+                chamfer: matches!(blend_mode, crate::csg::BlendMode::Chamfer),
+                is_difference,
+            },
+            Transform::IDENTITY,
+        ),
+    );
+}
+
 pub(crate) fn complemented_features(body: &BoundedCsg) -> std::collections::HashSet<u32> {
     let mut out = std::collections::HashSet::new();
     collect_parity(body, false, &mut out);

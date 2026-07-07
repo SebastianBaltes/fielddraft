@@ -358,7 +358,8 @@ pub(super) fn snap_to_carrier(surface: &SurfaceGeometry, p: [f64; 3]) -> Option<
         HalfSpace::Cone { .. }
         | HalfSpace::Torus { .. }
         | HalfSpace::Gyroid { .. }
-        | HalfSpace::RevolvedProfile { .. } => None,
+        | HalfSpace::RevolvedProfile { .. }
+        | HalfSpace::Blend { .. } => None,
     }?;
     Some(xf_point(
         transform,

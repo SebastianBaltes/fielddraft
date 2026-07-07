@@ -171,6 +171,20 @@ Contributor-Mengen (Smooth-Ops/Masken als harte Boolesche behandelt) — die Gru
 exakten Kantenklassifikation. **`Visual`** entspricht dem gerenderten Feld (mit weichen
 Blends). Aktuell liefern beide dasselbe Feld; die Klassifikation nutzt bewusst `Logical`.
 
+**Ausnahme — der Fillet-Blend-Träger (`MaskedBlend` mit `BlendProvenance`):**
+Ein kantenselektiver Fillet ist die *reale* Oberfläche des Körpers, keine bloße
+Render-Kosmetik. Trägt der `MaskedBlend`-Knoten eine Provenienz (das Fillet-Feature +
+die zwei Wand-Branches), so ist er **modus-unabhängig**: auch `Logical` liefert die
+gerundete Fläche, und in der Abweichzone (`|f_a − f_b| < r`) gehört die Fläche dem
+**Fillet-Branch** — eine eigene, wohldefinierte Contributor-Identität. Damit webt das
+abgeleitete B-Rep die echte Rundung statt der scharfen Phantomkante, und die Blend-Fläche
+wird auswähl- und benennbar (§ 10, Blend-Carrier). Der symbolische Träger ist
+`HalfSpace::Blend { a, b, radius, … }`: Identität rein symbolisch (die zwei Wand-Träger +
+Radius), Auswertung = `blend_min` der beiden eingebetteten Wandfelder. Die tangentialen
+Skirt-Nähte (Blend↔Wand, ein G1-Kontakt) sind die offene Baustelle — sie sind
+transversal als `Wand_A = 0 ∧ Wand_B = r` darstellbar, aber der numerische Octree-Tracer
+kann sie noch nicht sampeln (dieselbe Transversalitäts-Grenze wie beim Tangentialkontakt).
+
 ---
 
 ## 4. Octree-Klassifikation (Extraktions-Phase 1)

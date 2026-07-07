@@ -1089,6 +1089,7 @@ fn masked_blend_fillets_only_inside_the_capsule() {
         blend_radius: 4.0,
         blend_mode: super::BlendMode::Fillet,
         is_difference: false,
+        provenance: super::BlendProvenance::NONE,
     };
     let hard = CsgNode::Union(Box::new(a), Box::new(b));
 
@@ -1175,8 +1176,11 @@ fn apply_edge_fillets_replaces_matching_junction() {
     };
     let tree = CsgNode::Union(Box::new(a), Box::new(b));
     let fillets = vec![EdgeFillet {
+        fillet_id: FeatureId::from_u32(9),
         feature_a: FeatureId::from_u32(1),
         feature_b: FeatureId::from_u32(2),
+        branch_a: 0,
+        branch_b: 0,
         mask_polyline: vec![[5.0, -15.0, 0.0], [5.0, 15.0, 0.0]],
         mask_radius: 5.0,
         blend_radius: 3.0,
@@ -1208,8 +1212,11 @@ fn apply_edge_fillets_leaves_unmatched_junctions() {
     // Fillet references features 3 and 4 which don't exist
     // in the tree → no match, tree stays unchanged.
     let fillets = vec![EdgeFillet {
+        fillet_id: FeatureId::from_u32(9),
         feature_a: FeatureId::from_u32(3),
         feature_b: FeatureId::from_u32(4),
+        branch_a: 0,
+        branch_b: 0,
         mask_polyline: vec![[0.0; 3], [0.0, 10.0, 0.0]],
         mask_radius: 5.0,
         blend_radius: 3.0,
@@ -1246,8 +1253,11 @@ fn fillet_all_edges_stress_test() {
     // Fillet every hole junction.
     let fillets: Vec<EdgeFillet> = (2..=5)
         .map(|i| EdgeFillet {
+            fillet_id: FeatureId::from_u32(100 + i),
             feature_a: FeatureId::from_u32(1),
             feature_b: FeatureId::from_u32(i),
+            branch_a: 0,
+            branch_b: 0,
             mask_polyline: vec![
                 [(i as f32 - 3.5) * 20.0, -55.0, 0.0],
                 [(i as f32 - 3.5) * 20.0, 55.0, 0.0],

@@ -239,6 +239,7 @@ pub enum BoundedCsg {
         blend_radius: f32,
         blend_mode: BlendMode,
         is_difference: bool,
+        provenance: crate::csg::BlendProvenance,
         aabb: Aabb,
     },
     /// K11.5: morph (linear interpolation) between two SDFs.
@@ -497,24 +498,21 @@ impl BoundedCsg {
                 is_difference,
                 ..
             } => {
+                // Mode-independent, mirrors `CsgNode::sdf_open` (the fillet
+                // is the body's real surface; the B-Rep weaves it).
                 let da = left.sdf_open(p, mode, open);
                 let db_raw = right.sdf_open(p, mode, open);
-                match mode {
-                    EvalMode::Logical => {
-                        if *is_difference { da.max(-db_raw) } else { da.min(db_raw) }
+                let mask_d = crate::csg::sdf_polyline_tube(p, mask_polyline, *mask_radius);
+                if mask_d < 0.0 {
+                    if *is_difference {
+                        -crate::csg::blend_min(-da, db_raw, *blend_radius, *blend_mode)
+                    } else {
+                        crate::csg::blend_min(da, db_raw, *blend_radius, *blend_mode)
                     }
-                    EvalMode::Visual => {
-                        let mask_d = crate::csg::sdf_polyline_tube(p, mask_polyline, *mask_radius);
-                        if mask_d < 0.0 {
-                            if *is_difference {
-                                -crate::csg::blend_min(-da, db_raw, *blend_radius, *blend_mode)
-                            } else {
-                                crate::csg::blend_min(da, db_raw, *blend_radius, *blend_mode)
-                            }
-                        } else {
-                            if *is_difference { da.max(-db_raw) } else { da.min(db_raw) }
-                        }
-                    }
+                } else if *is_difference {
+                    da.max(-db_raw)
+                } else {
+                    da.min(db_raw)
                 }
             }
             BoundedCsg::Extrude {
@@ -762,39 +760,50 @@ impl BoundedCsg {
                 blend_radius,
                 blend_mode,
                 is_difference,
+                provenance,
                 ..
             } => {
+                // Mirrors `CsgNode::evaluate_open`: mode-independent blend
+                // geometry; in the deviation zone the fillet's provenance
+                // branch owns the surface, the walls join within eps of
+                // their own surface (skirt pair signatures).
                 let (da, ca) = left.evaluate_open(p, eps, mode, open);
                 let (db_raw, cb) = right.evaluate_open(p, eps, mode, open);
                 let db = if *is_difference { -db_raw } else { db_raw };
-                match mode {
-                    EvalMode::Logical => {
-                        if *is_difference {
-                            combine_max(da, ca, db, cb, eps)
-                        } else {
-                            combine_min(da, ca, db, cb, eps)
-                        }
+                let hard = |da, ca, db, cb| {
+                    if *is_difference {
+                        combine_max(da, ca, db, cb, eps)
+                    } else {
+                        combine_min(da, ca, db, cb, eps)
                     }
-                    EvalMode::Visual => {
-                        let mask_d = crate::csg::sdf_polyline_tube(p, mask_polyline, *mask_radius);
-                        if mask_d < 0.0 {
-                            let d = if *is_difference {
-                                -crate::csg::blend_min(-da, db_raw, *blend_radius, *blend_mode)
-                            } else {
-                                crate::csg::blend_min(da, db_raw, *blend_radius, *blend_mode)
-                            };
-                            let mut c = ca;
-                            c.extend(cb);
-                            (d, c)
-                        } else {
-                            if *is_difference {
-                                combine_max(da, ca, db, cb, eps)
-                            } else {
-                                combine_min(da, ca, db, cb, eps)
-                            }
-                        }
-                    }
+                };
+                let mask_d = crate::csg::sdf_polyline_tube(p, mask_polyline, *mask_radius);
+                if mask_d >= 0.0 {
+                    return hard(da, ca, db, cb);
                 }
+                let (ba, bb) = if *is_difference { (-da, db_raw) } else { (da, db_raw) };
+                let d = if *is_difference {
+                    -crate::csg::blend_min(-da, db_raw, *blend_radius, *blend_mode)
+                } else {
+                    crate::csg::blend_min(da, db_raw, *blend_radius, *blend_mode)
+                };
+                if provenance.branch == 0 {
+                    let mut c = ca;
+                    c.extend(cb);
+                    return (d, c);
+                }
+                let deviates = *blend_radius > 0.0 && (ba - bb).abs() < *blend_radius;
+                if !deviates {
+                    return hard(da, ca, db, cb);
+                }
+                let mut c = Contributors::single(crate::csg::BranchId(provenance.branch));
+                if da.abs() <= eps {
+                    c.extend(ca);
+                }
+                if db_raw.abs() <= eps {
+                    c.extend(cb);
+                }
+                (d, c)
             }
             BoundedCsg::Extrude {
                 id,
@@ -1127,6 +1136,7 @@ fn build(csg: &CsgNode, carry: &Transform) -> BoundedCsg {
             blend_radius,
             blend_mode,
             is_difference,
+            provenance,
         } => {
             let left = build(a, carry);
             let right = build(b, carry);
@@ -1139,6 +1149,7 @@ fn build(csg: &CsgNode, carry: &Transform) -> BoundedCsg {
                 blend_radius: *blend_radius,
                 blend_mode: *blend_mode,
                 is_difference: *is_difference,
+                provenance: *provenance,
                 aabb,
             }
         }

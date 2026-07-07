@@ -431,6 +431,7 @@ fn main() {
         blend_radius: 1.5,
         blend_mode: BlendMode::Fillet,
         is_difference: false,
+        provenance: fielddraft_kernel::csg::BlendProvenance::NONE,
     });
     emit("masked_blend_polyline", &bvh, &pts);
 
@@ -442,6 +443,7 @@ fn main() {
         blend_radius: 2.0,
         blend_mode: BlendMode::Chamfer,
         is_difference: true,
+        provenance: fielddraft_kernel::csg::BlendProvenance::NONE,
     });
     emit("masked_blend_point_diff", &bvh, &pts);
 

@@ -50,7 +50,7 @@ impl FeatureKind for FilletEdgeFeature {
     fn execute(
         &self,
         ctx: &mut Context<'_>,
-        _id: &FeatureId,
+        id: &FeatureId,
         def: &Value,
     ) -> Result<(), FeatureError> {
         let d = FilletEdgeDef::parse(def)?;
@@ -77,11 +77,14 @@ impl FeatureKind for FilletEdgeFeature {
             });
         }
         let mask_radius = d.blend_radius * FILLET_MASK_SCALE;
-        for (feature_a, feature_b, mask_polyline) in resolved {
+        for hit in resolved {
             ctx.edge_fillets.push(crate::csg::EdgeFillet {
-                feature_a,
-                feature_b,
-                mask_polyline,
+                fillet_id: id.clone(),
+                feature_a: hit.feature_a,
+                feature_b: hit.feature_b,
+                branch_a: hit.branch_a,
+                branch_b: hit.branch_b,
+                mask_polyline: hit.polyline,
                 mask_radius,
                 blend_radius: d.blend_radius,
                 blend_mode: crate::csg::BlendMode::Fillet,
