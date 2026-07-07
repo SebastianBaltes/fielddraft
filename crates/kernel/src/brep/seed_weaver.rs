@@ -1959,17 +1959,21 @@ mod tests {
             closed_edges(&partial)
         );
 
-        // Quality floor: no worse than the full octree fallback this body
-        // previously took. (The tessellated torus face's ring winding is a
-        // pre-existing limitation shared by BOTH routes — the hybrid must
-        // not add violations beyond it.)
+        // With the tessellated ring-winding alignment the merged body is
+        // fully manifold — every seam ring complements its analytic
+        // partner's orientation.
+        assert_eq!(
+            hybrid.manifold_violations(),
+            Vec::<String>::new(),
+            "hybrid box∪torus must be orientation-clean"
+        );
+        // And the pure octree route shares the same convention.
         let octree = crate::brep::octree::Octree::build(&body, min_cell);
         let full = crate::brep::weaving::weave(&body, &octree);
-        assert!(
-            hybrid.manifold_violations().len() <= full.manifold_violations().len(),
-            "hybrid ({}) must not exceed the octree route's violations ({})",
-            hybrid.manifold_violations().len(),
-            full.manifold_violations().len()
+        assert_eq!(
+            full.manifold_violations(),
+            Vec::<String>::new(),
+            "octree box∪torus must be orientation-clean"
         );
     }
 

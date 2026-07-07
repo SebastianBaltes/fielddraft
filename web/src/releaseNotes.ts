@@ -24,6 +24,16 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.457",
+    entries: [
+      {
+        kind: "fix",
+        scope: "kernel",
+        text: "Ring-Windung ohne intrinsische Autorität repariert: Punktur-Ringe, die um die Röhre eines Torus (oder durch eine Kugel) winden, haben die Fläche auf BEIDEN Seiten — uv-Shoelace und Flächenseite-Regel können sie nicht orientieren und drehten sie bisher gegen ihre schon korrekten Partner-Faces. Jetzt enthalten sich diese Ringe (und alle Ringe tessellierter Faces) beim intrinsischen Flip und übernehmen per Mehrheits-Parität das Komplement ihrer autoritativen Partner — Box ∪ Torus webt orientierungs-sauber (0 Manifold-Verletzungen) auf Octree- UND Hybrid-Route.",
+      },
+    ],
+  },
+  {
     version: "0.6.456",
     entries: [
       {
