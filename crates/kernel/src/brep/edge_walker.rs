@@ -1540,26 +1540,71 @@ fn chain_on_both_surfaces(
     check_branch(sa) && check_branch(sb)
 }
 
-/// Does a chain lie on the body's actual boundary, rather than buried inside it
-/// (DL-74)? Evaluates the hard-union ([`EvalMode::Logical`]) SDF at each sample:
-/// a real edge sits at `sdf ≈ 0`, while a stretch of analytic joint zero-set
-/// that tunnels through another union member (a box edge under an overhanging
-/// sphere) reads strongly negative along its whole length. A chain is kept when
-/// fewer than a small fraction of its samples are interior beyond one sample
-/// spacing — slack enough for on-boundary jitter, far tighter than the cell-deep
-/// burial of a genuinely interior segment.
-fn chain_on_body_boundary(body: &BoundedCsg, samples: &[HermiteSample], tol: f64) -> bool {
+/// Does a chain lie on the body's actual boundary, rather than off it on either
+/// side? Evaluates the hard-union ([`EvalMode::Logical`]) SDF at each sample: a
+/// real edge sits at `sdf ≈ 0`, while two kinds of phantom stretch read clearly
+/// nonzero along their length:
+///
+/// - **buried** (DL-74, `f < −interior_tol`): a stretch of analytic joint
+///   zero-set that tunnels through another union member — a box edge under an
+///   overhanging sphere;
+/// - **airborne** (DL-82, `f > exterior_tol`): the carved-out middle of a box
+///   edge across an *open* groove mouth — exactly on both (infinite) carrier
+///   planes, but a feature-clearance away from the body, because the
+///   difference operand removed the material between the two rims.
+///
+/// The two tolerances differ deliberately: burial is cell-deep, so one sample
+/// spacing is the right slack; an airborne stretch's clearance is bounded by
+/// the *feature* size (half the groove width) which can undercut the sample
+/// spacing — traced samples sit on the boundary to Newton-refinement noise, so
+/// the caller passes the much tighter [`tol::on_boundary`] there and keeps the
+/// loose spacing for sample-fit chains (their residual is genuinely
+/// spacing-scale).
+fn chain_on_body_boundary(
+    body: &BoundedCsg,
+    samples: &[HermiteSample],
+    interior_tol: f64,
+    exterior_tol: f64,
+    midpoint_tol: Option<f64>,
+) -> bool {
     if samples.is_empty() {
         return true;
     }
-    let interior = samples
+    let field_at = |p: [f64; 3]| -> f64 {
+        body.sdf(
+            [p[0] as f32, p[1] as f32, p[2] as f32],
+            crate::csg::EvalMode::Logical,
+        ) as f64
+    };
+    let mut off_boundary = samples
         .iter()
         .filter(|s| {
-            let p = [s.point[0] as f32, s.point[1] as f32, s.point[2] as f32];
-            (body.sdf(p, crate::csg::EvalMode::Logical) as f64) < -tol
+            let f = field_at(s.point);
+            f < -interior_tol || f > exterior_tol
         })
         .count();
-    (interior as f64) <= (1.0 - SURFACE_MEMBERSHIP_FRACTION) * samples.len() as f64
+    let mut total = samples.len();
+    // Chord-midpoint probes (DL-82): the adaptive tracer can cross an open
+    // gap in ONE step — every *sample* then sits on the boundary (the rims on
+    // either side of the mouth) while the chain itself hangs in air. The
+    // chord midpoint of a legitimate traced segment stays within the sagitta
+    // budget of the surface; over an open mouth it reads the feature
+    // clearance instead.
+    if let Some(mtol) = midpoint_tol {
+        for w in samples.windows(2) {
+            let mid = [
+                0.5 * (w[0].point[0] + w[1].point[0]),
+                0.5 * (w[0].point[1] + w[1].point[1]),
+                0.5 * (w[0].point[2] + w[1].point[2]),
+            ];
+            let f = field_at(mid);
+            if f < -mtol || f > mtol {
+                off_boundary += 1;
+            }
+            total += 1;
+        }
+    }
+    (off_boundary as f64) <= (1.0 - SURFACE_MEMBERSHIP_FRACTION) * total as f64
 }
 
 // ─── public entry point ───────────────────────────────────────────────────
@@ -1799,6 +1844,7 @@ pub fn build_wireframe_with(body: &BoundedCsg, octree: &Octree, pure_octree: boo
         // into one clean oriented chain. Only if neither fits (a genuinely
         // multi-edge signature, DL-11) do we fall back to gap-chaining.
         let fit_tol = spacing * FIT_RESIDUAL_FACTOR;
+        let was_traced = traced.is_some();
         let chains: Vec<Chain> = if let Some(component_chains) = traced {
             component_chains
         } else if let Some(samples) = fit_line(&pts, fit_tol) {
@@ -1831,7 +1877,34 @@ pub fn build_wireframe_with(body: &BoundedCsg, octree: &Octree, pure_octree: boo
             // top edge that passes under an overhanging sphere. Such a stretch is
             // on both planes but interior to the solid, so it is no edge. Reject a
             // chain whose samples are predominantly inside the body.
-            if !chain_on_body_boundary(body, &chain.samples, spacing) {
+            // Traced samples are Newton-projected onto both carriers, so on a
+            // real boundary the body field vanishes to refinement noise — the
+            // airborne test can be as tight as `tol::on_boundary`. Sample-fit
+            // chains carry genuine spacing-scale residual and keep the loose
+            // bound (their points come from sign-change cells, which cannot
+            // exist in the open-mouth air gap in the first place).
+            let exterior_tol = if was_traced {
+                crate::brep::tol::on_boundary(model_diag)
+            } else {
+                spacing
+            };
+            // Midpoint probing only for traced chains: their chords honour
+            // the adaptive sagitta budget, so 3x that budget separates honest
+            // arc-to-chord error from an open-gap crossing. Sample-fit chains
+            // skip it - their gap threshold already splits across voids, and
+            // their residual is spacing-scale anyway.
+            let midpoint_tol = if was_traced {
+                Some(3.0 * ADAPT_TOL_FRACTION * model_diag)
+            } else {
+                None
+            };
+            if !chain_on_body_boundary(
+                body,
+                &chain.samples,
+                spacing,
+                exterior_tol,
+                midpoint_tol,
+            ) {
                 continue;
             }
             let first = chain.samples.first().unwrap().point;
@@ -2158,15 +2231,13 @@ mod tests {
         );
     }
 
-    /// KNOWN DEFECT (DL-82, follow-up pending — see `docs/Backlog.md`): at
-    /// artificially fine octree resolution the weave invents short spurious edges
-    /// that bridge the *open* groove mouth (x ∈ [-2.5, 2.5] at y = 500, z = ±500).
-    /// That is geometrically wrong — a through-slot is open there — yet `validate()`
-    /// does not flag it. The production-clamped path (10 mm) is correct, so this is
-    /// not user-visible today; we keep this test asserting the *correct* invariant
-    /// so it stays red until the fine path is fixed, then can be un-ignored.
+    /// DL-82 (FIXED): at fine octree resolution the adaptive tracer used to
+    /// cross the *open* groove mouth (x ∈ [-2.5, 2.5] at y = 500, z = ±500) in
+    /// one step — every sample sat on a rim, so the sample-level boundary
+    /// filter was blind to the airborne chord. `chain_on_body_boundary` now
+    /// probes chord midpoints of traced chains against the sagitta budget and
+    /// rejects the bridge; the tests below pin both resolutions.
     #[test]
-    #[ignore = "DL-82: fine-octree ghost mouth bridge not yet fixed"]
     fn ghost_mouth_bridge_at_fine_octree_is_a_defect() {
         let brep = weave_top_groove(2.0);
         assert_eq!(
@@ -2175,6 +2246,7 @@ mod tests {
             "fine octree bridges the open groove mouth with ghost edges"
         );
     }
+
 
     fn edge_polyline(_brep: &BRep, e: &Edge) -> Vec<[f64; 3]> {
         match &e.geometry {

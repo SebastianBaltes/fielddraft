@@ -24,6 +24,16 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.451",
+    entries: [
+      {
+        kind: "fix",
+        scope: "kernel",
+        text: "DL-82 behoben: Bei feiner Octree-Auflösung erzeugte der Edge-Weave Geisterkanten quer über einen offenen Nutmund (der adaptive Seam-Tracer übersprang die Lücke in einem Schritt, alle Samples lagen auf den Rims). Der Body-Boundary-Filter testet jetzt symmetrisch (vergraben UND in der Luft) und probt bei getracten Chains zusätzlich die Chord-Mittelpunkte gegen das Sagitta-Budget — die Brücke fliegt, echte gekrümmte Kanten bleiben.",
+      },
+    ],
+  },
+  {
     version: "0.6.450",
     entries: [
       {
