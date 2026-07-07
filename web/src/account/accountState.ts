@@ -52,9 +52,10 @@ export interface AccountState {
   invitePrefill: string;
   /** Reset token prefilled into the reset-confirm form (from `?reset=`). */
   resetPrefill: string;
-  /** Ticket id to deep-link into when the Issues tab opens (e.g. straight from
-   *  a filed report), or null for the list. One-shot. */
-  ticketPrefill: string | null;
+  /** The Issues tab's open ticket (detail view), or null for the list.
+   *  Drives BOTH the controlled TicketsView and the URL hash (#/issues/<id>,
+   *  ticket 3032c29b) — cleared when leaving the Issues tab. */
+  ticketDetail: string | null;
   /** Count of unseen admin alerts, surfaced as a badge on the topbar bell.
    *  Always 0 for non-admins (never fetched). */
   unseenAlertCount: number;
@@ -116,7 +117,7 @@ export function initialAccountState(search = ""): AccountState {
     bellOpen: false,
     invitePrefill,
     resetPrefill,
-    ticketPrefill: null,
+    ticketDetail: null,
     unseenAlertCount: 0,
   };
 }
@@ -164,7 +165,7 @@ export function accountReducer(
         overviewTab: "projects",
         auth: null,
         bellOpen: false,
-        ticketPrefill: null,
+        ticketDetail: null,
         unseenAlertCount: 0,
       };
     case "show-overview":
@@ -174,9 +175,9 @@ export function accountReducer(
         overviewTab: action.tab ?? state.overviewTab,
         // Leaving for the Overview clears a stale ticket deep-link unless we're
         // explicitly (re)opening the Issues tab.
-        ticketPrefill:
+        ticketDetail:
           (action.tab ?? state.overviewTab) === "issues"
-            ? state.ticketPrefill
+            ? state.ticketDetail
             : null,
       };
     case "select-tab":
@@ -184,16 +185,16 @@ export function accountReducer(
         ...state,
         page: "overview",
         overviewTab: action.tab,
-        ticketPrefill: action.tab === "issues" ? state.ticketPrefill : null,
+        ticketDetail: action.tab === "issues" ? state.ticketDetail : null,
       };
     case "enter-project":
-      return { ...state, page: "project", ticketPrefill: null };
+      return { ...state, page: "project", ticketDetail: null };
     case "open-ticket":
       return {
         ...state,
         page: "overview",
         overviewTab: "issues",
-        ticketPrefill: action.ticketId,
+        ticketDetail: action.ticketId,
       };
     case "open-auth":
       return { ...state, auth: action.mode };

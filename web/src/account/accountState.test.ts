@@ -124,25 +124,25 @@ describe("accountReducer", () => {
     const s = accountReducer(base, { type: "open-ticket", ticketId: "t9" });
     expect(s.page).toBe("overview");
     expect(s.overviewTab).toBe("issues");
-    expect(s.ticketPrefill).toBe("t9");
+    expect(s.ticketDetail).toBe("t9");
   });
 
   it("open-ticket with null opens the Issues list (no deep-link)", () => {
     const s = accountReducer(base, { type: "open-ticket", ticketId: null });
     expect(s.overviewTab).toBe("issues");
-    expect(s.ticketPrefill).toBeNull();
+    expect(s.ticketDetail).toBeNull();
   });
 
   it("selecting a non-issues tab clears a stale ticket deep-link", () => {
     const deep = accountReducer(base, { type: "open-ticket", ticketId: "t9" });
     const s = accountReducer(deep, { type: "select-tab", tab: "projects" });
-    expect(s.ticketPrefill).toBeNull();
+    expect(s.ticketDetail).toBeNull();
   });
 
   it("entering a project clears the ticket deep-link", () => {
     const deep = accountReducer(base, { type: "open-ticket", ticketId: "t9" });
     const s = accountReducer(deep, { type: "enter-project" });
-    expect(s.ticketPrefill).toBeNull();
+    expect(s.ticketDetail).toBeNull();
   });
 
   it("open-auth / close-auth toggle the standalone auth screen", () => {

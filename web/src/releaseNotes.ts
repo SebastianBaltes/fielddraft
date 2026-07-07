@@ -24,6 +24,17 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.458",
+    entries: [
+      {
+        kind: "feat",
+        scope: "app",
+        tickets: ["3032c29b"],
+        text: "URL-Routing: Issues und Projekte haben jetzt URLs (#/issues, #/issues/<id>, #/projects, #/p/<projekt-id>, #/edit) — Browser-Zurück funktioniert (z. B. vom Issue-Detail zur Liste), und die URLs sind teil-/lesezeichenbar: ein direkt geladener #/p/<id>-Link öffnet das Server-Projekt, #/issues/<id> das Ticket.",
+      },
+    ],
+  },
+  {
     version: "0.6.457",
     entries: [
       {

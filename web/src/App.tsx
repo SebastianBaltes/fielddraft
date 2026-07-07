@@ -1,4 +1,4 @@
-import { StrictMode, useEffect, useState } from "react";
+import { StrictMode, useCallback, useEffect, useRef, useState } from "react";
 import { Outliner } from "./Outliner";
 import { Toolbar } from "./Toolbar";
 import { Viewport } from "./Viewport";
@@ -30,6 +30,7 @@ import {
   clearStoredServerBinding,
 } from "./projectStore";
 import { platformApi, type Project as ServerProject } from "./api/platform";
+import { parseHash, routeToHash } from "./account/hashRoute";
 
 // WP11: the deployed build gates the whole app behind login. The gate is a
 // build flag (default OFF) so local `just dev`, the Playwright e2e and offline
@@ -321,6 +322,89 @@ function AppShell({ account }: { account: UseAccount }) {
   // both; the modeling chrome (toolbar/viewport/outliner/meta) mounts only in
   // the project view.
   const inProject = account.state.page === "project";
+
+  // ── URL-hash routing (ticket 3032c29b) ─────────────────────────────
+  // Issues and projects have URLs; browser Back works. The hash is a pure
+  // projection of {page, overviewTab, ticketDetail, projectId}; see
+  // hashRoute.ts for the shapes. Two directions, both idempotent:
+
+  // hash → state. Applied on hashchange (Back/Forward, pasted URLs) and once
+  // on boot after the session resolves. A #/p/<id> deep link to a project
+  // that is not currently bound loads it from the server first.
+  const applyRoute = useCallback(() => {
+    const route = parseHash(window.location.hash);
+    if (!route) return;
+    if (route.page === "project") {
+      const boundId = store?.getState().projectId ?? null;
+      if (route.projectId && route.projectId !== boundId) {
+        platformApi.getProject(route.projectId).then(
+          (p) => openServerProjectRef.current(p),
+          () => account.showOverview("projects"),
+        );
+      } else {
+        account.enterProject();
+      }
+    } else if (route.tab === "issues") {
+      account.openTicket(route.ticketId);
+    } else {
+      account.selectTab(route.tab);
+    }
+    // account methods are stable useCallbacks; store is a stable singleton.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [account.enterProject, account.openTicket, account.selectTab, account.showOverview, store]);
+
+  // openServerProject is redefined per render (it closes over `account`);
+  // the route handler reads the latest through a ref.
+  const openServerProjectRef = useRef(openServerProject);
+  openServerProjectRef.current = openServerProject;
+
+  useEffect(() => {
+    window.addEventListener("hashchange", applyRoute);
+    return () => window.removeEventListener("hashchange", applyRoute);
+  }, [applyRoute]);
+
+  // Boot deep link: apply the initial hash once the session has resolved
+  // (session-resolved may flip the landing page right before this).
+  const bootRouteApplied = useRef(false);
+  useEffect(() => {
+    if (account.state.status === "loading" || bootRouteApplied.current) return;
+    bootRouteApplied.current = true;
+    applyRoute();
+  }, [account.state.status, applyRoute]);
+
+  // state → hash. Every navigation writes a history entry (Back walks the
+  // app history); the very first write only normalizes the URL in place.
+  const firstHashWrite = useRef(true);
+  useEffect(() => {
+    if (account.state.status === "loading") return;
+    const hash = routeToHash(
+      inProject
+        ? { page: "project", projectId: state?.projectId ?? null }
+        : {
+            page: "overview",
+            tab: account.state.overviewTab,
+            ticketId: account.state.ticketDetail,
+          },
+    );
+    if (window.location.hash === hash) {
+      firstHashWrite.current = false;
+      return;
+    }
+    if (firstHashWrite.current) {
+      firstHashWrite.current = false;
+      // Don't clobber a deep link before the boot apply consumed it.
+      if (parseHash(window.location.hash)) return;
+      window.history.replaceState(null, "", hash);
+    } else {
+      window.location.hash = hash;
+    }
+  }, [
+    account.state.status,
+    account.state.overviewTab,
+    account.state.ticketDetail,
+    inProject,
+    state?.projectId,
+  ]);
 
   return (
     <WorkspaceUnitsContext.Provider value={settings.units}>

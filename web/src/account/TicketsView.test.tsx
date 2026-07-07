@@ -83,6 +83,8 @@ function mount(props: Partial<Parameters<typeof TicketsView>[0]> = {}) {
         user={USER}
         isAdmin={false}
         onLoadFdraft={() => {}}
+        ticketId={null}
+        onNavigate={() => {}}
         {...props}
       />,
     );
@@ -162,7 +164,7 @@ describe("TicketsView — detail", () => {
     vi.spyOn(platform.platformApi, "getTicket").mockResolvedValue(
       detail({ comments: [comment({ body: "first reply" })] }),
     );
-    mount({ initialTicketId: "t1" });
+    mount({ ticketId: "t1" });
     await flush();
     expect(byTestId("detail-body")?.textContent).toBe("It explodes");
     expect(byTestId("ticket-thread")?.textContent).toContain("first reply");
@@ -182,7 +184,7 @@ describe("TicketsView — detail", () => {
         ],
       }),
     );
-    mount({ initialTicketId: "t1", isAdmin: false });
+    mount({ ticketId: "t1", isAdmin: false });
     await flush();
     expect(byTestId("comment-pub")).toBeTruthy();
     expect(byTestId("comment-secret")).toBeNull();
@@ -201,7 +203,7 @@ describe("TicketsView — detail", () => {
         ],
       }),
     );
-    mount({ initialTicketId: "t1", isAdmin: true });
+    mount({ ticketId: "t1", isAdmin: true });
     await flush();
     expect(byTestId("comment-secret")).toBeTruthy();
   });
@@ -213,7 +215,7 @@ describe("TicketsView — detail", () => {
     const add = vi
       .spyOn(platform.platformApi, "addComment")
       .mockResolvedValue(comment({ id: "new", body: "my reply" }));
-    mount({ initialTicketId: "t1" });
+    mount({ ticketId: "t1" });
     await flush();
     const input = byTestId<HTMLTextAreaElement>("comment-input")!;
     const setValue = Object.getOwnPropertyDescriptor(
@@ -251,7 +253,7 @@ describe("TicketsView — detail", () => {
     const bytes = new Uint8Array([80, 75, 3, 4]).buffer;
     vi.spyOn(platform.platformApi, "fetchArtifact").mockResolvedValue(bytes);
     const onLoadFdraft = vi.fn();
-    mount({ initialTicketId: "t1", onLoadFdraft });
+    mount({ ticketId: "t1", onLoadFdraft });
     await flush();
     act(() => byTestId<HTMLButtonElement>("artifact-load-project")!.click());
     await flush();

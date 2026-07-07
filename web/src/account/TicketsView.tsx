@@ -51,8 +51,12 @@ interface TicketsViewProps {
   /** Load a ticket's `.fdraft` artifact bytes into the live workspace as an
    *  unbound copy (App.tsx wires this to the kernel store). */
   onLoadFdraft(bytes: ArrayBuffer): void;
-  /** Deep-link: open this ticket id on mount (e.g. straight from a report). */
-  initialTicketId?: string | null;
+  /** Controlled master/detail selection: the open ticket id, or null for
+   *  the list. Owned by the account state so the URL hash can drive it
+   *  (#/issues/<id>, ticket 3032c29b). */
+  ticketId: string | null;
+  /** Navigate list ↔ detail (routes through account.openTicket → URL). */
+  onNavigate(id: string | null): void;
 }
 
 const CATEGORIES: TicketCategory[] = ["bug", "feature", "question", "other"];
@@ -74,33 +78,27 @@ export function TicketsView({
   user,
   isAdmin,
   onLoadFdraft,
-  initialTicketId,
+  ticketId,
+  onNavigate,
 }: TicketsViewProps) {
-  // Master/detail mode: the list or a single ticket id. There is no create
-  // mode — issues are filed via the 👤 "Report Issue…" flow.
-  const [mode, setMode] = useState<
-    { kind: "list" } | { kind: "detail"; id: string }
-  >(
-    initialTicketId
-      ? { kind: "detail", id: initialTicketId }
-      : { kind: "list" },
-  );
-
-  if (mode.kind === "detail") {
+  // Controlled master/detail: the list or a single ticket id. There is no
+  // create mode — issues are filed via the "Report Issue…" flow. The key
+  // remounts the detail panel when the id changes (hash navigation between
+  // two tickets must not keep stale panel state).
+  if (ticketId) {
     return (
       <TicketDetailPanel
-        id={mode.id}
+        key={ticketId}
+        id={ticketId}
         user={user}
         isAdmin={isAdmin}
         onLoadFdraft={onLoadFdraft}
-        onBack={() => setMode({ kind: "list" })}
+        onBack={() => onNavigate(null)}
       />
     );
   }
 
-  return (
-    <TicketList user={user} onOpen={(id) => setMode({ kind: "detail", id })} />
-  );
+  return <TicketList user={user} onOpen={(id) => onNavigate(id)} />;
 }
 
 /* ── list ───────────────────────────────────────────────────────── */

@@ -47,7 +47,7 @@ export function Overview({
   onLoadFdraft,
   boundProjectId,
 }: OverviewProps) {
-  const { state, isAdmin, selectTab } = account;
+  const { state, isAdmin, selectTab, openTicket } = account;
   const tabs = isAdmin ? [...BASE_TABS, ...ADMIN_TABS] : BASE_TABS;
   // A non-admin never has invites/users selected; guard so a stale tab (e.g.
   // after logout from admin) falls back to Projects.
@@ -92,7 +92,8 @@ export function Overview({
             user={state.user}
             isAdmin={isAdmin}
             onLoadFdraft={onLoadFdraft}
-            initialTicketId={state.ticketPrefill}
+            ticketId={state.ticketDetail}
+            onNavigate={(id) => openTicket(id)}
           />
         )}
         {active === "invites" && isAdmin && <InvitePanel />}
