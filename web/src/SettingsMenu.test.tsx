@@ -65,6 +65,7 @@ function setup() {
           state={null}
           settings={currentSettings}
           onSettingsChange={onChange}
+          inProject
         />,
       );
     });
@@ -77,6 +78,7 @@ function setup() {
         state={null}
         settings={currentSettings}
         onSettingsChange={onChange}
+        inProject
       />,
     );
   });

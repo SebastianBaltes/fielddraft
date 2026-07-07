@@ -24,6 +24,29 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.449",
+    entries: [
+      {
+        kind: "fix",
+        scope: "dev",
+        tickets: ["a020ac1e"],
+        text: "„Auto-reload on code change: Off“ wirkt wieder. Vite 8 führt HMR-Listener über Promise.allSettled aus, wodurch der bisherige Abbrech-Trick (Exception im vite:beforeFullReload-Handler) still wirkungslos wurde — die Seite lud trotz Off-Schalter neu. Der Dev-Server schickt jetzt nie mehr ein rohes full-reload; der Client entscheidet selbst anhand der Einstellung.",
+      },
+      {
+        kind: "fix",
+        scope: "ui",
+        tickets: ["376bf453"],
+        text: "Burger-Menü: Dokument-Aktionen (New, Open, Save, Import, Export, Share, Undo, Redo, Debug) sind außerhalb der Projekt-Ansicht deaktiviert — auf der Projekt-Seite operierten sie bisher unsichtbar auf dem Hintergrund-Workspace.",
+      },
+      {
+        kind: "fix",
+        scope: "ui",
+        tickets: ["e752b6f8"],
+        text: "„Report Issue…“ und „Release Notes…“ sind aus dem Burger-Menü entfernt. Beides bleibt erreichbar: Issues über F2, Release Notes über Klick aufs Versions-Badge.",
+      },
+    ],
+  },
+  {
     version: "0.6.448",
     entries: [
       {

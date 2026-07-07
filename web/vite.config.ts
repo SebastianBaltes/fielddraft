@@ -36,6 +36,40 @@ function liveVersion(): Plugin {
   };
 }
 
+// Ticket a020ac: Vite 8 runs vite:beforeFullReload listeners via
+// Promise.allSettled, so the old cztw trick (throwing cancels the reload) is
+// silently dead — "Auto-reload on code change: off" reloaded anyway. The dev
+// server therefore never sends a raw `full-reload` to the browser anymore:
+// every one (Vite core AND our plugins) is rewritten to the custom
+// `fd:full-reload` event, and the CLIENT decides in main.tsx whether to call
+// location.reload() (the Auto-reload setting). Dev-only by construction.
+function reloadGate(): Plugin {
+  return {
+    name: "fd-reload-gate",
+    configureServer(server) {
+      const channels = new Set<{ send: (...args: unknown[]) => void }>();
+      const clientHot = (
+        server as unknown as {
+          environments?: { client?: { hot?: { send: (...args: unknown[]) => void } } };
+        }
+      ).environments?.client?.hot;
+      if (clientHot) channels.add(clientHot);
+      channels.add(server.hot as unknown as { send: (...args: unknown[]) => void });
+      for (const ch of channels) {
+        const send = ch.send.bind(ch);
+        ch.send = (...args: unknown[]) => {
+          const payload = args[0] as { type?: string } | undefined;
+          if (payload && payload.type === "full-reload") {
+            send({ type: "custom", event: "fd:full-reload" });
+            return;
+          }
+          send(...args);
+        };
+      }
+    },
+  };
+}
+
 // Boot-time staleness guard source. `build-wasm` writes the WASM stamp into
 // this sidecar; the guard in kernel.ts compares the loaded module's self-
 // reported stamp against `__KERNEL_EXPECTED__` (defined from this file). Both
@@ -455,7 +489,7 @@ function serverPort(mode: string): number {
 
 // https://vitejs.dev/config/
 export default defineConfig(({ mode }) => ({
-  plugins: [react(), liveVersion(), kernelStamp(), ticketWriter(), fileReader()],
+  plugins: [react(), reloadGate(), liveVersion(), kernelStamp(), ticketWriter(), fileReader()],
   server: {
     port: webPort(mode),
     strictPort: true,

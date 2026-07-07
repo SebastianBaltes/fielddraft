@@ -100,6 +100,10 @@ interface SettingsMenuProps {
   state: StoreState | null;
   settings: SettingsState;
   onSettingsChange: (next: SettingsState) => void;
+  /** Ticket 376bf4: document-scoped actions (New/Open/Save/Import/Export/
+   *  Share/Undo/Redo/Debug) only make sense in the modeling view — on the
+   *  dashboard they'd operate on the invisible background workspace. */
+  inProject: boolean;
 }
 
 export function SettingsMenu({
@@ -107,6 +111,7 @@ export function SettingsMenu({
   state,
   settings,
   onSettingsChange,
+  inProject,
 }: SettingsMenuProps) {
   const [open, setOpen] = useState(false);
   const [settingsDialogOpen, setSettingsDialogOpen] = useState(false);
@@ -209,6 +214,7 @@ export function SettingsMenu({
             role="menuitem"
             className="menu-item"
             data-testid="menu-new-project"
+            disabled={!inProject}
             onClick={() =>
               menuAction(() => {
                 if (
@@ -228,6 +234,7 @@ export function SettingsMenu({
             role="menuitem"
             className="menu-item"
             data-testid="menu-open"
+            disabled={!inProject}
             onClick={() =>
               menuAction(() =>
                 document
@@ -245,6 +252,7 @@ export function SettingsMenu({
             role="menuitem"
             className="menu-item"
             data-testid="menu-save"
+            disabled={!inProject}
             onClick={() => menuAction(() => store?.saveProjectToFile())}
           >
             <span>Save</span>
@@ -258,6 +266,7 @@ export function SettingsMenu({
             role="menuitem"
             className="menu-item"
             data-testid="menu-import"
+            disabled={!inProject}
             onClick={() =>
               menuAction(() =>
                 document
@@ -274,7 +283,7 @@ export function SettingsMenu({
           <ExportSubmenu
             store={store}
             state={state}
-            disabled={!hasFeatures}
+            disabled={!hasFeatures || !inProject}
             onClose={close}
             onExportDialog={setExportDialog}
           />
@@ -286,7 +295,7 @@ export function SettingsMenu({
             role="menuitem"
             className="menu-item"
             data-testid="menu-share"
-            disabled={!hasFeatures || !state?.projectId}
+            disabled={!hasFeatures || !state?.projectId || !inProject}
             onClick={() => menuAction(() => store?.publishProject())}
           >
             Share
@@ -299,7 +308,7 @@ export function SettingsMenu({
             role="menuitem"
             className="menu-item"
             data-testid="menu-undo"
-            disabled={!state?.canUndo}
+            disabled={!state?.canUndo || !inProject}
             onClick={() => menuAction(() => { store?.undo(); })}
           >
             <span>
@@ -313,7 +322,7 @@ export function SettingsMenu({
             role="menuitem"
             className="menu-item"
             data-testid="menu-redo"
-            disabled={!state?.canRedo}
+            disabled={!state?.canRedo || !inProject}
             onClick={() => menuAction(() => { store?.redo(); })}
           >
             <span>
@@ -335,27 +344,10 @@ export function SettingsMenu({
             Settings…
           </button>
 
-          <button
-            type="button"
-            role="menuitem"
-            className="menu-item"
-            data-testid="menu-report-issue"
-            onClick={() => menuAction(() => setReportDialogOpen(true))}
-          >
-            Report Issue…
-          </button>
-
-          <div className="menu-separator" role="separator" />
-
-          <button
-            type="button"
-            role="menuitem"
-            className="menu-item"
-            data-testid="menu-release-notes"
-            onClick={() => menuAction(() => setReleaseNotesOpen(true))}
-          >
-            Release Notes…
-          </button>
+          {/* Ticket e752b6: "Report Issue…" and "Release Notes…" left the
+              menu — they stay reachable via F2 / the fd:report-issue event
+              and the version badge (fd:release-notes); the dialogs below
+              remain owned by this component. */}
 
           <div className="menu-separator" role="separator" />
 
@@ -366,6 +358,7 @@ export function SettingsMenu({
               className="menu-item submenu-trigger"
               aria-haspopup="menu"
               data-testid="menu-debug"
+              disabled={!inProject}
             >
               <span>Debug</span>
               <span className="menu-chevron">&#9656;</span>

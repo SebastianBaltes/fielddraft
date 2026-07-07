@@ -354,6 +354,7 @@ function AppShell({ account }: { account: UseAccount }) {
                 state={state}
                 settings={settings}
                 onSettingsChange={setSettings}
+                inProject={inProject}
               />
               {/* Ticket C: the current project's name next to the logo — click
                   to rename inline (modeling view only). */}

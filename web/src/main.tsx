@@ -6,22 +6,24 @@ import { bootProjectPath } from "./bootParams";
 import { applyBootSettings, loadBootProject } from "./bootProject";
 import "./styles/index.css";
 
-// Ticket cztw: let the user keep a running session across edits. When Vite has
-// a change it can't hot-swap it normally reloads the whole page — wiping the
-// in-progress (unsaved) project. With the "Auto-reload on code change" setting
-// off, throwing from this handler aborts Vite's `location.reload()`, so the app
-// keeps running; the user reloads manually (F5) when ready. Dev-only —
-// `import.meta.hot` is undefined in a production build.
+// Ticket cztw / a020ac: let the user keep a running session across edits.
+// The dev server never sends Vite's raw `full-reload` — the reloadGate plugin
+// (vite.config.ts) rewrites every one to this custom event, because Vite 8
+// runs vite:beforeFullReload listeners via Promise.allSettled and the old
+// "throw to cancel" trick no longer aborts the reload. The client decides:
+// with "Auto-reload on code change" off the app keeps running and the user
+// reloads manually (F5) when ready. Dev-only — `import.meta.hot` is
+// undefined in a production build.
 if (import.meta.hot) {
-  import.meta.hot.on("vite:beforeFullReload", () => {
+  import.meta.hot.on("fd:full-reload", () => {
     if (localStorage.getItem(LS_AUTO_RELOAD) === "false") {
-      // The throw is the documented way to cancel Vite's full reload.
       // eslint-disable-next-line no-console
       console.info(
         "[FieldDraft] Full reload skipped (Auto-reload off in Settings). Press F5 to apply the latest code.",
       );
-      throw new Error("vite full reload cancelled by FieldDraft setting");
+      return;
     }
+    location.reload();
   });
 }
 
