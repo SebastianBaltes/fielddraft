@@ -11,7 +11,11 @@ import { loadSettings, WorkspaceUnitsContext } from "./settings";
 import type { SettingsState } from "./settings";
 import { ProjectTitle } from "./ProjectTitle";
 import { CONTROLS_PRESETS, viewShortcutRow } from "./controlsPreset";
-import { useAccount, type UseAccountOptions } from "./account/useAccount";
+import {
+  useAccount,
+  accountErrorMessage,
+  type UseAccountOptions,
+} from "./account/useAccount";
 import type { UseAccount } from "./account/useAccount";
 import { UserMenu } from "./account/UserMenu";
 import { Bell } from "./account/Bell";
@@ -356,6 +360,30 @@ function AppShell({ account }: { account: UseAccount }) {
                 onSettingsChange={setSettings}
                 inProject={inProject}
                 onEnterProject={() => account.enterProject()}
+                onSaveToCloud={
+                  account.state.status === "authed" &&
+                  store &&
+                  state &&
+                  state.projectId === null
+                    ? () => {
+                        void (async () => {
+                          const doc = currentDocument();
+                          const created = await platformApi.createProject(
+                            state.project.name?.trim() || "Untitled",
+                            doc ?? {},
+                          );
+                          store.setProjectId(created.id);
+                        })().catch((err) => {
+                          store.showTransientError(
+                            accountErrorMessage(
+                              err,
+                              "Could not save to the cloud",
+                            ),
+                          );
+                        });
+                      }
+                    : null
+                }
               />
               {/* Ticket C: the current project's name next to the logo — click
                   to rename inline (modeling view only). */}

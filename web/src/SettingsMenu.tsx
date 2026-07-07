@@ -108,6 +108,10 @@ interface SettingsMenuProps {
    *  local `.fdraft` as an unbound project and this callback switches the
    *  app into the modeling view (otherwise the load happens invisibly). */
   onEnterProject: () => void;
+  /** Ticket 6c09c11f: turn the open LOCAL project into a cloud project.
+   *  `null` when unavailable (guest, or already bound) — the menu item
+   *  renders disabled with a hint then. */
+  onSaveToCloud: (() => void) | null;
 }
 
 export function SettingsMenu({
@@ -117,6 +121,7 @@ export function SettingsMenu({
   onSettingsChange,
   inProject,
   onEnterProject,
+  onSaveToCloud,
 }: SettingsMenuProps) {
   const [open, setOpen] = useState(false);
   const [settingsDialogOpen, setSettingsDialogOpen] = useState(false);
@@ -249,7 +254,7 @@ export function SettingsMenu({
               )
             }
           >
-            Open…
+            Open local project…
           </button>
           <button
             type="button"
@@ -259,8 +264,32 @@ export function SettingsMenu({
             disabled={!inProject}
             onClick={() => menuAction(() => store?.saveProjectToFile())}
           >
-            <span>Save</span>
+            <span>Download project</span>
             <span className="menu-shortcut">Ctrl+S</span>
+          </button>
+          {/* Ticket 6c09c11f: local vs cloud must be explicit. "Download
+              project" writes the local .fdraft; this turns the open LOCAL
+              project into a cloud project (creates + binds a server project;
+              autosave keeps it in sync from then on). Bound projects are
+              already in the cloud — disabled with a hint. */}
+          <button
+            type="button"
+            role="menuitem"
+            className="menu-item"
+            data-testid="menu-save-to-cloud"
+            disabled={!inProject || !onSaveToCloud}
+            title={
+              !inProject
+                ? undefined
+                : onSaveToCloud
+                  ? "Create a cloud project from the current workspace"
+                  : state?.projectId
+                    ? "Already a cloud project — changes autosave"
+                    : "Log in to save to the cloud"
+            }
+            onClick={() => menuAction(() => onSaveToCloud?.())}
+          >
+            Save to cloud
           </button>
 
           <div className="menu-separator" role="separator" />

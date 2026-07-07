@@ -24,6 +24,17 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.457",
+    entries: [
+      {
+        kind: "feat",
+        scope: "ui",
+        tickets: ["6c09c11f"],
+        text: "Burger-Menü unterscheidet lokal vs. Cloud: „Save“ heißt jetzt „Download project“ (lokale .fdraft-Datei, Ctrl+S), „Open…“ heißt „Open local project…“, und ein neuer Punkt „Save to cloud“ macht aus dem offenen lokalen Projekt ein Cloud-Projekt (legt es auf dem Server an und bindet es — ab dann greift der Autosave). Bei bereits gebundenen Projekten ist der Punkt mit Hinweis deaktiviert.",
+      },
+    ],
+  },
+  {
     version: "0.6.456",
     entries: [
       {
