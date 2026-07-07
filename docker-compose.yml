@@ -1,7 +1,8 @@
 # Dev stack — MariaDB + Go server. The frontend is NOT containerized in dev:
 # the real dev flow runs Vite on the host (`just dev` / `just dev-full`), which
 # proxies /api to the server below.
-# Usage: docker compose up --build -d db server
+# Usage: docker compose up --build -d db server            (core stack)
+#        docker compose up --build -d db server mesher     (+ CGAL meshing)
 
 services:
   db:
@@ -41,12 +42,29 @@ services:
       CODING_SERVICE_TOKEN: "${FIELDDRAFT_CODING_SERVICE_TOKEN:-dev-coding}"
       # Set to 1 behind TLS/Caddy so session cookies get the Secure attribute.
       SECURE_COOKIES: "${FIELDDRAFT_SECURE_COOKIES:-}"
+      # Server-side CGAL meshing service (internal compose DNS). Empty =
+      # feature off, mesh routes answer 503 (plan §P6).
+      MESHER_URL: "http://mesher:9090"
     volumes:
       - blob-data:/data/blobs
     restart: unless-stopped
     depends_on:
       db:
         condition: service_healthy
+
+  # Server-side CGAL mesher (fd-prepare + fd-cgal-mesh + HTTP wrapper).
+  # Internal network only — no published port. Scale horizontally via
+  # `docker compose up --scale mesher=N`; TBB threads per job via
+  # FD_MESH_THREADS (0 = all cores).
+  mesher:
+    build:
+      context: .
+      dockerfile: cgal-mesher/Dockerfile
+    environment:
+      FD_MESH_CONCURRENCY: "${FIELDDRAFT_MESH_CONCURRENCY:-2}"
+      FD_MESH_THREADS: "${FIELDDRAFT_MESH_THREADS:-0}"
+      FD_MESH_TIMEOUT_SEC: "${FIELDDRAFT_MESH_TIMEOUT_SEC:-300}"
+    restart: unless-stopped
 
 volumes:
   db-data:

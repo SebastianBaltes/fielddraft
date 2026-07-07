@@ -29,6 +29,11 @@ flachen f32-Opcode-Buffer, C++ evaluiert die SDF autonom über einen
   binäres STL; Report-JSON auf stderr.
 - `crates/kernel/src/bin/fd_prepare.rs` + `native_prepare.rs` — die
   Rust-Vorstufe: `document.json` → Opcodes + AABB + B-Rep-Kanten-Polylines.
+- `serve/main.go` — minimaler HTTP-Wrapper (M2): `POST /mesh` mit
+  `{document, params}` → fd-prepare → fd-cgal-mesh → binäres STL zurück
+  (Report-JSON im `X-Fd-Report`-Header), `GET /healthz`. Kein Auth (nur
+  internes Compose-Netz); Limits: `FD_MESH_CONCURRENCY` (default 2),
+  `FD_MESH_TIMEOUT_SEC` (300), `FD_MESH_MAX_BODY_MB` (50).
 
 ## Pipeline lokal
 
@@ -58,8 +63,15 @@ Shell inward statt symmetrisch) — nicht optional.
   übersteuerbar), `-DCGAL_DISABLE_GMP -DCGAL_USE_BOOST_MP`,
   `Sequential_tag`. Keine Systempakete nötig, aber langsame exakte
   Arithmetik.
-- Docker-Image (M2, geplant): Distro-CGAL + GMP/MPFR + TBB
-  (`Parallel_tag`), Thread-Deckel `FD_MESH_THREADS`.
+- `Dockerfile` (M2, Kontext = Repo-Root): Debian-trixie-CGAL + GMP/MPFR +
+  TBB (`Parallel_tag`), Thread-Deckel pro Job via `FD_MESH_THREADS`
+  (tbb::global_control, 0 = alle Kerne). Der Golden-Test läuft als
+  Pflicht-Schritt IM Image-Build — Interpreter-Drift bricht den Build.
+  Compose-Service `mesher` (docker-compose.yml, internes Netz, kein Port):
+
+      docker compose up --build -d db server mesher
+      # Smoke-Test aus dem server-Container heraus:
+      # POST http://mesher:9090/mesh {"document":…, "params":{…}} → STL
 
 ## Bekannte Grenzen (Plan §4)
 

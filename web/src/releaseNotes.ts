@@ -24,6 +24,16 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.439",
+    entries: [
+      {
+        kind: "feat",
+        scope: "export",
+        text: "CGAL-Meshing Meilenstein M2 (Service-Container): Docker-Image (Debian-CGAL mit GMP/MPFR, TBB-Multithreading mit FD_MESH_THREADS-Deckel, Golden-Test als Pflicht-Build-Schritt) + Go-HTTP-Wrapper (POST /mesh → STL, Concurrency-Limit, Job-Timeout, Größenlimit) + Compose-Service „mesher“ im internen Netz.",
+      },
+    ],
+  },
+  {
     version: "0.6.438",
     entries: [
       {

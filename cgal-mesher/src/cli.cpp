@@ -17,11 +17,17 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <fstream>
+#include <memory>
 #include <sstream>
 #include <string>
 #include <vector>
+
+#ifdef CGAL_LINKED_WITH_TBB
+#include <tbb/global_control.h>
+#endif
 
 // mesher.cpp API (linked in the same binary).
 extern "C" {
@@ -81,6 +87,18 @@ int main(int argc, char** argv) {
     std::fprintf(stderr, "fd-cgal-mesh: cannot open %s\n", argv[1]);
     return 2;
   }
+
+#ifdef CGAL_LINKED_WITH_TBB
+  // Cap TBB parallelism per job so jobs × threads cannot oversubscribe the
+  // host (plan §2 P1). Unset/0 = TBB default (all cores).
+  std::unique_ptr<tbb::global_control> thread_cap;
+  if (const char* tenv = std::getenv("FD_MESH_THREADS")) {
+    int nthreads = std::atoi(tenv);
+    if (nthreads > 0)
+      thread_cap = std::make_unique<tbb::global_control>(
+          tbb::global_control::max_allowed_parallelism, nthreads);
+  }
+#endif
 
   std::string params_json = "{}";
   std::vector<Body> bodies;
