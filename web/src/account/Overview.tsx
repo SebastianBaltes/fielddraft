@@ -24,6 +24,8 @@ interface OverviewProps {
   onOpenProject(project: Project): void;
   /** Open a PUBLIC project as a fresh unbound copy → modeling view. */
   onOpenCopy(project: Project): void;
+  /** Reopen a remembered LOCAL project (ticket 14661fc4) → modeling view. */
+  onOpenLocalProject(id: string): void;
   /** Load a ticket's `.fdraft` artifact into the live workspace → modeling. */
   onLoadFdraft(bytes: ArrayBuffer): void;
   /** The currently-bound server project id, if any (highlighted). */
@@ -44,6 +46,7 @@ export function Overview({
   account,
   onOpenProject,
   onOpenCopy,
+  onOpenLocalProject,
   onLoadFdraft,
   boundProjectId,
 }: OverviewProps) {
@@ -83,6 +86,7 @@ export function Overview({
             authed={state.status === "authed"}
             onOpen={onOpenProject}
             onOpenCopy={onOpenCopy}
+            onOpenLocal={onOpenLocalProject}
             selfId={state.user?.id ?? null}
             boundProjectId={boundProjectId}
           />

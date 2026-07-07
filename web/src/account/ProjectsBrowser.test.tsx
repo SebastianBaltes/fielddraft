@@ -40,6 +40,7 @@ function mount(props: Partial<Parameters<typeof ProjectsBrowser>[0]> = {}): {
         authed
         onOpen={onOpen}
         onOpenCopy={onOpenCopy}
+        onOpenLocal={() => {}}
         selfId="me"
         boundProjectId={null}
         {...props}

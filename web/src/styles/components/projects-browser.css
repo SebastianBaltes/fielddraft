@@ -211,4 +211,66 @@
       text-decoration: underline;
     }
   }
+
+  /* ── Local projects (ticket 14661fc4) — files on this device ── */
+  & .local-projects {
+    margin-bottom: var(--space-4);
+
+    & .local-title {
+      margin: 0 0 var(--space-2);
+      font-size: var(--fs-base);
+      color: var(--color-text-muted);
+      font-weight: 600;
+    }
+
+    & .local-list {
+      list-style: none;
+      margin: 0;
+      padding: 0;
+      display: flex;
+      flex-direction: column;
+      gap: var(--space-1);
+    }
+
+    & .local-row {
+      display: flex;
+      align-items: center;
+      gap: var(--space-3);
+      padding: var(--space-2) var(--space-3);
+      border: 1px solid var(--color-border);
+      border-radius: var(--radius-md);
+      background: var(--color-surface);
+    }
+
+    & .local-open {
+      font-family: inherit;
+      font-size: var(--fs-base);
+      padding: 0;
+      border: none;
+      background: transparent;
+      color: var(--color-accent);
+      cursor: pointer;
+
+      &:not(:disabled):hover {
+        text-decoration: underline;
+      }
+    }
+
+    & .local-forget {
+      margin-left: auto;
+      font-family: inherit;
+      font-size: var(--fs-base);
+      padding: 0;
+      border: none;
+      background: transparent;
+      color: var(--color-text-muted);
+      cursor: pointer;
+
+      &:hover {
+        color: var(--color-error-text);
+        text-decoration: underline;
+      }
+    }
+  }
+
 }

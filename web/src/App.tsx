@@ -31,6 +31,16 @@ import {
 } from "./projectStore";
 import { platformApi, type Project as ServerProject } from "./api/platform";
 import { parseHash, routeToHash } from "./account/hashRoute";
+import {
+  isLocalProjectsSupported,
+  localProjectHandle,
+  rememberLocalProject,
+  type FsaFileHandle,
+} from "./localProjects";
+import {
+  bindLocalFile,
+  clearLocalFileBinding,
+} from "./localFileBridge";
 
 // WP11: the deployed build gates the whole app behind login. The gate is a
 // build flag (default OFF) so local `just dev`, the Playwright e2e and offline
@@ -136,6 +146,7 @@ function AppShell({ account }: { account: UseAccount }) {
       );
       return;
     }
+    clearLocalFileBinding();
     account.enterProject();
   };
 
@@ -154,6 +165,7 @@ function AppShell({ account }: { account: UseAccount }) {
     } else if (store.loadProjectFromJson(json)) {
       store.detachServerProject();
     }
+    clearLocalFileBinding();
     account.enterProject();
   };
 
@@ -165,7 +177,93 @@ function AppShell({ account }: { account: UseAccount }) {
     if (store.loadProjectFromBytes(bytes)) {
       store.detachServerProject();
     }
+    clearLocalFileBinding();
     account.enterProject();
+  };
+
+  // ── Local projects (ticket 14661fc4) ────────────────────────────
+  // Open a local .fdraft through the File System Access API: the handle is
+  // remembered in IndexedDB (the Projects overview lists it for reopening)
+  // and, with readwrite permission, bound so the autosave mirrors the ZIP
+  // back to disk. Falls back to the classic hidden <input type=file> where
+  // the API is unavailable (then: no listing, no disk autosave).
+  const finishLocalOpen = async (handle: FsaFileHandle, writable: boolean) => {
+    if (!store) return;
+    const file = await handle.getFile();
+    const buf = await file.arrayBuffer();
+    clearLocalFileBinding();
+    store.detachServerProject();
+    if (!store.openUserProjectFromBytes(buf)) {
+      store.showTransientError(
+        `“${file.name}” is not a valid FieldDraft project.`,
+      );
+      return;
+    }
+    void rememberLocalProject(handle).catch(() => {});
+    if (writable) {
+      bindLocalFile(handle, () => store.exportProjectFdraft());
+    }
+    account.enterProject();
+  };
+
+  const openLocalViaPicker = () => {
+    if (!store) return;
+    if (!isLocalProjectsSupported()) {
+      document
+        .querySelector<HTMLInputElement>('[data-testid="load-project-input"]')
+        ?.click();
+      return;
+    }
+    void (async () => {
+      let handle: FsaFileHandle;
+      try {
+        const picked = await (
+          window as unknown as {
+            showOpenFilePicker(opts?: unknown): Promise<FsaFileHandle[]>;
+          }
+        ).showOpenFilePicker({
+          types: [
+            {
+              description: "FieldDraft project",
+              accept: {
+                "application/zip": [".fdraft"],
+                "application/json": [".json"],
+              },
+            },
+          ],
+        });
+        handle = picked[0];
+      } catch {
+        return; // picker cancelled
+      }
+      // Ask for write access right away (still within the picker's user
+      // activation) so the autosave can mirror to disk. Read-only grant
+      // still opens the project — it just won't autosave to the file.
+      let writable = false;
+      try {
+        writable =
+          typeof handle.requestPermission !== "function" ||
+          (await handle.requestPermission({ mode: "readwrite" })) ===
+            "granted";
+      } catch {
+        writable = false;
+      }
+      await finishLocalOpen(handle, writable);
+    })();
+  };
+
+  const openLocalProjectById = (id: string) => {
+    if (!store) return;
+    void (async () => {
+      const handle = await localProjectHandle(id);
+      if (!handle) {
+        store.showTransientError(
+          "This local project is no longer accessible — open it once via “Open local project…” again.",
+        );
+        return;
+      }
+      await finishLocalOpen(handle, true);
+    })();
   };
 
   const currentDocument = (): unknown | null => {
@@ -444,6 +542,7 @@ function AppShell({ account }: { account: UseAccount }) {
                 onSettingsChange={setSettings}
                 inProject={inProject}
                 onEnterProject={() => account.enterProject()}
+                onOpenLocal={openLocalViaPicker}
                 onSaveToCloud={
                   account.state.status === "authed" &&
                   store &&
@@ -562,6 +661,7 @@ function AppShell({ account }: { account: UseAccount }) {
             account={account}
             onOpenProject={openServerProject}
             onOpenCopy={openServerCopy}
+            onOpenLocalProject={openLocalProjectById}
             onLoadFdraft={loadFdraftBytes}
             boundProjectId={state?.projectId ?? null}
           />

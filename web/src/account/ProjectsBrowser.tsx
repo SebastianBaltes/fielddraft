@@ -25,6 +25,12 @@ import {
 } from "../api/platform";
 import { accountErrorMessage } from "./useAccount";
 import { parseProjectBytes, serializeProject } from "../project";
+import {
+  isLocalProjectsSupported,
+  listLocalProjects,
+  removeLocalProject,
+  type LocalProjectSummary,
+} from "../localProjects";
 
 /** Which projects the browser lists. `mine` and `public` map to the owner /
  *  gallery endpoints; `all` is their union (logged-in only). */
@@ -38,6 +44,8 @@ interface ProjectsBrowserProps {
   onOpen(project: Project): void;
   /** Open a PUBLIC project as a fresh unbound copy. */
   onOpenCopy(project: Project): void;
+  /** Reopen a remembered LOCAL project by registry id (ticket 14661fc4). */
+  onOpenLocal(id: string): void;
   /** The current admin's / owner's user id, to tell owned projects apart in the
    *  `all` view (owner actions only on your own). */
   selfId: string | null;
@@ -59,6 +67,7 @@ export function ProjectsBrowser({
   authed,
   onOpen,
   onOpenCopy,
+  onOpenLocal,
   selfId,
   boundProjectId,
 }: ProjectsBrowserProps) {
@@ -96,6 +105,27 @@ export function ProjectsBrowser({
   useEffect(() => {
     void reload();
   }, [reload]);
+
+  // Ticket 14661fc4: locally opened .fdraft files (File System Access API)
+  // are remembered in IndexedDB and listed alongside the cloud projects in
+  // the "mine"/"all" filters. Device-scoped, so independent of the session.
+  const [localList, setLocalList] = useState<LocalProjectSummary[]>([]);
+  useEffect(() => {
+    if (filter === "public") return;
+    let cancelled = false;
+    void listLocalProjects().then((list) => {
+      if (!cancelled) setLocalList(list);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [filter]);
+
+  const forgetLocal = (id: string) => {
+    void removeLocalProject(id).then(() =>
+      listLocalProjects().then(setLocalList),
+    );
+  };
 
   const guard = useCallback(
     async (id: string, fn: () => Promise<void>, fallback: string) => {
@@ -292,6 +322,44 @@ export function ProjectsBrowser({
           {error}
         </p>
       )}
+
+      {filter !== "public" &&
+        isLocalProjectsSupported() &&
+        localList.length > 0 && (
+          <div className="local-projects" data-testid="local-projects">
+            <h4 className="local-title">On this device</h4>
+            <ul className="local-list">
+              {localList.map((lp) => (
+                <li
+                  key={lp.id}
+                  className="local-row"
+                  data-testid={`local-project-${lp.id}`}
+                >
+                  <span className="badge">Local</span>
+                  <button
+                    type="button"
+                    className="local-open"
+                    data-testid={`local-open-${lp.id}`}
+                    disabled={busyId !== null}
+                    onClick={() => onOpenLocal(lp.id)}
+                    title="Reopen this file (may ask for permission)"
+                  >
+                    {lp.name}
+                  </button>
+                  <button
+                    type="button"
+                    className="local-forget"
+                    data-testid={`local-forget-${lp.id}`}
+                    onClick={() => forgetLocal(lp.id)}
+                    title="Remove from this list (the file stays on disk)"
+                  >
+                    Forget
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
 
       {loading ? (
         <p className="empty" data-testid="projects-loading">

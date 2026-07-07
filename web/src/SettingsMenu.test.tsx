@@ -67,6 +67,7 @@ function setup() {
           onSettingsChange={onChange}
           inProject
           onEnterProject={() => {}}
+          onOpenLocal={() => {}}
           onSaveToCloud={null}
         />,
       );
@@ -82,6 +83,7 @@ function setup() {
         onSettingsChange={onChange}
         inProject
         onEnterProject={() => {}}
+        onOpenLocal={() => {}}
         onSaveToCloud={null}
       />,
     );

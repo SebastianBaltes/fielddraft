@@ -64,6 +64,7 @@ function mount(account: UseAccount) {
         account={account}
         onOpenProject={() => {}}
         onOpenCopy={() => {}}
+        onOpenLocalProject={() => {}}
         onLoadFdraft={() => {}}
         boundProjectId={null}
       />,

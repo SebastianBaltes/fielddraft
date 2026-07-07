@@ -24,6 +24,17 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.459",
+    entries: [
+      {
+        kind: "feat",
+        scope: "projects",
+        tickets: ["14661fc4"],
+        text: "Lokale Projekte erscheinen jetzt in der Projekt-Übersicht („On this device“) und lassen sich von dort wieder öffnen: „Open local project…“ nutzt die File-System-Access-API, merkt sich das FileHandle in IndexedDB, und der Autosave schreibt die .fdraft-Datei fortan direkt auf der Platte mit (gleiche Bytes wie „Download project“). „Forget“ entfernt einen Eintrag aus der Liste (die Datei bleibt). Auf Browsern ohne File-System-Access-API bleibt der klassische Datei-Dialog ohne Merken/Disk-Autosave.",
+      },
+    ],
+  },
+  {
     version: "0.6.458",
     entries: [
       {

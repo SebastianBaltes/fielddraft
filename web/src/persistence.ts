@@ -41,6 +41,16 @@ export interface CreateAutoSaveOptions {
   clearTimeoutImpl?: typeof clearTimeout;
 }
 
+/** Ticket 14661fc4: a secondary autosave sink. While a LOCAL project file
+ *  is bound (localFileBridge), every debounced autosave write also triggers
+ *  a mirror write of the `.fdraft` bytes back to disk. Module-scoped so the
+ *  bridge can attach without threading through every AutoSaveHandle. */
+let autosaveMirror: (() => void) | null = null;
+
+export function setAutosaveMirror(fn: (() => void) | null): void {
+  autosaveMirror = fn;
+}
+
 function safeStorage(): StorageLike | null {
   try {
     if (typeof globalThis.localStorage === "undefined") return null;
@@ -104,6 +114,7 @@ export function createAutoSave(options: CreateAutoSaveOptions = {}): AutoSaveHan
     try {
       const json = typeof pending === "function" ? pending() : pending;
       storage.setItem(key, json);
+      autosaveMirror?.();
     } catch (err) {
       // Quota exceeded, private mode, disk full — swallow but surface on the
       // console so the UI can pick it up from a hook later if needed.

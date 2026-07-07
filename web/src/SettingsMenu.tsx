@@ -108,6 +108,10 @@ interface SettingsMenuProps {
    *  local `.fdraft` as an unbound project and this callback switches the
    *  app into the modeling view (otherwise the load happens invisibly). */
   onEnterProject: () => void;
+  /** Ticket 14661fc4: open a local .fdraft — App routes this to the File
+   *  System Access picker (remember + disk autosave) or falls back to the
+   *  hidden file input below on unsupported browsers. */
+  onOpenLocal: () => void;
   /** Ticket 6c09c11f: turn the open LOCAL project into a cloud project.
    *  `null` when unavailable (guest, or already bound) — the menu item
    *  renders disabled with a hint then. */
@@ -121,6 +125,7 @@ export function SettingsMenu({
   onSettingsChange,
   inProject,
   onEnterProject,
+  onOpenLocal,
   onSaveToCloud,
 }: SettingsMenuProps) {
   const [open, setOpen] = useState(false);
@@ -244,15 +249,7 @@ export function SettingsMenu({
             role="menuitem"
             className="menu-item"
             data-testid="menu-open"
-            onClick={() =>
-              menuAction(() =>
-                document
-                  .querySelector<HTMLInputElement>(
-                    '[data-testid="load-project-input"]',
-                  )
-                  ?.click(),
-              )
-            }
+            onClick={() => menuAction(onOpenLocal)}
           >
             Open local project…
           </button>
