@@ -191,8 +191,15 @@ Constraint-Polygon.** Begründung gegen die Alternativen:
     Face bleibt unvermascht). Rohr-Meilenstein: Rechteck-Revolve ∩ Box
     end-to-end wasserdicht (Torus, Euler=0); Außen-/Innenwand desselben
     Branch trennen sich rein übers Chart, Deckel als Annuli.
-  - *P4c offen*: Polkappen-Fächer (Windung-1-Loops), Anisotropie,
-    Gyroid-Blätter (Tessellated-Faces).
+  - *P4c umgesetzt (v0.6.437)*: Polkappen-Fächer — bei einer windenden
+    Loop mit bekanntem Pol (Sphere/Cone/Revolve-Achsberührung) wird ein
+    Pol-Ring aus Aux-Punkten knapp vor dem Pol erzeugt, Loop↔Ring läuft
+    rekursiv durch den Band-Pfad, der Ring schließt per Dreiecks-Fächer
+    zum einzelnen Pol-Vertex (nie zwei Pol-Ecken pro Dreieck). Ring-
+    Auflösung aus der Welt-Bogenlänge. Kugelkappe ∩ Box: Euler=2.
+  - *P4d offen*: Anisotropie (M=QᵀQ), Gyroid-Blätter (Tessellated-Faces),
+    Zonen über den Pol (nicht-windende Loops, Pol im Inneren — derzeit
+    unerkannt, hinterlässt ein Loch am Pol).
 - **P5 — Export-Integration**: Ersetzt MT/MDC im Export-Dialog als
   Qualitätsstufe „CAD (kantenexakt)"; Survey-Harness
   (ticket_survey_all_methods) erweitert um Hausdorff/Winkel-Histogramm wie
