@@ -118,6 +118,7 @@ export const FEATURE_TYPE_META: Record<
   mirror: { label: "Mirror", glyph: "◫" },
   mate_connector: { label: "Mate Connector", glyph: "⊕" },
   fillet_edge: { label: "Fillet Edge", glyph: "◠" },
+  round_all: { label: "Round All Edges", glyph: "⬭" },
   shell: { label: "Shell", glyph: "⬚" },
   thicken: { label: "Thicken", glyph: "◗" },
   sweep: { label: "Sweep", glyph: "↝" },

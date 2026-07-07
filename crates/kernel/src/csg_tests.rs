@@ -1058,6 +1058,70 @@ fn smin_poly_zero_set_is_an_exact_circle() {
     assert!(super::smin_poly(cross + 0.1, cross + 0.1, r) > 0.0, "outside the arc is positive");
 }
 
+/// d: `apply_global_round` rewrites every hard Boolean junction to its
+/// smooth form (Union→SmoothUnion, Difference→SmoothDifference) and leaves
+/// existing blends untouched.
+#[test]
+fn apply_global_round_smooths_all_hard_junctions() {
+    let a = CsgNode::Leaf {
+        id: FeatureId::from_u32(1),
+        primitive: Primitive::Box { center: [0.0; 3], half_extents: [10.0, 10.0, 10.0] },
+    };
+    let b = CsgNode::Leaf {
+        id: FeatureId::from_u32(2),
+        primitive: Primitive::Box { center: [12.0, 0.0, 0.0], half_extents: [10.0, 10.0, 10.0] },
+    };
+    let c = CsgNode::Leaf {
+        id: FeatureId::from_u32(3),
+        primitive: Primitive::Cylinder { center: [0.0; 3], radius: 3.0, half_height: 20.0 },
+    };
+    // (box ∪ box) − cylinder.
+    let tree = CsgNode::Difference(
+        Box::new(CsgNode::Union(Box::new(a), Box::new(b))),
+        Box::new(c),
+    );
+    let rounded = tree.apply_global_round(2.0);
+    match rounded {
+        CsgNode::SmoothDifference(inner, _, r, BlendMode::Fillet) => {
+            assert_eq!(r, 2.0);
+            assert!(
+                matches!(*inner, CsgNode::SmoothUnion(_, _, 2.0, BlendMode::Fillet)),
+                "the inner union rounds too"
+            );
+        }
+        other => panic!("top Difference must become SmoothDifference, got {other:?}"),
+    }
+    // r == 0 is a no-op.
+    let flat = CsgNode::Union(
+        Box::new(CsgNode::Leaf { id: FeatureId::from_u32(1), primitive: Primitive::Sphere { center: [0.0; 3], radius: 5.0 } }),
+        Box::new(CsgNode::Leaf { id: FeatureId::from_u32(2), primitive: Primitive::Sphere { center: [4.0, 0.0, 0.0], radius: 5.0 } }),
+    );
+    assert!(matches!(flat.apply_global_round(0.0), CsgNode::Union(_, _)));
+}
+
+/// d: the global round actually rounds the geometry — at a convex union edge
+/// the field is pulled below the hard `min` (a fillet of the requested radius).
+#[test]
+fn apply_global_round_rounds_a_union_edge() {
+    let a = CsgNode::Leaf {
+        id: FeatureId::from_u32(1),
+        primitive: Primitive::Box { center: [0.0; 3], half_extents: [10.0, 10.0, 10.0] },
+    };
+    let b = CsgNode::Leaf {
+        id: FeatureId::from_u32(2),
+        primitive: Primitive::Box { center: [10.0, 10.0, 0.0], half_extents: [10.0, 10.0, 10.0] },
+    };
+    let hard = CsgNode::Union(Box::new(a.clone()), Box::new(b.clone()));
+    let rounded = hard.clone().apply_global_round(3.0);
+    // The convex edge sits where the two top faces (y=10) and side faces
+    // (x=10) meet, near (10, 10, 0). Just outside, the round pulls the field
+    // more negative (adds the fillet material).
+    let p = [10.0, 10.0, 0.0];
+    let d_hard = hard.sdf(p, EvalMode::Visual);
+    let d_round = rounded.sdf(p, EvalMode::Visual);
+    assert!(d_round < d_hard, "round {d_round} not < hard {d_hard}");
+}
+
 #[test]
 fn smooth_union_rounds_a_box_sphere_junction() {
     let a = CsgNode::Leaf {

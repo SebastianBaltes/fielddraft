@@ -1354,6 +1354,95 @@ impl CsgNode {
         }
     }
 
+    /// d / "Kanten runden (global)": round EVERY remaining hard Boolean
+    /// junction with radius `r`, reusing the exact-circular smin. A plain
+    /// `Union` becomes `SmoothUnion` (convex edge rounded), `Difference`
+    /// becomes `SmoothDifference` (concave edge rounded). Nodes already
+    /// blended per-edge (`MaskedBlend`) or per-feature (`SmoothUnion`/
+    /// `SmoothDifference`, i.e. a fillet the user placed by hand) are left
+    /// untouched — the global round only fills the gaps.
+    ///
+    /// This is the SDF-native "deburr everything" operator: robust (a field
+    /// blend never invalidates the solid) and exact between planar walls. It
+    /// rounds FEATURE-JUNCTION edges; a lone primitive's own edges are inside
+    /// its SDF, not a Boolean node, so they are out of scope (that needs a
+    /// per-primitive round radius or an eikonal offset — neither built).
+    pub fn apply_global_round(self, r: f32) -> Self {
+        if r <= 0.0 {
+            return self;
+        }
+        match self {
+            CsgNode::Union(a, b) => CsgNode::SmoothUnion(
+                Box::new(a.apply_global_round(r)),
+                Box::new(b.apply_global_round(r)),
+                r,
+                BlendMode::Fillet,
+            ),
+            CsgNode::Difference(a, b) => CsgNode::SmoothDifference(
+                Box::new(a.apply_global_round(r)),
+                Box::new(b.apply_global_round(r)),
+                r,
+                BlendMode::Fillet,
+            ),
+            CsgNode::Intersection(a, b) => CsgNode::Intersection(
+                Box::new(a.apply_global_round(r)),
+                Box::new(b.apply_global_round(r)),
+            ),
+            // Recurse through existing blends/morphs without re-rounding them.
+            CsgNode::SmoothUnion(a, b, br, m) => CsgNode::SmoothUnion(
+                Box::new(a.apply_global_round(r)),
+                Box::new(b.apply_global_round(r)),
+                br,
+                m,
+            ),
+            CsgNode::SmoothDifference(a, b, br, m) => CsgNode::SmoothDifference(
+                Box::new(a.apply_global_round(r)),
+                Box::new(b.apply_global_round(r)),
+                br,
+                m,
+            ),
+            CsgNode::Morph(a, b, t) => CsgNode::Morph(
+                Box::new(a.apply_global_round(r)),
+                Box::new(b.apply_global_round(r)),
+                t,
+            ),
+            CsgNode::MaskedBlend {
+                a,
+                b,
+                mask_polyline,
+                mask_radius,
+                blend_radius,
+                blend_mode,
+                is_difference,
+                provenance,
+            } => CsgNode::MaskedBlend {
+                a: Box::new(a.apply_global_round(r)),
+                b: Box::new(b.apply_global_round(r)),
+                mask_polyline,
+                mask_radius,
+                blend_radius,
+                blend_mode,
+                is_difference,
+                provenance,
+            },
+            CsgNode::Transform(t, inner) => {
+                CsgNode::Transform(t, Box::new(inner.apply_global_round(r)))
+            }
+            CsgNode::Twist(inner, rate) => CsgNode::Twist(Box::new(inner.apply_global_round(r)), rate),
+            CsgNode::Bend(inner, rate) => CsgNode::Bend(Box::new(inner.apply_global_round(r)), rate),
+            CsgNode::Shell(inner, t, open) => {
+                CsgNode::Shell(Box::new(inner.apply_global_round(r)), t, open)
+            }
+            CsgNode::Offset(inner, delta) => {
+                CsgNode::Offset(Box::new(inner.apply_global_round(r)), delta)
+            }
+            CsgNode::Displace(inner, d, f) => {
+                CsgNode::Displace(Box::new(inner.apply_global_round(r)), d, f)
+            }
+            other => other,
+        }
+    }
+
     /// K3.5C: collect a map of leaf FeatureId → Primitive reference.
     pub fn leaf_primitives(&self) -> std::collections::HashMap<u32, &Primitive> {
         let mut out = std::collections::HashMap::new();

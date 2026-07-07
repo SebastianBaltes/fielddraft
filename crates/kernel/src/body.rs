@@ -958,8 +958,22 @@ fn hash_feature_geometry(f: &DecodedFeature, hasher: &mut DefaultHasher) {
 /// the logic: take the body's subset of features, fold them into a
 /// `CsgNode` via `from_features`, then BVH-wrap.
 pub fn build_bounded_for_body(features: &[DecodedFeature], indices: &[usize]) -> BoundedCsg {
+    build_bounded_for_body_rounded(features, indices, None)
+}
+
+/// Like [`build_bounded_for_body`] but rounds every Boolean junction by
+/// `global_round` first (feature `round_all`, d). Used by the GPU-SDF compile
+/// path so the ray-marched render shows the deburred edges.
+pub fn build_bounded_for_body_rounded(
+    features: &[DecodedFeature],
+    indices: &[usize],
+    global_round: Option<f32>,
+) -> BoundedCsg {
     let sub: Vec<DecodedFeature> = indices.iter().map(|&i| features[i].clone()).collect();
-    let csg = CsgNode::from_decoded(&sub);
+    let mut csg = CsgNode::from_decoded(&sub);
+    if let Some(r) = global_round {
+        csg = csg.apply_global_round(r);
+    }
     BoundedCsg::from_csg(&csg)
 }
 
@@ -990,8 +1004,23 @@ pub fn build_bounded_with_primitives(
     features: &[DecodedFeature],
     indices: &[usize],
 ) -> (BoundedCsg, std::collections::HashMap<u32, fielddraft_protocol::Primitive>) {
+    build_bounded_with_primitives_rounded(features, indices, None)
+}
+
+/// Like [`build_bounded_with_primitives`] but rounds every Boolean junction by
+/// `global_round` first (feature `round_all`, d), so the render mesh shows the
+/// deburred edges. `None` is the plain build. The primitive map is unaffected —
+/// the round only rewrites Boolean nodes, never leaves.
+pub fn build_bounded_with_primitives_rounded(
+    features: &[DecodedFeature],
+    indices: &[usize],
+    global_round: Option<f32>,
+) -> (BoundedCsg, std::collections::HashMap<u32, fielddraft_protocol::Primitive>) {
     let sub: Vec<DecodedFeature> = indices.iter().map(|&i| features[i].clone()).collect();
-    let csg = CsgNode::from_decoded(&sub);
+    let mut csg = CsgNode::from_decoded(&sub);
+    if let Some(r) = global_round {
+        csg = csg.apply_global_round(r);
+    }
     let prims: std::collections::HashMap<u32, fielddraft_protocol::Primitive> = csg
         .leaf_primitives()
         .into_iter()

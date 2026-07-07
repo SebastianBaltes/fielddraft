@@ -24,12 +24,22 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.462",
+    entries: [
+      {
+        kind: "feat",
+        scope: "kernel",
+        text: "Neues Feature „Round All Edges“: rundet in einem Schritt jede Kante global mit einem Radius. Als Feld-Operator (SDF) kann die Rundung den Körper nie in einen ungültigen Zustand bringen, und zwischen ebenen Flächen ist sie ein exakter Kreisbogen. Gerundet werden die Kanten, an denen Features aneinanderstoßen; die Eigenkanten eines einzelnen Primitivs bleiben vorerst außen vor.",
+      },
+    ],
+  },
+  {
     version: "0.6.461",
     entries: [
       {
         kind: "fix",
         scope: "kernel",
-        text: "Fillets sind jetzt exakt kreisförmig: Der Rundungs-Übergang nutzt die zirkuläre smin-Form (echter Kreisbogen vom Radius r zwischen zwei ebenen Flächen) statt der bisherigen kubischen Polynom-Näherung — ein gefilletes Kantenprofil hat damit einen messbaren Radius. Nebenbei die zwei bisher auseinanderlaufenden smin-Familien vereinheitlicht (CPU-Kernel war kubisch, Tape/GPU/CGAL-Mesher quadratisch — beide behaupteten fälschlich „cubic") und einen fehlenden Nulldivisions-Schutz (blend_radius 0) in der Tape-Familie ergänzt.",
+        text: "Fillets sind jetzt exakt kreisförmig: Der Rundungs-Übergang nutzt die zirkuläre smin-Form (echter Kreisbogen vom Radius r zwischen zwei ebenen Flächen) statt der bisherigen kubischen Polynom-Näherung — ein gefilletes Kantenprofil hat damit einen messbaren Radius. Nebenbei die zwei bisher auseinanderlaufenden smin-Familien vereinheitlicht (CPU-Kernel war kubisch, Tape/GPU/CGAL-Mesher quadratisch — beide behaupteten fälschlich „cubic“) und einen fehlenden Nulldivisions-Schutz (blend_radius 0) in der Tape-Familie ergänzt.",
       },
     ],
   },

@@ -280,6 +280,7 @@ export type FeatureKindName =
   | "mirror"
   | "mate_connector"
   | "fillet_edge"
+  | "round_all"
   | "shell"
   | "sweep"
   | "imported_mesh"
@@ -1448,6 +1449,11 @@ export class Kernel {
    *  feature so its dialog can be filled. */
   addShell(openFaces: string, thicknessMm: number): number {
     return this.inner.addShell(openFaces, thicknessMm);
+  }
+
+  /** d: round every Boolean-junction edge globally with `radiusMm` (0 clears). */
+  addRoundAll(radiusMm: number): number {
+    return this.inner.addRoundAll(radiusMm);
   }
 
   /** Extrude one or more coplanar planar faces (P1). `faces` is a

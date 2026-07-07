@@ -1483,6 +1483,14 @@ export function Toolbar({ store, state }: ToolbarProps) {
           label="Shell"
         />
         <FeatureButton
+          kind="round_all"
+          title="Round every edge globally — set the radius in the dialog"
+          testId="add-round-all"
+          disabled={!hasFeatures}
+          onClick={() => store.addRoundAll()}
+          label="Round All"
+        />
+        <FeatureButton
           kind="mate_connector"
           title="Place a mate connector (Ctrl+M)"
           testId="add-mate-connector"

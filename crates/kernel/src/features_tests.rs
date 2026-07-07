@@ -16,7 +16,7 @@ fn empty_ctx() -> Document {
 #[test]
 fn with_builtins_registers_the_k1_primitives_and_k4_5_8_extrude() {
     let registry = FeatureRegistry::with_builtins();
-    assert_eq!(registry.len(), 30);
+    assert_eq!(registry.len(), 31);
     assert!(registry.get("box").is_some());
     assert!(registry.get("sphere").is_some());
     assert!(registry.get("cylinder").is_some());
@@ -89,6 +89,7 @@ fn type_names_contains_all_four_builtins() {
             "mirror",
             "revolve",
             "rotate",
+            "round_all",
             "scale",
             "shell",
             "sketch",
@@ -4684,6 +4685,51 @@ fn fillet_edge_query_resolving_nothing_is_a_hard_error() {
         )
         .unwrap_err();
     assert!(format!("{err:?}").contains("edge"), "error mentions the edge param: {err:?}");
+}
+
+/// d: the `round_all` feature captures a document-wide round radius, and the
+/// eval CSG (mesh/GPU-SDF path) rounds every Boolean junction with it.
+#[test]
+fn round_all_feature_rounds_every_junction() {
+    let registry = FeatureRegistry::with_builtins();
+    let mut doc = empty_ctx();
+    let mut ctx = Context::new(&mut doc);
+    // Two overlapping boxes (a union) + a global round.
+    registry
+        .regenerate(
+            &mut ctx,
+            &[
+                box_call(1, 10.0),
+                FeatureCall::new(
+                    "box",
+                    id(2),
+                    json!({ "half_extents": [10.0, 10.0, 10.0], "center": [14.0, 0.0, 0.0] }),
+                ),
+                FeatureCall::new("round_all", id(3), json!({ "radius": 3.0 })),
+            ],
+            None,
+        )
+        .unwrap();
+    assert_eq!(ctx.global_round, Some(3.0), "round_all captured the radius");
+
+    // The rounded eval CSG pulls the convex union edge below the hard min.
+    let hard = crate::csg::CsgNode::from_decoded(&ctx.features);
+    let rounded = hard.clone().apply_global_round(3.0);
+    // Convex edge near (4, 10, 0) where box1's +Y face meets box2's −X region.
+    let p = [4.0, 10.0, 0.0];
+    let d_hard = hard.sdf(p, crate::csg::EvalMode::Visual);
+    let d_round = rounded.sdf(p, crate::csg::EvalMode::Visual);
+    assert!(d_round < d_hard, "round {d_round} not < hard {d_hard}");
+
+    // radius 0 clears the global round.
+    registry
+        .regenerate(
+            &mut ctx,
+            &[box_call(1, 10.0), FeatureCall::new("round_all", id(3), json!({ "radius": 0.0 }))],
+            None,
+        )
+        .unwrap();
+    assert_eq!(ctx.global_round, None, "radius 0 clears the round");
 }
 
 /// c-M1: the procedural blend carrier. A filleted junction must weave the
