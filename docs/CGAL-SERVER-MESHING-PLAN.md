@@ -1,5 +1,17 @@
 # Serverseitiges CGAL-Meshing (Plan-SSOT)
 
+**Status (2026-07-07): ALLE Meilensteine M1–M6 UMGESETZT** (v0.6.438–443,
+Commits 584ecf3…9940896). M1 Kern-Pipeline (fd-prepare | fd-cgal-mesh,
+verify_stl.py: Box/Zylinder/Rohr/Vase wasserdicht/2-manifold/kantenexakt),
+M2 Service-Container (cgal-mesher/Dockerfile, Golden-Test im Image-Build,
+Go-Wrapper serve/, Compose `mesher`), M3 Backend (mesh_jobs 0006,
+Dispatcher, Routen, Live-Roundtrip verifiziert), M4 Frontend (Export-
+Methode „CGAL Mesh_3 (server)", Polling+Cancel, STL-Preview), M5 Prod
+(prod-Compose, drittes GHCR-Image in release.yml, Env-Tuning, DEPLOY.md),
+M6 3MF (clientseitige Konvertierung via mesh3mfFromBuffers). Bekannt offen
+(§4): Gyroid/TPMS-Initial-Seeding, Baked Volumes (OP_PRIM_TEX3D),
+sdf_interp.h ohne HALFSPACE/Helix/Sweep-Opcodes.
+
 Richtungsschwenk (2026-07-07): Export-Meshing höchster Qualität läuft künftig
 **serverseitig** über CGAL `Mesh_3`. Die clientseitige CGAL-Integration
 (Wasm/Emscripten, Branch `feat/cgal-mesher`) wird **verworfen** — ihre
