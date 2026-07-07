@@ -24,6 +24,16 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.454",
+    entries: [
+      {
+        kind: "fix",
+        scope: "shell",
+        text: "Shell-Open-Faces erreichen jetzt auch Sweep-Körper: Beide SDF-Evaluatoren (BVH-Hot-Path und Picking-Pfad) gaten das geöffnete Profil-Segment im Querschnitt des Sweeps — Parität mit Extrude/Revolve/Helix, die den Retained-Pfad schon konnten.",
+      },
+    ],
+  },
+  {
     version: "0.6.453",
     entries: [
       {

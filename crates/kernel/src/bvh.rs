@@ -574,12 +574,22 @@ impl BoundedCsg {
                 };
                 crate::helix_compose(d, ell) * scale * world_transform.min_scale()
             }
-            BoundedCsg::Sweep { sketch, path, world_transform, .. } => {
+            BoundedCsg::Sweep { id, sketch, path, world_transform, .. } => {
                 // The nearest-spine-point map + cap composition lives on the
                 // shared SweepPath; the gate guarantees the foot is unique.
-                // (Shell-retained eval on a sweep is not yet supported.)
+                // Shell-retained eval mirrors the Helix arm: project into the
+                // profile plane, gate the opened profile segments there, and
+                // re-compose with the axial cap coordinate.
                 let local = world_to_local(world_transform, p);
-                path.sdf(sketch, local) * world_transform.min_scale()
+                let d = if open.has_feature(id.as_u32_or_root().unwrap_or(0)) {
+                    let cs = path.cross_section(local);
+                    let d2 = sketch
+                        .sdf_retained([cs.u, cs.v], &mut |g| open.contains_sub(id, g));
+                    crate::sweep_path::sweep_compose(d2, cs.w)
+                } else {
+                    path.sdf(sketch, local)
+                };
+                d * world_transform.min_scale()
             }
             BoundedCsg::Morph { left, right, t, .. } => {
                 let da = left.sdf_open(p, mode, open);
@@ -2021,5 +2031,62 @@ mod tests {
             c_in.as_slice().iter().all(|b| b.feature_id() == 1),
             "inner wall keeps its owning feature"
         );
+    }
+
+    /// Shell-retained eval reaches a Sweep's profile (parity with the
+    /// Extrude/Revolve/Helix arms): an open set naming one of the sweep
+    /// profile's sub-groups must change the field near the wall skin, and an
+    /// open set naming a DIFFERENT feature must leave it byte-identical.
+    #[test]
+    fn sweep_shell_retained_eval_gates_the_profile() {
+        use crate::csg::{CsgNode, EvalMode, OpenBranchSet, OpenSurface};
+        use fielddraft_protocol::{HalfSpace, Sketch2d, Sketch2dPrimitive, Transform};
+
+        let sweep_id = FeatureId::from_u32(7);
+        let node = CsgNode::Sweep {
+            id: sweep_id.clone(),
+            // Retained groups only exist for Path profiles (per-segment
+            // branch sub-ids) — exactly what a committed sketch lowers to.
+            sketch: Box::new(Sketch2d::Prim(Sketch2dPrimitive::Path {
+                segments: vec![
+                    fielddraft_protocol::SketchSegment::Line { start: [-2.0, -2.0], end: [2.0, -2.0] },
+                    fielddraft_protocol::SketchSegment::Line { start: [2.0, -2.0], end: [2.0, 2.0] },
+                    fielddraft_protocol::SketchSegment::Line { start: [2.0, 2.0], end: [-2.0, 2.0] },
+                    fielddraft_protocol::SketchSegment::Line { start: [-2.0, 2.0], end: [-2.0, -2.0] },
+                ],
+                closed: true,
+            })),
+            path: vec![[0.0, 0.0, 0.0], [10.0, 0.0, 0.0], [20.0, 0.0, 5.0]],
+            closed: false,
+            twist: 0.0,
+        };
+        let body = BoundedCsg::from_csg(&node);
+        // A probe point just outside the wall skin at the path's middle.
+        let probe = [10.0, 2.5, 0.0];
+        let baseline = body.sdf_open(probe, EvalMode::Logical, &OpenBranchSet::EMPTY);
+        assert!(baseline.is_finite() && baseline > 0.0, "probe starts outside the skin");
+
+        let open_surface = |feature: &FeatureId, sub: u32| OpenSurface {
+            branch: crate::csg::BranchId::from_feature_sub(feature, sub).as_u32(),
+            surface: HalfSpace::Plane { normal: [0.0, 1.0, 0.0], offset: 0.0 },
+            placement: Transform::IDENTITY,
+        };
+
+        // A different feature's open set must not perturb the sweep at all.
+        let foreign = [open_surface(&FeatureId::from_u32(99), 0)];
+        let set = OpenBranchSet::push(&OpenBranchSet::EMPTY, &foreign);
+        let with_foreign = body.sdf_open(probe, EvalMode::Logical, &set);
+        assert_eq!(baseline, with_foreign, "foreign feature must not gate the sweep");
+
+        // Opening one of the sweep's own profile groups must change the wall
+        // field (the retained profile drops that segment's boundary). The
+        // exact group numbering is a sketch-SDF detail — any of the first few
+        // firing proves the gate is wired end-to-end.
+        let changed = (0..8).any(|g| {
+            let own = [open_surface(&sweep_id, g)];
+            let set = OpenBranchSet::push(&OpenBranchSet::EMPTY, &own);
+            body.sdf_open(probe, EvalMode::Logical, &set) != baseline
+        });
+        assert!(changed, "opening a sweep profile group must reach the retained profile");
     }
 }

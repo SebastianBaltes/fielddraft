@@ -1586,13 +1586,24 @@ impl CsgNode {
                 };
                 crate::helix_compose(d, ell) * scale
             }
-            CsgNode::Sweep { sketch, path, closed, twist, .. } => {
+            CsgNode::Sweep { id, sketch, path, closed, twist, .. } => {
                 // Unbounded picking-path eval: build the SweepPath on the fly
                 // (the hot render path uses BoundedCsg::Sweep's cached one).
+                // Shell-retained eval mirrors the Helix arm via the profile
+                // plane (see the BoundedCsg::Sweep counterpart).
                 let bounded = crate::sketch2d::BoundedSketch2d::from_sketch(sketch);
-                crate::sweep_path::SweepPath::new(path.clone(), *closed, *twist)
-                    .map(|sp| sp.sdf(&bounded, p))
-                    .unwrap_or(f32::INFINITY)
+                let Some(sp) = crate::sweep_path::SweepPath::new(path.clone(), *closed, *twist)
+                else {
+                    return f32::INFINITY;
+                };
+                if open.has_feature(id.as_u32_or_root().unwrap_or(0)) {
+                    let cs = sp.cross_section(p);
+                    let d2 = bounded
+                        .sdf_retained([cs.u, cs.v], &mut |g| open.contains_sub(id, g));
+                    crate::sweep_path::sweep_compose(d2, cs.w)
+                } else {
+                    sp.sdf(&bounded, p)
+                }
             }
         }
     }
