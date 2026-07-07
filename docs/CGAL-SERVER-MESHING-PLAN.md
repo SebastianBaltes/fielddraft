@@ -17,25 +17,33 @@ Domain und (2) den B-Rep-Kanten/-Ecken als geschützten 1D-Features.
 sequenceDiagram
     participant FE as Frontend (ExportDialog)
     participant GO as Go-Server (api)
-    participant MS as Mesher-Service (Container)
+    participant MS as Mesher-Service (skalierbar)
     participant BL as Blob-Store
 
     FE->>GO: PATCH /api/projects/{id} (Projekt speichern)
     FE->>GO: POST /api/projects/{id}/mesh {partId, params, format}
-    GO->>GO: Auth + Ownership, document aus DB
+    GO->>GO: Auth + Ownership → Job anlegen (status queued)
+    GO-->>FE: {jobId}
+    loop Polling (~1–2 s)
+        FE->>GO: GET /api/mesh-jobs/{jobId}
+        GO-->>FE: {status, progress?, …}
+    end
+    Note over GO,MS: Dispatcher (Worker-Pool) nimmt Job
     GO->>MS: POST /mesh {document.json des Parts, params}
     MS->>MS: fd-prepare (Rust): Opcodes+AABB+BRep-Kanten je Body
-    MS->>MS: fd-cgal-mesh (C++): Mesh_3, Feature-Protection, STL
-    MS-->>GO: Mesh-Bytes (binäres STL)
+    MS->>MS: fd-cgal-mesh (C++, TBB-parallel): Mesh_3, STL
+    MS-->>GO: Mesh-Bytes (binäres STL) + Report
     GO->>BL: putBlob(stl) → sha256-Ref
-    GO-->>FE: {blobRef, url, report}
+    GO->>GO: Job → done {blobRef, report}
     FE->>GO: GET /api/mesh-artifacts/{ref} (Download/Preview)
     FE->>FE: STL parsen → setExportPreview(positions, indices)
 ```
 
-Erster Wurf **synchron**: der POST hält die Verbindung, bis das Mesh fertig
-ist (Timeout großzügig, z.B. 10 min); Job-Queue/Polling ist eine spätere
-Ausbaustufe (Muster analog `WorkOrder` existiert im Server).
+**Job-Queue von Anfang an** (Entscheid 2026-07-07): `POST …/mesh` legt nur
+einen Job an und antwortet sofort mit `{jobId}`; das Frontend pollt
+`GET /api/mesh-jobs/{jobId}` bis `done`/`error`. Kein hängender Request,
+Browser-Reload/Timeout-fest, und mehrere Mesher-Replicas können Jobs
+abarbeiten.
 
 ## 2. Komponenten & Phasen
 
@@ -51,8 +59,15 @@ Umbau Wasm → nativ:
 - **CMake statt em++/build.sh**; echtes **GMP/MPFR** statt
   `CGAL_DISABLE_GMP/Boost.MP` (nativ verfügbar, schneller/robuster);
   `-DCGAL_ALWAYS_ROUND_TO_NEAREST` und `CGAL_HAS_NO_THREADS` entfallen.
-  Optional **TBB** (`Parallel_tag` in `Mesh_triangulation_3`) — erst wenn
-  die serielle Version steht.
+- **Multithreading fest eingeplant (TBB)**: `Parallel_tag` als dritter
+  Template-Parameter von `Mesh_triangulation_3` + Link gegen Intel TBB
+  parallelisiert Refinement sowie Lloyd/ODT/Perturber (der Exuder bleibt
+  sequenziell; die 1D-Feature-Protection ist eine kurze sequenzielle
+  Vorphase). M1 darf seriell starten (`Sequential_tag`, ein
+  Compile-Switch), der Service-Build (M2) kompiliert mit `Parallel_tag`;
+  Thread-Zahl pro Job via `FD_MESH_THREADS` (TBB
+  `global_control::max_allowed_parallelism`), damit Jobs × Threads die
+  Host-Kerne nicht überzeichnen.
 - **CLI-Hülle** um die bestehende C-API: liest EIN Input-File (Format §3),
   schreibt **binäres STL** nach stdout/Datei, Exit-Code + Report
   (Dreiecke, Dauer, Kriterien) als JSON auf stderr/Seitendatei.
@@ -102,16 +117,28 @@ Dockerfile mehrstufig: Rust-Builder (kernel-bin) + C++-Builder
 (CGAL/GMP/MPFR aus Debian-Paketen — `libcgal-dev` reicht, CGAL ist
 header-only) → schlankes Runtime-Image.
 
-### P4 — Go-Server-Route
+### P4 — Go-Server: Job-Queue + Routen
 
-- `POST /api/projects/{id}/mesh` `{partId, cellSizeMm, format, …}`:
-  `requireAuth` + Ownership → Part-Document aus `Project.Document`
-  extrahieren → Mesher-Service (interne URL via Env `MESHER_URL`) →
-  `putBlob(stl)` → Antwort `{ref, url, report}`.
-- `GET /api/mesh-artifacts/{ref}`: Serving analog `handleGetArtifact`
-  (Content-Type `model/stl`, Download-Header), auth-pflichtig.
-- Rate-Limit: bestehender Token-Bucket greift; zusätzlich 1 laufender
-  Mesh-Job pro User (In-Memory-Guard) gegen Missbrauch.
+- **Persistentes Job-Modell** (DB-Tabelle `mesh_jobs`, Muster analog
+  `WorkOrder`): `{id, ownerId, projectId, partId, paramsJson, status
+  queued|running|done|error, blobRef, reportJson, error, createdAt,
+  startedAt, finishedAt}`. Jobs überleben Server-Restart (queued/running →
+  bei Boot auf queued zurückgesetzt bzw. als error markiert, wenn zu alt).
+- **Dispatcher**: Goroutine-Worker-Pool im Go-Server (Größe
+  `MESH_WORKERS`, default = Zahl der Mesher-Replicas), zieht queued-Jobs
+  FIFO, ruft den Mesher-Service (`MESHER_URL`; mehrere Replicas via
+  Compose-DNS/`scale`), schreibt Ergebnis via `putBlob` und den Job auf
+  done/error. Prozess-Timeout pro Job.
+- **Routen**:
+  - `POST /api/projects/{id}/mesh` `{partId, cellSizeMm, format, …}` →
+    `requireAuth` + Ownership → Job anlegen → `202 {jobId}`.
+  - `GET /api/mesh-jobs/{jobId}` → `{status, blobRef?, url?, report?,
+    error?}` (Owner-gated). Polling-freundlich (billig, nur DB-Read).
+  - `DELETE /api/mesh-jobs/{jobId}` → Abbruch (best effort).
+  - `GET /api/mesh-artifacts/{ref}`: Serving analog `handleGetArtifact`
+    (Content-Type `model/stl`, Download-Header), auth-pflichtig.
+- Limits: bestehender Token-Bucket; zusätzlich max. 1 queued/running-Job
+  pro User (weitere POSTs → 429).
 
 ### P5 — Frontend-Integration
 
@@ -119,8 +146,10 @@ header-only) → schlankes Runtime-Image.
   (Server)"** im ExportDialog (`web/src/ExportDialog.tsx`).
 - Bei Auswahl „cgal": statt Worker-Roundtrip → (1) `syncToServer()`
   (Projekt speichern; falls Projekt noch nie gespeichert/kein Server-Login:
-  Option ausgegraut mit Tooltip), (2) `POST …/mesh`, Progress als
-  Unbestimmt-Anzeige („Server mesht…"), (3) Antwort: STL von `url` laden,
+  Option ausgegraut mit Tooltip), (2) `POST …/mesh` → `jobId`, dann
+  Polling `GET /api/mesh-jobs/{jobId}` (~1–2 s Intervall) mit
+  Status-Anzeige („Warteschlange…"/„Server mesht…", Abbrechen-Button →
+  DELETE), (3) bei done: STL von `url` laden,
   binäres STL parsen (klein, ~50 Zeilen; non-indexed → Vertex-Dedup oder
   triviale 0..n-Indizes) → `setExportPreview({positions, indices})` —
   identisch zur bestehenden Preview —, Download-Button aufs Artefakt.
@@ -131,7 +160,10 @@ header-only) → schlankes Runtime-Image.
 
 - Neuer Service `mesher` in `docker-compose.yml` (dev) und
   `docker-compose.prod.yml` (prod, `restart: unless-stopped`, NICHT hinter
-  Caddy exponiert — nur internes Netz zum `server`).
+  Caddy exponiert — nur internes Netz zum `server`). Horizontal skalierbar
+  (`docker compose up --scale mesher=N`; Compose-DNS verteilt); der
+  Zielserver wird bei Bedarf skaliert (Entscheid 2026-07-07), vertikal
+  greift TBB (`FD_MESH_THREADS`).
 - Release-Workflow: drittes GHCR-Image `fielddraft/mesher:<tag>`; Ansible-
   Deploy um den Service ergänzen.
 - `server` bekommt `MESHER_URL` (Env, default leer → Feature aus, Route
@@ -179,24 +211,24 @@ Golden-Test läuft in CI gegen beide Seiten.
    erzeugt für Box/Zylinder/Vase ein STL; Prüfskript: wasserdicht/manifold
    (Kanten-2×-Zählung) + Kanten-Treue (Hausdorff der B-Rep-Polylines gegen
    Mesh-Kanten). Golden-Test grün.
-2. **M2 (Service):** P3 — Container baut, HTTP-Wrapper, Compose dev.
-3. **M3 (Backend):** P4 — Route + Blob + Serving, Integrationstest.
-4. **M4 (Frontend):** P5 — Select-Option, Save-then-Mesh-Roundtrip,
+2. **M2 (Service):** P3 — Container baut (TBB/`Parallel_tag`),
+   HTTP-Wrapper, Compose dev.
+3. **M3 (Backend):** P4 — Job-Queue (mesh_jobs + Dispatcher) + Routen +
+   Blob + Serving, Integrationstest.
+4. **M4 (Frontend):** P5 — Select-Option, Save→Job→Polling-Roundtrip,
    Preview in der Szene, Download.
-5. **M5 (Prod):** P6 — Prod-Compose, GHCR, Ansible, Doku (`DEPLOY.md`).
+5. **M5 (Prod):** P6 — Prod-Compose (skalierbar), GHCR, Ansible, Doku
+   (`DEPLOY.md`).
+6. **M6 (3MF):** Format-Follow-up — 3MF-Ausgabe (server- oder
+   clientseitig aus dem Mesh), Format-Select im Dialog freischalten.
 
-## 6. Offene Fragen (vor M1 zu klären)
+## 6. Entscheide (2026-07-07, Antworten des Betreibers)
 
-1. **Service-Schnitt bestätigt?** Eigener `mesher`-Container mit interner
-   HTTP-API (Empfehlung) vs. CLI-Aufruf im `server`-Image (mischt Go- und
-   C++-Buildketten, verworfen?).
-2. **Synchroner Roundtrip** für Phase 1 okay (Request wartet, Timeout
-   ~10 min), Job-Queue später?
-3. **Format-Scope Phase 1**: nur binäres STL (3MF als Follow-up)?
-4. **Branch-Hygiene**: `feat/cgal-mesher` bleibt unmerged liegen; nur
-   `mesher.cpp`/`sdf_interp.h`/Tests/gen_golden werden (nativ umgebaut)
-   nach main übernommen, die Wasm-Artefakte (`web/src/wasm/cgal/*`) kommen
-   NICHT mit. Einverstanden?
-5. **Prod-Host-Ressourcen**: CGAL-Meshing ist CPU/RAM-hungrig (exakte
-   Prädikate, Tet-Volumen) — gibt es Grenzen auf dem Zielserver, die die
-   Default-Kriterien berücksichtigen müssen?
+1. **Service-Schnitt**: eigener `mesher`-Container mit interner HTTP-API. ✓
+2. **Job-Queue von Anfang an** (kein synchroner Erstwurf): POST → jobId,
+   Polling; persistente `mesh_jobs`-Tabelle + Dispatcher. ✓
+3. **Format**: Phase 1 binäres STL, danach 3MF (M6). ✓
+4. **Branch-Hygiene**: `feat/cgal-mesher` bleibt unmerged; nur C++-Quellen/
+   Tests/gen_golden werden nativ übernommen, Wasm-Artefakte nicht. ✓
+5. **Ressourcen**: Zielserver wird bei Bedarf skaliert; Meshing läuft
+   multi-threaded (TBB, §2 P1) und horizontal über Mesher-Replicas.
