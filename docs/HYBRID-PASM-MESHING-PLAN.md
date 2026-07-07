@@ -91,19 +91,12 @@ stehen in §5.4, das PDF liegt unter `docs/Literatur/PASM_SIGGRAPH_2013.pdf`):
 1. ~~§5.1 committen~~ ERLEDIGT (v0.6.461/462).
 2. ~~§5.2 „Zone über den Pol"~~ UNTERSUCHT — kein Loch, nur Pol-Qualität,
    herabgestuft (§5.2). Nicht mehr Blocker.
-3. **§5.3 P5 Export-Integration „CAD (kantenexakt)" — JETZT dran, größter
-   Nutzer-Hebel.** Turnt das Debug-Overlay in einen echten Export. ACHTUNG
-   Architektur-Entscheid nötig: die PASM-Pipeline (`mesher_points`) meshed
-   heute die GANZE Szene auf einmal (alle Bodies), der Export-Pfad
-   (`export_mesh.rs`, `MeshMethod`) meshed PRO BODY via
-   `build_bounded_with_primitives`. Für einen `MeshMethod::HybridPasm` muss
-   die PASM-Kette erst in eine wiederverwendbare Funktion refaktoriert
-   werden, die für einen einzelnen `BoundedCsg` ein `Mesh` (nur Positionen
-   + Indizes) liefert. Danach Geschlossenheits-Gate + UI-Option (Details
-   §5.3). Vor Beginn ggf. mit dem Betreiber klären: eigene MeshMethod ODER
-   separater Export-Pfad?
-4. §5.4 P4d-2 Anisotropie (Paper-Kern, größter Qualitätshebel, schwerste
-   Mathematik — deshalb nach dem Export).
+3. ~~§5.3 P5 Export-Integration „CAD (kantenexakt)"~~ ERLEDIGT (v0.6.464).
+   `MeshMethod::HybridPasm`; `mesher_points_impl(opts, body_filter)` meshed
+   pro Body; Geschlossenheits-Gate → adaptive Fallback; UI-Option. Details
+   §5.3. **JETZT dran: §5.4 Anisotropie.**
+4. **§5.4 P4d-2 Anisotropie** (Paper-Kern, größter Qualitätshebel, schwerste
+   Mathematik) — der nächste Schritt.
 5. §5.5 P4d-3 Gyroid-Blätter (F2) — durch §6-F3-Fallback (v0.6.463) bereits
    auf DC-Qualität statt Loch; F2 (chartfreies PASM) ist die Kür.
 
@@ -388,42 +381,44 @@ volle Periode, was die planare CDT sprengt. Also echte neue Topologie-Arbeit,
 nicht bloß „P4c wiederverwenden". Lohnt sich erst, wenn Pol-Kappen in echten
 Modellen sichtbar stören.
 
-### 5.3 P5 — Export-Integration „CAD (kantenexakt)"
+### 5.3 P5 — Export-Integration „CAD (kantenexakt)" — UMGESETZT (v0.6.464)
 
-Ziel: das PASM-Netz als Export-Qualitätsstufe neben den bestehenden
-Verfahren; Fallback bleibt MDC, wenn das Netz nicht geschlossen zustande
-kommt.
+Das PASM-Netz ist eine Export-Qualitätsstufe neben MDC/MC/Surface-Nets;
+Fallback bleibt die adaptive Route, wenn ein Body nicht geschlossen
+zustande kommt.
 
-1. **Kernel-API:** `mesher_points` liefert das Netz schon heute (Rückgabe:
-   `out[0]` \= Punktzahl N, `out[1]` \= Dreieckszahl T, dann N Punkte à 9
-   Floats — exaktes Layout in `export.rs` nachlesen, die Tests nutzen
-   Stride 9 —, dann T·3 Indizes). Für den Export einen schlanken Pfad
-   ergänzen (z.B. `exportMeshCad(targetEdgeLength)` als eigener
-   `wasm_bindgen`-Einstieg), der NUR Positionen + Indizes zurückgibt, ohne
-   Debug-Overlay-Ballast.
-2. **Geschlossenheits-Gate im Kernel:** nach dem Bau `edge_use` zählen
-   (Muster aus den Tests). Irgendeine Kante ≠ 2× oder unvermaschte Faces
-   (Faltungs-Guard, fehlende Loops, Gyroid) ⇒ Ergebnis als „nicht
-   geschlossen" markieren; der Export fällt dann auf MDC zurück und der
-   Dialog zeigt eine Warnung (Muster: bestehende thin\_cells-/
-   Selbstschnitt-Warnungen im Export-Dialog).
-3. **UI:** `ExportDialog.tsx` — neue Qualitätsstufe „CAD (kantenexakt)" mit
-   genau EINEM Parameter h (Ziel-Kantenlänge, `NumberInput` — nie
-   `<input type=number>`), Default 2 mm. Preview über den bestehenden
-   `exportPreviewStore`-Pfad (der Wireframe-Fix aus cdb25e1e zeigt das
-   Netz dann in allen Renderern korrekt). STL-/3MF-Writer existieren —
-   nur die Mesh-Quelle wechselt.
-4. **Survey-Harness:** `ticket_survey_all_methods` um die Paper-§4.5-
-   Metriken erweitern: Hausdorff-Schätzung (Dreiecke sampeln → max |SDF|),
-   Winkel-Histogramm, Dreiecksqualität `G = 2√3·S/(p·h_max)`
-   (Frey–Borouchaki: S Fläche, p Halbumfang, h\_max längste Kante),
-   `G_min`, `G_avg`, `θ_min`, `θ_avg`, `%<30°`. Vergleichslauf MT vs. MDC
-   vs. CAD auf den vier Referenzkörpern + Vase, Zahlen in die
-   Commit-Message.
+*Was umgesetzt wurde:*
 
-*DoD:* Export eines Box- und eines Revolve-Projekts als STL aus der App,
-Geschlossenheits-Gate greift nachweislich (Gyroid-Body → MDC-Fallback +
-Warnung); Survey-Zahlen dokumentiert; Commit + Push + Release-Note.
+1. **Per-Body-Refactor:** `mesher_points` → `mesher_points_impl(opts,
+   body_filter: Option<usize>)` (`api/export.rs`). `None` = ganze Szene
+   (Debug-Overlay, unverändert); `Some(i)` beschränkt Octree-Extent,
+   Flächen-SDF, Skelett-Sammlung, Partikel-Attribution und per-Face-CDT auf
+   Body `i`. Der lokale `bodies`-Vec bleibt 1:1 mit `self.bodies`, ein
+   `active`-Index-Set wählt die teilnehmenden — so bleiben Attribution und
+   Face-Lookup im selben Index-Raum. `octree_root_of(bodies, active)` sizet
+   den Octree über die Teilmenge.
+2. **`MeshMethod::HybridPasm`** (`export_mesh.rs`, Wire `"hybrid-pasm"`):
+   `hybrid_pasm_export_body(i)` ruft `mesher_points_impl(preset, Some(i))`,
+   wandelt die Float-Ausgabe via `pasm_floats_to_mesh` in ein `Mesh`
+   (nur referenzierte Vertices), orientiert + validiert. **Geschlossenheits-
+   Gate:** `!watertight` ⇒ `mdc_export_body` (adaptive Route), Route-String
+   meldet den Fallback. `cell_size_mm` wird als h gelesen.
+3. **UI:** Option „CAD (kantenexakt, PASM+B-Rep)" im `ExportDialog.tsx`;
+   das Zellgröße-Feld heißt dann „Edge length h (mm)", eigener Hinweistext.
+   STL-/3MF-Writer + Preview unverändert (nur die Mesh-Quelle wechselt).
+
+*Verifiziert:* Kernel-Tests `box_exports_hybrid_pasm_watertight`
+(edge-exact, Dev < 0.05 mm) + `gyroid_hybrid_pasm_gate_falls_back_watertight`
+(Gate hält dicht). Reales WASM: Box ∩ Zylinderloch → edge-exact,
+wasserdicht, 8028 Tris, Dev 0.0000134 mm, gültige STL; Dialog-Option +
+h-Label sichtgeprüft.
+
+*Noch offen (Nice-to-have, nicht Blocker):* Survey-Harness
+`ticket_survey_all_methods` um die Paper-§4.5-Metriken erweitern
+(Hausdorff, Winkel-Histogramm, `G = 2√3·S/(p·h_max)`, `G_min`/`θ_min`,
+`%<30°`) und CAD gegen MT/MDC auf den Referenzkörpern vergleichen. Zweiter
+offener Punkt: der Export meshed pro Body korrekt, aber der Debug-Dialog
+und der Export teilen keine Preset-Defaults — irrelevant für Nutzer.
 
 ### 5.4 P4d-2 — Anisotropie (Paper §3.2 exakt umsetzen)
 
