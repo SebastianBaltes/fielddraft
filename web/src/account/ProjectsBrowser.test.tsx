@@ -145,6 +145,57 @@ describe("ProjectsBrowser", () => {
     expect(onOpen).toHaveBeenCalledWith(created);
   });
 
+  it("Import… creates a server project from a local .fdraft and opens it (421c3610)", async () => {
+    vi.spyOn(platform.platformApi, "listProjects").mockResolvedValue([]);
+    vi.spyOn(platform.platformApi, "listGallery").mockResolvedValue([]);
+    const created = project({ id: "imported" });
+    const create = vi
+      .spyOn(platform.platformApi, "createProject")
+      .mockResolvedValue(created);
+    const { onOpen } = mount();
+    await flush();
+
+    const blob = JSON.stringify({
+      schemaVersion: 1,
+      name: "Blob-Name",
+      activeTabId: "p1",
+      tabs: [
+        {
+          id: "p1",
+          kind: "part",
+          name: "Part 1",
+          documentJson:
+            '{"schema_version":1,"name":"Part","feature_calls":[],"next_feature_id":1}',
+        },
+      ],
+    });
+    const input = byTestId<HTMLInputElement>("projects-import-input")!;
+    const file = new File([blob], "Halterung v3.fdraft", {
+      type: "application/json",
+    });
+    // jsdom's File lacks arrayBuffer() — polyfill for the handler under test.
+    Object.defineProperty(file, "arrayBuffer", {
+      value: async () => new TextEncoder().encode(blob).buffer,
+    });
+    Object.defineProperty(input, "files", { value: [file] });
+    act(() => {
+      input.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    // file.arrayBuffer() resolves on a macrotask — flush past it.
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 0));
+    });
+    await flush();
+
+    expect(byTestId("projects-error")?.textContent ?? "").toBe("");
+    // Named after the file (not the blob), document = the parsed Project.
+    expect(create).toHaveBeenCalledTimes(1);
+    const [name, doc] = create.mock.calls[0];
+    expect(name).toBe("Halterung v3");
+    expect((doc as { name: string }).name).toBe("Blob-Name");
+    expect(onOpen).toHaveBeenCalledWith(created);
+  });
+
   it("has no × close button and no Save Current Workspace action", async () => {
     vi.spyOn(platform.platformApi, "listProjects").mockResolvedValue([]);
     vi.spyOn(platform.platformApi, "listGallery").mockResolvedValue([]);

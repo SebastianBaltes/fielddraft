@@ -24,6 +24,17 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.456",
+    entries: [
+      {
+        kind: "feat",
+        scope: "projects",
+        tickets: ["421c3610"],
+        text: "Neuer „Import…“-Button neben „New project“ auf der Projekt-Seite: importiert ein lokales .fdraft als neues Server-Projekt (benannt nach der Datei) und öffnet es direkt gebunden.",
+      },
+    ],
+  },
+  {
     version: "0.6.455",
     entries: [
       {

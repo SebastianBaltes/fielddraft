@@ -16,7 +16,7 @@
  * browser is a persistent Overview tab, not an overlay.
  */
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   platformApi,
   thumbnailUrl,
@@ -24,6 +24,7 @@ import {
   type Visibility,
 } from "../api/platform";
 import { accountErrorMessage } from "./useAccount";
+import { parseProjectBytes, serializeProject } from "../project";
 
 /** Which projects the browser lists. `mine` and `public` map to the owner /
  *  gallery endpoints; `all` is their union (logged-in only). */
@@ -133,6 +134,33 @@ export function ProjectsBrowser({
       "Could not create a project",
     );
 
+  // Ticket 421c3610: import a local `.fdraft` as a NEW server project (next
+  // to "New project"). The file is parsed client-side (ZIP or legacy JSON)
+  // and its Project blob becomes the server document; embedded ZIP assets
+  // (uploaded fonts) are not part of a server document and are dropped, as
+  // with any server save. Named after the file; opens bound, like New.
+  const importInputRef = useRef<HTMLInputElement>(null);
+  const importLocal = (file: File) =>
+    guard(
+      "__import__",
+      async () => {
+        const bytes = new Uint8Array(await file.arrayBuffer());
+        const parsed = parseProjectBytes(bytes);
+        if (!parsed) {
+          throw new Error(`“${file.name}” is not a valid FieldDraft project`);
+        }
+        const name =
+          file.name.replace(/\.(fdraft|json)$/i, "").trim() ||
+          parsed.project.name;
+        const created = await platformApi.createProject(
+          name,
+          JSON.parse(serializeProject(parsed.project)),
+        );
+        onOpen(created);
+      },
+      "Could not import the project",
+    );
+
   const rename = (p: Project) =>
     guard(
       p.id,
@@ -224,15 +252,38 @@ export function ProjectsBrowser({
           ))}
         </div>
         {authed && (
-          <button
-            type="button"
-            className="primary"
-            data-testid="projects-new"
-            disabled={busyId !== null}
-            onClick={createEmpty}
-          >
-            New project
-          </button>
+          <>
+            <button
+              type="button"
+              className="secondary"
+              data-testid="projects-import"
+              disabled={busyId !== null}
+              onClick={() => importInputRef.current?.click()}
+            >
+              Import…
+            </button>
+            <button
+              type="button"
+              className="primary"
+              data-testid="projects-new"
+              disabled={busyId !== null}
+              onClick={createEmpty}
+            >
+              New project
+            </button>
+            <input
+              ref={importInputRef}
+              type="file"
+              accept=".fdraft,.json"
+              hidden
+              data-testid="projects-import-input"
+              onChange={(e) => {
+                const file = e.currentTarget.files?.[0];
+                if (file) void importLocal(file);
+                e.currentTarget.value = "";
+              }}
+            />
+          </>
         )}
       </div>
 
