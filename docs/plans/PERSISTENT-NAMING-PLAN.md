@@ -4,6 +4,27 @@ Stand: 2026-07-07. Plan-SSOT für den Umbau der Face-/Edge-/Vertex-Identität
 (ARCHITECTURE-ROADMAP Punkt 4). Auslöser: „face not found" nach harmlosen
 Edits; schlimmer noch der stille Fehlbind-Fall (s. Befund B3).
 
+## Status: N0–N4 UMGESETZT (v0.6.448–450, 2026-07-07)
+
+- **N0** (Naming-Gate `naming_gate.rs`) + **N1** (Ein-Score-Resolve,
+  provenienz-gebunden auf die Signatur-Gruppe; gruppen-relatives Sweep-ε)
+  → v0.6.448. Beide known-red Gates grün.
+- **N2** (`ElementRef`, Langform `qFace(<hash> @ …)`, kanonischer String
+  kommt fertig aus dem Kernel — Pick-JSON `query`-Feld, `fd.q`-Handles)
+  + **N3** (`locate_element` als EIN healing-fähiger Resolver, alle sieben
+  context_resolve-Hash-Scans umgestellt) → v0.6.449.
+- **N4** (`healElementRefs` — Heal-on-Save im Persistenz-Funnel, Legacy-
+  Upgrade auf Langform, Report) → v0.6.450.
+
+**Offene Follow-ups** (bewusst nachgelagert):
+- Heal-Report in der UI sichtbar machen (aktuell `console.info`).
+- Playwright-E2E des Heilens (Kernel-Gates decken die Logik ab).
+- Mate-Connector-Queries (`mateConnectionPoints.ts`, `mateOverlays.tsx`)
+  nutzen noch die hash-only Kurzform, weil ihr Matching auf String-
+  Gleichheit beruht — auf Hash-Vergleich umstellen, dann Langform.
+- `resolve_query_topo` transportiert den `ResolutionState` noch nicht zum
+  Feature-Fehlertext (Ambiguous/Missing sind heute beide „not found").
+
 ## Befund (gegen den Code verifiziert, 2026-07-07)
 
 Identität heute: `id_hash = fnv1a(sortierte Branch-u32s ++ spatial_index)`

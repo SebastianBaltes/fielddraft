@@ -138,7 +138,18 @@ Bestehende Konstanten dorthin migrieren; neue absolute Literale per Konvention
 Klassifikationsstufe entfernt erst die Epsilon-Konsumenten, die Koinzidenz
 heute kompensieren; danach ist der verbleibende Bestand klein und migrierbar.
 
-## 4. Persistentes Naming: Provenienz statt räumlicher Reihenfolge
+## 4. Persistentes Naming: Provenienz statt räumlicher Reihenfolge — KERN UMGESETZT
+
+**Status (2026-07-07, v0.6.448–450).** Plan-SSOT:
+`docs/plans/PERSISTENT-NAMING-PLAN.md`, Phasen N0–N4 umgesetzt: Referenz-
+Auflösung bewertet alle Kandidaten einheitlich (Fingerprint + Hash-Bonus,
+provenienz-gebunden auf die Signatur-Gruppe — kein stilles Fehlbinden,
+ehrliches `Ambiguous`), Element-Referenzen tragen einen persistierten
+Fingerprint (`qFace(<hash> @ …)`), alle Feature-Pfade heilen über EINEN
+Resolver, und Heal-on-Save re-kanonisiert gespeicherte Referenzen. Die
+Sweep-Ordnung ist gruppen-relativ statt absolut-ε. `spatial_index` bleibt
+als letzter Tie-Breaker in der ID — die Referenz-Schicht kompensiert sein
+Kippen. Offene Follow-ups im Plan-Doc.
 
 **Problem.** `face_id(branch, spatial_index)` disambiguiert mehrere Faces
 desselben Branches über die räumliche Sortierung der Weave-Ausgabe. Die kippt
