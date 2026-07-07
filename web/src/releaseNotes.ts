@@ -24,6 +24,17 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.464",
+    entries: [
+      {
+        kind: "feat",
+        scope: "export",
+        tickets: ["nwmi"],
+        text: "Export-Stufe „CAD (kantenexakt, PASM+B-Rep)“ — die Hybrid-Pipeline (Skelett → PASM-Relaxation → per-Face-CDT → DC-Fallback) ist jetzt ein wählbares Meshing-Verfahren im Export-Dialog neben MDC/MC/Surface-Nets. Die Zellgröße wird dabei als Ziel-Kantenlänge h gelesen. Ein Geschlossenheits-Gate fängt Körper ab, die die PASM-Kette nicht dicht bekommt (z.B. unvollständig gewebte Gyroide) und fällt für diesen Körper sauber auf das adaptive Verfahren zurück, sodass der Export nie ein Loch ausliefert.",
+      },
+    ],
+  },
+  {
     version: "0.6.463",
     entries: [
       {

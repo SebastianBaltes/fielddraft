@@ -35,7 +35,8 @@ export type MeshMethod =
   | "dual-marching-cubes"
   | "extended-marching-cubes"
   | "macet"
-  | "manifold-dc";
+  | "manifold-dc"
+  | "hybrid-pasm";
 
 /** Per-body slice of the export report (kernel: `BodyExportReport`,
  *  with the `MeshValidation` fields flattened in). */

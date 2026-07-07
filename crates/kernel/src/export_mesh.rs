@@ -93,6 +93,15 @@ pub enum MeshMethod {
     /// perpendicular to the surface (gradient/tangential, analytic ∇f) so the
     /// triangles are well-shaped (no skinny/degenerate ones), staying watertight.
     Macet,
+    /// Hybrid PASM + B-Rep (`mesher_points_impl`, ticket nwmi): the
+    /// edge-exact route. Pins the B-Rep corners/edges as a fixed skeleton,
+    /// relaxes surface particles with the PASM Gaussian kernel, and closes
+    /// each face by constrained Delaunay in its carrier chart (chartless
+    /// faces via the §6-F3 DC-patch fallback). `cell_size_mm` is read as the
+    /// target edge length `h`. Watertight by construction; if a body's mesh
+    /// nonetheless comes back open, the closedness gate falls back to the
+    /// adaptive route for that body.
+    HybridPasm,
 }
 
 impl MeshMethod {
@@ -109,6 +118,7 @@ impl MeshMethod {
             "extended-marching-cubes" => MeshMethod::ExtendedMarchingCubes,
             "macet" => MeshMethod::Macet,
             "manifold-dc" => MeshMethod::ManifoldDc,
+            "hybrid-pasm" => MeshMethod::HybridPasm,
             _ => MeshMethod::Adaptive,
         }
     }
@@ -351,6 +361,44 @@ fn raw_dense_mesh(
     }
 }
 
+/// Convert the flat `mesher_points` output — `[nPoints, nTris, nFallback,
+/// point×9…, index×3…]` (see `Kernel::mesher_points`) — into an indexed
+/// [`Mesh`], keeping only vertices referenced by a triangle (the point table
+/// also carries un-triangulated seed particles and skeleton points).
+fn pasm_floats_to_mesh(out: &[f32]) -> Mesh {
+    if out.len() < 3 {
+        return Mesh::default();
+    }
+    let n = out[0] as usize;
+    let ntris = out[1] as usize;
+    let idx_base = 3 + n * 9;
+    if out.len() < idx_base + ntris * 3 {
+        return Mesh::default();
+    }
+    let mut remap = vec![u32::MAX; n];
+    let mut positions: Vec<f32> = Vec::new();
+    let mut indices: Vec<u32> = Vec::with_capacity(ntris * 3);
+    for j in 0..ntris * 3 {
+        let v = out[idx_base + j] as usize;
+        if v >= n {
+            continue;
+        }
+        if remap[v] == u32::MAX {
+            let b = 3 + v * 9;
+            remap[v] = (positions.len() / 3) as u32;
+            positions.extend_from_slice(&[out[b], out[b + 1], out[b + 2]]);
+        }
+        indices.push(remap[v]);
+    }
+    // Drop any triangle that lost a vertex to the bounds check above.
+    indices.truncate((indices.len() / 3) * 3);
+    Mesh {
+        positions,
+        indices,
+        ..Default::default()
+    }
+}
+
 impl crate::Kernel {
     /// Pre-mesh estimate for the export dialog (dense-grid methods only):
     /// the finest achievable cell size per body and a raw-grid triangle
@@ -507,6 +555,11 @@ impl crate::Kernel {
             // ── Interval-octree Manifold DC (fidget) ── topology-safe for
             // non-1-Lipschitz fields, feature-preserving, no B-Rep needed.
             self.interval_dc_export_body(body_id, &feature_indices, size, cell_mm)
+        } else if method == MeshMethod::HybridPasm {
+            // ── Hybrid PASM + B-Rep (edge-exact) ── skeleton + relaxed
+            // particles + per-face CDT; closedness gate falls back to the
+            // adaptive route if the body's mesh comes back open.
+            self.hybrid_pasm_export_body(i, body_id, &feature_indices, size, cell_mm)
         } else if matches!(
             method,
             MeshMethod::UniformDc
@@ -687,6 +740,97 @@ impl crate::Kernel {
                 );
             }
         }
+    }
+
+    /// Hybrid PASM + B-Rep export for one body (edge-exact route). Runs the
+    /// PASM pipeline restricted to body `i` (`mesher_points_impl(Some(i))`),
+    /// converts its triangle output into a [`Mesh`], and gates on
+    /// watertightness: an open result (e.g. a face the chart AND the F3
+    /// fallback both declined — a partial weave) falls back to the adaptive
+    /// route for this body so the export never ships a hole. `cell_mm` is the
+    /// target edge length `h`.
+    fn hybrid_pasm_export_body(
+        &mut self,
+        i: usize,
+        body_id: u32,
+        feature_indices: &[usize],
+        size: [f32; 3],
+        cell_mm: f32,
+    ) -> (Mesh, BodyExportReport) {
+        let opts = crate::mesher_points::MesherPointOptions {
+            target_edge_length: cell_mm,
+            brep_skeleton: true,
+            cdt_faces: true,
+            fallback_patches: true,
+            pasm_kernel: true,
+            fit_on_surface: true,
+            only_on_surface: true,
+            repulsion: true,
+            near_surface_only: true,
+            near_surface_dist: cell_mm,
+            iterations: 40,
+            balance_octree: true,
+            ..Default::default()
+        };
+        let out = self.mesher_points_impl(opts, Some(i));
+        let mut mesh = pasm_floats_to_mesh(&out);
+
+        let (bounded, _) =
+            crate::body::build_bounded_with_primitives(&self.decoded, feature_indices);
+        let sdf = |p: [f32; 3]| bounded.sdf(p, crate::csg::EvalMode::Visual);
+        let flips = mesh_validate::fix_orientation(&mut mesh, &sdf);
+        let mut validation = mesh_validate::validate_topology(&mesh);
+
+        // Closedness gate: the PASM mesh is watertight BY CONSTRUCTION when
+        // every face charted or fell to F3, but a partial weave (a face with
+        // no closed rim) can still leave a hole. Never ship that — redo the
+        // body on the adaptive route and report the fallback.
+        if !validation.watertight || mesh.indices.is_empty() {
+            let (m, mut report) = self.mdc_export_body(
+                i,
+                body_id,
+                feature_indices,
+                size,
+                cell_mm,
+                "hybrid PASM open → adaptive fallback".into(),
+            );
+            report.route = format!("hybrid PASM open → {}", report.route);
+            return (m, report);
+        }
+
+        let (max_dev, p95_dev, samples) =
+            mesh_validate::measure_deviation(&mesh, DEVIATION_SAMPLE_BUDGET, &sdf);
+        validation.max_deviation_mm = max_dev;
+        validation.p95_deviation_mm = p95_dev;
+        validation.deviation_samples = samples;
+        let (si, si_complete) =
+            mesh_validate::count_self_intersections(&mesh, SELF_INTERSECT_PAIR_BUDGET);
+
+        let report = BodyExportReport {
+            body_id,
+            requested_cell_mm: cell_mm,
+            actual_cell_mm: cell_mm,
+            resolution: 0,
+            cell_limited: false,
+            passthrough: false,
+            parametric: false,
+            parametric_skip_reason: String::new(),
+            adaptive: false,
+            adaptive_skip_reason: String::new(),
+            orientation_repaired: flips,
+            edges_pinned: 0,
+            simplified: false,
+            simplification_rejected: false,
+            thin_cells: 0,
+            self_intersections: si,
+            self_intersections_complete: si_complete,
+            surface_nets: false,
+            interval_dc: false,
+            route: format!("hybrid PASM (edge-exact) h={cell_mm:.3} mm"),
+            dense_triangles: 0,
+            validation,
+        };
+        (mesh, report)
     }
 
     /// The uniform-grid MDC pass (Phase 0/1a/1b) — the fallback when
@@ -2155,6 +2299,65 @@ mod tests {
             report["max_deviation_mm"].as_f64().unwrap() < 0.1,
             "{report}"
         );
+    }
+
+    /// P5 (ticket nwmi): the hybrid PASM route is a selectable export tier.
+    /// A box meshed via `hybrid-pasm` must come back CLOSED (watertight),
+    /// stay on the edge-exact route (not fall back to adaptive), and hug the
+    /// surface (deviation ≈ 0 — the box is planar, particles sit exactly on
+    /// it).
+    #[test]
+    fn box_exports_hybrid_pasm_watertight() {
+        let mut k = crate::Kernel::new();
+        k.add_primitive(Primitive::KIND_BOX, BoolOp::TAG_NEW, 0.0, 0.0, 0.0, 10.0, 10.0, 10.0)
+            .unwrap();
+        let report = export_single_method(&mut k, 2.0, "hybrid-pasm");
+        assert_eq!(report["all_watertight"], true, "{report}");
+        let route = report["bodies"][0]["route"].as_str().unwrap_or("");
+        assert!(
+            route.starts_with("hybrid PASM (edge-exact)"),
+            "expected the edge-exact route, got {route:?}"
+        );
+        assert!(
+            report["max_deviation_mm"].as_f64().unwrap() < 0.05,
+            "planar box should sit on the surface: {report}"
+        );
+    }
+
+    /// The closedness gate: a body the PASM route can't close (here a bare
+    /// gyroid TPMS shell, whose sheets have no closed B-Rep rim) must NOT
+    /// ship a hole — the gate falls back to the adaptive route and the export
+    /// stays watertight.
+    #[test]
+    fn gyroid_hybrid_pasm_gate_falls_back_watertight() {
+        let mut k = crate::Kernel::new();
+        // Box ∩ gyroid: a single bounded TPMS shell body. The gyroid sheets
+        // are tessellated (chartless) faces — the PASM route meshes what it
+        // can and the closedness gate must keep the export watertight,
+        // whatever route each body lands on.
+        k.document = serde_json::from_str(
+            &serde_json::json!({
+                "schema_version": 2, "name": "gyroid-box", "next_feature_id": 3,
+                "feature_calls": [
+                    { "type": "box", "id": "1", "params": {
+                        "half_extents": [12.0, 12.0, 12.0], "translate": [0.0, 0.0, 0.0] } },
+                    { "type": "gyroid", "id": "2", "params": {
+                        "cell_size": { "value": 10.0, "unit": "mm" },
+                        "thickness": { "value": 2.0, "unit": "mm" },
+                        "op": "intersect", "targets": "qCreatedBy(1)",
+                        "blend_radius": { "value": 0.0, "unit": "mm" },
+                        "chamfer_size": { "value": 0.0, "unit": "mm" },
+                        "displace_depth": { "value": 0.0, "unit": "mm" },
+                        "shell_thickness": { "value": 0.0, "unit": "mm" } } }
+                ]
+            })
+            .to_string(),
+        )
+        .unwrap();
+        k.bootstrap_features_from_calls().unwrap();
+        k.rebuild_packed();
+        let report = export_single_method(&mut k, 2.0, "hybrid-pasm");
+        assert_eq!(report["all_watertight"], true, "{report}");
     }
 
     #[test]

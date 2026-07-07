@@ -446,6 +446,7 @@ export function ExportDialog({ store, format, onClose }: ExportDialogProps) {
           </option>
           <option value="macet">MACET (edge transforms, quality)</option>
           <option value="manifold-dc">Manifold DC (viewport)</option>
+          <option value="hybrid-pasm">CAD (kantenexakt, PASM+B-Rep)</option>
           <option value="cgal-server" disabled={!serverReady}>
             CGAL Mesh_3 (server)
             {!serverReady ? " — save to server first" : ""}
@@ -474,12 +475,16 @@ export function ExportDialog({ store, format, onClose }: ExportDialogProps) {
                             ? "MACET (Dietrich/Scheidegger 2009): MC33 topology, but each active edge is transformed to be perpendicular to the surface (gradient + tangential, using the analytic ∇f) and the crossing is re-found by bisection — eliminates skinny/degenerate triangles while staying watertight. Slower (root-finding per edge)."
                             : method === "manifold-dc"
                             ? "The viewport's own uniform Manifold Dual Contouring with planar-face simplification — now exportable too."
+                            : method === "hybrid-pasm"
+                            ? "Hybrid PASM + B-Rep (kantenexakt): pins the B-Rep corners/edges as a fixed skeleton, relaxes surface particles (PASM Gaussian kernel) and closes each face by constrained Delaunay in its carrier chart; chartless faces (Torus/Gyroid/Custom-SDF) fall to a DC-patch zippered to the exact edges. Here the cell size is read as the target edge length h. Watertight by construction; a body that can't close falls back to the adaptive route."
                             : "Parametric-first, then adaptive Manifold-DC — exact edges and the fewest triangles for regular CAD solids."}
         </span>
       </div>
 
       <div className="settings-row">
-        <label htmlFor="export-cell-size">Cell size (mm)</label>
+        <label htmlFor="export-cell-size">
+          {method === "hybrid-pasm" ? "Edge length h (mm)" : "Cell size (mm)"}
+        </label>
         <NumberInput
           id="export-cell-size"
           data-testid="export-cell-size"
@@ -493,8 +498,9 @@ export function ExportDialog({ store, format, onClose }: ExportDialogProps) {
           }}
         />
         <span className="hint">
-          Grid cell edge per body — smaller is finer. Vertices sit on the exact
-          surface; the report shows the measured deviation.
+          {method === "hybrid-pasm"
+            ? "Target edge length h the mesh aims for — smaller is finer. The whole PASM pipeline (skeleton spacing, kernel radius, CDT clearance) scales off it."
+            : "Grid cell edge per body — smaller is finer. Vertices sit on the exact surface; the report shows the measured deviation."}
         </span>
         {estimate?.dense && (
           <span className="hint estimate" data-testid="export-estimate">

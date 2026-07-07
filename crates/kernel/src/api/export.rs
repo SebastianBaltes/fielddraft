@@ -124,8 +124,23 @@ impl Kernel {
     /// "only on surface" escapees are dropped from the point list entirely.
     #[wasm_bindgen(js_name = mesherPoints)]
     pub fn mesher_points(&mut self, options_json: String) -> Vec<f32> {
-        let mut opts: crate::mesher_points::MesherPointOptions =
+        let opts: crate::mesher_points::MesherPointOptions =
             serde_json::from_str(&options_json).unwrap_or_default();
+        self.mesher_points_impl(opts, None)
+    }
+
+    /// Core of the PASM debug/export pipeline. `body_filter = None` meshes the
+    /// WHOLE scene (the Debug ▸ Mesher overlay); `Some(i)` restricts every
+    /// stage — octree extent, surface SDF, skeleton, particle attribution,
+    /// per-face CDT — to body `i` alone, so the export path can produce one
+    /// watertight mesh per body. The local `bodies` vec stays 1:1 with
+    /// `self.bodies`, so branch attribution and face lookup share the same
+    /// index space; `active` just selects which of them participate.
+    pub(crate) fn mesher_points_impl(
+        &mut self,
+        mut opts: crate::mesher_points::MesherPointOptions,
+        body_filter: Option<usize>,
+    ) -> Vec<f32> {
         let bodies: Vec<crate::bvh::BoundedCsg> = self
             .bodies
             .iter()
@@ -133,7 +148,12 @@ impl Kernel {
                 crate::body::build_bounded_with_primitives(&self.decoded, &b.feature_indices).0
             })
             .collect();
-        let Some((center, root_size)) = octree_root(&bodies) else {
+        let active: Vec<usize> = match body_filter {
+            Some(i) if i < bodies.len() => vec![i],
+            Some(_) => return Vec::new(),
+            None => (0..bodies.len()).collect(),
+        };
+        let Some((center, root_size)) = octree_root_of(&bodies, &active) else {
             return Vec::new();
         };
         // Mesher-PASM: ONE resolution parameter. `targetEdgeLength` (h, mm)
@@ -148,8 +168,8 @@ impl Kernel {
         }
         let scene_sdf = |p: [f32; 3]| {
             let mut d = f32::MAX;
-            for b in &bodies {
-                d = d.min(b.sdf(p, crate::csg::EvalMode::Visual));
+            for &bi in &active {
+                d = d.min(bodies[bi].sdf(p, crate::csg::EvalMode::Visual));
             }
             d
         };
@@ -206,7 +226,7 @@ impl Kernel {
             } else {
                 min_size_est
             };
-            for bi in 0..self.bodies.len() {
+            for &bi in &active {
                 self.bodies[bi].ensure_brep(&self.decoded, true);
                 let placement = self.bodies[bi].placement;
                 let Some(brep) = self.bodies[bi].brep_cached() else { continue };
@@ -329,8 +349,8 @@ impl Kernel {
                 }
                 let p = points[i];
                 let mut best = (f32::MAX, usize::MAX);
-                for (bi, b) in bodies.iter().enumerate() {
-                    let d = b.sdf(p, crate::csg::EvalMode::Logical).abs();
+                for &bi in &active {
+                    let d = bodies[bi].sdf(p, crate::csg::EvalMode::Logical).abs();
                     if d < best.0 {
                         best = (d, bi);
                     }
@@ -359,7 +379,7 @@ impl Kernel {
             // Faces WITHOUT a usable chart, deferred to the §6-F3 fallback
             // pass below: (body, branch, rim loops as output-index rings).
             let mut fallback_faces: Vec<(usize, u32, Vec<Vec<u32>>)> = Vec::new();
-            for (bi, _) in self.bodies.iter().enumerate() {
+            for &bi in &active {
                 let placement = self.bodies[bi].placement;
                 let Some(brep) = self.bodies[bi].brep_cached() else { continue };
                 for face in &brep.faces {
@@ -1157,14 +1177,28 @@ pub(crate) fn octree_leaf_samples(
 /// The leaf structs behind [`octree_leaf_samples`] — the jq2t point pipeline
 /// needs the cells (centre + size = clamp bounds), not just packed floats.
 /// Root sizing lives here; construction is `mesher_points::build_octree`.
+/// [`octree_root`] over a selected subset of `bodies` (the PASM per-body
+/// export path meshes one body at a time).
+pub(crate) fn octree_root_of(
+    bodies: &[crate::bvh::BoundedCsg],
+    active: &[usize],
+) -> Option<([f32; 3], f32)> {
+    octree_root_iter(active.iter().filter_map(|&i| bodies.get(i)))
+}
+
 pub(crate) fn octree_root(bodies: &[crate::bvh::BoundedCsg]) -> Option<([f32; 3], f32)> {
-    if bodies.is_empty() {
-        return None;
-    }
+    octree_root_iter(bodies.iter())
+}
+
+fn octree_root_iter<'a>(
+    bodies: impl Iterator<Item = &'a crate::bvh::BoundedCsg>,
+) -> Option<([f32; 3], f32)> {
     let mut mn = [f32::MAX; 3];
     let mut mx = [f32::MIN; 3];
     let mut any = false;
+    let mut empty = true;
     for b in bodies {
+        empty = false;
         let a = b.aabb();
         if !a.is_empty() {
             any = true;
@@ -1173,6 +1207,9 @@ pub(crate) fn octree_root(bodies: &[crate::bvh::BoundedCsg]) -> Option<([f32; 3]
                 mx[k] = mx[k].max(a.max[k]);
             }
         }
+    }
+    if empty {
+        return None;
     }
     if !any {
         mn = [-50.0; 3];
