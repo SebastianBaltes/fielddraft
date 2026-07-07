@@ -23,6 +23,7 @@ import {
   subscribeExportPreview,
 } from "./exportPreviewStore";
 import { PREVIEW_LAYER } from "./viewportLayers";
+import { useState } from "react";
 
 /** Put an object (mesh / light) on the preview layer only. */
 const onPreviewLayer = (o: THREE.Object3D | null) => {
@@ -44,11 +45,25 @@ export function ExportPreviewMesh() {
   );
   const invalidate = useThree((s) => s.invalidate);
   const geometry = useMemo(() => new THREE.BufferGeometry(), []);
+  // Ticket cdb25e1e: material.wireframe is IGNORED by the WebGPURenderer
+  // (no line fill-mode in WebGPU) — the checkbox showed nothing in the SDF
+  // render modes. The wireframe is real LineSegments geometry instead,
+  // rebuilt whenever the preview mesh changes.
+  const [wireGeo, setWireGeo] = useState<THREE.WireframeGeometry | null>(
+    null,
+  );
 
   useEffect(() => () => geometry.dispose(), [geometry]);
+  useEffect(
+    () => () => {
+      wireGeo?.dispose();
+    },
+    [wireGeo],
+  );
 
   useEffect(() => {
     if (!preview) {
+      setWireGeo(null);
       invalidate(); // repaint the frame the normal renderer owns again
       return;
     }
@@ -60,8 +75,37 @@ export function ExportPreviewMesh() {
     geometry.computeVertexNormals();
     geometry.computeBoundingBox();
     geometry.computeBoundingSphere();
+    setWireGeo(new THREE.WireframeGeometry(geometry));
     invalidate();
   }, [geometry, preview, invalidate]);
+
+  // Ticket cdb25e1e: manage the solid's material imperatively. `transparent`
+  // stays ALWAYS true — toggling it per opacity value rebuilds the WebGPU
+  // pipeline and made the slider act like on/off; a constant alpha-blend
+  // pipeline gives smooth intermediate opacities. Only the depthWrite flip
+  // (opaque-ish ⇒ write depth) needs a pipeline update.
+  const solidMat = useMemo(
+    () =>
+      new THREE.MeshStandardMaterial({
+        color: "#b3bcc9",
+        flatShading: true,
+        side: THREE.DoubleSide,
+        transparent: true,
+        polygonOffset: true,
+        polygonOffsetFactor: -2,
+        polygonOffsetUnits: -4,
+      }),
+    [],
+  );
+  useEffect(() => () => solidMat.dispose(), [solidMat]);
+  useEffect(() => {
+    solidMat.opacity = opacity;
+    const depthWrite = opacity > 0.98;
+    if (solidMat.depthWrite !== depthWrite) {
+      solidMat.depthWrite = depthWrite;
+      solidMat.needsUpdate = true;
+    }
+  }, [opacity, solidMat]);
 
   // Repaint on every crossfade/wireframe change (the SDF path is
   // demand-driven; a state change alone won't trigger a frame).
@@ -91,32 +135,21 @@ export function ExportPreviewMesh() {
           without a bias of its own (ticket rfm6). polygonOffset pulls the
           preview fragments toward the camera; the wireframe gets a slightly
           stronger pull so it also beats the preview solid. */}
-      <mesh ref={onPreviewLayer} geometry={geometry} renderOrder={1}>
-        <meshStandardMaterial
-          color="#b3bcc9"
-          flatShading
-          side={THREE.DoubleSide}
-          transparent={opacity < 1}
-          opacity={opacity}
-          depthWrite={opacity > 0.98}
-          polygonOffset
-          polygonOffsetFactor={-2}
-          polygonOffsetUnits={-4}
-        />
-      </mesh>
-      {wireframe && (
-        <mesh ref={onPreviewLayer} geometry={geometry} renderOrder={2}>
-          <meshBasicMaterial
+      <mesh
+        ref={onPreviewLayer}
+        geometry={geometry}
+        material={solidMat}
+        renderOrder={1}
+      />
+      {wireframe && wireGeo && (
+        <lineSegments ref={onPreviewLayer} geometry={wireGeo} renderOrder={2}>
+          <lineBasicMaterial
             color="#1e293b"
-            wireframe
             transparent
             opacity={Math.max(opacity, 0.35)}
             depthWrite={false}
-            polygonOffset
-            polygonOffsetFactor={-3}
-            polygonOffsetUnits={-6}
           />
-        </mesh>
+        </lineSegments>
       )}
     </>
   );

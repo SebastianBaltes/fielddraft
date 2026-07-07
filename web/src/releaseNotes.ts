@@ -24,6 +24,17 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.462",
+    entries: [
+      {
+        kind: "fix",
+        scope: "export",
+        tickets: ["cdb25e1e"],
+        text: "Export-Preview: Wireframe-Checkbox zeigt jetzt auch in den SDF-Rendermodi ein Drahtgitter (WebGPU ignoriert material.wireframe — das Gitter ist jetzt echte Linien-Geometrie), und der Deckkraft-Regler wirkt stufenlos statt als An/Aus (konstante Alpha-Blend-Pipeline statt Pipeline-Rebuild pro Reglerschritt).",
+      },
+    ],
+  },
+  {
     version: "0.6.461",
     entries: [
       {
