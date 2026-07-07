@@ -652,12 +652,15 @@ func attachmentFilename(index int, name string) string {
 }
 
 // ticketHeading derives the ticket.md heading from the description's first
-// non-empty line. Falls back to a generic "Issue <id>".
+// non-empty line. Falls back to a generic "Issue <id>". Truncation is
+// RUNE-based — a byte slice (`t[:80]`) cuts multi-byte characters in half
+// and the resulting invalid UTF-8 makes MariaDB reject the INSERT with
+// Error 1366 ("Report an issue" then fails with a 500).
 func ticketHeading(id, description string) string {
 	for _, line := range strings.Split(description, "\n") {
 		if t := strings.TrimSpace(line); t != "" {
-			if len(t) > 80 {
-				t = strings.TrimSpace(t[:80]) + "…"
+			if runes := []rune(t); len(runes) > 80 {
+				t = strings.TrimSpace(string(runes[:80])) + "…"
 			}
 			return t
 		}

@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 // ticketTestEnv spins up a server against the in-memory store and registers a
@@ -482,4 +483,23 @@ func seedAdminCookies(t *testing.T, e *ticketTestEnv, email string) []*http.Cook
 		t.Fatal("no admin session cookie")
 	}
 	return c
+}
+
+// A multi-byte character straddling the 80-char boundary must not be cut in
+// half — invalid UTF-8 in the derived title made MariaDB reject the INSERT
+// (Error 1366) and "Report an issue" failed with a 500.
+func TestTicketHeadingRuneSafeTruncation(t *testing.T) {
+	// 79 ASCII chars, then "ä…" — a byte slice at 80 would split the "ä".
+	long := strings.Repeat("x", 79) + "äöü und noch mehr Text dahinter"
+	got := ticketHeading("id1", long)
+	if !utf8.ValidString(got) {
+		t.Fatalf("heading is not valid UTF-8: %q", got)
+	}
+	if want := strings.Repeat("x", 79) + "ä…"; got != want {
+		t.Fatalf("heading = %q, want %q", got, want)
+	}
+	// Short lines pass through untouched.
+	if got := ticketHeading("id2", "kurz"); got != "kurz" {
+		t.Fatalf("short heading = %q", got)
+	}
 }

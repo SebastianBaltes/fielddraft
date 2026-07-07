@@ -24,6 +24,16 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.453",
+    entries: [
+      {
+        kind: "fix",
+        scope: "tickets",
+        text: "„Report an issue“ scheiterte mit einem 500er, wenn in den ersten 80 Zeichen der Beschreibung ein Umlaut auf der Kürzungsgrenze lag: Der abgeleitete Titel wurde byteweise statt zeichenweise gekürzt, das halbe Multibyte-Zeichen war ungültiges UTF-8 und die Datenbank lehnte den Eintrag ab. Der Titel wird jetzt runen-sicher gekürzt.",
+      },
+    ],
+  },
+  {
     version: "0.6.452",
     entries: [
       {
