@@ -11,6 +11,7 @@ import type { BRepEdgeMode } from "./SettingsMenu";
 import { OVERLAY_LAYER } from "./viewportLayers";
 import { disposeAfterGpuIdle } from "./sdfPipelineCommon";
 import { setHoveredElementOfKind } from "./brepPickBridge";
+import { getPickCamera } from "./renderCameraBridge";
 import { getActive as getActiveQueryPicker } from "./queryPickerBridge";
 import { useBodyFingerprint } from "./bodyFingerprint";
 import {
@@ -256,7 +257,8 @@ export function BRepEdgeOverlay({
   // probed edge — only a genuinely nearer surface rejects a candidate.
   const isOccludedPoint = (w: [number, number, number]): boolean => {
     if (!store) return false;
-    const o = camera.position;
+    // Ticket pzvt: probe from the PRESENTED frame's camera, not the live one.
+    const o = getPickCamera(camera).position;
     const dx = w[0] - o.x;
     const dy = w[1] - o.y;
     const dz = w[2] - o.z;
@@ -285,6 +287,10 @@ export function BRepEdgeOverlay({
     }
     const a = projA.current;
     const b = projB.current;
+    // Ticket pzvt "pick what you see": project against the camera of the
+    // last PRESENTED frame — during shader compiles the visible frame is
+    // frozen while the live camera may already have moved.
+    const pickCam = getPickCamera(camera);
     // Collect the best segment per edge within the pick band; the winner is
     // resolved afterwards so non-x-ray modes can skip occluded candidates.
     const candidates: {
@@ -302,11 +308,11 @@ export function BRepEdgeOverlay({
       let bestDepth = Infinity;
       let bestWorld: [number, number, number] | null = null;
       for (let i = 0; i + 5 < pos.length; i += 6) {
-        a.set(pos[i], pos[i + 1], pos[i + 2]).project(camera);
-        b.set(pos[i + 3], pos[i + 4], pos[i + 5]).project(camera);
+        a.set(pos[i], pos[i + 1], pos[i + 2]).project(pickCam);
+        b.set(pos[i + 3], pos[i + 4], pos[i + 5]).project(pickCam);
         // Skip segments that cross or sit behind the near plane — projecting
         // those wraps the NDC coords and yields bogus distances.
-        if (!ndcZVisible(camera, a.z) || !ndcZVisible(camera, b.z)) continue;
+        if (!ndcZVisible(pickCam, a.z) || !ndcZVisible(pickCam, b.z)) continue;
         // Closest point on the segment in NDC; `t` doubles as the lerp
         // parameter for the world-space occlusion probe point below (the
         // perspective error over one short tessellation segment is nil).

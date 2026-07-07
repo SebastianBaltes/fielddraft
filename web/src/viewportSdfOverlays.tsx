@@ -28,6 +28,10 @@ import {
 import { resolveMaterials, applyMaterials } from "./materialBridge";
 import { getMesherPartOpacity } from "./mesherDebugStore";
 import { disposeAfterGpuIdle } from "./sdfPipelineCommon";
+import {
+  publishRenderCamera,
+  clearRenderCamera,
+} from "./renderCameraBridge";
 import { OVERLAY_LAYER, DATUM_LAYER, PREVIEW_LAYER } from "./viewportLayers";
 import {
   computeSdfFingerprints,
@@ -268,6 +272,9 @@ function useSdfPipelineOverlay<P extends MaterialBufferTarget, B>(
         adapter.dispose(pipelineRef.current, rendererRef.current ?? undefined);
         pipelineRef.current = null;
       }
+      // Other render modes (mesh/WebGL) pick against the live camera — a
+      // stale SDF snapshot must not shadow it (ticket pzvt).
+      clearRenderCamera();
     };
   }, [adapter]);
 
@@ -380,6 +387,10 @@ function useSdfPipelineOverlay<P extends MaterialBufferTarget, B>(
         () => adapter.renderFrame(pipeline, wgpu, camera),
         brepEdgeMode === "visible",
       );
+      // Ticket pzvt: publish the camera this frame was PRESENTED with. While
+      // a shader compile freezes the visible frame, picks keep projecting
+      // against this snapshot instead of the (possibly moved) live camera.
+      publishRenderCamera(camera);
     } catch (err) {
       console.error("SDF render error:", err);
       readyRef.current = false;

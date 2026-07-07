@@ -20,6 +20,7 @@ import {
 } from "./kernel";
 import { OVERLAY_LAYER } from "./viewportLayers";
 import { disposeAfterGpuIdle } from "./sdfPipelineCommon";
+import { getPickCamera } from "./renderCameraBridge";
 import {
   applyLeafTransform,
   createPrimitiveGeometry,
@@ -465,7 +466,11 @@ export function BRepSelectionOverlay({
       !edgeWins && (picker ? filterAllows("face", filter) : true);
     const wantVertex = picker ? filterAllows("vertex", filter) : true;
 
-    raycaster.current.setFromCamera(new THREE.Vector2(ndc.x, ndc.y), camera);
+    // Ticket pzvt "pick what you see": raycast/project against the camera of
+    // the last PRESENTED frame — during shader compiles the visible frame is
+    // frozen while the live camera may already have moved.
+    const pickCam = getPickCamera(camera);
+    raycaster.current.setFromCamera(new THREE.Vector2(ndc.x, ndc.y), pickCam);
 
     // ── Faces ──
     // Two resolution paths (ticket evq2): the triangle pick mesh where this
@@ -538,7 +543,7 @@ export function BRepSelectionOverlay({
     } | null = null;
     if (wantVertex) {
       const v = new THREE.Vector3();
-      const camPos = camera.position;
+      const camPos = pickCam.position;
       // Pixel → NDC (y spans 2 over the viewport height), per frame.
       const vertexPickNdc = (2 * VERTEX_PICK_PX) / Math.max(1, viewportSize.height);
       for (let bi = 0; bi < bodies.length; bi++) {
@@ -549,8 +554,8 @@ export function BRepSelectionOverlay({
           const camDist = v.distanceTo(camPos);
           if (resolvedFace && camDist > resolvedFace.dist * 1.05 + 1e-3)
             continue;
-          v.project(camera);
-          if (!ndcZVisible(camera, v.z)) continue;
+          v.project(pickCam);
+          if (!ndcZVisible(pickCam, v.z)) continue;
           const d = Math.hypot(v.x - ndc.x, v.y - ndc.y);
           if (d > vertexPickNdc) continue;
           if (!resolvedVertex || d < resolvedVertex.ndcDist) {

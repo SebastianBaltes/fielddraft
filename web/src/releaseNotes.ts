@@ -24,6 +24,17 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.452",
+    entries: [
+      {
+        kind: "fix",
+        scope: "viewport",
+        tickets: ["pzvt"],
+        text: "Kanten-Hover trifft wieder, auch wenn der sichtbare Frame während langer Shader-Compiles eingefroren ist („Pick what you see“): Die SDF-Renderer publizieren die Kamera jedes tatsächlich gezeichneten Frames, und Edge-/Face-/Vertex-Picking projiziert gegen diesen Snapshot statt gegen die Live-Kamera. Bisher desyncte jede Kamera-Änderung im Compile-Fenster (View-Restore, kleine Orbits) Interaktion und Anzeige — das 8px-Kanten-Band verfehlte zuerst, Flächen schienen weiter zu funktionieren.",
+      },
+    ],
+  },
+  {
     version: "0.6.451",
     entries: [
       {
