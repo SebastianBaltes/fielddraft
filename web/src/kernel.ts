@@ -1093,6 +1093,11 @@ export class Kernel {
     return this.inner.exportEstimate(cellSizeMm, method);
   }
 
+  /** 3MF archive from raw triangle buffers (server-mesh format conversion). */
+  mesh3mfFromBuffers(positions: Float32Array, indices: Uint32Array): Uint8Array {
+    return this.inner.mesh3mfFromBuffers(positions, indices);
+  }
+
   /** Debug: sample the scene SDF on a `resolution`×`resolution` grid over a
    *  plane at `origin` with `normal`, spanning ±`halfExtent`. Row-major
    *  (v outer, u inner) mm distances — the same field the meshers see. */

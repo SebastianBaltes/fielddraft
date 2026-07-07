@@ -24,6 +24,16 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.443",
+    entries: [
+      {
+        kind: "feat",
+        scope: "export",
+        text: "CGAL-Meshing Meilenstein M6 (3MF): Die Server-Methode „CGAL Mesh_3 (server)“ exportiert jetzt auch 3MF — das Server-STL wird clientseitig durch den Kernel-3MF-Encoder konvertiert (neues mesh3mfFromBuffers), das Format-Select ist für die Server-Route freigeschaltet. Damit sind alle Meilensteine des serverseitigen CGAL-Meshings (M1–M6) abgeschlossen.",
+      },
+    ],
+  },
+  {
     version: "0.6.442",
     entries: [
       {

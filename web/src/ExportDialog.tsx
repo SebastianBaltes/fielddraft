@@ -205,8 +205,14 @@ export function ExportDialog({ store, format, onClose }: ExportDialogProps) {
         abort.signal,
       );
       if (runIdRef.current !== runId) return;
-      setPhase({ kind: "server-done", report: result.report, bytes: result.bytes });
       const preview = parseBinaryStl(result.bytes);
+      // The server always meshes to binary STL; a 3MF export converts the
+      // triangles through the kernel's 3MF encoder client-side (M6).
+      const bytes =
+        format === "3mf"
+          ? store.mesh3mfFromBuffers(preview.positions, preview.indices)
+          : result.bytes;
+      setPhase({ kind: "server-done", report: result.report, bytes });
       setExportPreview(
         preview.positions.length > 0
           ? { positions: preview.positions, indices: preview.indices }
@@ -222,7 +228,7 @@ export function ExportDialog({ store, format, onClose }: ExportDialogProps) {
         });
       }
     });
-  }, [commitCellSize, store, meshOpacity, wireframe]);
+  }, [commitCellSize, store, format, meshOpacity, wireframe]);
 
   // Step 2: run the meshing pass for the confirmed cell size.
   const runExport = useCallback(() => {
@@ -440,16 +446,9 @@ export function ExportDialog({ store, format, onClose }: ExportDialogProps) {
           </option>
           <option value="macet">MACET (edge transforms, quality)</option>
           <option value="manifold-dc">Manifold DC (viewport)</option>
-          <option
-            value="cgal-server"
-            disabled={!serverReady || format !== "stl"}
-          >
+          <option value="cgal-server" disabled={!serverReady}>
             CGAL Mesh_3 (server)
-            {!serverReady
-              ? " — save to server first"
-              : format !== "stl"
-                ? " — STL only"
-                : ""}
+            {!serverReady ? " — save to server first" : ""}
           </option>
         </select>
         <span className="hint">

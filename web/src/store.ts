@@ -2166,6 +2166,12 @@ export class KernelStore {
     }
   }
 
+  /** 3MF archive from raw triangle buffers — format conversion for the
+   *  server meshing route (the mesher returns binary STL). */
+  mesh3mfFromBuffers(positions: Float32Array, indices: Uint32Array): Uint8Array {
+    return this.kernel.mesh3mfFromBuffers(positions, indices);
+  }
+
   /** Debug SDF-plane sampler: the scene SDF on a `resolution`² grid over the
    *  plane at `origin`/`normal` spanning ±`halfExtent`. Synchronous main-thread
    *  eval of the exact mesher field. */

@@ -785,6 +785,19 @@ impl Kernel {
         export_3mf::export_3mf(&self.export_session_meshes())
     }
 
+    /// 3MF archive from raw triangle buffers (xyz-interleaved positions +
+    /// indices) — the server-meshing route (CGAL Mesh_3 returns an STL)
+    /// reuses the kernel's 3MF encoder for its format conversion.
+    #[wasm_bindgen(js_name = mesh3mfFromBuffers)]
+    pub fn mesh_3mf_from_buffers(&self, positions: Vec<f32>, indices: Vec<u32>) -> Vec<u8> {
+        let mesh = crate::dc::Mesh {
+            positions,
+            indices,
+            ..Default::default()
+        };
+        export_3mf::export_3mf(&[&mesh])
+    }
+
     /// Merged vertex positions (xyz-interleaved) of ALL session export
     /// meshes, for the in-app solid preview. Pairs with
     /// [`Kernel::export_mesh_preview_indices`] (indices are rebased per
