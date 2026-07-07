@@ -19,9 +19,13 @@ export type ExportFormat = "stl" | "3mf";
  *    (fidget). Topology-safe subdivision (no Lipschitz assumption) and
  *    QEF sharp-edge preservation for closed-form solids; watertight on
  *    smooth solids, a few non-manifold edges at sharp/dense feature
- *    edges. */
+ *    edges.
+ *  - `cgal-server` — server-side CGAL Mesh_3 via the backend job queue
+ *    (plan CGAL-SERVER-MESHING): watertight, 2-manifold, exact protected
+ *    B-Rep edges. Needs a server-saved project. */
 export type MeshMethod =
   | "adaptive"
+  | "cgal-server"
   | "surface-nets"
   | "surface-nets-builtin"
   | "interval-dc"

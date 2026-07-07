@@ -24,6 +24,16 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.441",
+    entries: [
+      {
+        kind: "feat",
+        scope: "export",
+        text: "CGAL-Meshing Meilenstein M4 (Frontend): neue Export-Methode „CGAL Mesh_3 (server)“ im Export-Dialog — speichert das Projekt, startet den Server-Job, pollt den Status (Warteschlange/Server mesht/Download, mit Cancel), zeigt das STL als Preview in der Szene und lädt die unveränderten Server-Bytes herunter. Nur mit server-gespeichertem Projekt und STL-Format wählbar (sonst ausgegraut).",
+      },
+    ],
+  },
+  {
     version: "0.6.440",
     entries: [
       {
