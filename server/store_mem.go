@@ -34,6 +34,10 @@ type memStore struct {
 	alerts   map[string]*AdminAlert // alert ID → admin alert
 	alertSeq []string               // alert IDs, insertion order (newest = last)
 	userSeq  []string               // user IDs, insertion order (for stable list)
+
+	meshJobs  map[string]*MeshJob // job ID → mesh job (store_mem_mesh.go)
+	meshSeq   []string            // job IDs, insertion order (FIFO claim)
+	meshBlobs map[string][]byte   // blob ref → STL bytes
 }
 
 // NewStore returns the in-memory store (test fixture).

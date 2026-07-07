@@ -388,6 +388,23 @@ mod tests {
     }
 
     #[test]
+    fn export_from_raw_buffers_is_valid_zip() {
+        // The server-mesh route builds a Mesh from bare STL triangle
+        // buffers (no normals/classifications) — the encoder must not
+        // depend on those side arrays.
+        let mesh = Mesh {
+            positions: vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+            indices: vec![0, 1, 2],
+            ..Default::default()
+        };
+        let bytes = export_3mf(&[&mesh]);
+        assert_eq!(&bytes[0..4], b"PK\x03\x04");
+        let hay = String::from_utf8_lossy(&bytes);
+        assert!(hay.contains("3D/3dmodel.model"));
+        assert!(hay.contains("<triangle v1=\"0\" v2=\"1\" v3=\"2\""));
+    }
+
+    #[test]
     fn crc32_known_value() {
         assert_eq!(crc32(b"123456789"), 0xCBF43926);
     }

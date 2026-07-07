@@ -100,7 +100,7 @@
       color: var(--color-text-muted);
     }
 
-    & input[type="number"] {
+    & input {
       width: 4rem;
       font-size: var(--fs-base);
       color: var(--color-text);
@@ -152,7 +152,7 @@
     color: var(--color-text-muted);
   }
 
-  & input[type="number"] {
+  & input {
     width: 4rem;
     font-size: var(--fs-base);
     color: var(--color-text);
@@ -215,7 +215,7 @@
     color: var(--color-text-muted);
   }
 
-  & input[type="number"] {
+  & input {
     width: 4rem;
     font-size: var(--fs-base);
     color: var(--color-text);

@@ -93,12 +93,6 @@ export function makeDisplacedSdfEval(sdfEvalRaw: any, materialBuf: any) {
   };
 }
 
-/** Depth written for a raymarched hit sits 0.1% of viewZ BEHIND the true
- *  surface: the B-Rep edges lie EXACTLY on the surface, so without the bias
- *  they z-fight the face and render ragged/washed-out in "visible" edge mode
- *  (ticket b9xz). */
-export const DEPTH_EDGE_BIAS = 1.001;
-
 /**
  * Write per-pixel canvas depth for a raymarched world-space hit, so the
  * B-Rep edge overlay can occlude in "visible" mode. Both SDF pipelines draw
@@ -107,6 +101,15 @@ export const DEPTH_EDGE_BIAS = 1.001;
  * view matrix + near/far instead. Perspective depth is reciprocal in view-Z,
  * orthographic is linear; `isOrthoU` picks the matching encoder. Emits into
  * the calling `Fn()`/`If()` scope.
+ *
+ * The depth is the TRUE surface depth. It used to be scaled 0.1% of viewZ
+ * BEHIND the surface (`DEPTH_EDGE_BIAS`, ticket b9xz) so the exactly-on-
+ * surface B-Rep edges would win their z-fight in "visible" edge mode — but
+ * that skewed every depth comparison against rasterized geometry: where a
+ * solid meets the SDF plane at a grazing angle the offset amplifies to a
+ * view-dependent millimetre-scale crescent along the intersection (ticket
+ * iw6f). The edge overlay now pulls ITSELF forward via polygonOffset
+ * instead (brepEdgeOverlays.tsx).
  */
 export function emitSceneDepthWrite({
   hitPos,
@@ -115,7 +118,7 @@ export function emitSceneDepthWrite({
   farU,
   isOrthoU,
 }: any): void {
-  const viewZ = viewMatU.mul(vec4(hitPos, 1.0)).z.mul(DEPTH_EDGE_BIAS);
+  const viewZ = viewMatU.mul(vec4(hitPos, 1.0)).z;
   depth
     .assign(
       select(

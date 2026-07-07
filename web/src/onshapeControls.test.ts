@@ -1,6 +1,12 @@
 import { describe, it, expect } from "vitest";
 import * as THREE from "three";
-import { sphereFitsViewport, rotationDelta, cursorZoomFocus } from "./onshapeControls";
+import {
+  sphereFitsViewport,
+  rotationDelta,
+  cursorZoomFocus,
+  OnshapeControls,
+} from "./onshapeControls";
+import { publishSceneBounds } from "./sceneBoundsBridge";
 
 function cameraLookingAt(
   pos: [number, number, number],
@@ -126,5 +132,149 @@ describe("cursorZoomFocus", () => {
   it("returns null for a grazing ray and a degenerate camera", () => {
     expect(cursorZoomFocus(camPos, target, new THREE.Vector3(1, 0, 0), new THREE.Vector3())).toBeNull();
     expect(cursorZoomFocus(target, target, new THREE.Vector3(0, 0, -1), new THREE.Vector3())).toBeNull();
+  });
+});
+
+describe("OnshapeControls touch gestures", () => {
+  const touch = (id: number, x: number, y: number) =>
+    ({
+      pointerType: "touch",
+      pointerId: id,
+      clientX: x,
+      clientY: y,
+      button: 0,
+      stopPropagation: () => {},
+    }) as unknown as PointerEvent;
+
+  // The private pointer handlers are the gesture entry points; call them
+  // directly (jsdom PointerEvent is flaky) with the fields they read.
+  const handlers = (c: OnshapeControls) =>
+    c as unknown as {
+      onPointerDown: (e: PointerEvent) => void;
+      onPointerMove: (e: PointerEvent) => void;
+      onPointerUp: (e: PointerEvent) => void;
+    };
+
+  // jsdom reports clientHeight 0 and an empty rect; give the element realistic
+  // metrics so rotate (∝ dx/clientHeight) and cursor-zoom aren't degenerate.
+  const makeEl = (): HTMLElement => {
+    const el = document.createElement("div");
+    Object.defineProperty(el, "clientHeight", { value: 600, configurable: true });
+    el.getBoundingClientRect = () =>
+      ({ left: 0, top: 0, right: 800, bottom: 600, width: 800, height: 600, x: 0, y: 0, toJSON: () => ({}) }) as DOMRect;
+    return el;
+  };
+
+  it("one-finger drag past the tap threshold rotates the camera", () => {
+    const cam = cameraLookingAt([0, 0, 100], [0, 0, 0]);
+    const c = new OnshapeControls(cam, makeEl());
+    const h = handlers(c);
+    const before = cam.position.clone();
+    h.onPointerDown(touch(1, 100, 100));
+    h.onPointerMove(touch(1, 160, 100)); // 60px > threshold → rotate
+    h.onPointerUp(touch(1, 160, 100));
+    expect(cam.position.distanceTo(before)).toBeGreaterThan(0.1);
+    c.dispose();
+  });
+
+  it("a one-finger tap (below threshold) leaves the camera untouched", () => {
+    const cam = cameraLookingAt([0, 0, 100], [0, 0, 0]);
+    const c = new OnshapeControls(cam, makeEl());
+    const h = handlers(c);
+    const before = cam.position.clone();
+    h.onPointerDown(touch(1, 100, 100));
+    h.onPointerMove(touch(1, 102, 101)); // < threshold → still a tap
+    h.onPointerUp(touch(1, 102, 101));
+    expect(cam.position.distanceTo(before)).toBe(0);
+    c.dispose();
+  });
+
+  // A right-button mouse event (button 2 → ROTATE in the Onshape preset).
+  const mouse = (button: number, x: number, y: number) =>
+    ({
+      pointerType: "mouse",
+      pointerId: 1,
+      button,
+      clientX: x,
+      clientY: y,
+      stopPropagation: () => {},
+    }) as unknown as PointerEvent;
+
+  it("rotate pivots on the cursor-raycast HIT point (ohtn)", () => {
+    // Onshape heuristic: the surface point under the cursor becomes the pivot.
+    const cam = cameraLookingAt([0, 0, 100], [0, 0, 0]);
+    const c = new OnshapeControls(cam, makeEl());
+    c.pickPivot = () => [1, 2, 3]; // cursor ray hits geometry at (1,2,3)
+    const h = handlers(c);
+    h.onPointerDown(mouse(2, 100, 100)); // right button → rotate begins
+    expect(c.target.x).toBeCloseTo(1, 5);
+    expect(c.target.y).toBeCloseTo(2, 5);
+    expect(c.target.z).toBeCloseTo(3, 5);
+    c.dispose();
+  });
+
+  it("rotate falls back to the scene centre on a raycast MISS (ohtn)", () => {
+    // Empty space under the cursor → pivot on the visible scene centre
+    // (the tight `pivot` when the kernel has it, else the AABB centre).
+    publishSceneBounds({ center: [0, 0, 0], radius: 5, pivot: [5, 6, 7] });
+    const cam = cameraLookingAt([0, 0, 100], [0, 0, 0]);
+    const c = new OnshapeControls(cam, makeEl());
+    c.pickPivot = () => null; // miss
+    const h = handlers(c);
+    h.onPointerDown(mouse(2, 100, 100));
+    expect(c.target.x).toBeCloseTo(5, 5);
+    expect(c.target.y).toBeCloseTo(6, 5);
+    expect(c.target.z).toBeCloseTo(7, 5);
+    c.dispose();
+    publishSceneBounds(null);
+  });
+
+  it("ortho wheel-zoom pins the cursor point even with an off-axis target (zc9b)", () => {
+    // The rotate pivot raycasts onto whatever sat under the cursor, so the
+    // target routinely ends up OFF the camera view axis. Cursor zoom must
+    // still keep the world point under the pointer fixed on screen — the pin
+    // offset is relative to the camera axis, not the target.
+    const cam = new THREE.OrthographicCamera(-400, 400, 300, -300, 0.05, 2000);
+    cam.position.set(0, 0, 100);
+    cam.zoom = 2;
+    cam.updateProjectionMatrix();
+    cam.updateMatrixWorld(true);
+    const el = makeEl();
+    const c = new OnshapeControls(cam, el);
+    c.target.set(30, -20, 0); // off-axis pivot, as after an ohtn raycast
+
+    // World point under the cursor before zooming.
+    const p = new THREE.Vector3(10, 5, 0);
+    const toPx = () => {
+      const ndc = p.clone().project(cam);
+      return { x: (ndc.x + 1) * 400, y: (1 - ndc.y) * 300 };
+    };
+    const before = toPx();
+
+    const wheel = (c as unknown as { onWheel: (e: WheelEvent) => void }).onWheel;
+    wheel({
+      deltaY: -300, // zoom IN three notches
+      clientX: before.x,
+      clientY: before.y,
+      preventDefault: () => {},
+    } as unknown as WheelEvent);
+
+    cam.updateMatrixWorld(true);
+    const after = toPx();
+    expect(Math.abs(after.x - before.x)).toBeLessThan(0.5);
+    expect(Math.abs(after.y - before.y)).toBeLessThan(0.5);
+    c.dispose();
+  });
+
+  it("two-finger spread zooms in (perspective camera moves closer)", () => {
+    const cam = cameraLookingAt([0, 0, 100], [0, 0, 0]);
+    const c = new OnshapeControls(cam, makeEl());
+    const h = handlers(c);
+    const distBefore = cam.position.distanceTo(c.target);
+    h.onPointerDown(touch(1, 100, 100));
+    h.onPointerDown(touch(2, 200, 100)); // pinch begins, dist 100
+    h.onPointerMove(touch(2, 300, 100)); // dist 200 → spread → zoom in
+    expect(cam.position.distanceTo(c.target)).toBeLessThan(distBefore);
+    c.dispose();
   });
 });

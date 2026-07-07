@@ -90,7 +90,7 @@ pub fn weave_branch_seeds(body: &BoundedCsg) -> Option<BRep> {
 /// fill those — Stufe C, not implemented here). Returns `None` only for
 /// out-of-scope bodies or when not a single seam resolved (→ whole-body octree).
 pub fn weave_branch_seeds_partial(body: &BoundedCsg) -> Option<BRep> {
-    if !scope_supported(body) {
+    if !scope_supported_partial(body) {
         return None;
     }
     let wireframe = build_seed_wireframe(body, SeedMode::Partial)?;
@@ -142,6 +142,43 @@ fn scope_supported(body: &BoundedCsg) -> bool {
         return false;
     }
     true
+}
+
+/// Scope gate of the PARTIAL path: like [`scope_supported`], but a **gyroid**
+/// is admitted — its Boolean rim seams seed via SSI (gyroid as implicit
+/// operand) and trace via the dual field, both proven; every seam a gyroid
+/// pair cannot resolve is gracefully skipped by `Partial` mode anyway. The
+/// other non-Lipschitz features (Thread / Helix / Sweep) stay rejected: they
+/// have no analytic half-space carrier at all, so nothing would resolve.
+fn scope_supported_partial(body: &BoundedCsg) -> bool {
+    !body_has_warp(body) && !has_non_gyroid_non_lipschitz(body)
+}
+
+/// Any Thread leaf, Helix or Sweep under `node` (the non-Lipschitz features
+/// WITHOUT an analytic carrier — gyroids are deliberately not counted).
+fn has_non_gyroid_non_lipschitz(node: &BoundedCsg) -> bool {
+    use fielddraft_protocol::Primitive;
+    match node {
+        BoundedCsg::Leaf { primitive, .. } => {
+            primitive.is_non_lipschitz() && !matches!(primitive, Primitive::Gyroid { .. })
+        }
+        BoundedCsg::Helix { .. } | BoundedCsg::Sweep { .. } => true,
+        BoundedCsg::Union { left, right, .. }
+        | BoundedCsg::Difference { left, right, .. }
+        | BoundedCsg::Intersection { left, right, .. }
+        | BoundedCsg::SmoothUnion { left, right, .. }
+        | BoundedCsg::SmoothDifference { left, right, .. }
+        | BoundedCsg::MaskedBlend { left, right, .. }
+        | BoundedCsg::Morph { left, right, .. } => {
+            has_non_gyroid_non_lipschitz(left) || has_non_gyroid_non_lipschitz(right)
+        }
+        BoundedCsg::Twist { inner, .. }
+        | BoundedCsg::Bend { inner, .. }
+        | BoundedCsg::Displace { inner, .. }
+        | BoundedCsg::Offset { inner, .. }
+        | BoundedCsg::Shell { inner, .. } => has_non_gyroid_non_lipschitz(inner),
+        BoundedCsg::Extrude { .. } | BoundedCsg::Revolve { .. } | BoundedCsg::Empty => false,
+    }
 }
 
 // Curvature-adaptive trace fractions — shared with the octree route via
@@ -226,7 +263,12 @@ fn build_seed_wireframe(body: &BoundedCsg, mode: SeedMode) -> Option<BRep> {
     // (e.g. a plane parallel to an infinite cylinder) that must stall → `Open`.
     let tol = ADAPT_TOL_FRACTION * diag;
     let min_step = ADAPT_MIN_FRACTION * diag;
-    let max_step = (ADAPT_MAX_FRACTION * diag).max(min_step);
+    // Half the shared max fraction (ticket 7sp1): together with the march's
+    // midpoint gap guard this bounds the smallest trimmed-away stretch a
+    // stride can leap over to ~2.5% of the model diagonal (the g4rr lens gap
+    // is 4.2%). Costs a few extra points on long straight edges, nothing on
+    // curved ones (there the sagitta tolerance governs).
+    let max_step = (0.5 * ADAPT_MAX_FRACTION * diag).max(min_step);
     // Deviation from the spec's `from_step(max_step)`: the *initial* predictor
     // (and hence `close_tol`) must be small. The octree route seeds this from its
     // small octree `spacing`; with no octree we seed it from `min_step`. Starting
@@ -256,11 +298,16 @@ fn build_seed_wireframe(body: &BoundedCsg, mode: SeedMode) -> Option<BRep> {
     let eps = (1e-5 * diag) as f32;
 
     // Co-component seed dedup radius and corner-cluster gap, both scaled to the
-    // model. `near_tol = max_step`: any second seed lying within a step of an
-    // already-traced polyline is the SAME component (SSI can emit several seeds
-    // per curve) and is dropped; a seed on a genuinely disjoint component lies
-    // far off the polyline and survives to trace its own edge.
-    let near_tol = max_step;
+    // model. A second seed of the SAME component (SSI emits several per curve)
+    // lies within the polyline's chord sagitta (≤ the adaptive tol — the dedup
+    // measures SEGMENT distance via `near_traced`, so the stride length is
+    // irrelevant) plus the seed's own bisection residual; 10× the adaptive tol
+    // covers both with headroom. It must NOT be any larger: `max_step`
+    // (= 0.1·diag) as the old radius swallowed genuinely DISTINCT parallel
+    // edges — a gyroid shell's twin rims run ~2·t·s·0.2887 apart, so on the
+    // 7sp1 sliver every second sheet rim was "covered" by the first sheet's
+    // polyline and half the Boolean rim edges silently vanished (ticket 7sp1).
+    let near_tol = 10.0 * ADAPT_TOL_FRACTION * diag;
     // `gap = 0.1·diag` is the *gather* scale: large enough to collect all of one
     // corner's edge termini — each ~`eps`-overshot along its free axis, and at a
     // grazing crossing overshot by `eps/sinθ` (which can reach a few ·1e-2·diag)
@@ -274,6 +321,124 @@ fn build_seed_wireframe(body: &BoundedCsg, mode: SeedMode) -> Option<BRep> {
     // termini of one corner are indistinguishable, so a still-spurious cluster
     // this tight is a genuine phantom (DL-81) → octree.
     let min_gap = (eps as f64).max(1e-9);
+
+    // 2b. Vertex witnesses (ticket 7sp1 follow-up). The march samples the
+    //    active predicate only at (mid)points of its strides, so a stride can
+    //    still leap a trimmed-away stretch narrower than the resolution floor
+    //    and bridge two arcs a third surface separates. The gap BOUNDARIES,
+    //    however, are triple points — concurrences of the pair's two surfaces
+    //    with the trimming third — and those are solvable analytically BEFORE
+    //    tracing: for every branch triple whose three pairs all seeded, run
+    //    the corner Newton from that triple's seam seeds and keep every
+    //    concurrence that lies ON the body boundary. The marches get them as
+    //    bounding vertices, so a march SNAPS to the gap boundary instead of
+    //    leaping it — and the a-posteriori machinery (interior splitting,
+    //    trim clustering) keeps working as the backstop.
+    let witness_merge = (1e-3 * diag).max(64.0 * eps as f64);
+    let mut witnesses: Vec<([f64; 3], [BranchId; 3])> = Vec::new();
+    {
+        use std::collections::{BTreeSet, HashSet};
+        let ckey = |x: BranchId, y: BranchId| {
+            let (a32, b32) = (x.as_u32(), y.as_u32());
+            (a32.min(b32), a32.max(b32))
+        };
+        let seeded: HashSet<(u32, u32)> = seeds.iter().map(|s| ckey(s.a, s.b)).collect();
+        let mut partner: HashMap<u32, HashSet<u32>> = HashMap::new();
+        for &(x, y) in &seeded {
+            partner.entry(x).or_default().insert(y);
+            partner.entry(y).or_default().insert(x);
+        }
+        let mut triples: BTreeSet<[u32; 3]> = BTreeSet::new();
+        for &(x, y) in &seeded {
+            if let (Some(px), Some(py)) = (partner.get(&x), partner.get(&y)) {
+                for &z in px.intersection(py) {
+                    let mut t = [x, y, z];
+                    t.sort_unstable();
+                    triples.insert(t);
+                }
+            }
+        }
+        // Newton guesses: the triple's pair with the FEWEST seeds (any seam
+        // seed walks to the concurrence), capped — witnesses are corners, a
+        // handful of starts per triple finds them all.
+        const GUESS_CAP: usize = 48;
+        for t in triples {
+            let branches = [BranchId(t[0]), BranchId(t[1]), BranchId(t[2])];
+            let mut best: Option<Vec<[f32; 3]>> = None;
+            for (x, y) in [(t[0], t[1]), (t[0], t[2]), (t[1], t[2])] {
+                let list: Vec<[f32; 3]> = seeds
+                    .iter()
+                    .filter(|s| ckey(s.a, s.b) == (x, y))
+                    .map(|s| s.point)
+                    .collect();
+                if best.as_ref().is_none_or(|b| list.len() < b.len()) && !list.is_empty() {
+                    best = Some(list);
+                }
+            }
+            let Some(guesses) = best else { continue };
+            let stride = (guesses.len() / GUESS_CAP).max(1);
+            for g in guesses.iter().step_by(stride) {
+                let start = [g[0] as f64, g[1] as f64, g[2] as f64];
+                let TripleRefine::Refined(p) =
+                    refine_triple_vertex(&halfspaces, &branches, start)
+                else {
+                    continue;
+                };
+                // Only ACTIVE concurrences become witnesses: extended analytic
+                // surfaces concur outside the material too — far off (a cap
+                // plane crossing a box edge line) or even ON the body boundary
+                // (a shell inner wall\'s carrier plane reaches the outer face,
+                // where the wall itself does not exist). Snapping there would
+                // split real edges at phantom corners, so a witness must pass
+                // the SAME activity test the marches trim by, for ALL THREE of
+                // its pairs: every surface genuinely on the boundary here.
+                // Rank gate: a corner is a POINT only when the three surface
+                // normals genuinely span 3-space. Near-coincident carriers (a
+                // µm-drifted coplanar wall pair, o2j9) concur along a whole
+                // CURVE — the Newton "converges" anywhere on it and every
+                // start seed mints another phantom witness marching the seam.
+                // The scalar triple product of the unit normals is exactly
+                // that spanning volume; refuse anything close to flat.
+                {
+                    let mut n = [[0.0f64; 3]; 3];
+                    let mut ok = true;
+                    for (k, br) in branches.iter().enumerate() {
+                        let Some((hs, xf)) = halfspaces.get(&br.as_u32()) else {
+                            ok = false;
+                            break;
+                        };
+                        let (_, g) = crate::sdf_dual::halfspace_value_grad(hs, xf, p);
+                        let l = (g[0] * g[0] + g[1] * g[1] + g[2] * g[2]).sqrt();
+                        if l < 1e-9 {
+                            ok = false;
+                            break;
+                        }
+                        n[k] = [g[0] / l, g[1] / l, g[2] / l];
+                    }
+                    let vol = (n[0][0] * (n[1][1] * n[2][2] - n[1][2] * n[2][1])
+                        - n[0][1] * (n[1][0] * n[2][2] - n[1][2] * n[2][0])
+                        + n[0][2] * (n[1][0] * n[2][1] - n[1][1] * n[2][0]))
+                        .abs();
+                    if !ok || vol < 1e-2 {
+                        continue;
+                    }
+                }
+                let pf = [p[0] as f32, p[1] as f32, p[2] as f32];
+                let all_pairs_active = [(0usize, 1usize), (0, 2), (1, 2)]
+                    .iter()
+                    .all(|&(i, j)| {
+                        both_branches_active(body, pf, branches[i], branches[j], eps)
+                    });
+                if !all_pairs_active {
+                    continue;
+                }
+                if witnesses.iter().any(|(w, _)| dist3(*w, p) < witness_merge) {
+                    continue;
+                }
+                witnesses.push((p, branches));
+            }
+        }
+    }
 
     // 3. Group seeds by canonical (min, max) branch signature, then process each
     //    group, collapsing co-component seeds into a single traced edge.
@@ -293,6 +458,18 @@ fn build_seed_wireframe(body: &BoundedCsg, mode: SeedMode) -> Option<BRep> {
 
     let mut records: Vec<EdgeRecord> = Vec::new();
     for (_key, members) in group_list {
+        // This pair's vertex witnesses: triple points whose branch set contains
+        // BOTH branches (they lie exactly on this pair's seam curve). Handed to
+        // every trace of the group as bounding vertices; `wit_global` maps the
+        // per-group index a march reports back to the global witness id.
+        let (wit_global, wit_pos): (Vec<usize>, Vec<[f64; 3]>) = witnesses
+            .iter()
+            .enumerate()
+            .filter(|(_, (_, br))| {
+                br.iter().any(|x| x.as_u32() == _key.0) && br.iter().any(|x| x.as_u32() == _key.1)
+            })
+            .map(|(i, (p, _))| (i, *p))
+            .unzip();
         // `covered` marks group seeds already absorbed by an emitted polyline.
         let mut covered = vec![false; members.len()];
         for idx in 0..members.len() {
@@ -326,12 +503,11 @@ fn build_seed_wireframe(body: &BoundedCsg, mode: SeedMode) -> Option<BRep> {
                 seed.point[2] as f64,
             ];
 
-            // No caller vertices: only `Trim`/`Open` ends can occur.
-            let Some(traced) = trace_edge(
+            let Some(mut traced) = trace_edge(
                 &fa,
                 &fb,
                 seed_pt,
-                &[],
+                &wit_pos,
                 &params,
                 Some(&active as &dyn Fn([f64; 3]) -> bool),
             ) else {
@@ -357,6 +533,37 @@ fn build_seed_wireframe(body: &BoundedCsg, mode: SeedMode) -> Option<BRep> {
                 return None;
             }
 
+            // Remap witness-vertex ends from the group-local list the march
+            // saw to GLOBAL witness ids (materialised as B-Rep vertices below).
+            for end in [&mut traced.ends.0, &mut traced.ends.1] {
+                if let EdgeEnd::Vertex(li) = end {
+                    *end = EdgeEnd::Vertex(wit_global[*li]);
+                }
+            }
+
+            // A seed sitting (numerically) ON a witness corner ends BOTH
+            // march directions right at that corner — one side snapped to the
+            // vertex, the other trim-bisected onto the same spot — a µm-scale
+            // self-loop stub, not an edge. Positions decide (the end KINDS
+            // vary): an open arc whose termini coincide within the corner
+            // merge radius and whose whole arc is a few march floors long is
+            // degenerate. A genuine same-vertex teardrop seam is orders of
+            // magnitude longer.
+            if !traced.closed && traced.points.len() >= 2 {
+                let first = traced.points[0];
+                let last = *traced.points.last().expect("nonempty");
+                if dist3(first, last) < witness_merge {
+                    let len: f64 = traced
+                        .points
+                        .windows(2)
+                        .map(|w| dist3(w[0], w[1]))
+                        .sum();
+                    if len < 8.0 * min_step {
+                        continue;
+                    }
+                }
+            }
+
             // Convert to Hermite NOW, while the borrowing fields are alive, so
             // the stored record is self-contained.
             let samples = traced_to_hermite(&fa, &fb, &traced);
@@ -370,13 +577,25 @@ fn build_seed_wireframe(body: &BoundedCsg, mode: SeedMode) -> Option<BRep> {
             // A seed on a genuinely disjoint component lies off the polyline and
             // survives to trace its own edge.
             covered[idx] = true;
+            // The dedup polyline includes the TRIM TERMINI: the march's last
+            // emitted point undershoots the true end by up to one adaptive
+            // stride, and a same-arc seed inside that gap would otherwise
+            // escape the (deliberately tight) radius and re-trace the arc —
+            // the historical reason `near_tol` had to be a whole `max_step`.
+            let mut dedup_poly = traced.points.clone();
+            if let EdgeEnd::Trim(p) = traced.ends.0 {
+                dedup_poly.insert(0, p);
+            }
+            if let EdgeEnd::Trim(p) = traced.ends.1 {
+                dedup_poly.push(p);
+            }
             for other in 0..members.len() {
                 if covered[other] {
                     continue;
                 }
                 let p = &seeds[members[other]].point;
                 let q = [p[0] as f64, p[1] as f64, p[2] as f64];
-                if near_traced(q, &traced.points, traced.closed, near_tol) {
+                if near_traced(q, &dedup_poly, traced.closed, near_tol) {
                     covered[other] = true;
                 }
             }
@@ -414,6 +633,24 @@ fn build_seed_wireframe(body: &BoundedCsg, mode: SeedMode) -> Option<BRep> {
     let mut brep = BRep::new();
     // Per (record, side) → the corner vertex it terminates at.
     let mut side_vertex: HashMap<(usize, usize), VertexId> = HashMap::new();
+
+    // Collect which (record, side) termini reference each witness. The
+    // vertices are materialised AFTER trim clustering: a witness vertex's
+    // branch set must be the union of every incident record's two branches —
+    // exactly what the cluster path builds — or the vertex id_hash diverges
+    // from the octree route and the handle-identity contract breaks (the
+    // flush-union classification gates). Trim clusters resolving onto a
+    // referenced witness merge INTO it below, so a corner reached by a
+    // vertex-snapped march on one edge and an activity-trimmed march on
+    // another still fuses into ONE vertex.
+    let mut witness_refs: HashMap<usize, Vec<(usize, usize)>> = HashMap::new();
+    for (ri, rec) in records.iter().enumerate() {
+        for (side, end) in [(0usize, rec.ends.0), (1, rec.ends.1)] {
+            if let EdgeEnd::Vertex(wi) = end {
+                witness_refs.entry(wi).or_default().push((ri, side));
+            }
+        }
+    }
 
     // Resolve corners with split-on-spurious. Each work item is a set of trim
     // termini (indices into `trim_*`) to cluster at gap `g`. A cluster that
@@ -513,10 +750,43 @@ fn build_seed_wireframe(body: &BoundedCsg, mode: SeedMode) -> Option<BRep> {
                 }
             };
 
+            // A corner that coincides with a REFERENCED witness must not be
+            // duplicated — loops chain by VertexId, and two vertices at one
+            // position break the ring connectivity. Merge this cluster's
+            // termini into the witness; its branch union picks them up when
+            // the witness vertices are materialised below.
+            let coincident = witness_refs
+                .keys()
+                .find(|wi| dist3(witnesses[**wi].0, pos) <= witness_merge)
+                .copied();
+            if let Some(wi) = coincident {
+                let refs = witness_refs.get_mut(&wi).expect("key just found");
+                for &m in &group {
+                    refs.push(trim_refs[m]);
+                }
+                continue;
+            }
             let vid = brep.add_vertex(Vertex::new(pos, branches));
             for &m in &group {
                 side_vertex.insert(trim_refs[m], vid);
             }
+        }
+    }
+
+    // Materialise the referenced witnesses (deterministic order), each with
+    // the branch UNION of every terminus that ends there — cluster-path
+    // semantics, so the vertex id_hash matches the octree route.
+    let mut wit_list: Vec<(usize, Vec<(usize, usize)>)> = witness_refs.into_iter().collect();
+    wit_list.sort_unstable_by_key(|(wi, _)| *wi);
+    for (wi, refs) in wit_list {
+        let mut branches: Vec<BranchId> = Vec::new();
+        for &(ri, _) in &refs {
+            branches.push(records[ri].a);
+            branches.push(records[ri].b);
+        }
+        let vid = brep.add_vertex(Vertex::new(witnesses[wi].0, branches));
+        for r in refs {
+            side_vertex.insert(r, vid);
         }
     }
 
@@ -779,6 +1049,182 @@ mod tests {
         };
         let body = BoundedCsg::from_csg(&csg);
         assert!(!scope_supported(&body));
+    }
+
+    /// A gyroid body stays out of the STRICT scope (id_hash toggle-invariance)
+    /// but is admitted by the PARTIAL gate.
+    #[test]
+    fn partial_scope_admits_gyroid_but_strict_does_not() {
+        let csg = CsgNode::Intersection(
+            Box::new(box_leaf(1, [0.0, 0.0, 0.0], [10.0, 10.0, 10.0])),
+            Box::new(CsgNode::Leaf {
+                id: FeatureId::from_u32(2),
+                primitive: Primitive::Gyroid { cell_size: 4.0, thickness: 0.3 },
+            }),
+        );
+        let body = BoundedCsg::from_csg(&csg);
+        assert!(!scope_supported(&body), "strict scope must keep rejecting gyroid");
+        assert!(scope_supported_partial(&body), "partial scope must admit gyroid");
+    }
+
+    /// End-to-end: Box∩Gyroid through the graceful partial weave — the DL-71
+    /// lift. The result must carry real edges: the box's own 12 edges (where
+    /// they survive the intersection) plus the gyroid rim seams on the box
+    /// faces, every sampled point ON the body boundary.
+    #[test]
+    fn partial_weave_box_intersect_gyroid_has_rim_edges() {
+        let csg = CsgNode::Intersection(
+            Box::new(box_leaf(1, [0.0, 0.0, 0.0], [10.0, 10.0, 10.0])),
+            Box::new(CsgNode::Leaf {
+                id: FeatureId::from_u32(2),
+                primitive: Primitive::Gyroid { cell_size: 4.0, thickness: 0.3 },
+            }),
+        );
+        let body = BoundedCsg::from_csg(&csg);
+        let brep = weave_branch_seeds_partial(&body).expect("gyroid body must partial-weave");
+        assert!(!brep.edges.is_empty(), "no edges woven");
+
+        // At least one seam must involve the gyroid branch (feature 2).
+        let gyroid_edges = brep
+            .edges
+            .iter()
+            .filter(|e| e.signature.0.feature_id() == 2 || e.signature.1.feature_id() == 2)
+            .count();
+        assert!(gyroid_edges > 0, "no gyroid rim seams woven");
+        println!(
+            "box∩gyroid partial weave: {} edges total, {} gyroid rim seams, {} vertices",
+            brep.edges.len(),
+            gyroid_edges,
+            brep.vertices.len()
+        );
+
+        // Every sampled edge point lies on the body boundary (Visual mode, the
+        // renderer's field): |f| within a loose band — the samples are exact
+        // f64 on their two carrier surfaces, the body eval is f32.
+        let mut checked = 0usize;
+        for e in &brep.edges {
+            // finish_weave fits Hermite chains to NURBS — sample via the
+            // shared tessellator (same path body_brep_edges exports).
+            let pts = crate::brep::edge_sampling::sample_edge(&e.geometry);
+            for q in pts {
+                let f = body.sdf(
+                    [q[0] as f32, q[1] as f32, q[2] as f32],
+                    crate::csg::EvalMode::Logical,
+                );
+                assert!(f.abs() < 1e-2, "edge point {q:?} off the body boundary: {f}");
+                checked += 1;
+            }
+        }
+        assert!(checked > 100, "suspiciously few edge samples: {checked}");
+    }
+
+    /// Ticket 7sp1: the l45r gyroid sliver was missing its two vertical
+    /// cylinder×box-side-face seams (the SSI scan masked away crossings lying
+    /// on the overlap wall). Both must now be woven.
+    #[test]
+    fn ticket_7sp1_cylinder_box_side_seams_are_woven() {
+        let gy = CsgNode::Leaf {
+            id: FeatureId::from_u32(2),
+            primitive: Primitive::Gyroid { cell_size: 10.0, thickness: 1.0 },
+        };
+        let sph = CsgNode::Leaf {
+            id: FeatureId::from_u32(1),
+            primitive: Primitive::Sphere { center: [0.0; 3], radius: 50.0 },
+        };
+        let cyl = cylinder_leaf(3, [0.0, 0.0, 0.0], 30.0, 60.0);
+        let bx = box_leaf(4, [7.970110677489131, 22.314295, 29.869688], [3.0, 4.0, 3.0]);
+        let csg = CsgNode::Intersection(
+            Box::new(CsgNode::Difference(
+                Box::new(CsgNode::Intersection(Box::new(sph), Box::new(gy))),
+                Box::new(cyl),
+            )),
+            Box::new(bx),
+        );
+        let body = BoundedCsg::from_csg(&csg);
+        let brep = weave_branch_seeds_partial(&body).expect("sliver must weave");
+        let has = |fa: u32, sa: u32, fb: u32, sb: u32| {
+            brep.edges.iter().any(|e| {
+                let (a, b) = e.signature;
+                (a.feature_id() == fa && a.sub() == sa && b.feature_id() == fb && b.sub() == sb)
+                    || (a.feature_id() == fb && a.sub() == sb && b.feature_id() == fa && b.sub() == sa)
+            })
+        };
+        assert!(has(3, 0, 4, 1), "middle vertical seam (cylinder × box −x) missing");
+        assert!(has(3, 0, 4, 0), "right vertical seam (cylinder × box +x) missing");
+        assert!(brep.edges.len() >= 12, "expected the full sliver edge set, got {}", brep.edges.len());
+    }
+
+    /// Ticket 7cv2 diagnostic: face loops of the sliver.
+    #[test]
+    #[ignore]
+    fn ticket_7cv2_face_loops_dump() {
+        let gy = CsgNode::Leaf {
+            id: FeatureId::from_u32(2),
+            primitive: Primitive::Gyroid { cell_size: 10.0, thickness: 1.0 },
+        };
+        let sph = CsgNode::Leaf {
+            id: FeatureId::from_u32(1),
+            primitive: Primitive::Sphere { center: [0.0; 3], radius: 50.0 },
+        };
+        let cyl = cylinder_leaf(3, [0.0, 0.0, 0.0], 30.0, 60.0);
+        let bx = box_leaf(4, [7.970110677489131, 22.314295, 29.869688], [3.0, 4.0, 3.0]);
+        let csg = CsgNode::Intersection(
+            Box::new(CsgNode::Difference(
+                Box::new(CsgNode::Intersection(Box::new(sph), Box::new(gy))),
+                Box::new(cyl),
+            )),
+            Box::new(bx),
+        );
+        let body = BoundedCsg::from_csg(&csg);
+        let brep = weave_branch_seeds_partial(&body).expect("must weave");
+        for (k, e) in brep.edges.iter().enumerate() {
+            println!("edge {k}: {}.{} x {}.{}", e.signature.0.feature_id(), e.signature.0.sub(),
+                e.signature.1.feature_id(), e.signature.1.sub());
+        }
+        for (k, e) in brep.edges.iter().enumerate() {
+            let pts = crate::brep::edge_sampling::sample_edge(&e.geometry);
+            let coords: Vec<String> = pts.iter().map(|p| format!("[{:.4},{:.4},{:.4}]", p[0], p[1], p[2])).collect();
+            println!("POLY {k} {}.{}x{}.{} [{}]",
+                e.signature.0.feature_id(), e.signature.0.sub(),
+                e.signature.1.feature_id(), e.signature.1.sub(), coords.join(","));
+        }
+        for (fk, f) in brep.faces.iter().enumerate() {
+            let fmt_loop = |lp: &crate::brep::Loop| lp.edges.iter().map(|(e, r)| format!("{}{}", e.0, if *r {"r"} else {""})).collect::<Vec<_>>().join(",");
+            println!("face {fk}: branch {}.{} outer=[{}] inner={}",
+                f.branch_id.feature_id(), f.branch_id.sub(),
+                fmt_loop(&f.outer),
+                f.inner.iter().map(|l| format!("[{}]", fmt_loop(l))).collect::<Vec<_>>().join(" "));
+        }
+    }
+
+    /// Ticket p6pv diagnostic: full Sphere ∩ Gyroid (the holey ball).
+    #[test]
+    #[ignore]
+    fn ticket_p6pv_sphere_gyroid_dump() {
+        let gy = CsgNode::Leaf {
+            id: FeatureId::from_u32(2),
+            primitive: Primitive::Gyroid { cell_size: 10.0, thickness: 1.0 },
+        };
+        let sph = CsgNode::Leaf {
+            id: FeatureId::from_u32(1),
+            primitive: Primitive::Sphere { center: [0.0; 3], radius: 50.0 },
+        };
+        let csg = CsgNode::Intersection(Box::new(sph), Box::new(gy));
+        let body = BoundedCsg::from_csg(&csg);
+        let res = crate::brep::branch_seed::seed_branch_pairs(&body);
+        println!("seeds: {} unresolved: {}", res.seeds.len(), res.unresolved.len());
+        let t0 = std::time::Instant::now();
+        let brep = weave_branch_seeds_partial(&body);
+        println!("weave took {:?}", t0.elapsed());
+        match &brep {
+            Some(b) => {
+                println!("edges: {} vertices: {}", b.edges.len(), b.vertices.len());
+                let mut closed = 0; let mut open = 0;
+                for e in &b.edges { if e.start.is_none() && e.end.is_none() { closed += 1; } else { open += 1; } }
+                println!("closed rings: {closed}, open arcs: {open}");
+            }
+            None => println!("weave returned NONE"),
+        }
     }
 
     #[test]
@@ -1360,4 +1806,6 @@ mod tests {
         let body = BoundedCsg::from_csg(&csg);
         assert!(weave_branch_seeds(&body).is_none());
     }
+
+
 }

@@ -533,6 +533,25 @@ fn march(
                 pts.push(boundary);
                 return (pts, MarchEnd::Trimmed(boundary));
             }
+            // Gap guard (ticket 7sp1): a long adaptive stride can leap clean
+            // OVER a trimmed-away stretch — both endpoints active, the covered
+            // gap between them never sampled — and the march then bridges two
+            // arcs that a third surface separates (the g4rr lens gap). Test
+            // the stride midpoint too, REPROJECTED onto the edge first: the
+            // raw chord midpoint sits up to the sagitta off the curve, which
+            // exceeds the activity band and would fake inactivity on every
+            // curved edge. Halves the smallest leapable gap; the seed route
+            // additionally caps its `max_step` for the same reason.
+            if p.adapt.is_some() {
+                let chord_mid = scale(add(cur, np), 0.5);
+                if let Some(mid) = project_to_edge(fa, fb, chord_mid) {
+                    if !f(mid) {
+                        let boundary = bisect_active(fa, fb, f, cur, mid);
+                        pts.push(boundary);
+                        return (pts, MarchEnd::Trimmed(boundary));
+                    }
+                }
+            }
         }
 
         // Loop closure: back near the seed after genuinely leaving it.
@@ -1191,6 +1210,134 @@ mod tests {
             "inactive seed must yield None"
         );
     }
+
+    // ── gyroid rim tracing (spike phase 2: SSI seeds → 1D trace) ────────────
+
+    fn gyroid(cell_size: f64, thickness: f64) -> Field<'static> {
+        Field::Analytic {
+            hs: HalfSpace::Gyroid {
+                cell_size: cell_size as f32,
+                thickness: thickness as f32,
+            },
+            xf: Transform::IDENTITY,
+        }
+    }
+
+    /// Trace every SSI-seeded component of one carrier ∩ gyroid pair and
+    /// return (closed loops, open arcs, total points), asserting each trace
+    /// resolves, stays on BOTH surfaces (f64-tight) and terminates cleanly
+    /// (loop closure or an active-window trim — never a stall).
+    fn trace_gyroid_pair(
+        carrier: &Field,
+        carrier_hs: &HalfSpace,
+        gy_field: &Field,
+        gy_hs: &HalfSpace,
+        overlap: crate::csg::Aabb,
+        active: &dyn Fn([f64; 3]) -> bool,
+    ) -> (usize, usize, usize) {
+        use crate::brep::ssi::{ssi_seeds, SsiResult};
+        let id = Transform::IDENTITY;
+        let SsiResult::Components(comps) =
+            ssi_seeds(carrier_hs, &id, gy_hs, &id, &overlap)
+        else {
+            panic!("carrier∩gyroid must be seedable");
+        };
+        assert!(!comps.is_empty(), "no components seeded");
+        let params = TraceParams::from_step(0.3);
+        let (mut loops, mut arcs, mut pts) = (0usize, 0usize, 0usize);
+        for comp in &comps {
+            let s = comp[0];
+            let seed = [s[0] as f64, s[1] as f64, s[2] as f64];
+            let edge = trace_edge(carrier, gy_field, seed, &[], &params, Some(active))
+                .expect("seeded component must trace");
+            assert!(edge.points.len() >= 3, "degenerate trace: {} pts", edge.points.len());
+            for &q in &edge.points {
+                let (dc, _) = carrier.value_grad(q);
+                let (dg, _) = gy_field.value_grad(q);
+                assert!(dc.abs() < 1e-6, "point off carrier: {dc}");
+                assert!(dg.abs() < 1e-6, "point off gyroid: {dg}");
+            }
+            if edge.closed {
+                loops += 1;
+            } else {
+                arcs += 1;
+                for end in [&edge.ends.0, &edge.ends.1] {
+                    assert!(
+                        matches!(end, EdgeEnd::Trim(_) | EdgeEnd::Vertex(_)),
+                        "march stalled instead of trimming: {end:?}"
+                    );
+                }
+            }
+            pts += edge.points.len();
+        }
+        (loops, arcs, pts)
+    }
+
+    /// A box-face plane ∩ gyroid shell: every SSI component must trace to a
+    /// closed rim loop or a window-trimmed arc, exactly on both surfaces —
+    /// the full seed→trace pipeline for TPMS Boolean rims.
+    #[test]
+    fn gyroid_plane_rims_trace_closed_or_trimmed() {
+        let gy_hs = HalfSpace::Gyroid { cell_size: 4.0, thickness: 0.3 };
+        let pl_hs = HalfSpace::Plane { normal: [0.0, 1.0, 0.0], offset: 0.0 };
+        let carrier = plane([0.0, 1.0, 0.0], 0.0);
+        let gy = gyroid(4.0, 0.3);
+        let overlap = crate::csg::Aabb {
+            min: [-20.0, -0.5, -20.0],
+            max: [20.0, 0.5, 20.0],
+        };
+        // Active window = the face patch; rims wandering off the face get
+        // trimmed like a third surface would trim them in a real body. Sized
+        // to the PADDED seed box: SSI pads the overlap by 5% (seeds land out
+        // to ±22), so a ±20 window would reject boundary seeds outright.
+        let active = |q: [f64; 3]| q[0].abs() <= 22.5 && q[2].abs() <= 22.5;
+        let (loops, arcs, pts) =
+            trace_gyroid_pair(&carrier, &pl_hs, &gy, &gy_hs, overlap, &active);
+        println!("plane∩gyroid traces: {loops} closed loops, {arcs} trimmed arcs, {pts} points");
+        // The y=0 gyroid section is a set of OPEN channels (the labyrinth
+        // property), so no closed loops are expected here — every curve runs
+        // to the window and trims. Loop closure is proven on the compact
+        // carrier below (sphere∩gyroid).
+        assert!(loops + arcs >= 2, "expected several rim curves");
+    }
+
+    /// Compact carrier: sphere ∩ gyroid. Every rim curve on a closed surface
+    /// with no trim window MUST close as a loop — the loop-closure proof.
+    #[test]
+    fn gyroid_sphere_rims_all_close() {
+        let gy_hs = HalfSpace::Gyroid { cell_size: 4.0, thickness: 0.3 };
+        let sph_hs = HalfSpace::Sphere { radius: 5.0 };
+        let carrier = sphere([0.0, 0.0, 0.0], 5.0);
+        let gy = gyroid(4.0, 0.3);
+        let overlap = crate::csg::Aabb {
+            min: [-5.5, -5.5, -5.5],
+            max: [5.5, 5.5, 5.5],
+        };
+        let active = |_: [f64; 3]| true;
+        let (loops, arcs, pts) =
+            trace_gyroid_pair(&carrier, &sph_hs, &gy, &gy_hs, overlap, &active);
+        println!("sphere∩gyroid traces: {loops} closed loops, {arcs} arcs, {pts} points");
+        assert!(loops >= 1, "a sphere through a gyroid lattice must carry closed rims");
+        assert_eq!(arcs, 0, "no trim window → every curve on the sphere must close");
+    }
+
+    /// Curved carrier: cylinder wall ∩ gyroid shell (a drilled gyroid lattice).
+    #[test]
+    fn gyroid_cylinder_rims_trace() {
+        let gy_hs = HalfSpace::Gyroid { cell_size: 4.0, thickness: 0.3 };
+        let cyl_hs = HalfSpace::InfiniteCylinder { radius: 6.0 };
+        let carrier = cylinder_y([0.0, 0.0, 0.0], 6.0);
+        let gy = gyroid(4.0, 0.3);
+        let overlap = crate::csg::Aabb {
+            min: [-8.0, -8.0, -8.0],
+            max: [8.0, 8.0, 8.0],
+        };
+        // Padded like the plane test: seeds may sit up to 5% past ±8.
+        let active = |q: [f64; 3]| q[1].abs() <= 9.0;
+        let (loops, arcs, pts) =
+            trace_gyroid_pair(&carrier, &cyl_hs, &gy, &gy_hs, overlap, &active);
+        println!("cylinder∩gyroid traces: {loops} closed loops, {arcs} trimmed arcs, {pts} points");
+        assert!(loops + arcs >= 1, "no rim curves traced on the cylinder wall");
+    }
+
 }
-
-

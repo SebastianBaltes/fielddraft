@@ -16,6 +16,15 @@ export interface SceneBounds {
   center: [number, number, number];
   /** Bounding-sphere radius (half the AABB diagonal). 0 = empty scene. */
   radius: number;
+  /**
+   * World-space centre of the *visible* solid's tight AABB — the orbit pivot
+   * (ticket f88u). `center` is the conservative CSG bound the clip-plane
+   * adaptation needs; but a half-carved sphere reports the whole sphere there,
+   * so its centre lands on the phantom original. This is the centre of what is
+   * actually drawn (kernel `sceneVisibleCenter`, SDF-sampled). Absent when the
+   * kernel can't tighten (empty / unbounded field) → callers use `center`.
+   */
+  pivot?: [number, number, number];
 }
 
 /** Edge length of the world reference volume around the origin. The visible

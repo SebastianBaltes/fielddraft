@@ -13,7 +13,6 @@ pub mod sdf_dual;
 pub mod dc;
 pub mod mdc;
 pub mod mt;
-pub mod rfta;
 pub mod expr;
 pub mod features;
 // K13: mesh_sdf moved to the protocol crate so
@@ -28,6 +27,9 @@ pub mod mdc_adaptive;
 pub mod surface_nets;
 pub mod uniform_contour;
 pub mod marching_tets;
+pub mod mesher_cdt;
+pub mod native_prepare;
+pub mod mesher_points;
 pub mod marching_cubes33;
 pub mod marching_cubes33_tables;
 pub mod dual_marching_cubes;

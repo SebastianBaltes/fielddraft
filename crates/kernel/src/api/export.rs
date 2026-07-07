@@ -102,16 +102,29 @@ impl Kernel {
         out
     }
 
-    /// Debug ▸ Mesher, step 1: build a narrow-band adaptive octree over the
-    /// scene and return, for every leaf cell, its centre sample packed as
-    /// `[x, y, z, sdf, nx, ny, nz, cellSize]` (8 floats). A cell subdivides
-    /// while its centre lies within the surface band (`|sdf| ≤ halfDiagonal ·
-    /// guard`) and `depth < max_depth`; otherwise it is a leaf. `sdf` is the
-    /// min-over-bodies field (`EvalMode::Visual`), `n` its normalised gradient
-    /// (central differences). This is the scaffold a custom mesher will grow
-    /// from — the overlay colour-codes `sdf` and draws `n` as a short line.
-    #[wasm_bindgen(js_name = mesherOctreeSamples)]
-    pub fn mesher_octree_samples(&self, max_depth: u32, band_guard: f32) -> Vec<f32> {
+    /// Debug ▸ Mesher: build the narrow-band adaptive octree over the scene
+    /// (one point per leaf cell = its centre) and run the OPTIONAL stages of
+    /// the debug meshing pipeline, all controlled by `options_json`
+    /// ([`crate::mesher_points::MesherPointOptions`], camelCase; unknown
+    /// fields ignored, malformed JSON → defaults):
+    ///
+    ///  1. jq2t point optimisers (processing filters, Newton "Fit on
+    ///     Surface", tangential "Repulsion inside Surface", cell clamping),
+    ///  2. `meshPoints`: adaptive dual contouring over the optimised points
+    ///     (one vertex per leaf; quads at sign-changing minimal octree
+    ///     edges), after an optional 2:1 balance pass (`balanceOctree`).
+    ///
+    /// Returns `[nPoints, nTris, points…, indices…]`: per leaf 9 floats
+    /// `[x, y, z, sdf, nx, ny, nz, cellSize, shown]` with the FINAL point
+    /// position (sdf/normal re-evaluated there) and a `shown` display flag
+    /// (1 = passed the near-surface/sign-change filters), then 3 indices per
+    /// triangle into the point list. Points failing the processing filters
+    /// stay rigid and `shown = 0`; "only on surface" escapees are dropped
+    /// from the point list entirely.
+    #[wasm_bindgen(js_name = mesherPoints)]
+    pub fn mesher_points(&mut self, options_json: String) -> Vec<f32> {
+        let opts: crate::mesher_points::MesherPointOptions =
+            serde_json::from_str(&options_json).unwrap_or_default();
         let bodies: Vec<crate::bvh::BoundedCsg> = self
             .bodies
             .iter()
@@ -119,7 +132,617 @@ impl Kernel {
                 crate::body::build_bounded_with_primitives(&self.decoded, &b.feature_indices).0
             })
             .collect();
-        octree_leaf_samples(&bodies, max_depth, band_guard)
+        let Some((center, root_size)) = octree_root(&bodies) else {
+            return Vec::new();
+        };
+        let scene_sdf = |p: [f32; 3]| {
+            let mut d = f32::MAX;
+            for b in &bodies {
+                d = d.min(b.sdf(p, crate::csg::EvalMode::Visual));
+            }
+            d
+        };
+        let mut root = crate::mesher_points::build_octree(
+            center,
+            root_size,
+            opts.max_depth,
+            opts.band_guard,
+            &scene_sdf,
+        );
+        if opts.mesh_points && opts.balance_octree {
+            crate::mesher_points::balance_2to1(&mut root, &scene_sdf);
+        }
+        let min_size_est = root_size / (1u32 << opts.max_depth.min(10)) as f32;
+        let eps = (min_size_est * 0.05).clamp(1e-3, 1.0);
+        let grad = |p: [f32; 3]| -> [f32; 3] {
+            let gx = scene_sdf([p[0] + eps, p[1], p[2]]) - scene_sdf([p[0] - eps, p[1], p[2]]);
+            let gy = scene_sdf([p[0], p[1] + eps, p[2]]) - scene_sdf([p[0], p[1] - eps, p[2]]);
+            let gz = scene_sdf([p[0], p[1], p[2] + eps]) - scene_sdf([p[0], p[1], p[2] - eps]);
+            let l = (gx * gx + gy * gy + gz * gz).sqrt();
+            if l > 1e-12 {
+                [gx / l, gy / l, gz / l]
+            } else {
+                [0.0, 0.0, 1.0]
+            }
+        };
+        let leaves = crate::mesher_points::collect_leaves(&mut root, &grad);
+        if leaves.is_empty() {
+            return vec![0.0, 0.0];
+        }
+
+        // ── B-Rep skeleton (Hybrid-PASM P1, ticket nwmi) ──
+        // The woven edges become FIXED particle chains: corners exactly at the
+        // B-Rep vertices (flag 3), edge interiors resampled by arc length at
+        // the interaction radius (flag 2). They repel the free particles but
+        // never move — sharp features are boundary conditions, not detection
+        // targets. Positions fold the body placement (mirror body_brep_edges).
+        let mut skeleton: Vec<[f32; 3]> = Vec::new();
+        let mut skeleton_corner: Vec<bool> = Vec::new();
+        // Per (body, vertex idx) → skeleton slot; per (body, edge idx) → the
+        // FULL chain of skeleton slots (endpoints = corner slots for open
+        // edges) — the loop assembly of the CDT stage below re-uses exactly
+        // these slots, which is what makes seams watertight by construction.
+        let mut corner_slot: std::collections::HashMap<(usize, usize), usize> =
+            std::collections::HashMap::new();
+        let mut edge_chain: std::collections::HashMap<(usize, usize), Vec<usize>> =
+            std::collections::HashMap::new();
+        if opts.brep_skeleton {
+            let h = if opts.interaction_radius > 0.0 {
+                opts.interaction_radius
+            } else {
+                min_size_est
+            };
+            for bi in 0..self.bodies.len() {
+                self.bodies[bi].ensure_brep(&self.decoded, true);
+                let placement = self.bodies[bi].placement;
+                let Some(brep) = self.bodies[bi].brep_cached() else { continue };
+                let s = placement.scale[0];
+                let to_world = |p: [f64; 3]| -> [f32; 3] {
+                    let scaled = [p[0] as f32 * s, p[1] as f32 * s, p[2] as f32 * s];
+                    let r = crate::quat_rotate(placement.rotation, scaled);
+                    [
+                        r[0] + placement.translate[0],
+                        r[1] + placement.translate[1],
+                        r[2] + placement.translate[2],
+                    ]
+                };
+                for (vi, v) in brep.vertices.iter().enumerate() {
+                    corner_slot.insert((bi, vi), skeleton.len());
+                    skeleton.push(to_world(v.position));
+                    skeleton_corner.push(true);
+                }
+                for (ei, e) in brep.edges.iter().enumerate() {
+                    let pts: Vec<[f32; 3]> = crate::brep::edge_sampling::sample_edge(&e.geometry)
+                        .into_iter()
+                        .map(to_world)
+                        .collect();
+                    let chain = crate::mesher_points::resample_polyline(&pts, h);
+                    let mut slots: Vec<usize> = Vec::with_capacity(chain.len());
+                    if let Some(vs) = e.start {
+                        slots.push(corner_slot[&(bi, vs.0 as usize)]);
+                    }
+                    // Interior points only: chain endpoints coincide with the
+                    // corner vertices (open edges) or wrap onto the chain
+                    // itself (closed rings — drop the duplicated seam point).
+                    let start = if e.start.is_some() { 1 } else { 0 };
+                    let mut end = chain.len().saturating_sub(usize::from(e.end.is_some()));
+                    if e.start.is_none() && e.end.is_none() && chain.len() >= 2 {
+                        // Closed ring: resample keeps first == last; keep one.
+                        end = end.saturating_sub(1);
+                    }
+                    for p in &chain[start.min(chain.len())..end] {
+                        slots.push(skeleton.len());
+                        skeleton.push(*p);
+                        skeleton_corner.push(false);
+                    }
+                    if let Some(ve) = e.end {
+                        slots.push(corner_slot[&(bi, ve.0 as usize)]);
+                    }
+                    edge_chain.insert((bi, ei), slots);
+                }
+            }
+        }
+
+        let (points, processed, alive) =
+            crate::mesher_points::optimize_leaf_points(&leaves, &opts, &scene_sdf, &grad, &skeleton);
+        // The mesh connects exactly the SHOWN points (passed the display
+        // filters = processed AND survived only-on-surface): one vertex per
+        // shown leaf, triangles by octree-edge adjacency (no sign-change).
+        let shown: Vec<bool> = (0..leaves.len()).map(|i| processed[i] && alive[i]).collect();
+        let indices = if opts.mesh_points && !opts.cdt_faces {
+            crate::mesher_points::connect_octree_edges(&root, &shown)
+        } else {
+            Vec::new()
+        };
+
+        // "Only on surface" drops points from the SET: dead leaves are
+        // omitted from the output and the mesh indices remapped onto the
+        // surviving points.
+        let mut remap = vec![u32::MAX; leaves.len()];
+        let mut n_alive = 0u32;
+        for (i, &a) in alive.iter().enumerate() {
+            if a {
+                remap[i] = n_alive;
+                n_alive += 1;
+            }
+        }
+        // Per point 9 floats: [x, y, z, sdf, nx, ny, nz, size, shown]. `shown`
+        // (1/0) = passed the DISPLAY filters (near-surface AND sign-change) —
+        // the overlay draws normals/dots only for shown points, so toggling a
+        // processing filter visibly culls the cloud (tickets jt76/gjuu). The
+        // MESH still uses every emitted point as a vertex (crack-free DC), so
+        // `shown` is display-only; only "only-on-surface" escapees are gone
+        // from the vertex set entirely (dropped above via `alive`).
+        // ── CDT faces (Hybrid-PASM P3) ──
+        // Per PLANAR face: assemble its boundary loops from the shared
+        // skeleton chains (same slots on both adjacent faces → watertight
+        // seams), attribute the free shown particles by branch, and run the
+        // constrained Delaunay triangulation in the face plane. Triangles are
+        // emitted in OUTPUT indices (alive-remapped particles first, then the
+        // skeleton block), so they bypass the octree remap below.
+        let mut cdt_tris: Vec<[u32; 3]> = Vec::new();
+        // Seam Steiner vertices of periodic (unrolled) faces — appended to
+        // the output point table after the skeleton block.
+        let mut aux_points: Vec<[f32; 3]> = Vec::new();
+        if opts.cdt_faces && opts.brep_skeleton {
+            use crate::brep::SurfaceGeometry;
+            use fielddraft_protocol::HalfSpace;
+            // Output-space point table (mirror of the emission order below).
+            let mut flat: Vec<[f32; 3]> = Vec::with_capacity(n_alive as usize + skeleton.len());
+            for (i, _) in leaves.iter().enumerate() {
+                if alive[i] {
+                    flat.push(points[i]);
+                }
+            }
+            flat.extend(skeleton.iter().copied());
+            let skel_base = n_alive;
+
+            // Branch attribution of the free particles (shown only): the
+            // winning body's contributor set at the point names its face.
+            let eps_attr = (min_size_est * 0.1).max(1e-3);
+            let mut by_branch: std::collections::HashMap<(usize, u32), Vec<u32>> =
+                std::collections::HashMap::new();
+            for (i, _) in leaves.iter().enumerate() {
+                if !(alive[i] && processed[i]) {
+                    continue;
+                }
+                let p = points[i];
+                let mut best = (f32::MAX, usize::MAX);
+                for (bi, b) in bodies.iter().enumerate() {
+                    let d = b.sdf(p, crate::csg::EvalMode::Logical).abs();
+                    if d < best.0 {
+                        best = (d, bi);
+                    }
+                }
+                if best.1 == usize::MAX {
+                    continue;
+                }
+                let (_, contributors) =
+                    bodies[best.1].evaluate(p, eps_attr, crate::csg::EvalMode::Logical);
+                for br in contributors.as_slice() {
+                    by_branch
+                        .entry((best.1, br.as_u32()))
+                        .or_default()
+                        .push(remap[i]);
+                }
+            }
+
+            // Seam sampling spacing (world mm) — same law as the skeleton
+            // chains: the interaction radius, octree cell size as fallback.
+            let h_seam = if opts.interaction_radius > 0.0 {
+                opts.interaction_radius
+            } else {
+                min_size_est
+            };
+            for (bi, _) in self.bodies.iter().enumerate() {
+                let placement = self.bodies[bi].placement;
+                let Some(brep) = self.bodies[bi].brep_cached() else { continue };
+                for face in &brep.faces {
+                    let SurfaceGeometry::Analytic { surface, transform } = &face.surface
+                    else {
+                        continue; // tessellated (gyroid) — P4 sheet stage, open
+                    };
+                    if !matches!(
+                        surface,
+                        HalfSpace::Plane { .. }
+                            | HalfSpace::InfiniteCylinder { .. }
+                            | HalfSpace::Cone { .. }
+                            | HalfSpace::Sphere { .. }
+                            | HalfSpace::RevolvedProfile { .. }
+                    ) {
+                        continue;
+                    }
+                    // Assemble closed loops (outer first) as OUTPUT indices.
+                    let mut face_loops: Vec<Vec<u32>> = Vec::new();
+                    let mut ok = true;
+                    for lp in std::iter::once(&face.outer).chain(face.inner.iter()) {
+                        let mut ring: Vec<u32> = Vec::new();
+                        for &(eid, reversed) in &lp.edges {
+                            let Some(chain) = edge_chain.get(&(bi, eid.0 as usize)) else {
+                                ok = false;
+                                break;
+                            };
+                            let seq: Vec<usize> = if reversed {
+                                chain.iter().rev().copied().collect()
+                            } else {
+                                chain.clone()
+                            };
+                            for (k, slot) in seq.iter().enumerate() {
+                                let out_idx = skel_base + *slot as u32;
+                                if k == 0 && ring.last() == Some(&out_idx) {
+                                    continue; // junction shared with the previous chain
+                                }
+                                ring.push(out_idx);
+                            }
+                        }
+                        if !ok {
+                            break;
+                        }
+                        if ring.first() == ring.last() && ring.len() > 1 {
+                            ring.pop(); // the wrap point — the loop closes implicitly
+                        }
+                        if ring.len() >= 3 {
+                            face_loops.push(ring);
+                        }
+                    }
+                    if !ok || face_loops.is_empty() {
+                        continue;
+                    }
+                    let interior = by_branch
+                        .get(&(bi, face.branch_id.as_u32()))
+                        .map(Vec::as_slice)
+                        .unwrap_or(&[]);
+                    if matches!(surface, HalfSpace::Plane { .. }) {
+                        cdt_tris.extend(crate::mesher_cdt::triangulate_planar_face(
+                            &flat,
+                            &face_loops,
+                            interior,
+                            0.25 * h_seam as f64,
+                        ));
+                        continue;
+                    }
+
+                    // ── P4: developable/periodic carriers ──
+                    // Unroll the face into its (θ·s, v·s) chart (u periodic)
+                    // and let the periodic CDT cut + weld the seam. The chart
+                    // lives in SURFACE-LOCAL coordinates: world → body local
+                    // (inverse placement) → surface local (inverse transform),
+                    // folded into one composed transform.
+                    let total_t = crate::compose_transforms(&placement, transform);
+                    // P4b: a RevolvedProfile's chart v-axis is the ARC LENGTH
+                    // along the offset-corrected profile chain. Sample the
+                    // chain (ssi's pieces, continuous order) into a local
+                    // (r, y) polyline with cumulative arc lengths; v of a
+                    // point is the arc length of its nearest-point
+                    // projection. Points ON the surface project uniquely, so
+                    // the offset-fold ambiguity of far points never applies.
+                    let profile: Option<(Vec<[f32; 2]>, Vec<f32>)> =
+                        if matches!(surface, HalfSpace::RevolvedProfile { .. }) {
+                            let mut lo = [f32::INFINITY; 3];
+                            let mut hi = [f32::NEG_INFINITY; 3];
+                            for ring in &face_loops {
+                                for &gi in ring {
+                                    let p = flat[gi as usize];
+                                    for a in 0..3 {
+                                        lo[a] = lo[a].min(p[a]);
+                                        hi[a] = hi[a].max(p[a]);
+                                    }
+                                }
+                            }
+                            let bb = crate::csg::Aabb { min: lo, max: hi };
+                            let Some(pieces) =
+                                crate::brep::ssi::profile_pieces(surface, &total_t, &bb)
+                            else {
+                                continue;
+                            };
+                            let mut poly: Vec<[f32; 2]> = Vec::new();
+                            for pc in &pieces {
+                                let n = pc.samples.clamp(8, 128);
+                                for k in 0..=n {
+                                    let q = (pc.eval)(k as f32 / n as f32);
+                                    if poly.last().map_or(true, |l| {
+                                        let d = [q[0] - l[0], q[1] - l[1]];
+                                        d[0] * d[0] + d[1] * d[1] > 1e-10
+                                    }) {
+                                        poly.push(q);
+                                    }
+                                }
+                            }
+                            if poly.len() < 2 {
+                                continue;
+                            }
+                            let mut arc = Vec::with_capacity(poly.len());
+                            let mut acc = 0.0f32;
+                            arc.push(0.0);
+                            for w in poly.windows(2) {
+                                let d = [w[1][0] - w[0][0], w[1][1] - w[0][1]];
+                                acc += (d[0] * d[0] + d[1] * d[1]).sqrt();
+                                arc.push(acc);
+                            }
+                            Some((poly, arc))
+                        } else {
+                            None
+                        };
+                    let uv_raw = |p: [f32; 3]| -> Option<[f64; 2]> {
+                        let l = crate::world_to_local(&total_t, p);
+                        match surface {
+                            HalfSpace::InfiniteCylinder { .. } | HalfSpace::Cone { .. } => {
+                                Some([(l[2] as f64).atan2(l[0] as f64), l[1] as f64])
+                            }
+                            HalfSpace::Sphere { .. } => {
+                                let (x, y, z) = (l[0] as f64, l[1] as f64, l[2] as f64);
+                                let r = (x * x + y * y + z * z).sqrt();
+                                if r < 1e-9 {
+                                    None // a pole point has no azimuth
+                                } else {
+                                    Some([z.atan2(x), (y / r).clamp(-1.0, 1.0).acos()])
+                                }
+                            }
+                            HalfSpace::RevolvedProfile { .. } => {
+                                let (poly, arc) = profile.as_ref()?;
+                                let rad = (l[0] * l[0] + l[2] * l[2]).sqrt();
+                                let mut best = (f32::INFINITY, 0.0f32);
+                                for (k, w) in poly.windows(2).enumerate() {
+                                    let d = [w[1][0] - w[0][0], w[1][1] - w[0][1]];
+                                    let len2 = d[0] * d[0] + d[1] * d[1];
+                                    let t = if len2 > 0.0 {
+                                        (((rad - w[0][0]) * d[0] + (l[1] - w[0][1]) * d[1])
+                                            / len2)
+                                            .clamp(0.0, 1.0)
+                                    } else {
+                                        0.0
+                                    };
+                                    let e = [
+                                        rad - (w[0][0] + t * d[0]),
+                                        l[1] - (w[0][1] + t * d[1]),
+                                    ];
+                                    let d2 = e[0] * e[0] + e[1] * e[1];
+                                    if d2 < best.0 {
+                                        best = (d2, arc[k] + t * len2.sqrt());
+                                    }
+                                }
+                                Some([(l[2] as f64).atan2(l[0] as f64), best.1 as f64])
+                            }
+                            _ => None,
+                        }
+                    };
+                    let mut raw_loops: Vec<Vec<(u32, [f64; 2])>> = Vec::new();
+                    let mut chart_ok = true;
+                    for ring in &face_loops {
+                        let mut lp = Vec::with_capacity(ring.len());
+                        for &gi in ring {
+                            match uv_raw(flat[gi as usize]) {
+                                Some(uv) => lp.push((gi, uv)),
+                                None => {
+                                    chart_ok = false;
+                                    break;
+                                }
+                            }
+                        }
+                        if !chart_ok {
+                            break;
+                        }
+                        raw_loops.push(lp);
+                    }
+                    if !chart_ok {
+                        continue;
+                    }
+                    // Projection-fold guard (RevolvedProfile): if v jumps by
+                    // more than a quarter of the chain length between
+                    // neighbouring loop points, the nearest-point chart
+                    // folded (closed/ambiguous profile) — leave unmeshed.
+                    if let Some((_, arc)) = &profile {
+                        let l_total = *arc.last().unwrap_or(&0.0) as f64;
+                        let folded = raw_loops.iter().any(|lp| {
+                            (0..lp.len()).any(|k| {
+                                (lp[(k + 1) % lp.len()].1[1] - lp[k].1[1]).abs()
+                                    > 0.25 * l_total
+                            })
+                        });
+                        if folded {
+                            continue;
+                        }
+                    }
+                    // Scale θ (and the sphere's polar angle) to arc length so
+                    // both chart axes carry comparable units — a Delaunay
+                    // quality concern, not a correctness one. The cone uses
+                    // the mean loop radius as its reference.
+                    let (su, sv) = match surface {
+                        HalfSpace::InfiniteCylinder { radius } => (*radius as f64, 1.0),
+                        HalfSpace::Sphere { radius } => (*radius as f64, *radius as f64),
+                        HalfSpace::Cone { half_angle } => {
+                            let tan_a = (*half_angle as f64).tan().abs().max(1e-6);
+                            let n_pts: usize = raw_loops.iter().map(Vec::len).sum();
+                            let mean_v = raw_loops
+                                .iter()
+                                .flatten()
+                                .map(|&(_, [_, v])| v.abs())
+                                .sum::<f64>()
+                                / n_pts.max(1) as f64;
+                            ((mean_v * tan_a).max(1e-3), 1.0)
+                        }
+                        HalfSpace::RevolvedProfile { .. } => {
+                            // Mean loop radius as the θ arc-length reference
+                            // (v is already an arc length).
+                            let (mut sum, mut n) = (0.0f64, 0usize);
+                            for ring in &face_loops {
+                                for &gi in ring {
+                                    let l =
+                                        crate::world_to_local(&total_t, flat[gi as usize]);
+                                    sum += ((l[0] * l[0] + l[2] * l[2]) as f64).sqrt();
+                                    n += 1;
+                                }
+                            }
+                            ((sum / n.max(1) as f64).max(1e-3), 1.0)
+                        }
+                        _ => (1.0, 1.0),
+                    };
+                    let period = std::f64::consts::TAU * su;
+                    let scaled: Vec<Vec<(u32, [f64; 2])>> = raw_loops
+                        .iter()
+                        .map(|lp| {
+                            lp.iter().map(|&(gi, [u, v])| (gi, [u * su, v * sv])).collect()
+                        })
+                        .collect();
+                    let scaled_interior: Vec<(u32, [f64; 2])> = interior
+                        .iter()
+                        .filter_map(|&gi| {
+                            uv_raw(flat[gi as usize]).map(|[u, v]| (gi, [u * su, v * sv]))
+                        })
+                        .collect();
+                    let world_of = |u: f64, v: f64| -> [f32; 3] {
+                        let (th, t) = (u / su, v / sv);
+                        let local = match surface {
+                            HalfSpace::InfiniteCylinder { radius } => {
+                                let r = *radius as f64;
+                                [(r * th.cos()) as f32, t as f32, (r * th.sin()) as f32]
+                            }
+                            HalfSpace::Cone { half_angle } => {
+                                let r = t.abs() * (*half_angle as f64).tan();
+                                [(r * th.cos()) as f32, t as f32, (r * th.sin()) as f32]
+                            }
+                            HalfSpace::Sphere { radius } => {
+                                let r = *radius as f64;
+                                let sp = t.sin();
+                                [
+                                    (r * sp * th.cos()) as f32,
+                                    (r * t.cos()) as f32,
+                                    (r * sp * th.sin()) as f32,
+                                ]
+                            }
+                            HalfSpace::RevolvedProfile { .. } => {
+                                let (poly, arc) =
+                                    profile.as_ref().expect("revolve chart has a profile");
+                                let s_arc =
+                                    (t as f32).clamp(0.0, *arc.last().unwrap_or(&0.0));
+                                let k = arc
+                                    .partition_point(|&a| a < s_arc)
+                                    .clamp(1, arc.len() - 1);
+                                let (a0, a1) = (arc[k - 1], arc[k]);
+                                let f =
+                                    if a1 > a0 { (s_arc - a0) / (a1 - a0) } else { 0.0 };
+                                let r = (poly[k - 1][0]
+                                    + f * (poly[k][0] - poly[k - 1][0]))
+                                    as f64;
+                                let yy = poly[k - 1][1] + f * (poly[k][1] - poly[k - 1][1]);
+                                [(r * th.cos()) as f32, yy, (r * th.sin()) as f32]
+                            }
+                            _ => [0.0; 3],
+                        };
+                        let sc = [
+                            local[0] * total_t.scale[0],
+                            local[1] * total_t.scale[1],
+                            local[2] * total_t.scale[2],
+                        ];
+                        let r = crate::quat_rotate(total_t.rotation, sc);
+                        [
+                            r[0] + total_t.translate[0],
+                            r[1] + total_t.translate[1],
+                            r[2] + total_t.translate[2],
+                        ]
+                    };
+                    // Seam spacing converted from world mm to local chart mm.
+                    let ms = total_t.scale[0]
+                        .abs()
+                        .max(total_t.scale[1].abs())
+                        .max(total_t.scale[2].abs())
+                        .max(1e-6);
+                    let aux_base =
+                        (n_alive as usize + skeleton.len() + aux_points.len()) as u32;
+                    let h_chart = (h_seam / ms) as f64;
+                    // Chart-v positions of the carrier's poles/apexes — where
+                    // a cap face (one winding loop) closes via ring + fan.
+                    let poles: Vec<f64> = match surface {
+                        HalfSpace::Sphere { .. } => vec![0.0, std::f64::consts::PI * sv],
+                        HalfSpace::Cone { .. } => vec![0.0],
+                        HalfSpace::RevolvedProfile { .. } => {
+                            let (poly, arc) =
+                                profile.as_ref().expect("revolve chart has a profile");
+                            poly.iter()
+                                .zip(arc.iter())
+                                .filter(|(q, _)| q[0].abs() < 1e-3)
+                                .map(|(_, &a)| a as f64)
+                                .collect()
+                        }
+                        _ => Vec::new(),
+                    };
+                    if let Some(mesh) = crate::mesher_cdt::triangulate_periodic_face(
+                        &scaled,
+                        &scaled_interior,
+                        period,
+                        h_chart,
+                        0.25 * h_chart,
+                        &poles,
+                        aux_base,
+                        &world_of,
+                    ) {
+                        cdt_tris.extend(mesh.tris);
+                        aux_points.extend(mesh.aux);
+                    }
+                }
+            }
+        }
+
+        let n_total = n_alive as usize + skeleton.len() + aux_points.len();
+        let mut out =
+            Vec::with_capacity(2 + n_total * 9 + indices.len() + cdt_tris.len() * 3);
+        out.push(n_total as f32);
+        out.push((indices.len() / 3 + cdt_tris.len()) as f32);
+        for (i, leaf) in leaves.iter().enumerate() {
+            if !alive[i] {
+                continue;
+            }
+            let p = points[i];
+            let (d, n) = if processed[i] && (opts.fit_on_surface || opts.repulsion) {
+                (scene_sdf(p), grad(p))
+            } else {
+                (leaf.sdf, leaf.normal)
+            };
+            let shown = if processed[i] { 1.0 } else { 0.0 };
+            out.extend_from_slice(&[p[0], p[1], p[2], d, n[0], n[1], n[2], leaf.size, shown]);
+        }
+        // Skeleton points: flag 2 = edge chain, 3 = corner (drawn distinctly
+        // by the overlay; the octree mesh never references them, so appending
+        // after the leaf points keeps every triangle index valid).
+        for (k, p) in skeleton.iter().enumerate() {
+            let flag = if skeleton_corner[k] { 3.0 } else { 2.0 };
+            out.extend_from_slice(&[p[0], p[1], p[2], 0.0, 0.0, 0.0, 1.0, 0.0, flag]);
+        }
+        // Periodic-face seam Steiner vertices: chain-coloured (flag 2), only
+        // referenced by the CDT triangles.
+        for p in &aux_points {
+            out.extend_from_slice(&[p[0], p[1], p[2], 0.0, 0.0, 0.0, 1.0, 0.0, 2.0]);
+        }
+        out.extend(indices.iter().map(|&i| remap[i as usize] as f32));
+        for t in &cdt_tris {
+            out.extend_from_slice(&[t[0] as f32, t[1] as f32, t[2] as f32]);
+        }
+        out
+    }
+
+    /// World-space centre of the *visible* solids' AABB — the orbit pivot
+    /// (ticket f88u). This is the union of the per-body `Body.aabb`, which the
+    /// feature pipeline keeps analytically current: a boolean Remove retreats
+    /// the bound past the slab it caps, an Intersect clips it to the tool, so a
+    /// half-carved sphere reports the visible remainder — unlike
+    /// [`Kernel::scene_aabb`], whose Difference bound stays the conservative
+    /// *left operand* (the phantom whole sphere) for clip-plane framing. `[]`
+    /// for an empty scene → the caller keeps the conservative centre. Cheap
+    /// (unions a handful of stored boxes), so it needs no memoisation.
+    #[wasm_bindgen(js_name = sceneVisibleCenter)]
+    pub fn scene_visible_center(&self) -> Vec<f32> {
+        let mut bb = crate::csg::Aabb::EMPTY;
+        for b in &self.bodies {
+            bb = crate::csg::Aabb::union(bb, b.aabb);
+        }
+        if bb.is_empty() {
+            return Vec::new();
+        }
+        vec![
+            0.5 * (bb.min[0] + bb.max[0]),
+            0.5 * (bb.min[1] + bb.max[1]),
+            0.5 * (bb.min[2] + bb.max[2]),
+        ]
     }
 
     /// Pre-mesh estimate for the export dialog: for dense-grid methods, the
@@ -160,6 +783,19 @@ impl Kernel {
     #[wasm_bindgen(js_name = exportMesh3mf)]
     pub fn export_mesh_3mf(&self) -> Vec<u8> {
         export_3mf::export_3mf(&self.export_session_meshes())
+    }
+
+    /// 3MF archive from raw triangle buffers (xyz-interleaved positions +
+    /// indices) — the server-meshing route (CGAL Mesh_3 returns an STL)
+    /// reuses the kernel's 3MF encoder for its format conversion.
+    #[wasm_bindgen(js_name = mesh3mfFromBuffers)]
+    pub fn mesh_3mf_from_buffers(&self, positions: Vec<f32>, indices: Vec<u32>) -> Vec<u8> {
+        let mesh = crate::dc::Mesh {
+            positions,
+            indices,
+            ..Default::default()
+        };
+        export_3mf::export_3mf(&[&mesh])
     }
 
     /// Merged vertex positions (xyz-interleaved) of ALL session export
@@ -261,25 +897,30 @@ impl Kernel {
 /// Debug ▸ Mesher core (kept free of the wasm boundary so it is unit-testable):
 /// build a narrow-band adaptive octree over the union of `bodies` and return
 /// every leaf cell centre packed `[x, y, z, sdf, nx, ny, nz, cellSize]`.
+#[cfg(test)]
 pub(crate) fn octree_leaf_samples(
     bodies: &[crate::bvh::BoundedCsg],
     max_depth: u32,
     band_guard: f32,
 ) -> Vec<f32> {
-    if bodies.is_empty() {
-        return Vec::new();
-    }
-    let scene_sdf = |p: [f32; 3]| {
-        let mut d = f32::MAX;
-        for b in bodies {
-            d = d.min(b.sdf(p, crate::csg::EvalMode::Visual));
-        }
-        d
-    };
+    octree_leaves(bodies, max_depth, band_guard)
+        .into_iter()
+        .flat_map(|l| {
+            [
+                l.center[0], l.center[1], l.center[2], l.sdf, l.normal[0], l.normal[1],
+                l.normal[2], l.size,
+            ]
+        })
+        .collect()
+}
 
-    // Root cube = the union of the bodies' AABBs, squared up (with a small
-    // margin). Space-filling bodies (gyroid) can report an empty AABB — fall
-    // back to a default box so the tool still shows something.
+/// The leaf structs behind [`octree_leaf_samples`] — the jq2t point pipeline
+/// needs the cells (centre + size = clamp bounds), not just packed floats.
+/// Root sizing lives here; construction is `mesher_points::build_octree`.
+pub(crate) fn octree_root(bodies: &[crate::bvh::BoundedCsg]) -> Option<([f32; 3], f32)> {
+    if bodies.is_empty() {
+        return None;
+    }
     let mut mn = [f32::MAX; 3];
     let mut mx = [f32::MIN; 3];
     let mut any = false;
@@ -297,56 +938,45 @@ pub(crate) fn octree_leaf_samples(
         mn = [-50.0; 3];
         mx = [50.0; 3];
     }
-    let center0 = [
+    let center = [
         0.5 * (mn[0] + mx[0]),
         0.5 * (mn[1] + mx[1]),
         0.5 * (mn[2] + mx[2]),
     ];
     let ext = (mx[0] - mn[0]).max(mx[1] - mn[1]).max(mx[2] - mn[2]);
-    let root_size = (ext * 1.1).max(1e-3);
-    let eps = (root_size * 0.005).clamp(1e-3, 1.0);
-    let guard = band_guard.max(0.1);
-    let max_depth = max_depth.min(10);
-    const MAX_LEAVES: usize = 200_000;
-    const SQRT3: f32 = 1.732_050_8;
+    Some((center, (ext * 1.1).max(1e-3)))
+}
 
-    let mut out: Vec<f32> = Vec::new();
-    let mut stack: Vec<([f32; 3], f32, u32)> = vec![(center0, root_size, 0)];
-    while let Some((c, size, depth)) = stack.pop() {
-        if out.len() / 8 >= MAX_LEAVES {
-            break;
+pub(crate) fn octree_leaves(
+    bodies: &[crate::bvh::BoundedCsg],
+    max_depth: u32,
+    band_guard: f32,
+) -> Vec<crate::mesher_points::Leaf> {
+    let Some((center, root_size)) = octree_root(bodies) else {
+        return Vec::new();
+    };
+    let scene_sdf = |p: [f32; 3]| {
+        let mut d = f32::MAX;
+        for b in bodies {
+            d = d.min(b.sdf(p, crate::csg::EvalMode::Visual));
         }
-        let d = scene_sdf(c);
-        let half_diag = size * 0.5 * SQRT3;
-        let in_band = d.abs() <= half_diag * guard;
-        if depth < max_depth && in_band {
-            let h = size * 0.25; // child centre offset = quarter of parent size
-            for &sz in &[-1.0f32, 1.0] {
-                for &sy in &[-1.0f32, 1.0] {
-                    for &sx in &[-1.0f32, 1.0] {
-                        stack.push((
-                            [c[0] + sx * h, c[1] + sy * h, c[2] + sz * h],
-                            size * 0.5,
-                            depth + 1,
-                        ));
-                    }
-                }
-            }
+        d
+    };
+    let eps = (root_size * 0.005).clamp(1e-3, 1.0);
+    let grad = |p: [f32; 3]| -> [f32; 3] {
+        let gx = scene_sdf([p[0] + eps, p[1], p[2]]) - scene_sdf([p[0] - eps, p[1], p[2]]);
+        let gy = scene_sdf([p[0], p[1] + eps, p[2]]) - scene_sdf([p[0], p[1] - eps, p[2]]);
+        let gz = scene_sdf([p[0], p[1], p[2] + eps]) - scene_sdf([p[0], p[1], p[2] - eps]);
+        let gl = (gx * gx + gy * gy + gz * gz).sqrt();
+        if gl > 1e-12 {
+            [gx / gl, gy / gl, gz / gl]
         } else {
-            // Leaf: centre sample + gradient (central differences).
-            let gx = scene_sdf([c[0] + eps, c[1], c[2]]) - scene_sdf([c[0] - eps, c[1], c[2]]);
-            let gy = scene_sdf([c[0], c[1] + eps, c[2]]) - scene_sdf([c[0], c[1] - eps, c[2]]);
-            let gz = scene_sdf([c[0], c[1], c[2] + eps]) - scene_sdf([c[0], c[1], c[2] - eps]);
-            let gl = (gx * gx + gy * gy + gz * gz).sqrt();
-            let n = if gl > 1e-12 {
-                [gx / gl, gy / gl, gz / gl]
-            } else {
-                [0.0, 0.0, 1.0]
-            };
-            out.extend_from_slice(&[c[0], c[1], c[2], d, n[0], n[1], n[2], size]);
+            [0.0, 0.0, 1.0]
         }
-    }
-    out
+    };
+    let mut root =
+        crate::mesher_points::build_octree(center, root_size, max_depth, band_guard, &scene_sdf);
+    crate::mesher_points::collect_leaves(&mut root, &grad)
 }
 
 #[cfg(test)]
@@ -408,5 +1038,301 @@ mod mesher_octree_tests {
     #[test]
     fn empty_scene_yields_no_cells() {
         assert!(octree_leaf_samples(&[], 5, 1.0).is_empty());
+    }
+
+    /// Hybrid-PASM P3 (ticket nwmi): skeleton + CDT on a box must produce a
+    /// CLOSED 2-manifold triangle mesh — every edge shared by exactly two
+    /// triangles, Euler characteristic V − E + F = 2. That is the structural
+    /// watertightness contract of the shared skeleton chains.
+    #[test]
+    fn mesher_points_cdt_box_is_watertight_manifold() {
+        use fielddraft_protocol::{BoolOp, Primitive};
+        let mut k = crate::Kernel::new();
+        k.add_primitive(
+            Primitive::KIND_BOX,
+            BoolOp::TAG_NEW,
+            0.0,
+            0.0,
+            0.0,
+            10.0,
+            10.0,
+            10.0,
+        )
+        .unwrap();
+        let out = k.mesher_points(
+            r#"{"maxDepth":4,"brepSkeleton":true,"cdtFaces":true,
+                "nearSurfaceOnly":true,"nearSurfaceDist":1.0,
+                "fitOnSurface":true,"onlyOnSurface":true,
+                "repulsion":true,"interactionRadius":3.0,"repulsionStrength":0.5,
+                "pasmKernel":true,"iterations":20}"#
+                .into(),
+        );
+        let total = out[0] as usize;
+        let tris = out[1] as usize;
+        assert!(tris >= 12, "expected a real triangulation, got {tris} tris");
+        let idx_base = 2 + total * 9;
+        // Edge → usage count over all triangles.
+        let mut edge_use: std::collections::HashMap<(u32, u32), u32> =
+            std::collections::HashMap::new();
+        let mut used: std::collections::HashSet<u32> = std::collections::HashSet::new();
+        for t in 0..tris {
+            let a = out[idx_base + t * 3] as u32;
+            let b = out[idx_base + t * 3 + 1] as u32;
+            let c3 = out[idx_base + t * 3 + 2] as u32;
+            assert!(a != b && b != c3 && c3 != a, "degenerate triangle");
+            for (x, y) in [(a, b), (b, c3), (c3, a)] {
+                *edge_use.entry((x.min(y), x.max(y))).or_default() += 1;
+                used.insert(x);
+                used.insert(y);
+            }
+        }
+        // Closed 2-manifold: EVERY edge exactly twice.
+        for (&(a, b), &n) in &edge_use {
+            assert_eq!(n, 2, "edge {a}-{b} used {n}× (open seam or fan)");
+        }
+        // Euler characteristic of a sphere-topology solid.
+        let v = used.len() as i64;
+        let e = edge_use.len() as i64;
+        let f = tris as i64;
+        assert_eq!(v - e + f, 2, "Euler characteristic broke: V={v} E={e} F={f}");
+    }
+
+    /// Hybrid-PASM P4 (ticket nwmi): a CYLINDER exercises the developable
+    /// carrier path — the barrel face unrolls into its (θ·r, y) chart, gets
+    /// cut open along a seam whose two copies share global vertex indices,
+    /// and must close up watertight against the two planar cap discs:
+    /// every edge in exactly two triangles, Euler V − E + F = 2.
+    #[test]
+    fn mesher_points_cdt_cylinder_is_watertight_manifold() {
+        use fielddraft_protocol::{BoolOp, Primitive};
+        let mut k = crate::Kernel::new();
+        k.add_primitive(
+            Primitive::KIND_CYLINDER,
+            BoolOp::TAG_NEW,
+            0.0,
+            0.0,
+            0.0,
+            10.0,
+            10.0,
+            0.0,
+        )
+        .unwrap();
+        let out = k.mesher_points(
+            r#"{"maxDepth":4,"brepSkeleton":true,"cdtFaces":true,
+                "nearSurfaceOnly":true,"nearSurfaceDist":1.0,
+                "fitOnSurface":true,"onlyOnSurface":true,
+                "repulsion":true,"interactionRadius":3.0,"repulsionStrength":0.5,
+                "pasmKernel":true,"iterations":20}"#
+                .into(),
+        );
+        let total = out[0] as usize;
+        let tris = out[1] as usize;
+        assert!(tris >= 12, "expected a real triangulation, got {tris} tris");
+        let idx_base = 2 + total * 9;
+        let mut edge_use: std::collections::HashMap<(u32, u32), u32> =
+            std::collections::HashMap::new();
+        let mut used: std::collections::HashSet<u32> = std::collections::HashSet::new();
+        for t in 0..tris {
+            let a = out[idx_base + t * 3] as u32;
+            let b = out[idx_base + t * 3 + 1] as u32;
+            let c3 = out[idx_base + t * 3 + 2] as u32;
+            assert!(a != b && b != c3 && c3 != a, "degenerate triangle");
+            for (x, y) in [(a, b), (b, c3), (c3, a)] {
+                *edge_use.entry((x.min(y), x.max(y))).or_default() += 1;
+                used.insert(x);
+                used.insert(y);
+            }
+        }
+        for (&(a, b), &n) in &edge_use {
+            assert_eq!(n, 2, "edge {a}-{b} used {n}× (open seam or fan)");
+        }
+        let v = used.len() as i64;
+        let e = edge_use.len() as i64;
+        let f = tris as i64;
+        assert_eq!(v - e + f, 2, "Euler characteristic broke: V={v} E={e} F={f}");
+    }
+
+    /// Hybrid-PASM P4b (ticket nwmi): a revolved TUBE (rectangle profile at
+    /// r ∈ [5, 9] about Y, intersected with a y-slab box) exercises the
+    /// RevolvedProfile chart — v is the arc length of the nearest-point
+    /// projection onto the offset-corrected profile chain. Outer AND inner
+    /// wall live on the SAME branch (one RevolvedProfile half-space) and
+    /// must separate purely through the chart; the caps are annuli (planar
+    /// path with a hole loop). Torus topology: every edge in exactly two
+    /// triangles, Euler V − E + F = 0.
+    #[test]
+    fn mesher_points_cdt_revolve_tube_is_watertight_manifold() {
+        let mut k = crate::Kernel::new();
+        k.document = serde_json::from_str(
+            &serde_json::json!({
+                "schema_version": 2,
+                "name": "revolve-tube",
+                "next_feature_id": 4,
+                "feature_calls": [
+                    { "type": "sketch", "id": "1", "params": {
+                        "plane": "qCreatedBy(origin_plane_xy)",
+                        "sub_calls": [
+                            { "type": "sketch_rectangle", "id": "r1", "params": {
+                                "corner_a": [5.0, -10.0], "corner_b": [9.0, 10.0] } },
+                            { "type": "sketch_line", "id": "axis", "params": {
+                                "start": [0.0, -10.0], "end": [0.0, 10.0] } }
+                        ] } },
+                    { "type": "revolve", "id": "2", "params": {
+                        "profiles": "qCreatedBy(1)", "axis": "qSketchLine(1, 11)" } },
+                    { "type": "box", "id": "3", "params": {
+                        "half_extents": [20.0, 6.0, 20.0],
+                        "translate": [0.0, 0.0, 0.0],
+                        "op": "intersect", "targets": "qCreatedBy(2)" } }
+                ]
+            })
+            .to_string(),
+        )
+        .unwrap();
+        k.bootstrap_features_from_calls().unwrap();
+        k.rebuild_packed();
+        let out = k.mesher_points(
+            r#"{"maxDepth":4,"brepSkeleton":true,"cdtFaces":true,
+                "nearSurfaceOnly":true,"nearSurfaceDist":1.0,
+                "fitOnSurface":true,"onlyOnSurface":true,
+                "repulsion":true,"interactionRadius":3.0,"repulsionStrength":0.5,
+                "pasmKernel":true,"iterations":20}"#
+                .into(),
+        );
+        let total = out[0] as usize;
+        let tris = out[1] as usize;
+        assert!(tris >= 16, "expected a real triangulation, got {tris} tris");
+        let idx_base = 2 + total * 9;
+        let mut edge_use: std::collections::HashMap<(u32, u32), u32> =
+            std::collections::HashMap::new();
+        let mut used: std::collections::HashSet<u32> = std::collections::HashSet::new();
+        for t in 0..tris {
+            let a = out[idx_base + t * 3] as u32;
+            let b = out[idx_base + t * 3 + 1] as u32;
+            let c3 = out[idx_base + t * 3 + 2] as u32;
+            assert!(a != b && b != c3 && c3 != a, "degenerate triangle");
+            for (x, y) in [(a, b), (b, c3), (c3, a)] {
+                *edge_use.entry((x.min(y), x.max(y))).or_default() += 1;
+                used.insert(x);
+                used.insert(y);
+            }
+        }
+        for (&(a, b), &n) in &edge_use {
+            assert_eq!(n, 2, "edge {a}-{b} used {n}× (open seam or fan)");
+        }
+        let v = used.len() as i64;
+        let e = edge_use.len() as i64;
+        let f = tris as i64;
+        assert_eq!(
+            v - e + f,
+            0,
+            "tube Euler characteristic broke: V={v} E={e} F={f}"
+        );
+    }
+
+    /// Hybrid-PASM P4c (ticket nwmi): a SPHERE CAP (sphere ∩ y-slab box
+    /// enclosing the +Y pole) exercises the pole-fan path — the cap face is
+    /// one winding loop around the pole and closes via pole ring + fan;
+    /// together with the planar disc it must form a closed 2-manifold
+    /// (every edge in exactly two triangles, Euler V − E + F = 2).
+    #[test]
+    fn mesher_points_cdt_sphere_cap_is_watertight_manifold() {
+        let mut k = crate::Kernel::new();
+        k.document = serde_json::from_str(
+            &serde_json::json!({
+                "schema_version": 2,
+                "name": "sphere-cap",
+                "next_feature_id": 3,
+                "feature_calls": [
+                    { "type": "sphere", "id": "1", "params": {
+                        "radius": 10.0, "translate": [0.0, 0.0, 0.0] } },
+                    { "type": "box", "id": "2", "params": {
+                        "half_extents": [20.0, 8.0, 20.0],
+                        "translate": [0.0, 12.0, 0.0],
+                        "op": "intersect", "targets": "qCreatedBy(1)" } }
+                ]
+            })
+            .to_string(),
+        )
+        .unwrap();
+        k.bootstrap_features_from_calls().unwrap();
+        k.rebuild_packed();
+        let out = k.mesher_points(
+            r#"{"maxDepth":4,"brepSkeleton":true,"cdtFaces":true,
+                "nearSurfaceOnly":true,"nearSurfaceDist":1.0,
+                "fitOnSurface":true,"onlyOnSurface":true,
+                "repulsion":true,"interactionRadius":3.0,"repulsionStrength":0.5,
+                "pasmKernel":true,"iterations":20}"#
+                .into(),
+        );
+        let total = out[0] as usize;
+        let tris = out[1] as usize;
+        assert!(tris >= 12, "expected a real triangulation, got {tris} tris");
+        let idx_base = 2 + total * 9;
+        let mut edge_use: std::collections::HashMap<(u32, u32), u32> =
+            std::collections::HashMap::new();
+        let mut used: std::collections::HashSet<u32> = std::collections::HashSet::new();
+        for t in 0..tris {
+            let a = out[idx_base + t * 3] as u32;
+            let b = out[idx_base + t * 3 + 1] as u32;
+            let c3 = out[idx_base + t * 3 + 2] as u32;
+            assert!(a != b && b != c3 && c3 != a, "degenerate triangle");
+            for (x, y) in [(a, b), (b, c3), (c3, a)] {
+                *edge_use.entry((x.min(y), x.max(y))).or_default() += 1;
+                used.insert(x);
+                used.insert(y);
+            }
+        }
+        for (&(a, b), &n) in &edge_use {
+            assert_eq!(n, 2, "edge {a}-{b} used {n}× (open seam or fan)");
+        }
+        let v = used.len() as i64;
+        let e = edge_use.len() as i64;
+        let f = tris as i64;
+        assert_eq!(v - e + f, 2, "cap Euler characteristic broke: V={v} E={e} F={f}");
+    }
+
+    /// Hybrid-PASM P1 (ticket nwmi): with `brepSkeleton` on, a box body emits
+    /// its 8 corners as pinned flag-3 particles EXACTLY at the corner
+    /// positions plus arc-length-resampled flag-2 chains along the 12 edges.
+    #[test]
+    fn mesher_points_emits_brep_skeleton_for_a_box() {
+        use fielddraft_protocol::{BoolOp, Primitive};
+        let mut k = crate::Kernel::new();
+        k.add_primitive(
+            Primitive::KIND_BOX,
+            BoolOp::TAG_NEW,
+            0.0,
+            0.0,
+            0.0,
+            10.0,
+            10.0,
+            10.0,
+        )
+        .unwrap();
+        let out = k.mesher_points(
+            r#"{"maxDepth":3,"brepSkeleton":true,"interactionRadius":2.0}"#.into(),
+        );
+        let total = out[0] as usize;
+        let mut corners = Vec::new();
+        let mut chain = 0usize;
+        for i in 0..total {
+            let b = 2 + i * 9;
+            match out[b + 8] as i32 {
+                3 => corners.push([out[b], out[b + 1], out[b + 2]]),
+                2 => chain += 1,
+                _ => {}
+            }
+        }
+        assert_eq!(corners.len(), 8, "eight pinned box corners");
+        for c in &corners {
+            for a in 0..3 {
+                assert!(
+                    (c[a].abs() - 10.0).abs() < 1e-3,
+                    "corner coordinate off ±10: {c:?}"
+                );
+            }
+        }
+        // 12 edges of length 20 at h=2 → 9 interior points each = 108.
+        assert_eq!(chain, 12 * 9, "arc-length chains at the interaction radius");
     }
 }

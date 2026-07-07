@@ -26,6 +26,12 @@ import {
   type AutoSaveHandle,
 } from "./persistence";
 import { bootProjectPath } from "./bootParams";
+import { getAutosaveDebounceMs } from "./settings";
+import { subscribeCameraPoseChanged } from "./cameraPoseBridge";
+import { subscribeDebugDialogs } from "./projectDebug";
+import { subscribePartAabb } from "./partAabbStore";
+import { subscribeSdfPlane } from "./sdfPlaneStore";
+import { subscribeMesherDebug } from "./mesherDebugStore";
 import {
   parseVariableInput,
   resolveVariableTable,
@@ -117,12 +123,19 @@ export class KernelStore {
    *  toggles) — see workerOrchestration.ts. */
   private readonly workers: WorkerOrchestrator;
 
+  /** True in a deep-link repro tab (`?project=`), which boots with an inert
+   *  autosave so it can't clobber another tab's persisted project. An
+   *  explicit user Open clears this via {@link graduateFromDeepLink}. */
+  private deepLink = false;
+
   constructor(
     kernel: Kernel,
     autosave: AutoSaveHandle,
     persistedProjectJson: string | null = null,
+    deepLink = false,
   ) {
     this.kernel = kernel;
+    this.deepLink = deepLink;
     this.core = new StoreCore(kernel, autosave);
     // Late-bound commit hooks: the domain-specific pieces of the shared
     // commit() tail (see StoreCoreHooks). Bound as closures so they always
@@ -841,6 +854,51 @@ export class KernelStore {
 
   loadProjectFromBytes(bytes: Uint8Array | ArrayBuffer): boolean {
     return this.project.loadProjectFromBytes(bytes);
+  }
+
+  /** Explicit user "Open project" (File → Open, drag-drop): loads the bytes
+   *  AND makes the result durable across a reload. Ticket 4z37: a deep-link
+   *  repro tab boots with an inert autosave and a `?project=` URL that
+   *  re-fetches the ticket on reload — so a disk project opened there
+   *  vanished on reload. Opening a project is a deliberate "work on THIS"
+   *  action, so it graduates the tab out of repro mode (real autosave, URL
+   *  param stripped) and force-writes the loaded project now. The automated
+   *  ticket-repro boot never calls this, so it can't clobber another tab. */
+  openUserProjectFromBytes(bytes: Uint8Array | ArrayBuffer): boolean {
+    const ok = this.project.loadProjectFromBytes(bytes);
+    if (!ok) return false;
+    this.graduateFromDeepLink();
+    // Persist immediately (deep-link tabs' load-time flush hit the noop).
+    this.core.autosave.schedule(this.project.serializeProject());
+    this.core.autosave.flush();
+    return true;
+  }
+
+  /** Flush any pending autosave immediately (beforeunload). Reads the LIVE
+   *  core handle so a graduated deep-link tab flushes its real autosave. */
+  flushAutosave(): void {
+    this.core.autosave.flush();
+  }
+
+  /** Turn a deep-link repro tab into a normal working tab: swap in a real
+   *  debounced autosave and drop the `?project=` param so a reload restores
+   *  the now-persisted project instead of re-fetching the ticket. No-op in a
+   *  tab that was already a normal one. */
+  private graduateFromDeepLink(): void {
+    if (!this.deepLink) return;
+    this.deepLink = false;
+    this.core.replaceAutosave(createAutoSave({ debounceMs: getAutosaveDebounceMs }));
+    if (typeof window !== "undefined") {
+      try {
+        const url = new URL(window.location.href);
+        if (url.searchParams.has("project")) {
+          url.searchParams.delete("project");
+          window.history.replaceState(null, "", url.toString());
+        }
+      } catch {
+        // history/URL unavailable (tests) — the autosave swap alone suffices.
+      }
+    }
   }
 
   setProjectId(id: string | null): void {
@@ -2082,6 +2140,15 @@ export class KernelStore {
     this.core.setTransientError(message);
   }
 
+  /** Mark the persisted project dirty WITHOUT a document commit: camera
+   *  moves and debug-dialog changes route here. Serialisation is lazy (the
+   *  producer runs once at write time), so high-frequency markers (a camera
+   *  drag marks once per changed frame) cost nothing until the debounce
+   *  fires. */
+  markProjectDirty(): void {
+    this.core.autosave.schedule(() => this.project.serializeProject());
+  }
+
   private setTransientError(message: string): void {
     this.core.setTransientError(message);
   }
@@ -2114,6 +2181,12 @@ export class KernelStore {
     }
   }
 
+  /** 3MF archive from raw triangle buffers — format conversion for the
+   *  server meshing route (the mesher returns binary STL). */
+  mesh3mfFromBuffers(positions: Float32Array, indices: Uint32Array): Uint8Array {
+    return this.kernel.mesh3mfFromBuffers(positions, indices);
+  }
+
   /** Debug SDF-plane sampler: the scene SDF on a `resolution`² grid over the
    *  plane at `origin`/`normal` spanning ±`halfExtent`. Synchronous main-thread
    *  eval of the exact mesher field. */
@@ -2128,8 +2201,8 @@ export class KernelStore {
 
   /** Debug ▸ Mesher (step 1): narrow-band adaptive octree leaf centres, packed
    *  `[x,y,z, sdf, nx,ny,nz, cellSize]` per leaf. Synchronous main-thread eval. */
-  mesherOctreeSamples(maxDepth: number, bandGuard: number): Float32Array {
-    return this.kernel.mesherOctreeSamples(maxDepth, bandGuard);
+  mesherPoints(optionsJson: string): Float32Array {
+    return this.kernel.mesherPoints(optionsJson);
   }
 
   /** Download an already-built export (3MF re-wraps stashed slicer
@@ -2236,6 +2309,13 @@ export class KernelStore {
 let singleton: KernelStore | null = null;
 let storePromise: Promise<KernelStore> | null = null;
 
+/** Synchronous, non-subscribing peek at the loaded store singleton (or `null`
+ *  before it boots). For imperative call-sites that must not re-render on state
+ *  changes — e.g. the camera controller's cursor-pick pivot. */
+export function peekStore(): KernelStore | null {
+  return singleton;
+}
+
 export async function getStore(): Promise<KernelStore> {
   if (singleton) return singleton;
   if (storePromise) return storePromise;
@@ -2255,16 +2335,30 @@ export async function getStore(): Promise<KernelStore> {
     // start so opening a ticket can never clobber a live work session in
     // another tab.
     const deepLink = bootProjectPath() !== null;
-    const autosave = deepLink ? createNoopAutoSave() : createAutoSave();
+    const autosave = deepLink
+      ? createNoopAutoSave()
+      : createAutoSave({ debounceMs: getAutosaveDebounceMs });
     const store = new KernelStore(
       kernel,
       autosave,
       deepLink ? null : loadPersisted(),
+      deepLink,
     );
+
+    // Dirty tracking beyond document commits: camera moves and debug-tool
+    // changes also persist into the project (Project.view / Project.debug),
+    // debounced through the same autosave handle. The camera source fires
+    // only on REAL pose changes (cameraPoseBridge deduplicates per frame).
+    const markDirty = () => store.markProjectDirty();
+    subscribeCameraPoseChanged(markDirty);
+    subscribeDebugDialogs(markDirty);
+    subscribePartAabb(markDirty);
+    subscribeSdfPlane(markDirty);
+    subscribeMesherDebug(markDirty);
 
     // Stale-WASM guard (UI side): `Kernel.create` already logs a console
     // warning on a version mismatch; also surface it as a toast so it's
-    // not missed. A stale kernel means new mesher code (e.g. RFTA) never
+    // not missed. A stale kernel means new mesher code never
     // loaded, so the viewport silently shows old output.
     if (kernel.version() !== __KERNEL_EXPECTED__) {
       store.showTransientError(
@@ -2273,7 +2367,10 @@ export async function getStore(): Promise<KernelStore> {
     }
 
     if (typeof window !== "undefined") {
-      window.addEventListener("beforeunload", () => autosave.flush());
+      // Flush the LIVE autosave (a deep-link tab graduates its handle on an
+      // explicit Open, ticket 4z37) — not the captured boot handle, or a
+      // pending edit after graduation would be lost on unload.
+      window.addEventListener("beforeunload", () => store.flushAutosave());
       // Dev-mode test hook: expose the kernel + store handles on
       // window so Playwright specs can peek non-UI state (current
       // sub-spine, diagnostics, raw feature calls) without

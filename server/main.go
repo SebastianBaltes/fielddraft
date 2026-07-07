@@ -18,6 +18,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -35,6 +36,9 @@ type Server struct {
 	// X-Forwarded-For. Only correct behind a trusted reverse proxy (Caddy in
 	// prod) — an untrusted client can spoof the header otherwise.
 	trustProxy bool
+	// mesh is the running mesh-job dispatcher (mesher.go); nil = feature off
+	// (MESHER_URL unset), the mesh routes answer 503.
+	mesh *meshDispatch
 }
 
 func NewServer(store Store) *Server {
@@ -56,6 +60,10 @@ func NewServer(store Store) *Server {
 	s.mux.HandleFunc("PATCH /api/projects/{id}", s.handleUpdateProject)
 	s.mux.HandleFunc("DELETE /api/projects/{id}", s.handleDeleteProject)
 	s.mux.HandleFunc("GET /api/gallery", s.handleGallery)
+	s.mux.HandleFunc("POST /api/projects/{id}/mesh", s.handleCreateMeshJob)
+	s.mux.HandleFunc("GET /api/mesh-jobs/{id}", s.handleGetMeshJob)
+	s.mux.HandleFunc("GET /api/mesh-jobs/{id}/artifact", s.handleGetMeshArtifact)
+	s.mux.HandleFunc("DELETE /api/mesh-jobs/{id}", s.handleCancelMeshJob)
 	s.mux.HandleFunc("POST /api/auth/password-reset-request", s.handlePasswordResetRequest)
 	s.mux.HandleFunc("POST /api/auth/password-reset", s.handlePasswordReset)
 	s.mux.HandleFunc("GET /api/projects/{id}/thumbnail", s.handleGetThumbnail)
@@ -677,6 +685,14 @@ func main() {
 	seedAdmin(store)
 
 	srv := NewServer(store)
+
+	meshWorkers := 2
+	if v := os.Getenv("MESH_WORKERS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			meshWorkers = n
+		}
+	}
+	srv.startMeshDispatcher(os.Getenv("MESHER_URL"), meshWorkers)
 
 	addr := ":8080"
 	if p := os.Getenv("PORT"); p != "" {

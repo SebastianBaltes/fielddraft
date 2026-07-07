@@ -33,6 +33,10 @@ convenience. The frontend is not containerized in dev: run Vite on the host
 docker compose up --build -d db server
 # db:     MariaDB 11   (host :3306)
 # server: Go backend   (host :8080)
+
+# Optional: server-side CGAL meshing (export dialog "CGAL Mesh_3 (server)")
+docker compose up --build -d db server mesher
+# mesher: CGAL meshing service (in-network only, server reaches it via MESHER_URL)
 ```
 
 Dev env vars (host port overrides) live in `.env` — see `.env.example`.
@@ -78,6 +82,7 @@ Browser ──TLS──▶ caddy (80/443/443-udp) ──┬──▶ server :808
 | `db` | `mariadb:11` | **none** | in-network only; password from env/Vault |
 | `server` | `…/server:<tag>` | **none** | Caddy proxies `/api/*`; runs DB migrations on startup |
 | `caddy` | `…/web:<tag>` | 80, 443, 443/udp | auto-TLS; serves the SPA; reverse-proxies the API |
+| `mesher` | `…/mesher:<tag>` | **none** | server-side CGAL meshing (fd-prepare + fd-cgal-mesh + HTTP wrapper); only `server` talks to it; scale with `--scale mesher=N` |
 
 Persistent volumes: `db-data`, `blob-data` (`/data/blobs`), `caddy-data`
 (ACME certs), `caddy-config`. `restart: unless-stopped` on every service.
@@ -122,13 +127,14 @@ uses, with cargo/target caching. **CI red ⇒ no release** (PLATFORM-ARCHITECTUR
 Releases are **tag-driven**, not branch-driven. Pushing a `v*` tag triggers
 `.github/workflows/release.yml`, which logs in to GHCR with the workflow's
 `GITHUB_TOKEN` (`packages: write`) and uses `docker/build-push-action` to build
-**and push both images private to GHCR**, each tagged with the version **and**
+**and push all three images private to GHCR**, each tagged with the version **and**
 `latest`:
 
 | Image | Built from | Context | Pushed as |
 |---|---|---|---|
 | server | `server/Dockerfile` (static Go binary) | `./server` | `ghcr.io/<owner>/fielddraft/server:<tag>` |
 | web | `web/Dockerfile.prod` (wasm → vite → caddy) | repo root `.` | `ghcr.io/<owner>/fielddraft/web:<tag>` |
+| mesher | `cgal-mesher/Dockerfile` (fd-prepare + CGAL + wrapper; golden interpreter test runs in-build) | repo root `.` | `ghcr.io/<owner>/fielddraft/mesher:<tag>` |
 
 The owner is lower-cased per GHCR rules; with `REGISTRY` left at its default the
 refs equal `ghcr.io/sorokan/fielddraft/{server,web}:<tag>` — exactly what
@@ -157,7 +163,7 @@ git commit -am "release: v0.6.340"
 git tag v0.6.340
 git push origin HEAD --tags
 
-# 3. Wait for the Release workflow to finish (both images on GHCR), then deploy.
+# 3. Wait for the Release workflow to finish (all three images on GHCR), then deploy.
 cd deploy/ansible
 ansible-playbook -i inventory.ini deploy.yml --ask-vault-pass -e version=v0.6.340
 ```
@@ -229,7 +235,7 @@ Point the domain's A/AAAA record at the V-server first. For local testing set
 
 ### Rollback (1 command)
 
-Every release is an immutable `v*` tag and a matching pair of GHCR images; the
+Every release is an immutable `v*` tag and a matching set of GHCR images; the
 previous tag's images stay in GHCR. **Rollback = deploy the previous tag** — no
 rebuild, no revert commit, just point `version` at the prior release:
 

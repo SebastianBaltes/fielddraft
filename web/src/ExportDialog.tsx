@@ -19,6 +19,7 @@ import {
   type PointerEvent as ReactPointerEvent,
 } from "react";
 import type { KernelStore } from "./store";
+import { NumberInput } from "./NumberInput";
 import type {
   ExportBodyReport,
   ExportEstimate,
@@ -32,6 +33,11 @@ import {
   setExportPreviewOpacity,
   setExportPreviewWireframe,
 } from "./exportPreviewStore";
+import {
+  parseBinaryStl,
+  runServerMesh,
+  type ServerMeshReport,
+} from "./serverMesh";
 
 const CELL_SIZE_STORAGE_KEY = "fielddraft.export.cellSizeMm";
 const METHOD_STORAGE_KEY = "fielddraft.export.method";
@@ -83,7 +89,7 @@ function initialMethod(): MeshMethod {
       stored === "extended-marching-cubes" ||
       stored === "macet" ||
       stored === "manifold-dc" ||
-      stored === "rfta" ||
+      stored === "cgal-server" ||
       stored === "adaptive"
     ) {
       return stored;
@@ -103,11 +109,13 @@ interface ExportDialogProps {
 type Phase =
   | { kind: "idle" }
   | { kind: "running"; progress: ExportProgress | null }
+  | { kind: "server-running"; status: string }
   | { kind: "done"; report: ExportReport; bytes: Uint8Array }
+  | { kind: "server-done"; report: ServerMeshReport; bytes: Uint8Array }
   | { kind: "error"; message: string };
 
 export function ExportDialog({ store, format, onClose }: ExportDialogProps) {
-  const [cellInput, setCellInput] = useState(String(initialCellSize()));
+  const [cellSizeMm, setCellSizeMm] = useState(initialCellSize());
   const [method, setMethod] = useState<MeshMethod>(initialMethod);
   const [phase, setPhase] = useState<Phase>({ kind: "idle" });
   // Preview display controls (crossfade mesh↔SDF solid, wireframe overlay),
@@ -125,19 +133,17 @@ export function ExportDialog({ store, format, onClose }: ExportDialogProps) {
 
   // Live estimate: debounced so it doesn't mesh a coarse grid on every
   // keystroke. The kernel returns `dense: false` for octree / parametric /
-  // RFTA routes, and the hint below renders nothing for those.
+  // routes, and the hint below renders nothing for those.
   useEffect(() => {
-    const parsed = Number(cellInput.replace(",", "."));
-    if (!Number.isFinite(parsed)) {
-      setEstimate(null);
+    if (method === "cgal-server") {
+      setEstimate(null); // meshing happens server-side, no local estimate
       return;
     }
-    const clamped = Math.min(5, Math.max(0.05, parsed));
     const handle = setTimeout(() => {
-      setEstimate(store.exportEstimate(clamped, method));
+      setEstimate(store.exportEstimate(cellSizeMm, method));
     }, 250);
     return () => clearTimeout(handle);
-  }, [cellInput, method, store]);
+  }, [cellSizeMm, method, store]);
 
   useEffect(() => {
     const handleKey = (e: KeyboardEvent) => {
@@ -150,25 +156,87 @@ export function ExportDialog({ store, format, onClose }: ExportDialogProps) {
     return () => window.removeEventListener("keydown", handleKey, true);
   }, [onClose]);
 
-  // Reads the current cell-size input, clamps + persists it, returns the
-  // usable value (or null if unparseable).
-  const commitCellSize = useCallback((): number | null => {
-    const parsed = Number(cellInput.replace(",", "."));
-    if (!Number.isFinite(parsed)) return null;
-    const clamped = Math.min(5, Math.max(0.05, parsed));
-    setCellInput(String(clamped));
+  // Persist the current (already-clamped by NumberInput) cell size and return
+  // it for the meshing pass.
+  const commitCellSize = useCallback((): number => {
     try {
-      localStorage.setItem(CELL_SIZE_STORAGE_KEY, String(clamped));
+      localStorage.setItem(CELL_SIZE_STORAGE_KEY, String(cellSizeMm));
     } catch {
       // ignore
     }
-    return clamped;
-  }, [cellInput]);
+    return cellSizeMm;
+  }, [cellSizeMm]);
+
+  // Server route (method "cgal-server"): sync the project, submit a mesh
+  // job, poll it to done and preview the downloaded STL. The abort
+  // controller cancels the poll loop AND the job on reset/close.
+  const serverAbortRef = useRef<AbortController | null>(null);
+
+  const runServerExport = useCallback(() => {
+    const cellSize = commitCellSize();
+    const runId = ++runIdRef.current;
+    const abort = new AbortController();
+    serverAbortRef.current?.abort();
+    serverAbortRef.current = abort;
+    setPhase({ kind: "server-running", status: "Saving project…" });
+    (async () => {
+      const synced = await store.syncToServer();
+      const state = store.getState();
+      if (!synced || !state.projectId) {
+        throw new Error(
+          "Server meshing needs a project saved to the server — sign in and save first.",
+        );
+      }
+      // Mesh the active part tab; if a script/assembly tab is active, fall
+      // back to the first part tab.
+      const tabs = state.project.tabs;
+      const active = tabs.find((t) => t.id === state.project.activeTabId);
+      const part = active?.kind === "part" ? active : tabs.find((t) => t.kind === "part");
+      if (!part) throw new Error("No part tab to mesh.");
+      const result = await runServerMesh(
+        state.projectId,
+        part.id,
+        { cellSizeMm: cellSize, facetDistMult: 0.15 },
+        (status) => {
+          if (runIdRef.current === runId) {
+            setPhase({ kind: "server-running", status });
+          }
+        },
+        abort.signal,
+      );
+      if (runIdRef.current !== runId) return;
+      const preview = parseBinaryStl(result.bytes);
+      // The server always meshes to binary STL; a 3MF export converts the
+      // triangles through the kernel's 3MF encoder client-side (M6).
+      const bytes =
+        format === "3mf"
+          ? store.mesh3mfFromBuffers(preview.positions, preview.indices)
+          : result.bytes;
+      setPhase({ kind: "server-done", report: result.report, bytes });
+      setExportPreview(
+        preview.positions.length > 0
+          ? { positions: preview.positions, indices: preview.indices }
+          : null,
+      );
+      setExportPreviewOpacity(meshOpacity);
+      setExportPreviewWireframe(wireframe);
+    })().catch((err: unknown) => {
+      if (runIdRef.current === runId && !abort.signal.aborted) {
+        setPhase({
+          kind: "error",
+          message: err instanceof Error ? err.message : String(err),
+        });
+      }
+    });
+  }, [commitCellSize, store, format, meshOpacity, wireframe]);
 
   // Step 2: run the meshing pass for the confirmed cell size.
   const runExport = useCallback(() => {
+    if (method === "cgal-server") {
+      runServerExport();
+      return;
+    }
     const cellSize = commitCellSize();
-    if (cellSize === null) return;
     const runId = ++runIdRef.current;
     setPhase({ kind: "running", progress: null });
     store
@@ -200,7 +268,15 @@ export function ExportDialog({ store, format, onClose }: ExportDialogProps) {
           });
         }
       });
-  }, [commitCellSize, store, format, method, meshOpacity, wireframe]);
+  }, [
+    commitCellSize,
+    store,
+    format,
+    method,
+    meshOpacity,
+    wireframe,
+    runServerExport,
+  ]);
 
   // Editing the cell size (or method) after a run discards the stale
   // mesh so the user must re-confirm (Prio: never save/preview a mesh
@@ -208,6 +284,7 @@ export function ExportDialog({ store, format, onClose }: ExportDialogProps) {
   // preferences are intentionally KEPT (they're persisted user settings).
   const resetToIdle = useCallback(() => {
     runIdRef.current++; // invalidate any in-flight run
+    serverAbortRef.current?.abort(); // cancels a pending server job too
     setPhase({ kind: "idle" });
     setExportPreview(null); // drop the stale solid from the viewport
   }, []);
@@ -232,9 +309,9 @@ export function ExportDialog({ store, format, onClose }: ExportDialogProps) {
     }
   }, []);
 
-  const onCellInputChange = useCallback(
-    (value: string) => {
-      setCellInput(value);
+  const onCellSizeChange = useCallback(
+    (value: number) => {
+      setCellSizeMm(value);
       resetToIdle();
     },
     [resetToIdle],
@@ -254,8 +331,15 @@ export function ExportDialog({ store, format, onClose }: ExportDialogProps) {
   );
 
   // The preview lives only while the dialog is open — clear it on close
-  // so the normal renderer takes over again.
-  useEffect(() => () => setExportPreview(null), []);
+  // so the normal renderer takes over again. Closing also cancels a
+  // pending server mesh job.
+  useEffect(
+    () => () => {
+      setExportPreview(null);
+      serverAbortRef.current?.abort();
+    },
+    [],
+  );
 
   // Free-floating (non-modal) window position; null = CSS default anchor
   // (top-right). Dragging the header sets an explicit left/top.
@@ -292,7 +376,7 @@ export function ExportDialog({ store, format, onClose }: ExportDialogProps) {
   }, []);
 
   const save = useCallback(() => {
-    if (phase.kind !== "done") return;
+    if (phase.kind !== "done" && phase.kind !== "server-done") return;
     store.downloadExport(phase.bytes, format);
   }, [phase, store, format]);
 
@@ -303,6 +387,11 @@ export function ExportDialog({ store, format, onClose }: ExportDialogProps) {
     },
     [store],
   );
+
+  // Server meshing needs a signed-in, server-saved project (read per render;
+  // the submit path re-checks after the sync).
+  const { projectId, syncState } = store.getState();
+  const serverReady = projectId !== null && syncState !== "offline";
 
   return (
     <div
@@ -347,7 +436,7 @@ export function ExportDialog({ store, format, onClose }: ExportDialogProps) {
           </option>
           <option value="interval-dc">Interval-octree DC (fidget)</option>
           <option value="uniform-dc">Uniform Dual Contouring (QEF)</option>
-          <option value="marching-cubes">Marching cubes (robust)</option>
+          <option value="marching-cubes">Marching Tetrahedra (robust)</option>
           <option value="marching-cubes-33">Marching Cubes 33 (Lewiner)</option>
           <option value="dual-marching-cubes">
             Dual Marching Cubes (Nielson)
@@ -357,10 +446,15 @@ export function ExportDialog({ store, format, onClose }: ExportDialogProps) {
           </option>
           <option value="macet">MACET (edge transforms, quality)</option>
           <option value="manifold-dc">Manifold DC (viewport)</option>
-          <option value="rfta">Reach for the Arcs</option>
+          <option value="cgal-server" disabled={!serverReady}>
+            CGAL Mesh_3 (server)
+            {!serverReady ? " — save to server first" : ""}
+          </option>
         </select>
         <span className="hint">
-          {method === "surface-nets"
+          {method === "cgal-server"
+            ? "Server-side CGAL Mesh_3 (restricted Delaunay refinement): watertight, 2-manifold and exact protected B-Rep edges. Saves the project, meshes on the server and downloads the STL — needs a signed-in, server-saved project."
+            : method === "surface-nets"
             ? "Dense grid (every cell evaluated) then QEM decimation, via fast-surface-nets + baby_shark — robust for non-1-Lipschitz fields: gyroid, TPMS, dense helix windings."
             : method === "surface-nets-builtin"
               ? "Same dense-grid + QEM pipeline, but our own from-scratch implementations — dependency-free alternative to diff against the library path."
@@ -380,23 +474,20 @@ export function ExportDialog({ store, format, onClose }: ExportDialogProps) {
                             ? "MACET (Dietrich/Scheidegger 2009): MC33 topology, but each active edge is transformed to be perpendicular to the surface (gradient + tangential, using the analytic ∇f) and the crossing is re-found by bisection — eliminates skinny/degenerate triangles while staying watertight. Slower (root-finding per edge)."
                             : method === "manifold-dc"
                             ? "The viewport's own uniform Manifold Dual Contouring with planar-face simplification — now exportable too."
-                            : method === "rfta"
-                              ? "Reach for the Arcs (Sellán et al. 2024): spheres → tangent points → screened Poisson reconstruction. A sampled-grid reconstruction (internal resolution capped) — robust on blurry/imperfect fields."
-                              : "Parametric-first, then adaptive Manifold-DC — exact edges and the fewest triangles for regular CAD solids."}
+                            : "Parametric-first, then adaptive Manifold-DC — exact edges and the fewest triangles for regular CAD solids."}
         </span>
       </div>
 
       <div className="settings-row">
         <label htmlFor="export-cell-size">Cell size (mm)</label>
-        <input
+        <NumberInput
           id="export-cell-size"
           data-testid="export-cell-size"
-          type="number"
           min={0.05}
           max={5}
           step={0.05}
-          value={cellInput}
-          onChange={(e) => onCellInputChange(e.target.value)}
+          value={cellSizeMm}
+          onChange={onCellSizeChange}
           onKeyDown={(e) => {
             if (e.key === "Enter" && phase.kind !== "running") runExport();
           }}
@@ -438,10 +529,59 @@ export function ExportDialog({ store, format, onClose }: ExportDialogProps) {
         </div>
       )}
 
+      {phase.kind === "server-running" && (
+        <div className="progress-block" data-testid="export-server-progress">
+          <span className="spinner" aria-hidden="true" />
+          <span>{phase.status}</span>
+          <button type="button" className="secondary" onClick={resetToIdle}>
+            Cancel job
+          </button>
+        </div>
+      )}
+
       {phase.kind === "error" && (
         <div className="error-block" data-testid="export-error">
           Export failed: {phase.message}
         </div>
+      )}
+
+      {phase.kind === "server-done" && (
+        <>
+          <div className="report" data-testid="export-report">
+            <div className="verdict ok" data-testid="export-verdict">
+              ✓ Watertight &amp; 2-manifold (CGAL Mesh_3)
+              {" · "}
+              {(phase.report.triangles ?? 0).toLocaleString()} triangles
+              {" · "}
+              {(phase.report.vertices ?? 0).toLocaleString()} vertices
+            </div>
+          </div>
+          <div
+            className="preview-controls"
+            data-testid="export-preview-controls"
+          >
+            <label htmlFor="export-preview-opacity">SDF ↔ mesh</label>
+            <input
+              id="export-preview-opacity"
+              data-testid="export-preview-opacity"
+              type="range"
+              min={0}
+              max={1}
+              step={0.01}
+              value={meshOpacity}
+              onChange={(e) => onMeshOpacityChange(Number(e.target.value))}
+            />
+            <label className="checkbox">
+              <input
+                type="checkbox"
+                data-testid="export-preview-wireframe"
+                checked={wireframe}
+                onChange={(e) => onWireframeChange(e.target.checked)}
+              />
+              Wireframe
+            </label>
+          </div>
+        </>
       )}
 
       {phase.kind === "done" && (
@@ -479,7 +619,7 @@ export function ExportDialog({ store, format, onClose }: ExportDialogProps) {
         <button type="button" className="secondary" onClick={onClose}>
           Cancel
         </button>
-        {phase.kind === "done" ? (
+        {phase.kind === "done" || phase.kind === "server-done" ? (
           <button
             type="button"
             className="primary"
@@ -493,10 +633,12 @@ export function ExportDialog({ store, format, onClose }: ExportDialogProps) {
             type="button"
             className="primary"
             data-testid="export-mesh"
-            disabled={phase.kind === "running"}
+            disabled={
+              phase.kind === "running" || phase.kind === "server-running"
+            }
             onClick={runExport}
           >
-            {phase.kind === "running"
+            {phase.kind === "running" || phase.kind === "server-running"
               ? "Meshing…"
               : phase.kind === "error"
                 ? "Retry"

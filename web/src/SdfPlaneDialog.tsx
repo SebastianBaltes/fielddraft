@@ -24,6 +24,7 @@ import {
   subscribeSdfPlaneHover,
   getSdfPlaneHover,
 } from "./sdfPlaneStore";
+import { NumberInput } from "./NumberInput";
 
 type Vec3 = [number, number, number];
 
@@ -123,14 +124,7 @@ export function SdfPlaneDialog({ onClose }: { onClose: () => void }) {
     return () => window.removeEventListener("keydown", onKey, true);
   }, [onClose]);
 
-  const setAxis = (
-    set: (v: Vec3) => void,
-    v: Vec3,
-    i: number,
-    raw: string,
-  ) => {
-    const n = Number(raw.replace(",", "."));
-    if (!Number.isFinite(n)) return;
+  const setAxis = (set: (v: Vec3) => void, v: Vec3, i: number, n: number) => {
     const next: Vec3 = [...v];
     next[i] = n;
     set(next);
@@ -194,13 +188,12 @@ export function SdfPlaneDialog({ onClose }: { onClose: () => void }) {
       <div className="vec-row">
         <div className="fields">
           {AXES.map(({ key, i }) => (
-            <input
+            <NumberInput
               key={key}
-              type="number"
               step={step}
               aria-label={`point ${key}`}
               value={point[i]}
-              onChange={(e) => setAxis(setPoint, point, i, e.target.value)}
+              onChange={(n) => setAxis(setPoint, point, i, n)}
             />
           ))}
         </div>
@@ -209,13 +202,12 @@ export function SdfPlaneDialog({ onClose }: { onClose: () => void }) {
       <div className="vec-row">
         <div className="fields">
           {AXES.map(({ key, i }) => (
-            <input
+            <NumberInput
               key={key}
-              type="number"
               step={step}
               aria-label={`normal ${key}`}
               value={normal[i]}
-              onChange={(e) => setAxis(setNormal, normal, i, e.target.value)}
+              onChange={(n) => setAxis(setNormal, normal, i, n)}
             />
           ))}
         </div>
@@ -236,15 +228,12 @@ export function SdfPlaneDialog({ onClose }: { onClose: () => void }) {
       <div className="vec-row">
         <label>Step</label>
         <div className="fields">
-          <input
-            type="number"
-            min={0}
+          <NumberInput
             step={0.1}
             aria-label="step"
             value={step}
-            onChange={(e) => {
-              const n = Number(e.target.value.replace(",", "."));
-              if (Number.isFinite(n) && n > 0) setStep(n);
+            onChange={(n) => {
+              if (n > 0) setStep(n);
             }}
           />
         </div>
@@ -253,15 +242,12 @@ export function SdfPlaneDialog({ onClose }: { onClose: () => void }) {
       <div className="vec-row">
         <label>Half size (mm)</label>
         <div className="fields">
-          <input
-            type="number"
-            min={1}
+          <NumberInput
             step={5}
             aria-label="half extent"
             value={halfExtent}
-            onChange={(e) => {
-              const n = Number(e.target.value.replace(",", "."));
-              if (Number.isFinite(n) && n > 0) setHalfExtent(n);
+            onChange={(n) => {
+              if (n > 0) setHalfExtent(n);
             }}
           />
         </div>
@@ -270,18 +256,14 @@ export function SdfPlaneDialog({ onClose }: { onClose: () => void }) {
       <div className="vec-row">
         <label>Resolution</label>
         <div className="fields">
-          <input
-            type="number"
+          <NumberInput
+            integer
             min={16}
             max={1024}
             step={16}
             aria-label="resolution"
             value={resolution}
-            onChange={(e) => {
-              const n = Math.round(Number(e.target.value.replace(",", ".")));
-              if (Number.isFinite(n) && n >= 16)
-                setResolution(Math.min(1024, n));
-            }}
+            onChange={setResolution}
           />
         </div>
       </div>
@@ -289,17 +271,14 @@ export function SdfPlaneDialog({ onClose }: { onClose: () => void }) {
       <div className="vec-row">
         <label>Iso-bands</label>
         <div className="fields">
-          <input
-            type="number"
+          <NumberInput
+            integer
             min={1}
             max={256}
             step={1}
             aria-label="iso-bands"
             value={bands}
-            onChange={(e) => {
-              const n = Math.round(Number(e.target.value.replace(",", ".")));
-              if (Number.isFinite(n) && n >= 1) setBands(Math.min(256, n));
-            }}
+            onChange={setBands}
           />
         </div>
       </div>

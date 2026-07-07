@@ -37,6 +37,7 @@ dist-ssr/
 # the format is documented in tickets/README.md (tracked).
 /tickets/open/
 /tickets/done/
+/tickets/later/
 
 # Test artifacts
 /web/coverage/
@@ -67,3 +68,4 @@ CLAUDE.md.bak*
 deploy/ansible/inventory.ini
 deploy/ansible/group_vars/all.yml
 deploy/ansible/group_vars/vault.yml
+cgal-mesher/build/

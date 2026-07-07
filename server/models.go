@@ -269,3 +269,33 @@ type AdminAlert struct {
 	CreatedAt time.Time `json:"created_at"`
 	Seen      bool      `json:"seen"`
 }
+
+// ─── mesh jobs (server-side CGAL meshing, plan §P4) ─────────────
+
+// MeshJobStatus is a mesh job's lifecycle state.
+type MeshJobStatus string
+
+const (
+	MeshQueued  MeshJobStatus = "queued"
+	MeshRunning MeshJobStatus = "running"
+	MeshDone    MeshJobStatus = "done"
+	MeshError   MeshJobStatus = "error"
+)
+
+// MeshJob is one server-side meshing order: a part of a saved project is
+// prepared (fd-prepare) and meshed (fd-cgal-mesh) by the mesher service; the
+// resulting STL lands as a blob. Jobs survive server restarts.
+type MeshJob struct {
+	ID         string        `json:"id"`
+	OwnerID    string        `json:"owner_id"`
+	ProjectID  string        `json:"project_id"`
+	PartID     string        `json:"part_id"`
+	ParamsJSON string        `json:"params_json"`
+	Status     MeshJobStatus `json:"status"`
+	BlobRef    string        `json:"-"` // content-addressed STL blob (done only)
+	ReportJSON string        `json:"report_json"` // mesher report (done only)
+	Error      string        `json:"error"`       // failure detail (error only)
+	CreatedAt  time.Time     `json:"created_at"`
+	StartedAt  *time.Time    `json:"started_at"`
+	FinishedAt *time.Time    `json:"finished_at"`
+}

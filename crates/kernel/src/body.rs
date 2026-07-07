@@ -209,10 +209,17 @@ impl Body {
                 parametric_brep
             } else if bounded_contains_space_filling(&bounded) {
                 // Space-filling (gyroid TPMS) or a non-constructible Helix/Sweep
-                // profile: skip the octree+weave outright (it would refine on
-                // tens of thousands of non-Lipschitz seam cells, a wasm stall);
-                // the renderer covers the shape.
-                BRep::new()
+                // profile: the OCTREE stays excluded outright (it would refine
+                // on tens of thousands of cells — the DL-71 wasm stall). But the
+                // octree-free graceful seed path CAN weave a gyroid's Boolean
+                // rim seams (SSI seeds the gyroid as implicit operand, the dual
+                // field traces them) — so try it; Helix/Sweep and other
+                // non-gyroid non-Lipschitz bodies fail its scope gate and stay
+                // edgeless as before, the renderer covers the shape.
+                parametric
+                    .then(|| crate::brep::seed_weaver::weave_branch_seeds_partial(&bounded))
+                    .flatten()
+                    .unwrap_or_default()
             } else if let Some(partial) = parametric
                 .then(|| crate::brep::seed_weaver::weave_branch_seeds_partial(&bounded))
                 .flatten()
@@ -442,6 +449,18 @@ pub fn partition(features: &[DecodedFeature]) -> Vec<BodyPartition> {
             }
             BoolOp::Remove | BoolOp::Intersect => {
                 if !feature.target_ids.is_empty() {
+                    // Each feature keeps the affected body's AABB analytically
+                    // current, just like the SDF (ticket f88u): an Intersect
+                    // clips the body to the tool's bound; a Remove retreats the
+                    // bound past the slab the tool provably caps. Both stay a
+                    // conservative superset of the true result, so the meshing
+                    // domain (rebuilt from the CSG tree) and docking stay sound.
+                    let is_remove = matches!(feature.op, BoolOp::Remove);
+                    let inner = if is_remove {
+                        feature_inner_world_aabb(feature)
+                    } else {
+                        None
+                    };
                     // indexed element is both read and mutated; iter_mut rewrite is risky
                     #[allow(clippy::needless_range_loop)]
                     for idx in 0..groups.len() {
@@ -451,6 +470,22 @@ pub fn partition(features: &[DecodedFeature]) -> Vec<BodyPartition> {
                         });
                         if matches {
                             groups[idx].feature_indices.push(i);
+                            if is_remove {
+                                if let Some(inner) = inner {
+                                    groups[idx].aabb = subtract_cap(groups[idx].aabb, inner);
+                                }
+                            } else if !feat_aabb.is_empty() {
+                                // A bounded Intersect tool clips the body to it.
+                                // An UNBOUNDED / space-filling one (gyroid → an
+                                // empty AABB sentinel, csg.rs) imposes no box
+                                // constraint — keep the body's current bound
+                                // rather than collapsing it to empty (ticket
+                                // ipnx: a Sphere ∩ Gyroid ∩ Box otherwise lost
+                                // its whole AABB, dropping the orbit pivot back
+                                // to the origin).
+                                groups[idx].aabb =
+                                    Aabb::intersect(groups[idx].aabb, feat_aabb);
+                            }
                         }
                     }
                 } else {
@@ -578,6 +613,131 @@ impl BrepCache {
 /// transformed by its placement.
 fn feature_world_aabb(feature: &DecodedFeature) -> Aabb {
     feature.node.aabb().transformed(&feature.transform)
+}
+
+/// Does `rotation` (a quaternion) map every world axis onto ±another axis — a
+/// "grid" rotation? Only then does transforming an axis-aligned box keep it
+/// axis-aligned, so an *inner* (provably-inside) box stays inside after
+/// placement. Any oblique rotation returns `false`.
+fn rotation_is_axis_aligned(rotation: [f32; 4]) -> bool {
+    const EPS: f32 = 1e-5;
+    for axis in [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]] {
+        let r = crate::transform::quat_rotate(rotation, axis);
+        let mut units = 0;
+        for k in 0..3 {
+            let a = r[k].abs();
+            if a > 1.0 - EPS {
+                units += 1;
+            } else if a > EPS {
+                return false;
+            }
+        }
+        if units != 1 {
+            return false;
+        }
+    }
+    true
+}
+
+/// Largest world-space axis-aligned box PROVABLY inside a feature's solid, or
+/// `None` when it can't be determined safely. Used to shrink a body's AABB when
+/// this feature is *removed* (ticket f88u): everything of the body inside this
+/// box is definitely gone, so the body's bound may retreat to the box's near
+/// face.
+///
+/// Handles the bare primitives whose inscribed box is analytic — Box (itself),
+/// Sphere (a `radius/√3` cube), Cylinder (`radius/√2` across, full height) —
+/// and only under an axis-aligned (grid) placement, so the transformed inner
+/// box stays axis-aligned AND stays inside (`Aabb::transformed` corner-bounds a
+/// box exactly under a grid rotation, but overshoots under an oblique one).
+/// Everything else — modifier-wrapped nodes, curved cutters we don't model,
+/// oblique rotations — returns `None`, and the body keeps its conservative
+/// bound. This NEVER over-shrinks, so the meshing domain (rebuilt from the CSG
+/// tree, not this AABB) and Add-docking stay correct.
+fn feature_inner_world_aabb(feature: &DecodedFeature) -> Option<Aabb> {
+    use fielddraft_protocol::Primitive;
+    const SQRT3_INV: f32 = 0.577_350_26; // 1/√3
+    const SQRT2_INV: f32 = 0.707_106_77; // 1/√2
+    let primitive = match &feature.node {
+        CsgNode::Leaf { primitive, .. } => primitive,
+        _ => return None,
+    };
+    let local = match primitive {
+        Primitive::Box {
+            center,
+            half_extents,
+        } => Aabb {
+            min: [
+                center[0] - half_extents[0],
+                center[1] - half_extents[1],
+                center[2] - half_extents[2],
+            ],
+            max: [
+                center[0] + half_extents[0],
+                center[1] + half_extents[1],
+                center[2] + half_extents[2],
+            ],
+        },
+        Primitive::Sphere { center, radius } => {
+            let h = radius * SQRT3_INV;
+            Aabb {
+                min: [center[0] - h, center[1] - h, center[2] - h],
+                max: [center[0] + h, center[1] + h, center[2] + h],
+            }
+        }
+        // Cylinder axis is local Y (see `Aabb::of_primitive`).
+        Primitive::Cylinder {
+            center,
+            radius,
+            half_height,
+        } => {
+            let r = radius * SQRT2_INV;
+            Aabb {
+                min: [center[0] - r, center[1] - half_height, center[2] - r],
+                max: [center[0] + r, center[1] + half_height, center[2] + r],
+            }
+        }
+        _ => return None,
+    };
+    if !rotation_is_axis_aligned(feature.transform.rotation) {
+        return None;
+    }
+    Some(local.transformed(&feature.transform))
+}
+
+/// Shrink `body` by the axis-aligned slab that `inner` (a box provably inside a
+/// removed tool) fully caps. `inner` caps `body` on axis `k` only when it spans
+/// `body`'s entire cross-section in the other two axes; then everything of
+/// `body` past `inner`'s near face on `k` is gone and the bound retreats to it.
+/// Never grows `body` and never drops surviving material (`inner ⊆ tool`), so
+/// the result stays a conservative superset of the true cut solid.
+fn subtract_cap(body: Aabb, inner: Aabb) -> Aabb {
+    if body.is_empty() || inner.is_empty() {
+        return body;
+    }
+    let mut out = body;
+    for k in 0..3 {
+        let (u, v) = ((k + 1) % 3, (k + 2) % 3);
+        // `inner` must cover `body`'s full cross-section perpendicular to `k`
+        // (tested against the ORIGINAL body so multi-axis caps don't interact).
+        let spans_cross = inner.min[u] <= body.min[u]
+            && inner.max[u] >= body.max[u]
+            && inner.min[v] <= body.min[v]
+            && inner.max[v] >= body.max[v];
+        if !spans_cross {
+            continue;
+        }
+        // Cap the +k side: `inner` starts inside `body` and reaches past its +k
+        // face → retreat the bound to `inner`'s near face.
+        if inner.max[k] >= body.max[k] && inner.min[k] > body.min[k] {
+            out.max[k] = out.max[k].min(inner.min[k]);
+        }
+        // Cap the −k side symmetrically.
+        if inner.min[k] <= body.min[k] && inner.max[k] < body.max[k] {
+            out.min[k] = out.min[k].max(inner.max[k]);
+        }
+    }
+    out
 }
 
 fn aabbs_overlap(a: Aabb, b: Aabb) -> bool {
@@ -991,20 +1151,21 @@ mod tests {
     }
 
     #[test]
-    fn space_filling_body_skips_weave() {
-        // DL-71: a body containing a gyroid (space-filling) gets NO B-Rep — the
-        // octree would refine over the whole volume (a 30s wasm move-stall) to
-        // weave a wireframe of non-Lipschitz seams we discard anyway. A plain
-        // box, by contrast, still weaves its 12 edges.
+    fn space_filling_body_weaves_rim_edges_octree_free() {
+        // DL-71 (lifted for gyroids): the OCTREE stays excluded for a
+        // space-filling body (it would refine over the whole volume — the 30s
+        // wasm move-stall), but the octree-free graceful seed path now weaves
+        // the gyroid's Boolean rim seams (SSI seeds the gyroid as implicit
+        // operand, the dual field traces). A plain box still weaves its 12
+        // edges through the strict path.
         let gyroid_body = weave_all(&[
             box_feat(1, BoolOp::New, [0.0, 0.0, 0.0], [1.0, 1.0, 1.0]),
             gyroid_feat(2, BoolOp::Intersect, 1, 0.5, 0.15),
         ]);
         assert_eq!(gyroid_body.len(), 1);
-        assert_eq!(
-            gyroid_body[0].0.edge_count(),
-            0,
-            "a space-filling body must weave an empty B-Rep"
+        assert!(
+            gyroid_body[0].0.edge_count() > 0,
+            "a gyroid body must weave its Boolean rim edges via the seed path"
         );
 
         let plain_box = weave_all(&[box_feat(1, BoolOp::New, [0.0, 0.0, 0.0], [1.0, 1.0, 1.0])]);
@@ -1018,6 +1179,143 @@ mod tests {
         assert_eq!(bodies.len(), 1);
         assert_eq!(bodies[0].feature_indices, vec![0]);
         assert_eq!(bodies[0].seed_id(&features), FeatureId::from_u32(1));
+    }
+
+    /// A boolean tool (Remove/Intersect) targeting `target`.
+    fn tool_feat(id: u32, op: BoolOp, target: u32, prim: Primitive) -> DecodedFeature {
+        DecodedFeature::from_parts(
+            FeatureId::from_u32(id),
+            format!("Tool {id}"),
+            op,
+            prim,
+            Transform::IDENTITY,
+            PrimitiveModifiers::NONE,
+            vec![FeatureId::from_u32(target)],
+        )
+    }
+
+    #[test]
+    fn remove_retreats_body_aabb_past_a_box_cut() {
+        // f88u: a sphere (r=10) with its whole +x half carved by a box. The
+        // body AABB must follow the visible LEFT half — x ∈ [−10, 0] — not stay
+        // the full sphere, so the orbit pivot lands in the remaining material.
+        let features = vec![
+            sphere_feat(1, BoolOp::New, [0.0, 0.0, 0.0], 10.0),
+            tool_feat(
+                2,
+                BoolOp::Remove,
+                1,
+                Primitive::Box {
+                    center: [10.0, 0.0, 0.0],
+                    half_extents: [10.0, 20.0, 20.0],
+                },
+            ),
+        ];
+        let bodies = partition(&features);
+        assert_eq!(bodies.len(), 1);
+        let bb = bodies[0].aabb;
+        assert!((bb.min[0] + 10.0).abs() < 1e-4, "min x {}", bb.min[0]);
+        assert!(
+            bb.max[0].abs() < 1e-4,
+            "max x should retreat to the cut plane (0), got {}",
+            bb.max[0]
+        );
+        // y and z are untouched by the cut.
+        assert!((bb.min[1] + 10.0).abs() < 1e-4 && (bb.max[1] - 10.0).abs() < 1e-4);
+        let cx = 0.5 * (bb.min[0] + bb.max[0]);
+        assert!((cx + 5.0).abs() < 1e-4, "centre x should be −5, got {cx}");
+    }
+
+    #[test]
+    fn intersect_clips_body_aabb_to_the_tool_bound() {
+        // Box(±10) ∩ Box(centre +5, ±10) → analytic body AABB = the AABB
+        // intersection, x ∈ [−5, 10]; y, z stay ±10.
+        let features = vec![
+            box_feat(1, BoolOp::New, [0.0, 0.0, 0.0], [10.0, 10.0, 10.0]),
+            tool_feat(
+                2,
+                BoolOp::Intersect,
+                1,
+                Primitive::Box {
+                    center: [5.0, 0.0, 0.0],
+                    half_extents: [10.0, 10.0, 10.0],
+                },
+            ),
+        ];
+        let bodies = partition(&features);
+        assert_eq!(bodies.len(), 1);
+        let bb = bodies[0].aabb;
+        assert!((bb.min[0] + 5.0).abs() < 1e-4, "min x {}", bb.min[0]);
+        assert!((bb.max[0] - 10.0).abs() < 1e-4, "max x {}", bb.max[0]);
+        assert!((bb.min[1] + 10.0).abs() < 1e-4 && (bb.max[1] - 10.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn remove_with_a_partial_cutter_keeps_the_conservative_bound() {
+        // A small sphere carved from a big box removes interior material but
+        // spans NO full cross-section → the body AABB must stay the full box.
+        // Over-shrinking here would clip live geometry (docking / pivot).
+        let features = vec![
+            box_feat(1, BoolOp::New, [0.0, 0.0, 0.0], [10.0, 10.0, 10.0]),
+            tool_feat(
+                2,
+                BoolOp::Remove,
+                1,
+                Primitive::Sphere {
+                    center: [0.0, 0.0, 0.0],
+                    radius: 3.0,
+                },
+            ),
+        ];
+        let bodies = partition(&features);
+        let bb = bodies[0].aabb;
+        for k in 0..3 {
+            assert!(
+                (bb.min[k] + 10.0).abs() < 1e-4 && (bb.max[k] - 10.0).abs() < 1e-4,
+                "axis {k} shrank but the cutter does not span the cross-section"
+            );
+        }
+    }
+
+    #[test]
+    fn intersect_with_a_space_filling_tool_keeps_the_body_aabb() {
+        // Ticket ipnx: Sphere ∩ Gyroid ∩ small offset Box. The gyroid is
+        // space-filling and reports an EMPTY AABB sentinel — it must NOT
+        // collapse the body's bound to empty (which dropped the orbit pivot to
+        // the origin). The final box then clips the AABB to its own extent.
+        let features = vec![
+            sphere_feat(1, BoolOp::New, [0.0, 0.0, 0.0], 50.0),
+            gyroid_feat(2, BoolOp::Intersect, 1, 10.0, 1.0),
+            DecodedFeature::from_parts(
+                FeatureId::from_u32(3),
+                "Box".into(),
+                BoolOp::Intersect,
+                Primitive::Box {
+                    center: [0.0, 0.0, 0.0],
+                    half_extents: [3.0, 4.0, 3.0],
+                },
+                Transform {
+                    translate: [8.0, 22.0, 30.0],
+                    ..Transform::IDENTITY
+                },
+                PrimitiveModifiers::NONE,
+                vec![FeatureId::from_u32(1)],
+            ),
+        ];
+        let bodies = partition(&features);
+        assert_eq!(bodies.len(), 1);
+        let bb = bodies[0].aabb;
+        assert!(!bb.is_empty(), "gyroid intersect wrongly emptied the body AABB");
+        // Clipped to the translated box → centre ≈ (8, 22, 30).
+        let c = [
+            0.5 * (bb.min[0] + bb.max[0]),
+            0.5 * (bb.min[1] + bb.max[1]),
+            0.5 * (bb.min[2] + bb.max[2]),
+        ];
+        assert!(
+            (c[0] - 8.0).abs() < 0.5 && (c[1] - 22.0).abs() < 0.5 && (c[2] - 30.0).abs() < 0.5,
+            "AABB centre should follow the box intersect, got {c:?}"
+        );
     }
 
     #[test]

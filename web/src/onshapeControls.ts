@@ -49,7 +49,6 @@ const WORLD_UP = /*@__PURE__*/ new THREE.Vector3(0, 1, 0);
 const _offset = new THREE.Vector3();
 const _right = new THREE.Vector3();
 const _up = new THREE.Vector3();
-const _c = new THREE.Vector3();
 const _ndc = new THREE.Vector3();
 const _viewDir = new THREE.Vector3();
 const _rayDir = new THREE.Vector3();
@@ -147,6 +146,12 @@ export interface OnshapeMouseButtons {
   RIGHT: number | null;
 }
 
+/** Finger travel (px) before a one-finger touch becomes a rotate (so a tap
+ *  still falls through to selection). */
+const TOUCH_ROTATE_THRESHOLD = 6;
+/** Pinch distance change (px) → dolly `amount` scale (≈ a wheel notch is 100). */
+const PINCH_DOLLY_SCALE = 2;
+
 export class OnshapeControls extends THREE.Controls {
   /** Pivot of orbit; pan moves it, the sticky-sphere logic re-centres it. */
   readonly target = new THREE.Vector3();
@@ -164,10 +169,30 @@ export class OnshapeControls extends THREE.Controls {
   rotateMode: RotateMode = "free";
   /** Invoked after every camera change so a demand-mode root can invalidate. */
   onChange: (() => void) | null = null;
+  /**
+   * Onshape orbit-pivot heuristic (ticket ohtn): on rotate-start, raycast from
+   * the cursor into the scene. Given the cursor's client coords, this returns
+   * the world-space hit point on the geometry, or `null` on a miss (empty
+   * space). Supplied by the viewport layer (it owns the kernel picker). When
+   * unset, or on a miss, the pivot falls back to the scene centre.
+   */
+  pickPivot:
+    | ((clientX: number, clientY: number) => [number, number, number] | null)
+    | null = null;
 
   private action: Action = null;
   private px = 0;
   private py = 0;
+
+  // ── Touch state ──────────────────────────────────────────────────
+  // Active touch pointers by id → last client position. One finger rotates
+  // (after a small move so a tap can still select), two fingers pinch-zoom +
+  // pan. Kept separate from the mouse-button mapping (touch reports button 0,
+  // which is `LEFT` = usually unbound in the Onshape preset).
+  private touches = new Map<number, { x: number; y: number }>();
+  private touchMode: "none" | "pending" | "rotate" | "pinch" = "none";
+  private touchStart = { x: 0, y: 0 };
+  private pinchPrev: { dist: number; cx: number; cy: number } | null = null;
 
   constructor(object: THREE.Camera, domElement: HTMLElement | null = null) {
     super(object, domElement);
@@ -220,6 +245,10 @@ export class OnshapeControls extends THREE.Controls {
 
   private onPointerDown = (e: PointerEvent) => {
     if (!this.enabled) return;
+    if (e.pointerType === "touch") {
+      this.onTouchDown(e);
+      return;
+    }
     const code =
       e.button === 0
         ? this.mouseButtons.LEFT
@@ -233,15 +262,19 @@ export class OnshapeControls extends THREE.Controls {
     this.action = action;
     this.px = e.clientX;
     this.py = e.clientY;
-    if (action === "rotate") this.recentrePivot();
+    if (action === "rotate") this.setRotatePivot(e.clientX, e.clientY);
     (this.domElement as HTMLElement | null)?.setPointerCapture?.(e.pointerId);
-    window.addEventListener("pointermove", this.onPointerMove);
-    window.addEventListener("pointerup", this.onPointerUp);
+    this.startWindowTracking();
     e.stopPropagation();
   };
 
   private onPointerMove = (e: PointerEvent) => {
-    if (!this.enabled || this.action === null) return;
+    if (!this.enabled) return;
+    if (this.touches.has(e.pointerId)) {
+      this.onTouchMove(e);
+      return;
+    }
+    if (this.action === null) return;
     const dx = e.clientX - this.px;
     const dy = e.clientY - this.py;
     this.px = e.clientX;
@@ -253,11 +286,104 @@ export class OnshapeControls extends THREE.Controls {
   };
 
   private onPointerUp = (e: PointerEvent) => {
+    if (this.touches.has(e.pointerId)) {
+      this.onTouchUp(e);
+      return;
+    }
     this.action = null;
     (this.domElement as HTMLElement | null)?.releasePointerCapture?.(e.pointerId);
-    window.removeEventListener("pointermove", this.onPointerMove);
-    window.removeEventListener("pointerup", this.onPointerUp);
+    this.stopWindowTrackingIfIdle();
   };
+
+  // ── Touch gestures ───────────────────────────────────────────────
+
+  private startWindowTracking(): void {
+    // Same-reference listeners → the browser dedups repeated adds.
+    window.addEventListener("pointermove", this.onPointerMove);
+    window.addEventListener("pointerup", this.onPointerUp);
+  }
+
+  private stopWindowTrackingIfIdle(): void {
+    if (this.action === null && this.touches.size === 0) {
+      window.removeEventListener("pointermove", this.onPointerMove);
+      window.removeEventListener("pointerup", this.onPointerUp);
+    }
+  }
+
+  /** Distance + midpoint of the first two active touches. */
+  private pinchState(): { dist: number; cx: number; cy: number } {
+    const it = this.touches.values();
+    const a = it.next().value as { x: number; y: number };
+    const b = it.next().value as { x: number; y: number };
+    return {
+      dist: Math.hypot(b.x - a.x, b.y - a.y),
+      cx: 0.5 * (a.x + b.x),
+      cy: 0.5 * (a.y + b.y),
+    };
+  }
+
+  private onTouchDown(e: PointerEvent): void {
+    this.touches.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    (this.domElement as HTMLElement | null)?.setPointerCapture?.(e.pointerId);
+    this.startWindowTracking();
+    if (this.touches.size === 1) {
+      this.touchMode = "pending"; // wait for movement so a tap can select
+      this.touchStart = { x: e.clientX, y: e.clientY };
+    } else if (this.touches.size === 2) {
+      this.touchMode = "pinch";
+      this.pinchPrev = this.pinchState();
+      e.stopPropagation(); // a two-finger gesture is never a tap
+    }
+  }
+
+  private onTouchMove(e: PointerEvent): void {
+    const prev = this.touches.get(e.pointerId);
+    if (!prev) return;
+    const cur = { x: e.clientX, y: e.clientY };
+    this.touches.set(e.pointerId, cur);
+
+    if (this.touchMode === "pending") {
+      const moved = Math.hypot(
+        e.clientX - this.touchStart.x,
+        e.clientY - this.touchStart.y,
+      );
+      if (moved <= TOUCH_ROTATE_THRESHOLD) return; // still a potential tap
+      this.touchMode = "rotate";
+      this.setRotatePivot(cur.x, cur.y);
+    }
+
+    if (this.touchMode === "rotate" && this.touches.size === 1) {
+      this.rotate(cur.x - prev.x, cur.y - prev.y);
+      e.stopPropagation();
+    } else if (this.touchMode === "pinch" && this.touches.size >= 2) {
+      const st = this.pinchState();
+      if (this.pinchPrev) {
+        const ddist = st.dist - this.pinchPrev.dist;
+        // Spreading fingers (dist grows) zooms IN → negative dolly amount.
+        if (ddist !== 0) this.dolly(-ddist * PINCH_DOLLY_SCALE, st.cx, st.cy);
+        this.pan(st.cx - this.pinchPrev.cx, st.cy - this.pinchPrev.cy);
+      }
+      this.pinchPrev = st;
+      e.stopPropagation();
+    }
+  }
+
+  private onTouchUp(e: PointerEvent): void {
+    this.touches.delete(e.pointerId);
+    (this.domElement as HTMLElement | null)?.releasePointerCapture?.(e.pointerId);
+    if (this.touches.size === 1) {
+      // Dropped from a pinch to one finger → resume rotating cleanly, pivoting
+      // under the remaining finger.
+      this.touchMode = "rotate";
+      this.pinchPrev = null;
+      const rest = [...this.touches.values()][0];
+      if (rest) this.setRotatePivot(rest.x, rest.y);
+    } else if (this.touches.size === 0) {
+      this.touchMode = "none";
+      this.pinchPrev = null;
+    }
+    this.stopWindowTrackingIfIdle();
+  }
 
   private onWheel = (e: WheelEvent) => {
     if (!this.enabled) return;
@@ -265,17 +391,30 @@ export class OnshapeControls extends THREE.Controls {
     this.dolly(e.deltaY, e.clientX, e.clientY);
   };
 
-  /** Decide the rotate pivot via the sticky-bounding-sphere rule. */
-  private recentrePivot(): void {
-    const cam = this.cam;
-    cam.updateMatrixWorld();
+  /**
+   * Onshape orbit-pivot heuristic (ticket ohtn). At rotate-start, raycast from
+   * the cursor: a HIT makes that exact surface point the pivot; a MISS falls
+   * back to the geometric centre of the visible scene. The pivot then stays
+   * fixed for the whole drag (rotate() orbits about `this.target`). This
+   * replaces the earlier sticky-bounding-sphere rule — you spin about whatever
+   * is under the cursor, exactly like Onshape.
+   */
+  private setRotatePivot(clientX: number, clientY: number): void {
+    const hit = this.pickPivot?.(clientX, clientY) ?? null;
+    if (hit) {
+      this.target.set(hit[0], hit[1], hit[2]);
+      return;
+    }
+    this.recentreOnSceneCentre();
+  }
+
+  /** Miss fallback: pivot on the visible scene centre (tight `pivot` when the
+   *  kernel could compute it, else the conservative AABB `center`). */
+  private recentreOnSceneCentre(): void {
     const b = getSceneBounds();
     if (!b || b.radius <= 0) return; // nothing drawn → keep the current pivot
-    _c.set(b.center[0], b.center[1], b.center[2]);
-    if (sphereFitsViewport(cam, _c, b.radius)) {
-      this.target.copy(_c); // sphere still frames → re-centre on the model
-    }
-    // else: sticky — leave the pivot at its last fitting position
+    const c = b.pivot ?? b.center;
+    this.target.set(c[0], c[1], c[2]);
   }
 
   private rotate(dx: number, dy: number): void {
@@ -350,14 +489,20 @@ export class OnshapeControls extends THREE.Controls {
       ortho.zoom = Math.max(ortho.zoom * s, 1e-4);
       const rect = (this.domElement as HTMLElement | null)?.getBoundingClientRect();
       if (rect && rect.width > 0 && rect.height > 0) {
-        // World point under the cursor, on the plane through the target ⊥ view.
+        // World point under the cursor (depth irrelevant under parallel proj).
         const ndcX = ((clientX - rect.left) / rect.width) * 2 - 1;
         const ndcY = -((clientY - rect.top) / rect.height) * 2 + 1;
         _focus.set(ndcX, ndcY, 0).unproject(cam);
-        // Project that point's offset-from-target onto the camera view plane
-        // (drop the view-direction component — irrelevant under parallel proj).
+        // The pin offset is the cursor point's view-plane offset from the
+        // CAMERA AXIS — i.e. relative to `cam.position`, NOT `this.target`
+        // (ticket zc9b): the rotate pivot is raycast onto whatever was under
+        // the cursor, so the target routinely sits OFF the view axis, and a
+        // target-relative offset then pins the wrong point (target over the
+        // object → offset ≈ 0 → zoom about the screen centre instead of the
+        // cursor). Drop the view-direction component and slide camera+target
+        // by `offset·(1 − 1/s)` so the cursor point keeps its pixel.
         _viewDir.setFromMatrixColumn(cam.matrixWorld, 2).normalize();
-        _offset.copy(_focus).sub(this.target);
+        _offset.copy(_focus).sub(cam.position);
         _offset.addScaledVector(_viewDir, -_offset.dot(_viewDir));
         _offset.multiplyScalar(1 - 1 / s);
         cam.position.add(_offset);

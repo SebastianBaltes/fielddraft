@@ -26,6 +26,7 @@ import {
   type DeferredPipelineState,
 } from "./sdfDeferredRenderer";
 import { resolveMaterials, applyMaterials } from "./materialBridge";
+import { getMesherPartOpacity } from "./mesherDebugStore";
 import { disposeAfterGpuIdle } from "./sdfPipelineCommon";
 import { OVERLAY_LAYER, DATUM_LAYER, PREVIEW_LAYER } from "./viewportLayers";
 import {
@@ -246,6 +247,7 @@ function useSdfPipelineOverlay<P extends MaterialBufferTarget, B>(
   const compilingRef = useRef(false);
   const readyRef = useRef(false);
   const matFeaturesRef = useRef<unknown>(null);
+  const matOpacityRef = useRef(1);
   const selectionRef = useRef<unknown>(null);
   // Captured from useFrame so the unmount cleanup can defer the pipeline's GPU
   // disposal until the device is idle (ticket 323i).
@@ -339,13 +341,23 @@ function useSdfPipelineOverlay<P extends MaterialBufferTarget, B>(
     // fresh array) or when geometry rebuilt/updated this frame. Gate the
     // resolve+GPU upload behind that so a static scene doesn't re-upload the
     // material buffer every frame.
+    // Debug ▸ Mesher part-visibility slider fades the solid live; fold it into
+    // the same gate so a slider drag re-uploads the material buffer.
+    const partOpacity = getMesherPartOpacity();
     if (
       storeState.features !== matFeaturesRef.current ||
+      partOpacity !== matOpacityRef.current ||
       needsRebuild ||
       needsDataUpdate
     ) {
-      applyMaterials(pipeline, resolveMaterials(k, storeState.features), count);
+      applyMaterials(
+        pipeline,
+        resolveMaterials(k, storeState.features),
+        count,
+        partOpacity,
+      );
       matFeaturesRef.current = storeState.features;
+      matOpacityRef.current = partOpacity;
     }
 
     // Selection likewise only changes via a fresh selection Set (or when the

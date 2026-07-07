@@ -24,12 +24,610 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
-    version: "0.6.392",
+    version: "0.6.445",
     entries: [
       {
         kind: "feat",
         text: "Neues Feature „Custom SDF“ (ƒ in der Toolbar): eigene implizite Körper aus einer Math-Formel über x, y, z — z. B. TPMS-Gitter oder algebraische Flächen. Die Formel (sin, cos, sqrt, abs, min, max, exp, ln, atan2, pow, ^, pi/tau) wird einmal in eine Opcode-Tape kompiliert und identisch auf CPU (inkl. exakter Gradienten) und GPU ausgewertet; Lipschitz-Faktor normalisiert das Feld, eine lokale Box begrenzt den Körper. Custom-Bodies sind SDF-only (kein B-Rep), wie das Gyroid",
         scope: "kernel",
+      },
+      {
+        kind: "perf",
+        text: "Zell-lokale CSG-Baum-Spezialisierung im Kernel: B-Rep-Octree und adaptiver Narrow-Band-Mesher prunen pro Zelle Boolean-Zweige, die das Feld dort beweisbar nicht beeinflussen (fidget-artige Tape-Verkürzung auf dem eigenen Baum), und vererben den verkürzten Baum an die Kindzellen — Octree-Aufbau auf zusammengesetzten Körpern mehrfach schneller (30-Teile-Testbaugruppe: 3,9×), byte-identisches Ergebnis. Zusätzlich eps-bewusstes AABB-Pruning in der Contributor-Evaluation",
+        scope: "kernel",
+      },
+    ],
+  },
+  {
+    version: "0.6.444",
+    entries: [
+      {
+        kind: "feat",
+        scope: "export",
+        text: "CGAL-Server-Meshing versteht jetzt alle Kernel-Opcodes: HALFSPACE (geöffnete Shells), Helix und Sweep sind in den C++-Interpreter portiert, ein Masked-Blend-Format-Drift ist gefixt (count-präfixierte Polyline statt festem 2-Punkt-Kapsel-Layout). Der Golden-Test deckt alles mit 9 neuen Szenen ab (25 gesamt, 12.800 Checks). Dazu Douglas-Peucker-Dezimierung der Kanten-Schutz-Polylines im Mesher — eine Helix lieferte 102.000 Tracer-Punkte und würgte CGALs Feature-Protection ab. Helix+Vase end-to-end verifiziert: wasserdicht, 2-manifold, kantentreu (3,4 Mio. Dreiecke).",
+      },
+    ],
+  },
+  {
+    version: "0.6.443",
+    entries: [
+      {
+        kind: "feat",
+        scope: "export",
+        text: "CGAL-Meshing Meilenstein M6 (3MF): Die Server-Methode „CGAL Mesh_3 (server)“ exportiert jetzt auch 3MF — das Server-STL wird clientseitig durch den Kernel-3MF-Encoder konvertiert (neues mesh3mfFromBuffers), das Format-Select ist für die Server-Route freigeschaltet. Damit sind alle Meilensteine des serverseitigen CGAL-Meshings (M1–M6) abgeschlossen.",
+      },
+    ],
+  },
+  {
+    version: "0.6.442",
+    entries: [
+      {
+        kind: "feat",
+        scope: "deploy",
+        text: "CGAL-Meshing Meilenstein M5 (Prod-Deployment): mesher-Service in docker-compose.prod.yml (internes Netz, horizontal skalierbar via --scale), drittes GHCR-Image im Release-Workflow (Golden-Test läuft im Image-Build), Env-Tuning (MESH_WORKERS/CONCURRENCY/THREADS/TIMEOUT) in .env.prod.example, DEPLOY.md + ARCHITECTURE.md nachgeführt. Ansible-Deploy zieht das Image automatisch mit.",
+      },
+    ],
+  },
+  {
+    version: "0.6.441",
+    entries: [
+      {
+        kind: "feat",
+        scope: "export",
+        text: "CGAL-Meshing Meilenstein M4 (Frontend): neue Export-Methode „CGAL Mesh_3 (server)“ im Export-Dialog — speichert das Projekt, startet den Server-Job, pollt den Status (Warteschlange/Server mesht/Download, mit Cancel), zeigt das STL als Preview in der Szene und lädt die unveränderten Server-Bytes herunter. Nur mit server-gespeichertem Projekt und STL-Format wählbar (sonst ausgegraut).",
+      },
+    ],
+  },
+  {
+    version: "0.6.440",
+    entries: [
+      {
+        kind: "feat",
+        scope: "export",
+        text: "CGAL-Meshing Meilenstein M3 (Backend-Job-Queue): persistente mesh_jobs-Tabelle (überlebt Server-Restart, Boot-Recovery running→queued), Dispatcher-Worker-Pool mit atomarem Claim (replikasicher), Routen POST /api/projects/{id}/mesh → 202 jobId, Polling-Route, STL-Artefakt-Download (owner-gated, Content-addressed Blob), Abbruch-Route; max. 1 aktiver Job pro User. Integrationstest + Live-Roundtrip gegen den echten Mesher-Container verifiziert.",
+      },
+    ],
+  },
+  {
+    version: "0.6.439",
+    entries: [
+      {
+        kind: "feat",
+        scope: "export",
+        text: "CGAL-Meshing Meilenstein M2 (Service-Container): Docker-Image (Debian-CGAL mit GMP/MPFR, TBB-Multithreading mit FD_MESH_THREADS-Deckel, Golden-Test als Pflicht-Build-Schritt) + Go-HTTP-Wrapper (POST /mesh → STL, Concurrency-Limit, Job-Timeout, Größenlimit) + Compose-Service „mesher“ im internen Netz.",
+      },
+    ],
+  },
+  {
+    version: "0.6.438",
+    entries: [
+      {
+        kind: "feat",
+        scope: "export",
+        text: "Serverseitiges CGAL-Meshing, Meilenstein M1 (Kern-Pipeline): fd-prepare (natives Kernel-Binary: Dokument → SDF-Opcodes + B-Rep-Kanten-Polylines) + fd-cgal-mesh (natives CGAL Mesh_3 mit Kanten-Schutzkugeln, manifold-Kriterium, Außen-Orientierung, binäres STL). Box/Zylinder/Revolve-Rohr verifiziert wasserdicht/2-manifold mit exakter Kantentreue; Golden-Test Rust↔C++ fand und fixte zwei Interpreter-Drifts (Cone wall_scale, Shell inward). Noch ohne UI — Backend-Route und Export-Dialog-Option folgen.",
+      },
+    ],
+  },
+  {
+    version: "0.6.437",
+    entries: [
+      {
+        kind: "feat",
+        scope: "debug",
+        tickets: ["nwmi"],
+        text: "Hybrid-PASM P4c: Polkappen-Fächer — Faces mit einer windenden Loop um einen Pol/Apex (Kugelkappe, Kegelspitze, Revolve-Achsberührung) werden jetzt vernetzt: ein Pol-Ring aus Hilfspunkten knapp vor dem Pol, das Stück Loop↔Ring über den Band-Pfad, der Ring per Dreiecks-Fächer zum Pol geschlossen — jedes Fächer-Dreieck berührt den Pol genau einmal, nichts kollabiert. Ring-Auflösung aus der Welt-Bogenlänge (am Pol schrumpft der Umfang). Kugelkappe ∩ Box end-to-end geschlossen/2-Manifold (Euler=2).",
+      },
+    ],
+  },
+  {
+    version: "0.6.436",
+    entries: [
+      {
+        kind: "feat",
+        scope: "debug",
+        tickets: ["nwmi"],
+        text: "Hybrid-PASM P4b: Revolve-Träger im CDT-Mesher — die v-Achse des Charts ist die Bogenlänge der Nächster-Punkt-Projektion auf die offset-korrigierte Profilkette (ssi-Profile-Pieces). Rohr-Meilenstein grün: Rechteck-Revolve ∩ Box liefert end-to-end ein wasserdichtes Torus-Netz (Euler=0) — Außen- und Innenwand liegen auf demselben Branch und trennen sich rein über das Chart, die Deckel sind Annuli mit Loch-Loop. Faltungs-Guard: springt v entlang einer Loop um mehr als ¼ der Kettenlänge, bleibt die Face unvermascht.",
+      },
+    ],
+  },
+  {
+    version: "0.6.435",
+    entries: [
+      {
+        kind: "feat",
+        scope: "debug",
+        tickets: ["nwmi"],
+        text: "Hybrid-PASM P4a: CDT auf abrollbaren Trägern — Zylinder/Kegel/Kugel-Bänder werden ins (θ·r, v)-Chart abgewickelt und periodisch vernetzt; die Schnitt-Naht teilt ihre Steiner-Punkte zwischen beiden Kopien und ist damit strukturell verschweißt. Voller Zylinder jetzt end-to-end geschlossen/2-Manifold (Band + Deckel, Euler=2). Dreiecks-Klassifikation jetzt kombinatorisch (Flood-Fill mit Constraint-Parität) statt Zentroid-Test — robust gegen Naht-Sliver; randnahe Partikel (<0,25·h) werden vor dem Einfügen verworfen, damit kein einseitiger Constraint-Split die Naht öffnet.",
+      },
+    ],
+  },
+  {
+    version: "0.6.434",
+    entries: [
+      {
+        kind: "feat",
+        text: "Hybrid-PASM-Meshing Phasen 2+3: „PASM kernel (Gaussian)“ — der Paar-Kernel des Papers (σ = Interaktionsradius/5, 5σ-Trunkierung, Konvergenz-Abbruch) ersetzt wahlweise den 1/d²-Monopol; „CDT faces (planar)“ — planare Faces werden per Constrained Delaunay (spade) in der Face-Ebene vernetzt, mit den B-Rep-Skelett-Loops als Constraints und den freien Partikeln als Innenpunkten. Erster End-to-End-Beweis: die Box liefert ein GESCHLOSSENES 2-Manifold-Netz (jede Kante exakt 2×, Euler V−E+F=2) — kantenexakt und wasserdicht per Konstruktion",
+        scope: "debug",
+        tickets: ["nwmi"],
+      },
+    ],
+  },
+  {
+    version: "0.6.433",
+    entries: [
+      {
+        kind: "feat",
+        text: "Hybrid-PASM-Meshing Phase 1 (Konzept-SSOT docs/HYBRID-PASM-MESHING-PLAN.md): Debug ▸ Mesher kann die gewebten B-Rep-Kanten als FIXES Partikel-Skelett einspannen — Ecken exakt gepinnt (rot), Kantenketten bogenlängen-gesampelt am Interaktionsradius (orange); sie stoßen die freien Flächen-Partikel ab, bewegen sich aber nie. Scharfe Features werden Randbedingung statt Detektionsaufgabe — die konstruktive Basis für kantenexaktes, wasserdichtes Meshing",
+        scope: "debug",
+        tickets: ["nwmi"],
+      },
+    ],
+  },
+  {
+    version: "0.6.432",
+    entries: [
+      {
+        kind: "fix",
+        text: "Schmale Flächen waren nicht hoverbar (nur einzelne Kanten leuchteten): der Kanten-Pick-Radius war in NDC definiert und wuchs mit der Fenstergröße auf ~15px — breit genug, um eine schmale Seitenfläche von beiden Silhouetten her komplett abzudecken, sodass per Edge-vor-Face-Priorität nie die Fläche gewann. Kanten- (8px) und Vertex-Pick-Radius (11px) sind jetzt pixel-basiert und fenstergrößen-stabil",
+        scope: "viewport",
+        tickets: ["7cv2"],
+      },
+    ],
+  },
+  {
+    version: "0.6.431",
+    entries: [
+      {
+        kind: "feat",
+        text: "B-Rep: Vertex-Witnesses — Ecken (Tripelpunkte) werden VOR dem Kanten-Tracing analytisch gelöst und den Märschen als Snap-Ziele mitgegeben; ein Marsch endet exakt an der Ecke statt eine weggetrimmte Lücke zu überspringen (fundamentale Lösung des Gap-Leap-Problems). Schutzgitter: Aktivitäts-Gate über alle drei Flächenpaare, Spatprodukt-Rang-Gate gegen Phantom-Konkurrenzen entlang µm-gedrifteter Koplanar-Wände, Mikro-Stub-Filter; Branch-Union wie im Cluster-Pfad hält die Handle-Identität zur Octree-Route",
+        scope: "kernel",
+      },
+      {
+        kind: "fix",
+        text: "Zoom zum Mauszeiger (Ortho): der Pin-Offset wurde relativ zum Orbit-Pivot statt zur Kamera-Achse gerechnet — seit dem Onshape-Pivot-Raycast liegt der Pivot oft abseits der Blickachse, dann zoomte das Mausrad am Cursor vorbei (aufs Bildschirmzentrum). Jetzt bleibt der Punkt unterm Cursor exakt stehen",
+        scope: "camera",
+        tickets: ["zc9b"],
+      },
+    ],
+  },
+  {
+    version: "0.6.430",
+    entries: [
+      {
+        kind: "fix",
+        text: "B-Rep: fehlende vertikale Kanten, wo eine große Zylinderwand eine kleine Box-Seitenfläche schneidet (Gyroid-Sliver). Drei Wurzelursachen behoben: (1) der SSI-Scan verwarf Schnitt-Zellen mit Eckpunkt knapp außerhalb der Overlap-Box — die Ecken-Maske wird jetzt um eine Zell-Diagonale erweitert (Seeds bleiben strikt in der Box); (2) die Co-Component-Dedup fraß parallel laufende Zwillings-Kanten — Radius von 0.1·diag auf 10× Sagitta-Toleranz verkleinert, Trim-Termini zählen zur Dedup-Polyline; (3) ein langer adaptiver Trace-Schritt konnte eine weggetrimmte Lücke komplett überspringen und zwei getrennte Kantenbögen überbrücken — neuer Mittelpunkts-Gap-Guard im March plus halbierte Seed-Routen-Schrittkappe",
+        scope: "kernel",
+        tickets: ["7sp1"],
+      },
+    ],
+  },
+  {
+    version: "0.6.429",
+    entries: [
+      {
+        kind: "feat",
+        text: "Debug ▸ Mesher: „Feature snap (edges/corners)“ — Kanten/Ecken werden per Normalen-Proben erkannt, Punkte exakt auf den Schnitt der Tangentialebenen gezogen und dort verankert (Kantenpunkte gleiten 1D entlang der Kante, Ecken sind fixiert; beide stoßen weiter ab). Löst das systematische Abrunden harter Kanten durch isotrope Repulsion (0D/1D-Features haben Maß null); einstellbarer Feature-Winkel",
+        scope: "debug",
+      },
+    ],
+  },
+  {
+    version: "0.6.428",
+    entries: [
+      {
+        kind: "feat",
+        text: "Gyroid-Körper haben jetzt B-Rep-Kanten: die Boolean-Rim-Kurven (wo Box/Zylinder/Kugel-Flächen die Gyroid-Shell schneiden) werden über den octree-freien Seed-Pfad exakt getraced (SSI-Seeds + Dual-Field-Tracing) und als partielles Wireframe gewebt. Der Octree bleibt für Space-Filling-Körper weiterhin ausgeschlossen (kein DL-71-Stall); Helix/Sweep-Körper bleiben unverändert kantenlos",
+        scope: "kernel",
+      },
+    ],
+  },
+  {
+    version: "0.6.427",
+    entries: [
+      {
+        kind: "feat",
+        text: "Kernel-Spike: Der SSI-Kurven-Seeder unterstützt jetzt Gyroide als Implicit-Operand (Ebene/Zylinder ∩ Gyroid) — Machbarkeitsnachweis für exakte Boolean-Kanten an TPMS-Körpern (Box∩Gyroid: 66 Rim-Kurven, ~9k Seeds, wenige ms). Noch nicht im B-Rep-Weave aktiv; Gyroid-Bodies bleiben vorerst ohne Kanten (DL-71)",
+        scope: "kernel",
+      },
+    ],
+  },
+  {
+    version: "0.6.426",
+    entries: [
+      {
+        kind: "fix",
+        text: "Debug ▸ Mesher: „Damping“ ist jetzt ein direktes Zahlenfeld statt eines Sliders",
+        scope: "debug",
+      },
+    ],
+  },
+  {
+    version: "0.6.425",
+    entries: [
+      {
+        kind: "fix",
+        text: "Debug ▸ Mesher: Punkte verklumpten trotz starker 1/d²-Repulsion in einer Ecke — Ursache war eine numerische Instabilität: der explizite Schritt konnte bei hoher „Strength“ einen Punkt komplett über seine Nachbarn hinweg und von der Oberfläche schleudern (wo „Only on surface“ ihn verwarf), während der symmetrische Cluster-Kern (Netto-Kraft ≈ 0) liegen blieb. Der Repulsions-Schritt wird jetzt auf die halbe Distanz zum nächsten Nachbarn begrenzt → stabil für JEDE Strength, Klumpen dehnen sich monoton zu gleichmäßigem Abstand",
+        scope: "debug",
+        tickets: ["l45r"],
+      },
+    ],
+  },
+  {
+    version: "0.6.424",
+    entries: [
+      {
+        kind: "fix",
+        text: "Debug ▸ Mesher: Repulsions-Kraftgesetz ist jetzt durchgängig invers-quadratisch (∝ 1/d², wie gleich geladene Monopole) — nähere Punkte stoßen sich viel stärker ab, dadurch bleiben Cluster nicht bestehen und die Verteilung bleibt lokal und gleichmäßig statt global in die Ecken zu driften. Die „Weighting“-Auswahl (Linear/Inverse Square) entfällt, 1/d² ist das einzige Gesetz",
+        scope: "debug",
+      },
+    ],
+  },
+  {
+    version: "0.6.423",
+    entries: [
+      {
+        kind: "feat",
+        text: "Debug ▸ Mesher: UI an das Ein-Schleifen-Verfahren angepasst — die zwei alten Iterations-Felder durch ein einziges „Iterations“ ersetzt; neu: Repulsion-„Damping“ (Abkling-Faktor der Repulsion pro Iteration) und „Damping curve“ (Linear/Exponential) für das Annealing",
+        scope: "debug",
+        tickets: ["yanv"],
+      },
+    ],
+  },
+  {
+    version: "0.6.422",
+    entries: [
+      {
+        kind: "feat",
+        text: "Debug ▸ Mesher: Punktverteilung jetzt eine EINZIGE interleavte Schleife (Repulsion → Fit → Clamp pro Iteration) mit von stark nach null abklingender Repulsion, plus abschließendem Fit-to-Surface — die Punkte spreizen sich früh und liegen am Ende wirklich auf der Oberfläche (im Rahmen des Clamps)",
+        scope: "debug",
+        tickets: ["yanv"],
+      },
+    ],
+  },
+  {
+    version: "0.6.421",
+    entries: [
+      {
+        kind: "feat",
+        text: "Debug ▸ Mesher: Punktverteilung läuft jetzt als 2-Phasen-Iteration aus atomaren Schritten — Phase 1 pro Schritt Fit-on-Surface → Clamp-to-Cell (bis Target-ε oder Max-Iterationen), Phase 2 pro Schritt Repulsion → Fit → Clamp (für Repulsion-Iterationen); jeder Schritt nur, wenn die zugehörige Checkbox gesetzt ist",
+        scope: "debug",
+        tickets: ["yanv"],
+      },
+    ],
+  },
+  {
+    version: "0.6.420",
+    entries: [
+      {
+        kind: "feat",
+        text: "Debug ▸ Mesher „Mesh points“ verbindet jetzt die angezeigten (gefilterten) Punkte entlang der Octree-Kantenbeziehungen zu Dreiecken — kein Dual Contouring, kein Vorzeichenwechsel-Test, Löcher/falsche Facetten sind bewusst erlaubt; das Ergebnis wird nur als Wireframe gezeichnet",
+        scope: "debug",
+      },
+    ],
+  },
+  {
+    version: "0.6.419",
+    entries: [
+      {
+        kind: "fix",
+        text: "Debug ▸ Mesher: die Filter „Neighbour sign change only“ und „Only on surface“ blenden die Normalen/Punkte jetzt sichtbar aus — der Kernel liefert pro Punkt ein shown-Flag, das alle Prozess-Filter berücksichtigt (vorher wirkten sie nur intern auf Fit/Repulsion/Mesh)",
+        scope: "debug",
+        tickets: ["jt76", "gjuu"],
+      },
+      {
+        kind: "fix",
+        text: "Von Disk geöffnetes Projekt überlebt jetzt einen Reload: ein „Projekt öffnen“ persistiert sofort in localStorage und holt einen Deep-Link-Repro-Tab (?project=) aus dem Repro-Modus (echter Autosave, URL-Parameter entfernt), statt beim Reload leer zu sein",
+        scope: "project",
+        tickets: ["4z37"],
+      },
+    ],
+  },
+  {
+    version: "0.6.418",
+    entries: [
+      {
+        kind: "feat",
+        text: "Debug ▸ Mesher: Filter „Only on surface“ — Punkte, die die Oberfläche nach der Newton-Projektion nicht erreichen (in ihrer Zelle geclampt), fallen komplett aus dem Set: nicht gezeichnet, keine Repulsion, kein Mesh-Vertex",
+        scope: "debug",
+      },
+    ],
+  },
+  {
+    version: "0.6.417",
+    entries: [
+      {
+        kind: "feat",
+        text: "Debug ▸ Mesher: „Mesh points (dual contour)“ — adaptives Dual Contouring über den gefilterten/projizierten/abgestoßenen Punkten (ein Vertex pro Octree-Blattzelle, Quads an vorzeichenwechselnden Minimal-Kanten, crack-frei per rekursivem cell/face/edge-Walk), optional mit 2:1-balanciertem Octree; Dreieckszahl im Dialog",
+        scope: "debug",
+      },
+    ],
+  },
+  {
+    version: "0.6.416",
+    entries: [
+      {
+        kind: "fix",
+        text: "Export-Vorschau: SDF ↔ Mesh-Crossfade blendet wieder graduell — nach dem jüngsten Tiefen-Fix verlor das exakt auf der Fläche liegende Preview-Mesh den Depth-Test gegen den SDF-Körper; es zieht sich jetzt per polygonOffset nach vorn",
+        scope: "export",
+        tickets: ["rfm6"],
+      },
+    ],
+  },
+  {
+    version: "0.6.415",
+    entries: [
+      {
+        kind: "feat",
+        text: "Debug ▸ Mesher: iterative Punkt-Optimierer — „Fit on Surface“ (gedämpfte Newton-Projektion auf die SDF-Nullfläche) und „Repulsion inside Surface“ (tangentiale Relaxation mit Re-Pinning), mit Zell-Clamping (constrainToCell), Vorzeichenwechsel-Nachbar-Filter und Gewichtungsfunktion Linear/Inverse Square — komplett im Kernel (31k Punkte fitten in ~70 ms)",
+        scope: "debug",
+        tickets: ["jq2t"],
+      },
+    ],
+  },
+  {
+    version: "0.6.414",
+    entries: [
+      {
+        kind: "feat",
+        text: "Debug-Dialoge (SDF-Plane, Mesher, Part-AABB) persistieren im Projekt — ein gespeichertes Projekt oder Ticket öffnet mit exakt dem Debug-Setup (offene Dialoge + Parameter), mit dem es erfasst wurde",
+        scope: "debug",
+      },
+      {
+        kind: "feat",
+        text: "Projekt-Autosave per Dirty-Tracking: auch reine Kamera-Bewegungen und Debug-Dialog-Änderungen speichern jetzt (debounced); Debounce als Einstellung „Autosave-Debounce (s)“ (Default 5 s), beim Schließen des Tabs wird sofort geschrieben",
+        scope: "viewport",
+      },
+    ],
+  },
+  {
+    version: "0.6.413",
+    entries: [
+      {
+        kind: "fix",
+        text: "SDF-Renderer: blickwinkelabhängige Parallaxe zwischen Solid und SDF-Plane behoben — die Szenen-Tiefe wurde 0,1 % hinter die Oberfläche geschoben (Kanten-Bias), was an flach geschnittenen Ebenen zur Sichel verstärkte; B-Rep-Kanten ziehen sich jetzt selbst per polygonOffset nach vorn",
+        scope: "render",
+        tickets: ["iw6f"],
+      },
+    ],
+  },
+  {
+    version: "0.6.412",
+    entries: [
+      {
+        kind: "fix",
+        text: "Extended Marching Cubes: Feature-Zellen zelteten jedes Patch-Dreieck über alle drei Kanten auf den Feature-Vertex — jetzt nur noch über den Patch-Rand (Gyroid-Kugel: 12.650 → 24 non-manifold-Kanten, Abweichung 0,43 → 0,34 mm)",
+        scope: "export",
+        tickets: ["4m67"],
+      },
+      {
+        kind: "fix",
+        text: "Loch-Sicherheitsnetz auch für explizit gewählte Dense-Mesher: Manifold DC lieferte auf der Gyroid-Kugel 1.471 offene Kanten und 7,6 mm Ausreißer — bei Löchern ersetzt jetzt ein Marching-Tets-Netz das Ergebnis (im route-Label ausgewiesen)",
+        scope: "export",
+        tickets: ["4m67"],
+      },
+      {
+        kind: "fix",
+        text: "Export-Verfahren „Marching cubes (robust)“ heißt jetzt ehrlich „Marching Tetrahedra (robust)“ — Titel und Beschreibung widersprachen sich",
+        scope: "export",
+        tickets: ["agco"],
+      },
+    ],
+  },
+  {
+    version: "0.6.411",
+    entries: [
+      {
+        kind: "fix",
+        text: "Meshing-Verfahren „Reach for the Arcs“ entfernt — die sPSR-Rekonstruktion lieferte prinzipbedingt entartete Netze (625 Dreiecke, >5 mm Abweichung) und ist nicht rettbar",
+        scope: "export",
+        tickets: ["tihw"],
+      },
+    ],
+  },
+  {
+    version: "0.6.410",
+    entries: [
+      {
+        kind: "feat",
+        text: "Kamera-Blickwinkel (Position, Ausrichtung, Orbit-Ziel, Zoom) wird jetzt im Projekt gespeichert und beim Öffnen/Neuladen wiederhergestellt — statt immer auf die Default-Ansicht zu springen",
+        scope: "viewport",
+        tickets: ["pxff"],
+      },
+    ],
+  },
+  {
+    version: "0.6.409",
+    entries: [
+      {
+        kind: "fix",
+        text: "Mesher: die Surface-Farbschwelle wirkte kaum — die frühere graduelle, auf den Maximalwert normierte Farbrampe ließ oberflächennahe Samples fast immer grün wirken. Jetzt scharfe 3-Wege-Klassifikation: |SDF| ≤ Schwelle = grün, sonst blau (innen) / rot (außen). Der Schwellwert steuert das Grün nun direkt (kleiner Wert = wenig grün)",
+        scope: "debug",
+        tickets: ["0ly1"],
+      },
+    ],
+  },
+  {
+    version: "0.6.408",
+    entries: [
+      {
+        kind: "feat",
+        text: "Mesher-Debug erweitert: ein Parameter Surface ± für den Grün-/Surface-Schwellwert der Farbcodierung (|SDF| darunter = grün, darüber Rampe nach blau/rot) und ein Part-opacity-Slider, der den Solid durchscheinend macht — im transparenten Modus werden auch die innenliegenden Normalen gezeigt",
+        scope: "debug",
+        tickets: ["dbmy"],
+      },
+    ],
+  },
+  {
+    version: "0.6.407",
+    entries: [
+      {
+        kind: "fix",
+        text: "Mesher-Debug: Parameter Band guard in Band width umbenannt und mit Erklär-Tooltip versehen — er steuert die Narrow-Band-Breite der Octree-Unterteilung (nicht die Inside/Outside-Farbtrennung). Oberhalb ~1 gesättigt (1 bis 8 ohne sichtbaren Effekt), unter 1 engere Band, also weniger oberflächennahe Zellen/Normalen",
+        scope: "debug",
+        tickets: ["dbmy"],
+      },
+    ],
+  },
+  {
+    version: "0.6.406",
+    entries: [
+      {
+        kind: "fix",
+        text: "Menüpunkt Debug ▸ Part-AABB war nach rechts eingerückt (ein unsichtbares EM-Space-Zeichen als Zustands-Platzhalter). Der Eintrag steht jetzt linksbündig wie die Nachbarn; der Aktiv-Zustand zeigt ein nachgestelltes Häkchen",
+        scope: "ui",
+        tickets: ["cvii"],
+      },
+    ],
+  },
+  {
+    version: "0.6.405",
+    entries: [
+      {
+        kind: "fix",
+        text: "Umschalten Perspektive ⇄ Orthografisch springt nicht mehr: das Framing gleicht die Bildgröße jetzt um den tatsächlichen Blickmittelpunkt (Orbit-Target) ab statt um das Szenen-AABB-Zentrum — bei geschnittenen/versetzten Teilen wichen die auseinander. Zusätzlich erben die beim Umschalten neu erzeugten Kamera-Controls das letzte Orbit-Target, sodass ein Rotieren direkt nach dem Umschalten weiter um denselben Punkt dreht",
+        scope: "camera",
+        tickets: ["q3bb"],
+      },
+    ],
+  },
+  {
+    version: "0.6.404",
+    entries: [
+      {
+        kind: "feat",
+        text: "Kamera-Pivot wie in Onshape: Beim Start der Rotation wird ein Strahl vom Cursor in die Szene geschossen — trifft er Geometrie, dreht die Ansicht um genau diesen Punkt; trifft er ins Leere, um das Zentrum der sichtbaren Szene. Ersetzt die bisherige AABB-Sticky-Heuristik; man dreht jetzt um das, was unter dem Mauszeiger liegt (Maus + Touch)",
+        scope: "camera",
+        tickets: ["ohtn"],
+      },
+    ],
+  },
+  {
+    version: "0.6.403",
+    entries: [
+      {
+        kind: "fix",
+        text: "Auto-reload-Off-Unterdrückung robuster gemacht: statt sich auf die Listener-Reihenfolge zu verlassen (stopImmediatePropagation, brach wiederholt), umschließt der HMR-Socket-Patch jetzt Vites eigene message/close-Handler direkt und blendet full-reload-Payloads sowie den Server-Restart-Close aus, solange Auto-reload aus ist",
+        scope: "dev",
+        tickets: ["y2b8"],
+      },
+    ],
+  },
+  {
+    version: "0.6.402",
+    entries: [
+      {
+        kind: "fix",
+        text: "Feature-Details-Panel hat keinen Schlagschatten mehr — es ist in der Seitenleiste angedockt, kein schwebendes Fenster. Der Schatten bleibt den verschiebbaren/modalen Dialogen vorbehalten",
+        scope: "ui",
+        tickets: ["35np"],
+      },
+    ],
+  },
+  {
+    version: "0.6.401",
+    entries: [
+      {
+        kind: "fix",
+        text: "Part-AABB-Panel: Schließen-× oben rechts ergänzt und das dekorative cyan-Kästchen vor dem Titel entfernt. Die Anzeige wechselt jetzt korrekt vom Leer-Hinweis auf die Maße des selektierten Parts (zusammen mit dem AABB-Fix ipnx)",
+        scope: "debug",
+        tickets: ["5egt"],
+      },
+    ],
+  },
+  {
+    version: "0.6.400",
+    entries: [
+      {
+        kind: "fix",
+        text: "Rotier-Pivot lag bei Körpern mit einem Gyroid-Intersect wieder im Ursprung: ein space-filling Werkzeug (Gyroid) meldet eine leere AABB, wodurch der Intersect die Body-AABB fälschlich auf leer kollabierte. Ein unbegrenztes Intersect-Werkzeug schränkt die Box jetzt nicht mehr ein — der Pivot folgt wieder dem sichtbaren Part",
+        scope: "kernel",
+        tickets: ["ipnx"],
+      },
+    ],
+  },
+  {
+    version: "0.6.399",
+    entries: [
+      {
+        kind: "fix",
+        text: "Zahlenfelder sind jetzt durchgängig eine relaxte, text-basierte Eingabe (NumberInput) statt des nativen type=number: Zwischenzustände beim Tippen (führendes Minus, ein hängender Punkt, ein Dezimalkomma) sind erlaubt, kein Zurückspringen auf 0, kein aufgezwungener Spinner. Ersetzt alle rohen Number-Felder (Sketch-Werkzeuge, SDF-Plane, Mesher, Export, Sketch-Bemaßung)",
+        scope: "ui",
+      },
+    ],
+  },
+  {
+    version: "0.6.398",
+    entries: [
+      {
+        kind: "feat",
+        text: "Debug ▸ Part-AABB: blendet die achsenparallele Bounding-Box des selektierten Parts als Wireframe im Viewport ein, plus ein Panel mit Größe (X × Y × Z) und Min/Max-Ecke. Nutzt die analytische, pipeline-gepflegte Body-AABB (eng nach Boolean-Schnitten)",
+        scope: "debug",
+      },
+    ],
+  },
+  {
+    version: "0.6.397",
+    entries: [
+      {
+        kind: "fix",
+        text: "Body-AABB wird jetzt analytisch pro Feature durch die Pipeline gepflegt (wie das SDF): eine Remove-Operation zieht die Bound hinter die vom Werkzeug abgedeckte Schicht zurück, ein Intersect klippt sie auf das Werkzeug. Der Rotier-Pivot kommt aus dieser Body-AABB statt aus einer SDF-Abtastung — sauberer und ohne Sampling-Heuristik",
+        scope: "kernel",
+        tickets: ["f88u"],
+      },
+    ],
+  },
+  {
+    version: "0.6.396",
+    entries: [
+      {
+        kind: "fix",
+        text: "Sticky-Pivot-Verhalten wiederhergestellt: solange der Part ins Bild passt, folgt der Rotier-Pivot seinem (jetzt korrekten, engen) Mittelpunkt; ist so weit hineingezoomt, dass der Part nicht mehr ganz ins Bild passt, bleibt der Pivot an seiner letzten passenden Stelle statt auf einen Punkt außerhalb des Bildes zu springen",
+        scope: "viewport",
+        tickets: ["f88u"],
+      },
+    ],
+  },
+  {
+    version: "0.6.395",
+    entries: [
+      {
+        kind: "fix",
+        text: "Rotier-Pivot lag nach Boolean-Schnitten auf dem Zentrum des ursprünglichen Körpers (z.B. der ganzen Kugel) statt auf dem sichtbaren Rest. Der Pivot ist jetzt der Mittelpunkt der engen AABB des tatsächlich gerenderten Solids (aus dem SDF-Feld abgetastet), nicht mehr der konservativen CSG-Hülle",
+        scope: "viewport",
+        tickets: ["f88u"],
+      },
+    ],
+  },
+  {
+    version: "0.6.394",
+    entries: [
+      {
+        kind: "fix",
+        text: "Rotieren dreht jetzt immer um den Mittelpunkt der AABB des angezeigten Parts — die frühere „sticky pivot“-Logik (Pivot bleibt an der letzten passenden Stelle, wenn der Körper nicht ganz ins Bild passt) ist entfallen. Auch nach Verschieben/Zoomen zentriert ein Rotieren wieder auf den Part",
+        scope: "viewport",
+        tickets: ["f88u"],
+      },
+    ],
+  },
+  {
+    version: "0.6.393",
+    entries: [
+      {
+        kind: "fix",
+        text: "Einstellung „Auto-reload on code change = off“ wird wieder respektiert: Vite 8 verschluckt (via Promise.allSettled) den Fehler, mit dem wir bisher den Full-Reload abbrachen — die Seite lud trotzdem neu (und verwarf das ungespeicherte Projekt). Neu wird die Vite-„full-reload“-Nachricht direkt am HMR-Socket abgefangen, bevor Vite sie verarbeitet",
+        scope: "dev",
+        tickets: ["0u31"],
+      },
+    ],
+  },
+  {
+    version: "0.6.392",
+    entries: [
+      {
+        kind: "feat",
+        text: "Mesher-Debug-Ansicht verfeinert: die Normalen-Linien sind jetzt in der SDF-Farbe kodiert (innen/Oberfläche/außen) und haben eine einstellbare Stroke-Width; der Zell-Mittelpunkt ist ein runder Punkt (Durchmesser 3× Stroke-Width) in derselben Farbe. Neu: Checkbox „Near surface only“ mit Distanz-Eingabe blendet nur Octree-Zellen nahe der Oberfläche ein",
+        scope: "debug",
+        tickets: ["lbb3"],
       },
     ],
   },
@@ -37,9 +635,10 @@ export const RELEASE_NOTES: ReleaseNote[] = [
     version: "0.6.391",
     entries: [
       {
-        kind: "perf",
-        text: "Adaptiver Narrow-Band-Mesher (Export „Adaptive Manifold-DC“) nutzt jetzt ebenfalls die zell-lokale CSG-Baum-Spezialisierung: Band-Abstieg und Corner-Sampling werten pro Zelle nur die lokal sichtbaren Boolean-Zweige aus — identische Meshes, deutlich schneller auf Baugruppen",
-        scope: "kernel",
+        kind: "fix",
+        text: "Kamera lässt sich jetzt per Touch bedienen: ein Finger rotiert (nach kurzer Bewegung, ein Tippen selektiert weiterhin), zwei Finger zoomen (Pinch) und schieben (Pan). Vorher fingen Browser die Gesten ab und zoomten/verschoben die ganze Seite — die OnshapeControls hatten keine Touch-Verarbeitung, und dem Viewport fehlte touch-action:none samt user-scalable=no",
+        scope: "viewport",
+        tickets: ["0m1l"],
       },
     ],
   },
@@ -47,9 +646,9 @@ export const RELEASE_NOTES: ReleaseNote[] = [
     version: "0.6.390",
     entries: [
       {
-        kind: "perf",
-        text: "Zell-lokale CSG-Baum-Spezialisierung im Kernel: der B-Rep-Octree prunt pro Zelle Boolean-Zweige, die das Feld dort beweisbar nicht beeinflussen (fidget-artige Tape-Verkürzung auf dem eigenen Baum), und vererbt den verkürzten Baum an die Kindzellen — Octree-Aufbau auf zusammengesetzten Körpern mehrfach schneller (30-Teile-Testbaugruppe: 3,9×), byte-identisches Ergebnis. Zusätzlich eps-bewusstes AABB-Pruning in der Contributor-Evaluation",
-        scope: "kernel",
+        kind: "feat",
+        text: "„Report Issue…“ ist jetzt auch im Haupt-Hamburger-Menü (neben Settings) — so lassen sich Fehler/Wünsche auch im nicht eingeloggten Zustand (Dev-Server) melden, nicht nur über das Benutzermenü",
+        scope: "ui",
       },
     ],
   },

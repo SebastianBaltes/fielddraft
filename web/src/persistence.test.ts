@@ -124,4 +124,48 @@ describe("persistence", () => {
       warn.mockRestore();
     }
   });
+  it("resolves a lazy producer once, at write time", () => {
+    const storage = fakeStorage();
+    let calls = 0;
+    let tick: () => void = () => {};
+    const autosave = createAutoSave({
+      storage,
+      debounceMs: 100,
+      setTimeoutImpl: ((fn: () => void) => {
+        tick = fn;
+        return 1 as unknown as ReturnType<typeof setTimeout>;
+      }) as typeof setTimeout,
+      clearTimeoutImpl: (() => {}) as typeof clearTimeout,
+    });
+    const producer = () => {
+      calls++;
+      return `state-${calls}`;
+    };
+    autosave.schedule(producer);
+    autosave.schedule(producer);
+    autosave.schedule(producer);
+    expect(calls).toBe(0); // never serialized during the burst
+    tick();
+    expect(calls).toBe(1); // exactly once, at the debounced write
+    expect(storage.map.get(STORAGE_KEY)).toBe("state-1");
+  });
+
+  it("re-reads a debounce getter on every schedule (live setting change)", () => {
+    const storage = fakeStorage();
+    const delays: number[] = [];
+    let debounce = 500;
+    const autosave = createAutoSave({
+      storage,
+      debounceMs: () => debounce,
+      setTimeoutImpl: ((_fn: () => void, ms?: number) => {
+        delays.push(ms ?? 0);
+        return 1 as unknown as ReturnType<typeof setTimeout>;
+      }) as typeof setTimeout,
+      clearTimeoutImpl: (() => {}) as typeof clearTimeout,
+    });
+    autosave.schedule("a");
+    debounce = 5000;
+    autosave.schedule("b");
+    expect(delays).toEqual([500, 5000]);
+  });
 });

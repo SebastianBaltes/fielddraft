@@ -1,9 +1,29 @@
-import { lazy, Suspense, useEffect, useRef, useState, useCallback } from "react";
+import {
+  lazy,
+  Suspense,
+  useEffect,
+  useRef,
+  useState,
+  useCallback,
+  useSyncExternalStore,
+} from "react";
 import type { KernelStore, StoreState } from "./store";
+import {
+  getPartAabbVisible,
+  subscribePartAabb,
+  togglePartAabbVisible,
+} from "./partAabbStore";
 import { ReportDialog } from "./ReportDialog";
 import { ExportDialog } from "./ExportDialog";
+import { NumberInput } from "./NumberInput";
 import { SdfPlaneDialog } from "./SdfPlaneDialog";
 import { MesherDialog } from "./MesherDialog";
+import {
+  getDebugDialogs,
+  setMesherDialogOpen,
+  setSdfPlaneDialogOpen,
+  subscribeDebugDialogs,
+} from "./projectDebug";
 
 // Lazy: the dialog pulls the full release-note history (releaseNotes.ts,
 // thousands of lines of data) — that belongs in an on-demand chunk, not in
@@ -93,8 +113,14 @@ export function SettingsMenu({
   const [reportDialogOpen, setReportDialogOpen] = useState(false);
   const [releaseNotesOpen, setReleaseNotesOpen] = useState(false);
   const [exportDialog, setExportDialog] = useState<"stl" | "3mf" | null>(null);
-  const [sdfPlaneOpen, setSdfPlaneOpen] = useState(false);
-  const [mesherOpen, setMesherOpen] = useState(false);
+  // Debug-dialog open flags live in projectDebug (module store), not local
+  // state: a project load restores them (Project.debug), and the revision
+  // keys remount open dialogs onto freshly-restored settings.
+  const debugDialogs = useSyncExternalStore(subscribeDebugDialogs, getDebugDialogs);
+  const partAabbVisible = useSyncExternalStore(
+    subscribePartAabb,
+    getPartAabbVisible,
+  );
   const popoverRef = useRef<HTMLDivElement>(null);
   const buttonRef = useRef<HTMLButtonElement>(null);
 
@@ -309,6 +335,16 @@ export function SettingsMenu({
             Settings…
           </button>
 
+          <button
+            type="button"
+            role="menuitem"
+            className="menu-item"
+            data-testid="menu-report-issue"
+            onClick={() => menuAction(() => setReportDialogOpen(true))}
+          >
+            Report Issue…
+          </button>
+
           <div className="menu-separator" role="separator" />
 
           <button
@@ -340,7 +376,7 @@ export function SettingsMenu({
                 role="menuitem"
                 className="menu-item"
                 data-testid="menu-debug-sdf-plane"
-                onClick={() => menuAction(() => setSdfPlaneOpen(true))}
+                onClick={() => menuAction(() => setSdfPlaneDialogOpen(true))}
               >
                 SDF-Plane…
               </button>
@@ -349,9 +385,21 @@ export function SettingsMenu({
                 role="menuitem"
                 className="menu-item"
                 data-testid="menu-debug-mesher"
-                onClick={() => menuAction(() => setMesherOpen(true))}
+                onClick={() => menuAction(() => setMesherDialogOpen(true))}
               >
                 Mesher…
+              </button>
+              <button
+                type="button"
+                role="menuitemcheckbox"
+                aria-checked={partAabbVisible}
+                className="menu-item"
+                data-testid="menu-debug-part-aabb"
+                onClick={() => menuAction(togglePartAabbVisible)}
+              >
+                {/* Ticket cvii: left-aligned with the sibling items (no leading
+                    char/space); the on-state shows a TRAILING check, never indents. */}
+                Part-AABB{partAabbVisible ? " ✓" : ""}
               </button>
             </div>
           </div>
@@ -369,7 +417,9 @@ export function SettingsMenu({
           if (!file) return;
           // wu2v: read bytes so ZIP `.fdraft` containers load; the byte
           // loader falls back to JSON for legacy plain-text files.
-          file.arrayBuffer().then((buf) => store?.loadProjectFromBytes(buf));
+          // Ticket 4z37: the explicit-open path persists + graduates a
+          // deep-link repro tab so a reload restores the opened project.
+          file.arrayBuffer().then((buf) => store?.openUserProjectFromBytes(buf));
           e.currentTarget.value = "";
         }}
       />
@@ -436,8 +486,18 @@ export function SettingsMenu({
         />
       )}
 
-      {sdfPlaneOpen && <SdfPlaneDialog onClose={() => setSdfPlaneOpen(false)} />}
-      {mesherOpen && <MesherDialog onClose={() => setMesherOpen(false)} />}
+      {debugDialogs.sdfPlaneOpen && (
+        <SdfPlaneDialog
+          key={`sdf-plane-${debugDialogs.revision}`}
+          onClose={() => setSdfPlaneDialogOpen(false)}
+        />
+      )}
+      {debugDialogs.mesherOpen && (
+        <MesherDialog
+          key={`mesher-${debugDialogs.revision}`}
+          onClose={() => setMesherDialogOpen(false)}
+        />
+      )}
     </div>
   );
 }
@@ -822,7 +882,6 @@ function SettingsDialog({
                       onChange={(e) => set("meshAlgorithm", e.target.value as MeshAlgorithm)}
                     >
                       <option value="mdc">MDC</option>
-                      <option value="rfta">RFTA</option>
                       <option value="mt">Marching Tetrahedra</option>
                     </select>
                   </div>
@@ -974,6 +1033,19 @@ function SettingsDialog({
               {import.meta.hot && (
                 <div className="setting-group">
                   <div className="setting-group-title">Developer</div>
+                  <div className="setting-row" data-testid="setting-autosave-debounce">
+                    <span className="setting-label" title="Änderungen (Dokument, Kamera, Debug-Dialoge) markieren das Projekt dirty; gespeichert wird, sobald so lange Ruhe war. Beim Schließen des Tabs wird immer sofort gespeichert.">
+                      Autosave-Debounce (s)
+                    </span>
+                    <NumberInput
+                      className="setting-number"
+                      value={settings.autosaveDebounceSec}
+                      min={0.5}
+                      max={60}
+                      onChange={(v) => set("autosaveDebounceSec", v)}
+                      data-testid="setting-autosave-debounce-input"
+                    />
+                  </div>
                   <div className="setting-row" data-testid="setting-auto-reload">
                     <span className="setting-label" title="Dev only: when off, a code change that Vite can't hot-swap no longer reloads the page — your running session and in-progress project stay alive. Reload manually (F5) to pick the change up.">
                       Auto-reload on code change

@@ -31,6 +31,7 @@ const LS_SHOW_OCTREE_CELLS = "fielddraft.showOctreeCells";
 const LS_SCREEN_SPACE_CSG = "fielddraft.screenSpaceCsg";
 const LS_PERSPECTIVE = "fielddraft.perspective";
 const LS_CONTROLS_PRESET = "fielddraft.controlsPreset";
+const LS_AUTOSAVE_DEBOUNCE = "fielddraft.autosaveDebounceSec";
 /** Shared with main.tsx's HMR guard — kept here so all localStorage keys live
  *  in one place. */
 export const LS_AUTO_RELOAD = "fielddraft.autoReload";
@@ -193,7 +194,7 @@ export function useWorkspaceUnits(): WorkspaceUnits {
 
 export type ThemeChoice = "light" | "dark";
 export type RenderMode = "sdf-vm" | "sdf-deferred" | "mesh" | "brep" | "webgl";
-export type MeshAlgorithm = "mdc" | "rfta" | "mt";
+export type MeshAlgorithm = "mdc" | "mt";
 /** R3F render scheduling:
  *   - "demand": render only when something invalidates the canvas (default,
  *               idle GPU when the scene is static)
@@ -208,7 +209,7 @@ export type FrameLoopMode = "demand" | "always";
 export type BRepEdgeMode = "xray" | "visible" | "none";
 
 const VALID_RENDER_MODES: RenderMode[] = ["sdf-vm", "sdf-deferred", "mesh", "brep", "webgl"];
-const VALID_MESH_ALGORITHMS: MeshAlgorithm[] = ["mdc", "rfta", "mt"];
+const VALID_MESH_ALGORITHMS: MeshAlgorithm[] = ["mdc", "mt"];
 const VALID_BREP_EDGE_MODES: BRepEdgeMode[] = ["xray", "visible", "none"];
 
 export interface SettingsState {
@@ -266,6 +267,28 @@ export interface SettingsState {
    * project) alive across edits — main.tsx's `vite:beforeFullReload` guard
    * reads this. No effect in a production build (no HMR). */
   autoReload: boolean;
+  /** Project autosave debounce, in seconds. Every dirty marker (document
+   * edit, camera move, debug-dialog change) restarts this timer; the project
+   * is written once the state has been quiet for this long (plus a flush on
+   * unload). */
+  autosaveDebounceSec: number;
+}
+
+export const DEFAULT_AUTOSAVE_DEBOUNCE_SEC = 5;
+
+/** Module-level mirror of the debounce so non-React code (the autosave
+ *  handle created at store bootstrap) can read the CURRENT value without a
+ *  settings re-load. Kept in sync by loadSettings/updateSetting. */
+let autosaveDebounceSecCache = DEFAULT_AUTOSAVE_DEBOUNCE_SEC;
+
+export function getAutosaveDebounceMs(): number {
+  return autosaveDebounceSecCache * 1000;
+}
+
+function clampAutosaveDebounceSec(v: unknown): number {
+  return typeof v === "number" && Number.isFinite(v)
+    ? Math.min(60, Math.max(0.5, v))
+    : DEFAULT_AUTOSAVE_DEBOUNCE_SEC;
 }
 
 function validOr<K extends string>(opts: { key: K }[], val: unknown, fallback: K): K {
@@ -331,6 +354,7 @@ const BOOT_SETTING_KEYS: (keyof SettingsState)[] = [
   "perspective",
   "controlsPreset",
   "autoReload",
+  "autosaveDebounceSec",
 ];
 
 /** Stage a settings.json snapshot as the next loadSettings() result (one-shot,
@@ -366,6 +390,7 @@ export function loadSettings(): SettingsState {
   let perspective = false;
   let controlsPreset: ControlsPresetId = DEFAULT_CONTROLS_PRESET;
   let autoReload = true;
+  let autosaveDebounceSec = DEFAULT_AUTOSAVE_DEBOUNCE_SEC;
   try {
     compact = localStorage.getItem(LS_COMPACT) === "true";
     units = parseUnits(localStorage.getItem(LS_UNITS));
@@ -398,15 +423,20 @@ export function loadSettings(): SettingsState {
     const rawPreset = localStorage.getItem(LS_CONTROLS_PRESET);
     if (isControlsPresetId(rawPreset)) controlsPreset = rawPreset;
     autoReload = localStorage.getItem(LS_AUTO_RELOAD) !== "false";
+    const rawDebounce = Number(localStorage.getItem(LS_AUTOSAVE_DEBOUNCE));
+    if (Number.isFinite(rawDebounce) && rawDebounce > 0)
+      autosaveDebounceSec = clampAutosaveDebounceSec(rawDebounce);
   } catch {
     // localStorage may be unavailable
   }
-  const loaded: SettingsState = { compact, units, theme, renderMode, meshAlgorithm, brepEdgeMode, frameLoop, parametricWeave, dragBrepRecompute, liveExtrudeDrag, showEdgePoints, showOctreeCells, screenSpaceCsg, perspective, controlsPreset, autoReload };
+  const loaded: SettingsState = { compact, units, theme, renderMode, meshAlgorithm, brepEdgeMode, frameLoop, parametricWeave, dragBrepRecompute, liveExtrudeDrag, showEdgePoints, showOctreeCells, screenSpaceCsg, perspective, controlsPreset, autoReload, autosaveDebounceSec };
   if (bootOverride) {
     const merged = { ...loaded, ...bootOverride };
     bootOverride = null; // one-shot: only the first read (React mount) honors it
+    autosaveDebounceSecCache = clampAutosaveDebounceSec(merged.autosaveDebounceSec);
     return merged;
   }
+  autosaveDebounceSecCache = autosaveDebounceSec;
   return loaded;
 }
 
@@ -436,6 +466,7 @@ const LS_KEY_BY_SETTING: Partial<Record<keyof SettingsState, string>> = {
   perspective: LS_PERSPECTIVE,
   controlsPreset: LS_CONTROLS_PRESET,
   autoReload: LS_AUTO_RELOAD,
+  autosaveDebounceSec: LS_AUTOSAVE_DEBOUNCE,
 };
 
 /** Set one setting: persists it to localStorage (unless it's session-only)
@@ -446,6 +477,10 @@ export function updateSetting<K extends keyof SettingsState>(
   key: K,
   value: SettingsState[K],
 ): SettingsState {
+  if (key === "autosaveDebounceSec") {
+    value = clampAutosaveDebounceSec(value) as SettingsState[K];
+    autosaveDebounceSecCache = value as number;
+  }
   const lsKey = LS_KEY_BY_SETTING[key];
   if (lsKey !== undefined) {
     saveSetting(lsKey, key === "units" ? JSON.stringify(value) : String(value));

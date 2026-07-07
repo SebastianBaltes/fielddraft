@@ -430,7 +430,7 @@ export class Kernel {
     // the live package.json) means a cosmetic version bump without a rebuild
     // never trips this — only a genuinely stale module does, i.e. a long-open
     // tab whose worker booted before the last `just build-wasm`. Warn loudly
-    // so it's never silent (e.g. MDC and RFTA returning the same triangle
+    // so it's never silent (e.g. two meshers returning the same triangle
     // count because the new mesher code never loaded).
     const wasmV = wasmVersion();
     if (wasmV !== __KERNEL_EXPECTED__) {
@@ -580,6 +580,14 @@ export class Kernel {
 
   bodySdfAabb(i: number): Float32Array {
     return new Float32Array(this.inner.bodySdfAabb(i));
+  }
+
+  /** Analytic world AABB `[minx,miny,minz, maxx,maxy,maxz]` of the body that
+   *  contains `featureId` (the pipeline-maintained tight `Body.aabb`, ticket
+   *  f88u), or `[]` when the feature isn't in any body. Feeds the Debug ▸
+   *  Part-AABB overlay for the selected part. */
+  bodyAabbForFeature(featureId: number): number[] {
+    return Array.from(this.inner.bodyAabbForFeature(featureId));
   }
 
   /** Conservative raymarch step factor (≤1) for this body — the SDF renderer
@@ -1091,6 +1099,11 @@ export class Kernel {
     return this.inner.exportEstimate(cellSizeMm, method);
   }
 
+  /** 3MF archive from raw triangle buffers (server-mesh format conversion). */
+  mesh3mfFromBuffers(positions: Float32Array, indices: Uint32Array): Uint8Array {
+    return this.inner.mesh3mfFromBuffers(positions, indices);
+  }
+
   /** Debug: sample the scene SDF on a `resolution`×`resolution` grid over a
    *  plane at `origin` with `normal`, spanning ±`halfExtent`. Row-major
    *  (v outer, u inner) mm distances — the same field the meshers see. */
@@ -1114,8 +1127,8 @@ export class Kernel {
 
   /** Debug ▸ Mesher: narrow-band adaptive octree over the scene. Returns leaf
    *  cell centres packed `[x,y,z, sdf, nx,ny,nz, cellSize]` (8 floats each). */
-  mesherOctreeSamples(maxDepth: number, bandGuard: number): Float32Array {
-    return this.inner.mesherOctreeSamples(maxDepth, bandGuard);
+  mesherPoints(optionsJson: string): Float32Array {
+    return this.inner.mesherPoints(optionsJson);
   }
 
   /** Mesh + validate body `i`; returns its report JSON ("" without a
@@ -1472,13 +1485,20 @@ export class Kernel {
     );
   }
 
-  /** K9.1: overall scene AABB in mm. */
+  /** K9.1: overall scene AABB in mm (conservative CSG bound). */
   sceneAabb(): { min: number[]; max: number[]; size: number[] } {
     return JSON.parse(this.inner.sceneAabb()) as {
       min: number[];
       max: number[];
       size: number[];
     };
+  }
+
+  /** Ticket f88u: world-space centre of the *visible* solid's tight AABB — the
+   *  orbit pivot. `[x,y,z]`, or `[]` when the kernel can't tighten the field
+   *  (empty / unbounded scene). Memoised kernel-side on the geometry version. */
+  sceneVisibleCenter(): number[] {
+    return Array.from(this.inner.sceneVisibleCenter());
   }
 
   /** K8.7: toggle the suppressed flag of a feature call. */

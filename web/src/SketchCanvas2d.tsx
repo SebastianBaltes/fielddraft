@@ -33,6 +33,7 @@ import {
   subscribe as subscribeQueryPicker,
 } from "./queryPickerBridge";
 import type { KernelStore } from "./store";
+import { NumberInput } from "./NumberInput";
 import type { SketchSessionState } from "./sketchSession";
 import {
   readSketchCamera,
@@ -1381,15 +1382,12 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
           <div className="text-params" data-testid="sketch-text-params">
             <label className="field" title="Text em height (mm)">
               H
-              <input
-                type="number"
-                min="0"
-                step="0.5"
+              <NumberInput
+                min={0}
+                step={0.5}
                 data-testid="sketch-text-height"
                 value={textParams.height}
-                onChange={(e) =>
-                  store.setSketchTextHeight(Number(e.currentTarget.value))
-                }
+                onChange={(n) => store.setSketchTextHeight(n)}
               />
             </label>
             <label className="field" title="Text font">
@@ -1443,15 +1441,12 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
             >
               <label className="field" title={field.title}>
                 {field.label}
-                <input
-                  type="number"
-                  min="0"
-                  step="0.5"
+                <NumberInput
+                  min={0}
+                  step={0.5}
                   data-testid={field.testId}
                   value={field.value}
-                  onChange={(e) =>
-                    field.set(store, Number(e.currentTarget.value))
-                  }
+                  onChange={(n) => field.set(store, n)}
                 />
               </label>
             </div>
@@ -1472,17 +1467,13 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
         >
           <label className="field" title="Number of polygon sides">
             N
-            <input
-              type="number"
-              min="3"
-              step="1"
+            <NumberInput
+              integer
+              min={3}
+              step={1}
               data-testid="sketch-ngon-sides"
               value={Number(session.toolDraft?.sides) || 6}
-              onChange={(e) =>
-                store.setSketchToolDraft({
-                  sides: Math.max(3, Math.round(Number(e.currentTarget.value))),
-                })
-              }
+              onChange={(n) => store.setSketchToolDraft({ sides: n })}
             />
           </label>
           <label
@@ -1520,39 +1511,31 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
           <div className="row">
             <label className="field" title="Pattern instance count">
               N
-              <input
-                type="number"
-                min="1"
-                step="1"
+              <NumberInput
+                integer
+                min={1}
+                step={1}
                 data-testid="sketch-pattern-count"
                 value={transformParams.patternCount}
-                onChange={(e) =>
-                  store.setSketchPatternCount(Number(e.currentTarget.value))
-                }
+                onChange={(n) => store.setSketchPatternCount(n)}
               />
             </label>
             <label className="field" title="Linear pattern spacing (mm)">
               S
-              <input
-                type="number"
-                step="1"
+              <NumberInput
+                step={1}
                 data-testid="sketch-pattern-spacing"
                 value={transformParams.patternSpacing}
-                onChange={(e) =>
-                  store.setSketchPatternSpacing(Number(e.currentTarget.value))
-                }
+                onChange={(n) => store.setSketchPatternSpacing(n)}
               />
             </label>
             <label className="field" title="Circular pattern total angle (deg)">
               A
-              <input
-                type="number"
-                step="15"
+              <NumberInput
+                step={15}
                 data-testid="sketch-pattern-angle"
                 value={transformParams.patternAngle}
-                onChange={(e) =>
-                  store.setSketchPatternAngle(Number(e.currentTarget.value))
-                }
+                onChange={(n) => store.setSketchPatternAngle(n)}
               />
             </label>
           </div>
@@ -1588,14 +1571,11 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
           <div className="row">
             <label className="field" title="Rotation angle (deg)">
               ∠
-              <input
-                type="number"
-                step="15"
+              <NumberInput
+                step={15}
                 data-testid="sketch-rotate-angle"
                 value={transformParams.rotateAngle}
-                onChange={(e) =>
-                  store.setSketchRotateAngle(Number(e.currentTarget.value))
-                }
+                onChange={(n) => store.setSketchRotateAngle(n)}
               />
             </label>
             <button

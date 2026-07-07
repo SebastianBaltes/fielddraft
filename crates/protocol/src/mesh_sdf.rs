@@ -1039,7 +1039,7 @@ fn aabb_point_dist_sq(p: [f32; 3], aabb_min: [f32; 3], aabb_max: [f32; 3]) -> f3
 /// Squared distance from point `p` to triangle `(v0, v1, v2)`, the barycentric
 /// coordinates (s, t) where `closest = v0 + s*(v1-v0) + t*(v2-v0)`, and the
 /// closest point itself. Ericson's region solver; shared with the kernel's
-/// RFTA closest-point BVH.
+/// closest-point BVH.
 pub fn point_triangle(
     p: [f32; 3],
     v0: [f32; 3],

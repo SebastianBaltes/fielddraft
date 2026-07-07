@@ -333,7 +333,10 @@ export interface StoreCoreHooks {
 
 export class StoreCore {
   readonly kernel: Kernel;
-  readonly autosave: AutoSaveHandle;
+  /** Not `readonly`: a deep-link repro tab boots with an inert (noop)
+   *  autosave, but an explicit user "Open project" graduates it to a real
+   *  persisting one (ticket 4z37) via {@link replaceAutosave}. */
+  autosave: AutoSaveHandle;
   readonly listeners = new Set<() => void>();
   /** The current immutable state snapshot. Assigned by the facade
    *  constructor once the initial document is loaded; every mutation
@@ -344,6 +347,14 @@ export class StoreCore {
   constructor(kernel: Kernel, autosave: AutoSaveHandle) {
     this.kernel = kernel;
     this.autosave = autosave;
+  }
+
+  /** Swap the autosave handle (ticket 4z37: a deep-link repro tab upgrades
+   *  its inert autosave to a real one on an explicit user Open). Cancels any
+   *  pending write on the old handle first. */
+  replaceAutosave(next: AutoSaveHandle): void {
+    this.autosave.cancel();
+    this.autosave = next;
   }
 
   /** Late-bind the domain hooks (the facade wires them after the domain
@@ -388,6 +399,18 @@ export class StoreCore {
     try {
       const a = this.kernel.sceneAabb();
       const radius = 0.5 * Math.hypot(a.size[0], a.size[1], a.size[2]);
+      // Tight centre of the *visible* solid for the orbit pivot (ticket f88u).
+      // Memoised kernel-side on the geometry version, so calling it on every
+      // (selection-driven) notify costs nothing between edits. `[]` when the
+      // kernel can't tighten → omit `pivot`, callers fall back to `center`.
+      // Feature-detected so test doubles without the method still publish
+      // their conservative bounds.
+      const vc =
+        typeof this.kernel.sceneVisibleCenter === "function"
+          ? this.kernel.sceneVisibleCenter()
+          : [];
+      const pivot: [number, number, number] | undefined =
+        vc.length === 3 ? [vc[0], vc[1], vc[2]] : undefined;
       publishSceneBounds(
         radius > 0
           ? {
@@ -397,6 +420,7 @@ export class StoreCore {
                 (a.min[2] + a.max[2]) / 2,
               ],
               radius,
+              pivot,
             }
           : null,
       );

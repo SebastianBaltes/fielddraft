@@ -54,9 +54,10 @@ const VERTEX_COLOR = 0xb07820;
  *  spheres looked huge at modelling zoom levels. */
 const VERTEX_SELECT_DIAMETER_PX = 4;
 const VERTEX_HOVER_DIAMETER_PX = 3;
-/** Screen-space radius (in NDC units) within which a vertex marker counts as
- *  hovered. ~3.5% of the viewport half-extent. */
-const VERTEX_PICK_NDC_RADIUS = 0.035;
+/** Pixel radius within which a vertex marker counts as hovered (converted to
+ *  NDC per frame — a fixed NDC radius scales with the window, ticket 7cv2).
+ *  Wider than the edge band so a corner wins over its edges. */
+const VERTEX_PICK_PX = 11;
 
 /**
  * A point marker with a CONSTANT screen-space diameter (ticket 7zs8): a unit
@@ -264,6 +265,7 @@ export function BRepSelectionOverlay({
   const camera = useThree((s) => s.camera);
   const invalidate = useThree((s) => s.invalidate);
   const gl = useThree((s) => s.gl);
+  const viewportSize = useThree((s) => s.size);
   // Fat node materials only render on WebGPU; the classic WebGLRenderer needs a
   // plain LineBasicMaterial or it crashes in resolveIncludes (ticket gsoj).
   const isWebGPU = isWebGPURenderer(gl);
@@ -537,6 +539,8 @@ export function BRepSelectionOverlay({
     if (wantVertex) {
       const v = new THREE.Vector3();
       const camPos = camera.position;
+      // Pixel → NDC (y spans 2 over the viewport height), per frame.
+      const vertexPickNdc = (2 * VERTEX_PICK_PX) / Math.max(1, viewportSize.height);
       for (let bi = 0; bi < bodies.length; bi++) {
         const verts = bodies[bi].vertices;
         for (let vi = 0; vi < verts.length; vi++) {
@@ -548,7 +552,7 @@ export function BRepSelectionOverlay({
           v.project(camera);
           if (!ndcZVisible(camera, v.z)) continue;
           const d = Math.hypot(v.x - ndc.x, v.y - ndc.y);
-          if (d > VERTEX_PICK_NDC_RADIUS) continue;
+          if (d > vertexPickNdc) continue;
           if (!resolvedVertex || d < resolvedVertex.ndcDist) {
             resolvedVertex = { bi, vi, idHash: verts[vi].idHash, ndcDist: d };
           }

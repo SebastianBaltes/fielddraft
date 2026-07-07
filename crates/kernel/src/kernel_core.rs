@@ -14,7 +14,6 @@ use crate::dc::Mesh;
 use crate::dc;
 use crate::features;
 use crate::mt;
-use crate::rfta;
 use crate::script_runtime;
 use crate::sdf_compiler;
 /// Maximum undo / redo depth. The whole document is snapshotted per
@@ -67,7 +66,7 @@ pub struct Kernel {
     /// Default `true` so every Rust test keeps producing real
     /// meshes without needing to opt in.
     pub(crate) sync_meshing: bool,
-    /// Mesh algorithm selection: 0 = MDC (default), 1 = RFTA.
+    /// Mesh algorithm selection: 0 = MDC (default), 2 = Marching Tets.
     pub(crate) mesh_algorithm: u8,
     /// Milestone-1 parametric weaving: when on, pure grundforms get an exact
     /// analytic B-Rep (CSG branch-pair seeds) instead of an octree-sampled one.
@@ -357,7 +356,6 @@ impl Kernel {
         let prim_refs: std::collections::HashMap<u32, &Primitive> =
             prims.iter().map(|(k, v)| (*k, v)).collect();
         match self.mesh_algorithm {
-            1 => rfta::reach_for_the_arcs(&bounded, resolution),
             2 => mt::marching_tetrahedra(&bounded, resolution),
             _ => dc::dual_contour_with_primitives(&bounded, resolution, &prim_refs),
         }

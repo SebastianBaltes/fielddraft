@@ -19,9 +19,13 @@ export type ExportFormat = "stl" | "3mf";
  *    (fidget). Topology-safe subdivision (no Lipschitz assumption) and
  *    QEF sharp-edge preservation for closed-form solids; watertight on
  *    smooth solids, a few non-manifold edges at sharp/dense feature
- *    edges. */
+ *    edges.
+ *  - `cgal-server` — server-side CGAL Mesh_3 via the backend job queue
+ *    (plan CGAL-SERVER-MESHING): watertight, 2-manifold, exact protected
+ *    B-Rep edges. Needs a server-saved project. */
 export type MeshMethod =
   | "adaptive"
+  | "cgal-server"
   | "surface-nets"
   | "surface-nets-builtin"
   | "interval-dc"
@@ -31,8 +35,7 @@ export type MeshMethod =
   | "dual-marching-cubes"
   | "extended-marching-cubes"
   | "macet"
-  | "manifold-dc"
-  | "rfta";
+  | "manifold-dc";
 
 /** Per-body slice of the export report (kernel: `BodyExportReport`,
  *  with the `MeshValidation` fields flattened in). */
@@ -69,7 +72,7 @@ export interface ExportBodyReport {
    *  (fidget). */
   interval_dc: boolean;
   /** Short human label of the mesher route (e.g. "uniform DC 0.5 mm",
-   *  "marching cubes 0.5 mm"); empty falls back to the flags. */
+   *  "marching tets 0.5 mm"); empty falls back to the flags. */
   route: string;
   /** Triangle count of the dense Surface Nets mesh before decimation
    *  (0 off that route) — the report shows the reduction. */
@@ -102,7 +105,7 @@ export interface ExportBodyEstimate {
 
 /** Pre-mesh estimate for the export dialog (kernel: `ExportEstimate`).
  *  Only meaningful for dense-grid methods (`dense: true`); the octree /
- *  parametric / RFTA routes return `dense: false` and the dialog shows
+ *  parametric routes return `dense: false` and the dialog shows
  *  nothing. */
 export interface ExportEstimate {
   dense: boolean;

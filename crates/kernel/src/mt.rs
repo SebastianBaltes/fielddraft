@@ -1,7 +1,7 @@
 //! Marching Tetrahedra mesher.
 //!
-//! A third surface-extraction option next to Manifold Dual Contouring
-//! ([`crate::mdc`]) and Reach For The Arcs ([`crate::rfta`]). The grid is
+//! A surface-extraction option next to Manifold Dual Contouring
+//! ([`crate::mdc`]). The grid is
 //! the same uniform, AABB-expanded voxel lattice the DC path uses, but
 //! each cube is split into six tetrahedra sharing the `0–6` body diagonal
 //! and the zero level set is extracted per tetrahedron.

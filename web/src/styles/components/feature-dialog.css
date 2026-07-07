@@ -15,7 +15,9 @@
   background: var(--color-bg-elevated);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-md);
-  box-shadow: var(--shadow-dialog);
+  /* Ticket 35np: the Feature-Details body is docked in the sidebar, not a
+   * floating window — no drop shadow. The shadow belongs to movable / modal
+   * dialogs only (SDF-Plane, Mesher, Export, Report — their own classes). */
   padding: var(--space-3);
   gap: var(--space-3);
   font-size: var(--fs-base);
