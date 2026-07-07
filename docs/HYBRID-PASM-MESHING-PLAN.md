@@ -184,9 +184,15 @@ Constraint-Polygon.** Begründung gegen die Alternativen:
     rauschen an Naht-Slivern) und 0,25·h-Boundary-Clearance für Partikel
     (exakt-auf-Constraint splittet einseitig und öffnet die Kette).
     Zylinder end-to-end geschlossen/2-Manifold.
-  - *P4b offen*: Revolve-Träger (Welt→v via Nächster-Punkt-Projektion auf
-    die offset-korrigierte Profilkette; Chart-Faltung konkaver Offsets
-    beachten), Polkappen-Fächer, Anisotropie, Gyroid-Blätter.
+  - *P4b umgesetzt (v0.6.436)*: Revolve-Träger — v = Bogenlänge der
+    Nächster-Punkt-Projektion auf die offset-korrigierte Profilkette
+    (`ssi::profile_pieces` → (r,y)-Polyline). Punkte AUF der Fläche
+    projizieren eindeutig; Faltungs-Guard (v-Sprung > ¼ Kettenlänge →
+    Face bleibt unvermascht). Rohr-Meilenstein: Rechteck-Revolve ∩ Box
+    end-to-end wasserdicht (Torus, Euler=0); Außen-/Innenwand desselben
+    Branch trennen sich rein übers Chart, Deckel als Annuli.
+  - *P4c offen*: Polkappen-Fächer (Windung-1-Loops), Anisotropie,
+    Gyroid-Blätter (Tessellated-Faces).
 - **P5 — Export-Integration**: Ersetzt MT/MDC im Export-Dialog als
   Qualitätsstufe „CAD (kantenexakt)"; Survey-Harness
   (ticket_survey_all_methods) erweitert um Hausdorff/Winkel-Histogramm wie
