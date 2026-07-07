@@ -47,6 +47,21 @@ use crate::brep::{BRep, Edge, EdgeGeometry, HermiteSample, Vertex, VertexId};
 use crate::csg::BranchId;
 use crate::bvh::BoundedCsg;
 
+/// Canonical `(lo, hi)` signature key of a branch pair — the identity the
+/// Stufe-C octree fill matches edges on.
+fn pair_key(a: BranchId, b: BranchId) -> (u32, u32) {
+    let (x, y) = (a.as_u32(), b.as_u32());
+    if x <= y { (x, y) } else { (y, x) }
+}
+
+/// A partial seed wireframe plus the canonical signatures of the transition
+/// seams `Partial` mode had to skip — the work list for the Stufe-C octree
+/// fill ([`weave_branch_seeds_hybrid`]).
+struct SeedWireframe {
+    brep: BRep,
+    skipped: std::collections::HashSet<(u32, u32)>,
+}
+
 /// How `build_seed_wireframe` reacts to a branch pair / corner the analytic
 /// pipeline cannot resolve cleanly.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -86,9 +101,11 @@ pub fn weave_branch_seeds(body: &BoundedCsg) -> Option<BRep> {
 ///
 /// The result is a *partial*, non-watertight B-Rep: it carries the parametric
 /// single-operand and analytic-boundary edges the user wants to see, while the
-/// genuine transition zones simply have no edges (the octree would be needed to
-/// fill those — Stufe C, not implemented here). Returns `None` only for
-/// out-of-scope bodies or when not a single seam resolved (→ whole-body octree).
+/// genuine transition zones simply have no edges. Consumers that may build an
+/// octree should prefer [`weave_branch_seeds_hybrid`] (Stufe C), which fills
+/// exactly those zones; this partial entry remains for octree-forbidden bodies
+/// (space-filling TPMS). Returns `None` only for out-of-scope bodies or when
+/// not a single seam resolved (→ whole-body octree).
 pub fn weave_branch_seeds_partial(body: &BoundedCsg) -> Option<BRep> {
     if !scope_supported_partial(body) {
         return None;
@@ -99,6 +116,135 @@ pub fn weave_branch_seeds_partial(body: &BoundedCsg) -> Option<BRep> {
         return None;
     }
     Some(finish_weave(wireframe, body))
+}
+
+/// **Hybrid** seed weave — Stufe C (`docs/PARAMETRIC-WEAVING-PLAN.md`): the
+/// graceful partial weave keeps every analytically resolvable seam at
+/// parametric precision, and the transition seams it had to skip are filled
+/// from the octree wireframe — only the skipped pairs' edges are consumed,
+/// their endpoint vertices welded into the seed wireframe's corners. The
+/// merged wireframe then assembles through the shared [`finish_weave`], so
+/// the result is a COMPLETE B-Rep (box edges exact, torus transition seams
+/// octree-quality) instead of the partial route's open shell.
+///
+/// Any analytic leftovers of a skipped pair (fragments from seeds of the same
+/// pair that did trace before the skip) are dropped first — a skipped pair is
+/// owned wholesale by the octree, never stitched half-and-half.
+///
+/// `min_cell` is the octree resolution the caller would have used for the
+/// full octree fallback ([`crate::body::topology_min_cell_size`]). Returns
+/// `None` exactly like [`weave_branch_seeds_partial`] (out-of-scope body or
+/// nothing resolved → whole-body octree).
+pub fn weave_branch_seeds_hybrid(body: &BoundedCsg, min_cell: f32) -> Option<BRep> {
+    if !scope_supported_partial(body) {
+        return None;
+    }
+    let SeedWireframe { mut brep, skipped } =
+        build_seed_wireframe_tracked(body, SeedMode::Partial)?;
+    if brep.edges.is_empty() && brep.vertices.is_empty() {
+        return None;
+    }
+    if skipped.is_empty() {
+        return Some(finish_weave(brep, body));
+    }
+
+    drop_pair_edges(&mut brep, &skipped);
+
+    let octree = crate::brep::octree::Octree::build(body, min_cell);
+    let oct = crate::brep::edge_walker::build_wireframe(body, &octree);
+    let weld = crate::brep::edge_walker::VERTEX_CLUSTER_GAP_FACTOR
+        * crate::brep::edge_walker::max_vertex_cell_size(&octree);
+    merge_octree_fill(&mut brep, &oct, &skipped, weld);
+
+    Some(finish_weave(brep, body))
+}
+
+/// Remove every edge whose canonical signature is in `skipped`, compacting
+/// away vertices that lose all references (the arena remap keeps the kept
+/// edges' endpoint ids valid).
+fn drop_pair_edges(brep: &mut BRep, skipped: &std::collections::HashSet<(u32, u32)>) {
+    let kept: Vec<Edge> = brep
+        .edges
+        .drain(..)
+        .filter(|e| !skipped.contains(&pair_key(e.signature.0, e.signature.1)))
+        .collect();
+    let mut used = vec![false; brep.vertices.len()];
+    for e in &kept {
+        if let Some(v) = e.start {
+            used[v.0 as usize] = true;
+        }
+        if let Some(v) = e.end {
+            used[v.0 as usize] = true;
+        }
+    }
+    let old: Vec<Vertex> = brep.vertices.drain(..).collect();
+    let mut remap: Vec<Option<VertexId>> = vec![None; old.len()];
+    for (i, v) in old.into_iter().enumerate() {
+        if used[i] {
+            remap[i] = Some(brep.add_vertex(v));
+        }
+    }
+    for mut e in kept {
+        e.start = e.start.and_then(|v| remap[v.0 as usize]);
+        e.end = e.end.and_then(|v| remap[v.0 as usize]);
+        brep.add_edge(e);
+    }
+}
+
+/// Append the octree wireframe's edges of the `skipped` signatures to `brep`,
+/// welding their endpoint vertices into existing seed corners within `weld`
+/// (branch sets union — the seed corner learns the filled pair's branches, so
+/// its final branch set matches what a full octree weave would carry there).
+fn merge_octree_fill(
+    brep: &mut BRep,
+    oct: &BRep,
+    skipped: &std::collections::HashSet<(u32, u32)>,
+    weld: f64,
+) {
+    let mut vmap: HashMap<u32, VertexId> = HashMap::new();
+    // Deterministic fill order: octree arena order is deterministic per body.
+    for e in &oct.edges {
+        if !skipped.contains(&pair_key(e.signature.0, e.signature.1)) {
+            continue;
+        }
+        let mut map_end = |end: Option<VertexId>, brep: &mut BRep| -> Option<VertexId> {
+            let vid = end?;
+            if let Some(&mapped) = vmap.get(&vid.0) {
+                return Some(mapped);
+            }
+            let ov = &oct.vertices[vid.0 as usize];
+            let mut best: Option<(f64, VertexId)> = None;
+            for (i, v) in brep.vertices.iter().enumerate() {
+                let d = dist3(v.position, ov.position);
+                if d <= weld && best.is_none_or(|(bd, _)| d < bd) {
+                    best = Some((d, VertexId(i as u32)));
+                }
+            }
+            let mapped = match best {
+                Some((_, id)) => {
+                    // Union the branch sets (canonicalised by Vertex::new).
+                    let existing = &brep.vertices[id.0 as usize];
+                    let mut branches = existing.branches.clone();
+                    branches.extend(ov.branches.iter().copied());
+                    brep.vertices[id.0 as usize] =
+                        Vertex::new(existing.position, branches);
+                    id
+                }
+                None => brep.add_vertex(ov.clone()),
+            };
+            vmap.insert(vid.0, mapped);
+            Some(mapped)
+        };
+        let start = map_end(e.start, brep);
+        let end = map_end(e.end, brep);
+        brep.add_edge(Edge::new(
+            e.geometry.clone(),
+            e.signature.0,
+            e.signature.1,
+            start,
+            end,
+        ));
+    }
 }
 
 /// The scope-gated *raw* seed wireframe (deduplicated corner vertices + signed
@@ -227,6 +373,11 @@ fn group_diameter(all: &[[f64; 3]], members: &[usize]) -> f64 {
 /// Any condition the analytic path cannot lift cleanly returns `None` so the
 /// caller falls back to the whole-body octree weave.
 fn build_seed_wireframe(body: &BoundedCsg, mode: SeedMode) -> Option<BRep> {
+    build_seed_wireframe_tracked(body, mode).map(|sw| sw.brep)
+}
+
+fn build_seed_wireframe_tracked(body: &BoundedCsg, mode: SeedMode) -> Option<SeedWireframe> {
+    let mut skipped: std::collections::HashSet<(u32, u32)> = std::collections::HashSet::new();
     // 1. Seed every candidate branch pair. An unresolved pair is one whose field
     //    we cannot lift analytically (missing half-space / SSI `Unsupported`) —
     //    the analytic route cannot trace it. In `Strict` mode the WHOLE body goes
@@ -237,6 +388,9 @@ fn build_seed_wireframe(body: &BoundedCsg, mode: SeedMode) -> Option<BRep> {
     let SeedResult { seeds, unresolved } = seed_branch_pairs(body);
     if mode == SeedMode::Strict && !unresolved.is_empty() {
         return None;
+    }
+    for pair in &unresolved {
+        skipped.insert(pair_key(pair.a, pair.b));
     }
 
     // 2. The per-branch field ingredients, built once and shared across seeds.
@@ -489,6 +643,7 @@ fn build_seed_wireframe(body: &BoundedCsg, mode: SeedMode) -> Option<BRep> {
                 branch_field(&halfspaces, &leaf_map, b.as_u32()),
             ) else {
                 if mode == SeedMode::Partial {
+                    skipped.insert(pair_key(a, b));
                     continue;
                 }
                 return None;
@@ -528,6 +683,7 @@ fn build_seed_wireframe(body: &BoundedCsg, mode: SeedMode) -> Option<BRep> {
                 && (matches!(traced.ends.0, EdgeEnd::Open) || matches!(traced.ends.1, EdgeEnd::Open))
             {
                 if mode == SeedMode::Partial {
+                    skipped.insert(pair_key(a, b));
                     continue;
                 }
                 return None;
@@ -708,8 +864,13 @@ fn build_seed_wireframe(body: &BoundedCsg, mode: SeedMode) -> Option<BRep> {
                         }
                         // Cannot place this corner. Strict → whole-body octree;
                         // partial → skip just this cluster (its incident edges
-                        // emit unbounded on the affected side).
+                        // emit unbounded on the affected side; the hybrid fill
+                        // re-owns their pairs from the octree).
                         if mode == SeedMode::Partial {
+                            for &m in &group {
+                                let (ri, _) = trim_refs[m];
+                                skipped.insert(pair_key(records[ri].a, records[ri].b));
+                            }
                             continue;
                         }
                         return None;
@@ -744,6 +905,10 @@ fn build_seed_wireframe(body: &BoundedCsg, mode: SeedMode) -> Option<BRep> {
                     // Genuine phantom corner. Strict → whole-body octree;
                     // partial → skip just this cluster.
                     if mode == SeedMode::Partial {
+                        for &m in &group {
+                            let (ri, _) = trim_refs[m];
+                            skipped.insert(pair_key(records[ri].a, records[ri].b));
+                        }
                         continue;
                     }
                     return None;
@@ -974,7 +1139,7 @@ fn build_seed_wireframe(body: &BoundedCsg, mode: SeedMode) -> Option<BRep> {
         }
     }
 
-    Some(brep)
+    Some(SeedWireframe { brep, skipped })
 }
 
 #[cfg(test)]
@@ -1705,6 +1870,107 @@ mod tests {
         );
         let body = BoundedCsg::from_csg(&csg);
         assert_seed_matches_octree(&body, 0.5);
+    }
+
+    #[test]
+    fn hybrid_seed_fills_skipped_seams_from_the_octree() {
+        // Stufe C on the Stufe-A/B scenario: box ∪ torus — the torus tube
+        // pokes out of the box's ±x/±z faces, every box×torus cross pair is
+        // analytically unresolvable (`unresolved`). The PARTIAL weave keeps
+        // the box's exact wireframe but has NO transition seams (open shell);
+        // the HYBRID weave must fill exactly those from the octree.
+        let body = BoundedCsg::from_csg(&CsgNode::Union(
+            Box::new(box_leaf(1, [0.0, 0.0, 0.0], [10.0, 10.0, 10.0])),
+            Box::new(CsgNode::Leaf {
+                id: FeatureId::from_u32(2),
+                primitive: Primitive::Torus {
+                    center: [0.0, 0.0, 0.0],
+                    major_radius: 8.0,
+                    minor_radius: 3.0,
+                },
+            }),
+        ));
+        // Premise: partial has zero cross-signature seams.
+        let partial = weave_branch_seeds_partial(&body).expect("partial weaves");
+        let cross = |brep: &BRep| {
+            brep.edges
+                .iter()
+                .filter(|e| {
+                    e.signature.0.feature_id() != e.signature.1.feature_id()
+                })
+                .count()
+        };
+        assert_eq!(cross(&partial), 0, "premise: partial skips all transition seams");
+
+        let min_cell = 0.5;
+        let hybrid = weave_branch_seeds_hybrid(&body, min_cell)
+            .expect("hybrid weaves whenever partial does");
+
+        // The box's exact analytic edges survive at parametric precision …
+        let box_edges = hybrid
+            .edges
+            .iter()
+            .filter(|e| e.signature.0.feature_id() == 1 && e.signature.1.feature_id() == 1)
+            .count();
+        assert!(
+            box_edges >= 12,
+            "the box's analytic edges must survive the fill, got {box_edges}"
+        );
+        for v in hybrid.vertices.iter().filter(|v| {
+            v.branches.iter().all(|b| b.feature_id() == 1) && v.branches.len() == 3
+        }) {
+            for &c in &v.position {
+                assert!(
+                    (c.abs() - 10.0).abs() < 1e-3,
+                    "box corner coord {c} not ±10 (analytic precision lost in the merge)"
+                );
+            }
+        }
+
+        // … and the transition seams are now present, filled from the octree.
+        assert!(
+            cross(&hybrid) > 0,
+            "hybrid must carry box×torus transition seams (octree fill)"
+        );
+        // Structural sanity of the merged arena.
+        assert_eq!(hybrid.validate(), Ok(()), "merged B-Rep must be referentially sound");
+        // Closedness metric: edges used by exactly two face loops. The
+        // partial (open-shell) result leaves every pierced box face without
+        // its seam ring — the fill must add closed seam edges, not just any
+        // edges.
+        let closed_edges = |brep: &BRep| {
+            let mut uses = vec![0usize; brep.edges.len()];
+            for f in &brep.faces {
+                for &(eid, _) in f
+                    .outer
+                    .edges
+                    .iter()
+                    .chain(f.inner.iter().flat_map(|l| l.edges.iter()))
+                {
+                    uses[eid.0 as usize] += 1;
+                }
+            }
+            uses.iter().filter(|&&u| u == 2).count()
+        };
+        assert!(
+            closed_edges(&hybrid) > closed_edges(&partial),
+            "hybrid ({}) must close more edges than partial ({})",
+            closed_edges(&hybrid),
+            closed_edges(&partial)
+        );
+
+        // Quality floor: no worse than the full octree fallback this body
+        // previously took. (The tessellated torus face's ring winding is a
+        // pre-existing limitation shared by BOTH routes — the hybrid must
+        // not add violations beyond it.)
+        let octree = crate::brep::octree::Octree::build(&body, min_cell);
+        let full = crate::brep::weaving::weave(&body, &octree);
+        assert!(
+            hybrid.manifold_violations().len() <= full.manifold_violations().len(),
+            "hybrid ({}) must not exceed the octree route's violations ({})",
+            hybrid.manifold_violations().len(),
+            full.manifold_violations().len()
+        );
     }
 
     #[test]

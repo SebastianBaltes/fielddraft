@@ -220,22 +220,27 @@ impl Body {
                     .then(|| crate::brep::seed_weaver::weave_branch_seeds_partial(&bounded))
                     .flatten()
                     .unwrap_or_default()
-            } else if let Some(partial) = parametric
-                .then(|| crate::brep::seed_weaver::weave_branch_seeds_partial(&bounded))
+            } else if let Some(hybrid) = parametric
+                .then(|| {
+                    crate::brep::seed_weaver::weave_branch_seeds_hybrid(
+                        &bounded,
+                        topology_min_cell_size(&self.aabb),
+                    )
+                })
                 .flatten()
             {
-                // Graceful branch-seed weave (Stufe A+B, tickets 7vbe/qmvn): the
-                // strict `weave_parametric` above bailed on a single unresolvable
-                // transition seam, which previously threw the WHOLE body onto the
-                // octree (degenerate/coarse). Instead, keep every analytically
-                // resolvable edge — each operand's own edges AND the analytic
-                // Boolean boundary (SSI cross-pair) edges — and skip only the
-                // genuine transition seams. The result is a *partial* (non-
-                // watertight) B-Rep that still shows the parametric single bodies;
-                // only the transition zones lack edges (filling them locally from
-                // the octree is Stufe C, not yet implemented). Returns `None` for
-                // out-of-scope bodies and when nothing resolved → octree below.
-                partial
+                // Hybrid branch-seed weave (Stufe A+B+C, tickets 7vbe/qmvn +
+                // PARAMETRIC-WEAVING-PLAN Stufe C): the strict `weave_parametric`
+                // above bailed on an unresolvable transition seam. Every
+                // analytically resolvable edge is kept at parametric precision —
+                // each operand's own edges AND the analytic Boolean boundary
+                // (SSI cross-pair) edges — and ONLY the genuinely unresolvable
+                // seams are filled from the octree wireframe (their pairs' edges
+                // consumed, endpoint vertices welded into the seed corners). The
+                // result is a complete B-Rep instead of the earlier partial open
+                // shell. Returns `None` for out-of-scope bodies and when nothing
+                // resolved → whole-body octree below.
+                hybrid
             } else {
                 let min_cell = topology_min_cell_size(&self.aabb);
                 let octree = Octree::build(&bounded, min_cell);

@@ -939,7 +939,7 @@ struct DedupVertex {
 /// must span several cells; the macroscopic separation between two genuinely
 /// distinct corners that happen to share a branch-set (a sphere crossing one box
 /// edge twice — DL-74) is far larger, so they never get merged.
-const VERTEX_CLUSTER_GAP_FACTOR: f64 = 4.0;
+pub(crate) const VERTEX_CLUSTER_GAP_FACTOR: f64 = 4.0;
 
 /// Deduplicate the Phase-3 vertices by branch-set **and spatial cluster**,
 /// averaging positions within each cluster. Many `Vertex` cells around one
@@ -1084,7 +1084,7 @@ fn merge_refined_by_branch_set(dedup: Vec<DedupVertex>, gap: f64) -> Vec<DedupVe
 /// at which corners are tagged. Drives the vertex-dedup cluster gap (DL-74).
 /// `0.0` when the body has no vertex cells (a lone closed surface), which keeps
 /// dedup in its single-cluster mode.
-fn max_vertex_cell_size(octree: &Octree) -> f64 {
+pub(crate) fn max_vertex_cell_size(octree: &Octree) -> f64 {
     octree
         .vertex_cells()
         .map(|c| {

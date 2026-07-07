@@ -24,6 +24,16 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.455",
+    entries: [
+      {
+        kind: "feat",
+        scope: "kernel",
+        text: "Hybrid-Weave (Seed-Weaver Stufe C): Körper, deren Übergangs-Seams analytisch nicht auflösbar sind (z. B. Box ∪ Torus), bekommen jetzt ein VOLLSTÄNDIGES B-Rep statt einer offenen Schale — die parametrisch exakten Kanten der Operanden bleiben erhalten, nur die übersprungenen Seam-Paare werden aus dem Octree-Wireframe nachgefüllt (Endpunkte in die Seed-Ecken verschweißt, Branch-Sets vereinigt). Qualitätsboden: nie schlechter als der bisherige Voll-Octree-Fallback.",
+      },
+    ],
+  },
+  {
     version: "0.6.454",
     entries: [
       {
