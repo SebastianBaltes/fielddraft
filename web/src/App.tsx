@@ -355,6 +355,7 @@ function AppShell({ account }: { account: UseAccount }) {
                 settings={settings}
                 onSettingsChange={setSettings}
                 inProject={inProject}
+                onEnterProject={() => account.enterProject()}
               />
               {/* Ticket C: the current project's name next to the logo — click
                   to rename inline (modeling view only). */}

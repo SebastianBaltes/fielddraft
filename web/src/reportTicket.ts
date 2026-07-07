@@ -121,16 +121,46 @@ export interface TicketPayload {
 export async function captureWindow(): Promise<string | null> {
   if (typeof document === "undefined" || !document.body) return null;
   try {
-    return await toPng(document.body, {
+    const shot = toPng(document.body, {
       // Drop the report modal (overlay + backdrop) from the snapshot.
-      filter: (node) =>
-        !(
+      filter: (node) => {
+        if (
           node instanceof HTMLElement &&
           node.classList?.contains("fd-report-overlay")
-        ),
+        ) {
+          return false;
+        }
+        // Ticket ddd6d8: a broken <img> (e.g. the dashboard's 404 project
+        // thumbnails) hangs html-to-image's clone step forever — its load
+        // event never fires. Skip anything not successfully decoded.
+        if (
+          node instanceof HTMLImageElement &&
+          (!node.complete || node.naturalWidth === 0)
+        ) {
+          return false;
+        }
+        // Ticket ddd6d8: `hidden` subtrees (the modeling workspace stays
+        // mounted behind the dashboard) are invisible anyway, and cloning
+        // their WebGPU canvas stalls the capture. Skip them wholesale.
+        if (node instanceof HTMLElement && node.hidden) {
+          return false;
+        }
+        return true;
+      },
       pixelRatio: window.devicePixelRatio || 1,
+      // Ticket ddd6d8: font embedding walks every stylesheet and re-fetches
+      // font resources — html-to-image hangs indefinitely on some views
+      // (Projects dashboard), leaving "Attach screenshot" permanently
+      // unavailable. The UI uses system fonts, so nothing is lost.
+      skipFonts: true,
       cacheBust: true,
     });
+    // Hard cap as a safety net: a hung capture must degrade to "capture
+    // unavailable", not block forever.
+    const timeout = new Promise<null>((resolve) =>
+      setTimeout(() => resolve(null), 8000),
+    );
+    return await Promise.race([shot, timeout]);
   } catch {
     return null;
   }

@@ -24,6 +24,29 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.450",
+    entries: [
+      {
+        kind: "fix",
+        scope: "ui",
+        tickets: ["3d0f20de"],
+        text: "„Open…“ funktioniert jetzt auch von der Projekt-Übersicht aus: Das gewählte lokale .fdraft wird geladen und die App wechselt in die Modellier-Ansicht. Bisher lud die Datei unsichtbar in den Hintergrund-Workspace („es passiert nichts“); außerdem wird vorher die Server-Bindung gelöst, damit der Autosave das gebundene Server-Projekt nicht mit dem lokalen File überschreibt.",
+      },
+      {
+        kind: "fix",
+        scope: "tickets",
+        tickets: ["ddd6d897"],
+        text: "„Attach screenshot“ geht jetzt auch auf der Projekt-Übersicht. Der Capture hing bisher endlos an zwei Stellen: an den (noch leeren) 404-Projekt-Thumbnails und am Klonen der unsichtbar mitgemounteten 3D-Canvas. Kaputte Bilder und hidden-Bereiche werden jetzt aus dem Capture gefiltert, dazu ein 8-Sekunden-Sicherheitslimit.",
+      },
+      {
+        kind: "feat",
+        scope: "tickets",
+        tickets: ["582dfe62"],
+        text: "Angehängte Bilder in der Issue-Detailansicht zeigen jetzt ein Preview-Thumbnail (wie der Fenster-Screenshot) statt eines reinen Datei-Chips.",
+      },
+    ],
+  },
+  {
     version: "0.6.449",
     entries: [
       {

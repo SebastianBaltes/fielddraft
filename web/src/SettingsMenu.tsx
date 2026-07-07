@@ -100,10 +100,14 @@ interface SettingsMenuProps {
   state: StoreState | null;
   settings: SettingsState;
   onSettingsChange: (next: SettingsState) => void;
-  /** Ticket 376bf4: document-scoped actions (New/Open/Save/Import/Export/
+  /** Ticket 376bf4: document-scoped actions (New/Save/Import/Export/
    *  Share/Undo/Redo/Debug) only make sense in the modeling view — on the
    *  dashboard they'd operate on the invisible background workspace. */
   inProject: boolean;
+  /** Ticket 3d0f20: "Open…" DOES work from the dashboard — it loads the
+   *  local `.fdraft` as an unbound project and this callback switches the
+   *  app into the modeling view (otherwise the load happens invisibly). */
+  onEnterProject: () => void;
 }
 
 export function SettingsMenu({
@@ -112,6 +116,7 @@ export function SettingsMenu({
   settings,
   onSettingsChange,
   inProject,
+  onEnterProject,
 }: SettingsMenuProps) {
   const [open, setOpen] = useState(false);
   const [settingsDialogOpen, setSettingsDialogOpen] = useState(false);
@@ -234,7 +239,6 @@ export function SettingsMenu({
             role="menuitem"
             className="menu-item"
             data-testid="menu-open"
-            disabled={!inProject}
             onClick={() =>
               menuAction(() =>
                 document
@@ -412,7 +416,19 @@ export function SettingsMenu({
           // loader falls back to JSON for legacy plain-text files.
           // Ticket 4z37: the explicit-open path persists + graduates a
           // deep-link repro tab so a reload restores the opened project.
-          file.arrayBuffer().then((buf) => store?.openUserProjectFromBytes(buf));
+          // Ticket 3d0f20: from the dashboard, detach the (invisibly
+          // rebound) server project BEFORE loading — the local file is not
+          // that project, and the load-time autosave flush would otherwise
+          // PATCH the file's content over it. Then enter the modeling view;
+          // previously the load happened without a view switch ("nothing
+          // happens").
+          file.arrayBuffer().then((buf) => {
+            if (!store) return;
+            if (!inProject) store.detachServerProject();
+            if (store.openUserProjectFromBytes(buf) && !inProject) {
+              onEnterProject();
+            }
+          });
           e.currentTarget.value = "";
         }}
       />

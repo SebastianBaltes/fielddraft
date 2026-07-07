@@ -529,11 +529,13 @@ function Artifacts({
   const [loadingFdraft, setLoadingFdraft] = useState(false);
   if (artifacts.length === 0) return null;
 
-  const screenshots = artifacts.filter((a) => a.kind === "screenshot");
+  // Ticket 582dfe: image ATTACHMENTS get the same preview-thumb treatment as
+  // the window screenshot — only non-image files stay as download chips.
+  const isImage = (a: TicketArtifact) =>
+    a.kind === "screenshot" || a.mime.startsWith("image/");
+  const screenshots = artifacts.filter(isImage);
   const fdraft = artifacts.find((a) => a.kind === "fdraft");
-  const others = artifacts.filter(
-    (a) => a.kind !== "screenshot" && a.kind !== "fdraft",
-  );
+  const others = artifacts.filter((a) => !isImage(a) && a.kind !== "fdraft");
 
   const loadProject = async () => {
     if (!fdraft) return;

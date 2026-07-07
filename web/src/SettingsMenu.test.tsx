@@ -66,6 +66,7 @@ function setup() {
           settings={currentSettings}
           onSettingsChange={onChange}
           inProject
+          onEnterProject={() => {}}
         />,
       );
     });
@@ -79,6 +80,7 @@ function setup() {
         settings={currentSettings}
         onSettingsChange={onChange}
         inProject
+        onEnterProject={() => {}}
       />,
     );
   });
