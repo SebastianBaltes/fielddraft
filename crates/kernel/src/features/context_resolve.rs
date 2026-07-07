@@ -23,18 +23,19 @@ impl<'a> Context<'a> {
         &mut self,
         expr: &crate::queries::QueryExpr,
     ) -> Option<crate::sketch::SketchFrame> {
-        use crate::brep::naming::TopoRef;
         use crate::brep::FaceId;
         use crate::queries::QueryExpr;
 
         let woven = self.brep_cache.ensure(&self.features);
+        if let QueryExpr::Face(eref) = expr {
+            let (bi, fid) = locate_face(woven, eref)?;
+            let (brep, placement) = &woven[bi];
+            return Some(crate::sketch::face_plane_frame(brep, fid, placement));
+        }
         for (brep, placement) in woven {
             for i in 0..brep.faces.len() {
                 let fid = FaceId(i as u32);
                 let hit = match expr {
-                    QueryExpr::Face(hash) => {
-                        TopoRef::from_face(brep, fid).id_hash == *hash
-                    }
                     QueryExpr::CreatedBy(f) | QueryExpr::FaceOf(f) => f
                         .as_u32_or_root()
                         .is_some_and(|t| brep.faces[i].branch_id.feature_id() == t),
@@ -63,16 +64,19 @@ impl<'a> Context<'a> {
         &mut self,
         expr: &crate::queries::QueryExpr,
     ) -> Option<(crate::csg::OpenSurface, FeatureId)> {
-        use crate::brep::naming::TopoRef;
         use crate::brep::{FaceId, SurfaceGeometry};
         use crate::queries::QueryExpr;
 
         let woven = self.brep_cache.ensure(&self.features);
-        for (brep, placement) in woven {
+        let located = match expr {
+            QueryExpr::Face(eref) => Some(locate_face(woven, eref)?),
+            _ => None,
+        };
+        for (bi, (brep, placement)) in woven.iter().enumerate() {
             for i in 0..brep.faces.len() {
                 let fid = FaceId(i as u32);
                 let hit = match expr {
-                    QueryExpr::Face(hash) => TopoRef::from_face(brep, fid).id_hash == *hash,
+                    QueryExpr::Face(_) => located == Some((bi, fid)),
                     QueryExpr::CreatedBy(f) | QueryExpr::FaceOf(f) => f
                         .as_u32_or_root()
                         .is_some_and(|t| brep.faces[i].branch_id.feature_id() == t),
@@ -116,7 +120,6 @@ impl<'a> Context<'a> {
         &mut self,
         queries: &[String],
     ) -> Result<(::fielddraft_protocol::Sketch2d, crate::sketch::SketchFrame), String> {
-        use crate::brep::naming::TopoRef;
         use crate::brep::FaceId;
         use crate::queries::QueryExpr;
 
@@ -127,29 +130,19 @@ impl<'a> Context<'a> {
         for q in queries {
             let expr = crate::queries::parse_query(q)
                 .map_err(|e| format!("invalid face query `{q}`: {e:?}"))?;
-            let QueryExpr::Face(hash) = expr else {
+            let QueryExpr::Face(eref) = expr else {
                 return Err(format!(
                     "extrude faces must be `qFace(<id_hash>)` selections; got `{q}`"
                 ));
             };
-            let mut found = false;
-            'scan: for (bi, (brep, placement)) in woven.iter().enumerate() {
-                for i in 0..brep.faces.len() {
-                    let fid = FaceId(i as u32);
-                    if TopoRef::from_face(brep, fid).id_hash == hash {
-                        hits.push((
-                            bi,
-                            fid,
-                            crate::sketch::face_plane_frame(brep, fid, placement),
-                        ));
-                        found = true;
-                        break 'scan;
-                    }
-                }
-            }
-            if !found {
-                return Err(format!("face {hash} not found in the current model"));
-            }
+            let Some((bi, fid)) = locate_face(woven, &eref) else {
+                return Err(format!(
+                    "face {} not found in the current model",
+                    eref.id_hash
+                ));
+            };
+            let (brep, placement) = &woven[bi];
+            hits.push((bi, fid, crate::sketch::face_plane_frame(brep, fid, placement)));
         }
         if hits.is_empty() {
             return Err("no faces selected to extrude".to_string());
@@ -189,25 +182,19 @@ impl<'a> Context<'a> {
     /// happens to overlap the prism (ticket px2o). Empty if no face resolves, so
     /// the caller keeps the legacy AABB docking.
     pub fn face_owner_target_ids(&mut self, queries: &[String]) -> Vec<FeatureId> {
-        use crate::brep::naming::TopoRef;
-        use crate::brep::FaceId;
         use crate::queries::QueryExpr;
 
         // Locate the woven body (partition order) that carries any picked face.
         let mut owner_bi: Option<usize> = None;
         {
             let woven = self.brep_cache.ensure(&self.features);
-            'scan: for q in queries {
-                let Ok(QueryExpr::Face(hash)) = crate::queries::parse_query(q) else {
+            for q in queries {
+                let Ok(QueryExpr::Face(eref)) = crate::queries::parse_query(q) else {
                     continue;
                 };
-                for (bi, (brep, _)) in woven.iter().enumerate() {
-                    for i in 0..brep.faces.len() {
-                        if TopoRef::from_face(brep, FaceId(i as u32)).id_hash == hash {
-                            owner_bi = Some(bi);
-                            break 'scan;
-                        }
-                    }
+                if let Some((bi, _)) = locate_face(woven, &eref) {
+                    owner_bi = Some(bi);
+                    break;
                 }
             }
         }
@@ -266,49 +253,41 @@ impl<'a> Context<'a> {
             for (qi, q) in queries.iter().enumerate() {
                 let expr = crate::queries::parse_query(q)
                     .map_err(|e| format!("invalid face query `{q}`: {e:?}"))?;
-                let QueryExpr::Face(hash) = expr else {
+                let QueryExpr::Face(eref) = expr else {
                     return Err(format!(
                         "thicken faces must be `qFace(<id_hash>)` selections; got `{q}`"
                     ));
                 };
-                let mut found = false;
-                'scan: for (brep, placement) in woven.iter() {
-                    for i in 0..brep.faces.len() {
-                        let fid = FaceId(i as u32);
-                        if TopoRef::from_face(brep, fid).id_hash == hash {
-                            let face = brep.face(fid);
-                            match &face.surface {
-                                // A revolved-profile carrier is analytic for the
-                                // weaver but has no parameter-shift offset, so it
-                                // thickens via the general field-offset band —
-                                // the same route these faces took when they were
-                                // still tessellated.
-                                SurfaceGeometry::Analytic {
-                                    surface: fielddraft_protocol::HalfSpace::RevolvedProfile { .. },
-                                    ..
-                                }
-                                | SurfaceGeometry::Tessellated { .. } => bands.push(BandReq {
-                                    qi,
-                                    feature_id: face.branch_id.feature_id(),
-                                    placement: *placement,
-                                    loops: crate::brep::face_lateral_trim::sample_face_loops(
-                                        brep, fid,
-                                    ),
-                                }),
-                                SurfaceGeometry::Analytic { .. } => {
-                                    let s = crate::brep::face_thicken::thicken_face(
-                                        brep, fid, placement, outer_off, inner_off,
-                                    )?;
-                                    walls.push((qi, thicken_diff_node(id, qi, &s), s.world));
-                                }
-                            }
-                            found = true;
-                            break 'scan;
-                        }
+                let Some((bi, fid)) = locate_face(woven, &eref) else {
+                    return Err(format!(
+                        "face {} not found in the current model",
+                        eref.id_hash
+                    ));
+                };
+                let (brep, placement) = &woven[bi];
+                let face = brep.face(fid);
+                match &face.surface {
+                    // A revolved-profile carrier is analytic for the
+                    // weaver but has no parameter-shift offset, so it
+                    // thickens via the general field-offset band —
+                    // the same route these faces took when they were
+                    // still tessellated.
+                    SurfaceGeometry::Analytic {
+                        surface: fielddraft_protocol::HalfSpace::RevolvedProfile { .. },
+                        ..
                     }
-                }
-                if !found {
-                    return Err(format!("face {hash} not found in the current model"));
+                    | SurfaceGeometry::Tessellated { .. } => bands.push(BandReq {
+                        qi,
+                        feature_id: face.branch_id.feature_id(),
+                        placement: *placement,
+                        loops: crate::brep::face_lateral_trim::sample_face_loops(brep, fid),
+                    }),
+                    SurfaceGeometry::Analytic { .. } => {
+                        let s = crate::brep::face_thicken::thicken_face(
+                            brep, fid, placement, outer_off, inner_off,
+                        )?;
+                        walls.push((qi, thicken_diff_node(id, qi, &s), s.world));
+                    }
                 }
             }
         }
@@ -381,7 +360,6 @@ impl<'a> Context<'a> {
         face_queries: &[String],
         target_query: &str,
     ) -> Result<Vec<(CsgNode, Transform)>, String> {
-        use crate::brep::naming::TopoRef;
         use crate::brep::FaceId;
         use crate::queries::QueryExpr;
 
@@ -391,18 +369,12 @@ impl<'a> Context<'a> {
         let find_face = |q: &str| -> Result<(usize, FaceId), String> {
             let expr = crate::queries::parse_query(q)
                 .map_err(|e| format!("invalid face query `{q}`: {e:?}"))?;
-            let QueryExpr::Face(hash) = expr else {
+            let QueryExpr::Face(eref) = expr else {
                 return Err(format!("thicken faces must be `qFace(<id_hash>)` selections; got `{q}`"));
             };
-            for (bi, (brep, _placement)) in woven.iter().enumerate() {
-                for i in 0..brep.faces.len() {
-                    let fid = FaceId(i as u32);
-                    if TopoRef::from_face(brep, fid).id_hash == hash {
-                        return Ok((bi, fid));
-                    }
-                }
-            }
-            Err(format!("face {hash} not found in the current model"))
+            locate_face(woven, &eref).ok_or_else(|| {
+                format!("face {} not found in the current model", eref.id_hash)
+            })
         };
 
         let (tgt_bi, tgt_fid) = find_face(target_query)?;
@@ -464,23 +436,26 @@ impl<'a> Context<'a> {
         &mut self,
         expr: &crate::queries::QueryExpr,
     ) -> Vec<(FeatureId, FeatureId, Vec<[f32; 3]>)> {
-        use crate::brep::naming::TopoRef;
         use crate::brep::{EdgeGeometry, EdgeId};
 
         let woven = self.brep_cache.ensure(&self.features);
+        let located = match expr {
+            crate::queries::QueryExpr::Edge(eref) => match locate_edge(woven, eref) {
+                Some(hit) => Some(hit),
+                None => return Vec::new(),
+            },
+            _ => None,
+        };
         let mut out = Vec::new();
-        for (brep, placement) in woven {
+        for (bi, (brep, placement)) in woven.iter().enumerate() {
             for i in 0..brep.edges.len() {
                 let id = EdgeId(i as u32);
                 let edge = brep.edge(id);
                 // Match the edge against the query. `qEdge(hash)` matches
-                // by id_hash; `qEdgeBetween(a, b)` matches by the (unordered)
-                // signature feature pair. Reuse the existing hashing /
-                // signature logic rather than duplicating it.
+                // via the shared healing-aware locator; `qEdgeBetween(a, b)`
+                // matches by the (unordered) signature feature pair.
                 let hit = match expr {
-                    crate::queries::QueryExpr::Edge(hash) => {
-                        TopoRef::from_edge(brep, id).id_hash == *hash
-                    }
+                    crate::queries::QueryExpr::Edge(_) => located == Some((bi, id)),
                     crate::queries::QueryExpr::EdgeBetween(a, b) => {
                         let s0 = edge.signature.0.feature_id();
                         let s1 = edge.signature.1.feature_id();
@@ -538,19 +513,23 @@ impl<'a> Context<'a> {
         &mut self,
         expr: &crate::queries::QueryExpr,
     ) -> Vec<Vec<[f32; 3]>> {
-        use crate::brep::naming::TopoRef;
         use crate::brep::EdgeId;
 
         let woven = self.brep_cache.ensure(&self.features);
+        let located = match expr {
+            crate::queries::QueryExpr::Edge(eref) => match locate_edge(woven, eref) {
+                Some(hit) => Some(hit),
+                None => return Vec::new(),
+            },
+            _ => None,
+        };
         let mut out = Vec::new();
-        for (brep, placement) in woven {
+        for (bi, (brep, placement)) in woven.iter().enumerate() {
             for i in 0..brep.edges.len() {
                 let id = EdgeId(i as u32);
                 let edge = brep.edge(id);
                 let hit = match expr {
-                    crate::queries::QueryExpr::Edge(hash) => {
-                        TopoRef::from_edge(brep, id).id_hash == *hash
-                    }
+                    crate::queries::QueryExpr::Edge(_) => located == Some((bi, id)),
                     crate::queries::QueryExpr::EdgeBetween(a, b) => {
                         let s0 = edge.signature.0.feature_id();
                         let s1 = edge.signature.1.feature_id();
@@ -586,17 +565,21 @@ impl<'a> Context<'a> {
         use crate::queries::QueryExpr;
         match expr {
             QueryExpr::Edge(_) | QueryExpr::EdgeBetween(_, _) => {
-                use crate::brep::naming::TopoRef;
                 use crate::brep::EdgeId;
                 let woven = self.brep_cache.ensure(&self.features);
-                for (brep, placement) in woven {
+                let located = match expr {
+                    QueryExpr::Edge(eref) => match locate_edge(woven, eref) {
+                        Some(hit) => Some(hit),
+                        None => return None,
+                    },
+                    _ => None,
+                };
+                for (bi, (brep, placement)) in woven.iter().enumerate() {
                     for i in 0..brep.edges.len() {
                         let eid = EdgeId(i as u32);
                         let edge = brep.edge(eid);
                         let hit = match expr {
-                            QueryExpr::Edge(hash) => {
-                                TopoRef::from_edge(brep, eid).id_hash == *hash
-                            }
+                            QueryExpr::Edge(_) => located == Some((bi, eid)),
                             QueryExpr::EdgeBetween(a, b) => {
                                 let s0 = edge.signature.0.feature_id();
                                 let s1 = edge.signature.1.feature_id();
@@ -630,34 +613,32 @@ impl<'a> Context<'a> {
                 }
                 None
             }
-            QueryExpr::Vertex(hash) => {
-                use crate::brep::naming::TopoRef;
-                use crate::brep::VertexId;
+            QueryExpr::Vertex(eref) => {
+                use crate::brep::naming::EntityHandle;
                 let woven = self.brep_cache.ensure(&self.features);
-                for (brep, placement) in woven {
-                    for i in 0..brep.vertices.len() {
-                        let vid = VertexId(i as u32);
-                        if TopoRef::from_vertex(brep, vid).id_hash == *hash {
-                            let v = brep.vertex(vid);
-                            let origin = place_point(
-                                placement,
-                                [v.position[0] as f32, v.position[1] as f32, v.position[2] as f32],
-                            );
-                            // A vertex has no intrinsic axis; an adjacent face
-                            // normal defines +Z (Onshape: "normal to the face").
-                            let auto_secondary = v
-                                .branches
-                                .iter()
-                                .find_map(|b| face_normal_for_branch(brep, placement, *b));
-                            return Some(MateAnchorFrame {
-                                origin,
-                                primary: None,
-                                auto_secondary,
-                            });
-                        }
-                    }
-                }
-                None
+                let (bi, handle) = crate::queries::locate_element(
+                    woven.iter().map(|(b, _)| b),
+                    crate::brep::naming::EntityKind::Vertex,
+                    eref,
+                )?;
+                let EntityHandle::Vertex(vid) = handle else { return None };
+                let (brep, placement) = &woven[bi];
+                let v = brep.vertex(vid);
+                let origin = place_point(
+                    placement,
+                    [v.position[0] as f32, v.position[1] as f32, v.position[2] as f32],
+                );
+                // A vertex has no intrinsic axis; an adjacent face
+                // normal defines +Z (Onshape: "normal to the face").
+                let auto_secondary = v
+                    .branches
+                    .iter()
+                    .find_map(|b| face_normal_for_branch(brep, placement, *b));
+                Some(MateAnchorFrame {
+                    origin,
+                    primary: None,
+                    auto_secondary,
+                })
             }
             // Face / created-by / face-of: the anchor IS a face; its normal is +Z.
             _ => self.resolve_face_frame(expr).map(|f| MateAnchorFrame {
@@ -754,6 +735,31 @@ fn coplanar(
     off.abs() < 1e-2
 }
 
+
+/// Locate a `qFace` element reference across the woven bodies —
+/// fingerprint-healing included (see [`crate::queries::locate_element`]).
+fn locate_face(
+    woven: &[(crate::brep::BRep, fielddraft_protocol::Transform)],
+    eref: &crate::queries::ElementRef,
+) -> Option<(usize, crate::brep::FaceId)> {
+    use crate::brep::naming::{EntityHandle, EntityKind};
+    match crate::queries::locate_element(woven.iter().map(|(b, _)| b), EntityKind::Face, eref)? {
+        (bi, EntityHandle::Face(fid)) => Some((bi, fid)),
+        _ => None,
+    }
+}
+
+/// Locate a `qEdge` element reference across the woven bodies.
+fn locate_edge(
+    woven: &[(crate::brep::BRep, fielddraft_protocol::Transform)],
+    eref: &crate::queries::ElementRef,
+) -> Option<(usize, crate::brep::EdgeId)> {
+    use crate::brep::naming::{EntityHandle, EntityKind};
+    match crate::queries::locate_element(woven.iter().map(|(b, _)| b), EntityKind::Edge, eref)? {
+        (bi, EntityHandle::Edge(eid)) => Some((bi, eid)),
+        _ => None,
+    }
+}
 
 /// Apply a body `placement` (rotate·scale then translate) to a point.
 /// Mirrors the centroid mapping in

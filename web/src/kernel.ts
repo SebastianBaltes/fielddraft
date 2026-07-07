@@ -103,6 +103,11 @@ export interface BRepEdge {
    *  1 (every control point is an on-curve node). */
   degree: number;
   idHash: string;
+  /** Canonical fingerprint-carrying element query (`qEdge(<hash> @ …)`) —
+   *  what pickers should persist so the reference can heal across
+   *  topological edits (PERSISTENT-NAMING-PLAN N2). Absent until the wasm
+   *  exporting it is regenerated. */
+  query?: string;
   /** Arena indices (== `BRepFace.faceIndex`) of the faces this edge bounds.
    *  Face-precise — unlike the `a`/`b` branch signature, which coplanar
    *  split faces share (ticket b91c). */
@@ -135,6 +140,9 @@ export interface OctreeCells {
 export interface BRepFace {
   faceIndex: number;
   idHash: string;
+  /** Canonical fingerprint-carrying element query (`qFace(<hash> @ …)`);
+   *  absent until the wasm exporting it is regenerated. */
+  query?: string;
   kind: "face";
   /** Packed BranchId (feature << SUB_BITS | sub) this face lies on. */
   branchId: number;
@@ -179,6 +187,9 @@ export type SurfaceParams =
 export interface BRepVertex {
   vertexIndex: number;
   idHash: string;
+  /** Canonical fingerprint-carrying element query (`qVertex(<hash> @ …)`);
+   *  absent until the wasm exporting it is regenerated. */
+  query?: string;
   kind: "vertex";
   positionLocal: [number, number, number];
   /** Packed BranchIds of the ≥3 branch surfaces colliding at this vertex. */

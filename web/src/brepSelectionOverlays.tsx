@@ -132,7 +132,7 @@ interface BodyPickData {
   faceIndexView: Uint32Array | null;
   faces: BRepFace[];
   /** Vertices with world-space positions folded through the placement. */
-  vertices: { idHash: string; world: [number, number, number] }[];
+  vertices: { idHash: string; query?: string; world: [number, number, number] }[];
   /** Analytic edge polylines (world space) keyed for face-outline highlights.
    *  `faces` carries the FACE-precise arena association (== faceIndex,
    *  ticket b91c); the `(a, b)` branch signature stays as the fallback for
@@ -199,6 +199,7 @@ function buildBodyPickData(kernel: {
     }
     const vertices = verts.map((v) => ({
       idHash: v.idHash,
+      query: v.query,
       world: localToWorld(v.positionLocal, placement),
     }));
     out.push({
@@ -478,6 +479,7 @@ export function BRepSelectionOverlay({
       arena: number | null;
       branchId: number;
       idHash: string;
+      query?: string;
       dist: number;
     } | null = null;
     if (wantFace) {
@@ -497,6 +499,7 @@ export function BRepSelectionOverlay({
               arena,
               branchId: face.branchId,
               idHash: face.idHash,
+              query: face.query,
               dist: h.distance,
             };
           }
@@ -517,6 +520,7 @@ export function BRepSelectionOverlay({
                 arena: null,
                 branchId: face.branchId,
                 idHash: face.idHash,
+                query: face.query,
                 dist: hit.t,
               };
               break outer;
@@ -534,6 +538,7 @@ export function BRepSelectionOverlay({
       bi: number;
       vi: number;
       idHash: string;
+      query?: string;
       ndcDist: number;
     } | null = null;
     if (wantVertex) {
@@ -554,7 +559,13 @@ export function BRepSelectionOverlay({
           const d = Math.hypot(v.x - ndc.x, v.y - ndc.y);
           if (d > vertexPickNdc) continue;
           if (!resolvedVertex || d < resolvedVertex.ndcDist) {
-            resolvedVertex = { bi, vi, idHash: verts[vi].idHash, ndcDist: d };
+            resolvedVertex = {
+              bi,
+              vi,
+              idHash: verts[vi].idHash,
+              query: verts[vi].query,
+              ndcDist: d,
+            };
           }
         }
       }
@@ -579,6 +590,7 @@ export function BRepSelectionOverlay({
       setHoveredElementOfKind("face", {
         kind: "face",
         idHash: resolvedFace.idHash,
+        query: resolvedFace.query,
       });
       setHoveredElementOfKind("vertex", null);
     } else if (resolvedVertex) {
@@ -600,6 +612,7 @@ export function BRepSelectionOverlay({
       setHoveredElementOfKind("vertex", {
         kind: "vertex",
         idHash: resolvedVertex.idHash,
+        query: resolvedVertex.query,
       });
     } else {
       if (faceHover) {

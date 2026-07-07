@@ -24,12 +24,22 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.449",
+    entries: [
+      {
+        kind: "feat",
+        scope: "kernel",
+        text: "Persistentes Naming N2/N3: Element-Referenzen tragen jetzt einen geometrischen Fingerprint (qFace(<hash> @ …), kanonische Form kommt fertig aus dem Kernel) und HEILEN beim Auflösen — eine gespeicherte Face-/Edge-/Vertex-Referenz überlebt topologische Edits, statt mit „face not found“ zu scheitern. Alle Feature-Pfade (Extrude auf Face, Up-to-Face, Thicken, Shell, Fillet, Mate-Anchor) laufen über eine gemeinsame healing-fähige Auflösung statt sieben Hash-Scan-Kopien.",
+      },
+    ],
+  },
+  {
     version: "0.6.448",
     entries: [
       {
         kind: "fix",
         scope: "kernel",
-        text: "Persistentes Naming N1: Referenz-Auflösung bewertet alle Kandidaten einheitlich (Fingerprint-Ähnlichkeit + Hash-Bonus, provenienz-gebunden auf die Signatur-Gruppe) — ein Index-Kipp bindet nicht mehr still an das falsche Element, gleich gute Kandidaten melden ehrlich „Ambiguous". Räumliche Index-Vergabe jetzt mit gruppen-relativem ε statt absolutem 1e-9 (nm-Jitter kippt keine Identitäten mehr). Neue Handle-Resolve-Gate-Testfamilie (naming_gate.rs).",
+        text: "Persistentes Naming N1: Referenz-Auflösung bewertet alle Kandidaten einheitlich (Fingerprint-Ähnlichkeit + Hash-Bonus, provenienz-gebunden auf die Signatur-Gruppe) — ein Index-Kipp bindet nicht mehr still an das falsche Element, gleich gute Kandidaten melden ehrlich „Ambiguous“. Räumliche Index-Vergabe jetzt mit gruppen-relativem ε statt absolutem 1e-9 (nm-Jitter kippt keine Identitäten mehr). Neue Handle-Resolve-Gate-Testfamilie (naming_gate.rs).",
       },
     ],
   },

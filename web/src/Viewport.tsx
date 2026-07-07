@@ -298,7 +298,7 @@ function tryQueryPick(
   store: {
     kernel: {
       bodyCount(): number;
-      bodyBrepFaces(i: number): { branchId: number; idHash: string }[];
+      bodyBrepFaces(i: number): { branchId: number; idHash: string; query?: string }[];
     };
   } | null,
   datumAtRay?: () => string | null,
@@ -372,7 +372,7 @@ function tryQueryPick(
       outer: for (let i = 0; i < count; i++) {
         for (const face of store.kernel.bodyBrepFaces(i)) {
           if (!click.branches.includes(face.branchId)) continue;
-          if (picker.onPick(`qFace(${face.idHash})`)) return true;
+          if (picker.onPick(face.query ?? `qFace(${face.idHash})`)) return true;
           break outer;
         }
       }
@@ -1453,7 +1453,7 @@ export function Viewport({
         outer: for (let i = 0; i < count; i++) {
           for (const f of store.kernel.bodyBrepFaces(i)) {
             if (!pickResult.branches.includes(f.branchId)) continue;
-            plane = `qFace(${f.idHash})`;
+            plane = f.query ?? `qFace(${f.idHash})`;
             break outer;
           }
         }

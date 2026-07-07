@@ -359,6 +359,10 @@ struct QueryHandleDto {
     /// The `u64` id hash as a decimal string (JS-number-safe).
     #[serde(rename = "idHash")]
     id_hash: String,
+    /// The canonical fingerprint-carrying element query for this handle —
+    /// the string a feature parameter should persist so the reference can
+    /// heal across topological edits (PERSISTENT-NAMING-PLAN N2).
+    query: String,
     /// The query's input feature ids as `FeatureId` display strings.
     contributors: Vec<String>,
 }
@@ -413,6 +417,7 @@ pub fn resolve_query_global(query: &str) -> Result<String, ScriptError> {
             }
             .to_string(),
             id_hash: r.id_hash.to_string(),
+            query: crate::queries::element_query(r).to_string(),
             contributors: contributors.clone(),
         })
         .collect();

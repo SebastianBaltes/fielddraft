@@ -2844,7 +2844,7 @@ fn context_resolve_topo_resolves_qface_against_features_so_far() {
     assert_eq!(brep.face_count(), 6, "a box has 6 faces");
     let want = crate::brep::naming::TopoRef::from_face(brep, crate::brep::FaceId(0));
 
-    let refs = ctx.resolve_topo(&crate::queries::QueryExpr::Face(want.id_hash));
+    let refs = ctx.resolve_topo(&crate::queries::QueryExpr::Face(want.id_hash.into()));
     assert_eq!(refs.len(), 1, "qFace(h) resolves to exactly one face mid-loop");
     assert_eq!(refs[0].id_hash, want.id_hash);
     // qCreatedBy(box) yields all six faces.
