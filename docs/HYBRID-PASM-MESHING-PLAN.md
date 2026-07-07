@@ -88,7 +88,8 @@ stehen in §5.4, das PDF liegt unter `docs/Literatur/PASM_SIGGRAPH_2013.pdf`):
    Punktverteilung, nicht den Export-Kontrakt, darum Export ZUERST.
 4. §5.4 P4d-2 Anisotropie (Paper-Kern, größter Qualitätshebel, schwerste
    Mathematik — deshalb nach dem Export).
-5. §5.5 P4d-3 Gyroid-Blätter (darf offen bleiben; Fallback greift).
+5. §5.5 P4d-3 Gyroid-Blätter (darf offen bleiben; §6-F3-Fallback greift
+   seit v0.6.463 und liefert dort DC-Qualität statt eines Lochs).
 
 **Unabhängig offen:** Ticket pzvt (Hover-Kamera-Desync, Analyse im
 Ticket-Ordner `tickets/open/20260707-001324-pzvt`; Fix-Idee „pick what you
@@ -522,21 +523,27 @@ bleibt Konstruktion, nie Toleranz-Schweißen.
   Vernetzung braucht einen Ersatz: lokale Tangential-CDT + Merge,
   Advancing Front vom Rim-Skelett, oder Restricted Delaunay über der
   Punktmenge (§5.5-Optionen, gelten allgemein).
-* **F3 — MDC-Patch mit Reißverschluss:** Octree-Rasterung (MDC/EMC,
-  existiert) NUR über den Zellen, die der Region attribuiert sind; den
-  Patch-Rand mit ~0,25·h Clearance VOR dem Rim stoppen; den Ring-Spalt
-  zwischen Patch-Randpolylinie und Rim-Kette als Streifen triangulieren
-  (Band-Maschinerie-Idee aus P4a/P4c: zwei Polylinien, ein Zipper), wobei
-  die Rim-Seite die geteilten Skelett-Indizes trägt. Ergebnis: Innenfläche
-  in MDC-Qualität (per Definition nicht schlechter als Standard-DC/MC),
-  Naht exakt und strukturell dicht. Octree-Blattgröße ≈ h wählen, damit
-  die Zipper-Dreiecke nicht degenerieren.
+* **F3 — DC-Patch mit Reißverschluss** *(UMGESETZT v0.6.463, Option
+  `fallbackPatches`)*: Signed-DC-Rasterung NUR über den der Region
+  attribuierten Octree-Zellen (`connect_octree_edges_signed` — echtes
+  Vorzeichenwechsel-Kriterium der minimalen Kante, keine Staircase-Fins
+  wie beim reinen Adjazenzgraphen); den Patch-Rand mit 0,5·h Clearance VOR
+  dem Rim stoppen; die Patch-Boundary-Loop per greedy Reißverschluss
+  (`zip_rings`) an die Rim-Kette nähen, wobei die Rim-Seite die geteilten
+  Skelett-Indizes trägt → strukturell dicht. Interior-Löcher (tangentiale
+  Sliver-Zellen ohne Ecken-Vorzeichenwechsel) per Centroid-Fächer
+  schließen; verwaiste DC-Komponenten per Rim-Nähe-Gate verwerfen;
+  Bowtie-Boundaries vorher in simple Zyklen zerlegen (`boundary_loops` →
+  `split_simple`). Modul `crates/kernel/src/mesher_patch.rs`. Verifiziert
+  an Torus ∩ Quader (Kernel-Test + reales WASM: geschlossen, 2-manifold,
+  Euler 0, Mix CDT/Fallback). Ausbaubedarf: Resolution muss die chartlose
+  Region ein paar Zellen BREIT lassen (Patch minus Clearance-Band), sonst
+  verhungert ein zu schmales Band zu einer Zellreihe und bildet kein Patch
+  — perspektivisch aus h ableiten statt Nutzer-Sache.
 
-**Gate bleibt der Wächter:** Solange F2/F3 nicht implementiert sind, sorgt
-das Geschlossenheits-Gate aus §5.3 dafür, dass jeder Body mit
-SDF-only-Faces KOMPLETT auf MDC zurückfällt — funktional korrekt, nur ohne
-Kantenexaktheit. F3 ist danach der empfohlene erste Ausbauschritt (nutzt
-nur Vorhandenes: MDC, Attribution, Band-Triangulierung); F2 ist die
-Qualitätsstufe darüber. Voraussetzung beider: geschlossene Rim-Loops
-(Partial-Weave-Lücken ⇒ weiterhin Voll-Fallback) und konsistente
-Orientierung Patch↔Zipper↔Nachbarfaces.
+**Gate bleibt der Wächter:** Ist `fallbackPatches` aus (oder F2 offen),
+sorgt das Geschlossenheits-Gate aus §5.3 dafür, dass ein Body mit
+SDF-only-Faces auf MDC zurückfällt — funktional korrekt, nur ohne
+Kantenexaktheit. F2 ist die Qualitätsstufe über F3. Voraussetzung beider:
+geschlossene Rim-Loops (Partial-Weave-Lücken ⇒ weiterhin Voll-Fallback)
+und konsistente Orientierung Patch↔Zipper↔Nachbarfaces.
