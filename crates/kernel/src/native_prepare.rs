@@ -69,16 +69,6 @@ pub fn prepare_interchange(document_json: &str, params_json: &str) -> Result<Str
                  server meshing yet"
             ));
         }
-        // OP_PRIM_CUSTOM (user expression tapes, v0.6.445) is not in the
-        // C++ interpreter yet — gate here so the server route fails with
-        // a clear message instead of the C++ unknown-opcode error.
-        if bounded_contains_custom_sdf(&bounded) {
-            return Err(format!(
-                "body {bi} uses a custom SDF expression (OP_PRIM_CUSTOM) — not \
-                 supported by server meshing yet"
-            ));
-        }
-
         let _ = writeln!(out, "BODY {bi}");
         let a = &compiled.aabb;
         let _ = writeln!(
@@ -136,36 +126,6 @@ pub fn prepare_interchange(document_json: &str, params_json: &str) -> Result<Str
     }
     out.push_str("END\n");
     Ok(out)
-}
-
-/// Does the tree contain a [`fielddraft_protocol::Primitive::CustomSdf`]
-/// leaf? (The C++ interpreter has no OP_PRIM_CUSTOM arm yet.)
-fn bounded_contains_custom_sdf(node: &crate::bvh::BoundedCsg) -> bool {
-    use crate::bvh::BoundedCsg as B;
-    match node {
-        B::Leaf { primitive, .. } => {
-            matches!(primitive, fielddraft_protocol::Primitive::CustomSdf { .. })
-        }
-        B::Union { left, right, .. }
-        | B::Difference { left, right, .. }
-        | B::Intersection { left, right, .. }
-        | B::SmoothUnion { left, right, .. }
-        | B::SmoothDifference { left, right, .. }
-        | B::MaskedBlend { left, right, .. }
-        | B::Morph { left, right, .. } => {
-            bounded_contains_custom_sdf(left) || bounded_contains_custom_sdf(right)
-        }
-        B::Twist { inner, .. }
-        | B::Bend { inner, .. }
-        | B::Displace { inner, .. }
-        | B::Offset { inner, .. }
-        | B::Shell { inner, .. } => bounded_contains_custom_sdf(inner),
-        B::Empty
-        | B::Extrude { .. }
-        | B::Revolve { .. }
-        | B::Helix { .. }
-        | B::Sweep { .. } => false,
-    }
 }
 
 #[cfg(test)]

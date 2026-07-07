@@ -11,7 +11,7 @@ use fielddraft_kernel::bvh::BoundedCsg;
 use fielddraft_kernel::csg::{BlendMode, BranchId, CsgNode, DecodedFeature, OpenSurface, PrimitiveModifiers};
 use fielddraft_kernel::sdf_compiler::{compile_body, eval_opcodes};
 use fielddraft_protocol::sketch2d::{Sketch2d, Sketch2dPrimitive, SketchSegment};
-use fielddraft_protocol::{BoolOp, FeatureId, Primitive, Transform};
+use fielddraft_protocol::{BoolOp, FeatureId, Primitive, SdfExprOp, Transform};
 
 fn feat_m(
     id: u32,
@@ -504,4 +504,32 @@ fn main() {
     );
     let bvh = BoundedCsg::from_csg(&shell);
     emit("shell_open_cone", &bvh, &pts);
+
+    // ── Custom SDF (OP_PRIM_CUSTOM, user expression tape) ──────────────
+    // A sin-displaced sphere: sqrt(x²+y²+z²) − 8 + sin(x·0.9)·cos(y·1.1)
+    // — exercises leaf pushes, const, mul, add/sub, sqrt, sin/cos, and the
+    // max(expr·invL, box) clip; plus a tilted transform.
+    use SdfExprOp as E;
+    let ops = vec![
+        E::X, E::X, E::Mul,
+        E::Y, E::Y, E::Mul, E::Add,
+        E::Z, E::Z, E::Mul, E::Add,
+        E::Sqrt,
+        E::Const { v: 8.0 }, E::Sub,
+        E::X, E::Const { v: 0.9 }, E::Mul, E::Sin,
+        E::Y, E::Const { v: 1.1 }, E::Mul, E::Cos,
+        E::Mul, E::Add,
+    ];
+    let bvh = BoundedCsg::from_csg(&CsgNode::from_decoded(&[feat(
+        1,
+        BoolOp::Add,
+        Primitive::CustomSdf {
+            source: "sqrt(x*x+y*y+z*z)-8+sin(x*0.9)*cos(y*1.1)".into(),
+            ops,
+            lipschitz: 2.5,
+            half_extents: [10.0, 10.0, 10.0],
+        },
+        xform([1.0, -2.0, 0.5], tilt_quat(), s1),
+    )]));
+    emit("custom_sdf_sinsphere", &bvh, &pts);
 }

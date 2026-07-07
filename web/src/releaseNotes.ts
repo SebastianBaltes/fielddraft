@@ -24,6 +24,16 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.446",
+    entries: [
+      {
+        kind: "feat",
+        scope: "export",
+        text: "Custom-SDF-Körper (Math-Expressions) sind jetzt auch über das Server-Meshing exportierbar: OP_PRIM_CUSTOM (0x0E, Expression-Stack-Machine) ist in den C++-CGAL-Interpreter portiert, das Ausschluss-Gate in fd-prepare entfällt. Golden-Szene (sin-displaced Sphere, 26 Szenen gesamt) und End-to-End-Verifikation (wasserdicht/2-manifold) grün.",
+      },
+    ],
+  },
+  {
     version: "0.6.445",
     entries: [
       {

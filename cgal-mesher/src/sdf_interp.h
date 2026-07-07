@@ -35,6 +35,7 @@ enum : uint32_t {
   OP_PRIM_THREAD    = 0x0B,
   OP_PRIM_TEX3D     = 0x0C,
   OP_PRIM_HALFSPACE = 0x0D,
+  OP_PRIM_CUSTOM    = 0x0E,
 
   OP_PRIM2D_CIRCLE  = 0x10,
   OP_PRIM2D_RECT    = 0x11,
@@ -467,6 +468,74 @@ inline float blend_min_eval(float a, float b, float r, float mode) {
   return fminf_(fminf_(a, b), (a + b - r) * FRAC_1_SQRT_2);
 }
 
+// User expression tape (OP_PRIM_CUSTOM inner records) — 1:1 mirror of
+// sdf_compiler.rs::eval_expr_records. Fixed-width (code, payload) records,
+// codes are PLAIN SMALL FLOATS (not bit-cast tags); 1.0e6 is the shared
+// error sentinel for stack under/overflow and malformed streams.
+constexpr int FD_SDF_EXPR_MAX_STACK = 8;
+
+inline float eval_expr_records(const float* records, int len,
+                               const float local[3]) {
+  float stack[FD_SDF_EXPR_MAX_STACK];
+  int sp = 0;
+  int i = 0;
+  while (i + 1 < len) {
+    int code = (int)records[i];
+    float payload = records[i + 1];
+    i += 2;
+    // Leaf pushes.
+    if (code >= 0 && code <= 3) {
+      if (sp >= FD_SDF_EXPR_MAX_STACK) return 1.0e6f;
+      stack[sp++] = code == 0   ? local[0]
+                    : code == 1 ? local[1]
+                    : code == 2 ? local[2]
+                                : payload;
+      continue;
+    }
+    // Unary ops.
+    if (code == 8 || code == 11 || code == 12 || code == 13 || code == 14 ||
+        code == 15 || code == 16 || code == 17 || code == 20 || code == 21) {
+      if (sp == 0) return 1.0e6f;
+      float a = stack[sp - 1];
+      float r;
+      switch (code) {
+        case 8: r = -a; break;
+        case 11: r = std::fabs(a); break;
+        case 12: r = std::sqrt(fmaxf_(a, 0.0f)); break;
+        case 13: r = std::sin(a); break;
+        case 14: r = std::cos(a); break;
+        case 15: r = std::floor(a); break;
+        case 16: r = std::exp(a); break;
+        case 17: r = a > 0.0f ? std::log(a) : -1.0e6f; break;
+        case 20: r = std::asin(clampf_(a, -1.0f, 1.0f)); break;
+        default: r = std::acos(clampf_(a, -1.0f, 1.0f)); break;
+      }
+      stack[sp - 1] = r;
+      continue;
+    }
+    // Binary ops.
+    if (sp < 2) return 1.0e6f;
+    float b = stack[sp - 1];
+    float a = stack[sp - 2];
+    sp -= 1;
+    float r;
+    switch (code) {
+      case 4: r = a + b; break;
+      case 5: r = a - b; break;
+      case 6: r = a * b; break;
+      case 7: r = a / b; break;
+      case 9: r = fminf_(a, b); break;
+      case 10: r = fmaxf_(a, b); break;
+      // Pow mirrors Rust exactly: exp(ln(a)·b), 0 for a ≤ 0.
+      case 18: r = a > 0.0f ? std::exp(std::log(a) * b) : 0.0f; break;
+      case 19: r = std::atan2(a, b); break;
+      default: return 1.0e6f;
+    }
+    stack[sp - 1] = r;
+  }
+  return sp == 1 ? stack[0] : 1.0e6f;
+}
+
 // One retained analytic half-space face (OP_PRIM_HALFSPACE) — mirror of
 // sdf_compiler.rs::halfspace_local. `kind` selects plane / infinite
 // cylinder / sphere / cone / torus; params are zero-padded to 4 slots.
@@ -632,6 +701,22 @@ inline float eval_opcodes(const float* opcodes, int n, float wx, float wy,
         float scale = read_transform_and_localise(opcodes, &pc, pt, local);
         float prm[4] = {rd(), rd(), rd(), rd()};
         push_v(halfspace_local(local, kind, prm) * scale);
+        break;
+      }
+
+      case OP_PRIM_CUSTOM: {
+        // User expression tape: transform(10) + inv_lipschitz + half_extents(3)
+        // + op_count + op_count×(code, payload). Field = max(expr·invL, box).
+        float local[3];
+        float scale = read_transform_and_localise(opcodes, &pc, pt, local);
+        float inv_l = rd();
+        float he[3] = {rd(), rd(), rd()};
+        int nrec = (int)rd();
+        const float* records = opcodes + pc;
+        pc += 2 * nrec;
+        float expr = eval_expr_records(records, 2 * nrec, local) * inv_l;
+        float d = fmaxf_(expr, sdf_box_local(local, he));
+        push_v(d * scale);
         break;
       }
 
