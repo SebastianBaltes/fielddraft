@@ -167,7 +167,9 @@ test.describe("Visual regression: Full editor viewport (K9)", () => {
     const canvas = page.getByTestId("fielddraft-canvas");
     await expect(page).toHaveScreenshot("editor-full-box.png", {
       ...SCREENSHOT_OPTS,
-      mask: [canvas.locator("canvas")],
+      // Version badge changes every bump — masking it keeps the baseline
+      // stable across releases (it went stale for months without this).
+      mask: [canvas.locator("canvas"), page.getByTestId("version-badge")],
     });
   });
 
@@ -184,7 +186,7 @@ test.describe("Visual regression: Full editor viewport (K9)", () => {
     const canvas = page.getByTestId("fielddraft-canvas");
     await expect(page).toHaveScreenshot("editor-multi-features.png", {
       ...SCREENSHOT_OPTS,
-      mask: [canvas.locator("canvas")],
+      mask: [canvas.locator("canvas"), page.getByTestId("version-badge")],
     });
   });
 
