@@ -127,6 +127,52 @@ FD_EXPORT void fd_reset() {
 
 // Append a protected sharp-edge polyline: `pts` holds `n` points,
 // 3 floats each (x,y,z). Call once per B-Rep edge before fd_mesh.
+// Douglas-Peucker polyline simplification (squared-distance form).
+// B-Rep edge polylines arrive as densely as the tracer walked them (a
+// helix ships 100k+ points) — CGAL's feature protection preprocessing is
+// super-linear in the input point count and stalls on that, while the
+// protection itself only needs the curve within a chord tolerance well
+// below facet_distance. Corners are polyline ENDPOINTS by construction,
+// so per-polyline simplification never eats a sharp feature.
+static void dp_simplify(const Polyline_3& in, double tol2, std::size_t lo,
+                        std::size_t hi, std::vector<char>& keep) {
+  if (hi <= lo + 1) return;
+  const Point &a = in[lo], &b = in[hi];
+  double abx = b.x() - a.x(), aby = b.y() - a.y(), abz = b.z() - a.z();
+  double ab2 = abx * abx + aby * aby + abz * abz;
+  double worst = -1.0;
+  std::size_t worst_i = lo;
+  for (std::size_t i = lo + 1; i < hi; ++i) {
+    double apx = in[i].x() - a.x(), apy = in[i].y() - a.y(),
+           apz = in[i].z() - a.z();
+    double t = ab2 > 1e-30 ? (apx * abx + apy * aby + apz * abz) / ab2 : 0.0;
+    t = t < 0.0 ? 0.0 : (t > 1.0 ? 1.0 : t);
+    double dx = apx - abx * t, dy = apy - aby * t, dz = apz - abz * t;
+    double d2 = dx * dx + dy * dy + dz * dz;
+    if (d2 > worst) {
+      worst = d2;
+      worst_i = i;
+    }
+  }
+  if (worst > tol2) {
+    keep[worst_i] = 1;
+    dp_simplify(in, tol2, lo, worst_i, keep);
+    dp_simplify(in, tol2, worst_i, hi, keep);
+  }
+}
+
+static Polyline_3 simplify_polyline(const Polyline_3& in, double tol) {
+  if (in.size() <= 2) return in;
+  std::vector<char> keep(in.size(), 0);
+  keep.front() = keep.back() = 1;
+  dp_simplify(in, tol * tol, 0, in.size() - 1, keep);
+  Polyline_3 out;
+  for (std::size_t i = 0; i < in.size(); ++i) {
+    if (keep[i]) out.push_back(in[i]);
+  }
+  return out;
+}
+
 FD_EXPORT void fd_add_edge(const float* pts, int n) {
   if (n < 2) return;
   Polyline_3 poly;
@@ -237,10 +283,20 @@ FD_EXPORT int fd_mesh(const float* opcodes, int n_ops, float minx, float miny,
 
   bool has_features = !g_edges.empty();
   if (has_features) {
-    std::size_t npts = 0;
-    for (const auto& e : g_edges) npts += e.size();
-    std::fprintf(stderr, "[cgal] add_features: %zu polylines, %zu points\n",
-                 g_edges.size(), npts);
+    // Simplify the protection polylines to a chord tolerance well below
+    // the facet distance — identical curve for the protection, but the
+    // preprocessing cost drops from 100k+ tracer samples to O(curvature).
+    const double edge_tol = 0.1 * cell;
+    std::size_t npts_in = 0, npts = 0;
+    for (auto& e : g_edges) {
+      npts_in += e.size();
+      e = simplify_polyline(e, edge_tol);
+      npts += e.size();
+    }
+    std::fprintf(stderr,
+                 "[cgal] add_features: %zu polylines, %zu points "
+                 "(simplified from %zu, tol=%.4f)\n",
+                 g_edges.size(), npts, npts_in, edge_tol);
     domain.add_features(g_edges.begin(), g_edges.end());
     std::fprintf(stderr, "[cgal] add_features done\n");
   }

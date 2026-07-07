@@ -1,13 +1,14 @@
-//! THROWAWAY: emit golden (opcodes, point, sdf) triples so the C++ port
+//! Golden generator: emit (opcodes, point, sdf) triples so the C++ port
 //! of `eval_opcodes` (cgal-mesher/src/sdf_interp.h) can be cross-checked
-//! bit-exactly against the authoritative Rust interpreter.
+//! against the authoritative Rust interpreter. PERMANENT — the check runs
+//! as a mandatory step inside the mesher Docker-image build (interpreter
+//! drift fails the build); extend the scene list with every new opcode.
 //!
 //! Run: cargo run -p fielddraft-kernel --example gen_golden > /tmp/fd_golden.txt
 //! Then: cgal-mesher/test/check_interp (reads /tmp/fd_golden.txt).
-//! Delete this file once the port is validated.
 
 use fielddraft_kernel::bvh::BoundedCsg;
-use fielddraft_kernel::csg::{CsgNode, DecodedFeature, PrimitiveModifiers};
+use fielddraft_kernel::csg::{BlendMode, BranchId, CsgNode, DecodedFeature, OpenSurface, PrimitiveModifiers};
 use fielddraft_kernel::sdf_compiler::{compile_body, eval_opcodes};
 use fielddraft_protocol::sketch2d::{Sketch2d, Sketch2dPrimitive, SketchSegment};
 use fielddraft_protocol::{BoolOp, FeatureId, Primitive, Transform};
@@ -326,4 +327,181 @@ fn main() {
     );
     let bvh = BoundedCsg::from_csg(&CsgNode::from_decoded(&[a, b]));
     emit("smooth_diff_chamfer", &bvh, &pts);
+
+    // ── Helix (OP_WARP_HELIX + OP_HELIX_SCALE) ─────────────────────────
+    // Circle profile swept helically; a right- and a left-handed variant
+    // with taper + start_angle to exercise every parameter slot.
+    let helix_profile = || {
+        Sketch2d::Prim(Sketch2dPrimitive::Circle { center: [6.0, 0.0], radius: 1.5 })
+    };
+    let bvh = BoundedCsg::from_csg(&CsgNode::from_decoded(&[feat(
+        1,
+        BoolOp::Add,
+        Primitive::Helix {
+            sketch: helix_profile(),
+            center: [1.0, -2.0, 0.5],
+            pitch: 4.0,
+            turns: 3.0,
+            left_handed: false,
+            taper: 0.05,
+            start_angle: 0.4,
+        },
+        xform([0.0, 0.0, 0.0], id, s1),
+    )]));
+    emit("helix", &bvh, &pts);
+
+    let bvh = BoundedCsg::from_csg(&CsgNode::from_decoded(&[feat(
+        1,
+        BoolOp::Add,
+        Primitive::Helix {
+            sketch: helix_profile(),
+            center: [0.0, 0.0, 0.0],
+            pitch: 3.0,
+            turns: 2.5,
+            left_handed: true,
+            taper: 0.0,
+            start_angle: 0.0,
+        },
+        xform([2.0, 1.0, -1.0], tilt_quat(), s1),
+    )]));
+    emit("helix_left_tilted", &bvh, &pts);
+
+    // ── Sweep (OP_WARP_SWEEP + OP_HELIX_SCALE) ─────────────────────────
+    // Open swept tube with twist along a 3D polyline (end caps via the
+    // w-coordinate), and a closed ring sweep (w = −∞ branch).
+    let sweep_profile = || {
+        Sketch2d::Prim(Sketch2dPrimitive::Rectangle {
+            center: [0.0, 0.0],
+            half_extents: [1.5, 0.8],
+        })
+    };
+    let bvh = BoundedCsg::from_csg(&CsgNode::Sweep {
+        id: FeatureId::from_u32(1),
+        sketch: Box::new(sweep_profile()),
+        path: vec![
+            [-8.0, -3.0, 0.0],
+            [-2.0, 2.0, 1.0],
+            [4.0, 1.0, -2.0],
+            [9.0, -4.0, 3.0],
+        ],
+        closed: false,
+        twist: 1.2,
+    });
+    emit("sweep_open_twist", &bvh, &pts);
+
+    let bvh = BoundedCsg::from_csg(&CsgNode::Sweep {
+        id: FeatureId::from_u32(1),
+        sketch: Box::new(sweep_profile()),
+        path: vec![
+            [8.0, 0.0, 0.0],
+            [0.0, 0.0, 8.0],
+            [-8.0, 0.0, 0.0],
+            [0.0, 0.0, -8.0],
+        ],
+        closed: true,
+        twist: 0.0,
+    });
+    emit("sweep_closed_ring", &bvh, &pts);
+
+    // ── Masked blend (OP_MASKED_BLEND, count-prefixed polyline) ────────
+    // The C++ port initially read a fixed 2-point capsule — a 3-point
+    // polyline (fillet union) and a 1-point sphere mask (chamfer diff)
+    // pin the count-prefixed layout.
+    let box_node = || {
+        CsgNode::from_decoded(&[feat(
+            1,
+            BoolOp::Add,
+            Primitive::Box { center: [0.0, 0.0, 0.0], half_extents: [8.0, 6.0, 8.0] },
+            xform([0.0, 0.0, 0.0], id, s1),
+        )])
+    };
+    let sphere_node = || {
+        CsgNode::from_decoded(&[feat(
+            2,
+            BoolOp::Add,
+            Primitive::Sphere { center: [0.0, 0.0, 0.0], radius: 6.0 },
+            xform([6.0, 4.0, 0.0], id, s1),
+        )])
+    };
+    let bvh = BoundedCsg::from_csg(&CsgNode::MaskedBlend {
+        a: Box::new(box_node()),
+        b: Box::new(sphere_node()),
+        mask_polyline: vec![[8.0, -2.0, -6.0], [8.0, 6.0, 0.0], [8.0, -2.0, 6.0]],
+        mask_radius: 3.0,
+        blend_radius: 1.5,
+        blend_mode: BlendMode::Fillet,
+        is_difference: false,
+    });
+    emit("masked_blend_polyline", &bvh, &pts);
+
+    let bvh = BoundedCsg::from_csg(&CsgNode::MaskedBlend {
+        a: Box::new(box_node()),
+        b: Box::new(sphere_node()),
+        mask_polyline: vec![[7.0, 5.0, 0.0]],
+        mask_radius: 4.0,
+        blend_radius: 2.0,
+        blend_mode: BlendMode::Chamfer,
+        is_difference: true,
+    });
+    emit("masked_blend_point_diff", &bvh, &pts);
+
+    // ── Opened shells (OP_PRIM_HALFSPACE retained faces) ───────────────
+    // Box with the +Y face opened → 5 retained plane half-spaces; a
+    // cylinder with the top cap opened → cylinder-kind + plane records; a
+    // cone with a cap opened → cone-kind record.
+    let open = |fid: u32, sub: u32, surface: fielddraft_protocol::HalfSpace| OpenSurface {
+        branch: BranchId::from_feature_sub(&FeatureId::from_u32(fid), sub).as_u32(),
+        surface,
+        placement: Transform::IDENTITY,
+    };
+    let boxed = CsgNode::from_decoded(&[feat(
+        1,
+        BoolOp::Add,
+        Primitive::Box { center: [0.0, 0.0, 0.0], half_extents: [9.0, 7.0, 9.0] },
+        xform([0.0, 0.0, 0.0], id, s1),
+    )]);
+    let shell = CsgNode::Shell(
+        Box::new(boxed),
+        1.5,
+        vec![open(1, 2, fielddraft_protocol::HalfSpace::Plane {
+            normal: [0.0, 1.0, 0.0],
+            offset: 7.0,
+        })],
+    );
+    let bvh = BoundedCsg::from_csg(&shell);
+    emit("shell_open_box", &bvh, &pts);
+
+    let cyl = CsgNode::from_decoded(&[feat(
+        1,
+        BoolOp::Add,
+        Primitive::Cylinder { center: [0.0, 0.0, 0.0], radius: 8.0, half_height: 9.0 },
+        xform([0.0, 1.0, 0.0], tilt_quat(), s1),
+    )]);
+    let shell = CsgNode::Shell(
+        Box::new(cyl),
+        1.0,
+        vec![open(1, 1, fielddraft_protocol::HalfSpace::Plane {
+            normal: [0.0, 1.0, 0.0],
+            offset: 9.0,
+        })],
+    );
+    let bvh = BoundedCsg::from_csg(&shell);
+    emit("shell_open_cylinder", &bvh, &pts);
+
+    let cone = CsgNode::from_decoded(&[feat(
+        1,
+        BoolOp::Add,
+        Primitive::Cone { r_bottom: 9.0, r_top: 3.0, half_height: 8.0 },
+        xform([0.0, 0.0, 0.0], id, s1),
+    )]);
+    let shell = CsgNode::Shell(
+        Box::new(cone),
+        1.0,
+        vec![open(1, 1, fielddraft_protocol::HalfSpace::Plane {
+            normal: [0.0, 1.0, 0.0],
+            offset: 8.0,
+        })],
+    );
+    let bvh = BoundedCsg::from_csg(&shell);
+    emit("shell_open_cone", &bvh, &pts);
 }

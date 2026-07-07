@@ -34,6 +34,7 @@ enum : uint32_t {
   OP_PRIM_GYROID    = 0x0A,
   OP_PRIM_THREAD    = 0x0B,
   OP_PRIM_TEX3D     = 0x0C,
+  OP_PRIM_HALFSPACE = 0x0D,
 
   OP_PRIM2D_CIRCLE  = 0x10,
   OP_PRIM2D_RECT    = 0x11,
@@ -61,6 +62,9 @@ enum : uint32_t {
   OP_WARP_BEND      = 0x33,
   OP_WARP_TRANSFORM = 0x34,
   OP_WARP_REVOLVE   = 0x35,
+  OP_WARP_HELIX     = 0x36,
+  OP_HELIX_SCALE    = 0x37,
+  OP_WARP_SWEEP     = 0x38,
 
   OP_MASKED_BLEND   = 0x40,
 
@@ -463,6 +467,50 @@ inline float blend_min_eval(float a, float b, float r, float mode) {
   return fminf_(fminf_(a, b), (a + b - r) * FRAC_1_SQRT_2);
 }
 
+// One retained analytic half-space face (OP_PRIM_HALFSPACE) — mirror of
+// sdf_compiler.rs::halfspace_local. `kind` selects plane / infinite
+// cylinder / sphere / cone / torus; params are zero-padded to 4 slots.
+inline float halfspace_local(const float local[3], float kind,
+                             const float p[4]) {
+  if (kind < 0.5f) {
+    // Plane: normal = (p0, p1, p2), offset = p3.
+    return local[0] * p[0] + local[1] * p[1] + local[2] * p[2] - p[3];
+  } else if (kind < 1.5f) {
+    // Infinite cylinder, radius p0, axis Y.
+    return std::sqrt(local[0] * local[0] + local[2] * local[2]) - p[0];
+  } else if (kind < 2.5f) {
+    // Sphere, radius p0.
+    return std::sqrt(local[0] * local[0] + local[1] * local[1] +
+                     local[2] * local[2]) -
+           p[0];
+  } else if (kind < 3.5f) {
+    // Cone, half-angle p0, apex at origin, axis Y.
+    float rho = std::sqrt(local[0] * local[0] + local[2] * local[2]);
+    float sin_a = std::sin(p[0]), cos_a = std::cos(p[0]);
+    return rho * cos_a - std::fabs(local[1]) * sin_a;
+  } else if (kind < 4.5f) {
+    // Torus, major p0, minor p1.
+    float rho = std::sqrt(local[0] * local[0] + local[2] * local[2]);
+    float q0 = rho - p[0];
+    return std::sqrt(q0 * q0 + local[1] * local[1]) - p[1];
+  }
+  // Non-analytic (TPMS / profile) — never emitted as retained faces.
+  return FD_FLT_MAX;
+}
+
+inline float dot3_(const float a[3], const float b[3]) {
+  return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+}
+
+inline void normalize3_(float v[3]) {
+  float len = std::sqrt(dot3_(v, v));
+  if (len > 0.0f) {
+    v[0] /= len;
+    v[1] /= len;
+    v[2] /= len;
+  }
+}
+
 inline float sdf_capsule_3d(const float p[3], const float a[3], const float b[3],
                             float r) {
   float ab[3] = {b[0] - a[0], b[1] - a[1], b[2] - a[2]};
@@ -575,6 +623,15 @@ inline float eval_opcodes(const float* opcodes, int n, float wx, float wy,
         float scale = read_transform_and_localise(opcodes, &pc, pt, local);
         float nr = rd(), pitch = rd(), depth = rd(), hh = rd();
         push_v(sdf_thread_local(local, nr, pitch, depth, hh) * scale);
+        break;
+      }
+
+      case OP_PRIM_HALFSPACE: {
+        float kind = rd();
+        float local[3];
+        float scale = read_transform_and_localise(opcodes, &pc, pt, local);
+        float prm[4] = {rd(), rd(), rd(), rd()};
+        push_v(halfspace_local(local, kind, prm) * scale);
         break;
       }
 
@@ -778,16 +835,150 @@ inline float eval_opcodes(const float* opcodes, int n, float wx, float wy,
         pt[2] = 0.0f;
         break;
       }
+      case OP_WARP_HELIX: {
+        // Helical unwrap into the profile frame — mirror of the Rust arm /
+        // helix_profile_point: continuous sweep-parameter clamp; the signed
+        // end-overshoot chord rides along in pt[2] (2D sketch ops ignore z)
+        // until OP_HELIX_SCALE composes it in.
+        float pitch = rd(), hand = rd(), turns = rd(), y_anchor = rd();
+        float taper = rd(), r_inner = rd(), start_angle = rd();
+        const float TAU = 6.28318530717958647692f;
+        const float PI_ = 3.14159265358979323846f;
+        float r = std::sqrt(pt[0] * pt[0] + pt[2] * pt[2]);
+        float theta = std::atan2(pt[2], pt[0]);
+        float th = hand * theta - start_angle;
+        float nn = std::round((pt[1] - y_anchor) / pitch - th / TAU);
+        float t_n = th + TAU * nn;
+        float t_end = TAU * turns;
+        float t_c = clampf_(t_n, 0.0f, t_end);
+        float w = pt[1] - pitch * t_c / TAU;
+        float rp = r - taper * (pt[1] - y_anchor);
+        float rr = fmaxf_(fmaxf_(r_inner, pitch / TAU * 0.25f), 1e-3f);
+        float l_t = std::fabs(t_n - t_end * 0.5f) - t_end * 0.5f;
+        float ell = std::copysign(1.0f, l_t) * fminf_(r, rr) *
+                    std::sin(fminf_(std::fabs(l_t), PI_) * 0.5f);
+        pt[0] = rp;
+        pt[1] = w;
+        pt[2] = ell;
+        break;
+      }
+      case OP_HELIX_SCALE: {
+        // Compose the 2D profile distance with the cap coordinate stashed
+        // in pt[2] by OP_WARP_HELIX / OP_WARP_SWEEP (IQ extrude compose),
+        // then apply the baked world·Lipschitz multiplier.
+        float scale = rd();
+        float d2 = pop_v();
+        float ell = pt[2];
+        float outside =
+            std::sqrt(sq_(fmaxf_(d2, 0.0f)) + sq_(fmaxf_(ell, 0.0f)));
+        float inside = fminf_(fmaxf_(d2, ell), 0.0f);
+        push_v((outside + inside) * scale);
+        break;
+      }
+      case OP_WARP_SWEEP: {
+        // Mirror of SweepPath::cross_section: nearest spine point, project
+        // into the interpolated (n, b) frame → (u, v); the cap coordinate w
+        // rides along in pt[2] until OP_HELIX_SCALE. Records live at
+        // opcodes[base + i*10]: point(3) + n(3) + b(3) + arclen.
+        int n = (int)rd();
+        bool closed = rd() > 0.5f;
+        float total_len = rd();
+        float twist = rd();
+        int base = pc;
+        pc += n * 10;
+        auto rec = [&](int i) { return opcodes + base + i * 10; };
+        int seg_count = closed ? n : n - 1;
+        float best_d2 = FD_FLT_MAX;
+        int best_seg = 0;
+        float best_t = 0.0f;
+        for (int si = 0; si < seg_count; ++si) {
+          const float* a = rec(si);
+          const float* b = rec((si + 1) % n);
+          float ab[3] = {b[0] - a[0], b[1] - a[1], b[2] - a[2]};
+          float ap[3] = {pt[0] - a[0], pt[1] - a[1], pt[2] - a[2]};
+          float denom = dot3_(ab, ab);
+          float t = denom > 1e-12f ? clampf_(dot3_(ap, ab) / denom, 0.0f, 1.0f)
+                                   : 0.0f;
+          float dx = ap[0] - ab[0] * t;
+          float dy = ap[1] - ab[1] * t;
+          float dz = ap[2] - ab[2] * t;
+          float d2 = dx * dx + dy * dy + dz * dz;
+          if (d2 < best_d2) {
+            best_d2 = d2;
+            best_seg = si;
+            best_t = t;
+          }
+        }
+        const float* a0 = rec(best_seg);
+        const float* a1 = rec((best_seg + 1) % n);
+        float foot[3] = {a0[0] + (a1[0] - a0[0]) * best_t,
+                         a0[1] + (a1[1] - a0[1]) * best_t,
+                         a0[2] + (a1[2] - a0[2]) * best_t};
+        float nf[3] = {a0[3] + (a1[3] - a0[3]) * best_t,
+                       a0[4] + (a1[4] - a0[4]) * best_t,
+                       a0[5] + (a1[5] - a0[5]) * best_t};
+        float bf[3] = {a0[6] + (a1[6] - a0[6]) * best_t,
+                       a0[7] + (a1[7] - a0[7]) * best_t,
+                       a0[8] + (a1[8] - a0[8]) * best_t};
+        normalize3_(nf);
+        normalize3_(bf);
+        float d[3] = {pt[0] - foot[0], pt[1] - foot[1], pt[2] - foot[2]};
+        float u = dot3_(d, nf);
+        float v = dot3_(d, bf);
+        float s_foot = a0[9] + (a1[9] - a0[9]) * best_t;
+        float w;
+        if (closed) {
+          w = -FD_FLT_MAX;
+        } else {
+          bool at_end = (best_seg == 0 && best_t <= 1e-6f) ||
+                        (best_seg == seg_count - 1 && best_t >= 1.0f - 1e-6f);
+          if (at_end) {
+            float taxis[3] = {nf[1] * bf[2] - nf[2] * bf[1],
+                              nf[2] * bf[0] - nf[0] * bf[2],
+                              nf[0] * bf[1] - nf[1] * bf[0]};
+            normalize3_(taxis);
+            w = std::fabs(dot3_(d, taxis));
+          } else {
+            w = -fminf_(s_foot, total_len - s_foot);
+          }
+        }
+        // Twist: un-rotate (u, v) by θ = twist · s/L.
+        if (twist != 0.0f && total_len > 1e-6f) {
+          float theta = -twist * s_foot / total_len;
+          float sn = std::sin(theta), cs = std::cos(theta);
+          float nu = cs * u - sn * v;
+          float nv = sn * u + cs * v;
+          u = nu;
+          v = nv;
+        }
+        pt[0] = u;
+        pt[1] = v;
+        pt[2] = w;
+        break;
+      }
 
       case OP_MASKED_BLEND: {
-        float p0[3] = {rd(), rd(), rd()};
-        float p1[3] = {rd(), rd(), rd()};
+        // Count-prefixed mask polyline (n + n×[x,y,z]) — mirror of the Rust
+        // arm: the mask is the min over consecutive capsules (1 point = a
+        // sphere, 0 points = no mask).
+        int n = (int)rd();
+        int base = pc;
+        pc += n * 3;
         float mask_r = rd();
         float blend_r = rd();
         float mode = rd();
         bool is_diff = rd() > 0.5f;
         float db = pop_v(), da = pop_v();
-        float mask_d = sdf_capsule_3d(pt, p0, p1, mask_r);
+        float mask_d = FD_FLT_MAX;
+        if (n == 1) {
+          mask_d = sdf_capsule_3d(pt, opcodes + base, opcodes + base, mask_r);
+        } else {
+          for (int i = 0; i + 1 < n; ++i) {
+            mask_d = fminf_(mask_d, sdf_capsule_3d(pt, opcodes + base + i * 3,
+                                                   opcodes + base + (i + 1) * 3,
+                                                   mask_r));
+          }
+        }
         float result;
         if (mask_d < 0.0f) {
           result = is_diff ? -blend_min_eval(-da, db, blend_r, mode)

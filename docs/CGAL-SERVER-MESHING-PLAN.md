@@ -9,8 +9,11 @@ Dispatcher, Routen, Live-Roundtrip verifiziert), M4 Frontend (Export-
 Methode „CGAL Mesh_3 (server)", Polling+Cancel, STL-Preview), M5 Prod
 (prod-Compose, drittes GHCR-Image in release.yml, Env-Tuning, DEPLOY.md),
 M6 3MF (clientseitige Konvertierung via mesh3mfFromBuffers). Bekannt offen
-(§4): Gyroid/TPMS-Initial-Seeding, Baked Volumes (OP_PRIM_TEX3D),
-sdf_interp.h ohne HALFSPACE/Helix/Sweep-Opcodes.
+(§4): Gyroid/TPMS-Initial-Seeding, Baked Volumes (OP_PRIM_TEX3D).
+Nachtrag: die zuvor fehlenden Opcodes HALFSPACE (0x0D), Helix (0x36/0x37)
+und Sweep (0x38) sind portiert, der Masked-Blend-Drift (festes 2-Punkt-
+statt count-präfixiertes Polyline-Format) ist gefixt; der Golden-Test
+deckt alle mit 9 neuen Szenen ab (25 Szenen gesamt).
 
 Richtungsschwenk (2026-07-07): Export-Meshing höchster Qualität läuft künftig
 **serverseitig** über CGAL `Mesh_3`. Die clientseitige CGAL-Integration

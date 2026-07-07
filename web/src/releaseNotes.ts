@@ -24,6 +24,16 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.444",
+    entries: [
+      {
+        kind: "feat",
+        scope: "export",
+        text: "CGAL-Server-Meshing versteht jetzt alle Kernel-Opcodes: HALFSPACE (geöffnete Shells), Helix und Sweep sind in den C++-Interpreter portiert, ein Masked-Blend-Format-Drift ist gefixt (count-präfixierte Polyline statt festem 2-Punkt-Kapsel-Layout). Der Golden-Test deckt alles mit 9 neuen Szenen ab (25 gesamt, 12.800 Checks). Dazu Douglas-Peucker-Dezimierung der Kanten-Schutz-Polylines im Mesher — eine Helix lieferte 102.000 Tracer-Punkte und würgte CGALs Feature-Protection ab. Helix+Vase end-to-end verifiziert: wasserdicht, 2-manifold, kantentreu (3,4 Mio. Dreiecke).",
+      },
+    ],
+  },
+  {
     version: "0.6.443",
     entries: [
       {
