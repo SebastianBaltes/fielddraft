@@ -61,8 +61,8 @@ dev: build-wasm
 dev-full: build-wasm
     #!/usr/bin/env bash
     set -euo pipefail
-    echo "▶ bringing up db + server (docker compose)…"
-    docker compose up --build -d db server
+    echo "▶ bringing up db + server + mesher (docker compose)…"
+    docker compose up --build -d db server mesher
     echo "▶ waiting for the Go server on :${FIELDDRAFT_SERVER_PORT:-8080}…"
     # Any HTTP response (even 401/404) means the server is up and migrations ran.
     for i in $(seq 1 60); do
