@@ -24,6 +24,16 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.451",
+    entries: [
+      {
+        kind: "feat",
+        scope: "tickets",
+        text: "Links in Issue-Beschreibungen und Kommentaren sind jetzt klickbar (öffnen in neuem Tab) — z. B. die Commit-Links in Dev-Kommentaren.",
+      },
+    ],
+  },
+  {
     version: "0.6.450",
     entries: [
       {

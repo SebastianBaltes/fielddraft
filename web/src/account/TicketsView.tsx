@@ -33,6 +33,7 @@ import {
   type User,
 } from "../api/platform";
 import { accountErrorMessage } from "./useAccount";
+import { linkify } from "./linkify";
 import {
   categoryLabel,
   commentVisible,
@@ -365,7 +366,7 @@ function TicketDetailPanel({
             <span>Updated {formatDate(ticket.updated_at)}</span>
           </div>
           <p className="detail-body" data-testid="detail-body">
-            {ticket.body}
+            {linkify(ticket.body)}
           </p>
           {isAuthor && (
             <div className="detail-author-actions">
@@ -670,7 +671,7 @@ function Thread({
                     {formatDate(c.created_at)}
                   </span>
                 </div>
-                <p className="comment-text">{c.body}</p>
+                <p className="comment-text">{linkify(c.body)}</p>
               </div>
             </li>
           ))}
