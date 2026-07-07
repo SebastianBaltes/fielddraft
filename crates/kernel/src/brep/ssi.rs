@@ -213,9 +213,9 @@ fn profile_rank(h: &HalfSpace) -> u8 {
 /// (start end-piece reversed, segments, end end-piece), so concatenating
 /// them yields a continuous curve parametrisation — the property the
 /// revolved-surface arm of [`ParamA::point`] relies on.
-struct ProfilePiece<'a> {
-    samples: usize,
-    eval: Box<dyn Fn(f32) -> [f32; 2] + 'a>,
+pub(crate) struct ProfilePiece<'a> {
+    pub(crate) samples: usize,
+    pub(crate) eval: Box<dyn Fn(f32) -> [f32; 2] + 'a>,
 }
 
 /// Decompose operand A's profile into sampleable pieces, bounded by the
@@ -224,7 +224,11 @@ struct ProfilePiece<'a> {
 /// chain ends: that is where shared-corner roots with adjacent groups live
 /// (the carriers cross transversally there), and an inner-wall corner's foot
 /// can sit far beyond the group end at shallow knick angles (`offset/tanθ`).
-fn profile_pieces<'a>(h: &'a HalfSpace, t: &'a Transform, overlap: &Aabb) -> Option<Vec<ProfilePiece<'a>>> {
+pub(crate) fn profile_pieces<'a>(
+    h: &'a HalfSpace,
+    t: &'a Transform,
+    overlap: &Aabb,
+) -> Option<Vec<ProfilePiece<'a>>> {
     // Overlap corners in A's local frame → y-range + a local length scale.
     let corners = box_corners(overlap);
     let local: Vec<[f32; 3]> = corners.iter().map(|&c| world_to_local(t, c)).collect();

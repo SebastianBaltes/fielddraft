@@ -24,6 +24,17 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.436",
+    entries: [
+      {
+        kind: "feat",
+        scope: "debug",
+        tickets: ["nwmi"],
+        text: "Hybrid-PASM P4b: Revolve-Träger im CDT-Mesher — die v-Achse des Charts ist die Bogenlänge der Nächster-Punkt-Projektion auf die offset-korrigierte Profilkette (ssi-Profile-Pieces). Rohr-Meilenstein grün: Rechteck-Revolve ∩ Box liefert end-to-end ein wasserdichtes Torus-Netz (Euler=0) — Außen- und Innenwand liegen auf demselben Branch und trennen sich rein über das Chart, die Deckel sind Annuli mit Loch-Loop. Faltungs-Guard: springt v entlang einer Loop um mehr als ¼ der Kettenlänge, bleibt die Face unvermascht.",
+      },
+    ],
+  },
+  {
     version: "0.6.435",
     entries: [
       {

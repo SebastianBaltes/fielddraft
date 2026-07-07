@@ -348,6 +348,7 @@ impl Kernel {
                             | HalfSpace::InfiniteCylinder { .. }
                             | HalfSpace::Cone { .. }
                             | HalfSpace::Sphere { .. }
+                            | HalfSpace::RevolvedProfile { .. }
                     ) {
                         continue;
                     }
@@ -408,6 +409,60 @@ impl Kernel {
                     // (inverse placement) → surface local (inverse transform),
                     // folded into one composed transform.
                     let total_t = crate::compose_transforms(&placement, transform);
+                    // P4b: a RevolvedProfile's chart v-axis is the ARC LENGTH
+                    // along the offset-corrected profile chain. Sample the
+                    // chain (ssi's pieces, continuous order) into a local
+                    // (r, y) polyline with cumulative arc lengths; v of a
+                    // point is the arc length of its nearest-point
+                    // projection. Points ON the surface project uniquely, so
+                    // the offset-fold ambiguity of far points never applies.
+                    let profile: Option<(Vec<[f32; 2]>, Vec<f32>)> =
+                        if matches!(surface, HalfSpace::RevolvedProfile { .. }) {
+                            let mut lo = [f32::INFINITY; 3];
+                            let mut hi = [f32::NEG_INFINITY; 3];
+                            for ring in &face_loops {
+                                for &gi in ring {
+                                    let p = flat[gi as usize];
+                                    for a in 0..3 {
+                                        lo[a] = lo[a].min(p[a]);
+                                        hi[a] = hi[a].max(p[a]);
+                                    }
+                                }
+                            }
+                            let bb = crate::csg::Aabb { min: lo, max: hi };
+                            let Some(pieces) =
+                                crate::brep::ssi::profile_pieces(surface, &total_t, &bb)
+                            else {
+                                continue;
+                            };
+                            let mut poly: Vec<[f32; 2]> = Vec::new();
+                            for pc in &pieces {
+                                let n = pc.samples.clamp(8, 128);
+                                for k in 0..=n {
+                                    let q = (pc.eval)(k as f32 / n as f32);
+                                    if poly.last().map_or(true, |l| {
+                                        let d = [q[0] - l[0], q[1] - l[1]];
+                                        d[0] * d[0] + d[1] * d[1] > 1e-10
+                                    }) {
+                                        poly.push(q);
+                                    }
+                                }
+                            }
+                            if poly.len() < 2 {
+                                continue;
+                            }
+                            let mut arc = Vec::with_capacity(poly.len());
+                            let mut acc = 0.0f32;
+                            arc.push(0.0);
+                            for w in poly.windows(2) {
+                                let d = [w[1][0] - w[0][0], w[1][1] - w[0][1]];
+                                acc += (d[0] * d[0] + d[1] * d[1]).sqrt();
+                                arc.push(acc);
+                            }
+                            Some((poly, arc))
+                        } else {
+                            None
+                        };
                     let uv_raw = |p: [f32; 3]| -> Option<[f64; 2]> {
                         let l = crate::world_to_local(&total_t, p);
                         match surface {
@@ -422,6 +477,31 @@ impl Kernel {
                                 } else {
                                     Some([z.atan2(x), (y / r).clamp(-1.0, 1.0).acos()])
                                 }
+                            }
+                            HalfSpace::RevolvedProfile { .. } => {
+                                let (poly, arc) = profile.as_ref()?;
+                                let rad = (l[0] * l[0] + l[2] * l[2]).sqrt();
+                                let mut best = (f32::INFINITY, 0.0f32);
+                                for (k, w) in poly.windows(2).enumerate() {
+                                    let d = [w[1][0] - w[0][0], w[1][1] - w[0][1]];
+                                    let len2 = d[0] * d[0] + d[1] * d[1];
+                                    let t = if len2 > 0.0 {
+                                        (((rad - w[0][0]) * d[0] + (l[1] - w[0][1]) * d[1])
+                                            / len2)
+                                            .clamp(0.0, 1.0)
+                                    } else {
+                                        0.0
+                                    };
+                                    let e = [
+                                        rad - (w[0][0] + t * d[0]),
+                                        l[1] - (w[0][1] + t * d[1]),
+                                    ];
+                                    let d2 = e[0] * e[0] + e[1] * e[1];
+                                    if d2 < best.0 {
+                                        best = (d2, arc[k] + t * len2.sqrt());
+                                    }
+                                }
+                                Some([(l[2] as f64).atan2(l[0] as f64), best.1 as f64])
                             }
                             _ => None,
                         }
@@ -447,6 +527,22 @@ impl Kernel {
                     if !chart_ok {
                         continue;
                     }
+                    // Projection-fold guard (RevolvedProfile): if v jumps by
+                    // more than a quarter of the chain length between
+                    // neighbouring loop points, the nearest-point chart
+                    // folded (closed/ambiguous profile) — leave unmeshed.
+                    if let Some((_, arc)) = &profile {
+                        let l_total = *arc.last().unwrap_or(&0.0) as f64;
+                        let folded = raw_loops.iter().any(|lp| {
+                            (0..lp.len()).any(|k| {
+                                (lp[(k + 1) % lp.len()].1[1] - lp[k].1[1]).abs()
+                                    > 0.25 * l_total
+                            })
+                        });
+                        if folded {
+                            continue;
+                        }
+                    }
                     // Scale θ (and the sphere's polar angle) to arc length so
                     // both chart axes carry comparable units — a Delaunay
                     // quality concern, not a correctness one. The cone uses
@@ -464,6 +560,20 @@ impl Kernel {
                                 .sum::<f64>()
                                 / n_pts.max(1) as f64;
                             ((mean_v * tan_a).max(1e-3), 1.0)
+                        }
+                        HalfSpace::RevolvedProfile { .. } => {
+                            // Mean loop radius as the θ arc-length reference
+                            // (v is already an arc length).
+                            let (mut sum, mut n) = (0.0f64, 0usize);
+                            for ring in &face_loops {
+                                for &gi in ring {
+                                    let l =
+                                        crate::world_to_local(&total_t, flat[gi as usize]);
+                                    sum += ((l[0] * l[0] + l[2] * l[2]) as f64).sqrt();
+                                    n += 1;
+                                }
+                            }
+                            ((sum / n.max(1) as f64).max(1e-3), 1.0)
                         }
                         _ => (1.0, 1.0),
                     };
@@ -499,6 +609,23 @@ impl Kernel {
                                     (r * t.cos()) as f32,
                                     (r * sp * th.sin()) as f32,
                                 ]
+                            }
+                            HalfSpace::RevolvedProfile { .. } => {
+                                let (poly, arc) =
+                                    profile.as_ref().expect("revolve chart has a profile");
+                                let s_arc =
+                                    (t as f32).clamp(0.0, *arc.last().unwrap_or(&0.0));
+                                let k = arc
+                                    .partition_point(|&a| a < s_arc)
+                                    .clamp(1, arc.len() - 1);
+                                let (a0, a1) = (arc[k - 1], arc[k]);
+                                let f =
+                                    if a1 > a0 { (s_arc - a0) / (a1 - a0) } else { 0.0 };
+                                let r = (poly[k - 1][0]
+                                    + f * (poly[k][0] - poly[k - 1][0]))
+                                    as f64;
+                                let yy = poly[k - 1][1] + f * (poly[k][1] - poly[k - 1][1]);
+                                [(r * th.cos()) as f32, yy, (r * th.sin()) as f32]
                             }
                             _ => [0.0; 3],
                         };
@@ -993,6 +1120,83 @@ mod mesher_octree_tests {
         let e = edge_use.len() as i64;
         let f = tris as i64;
         assert_eq!(v - e + f, 2, "Euler characteristic broke: V={v} E={e} F={f}");
+    }
+
+    /// Hybrid-PASM P4b (ticket nwmi): a revolved TUBE (rectangle profile at
+    /// r ∈ [5, 9] about Y, intersected with a y-slab box) exercises the
+    /// RevolvedProfile chart — v is the arc length of the nearest-point
+    /// projection onto the offset-corrected profile chain. Outer AND inner
+    /// wall live on the SAME branch (one RevolvedProfile half-space) and
+    /// must separate purely through the chart; the caps are annuli (planar
+    /// path with a hole loop). Torus topology: every edge in exactly two
+    /// triangles, Euler V − E + F = 0.
+    #[test]
+    fn mesher_points_cdt_revolve_tube_is_watertight_manifold() {
+        let mut k = crate::Kernel::new();
+        k.document = serde_json::from_str(
+            &serde_json::json!({
+                "schema_version": 2,
+                "name": "revolve-tube",
+                "next_feature_id": 4,
+                "feature_calls": [
+                    { "type": "sketch", "id": "1", "params": {
+                        "plane": "qCreatedBy(origin_plane_xy)",
+                        "sub_calls": [
+                            { "type": "sketch_rectangle", "id": "r1", "params": {
+                                "corner_a": [5.0, -10.0], "corner_b": [9.0, 10.0] } },
+                            { "type": "sketch_line", "id": "axis", "params": {
+                                "start": [0.0, -10.0], "end": [0.0, 10.0] } }
+                        ] } },
+                    { "type": "revolve", "id": "2", "params": {
+                        "profiles": "qCreatedBy(1)", "axis": "qSketchLine(1, 11)" } },
+                    { "type": "box", "id": "3", "params": {
+                        "half_extents": [20.0, 6.0, 20.0],
+                        "translate": [0.0, 0.0, 0.0],
+                        "op": "intersect", "targets": "qCreatedBy(2)" } }
+                ]
+            })
+            .to_string(),
+        )
+        .unwrap();
+        k.bootstrap_features_from_calls().unwrap();
+        k.rebuild_packed();
+        let out = k.mesher_points(
+            r#"{"maxDepth":4,"brepSkeleton":true,"cdtFaces":true,
+                "nearSurfaceOnly":true,"nearSurfaceDist":1.0,
+                "fitOnSurface":true,"onlyOnSurface":true,
+                "repulsion":true,"interactionRadius":3.0,"repulsionStrength":0.5,
+                "pasmKernel":true,"iterations":20}"#
+                .into(),
+        );
+        let total = out[0] as usize;
+        let tris = out[1] as usize;
+        assert!(tris >= 16, "expected a real triangulation, got {tris} tris");
+        let idx_base = 2 + total * 9;
+        let mut edge_use: std::collections::HashMap<(u32, u32), u32> =
+            std::collections::HashMap::new();
+        let mut used: std::collections::HashSet<u32> = std::collections::HashSet::new();
+        for t in 0..tris {
+            let a = out[idx_base + t * 3] as u32;
+            let b = out[idx_base + t * 3 + 1] as u32;
+            let c3 = out[idx_base + t * 3 + 2] as u32;
+            assert!(a != b && b != c3 && c3 != a, "degenerate triangle");
+            for (x, y) in [(a, b), (b, c3), (c3, a)] {
+                *edge_use.entry((x.min(y), x.max(y))).or_default() += 1;
+                used.insert(x);
+                used.insert(y);
+            }
+        }
+        for (&(a, b), &n) in &edge_use {
+            assert_eq!(n, 2, "edge {a}-{b} used {n}× (open seam or fan)");
+        }
+        let v = used.len() as i64;
+        let e = edge_use.len() as i64;
+        let f = tris as i64;
+        assert_eq!(
+            v - e + f,
+            0,
+            "tube Euler characteristic broke: V={v} E={e} F={f}"
+        );
     }
 
     /// Hybrid-PASM P1 (ticket nwmi): with `brepSkeleton` on, a box body emits
