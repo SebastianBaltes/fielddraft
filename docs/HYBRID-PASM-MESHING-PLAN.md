@@ -175,6 +175,18 @@ Constraint-Polygon.** Begründung gegen die Alternativen:
   Naht-Kontrakt-Tests (jede Loop-Kette exakt einmal je Face-Seite).
 - **P4 — Anisotropie & Gyroid**: volle M=QᵀQ-Kräfte (Gl. 21), Squash-CDT;
   Gyroid-Faces via Tangential-CDT oder Front; MDC-Stitching entfällt.
+  - *P4a umgesetzt (v0.6.435)*: periodische Träger (Zylinder/Kegel/Kugel-
+    Bänder) via `triangulate_periodic_face` — Unwrap + Windungszahl,
+    Naht-Schnitt mit GETEILTEN Steiner-Punkt-Indizes in beiden Kopien
+    (strukturelle Verschweißung), Polkappen (Windung 1) bewusst abgelehnt.
+    Zwei Robustheits-Fundamente daraus: Dreiecks-Harvest kombinatorisch
+    (Flood-Fill, Parität flippt an Constraint-Kanten — Zentroid-Tests
+    rauschen an Naht-Slivern) und 0,25·h-Boundary-Clearance für Partikel
+    (exakt-auf-Constraint splittet einseitig und öffnet die Kette).
+    Zylinder end-to-end geschlossen/2-Manifold.
+  - *P4b offen*: Revolve-Träger (Welt→v via Nächster-Punkt-Projektion auf
+    die offset-korrigierte Profilkette; Chart-Faltung konkaver Offsets
+    beachten), Polkappen-Fächer, Anisotropie, Gyroid-Blätter.
 - **P5 — Export-Integration**: Ersetzt MT/MDC im Export-Dialog als
   Qualitätsstufe „CAD (kantenexakt)"; Survey-Harness
   (ticket_survey_all_methods) erweitert um Hausdorff/Winkel-Histogramm wie
