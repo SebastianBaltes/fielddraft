@@ -749,14 +749,21 @@ fn aabbs_overlap(a: Aabb, b: Aabb) -> bool {
     // (the centroid of a marching-cubes face) and lands a fraction of a micron
     // off the parent's exact bound. Expand by a tiny tolerance so genuinely
     // touching bodies still dock; bodies a real gap apart stay separate
-    // (ticket px2o). 1 µm is far below any meaningful CAD feature size.
-    const TOL: f32 = 1e-3;
-    a.min[0] <= b.max[0] + TOL
-        && a.max[0] + TOL >= b.min[0]
-        && a.min[1] <= b.max[1] + TOL
-        && a.max[1] + TOL >= b.min[1]
-        && a.min[2] <= b.max[2] + TOL
-        && a.max[2] + TOL >= b.min[2]
+    // (ticket px2o). Floor: 1 µm, far below any meaningful CAD feature size.
+    // Scale-relative term: on metre-scale models the f32 coordinate noise of
+    // the AABBs themselves exceeds a fixed micron, so the slack additionally
+    // tracks the pair's extent (1e-6 of the larger span — epsilon policy,
+    // ARCHITECTURE-ROADMAP Punkt 3).
+    let span = (0..3)
+        .map(|k| (a.max[k] - a.min[k]).max(b.max[k] - b.min[k]))
+        .fold(0.0_f32, f32::max);
+    let tol = (span * 1e-6).max(1e-3);
+    a.min[0] <= b.max[0] + tol
+        && a.max[0] + tol >= b.min[0]
+        && a.min[1] <= b.max[1] + tol
+        && a.max[1] + tol >= b.min[1]
+        && a.min[2] <= b.max[2] + tol
+        && a.max[2] + tol >= b.min[2]
 }
 
 /// Split hash of a body's feature payload: geometry vs. transform.

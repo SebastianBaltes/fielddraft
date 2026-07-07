@@ -120,7 +120,18 @@ Face-Picking auf der Naht) oder Beginn der Fillet-BRep-Arbeit aus
 unbetroffen (G1-Stoß ist glatt — fürs Meshing ist „kein scharfes Feature"
 sogar korrekt), es leiden Wireframe/Picking/STEP.
 
-## 3. Epsilon-Politik: eine zentrale, skalenrelative Toleranz-Policy
+## 3. Epsilon-Politik: eine zentrale, skalenrelative Toleranz-Policy — UMGESETZT
+
+**Status (2026-07-07).** Kern durch Phase 5a des Klassifikations-Plans
+(`brep::tol`, v0.6.71–74): benannte, klassifizierte Toleranzen
+(skalenrelativ / dimensionslos / eingefroren-absolut mit
+Konvertierungsauftrag). Kernel-weites Audit 2026-07-07: Restbestand
+klassifiziert (dimensionslos / Sketch-mm-Domäne / Meshing-Export-Domäne —
+Details im `brep/tol.rs`-Modulkopf), skalen-fragile Nachzügler migriert
+(AABB-Docking-Slack in `body.rs` jetzt span-relativ mit 1-µm-Floor; das
+Naming-Sweep-ε ist seit dem Persistent-Naming-N1 gruppen-relativ).
+Konvention für neue geometrische Längen-Toleranzen: über `brep::tol`
+ankern.
 
 **Problem.** Der Kern mischt absolute Toleranzen (`PROJECT_TOL = 1e-9`,
 `BISECT_ACTIVE_TOL = 1e-7`, `PARALLEL_EPS = 1e-6`) mit diagonal-relativen
