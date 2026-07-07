@@ -57,6 +57,35 @@ import {
   type StoreState,
 } from "./storeCore";
 
+/** Ticket 6398…: the server-project binding survives a page reload. The
+ *  localStorage autosave restores the DOCUMENT, this key restores the sync
+ *  binding (`projectId`) — without it a reload silently degrades a
+ *  server-saved project to guest mode ("save to server first" on export).
+ *  Written/cleared in lockstep with the binding transitions below; the boot
+ *  rebind (App.tsx) verifies the id against the server before adopting it. */
+const SERVER_BINDING_KEY = "fielddraft.serverProjectId";
+
+export function loadStoredServerBinding(): string | null {
+  try {
+    return localStorage.getItem(SERVER_BINDING_KEY);
+  } catch {
+    return null;
+  }
+}
+
+export function clearStoredServerBinding(): void {
+  persistServerBinding(null);
+}
+
+function persistServerBinding(id: string | null): void {
+  try {
+    if (id) localStorage.setItem(SERVER_BINDING_KEY, id);
+    else localStorage.removeItem(SERVER_BINDING_KEY);
+  } catch {
+    // storage unavailable (private mode) — binding just won't survive reload
+  }
+}
+
 export class ProjectStore {
   constructor(private readonly core: StoreCore) {}
 
@@ -336,6 +365,7 @@ export class ProjectStore {
 
   /** M12: set the server-side project ID (activates sync). */
   setProjectId(id: string | null): void {
+    persistServerBinding(id);
     this.state = {
       ...this.state,
       projectId: id,
@@ -367,6 +397,7 @@ export class ProjectStore {
     } else if (!this.loadProjectFromJson(documentJson)) {
       return false;
     }
+    persistServerBinding(id);
     this.state = {
       ...this.state,
       projectId: id,
@@ -380,6 +411,7 @@ export class ProjectStore {
    *  (e.g. after the bound project is deleted, or on logout). The live
    *  workspace document is left untouched. */
   detachServerProject(): void {
+    persistServerBinding(null);
     if (this.state.projectId === null && this.state.syncState === "offline") {
       return;
     }

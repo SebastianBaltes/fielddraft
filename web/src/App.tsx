@@ -21,6 +21,10 @@ import { AuthGate } from "./account/AuthGate";
 import { InviteRegister } from "./account/InviteRegister";
 import { GuestImportBanner } from "./account/GuestImportBanner";
 import { shouldOfferGuestImport } from "./account/guestImport";
+import {
+  loadStoredServerBinding,
+  clearStoredServerBinding,
+} from "./projectStore";
 import { platformApi, type Project as ServerProject } from "./api/platform";
 
 // WP11: the deployed build gates the whole app behind login. The gate is a
@@ -117,7 +121,16 @@ function AppShell({ account }: { account: UseAccount }) {
       typeof project.document === "string"
         ? project.document
         : JSON.stringify(project.document ?? {});
-    store.loadServerProject(project.id, json);
+    // Ticket 6398…: a malformed server blob must NOT silently enter the
+    // modeling view with the previous (guest) workspace unbound — that
+    // masquerades as the wrong project and downgrades export to "save to
+    // server first". Surface the failure and stay on the dashboard.
+    if (!store.loadServerProject(project.id, json)) {
+      store.showTransientError(
+        `“${project.name}” could not be opened — its stored document is not a valid project.`,
+      );
+      return;
+    }
     account.enterProject();
   };
 
@@ -159,6 +172,32 @@ function AppShell({ account }: { account: UseAccount }) {
     }
   };
 
+  // Ticket 6398…: rebind the server project after a page reload. The
+  // localStorage autosave restores the DOCUMENT; this restores the sync
+  // binding, which otherwise silently degrades to guest mode ("save to
+  // server first" on CGAL export despite an open server project). The stored
+  // id is verified against the server first — a deleted/foreign project
+  // clears it instead of binding. setProjectId marks the session "dirty", so
+  // the next autosave pushes the (autosave-identical) local doc back up.
+  useEffect(() => {
+    if (!store || account.state.status !== "authed") return;
+    if (state?.projectId) return;
+    const storedId = loadStoredServerBinding();
+    if (!storedId) return;
+    let cancelled = false;
+    platformApi.getProject(storedId).then(
+      (p) => {
+        if (!cancelled) store.setProjectId(p.id);
+      },
+      () => {
+        if (!cancelled) clearStoredServerBinding();
+      },
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [store, account.state.status, state?.projectId]);
+
   // WP9 B4: first-login guest-project import. When a guest who has done real
   // local work logs in (or registers) for the first time, offer — once — to
   // import their localStorage guest project as a new server project. Declining
@@ -175,7 +214,9 @@ function AppShell({ account }: { account: UseAccount }) {
     if (!store) return;
     const offer = shouldOfferGuestImport({
       authed: account.state.status === "authed",
-      boundProjectId: state?.projectId ?? null,
+      // A stored (not-yet-rehydrated) binding counts as bound — the async
+      // rebind above must not race a spurious "import your guest project?".
+      boundProjectId: state?.projectId ?? loadStoredServerBinding(),
       guestDocument: currentDocument(),
     });
     if (offer) setImportPrompt("offer");
@@ -362,7 +403,19 @@ function AppShell({ account }: { account: UseAccount }) {
                 )}
               </div>
             ) : (
-              <div className="topbar-spacer" />
+              <div className="topbar-spacer">
+                {/* Dashboard-side surface for store errors (e.g. a server
+                    project whose blob failed to open, ticket 6398…). */}
+                {state?.transientError ? (
+                  <span
+                    className="transient-error"
+                    data-testid="transient-error"
+                    role="alert"
+                  >
+                    ⚠ {state.transientError}
+                  </span>
+                ) : null}
+              </div>
             )}
             <Bell account={account} />
             <UserMenu

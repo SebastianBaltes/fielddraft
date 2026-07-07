@@ -24,6 +24,23 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.448",
+    entries: [
+      {
+        kind: "fix",
+        scope: "export",
+        tickets: ["63989a9e"],
+        text: "Server-Projekt-Bindung überlebt jetzt einen Seiten-Reload: Bisher stellte das Autosave zwar das Dokument wieder her, die Sync-Bindung ging aber verloren — der CGAL-Server-Export meldete dann fälschlich „save to server first“, obwohl das Projekt auf dem Server lag. Die Bindung wird jetzt persistiert und beim Start gegen den Server verifiziert wiederhergestellt (gelöschte/fremde Projekte binden nicht).",
+      },
+      {
+        kind: "fix",
+        scope: "projects",
+        tickets: ["63989a9e"],
+        text: "Ein Server-Projekt mit defektem Dokument-Blob öffnete sich bisher STILL falsch: Die App wechselte in die Modellier-Ansicht, zeigte dort aber das vorherige lokale Dokument ungebunden an — mit demselben „save to server first“-Symptom. Jetzt bleibt die App auf der Projekt-Seite und zeigt eine Fehlermeldung.",
+      },
+    ],
+  },
+  {
     version: "0.6.447",
     entries: [
       {
