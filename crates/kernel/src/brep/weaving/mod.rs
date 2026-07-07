@@ -185,8 +185,57 @@ pub(crate) fn finish_weave(mut brep: BRep, body: &BoundedCsg) -> BRep {
     let halfspaces = branch_halfspace_map(body);
     let complemented = complemented_features(body);
     let (memberships, culled) = canonicalize_coincident(&mut brep, body, &halfspaces);
-    let face_ids = materialize_faces(&mut brep, &halfspaces, &complemented, &memberships, &culled);
-    assemble_solid(brep, face_ids)
+
+    // First attempt with the canonicalised memberships as-is.
+    let mut attempt = brep.clone();
+    let face_ids =
+        materialize_faces(&mut attempt, &halfspaces, &complemented, &memberships, &culled);
+
+    // Repair stage (plan Phase 3, the OVERLAP case —
+    // gate_union_crossing_boxes_coplanar_tops): when coincident class
+    // regions overlap on a shared carrier, the merge memberships
+    // double-cover the overlap and the result is non-manifold. Only then —
+    // never on an already-manifold body — re-attribute the memberships by
+    // ±ε ownership probes and materialise again. Gating the repair on the
+    // actual failure keeps every abutting-only body (flush stacks, the
+    // drift-laden o2j9 family) byte-identical to the direct path.
+    if !attempt.manifold_violations().is_empty() {
+        let registry = crate::brep::coincidence::CoincidenceRegistry::build(body);
+        if !registry.is_empty() {
+            let aabb = body.aabb();
+            let diag = norm([
+                (aabb.max[0] - aabb.min[0]) as f64,
+                (aabb.max[1] - aabb.min[1]) as f64,
+                (aabb.max[2] - aabb.min[2]) as f64,
+            ])
+            .max(1.0);
+            let mut repaired = brep.clone();
+            let mut repaired_members = memberships.clone();
+            reattribute_coincident_memberships(
+                body,
+                &mut repaired,
+                &registry,
+                &halfspaces,
+                &mut repaired_members,
+                &culled,
+                diag,
+            );
+            let mut repaired_attempt = repaired.clone();
+            let repaired_face_ids = materialize_faces(
+                &mut repaired_attempt,
+                &halfspaces,
+                &complemented,
+                &repaired_members,
+                &culled,
+            );
+            if repaired_attempt.manifold_violations().len()
+                < attempt.manifold_violations().len()
+            {
+                return assemble_solid(repaired_attempt, repaired_face_ids);
+            }
+        }
+    }
+    assemble_solid(attempt, face_ids)
 }
 
 /// Phase (1): upgrade every Hermite edge to NURBS. The edge-walk samples stop

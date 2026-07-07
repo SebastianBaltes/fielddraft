@@ -231,8 +231,8 @@ impl<'a> Context<'a> {
         outer_off: f32,
         inner_off: f32,
     ) -> Result<Vec<(CsgNode, Transform)>, String> {
-        use crate::brep::naming::TopoRef;
-        use crate::brep::{FaceId, SurfaceGeometry};
+        
+        use crate::brep::SurfaceGeometry;
         use crate::queries::QueryExpr;
 
         // Pass 1 (woven borrowed): resolve analytic walls in place; for a

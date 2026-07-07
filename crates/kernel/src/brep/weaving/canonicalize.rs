@@ -627,3 +627,308 @@ pub(super) fn is_watertight(brep: &BRep, face_ids: &[crate::brep::FaceId]) -> bo
     }
     uses.iter().all(|&u| u == 2)
 }
+
+/// Re-attribute edge memberships where coincident carriers OVERLAP (plan
+/// Phase 3, the case the flush stacks never hit —
+/// `gate_union_crossing_boxes_coplanar_tops`). Two failure shapes of the raw
+/// signature semantics on an overlapping ON-same class:
+///
+/// - **buried signature branch**: the central stretch of box1's top∩wall
+///   edge lies on the shared top plane, but box1's WALL is buried inside the
+///   crossing box there — the edge's real second face is the *coincident
+///   sibling's* region (box2.top), not the wall. Feeding the wall's face
+///   loop that edge double-covers the overlap and breaks orientation.
+/// - **interior seam**: a traced pair line that crosses the overlap (box1.top
+///   ∩ box2.wall inside the plus's centre) separates nothing — both sides
+///   belong to the same kept region. It must be dropped entirely.
+///
+/// For every edge whose signature touches a coincidence class, the true pair
+/// of adjacent faces is decided by ±ε side probes in each carrier's tangent
+/// plane (the plan-blessed probe form: sidedness of a KNOWN analytic surface
+/// point; the coincidence facts came symbolically from the registry). A side
+/// is adjacent when it lies on the body boundary; among coincident class
+/// members active there, the smallest branch owns the region (the same
+/// deterministic representative rule the edge merge uses). Bails to the raw
+/// semantics whenever an ingredient is missing — never acts on guesswork.
+pub(super) fn reattribute_coincident_memberships(
+    body: &BoundedCsg,
+    brep: &mut BRep,
+    registry: &crate::brep::coincidence::CoincidenceRegistry,
+    halfspaces: &BranchSurfaceMap,
+    memberships: &mut Vec<Vec<u32>>,
+    culled: &std::collections::HashSet<u32>,
+    diag: f64,
+) {
+    use crate::csg::EvalMode;
+
+    let leaf_map = crate::brep::edge_walker::branch_leaf_map(body);
+    let bnd = crate::brep::tol::on_boundary(diag);
+    // Probe offset: comfortably clear of the boundary band and the eval
+    // attribution noise, far below any face extent that matters.
+    let probe_eps = 16.0 * bnd;
+
+    let mut keep = vec![true; brep.edges.len()];
+    let mut changed_any = false;
+
+    for i in 0..brep.edges.len() {
+        let (sa, sb) = {
+            let e = &brep.edges[i];
+            (e.signature.0, e.signature.1)
+        };
+        let cls_a = registry.class_of(sa);
+        let cls_b = registry.class_of(sb);
+        if cls_a.is_none() && cls_b.is_none() {
+            continue; // no coincidence involved — raw semantics are exact
+        }
+
+        // Midpoint + unit tangent from the (already refined) edge geometry.
+        let samples = crate::brep::edge_sampling::sample_edge(&brep.edges[i].geometry);
+        if samples.len() < 2 {
+            continue;
+        }
+        let mid_idx = samples.len() / 2;
+        let m = samples[mid_idx];
+        let t = {
+            let lo = mid_idx.saturating_sub(1);
+            let hi = (mid_idx + 1).min(samples.len() - 1);
+            let d = sub(samples[hi], samples[lo]);
+            if norm(d) < 1e-12 {
+                continue;
+            }
+            unit(d)
+        };
+
+        // Candidate class members share the signature branch's carrier.
+        let group_of = |branch: BranchId| -> Vec<u32> {
+            match registry.class_of(branch) {
+                Some((cls, _)) => registry.classes()[cls]
+                    .members
+                    .iter()
+                    .map(|&(b, _)| b.as_u32())
+                    .collect(),
+                None => vec![branch.as_u32()],
+            }
+        };
+        // Carrier-side probe: on `anchor`'s carrier, step probe_eps to both
+        // sides of the edge in the tangent plane and report the body field
+        // there. `None` when any ingredient is missing (no analytic carrier,
+        // degenerate tangent) — the caller then leaves this edge alone.
+        let side_fields = |anchor: u32| -> Option<[(f32, [f32; 3]); 2]> {
+            let (hs, xf) = halfspaces.get(&anchor)?;
+            let surface = SurfaceGeometry::Analytic {
+                surface: hs.clone(),
+                transform: *xf,
+            };
+            let q = snap_to_carrier(&surface, m)?;
+            let n = surface_normal_at(&surface, q)?;
+            let d = cross(n, t);
+            if norm(d) < 1e-9 {
+                return None;
+            }
+            let d = unit(d);
+            let probe = |side: f64| -> (f32, [f32; 3]) {
+                let p = [
+                    (q[0] + d[0] * probe_eps * side) as f32,
+                    (q[1] + d[1] * probe_eps * side) as f32,
+                    (q[2] + d[2] * probe_eps * side) as f32,
+                ];
+                (body.sdf(p, EvalMode::Logical), p)
+            };
+            Some([probe(1.0), probe(-1.0)])
+        };
+        // Region containment via the member's OWN leaf field: the probe sits
+        // on the shared carrier, so |f_leaf| vanishes exactly inside that
+        // member's footprint and grows past its rim. (Contributor attribution
+        // is NOT a containment oracle here — extrude leaves report both wall
+        // groups at any axial distance.)
+        let contains = |c: u32, p: [f32; 3]| -> Option<bool> {
+            let leaf = leaf_map.get(&BranchId(c).feature_id())?;
+            // TIGHT containment: the probe sits on the shared carrier, so the
+            // true owner's leaf field vanishes there to drift noise, while a
+            // member whose region ends short of the probe reads ~probe_eps.
+            // A loose bound here would blur abutting regions into fake
+            // overlaps (flush stacks) — bnd separates the two regimes.
+            Some((leaf.sdf(p, EvalMode::Logical) as f64).abs() <= bnd)
+        };
+
+        // Master gate — genuine region OVERLAP only: the pass may act on
+        // this edge only when some on-boundary side probe of a class carrier
+        // is tightly contained by TWO OR MORE class members (the plus's
+        // centre square). Abutting regions (flush stacks, drift-split tiers)
+        // never double-contain a probe; for them the merge pass's membership
+        // is already the truth and stays untouched.
+        let mut overlap_here = false;
+        for anchor in [sa, sb] {
+            let group = group_of(anchor);
+            if group.len() < 2 {
+                continue;
+            }
+            let Some(sides) = side_fields(anchor.as_u32()) else {
+                continue;
+            };
+            for &(f, p) in &sides {
+                if (f as f64).abs() > bnd {
+                    continue;
+                }
+                // STRICT containment for the gate: a genuine overlap reads
+                // exactly zero in both members' leaf fields (the probe lies
+                // well inside both footprints on the shared carrier), while
+                // near-coincidence drift artefacts read ~bnd. A quarter of
+                // the boundary tolerance separates the regimes with margin.
+                let strictly_contains = |c: u32| -> bool {
+                    leaf_map
+                        .get(&BranchId(c).feature_id())
+                        .is_some_and(|leaf| {
+                            (leaf.sdf(p, EvalMode::Logical) as f64).abs() <= 0.25 * bnd
+                        })
+                };
+                let n_containing = group
+                    .iter()
+                    .filter(|c| !culled.contains(*c))
+                    .filter(|&&c| strictly_contains(c))
+                    .count();
+                if n_containing >= 2 {
+                    overlap_here = true;
+                }
+            }
+        }
+        if !overlap_here {
+            continue;
+        }
+
+        // Step 1 — removal, conservative: a member goes only when BOTH side
+        // probes on its own carrier are CLEARLY off the boundary (beyond
+        // 4×bnd, buried or airborne). Marginal readings (drift-scale flush
+        // stacks) keep the member — merge's answer stands.
+        let rm_tol = 4.0 * bnd;
+        let mut members = memberships[i].clone();
+        let before = members.clone();
+        members.retain(|&b| {
+            let Some(sides) = side_fields(b) else {
+                return true; // no carrier — never guess
+            };
+            let clearly_off = sides
+                .iter()
+                .all(|&(f, _)| (f as f64).abs() > rm_tol);
+            !clearly_off
+        });
+
+        // Step 1b — ownership partition on OVERLAPPING class regions: when
+        // two same-class members both tightly contain the SAME side probe,
+        // their regions genuinely overlap there (the plus's centre square) —
+        // regions that merely ABUT (flush stacks, drift-split tiers) never
+        // double-contain a probe and are skipped, so merge's answer stands
+        // for them. Inside an overlap the smallest containing member owns
+        // each on-boundary side; class members owning no side leave the
+        // membership.
+        for anchor in [sa, sb] {
+            let group = group_of(anchor);
+            if group.len() < 2 {
+                continue;
+            }
+            let Some(sides) = side_fields(anchor.as_u32()) else {
+                continue;
+            };
+            let mut owners: Vec<u32> = Vec::new();
+            let mut overlap = false;
+            let mut oracle_ok = true;
+            for &(f, p) in &sides {
+                if (f as f64).abs() > bnd {
+                    continue; // off-boundary side owns nothing
+                }
+                let mut containing: Vec<u32> = Vec::new();
+                for &c in &group {
+                    if culled.contains(&c) {
+                        continue;
+                    }
+                    match contains(c, p) {
+                        Some(true) => containing.push(c),
+                        Some(false) => {}
+                        None => oracle_ok = false,
+                    }
+                }
+                if containing.len() >= 2 {
+                    overlap = true;
+                }
+                if let Some(&o) = containing.iter().min() {
+                    if !owners.contains(&o) {
+                        owners.push(o);
+                    }
+                }
+            }
+            if !oracle_ok || !overlap {
+                continue;
+            }
+            members.retain(|b| !group.contains(b) || owners.contains(b));
+        }
+
+        // Step 2 — sibling addition, only when removal (or a thin merge) left
+        // fewer than two real faces: on each signature carrier, the smallest
+        // class member containing an on-boundary side probe owns that side;
+        // an owner that is not yet a member joins.
+        let live = |ms: &[u32]| ms.iter().filter(|b| !culled.contains(*b)).count();
+        if live(&members) < 2 {
+            for anchor in [sa, sb] {
+                let group = group_of(anchor);
+                if group.len() < 2 {
+                    continue; // no class — nothing to add
+                }
+                let Some(sides) = side_fields(anchor.as_u32()) else {
+                    continue;
+                };
+                for &(f, p) in &sides {
+                    if (f as f64).abs() > bnd {
+                        continue; // this side is off the boundary
+                    }
+                    let mut owner: Option<u32> = None;
+                    let mut oracle_ok = true;
+                    for &c in &group {
+                        if culled.contains(&c) {
+                            continue;
+                        }
+                        match contains(c, p) {
+                            Some(true) => {
+                                owner = Some(owner.map_or(c, |o: u32| o.min(c)));
+                            }
+                            Some(false) => {}
+                            None => oracle_ok = false,
+                        }
+                    }
+                    if !oracle_ok {
+                        continue;
+                    }
+                    if let Some(o) = owner {
+                        if !members.contains(&o) {
+                            members.push(o);
+                        }
+                    }
+                }
+            }
+        }
+
+        members.sort_unstable();
+        if std::env::var("REATTR_DBG").is_ok() && members != before {
+            eprintln!(
+                "REATTR edge {i}: sig=({},{}) m={:?} {:?} -> {:?}",
+                sa.as_u32(),
+                sb.as_u32(),
+                m,
+                before,
+                members
+            );
+        }
+        // Step 3 — an edge with fewer than two live faces separates nothing:
+        // it was interior to a single region (the overlap centre) — drop it.
+        if live(&members) < 2 && live(&before) >= 2 {
+            keep[i] = false;
+            changed_any = true;
+        } else if members != memberships[i] {
+            memberships[i] = members;
+            changed_any = true;
+        }
+    }
+
+    if changed_any {
+        compact_edges_and_vertices(brep, &keep, memberships);
+    }
+}

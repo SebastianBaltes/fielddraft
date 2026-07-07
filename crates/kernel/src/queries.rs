@@ -539,7 +539,7 @@ pub fn resolve_query_topo(
     expr: &QueryExpr,
 ) -> Vec<crate::brep::naming::TopoRef> {
     use crate::brep::naming::TopoRef;
-    use crate::brep::{EdgeId, FaceId, VertexId};
+    use crate::brep::{EdgeId, FaceId};
 
     let mut out: Vec<TopoRef> = Vec::new();
 

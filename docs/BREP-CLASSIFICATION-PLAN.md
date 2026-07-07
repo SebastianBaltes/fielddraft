@@ -327,8 +327,15 @@ disambiguiert die Namen). Das transversale Plus-Gate ist entignoriert
 und grün; Multi-Region auf GEKRÜMMTEN Carriern bleibt dokumentierte
 Limitation (eine Face, periodische uv-Domain hat keine globale
 Containment-Ordnung). Das Kombi-Gate koplanarer Deckel
-(`gate_union_crossing_boxes_coplanar_tops`) bleibt rot — es braucht
-Naht-Kanten-Erzeugung auf koinzidenten Wänden (eigenes Arbeitspaket).
+(`gate_union_crossing_boxes_coplanar_tops`) ist GESCHLOSSEN (v0.6.452):
+`reattribute_coincident_memberships` (canonicalize.rs) partitioniert
+überlappende ON-same-Regionen als **Reparatur-Stufe** in `finish_weave` —
+sie läuft nur, wenn die Materialisierung mit den Merge-Memberships
+non-manifold ist, und nur auf Kanten mit strikt nachgewiesener
+Region-Überlappung (±ε-Ownership-Proben, kleinster enthaltender Member
+besitzt die Region; vergrabene Signatur-Branches verlieren die Kante,
+Flächen-innere Nähte werden gedroppt). Anstoßende Körper (Flush-Stapel,
+die drift-behaftete o2j9-Familie) nehmen byte-identisch den direkten Pfad.
 Phase 4
 (Octree-Route auf den Ticket-Bodies degeneriert weiter an rotierten/
 gekrümmten koinzidenten Wänden — Produktion nimmt die Seed-Route),

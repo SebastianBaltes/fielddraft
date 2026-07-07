@@ -24,6 +24,16 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.452",
+    entries: [
+      {
+        kind: "fix",
+        scope: "kernel",
+        text: "Koplanare ON-same-Überlappung webt manifold: Kreuzende Körper mit gleich hohen Deckeln doppel-deckten das Überlappungs-Quadrat (40 Orientierungs-Verletzungen). Neue Reparatur-Stufe im Weave: schlägt die Materialisierung fehl, partitioniert eine ±ε-Ownership-Probe die überlappenden Klassen-Regionen (kleinster enthaltender Member besitzt die Region), vergrabene Signatur-Branches verlieren die Kante, Flächen-innere Nähte fliegen. Nur bei nachgewiesenem Overlap aktiv — anstoßende Stapel (o2j9-Familie) bleiben byte-identisch.",
+      },
+    ],
+  },
+  {
     version: "0.6.451",
     entries: [
       {

@@ -227,13 +227,17 @@ fn gate_union_crossing_boxes_transversal() {
 
 // ─── coincidence scenarios — known red until Phases 2/3 land ────────────────
 
+
 #[test]
-#[ignore = "BREP-CLASSIFICATION-PLAN Phase 3 — koplanare ON-same-Wände (Naht-Kante), bekannt rot"]
 fn gate_union_crossing_boxes_coplanar_tops() {
     // A plus sign with EQUAL heights: the side walls cross transversally, but
     // the top/bottom faces of both boxes are coplanar same-orientation
     // (ON-same) — they must survive as separate faces joined by seam edges.
-    // Combines F0-1 with the coincidence classification.
+    // Combines F0-1 with the coincidence classification. Fixed by the
+    // overlap-aware membership re-attribution
+    // (`reattribute_coincident_memberships`): the overlap square belongs to
+    // the class representative, buried signature branches lose the edge,
+    // interior seams inside the overlap are dropped.
     let body = union(
         box_leaf(1, [0.0, 0.0, 0.0], [12.0, 3.0, 3.0]),
         box_leaf(2, [0.0, 0.0, 0.0], [3.0, 12.0, 3.0]),

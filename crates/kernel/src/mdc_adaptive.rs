@@ -732,7 +732,7 @@ pub fn adaptive_mdc(
     // Topmost collapsible ancestor. Cached per QUERY vertex only — an
     // interior chain node's own representative differs from the leaf's
     // whenever the topmost collapsible lies below it.
-    let mut repr = |start: u32, nodes: &[VertexNode], cache: &mut Vec<u32>| -> u32 {
+    let repr = |start: u32, nodes: &[VertexNode], cache: &mut Vec<u32>| -> u32 {
         if cache[start as usize] != u32::MAX {
             return cache[start as usize];
         }
@@ -754,7 +754,7 @@ pub fn adaptive_mdc(
     let mut used_nodes: Vec<u32> = Vec::new();
     let mut indices: Vec<u32> = Vec::new();
 
-    let mut emit_vertex = |node_id: u32,
+    let emit_vertex = |node_id: u32,
                            nodes: &[VertexNode],
                            out_index: &mut HashMap<u32, u32>,
                            positions: &mut Vec<f32>,
