@@ -123,7 +123,7 @@ impl Kernel {
     /// from the point list entirely.
     #[wasm_bindgen(js_name = mesherPoints)]
     pub fn mesher_points(&mut self, options_json: String) -> Vec<f32> {
-        let opts: crate::mesher_points::MesherPointOptions =
+        let mut opts: crate::mesher_points::MesherPointOptions =
             serde_json::from_str(&options_json).unwrap_or_default();
         let bodies: Vec<crate::bvh::BoundedCsg> = self
             .bodies
@@ -135,6 +135,16 @@ impl Kernel {
         let Some((center, root_size)) = octree_root(&bodies) else {
             return Vec::new();
         };
+        // Mesher-PASM: ONE resolution parameter. `targetEdgeLength` (h, mm)
+        // derives the seed octree depth (leaf cell size just below h → seed
+        // spacing ≈ h in the surface band) and the interaction radius (= 5σ
+        // truncation of the Gaussian kernel, σ = h/5).
+        if opts.target_edge_length > 0.0 {
+            let h = opts.target_edge_length;
+            let depth = (root_size / h).log2().ceil() as i32;
+            opts.max_depth = depth.clamp(1, 10) as u32;
+            opts.interaction_radius = h;
+        }
         let scene_sdf = |p: [f32; 3]| {
             let mut d = f32::MAX;
             for b in &bodies {
@@ -1091,6 +1101,60 @@ mod mesher_octree_tests {
             assert_eq!(n, 2, "edge {a}-{b} used {n}× (open seam or fan)");
         }
         // Euler characteristic of a sphere-topology solid.
+        let v = used.len() as i64;
+        let e = edge_use.len() as i64;
+        let f = tris as i64;
+        assert_eq!(v - e + f, 2, "Euler characteristic broke: V={v} E={e} F={f}");
+    }
+
+    /// Mesher-PASM preset: `targetEdgeLength` alone must stand in for
+    /// `maxDepth` + `interactionRadius` (kernel-derived) and still produce
+    /// the closed 2-manifold box mesh — the contract of the dedicated
+    /// Debug ▸ Mesher PASM dialog, which only exposes h.
+    #[test]
+    fn mesher_points_pasm_target_edge_length_derives_resolution() {
+        use fielddraft_protocol::{BoolOp, Primitive};
+        let mut k = crate::Kernel::new();
+        k.add_primitive(
+            Primitive::KIND_BOX,
+            BoolOp::TAG_NEW,
+            0.0,
+            0.0,
+            0.0,
+            10.0,
+            10.0,
+            10.0,
+        )
+        .unwrap();
+        let out = k.mesher_points(
+            r#"{"targetEdgeLength":3.0,"brepSkeleton":true,"cdtFaces":true,
+                "nearSurfaceOnly":true,"nearSurfaceDist":1.0,
+                "fitOnSurface":true,"onlyOnSurface":true,
+                "repulsion":true,"repulsionStrength":0.5,
+                "pasmKernel":true,"iterations":20}"#
+                .into(),
+        );
+        let total = out[0] as usize;
+        let tris = out[1] as usize;
+        assert!(tris >= 12, "expected a real triangulation, got {tris} tris");
+        let idx_base = 2 + total * 9;
+        let mut edge_use: std::collections::HashMap<(u32, u32), u32> =
+            std::collections::HashMap::new();
+        let mut used: std::collections::HashSet<u32> = std::collections::HashSet::new();
+        for t in 0..tris {
+            let a = out[idx_base + t * 3] as u32;
+            let b = out[idx_base + t * 3 + 1] as u32;
+            let c3 = out[idx_base + t * 3 + 2] as u32;
+            assert!(a != b && b != c3 && c3 != a, "degenerate triangle");
+            for (x, y) in [(a, b), (b, c3), (c3, a)] {
+                *edge_use.entry((x.min(y), x.max(y))).or_default() += 1;
+                used.insert(x);
+                used.insert(y);
+            }
+        }
+        for (&(a, b), &n) in &edge_use {
+            assert_eq!(n, 2, "edge {a}-{b} used {n}× (open seam or fan)");
+        }
         let v = used.len() as i64;
         let e = edge_use.len() as i64;
         let f = tris as i64;

@@ -24,6 +24,17 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.461",
+    entries: [
+      {
+        kind: "feat",
+        scope: "mesher",
+        tickets: ["nwmi"],
+        text: "Debug ▸ „Mesher PASM…“ — eigener Dialog für die Hybrid-PASM-Pipeline (B-Rep-Skelett → Gauß-Relaxation → per-Face-CDT) mit genau einem Auflösungsparameter: der Ziel-Kantenlänge h. Seed-Octree-Tiefe, Kernel-Radius (5σ = h), Ketten-/Naht-Abstand und CDT-Clearance leitet der Kernel daraus ab (neues targetEdgeLength in mesherPoints). Der generische Mesher-Dialog bleibt als Baukasten erhalten; beide schließen sich gegenseitig aus.",
+      },
+    ],
+  },
+  {
     version: "0.6.460",
     entries: [
       {

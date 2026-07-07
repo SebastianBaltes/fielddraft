@@ -5,6 +5,7 @@ import {
   getDebugDialogs,
   parseProjectDebug,
   setMesherDialogOpen,
+  setMesherPasmDialogOpen,
   setSdfPlaneDialogOpen,
   subscribeDebugDialogs,
 } from "./projectDebug";
@@ -82,5 +83,42 @@ describe("projectDebug", () => {
     setSdfPlaneDialogOpen(false);
     expect(fired).toBe(2);
     unsub();
+  });
+
+  it("round-trips the Mesher PASM dialog + settings", () => {
+    localStorage.setItem(
+      "fielddraft.debug.mesherPasm",
+      JSON.stringify({ targetEdgeLength: 3.5, iterations: 60 }),
+    );
+    setMesherPasmDialogOpen(true);
+
+    const blob = collectProjectDebug()!;
+    expect(blob.mesherPasmOpen).toBe(true);
+    expect(blob.mesherPasm).toMatchObject({ targetEdgeLength: 3.5 });
+
+    applyProjectDebug(undefined);
+    expect(getDebugDialogs().mesherPasmOpen).toBe(false);
+
+    applyProjectDebug(parseProjectDebug(JSON.parse(JSON.stringify(blob))));
+    expect(getDebugDialogs().mesherPasmOpen).toBe(true);
+    expect(
+      JSON.parse(localStorage.getItem("fielddraft.debug.mesherPasm")!),
+    ).toMatchObject({ targetEdgeLength: 3.5, iterations: 60 });
+  });
+
+  it("Mesher and Mesher PASM are mutually exclusive (shared overlay store)", () => {
+    setMesherDialogOpen(true);
+    setMesherPasmDialogOpen(true);
+    expect(getDebugDialogs().mesherOpen).toBe(false);
+    expect(getDebugDialogs().mesherPasmOpen).toBe(true);
+
+    setMesherDialogOpen(true);
+    expect(getDebugDialogs().mesherOpen).toBe(true);
+    expect(getDebugDialogs().mesherPasmOpen).toBe(false);
+
+    // A blob claiming both keeps only the PASM dialog.
+    applyProjectDebug({ mesherOpen: true, mesherPasmOpen: true });
+    expect(getDebugDialogs().mesherOpen).toBe(false);
+    expect(getDebugDialogs().mesherPasmOpen).toBe(true);
   });
 });

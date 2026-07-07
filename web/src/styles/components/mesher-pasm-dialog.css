@@ -1,0 +1,25 @@
+/* Debug ▸ Mesher PASM: shares the fd-mesher-dialog window chrome (the
+ * component carries both classes); this file only holds the PASM-specific
+ * legend swatches — skeleton corners red, edge chains orange, free surface
+ * particles green (matches MesherOverlay's point colours). */
+.fd-mesher-pasm-dialog {
+  & .legend {
+    & .corner::before,
+    & .chain::before,
+    & .particle::before {
+      content: "";
+      width: 0.8rem;
+      height: 0.8rem;
+      border-radius: 2px;
+    }
+    & .corner::before {
+      background: rgb(217, 26, 26);
+    }
+    & .chain::before {
+      background: rgb(242, 140, 26);
+    }
+    & .particle::before {
+      background: rgb(40, 255, 120);
+    }
+  }
+}

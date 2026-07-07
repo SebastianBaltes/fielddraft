@@ -89,6 +89,11 @@ export interface MesherDebug {
   /** 2:1-balance the octree before meshing (bounded neighbour depth
    *  contrast → more even triangle sizes). */
   balanceOctree: boolean;
+  /** Mesher-PASM single resolution parameter: target edge length h (mm).
+   *  When > 0 the KERNEL derives `maxDepth` (seed leaf size just below h)
+   *  and overrides `interactionRadius = h` (= 5σ kernel truncation). Only
+   *  published by the dedicated Debug ▸ Mesher PASM dialog. */
+  targetEdgeLength?: number;
 }
 
 export type MesherDampingCurve = "linear" | "exponential";

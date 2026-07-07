@@ -18,9 +18,11 @@ import { ExportDialog } from "./ExportDialog";
 import { NumberInput } from "./NumberInput";
 import { SdfPlaneDialog } from "./SdfPlaneDialog";
 import { MesherDialog } from "./MesherDialog";
+import { MesherPasmDialog } from "./MesherPasmDialog";
 import {
   getDebugDialogs,
   setMesherDialogOpen,
+  setMesherPasmDialogOpen,
   setSdfPlaneDialogOpen,
   subscribeDebugDialogs,
 } from "./projectDebug";
@@ -423,6 +425,15 @@ export function SettingsMenu({
               </button>
               <button
                 type="button"
+                role="menuitem"
+                className="menu-item"
+                data-testid="menu-debug-mesher-pasm"
+                onClick={() => menuAction(() => setMesherPasmDialogOpen(true))}
+              >
+                Mesher PASM…
+              </button>
+              <button
+                type="button"
                 role="menuitemcheckbox"
                 aria-checked={partAabbVisible}
                 className="menu-item"
@@ -540,6 +551,12 @@ export function SettingsMenu({
         <MesherDialog
           key={`mesher-${debugDialogs.revision}`}
           onClose={() => setMesherDialogOpen(false)}
+        />
+      )}
+      {debugDialogs.mesherPasmOpen && (
+        <MesherPasmDialog
+          key={`mesher-pasm-${debugDialogs.revision}`}
+          onClose={() => setMesherPasmDialogOpen(false)}
         />
       )}
     </div>

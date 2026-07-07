@@ -23,6 +23,7 @@ import { getPartAabbVisible, setPartAabbVisible } from "./partAabbStore";
 /** localStorage slots the dialogs persist their settings under. */
 const SDF_PLANE_SETTINGS_KEY = "fielddraft.debug.sdfPlane";
 const MESHER_SETTINGS_KEY = "fielddraft.debug.mesher";
+const MESHER_PASM_SETTINGS_KEY = "fielddraft.debug.mesherPasm";
 
 export interface ProjectDebug {
   /** Debug ▸ SDF-Plane dialog open? */
@@ -33,6 +34,10 @@ export interface ProjectDebug {
   mesherOpen?: boolean;
   /** Snapshot of the Mesher dialog settings (shape owned by the dialog). */
   mesher?: Record<string, unknown>;
+  /** Debug ▸ Mesher PASM dialog open? */
+  mesherPasmOpen?: boolean;
+  /** Snapshot of the Mesher PASM dialog settings (shape owned by the dialog). */
+  mesherPasm?: Record<string, unknown>;
   /** Debug ▸ Part-AABB overlay visible? */
   partAabbVisible?: boolean;
 }
@@ -42,12 +47,18 @@ export interface ProjectDebug {
 export interface DebugDialogs {
   sdfPlaneOpen: boolean;
   mesherOpen: boolean;
+  mesherPasmOpen: boolean;
   /** Bumped by applyProjectDebug — keys the dialog elements so an already-
    *  open dialog remounts and re-reads its (just overwritten) settings. */
   revision: number;
 }
 
-let dialogs: DebugDialogs = { sdfPlaneOpen: false, mesherOpen: false, revision: 0 };
+let dialogs: DebugDialogs = {
+  sdfPlaneOpen: false,
+  mesherOpen: false,
+  mesherPasmOpen: false,
+  revision: 0,
+};
 const listeners = new Set<() => void>();
 
 function notify(): void {
@@ -64,9 +75,27 @@ export function setSdfPlaneDialogOpen(open: boolean): void {
   notify();
 }
 
+// Both Mesher dialogs publish into the SAME `mesherDebugStore` singleton
+// (one overlay), so they are mutually exclusive: opening one closes the
+// other — the closing dialog's unmount would otherwise clear the store the
+// surviving dialog just wrote.
 export function setMesherDialogOpen(open: boolean): void {
   if (dialogs.mesherOpen === open) return;
-  dialogs = { ...dialogs, mesherOpen: open };
+  dialogs = {
+    ...dialogs,
+    mesherOpen: open,
+    mesherPasmOpen: open ? false : dialogs.mesherPasmOpen,
+  };
+  notify();
+}
+
+export function setMesherPasmDialogOpen(open: boolean): void {
+  if (dialogs.mesherPasmOpen === open) return;
+  dialogs = {
+    ...dialogs,
+    mesherPasmOpen: open,
+    mesherOpen: open ? false : dialogs.mesherOpen,
+  };
   notify();
 }
 
@@ -105,7 +134,13 @@ function writeSettingsSlot(key: string, value: Record<string, unknown>): void {
  *  are meaningless without an open dialog/overlay to show them). */
 export function collectProjectDebug(): ProjectDebug | undefined {
   const partAabb = getPartAabbVisible();
-  if (!dialogs.sdfPlaneOpen && !dialogs.mesherOpen && !partAabb) return undefined;
+  if (
+    !dialogs.sdfPlaneOpen &&
+    !dialogs.mesherOpen &&
+    !dialogs.mesherPasmOpen &&
+    !partAabb
+  )
+    return undefined;
   return {
     ...(dialogs.sdfPlaneOpen ? { sdfPlaneOpen: true } : {}),
     ...(dialogs.sdfPlaneOpen
@@ -113,6 +148,10 @@ export function collectProjectDebug(): ProjectDebug | undefined {
       : {}),
     ...(dialogs.mesherOpen ? { mesherOpen: true } : {}),
     ...(dialogs.mesherOpen ? { mesher: readSettingsSlot(MESHER_SETTINGS_KEY) } : {}),
+    ...(dialogs.mesherPasmOpen ? { mesherPasmOpen: true } : {}),
+    ...(dialogs.mesherPasmOpen
+      ? { mesherPasm: readSettingsSlot(MESHER_PASM_SETTINGS_KEY) }
+      : {}),
     ...(partAabb ? { partAabbVisible: true } : {}),
   };
 }
@@ -125,10 +164,16 @@ export function collectProjectDebug(): ProjectDebug | undefined {
 export function applyProjectDebug(debug: ProjectDebug | undefined): void {
   if (debug?.sdfPlane) writeSettingsSlot(SDF_PLANE_SETTINGS_KEY, debug.sdfPlane);
   if (debug?.mesher) writeSettingsSlot(MESHER_SETTINGS_KEY, debug.mesher);
+  if (debug?.mesherPasm)
+    writeSettingsSlot(MESHER_PASM_SETTINGS_KEY, debug.mesherPasm);
   setPartAabbVisible(debug?.partAabbVisible === true);
+  // Mesher and Mesher PASM are mutually exclusive (shared store); a blob
+  // claiming both keeps only the PASM dialog.
+  const pasmOpen = debug?.mesherPasmOpen === true;
   dialogs = {
     sdfPlaneOpen: debug?.sdfPlaneOpen === true,
-    mesherOpen: debug?.mesherOpen === true,
+    mesherOpen: debug?.mesherOpen === true && !pasmOpen,
+    mesherPasmOpen: pasmOpen,
     revision: dialogs.revision + 1,
   };
   notify();
@@ -149,6 +194,8 @@ export function parseProjectDebug(raw: unknown): ProjectDebug | undefined {
     ...(rec(p.sdfPlane) ? { sdfPlane: rec(p.sdfPlane) } : {}),
     ...(p.mesherOpen === true ? { mesherOpen: true } : {}),
     ...(rec(p.mesher) ? { mesher: rec(p.mesher) } : {}),
+    ...(p.mesherPasmOpen === true ? { mesherPasmOpen: true } : {}),
+    ...(rec(p.mesherPasm) ? { mesherPasm: rec(p.mesherPasm) } : {}),
     ...(p.partAabbVisible === true ? { partAabbVisible: true } : {}),
   };
   return Object.keys(out).length > 0 ? out : undefined;

@@ -112,6 +112,12 @@ pub struct MesherPointOptions {
     /// Enforce the 2:1 octree balance before meshing (bounded depth
     /// contrast between face neighbours → more even triangle sizes).
     pub balance_octree: bool,
+    /// Mesher-PASM single resolution parameter: the target edge length `h`
+    /// (mm). When > 0 the kernel DERIVES the seed density and the kernel
+    /// scale from it — `max_depth` so the leaf cell size lands just below
+    /// `h`, and `interaction_radius = h` (= the 5σ Gaussian truncation, so
+    /// σ = h/5). The dedicated PASM dialog exposes only this.
+    pub target_edge_length: f32,
 }
 
 /// How the repulsion strength decays over the relaxation iterations.
@@ -150,6 +156,7 @@ impl Default for MesherPointOptions {
             feature_angle_deg: 30.0,
             mesh_points: false,
             balance_octree: true,
+            target_edge_length: 0.0,
         }
     }
 }
