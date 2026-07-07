@@ -998,6 +998,12 @@ export class Kernel {
     return this.inner.addGyroid(cellSizeMm, thicknessMm, op);
   }
 
+  /** Append a custom-SDF feature (user math expression over x,y,z,
+   *  clipped to a local box of the given half extent). */
+  addCustomSdf(halfExtentMm: number): number {
+    return this.inner.addCustomSdf(halfExtentMm);
+  }
+
   addBoolean(): number {
     return this.inner.addBoolean();
   }

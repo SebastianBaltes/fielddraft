@@ -70,6 +70,7 @@ pub use fielddraft_protocol::FeatureCall;
 mod context_resolve;
 
 pub mod boolean;
+pub mod custom_sdf;
 pub mod extrude;
 pub mod fillet_shell;
 pub mod gyroid;
@@ -87,6 +88,7 @@ pub mod thicken;
 pub mod transforms;
 
 pub use boolean::*;
+pub use custom_sdf::*;
 pub use extrude::*;
 pub use fillet_shell::*;
 pub use gyroid::*;
@@ -341,6 +343,7 @@ impl FeatureRegistry {
         r.register(Box::new(ShellFeature));
         r.register(Box::new(ImportedMeshFeature));
         r.register(Box::new(GyroidFeature));
+        r.register(Box::new(CustomSdfFeature));
         r.register(Box::new(LinearPatternFeature));
         r.register(Box::new(CircularPatternFeature));
         r.register(Box::new(MirrorFeature));

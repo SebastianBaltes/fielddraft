@@ -223,6 +223,9 @@ fn classify_primitive(p: &Primitive) -> StepSupport {
         Primitive::ImportedMesh { .. } => StepSupport::Excluded(
             "imported mesh is already tessellated, not B-Rep".into(),
         ),
+        Primitive::CustomSdf { .. } => StepSupport::Excluded(
+            "user-defined SDF expression not representable in B-Rep".into(),
+        ),
     }
 }
 

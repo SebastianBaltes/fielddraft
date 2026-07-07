@@ -47,6 +47,7 @@ pub mod sweep_gate;
 pub mod script_runtime;
 pub mod transform;
 pub mod sdf_eval;
+pub mod sdf_expr;
 pub mod finite;
 pub mod vec3f;
 pub mod fidget_bridge;

@@ -347,7 +347,62 @@ pub enum Primitive {
         #[serde(default)]
         start_angle: f32,
     },
+    /// User-defined implicit via a compiled scalar expression tape
+    /// (fidget-style closed-form math, no loops). `ops` is the postfix
+    /// program over the local point; the field is evaluated as
+    /// `max(expr(p) / lipschitz, box(p, half_extents))` — normalised by
+    /// the declared Lipschitz allowance (the gyroid trick, so marching
+    /// and octree brackets stay sound) and clipped to a finite local
+    /// box so the body has a real AABB. `source` is the authoring text
+    /// (round-tripped for the dialog, never evaluated at runtime).
+    CustomSdf {
+        source: String,
+        ops: Vec<SdfExprOp>,
+        lipschitz: f32,
+        half_extents: [f32; 3],
+    },
 }
+
+/// One instruction of a [`Primitive::CustomSdf`] expression tape — a
+/// stack machine over the leaf-local point `(x, y, z)`. Postfix: leaf
+/// ops push, unary ops replace the top, binary ops pop two and push one
+/// (left operand pushed first). Stack depth is limited to
+/// [`SDF_EXPR_MAX_STACK`], program length to [`SDF_EXPR_MAX_OPS`] —
+/// both are enforced by the kernel-side compiler and mirrored by the
+/// GPU interpreter's register file.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "op", rename_all = "snake_case")]
+pub enum SdfExprOp {
+    X,
+    Y,
+    Z,
+    Const { v: f32 },
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Neg,
+    Min,
+    Max,
+    Abs,
+    Sqrt,
+    Sin,
+    Cos,
+    Floor,
+    Exp,
+    Ln,
+    Pow,
+    Atan2,
+    Asin,
+    Acos,
+}
+
+/// Maximum operand-stack depth of a [`SdfExprOp`] program (the GPU
+/// interpreter's expression register file).
+pub const SDF_EXPR_MAX_STACK: usize = 8;
+/// Maximum program length of a [`SdfExprOp`] tape (bounded by the
+/// per-body GPU opcode budget).
+pub const SDF_EXPR_MAX_OPS: usize = 200;
 
 /// Analytic surface a primitive sub-face lies on. The B-Rep substrate
 /// decomposes box/cylinder/cone primitives into their per-face
@@ -404,6 +459,7 @@ impl Primitive {
     pub const KIND_IMPORTED_MESH: u32 = 11;
     pub const KIND_ELLIPSOID: u32 = 12;
     pub const KIND_HELIX: u32 = 13;
+    pub const KIND_CUSTOM_SDF: u32 = 14;
 
     pub fn kind_tag(&self) -> u32 {
         match self {
@@ -421,6 +477,7 @@ impl Primitive {
             Primitive::Helix { .. } => Self::KIND_HELIX,
             Primitive::ImportedMesh { .. } => Self::KIND_IMPORTED_MESH,
             Primitive::Ellipsoid { .. } => Self::KIND_ELLIPSOID,
+            Primitive::CustomSdf { .. } => Self::KIND_CUSTOM_SDF,
         }
     }
 
@@ -436,7 +493,10 @@ impl Primitive {
     pub fn is_non_lipschitz(&self) -> bool {
         matches!(
             self,
-            Primitive::Thread { .. } | Primitive::Gyroid { .. } | Primitive::Helix { .. }
+            Primitive::Thread { .. }
+                | Primitive::Gyroid { .. }
+                | Primitive::Helix { .. }
+                | Primitive::CustomSdf { .. }
         )
     }
 
@@ -449,6 +509,15 @@ impl Primitive {
     /// outright (`Body::ensure_brep`) — the 30s move-stall fix. See DL-71.
     pub fn is_space_filling(&self) -> bool {
         matches!(self, Primitive::Gyroid { .. })
+    }
+
+    /// Primitives whose bodies skip the B-Rep weave outright: space-filling
+    /// TPMS fields AND user-defined expression fields (arbitrary topology,
+    /// non-Lipschitz by construction — the octree/edge tracer has nothing
+    /// analytic to attach to). Such bodies render/mesh SDF-only, like the
+    /// gyroid.
+    pub fn is_brep_excluded(&self) -> bool {
+        self.is_space_filling() || matches!(self, Primitive::CustomSdf { .. })
     }
 
     pub fn default_name(&self) -> &'static str {
@@ -467,6 +536,7 @@ impl Primitive {
             Primitive::Helix { .. } => "Helix",
             Primitive::ImportedMesh { .. } => "Imported mesh",
             Primitive::Ellipsoid { .. } => "Ellipsoid",
+            Primitive::CustomSdf { .. } => "Custom SDF",
         }
     }
 }

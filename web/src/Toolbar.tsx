@@ -1392,6 +1392,13 @@ export function Toolbar({ store, state }: ToolbarProps) {
           dragType="fielddraft/primitive"
         />
         <FeatureButton
+          kind="custom_sdf"
+          title="Add Custom SDF (math expression)"
+          onClick={() => store.addCustomSdf()}
+          draggable
+          dragType="fielddraft/primitive"
+        />
+        <FeatureButton
           kind="linear_pattern"
           title="Linear pattern (+X, 3x, 60 mm)"
           testId="linear-pattern-latest"

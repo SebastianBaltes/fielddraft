@@ -105,6 +105,15 @@ fn primitive_samples() -> Vec<Primitive> {
         Primitive::HexPrism { apothem: 2.0, half_height: 1.5 },
         Primitive::ImportedMesh { mesh: Box::new(cube_mesh()) },
         Primitive::Ellipsoid { radii: [3.0, 1.5, 2.0] },
+        Primitive::CustomSdf {
+            source: "sin(x)*cos(y) + sin(y)*cos(z) + sin(z)*cos(x) - 0.2".into(),
+            ops: crate::sdf_expr::compile_expr(
+                "sin(x)*cos(y) + sin(y)*cos(z) + sin(z)*cos(x) - 0.2",
+            )
+            .expect("valid parity expression"),
+            lipschitz: 3.0,
+            half_extents: [2.5, 2.5, 2.5],
+        },
     ];
     // ── Exhaustivitäts-Wächter (KEIN Wildcard-Arm!) ────────────────────
     for p in &samples {
@@ -122,7 +131,8 @@ fn primitive_samples() -> Vec<Primitive> {
             | Primitive::ImportedMesh { .. }
             | Primitive::Gyroid { .. }
             | Primitive::Revolve { .. }
-            | Primitive::Helix { .. } => {}
+            | Primitive::Helix { .. }
+            | Primitive::CustomSdf { .. } => {}
         }
     }
     samples

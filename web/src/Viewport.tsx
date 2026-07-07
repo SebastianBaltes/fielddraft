@@ -1434,6 +1434,8 @@ export function Viewport({
         store.addHole();
       } else if (kind === "gyroid") {
         store.addGyroid();
+      } else if (kind === "custom_sdf") {
+        store.addCustomSdf();
       }
       return;
     }

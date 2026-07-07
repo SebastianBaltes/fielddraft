@@ -24,6 +24,16 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.392",
+    entries: [
+      {
+        kind: "feat",
+        text: "Neues Feature „Custom SDF“ (ƒ in der Toolbar): eigene implizite Körper aus einer Math-Formel über x, y, z — z. B. TPMS-Gitter oder algebraische Flächen. Die Formel (sin, cos, sqrt, abs, min, max, exp, ln, atan2, pow, ^, pi/tau) wird einmal in eine Opcode-Tape kompiliert und identisch auf CPU (inkl. exakter Gradienten) und GPU ausgewertet; Lipschitz-Faktor normalisiert das Feld, eine lokale Box begrenzt den Körper. Custom-Bodies sind SDF-only (kein B-Rep), wie das Gyroid",
+        scope: "kernel",
+      },
+    ],
+  },
+  {
     version: "0.6.391",
     entries: [
       {

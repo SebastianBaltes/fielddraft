@@ -471,6 +471,22 @@ impl Kernel {
         }))
     }
 
+    /// Append a `custom_sdf` feature call: a user-defined implicit from
+    /// a math expression over `x, y, z` (mm), clipped to a local box of
+    /// `half_extent_mm` and normalised by `lipschitz`. Returns the new id.
+    #[wasm_bindgen(js_name = addCustomSdf)]
+    pub fn add_custom_sdf(&mut self, half_extent_mm: f32) -> Result<u32, JsError> {
+        self.push_feature_call("custom_sdf", serde_json::json!({
+            "expression": "sqrt(x*x + y*y + z*z) - 15",
+            "lipschitz": 1.0,
+            "half_extents": [half_extent_mm, half_extent_mm, half_extent_mm],
+            "op": "new",
+            "blend_radius": { "value": 0.0, "unit": "mm" },
+            "chamfer_size": { "value": 0.0, "unit": "mm" },
+            "shell_thickness": { "value": 0.0, "unit": "mm" },
+        }))
+    }
+
     #[wasm_bindgen(js_name = addBoolean)]
     pub fn add_boolean(&mut self) -> Result<u32, JsError> {
         self.push_feature_call("boolean", serde_json::json!({

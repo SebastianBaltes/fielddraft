@@ -160,7 +160,8 @@ fn primitive_command(handle: &str, prim: &Primitive) -> Option<Value> {
         | Primitive::Thread { .. }
         | Primitive::Helix { .. }
         | Primitive::Gyroid { .. }
-        | Primitive::ImportedMesh { .. } => None,
+        | Primitive::ImportedMesh { .. }
+        | Primitive::CustomSdf { .. } => None,
     }
 }
 

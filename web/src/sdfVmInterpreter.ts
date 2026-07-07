@@ -13,14 +13,21 @@ import {
   If,
   Loop,
   abs,
+  acos,
+  asin,
   atan,
   clamp,
+  cos,
+  exp,
   float,
+  floor,
   int,
+  log,
   max,
   min,
   round,
   sign,
+  sin,
   sqrt,
   step,
   texture3D,
@@ -40,7 +47,7 @@ import {
   OP_PRIM2D_PATH,
   OP_UNION, OP_DIFFERENCE, OP_INTERSECT, OP_SMOOTH_UNION, OP_SMOOTH_DIFF,
   OP_SHELL, OP_MORPH, OP_DISPLACE_VAL, OP_EXTRUDE, OP_REVOLVE_SCALE,
-  OP_OFFSET_2D, OP_NEG, OP_PRIM_HALFSPACE,
+  OP_OFFSET_2D, OP_NEG, OP_PRIM_HALFSPACE, OP_PRIM_CUSTOM,
   OP_WARP_PUSH, OP_WARP_POP, OP_WARP_TWIST, OP_WARP_BEND,
   OP_WARP_TRANSFORM, OP_WARP_REVOLVE,
   OP_WARP_HELIX, OP_HELIX_SCALE, OP_WARP_SWEEP,
@@ -65,6 +72,12 @@ export const bitcastTagFn = wgslFn(`
 export const floatToIntFn = wgslFn(`
   fn fd_f2i(v: f32) -> i32 {
     return i32(v + 0.5);
+  }
+`);
+
+const atan2Fn = wgslFn(`
+  fn fd_atan2(y: f32, x: f32) -> f32 {
+    return atan2(y, x);
   }
 `);
 
@@ -214,6 +227,112 @@ export function buildVmSdfEvalFn(
         const { local, scale: s } = emitTransformAndLocal();
         const nom_r = rd(), pitch = rd(), depth = rd(), hh = rd();
         pushV(sdfThreadFn({ p: local, nom_r, pitch, depth, hh }).mul(s));
+
+      }).ElseIf(tag.equal(int(OP_PRIM_CUSTOM)), () => {
+        // User expression tape (mirror of `sdf_compiler::eval_expr_records`):
+        // header = transform(10) + inv_lipschitz + half_extents(3) +
+        // op_count, then op_count × (code, payload) fixed-width records.
+        // The inner interpreter runs an own 8-deep operand stack
+        // (es0..es7 + esp — same If-chain register trick as vs*/vsp;
+        // TSL has no local arrays). Field = max(expr·invL, box).
+        const { local, scale: s } = emitTransformAndLocal();
+        const invL = rd();
+        const hx = rd(), hy = rd(), hz = rd();
+        const nRaw = rd();
+        const nInt = floatToIntFn({ v: nRaw });
+        const recStart = pc.toVar();
+        pc.addAssign(nInt.mul(2));
+
+        const es0 = float(0).toVar(), es1 = float(0).toVar();
+        const es2 = float(0).toVar(), es3 = float(0).toVar();
+        const es4 = float(0).toVar(), es5 = float(0).toVar();
+        const es6 = float(0).toVar(), es7 = float(0).toVar();
+        const esp = int(0).toVar();
+        const pushE = (val: any) => {
+          If(esp.equal(0), () => { es0.assign(val); })
+            .ElseIf(esp.equal(1), () => { es1.assign(val); })
+            .ElseIf(esp.equal(2), () => { es2.assign(val); })
+            .ElseIf(esp.equal(3), () => { es3.assign(val); })
+            .ElseIf(esp.equal(4), () => { es4.assign(val); })
+            .ElseIf(esp.equal(5), () => { es5.assign(val); })
+            .ElseIf(esp.equal(6), () => { es6.assign(val); })
+            .ElseIf(esp.equal(7), () => { es7.assign(val); });
+          esp.addAssign(1);
+        };
+        const popE = () => {
+          esp.subAssign(1);
+          const out = float(0).toVar();
+          If(esp.equal(0), () => { out.assign(es0); })
+            .ElseIf(esp.equal(1), () => { out.assign(es1); })
+            .ElseIf(esp.equal(2), () => { out.assign(es2); })
+            .ElseIf(esp.equal(3), () => { out.assign(es3); })
+            .ElseIf(esp.equal(4), () => { out.assign(es4); })
+            .ElseIf(esp.equal(5), () => { out.assign(es5); })
+            .ElseIf(esp.equal(6), () => { out.assign(es6); })
+            .ElseIf(esp.equal(7), () => { out.assign(es7); });
+          return out;
+        };
+
+        const ii = int(0).toVar();
+        Loop(nInt, () => {
+          const base = recStart.add(ii.mul(2));
+          const code = floatToIntFn({ v: opBuf.element(base) });
+          const payload = opBuf.element(base.add(1)).toVar();
+          // Leaf pushes: 0=X 1=Y 2=Z 3=Const.
+          If(code.lessThan(int(4)), () => {
+            const v = float(0).toVar();
+            If(code.equal(int(0)), () => { v.assign(local.x); })
+              .ElseIf(code.equal(int(1)), () => { v.assign(local.y); })
+              .ElseIf(code.equal(int(2)), () => { v.assign(local.z); })
+              .Else(() => { v.assign(payload); });
+            pushE(v);
+          }).ElseIf(
+            // Unary: 8=Neg 11=Abs 12=Sqrt 13=Sin 14=Cos 15=Floor
+            // 16=Exp 17=Ln 20=Asin 21=Acos.
+            code.equal(int(8))
+              .or(code.greaterThanEqual(int(11)).and(code.lessThanEqual(int(17))))
+              .or(code.greaterThanEqual(int(20))),
+            () => {
+              const a = popE();
+              const r = float(0).toVar();
+              If(code.equal(int(8)), () => { r.assign(a.negate()); })
+                .ElseIf(code.equal(int(11)), () => { r.assign(abs(a)); })
+                .ElseIf(code.equal(int(12)), () => { r.assign(sqrt(max(a, 0.0))); })
+                .ElseIf(code.equal(int(13)), () => { r.assign(sin(a)); })
+                .ElseIf(code.equal(int(14)), () => { r.assign(cos(a)); })
+                .ElseIf(code.equal(int(15)), () => { r.assign(floor(a)); })
+                .ElseIf(code.equal(int(16)), () => { r.assign(exp(a)); })
+                .ElseIf(code.equal(int(17)), () => {
+                  If(a.greaterThan(0.0), () => { r.assign(log(a)); })
+                    .Else(() => { r.assign(float(-1.0e6)); });
+                })
+                .ElseIf(code.equal(int(20)), () => { r.assign(asin(clamp(a, -1.0, 1.0))); })
+                .Else(() => { r.assign(acos(clamp(a, -1.0, 1.0))); });
+              pushE(r);
+            },
+          ).Else(() => {
+            // Binary: 4=Add 5=Sub 6=Mul 7=Div 9=Min 10=Max 18=Pow 19=Atan2.
+            const b = popE();
+            const a = popE();
+            const r = float(0).toVar();
+            If(code.equal(int(4)), () => { r.assign(a.add(b)); })
+              .ElseIf(code.equal(int(5)), () => { r.assign(a.sub(b)); })
+              .ElseIf(code.equal(int(6)), () => { r.assign(a.mul(b)); })
+              .ElseIf(code.equal(int(7)), () => { r.assign(a.div(b)); })
+              .ElseIf(code.equal(int(9)), () => { r.assign(min(a, b)); })
+              .ElseIf(code.equal(int(10)), () => { r.assign(max(a, b)); })
+              .ElseIf(code.equal(int(18)), () => {
+                If(a.greaterThan(0.0), () => { r.assign(exp(log(a).mul(b))); })
+                  .Else(() => { r.assign(float(0)); });
+              })
+              .Else(() => { r.assign(atan2Fn({ y: a, x: b })); });
+            pushE(r);
+          });
+          ii.addAssign(1);
+        });
+        const expr = popE();
+        const boxD = sdfBoxFn({ p: local, h: vec3(hx, hy, hz) });
+        pushV(max(expr.mul(invL), boxD).mul(s));
 
       }).ElseIf(tag.equal(int(OP_PRIM_TEX3D)), () => {
         const texIdxRaw = rd();

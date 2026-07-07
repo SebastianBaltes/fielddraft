@@ -24,6 +24,7 @@ export const OP_PRIM_GYROID    = 0x0A;
 export const OP_PRIM_THREAD    = 0x0B;
 export const OP_PRIM_TEX3D     = 0x0C;
 export const OP_PRIM_HALFSPACE = 0x0D;
+export const OP_PRIM_CUSTOM    = 0x0E;
 
 export const OP_PRIM2D_CIRCLE  = 0x10;
 export const OP_PRIM2D_RECT    = 0x11;

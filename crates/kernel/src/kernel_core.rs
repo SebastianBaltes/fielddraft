@@ -501,6 +501,7 @@ impl Kernel {
             "helix" => "Helix",
             "hole" => "Hole",
             "gyroid" => "Gyroid",
+            "custom_sdf" => "Custom SDF",
             "imported_mesh" => "Imported mesh",
             "fillet_edge" => "Fillet edge",
             "sweep" => "Sweep",

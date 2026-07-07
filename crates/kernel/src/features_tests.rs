@@ -16,7 +16,7 @@ fn empty_ctx() -> Document {
 #[test]
 fn with_builtins_registers_the_k1_primitives_and_k4_5_8_extrude() {
     let registry = FeatureRegistry::with_builtins();
-    assert_eq!(registry.len(), 29);
+    assert_eq!(registry.len(), 30);
     assert!(registry.get("box").is_some());
     assert!(registry.get("sphere").is_some());
     assert!(registry.get("cylinder").is_some());
@@ -73,6 +73,7 @@ fn type_names_contains_all_four_builtins() {
             "capsule",
             "circular_pattern",
             "cone",
+            "custom_sdf",
             "cylinder",
             "ellipsoid",
             "extrude",

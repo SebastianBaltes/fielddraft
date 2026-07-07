@@ -37,6 +37,7 @@ pub const OP_PRIM_GYROID: u32    = 0x0A; // +10: transform(8) + cell_size(1) + t
 pub const OP_PRIM_THREAD: u32    = 0x0B; // +12: transform(8) + nom_r + pitch + depth + half_h
 pub const OP_PRIM_TEX3D: u32     = 0x0C; // +15: tex_idx(1) + transform(8) + aabb_min(3) + aabb_max(3)
 pub const OP_PRIM_HALFSPACE: u32 = 0x0D; // +15: kind(1) + transform(10) + params(4) — one analytic half-space face (retained-boundary shell)
+pub const OP_PRIM_CUSTOM: u32    = 0x0E; // +15+2N: transform(10) + inv_lipschitz(1) + half_extents(3) + op_count(1) + ops(2*N, record = code(1) + payload(1)); user expression tape, field = max(expr·inv_L, box)
 
 // 2D primitives — evaluate at (point.x, point.y), push onto stack.
 pub const OP_PRIM2D_CIRCLE: u32  = 0x10; // +3: center(2) + radius(1)
@@ -700,7 +701,134 @@ fn emit_leaf_primitive(prim: &Primitive, t: &Transform, ctx: &mut CompileCtx) {
             out.extend_from_slice(&volume.aabb_max);
             ctx.volumes.push(volume);
         }
+        Primitive::CustomSdf { ops, lipschitz, half_extents, .. } => {
+            out.push(op(OP_PRIM_CUSTOM));
+            emit_transform(t, out);
+            out.push(1.0 / lipschitz.max(f32::MIN_POSITIVE));
+            out.extend_from_slice(half_extents);
+            out.push(ops.len() as f32);
+            for o in ops {
+                let (code, payload) = expr_op_record(o);
+                out.push(code);
+                out.push(payload);
+            }
+        }
     }
+}
+
+/// Fixed-width (code, payload) record of one [`SdfExprOp`] in the GPU
+/// buffer. Codes are plain small floats (not bit-cast tags) — the inner
+/// expression interpreter dispatches on `int(code)`. Mirrored by
+/// `web/src/sdfVmInterpreter.ts` and [`eval_expr_record`].
+pub(crate) fn expr_op_record(op: &fielddraft_protocol::SdfExprOp) -> (f32, f32) {
+    use fielddraft_protocol::SdfExprOp as E;
+    match op {
+        E::X => (0.0, 0.0),
+        E::Y => (1.0, 0.0),
+        E::Z => (2.0, 0.0),
+        E::Const { v } => (3.0, *v),
+        E::Add => (4.0, 0.0),
+        E::Sub => (5.0, 0.0),
+        E::Mul => (6.0, 0.0),
+        E::Div => (7.0, 0.0),
+        E::Neg => (8.0, 0.0),
+        E::Min => (9.0, 0.0),
+        E::Max => (10.0, 0.0),
+        E::Abs => (11.0, 0.0),
+        E::Sqrt => (12.0, 0.0),
+        E::Sin => (13.0, 0.0),
+        E::Cos => (14.0, 0.0),
+        E::Floor => (15.0, 0.0),
+        E::Exp => (16.0, 0.0),
+        E::Ln => (17.0, 0.0),
+        E::Pow => (18.0, 0.0),
+        E::Atan2 => (19.0, 0.0),
+        E::Asin => (20.0, 0.0),
+        E::Acos => (21.0, 0.0),
+    }
+}
+
+/// CPU mirror of the GPU inner expression interpreter: evaluate one
+/// (code, payload) record stream at the LOCAL point. Must match the
+/// TSL dispatch in `sdfVmInterpreter.ts` op for op.
+fn eval_expr_records(records: &[f32], local: [f32; 3]) -> f32 {
+    const MAX_STACK: usize = fielddraft_protocol::SDF_EXPR_MAX_STACK;
+    let mut stack = [0.0f32; MAX_STACK];
+    let mut sp = 0usize;
+    let mut i = 0usize;
+    while i + 1 < records.len() {
+        let code = records[i] as i32;
+        let payload = records[i + 1];
+        i += 2;
+        // Leaf pushes.
+        let pushed = match code {
+            0 => Some(local[0]),
+            1 => Some(local[1]),
+            2 => Some(local[2]),
+            3 => Some(payload),
+            _ => None,
+        };
+        if let Some(v) = pushed {
+            if sp >= MAX_STACK {
+                return 1.0e6;
+            }
+            stack[sp] = v;
+            sp += 1;
+            continue;
+        }
+        // Unary ops.
+        if matches!(code, 8 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 20 | 21) {
+            if sp == 0 {
+                return 1.0e6;
+            }
+            let a = stack[sp - 1];
+            stack[sp - 1] = match code {
+                8 => -a,
+                11 => a.abs(),
+                12 => a.max(0.0).sqrt(),
+                13 => a.sin(),
+                14 => a.cos(),
+                15 => a.floor(),
+                16 => a.exp(),
+                17 => {
+                    if a > 0.0 {
+                        a.ln()
+                    } else {
+                        -1.0e6
+                    }
+                }
+                20 => a.clamp(-1.0, 1.0).asin(),
+                21 => a.clamp(-1.0, 1.0).acos(),
+                _ => unreachable!(),
+            };
+            continue;
+        }
+        // Binary ops.
+        if sp < 2 {
+            return 1.0e6;
+        }
+        let b = stack[sp - 1];
+        let a = stack[sp - 2];
+        sp -= 1;
+        stack[sp - 1] = match code {
+            4 => a + b,
+            5 => a - b,
+            6 => a * b,
+            7 => a / b,
+            9 => a.min(b),
+            10 => a.max(b),
+            18 => {
+                if a > 0.0 {
+                    (a.ln() * b).exp()
+                } else {
+                    0.0
+                }
+            }
+            19 => a.atan2(b),
+            _ => return 1.0e6,
+        };
+    }
+    if sp == 1 { stack[0] } else { 1.0e6 }
 }
 
 // ── 2D sketch inlining ────────────────────────────────────────────
@@ -987,6 +1115,17 @@ pub fn eval_opcodes_with_volumes(
                 let (local, scale) = read_transform_and_localise(opcodes, &mut pc, pt);
                 let params = [rd!(), rd!(), rd!(), rd!()];
                 push_v!(halfspace_local(local, kind, params) * scale);
+            }
+            OP_PRIM_CUSTOM => {
+                let (local, scale) = read_transform_and_localise(opcodes, &mut pc, pt);
+                let inv_l = rd!();
+                let he = rd3!();
+                let n = rd!() as usize;
+                let records = &opcodes[pc..pc + 2 * n];
+                pc += 2 * n;
+                let expr = eval_expr_records(records, local) * inv_l;
+                let d = expr.max(sdf_box_local(local, he));
+                push_v!(d * scale);
             }
 
             // ── 2D primitives ──────────────────────────────────

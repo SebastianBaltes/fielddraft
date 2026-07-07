@@ -504,6 +504,11 @@ impl Aabb {
                 min: [-radii[0], -radii[1], -radii[2]],
                 max: [radii[0], radii[1], radii[2]],
             },
+            // The user field is clipped to its declared local box.
+            Primitive::CustomSdf { half_extents, .. } => Aabb {
+                min: [-half_extents[0], -half_extents[1], -half_extents[2]],
+                max: [half_extents[0], half_extents[1], half_extents[2]],
+            },
         }
     }
 

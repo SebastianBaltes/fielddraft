@@ -321,14 +321,16 @@ fn topology_min_cell_size(aabb: &Aabb) -> f32 {
     (largest / DIVISOR).clamp(FLOOR, CEIL)
 }
 
-/// Does `node`'s CSG tree contain a **space-filling** primitive (a gyroid
-/// TPMS, [`Primitive::is_space_filling`])? Such a body skips the B-Rep weave
-/// entirely (DL-71): its surface threads through nearly the whole volume, so
-/// the octree would refine on tens of thousands of cells to produce a wireframe
-/// of non-Lipschitz seams we discard anyway.
+/// Does `node`'s CSG tree contain a **weave-excluded** primitive (a gyroid
+/// TPMS, [`Primitive::is_space_filling`], or a user CustomSdf —
+/// [`Primitive::is_brep_excluded`])? Such a body skips the B-Rep weave
+/// entirely (DL-71): its surface threads through nearly the whole volume (or
+/// has arbitrary user-defined topology), so the octree would refine on tens
+/// of thousands of cells to produce a wireframe of non-Lipschitz seams we
+/// discard anyway.
 fn bounded_contains_space_filling(node: &BoundedCsg) -> bool {
     match node {
-        BoundedCsg::Leaf { primitive, .. } => primitive.is_space_filling(),
+        BoundedCsg::Leaf { primitive, .. } => primitive.is_brep_excluded(),
         BoundedCsg::Union { left, right, .. }
         | BoundedCsg::Difference { left, right, .. }
         | BoundedCsg::Intersection { left, right, .. }

@@ -550,6 +550,21 @@ export class KernelStore {
     return id;
   }
 
+  /** Add a custom-SDF body (default: 15 mm sphere expression in a
+   *  20 mm box — edit the expression in the feature dialog). */
+  addCustomSdf(halfExtentMm = 20): number {
+    let id: number;
+    try {
+      id = this.kernel.addCustomSdf(halfExtentMm);
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error("fielddraft: addCustomSdf failed", err);
+      return -1;
+    }
+    this.commit(new Set([id]), id);
+    return id;
+  }
+
   /** Add a `shell` feature and select it so its dialog opens. Faces to open
    *  and the wall thickness are picked in the dialog (schema-driven); the
    *  feature emits no geometry until at least one face (planar or curved)

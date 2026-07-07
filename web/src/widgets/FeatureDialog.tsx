@@ -112,6 +112,7 @@ export const FEATURE_TYPE_META: Record<
   hole: { label: "Hole", glyph: "⊖" },
   thread: { label: "Thread", glyph: "⏍" },
   gyroid: { label: "Gyroid", glyph: "🕸" },
+  custom_sdf: { label: "Custom SDF", glyph: "ƒ" },
   linear_pattern: { label: "Linear Pattern", glyph: "⎡" },
   circular_pattern: { label: "Circular Pattern", glyph: "↻" },
   mirror: { label: "Mirror", glyph: "◫" },

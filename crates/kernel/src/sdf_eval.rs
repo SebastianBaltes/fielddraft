@@ -330,6 +330,19 @@ where
             let f = x.sin() * y.cos() + y.sin() * z.cos() + z.sin() * x.cos();
             (f.abs() - cf(*thickness)) * s * cd(0.2887)
         }
+        Primitive::CustomSdf { ops, lipschitz, half_extents, .. } => {
+            // User expression, normalised by the declared Lipschitz
+            // allowance (gyroid trick — keeps marching/brackets sound),
+            // clipped to the local bounding box so the field is a
+            // bounded solid with a real AABB.
+            let d = crate::sdf_expr::eval_expr_generic(ops, p)
+                / cf(lipschitz.max(f32::MIN_POSITIVE));
+            let box_d = sdf_primitive_generic(
+                &Primitive::Box { center: [0.0; 3], half_extents: *half_extents },
+                p,
+            );
+            if d > box_d { d } else { box_d }
+        }
         Primitive::Thread { nominal_radius, pitch, depth, half_height } => {
             let r = SdfSqrt::sdf_sqrt(p[0] * p[0] + p[2] * p[2]);
             // Axis guard: ∂θ/∂(x,z) = (-z, x)/r² diverges as r→0 and produces NaN
