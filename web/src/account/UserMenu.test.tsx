@@ -102,16 +102,12 @@ describe("UserMenu", () => {
     expect(byTestId("user-identity")?.textContent).toContain("user");
   });
 
-  it("Report Issue… dispatches the fd:report-issue event", () => {
+  it("has no Report Issue entry (lives in the settings burger, b5a60122)", () => {
     const { account } = fakeAccount();
     mount(account);
-    const fired = vi.fn();
-    window.addEventListener("fd:report-issue", fired);
     click(byTestId("user-menu-trigger")!);
-    expect(byTestId("user-report")).toBeTruthy();
-    click(byTestId("user-report")!);
-    window.removeEventListener("fd:report-issue", fired);
-    expect(fired).toHaveBeenCalled();
+    expect(byTestId("user-report")).toBeNull();
+    expect(byTestId("user-logout")).toBeTruthy();
   });
 
   it("Log out calls logout then onLoggedOut", async () => {

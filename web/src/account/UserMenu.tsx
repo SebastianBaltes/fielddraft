@@ -4,12 +4,11 @@
  * Replaces the old "A Admin" name button. Renders:
  *   - guest:  a "Log in" button that opens the login screen;
  *   - authed: a black person glyph (👤, no name) whose dropdown holds a small
- *             identity line (email + role), **Report Issue…** and **Log out**.
+ *             identity line (email + role) and **Log out**.
  *
  * The Projects / Issues / Invites / Users entries are NO LONGER here — they are
- * the Overview's main-level tabs. Report Issue moved here out of the settings
- * burger; it dispatches the same `fd:report-issue` window event the F2 shortcut
- * uses, so the existing report dialog (owned by SettingsMenu) opens unchanged.
+ * the Overview's main-level tabs. Report Issue lives in the settings burger
+ * (with the F2 shortcut shown, ticket b5a60122), not here.
  *
  * A thin surface over the shared {@link useAccount} session; it never resolves
  * `/api/me` itself.
@@ -98,19 +97,8 @@ export function UserMenu({ account, onLoggedOut }: UserMenuProps) {
             <span className="role">{isAdmin ? "admin" : "user"}</span>
           </div>
           <div className="menu-separator" role="separator" />
-          <button
-            type="button"
-            role="menuitem"
-            className="menu-item"
-            data-testid="user-report"
-            onClick={() => {
-              window.dispatchEvent(new Event("fd:report-issue"));
-              close();
-            }}
-          >
-            <span>Report Issue…</span>
-            <span className="menu-shortcut">F2</span>
-          </button>
+          {/* Ticket b5a60122: "Report Issue…" lives in the settings burger
+              (with F2), not here — the user menu is identity + logout. */}
           <button
             type="button"
             role="menuitem"

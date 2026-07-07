@@ -24,6 +24,17 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.454",
+    entries: [
+      {
+        kind: "fix",
+        scope: "ui",
+        tickets: ["b5a60122"],
+        text: "„Report Issue…“ ist zurück im Burger-Menü (mit sichtbarem F2-Shortcut) und aus dem User-Menü entfernt — das User-Menü ist wieder nur Identität + Log out.",
+      },
+    ],
+  },
+  {
     version: "0.6.453",
     entries: [
       {

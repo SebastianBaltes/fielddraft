@@ -348,10 +348,19 @@ export function SettingsMenu({
             Settings…
           </button>
 
-          {/* Ticket e752b6: "Report Issue…" and "Release Notes…" left the
-              menu — they stay reachable via F2 / the fd:report-issue event
-              and the version badge (fd:release-notes); the dialogs below
-              remain owned by this component. */}
+          {/* Ticket e752b6 removed this; ticket b5a60122 brought it back with
+              the F2 shortcut shown (and dropped the UserMenu copy instead).
+              "Release Notes…" stays out — reachable via the version badge. */}
+          <button
+            type="button"
+            role="menuitem"
+            className="menu-item"
+            data-testid="menu-report-issue"
+            onClick={() => menuAction(() => setReportDialogOpen(true))}
+          >
+            <span>Report Issue…</span>
+            <span className="menu-shortcut">F2</span>
+          </button>
 
           <div className="menu-separator" role="separator" />
 
