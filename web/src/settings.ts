@@ -485,5 +485,10 @@ export function updateSetting<K extends keyof SettingsState>(
   if (lsKey !== undefined) {
     saveSetting(lsKey, key === "units" ? JSON.stringify(value) : String(value));
   }
+  // Ticket dc02f591: the HMR mute handshake (main.tsx) must follow a LIVE
+  // toggle, not only the next boot.
+  if (key === "autoReload" && typeof window !== "undefined") {
+    window.dispatchEvent(new Event("fd:autoreload-changed"));
+  }
   return { ...settings, [key]: value };
 }

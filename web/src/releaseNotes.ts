@@ -24,6 +24,17 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.460",
+    entries: [
+      {
+        kind: "fix",
+        scope: "dev",
+        tickets: ["dc02f591"],
+        text: "„Auto-reload on code change: Off“ schottet die App jetzt komplett von Code-Änderungen ab: Bisher blieben Hot-Module-Updates aktiv und setzten beim Editieren von Quellcode den UI-Zustand zurück (ohne Reload). Der Client meldet die Einstellung an den Dev-Server, der daraufhin sämtliche Hot-Payloads (Updates, Prune, Full-Reload) für diesen Tab verwirft — F5 lädt weiterhin den neuesten Stand, und das Umschalten wirkt sofort ohne Neustart.",
+      },
+    ],
+  },
+  {
     version: "0.6.459",
     entries: [
       {

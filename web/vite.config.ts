@@ -66,6 +66,48 @@ function reloadGate(): Plugin {
           send(...args);
         };
       }
+
+      // Ticket dc02f591: with "Auto-reload on code change" OFF the app must
+      // be COMPLETELY untouched by code changes — module hot-updates
+      // re-execute code and reset UI state even without a full reload. The
+      // client announces its preference (fd:hot-mute); we then drop every
+      // hot payload (update / prune / the fd:full-reload custom event) at
+      // that client's socket. F5 still loads the latest code, and toggling
+      // the setting back on unmutes live.
+      server.ws.on(
+        "fd:hot-mute",
+        (data: { muted?: boolean }, client: unknown) => {
+          const raw = (
+            client as { socket?: { send(payload: string): void } }
+          ).socket as
+            | { send(payload: string): void; __fdSend?: (p: string) => void }
+            | undefined;
+          if (!raw) return;
+          if (data?.muted) {
+            if (raw.__fdSend) return; // already muted
+            raw.__fdSend = raw.send.bind(raw);
+            raw.send = (str: string) => {
+              try {
+                const p = JSON.parse(str) as { type?: string; event?: string };
+                if (
+                  p.type === "update" ||
+                  p.type === "prune" ||
+                  p.type === "full-reload" ||
+                  (p.type === "custom" && p.event === "fd:full-reload")
+                ) {
+                  return;
+                }
+              } catch {
+                // non-JSON frame — pass through
+              }
+              raw.__fdSend!(str);
+            };
+          } else if (raw.__fdSend) {
+            raw.send = raw.__fdSend;
+            delete raw.__fdSend;
+          }
+        },
+      );
     },
   };
 }

@@ -25,6 +25,20 @@ if (import.meta.hot) {
     }
     location.reload();
   });
+
+  // Ticket dc02f591: with Auto-reload OFF the app must be COMPLETELY
+  // untouched by code changes — hot module updates re-execute modules and
+  // reset UI state even without a reload. Announce the preference so the
+  // reloadGate plugin (vite.config.ts) drops hot payloads at our socket.
+  // Re-announced on every (re)connect and live on a settings toggle.
+  const announceHotMute = () => {
+    import.meta.hot?.send("fd:hot-mute", {
+      muted: localStorage.getItem(LS_AUTO_RELOAD) === "false",
+    });
+  };
+  announceHotMute();
+  import.meta.hot.on("vite:ws:connect", announceHotMute);
+  window.addEventListener("fd:autoreload-changed", announceHotMute);
 }
 
 // Capture raw pointer/keyboard/wheel/resize input into the user-action log so a
