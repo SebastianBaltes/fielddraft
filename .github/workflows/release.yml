@@ -63,6 +63,22 @@ jobs:
           cache-from: type=gha,scope=server
           cache-to: type=gha,scope=server,mode=max
 
+      # --- mesher image: fd-prepare + fd-cgal-mesh + HTTP wrapper -----------
+      # Context MUST be the repo root (the Rust stage needs crates/). The
+      # golden interpreter-sync test runs INSIDE this build — Rust↔C++ SDF
+      # drift fails the release.
+      - name: Build + push mesher image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: cgal-mesher/Dockerfile
+          push: true
+          tags: |
+            ${{ steps.meta.outputs.base }}/mesher:${{ steps.meta.outputs.tag }}
+            ${{ steps.meta.outputs.base }}/mesher:latest
+          cache-from: type=gha,scope=mesher
+          cache-to: type=gha,scope=mesher,mode=max
+
       # --- web image: wasm → vite → caddy (context = repo root) -------------
       # Context MUST be the repo root so the wasm stage can see crates/ +
       # Cargo.toml (see web/Dockerfile.prod header).

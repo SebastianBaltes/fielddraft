@@ -733,9 +733,17 @@ graph LR
   Arcs* wurde entfernt (Ticket tihw: die sPSR-Rekonstruktion der
   poisson_reconstruction-Crate hat selbst auf einer perfekten Kugel-
   Punktwolke >10 % Formfehler und ist superlinear langsam — in
-  FieldDraft, wo das exakte SDF vorliegt, ohne Anwendungsfall). CGAL/libfive/OpenVDB sind
-  nicht auf `main`: CGAL-Spike liegt auf Branch `feat/cgal-mesher`
-  (emscripten-Mesh_3), libfive ist über fidget (interval-dc) abgedeckt.
+  FieldDraft, wo das exakte SDF vorliegt, ohne Anwendungsfall). libfive/OpenVDB sind
+  nicht auf `main`; libfive ist über fidget (interval-dc) abgedeckt.
+  **CGAL Mesh_3 läuft serverseitig** (`cgal-mesher/`, Plan-SSOT
+  `docs/CGAL-SERVER-MESHING-PLAN.md`): Export-Methode „CGAL Mesh_3
+  (server)" synct das Projekt, der Go-Server queued einen `mesh_jobs`-Job,
+  ein Dispatcher POSTet das per `fd-prepare` (natives Kernel-Binary:
+  Dokument → SDF-Opcodes + B-Rep-Kanten-Polylines) vorbereitete Dokument an
+  den `mesher`-Container (`fd-cgal-mesh`: Mesh_3, Kanten-Schutzkugeln,
+  manifold-Kriterium, TBB), das STL kommt als Blob-Artefakt zurück
+  (wasserdicht, 2-manifold, kantenexakt). Interpreter-Sync Rust↔C++ wird
+  vom Golden-Test im Image-Build erzwungen.
 * **Export-Vorschau** (`exportPreviewStore.ts`, `exportPreviewMesh.tsx`):
   Nach „Mesh" publiziert der Dialog die zusammengeführten Export-Dreiecke
   (`exportMeshPreviewPositions/Indices`); der Viewport unterdrückt den
@@ -819,7 +827,9 @@ The application runs purely in the browser with localStorage persistence. The Go
 * **Rate limiting:** Per-IP token bucket (60 burst, 1 req/sec refill)
 * **Password reset:** 1-hour token, CLI-logged (SMTP integration TBD)
 
-**API endpoints** (16 routes): `/api/auth/*` (register/login/logout/reset), `/api/me`, `/api/projects/*` (CRUD + publish + thumbnail), `/api/gallery`, `/api/v/{id}`.
+**API endpoints** (20 routes): `/api/auth/*` (register/login/logout/reset), `/api/me`, `/api/projects/*` (CRUD + publish + thumbnail + mesh), `/api/mesh-jobs/{id}` (+ `/artifact`, DELETE), `/api/gallery`, `/api/v/{id}`.
+
+* **Server-side meshing** (`mesher.go`, plan §P4): persistente `mesh_jobs`-Queue (Migration 0006, Boot-Recovery), Dispatcher-Worker-Pool (`MESH_WORKERS`) mit atomarem FIFO-Claim, POST an den `mesher`-Container (`MESHER_URL`; leer = Feature aus → 503), STL als content-addressed Blob; max. 1 aktiver Job pro User.
 
 Storage backends: `store_sql.go` (MariaDB, production), `store_mem.go` (in-memory, tests/dev), plus a pluggable ticket store (`ticketstore.go`: SQL for prod, `ticketstore_file.go` for local dev, `TICKET_BACKEND=files`).
 

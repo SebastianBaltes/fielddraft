@@ -24,6 +24,16 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.442",
+    entries: [
+      {
+        kind: "feat",
+        scope: "deploy",
+        text: "CGAL-Meshing Meilenstein M5 (Prod-Deployment): mesher-Service in docker-compose.prod.yml (internes Netz, horizontal skalierbar via --scale), drittes GHCR-Image im Release-Workflow (Golden-Test läuft im Image-Build), Env-Tuning (MESH_WORKERS/CONCURRENCY/THREADS/TIMEOUT) in .env.prod.example, DEPLOY.md + ARCHITECTURE.md nachgeführt. Ansible-Deploy zieht das Image automatisch mit.",
+      },
+    ],
+  },
+  {
     version: "0.6.441",
     entries: [
       {

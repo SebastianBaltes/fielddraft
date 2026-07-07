@@ -65,12 +65,33 @@ services:
       # disables that scope; set both to enable the User→Agent loop.
       PO_SERVICE_TOKEN: "${PO_SERVICE_TOKEN:-}"
       CODING_SERVICE_TOKEN: "${CODING_SERVICE_TOKEN:-}"
+      # Server-side CGAL meshing (plan §P6): compose-DNS of the mesher
+      # service. Empty disables the feature (mesh routes answer 503).
+      MESHER_URL: "http://mesher:9090"
+      MESH_WORKERS: "${MESH_WORKERS:-2}"
     volumes:
       - blob-data:/data/blobs
     # NO `ports:` — only Caddy reaches the API (reverse_proxy server:8080).
     depends_on:
       db:
         condition: service_healthy
+    networks:
+      - internal
+
+  # Server-side CGAL mesher (fd-prepare + fd-cgal-mesh + HTTP wrapper).
+  # Internal network only — NEVER exposed; only `server` talks to it. Scale
+  # horizontally with `docker compose up --scale mesher=N` (compose DNS
+  # round-robins), vertically via FD_MESH_THREADS (TBB threads per job).
+  mesher:
+    image: "${REGISTRY:-ghcr.io/sorokan/fielddraft}/mesher:${TAG:-latest}"
+    build:
+      context: .
+      dockerfile: cgal-mesher/Dockerfile
+    restart: unless-stopped
+    environment:
+      FD_MESH_CONCURRENCY: "${MESH_CONCURRENCY:-2}"
+      FD_MESH_THREADS: "${MESH_THREADS:-0}"
+      FD_MESH_TIMEOUT_SEC: "${MESH_TIMEOUT_SEC:-300}"
     networks:
       - internal
 
