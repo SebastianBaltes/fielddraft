@@ -24,6 +24,17 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.437",
+    entries: [
+      {
+        kind: "feat",
+        scope: "debug",
+        tickets: ["nwmi"],
+        text: "Hybrid-PASM P4c: Polkappen-Fächer — Faces mit einer windenden Loop um einen Pol/Apex (Kugelkappe, Kegelspitze, Revolve-Achsberührung) werden jetzt vernetzt: ein Pol-Ring aus Hilfspunkten knapp vor dem Pol, das Stück Loop↔Ring über den Band-Pfad, der Ring per Dreiecks-Fächer zum Pol geschlossen — jedes Fächer-Dreieck berührt den Pol genau einmal, nichts kollabiert. Ring-Auflösung aus der Welt-Bogenlänge (am Pol schrumpft der Umfang). Kugelkappe ∩ Box end-to-end geschlossen/2-Manifold (Euler=2).",
+      },
+    ],
+  },
+  {
     version: "0.6.436",
     entries: [
       {

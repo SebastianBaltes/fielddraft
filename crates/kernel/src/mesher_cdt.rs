@@ -287,15 +287,24 @@ fn unwrap_ring(ring: &[UvPoint], period: f64) -> (Vec<UvPoint>, i32) {
 ///   global index sequence, so across the seam every edge is shared by
 ///   exactly two triangles — the cut is invisible in the mesh.
 ///
-/// Anything else (a cap containing a pole/apex → one winding loop, |w| ≥ 2,
-/// holes crossing the seam) returns `None` — the face stays unmeshed rather
-/// than risking a broken seam.
+/// - **A pole cap** (exactly one loop winding once, `poles` non-empty): an
+///   artificial POLE RING of aux vertices is placed just short of the
+///   enclosed pole (chosen from `poles` — chart v values of the carrier's
+///   poles/apexes — via the interior particles' side, nearest as fallback).
+///   The loop↔ring strip recurses through the band path; the ring is then
+///   closed by an explicit triangle FAN to one pole vertex, so every fan
+///   triangle touches the pole exactly once and nothing collapses.
+///
+/// Anything else (|w| ≥ 2, holes crossing the seam, cap without a known
+/// pole) returns `None` — the face stays unmeshed rather than risking a
+/// broken seam.
 pub(crate) fn triangulate_periodic_face(
     loops_uv: &[Vec<UvPoint>],
     interior: &[UvPoint],
     period: f64,
     seam_h: f64,
     clearance: f64,
+    poles: &[f64],
     aux_base: u32,
     world_of: &dyn Fn(f64, f64) -> [f32; 3],
 ) -> Option<PeriodicFaceMesh> {
@@ -327,9 +336,106 @@ pub(crate) fn triangulate_periodic_face(
         });
     }
 
-    // ── Case 2: a full band — exactly two loops winding once each ──
+    // ── Case 2: a pole cap — one loop winding once, pole known ──
+    if winders.len() == 1 && unwrapped[winders[0]].1.abs() == 1 && !poles.is_empty() {
+        let wa = winders[0];
+        let loop_vs: Vec<f64> = unwrapped[wa].0.iter().map(|&(_, [_, v])| v).collect();
+        let mean_loop_v = loop_vs.iter().sum::<f64>() / loop_vs.len() as f64;
+        // Pick the enclosed pole: the interior particles lie between loop
+        // and pole, so their mean v points the way; nearest pole otherwise.
+        let dist = |p: f64| (p - mean_loop_v).abs();
+        let mut pole_v = poles[0];
+        for &p in poles {
+            if dist(p) < dist(pole_v) {
+                pole_v = p;
+            }
+        }
+        if !interior.is_empty() {
+            let mean_int_v =
+                interior.iter().map(|&(_, [_, v])| v).sum::<f64>() / interior.len() as f64;
+            let side = mean_int_v - mean_loop_v;
+            let mut best: Option<f64> = None;
+            for &p in poles {
+                if (p - mean_loop_v) * side > 0.0 && best.map_or(true, |b| dist(p) < dist(b)) {
+                    best = Some(p);
+                }
+            }
+            if let Some(p) = best {
+                pole_v = p;
+            }
+        }
+        let min_gap = loop_vs
+            .iter()
+            .map(|v| (v - pole_v).abs())
+            .fold(f64::INFINITY, f64::min);
+        if !(min_gap > 1e-9) {
+            return None; // loop touches the pole — degenerate cap
+        }
+        let dir = (mean_loop_v - pole_v).signum();
+        let ring_v = pole_v + dir * seam_h.min(0.5 * min_gap).max(1e-9);
+
+        // Ring resolution from WORLD arc length — the chart's u scale is a
+        // reference radius, but near the pole the true circumference shrinks.
+        let wdist = |a: [f32; 3], b: [f32; 3]| -> f64 {
+            let d = [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+            ((d[0] * d[0] + d[1] * d[1] + d[2] * d[2]) as f64).sqrt()
+        };
+        let a0u_cap = unwrapped[wa].0[0].1[0];
+        let probes = 24usize;
+        let mut ring_len = 0.0f64;
+        let mut prev = world_of(a0u_cap, ring_v);
+        for i in 1..=probes {
+            let q = world_of(a0u_cap + i as f64 / probes as f64 * period, ring_v);
+            ring_len += wdist(q, prev);
+            prev = q;
+        }
+        let h_world = wdist(
+            world_of(a0u_cap, ring_v),
+            world_of(a0u_cap, ring_v + dir * seam_h),
+        )
+        .max(1e-9);
+        let n_ring = ((ring_len / h_world).round() as usize).clamp(3, 512);
+
+        // Pole ring + pole vertex as NEW aux points, then the loop↔ring
+        // strip through the band path (recursion with poles = [] — the
+        // strip has two winding loops now, so it cannot recurse again).
+        let mut aux: Vec<[f32; 3]> = Vec::with_capacity(n_ring + 1);
+        let mut ring_loop: Vec<UvPoint> = Vec::with_capacity(n_ring);
+        for i in 0..n_ring {
+            let u = a0u_cap + i as f64 / n_ring as f64 * period;
+            ring_loop.push((aux_base + i as u32, [u, ring_v]));
+            aux.push(world_of(u, ring_v));
+        }
+        let pole_idx = aux_base + n_ring as u32;
+        aux.push(world_of(a0u_cap, pole_v));
+
+        let mut sub_loops = loops_uv.to_vec();
+        sub_loops.push(ring_loop);
+        let sub = triangulate_periodic_face(
+            &sub_loops,
+            interior,
+            period,
+            seam_h,
+            clearance,
+            &[],
+            pole_idx + 1,
+            world_of,
+        )?;
+        let mut tris = sub.tris;
+        for i in 0..n_ring {
+            tris.push([
+                pole_idx,
+                aux_base + i as u32,
+                aux_base + ((i + 1) % n_ring) as u32,
+            ]);
+        }
+        aux.extend(sub.aux);
+        return Some(PeriodicFaceMesh { tris, aux });
+    }
+
+    // ── Case 3: a full band — exactly two loops winding once each ──
     if winders.len() != 2 || winders.iter().any(|&i| unwrapped[i].1.abs() != 1) {
-        return None; // pole cap / apex / exotic topology — stay unmeshed
+        return None; // exotic topology (|w| ≥ 2, cap without pole) — unmeshed
     }
     let (wa, wb) = (winders[0], winders[1]);
 
@@ -553,6 +659,7 @@ mod tests {
             period,
             4.0,
             1.0,
+            &[],
             17,
             &world_of,
         )
@@ -590,17 +697,83 @@ mod tests {
         }
     }
 
-    /// A single winding loop (a cap containing the pole) must be refused —
-    /// meshing it through the chart would collapse the pole line.
+    /// A single winding loop WITHOUT a known pole must be refused — meshing
+    /// it through the chart would collapse the pole line.
     #[test]
-    fn pole_cap_is_refused() {
+    fn pole_cap_without_pole_is_refused() {
         let period = 80.0f64;
         let lp: Vec<UvPoint> = (0..8)
             .map(|i| (i as u32, [i as f64 * 10.0, 5.0]))
             .collect();
         let world_of = |_: f64, _: f64| [0.0f32; 3];
         assert!(
-            triangulate_periodic_face(&[lp], &[], period, 4.0, 1.0, 8, &world_of).is_none()
+            triangulate_periodic_face(&[lp], &[], period, 4.0, 1.0, &[], 8, &world_of).is_none()
+        );
+    }
+
+    /// Hybrid-PASM P4c: a cap (one winding loop) with a known pole closes
+    /// via pole ring + fan — the only boundary edges of the result are the
+    /// original loop's segments; the pole vertex is used, and every fan
+    /// triangle touches it exactly once.
+    #[test]
+    fn pole_cap_fans_to_the_pole() {
+        let period = 80.0f64;
+        let su = period / std::f64::consts::TAU;
+        // Cone-like chart: world radius grows linearly with v, apex at v=0.
+        let world_of = move |u: f64, v: f64| -> [f32; 3] {
+            let th = u / su;
+            let r = v.max(0.0);
+            [(r * th.cos()) as f32, v as f32, (r * th.sin()) as f32]
+        };
+        let lp: Vec<UvPoint> = (0..8)
+            .map(|i| (i as u32, [3.0 + i as f64 * 10.0, 5.0]))
+            .collect();
+        let mesh = triangulate_periodic_face(
+            &[lp],
+            &[],
+            period,
+            2.0,
+            0.5,
+            &[0.0],
+            8,
+            &world_of,
+        )
+        .expect("cap must triangulate");
+        assert!(!mesh.aux.is_empty(), "ring + pole aux vertices expected");
+        let mut edge_count: std::collections::HashMap<(u32, u32), u32> =
+            std::collections::HashMap::new();
+        let mut used: std::collections::HashSet<u32> = std::collections::HashSet::new();
+        for t in &mesh.tris {
+            assert!(t[0] != t[1] && t[1] != t[2] && t[2] != t[0]);
+            for (a, b) in [(t[0], t[1]), (t[1], t[2]), (t[2], t[0])] {
+                *edge_count.entry((a.min(b), a.max(b))).or_default() += 1;
+                used.insert(a);
+                used.insert(b);
+            }
+        }
+        // Boundary edges (count 1) may only be original loop segments
+        // (indices 0..8, cyclically adjacent); everything else, including
+        // ring and fan edges, must be shared by exactly two triangles.
+        for (&(a, b), &c) in &edge_count {
+            assert!(c <= 2, "edge {a}-{b} used {c}× (non-manifold)");
+            if c == 1 {
+                assert!(
+                    a < 8
+                        && b < 8
+                        && ((a as i32 - b as i32).abs() == 1
+                            || (a as i32 - b as i32).abs() == 7),
+                    "open edge {a}-{b} is not a rim segment — cap leaked"
+                );
+            }
+        }
+        // Euler characteristic of a disc: V − E + F = 1.
+        let v = used.len() as i64;
+        let e = edge_count.len() as i64;
+        let f = mesh.tris.len() as i64;
+        assert_eq!(
+            v - e + f,
+            1,
+            "cap Euler characteristic broke: V={v} E={e} F={f}"
         );
     }
 }

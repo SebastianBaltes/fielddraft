@@ -650,12 +650,29 @@ impl Kernel {
                     let aux_base =
                         (n_alive as usize + skeleton.len() + aux_points.len()) as u32;
                     let h_chart = (h_seam / ms) as f64;
+                    // Chart-v positions of the carrier's poles/apexes — where
+                    // a cap face (one winding loop) closes via ring + fan.
+                    let poles: Vec<f64> = match surface {
+                        HalfSpace::Sphere { .. } => vec![0.0, std::f64::consts::PI * sv],
+                        HalfSpace::Cone { .. } => vec![0.0],
+                        HalfSpace::RevolvedProfile { .. } => {
+                            let (poly, arc) =
+                                profile.as_ref().expect("revolve chart has a profile");
+                            poly.iter()
+                                .zip(arc.iter())
+                                .filter(|(q, _)| q[0].abs() < 1e-3)
+                                .map(|(_, &a)| a as f64)
+                                .collect()
+                        }
+                        _ => Vec::new(),
+                    };
                     if let Some(mesh) = crate::mesher_cdt::triangulate_periodic_face(
                         &scaled,
                         &scaled_interior,
                         period,
                         h_chart,
                         0.25 * h_chart,
+                        &poles,
                         aux_base,
                         &world_of,
                     ) {
@@ -1197,6 +1214,68 @@ mod mesher_octree_tests {
             0,
             "tube Euler characteristic broke: V={v} E={e} F={f}"
         );
+    }
+
+    /// Hybrid-PASM P4c (ticket nwmi): a SPHERE CAP (sphere ∩ y-slab box
+    /// enclosing the +Y pole) exercises the pole-fan path — the cap face is
+    /// one winding loop around the pole and closes via pole ring + fan;
+    /// together with the planar disc it must form a closed 2-manifold
+    /// (every edge in exactly two triangles, Euler V − E + F = 2).
+    #[test]
+    fn mesher_points_cdt_sphere_cap_is_watertight_manifold() {
+        let mut k = crate::Kernel::new();
+        k.document = serde_json::from_str(
+            &serde_json::json!({
+                "schema_version": 2,
+                "name": "sphere-cap",
+                "next_feature_id": 3,
+                "feature_calls": [
+                    { "type": "sphere", "id": "1", "params": {
+                        "radius": 10.0, "translate": [0.0, 0.0, 0.0] } },
+                    { "type": "box", "id": "2", "params": {
+                        "half_extents": [20.0, 8.0, 20.0],
+                        "translate": [0.0, 12.0, 0.0],
+                        "op": "intersect", "targets": "qCreatedBy(1)" } }
+                ]
+            })
+            .to_string(),
+        )
+        .unwrap();
+        k.bootstrap_features_from_calls().unwrap();
+        k.rebuild_packed();
+        let out = k.mesher_points(
+            r#"{"maxDepth":4,"brepSkeleton":true,"cdtFaces":true,
+                "nearSurfaceOnly":true,"nearSurfaceDist":1.0,
+                "fitOnSurface":true,"onlyOnSurface":true,
+                "repulsion":true,"interactionRadius":3.0,"repulsionStrength":0.5,
+                "pasmKernel":true,"iterations":20}"#
+                .into(),
+        );
+        let total = out[0] as usize;
+        let tris = out[1] as usize;
+        assert!(tris >= 12, "expected a real triangulation, got {tris} tris");
+        let idx_base = 2 + total * 9;
+        let mut edge_use: std::collections::HashMap<(u32, u32), u32> =
+            std::collections::HashMap::new();
+        let mut used: std::collections::HashSet<u32> = std::collections::HashSet::new();
+        for t in 0..tris {
+            let a = out[idx_base + t * 3] as u32;
+            let b = out[idx_base + t * 3 + 1] as u32;
+            let c3 = out[idx_base + t * 3 + 2] as u32;
+            assert!(a != b && b != c3 && c3 != a, "degenerate triangle");
+            for (x, y) in [(a, b), (b, c3), (c3, a)] {
+                *edge_use.entry((x.min(y), x.max(y))).or_default() += 1;
+                used.insert(x);
+                used.insert(y);
+            }
+        }
+        for (&(a, b), &n) in &edge_use {
+            assert_eq!(n, 2, "edge {a}-{b} used {n}× (open seam or fan)");
+        }
+        let v = used.len() as i64;
+        let e = edge_use.len() as i64;
+        let f = tris as i64;
+        assert_eq!(v - e + f, 2, "cap Euler characteristic broke: V={v} E={e} F={f}");
     }
 
     /// Hybrid-PASM P1 (ticket nwmi): with `brepSkeleton` on, a box body emits
