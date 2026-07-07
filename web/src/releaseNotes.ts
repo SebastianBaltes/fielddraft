@@ -24,6 +24,16 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.391",
+    entries: [
+      {
+        kind: "perf",
+        text: "Adaptiver Narrow-Band-Mesher (Export „Adaptive Manifold-DC“) nutzt jetzt ebenfalls die zell-lokale CSG-Baum-Spezialisierung: Band-Abstieg und Corner-Sampling werten pro Zelle nur die lokal sichtbaren Boolean-Zweige aus — identische Meshes, deutlich schneller auf Baugruppen",
+        scope: "kernel",
+      },
+    ],
+  },
+  {
     version: "0.6.390",
     entries: [
       {

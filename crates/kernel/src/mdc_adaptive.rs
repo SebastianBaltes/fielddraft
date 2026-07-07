@@ -213,46 +213,14 @@ pub fn adaptive_mdc(
 
     let sdf = |p: [f32; 3]| node.sdf(p, EvalMode::Visual);
 
-    // ── 1. Narrow band: descend the implicit octree ────────────────
-    let mut leaves: Vec<([i32; 3], f32)> = Vec::new();
-    let mut stack: Vec<(u32, [i32; 3])> = vec![(0, [0, 0, 0])];
-    while let Some((l, c)) = stack.pop() {
-        let s = root_size / (1u32 << l) as f32;
-        let cc = [
-            origin[0] + (c[0] as f32 + 0.5) * s,
-            origin[1] + (c[1] as f32 + 0.5) * s,
-            origin[2] + (c[2] as f32 + 0.5) * s,
-        ];
-        let d = sdf(cc);
-        if d.abs() > 0.8661 * s * lipschitz_guard + 1e-4 {
-            continue; // cell provably clear of the surface
-        }
-        if l == level {
-            leaves.push((c, d));
-            if leaves.len() > MAX_BAND_CELLS {
-                return Err(format!("band exceeds {MAX_BAND_CELLS} cells"));
-            }
-            continue;
-        }
-        for oct in 0..8i32 {
-            stack.push((
-                l + 1,
-                [
-                    c[0] * 2 + (oct & 1),
-                    c[1] * 2 + ((oct >> 1) & 1),
-                    c[2] * 2 + ((oct >> 2) & 1),
-                ],
-            ));
-        }
-    }
-    if leaves.is_empty() {
-        return Err("no band cells (surface not found)".into());
-    }
-    // Deterministic processing order.
-    leaves.sort_unstable_by_key(|(c, _)| *c);
-
-    // ── 2. Corner sampling (shared, memoised) ──────────────────────
-    let mut corners: HashMap<[i32; 3], f32> = HashMap::with_capacity(leaves.len() * 2);
+    // ── 1.+2. Narrow band + corner sampling, cell-specialized ──────
+    // The descent re-specializes the CSG view per visited cell (see
+    // `crate::cell_csg`): boolean branches provably clear of a cell are
+    // dropped and the shrunken tree is inherited downward, so band and
+    // corner evals cost the locally visible complexity, not the whole
+    // assembly. Values are exactly those of the full tree (margin 0,
+    // value-only use). Corners are memoised across adjacent cells —
+    // safe, because every spec produces identical values.
     let corner_point = |g: [i32; 3]| -> [f32; 3] {
         [
             origin[0] + g[0] as f32 * cell,
@@ -260,16 +228,92 @@ pub fn adaptive_mdc(
             origin[2] + g[2] as f32 * cell,
         ]
     };
-    for (c, _) in &leaves {
-        for oct in 0..8i32 {
-            let g = [
-                c[0] + (oct & 1),
-                c[1] + ((oct >> 1) & 1),
-                c[2] + ((oct >> 2) & 1),
-            ];
-            corners.entry(g).or_insert_with(|| sdf(corner_point(g)));
-        }
+    struct BandCtx {
+        origin: [f32; 3],
+        root_size: f32,
+        level: u32,
+        lipschitz_guard: f32,
+        cell: f32,
+        leaves: Vec<([i32; 3], f32)>,
+        corners: HashMap<[i32; 3], f32>,
     }
+    fn band_descend(
+        spec: &crate::cell_csg::CellCsg<'_>,
+        l: u32,
+        c: [i32; 3],
+        ctx: &mut BandCtx,
+    ) -> Result<(), String> {
+        let s = ctx.root_size / (1u32 << l) as f32;
+        let min = [
+            ctx.origin[0] + c[0] as f32 * s,
+            ctx.origin[1] + c[1] as f32 * s,
+            ctx.origin[2] + c[2] as f32 * s,
+        ];
+        let aabb = crate::csg::Aabb { min, max: [min[0] + s, min[1] + s, min[2] + s] };
+        let cc = [min[0] + 0.5 * s, min[1] + 0.5 * s, min[2] + 0.5 * s];
+        let d = spec.sdf(cc, EvalMode::Visual);
+        if d.abs() > 0.8661 * s * ctx.lipschitz_guard + 1e-4 {
+            return Ok(()); // cell provably clear of the surface
+        }
+        if l == ctx.level {
+            ctx.leaves.push((c, d));
+            if ctx.leaves.len() > MAX_BAND_CELLS {
+                return Err(format!("band exceeds {MAX_BAND_CELLS} cells"));
+            }
+            for oct in 0..8i32 {
+                let g = [
+                    c[0] + (oct & 1),
+                    c[1] + ((oct >> 1) & 1),
+                    c[2] + ((oct >> 2) & 1),
+                ];
+                if !ctx.corners.contains_key(&g) {
+                    let p = [
+                        ctx.origin[0] + g[0] as f32 * ctx.cell,
+                        ctx.origin[1] + g[1] as f32 * ctx.cell,
+                        ctx.origin[2] + g[2] as f32 * ctx.cell,
+                    ];
+                    let v = spec.sdf(p, EvalMode::Visual);
+                    ctx.corners.insert(g, v);
+                }
+            }
+            return Ok(());
+        }
+        let child_spec = spec.specialize(&crate::cell_csg::SpecCell::new(
+            aabb,
+            0.0,
+            EvalMode::Visual,
+            ctx.lipschitz_guard.max(1.0),
+        ));
+        for oct in 0..8i32 {
+            band_descend(
+                &child_spec.tree,
+                l + 1,
+                [
+                    c[0] * 2 + (oct & 1),
+                    c[1] * 2 + ((oct >> 1) & 1),
+                    c[2] * 2 + ((oct >> 2) & 1),
+                ],
+                ctx,
+            )?;
+        }
+        Ok(())
+    }
+    let mut band = BandCtx {
+        origin,
+        root_size,
+        level,
+        lipschitz_guard,
+        cell,
+        leaves: Vec::new(),
+        corners: HashMap::new(),
+    };
+    band_descend(&crate::cell_csg::CellCsg::full(node), 0, [0, 0, 0], &mut band)?;
+    let BandCtx { mut leaves, corners, .. } = band;
+    if leaves.is_empty() {
+        return Err("no band cells (surface not found)".into());
+    }
+    // Deterministic processing order.
+    leaves.sort_unstable_by_key(|(c, _)| *c);
 
     // ── 3. Finest-level vertices (one per contour cycle) ───────────
     let normal_eps = cell * 0.25;
