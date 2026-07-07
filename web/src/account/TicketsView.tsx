@@ -289,22 +289,26 @@ function TicketDetailPanel({
   }, [reload]);
 
   const isAuthor = !!user && !!ticket && ticket.author_id === user.id;
-  // The state machine only lets a non-admin author close a resolved ticket
-  // (resolved → closed). Other transitions are admin/PO-driven.
+  // The state machine lets a non-admin author close a resolved ticket
+  // (resolved → closed) or REOPEN it (resolved → in_progress, ticket
+  // d22a909e: "the fix didn't stick"). Other transitions are admin/PO-driven.
   const canClose = isAuthor && ticket?.state === "resolved";
+  const canReopen = isAuthor && ticket?.state === "resolved";
 
-  const close = async () => {
+  const setState = async (state: "closed" | "in_progress", failMsg: string) => {
     setBusy(true);
     setError(null);
     try {
-      const updated = await platformApi.updateTicket(id, { state: "closed" });
+      const updated = await platformApi.updateTicket(id, { state });
       setTicket(updated);
     } catch (err) {
-      setError(accountErrorMessage(err, "Could not close the issue"));
+      setError(accountErrorMessage(err, failMsg));
     } finally {
       setBusy(false);
     }
   };
+  const close = () => setState("closed", "Could not close the issue");
+  const reopen = () => setState("in_progress", "Could not reopen the issue");
 
   if (loading) {
     return (
@@ -388,6 +392,18 @@ function TicketDetailPanel({
                   onClick={close}
                 >
                   Close issue
+                </button>
+              )}
+              {canReopen && (
+                <button
+                  type="button"
+                  className="secondary"
+                  data-testid="detail-reopen-ticket"
+                  disabled={busy}
+                  onClick={reopen}
+                  title="Der Fix reicht nicht — Ticket zurück in Bearbeitung"
+                >
+                  Reopen
                 </button>
               )}
             </div>

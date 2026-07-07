@@ -248,12 +248,14 @@ func (s *Server) handlePatchTicket(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// State change. The author may only close (resolved → closed); the admin
-	// may drive any validated transition (PO/dev moves).
+	// State change. The author may close (resolved → closed) or REOPEN a
+	// resolved ticket (resolved → in_progress, "the fix didn't stick");
+	// the admin may drive any validated transition (PO/dev moves).
 	if body.State != nil {
 		to := TicketState(*body.State)
 		if !isAdmin {
-			if to != StateClosed {
+			reopen := to == StateInProgress && t.State == StateResolved
+			if to != StateClosed && !reopen {
 				writeErr(w, http.StatusForbidden, "only admins may set this state")
 				return
 			}

@@ -503,3 +503,42 @@ func TestTicketHeadingRuneSafeTruncation(t *testing.T) {
 		t.Fatalf("short heading = %q", got)
 	}
 }
+
+// Ticket d22a909e: the AUTHOR may reopen a resolved ticket (resolved →
+// in_progress, "the fix didn't stick") — but no other transition.
+func TestAuthorReopensResolvedTicket(t *testing.T) {
+	e := newTicketEnv(t, "reopen@test.com")
+	resp := e.do(t, "POST", "/api/tickets", `{"title":"Fix me","body":"bug"}`, e.cookies)
+	var tk ticketDetailResponse
+	json.NewDecoder(resp.Body).Decode(&tk)
+	resp.Body.Close()
+
+	// Author may NOT push a triage ticket to in_progress.
+	resp = e.do(t, "PATCH", "/api/tickets/"+tk.ID, `{"state":"in_progress"}`, e.cookies)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("author triage→in_progress: got %d, want 403", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	// Drive to resolved via admin.
+	adminCookies := seedAdminCookies(t, e, "reopen-admin@test.com")
+	for _, s := range []string{"accepted", "in_progress", "deploying", "resolved"} {
+		resp = e.do(t, "PATCH", "/api/tickets/"+tk.ID, `{"state":"`+s+`"}`, adminCookies)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("admin →%s: got %d, want 200", s, resp.StatusCode)
+		}
+		resp.Body.Close()
+	}
+
+	// Author reopens: resolved → in_progress.
+	resp = e.do(t, "PATCH", "/api/tickets/"+tk.ID, `{"state":"in_progress"}`, e.cookies)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("author reopen: got %d, want 200", resp.StatusCode)
+	}
+	var updated ticketDetailResponse
+	json.NewDecoder(resp.Body).Decode(&updated)
+	resp.Body.Close()
+	if updated.State != StateInProgress {
+		t.Fatalf("state after reopen = %q, want in_progress", updated.State)
+	}
+}

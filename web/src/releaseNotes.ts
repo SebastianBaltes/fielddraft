@@ -24,6 +24,17 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.455",
+    entries: [
+      {
+        kind: "feat",
+        scope: "tickets",
+        tickets: ["d22a909e"],
+        text: "Tickets lassen sich wieder öffnen: Der Autor eines resolved-Tickets hat neben „Close issue“ jetzt einen „Reopen“-Button (setzt zurück auf in_progress — „der Fix reicht nicht“). Andere Zustandswechsel bleiben Admin/PO-Sache.",
+      },
+    ],
+  },
+  {
     version: "0.6.454",
     entries: [
       {
