@@ -50,10 +50,17 @@ Constraint-Kanten) — Zentroid-Tests rauschen an fast-kollinearen Nähten.
 (3) Partikel \< 0,25·h Chart-Abstand zur Boundary verwerfen — exakt-auf-
 Constraint splittet einseitig und öffnet die geteilte Kette.
 
-**Arbeitsstand im Working Tree (UNCOMMITTET — zuerst abschließen, §5.1):**
+**STAND 2026-07-08: v0.6.461–463 COMMITTED+GEPUSHT, im realen WASM verifiziert.**
+Erledigt seit der Übergabe: §5.1 (PASM-Dialog v0.6.461 + Export-Fix cdb25e1e
+v0.6.462, Ticket resolved), §6-F3-Fallback v0.6.463 (chartlose Faces, s.u.),
+sowie die Untersuchung von §5.2 (Ergebnis: KEIN Loch, nur Pol-Qualität —
+Details in §5.2). Offen für den Nachfolger: §5.3 Export-Integration (das ist
+jetzt der größte Nutzer-Hebel), §5.4 Anisotropie, §5.5/§6-F2. Die historische
+Working-Tree-Beschreibung unten ist nur noch Kontext.
 
-v0.6.461 ist vorbereitet, aber weder committet noch im Browser verifiziert.
-Es liegen ZWEI getrennte Arbeiten gemischt im Working Tree:
+**Historischer Arbeitsstand (war UNCOMMITTET, jetzt erledigt via §5.1):**
+
+Es lagen ZWEI getrennte Arbeiten gemischt im Working Tree:
 
 1. **Mesher-PASM-Dialog (dieses Ticket nwmi):** Kernel-Option
    `MesherPointOptions::target_edge_length` (JSON `targetEdgeLength`,
@@ -81,15 +88,24 @@ Es liegen ZWEI getrennte Arbeiten gemischt im Working Tree:
 Paper muss dafür NICHT erneut gelesen werden — alle benötigten Gleichungen
 stehen in §5.4, das PDF liegt unter `docs/Literatur/PASM_SIGGRAPH_2013.pdf`):
 
-1. §5.1 Arbeitsstand testen, sichten, in ZWEI Commits committen + pushen.
-2. §5.2 „Zone über den Pol" schließen (kleiner Korrektheits-Fix, P4d-1).
-3. §5.3 P5 Export-Integration „CAD (kantenexakt)" — liefert Nutzerwert mit
-   der fertigen isotropen Pipeline. Anisotropie ändert später nur die
-   Punktverteilung, nicht den Export-Kontrakt, darum Export ZUERST.
+1. ~~§5.1 committen~~ ERLEDIGT (v0.6.461/462).
+2. ~~§5.2 „Zone über den Pol"~~ UNTERSUCHT — kein Loch, nur Pol-Qualität,
+   herabgestuft (§5.2). Nicht mehr Blocker.
+3. **§5.3 P5 Export-Integration „CAD (kantenexakt)" — JETZT dran, größter
+   Nutzer-Hebel.** Turnt das Debug-Overlay in einen echten Export. ACHTUNG
+   Architektur-Entscheid nötig: die PASM-Pipeline (`mesher_points`) meshed
+   heute die GANZE Szene auf einmal (alle Bodies), der Export-Pfad
+   (`export_mesh.rs`, `MeshMethod`) meshed PRO BODY via
+   `build_bounded_with_primitives`. Für einen `MeshMethod::HybridPasm` muss
+   die PASM-Kette erst in eine wiederverwendbare Funktion refaktoriert
+   werden, die für einen einzelnen `BoundedCsg` ein `Mesh` (nur Positionen
+   + Indizes) liefert. Danach Geschlossenheits-Gate + UI-Option (Details
+   §5.3). Vor Beginn ggf. mit dem Betreiber klären: eigene MeshMethod ODER
+   separater Export-Pfad?
 4. §5.4 P4d-2 Anisotropie (Paper-Kern, größter Qualitätshebel, schwerste
    Mathematik — deshalb nach dem Export).
-5. §5.5 P4d-3 Gyroid-Blätter (darf offen bleiben; §6-F3-Fallback greift
-   seit v0.6.463 und liefert dort DC-Qualität statt eines Lochs).
+5. §5.5 P4d-3 Gyroid-Blätter (F2) — durch §6-F3-Fallback (v0.6.463) bereits
+   auf DC-Qualität statt Loch; F2 (chartfreies PASM) ist die Kür.
 
 **Unabhängig offen:** Ticket pzvt (Hover-Kamera-Desync, Analyse im
 Ticket-Ordner `tickets/open/20260707-001324-pzvt`; Fix-Idee „pick what you
@@ -341,32 +357,36 @@ lehnt `feat|fix|perf … (vX.Y.Z)` ohne passenden Release-Note-Eintrag ab).
    Commit-Link `https://github.com/SebastianBaltes/fielddraft/commit/<hash>`)
    und `state='resolved'`.
 
-### 5.2 P4d-1 — „Zone über den Pol" schließen
+### 5.2 P4d-1 — „Zone über den Pol": KEIN Loch (Befund 2026-07-08), nur Qualität
 
-*Symptom:* Liegt ein Pol des Trägers (Kugel / Kegel / Revolve mit
-Achsberührung) IM Inneren eines Faces, dessen Loops NICHT um die Periode
-winden (Beispiel: Kugel, von einer seitlich versetzten Box geschnitten),
-bleibt am Pol ein Loch — der P4c-Polkappen-Pfad springt nur bei windenden
-Loops an.
+*Ursprüngliche Annahme:* Liegt ein Pol des Trägers (Kugel / Kegel / Revolve
+mit Achsberührung) IM Inneren eines Faces, dessen Loops NICHT um die Periode
+winden (Kugel seitlich geschnitten), bleibe am Pol ein Loch.
 
-*Erkennung* (in `export.rs`, dort wo `poles` befüllt und die Faces den
-Chart-Fällen zugewiesen werden): Ein Pol gehört zum Face, wenn (a) der
-Pol-Punkt der Face-Region attribuiert ist — dieselben Contributor-/
-Aktivitäts-Checks wie bei der Partikel-Attribution, KEINE
-Toleranz-Geometrie — und (b) keine Loop des Faces Netto-Windung trägt.
-Plausibilisierung: u-Spannweite der abgewickelten Loop ≈ volle Periode.
+*Befund (im realen WASM v0.6.463 gegengeprüft, KEIN Recompile nötig — per
+`window.__fdKernel.loadJson` + `mesherPoints`):* Diese Annahme trifft NICHT
+mehr zu. Kugel ∩ Box mit `x<4` (beide Pole ±Y im Inneren, Schnitt-Loop
+windet nicht) liefert über alle Auflösungen (maxDepth 3–6) ein GESCHLOSSENES
+Netz — 0 offene Kanten, 0 überzählige, Euler 2 — auch OHNE Fallback. Der
+`winders.is_empty()`-Zweig (Case 1) von `triangulate_periodic_face`
+trianguliert die Region im (θ,φ)-Chart direkt und schließt den Pol
+kombinatorisch. Es bleibt KEIN Loch.
 
-*Umsetzung mit vorhandener P4c-Maschinerie:* Pol-Ring aus Aux-Punkten knapp
-vor dem Pol einfügen (Ring-Auflösung aus der Welt-Bogenlänge, existiert).
-Der Ring IST eine windende Loop → das Face zerfällt in (1) die Zone
-zwischen Original-Loop und Ring — das ist der bekannte Band-Fall mit
-geteilten Naht-Steiner-Punkten — und (2) die Polkappe Ring → Fächer →
-Pol-Vertex (nie zwei Pol-Ecken pro Dreieck). Keine neue Topologie-Logik
-erfinden.
+*Was real bleibt (Qualität, kein Korrektheitsbug):* Am Pol ist das Netz
+GRÖBER als h verlangt — bei h\=2 liegt der nächste Vertex ~4 mm vom Pol
+entfernt, die Polkappe wird von wenigen großen Dreiecken überspannt statt
+von einem feinen Fächer (die (θ,φ)-Karte ist am Pol singulär, die CDT
+verzerrt dort). Kein Loch, keine Nicht-Mannigfaltigkeit.
 
-*DoD:* neuer Kernel-Test „Kugel ∩ seitlich versetzte Box" in
-`api/export.rs` nach dem Muster der vier bestehenden: jede Kante exakt 2×,
-Euler \= 2. Danach Sichtprüfung + eigener Commit.
+*Empfehlung:* Diesen Punkt von „Blocker/Korrektheit" auf „Qualitäts-Nice-to-
+have" herabstufen. Die saubere Lösung (Pol-Ring auch für nicht-windende
+Regionen) ist NICHT billig: sie erzeugt ein GEMISCHTES Band (nicht-windende
+Außen-Loop + windender Ring), das der aktuelle Band-Pfad (Case 3, verlangt
+genau zwei windende Loops) nicht abdeckt — die windende Ring-„Loop" ist im
+abgewickelten Chart kein geschlossener Ring, sondern eine Linie über eine
+volle Periode, was die planare CDT sprengt. Also echte neue Topologie-Arbeit,
+nicht bloß „P4c wiederverwenden". Lohnt sich erst, wenn Pol-Kappen in echten
+Modellen sichtbar stören.
 
 ### 5.3 P5 — Export-Integration „CAD (kantenexakt)"
 
