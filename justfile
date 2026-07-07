@@ -51,7 +51,7 @@ build-wasm:
 # Start the Vite dev server (WebGPU-capable Chromium recommended).
 dev: build-wasm
     @echo "▶ ${FIELDDRAFT_INSTANCE:-fielddraft} dev server on port ${FIELDDRAFT_WEB_PORT:-5173}"
-    cd web && {{nvm_use}} && npm run dev
+    cd web && {{nvm_use}} && npm run dev -- --host 0.0.0.0
 
 # Full local stack: MariaDB + Go server (docker compose) + Vite dev server.
 # Brings up db+server in the background (seeds admin@local / admin on a fresh
@@ -74,7 +74,7 @@ dev-full: build-wasm
     # POST /api/tickets to the FS sink and let creates proxy to the Go server (→ its
     # ticket store: db / issuevault), like prod. Pure `just dev` (no backend) keeps
     # the FS sink.
-    cd web && {{nvm_use}} && FIELDDRAFT_DEV_BACKEND=1 npm run dev
+    cd web && {{nvm_use}} && FIELDDRAFT_DEV_BACKEND=1 npm run dev -- --host 0.0.0.0
 
 # Build the full web bundle (WASM + Vite).
 build: build-wasm
