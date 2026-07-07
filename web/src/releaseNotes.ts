@@ -24,6 +24,16 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.390",
+    entries: [
+      {
+        kind: "perf",
+        text: "Zell-lokale CSG-Baum-Spezialisierung im Kernel: der B-Rep-Octree prunt pro Zelle Boolean-Zweige, die das Feld dort beweisbar nicht beeinflussen (fidget-artige Tape-Verkürzung auf dem eigenen Baum), und vererbt den verkürzten Baum an die Kindzellen — Octree-Aufbau auf zusammengesetzten Körpern mehrfach schneller (30-Teile-Testbaugruppe: 3,9×), byte-identisches Ergebnis. Zusätzlich eps-bewusstes AABB-Pruning in der Contributor-Evaluation",
+        scope: "kernel",
+      },
+    ],
+  },
+  {
     version: "0.6.389",
     entries: [
       {

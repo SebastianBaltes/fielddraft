@@ -592,11 +592,12 @@ impl BoundedCsg {
     /// Provenance-aware evaluation. Mirrors [`CsgNode::evaluate`]
     /// with the same tie-merging rules, but traverses the BVH form
     /// so it shares leaf transforms and AABBs with the `sdf` hot
-    /// path. No pruning yet — contributor ties across an
-    /// almost-equal branch need to see both sides, and the
-    /// classification pass in DC only calls this once per mesh
-    /// vertex, so the saved branches wouldn't pay for the extra
-    /// correctness footwork.
+    /// path. Union/Difference prune eps-aware: a branch whose AABB
+    /// distance lower bound clears the other side's value by more
+    /// than `eps` can neither win the combine nor enter the
+    /// contributor band, so skipping it is value- AND
+    /// contributor-exact. (The B-Rep octree hammers this call; see
+    /// also the cell-local specialization in [`crate::cell_csg`].)
     pub fn evaluate(
         &self,
         p: [f32; 3],
@@ -630,11 +631,33 @@ impl BoundedCsg {
             }
             BoundedCsg::Union { left, right, .. } => {
                 let (da, ca) = left.evaluate_open(p, eps, mode, open);
+                // Left stays evaluated first (contributor tie ORDER must
+                // not change), only the right side may be skipped: outside
+                // its AABB `d_right ≥ dist_right`, so when `da + eps <
+                // dist_right` it can neither win the min nor tie into the
+                // eps band. Off under open shells (retained fields extend
+                // past their AABB, as in `sdf_open`).
+                if open.is_empty() {
+                    let dist_right = distance_point_to_aabb(p, right.aabb());
+                    if dist_right > 0.0 && da + eps < dist_right {
+                        return (da, ca);
+                    }
+                }
                 let (db, cb) = right.evaluate_open(p, eps, mode, open);
                 combine_min(da, ca, db, cb, eps)
             }
             BoundedCsg::Difference { left, right, .. } => {
                 let (da, ca) = left.evaluate_open(p, eps, mode, open);
+                // result = max(da, −db). Outside the tool's AABB
+                // `−db ≤ −dist_right`; when `da + dist_right > eps` the
+                // tool can neither carve (`−db < da`) nor reach the eps
+                // band (`−db < da − eps`).
+                if open.is_empty() {
+                    let dist_right = distance_point_to_aabb(p, right.aabb());
+                    if dist_right > 0.0 && da + dist_right > eps {
+                        return (da, ca);
+                    }
+                }
                 let (db, cb) = right.evaluate_open(p, eps, mode, open);
                 combine_max(da, ca, -db, cb, eps)
             }
@@ -1246,8 +1269,10 @@ pub(crate) fn distance_point_to_aabb(p: [f32; 3], aabb: Aabb) -> f32 {
 
 // Re-export the contributor combinators used by `evaluate`. They live
 // in `csg.rs` as helpers for `CsgNode::evaluate` and are small enough
-// that duplicating the code would be silly.
-fn combine_min(
+// that duplicating the code would be silly. `pub(crate)` so the
+// cell-specialized view (`cell_csg.rs`) mirrors the exact same
+// tie-merging semantics.
+pub(crate) fn combine_min(
     da: f32,
     ca: Contributors,
     db: f32,
@@ -1265,7 +1290,7 @@ fn combine_min(
     }
 }
 
-fn combine_max(
+pub(crate) fn combine_max(
     da: f32,
     ca: Contributors,
     db: f32,

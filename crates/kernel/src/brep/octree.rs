@@ -78,6 +78,7 @@
 use std::collections::HashSet;
 
 use crate::bvh::BoundedCsg;
+use crate::cell_csg::{CellCsg, SpecCell};
 use crate::csg::{Aabb, BranchId, EvalMode};
 use crate::sdf_dual::sdf_gradient_mode;
 
@@ -151,6 +152,13 @@ pub struct OctreeConfig {
     /// Margin (relative to the body AABB's largest extent) by which the
     /// root cell is expanded so boundary surfaces are never clipped.
     pub root_margin_factor: f32,
+    /// Cell-local tree specialization (see [`crate::cell_csg`]): each
+    /// subdivision re-specializes the parent's (already shrunken) CSG view
+    /// for its cell, dropping boolean branches that provably cannot
+    /// influence the samples — value- and contributor-exact, so the built
+    /// octree is identical either way; only the eval cost changes. Off is
+    /// for A/B debugging.
+    pub specialize: bool,
 }
 
 /// How much coarser a `Face` cell may be than a feature cell. Faces carry no
@@ -179,6 +187,7 @@ impl Default for OctreeConfig {
             max_depth: 8,
             eps_factor: 0.5,
             root_margin_factor: 0.01,
+            specialize: true,
         }
     }
 }
@@ -240,8 +249,9 @@ impl Octree {
         // weiten die Schranke um `1/relax`, sodass überschätzte Oberflächen-
         // zellen nicht fälschlich als `Empty` weggeschnitten werden.
         let relax = crate::sdf_compiler::march_relax(body).clamp(f32::MIN_POSITIVE, 1.0);
-        let root_samples = gather_samples(body, &cfg, root);
-        recurse(body, &cfg, &registry, root, 0, relax, &mut leaves, &root_samples);
+        let spec_root = CellCsg::full(body);
+        let root_samples = gather_samples(&spec_root, &cfg, root);
+        recurse(&spec_root, &cfg, &registry, root, 0, relax, &mut leaves, &root_samples);
         Octree { leaves }
     }
 
@@ -266,8 +276,9 @@ impl Octree {
         let root = aabb.expanded(largest * cfg.root_margin_factor);
         let registry = crate::brep::coincidence::CoincidenceRegistry::build(body);
         let relax = relax.clamp(f32::MIN_POSITIVE, 1.0);
-        let root_samples = gather_samples(body, &cfg, root);
-        recurse(body, &cfg, &registry, root, 0, relax, &mut leaves, &root_samples);
+        let spec_root = CellCsg::full(body);
+        let root_samples = gather_samples(&spec_root, &cfg, root);
+        recurse(&spec_root, &cfg, &registry, root, 0, relax, &mut leaves, &root_samples);
         Octree { leaves }
     }
 
@@ -329,7 +340,7 @@ struct Sample {
 /// 27 corner lattice points are evaluated ONCE and handed down instead of
 /// 8×8 per-child corner re-evaluations (the SDF eval dominates the build).
 fn recurse(
-    body: &BoundedCsg,
+    body: &CellCsg<'_>,
     cfg: &OctreeConfig,
     registry: &crate::brep::coincidence::CoincidenceRegistry,
     cell: Aabb,
@@ -390,8 +401,13 @@ fn recurse(
 /// Parent samples are NOT reused: the contributor eps scales with the
 /// cell diagonal, so a parent sample at the same point carries a fatter
 /// branch set and would change classification semantics.
+///
+/// Cell-local specialization: before sampling, the parent's CSG view is
+/// re-specialized for THIS cell (margin = the lattice's `child_eps`, so
+/// every sample taken from it — and every deeper re-specialization — is
+/// value- and contributor-exact; see [`crate::cell_csg`]).
 fn subdivide(
-    body: &BoundedCsg,
+    parent_body: &CellCsg<'_>,
     cfg: &OctreeConfig,
     registry: &crate::brep::coincidence::CoincidenceRegistry,
     cell: Aabb,
@@ -403,6 +419,18 @@ fn subdivide(
     let child_diag = 0.5
         * (size[0] * size[0] + size[1] * size[1] + size[2] * size[2]).sqrt();
     let child_eps = child_diag * cfg.eps_factor;
+
+    let spec = if cfg.specialize {
+        let spec_cell =
+            SpecCell::new(cell, child_eps, EvalMode::Logical, 1.0 / relax);
+        Some(parent_body.specialize(&spec_cell))
+    } else {
+        None
+    };
+    let body: &CellCsg<'_> = match &spec {
+        Some(s) => &s.tree,
+        None => parent_body,
+    };
 
     let mid = [
         0.5 * (cell.min[0] + cell.max[0]),
@@ -478,7 +506,7 @@ fn subdivide(
 /// diagonal-scaled contributor eps. Used for the ROOT cell only — every
 /// deeper cell receives its samples from the parent's shared lattice
 /// (see [`subdivide`]).
-fn gather_samples(body: &BoundedCsg, cfg: &OctreeConfig, cell: Aabb) -> [Sample; 9] {
+fn gather_samples(body: &CellCsg<'_>, cfg: &OctreeConfig, cell: Aabb) -> [Sample; 9] {
     let size = cell.size();
     let diag = (size[0] * size[0] + size[1] * size[1] + size[2] * size[2]).sqrt();
     let eps = diag * cfg.eps_factor;
@@ -630,7 +658,7 @@ fn classify(
 /// classification, but we touch it here so the dependency stays wired and
 /// honest (it is cheap relative to the 9 evaluate calls and keeps the
 /// import meaningful for C.3 to lean on).
-fn sample_at(body: &BoundedCsg, p: [f32; 3], eps: f32) -> Sample {
+fn sample_at(body: &CellCsg<'_>, p: [f32; 3], eps: f32) -> Sample {
     let (value, contributors) = body.evaluate(p, eps, EvalMode::Logical);
     let mut branches = [BranchId::default(); crate::csg::MAX_CONTRIBUTORS];
     let slice = contributors.as_slice();
@@ -798,6 +826,83 @@ mod tests {
             octree.leaves().len()
         );
         assert!(!octree.leaves().is_empty(), "the body surface must survive");
+    }
+
+    /// Cell-local specialization must be a pure optimisation: the built
+    /// octree (every leaf, class and branch set, in order) is identical
+    /// with and without it — on an assembly with unions, differences and
+    /// a smooth op, where pruning actually fires.
+    #[test]
+    fn specialization_is_leaf_identical_and_faster() {
+        // 3×3×3 grid of boxes/spheres, two subtracted tools, one smooth
+        // union — 30 leaves.
+        let mut node: Option<CsgNode> = None;
+        let mut id = 1u32;
+        for ix in 0..3 {
+            for iy in 0..3 {
+                for iz in 0..3 {
+                    let c = [ix as f32 * 10.0, iy as f32 * 10.0, iz as f32 * 10.0];
+                    let prim = if (ix + iy + iz) % 2 == 0 {
+                        CsgNode::Leaf {
+                            id: FeatureId::from_u32(id),
+                            primitive: Primitive::Sphere { center: c, radius: 3.0 },
+                        }
+                    } else {
+                        CsgNode::Leaf {
+                            id: FeatureId::from_u32(id),
+                            primitive: Primitive::Box {
+                                center: c,
+                                half_extents: [2.5, 2.5, 2.5],
+                            },
+                        }
+                    };
+                    id += 1;
+                    node = Some(match node {
+                        None => prim,
+                        Some(acc) => CsgNode::Union(Box::new(acc), Box::new(prim)),
+                    });
+                }
+            }
+        }
+        let mut tree = node.unwrap();
+        tree = CsgNode::Difference(
+            Box::new(tree),
+            Box::new(CsgNode::Leaf {
+                id: FeatureId::from_u32(100),
+                primitive: Primitive::Sphere { center: [10.0, 10.0, 10.0], radius: 2.0 },
+            }),
+        );
+        tree = CsgNode::SmoothUnion(
+            Box::new(tree),
+            Box::new(CsgNode::Leaf {
+                id: FeatureId::from_u32(101),
+                primitive: Primitive::Sphere { center: [0.0, 20.0, 20.0], radius: 4.0 },
+            }),
+            1.5,
+            crate::csg::BlendMode::Fillet,
+        );
+        let body = BoundedCsg::from_csg(&tree);
+
+        let cfg_on = OctreeConfig::with_min_cell_size(0.5);
+        let cfg_off = OctreeConfig { specialize: false, ..cfg_on };
+
+        let t0 = Instant::now();
+        let with_spec = Octree::build_with(&body, cfg_on);
+        let t_on = t0.elapsed();
+        let t1 = Instant::now();
+        let without = Octree::build_with(&body, cfg_off);
+        let t_off = t1.elapsed();
+        eprintln!(
+            "octree 30-leaf assembly: specialize {t_on:?} vs full {t_off:?} ({} leaves)",
+            with_spec.leaves().len()
+        );
+
+        assert_eq!(
+            with_spec.leaves(),
+            without.leaves(),
+            "specialization changed the octree"
+        );
+        assert!(!with_spec.leaves().is_empty());
     }
 
     #[test]

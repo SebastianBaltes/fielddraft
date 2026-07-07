@@ -7,6 +7,7 @@
 pub mod body;
 pub mod brep;
 pub mod bvh;
+pub mod cell_csg;
 pub mod csg;
 pub mod sdf_dual;
 pub mod dc;
