@@ -24,6 +24,16 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.448",
+    entries: [
+      {
+        kind: "fix",
+        scope: "kernel",
+        text: "Persistentes Naming N1: Referenz-Auflösung bewertet alle Kandidaten einheitlich (Fingerprint-Ähnlichkeit + Hash-Bonus, provenienz-gebunden auf die Signatur-Gruppe) — ein Index-Kipp bindet nicht mehr still an das falsche Element, gleich gute Kandidaten melden ehrlich „Ambiguous". Räumliche Index-Vergabe jetzt mit gruppen-relativem ε statt absolutem 1e-9 (nm-Jitter kippt keine Identitäten mehr). Neue Handle-Resolve-Gate-Testfamilie (naming_gate.rs).",
+      },
+    ],
+  },
+  {
     version: "0.6.447",
     entries: [
       {

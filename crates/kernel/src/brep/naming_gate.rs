@@ -7,10 +7,9 @@
 //! element or degrade honestly (`Ambiguous`/`Missing`) — it must NEVER bind
 //! silently to a different element (finding B3 in the plan).
 //!
-//! Tests marked `#[ignore]` are **known red** and define "done" for the
-//! plan's phase N1 (unified candidate scoring + closeness-ambiguity in
-//! `naming::resolve`). Green tests pin behaviour that already holds and must
-//! survive N1 unchanged.
+//! Phase N1 (unified candidate scoring + closeness-ambiguity in
+//! `naming::resolve`, group-relative sweep epsilon) turned the two known-red
+//! scenarios green; all tests are hard guards now.
 
 use super::naming::{
     resolve, EntityHandle, EntityKind, ResolutionState, TopoRef,
@@ -76,7 +75,6 @@ fn face_nearest(brep: &BRep, feature: u32, at: [f64; 3]) -> FaceId {
 /// (the fingerprint says so unambiguously); today the hash-hit early path
 /// returns the wrong edge with a *Resolved*-band score.
 #[test]
-#[ignore = "PERSISTENT-NAMING-PLAN N1 — hash-hit path never consults non-hit candidates, bekannt rot"]
 fn gate_swap_no_misbind() {
     let a = BranchId(1 << 4);
     let b = BranchId(2 << 4);
@@ -127,7 +125,6 @@ fn gate_swap_no_misbind() {
 /// `face_id(branch, 0)` hash-hits whichever piece the sweep ordered first
 /// and reports a `Resolved`-band score for an arbitrary pick.
 #[test]
-#[ignore = "PERSISTENT-NAMING-PLAN N1 — Nähe-Ambiguität fehlt, Hash-Hit wählt willkürlich, bekannt rot"]
 fn gate_region_split_is_honest() {
     // Long flat box; its +Y wall (y = 3) spans x ∈ [−12, 12], z ∈ [−3, 3].
     let flat = box_leaf(1, [0.0, 0.0, 0.0], [12.0, 3.0, 3.0]);
