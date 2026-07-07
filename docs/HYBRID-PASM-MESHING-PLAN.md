@@ -6,6 +6,74 @@ C1-Diskontinuitäten). Grundlage: *Particle-Based Anisotropic Surface Meshing*
 (Zhong, Guo, Wang, Lévy, Sun, Liu, Mao — SIGGRAPH 2013,
 `docs/Literatur/PASM_SIGGRAPH_2013.pdf`), im Folgenden **PASM**.
 
+## Status & Wiedereinstieg (Stand 2026-07-07, Arbeit pausiert)
+
+**Erreicht: P1–P4c, v0.6.433–437.** Vier Referenzkörper laufen end-to-end
+durch die komplette Kette Skelett → PASM-Relaxation → per-Face-CDT und
+liefern GESCHLOSSENE, 2-manifolde, kantenexakte Netze (jede Kante exakt 2×,
+korrekte Euler-Charakteristik):
+
+| Körper | prüft | Test (`api/export.rs`) |
+|---|---|---|
+| Box | planare Faces, geteilte Ketten-Slots | `mesher_points_cdt_box_is_watertight_manifold` (Euler 2) |
+| Zylinder | periodisches Band, Naht-Verschweißung | `..._cylinder_...` (Euler 2) |
+| Revolve-Rohr ∩ Box | Revolve-Chart, 2 Wände auf EINEM Branch, Annulus-Deckel | `..._revolve_tube_...` (Euler 0, Torus) |
+| Kugelkappe ∩ Box | Polkappen-Fächer | `..._sphere_cap_...` (Euler 2) |
+
+**Code-Landkarte:**
+
+- `crates/kernel/src/mesher_cdt.rs` — CDT-Kern (`spade`):
+  `triangulate_uv` (uv-generisch, kombinatorischer Parität-Harvest,
+  0,25·h-Boundary-Clearance), `triangulate_planar_face` (Newell-Frame),
+  `triangulate_periodic_face` (Unwrap + Windungszahl; Fälle: Patch /
+  Polkappe via Pol-Ring+Fächer+Band-Rekursion / Band mit geteilten
+  Naht-Steiner-Punkten). Unit-Tests im selben File.
+- `crates/kernel/src/api/export.rs::mesher_points` — Pipeline-Verdrahtung:
+  Skelett-Sammlung (`corner_slot`/`edge_chain`), Partikel-Attribution über
+  Contributor-Sets, Face-Loop-Assembly, Chart-Bau pro Träger (Plane /
+  Zylinder / Kegel / Kugel / RevolvedProfile inkl. Profil-Polyline +
+  Bogenlängen-Projektion + Faltungs-Guard), `poles`-Liste, Aux-Punkt-Emission
+  (Flag 2 hinter dem Skelett-Block).
+- `crates/kernel/src/mesher_points.rs` — Partikel-Loop: 1/d² + PASM-Gauß-
+  Kernel (σ=r/5, Konvergenz-Abbruch), Skelett-Anker, Feature-Snap-Fallback.
+- `crates/kernel/src/brep/ssi.rs` — `profile_pieces` jetzt `pub(crate)`
+  (liefert die offset-korrigierte Profilkette fürs Revolve-Chart).
+- UI: Debug ▸ Mesher, Checkboxen „B-Rep skeleton", „PASM kernel (Gaussian)",
+  „CDT faces (planar + abrollbar)"; Overlay färbt Ecken rot, Ketten/Naht
+  orange.
+
+**Die drei tragenden Robustheits-Entscheide** (bei Weiterarbeit nicht
+aufweichen): (1) Wasserdichtigkeit ist STRUKTURELL — Nachbar-Faces teilen
+dieselben globalen Ketten-/Steiner-Indizes, nie Toleranz-Schweißen.
+(2) Dreiecks-Klassifikation KOMBINATORISCH (Flood-Fill, Parität flippt an
+Constraint-Kanten) — Zentroid-Tests rauschen an fast-kollinearen Nähten.
+(3) Partikel < 0,25·h Chart-Abstand zur Boundary verwerfen — exakt-auf-
+Constraint splittet einseitig und öffnet die geteilte Kette.
+
+**Nächste Schritte (Reihenfolge = Empfehlung):**
+
+1. **P4d Anisotropie** — größter Qualitätshebel des Papers: metrik-gewarpte
+   Kräfte `F = Q_ij(x_i−x_j)/2σ²·E` (Gl. 21, `Q` nicht `M`!), Metrik aus
+   geschlossenen Krümmungen des Face-Trägers (einseitig pro Blatt, s_max-
+   Clamp, Glättung pro Face), affiner Squash der Chart-Koordinaten vor der
+   CDT.
+2. **Gyroid-Blätter** — Tessellated-Faces haben kein analytisches Chart:
+   Tangential-CDT (lokale Projektion) oder Advancing Front am vorhandenen
+   Teil-Skelett; Blatt-Metrik via Dual-Hessian von `f∓t`.
+3. **Bekannte Lücke „Zone über den Pol"** — Face ohne windende Loop, aber
+   Pol im Inneren (Kugel seitlich geschnitten): derzeit unerkannt → Loch am
+   Pol. Erkennung z.B. per SDF-Probe am Pol oder u-Spannweite ≈ Periode.
+4. **P5 Export-Integration** — Qualitätsstufe „CAD (kantenexakt)" im
+   Export-Dialog neben MT/MDC; Survey-Harness (`ticket_survey_all_methods`)
+   um Hausdorff/Winkel-Histogramm erweitern (Paper §4.5). Voraussetzung:
+   In-App-Sichtprüfung der Debug-Netze auf realen Projekten (bisher nur
+   Kernel-Tests; Dev-Server hat frische WASM 0.6.437).
+
+**Unabhängig offen:** Ticket pzvt (Hover-Kamera-Desync, Analyse im
+Ticket-Ordner `tickets/open/20260707-001324-pzvt`; Fix-Idee „pick what you
+see": SDF-Pass publiziert Render-Kamera-Snapshot, Picks projizieren durch
+diesen).
+
 ## 0. Kurzfassung des Papers (was wir übernehmen)
 
 - **Energie statt Ad-hoc-Kräfte.** Partikelpaare tragen eine Gauß-Energie
