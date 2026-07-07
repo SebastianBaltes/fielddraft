@@ -163,19 +163,24 @@ fn sdf_extrude_generic<T: DualNum<f64> + Copy + PartialOrd>(d2: T, z: T, half_h:
     outside + inside
 }
 
-/// Generic smin polynomial. Mirrors `crate::csg::smin_poly`.
+/// Generic exact-circular smin. Mirrors `crate::csg::smin_poly`:
+/// `max(r, min) − ‖(max(r−da,0), max(r−db,0))‖`.
 fn smin_poly_generic<T: DualNum<f64> + Copy + PartialOrd>(da: T, db: T, r: T) -> T {
     if r.re() <= 0.0 {
         return if da < db { da } else { db };
     }
-    let diff = da - db;
-    let abs_diff = diff.abs();
-    let h_num = r - abs_diff;
     let zero = T::from(0.0);
-    let h_clamped = if h_num > zero { h_num } else { zero };
-    let h = h_clamped / r;
+    let ua = {
+        let u = r - da;
+        if u > zero { u } else { zero }
+    };
+    let ub = {
+        let u = r - db;
+        if u > zero { u } else { zero }
+    };
     let min_ab = if da < db { da } else { db };
-    min_ab - h * h * h * r / T::from(6.0)
+    let outer = if min_ab > r { min_ab } else { r };
+    outer - safe_sqrt(ua * ua + ub * ub)
 }
 
 /// Generic chamfer union. Mirrors `crate::csg::chamfer_union`.

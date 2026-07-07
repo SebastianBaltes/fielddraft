@@ -562,8 +562,9 @@ impl Aabb {
 /// propagates through the provenance-aware `evaluate` fold, so every
 /// surface hit can be traced back to the primitives that produced it.
 /// K10.2: how to blend the junction between two Boolean
-/// operands. Fillet uses the cubic smin polynomial (rounded
-/// edges); Chamfer uses a linear 45° cut.
+/// operands. Fillet uses the exact-circular smin ([`smin_poly`], a true
+/// circular arc of radius `r` between planar walls); Chamfer uses a linear
+/// 45° cut.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum BlendMode {
     Fillet,
@@ -2226,20 +2227,27 @@ pub(crate) fn revolve_contributors(id: &FeatureId, band: &SketchEdgeBand) -> Con
     c
 }
 
-/// K10.0: polynomial smooth minimum (IQ's cubic variant).
-/// `r` is the blend radius. When the two input distances are
-/// far apart (|da - db| >= r) the result degenerates to
-/// `min(da, db)`. In the blend zone the result is strictly
-/// less than both inputs, producing a fillet of approximate
-/// radius `r`.
+/// K10.0 / c-M-b: **exact circular** smooth minimum (IQ's rounded variant).
+/// `r` is the blend radius. Between two half-spaces the zero level set is a
+/// TRUE circular arc of radius `r` (centre at `(r, r)` in the two distances'
+/// plane), so a filleted planar edge has a measurable radius — unlike the old
+/// cubic polynomial, whose cross-section only *approximated* a round. When the
+/// inputs are far apart (`min(da,db) >= r`) it degenerates to `min(da, db)`.
 ///
-/// Reference: <https://iquilezles.org/articles/smin/>
+/// `f = max(r, min(da,db)) − ‖(max(r−da,0), max(r−db,0))‖`. In the arc region
+/// this is the exact Euclidean distance to the fillet circle; the gradient is
+/// the arc normal `((r−da), (r−db)) / L` (see [`blend_min_weights`]). Max
+/// undershoot below `min` is `(√2 − 1)·r ≈ 0.414 r` at `da = db = 0` — the AABB
+/// and cell-prune margins carry `r`, which covers it.
+///
+/// Reference: <https://iquilezles.org/articles/smin/> (round union).
 pub(crate) fn smin_poly(da: f32, db: f32, r: f32) -> f32 {
     if r <= 0.0 {
         return da.min(db);
     }
-    let h = (r - (da - db).abs()).max(0.0) / r;
-    da.min(db) - h * h * h * r / 6.0
+    let ua = (r - da).max(0.0);
+    let ub = (r - db).max(0.0);
+    da.min(db).max(r) - (ua * ua + ub * ub).sqrt()
 }
 
 /// Recursively descend through Union/SmoothUnion nodes in `tree`,
@@ -2940,27 +2948,29 @@ fn blend_wall_value_grad(hs: &HalfSpace, xf: &Transform, flip: bool, p: [f32; 3]
     if flip { (-v, [-g[0], -g[1], -g[2]]) } else { (v, g) }
 }
 
-/// Partial derivatives `(∂f/∂a, ∂f/∂b)` of [`blend_min`]. For the cubic smin
-/// the weights are continuous (both → ½ at `a = b`); for the chamfer they are
-/// the active plane's coefficients. Used to combine the two wall gradients of
-/// a [`HalfSpace::Blend`] carrier.
+/// Partial derivatives `(∂f/∂a, ∂f/∂b)` of [`blend_min`]. For the circular
+/// smin (arc region) the weights are the arc normal `((r−a), (r−b)) / L`; for
+/// the chamfer they are the active plane's coefficients. Used to combine the
+/// two wall gradients of a [`HalfSpace::Blend`] carrier.
 fn blend_min_weights(da: f32, db: f32, r: f32, mode: BlendMode) -> (f32, f32) {
     match mode {
         BlendMode::Fillet => {
-            if da == db {
-                // `signum(0) = 1` would break the symmetric limit (both ½).
-                return (0.5, 0.5);
-            }
             let pick = if da <= db { (1.0, 0.0) } else { (0.0, 1.0) };
             if r <= 0.0 {
                 return pick;
             }
-            let h = (r - (da - db).abs()).max(0.0) / r;
-            if h <= 0.0 {
+            // Arc region iff both inputs are within `r` of the corner (so
+            // `max(r, min) = r` AND both `u` components are positive).
+            let ua = r - da;
+            let ub = r - db;
+            if ua <= 0.0 || ub <= 0.0 {
                 return pick;
             }
-            let s = (da - db).signum();
-            (pick.0 + 0.5 * h * h * s, pick.1 - 0.5 * h * h * s)
+            let l = (ua * ua + ub * ub).sqrt();
+            if l <= 1e-12 {
+                return (0.5, 0.5);
+            }
+            (ua / l, ub / l)
         }
         BlendMode::Chamfer => {
             let chamfer = (da + db - r) * std::f32::consts::FRAC_1_SQRT_2;

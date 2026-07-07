@@ -1036,6 +1036,28 @@ fn smin_poly_is_strictly_less_than_hard_min_in_blend_zone() {
     assert!(smooth < hard, "smooth {smooth} not < hard {hard}");
 }
 
+/// c-M-b: the fillet cross-section is an EXACT circle. Between two half-spaces
+/// with distances `(a, b)`, the zero level set of `smin_poly` is the arc of
+/// radius `r` centred at `(r, r)`. Sample the quadrant facing the corner:
+/// every point on that circle must read exactly 0.
+#[test]
+fn smin_poly_zero_set_is_an_exact_circle() {
+    let r = 5.0_f32;
+    for i in 0..=16 {
+        // φ ∈ [π, 3π/2] parametrises the arc facing the origin.
+        let phi = std::f32::consts::PI + std::f32::consts::FRAC_PI_2 * (i as f32 / 16.0);
+        let a = r + r * phi.cos();
+        let b = r + r * phi.sin();
+        let f = super::smin_poly(a, b, r);
+        assert!(f.abs() < 1e-4, "arc point (a={a}, b={b}) reads {f}, expected 0");
+    }
+    // The arc crosses the diagonal at a = b = r·(1 − 1/√2) ≈ 0.293 r. Just
+    // inside reads negative, just outside positive (a true radius test).
+    let cross = r * (1.0 - std::f32::consts::FRAC_1_SQRT_2);
+    assert!(super::smin_poly(cross - 0.1, cross - 0.1, r) < 0.0, "inside the arc is negative");
+    assert!(super::smin_poly(cross + 0.1, cross + 0.1, r) > 0.0, "outside the arc is positive");
+}
+
 #[test]
 fn smooth_union_rounds_a_box_sphere_junction() {
     let a = CsgNode::Leaf {

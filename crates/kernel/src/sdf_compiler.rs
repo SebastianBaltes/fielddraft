@@ -1728,9 +1728,16 @@ fn sdf_sector_2d(
 
 fn blend_min_eval(a: f32, b: f32, r: f32, mode: f32) -> f32 {
     if mode < 0.5 {
-        // Fillet (IQ cubic smin)
-        let h = (0.5 + 0.5 * (b - a) / r).clamp(0.0, 1.0);
-        b * (1.0 - h) + a * h - r * h * (1.0 - h)
+        // Fillet — EXACT circular smin (IQ round union), matching
+        // `csg::smin_poly`. Was a quadratic mix-form here (r/4 undershoot,
+        // and no `r <= 0` guard → div-by-zero); now byte-consistent with the
+        // CPU/dual/fidget family.
+        if r <= 0.0 {
+            return a.min(b);
+        }
+        let ua = (r - a).max(0.0);
+        let ub = (r - b).max(0.0);
+        a.min(b).max(r) - (ua * ua + ub * ub).sqrt()
     } else {
         // Chamfer
         a.min(b).min((a + b - r) * std::f32::consts::FRAC_1_SQRT_2)

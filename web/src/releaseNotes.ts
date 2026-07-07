@@ -24,6 +24,16 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.461",
+    entries: [
+      {
+        kind: "fix",
+        scope: "kernel",
+        text: "Fillets sind jetzt exakt kreisförmig: Der Rundungs-Übergang nutzt die zirkuläre smin-Form (echter Kreisbogen vom Radius r zwischen zwei ebenen Flächen) statt der bisherigen kubischen Polynom-Näherung — ein gefilletes Kantenprofil hat damit einen messbaren Radius. Nebenbei die zwei bisher auseinanderlaufenden smin-Familien vereinheitlicht (CPU-Kernel war kubisch, Tape/GPU/CGAL-Mesher quadratisch — beide behaupteten fälschlich „cubic") und einen fehlenden Nulldivisions-Schutz (blend_radius 0) in der Tape-Familie ergänzt.",
+      },
+    ],
+  },
+  {
     version: "0.6.460",
     entries: [
       {
