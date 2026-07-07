@@ -80,6 +80,17 @@ type Store interface {
 	// — the DB backend is simply the existing store's ticket methods (no behavior
 	// change). See Server.tickets and TICKET_BACKEND selection in NewServer.
 
+	// Mesh jobs (server-side CGAL meshing, plan §P4). The STL result is a
+	// content-addressed blob; MeshJobArtifact is owner-gated like GetMeshJob.
+	CreateMeshJob(ownerID, projectID, partID, paramsJSON string) *MeshJob
+	GetMeshJob(id, ownerID string) *MeshJob
+	ClaimNextMeshJob() *MeshJob // oldest queued → running; nil if none
+	FinishMeshJob(id string, status MeshJobStatus, stl []byte, reportJSON, errMsg string)
+	CancelMeshJob(id, ownerID string) bool // queued → error("canceled"); running/done untouched
+	ActiveMeshJobs(ownerID string) int     // # of queued+running jobs of one user
+	MeshJobArtifact(id, ownerID string) []byte
+	ResetStaleMeshJobs() // boot recovery: running → queued
+
 	// Admin alerts (B2, §4.4 admin-awareness): real notify records for malicious
 	// tickets/comments, withheld outgoing comments, and user bans.
 	CreateAdminAlert(kind AlertKind, ticketID *string, detail string) *AdminAlert

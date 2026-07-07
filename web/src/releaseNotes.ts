@@ -24,6 +24,16 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.440",
+    entries: [
+      {
+        kind: "feat",
+        scope: "export",
+        text: "CGAL-Meshing Meilenstein M3 (Backend-Job-Queue): persistente mesh_jobs-Tabelle (überlebt Server-Restart, Boot-Recovery running→queued), Dispatcher-Worker-Pool mit atomarem Claim (replikasicher), Routen POST /api/projects/{id}/mesh → 202 jobId, Polling-Route, STL-Artefakt-Download (owner-gated, Content-addressed Blob), Abbruch-Route; max. 1 aktiver Job pro User. Integrationstest + Live-Roundtrip gegen den echten Mesher-Container verifiziert.",
+      },
+    ],
+  },
+  {
     version: "0.6.439",
     entries: [
       {
