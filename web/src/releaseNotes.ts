@@ -24,6 +24,21 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.456",
+    entries: [
+      {
+        kind: "feat",
+        scope: "thicken",
+        text: "Thicken funktioniert jetzt auch auf Flächen von zusammengesetzten (Boolean-)Features — etwa FieldSkript-Körpern oder verketteten Thicken-Wänden: Der Träger der gepickten Fläche wird per Proben an den Face-Loop-Samples aus dem Boolean-Baum isoliert (nur DIE Fläche wächst, nicht jede Oberfläche des Booleans). Shell-/Offset-Owner ohne eindeutigen geschlossenen Träger melden weiterhin einen klaren Fehler.",
+      },
+      {
+        kind: "fix",
+        scope: "extrude",
+        text: "Gekrümmte Fläche als Extrude-Profil: früher, präziser Fehler mit Handlungsanweisung (Thicken nutzen) statt des späten generischen Profil-Fehlers. Design-Entscheidung im Kernel-Konzept dokumentiert: Extrude bleibt planar, Normal-Wachstum gekrümmter Flächen ist Thicken.",
+      },
+    ],
+  },
+  {
     version: "0.6.455",
     entries: [
       {

@@ -4155,11 +4155,13 @@ fn thicken_one_extrude_wall_trims_to_a_bounded_patch() {
 }
 
 #[test]
-fn thicken_rejects_a_composite_non_analytic_carrier() {
-    // A boolean carrier (union of two revolved blobs) is deferred past M0:
-    // offsetting the whole boolean would thicken every surface, so a pick on
-    // a non-analytic face whose source feature is composite returns a clear
-    // error rather than silently-wrong geometry.
+fn thicken_isolates_the_carrier_of_a_composite_body() {
+    // A boolean owner (union of two revolved blobs): the picked face's
+    // carrier is isolated by probing the face's loop samples against each
+    // single-primitive subtree (`face_carrier`), so the wall grows from the
+    // ONE revolve the face lives on — offsetting the whole boolean would
+    // thicken every surface. This used to be a hard "deferred past M0"
+    // error.
     let mut doc = empty_ctx();
     let mut ctx = Context::new(&mut doc);
     let mut composite = blob_revolve_feature(1);
@@ -4177,9 +4179,35 @@ fn thicken_rejects_a_composite_non_analytic_carrier() {
     let brep = crate::body::weave_all(&ctx.features)[0].0.clone();
     let hash = tessellated_face_hash(&brep).expect("a Tessellated wall");
     let def = json!({ "faces": format!("qFace({hash})"), "thickness": { "value": 1.0, "unit": "mm" } });
-    let err = ThickenFeature.execute(&mut ctx, &id(2), &def).unwrap_err();
-    let msg = format!("{err:?}");
-    assert!(msg.contains("composite") || msg.contains("deferred"), "got: {msg}");
+    ThickenFeature
+        .execute(&mut ctx, &id(2), &def)
+        .expect("a composite owner must thicken via carrier isolation");
+
+    // The wall feature's node must be built from exactly ONE of the two
+    // revolves (the probed carrier), never the whole union.
+    fn count_revolves(node: &CsgNode) -> usize {
+        match node {
+            CsgNode::Revolve { .. } => 1,
+            CsgNode::Transform(_, inner)
+            | CsgNode::Shell(inner, _, _)
+            | CsgNode::Offset(inner, _) => count_revolves(inner),
+            CsgNode::Union(a, b)
+            | CsgNode::Difference(a, b)
+            | CsgNode::Intersection(a, b) => count_revolves(a) + count_revolves(b),
+            _ => 0,
+        }
+    }
+    let wall = ctx
+        .features
+        .iter()
+        .find(|f| f.id == id(2))
+        .expect("the thicken wall feature must land on the spine");
+    assert_eq!(
+        count_revolves(&wall.node),
+        1,
+        "the wall must grow from the single probed carrier, got node {:?}",
+        wall.node
+    );
 }
 
 // ─── C2: mate-connector-on-face ────────────────────────────────

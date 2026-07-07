@@ -397,3 +397,17 @@ Aus der gewobenen B-Rep wird ein AP242-STEP geschrieben
   Parameteränderungen brauchen kein nachträgliches Remapping.
 * **Generischer Pfad zuerst.** Der analytische `weave_parametric`-Pfad ist Opt-in für reine
   Grundformen; der robuste Standard ist der generische Octree-Pfad (siehe Abschnitt 6).
+
+* **Extrude ist planar, Thicken ist der gekrümmte Wachstums-Operator**
+  (Entscheidung 2026-07-07, Deferred-Tail). Eine gekrümmte B-Rep-Fläche als
+  Extrude-*Profil* hat keine kanonische Semantik (Schatten-Prisma? gerichteter
+  Flächen-Sweep? Normal-Offset?) — Mainstream-CAD (Onshape, Fusion) lehnt sie
+  ebenfalls ab. Die wohldefinierte Bedeutung von „gekrümmte Fläche wachsen
+  lassen" ist der Normal-Offset, und genau das ist Thicken (analytisch für
+  Sphere/Cylinder/Torus/Cone inkl. partieller Wände via Sektor-Trim, generisch
+  via Offset-Band). `resolve_extrude_faces` weist gekrümmte Picks deshalb früh
+  und mit Handlungsanweisung ab, statt spät mit einem generischen Fehler.
+  Ein gerichteter Flächen-Sweep (SolidWorks „Extrude Surface") bliebe als
+  eigenes Feature denkbar — er bräuchte einen neuen unären CSG-Operator
+  (Minkowski-Segment über dem Carrier-Feld) und ist bewusst nicht Teil von
+  Extrude.

@@ -202,7 +202,10 @@ const ACCEPT_EPS: f32 = 1e-3;
 /// One extracted edge sample: a point on the surface edge, the edge tangent
 /// there, and the canonical `(BranchId, BranchId)` signature of the two
 /// colliding branches. The raw Phase-3 product for one `Edge` cell, in `f64`
-/// to match the B-Rep geometry types. NOT yet chained or fitted (C.4/C.5).
+/// to match the B-Rep geometry types. Deliberately UN-chained and UN-fitted:
+/// chaining (C.4) and curve fitting (C.5) live downstream in
+/// [`crate::brep::edge_walker::build_wireframe`] (per-signature grouping →
+/// analytic tracer / `fit_line` / `fit_circle` / gap chaining).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct EdgePoint {
     pub position: [f64; 3],

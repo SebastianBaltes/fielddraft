@@ -142,6 +142,25 @@ impl<'a> Context<'a> {
                 ));
             };
             let (brep, placement) = &woven[bi];
+            // Extrude is a PLANAR operation by design (see the decision log in
+            // GEOMETRY-KERNEL-CONCEPT.md §10): a curved face has no canonical
+            // extrude profile, and the well-defined "grow a curved face"
+            // operation is Thicken. Reject early with the actionable pointer
+            // instead of failing later in the profile projection.
+            let planar = matches!(
+                &brep.face(fid).surface,
+                crate::brep::SurfaceGeometry::Analytic {
+                    surface: fielddraft_protocol::HalfSpace::Plane { .. },
+                    ..
+                }
+            );
+            if !planar {
+                return Err(
+                    "selected face is curved — Extrude needs a planar profile; use Thicken \
+                     to grow a wall along a curved face's normal"
+                        .to_string(),
+                );
+            }
             hits.push((bi, fid, crate::sketch::face_plane_frame(brep, fid, placement)));
         }
         if hits.is_empty() {
@@ -302,12 +321,41 @@ impl<'a> Context<'a> {
                 .ok_or_else(|| {
                     "selected face has no source feature in the spine — cannot thicken".to_string()
                 })?;
-            let carrier = crate::brep::face_offset::single_primitive_carrier(&source.node)
-                .ok_or_else(|| {
-                    "face's carrier is a composite (boolean) body — general thicken of a \
-                     non-analytic boolean result is deferred past M0"
-                        .to_string()
-                })?;
+            // Composite (boolean) owner nodes descend to the ONE leaf whose
+            // surface holds the picked face, probed at the face's own loop
+            // samples in the feature-local frame (see
+            // [`crate::brep::face_offset::face_carrier`]). Shell/Offset
+            // owners have no single closed carrier and stay an honest error.
+            let inv_feature = crate::inverse(&source.transform);
+            let samples_local: Vec<[f32; 3]> = req
+                .loops
+                .outer
+                .iter()
+                .chain(req.loops.inner.iter().flatten())
+                .step_by((req.loops.outer.len() / 16).max(1))
+                .map(|p| {
+                    place_point(&inv_feature, [p[0] as f32, p[1] as f32, p[2] as f32])
+                })
+                .collect();
+            let probe_tol = {
+                // Scale-relative: a face sample sits on its carrier to weave
+                // noise; the boolean partner reads a feature-scale distance.
+                let diag = samples_local
+                    .iter()
+                    .flat_map(|p| p.iter())
+                    .fold(0.0_f32, |m, &c| m.max(c.abs()));
+                (diag * 1e-3).max(1e-3)
+            };
+            let carrier = crate::brep::face_offset::face_carrier(
+                &source.node,
+                &samples_local,
+                probe_tol,
+            )
+            .ok_or_else(|| {
+                "face's carrier could not be isolated from its composite (boolean) body — \
+                 a Shell/Offset owner has no single closed carrier to offset"
+                    .to_string()
+            })?;
             // Pre-remap carrier drives the M1 wall-normal field (the sweep
             // direction); the remapped clone carries the band's fresh ids.
             let trim_base = id.child(format!("{}", req.qi));
