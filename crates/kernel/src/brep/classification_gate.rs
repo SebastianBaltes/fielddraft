@@ -360,6 +360,74 @@ fn gate_tangent_rounded_cone_tip() {
     );
 }
 
+/// The vase stack — the CONSTRUCTED profile-G1 case from the roadmap: a
+/// cylindrical pot (revolve 1, straight wall → analytic cylinder lift) and
+/// an arc dome (revolve 2, curved wall group → `RevolvedProfile`) whose
+/// profiles share the endpoint (r=5, y=0) with an equal (vertical) end
+/// tangent. The junction circle is detected on the 2D construction data
+/// (profile chain ends) and materialised symbolically; the flush interface
+/// discs are ON-opposite membranes and cull as usual.
+#[test]
+fn gate_tangent_vase_stack_profile_g1() {
+    use fielddraft_protocol::{Sketch2d, Sketch2dPrimitive, SketchSegment};
+    let path = |segments: Vec<SketchSegment>| {
+        Sketch2d::Prim(Sketch2dPrimitive::Path { segments, closed: true })
+    };
+    let line = |a: [f32; 2], b: [f32; 2]| SketchSegment::Line { start: a, end: b };
+    // Pot: rectangle r ∈ [0, 5], y ∈ [−4, 0].
+    let pot = CsgNode::Revolve {
+        id: FeatureId::from_u32(1),
+        sketch: Box::new(path(vec![
+            line([0.0, -4.0], [5.0, -4.0]),
+            line([5.0, -4.0], [5.0, 0.0]),
+            line([5.0, 0.0], [0.0, 0.0]),
+            line([0.0, 0.0], [0.0, -4.0]),
+        ])),
+    };
+    // Dome: bottom flat to (5, 0), then a 90° arc (centre (3, 0), R = 2)
+    // starting with a VERTICAL tangent — G1 against the pot wall — up to
+    // (3, 2), closed by the top flat and the axis.
+    let dome = CsgNode::Revolve {
+        id: FeatureId::from_u32(2),
+        sketch: Box::new(path(vec![
+            line([0.0, 0.0], [5.0, 0.0]),
+            SketchSegment::Arc {
+                center: [3.0, 0.0],
+                radius: 2.0,
+                start_angle: 0.0,
+                sweep_angle: std::f32::consts::FRAC_PI_2,
+            },
+            line([3.0, 2.0], [0.0, 2.0]),
+            line([0.0, 2.0], [0.0, 0.0]),
+        ])),
+    };
+    let body = BoundedCsg::from_csg(&CsgNode::Union(Box::new(pot), Box::new(dome)));
+
+    let registry = crate::brep::coincidence::CoincidenceRegistry::build(&body);
+    assert_eq!(
+        registry.tangent_seams().len(),
+        1,
+        "the profile-G1 junction must register exactly one tangent circle"
+    );
+
+    let brep = weave_branch_seeds(&body).expect("seed weavable");
+    assert_solid_invariants(&brep, 0, "vase stack (profile G1) [seed route]");
+    // The junction circle at (r = 5, y = 0) exists as a closed
+    // cross-feature seam.
+    assert!(
+        brep.edges.iter().any(|e| {
+            e.signature.0.feature_id() != e.signature.1.feature_id()
+                && e.start.is_none()
+                && e.end.is_none()
+                && crate::brep::edge_sampling::sample_edge(&e.geometry).iter().all(|p| {
+                    let r = (p[0] * p[0] + p[2] * p[2]).sqrt();
+                    (r - 5.0).abs() < 0.01 && p[1].abs() < 0.01
+                })
+        }),
+        "the G1 junction circle (r = 5, y = 0) must exist"
+    );
+}
+
 // ─── coincidence scenarios — known red until Phases 2/3 land ────────────────
 
 

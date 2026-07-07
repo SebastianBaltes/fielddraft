@@ -77,10 +77,14 @@ entlang des gemeinsamen Meridians, ε über der √-Separation dimensioniert)
 unterscheidet echte Boundary-Nähte vom Innen-Grazing (einbeschriebene
 Kugel → keine Kante). Gates: kugelgekappter Zylinder (beide Routen,
 Toggle-Invarianz), abgerundete Kegelspitze, zwei Grazing-Negativfälle.
-**Offen:** die konstruierten Profil-G1-Fälle (RevolvedProfile↔*, gestapelte
-Revolves mit geteiltem Profil-Endpunkt) — Andockstelle identisch, Profil-
-Endtangenten aus den 2D-Sketchdaten; sowie Nicht-Rotations-G1 (Extrude-
-Profile) und die ursprüngliche Fillet-B-Rep-Frage.
+Die konstruierten Profil-G1-Fälle sind ebenfalls umgesetzt (v0.6.459):
+`RevolvedProfile`-Wände paaren über ihre Profil-KETTENENDEN + Endtangenten
+(exakte 2D-Sketchdaten, `revolved_profile_ends`) mit RevolvedProfile /
+Zylinder / Kegel / achsnormaler Ebene — Gate: der Vasen-Stapel
+(Zylinder-Topf + Bogen-Kuppel, G1 bei r=5/y=0).
+**Offen:** Nicht-Rotations-G1 (Extrude-Profile über Feature-Grenzen),
+Offset-Profile (`offset ≠ 0` bailt ehrlich), Innen-Profil-Tangenz abseits
+der Kettenenden, und die ursprüngliche Fillet-B-Rep-Frage.
 
 **Problem.** Berühren sich zwei Trägerflächen G1-stetig entlang einer Kurve,
 degeneriert die SSI: die Marschrichtung des Tracers ist ∇f_a × ∇f_b, und die

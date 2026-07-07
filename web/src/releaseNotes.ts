@@ -24,6 +24,16 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.459",
+    entries: [
+      {
+        kind: "feat",
+        scope: "kernel",
+        text: "Tangentialkontakt, Teil 2 — die konstruierten Profil-G1-Fälle: Gestapelte Revolves, deren Profile sich einen Endpunkt mit gleicher Tangente teilen (der Vasen-Stapel: Zylinder-Topf + Bogen-Kuppel), bekommen ihren Übergangs-Kreis jetzt symbolisch aus den exakten 2D-Sketchdaten (Profil-Kettenenden + Endtangenten) — RevolvedProfile-Wände paaren mit RevolvedProfile, Zylinder, Kegel und achsnormalen Ebenen.",
+      },
+    ],
+  },
+  {
     version: "0.6.458",
     entries: [
       {
