@@ -24,6 +24,16 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.438",
+    entries: [
+      {
+        kind: "feat",
+        scope: "export",
+        text: "Serverseitiges CGAL-Meshing, Meilenstein M1 (Kern-Pipeline): fd-prepare (natives Kernel-Binary: Dokument → SDF-Opcodes + B-Rep-Kanten-Polylines) + fd-cgal-mesh (natives CGAL Mesh_3 mit Kanten-Schutzkugeln, manifold-Kriterium, Außen-Orientierung, binäres STL). Box/Zylinder/Revolve-Rohr verifiziert wasserdicht/2-manifold mit exakter Kantentreue; Golden-Test Rust↔C++ fand und fixte zwei Interpreter-Drifts (Cone wall_scale, Shell inward). Noch ohne UI — Backend-Route und Export-Dialog-Option folgen.",
+      },
+    ],
+  },
+  {
     version: "0.6.437",
     entries: [
       {

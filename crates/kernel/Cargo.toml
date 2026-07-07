@@ -8,6 +8,10 @@ publish.workspace = true
 [lib]
 crate-type = ["cdylib", "rlib"]
 
+[[bin]]
+name = "fd-prepare"
+path = "src/bin/fd_prepare.rs"
+
 [dependencies]
 fielddraft-protocol = { path = "../protocol" }
 fielddraft-features-macros = { path = "../features-macros" }

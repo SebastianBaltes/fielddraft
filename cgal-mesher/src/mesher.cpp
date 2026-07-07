@@ -175,16 +175,23 @@ FD_EXPORT int fd_mesh(const float* opcodes, int n_ops, float minx, float miny,
   // never terminates when the SDF has no sign change inside the bounding
   // sphere (billions of evals — exactly what a broken/desynced opcode
   // stream produces). A coarse 24³ probe costs ~14k evals and catches it.
+  // Probe over a padded box, not the tight AABB: a body that fills its
+  // AABB exactly (plain box) has no positive sample inside it, but the
+  // mesh domain sphere extends beyond — so must the probe.
   {
     fd::unknown_opcode_seen() = false;
     const int N = 24;
+    const float pad = 0.025f * diag + 2.0f * cell;
+    const float pminx = minx - pad, pminy = miny - pad, pminz = minz - pad;
+    const float pex = ex + 2.0f * pad, pey = ey + 2.0f * pad,
+                pez = ez + 2.0f * pad;
     bool any_neg = false, any_pos = false;
     for (int i = 0; i < N && !(any_neg && any_pos); ++i)
       for (int j = 0; j < N; ++j)
         for (int k = 0; k < N; ++k) {
-          float x = minx + ex * (i + 0.5f) / N;
-          float y = miny + ey * (j + 0.5f) / N;
-          float z = minz + ez * (k + 0.5f) / N;
+          float x = pminx + pex * (i + 0.5f) / N;
+          float y = pminy + pey * (j + 0.5f) / N;
+          float z = pminz + pez * (k + 0.5f) / N;
           float v = fd::eval_opcodes(g_ops, g_nops, x, y, z);
           if (v < 0.0f) any_neg = true;
           else if (v > 0.0f) any_pos = true;
