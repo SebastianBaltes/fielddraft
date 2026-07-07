@@ -24,6 +24,16 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.450",
+    entries: [
+      {
+        kind: "feat",
+        scope: "kernel",
+        text: "Persistentes Naming N4 — selbstheilende Dokumente: Beim Speichern (inkl. Auto-Save) werden alle gespeicherten Element-Referenzen gegen das aktuelle Modell re-kanonisiert — geheilte Referenzen bekommen frischen Hash + Fingerprint (kein Fingerprint-Verfall über viele Edits), alte hash-only Referenzen werden auf die heilbare Langform aufgerüstet. Unauflösbare Referenzen bleiben unverändert und melden ihren Fehler ehrlich am Feature.",
+      },
+    ],
+  },
+  {
     version: "0.6.449",
     entries: [
       {

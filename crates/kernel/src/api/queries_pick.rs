@@ -30,6 +30,42 @@ impl Kernel {
         serde_json::to_string(&result).map_err(|e| JsError::new(&e.to_string()))
     }
 
+    /// PERSISTENT-NAMING-PLAN N4 — self-healing documents. Walks every
+    /// feature call's params, finds element queries (`qFace`/`qEdge`/
+    /// `qVertex`, single or in a MultiQuery list) and re-canonicalises them
+    /// against the current woven B-Reps:
+    ///
+    /// - a **healed** reference (hash migrated, fingerprint re-bound it) is
+    ///   rewritten to the fresh hash + fresh fingerprint, so the stored
+    ///   fingerprint never decays across successive edits;
+    /// - an exactly-resolving **hash-only legacy** reference is upgraded to
+    ///   the fingerprint-carrying long form, making it healable from now on;
+    /// - an unresolvable reference is left untouched (the honest error
+    ///   surfaces where the feature consumes it).
+    ///
+    /// Intended call site: right before a project save (including
+    /// auto-save) — healing is a normalisation of stored references, not a
+    /// user edit, so it deliberately bypasses the undo stack and never
+    /// triggers a rebuild (a healed reference resolves to the same
+    /// geometry by construction). Returns a JSON array report:
+    /// `[{"feature","from","to","rehashed"}, …]` — empty when nothing
+    /// changed.
+    #[wasm_bindgen(js_name = healElementRefs)]
+    pub fn heal_element_refs(&mut self) -> String {
+        // Weave every body's B-Rep (cached — a no-op when current).
+        for body in &mut self.bodies {
+            body.ensure_brep(&self.decoded, self.parametric_weave);
+        }
+        let breps: Vec<&crate::brep::BRep> =
+            self.bodies.iter().filter_map(|b| b.brep_cached()).collect();
+
+        let mut report: Vec<serde_json::Value> = Vec::new();
+        for call in &mut self.document.feature_calls {
+            let feature = call.id.to_string();
+            heal_params_value(&mut call.params, &breps, &feature, &mut report);
+        }
+        serde_json::Value::Array(report).to_string()
+    }
 
     // ── picking / provenance ──────────────────────────────────────────
     //
@@ -95,5 +131,172 @@ impl Kernel {
                 )
             }
         }
+    }
+}
+
+/// Recursive param walk for [`Kernel::heal_element_refs`]: every string leaf
+/// is a healing candidate; objects and arrays recurse.
+fn heal_params_value(
+    v: &mut serde_json::Value,
+    breps: &[&crate::brep::BRep],
+    feature: &str,
+    report: &mut Vec<serde_json::Value>,
+) {
+    match v {
+        serde_json::Value::Object(map) => {
+            for val in map.values_mut() {
+                heal_params_value(val, breps, feature, report);
+            }
+        }
+        serde_json::Value::Array(arr) => {
+            for val in arr.iter_mut() {
+                heal_params_value(val, breps, feature, report);
+            }
+        }
+        serde_json::Value::String(s) => {
+            if let Some(next) = heal_query_string(s, breps, feature, report) {
+                *s = next;
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Re-canonicalise the element queries inside one (Multi)Query string.
+/// Returns the rewritten string when anything changed; `None` leaves the
+/// param untouched (including every non-query string — a part that doesn't
+/// parse as an element query passes through verbatim).
+fn heal_query_string(
+    s: &str,
+    breps: &[&crate::brep::BRep],
+    feature: &str,
+    report: &mut Vec<serde_json::Value>,
+) -> Option<String> {
+    use crate::brep::naming::{EntityHandle, EntityKind, TopoRef};
+    use crate::queries::{element_query, locate_element, parse_query, QueryExpr};
+
+    // Cheap gate: only strings that could contain a query at all.
+    if !s.trim_start().starts_with('q') {
+        return None;
+    }
+    let mq = fielddraft_protocol::MultiQuery::new(s);
+    let parts: Vec<String> = mq.queries().iter().map(|p| p.to_string()).collect();
+    if parts.is_empty() {
+        return None;
+    }
+
+    let mut changed = false;
+    let mut out: Vec<String> = Vec::with_capacity(parts.len());
+    for part in parts {
+        let (kind, eref) = match parse_query(&part) {
+            Ok(QueryExpr::Face(r)) => (EntityKind::Face, r),
+            Ok(QueryExpr::Edge(r)) => (EntityKind::Edge, r),
+            Ok(QueryExpr::Vertex(r)) => (EntityKind::Vertex, r),
+            _ => {
+                out.push(part);
+                continue;
+            }
+        };
+        let Some((bi, handle)) = locate_element(breps.iter().copied(), kind, &eref) else {
+            // Unresolvable — keep the stored reference; the consuming
+            // feature reports the honest error.
+            out.push(part);
+            continue;
+        };
+        let brep = breps[bi];
+        let topo = match handle {
+            EntityHandle::Face(id) => TopoRef::from_face(brep, id),
+            EntityHandle::Edge(id) => TopoRef::from_edge(brep, id),
+            EntityHandle::Vertex(id) => TopoRef::from_vertex(brep, id),
+        };
+        let canonical = element_query(&topo).to_string();
+        if canonical != part {
+            report.push(serde_json::json!({
+                "feature": feature,
+                "from": part,
+                "to": canonical,
+                "rehashed": topo.id_hash != eref.id_hash,
+            }));
+            changed = true;
+        }
+        out.push(canonical);
+    }
+    changed.then(|| out.join(", "))
+}
+
+#[cfg(test)]
+mod heal_tests {
+    use super::*;
+    use crate::brep::naming::TopoRef;
+    use crate::brep::octree::Octree;
+    use crate::brep::weaving::weave;
+    use crate::bvh::BoundedCsg;
+    use crate::csg::CsgNode;
+    use crate::queries::element_query;
+    use fielddraft_protocol::{FeatureId, Primitive};
+
+    fn cube_brep(half: f32) -> crate::brep::BRep {
+        let body = BoundedCsg::from_csg(&CsgNode::Leaf {
+            id: FeatureId::from_u32(1),
+            primitive: Primitive::Box { center: [0.0; 3], half_extents: [half; 3] },
+        });
+        let octree = Octree::build(&body, 0.25);
+        weave(&body, &octree)
+    }
+
+    #[test]
+    fn heal_upgrades_hash_only_and_normalises() {
+        let brep = cube_brep(5.0);
+        let want = TopoRef::from_face(&brep, crate::brep::FaceId(2));
+        let canonical = element_query(&want).to_string();
+
+        let mut report = Vec::new();
+        // Legacy hash-only ref upgrades to the fingerprint long form.
+        let healed = heal_query_string(
+            &format!("qFace({})", want.id_hash),
+            &[&brep],
+            "f1",
+            &mut report,
+        );
+        assert_eq!(healed.as_deref(), Some(canonical.as_str()));
+        assert_eq!(report.len(), 1);
+        assert_eq!(report[0]["rehashed"], false);
+
+        // An already-canonical ref is a no-op (no churn on every save).
+        let mut report2 = Vec::new();
+        assert_eq!(heal_query_string(&canonical, &[&brep], "f1", &mut report2), None);
+        assert!(report2.is_empty());
+
+        // Non-query strings pass through untouched.
+        assert_eq!(heal_query_string("hello", &[&brep], "f1", &mut Vec::new()), None);
+        assert_eq!(
+            heal_query_string("qCreatedBy(box_1)", &[&brep], "f1", &mut Vec::new()),
+            None
+        );
+    }
+
+    #[test]
+    fn heal_rewrites_stale_hash_via_fingerprint() {
+        let brep = cube_brep(5.0);
+        let want = TopoRef::from_face(&brep, crate::brep::FaceId(2));
+        // A stale ref: dead hash, but the fingerprint still pins the face.
+        let stale = format!(
+            "qFace(1234567890 @ {} {} {} {})",
+            want.fingerprint.centroid[0],
+            want.fingerprint.centroid[1],
+            want.fingerprint.centroid[2],
+            want.fingerprint.size
+        );
+        let mut report = Vec::new();
+        let healed = heal_query_string(&stale, &[&brep], "f1", &mut report);
+        assert_eq!(healed.as_deref(), Some(element_query(&want).to_string().as_str()));
+        assert_eq!(report[0]["rehashed"], true);
+
+        // Unresolvable refs stay verbatim (mixed MultiQuery keeps both parts).
+        let mixed = format!("qFace(999 @ 1e6 1e6 1e6 0.001), {stale}");
+        let mut report3 = Vec::new();
+        let healed3 = heal_query_string(&mixed, &[&brep], "f1", &mut report3).unwrap();
+        assert!(healed3.starts_with("qFace(999 @ 1e6 1e6 1e6 0.001), "));
+        assert_eq!(report3.len(), 1, "only the resolvable part is rewritten");
     }
 }

@@ -1496,6 +1496,24 @@ export class Kernel {
     );
   }
 
+  /** PERSISTENT-NAMING N4: re-canonicalise every stored element reference
+   *  (fresh hash + fingerprint) against the current woven B-Reps. Called by
+   *  the persistence funnel right before a save; returns the heal report
+   *  (`[{feature, from, to, rehashed}]`, empty when nothing changed). */
+  healElementRefs(): {
+    feature: string;
+    from: string;
+    to: string;
+    rehashed: boolean;
+  }[] {
+    return JSON.parse(this.inner.healElementRefs()) as {
+      feature: string;
+      from: string;
+      to: string;
+      rehashed: boolean;
+    }[];
+  }
+
   /** K9.1: overall scene AABB in mm (conservative CSG bound). */
   sceneAabb(): { min: number[]; max: number[]; size: number[] } {
     return JSON.parse(this.inner.sceneAabb()) as {
