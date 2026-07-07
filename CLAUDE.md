@@ -23,9 +23,13 @@ Bei jedem Versions-Bump (`web/package.json`) **einen Eintrag oben** in `web/src/
 
 ## Tickets abarbeiten (wenn nichts anderes ansteht)
 
-User melden Fehler/Feature-Wünsche in-App über **Report Issue…** (Menü oben links). Jedes Ticket landet unter `tickets/open/<id>/` (Screenshot, `project.fdraft`, `ticket.md`). Format und Ablauf: `tickets/README.md`.
+User melden Fehler/Feature-Wünsche in-App über **Report Issue…** (F2). Seit dem Dev-Backend-Modus (`just dev-full`, `FIELDDRAFT_DEV_BACKEND=1`) landen Tickets im **Server-Ticket-Store** (Tabelle `tickets`, MariaDB-Container `fielddraft-db-1`); nur ältere Tickets liegen noch als Ordner unter `tickets/open/<id>/` (Format: `tickets/README.md`).
 
-Wenn keine andere Aufgabe ansteht: offene Tickets in `tickets/open/` abarbeiten — pro Ticket `ticket.md` lesen, Screenshot/Attachments ansehen, `project.fdraft` zum Reproduzieren laden, Fix/Feature umsetzen, testen, committen+pushen, dann den Ordner nach `tickets/done/<id>/` verschieben und eine `resolution.md` (Commit-Hash + Kurzfassung) ergänzen.
+Wenn keine andere Aufgabe ansteht: offene Tickets abarbeiten — Ticket lesen, Screenshot/Attachments ansehen, Projekt zum Reproduzieren laden, Fix/Feature umsetzen, testen, committen+pushen.
+
+**Beim Erledigen eines Tickets immer beides:**
+1. **Ticket-Kommentar** hinterlassen, der den Fix/Status inhaltlich erklärt und **auf die GitHub-Commits verlinkt** (`https://github.com/SebastianBaltes/fielddraft/commit/<hash>`). Server-Tickets: Insert in `ticket_comments` mit `author_type='dev'`, `internal=0`, `po_reviewed=1`, `author_id=NULL`, `id=REPLACE(UUID(),'-','')`. FS-Tickets: `resolution.md` (Commit-Hash + Kurzfassung) in den Ordner.
+2. **Status setzen:** Server-Tickets `state='resolved'`; FS-Tickets den Ordner nach `tickets/done/<id>/` verschieben.
 
 **Reihenfolge — nicht stur ältestes-zuerst, sondern nach Wirkung sortieren:**
 1. **Regressionen zuerst** — was eine kürzliche Änderung kaputt gemacht hat, hat oberste Priorität (Arbeitsfähigkeit wiederherstellen).
