@@ -24,6 +24,16 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.447",
+    entries: [
+      {
+        kind: "perf",
+        scope: "export",
+        text: "CGAL-Server-Meshing: zell-lokale Opcode-Tape-Spezialisierung (C++-Gegenstück zu cell_csg.rs) — pro Octree-Zelle werden Boolean-Zweige, die das Feld dort beweisbar nicht beeinflussen, per 1-Lipschitz-Ball-Bound geprunt und die verkürzte Tape an Kindzellen vererbt; das Mesh_3-Oracle evaluiert nur noch die Zell-Tape. 512-Teile-Baugruppe: 2,2× Wall / 4,0× CPU (Tape 6656 → Ø 30 Records); bit-exakt verifiziert (check_spec-Harness, 7 Modelle × 20k Zufallspunkte, Abweichung 0). FD_NO_SPEC=1 schaltet ab.",
+      },
+    ],
+  },
+  {
     version: "0.6.446",
     entries: [
       {

@@ -34,6 +34,7 @@
 #include <vector>
 
 #include "sdf_interp.h"
+#include "tape_spec.h"
 
 #if defined(__EMSCRIPTEN__)
 #include <emscripten/emscripten.h>
@@ -75,6 +76,8 @@ namespace params = CGAL::parameters;
 
 static const float* g_ops = nullptr;
 static int g_nops = 0;
+// Cell-local specialized tapes (tape_spec.h) — empty when disabled/failed.
+static fd_spec::SpecOctree g_spec;
 
 static std::vector<float> g_positions;   // 3 per vertex
 static std::vector<float> g_normals;     // 3 per vertex
@@ -90,9 +93,14 @@ static FT sdf_fn(const Point& p) {
   long n = ++g_eval_count;
   if (n % 1000000 == 0)
     std::fprintf(stderr, "[cgal] sdf evals: %ldM\n", n / 1000000);
-  float v = fd::eval_opcodes(g_ops, g_nops, (float)CGAL::to_double(p.x()),
-                             (float)CGAL::to_double(p.y()),
-                             (float)CGAL::to_double(p.z()));
+  float q[3] = {(float)CGAL::to_double(p.x()), (float)CGAL::to_double(p.y()),
+                (float)CGAL::to_double(p.z())};
+  // Cell-local specialized tape when the point falls inside the spec
+  // octree (read-only after build — safe under TBB), full tape otherwise.
+  const std::vector<float>* tape = g_spec.lookup(q);
+  float v = tape ? fd::eval_opcodes(tape->data(), (int)tape->size(), q[0],
+                                    q[1], q[2])
+                 : fd::eval_opcodes(g_ops, g_nops, q[0], q[1], q[2]);
   return FT(v);
 }
 
@@ -252,6 +260,33 @@ FD_EXPORT int fd_mesh(const float* opcodes, int n_ops, float minx, float miny,
                            "in AABB (neg=%d pos=%d), no surface to mesh\n",
                    (int)any_neg, (int)any_pos);
       return 0;
+    }
+  }
+
+  // Cell-local tape specialization (tape_spec.h): per octree cell, prune
+  // boolean branches that provably cannot influence the field there and
+  // let the oracle evaluate the short tape. Big win on many-part
+  // assemblies (every oracle call otherwise walks every part).
+  // FD_NO_SPEC=1 disables; points outside the octree (bounding-sphere
+  // fringe) fall back to the full tape.
+  g_spec = fd_spec::SpecOctree{};
+  if (!std::getenv("FD_NO_SPEC")) {
+    const float pad2 = 0.05f * diag + 2.0f * cell;
+    float smn[3] = {minx - pad2, miny - pad2, minz - pad2};
+    float smx[3] = {maxx + pad2, maxy + pad2, maxz + pad2};
+    g_spec = fd_spec::build_spec_octree(opcodes, n_ops, smn, smx, 6);
+    if (g_spec.root) {
+      std::fprintf(stderr,
+                   "[cgal] tape spec: %ld cells, leaf tape avg %.0f records "
+                   "(full %ld)\n",
+                   g_spec.cells,
+                   g_spec.cells > 0
+                       ? (double)g_spec.leaf_records / (double)g_spec.cells
+                       : 0.0,
+                   g_spec.full_records);
+    } else {
+      std::fprintf(stderr, "[cgal] tape spec: unsupported tape shape, "
+                           "using the full tape\n");
     }
   }
 

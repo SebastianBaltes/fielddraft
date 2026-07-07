@@ -56,6 +56,23 @@ Kanten-Punkt < 1,5·cell an einem Mesh-Vertex (Kantentreue).
 Hat beim Nativ-Umbau sofort zwei echte Drifts gefunden (Cone `wall_scale`,
 Shell inward statt symmetrisch) — nicht optional.
 
+## Tape-Spezialisierung (tape_spec.h)
+
+Zell-lokale Verkürzung der Opcode-Tape (C++-Gegenstück zu
+`crates/kernel/src/cell_csg.rs`): Octree über dem Mesh-AABB, pro Zelle
+werden Boolean-Zweige per 1-Lipschitz-Ball-Bound (ein Center-Eval pro
+Subtree) geprunt, die kurze Tape wird an Kindzellen vererbt und vom
+Mesh_3-Oracle evaluiert. Warp-Klammern (Extrude/Revolve/Helix/Sweep)
+bleiben opake Leaf-Spans — nur erkannte Boolean-Knoten werden geprunt,
+unbekannte Tape-Formen fallen komplett auf die volle Tape zurück.
+`FD_NO_SPEC=1` schaltet ab. Wert-Exaktheits-Harness:
+
+    g++ -O2 -std=c++17 -I src -o /tmp/check_spec test/check_spec.cpp
+    /tmp/check_spec job.fdmesh   # vergleicht voll vs. spezialisiert
+
+Benchmark 512-Kugel-Baugruppe (cell 0,8): 36,1s → 16,3s wall,
+466s → 117s CPU; Tape 6656 → Ø 30 Records pro Zelle.
+
 ## Build-Varianten
 
 - `build-native.sh` (M1, lokal): header-only — CGAL-6.0.1- + Boost-1.86-
