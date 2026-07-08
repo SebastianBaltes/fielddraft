@@ -6,7 +6,7 @@
 use fielddraft_protocol::{BoolOp, Document, FeatureId, Primitive};
 use wasm_bindgen::prelude::*;
 
-use crate::body::{Body, build_bounded_for_body, build_bounded_with_primitives, detect_uniform_translation, hash_body_payload, hash_body_payload_split, partition};
+use crate::body::{Body, detect_uniform_translation, hash_body_payload, hash_body_payload_split, partition};
 use crate::body;
 use crate::csg::{CsgNode, DecodedFeature};
 use crate::csg;
@@ -91,6 +91,9 @@ pub struct Kernel {
     /// during the last regenerate pass. Applied as a post-processing
     /// step on the CsgNode tree before meshing.
     pub(crate) edge_fillets: Vec<csg::EdgeFillet>,
+    /// d: global round radius from the last `round_all` feature, applied as a
+    /// post-pass after `edge_fillets` on the eval/pick/mesh CSG tree.
+    pub(crate) global_round: Option<f32>,
     /// C2: resolved CSYS of every `mate_connector` from the last
     /// regenerate pass, so the viewport can render datum triads without
     /// re-resolving the face query on the JS side.
@@ -352,7 +355,11 @@ impl Kernel {
             }
         }
 
-        let (bounded, prims) = build_bounded_with_primitives(&self.decoded, feature_indices);
+        let (bounded, prims) = crate::body::build_bounded_with_primitives_rounded(
+            &self.decoded,
+            feature_indices,
+            self.global_round,
+        );
         let prim_refs: std::collections::HashMap<u32, &Primitive> =
             prims.iter().map(|(k, v)| (*k, v)).collect();
         match self.mesh_algorithm {
@@ -375,7 +382,11 @@ impl Kernel {
     }
 
     pub(crate) fn compile_sdf_for(&self, feature_indices: &[usize]) -> sdf_compiler::CompiledSdf {
-        let bounded = build_bounded_for_body(&self.decoded, feature_indices);
+        let bounded = crate::body::build_bounded_for_body_rounded(
+            &self.decoded,
+            feature_indices,
+            self.global_round,
+        );
         sdf_compiler::compile_body(&bounded)
     }
 
@@ -676,6 +687,8 @@ impl Kernel {
             self.regen_brep_cache = std::mem::take(&mut ctx.brep_cache);
             // K10.4: capture edge fillets collected during regen.
             self.edge_fillets = std::mem::take(&mut ctx.edge_fillets);
+            // d: capture the global round radius (last `round_all` wins).
+            self.global_round = ctx.global_round.take();
             // C2: capture resolved mate-connector CSYS for the viewport.
             self.mate_connectors = std::mem::take(&mut ctx.mate_connectors);
             // Merge-scope warnings collected during regen (non-fatal).

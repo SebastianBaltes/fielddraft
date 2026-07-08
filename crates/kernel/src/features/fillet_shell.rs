@@ -50,7 +50,7 @@ impl FeatureKind for FilletEdgeFeature {
     fn execute(
         &self,
         ctx: &mut Context<'_>,
-        _id: &FeatureId,
+        id: &FeatureId,
         def: &Value,
     ) -> Result<(), FeatureError> {
         let d = FilletEdgeDef::parse(def)?;
@@ -77,16 +77,66 @@ impl FeatureKind for FilletEdgeFeature {
             });
         }
         let mask_radius = d.blend_radius * FILLET_MASK_SCALE;
-        for (feature_a, feature_b, mask_polyline) in resolved {
+        for hit in resolved {
             ctx.edge_fillets.push(crate::csg::EdgeFillet {
-                feature_a,
-                feature_b,
-                mask_polyline,
+                fillet_id: id.clone(),
+                feature_a: hit.feature_a,
+                feature_b: hit.feature_b,
+                branch_a: hit.branch_a,
+                branch_b: hit.branch_b,
+                mask_polyline: hit.polyline,
                 mask_radius,
                 blend_radius: d.blend_radius,
                 blend_mode: crate::csg::BlendMode::Fillet,
             });
         }
+        Ok(())
+    }
+}
+
+// ─── Round all edges (global): deburr every Boolean junction ───
+
+/// `round_all` — round EVERY Boolean-junction edge of the model with one
+/// radius. The SDF-native "deburr everything" operator: a field blend can
+/// never invalidate the solid, and between planar walls the round is an exact
+/// circle (see [`crate::csg::smin_poly`]). Rounds feature-junction edges;
+/// a lone primitive's own edges are out of scope (see
+/// [`crate::csg::CsgNode::apply_global_round`]).
+#[derive(FeatureSchema)]
+#[schema(type = "round_all")]
+pub struct RoundAllDef {
+    /// Round radius applied to every hard Boolean junction.
+    #[param(default = 2.0)]
+    pub radius: f32,
+}
+
+pub struct RoundAllFeature;
+
+impl FeatureKind for RoundAllFeature {
+    fn type_name(&self) -> &'static str {
+        RoundAllDef::TYPE_NAME
+    }
+
+    fn schema_json(&self) -> Value {
+        RoundAllDef::schema_json()
+    }
+
+    fn execute(
+        &self,
+        ctx: &mut Context<'_>,
+        _id: &FeatureId,
+        def: &Value,
+    ) -> Result<(), FeatureError> {
+        let d = RoundAllDef::parse(def)?;
+        if d.radius < 0.0 {
+            return Err(FeatureError::InvalidParameter {
+                feature: RoundAllDef::TYPE_NAME,
+                name: "radius",
+                message: format!("must be >= 0, got {}", d.radius),
+            });
+        }
+        // Last `round_all` in the timeline wins (a single global radius).
+        ctx.global_round = if d.radius > 0.0 { Some(d.radius) } else { None };
         Ok(())
     }
 }

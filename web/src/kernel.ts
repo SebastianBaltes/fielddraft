@@ -103,6 +103,11 @@ export interface BRepEdge {
    *  1 (every control point is an on-curve node). */
   degree: number;
   idHash: string;
+  /** Canonical fingerprint-carrying element query (`qEdge(<hash> @ …)`) —
+   *  what pickers should persist so the reference can heal across
+   *  topological edits (PERSISTENT-NAMING-PLAN N2). Absent until the wasm
+   *  exporting it is regenerated. */
+  query?: string;
   /** Arena indices (== `BRepFace.faceIndex`) of the faces this edge bounds.
    *  Face-precise — unlike the `a`/`b` branch signature, which coplanar
    *  split faces share (ticket b91c). */
@@ -135,6 +140,9 @@ export interface OctreeCells {
 export interface BRepFace {
   faceIndex: number;
   idHash: string;
+  /** Canonical fingerprint-carrying element query (`qFace(<hash> @ …)`);
+   *  absent until the wasm exporting it is regenerated. */
+  query?: string;
   kind: "face";
   /** Packed BranchId (feature << SUB_BITS | sub) this face lies on. */
   branchId: number;
@@ -179,6 +187,9 @@ export type SurfaceParams =
 export interface BRepVertex {
   vertexIndex: number;
   idHash: string;
+  /** Canonical fingerprint-carrying element query (`qVertex(<hash> @ …)`);
+   *  absent until the wasm exporting it is regenerated. */
+  query?: string;
   kind: "vertex";
   positionLocal: [number, number, number];
   /** Packed BranchIds of the ≥3 branch surfaces colliding at this vertex. */
@@ -269,6 +280,7 @@ export type FeatureKindName =
   | "mirror"
   | "mate_connector"
   | "fillet_edge"
+  | "round_all"
   | "shell"
   | "sweep"
   | "imported_mesh"
@@ -1439,6 +1451,11 @@ export class Kernel {
     return this.inner.addShell(openFaces, thicknessMm);
   }
 
+  /** d: round every Boolean-junction edge globally with `radiusMm` (0 clears). */
+  addRoundAll(radiusMm: number): number {
+    return this.inner.addRoundAll(radiusMm);
+  }
+
   /** Extrude one or more coplanar planar faces (P1). `faces` is a
    *  comma-separated list of `qFace(<idHash>)` queries; `symmetric=false`
    *  is the blind/two-sided Onshape default growing outward from the face.
@@ -1483,6 +1500,24 @@ export class Kernel {
       thicknessBackMm,
       upToFace,
     );
+  }
+
+  /** PERSISTENT-NAMING N4: re-canonicalise every stored element reference
+   *  (fresh hash + fingerprint) against the current woven B-Reps. Called by
+   *  the persistence funnel right before a save; returns the heal report
+   *  (`[{feature, from, to, rehashed}]`, empty when nothing changed). */
+  healElementRefs(): {
+    feature: string;
+    from: string;
+    to: string;
+    rehashed: boolean;
+  }[] {
+    return JSON.parse(this.inner.healElementRefs()) as {
+      feature: string;
+      from: string;
+      to: string;
+      rehashed: boolean;
+    }[];
   }
 
   /** K9.1: overall scene AABB in mm (conservative CSG bound). */

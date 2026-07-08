@@ -19,10 +19,16 @@
 /** A B-Rep element kind that can be addressed by a stable id_hash. */
 export type ElementKind = "face" | "edge" | "vertex";
 
-/** A picked element: its kind plus the stable decimal id_hash. */
+/** A picked element: its kind plus the stable decimal id_hash, and — when
+ *  the kernel provided it — the canonical fingerprint-carrying query string
+ *  (PERSISTENT-NAMING-PLAN N2). */
 export interface PickedElement {
   kind: ElementKind;
   idHash: string;
+  /** Kernel-built `qFace/qEdge/qVertex(<hash> @ <fingerprint>)`. Preferred
+   *  over the hash-only fallback: it lets the stored reference heal after
+   *  topological edits. The string is opaque to the web layer. */
+  query?: string;
 }
 
 /**
@@ -150,8 +156,11 @@ export function queryAcceptedByFilter(query: string, entityFilter?: string): boo
   }
 }
 
-/** Build the canonical element-query string addressing one element. */
+/** Build the canonical element-query string addressing one element. The
+ *  kernel-provided fingerprint-carrying form wins; the hash-only fallback
+ *  covers picks from a kernel wasm that predates the `query` field. */
 export function elementQueryString(el: PickedElement): string {
+  if (el.query) return el.query;
   switch (el.kind) {
     case "face":
       return `qFace(${el.idHash})`;

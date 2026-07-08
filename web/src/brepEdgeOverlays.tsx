@@ -33,6 +33,8 @@ interface AnalyticEdge {
   /** Stable decimal id_hash of this edge, or `undefined` until the kernel
    *  wasm exporting it has been regenerated (defensive — Brocken B-K). */
   idHash?: string;
+  /** Canonical fingerprint-carrying element query from the kernel. */
+  query?: string;
   /** Flat `LineSegments` positions (pairs of points) for this edge. */
   positions: Float32Array;
 }
@@ -184,7 +186,7 @@ export function BRepEdgeOverlay({
       for (const e of bodyEdges) {
         const positions = polylineToSegments(e.points);
         if (positions.length > 0)
-          out.push({ a: e.a, b: e.b, idHash: e.idHash, positions });
+          out.push({ a: e.a, b: e.b, idHash: e.idHash, query: e.query, positions });
       }
     }
     return out;
@@ -369,7 +371,11 @@ export function BRepEdgeOverlay({
   useEffect(() => {
     const e = hoveredIdx >= 0 ? edges[hoveredIdx] : undefined;
     if (e?.idHash !== undefined) {
-      setHoveredElementOfKind("edge", { kind: "edge", idHash: e.idHash });
+      setHoveredElementOfKind("edge", {
+        kind: "edge",
+        idHash: e.idHash,
+        query: e.query,
+      });
       return () => setHoveredElementOfKind("edge", null);
     }
     return undefined;

@@ -171,16 +171,17 @@ fn primitive_to_tree(prim: &Primitive, p: &[Tree; 3]) -> Result<Tree, String> {
     }
 }
 
-/// Smooth-min polynomial (IQ `smin`) as a Tree. Mirrors
-/// `sdf_dual::smin_poly_generic` (Fillet mode).
+/// Exact-circular smooth-min (IQ round union) as a Tree. Mirrors
+/// `sdf_dual::smin_poly_generic` (Fillet mode):
+/// `max(r, min) − ‖(relu(r−da), relu(r−db))‖`.
 fn smin_poly(da: &Tree, db: &Tree, r: f64) -> Tree {
     if r <= 0.0 {
         return da.clone().min(db.clone());
     }
-    let diff = da.clone() - db.clone();
-    let h = relu(neg(diff.abs()) + r) * (1.0 / r);
+    let ua = relu(neg(da.clone()) + r);
+    let ub = relu(neg(db.clone()) + r);
     let min_ab = da.clone().min(db.clone());
-    min_ab - h.clone() * h.clone() * h * (r / 6.0)
+    min_ab.max(r) - (ua.clone() * ua + ub.clone() * ub).sqrt()
 }
 
 /// Chamfer union as a Tree. Mirrors `sdf_dual::chamfer_union_generic`.

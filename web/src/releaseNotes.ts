@@ -24,6 +24,176 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.484",
+    entries: [
+      {
+        kind: "feat",
+        scope: "kernel",
+        text: "Fillet-Flächen weben jetzt sauber (c-M2): Die tangentialen Übergangsnähte eines Fillets (wo die Rundung ihre Trägerflächen G1-tangential verlässt) kann der numerische Tracer prinzipbedingt nicht abtasten — sie werden nun symbolisch als exakte Kurven eingesetzt. Für einen Fillet zwischen Zylinder und ebener Fläche (ein exakter Torus-Ring) sind das zwei koaxiale Kreise; das Ergebnis ist ein topologisch geschlossener, manifolder Körper mit einer echten Fillet-Fläche. Die verbleibenden Fälle (gerade Kanten mit Auslauf-Ecken) folgen später.",
+      },
+    ],
+  },
+  {
+    version: "0.6.483",
+    entries: [
+      {
+        kind: "feat",
+        scope: "kernel",
+        text: "Neues Feature „Round All Edges“: rundet in einem Schritt jede Kante global mit einem Radius. Als Feld-Operator (SDF) kann die Rundung den Körper nie in einen ungültigen Zustand bringen, und zwischen ebenen Flächen ist sie ein exakter Kreisbogen. Gerundet werden die Kanten, an denen Features aneinanderstoßen; die Eigenkanten eines einzelnen Primitivs bleiben vorerst außen vor.",
+      },
+    ],
+  },
+  {
+    version: "0.6.482",
+    entries: [
+      {
+        kind: "fix",
+        scope: "kernel",
+        text: "Fillets sind jetzt exakt kreisförmig: Der Rundungs-Übergang nutzt die zirkuläre smin-Form (echter Kreisbogen vom Radius r zwischen zwei ebenen Flächen) statt der bisherigen kubischen Polynom-Näherung — ein gefilletes Kantenprofil hat damit einen messbaren Radius. Nebenbei die zwei bisher auseinanderlaufenden smin-Familien vereinheitlicht (CPU-Kernel war kubisch, Tape/GPU/CGAL-Mesher quadratisch — beide behaupteten fälschlich „cubic“) und einen fehlenden Nulldivisions-Schutz (blend_radius 0) in der Tape-Familie ergänzt.",
+      },
+    ],
+  },
+  {
+    version: "0.6.481",
+    entries: [
+      {
+        kind: "feat",
+        scope: "kernel",
+        text: "Fillets als eigenständige, referenzierbare Fläche (Fundament): Ein kantenselektiver Fillet erzeugt jetzt einen prozeduralen Blend-Träger mit stabiler, provenienz-basierter Identität (Fillet-Feature + die zwei Wand-Kanten) statt einer namenlosen Ersatzfläche. Das abgeleitete B-Rep folgt der echten Rundung statt der scharfen Phantomkante, und die Blend-Fläche ist damit auswählbar und benennbar — die Grundlage dafür, Fillet-Geometrie später sauber weiterzuverwenden (Projektion in Sketches u.a.). Auswertung konsistent über alle Backends (Dual-Zahlen, Tape/GPU, CGAL-Mesher).",
+      },
+    ],
+  },
+  {
+    version: "0.6.480",
+    entries: [
+      {
+        kind: "feat",
+        scope: "kernel",
+        text: "Tangentialkontakt, Teil 2 — die konstruierten Profil-G1-Fälle: Gestapelte Revolves, deren Profile sich einen Endpunkt mit gleicher Tangente teilen (der Vasen-Stapel: Zylinder-Topf + Bogen-Kuppel), bekommen ihren Übergangs-Kreis jetzt symbolisch aus den exakten 2D-Sketchdaten (Profil-Kettenenden + Endtangenten) — RevolvedProfile-Wände paaren mit RevolvedProfile, Zylinder, Kegel und achsnormalen Ebenen.",
+      },
+    ],
+  },
+  {
+    version: "0.6.479",
+    entries: [
+      {
+        kind: "feat",
+        scope: "kernel",
+        text: "Tangentialkontakt (Kontaktordnung 1) für koaxiale Rotationsflächen: Die Koinzidenz-Registry erkennt Tangentialkreise symbolisch auf Konstruktionsdaten (Kugel↔Zylinder, Kugel↔Kegel, Ebene↔Torus, Zylinder↔Torus, Kugel↔Torus) und der Weave materialisiert den EXAKTEN Kreis statt zu tracen — ein kugelgekappter Zylinder (abgerundeter Pfosten) webt jetzt sauber (vorher 241 Verletzungen auf der Octree-Route), ebenso die abgerundete Kegelspitze. Ein Kontributor-Rollenwechsel-Gate unterscheidet echte Nähte von Innen-Berührungen (einbeschriebene Kugel = keine Kante).",
+      },
+      {
+        kind: "fix",
+        scope: "kernel",
+        text: "Aufwärts breiter werdende Kegelstümpfe (r_top > r_bottom) verloren auf der Seed-Route ALLE Kanten: primitive_halfspaces erzeugte einen negativen Halbwinkel, der das Steigungs-Vorzeichen der Kegel-SDF drehte — jede Rim-Projektion lief ins Leere. Der Halbwinkel ist jetzt immer positiv (die Öffnungsrichtung trägt der Apex-Offset).",
+      },
+    ],
+  },
+  {
+    version: "0.6.478",
+    entries: [
+      {
+        kind: "fix",
+        scope: "kernel",
+        text: "Ring-Windung ohne intrinsische Autorität repariert: Punktur-Ringe, die um die Röhre eines Torus (oder durch eine Kugel) winden, haben die Fläche auf BEIDEN Seiten — uv-Shoelace und Flächenseite-Regel können sie nicht orientieren und drehten sie bisher gegen ihre schon korrekten Partner-Faces. Jetzt enthalten sich diese Ringe (und alle Ringe tessellierter Faces) beim intrinsischen Flip und übernehmen per Mehrheits-Parität das Komplement ihrer autoritativen Partner — Box ∪ Torus webt orientierungs-sauber (0 Manifold-Verletzungen) auf Octree- UND Hybrid-Route.",
+      },
+    ],
+  },
+  {
+    version: "0.6.477",
+    entries: [
+      {
+        kind: "feat",
+        scope: "thicken",
+        text: "Thicken funktioniert jetzt auch auf Flächen von zusammengesetzten (Boolean-)Features — etwa FieldSkript-Körpern oder verketteten Thicken-Wänden: Der Träger der gepickten Fläche wird per Proben an den Face-Loop-Samples aus dem Boolean-Baum isoliert (nur DIE Fläche wächst, nicht jede Oberfläche des Booleans). Shell-/Offset-Owner ohne eindeutigen geschlossenen Träger melden weiterhin einen klaren Fehler.",
+      },
+      {
+        kind: "fix",
+        scope: "extrude",
+        text: "Gekrümmte Fläche als Extrude-Profil: früher, präziser Fehler mit Handlungsanweisung (Thicken nutzen) statt des späten generischen Profil-Fehlers. Design-Entscheidung im Kernel-Konzept dokumentiert: Extrude bleibt planar, Normal-Wachstum gekrümmter Flächen ist Thicken.",
+      },
+    ],
+  },
+  {
+    version: "0.6.476",
+    entries: [
+      {
+        kind: "feat",
+        scope: "kernel",
+        text: "Hybrid-Weave (Seed-Weaver Stufe C): Körper, deren Übergangs-Seams analytisch nicht auflösbar sind (z. B. Box ∪ Torus), bekommen jetzt ein VOLLSTÄNDIGES B-Rep statt einer offenen Schale — die parametrisch exakten Kanten der Operanden bleiben erhalten, nur die übersprungenen Seam-Paare werden aus dem Octree-Wireframe nachgefüllt (Endpunkte in die Seed-Ecken verschweißt, Branch-Sets vereinigt). Qualitätsboden: nie schlechter als der bisherige Voll-Octree-Fallback.",
+      },
+    ],
+  },
+  {
+    version: "0.6.475",
+    entries: [
+      {
+        kind: "fix",
+        scope: "shell",
+        text: "Shell-Open-Faces erreichen jetzt auch Sweep-Körper: Beide SDF-Evaluatoren (BVH-Hot-Path und Picking-Pfad) gaten das geöffnete Profil-Segment im Querschnitt des Sweeps — Parität mit Extrude/Revolve/Helix, die den Retained-Pfad schon konnten.",
+      },
+    ],
+  },
+  {
+    version: "0.6.474",
+    entries: [
+      {
+        kind: "feat",
+        scope: "thicken",
+        text: "Partielle (geschnittene) Zylinder- und Kegelwände lassen sich verdicken: Der Winkel-Spann der Wand wird aus den Rim-Kanten gelesen und die Voll-Rotations-Differenz mit einem extrudierten Sektor-Prisma auf den tatsächlichen Ausschnitt begrenzt — eine Half-Pipe wird zur halben Röhre statt zum Fehler. Außerdem: Up-to-Face akzeptiert jetzt Kegel-Ziele (koaxial, gleicher Halbwinkel — konstanter Wandabstand δ·sin α).",
+      },
+    ],
+  },
+  {
+    version: "0.6.473",
+    entries: [
+      {
+        kind: "fix",
+        scope: "kernel",
+        text: "Koplanare ON-same-Überlappung webt manifold: Kreuzende Körper mit gleich hohen Deckeln doppel-deckten das Überlappungs-Quadrat (40 Orientierungs-Verletzungen). Neue Reparatur-Stufe im Weave: schlägt die Materialisierung fehl, partitioniert eine ±ε-Ownership-Probe die überlappenden Klassen-Regionen (kleinster enthaltender Member besitzt die Region), vergrabene Signatur-Branches verlieren die Kante, Flächen-innere Nähte fliegen. Nur bei nachgewiesenem Overlap aktiv — anstoßende Stapel (o2j9-Familie) bleiben byte-identisch.",
+      },
+    ],
+  },
+  {
+    version: "0.6.472",
+    entries: [
+      {
+        kind: "fix",
+        scope: "kernel",
+        text: "DL-82 behoben: Bei feiner Octree-Auflösung erzeugte der Edge-Weave Geisterkanten quer über einen offenen Nutmund (der adaptive Seam-Tracer übersprang die Lücke in einem Schritt, alle Samples lagen auf den Rims). Der Body-Boundary-Filter testet jetzt symmetrisch (vergraben UND in der Luft) und probt bei getracten Chains zusätzlich die Chord-Mittelpunkte gegen das Sagitta-Budget — die Brücke fliegt, echte gekrümmte Kanten bleiben.",
+      },
+    ],
+  },
+  {
+    version: "0.6.471",
+    entries: [
+      {
+        kind: "feat",
+        scope: "kernel",
+        text: "Persistentes Naming N4 — selbstheilende Dokumente: Beim Speichern (inkl. Auto-Save) werden alle gespeicherten Element-Referenzen gegen das aktuelle Modell re-kanonisiert — geheilte Referenzen bekommen frischen Hash + Fingerprint (kein Fingerprint-Verfall über viele Edits), alte hash-only Referenzen werden auf die heilbare Langform aufgerüstet. Unauflösbare Referenzen bleiben unverändert und melden ihren Fehler ehrlich am Feature.",
+      },
+    ],
+  },
+  {
+    version: "0.6.470",
+    entries: [
+      {
+        kind: "feat",
+        scope: "kernel",
+        text: "Persistentes Naming N2/N3: Element-Referenzen tragen jetzt einen geometrischen Fingerprint (qFace(<hash> @ …), kanonische Form kommt fertig aus dem Kernel) und HEILEN beim Auflösen — eine gespeicherte Face-/Edge-/Vertex-Referenz überlebt topologische Edits, statt mit „face not found“ zu scheitern. Alle Feature-Pfade (Extrude auf Face, Up-to-Face, Thicken, Shell, Fillet, Mate-Anchor) laufen über eine gemeinsame healing-fähige Auflösung statt sieben Hash-Scan-Kopien.",
+      },
+    ],
+  },
+  {
+    version: "0.6.469",
+    entries: [
+      {
+        kind: "fix",
+        scope: "kernel",
+        text: "Persistentes Naming N1: Referenz-Auflösung bewertet alle Kandidaten einheitlich (Fingerprint-Ähnlichkeit + Hash-Bonus, provenienz-gebunden auf die Signatur-Gruppe) — ein Index-Kipp bindet nicht mehr still an das falsche Element, gleich gute Kandidaten melden ehrlich „Ambiguous“. Räumliche Index-Vergabe jetzt mit gruppen-relativem ε statt absolutem 1e-9 (nm-Jitter kippt keine Identitäten mehr). Neue Handle-Resolve-Gate-Testfamilie (naming_gate.rs).",
+      },
+    ],
+  },
+  {
     version: "0.6.468",
     entries: [
       {

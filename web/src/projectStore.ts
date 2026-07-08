@@ -189,6 +189,17 @@ export class ProjectStore {
   private buildPersistableProject(): Project {
     const tabs = this.state.project.tabs.map((t) => {
       if (t.id === this.loadedPartTabId && t.kind === "part") {
+        // PERSISTENT-NAMING N4: normalise stored element references (fresh
+        // hash + fingerprint) right before the document is persisted, so a
+        // healed reference never decays across successive edits. Best-effort:
+        // a save must never fail on healing.
+        try {
+          const healed = this.kernel.healElementRefs();
+          if (healed.length > 0)
+            console.info("[fielddraft] healed element refs on save:", healed);
+        } catch {
+          // ignore — healing is a normalisation, not a save precondition
+        }
         return { ...t, documentJson: stripScripts(this.kernel.toJson()) };
       }
       return t;
@@ -509,6 +520,17 @@ export class ProjectStore {
   private flushLoadedTab(): void {
     const tabs = this.state.project.tabs.map((t) => {
       if (t.id === this.loadedPartTabId && t.kind === "part") {
+        // PERSISTENT-NAMING N4: normalise stored element references (fresh
+        // hash + fingerprint) right before the document is persisted, so a
+        // healed reference never decays across successive edits. Best-effort:
+        // a save must never fail on healing.
+        try {
+          const healed = this.kernel.healElementRefs();
+          if (healed.length > 0)
+            console.info("[fielddraft] healed element refs on save:", healed);
+        } catch {
+          // ignore — healing is a normalisation, not a save precondition
+        }
         return { ...t, documentJson: stripScripts(this.kernel.toJson()) };
       }
       return t;

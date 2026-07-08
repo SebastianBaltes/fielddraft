@@ -15,7 +15,7 @@ use crate::csg::BranchId;
 use fielddraft_protocol::HalfSpace;
 
 // ─── small vector helpers (f64): shared, see brep::vec3 ─────────────────────
-use crate::brep::vec3::{cross, normalize as unit, scale, sub};
+use crate::brep::vec3::{cross, dot, normalize as unit, scale, sub};
 use crate::brep::vec3::norm;
 use super::*;
 
@@ -358,7 +358,8 @@ pub(super) fn snap_to_carrier(surface: &SurfaceGeometry, p: [f64; 3]) -> Option<
         HalfSpace::Cone { .. }
         | HalfSpace::Torus { .. }
         | HalfSpace::Gyroid { .. }
-        | HalfSpace::RevolvedProfile { .. } => None,
+        | HalfSpace::RevolvedProfile { .. }
+        | HalfSpace::Blend { .. } => None,
     }?;
     Some(xf_point(
         transform,
@@ -626,4 +627,713 @@ pub(super) fn is_watertight(brep: &BRep, face_ids: &[crate::brep::FaceId]) -> bo
         }
     }
     uses.iter().all(|&u| u == 2)
+}
+
+/// Re-attribute edge memberships where coincident carriers OVERLAP (plan
+/// Phase 3, the case the flush stacks never hit —
+/// `gate_union_crossing_boxes_coplanar_tops`). Two failure shapes of the raw
+/// signature semantics on an overlapping ON-same class:
+///
+/// - **buried signature branch**: the central stretch of box1's top∩wall
+///   edge lies on the shared top plane, but box1's WALL is buried inside the
+///   crossing box there — the edge's real second face is the *coincident
+///   sibling's* region (box2.top), not the wall. Feeding the wall's face
+///   loop that edge double-covers the overlap and breaks orientation.
+/// - **interior seam**: a traced pair line that crosses the overlap (box1.top
+///   ∩ box2.wall inside the plus's centre) separates nothing — both sides
+///   belong to the same kept region. It must be dropped entirely.
+///
+/// For every edge whose signature touches a coincidence class, the true pair
+/// of adjacent faces is decided by ±ε side probes in each carrier's tangent
+/// plane (the plan-blessed probe form: sidedness of a KNOWN analytic surface
+/// point; the coincidence facts came symbolically from the registry). A side
+/// is adjacent when it lies on the body boundary; among coincident class
+/// members active there, the smallest branch owns the region (the same
+/// deterministic representative rule the edge merge uses). Bails to the raw
+/// semantics whenever an ingredient is missing — never acts on guesswork.
+pub(super) fn reattribute_coincident_memberships(
+    body: &BoundedCsg,
+    brep: &mut BRep,
+    registry: &crate::brep::coincidence::CoincidenceRegistry,
+    halfspaces: &BranchSurfaceMap,
+    memberships: &mut Vec<Vec<u32>>,
+    culled: &std::collections::HashSet<u32>,
+    diag: f64,
+) {
+    use crate::csg::EvalMode;
+
+    let leaf_map = crate::brep::edge_walker::branch_leaf_map(body);
+    let bnd = crate::brep::tol::on_boundary(diag);
+    // Probe offset: comfortably clear of the boundary band and the eval
+    // attribution noise, far below any face extent that matters.
+    let probe_eps = 16.0 * bnd;
+
+    let mut keep = vec![true; brep.edges.len()];
+    let mut changed_any = false;
+
+    for i in 0..brep.edges.len() {
+        let (sa, sb) = {
+            let e = &brep.edges[i];
+            (e.signature.0, e.signature.1)
+        };
+        let cls_a = registry.class_of(sa);
+        let cls_b = registry.class_of(sb);
+        if cls_a.is_none() && cls_b.is_none() {
+            continue; // no coincidence involved — raw semantics are exact
+        }
+
+        // Midpoint + unit tangent from the (already refined) edge geometry.
+        let samples = crate::brep::edge_sampling::sample_edge(&brep.edges[i].geometry);
+        if samples.len() < 2 {
+            continue;
+        }
+        let mid_idx = samples.len() / 2;
+        let m = samples[mid_idx];
+        let t = {
+            let lo = mid_idx.saturating_sub(1);
+            let hi = (mid_idx + 1).min(samples.len() - 1);
+            let d = sub(samples[hi], samples[lo]);
+            if norm(d) < 1e-12 {
+                continue;
+            }
+            unit(d)
+        };
+
+        // Candidate class members share the signature branch's carrier.
+        let group_of = |branch: BranchId| -> Vec<u32> {
+            match registry.class_of(branch) {
+                Some((cls, _)) => registry.classes()[cls]
+                    .members
+                    .iter()
+                    .map(|&(b, _)| b.as_u32())
+                    .collect(),
+                None => vec![branch.as_u32()],
+            }
+        };
+        // Carrier-side probe: on `anchor`'s carrier, step probe_eps to both
+        // sides of the edge in the tangent plane and report the body field
+        // there. `None` when any ingredient is missing (no analytic carrier,
+        // degenerate tangent) — the caller then leaves this edge alone.
+        let side_fields = |anchor: u32| -> Option<[(f32, [f32; 3]); 2]> {
+            let (hs, xf) = halfspaces.get(&anchor)?;
+            let surface = SurfaceGeometry::Analytic {
+                surface: hs.clone(),
+                transform: *xf,
+            };
+            let q = snap_to_carrier(&surface, m)?;
+            let n = surface_normal_at(&surface, q)?;
+            let d = cross(n, t);
+            if norm(d) < 1e-9 {
+                return None;
+            }
+            let d = unit(d);
+            let probe = |side: f64| -> (f32, [f32; 3]) {
+                let p = [
+                    (q[0] + d[0] * probe_eps * side) as f32,
+                    (q[1] + d[1] * probe_eps * side) as f32,
+                    (q[2] + d[2] * probe_eps * side) as f32,
+                ];
+                (body.sdf(p, EvalMode::Logical), p)
+            };
+            Some([probe(1.0), probe(-1.0)])
+        };
+        // Region containment via the member's OWN leaf field: the probe sits
+        // on the shared carrier, so |f_leaf| vanishes exactly inside that
+        // member's footprint and grows past its rim. (Contributor attribution
+        // is NOT a containment oracle here — extrude leaves report both wall
+        // groups at any axial distance.)
+        let contains = |c: u32, p: [f32; 3]| -> Option<bool> {
+            let leaf = leaf_map.get(&BranchId(c).feature_id())?;
+            // TIGHT containment: the probe sits on the shared carrier, so the
+            // true owner's leaf field vanishes there to drift noise, while a
+            // member whose region ends short of the probe reads ~probe_eps.
+            // A loose bound here would blur abutting regions into fake
+            // overlaps (flush stacks) — bnd separates the two regimes.
+            Some((leaf.sdf(p, EvalMode::Logical) as f64).abs() <= bnd)
+        };
+
+        // Master gate — genuine region OVERLAP only: the pass may act on
+        // this edge only when some on-boundary side probe of a class carrier
+        // is tightly contained by TWO OR MORE class members (the plus's
+        // centre square). Abutting regions (flush stacks, drift-split tiers)
+        // never double-contain a probe; for them the merge pass's membership
+        // is already the truth and stays untouched.
+        let mut overlap_here = false;
+        for anchor in [sa, sb] {
+            let group = group_of(anchor);
+            if group.len() < 2 {
+                continue;
+            }
+            let Some(sides) = side_fields(anchor.as_u32()) else {
+                continue;
+            };
+            for &(f, p) in &sides {
+                if (f as f64).abs() > bnd {
+                    continue;
+                }
+                // STRICT containment for the gate: a genuine overlap reads
+                // exactly zero in both members' leaf fields (the probe lies
+                // well inside both footprints on the shared carrier), while
+                // near-coincidence drift artefacts read ~bnd. A quarter of
+                // the boundary tolerance separates the regimes with margin.
+                let strictly_contains = |c: u32| -> bool {
+                    leaf_map
+                        .get(&BranchId(c).feature_id())
+                        .is_some_and(|leaf| {
+                            (leaf.sdf(p, EvalMode::Logical) as f64).abs() <= 0.25 * bnd
+                        })
+                };
+                let n_containing = group
+                    .iter()
+                    .filter(|c| !culled.contains(*c))
+                    .filter(|&&c| strictly_contains(c))
+                    .count();
+                if n_containing >= 2 {
+                    overlap_here = true;
+                }
+            }
+        }
+        if !overlap_here {
+            continue;
+        }
+
+        // Step 1 — removal, conservative: a member goes only when BOTH side
+        // probes on its own carrier are CLEARLY off the boundary (beyond
+        // 4×bnd, buried or airborne). Marginal readings (drift-scale flush
+        // stacks) keep the member — merge's answer stands.
+        let rm_tol = 4.0 * bnd;
+        let mut members = memberships[i].clone();
+        let before = members.clone();
+        members.retain(|&b| {
+            let Some(sides) = side_fields(b) else {
+                return true; // no carrier — never guess
+            };
+            let clearly_off = sides
+                .iter()
+                .all(|&(f, _)| (f as f64).abs() > rm_tol);
+            !clearly_off
+        });
+
+        // Step 1b — ownership partition on OVERLAPPING class regions: when
+        // two same-class members both tightly contain the SAME side probe,
+        // their regions genuinely overlap there (the plus's centre square) —
+        // regions that merely ABUT (flush stacks, drift-split tiers) never
+        // double-contain a probe and are skipped, so merge's answer stands
+        // for them. Inside an overlap the smallest containing member owns
+        // each on-boundary side; class members owning no side leave the
+        // membership.
+        for anchor in [sa, sb] {
+            let group = group_of(anchor);
+            if group.len() < 2 {
+                continue;
+            }
+            let Some(sides) = side_fields(anchor.as_u32()) else {
+                continue;
+            };
+            let mut owners: Vec<u32> = Vec::new();
+            let mut overlap = false;
+            let mut oracle_ok = true;
+            for &(f, p) in &sides {
+                if (f as f64).abs() > bnd {
+                    continue; // off-boundary side owns nothing
+                }
+                let mut containing: Vec<u32> = Vec::new();
+                for &c in &group {
+                    if culled.contains(&c) {
+                        continue;
+                    }
+                    match contains(c, p) {
+                        Some(true) => containing.push(c),
+                        Some(false) => {}
+                        None => oracle_ok = false,
+                    }
+                }
+                if containing.len() >= 2 {
+                    overlap = true;
+                }
+                if let Some(&o) = containing.iter().min() {
+                    if !owners.contains(&o) {
+                        owners.push(o);
+                    }
+                }
+            }
+            if !oracle_ok || !overlap {
+                continue;
+            }
+            members.retain(|b| !group.contains(b) || owners.contains(b));
+        }
+
+        // Step 2 — sibling addition, only when removal (or a thin merge) left
+        // fewer than two real faces: on each signature carrier, the smallest
+        // class member containing an on-boundary side probe owns that side;
+        // an owner that is not yet a member joins.
+        let live = |ms: &[u32]| ms.iter().filter(|b| !culled.contains(*b)).count();
+        if live(&members) < 2 {
+            for anchor in [sa, sb] {
+                let group = group_of(anchor);
+                if group.len() < 2 {
+                    continue; // no class — nothing to add
+                }
+                let Some(sides) = side_fields(anchor.as_u32()) else {
+                    continue;
+                };
+                for &(f, p) in &sides {
+                    if (f as f64).abs() > bnd {
+                        continue; // this side is off the boundary
+                    }
+                    let mut owner: Option<u32> = None;
+                    let mut oracle_ok = true;
+                    for &c in &group {
+                        if culled.contains(&c) {
+                            continue;
+                        }
+                        match contains(c, p) {
+                            Some(true) => {
+                                owner = Some(owner.map_or(c, |o: u32| o.min(c)));
+                            }
+                            Some(false) => {}
+                            None => oracle_ok = false,
+                        }
+                    }
+                    if !oracle_ok {
+                        continue;
+                    }
+                    if let Some(o) = owner {
+                        if !members.contains(&o) {
+                            members.push(o);
+                        }
+                    }
+                }
+            }
+        }
+
+        members.sort_unstable();
+        if std::env::var("REATTR_DBG").is_ok() && members != before {
+            eprintln!(
+                "REATTR edge {i}: sig=({},{}) m={:?} {:?} -> {:?}",
+                sa.as_u32(),
+                sb.as_u32(),
+                m,
+                before,
+                members
+            );
+        }
+        // Step 3 — an edge with fewer than two live faces separates nothing:
+        // it was interior to a single region (the overlap centre) — drop it.
+        if live(&members) < 2 && live(&before) >= 2 {
+            keep[i] = false;
+            changed_any = true;
+        } else if members != memberships[i] {
+            memberships[i] = members;
+            changed_any = true;
+        }
+    }
+
+    if changed_any {
+        compact_edges_and_vertices(brep, &keep, memberships);
+    }
+}
+
+/// Materialise the registry's **order-1 (tangent) seams** symbolically
+/// (ARCHITECTURE-ROADMAP Punkt 2): for each detected tangent circle,
+///
+/// 1. drop every traced edge of the tangent PAIR's signature — those are
+///    the tracer's attempts at the degenerate curve (`∇f_a × ∇f_b → 0`
+///    along the whole seam): on the octree route a garbage star in the
+///    √-shaped tolerance tube, on the seed route usually nothing at all;
+/// 2. drop every other edge lying ON the circle (the coincident rim copies
+///    of a face pinched between the tangent partners — the ghost cap of a
+///    sphere-capped cylinder loses BOTH its circles here and thus never
+///    materialises, which is exactly right: it is interior);
+/// 3. add the EXACT parametric circle as the seam edge of the pair.
+///
+/// The circle is a rational quadratic NURBS (a true circle), so the seam is
+/// resolution-independent — the tracer is never pointed at the degenerate
+/// curve, per the plan's constructive-provenance directive.
+pub(super) fn materialize_tangent_seams(
+    body: &BoundedCsg,
+    brep: &mut BRep,
+    registry: &crate::brep::coincidence::CoincidenceRegistry,
+    memberships: &mut Vec<Vec<u32>>,
+    diag: f64,
+) {
+    for seam in registry.tangent_seams() {
+        // BOUNDARY gate: a tangent circle is a seam only when the two
+        // carriers SWAP the outward role across it (sphere cap on a
+        // cylinder: wall outside below, sphere outside above). An INTERIOR
+        // tangency — an inscribed sphere grazing the wall from inside —
+        // keeps one carrier outside on both sides and contributes no
+        // boundary edge at all. Decided by ±ε probes along each carrier's
+        // meridian at a known circle point (the sanctioned probe form); ε
+        // must clear the √-shaped separation tube (the surfaces separate
+        // QUADRATICALLY off the circle), so it scales with √(diag·tol).
+        if !tangent_seam_on_boundary(body, seam, diag) {
+            continue;
+        }
+        let (ka, kb) = (seam.a.as_u32(), seam.b.as_u32());
+        let inv = crate::inverse(&seam.frame);
+        // Local-frame tolerance: the world boundary tolerance divided by the
+        // frame scale (rim copies are traced to refinement noise, far below).
+        let scale = (seam.frame.scale[0].abs() as f64).max(1e-9);
+        let tol = 4.0 * super::super::tol::on_boundary(diag) / scale;
+
+        let on_circle = |e: &Edge| -> bool {
+            let pts = crate::brep::edge_sampling::sample_edge(&e.geometry);
+            !pts.is_empty()
+                && pts.iter().all(|p| {
+                    let l = crate::world_to_local(
+                        &seam.frame,
+                        [p[0] as f32, p[1] as f32, p[2] as f32],
+                    );
+                    let _ = &inv; // frame inversion is folded into world_to_local
+                    let r = ((l[0] as f64).powi(2) + (l[2] as f64).powi(2)).sqrt();
+                    (r - seam.radius as f64).abs() <= tol
+                        && (l[1] as f64 - seam.y_local as f64).abs() <= tol
+                })
+        };
+
+        let keep: Vec<bool> = brep
+            .edges
+            .iter()
+            .map(|e| {
+                let sig = (e.signature.0.as_u32(), e.signature.1.as_u32());
+                let is_pair = (sig.0 == ka && sig.1 == kb) || (sig.0 == kb && sig.1 == ka);
+                !(is_pair || on_circle(e))
+            })
+            .collect();
+        if keep.iter().any(|&k| !k) {
+            compact_edges_and_vertices(brep, &keep, memberships);
+        }
+
+        brep.add_edge(Edge::new(
+            EdgeGeometry::Nurbs(super::wireframes::nurbs_circle(
+                &seam.frame,
+                seam.radius,
+                seam.y_local,
+            )),
+            seam.a,
+            seam.b,
+            None,
+            None,
+        ));
+        memberships.push(vec![ka.min(kb), ka.max(kb)]);
+    }
+}
+
+/// The ±ε boundary probe behind [`materialize_tangent_seams`]: walk a small
+/// step along each carrier's meridian from a point on the tangent circle and
+/// read the body field. The circle is a boundary seam iff each carrier is on
+/// the boundary on EXACTLY one side and the two carriers cover OPPOSITE
+/// sides (the outward-role swap of a G1 join).
+fn tangent_seam_on_boundary(
+    body: &BoundedCsg,
+    seam: &crate::brep::coincidence::TangentSeam,
+    diag: f64,
+) -> bool {
+    use crate::csg::EvalMode;
+
+    let bnd = crate::brep::tol::on_boundary(diag);
+    // Quadratic separation: at arc-distance ε off the circle the two
+    // surfaces sit ~ε²/(2R) apart. ε = 4·√(diag·bnd) puts that gap at
+    // ~8·bnd·diag/R ≫ the on/off threshold for any feature-scale R.
+    let eps = 4.0 * (diag * bnd).sqrt();
+    let on_tol = 4.0 * bnd;
+
+    // A point on the circle, in the weave frame.
+    let p0 = place_point3(
+        &seam.frame,
+        [seam.radius as f64, seam.y_local as f64, 0.0],
+    );
+    // Meridian direction of a revolution carrier at p0: project the axis
+    // direction into the carrier's tangent plane. For BOTH carriers the
+    // meridian at the tangent circle is the same line (the surfaces are
+    // tangent there!) — so a single ± probe pair, evaluated per carrier
+    // FIELD, cannot distinguish them. Instead probe the BODY field only:
+    // the role swap manifests as "boundary on both sides of the circle
+    // along the COMMON tangent direction" vs. the interior case where one
+    // side dives into material. On-boundary on both sides → seam; interior
+    // tangency shows f < −on_tol on at least one side (the side where the
+    // grazing carrier runs under the surviving one).
+    let axis = {
+        let r = crate::quat_rotate(seam.frame.rotation, [0.0, 1.0, 0.0]);
+        let n = ((r[0] * r[0] + r[1] * r[1] + r[2] * r[2]) as f64).sqrt().max(1e-12);
+        [r[0] as f64 / n, r[1] as f64 / n, r[2] as f64 / n]
+    };
+    // The probe walks the common MERIDIAN of the two carriers at p0 — the
+    // axis direction projected into the shared tangent plane. Walking the
+    // raw axis is only right for cylinder-like walls; on a sloped cone wall
+    // it leaves the surface LINEARLY (ε·slope) and would misread every
+    // probe. The shared surface normal at p0 is well-conditioned (both
+    // carriers agree there — that is what tangency means) and comes from a
+    // central-difference gradient of the body field.
+    let grad = {
+        let h = (1e-4 * diag).max(1e-6) as f32;
+        let f = |p: [f32; 3]| body.sdf(p, EvalMode::Logical);
+        let b = [p0[0] as f32, p0[1] as f32, p0[2] as f32];
+        let g = [
+            (f([b[0] + h, b[1], b[2]]) - f([b[0] - h, b[1], b[2]])) as f64,
+            (f([b[0], b[1] + h, b[2]]) - f([b[0], b[1] - h, b[2]])) as f64,
+            (f([b[0], b[1], b[2] + h]) - f([b[0], b[1], b[2] - h])) as f64,
+        ];
+        let n = (g[0] * g[0] + g[1] * g[1] + g[2] * g[2]).sqrt().max(1e-12);
+        [g[0] / n, g[1] / n, g[2] / n]
+    };
+    let meridian = {
+        let an = axis[0] * grad[0] + axis[1] * grad[1] + axis[2] * grad[2];
+        let m = [
+            axis[0] - an * grad[0],
+            axis[1] - an * grad[1],
+            axis[2] - an * grad[2],
+        ];
+        let n = (m[0] * m[0] + m[1] * m[1] + m[2] * m[2]).sqrt().max(1e-12);
+        [m[0] / n, m[1] / n, m[2] / n]
+    };
+    // The decisive fact is the ROLE SWAP, read from the contributor sets:
+    // on a true seam (sphere cap on a cylinder) one side of the circle is
+    // bound by carrier `a` alone and the other by carrier `b` alone — the
+    // boundary hands over at the circle. On a grazing contact (an inscribed
+    // sphere, a sphere leaving through the CAP instead of the wall) the
+    // same carrier binds BOTH sides and the other never reaches the band.
+    // The quadratic separation puts the non-binding carrier ~ε²/(2R) ≈
+    // 8·ε²/diag off the probe — an order of magnitude beyond the `on_tol`
+    // band — so membership is well separated. (A field magnitude alone
+    // cannot decide this: along the common meridian the surviving wall
+    // reads ~0 on both sides in every case.)
+    let probe = |side: f64| -> (f64, bool, bool) {
+        let p = [
+            (p0[0] + meridian[0] * eps * side) as f32,
+            (p0[1] + meridian[1] * eps * side) as f32,
+            (p0[2] + meridian[2] * eps * side) as f32,
+        ];
+        let (f, contributors) = body.evaluate(p, on_tol as f32, crate::csg::EvalMode::Logical);
+        let slice = contributors.as_slice();
+        (
+            f as f64,
+            slice.contains(&seam.a),
+            slice.contains(&seam.b),
+        )
+    };
+    let (f_up, a_up, b_up) = probe(1.0);
+    let (f_dn, a_dn, b_dn) = probe(-1.0);
+    let on = |f: f64| f.abs() <= on_tol + (eps * eps / diag) * 8.0;
+    if !(on(f_up) && on(f_dn)) {
+        return false; // one side leaves the boundary entirely — no seam
+    }
+    (a_up && !b_up && b_dn && !a_dn) || (b_up && !a_up && a_dn && !b_dn)
+}
+
+/// `place_point` for f64 local coordinates (scale → rotate → translate).
+fn place_point3(t: &fielddraft_protocol::Transform, p: [f64; 3]) -> [f64; 3] {
+    let scaled = [
+        (p[0] * t.scale[0] as f64) as f32,
+        (p[1] * t.scale[1] as f64) as f32,
+        (p[2] * t.scale[2] as f64) as f32,
+    ];
+    let r = crate::quat_rotate(t.rotation, scaled);
+    [
+        r[0] as f64 + t.translate[0] as f64,
+        r[1] as f64 + t.translate[1] as f64,
+        r[2] as f64 + t.translate[2] as f64,
+    ]
+}
+
+// ─── c-M2: procedural blend-seam materialisation ────────────────────────────
+//
+// A filleted junction's blend surface leaves each wall along a G1-TANGENT
+// seam — a curve the octree tracer cannot sample (parallel gradients along the
+// whole curve, the same transversality wall as the tangent-contact seams).
+// But the seam is symbolic: `wall_A = 0 ∧ wall_B = r` is the transversal
+// intersection of wall_A with the r-offset of wall_B, computable in closed
+// form. This materialises the CLOSED (circular) seams — a fillet between a
+// cylinder and a perpendicular plane (round-min → exact torus band; both seams
+// are coaxial circles). Non-closed seams (planar straight edges → clipped
+// lines with runout caps) and other combos stay on the octree fallback.
+
+/// One filleted junction to seam: the blend's own branch, its two wall
+/// branches, and the blend radius.
+struct BlendSeamSpec {
+    blend: u32,
+    wall_a: u32,
+    wall_b: u32,
+    radius: f32,
+}
+
+/// Walk the CSG body and collect every `MaskedBlend` that carries a B-Rep
+/// identity (a real fillet, not a hand-built node).
+fn collect_blend_specs(node: &BoundedCsg, out: &mut Vec<BlendSeamSpec>) {
+    match node {
+        BoundedCsg::MaskedBlend { left, right, blend_radius, provenance, .. } => {
+            if provenance.branch != 0 && *blend_radius > 0.0 {
+                out.push(BlendSeamSpec {
+                    blend: provenance.branch,
+                    wall_a: provenance.wall_a,
+                    wall_b: provenance.wall_b,
+                    radius: *blend_radius,
+                });
+            }
+            collect_blend_specs(left, out);
+            collect_blend_specs(right, out);
+        }
+        BoundedCsg::Union { left, right, .. }
+        | BoundedCsg::Difference { left, right, .. }
+        | BoundedCsg::Intersection { left, right, .. }
+        | BoundedCsg::SmoothUnion { left, right, .. }
+        | BoundedCsg::SmoothDifference { left, right, .. }
+        | BoundedCsg::Morph { left, right, .. } => {
+            collect_blend_specs(left, out);
+            collect_blend_specs(right, out);
+        }
+        BoundedCsg::Twist { inner, .. }
+        | BoundedCsg::Bend { inner, .. }
+        | BoundedCsg::Displace { inner, .. }
+        | BoundedCsg::Shell { inner, .. }
+        | BoundedCsg::Offset { inner, .. } => collect_blend_specs(inner, out),
+        BoundedCsg::Leaf { .. }
+        | BoundedCsg::Extrude { .. }
+        | BoundedCsg::Revolve { .. }
+        | BoundedCsg::Helix { .. }
+        | BoundedCsg::Sweep { .. }
+        | BoundedCsg::Empty => {}
+    }
+}
+
+/// Materialise the closed circular seams of every filleted cylinder↔plane
+/// junction: drop the octree's degenerate blend fragments + the sharp wall
+/// stub, insert the two exact seam circles. `finish_weave`'s loop ordering
+/// then assembles the torus band + punches the plane's hole.
+pub(super) fn materialize_blend_seams(
+    body: &BoundedCsg,
+    brep: &mut BRep,
+    halfspaces: &BranchSurfaceMap,
+    memberships: &mut Vec<Vec<u32>>,
+    diag: f64,
+) {
+    let mut specs = Vec::new();
+    collect_blend_specs(body, &mut specs);
+    for spec in specs {
+        let Some((hs_a, xf_a)) = halfspaces.get(&spec.wall_a).cloned() else { continue };
+        let Some((hs_b, xf_b)) = halfspaces.get(&spec.wall_b).cloned() else { continue };
+        let Some(circles) = blend_seam_circles(
+            &hs_a, &xf_a, spec.wall_a, &hs_b, &xf_b, spec.wall_b, spec.radius, body, diag,
+        ) else {
+            continue;
+        };
+        // Drop every edge touching the blend branch (the octree's degenerate
+        // tangent-seam attempts) and the sharp wall_a↔wall_b stub.
+        let keep: Vec<bool> = brep
+            .edges
+            .iter()
+            .map(|e| {
+                let (s0, s1) = (e.signature.0.as_u32(), e.signature.1.as_u32());
+                let touches_blend = s0 == spec.blend || s1 == spec.blend;
+                let sharp = (s0 == spec.wall_a && s1 == spec.wall_b)
+                    || (s0 == spec.wall_b && s1 == spec.wall_a);
+                !(touches_blend || sharp)
+            })
+            .collect();
+        if keep.iter().any(|&k| !k) {
+            compact_edges_and_vertices(brep, &keep, memberships);
+        }
+        for (frame, radius, y_local, wall) in circles {
+            brep.add_edge(Edge::new(
+                EdgeGeometry::Nurbs(super::wireframes::nurbs_circle(&frame, radius, y_local)),
+                BranchId(spec.blend),
+                BranchId(wall),
+                None,
+                None,
+            ));
+            memberships.push(vec![spec.blend.min(wall), spec.blend.max(wall)]);
+        }
+    }
+}
+
+/// The two closed seam circles of a cylinder↔plane fillet, each as
+/// `(frame, radius_local, y_local, wall_branch)` for [`nurbs_circle`] in the
+/// cylinder's frame (both seams are coaxial with the cylinder). `None` for any
+/// other wall combination or a non-perpendicular plane (→ octree fallback).
+#[allow(clippy::too_many_arguments)]
+fn blend_seam_circles(
+    hs_a: &HalfSpace,
+    xf_a: &fielddraft_protocol::Transform,
+    branch_a: u32,
+    hs_b: &HalfSpace,
+    xf_b: &fielddraft_protocol::Transform,
+    branch_b: u32,
+    radius: f32,
+    body: &BoundedCsg,
+    diag: f64,
+) -> Option<Vec<(fielddraft_protocol::Transform, f32, f32, u32)>> {
+    // Identify which wall is the cylinder and which the plane.
+    let (cyl_r, cyl_xf, cyl_branch, pl_normal, pl_offset, pl_xf, pl_branch) = match (hs_a, hs_b) {
+        (HalfSpace::InfiniteCylinder { radius: rc }, HalfSpace::Plane { normal, offset }) => {
+            (*rc, xf_a, branch_a, *normal, *offset, xf_b, branch_b)
+        }
+        (HalfSpace::Plane { normal, offset }, HalfSpace::InfiniteCylinder { radius: rc }) => {
+            (*rc, xf_b, branch_b, *normal, *offset, xf_a, branch_a)
+        }
+        _ => return None,
+    };
+
+    let axis = unit([
+        crate::quat_rotate(cyl_xf.rotation, [0.0, 1.0, 0.0])[0] as f64,
+        crate::quat_rotate(cyl_xf.rotation, [0.0, 1.0, 0.0])[1] as f64,
+        crate::quat_rotate(cyl_xf.rotation, [0.0, 1.0, 0.0])[2] as f64,
+    ]);
+    let n_local = unit([pl_normal[0] as f64, pl_normal[1] as f64, pl_normal[2] as f64]);
+    let n_world = crate::quat_rotate(pl_xf.rotation, [
+        n_local[0] as f32,
+        n_local[1] as f32,
+        n_local[2] as f32,
+    ]);
+    let n_world = unit([n_world[0] as f64, n_world[1] as f64, n_world[2] as f64]);
+    // The seam is a circle only when the plane is perpendicular to the axis.
+    if dot(axis, n_world).abs() < 0.999 {
+        return None;
+    }
+
+    // Plane point in the cylinder's local frame → its axial coordinate.
+    let pl_pt_world = place_point3(pl_xf, [
+        (pl_normal[0] * pl_offset) as f64,
+        (pl_normal[1] * pl_offset) as f64,
+        (pl_normal[2] * pl_offset) as f64,
+    ]);
+    let pl_local = crate::world_to_local(cyl_xf, [
+        pl_pt_world[0] as f32,
+        pl_pt_world[1] as f32,
+        pl_pt_world[2] as f32,
+    ]);
+    let y_plane = pl_local[1] as f64;
+    let scale = (cyl_xf.min_scale() as f64).max(1e-9);
+    let r_local = radius as f64 / scale;
+    let r_cyl = cyl_r as f64;
+    let tol = crate::brep::tol::on_boundary(diag) * 4.0;
+
+    // A circle at (radius, y) in the cylinder frame is on the body boundary iff
+    // its 0° sample reads ~0 under the (blend-aware) field.
+    let on_body = |radius_l: f64, y_l: f64| -> f64 {
+        let w = place_point3(cyl_xf, [radius_l, y_l, 0.0]);
+        body.sdf([w[0] as f32, w[1] as f32, w[2] as f32], crate::csg::EvalMode::Visual)
+            .abs() as f64
+    };
+    // Pick the offset sign whose sample sits on the boundary.
+    let pick = |cands: [(f64, f64); 2]| -> Option<(f64, f64)> {
+        cands
+            .into_iter()
+            .filter(|&(rl, yl)| on_body(rl, yl) <= tol)
+            .min_by(|a, b| {
+                on_body(a.0, a.1).partial_cmp(&on_body(b.0, b.1)).unwrap()
+            })
+    };
+
+    // Seam on the cylinder wall: radius = R, axial = y_plane ± r.
+    let (rc_cyl, y_cyl) =
+        pick([(r_cyl, y_plane + r_local), (r_cyl, y_plane - r_local)])?;
+    // Seam on the plane: radius = R ± r, axial = y_plane.
+    let (r_pl, y_pl) =
+        pick([(r_cyl + r_local, y_plane), (r_cyl - r_local, y_plane)])?;
+
+    Some(vec![
+        (cyl_xf.clone(), rc_cyl as f32, y_cyl as f32, cyl_branch),
+        (cyl_xf.clone(), r_pl as f32, y_pl as f32, pl_branch),
+    ])
 }

@@ -188,6 +188,10 @@ pub struct Context<'a> {
     /// K10.4: edge fillets collected during regen, applied as a
     /// post-processing pass on the CsgNode tree.
     pub edge_fillets: Vec<crate::csg::EdgeFillet>,
+    /// d: the global round radius from the last `round_all` feature, applied
+    /// as a post-pass after `edge_fillets` (rounds every remaining Boolean
+    /// junction). `None` when no `round_all` is active.
+    pub global_round: Option<f32>,
     /// C0: shared lazy B-Rep cache over `features`. A feature can
     /// resolve element-level queries (`qFace(h)`, `qCreatedBy(id)`, …)
     /// against the geometry produced by every feature *so far* —
@@ -213,6 +217,7 @@ impl<'a> Context<'a> {
             features: Vec::new(),
             sketches: HashMap::new(),
             edge_fillets: Vec::new(),
+            global_round: None,
             brep_cache: crate::body::BrepCache::new(),
             mate_connectors: Vec::new(),
             feature_warnings: Vec::new(),
@@ -340,6 +345,7 @@ impl FeatureRegistry {
         r.register(Box::new(MateConnectorFeature));
         r.register(Box::new(SweepFeature));
         r.register(Box::new(FilletEdgeFeature));
+        r.register(Box::new(RoundAllFeature));
         r.register(Box::new(ShellFeature));
         r.register(Box::new(ImportedMeshFeature));
         r.register(Box::new(GyroidFeature));

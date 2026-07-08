@@ -201,7 +201,8 @@ impl Kernel {
             }
         }
         for (k, edge) in brep.edges.iter().enumerate() {
-            let id_hash = TopoRef::from_edge(brep, EdgeId(k as u32)).id_hash;
+            let topo = TopoRef::from_edge(brep, EdgeId(k as u32));
+            let id_hash = topo.id_hash;
             let points = to_world(&crate::brep::edge_sampling::sample_edge(&edge.geometry));
             // Structural points for the debug overlay: the few control points
             // that define the curve, plus its degree (on-curve nodes sit at
@@ -213,6 +214,7 @@ impl Kernel {
                 "a": edge.signature.0.as_u32(),
                 "b": edge.signature.1.as_u32(),
                 "idHash": id_hash.to_string(),
+                "query": crate::queries::element_query(&topo).to_string(),
                 "points": points,
                 "controlPoints": control_points,
                 "degree": degree,
@@ -288,11 +290,13 @@ impl Kernel {
         let brep = self.bodies[i].brep_cached().expect("woven above");
         let mut faces = Vec::with_capacity(brep.faces.len());
         for (k, face) in brep.faces.iter().enumerate() {
-            let id_hash = TopoRef::from_face(brep, FaceId(k as u32)).id_hash;
+            let topo = TopoRef::from_face(brep, FaceId(k as u32));
+            let id_hash = topo.id_hash;
             let (centroid, normal) = face_centroid_normal_local(brep, FaceId(k as u32));
             faces.push(serde_json::json!({
                 "faceIndex": k,
                 "idHash": id_hash.to_string(),
+                "query": crate::queries::element_query(&topo).to_string(),
                 "kind": "face",
                 "branchId": face.branch_id.as_u32(),
                 "featureId": face.branch_id.feature_id(),
@@ -322,11 +326,13 @@ impl Kernel {
         let brep = self.bodies[i].brep_cached().expect("woven above");
         let mut verts = Vec::with_capacity(brep.vertices.len());
         for (k, vertex) in brep.vertices.iter().enumerate() {
-            let id_hash = TopoRef::from_vertex(brep, VertexId(k as u32)).id_hash;
+            let topo = TopoRef::from_vertex(brep, VertexId(k as u32));
+            let id_hash = topo.id_hash;
             let branches: Vec<u32> = vertex.branches.iter().map(|b| b.as_u32()).collect();
             verts.push(serde_json::json!({
                 "vertexIndex": k,
                 "idHash": id_hash.to_string(),
+                "query": crate::queries::element_query(&topo).to_string(),
                 "kind": "vertex",
                 "positionLocal": vertex.position,
                 "branches": branches,

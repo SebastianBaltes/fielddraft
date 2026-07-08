@@ -54,6 +54,8 @@ pub mod branch_pairs;
 pub mod branch_seed;
 #[cfg(test)]
 mod classification_gate;
+#[cfg(test)]
+mod naming_gate;
 pub mod coincidence;
 pub mod diff;
 pub mod edge_sampling;

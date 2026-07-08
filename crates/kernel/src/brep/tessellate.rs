@@ -465,6 +465,9 @@ fn tessellate_face(
             Err("trimmed torus patch (closed profile loop — not yet parametric)".into())
         }
         HalfSpace::Gyroid { .. } => Err("gyroid carrier".into()),
+        // No closed-form parametrisation; the body exports via the generic
+        // field-mesh pass like other non-parametric carriers.
+        HalfSpace::Blend { .. } => Err("procedural blend carrier".into()),
         HalfSpace::RevolvedProfile {
             segments,
             ccw,

@@ -584,6 +584,18 @@ impl Kernel {
         }))
     }
 
+    /// d: round EVERY Boolean-junction edge of the model with one radius (the
+    /// SDF-native "deburr everything" operator). A field blend never
+    /// invalidates the solid, and between planar walls the round is an exact
+    /// circle. Rounds feature-junction edges; a lone primitive's own edges are
+    /// out of scope. `radius_mm == 0` clears the round.
+    #[wasm_bindgen(js_name = addRoundAll)]
+    pub fn add_round_all(&mut self, radius_mm: f32) -> Result<u32, JsError> {
+        self.push_feature_call("round_all", serde_json::json!({
+            "radius": { "value": radius_mm, "unit": "mm" },
+        }))
+    }
+
     /// Extrude one or more coplanar B-Rep faces (P1). `faces` is one or more
     /// comma-separated planar face queries (e.g. `qFace(<id_hash>)`); their
     /// boundary loops are projected into their shared plane and swept by

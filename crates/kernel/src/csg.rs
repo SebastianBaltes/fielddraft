@@ -247,6 +247,12 @@ pub enum ProxyElement {
 ///   smeared the boundary. This is the path that feeds picking, the
 ///   raycaster and the B-Rep proxy construction.
 ///
+/// EXCEPTION (blend-carrier work): a [`CsgNode::MaskedBlend`] with a
+/// [`BlendProvenance`] is mode-INDEPENDENT — the fillet surface owns a
+/// branch identity of its own (the fillet feature), so its contributor
+/// sets are well-defined and the B-Rep weaves the real (blended) surface
+/// instead of the phantom hard edge.
+///
 /// Rule of thumb: "what does the user see?" → `Visual`. "what leaf
 /// actually owns this surface?" → `Logical`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -556,8 +562,9 @@ impl Aabb {
 /// propagates through the provenance-aware `evaluate` fold, so every
 /// surface hit can be traced back to the primitives that produced it.
 /// K10.2: how to blend the junction between two Boolean
-/// operands. Fillet uses the cubic smin polynomial (rounded
-/// edges); Chamfer uses a linear 45° cut.
+/// operands. Fillet uses the exact-circular smin ([`smin_poly`], a true
+/// circular arc of radius `r` between planar walls); Chamfer uses a linear
+/// 45° cut.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum BlendMode {
     Fillet,
@@ -764,6 +771,10 @@ pub enum CsgNode {
         blend_radius: f32,
         blend_mode: BlendMode,
         is_difference: bool,
+        /// Branch identity of the blend face + the two junction walls —
+        /// feeds the procedural [`fielddraft_protocol::HalfSpace::Blend`]
+        /// carrier in the B-Rep surface registry.
+        provenance: BlendProvenance,
     },
     /// Lift a 2D sketch into a 3D slab of `±half_height` along the
     /// local Z axis. The whole extruded region contributes a
@@ -1286,7 +1297,7 @@ impl CsgNode {
             CsgNode::Union(a, b) => {
                 let a = a.apply_edge_fillets(fillets);
                 let b = b.apply_edge_fillets(fillets);
-                if let Some(f) = find_matching_fillet(&a, &b, fillets) {
+                if let Some((f, provenance)) = find_matching_fillet(&a, &b, fillets) {
                     CsgNode::MaskedBlend {
                         a: Box::new(a),
                         b: Box::new(b),
@@ -1295,6 +1306,7 @@ impl CsgNode {
                         blend_radius: f.blend_radius,
                         blend_mode: f.blend_mode,
                         is_difference: false,
+                        provenance,
                     }
                 } else {
                     CsgNode::Union(Box::new(a), Box::new(b))
@@ -1303,7 +1315,7 @@ impl CsgNode {
             CsgNode::Difference(a, b) => {
                 let a = a.apply_edge_fillets(fillets);
                 let b = b.apply_edge_fillets(fillets);
-                if let Some(f) = find_matching_fillet(&a, &b, fillets) {
+                if let Some((f, provenance)) = find_matching_fillet(&a, &b, fillets) {
                     CsgNode::MaskedBlend {
                         a: Box::new(a),
                         b: Box::new(b),
@@ -1312,6 +1324,7 @@ impl CsgNode {
                         blend_radius: f.blend_radius,
                         blend_mode: f.blend_mode,
                         is_difference: true,
+                        provenance,
                     }
                 } else {
                     CsgNode::Difference(Box::new(a), Box::new(b))
@@ -1337,6 +1350,95 @@ impl CsgNode {
                 CsgNode::Displace(Box::new(inner.apply_edge_fillets(fillets)), d, f)
             }
             // Leaves and already-blended nodes pass through.
+            other => other,
+        }
+    }
+
+    /// d / "Kanten runden (global)": round EVERY remaining hard Boolean
+    /// junction with radius `r`, reusing the exact-circular smin. A plain
+    /// `Union` becomes `SmoothUnion` (convex edge rounded), `Difference`
+    /// becomes `SmoothDifference` (concave edge rounded). Nodes already
+    /// blended per-edge (`MaskedBlend`) or per-feature (`SmoothUnion`/
+    /// `SmoothDifference`, i.e. a fillet the user placed by hand) are left
+    /// untouched — the global round only fills the gaps.
+    ///
+    /// This is the SDF-native "deburr everything" operator: robust (a field
+    /// blend never invalidates the solid) and exact between planar walls. It
+    /// rounds FEATURE-JUNCTION edges; a lone primitive's own edges are inside
+    /// its SDF, not a Boolean node, so they are out of scope (that needs a
+    /// per-primitive round radius or an eikonal offset — neither built).
+    pub fn apply_global_round(self, r: f32) -> Self {
+        if r <= 0.0 {
+            return self;
+        }
+        match self {
+            CsgNode::Union(a, b) => CsgNode::SmoothUnion(
+                Box::new(a.apply_global_round(r)),
+                Box::new(b.apply_global_round(r)),
+                r,
+                BlendMode::Fillet,
+            ),
+            CsgNode::Difference(a, b) => CsgNode::SmoothDifference(
+                Box::new(a.apply_global_round(r)),
+                Box::new(b.apply_global_round(r)),
+                r,
+                BlendMode::Fillet,
+            ),
+            CsgNode::Intersection(a, b) => CsgNode::Intersection(
+                Box::new(a.apply_global_round(r)),
+                Box::new(b.apply_global_round(r)),
+            ),
+            // Recurse through existing blends/morphs without re-rounding them.
+            CsgNode::SmoothUnion(a, b, br, m) => CsgNode::SmoothUnion(
+                Box::new(a.apply_global_round(r)),
+                Box::new(b.apply_global_round(r)),
+                br,
+                m,
+            ),
+            CsgNode::SmoothDifference(a, b, br, m) => CsgNode::SmoothDifference(
+                Box::new(a.apply_global_round(r)),
+                Box::new(b.apply_global_round(r)),
+                br,
+                m,
+            ),
+            CsgNode::Morph(a, b, t) => CsgNode::Morph(
+                Box::new(a.apply_global_round(r)),
+                Box::new(b.apply_global_round(r)),
+                t,
+            ),
+            CsgNode::MaskedBlend {
+                a,
+                b,
+                mask_polyline,
+                mask_radius,
+                blend_radius,
+                blend_mode,
+                is_difference,
+                provenance,
+            } => CsgNode::MaskedBlend {
+                a: Box::new(a.apply_global_round(r)),
+                b: Box::new(b.apply_global_round(r)),
+                mask_polyline,
+                mask_radius,
+                blend_radius,
+                blend_mode,
+                is_difference,
+                provenance,
+            },
+            CsgNode::Transform(t, inner) => {
+                CsgNode::Transform(t, Box::new(inner.apply_global_round(r)))
+            }
+            CsgNode::Twist(inner, rate) => CsgNode::Twist(Box::new(inner.apply_global_round(r)), rate),
+            CsgNode::Bend(inner, rate) => CsgNode::Bend(Box::new(inner.apply_global_round(r)), rate),
+            CsgNode::Shell(inner, t, open) => {
+                CsgNode::Shell(Box::new(inner.apply_global_round(r)), t, open)
+            }
+            CsgNode::Offset(inner, delta) => {
+                CsgNode::Offset(Box::new(inner.apply_global_round(r)), delta)
+            }
+            CsgNode::Displace(inner, d, f) => {
+                CsgNode::Displace(Box::new(inner.apply_global_round(r)), d, f)
+            }
             other => other,
         }
     }
@@ -1531,23 +1633,24 @@ impl CsgNode {
                 blend_radius,
                 blend_mode,
                 is_difference,
+                ..
             } => {
+                // Geometry is mode-INDEPENDENT: the fillet is the body's real
+                // surface, and the B-Rep must weave it (its contributor
+                // identity is the blend's provenance branch, see
+                // `evaluate_open`). Logical == Visual since the blend-carrier
+                // work; before it, Logical degraded to the hard combine.
                 let da = a.sdf_open(p, mode, open);
                 let db_raw = b.sdf_open(p, mode, open);
-                match mode {
-                    EvalMode::Logical => hard_combine(*is_difference, da, db_raw),
-                    EvalMode::Visual => {
-                        let mask_d = sdf_polyline_tube(p, mask_polyline, *mask_radius);
-                        if mask_d < 0.0 {
-                            if *is_difference {
-                                -blend_min(-da, db_raw, *blend_radius, *blend_mode)
-                            } else {
-                                blend_min(da, db_raw, *blend_radius, *blend_mode)
-                            }
-                        } else {
-                            hard_combine(*is_difference, da, db_raw)
-                        }
+                let mask_d = sdf_polyline_tube(p, mask_polyline, *mask_radius);
+                if mask_d < 0.0 {
+                    if *is_difference {
+                        -blend_min(-da, db_raw, *blend_radius, *blend_mode)
+                    } else {
+                        blend_min(da, db_raw, *blend_radius, *blend_mode)
                     }
+                } else {
+                    hard_combine(*is_difference, da, db_raw)
                 }
             }
             CsgNode::Extrude {
@@ -1586,13 +1689,24 @@ impl CsgNode {
                 };
                 crate::helix_compose(d, ell) * scale
             }
-            CsgNode::Sweep { sketch, path, closed, twist, .. } => {
+            CsgNode::Sweep { id, sketch, path, closed, twist, .. } => {
                 // Unbounded picking-path eval: build the SweepPath on the fly
                 // (the hot render path uses BoundedCsg::Sweep's cached one).
+                // Shell-retained eval mirrors the Helix arm via the profile
+                // plane (see the BoundedCsg::Sweep counterpart).
                 let bounded = crate::sketch2d::BoundedSketch2d::from_sketch(sketch);
-                crate::sweep_path::SweepPath::new(path.clone(), *closed, *twist)
-                    .map(|sp| sp.sdf(&bounded, p))
-                    .unwrap_or(f32::INFINITY)
+                let Some(sp) = crate::sweep_path::SweepPath::new(path.clone(), *closed, *twist)
+                else {
+                    return f32::INFINITY;
+                };
+                if open.has_feature(id.as_u32_or_root().unwrap_or(0)) {
+                    let cs = sp.cross_section(p);
+                    let d2 = bounded
+                        .sdf_retained([cs.u, cs.v], &mut |g| open.contains_sub(id, g));
+                    crate::sweep_path::sweep_compose(d2, cs.w)
+                } else {
+                    sp.sdf(&bounded, p)
+                }
             }
         }
     }
@@ -1747,38 +1861,53 @@ impl CsgNode {
                 blend_radius,
                 blend_mode,
                 is_difference,
+                provenance,
             } => {
                 let (da, ca) = a.evaluate_open(p, eps, mode, open);
                 let (db_raw, cb) = b.evaluate_open(p, eps, mode, open);
                 let db = if *is_difference { -db_raw } else { db_raw };
-                match mode {
-                    EvalMode::Logical => {
-                        if *is_difference {
-                            combine_max(da, ca, db, cb, eps)
-                        } else {
-                            combine_min(da, ca, db, cb, eps)
-                        }
+                let hard = |da, ca, db, cb| {
+                    if *is_difference {
+                        combine_max(da, ca, db, cb, eps)
+                    } else {
+                        combine_min(da, ca, db, cb, eps)
                     }
-                    EvalMode::Visual => {
-                        let mask_d = sdf_polyline_tube(p, mask_polyline, *mask_radius);
-                        if mask_d < 0.0 {
-                            let d = if *is_difference {
-                                -blend_min(-da, db_raw, *blend_radius, *blend_mode)
-                            } else {
-                                blend_min(da, db_raw, *blend_radius, *blend_mode)
-                            };
-                            let mut c = ca;
-                            c.extend(cb);
-                            (d, c)
-                        } else {
-                            if *is_difference {
-                                combine_max(da, ca, db, cb, eps)
-                            } else {
-                                combine_min(da, ca, db, cb, eps)
-                            }
-                        }
-                    }
+                };
+                let mask_d = sdf_polyline_tube(p, mask_polyline, *mask_radius);
+                if mask_d >= 0.0 {
+                    return hard(da, ca, db, cb);
                 }
+                // Inside the mask tube: geometry is the blend (mode-
+                // independent — the fillet is the body's real surface).
+                let (ba, bb) = if *is_difference { (-da, db_raw) } else { (da, db_raw) };
+                let d = if *is_difference {
+                    -blend_min(-da, db_raw, *blend_radius, *blend_mode)
+                } else {
+                    blend_min(da, db_raw, *blend_radius, *blend_mode)
+                };
+                if provenance.branch == 0 {
+                    // No B-Rep identity (hand-built node): legacy semantics,
+                    // both operand sets merged.
+                    let mut c = ca;
+                    c.extend(cb);
+                    return (d, c);
+                }
+                // Deviation zone (`h > 0`): the surface here belongs to the
+                // fillet branch. The operand walls join the set only within
+                // the provenance eps of their OWN surface, so the fillet⇄wall
+                // skirt seams carry the pair signature like any other edge.
+                let deviates = *blend_radius > 0.0 && (ba - bb).abs() < *blend_radius;
+                if !deviates {
+                    return hard(da, ca, db, cb);
+                }
+                let mut c = Contributors::single(BranchId(provenance.branch));
+                if da.abs() <= eps {
+                    c.extend(ca);
+                }
+                if db_raw.abs() <= eps {
+                    c.extend(cb);
+                }
+                (d, c)
             }
             CsgNode::Extrude {
                 id,
@@ -2187,20 +2316,27 @@ pub(crate) fn revolve_contributors(id: &FeatureId, band: &SketchEdgeBand) -> Con
     c
 }
 
-/// K10.0: polynomial smooth minimum (IQ's cubic variant).
-/// `r` is the blend radius. When the two input distances are
-/// far apart (|da - db| >= r) the result degenerates to
-/// `min(da, db)`. In the blend zone the result is strictly
-/// less than both inputs, producing a fillet of approximate
-/// radius `r`.
+/// K10.0 / c-M-b: **exact circular** smooth minimum (IQ's rounded variant).
+/// `r` is the blend radius. Between two half-spaces the zero level set is a
+/// TRUE circular arc of radius `r` (centre at `(r, r)` in the two distances'
+/// plane), so a filleted planar edge has a measurable radius — unlike the old
+/// cubic polynomial, whose cross-section only *approximated* a round. When the
+/// inputs are far apart (`min(da,db) >= r`) it degenerates to `min(da, db)`.
 ///
-/// Reference: <https://iquilezles.org/articles/smin/>
+/// `f = max(r, min(da,db)) − ‖(max(r−da,0), max(r−db,0))‖`. In the arc region
+/// this is the exact Euclidean distance to the fillet circle; the gradient is
+/// the arc normal `((r−da), (r−db)) / L` (see [`blend_min_weights`]). Max
+/// undershoot below `min` is `(√2 − 1)·r ≈ 0.414 r` at `da = db = 0` — the AABB
+/// and cell-prune margins carry `r`, which covers it.
+///
+/// Reference: <https://iquilezles.org/articles/smin/> (round union).
 pub(crate) fn smin_poly(da: f32, db: f32, r: f32) -> f32 {
     if r <= 0.0 {
         return da.min(db);
     }
-    let h = (r - (da - db).abs()).max(0.0) / r;
-    da.min(db) - h * h * h * r / 6.0
+    let ua = (r - da).max(0.0);
+    let ub = (r - db).max(0.0);
+    da.min(db).max(r) - (ua * ua + ub * ub).sqrt()
 }
 
 /// Recursively descend through Union/SmoothUnion nodes in `tree`,
@@ -2332,23 +2468,46 @@ fn apply_op(
     }
 }
 
-/// K10.4: find the first EdgeFillet that matches a junction
-/// between two subtrees. A fillet matches when one subtree
-/// contains feature_a and the other contains feature_b.
+/// K10.4: find the first EdgeFillet that matches a junction between two
+/// subtrees. A fillet matches when one subtree contains feature_a and the
+/// other contains feature_b; the returned [`BlendProvenance`] carries the
+/// wall branches oriented to the (left, right) operand order.
 fn find_matching_fillet<'a>(
     left: &CsgNode,
     right: &CsgNode,
     fillets: &'a [EdgeFillet],
-) -> Option<&'a EdgeFillet> {
+) -> Option<(&'a EdgeFillet, BlendProvenance)> {
     let left_ids = left.leaf_ids();
     let right_ids = right.leaf_ids();
-    fillets.iter().find(|f| {
-        let a_in_left = left_ids.contains(&f.feature_a);
-        let b_in_right = right_ids.contains(&f.feature_b);
-        let a_in_right = right_ids.contains(&f.feature_a);
-        let b_in_left = left_ids.contains(&f.feature_b);
-        (a_in_left && b_in_right) || (a_in_right && b_in_left)
+    fillets.iter().find_map(|f| {
+        let a_in_left = left_ids.contains(&f.feature_a) && right_ids.contains(&f.feature_b);
+        let a_in_right = right_ids.contains(&f.feature_a) && left_ids.contains(&f.feature_b);
+        if !a_in_left && !a_in_right {
+            return None;
+        }
+        let branch = BranchId::from_feature(&f.fillet_id).as_u32();
+        let (wall_a, wall_b) =
+            if a_in_left { (f.branch_a, f.branch_b) } else { (f.branch_b, f.branch_a) };
+        Some((f, BlendProvenance { branch, wall_a, wall_b }))
     })
+}
+
+/// Branch identity of a masked blend's fillet surface and its two junction
+/// walls (full [`BranchId`] u32s from the filleted edge's signature).
+/// `NONE` (all zero) marks a blend with no B-Rep identity — the registry
+/// skips it and its face degrades to Tessellated.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BlendProvenance {
+    /// The blend face's own branch: the fillet feature's id, sub 0.
+    pub branch: u32,
+    /// The junction wall inside operand `a` (MaskedBlend's left subtree).
+    pub wall_a: u32,
+    /// The junction wall inside operand `b`.
+    pub wall_b: u32,
+}
+
+impl BlendProvenance {
+    pub const NONE: Self = Self { branch: 0, wall_a: 0, wall_b: 0 };
 }
 
 /// K10.4 / DL-61: per-edge fillet specification. Identifies a Boolean
@@ -2357,10 +2516,16 @@ fn find_matching_fillet<'a>(
 /// along the edge's actual geometry.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EdgeFillet {
+    /// The fillet feature's own id — the blend face's branch identity.
+    pub fillet_id: FeatureId,
     /// Feature id of the "left" operand at the junction.
     pub feature_a: FeatureId,
     /// Feature id of the "right" operand.
     pub feature_b: FeatureId,
+    /// Full branch id (with sub) of the junction wall on `feature_a`'s side.
+    pub branch_a: u32,
+    /// Full branch id (with sub) of the junction wall on `feature_b`'s side.
+    pub branch_b: u32,
     /// The queried edge's polyline in CSG/world eval space. The mask is
     /// the union of capsules along consecutive segments.
     pub mask_polyline: Vec<[f32; 3]>,
@@ -2599,8 +2764,16 @@ pub(crate) fn primitive_halfspaces(prim: &Primitive) -> Option<PrimitiveHalfSpac
             })],
         )),
         Primitive::Cone { r_bottom, r_top, half_height } => {
-            // Wall half-angle of the truncated cone (apex direction along Y).
-            let half_angle = ((r_bottom - r_top) / (2.0 * *half_height)).atan();
+            // Wall half-angle of the truncated cone. ALWAYS positive: the
+            // `HalfSpace::Cone` SDF (`r·cos α − |y|·sin α`) is a symmetric
+            // double cone about the apex — the OPENING direction lives in the
+            // apex offset below, not in the angle's sign. A signed angle (the
+            // old `atan` of the raw slope) silently negated the slope term
+            // for upward-widening frustums (`r_top > r_bottom`): the wall
+            // field read ~2·|y|·sin α instead of 0 on the wall, every rim
+            // seed "projected" nowhere, and the seed route emitted an
+            // edgeless frustum.
+            let half_angle = ((r_bottom - r_top) / (2.0 * *half_height)).atan().abs();
             let mut hs = mk(
                 [0.0, 0.0, 0.0],
                 &[
@@ -2820,6 +2993,84 @@ pub(crate) fn sdf_halfspace(hs: &HalfSpace, p: [f32; 3]) -> f32 {
             );
             d + offset
         }
+        HalfSpace::Blend {
+            a,
+            a_transform,
+            a_flip,
+            b,
+            b_transform,
+            b_flip,
+            radius,
+            chamfer,
+            is_difference,
+        } => {
+            let fa = blend_wall_value(a, a_transform, *a_flip, p);
+            let fb = blend_wall_value(b, b_transform, *b_flip, p);
+            let mode = if *chamfer { BlendMode::Chamfer } else { BlendMode::Fillet };
+            if *is_difference {
+                -blend_min(-fa, fb, *radius, mode)
+            } else {
+                blend_min(fa, fb, *radius, mode)
+            }
+        }
+    }
+}
+
+/// One embedded wall field of a [`HalfSpace::Blend`], evaluated at a
+/// body-frame point: local carrier value lifted to the body metric via the
+/// placement's uniform scale, complemented when the wall's feature sits under
+/// an odd number of subtractions within its blend operand's subtree.
+fn blend_wall_value(hs: &HalfSpace, xf: &Transform, flip: bool, p: [f32; 3]) -> f32 {
+    let local = crate::transform::world_to_local(xf, p);
+    let v = sdf_halfspace(hs, local) * xf.min_scale();
+    if flip { -v } else { v }
+}
+
+/// Value + body-frame unit gradient of one embedded [`HalfSpace::Blend`] wall.
+/// Under a rotation + uniform scale the world gradient of `s·f(T⁻¹p)` is the
+/// rotated local gradient (the value scale and the coordinate compression
+/// cancel), so unit-norm carriers stay unit-norm in the body frame.
+fn blend_wall_value_grad(hs: &HalfSpace, xf: &Transform, flip: bool, p: [f32; 3]) -> (f32, [f32; 3]) {
+    let local = crate::transform::world_to_local(xf, p);
+    let v = sdf_halfspace(hs, local) * xf.min_scale();
+    let g = crate::transform::quat_rotate(xf.rotation, grad_halfspace(hs, local));
+    if flip { (-v, [-g[0], -g[1], -g[2]]) } else { (v, g) }
+}
+
+/// Partial derivatives `(∂f/∂a, ∂f/∂b)` of [`blend_min`]. For the circular
+/// smin (arc region) the weights are the arc normal `((r−a), (r−b)) / L`; for
+/// the chamfer they are the active plane's coefficients. Used to combine the
+/// two wall gradients of a [`HalfSpace::Blend`] carrier.
+fn blend_min_weights(da: f32, db: f32, r: f32, mode: BlendMode) -> (f32, f32) {
+    match mode {
+        BlendMode::Fillet => {
+            let pick = if da <= db { (1.0, 0.0) } else { (0.0, 1.0) };
+            if r <= 0.0 {
+                return pick;
+            }
+            // Arc region iff both inputs are within `r` of the corner (so
+            // `max(r, min) = r` AND both `u` components are positive).
+            let ua = r - da;
+            let ub = r - db;
+            if ua <= 0.0 || ub <= 0.0 {
+                return pick;
+            }
+            let l = (ua * ua + ub * ub).sqrt();
+            if l <= 1e-12 {
+                return (0.5, 0.5);
+            }
+            (ua / l, ub / l)
+        }
+        BlendMode::Chamfer => {
+            let chamfer = (da + db - r) * std::f32::consts::FRAC_1_SQRT_2;
+            if chamfer < da.min(db) {
+                (std::f32::consts::FRAC_1_SQRT_2, std::f32::consts::FRAC_1_SQRT_2)
+            } else if da <= db {
+                (1.0, 0.0)
+            } else {
+                (0.0, 1.0)
+            }
+        }
     }
 }
 
@@ -2883,6 +3134,34 @@ pub(crate) fn grad_halfspace(hs: &HalfSpace, p: [f32; 3]) -> [f32; 3] {
                 [0.0, g2[1], 0.0]
             }
         }
+        HalfSpace::Blend {
+            a,
+            a_transform,
+            a_flip,
+            b,
+            b_transform,
+            b_flip,
+            radius,
+            chamfer,
+            is_difference,
+        } => {
+            let (fa, ga) = blend_wall_value_grad(a, a_transform, *a_flip, p);
+            let (fb, gb) = blend_wall_value_grad(b, b_transform, *b_flip, p);
+            let mode = if *chamfer { BlendMode::Chamfer } else { BlendMode::Fillet };
+            // Difference form `f = -blend(-fa, fb)`: ∂f/∂fa = w_a(-fa, fb),
+            // ∂f/∂fb = -w_b(-fa, fb).
+            let (wa, wb) = if *is_difference {
+                let (wa, wb) = blend_min_weights(-fa, fb, *radius, mode);
+                (wa, -wb)
+            } else {
+                blend_min_weights(fa, fb, *radius, mode)
+            };
+            [
+                wa * ga[0] + wb * gb[0],
+                wa * ga[1] + wb * gb[1],
+                wa * ga[2] + wb * gb[2],
+            ]
+        }
     }
 }
 
@@ -2921,8 +3200,10 @@ pub fn offset_halfspace_inward(hs: &HalfSpace, thickness: f32) -> Option<HalfSpa
                 minor_radius,
             })
         }
-        // Cone nappes separate under offset; Gyroid/TPMS have no analytic offset.
-        HalfSpace::Cone { .. } | HalfSpace::Gyroid { .. } => None,
+        // Cone nappes separate under offset; Gyroid/TPMS have no analytic
+        // offset; a Blend's offset is not a blend of the offset walls (the
+        // smin level sets are not parallel surfaces).
+        HalfSpace::Cone { .. } | HalfSpace::Gyroid { .. } | HalfSpace::Blend { .. } => None,
         // The inner wall of a revolved profile group is the SAME carrier with a
         // shifted level (`g = signed_profile_distance + offset`). No degeneracy
         // gate is computable cheaply here (it would need the profile's minimum

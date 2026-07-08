@@ -42,6 +42,7 @@ pub fn surface_kind(surface: &SurfaceGeometry) -> &'static str {
             HalfSpace::Torus { .. } => "torus",
             HalfSpace::Gyroid { .. } => "tessellated",
             HalfSpace::RevolvedProfile { .. } => "revolved_profile",
+            HalfSpace::Blend { .. } => "blend",
         },
         SurfaceGeometry::Tessellated { .. } => "tessellated",
     }
@@ -94,7 +95,8 @@ pub fn surface_params(surface: &SurfaceGeometry) -> Option<serde_json::Value> {
         })),
         HalfSpace::Plane { .. }
         | HalfSpace::Gyroid { .. }
-        | HalfSpace::RevolvedProfile { .. } => None,
+        | HalfSpace::RevolvedProfile { .. }
+        | HalfSpace::Blend { .. } => None,
     }
 }
 

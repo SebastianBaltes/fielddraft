@@ -1608,7 +1608,7 @@ fn child_center(c: [f32; 3], size: f32, i: usize) -> [f32; 3] {
 }
 
 fn split_node(node: &mut OctreeNode, sdf: &dyn Fn([f32; 3]) -> f32) {
-    let mut make = |i: usize| {
+    let make = |i: usize| {
         let cc = child_center(node.center, node.size, i);
         OctreeNode {
             center: cc,

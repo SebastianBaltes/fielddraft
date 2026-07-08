@@ -459,9 +459,13 @@ inline float sdf_sector_2d(const float p[2], const float center[2], float radius
 
 inline float blend_min_eval(float a, float b, float r, float mode) {
   if (mode < 0.5f) {
-    // Fillet (IQ cubic smin)
-    float h = clampf_(0.5f + 0.5f * (b - a) / r, 0.0f, 1.0f);
-    return b * (1.0f - h) + a * h - r * h * (1.0f - h);
+    // Fillet — EXACT circular smin (IQ round union), matching the Rust
+    // kernel's csg::smin_poly. Was a quadratic mix-form (r/4 undershoot, no
+    // r<=0 guard); now byte-consistent with the authoritative interpreter.
+    if (r <= 0.0f) return fminf_(a, b);
+    float ua = fmaxf_(r - a, 0.0f);
+    float ub = fmaxf_(r - b, 0.0f);
+    return fmaxf_(fminf_(a, b), r) - std::sqrt(ua * ua + ub * ub);
   }
   // Chamfer
   const float FRAC_1_SQRT_2 = 0.70710678f;

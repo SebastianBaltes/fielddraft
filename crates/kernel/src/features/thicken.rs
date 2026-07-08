@@ -67,7 +67,7 @@ pub(crate) fn thicken_diff_node(
     qi: usize,
     s: &crate::brep::face_thicken::ThickenSolid,
 ) -> CsgNode {
-    CsgNode::Difference(
+    let diff = CsgNode::Difference(
         Box::new(CsgNode::Leaf {
             id: id.child(format!("{qi}o")),
             primitive: s.outer.clone(),
@@ -76,6 +76,39 @@ pub(crate) fn thicken_diff_node(
             id: id.child(format!("{qi}i")),
             primitive: s.inner.clone(),
         }),
+    );
+    // Partial (cut) wall: bound the full-revolution difference to the wall's
+    // own angular interval with a sector prism (see
+    // [`crate::brep::face_thicken::SectorTrim`]). The prism is an extruded
+    // pie wedge; `Primitive::Extrude` sweeps its sketch along local Z, so a
+    // +90° rotation about X maps that axis onto the wall's surface-local +Y —
+    // under which the sketch's polar angle coincides with the wall azimuth
+    // `atan2(z, x)` (x_sketch = x, y_sketch = z).
+    let Some(t) = &s.sector else { return diff };
+    let sector = CsgNode::Leaf {
+        id: id.child(format!("{qi}w")),
+        primitive: fielddraft_protocol::Primitive::Extrude {
+            sketch: fielddraft_protocol::Sketch2d::Prim(
+                fielddraft_protocol::Sketch2dPrimitive::Sector {
+                    center: [0.0, 0.0],
+                    radius: t.radius,
+                    start_angle: t.start_angle,
+                    sweep_angle: t.sweep_angle,
+                },
+            ),
+            half_depth_z: t.half_height,
+            // Extrude-local z maps to surface-local −y under the rotation
+            // below, so the slab centre picks up a sign flip.
+            center: [0.0, 0.0, -t.center_y],
+        },
+    };
+    let rot_x_90 = fielddraft_protocol::Transform {
+        rotation: [std::f32::consts::FRAC_1_SQRT_2, 0.0, 0.0, std::f32::consts::FRAC_1_SQRT_2],
+        ..fielddraft_protocol::Transform::IDENTITY
+    };
+    CsgNode::Intersection(
+        Box::new(diff),
+        Box::new(CsgNode::Transform(rot_x_90, Box::new(sector))),
     )
 }
 

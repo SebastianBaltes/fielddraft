@@ -87,12 +87,36 @@ pub struct CoincidenceClass {
     pub order: ContactOrder,
 }
 
+/// A detected **order-1 (tangential)** contact between two coaxial
+/// revolution carriers (ARCHITECTURE-ROADMAP Punkt 2): the exact tangent
+/// circle, expressed in `frame`'s local coordinates (axis = local +Y,
+/// circle of `radius` in the plane `y = y_local`) — exactly the inputs of
+/// the parametric circle builder, so the seam is materialised symbolically
+/// and the tracer is never pointed at the degenerate curve.
+#[derive(Debug, Clone)]
+pub struct TangentSeam {
+    pub a: BranchId,
+    pub b: BranchId,
+    /// Local → weave-frame placement of the circle's axis frame (one of the
+    /// two carriers' transforms).
+    pub frame: Transform,
+    /// Circle radius in `frame`-local units.
+    pub radius: f32,
+    /// Circle plane height in `frame`-local units.
+    pub y_local: f32,
+}
+
 /// The per-body coincidence registry (plan Phase 1). Only classes with ≥ 2
 /// members are stored — a branch without coincidence partners is not listed.
 #[derive(Debug, Default)]
 pub struct CoincidenceRegistry {
     classes: Vec<CoincidenceClass>,
     by_branch: HashMap<u32, (usize, RelOrientation)>,
+    /// Order-1 contacts (tangent circles between coaxial revolution
+    /// carriers) — the Phase-1 docking point for tangential contact, now
+    /// populated for the analytic pair zoo (sphere↔cylinder, sphere↔cone,
+    /// plane↔torus, cylinder↔torus, sphere↔torus).
+    tangent_seams: Vec<TangentSeam>,
 }
 
 impl CoincidenceRegistry {
@@ -149,7 +173,43 @@ impl CoincidenceRegistry {
             }
             out.classes.push(CoincidenceClass { members, order: ContactOrder::Coincident });
         }
+
+        // Order-1 sweep: pairwise tangency of coaxial revolution carriers,
+        // decided on exact surface parameters with the SAME single tolerance
+        // as coincidence. Cross-feature pairs only — same-feature G1 joints
+        // are already one wall branch (the sketch G1 boundary groups).
+        for i in 0..branches.len() {
+            for j in (i + 1)..branches.len() {
+                let (a, b) = (branches[i], branches[j]);
+                if BranchId(a).feature_id() == BranchId(b).feature_id() {
+                    continue;
+                }
+                let comp_a = branch_is_complemented(BranchId(a), &complemented);
+                let comp_b = branch_is_complemented(BranchId(b), &complemented);
+                // A smooth (G1) join needs material on the same side of both
+                // carriers; a solid wall tangent to a cavity wall is a cusp.
+                if comp_a != comp_b {
+                    continue;
+                }
+                let (hs_a, xf_a) = &halfspaces[&a];
+                let (hs_b, xf_b) = &halfspaces[&b];
+                if let Some(seam) =
+                    tangent_circle(hs_a, xf_a, hs_b, xf_b, tol_len, tol_ang)
+                {
+                    out.tangent_seams.push(TangentSeam {
+                        a: BranchId(a),
+                        b: BranchId(b),
+                        ..seam
+                    });
+                }
+            }
+        }
         out
+    }
+
+    /// The detected order-1 (tangent-circle) contacts of the body.
+    pub fn tangent_seams(&self) -> &[TangentSeam] {
+        &self.tangent_seams
     }
 
     /// All coincidence classes of the body.
@@ -186,6 +246,375 @@ impl CoincidenceRegistry {
 /// the plan's declared scope is Plane/Cylinder/Sphere) and for non-uniform
 /// scale (which deforms cylinders/spheres out of their family and planes'
 /// normals via the inverse transpose; not produced by today's features).
+/// Exact-parameter tangency test for two coaxial revolution carriers.
+/// Returns the tangent circle (as a partial [`TangentSeam`] — the caller
+/// fills the branch ids) or `None`. Every geometric fact is decided on the
+/// carriers' construction parameters with the ONE coincidence tolerance;
+/// nothing is sampled.
+///
+/// Covered pairs (both directions): sphere↔cylinder (coaxial, equal radius
+/// → equator circle), sphere↔cone (centre on axis, inscribed-sphere radius
+/// → contact circle), plane↔torus (normal ∥ axis, plane at tube extreme →
+/// equator-height circle), cylinder↔torus (coaxial, `R_c = R ± r` → torus
+/// equator circle), sphere↔torus (concentric, `R_s = R ± r` → equator
+/// circle). Each condition also implies the pair meets NOWHERE else, so
+/// replacing all traced fragments of the pair with the symbolic circle is
+/// sound.
+fn tangent_circle(
+    hs_a: &HalfSpace,
+    xf_a: &Transform,
+    hs_b: &HalfSpace,
+    xf_b: &Transform,
+    tol_len: f64,
+    tol_ang: f64,
+) -> Option<TangentSeam> {
+    // Uniform scales only (like `carrier_of`): under anisotropy these are no
+    // longer revolution surfaces.
+    let uscale = |xf: &Transform| -> Option<f64> {
+        let s = xf.scale;
+        (((s[0] - s[1]).abs() as f64) < 1e-6 && ((s[0] - s[2]).abs() as f64) < 1e-6)
+            .then_some(s[0] as f64)
+    };
+    let (sa, sb) = (uscale(xf_a)?, uscale(xf_b)?);
+    let origin = |xf: &Transform| -> [f64; 3] {
+        [xf.translate[0] as f64, xf.translate[1] as f64, xf.translate[2] as f64]
+    };
+    let axis = |xf: &Transform| -> [f64; 3] {
+        let r = crate::quat_rotate(xf.rotation, [0.0, 1.0, 0.0]);
+        normalize([r[0] as f64, r[1] as f64, r[2] as f64])
+    };
+    let parallel = |u: [f64; 3], v: [f64; 3]| -> bool { norm(cross(u, v)) <= tol_ang };
+    // Perpendicular distance of a point to an axis line.
+    let axis_dist = |p: [f64; 3], o: [f64; 3], a: [f64; 3]| -> f64 {
+        let d = sub(p, o);
+        let along = d[0] * a[0] + d[1] * a[1] + d[2] * a[2];
+        norm(sub(d, vscale(a, along)))
+    };
+    let along = |p: [f64; 3], o: [f64; 3], a: [f64; 3]| -> f64 {
+        let d = sub(p, o);
+        d[0] * a[0] + d[1] * a[1] + d[2] * a[2]
+    };
+
+    // Dispatch both orders through one canonical arm each.
+    match (hs_a, hs_b) {
+        (HalfSpace::Sphere { .. }, HalfSpace::InfiniteCylinder { .. })
+        | (HalfSpace::Sphere { .. }, HalfSpace::Cone { .. })
+        | (HalfSpace::Sphere { .. }, HalfSpace::Torus { .. })
+        | (HalfSpace::Plane { .. }, HalfSpace::Torus { .. })
+        | (HalfSpace::InfiniteCylinder { .. }, HalfSpace::Torus { .. })
+        | (HalfSpace::RevolvedProfile { .. }, _) => {}
+        (HalfSpace::InfiniteCylinder { .. }, HalfSpace::Sphere { .. })
+        | (HalfSpace::Cone { .. }, HalfSpace::Sphere { .. })
+        | (HalfSpace::Torus { .. }, HalfSpace::Sphere { .. })
+        | (HalfSpace::Torus { .. }, HalfSpace::Plane { .. })
+        | (HalfSpace::Torus { .. }, HalfSpace::InfiniteCylinder { .. })
+        | (_, HalfSpace::RevolvedProfile { .. }) => {
+            return tangent_circle(hs_b, xf_b, hs_a, xf_a, tol_len, tol_ang);
+        }
+        _ => return None,
+    }
+
+    match (hs_a, hs_b) {
+        // Sphere cap on a cylinder: coaxial, equal radii → the equator
+        // circle at the sphere-centre height, in the CYLINDER's frame.
+        (HalfSpace::Sphere { radius: rs }, HalfSpace::InfiniteCylinder { radius: rc }) => {
+            let c = origin(xf_a);
+            let (o, ax) = (origin(xf_b), axis(xf_b));
+            let rs_w = *rs as f64 * sa;
+            let rc_w = *rc as f64 * sb;
+            if axis_dist(c, o, ax) > tol_len || (rs_w - rc_w).abs() > tol_len {
+                return None;
+            }
+            Some(TangentSeam {
+                a: BranchId(0),
+                b: BranchId(0),
+                frame: *xf_b,
+                radius: *rc,
+                y_local: (along(c, o, ax) / sb) as f32,
+            })
+        }
+        // Inscribed sphere in a cone (ice-cream): centre on the axis at
+        // apex-distance d with `R_s = |d|·sin α` → contact circle radius
+        // `R_s·cos α` at `y = d − sign(d)·R_s·sin α` (apex-local frame).
+        (HalfSpace::Sphere { radius: rs }, HalfSpace::Cone { half_angle }) => {
+            let c = origin(xf_a);
+            let (apex, ax) = (origin(xf_b), axis(xf_b));
+            if axis_dist(c, apex, ax) > tol_len {
+                return None;
+            }
+            let rs_w = *rs as f64 * sa;
+            let d = along(c, apex, ax);
+            let sin_a = (*half_angle as f64).sin().abs();
+            let cos_a = (*half_angle as f64).cos().abs();
+            if (rs_w - d.abs() * sin_a).abs() > tol_len {
+                return None;
+            }
+            let rs_l = rs_w / sb; // sphere radius in cone-local units
+            Some(TangentSeam {
+                a: BranchId(0),
+                b: BranchId(0),
+                frame: *xf_b,
+                radius: (rs_l * cos_a) as f32,
+                y_local: ((d / sb) - d.signum() * rs_l * sin_a) as f32,
+            })
+        }
+        // Concentric sphere and torus: `R_s = R ± r` → the torus-equator
+        // circle of that radius in the TORUS frame.
+        (
+            HalfSpace::Sphere { radius: rs },
+            HalfSpace::Torus { major_radius, minor_radius },
+        ) => {
+            let c = origin(xf_a);
+            let (o, ax) = (origin(xf_b), axis(xf_b));
+            let rs_w = *rs as f64 * sa;
+            let rmaj_w = *major_radius as f64 * sb;
+            let rmin_w = *minor_radius as f64 * sb;
+            if axis_dist(c, o, ax) > tol_len || along(c, o, ax).abs() > tol_len {
+                return None;
+            }
+            let radius = if (rs_w - (rmaj_w + rmin_w)).abs() <= tol_len {
+                *major_radius + *minor_radius
+            } else if (rs_w - (rmaj_w - rmin_w)).abs() <= tol_len && rmaj_w > rmin_w {
+                *major_radius - *minor_radius
+            } else {
+                return None;
+            };
+            Some(TangentSeam {
+                a: BranchId(0),
+                b: BranchId(0),
+                frame: *xf_b,
+                radius,
+                y_local: 0.0,
+            })
+        }
+        // Torus resting on a plane (donut on the table): normal ∥ axis,
+        // plane at a tube extreme → circle of the MAJOR radius at that
+        // height (torus frame).
+        (HalfSpace::Plane { normal, offset }, HalfSpace::Torus { major_radius, minor_radius }) => {
+            let n = {
+                let r = crate::quat_rotate(xf_a.rotation, *normal);
+                normalize([r[0] as f64, r[1] as f64, r[2] as f64])
+            };
+            let (o, ax) = (origin(xf_b), axis(xf_b));
+            if !parallel(n, ax) {
+                return None;
+            }
+            let d_world = sa * (*offset as f64)
+                + n[0] * origin(xf_a)[0]
+                + n[1] * origin(xf_a)[1]
+                + n[2] * origin(xf_a)[2];
+            // Plane height along the TORUS axis (sign-normalise n onto ax).
+            let sgn = if n[0] * ax[0] + n[1] * ax[1] + n[2] * ax[2] >= 0.0 { 1.0 } else { -1.0 };
+            let h = sgn * d_world - (o[0] * ax[0] + o[1] * ax[1] + o[2] * ax[2]);
+            let rmin_w = *minor_radius as f64 * sb;
+            if (h.abs() - rmin_w).abs() > tol_len {
+                return None;
+            }
+            Some(TangentSeam {
+                a: BranchId(0),
+                b: BranchId(0),
+                frame: *xf_b,
+                radius: *major_radius,
+                y_local: (h / sb) as f32,
+            })
+        }
+        // Coaxial cylinder and torus: `R_c = R ± r` → the torus-equator
+        // circle at the torus centre height (torus frame).
+        (
+            HalfSpace::InfiniteCylinder { radius: rc },
+            HalfSpace::Torus { major_radius, minor_radius },
+        ) => {
+            let (oc, axc) = (origin(xf_a), axis(xf_a));
+            let (o, ax) = (origin(xf_b), axis(xf_b));
+            if !parallel(axc, ax) || axis_dist(oc, o, ax) > tol_len {
+                return None;
+            }
+            let rc_w = *rc as f64 * sa;
+            let rmaj_w = *major_radius as f64 * sb;
+            let rmin_w = *minor_radius as f64 * sb;
+            let ok = (rc_w - (rmaj_w + rmin_w)).abs() <= tol_len
+                || ((rc_w - (rmaj_w - rmin_w)).abs() <= tol_len && rmaj_w > rmin_w);
+            if !ok {
+                return None;
+            }
+            Some(TangentSeam {
+                a: BranchId(0),
+                b: BranchId(0),
+                frame: *xf_b,
+                radius: (rc_w / sb) as f32,
+                y_local: 0.0,
+            })
+        }
+        // ── Revolved-profile walls: the CONSTRUCTED G1 case (vase stacks).
+        // Tangency is decided on the profiles' own chain ENDS in the shared
+        // (r, y) half-plane — a shared endpoint with a parallel end tangent
+        // (RP↔RP), or an endpoint lying tangentially on the partner's
+        // profile line (RP↔cylinder/cone/plane). All 2D exact construction
+        // data; nothing is sampled.
+        (HalfSpace::RevolvedProfile { segments, offset, .. }, partner) => {
+            let (oa, axa) = (origin(xf_a), axis(xf_a));
+            let (ob, axb) = (origin(xf_b), axis(xf_b));
+            // Both carriers must revolve about the SAME axis line (a plane
+            // partner only needs its normal parallel to the axis).
+            let coaxial_ok = match partner {
+                HalfSpace::Plane { normal, .. } => {
+                    let n = {
+                        let r = crate::quat_rotate(xf_b.rotation, *normal);
+                        normalize([r[0] as f64, r[1] as f64, r[2] as f64])
+                    };
+                    parallel(n, axa)
+                }
+                _ => parallel(axa, axb) && axis_dist(ob, oa, axa) <= tol_len,
+            };
+            if !coaxial_ok {
+                return None;
+            }
+            let ends = revolved_profile_ends(segments, *offset)?;
+            let axis_sign = (axa[0] * axb[0] + axa[1] * axb[1] + axa[2] * axb[2]).signum();
+            for (p_a, t_a) in ends {
+                // A's endpoint as a world point on its meridian plane.
+                let end_world = [
+                    // radial direction is frame-relative; only radius and
+                    // axial height matter for coaxial comparison.
+                    p_a[0] * sa, // world radius
+                    along(
+                        [
+                            oa[0] + axa[0] * p_a[1] * sa,
+                            oa[1] + axa[1] * p_a[1] * sa,
+                            oa[2] + axa[2] * p_a[1] * sa,
+                        ],
+                        ob,
+                        axb,
+                    ), // world axial height in B's frame direction
+                ];
+                let r_b = end_world[0] / sb; // partner-local radius
+                let y_b = end_world[1] / sb; // partner-local axial coord
+                // A's end tangent in B's (r, y) orientation.
+                let t_b = [t_a[0], t_a[1] * axis_sign];
+                let matched = match partner {
+                    // Another revolved profile: shared chain endpoint with a
+                    // parallel end tangent.
+                    HalfSpace::RevolvedProfile { segments: seg_b, offset: off_b, .. } => {
+                        revolved_profile_ends(seg_b, *off_b).is_some_and(|ends_b| {
+                            ends_b.iter().any(|(p_b, tb)| {
+                                let dp = (((p_b[0] - r_b) * sb).powi(2)
+                                    + ((p_b[1] - y_b) * sb).powi(2))
+                                .sqrt();
+                                let cross = (t_b[0] * tb[1] - t_b[1] * tb[0]).abs();
+                                dp <= tol_len && cross <= tol_ang
+                            })
+                        })
+                    }
+                    // Cylinder wall: profile line r = R — endpoint on it
+                    // with a VERTICAL (axis-parallel) end tangent.
+                    HalfSpace::InfiniteCylinder { radius } => {
+                        ((r_b - *radius as f64) * sb).abs() <= tol_len
+                            && t_b[0].abs() <= tol_ang
+                    }
+                    // Cone wall: profile line r = |y|·tan α through the
+                    // apex — endpoint on the line, tangent parallel to it.
+                    HalfSpace::Cone { half_angle } => {
+                        let ta = (*half_angle as f64).tan().abs();
+                        let dir = {
+                            let d = [ta * y_b.signum(), 1.0];
+                            let n = (d[0] * d[0] + d[1] * d[1]).sqrt();
+                            [d[0] / n, d[1] / n]
+                        };
+                        let on_line = ((r_b - y_b.abs() * ta) * sb).abs() <= tol_len;
+                        let cross = (t_b[0] * dir[1] - t_b[1] * dir[0]).abs();
+                        on_line && cross <= tol_ang
+                    }
+                    // Axis-normal plane: profile line y = h — endpoint on it
+                    // with a HORIZONTAL (radial) end tangent.
+                    HalfSpace::Plane { normal, offset: d } => {
+                        let n = {
+                            let r = crate::quat_rotate(xf_b.rotation, *normal);
+                            normalize([r[0] as f64, r[1] as f64, r[2] as f64])
+                        };
+                        let plane_h = sb * (*d as f64)
+                            + n[0] * ob[0]
+                            + n[1] * ob[1]
+                            + n[2] * ob[2];
+                        let end_h = {
+                            let w = [
+                                oa[0] + axa[0] * p_a[1] * sa,
+                                oa[1] + axa[1] * p_a[1] * sa,
+                                oa[2] + axa[2] * p_a[1] * sa,
+                            ];
+                            n[0] * w[0] + n[1] * w[1] + n[2] * w[2]
+                        };
+                        (end_h - plane_h).abs() <= tol_len && t_a[1].abs() <= tol_ang
+                    }
+                    _ => false,
+                };
+                if matched {
+                    return Some(TangentSeam {
+                        a: BranchId(0),
+                        b: BranchId(0),
+                        frame: *xf_a,
+                        radius: p_a[0] as f32,
+                        y_local: p_a[1] as f32,
+                    });
+                }
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+/// The two chain ends of a revolved-profile wall group, as
+/// `(point, unit_tangent)` in the profile's `(r, y)` plane — the exact
+/// construction data the roadmap's "konstruierte Provenienz" rule keys on.
+/// `None` for a closed chain (no rim ends), an offset profile (the offset
+/// surface's ends are not the raw segment ends) or an empty group.
+fn revolved_profile_ends(
+    segments: &[fielddraft_protocol::SketchSegment],
+    offset: f32,
+) -> Option<[([f64; 2], [f64; 2]); 2]> {
+    use fielddraft_protocol::SketchSegment as Seg;
+    if segments.is_empty() || offset.abs() > 1e-9 {
+        return None;
+    }
+    let pt = |p: [f32; 2]| [p[0] as f64, p[1] as f64];
+    let unit = |d: [f64; 2]| -> Option<[f64; 2]> {
+        let n = (d[0] * d[0] + d[1] * d[1]).sqrt();
+        (n > 1e-12).then(|| [d[0] / n, d[1] / n])
+    };
+    // Endpoint + OUTGOING tangent of a segment at its start / end.
+    let seg_end = |seg: &Seg, at_start: bool| -> Option<([f64; 2], [f64; 2])> {
+        match seg {
+            Seg::Line { start, end } => {
+                let d = unit([end[0] as f64 - start[0] as f64, end[1] as f64 - start[1] as f64])?;
+                Some((pt(if at_start { *start } else { *end }), d))
+            }
+            Seg::Arc { center, radius, start_angle, sweep_angle } => {
+                let th = *start_angle as f64
+                    + if at_start { 0.0 } else { *sweep_angle as f64 };
+                let p = [
+                    center[0] as f64 + *radius as f64 * th.cos(),
+                    center[1] as f64 + *radius as f64 * th.sin(),
+                ];
+                let s = (*sweep_angle as f64).signum();
+                Some((p, [-th.sin() * s, th.cos() * s]))
+            }
+            Seg::QuadBezier { p0, p1, p2 } => {
+                let (a, b) = if at_start { (p0, p1) } else { (p1, p2) };
+                let d = unit([b[0] as f64 - a[0] as f64, b[1] as f64 - a[1] as f64])?;
+                Some((pt(if at_start { *p0 } else { *p2 }), d))
+            }
+        }
+    };
+    let (start_p, start_t) = seg_end(segments.first()?, true)?;
+    let (end_p, end_t) = seg_end(segments.last()?, false)?;
+    // A closed chain has no rim ends.
+    let gap = ((start_p[0] - end_p[0]).powi(2) + (start_p[1] - end_p[1]).powi(2)).sqrt();
+    if gap < 1e-9 {
+        return None;
+    }
+    Some([(start_p, start_t), (end_p, end_t)])
+}
+
 fn carrier_of(hs: &HalfSpace, xf: &Transform, complemented: bool) -> Option<Carrier> {
     let s = xf.scale;
     let uniform = ((s[0] - s[1]).abs() as f64) < 1e-6 && ((s[0] - s[2]).abs() as f64) < 1e-6;
@@ -232,7 +661,8 @@ fn carrier_of(hs: &HalfSpace, xf: &Transform, complemented: bool) -> Option<Carr
         HalfSpace::Cone { .. }
         | HalfSpace::Torus { .. }
         | HalfSpace::Gyroid { .. }
-        | HalfSpace::RevolvedProfile { .. } => None,
+        | HalfSpace::RevolvedProfile { .. }
+        | HalfSpace::Blend { .. } => None,
     }
 }
 

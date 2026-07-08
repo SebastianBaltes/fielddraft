@@ -220,22 +220,27 @@ impl Body {
                     .then(|| crate::brep::seed_weaver::weave_branch_seeds_partial(&bounded))
                     .flatten()
                     .unwrap_or_default()
-            } else if let Some(partial) = parametric
-                .then(|| crate::brep::seed_weaver::weave_branch_seeds_partial(&bounded))
+            } else if let Some(hybrid) = parametric
+                .then(|| {
+                    crate::brep::seed_weaver::weave_branch_seeds_hybrid(
+                        &bounded,
+                        topology_min_cell_size(&self.aabb),
+                    )
+                })
                 .flatten()
             {
-                // Graceful branch-seed weave (Stufe A+B, tickets 7vbe/qmvn): the
-                // strict `weave_parametric` above bailed on a single unresolvable
-                // transition seam, which previously threw the WHOLE body onto the
-                // octree (degenerate/coarse). Instead, keep every analytically
-                // resolvable edge — each operand's own edges AND the analytic
-                // Boolean boundary (SSI cross-pair) edges — and skip only the
-                // genuine transition seams. The result is a *partial* (non-
-                // watertight) B-Rep that still shows the parametric single bodies;
-                // only the transition zones lack edges (filling them locally from
-                // the octree is Stufe C, not yet implemented). Returns `None` for
-                // out-of-scope bodies and when nothing resolved → octree below.
-                partial
+                // Hybrid branch-seed weave (Stufe A+B+C, tickets 7vbe/qmvn +
+                // PARAMETRIC-WEAVING-PLAN Stufe C): the strict `weave_parametric`
+                // above bailed on an unresolvable transition seam. Every
+                // analytically resolvable edge is kept at parametric precision —
+                // each operand's own edges AND the analytic Boolean boundary
+                // (SSI cross-pair) edges — and ONLY the genuinely unresolvable
+                // seams are filled from the octree wireframe (their pairs' edges
+                // consumed, endpoint vertices welded into the seed corners). The
+                // result is a complete B-Rep instead of the earlier partial open
+                // shell. Returns `None` for out-of-scope bodies and when nothing
+                // resolved → whole-body octree below.
+                hybrid
             } else {
                 let min_cell = topology_min_cell_size(&self.aabb);
                 let octree = Octree::build(&bounded, min_cell);
@@ -749,14 +754,21 @@ fn aabbs_overlap(a: Aabb, b: Aabb) -> bool {
     // (the centroid of a marching-cubes face) and lands a fraction of a micron
     // off the parent's exact bound. Expand by a tiny tolerance so genuinely
     // touching bodies still dock; bodies a real gap apart stay separate
-    // (ticket px2o). 1 µm is far below any meaningful CAD feature size.
-    const TOL: f32 = 1e-3;
-    a.min[0] <= b.max[0] + TOL
-        && a.max[0] + TOL >= b.min[0]
-        && a.min[1] <= b.max[1] + TOL
-        && a.max[1] + TOL >= b.min[1]
-        && a.min[2] <= b.max[2] + TOL
-        && a.max[2] + TOL >= b.min[2]
+    // (ticket px2o). Floor: 1 µm, far below any meaningful CAD feature size.
+    // Scale-relative term: on metre-scale models the f32 coordinate noise of
+    // the AABBs themselves exceeds a fixed micron, so the slack additionally
+    // tracks the pair's extent (1e-6 of the larger span — epsilon policy,
+    // ARCHITECTURE-ROADMAP Punkt 3).
+    let span = (0..3)
+        .map(|k| (a.max[k] - a.min[k]).max(b.max[k] - b.min[k]))
+        .fold(0.0_f32, f32::max);
+    let tol = (span * 1e-6).max(1e-3);
+    a.min[0] <= b.max[0] + tol
+        && a.max[0] + tol >= b.min[0]
+        && a.min[1] <= b.max[1] + tol
+        && a.max[1] + tol >= b.min[1]
+        && a.min[2] <= b.max[2] + tol
+        && a.max[2] + tol >= b.min[2]
 }
 
 /// Split hash of a body's feature payload: geometry vs. transform.
@@ -946,8 +958,22 @@ fn hash_feature_geometry(f: &DecodedFeature, hasher: &mut DefaultHasher) {
 /// the logic: take the body's subset of features, fold them into a
 /// `CsgNode` via `from_features`, then BVH-wrap.
 pub fn build_bounded_for_body(features: &[DecodedFeature], indices: &[usize]) -> BoundedCsg {
+    build_bounded_for_body_rounded(features, indices, None)
+}
+
+/// Like [`build_bounded_for_body`] but rounds every Boolean junction by
+/// `global_round` first (feature `round_all`, d). Used by the GPU-SDF compile
+/// path so the ray-marched render shows the deburred edges.
+pub fn build_bounded_for_body_rounded(
+    features: &[DecodedFeature],
+    indices: &[usize],
+    global_round: Option<f32>,
+) -> BoundedCsg {
     let sub: Vec<DecodedFeature> = indices.iter().map(|&i| features[i].clone()).collect();
-    let csg = CsgNode::from_decoded(&sub);
+    let mut csg = CsgNode::from_decoded(&sub);
+    if let Some(r) = global_round {
+        csg = csg.apply_global_round(r);
+    }
     BoundedCsg::from_csg(&csg)
 }
 
@@ -978,8 +1004,23 @@ pub fn build_bounded_with_primitives(
     features: &[DecodedFeature],
     indices: &[usize],
 ) -> (BoundedCsg, std::collections::HashMap<u32, fielddraft_protocol::Primitive>) {
+    build_bounded_with_primitives_rounded(features, indices, None)
+}
+
+/// Like [`build_bounded_with_primitives`] but rounds every Boolean junction by
+/// `global_round` first (feature `round_all`, d), so the render mesh shows the
+/// deburred edges. `None` is the plain build. The primitive map is unaffected —
+/// the round only rewrites Boolean nodes, never leaves.
+pub fn build_bounded_with_primitives_rounded(
+    features: &[DecodedFeature],
+    indices: &[usize],
+    global_round: Option<f32>,
+) -> (BoundedCsg, std::collections::HashMap<u32, fielddraft_protocol::Primitive>) {
     let sub: Vec<DecodedFeature> = indices.iter().map(|&i| features[i].clone()).collect();
-    let csg = CsgNode::from_decoded(&sub);
+    let mut csg = CsgNode::from_decoded(&sub);
+    if let Some(r) = global_round {
+        csg = csg.apply_global_round(r);
+    }
     let prims: std::collections::HashMap<u32, fielddraft_protocol::Primitive> = csg
         .leaf_primitives()
         .into_iter()

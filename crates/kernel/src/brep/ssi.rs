@@ -190,7 +190,7 @@ fn coaxial_with(h: &HalfSpace, t: &Transform, axis: &RevAxis) -> bool {
             }
             None => false,
         },
-        HalfSpace::Torus { .. } | HalfSpace::Gyroid { .. } => false,
+        HalfSpace::Torus { .. } | HalfSpace::Gyroid { .. } | HalfSpace::Blend { .. } => false,
     }
 }
 
@@ -807,9 +807,10 @@ impl ParamA<'_> {
                 let q = (pieces[k].eval)(s);
                 [q[0] * u.cos(), q[1], q[0] * u.sin()]
             }
-            HalfSpace::Torus { .. } | HalfSpace::Gyroid { .. } => {
-                // Torus is bailed in `ssi_seeds`; a gyroid can be the IMPLICIT
-                // operand but never the parametrised side (`build_param` → None).
+            HalfSpace::Torus { .. } | HalfSpace::Gyroid { .. } | HalfSpace::Blend { .. } => {
+                // Torus is bailed in `ssi_seeds`; a gyroid/blend can be the
+                // IMPLICIT operand but never the parametrised side
+                // (`build_param` → None).
                 unreachable!("never parametrised")
             }
         };
@@ -934,7 +935,7 @@ fn build_param<'a>(h: &'a HalfSpace, t: &'a Transform, overlap: &Aabb) -> Option
                 pieces: None,
             })
         }
-        HalfSpace::Torus { .. } | HalfSpace::Gyroid { .. } => None,
+        HalfSpace::Torus { .. } | HalfSpace::Gyroid { .. } | HalfSpace::Blend { .. } => None,
     }
 }
 

@@ -185,8 +185,59 @@ pub(crate) fn finish_weave(mut brep: BRep, body: &BoundedCsg) -> BRep {
     let halfspaces = branch_halfspace_map(body);
     let complemented = complemented_features(body);
     let (memberships, culled) = canonicalize_coincident(&mut brep, body, &halfspaces);
-    let face_ids = materialize_faces(&mut brep, &halfspaces, &complemented, &memberships, &culled);
-    assemble_solid(brep, face_ids)
+
+    // First attempt with the canonicalised memberships as-is.
+    let mut attempt = brep.clone();
+    let face_ids =
+        materialize_faces(&mut attempt, &halfspaces, &complemented, &memberships, &culled);
+
+    // Repair stage (plan Phase 3, the OVERLAP case —
+    // gate_union_crossing_boxes_coplanar_tops): when coincident class
+    // regions overlap on a shared carrier, the merge memberships
+    // double-cover the overlap and the result is non-manifold. Only then —
+    // never on an already-manifold body — re-attribute the memberships by
+    // ±ε ownership probes and materialise again. Gating the repair on the
+    // actual failure keeps every abutting-only body (flush stacks, the
+    // drift-laden o2j9 family) byte-identical to the direct path.
+    align_ambiguous_ring_windings(&mut attempt);
+    if !attempt.manifold_violations().is_empty() {
+        let registry = crate::brep::coincidence::CoincidenceRegistry::build(body);
+        if !registry.is_empty() {
+            let aabb = body.aabb();
+            let diag = norm([
+                (aabb.max[0] - aabb.min[0]) as f64,
+                (aabb.max[1] - aabb.min[1]) as f64,
+                (aabb.max[2] - aabb.min[2]) as f64,
+            ])
+            .max(1.0);
+            let mut repaired = brep.clone();
+            let mut repaired_members = memberships.clone();
+            reattribute_coincident_memberships(
+                body,
+                &mut repaired,
+                &registry,
+                &halfspaces,
+                &mut repaired_members,
+                &culled,
+                diag,
+            );
+            let mut repaired_attempt = repaired.clone();
+            let repaired_face_ids = materialize_faces(
+                &mut repaired_attempt,
+                &halfspaces,
+                &complemented,
+                &repaired_members,
+                &culled,
+            );
+            align_ambiguous_ring_windings(&mut repaired_attempt);
+            if repaired_attempt.manifold_violations().len()
+                < attempt.manifold_violations().len()
+            {
+                return assemble_solid(repaired_attempt, repaired_face_ids);
+            }
+        }
+    }
+    assemble_solid(attempt, face_ids)
 }
 
 /// Phase (1): upgrade every Hermite edge to NURBS. The edge-walk samples stop
@@ -274,7 +325,16 @@ fn canonicalize_coincident(
         })
         .collect();
     let mut culled: std::collections::HashSet<u32> = std::collections::HashSet::new();
-    if !registry.is_empty() {
+    let has_tangency = !registry.tangent_seams().is_empty();
+    // c-M2: filleted junctions carry a procedural blend carrier whose two
+    // seams are G1-tangent (untraceable by the octree). Materialise their
+    // closed circular seams symbolically first, so the loop ordering sees the
+    // exact curves. Runs whenever the body has a blend carrier, independent of
+    // coincidence.
+    let has_blend = halfspaces
+        .values()
+        .any(|(hs, _)| matches!(hs, fielddraft_protocol::HalfSpace::Blend { .. }));
+    if has_blend {
         let aabb = body.aabb();
         let diag = norm([
             (aabb.max[0] - aabb.min[0]) as f64,
@@ -282,11 +342,30 @@ fn canonicalize_coincident(
             (aabb.max[2] - aabb.min[2]) as f64,
         ])
         .max(1.0);
-        drop_point_contact_edges(brep, &mut memberships, diag);
-        weld_seam_vertices(brep, &mut memberships, diag);
-        merge_coincident_edges(brep, &registry, &mut memberships, diag);
-        culled = cull_membrane_branches(body, brep, &registry, halfspaces, &memberships, diag);
-        drop_fin_edges(body, brep, &mut memberships, &culled, halfspaces, diag);
+        materialize_blend_seams(body, brep, halfspaces, &mut memberships, diag);
+    }
+    if !registry.is_empty() || has_tangency {
+        let aabb = body.aabb();
+        let diag = norm([
+            (aabb.max[0] - aabb.min[0]) as f64,
+            (aabb.max[1] - aabb.min[1]) as f64,
+            (aabb.max[2] - aabb.min[2]) as f64,
+        ])
+        .max(1.0);
+        // Order-1 seams first: they REPLACE the tracer's output for their
+        // pairs, so every later step sees the symbolic circle instead of the
+        // degenerate fragments.
+        if has_tangency {
+            materialize_tangent_seams(body, brep, &registry, &mut memberships, diag);
+        }
+        if !registry.is_empty() {
+            drop_point_contact_edges(brep, &mut memberships, diag);
+            weld_seam_vertices(brep, &mut memberships, diag);
+            merge_coincident_edges(brep, &registry, &mut memberships, diag);
+            culled =
+                cull_membrane_branches(body, brep, &registry, halfspaces, &memberships, diag);
+            drop_fin_edges(body, brep, &mut memberships, &culled, halfspaces, diag);
+        }
     }
     (memberships, culled)
 }
@@ -431,6 +510,137 @@ fn materialize_faces(
     }
 
     face_ids
+}
+
+/// Post-materialisation winding alignment for rings with **no intrinsic
+/// winding authority**:
+///
+/// - every ring of a **tessellated** face (no uv parametrisation at all —
+///   a swept blob, a gyroid patch);
+/// - a **v-winding puncture ring** on a closed-cross analytic carrier (a
+///   ring around the torus tube / through a sphere): the kept surface lies
+///   on BOTH sides of such a ring, so neither the uv shoelace nor the
+///   Flächenseite rule can orient it (`classify_rings_curved` abstains for
+///   exactly these).
+///
+/// The manifold convention is PAIRWISE (each edge once forward, once
+/// reversed across its two faces) and the authoritative faces' windings are
+/// already law (planar Newell rules / uv metrics). So each ambiguous ring
+/// takes the COMPLEMENT of how its authoritative partners consumed its
+/// edges, decided by majority over the ring (the ring flips as a whole to
+/// keep head-to-tail connectivity). Rings with no authoritative partner
+/// keep walk order — there is no anchor, and both sides flipping together
+/// would be a no-op anyway.
+fn align_ambiguous_ring_windings(brep: &mut BRep) {
+    use loop_ordering::is_full_revolution;
+
+    // Per face: the loop indices (0 = outer, 1.. = inner) with no intrinsic
+    // winding authority.
+    let mut ambiguous: Vec<(usize, Vec<usize>)> = Vec::new();
+    for (i, face) in brep.faces.iter().enumerate() {
+        let loops: Vec<&crate::brep::Loop> =
+            std::iter::once(&face.outer).chain(face.inner.iter()).collect();
+        match &face.surface {
+            SurfaceGeometry::Tessellated { .. } => {
+                ambiguous.push((i, (0..loops.len()).collect()));
+            }
+            SurfaceGeometry::Analytic { surface, .. }
+                if !matches!(surface, fielddraft_protocol::HalfSpace::Plane { .. }) =>
+            {
+                // A procedural fillet Blend band (c-M2) is a torus-like band:
+                // both its circular seams need partner-parity alignment against
+                // the authoritative wall faces, exactly like a closed-cross
+                // carrier's full-rev rings.
+                let closed_cross = matches!(
+                    surface,
+                    fielddraft_protocol::HalfSpace::Sphere { .. }
+                        | fielddraft_protocol::HalfSpace::Torus { .. }
+                        | fielddraft_protocol::HalfSpace::Blend { .. }
+                );
+                let idxs: Vec<usize> = (0..loops.len())
+                    .filter(|&li| {
+                        let ring = &loops[li].edges;
+                        if !is_full_revolution(brep, ring) {
+                            return false;
+                        }
+                        // Ambiguity families on curved carriers:
+                        // - ANY full-revolution ring on a closed-cross
+                        //   carrier (sphere/torus): u-winding rims decided by
+                        //   the mean-v heuristic and v-winding punctures
+                        //   alike — pairwise partner parity outranks both
+                        //   (the alignment only flips on majority
+                        //   disagreement, so a correct intrinsic result is
+                        //   never disturbed);
+                        // - a LONE full-revolution rim on any curved carrier
+                        //   (single-loop face, e.g. a sphere cap's equator) —
+                        //   the F0-2 declared gap: no reference ring exists,
+                        //   so the intrinsic rules keep walk order.
+                        let lone_rim = loops.len() == 1;
+                        lone_rim || closed_cross
+                    })
+                    .collect();
+                if !idxs.is_empty() {
+                    ambiguous.push((i, idxs));
+                }
+            }
+            _ => {}
+        }
+    }
+    if ambiguous.is_empty() {
+        return;
+    }
+
+    // Edge-orientation usage by the AUTHORITATIVE loops only (everything not
+    // listed as ambiguous).
+    let mut fwd = vec![0u32; brep.edges.len()];
+    let mut rev = vec![0u32; brep.edges.len()];
+    for (i, face) in brep.faces.iter().enumerate() {
+        let amb = ambiguous
+            .iter()
+            .find(|(fi, _)| *fi == i)
+            .map(|(_, idxs)| idxs.as_slice())
+            .unwrap_or(&[]);
+        for (li, lp) in std::iter::once(&face.outer).chain(face.inner.iter()).enumerate() {
+            if amb.contains(&li) {
+                continue;
+            }
+            for &(eid, reversed) in &lp.edges {
+                if reversed {
+                    rev[eid.0 as usize] += 1;
+                } else {
+                    fwd[eid.0 as usize] += 1;
+                }
+            }
+        }
+    }
+    for (fi, idxs) in ambiguous {
+        let face = &mut brep.faces[fi];
+        for li in idxs {
+            let lp = if li == 0 { &mut face.outer } else { &mut face.inner[li - 1] };
+            let (mut agree, mut disagree) = (0u32, 0u32);
+            for &(eid, reversed) in &lp.edges {
+                let (f, r) = (fwd[eid.0 as usize], rev[eid.0 as usize]);
+                // Only edges with an unambiguous authoritative orientation
+                // vote; unshared or doubly-used edges abstain.
+                let partner_reversed = match (f, r) {
+                    (1, 0) => false,
+                    (0, 1) => true,
+                    _ => continue,
+                };
+                if reversed != partner_reversed {
+                    agree += 1; // we already complement the partner
+                } else {
+                    disagree += 1;
+                }
+            }
+            if disagree > agree {
+                lp.edges.reverse();
+                for entry in lp.edges.iter_mut() {
+                    entry.1 = !entry.1;
+                }
+            }
+        }
+    }
 }
 
 /// Phase (3): shell + solid assembly. Watertight iff every edge is used by

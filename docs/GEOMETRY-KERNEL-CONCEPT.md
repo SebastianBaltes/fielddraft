@@ -171,6 +171,30 @@ Contributor-Mengen (Smooth-Ops/Masken als harte Boolesche behandelt) — die Gru
 exakten Kantenklassifikation. **`Visual`** entspricht dem gerenderten Feld (mit weichen
 Blends). Aktuell liefern beide dasselbe Feld; die Klassifikation nutzt bewusst `Logical`.
 
+**Ausnahme — der Fillet-Blend-Träger (`MaskedBlend` mit `BlendProvenance`):**
+Ein kantenselektiver Fillet ist die *reale* Oberfläche des Körpers, keine bloße
+Render-Kosmetik. Trägt der `MaskedBlend`-Knoten eine Provenienz (das Fillet-Feature +
+die zwei Wand-Branches), so ist er **modus-unabhängig**: auch `Logical` liefert die
+gerundete Fläche, und in der Abweichzone (`|f_a − f_b| < r`) gehört die Fläche dem
+**Fillet-Branch** — eine eigene, wohldefinierte Contributor-Identität. Damit webt das
+abgeleitete B-Rep die echte Rundung statt der scharfen Phantomkante, und die Blend-Fläche
+wird auswähl- und benennbar (§ 10, Blend-Carrier). Der symbolische Träger ist
+`HalfSpace::Blend { a, b, radius, … }`: Identität rein symbolisch (die zwei Wand-Träger +
+Radius), Auswertung = `blend_min` der beiden eingebetteten Wandfelder.
+
+Die tangentialen Skirt-Nähte (Blend↔Wand, ein G1-Kontakt) kann der numerische
+Octree-Tracer nicht sampeln (parallele Gradienten entlang der ganzen Kurve — dieselbe
+Transversalitäts-Grenze wie beim Tangentialkontakt), aber sie sind symbolisch: die Naht
+ist `Wand_A = 0 ∧ Wand_B = r`, der transversale Schnitt von Wand_A mit dem r-Offset von
+Wand_B. `materialize_blend_seams` (c-M2, `weaving/canonicalize.rs`) materialisiert die
+**geschlossenen (zirkulären) Nähte** exakt: ein Fillet zwischen Zylinder und
+achsnormaler Ebene (dank der exakt-zirkulären smin-Form ein exakter Torus-Ring) hat zwei
+koaxiale Kreis-Nähte (Blend↔Zylinder in Höhe r, Blend↔Ebene bei Radius R±r); sie werden
+als exakte NURBS-Kreise eingesetzt, die degenerierten Octree-Fragmente + der scharfe
+Wand-Stummel fallen, das Loop-Ordering fügt Torus-Ring + Ebenen-Loch zusammen (χ = 2, null
+Verletzungen). Offen bleiben die NICHT-geschlossenen Nähte (planare Geradkanten →
+geclippte Geraden mit Runout-Caps) und die Verdrahtung ins Produktions-Weben.
+
 ---
 
 ## 4. Octree-Klassifikation (Extraktions-Phase 1)
@@ -397,3 +421,17 @@ Aus der gewobenen B-Rep wird ein AP242-STEP geschrieben
   Parameteränderungen brauchen kein nachträgliches Remapping.
 * **Generischer Pfad zuerst.** Der analytische `weave_parametric`-Pfad ist Opt-in für reine
   Grundformen; der robuste Standard ist der generische Octree-Pfad (siehe Abschnitt 6).
+
+* **Extrude ist planar, Thicken ist der gekrümmte Wachstums-Operator**
+  (Entscheidung 2026-07-07, Deferred-Tail). Eine gekrümmte B-Rep-Fläche als
+  Extrude-*Profil* hat keine kanonische Semantik (Schatten-Prisma? gerichteter
+  Flächen-Sweep? Normal-Offset?) — Mainstream-CAD (Onshape, Fusion) lehnt sie
+  ebenfalls ab. Die wohldefinierte Bedeutung von „gekrümmte Fläche wachsen
+  lassen" ist der Normal-Offset, und genau das ist Thicken (analytisch für
+  Sphere/Cylinder/Torus/Cone inkl. partieller Wände via Sektor-Trim, generisch
+  via Offset-Band). `resolve_extrude_faces` weist gekrümmte Picks deshalb früh
+  und mit Handlungsanweisung ab, statt spät mit einem generischen Fehler.
+  Ein gerichteter Flächen-Sweep (SolidWorks „Extrude Surface") bliebe als
+  eigenes Feature denkbar — er bräuchte einen neuen unären CSG-Operator
+  (Minkowski-Segment über dem Carrier-Feld) und ist bewusst nicht Teil von
+  Extrude.

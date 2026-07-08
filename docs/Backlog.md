@@ -1,6 +1,5 @@
 * Bei den Boolean Eingabefeldern Tools oder Targets, Click Objects in Viewport, sollen nur Parts und keine BReps auswählbar sein
 * SDF Deferred Renderer hat Artefakte im Boolean Übergangsbereich bei einigen Szenen
-* DL-82: Bei feiner Octree-Auflösung erzeugt der Edge-Weave Geisterkanten quer über einen offenen Nutmund (5-mm-Durchgangsschlitz auf 1-m-Würfel, Kante x∈[-2.5,2.5] bei y=500). Geometrisch falsch, aber `validate()` erkennt es nicht. Der Produktionspfad (10-mm-Octree) ist korrekt, daher aktuell nicht user-sichtbar. Failing-Test hält den Zustand fest: `ghost_mouth_bridge_at_fine_octree_is_a_defect` (`#[ignore]`-markiert in edge_walker.rs) — bei Fix grün machen und un-ignorieren.
 *
 * Scale Feature verwendet, Scale einer Box damit geändert, Scale Feature gelöscht \=> Box bleibt gescaled.
 * Sketches in der Szene sollten selektierbar sein (indem man auf eine der Objekte im Sketch klickt, die ja in der 3D Szene zu sehen sind entsprechend Projeziert im 3D-Raum, wenn der Sketch visible ist)

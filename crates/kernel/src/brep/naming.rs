@@ -148,14 +148,28 @@ fn spatial_indices(brep: &BRep, kind: EntityKind) -> Vec<u32> {
         if members.len() <= 1 {
             continue; // unique signature → spatial_index 0
         }
-        let mut ordered = members.clone();
+        let centroids: Vec<[f64; 3]> =
+            members.iter().map(|&i| entity_centroid(brep, kind, i)).collect();
+        // Group-relative sweep epsilon: an axis difference below one millionth
+        // of the group's own spread is float jitter, not geometry — without
+        // this, a nanometre wobble on the leading axis flips the whole order
+        // (plan finding B1). Floor at the old absolute 1e-9 for degenerate
+        // (near-coincident) groups.
+        let spread = (0..3)
+            .map(|k| {
+                let (lo, hi) = centroids
+                    .iter()
+                    .fold((f64::MAX, f64::MIN), |(lo, hi), c| (lo.min(c[k]), hi.max(c[k])));
+                hi - lo
+            })
+            .fold(0.0_f64, f64::max);
+        let eps = (spread * 1e-6).max(1e-9);
+        let mut ordered: Vec<usize> = (0..members.len()).collect();
         ordered.sort_by(|&a, &b| {
-            let ca = entity_centroid(brep, kind, a);
-            let cb = entity_centroid(brep, kind, b);
-            cmp_axis_order(ca, cb).then(a.cmp(&b))
+            cmp_axis_order(centroids[a], centroids[b], eps).then(members[a].cmp(&members[b]))
         });
-        for (idx, &slot) in ordered.iter().enumerate() {
-            out[slot] = idx as u32;
+        for (idx, &m) in ordered.iter().enumerate() {
+            out[members[m]] = idx as u32;
         }
     }
     out
@@ -174,12 +188,12 @@ fn base_signature_hash(brep: &BRep, kind: EntityKind, i: usize) -> u64 {
     }
 }
 
-/// Lexicographic comparison of two centroids in X → Y → Z order, using a small
-/// epsilon so floating jitter along the leading axis does not flip the order.
-fn cmp_axis_order(a: [f64; 3], b: [f64; 3]) -> std::cmp::Ordering {
-    const EPS: f64 = 1e-9;
+/// Lexicographic comparison of two centroids in X → Y → Z order. `eps` is the
+/// caller's group-relative jitter floor (see `spatial_indices`): differences
+/// at or below it don't decide the order, the next axis does.
+fn cmp_axis_order(a: [f64; 3], b: [f64; 3], eps: f64) -> std::cmp::Ordering {
     for k in 0..3 {
-        if (a[k] - b[k]).abs() > EPS {
+        if (a[k] - b[k]).abs() > eps {
             return a[k].partial_cmp(&b[k]).unwrap_or(std::cmp::Ordering::Equal);
         }
     }
@@ -472,26 +486,44 @@ fn fingerprint_similarity(kind: EntityKind, a: &Fingerprint, b: &Fingerprint) ->
 /// pure parameter change (resize a box) keeps the hash byte-for-byte identical
 /// even though the geometry — and thus the fingerprint — moved. We therefore
 /// floor a hash hit at 0.9 and let `0.1·similarity` push it into the `Resolved`
-/// band, so a uniform resize comfortably exceeds 0.95 while a hash hit whose
-/// geometry looks nothing alike (sim ≈ 0, a genuine ambiguity) still falls back
-/// to `Healed`. The blended score is clamped to `[0, 1]`. See DL-34.
+/// band. The blended score is clamped to `[0, 1]`. See DL-34.
 const HASH_MATCH_FLOOR: f64 = 0.9;
 const HASH_MATCH_SIM_WEIGHT: f64 = 0.1;
 
+/// Two candidates whose fingerprint similarities lie within this margin are
+/// geometrically indistinguishable *to the fingerprint* — any pick between
+/// them rests on other evidence (the hash) or is arbitrary.
+const CLOSE_MARGIN: f64 = 0.05;
+
+/// Above this similarity the fingerprint alone is considered decisive
+/// evidence of "same element". Below it, a candidate merely *resembles* the
+/// stored reference — good enough to heal towards when unrivalled, not good
+/// enough to override a tie (see the split-wall case in `naming_gate`).
+const STRONG_SIM: f64 = 0.8;
+
 /// Resolve a stored [`TopoRef`] against a freshly woven B-Rep.
 ///
-/// Algorithm:
-/// 1. Compute spatial indices for the new B-Rep and the semantic id of every
-///    same-kind entity.
-/// 2. **Hash hits.** If exactly one entity matches `id_hash` → very high
-///    confidence (`HASH_MATCH_FLOOR + HASH_MATCH_SIM_WEIGHT·similarity`,
-///    clamped). If several match (shouldn't happen for a well-disambiguated
-///    B-Rep, but is handled), pick the most fingerprint-similar.
-/// 3. **No hash hit.** Fall back to the most fingerprint-similar entity over
-///    all same-kind candidates, scored by `fingerprint_similarity` alone — so a
-///    spatially-reordered or renamed entity can still land in the `Healed`
-///    band.
-/// 4. Map the final score to a [`ResolutionState`].
+/// Every same-kind entity is scored on **two axes**: geometric fingerprint
+/// similarity, and whether its freshly computed semantic id equals the
+/// stored `id_hash`. The two axes are then reconciled (plan
+/// `PERSISTENT-NAMING-PLAN.md`, Leitentscheidung 3 — no silent misbinding):
+///
+/// 1. **Hash and fingerprint agree** (the hash carrier is also the most
+///    fingerprint-similar candidate, or ties with it within
+///    [`CLOSE_MARGIN`]): bind to it with the boosted score
+///    `HASH_MATCH_FLOOR + HASH_MATCH_SIM_WEIGHT·sim`. If the runner-up ties
+///    within [`CLOSE_MARGIN`] *and* the winner's similarity is below
+///    [`STRONG_SIM`], the geometric evidence is a coin toss between weak
+///    candidates (a split region inheriting index 0 by accident) — the state
+///    demotes to `Ambiguous`, keeping the hash carrier as the reported
+///    handle.
+/// 2. **They conflict** (some other entity is clearly more similar than the
+///    hash carrier): the spatial index has migrated onto a different element
+///    — bind to the fingerprint's choice with its raw similarity as score
+///    (no hash bonus). This is the anti-misbinding override.
+/// 3. **No hash hit**: bind to the most similar candidate; a runner-up
+///    within [`CLOSE_MARGIN`] demotes to `Ambiguous` (with no hash there is
+///    nothing to break a tie, however similar the twins are).
 ///
 /// Never panics and never allocates beyond the per-kind index vector.
 pub fn resolve(old: &TopoRef, new_brep: &BRep) -> Resolution {
@@ -531,48 +563,78 @@ pub fn resolve(old: &TopoRef, new_brep: &BRep) -> Resolution {
         }
     };
 
-    // Step 1/2: collect candidates whose semantic id matches the stored hash.
-    let hash_hits: Vec<usize> = (0..count).filter(|&i| id_of(i) == old.id_hash).collect();
+    // Score both axes for every candidate in one pass.
+    let sims: Vec<f64> = (0..count)
+        .map(|i| fingerprint_similarity(kind, &old.fingerprint, &fingerprint_of(i)))
+        .collect();
+    let max_sim_of = |pool: &mut dyn Iterator<Item = usize>| -> Option<usize> {
+        pool.max_by(|&a, &b| sims[a].partial_cmp(&sims[b]).unwrap_or(std::cmp::Ordering::Equal))
+    };
+    // The best hash carrier (most similar among possibly several hits).
+    let hash_best = max_sim_of(&mut (0..count).filter(|&i| id_of(i) == old.id_hash));
 
-    if !hash_hits.is_empty() {
-        // Among hash hits, prefer the most fingerprint-similar (handles the
-        // theoretical multi-hit case; for a unique hit it's just that one).
-        let (best, sim) = hash_hits
-            .iter()
-            .map(|&i| {
-                (
-                    i,
-                    fingerprint_similarity(kind, &old.fingerprint, &fingerprint_of(i)),
-                )
-            })
-            .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
-            .unwrap();
-        let score = (HASH_MATCH_FLOOR + HASH_MATCH_SIM_WEIGHT * sim).clamp(0.0, 1.0);
-        return Resolution {
-            state: ResolutionState::from_score(score),
-            score,
-            handle: Some(handle_of(best)),
-        };
-    }
+    let (best, score, demote) = match hash_best {
+        Some(h) => {
+            // The hash carrier reveals the stored reference's branch
+            // signature — identity is provenance-first, so the override and
+            // ambiguity comparisons run over the SAME-SIGNATURE group only.
+            // A merely similar face of a *different* feature is not a
+            // candidate (it would be cross-branch misbinding), and it must
+            // not manufacture false ambiguity either.
+            let sig = base_signature_hash(new_brep, kind, h);
+            let group: Vec<usize> = (0..count)
+                .filter(|&i| base_signature_hash(new_brep, kind, i) == sig)
+                .collect();
+            let g_best = max_sim_of(&mut group.iter().copied()).unwrap();
+            let s1 = sims[g_best];
+            let s2 = group
+                .iter()
+                .filter(|&&i| i != g_best)
+                .map(|&i| sims[i])
+                .fold(0.0_f64, f64::max);
+            if h == g_best || sims[h] >= s1 - CLOSE_MARGIN {
+                // Hash and fingerprint agree (or tie within the margin).
+                let score =
+                    (HASH_MATCH_FLOOR + HASH_MATCH_SIM_WEIGHT * sims[h]).clamp(0.0, 1.0);
+                // Weak-evidence tie: the sibling looks just as (dis)similar
+                // and even the winner doesn't really resemble the stored
+                // reference — the hash pick is arbitrary (split-region case).
+                let demote = s1 - s2 < CLOSE_MARGIN && s1 < STRONG_SIM && group.len() > 1;
+                (h, score, demote)
+            } else {
+                // Conflict: within the signature group the fingerprint
+                // clearly prefers a sibling — the spatial index migrated;
+                // binding to the hash carrier would be the silent misbinding
+                // of plan finding B3. Geometric override, no hash bonus.
+                (g_best, s1, false)
+            }
+        }
+        // No hash hit — the branch may have been renamed entirely; geometry
+        // alone decides over all candidates, ties are ambiguous.
+        None => {
+            let sim_best = max_sim_of(&mut (0..count)).unwrap();
+            let s1 = sims[sim_best];
+            let s2 = (0..count)
+                .filter(|&i| i != sim_best)
+                .map(|i| sims[i])
+                .fold(0.0_f64, f64::max);
+            (sim_best, s1, s1 - s2 < CLOSE_MARGIN && count > 1)
+        }
+    };
 
-    // Step 3: no hash hit — fall back to nearest fingerprint over all
-    // same-kind entities. Pure geometric similarity (no bonus).
-    let (best, sim) = (0..count)
-        .map(|i| {
-            (
-                i,
-                fingerprint_similarity(kind, &old.fingerprint, &fingerprint_of(i)),
-            )
-        })
-        .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
-        .unwrap();
-
+    // Demotion marks an *actionable but arbitrary* pick; a score already
+    // below the Ambiguous floor stays what it is (Missing must stay Missing).
+    let state = if demote && score >= 0.4 {
+        ResolutionState::Ambiguous
+    } else {
+        ResolutionState::from_score(score)
+    };
     Resolution {
-        state: ResolutionState::from_score(sim),
-        score: sim,
+        state,
+        score,
         // Below the Missing floor we report no handle: the match is too weak to
         // act on, but the caller still learns the best candidate's score is low.
-        handle: if sim >= 0.4 {
+        handle: if score >= 0.4 {
             Some(handle_of(best))
         } else {
             None

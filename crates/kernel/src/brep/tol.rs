@@ -28,6 +28,26 @@
 //! Adding a tolerance? Add it here, classify it, justify the value, and
 //! derive it from an existing anchor if the question is related (see
 //! [`ON_BOUNDARY_REL_TOL`] for the pattern).
+//!
+//! ## Kernel-wide audit (2026-07-07, ARCHITECTURE-ROADMAP Punkt 3)
+//!
+//! The constants OUTSIDE `brep/` were surveyed against this policy. The
+//! remaining absolute literals fall into categories that are exempt by the
+//! rules above or by domain:
+//!
+//! - **Dimensionless** — quaternion axis tests, feature-angle cosines,
+//!   Lipschitz guards, fit weights: scale-free, stay at their site.
+//! - **Sketch/mm-domain** — sketch coordinates are millimetres by unit
+//!   convention (`LOOP_JOIN_TOL`, `SPLINE_LOWER_TOL`, snap radii): these are
+//!   *user-scale* thresholds, not geometry-identity epsilons; converting
+//!   them to model-relative would change UX, not robustness.
+//! - **Meshing/export** (`decimate`, `export_mesh`, `dc`/`mt` samplers):
+//!   resolution-domain parameters tied to cell size, audited separately
+//!   with the export-mesher work line.
+//! - Genuinely scale-fragile stragglers are migrated as found (e.g. the
+//!   body-docking AABB slack in `body.rs::aabbs_overlap`, now
+//!   span-relative with a 1 µm floor). New geometric length tolerances
+//!   anywhere in the kernel should anchor here.
 
 // ─── Anchor: coincidence (plan Phase 1) ─────────────────────────────────────
 

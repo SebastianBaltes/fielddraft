@@ -225,15 +225,222 @@ fn gate_union_crossing_boxes_transversal() {
     assert_gate(&body, 0.5, 0, "crossing boxes (transversal)");
 }
 
+// ─── order-1 (tangential) contact — symbolic tangent circles ────────────────
+
+/// The canonical order-1 case: a cylinder with a coaxial spherical cap of
+/// EQUAL radius — wall and sphere meet G1 along the equator circle. The
+/// tracer degenerates there (∇f_a × ∇f_b → 0 along the whole seam; the
+/// octree route used to shatter into a 241-violation garbage star), so the
+/// seam is materialised SYMBOLICALLY from the registry's tangent-circle
+/// detection. Expected: bottom cap + wall + sphere cap, two closed rims
+/// (bottom rim + tangent circle), no interior ghost cap — a closed genus-0
+/// solid on BOTH routes.
+#[test]
+fn gate_tangent_sphere_capped_cylinder() {
+    let body = union(
+        cylinder_leaf(1, [0.0, 0.0, 0.0], 5.0, 5.0),
+        CsgNode::Leaf {
+            id: FeatureId::from_u32(2),
+            primitive: Primitive::Sphere { center: [0.0, 5.0, 0.0], radius: 5.0 },
+        },
+    );
+    assert_gate(&body, 0.4, 0, "sphere-capped cylinder (tangent equator)");
+}
+
+/// Inscribed sphere in a cone (the ice-cream): the sphere touches the cone
+/// wall along a circle. Symbolic order-1 seam, both routes.
+#[test]
+fn gate_tangent_sphere_in_cone() {
+    // Frustum r_bottom=6, r_top=2, hh=4 → slope tan α = 0.5, apex 4 above
+    // the top rim (frustum centre-local apex at y = 8). Sphere centred on
+    // the axis at distance d below the apex with R = d·sin α: sin α =
+    // 0.5/√1.25 ≈ 0.4472; pick d = 6.7082 → R = 3.0. Apex world y = 8 →
+    // centre y = 8 − 6.7082 = 1.2918.
+    let body = union(
+        CsgNode::Leaf {
+            id: FeatureId::from_u32(1),
+            primitive: Primitive::Cone { r_bottom: 6.0, r_top: 2.0, half_height: 4.0 },
+        },
+        CsgNode::Leaf {
+            id: FeatureId::from_u32(2),
+            primitive: Primitive::Sphere { center: [0.0, 1.2918, 0.0], radius: 3.0 },
+        },
+    );
+    // Premise: the registry must actually detect the order-1 contact —
+    // otherwise this test would silently exercise nothing.
+    let registry = crate::brep::coincidence::CoincidenceRegistry::build(&body);
+    assert_eq!(
+        registry.tangent_seams().len(),
+        1,
+        "sphere-in-cone must register exactly one tangent circle"
+    );
+    let brep = weave_branch_seeds(&body).expect("seed weavable");
+    assert_solid_invariants(&brep, 0, "sphere in cone (tangent circle) [seed route]");
+}
+
+/// A frustum whose inscribed sphere pokes out through the BOTTOM CAP: the
+/// sphere grazes the wall tangentially but never crosses it (it exits
+/// through the cap), so the tangent circle is NOT a boundary seam — the
+/// wall face runs through it smoothly. The registry detects the geometric
+/// tangency; the boundary gate's contributor role-swap test must reject it,
+/// leaving a clean transversal weave (wall + caps + sphere bulge).
+#[test]
+fn gate_tangent_graze_through_cap_is_no_seam() {
+    let body = union(
+        CsgNode::Leaf {
+            id: FeatureId::from_u32(1),
+            primitive: Primitive::Cone { r_bottom: 1.0, r_top: 3.0, half_height: 4.0 },
+        },
+        CsgNode::Leaf {
+            id: FeatureId::from_u32(2),
+            primitive: Primitive::Sphere { center: [0.0, -3.258, 0.0], radius: 1.15 },
+        },
+    );
+    let registry = crate::brep::coincidence::CoincidenceRegistry::build(&body);
+    assert_eq!(registry.tangent_seams().len(), 1, "the graze is geometrically tangent");
+    let brep = weave_branch_seeds(&body).expect("seed weavable");
+    assert_solid_invariants(&brep, 0, "grazing sphere through cap [seed route]");
+    // No symbolic tangent circle at the graze height — the wall is smooth.
+    assert!(
+        !brep.edges.iter().any(|e| {
+            e.start.is_none()
+                && e.end.is_none()
+                && crate::brep::edge_sampling::sample_edge(&e.geometry)
+                    .iter()
+                    .all(|p| (p[1] - (-3.537)).abs() < 0.01)
+        }),
+        "a grazing tangency must not materialise a seam edge"
+    );
+}
+
+/// Rounded cone tip, the TRUE seam flavour: the frustum's top rim IS the
+/// tangent circle (`r_top = R·cos α`, sphere centre `R·sin α` above the
+/// cap) — below the circle the wall bounds the body, above it the sphere
+/// does. Mirrors the sphere-capped cylinder on a sloped wall: the ghost
+/// top cap loses both its coincident circles to the symbolic seam and
+/// never materialises.
+#[test]
+fn gate_tangent_rounded_cone_tip() {
+    // slope 0.25 → sin α ≈ 0.2425; apex at y ≈ 8.4627. Tangency needs the
+    // centre at apex-distance d = R/sin α ≈ 4.7415 → centre y ≈ 3.7212; the
+    // contact circle then sits at apex − d·cos²α ≈ 4.0 — exactly the rim.
+    let body = union(
+        CsgNode::Leaf {
+            id: FeatureId::from_u32(1),
+            primitive: Primitive::Cone {
+                r_bottom: 3.115_617,
+                r_top: 1.115_664,
+                half_height: 4.0,
+            },
+        },
+        CsgNode::Leaf {
+            id: FeatureId::from_u32(2),
+            primitive: Primitive::Sphere { center: [0.0, 3.721_2, 0.0], radius: 1.15 },
+        },
+    );
+    let registry = crate::brep::coincidence::CoincidenceRegistry::build(&body);
+    assert_eq!(
+        registry.tangent_seams().len(),
+        1,
+        "rounded cone tip must register exactly one tangent circle"
+    );
+    let brep = weave_branch_seeds(&body).expect("seed weavable");
+    assert_solid_invariants(&brep, 0, "rounded cone tip (tangent circle) [seed route]");
+    // The symbolic seam exists: a closed cross-feature circle at the rim.
+    assert!(
+        brep.edges.iter().any(|e| {
+            e.signature.0.feature_id() != e.signature.1.feature_id()
+                && e.start.is_none()
+                && e.end.is_none()
+                && crate::brep::edge_sampling::sample_edge(&e.geometry)
+                    .iter()
+                    .all(|p| (p[1] - 4.0).abs() < 0.01)
+        }),
+        "the tangent circle at the rim (y = 4) must exist"
+    );
+}
+
+/// The vase stack — the CONSTRUCTED profile-G1 case from the roadmap: a
+/// cylindrical pot (revolve 1, straight wall → analytic cylinder lift) and
+/// an arc dome (revolve 2, curved wall group → `RevolvedProfile`) whose
+/// profiles share the endpoint (r=5, y=0) with an equal (vertical) end
+/// tangent. The junction circle is detected on the 2D construction data
+/// (profile chain ends) and materialised symbolically; the flush interface
+/// discs are ON-opposite membranes and cull as usual.
+#[test]
+fn gate_tangent_vase_stack_profile_g1() {
+    use fielddraft_protocol::{Sketch2d, Sketch2dPrimitive, SketchSegment};
+    let path = |segments: Vec<SketchSegment>| {
+        Sketch2d::Prim(Sketch2dPrimitive::Path { segments, closed: true })
+    };
+    let line = |a: [f32; 2], b: [f32; 2]| SketchSegment::Line { start: a, end: b };
+    // Pot: rectangle r ∈ [0, 5], y ∈ [−4, 0].
+    let pot = CsgNode::Revolve {
+        id: FeatureId::from_u32(1),
+        sketch: Box::new(path(vec![
+            line([0.0, -4.0], [5.0, -4.0]),
+            line([5.0, -4.0], [5.0, 0.0]),
+            line([5.0, 0.0], [0.0, 0.0]),
+            line([0.0, 0.0], [0.0, -4.0]),
+        ])),
+    };
+    // Dome: bottom flat to (5, 0), then a 90° arc (centre (3, 0), R = 2)
+    // starting with a VERTICAL tangent — G1 against the pot wall — up to
+    // (3, 2), closed by the top flat and the axis.
+    let dome = CsgNode::Revolve {
+        id: FeatureId::from_u32(2),
+        sketch: Box::new(path(vec![
+            line([0.0, 0.0], [5.0, 0.0]),
+            SketchSegment::Arc {
+                center: [3.0, 0.0],
+                radius: 2.0,
+                start_angle: 0.0,
+                sweep_angle: std::f32::consts::FRAC_PI_2,
+            },
+            line([3.0, 2.0], [0.0, 2.0]),
+            line([0.0, 2.0], [0.0, 0.0]),
+        ])),
+    };
+    let body = BoundedCsg::from_csg(&CsgNode::Union(Box::new(pot), Box::new(dome)));
+
+    let registry = crate::brep::coincidence::CoincidenceRegistry::build(&body);
+    assert_eq!(
+        registry.tangent_seams().len(),
+        1,
+        "the profile-G1 junction must register exactly one tangent circle"
+    );
+
+    let brep = weave_branch_seeds(&body).expect("seed weavable");
+    assert_solid_invariants(&brep, 0, "vase stack (profile G1) [seed route]");
+    // The junction circle at (r = 5, y = 0) exists as a closed
+    // cross-feature seam.
+    assert!(
+        brep.edges.iter().any(|e| {
+            e.signature.0.feature_id() != e.signature.1.feature_id()
+                && e.start.is_none()
+                && e.end.is_none()
+                && crate::brep::edge_sampling::sample_edge(&e.geometry).iter().all(|p| {
+                    let r = (p[0] * p[0] + p[2] * p[2]).sqrt();
+                    (r - 5.0).abs() < 0.01 && p[1].abs() < 0.01
+                })
+        }),
+        "the G1 junction circle (r = 5, y = 0) must exist"
+    );
+}
+
 // ─── coincidence scenarios — known red until Phases 2/3 land ────────────────
 
+
 #[test]
-#[ignore = "BREP-CLASSIFICATION-PLAN Phase 3 — koplanare ON-same-Wände (Naht-Kante), bekannt rot"]
 fn gate_union_crossing_boxes_coplanar_tops() {
     // A plus sign with EQUAL heights: the side walls cross transversally, but
     // the top/bottom faces of both boxes are coplanar same-orientation
     // (ON-same) — they must survive as separate faces joined by seam edges.
-    // Combines F0-1 with the coincidence classification.
+    // Combines F0-1 with the coincidence classification. Fixed by the
+    // overlap-aware membership re-attribution
+    // (`reattribute_coincident_memberships`): the overlap square belongs to
+    // the class representative, buried signature branches lose the edge,
+    // interior seams inside the overlap are dropped.
     let body = union(
         box_leaf(1, [0.0, 0.0, 0.0], [12.0, 3.0, 3.0]),
         box_leaf(2, [0.0, 0.0, 0.0], [3.0, 12.0, 3.0]),

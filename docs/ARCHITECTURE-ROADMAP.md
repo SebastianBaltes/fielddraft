@@ -64,7 +64,27 @@ nötig (Naht-Kanten kommen aus den transversalen Paaren mit den berandenden
 Flächen). Offen: Phase 4 (Octree-Route auf Klassen — Produktionspfad ist die
 Seed-Route) und F0-1 (Face-pro-Region).
 
-## 2. Tangentialer Kontakt (Kontaktordnung 1) — ZURÜCKGESTELLT, Design-Direktive aktiv
+## 2. Tangentialer Kontakt (Kontaktordnung 1) — ANALYTISCH-KOAXIALE FÄLLE UMGESETZT
+
+**Status (2026-07-08, v0.6.458).** Der analytisch-koaxiale Teil ist gebaut,
+exakt nach der unten dokumentierten Lösungsrichtung: Die Registry erkennt
+Ordnung-1-Kontakt **symbolisch auf Konstruktionsdaten** (`tangent_circle`
+in coincidence.rs: Kugel↔Zylinder/Kegel/Torus, Ebene↔Torus, Zylinder↔Torus;
+eine Toleranz), `finish_weave` materialisiert den exakten NURBS-Kreis und
+verwirft alle Trace-Fragmente des degenerierten Paars — der Tracer wird nie
+auf die Kurve angesetzt. Ein ±ε-Kontributor-Rollenwechsel-Gate (Proben
+entlang des gemeinsamen Meridians, ε über der √-Separation dimensioniert)
+unterscheidet echte Boundary-Nähte vom Innen-Grazing (einbeschriebene
+Kugel → keine Kante). Gates: kugelgekappter Zylinder (beide Routen,
+Toggle-Invarianz), abgerundete Kegelspitze, zwei Grazing-Negativfälle.
+Die konstruierten Profil-G1-Fälle sind ebenfalls umgesetzt (v0.6.459):
+`RevolvedProfile`-Wände paaren über ihre Profil-KETTENENDEN + Endtangenten
+(exakte 2D-Sketchdaten, `revolved_profile_ends`) mit RevolvedProfile /
+Zylinder / Kegel / achsnormaler Ebene — Gate: der Vasen-Stapel
+(Zylinder-Topf + Bogen-Kuppel, G1 bei r=5/y=0).
+**Offen:** Nicht-Rotations-G1 (Extrude-Profile über Feature-Grenzen),
+Offset-Profile (`offset ≠ 0` bailt ehrlich), Innen-Profil-Tangenz abseits
+der Kettenenden, und die ursprüngliche Fillet-B-Rep-Frage.
 
 **Problem.** Berühren sich zwei Trägerflächen G1-stetig entlang einer Kurve,
 degeneriert die SSI: die Marschrichtung des Tracers ist ∇f_a × ∇f_b, und die
@@ -120,7 +140,18 @@ Face-Picking auf der Naht) oder Beginn der Fillet-BRep-Arbeit aus
 unbetroffen (G1-Stoß ist glatt — fürs Meshing ist „kein scharfes Feature"
 sogar korrekt), es leiden Wireframe/Picking/STEP.
 
-## 3. Epsilon-Politik: eine zentrale, skalenrelative Toleranz-Policy
+## 3. Epsilon-Politik: eine zentrale, skalenrelative Toleranz-Policy — UMGESETZT
+
+**Status (2026-07-07).** Kern durch Phase 5a des Klassifikations-Plans
+(`brep::tol`, v0.6.71–74): benannte, klassifizierte Toleranzen
+(skalenrelativ / dimensionslos / eingefroren-absolut mit
+Konvertierungsauftrag). Kernel-weites Audit 2026-07-07: Restbestand
+klassifiziert (dimensionslos / Sketch-mm-Domäne / Meshing-Export-Domäne —
+Details im `brep/tol.rs`-Modulkopf), skalen-fragile Nachzügler migriert
+(AABB-Docking-Slack in `body.rs` jetzt span-relativ mit 1-µm-Floor; das
+Naming-Sweep-ε ist seit dem Persistent-Naming-N1 gruppen-relativ).
+Konvention für neue geometrische Längen-Toleranzen: über `brep::tol`
+ankern.
 
 **Problem.** Der Kern mischt absolute Toleranzen (`PROJECT_TOL = 1e-9`,
 `BISECT_ACTIVE_TOL = 1e-7`, `PARALLEL_EPS = 1e-6`) mit diagonal-relativen
@@ -138,7 +169,18 @@ Bestehende Konstanten dorthin migrieren; neue absolute Literale per Konvention
 Klassifikationsstufe entfernt erst die Epsilon-Konsumenten, die Koinzidenz
 heute kompensieren; danach ist der verbleibende Bestand klein und migrierbar.
 
-## 4. Persistentes Naming: Provenienz statt räumlicher Reihenfolge
+## 4. Persistentes Naming: Provenienz statt räumlicher Reihenfolge — KERN UMGESETZT
+
+**Status (2026-07-07, v0.6.448–450).** Plan-SSOT:
+`docs/plans/PERSISTENT-NAMING-PLAN.md`, Phasen N0–N4 umgesetzt: Referenz-
+Auflösung bewertet alle Kandidaten einheitlich (Fingerprint + Hash-Bonus,
+provenienz-gebunden auf die Signatur-Gruppe — kein stilles Fehlbinden,
+ehrliches `Ambiguous`), Element-Referenzen tragen einen persistierten
+Fingerprint (`qFace(<hash> @ …)`), alle Feature-Pfade heilen über EINEN
+Resolver, und Heal-on-Save re-kanonisiert gespeicherte Referenzen. Die
+Sweep-Ordnung ist gruppen-relativ statt absolut-ε. `spatial_index` bleibt
+als letzter Tie-Breaker in der ID — die Referenz-Schicht kompensiert sein
+Kippen. Offene Follow-ups im Plan-Doc.
 
 **Problem.** `face_id(branch, spatial_index)` disambiguiert mehrere Faces
 desselben Branches über die räumliche Sortierung der Weave-Ausgabe. Die kippt

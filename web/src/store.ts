@@ -595,6 +595,20 @@ export class KernelStore {
     return id;
   }
 
+  /** d: round every Boolean-junction edge globally with `radiusMm`. */
+  addRoundAll(radiusMm = 2): number {
+    let id: number;
+    try {
+      id = this.kernel.addRoundAll(radiusMm);
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error("fielddraft: addRoundAll failed", err);
+      return -1;
+    }
+    this.commit(new Set([id]), id);
+    return id;
+  }
+
   addBoolean(): number {
     let id: number;
     try {

@@ -591,11 +591,30 @@ fn classify_rings_curved(
             Some(vs.iter().sum::<f64>() / vs.len() as f64)
         }
     };
+    // Rings that wind the CLOSED cross direction of a sphere/torus carrier
+    // (full revolution with `net_du ≈ 0` — a puncture ring around the torus
+    // tube) have NO intrinsic winding authority: the kept surface lies on
+    // BOTH sides of such a ring, so neither the uv shoelace nor the
+    // Flächenseite rule can orient it. Their manifold-correct orientation is
+    // whatever COMPLEMENTS the partner face — decided by the
+    // `align_ambiguous_ring_windings` post-pass; the intrinsic flip below
+    // must abstain (it used to flip 3 of the box∪torus's 4 pierce rings
+    // against their already-correct planar partners).
+    let closed_cross_carrier = matches!(
+        surface,
+        SurfaceGeometry::Analytic {
+            surface: HalfSpace::Sphere { .. } | HalfSpace::Torus { .. },
+            ..
+        }
+    );
     for i in 0..rings.len() {
         let Some(RingUvMetrics { net_du, mean_v, shoelace }) = metrics[i] else {
             continue;
         };
         let bounded = net_du.abs() < std::f64::consts::PI;
+        if bounded && closed_cross_carrier && full_rev.contains(&i) {
+            continue; // v-winding puncture — partner-parity pass owns it
+        }
         let flip = if bounded {
             let required = if i == outer_idx { -s } else { s };
             shoelace * required < 0.0
