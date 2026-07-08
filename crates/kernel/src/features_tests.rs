@@ -61,6 +61,31 @@ fn schema_for_returns_none_for_unknown_types() {
 }
 
 #[test]
+fn custom_sdf_maps_to_its_kind_and_carries_the_formula_hint() {
+    // Ticket c50f3e15: a `custom_sdf` feature must resolve to the
+    // "custom_sdf" outliner kind — NOT "unknown". When it fell through to
+    // "unknown", the outliner's `schemaForType` lookup failed and the detail
+    // panel showed "No feature selected" instead of the editable dialog, so
+    // the formula could never be changed (it stayed the default sphere).
+    assert_eq!(
+        crate::Kernel::static_kind_name("custom_sdf"),
+        "custom_sdf",
+        "custom_sdf must not fall through to \"unknown\""
+    );
+    let registry = FeatureRegistry::with_builtins();
+    assert!(registry.get("custom_sdf").is_some(), "custom_sdf registered");
+    // The Expression param drives the multi-line formula widget via its hint.
+    let schema = registry.schema_for("custom_sdf").expect("custom_sdf schema");
+    let expr = schema["params"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["key"] == json!("expression"))
+        .expect("expression param");
+    assert_eq!(expr["ui_hint"], json!("formula"));
+}
+
+#[test]
 fn type_names_contains_all_four_builtins() {
     let registry = FeatureRegistry::with_builtins();
     let mut names = registry.type_names();

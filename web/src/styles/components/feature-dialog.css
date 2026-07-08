@@ -133,6 +133,23 @@
     resize: vertical;
   }
 
+  /* Custom-SDF formula editor (ticket c50f3e15): monospace, roomy, resizable,
+   *  with a muted vocabulary hint below it. */
+  & .formula-input {
+    font-family: var(--font-family-mono);
+    width: 100%;
+    min-height: 3.5rem;
+    resize: vertical;
+    line-height: 1.4;
+  }
+
+  & .formula-hint {
+    margin: var(--space-1) 0 0;
+    font-size: var(--fs-base);
+    color: var(--color-text-subtle);
+    line-height: 1.35;
+  }
+
   & .input:focus,
   & .select:focus,
   & .textarea:focus {

@@ -24,6 +24,17 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.487",
+    entries: [
+      {
+        kind: "fix",
+        scope: "custom-sdf",
+        tickets: ["c50f3e15"],
+        text: "Custom SDF ist jetzt editierbar. Zwei Probleme behoben: das Feature meldete intern die Art „unknown“, weshalb das Detail-Panel „Kein Feature selektiert“ zeigte statt eines Dialogs — die Formel blieb die Default-Kugel. Jetzt öffnet die Auswahl des Custom-SDF-Features einen Formel-Editor: ein mehrzeiliges Monospace-Feld mit Vokabular-Hinweis (Variablen x, y, z · Funktionen sin cos tan sqrt … · Konstanten pi, tau · Potenz ^). Syntaxfehler in der Formel werden als Feature-Fehler angezeigt. So kann man z.B. eine Gyroid-Formel eingeben: sin(x)·cos(y) + sin(y)·cos(z) + sin(z)·cos(x).",
+      },
+    ],
+  },
+  {
     version: "0.6.486",
     entries: [
       {

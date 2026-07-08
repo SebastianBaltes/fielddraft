@@ -29,7 +29,7 @@ use super::{
 pub struct CustomSdfDef {
     /// Expression over `x, y, z` (mm). Functions: sin cos sqrt abs exp
     /// ln floor asin acos min max pow atan2; constants pi, tau; `^`.
-    #[param(name = "Expression", default = String::from("sqrt(x*x + y*y + z*z) - 15"))]
+    #[param(name = "Expression", ui_hint = "formula", default = String::from("sqrt(x*x + y*y + z*z) - 15"))]
     pub expression: String,
     /// Lipschitz allowance L (max |gradient| of the expression). The
     /// field is divided by L so marching stays conservative.
