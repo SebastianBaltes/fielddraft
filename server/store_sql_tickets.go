@@ -16,7 +16,7 @@ import (
 // ─── tickets ────────────────────────────────────────────────────
 
 const ticketCols = `id, author_id, title, body, state, category, po_spam, po_malicious,
-	po_vision_fit, po_reason, po_verdict_at, created_at, updated_at`
+	po_vision_fit, po_reason, po_verdict_at, created_at, updated_at, number`
 
 func (s *sqlStore) scanTicket(scan func(...any) error) *Ticket {
 	t := &Ticket{}
@@ -25,7 +25,7 @@ func (s *sqlStore) scanTicket(scan func(...any) error) *Ticket {
 	var verdictAt sql.NullTime
 	if err := scan(&t.ID, &t.AuthorID, &t.Title, &t.Body, &state, &category,
 		&t.POSpam, &t.POMalicious, &visionFit, &reason, &verdictAt,
-		&t.CreatedAt, &t.UpdatedAt); err != nil {
+		&t.CreatedAt, &t.UpdatedAt, &t.Number); err != nil {
 		return nil
 	}
 	t.State = TicketState(state)
@@ -62,12 +62,18 @@ func (s *sqlStore) CreateTicket(authorID, title, body, category string) *Ticket 
 		c := category
 		t.Category = &c
 	}
-	if _, err := s.db.Exec(
+	res, err := s.db.Exec(
 		`INSERT INTO tickets (id, author_id, title, body, state, category, created_at, updated_at)
 		 VALUES (?, ?, ?, ?, 'triage', ?, ?, ?)`,
-		t.ID, t.AuthorID, t.Title, t.Body, cat, t.CreatedAt, t.UpdatedAt); err != nil {
+		t.ID, t.AuthorID, t.Title, t.Body, cat, t.CreatedAt, t.UpdatedAt)
+	if err != nil {
 		log.Printf("sqlStore: CreateTicket: %v", err)
 		return nil
+	}
+	// `number` is the table's sole AUTO_INCREMENT column, so LastInsertId is the
+	// assigned short reference (#N) — no extra round-trip needed.
+	if n, e := res.LastInsertId(); e == nil {
+		t.Number = int(n)
 	}
 	return t
 }

@@ -485,6 +485,26 @@ func seedAdminCookies(t *testing.T, e *ticketTestEnv, email string) []*http.Cook
 	return c
 }
 
+// seedUserCookies registers a second NON-admin user and returns its session —
+// for author-permission tests (a stranger acting on someone else's ticket).
+func seedUserCookies(t *testing.T, e *ticketTestEnv, email string) []*http.Cookie {
+	t.Helper()
+	if _, err := e.store.CreateUser(email, "Stranger", "userpass123", RoleUser); err != nil {
+		t.Fatalf("seed user: %v", err)
+	}
+	resp, err := e.client.Post(e.srv.URL+"/api/auth/login", "application/json",
+		strings.NewReader(`{"email":"`+email+`","password":"userpass123"}`))
+	if err != nil {
+		t.Fatalf("user login: %v", err)
+	}
+	c := resp.Cookies()
+	resp.Body.Close()
+	if len(c) == 0 {
+		t.Fatal("no user session cookie")
+	}
+	return c
+}
+
 // A multi-byte character straddling the 80-char boundary must not be cut in
 // half — invalid UTF-8 in the derived title made MariaDB reject the INSERT
 // (Error 1366) and "Report an issue" failed with a 500.
@@ -540,5 +560,94 @@ func TestAuthorReopensResolvedTicket(t *testing.T) {
 	resp.Body.Close()
 	if updated.State != StateInProgress {
 		t.Fatalf("state after reopen = %q, want in_progress", updated.State)
+	}
+}
+
+// Ticket 066230d9: every ticket gets a short, strictly-increasing #N reference,
+// surfaced on create, GET and the list.
+func TestTicketNumberAssignedAndIncrements(t *testing.T) {
+	e := newTicketEnv(t, "number@test.com")
+
+	create := func(title string) ticketDetailResponse {
+		resp := e.do(t, "POST", "/api/tickets", `{"title":"`+title+`","body":"b"}`, e.cookies)
+		var tk ticketDetailResponse
+		json.NewDecoder(resp.Body).Decode(&tk)
+		resp.Body.Close()
+		return tk
+	}
+
+	a := create("first")
+	b := create("second")
+	if a.Number < 1 {
+		t.Fatalf("first ticket number = %d, want >= 1", a.Number)
+	}
+	if b.Number <= a.Number {
+		t.Fatalf("second number = %d, want > first (%d)", b.Number, a.Number)
+	}
+
+	// GET carries the same number.
+	resp := e.do(t, "GET", "/api/tickets/"+b.ID, "", e.cookies)
+	var got ticketDetailResponse
+	json.NewDecoder(resp.Body).Decode(&got)
+	resp.Body.Close()
+	if got.Number != b.Number {
+		t.Fatalf("GET number = %d, want %d", got.Number, b.Number)
+	}
+
+	// The list row carries it too.
+	resp = e.do(t, "GET", "/api/tickets", "", e.cookies)
+	var list []ticketSummary
+	json.NewDecoder(resp.Body).Decode(&list)
+	resp.Body.Close()
+	for _, row := range list {
+		if row.ID == b.ID && row.Number != b.Number {
+			t.Fatalf("list number = %d, want %d", row.Number, b.Number)
+		}
+	}
+}
+
+// Ticket 066230d9: the author may park a ticket to `backlog`, un-park it, close
+// it, and reopen a closed ticket — a non-author may not.
+func TestAuthorBacklogCloseReopen(t *testing.T) {
+	e := newTicketEnv(t, "backlog@test.com")
+	resp := e.do(t, "POST", "/api/tickets", `{"title":"Later","body":"b"}`, e.cookies)
+	var tk ticketDetailResponse
+	json.NewDecoder(resp.Body).Decode(&tk)
+	resp.Body.Close()
+
+	patch := func(state string, cookies []*http.Cookie) (int, TicketState) {
+		resp := e.do(t, "PATCH", "/api/tickets/"+tk.ID, `{"state":"`+state+`"}`, cookies)
+		defer resp.Body.Close()
+		// An error body ({"error":…}) leaves the embedded *Ticket nil, so only
+		// read the promoted State on success.
+		if resp.StatusCode != http.StatusOK {
+			return resp.StatusCode, ""
+		}
+		var up ticketDetailResponse
+		json.NewDecoder(resp.Body).Decode(&up)
+		return resp.StatusCode, up.State
+	}
+
+	// A stranger may not touch someone else's ticket state.
+	strangerCookies := seedUserCookies(t, e, "stranger@test.com")
+	if code, _ := patch("backlog", strangerCookies); code != http.StatusForbidden {
+		t.Fatalf("stranger park: got %d, want 403", code)
+	}
+
+	// Author: triage → backlog (park).
+	if code, st := patch("backlog", e.cookies); code != http.StatusOK || st != StateBacklog {
+		t.Fatalf("author park: got %d / %q, want 200 / backlog", code, st)
+	}
+	// backlog → triage (un-park).
+	if code, st := patch("triage", e.cookies); code != http.StatusOK || st != StateTriage {
+		t.Fatalf("author un-park: got %d / %q, want 200 / triage", code, st)
+	}
+	// triage → closed (close).
+	if code, st := patch("closed", e.cookies); code != http.StatusOK || st != StateClosed {
+		t.Fatalf("author close: got %d / %q, want 200 / closed", code, st)
+	}
+	// closed → triage (reopen a closed ticket).
+	if code, st := patch("triage", e.cookies); code != http.StatusOK || st != StateTriage {
+		t.Fatalf("author reopen-closed: got %d / %q, want 200 / triage", code, st)
 	}
 }

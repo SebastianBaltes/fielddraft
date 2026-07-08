@@ -248,17 +248,14 @@ func (s *Server) handlePatchTicket(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// State change. The author may close (resolved → closed) or REOPEN a
-	// resolved ticket (resolved → in_progress, "the fix didn't stick");
-	// the admin may drive any validated transition (PO/dev moves).
+	// State change. The author gets the safe subset in userMaySetState (close /
+	// park to backlog / un-park / reopen, ticket 066230d9); the admin may drive
+	// any validated transition (PO/dev moves).
 	if body.State != nil {
 		to := TicketState(*body.State)
-		if !isAdmin {
-			reopen := to == StateInProgress && t.State == StateResolved
-			if to != StateClosed && !reopen {
-				writeErr(w, http.StatusForbidden, "only admins may set this state")
-				return
-			}
+		if !isAdmin && !userMaySetState(t.State, to) {
+			writeErr(w, http.StatusForbidden, "only admins may set this state")
+			return
 		}
 		if _, err := s.tickets.SetTicketState(id, to); err != nil {
 			writeStoreError(w, err)
@@ -397,6 +394,7 @@ func (s *Server) handleGetArtifact(w http.ResponseWriter, r *http.Request) {
 // ticketSummary is one row in the list view (no thread, no body blob).
 type ticketSummary struct {
 	ID        string      `json:"id"`
+	Number    int         `json:"number"`
 	AuthorID  string      `json:"author_id"`
 	Title     string      `json:"title"`
 	State     TicketState `json:"state"`
@@ -408,6 +406,7 @@ type ticketSummary struct {
 func summarize(t *Ticket) ticketSummary {
 	return ticketSummary{
 		ID:        t.ID,
+		Number:    t.Number,
 		AuthorID:  t.AuthorID,
 		Title:     t.Title,
 		State:     t.State,

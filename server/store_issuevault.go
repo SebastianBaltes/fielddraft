@@ -279,7 +279,10 @@ func emptyToNil(s string) *string {
 
 func mapTicket(iv *ivTicket) *Ticket {
 	return &Ticket{
-		ID:          iv.ID,
+		ID: iv.ID,
+		// IssueVault assigns `number` per-project at creation, stable for life
+		// (ticket 066230d9). Surfaced as the short "#N" reference.
+		Number:      iv.Number,
 		AuthorID:    iv.Author,
 		Title:       iv.Title,
 		Body:        iv.Body,

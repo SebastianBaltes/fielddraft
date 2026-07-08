@@ -42,6 +42,7 @@ import {
   personaTag,
   stateBucket,
   stateLabel,
+  ticketRef,
 } from "./ticketView";
 
 interface TicketsViewProps {
@@ -70,6 +71,7 @@ const STATES: TicketState[] = [
   "resolved",
   "closed",
   "declined",
+  "backlog",
   "rejected_spam",
   "rejected_malicious",
 ];
@@ -108,9 +110,11 @@ interface TicketListProps {
   onOpen(id: string): void;
 }
 
-/** The click-sortable columns of the issue list (ticket a7b63b6). */
-type SortKey = "state" | "title" | "category" | "updated";
+/** The click-sortable columns of the issue list (ticket a7b63b6; the `#`
+ *  reference column is ticket 066230d9). */
+type SortKey = "number" | "state" | "title" | "category" | "updated";
 const SORT_COLUMNS: { key: SortKey; label: string }[] = [
+  { key: "number", label: "#" },
   { key: "state", label: "State" },
   { key: "title", label: "Title" },
   { key: "category", label: "Category" },
@@ -157,6 +161,9 @@ function TicketList({ user, onOpen }: TicketListProps) {
   const sortedTickets = useMemo(() => {
     const key = (t: TicketSummary): string => {
       switch (sortKey) {
+        case "number":
+          // localeCompare with numeric:true orders "#2" before "#10".
+          return String(t.number);
         case "state":
           return stateLabel(t.state);
         case "title":
@@ -290,6 +297,9 @@ function TicketList({ user, onOpen }: TicketListProps) {
                 data-testid={`ticket-open-${t.id}`}
                 onClick={() => onOpen(t.id)}
               >
+                <span className="row-number" data-testid={`ticket-number-${t.id}`}>
+                  {ticketRef(t.number)}
+                </span>
                 <span
                   className={`badge state-${stateBucket(t.state)}`}
                   data-testid={`ticket-state-${t.id}`}
@@ -355,13 +365,23 @@ function TicketDetailPanel({
   }, [reload]);
 
   const isAuthor = !!user && !!ticket && ticket.author_id === user.id;
-  // The state machine lets a non-admin author close a resolved ticket
-  // (resolved → closed) or REOPEN it (resolved → in_progress, ticket
-  // d22a909e: "the fix didn't stick"). Other transitions are admin/PO-driven.
-  const canClose = isAuthor && ticket?.state === "resolved";
-  const canReopen = isAuthor && ticket?.state === "resolved";
+  // The author gets a safe subset of the state machine (ticket 066230d9,
+  // mirrors server userMaySetState): close their ticket, park it to `backlog`
+  // (recorded, do-not-work), un-park it, and reopen it. Everything else is
+  // admin/PO-driven.
+  const st = ticket?.state;
+  const canClose =
+    isAuthor &&
+    (st === "triage" ||
+      st === "needs_info" ||
+      st === "declined" ||
+      st === "backlog" ||
+      st === "resolved");
+  const canReopen = isAuthor && (st === "resolved" || st === "closed");
+  const canBacklog = isAuthor && (st === "triage" || st === "needs_info");
+  const canUnpark = isAuthor && st === "backlog";
 
-  const setState = async (state: "closed" | "in_progress", failMsg: string) => {
+  const setState = async (state: TicketState, failMsg: string) => {
     setBusy(true);
     setError(null);
     try {
@@ -374,7 +394,15 @@ function TicketDetailPanel({
     }
   };
   const close = () => setState("closed", "Could not close the issue");
-  const reopen = () => setState("in_progress", "Could not reopen the issue");
+  // Reopen a resolved ticket → in_progress ("the fix didn't stick"); a closed
+  // one → triage (re-evaluate through the PO).
+  const reopen = () =>
+    setState(
+      st === "closed" ? "triage" : "in_progress",
+      "Could not reopen the issue",
+    );
+  const backlog = () => setState("backlog", "Could not move the issue to backlog");
+  const unpark = () => setState("triage", "Could not take the issue out of backlog");
 
   if (loading) {
     return (
@@ -422,6 +450,9 @@ function TicketDetailPanel({
       ) : (
         <div className="detail-head">
           <div className="detail-head-row">
+            <span className="detail-number" data-testid="detail-number">
+              {ticketRef(ticket.number)}
+            </span>
             <span
               className={`badge state-${stateBucket(ticket.state)}`}
               data-testid="detail-state"
@@ -449,6 +480,30 @@ function TicketDetailPanel({
               >
                 Edit
               </button>
+              {canBacklog && (
+                <button
+                  type="button"
+                  className="secondary"
+                  data-testid="detail-backlog-ticket"
+                  disabled={busy}
+                  onClick={backlog}
+                  title="Notiert, aber vom Agenten vorerst nicht bearbeiten"
+                >
+                  Move to backlog
+                </button>
+              )}
+              {canUnpark && (
+                <button
+                  type="button"
+                  className="secondary"
+                  data-testid="detail-unpark-ticket"
+                  disabled={busy}
+                  onClick={unpark}
+                  title="Zurück in Triage — der Agent darf es wieder bearbeiten"
+                >
+                  Out of backlog
+                </button>
+              )}
               {canClose && (
                 <button
                   type="button"
@@ -467,7 +522,7 @@ function TicketDetailPanel({
                   data-testid="detail-reopen-ticket"
                   disabled={busy}
                   onClick={reopen}
-                  title="Der Fix reicht nicht — Ticket zurück in Bearbeitung"
+                  title="Ticket wieder öffnen"
                 >
                   Reopen
                 </button>

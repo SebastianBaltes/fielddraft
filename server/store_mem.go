@@ -23,6 +23,7 @@ type memStore struct {
 	invites     map[string]*Invite     // token → invite
 
 	tickets   map[string]*Ticket           // ticket ID → ticket
+	ticketSeq int                          // monotonic #N counter (ticket 066230d9)
 	comments  map[string][]*TicketComment  // ticket ID → comments (in order)
 	artifacts map[string][]*TicketArtifact // ticket ID → artifacts (in order)
 	blobs     map[string][]byte            // sha256 hex → blob bytes

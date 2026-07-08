@@ -102,6 +102,9 @@ const (
 	StateResolved          TicketState = "resolved"
 	StateClosed            TicketState = "closed"
 	StateDeclined          TicketState = "declined"
+	// StateBacklog: recorded, but the agent should NOT work it — a user-set
+	// parking state outside the triage→…→resolved flow (ticket 066230d9).
+	StateBacklog           TicketState = "backlog"
 	StateRejectedSpam      TicketState = "rejected_spam"
 	StateRejectedMalicious TicketState = "rejected_malicious"
 )
@@ -131,7 +134,11 @@ const (
 // Ticket is a user-authored issue (bug / feature / question). Repro artifacts
 // hang off it as TicketArtifact; the discussion is a TicketComment thread.
 type Ticket struct {
-	ID          string      `json:"id"`
+	ID string `json:"id"`
+	// Number is the short, human/agent-friendly reference shown as "#N". The
+	// opaque `id` stays the storage/routing key; number is assigned per-DB
+	// (auto-increment) or, in prod, by IssueVault's per-project counter.
+	Number      int         `json:"number"`
 	AuthorID    string      `json:"author_id"`
 	Title       string      `json:"title"`
 	Body        string      `json:"body"`

@@ -24,6 +24,17 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.488",
+    entries: [
+      {
+        kind: "feat",
+        scope: "issues",
+        tickets: ["066230d9"],
+        text: "Issues haben jetzt eine kurze Referenz „#N“ statt der langen UUID — angezeigt in der Liste (eigene, sortierbare Spalte) und im Detail-Kopf. Die interne ID bleibt der Speicher-/Routing-Schlüssel; die Nummer ist die menschen- und agentenfreundliche Kurzform (im lokalen Store fortlaufend, in Prod vom Issue-Server pro Projekt vergeben — mit dem issuevault-Agenten abgestimmt). Außerdem kann der Autor den State seines Tickets selbst steuern: schließen, ein geschlossenes wieder öffnen, und neu „Backlog“ = notiert, aber vom Agenten vorerst nicht bearbeiten (parken/entparken). Serverseitig als sichere Teilmenge der State-Machine (nur der Autor bzw. Admins), inkl. Enum-Migration und Backfill der Bestands-Nummern.",
+      },
+    ],
+  },
+  {
     version: "0.6.487",
     entries: [
       {
