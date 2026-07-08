@@ -92,13 +92,15 @@ stehen in §5.4, das PDF liegt unter `docs/Literatur/PASM_SIGGRAPH_2013.pdf`):
 2. ~~§5.2 „Zone über den Pol"~~ UNTERSUCHT — kein Loch, nur Pol-Qualität,
    herabgestuft (§5.2). Nicht mehr Blocker.
 3. ~~§5.3 P5 Export-Integration „CAD (kantenexakt)"~~ ERLEDIGT (v0.6.464).
-   `MeshMethod::HybridPasm`; `mesher_points_impl(opts, body_filter)` meshed
-   pro Body; Geschlossenheits-Gate → adaptive Fallback; UI-Option. Details
-   §5.3. **JETZT dran: §5.4 Anisotropie.**
-4. **§5.4 P4d-2 Anisotropie** (Paper-Kern, größter Qualitätshebel, schwerste
-   Mathematik) — der nächste Schritt.
+4. ~~§5.4 P4d-2 Anisotropie~~ ERLEDIGT (opt-in, v0.6.465). Details + offener
+   Ausbaupfad (Metrik-Flächen-Seeding) in §5.4.
 5. §5.5 P4d-3 Gyroid-Blätter (F2) — durch §6-F3-Fallback (v0.6.463) bereits
-   auf DC-Qualität statt Loch; F2 (chartfreies PASM) ist die Kür.
+   auf DC-Qualität statt Loch; F2 (chartfreies PASM) ist die Kür. OFFEN,
+   niedrige Prio (Fallback deckt es funktional ab).
+
+**Feature-Status:** Die Kern-Pipeline (kantenexaktes, wasserdichtes Meshing +
+Export + Fallback + Anisotropie) ist FERTIG und nutzbar. Offen sind nur noch
+Küren: F2 (Gyroid-Chart), Metrik-Flächen-Seeding, Survey-Metriken.
 
 **Unabhängig offen:** Ticket pzvt (Hover-Kamera-Desync, Analyse im
 Ticket-Ordner `tickets/open/20260707-001324-pzvt`; Fix-Idee „pick what you
@@ -420,13 +422,45 @@ h-Label sichtgeprüft.
 offener Punkt: der Export meshed pro Body korrekt, aber der Debug-Dialog
 und der Export teilen keine Preset-Defaults — irrelevant für Nutzer.
 
-### 5.4 P4d-2 — Anisotropie (Paper §3.2 exakt umsetzen)
+### 5.4 P4d-2 — Anisotropie — UMGESETZT (opt-in, v0.6.465)
 
-Der schwierigste Rest. Alle Gleichungsnummern \= PASM-Paper. Die zwei
-dokumentierten IRRWEGE zuerst — beide sehen plausibel aus und degradieren
-messbar (Paper Fig. 4): (1) `M_ij` statt `Q_ij` in der Kraft (der
-ASPH-Fehler, Gl. 24); (2) die Jacobian-Pseudo-Inverse (Gl. 25). Es gilt
-ausschließlich Gl. 21.
+*Was umgesetzt wurde:* `Metric`-Struktur + `metric_at()` in `mesher_points.rs`
+lesen die Hauptkrümmungen aus dem tangentialen SDF-Hessian (zentrale
+Differenzen von ∇f, Schrittweite δ\=0,1·h < Clearance → nie über die Kante),
+bilden Streckfaktoren `s_k = h/clamp(√(8ε/|κ_k|), h/s_max, h)` und liefern
+`q_apply` (Q·d) + `m_quad` (dᵀMd). In `relaxation_pass` verzerrt die
+anisotrope Gauß-Kraft die Paare mit **Q_ij** (NICHT M_ij — der ASPH-Irrweg
+Gl. 24 ist so vermieden), Exponent \= symmetrische Mittelpunkt-Metrik
+½(M_i+M_j). `M=I` (Default, off) reproduziert den isotropen Kernel EXAKT
+(`q_apply`/`m_quad` → Identität bei s\=1), daher alle Bestandstests grün.
+Euklidischer 5σ-Cutoff bleibt gültig, weil `M ≥ I` ⇒ Metrik-Distanz ≥
+euklidisch (kein Nachbar wird verpasst); Nachbarsuche unverändert. Optionen
+`anisotropy`/`aniso_sag`/`aniso_smax`; Checkbox im PASM-Dialog.
+
+*Verifiziert:* Kernel-Test `mesher_points_anisotropy_cuts_cylinder_triangles`
++ real-WASM: langer Zylinder r10×h30 bei gleicher Sag-Toleranz isotrop 5722 →
+anisotrop 4890 Dreiecke, wasserdicht/2-manifold (Euler 2), dichter am
+Umfang / gröber längs der Achse.
+
+*Bewusste Entscheidungen / Grenzen (für den Nachfolger):*
+* **OPT-IN, nicht im Export-Default.** Der Formoperator pro Partikel pro
+  Iteration verlangsamt die Vernetzung deutlich (~1 s statt ~0,2 s beim
+  Zylinder); der Dreiecks-Gewinn ist real, aber moderat (~15 %). Kosten/Nutzen
+  rechtfertigt kein Default-An.
+* **Warum nur moderat:** Die Punktzahl ist SEED-fixiert (Octree, keine
+  Populations-Kontrolle — Paper-Vorteil, hier Grenze). Die Anisotropie
+  VERTEILT die fixen Seeds besser (dichter wo krümmt), reduziert aber die
+  Gesamtzahl nur, soweit die Achse gröber wird. Für den vollen Paper-Gewinn
+  müsste die Seed-Zahl aus der METRIK-Fläche `|Ω̄| = ∫√det M` folgen
+  (`σ = 0.3·√(|Ω̄|/n)`, Punktzahl statt Octree-Tiefe) — das ist der offene
+  Ausbaupfad, sinnvoll gemeinsam mit einem Punktzahl-getriebenen Seeding.
+* **Squash-CDT (§5.4 Punkt 6) NICHT nötig für den Basisgewinn:** die
+  Charts sind bereits bogenlängen-parametrisiert, anisotrope Punkte ergeben
+  im Chart direkt anisotrope Dreiecke. Squash bleibt eine Qualitäts-Kür.
+
+*Historische Umsetzungs-Anleitung (falls neu aufgerollt):* Alle
+Gleichungsnummern \= PASM-Paper. Die zwei IRRWEGE: (1) `M_ij` statt `Q_ij`
+(ASPH-Fehler Gl. 24); (2) Jacobian-Pseudo-Inverse (Gl. 25). Es gilt Gl. 21.
 
 1. **Metrik pro Partikel** (in `export.rs` pro Träger, geschlossen — nie
    über die Kante sampeln): Hauptkrümmungen κ₁, κ₂ mit Richtungen v₁, v₂:
