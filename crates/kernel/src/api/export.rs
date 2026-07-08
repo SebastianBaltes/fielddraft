@@ -1622,6 +1622,84 @@ mod mesher_octree_tests {
         assert_eq!(v - e + f, 2, "cap Euler characteristic broke: V={v} E={e} F={f}");
     }
 
+    /// Count the closed-mesh stats of a `mesher_points` run: `(triangles,
+    /// watertight, euler)`. Shared by the anisotropy test.
+    #[cfg(test)]
+    fn mesh_stats(out: &[f32]) -> (usize, bool, i64) {
+        let total = out[0] as usize;
+        let tris = out[1] as usize;
+        let idx_base = 3 + total * 9;
+        let mut edge_use: std::collections::HashMap<(u32, u32), u32> =
+            std::collections::HashMap::new();
+        let mut used: std::collections::HashSet<u32> = std::collections::HashSet::new();
+        for t in 0..tris {
+            let a = out[idx_base + t * 3] as u32;
+            let b = out[idx_base + t * 3 + 1] as u32;
+            let c = out[idx_base + t * 3 + 2] as u32;
+            for (x, y) in [(a, b), (b, c), (c, a)] {
+                *edge_use.entry((x.min(y), x.max(y))).or_default() += 1;
+                used.insert(x);
+                used.insert(y);
+            }
+        }
+        let watertight = !edge_use.is_empty() && edge_use.values().all(|&n| n == 2);
+        let euler = used.len() as i64 - edge_use.len() as i64 + tris as i64;
+        (tris, watertight, euler)
+    }
+
+    /// Hybrid-PASM P4d-2 (§5.4, ticket nwmi): curvature anisotropy on a tall
+    /// cylinder. At the SAME sag tolerance the anisotropic run must produce
+    /// FEWER triangles than the isotropic run — the barrel stays coarse along
+    /// the flat axis and only refines around the curved circumference — while
+    /// keeping the mesh closed and 2-manifold (Euler 2).
+    #[test]
+    fn mesher_points_anisotropy_cuts_cylinder_triangles() {
+        use fielddraft_protocol::{BoolOp, Primitive};
+        let mesh = |opts: &str| {
+            let mut k = crate::Kernel::new();
+            k.add_primitive(
+                Primitive::KIND_CYLINDER,
+                BoolOp::TAG_NEW,
+                0.0,
+                0.0,
+                0.0,
+                10.0,
+                15.0,
+                0.0,
+            )
+            .unwrap();
+            k.mesher_points(opts.into())
+        };
+        // Isotropic, fine enough to meet sag ≈ 0.02 on r=10 (h ≈ 1.5).
+        let iso = mesh(
+            r#"{"maxDepth":5,"brepSkeleton":true,"cdtFaces":true,
+                "nearSurfaceOnly":true,"nearSurfaceDist":1.5,
+                "fitOnSurface":true,"onlyOnSurface":true,
+                "repulsion":true,"interactionRadius":1.5,"repulsionStrength":0.5,
+                "pasmKernel":true,"iterations":16}"#,
+        );
+        // Anisotropic: coarse axial edge length h=4, same sag → circumference
+        // refines, axis stays coarse.
+        let aniso = mesh(
+            r#"{"maxDepth":5,"brepSkeleton":true,"cdtFaces":true,
+                "nearSurfaceOnly":true,"nearSurfaceDist":4.0,
+                "fitOnSurface":true,"onlyOnSurface":true,
+                "repulsion":true,"interactionRadius":4.0,"repulsionStrength":0.5,
+                "pasmKernel":true,"iterations":16,
+                "anisotropy":true,"anisoSag":0.02,"anisoSmax":8.0}"#,
+        );
+        let (iso_tris, iso_wt, iso_euler) = mesh_stats(&iso);
+        let (an_tris, an_wt, an_euler) = mesh_stats(&aniso);
+        assert!(iso_wt, "isotropic cylinder not watertight");
+        assert!(an_wt, "anisotropic cylinder not watertight");
+        assert_eq!(an_euler, 2, "anisotropic cylinder Euler broke: {an_euler}");
+        assert_eq!(iso_euler, 2, "isotropic cylinder Euler broke: {iso_euler}");
+        assert!(
+            an_tris < iso_tris,
+            "anisotropy should cut triangles at equal sag: aniso={an_tris} iso={iso_tris}"
+        );
+    }
+
     /// Hybrid-PASM §6 F3 (ticket nwmi): a TORUS ∩ y-slab exercises the
     /// CHARTLESS fallback — `HalfSpace::Torus` has no chart in the CDT
     /// dispatch, so both torus bands (outer + inner) are meshed as octree

@@ -24,6 +24,17 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.465",
+    entries: [
+      {
+        kind: "feat",
+        scope: "mesher",
+        tickets: ["nwmi"],
+        text: "Mesher PASM: Krümmungs-Anisotropie (Paper §3.2, opt-in Checkbox im PASM-Dialog). Die Gauß-Paarkraft wird mit der Flächenmetrik M=QᵀQ aus dem SDF-Formoperator verzerrt (Paper Gl. 21, Q_ij statt M_ij — der ASPH-Fehler wird vermieden): Partikel packen dichter, wo die Fläche krümmt, und gröber, wo sie flach ist. Am langen Zylinder messbar weniger Dreiecke bei gleicher Sag-Toleranz, gestreckte Dreiecke in der flachen Richtung, weiterhin wasserdicht/2-manifold. Bewusst opt-in (nicht im Export-Default), da der Formoperator pro Partikel die Vernetzung deutlich verlangsamt.",
+      },
+    ],
+  },
+  {
     version: "0.6.464",
     entries: [
       {

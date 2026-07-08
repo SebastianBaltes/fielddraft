@@ -125,6 +125,24 @@ pub struct MesherPointOptions {
     /// watertight seam by shared indices, DC-quality interior. Needs
     /// `cdt_faces` + `brep_skeleton`.
     pub fallback_patches: bool,
+    /// Hybrid-PASM P4d-2 (§5.4): curvature-anisotropic relaxation. When on,
+    /// the Gaussian pair force is warped by the surface metric `M = QᵀQ`
+    /// from the SDF shape operator — the paper's `Q_ij` prefactor (Gl. 21),
+    /// NOT `M_ij` (the ASPH error). Particles then space `h` apart in flat
+    /// directions but refine to meet the sag tolerance where the surface
+    /// curves, so a cylinder/cone/extrusion needs far fewer triangles for
+    /// the same chord accuracy. `M = I` (off) reproduces the isotropic
+    /// kernel exactly. Needs `pasm_kernel`.
+    pub anisotropy: bool,
+    /// Sag (chord-deviation) tolerance ε in mm that drives the anisotropic
+    /// refinement: the target spacing in a principal direction is
+    /// `√(8·ε/|κ|)`, clamped to `[h/aniso_smax, h]`. Only used when
+    /// `anisotropy` is on.
+    pub aniso_sag: f32,
+    /// Maximum anisotropic stretch factor `s_max` (spacing ratio between the
+    /// flat and the most-curved direction). Clamps the metric so the chart
+    /// squash stays well-conditioned. Only used when `anisotropy` is on.
+    pub aniso_smax: f32,
 }
 
 /// How the repulsion strength decays over the relaxation iterations.
@@ -165,6 +183,9 @@ impl Default for MesherPointOptions {
             balance_octree: true,
             target_edge_length: 0.0,
             fallback_patches: false,
+            anisotropy: false,
+            aniso_sag: 0.02,
+            aniso_smax: 8.0,
         }
     }
 }
@@ -215,6 +236,111 @@ fn v_len(a: [f32; 3]) -> f32 {
 fn v_norm(a: [f32; 3]) -> [f32; 3] {
     let l = v_len(a);
     if l > 1e-12 { v_scale(a, 1.0 / l) } else { a }
+}
+
+/// Curvature-anisotropic metric at a surface point (Hybrid-PASM P4d-2). The
+/// two tangential principal directions `v1,v2` carry stretch factors
+/// `s1,s2 ∈ [1, s_max]`: `s_k = h / clamp(√(8ε/|κ_k|), h/s_max, h)`, so a
+/// direction spaces `h` apart where flat and refines toward `h/s_max` where
+/// it curves. The full metric is `M = I + (s1²−1)v1v1ᵀ + (s2²−1)v2v2ᵀ` and
+/// its square root `Q = I + (s1−1)v1v1ᵀ + (s2−1)v2v2ᵀ` — both reduce to the
+/// identity when `s1=s2=1`, so an isotropic patch behaves exactly like the
+/// `M=I` kernel. See [`metric_at`].
+#[derive(Debug, Clone, Copy)]
+struct Metric {
+    v1: [f32; 3],
+    v2: [f32; 3],
+    s1: f32,
+    s2: f32,
+}
+
+impl Metric {
+    const IDENTITY: Metric = Metric {
+        v1: [1.0, 0.0, 0.0],
+        v2: [0.0, 1.0, 0.0],
+        s1: 1.0,
+        s2: 1.0,
+    };
+
+    /// `Q·d` — scale the tangential components of `d` by `s1,s2`, leave the
+    /// (small) normal component untouched. `s1=s2=1` → returns `d`.
+    fn q_apply(&self, d: [f32; 3]) -> [f32; 3] {
+        let a = v_dot(self.v1, d);
+        let b = v_dot(self.v2, d);
+        v_add(
+            v_add(d, v_scale(self.v1, (self.s1 - 1.0) * a)),
+            v_scale(self.v2, (self.s2 - 1.0) * b),
+        )
+    }
+
+    /// `dᵀ·M·d` — squared metric length. `s1=s2=1` → returns `|d|²`.
+    fn m_quad(&self, d: [f32; 3]) -> f32 {
+        let a = v_dot(self.v1, d);
+        let b = v_dot(self.v2, d);
+        v_dot(d, d) + (self.s1 * self.s1 - 1.0) * a * a + (self.s2 * self.s2 - 1.0) * b * b
+    }
+}
+
+/// Compute the [`Metric`] at surface point `p`. The SDF shape operator (the
+/// tangential Hessian of the field — a true distance field has eigenvalues
+/// `{κ1, κ2, 0}`, the 0 along the normal) is evaluated from central
+/// differences of the gradient at step `δ`, projected into the tangent
+/// plane, and eigen-decomposed as a symmetric 2×2. `δ` is kept below the
+/// boundary clearance so the stencil never straddles a sharp edge (the
+/// curvature is read on the SMOOTH sheet only — the plan's core trick).
+fn metric_at(
+    p: [f32; 3],
+    h: f32,
+    sag: f32,
+    s_max: f32,
+    grad: &dyn Fn([f32; 3]) -> [f32; 3],
+) -> Metric {
+    let n = grad(p);
+    // Tangent basis (e1, e2) ⟂ n.
+    let seed = if n[0].abs() < 0.9 { [1.0, 0.0, 0.0] } else { [0.0, 1.0, 0.0] };
+    let e1 = v_norm(v_sub(seed, v_scale(n, v_dot(seed, n))));
+    let e2 = v_cross(n, e1);
+    // Shape operator via ∂n/∂e_k, central differences. δ well below the
+    // 0.25·h clearance so the probes stay on the smooth sheet.
+    let delta = (0.1 * h).clamp(1e-3, 0.5);
+    let dn = |dir: [f32; 3]| -> [f32; 3] {
+        let gp = grad(v_add(p, v_scale(dir, delta)));
+        let gm = grad(v_sub(p, v_scale(dir, delta)));
+        v_scale(v_sub(gp, gm), 1.0 / (2.0 * delta))
+    };
+    let dne1 = dn(e1);
+    let dne2 = dn(e2);
+    // Symmetric 2×2 shape operator in the (e1,e2) basis.
+    let a = v_dot(dne1, e1);
+    let c = v_dot(dne2, e2);
+    let b = 0.5 * (v_dot(dne1, e2) + v_dot(dne2, e1));
+    // Principal curvatures = eigenvalues; eigenvectors give the directions.
+    let mean = 0.5 * (a + c);
+    let diff = 0.5 * (a - c);
+    let rad = (diff * diff + b * b).sqrt();
+    let (k1, k2) = (mean + rad, mean - rad);
+    // Eigenvector for k1 in the (e1,e2) plane.
+    let (c1, c2) = if b.abs() > 1e-9 {
+        let ang = 0.5 * (2.0 * b).atan2(a - c);
+        (ang.cos(), ang.sin())
+    } else if a >= c {
+        (1.0, 0.0)
+    } else {
+        (0.0, 1.0)
+    };
+    let v1 = v_add(v_scale(e1, c1), v_scale(e2, c2));
+    let v2 = v_add(v_scale(e1, -c2), v_scale(e2, c1));
+    // Stretch factors from the sag tolerance: s_k = h / clamp(√(8ε/|κ|)).
+    let stretch = |k: f32| -> f32 {
+        let hk = if k.abs() > 1e-6 { (8.0 * sag / k.abs()).sqrt() } else { h };
+        h / hk.clamp(h / s_max.max(1.0), h)
+    };
+    Metric {
+        v1,
+        v2,
+        s1: stretch(k1),
+        s2: stretch(k2),
+    }
 }
 
 /// Probe the normal field in the tangent plane around `p` (8 directions at
@@ -464,6 +590,28 @@ fn relaxation_pass(
         for (a, p) in anchors.iter().enumerate() {
             grid.entry(key(p)).or_default().push(n_pts + a);
         }
+        // Anisotropy (P4d-2): the curvature metric at each active point's
+        // CURRENT position, cached for this iteration. `M ≥ I` in every
+        // direction, so metric distances never fall below Euclidean — the
+        // Euclidean cutoff `r = 5σ` still captures every non-negligible
+        // interaction, and the grid/neighbour search stays unchanged.
+        let metrics: Vec<Metric> = if opts.anisotropy && opts.pasm_kernel {
+            let mut m = vec![Metric::IDENTITY; n_pts];
+            for &i in active {
+                if feature.map_or(PointLock::Free, |(l, _)| l[i]) == PointLock::Free {
+                    m[i] = metric_at(
+                        points[i],
+                        r,
+                        opts.aniso_sag,
+                        opts.aniso_smax,
+                        grad,
+                    );
+                }
+            }
+            m
+        } else {
+            Vec::new()
+        };
         let mut moved = points.clone();
         let mut max_disp = 0.0f32;
         for &i in active {
@@ -497,6 +645,28 @@ fn relaxation_pass(
                                 continue;
                             }
                             nearest = nearest.min(dist);
+                            if !metrics.is_empty() {
+                                // Anisotropic PASM force (paper Gl. 21): the
+                                // exponent uses the symmetric midpoint metric
+                                // `M_ij = ½(M_i+M_j)`, the prefactor uses
+                                // `Q_ij = ½(Q_i+Q_j)` — Q, NOT M (the ASPH
+                                // error, Gl. 24). Reduces to the isotropic
+                                // kernel exactly when both metrics are I.
+                                let sigma = r / 5.0;
+                                let mi = metrics[i];
+                                let mj = if j < n_pts { metrics[j] } else { Metric::IDENTITY };
+                                let quad = 0.5 * (mi.m_quad(dvec) + mj.m_quad(dvec));
+                                let s = (-quad / (4.0 * sigma * sigma)).exp()
+                                    / (2.0 * sigma * sigma);
+                                let qd = v_scale(
+                                    v_add(mi.q_apply(dvec), mj.q_apply(dvec)),
+                                    0.5,
+                                );
+                                f[0] += qd[0] * s;
+                                f[1] += qd[1] * s;
+                                f[2] += qd[2] * s;
+                                continue;
+                            }
                             let s = if opts.pasm_kernel {
                                 // PASM isotropic Gaussian kernel (paper Eq. 6,
                                 // M = I): F = (xi−xj)/2σ²·exp(−d²/4σ²) with

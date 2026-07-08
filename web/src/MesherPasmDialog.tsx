@@ -78,6 +78,8 @@ interface PasmSettings {
   iterations: number;
   /** Run the pipeline only up to this stage (visual debugging). */
   step: PasmStep;
+  /** P4d-2: curvature-anisotropic relaxation (denser where curved). */
+  anisotropy: boolean;
   partOpacity: number;
   strokeWidth: number;
 }
@@ -86,6 +88,7 @@ const DEFAULTS: PasmSettings = {
   targetEdgeLength: 2,
   iterations: 40,
   step: "full",
+  anisotropy: false,
   partOpacity: 0.4,
   strokeWidth: 2,
 };
@@ -109,6 +112,7 @@ function loadSettings(): PasmSettings {
       ),
       iterations: Math.round(clampNum(p.iterations, 1, 200, DEFAULTS.iterations)),
       step: STEPS.some((s) => s.key === p.step) ? (p.step as PasmStep) : DEFAULTS.step,
+      anisotropy: p.anisotropy === true,
       partOpacity: clampNum(p.partOpacity, 0, 1, DEFAULTS.partOpacity),
       strokeWidth: clampNum(p.strokeWidth, 0.5, 12, DEFAULTS.strokeWidth),
     };
@@ -144,6 +148,11 @@ function pasmParams(s: PasmSettings): MesherDebug {
     dampingCurve: "linear",
     fitTargetEpsilon: 0.001,
     fitStepMultiplier: 0.8,
+    // P4d-2: curvature anisotropy (opt-in — denser where curved, coarser
+    // where flat; higher mesh cost from the per-particle shape operator).
+    anisotropy: s.anisotropy,
+    anisoSag: 0.02,
+    anisoSmax: 8,
     // Seeding: the near-surface band at the target spacing.
     bandGuard: 1,
     nearSurfaceOnly: true,
@@ -166,6 +175,7 @@ export function MesherPasmDialog({ onClose }: { onClose: () => void }) {
   const [targetEdgeLength, setTargetEdgeLength] = useState(initial.targetEdgeLength);
   const [iterations, setIterations] = useState(initial.iterations);
   const [step, setStep] = useState<PasmStep>(initial.step);
+  const [anisotropy, setAnisotropy] = useState(initial.anisotropy);
   const [partOpacity, setPartOpacity] = useState(initial.partOpacity);
   const [strokeWidth, setStrokeWidth] = useState(initial.strokeWidth);
 
@@ -177,6 +187,7 @@ export function MesherPasmDialog({ onClose }: { onClose: () => void }) {
       targetEdgeLength,
       iterations,
       step,
+      anisotropy,
       partOpacity,
       strokeWidth,
     };
@@ -186,7 +197,7 @@ export function MesherPasmDialog({ onClose }: { onClose: () => void }) {
     } catch {
       // no localStorage (tests) — non-persistent is fine
     }
-  }, [targetEdgeLength, iterations, step, partOpacity, strokeWidth]);
+  }, [targetEdgeLength, iterations, step, anisotropy, partOpacity, strokeWidth]);
   useEffect(() => () => setMesherDebug(null), []);
 
   useEffect(() => {
@@ -310,6 +321,31 @@ export function MesherPasmDialog({ onClose }: { onClose: () => void }) {
             value={iterations}
             onChange={setIterations}
           />
+        </div>
+      </div>
+
+      <div className="vec-row">
+        <label
+          title={
+            "Curvature anisotropy (P4d-2): the metric-warped Gaussian force " +
+            "(paper Gl. 21, Q not M) packs particles denser where the surface " +
+            "curves and coarser where it's flat — fewer triangles at the same " +
+            "sag (ε = 0.02 mm), at a higher mesh cost (shape operator per " +
+            "particle). Off = the isotropic kernel."
+          }
+        >
+          Anisotropy
+        </label>
+        <div className="fields">
+          <label className="checkbox">
+            <input
+              type="checkbox"
+              aria-label="Anisotropy"
+              data-testid="mesher-pasm-anisotropy"
+              checked={anisotropy}
+              onChange={(e) => setAnisotropy(e.currentTarget.checked)}
+            />
+          </label>
         </div>
       </div>
 

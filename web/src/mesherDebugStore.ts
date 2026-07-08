@@ -98,6 +98,14 @@ export interface MesherDebug {
    *  tessellated sheets, fold-guard failures) as signed-DC octree patches
    *  zipped to the exact skeleton rim chains. Needs brepSkeleton+cdtFaces. */
   fallbackPatches?: boolean;
+  /** Hybrid-PASM P4d-2: curvature-anisotropic relaxation (metric-warped
+   *  Gaussian force, paper Gl. 21). Denser where the surface curves, coarse
+   *  where flat — fewer triangles at equal sag, at a higher mesh cost. */
+  anisotropy?: boolean;
+  /** Sag tolerance ε (mm) driving the anisotropic refinement. */
+  anisoSag?: number;
+  /** Max anisotropic stretch factor s_max. */
+  anisoSmax?: number;
 }
 
 export type MesherDampingCurve = "linear" | "exponential";
