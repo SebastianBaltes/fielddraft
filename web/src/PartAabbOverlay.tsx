@@ -50,18 +50,28 @@ export function PartAabbOverlay() {
   );
 
   const selection = state?.selection;
+  // Ticket 72a141f: clicking a row in the Parts panel HIGHLIGHTS the body
+  // (`highlightedBodyIndex`), it does not add to the feature `selection`. Box
+  // that part too, else "select a part → no AABB". Union so a viewport/list
+  // feature selection AND a highlighted part both draw.
+  const highlightedBodyIndex = state?.highlightedBodyIndex ?? null;
   const brepVersion = state?.brepVersion ?? 0;
   useEffect(() => {
     const group = groupRef.current;
     if (!group) return;
     disposeChildren(group);
-    if (!visible || !store || !selection || selection.size === 0) {
+    const featureIds = new Set<number>(selection ?? []);
+    if (highlightedBodyIndex != null && store) {
+      const seed = store.listBodies()[highlightedBodyIndex]?.seedId;
+      if (seed != null) featureIds.add(seed);
+    }
+    if (!visible || !store || featureIds.size === 0) {
       invalidate();
       return;
     }
 
     const webgpu = isWebGPURenderer(gl);
-    for (const box of selectedPartAabbs(store.kernel, selection)) {
+    for (const box of selectedPartAabbs(store.kernel, featureIds)) {
       // makeFatLine attaches the geometry to the object; disposeChildren frees
       // it. depthTest is off (createFatLineMaterials default) → x-ray box.
       const { object } = makeFatLine(
@@ -74,7 +84,7 @@ export function PartAabbOverlay() {
       group.add(object);
     }
     invalidate();
-  }, [visible, store, selection, brepVersion, gl, mats, invalidate]);
+  }, [visible, store, selection, highlightedBodyIndex, brepVersion, gl, mats, invalidate]);
 
   useEffect(() => {
     return () => {

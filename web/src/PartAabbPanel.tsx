@@ -24,13 +24,30 @@ export function PartAabbPanel() {
   const { store, state } = useKernelStore();
   const visible = useSyncExternalStore(subscribePartAabb, getPartAabbVisible);
   const selection = state?.selection;
+  // Ticket 72a141f: a Parts-panel row click highlights a body
+  // (`highlightedBodyIndex`) rather than adding to the feature selection —
+  // mirror the overlay and include it, so its bounds show too.
+  const highlightedBodyIndex = state?.highlightedBodyIndex ?? null;
 
   // Re-resolve when the selection OR the geometry (an edit moves/cuts a part)
   // changes — `features`/`brepVersion` are extra invalidation triggers.
   const boxes = useMemo<PartAabb[]>(() => {
-    if (!visible || !store || !selection || selection.size === 0) return [];
-    return selectedPartAabbs(store.kernel, selection);
-  }, [visible, store, selection, state?.features, state?.brepVersion]);
+    if (!visible || !store) return [];
+    const featureIds = new Set<number>(selection ?? []);
+    if (highlightedBodyIndex != null) {
+      const seed = store.listBodies()[highlightedBodyIndex]?.seedId;
+      if (seed != null) featureIds.add(seed);
+    }
+    if (featureIds.size === 0) return [];
+    return selectedPartAabbs(store.kernel, featureIds);
+  }, [
+    visible,
+    store,
+    selection,
+    highlightedBodyIndex,
+    state?.features,
+    state?.brepVersion,
+  ]);
 
   if (!visible) return null;
 

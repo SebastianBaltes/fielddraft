@@ -24,13 +24,24 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.467",
+    entries: [
+      {
+        kind: "fix",
+        scope: "debug",
+        tickets: ["72a141f"],
+        text: "Debug ▸ Part-AABB zeigt jetzt auch die Bounding-Box eines über die Parts-Liste selektierten Körpers. Ein Klick in der Parts-Liste markiert den Körper über den Highlight-Index, nicht über die Feature-Selektion — Overlay und Zahlen-Panel lasen aber nur letztere und blieben daher leer. Beide berücksichtigen nun zusätzlich den hervorgehobenen Part.",
+      },
+    ],
+  },
+  {
     version: "0.6.466",
     entries: [
       {
         kind: "fix",
         scope: "mesher",
         tickets: ["0018657"],
-        text: "Zahlenfelder, deren Änderung ein teures Neu-Weben auslöst (Mesher-, Mesher-PASM- und Export-Dialog), werten die Eingabe jetzt erst bei Verlassen des Feldes bzw. mit Enter aus. Vorher hing der Mesher schon während der Eingabe: Tippt man „0" und dann „0,", wurde der Zwischenwert auf das Minimum geklemmt und ein extrem feines Mesh gewoben, obwohl die Eingabe noch gar nicht fertig war.",
+        text: "Zahlenfelder, deren Änderung ein teures Neu-Weben auslöst (Mesher-, Mesher-PASM- und Export-Dialog), werten die Eingabe jetzt erst bei Verlassen des Feldes bzw. mit Enter aus. Vorher hing der Mesher schon während der Eingabe: Tippt man „0“ und dann „0,“, wurde der Zwischenwert auf das Minimum geklemmt und ein extrem feines Mesh gewoben, obwohl die Eingabe noch gar nicht fertig war.",
       },
     ],
   },
