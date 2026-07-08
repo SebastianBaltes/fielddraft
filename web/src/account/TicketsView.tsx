@@ -19,7 +19,7 @@
  * button.
  */
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   platformApi,
   artifactUrl,
@@ -108,6 +108,15 @@ interface TicketListProps {
   onOpen(id: string): void;
 }
 
+/** The click-sortable columns of the issue list (ticket a7b63b6). */
+type SortKey = "state" | "title" | "category" | "updated";
+const SORT_COLUMNS: { key: SortKey; label: string }[] = [
+  { key: "state", label: "State" },
+  { key: "title", label: "Title" },
+  { key: "category", label: "Category" },
+  { key: "updated", label: "Updated" },
+];
+
 function TicketList({ user, onOpen }: TicketListProps) {
   const [tickets, setTickets] = useState<TicketSummary[]>([]);
   const [loading, setLoading] = useState(true);
@@ -116,6 +125,9 @@ function TicketList({ user, onOpen }: TicketListProps) {
   const [stateFilter, setStateFilter] = useState<TicketState | "">("");
   const [categoryFilter, setCategoryFilter] = useState<TicketCategory | "">("");
   const [query, setQuery] = useState("");
+  // Sort column + direction (ticket a7b63b6). Default: most-recent activity.
+  const [sortKey, setSortKey] = useState<SortKey>("updated");
+  const [sortAsc, setSortAsc] = useState(false);
 
   const reload = useCallback(async () => {
     setLoading(true);
@@ -128,8 +140,6 @@ function TicketList({ user, onOpen }: TicketListProps) {
     };
     try {
       const list = await platformApi.listTickets(filter);
-      // Most-recent activity first (created falls back via updated).
-      list.sort((a, b) => b.updated_at.localeCompare(a.updated_at));
       setTickets(list);
     } catch (err) {
       setError(accountErrorMessage(err, "Could not load tickets"));
@@ -141,6 +151,37 @@ function TicketList({ user, onOpen }: TicketListProps) {
   useEffect(() => {
     void reload();
   }, [reload]);
+
+  // Client-side sort by the chosen column (the server returns the filtered
+  // set; the header toggles key + direction — ticket a7b63b6).
+  const sortedTickets = useMemo(() => {
+    const key = (t: TicketSummary): string => {
+      switch (sortKey) {
+        case "state":
+          return stateLabel(t.state);
+        case "title":
+          return t.title;
+        case "category":
+          return categoryLabel(t.category);
+        case "updated":
+          return t.updated_at;
+      }
+    };
+    const dir = sortAsc ? 1 : -1;
+    return [...tickets].sort(
+      (a, b) => dir * key(a).localeCompare(key(b), undefined, { numeric: true }),
+    );
+  }, [tickets, sortKey, sortAsc]);
+
+  const onSort = (key: SortKey) => {
+    if (key === sortKey) {
+      setSortAsc((v) => !v);
+    } else {
+      setSortKey(key);
+      // Dates default newest-first; text columns default A→Z.
+      setSortAsc(key !== "updated");
+    }
+  };
 
   return (
     <div className="fd-tickets" data-testid="tickets">
@@ -210,8 +251,34 @@ function TicketList({ user, onOpen }: TicketListProps) {
           No issues match these filters.
         </p>
       ) : (
-        <ul className="ticket-rows" data-testid="ticket-list">
-          {tickets.map((t) => (
+        <div className="ticket-table" data-testid="ticket-list">
+          <div className="ticket-head" role="row">
+            {SORT_COLUMNS.map((col) => (
+              <button
+                key={col.key}
+                type="button"
+                className={`col-head col-${col.key}${
+                  sortKey === col.key ? " active" : ""
+                }`}
+                data-testid={`ticket-sort-${col.key}`}
+                aria-sort={
+                  sortKey === col.key
+                    ? sortAsc
+                      ? "ascending"
+                      : "descending"
+                    : "none"
+                }
+                onClick={() => onSort(col.key)}
+              >
+                {col.label}
+                <span className="sort-arrow" aria-hidden="true">
+                  {sortKey === col.key ? (sortAsc ? "▲" : "▼") : ""}
+                </span>
+              </button>
+            ))}
+          </div>
+          <ul className="ticket-rows">
+            {sortedTickets.map((t) => (
             <li
               key={t.id}
               className="ticket-row"
@@ -240,8 +307,9 @@ function TicketList({ user, onOpen }: TicketListProps) {
                 </span>
               </button>
             </li>
-          ))}
-        </ul>
+            ))}
+          </ul>
+        </div>
       )}
     </div>
   );

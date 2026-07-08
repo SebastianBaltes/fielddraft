@@ -24,6 +24,17 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.485",
+    entries: [
+      {
+        kind: "feat",
+        scope: "issues",
+        tickets: ["a7b63b6"],
+        text: "Die Issues-Liste hat jetzt klickbare, sortierbare Spaltenüberschriften (State, Title, Category, Updated). Ein Klick sortiert nach der Spalte, ein weiterer kehrt die Richtung um; die aktive Spalte zeigt einen Pfeil. Text-Spalten starten A→Z, „Updated“ neueste zuerst.",
+      },
+    ],
+  },
+  {
     version: "0.6.484",
     entries: [
       {
