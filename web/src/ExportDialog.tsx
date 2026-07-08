@@ -493,6 +493,9 @@ export function ExportDialog({ store, format, onClose }: ExportDialogProps) {
           step={0.05}
           value={cellSizeMm}
           onChange={onCellSizeChange}
+          // Ticket 0018657: the pre-mesh estimate recomputes on change — commit
+          // on blur/Enter so a half-typed value can't clamp to the min and stall.
+          commitOnChange={false}
           onKeyDown={(e) => {
             if (e.key === "Enter" && phase.kind !== "running") runExport();
           }}

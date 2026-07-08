@@ -280,6 +280,9 @@ export function MesherPasmDialog({ onClose }: { onClose: () => void }) {
             aria-label="Edge length h (mm)"
             value={targetEdgeLength}
             onChange={setTargetEdgeLength}
+            // Ticket 0018657: re-weaves on change → commit on blur/Enter so a
+            // half-typed "0," can't clamp to the min and hang on a fine mesh.
+            commitOnChange={false}
           />
         </div>
       </div>
@@ -320,6 +323,7 @@ export function MesherPasmDialog({ onClose }: { onClose: () => void }) {
             aria-label="Iterations (max)"
             value={iterations}
             onChange={setIterations}
+            commitOnChange={false}
           />
         </div>
       </div>

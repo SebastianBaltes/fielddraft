@@ -270,6 +270,10 @@ export function MesherDialog({ onClose }: { onClose: () => void }) {
           aria-label={label}
           value={value}
           onChange={set}
+          // Ticket 0018657: every numeric change here re-weaves the mesh.
+          // Commit only on blur/Enter so an intermediate keystroke ("0,")
+          // can't clamp to the minimum and hang on an ultra-fine mesh.
+          commitOnChange={false}
         />
       </div>
     </div>
