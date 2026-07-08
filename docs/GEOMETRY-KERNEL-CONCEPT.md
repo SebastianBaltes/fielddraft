@@ -180,10 +180,20 @@ gerundete Fläche, und in der Abweichzone (`|f_a − f_b| < r`) gehört die Flä
 abgeleitete B-Rep die echte Rundung statt der scharfen Phantomkante, und die Blend-Fläche
 wird auswähl- und benennbar (§ 10, Blend-Carrier). Der symbolische Träger ist
 `HalfSpace::Blend { a, b, radius, … }`: Identität rein symbolisch (die zwei Wand-Träger +
-Radius), Auswertung = `blend_min` der beiden eingebetteten Wandfelder. Die tangentialen
-Skirt-Nähte (Blend↔Wand, ein G1-Kontakt) sind die offene Baustelle — sie sind
-transversal als `Wand_A = 0 ∧ Wand_B = r` darstellbar, aber der numerische Octree-Tracer
-kann sie noch nicht sampeln (dieselbe Transversalitäts-Grenze wie beim Tangentialkontakt).
+Radius), Auswertung = `blend_min` der beiden eingebetteten Wandfelder.
+
+Die tangentialen Skirt-Nähte (Blend↔Wand, ein G1-Kontakt) kann der numerische
+Octree-Tracer nicht sampeln (parallele Gradienten entlang der ganzen Kurve — dieselbe
+Transversalitäts-Grenze wie beim Tangentialkontakt), aber sie sind symbolisch: die Naht
+ist `Wand_A = 0 ∧ Wand_B = r`, der transversale Schnitt von Wand_A mit dem r-Offset von
+Wand_B. `materialize_blend_seams` (c-M2, `weaving/canonicalize.rs`) materialisiert die
+**geschlossenen (zirkulären) Nähte** exakt: ein Fillet zwischen Zylinder und
+achsnormaler Ebene (dank der exakt-zirkulären smin-Form ein exakter Torus-Ring) hat zwei
+koaxiale Kreis-Nähte (Blend↔Zylinder in Höhe r, Blend↔Ebene bei Radius R±r); sie werden
+als exakte NURBS-Kreise eingesetzt, die degenerierten Octree-Fragmente + der scharfe
+Wand-Stummel fallen, das Loop-Ordering fügt Torus-Ring + Ebenen-Loch zusammen (χ = 2, null
+Verletzungen). Offen bleiben die NICHT-geschlossenen Nähte (planare Geradkanten →
+geclippte Geraden mit Runout-Caps) und die Verdrahtung ins Produktions-Weben.
 
 ---
 

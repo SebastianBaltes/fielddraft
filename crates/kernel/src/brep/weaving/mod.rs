@@ -326,6 +326,24 @@ fn canonicalize_coincident(
         .collect();
     let mut culled: std::collections::HashSet<u32> = std::collections::HashSet::new();
     let has_tangency = !registry.tangent_seams().is_empty();
+    // c-M2: filleted junctions carry a procedural blend carrier whose two
+    // seams are G1-tangent (untraceable by the octree). Materialise their
+    // closed circular seams symbolically first, so the loop ordering sees the
+    // exact curves. Runs whenever the body has a blend carrier, independent of
+    // coincidence.
+    let has_blend = halfspaces
+        .values()
+        .any(|(hs, _)| matches!(hs, fielddraft_protocol::HalfSpace::Blend { .. }));
+    if has_blend {
+        let aabb = body.aabb();
+        let diag = norm([
+            (aabb.max[0] - aabb.min[0]) as f64,
+            (aabb.max[1] - aabb.min[1]) as f64,
+            (aabb.max[2] - aabb.min[2]) as f64,
+        ])
+        .max(1.0);
+        materialize_blend_seams(body, brep, halfspaces, &mut memberships, diag);
+    }
     if !registry.is_empty() || has_tangency {
         let aabb = body.aabb();
         let diag = norm([
@@ -529,10 +547,15 @@ fn align_ambiguous_ring_windings(brep: &mut BRep) {
             SurfaceGeometry::Analytic { surface, .. }
                 if !matches!(surface, fielddraft_protocol::HalfSpace::Plane { .. }) =>
             {
+                // A procedural fillet Blend band (c-M2) is a torus-like band:
+                // both its circular seams need partner-parity alignment against
+                // the authoritative wall faces, exactly like a closed-cross
+                // carrier's full-rev rings.
                 let closed_cross = matches!(
                     surface,
                     fielddraft_protocol::HalfSpace::Sphere { .. }
                         | fielddraft_protocol::HalfSpace::Torus { .. }
+                        | fielddraft_protocol::HalfSpace::Blend { .. }
                 );
                 let idxs: Vec<usize> = (0..loops.len())
                     .filter(|&li| {

@@ -15,7 +15,7 @@ use crate::csg::BranchId;
 use fielddraft_protocol::HalfSpace;
 
 // ─── small vector helpers (f64): shared, see brep::vec3 ─────────────────────
-use crate::brep::vec3::{cross, normalize as unit, scale, sub};
+use crate::brep::vec3::{cross, dot, normalize as unit, scale, sub};
 use crate::brep::vec3::norm;
 use super::*;
 
@@ -1135,4 +1135,205 @@ fn place_point3(t: &fielddraft_protocol::Transform, p: [f64; 3]) -> [f64; 3] {
         r[1] as f64 + t.translate[1] as f64,
         r[2] as f64 + t.translate[2] as f64,
     ]
+}
+
+// ─── c-M2: procedural blend-seam materialisation ────────────────────────────
+//
+// A filleted junction's blend surface leaves each wall along a G1-TANGENT
+// seam — a curve the octree tracer cannot sample (parallel gradients along the
+// whole curve, the same transversality wall as the tangent-contact seams).
+// But the seam is symbolic: `wall_A = 0 ∧ wall_B = r` is the transversal
+// intersection of wall_A with the r-offset of wall_B, computable in closed
+// form. This materialises the CLOSED (circular) seams — a fillet between a
+// cylinder and a perpendicular plane (round-min → exact torus band; both seams
+// are coaxial circles). Non-closed seams (planar straight edges → clipped
+// lines with runout caps) and other combos stay on the octree fallback.
+
+/// One filleted junction to seam: the blend's own branch, its two wall
+/// branches, and the blend radius.
+struct BlendSeamSpec {
+    blend: u32,
+    wall_a: u32,
+    wall_b: u32,
+    radius: f32,
+}
+
+/// Walk the CSG body and collect every `MaskedBlend` that carries a B-Rep
+/// identity (a real fillet, not a hand-built node).
+fn collect_blend_specs(node: &BoundedCsg, out: &mut Vec<BlendSeamSpec>) {
+    match node {
+        BoundedCsg::MaskedBlend { left, right, blend_radius, provenance, .. } => {
+            if provenance.branch != 0 && *blend_radius > 0.0 {
+                out.push(BlendSeamSpec {
+                    blend: provenance.branch,
+                    wall_a: provenance.wall_a,
+                    wall_b: provenance.wall_b,
+                    radius: *blend_radius,
+                });
+            }
+            collect_blend_specs(left, out);
+            collect_blend_specs(right, out);
+        }
+        BoundedCsg::Union { left, right, .. }
+        | BoundedCsg::Difference { left, right, .. }
+        | BoundedCsg::Intersection { left, right, .. }
+        | BoundedCsg::SmoothUnion { left, right, .. }
+        | BoundedCsg::SmoothDifference { left, right, .. }
+        | BoundedCsg::Morph { left, right, .. } => {
+            collect_blend_specs(left, out);
+            collect_blend_specs(right, out);
+        }
+        BoundedCsg::Twist { inner, .. }
+        | BoundedCsg::Bend { inner, .. }
+        | BoundedCsg::Displace { inner, .. }
+        | BoundedCsg::Shell { inner, .. }
+        | BoundedCsg::Offset { inner, .. } => collect_blend_specs(inner, out),
+        BoundedCsg::Leaf { .. }
+        | BoundedCsg::Extrude { .. }
+        | BoundedCsg::Revolve { .. }
+        | BoundedCsg::Helix { .. }
+        | BoundedCsg::Sweep { .. }
+        | BoundedCsg::Empty => {}
+    }
+}
+
+/// Materialise the closed circular seams of every filleted cylinder↔plane
+/// junction: drop the octree's degenerate blend fragments + the sharp wall
+/// stub, insert the two exact seam circles. `finish_weave`'s loop ordering
+/// then assembles the torus band + punches the plane's hole.
+pub(super) fn materialize_blend_seams(
+    body: &BoundedCsg,
+    brep: &mut BRep,
+    halfspaces: &BranchSurfaceMap,
+    memberships: &mut Vec<Vec<u32>>,
+    diag: f64,
+) {
+    let mut specs = Vec::new();
+    collect_blend_specs(body, &mut specs);
+    for spec in specs {
+        let Some((hs_a, xf_a)) = halfspaces.get(&spec.wall_a).cloned() else { continue };
+        let Some((hs_b, xf_b)) = halfspaces.get(&spec.wall_b).cloned() else { continue };
+        let Some(circles) = blend_seam_circles(
+            &hs_a, &xf_a, spec.wall_a, &hs_b, &xf_b, spec.wall_b, spec.radius, body, diag,
+        ) else {
+            continue;
+        };
+        // Drop every edge touching the blend branch (the octree's degenerate
+        // tangent-seam attempts) and the sharp wall_a↔wall_b stub.
+        let keep: Vec<bool> = brep
+            .edges
+            .iter()
+            .map(|e| {
+                let (s0, s1) = (e.signature.0.as_u32(), e.signature.1.as_u32());
+                let touches_blend = s0 == spec.blend || s1 == spec.blend;
+                let sharp = (s0 == spec.wall_a && s1 == spec.wall_b)
+                    || (s0 == spec.wall_b && s1 == spec.wall_a);
+                !(touches_blend || sharp)
+            })
+            .collect();
+        if keep.iter().any(|&k| !k) {
+            compact_edges_and_vertices(brep, &keep, memberships);
+        }
+        for (frame, radius, y_local, wall) in circles {
+            brep.add_edge(Edge::new(
+                EdgeGeometry::Nurbs(super::wireframes::nurbs_circle(&frame, radius, y_local)),
+                BranchId(spec.blend),
+                BranchId(wall),
+                None,
+                None,
+            ));
+            memberships.push(vec![spec.blend.min(wall), spec.blend.max(wall)]);
+        }
+    }
+}
+
+/// The two closed seam circles of a cylinder↔plane fillet, each as
+/// `(frame, radius_local, y_local, wall_branch)` for [`nurbs_circle`] in the
+/// cylinder's frame (both seams are coaxial with the cylinder). `None` for any
+/// other wall combination or a non-perpendicular plane (→ octree fallback).
+#[allow(clippy::too_many_arguments)]
+fn blend_seam_circles(
+    hs_a: &HalfSpace,
+    xf_a: &fielddraft_protocol::Transform,
+    branch_a: u32,
+    hs_b: &HalfSpace,
+    xf_b: &fielddraft_protocol::Transform,
+    branch_b: u32,
+    radius: f32,
+    body: &BoundedCsg,
+    diag: f64,
+) -> Option<Vec<(fielddraft_protocol::Transform, f32, f32, u32)>> {
+    // Identify which wall is the cylinder and which the plane.
+    let (cyl_r, cyl_xf, cyl_branch, pl_normal, pl_offset, pl_xf, pl_branch) = match (hs_a, hs_b) {
+        (HalfSpace::InfiniteCylinder { radius: rc }, HalfSpace::Plane { normal, offset }) => {
+            (*rc, xf_a, branch_a, *normal, *offset, xf_b, branch_b)
+        }
+        (HalfSpace::Plane { normal, offset }, HalfSpace::InfiniteCylinder { radius: rc }) => {
+            (*rc, xf_b, branch_b, *normal, *offset, xf_a, branch_a)
+        }
+        _ => return None,
+    };
+
+    let axis = unit([
+        crate::quat_rotate(cyl_xf.rotation, [0.0, 1.0, 0.0])[0] as f64,
+        crate::quat_rotate(cyl_xf.rotation, [0.0, 1.0, 0.0])[1] as f64,
+        crate::quat_rotate(cyl_xf.rotation, [0.0, 1.0, 0.0])[2] as f64,
+    ]);
+    let n_local = unit([pl_normal[0] as f64, pl_normal[1] as f64, pl_normal[2] as f64]);
+    let n_world = crate::quat_rotate(pl_xf.rotation, [
+        n_local[0] as f32,
+        n_local[1] as f32,
+        n_local[2] as f32,
+    ]);
+    let n_world = unit([n_world[0] as f64, n_world[1] as f64, n_world[2] as f64]);
+    // The seam is a circle only when the plane is perpendicular to the axis.
+    if dot(axis, n_world).abs() < 0.999 {
+        return None;
+    }
+
+    // Plane point in the cylinder's local frame → its axial coordinate.
+    let pl_pt_world = place_point3(pl_xf, [
+        (pl_normal[0] * pl_offset) as f64,
+        (pl_normal[1] * pl_offset) as f64,
+        (pl_normal[2] * pl_offset) as f64,
+    ]);
+    let pl_local = crate::world_to_local(cyl_xf, [
+        pl_pt_world[0] as f32,
+        pl_pt_world[1] as f32,
+        pl_pt_world[2] as f32,
+    ]);
+    let y_plane = pl_local[1] as f64;
+    let scale = (cyl_xf.min_scale() as f64).max(1e-9);
+    let r_local = radius as f64 / scale;
+    let r_cyl = cyl_r as f64;
+    let tol = crate::brep::tol::on_boundary(diag) * 4.0;
+
+    // A circle at (radius, y) in the cylinder frame is on the body boundary iff
+    // its 0° sample reads ~0 under the (blend-aware) field.
+    let on_body = |radius_l: f64, y_l: f64| -> f64 {
+        let w = place_point3(cyl_xf, [radius_l, y_l, 0.0]);
+        body.sdf([w[0] as f32, w[1] as f32, w[2] as f32], crate::csg::EvalMode::Visual)
+            .abs() as f64
+    };
+    // Pick the offset sign whose sample sits on the boundary.
+    let pick = |cands: [(f64, f64); 2]| -> Option<(f64, f64)> {
+        cands
+            .into_iter()
+            .filter(|&(rl, yl)| on_body(rl, yl) <= tol)
+            .min_by(|a, b| {
+                on_body(a.0, a.1).partial_cmp(&on_body(b.0, b.1)).unwrap()
+            })
+    };
+
+    // Seam on the cylinder wall: radius = R, axial = y_plane ± r.
+    let (rc_cyl, y_cyl) =
+        pick([(r_cyl, y_plane + r_local), (r_cyl, y_plane - r_local)])?;
+    // Seam on the plane: radius = R ± r, axial = y_plane.
+    let (r_pl, y_pl) =
+        pick([(r_cyl + r_local, y_plane), (r_cyl - r_local, y_plane)])?;
+
+    Some(vec![
+        (cyl_xf.clone(), rc_cyl as f32, y_cyl as f32, cyl_branch),
+        (cyl_xf.clone(), r_pl as f32, y_pl as f32, pl_branch),
+    ])
 }

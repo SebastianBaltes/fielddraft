@@ -4811,6 +4811,143 @@ fn fillet_blend_weaves_as_its_own_analytic_face() {
     }
 }
 
+/// c-M2 target: a cylinder embedded in a box, filleted at the circular
+/// contact edge. The blend is an exact torus band (round-min between a
+/// cylinder and a plane); its two seams are CLOSED circles (blend↔cylinder
+/// at height r, blend↔box-top at radius R+r) — no runout, the cleanest
+/// manifold fillet.
+fn cylinder_on_box_filleted(radius: f32) -> (crate::bvh::BoundedCsg, u32) {
+    let registry = FeatureRegistry::with_builtins();
+    let mut doc = empty_ctx();
+    let mut ctx = Context::new(&mut doc);
+    // Solid box (top y=10) with a blind cylindrical hole (R=6, axis Y) cut
+    // from the top — a Difference keeps both features in ONE woven body. The
+    // top rim of the hole is a circle (feature-1×feature-2 edge).
+    registry
+        .regenerate(
+            &mut ctx,
+            &[
+                FeatureCall::new(
+                    "box",
+                    id(1),
+                    json!({ "half_extents": [15.0, 10.0, 15.0] }),
+                ),
+                FeatureCall::new(
+                    "cylinder",
+                    id(2),
+                    json!({
+                        "radius": 6.0,
+                        "half_height": 8.0,
+                        "center": [0.0, 6.0, 0.0],
+                        "op": "remove",
+                        "targets": "qCreatedBy(1)",
+                    }),
+                ),
+            ],
+            None,
+        )
+        .unwrap();
+    let woven = crate::body::weave_all(&ctx.features);
+    let (brep, placement) = &woven[0];
+    // The contact circle: a feature-1×feature-2 edge.
+    use crate::brep::naming::TopoRef;
+    use crate::brep::EdgeId;
+    let mut edge_hash = None;
+    for i in 0..brep.edges.len() {
+        let e = brep.edge(EdgeId(i as u32));
+        let (s0, s1) = (e.signature.0.feature_id(), e.signature.1.feature_id());
+        if (s0 == 1 && s1 == 2) || (s0 == 2 && s1 == 1) {
+            edge_hash = Some(TopoRef::from_edge(brep, EdgeId(i as u32)).id_hash);
+            break;
+        }
+    }
+    let _ = placement;
+    let edge_hash = edge_hash.expect("cylinder-box contact edge exists");
+    registry
+        .regenerate(
+            &mut ctx,
+            &[FeatureCall::new(
+                "fillet_edge",
+                id(3),
+                json!({ "edge": format!("qEdge({edge_hash})"), "blend_radius": radius }),
+            )],
+            None,
+        )
+        .unwrap();
+    let hard = crate::csg::CsgNode::from_decoded(&ctx.features);
+    let filleted = hard.apply_edge_fillets(&ctx.edge_fillets);
+    let fillet_branch = crate::csg::BranchId::from_feature(&id(3)).as_u32();
+    (crate::bvh::BoundedCsg::from_csg(&filleted), fillet_branch)
+}
+
+/// c-M2: a filleted cylinder↔plane junction weaves MANIFOLD-CLEAN. The two
+/// G1-tangent seams (blend↔cylinder, blend↔box-top) — which the octree tracer
+/// cannot sample — are materialised symbolically as exact circles, so the
+/// blend face is a proper torus band, the box-top gets its hole, and the solid
+/// closes (Euler–Poincaré χ = 2, zero orientation violations).
+#[test]
+fn cylinder_on_box_fillet_weaves_manifold() {
+    use crate::brep::SurfaceGeometry;
+    use fielddraft_protocol::HalfSpace;
+
+    let (body, fillet_branch) = cylinder_on_box_filleted(3.0);
+    let bb = body.aabb();
+    let largest = bb.size().into_iter().fold(0.0_f32, f32::max);
+    let min_cell = (largest / 48.0).clamp(1e-3, 10.0);
+    let octree = crate::brep::octree::Octree::build(&body, min_cell);
+    let brep = crate::brep::weaving::weave(&body, &octree);
+
+    let violations = brep.manifold_violations();
+    assert!(
+        violations.is_empty(),
+        "filleted body must be manifold, got {} violation(s): {:?}",
+        violations.len(),
+        violations.iter().take(4).collect::<Vec<_>>()
+    );
+
+    // Generalised Euler–Poincaré of a closed genus-0 solid: (V + closed_edges)
+    // − E + (F − inner_loops) == 2.
+    let closed_edges =
+        brep.edges.iter().filter(|e| e.start.is_none() && e.end.is_none()).count();
+    let inner_loops: usize = brep.faces.iter().map(|f| f.inner.len()).sum();
+    let chi = (brep.vertices.len() + closed_edges) as i64 - brep.edges.len() as i64
+        + brep.faces.len() as i64
+        - inner_loops as i64;
+    assert_eq!(chi, 2, "closed genus-0 solid: χ must be 2 (V + closed − E + F − inner)");
+
+    // The blend is a torus BAND: one face on the blend carrier with two loops
+    // (outer + one inner), i.e. its two circular seams.
+    let blend_faces: Vec<_> = brep
+        .faces
+        .iter()
+        .filter(|f| {
+            matches!(&f.surface, SurfaceGeometry::Analytic { surface: HalfSpace::Blend { .. }, .. })
+        })
+        .collect();
+    assert_eq!(blend_faces.len(), 1, "exactly one blend face");
+    assert_eq!(blend_faces[0].inner.len(), 1, "blend band has two circular boundaries");
+
+    // Both seams exist: blend↔cylinder and blend↔box-top, each a closed circle.
+    let blend_id = crate::csg::BranchId(fillet_branch).feature_id();
+    let seam_partners: std::collections::HashSet<u32> = brep
+        .edges
+        .iter()
+        .filter(|e| {
+            e.start.is_none()
+                && (e.signature.0.feature_id() == blend_id
+                    || e.signature.1.feature_id() == blend_id)
+        })
+        .map(|e| {
+            if e.signature.0.feature_id() == blend_id {
+                e.signature.1.feature_id()
+            } else {
+                e.signature.0.feature_id()
+            }
+        })
+        .collect();
+    assert_eq!(seam_partners.len(), 2, "blend has two distinct circular seams, got {seam_partners:?}");
+}
+
 /// End-to-end regression for the UI vase exercise: a Front-plane
 /// sketch whose profile is FREE lines (axis, rim, foot, bottom) plus
 /// an OPEN interpolated spline (the wall), stitched into a region by

@@ -24,6 +24,16 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.463",
+    entries: [
+      {
+        kind: "feat",
+        scope: "kernel",
+        text: "Fillet-Flächen weben jetzt sauber (c-M2): Die tangentialen Übergangsnähte eines Fillets (wo die Rundung ihre Trägerflächen G1-tangential verlässt) kann der numerische Tracer prinzipbedingt nicht abtasten — sie werden nun symbolisch als exakte Kurven eingesetzt. Für einen Fillet zwischen Zylinder und ebener Fläche (ein exakter Torus-Ring) sind das zwei koaxiale Kreise; das Ergebnis ist ein topologisch geschlossener, manifolder Körper mit einer echten Fillet-Fläche. Die verbleibenden Fälle (gerade Kanten mit Auslauf-Ecken) folgen später.",
+      },
+    ],
+  },
+  {
     version: "0.6.462",
     entries: [
       {
