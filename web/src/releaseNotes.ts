@@ -24,6 +24,17 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.468",
+    entries: [
+      {
+        kind: "fix",
+        scope: "mate",
+        tickets: ["e94cf61"],
+        text: "Mate-Connector-Gizmos (platzierte Connectoren und die Hover-Vorschau) erscheinen jetzt zoomstufen-unabhängig immer gleich groß (~2rem), statt mit der Zoomstufe mitzuwachsen. Die Arme werden pro Frame auf eine konstante Bildschirmgröße skaliert — dieselbe Screen-Space-Logik wie bei den übrigen Gizmos.",
+      },
+    ],
+  },
+  {
     version: "0.6.467",
     entries: [
       {

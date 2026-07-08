@@ -25,6 +25,37 @@ import {
   type FatLineMaterials,
 } from "./overlayLineMaterials";
 
+/** Target on-screen arm length (px) of a mate gizmo — constant regardless of
+ *  zoom/distance, ~2rem overall including the ring (ticket e94cf61). */
+export const MATE_GIZMO_TARGET_PX = 26;
+
+/** Per-frame constant-screen-size scale for a gizmo built by
+ *  [`buildMateGizmo`]. Mirrors the arrow-gizmo math: world-per-pixel at the
+ *  gizmo's world position (perspective: `2·dist·tan(fov/2)/H`; ortho:
+ *  `(top−bottom)/zoom/H`), then scale so the built arm reads
+ *  `MATE_GIZMO_TARGET_PX` pixels. Apply as `giz.scale.setScalar(...)` each
+ *  frame. Returns 1 if the gizmo carries no size tag. */
+export function mateGizmoScreenScale(
+  giz: THREE.Object3D,
+  camera: THREE.Camera,
+  viewportHeight: number,
+): number {
+  const builtSize = (giz.userData.mateGizmoSize as number | undefined) ?? 0;
+  if (!(builtSize > 0) || viewportHeight <= 0) return 1;
+  let wpp: number;
+  const persp = camera as THREE.PerspectiveCamera;
+  if (persp.isPerspectiveCamera) {
+    const dist = giz.getWorldPosition(new THREE.Vector3()).distanceTo(
+      persp.position,
+    );
+    wpp = (2 * dist * Math.tan((persp.fov * Math.PI) / 360)) / viewportHeight;
+  } else {
+    const oc = camera as THREE.OrthographicCamera;
+    wpp = (oc.top - oc.bottom) / oc.zoom / viewportHeight;
+  }
+  return Math.max(1e-6, (MATE_GIZMO_TARGET_PX * wpp) / builtSize);
+}
+
 /** Axis + accent colours of the gizmo. Kept here (not in `tokens.css`) because
  *  these drive 3D material colours, not DOM styling. */
 export const MATE_GIZMO_COLORS = {
@@ -156,6 +187,11 @@ export function buildMateGizmo(
   group.quaternion.setFromRotationMatrix(
     new THREE.Matrix4().makeBasis(frame.x, frame.y, frame.z),
   );
+  // The world-space arm length, so a per-frame consumer can rescale the gizmo
+  // to a constant SCREEN size regardless of the `size` it was built at
+  // (ticket e94cf61 — mate connectors must be zoom-independent like all
+  // gizmos). See `mateGizmoScreenScale`.
+  group.userData.mateGizmoSize = size;
   tag(group, layer, baseOrder);
 
   const webgpu = opts.webgpu;

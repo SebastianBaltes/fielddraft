@@ -9,6 +9,7 @@ import {
   orthonormalMateFrame,
   buildMateGizmo,
   disposeMateGizmo,
+  mateGizmoScreenScale,
 } from "./mateGizmo";
 import {
   enumerateConnectionPoints,
@@ -90,7 +91,19 @@ export function AssemblyParts() {
 export function MateConnectorOverlay() {
   const { store, state } = useKernelStore();
   const webgpu = isWebGPURenderer(useThree((s) => s.gl));
+  const camera = useThree((s) => s.camera);
+  const size = useThree((s) => s.size);
   const groupRef = useRef<THREE.Group>(null);
+
+  // Ticket e94cf61: rescale each placed connector gizmo to a constant SCREEN
+  // size every frame — otherwise the world-space arms grow/shrink with zoom.
+  useFrame(() => {
+    const group = groupRef.current;
+    if (!group) return;
+    for (const child of group.children) {
+      child.scale.setScalar(mateGizmoScreenScale(child, camera, size.height));
+    }
+  });
 
   useEffect(() => {
     const group = groupRef.current;
@@ -291,6 +304,14 @@ export function MateInferenceOverlay({
     }
     grp.visible = true;
 
+    // Ticket e94cf61: keep the preview gizmo a constant screen size (runs
+    // every frame, before the shift-lock early-out, so zoom still rescales it).
+    if (gizmoRef.current) {
+      gizmoRef.current.scale.setScalar(
+        mateGizmoScreenScale(gizmoRef.current, camera, size.height),
+      );
+    }
+
     // Shift locks the inference: keep the current snap + gizmo + dots frozen
     // while the user moves the cursor (the bridge snap persists too).
     if (shiftLockRef.current && gizmoRef.current) return;
@@ -392,6 +413,7 @@ export function MateInferenceOverlay({
           layer: OVERLAY_LAYER,
           webgpu,
         });
+        giz.scale.setScalar(mateGizmoScreenScale(giz, camera, size.height));
         grp.add(giz);
         gizmoRef.current = giz;
       }
