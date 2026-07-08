@@ -24,6 +24,17 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.486",
+    entries: [
+      {
+        kind: "fix",
+        scope: "cgal",
+        tickets: ["335d153"],
+        text: "CGAL-Export: scharfe, gekrümmte B-Rep-Kanten (z.B. ein Sichelrand) fransen nicht mehr aus. Zwei Ursachen behoben: die Schutz-Polylinien der Feature-Kanten wurden zu grob vereinfacht (0,1·cell → eine gekrümmte Kante wurde zu wenigen langen Geraden, deren Silhouette zackte) — jetzt 0,02·cell, also kurvenerhaltend; und die neue edge_distance-Kriterium (CGAL 6.0) begrenzt den Sehnenfehler der vermaschten Kante wie facet_distance für die Fläche. Ergebnis: der obere Sichelbogen wird sauber, das Netz bleibt wasserdicht/2-manifold. Sehr dünne Spitzen brauchen weiterhin eine kleinere Zellgröße.",
+      },
+    ],
+  },
+  {
     version: "0.6.485",
     entries: [
       {
