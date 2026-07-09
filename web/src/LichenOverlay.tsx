@@ -180,6 +180,16 @@ export function LichenOverlay() {
     const liftX = (b: number) => data[b];
     const liftY = (b: number) => data[b + 1];
     const liftZ = (b: number) => data[b + 2];
+    // Z-Puffer-Bias (nur WebGPU): LineSegments2 (fette Linien) UND die Box-Marker
+    // rastern Dreiecke, daher wirkt `polygonOffset` als WebGPU-`depthBias` und
+    // zieht die Debug-Objekte im TIEFENPUFFER minimal Richtung Kamera — sie
+    // liegen so leicht vor dem Solid und werden nicht so schnell verdeckt (kein
+    // geometrischer World-/Kamera-Versatz). Auf WebGL (plain lines/points greift
+    // depthBias nicht) bewusst weggelassen.
+    const webgpu = isWebGPURenderer(gl);
+    const depthBias = webgpu
+      ? { polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -4 }
+      : {};
     // Display filter: draw normals/dots only for points the kernel marks as
     // `shown` (index 8 = 1). That flag folds in ALL processing filters
     // (near-surface AND sign-change), so toggling any of them visibly culls
@@ -239,6 +249,7 @@ export function LichenOverlay() {
             worldUnits: false,
             transparent: true,
             depthWrite: false,
+            ...depthBias,
           }),
         );
         wire.layers.enable(OVERLAY_LAYER);
@@ -307,6 +318,8 @@ export function LichenOverlay() {
       const geo = new THREE.BoxGeometry(1, 1, 1);
       const mat = new THREE.MeshBasicMaterial({
         toneMapped: false,
+        depthWrite: false,
+        ...depthBias,
       });
       const im = new THREE.InstancedMesh(geo, mat, n);
       im.frustumCulled = false;
@@ -415,6 +428,7 @@ export function LichenOverlay() {
               transparent: true,
               opacity: 0.7,
               depthWrite: false,
+              ...depthBias,
             }),
           );
         } else {
@@ -462,6 +476,7 @@ export function LichenOverlay() {
               worldUnits: false,
               transparent: true,
               depthWrite: false,
+              ...depthBias,
             }),
           );
         } else {
@@ -485,7 +500,6 @@ export function LichenOverlay() {
 
     // ── Normal lines (stroke width, SDF-coloured) ──
     if (params.normalScale > 0) {
-      const webgpu = isWebGPURenderer(gl);
       let lines: THREE.Object3D;
       if (webgpu) {
         const lg = new LineSegmentsGeometry();
@@ -499,6 +513,7 @@ export function LichenOverlay() {
             worldUnits: false,
             transparent: true,
             depthWrite: false,
+            ...depthBias,
           }),
         );
       } else {

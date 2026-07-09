@@ -24,6 +24,16 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.487",
+    entries: [
+      {
+        kind: "fix",
+        scope: "debug",
+        text: "Debug-Overlays (Lichen-Punkte/Kreise/Wireframe/Normalen) bekommen jetzt einen echten Z-Puffer-Bias statt eines geometrischen Versatzes: da LineSegments2 und die Box-Marker Dreiecke rastern, wirkt polygonOffset auf WebGPU als depthBias und zieht die Objekte im Tiefenpuffer minimal Richtung Kamera — sie liegen dadurch leicht vor dem Solid und werden nicht so schnell verdeckt, ohne im Raum verschoben zu werden. Nur WebGPU (auf WebGL greift depthBias für Linien/Punkte nicht und bleibt weg). BRep-Kanten nutzen denselben moderaten Bias.",
+      },
+    ],
+  },
+  {
     version: "0.6.486",
     entries: [
       {
