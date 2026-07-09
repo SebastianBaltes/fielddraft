@@ -24,6 +24,16 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.485",
+    entries: [
+      {
+        kind: "feat",
+        scope: "mesher",
+        text: "Debug-Mesher Lichen (Menü Debug ▸ Mesher: Lichen…): direkter SDF+BRep-Oberflächen-Mesher. Punkte wachsen als hexagonale Waben-Front pro BRep-Fläche über die Oberfläche — mit einer HARTEN Kanten-Wand: kein Punkt überspringt je eine BRep-Kante auf eine Nachbarfläche oder ins Leere, und der U(p)-Anzeigekreis bleibt stets innerhalb der Fläche. Die Triangulierung erfolgt pro Fläche über den robusten Constrained-Delaunay (spade), mit flächenübergreifend geteilten Rand-Ketten → das Netz einer Box ist ein geschlossenes, wasserdichtes 2-Manifold (kein Loch, kein Dreieck über eine Kante). Gekrümmte Flächen (Zylinder/Kugel/Torus) folgen als nächster Schritt.",
+      },
+    ],
+  },
+  {
     version: "0.6.484",
     entries: [
       {

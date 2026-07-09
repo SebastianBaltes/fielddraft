@@ -27,6 +27,7 @@ import {
 } from "./sdfDeferredRenderer";
 import { resolveMaterials, applyMaterials } from "./materialBridge";
 import { getMesherPartOpacity } from "./mesherDebugStore";
+import { getLichenPartOpacity } from "./lichenDebugStore";
 import { disposeAfterGpuIdle } from "./sdfPipelineCommon";
 import {
   publishRenderCamera,
@@ -350,7 +351,9 @@ function useSdfPipelineOverlay<P extends MaterialBufferTarget, B>(
     // material buffer every frame.
     // Debug ▸ Mesher part-visibility slider fades the solid live; fold it into
     // the same gate so a slider drag re-uploads the material buffer.
-    const partOpacity = getMesherPartOpacity();
+    // Both the PASM and the Lichen debug dialogs fade the solid so their
+    // surface points/overlay show through; take whichever is more transparent.
+    const partOpacity = Math.min(getMesherPartOpacity(), getLichenPartOpacity());
     if (
       storeState.features !== matFeaturesRef.current ||
       partOpacity !== matOpacityRef.current ||

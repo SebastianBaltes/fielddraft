@@ -32,6 +32,7 @@ import { subscribeDebugDialogs } from "./projectDebug";
 import { subscribePartAabb } from "./partAabbStore";
 import { subscribeSdfPlane } from "./sdfPlaneStore";
 import { subscribeMesherDebug } from "./mesherDebugStore";
+import { subscribeLichenDebug } from "./lichenDebugStore";
 import {
   parseVariableInput,
   resolveVariableTable,
@@ -2219,6 +2220,13 @@ export class KernelStore {
     return this.kernel.mesherPoints(optionsJson);
   }
 
+  /** Debug ▸ Mesher Lichen: the flat overlay format the PASM mesher emits
+   *  (`[nPoints, nTris, nFallbackTris, points×9, indices]`). Synchronous
+   *  main-thread eval. */
+  lichenMesh(json: string): Float32Array {
+    return this.kernel.lichenMesh(json);
+  }
+
   /** Download an already-built export (3MF re-wraps stashed slicer
    *  metadata from the last import). */
   downloadExport(
@@ -2369,6 +2377,7 @@ export async function getStore(): Promise<KernelStore> {
     subscribePartAabb(markDirty);
     subscribeSdfPlane(markDirty);
     subscribeMesherDebug(markDirty);
+    subscribeLichenDebug(markDirty);
 
     // Stale-WASM guard (UI side): `Kernel.create` already logs a console
     // warning on a version mismatch; also surface it as a toast so it's

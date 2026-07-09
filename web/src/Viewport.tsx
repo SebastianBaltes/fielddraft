@@ -78,6 +78,7 @@ import { ReferenceMesh, PickHud } from "./viewportHud";
 import { ExportPreviewMesh } from "./exportPreviewMesh";
 import { SdfPlaneOverlay } from "./SdfPlaneOverlay";
 import { MesherOverlay } from "./MesherOverlay";
+import { LichenOverlay } from "./LichenOverlay";
 import { PartAabbOverlay } from "./PartAabbOverlay";
 import { PartAabbPanel } from "./PartAabbPanel";
 import { PREVIEW_LAYER } from "./viewportLayers";
@@ -736,6 +737,7 @@ function WebGLViewport({
             dialog published a plane. */}
         <SdfPlaneOverlay />
         <MesherOverlay />
+        <LichenOverlay />
         <PartAabbOverlay />
         {/* Opt-in experiment (default off): Screen-Space-CSG Stage 1
             (docs/ADAPTIVE-RENDERING-PLAN.md, Achse 3, Phase 3). Mounts an
@@ -1683,6 +1685,7 @@ export function Viewport({
                     plane is published by the dialog. */}
                 <SdfPlaneOverlay />
                 <MesherOverlay />
+                <LichenOverlay />
                 <PartAabbOverlay />
                 {/* All B-Rep overlays hide during a suppressed gizmo drag:
                   the kernel serves no fresh weave then, and even cached

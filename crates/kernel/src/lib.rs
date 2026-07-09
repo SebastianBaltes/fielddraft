@@ -31,6 +31,7 @@ pub mod mesher_cdt;
 pub mod mesher_patch;
 pub mod native_prepare;
 pub mod mesher_points;
+pub mod lichen;
 pub mod marching_cubes33;
 pub mod marching_cubes33_tables;
 pub mod dual_marching_cubes;

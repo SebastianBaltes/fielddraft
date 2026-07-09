@@ -6,6 +6,7 @@ import {
   useState,
   useCallback,
   useSyncExternalStore,
+  type ComponentType,
 } from "react";
 import type { KernelStore, StoreState } from "./store";
 import {
@@ -19,13 +20,30 @@ import { NumberInput } from "./NumberInput";
 import { SdfPlaneDialog } from "./SdfPlaneDialog";
 import { MesherDialog } from "./MesherDialog";
 import { MesherPasmDialog } from "./MesherPasmDialog";
+import { MesherLichenDialog } from "./MesherLichenDialog";
 import {
   getDebugDialogs,
-  setMesherDialogOpen,
-  setMesherPasmDialogOpen,
-  setSdfPlaneDialogOpen,
+  setDebugDialogOpen,
   subscribeDebugDialogs,
 } from "./projectDebug";
+import { DEBUG_DIALOG_SPECS, type DebugDialogId } from "./debugDialogs";
+
+/** UI descriptor per registered debug dialog — the menu label/testId and the
+ *  component to render. `Record<DebugDialogId, …>` makes this exhaustive: add a
+ *  spec in `debugDialogs.ts` and TypeScript flags the missing entry here. */
+const DEBUG_DIALOG_UI: Record<
+  DebugDialogId,
+  { label: string; testId: string; Component: ComponentType<{ onClose: () => void }> }
+> = {
+  sdfPlane: { label: "SDF-Plane…", testId: "menu-debug-sdf-plane", Component: SdfPlaneDialog },
+  mesher: { label: "Mesher…", testId: "menu-debug-mesher", Component: MesherDialog },
+  mesherPasm: {
+    label: "Mesher PASM…",
+    testId: "menu-debug-mesher-pasm",
+    Component: MesherPasmDialog,
+  },
+  lichen: { label: "Mesher: Lichen…", testId: "menu-debug-lichen", Component: MesherLichenDialog },
+};
 
 // Lazy: the dialog pulls the full release-note history (releaseNotes.ts,
 // thousands of lines of data) — that belongs in an on-demand chunk, not in
@@ -405,33 +423,21 @@ export function SettingsMenu({
               <span className="menu-chevron">&#9656;</span>
             </button>
             <div className="submenu" role="menu">
-              <button
-                type="button"
-                role="menuitem"
-                className="menu-item"
-                data-testid="menu-debug-sdf-plane"
-                onClick={() => menuAction(() => setSdfPlaneDialogOpen(true))}
-              >
-                SDF-Plane…
-              </button>
-              <button
-                type="button"
-                role="menuitem"
-                className="menu-item"
-                data-testid="menu-debug-mesher"
-                onClick={() => menuAction(() => setMesherDialogOpen(true))}
-              >
-                Mesher…
-              </button>
-              <button
-                type="button"
-                role="menuitem"
-                className="menu-item"
-                data-testid="menu-debug-mesher-pasm"
-                onClick={() => menuAction(() => setMesherPasmDialogOpen(true))}
-              >
-                Mesher PASM…
-              </button>
+              {DEBUG_DIALOG_SPECS.map((spec) => {
+                const ui = DEBUG_DIALOG_UI[spec.id];
+                return (
+                  <button
+                    key={spec.id}
+                    type="button"
+                    role="menuitem"
+                    className="menu-item"
+                    data-testid={ui.testId}
+                    onClick={() => menuAction(() => setDebugDialogOpen(spec.id, true))}
+                  >
+                    {ui.label}
+                  </button>
+                );
+              })}
               <button
                 type="button"
                 role="menuitemcheckbox"
@@ -541,24 +547,18 @@ export function SettingsMenu({
         />
       )}
 
-      {debugDialogs.sdfPlaneOpen && (
-        <SdfPlaneDialog
-          key={`sdf-plane-${debugDialogs.revision}`}
-          onClose={() => setSdfPlaneDialogOpen(false)}
-        />
-      )}
-      {debugDialogs.mesherOpen && (
-        <MesherDialog
-          key={`mesher-${debugDialogs.revision}`}
-          onClose={() => setMesherDialogOpen(false)}
-        />
-      )}
-      {debugDialogs.mesherPasmOpen && (
-        <MesherPasmDialog
-          key={`mesher-pasm-${debugDialogs.revision}`}
-          onClose={() => setMesherPasmDialogOpen(false)}
-        />
-      )}
+      {DEBUG_DIALOG_SPECS.map((spec) => {
+        if (!debugDialogs.open[spec.id]) return null;
+        const { Component } = DEBUG_DIALOG_UI[spec.id];
+        // Revision-keyed so a project restore remounts the dialog onto the
+        // freshly-overwritten localStorage settings.
+        return (
+          <Component
+            key={`${spec.id}-${debugDialogs.revision}`}
+            onClose={() => setDebugDialogOpen(spec.id, false)}
+          />
+        );
+      })}
     </div>
   );
 }

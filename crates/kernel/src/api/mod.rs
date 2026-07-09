@@ -8,6 +8,7 @@ mod brep;
 mod document;
 mod export;
 mod features;
+mod lichen;
 mod gizmo;
 mod queries_pick;
 mod sketch;

@@ -16,87 +16,51 @@
  *
  * The dialogs keep owning their settings persistence (localStorage) — the
  * project carries a snapshot of those slots, not a second source of truth.
+ *
+ * Everything here is GENERIC over the `debugDialogs` registry: the per-dialog
+ * open flag, (de)serialisation and mutual exclusion all iterate that list, so a
+ * new dialog needs no edit in this file. `Part-AABB` is the one non-dialog
+ * exception (a bare overlay toggle with its own store, no settings snapshot).
  */
 
 import { getPartAabbVisible, setPartAabbVisible } from "./partAabbStore";
+import { DEBUG_DIALOG_SPECS, type DebugDialogId } from "./debugDialogs";
 
-/** localStorage slots the dialogs persist their settings under. */
-const SDF_PLANE_SETTINGS_KEY = "fielddraft.debug.sdfPlane";
-const MESHER_SETTINGS_KEY = "fielddraft.debug.mesher";
-const MESHER_PASM_SETTINGS_KEY = "fielddraft.debug.mesherPasm";
-
-export interface ProjectDebug {
-  /** Debug ▸ SDF-Plane dialog open? */
-  sdfPlaneOpen?: boolean;
-  /** Snapshot of the SDF-Plane dialog settings (shape owned by the dialog). */
-  sdfPlane?: Record<string, unknown>;
-  /** Debug ▸ Mesher dialog open? */
-  mesherOpen?: boolean;
-  /** Snapshot of the Mesher dialog settings (shape owned by the dialog). */
-  mesher?: Record<string, unknown>;
-  /** Debug ▸ Mesher PASM dialog open? */
-  mesherPasmOpen?: boolean;
-  /** Snapshot of the Mesher PASM dialog settings (shape owned by the dialog). */
-  mesherPasm?: Record<string, unknown>;
-  /** Debug ▸ Part-AABB overlay visible? */
-  partAabbVisible?: boolean;
-}
+/** The `Project.debug` blob: for each dialog a `${id}Open` flag and an `${id}`
+ *  settings snapshot, plus the Part-AABB overlay flag. All optional — an absent
+ *  key means off/closed. */
+export type ProjectDebug = Partial<
+  Record<`${DebugDialogId}Open`, boolean> &
+    Record<DebugDialogId, Record<string, unknown>> & {
+      partAabbVisible: boolean;
+    }
+>;
 
 // ── Dialog open flags (+ remount revision) ───────────────────────────
 
-export interface DebugDialogs {
-  sdfPlaneOpen: boolean;
-  mesherOpen: boolean;
-  mesherPasmOpen: boolean;
+export interface DebugDialogsState {
+  /** id → is the dialog open. */
+  open: Record<DebugDialogId, boolean>;
   /** Bumped by applyProjectDebug — keys the dialog elements so an already-
    *  open dialog remounts and re-reads its (just overwritten) settings. */
   revision: number;
 }
 
-let dialogs: DebugDialogs = {
-  sdfPlaneOpen: false,
-  mesherOpen: false,
-  mesherPasmOpen: false,
-  revision: 0,
-};
+const allClosed = (): Record<DebugDialogId, boolean> =>
+  Object.fromEntries(DEBUG_DIALOG_SPECS.map((d) => [d.id, false])) as Record<
+    DebugDialogId,
+    boolean
+  >;
+
+let state: DebugDialogsState = { open: allClosed(), revision: 0 };
 const listeners = new Set<() => void>();
 
 function notify(): void {
   for (const l of listeners) l();
 }
 
-export function getDebugDialogs(): DebugDialogs {
-  return dialogs;
-}
-
-export function setSdfPlaneDialogOpen(open: boolean): void {
-  if (dialogs.sdfPlaneOpen === open) return;
-  dialogs = { ...dialogs, sdfPlaneOpen: open };
-  notify();
-}
-
-// Both Mesher dialogs publish into the SAME `mesherDebugStore` singleton
-// (one overlay), so they are mutually exclusive: opening one closes the
-// other — the closing dialog's unmount would otherwise clear the store the
-// surviving dialog just wrote.
-export function setMesherDialogOpen(open: boolean): void {
-  if (dialogs.mesherOpen === open) return;
-  dialogs = {
-    ...dialogs,
-    mesherOpen: open,
-    mesherPasmOpen: open ? false : dialogs.mesherPasmOpen,
-  };
-  notify();
-}
-
-export function setMesherPasmDialogOpen(open: boolean): void {
-  if (dialogs.mesherPasmOpen === open) return;
-  dialogs = {
-    ...dialogs,
-    mesherPasmOpen: open,
-    mesherOpen: open ? false : dialogs.mesherOpen,
-  };
-  notify();
+export function getDebugDialogs(): DebugDialogsState {
+  return state;
 }
 
 export function subscribeDebugDialogs(listener: () => void): () => void {
@@ -104,6 +68,40 @@ export function subscribeDebugDialogs(listener: () => void): () => void {
   return () => {
     listeners.delete(listener);
   };
+}
+
+/** Within each exclusiveGroup keep only the LAST requested-open dialog in
+ *  registry order — group-mates share one overlay store, so at most one may be
+ *  open. Used on restore (`applyProjectDebug`), where several may be requested. */
+function resolveExclusiveGroups(
+  open: Record<DebugDialogId, boolean>,
+): Record<DebugDialogId, boolean> {
+  const out = { ...open };
+  const winner = new Map<string, DebugDialogId>();
+  for (const d of DEBUG_DIALOG_SPECS) {
+    if (!d.exclusiveGroup || !out[d.id]) continue;
+    const prev = winner.get(d.exclusiveGroup);
+    if (prev !== undefined) out[prev] = false;
+    winner.set(d.exclusiveGroup, d.id);
+  }
+  return out;
+}
+
+/** Open or close a debug dialog. Opening one closes any dialog sharing its
+ *  overlay/store (its exclusiveGroup) — the just-opened dialog always wins. */
+export function setDebugDialogOpen(id: DebugDialogId, open: boolean): void {
+  if (state.open[id] === open) return;
+  const next = { ...state.open, [id]: open };
+  if (open) {
+    const { exclusiveGroup } = DEBUG_DIALOG_SPECS.find((d) => d.id === id)!;
+    if (exclusiveGroup) {
+      for (const d of DEBUG_DIALOG_SPECS) {
+        if (d.id !== id && d.exclusiveGroup === exclusiveGroup) next[d.id] = false;
+      }
+    }
+  }
+  state = { open: next, revision: state.revision };
+  notify();
 }
 
 // ── Project (de)serialisation ────────────────────────────────────────
@@ -134,26 +132,17 @@ function writeSettingsSlot(key: string, value: Record<string, unknown>): void {
  *  are meaningless without an open dialog/overlay to show them). */
 export function collectProjectDebug(): ProjectDebug | undefined {
   const partAabb = getPartAabbVisible();
-  if (
-    !dialogs.sdfPlaneOpen &&
-    !dialogs.mesherOpen &&
-    !dialogs.mesherPasmOpen &&
-    !partAabb
-  )
-    return undefined;
-  return {
-    ...(dialogs.sdfPlaneOpen ? { sdfPlaneOpen: true } : {}),
-    ...(dialogs.sdfPlaneOpen
-      ? { sdfPlane: readSettingsSlot(SDF_PLANE_SETTINGS_KEY) }
-      : {}),
-    ...(dialogs.mesherOpen ? { mesherOpen: true } : {}),
-    ...(dialogs.mesherOpen ? { mesher: readSettingsSlot(MESHER_SETTINGS_KEY) } : {}),
-    ...(dialogs.mesherPasmOpen ? { mesherPasmOpen: true } : {}),
-    ...(dialogs.mesherPasmOpen
-      ? { mesherPasm: readSettingsSlot(MESHER_PASM_SETTINGS_KEY) }
-      : {}),
-    ...(partAabb ? { partAabbVisible: true } : {}),
-  };
+  const anyOpen = DEBUG_DIALOG_SPECS.some((d) => state.open[d.id]);
+  if (!anyOpen && !partAabb) return undefined;
+  const out: Record<string, unknown> = {};
+  for (const d of DEBUG_DIALOG_SPECS) {
+    if (!state.open[d.id]) continue;
+    out[`${d.id}Open`] = true;
+    const slot = readSettingsSlot(d.settingsKey);
+    if (slot) out[d.id] = slot;
+  }
+  if (partAabb) out.partAabbVisible = true;
+  return out as ProjectDebug;
 }
 
 /** Restore a loaded project's debug state: overwrite the dialog settings
@@ -162,19 +151,19 @@ export function collectProjectDebug(): ProjectDebug | undefined {
  *  without debug state) closes everything — the state must be reproducible
  *  in BOTH directions. */
 export function applyProjectDebug(debug: ProjectDebug | undefined): void {
-  if (debug?.sdfPlane) writeSettingsSlot(SDF_PLANE_SETTINGS_KEY, debug.sdfPlane);
-  if (debug?.mesher) writeSettingsSlot(MESHER_SETTINGS_KEY, debug.mesher);
-  if (debug?.mesherPasm)
-    writeSettingsSlot(MESHER_PASM_SETTINGS_KEY, debug.mesherPasm);
+  for (const d of DEBUG_DIALOG_SPECS) {
+    const slot = debug?.[d.id];
+    if (slot) writeSettingsSlot(d.settingsKey, slot);
+  }
   setPartAabbVisible(debug?.partAabbVisible === true);
-  // Mesher and Mesher PASM are mutually exclusive (shared store); a blob
-  // claiming both keeps only the PASM dialog.
-  const pasmOpen = debug?.mesherPasmOpen === true;
-  dialogs = {
-    sdfPlaneOpen: debug?.sdfPlaneOpen === true,
-    mesherOpen: debug?.mesherOpen === true && !pasmOpen,
-    mesherPasmOpen: pasmOpen,
-    revision: dialogs.revision + 1,
+
+  const requested = allClosed();
+  for (const d of DEBUG_DIALOG_SPECS) {
+    requested[d.id] = debug?.[`${d.id}Open`] === true;
+  }
+  state = {
+    open: resolveExclusiveGroups(requested),
+    revision: state.revision + 1,
   };
   notify();
 }
@@ -189,14 +178,12 @@ export function parseProjectDebug(raw: unknown): ProjectDebug | undefined {
     typeof v === "object" && v !== null && !Array.isArray(v)
       ? (v as Record<string, unknown>)
       : undefined;
-  const out: ProjectDebug = {
-    ...(p.sdfPlaneOpen === true ? { sdfPlaneOpen: true } : {}),
-    ...(rec(p.sdfPlane) ? { sdfPlane: rec(p.sdfPlane) } : {}),
-    ...(p.mesherOpen === true ? { mesherOpen: true } : {}),
-    ...(rec(p.mesher) ? { mesher: rec(p.mesher) } : {}),
-    ...(p.mesherPasmOpen === true ? { mesherPasmOpen: true } : {}),
-    ...(rec(p.mesherPasm) ? { mesherPasm: rec(p.mesherPasm) } : {}),
-    ...(p.partAabbVisible === true ? { partAabbVisible: true } : {}),
-  };
-  return Object.keys(out).length > 0 ? out : undefined;
+  const out: Record<string, unknown> = {};
+  for (const d of DEBUG_DIALOG_SPECS) {
+    if (p[`${d.id}Open`] === true) out[`${d.id}Open`] = true;
+    const settings = rec(p[d.id]);
+    if (settings) out[d.id] = settings;
+  }
+  if (p.partAabbVisible === true) out.partAabbVisible = true;
+  return Object.keys(out).length > 0 ? (out as ProjectDebug) : undefined;
 }

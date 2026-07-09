@@ -1,0 +1,629 @@
+//! wasm-bindgen-API des Meshers „Lichen" (`docs/Mesher-Konzept.md`).
+//! Orchestriert die volle Pipeline: BRep-Feature-Seeds + Pro-Fläche-Rand-Loops
+//! + Flächen-Klassifikator (harte Kanten-Wand) → Waben-Wachstum pro Fläche →
+//! Pro-Fläche Constrained-Delaunay ([`crate::mesher_cdt`]). Rückgabe im flachen
+//! Overlay-Format.
+
+use std::collections::{HashMap, HashSet};
+
+use wasm_bindgen::prelude::*;
+
+use fielddraft_protocol::{HalfSpace, Transform};
+
+use crate::Kernel;
+use crate::brep::{EdgeId, FaceId, SurfaceGeometry};
+use crate::lichen::{self, LPoint, LichenOptions};
+
+#[wasm_bindgen]
+impl Kernel {
+    /// Mesher „Lichen": Seeds (BRep-Ecken/-Kanten) + Waben-Wachstum +
+    /// Advancing-Front-Triangulierung. Rückgabe wie `mesherPoints`:
+    /// `[nPoints, nTris, nFallbackTris, points×9, indices×3]`.
+    #[wasm_bindgen(js_name = lichenMesh)]
+    pub fn lichen_mesh(&mut self, options_json: String) -> Vec<f32> {
+        let opts: LichenOptions = serde_json::from_str(&options_json).unwrap_or_default();
+        self.lichen_mesh_impl(opts, None)
+    }
+
+    /// Kern (testbar, per-Body-fähig). `body_filter = None` = ganze Szene.
+    pub(crate) fn lichen_mesh_impl(
+        &mut self,
+        opts: LichenOptions,
+        body_filter: Option<usize>,
+    ) -> Vec<f32> {
+        let h = if opts.target_edge_length > 0.0 { opts.target_edge_length } else { 4.0 };
+
+        // Welt-Felder pro Body (1:1 zu self.bodies, wie im PASM-Pfad).
+        let bodies: Vec<crate::bvh::BoundedCsg> = self
+            .bodies
+            .iter()
+            .map(|b| crate::body::build_bounded_with_primitives(&self.decoded, &b.feature_indices).0)
+            .collect();
+        let active: Vec<usize> = match body_filter {
+            Some(i) if i < bodies.len() => vec![i],
+            Some(_) => return Vec::new(),
+            None => (0..bodies.len()).collect(),
+        };
+        if active.is_empty() {
+            return vec![0.0, 0.0, 0.0];
+        }
+
+        // Szenen-Feld: (sdf, ∇f) des Body mit kleinstem Abstand (argmin).
+        let fg = |p: [f32; 3]| -> (f32, [f32; 3]) {
+            let mut bd = f32::MAX;
+            let mut bg = [0.0f32, 0.0, 1.0];
+            for &bi in &active {
+                let (d, g) = crate::sdf_dual::sdf_gradient(&bodies[bi], p);
+                if d < bd {
+                    bd = d;
+                    bg = g;
+                }
+            }
+            (bd, bg)
+        };
+
+        // ── Seeds (§1) + Pro-Fläche-Rand-Loops + Flächen-Klassifikator ──
+        // `all` = alle Punkte (parallel dazu `point_faces[i]` = die Flächen-IDs
+        // (+ Normalen) von Punkt i, `local_pos[i]` = seine Body-Local-Koords).
+        // Endpunkte teilen sich die Ecken-Slots → feste `chain_links` (BRep-
+        // Kanten in G) + `edge_segs` (Welt-Segmente für R_BRep).
+        //
+        // Owned Flächendaten für den Welt→Fläche-Distanz-Klassifikator (die harte
+        // Kanten-Wand): `argmin_gf |sdf(face_gf.surface, ·)|`.
+        struct FaceSurf {
+            surface: HalfSpace,
+            transform: Transform,
+            placement: Transform,
+        }
+        let mut all: Vec<LPoint> = Vec::new();
+        let mut point_faces: Vec<Vec<(u32, [f32; 3])>> = Vec::new();
+        let mut local_pos: Vec<[f32; 3]> = Vec::new();
+        let mut edge_segs: Vec<([f32; 3], [f32; 3])> = Vec::new();
+        let mut face_surfs: Vec<FaceSurf> = Vec::new();
+        let mut face_loops: Vec<Vec<(Vec<u32>, bool)>> = Vec::new();
+
+        for &bi in &active {
+            self.bodies[bi].ensure_brep(&self.decoded, true);
+            let placement = self.bodies[bi].placement;
+            let Some(brep) = self.bodies[bi].brep_cached() else { continue };
+            let s = placement.scale[0];
+            let to_world = |p: [f64; 3]| -> [f32; 3] {
+                let scaled = [p[0] as f32 * s, p[1] as f32 * s, p[2] as f32 * s];
+                let r = crate::quat_rotate(placement.rotation, scaled);
+                [
+                    r[0] + placement.translate[0],
+                    r[1] + placement.translate[1],
+                    r[2] + placement.translate[2],
+                ]
+            };
+
+            // Ecken (flag 3): globale Slots; Normale (Mittel der Flächen) folgt.
+            let mut corner_slot: HashMap<usize, u32> = HashMap::new();
+            for (vi, v) in brep.vertices.iter().enumerate() {
+                let p = to_world(v.position);
+                let (d, _) = fg(p);
+                corner_slot.insert(vi, all.len() as u32);
+                all.push(LPoint { p, sdf: d, n: [0.0, 0.0, 1.0], u: h, space: h, flag: 3.0 });
+                point_faces.push(Vec::new());
+                local_pos.push([v.position[0] as f32, v.position[1] as f32, v.position[2] as f32]);
+            }
+
+            // Kanten (flag 2): in LOCAL resamplen (§3.2 krümmungsgesteuert);
+            // geordnete globale Index-Kette je Kante merken (für die Flächen-
+            // Loops); chain_links = feste Feature-Kanten in G; Welt-Segmente für
+            // R_BRep.
+            let h_local = h / s.max(1e-6);
+            let mut edge_chain: HashMap<u32, Vec<u32>> = HashMap::new();
+            for (eid, e) in brep.edges.iter().enumerate() {
+                let raw_local: Vec<[f32; 3]> = crate::brep::edge_sampling::sample_edge(&e.geometry)
+                    .into_iter()
+                    .map(|p| [p[0] as f32, p[1] as f32, p[2] as f32])
+                    .collect();
+                let chain = lichen::resample_edge_by_curvature(
+                    &raw_local,
+                    h_local,
+                    opts.curv_angle_deg.to_radians(),
+                );
+                let mut idxs: Vec<u32> = Vec::new();
+                if let Some(vs) = e.start {
+                    idxs.push(corner_slot[&(vs.0 as usize)]);
+                }
+                let start = usize::from(e.start.is_some());
+                let mut end = chain.len().saturating_sub(usize::from(e.end.is_some()));
+                if e.start.is_none() && e.end.is_none() && chain.len() >= 2 {
+                    end = end.saturating_sub(1);
+                }
+                let lo = start.min(chain.len());
+                if lo < end {
+                    for pl in &chain[lo..end] {
+                        let p = to_world([pl[0] as f64, pl[1] as f64, pl[2] as f64]);
+                        let (d, _) = fg(p);
+                        idxs.push(all.len() as u32);
+                        all.push(LPoint { p, sdf: d, n: [0.0, 0.0, 1.0], u: h, space: h, flag: 2.0 });
+                        point_faces.push(Vec::new());
+                        local_pos.push(*pl);
+                    }
+                }
+                if let Some(ve) = e.end {
+                    idxs.push(corner_slot[&(ve.0 as usize)]);
+                }
+                for w in idxs.windows(2) {
+                    edge_segs.push((all[w[0] as usize].p, all[w[1] as usize].p));
+                }
+                edge_chain.insert(eid as u32, idxs);
+            }
+
+            // Flächen: gf zuweisen, Klassifikator-Daten sichern, Rand-Loops als
+            // geordnete globale Index-Ringe bauen (Kanten-Ketten in Loop-Reihen-
+            // folge verkettet, geteilte Gelenk-Vertices entfernt), und an jedem
+            // eindeutigen Rand-Punkt die Pro-Fläche-Normale registrieren.
+            let build_ring = |lp: &crate::brep::Loop| -> Vec<u32> {
+                let mut ring: Vec<u32> = Vec::new();
+                for &(EdgeId(ei), reversed) in &lp.edges {
+                    let Some(chain) = edge_chain.get(&ei) else { continue };
+                    let mut chain = chain.clone();
+                    if reversed {
+                        chain.reverse();
+                    }
+                    for gidx in chain {
+                        if ring.last() == Some(&gidx) {
+                            continue; // gemeinsamer Gelenk-Vertex
+                        }
+                        ring.push(gidx);
+                    }
+                }
+                if ring.len() >= 2 && ring.first() == ring.last() {
+                    ring.pop();
+                }
+                ring
+            };
+            for (fi, face) in brep.faces.iter().enumerate() {
+                let SurfaceGeometry::Analytic { surface, transform } = &face.surface else {
+                    continue; // tessellierte Flächen (Gyroid) hier ausgelassen
+                };
+                let gf = face_surfs.len() as u32;
+                face_surfs.push(FaceSurf {
+                    surface: surface.clone(),
+                    transform: *transform,
+                    placement,
+                });
+                let fid = FaceId(fi as u32);
+                let mut rings: Vec<(Vec<u32>, bool)> = Vec::new();
+                let outer = build_ring(&face.outer);
+                if outer.len() >= 3 {
+                    rings.push((outer, true));
+                }
+                for il in &face.inner {
+                    let r = build_ring(il);
+                    if r.len() >= 3 {
+                        rings.push((r, false));
+                    }
+                }
+                let mut seen: HashSet<u32> = HashSet::new();
+                for (ring, _) in &rings {
+                    for &gidx in ring {
+                        if !seen.insert(gidx) {
+                            continue;
+                        }
+                        let pl = local_pos[gidx as usize];
+                        let nl = crate::brep::face_export::face_normal_at_local(
+                            brep,
+                            fid,
+                            [pl[0] as f64, pl[1] as f64, pl[2] as f64],
+                        );
+                        let nw = lichen::unit(crate::quat_rotate(
+                            placement.rotation,
+                            [nl[0] as f32, nl[1] as f32, nl[2] as f32],
+                        ));
+                        point_faces[gidx as usize].push((gf, nw));
+                    }
+                }
+                face_loops.push(rings);
+            }
+        }
+
+        // Welt→Fläche-Klassifikator (harte Kanten-Wand): die BRep-Fläche mit
+        // kleinstem |Flächen-SDF| am Punkt; `None`, wenn zu weit von allen
+        // Flächen (Blend-Region) — dorthin wächst nichts.
+        let face_of = |p_world: [f32; 3]| -> Option<u32> {
+            let mut best = u32::MAX;
+            let mut bestd = f32::MAX;
+            for (gf, fs) in face_surfs.iter().enumerate() {
+                let p_local = crate::world_to_local(&fs.placement, p_world);
+                let p_surf = crate::world_to_local(&fs.transform, p_local);
+                let d = crate::csg::sdf_halfspace(&fs.surface, p_surf).abs();
+                if d < bestd {
+                    bestd = d;
+                    best = gf as u32;
+                }
+            }
+            if best != u32::MAX && bestd < 0.5 * h { Some(best) } else { None }
+        };
+
+        // R_BRep (§2.2): echter Punkt-zu-Segment-Abstand zur nächsten BRep-Kante
+        // (NICHT nur zum nächsten Abtastpunkt) — so bleibt der U(p)-Kreis stets
+        // innerhalb der Fläche und überschreitet nie eine Kante.
+        let brep_dist = |p: [f32; 3]| -> f32 {
+            let mut best = f32::INFINITY;
+            for &(a, b) in &edge_segs {
+                let ab = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+                let ap = [p[0] - a[0], p[1] - a[1], p[2] - a[2]];
+                let denom = ab[0] * ab[0] + ab[1] * ab[1] + ab[2] * ab[2];
+                let t = if denom > 1e-20 {
+                    ((ap[0] * ab[0] + ap[1] * ab[1] + ap[2] * ab[2]) / denom).clamp(0.0, 1.0)
+                } else {
+                    0.0
+                };
+                let q = [a[0] + ab[0] * t, a[1] + ab[1] * t, a[2] + ab[2] * t];
+                let dd = ((p[0] - q[0]).powi(2) + (p[1] - q[1]).powi(2) + (p[2] - q[2]).powi(2)).sqrt();
+                if dd < best {
+                    best = dd;
+                }
+            }
+            best
+        };
+
+        // ── Wachstum (§1) pro Fläche, mit harter Kanten-Wand ──
+        // Gewachsene Innen-Partikel je Fläche (für den Pro-Fläche-CDT).
+        let mut face_interior: Vec<Vec<u32>> = vec![Vec::new(); face_surfs.len()];
+        if opts.grow {
+            let n_faces = face_surfs.len() as u32;
+            let gf_normal = |pf: &[(u32, [f32; 3])], gf: u32| -> [f32; 3] {
+                pf.iter().find(|&&(g, _)| g == gf).map(|&(_, nrm)| nrm).unwrap_or([0.0, 0.0, 1.0])
+            };
+            for gf in 0..n_faces {
+                // Rand-Punkte dieser Fläche als Wachstums-Seeds (mit gf-Normale,
+                // damit die Hex-Front in die Fläche zeigt, nicht diagonal).
+                let mut seen: HashSet<u32> = HashSet::new();
+                let mut bseeds: Vec<LPoint> = Vec::new();
+                for (ring, _) in &face_loops[gf as usize] {
+                    for &gidx in ring {
+                        if !seen.insert(gidx) {
+                            continue;
+                        }
+                        let src = all[gidx as usize];
+                        bseeds.push(LPoint {
+                            p: src.p,
+                            sdf: src.sdf,
+                            n: gf_normal(&point_faces[gidx as usize], gf),
+                            u: h,
+                            space: h,
+                            flag: src.flag,
+                        });
+                    }
+                }
+                if bseeds.is_empty() {
+                    continue;
+                }
+                let on_face = |p: [f32; 3]| face_of(p) == Some(gf);
+                let grown = lichen::grow_surface(&bseeds, h, &opts, &fg, &brep_dist, &on_face);
+                for g in grown {
+                    let idx = all.len() as u32;
+                    all.push(g);
+                    point_faces.push(vec![(gf, g.n)]);
+                    local_pos.push([0.0; 3]);
+                    face_interior[gf as usize].push(idx);
+                }
+            }
+        }
+
+        // Rand-Normale (LPoint.n) = Mittel der angrenzenden Flächen-Normalen
+        // (STABIL an Kanten/Ecken; z.B. Box-Ecke = ±1/√3-Diagonale); gewachsene
+        // Punkte behalten ihr ∇f.
+        for i in 0..all.len() {
+            if all[i].flag >= 1.5 && !point_faces[i].is_empty() {
+                let ns: Vec<[f32; 3]> = point_faces[i].iter().map(|&(_, nrm)| nrm).collect();
+                if let Some(m) = lichen::mean_unit(&ns) {
+                    all[i].n = m;
+                }
+            }
+        }
+
+        // ── Pro-Fläche-Triangulierung (§4/§5): robuster Constrained-Delaunay je
+        // BRep-Fläche (spade, `mesher_cdt`). Rand-Ketten sind flächenübergreifend
+        // geteilt → wasserdichte Nähte; Innen-Partikel werden auf die Fläche
+        // gefiltert; kein Dreieck überspannt eine Kante (harte Grenze). Planare
+        // Flächen (Box) direkt; gekrümmte (Zylinder/Kugel/…) folgen als
+        // periodischer Chart (M4) und bleiben vorerst untrianguliert. ──
+        let tris = if opts.triangulate && all.len() >= 3 {
+            let positions: Vec<[f32; 3]> = all.iter().map(|lp| lp.p).collect();
+            let mut t: Vec<[u32; 3]> = Vec::new();
+            for gf in 0..face_surfs.len() {
+                if !matches!(face_surfs[gf].surface, HalfSpace::Plane { .. }) {
+                    continue; // gekrümmte Fläche → periodischer Chart (M4)
+                }
+                let loops: Vec<Vec<u32>> =
+                    face_loops[gf].iter().map(|(r, _)| r.clone()).collect();
+                t.extend(crate::mesher_cdt::triangulate_planar_face(
+                    &positions,
+                    &loops,
+                    &face_interior[gf],
+                    0.25 * h as f64,
+                ));
+            }
+            t
+        } else {
+            Vec::new()
+        };
+
+        lichen::pack(&all, &tris, &point_faces)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use fielddraft_protocol::{BoolOp, Primitive};
+
+    fn box_kernel() -> crate::Kernel {
+        let mut k = crate::Kernel::new();
+        k.add_primitive(Primitive::KIND_BOX, BoolOp::TAG_NEW, 0.0, 0.0, 0.0, 10.0, 10.0, 10.0)
+            .unwrap();
+        k
+    }
+
+    /// Full pipeline runs on a real body — seeds, growth, graph, advancing-front
+    /// — and emits the box corners, edge-chain seeds, grown points and triangles.
+    #[test]
+    fn lichen_box_emits_seeds_growth_and_triangles() {
+        let mut k = box_kernel();
+        let out = k.lichen_mesh(
+            r#"{"targetEdgeLength":3.0,"grow":true,"maxPoints":8000}"#.into(),
+        );
+        assert!(out.len() >= 3, "header present");
+        let total = out[0] as usize;
+        let tris = out[1] as usize;
+        assert!(tris > 0, "advancing front emits real triangles");
+        // Layout: header(3) + points×9 + indices×3 + nFaceRec + faceRec×4.
+        let idx_end = 3 + total * 9 + tris * 3;
+        let n_face = out[idx_end] as usize;
+        assert_eq!(
+            idx_end + 1 + n_face * 4,
+            out.len(),
+            "flat layout: points + index + face-normal block"
+        );
+        assert!(n_face >= total, "at least one circle record per point (boundary points ≥2)");
+        let (mut corners, mut chain, mut surf) = (0u32, 0u32, 0u32);
+        for i in 0..total {
+            match out[3 + i * 9 + 8] as i32 {
+                3 => corners += 1,
+                2 => chain += 1,
+                1 => surf += 1,
+                _ => {}
+            }
+        }
+        assert_eq!(corners, 8, "eight pinned box corners");
+        assert!(chain > 0 && surf > 0, "edge chains + grown surface points");
+    }
+
+    /// The box mesh is a CLOSED, watertight 2-manifold: no edge borders more
+    /// than two triangles, NO boundary edge exists at all (every edge is shared
+    /// by exactly two triangles — the per-face CDT welds along the shared BRep
+    /// edge chains), and the Euler characteristic of the used vertices is 2
+    /// (genus-0 sphere topology, no holes). This is the core §4/§5 guarantee
+    /// and the regression gate for the hole-closer.
+    #[test]
+    fn lichen_box_mesh_is_watertight() {
+        let mut k = box_kernel();
+        let out = k.lichen_mesh(
+            r#"{"targetEdgeLength":3.0,"grow":true,"maxPoints":8000}"#.into(),
+        );
+        let total = out[0] as usize;
+        let tris = out[1] as usize;
+        assert!(tris > 0);
+        let base = 3 + total * 9;
+        let mut edge_use: std::collections::HashMap<(u32, u32), u32> =
+            std::collections::HashMap::new();
+        let mut used_v: std::collections::HashSet<u32> = std::collections::HashSet::new();
+        for t in 0..tris {
+            let a = out[base + t * 3] as u32;
+            let b = out[base + t * 3 + 1] as u32;
+            let c = out[base + t * 3 + 2] as u32;
+            assert!(a != b && b != c && c != a, "degenerate triangle");
+            used_v.insert(a);
+            used_v.insert(b);
+            used_v.insert(c);
+            for (x, y) in [(a, b), (b, c), (c, a)] {
+                *edge_use.entry((x.min(y), x.max(y))).or_default() += 1;
+            }
+        }
+        let over = edge_use.values().filter(|&&u| u > 2).count();
+        assert_eq!(over, 0, "no edge may border >2 triangles (2-manifold)");
+        let interior = edge_use.values().filter(|&&u| u == 2).count();
+        let boundary = edge_use.values().filter(|&&u| u == 1).count();
+        assert_eq!(boundary, 0, "watertight: NO boundary/hole edges (got {boundary})");
+        // Euler characteristic on the used vertices: V − E + F = 2 for a closed
+        // genus-0 surface (E = interior edges, since boundary == 0).
+        let euler = used_v.len() as i64 - interior as i64 + tris as i64;
+        assert_eq!(euler, 2, "closed genus-0 mesh: V−E+F must be 2, got {euler}");
+    }
+
+    /// The mesher must NEVER emit a degenerate triangle: distinct vertices,
+    /// non-zero area, and shape quality above the degeneracy threshold.
+    #[test]
+    fn lichen_box_has_no_degenerate_triangles() {
+        let mut k = box_kernel();
+        let out = k.lichen_mesh(
+            r#"{"targetEdgeLength":3.0,"grow":true,"maxPoints":8000}"#.into(),
+        );
+        let total = out[0] as usize;
+        let tris = out[1] as usize;
+        assert!(tris > 0);
+        let base = 3 + total * 9;
+        let pos = |i: usize| [out[3 + i * 9], out[3 + i * 9 + 1], out[3 + i * 9 + 2]];
+        let mut worst = f32::MAX;
+        for t in 0..tris {
+            let (ia, ib, ic) = (
+                out[base + t * 3] as usize,
+                out[base + t * 3 + 1] as usize,
+                out[base + t * 3 + 2] as usize,
+            );
+            assert!(ia != ib && ib != ic && ic != ia, "coincident vertex indices");
+            let (a, b, c) = (pos(ia), pos(ib), pos(ic));
+            let ab = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+            let ac = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
+            let cr = [
+                ab[1] * ac[2] - ab[2] * ac[1],
+                ab[2] * ac[0] - ab[0] * ac[2],
+                ab[0] * ac[1] - ab[1] * ac[0],
+            ];
+            let area = 0.5 * (cr[0] * cr[0] + cr[1] * cr[1] + cr[2] * cr[2]).sqrt();
+            assert!(area > 1e-6, "zero-area (degenerate) triangle {t}");
+            let bc = [c[0] - b[0], c[1] - b[1], c[2] - b[2]];
+            let s = ab.iter().map(|v| v * v).sum::<f32>()
+                + ac.iter().map(|v| v * v).sum::<f32>()
+                + bc.iter().map(|v| v * v).sum::<f32>();
+            worst = worst.min(4.0 * (3.0f32).sqrt() * area / s);
+        }
+        assert!(worst > 0.02, "no degenerate slivers: worst shape quality {worst}");
+    }
+
+    /// Interior surface points must grow whether or not the reach term is on
+    /// (ticket: "use reach off ⇒ no interior points" was a bug).
+    #[test]
+    fn lichen_grows_interior_without_reach() {
+        let mut k = box_kernel();
+        let out = k.lichen_mesh(
+            r#"{"targetEdgeLength":10.0,"grow":true,"curvAngleDeg":30.0,"useReach":false,"maxPoints":50000}"#.into(),
+        );
+        let total = out[0] as usize;
+        let surf = (0..total).filter(|&i| out[3 + i * 9 + 8] as i32 == 1).count();
+        assert!(surf > 0, "interior points must grow without reach, got {surf}");
+    }
+
+    /// `grow=false` (seeds only): no interior growth.
+    #[test]
+    fn lichen_seeds_only_when_grow_off() {
+        let mut k = box_kernel();
+        let out = k.lichen_mesh(r#"{"targetEdgeLength":3.0,"grow":false}"#.into());
+        let total = out[0] as usize;
+        let surf = (0..total).filter(|&i| out[3 + i * 9 + 8] as i32 == 1).count();
+        assert_eq!(surf, 0, "grow=false ⇒ no interior growth");
+        assert!(total >= 8, "seeds still present");
+    }
+
+    /// The curvature angle (rad) drives the BOUNDARY subdivision (§3.2): a
+    /// curved edge is denser for a smaller angle, while a straight edge only
+    /// feels the h cap.
+    #[test]
+    fn edge_subdivision_is_curvature_driven() {
+        // Halbkreis-Polyline (Radius 10).
+        let arc: Vec<[f32; 3]> = (0..=64)
+            .map(|k| {
+                let t = k as f32 / 64.0 * std::f32::consts::PI;
+                [10.0 * t.cos(), 10.0 * t.sin(), 0.0]
+            })
+            .collect();
+        let fine = crate::lichen::resample_edge_by_curvature(&arc, 5.0, 0.05);
+        let coarse = crate::lichen::resample_edge_by_curvature(&arc, 5.0, 2.0);
+        assert!(
+            fine.len() > coarse.len(),
+            "small angle ⇒ denser on curves: {} vs {}",
+            fine.len(),
+            coarse.len()
+        );
+        // Gerade Kante: Krümmungswinkel irrelevant, nur h zählt.
+        let line = vec![[0.0, 0.0, 0.0], [20.0, 0.0, 0.0]];
+        let a = crate::lichen::resample_edge_by_curvature(&line, 5.0, 0.05);
+        let b = crate::lichen::resample_edge_by_curvature(&line, 5.0, 2.0);
+        assert_eq!(a.len(), b.len(), "straight edge: angle has no effect");
+    }
+
+    /// Der Trailing-Face-Normalen-Block liefert PRO Randpunkt ≥2 Kreis-Records
+    /// (Kante = 2 Flächen, Ecke ≥3), Flächenpunkte genau einen — die Grundlage
+    /// für „2 Kreise pro Randpunkt" im Overlay.
+    #[test]
+    fn lichen_boundary_points_emit_two_circle_records() {
+        let mut k = box_kernel();
+        let out = k.lichen_mesh(r#"{"targetEdgeLength":3.0,"grow":true,"maxPoints":8000}"#.into());
+        let total = out[0] as usize;
+        let tris = out[1] as usize;
+        let idx_end = 3 + total * 9 + tris * 3;
+        let n_face = out[idx_end] as usize;
+        let rec_base = idx_end + 1;
+        // Records je Punkt-Index zählen.
+        let mut per_point = vec![0u32; total];
+        for r in 0..n_face {
+            let pi = out[rec_base + r * 4] as usize;
+            per_point[pi] += 1;
+        }
+        let mut checked_boundary = 0;
+        for i in 0..total {
+            let flag = out[3 + i * 9 + 8] as i32;
+            match flag {
+                2 | 3 => {
+                    // Kanten-/Ecken-Punkt: 2 bzw. ≥3 adjazente Flächen.
+                    assert!(
+                        per_point[i] >= 2,
+                        "boundary point {i} (flag {flag}) needs ≥2 circle records, got {}",
+                        per_point[i]
+                    );
+                    checked_boundary += 1;
+                }
+                1 => assert_eq!(per_point[i], 1, "surface point {i} has exactly one record"),
+                // flag 4 = beförderter Advancing-Front-Seed; kann Flächen- ODER
+                // Randpunkt gewesen sein → hier nicht restriktiv prüfen.
+                _ => {}
+            }
+        }
+        assert!(checked_boundary >= 8, "at least the eight box corners are boundary points");
+    }
+
+    #[test]
+    fn zz_hole_stats() {
+        let mut k = box_kernel();
+        let out = k.lichen_mesh(r#"{"targetEdgeLength":3.0,"grow":true,"maxPoints":8000}"#.into());
+        let total = out[0] as usize;
+        let tris = out[1] as usize;
+        let base = 3 + total * 9;
+        let mut edge_use: std::collections::HashMap<(u32, u32), u32> =
+            std::collections::HashMap::new();
+        for t in 0..tris {
+            let a = out[base + t * 3] as u32;
+            let b = out[base + t * 3 + 1] as u32;
+            let c = out[base + t * 3 + 2] as u32;
+            for (x, y) in [(a, b), (b, c), (c, a)] {
+                *edge_use.entry((x.min(y), x.max(y))).or_default() += 1;
+            }
+        }
+        let interior = edge_use.values().filter(|&&u| u == 2).count();
+        let boundary = edge_use.values().filter(|&&u| u == 1).count();
+        let over = edge_use.values().filter(|&&u| u > 2).count();
+        let mut used_v = std::collections::HashSet::new();
+        for t in 0..tris {
+            used_v.insert(out[base + t * 3] as u32);
+            used_v.insert(out[base + t * 3 + 1] as u32);
+            used_v.insert(out[base + t * 3 + 2] as u32);
+        }
+        let euler = used_v.len() as i64 - interior as i64 + tris as i64;
+        eprintln!(
+            "HOLESTATS pts={total} usedV={} tris={tris} interiorEdges={interior} boundaryEdges={boundary} over={over} euler(usedV-E+F)={euler}",
+            used_v.len()
+        );
+    }
+
+    /// Step 1: a corner normal is now the MEAN of its adjacent face normals
+    /// (stable), not the unstable ∇f. A box corner → the diagonal (±1/√3 each).
+    #[test]
+    fn lichen_corner_normal_is_face_mean() {
+        let mut k = box_kernel();
+        let out = k.lichen_mesh(r#"{"targetEdgeLength":10.0,"grow":false,"triangulate":false}"#.into());
+        let total = out[0] as usize;
+        let inv_sqrt3 = 1.0f32 / 3.0f32.sqrt();
+        let mut checked = 0;
+        for i in 0..total {
+            let b = 3 + i * 9;
+            if out[b + 8] as i32 != 3 {
+                continue; // only corners
+            }
+            let n = [out[b + 4], out[b + 5], out[b + 6]];
+            for c in 0..3 {
+                assert!(
+                    (n[c].abs() - inv_sqrt3).abs() < 0.05,
+                    "corner normal is not the diagonal face-mean: {n:?}"
+                );
+            }
+            checked += 1;
+        }
+        assert_eq!(checked, 8, "all eight box corners checked");
+    }
+}

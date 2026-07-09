@@ -116,6 +116,14 @@ pub fn face_centroid_normal_local(brep: &BRep, id: FaceId) -> ([f64; 3], [f64; 3
     (centroid, normal)
 }
 
+/// Outward unit normal of face `id` at body-local point `at` — analytic-exact
+/// for planes AND curved analytic surfaces (cylinder/sphere/cone/…), area-
+/// weighted for tessellated faces. Public so consumers (e.g. the Lichen
+/// edge/corner feature normal) can query the per-point face normal.
+pub fn face_normal_at_local(brep: &BRep, id: FaceId, at: [f64; 3]) -> [f64; 3] {
+    face_normal_local(brep.face(id), at)
+}
+
 /// Mean of the outer-loop edge sample points, in the body-local frame.
 fn face_centroid_local(brep: &BRep, face: &Face) -> [f64; 3] {
     let mut acc = [0.0f64; 3];

@@ -1143,6 +1143,12 @@ export class Kernel {
     return this.inner.mesherPoints(optionsJson);
   }
 
+  /** Debug ▸ Mesher Lichen: the same flat overlay format the PASM mesher
+   *  emits — `[nPoints, nTris, nFallbackTris, nPoints×9 floats, indices]`. */
+  lichenMesh(json: string): Float32Array {
+    return this.inner.lichenMesh(json);
+  }
+
   /** Mesh + validate body `i`; returns its report JSON ("" without a
    *  running session). */
   exportMeshBody(i: number): string {

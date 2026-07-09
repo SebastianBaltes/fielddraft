@@ -4,9 +4,7 @@ import {
   collectProjectDebug,
   getDebugDialogs,
   parseProjectDebug,
-  setMesherDialogOpen,
-  setMesherPasmDialogOpen,
-  setSdfPlaneDialogOpen,
+  setDebugDialogOpen,
   subscribeDebugDialogs,
 } from "./projectDebug";
 import { getPartAabbVisible, setPartAabbVisible } from "./partAabbStore";
@@ -30,8 +28,8 @@ describe("projectDebug", () => {
       "fielddraft.debug.mesher",
       JSON.stringify({ maxDepth: 7, partOpacity: 0.5 }),
     );
-    setSdfPlaneDialogOpen(true);
-    setMesherDialogOpen(true);
+    setDebugDialogOpen("sdfPlane", true);
+    setDebugDialogOpen("mesher", true);
     setPartAabbVisible(true);
 
     const blob = collectProjectDebug()!;
@@ -43,14 +41,14 @@ describe("projectDebug", () => {
     // Fresh session: nothing open, other settings in the slots.
     applyProjectDebug(undefined);
     localStorage.setItem("fielddraft.debug.sdfPlane", JSON.stringify({ halfExtent: 99 }));
-    expect(getDebugDialogs().sdfPlaneOpen).toBe(false);
+    expect(getDebugDialogs().open.sdfPlane).toBe(false);
     expect(getPartAabbVisible()).toBe(false);
 
     // Apply the (validated) blob — dialogs open, slots restored, overlay on.
     const before = getDebugDialogs().revision;
     applyProjectDebug(parseProjectDebug(JSON.parse(JSON.stringify(blob))));
-    expect(getDebugDialogs().sdfPlaneOpen).toBe(true);
-    expect(getDebugDialogs().mesherOpen).toBe(true);
+    expect(getDebugDialogs().open.sdfPlane).toBe(true);
+    expect(getDebugDialogs().open.mesher).toBe(true);
     expect(getDebugDialogs().revision).toBe(before + 1);
     expect(getPartAabbVisible()).toBe(true);
     expect(
@@ -59,10 +57,10 @@ describe("projectDebug", () => {
   });
 
   it("apply(undefined) closes everything (state is reproducible both ways)", () => {
-    setSdfPlaneDialogOpen(true);
+    setDebugDialogOpen("sdfPlane", true);
     setPartAabbVisible(true);
     applyProjectDebug(undefined);
-    expect(getDebugDialogs().sdfPlaneOpen).toBe(false);
+    expect(getDebugDialogs().open.sdfPlane).toBe(false);
     expect(getPartAabbVisible()).toBe(false);
   });
 
@@ -78,9 +76,9 @@ describe("projectDebug", () => {
   it("open-flag changes notify subscribers (dirty tracking hook)", () => {
     let fired = 0;
     const unsub = subscribeDebugDialogs(() => fired++);
-    setSdfPlaneDialogOpen(true);
-    setSdfPlaneDialogOpen(true); // no-op — must not fire
-    setSdfPlaneDialogOpen(false);
+    setDebugDialogOpen("sdfPlane", true);
+    setDebugDialogOpen("sdfPlane", true); // no-op — must not fire
+    setDebugDialogOpen("sdfPlane", false);
     expect(fired).toBe(2);
     unsub();
   });
@@ -90,35 +88,56 @@ describe("projectDebug", () => {
       "fielddraft.debug.mesherPasm",
       JSON.stringify({ targetEdgeLength: 3.5, iterations: 60 }),
     );
-    setMesherPasmDialogOpen(true);
+    setDebugDialogOpen("mesherPasm", true);
 
     const blob = collectProjectDebug()!;
     expect(blob.mesherPasmOpen).toBe(true);
     expect(blob.mesherPasm).toMatchObject({ targetEdgeLength: 3.5 });
 
     applyProjectDebug(undefined);
-    expect(getDebugDialogs().mesherPasmOpen).toBe(false);
+    expect(getDebugDialogs().open.mesherPasm).toBe(false);
 
     applyProjectDebug(parseProjectDebug(JSON.parse(JSON.stringify(blob))));
-    expect(getDebugDialogs().mesherPasmOpen).toBe(true);
+    expect(getDebugDialogs().open.mesherPasm).toBe(true);
     expect(
       JSON.parse(localStorage.getItem("fielddraft.debug.mesherPasm")!),
     ).toMatchObject({ targetEdgeLength: 3.5, iterations: 60 });
   });
 
   it("Mesher and Mesher PASM are mutually exclusive (shared overlay store)", () => {
-    setMesherDialogOpen(true);
-    setMesherPasmDialogOpen(true);
-    expect(getDebugDialogs().mesherOpen).toBe(false);
-    expect(getDebugDialogs().mesherPasmOpen).toBe(true);
+    setDebugDialogOpen("mesher", true);
+    setDebugDialogOpen("mesherPasm", true);
+    expect(getDebugDialogs().open.mesher).toBe(false);
+    expect(getDebugDialogs().open.mesherPasm).toBe(true);
 
-    setMesherDialogOpen(true);
-    expect(getDebugDialogs().mesherOpen).toBe(true);
-    expect(getDebugDialogs().mesherPasmOpen).toBe(false);
+    setDebugDialogOpen("mesher", true);
+    expect(getDebugDialogs().open.mesher).toBe(true);
+    expect(getDebugDialogs().open.mesherPasm).toBe(false);
 
-    // A blob claiming both keeps only the PASM dialog.
+    // A blob claiming both keeps only the PASM dialog (last in registry order).
     applyProjectDebug({ mesherOpen: true, mesherPasmOpen: true });
-    expect(getDebugDialogs().mesherOpen).toBe(false);
-    expect(getDebugDialogs().mesherPasmOpen).toBe(true);
+    expect(getDebugDialogs().open.mesher).toBe(false);
+    expect(getDebugDialogs().open.mesherPasm).toBe(true);
+  });
+
+  it("a brand-new dialog spec is fully wired with no per-dialog plumbing", () => {
+    // Guards the generalisation: the Lichen dialog was added as a single
+    // registry entry — its open flag, serialisation and remount all work
+    // without any Lichen-specific code in this module.
+    localStorage.setItem(
+      "fielddraft.debug.lichen",
+      JSON.stringify({ targetEdgeLength: 4 }),
+    );
+    setDebugDialogOpen("lichen", true);
+
+    const blob = collectProjectDebug()!;
+    expect(blob.lichenOpen).toBe(true);
+    expect(blob.lichen).toMatchObject({ targetEdgeLength: 4 });
+
+    applyProjectDebug(undefined);
+    expect(getDebugDialogs().open.lichen).toBe(false);
+
+    applyProjectDebug(parseProjectDebug(JSON.parse(JSON.stringify(blob))));
+    expect(getDebugDialogs().open.lichen).toBe(true);
   });
 });

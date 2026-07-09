@@ -154,9 +154,12 @@ export function BRepEdgeOverlay({
         m.needsUpdate = true;
       }
       if (depthTest && !m.polygonOffset) {
+        // Stärkerer Bias Richtung Kamera: die Kante scheint ein paar Pixel tief
+        // durch den Körper (koplanare/Silhouetten-Verdeckung weg), Rückseiten-
+        // Kanten bleiben verdeckt.
         m.polygonOffset = true;
-        m.polygonOffsetFactor = -2;
-        m.polygonOffsetUnits = -4;
+        m.polygonOffsetFactor = -4;
+        m.polygonOffsetUnits = -16;
         m.needsUpdate = true;
       }
     }
