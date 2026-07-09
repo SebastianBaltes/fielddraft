@@ -172,27 +172,14 @@ export function LichenOverlay() {
     const STRIDE = 9; // [x,y,z,sdf,nx,ny,nz,size,shown]
     const P = 3; // points offset
     const I = 3 + total * STRIDE; // indices offset
-    // Z-Offset: lift every drawn point this many mm ALONG ITS ∇f NORMAL, off the
-    // surface, so the markers/circles/wireframe read clearly in front instead of
-    // coinciding with the shaded face. A REAL geometric shift baked into the
-    // positions here — visible in the orthographic CAD view (a view-space depth
-    // bias like `polygonOffset` is invisible in ortho AND a no-op for lines) and
-    // the gap grows as you zoom in. Each block below reads its point through
-    // `lift*` so the offset is applied uniformly.
-    //
-    // The lift alone can't robustly beat the depth buffer on a COPLANAR flat
-    // face (a plane-parallel overlay a few mm off the surface still stitches in
-    // depth-tested render modes — mesh/webgl/brep or "Visible only" edges). So
-    // every overlay element is additionally drawn depth-test-free (`depthTest:
-    // false`, alongside the existing `depthWrite: false`): as a debug overlay it
-    // always paints crisply on top and can never z-fight a coplanar surface, in
-    // ANY render mode. The lift then serves purely to give parallax separation
-    // on curved surfaces (matches the x-ray edge default, where depth is cleared
-    // anyway).
-    const zOff = params.zOffset;
-    const liftX = (b: number) => data[b] + data[b + 4] * zOff;
-    const liftY = (b: number) => data[b + 1] + data[b + 5] * zOff;
-    const liftZ = (b: number) => data[b + 2] + data[b + 6] * zOff;
+    // Punkte werden an ihrer ECHTEN Position gezeichnet (kein Versatz im World-/
+    // Kamera-Raum). Dass die Overlay-Elemente vor dem Körper lesbar bleiben,
+    // regelt der OVERLAY_LAYER (x-ray, Tiefe geleert) zusammen mit
+    // `depthWrite: false` — exakt wie im PASM-`MesherOverlay`. Kein Lift, kein
+    // `depthTest`-Override.
+    const liftX = (b: number) => data[b];
+    const liftY = (b: number) => data[b + 1];
+    const liftZ = (b: number) => data[b + 2];
     // Display filter: draw normals/dots only for points the kernel marks as
     // `shown` (index 8 = 1). That flag folds in ALL processing filters
     // (near-surface AND sign-change), so toggling any of them visibly culls
@@ -252,7 +239,6 @@ export function LichenOverlay() {
             worldUnits: false,
             transparent: true,
             depthWrite: false,
-            depthTest: false,
           }),
         );
         wire.layers.enable(OVERLAY_LAYER);
@@ -321,7 +307,6 @@ export function LichenOverlay() {
       const geo = new THREE.BoxGeometry(1, 1, 1);
       const mat = new THREE.MeshBasicMaterial({
         toneMapped: false,
-        depthTest: false,
       });
       const im = new THREE.InstancedMesh(geo, mat, n);
       im.frustumCulled = false;
@@ -430,7 +415,6 @@ export function LichenOverlay() {
               transparent: true,
               opacity: 0.7,
               depthWrite: false,
-              depthTest: false,
             }),
           );
         } else {
@@ -443,7 +427,6 @@ export function LichenOverlay() {
               transparent: true,
               opacity: 0.7,
               depthWrite: false,
-              depthTest: false,
               toneMapped: false,
             }),
           );
@@ -479,7 +462,6 @@ export function LichenOverlay() {
               worldUnits: false,
               transparent: true,
               depthWrite: false,
-              depthTest: false,
             }),
           );
         } else {
@@ -491,7 +473,6 @@ export function LichenOverlay() {
               color: 0x2288ee,
               transparent: true,
               depthWrite: false,
-              depthTest: false,
               toneMapped: false,
             }),
           );
@@ -518,7 +499,6 @@ export function LichenOverlay() {
             worldUnits: false,
             transparent: true,
             depthWrite: false,
-            depthTest: false,
           }),
         );
       } else {
@@ -531,7 +511,6 @@ export function LichenOverlay() {
             vertexColors: true,
             transparent: true,
             depthWrite: false,
-            depthTest: false,
             toneMapped: false,
           }),
         );

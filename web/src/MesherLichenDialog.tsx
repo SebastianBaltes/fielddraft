@@ -61,8 +61,6 @@ interface LichenSettings {
   showNormals: boolean;
   /** Length (mm) of the normal needles. */
   normalLength: number;
-  /** Lift the whole overlay this many mm toward the camera (view-space Z). */
-  zOffset: number;
 }
 
 const DEFAULTS: LichenSettings = {
@@ -80,7 +78,6 @@ const DEFAULTS: LichenSettings = {
   pointSize: 1,
   showNormals: false,
   normalLength: 1,
-  zOffset: 2,
 };
 
 const clampNum = (v: unknown, lo: number, hi: number, fallback: number): number =>
@@ -116,7 +113,6 @@ function loadSettings(): LichenSettings {
       pointSize: clampNum(p.pointSize, 0.5, 100, DEFAULTS.pointSize),
       showNormals: p.showNormals === true,
       normalLength: clampNum(p.normalLength, 0, 1000, DEFAULTS.normalLength),
-      zOffset: clampNum(p.zOffset, 0, 1000, DEFAULTS.zOffset),
     };
   } catch {
     return DEFAULTS;
@@ -142,7 +138,6 @@ function lichenParams(s: LichenSettings): LichenDebug {
     pointSize: s.pointSize,
     showNormals: s.showNormals,
     normalLength: s.normalLength,
-    zOffset: s.zOffset,
     // Display: 3-way SDF colouring band (unused for markers now).
     surfaceThreshold: 0.05,
     normalScale: 0,
@@ -165,7 +160,6 @@ export function MesherLichenDialog({ onClose }: { onClose: () => void }) {
   const [pointSize, setPointSize] = useState(initial.pointSize);
   const [showNormals, setShowNormals] = useState(initial.showNormals);
   const [normalLength, setNormalLength] = useState(initial.normalLength);
-  const [zOffset, setZOffset] = useState(initial.zOffset);
 
   const stats = useSyncExternalStore(subscribeLichenStats, getLichenStats);
 
@@ -186,7 +180,6 @@ export function MesherLichenDialog({ onClose }: { onClose: () => void }) {
       pointSize,
       showNormals,
       normalLength,
-      zOffset,
     };
     setLichenDebug(lichenParams(s));
     try {
@@ -194,7 +187,7 @@ export function MesherLichenDialog({ onClose }: { onClose: () => void }) {
     } catch {
       // no localStorage (tests) — non-persistent is fine
     }
-  }, [targetEdgeLength, grow, curvAngleDeg, useReach, reachTol, maxPoints, partOpacity, strokeWidth, showCircles, showPoints, showTriangles, pointSize, showNormals, normalLength, zOffset]);
+  }, [targetEdgeLength, grow, curvAngleDeg, useReach, reachTol, maxPoints, partOpacity, strokeWidth, showCircles, showPoints, showTriangles, pointSize, showNormals, normalLength]);
   useEffect(() => () => setLichenDebug(null), []);
 
   useEffect(() => {
@@ -403,32 +396,6 @@ export function MesherLichenDialog({ onClose }: { onClose: () => void }) {
             aria-label="Stroke width"
             value={strokeWidth}
             onChange={setStrokeWidth}
-          />
-        </div>
-      </div>
-
-      <div className="vec-row">
-        <label
-          title={
-            "Lift the whole overlay this many mm TOWARD the camera so the " +
-            "points/circles/wireframe float in front of the surface instead of " +
-            "z-fighting with it. A real geometric shift — the gap grows as you " +
-            "zoom in (unlike a depth-buffer bias, which does nothing here)."
-          }
-        >
-          Z-Offset (mm)
-        </label>
-        <div className="fields">
-          <NumberInput
-            min={0}
-            max={1000}
-            step={0.5}
-            aria-label="Z-Offset"
-            value={zOffset}
-            onChange={setZOffset}
-            // Re-meshes on change (shared overlay effect) → commit on blur/Enter
-            // so scrubbing the value can't re-weave a fine mesh per keystroke.
-            commitOnChange={false}
           />
         </div>
       </div>

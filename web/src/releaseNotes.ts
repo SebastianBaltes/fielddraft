@@ -24,6 +24,16 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.486",
+    entries: [
+      {
+        kind: "fix",
+        scope: "debug",
+        text: "Z-Offset-Workarounds der Debug-Overlays zurückgenommen: die Debug-Objekte (Lichen-Punkte/Kreise/Wireframe) wurden nicht mehr geometrisch im World-/Kamera-Raum entlang der Normale verschoben (das erzeugte fehlerhafte Darstellungen). Sie werden jetzt an ihrer echten Position gezeichnet; das Vorne-Liegen regelt wie beim PASM-Mesher-Overlay der x-ray-OVERLAY_LAYER + depthWrite:false. Der zugehörige Z-Offset-Regler ist entfernt. BRep-Kanten-polygonOffset wieder auf den moderaten Vorwert (−2/−4).",
+      },
+    ],
+  },
+  {
     version: "0.6.485",
     entries: [
       {

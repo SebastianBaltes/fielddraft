@@ -52,11 +52,6 @@ export interface LichenDebug {
   showNormals: boolean;
   /** Length (mm) of the normal needles. */
   normalLength: number;
-  /** Lift the WHOLE overlay this many mm toward the camera (view-space Z), so
-   *  the points/circles/wireframe float visibly in front of the surface instead
-   *  of z-fighting with it. A REAL geometric shift (not a depth-buffer bias, so
-   *  the gap grows as you zoom in) — read per-frame by the overlay. */
-  zOffset: number;
 }
 
 let params: LichenDebug | null = null;
