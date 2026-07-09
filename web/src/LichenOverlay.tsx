@@ -177,9 +177,9 @@ export function LichenOverlay() {
     // regelt der OVERLAY_LAYER (x-ray, Tiefe geleert) zusammen mit
     // `depthWrite: false` — exakt wie im PASM-`MesherOverlay`. Kein Lift, kein
     // `depthTest`-Override.
-    const liftX = (b: number) => data[b];
-    const liftY = (b: number) => data[b + 1];
-    const liftZ = (b: number) => data[b + 2];
+    const rawX = (b: number) => data[b];
+    const rawY = (b: number) => data[b + 1];
+    const rawZ = (b: number) => data[b + 2];
     // Z-Puffer-Bias (nur WebGPU): LineSegments2 (fette Linien) UND die Box-Marker
     // rastern Dreiecke, daher wirkt `polygonOffset` als WebGPU-`depthBias` und
     // zieht die Debug-Objekte im TIEFENPUFFER minimal Richtung Kamera — sie
@@ -214,9 +214,9 @@ export function LichenOverlay() {
     // WebGPU-visible fat-line path (Line2NodeMaterial), so it reads as the raw
     // octree edge graph over the point set.
     if (triCount > 0 && params.showTriangles) {
-      const px = (i: number) => liftX(P + i * STRIDE);
-      const py = (i: number) => liftY(P + i * STRIDE);
-      const pz = (i: number) => liftZ(P + i * STRIDE);
+      const px = (i: number) => rawX(P + i * STRIDE);
+      const py = (i: number) => rawY(P + i * STRIDE);
+      const pz = (i: number) => rawZ(P + i * STRIDE);
       // Two wireframes: CDT/DC triangles in ink, §6-F3 fallback patches in
       // orange — the split is positional (fallback tris sit LAST).
       const buildWire = (from: number, to: number, color: number) => {
@@ -271,9 +271,9 @@ export function LichenOverlay() {
     const lineCol = new Float32Array(n * 6);
     for (let idx = 0; idx < n; idx++) {
       const b = P + keep[idx] * STRIDE;
-      const x = liftX(b),
-        y = liftY(b),
-        z = liftZ(b),
+      const x = rawX(b),
+        y = rawY(b),
+        z = rawZ(b),
         d = data[b + 3];
       const nx = data[b + 4],
         ny = data[b + 5],
@@ -331,9 +331,9 @@ export function LichenOverlay() {
       const col = new THREE.Color();
       for (let idx = 0; idx < n; idx++) {
         const b = P + keep[idx] * STRIDE;
-        centers[idx * 3] = liftX(b);
-        centers[idx * 3 + 1] = liftY(b);
-        centers[idx * 3 + 2] = liftZ(b);
+        centers[idx * 3] = rawX(b);
+        centers[idx * 3 + 1] = rawY(b);
+        centers[idx * 3 + 2] = rawZ(b);
         const nx = data[b + 4], ny = data[b + 5], nz = data[b + 6];
         en.set(nx, ny, nz).normalize();
         const sx = Math.abs(nx) < 0.9 ? 1 : 0;
@@ -391,7 +391,7 @@ export function LichenOverlay() {
         const b = P + pi * STRIDE;
         const u = data[b + 7];
         if (!(u > 0)) continue;
-        const x = liftX(b), y = liftY(b), z = liftZ(b);
+        const x = rawX(b), y = rawY(b), z = rawZ(b);
         const nx = data[rb + 1], ny = data[rb + 2], nz = data[rb + 3];
         // Tangent basis (e ⟂ f ⟂ n), matching the kernel's construction.
         const sx = Math.abs(nx) < 0.9 ? 1 : 0;
@@ -458,7 +458,7 @@ export function LichenOverlay() {
       const seg: number[] = [];
       for (let idx = 0; idx < n; idx++) {
         const b = P + keep[idx] * STRIDE;
-        const x = liftX(b), y = liftY(b), z = liftZ(b);
+        const x = rawX(b), y = rawY(b), z = rawZ(b);
         const nx = data[b + 4], ny = data[b + 5], nz = data[b + 6];
         const l = params.normalLength;
         seg.push(x, y, z, x + nx * l, y + ny * l, z + nz * l);
