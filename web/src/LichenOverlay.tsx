@@ -172,24 +172,14 @@ export function LichenOverlay() {
     const STRIDE = 9; // [x,y,z,sdf,nx,ny,nz,size,shown]
     const P = 3; // points offset
     const I = 3 + total * STRIDE; // indices offset
-    // Punkte werden an ihrer ECHTEN Position gezeichnet (kein Versatz im World-/
-    // Kamera-Raum). Dass die Overlay-Elemente vor dem Körper lesbar bleiben,
-    // regelt der OVERLAY_LAYER (x-ray, Tiefe geleert) zusammen mit
-    // `depthWrite: false` — exakt wie im PASM-`MesherOverlay`. Kein Lift, kein
-    // `depthTest`-Override.
+    // KEINERLEI Z-Offset/-Bias mehr: Punkte an ihrer ECHTEN Position, kein Lift,
+    // kein `depthTest`-Override, kein `polygonOffset`. Sichtbarkeit regelt allein
+    // der OVERLAY_LAYER (x-ray, Tiefe geleert) + `depthWrite: false` — exakt wie
+    // das PASM-`MesherOverlay`. (Auf Wunsch des Betreibers komplett entfernt.)
     const rawX = (b: number) => data[b];
     const rawY = (b: number) => data[b + 1];
     const rawZ = (b: number) => data[b + 2];
-    // Z-Puffer-Bias (nur WebGPU): LineSegments2 (fette Linien) UND die Box-Marker
-    // rastern Dreiecke, daher wirkt `polygonOffset` als WebGPU-`depthBias` und
-    // zieht die Debug-Objekte im TIEFENPUFFER minimal Richtung Kamera — sie
-    // liegen so leicht vor dem Solid und werden nicht so schnell verdeckt (kein
-    // geometrischer World-/Kamera-Versatz). Auf WebGL (plain lines/points greift
-    // depthBias nicht) bewusst weggelassen.
     const webgpu = isWebGPURenderer(gl);
-    const depthBias = webgpu
-      ? { polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -4 }
-      : {};
     // Display filter: draw normals/dots only for points the kernel marks as
     // `shown` (index 8 = 1). That flag folds in ALL processing filters
     // (near-surface AND sign-change), so toggling any of them visibly culls
@@ -249,7 +239,6 @@ export function LichenOverlay() {
             worldUnits: false,
             transparent: true,
             depthWrite: false,
-            ...depthBias,
           }),
         );
         wire.layers.enable(OVERLAY_LAYER);
@@ -319,7 +308,6 @@ export function LichenOverlay() {
       const mat = new THREE.MeshBasicMaterial({
         toneMapped: false,
         depthWrite: false,
-        ...depthBias,
       });
       const im = new THREE.InstancedMesh(geo, mat, n);
       im.frustumCulled = false;
@@ -428,7 +416,6 @@ export function LichenOverlay() {
               transparent: true,
               opacity: 0.7,
               depthWrite: false,
-              ...depthBias,
             }),
           );
         } else {
@@ -476,7 +463,6 @@ export function LichenOverlay() {
               worldUnits: false,
               transparent: true,
               depthWrite: false,
-              ...depthBias,
             }),
           );
         } else {
@@ -513,7 +499,6 @@ export function LichenOverlay() {
             worldUnits: false,
             transparent: true,
             depthWrite: false,
-            ...depthBias,
           }),
         );
       } else {

@@ -24,6 +24,16 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.488",
+    entries: [
+      {
+        kind: "fix",
+        scope: "debug",
+        text: "Sämtliche Z-Offset-Behandlung der Debug-Overlays komplett entfernt (auf Betreiber-Wunsch): kein geometrischer Versatz UND kein Z-Puffer-Bias (polygonOffset) mehr. Das Lichen-Overlay ist damit auf dem sauberen Ausgangszustand wie das PASM-Mesher-Overlay — Sichtbarkeit allein über den x-ray-OVERLAY_LAYER + depthWrite:false. Die Kantenpunkt-2-Normalen (ein Kreis-Record je angrenzender Fläche) bleiben unverändert.",
+      },
+    ],
+  },
+  {
     version: "0.6.487",
     entries: [
       {
