@@ -124,7 +124,10 @@ func NewServer(store Store) *Server {
 //   - TICKET_BACKEND=issuevault → the shared external IssueVault service
 //     (store_issuevault.go), configured via ISSUEVAULT_TOKEN + _INSTALLATION
 //     (URL/PROJECT default in-code). This is the store the FieldDraft
-//     installations share; dev opts in via a gitignored .env.
+//     installations share (prod + every dev stack); it is injected by the
+//     deploy env — Ansible-Vault in prod, a gitignored .env in dev — NOT by a
+//     committed compose default. All installations share one IssueVault
+//     project, isolated per installation; see DEPLOY.md.
 //
 // The same ticket CRUD/UI/API/agent-harvest runs unchanged over whichever
 // backend is installed.
