@@ -24,6 +24,17 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.500",
+    entries: [
+      {
+        kind: "feat",
+        scope: "mesher",
+        text: "Lichen: Mikro-Features werden kollabiert statt umtanzt („andersrum“-Sicht auf die U(p)-Lücken). Drei Mechanismen: (1) B-Rep-Ecken näher beieinander als der Min. Kantenabstand teilen sich einen Mesh-Vertex (Cluster-Repräsentant) — solche Häufungen entstehen bei streifenden Verschneidungen; (2) Mikro-Kanten innerhalb eines Clusters und Mikro-Ringe (Umfang < 4·Min-Abstand) verschwinden ganz aus dem Mesh (Sub-Resolution-Topologie); (3) die Kanten-Abtastung tilgt Trailing-Remnants — das beliebig kleine Rest-Segment vor dem Kettenende (die eigentliche Quelle der µm-kleinen U(Ecke)-Kreise). Ecken-Umgebungen sind damit wieder ≥ Min-Abstand groß, und die Punktzahl sinkt statt zu explodieren (Ticket-Modell: 191 → 165 Punkte bei weiterhin lückenloser Überdeckung).",
+        tickets: ["2e7eab20"],
+      },
+    ],
+  },
+  {
     version: "0.6.499",
     entries: [
       {

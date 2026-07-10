@@ -97,26 +97,61 @@ impl Kernel {
                 ]
             };
 
+            let h_local = h / s.max(1e-6);
+            let min_spacing_local = opts.min_edge_spacing.max(0.0) / s.max(1e-6);
+            let seg_len = |a: [f32; 3], b: [f32; 3]| -> f32 {
+                ((b[0] - a[0]).powi(2) + (b[1] - a[1]).powi(2) + (b[2] - a[2]).powi(2)).sqrt()
+            };
+
             // Ecken (flag 3): globale Slots; Normale (Mittel der Flächen) folgt.
+            //
+            // MIKRO-FEATURE-KOLLAPS (Ticket 2e7eab20, „andersrum"): B-Rep-Ecken,
+            // die näher beieinander liegen als der Min. Kantenabstand, teilen
+            // sich EINEN Mesh-Vertex (Cluster-Repräsentant = erste Ecke). Solche
+            // Häufungen entstehen z.B. bei streifenden Verschneidungen (die
+            // r=30-Bohrung dieses Modells trifft die Box-Kante bei Radial-
+            // abstand 29.998) — Topologie unterhalb der Mesh-Auflösung, die
+            // U(Ecke) sonst auf µm drückt und Verdichtungs-Kaskaden auslöst.
             let mut corner_slot: HashMap<usize, u32> = HashMap::new();
+            let mut cluster_reps: Vec<(u32, [f64; 3])> = Vec::new();
             for (vi, v) in brep.vertices.iter().enumerate() {
-                let p = to_world(v.position);
-                let (d, _) = fg(p);
-                corner_slot.insert(vi, all.len() as u32);
-                all.push(LPoint { p, sdf: d, n: [0.0, 0.0, 1.0], u: h, space: h, flag: 3.0 });
-                point_faces.push(Vec::new());
-                local_pos.push([v.position[0] as f32, v.position[1] as f32, v.position[2] as f32]);
+                let rep = cluster_reps.iter().find(|&&(_, rp)| {
+                    let dx = v.position[0] - rp[0];
+                    let dy = v.position[1] - rp[1];
+                    let dz = v.position[2] - rp[2];
+                    ((dx * dx + dy * dy + dz * dz) as f32).sqrt() < min_spacing_local
+                });
+                let slot = match rep {
+                    Some(&(slot, _)) => slot,
+                    None => {
+                        let p = to_world(v.position);
+                        let (d, _) = fg(p);
+                        let slot = all.len() as u32;
+                        all.push(LPoint {
+                            p,
+                            sdf: d,
+                            n: [0.0, 0.0, 1.0],
+                            u: h,
+                            space: h,
+                            flag: 3.0,
+                        });
+                        point_faces.push(Vec::new());
+                        local_pos.push([
+                            v.position[0] as f32,
+                            v.position[1] as f32,
+                            v.position[2] as f32,
+                        ]);
+                        cluster_reps.push((slot, v.position));
+                        slot
+                    }
+                };
+                corner_slot.insert(vi, slot);
             }
 
             // Kanten (flag 2): in LOCAL resamplen (§3.2 krümmungsgesteuert);
             // geordnete globale Index-Kette je Kante merken (für die Flächen-
             // Loops); chain_links = feste Feature-Kanten in G; Welt-Segmente für
             // R_BRep.
-            let h_local = h / s.max(1e-6);
-            let min_spacing_local = opts.min_edge_spacing.max(0.0) / s.max(1e-6);
-            let seg_len = |a: [f32; 3], b: [f32; 3]| -> f32 {
-                ((b[0] - a[0]).powi(2) + (b[1] - a[1]).powi(2) + (b[2] - a[2]).powi(2)).sqrt()
-            };
             // Kette einer Kante bauen: adaptives Resampling (mit Ecken-Rand-
             // Bedingungen fürs Grading) + 4-Punkte-Schutz für Ringe.
             let build_chain = |raw_local: &[[f32; 3]], closed: bool, bounds: (f32, f32)| {
@@ -151,6 +186,11 @@ impl Kernel {
                 closed: bool,
                 vs: Option<usize>,
                 ve: Option<usize>,
+                /// Mikro-Feature-Kollaps: Kante verschwindet aus dem Mesh —
+                /// offene Mikro-Kante innerhalb EINES Ecken-Clusters → nur der
+                /// Repräsentant bleibt; Mikro-Ring (Umfang < 4·min_spacing) →
+                /// ersatzlos (das Loch ist Sub-Resolution).
+                collapse: bool,
             }
             let mut pedges: Vec<PEdge> = Vec::with_capacity(brep.edges.len());
             let mut corner_gap: HashMap<usize, f32> = HashMap::new();
@@ -160,28 +200,45 @@ impl Kernel {
                     .map(|p| [p[0] as f32, p[1] as f32, p[2] as f32])
                     .collect();
                 let closed = e.start.is_none() && e.end.is_none();
-                let chain =
-                    build_chain(&raw_local, closed, (f32::INFINITY, f32::INFINITY));
-                let mut note = |v: Option<crate::brep::VertexId>, d: f32| {
-                    if let Some(vid) = v {
-                        let slot = corner_gap.entry(vid.0 as usize).or_insert(f32::INFINITY);
-                        *slot = slot.min(d);
-                    }
+                let total: f32 = raw_local.windows(2).map(|w| seg_len(w[0], w[1])).sum();
+                let vs = e.start.map(|v| v.0 as usize);
+                let ve = e.end.map(|v| v.0 as usize);
+                let same_cluster = match (vs, ve) {
+                    (Some(a), Some(b)) => corner_slot[&a] == corner_slot[&b],
+                    _ => false,
                 };
-                if chain.len() >= 2 {
-                    note(e.start, seg_len(chain[0], chain[1]));
-                    note(e.end, seg_len(chain[chain.len() - 2], chain[chain.len() - 1]));
+                let collapse = (same_cluster && total < min_spacing_local)
+                    || (closed && total < 4.0 * min_spacing_local);
+                if !collapse {
+                    let chain =
+                        build_chain(&raw_local, closed, (f32::INFINITY, f32::INFINITY));
+                    let mut note = |v: Option<usize>, d: f32| {
+                        if let Some(vid) = v {
+                            let slot = corner_gap.entry(vid).or_insert(f32::INFINITY);
+                            *slot = slot.min(d);
+                        }
+                    };
+                    if chain.len() >= 2 {
+                        note(vs, seg_len(chain[0], chain[1]));
+                        note(ve, seg_len(chain[chain.len() - 2], chain[chain.len() - 1]));
+                    }
                 }
-                pedges.push(PEdge {
-                    raw_local,
-                    closed,
-                    vs: e.start.map(|v| v.0 as usize),
-                    ve: e.end.map(|v| v.0 as usize),
-                });
+                pedges.push(PEdge { raw_local, closed, vs, ve, collapse });
             }
 
             let mut edge_chain: HashMap<u32, Vec<u32>> = HashMap::new();
             for (eid, (e, pe)) in brep.edges.iter().zip(&pedges).enumerate() {
+                if pe.collapse {
+                    // Offene Mikro-Kante: der geteilte Cluster-Repräsentant
+                    // hält die angrenzenden Ringe zusammen. Mikro-Ring: leer —
+                    // das Sub-Resolution-Loch verschwindet aus beiden Faces.
+                    let idxs: Vec<u32> = match pe.vs {
+                        Some(v) if !pe.closed => vec![corner_slot[&v]],
+                        _ => Vec::new(),
+                    };
+                    edge_chain.insert(eid as u32, idxs);
+                    continue;
+                }
                 let bound_of = |v: Option<usize>| -> f32 {
                     v.and_then(|vid| corner_gap.get(&vid).copied()).unwrap_or(f32::INFINITY)
                 };
@@ -1109,3 +1166,4 @@ mod tests {
         assert_eq!(checked, 8, "all eight box corners checked");
     }
 }
+

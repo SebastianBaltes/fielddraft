@@ -427,6 +427,15 @@ pub fn resample_edge_by_curvature(
             }
         }
     }
+    // Trailing-Remnant tilgen (Ticket 2e7eab20 „andersrum"): die Emission
+    // läuft im min_spacing-Raster und lässt vor dem Kettenende ein beliebig
+    // kleines Rest-Segment übrig (z.B. 0.017 mm bei min 0.2) — das drückt
+    // U(Ecke) auf µm und zwingt die Überdeckung in Verdichtungs-Kaskaden.
+    // Interior-Punkte näher als min_spacing am Ende fallen weg; der letzte
+    // Abstand wird Teil des vorletzten Segments.
+    while s_out.len() > 1 && total - *s_out.last().unwrap() < min_spacing {
+        s_out.pop();
+    }
     if total - *s_out.last().unwrap() > 1e-9 {
         s_out.push(total);
     } else {
