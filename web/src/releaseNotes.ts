@@ -24,6 +24,34 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.494",
+    entries: [
+      {
+        kind: "feat",
+        scope: "mesher",
+        text: "Lichen: Neuer Parameter „Min. Kantenabstand (mm)" (Default 0.01) — die winkelgetriebene Kanten-Verdichtung setzt keine Punkte näher als diesen Abstand, sehr kleine Kreise bekommen also nicht mehr die volle Winkel-Punktzahl. Geschlossene Kanten behalten unabhängig davon mindestens 4 Punkte, damit sie nicht entarten.",
+        tickets: ["6d3f4a7f"],
+      },
+      {
+        kind: "fix",
+        scope: "mesher",
+        text: "Lichen: U(p) ist für Kanten- und Eckpunkte jetzt durch den Abstand zum nächsten Ketten-Nachbarn begrenzt (statt pauschal h) — der Anzeigekreis reicht nie über den Nachbarpunkt hinaus. Bei geschlossenen Ringen zählt auch das Schluss-Segment (das zudem jetzt in die R_BRep-Distanz eingeht).",
+        tickets: ["0d94273b"],
+      },
+    ],
+  },
+  {
+    version: "0.6.493",
+    entries: [
+      {
+        kind: "fix",
+        scope: "account",
+        text: "Der „Keep your local work?"-Import-Banner nach dem Login erscheint nicht mehr in der lokalen Dev-Umgebung (Vite-Dev-Server) — dort ist das Gast-Projekt fast immer bewusste lokale Entwicklungsarbeit.",
+        tickets: ["14a08041"],
+      },
+    ],
+  },
+  {
     version: "0.6.492",
     entries: [
       {

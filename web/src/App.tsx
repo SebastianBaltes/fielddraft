@@ -315,6 +315,10 @@ function AppShell({ account }: { account: UseAccount }) {
   useEffect(() => {
     if (importDecided || importPrompt !== "hidden") return;
     if (!store) return;
+    // Ticket 14a08041: in der lokalen Dev-Umgebung (vite dev server) nicht
+    // anbieten — dort ist das "Gast-Projekt" fast immer bewusste lokale
+    // Entwicklungsarbeit, und der Banner nervt bei jedem Login.
+    if (import.meta.env.DEV) return;
     const offer = shouldOfferGuestImport({
       authed: account.state.status === "authed",
       // A stored (not-yet-rehydrated) binding counts as bound — the async
