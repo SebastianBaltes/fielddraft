@@ -58,6 +58,14 @@ dev: build-wasm
 # DB), waits for the server to be healthy, then runs vite — which proxies /api
 # to the local Go server (see web/vite.config.ts). Gives a working local login.
 # Stop the backend afterwards with `docker compose down`.
+# Wie dev-full, aber der Go-Server läuft mit air-Live-Reload: jede Änderung
+# unter server/*.go baut & startet ihn automatisch neu (docker-compose.air.yml
+# mountet ./server in einen golang-Container; Caches in benannten Volumes).
+# Zurück zum gebauten Image: `just dev-full` bzw. `docker compose up -d --build server`.
+dev-air:
+    docker compose -f docker-compose.yml -f docker-compose.air.yml up -d db server mesher
+    docker compose logs -f server
+
 dev-full: build-wasm
     #!/usr/bin/env bash
     set -euo pipefail

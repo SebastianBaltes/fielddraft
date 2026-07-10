@@ -1,0 +1,20 @@
+# air — Live-Reload für den Go-Dev-Server (docker-compose.air.yml).
+# Bei jeder .go-Änderung: neu bauen, Prozess neu starten. Tests/tmp/Daten
+# ausgenommen. Läuft im golang-Container mit ./server als Bind-Mount.
+root = "."
+tmp_dir = "tmp"
+
+[build]
+cmd = "go build -o ./tmp/fielddraft-server ."
+bin = "./tmp/fielddraft-server"
+include_ext = ["go"]
+exclude_dir = ["tmp", "data"]
+exclude_regex = ["_test\\.go$"]
+delay = 300
+stop_on_error = true
+
+[log]
+main_only = false
+
+[misc]
+clean_on_exit = true

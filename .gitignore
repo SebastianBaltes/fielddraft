@@ -69,3 +69,4 @@ deploy/ansible/inventory.ini
 deploy/ansible/group_vars/all.yml
 deploy/ansible/group_vars/vault.yml
 cgal-mesher/build/
+server/tmp/
