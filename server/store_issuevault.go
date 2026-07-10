@@ -400,38 +400,77 @@ func (s *issuevaultStore) GetTicket(id string) *Ticket {
 }
 
 func (s *issuevaultStore) ListTickets(f TicketFilter) []*Ticket {
-	// scope=own: only THIS installation's tickets. The store's token is
-	// installation-bound, so it isolates FieldDraft instances from each other
-	// (a project-scoped token would leak all installations' tickets). Records
-	// (deploys) stay project-level below.
-	pred := map[string]any{"scope": "own"}
-	if f.State != "" {
-		pred["status"] = []string{string(f.State)} // search expects a status set
-	}
-	if f.Category != "" {
-		pred["category"] = f.Category
-	}
-	if f.AuthorID != "" {
-		// f.AuthorID is already resolved by the caller ("me" is not handled here).
-		pred["author"] = f.AuthorID
-	}
-	if f.Query != "" {
-		pred["q"] = f.Query
-	}
-	ivs, err := s.search(pred)
-	if err != nil {
-		log.Printf("issuevault: ListTickets: %v", err)
-		return nil
-	}
-	var out []*Ticket
-	for i := range ivs {
-		t := mapTicket(&ivs[i])
-		// Visibility (§7.3): hide rejected tickets unless the viewer is admin or
-		// the ticket's own author.
-		if isRejected(t.State) && !f.ViewerIsAdmin && t.AuthorID != f.ViewerID {
-			continue
+	// RESOLVED tickets are shared across ALL installations of the project (they
+	// migrate to main / are inherently shareable), so they are read PROJECT-WIDE
+	// (scope:"project"). Every OTHER state stays isolated to the viewer's own
+	// installation (scope:"own"). The installation-bound token IS allowed to read
+	// scope:"project" (verified with IssueVault) and GET any ticket of the project
+	// by id — the per-state isolation is this adapter's choice, not a token
+	// boundary. So a peer installation's resolved ticket also lists AND opens.
+	mk := func(scope string, status []string) map[string]any {
+		pred := map[string]any{"scope": scope}
+		if status != nil {
+			pred["status"] = status
 		}
-		out = append(out, t)
+		if f.Category != "" {
+			pred["category"] = f.Category
+		}
+		if f.AuthorID != "" {
+			// f.AuthorID is already resolved by the caller ("me" is not handled here).
+			pred["author"] = f.AuthorID
+		}
+		if f.Query != "" {
+			pred["q"] = f.Query
+		}
+		return pred
+	}
+
+	seen := map[string]bool{}
+	var out []*Ticket
+	add := func(ivs []ivTicket) {
+		for i := range ivs {
+			t := mapTicket(&ivs[i])
+			if seen[t.ID] {
+				continue
+			}
+			// Visibility (§7.3): hide rejected tickets unless the viewer is admin
+			// or the ticket's own author. (Resolved is never rejected, so the
+			// project-wide resolved set always passes.)
+			if isRejected(t.State) && !f.ViewerIsAdmin && t.AuthorID != f.ViewerID {
+				continue
+			}
+			seen[t.ID] = true
+			out = append(out, t)
+		}
+	}
+	run := func(pred map[string]any) bool {
+		ivs, err := s.search(pred)
+		if err != nil {
+			log.Printf("issuevault: ListTickets: %v", err)
+			return false
+		}
+		add(ivs)
+		return true
+	}
+
+	resolved := []string{string(StateResolved)}
+	switch f.State {
+	case StateResolved:
+		// Only resolved requested → all installations' resolved.
+		if !run(mk("project", resolved)) {
+			return nil
+		}
+	case "":
+		// All states → the viewer's OWN (every state) PLUS every installation's
+		// resolved, merged and de-duplicated by id (own resolved appears first,
+		// peer resolved is added after).
+		run(mk("own", nil))
+		run(mk("project", resolved))
+	default:
+		// A specific non-resolved state → the viewer's own installation only.
+		if !run(mk("own", []string{string(f.State)})) {
+			return nil
+		}
 	}
 	sortTicketsDesc(out)
 	return out

@@ -24,6 +24,16 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.500",
+    entries: [
+      {
+        kind: "feat",
+        scope: "issues",
+        text: "Die Issues-Liste zeigt jetzt erledigte (resolved) Tickets ALLER Installationen/Agenten des Projekts — resolved Tickets sind geteilt (sie wandern ohnehin nach main). Alle anderen Status bleiben auf die eigene Installation beschränkt. Serverseitig (IssueVault-Backend): resolved wird projekt-weit gelesen (scope:project), der Rest scope:own, zusammengeführt und dedupliziert. Mit dem issuevault-Agenten abgestimmt (der installations-gebundene Token darf projekt-weit lesen).",
+      },
+    ],
+  },
+  {
     version: "0.6.499",
     entries: [
       {
