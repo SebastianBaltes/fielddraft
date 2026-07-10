@@ -1,7 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  armProjectThumbnailCapture,
   maybeCaptureThumbnail,
   resetThumbnailThrottle,
+  takeArmedProjectCapture,
   THUMBNAIL_MIN_INTERVAL_MS,
 } from "./thumbnailScheduler";
 import type { ThumbnailBody } from "./thumbnailCapture";
@@ -17,84 +19,99 @@ const pngBlob = () => new Blob(["png"], { type: "image/png" });
 describe("maybeCaptureThumbnail", () => {
   beforeEach(() => resetThumbnailThrottle());
 
-  it("renders + uploads when there is geometry", async () => {
+  it("renders + hands the blob to the sink when there is geometry", async () => {
     const render = vi.fn().mockResolvedValue(pngBlob());
-    const put = vi.fn().mockResolvedValue(undefined);
-    const ok = await maybeCaptureThumbnail("p1", [body()], {
+    const sink = vi.fn().mockResolvedValue(undefined);
+    const ok = await maybeCaptureThumbnail([body()], sink, {
       render,
-      put,
       nowMs: 1000,
     });
     expect(ok).toBe(true);
     expect(render).toHaveBeenCalledOnce();
-    expect(put).toHaveBeenCalledWith("p1", expect.any(Blob));
+    expect(sink).toHaveBeenCalledWith(expect.any(Blob));
   });
 
   it("skips with no geometry and does NOT consume the throttle window", async () => {
     const render = vi.fn();
-    const put = vi.fn();
-    expect(
-      await maybeCaptureThumbnail("p1", [], { render, put, nowMs: 1000 }),
-    ).toBe(false);
+    const sink = vi.fn();
+    expect(await maybeCaptureThumbnail([], sink, { render, nowMs: 1000 })).toBe(
+      false,
+    );
     expect(render).not.toHaveBeenCalled();
 
     // A real capture shortly after still fires — the empty attempt didn't claim
     // the throttle.
     const render2 = vi.fn().mockResolvedValue(pngBlob());
-    const put2 = vi.fn().mockResolvedValue(undefined);
+    const sink2 = vi.fn().mockResolvedValue(undefined);
     expect(
-      await maybeCaptureThumbnail("p1", [body()], {
+      await maybeCaptureThumbnail([body()], sink2, {
         render: render2,
-        put: put2,
         nowMs: 1100,
       }),
     ).toBe(true);
   });
 
   it("throttles within the interval, then allows again past it", async () => {
-    const first = {
-      render: vi.fn().mockResolvedValue(pngBlob()),
-      put: vi.fn().mockResolvedValue(undefined),
-    };
     expect(
-      await maybeCaptureThumbnail("p1", [body()], { ...first, nowMs: 0 }),
+      await maybeCaptureThumbnail(
+        [body()],
+        vi.fn().mockResolvedValue(undefined),
+        { render: vi.fn().mockResolvedValue(pngBlob()), nowMs: 0 },
+      ),
     ).toBe(true);
 
-    const within = { render: vi.fn(), put: vi.fn() };
+    const withinRender = vi.fn();
     expect(
-      await maybeCaptureThumbnail("p1", [body()], {
-        ...within,
+      await maybeCaptureThumbnail([body()], vi.fn(), {
+        render: withinRender,
         nowMs: THUMBNAIL_MIN_INTERVAL_MS - 1,
       }),
     ).toBe(false);
-    expect(within.render).not.toHaveBeenCalled();
+    expect(withinRender).not.toHaveBeenCalled();
 
-    const after = {
-      render: vi.fn().mockResolvedValue(pngBlob()),
-      put: vi.fn().mockResolvedValue(undefined),
-    };
     expect(
-      await maybeCaptureThumbnail("p1", [body()], {
-        ...after,
-        nowMs: THUMBNAIL_MIN_INTERVAL_MS + 1,
-      }),
+      await maybeCaptureThumbnail(
+        [body()],
+        vi.fn().mockResolvedValue(undefined),
+        {
+          render: vi.fn().mockResolvedValue(pngBlob()),
+          nowMs: THUMBNAIL_MIN_INTERVAL_MS + 1,
+        },
+      ),
     ).toBe(true);
   });
 
-  it("swallows a failed upload (best-effort)", async () => {
+  it("swallows a failed sink (best-effort)", async () => {
     const render = vi.fn().mockResolvedValue(pngBlob());
-    const put = vi.fn().mockRejectedValue(new Error("boom"));
+    const sink = vi.fn().mockRejectedValue(new Error("boom"));
     expect(
-      await maybeCaptureThumbnail("p1", [body()], { render, put, nowMs: 9000 }),
+      await maybeCaptureThumbnail([body()], sink, { render, nowMs: 9000 }),
     ).toBe(false);
   });
 
   it("skips a null render (no geometry drawn)", async () => {
     const render = vi.fn().mockResolvedValue(null);
-    const put = vi.fn();
+    const sink = vi.fn();
     expect(
-      await maybeCaptureThumbnail("p1", [body()], { render, put, nowMs: 50000 }),
+      await maybeCaptureThumbnail([body()], sink, { render, nowMs: 50000 }),
     ).toBe(false);
-    expect(put).not.toHaveBeenCalled();
+    expect(sink).not.toHaveBeenCalled();
+  });
+});
+
+describe("armProjectThumbnailCapture / takeArmedProjectCapture", () => {
+  beforeEach(() => resetThumbnailThrottle());
+
+  it("is one-shot: fires once after arming, then not again", () => {
+    expect(takeArmedProjectCapture()).toBe(false);
+    armProjectThumbnailCapture();
+    expect(takeArmedProjectCapture()).toBe(true);
+    expect(takeArmedProjectCapture()).toBe(false);
+  });
+
+  it("resetThumbnailThrottle disarms", () => {
+    armProjectThumbnailCapture();
+    resetThumbnailThrottle();
+    expect(takeArmedProjectCapture()).toBe(false);
   });
 });

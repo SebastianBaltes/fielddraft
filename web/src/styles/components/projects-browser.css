@@ -242,6 +242,15 @@
       background: var(--color-surface);
     }
 
+    & .local-thumb {
+      width: 2.5rem;
+      height: 2.5rem;
+      object-fit: cover;
+      border-radius: var(--radius-sm);
+      background: var(--color-bg-sunken);
+      border: 1px solid var(--color-divider);
+    }
+
     & .local-open {
       font-family: inherit;
       font-size: var(--fs-base);

@@ -26,11 +26,13 @@ import {
 import { accountErrorMessage } from "./useAccount";
 import { parseProjectBytes, serializeProject } from "../project";
 import {
+  getLocalThumbnail,
   isLocalProjectsSupported,
   listLocalProjects,
   removeLocalProject,
   type LocalProjectSummary,
 } from "../localProjects";
+import { armProjectThumbnailCapture } from "../thumbnailScheduler";
 
 /** Which projects the browser lists. `mine` and `public` map to the owner /
  *  gallery endpoints; `all` is their union (logged-in only). */
@@ -127,6 +129,41 @@ export function ProjectsBrowser({
     );
   };
 
+  // Phase 3c: local project previews live in IndexedDB (per-project key, written
+  // on editor exit). Load each as an object URL for the card image; revoke the
+  // URLs when the list changes or the browser unmounts.
+  const [localThumbs, setLocalThumbs] = useState<Record<string, string>>({});
+  useEffect(() => {
+    if (filter === "public" || localList.length === 0) {
+      setLocalThumbs({});
+      return;
+    }
+    let cancelled = false;
+    const urls: string[] = [];
+    void (async () => {
+      const entries = await Promise.all(
+        localList.map(async (lp) => {
+          const blob = await getLocalThumbnail(lp.id);
+          if (!blob) return [lp.id, null] as const;
+          const url = URL.createObjectURL(blob);
+          urls.push(url);
+          return [lp.id, url] as const;
+        }),
+      );
+      if (cancelled) {
+        urls.forEach((u) => URL.revokeObjectURL(u));
+        return;
+      }
+      const map: Record<string, string> = {};
+      for (const [id, url] of entries) if (url) map[id] = url;
+      setLocalThumbs(map);
+    })();
+    return () => {
+      cancelled = true;
+      urls.forEach((u) => URL.revokeObjectURL(u));
+    };
+  }, [filter, localList]);
+
   const guard = useCallback(
     async (id: string, fn: () => Promise<void>, fallback: string) => {
       setBusyId(id);
@@ -159,6 +196,9 @@ export function ProjectsBrowser({
       "__new__",
       async () => {
         const created = await platformApi.createProject("Untitled", {});
+        // Phase 3c: arm a one-shot thumbnail — the first time the fresh project
+        // has geometry, App.tsx snapshots a gallery preview.
+        armProjectThumbnailCapture();
         onOpen(created);
       },
       "Could not create a project",
@@ -186,6 +226,8 @@ export function ProjectsBrowser({
           name,
           JSON.parse(serializeProject(parsed.project)),
         );
+        // Phase 3c: capture a preview once the imported geometry is meshed.
+        armProjectThumbnailCapture();
         onOpen(created);
       },
       "Could not import the project",
@@ -335,6 +377,14 @@ export function ProjectsBrowser({
                   className="local-row"
                   data-testid={`local-project-${lp.id}`}
                 >
+                  {localThumbs[lp.id] ? (
+                    <img
+                      className="local-thumb"
+                      src={localThumbs[lp.id]}
+                      alt=""
+                      data-testid={`local-thumb-${lp.id}`}
+                    />
+                  ) : null}
                   <span className="badge">Local</span>
                   <button
                     type="button"

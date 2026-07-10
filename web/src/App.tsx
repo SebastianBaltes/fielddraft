@@ -5,7 +5,13 @@ import { Viewport } from "./Viewport";
 import { FieldSkriptEditor } from "./FieldSkriptEditor";
 import { BottomTabs } from "./BottomTabs";
 import { useKernelStore } from "./store";
-import { maybeCaptureThumbnail } from "./thumbnailScheduler";
+import {
+  armProjectThumbnailCapture,
+  cloudThumbnailSink,
+  localThumbnailSink,
+  maybeCaptureThumbnail,
+  takeArmedProjectCapture,
+} from "./thumbnailScheduler";
 import { dispatchKeyboardCommand } from "./keyboardCommands";
 import { SettingsMenu } from "./SettingsMenu";
 import { loadSettings, WorkspaceUnitsContext } from "./settings";
@@ -129,6 +135,11 @@ function AppShell({ account }: { account: UseAccount }) {
   // owned by the outer App (one `/api/me` per load) and passed in, so the WP11
   // login gate and this shell share exactly one resolution.
 
+  // Phase 3c: the local-project registry id (localProjects.ts) of the currently
+  // open LOCAL project, or null when the workspace is a cloud/guest project.
+  // Keyed here so the editor-exit thumbnail capture can route to IndexedDB.
+  const currentLocalIdRef = useRef<string | null>(null);
+
   // Bridge: load a server project's document into the live workspace, bind it
   // for sync, and enter the modeling view. The server stores the full multi-tab
   // Project blob, so this restores the whole workspace.
@@ -151,6 +162,7 @@ function AppShell({ account }: { account: UseAccount }) {
       return;
     }
     clearLocalFileBinding();
+    currentLocalIdRef.current = null;
     account.enterProject();
   };
 
@@ -172,6 +184,7 @@ function AppShell({ account }: { account: UseAccount }) {
       store.detachServerProject();
     }
     clearLocalFileBinding();
+    currentLocalIdRef.current = null;
     account.enterProject();
   };
 
@@ -184,6 +197,7 @@ function AppShell({ account }: { account: UseAccount }) {
       store.detachServerProject();
     }
     clearLocalFileBinding();
+    currentLocalIdRef.current = null;
     account.enterProject();
   };
 
@@ -205,7 +219,13 @@ function AppShell({ account }: { account: UseAccount }) {
       );
       return;
     }
-    void rememberLocalProject(handle).catch(() => {});
+    // Remember the registry id so the editor-exit capture keys the local
+    // thumbnail per project (best-effort — a failure just means no preview).
+    try {
+      currentLocalIdRef.current = await rememberLocalProject(handle);
+    } catch {
+      currentLocalIdRef.current = null;
+    }
     if (writable) {
       bindLocalFile(handle, () => store.exportProjectFdraft());
     }
@@ -307,21 +327,33 @@ function AppShell({ account }: { account: UseAccount }) {
     };
   }, [store, account.state.status, state?.projectId]);
 
-  // Ticket 14cff61: capture a preview thumbnail when a server-bound project
-  // finishes syncing to the server — the `syncing → clean` edge marks a real
-  // save (loadServerProject sets "clean" directly, so it never triggers). The
-  // offscreen WebGL capture is isolated from the live WebGPU renderer and the
-  // upload is throttled + best-effort (see thumbnailScheduler).
-  const prevSyncRef = useRef<string | undefined>(undefined);
-  useEffect(() => {
-    const prev = prevSyncRef.current;
-    const cur = state?.syncState;
-    prevSyncRef.current = cur;
-    const pid = state?.projectId;
-    if (prev === "syncing" && cur === "clean" && pid && store) {
-      void maybeCaptureThumbnail(pid, store.getState().meshedBodies);
+  // Phase 3c: capture a preview thumbnail for the bound project. Route to the
+  // right sink — a cloud project (projectId) uploads via PUT; a local project
+  // (currentLocalIdRef) writes to IndexedDB. The offscreen WebGL capture is
+  // isolated from the live WebGPU renderer and is throttled + best-effort.
+  const captureThumbnailForCurrent = useCallback(() => {
+    if (!store) return;
+    const s = store.getState();
+    const pid = s.projectId;
+    const localId = currentLocalIdRef.current;
+    if (pid) {
+      void maybeCaptureThumbnail(s.meshedBodies, cloudThumbnailSink(pid));
+    } else if (localId) {
+      void maybeCaptureThumbnail(s.meshedBodies, localThumbnailSink(localId));
     }
-  }, [state?.syncState, state?.projectId, store]);
+  }, [store]);
+
+  // New-project arming: a project created (empty, imported, or "save current
+  // workspace") arms a one-shot capture. As soon as geometry is ready for the
+  // bound project, snapshot a preview so a fresh project gets a gallery
+  // thumbnail without waiting for the first editor exit. Plain "open an
+  // existing project" never arms — opening never re-captures.
+  useEffect(() => {
+    if (!store) return;
+    if (!state?.meshedBodies || state.meshedBodies.length === 0) return;
+    if (!takeArmedProjectCapture()) return;
+    captureThumbnailForCurrent();
+  }, [state?.meshedBodies, state?.projectId, store, captureThumbnailForCurrent]);
 
   // WP9 B4: first-login guest-project import. When a guest who has done real
   // local work logs in (or registers) for the first time, offer — once — to
@@ -362,6 +394,8 @@ function AppShell({ account }: { account: UseAccount }) {
     const created = await platformApi.createProject("My project", doc ?? {});
     // Bind the freshly-created project to the live workspace (it IS the current
     // workspace) without reloading — same as the dashboard "save current" path.
+    currentLocalIdRef.current = null;
+    armProjectThumbnailCapture();
     store.setProjectId(created.id);
     setImportPrompt("hidden");
     setImportDecided(true);
@@ -476,8 +510,12 @@ function AppShell({ account }: { account: UseAccount }) {
         getProjectId: () => store.getState().projectId,
         sync: () => void store.syncToServer(),
       });
+      // Phase 3c: the editor-exit edge is the primary thumbnail trigger — the
+      // moment the gallery preview matters. Independent of dirty/sync state
+      // (we always want the current view as the preview) and throttled.
+      captureThumbnailForCurrent();
     }
-  }, [inProject, store]);
+  }, [inProject, store, captureThumbnailForCurrent]);
 
   // 3. beforeunload → best-effort. The small document PATCH uses keepalive:true
   //    so it can outlive the unload; the preceding blob uploads are ordinary
@@ -632,6 +670,8 @@ function AppShell({ account }: { account: UseAccount }) {
                             state.project.name?.trim() || "Untitled",
                             doc ?? {},
                           );
+                          currentLocalIdRef.current = null;
+                          armProjectThumbnailCapture();
                           store.setProjectId(created.id);
                         })().catch((err) => {
                           store.showTransientError(
