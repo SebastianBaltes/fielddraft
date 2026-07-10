@@ -24,6 +24,16 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.513",
+    entries: [
+      {
+        kind: "fix",
+        scope: "tickets",
+        text: "Report-Submit scheiterte mit „signal timed out“: der 30-s-Timeout war für das IssueVault-Backend zu knapp — der Server lädt Screenshot, Anhänge und Projektdatei einzeln zum entfernten Store hoch. Timeout jetzt 120 s. Außerdem zeigt die fielddraft-a-Dev-Instanz nach Server-Rebuild wieder die projekt-weiten resolved Issues aller Installationen (der laufende Container war älter als das Sichtbarkeits-Feature).",
+      },
+    ],
+  },
+  {
     version: "0.6.512",
     entries: [
       {

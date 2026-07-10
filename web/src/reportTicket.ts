@@ -180,13 +180,16 @@ export async function submitTicket(
   try {
     // Hard timeout: a dead proxy/backend must degrade to an inline error,
     // not an eternal "Sending…" (the dialog has no other escape hatch).
+    // 120 s, nicht 30: mit dem IssueVault-Backend lädt der Go-Server
+    // Screenshot/Anhänge/fdraft (mehrere MB) einzeln zum entfernten Store
+    // hoch — 30 s rissen bei realen Reports ("signal timed out").
     const res = await fetch("/api/tickets", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       // The DB-backed ticket endpoint authenticates via the session cookie.
       credentials: "include",
       body: JSON.stringify(payload),
-      signal: AbortSignal.timeout(30_000),
+      signal: AbortSignal.timeout(120_000),
     });
     if (!res.ok) {
       // The DB-backed endpoint requires a session; surface that distinctly so
