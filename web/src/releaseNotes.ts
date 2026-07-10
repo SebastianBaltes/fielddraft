@@ -24,6 +24,16 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.499",
+    entries: [
+      {
+        kind: "feat",
+        scope: "projects",
+        text: "Lokale Projekte speichern jetzt manuell statt kontinuierlich: die geöffnete .fdraft-Datei wird nur noch beim ausdrücklichen Speichern (Ctrl+S bzw. „Save“ im Menü) auf die Platte geschrieben — auf Chromium still in dieselbe Datei, sonst als Download. Der Arbeitsstand läuft weiterhin laufend in den lokalen Browser-Speicher (kein Datenverlust bei Reload), aber die Datei bleibt so lange unverändert, bis du speicherst. Das Menü zeigt den Dateinamen und einen Punkt, wenn es ungespeicherte Änderungen gibt; beim Schließen mit ungespeicherten lokalen Änderungen warnt der Browser. Damit ist Speichern in allen Browsern gleich (kein automatisches Mitschreiben der Datei mehr).",
+      },
+    ],
+  },
+  {
     version: "0.6.498",
     entries: [
       {

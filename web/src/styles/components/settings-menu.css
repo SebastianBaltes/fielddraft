@@ -93,6 +93,42 @@
     color: var(--color-text-muted);
   }
 
+  /* ── Save entry: bound filename + unsaved indicator (Phase 4) ── */
+
+  & .menu-save {
+    /* The label spans two lines when a local file is bound, so top-align
+     * the label column and the trailing Ctrl+S shortcut. */
+    align-items: flex-start;
+  }
+
+  & .save-text {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    min-width: 0;
+  }
+
+  & .save-primary {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-2);
+  }
+
+  & .save-filename {
+    font-size: var(--fs-base);
+    color: var(--color-text-muted);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 12rem;
+  }
+
+  & .dirty-dot {
+    color: var(--color-warning);
+    font-size: var(--fs-base);
+    line-height: 1;
+  }
+
   & .menu-separator {
     height: 1px;
     background: var(--color-divider);

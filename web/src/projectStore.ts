@@ -42,6 +42,11 @@ import {
   type TabKind,
 } from "./project";
 import { exportFdraftBytes, readFdraftProject } from "./fdraftFile";
+import {
+  isLocalFileBound,
+  setLocalClean,
+  writeBoundFile,
+} from "./localFileBridge";
 import { parseFeatureSchema, buildDefaultDefinition } from "./widgets/schema";
 import { externalizeProject, inlineProject } from "./projectPersistence";
 import { serverBlobStore } from "./serverBlobStore";
@@ -217,16 +222,25 @@ export class ProjectStore {
     return exportFdraftBytes(this.serializeProject());
   }
 
-  /** Save the current project as a downloadable .fdraft file.
+  /** Explicit Save (Ctrl+S / menu). Phase 4: when a local `.fdraft` file is
+   *  bound as the save target, write the current project straight into that
+   *  file (silent overwrite via the FSA handle) and mark the local state
+   *  clean. Otherwise — no bound file, or the handle write failed (permission
+   *  revoked) — fall back to a browser download.
    *
-   *  Phase 3d: the file is a content-addressed ZIP (`project.json` envelope +
+   *  The file is a content-addressed ZIP (`project.json` envelope +
    *  `assets/<hash>` mesh/font blobs) — self-contained and deduplicated.
    *  Legacy `.fdraft` files (plain JSON or the old `document.json` layout)
    *  still open (the loader sniffs the format). The bug-report path uses the
    *  same ZIP — see exportProjectFdraft. */
   async saveProjectToFile(filename = "project.fdraft"): Promise<void> {
-    if (typeof document === "undefined") return;
     const zip = await exportFdraftBytes(this.serializeProject());
+    // Bound local file → overwrite it in place, no download dialog.
+    if (isLocalFileBound() && (await writeBoundFile(zip))) {
+      setLocalClean();
+      return;
+    }
+    if (typeof document === "undefined") return;
     // Copy into a fresh ArrayBuffer so Blob doesn't retain the WASM/heap view.
     const blob = new Blob([zip.slice()], { type: "application/zip" });
     const url = URL.createObjectURL(blob);
@@ -557,7 +571,7 @@ export class ProjectStore {
         project: { ...this.state.project, activeTabId: id },
       };
       this.notify();
-      this.core.autosave.schedule(this.serializeProject());
+      this.core.scheduleAutosave();
       return;
     }
 
@@ -572,7 +586,7 @@ export class ProjectStore {
       project: { ...this.state.project, activeTabId: id },
     };
     this.notify();
-    this.core.autosave.schedule(this.serializeProject());
+    this.core.scheduleAutosave();
   }
 
   /** MT-A: create a new tab of the given kind, activate it, return its
@@ -640,7 +654,7 @@ export class ProjectStore {
       syncState: this.state.projectId ? "dirty" : this.state.syncState,
     };
     this.notify();
-    this.core.autosave.schedule(this.serializeProject());
+    this.core.scheduleAutosave();
 
     const id = this.state.projectId;
     if (id) {
@@ -669,7 +683,7 @@ export class ProjectStore {
       project: { ...this.state.project, tabs },
     };
     this.notify();
-    this.core.autosave.schedule(this.serializeProject());
+    this.core.scheduleAutosave();
   }
 
   /** MT-A: delete a tab. Mirrors the kernel for script tabs, picks a

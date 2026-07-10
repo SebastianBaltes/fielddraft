@@ -28,6 +28,7 @@ import type { ThreeMfStash } from "./threemf";
 import type { Project } from "./project";
 import type { AssemblyState } from "./assembly";
 import { publishSceneBounds } from "./sceneBoundsBridge";
+import { markLocalDirty } from "./localFileBridge";
 
 /**
  * One mesh-ready body as cached by the store after a worker response.
@@ -494,6 +495,9 @@ export class StoreCore {
       this.patch({ selectionAnchor: null });
     }
     this.hooks.syncActiveBody();
+    // Phase 4: a document mutation diverges the working state from the bound
+    // local `.fdraft` on disk (no-op when no local file is bound).
+    markLocalDirty();
     this.autosave.schedule(this.hooks.serializeProject());
     this.hooks.refreshMeshCache();
     this.hooks.scheduleWeave();
@@ -504,6 +508,7 @@ export class StoreCore {
    *  domain writes that persist without running the full commit()
    *  tail (e.g. assembly-document edits, tab renames). */
   scheduleAutosave(): void {
+    markLocalDirty();
     this.autosave.schedule(this.hooks.serializeProject());
   }
 

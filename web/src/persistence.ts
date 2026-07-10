@@ -57,16 +57,6 @@ export interface CreateAutoSaveOptions {
   clearTimeoutImpl?: typeof clearTimeout;
 }
 
-/** Ticket 14661fc4: a secondary autosave sink. While a LOCAL project file
- *  is bound (localFileBridge), every debounced autosave write also triggers
- *  a mirror write of the `.fdraft` bytes back to disk. Module-scoped so the
- *  bridge can attach without threading through every AutoSaveHandle. */
-let autosaveMirror: (() => void) | null = null;
-
-export function setAutosaveMirror(fn: (() => void) | null): void {
-  autosaveMirror = fn;
-}
-
 function safeStorage(): StorageLike | null {
   try {
     if (typeof globalThis.localStorage === "undefined") return null;
@@ -146,15 +136,12 @@ export function createAutoSave(options: CreateAutoSaveOptions = {}): AutoSaveHan
       return;
     }
     if (result && typeof (result as Promise<void>).then === "function") {
-      // Async sink (IndexedDB): fire-and-forget. Mirror after it lands; a
-      // rejection is logged, never thrown (the reload reads back from the
-      // store, so the loss window is at most one debounce).
-      (result as Promise<void>).then(
-        () => autosaveMirror?.(),
-        (err) => console.warn("fielddraft: auto-save failed", err),
+      // Async sink (IndexedDB): fire-and-forget. A rejection is logged, never
+      // thrown (the reload reads back from the store, so the loss window is at
+      // most one debounce).
+      (result as Promise<void>).then(undefined, (err) =>
+        console.warn("fielddraft: auto-save failed", err),
       );
-    } else {
-      autosaveMirror?.();
     }
   };
 

@@ -48,6 +48,8 @@ import {
 import {
   bindLocalFile,
   clearLocalFileBinding,
+  isLocalDirty,
+  isLocalFileBound,
 } from "./localFileBridge";
 
 // WP11: the deployed build gates the whole app behind login. The gate is a
@@ -204,9 +206,11 @@ function AppShell({ account }: { account: UseAccount }) {
   // ── Local projects (ticket 14661fc4) ────────────────────────────
   // Open a local .fdraft through the File System Access API: the handle is
   // remembered in IndexedDB (the Projects overview lists it for reopening)
-  // and, with readwrite permission, bound so the autosave mirrors the ZIP
-  // back to disk. Falls back to the classic hidden <input type=file> where
-  // the API is unavailable (then: no listing, no disk autosave).
+  // and, with readwrite permission, bound as the explicit Save target (Ctrl+S
+  // writes the ZIP back to this file). Working state autosaves to IndexedDB
+  // meanwhile; the file only changes on an explicit Save. Falls back to the
+  // classic hidden <input type=file> where the API is unavailable (then: no
+  // listing, no bound save target — Save downloads).
   const finishLocalOpen = async (handle: FsaFileHandle, writable: boolean) => {
     if (!store) return;
     const file = await handle.getFile();
@@ -227,7 +231,7 @@ function AppShell({ account }: { account: UseAccount }) {
       currentLocalIdRef.current = null;
     }
     if (writable) {
-      bindLocalFile(handle, () => store.exportProjectFdraft());
+      bindLocalFile(handle);
     }
     account.enterProject();
   };
@@ -517,20 +521,27 @@ function AppShell({ account }: { account: UseAccount }) {
     }
   }, [inProject, store, captureThumbnailForCurrent]);
 
-  // 3. beforeunload → best-effort. The small document PATCH uses keepalive:true
-  //    so it can outlive the unload; the preceding blob uploads are ordinary
-  //    fetches the browser may abort mid-flight. That's acceptable: blobs are
-  //    normally already uploaded by triggers 1/2, and IndexedDB is the safety
-  //    net (the next boot re-syncs the persisted doc). Fire-and-forget — a
-  //    beforeunload handler cannot await.
+  // 3. beforeunload → cloud best-effort sync + local unsaved-changes warning,
+  //    bundled in ONE handler (two listeners would double-register). Cloud:
+  //    the small document PATCH uses keepalive:true so it can outlive the
+  //    unload; the preceding blob uploads are ordinary fetches the browser may
+  //    abort mid-flight. That's acceptable: blobs are normally already
+  //    uploaded by triggers 1/2, and IndexedDB is the safety net. Local
+  //    (Phase 4): a bound `.fdraft` with unsaved changes triggers the native
+  //    "leave site?" prompt — IndexedDB is the net, but the user treats
+  //    browser storage as fragile, so the warning is intentional.
   useEffect(() => {
     if (!store) return;
-    const onBeforeUnload = () => {
+    const onBeforeUnload = (e: BeforeUnloadEvent) => {
       cloudSyncIfDirty({
         getSyncState: () => store.getState().syncState,
         getProjectId: () => store.getState().projectId,
         sync: () => void store.syncToServer({ keepalive: true }),
       });
+      if (isLocalFileBound() && isLocalDirty()) {
+        e.preventDefault();
+        e.returnValue = "";
+      }
     };
     window.addEventListener("beforeunload", onBeforeUnload);
     return () => window.removeEventListener("beforeunload", onBeforeUnload);
@@ -671,6 +682,9 @@ function AppShell({ account }: { account: UseAccount }) {
                             doc ?? {},
                           );
                           currentLocalIdRef.current = null;
+                          // Now a cloud project — drop any local `.fdraft` save
+                          // target so the two bindings can't both be live.
+                          clearLocalFileBinding();
                           armProjectThumbnailCapture();
                           store.setProjectId(created.id);
                         })().catch((err) => {

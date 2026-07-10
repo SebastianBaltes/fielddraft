@@ -14,6 +14,11 @@ import {
   subscribePartAabb,
   togglePartAabbVisible,
 } from "./partAabbStore";
+import {
+  clearLocalFileBinding,
+  getLocalFileState,
+  subscribeLocalFile,
+} from "./localFileBridge";
 import { ReportDialog } from "./ReportDialog";
 import { ExportDialog } from "./ExportDialog";
 import { NumberInput } from "./NumberInput";
@@ -161,6 +166,9 @@ export function SettingsMenu({
     subscribePartAabb,
     getPartAabbVisible,
   );
+  // Phase 4: the bound local `.fdraft` (save target) + its dirty state, so the
+  // Save entry shows the filename and an unsaved-changes indicator.
+  const localFile = useSyncExternalStore(subscribeLocalFile, getLocalFileState);
   const popoverRef = useRef<HTMLDivElement>(null);
   const buttonRef = useRef<HTMLButtonElement>(null);
 
@@ -257,6 +265,10 @@ export function SettingsMenu({
                   state.features.length === 0 ||
                   confirm("Discard current project?")
                 ) {
+                  // A fresh project is unbound — drop any local-file save
+                  // target so Ctrl+S can't silently overwrite the previously
+                  // open file with the empty document.
+                  clearLocalFileBinding();
                   store?.newProject();
                 }
               })
@@ -276,12 +288,34 @@ export function SettingsMenu({
           <button
             type="button"
             role="menuitem"
-            className="menu-item"
+            className="menu-item menu-save"
             data-testid="menu-save"
             disabled={!inProject}
             onClick={() => menuAction(() => store?.saveProjectToFile())}
           >
-            <span>Download project</span>
+            <span className="save-text">
+              <span className="save-primary">
+                {localFile.name ? "Save" : "Download project"}
+                {localFile.dirty ? (
+                  <span
+                    className="dirty-dot"
+                    data-testid="menu-save-dirty"
+                    title="Nicht gespeichert"
+                    aria-label="Nicht gespeichert"
+                  >
+                    ●
+                  </span>
+                ) : null}
+              </span>
+              {localFile.name ? (
+                <span
+                  className="save-filename"
+                  data-testid="menu-save-filename"
+                >
+                  {localFile.name}
+                </span>
+              ) : null}
+            </span>
             <span className="menu-shortcut">Ctrl+S</span>
           </button>
           {/* Ticket 6c09c11f: local vs cloud must be explicit. "Download
