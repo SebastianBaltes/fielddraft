@@ -114,35 +114,83 @@ impl Kernel {
             // R_BRep.
             let h_local = h / s.max(1e-6);
             let min_spacing_local = opts.min_edge_spacing.max(0.0) / s.max(1e-6);
-            let mut edge_chain: HashMap<u32, Vec<u32>> = HashMap::new();
-            for (eid, e) in brep.edges.iter().enumerate() {
-                let raw_local: Vec<[f32; 3]> = crate::brep::edge_sampling::sample_edge(&e.geometry)
-                    .into_iter()
-                    .map(|p| [p[0] as f32, p[1] as f32, p[2] as f32])
-                    .collect();
-                let closed = e.start.is_none() && e.end.is_none();
+            let seg_len = |a: [f32; 3], b: [f32; 3]| -> f32 {
+                ((b[0] - a[0]).powi(2) + (b[1] - a[1]).powi(2) + (b[2] - a[2]).powi(2)).sqrt()
+            };
+            // Kette einer Kante bauen: adaptives Resampling (mit Ecken-Rand-
+            // Bedingungen fürs Grading) + 4-Punkte-Schutz für Ringe.
+            let build_chain = |raw_local: &[[f32; 3]], closed: bool, bounds: (f32, f32)| {
                 let mut chain = lichen::resample_edge_by_curvature(
-                    &raw_local,
+                    raw_local,
                     h_local,
                     opts.curv_angle_deg.to_radians(),
                     min_spacing_local,
+                    bounds,
                 );
                 // Degenerations-Schutz (Ticket 6d3f4a7f): eine geschlossene
                 // Kante braucht ≥4 Punkte, egal wie klein sie ist — sonst
                 // entartet der Ring. Uniform bei Viertel-Bogenlänge neu
                 // abtasten (Ende = Start-Duplikat, wird unten getrimmt).
                 if closed && chain.len() < 5 && raw_local.len() >= 2 {
-                    let total: f32 = raw_local
-                        .windows(2)
-                        .map(|w| {
-                            let d = [w[1][0] - w[0][0], w[1][1] - w[0][1], w[1][2] - w[0][2]];
-                            (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt()
-                        })
-                        .sum();
+                    let total: f32 = raw_local.windows(2).map(|w| seg_len(w[0], w[1])).sum();
                     if total > 1e-9 {
-                        chain = crate::mesher_points::resample_polyline(&raw_local, total / 4.0);
+                        chain = crate::mesher_points::resample_polyline(raw_local, total / 4.0);
                     }
                 }
+                chain
+            };
+
+            // Pass A (Ticket cec70614): End-Abstände aller an einer Ecke
+            // mündenden Ketten sammeln — das kleinste wird die Grading-Rand-
+            // Bedingung der Nachbarkanten in Pass B. Ohne diese Kopplung
+            // startet eine gerade Kante an der Ecke mit ~h, während U(Ecke)
+            // vom dichtesten Nachbarn stammt: die U-Kreise von Ecke und
+            // erstem Kettenpunkt berühren sich dann nicht mehr.
+            struct PEdge {
+                raw_local: Vec<[f32; 3]>,
+                closed: bool,
+                vs: Option<usize>,
+                ve: Option<usize>,
+            }
+            let mut pedges: Vec<PEdge> = Vec::with_capacity(brep.edges.len());
+            let mut corner_gap: HashMap<usize, f32> = HashMap::new();
+            for e in brep.edges.iter() {
+                let raw_local: Vec<[f32; 3]> = crate::brep::edge_sampling::sample_edge(&e.geometry)
+                    .into_iter()
+                    .map(|p| [p[0] as f32, p[1] as f32, p[2] as f32])
+                    .collect();
+                let closed = e.start.is_none() && e.end.is_none();
+                let chain =
+                    build_chain(&raw_local, closed, (f32::INFINITY, f32::INFINITY));
+                let mut note = |v: Option<crate::brep::VertexId>, d: f32| {
+                    if let Some(vid) = v {
+                        let slot = corner_gap.entry(vid.0 as usize).or_insert(f32::INFINITY);
+                        *slot = slot.min(d);
+                    }
+                };
+                if chain.len() >= 2 {
+                    note(e.start, seg_len(chain[0], chain[1]));
+                    note(e.end, seg_len(chain[chain.len() - 2], chain[chain.len() - 1]));
+                }
+                pedges.push(PEdge {
+                    raw_local,
+                    closed,
+                    vs: e.start.map(|v| v.0 as usize),
+                    ve: e.end.map(|v| v.0 as usize),
+                });
+            }
+
+            let mut edge_chain: HashMap<u32, Vec<u32>> = HashMap::new();
+            for (eid, (e, pe)) in brep.edges.iter().zip(&pedges).enumerate() {
+                let bound_of = |v: Option<usize>| -> f32 {
+                    v.and_then(|vid| corner_gap.get(&vid).copied()).unwrap_or(f32::INFINITY)
+                };
+                let closed = pe.closed;
+                let chain = build_chain(
+                    &pe.raw_local,
+                    closed,
+                    (bound_of(pe.vs), bound_of(pe.ve)),
+                );
                 let mut idxs: Vec<u32> = Vec::new();
                 if let Some(vs) = e.start {
                     idxs.push(corner_slot[&(vs.0 as usize)]);
@@ -769,8 +817,8 @@ mod tests {
                 [10.0 * t.cos(), 10.0 * t.sin(), 0.0]
             })
             .collect();
-        let fine = crate::lichen::resample_edge_by_curvature(&arc, 5.0, 0.05, 0.01);
-        let coarse = crate::lichen::resample_edge_by_curvature(&arc, 5.0, 2.0, 0.01);
+        let fine = crate::lichen::resample_edge_by_curvature(&arc, 5.0, 0.05, 0.01, (f32::INFINITY, f32::INFINITY));
+        let coarse = crate::lichen::resample_edge_by_curvature(&arc, 5.0, 2.0, 0.01, (f32::INFINITY, f32::INFINITY));
         assert!(
             fine.len() > coarse.len(),
             "small angle ⇒ denser on curves: {} vs {}",
@@ -779,8 +827,8 @@ mod tests {
         );
         // Gerade Kante: Krümmungswinkel irrelevant, nur h zählt.
         let line = vec![[0.0, 0.0, 0.0], [20.0, 0.0, 0.0]];
-        let a = crate::lichen::resample_edge_by_curvature(&line, 5.0, 0.05, 0.01);
-        let b = crate::lichen::resample_edge_by_curvature(&line, 5.0, 2.0, 0.01);
+        let a = crate::lichen::resample_edge_by_curvature(&line, 5.0, 0.05, 0.01, (f32::INFINITY, f32::INFINITY));
+        let b = crate::lichen::resample_edge_by_curvature(&line, 5.0, 2.0, 0.01, (f32::INFINITY, f32::INFINITY));
         assert_eq!(a.len(), b.len(), "straight edge: angle has no effect");
     }
 
@@ -804,6 +852,7 @@ mod tests {
             10.0,
             2.0f32.to_radians(),
             0.01,
+            (f32::INFINITY, f32::INFINITY),
         );
         assert!(
             out.len() >= 100,
@@ -825,10 +874,11 @@ mod tests {
                 [r * t.cos(), r * t.sin(), 0.0]
             })
             .collect();
+        let inf = (f32::INFINITY, f32::INFINITY);
         let unbounded =
-            crate::lichen::resample_edge_by_curvature(&circle, 10.0, 2.0f32.to_radians(), 0.0);
+            crate::lichen::resample_edge_by_curvature(&circle, 10.0, 2.0f32.to_radians(), 0.0, inf);
         let capped =
-            crate::lichen::resample_edge_by_curvature(&circle, 10.0, 2.0f32.to_radians(), 0.01);
+            crate::lichen::resample_edge_by_curvature(&circle, 10.0, 2.0f32.to_radians(), 0.01, inf);
         // Umfang 0.314 mm / 0.01 mm ⇒ höchstens ~33 Punkte (+ Enden).
         assert!(
             capped.len() <= 36,
@@ -841,6 +891,35 @@ mod tests {
             unbounded.len(),
             capped.len()
         );
+    }
+
+    /// Ticket cec70614: Ecken-Rand-Bedingung — mündet an einer Ecke eine
+    /// dicht abgetastete Kante (Endabstand 0.2), muss die GERADE Nachbar-
+    /// kante dort ebenso fein starten und geometrisch auf h wachsen; sonst
+    /// klafft zwischen U(Ecke) und dem ersten Kettenpunkt eine Lücke.
+    #[test]
+    fn edge_grading_honours_corner_end_bounds() {
+        let line = vec![[0.0f32, 0.0, 0.0], [30.0, 0.0, 0.0]];
+        let out = crate::lichen::resample_edge_by_curvature(
+            &line,
+            10.0,
+            10.0f32.to_radians(),
+            0.01,
+            (0.2, f32::INFINITY),
+        );
+        let first = out[1][0] - out[0][0];
+        assert!(
+            first <= 0.2 * 1.5 * 1.01,
+            "erstes Segment muss an die 0.2-Ecke anschließen, got {first}"
+        );
+        for k in 2..out.len() {
+            let d0 = (out[k - 1][0] - out[k - 2][0]).max(1e-6);
+            let d1 = (out[k][0] - out[k - 1][0]).max(1e-6);
+            assert!(
+                d1 / d0 <= 1.6 && d0 / d1 <= 1.6,
+                "Grading-Sprung: {d0:.3} → {d1:.3}"
+            );
+        }
     }
 
     /// Ticket e1a10bcd: Grading — nach einer dichten Häufung (enge Kurve)
@@ -866,6 +945,7 @@ mod tests {
             10.0,
             10.0f32.to_radians(),
             0.01,
+            (f32::INFINITY, f32::INFINITY),
         );
         assert!(out.len() >= 8, "Kurve + Grading-Übergang erwartet, got {}", out.len());
         let seg = |a: [f32; 3], b: [f32; 3]| {

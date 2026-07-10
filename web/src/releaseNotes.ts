@@ -24,6 +24,17 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.497",
+    entries: [
+      {
+        kind: "fix",
+        scope: "mesher",
+        text: "Lichen: Das Kanten-Grading kennt jetzt Ecken-Rand-Bedingungen. Bisher wurde jede Kette isoliert graduiert — eine gerade Kante startete an der Ecke mit ~h, während U(Ecke) vom dichtesten Nachbarn stammt: die U-Kreise von Ecke und erstem Kettenpunkt berührten sich nicht (Lücke). Jetzt sammelt ein Vorlauf die End-Abstände aller an einer Ecke mündenden Ketten; das kleinste wird die Grading-Rand-Bedingung der Nachbarkanten — jede Kante wächst von der Ecke geometrisch (Faktor ≤1.5) auf h.",
+        tickets: ["cec70614"],
+      },
+    ],
+  },
+  {
     version: "0.6.496",
     entries: [
       {

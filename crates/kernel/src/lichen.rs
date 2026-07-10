@@ -364,11 +364,17 @@ where
 /// nach unten: kein Punkt näher als dies am zuletzt gesetzten — sehr kleine
 /// Kreise entarten sonst zur Punktwolke in Mikrometer-Abständen (Ticket
 /// 6d3f4a7f); die Mindest-Punktzahl geschlossener Kanten sichert der Caller.
+/// `end_bounds` sind virtuelle Nachbarsegment-Längen VOR dem ersten bzw.
+/// NACH dem letzten Punkt (Ticket cec70614): an einer Ecke, in der auch eine
+/// dicht abgetastete Kante mündet, muss das Grading dieser Kette am Rand mit
+/// deren Endabstand weiterlaufen — sonst klafft zwischen U(Ecke) und dem
+/// ersten Kettenpunkt eine Lücke. `f32::INFINITY` = kein Rand-Zwang.
 pub fn resample_edge_by_curvature(
     pts: &[[f32; 3]],
     h: f32,
     angle_rad: f32,
     min_spacing: f32,
+    end_bounds: (f32, f32),
 ) -> Vec<[f32; 3]> {
     if pts.len() < 2 {
         return pts.to_vec();
@@ -447,8 +453,16 @@ pub fn resample_edge_by_curvature(
             // Nachbarn unterhalb des Mindestabstands treiben kein Grading —
             // sonst kaskadiert ein winziges Rest-Segment (z.B. der letzte
             // Schnipsel vor dem Kettenende) rückwärts in µm-Splits.
-            let dl = if k >= 2 { (s_out[k - 1] - s_out[k - 2]).max(floor) } else { f32::INFINITY };
-            let dr = if k + 1 < n { (s_out[k + 1] - s_out[k]).max(floor) } else { f32::INFINITY };
+            let dl = if k >= 2 {
+                (s_out[k - 1] - s_out[k - 2]).max(floor)
+            } else {
+                end_bounds.0.max(floor)
+            };
+            let dr = if k + 1 < n {
+                (s_out[k + 1] - s_out[k]).max(floor)
+            } else {
+                end_bounds.1.max(floor)
+            };
             let bound = GRADE * dl.min(dr);
             if d > bound * (1.0 + 1e-3) && d > 2.0 * floor {
                 // Vom kleineren Nachbarn aus geometrisch wachsen.
