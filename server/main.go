@@ -60,6 +60,12 @@ func NewServer(store Store) *Server {
 	s.mux.HandleFunc("PATCH /api/projects/{id}", s.handleUpdateProject)
 	s.mux.HandleFunc("DELETE /api/projects/{id}", s.handleDeleteProject)
 	s.mux.HandleFunc("GET /api/gallery", s.handleGallery)
+	// Content-addressed asset blobs (client cloud-save asset sync, §5.5).
+	s.mux.HandleFunc("POST /api/blobs/missing", s.handleBlobsMissing)
+	s.mux.HandleFunc("PUT /api/blobs/{sha256}", s.handlePutBlob)
+	s.mux.HandleFunc("GET /api/blobs/{sha256}", s.handleGetBlob)
+	// Admin: orphaned-asset-blob GC (opt-in, dry-run by default; blobs_gc.go).
+	s.mux.HandleFunc("POST /api/admin/blobs/gc", s.handleBlobsGC)
 	s.mux.HandleFunc("POST /api/projects/{id}/mesh", s.handleCreateMeshJob)
 	s.mux.HandleFunc("GET /api/mesh-jobs/{id}", s.handleGetMeshJob)
 	s.mux.HandleFunc("GET /api/mesh-jobs/{id}/artifact", s.handleGetMeshArtifact)
@@ -118,7 +124,10 @@ func NewServer(store Store) *Server {
 //   - TICKET_BACKEND=issuevault → the shared external IssueVault service
 //     (store_issuevault.go), configured via ISSUEVAULT_TOKEN + _INSTALLATION
 //     (URL/PROJECT default in-code). This is the store the FieldDraft
-//     installations share; dev opts in via a gitignored .env.
+//     installations share (prod + every dev stack); it is injected by the
+//     deploy env — Ansible-Vault in prod, a gitignored .env in dev — NOT by a
+//     committed compose default. All installations share one IssueVault
+//     project, isolated per installation; see DEPLOY.md.
 //
 // The same ticket CRUD/UI/API/agent-harvest runs unchanged over whichever
 // backend is installed.
@@ -599,7 +608,29 @@ func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, "not found")
 		return
 	}
-	snap := s.store.CreateSnapshot(proj.ID, proj.Document)
+	// docs/PROJECT-ASSET-STORAGE-PLAN §6 (P2 regression): a server-bound
+	// project stores a LEAN document — meshes/fonts are content-addressed
+	// blobs behind the owner-auth-gated /api/blobs. The public snapshot
+	// viewer is UNAUTHENTICATED and cannot fetch those blobs, so an
+	// asset-bearing published project would not load. The client therefore
+	// POSTs the SELF-CONTAINED full document (serializeProject, assets
+	// inline) as `{document}`; we snapshot that instead of the stored lean
+	// doc. An absent/empty body (legacy client, asset-free project) falls
+	// back to proj.Document, which is already self-contained.
+	doc := proj.Document
+	var body struct {
+		Document json.RawMessage `json:"document"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		if err != io.EOF {
+			writeErr(w, http.StatusBadRequest, "invalid JSON")
+			return
+		}
+		// Empty body — keep the stored document (backward-compat).
+	} else if len(body.Document) > 0 && string(body.Document) != "null" {
+		doc = body.Document
+	}
+	snap := s.store.CreateSnapshot(proj.ID, doc)
 	if snap == nil {
 		writeErr(w, http.StatusInternalServerError, "could not publish")
 		return

@@ -227,6 +227,34 @@ Required env (full list in `.env.prod.example`): `DOMAIN`, `TLS_EMAIL`,
 `X-Forwarded-For` (correct behind Caddy, which strips client-supplied XFF;
 without a trusted proxy leave it unset — the header is client-spoofable).
 
+### Ticket backend (IssueVault)
+
+The ticket domain is a pluggable store chosen by `TICKET_BACKEND` at runtime
+(`selectTicketStore` in `server/main.go`): unset (or `db`) ⇒ the local MariaDB
+store (isolated, self-contained). **Production runs on IssueVault**, the shared
+external ticket service — the deploy sets, in the prod env:
+
+```
+TICKET_BACKEND=issuevault
+ISSUEVAULT_URL=…            # optional; falls back to the code default
+ISSUEVAULT_PROJECT=…       # optional; falls back to the code default
+ISSUEVAULT_INSTALLATION=…  # this deployment's installation id
+ISSUEVAULT_TOKEN=…         # installation-bound agent token — SECRET (Vault)
+```
+
+These come from the deploy's env (Ansible-Vault → the rendered prod `.env`),
+**not** from a committed compose default (whose SQL fallback is the one-command
+rollback: clear `TICKET_BACKEND` / set it to `db` and redeploy). `docker-compose.prod.yml`
+passes all five through with empty defaults, so a break-glass
+`--env-file .env.prod` run honours them too; leave them empty to stay on SQL.
+
+All FieldDraft installations — production and each developer's dev stack — share
+**one** IssueVault project and are isolated per installation (`scope:"own"`):
+each sees only its own non-resolved tickets, while **resolved** tickets are read
+project-wide (they migrate to `main` and are inherently shareable). A dev stack
+opts in the same way via its gitignored `.env` (see *Dev stack* above); each
+stack needs its own installation-bound token (ask the IssueVault operator).
+
 ### TLS / domain
 
 Caddy auto-issues a Let's Encrypt cert for `{$DOMAIN}` and redirects HTTP→HTTPS.

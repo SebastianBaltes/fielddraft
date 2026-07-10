@@ -22,9 +22,14 @@ import {
 import {
   createAutoSave,
   createNoopAutoSave,
-  loadPersisted,
   type AutoSaveHandle,
 } from "./persistence";
+import {
+  persistProjectDoc,
+  loadProjectDoc,
+  migrateFromLocalStorage,
+  gcLocalBlobs,
+} from "./projectPersistence";
 import { bootProjectPath } from "./bootParams";
 import { getAutosaveDebounceMs } from "./settings";
 import { subscribeCameraPoseChanged } from "./cameraPoseBridge";
@@ -300,7 +305,7 @@ export class KernelStore {
 
   /** Public accessor for the live project as a `.fdraft` ZIP — see
    *  {@link ProjectStore.exportProjectFdraft} (bug-report flow, on3k). */
-  exportProjectFdraft(): Uint8Array {
+  exportProjectFdraft(): Promise<Uint8Array> {
     return this.project.exportProjectFdraft();
   }
 
@@ -859,15 +864,15 @@ export class KernelStore {
 
   // ── project persistence & server sync — see ProjectStore ──────────
 
-  saveProjectToFile(filename = "project.fdraft"): void {
-    this.project.saveProjectToFile(filename);
+  saveProjectToFile(filename = "project.fdraft"): Promise<void> {
+    return this.project.saveProjectToFile(filename);
   }
 
-  loadProjectFromJson(json: string): boolean {
+  loadProjectFromJson(json: string): Promise<boolean> {
     return this.project.loadProjectFromJson(json);
   }
 
-  loadProjectFromBytes(bytes: Uint8Array | ArrayBuffer): boolean {
+  loadProjectFromBytes(bytes: Uint8Array | ArrayBuffer): Promise<boolean> {
     return this.project.loadProjectFromBytes(bytes);
   }
 
@@ -879,8 +884,8 @@ export class KernelStore {
    *  action, so it graduates the tab out of repro mode (real autosave, URL
    *  param stripped) and force-writes the loaded project now. The automated
    *  ticket-repro boot never calls this, so it can't clobber another tab. */
-  openUserProjectFromBytes(bytes: Uint8Array | ArrayBuffer): boolean {
-    const ok = this.project.loadProjectFromBytes(bytes);
+  async openUserProjectFromBytes(bytes: Uint8Array | ArrayBuffer): Promise<boolean> {
+    const ok = await this.project.loadProjectFromBytes(bytes);
     if (!ok) return false;
     this.graduateFromDeepLink();
     // Persist immediately (deep-link tabs' load-time flush hit the noop).
@@ -902,7 +907,9 @@ export class KernelStore {
   private graduateFromDeepLink(): void {
     if (!this.deepLink) return;
     this.deepLink = false;
-    this.core.replaceAutosave(createAutoSave({ debounceMs: getAutosaveDebounceMs }));
+    this.core.replaceAutosave(
+      createAutoSave({ debounceMs: getAutosaveDebounceMs, sink: persistProjectDoc }),
+    );
     if (typeof window !== "undefined") {
       try {
         const url = new URL(window.location.href);
@@ -924,16 +931,22 @@ export class KernelStore {
     return this.project.serializeProjectJson();
   }
 
-  loadServerProject(id: string, documentJson: string): boolean {
+  loadServerProject(id: string, documentJson: string): Promise<boolean> {
     return this.project.loadServerProject(id, documentJson);
+  }
+
+  /** P2: re-inline a server document's externalized asset blobs into a full
+   *  project JSON (for a gallery-copy open). Legacy full documents are a no-op. */
+  inlineServerDocument(documentJson: string): Promise<string> {
+    return this.project.inlineServerDocument(documentJson);
   }
 
   detachServerProject(): void {
     this.project.detachServerProject();
   }
 
-  syncToServer(): Promise<boolean> {
-    return this.project.syncToServer();
+  syncToServer(opts?: { keepalive?: boolean }): Promise<boolean> {
+    return this.project.syncToServer(opts);
   }
 
   newProject(): void {
@@ -1160,8 +1173,8 @@ export class KernelStore {
   addPartToAssembly(
     source: string | Uint8Array | ArrayBuffer,
     name?: string,
-  ): void {
-    this.assembly.addPartToAssembly(source, name);
+  ): Promise<void> {
+    return this.assembly.addPartToAssembly(source, name);
   }
 
   removePartFromAssembly(partId: string): void {
@@ -2359,13 +2372,23 @@ export async function getStore(): Promise<KernelStore> {
     const deepLink = bootProjectPath() !== null;
     const autosave = deepLink
       ? createNoopAutoSave()
-      : createAutoSave({ debounceMs: getAutosaveDebounceMs });
-    const store = new KernelStore(
-      kernel,
-      autosave,
-      deepLink ? null : loadPersisted(),
-      deepLink,
-    );
+      : createAutoSave({ debounceMs: getAutosaveDebounceMs, sink: persistProjectDoc });
+    // P1b: the browser-local working store moved from localStorage to IndexedDB
+    // (content-addressed assets, docs/PROJECT-ASSET-STORAGE-PLAN §5.3). Migrate
+    // any legacy localStorage row once, then load the (mesh-externalized) doc
+    // and re-inline its blobs. Both awaits are safe here — getStore is already
+    // async (it awaits the WASM kernel). A deep-link repro tab keeps its clean
+    // start (it must never touch the origin-wide working store).
+    let persisted: string | null = null;
+    if (!deepLink) {
+      await migrateFromLocalStorage();
+      persisted = await loadProjectDoc();
+      // P3e: reclaim orphaned local blobs left by earlier saves (mesh/font a
+      // newer save replaced). Fire-and-forget so it never delays boot; it
+      // no-ops on an empty store, so it can only run once a doc has loaded.
+      void gcLocalBlobs().catch(() => {});
+    }
+    const store = new KernelStore(kernel, autosave, persisted, deepLink);
 
     // Dirty tracking beyond document commits: camera moves and debug-tool
     // changes also persist into the project (Project.view / Project.debug),

@@ -24,7 +24,7 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
-    version: "0.6.501",
+    version: "0.6.512",
     entries: [
       {
         kind: "fix",
@@ -35,7 +35,7 @@ export const RELEASE_NOTES: ReleaseNote[] = [
     ],
   },
   {
-    version: "0.6.500",
+    version: "0.6.511",
     entries: [
       {
         kind: "feat",
@@ -46,7 +46,7 @@ export const RELEASE_NOTES: ReleaseNote[] = [
     ],
   },
   {
-    version: "0.6.499",
+    version: "0.6.510",
     entries: [
       {
         kind: "fix",
@@ -57,7 +57,7 @@ export const RELEASE_NOTES: ReleaseNote[] = [
     ],
   },
   {
-    version: "0.6.498",
+    version: "0.6.509",
     entries: [
       {
         kind: "fix",
@@ -68,7 +68,7 @@ export const RELEASE_NOTES: ReleaseNote[] = [
     ],
   },
   {
-    version: "0.6.497",
+    version: "0.6.508",
     entries: [
       {
         kind: "fix",
@@ -79,7 +79,7 @@ export const RELEASE_NOTES: ReleaseNote[] = [
     ],
   },
   {
-    version: "0.6.496",
+    version: "0.6.507",
     entries: [
       {
         kind: "fix",
@@ -90,7 +90,7 @@ export const RELEASE_NOTES: ReleaseNote[] = [
     ],
   },
   {
-    version: "0.6.495",
+    version: "0.6.506",
     entries: [
       {
         kind: "fix",
@@ -101,7 +101,7 @@ export const RELEASE_NOTES: ReleaseNote[] = [
     ],
   },
   {
-    version: "0.6.494",
+    version: "0.6.505",
     entries: [
       {
         kind: "feat",
@@ -118,7 +118,7 @@ export const RELEASE_NOTES: ReleaseNote[] = [
     ],
   },
   {
-    version: "0.6.493",
+    version: "0.6.504",
     entries: [
       {
         kind: "fix",
@@ -129,7 +129,7 @@ export const RELEASE_NOTES: ReleaseNote[] = [
     ],
   },
   {
-    version: "0.6.492",
+    version: "0.6.503",
     entries: [
       {
         kind: "fix",
@@ -139,7 +139,7 @@ export const RELEASE_NOTES: ReleaseNote[] = [
     ],
   },
   {
-    version: "0.6.491",
+    version: "0.6.502",
     entries: [
       {
         kind: "feat",
@@ -150,13 +150,125 @@ export const RELEASE_NOTES: ReleaseNote[] = [
     ],
   },
   {
-    version: "0.6.490",
+    version: "0.6.501",
     entries: [
       {
         kind: "fix",
         scope: "brep",
         text: "Skalierte Kugeln bekommen wieder vollständige BRep-Kanten: Die exakte Schnittkreis-Berechnung (Kugel×Ebene, Kugel×Kugel) ignorierte die Scale-Transform des Features — eine ×0.02 skalierte Kugel wurde mit ihrem unskalierten Radius (50 statt 1) geschnitten, der Seam an Box-Flächen fiel dadurch stillschweigend weg und die betroffene Fläche war nicht mehr komplett von Kanten umschlossen. Nicht-uniform skalierte Kugeln (Ellipsoide) nehmen jetzt den Parameterraum-Scan statt der geschlossenen Form.",
         tickets: ["20260710-163918-a26a"],
+      },
+    ],
+  },
+  {
+    version: "0.6.500",
+    entries: [
+      {
+        kind: "feat",
+        scope: "issues",
+        text: "Die Issues-Liste zeigt jetzt erledigte (resolved) Tickets ALLER Installationen/Agenten des Projekts — resolved Tickets sind geteilt (sie wandern ohnehin nach main). Alle anderen Status bleiben auf die eigene Installation beschränkt. Serverseitig (IssueVault-Backend): resolved wird projekt-weit gelesen (scope:project), der Rest scope:own, zusammengeführt und dedupliziert. Mit dem issuevault-Agenten abgestimmt (der installations-gebundene Token darf projekt-weit lesen).",
+      },
+    ],
+  },
+  {
+    version: "0.6.499",
+    entries: [
+      {
+        kind: "feat",
+        scope: "projects",
+        text: "Lokale Projekte speichern jetzt manuell statt kontinuierlich: die geöffnete .fdraft-Datei wird nur noch beim ausdrücklichen Speichern (Ctrl+S bzw. „Save“ im Menü) auf die Platte geschrieben — auf Chromium still in dieselbe Datei, sonst als Download. Der Arbeitsstand läuft weiterhin laufend in den lokalen Browser-Speicher (kein Datenverlust bei Reload), aber die Datei bleibt so lange unverändert, bis du speicherst. Das Menü zeigt den Dateinamen und einen Punkt, wenn es ungespeicherte Änderungen gibt; beim Schließen mit ungespeicherten lokalen Änderungen warnt der Browser. Damit ist Speichern in allen Browsern gleich (kein automatisches Mitschreiben der Datei mehr).",
+      },
+    ],
+  },
+  {
+    version: "0.6.498",
+    entries: [
+      {
+        kind: "feat",
+        scope: "admin",
+        text: "Blob-Garbage-Collection für verwaiste content-addressed Assets — bewusst sicher und opt-in: der Admin-Endpoint POST /api/admin/blobs/gc läuft standardmäßig als Dry-Run (meldet, löscht nichts) und braucht dry_run=false zum echten Löschen. Ein Blob gilt nur als verwaist, wenn ihn KEINE Projekt-, Snapshot-, Thumbnail-, Mesh-Job- oder Ticket-Referenz und keine eingebettete Asset-Referenz mehr nennt (alle Quellen vereinigt, fail-closed bei jedem Fehler), und er älter als eine Grace-Period (Standard 48 h) ist. Zusätzlich räumt der Client verwaiste Blobs im lokalen IndexedDB-Store nach dem Laden auf.",
+      },
+    ],
+  },
+  {
+    version: "0.6.497",
+    entries: [
+      {
+        kind: "perf",
+        scope: "projects",
+        text: "Die .fdraft-Projektdatei ist jetzt content-addressed und selbst-enthalten: importierte Meshes und hochgeladene Fonts liegen als hash-benannte Blob-Einträge (assets/…) im ZIP, das Projekt-Dokument (project.json) bleibt schlank und trägt nur die Hashes. Vorher waren Meshes als riesige JSON-Zahl-Arrays direkt im Dokument des ZIP eingebettet. Innerhalb einer Datei werden identische Assets dedupliziert. Ältere .fdraft-Dateien (mit eingebetteten Meshes) laden weiterhin unverändert.",
+      },
+    ],
+  },
+  {
+    version: "0.6.496",
+    entries: [
+      {
+        kind: "feat",
+        scope: "projects",
+        tickets: ["14cff61"],
+        text: "Vorschaubilder gelten jetzt für ALLE Projekte — Cloud UND lokale. Erzeugt werden sie beim Verlassen der Editor-Ansicht (und einmalig bei Neu-Anlage), nicht mehr bei jedem Speichern: das spart GPU/Upload und aktualisiert die Vorschau genau dann, wenn die Galerie sie zeigt. Cloud-Projekte laden ihr Thumbnail wie bisher vom Server; lokale Projekte speichern es in IndexedDB (pro Projekt) und die Übersicht zeigt es auf den „Auf diesem Gerät“-Karten. Weiterhin gedrosselt (höchstens 1×/30 s).",
+      },
+    ],
+  },
+  {
+    version: "0.6.495",
+    entries: [
+      {
+        kind: "feat",
+        scope: "cloud",
+        text: "Cloud-Projekte speichern jetzt automatisch zum Server (Phase 3): periodisch (einstellbares Intervall, Standard 1 Minute — 0 schaltet es aus), beim Verlassen der Editor-Ansicht und beim Schließen/Neuladen des Tabs. Jeder Trigger feuert nur, wenn es ungespeicherte Änderungen gibt (kein unnötiger Traffic). Dank des schlanken Cloud-Dokuments (Phase 2) schickt der Sync nur das kleine Feature-Dokument, nicht die Mesh-Bytes. Das neue Intervall stellt man unter Einstellungen ▸ Cloud ein. Bisher wurde ein Cloud-Projekt nur beim Export gespeichert.",
+      },
+    ],
+  },
+  {
+    version: "0.6.494",
+    entries: [
+      {
+        kind: "fix",
+        scope: "cloud",
+        text: "Veröffentlichte Projekte mit importierten Meshes oder hochgeladenen Fonts laden jetzt korrekt im öffentlichen Viewer. Seit dem schlanken Cloud-Speichern (Phase 2) liegen Assets als owner-authentifizierte Blobs — der unauthentifizierte Viewer hätte sie nicht laden können. Beim Publizieren wird jetzt das volle, selbst-enthaltene Dokument (Assets eingebettet) als Snapshot gespeichert, sodass der Viewer ohne Blob-Zugriff auskommt. Asset-freie Projekte sind unverändert.",
+      },
+    ],
+  },
+  {
+    version: "0.6.493",
+    entries: [
+      {
+        kind: "perf",
+        scope: "cloud",
+        text: "Cloud-Speichern ist schlank geworden (Phase 2): Server-gebundene Projekte legen das Dokument klein ab (nur Features + Asset-Hashes); importierte Meshes und hochgeladene Fonts werden als content-addressed Blobs separat hochgeladen — mit Dedup (ein Blob wird nur einmal übertragen und gespeichert, auch über Projekte hinweg). Der Sync schickt beim Speichern nur noch das kleine Dokument statt megabyte-großer eingebetteter Meshes. Neue Server-Endpoints PUT/GET /api/blobs/{sha256} + /api/blobs/missing (content-adressiert, owner-authentifiziert). Bestehende (volle) Cloud-Dokumente laden unverändert und werden beim nächsten Speichern automatisch umgestellt. IndexedDB (lokal) und Server teilen sich denselben Externalisier-Code.",
+      },
+    ],
+  },
+  {
+    version: "0.6.492",
+    entries: [
+      {
+        kind: "fix",
+        scope: "projects",
+        text: "Hochgeladene Fonts (Sketch-Text) überstehen jetzt einen Reload. Bisher lagen die Font-Bytes nur in einem flüchtigen In-Memory-Cache — nach einem Neuladen aus dem lokalen Arbeits-Store blieb der Text mit hochgeladener Schrift leer. Jetzt werden Fonts wie Meshes als content-addressed Blobs (sha256) im Arbeits-Store persistiert und beim Laden wiederhergestellt. Damit behandeln Server (P2) und `.fdraft` (P3) Meshes und Fonts einheitlich.",
+      },
+    ],
+  },
+  {
+    version: "0.6.491",
+    entries: [
+      {
+        kind: "perf",
+        scope: "projects",
+        text: "Projekt-Persistenz: importierte Meshes werden nicht mehr roh (als riesige JSON-Zahl-Arrays) ins Projekt-Dokument geschrieben, sondern als content-addressed Blobs (sha256) ausgelagert; das Dokument bleibt dadurch klein. Der lokale Arbeits-Store wechselt von localStorage auf IndexedDB — kein 5–10-MB-Limit mehr (mesh-lastige Projekte sprengten bisher die localStorage-Quota, wodurch der Autosave still fehlschlug) und keine synchronen Schreib-Hänger. Bestehende Projekte werden beim ersten Laden einmalig migriert. Grundlage (Phase 1) für den kommenden Server-Blob-Store und das schlanke Cloud-Speichern.",
+      },
+    ],
+  },
+  {
+    version: "0.6.490",
+    entries: [
+      {
+        kind: "feat",
+        scope: "projects",
+        tickets: ["14cff61"],
+        text: "Projekt-Vorschaubilder: server-gebundene Projekte bekommen jetzt automatisch ein Thumbnail, das in der Projektübersicht auf der Karte erscheint. Erzeugt wird es beim Speichern zum Server über einen eigenen, unsichtbaren Offscreen-WebGL-Renderer (mit preserveDrawingBuffer) — bewusst getrennt vom Live-WebGPU-Renderer, dessen Canvas sich nicht zuverlässig auslesen ließ (leer/eingefroren). Die kleine Szene wird frisch aus den Kernel-Mesh-Daten gebaut (dieselben Dreiecke wie im mesh/webgl-Modus — Booleans und SDF bereits aufgelöst), flach schattiert und aus fixem Iso-Blick gerahmt. Gedrosselt (höchstens 1×/30 s) und best-effort — ein fehlendes Thumbnail schadet nie.",
       },
     ],
   },

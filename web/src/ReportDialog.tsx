@@ -161,7 +161,7 @@ export function ReportDialog({ store, onClose }: ReportDialogProps) {
       description: description.trim(),
       // on3k: ship the real .fdraft ZIP (document + font assets), base64-encoded
       // for the JSON POST, so the ticket carries an openable project file.
-      projectFdraft: store ? bytesToBase64(store.exportProjectFdraft()) : "",
+      projectFdraft: store ? bytesToBase64(await store.exportProjectFdraft()) : "",
       screenshot: includeShot ? screenshot : null,
       attachments,
       version: __APP_VERSION__,

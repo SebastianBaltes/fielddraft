@@ -32,6 +32,7 @@ const LS_SCREEN_SPACE_CSG = "fielddraft.screenSpaceCsg";
 const LS_PERSPECTIVE = "fielddraft.perspective";
 const LS_CONTROLS_PRESET = "fielddraft.controlsPreset";
 const LS_AUTOSAVE_DEBOUNCE = "fielddraft.autosaveDebounceSec";
+const LS_CLOUD_SYNC_INTERVAL = "fielddraft.cloudSyncIntervalMin";
 /** Shared with main.tsx's HMR guard — kept here so all localStorage keys live
  *  in one place. */
 export const LS_AUTO_RELOAD = "fielddraft.autoReload";
@@ -272,9 +273,17 @@ export interface SettingsState {
    * is written once the state has been quiet for this long (plus a flush on
    * unload). */
   autosaveDebounceSec: number;
+  /** Cloud auto-sync interval, in minutes (P3b, docs/PROJECT-ASSET-STORAGE-PLAN
+   * §5.7). A background timer pushes a server-bound project to the cloud this
+   * often — but only when it is `dirty`, so a quiet project costs nothing.
+   * `0` disables the periodic timer entirely (the exit-editor and beforeunload
+   * triggers still fire). Because P1/P2 externalize meshes to blobs, the doc
+   * PATCH is small, so frequent saves are cheap. */
+  cloudSyncIntervalMin: number;
 }
 
 export const DEFAULT_AUTOSAVE_DEBOUNCE_SEC = 5;
+export const DEFAULT_CLOUD_SYNC_INTERVAL_MIN = 1;
 
 /** Module-level mirror of the debounce so non-React code (the autosave
  *  handle created at store bootstrap) can read the CURRENT value without a
@@ -289,6 +298,23 @@ function clampAutosaveDebounceSec(v: unknown): number {
   return typeof v === "number" && Number.isFinite(v)
     ? Math.min(60, Math.max(0.5, v))
     : DEFAULT_AUTOSAVE_DEBOUNCE_SEC;
+}
+
+/** Module-level mirror of the cloud-sync interval so non-React code can read
+ *  the CURRENT value; kept in sync by loadSettings/updateSetting. */
+let cloudSyncIntervalMinCache = DEFAULT_CLOUD_SYNC_INTERVAL_MIN;
+
+/** Current cloud auto-sync interval in milliseconds (`0` = disabled). */
+export function getCloudSyncIntervalMs(): number {
+  return cloudSyncIntervalMinCache * 60_000;
+}
+
+/** Clamp to [0, 60] minutes; `0` (disabled) is a valid value, unlike the
+ *  autosave debounce which has a floor. */
+function clampCloudSyncIntervalMin(v: unknown): number {
+  return typeof v === "number" && Number.isFinite(v)
+    ? Math.min(60, Math.max(0, v))
+    : DEFAULT_CLOUD_SYNC_INTERVAL_MIN;
 }
 
 function validOr<K extends string>(opts: { key: K }[], val: unknown, fallback: K): K {
@@ -355,6 +381,7 @@ const BOOT_SETTING_KEYS: (keyof SettingsState)[] = [
   "controlsPreset",
   "autoReload",
   "autosaveDebounceSec",
+  "cloudSyncIntervalMin",
 ];
 
 /** Stage a settings.json snapshot as the next loadSettings() result (one-shot,
@@ -391,6 +418,7 @@ export function loadSettings(): SettingsState {
   let controlsPreset: ControlsPresetId = DEFAULT_CONTROLS_PRESET;
   let autoReload = true;
   let autosaveDebounceSec = DEFAULT_AUTOSAVE_DEBOUNCE_SEC;
+  let cloudSyncIntervalMin = DEFAULT_CLOUD_SYNC_INTERVAL_MIN;
   try {
     compact = localStorage.getItem(LS_COMPACT) === "true";
     units = parseUnits(localStorage.getItem(LS_UNITS));
@@ -426,17 +454,22 @@ export function loadSettings(): SettingsState {
     const rawDebounce = Number(localStorage.getItem(LS_AUTOSAVE_DEBOUNCE));
     if (Number.isFinite(rawDebounce) && rawDebounce > 0)
       autosaveDebounceSec = clampAutosaveDebounceSec(rawDebounce);
+    const rawCloud = localStorage.getItem(LS_CLOUD_SYNC_INTERVAL);
+    if (rawCloud !== null && Number.isFinite(Number(rawCloud)))
+      cloudSyncIntervalMin = clampCloudSyncIntervalMin(Number(rawCloud));
   } catch {
     // localStorage may be unavailable
   }
-  const loaded: SettingsState = { compact, units, theme, renderMode, meshAlgorithm, brepEdgeMode, frameLoop, parametricWeave, dragBrepRecompute, liveExtrudeDrag, showEdgePoints, showOctreeCells, screenSpaceCsg, perspective, controlsPreset, autoReload, autosaveDebounceSec };
+  const loaded: SettingsState = { compact, units, theme, renderMode, meshAlgorithm, brepEdgeMode, frameLoop, parametricWeave, dragBrepRecompute, liveExtrudeDrag, showEdgePoints, showOctreeCells, screenSpaceCsg, perspective, controlsPreset, autoReload, autosaveDebounceSec, cloudSyncIntervalMin };
   if (bootOverride) {
     const merged = { ...loaded, ...bootOverride };
     bootOverride = null; // one-shot: only the first read (React mount) honors it
     autosaveDebounceSecCache = clampAutosaveDebounceSec(merged.autosaveDebounceSec);
+    cloudSyncIntervalMinCache = clampCloudSyncIntervalMin(merged.cloudSyncIntervalMin);
     return merged;
   }
   autosaveDebounceSecCache = autosaveDebounceSec;
+  cloudSyncIntervalMinCache = cloudSyncIntervalMin;
   return loaded;
 }
 
@@ -467,6 +500,7 @@ const LS_KEY_BY_SETTING: Partial<Record<keyof SettingsState, string>> = {
   controlsPreset: LS_CONTROLS_PRESET,
   autoReload: LS_AUTO_RELOAD,
   autosaveDebounceSec: LS_AUTOSAVE_DEBOUNCE,
+  cloudSyncIntervalMin: LS_CLOUD_SYNC_INTERVAL,
 };
 
 /** Set one setting: persists it to localStorage (unless it's session-only)
@@ -480,6 +514,10 @@ export function updateSetting<K extends keyof SettingsState>(
   if (key === "autosaveDebounceSec") {
     value = clampAutosaveDebounceSec(value) as SettingsState[K];
     autosaveDebounceSecCache = value as number;
+  }
+  if (key === "cloudSyncIntervalMin") {
+    value = clampCloudSyncIntervalMin(value) as SettingsState[K];
+    cloudSyncIntervalMinCache = value as number;
   }
   const lsKey = LS_KEY_BY_SETTING[key];
   if (lsKey !== undefined) {

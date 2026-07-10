@@ -6,6 +6,8 @@
 package main
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"sync"
 	"time"
@@ -27,6 +29,7 @@ type memStore struct {
 	comments  map[string][]*TicketComment  // ticket ID → comments (in order)
 	artifacts map[string][]*TicketArtifact // ticket ID → artifacts (in order)
 	blobs     map[string][]byte            // sha256 hex → blob bytes
+	blobMod   map[string]time.Time         // sha256 hex → first-write time (GC grace window)
 
 	workOrders map[string]*WorkOrder // ticket ID → work-order
 	deploys    map[string]*Deploy    // deploy ID → deploy
@@ -56,10 +59,52 @@ func NewStore() Store {
 		comments:    make(map[string][]*TicketComment),
 		artifacts:   make(map[string][]*TicketArtifact),
 		blobs:       make(map[string][]byte),
+		blobMod:     make(map[string]time.Time),
 		workOrders:  make(map[string]*WorkOrder),
 		deploys:     make(map[string]*Deploy),
 		alerts:      make(map[string]*AdminAlert),
 	}
+}
+
+// ─── content-addressed blobs (client asset sync, plan §5.5) ─────
+//
+// Reuses the same `blobs` map the ticket artifacts use — one content-addressed
+// namespace keyed by sha256 hex.
+
+func (s *memStore) PutBlob(data []byte) (string, error) {
+	if len(data) == 0 {
+		return "", nil
+	}
+	sum := sha256.Sum256(data)
+	ref := hex.EncodeToString(sum[:])
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.blobs[ref]; !ok {
+		cp := make([]byte, len(data))
+		copy(cp, data)
+		s.blobs[ref] = cp
+		s.blobMod[ref] = now()
+	}
+	return ref, nil
+}
+
+func (s *memStore) GetBlob(ref string) ([]byte, error) {
+	if ref == "" {
+		return nil, nil
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.blobs[ref], nil
+}
+
+func (s *memStore) HasBlob(ref string) bool {
+	if ref == "" {
+		return false
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	_, ok := s.blobs[ref]
+	return ok
 }
 
 func (s *memStore) CreateUser(email, displayName, password string, role Role) (*User, error) {

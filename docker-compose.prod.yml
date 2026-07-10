@@ -69,6 +69,16 @@ services:
       # service. Empty disables the feature (mesh routes answer 503).
       MESHER_URL: "http://mesher:9090"
       MESH_WORKERS: "${MESH_WORKERS:-2}"
+      # Ticket backend (server/main.go selectTicketStore). Empty/unset → the
+      # local MariaDB store. Production sets TICKET_BACKEND=issuevault plus the
+      # ISSUEVAULT_* vars (token from Vault) to run on the shared external
+      # IssueVault store; leaving TICKET_BACKEND empty (or =db) is the SQL
+      # rollback. Empty ISSUEVAULT_URL/PROJECT fall back to code defaults.
+      TICKET_BACKEND: "${TICKET_BACKEND:-}"
+      ISSUEVAULT_URL: "${ISSUEVAULT_URL:-}"
+      ISSUEVAULT_PROJECT: "${ISSUEVAULT_PROJECT:-}"
+      ISSUEVAULT_INSTALLATION: "${ISSUEVAULT_INSTALLATION:-}"
+      ISSUEVAULT_TOKEN: "${ISSUEVAULT_TOKEN:-}"
     volumes:
       - blob-data:/data/blobs
     # NO `ports:` — only Caddy reaches the API (reverse_proxy server:8080).

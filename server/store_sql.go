@@ -121,6 +121,21 @@ func (s *sqlStore) getBlob(ref string) ([]byte, error) {
 	return data, err
 }
 
+// PutBlob / GetBlob / HasBlob expose the on-disk content-addressed blob store
+// through the Store interface (client asset sync, plan §5.5). PutBlob/GetBlob
+// reuse the existing helpers; HasBlob stats the file so a batch-missing probe
+// never reads the bytes.
+func (s *sqlStore) PutBlob(data []byte) (string, error) { return s.putBlob(data) }
+func (s *sqlStore) GetBlob(ref string) ([]byte, error)  { return s.getBlob(ref) }
+
+func (s *sqlStore) HasBlob(ref string) bool {
+	if ref == "" {
+		return false
+	}
+	_, err := os.Stat(filepath.Join(s.blobDir, ref))
+	return err == nil
+}
+
 // ─── users & auth ───────────────────────────────────────────────
 
 func (s *sqlStore) CreateUser(email, displayName, password string, role Role) (*User, error) {

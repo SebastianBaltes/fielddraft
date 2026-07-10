@@ -1,73 +1,87 @@
-// wu2v: ZIP-container `.fdraft` round-trip + legacy-JSON fallback tests.
+// Phase 3d: the pure `.fdraft` byte layer — content-addressed ZIP write/read
+// (`serializeFdraftZip` / `readFdraftBytes`) + legacy-format fallbacks. The
+// async externalize/inline round-trip lives in `fdraftFile.test.ts`.
 import { describe, expect, it } from "vitest";
+import { zipSync, unzipSync } from "fflate";
 import {
   createDefaultProject,
   serializeProject,
-  serializeProjectToZip,
-  parseProjectBytes,
-  emptyProjectAssets,
-  type Project,
+  serializeFdraftZip,
+  readFdraftBytes,
 } from "./project";
 
-/** A small project with a part tab whose document references an uploaded
- *  font id via a `sketch_path` `text.fontId`. */
-function projectWithUploadedFont(fontId: string): Project {
-  const base = createDefaultProject();
-  const part = base.tabs.find((t) => t.kind === "part");
-  if (!part || part.kind !== "part") throw new Error("no part tab");
-  const doc = {
-    schema_version: 1,
-    name: "Part",
-    feature_calls: [
-      {
-        type: "sketch_path",
-        params: { text: { group: "g1", value: "Hi", height: 10, fontId, origin: [0, 0] } },
-      },
-    ],
-    next_feature_id: 2,
-  };
-  part.documentJson = JSON.stringify(doc);
-  return base;
-}
+const enc = (s: string) => new TextEncoder().encode(s);
+const dec = (b: Uint8Array) => new TextDecoder().decode(b);
 
-describe("serializeProjectToZip / parseProjectBytes", () => {
-  it("round-trips a project with no assets to an equal project", () => {
-    const project = createDefaultProject();
-    const zip = serializeProjectToZip(project, emptyProjectAssets());
+describe("serializeFdraftZip / readFdraftBytes (v2, content-addressed)", () => {
+  it("writes `project.json` + `assets/<hash>` and reads them back", () => {
+    const envelope = JSON.stringify({ v: 2, doc: "{}", fonts: {} });
+    const blobs = new Map<string, Uint8Array>([
+      ["aaaa", new Uint8Array([1, 2, 3])],
+      ["bbbb", new Uint8Array([9, 9])],
+    ]);
+    const zip = serializeFdraftZip(envelope, blobs);
     // ZIP magic bytes ("PK").
     expect(zip[0]).toBe(0x50);
     expect(zip[1]).toBe(0x4b);
 
-    const parsed = parseProjectBytes(zip);
+    // The archive carries the envelope under `project.json` and each blob under
+    // `assets/<hash>` — no raw document embedding.
+    const files = unzipSync(zip);
+    expect(dec(files["project.json"])).toBe(envelope);
+    expect(Array.from(files["assets/aaaa"])).toEqual([1, 2, 3]);
+    expect(Array.from(files["assets/bbbb"])).toEqual([9, 9]);
+    expect(files["document.json"]).toBeUndefined();
+
+    const parsed = readFdraftBytes(zip);
     expect(parsed).not.toBeNull();
-    expect(parsed!.project).toEqual(project);
-    expect(parsed!.assets.fonts.size).toBe(0);
+    expect(parsed!.kind).toBe("v2");
+    if (parsed!.kind !== "v2") throw new Error("expected v2");
+    expect(parsed!.envelopeJson).toBe(envelope);
+    expect(Array.from(parsed!.blobs.get("aaaa")!)).toEqual([1, 2, 3]);
+    expect(Array.from(parsed!.blobs.get("bbbb")!)).toEqual([9, 9]);
   });
 
-  it("parses legacy plain-JSON bytes (no ZIP) as a project", () => {
+  it("carries a lean envelope even with no blobs", () => {
+    const envelope = JSON.stringify({ v: 2, doc: "{}", fonts: {} });
+    const zip = serializeFdraftZip(envelope, new Map());
+    const parsed = readFdraftBytes(zip);
+    expect(parsed!.kind).toBe("v2");
+    if (parsed!.kind !== "v2") throw new Error("expected v2");
+    expect(parsed!.blobs.size).toBe(0);
+  });
+});
+
+describe("readFdraftBytes — legacy fallbacks", () => {
+  it("reads legacy plain-JSON bytes (no ZIP) as a project", () => {
     const project = createDefaultProject();
-    const jsonBytes = new TextEncoder().encode(serializeProject(project));
+    const jsonBytes = enc(serializeProject(project));
     // Not a ZIP — first byte is '{'.
     expect(jsonBytes[0]).not.toBe(0x50);
 
-    const parsed = parseProjectBytes(jsonBytes);
+    const parsed = readFdraftBytes(jsonBytes);
     expect(parsed).not.toBeNull();
+    expect(parsed!.kind).toBe("legacy");
+    if (parsed!.kind !== "legacy") throw new Error("expected legacy");
     expect(parsed!.project).toEqual(project);
     expect(parsed!.assets.fonts.size).toBe(0);
   });
 
-  it("round-trips uploaded font bytes embedded in the ZIP", () => {
+  it("reads a legacy embedded ZIP (`document.json` + font manifest)", () => {
+    const project = createDefaultProject();
     const fontId = "uploaded:MyFont.ttf";
-    const project = projectWithUploadedFont(fontId);
-    const fontBytes = new Uint8Array([1, 2, 3, 4, 5]);
-    const assets = emptyProjectAssets();
-    assets.fonts.set(fontId, { bytes: fontBytes, ext: "ttf" });
+    const fontPath = "assets/fonts/uploaded_MyFont.ttf.ttf";
+    const legacyZip = zipSync({
+      "document.json": enc(serializeProject(project)),
+      [fontPath]: new Uint8Array([1, 2, 3, 4, 5]),
+      "manifest.json": enc(JSON.stringify({ fonts: { [fontId]: fontPath } })),
+    });
 
-    const zip = serializeProjectToZip(project, assets);
-    const parsed = parseProjectBytes(zip);
+    const parsed = readFdraftBytes(legacyZip);
     expect(parsed).not.toBeNull();
+    expect(parsed!.kind).toBe("legacy");
+    if (parsed!.kind !== "legacy") throw new Error("expected legacy");
     expect(parsed!.project).toEqual(project);
-
     const back = parsed!.assets.fonts.get(fontId);
     expect(back).toBeDefined();
     expect(back!.ext).toBe("ttf");
@@ -75,6 +89,6 @@ describe("serializeProjectToZip / parseProjectBytes", () => {
   });
 
   it("returns null for malformed JSON bytes", () => {
-    expect(parseProjectBytes(new TextEncoder().encode("not json"))).toBeNull();
+    expect(readFdraftBytes(enc("not json"))).toBeNull();
   });
 });

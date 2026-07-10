@@ -19,11 +19,6 @@ import { getCameraPose, requestCameraRestore } from "./cameraPoseBridge";
 import { applyProjectDebug, collectProjectDebug } from "./projectDebug";
 import { logUserAction } from "./userActionLog";
 import {
-  registerUploadedFontFromBytes,
-  getUploadedFontBytes,
-  UPLOADED_FONT_PREFIX,
-} from "./sketchTextFont";
-import {
   createRecord,
   reviseRecord,
   type FieldSkriptRecord,
@@ -39,10 +34,6 @@ import {
   projectScripts,
   reseedTabIds,
   serializeProject as serializeProjectJson,
-  serializeProjectToZip,
-  parseProjectBytes,
-  emptyProjectAssets,
-  type ProjectAssets,
   stripScripts,
   type PartTab,
   type Project,
@@ -50,7 +41,15 @@ import {
   type ScriptTab,
   type TabKind,
 } from "./project";
+import { exportFdraftBytes, readFdraftProject } from "./fdraftFile";
+import {
+  isLocalFileBound,
+  setLocalClean,
+  writeBoundFile,
+} from "./localFileBridge";
 import { parseFeatureSchema, buildDefaultDefinition } from "./widgets/schema";
+import { externalizeProject, inlineProject } from "./projectPersistence";
+import { serverBlobStore } from "./serverBlobStore";
 import {
   StoreCore,
   formatKernelError,
@@ -214,77 +213,34 @@ export class ProjectStore {
     };
   }
 
-  /**
-   * wu2v: collect the uploaded fonts actually referenced by a project.
-   * Scans every part tab's document JSON for `sketch_path` sub-calls whose
-   * `text.fontId` is an `uploaded:` id, then pulls the retained raw bytes.
-   * Fonts with no retained bytes (e.g. opened from a legacy JSON that never
-   * carried them) are skipped.
-   */
-  private collectProjectAssets(project: Project): ProjectAssets {
-    const assets = emptyProjectAssets();
-    const ids = new Set<string>();
-    for (const tab of project.tabs) {
-      if (tab.kind !== "part") continue;
-      let doc: unknown;
-      try {
-        doc = JSON.parse(tab.documentJson);
-      } catch {
-        continue;
-      }
-      // Walk the doc collecting any `fontId` field that names an upload.
-      const walk = (value: unknown): void => {
-        if (Array.isArray(value)) {
-          for (const v of value) walk(v);
-          return;
-        }
-        if (value && typeof value === "object") {
-          const obj = value as Record<string, unknown>;
-          const fontId = obj.fontId;
-          if (
-            typeof fontId === "string" &&
-            fontId.startsWith(UPLOADED_FONT_PREFIX)
-          ) {
-            ids.add(fontId);
-          }
-          for (const v of Object.values(obj)) walk(v);
-        }
-      };
-      walk(doc);
-    }
-    for (const id of ids) {
-      const bytes = getUploadedFontBytes(id);
-      if (!bytes) continue;
-      // Extension from the id tail (`uploaded:Foo.ttf` → `ttf`), default ttf.
-      const dot = id.lastIndexOf(".");
-      const ext = dot >= 0 ? id.slice(dot + 1).toLowerCase() : "ttf";
-      assets.fonts.set(id, { bytes, ext });
-    }
-    return assets;
+  /** Public accessor for the live project as a content-addressed `.fdraft`
+   *  ZIP (lean `project.json` envelope + `assets/<hash>` mesh/font blobs),
+   *  byte-identical to what Save writes. Used by the in-app bug-report flow
+   *  (on3k) so a ticket carries the exact, openable project file — assets
+   *  included — not a stripped JSON blob. */
+  async exportProjectFdraft(): Promise<Uint8Array> {
+    return exportFdraftBytes(this.serializeProject());
   }
 
-  /** Public accessor for the live project as a `.fdraft` ZIP (document
-   *  JSON + uploaded font assets), byte-identical to what Save writes.
-   *  Used by the in-app bug-report flow (on3k) so a ticket carries the
-   *  exact, openable project file — assets included — not a stripped
-   *  JSON blob. */
-  exportProjectFdraft(): Uint8Array {
-    const project = this.buildPersistableProject();
-    const assets = this.collectProjectAssets(project);
-    return serializeProjectToZip(project, assets);
-  }
-
-  /** Save the current project as a downloadable .fdraft file.
+  /** Explicit Save (Ctrl+S / menu). Phase 4: when a local `.fdraft` file is
+   *  bound as the save target, write the current project straight into that
+   *  file (silent overwrite via the FSA handle) and mark the local state
+   *  clean. Otherwise — no bound file, or the handle write failed (permission
+   *  revoked) — fall back to a browser download.
    *
-   *  wu2v: the file is a ZIP container (document.json + embedded uploaded
-   *  font bytes + manifest) so binary assets survive a reload. Legacy JSON
-   *  `.fdraft` files still open (the loader sniffs the ZIP magic bytes).
-   *  The bug-report path uses the same ZIP — see exportProjectFdraft. */
-  saveProjectToFile(filename = "project.fdraft"): void {
+   *  The file is a content-addressed ZIP (`project.json` envelope +
+   *  `assets/<hash>` mesh/font blobs) — self-contained and deduplicated.
+   *  Legacy `.fdraft` files (plain JSON or the old `document.json` layout)
+   *  still open (the loader sniffs the format). The bug-report path uses the
+   *  same ZIP — see exportProjectFdraft. */
+  async saveProjectToFile(filename = "project.fdraft"): Promise<void> {
+    const zip = await exportFdraftBytes(this.serializeProject());
+    // Bound local file → overwrite it in place, no download dialog.
+    if (isLocalFileBound() && (await writeBoundFile(zip))) {
+      setLocalClean();
+      return;
+    }
     if (typeof document === "undefined") return;
-    const project = this.buildPersistableProject();
-    const assets = this.collectProjectAssets(project);
-    const zip = serializeProjectToZip(project, assets);
     // Copy into a fresh ArrayBuffer so Blob doesn't retain the WASM/heap view.
     const blob = new Blob([zip.slice()], { type: "application/zip" });
     const url = URL.createObjectURL(blob);
@@ -302,30 +258,20 @@ export class ProjectStore {
    *  so a JSON string and a ZIP file share one load path (the byte loader
    *  sniffs the magic bytes and treats non-ZIP bytes as JSON text).
    *  Returns `false` on malformed input. */
-  loadProjectFromJson(json: string): boolean {
+  async loadProjectFromJson(json: string): Promise<boolean> {
     return this.loadProjectFromBytes(new TextEncoder().encode(json));
   }
 
-  /** wu2v: load a project from raw `.fdraft` bytes — a ZIP container or
-   *  legacy JSON (auto-detected). Re-registers any embedded uploaded fonts
-   *  so they render again, then applies the project. Returns `false` on
-   *  malformed input. */
-  loadProjectFromBytes(bytes: Uint8Array | ArrayBuffer): boolean {
+  /** Phase 3d: load a project from raw `.fdraft` bytes — a content-addressed
+   *  ZIP, a legacy embedded ZIP, or legacy JSON (auto-detected). Re-inlines
+   *  externalized mesh blobs and restores uploaded fonts into the cache, then
+   *  applies the project. Returns `false` on malformed input. */
+  async loadProjectFromBytes(bytes: Uint8Array | ArrayBuffer): Promise<boolean> {
     const u8 = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
-    const parsed = parseProjectBytes(u8);
-    if (!parsed) return false;
+    const project = await readFdraftProject(u8);
+    if (!project) return false;
     logUserAction("doc", "load-project", { bytes: u8.length });
-    // Re-register embedded uploaded fonts before applying the project so the
-    // font cache is warm when the scene regenerates its text geometry.
-    for (const [id, { bytes: fontBytes }] of parsed.assets.fonts) {
-      try {
-        registerUploadedFontFromBytes(id, fontBytes);
-      } catch (err) {
-        // eslint-disable-next-line no-console
-        console.error("fielddraft: embedded font re-register failed", id, err);
-      }
-    }
-    return this.applyLoadedProject(parsed.project);
+    return this.applyLoadedProject(project);
   }
 
   /** Common tail of the load paths: reseed ids, rebuild scripts, load the
@@ -393,19 +339,33 @@ export class ProjectStore {
     return this.serializeProject();
   }
 
-  /** WP3: load a server project into the live workspace and bind it for sync.
-   *  `documentJson` is the Project blob previously saved via
-   *  {@link serializeProjectJson}. A freshly-created server project carries an
-   *  empty document (`{}` / `""`) — that's not a valid Project blob, so we
-   *  start a fresh default workspace and bind the id instead of failing. Marks
-   *  the session clean (just-loaded), so the next edit flips it to "dirty".
-   *  Returns `false` only on a genuinely malformed (non-empty) blob. */
-  loadServerProject(id: string, documentJson: string): boolean {
+  /** P2: re-inline a server document's externalized asset blobs (meshes/fonts)
+   *  back into a full project JSON, ready for {@link loadProjectFromJson}. The
+   *  server stores a lean ENVELOPE (`{ v, doc, fonts }`) plus content-addressed
+   *  blobs fetched via {@link serverBlobStore}; a LEGACY full document (no
+   *  envelope, no `__asset` refs) round-trips unchanged (no-op). */
+  async inlineServerDocument(documentJson: string): Promise<string> {
     const trimmed = documentJson.trim();
+    // Empty/new server project — nothing to inline.
+    if (trimmed === "" || trimmed === "{}" || trimmed === "null") return documentJson;
+    return inlineProject(documentJson, serverBlobStore);
+  }
+
+  /** WP3: load a server project into the live workspace and bind it for sync.
+   *  `documentJson` is the lean ENVELOPE (or legacy full Project blob) previously
+   *  saved via {@link syncToServer}; its externalized mesh/font blobs are
+   *  re-inlined from the server first (P2). A freshly-created server project
+   *  carries an empty document (`{}` / `""`) — that's not a valid Project blob,
+   *  so we start a fresh default workspace and bind the id instead of failing.
+   *  Marks the session clean (just-loaded), so the next edit flips it to
+   *  "dirty". Returns `false` only on a genuinely malformed (non-empty) blob. */
+  async loadServerProject(id: string, documentJson: string): Promise<boolean> {
+    const inlined = await this.inlineServerDocument(documentJson);
+    const trimmed = inlined.trim();
     const isEmpty = trimmed === "" || trimmed === "{}" || trimmed === "null";
     if (isEmpty) {
       this.newProject();
-    } else if (!this.loadProjectFromJson(documentJson)) {
+    } else if (!this.loadProjectFromJson(inlined)) {
       return false;
     }
     persistServerBinding(id);
@@ -434,23 +394,51 @@ export class ProjectStore {
     this.core.emit();
   }
 
-  /** M12: sync the current workspace to the bound server project. No-op in
-   *  offline mode. Sends the full Project blob (see
-   *  {@link serializeProjectJson}). */
-  async syncToServer(): Promise<boolean> {
+  /** M12 + P2: sync the current workspace to the bound server project. No-op in
+   *  offline mode. Externalizes the workspace to a LEAN document — embedded
+   *  meshes and uploaded-font bytes are uploaded as content-addressed blobs
+   *  ({@link serverBlobStore}, upload-if-missing) and the PATCH body carries only
+   *  features + asset hashes. An ASSET-FREE workspace is sent as the plain
+   *  Project blob (no envelope) so publish/gallery-copy keep the exact document
+   *  shape they load today; only asset-bearing projects get the `{ v, doc, fonts }`
+   *  envelope.
+   *
+   *  P3b: `opts.keepalive` sets `keepalive: true` on the document PATCH so it can
+   *  outlive a `beforeunload` (browsers keep keepalive requests in flight as the
+   *  page unloads). Only the small doc PATCH gets it — the preceding blob uploads
+   *  are ordinary fetches; on a real unload they have usually already run via the
+   *  periodic/exit triggers (IndexedDB is the safety net if not). */
+  async syncToServer(opts: { keepalive?: boolean } = {}): Promise<boolean> {
     if (!this.state.projectId || this.state.syncState === "offline") {
       return false;
     }
     this.patch({ syncState: "syncing" });
     this.core.emit();
     try {
+      // Uploads every missing mesh/font blob, returns the lean envelope string.
+      const envelopeJson = await externalizeProject(
+        this.serializeProject(),
+        serverBlobStore,
+      );
+      const envelope = JSON.parse(envelopeJson) as {
+        doc: string;
+        fonts: Record<string, string>;
+      };
+      // Asset-free ⇒ store the inner project blob verbatim (viewer/gallery-copy
+      // load it directly, unwrapped-envelope not required); asset-bearing ⇒ the
+      // full envelope, which the cloud-load path re-inlines. The `__asset` marker
+      // lives inside each part tab's nested documentJson string, so it is
+      // double-escaped in `doc` — match the bare marker (never the quoted form).
+      const hasAssets =
+        Object.keys(envelope.fonts).length > 0 ||
+        envelope.doc.includes("__asset");
+      const document = JSON.parse(hasAssets ? envelopeJson : envelope.doc);
       const res = await fetch(`/api/projects/${this.state.projectId}`, {
         method: "PATCH",
         credentials: "include",
+        keepalive: opts.keepalive ?? false,
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          document: JSON.parse(this.serializeProject()),
-        }),
+        body: JSON.stringify({ document }),
       });
       if (!res.ok) throw new Error(`sync failed: ${res.status}`);
       this.patch({ syncState: "clean" });
@@ -489,11 +477,20 @@ export class ProjectStore {
   async publishProject(): Promise<string | null> {
     if (!this.state.projectId) return null;
     try {
+      // docs/PROJECT-ASSET-STORAGE-PLAN §6: publish a SELF-CONTAINED snapshot.
+      // The server-stored `document` is LEAN (assets externalized to
+      // auth-gated blobs), but the public viewer is unauthenticated and cannot
+      // fetch those blobs. `serializeProject()` still yields the FULL document
+      // (meshes/fonts inline — the kernel holds them), so we send it as the
+      // snapshot source; the viewer then loads it directly, no blob fetch.
+      const document = JSON.parse(this.serializeProject());
       const resp = await fetch(
         `/api/projects/${this.state.projectId}/publish`,
         {
           method: "POST",
           credentials: "include",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ document }),
         },
       );
       if (!resp.ok) return null;
@@ -574,7 +571,7 @@ export class ProjectStore {
         project: { ...this.state.project, activeTabId: id },
       };
       this.notify();
-      this.core.autosave.schedule(this.serializeProject());
+      this.core.scheduleAutosave();
       return;
     }
 
@@ -589,7 +586,7 @@ export class ProjectStore {
       project: { ...this.state.project, activeTabId: id },
     };
     this.notify();
-    this.core.autosave.schedule(this.serializeProject());
+    this.core.scheduleAutosave();
   }
 
   /** MT-A: create a new tab of the given kind, activate it, return its
@@ -657,7 +654,7 @@ export class ProjectStore {
       syncState: this.state.projectId ? "dirty" : this.state.syncState,
     };
     this.notify();
-    this.core.autosave.schedule(this.serializeProject());
+    this.core.scheduleAutosave();
 
     const id = this.state.projectId;
     if (id) {
@@ -686,7 +683,7 @@ export class ProjectStore {
       project: { ...this.state.project, tabs },
     };
     this.notify();
-    this.core.autosave.schedule(this.serializeProject());
+    this.core.scheduleAutosave();
   }
 
   /** MT-A: delete a tab. Mirrors the kernel for script tabs, picks a

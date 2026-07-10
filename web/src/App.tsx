@@ -5,10 +5,18 @@ import { Viewport } from "./Viewport";
 import { FieldSkriptEditor } from "./FieldSkriptEditor";
 import { BottomTabs } from "./BottomTabs";
 import { useKernelStore } from "./store";
+import {
+  armProjectThumbnailCapture,
+  cloudThumbnailSink,
+  localThumbnailSink,
+  maybeCaptureThumbnail,
+  takeArmedProjectCapture,
+} from "./thumbnailScheduler";
 import { dispatchKeyboardCommand } from "./keyboardCommands";
 import { SettingsMenu } from "./SettingsMenu";
 import { loadSettings, WorkspaceUnitsContext } from "./settings";
 import type { SettingsState } from "./settings";
+import { cloudSyncIfDirty, startCloudSyncTimer } from "./cloudSyncScheduler";
 import { ProjectTitle } from "./ProjectTitle";
 import { CONTROLS_PRESETS, viewShortcutRow } from "./controlsPreset";
 import {
@@ -40,6 +48,8 @@ import {
 import {
   bindLocalFile,
   clearLocalFileBinding,
+  isLocalDirty,
+  isLocalFileBound,
 } from "./localFileBridge";
 
 // WP11: the deployed build gates the whole app behind login. The gate is a
@@ -127,10 +137,15 @@ function AppShell({ account }: { account: UseAccount }) {
   // owned by the outer App (one `/api/me` per load) and passed in, so the WP11
   // login gate and this shell share exactly one resolution.
 
+  // Phase 3c: the local-project registry id (localProjects.ts) of the currently
+  // open LOCAL project, or null when the workspace is a cloud/guest project.
+  // Keyed here so the editor-exit thumbnail capture can route to IndexedDB.
+  const currentLocalIdRef = useRef<string | null>(null);
+
   // Bridge: load a server project's document into the live workspace, bind it
   // for sync, and enter the modeling view. The server stores the full multi-tab
   // Project blob, so this restores the whole workspace.
-  const openServerProject = (project: ServerProject) => {
+  const openServerProject = async (project: ServerProject) => {
     if (!store) return;
     const json =
       typeof project.document === "string"
@@ -140,68 +155,83 @@ function AppShell({ account }: { account: UseAccount }) {
     // modeling view with the previous (guest) workspace unbound — that
     // masquerades as the wrong project and downgrades export to "save to
     // server first". Surface the failure and stay on the dashboard.
-    if (!store.loadServerProject(project.id, json)) {
+    // P2: loadServerProject re-inlines any externalized mesh/font blobs from the
+    // server before loading, so the await is required.
+    if (!(await store.loadServerProject(project.id, json))) {
       store.showTransientError(
         `“${project.name}” could not be opened — its stored document is not a valid project.`,
       );
       return;
     }
     clearLocalFileBinding();
+    currentLocalIdRef.current = null;
     account.enterProject();
   };
 
   // Bridge: open a public/gallery project as a fresh UNBOUND copy (no server
   // binding — it's not the viewer's project) and enter the modeling view.
-  const openServerCopy = (project: ServerProject) => {
+  const openServerCopy = async (project: ServerProject) => {
     if (!store) return;
-    const json =
+    const raw =
       typeof project.document === "string"
         ? project.document
         : JSON.stringify(project.document ?? {});
+    // P2: re-inline any externalized mesh/font blobs before loading the copy.
+    const json = await store.inlineServerDocument(raw);
     const trimmed = json.trim();
     if (trimmed === "" || trimmed === "{}" || trimmed === "null") {
       store.newProject();
       store.detachServerProject();
-    } else if (store.loadProjectFromJson(json)) {
+    } else if (await store.loadProjectFromJson(json)) {
       store.detachServerProject();
     }
     clearLocalFileBinding();
+    currentLocalIdRef.current = null;
     account.enterProject();
   };
 
   // Bridge: load a ticket's `.fdraft` artifact (raw ZIP bytes) into the live
   // workspace as a fresh UNBOUND copy — it's repro material, not the viewer's
   // server project, so we don't bind it for sync — and enter the modeling view.
-  const loadFdraftBytes = (bytes: ArrayBuffer) => {
+  const loadFdraftBytes = async (bytes: ArrayBuffer) => {
     if (!store) return;
-    if (store.loadProjectFromBytes(bytes)) {
+    if (await store.loadProjectFromBytes(bytes)) {
       store.detachServerProject();
     }
     clearLocalFileBinding();
+    currentLocalIdRef.current = null;
     account.enterProject();
   };
 
   // ── Local projects (ticket 14661fc4) ────────────────────────────
   // Open a local .fdraft through the File System Access API: the handle is
   // remembered in IndexedDB (the Projects overview lists it for reopening)
-  // and, with readwrite permission, bound so the autosave mirrors the ZIP
-  // back to disk. Falls back to the classic hidden <input type=file> where
-  // the API is unavailable (then: no listing, no disk autosave).
+  // and, with readwrite permission, bound as the explicit Save target (Ctrl+S
+  // writes the ZIP back to this file). Working state autosaves to IndexedDB
+  // meanwhile; the file only changes on an explicit Save. Falls back to the
+  // classic hidden <input type=file> where the API is unavailable (then: no
+  // listing, no bound save target — Save downloads).
   const finishLocalOpen = async (handle: FsaFileHandle, writable: boolean) => {
     if (!store) return;
     const file = await handle.getFile();
     const buf = await file.arrayBuffer();
     clearLocalFileBinding();
     store.detachServerProject();
-    if (!store.openUserProjectFromBytes(buf)) {
+    if (!(await store.openUserProjectFromBytes(buf))) {
       store.showTransientError(
         `“${file.name}” is not a valid FieldDraft project.`,
       );
       return;
     }
-    void rememberLocalProject(handle).catch(() => {});
+    // Remember the registry id so the editor-exit capture keys the local
+    // thumbnail per project (best-effort — a failure just means no preview).
+    try {
+      currentLocalIdRef.current = await rememberLocalProject(handle);
+    } catch {
+      currentLocalIdRef.current = null;
+    }
     if (writable) {
-      bindLocalFile(handle, () => store.exportProjectFdraft());
+      bindLocalFile(handle);
     }
     account.enterProject();
   };
@@ -301,6 +331,34 @@ function AppShell({ account }: { account: UseAccount }) {
     };
   }, [store, account.state.status, state?.projectId]);
 
+  // Phase 3c: capture a preview thumbnail for the bound project. Route to the
+  // right sink — a cloud project (projectId) uploads via PUT; a local project
+  // (currentLocalIdRef) writes to IndexedDB. The offscreen WebGL capture is
+  // isolated from the live WebGPU renderer and is throttled + best-effort.
+  const captureThumbnailForCurrent = useCallback(() => {
+    if (!store) return;
+    const s = store.getState();
+    const pid = s.projectId;
+    const localId = currentLocalIdRef.current;
+    if (pid) {
+      void maybeCaptureThumbnail(s.meshedBodies, cloudThumbnailSink(pid));
+    } else if (localId) {
+      void maybeCaptureThumbnail(s.meshedBodies, localThumbnailSink(localId));
+    }
+  }, [store]);
+
+  // New-project arming: a project created (empty, imported, or "save current
+  // workspace") arms a one-shot capture. As soon as geometry is ready for the
+  // bound project, snapshot a preview so a fresh project gets a gallery
+  // thumbnail without waiting for the first editor exit. Plain "open an
+  // existing project" never arms — opening never re-captures.
+  useEffect(() => {
+    if (!store) return;
+    if (!state?.meshedBodies || state.meshedBodies.length === 0) return;
+    if (!takeArmedProjectCapture()) return;
+    captureThumbnailForCurrent();
+  }, [state?.meshedBodies, state?.projectId, store, captureThumbnailForCurrent]);
+
   // WP9 B4: first-login guest-project import. When a guest who has done real
   // local work logs in (or registers) for the first time, offer — once — to
   // import their localStorage guest project as a new server project. Declining
@@ -344,6 +402,8 @@ function AppShell({ account }: { account: UseAccount }) {
     const created = await platformApi.createProject("My project", doc ?? {});
     // Bind the freshly-created project to the live workspace (it IS the current
     // workspace) without reloading — same as the dashboard "save current" path.
+    currentLocalIdRef.current = null;
+    armProjectThumbnailCapture();
     store.setProjectId(created.id);
     setImportPrompt("hidden");
     setImportDecided(true);
@@ -424,6 +484,72 @@ function AppShell({ account }: { account: UseAccount }) {
   // both; the modeling chrome (toolbar/viewport/outliner/meta) mounts only in
   // the project view.
   const inProject = account.state.page === "project";
+
+  // ── P3b: Cloud auto-sync (docs/PROJECT-ASSET-STORAGE-PLAN §5.7) ─────
+  // A server-bound project is pushed to the cloud on three dirty-gated
+  // triggers. The gate lives in cloudSyncScheduler (fires only when the
+  // session is "dirty" AND a projectId is bound); after a successful sync
+  // syncState → "clean", so any redundant follow-up trigger is a no-op. All
+  // three read the store's LIVE state, never a captured render snapshot.
+
+  // 1. Periodic timer — interval from settings (minutes; 0 = off). Recreated
+  //    when the interval changes; cleared on unmount.
+  useEffect(() => {
+    if (!store) return;
+    return startCloudSyncTimer({
+      intervalMs: settings.cloudSyncIntervalMin * 60_000,
+      getSyncState: () => store.getState().syncState,
+      getProjectId: () => store.getState().projectId,
+      sync: () => void store.syncToServer(),
+    });
+  }, [store, settings.cloudSyncIntervalMin]);
+
+  // 2. Exit the editor view → a reliable sync. `inProject` flips false when the
+  //    user navigates back to the overview (the ◀ button / account.showOverview
+  //    / browser Back). The tab stays alive, so the full blob-upload + PATCH
+  //    runs to completion in the background (no keepalive needed).
+  const prevInProjectRef = useRef(inProject);
+  useEffect(() => {
+    const was = prevInProjectRef.current;
+    prevInProjectRef.current = inProject;
+    if (was && !inProject && store) {
+      cloudSyncIfDirty({
+        getSyncState: () => store.getState().syncState,
+        getProjectId: () => store.getState().projectId,
+        sync: () => void store.syncToServer(),
+      });
+      // Phase 3c: the editor-exit edge is the primary thumbnail trigger — the
+      // moment the gallery preview matters. Independent of dirty/sync state
+      // (we always want the current view as the preview) and throttled.
+      captureThumbnailForCurrent();
+    }
+  }, [inProject, store, captureThumbnailForCurrent]);
+
+  // 3. beforeunload → cloud best-effort sync + local unsaved-changes warning,
+  //    bundled in ONE handler (two listeners would double-register). Cloud:
+  //    the small document PATCH uses keepalive:true so it can outlive the
+  //    unload; the preceding blob uploads are ordinary fetches the browser may
+  //    abort mid-flight. That's acceptable: blobs are normally already
+  //    uploaded by triggers 1/2, and IndexedDB is the safety net. Local
+  //    (Phase 4): a bound `.fdraft` with unsaved changes triggers the native
+  //    "leave site?" prompt — IndexedDB is the net, but the user treats
+  //    browser storage as fragile, so the warning is intentional.
+  useEffect(() => {
+    if (!store) return;
+    const onBeforeUnload = (e: BeforeUnloadEvent) => {
+      cloudSyncIfDirty({
+        getSyncState: () => store.getState().syncState,
+        getProjectId: () => store.getState().projectId,
+        sync: () => void store.syncToServer({ keepalive: true }),
+      });
+      if (isLocalFileBound() && isLocalDirty()) {
+        e.preventDefault();
+        e.returnValue = "";
+      }
+    };
+    window.addEventListener("beforeunload", onBeforeUnload);
+    return () => window.removeEventListener("beforeunload", onBeforeUnload);
+  }, [store]);
 
   // ── URL-hash routing (ticket 3032c29b) ─────────────────────────────
   // Issues and projects have URLs; browser Back works. The hash is a pure
@@ -559,6 +685,11 @@ function AppShell({ account }: { account: UseAccount }) {
                             state.project.name?.trim() || "Untitled",
                             doc ?? {},
                           );
+                          currentLocalIdRef.current = null;
+                          // Now a cloud project — drop any local `.fdraft` save
+                          // target so the two bindings can't both be live.
+                          clearLocalFileBinding();
+                          armProjectThumbnailCapture();
                           store.setProjectId(created.id);
                         })().catch((err) => {
                           store.showTransientError(

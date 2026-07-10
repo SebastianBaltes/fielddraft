@@ -1,25 +1,23 @@
 /**
- * Ticket 14661fc4 — local-file autosave mirror: bound handle receives the
- * exported ZIP bytes on each autosave write; a failing write unbinds.
+ * Phase 4 — local-file bridge as an explicit Save target + dirty tracker.
+ * No continuous mirror any more: `writeBoundFile` writes on demand and
+ * `markLocalDirty`/`setLocalClean` track divergence from the file on disk.
  */
 
 import { describe, expect, it, afterEach, vi } from "vitest";
 import {
   bindLocalFile,
   clearLocalFileBinding,
+  getLocalFileState,
+  isLocalDirty,
+  isLocalFileBound,
   localFileName,
+  markLocalDirty,
+  setLocalClean,
+  subscribeLocalFile,
+  writeBoundFile,
 } from "./localFileBridge";
-import { createAutoSave, type StorageLike } from "./persistence";
 import type { FsaFileHandle } from "./localProjects";
-
-function fakeStorage(): StorageLike {
-  const map = new Map<string, string>();
-  return {
-    getItem: (k) => map.get(k) ?? null,
-    setItem: (k, v) => void map.set(k, v),
-    removeItem: (k) => void map.delete(k),
-  };
-}
 
 function fakeHandle(opts: { failWrite?: boolean } = {}) {
   const writes: ArrayBuffer[] = [];
@@ -41,57 +39,91 @@ function fakeHandle(opts: { failWrite?: boolean } = {}) {
   return { handle, writes };
 }
 
-const flush = () => new Promise((r) => setTimeout(r, 0));
-
 afterEach(() => {
   clearLocalFileBinding();
-  vi.useRealTimers();
 });
 
 describe("localFileBridge", () => {
-  it("mirrors autosave writes to the bound handle", async () => {
-    const { handle, writes } = fakeHandle();
-    const bytes = new Uint8Array([1, 2, 3]);
-    bindLocalFile(handle, () => bytes);
+  it("binds a file as the save target, starting clean", () => {
+    const { handle } = fakeHandle();
+    expect(isLocalFileBound()).toBe(false);
+    bindLocalFile(handle);
+    expect(isLocalFileBound()).toBe(true);
     expect(localFileName()).toBe("part.fdraft");
+    expect(isLocalDirty()).toBe(false);
+    expect(getLocalFileState()).toEqual({ name: "part.fdraft", dirty: false });
+  });
 
-    const autosave = createAutoSave({
-      storage: fakeStorage(),
-      debounceMs: 0,
-    });
-    autosave.schedule("{}");
-    autosave.flush();
-    await flush();
-    await flush();
+  it("marks dirty only while a file is bound, and notifies subscribers", () => {
+    const listener = vi.fn();
+    const unsub = subscribeLocalFile(listener);
 
+    // No binding → mark is a no-op.
+    markLocalDirty();
+    expect(isLocalDirty()).toBe(false);
+
+    const { handle } = fakeHandle();
+    bindLocalFile(handle);
+    listener.mockClear();
+
+    markLocalDirty();
+    expect(isLocalDirty()).toBe(true);
+    expect(getLocalFileState().dirty).toBe(true);
+    expect(listener).toHaveBeenCalledTimes(1);
+
+    // A second mark while already dirty must not re-notify.
+    markLocalDirty();
+    expect(listener).toHaveBeenCalledTimes(1);
+
+    setLocalClean();
+    expect(isLocalDirty()).toBe(false);
+    expect(listener).toHaveBeenCalledTimes(2);
+
+    unsub();
+  });
+
+  it("returns a referentially-stable snapshot between changes", () => {
+    const { handle } = fakeHandle();
+    bindLocalFile(handle);
+    const a = getLocalFileState();
+    expect(getLocalFileState()).toBe(a);
+    markLocalDirty();
+    expect(getLocalFileState()).not.toBe(a);
+  });
+
+  it("writes the bytes into the bound handle", async () => {
+    const { handle, writes } = fakeHandle();
+    bindLocalFile(handle);
+    const bytes = new Uint8Array([1, 2, 3]);
+    const ok = await writeBoundFile(bytes);
+    expect(ok).toBe(true);
     expect(writes).toHaveLength(1);
     expect(new Uint8Array(writes[0])).toEqual(bytes);
   });
 
-  it("a failing write unbinds instead of looping", async () => {
+  it("reports a failed write without throwing", async () => {
     const { handle } = fakeHandle({ failWrite: true });
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-    bindLocalFile(handle, () => new Uint8Array([9]));
-
-    const autosave = createAutoSave({
-      storage: fakeStorage(),
-      debounceMs: 0,
-    });
-    autosave.schedule("{}");
-    autosave.flush();
-    await flush();
-    await flush();
-
-    expect(localFileName()).toBeNull();
+    bindLocalFile(handle);
+    const ok = await writeBoundFile(new Uint8Array([9]));
+    expect(ok).toBe(false);
     expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
   });
 
-  it("no binding → autosave writes stay storage-only", async () => {
-    const storage = fakeStorage();
-    const autosave = createAutoSave({ storage, debounceMs: 0 });
-    autosave.schedule("{}");
-    autosave.flush();
-    await flush();
-    expect(storage.getItem("fielddraft.project.v2")).toBe("{}");
+  it("writeBoundFile is a no-op when nothing is bound", async () => {
+    expect(await writeBoundFile(new Uint8Array([1]))).toBe(false);
+  });
+
+  it("clearing the binding resets name and dirty", () => {
+    const { handle } = fakeHandle();
+    bindLocalFile(handle);
+    markLocalDirty();
+    expect(isLocalDirty()).toBe(true);
+    clearLocalFileBinding();
+    expect(isLocalFileBound()).toBe(false);
+    expect(localFileName()).toBeNull();
+    expect(isLocalDirty()).toBe(false);
+    expect(getLocalFileState()).toEqual({ name: null, dirty: false });
   });
 });

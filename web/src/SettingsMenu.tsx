@@ -14,6 +14,11 @@ import {
   subscribePartAabb,
   togglePartAabbVisible,
 } from "./partAabbStore";
+import {
+  clearLocalFileBinding,
+  getLocalFileState,
+  subscribeLocalFile,
+} from "./localFileBridge";
 import { ReportDialog } from "./ReportDialog";
 import { ExportDialog } from "./ExportDialog";
 import { NumberInput } from "./NumberInput";
@@ -161,6 +166,9 @@ export function SettingsMenu({
     subscribePartAabb,
     getPartAabbVisible,
   );
+  // Phase 4: the bound local `.fdraft` (save target) + its dirty state, so the
+  // Save entry shows the filename and an unsaved-changes indicator.
+  const localFile = useSyncExternalStore(subscribeLocalFile, getLocalFileState);
   const popoverRef = useRef<HTMLDivElement>(null);
   const buttonRef = useRef<HTMLButtonElement>(null);
 
@@ -257,6 +265,10 @@ export function SettingsMenu({
                   state.features.length === 0 ||
                   confirm("Discard current project?")
                 ) {
+                  // A fresh project is unbound — drop any local-file save
+                  // target so Ctrl+S can't silently overwrite the previously
+                  // open file with the empty document.
+                  clearLocalFileBinding();
                   store?.newProject();
                 }
               })
@@ -276,12 +288,34 @@ export function SettingsMenu({
           <button
             type="button"
             role="menuitem"
-            className="menu-item"
+            className="menu-item menu-save"
             data-testid="menu-save"
             disabled={!inProject}
             onClick={() => menuAction(() => store?.saveProjectToFile())}
           >
-            <span>Download project</span>
+            <span className="save-text">
+              <span className="save-primary">
+                {localFile.name ? "Save" : "Download project"}
+                {localFile.dirty ? (
+                  <span
+                    className="dirty-dot"
+                    data-testid="menu-save-dirty"
+                    title="Nicht gespeichert"
+                    aria-label="Nicht gespeichert"
+                  >
+                    ●
+                  </span>
+                ) : null}
+              </span>
+              {localFile.name ? (
+                <span
+                  className="save-filename"
+                  data-testid="menu-save-filename"
+                >
+                  {localFile.name}
+                </span>
+              ) : null}
+            </span>
             <span className="menu-shortcut">Ctrl+S</span>
           </button>
           {/* Ticket 6c09c11f: local vs cloud must be explicit. "Download
@@ -474,10 +508,10 @@ export function SettingsMenu({
           // PATCH the file's content over it. Then enter the modeling view;
           // previously the load happened without a view switch ("nothing
           // happens").
-          file.arrayBuffer().then((buf) => {
+          void file.arrayBuffer().then(async (buf) => {
             if (!store) return;
             if (!inProject) store.detachServerProject();
-            if (store.openUserProjectFromBytes(buf) && !inProject) {
+            if ((await store.openUserProjectFromBytes(buf)) && !inProject) {
               onEnterProject();
             }
           });
@@ -1053,6 +1087,29 @@ function SettingsDialog({
                   >
                     {settings.liveExtrudeDrag ? "On" : "Off"}
                   </button>
+                </div>
+              </div>
+
+              <div className="setting-group">
+                <div className="setting-group-title">Cloud</div>
+                <div
+                  className="setting-row"
+                  data-testid="setting-cloud-sync-interval"
+                >
+                  <span
+                    className="setting-label"
+                    title="Ein an die Cloud gebundenes Projekt wird bei ungespeicherten Änderungen in diesem Abstand automatisch hochgeladen. 0 = aus (es wird dann nur beim Verlassen des Editors und beim Schließen des Tabs gespeichert)."
+                  >
+                    Cloud-Sync-Intervall (Min, 0 = aus)
+                  </span>
+                  <NumberInput
+                    className="setting-number"
+                    value={settings.cloudSyncIntervalMin}
+                    min={0}
+                    max={60}
+                    onChange={(v) => set("cloudSyncIntervalMin", v)}
+                    data-testid="setting-cloud-sync-interval-input"
+                  />
                 </div>
               </div>
 
