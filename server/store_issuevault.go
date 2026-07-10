@@ -408,7 +408,11 @@ func (s *issuevaultStore) ListTickets(f TicketFilter) []*Ticket {
 	// by id — the per-state isolation is this adapter's choice, not a token
 	// boundary. So a peer installation's resolved ticket also lists AND opens.
 	mk := func(scope string, status []string) map[string]any {
-		pred := map[string]any{"scope": scope}
+		// limit:500 is IssueVault's max page size (the default is 100, and >500
+		// silently clamps back to 100). Without it the list truncates at 100 —
+		// material now that the shared project holds 300+ tickets. TODO: paginate
+		// (via number/updated_since cursors) if a scope ever exceeds 500.
+		pred := map[string]any{"scope": scope, "limit": 500}
 		if status != nil {
 			pred["status"] = status
 		}
