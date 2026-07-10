@@ -108,12 +108,17 @@ func NewServer(store Store) *Server {
 
 // selectTicketStore picks the ticket-domain backend from the environment (WP15):
 //
-//   - TICKET_BACKEND unset or "db" (the default, and the only prod path) → the
-//     existing DB/mem store's own ticket methods. Byte-identical to before the
-//     TicketStore split, so PROD IS UNAFFECTED.
+//   - TICKET_BACKEND unset or "db" (the default) → the existing DB/mem store's
+//     own ticket methods. Byte-identical to before the TicketStore split; the
+//     isolated, self-contained fallback for any checkout that hasn't opted into
+//     an external store.
 //   - TICKET_BACKEND=files → a file-backed store under TICKET_DIR (default
 //     ./tickets), for local dev. The materialized layout doubles as the on-disk
 //     tickets the desktop agents harvest (docs/TICKET-SYNC-AND-AGENTS.md §3.1).
+//   - TICKET_BACKEND=issuevault → the shared external IssueVault service
+//     (store_issuevault.go), configured via ISSUEVAULT_TOKEN + _INSTALLATION
+//     (URL/PROJECT default in-code). This is the store the FieldDraft
+//     installations share; dev opts in via a gitignored .env.
 //
 // The same ticket CRUD/UI/API/agent-harvest runs unchanged over whichever
 // backend is installed.

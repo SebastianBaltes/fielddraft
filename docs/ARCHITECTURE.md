@@ -831,7 +831,7 @@ The application runs purely in the browser with localStorage persistence. The Go
 
 * **Server-side meshing** (`mesher.go`, plan §P4): persistente `mesh_jobs`-Queue (Migration 0006, Boot-Recovery), Dispatcher-Worker-Pool (`MESH_WORKERS`) mit atomarem FIFO-Claim, POST an den `mesher`-Container (`MESHER_URL`; leer = Feature aus → 503), STL als content-addressed Blob; max. 1 aktiver Job pro User.
 
-Storage backends: `store_sql.go` (MariaDB, production), `store_mem.go` (in-memory, tests/dev), plus a pluggable ticket store (`ticketstore.go`: SQL for prod, `ticketstore_file.go` for local dev, `TICKET_BACKEND=files`).
+Storage backends: `store_sql.go` (MariaDB, production), `store_mem.go` (in-memory, tests/dev), plus a pluggable ticket store selected by `TICKET_BACKEND` (`selectTicketStore` in `main.go`): the DB/mem store's own methods by default (unset), a file store for local dev (`TICKET_BACKEND=files`, `ticketstore_file.go`), or the shared external **IssueVault** service (`TICKET_BACKEND=issuevault`, `store_issuevault.go`) that the FieldDraft installations share (token/installation via gitignored `.env`).
 
 ***
 
