@@ -24,6 +24,17 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.496",
+    entries: [
+      {
+        kind: "fix",
+        scope: "app",
+        text: "Release-Notes-Ansicht repariert: zwei Einträge (0.6.493/0.6.494) enthielten ein gerades Anführungszeichen im Text, das den String beendete — die Release-Notes-Datei war dadurch syntaktisch kaputt. Außerdem warnt der Tooltip von „Min. Kantenabstand“ im Lichen-Dialog jetzt explizit, dass Werte in der Größenordnung von h die Krümmungs-Verdichtung praktisch abschalten (sinnvoll: 0.01–0.1 mm).",
+        tickets: ["24d81476"],
+      },
+    ],
+  },
+  {
     version: "0.6.495",
     entries: [
       {
@@ -40,7 +51,7 @@ export const RELEASE_NOTES: ReleaseNote[] = [
       {
         kind: "feat",
         scope: "mesher",
-        text: "Lichen: Neuer Parameter „Min. Kantenabstand (mm)" (Default 0.01) — die winkelgetriebene Kanten-Verdichtung setzt keine Punkte näher als diesen Abstand, sehr kleine Kreise bekommen also nicht mehr die volle Winkel-Punktzahl. Geschlossene Kanten behalten unabhängig davon mindestens 4 Punkte, damit sie nicht entarten.",
+        text: "Lichen: Neuer Parameter „Min. Kantenabstand (mm)“ (Default 0.01) — die winkelgetriebene Kanten-Verdichtung setzt keine Punkte näher als diesen Abstand, sehr kleine Kreise bekommen also nicht mehr die volle Winkel-Punktzahl. Geschlossene Kanten behalten unabhängig davon mindestens 4 Punkte, damit sie nicht entarten.",
         tickets: ["6d3f4a7f"],
       },
       {
@@ -57,7 +68,7 @@ export const RELEASE_NOTES: ReleaseNote[] = [
       {
         kind: "fix",
         scope: "account",
-        text: "Der „Keep your local work?"-Import-Banner nach dem Login erscheint nicht mehr in der lokalen Dev-Umgebung (Vite-Dev-Server) — dort ist das Gast-Projekt fast immer bewusste lokale Entwicklungsarbeit.",
+        text: "Der „Keep your local work?“-Import-Banner nach dem Login erscheint nicht mehr in der lokalen Dev-Umgebung (Vite-Dev-Server) — dort ist das Gast-Projekt fast immer bewusste lokale Entwicklungsarbeit.",
         tickets: ["14a08041"],
       },
     ],

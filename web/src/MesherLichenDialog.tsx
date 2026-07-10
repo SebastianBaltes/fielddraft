@@ -336,7 +336,10 @@ export function MesherLichenDialog({ onClose }: { onClose: () => void }) {
             "Verdichtung setzt keine Punkte näher als diesen Abstand — sehr " +
             "kleine Kreise bekommen dadurch nicht mehr die volle Winkel-" +
             "Punktzahl. Geschlossene Kanten behalten unabhängig davon " +
-            "mindestens 4 Punkte, damit sie nicht entarten."
+            "mindestens 4 Punkte, damit sie nicht entarten. ACHTUNG: Werte in " +
+            "der Größenordnung von h schalten die Krümmungs-Verdichtung " +
+            "praktisch ab (kein Punktpaar darf dann näher liegen) — sinnvoll " +
+            "sind kleine Werte wie 0.01–0.1 mm."
           }
         >
           Min. Kantenabstand (mm)
