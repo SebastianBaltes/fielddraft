@@ -14,11 +14,12 @@
 // sqlStore's on-disk /data/blobs, the same store ticket artifacts and thumbnails
 // use).
 //
-// TODO(GC): orphaned blobs are never reclaimed here (plan §6). A blob that a
-// later save orphans (its project document no longer references the hash)
-// accumulates until a future sweep cross-references every live project/snapshot
-// document against the blob dir and deletes the unreachable ones. Until then the
-// store only grows.
+// GC: orphaned blobs are reclaimed by the opt-in, dry-run-by-default admin
+// endpoint POST /api/admin/blobs/gc (handleBlobsGC / gcOrphanBlobs in
+// blobs_gc.go). It cross-references every structural blob ref (documents,
+// thumbnails, snapshots, mesh STLs, ticket artifacts) plus the mesh/font hashes
+// embedded in project documents against the blob store, and deletes only the
+// unreachable blobs older than a grace window. There is no background sweep.
 
 package main
 

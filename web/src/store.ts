@@ -28,6 +28,7 @@ import {
   persistProjectDoc,
   loadProjectDoc,
   migrateFromLocalStorage,
+  gcLocalBlobs,
 } from "./projectPersistence";
 import { bootProjectPath } from "./bootParams";
 import { getAutosaveDebounceMs } from "./settings";
@@ -2382,6 +2383,10 @@ export async function getStore(): Promise<KernelStore> {
     if (!deepLink) {
       await migrateFromLocalStorage();
       persisted = await loadProjectDoc();
+      // P3e: reclaim orphaned local blobs left by earlier saves (mesh/font a
+      // newer save replaced). Fire-and-forget so it never delays boot; it
+      // no-ops on an empty store, so it can only run once a doc has loaded.
+      void gcLocalBlobs().catch(() => {});
     }
     const store = new KernelStore(kernel, autosave, persisted, deepLink);
 

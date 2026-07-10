@@ -64,6 +64,8 @@ func NewServer(store Store) *Server {
 	s.mux.HandleFunc("POST /api/blobs/missing", s.handleBlobsMissing)
 	s.mux.HandleFunc("PUT /api/blobs/{sha256}", s.handlePutBlob)
 	s.mux.HandleFunc("GET /api/blobs/{sha256}", s.handleGetBlob)
+	// Admin: orphaned-asset-blob GC (opt-in, dry-run by default; blobs_gc.go).
+	s.mux.HandleFunc("POST /api/admin/blobs/gc", s.handleBlobsGC)
 	s.mux.HandleFunc("POST /api/projects/{id}/mesh", s.handleCreateMeshJob)
 	s.mux.HandleFunc("GET /api/mesh-jobs/{id}", s.handleGetMeshJob)
 	s.mux.HandleFunc("GET /api/mesh-jobs/{id}/artifact", s.handleGetMeshArtifact)

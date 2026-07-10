@@ -29,6 +29,7 @@ type memStore struct {
 	comments  map[string][]*TicketComment  // ticket ID → comments (in order)
 	artifacts map[string][]*TicketArtifact // ticket ID → artifacts (in order)
 	blobs     map[string][]byte            // sha256 hex → blob bytes
+	blobMod   map[string]time.Time         // sha256 hex → first-write time (GC grace window)
 
 	workOrders map[string]*WorkOrder // ticket ID → work-order
 	deploys    map[string]*Deploy    // deploy ID → deploy
@@ -58,6 +59,7 @@ func NewStore() Store {
 		comments:    make(map[string][]*TicketComment),
 		artifacts:   make(map[string][]*TicketArtifact),
 		blobs:       make(map[string][]byte),
+		blobMod:     make(map[string]time.Time),
 		workOrders:  make(map[string]*WorkOrder),
 		deploys:     make(map[string]*Deploy),
 		alerts:      make(map[string]*AdminAlert),
@@ -81,6 +83,7 @@ func (s *memStore) PutBlob(data []byte) (string, error) {
 		cp := make([]byte, len(data))
 		copy(cp, data)
 		s.blobs[ref] = cp
+		s.blobMod[ref] = now()
 	}
 	return ref, nil
 }

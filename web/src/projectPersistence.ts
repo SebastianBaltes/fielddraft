@@ -371,6 +371,92 @@ export async function loadProjectDoc(): Promise<string | null> {
   return inlineProject(slot, store);
 }
 
+// ── local blob GC (P3e) ─────────────────────────────────────────────────────
+
+/** Collect every `__asset` mesh/font hash referenced anywhere in a parsed
+ *  kernel document. */
+function collectAssetHashesFromDoc(docJson: string, into: Set<string>): void {
+  let doc: unknown;
+  try {
+    doc = JSON.parse(docJson);
+  } catch {
+    return;
+  }
+  const walk = (value: unknown): void => {
+    if (Array.isArray(value)) {
+      for (const v of value) walk(v);
+      return;
+    }
+    if (isObject(value)) {
+      const asset = value.__asset;
+      if (typeof asset === "string") into.add(asset);
+      for (const v of Object.values(value)) walk(v);
+    }
+  };
+  walk(doc);
+}
+
+/** Every `__asset` hash referenced by a serialized (lean) Project — across all
+ *  part tabs' nested `documentJson` strings — or by a bare kernel document. */
+function collectAssetHashesFromProject(projectJson: string, into: Set<string>): void {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(projectJson);
+  } catch {
+    return;
+  }
+  const project = parsed as JsonProjectish;
+  if (!Array.isArray(project.tabs)) {
+    collectAssetHashesFromDoc(projectJson, into);
+    return;
+  }
+  for (const tab of project.tabs) {
+    if (isPartTab(tab)) collectAssetHashesFromDoc(tab.documentJson, into);
+  }
+}
+
+/** Every blob hash a stored envelope references: the font manifest values plus
+ *  every mesh `__asset` ref inside the (lean) project document. */
+function collectEnvelopeHashes(slot: string): Set<string> {
+  const hashes = new Set<string>();
+  const { doc, fonts } = parseEnvelope(slot);
+  for (const hash of Object.values(fonts)) {
+    if (typeof hash === "string") hashes.add(hash);
+  }
+  collectAssetHashesFromProject(doc, hashes);
+  return hashes;
+}
+
+/**
+ * Reclaim orphaned local blobs: after a document has loaded, delete every
+ * IndexedDB blob the CURRENT envelope no longer references (a mesh/font a newer
+ * save replaced). Conservative by design — GC deletes data:
+ *
+ *  - It runs ONLY when a document is actually stored (a non-null slot), never
+ *    against an empty store, so a fresh/empty boot can't wipe blobs a
+ *    not-yet-loaded document needs.
+ *  - No grace window is needed locally: a document and its blobs are written
+ *    together in one {@link persistProjectDoc} call, so anything unreferenced
+ *    right after a load is a true orphan (unlike the server, where a client can
+ *    upload blobs before it PATCHes the document).
+ *
+ * Best-effort and self-contained — call it fire-and-forget after the boot load.
+ * Returns the tallies for logging/tests.
+ */
+export async function gcLocalBlobs(): Promise<{ deleted: number; kept: number }> {
+  const slot = await store.readDoc();
+  if (slot === null) return { deleted: 0, kept: 0 }; // empty store — never GC
+  const referenced = collectEnvelopeHashes(slot);
+  const all = await store.listBlobs();
+  let deleted = 0;
+  for (const hash of all) {
+    if (referenced.has(hash)) continue;
+    await store.deleteBlob(hash);
+    deleted++;
+  }
+  return { deleted, kept: referenced.size };
+}
+
 /**
  * One-way migration of the legacy `fielddraft.project.v2` localStorage row
  * into the {@link AssetStore}. Idempotent and safe to call on every boot:

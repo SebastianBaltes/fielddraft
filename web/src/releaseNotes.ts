@@ -24,6 +24,16 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.498",
+    entries: [
+      {
+        kind: "feat",
+        scope: "admin",
+        text: "Blob-Garbage-Collection für verwaiste content-addressed Assets — bewusst sicher und opt-in: der Admin-Endpoint POST /api/admin/blobs/gc läuft standardmäßig als Dry-Run (meldet, löscht nichts) und braucht dry_run=false zum echten Löschen. Ein Blob gilt nur als verwaist, wenn ihn KEINE Projekt-, Snapshot-, Thumbnail-, Mesh-Job- oder Ticket-Referenz und keine eingebettete Asset-Referenz mehr nennt (alle Quellen vereinigt, fail-closed bei jedem Fehler), und er älter als eine Grace-Period (Standard 48 h) ist. Zusätzlich räumt der Client verwaiste Blobs im lokalen IndexedDB-Store nach dem Laden auf.",
+      },
+    ],
+  },
+  {
     version: "0.6.497",
     entries: [
       {

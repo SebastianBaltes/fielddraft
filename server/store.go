@@ -78,6 +78,29 @@ type Store interface {
 	GetBlob(ref string) ([]byte, error)
 	HasBlob(ref string) bool
 
+	// Garbage collection of orphaned asset blobs (plan §6, blobs_gc.go). The
+	// content-addressed blob store is SHARED across project documents,
+	// thumbnails, snapshots, mesh-job STLs, ticket artifacts, AND the mesh/font
+	// asset blobs a lean project document references by hash. GC must protect
+	// every one of those categories, so it unions two reference sources:
+	//
+	//   ListReferencedRefs   — every blob ref held DIRECTLY in a store column /
+	//     field (document / thumbnail / snapshot / mesh-artifact / ticket-
+	//     artifact). Deleting one would drop live data, so these are NEVER
+	//     collectible.
+	//   AllProjectDocuments  — every project's stored document, so GC can walk it
+	//     for embedded mesh (`__asset`) + font (`fonts`) blob hashes.
+	//
+	// ListBlobRefs enumerates the physical blobs (ref + mtime + size); DeleteBlob
+	// removes one. All three can fail (a DB / filesystem error); GC then ABORTS
+	// and deletes NOTHING — an incomplete reference set must never delete a live
+	// blob (fail closed). Only blobs absent from BOTH reference sources AND older
+	// than the grace window are ever deleted (see gcOrphanBlobs).
+	AllProjectDocuments() ([]json.RawMessage, error)
+	ListReferencedRefs() ([]string, error)
+	ListBlobRefs() ([]BlobRef, error)
+	DeleteBlob(ref string) error
+
 	// Snapshots (published, shareable copies).
 	CreateSnapshot(projectID string, doc json.RawMessage) *Snapshot
 	GetSnapshot(id string) *Snapshot

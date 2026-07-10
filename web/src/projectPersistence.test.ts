@@ -9,6 +9,7 @@ import {
   persistProjectDoc,
   loadProjectDoc,
   migrateFromLocalStorage,
+  gcLocalBlobs,
   __setAssetStoreForTest,
   __setFontCacheForTest,
 } from "./projectPersistence";
@@ -281,6 +282,72 @@ describe("projectPersistence", () => {
       // No fonts restored (legacy slot has no manifest), and no crash.
       expect(fonts.get(FONT_ID)).toBeUndefined();
       expect(JSON.parse(loaded!).tabs[0].kind).toBe("part");
+    });
+  });
+
+  describe("gcLocalBlobs (P3e)", () => {
+    it("deletes an orphaned blob but keeps referenced mesh + font blobs", async () => {
+      // Persist a project with a mesh + a referenced font → 2 referenced blobs.
+      fonts.set("uploaded:MyFont.ttf", new Uint8Array([1, 2, 3, 4]));
+      await persistProjectDoc(
+        JSON.stringify({
+          schemaVersion: 1,
+          name: "Untitled",
+          tabs: [
+            {
+              id: "tab_1",
+              kind: "part",
+              name: "Part 1",
+              documentJson: JSON.stringify({
+                schema_version: 1,
+                feature_calls: [
+                  {
+                    type: "imported_mesh",
+                    id: "1",
+                    params: {
+                      op: "New",
+                      __positions: [0, 0, 0, 1, 0, 0, 0, 1, 0],
+                      __indices: [0, 1, 2],
+                    },
+                  },
+                  {
+                    type: "sketch_path",
+                    id: "2",
+                    params: {
+                      text: { value: "Hi", height: 10, fontId: "uploaded:MyFont.ttf", origin: [0, 0] },
+                    },
+                  },
+                ],
+                next_feature_id: 3,
+              }),
+            },
+          ],
+          activeTabId: "tab_1",
+        }),
+      );
+
+      const referenced = [...fake.blobs.keys()];
+      expect(referenced.length).toBe(2); // mesh + font
+
+      // Inject an orphan blob that no document references.
+      const orphan = await sha256Hex(new Uint8Array([9, 9, 9]));
+      fake.blobs.set(orphan, new Uint8Array([9, 9, 9]));
+      expect(fake.blobs.size).toBe(3);
+
+      const res = await gcLocalBlobs();
+      expect(res.deleted).toBe(1);
+      expect(res.kept).toBe(2);
+      // Orphan gone, both referenced blobs survive.
+      expect(fake.blobs.has(orphan)).toBe(false);
+      for (const h of referenced) expect(fake.blobs.has(h)).toBe(true);
+    });
+
+    it("is a no-op on an empty store (never deletes when nothing is loaded)", async () => {
+      // No document stored, but a stray blob exists — must NOT be deleted.
+      fake.blobs.set("deadbeef", new Uint8Array([0]));
+      const res = await gcLocalBlobs();
+      expect(res).toEqual({ deleted: 0, kept: 0 });
+      expect(fake.blobs.has("deadbeef")).toBe(true);
     });
   });
 
