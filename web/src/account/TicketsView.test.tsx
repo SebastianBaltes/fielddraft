@@ -107,6 +107,7 @@ function byTestId<T extends HTMLElement = HTMLElement>(id: string): T | null {
 
 beforeEach(() => {
   vi.restoreAllMocks();
+  localStorage.clear();
 });
 
 afterEach(() => {
@@ -158,6 +159,51 @@ describe("TicketsView — list", () => {
     mount();
     await flush();
     expect(byTestId("tickets-error")?.textContent).toContain("boom");
+  });
+
+  it("paginates with an adjustable, persisted page size", async () => {
+    const many = Array.from({ length: 30 }, (_, i) =>
+      summary({
+        id: `t${i}`,
+        number: i + 1,
+        // descending updated_at keeps t0…t29 in order under the default sort
+        updated_at: `2026-06-${String(30 - i).padStart(2, "0")}T00:00:00Z`,
+      }),
+    );
+    vi.spyOn(platform.platformApi, "listTickets").mockResolvedValue(many);
+    mount();
+    await flush();
+
+    const rows = () =>
+      container.querySelectorAll('[data-testid^="ticket-row-"]');
+
+    // Default page size 25 → first page shows 25 of 30.
+    expect(rows()).toHaveLength(25);
+    expect(byTestId("ticket-total-count")?.textContent).toContain("30 issues");
+    expect(byTestId("ticket-page-status")?.textContent).toBe("Page 1 of 2");
+    expect(byTestId<HTMLButtonElement>("ticket-page-prev")!.disabled).toBe(true);
+
+    // Next → the remaining 5.
+    act(() => byTestId<HTMLButtonElement>("ticket-page-next")!.click());
+    await flush();
+    expect(rows()).toHaveLength(5);
+    expect(byTestId("ticket-page-status")?.textContent).toBe("Page 2 of 2");
+    expect(byTestId<HTMLButtonElement>("ticket-page-next")!.disabled).toBe(true);
+
+    // Changing the page size snaps back to page 1, re-slices, and persists.
+    const select = byTestId<HTMLSelectElement>("tickets-page-size")!;
+    const setValue = Object.getOwnPropertyDescriptor(
+      HTMLSelectElement.prototype,
+      "value",
+    )!.set!;
+    act(() => {
+      setValue.call(select, "10");
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await flush();
+    expect(rows()).toHaveLength(10);
+    expect(byTestId("ticket-page-status")?.textContent).toBe("Page 1 of 3");
+    expect(localStorage.getItem("fielddraft.tickets.pageSize")).toBe("10");
   });
 });
 
