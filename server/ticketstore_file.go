@@ -283,8 +283,17 @@ func (s *fileTicketStore) CreateTicket(authorID, title, body, category string) *
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	at := now()
+	// #N is max(existing)+1 (ticket 066230d9). The FS store is the dev-only
+	// sink, so an O(n) scan on create is fine.
+	next := 1
+	for _, ex := range s.allTickets() {
+		if ex.Number >= next {
+			next = ex.Number + 1
+		}
+	}
 	ft := &fileTicket{Ticket: Ticket{
 		ID:        newID(),
+		Number:    next,
 		AuthorID:  authorID,
 		Title:     title,
 		Body:      body,

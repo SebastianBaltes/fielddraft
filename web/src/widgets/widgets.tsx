@@ -645,6 +645,42 @@ export function StringWidget({
   );
 }
 
+/** The functions/constants the kernel's `compile_expr` accepts — kept in sync
+ *  with `crates/kernel/src/features/custom_sdf.rs` so the hint never lies. */
+const FORMULA_HINT =
+  "Variablen x, y, z (mm) · sin cos tan sqrt abs exp ln floor asin acos " +
+  "min max pow atan2 · Konstanten pi, tau · Potenz ^";
+
+/** Multi-line monospace editor for a custom-SDF formula (ticket c50f3e15,
+ *  `ui_hint = "formula"`). A single-line input cramped long expressions like
+ *  a gyroid; this gives room, a monospace face, and a live hint of the
+ *  available vocabulary. A compile error from the kernel surfaces as the
+ *  field `error` (a bad formula fails the feature's regeneration). */
+export function FormulaWidget({
+  label,
+  value,
+  onChange,
+  error,
+  required,
+}: WidgetProps<string>) {
+  const id = useId();
+  return (
+    <Field label={label} htmlFor={id} error={error} required={required}>
+      <textarea
+        id={id}
+        className="input formula-input"
+        rows={3}
+        spellCheck={false}
+        autoComplete="off"
+        autoCapitalize="off"
+        value={value}
+        onChange={(e) => onChange(e.currentTarget.value)}
+      />
+      <p className="formula-hint">{FORMULA_HINT}</p>
+    </Field>
+  );
+}
+
 // ─── length ─────────────────────────────────────────────────────
 
 export interface LengthValue {

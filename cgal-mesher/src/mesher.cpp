@@ -309,7 +309,16 @@ FD_EXPORT int fd_mesh(const float* opcodes, int n_ops, float minx, float miny,
   // meshes to nothing). cell*3 keeps tet count bounded by surface area while
   // guaranteeing every surface component is found.
   const double fdist = cell * (facet_dist_mult > 0.0f ? facet_dist_mult : 0.1f);
+  // edge_distance (ticket 335d153): bound the CHORD ERROR of the protected
+  // B-Rep feature edges, exactly as facet_distance does for the surface.
+  // Without it, `edge_size(cell)` sampled a tightly-curved protected edge
+  // (a sickle rim) at ~cell spacing → the meshed edge was a coarse polyline
+  // and its silhouette frayed into a sawtooth. `edge_distance = fdist` makes
+  // CGAL subdivide the protecting balls where the edge curves so the meshed
+  // edge stays within `fdist` of the true curve — adaptive, so straight
+  // edges keep their few segments (no triangle-count blowup). CGAL ≥ 6.0.
   Mesh_criteria criteria(params::edge_size(cell)
+                             .edge_distance(fdist)
                              .facet_angle(25.0)
                              .facet_size(diag)
                              .facet_distance(fdist)
@@ -321,7 +330,12 @@ FD_EXPORT int fd_mesh(const float* opcodes, int n_ops, float minx, float miny,
     // Simplify the protection polylines to a chord tolerance well below
     // the facet distance — identical curve for the protection, but the
     // preprocessing cost drops from 100k+ tracer samples to O(curvature).
-    const double edge_tol = 0.1 * cell;
+    // Ticket 335d153: 0.1·cell was NOT well below facet_distance (0.15·cell)
+    // — it collapsed a curved sickle rim to a handful of long straight
+    // segments whose silhouette frayed. 0.02·cell keeps the rim faithful
+    // (points where it actually curves); `edge_distance` above then meshes
+    // that faithful polyline smoothly.
+    const double edge_tol = 0.02 * cell;
     std::size_t npts_in = 0, npts = 0;
     for (auto& e : g_edges) {
       npts_in += e.size();

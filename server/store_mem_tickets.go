@@ -28,8 +28,10 @@ func (s *memStore) CreateTicket(authorID, title, body, category string) *Ticket 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	at := now()
+	s.ticketSeq++
 	t := &Ticket{
 		ID:        newID(),
+		Number:    s.ticketSeq,
 		AuthorID:  authorID,
 		Title:     title,
 		Body:      body,

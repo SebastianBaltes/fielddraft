@@ -26,6 +26,8 @@ export function stateLabel(state: TicketState): string {
       return "Closed";
     case "declined":
       return "Declined";
+    case "backlog":
+      return "Backlog";
     case "rejected_spam":
       return "Rejected (spam)";
     case "rejected_malicious":
@@ -33,9 +35,14 @@ export function stateLabel(state: TicketState): string {
   }
 }
 
-/** Coarse status bucket driving the badge color: open work, done, or rejected.
- *  Used as a `state-<bucket>` modifier class on the badge. */
-export type StateBucket = "open" | "progress" | "done" | "rejected";
+/** The short "#N" reference for a ticket (ticket 066230d9). */
+export function ticketRef(number: number): string {
+  return `#${number}`;
+}
+
+/** Coarse status bucket driving the badge color: open work, parked, done, or
+ *  rejected. Used as a `state-<bucket>` modifier class on the badge. */
+export type StateBucket = "open" | "progress" | "backlog" | "done" | "rejected";
 
 export function stateBucket(state: TicketState): StateBucket {
   switch (state) {
@@ -47,6 +54,8 @@ export function stateBucket(state: TicketState): StateBucket {
     case "in_progress":
     case "deploying":
       return "progress";
+    case "backlog":
+      return "backlog";
     case "resolved":
     case "closed":
       return "done";

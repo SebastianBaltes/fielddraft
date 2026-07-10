@@ -25,6 +25,7 @@ const USER: User = {
 function summary(over: Partial<TicketSummary> = {}): TicketSummary {
   return {
     id: "t1",
+    number: 1,
     author_id: "u1",
     title: "Crash on extrude",
     state: "triage",
@@ -38,6 +39,7 @@ function summary(over: Partial<TicketSummary> = {}): TicketSummary {
 function detail(over: Partial<TicketDetail> = {}): TicketDetail {
   return {
     id: "t1",
+    number: 1,
     author_id: "u1",
     title: "Crash on extrude",
     body: "It explodes",

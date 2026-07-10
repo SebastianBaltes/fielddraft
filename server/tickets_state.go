@@ -4,6 +4,10 @@
 // state change against it and rejects illegal moves with a 4xx; each accepted
 // transition appends a `system` audit comment.
 //
+// Beyond the PO/dev flow drawn below, the AUTHOR may drive a safe subset
+// (ticket 066230d9, see userMaySetState): close their own ticket, park it to
+// `backlog` (recorded, do-not-work), un-park it, and reopen it.
+//
 //	                 ┌──────────── rejected_spam       (PO: spam → hidden)
 //	  (user creates) │
 //	      │          ├──────────── rejected_malicious  (PO: malicious → hidden + notify)
@@ -40,16 +44,21 @@ import "net/http"
 var ticketTransitions = map[TicketState][]TicketState{
 	StateTriage: {
 		StateAccepted, StateDeclined, StateNeedsInfo,
+		StateBacklog, StateClosed, // user: park / close (ticket 066230d9)
 		StateRejectedSpam, StateRejectedMalicious,
 	},
 	// Dialogic: PO re-triages after the user replies; PO may also reject
 	// info-requests that turn out to be spam/malicious.
 	StateNeedsInfo: {
 		StateTriage, StateAccepted, StateDeclined,
+		StateBacklog, StateClosed, // user: park / close
 		StateRejectedSpam, StateRejectedMalicious,
 	},
-	// User can object to a decline → PO reconsiders (back to triage).
-	StateDeclined: {StateTriage},
+	// User can object to a decline → PO reconsiders (back to triage), or accept
+	// it and close the ticket.
+	StateDeclined: {StateTriage, StateClosed},
+	// Parked: the user can un-park it (→ triage, request work) or drop it.
+	StateBacklog: {StateTriage, StateClosed},
 	StateAccepted: {
 		StateInProgress, StateNeedsInfo, StateDeclined,
 	},
@@ -60,12 +69,40 @@ var ticketTransitions = map[TicketState][]TicketState{
 		StateResolved, StateInProgress,
 	},
 	StateResolved: {
-		StateClosed, StateInProgress, // reopen on regression
+		StateClosed, StateInProgress, // close, or reopen on regression
 	},
+	// Reopen a closed ticket → re-triage (ticket 066230d9).
+	StateClosed: {StateTriage},
 	// Terminal states.
-	StateClosed:            {},
 	StateRejectedSpam:      {},
 	StateRejectedMalicious: {},
+}
+
+// userMaySetState reports whether a non-admin ticket AUTHOR may drive from→to.
+// Authors get a safe subset of the machine (§7.2, ticket 066230d9): close their
+// own ticket, park it to `backlog`, un-park it, and reopen it. Everything else
+// (accept, decline, deploy, reject, …) stays PO/dev/admin-driven. Every move
+// permitted here is also a legal machine edge above, so validateTransition still
+// gates the actual store write.
+func userMaySetState(from, to TicketState) bool {
+	switch to {
+	case StateClosed:
+		// Close from a pre-work or resolved state (not mid-flow, not terminal).
+		switch from {
+		case StateTriage, StateNeedsInfo, StateDeclined, StateBacklog, StateResolved:
+			return true
+		}
+	case StateBacklog:
+		// Park a not-yet-worked ticket.
+		return from == StateTriage || from == StateNeedsInfo
+	case StateTriage:
+		// Un-park (backlog→triage) or reopen a closed ticket (closed→triage).
+		return from == StateBacklog || from == StateClosed
+	case StateInProgress:
+		// Reopen a resolved ticket — "the fix didn't stick" (resolved→in_progress).
+		return from == StateResolved
+	}
+	return false
 }
 
 // errInvalidTransition is returned for a disallowed state move.

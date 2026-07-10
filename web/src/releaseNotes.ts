@@ -24,12 +24,23 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.489",
+    entries: [
+      {
+        kind: "feat",
+        scope: "mesher",
+        text: "Debug-Mesher Lichen (Menü Debug ▸ Mesher: Lichen…): direkter SDF+BRep-Oberflächen-Mesher. Punkte wachsen als hexagonale Waben-Front pro BRep-Fläche über die Oberfläche — mit einer HARTEN Kanten-Wand: kein Punkt überspringt je eine BRep-Kante auf eine Nachbarfläche oder ins Leere, und der U(p)-Anzeigekreis bleibt stets innerhalb der Fläche. Die Triangulierung erfolgt pro Fläche über den robusten Constrained-Delaunay (spade), mit flächenübergreifend geteilten Rand-Ketten → das Netz einer Box ist ein geschlossenes, wasserdichtes 2-Manifold (kein Loch, kein Dreieck über eine Kante). Gekrümmte Flächen (Zylinder/Kugel/Torus) folgen als nächster Schritt. Das Debug-Overlay zeichnet die Punkte an ihrer echten Position (kein Z-Offset/-Versatz); die Sichtbarkeit regelt der x-ray-Layer wie beim PASM-Mesher-Overlay.",
+      },
+    ],
+  },
+  {
     version: "0.6.488",
     entries: [
       {
-        kind: "fix",
-        scope: "debug",
-        text: "Sämtliche Z-Offset-Behandlung der Debug-Overlays komplett entfernt (auf Betreiber-Wunsch): kein geometrischer Versatz UND kein Z-Puffer-Bias (polygonOffset) mehr. Das Lichen-Overlay ist damit auf dem sauberen Ausgangszustand wie das PASM-Mesher-Overlay — Sichtbarkeit allein über den x-ray-OVERLAY_LAYER + depthWrite:false. Die Kantenpunkt-2-Normalen (ein Kreis-Record je angrenzender Fläche) bleiben unverändert.",
+        kind: "feat",
+        scope: "issues",
+        tickets: ["066230d9"],
+        text: "Issues haben jetzt eine kurze Referenz „#N“ statt der langen UUID — angezeigt in der Liste (eigene, sortierbare Spalte) und im Detail-Kopf. Die interne ID bleibt der Speicher-/Routing-Schlüssel; die Nummer ist die menschen- und agentenfreundliche Kurzform (im lokalen Store fortlaufend, in Prod vom Issue-Server pro Projekt vergeben — mit dem issuevault-Agenten abgestimmt). Außerdem kann der Autor den State seines Tickets selbst steuern: schließen, ein geschlossenes wieder öffnen, und neu „Backlog“ = notiert, aber vom Agenten vorerst nicht bearbeiten (parken/entparken). Serverseitig als sichere Teilmenge der State-Machine (nur der Autor bzw. Admins), inkl. Enum-Migration und Backfill der Bestands-Nummern.",
       },
     ],
   },
@@ -38,8 +49,9 @@ export const RELEASE_NOTES: ReleaseNote[] = [
     entries: [
       {
         kind: "fix",
-        scope: "debug",
-        text: "Debug-Overlays (Lichen-Punkte/Kreise/Wireframe/Normalen) bekommen jetzt einen echten Z-Puffer-Bias statt eines geometrischen Versatzes: da LineSegments2 und die Box-Marker Dreiecke rastern, wirkt polygonOffset auf WebGPU als depthBias und zieht die Objekte im Tiefenpuffer minimal Richtung Kamera — sie liegen dadurch leicht vor dem Solid und werden nicht so schnell verdeckt, ohne im Raum verschoben zu werden. Nur WebGPU (auf WebGL greift depthBias für Linien/Punkte nicht und bleibt weg). BRep-Kanten nutzen denselben moderaten Bias.",
+        scope: "custom-sdf",
+        tickets: ["c50f3e15"],
+        text: "Custom SDF ist jetzt editierbar. Zwei Probleme behoben: das Feature meldete intern die Art „unknown“, weshalb das Detail-Panel „Kein Feature selektiert“ zeigte statt eines Dialogs — die Formel blieb die Default-Kugel. Jetzt öffnet die Auswahl des Custom-SDF-Features einen Formel-Editor: ein mehrzeiliges Monospace-Feld mit Vokabular-Hinweis (Variablen x, y, z · Funktionen sin cos tan sqrt … · Konstanten pi, tau · Potenz ^). Syntaxfehler in der Formel werden als Feature-Fehler angezeigt. So kann man z.B. eine Gyroid-Formel eingeben: sin(x)·cos(y) + sin(y)·cos(z) + sin(z)·cos(x).",
       },
     ],
   },
@@ -48,8 +60,9 @@ export const RELEASE_NOTES: ReleaseNote[] = [
     entries: [
       {
         kind: "fix",
-        scope: "debug",
-        text: "Z-Offset-Workarounds der Debug-Overlays zurückgenommen: die Debug-Objekte (Lichen-Punkte/Kreise/Wireframe) wurden nicht mehr geometrisch im World-/Kamera-Raum entlang der Normale verschoben (das erzeugte fehlerhafte Darstellungen). Sie werden jetzt an ihrer echten Position gezeichnet; das Vorne-Liegen regelt wie beim PASM-Mesher-Overlay der x-ray-OVERLAY_LAYER + depthWrite:false. Der zugehörige Z-Offset-Regler ist entfernt. BRep-Kanten-polygonOffset wieder auf den moderaten Vorwert (−2/−4).",
+        scope: "cgal",
+        tickets: ["335d153"],
+        text: "CGAL-Export: scharfe, gekrümmte B-Rep-Kanten (z.B. ein Sichelrand) fransen nicht mehr aus. Zwei Ursachen behoben: die Schutz-Polylinien der Feature-Kanten wurden zu grob vereinfacht (0,1·cell → eine gekrümmte Kante wurde zu wenigen langen Geraden, deren Silhouette zackte) — jetzt 0,02·cell, also kurvenerhaltend; und die neue edge_distance-Kriterium (CGAL 6.0) begrenzt den Sehnenfehler der vermaschten Kante wie facet_distance für die Fläche. Ergebnis: der obere Sichelbogen wird sauber, das Netz bleibt wasserdicht/2-manifold. Sehr dünne Spitzen brauchen weiterhin eine kleinere Zellgröße.",
       },
     ],
   },
@@ -58,8 +71,9 @@ export const RELEASE_NOTES: ReleaseNote[] = [
     entries: [
       {
         kind: "feat",
-        scope: "mesher",
-        text: "Debug-Mesher Lichen (Menü Debug ▸ Mesher: Lichen…): direkter SDF+BRep-Oberflächen-Mesher. Punkte wachsen als hexagonale Waben-Front pro BRep-Fläche über die Oberfläche — mit einer HARTEN Kanten-Wand: kein Punkt überspringt je eine BRep-Kante auf eine Nachbarfläche oder ins Leere, und der U(p)-Anzeigekreis bleibt stets innerhalb der Fläche. Die Triangulierung erfolgt pro Fläche über den robusten Constrained-Delaunay (spade), mit flächenübergreifend geteilten Rand-Ketten → das Netz einer Box ist ein geschlossenes, wasserdichtes 2-Manifold (kein Loch, kein Dreieck über eine Kante). Gekrümmte Flächen (Zylinder/Kugel/Torus) folgen als nächster Schritt.",
+        scope: "issues",
+        tickets: ["a7b63b6"],
+        text: "Die Issues-Liste hat jetzt klickbare, sortierbare Spaltenüberschriften (State, Title, Category, Updated). Ein Klick sortiert nach der Spalte, ein weiterer kehrt die Richtung um; die aktive Spalte zeigt einen Pfeil. Text-Spalten starten A→Z, „Updated“ neueste zuerst.",
       },
     ],
   },

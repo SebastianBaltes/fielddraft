@@ -19,7 +19,7 @@
  * button.
  */
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   platformApi,
   artifactUrl,
@@ -42,6 +42,7 @@ import {
   personaTag,
   stateBucket,
   stateLabel,
+  ticketRef,
 } from "./ticketView";
 
 interface TicketsViewProps {
@@ -70,6 +71,7 @@ const STATES: TicketState[] = [
   "resolved",
   "closed",
   "declined",
+  "backlog",
   "rejected_spam",
   "rejected_malicious",
 ];
@@ -108,6 +110,17 @@ interface TicketListProps {
   onOpen(id: string): void;
 }
 
+/** The click-sortable columns of the issue list (ticket a7b63b6; the `#`
+ *  reference column is ticket 066230d9). */
+type SortKey = "number" | "state" | "title" | "category" | "updated";
+const SORT_COLUMNS: { key: SortKey; label: string }[] = [
+  { key: "number", label: "#" },
+  { key: "state", label: "State" },
+  { key: "title", label: "Title" },
+  { key: "category", label: "Category" },
+  { key: "updated", label: "Updated" },
+];
+
 function TicketList({ user, onOpen }: TicketListProps) {
   const [tickets, setTickets] = useState<TicketSummary[]>([]);
   const [loading, setLoading] = useState(true);
@@ -116,6 +129,9 @@ function TicketList({ user, onOpen }: TicketListProps) {
   const [stateFilter, setStateFilter] = useState<TicketState | "">("");
   const [categoryFilter, setCategoryFilter] = useState<TicketCategory | "">("");
   const [query, setQuery] = useState("");
+  // Sort column + direction (ticket a7b63b6). Default: most-recent activity.
+  const [sortKey, setSortKey] = useState<SortKey>("updated");
+  const [sortAsc, setSortAsc] = useState(false);
 
   const reload = useCallback(async () => {
     setLoading(true);
@@ -128,8 +144,6 @@ function TicketList({ user, onOpen }: TicketListProps) {
     };
     try {
       const list = await platformApi.listTickets(filter);
-      // Most-recent activity first (created falls back via updated).
-      list.sort((a, b) => b.updated_at.localeCompare(a.updated_at));
       setTickets(list);
     } catch (err) {
       setError(accountErrorMessage(err, "Could not load tickets"));
@@ -141,6 +155,40 @@ function TicketList({ user, onOpen }: TicketListProps) {
   useEffect(() => {
     void reload();
   }, [reload]);
+
+  // Client-side sort by the chosen column (the server returns the filtered
+  // set; the header toggles key + direction — ticket a7b63b6).
+  const sortedTickets = useMemo(() => {
+    const key = (t: TicketSummary): string => {
+      switch (sortKey) {
+        case "number":
+          // localeCompare with numeric:true orders "#2" before "#10".
+          return String(t.number);
+        case "state":
+          return stateLabel(t.state);
+        case "title":
+          return t.title;
+        case "category":
+          return categoryLabel(t.category);
+        case "updated":
+          return t.updated_at;
+      }
+    };
+    const dir = sortAsc ? 1 : -1;
+    return [...tickets].sort(
+      (a, b) => dir * key(a).localeCompare(key(b), undefined, { numeric: true }),
+    );
+  }, [tickets, sortKey, sortAsc]);
+
+  const onSort = (key: SortKey) => {
+    if (key === sortKey) {
+      setSortAsc((v) => !v);
+    } else {
+      setSortKey(key);
+      // Dates default newest-first; text columns default A→Z.
+      setSortAsc(key !== "updated");
+    }
+  };
 
   return (
     <div className="fd-tickets" data-testid="tickets">
@@ -210,8 +258,34 @@ function TicketList({ user, onOpen }: TicketListProps) {
           No issues match these filters.
         </p>
       ) : (
-        <ul className="ticket-rows" data-testid="ticket-list">
-          {tickets.map((t) => (
+        <div className="ticket-table" data-testid="ticket-list">
+          <div className="ticket-head" role="row">
+            {SORT_COLUMNS.map((col) => (
+              <button
+                key={col.key}
+                type="button"
+                className={`col-head col-${col.key}${
+                  sortKey === col.key ? " active" : ""
+                }`}
+                data-testid={`ticket-sort-${col.key}`}
+                aria-sort={
+                  sortKey === col.key
+                    ? sortAsc
+                      ? "ascending"
+                      : "descending"
+                    : "none"
+                }
+                onClick={() => onSort(col.key)}
+              >
+                {col.label}
+                <span className="sort-arrow" aria-hidden="true">
+                  {sortKey === col.key ? (sortAsc ? "▲" : "▼") : ""}
+                </span>
+              </button>
+            ))}
+          </div>
+          <ul className="ticket-rows">
+            {sortedTickets.map((t) => (
             <li
               key={t.id}
               className="ticket-row"
@@ -223,6 +297,9 @@ function TicketList({ user, onOpen }: TicketListProps) {
                 data-testid={`ticket-open-${t.id}`}
                 onClick={() => onOpen(t.id)}
               >
+                <span className="row-number" data-testid={`ticket-number-${t.id}`}>
+                  {ticketRef(t.number)}
+                </span>
                 <span
                   className={`badge state-${stateBucket(t.state)}`}
                   data-testid={`ticket-state-${t.id}`}
@@ -240,8 +317,9 @@ function TicketList({ user, onOpen }: TicketListProps) {
                 </span>
               </button>
             </li>
-          ))}
-        </ul>
+            ))}
+          </ul>
+        </div>
       )}
     </div>
   );
@@ -287,13 +365,23 @@ function TicketDetailPanel({
   }, [reload]);
 
   const isAuthor = !!user && !!ticket && ticket.author_id === user.id;
-  // The state machine lets a non-admin author close a resolved ticket
-  // (resolved → closed) or REOPEN it (resolved → in_progress, ticket
-  // d22a909e: "the fix didn't stick"). Other transitions are admin/PO-driven.
-  const canClose = isAuthor && ticket?.state === "resolved";
-  const canReopen = isAuthor && ticket?.state === "resolved";
+  // The author gets a safe subset of the state machine (ticket 066230d9,
+  // mirrors server userMaySetState): close their ticket, park it to `backlog`
+  // (recorded, do-not-work), un-park it, and reopen it. Everything else is
+  // admin/PO-driven.
+  const st = ticket?.state;
+  const canClose =
+    isAuthor &&
+    (st === "triage" ||
+      st === "needs_info" ||
+      st === "declined" ||
+      st === "backlog" ||
+      st === "resolved");
+  const canReopen = isAuthor && (st === "resolved" || st === "closed");
+  const canBacklog = isAuthor && (st === "triage" || st === "needs_info");
+  const canUnpark = isAuthor && st === "backlog";
 
-  const setState = async (state: "closed" | "in_progress", failMsg: string) => {
+  const setState = async (state: TicketState, failMsg: string) => {
     setBusy(true);
     setError(null);
     try {
@@ -306,7 +394,15 @@ function TicketDetailPanel({
     }
   };
   const close = () => setState("closed", "Could not close the issue");
-  const reopen = () => setState("in_progress", "Could not reopen the issue");
+  // Reopen a resolved ticket → in_progress ("the fix didn't stick"); a closed
+  // one → triage (re-evaluate through the PO).
+  const reopen = () =>
+    setState(
+      st === "closed" ? "triage" : "in_progress",
+      "Could not reopen the issue",
+    );
+  const backlog = () => setState("backlog", "Could not move the issue to backlog");
+  const unpark = () => setState("triage", "Could not take the issue out of backlog");
 
   if (loading) {
     return (
@@ -354,6 +450,9 @@ function TicketDetailPanel({
       ) : (
         <div className="detail-head">
           <div className="detail-head-row">
+            <span className="detail-number" data-testid="detail-number">
+              {ticketRef(ticket.number)}
+            </span>
             <span
               className={`badge state-${stateBucket(ticket.state)}`}
               data-testid="detail-state"
@@ -381,6 +480,30 @@ function TicketDetailPanel({
               >
                 Edit
               </button>
+              {canBacklog && (
+                <button
+                  type="button"
+                  className="secondary"
+                  data-testid="detail-backlog-ticket"
+                  disabled={busy}
+                  onClick={backlog}
+                  title="Notiert, aber vom Agenten vorerst nicht bearbeiten"
+                >
+                  Move to backlog
+                </button>
+              )}
+              {canUnpark && (
+                <button
+                  type="button"
+                  className="secondary"
+                  data-testid="detail-unpark-ticket"
+                  disabled={busy}
+                  onClick={unpark}
+                  title="Zurück in Triage — der Agent darf es wieder bearbeiten"
+                >
+                  Out of backlog
+                </button>
+              )}
               {canClose && (
                 <button
                   type="button"
@@ -399,7 +522,7 @@ function TicketDetailPanel({
                   data-testid="detail-reopen-ticket"
                   disabled={busy}
                   onClick={reopen}
-                  title="Der Fix reicht nicht — Ticket zurück in Bearbeitung"
+                  title="Ticket wieder öffnen"
                 >
                   Reopen
                 </button>

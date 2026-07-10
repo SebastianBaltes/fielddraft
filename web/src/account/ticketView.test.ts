@@ -7,6 +7,7 @@ import {
   personaTag,
   stateBucket,
   stateLabel,
+  ticketRef,
 } from "./ticketView";
 
 function comment(over: Partial<TicketComment> = {}): TicketComment {
@@ -34,6 +35,7 @@ describe("ticketView helpers", () => {
       "resolved",
       "closed",
       "declined",
+      "backlog",
       "rejected_spam",
       "rejected_malicious",
     ];
@@ -42,15 +44,21 @@ describe("ticketView helpers", () => {
     }
   });
 
-  it("buckets states into open / progress / done / rejected", () => {
+  it("buckets states into open / progress / backlog / done / rejected", () => {
     expect(stateBucket("triage")).toBe("open");
     expect(stateBucket("needs_info")).toBe("open");
     expect(stateBucket("in_progress")).toBe("progress");
     expect(stateBucket("deploying")).toBe("progress");
+    expect(stateBucket("backlog")).toBe("backlog");
     expect(stateBucket("resolved")).toBe("done");
     expect(stateBucket("closed")).toBe("done");
     expect(stateBucket("rejected_spam")).toBe("rejected");
     expect(stateBucket("rejected_malicious")).toBe("rejected");
+  });
+
+  it("formats the short #N reference", () => {
+    expect(ticketRef(1)).toBe("#1");
+    expect(ticketRef(230)).toBe("#230");
   });
 
   it("labels + tags every persona", () => {

@@ -44,6 +44,7 @@ import {
   AngleWidget,
   BoolWidget,
   EnumWidget,
+  FormulaWidget,
   FlipButton,
   GroupHeader,
   LengthWidget,
@@ -479,7 +480,15 @@ function WidgetFor({
         />
       );
     case "string":
-      return (
+      return param.uiHint === "formula" ? (
+        <FormulaWidget
+          label={param.label}
+          value={value as string}
+          required={param.required}
+          error={error}
+          onChange={emit}
+        />
+      ) : (
         <StringWidget
           label={param.label}
           value={value as string}

@@ -188,19 +188,71 @@
       color: var(--color-error-text);
       border-color: var(--color-difference-soft);
     }
+
+    /* Parked: a muted, neutral look — "recorded, do-not-work" (ticket 066230d9). */
+    &.state-backlog {
+      background: var(--color-bg-sunken);
+      color: var(--color-text-muted);
+      border-color: var(--color-border);
+    }
   }
 
   /* ── list ───────────────────────────────────────────────── */
+  /* Shared column grid so the sortable header and the data rows line up
+   *  (ticket a7b63b6): # · State · Title (flex) · Category · Updated. The
+   *  leading `#` reference column is ticket 066230d9. */
+  --ticket-cols: 3.5rem 6rem minmax(0, 1fr) 9rem 11rem;
+
+  & .ticket-table {
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+    background: var(--color-bg-elevated);
+    overflow: hidden;
+  }
+
+  & .ticket-head {
+    display: grid;
+    grid-template-columns: var(--ticket-cols);
+    gap: var(--space-3);
+    padding: 0 var(--space-4);
+    border-bottom: 1px solid var(--color-border);
+    background: var(--color-bg-sunken);
+  }
+
+  & .col-head {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-1);
+    padding: var(--space-2) 0;
+    border: none;
+    background: transparent;
+    font-family: inherit;
+    font-size: var(--fs-base);
+    font-weight: var(--fw-medium);
+    color: var(--color-text-muted);
+    cursor: pointer;
+    text-align: left;
+
+    &:hover {
+      color: var(--color-text);
+    }
+
+    &.active {
+      color: var(--color-accent);
+    }
+
+    & .sort-arrow {
+      font-size: 0.75em;
+      line-height: 1;
+    }
+  }
+
   & .ticket-rows {
     list-style: none;
     margin: 0;
     padding: 0;
     display: flex;
     flex-direction: column;
-    border: 1px solid var(--color-border);
-    border-radius: var(--radius-md);
-    background: var(--color-bg-elevated);
-    overflow: hidden;
   }
 
   & .ticket-row {
@@ -212,7 +264,8 @@
   }
 
   & .row-open {
-    display: flex;
+    display: grid;
+    grid-template-columns: var(--ticket-cols);
     align-items: center;
     gap: var(--space-3);
     width: 100%;
@@ -228,10 +281,19 @@
     &:hover {
       background: var(--color-bg-hover);
     }
+
+    & .badge {
+      justify-self: start;
+    }
+  }
+
+  & .row-number {
+    font-variant-numeric: tabular-nums;
+    color: var(--color-text-subtle);
+    white-space: nowrap;
   }
 
   & .row-title {
-    flex: 1;
     font-size: var(--fs-md);
     font-weight: var(--fw-medium);
     overflow: hidden;
@@ -240,12 +302,10 @@
   }
 
   & .row-category {
-    flex: none;
     color: var(--color-text-muted);
   }
 
   & .row-meta {
-    flex: none;
     color: var(--color-text-subtle);
   }
 
@@ -264,6 +324,12 @@
     display: flex;
     align-items: center;
     gap: var(--space-3);
+  }
+
+  & .detail-number {
+    font-variant-numeric: tabular-nums;
+    font-size: var(--fs-md);
+    color: var(--color-text-subtle);
   }
 
   & .detail-title {
@@ -289,6 +355,7 @@
 
   & .detail-author-actions {
     display: flex;
+    flex-wrap: wrap;
     gap: var(--space-2);
   }
 

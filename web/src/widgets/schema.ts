@@ -113,7 +113,8 @@ export type UiHint =
   | "opposite_direction"
   | "slider"
   | "color"
-  | "cycle90";
+  | "cycle90"
+  | "formula";
 
 export interface EnumVariant {
   key: string;
@@ -476,7 +477,8 @@ function parseUiHint(value: unknown, where: string): UiHint | undefined {
     value === "opposite_direction" ||
     value === "slider" ||
     value === "color" ||
-    value === "cycle90"
+    value === "cycle90" ||
+    value === "formula"
   ) {
     return value;
   }

@@ -104,6 +104,7 @@ export type TicketState =
   | "resolved"
   | "closed"
   | "declined"
+  | "backlog"
   | "rejected_spam"
   | "rejected_malicious";
 
@@ -121,6 +122,8 @@ export type ArtifactKind =
 /** A list row: no thread, no body blob (mirrors server `ticketSummary`). */
 export interface TicketSummary {
   id: string;
+  /** Short human/agent-friendly reference, shown as "#N" (ticket 066230d9). */
+  number: number;
   author_id: string;
   title: string;
   state: TicketState;
@@ -187,6 +190,8 @@ export interface TicketArtifact {
  *  (mirrors server `ticketDetailResponse`, which embeds the `Ticket`). */
 export interface TicketDetail {
   id: string;
+  /** Short human/agent-friendly reference, shown as "#N" (ticket 066230d9). */
+  number: number;
   author_id: string;
   title: string;
   body: string;
