@@ -24,6 +24,16 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.493",
+    entries: [
+      {
+        kind: "perf",
+        scope: "cloud",
+        text: "Cloud-Speichern ist schlank geworden (Phase 2): Server-gebundene Projekte legen das Dokument klein ab (nur Features + Asset-Hashes); importierte Meshes und hochgeladene Fonts werden als content-addressed Blobs separat hochgeladen — mit Dedup (ein Blob wird nur einmal übertragen und gespeichert, auch über Projekte hinweg). Der Sync schickt beim Speichern nur noch das kleine Dokument statt megabyte-großer eingebetteter Meshes. Neue Server-Endpoints PUT/GET /api/blobs/{sha256} + /api/blobs/missing (content-adressiert, owner-authentifiziert). Bestehende (volle) Cloud-Dokumente laden unverändert und werden beim nächsten Speichern automatisch umgestellt. IndexedDB (lokal) und Server teilen sich denselben Externalisier-Code.",
+      },
+    ],
+  },
+  {
     version: "0.6.492",
     entries: [
       {

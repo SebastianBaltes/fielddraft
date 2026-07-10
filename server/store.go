@@ -69,6 +69,15 @@ type Store interface {
 	SetThumbnail(projectID string, data []byte)
 	GetThumbnail(projectID string) []byte
 
+	// Content-addressed asset blobs (client cloud-save asset sync, plan §5.5).
+	// A lean project document references large mesh/font payloads by sha256 hex;
+	// those bytes live here, deduplicated and immutable. PutBlob stores data and
+	// returns its ref (idempotent); GetBlob returns the bytes or nil when absent;
+	// HasBlob reports presence without reading the bytes (batch-missing probe).
+	PutBlob(data []byte) (string, error)
+	GetBlob(ref string) ([]byte, error)
+	HasBlob(ref string) bool
+
 	// Snapshots (published, shareable copies).
 	CreateSnapshot(projectID string, doc json.RawMessage) *Snapshot
 	GetSnapshot(id string) *Snapshot

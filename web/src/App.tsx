@@ -131,7 +131,7 @@ function AppShell({ account }: { account: UseAccount }) {
   // Bridge: load a server project's document into the live workspace, bind it
   // for sync, and enter the modeling view. The server stores the full multi-tab
   // Project blob, so this restores the whole workspace.
-  const openServerProject = (project: ServerProject) => {
+  const openServerProject = async (project: ServerProject) => {
     if (!store) return;
     const json =
       typeof project.document === "string"
@@ -141,7 +141,9 @@ function AppShell({ account }: { account: UseAccount }) {
     // modeling view with the previous (guest) workspace unbound — that
     // masquerades as the wrong project and downgrades export to "save to
     // server first". Surface the failure and stay on the dashboard.
-    if (!store.loadServerProject(project.id, json)) {
+    // P2: loadServerProject re-inlines any externalized mesh/font blobs from the
+    // server before loading, so the await is required.
+    if (!(await store.loadServerProject(project.id, json))) {
       store.showTransientError(
         `“${project.name}” could not be opened — its stored document is not a valid project.`,
       );
@@ -153,12 +155,14 @@ function AppShell({ account }: { account: UseAccount }) {
 
   // Bridge: open a public/gallery project as a fresh UNBOUND copy (no server
   // binding — it's not the viewer's project) and enter the modeling view.
-  const openServerCopy = (project: ServerProject) => {
+  const openServerCopy = async (project: ServerProject) => {
     if (!store) return;
-    const json =
+    const raw =
       typeof project.document === "string"
         ? project.document
         : JSON.stringify(project.document ?? {});
+    // P2: re-inline any externalized mesh/font blobs before loading the copy.
+    const json = await store.inlineServerDocument(raw);
     const trimmed = json.trim();
     if (trimmed === "" || trimmed === "{}" || trimmed === "null") {
       store.newProject();

@@ -109,17 +109,17 @@ describe("server-project binding persistence", () => {
     expect(loadStoredServerBinding()).toBeNull();
   });
 
-  it("loadServerProject persists the binding", () => {
+  it("loadServerProject persists the binding", async () => {
     const store = makeStore();
-    expect(store.loadServerProject("srv42", "{}")).toBe(true);
+    expect(await store.loadServerProject("srv42", "{}")).toBe(true);
     expect(loadStoredServerBinding()).toBe("srv42");
     expect(store.getState().projectId).toBe("srv42");
     expect(store.getState().syncState).toBe("clean");
   });
 
-  it("detachServerProject clears the binding (also when already offline)", () => {
+  it("detachServerProject clears the binding (also when already offline)", async () => {
     const store = makeStore();
-    store.loadServerProject("srv42", "{}");
+    await store.loadServerProject("srv42", "{}");
     store.detachServerProject();
     expect(loadStoredServerBinding()).toBeNull();
     expect(store.getState().projectId).toBeNull();
@@ -143,5 +143,101 @@ describe("server-project binding persistence", () => {
     expect(store.getState().projectId).toBeNull();
     expect(store.getState().syncState).toBe("offline");
     expect(loadStoredServerBinding()).toBe("srv42");
+  });
+});
+
+/** A Project blob whose single part tab embeds an `imported_mesh` — drives the
+ *  asset-bearing sync path (externalize → blob upload → envelope). */
+function meshProjectBlob(): string {
+  const documentJson = JSON.stringify({
+    schema_version: 1,
+    name: "Part",
+    feature_calls: [
+      {
+        type: "imported_mesh",
+        id: "1",
+        params: {
+          op: "New",
+          __positions: [0, 0, 0, 1, 0, 0, 0, 1, 0],
+          __indices: [0, 1, 2],
+          __watertight: true,
+        },
+      },
+    ],
+    next_feature_id: 2,
+  });
+  return JSON.stringify({
+    schemaVersion: 1,
+    name: "Untitled",
+    tabs: [{ id: "tab_1", kind: "part", name: "Part 1", documentJson }],
+    activeTabId: "tab_1",
+  });
+}
+
+describe("syncToServer — lean cloud save (P2)", () => {
+  it("sends the plain Project blob for an asset-free workspace", async () => {
+    const store = makeStore();
+    store.setProjectId("srv1");
+    const fetchMock = vi.fn(
+      async (_url: string | URL | Request, _init?: RequestInit) =>
+        new Response("{}", { status: 200 }),
+    );
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    expect(await store.syncToServer()).toBe(true);
+    // The only request is the project PATCH (no blobs to probe/upload).
+    const patch = fetchMock.mock.calls.find(
+      (c) => (c[1] as RequestInit).method === "PATCH",
+    );
+    expect(patch).toBeDefined();
+    expect(String(patch![0])).toBe("/api/projects/srv1");
+    const body = JSON.parse((patch![1] as RequestInit).body as string) as {
+      document: { tabs?: unknown; v?: unknown };
+    };
+    // Asset-free ⇒ document is the full Project blob (has tabs), NOT an envelope.
+    expect(body.document.tabs).toBeDefined();
+    expect(body.document.v).toBeUndefined();
+  });
+
+  it("externalizes the mesh to a blob and sends the envelope for an asset workspace", async () => {
+    const store = makeStore();
+    expect(store.loadProjectFromJson(meshProjectBlob())).toBe(true);
+    store.setProjectId("srv2");
+
+    const fetchMock = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      const u = String(url);
+      if (u === "/api/blobs/missing") {
+        // Echo the requested hashes back as missing ⇒ the client uploads them.
+        const reqBody = JSON.parse((init?.body as string) ?? "{}") as { hashes: string[] };
+        return new Response(JSON.stringify({ missing: reqBody.hashes }), { status: 200 });
+      }
+      if (u.startsWith("/api/blobs/")) {
+        return new Response(JSON.stringify({ stored: true }), { status: 200 });
+      }
+      return new Response("{}", { status: 200 }); // project PATCH
+    });
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    expect(await store.syncToServer()).toBe(true);
+
+    // A blob was uploaded via PUT /api/blobs/{hash}.
+    const put = fetchMock.mock.calls.find(
+      (c) =>
+        (c[1] as RequestInit)?.method === "PUT" &&
+        String(c[0]).startsWith("/api/blobs/"),
+    );
+    expect(put).toBeDefined();
+
+    // The PATCH document is the lean envelope (v:2) — no inline mesh payload.
+    const patch = fetchMock.mock.calls.find(
+      (c) => (c[1] as RequestInit)?.method === "PATCH",
+    );
+    expect(patch).toBeDefined();
+    const body = JSON.parse((patch![1] as RequestInit).body as string) as {
+      document: { v?: number; doc?: string };
+    };
+    expect(body.document.v).toBe(2);
+    expect(body.document.doc).not.toContain("__positions");
+    expect(body.document.doc).toContain("__asset");
   });
 });

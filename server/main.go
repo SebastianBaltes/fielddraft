@@ -60,6 +60,10 @@ func NewServer(store Store) *Server {
 	s.mux.HandleFunc("PATCH /api/projects/{id}", s.handleUpdateProject)
 	s.mux.HandleFunc("DELETE /api/projects/{id}", s.handleDeleteProject)
 	s.mux.HandleFunc("GET /api/gallery", s.handleGallery)
+	// Content-addressed asset blobs (client cloud-save asset sync, §5.5).
+	s.mux.HandleFunc("POST /api/blobs/missing", s.handleBlobsMissing)
+	s.mux.HandleFunc("PUT /api/blobs/{sha256}", s.handlePutBlob)
+	s.mux.HandleFunc("GET /api/blobs/{sha256}", s.handleGetBlob)
 	s.mux.HandleFunc("POST /api/projects/{id}/mesh", s.handleCreateMeshJob)
 	s.mux.HandleFunc("GET /api/mesh-jobs/{id}", s.handleGetMeshJob)
 	s.mux.HandleFunc("GET /api/mesh-jobs/{id}/artifact", s.handleGetMeshArtifact)

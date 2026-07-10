@@ -176,6 +176,16 @@ interface AssetStore {
 
 ## 6. Offene Fragen / Risiken
 
+- **⚠️ Öffentlicher Viewer + Asset-Blobs (Regression-Risiko, aus P2).** Der
+  publizierte Snapshot-Viewer ist unauthentifiziert, die Blob-Endpoints sind
+  aber owner-auth-gated. Ein *asset-behaftetes* veröffentlichtes Projekt (mit
+  importiertem Mesh / Upload-Font) würde im Viewer die Blobs nicht laden können.
+  Asset-freie veröffentlichte Projekte bleiben ein Plain-Project-Blob und sind
+  unberührt. **Fix-Optionen:** (a) beim Publizieren das Dokument **server-seitig
+  inline'n** und den VOLLEN (selbst-enthaltenen) Snapshot speichern — Working-Doc
+  bleibt schlank, Snapshot ist portabel; oder (b) token-/public-Blob-Zugriff für
+  Snapshots. Bevorzugt (a). Vor dem nächsten Publish-mit-Assets zu lösen (P3
+  oder eigener Schritt).
 - **GC verwaister Blobs** in allen drei Ablagen (Server, IndexedDB, `.fdraft`):
   Refcount vs. Mark-and-Sweep gegen das Dokument. Für `.fdraft` trivial (beim
   Export nur referenzierte Blobs einpacken).

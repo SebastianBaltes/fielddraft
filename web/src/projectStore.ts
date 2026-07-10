@@ -51,6 +51,8 @@ import {
   type TabKind,
 } from "./project";
 import { parseFeatureSchema, buildDefaultDefinition } from "./widgets/schema";
+import { externalizeProject, inlineProject } from "./projectPersistence";
+import { serverBlobStore } from "./serverBlobStore";
 import {
   StoreCore,
   formatKernelError,
@@ -393,19 +395,33 @@ export class ProjectStore {
     return this.serializeProject();
   }
 
-  /** WP3: load a server project into the live workspace and bind it for sync.
-   *  `documentJson` is the Project blob previously saved via
-   *  {@link serializeProjectJson}. A freshly-created server project carries an
-   *  empty document (`{}` / `""`) — that's not a valid Project blob, so we
-   *  start a fresh default workspace and bind the id instead of failing. Marks
-   *  the session clean (just-loaded), so the next edit flips it to "dirty".
-   *  Returns `false` only on a genuinely malformed (non-empty) blob. */
-  loadServerProject(id: string, documentJson: string): boolean {
+  /** P2: re-inline a server document's externalized asset blobs (meshes/fonts)
+   *  back into a full project JSON, ready for {@link loadProjectFromJson}. The
+   *  server stores a lean ENVELOPE (`{ v, doc, fonts }`) plus content-addressed
+   *  blobs fetched via {@link serverBlobStore}; a LEGACY full document (no
+   *  envelope, no `__asset` refs) round-trips unchanged (no-op). */
+  async inlineServerDocument(documentJson: string): Promise<string> {
     const trimmed = documentJson.trim();
+    // Empty/new server project — nothing to inline.
+    if (trimmed === "" || trimmed === "{}" || trimmed === "null") return documentJson;
+    return inlineProject(documentJson, serverBlobStore);
+  }
+
+  /** WP3: load a server project into the live workspace and bind it for sync.
+   *  `documentJson` is the lean ENVELOPE (or legacy full Project blob) previously
+   *  saved via {@link syncToServer}; its externalized mesh/font blobs are
+   *  re-inlined from the server first (P2). A freshly-created server project
+   *  carries an empty document (`{}` / `""`) — that's not a valid Project blob,
+   *  so we start a fresh default workspace and bind the id instead of failing.
+   *  Marks the session clean (just-loaded), so the next edit flips it to
+   *  "dirty". Returns `false` only on a genuinely malformed (non-empty) blob. */
+  async loadServerProject(id: string, documentJson: string): Promise<boolean> {
+    const inlined = await this.inlineServerDocument(documentJson);
+    const trimmed = inlined.trim();
     const isEmpty = trimmed === "" || trimmed === "{}" || trimmed === "null";
     if (isEmpty) {
       this.newProject();
-    } else if (!this.loadProjectFromJson(documentJson)) {
+    } else if (!this.loadProjectFromJson(inlined)) {
       return false;
     }
     persistServerBinding(id);
@@ -434,9 +450,14 @@ export class ProjectStore {
     this.core.emit();
   }
 
-  /** M12: sync the current workspace to the bound server project. No-op in
-   *  offline mode. Sends the full Project blob (see
-   *  {@link serializeProjectJson}). */
+  /** M12 + P2: sync the current workspace to the bound server project. No-op in
+   *  offline mode. Externalizes the workspace to a LEAN document — embedded
+   *  meshes and uploaded-font bytes are uploaded as content-addressed blobs
+   *  ({@link serverBlobStore}, upload-if-missing) and the PATCH body carries only
+   *  features + asset hashes. An ASSET-FREE workspace is sent as the plain
+   *  Project blob (no envelope) so publish/gallery-copy keep the exact document
+   *  shape they load today; only asset-bearing projects get the `{ v, doc, fonts }`
+   *  envelope. */
   async syncToServer(): Promise<boolean> {
     if (!this.state.projectId || this.state.syncState === "offline") {
       return false;
@@ -444,13 +465,29 @@ export class ProjectStore {
     this.patch({ syncState: "syncing" });
     this.core.emit();
     try {
+      // Uploads every missing mesh/font blob, returns the lean envelope string.
+      const envelopeJson = await externalizeProject(
+        this.serializeProject(),
+        serverBlobStore,
+      );
+      const envelope = JSON.parse(envelopeJson) as {
+        doc: string;
+        fonts: Record<string, string>;
+      };
+      // Asset-free ⇒ store the inner project blob verbatim (viewer/gallery-copy
+      // load it directly, unwrapped-envelope not required); asset-bearing ⇒ the
+      // full envelope, which the cloud-load path re-inlines. The `__asset` marker
+      // lives inside each part tab's nested documentJson string, so it is
+      // double-escaped in `doc` — match the bare marker (never the quoted form).
+      const hasAssets =
+        Object.keys(envelope.fonts).length > 0 ||
+        envelope.doc.includes("__asset");
+      const document = JSON.parse(hasAssets ? envelopeJson : envelope.doc);
       const res = await fetch(`/api/projects/${this.state.projectId}`, {
         method: "PATCH",
         credentials: "include",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          document: JSON.parse(this.serializeProject()),
-        }),
+        body: JSON.stringify({ document }),
       });
       if (!res.ok) throw new Error(`sync failed: ${res.status}`);
       this.patch({ syncState: "clean" });

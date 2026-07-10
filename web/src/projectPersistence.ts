@@ -116,12 +116,27 @@ function isPartTab(tab: unknown): tab is JsonPartTabish & { documentJson: string
 }
 
 /**
+ * The blob subset of {@link AssetStore} — the ONLY surface the externalize/
+ * inline path needs. Generalizing over it lets the exact same mesh+font
+ * content-addressing run against IndexedDB (local autosave) and the server
+ * (cloud save, {@link ./serverBlobStore | ServerBlobStore}) with one code path.
+ */
+export interface BlobBackend {
+  /** Whether a blob with this hash is already stored (skip re-upload). */
+  hasBlob(hash: string): Promise<boolean>;
+  /** Store a blob. Idempotent — a present hash is a no-op (immutable). */
+  writeBlob(hash: string, bytes: Uint8Array): Promise<void>;
+  /** Bytes of a blob by hash, or `null` when absent. */
+  readBlob(hash: string): Promise<Uint8Array | null>;
+}
+
+/**
  * Externalize every embedded mesh in a serialized Project. Runs the P1a
  * transform on each part tab's inner `documentJson` (see the module note),
  * merging the per-tab blob maps (dedup by hash). Falls back to a direct
  * transform for a non-Project input.
  */
-async function externalizeProject(
+async function externalizeMeshes(
   fullJson: string,
 ): Promise<{ doc: string; blobs: Map<string, Uint8Array> }> {
   let parsed: unknown;
@@ -148,9 +163,9 @@ async function externalizeProject(
   return { doc: JSON.stringify(project), blobs };
 }
 
-/** Inverse of {@link externalizeProject}: re-inline each part tab's blobs from
- *  the store so the result feeds `kernel.loadJson` unchanged. */
-async function inlineProject(slimJson: string): Promise<string> {
+/** Inverse of {@link externalizeMeshes}: re-inline each part tab's blobs from
+ *  `backend` so the result feeds `kernel.loadJson` unchanged. */
+async function inlineMeshes(slimJson: string, backend: BlobBackend): Promise<string> {
   let parsed: unknown;
   try {
     parsed = JSON.parse(slimJson);
@@ -159,12 +174,12 @@ async function inlineProject(slimJson: string): Promise<string> {
   }
   const project = parsed as JsonProjectish;
   if (!Array.isArray(project.tabs)) {
-    return inlineAssets(slimJson, (hash) => store.readBlob(hash));
+    return inlineAssets(slimJson, (hash) => backend.readBlob(hash));
   }
   for (const tab of project.tabs) {
     if (!isPartTab(tab)) continue;
     tab.documentJson = await inlineAssets(tab.documentJson, (hash) =>
-      store.readBlob(hash),
+      backend.readBlob(hash),
     );
   }
   return JSON.stringify(project);
@@ -253,11 +268,12 @@ async function collectFontBlobs(
   return manifest;
 }
 
-/** Restore each manifested font's bytes into the font cache. A missing blob is
- *  a warning, never a crash (P1a inline-assets semantics). */
-async function restoreFonts(fonts: FontManifest): Promise<void> {
+/** Restore each manifested font's bytes into the font cache, reading blobs from
+ *  `backend`. A missing blob is a warning, never a crash (P1a inline-assets
+ *  semantics). */
+async function restoreFonts(fonts: FontManifest, backend: BlobBackend): Promise<void> {
   for (const [fontId, hash] of Object.entries(fonts)) {
-    const bytes = await store.readBlob(hash);
+    const bytes = await backend.readBlob(hash);
     if (!bytes) {
       console.warn(
         `fielddraft: font blob missing (${hash}) for "${fontId}" — text may not render`,
@@ -288,34 +304,72 @@ function parseEnvelope(slot: string): { doc: string; fonts: FontManifest } {
   return { doc: slot, fonts: {} };
 }
 
-// ── sink / load boundary ────────────────────────────────────────────────────
+// ── generalized externalize / inline (backend-agnostic) ─────────────────────
 
 /**
- * Persist a serialized Project: externalize its embedded meshes to blobs,
- * content-address every referenced uploaded font's bytes to blobs, then write
- * the lean document ENVELOPE + every new blob to the {@link AssetStore}. The
- * autosave sink (fire-and-forget from the debounce timer).
+ * Externalize a serialized Project into a lean document ENVELOPE against an
+ * arbitrary {@link BlobBackend}: move every embedded mesh and referenced
+ * uploaded-font's bytes into content-addressed blobs, UPLOAD each new blob to
+ * `backend` (upload-if-missing — a hash the backend already holds is skipped,
+ * saving a server round-trip), and return the `{ v, doc, fonts }` envelope as a
+ * JSON string. The one code path shared by IndexedDB autosave
+ * ({@link persistProjectDoc}) and the server cloud-save
+ * (`ProjectStore.syncToServer`).
+ */
+export async function externalizeProject(
+  fullJson: string,
+  backend: BlobBackend,
+): Promise<string> {
+  const { doc, blobs } = await externalizeMeshes(fullJson);
+  const fonts = await collectFontBlobs(fullJson, blobs);
+  // Write blobs BEFORE the document so a stored doc never references a blob the
+  // backend lacks. Immutable/content-addressed ⇒ skip what's already present.
+  for (const [hash, bytes] of blobs) {
+    if (!(await backend.hasBlob(hash))) await backend.writeBlob(hash, bytes);
+  }
+  const envelope: DocEnvelope = { v: 2, doc, fonts };
+  return JSON.stringify(envelope);
+}
+
+/**
+ * Inverse of {@link externalizeProject}: unwrap the `slot` (envelope OR a legacy
+ * raw/full project-json — {@link parseEnvelope} tolerates both), restore any
+ * manifested fonts from `backend`, and re-inline every mesh blob so the result
+ * feeds `kernel.loadJson` unchanged. A legacy full document (no envelope, no
+ * `__asset` refs) round-trips as a NO-OP — nothing to fetch — so an old
+ * server-side document still loads and is externalized on the next save.
+ */
+export async function inlineProject(
+  slot: string,
+  backend: BlobBackend,
+): Promise<string> {
+  const { doc, fonts } = parseEnvelope(slot);
+  await restoreFonts(fonts, backend);
+  return inlineMeshes(doc, backend);
+}
+
+// ── sink / load boundary (IndexedDB) ────────────────────────────────────────
+
+/**
+ * Persist a serialized Project to the module {@link AssetStore} (IndexedDB):
+ * externalize meshes + fonts to blobs (uploaded via the store's blob methods)
+ * and write the lean document ENVELOPE. The autosave sink (fire-and-forget from
+ * the debounce timer).
  */
 export async function persistProjectDoc(fullJson: string): Promise<void> {
-  const { doc, blobs } = await externalizeProject(fullJson);
-  const fonts = await collectFontBlobs(fullJson, blobs);
-  const envelope: DocEnvelope = { v: 2, doc, fonts };
-  await store.writeDoc(JSON.stringify(envelope));
-  // Blobs are immutable/content-addressed: writeBlob is a no-op when present.
-  for (const [hash, bytes] of blobs) await store.writeBlob(hash, bytes);
+  const envelope = await externalizeProject(fullJson, store);
+  await store.writeDoc(envelope);
 }
 
 /**
  * Load the persisted Project (lean document + re-inlined mesh blobs + restored
- * fonts), or `null` when nothing is stored. The boot path feeds the result
- * straight into `ProjectStore.bootstrap`.
+ * fonts) from the module {@link AssetStore}, or `null` when nothing is stored.
+ * The boot path feeds the result straight into `ProjectStore.bootstrap`.
  */
 export async function loadProjectDoc(): Promise<string | null> {
   const slot = await store.readDoc();
   if (slot === null) return null;
-  const { doc, fonts } = parseEnvelope(slot);
-  await restoreFonts(fonts);
-  return inlineProject(doc);
+  return inlineProject(slot, store);
 }
 
 /**

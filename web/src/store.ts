@@ -930,8 +930,14 @@ export class KernelStore {
     return this.project.serializeProjectJson();
   }
 
-  loadServerProject(id: string, documentJson: string): boolean {
+  loadServerProject(id: string, documentJson: string): Promise<boolean> {
     return this.project.loadServerProject(id, documentJson);
+  }
+
+  /** P2: re-inline a server document's externalized asset blobs into a full
+   *  project JSON (for a gallery-copy open). Legacy full documents are a no-op. */
+  inlineServerDocument(documentJson: string): Promise<string> {
+    return this.project.inlineServerDocument(documentJson);
   }
 
   detachServerProject(): void {
