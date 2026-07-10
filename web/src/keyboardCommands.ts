@@ -149,7 +149,7 @@ export function dispatchKeyboardCommand(
   // Ctrl+S saves the whole project — an app-level action valid in
   // any workspace.
   if (ctrl && (e.key === "s" || e.key === "S")) {
-    store.saveProjectToFile();
+    void store.saveProjectToFile();
     e.preventDefault();
     return;
   }

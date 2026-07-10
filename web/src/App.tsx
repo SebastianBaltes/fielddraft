@@ -180,7 +180,7 @@ function AppShell({ account }: { account: UseAccount }) {
     if (trimmed === "" || trimmed === "{}" || trimmed === "null") {
       store.newProject();
       store.detachServerProject();
-    } else if (store.loadProjectFromJson(json)) {
+    } else if (await store.loadProjectFromJson(json)) {
       store.detachServerProject();
     }
     clearLocalFileBinding();
@@ -191,9 +191,9 @@ function AppShell({ account }: { account: UseAccount }) {
   // Bridge: load a ticket's `.fdraft` artifact (raw ZIP bytes) into the live
   // workspace as a fresh UNBOUND copy — it's repro material, not the viewer's
   // server project, so we don't bind it for sync — and enter the modeling view.
-  const loadFdraftBytes = (bytes: ArrayBuffer) => {
+  const loadFdraftBytes = async (bytes: ArrayBuffer) => {
     if (!store) return;
-    if (store.loadProjectFromBytes(bytes)) {
+    if (await store.loadProjectFromBytes(bytes)) {
       store.detachServerProject();
     }
     clearLocalFileBinding();
@@ -213,7 +213,7 @@ function AppShell({ account }: { account: UseAccount }) {
     const buf = await file.arrayBuffer();
     clearLocalFileBinding();
     store.detachServerProject();
-    if (!store.openUserProjectFromBytes(buf)) {
+    if (!(await store.openUserProjectFromBytes(buf))) {
       store.showTransientError(
         `“${file.name}” is not a valid FieldDraft project.`,
       );

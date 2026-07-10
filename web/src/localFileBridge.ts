@@ -17,8 +17,9 @@ import type { FsaFileHandle } from "./localProjects";
 
 interface Binding {
   handle: FsaFileHandle;
-  /** Produces the canonical `.fdraft` ZIP bytes (store.exportProjectFdraft). */
-  exportBytes: () => Uint8Array;
+  /** Produces the canonical `.fdraft` ZIP bytes (store.exportProjectFdraft,
+   *  now async since assets are content-addressed with sha256). */
+  exportBytes: () => Uint8Array | Promise<Uint8Array>;
 }
 
 let binding: Binding | null = null;
@@ -35,7 +36,7 @@ async function writeNow(): Promise<void> {
     do {
       writeAgain = false;
       const { handle, exportBytes } = binding;
-      const bytes = exportBytes();
+      const bytes = await exportBytes();
       const w = await handle.createWritable();
       // Copy — the export may be a WASM-heap view.
       await w.write(bytes.slice().buffer as ArrayBuffer);
@@ -54,7 +55,7 @@ async function writeNow(): Promise<void> {
 
 export function bindLocalFile(
   handle: FsaFileHandle,
-  exportBytes: () => Uint8Array,
+  exportBytes: () => Uint8Array | Promise<Uint8Array>,
 ): void {
   binding = { handle, exportBytes };
   setAutosaveMirror(() => void writeNow());

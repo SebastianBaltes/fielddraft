@@ -25,10 +25,8 @@ import {
   type IKTarget,
 } from "./assembly";
 import { executeScript } from "./fieldscript";
-import {
-  parseProjectBytes,
-  serializeProject as serializeProjectJson,
-} from "./project";
+import { serializeProject as serializeProjectJson } from "./project";
+import { readFdraftProject } from "./fdraftFile";
 import { StoreCore, type StoreState } from "./storeCore";
 
 /** Cross-domain pieces the assembly controller needs from the facade. */
@@ -87,12 +85,13 @@ export class AssemblyStore {
   }
 
   /** Import a `.fdraft` part into the active assembly. Accepts a document
-   *  JSON string or raw `.fdraft` bytes (wu2v: ZIP container → its
-   *  `document.json` is extracted; legacy JSON bytes pass through). */
-  addPartToAssembly(
+   *  JSON string or raw `.fdraft` bytes (Phase 3d: a content-addressed or
+   *  legacy ZIP → its project is read back, mesh blobs re-inlined; legacy
+   *  JSON bytes pass through). */
+  async addPartToAssembly(
     source: string | Uint8Array | ArrayBuffer,
     name?: string,
-  ): void {
+  ): Promise<void> {
     const asm = this.state.assembly;
     if (!asm.active) return;
 
@@ -103,9 +102,9 @@ export class AssemblyStore {
       const u8 = source instanceof Uint8Array ? source : new Uint8Array(source);
       const isZip = u8.length >= 2 && u8[0] === 0x50 && u8[1] === 0x4b;
       if (isZip) {
-        const parsed = parseProjectBytes(u8);
-        if (!parsed) return;
-        documentJson = serializeProjectJson(parsed.project);
+        const project = await readFdraftProject(u8);
+        if (!project) return;
+        documentJson = serializeProjectJson(project);
       } else {
         documentJson = new TextDecoder().decode(u8);
       }

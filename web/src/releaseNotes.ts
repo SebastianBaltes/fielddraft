@@ -24,6 +24,16 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.497",
+    entries: [
+      {
+        kind: "perf",
+        scope: "projects",
+        text: "Die .fdraft-Projektdatei ist jetzt content-addressed und selbst-enthalten: importierte Meshes und hochgeladene Fonts liegen als hash-benannte Blob-Einträge (assets/…) im ZIP, das Projekt-Dokument (project.json) bleibt schlank und trägt nur die Hashes. Vorher waren Meshes als riesige JSON-Zahl-Arrays direkt im Dokument des ZIP eingebettet. Innerhalb einer Datei werden identische Assets dedupliziert. Ältere .fdraft-Dateien (mit eingebetteten Meshes) laden weiterhin unverändert.",
+      },
+    ],
+  },
+  {
     version: "0.6.496",
     entries: [
       {

@@ -19,11 +19,6 @@ import { getCameraPose, requestCameraRestore } from "./cameraPoseBridge";
 import { applyProjectDebug, collectProjectDebug } from "./projectDebug";
 import { logUserAction } from "./userActionLog";
 import {
-  registerUploadedFontFromBytes,
-  getUploadedFontBytes,
-  UPLOADED_FONT_PREFIX,
-} from "./sketchTextFont";
-import {
   createRecord,
   reviseRecord,
   type FieldSkriptRecord,
@@ -39,10 +34,6 @@ import {
   projectScripts,
   reseedTabIds,
   serializeProject as serializeProjectJson,
-  serializeProjectToZip,
-  parseProjectBytes,
-  emptyProjectAssets,
-  type ProjectAssets,
   stripScripts,
   type PartTab,
   type Project,
@@ -50,6 +41,7 @@ import {
   type ScriptTab,
   type TabKind,
 } from "./project";
+import { exportFdraftBytes, readFdraftProject } from "./fdraftFile";
 import { parseFeatureSchema, buildDefaultDefinition } from "./widgets/schema";
 import { externalizeProject, inlineProject } from "./projectPersistence";
 import { serverBlobStore } from "./serverBlobStore";
@@ -216,77 +208,25 @@ export class ProjectStore {
     };
   }
 
-  /**
-   * wu2v: collect the uploaded fonts actually referenced by a project.
-   * Scans every part tab's document JSON for `sketch_path` sub-calls whose
-   * `text.fontId` is an `uploaded:` id, then pulls the retained raw bytes.
-   * Fonts with no retained bytes (e.g. opened from a legacy JSON that never
-   * carried them) are skipped.
-   */
-  private collectProjectAssets(project: Project): ProjectAssets {
-    const assets = emptyProjectAssets();
-    const ids = new Set<string>();
-    for (const tab of project.tabs) {
-      if (tab.kind !== "part") continue;
-      let doc: unknown;
-      try {
-        doc = JSON.parse(tab.documentJson);
-      } catch {
-        continue;
-      }
-      // Walk the doc collecting any `fontId` field that names an upload.
-      const walk = (value: unknown): void => {
-        if (Array.isArray(value)) {
-          for (const v of value) walk(v);
-          return;
-        }
-        if (value && typeof value === "object") {
-          const obj = value as Record<string, unknown>;
-          const fontId = obj.fontId;
-          if (
-            typeof fontId === "string" &&
-            fontId.startsWith(UPLOADED_FONT_PREFIX)
-          ) {
-            ids.add(fontId);
-          }
-          for (const v of Object.values(obj)) walk(v);
-        }
-      };
-      walk(doc);
-    }
-    for (const id of ids) {
-      const bytes = getUploadedFontBytes(id);
-      if (!bytes) continue;
-      // Extension from the id tail (`uploaded:Foo.ttf` → `ttf`), default ttf.
-      const dot = id.lastIndexOf(".");
-      const ext = dot >= 0 ? id.slice(dot + 1).toLowerCase() : "ttf";
-      assets.fonts.set(id, { bytes, ext });
-    }
-    return assets;
-  }
-
-  /** Public accessor for the live project as a `.fdraft` ZIP (document
-   *  JSON + uploaded font assets), byte-identical to what Save writes.
-   *  Used by the in-app bug-report flow (on3k) so a ticket carries the
-   *  exact, openable project file — assets included — not a stripped
-   *  JSON blob. */
-  exportProjectFdraft(): Uint8Array {
-    const project = this.buildPersistableProject();
-    const assets = this.collectProjectAssets(project);
-    return serializeProjectToZip(project, assets);
+  /** Public accessor for the live project as a content-addressed `.fdraft`
+   *  ZIP (lean `project.json` envelope + `assets/<hash>` mesh/font blobs),
+   *  byte-identical to what Save writes. Used by the in-app bug-report flow
+   *  (on3k) so a ticket carries the exact, openable project file — assets
+   *  included — not a stripped JSON blob. */
+  async exportProjectFdraft(): Promise<Uint8Array> {
+    return exportFdraftBytes(this.serializeProject());
   }
 
   /** Save the current project as a downloadable .fdraft file.
    *
-   *  wu2v: the file is a ZIP container (document.json + embedded uploaded
-   *  font bytes + manifest) so binary assets survive a reload. Legacy JSON
-   *  `.fdraft` files still open (the loader sniffs the ZIP magic bytes).
-   *  The bug-report path uses the same ZIP — see exportProjectFdraft. */
-  saveProjectToFile(filename = "project.fdraft"): void {
+   *  Phase 3d: the file is a content-addressed ZIP (`project.json` envelope +
+   *  `assets/<hash>` mesh/font blobs) — self-contained and deduplicated.
+   *  Legacy `.fdraft` files (plain JSON or the old `document.json` layout)
+   *  still open (the loader sniffs the format). The bug-report path uses the
+   *  same ZIP — see exportProjectFdraft. */
+  async saveProjectToFile(filename = "project.fdraft"): Promise<void> {
     if (typeof document === "undefined") return;
-    const project = this.buildPersistableProject();
-    const assets = this.collectProjectAssets(project);
-    const zip = serializeProjectToZip(project, assets);
+    const zip = await exportFdraftBytes(this.serializeProject());
     // Copy into a fresh ArrayBuffer so Blob doesn't retain the WASM/heap view.
     const blob = new Blob([zip.slice()], { type: "application/zip" });
     const url = URL.createObjectURL(blob);
@@ -304,30 +244,20 @@ export class ProjectStore {
    *  so a JSON string and a ZIP file share one load path (the byte loader
    *  sniffs the magic bytes and treats non-ZIP bytes as JSON text).
    *  Returns `false` on malformed input. */
-  loadProjectFromJson(json: string): boolean {
+  async loadProjectFromJson(json: string): Promise<boolean> {
     return this.loadProjectFromBytes(new TextEncoder().encode(json));
   }
 
-  /** wu2v: load a project from raw `.fdraft` bytes — a ZIP container or
-   *  legacy JSON (auto-detected). Re-registers any embedded uploaded fonts
-   *  so they render again, then applies the project. Returns `false` on
-   *  malformed input. */
-  loadProjectFromBytes(bytes: Uint8Array | ArrayBuffer): boolean {
+  /** Phase 3d: load a project from raw `.fdraft` bytes — a content-addressed
+   *  ZIP, a legacy embedded ZIP, or legacy JSON (auto-detected). Re-inlines
+   *  externalized mesh blobs and restores uploaded fonts into the cache, then
+   *  applies the project. Returns `false` on malformed input. */
+  async loadProjectFromBytes(bytes: Uint8Array | ArrayBuffer): Promise<boolean> {
     const u8 = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
-    const parsed = parseProjectBytes(u8);
-    if (!parsed) return false;
+    const project = await readFdraftProject(u8);
+    if (!project) return false;
     logUserAction("doc", "load-project", { bytes: u8.length });
-    // Re-register embedded uploaded fonts before applying the project so the
-    // font cache is warm when the scene regenerates its text geometry.
-    for (const [id, { bytes: fontBytes }] of parsed.assets.fonts) {
-      try {
-        registerUploadedFontFromBytes(id, fontBytes);
-      } catch (err) {
-        // eslint-disable-next-line no-console
-        console.error("fielddraft: embedded font re-register failed", id, err);
-      }
-    }
-    return this.applyLoadedProject(parsed.project);
+    return this.applyLoadedProject(project);
   }
 
   /** Common tail of the load paths: reseed ids, rebuild scripts, load the

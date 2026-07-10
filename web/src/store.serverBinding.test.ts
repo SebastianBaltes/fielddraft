@@ -180,7 +180,7 @@ describe("publishProject — self-contained snapshot (P2 §6)", () => {
     const store = makeStore();
     // An asset-bearing workspace: the loaded doc embeds an imported_mesh, so
     // the server-stored document would be LEAN (asset externalized to a blob).
-    expect(store.loadProjectFromJson(meshProjectBlob())).toBe(true);
+    expect(await store.loadProjectFromJson(meshProjectBlob())).toBe(true);
     store.setProjectId("srvPub");
 
     const fetchMock = vi.fn(async (url: string | URL | Request, _init?: RequestInit) => {
@@ -243,7 +243,7 @@ describe("syncToServer — lean cloud save (P2)", () => {
 
   it("externalizes the mesh to a blob and sends the envelope for an asset workspace", async () => {
     const store = makeStore();
-    expect(store.loadProjectFromJson(meshProjectBlob())).toBe(true);
+    expect(await store.loadProjectFromJson(meshProjectBlob())).toBe(true);
     store.setProjectId("srv2");
 
     const fetchMock = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {

@@ -140,7 +140,7 @@ describe("KernelStore.openUserProjectFromBytes (ticket 4z37)", () => {
     // Before opening, nothing is persisted (inert autosave).
     expect(await loadProjectDoc()).toBeNull();
 
-    const ok = store.openUserProjectFromBytes(projectBytes("Opened4z37"));
+    const ok = await store.openUserProjectFromBytes(projectBytes("Opened4z37"));
     expect(ok).toBe(true);
     await tick(); // let the graduated (async, IndexedDB) autosave flush settle
 
@@ -158,7 +158,7 @@ describe("KernelStore.openUserProjectFromBytes (ticket 4z37)", () => {
     // Graduated for good: a subsequent open still persists through the now-real
     // autosave (not the inert boot handle).
     assets.doc = null;
-    store.openUserProjectFromBytes(projectBytes("Edited4z37"));
+    await store.openUserProjectFromBytes(projectBytes("Edited4z37"));
     await tick();
     expect(JSON.parse((await loadProjectDoc())!).name).toBe("Edited4z37");
   });

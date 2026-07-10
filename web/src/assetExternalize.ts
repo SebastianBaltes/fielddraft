@@ -17,10 +17,10 @@
  *                        aabb_min:[3], aabb_max:[3] } (a serialized MeshSdf)
  *  2. **Fonts** embedded as base64 under `__fontData` (string).
  *     NOTE: today the kernel document does NOT carry fonts — uploaded font
- *     bytes live in a JS-side cache and ride in the .fdraft ZIP separately
- *     (sketchTextFont.ts / project.ts `collectProjectAssets`). `__fontData`
- *     is the agreed embedding convention that lets P1b route ALL binaries
- *     through one content-addressed path. See the report for the P1b hook.
+ *     bytes live in a JS-side cache (sketchTextFont.ts) and are content-
+ *     addressed to blobs via the font-cache→blob path in projectPersistence.ts.
+ *     `__fontData` is the agreed embedding convention that lets P1b route ALL
+ *     binaries through one content-addressed path. See the report for the hook.
  *
  * Each externalized site loses its inline payload and gains an asset ref:
  *     { __asset: "<sha256hex>", __assetKind: "mesh" | "meshLegacy" | "font" }

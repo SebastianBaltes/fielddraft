@@ -474,10 +474,10 @@ export function SettingsMenu({
           // PATCH the file's content over it. Then enter the modeling view;
           // previously the load happened without a view switch ("nothing
           // happens").
-          file.arrayBuffer().then((buf) => {
+          void file.arrayBuffer().then(async (buf) => {
             if (!store) return;
             if (!inProject) store.detachServerProject();
-            if (store.openUserProjectFromBytes(buf) && !inProject) {
+            if ((await store.openUserProjectFromBytes(buf)) && !inProject) {
               onEnterProject();
             }
           });

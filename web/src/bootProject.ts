@@ -49,7 +49,7 @@ export async function loadBootProject(projectPath: string): Promise<void> {
     }
     const bytes = await res.arrayBuffer();
     const store = await getStore();
-    if (!store.loadProjectFromBytes(bytes)) {
+    if (!(await store.loadProjectFromBytes(bytes))) {
       // eslint-disable-next-line no-console
       console.error(`[FieldDraft] deep-link project parse failed: ${projectPath}`);
     }

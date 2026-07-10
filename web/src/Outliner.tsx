@@ -954,7 +954,7 @@ export function Outliner({
                   // wu2v: read bytes so ZIP `.fdraft` containers import; the
                   // store extracts document.json (or falls back to legacy JSON).
                   file.arrayBuffer().then((buf) => {
-                    store.addPartToAssembly(
+                    void store.addPartToAssembly(
                       buf,
                       file.name.replace(/\.(fdraft|json)$/, ""),
                     );

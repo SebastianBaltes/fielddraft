@@ -35,7 +35,7 @@
  * (sketchTextFont.ts) that a reload wipes. So a mesh survived a working-store
  * reload but an uploaded font did NOT: the doc kept the id, the bytes were gone,
  * and text rendered blank. P1c closes that: on persist we scan the referenced
- * `fontId`s (same walk as `ProjectStore.collectProjectAssets`), content-address
+ * `fontId`s (see {@link scanFontIds}), content-address
  * each font's bytes to a blob, and record a `fontId → hash` manifest in the
  * envelope; on load we resolve each manifest entry and push the bytes back into
  * the font cache. Fonts are purely additive to the mesh path.
@@ -204,7 +204,7 @@ function isObject(v: unknown): v is Record<string, unknown> {
 }
 
 /** Collect every uploaded `fontId` referenced anywhere in a parsed kernel
- *  document (mirrors `ProjectStore.collectProjectAssets`'s walk). */
+ *  document (the same `fontId` walk the `.fdraft` export relies on). */
 function collectFontIdsFromDoc(docJson: string, ids: Set<string>): void {
   let doc: unknown;
   try {
@@ -251,8 +251,7 @@ function scanFontIds(fullJson: string): Set<string> {
 
 /** Content-address every referenced uploaded font's retained bytes into
  *  `blobs` (dedup by hash) and return the `fontId → hash` manifest. Fonts
- *  with no retained bytes (never uploaded this session) are silently skipped —
- *  matching `collectProjectAssets`. */
+ *  with no retained bytes (never uploaded this session) are silently skipped. */
 async function collectFontBlobs(
   fullJson: string,
   blobs: Map<string, Uint8Array>,

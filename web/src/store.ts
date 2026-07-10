@@ -304,7 +304,7 @@ export class KernelStore {
 
   /** Public accessor for the live project as a `.fdraft` ZIP — see
    *  {@link ProjectStore.exportProjectFdraft} (bug-report flow, on3k). */
-  exportProjectFdraft(): Uint8Array {
+  exportProjectFdraft(): Promise<Uint8Array> {
     return this.project.exportProjectFdraft();
   }
 
@@ -863,15 +863,15 @@ export class KernelStore {
 
   // ── project persistence & server sync — see ProjectStore ──────────
 
-  saveProjectToFile(filename = "project.fdraft"): void {
-    this.project.saveProjectToFile(filename);
+  saveProjectToFile(filename = "project.fdraft"): Promise<void> {
+    return this.project.saveProjectToFile(filename);
   }
 
-  loadProjectFromJson(json: string): boolean {
+  loadProjectFromJson(json: string): Promise<boolean> {
     return this.project.loadProjectFromJson(json);
   }
 
-  loadProjectFromBytes(bytes: Uint8Array | ArrayBuffer): boolean {
+  loadProjectFromBytes(bytes: Uint8Array | ArrayBuffer): Promise<boolean> {
     return this.project.loadProjectFromBytes(bytes);
   }
 
@@ -883,8 +883,8 @@ export class KernelStore {
    *  action, so it graduates the tab out of repro mode (real autosave, URL
    *  param stripped) and force-writes the loaded project now. The automated
    *  ticket-repro boot never calls this, so it can't clobber another tab. */
-  openUserProjectFromBytes(bytes: Uint8Array | ArrayBuffer): boolean {
-    const ok = this.project.loadProjectFromBytes(bytes);
+  async openUserProjectFromBytes(bytes: Uint8Array | ArrayBuffer): Promise<boolean> {
+    const ok = await this.project.loadProjectFromBytes(bytes);
     if (!ok) return false;
     this.graduateFromDeepLink();
     // Persist immediately (deep-link tabs' load-time flush hit the noop).
@@ -1172,8 +1172,8 @@ export class KernelStore {
   addPartToAssembly(
     source: string | Uint8Array | ArrayBuffer,
     name?: string,
-  ): void {
-    this.assembly.addPartToAssembly(source, name);
+  ): Promise<void> {
+    return this.assembly.addPartToAssembly(source, name);
   }
 
   removePartFromAssembly(partId: string): void {

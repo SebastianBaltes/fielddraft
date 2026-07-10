@@ -24,7 +24,8 @@ import {
   type Visibility,
 } from "../api/platform";
 import { accountErrorMessage } from "./useAccount";
-import { parseProjectBytes, serializeProject } from "../project";
+import { serializeProject } from "../project";
+import { readFdraftProject } from "../fdraftFile";
 import {
   getLocalThumbnail,
   isLocalProjectsSupported,
@@ -215,16 +216,15 @@ export function ProjectsBrowser({
       "__import__",
       async () => {
         const bytes = new Uint8Array(await file.arrayBuffer());
-        const parsed = parseProjectBytes(bytes);
-        if (!parsed) {
+        const project = await readFdraftProject(bytes);
+        if (!project) {
           throw new Error(`“${file.name}” is not a valid FieldDraft project`);
         }
         const name =
-          file.name.replace(/\.(fdraft|json)$/i, "").trim() ||
-          parsed.project.name;
+          file.name.replace(/\.(fdraft|json)$/i, "").trim() || project.name;
         const created = await platformApi.createProject(
           name,
-          JSON.parse(serializeProject(parsed.project)),
+          JSON.parse(serializeProject(project)),
         );
         // Phase 3c: capture a preview once the imported geometry is meshed.
         armProjectThumbnailCapture();

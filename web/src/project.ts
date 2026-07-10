@@ -182,29 +182,46 @@ export function serializeProject(project: Project): string {
   return JSON.stringify(project);
 }
 
-// ── wu2v: ZIP container ──────────────────────────────────────────
+// ── Phase 3d: content-addressed `.fdraft` ZIP ────────────────────
 //
 // A saved `.fdraft` is a ZIP archive (via fflate, exactly like
-// `threemf.ts`) so it can carry uploaded binary assets alongside the
-// document JSON. Layout:
+// `threemf.ts`), self-contained and content-addressed. Layout:
 //
-//   document.json            the serialized Project (verbatim JSON)
-//   assets/fonts/<id>.<ext>  uploaded font bytes, keyed by font id
-//   manifest.json            index of asset types → archive paths
+//   project.json     the lean document ENVELOPE (`{ v, doc, fonts }` from
+//                    projectPersistence.externalizeProject) — features +
+//                    `__asset` mesh hashes + a `fontId → hash` manifest.
+//   assets/<hash>    every referenced binary blob (meshes AND fonts),
+//                    sha256hex-named and deduplicated. No raw mesh bytes
+//                    live in the document any more.
 //
-// Legacy `.fdraft` files are plain JSON (a serialized Project). The
-// loader (`parseProjectBytes`) sniffs the ZIP magic bytes ("PK") and
-// falls back to JSON, so old files keep opening.
+// The heavy externalize/inline + font-cache round-trip lives in
+// `fdraftFile.ts` (async, over a `ZipBlobBackend`); THIS module owns only
+// the pure byte layer: {@link serializeFdraftZip} writes the ZIP,
+// {@link readFdraftBytes} reads it back into its raw pieces.
+//
+// Backward compatibility (LOAD ONLY): an OLD `.fdraft` — plain JSON, or a
+// ZIP whose document lives in `document.json` with fonts under
+// `assets/fonts/<id>.<ext>` + a `manifest.json` and meshes embedded inline —
+// keeps opening. {@link readFdraftBytes} sniffs the format and returns a
+// `legacy` variant for those; no new `.fdraft` is ever written that way.
 //
 // NOTE: the in-app bug-report / server / vite ticket path keeps writing
-// plain JSON (see store.exportProjectJson) so tickets stay
-// agent-readable; only the user-facing Save/Open uses the ZIP.
+// plain JSON (see store.exportProjectJson) so tickets stay agent-readable;
+// only the user-facing Save/Open uses the ZIP.
 
+/** New format: the lean envelope entry (`{ v, doc, fonts }` JSON). */
+const ENVELOPE_PATH = "project.json";
+/** New format: content-addressed blob directory (`assets/<sha256hex>`). */
+const BLOB_DIR = "assets/";
+/** Legacy format: the embedded (full) project document. */
 const DOCUMENT_PATH = "document.json";
+/** Legacy format: the font-path index. */
 const MANIFEST_PATH = "manifest.json";
 
-/** Binary assets carried in a `.fdraft` ZIP alongside the document.
- *  Fonts are keyed by their `sketchTextFontId` (e.g. `uploaded:Foo.ttf`). */
+/** Binary assets carried in a LEGACY `.fdraft` ZIP alongside the document.
+ *  Fonts are keyed by their `sketchTextFontId` (e.g. `uploaded:Foo.ttf`).
+ *  New `.fdraft` files route every binary through the content-addressed
+ *  `assets/<hash>` path instead; this type only backs the legacy reader. */
 export interface ProjectAssets {
   fonts: Map<string, { bytes: Uint8Array; ext: string }>;
 }
@@ -214,50 +231,54 @@ export function emptyProjectAssets(): ProjectAssets {
   return { fonts: new Map() };
 }
 
-/** Sanitize a font id into a safe archive filename stem (font ids look
- *  like `uploaded:Foo Bar.ttf`, which is not a clean path component). */
-function fontAssetStem(id: string): string {
-  return id.replace(/[^A-Za-z0-9._-]/g, "_");
-}
-
 interface ProjectManifest {
-  /** font id → archive path of its bytes. */
+  /** font id → archive path of its bytes (legacy format only). */
   fonts: Record<string, string>;
 }
 
-/** wu2v: serialize a project + its assets into a `.fdraft` ZIP. */
-export function serializeProjectToZip(
-  project: Project,
-  assets: ProjectAssets,
+/**
+ * Phase 3d: serialize a lean document envelope + its content-addressed blob
+ * map into a `.fdraft` ZIP (`project.json` + `assets/<hash>`). The envelope
+ * and blobs come from {@link externalizeProject} (see `fdraftFile.ts`).
+ */
+export function serializeFdraftZip(
+  envelopeJson: string,
+  blobs: Map<string, Uint8Array>,
 ): Uint8Array {
-  const manifest: ProjectManifest = { fonts: {} };
   const files: Zippable = {
-    [DOCUMENT_PATH]: new TextEncoder().encode(serializeProject(project)),
+    [ENVELOPE_PATH]: new TextEncoder().encode(envelopeJson),
   };
-
-  for (const [id, { bytes, ext }] of assets.fonts) {
-    const path = `assets/fonts/${fontAssetStem(id)}.${ext}`;
-    files[path] = bytes;
-    manifest.fonts[id] = path;
+  for (const [hash, bytes] of blobs) {
+    files[`${BLOB_DIR}${hash}`] = bytes;
   }
-
-  files[MANIFEST_PATH] = new TextEncoder().encode(JSON.stringify(manifest));
   return zipSync(files);
 }
 
-/** wu2v: parse `.fdraft` bytes into a project + assets. Detects a ZIP by
- *  its magic bytes ("PK"); otherwise treats the bytes as legacy JSON
- *  text. Returns `null` on any malformed input. */
-export function parseProjectBytes(
-  bytes: Uint8Array,
-): { project: Project; assets: ProjectAssets } | null {
+/** The raw pieces {@link readFdraftBytes} extracts from a `.fdraft`.
+ *  `v2` is the content-addressed format (envelope + hash blobs); `legacy`
+ *  is an old fully-embedded file (plain JSON or `document.json`+manifest). */
+export type FdraftContents =
+  | { kind: "v2"; envelopeJson: string; blobs: Map<string, Uint8Array> }
+  | { kind: "legacy"; project: Project; assets: ProjectAssets };
+
+/**
+ * Phase 3d: read `.fdraft` bytes into their raw pieces, auto-detecting the
+ * format. Returns `null` on malformed input. The async inlining (mesh blobs
+ * back into the document, font blobs back into the cache) happens in
+ * `fdraftFile.ts`; here we only unzip and classify.
+ *
+ *  - Not a ZIP → legacy plain-JSON Project (report/legacy path).
+ *  - ZIP with `project.json` → `v2` (envelope + every `assets/<hash>` blob).
+ *  - ZIP with `document.json` → legacy embedded (fonts via manifest).
+ */
+export function readFdraftBytes(bytes: Uint8Array): FdraftContents | null {
   // ZIP local-file-header magic: 0x50 0x4b ("PK").
   const isZip = bytes.length >= 2 && bytes[0] === 0x50 && bytes[1] === 0x4b;
   if (!isZip) {
     // Legacy / report path: the whole file is the serialized Project JSON.
     const project = parseProject(new TextDecoder().decode(bytes));
     if (!project) return null;
-    return { project, assets: emptyProjectAssets() };
+    return { kind: "legacy", project, assets: emptyProjectAssets() };
   }
 
   let files: Record<string, Uint8Array>;
@@ -267,6 +288,25 @@ export function parseProjectBytes(
     return null;
   }
 
+  // New content-addressed format: `project.json` + `assets/<hash>` blobs.
+  const envelopeBytes = files[ENVELOPE_PATH];
+  if (envelopeBytes) {
+    const blobs = new Map<string, Uint8Array>();
+    for (const [path, data] of Object.entries(files)) {
+      if (!path.startsWith(BLOB_DIR)) continue;
+      const hash = path.slice(BLOB_DIR.length);
+      // Only direct `assets/<hash>` children (never a nested legacy subdir).
+      if (hash.length === 0 || hash.includes("/")) continue;
+      blobs.set(hash, data);
+    }
+    return {
+      kind: "v2",
+      envelopeJson: new TextDecoder().decode(envelopeBytes),
+      blobs,
+    };
+  }
+
+  // Legacy ZIP: `document.json` (embedded meshes) + `assets/fonts/…` + manifest.
   const docBytes = files[DOCUMENT_PATH];
   if (!docBytes) return null;
   const project = parseProject(new TextDecoder().decode(docBytes));
@@ -291,7 +331,7 @@ export function parseProjectBytes(
     }
   }
 
-  return { project, assets };
+  return { kind: "legacy", project, assets };
 }
 
 /** Parse + defensively validate a serialized project. Returns `null` on
