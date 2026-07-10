@@ -300,9 +300,11 @@ export function MesherLichenDialog({ onClose }: { onClose: () => void }) {
       <div className="vec-row">
         <label
           title={
-            "Max. Normalen-Knickwinkel pro Kante in Grad — kleiner = dichter, wo " +
-            "die Fläche/Kante krümmt. Greift erst, wenn der Krümmungsradius " +
-            "kleiner als h/α wird; auf leicht gekrümmten Flächen wirkungslos."
+            "Wie weit sich die Flächennormale über eine Kante drehen darf " +
+            "(0–90°, freie Nachkommastellen): kleiner = feineres Netz auf " +
+            "gekrümmten Stellen. Wirkt nur bei enger Krümmung — auf (fast) " +
+            "ebenen Flächen ändert der Wert nichts, dort bestimmt die Ziel-" +
+            "Kantenlänge h die Dichte."
           }
         >
           Krümmungswinkel (°)
@@ -311,7 +313,7 @@ export function MesherLichenDialog({ onClose }: { onClose: () => void }) {
           <NumberInput
             min={0}
             max={90}
-            step={1}
+            step={0.5}
             aria-label="Krümmungswinkel in Grad"
             value={curvAngleDeg}
             onChange={setCurvAngleDeg}
