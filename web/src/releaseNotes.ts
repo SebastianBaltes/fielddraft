@@ -24,6 +24,16 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.492",
+    entries: [
+      {
+        kind: "fix",
+        scope: "mesher",
+        text: "Lichen: Der Krümmungswinkel wirkt jetzt wirklich auf die Kanten-Dichte. Das Kanten-Resampling tastete die Kante erst uniform mit Schritt 0.15·h ab und dünnte dann per Winkel aus — kleine, stark gekrümmte Kanten (z.B. der 6-mm-Schnittkreis einer skalierten Kugel bei h=10) kollabierten dabei auf eine Handvoll Punkte, bevor der Winkel-Test überhaupt messen konnte. Jetzt wird der Knickwinkel direkt auf der krümmungsadaptiven B-Rep-Polyline akkumuliert; h unterteilt nur noch gerade Strecken.",
+      },
+    ],
+  },
+  {
     version: "0.6.491",
     entries: [
       {

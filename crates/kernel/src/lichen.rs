@@ -359,27 +359,53 @@ pub fn resample_edge_by_curvature(pts: &[[f32; 3]], h: f32, angle_rad: f32) -> V
     if pts.len() < 2 {
         return pts.to_vec();
     }
-    // Erst gleichmäßig FEIN abtasten (interpoliert → auch grobe Eingabe wird
-    // dicht), dann winkel-/längenbasiert ausdünnen.
-    let dense = crate::mesher_points::resample_polyline(pts, (0.15 * h).max(0.02));
+    // Direkt auf der ORIGINAL-Polyline arbeiten (die B-Rep-Tessellierung ist
+    // bereits krümmungsadaptiv): Knickwinkel an den Original-Vertices
+    // akkumulieren, Bogenlänge kontinuierlich — lange gerade Segmente werden
+    // bei h interpoliert unterteilt. Ein uniformes Pre-Sampling mit Schritt
+    // ~0.15·h (früherer Ansatz) zerstörte kleine, stark gekrümmte Kanten:
+    // ein 6-mm-Kreis wurde bei h=10 zu ~4 Punkten, bevor der Winkel-Test
+    // überhaupt messen konnte — der Krümmungswinkel war dort wirkungslos.
     let ang_thresh = angle_rad.max(0.01); // rad; Floor, damit α=0 nicht „nie"
-    let mut out = vec![dense[0]];
+    let mut out: Vec<[f32; 3]> = vec![pts[0]];
     let mut acc_len = 0.0f32;
     let mut acc_ang = 0.0f32;
-    for i in 1..dense.len() {
-        acc_len += dist(dense[i - 1], dense[i]);
-        if i >= 2 {
-            let a = norm(sub(dense[i - 1], dense[i - 2]));
-            let b = norm(sub(dense[i], dense[i - 1]));
-            acc_ang += dot(a, b).clamp(-1.0, 1.0).acos(); // Knickwinkel
+    let mut push = |out: &mut Vec<[f32; 3]>, p: [f32; 3]| {
+        if out.last().map_or(true, |&q| dist(q, p) > 1e-9) {
+            out.push(p);
         }
-        if i != dense.len() - 1 && (acc_len >= h || acc_ang >= ang_thresh) {
-            out.push(dense[i]);
+    };
+    for i in 1..pts.len() {
+        let a = pts[i - 1];
+        let b = pts[i];
+        let seg = dist(a, b);
+        // Längen-Unterteilung INNERHALB des Segments (Geraden spüren nur h).
+        let mut t0 = 0.0f32;
+        while seg > 1e-12 && acc_len + (1.0 - t0) * seg >= h {
+            let t = t0 + (h - acc_len) / seg;
+            push(&mut out, [
+                a[0] + t * (b[0] - a[0]),
+                a[1] + t * (b[1] - a[1]),
+                a[2] + t * (b[2] - a[2]),
+            ]);
             acc_len = 0.0;
             acc_ang = 0.0;
+            t0 = t;
+        }
+        acc_len += (1.0 - t0) * seg;
+        // Knickwinkel am inneren Vertex b (zwischen a→b und b→next).
+        if i + 1 < pts.len() {
+            let d1 = norm(sub(b, a));
+            let d2 = norm(sub(pts[i + 1], b));
+            acc_ang += dot(d1, d2).clamp(-1.0, 1.0).acos();
+            if acc_ang >= ang_thresh {
+                push(&mut out, b);
+                acc_len = 0.0;
+                acc_ang = 0.0;
+            }
         }
     }
-    out.push(dense[dense.len() - 1]);
+    push(&mut out, pts[pts.len() - 1]);
     out
 }
 

@@ -747,6 +747,33 @@ mod tests {
         assert_eq!(a.len(), b.len(), "straight edge: angle has no effect");
     }
 
+    /// Ticket-Regression: eine KLEINE, stark gekrümmte Kante (Kreis r=1,
+    /// Umfang ~6 mm) bei großem h (10) und kleinem Winkel muss DICHT bleiben.
+    /// Das frühere uniforme Pre-Sampling mit Schritt 0.15·h kollabierte den
+    /// Kreis auf ~4 Punkte, bevor der Winkel-Test greifen konnte.
+    #[test]
+    fn small_curved_edge_stays_dense_under_large_h() {
+        let n = 128usize;
+        let circle: Vec<[f32; 3]> = (0..=n)
+            .map(|k| {
+                let t = k as f32 / n as f32 * std::f32::consts::TAU;
+                [t.cos(), t.sin(), 0.0]
+            })
+            .collect();
+        // 2° Schwellwert: Gesamtdrehung 360° → ~180 Punkte, gedeckelt durch
+        // die Eingabedichte (128). Deutlich über dem alten Kollaps (~4).
+        let out = crate::lichen::resample_edge_by_curvature(
+            &circle,
+            10.0,
+            2.0f32.to_radians(),
+        );
+        assert!(
+            out.len() >= 100,
+            "r=1-Kreis bei h=10, α=2° muss dicht bleiben, got {}",
+            out.len()
+        );
+    }
+
     /// Der Trailing-Face-Normalen-Block liefert PRO Randpunkt ≥2 Kreis-Records
     /// (Kante = 2 Flächen, Ecke ≥3), Flächenpunkte genau einen — die Grundlage
     /// für „2 Kreise pro Randpunkt" im Overlay.
