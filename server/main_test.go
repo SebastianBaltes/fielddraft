@@ -721,3 +721,115 @@ func TestInviteInfoPublic(t *testing.T) {
 		t.Fatalf("expired token: got %+v, want valid=false and no prefill", info)
 	}
 }
+
+// TestPublishSnapshotSelfContained covers the P2 regression fix
+// (docs/PROJECT-ASSET-STORAGE-PLAN §6): the public, unauthenticated snapshot
+// viewer cannot fetch owner-auth-gated asset blobs, so an asset-bearing
+// published project must snapshot the SELF-CONTAINED full document the client
+// POSTs as `{document}`. Absent a body, publish falls back to the stored
+// (lean) document — backward-compat for asset-free / legacy clients.
+func TestPublishSnapshotSelfContained(t *testing.T) {
+	store := NewStore()
+	srv := NewServer(store)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+
+	client := &http.Client{
+		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+
+	// Register (invite-gated) and grab the session cookie.
+	invite := newInvite(t, store)
+	resp, err := client.Post(ts.URL+"/api/auth/register", "application/json",
+		strings.NewReader(`{"email":"pub@example.com","password":"secret123","display_name":"Pub","invite":"`+invite+`"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cookies := resp.Cookies()
+	resp.Body.Close()
+	if len(cookies) == 0 {
+		t.Fatal("no session cookie")
+	}
+	sessionCookie := cookies[0]
+
+	// Create a project holding a LEAN document (an externalized asset ref).
+	lean := `{"schemaVersion":1,"tabs":[{"kind":"part","__asset":"deadbeef"}]}`
+	req, _ := http.NewRequest("POST", ts.URL+"/api/projects",
+		strings.NewReader(`{"name":"Asset Part","document":`+lean+`}`))
+	req.AddCookie(sessionCookie)
+	resp, err = client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var proj Project
+	json.NewDecoder(resp.Body).Decode(&proj)
+	resp.Body.Close()
+	if proj.ID == "" {
+		t.Fatal("no project id")
+	}
+
+	publish := func(bodyJSON string) string {
+		t.Helper()
+		var r *http.Request
+		if bodyJSON == "" {
+			r, _ = http.NewRequest("POST", ts.URL+"/api/projects/"+proj.ID+"/publish", nil)
+		} else {
+			r, _ = http.NewRequest("POST", ts.URL+"/api/projects/"+proj.ID+"/publish",
+				strings.NewReader(bodyJSON))
+		}
+		r.AddCookie(sessionCookie)
+		res, e := client.Do(r)
+		if e != nil {
+			t.Fatal(e)
+		}
+		if res.StatusCode != 200 {
+			t.Fatalf("publish: got %d", res.StatusCode)
+		}
+		var pub struct {
+			SnapshotID string `json:"snapshot_id"`
+		}
+		json.NewDecoder(res.Body).Decode(&pub)
+		res.Body.Close()
+		if pub.SnapshotID == "" {
+			t.Fatal("no snapshot_id")
+		}
+		return pub.SnapshotID
+	}
+
+	// The viewer endpoint is UNAUTHENTICATED — fetch WITHOUT a cookie.
+	viewDoc := func(snapshotID string) string {
+		t.Helper()
+		res, e := http.Get(ts.URL + "/api/v/" + snapshotID)
+		if e != nil {
+			t.Fatal(e)
+		}
+		if res.StatusCode != 200 {
+			t.Fatalf("view: got %d", res.StatusCode)
+		}
+		var snap Snapshot
+		json.NewDecoder(res.Body).Decode(&snap)
+		res.Body.Close()
+		return string(snap.Document)
+	}
+
+	// Publish WITH a {document} body → snapshot carries THAT full, inline doc.
+	full := `{"schema_version":1,"name":"Part","feature_calls":[{"type":"imported_mesh","params":{"__positions":[0,0,0]}}],"next_feature_id":1}`
+	withBody := viewDoc(publish(`{"document":` + full + `}`))
+	if !strings.Contains(withBody, "__positions") || strings.Contains(withBody, "__asset") {
+		t.Fatalf("snapshot not self-contained from posted doc: %s", withBody)
+	}
+
+	// Publish WITHOUT a body → fall back to the stored (lean) document.
+	noBody := viewDoc(publish(""))
+	if !strings.Contains(noBody, "__asset") || strings.Contains(noBody, "__positions") {
+		t.Fatalf("no-body publish should snapshot the stored lean doc: %s", noBody)
+	}
+
+	// An empty JSON object body is treated like no body (fallback, not 400).
+	emptyObj := viewDoc(publish(`{}`))
+	if !strings.Contains(emptyObj, "__asset") {
+		t.Fatalf("empty-object body should fall back to stored doc: %s", emptyObj)
+	}
+}

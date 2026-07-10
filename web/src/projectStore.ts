@@ -526,11 +526,20 @@ export class ProjectStore {
   async publishProject(): Promise<string | null> {
     if (!this.state.projectId) return null;
     try {
+      // docs/PROJECT-ASSET-STORAGE-PLAN §6: publish a SELF-CONTAINED snapshot.
+      // The server-stored `document` is LEAN (assets externalized to
+      // auth-gated blobs), but the public viewer is unauthenticated and cannot
+      // fetch those blobs. `serializeProject()` still yields the FULL document
+      // (meshes/fonts inline — the kernel holds them), so we send it as the
+      // snapshot source; the viewer then loads it directly, no blob fetch.
+      const document = JSON.parse(this.serializeProject());
       const resp = await fetch(
         `/api/projects/${this.state.projectId}/publish`,
         {
           method: "POST",
           credentials: "include",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ document }),
         },
       );
       if (!resp.ok) return null;

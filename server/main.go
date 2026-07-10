@@ -598,7 +598,29 @@ func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, "not found")
 		return
 	}
-	snap := s.store.CreateSnapshot(proj.ID, proj.Document)
+	// docs/PROJECT-ASSET-STORAGE-PLAN §6 (P2 regression): a server-bound
+	// project stores a LEAN document — meshes/fonts are content-addressed
+	// blobs behind the owner-auth-gated /api/blobs. The public snapshot
+	// viewer is UNAUTHENTICATED and cannot fetch those blobs, so an
+	// asset-bearing published project would not load. The client therefore
+	// POSTs the SELF-CONTAINED full document (serializeProject, assets
+	// inline) as `{document}`; we snapshot that instead of the stored lean
+	// doc. An absent/empty body (legacy client, asset-free project) falls
+	// back to proj.Document, which is already self-contained.
+	doc := proj.Document
+	var body struct {
+		Document json.RawMessage `json:"document"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		if err != io.EOF {
+			writeErr(w, http.StatusBadRequest, "invalid JSON")
+			return
+		}
+		// Empty body — keep the stored document (backward-compat).
+	} else if len(body.Document) > 0 && string(body.Document) != "null" {
+		doc = body.Document
+	}
+	snap := s.store.CreateSnapshot(proj.ID, doc)
 	if snap == nil {
 		writeErr(w, http.StatusInternalServerError, "could not publish")
 		return

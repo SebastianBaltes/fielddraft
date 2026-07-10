@@ -24,6 +24,16 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.494",
+    entries: [
+      {
+        kind: "fix",
+        scope: "cloud",
+        text: "Veröffentlichte Projekte mit importierten Meshes oder hochgeladenen Fonts laden jetzt korrekt im öffentlichen Viewer. Seit dem schlanken Cloud-Speichern (Phase 2) liegen Assets als owner-authentifizierte Blobs — der unauthentifizierte Viewer hätte sie nicht laden können. Beim Publizieren wird jetzt das volle, selbst-enthaltene Dokument (Assets eingebettet) als Snapshot gespeichert, sodass der Viewer ohne Blob-Zugriff auskommt. Asset-freie Projekte sind unverändert.",
+      },
+    ],
+  },
+  {
     version: "0.6.493",
     entries: [
       {

@@ -95,6 +95,7 @@ beforeEach(() => {
 afterEach(() => {
   clearStoredServerBinding();
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
 });
 
 describe("server-project binding persistence", () => {
@@ -173,6 +174,47 @@ function meshProjectBlob(): string {
     activeTabId: "tab_1",
   });
 }
+
+describe("publishProject — self-contained snapshot (P2 §6)", () => {
+  it("POSTs the FULL serialized document as {document} so the viewer needs no blobs", async () => {
+    const store = makeStore();
+    // An asset-bearing workspace: the loaded doc embeds an imported_mesh, so
+    // the server-stored document would be LEAN (asset externalized to a blob).
+    expect(store.loadProjectFromJson(meshProjectBlob())).toBe(true);
+    store.setProjectId("srvPub");
+
+    const fetchMock = vi.fn(async (url: string | URL | Request, _init?: RequestInit) => {
+      if (String(url).endsWith("/publish")) {
+        return new Response(
+          JSON.stringify({ snapshot_id: "snap9", view_url: "/api/v/snap9" }),
+          { status: 200 },
+        );
+      }
+      return new Response("{}", { status: 200 });
+    });
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    // Stub the clipboard so publishProject's embed-copy resolves cleanly
+    // (jsdom has no clipboard; the fallback `prompt` is not implemented).
+    vi.stubGlobal("navigator", {
+      clipboard: { writeText: vi.fn(async () => {}) },
+    });
+
+    expect(await store.publishProject()).toBe("snap9");
+
+    const publish = fetchMock.mock.calls.find((c) =>
+      String(c[0]).endsWith("/api/projects/srvPub/publish"),
+    );
+    expect(publish).toBeDefined();
+    const init = publish![1] as RequestInit;
+    expect(init.method).toBe("POST");
+    const body = JSON.parse(init.body as string) as { document: unknown };
+    // The published document is the FULL project blob with the mesh INLINE
+    // (no blob fetch needed) — never an externalized `__asset` reference.
+    const docStr = JSON.stringify(body.document);
+    expect(docStr).toContain("__positions");
+    expect(docStr).not.toContain("__asset");
+  });
+});
 
 describe("syncToServer — lean cloud save (P2)", () => {
   it("sends the plain Project blob for an asset-free workspace", async () => {
