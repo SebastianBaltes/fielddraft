@@ -116,7 +116,14 @@ pub fn ssi_seeds(
         (HalfSpace::Plane { .. }, HalfSpace::Sphere { .. })
         | (HalfSpace::Sphere { .. }, HalfSpace::Plane { .. })
         | (HalfSpace::Sphere { .. }, HalfSpace::Sphere { .. }) => {
-            return sphere_like(a, ta, b, tb, overlap);
+            // The closed form works on the WORLD circle, so a sphere's local
+            // radius must be liftable — only under a uniform placement scale.
+            // A non-uniformly scaled sphere is an ellipsoid: fall through to
+            // the parameter-domain scan, which evaluates both operands in
+            // their local frames and handles any scale.
+            if uniform_scale(ta).is_some() && uniform_scale(tb).is_some() {
+                return sphere_like(a, ta, b, tb, overlap);
+            }
         }
         _ => {}
     }
@@ -669,7 +676,11 @@ fn sphere_like(
     let HalfSpace::Sphere { radius: r } = sphere else {
         unreachable!()
     };
-    let r = *r;
+    // Lift the LOCAL radius to world units: the placement may carry a uniform
+    // scale (a scaled feature — ticket a26a's ×0.02 sphere presented a r=50
+    // world circle to a box face and silently seeded nothing). `ssi_seeds`
+    // gates this path on uniform scales, so scale[0] is representative.
+    let r = *r * ts.scale[0].abs();
     let centre = local_to_world(ts, [0.0, 0.0, 0.0]);
 
     match other {
@@ -686,7 +697,7 @@ fn sphere_like(
             seed_from_circle(circ_c, n, circ_r, overlap)
         }
         HalfSpace::Sphere { radius: r2 } => {
-            let r2 = *r2;
+            let r2 = *r2 * to.scale[0].abs();
             let c2 = local_to_world(to, [0.0, 0.0, 0.0]);
             let d = vlen(vsub(c2, centre));
             if d < PARALLEL_EPS {
@@ -977,6 +988,19 @@ fn pad_aabb(b: &Aabb) -> Aabb {
         max[i] += p;
     }
     Aabb { min, max }
+}
+
+/// The transform's uniform scale factor, or `None` if the three axes differ
+/// (beyond float drift). Gates the closed-form sphere circle lift in
+/// [`ssi_seeds`].
+fn uniform_scale(t: &Transform) -> Option<f32> {
+    let s = t.scale;
+    let tol = 1e-6 * s[0].abs().max(1.0);
+    if (s[0] - s[1]).abs() < tol && (s[0] - s[2]).abs() < tol {
+        Some(s[0])
+    } else {
+        None
+    }
 }
 
 /// Largest scale component of a transform (world stretch upper bound).

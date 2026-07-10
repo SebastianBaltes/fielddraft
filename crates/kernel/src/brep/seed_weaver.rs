@@ -1319,6 +1319,75 @@ mod tests {
         assert!(brep.edges.len() >= 12, "expected the full sliver edge set, got {}", brep.edges.len());
     }
 
+    /// Ticket a26a: a small *scaled* sphere unioned onto the l45r gyroid
+    /// sliver must weave its sphere×gyroid-wall seam — the reporter saw the
+    /// selected gyroid face missing exactly that bounding edge.
+    #[test]
+    fn ticket_a26a_scaled_sphere_gyroid_seam_is_woven() {
+        let gy = CsgNode::Leaf {
+            id: FeatureId::from_u32(2),
+            primitive: Primitive::Gyroid { cell_size: 10.0, thickness: 1.0 },
+        };
+        let sph = CsgNode::Leaf {
+            id: FeatureId::from_u32(1),
+            primitive: Primitive::Sphere { center: [0.0; 3], radius: 50.0 },
+        };
+        let cyl = cylinder_leaf(3, [0.0, 0.0, 0.0], 30.0, 60.0);
+        let bx = box_leaf(4, [7.970110677489131, 22.314295, 29.869688], [3.0, 4.0, 3.0]);
+        let sliver = CsgNode::Intersection(
+            Box::new(CsgNode::Difference(
+                Box::new(CsgNode::Intersection(Box::new(sph), Box::new(gy))),
+                Box::new(cyl),
+            )),
+            Box::new(bx),
+        );
+        // Sphere 6: r=50 scaled ×0.02 → effective r=1, translated onto the wall.
+        let small = CsgNode::Transform(
+            fielddraft_protocol::Transform {
+                translate: [5.2107882, 22.11431, 29.24847473977133],
+                rotation: [0.0, 0.0, 0.0, 1.0],
+                scale: [0.02, 0.02, 0.02],
+            },
+            Box::new(CsgNode::Leaf {
+                id: FeatureId::from_u32(6),
+                primitive: Primitive::Sphere { center: [0.0; 3], radius: 50.0 },
+            }),
+        );
+        let csg = CsgNode::Union(Box::new(sliver), Box::new(small));
+        let body = BoundedCsg::from_csg(&csg);
+        let brep = weave_branch_seeds_partial(&body).expect("body must partial-weave");
+
+        let has_pair = |fa: u32, fb: u32| {
+            brep.edges.iter().any(|e| {
+                let (a, b) = e.signature;
+                (a.feature_id() == fa && b.feature_id() == fb)
+                    || (a.feature_id() == fb && b.feature_id() == fa)
+            })
+        };
+        // The sphere pokes out of the gyroid wall (one cap → one closed ring)…
+        assert!(has_pair(2, 6), "scaled sphere × gyroid wall seam missing");
+        // …and out of the box −x face; the SSI closed form used to lift the
+        // sphere's LOCAL radius (50) into the world circle, so this pair
+        // silently seeded nothing and the face loops of 4.1/6.0 collapsed.
+        assert!(has_pair(4, 6), "scaled sphere × box face seam missing");
+        assert!(has_pair(3, 6), "scaled sphere × cylinder bore seam missing");
+
+        // Every sampled edge point lies ON the body boundary.
+        for e in &brep.edges {
+            for q in crate::brep::edge_sampling::sample_edge(&e.geometry) {
+                let f = body.sdf(
+                    [q[0] as f32, q[1] as f32, q[2] as f32],
+                    crate::csg::EvalMode::Logical,
+                );
+                assert!(
+                    f.abs() < 1e-2,
+                    "edge point {q:?} off the body boundary: {f} (edge {:?})",
+                    e.signature
+                );
+            }
+        }
+    }
+
     /// Ticket 7cv2 diagnostic: face loops of the sliver.
     #[test]
     #[ignore]

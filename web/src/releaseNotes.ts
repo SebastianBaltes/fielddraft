@@ -24,6 +24,17 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.490",
+    entries: [
+      {
+        kind: "fix",
+        scope: "brep",
+        text: "Skalierte Kugeln bekommen wieder vollständige BRep-Kanten: Die exakte Schnittkreis-Berechnung (Kugel×Ebene, Kugel×Kugel) ignorierte die Scale-Transform des Features — eine ×0.02 skalierte Kugel wurde mit ihrem unskalierten Radius (50 statt 1) geschnitten, der Seam an Box-Flächen fiel dadurch stillschweigend weg und die betroffene Fläche war nicht mehr komplett von Kanten umschlossen. Nicht-uniform skalierte Kugeln (Ellipsoide) nehmen jetzt den Parameterraum-Scan statt der geschlossenen Form.",
+        tickets: ["20260710-163918-a26a"],
+      },
+    ],
+  },
+  {
     version: "0.6.489",
     entries: [
       {
