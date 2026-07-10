@@ -856,6 +856,37 @@ mod tests {
         assert_watertight(&out);
     }
 
+    /// Ticket ee07b6f1: Wachstum auf einem Teil, das KLEINER als h ist — der
+    /// frühere 0.2·h-Floor klemmte den Wachstumsradius auf 2 mm (bei h=10)
+    /// und verwarf die Krümmungs-Verfeinerung: auf einem kleinen gekrümmten
+    /// Körper wuchs genau EIN Innenpunkt. Jetzt floort der Min. Kantenabstand,
+    /// R_curv greift, und ein r=1.5-Zylinder bekommt bei h=10 eine echte
+    /// Punktwolke.
+    #[test]
+    fn growth_refines_below_h_on_small_curved_part() {
+        let mut k = crate::Kernel::new();
+        k.add_primitive(
+            Primitive::KIND_CYLINDER,
+            BoolOp::TAG_NEW,
+            0.0,
+            0.0,
+            0.0,
+            1.5,
+            3.0,
+            0.0,
+        )
+        .unwrap();
+        let out = k.lichen_mesh(
+            r#"{"targetEdgeLength":10.0,"grow":true,"curvAngleDeg":20.0,"minEdgeSpacing":0.05,"maxPoints":20000,"triangulate":false}"#.into(),
+        );
+        let total = out[0] as usize;
+        let surf = (0..total).filter(|&i| out[3 + i * 9 + 8] as i32 == 1).count();
+        assert!(
+            surf > 30,
+            "Krümmungs-Verfeinerung muss auf dem kleinen Zylinder greifen, got {surf} Innenpunkte"
+        );
+    }
+
     /// Interior surface points must grow whether or not the reach term is on
     /// (ticket: "use reach off ⇒ no interior points" was a bug).
     #[test]
@@ -1166,4 +1197,5 @@ mod tests {
         assert_eq!(checked, 8, "all eight box corners checked");
     }
 }
+
 

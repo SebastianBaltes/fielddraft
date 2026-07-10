@@ -24,6 +24,17 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.501",
+    entries: [
+      {
+        kind: "fix",
+        scope: "mesher",
+        text: "Lichen: Grow findet wieder Innenpunkte auf Teilen, die kleiner als h sind. Der Wachstumsradius war hart auf mindestens 0.2·h geklemmt (bei h=10 also 2 mm) — auf dem 6×8×6-mm-Beispielteil passte damit genau ein Innenpunkt, und die Krümmungs-Verfeinerung (R_curv ≈ 0.3 mm auf der Gyroid-Wand) kam nie zum Zug. Der Floor ist jetzt der Min. Kantenabstand (konsistent mit der Kanten-Abtastung): auf dem Ticket-Modell wachsen statt 1 nun ~1350 Innenpunkte, krümmungsadaptiv verteilt.",
+        tickets: ["ee07b6f1"],
+      },
+    ],
+  },
+  {
     version: "0.6.500",
     entries: [
       {

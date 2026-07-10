@@ -218,7 +218,12 @@ where
     if opts.use_reach {
         r = r.min(reach(p, n, h, opts.reach_tol, fg));
     }
-    r.clamp(0.2 * h, h)
+    // Untere Grenze = Min. Kantenabstand (konsistent mit der Kanten-
+    // Abtastung), NICHT 0.2·h: der frühere 0.2h-Floor verwarf die gesamte
+    // Krümmungs-Verfeinerung — auf einem 6-mm-Teil bei h=10 war r überall
+    // auf 2 mm geklemmt, R_curv (z.B. 0.3 mm auf einer Gyroid-Wand) kam nie
+    // zum Zug und das Wachstum fand genau einen Innenpunkt (Ticket ee07b6f1).
+    r.clamp(opts.min_edge_spacing.max(1e-4).min(h), h)
 }
 
 #[inline]
