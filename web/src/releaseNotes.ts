@@ -30,7 +30,7 @@ export const RELEASE_NOTES: ReleaseNote[] = [
         kind: "feat",
         scope: "projects",
         tickets: ["14cff61"],
-        text: "Vorschaubilder gelten jetzt für ALLE Projekte — Cloud UND lokale. Erzeugt werden sie beim Verlassen der Editor-Ansicht (und einmalig bei Neu-Anlage), nicht mehr bei jedem Speichern: das spart GPU/Upload und aktualisiert die Vorschau genau dann, wenn die Galerie sie zeigt. Cloud-Projekte laden ihr Thumbnail wie bisher vom Server; lokale Projekte speichern es in IndexedDB (pro Projekt) und die Übersicht zeigt es auf den „Auf diesem Gerät"-Karten. Weiterhin gedrosselt (höchstens 1×/30 s).",
+        text: "Vorschaubilder gelten jetzt für ALLE Projekte — Cloud UND lokale. Erzeugt werden sie beim Verlassen der Editor-Ansicht (und einmalig bei Neu-Anlage), nicht mehr bei jedem Speichern: das spart GPU/Upload und aktualisiert die Vorschau genau dann, wenn die Galerie sie zeigt. Cloud-Projekte laden ihr Thumbnail wie bisher vom Server; lokale Projekte speichern es in IndexedDB (pro Projekt) und die Übersicht zeigt es auf den „Auf diesem Gerät“-Karten. Weiterhin gedrosselt (höchstens 1×/30 s).",
       },
     ],
   },
