@@ -1057,6 +1057,29 @@ function SettingsDialog({
               </div>
 
               <div className="setting-group">
+                <div className="setting-group-title">Cloud</div>
+                <div
+                  className="setting-row"
+                  data-testid="setting-cloud-sync-interval"
+                >
+                  <span
+                    className="setting-label"
+                    title="Ein an die Cloud gebundenes Projekt wird bei ungespeicherten Änderungen in diesem Abstand automatisch hochgeladen. 0 = aus (es wird dann nur beim Verlassen des Editors und beim Schließen des Tabs gespeichert)."
+                  >
+                    Cloud-Sync-Intervall (Min, 0 = aus)
+                  </span>
+                  <NumberInput
+                    className="setting-number"
+                    value={settings.cloudSyncIntervalMin}
+                    min={0}
+                    max={60}
+                    onChange={(v) => set("cloudSyncIntervalMin", v)}
+                    data-testid="setting-cloud-sync-interval-input"
+                  />
+                </div>
+              </div>
+
+              <div className="setting-group">
                 <div className="setting-group-title">Debug</div>
                 <div className="setting-row" data-testid="setting-edge-points">
                   <span className="setting-label" title="Highlight each B-Rep edge's individual sample points — reveals whether a NURBS edge is tessellated into many points or few.">

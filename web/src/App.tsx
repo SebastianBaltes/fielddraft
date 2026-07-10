@@ -10,6 +10,7 @@ import { dispatchKeyboardCommand } from "./keyboardCommands";
 import { SettingsMenu } from "./SettingsMenu";
 import { loadSettings, WorkspaceUnitsContext } from "./settings";
 import type { SettingsState } from "./settings";
+import { cloudSyncIfDirty, startCloudSyncTimer } from "./cloudSyncScheduler";
 import { ProjectTitle } from "./ProjectTitle";
 import { CONTROLS_PRESETS, viewShortcutRow } from "./controlsPreset";
 import {
@@ -441,6 +442,61 @@ function AppShell({ account }: { account: UseAccount }) {
   // both; the modeling chrome (toolbar/viewport/outliner/meta) mounts only in
   // the project view.
   const inProject = account.state.page === "project";
+
+  // ── P3b: Cloud auto-sync (docs/PROJECT-ASSET-STORAGE-PLAN §5.7) ─────
+  // A server-bound project is pushed to the cloud on three dirty-gated
+  // triggers. The gate lives in cloudSyncScheduler (fires only when the
+  // session is "dirty" AND a projectId is bound); after a successful sync
+  // syncState → "clean", so any redundant follow-up trigger is a no-op. All
+  // three read the store's LIVE state, never a captured render snapshot.
+
+  // 1. Periodic timer — interval from settings (minutes; 0 = off). Recreated
+  //    when the interval changes; cleared on unmount.
+  useEffect(() => {
+    if (!store) return;
+    return startCloudSyncTimer({
+      intervalMs: settings.cloudSyncIntervalMin * 60_000,
+      getSyncState: () => store.getState().syncState,
+      getProjectId: () => store.getState().projectId,
+      sync: () => void store.syncToServer(),
+    });
+  }, [store, settings.cloudSyncIntervalMin]);
+
+  // 2. Exit the editor view → a reliable sync. `inProject` flips false when the
+  //    user navigates back to the overview (the ◀ button / account.showOverview
+  //    / browser Back). The tab stays alive, so the full blob-upload + PATCH
+  //    runs to completion in the background (no keepalive needed).
+  const prevInProjectRef = useRef(inProject);
+  useEffect(() => {
+    const was = prevInProjectRef.current;
+    prevInProjectRef.current = inProject;
+    if (was && !inProject && store) {
+      cloudSyncIfDirty({
+        getSyncState: () => store.getState().syncState,
+        getProjectId: () => store.getState().projectId,
+        sync: () => void store.syncToServer(),
+      });
+    }
+  }, [inProject, store]);
+
+  // 3. beforeunload → best-effort. The small document PATCH uses keepalive:true
+  //    so it can outlive the unload; the preceding blob uploads are ordinary
+  //    fetches the browser may abort mid-flight. That's acceptable: blobs are
+  //    normally already uploaded by triggers 1/2, and IndexedDB is the safety
+  //    net (the next boot re-syncs the persisted doc). Fire-and-forget — a
+  //    beforeunload handler cannot await.
+  useEffect(() => {
+    if (!store) return;
+    const onBeforeUnload = () => {
+      cloudSyncIfDirty({
+        getSyncState: () => store.getState().syncState,
+        getProjectId: () => store.getState().projectId,
+        sync: () => void store.syncToServer({ keepalive: true }),
+      });
+    };
+    window.addEventListener("beforeunload", onBeforeUnload);
+    return () => window.removeEventListener("beforeunload", onBeforeUnload);
+  }, [store]);
 
   // ── URL-hash routing (ticket 3032c29b) ─────────────────────────────
   // Issues and projects have URLs; browser Back works. The hash is a pure

@@ -24,6 +24,16 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.495",
+    entries: [
+      {
+        kind: "feat",
+        scope: "cloud",
+        text: "Cloud-Projekte speichern jetzt automatisch zum Server (Phase 3): periodisch (einstellbares Intervall, Standard 1 Minute — 0 schaltet es aus), beim Verlassen der Editor-Ansicht und beim Schließen/Neuladen des Tabs. Jeder Trigger feuert nur, wenn es ungespeicherte Änderungen gibt (kein unnötiger Traffic). Dank des schlanken Cloud-Dokuments (Phase 2) schickt der Sync nur das kleine Feature-Dokument, nicht die Mesh-Bytes. Das neue Intervall stellt man unter Einstellungen ▸ Cloud ein. Bisher wurde ein Cloud-Projekt nur beim Export gespeichert.",
+      },
+    ],
+  },
+  {
     version: "0.6.494",
     entries: [
       {

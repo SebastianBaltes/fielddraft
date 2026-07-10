@@ -54,6 +54,7 @@ function setup() {
     controlsPreset: "onshape",
     autoReload: true,
     autosaveDebounceSec: 5,
+    cloudSyncIntervalMin: 1,
   };
 
   const onChange = vi.fn((next: SettingsState) => {
@@ -473,6 +474,7 @@ describe("loadSettings", () => {
       controlsPreset: "onshape",
       autoReload: true,
     autosaveDebounceSec: 5,
+    cloudSyncIntervalMin: 1,
     });
   });
 
@@ -509,6 +511,7 @@ describe("loadSettings", () => {
       controlsPreset: "onshape",
       autoReload: true,
     autosaveDebounceSec: 5,
+    cloudSyncIntervalMin: 1,
     });
   });
 

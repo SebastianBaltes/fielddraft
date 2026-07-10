@@ -457,8 +457,14 @@ export class ProjectStore {
    *  features + asset hashes. An ASSET-FREE workspace is sent as the plain
    *  Project blob (no envelope) so publish/gallery-copy keep the exact document
    *  shape they load today; only asset-bearing projects get the `{ v, doc, fonts }`
-   *  envelope. */
-  async syncToServer(): Promise<boolean> {
+   *  envelope.
+   *
+   *  P3b: `opts.keepalive` sets `keepalive: true` on the document PATCH so it can
+   *  outlive a `beforeunload` (browsers keep keepalive requests in flight as the
+   *  page unloads). Only the small doc PATCH gets it — the preceding blob uploads
+   *  are ordinary fetches; on a real unload they have usually already run via the
+   *  periodic/exit triggers (IndexedDB is the safety net if not). */
+  async syncToServer(opts: { keepalive?: boolean } = {}): Promise<boolean> {
     if (!this.state.projectId || this.state.syncState === "offline") {
       return false;
     }
@@ -486,6 +492,7 @@ export class ProjectStore {
       const res = await fetch(`/api/projects/${this.state.projectId}`, {
         method: "PATCH",
         credentials: "include",
+        keepalive: opts.keepalive ?? false,
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ document }),
       });

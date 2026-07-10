@@ -944,8 +944,8 @@ export class KernelStore {
     this.project.detachServerProject();
   }
 
-  syncToServer(): Promise<boolean> {
-    return this.project.syncToServer();
+  syncToServer(opts?: { keepalive?: boolean }): Promise<boolean> {
+    return this.project.syncToServer(opts);
   }
 
   newProject(): void {
