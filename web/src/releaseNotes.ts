@@ -24,6 +24,17 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.495",
+    entries: [
+      {
+        kind: "fix",
+        scope: "mesher",
+        text: "Lichen: Kanten-Abtastung mit Grading — benachbarte Segmentlängen wachsen höchstens um Faktor 1.5, statt an einer Ecken-Häufung abrupt von 0.01 mm auf h zu springen. Da U(p) eines Kettenpunkts der Abstand zum nächsten Nachbarn ist, überlappen sich die U(p)-Kreise benachbarter Punkte damit überall (U_a+U_b ≥ 2d/1.5 > d): Kanten sind vollständig von einander schneidenden Kreisen überdeckt, und im U-Kreis einer Ecke liegen ihre Ketten-Nachbarn.",
+        tickets: ["e1a10bcd"],
+      },
+    ],
+  },
+  {
     version: "0.6.494",
     entries: [
       {

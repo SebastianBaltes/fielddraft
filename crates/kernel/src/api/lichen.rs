@@ -843,6 +843,45 @@ mod tests {
         );
     }
 
+    /// Ticket e1a10bcd: Grading — nach einer dichten Häufung (enge Kurve)
+    /// darf die Segmentlänge nicht abrupt auf h springen, sondern wächst
+    /// höchstens um den Faktor 1.5 pro Segment. Damit überlappen sich die
+    /// U(p)-Kreise benachbarter Kettenpunkte überall (U = Nachbarabstand ⇒
+    /// U_a + U_b ≥ 2d/1.5 > d): Kanten sind vollständig überdeckt, und im
+    /// U-Kreis einer Ecke liegen ihre Ketten-Nachbarn.
+    #[test]
+    fn edge_grading_bounds_neighbour_segment_ratio() {
+        // Viertelkreis r=0.5 (eng gekrümmt → dichte Winkel-Emission), dann
+        // eine 30-mm-Gerade: genau die Ecken-Häufung-neben-h-Lauf-Situation.
+        let mut poly: Vec<[f32; 3]> = (0..=64)
+            .map(|k| {
+                let t = k as f32 / 64.0 * std::f32::consts::FRAC_PI_2;
+                [0.5 * t.sin(), 0.5 * (1.0 - t.cos()), 0.0]
+            })
+            .collect();
+        let end = *poly.last().unwrap();
+        poly.push([end[0] + 30.0, end[1], 0.0]);
+        let out = crate::lichen::resample_edge_by_curvature(
+            &poly,
+            10.0,
+            10.0f32.to_radians(),
+            0.01,
+        );
+        assert!(out.len() >= 8, "Kurve + Grading-Übergang erwartet, got {}", out.len());
+        let seg = |a: [f32; 3], b: [f32; 3]| {
+            ((b[0] - a[0]).powi(2) + (b[1] - a[1]).powi(2) + (b[2] - a[2]).powi(2)).sqrt()
+        };
+        for k in 2..out.len() {
+            let d0 = seg(out[k - 2], out[k - 1]).max(1e-6);
+            let d1 = seg(out[k - 1], out[k]).max(1e-6);
+            let ratio = (d1 / d0).max(d0 / d1);
+            assert!(
+                ratio <= 1.6,
+                "Segment-Sprung an {k}: {d0:.4} → {d1:.4} (ratio {ratio:.2})"
+            );
+        }
+    }
+
     /// Der Trailing-Face-Normalen-Block liefert PRO Randpunkt ≥2 Kreis-Records
     /// (Kante = 2 Flächen, Ecke ≥3), Flächenpunkte genau einen — die Grundlage
     /// für „2 Kreise pro Randpunkt" im Overlay.

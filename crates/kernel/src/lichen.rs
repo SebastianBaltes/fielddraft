@@ -381,49 +381,111 @@ pub fn resample_edge_by_curvature(
     // ein 6-mm-Kreis wurde bei h=10 zu ~4 Punkten, bevor der Winkel-Test
     // überhaupt messen konnte — der Krümmungswinkel war dort wirkungslos.
     let ang_thresh = angle_rad.max(0.01); // rad; Floor, damit α=0 nicht „nie"
-    let mut out: Vec<[f32; 3]> = vec![pts[0]];
-    let mut acc_len = 0.0f32;
-    let mut acc_ang = 0.0f32;
-    let mut push = |out: &mut Vec<[f32; 3]>, p: [f32; 3]| {
-        if out.last().map_or(true, |&q| dist(q, p) > 1e-9) {
-            out.push(p);
-        }
-    };
+
+    // Kumulative Bogenlängen der Original-Polyline: Emissionen werden als
+    // Bogen-POSITIONEN gesammelt, damit die anschließende Grading-Passe neue
+    // Punkte exakt AUF der Polyline interpolieren kann.
+    let mut cum: Vec<f32> = Vec::with_capacity(pts.len());
+    let mut acc = 0.0f32;
+    cum.push(0.0);
     for i in 1..pts.len() {
-        let a = pts[i - 1];
-        let b = pts[i];
-        let seg = dist(a, b);
-        // Längen-Unterteilung INNERHALB des Segments (Geraden spüren nur h).
-        let mut t0 = 0.0f32;
-        while seg > 1e-12 && acc_len + (1.0 - t0) * seg >= h {
-            let t = t0 + (h - acc_len) / seg;
-            push(&mut out, [
-                a[0] + t * (b[0] - a[0]),
-                a[1] + t * (b[1] - a[1]),
-                a[2] + t * (b[2] - a[2]),
-            ]);
-            acc_len = 0.0;
+        acc += dist(pts[i - 1], pts[i]);
+        cum.push(acc);
+    }
+    let total = acc;
+    if total <= 1e-12 {
+        return vec![pts[0], pts[pts.len() - 1]];
+    }
+
+    // ── Pass 1: Emissions-Positionen (h-Länge ODER Knickwinkel) ──
+    let mut s_out: Vec<f32> = vec![0.0];
+    let mut acc_ang = 0.0f32;
+    for i in 1..pts.len() {
+        // Längen-Unterteilung: alle h Bogenlänge seit der letzten Emission
+        // (Geraden spüren nur h).
+        while cum[i] - *s_out.last().unwrap() >= h {
+            let s = s_out.last().unwrap() + h;
+            s_out.push(s);
             acc_ang = 0.0;
-            t0 = t;
         }
-        acc_len += (1.0 - t0) * seg;
-        // Knickwinkel am inneren Vertex b (zwischen a→b und b→next). Die
-        // Winkel-Emission respektiert den Mindestabstand zum zuletzt
-        // gesetzten Punkt; die h-Unterteilung oben bleibt davon unberührt.
+        // Knickwinkel am inneren Vertex i (zwischen den Nachbarsegmenten).
+        // Die Winkel-Emission respektiert den Mindestabstand zum zuletzt
+        // gesetzten Punkt (Ticket 6d3f4a7f).
         if i + 1 < pts.len() {
-            let d1 = norm(sub(b, a));
-            let d2 = norm(sub(pts[i + 1], b));
+            let d1 = norm(sub(pts[i], pts[i - 1]));
+            let d2 = norm(sub(pts[i + 1], pts[i]));
             acc_ang += dot(d1, d2).clamp(-1.0, 1.0).acos();
-            if acc_ang >= ang_thresh
-                && out.last().map_or(true, |&q| dist(q, b) >= min_spacing)
-            {
-                push(&mut out, b);
-                acc_len = 0.0;
+            if acc_ang >= ang_thresh && cum[i] - *s_out.last().unwrap() >= min_spacing {
+                s_out.push(cum[i]);
                 acc_ang = 0.0;
             }
         }
     }
-    push(&mut out, pts[pts.len() - 1]);
+    if total - *s_out.last().unwrap() > 1e-9 {
+        s_out.push(total);
+    } else {
+        *s_out.last_mut().unwrap() = total;
+    }
+
+    // ── Pass 2: Grading (Ticket e1a10bcd) — benachbarte Segmentlängen dürfen
+    // höchstens um GRADE wachsen. Da U(p) eines Kettenpunkts der Abstand zum
+    // nächsten Nachbarn ist, garantiert GRADE < 2 die vollständige Über-
+    // deckung jeder Kante durch einander ÜBERLAPPENDE U(p)-Kreise:
+    // U_a + U_b ≥ 2·d/GRADE > d. Ohne Grading springt die Dichte an einer
+    // Ecken-Häufung abrupt (0.01 mm neben 10 mm) und die Kreise verketten
+    // sich nicht. Nur EINFÜGEN, nie verschieben — Winkel-Emissionen bleiben
+    // exakt auf ihren Polyline-Vertices.
+    const GRADE: f32 = 1.5;
+    for _ in 0..48 {
+        let n = s_out.len();
+        let mut next: Vec<f32> = Vec::with_capacity(n + 8);
+        next.push(s_out[0]);
+        let mut split_any = false;
+        let floor = min_spacing.max(1e-6);
+        for k in 1..n {
+            let d = s_out[k] - s_out[k - 1];
+            // Nachbarn unterhalb des Mindestabstands treiben kein Grading —
+            // sonst kaskadiert ein winziges Rest-Segment (z.B. der letzte
+            // Schnipsel vor dem Kettenende) rückwärts in µm-Splits.
+            let dl = if k >= 2 { (s_out[k - 1] - s_out[k - 2]).max(floor) } else { f32::INFINITY };
+            let dr = if k + 1 < n { (s_out[k + 1] - s_out[k]).max(floor) } else { f32::INFINITY };
+            let bound = GRADE * dl.min(dr);
+            if d > bound * (1.0 + 1e-3) && d > 2.0 * floor {
+                // Vom kleineren Nachbarn aus geometrisch wachsen.
+                if dl <= dr {
+                    next.push(s_out[k - 1] + bound.min(0.5 * d));
+                } else {
+                    next.push(s_out[k] - bound.min(0.5 * d));
+                }
+                split_any = true;
+            }
+            next.push(s_out[k]);
+        }
+        s_out = next;
+        if !split_any {
+            break;
+        }
+    }
+
+    // ── Pass 3: Bogen-Positionen → Punkte (Interpolation auf der Polyline) ──
+    let mut out: Vec<[f32; 3]> = Vec::with_capacity(s_out.len());
+    let mut seg = 1usize;
+    for &s in &s_out {
+        while seg + 1 < cum.len() && cum[seg] < s {
+            seg += 1;
+        }
+        let (s0, s1) = (cum[seg - 1], cum[seg]);
+        let t = if s1 > s0 { ((s - s0) / (s1 - s0)).clamp(0.0, 1.0) } else { 0.0 };
+        let (a, b) = (pts[seg - 1], pts[seg]);
+        let p = [
+            a[0] + t * (b[0] - a[0]),
+            a[1] + t * (b[1] - a[1]),
+            a[2] + t * (b[2] - a[2]),
+        ];
+        if out.last().map_or(true, |&q| dist(q, p) > 1e-9) {
+            out.push(p);
+        }
+    }
     out
 }
 
