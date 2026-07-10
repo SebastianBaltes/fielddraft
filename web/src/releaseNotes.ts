@@ -24,6 +24,17 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.491",
+    entries: [
+      {
+        kind: "feat",
+        scope: "mesher",
+        text: "Lichen-Mesher M4: gekrümmte analytische Flächen (Zylinder, Kugel, Kegel) werden jetzt trianguliert — über den periodischen Chart mit Naht-Schnitt (geteilte Steiner-Indizes, unsichtbare Naht) und Pol-Kappen via Ring + Fächer, dieselbe Mechanik wie der Hybrid-PASM-Export. Ein Zylinder oder eine Halbkugel vermascht damit als geschlossenes, wasserdichtes 2-Manifold. Torus (doppelt periodisch) und Gyroid-Flächen (chartlos) bleiben vorerst Punktwolke.",
+        tickets: ["10df1b20"],
+      },
+    ],
+  },
+  {
     version: "0.6.490",
     entries: [
       {

@@ -323,23 +323,166 @@ impl Kernel {
         // BRep-Fläche (spade, `mesher_cdt`). Rand-Ketten sind flächenübergreifend
         // geteilt → wasserdichte Nähte; Innen-Partikel werden auf die Fläche
         // gefiltert; kein Dreieck überspannt eine Kante (harte Grenze). Planare
-        // Flächen (Box) direkt; gekrümmte (Zylinder/Kugel/…) folgen als
-        // periodischer Chart (M4) und bleiben vorerst untrianguliert. ──
+        // Flächen (Box) im Newell-Frame; gekrümmte analytische Flächen
+        // (Zylinder/Kugel/Kegel) über den PERIODISCHEN CHART (M4) — dieselbe
+        // `triangulate_periodic_face`-Mechanik wie der Hybrid-PASM-Export (P4):
+        // Band-Schnitt mit index-geteilter Naht, Pol-Kappen via Ring + Fächer.
+        // Torus (doppelt periodisch) und Gyroid (chartlos, F2) bleiben
+        // vorerst untrianguliert. ──
         let tris = if opts.triangulate && all.len() >= 3 {
-            let positions: Vec<[f32; 3]> = all.iter().map(|lp| lp.p).collect();
             let mut t: Vec<[u32; 3]> = Vec::new();
             for gf in 0..face_surfs.len() {
-                if !matches!(face_surfs[gf].surface, HalfSpace::Plane { .. }) {
-                    continue; // gekrümmte Fläche → periodischer Chart (M4)
-                }
                 let loops: Vec<Vec<u32>> =
                     face_loops[gf].iter().map(|(r, _)| r.clone()).collect();
-                t.extend(crate::mesher_cdt::triangulate_planar_face(
-                    &positions,
-                    &loops,
-                    &face_interior[gf],
-                    0.25 * h as f64,
-                ));
+                if matches!(face_surfs[gf].surface, HalfSpace::Plane { .. }) {
+                    let positions: Vec<[f32; 3]> = all.iter().map(|lp| lp.p).collect();
+                    t.extend(crate::mesher_cdt::triangulate_planar_face(
+                        &positions,
+                        &loops,
+                        &face_interior[gf],
+                        0.25 * h as f64,
+                    ));
+                    continue;
+                }
+                let fs = &face_surfs[gf];
+                // Chart-Frame: Fläche lokal → Welt = placement ∘ transform
+                // (exakt die Kette des `face_of`-Klassifikators).
+                let total = crate::compose_transforms(&fs.placement, &fs.transform);
+                // (u, v) roh (Winkel/axial) je Trägerfläche + Bogenlängen-
+                // Skalen (su für θ, sv für v) und Pol-Positionen im Chart.
+                let uv_raw = |p_world: [f32; 3]| -> Option<[f64; 2]> {
+                    let l = crate::world_to_local(&total, p_world);
+                    match &fs.surface {
+                        HalfSpace::InfiniteCylinder { .. } | HalfSpace::Cone { .. } => {
+                            Some([(l[2] as f64).atan2(l[0] as f64), l[1] as f64])
+                        }
+                        HalfSpace::Sphere { .. } => {
+                            let r = ((l[0] * l[0] + l[1] * l[1] + l[2] * l[2]) as f64)
+                                .sqrt()
+                                .max(1e-9);
+                            Some([
+                                (l[2] as f64).atan2(l[0] as f64),
+                                (l[1] as f64 / r).clamp(-1.0, 1.0).acos(),
+                            ])
+                        }
+                        _ => None,
+                    }
+                };
+                let mut raw_loops: Vec<Vec<crate::mesher_cdt::UvPoint>> = Vec::new();
+                let mut chart_ok = !loops.is_empty();
+                'lp: for ring in &loops {
+                    let mut lp = Vec::with_capacity(ring.len());
+                    for &gi in ring {
+                        match uv_raw(all[gi as usize].p) {
+                            Some(uv) => lp.push((gi, uv)),
+                            None => {
+                                chart_ok = false;
+                                break 'lp;
+                            }
+                        }
+                    }
+                    raw_loops.push(lp);
+                }
+                if !chart_ok {
+                    continue; // Torus/Gyroid: chartlos (F2) — bleibt Punktwolke
+                }
+                // θ (und Kugel-Polarwinkel) auf Bogenlänge skalieren, damit
+                // beide Chart-Achsen vergleichbare Einheiten tragen.
+                let (su, sv) = match &fs.surface {
+                    HalfSpace::InfiniteCylinder { radius } => (*radius as f64, 1.0),
+                    HalfSpace::Sphere { radius } => (*radius as f64, *radius as f64),
+                    HalfSpace::Cone { half_angle } => {
+                        let tan_a = (*half_angle as f64).tan().abs().max(1e-6);
+                        let n_pts: usize = raw_loops.iter().map(Vec::len).sum();
+                        let mean_v = raw_loops
+                            .iter()
+                            .flatten()
+                            .map(|&(_, [_, v])| v.abs())
+                            .sum::<f64>()
+                            / n_pts.max(1) as f64;
+                        ((mean_v * tan_a).max(1e-3), 1.0)
+                    }
+                    _ => (1.0, 1.0),
+                };
+                let period = std::f64::consts::TAU * su;
+                let scaled: Vec<Vec<crate::mesher_cdt::UvPoint>> = raw_loops
+                    .iter()
+                    .map(|lp| lp.iter().map(|&(gi, [u, v])| (gi, [u * su, v * sv])).collect())
+                    .collect();
+                let scaled_interior: Vec<crate::mesher_cdt::UvPoint> = face_interior[gf]
+                    .iter()
+                    .filter_map(|&gi| {
+                        uv_raw(all[gi as usize].p).map(|[u, v]| (gi, [u * su, v * sv]))
+                    })
+                    .collect();
+                let surface = fs.surface.clone();
+                let world_of = |u: f64, v: f64| -> [f32; 3] {
+                    let (th, tv) = (u / su, v / sv);
+                    let local = match &surface {
+                        HalfSpace::InfiniteCylinder { radius } => {
+                            let r = *radius as f64;
+                            [(r * th.cos()) as f32, tv as f32, (r * th.sin()) as f32]
+                        }
+                        HalfSpace::Cone { half_angle } => {
+                            let r = tv.abs() * (*half_angle as f64).tan();
+                            [(r * th.cos()) as f32, tv as f32, (r * th.sin()) as f32]
+                        }
+                        HalfSpace::Sphere { radius } => {
+                            let r = *radius as f64;
+                            let sp = tv.sin();
+                            [
+                                (r * sp * th.cos()) as f32,
+                                (r * tv.cos()) as f32,
+                                (r * sp * th.sin()) as f32,
+                            ]
+                        }
+                        _ => [0.0; 3],
+                    };
+                    let sc = [
+                        local[0] * total.scale[0],
+                        local[1] * total.scale[1],
+                        local[2] * total.scale[2],
+                    ];
+                    let r = crate::quat_rotate(total.rotation, sc);
+                    [
+                        r[0] + total.translate[0],
+                        r[1] + total.translate[1],
+                        r[2] + total.translate[2],
+                    ]
+                };
+                let poles: Vec<f64> = match &fs.surface {
+                    HalfSpace::Sphere { .. } => vec![0.0, std::f64::consts::PI * sv],
+                    HalfSpace::Cone { .. } => vec![0.0],
+                    _ => Vec::new(),
+                };
+                // Naht-/Clearance-Spacing von Welt-mm in Chart-Einheiten.
+                let ms = total.scale[0]
+                    .abs()
+                    .max(total.scale[1].abs())
+                    .max(total.scale[2].abs())
+                    .max(1e-6);
+                let h_chart = (h / ms) as f64;
+                if let Some(mesh) = crate::mesher_cdt::triangulate_periodic_face(
+                    &scaled,
+                    &scaled_interior,
+                    period,
+                    h_chart,
+                    0.25 * h_chart,
+                    &poles,
+                    all.len() as u32,
+                    &world_of,
+                ) {
+                    t.extend(mesh.tris);
+                    // Naht-Steiner-/Pol-Punkte als neue Flächenpunkte anhängen
+                    // (flag 1); Normale aus ∇f.
+                    for p in mesh.aux {
+                        let (d, g) = fg(p);
+                        let n = lichen::unit(g);
+                        all.push(LPoint { p, sdf: d, n, u: h, space: h, flag: 1.0 });
+                        point_faces.push(vec![(gf as u32, n)]);
+                        local_pos.push([0.0; 3]);
+                    }
+                }
             }
             t
         } else {
@@ -475,6 +618,82 @@ mod tests {
             worst = worst.min(4.0 * (3.0f32).sqrt() * area / s);
         }
         assert!(worst > 0.02, "no degenerate slivers: worst shape quality {worst}");
+    }
+
+    /// Watertightness/manifold check over a packed lichen result.
+    fn assert_watertight(out: &[f32]) {
+        let total = out[0] as usize;
+        let tris = out[1] as usize;
+        assert!(tris > 0, "mesh has triangles");
+        let base = 3 + total * 9;
+        let mut edge_use: std::collections::HashMap<(u32, u32), u32> =
+            std::collections::HashMap::new();
+        let mut used_v: std::collections::HashSet<u32> = std::collections::HashSet::new();
+        for t in 0..tris {
+            let a = out[base + t * 3] as u32;
+            let b = out[base + t * 3 + 1] as u32;
+            let c = out[base + t * 3 + 2] as u32;
+            assert!(a != b && b != c && c != a, "degenerate triangle");
+            used_v.extend([a, b, c]);
+            for (x, y) in [(a, b), (b, c), (c, a)] {
+                *edge_use.entry((x.min(y), x.max(y))).or_default() += 1;
+            }
+        }
+        let over = edge_use.values().filter(|&&u| u > 2).count();
+        assert_eq!(over, 0, "no edge may border >2 triangles (2-manifold)");
+        let interior = edge_use.values().filter(|&&u| u == 2).count();
+        let boundary = edge_use.values().filter(|&&u| u == 1).count();
+        assert_eq!(boundary, 0, "watertight: NO boundary/hole edges (got {boundary})");
+        let euler = used_v.len() as i64 - interior as i64 + tris as i64;
+        assert_eq!(euler, 2, "closed genus-0 mesh: V−E+F must be 2, got {euler}");
+    }
+
+    /// M4 (periodischer Chart): ein Zylinder — Mantel-Band (zwei windende
+    /// Rim-Ringe, Naht-Schnitt mit geteilten Steiner-Indizes) + zwei planare
+    /// Kappen — vermascht zu einem GESCHLOSSENEN 2-Manifold.
+    #[test]
+    fn lichen_cylinder_mesh_is_watertight() {
+        let mut k = crate::Kernel::new();
+        k.add_primitive(
+            Primitive::KIND_CYLINDER,
+            BoolOp::TAG_NEW,
+            0.0,
+            0.0,
+            0.0,
+            8.0,
+            10.0,
+            0.0,
+        )
+        .unwrap();
+        let out = k.lichen_mesh(
+            r#"{"targetEdgeLength":3.0,"grow":true,"maxPoints":20000}"#.into(),
+        );
+        assert_watertight(&out);
+    }
+
+    /// M4 Pol-Kappe: eine Halbkugel (Kugel − Box) — die Kugelfläche ist eine
+    /// Kappe (EIN windender Loop) und schließt über Pol-Ring + Fächer; die
+    /// Schnittebene ist eine planare Scheibe. Ergebnis: geschlossen.
+    #[test]
+    fn lichen_hemisphere_mesh_is_watertight() {
+        let mut k = crate::Kernel::new();
+        k.add_primitive(Primitive::KIND_SPHERE, BoolOp::TAG_NEW, 0.0, 0.0, 0.0, 10.0, 0.0, 0.0)
+            .unwrap();
+        k.add_primitive(
+            Primitive::KIND_BOX,
+            BoolOp::TAG_REMOVE,
+            0.0,
+            -20.0,
+            0.0,
+            25.0,
+            20.0,
+            25.0,
+        )
+        .unwrap();
+        let out = k.lichen_mesh(
+            r#"{"targetEdgeLength":2.5,"grow":true,"maxPoints":20000}"#.into(),
+        );
+        assert_watertight(&out);
     }
 
     /// Interior surface points must grow whether or not the reach term is on
