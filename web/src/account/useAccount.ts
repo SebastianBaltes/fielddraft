@@ -215,6 +215,16 @@ export function useAccount(options: UseAccountOptions = {}): UseAccount {
     await resolveSession();
   }, [resolveSession]);
 
+  // Re-validate the session when an API call elsewhere hit a 401 while the
+  // UI still showed a logged-in user (ticket 95d0a7fa): the badge reflects
+  // the page-load /api/me, so a session that died in between would keep a
+  // stale "logged in" header. submitTicket dispatches this event.
+  useEffect(() => {
+    const onInvalid = () => void resolveSession();
+    window.addEventListener("fd:session-invalid", onInvalid);
+    return () => window.removeEventListener("fd:session-invalid", onInvalid);
+  }, [resolveSession]);
+
   const setUnseenAlerts = useCallback((count: number) => {
     dispatch({ type: "unseen-alerts", count });
   }, []);

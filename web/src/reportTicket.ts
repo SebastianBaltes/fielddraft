@@ -178,17 +178,24 @@ export async function submitTicket(
   payload: TicketPayload,
 ): Promise<SubmitResult> {
   try {
+    // Hard timeout: a dead proxy/backend must degrade to an inline error,
+    // not an eternal "Sending…" (the dialog has no other escape hatch).
     const res = await fetch("/api/tickets", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       // The DB-backed ticket endpoint authenticates via the session cookie.
       credentials: "include",
       body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(30_000),
     });
     if (!res.ok) {
       // The DB-backed endpoint requires a session; surface that distinctly so
-      // the dialog can prompt the user to log in.
+      // the dialog can prompt the user to log in — and tell the account layer
+      // to re-validate /api/me, so a stale "logged in" badge corrects itself
+      // (ticket 95d0a7fa: 401 on submit while the header still shows the
+      // user; the badge reflects the session state at page-load time).
       if (res.status === 401) {
+        window.dispatchEvent(new Event("fd:session-invalid"));
         return { ok: false, error: "Please log in to file a report." };
       }
       return { ok: false, error: `server returned ${res.status}` };

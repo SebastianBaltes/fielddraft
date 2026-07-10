@@ -154,6 +154,12 @@ func (s *sqlStore) scanUserRow(scan func(...any) error) *User {
 	u := &User{}
 	var role string
 	if err := scan(&u.ID, &u.Email, &u.DisplayName, &u.PasswordHash, &u.Salt, &role, &u.Disabled, &u.CreatedAt); err != nil {
+		// A transient DB error must be visible in the log: swallowing it
+		// silently turns into a spurious "not authenticated" for a user
+		// whose session is perfectly valid (ticket 95d0a7fa).
+		if !errors.Is(err, sql.ErrNoRows) {
+			log.Printf("sqlStore: scanUser: %v", err)
+		}
 		return nil
 	}
 	u.Role = Role(role)
@@ -277,6 +283,12 @@ func (s *sqlStore) GetSession(token string) *Session {
 		`SELECT token, user_id, expires_at FROM sessions WHERE token = ?`, token).
 		Scan(&sess.Token, &sess.UserID, &sess.Expires)
 	if err != nil {
+		// Distinguish "no such session" from a DB hiccup: the latter must
+		// be loggable, or a valid login sporadically 401s without a trace
+		// (ticket 95d0a7fa).
+		if !errors.Is(err, sql.ErrNoRows) {
+			log.Printf("sqlStore: GetSession: %v", err)
+		}
 		return nil
 	}
 	if now().After(sess.Expires) {

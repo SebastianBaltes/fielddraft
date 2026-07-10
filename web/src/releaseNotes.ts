@@ -24,6 +24,17 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.499",
+    entries: [
+      {
+        kind: "fix",
+        scope: "tickets",
+        text: "Report-Dialog robuster gegen „nicht eingeloggt“-Fehler trotz sichtbarem Login: Bei einem 401 beim Absenden validiert die App die Session jetzt sofort neu (/api/me), sodass ein veraltetes „eingeloggt“-Badge ehrlich wird statt weiter zu lügen; der Submit hat außerdem einen 30-s-Timeout (kein ewiges „Sending…“ mehr bei totem Backend). Serverseitig werden transiente DB-Fehler bei der Session-Prüfung jetzt geloggt statt still als „nicht eingeloggt“ maskiert — sporadische 401 bei gültiger Session sind damit diagnostizierbar.",
+        tickets: ["95d0a7fa"],
+      },
+    ],
+  },
+  {
     version: "0.6.498",
     entries: [
       {
