@@ -24,6 +24,17 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.490",
+    entries: [
+      {
+        kind: "feat",
+        scope: "projects",
+        tickets: ["14cff61"],
+        text: "Projekt-Vorschaubilder: server-gebundene Projekte bekommen jetzt automatisch ein Thumbnail, das in der Projektübersicht auf der Karte erscheint. Erzeugt wird es beim Speichern zum Server über einen eigenen, unsichtbaren Offscreen-WebGL-Renderer (mit preserveDrawingBuffer) — bewusst getrennt vom Live-WebGPU-Renderer, dessen Canvas sich nicht zuverlässig auslesen ließ (leer/eingefroren). Die kleine Szene wird frisch aus den Kernel-Mesh-Daten gebaut (dieselben Dreiecke wie im mesh/webgl-Modus — Booleans und SDF bereits aufgelöst), flach schattiert und aus fixem Iso-Blick gerahmt. Gedrosselt (höchstens 1×/30 s) und best-effort — ein fehlendes Thumbnail schadet nie.",
+      },
+    ],
+  },
+  {
     version: "0.6.489",
     entries: [
       {

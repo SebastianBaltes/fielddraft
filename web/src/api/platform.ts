@@ -354,6 +354,9 @@ export interface PlatformApi {
   addComment(id: string, body: string): Promise<TicketComment>;
   /** Fetch an artifact blob's raw bytes (e.g. the `.fdraft` ZIP to load). */
   fetchArtifact(ticketId: string, artifactId: string): Promise<ArrayBuffer>;
+  /** Upload a project's preview thumbnail (raw PNG bytes, owner only, ticket
+   *  14cff61). Best-effort — callers swallow failures. */
+  putThumbnail(projectId: string, png: Blob): Promise<void>;
 
   // Admin moderation (admin only — the backend re-checks the role on each).
   /** List admin alerts, newest-first. `unseenOnly` adds `?unseen=1`. */
@@ -517,6 +520,19 @@ export const platformApi: PlatformApi = {
       throw new ApiError(res.status, await extractError(res));
     }
     return res.arrayBuffer();
+  },
+
+  async putThumbnail(projectId, png) {
+    // Raw PNG bytes (not JSON) → a bare fetch, mirroring fetchArtifact.
+    const res = await fetch(thumbnailUrl(projectId), {
+      method: "PUT",
+      credentials: "include",
+      headers: { "Content-Type": "image/png" },
+      body: png,
+    });
+    if (!res.ok) {
+      throw new ApiError(res.status, await extractError(res));
+    }
   },
 
   listAdminAlerts: (unseenOnly) =>

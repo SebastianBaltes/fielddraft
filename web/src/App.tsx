@@ -5,6 +5,7 @@ import { Viewport } from "./Viewport";
 import { FieldSkriptEditor } from "./FieldSkriptEditor";
 import { BottomTabs } from "./BottomTabs";
 import { useKernelStore } from "./store";
+import { maybeCaptureThumbnail } from "./thumbnailScheduler";
 import { dispatchKeyboardCommand } from "./keyboardCommands";
 import { SettingsMenu } from "./SettingsMenu";
 import { loadSettings, WorkspaceUnitsContext } from "./settings";
@@ -300,6 +301,22 @@ function AppShell({ account }: { account: UseAccount }) {
       cancelled = true;
     };
   }, [store, account.state.status, state?.projectId]);
+
+  // Ticket 14cff61: capture a preview thumbnail when a server-bound project
+  // finishes syncing to the server — the `syncing → clean` edge marks a real
+  // save (loadServerProject sets "clean" directly, so it never triggers). The
+  // offscreen WebGL capture is isolated from the live WebGPU renderer and the
+  // upload is throttled + best-effort (see thumbnailScheduler).
+  const prevSyncRef = useRef<string | undefined>(undefined);
+  useEffect(() => {
+    const prev = prevSyncRef.current;
+    const cur = state?.syncState;
+    prevSyncRef.current = cur;
+    const pid = state?.projectId;
+    if (prev === "syncing" && cur === "clean" && pid && store) {
+      void maybeCaptureThumbnail(pid, store.getState().meshedBodies);
+    }
+  }, [state?.syncState, state?.projectId, store]);
 
   // WP9 B4: first-login guest-project import. When a guest who has done real
   // local work logs in (or registers) for the first time, offer — once — to
