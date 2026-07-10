@@ -4,12 +4,13 @@
 // document is lean, that load re-inlines it (round-trip), and the one-way
 // localStorage → store migration.
 import { describe, expect, it, beforeEach } from "vitest";
-import type { AssetStore } from "./assetStore";
+import { sha256Hex, type AssetStore } from "./assetStore";
 import {
   persistProjectDoc,
   loadProjectDoc,
   migrateFromLocalStorage,
   __setAssetStoreForTest,
+  __setFontCacheForTest,
 } from "./projectPersistence";
 import { STORAGE_KEY } from "./persistence";
 
@@ -38,6 +39,19 @@ class FakeAssetStore implements AssetStore {
   }
   async deleteBlob(hash: string) {
     this.blobs.delete(hash);
+  }
+}
+
+/** In-memory uploaded-font cache: the persist path reads bytes out of it, the
+ *  load path writes them back. Stands in for the real (opentype-parsing) cache,
+ *  which would reject the synthetic font bytes a unit test uses. */
+class FakeFontCache {
+  bytes = new Map<string, Uint8Array>();
+  get(id: string): Uint8Array | undefined {
+    return this.bytes.get(id);
+  }
+  set(id: string, b: Uint8Array): void {
+    this.bytes.set(id, b);
   }
 }
 
@@ -71,6 +85,48 @@ function projectWithMesh(): string {
   });
 }
 
+/** A serialized Project whose single part tab references an uploaded font via a
+ *  `sketch_path` `text.fontId` (mirrors production: fonts are referenced by id,
+ *  their bytes live only in the font cache). */
+function projectWithFont(fontId: string): string {
+  const documentJson = JSON.stringify({
+    schema_version: 1,
+    name: "Part",
+    feature_calls: [
+      {
+        type: "sketch_path",
+        id: "1",
+        params: { text: { group: "g1", value: "Hi", height: 10, fontId, origin: [0, 0] } },
+      },
+    ],
+    next_feature_id: 2,
+  });
+  return JSON.stringify({
+    schemaVersion: 1,
+    name: "Untitled",
+    tabs: [{ id: "tab_1", kind: "part", name: "Part 1", documentJson }],
+    activeTabId: "tab_1",
+  });
+}
+
+/** Unwrap the persisted v2 envelope (`{ v, doc, fonts }`) to its inner
+ *  project-json string. Tolerates a legacy raw slot (returns it verbatim). */
+function docSlot(slot: string): string {
+  try {
+    const env = JSON.parse(slot) as { v?: unknown; doc?: unknown };
+    if (typeof env.v === "number" && typeof env.doc === "string") return env.doc;
+  } catch {
+    /* not JSON — fall through */
+  }
+  return slot;
+}
+
+/** The font manifest recorded in the persisted envelope. */
+function envelopeFonts(slot: string): Record<string, string> {
+  const env = JSON.parse(slot) as { fonts?: Record<string, string> };
+  return env.fonts ?? {};
+}
+
 /** Parse a Project and its part tabs' inner docs so a deep comparison is
  *  key-order-independent (the externalize→inline round-trip re-appends payload
  *  keys, so the inner string is equal only after re-parsing). */
@@ -86,10 +142,13 @@ function normalized(projectJson: string): unknown {
 
 describe("projectPersistence", () => {
   let fake: FakeAssetStore;
+  let fonts: FakeFontCache;
 
   beforeEach(() => {
     fake = new FakeAssetStore();
     __setAssetStoreForTest(fake);
+    fonts = new FakeFontCache();
+    __setFontCacheForTest(fonts);
     try {
       localStorage.clear();
     } catch {
@@ -110,7 +169,7 @@ describe("projectPersistence", () => {
 
     // The inner (nested) documentJson references the asset by hash; sibling
     // metadata survives.
-    const inner = JSON.parse(JSON.parse(fake.doc!).tabs[0].documentJson);
+    const inner = JSON.parse(JSON.parse(docSlot(fake.doc!)).tabs[0].documentJson);
     const params = inner.feature_calls[0].params;
     expect(params.__asset).toMatch(/^[0-9a-f]{64}$/);
     expect(params.__assetKind).toBe("mesh");
@@ -158,7 +217,71 @@ describe("projectPersistence", () => {
     });
     await persistProjectDoc(doc);
     expect(fake.blobs.size).toBe(0);
-    expect(normalized(fake.doc!)).toEqual(normalized(doc));
+    expect(normalized(docSlot(fake.doc!))).toEqual(normalized(doc));
+  });
+
+  describe("fonts (P1c)", () => {
+    const FONT_ID = "uploaded:MyFont.ttf";
+    const FONT_BYTES = new Uint8Array([0x00, 0x01, 0x00, 0x00, 0x42, 0x99]);
+
+    it("externalizes a referenced uploaded font to a blob + envelope manifest", async () => {
+      fonts.set(FONT_ID, FONT_BYTES);
+      await persistProjectDoc(projectWithFont(FONT_ID));
+
+      const hash = await sha256Hex(FONT_BYTES);
+      // Font bytes landed in a content-addressed blob…
+      expect(fake.blobs.get(hash)).toEqual(FONT_BYTES);
+      // …and the envelope records fontId → hash.
+      expect(envelopeFonts(fake.doc!)).toEqual({ [FONT_ID]: hash });
+      // The document itself still only carries the id, never the bytes.
+      expect(docSlot(fake.doc!)).toContain(FONT_ID);
+      expect(docSlot(fake.doc!)).not.toContain("__fontData");
+    });
+
+    it("restores the font bytes into the cache on load", async () => {
+      fonts.set(FONT_ID, FONT_BYTES);
+      await persistProjectDoc(projectWithFont(FONT_ID));
+
+      // Simulate a reload: the in-memory font cache is empty again.
+      fonts.bytes.clear();
+      expect(fonts.get(FONT_ID)).toBeUndefined();
+
+      const loaded = await loadProjectDoc();
+      expect(loaded).not.toBeNull();
+      // The load boundary pushed the exact bytes back into the cache.
+      expect(fonts.get(FONT_ID)).toEqual(FONT_BYTES);
+      // The re-inlined doc still references the font by id.
+      expect(loaded!).toContain(FONT_ID);
+    });
+
+    it("skips a referenced font with no retained bytes (no blob, empty manifest)", async () => {
+      // Cache has no bytes for the id (e.g. opened from a legacy JSON).
+      await persistProjectDoc(projectWithFont(FONT_ID));
+      expect(fake.blobs.size).toBe(0);
+      expect(envelopeFonts(fake.doc!)).toEqual({});
+    });
+
+    it("warns (no crash) when a manifested font blob is missing on load", async () => {
+      fonts.set(FONT_ID, FONT_BYTES);
+      await persistProjectDoc(projectWithFont(FONT_ID));
+
+      // Drop the blob but keep the manifest → the load must degrade gracefully.
+      fake.blobs.clear();
+      fonts.bytes.clear();
+      const loaded = await loadProjectDoc();
+      expect(loaded).not.toBeNull();
+      expect(fonts.get(FONT_ID)).toBeUndefined();
+    });
+
+    it("tolerates a legacy raw-string slot (no envelope) on load", async () => {
+      // P1b wrote the raw project-json string directly, with no envelope.
+      fake.doc = projectWithFont(FONT_ID);
+      const loaded = await loadProjectDoc();
+      expect(loaded).not.toBeNull();
+      // No fonts restored (legacy slot has no manifest), and no crash.
+      expect(fonts.get(FONT_ID)).toBeUndefined();
+      expect(JSON.parse(loaded!).tabs[0].kind).toBe("part");
+    });
   });
 
   describe("migrateFromLocalStorage", () => {

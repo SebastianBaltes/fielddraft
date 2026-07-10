@@ -24,6 +24,16 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.492",
+    entries: [
+      {
+        kind: "fix",
+        scope: "projects",
+        text: "Hochgeladene Fonts (Sketch-Text) überstehen jetzt einen Reload. Bisher lagen die Font-Bytes nur in einem flüchtigen In-Memory-Cache — nach einem Neuladen aus dem lokalen Arbeits-Store blieb der Text mit hochgeladener Schrift leer. Jetzt werden Fonts wie Meshes als content-addressed Blobs (sha256) im Arbeits-Store persistiert und beim Laden wiederhergestellt. Damit behandeln Server (P2) und `.fdraft` (P3) Meshes und Fonts einheitlich.",
+      },
+    ],
+  },
+  {
     version: "0.6.491",
     entries: [
       {

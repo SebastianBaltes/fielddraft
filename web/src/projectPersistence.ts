@@ -1,5 +1,5 @@
 /**
- * projectPersistence — the async persistence sink + load boundary (Phase 1b).
+ * projectPersistence — the async persistence sink + load boundary (Phase 1b/1c).
  *
  * A thin wiring layer over the P1a building blocks
  * ({@link ./assetStore | assetStore} + {@link ./assetExternalize |
@@ -7,11 +7,14 @@
  * live persistence path (docs/PROJECT-ASSET-STORAGE-PLAN §5.2 / §5.3):
  *
  *  - {@link persistProjectDoc}: the autosave SINK. Externalizes a serialized
- *    Project's embedded meshes to immutable blobs and writes the lean document
- *    + blobs to the {@link AssetStore} (default: IndexedDB).
- *  - {@link loadProjectDoc}: the LOAD boundary. Reads the lean document back
- *    and re-inlines the blobs so the result feeds the boot path unchanged
- *    (`ProjectStore.bootstrap` → `kernel.loadJson`).
+ *    Project's embedded meshes to immutable blobs, content-addresses every
+ *    referenced uploaded font's bytes to blobs too, and writes a lean
+ *    document ENVELOPE + all blobs to the {@link AssetStore} (default:
+ *    IndexedDB).
+ *  - {@link loadProjectDoc}: the LOAD boundary. Reads the envelope back,
+ *    re-inlines the mesh blobs, and restores each uploaded font's bytes into
+ *    the in-memory font cache so the result feeds the boot path unchanged
+ *    (`ProjectStore.bootstrap` → `kernel.loadJson`) *and* text re-renders.
  *  - {@link migrateFromLocalStorage}: a one-way move of the legacy
  *    `fielddraft.project.v2` localStorage row into the AssetStore (its embedded
  *    meshes become blobs on the way in).
@@ -26,14 +29,36 @@
  * lives here. A non-Project input (a bare kernel document) is externalized
  * directly as a fallback.
  *
+ * ── Fonts (P1c) ───────────────────────────────────────────────────────────
+ * Uploaded font bytes never live in the document — a `sketch_path` only carries
+ * `text.fontId` (an `uploaded:` id); the raw bytes sit in an in-memory cache
+ * (sketchTextFont.ts) that a reload wipes. So a mesh survived a working-store
+ * reload but an uploaded font did NOT: the doc kept the id, the bytes were gone,
+ * and text rendered blank. P1c closes that: on persist we scan the referenced
+ * `fontId`s (same walk as `ProjectStore.collectProjectAssets`), content-address
+ * each font's bytes to a blob, and record a `fontId → hash` manifest in the
+ * envelope; on load we resolve each manifest entry and push the bytes back into
+ * the font cache. Fonts are purely additive to the mesh path.
+ *
+ * ── Storage envelope ──────────────────────────────────────────────────────
+ * The `doc` store slot holds a v2 envelope `{ v: 2, doc, fonts }` where `doc`
+ * is the lean project-json string and `fonts` is the `fontId → hash` manifest.
+ * A legacy slot (a raw project-json string, as P1b wrote) is tolerated on load
+ * as `{ doc: <string>, fonts: {} }` — no migration, no crash (dev data).
+ *
  * `serializeProject()` stays SYNCHRONOUS and keeps emitting the full document
  * with inline meshes; the externalization happens only here, at the async sink,
  * and the inlining only at the load boundary.
  */
 
-import { IndexedDbAssetStore, type AssetStore } from "./assetStore";
+import { IndexedDbAssetStore, sha256Hex, type AssetStore } from "./assetStore";
 import { externalizeAssets, inlineAssets } from "./assetExternalize";
 import { loadPersisted, clearPersisted } from "./persistence";
+import {
+  UPLOADED_FONT_PREFIX,
+  getUploadedFontBytes,
+  registerUploadedFontFromBytes,
+} from "./sketchTextFont";
 
 /** Module-singleton store. IndexedDB in the browser; a quiet no-op where
  *  `indexedDB` is absent (SSR / vitest jsdom). Swappable for tests. */
@@ -44,6 +69,30 @@ let store: AssetStore = new IndexedDbAssetStore();
 export function __setAssetStoreForTest(next: AssetStore): AssetStore {
   const prev = store;
   store = next;
+  return prev;
+}
+
+/**
+ * The uploaded-font byte cache, behind a tiny interface so tests can inject a
+ * fake (the real setter parses bytes with opentype, which rejects the fake
+ * font bytes a unit test uses). `get` yields the retained bytes for a persisted
+ * `fontId`; `set` re-registers bytes on load (parse → cache → retain).
+ */
+interface FontByteCache {
+  get(fontId: string): Uint8Array | undefined;
+  set(fontId: string, bytes: Uint8Array): void;
+}
+
+let fontCache: FontByteCache = {
+  get: getUploadedFontBytes,
+  set: registerUploadedFontFromBytes,
+};
+
+/** Test seam: replace the module-singleton {@link FontByteCache}. Returns the
+ *  previous cache so a test can restore it. */
+export function __setFontCacheForTest(next: FontByteCache): FontByteCache {
+  const prev = fontCache;
+  fontCache = next;
   return prev;
 }
 
@@ -121,27 +170,152 @@ async function inlineProject(slimJson: string): Promise<string> {
   return JSON.stringify(project);
 }
 
+// ── fonts (P1c) ─────────────────────────────────────────────────────────────
+
+/** The `fontId → blob-hash` manifest recorded alongside the document. */
+type FontManifest = Record<string, string>;
+
+/** The persisted document envelope (see the module note). */
+interface DocEnvelope {
+  v: 2;
+  /** The lean project-json string (meshes already externalized). */
+  doc: string;
+  /** Uploaded fonts referenced by the project: id → content-address. */
+  fonts: FontManifest;
+}
+
+function isObject(v: unknown): v is Record<string, unknown> {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
+/** Collect every uploaded `fontId` referenced anywhere in a parsed kernel
+ *  document (mirrors `ProjectStore.collectProjectAssets`'s walk). */
+function collectFontIdsFromDoc(docJson: string, ids: Set<string>): void {
+  let doc: unknown;
+  try {
+    doc = JSON.parse(docJson);
+  } catch {
+    return;
+  }
+  const walk = (value: unknown): void => {
+    if (Array.isArray(value)) {
+      for (const v of value) walk(v);
+      return;
+    }
+    if (isObject(value)) {
+      const fontId = value.fontId;
+      if (typeof fontId === "string" && fontId.startsWith(UPLOADED_FONT_PREFIX)) {
+        ids.add(fontId);
+      }
+      for (const v of Object.values(value)) walk(v);
+    }
+  };
+  walk(doc);
+}
+
+/** Every uploaded font id referenced by a serialized Project (across all part
+ *  tabs), or by a bare kernel document as a fallback. */
+function scanFontIds(fullJson: string): Set<string> {
+  const ids = new Set<string>();
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(fullJson);
+  } catch {
+    return ids;
+  }
+  const project = parsed as JsonProjectish;
+  if (!Array.isArray(project.tabs)) {
+    collectFontIdsFromDoc(fullJson, ids);
+    return ids;
+  }
+  for (const tab of project.tabs) {
+    if (isPartTab(tab)) collectFontIdsFromDoc(tab.documentJson, ids);
+  }
+  return ids;
+}
+
+/** Content-address every referenced uploaded font's retained bytes into
+ *  `blobs` (dedup by hash) and return the `fontId → hash` manifest. Fonts
+ *  with no retained bytes (never uploaded this session) are silently skipped —
+ *  matching `collectProjectAssets`. */
+async function collectFontBlobs(
+  fullJson: string,
+  blobs: Map<string, Uint8Array>,
+): Promise<FontManifest> {
+  const manifest: FontManifest = {};
+  for (const fontId of scanFontIds(fullJson)) {
+    const bytes = fontCache.get(fontId);
+    if (!bytes) continue;
+    const hash = await sha256Hex(bytes);
+    if (!blobs.has(hash)) blobs.set(hash, bytes);
+    manifest[fontId] = hash;
+  }
+  return manifest;
+}
+
+/** Restore each manifested font's bytes into the font cache. A missing blob is
+ *  a warning, never a crash (P1a inline-assets semantics). */
+async function restoreFonts(fonts: FontManifest): Promise<void> {
+  for (const [fontId, hash] of Object.entries(fonts)) {
+    const bytes = await store.readBlob(hash);
+    if (!bytes) {
+      console.warn(
+        `fielddraft: font blob missing (${hash}) for "${fontId}" — text may not render`,
+      );
+      continue;
+    }
+    try {
+      fontCache.set(fontId, bytes);
+    } catch (err) {
+      console.warn(`fielddraft: font restore failed for "${fontId}"`, err);
+    }
+  }
+}
+
+/** Unwrap the stored `doc` slot into its inner document + font manifest.
+ *  Tolerant of a legacy raw project-json string (P1b): it has no numeric `v`,
+ *  so it becomes `{ doc: <slot>, fonts: {} }` — no migration needed. */
+function parseEnvelope(slot: string): { doc: string; fonts: FontManifest } {
+  try {
+    const parsed: unknown = JSON.parse(slot);
+    if (isObject(parsed) && typeof parsed.v === "number" && typeof parsed.doc === "string") {
+      const fonts = isObject(parsed.fonts) ? (parsed.fonts as FontManifest) : {};
+      return { doc: parsed.doc, fonts };
+    }
+  } catch {
+    // Not JSON — treat the slot verbatim as the document.
+  }
+  return { doc: slot, fonts: {} };
+}
+
+// ── sink / load boundary ────────────────────────────────────────────────────
+
 /**
- * Persist a serialized Project: externalize its embedded meshes to blobs, then
- * write the lean document + every new blob to the {@link AssetStore}. The
+ * Persist a serialized Project: externalize its embedded meshes to blobs,
+ * content-address every referenced uploaded font's bytes to blobs, then write
+ * the lean document ENVELOPE + every new blob to the {@link AssetStore}. The
  * autosave sink (fire-and-forget from the debounce timer).
  */
 export async function persistProjectDoc(fullJson: string): Promise<void> {
   const { doc, blobs } = await externalizeProject(fullJson);
-  await store.writeDoc(doc);
+  const fonts = await collectFontBlobs(fullJson, blobs);
+  const envelope: DocEnvelope = { v: 2, doc, fonts };
+  await store.writeDoc(JSON.stringify(envelope));
   // Blobs are immutable/content-addressed: writeBlob is a no-op when present.
   for (const [hash, bytes] of blobs) await store.writeBlob(hash, bytes);
 }
 
 /**
- * Load the persisted Project (lean document + re-inlined blobs), or `null`
- * when nothing is stored. The boot path feeds the result straight into
- * `ProjectStore.bootstrap`.
+ * Load the persisted Project (lean document + re-inlined mesh blobs + restored
+ * fonts), or `null` when nothing is stored. The boot path feeds the result
+ * straight into `ProjectStore.bootstrap`.
  */
 export async function loadProjectDoc(): Promise<string | null> {
-  const slim = await store.readDoc();
-  if (slim === null) return null;
-  return inlineProject(slim);
+  const slot = await store.readDoc();
+  if (slot === null) return null;
+  const { doc, fonts } = parseEnvelope(slot);
+  await restoreFonts(fonts);
+  return inlineProject(doc);
 }
 
 /**
