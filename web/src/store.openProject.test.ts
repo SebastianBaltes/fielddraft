@@ -15,7 +15,41 @@
 import { describe, expect, it, beforeEach } from "vitest";
 import { KernelStore } from "./store";
 import type { Kernel } from "./kernel";
-import { createNoopAutoSave, loadPersisted, STORAGE_KEY } from "./persistence";
+import { createNoopAutoSave } from "./persistence";
+import type { AssetStore } from "./assetStore";
+import { loadProjectDoc, __setAssetStoreForTest } from "./projectPersistence";
+
+/** In-memory AssetStore standing in for IndexedDB (jsdom has none). P1b moved
+ *  the working store off localStorage, so this is where a graduated deep-link
+ *  tab's autosave now lands (`persistProjectDoc`). */
+class FakeAssetStore implements AssetStore {
+  doc: string | null = null;
+  blobs = new Map<string, Uint8Array>();
+  async readDoc() {
+    return this.doc;
+  }
+  async writeDoc(json: string) {
+    this.doc = json;
+  }
+  async readBlob(hash: string) {
+    return this.blobs.get(hash) ?? null;
+  }
+  async writeBlob(hash: string, bytes: Uint8Array) {
+    if (!this.blobs.has(hash)) this.blobs.set(hash, bytes);
+  }
+  async hasBlob(hash: string) {
+    return this.blobs.has(hash);
+  }
+  async listBlobs() {
+    return [...this.blobs.keys()];
+  }
+  async deleteBlob(hash: string) {
+    this.blobs.delete(hash);
+  }
+}
+
+/** Let the fire-and-forget async autosave sink settle. */
+const tick = () => new Promise((r) => setTimeout(r, 0));
 
 class FakeKernel {
   loadedJson =
@@ -85,12 +119,16 @@ function projectBytes(name: string): Uint8Array {
 }
 
 describe("KernelStore.openUserProjectFromBytes (ticket 4z37)", () => {
+  let assets: FakeAssetStore;
+
   beforeEach(() => {
     localStorage.clear();
+    assets = new FakeAssetStore();
+    __setAssetStoreForTest(assets);
     window.history.replaceState(null, "", "/?project=tickets/open/x/project.fdraft");
   });
 
-  it("persists an opened project and graduates the deep-link tab", () => {
+  it("persists an opened project and graduates the deep-link tab", async () => {
     // Deep-link repro tab: inert autosave, `?project=` in the URL.
     const store = new KernelStore(
       new FakeKernel() as unknown as Kernel,
@@ -100,25 +138,28 @@ describe("KernelStore.openUserProjectFromBytes (ticket 4z37)", () => {
     );
 
     // Before opening, nothing is persisted (inert autosave).
-    expect(loadPersisted()).toBeNull();
+    expect(await loadProjectDoc()).toBeNull();
 
     const ok = store.openUserProjectFromBytes(projectBytes("Opened4z37"));
     expect(ok).toBe(true);
+    await tick(); // let the graduated (async, IndexedDB) autosave flush settle
 
-    // The opened project is now in localStorage — a reload would restore it.
-    // (The only way this lands despite the inert BOOT handle is the graduate
-    // step swapping in a real autosave, so this proves graduation happened.)
-    const persisted = loadPersisted();
+    // The opened project is now in the working store — a reload would restore
+    // it. (The only way this lands despite the inert BOOT handle is the
+    // graduate step swapping in a real autosave, so this proves graduation
+    // happened.)
+    const persisted = await loadProjectDoc();
     expect(persisted).not.toBeNull();
     expect(JSON.parse(persisted!).name).toBe("Opened4z37");
 
-    // The `?project=` deep-link is stripped so reload uses localStorage.
+    // The `?project=` deep-link is stripped so reload uses the working store.
     expect(new URLSearchParams(window.location.search).has("project")).toBe(false);
 
     // Graduated for good: a subsequent open still persists through the now-real
     // autosave (not the inert boot handle).
-    localStorage.removeItem(STORAGE_KEY);
+    assets.doc = null;
     store.openUserProjectFromBytes(projectBytes("Edited4z37"));
-    expect(JSON.parse(loadPersisted()!).name).toBe("Edited4z37");
+    await tick();
+    expect(JSON.parse((await loadProjectDoc())!).name).toBe("Edited4z37");
   });
 });

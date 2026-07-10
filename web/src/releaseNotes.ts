@@ -24,6 +24,16 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.491",
+    entries: [
+      {
+        kind: "perf",
+        scope: "projects",
+        text: "Projekt-Persistenz: importierte Meshes werden nicht mehr roh (als riesige JSON-Zahl-Arrays) ins Projekt-Dokument geschrieben, sondern als content-addressed Blobs (sha256) ausgelagert; das Dokument bleibt dadurch klein. Der lokale Arbeits-Store wechselt von localStorage auf IndexedDB — kein 5–10-MB-Limit mehr (mesh-lastige Projekte sprengten bisher die localStorage-Quota, wodurch der Autosave still fehlschlug) und keine synchronen Schreib-Hänger. Bestehende Projekte werden beim ersten Laden einmalig migriert. Grundlage (Phase 1) für den kommenden Server-Blob-Store und das schlanke Cloud-Speichern.",
+      },
+    ],
+  },
+  {
     version: "0.6.490",
     entries: [
       {

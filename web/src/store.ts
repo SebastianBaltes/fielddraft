@@ -22,9 +22,13 @@ import {
 import {
   createAutoSave,
   createNoopAutoSave,
-  loadPersisted,
   type AutoSaveHandle,
 } from "./persistence";
+import {
+  persistProjectDoc,
+  loadProjectDoc,
+  migrateFromLocalStorage,
+} from "./projectPersistence";
 import { bootProjectPath } from "./bootParams";
 import { getAutosaveDebounceMs } from "./settings";
 import { subscribeCameraPoseChanged } from "./cameraPoseBridge";
@@ -902,7 +906,9 @@ export class KernelStore {
   private graduateFromDeepLink(): void {
     if (!this.deepLink) return;
     this.deepLink = false;
-    this.core.replaceAutosave(createAutoSave({ debounceMs: getAutosaveDebounceMs }));
+    this.core.replaceAutosave(
+      createAutoSave({ debounceMs: getAutosaveDebounceMs, sink: persistProjectDoc }),
+    );
     if (typeof window !== "undefined") {
       try {
         const url = new URL(window.location.href);
@@ -2359,13 +2365,19 @@ export async function getStore(): Promise<KernelStore> {
     const deepLink = bootProjectPath() !== null;
     const autosave = deepLink
       ? createNoopAutoSave()
-      : createAutoSave({ debounceMs: getAutosaveDebounceMs });
-    const store = new KernelStore(
-      kernel,
-      autosave,
-      deepLink ? null : loadPersisted(),
-      deepLink,
-    );
+      : createAutoSave({ debounceMs: getAutosaveDebounceMs, sink: persistProjectDoc });
+    // P1b: the browser-local working store moved from localStorage to IndexedDB
+    // (content-addressed assets, docs/PROJECT-ASSET-STORAGE-PLAN §5.3). Migrate
+    // any legacy localStorage row once, then load the (mesh-externalized) doc
+    // and re-inline its blobs. Both awaits are safe here — getStore is already
+    // async (it awaits the WASM kernel). A deep-link repro tab keeps its clean
+    // start (it must never touch the origin-wide working store).
+    let persisted: string | null = null;
+    if (!deepLink) {
+      await migrateFromLocalStorage();
+      persisted = await loadProjectDoc();
+    }
+    const store = new KernelStore(kernel, autosave, persisted, deepLink);
 
     // Dirty tracking beyond document commits: camera moves and debug-tool
     // changes also persist into the project (Project.view / Project.debug),

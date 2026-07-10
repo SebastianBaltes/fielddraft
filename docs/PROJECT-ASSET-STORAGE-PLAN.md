@@ -90,18 +90,33 @@ die manuell gespeicherte `.fdraft` bzw. die Cloud.
 - Eine Client-Abstraktion kapselt die Ablage (§5.3), damit der Rest der App
   backend-agnostisch bleibt.
 
-### 5.2 Kernel: `imported_mesh` → Hash-Ref
-- Der `imported_mesh`-Feature serialisiert **nicht mehr** `__positions`/
-  `__indices`, sondern einen `__asset` (sha256hex).
-- Die Vertex-Bytes leben zur Laufzeit **JS-seitig** (der `meshDataCache` in
-  `ioStore.ts` existiert bereits als Runtime-Cache → wird zur Hash→Bytes-Ablage).
-- Ablauf **Save**: Beim Import erzeugt JS den Hash, legt den Blob in den
-  Asset-Store, setzt `__asset` im Feature. `toJson` emittiert nur den Hash.
-- Ablauf **Load**: JS liest das Dokument, resolved `__asset`→Bytes aus dem
-  Asset-Store und speist sie über den bestehenden `addImportedMesh`-Pfad in den
-  Kernel (der Kernel bekommt die Vertices zur Laufzeit, nicht aus dem Dokument).
-- Fonts analog: Feature/Manifest hält den Hash statt base64.
-- **Riskantester Teil** (Serialisier-Grenze Kernel↔JS) — bewusst zuerst (P1).
+### 5.2 Asset-Externalisierung an der Serialisier-Grenze (P1, Kernel unverändert)
+- **Der Kernel bleibt unverändert** — er nutzt intern weiter `__positions`/
+  `__indices`. Die Asset-Trennung passiert rein **JS-seitig** an der `toJson`/
+  `loadJson`-Grenze. Das de-riskt P1 (kein Rust-Formatbruch).
+- **Save (deflate):** `serializeProject()` holt `toJson` (mit Positions), dann
+  extrahiert JS jedes `imported_mesh` (und eingebettete Fonts), legt die Bytes
+  als Blob ab und ersetzt sie im **persistierten** Dokument durch
+  `__asset: <sha256hex>`. Nur das schlanke Dokument wird persistiert/übertragen.
+- **Load (inflate):** JS liest das schlanke Dokument, holt die Blobs per Hash,
+  ersetzt `__asset` wieder durch `__positions`/`__indices` und ruft
+  `kernel.loadJson` mit dem vollen Dokument.
+- Round-trip `inline(externalize(doc)) == doc` ist Pflicht (unit-getestet).
+- Legacy-v1-Format (`__mesh`) wird beim Externalisieren mitbehandelt.
+- **Spätere Optimierung (nicht P1):** Wenn die `toJson`-CPU für sehr große
+  Meshes zum Problem wird, kann der Kernel später direkt den Hash emittieren
+  (spart das Serialisieren der Positionen). Für P1 bewusst weggelassen — Ziel ist
+  schlanke Persistenz/Übertragung bei minimalem Risiko.
+
+**Fonts** (User-Direktive: als Blob + ins `.fdraft`): importierte Fonts werden
+**content-addressed Blobs**, uniform mit Meshes. Sie liegen aber NICHT im
+Kernel-Dokument (sie leben in `sketchTextFont.ts` `uploadedBytes`, per `fontId`
+referenziert, heute separat via `collectProjectAssets` im ZIP). Daher **nicht**
+über die Doc-String-Transform, sondern über einen **Font-Cache→Blob-Pfad**: pro
+`fontId` → Bytes aus dem Cache → `sha256` → `writeBlob`; ein `fontId→hash`-
+Manifest wird mitpersistiert; beim Laden `readBlob` → Font-Cache wieder füllen.
+Gleicher Blob-Store → P2 (Server-Blobs) und P3 (`.fdraft`-Einträge) decken Mesh
+UND Font uniform ab (Dedup). In P1 additiv nach dem Mesh-Pfad.
 
 ### 5.3 Client-Store-Abstraktion + IndexedDB
 ```ts
