@@ -238,6 +238,24 @@ impl Kernel {
                 edge_chain.insert(eid as u32, idxs);
             }
 
+            // Überdeckungs-Invariante (nur Tests, Ticket 2e7eab20): jedes
+            // Ketten-Segment muss von den U-Kreisen seiner Endpunkte
+            // überdeckt sein — jede Pipeline-Testfahrt prüft das mit.
+            #[cfg(test)]
+            for (eid, idxs) in &edge_chain {
+                for w in idxs.windows(2) {
+                    let (a, b) = (&all[w[0] as usize], &all[w[1] as usize]);
+                    let d = seg_len(a.p, b.p);
+                    assert!(
+                        a.u + b.u >= d * 0.999,
+                        "U(p)-Überdeckungslücke auf Kante {eid}: d={d:.4} ua={:.4} ub={:.4} bei {:?}",
+                        a.u,
+                        b.u,
+                        a.p
+                    );
+                }
+            }
+
             // Flächen: gf zuweisen, Klassifikator-Daten sichern, Rand-Loops als
             // geordnete globale Index-Ringe bauen (Kanten-Ketten in Loop-Reihen-
             // folge verkettet, geteilte Gelenk-Vertices entfernt), und an jedem
@@ -891,6 +909,36 @@ mod tests {
             unbounded.len(),
             capped.len()
         );
+    }
+
+    /// Ticket 2e7eab20: Überdeckung schlägt min_spacing — eine Mikro-Kante
+    /// (Rand-Bedingung 0.017) neben einem 0.3-mm-Segment MUSS auch unterhalb
+    /// des Mindestabstands (0.2) gesplittet werden, sonst klafft zwischen den
+    /// U-Kreisen eine Lücke: min(dl,d)+min(d,dr) ≥ d gilt danach überall.
+    #[test]
+    fn coverage_split_beats_min_spacing_at_micro_corners() {
+        let line = vec![[0.0f32, 0.0, 0.0], [0.316, 0.0, 0.0]];
+        let out = crate::lichen::resample_edge_by_curvature(
+            &line,
+            10.0,
+            5.0f32.to_radians(),
+            0.2,
+            (0.017, 0.024),
+        );
+        assert!(out.len() > 2, "Coverage-Split muss Punkte einfügen, got {}", out.len());
+        // Segment-Kette inkl. virtueller Rand-Nachbarn: überall überdeckt.
+        let mut segs: Vec<f32> = vec![0.017];
+        for w in out.windows(2) {
+            segs.push(w[1][0] - w[0][0]);
+        }
+        segs.push(0.024);
+        for k in 1..segs.len() - 1 {
+            let (dl, d, dr) = (segs[k - 1], segs[k], segs[k + 1]);
+            assert!(
+                dl.min(d) + dr.min(d) >= d * 0.999,
+                "Lücke bei Segment {k}: dl={dl:.4} d={d:.4} dr={dr:.4}"
+            );
+        }
     }
 
     /// Ticket cec70614: Ecken-Rand-Bedingung — mündet an einer Ecke eine

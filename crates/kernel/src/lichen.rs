@@ -450,26 +450,37 @@ pub fn resample_edge_by_curvature(
         let floor = min_spacing.max(1e-6);
         for k in 1..n {
             let d = s_out[k] - s_out[k - 1];
-            // Nachbarn unterhalb des Mindestabstands treiben kein Grading —
-            // sonst kaskadiert ein winziges Rest-Segment (z.B. der letzte
-            // Schnipsel vor dem Kettenende) rückwärts in µm-Splits.
-            let dl = if k >= 2 {
-                (s_out[k - 1] - s_out[k - 2]).max(floor)
-            } else {
-                end_bounds.0.max(floor)
-            };
-            let dr = if k + 1 < n {
-                (s_out[k + 1] - s_out[k]).max(floor)
-            } else {
-                end_bounds.1.max(floor)
-            };
-            let bound = GRADE * dl.min(dr);
-            if d > bound * (1.0 + 1e-3) && d > 2.0 * floor {
+            // ECHTE Nachbarsegment-Längen (bzw. Ecken-Rand-Bedingungen).
+            let dl_r = if k >= 2 { s_out[k - 1] - s_out[k - 2] } else { end_bounds.0 };
+            let dr_r = if k + 1 < n { s_out[k + 1] - s_out[k] } else { end_bounds.1 };
+            // ÜBERDECKUNG (Ticket 2e7eab20, hart — kein min_spacing-Floor):
+            // U(p) ist der Abstand zum nächsten Nachbarn, also ist ein
+            // Segment genau dann von den U-Kreisen seiner Enden überdeckt,
+            // wenn min(dl,d) + min(d,dr) ≥ d. Verfehlt es das (beidseitig
+            // kleinere Nachbarn — z.B. eine 0.017-mm-Mikro-Kante an einer
+            // Ecke neben einem 0.3-mm-Segment), MUSS gesplittet werden,
+            // auch unterhalb des Mindestabstands: Geometrie, die feiner als
+            // min_spacing ist, erzwingt lokal feinere Punkte.
+            let cover_gap =
+                dl_r.min(d) + dr_r.min(d) < d * (1.0 - 1e-3) && d > 2e-6;
+            // GRADING (Ticket e1a10bcd, weich — mit Floor gegen µm-Kaskaden
+            // aus Rest-Schnipseln): Nachbarlängen wachsen höchstens um GRADE.
+            let dl_f = dl_r.max(floor);
+            let dr_f = dr_r.max(floor);
+            let ratio_split =
+                d > GRADE * dl_f.min(dr_f) * (1.0 + 1e-3) && d > 2.0 * floor;
+            if cover_gap || ratio_split {
                 // Vom kleineren Nachbarn aus geometrisch wachsen.
-                if dl <= dr {
-                    next.push(s_out[k - 1] + bound.min(0.5 * d));
+                let base = if cover_gap {
+                    dl_r.min(dr_r).max(1e-6)
                 } else {
-                    next.push(s_out[k] - bound.min(0.5 * d));
+                    dl_f.min(dr_f)
+                };
+                let step = (GRADE * base).min(0.5 * d);
+                if dl_r <= dr_r {
+                    next.push(s_out[k - 1] + step);
+                } else {
+                    next.push(s_out[k] - step);
                 }
                 split_any = true;
             }

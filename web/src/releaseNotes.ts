@@ -24,6 +24,17 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.498",
+    entries: [
+      {
+        kind: "fix",
+        scope: "mesher",
+        text: "Lichen: Überdeckung schlägt Mindestabstand. An Mikro-Kanten (Ecken-Paare feiner als der Min. Kantenabstand, z.B. 0.017 mm) blieb neben dem winzigen Ecken-U ein 0.3-mm-Segment ungesplittet — Lücke zwischen den U-Kreisen. Das Grading prüft jetzt zusätzlich die harte Überdeckungs-Bedingung min(dl,d)+min(d,dr) ≥ d ohne Mindestabstands-Floor: Geometrie, die feiner als der Mindestabstand ist, erzwingt lokal feinere Punkte. Die Überdeckungs-Invariante läuft als Assertion in jeder Pipeline-Testfahrt mit.",
+        tickets: ["2e7eab20"],
+      },
+    ],
+  },
+  {
     version: "0.6.497",
     entries: [
       {
