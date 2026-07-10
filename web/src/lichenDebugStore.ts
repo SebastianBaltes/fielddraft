@@ -27,6 +27,10 @@ export interface LichenDebug {
   useReach: boolean;
   /** Footpoint departure threshold (mm) for the reach march. */
   reachTol: number;
+  /** Untere Grenze des Punktabstands auf Kanten (mm) — deckelt die
+   *  winkelgetriebene Verdichtung auf sehr kleinen Kreisen; geschlossene
+   *  Kanten behalten kernel-seitig ≥4 Punkte. */
+  minEdgeSpacing: number;
   /** Hard cap on the particle count (safety valve). */
   maxPoints: number;
 

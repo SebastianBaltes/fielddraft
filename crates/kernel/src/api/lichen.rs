@@ -113,17 +113,36 @@ impl Kernel {
             // Loops); chain_links = feste Feature-Kanten in G; Welt-Segmente für
             // R_BRep.
             let h_local = h / s.max(1e-6);
+            let min_spacing_local = opts.min_edge_spacing.max(0.0) / s.max(1e-6);
             let mut edge_chain: HashMap<u32, Vec<u32>> = HashMap::new();
             for (eid, e) in brep.edges.iter().enumerate() {
                 let raw_local: Vec<[f32; 3]> = crate::brep::edge_sampling::sample_edge(&e.geometry)
                     .into_iter()
                     .map(|p| [p[0] as f32, p[1] as f32, p[2] as f32])
                     .collect();
-                let chain = lichen::resample_edge_by_curvature(
+                let closed = e.start.is_none() && e.end.is_none();
+                let mut chain = lichen::resample_edge_by_curvature(
                     &raw_local,
                     h_local,
                     opts.curv_angle_deg.to_radians(),
+                    min_spacing_local,
                 );
+                // Degenerations-Schutz (Ticket 6d3f4a7f): eine geschlossene
+                // Kante braucht ≥4 Punkte, egal wie klein sie ist — sonst
+                // entartet der Ring. Uniform bei Viertel-Bogenlänge neu
+                // abtasten (Ende = Start-Duplikat, wird unten getrimmt).
+                if closed && chain.len() < 5 && raw_local.len() >= 2 {
+                    let total: f32 = raw_local
+                        .windows(2)
+                        .map(|w| {
+                            let d = [w[1][0] - w[0][0], w[1][1] - w[0][1], w[1][2] - w[0][2]];
+                            (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt()
+                        })
+                        .sum();
+                    if total > 1e-9 {
+                        chain = crate::mesher_points::resample_polyline(&raw_local, total / 4.0);
+                    }
+                }
                 let mut idxs: Vec<u32> = Vec::new();
                 if let Some(vs) = e.start {
                     idxs.push(corner_slot[&(vs.0 as usize)]);
@@ -147,8 +166,26 @@ impl Kernel {
                 if let Some(ve) = e.end {
                     idxs.push(corner_slot[&(ve.0 as usize)]);
                 }
-                for w in idxs.windows(2) {
-                    edge_segs.push((all[w[0] as usize].p, all[w[1] as usize].p));
+                // Nachbar-Segmente: R_BRep-Distanzquelle UND U(p)-Deckel
+                // (Ticket 0d94273b) — der Anzeige-Kreis eines Kantenpunkts
+                // reicht höchstens bis zum nächsten Ketten-Nachbarn. Bei
+                // geschlossenen Ringen zählt auch das Schluss-Segment
+                // letzter→erster Punkt.
+                let mut bound_pair = |ia: u32, ib: u32, all: &mut Vec<LPoint>| {
+                    let (pa, pb) = (all[ia as usize].p, all[ib as usize].p);
+                    let d = ((pa[0] - pb[0]).powi(2)
+                        + (pa[1] - pb[1]).powi(2)
+                        + (pa[2] - pb[2]).powi(2))
+                    .sqrt();
+                    edge_segs.push((pa, pb));
+                    all[ia as usize].u = all[ia as usize].u.min(d);
+                    all[ib as usize].u = all[ib as usize].u.min(d);
+                };
+                for w in idxs.windows(2).map(|w| [w[0], w[1]]).collect::<Vec<_>>() {
+                    bound_pair(w[0], w[1], &mut all);
+                }
+                if closed && idxs.len() >= 2 {
+                    bound_pair(idxs[idxs.len() - 1], idxs[0], &mut all);
                 }
                 edge_chain.insert(eid as u32, idxs);
             }
@@ -732,8 +769,8 @@ mod tests {
                 [10.0 * t.cos(), 10.0 * t.sin(), 0.0]
             })
             .collect();
-        let fine = crate::lichen::resample_edge_by_curvature(&arc, 5.0, 0.05);
-        let coarse = crate::lichen::resample_edge_by_curvature(&arc, 5.0, 2.0);
+        let fine = crate::lichen::resample_edge_by_curvature(&arc, 5.0, 0.05, 0.01);
+        let coarse = crate::lichen::resample_edge_by_curvature(&arc, 5.0, 2.0, 0.01);
         assert!(
             fine.len() > coarse.len(),
             "small angle ⇒ denser on curves: {} vs {}",
@@ -742,8 +779,8 @@ mod tests {
         );
         // Gerade Kante: Krümmungswinkel irrelevant, nur h zählt.
         let line = vec![[0.0, 0.0, 0.0], [20.0, 0.0, 0.0]];
-        let a = crate::lichen::resample_edge_by_curvature(&line, 5.0, 0.05);
-        let b = crate::lichen::resample_edge_by_curvature(&line, 5.0, 2.0);
+        let a = crate::lichen::resample_edge_by_curvature(&line, 5.0, 0.05, 0.01);
+        let b = crate::lichen::resample_edge_by_curvature(&line, 5.0, 2.0, 0.01);
         assert_eq!(a.len(), b.len(), "straight edge: angle has no effect");
     }
 
@@ -766,11 +803,43 @@ mod tests {
             &circle,
             10.0,
             2.0f32.to_radians(),
+            0.01,
         );
         assert!(
             out.len() >= 100,
             "r=1-Kreis bei h=10, α=2° muss dicht bleiben, got {}",
             out.len()
+        );
+    }
+
+    /// Ticket 6d3f4a7f: der Mindestabstand deckelt die Winkel-Verdichtung —
+    /// ein WINZIGER Kreis (r=0.05, Umfang ~0.31 mm) darf bei α=2° nicht mehr
+    /// hunderte µm-dichte Punkte bekommen, sobald min_spacing=0.01 mm greift.
+    #[test]
+    fn min_edge_spacing_caps_tiny_circle_density() {
+        let n = 256usize;
+        let r = 0.05f32;
+        let circle: Vec<[f32; 3]> = (0..=n)
+            .map(|k| {
+                let t = k as f32 / n as f32 * std::f32::consts::TAU;
+                [r * t.cos(), r * t.sin(), 0.0]
+            })
+            .collect();
+        let unbounded =
+            crate::lichen::resample_edge_by_curvature(&circle, 10.0, 2.0f32.to_radians(), 0.0);
+        let capped =
+            crate::lichen::resample_edge_by_curvature(&circle, 10.0, 2.0f32.to_radians(), 0.01);
+        // Umfang 0.314 mm / 0.01 mm ⇒ höchstens ~33 Punkte (+ Enden).
+        assert!(
+            capped.len() <= 36,
+            "min_spacing=0.01 muss den µm-Kreis deckeln, got {}",
+            capped.len()
+        );
+        assert!(
+            unbounded.len() > capped.len() * 3,
+            "ohne Deckel deutlich dichter: {} vs {}",
+            unbounded.len(),
+            capped.len()
         );
     }
 

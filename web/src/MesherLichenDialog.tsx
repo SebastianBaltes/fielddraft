@@ -45,6 +45,8 @@ interface LichenSettings {
   useReach: boolean;
   /** Footpoint departure threshold (mm) for the reach march. */
   reachTol: number;
+  /** Untere Grenze des Punktabstands auf Kanten (mm). */
+  minEdgeSpacing: number;
   /** Hard cap on the particle count. */
   maxPoints: number;
   partOpacity: number;
@@ -69,6 +71,7 @@ const DEFAULTS: LichenSettings = {
   curvAngleDeg: 20,
   useReach: false,
   reachTol: 1,
+  minEdgeSpacing: 0.01,
   maxPoints: 50000,
   partOpacity: 0.4,
   strokeWidth: 2,
@@ -101,6 +104,7 @@ function loadSettings(): LichenSettings {
       curvAngleDeg: clampNum(p.curvAngleDeg, 0, 90, DEFAULTS.curvAngleDeg),
       useReach: p.useReach === true,
       reachTol: clampNum(p.reachTol, 0.001, 1e6, DEFAULTS.reachTol),
+      minEdgeSpacing: clampNum(p.minEdgeSpacing, 0, 100, DEFAULTS.minEdgeSpacing),
       maxPoints: Math.round(
         clampNum(p.maxPoints, 1, 2_000_000, DEFAULTS.maxPoints),
       ),
@@ -129,6 +133,7 @@ function lichenParams(s: LichenSettings): LichenDebug {
     curvAngleDeg: s.curvAngleDeg,
     useReach: s.useReach,
     reachTol: s.reachTol,
+    minEdgeSpacing: s.minEdgeSpacing,
     maxPoints: s.maxPoints,
     partOpacity: s.partOpacity,
     strokeWidth: s.strokeWidth,
@@ -151,6 +156,7 @@ export function MesherLichenDialog({ onClose }: { onClose: () => void }) {
   const [curvAngleDeg, setCurvAngleDeg] = useState(initial.curvAngleDeg);
   const [useReach, setUseReach] = useState(initial.useReach);
   const [reachTol, setReachTol] = useState(initial.reachTol);
+  const [minEdgeSpacing, setMinEdgeSpacing] = useState(initial.minEdgeSpacing);
   const [maxPoints, setMaxPoints] = useState(initial.maxPoints);
   const [partOpacity, setPartOpacity] = useState(initial.partOpacity);
   const [strokeWidth, setStrokeWidth] = useState(initial.strokeWidth);
@@ -171,6 +177,7 @@ export function MesherLichenDialog({ onClose }: { onClose: () => void }) {
       curvAngleDeg,
       useReach,
       reachTol,
+      minEdgeSpacing,
       maxPoints,
       partOpacity,
       strokeWidth,
@@ -187,7 +194,7 @@ export function MesherLichenDialog({ onClose }: { onClose: () => void }) {
     } catch {
       // no localStorage (tests) — non-persistent is fine
     }
-  }, [targetEdgeLength, grow, curvAngleDeg, useReach, reachTol, maxPoints, partOpacity, strokeWidth, showCircles, showPoints, showTriangles, pointSize, showNormals, normalLength]);
+  }, [targetEdgeLength, grow, curvAngleDeg, useReach, reachTol, minEdgeSpacing, maxPoints, partOpacity, strokeWidth, showCircles, showPoints, showTriangles, pointSize, showNormals, normalLength]);
   useEffect(() => () => setLichenDebug(null), []);
 
   useEffect(() => {
@@ -317,6 +324,31 @@ export function MesherLichenDialog({ onClose }: { onClose: () => void }) {
             aria-label="Krümmungswinkel in Grad"
             value={curvAngleDeg}
             onChange={setCurvAngleDeg}
+            commitOnChange={false}
+          />
+        </div>
+      </div>
+
+      <div className="vec-row">
+        <label
+          title={
+            "Untere Grenze des Punktabstands auf Kanten: die winkelgetriebene " +
+            "Verdichtung setzt keine Punkte näher als diesen Abstand — sehr " +
+            "kleine Kreise bekommen dadurch nicht mehr die volle Winkel-" +
+            "Punktzahl. Geschlossene Kanten behalten unabhängig davon " +
+            "mindestens 4 Punkte, damit sie nicht entarten."
+          }
+        >
+          Min. Kantenabstand (mm)
+        </label>
+        <div className="fields">
+          <NumberInput
+            min={0}
+            max={100}
+            step={0.01}
+            aria-label="Minimaler Kantenpunkt-Abstand in mm"
+            value={minEdgeSpacing}
+            onChange={setMinEdgeSpacing}
             commitOnChange={false}
           />
         </div>

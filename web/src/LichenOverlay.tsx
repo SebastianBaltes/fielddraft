@@ -161,6 +161,8 @@ export function LichenOverlay() {
         grow: params.grow,
         curvAngleDeg: params.curvAngleDeg,
         useReach: params.useReach,
+        reachTol: params.reachTol,
+        minEdgeSpacing: params.minEdgeSpacing,
         maxPoints: params.maxPoints,
       }),
     );

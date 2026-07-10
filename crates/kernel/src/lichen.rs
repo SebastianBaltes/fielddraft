@@ -43,6 +43,11 @@ pub struct LichenOptions {
     /// weiter als dies von `p` weg, gilt die äußere Medialachse als gekreuzt →
     /// begrenzt `U(p)`.
     pub reach_tol: f32,
+    /// Untere Grenze des Punktabstands auf Kanten (mm): winkelgetriebene
+    /// Verdichtung stoppt unterhalb dieses Abstands — sehr kleine Kreise
+    /// bekommen nicht mehr die volle Winkel-Punktzahl. Geschlossene Kanten
+    /// behalten unabhängig davon ≥4 Punkte (Degenerations-Schutz).
+    pub min_edge_spacing: f32,
     /// Obergrenze der Interior-Punkte (Runaway-Schutz).
     pub max_points: usize,
     /// Advancing-Front-Triangulierung ausführen. Aus = nur Punktwolke.
@@ -57,6 +62,7 @@ impl Default for LichenOptions {
             curv_angle_deg: 20.0,
             use_reach: true,
             reach_tol: 1.0,
+            min_edge_spacing: 0.01,
             max_points: 20000,
             triangulate: true,
         }
@@ -354,8 +360,16 @@ where
 /// der akkumulierte **Knickwinkel** `angle_rad` (Radiant) ODER die Bogenlänge
 /// `h` überschritten wird — dicht in Kurven, spärlich auf Geraden. Endpunkte
 /// (die Ecken) bleiben exakt erhalten. Damit steuert der Krümmungswinkel auch
-/// die Randdichte.
-pub fn resample_edge_by_curvature(pts: &[[f32; 3]], h: f32, angle_rad: f32) -> Vec<[f32; 3]> {
+/// die Randdichte. `min_spacing` deckelt die winkelgetriebene Verdichtung
+/// nach unten: kein Punkt näher als dies am zuletzt gesetzten — sehr kleine
+/// Kreise entarten sonst zur Punktwolke in Mikrometer-Abständen (Ticket
+/// 6d3f4a7f); die Mindest-Punktzahl geschlossener Kanten sichert der Caller.
+pub fn resample_edge_by_curvature(
+    pts: &[[f32; 3]],
+    h: f32,
+    angle_rad: f32,
+    min_spacing: f32,
+) -> Vec<[f32; 3]> {
     if pts.len() < 2 {
         return pts.to_vec();
     }
@@ -393,12 +407,16 @@ pub fn resample_edge_by_curvature(pts: &[[f32; 3]], h: f32, angle_rad: f32) -> V
             t0 = t;
         }
         acc_len += (1.0 - t0) * seg;
-        // Knickwinkel am inneren Vertex b (zwischen a→b und b→next).
+        // Knickwinkel am inneren Vertex b (zwischen a→b und b→next). Die
+        // Winkel-Emission respektiert den Mindestabstand zum zuletzt
+        // gesetzten Punkt; die h-Unterteilung oben bleibt davon unberührt.
         if i + 1 < pts.len() {
             let d1 = norm(sub(b, a));
             let d2 = norm(sub(pts[i + 1], b));
             acc_ang += dot(d1, d2).clamp(-1.0, 1.0).acos();
-            if acc_ang >= ang_thresh {
+            if acc_ang >= ang_thresh
+                && out.last().map_or(true, |&q| dist(q, b) >= min_spacing)
+            {
                 push(&mut out, b);
                 acc_len = 0.0;
                 acc_ang = 0.0;
