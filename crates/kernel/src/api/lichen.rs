@@ -1079,12 +1079,48 @@ mod tests {
     /// Betreiber-Demo-Projekt (2026-07-11): Kugel r50 ∩ Gyroid (cell 10),
     /// Zylinder-Bohrung r30, Mikro-Box-Intersect (6×8×6 an der Oberfläche),
     /// Mini-Kugel (r50 skaliert 0.02) — GENAU das Projekt, mit dem der
-    /// Betreiber das Lichen-Meshing in der App testet. Regressions-Gate für
-    /// die Mesh-QUALITÄT (lichen::mesh_quality) beider Triangulierungs-Pfade.
+    /// Betreiber das Lichen-Meshing in der App testet. Der Feature-Teil ist
+    /// bewusst HART im Test verdrahtet (Betreiber-Wunsch): der Testfall ist
+    /// hier lesbar und kann nicht stillschweigend von einer externen Datei
+    /// wegdriften. Regressions-Gate für die Mesh-QUALITÄT
+    /// (lichen::mesh_quality) beider Triangulierungs-Pfade.
     fn demo_project_kernel() -> crate::Kernel {
+        let json = r#"{
+            "schema_version": 1,
+            "name": "Lichen-Demo",
+            "feature_calls": [
+                { "type": "sphere", "id": 1, "params": {
+                    "op": "new", "radius": 50, "translate": [0, 0, 0] } },
+                { "type": "gyroid", "id": 2, "params": {
+                    "op": "intersect", "targets": "qCreatedBy(1)",
+                    "cell_size": { "unit": "mm", "value": 10 },
+                    "thickness": { "unit": "mm", "value": 1 },
+                    "blend_radius": { "unit": "mm", "value": 0 },
+                    "chamfer_size": { "unit": "mm", "value": 0 },
+                    "displace_depth": { "unit": "mm", "value": 0 },
+                    "shell_thickness": { "unit": "mm", "value": 0 } } },
+                { "type": "cylinder", "id": 3, "params": {
+                    "op": "remove", "targets": "qCreatedBy(1)",
+                    "radius": 30, "half_height": 60, "translate": [0, 0, 0] } },
+                { "type": "box", "id": 4, "params": {
+                    "op": "intersect", "targets": "qCreatedBy(1)",
+                    "half_extents": [3, 4, 3], "translate": [0, 0, 0] } },
+                { "type": "translate", "id": 5, "params": {
+                    "target_id": 4,
+                    "translate": [7.970110677489131, 22.314295, 29.869688] } },
+                { "type": "sphere", "id": 6, "params": {
+                    "op": "add", "targets": "qCreatedBy(2)",
+                    "radius": 50, "translate": [0, 0, 0] } },
+                { "type": "translate", "id": 7, "params": {
+                    "target_id": 6,
+                    "translate": [5.2107882, 22.11431, 29.24847473977133] } },
+                { "type": "scale", "id": 8, "params": {
+                    "target_id": 6, "scale": [0.02, 0.02, 0.02] } }
+            ],
+            "next_feature_id": 10
+        }"#;
         let mut k = crate::Kernel::new();
-        k.load_json(include_str!("../../testdata/lichen_demo_project.json"))
-            .expect("Demo-Projekt lädt");
+        k.load_json(json).expect("Demo-Projekt lädt");
         k
     }
 
