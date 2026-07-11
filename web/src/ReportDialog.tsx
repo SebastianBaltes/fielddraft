@@ -6,7 +6,7 @@
  * description — plus optional file/image attachments via the file picker or
  * Ctrl+V (ticket 8onw) — and submits. The ticket bundles the screenshot, the
  * attachments, the live project JSON, the app version and a timestamp, and
- * is written to the repo's `tickets/open/` directory (see reportTicket.ts).
+ * is POSTed to the backend ticket store (see reportTicket.ts).
  */
 
 import { useEffect, useRef, useState } from "react";
