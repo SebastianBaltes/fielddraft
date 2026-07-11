@@ -33,6 +33,17 @@ export interface LichenDebug {
   minEdgeSpacing: number;
   /** Hard cap on the particle count (safety valve). */
   maxPoints: number;
+  /** ALLGEMEINE (chartlose) Triangulierung über Stern-Konsistenz statt
+   *  Chart-CDT — ein Code für plan + gekrümmt; Diagnose-first. */
+  generalTri: boolean;
+  /** Akzeptanz-Bedingung des General-Pfads: "auto" (pro Fläche nach
+   *  Trägertyp — doppelt gekrümmt → Umkugel, planar/abwickelbar →
+   *  Stern-Konsens), "vote", "gabriel" (Umkugel mit deterministischem
+   *  Tie-Break) oder "hybrid". */
+  accept: "auto" | "vote" | "gabriel" | "hybrid";
+  /** Loch-Füller des General-Pfads (Fallback nach der Diagnose). Aus =
+   *  der Basis-Algorithmus wird pur gemessen. */
+  fillHoles: boolean;
 
   // ── Display knobs (overlay only, ignored by the kernel) ──
   /** Opacity of the rendered part (1 = opaque). Below 1 the solid turns
@@ -94,6 +105,23 @@ export interface LichenStats {
   tris: number;
   /** Of `tris`, how many came from the fallback path — drawn orange. */
   fallbackTris: number;
+  /** General-Pfad-Diagnose: offene Loch-Kanten (rot gezeichnet). */
+  holeEdges: number;
+  /** General-Pfad-Diagnose: abgelehnte Fast-Konsens-Kandidaten (orange). */
+  weakTris: number;
+  /** Qualitäts-Block (beide Pfade, kernel-berechnet über das finale Netz):
+   *  Kanten mit genau einem Dreieck (offener Rand). */
+  boundaryEdges: number;
+  /** Kanten mit >2 Dreiecken (0 = manifold). */
+  nonmanifoldEdges: number;
+  /** Dreiecke mit ~Null-Fläche oder doppelten Ecken. */
+  degenerateTris: number;
+  /** Zusammenhangskomponenten. */
+  components: number;
+  /** Euler-Charakteristik V−E+F (2 je geschlossener Kugel-Komponente). */
+  euler: number;
+  /** Mehrfach gleichgerichtete Kanten (0 = konsistent orientierbar). */
+  orientationViolations: number;
 }
 
 let stats: LichenStats | null = null;

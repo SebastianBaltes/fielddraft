@@ -199,7 +199,8 @@ export function InvitePanel() {
           No invites yet. Create one above.
         </p>
       ) : (
-        <table className="invite-table" data-testid="invite-list">
+        <div className="table-scroll">
+          <table className="invite-table" data-testid="invite-list">
           <thead>
             <tr>
               <th>Invitee</th>
@@ -250,6 +251,7 @@ export function InvitePanel() {
             ))}
           </tbody>
         </table>
+        </div>
       )}
     </div>
   );

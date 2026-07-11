@@ -737,6 +737,7 @@ impl Kernel {
                         &poles,
                         aux_base,
                         &world_of,
+                        None,
                     ) {
                         cdt_tris.extend(mesh.tris);
                         aux_points.extend(mesh.aux);

@@ -24,6 +24,184 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.531",
+    entries: [
+      {
+        kind: "feat",
+        scope: "mesher",
+        text: "Lichen: freie Kugeln ALLER Größen (r=1/8/50) jetzt strikt wasserdicht ohne Fallbacks — Dreiecks-Loch-Prädikat in der Kandidaten-Vervollständigung (schließt ein Kandidat alle drei Kanten eines exakten 3er-Lochs, ist er die einzige Manifold-Vervollständigung; die Umkugel darf ihn an Dichte-Übergängen nicht mehr blockieren). Wachstum: Schritt-Halbierung bei Wand-Treffern (Sub-h-Features) mit Kaskaden-Bremse und symmetrischem Konflikt-Test gegen das Spacing des nächsten Bestandspunkts.",
+      },
+    ],
+  },
+  {
+    version: "0.6.530",
+    entries: [
+      {
+        kind: "feat",
+        scope: "mesher",
+        text: "Lichen: Zylinder (Mantel + Kappen) im General-Pfad WASSERDICHT (χ=2, aktiver Test). Krümmung fürs Wachstum kommt jetzt von der glatten TRÄGERFLÄCHE statt vom Body-Feld — das Body-∇f maß an B-Rep-Kanten den Knick (Mikro-Spacing-Bänder) bzw. bei kleinem Fenster f32-Rauschen als Krümmung; die ~15-fache Überdichte ist weg (Box 12041→486 Dreiecke bei besserer Qualität, Mesher ~5× schneller). Rand-Seeds vererben ihr echtes Ketten-Spacing mit ≤×1,5-Grading; Fold-Elimination arbeitet seitenweise (auch non-manifolde Mehrfachbelegungen).",
+      },
+    ],
+  },
+  {
+    version: "0.6.529",
+    entries: [
+      {
+        kind: "fix",
+        scope: "mesher",
+        text: "Lichen: Wurzel-Bug im Gradientenfeld behoben — der Dual-Gradient ist exakt AUF planaren Flächen null, wodurch alle Wachstums-Punkte die Default-Normale [0,0,1] bekamen: 4 von 6 Box-Flächen blieben komplett ungemesht, Krümmungsschätzung und Stern-Projektion waren vergiftet. Jetzt FD-Fallback (robust_grad), Stern-Normalen exakt aus der Trägerfläche, §1.5-Konflikt-Rebalancing beim Wachstum (Kandidaten werden ausbalanciert statt verworfen) und Gegenseiten-Pflicht innerer Kanten (Folds raus). Alle Testkörper jetzt voll gemesht mit 0 non-manifold, 0 degeneriert, 0 Orientierungs-Konflikten.",
+      },
+    ],
+  },
+  {
+    version: "0.6.528",
+    entries: [
+      {
+        kind: "feat",
+        scope: "mesher",
+        text: "Lichen General-Tri: Umkugel-verifizierte Kandidaten-Vervollständigung — offene Kanten werden geschlossen, wenn das fehlende Delaunay-Dreieck die Umkugel-Prüfung besteht (Prädikat statt Heuristik, Teil des Basis-Algorithmus; deterministisch: kleinster Umkreisradius, Fixpunkt-Iteration mit Kapazitäts-, Ketten- und Degenerations-Wächtern). Box 128→98, Zylinder 434→345 offene Kanten (ohne Loch-Füller); der Füller ist jetzt kapazitäts-bewusst und kann keine non-manifolden Kanten mehr erzeugen.",
+      },
+    ],
+  },
+  {
+    version: "0.6.527",
+    entries: [
+      {
+        kind: "feat",
+        scope: "mesher",
+        text: "Lichen General-Tri: freie Kugeln sind jetzt WASSERDICHT (χ=2) — ohne Rand-Topologie, ohne Loch-Füller: Feld-Streuung besät Flächen ohne Rand-Seeds (Gitter + skalen-korrekte Newton-Projektion), und die Umkugel-Akzeptanz trägt den doppelt gekrümmten Fall. Neuer Akzeptanz-Modus „Auto“ (Default): pro Fläche nach Trägertyp — doppelt gekrümmt → Umkugel, planar/abwickelbar → Stern-Konsens (Demo: 165→153 offene Kanten). Loch-Füller im Dialog abschaltbar, um den Basis-Algorithmus pur zu messen.",
+      },
+    ],
+  },
+  {
+    version: "0.6.526",
+    entries: [
+      {
+        kind: "feat",
+        scope: "mesher",
+        text: "Lichen: verwaiste Branch-Flächen (vom Weave gedroppte Trim-Nähte, DL-71) werden rekonstruiert — Träger aus der Branch-Halfspace-Map, Rand-Loops durch Ketten-Verkettung, kettenlose Flächen per Feld-Streuung (Gitter + Newton-Projektion) besät. Loch-Loop-Walker biegt an Verzweigungen jetzt geometrisch ab (schärfste Linkskurve in der Tangentialebene) statt beliebig.",
+      },
+    ],
+  },
+  {
+    version: "0.6.525",
+    entries: [
+      {
+        kind: "fix",
+        scope: "mesher",
+        text: "Lichen: Demo-Projekt-Befunde behoben — beide Triangulierungs-Pfade liefern jetzt 0 non-manifolde Kanten und global konsistente Orientierung. Ketten-Kanten-Einzelnutzung pro Fläche (Rand-Folds/Sliver entfernt, gilt auch nach dem Loch-Füller), fremde Ketten-Kanten als globale Wände, Ring-Naht-Kohärenz beim Kanten-Resampling (U(p)-Überdeckungslücke am Nahtstoß geschlossener Ringe), kreuzende Chart-Constraints crashen nicht mehr (Diagnose statt spade-Panic), Orientierungs-Propagation über Kanten-Nachbarschaft.",
+      },
+    ],
+  },
+  {
+    version: "0.6.524",
+    entries: [
+      {
+        kind: "feat",
+        scope: "mesher",
+        text: "Lichen-Dialog zeigt Qualitäts-Kennzahlen des finalen Netzes: Manifold und Watertight als ✓/✗ mit Zählern, degenerierte Dreiecke, Komponenten, Euler-Charakteristik und Orientierungs-Verstöße (kernel-berechnet, beide Triangulierungs-Pfade). Das Betreiber-Demo-Projekt (Kugel∩Gyroid, Bohrung, Mikro-Features) ist jetzt Unit-Test-Fixture mit Qualitäts-Regressions-Gates; flächen-übergreifende Dreiecks-Duplikate des General-Pfads werden konsolidiert.",
+      },
+    ],
+  },
+  {
+    version: "0.6.523",
+    entries: [
+      {
+        kind: "feat",
+        scope: "mesher",
+        text: "Lichen General-Tri im Dialog schaltbar: „General tri“-Checkbox plus Akzeptanz-Auswahl (Stern-Konsens / Umkugel mit deterministischem Fächer-Tie-Break / Hybrid). Diagnose-Overlay zeigt offene Loch-Kanten rot und Fast-Konsens-Kandidaten orange; der Cocone-Öffnungswinkel ist an den globalen Krümmungswinkel gekoppelt (Zylinder: 434 statt ~1000 Loch-Kanten).",
+      },
+    ],
+  },
+  {
+    version: "0.6.522",
+    entries: [
+      {
+        kind: "fix",
+        scope: "mesher",
+        text: "Lichen: Auf geschlossenen Trägern (Kugel) entscheidet jetzt das Body-Feld statt der Loop-Parität, welche Chart-Region vermascht wird. Zwei Loops teilen eine Kugel in drei Regionen — die even-odd-Parität füllte den VERGRABENEN Annulus zwischen Naht-Ring und Bohrungs-Loop (innere Flächen), während die lebendige Kappe und das Bohrungs-Stück leer blieben. Der nicht-windende Chart-Fall prüft Kandidaten und Dreiecks-Zentroide jetzt per Liveness (Träger-Punkt auf dem Body): Kappe vermascht, vergrabene Dreiecke weg.",
+        tickets: ["28a95b4e", "0e9e8f40"],
+      },
+    ],
+  },
+  {
+    version: "0.6.521",
+    entries: [
+      {
+        kind: "fix",
+        scope: "mesher",
+        text: "Lichen: Die Triangulierung nutzt jetzt die Grow-Punkte. Die CDT-Rand-Clearance war fix 0.25·h — bei krümmungsadaptiv dichtem Wachstum (Spacing ≪ h) galt damit jeder gewachsene Punkt als „zu nah am Rand“ und wurde verworfen; die Dreiecke überspannten die Flächen nur mit Rand-Ketten. Jetzt: Clearance pro Fläche aus dem lokalen Punkt-Spacing, plus eine relative Regel im CDT (kein freier Punkt näher als 10% der jeweiligen Constraint-Segmentlänge) gegen Sliver-Dreiecke, wenn dichte Punkte auf grobe Randsegmente treffen.",
+        tickets: ["e6b21b96"],
+      },
+    ],
+  },
+  {
+    version: "0.6.520",
+    entries: [
+      {
+        kind: "fix",
+        scope: "render",
+        text: "Der Z-Offset im „Visible only“-Modus wirkt jetzt wirklich — auf B-Rep-Kanten UND Lichen-Overlays. Ursache: polygonOffsetUnits zählt in Schritten des kleinsten Depth-Buffer-Deltas (~2⁻²³), die analytisch geschriebene SDF-Tiefe weicht von der Raster-Tiefe der Kanten aber um ~1e-5 ab — der bisherige Bias war ~100× zu klein, Kanten auf Flächen (z.B. der Ring um die Kugel) verloren den Tiefen-Test. Die Skala ist jetzt headful vermessen (Schwelle zwischen 50 und 200 Units) und auf Units = −200·Wert gesetzt: der Default 2 zeigt den Kugel-Ring vollständig, mit doppelter Marge.",
+        tickets: ["d4fc002a", "65cc6903"],
+      },
+    ],
+  },
+  {
+    version: "0.6.519",
+    entries: [
+      {
+        kind: "fix",
+        scope: "mobile",
+        text: "Auch die Users- und Invites-Tabellen pannen jetzt horizontal, wenn sie nicht in die Fensterbreite passen (gleiches Muster wie die Issues-Tabelle): Scroll-Wrapper + Mindestbreite statt gequetschter Spalten.",
+      },
+    ],
+  },
+  {
+    version: "0.6.518",
+    entries: [
+      {
+        kind: "fix",
+        scope: "mobile",
+        text: "Die Issues-Tabelle ist jetzt scrollbar, wenn sie nicht ins Fenster passt: Auf schmalen Screens pannt sie horizontal (die Spalten behalten ihre Mindestbreite, statt sich zu überlagern — Title kollabierte auf 0 und legte sich über Category); vertikal scrollt die Übersicht wie gehabt im eigenen Container.",
+      },
+    ],
+  },
+  {
+    version: "0.6.517",
+    entries: [
+      {
+        kind: "fix",
+        scope: "mobile",
+        text: "Das Burger-Menü öffnet auf Phone-Breite nicht mehr aus dem Screen heraus: Es ist dort kein am Burger verankertes Popover mehr, sondern ein fixes Panel unter der Topbar über die volle Breite — scrollbar, wenn es höher als das Fenster ist; Submenus klappen inline auf (Akkordeon) statt seitlich hinauszulaufen. Die Debug-Dialoge (Mesher, Lichen/PASM, SDF-Plane) sind ebenfalls nie höher als das Fenster und scrollen ihren Inhalt.",
+      },
+    ],
+  },
+  {
+    version: "0.6.516",
+    entries: [
+      {
+        kind: "fix",
+        scope: "mobile",
+        text: "Mobile Topbar entschlackt: Auf Phone-Breite (≤768px) bleiben nur Zurück-Pfeil, Burger-Menü, Projekt-Titel und User-Menü — Marke, Versions-Badge, Feature-/Dreiecks-/Größen-Anzeige und die Alarm-Glocke sind ausgeblendet; Fehlermeldungen bleiben sichtbar.",
+      },
+      {
+        kind: "fix",
+        scope: "mobile",
+        text: "Die Seite selbst zoomt und scrollt auf Mobilgeräten nicht mehr: touch-action pan-x/pan-y verbietet dem Browser Pinch- und Doppeltipp-Zoom der Seite (Pinch gehört der 3D-Szene), overscroll-behavior stoppt Pull-to-Refresh/Rubber-Banding, und overflow:hidden auf html/body verhindert jedes Seiten-Scrollen — die App ist eine Single-Page-Fullscreen-Anwendung.",
+      },
+    ],
+  },
+  {
+    version: "0.6.515",
+    entries: [
+      {
+        kind: "feat",
+        scope: "render",
+        text: "Der Z-Puffer-Offset ist jetzt direkt einstellbar: Bei „B-Rep edges: Visible only“ erscheint in den Settings das Feld „Z-Offset (Depth-Bias)“ (Default 2, 0 = aus). Der Wert steuert, wie stark Kanten und Debug-Overlays im Tiefen-Test zur Kamera gezogen werden (polygonOffset: Factor = −Wert, Units = −2·Wert) — vorher war der Bias fest auf 2 kodiert. Wirkt live auf B-Rep-Kanten und Lichen-Overlays.",
+      },
+    ],
+  },
+  {
     version: "0.6.514",
     entries: [
       {

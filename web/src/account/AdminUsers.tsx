@@ -108,7 +108,8 @@ export function AdminUsers({ selfId }: AdminUsersProps) {
           No users.
         </p>
       ) : (
-        <table className="users-table" data-testid="admin-users-list">
+        <div className="table-scroll">
+          <table className="users-table" data-testid="admin-users-list">
           <thead>
             <tr>
               <th>Email</th>
@@ -166,6 +167,7 @@ export function AdminUsers({ selfId }: AdminUsersProps) {
             ))}
           </tbody>
         </table>
+        </div>
       )}
     </div>
   );

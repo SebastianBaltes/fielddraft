@@ -52,6 +52,22 @@ pub struct LichenOptions {
     pub max_points: usize,
     /// Advancing-Front-Triangulierung ausführen. Aus = nur Punktwolke.
     pub triangulate: bool,
+    /// ALLGEMEINE (chartlose) Triangulierung über Stern-Konsistenz statt
+    /// Chart-CDT — ein Code für plan, gekrümmt und (künftig) Gyroid; siehe
+    /// [`crate::lichen_tri`]. Experimentell, Diagnose-first (Löcher werden
+    /// gezählt, nicht übermalt).
+    pub general_tri: bool,
+    /// Akzeptanz-Bedingung des allgemeinen Pfads (schaltbar, Betreiber-Wunsch
+    /// 2026-07-11): `"auto"` (Default) = pro Fläche nach Trägertyp — doppelt
+    /// gekrümmt → Umkugel, planar/abwickelbar → Stern-Konsens; `"vote"` =
+    /// Stern-Konsens (Dreieck in allen 3 Sternen), `"gabriel"` = Umkugel-
+    /// Leere mit deterministischem Fächer-Tie-Break, `"hybrid"` = Konsens
+    /// ODER Umkugel.
+    pub accept: String,
+    /// Loch-Füller des General-Pfads (Fallback NACH der Diagnose). Aus =
+    /// der BASIS-Algorithmus wird pur gemessen (Betreiber-Wunsch: der
+    /// Kern muss auch ohne Fallbacks bestehen).
+    pub fill_holes: bool,
 }
 
 impl Default for LichenOptions {
@@ -65,6 +81,9 @@ impl Default for LichenOptions {
             min_edge_spacing: 0.01,
             max_points: 20000,
             triangulate: true,
+            general_tri: false,
+            accept: "auto".into(),
+            fill_holes: true,
         }
     }
 }
@@ -125,25 +144,61 @@ fn tangent_basis(n: [f32; 3]) -> ([f32; 3], [f32; 3]) {
     (e1, e2)
 }
 
+/// ∇f mit FD-Fallback: der Dual-Gradient ist EXAKT auf planaren Flächen
+/// null (Abs-Dual bei 0 — die Box liefert d≈1e-10, g=[0,0,0]); Newton
+/// konvergiert Punkte genau dorthin. Zentrale Differenzen retten den Fall —
+/// ohne diesen Fallback bekamen ALLE Box-Growth-Punkte die Default-Normale
+/// [0,0,1], was Wachstums-Frames, Krümmungsschätzung (Überdichte!) und die
+/// Stern-Projektion zugleich vergiftete.
+pub(crate) fn robust_grad<Fg: Fn([f32; 3]) -> (f32, [f32; 3])>(p: [f32; 3], fg: &Fg) -> [f32; 3] {
+    let g = fg(p).1;
+    if dot(g, g) > 1e-12 {
+        return g;
+    }
+    let e = 1e-3f32;
+    [
+        fg([p[0] + e, p[1], p[2]]).0 - fg([p[0] - e, p[1], p[2]]).0,
+        fg([p[0], p[1] + e, p[2]]).0 - fg([p[0], p[1] - e, p[2]]).0,
+        fg([p[0], p[1], p[2] + e]).0 - fg([p[0], p[1], p[2] - e]).0,
+    ]
+}
+
 /// Newton-Projektion auf `f = 0` (echter Step `p -= f·∇f/|∇f|²`). Liefert
 /// `(p, sdf, Einheitsnormale)`.
 fn project<Fg: Fn([f32; 3]) -> (f32, [f32; 3])>(mut p: [f32; 3], fg: &Fg) -> ([f32; 3], f32, [f32; 3]) {
     for _ in 0..5 {
         let (d, g) = fg(p);
-        let g2 = dot(g, g);
-        if g2 < 1e-24 { return (p, d, [0.0, 0.0, 1.0]); }
+        let mut g2 = dot(g, g);
+        let mut g = g;
+        if g2 < 1e-24 {
+            g = robust_grad(p, fg);
+            g2 = dot(g, g);
+            if g2 < 1e-24 {
+                return (p, d, [0.0, 0.0, 1.0]);
+            }
+        }
         let s = d / g2;
         p = [p[0] - s * g[0], p[1] - s * g[1], p[2] - s * g[2]];
         if d.abs() < 1e-5 { break; }
     }
-    let (d, g) = fg(p);
-    (p, d, norm(g))
+    let d = fg(p).0;
+    (p, d, norm(robust_grad(p, fg)))
 }
 
 /// Maximale Hauptkrümmung `κ_max` UND ihre Tangentialrichtung `d_max`
 /// (Shape-Operator per zentraler Differenz des Normalenfelds — Muster aus
 /// `mesher_points::metric_at`). `gradn` liefert die Einheitsnormale.
-fn curvature<Gn: Fn([f32; 3]) -> [f32; 3]>(p: [f32; 3], n: [f32; 3], h: f32, gradn: &Gn) -> (f32, [f32; 3]) {
+/// Shape-Operator per FD eines NORMALENFELDS. Der Aufrufer wählt das Feld:
+/// die TRÄGERFLÄCHEN-Normale (glatt, unendlich — keine Kanten-Knicke, kein
+/// Klein-Fenster-Rauschen) ist die korrekte Quelle fürs Wachstum; das Body-
+/// ∇f taugt NICHT (misst an B-Rep-Kanten den Knick als Krümmung → Mikro-
+/// Spacing-Bänder, ~15× Überdichte auf der Box).
+pub fn curvature<Gn: Fn([f32; 3]) -> [f32; 3]>(
+    p: [f32; 3],
+    n: [f32; 3],
+    h: f32,
+    gradn: &Gn,
+) -> (f32, [f32; 3]) {
     let (e1, e2) = tangent_basis(n);
     let delta = (0.1 * h).clamp(1e-3, 0.5);
     let dn = |dir: [f32; 3]| -> [f32; 3] {
@@ -202,13 +257,19 @@ fn reach<Fg: Fn([f32; 3]) -> (f32, [f32; 3])>(p: [f32; 3], n: [f32; 3], cap: f32
 /// unten geklemmt. `cap = h`. Steuert Punktdichte + Graph-Konnektivität; die
 /// Kanten-Grenze übernimmt die harte `on_face`-Wand (nicht mehr die Dichte),
 /// der angezeigte U(p)-Kreis wird separat via `R_BRep` beschränkt.
-fn local_radius<Fg>(p: [f32; 3], n: [f32; 3], h: f32, opts: &LichenOptions, fg: &Fg) -> f32
+fn local_radius<Fg>(
+    p: [f32; 3],
+    n: [f32; 3],
+    h: f32,
+    kmax: f32,
+    opts: &LichenOptions,
+    fg: &Fg,
+) -> f32
 where
     Fg: Fn([f32; 3]) -> (f32, [f32; 3]),
 {
-    let gradn = |q: [f32; 3]| norm(fg(q).1);
     let mut r = h;
-    let (kmax, _) = curvature(p, n, h, &gradn);
+    let _ = n;
     if kmax > 1e-6 {
         // R_curv = α_rad / κ_max — bindet nur, wo κ_max > α_rad/h (Radius < h/α),
         // sonst dominiert der h-Cap. Auf flachen/leicht gekrümmten Flächen also
@@ -233,16 +294,28 @@ fn gkey(p: [f32; 3], cell: f32) -> (i32, i32, i32) {
 
 /// Kleinster euklidischer Abstand von `p` zu einem Punkt in `pts` (Spatial-Hash).
 fn nearest_dist(grid: &HashMap<(i32, i32, i32), Vec<u32>>, pts: &[LPoint], cell: f32, p: [f32; 3]) -> f32 {
+    nearest_pt(grid, pts, cell, p).0
+}
+
+/// Wie [`nearest_dist`], liefert zusätzlich das SPACING des nächsten Punkts —
+/// für den symmetrischen Konflikt-Test (ein feiner Kandidat neben groben
+/// Bestandspunkten ist relativ zu DEREN Spacing redundant).
+fn nearest_pt(
+    grid: &HashMap<(i32, i32, i32), Vec<u32>>,
+    pts: &[LPoint],
+    cell: f32,
+    p: [f32; 3],
+) -> (f32, f32) {
     let (kx, ky, kz) = gkey(p, cell);
-    let mut best = f32::MAX;
+    let mut best = (f32::MAX, 0.0f32);
     for dx in -1..=1 {
         for dy in -1..=1 {
             for dz in -1..=1 {
                 if let Some(v) = grid.get(&(kx + dx, ky + dy, kz + dz)) {
                     for &i in v {
                         let d = dist(pts[i as usize].p, p);
-                        if d < best {
-                            best = d;
+                        if d < best.0 {
+                            best = (d, pts[i as usize].space);
                         }
                     }
                 }
@@ -283,18 +356,20 @@ fn visible<Fg: Fn([f32; 3]) -> (f32, [f32; 3])>(p: [f32; 3], q: [f32; 3], r: f32
 /// → `on_face` schlägt fehl → verworfen. So bleibt jede Fläche in ihren Kanten
 /// und wächst nie auf eine andere Fläche oder ins Leere. Liefert die neu
 /// gewachsenen Interior-Punkte (flag 1).
-pub fn grow_surface<Fg, Fb, On>(
+pub fn grow_surface<Fg, Fb, On, Sc>(
     seeds: &[LPoint],
     h: f32,
     opts: &LichenOptions,
     fg: &Fg,
     brep_dist: &Fb,
     on_face: &On,
+    surf_curv: &Sc,
 ) -> Vec<LPoint>
 where
     Fg: Fn([f32; 3]) -> (f32, [f32; 3]),
     Fb: Fn([f32; 3]) -> f32,
-    On: Fn([f32; 3]) -> bool,
+    On: Fn([f32; 3], f32) -> bool,
+    Sc: Fn([f32; 3]) -> (f32, [f32; 3]),
 {
     let cell = h.max(1e-4);
     let mut pts: Vec<LPoint> = seeds.to_vec();
@@ -304,8 +379,8 @@ where
     }
     let n_seeds = pts.len();
     let cap = n_seeds + opts.max_points;
-    let gradn = |q: [f32; 3]| norm(fg(q).1);
 
+    let mut rej = [0usize; 6]; // sdf, visible, face, redundant, rebalance, ok
     let mut queue: VecDeque<usize> = (0..n_seeds).collect();
     while let Some(i) = queue.pop_front() {
         if pts.len() >= cap {
@@ -313,40 +388,133 @@ where
         }
         let p = pts[i].p;
         let n = pts[i].n;
-        let r = local_radius(p, n, h, opts, fg);
-        // Referenzrichtung u entlang der maximalen Hauptkrümmung (§1.2); auf
-        // planaren/sphärischen Flächen (κ≈0) ein beliebiger Tangentenvektor.
-        let (kmax, dmax) = curvature(p, n, h, &gradn);
+        // Krümmung IMMER von der TRÄGERFLÄCHE (glatt, kantenfrei) — daraus
+        // Wachstums-Radius und Referenzrichtung. GRADING: höchstens ×1.5
+        // gegenüber dem eigenen Spacing (Dichte-Übergänge von dichten
+        // Ketten/Nachbarn ins gröbere Innere bleiben stetig).
+        let (kmax, dmax) = surf_curv(p);
+        let r = local_radius(p, n, h, kmax, opts, fg).min(1.5 * pts[i].space);
         let (u, w) = if kmax > 1e-4 {
             (dmax, cross(n, dmax))
         } else {
             tangent_basis(n)
         };
-        for k in 0..6 {
+        'dirs: for k in 0..6 {
             let ang = k as f32 * std::f32::consts::FRAC_PI_3;
             let dir = add(scale(u, ang.cos()), scale(w, ang.sin()));
-            let (cp, cd, cn) = project(add(p, scale(dir, r)), fg);
-            if cd.abs() > 0.2 * r {
-                continue; // nicht auf der Oberfläche gelandet
-            }
-            if !visible(p, cp, r, fg) {
-                continue; // hintere Wand
-            }
-            // Harte Kanten-Wand: der Kandidat muss auf DERSELBEN BRep-Fläche
-            // liegen. Übersprang er eine Kante, ist er auf einer Nachbarfläche
-            // oder außerhalb → verwerfen (Kanten sind harte Grenzen).
-            if !on_face(cp) {
-                continue;
-            }
+            // SCHRITT-HALBIERUNG (Sub-h-Features): überspringt der Kandidat
+            // die Fläche (Wand-Treffer / hintere Wand / neben der Fläche),
+            // wird NICHT verworfen, sondern mit halbem Radius nachgesetzt —
+            // auf einem 6-mm-Feature bei r≈3 landete sonst JEDER Kandidat
+            // auf der Nachbarwand und die Fläche wuchs gar nicht.
+            let mut rr = r;
+            let (cp, cd, cn) = 'step: {
+                for _ in 0..5 {
+                    let (cp, cd, cn) = project(add(p, scale(dir, rr)), fg);
+                    if cd.abs() > 0.2 * rr {
+                        rej[0] += 1;
+                        rr *= 0.5;
+                        continue;
+                    }
+                    if !visible(p, cp, rr, fg) {
+                        rej[1] += 1;
+                        rr *= 0.5;
+                        continue;
+                    }
+                    // Harte Kanten-Wand: der Kandidat muss auf DERSELBEN
+                    // BRep-Fläche liegen (Kanten sind harte Grenzen).
+                    if !on_face(cp, rr) {
+                        rej[2] += 1;
+                        rr *= 0.5;
+                        continue;
+                    }
+                    break 'step (cp, cd, cn);
+                }
+                continue 'dirs;
+            };
+            // KASKADEN-BREMSE: der halbierte Schritt gilt nur der PLATZIERUNG
+            // (Abstands-Checks mit rr) — das SPACING des neuen Punkts bleibt
+            // am vollen Radius orientiert, sonst gebären halbierte Punkte
+            // halbierte Kinder (Verdichtungs-Kaskade: Zylinder 0→84 Löcher).
+            let r_full = r;
+            let r = rr;
             // Saubere Abtastung: Kandidat näher als 0,8·r an einem bestehenden
-            // Punkt → verwerfen (Spacing ≈ r; eine über-dichte Wolke bricht die
-            // leere-Umkreis-Bedingung des Meshers).
-            if nearest_dist(&grid, &pts, cell, cp) < 0.8 * r {
-                continue;
+            // Punkt (Spacing ≈ r; eine über-dichte Wolke bricht die leere-
+            // Umkreis-Bedingung des Meshers).
+            let mut cp = cp;
+            let mut cd = cd;
+            let mut cn = cn;
+            // SYMMETRISCHER Konflikt-Test: Abstand gegen das Maximum aus
+            // eigenem (ggf. halbiertem) Radius und dem Spacing des nächsten
+            // Bestandspunkts — sonst nisten sich halbierte Kandidaten in die
+            // Lücken grober Nachbarn (Zylinder-Ringband: 0→84 Löcher).
+            let (nd, nspace) = nearest_pt(&grid, &pts, cell, cp);
+            let r = r.max(nspace.min(r_full));
+            if nd < 0.8 * r {
+                // §1.5 KONFLIKT-REBALANCING (Konzept-Schritt 5): NICHT einfach
+                // verwerfen — an Front-Kollisionen und Dichte-Übergängen reißt
+                // das genau die Lücken (0,8r < Lücke < Dreiecks-tauglich), an
+                // denen die Sterne später uneins sind. Stattdessen den
+                // Kandidaten iterativ von den Konflikt-Nachbarn wegdrücken
+                // (Ziel ≈ 0,85r), neu auf die Fläche projizieren und nur
+                // verwerfen, wenn auch ausbalanciert kein sauberer Abstand
+                // entsteht (dann ist er ECHT redundant).
+                if nd < 0.45 * r {
+                    rej[3] += 1;
+                    continue; // redundant nah am Bestand
+                }
+                let mut q = cp;
+                let mut settled = false;
+                for _ in 0..4 {
+                    let (kx, ky, kz) = gkey(q, cell);
+                    let mut disp = [0.0f32; 3];
+                    let mut conflicts = 0;
+                    for dx in -1..=1 {
+                        for dy in -1..=1 {
+                            for dz in -1..=1 {
+                                let Some(v) = grid.get(&(kx + dx, ky + dy, kz + dz)) else {
+                                    continue;
+                                };
+                                for &wi in v {
+                                    let d = sub(q, pts[wi as usize].p);
+                                    let l = len(d);
+                                    if l < 1e-9 || l >= 0.85 * r {
+                                        continue;
+                                    }
+                                    disp = add(disp, scale(d, (0.85 * r - l) / l));
+                                    conflicts += 1;
+                                }
+                            }
+                        }
+                    }
+                    if conflicts == 0 {
+                        settled = true;
+                        break;
+                    }
+                    q = add(q, scale(disp, 0.7));
+                    let (qp, qd, qn) = project(q, fg);
+                    if qd.abs() > 0.2 * r {
+                        break; // von der Fläche gerutscht
+                    }
+                    q = qp;
+                    cd = qd;
+                    cn = qn;
+                }
+                if !settled
+                    || nearest_dist(&grid, &pts, cell, q) < 0.75 * r
+                    || !visible(p, q, r, fg)
+                    || !on_face(q, r)
+                {
+                    rej[4] += 1;
+                    continue;
+                }
+                cp = q;
             }
-            // Eigener Spacing-Radius des Kandidaten; Anzeige-U zusätzlich durch
-            // den Kantenabstand beschränkt (Kreis bleibt in der Fläche).
-            let cspace = local_radius(cp, cn, h, opts, fg);
+            // Eigener Spacing-Radius des Kandidaten (Krümmung von der
+            // Trägerfläche); Anzeige-U zusätzlich durch den Kantenabstand
+            // beschränkt (Kreis bleibt in der Fläche).
+            let cspace =
+                local_radius(cp, cn, h, surf_curv(cp).0, opts, fg).min(1.5 * r_full);
             let cu = cspace.min(brep_dist(cp));
             let j = pts.len();
             pts.push(LPoint { p: cp, sdf: cd, n: cn, u: cu, space: cspace, flag: 1.0 });
@@ -356,6 +524,12 @@ where
                 break;
             }
         }
+    }
+    if std::env::var("LICHEN_DEBUG_GROW").is_ok() {
+        eprintln!(
+            "GROW-REJ sdf={} vis={} face={} redundant={} rebalance={}",
+            rej[0], rej[1], rej[2], rej[3], rej[4]
+        );
     }
     pts.split_off(n_seeds)
 }
@@ -539,7 +713,204 @@ pub fn resample_edge_by_curvature(
 /// der `LPoint.n`-Slot. Selbstbeschreibend (Count voran), damit die Punkt- und
 /// Index-Offsets exakt wie zuvor liegen. `point_faces[i]` = die Flächen-IDs
 /// (+ zugehörige Normalen) von Punkt `i`.
+/// Qualitäts-Kennzahlen eines Dreiecksnetzes — geteilt von Unit-Tests,
+/// `pack_with_diag` (→ Lichen-Dialog-Readout) und Diagnose-Ausgaben.
+/// Diagnose-first (Betreiber-Prinzip): alles wird GEZÄHLT, nichts gefiltert.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MeshQuality {
+    /// Kanten mit genau EINEM Dreieck (offener Rand/Loch).
+    pub boundary_edges: usize,
+    /// Kanten mit MEHR als zwei Dreiecken.
+    pub nonmanifold_edges: usize,
+    /// Dreiecke mit (nahezu) Null-Fläche (< 1e-12 mm²) oder doppelten Ecken.
+    pub degenerate_tris: usize,
+    /// Zusammenhangskomponenten über die Dreiecks-Konnektivität.
+    pub components: usize,
+    /// Euler-Charakteristik V − E + F (geschlossene Kugel-Topologie = 2 pro
+    /// Komponente).
+    pub euler: i64,
+    /// Gerichtete Kanten, die MEHRFACH in derselben Richtung vorkommen —
+    /// 0 = konsistent orientierbar (bei manifold+watertight).
+    pub orientation_violations: usize,
+}
+
+impl MeshQuality {
+    pub fn manifold(&self) -> bool {
+        self.nonmanifold_edges == 0
+    }
+    pub fn watertight(&self) -> bool {
+        self.boundary_edges == 0 && self.nonmanifold_edges == 0
+    }
+}
+
+/// Kennzahlen über die finale Dreiecksliste berechnen (Indizes in `points`).
+pub fn mesh_quality(points: &[[f32; 3]], tris: &[[u32; 3]]) -> MeshQuality {
+    use std::collections::HashMap;
+    let mut edge_use: HashMap<(u32, u32), u32> = HashMap::new();
+    let mut dir_use: HashMap<(u32, u32), u32> = HashMap::new();
+    let mut degenerate = 0usize;
+    // Union-Find über die benutzten Vertices.
+    let mut parent: HashMap<u32, u32> = HashMap::new();
+    fn find(parent: &mut HashMap<u32, u32>, x: u32) -> u32 {
+        let p = *parent.entry(x).or_insert(x);
+        if p == x {
+            return x;
+        }
+        let r = find(parent, p);
+        parent.insert(x, r);
+        r
+    }
+    for &[a, b, c] in tris {
+        if a == b || b == c || c == a {
+            degenerate += 1;
+            continue;
+        }
+        let (pa, pb, pc) = (
+            points[a as usize],
+            points[b as usize],
+            points[c as usize],
+        );
+        let u = [pb[0] - pa[0], pb[1] - pa[1], pb[2] - pa[2]];
+        let v = [pc[0] - pa[0], pc[1] - pa[1], pc[2] - pa[2]];
+        let cx = (u[1] * v[2] - u[2] * v[1]) as f64;
+        let cy = (u[2] * v[0] - u[0] * v[2]) as f64;
+        let cz = (u[0] * v[1] - u[1] * v[0]) as f64;
+        if 0.5 * (cx * cx + cy * cy + cz * cz).sqrt() < 1e-12 {
+            degenerate += 1;
+        }
+        for (x, y) in [(a, b), (b, c), (c, a)] {
+            *edge_use.entry((x.min(y), x.max(y))).or_default() += 1;
+            *dir_use.entry((x, y)).or_default() += 1;
+        }
+        let ra = find(&mut parent, a);
+        let rb = find(&mut parent, b);
+        parent.insert(rb, ra);
+        let rb2 = find(&mut parent, b);
+        let rc = find(&mut parent, c);
+        parent.insert(rc, rb2);
+    }
+    let boundary_edges = edge_use.values().filter(|&&u| u == 1).count();
+    let nonmanifold_edges = edge_use.values().filter(|&&u| u > 2).count();
+    let orientation_violations = dir_use.values().filter(|&&u| u > 1).count();
+    let verts: std::collections::HashSet<u32> =
+        tris.iter().flat_map(|t| t.iter().copied()).collect();
+    let mut roots: std::collections::HashSet<u32> = std::collections::HashSet::new();
+    for &v in &verts {
+        let r = find(&mut parent, v);
+        roots.insert(r);
+    }
+    let euler = verts.len() as i64 - edge_use.len() as i64 + tris.len() as i64;
+    MeshQuality {
+        boundary_edges,
+        nonmanifold_edges,
+        degenerate_tris: degenerate,
+        components: roots.len(),
+        euler,
+        orientation_violations,
+    }
+}
+
+/// Konsistente Orientierung über Kanten-Nachbarschaft propagieren: Seed je
+/// Zusammenhangskomponente an der Feld-Normalen (Mittel der Ecken-Normalen),
+/// dann BFS über manifold-Kanten (genau 2 Dreiecke) — Nachbarn müssen die
+/// geteilte Kante GEGENLÄUFIG durchlaufen. Rückgabe: Konflikte (Kanten, an
+/// denen beide Richtungen erzwungen wären — nur an Defekten möglich).
+pub fn orient_consistent(all: &[LPoint], tris: &mut [[u32; 3]]) -> usize {
+    use std::collections::HashMap;
+    let mut edge_tris: HashMap<(u32, u32), Vec<usize>> = HashMap::new();
+    for (ti, &[a, b, c]) in tris.iter().enumerate() {
+        for (x, y) in [(a, b), (b, c), (c, a)] {
+            edge_tris.entry((x.min(y), x.max(y))).or_default().push(ti);
+        }
+    }
+    // Durchläuft `t` die Kante (u,v) in DIESER Richtung?
+    let runs = |t: &[u32; 3], u: u32, v: u32| -> bool {
+        (t[0] == u && t[1] == v) || (t[1] == u && t[2] == v) || (t[2] == u && t[0] == v)
+    };
+    let mut visited = vec![false; tris.len()];
+    let mut conflicts = 0usize;
+    for seed in 0..tris.len() {
+        if visited[seed] {
+            continue;
+        }
+        // Seed an der Feld-Normalen ausrichten.
+        let t = tris[seed];
+        let (pa, pb, pc) = (
+            all[t[0] as usize].p,
+            all[t[1] as usize].p,
+            all[t[2] as usize].p,
+        );
+        let n_tri = [
+            (pb[1] - pa[1]) * (pc[2] - pa[2]) - (pb[2] - pa[2]) * (pc[1] - pa[1]),
+            (pb[2] - pa[2]) * (pc[0] - pa[0]) - (pb[0] - pa[0]) * (pc[2] - pa[2]),
+            (pb[0] - pa[0]) * (pc[1] - pa[1]) - (pb[1] - pa[1]) * (pc[0] - pa[0]),
+        ];
+        let mut n_ref = [0.0f32; 3];
+        for &i in &t {
+            let n = all[i as usize].n;
+            n_ref = [n_ref[0] + n[0], n_ref[1] + n[1], n_ref[2] + n[2]];
+        }
+        if n_tri[0] * n_ref[0] + n_tri[1] * n_ref[1] + n_tri[2] * n_ref[2] < 0.0 {
+            tris[seed].swap(1, 2);
+        }
+        visited[seed] = true;
+        let mut queue = std::collections::VecDeque::from([seed]);
+        while let Some(ti) = queue.pop_front() {
+            let cur = tris[ti];
+            for (u, v) in [(cur[0], cur[1]), (cur[1], cur[2]), (cur[2], cur[0])] {
+                let e = (u.min(v), u.max(v));
+                let Some(list) = edge_tris.get(&e) else { continue };
+                if list.len() != 2 {
+                    continue; // Rand/Defekt: nicht propagieren
+                }
+                for &tj in list {
+                    if tj == ti {
+                        continue;
+                    }
+                    // Konsistent = Nachbar durchläuft (u,v) GEGENLÄUFIG (v,u).
+                    let consistent = runs(&tris[tj], v, u);
+                    if visited[tj] {
+                        if !consistent {
+                            conflicts += 1;
+                            if std::env::var("LICHEN_DEBUG_ORIENT").is_ok() {
+                                let pf = |i: u32| {
+                                    let lp = &all[i as usize];
+                                    format!("#{i} f{} [{:.2},{:.2},{:.2}]", lp.flag, lp.p[0], lp.p[1], lp.p[2])
+                                };
+                                eprintln!(
+                                    "ORIENT-KONFLIKT Kante {}|{}: tri_i={:?} tri_j={:?} | {} {}",
+                                    u, v, tris[ti], tris[tj], pf(u), pf(v)
+                                );
+                            }
+                        }
+                        continue;
+                    }
+                    if !consistent {
+                        tris[tj].swap(1, 2);
+                    }
+                    visited[tj] = true;
+                    queue.push_back(tj);
+                }
+            }
+        }
+    }
+    conflicts
+}
+
 pub fn pack(all: &[LPoint], tris: &[[u32; 3]], point_faces: &[Vec<(u32, [f32; 3])>]) -> Vec<f32> {
+    pack_with_diag(all, tris, point_faces, &[], &[])
+}
+
+/// Wie [`pack`], plus DIAGNOSE-Trailing-Block des allgemeinen Tri-Pfads:
+/// `[nOpenEdge, (a,b)×n, nWeakTri, (a,b,c)×n]` NACH dem Face-Normal-Block —
+/// offene Loch-Kanten (rot) und Fast-Konsens-Kandidaten (orange) fürs Overlay.
+pub fn pack_with_diag(
+    all: &[LPoint],
+    tris: &[[u32; 3]],
+    point_faces: &[Vec<(u32, [f32; 3])>],
+    open_edges: &[(u32, u32)],
+    weak_tris: &[[u32; 3]],
+) -> Vec<f32> {
     let n = all.len();
     let mut recs: Vec<f32> = Vec::new();
     let mut rec_count = 0usize;
@@ -571,5 +942,26 @@ pub fn pack(all: &[LPoint], tris: &[[u32; 3]], point_faces: &[Vec<(u32, [f32; 3]
     }
     out.push(rec_count as f32);
     out.extend_from_slice(&recs);
+    out.push(open_edges.len() as f32);
+    for &(a, b) in open_edges {
+        out.push(a as f32);
+        out.push(b as f32);
+    }
+    out.push(weak_tris.len() as f32);
+    for t in weak_tris {
+        out.push(t[0] as f32);
+        out.push(t[1] as f32);
+        out.push(t[2] as f32);
+    }
+    // Qualitäts-Block (fix 6 Werte, fürs Dialog-Readout): [boundaryEdges,
+    // nonmanifoldEdges, degenerateTris, components, euler, orientViolations].
+    let positions: Vec<[f32; 3]> = all.iter().map(|lp| lp.p).collect();
+    let q = mesh_quality(&positions, tris);
+    out.push(q.boundary_edges as f32);
+    out.push(q.nonmanifold_edges as f32);
+    out.push(q.degenerate_tris as f32);
+    out.push(q.components as f32);
+    out.push(q.euler as f32);
+    out.push(q.orientation_violations as f32);
     out
 }

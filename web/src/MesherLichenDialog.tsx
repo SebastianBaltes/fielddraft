@@ -49,6 +49,12 @@ interface LichenSettings {
   minEdgeSpacing: number;
   /** Hard cap on the particle count. */
   maxPoints: number;
+  /** Allgemeine (chartlose) Stern-Konsistenz-Triangulierung statt Chart-CDT. */
+  generalTri: boolean;
+  /** Akzeptanz des General-Pfads: Auto / Stern-Konsens / Umkugel / Hybrid. */
+  accept: "auto" | "vote" | "gabriel" | "hybrid";
+  /** Loch-Füller des General-Pfads (aus = Basis-Algorithmus pur). */
+  fillHoles: boolean;
   partOpacity: number;
   strokeWidth: number;
   /** Draw the U(p) reach circle in the tangent plane at each point. */
@@ -73,6 +79,9 @@ const DEFAULTS: LichenSettings = {
   reachTol: 1,
   minEdgeSpacing: 0.01,
   maxPoints: 50000,
+  generalTri: false,
+  accept: "auto",
+  fillHoles: true,
   partOpacity: 0.4,
   strokeWidth: 2,
   showCircles: true,
@@ -108,6 +117,12 @@ function loadSettings(): LichenSettings {
       maxPoints: Math.round(
         clampNum(p.maxPoints, 1, 2_000_000, DEFAULTS.maxPoints),
       ),
+      generalTri: p.generalTri === true,
+      accept:
+        p.accept === "vote" || p.accept === "gabriel" || p.accept === "hybrid"
+          ? p.accept
+          : "auto",
+      fillHoles: p.fillHoles === undefined ? DEFAULTS.fillHoles : p.fillHoles === true,
       partOpacity: clampNum(p.partOpacity, 0, 1, DEFAULTS.partOpacity),
       strokeWidth: clampNum(p.strokeWidth, 0.5, 12, DEFAULTS.strokeWidth),
       showCircles: p.showCircles === undefined ? DEFAULTS.showCircles : p.showCircles === true,
@@ -135,6 +150,9 @@ function lichenParams(s: LichenSettings): LichenDebug {
     reachTol: s.reachTol,
     minEdgeSpacing: s.minEdgeSpacing,
     maxPoints: s.maxPoints,
+    generalTri: s.generalTri,
+    accept: s.accept,
+    fillHoles: s.fillHoles,
     partOpacity: s.partOpacity,
     strokeWidth: s.strokeWidth,
     showCircles: s.showCircles,
@@ -158,6 +176,9 @@ export function MesherLichenDialog({ onClose }: { onClose: () => void }) {
   const [reachTol, setReachTol] = useState(initial.reachTol);
   const [minEdgeSpacing, setMinEdgeSpacing] = useState(initial.minEdgeSpacing);
   const [maxPoints, setMaxPoints] = useState(initial.maxPoints);
+  const [generalTri, setGeneralTri] = useState(initial.generalTri);
+  const [accept, setAccept] = useState(initial.accept);
+  const [fillHoles, setFillHoles] = useState(initial.fillHoles);
   const [partOpacity, setPartOpacity] = useState(initial.partOpacity);
   const [strokeWidth, setStrokeWidth] = useState(initial.strokeWidth);
   const [showCircles, setShowCircles] = useState(initial.showCircles);
@@ -179,6 +200,9 @@ export function MesherLichenDialog({ onClose }: { onClose: () => void }) {
       reachTol,
       minEdgeSpacing,
       maxPoints,
+      generalTri,
+      accept,
+      fillHoles,
       partOpacity,
       strokeWidth,
       showCircles,
@@ -194,7 +218,7 @@ export function MesherLichenDialog({ onClose }: { onClose: () => void }) {
     } catch {
       // no localStorage (tests) — non-persistent is fine
     }
-  }, [targetEdgeLength, grow, curvAngleDeg, useReach, reachTol, minEdgeSpacing, maxPoints, partOpacity, strokeWidth, showCircles, showPoints, showTriangles, pointSize, showNormals, normalLength]);
+  }, [targetEdgeLength, grow, curvAngleDeg, useReach, reachTol, minEdgeSpacing, maxPoints, generalTri, accept, fillHoles, partOpacity, strokeWidth, showCircles, showPoints, showTriangles, pointSize, showNormals, normalLength]);
   useEffect(() => () => setLichenDebug(null), []);
 
   useEffect(() => {
@@ -414,6 +438,89 @@ export function MesherLichenDialog({ onClose }: { onClose: () => void }) {
         </div>
       </div>
 
+      <div className="vec-row">
+        <label
+          title={
+            "ALLGEMEINE (chartlose) Triangulierung über Stern-Konsistenz " +
+            "statt Chart-CDT — ein Code für plane, gekrümmte und (künftig) " +
+            "chartlose Flächen. Diagnose-first: Löcher werden rot, fast-" +
+            "einstimmige Kandidaten orange gezeichnet, nichts wird still " +
+            "übermalt."
+          }
+        >
+          General tri
+        </label>
+        <div className="fields">
+          <label className="checkbox">
+            <input
+              type="checkbox"
+              aria-label="General tri"
+              data-testid="mesher-lichen-general-tri"
+              checked={generalTri}
+              onChange={(e) => setGeneralTri(e.currentTarget.checked)}
+            />
+          </label>
+        </div>
+      </div>
+
+      {generalTri && (
+        <div className="vec-row">
+          <label
+            title={
+              "Akzeptanz-Bedingung des General-Pfads: Stern-Konsens (Dreieck " +
+              "muss im 2D-Delaunay-Stern ALLER drei Ecken vorkommen), Umkugel " +
+              "(kleinste Kugel durch die drei Ecken punktfrei, mit " +
+              "deterministischem Fächer-Tie-Break bei exakt cozirkulären " +
+              "Quads), oder Hybrid (Konsens ODER Umkugel)."
+            }
+          >
+            Akzeptanz
+          </label>
+          <div className="fields">
+            <select
+              aria-label="Akzeptanz"
+              data-testid="mesher-lichen-accept"
+              value={accept}
+              onChange={(e) =>
+                setAccept(
+                  e.currentTarget.value as "auto" | "vote" | "gabriel" | "hybrid",
+                )
+              }
+            >
+              <option value="auto">Auto (Trägertyp)</option>
+              <option value="vote">Stern-Konsens</option>
+              <option value="gabriel">Umkugel (Gabriel)</option>
+              <option value="hybrid">Hybrid</option>
+            </select>
+          </div>
+        </div>
+      )}
+
+      {generalTri && (
+        <div className="vec-row">
+          <label
+            title={
+              "Loch-Füller des General-Pfads: einfache Defekt-Loops werden " +
+              "nach der Diagnose per CDT geschlossen. AUS = der Basis-" +
+              "Algorithmus wird pur gemessen (Löcher bleiben sichtbar/rot)."
+            }
+          >
+            Loch-Füller
+          </label>
+          <div className="fields">
+            <label className="checkbox">
+              <input
+                type="checkbox"
+                aria-label="Loch-Füller"
+                data-testid="mesher-lichen-fill-holes"
+                checked={fillHoles}
+                onChange={(e) => setFillHoles(e.currentTarget.checked)}
+              />
+            </label>
+          </div>
+        </div>
+      )}
+
       {numRowLikeSlider(
         "Part opacity",
         partOpacity,
@@ -551,6 +658,79 @@ export function MesherLichenDialog({ onClose }: { onClose: () => void }) {
         <span className="k">Fallback tris</span>
         <span className="v" data-testid="mesher-lichen-fallback-tris">
           {stats ? (stats.fallbackTris ?? 0).toLocaleString() : "—"}
+        </span>
+      </div>
+      {generalTri && (
+        <div className="readout">
+          <span className="k">Loch-Kanten (rot)</span>
+          <span className="v" data-testid="mesher-lichen-hole-edges">
+            {stats ? (stats.holeEdges ?? 0).toLocaleString() : "—"}
+          </span>
+        </div>
+      )}
+      {generalTri && (
+        <div className="readout">
+          <span className="k">2-Stimmen-Kandidaten (orange)</span>
+          <span className="v" data-testid="mesher-lichen-weak-tris">
+            {stats ? (stats.weakTris ?? 0).toLocaleString() : "—"}
+          </span>
+        </div>
+      )}
+
+      {/* ── Qualitäts-Kennzahlen des finalen Netzes (kernel-berechnet,
+           beide Pfade): manifold/watertight als ✓/✗ mit Zählern. ── */}
+      <div className="readout">
+        <span
+          className="k"
+          title="Manifold = keine Kante gehört zu mehr als zwei Dreiecken. Zahl = non-manifolde Kanten."
+        >
+          Manifold
+        </span>
+        <span className="v" data-testid="mesher-lichen-manifold">
+          {stats
+            ? (stats.nonmanifoldEdges ?? 0) === 0
+              ? "✓"
+              : `✗ (${(stats.nonmanifoldEdges ?? 0).toLocaleString()} Kanten)`
+            : "—"}
+        </span>
+      </div>
+      <div className="readout">
+        <span
+          className="k"
+          title="Watertight = manifold UND keine offene Rand-Kante (jede Kante hat genau zwei Dreiecke). Zahl = offene Rand-Kanten."
+        >
+          Watertight
+        </span>
+        <span className="v" data-testid="mesher-lichen-watertight">
+          {stats
+            ? (stats.boundaryEdges ?? 0) === 0 && (stats.nonmanifoldEdges ?? 0) === 0
+              ? "✓"
+              : `✗ (${(stats.boundaryEdges ?? 0).toLocaleString()} offen)`
+            : "—"}
+        </span>
+      </div>
+      <div className="readout">
+        <span
+          className="k"
+          title="Dreiecke mit (nahezu) Null-Fläche oder doppelten Ecken — werden NICHT gefiltert, nur gezählt (Diagnose-Prinzip)."
+        >
+          Degenerierte Tris
+        </span>
+        <span className="v" data-testid="mesher-lichen-degenerate">
+          {stats ? (stats.degenerateTris ?? 0).toLocaleString() : "—"}
+        </span>
+      </div>
+      <div className="readout">
+        <span
+          className="k"
+          title="Zusammenhangskomponenten des Netzes · Euler-Charakteristik V−E+F (geschlossene Kugel-Topologie = 2 je Komponente) · mehrfach gleichgerichtete Kanten (0 = konsistent orientierbar)."
+        >
+          Topologie
+        </span>
+        <span className="v" data-testid="mesher-lichen-topology">
+          {stats
+            ? `${(stats.components ?? 0).toLocaleString()} Komp. · χ=${(stats.euler ?? 0).toLocaleString()} · ${(stats.orientationViolations ?? 0).toLocaleString()} Orient.`
+            : "—"}
         </span>
       </div>
 

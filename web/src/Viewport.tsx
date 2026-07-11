@@ -569,12 +569,14 @@ function handleSelectionClick(
 function WebGLViewport({
   controlsPreset,
   brepEdgeMode,
+  overlayDepthBias,
   ndc,
   screenSpaceCsg,
   perspective,
 }: {
   controlsPreset: ControlsPresetId;
   brepEdgeMode: BRepEdgeMode;
+  overlayDepthBias: number;
   // Live cursor NDC + active flag, driven by the parent Viewport's host-pointer
   // handlers (now enabled in WebGL mode too — ticket 814w). Feeds the hover
   // overlays below so B-Rep edge/face/vertex hover publishes to brepPickBridge,
@@ -737,7 +739,7 @@ function WebGLViewport({
             dialog published a plane. */}
         <SdfPlaneOverlay />
         <MesherOverlay />
-        <LichenOverlay occluded={brepEdgeMode === "visible"} />
+        <LichenOverlay occluded={brepEdgeMode === "visible"} depthBias={overlayDepthBias} />
         <PartAabbOverlay />
         {/* Opt-in experiment (default off): Screen-Space-CSG Stage 1
             (docs/ADAPTIVE-RENDERING-PLAN.md, Achse 3, Phase 3). Mounts an
@@ -768,7 +770,7 @@ function WebGLViewport({
             Hidden during a suppressed gizmo drag, like the WebGPU path. */}
         {!suppressBrepOverlays && (
           <>
-            <BRepEdgeOverlay ndc={ndc} mode={brepEdgeMode} />
+            <BRepEdgeOverlay ndc={ndc} mode={brepEdgeMode} depthBias={overlayDepthBias} />
             <BRepSelectionOverlay ndc={ndc} />
             <BRepSelectedOverlay />
             <BodyHighlightOverlay />
@@ -845,6 +847,7 @@ const WEBGPU_NO_ADAPTER: WebGpuError = {
 export function Viewport({
   renderMode,
   brepEdgeMode,
+  overlayDepthBias,
   frameLoop,
   showEdgePoints,
   showOctreeCells,
@@ -854,6 +857,8 @@ export function Viewport({
 }: {
   renderMode: RenderMode;
   brepEdgeMode: BRepEdgeMode;
+  /** Depth-Bias-Stärke für Kanten/Overlays im "visible"-Modus. */
+  overlayDepthBias: number;
   frameLoop: FrameLoopMode;
   showEdgePoints: boolean;
   showOctreeCells: boolean;
@@ -1547,6 +1552,7 @@ export function Viewport({
         <WebGLViewport
           controlsPreset={controlsPreset}
           brepEdgeMode={brepEdgeMode}
+          overlayDepthBias={overlayDepthBias}
           ndc={ndc}
           screenSpaceCsg={screenSpaceCsg}
           perspective={perspective}
@@ -1685,7 +1691,7 @@ export function Viewport({
                     plane is published by the dialog. */}
                 <SdfPlaneOverlay />
                 <MesherOverlay />
-                <LichenOverlay occluded={brepEdgeMode === "visible"} />
+                <LichenOverlay occluded={brepEdgeMode === "visible"} depthBias={overlayDepthBias} />
                 <PartAabbOverlay />
                 {/* All B-Rep overlays hide during a suppressed gizmo drag:
                   the kernel serves no fresh weave then, and even cached
@@ -1693,7 +1699,7 @@ export function Viewport({
                   drag. They remount (and refetch) on release. */}
                 {!suppressBrepOverlays && (
                   <>
-                    <BRepEdgeOverlay ndc={ndc} mode={brepEdgeMode} />
+                    <BRepEdgeOverlay ndc={ndc} mode={brepEdgeMode} depthBias={overlayDepthBias} />
                     {showEdgePoints && <BRepEdgePointsOverlay />}
                     {showOctreeCells && <OctreeCellOverlay />}
                     <BRepSelectionOverlay ndc={ndc} />

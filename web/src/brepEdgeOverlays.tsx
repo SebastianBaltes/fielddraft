@@ -64,9 +64,13 @@ const EDGE_PICK_PX = 8;
 export function BRepEdgeOverlay({
   ndc,
   mode,
+  depthBias = 2,
 }: {
   ndc: { x: number; y: number; active: boolean };
   mode: BRepEdgeMode;
+  /** Depth-Bias-Stärke im "visible"-Modus (Setting "Z-Offset"):
+   *  polygonOffsetFactor = −bias, Units = −2·bias. 0 = kein Bias. */
+  depthBias?: number;
 }) {
   const { store, state } = useKernelStore();
   const camera = useThree((s) => s.camera);
@@ -143,6 +147,7 @@ export function BRepEdgeOverlay({
   // depth test against rasterized geometry (SDF-plane crescent, ticket iw6f).
   useEffect(() => {
     const depthTest = mode === "visible";
+    const wantOffset = depthTest && depthBias > 0;
     for (const m of [
       baseMaterialRef.current,
       hoverMaterialRef.current,
@@ -153,15 +158,27 @@ export function BRepEdgeOverlay({
         m.depthTest = depthTest;
         m.needsUpdate = true;
       }
-      if (depthTest && !m.polygonOffset) {
-        // Leichter Bias Richtung Kamera, damit koplanare Kanten nicht z-fighten.
-        m.polygonOffset = true;
-        m.polygonOffsetFactor = -2;
-        m.polygonOffsetUnits = -4;
+      // Bias Richtung Kamera, damit koplanare Kanten nicht z-fighten; Stärke
+      // kommt aus dem Setting (direkte Eingabe neben "Visible only").
+      // Units-Skala ×200: polygonOffsetUnits zählt in Schritten des kleinsten
+      // Depth-Buffer-Deltas (~2⁻²³ NDC) — die SDF-Passes schreiben ihre Tiefe
+      // aber ANALYTISCH (frag_depth aus dem Ray-March), und die weicht von der
+      // Raster-Tiefe der Kanten-Dreiecke um ~1e-5 NDC ab, nicht um Einzel-
+      // Schritte. Headful vermessen (Ticket d4fc002a): ≤50 Units verliert der
+      // Ring auf der Fläche den Tiefen-Test, ab 200 gewinnt er vollständig;
+      // Wert 2 → 400 Units gibt doppelte Marge, ohne dass bei 40000 sichtbare
+      // Artefakte auftraten.
+      if (
+        m.polygonOffset !== wantOffset ||
+        (wantOffset && m.polygonOffsetFactor !== -depthBias)
+      ) {
+        m.polygonOffset = wantOffset;
+        m.polygonOffsetFactor = -depthBias;
+        m.polygonOffsetUnits = -200 * depthBias;
         m.needsUpdate = true;
       }
     }
-  }, [mode]);
+  }, [mode, depthBias]);
 
   // Body fingerprint (count + per-body id.version) — the edge cache re-reads
   // exactly when, and only when, the bodies actually change.

@@ -41,13 +41,19 @@
     display: flex;
     flex-direction: column;
 
-    /* On phones the burger sits mid-topbar, so a left-anchored menu ran off
-     * the right edge (shortcuts + submenu chevron clipped). Anchor it to the
-     * burger's right instead so it opens leftward and stays on screen; the
-     * side submenu then has room to open rightward. */
+    /* Phone: NICHT am Burger ankern — der sitzt je nach Topbar-Inhalt links
+     * (seit #320) oder mittig, und ein kanten-verankertes Popover läuft dann
+     * aus dem Screen (Ticket: „Menü öffnet nicht in den Screen hinein").
+     * Stattdessen ein fixes Panel unter der Topbar über die volle Breite,
+     * scrollbar wenn es höher als das Fenster ist. */
     @media (max-width: 768px) {
-      left: auto;
-      right: 0;
+      position: fixed;
+      left: var(--space-2);
+      right: var(--space-2);
+      top: calc(var(--topbar-height) + var(--space-2));
+      max-height: calc(100dvh - var(--topbar-height) - 2 * var(--space-2));
+      overflow-y: auto;
+      overscroll-behavior: contain;
     }
   }
 
@@ -164,6 +170,19 @@
     &:hover > .submenu,
     &:focus-within > .submenu {
       display: flex;
+    }
+
+    /* Phone: das Seiten-Submenu (left: 100%) liefe aus dem full-width-Panel
+     * hinaus — stattdessen klappt es INLINE unter dem Trigger auf
+     * (Akkordeon), innerhalb des scrollbaren Menüs. */
+    @media (max-width: 768px) {
+      & .submenu {
+        position: static;
+        min-width: 0;
+        border: none;
+        box-shadow: none;
+        padding-left: var(--space-4);
+      }
     }
 
     /* Don't show submenu when trigger is disabled */

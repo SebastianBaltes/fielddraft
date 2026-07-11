@@ -216,6 +216,27 @@
     min-height: 44px;
   }
 
+  /* Ticket #320: die Topbar ist auf Phone-Breite zu voll. Es bleiben nur
+     Zurück-Pfeil, Burger-Menü, Projekt-Titel und User-Menü — Marke, Version,
+     Feature-/Dreiecks-/Größen-Stats und die Glocke fliegen raus. Fehler
+     (.transient-error) bleiben sichtbar. */
+  .fd-shell > .topbar {
+    & .title .brand,
+    & .title .version {
+      display: none;
+    }
+
+    & .meta .feature-count,
+    & .meta .tri-count,
+    & .meta .scene-size {
+      display: none;
+    }
+  }
+
+  .fd-shell > .topbar .fd-bell {
+    display: none;
+  }
+
   /* Contain the off-canvas drawer so its parked (translated) state can't
      add horizontal page scroll. */
   .fd-shell > .fd-workspace > .main {
