@@ -634,12 +634,13 @@ export function buildDraftSketchState(
       // the lowered extrude profile.
       if (call.params.closed !== true && cpIds.length >= 2) {
         const n = cpIds.length;
-        // START leg = Line(cp[0], cp[1]).
+        // START leg = Line(cp[0], cp[1]). `guide` = not a snap target.
         state.entities.push({
           kind: "line",
           id: state.next_entity_id++,
           start: cpIds[0],
           end: cpIds[1],
+          guide: true,
         });
         // END leg = Line(cp[N-2], cp[N-1]) — only distinct when N>=3.
         if (n >= 3) {
@@ -648,6 +649,7 @@ export function buildDraftSketchState(
             id: state.next_entity_id++,
             start: cpIds[n - 2],
             end: cpIds[n - 1],
+            guide: true,
           });
         }
       }

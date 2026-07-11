@@ -264,6 +264,10 @@ export interface SketchSessionGeometry {
   points: number[];
   /** Off-curve control-handle marker positions (quad control points). */
   handles: number[];
+  /** Spline tangent control points (the far end of each endpoint leg /
+   *  the interior poles of a control-polygon spline) — rendered as
+   *  white-filled ring markers, Onshape style (ticket 7ad7d649). */
+  controlHandles: number[];
 }
 
 /**
@@ -284,6 +288,7 @@ export function collectSketchSessionGeometry(
   const legs: number[] = [];
   const points: number[] = [];
   const handles: number[] = [];
+  const controlHandles: number[] = [];
   const w = (a: Vec2): [number, number, number] =>
     planeToWorld(a[0], a[1], frame);
   const seg = (target: number[], a: Vec2, b: Vec2) => {
@@ -512,7 +517,23 @@ export function collectSketchSessionGeometry(
           if (!isControl && closed && sampled.length >= 2) {
             seg(line, sampled[sampled.length - 1], sampled[0]);
           }
-          for (const c of ctrl) pt(c);
+          // Tangent CONTROL points render as white ring markers (Onshape
+          // style, ticket 7ad7d649): the far end of each endpoint leg —
+          // for a control-polygon spline every interior pole (they sit
+          // off the curve). Endpoints/through-points stay filled dots.
+          const handleIdx = new Set<number>();
+          if (!isC && !closed && n >= 3) {
+            if (isControl) {
+              for (let i = 1; i < n - 1; i++) handleIdx.add(i);
+            } else {
+              handleIdx.add(1);
+              handleIdx.add(n - 2);
+            }
+          }
+          ctrl.forEach((c, i) => {
+            if (handleIdx.has(i)) controlHandles.push(...w(c));
+            else pt(c);
+          });
         }
         break;
       }
@@ -575,7 +596,7 @@ export function collectSketchSessionGeometry(
         break;
     }
   }
-  return { solid, construction, guide, legs, points, handles };
+  return { solid, construction, guide, legs, points, handles, controlHandles };
 }
 
 /** Flat world-space triangle positions `[x,y,z, ...]` (3 per triangle) for

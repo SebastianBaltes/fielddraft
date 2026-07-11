@@ -187,6 +187,10 @@ interface SdfPipelineAdapter<P extends MaterialBufferTarget, B> {
     pipeline: P,
     renderer: WebGPURenderer,
     camera: THREE.Camera,
+    /** Did the SDF scene content change this frame (rebuild / data /
+     *  material / selection upload)? Lets the deferred pipeline replay
+     *  its cached shade result on overlay-only invalidates (40001a3a). */
+    sceneDirty: boolean,
   ): void;
   /** Track the canvas size (deferred render targets); VM has no targets. */
   onResize?(pipeline: P, width: number, height: number): void;
@@ -354,12 +358,12 @@ function useSdfPipelineOverlay<P extends MaterialBufferTarget, B>(
     // Both the PASM and the Lichen debug dialogs fade the solid so their
     // surface points/overlay show through; take whichever is more transparent.
     const partOpacity = Math.min(getMesherPartOpacity(), getLichenPartOpacity());
-    if (
+    const materialsChanged =
       storeState.features !== matFeaturesRef.current ||
       partOpacity !== matOpacityRef.current ||
       needsRebuild ||
-      needsDataUpdate
-    ) {
+      needsDataUpdate;
+    if (materialsChanged) {
       applyMaterials(
         pipeline,
         resolveMaterials(k, storeState.features),
@@ -372,11 +376,13 @@ function useSdfPipelineOverlay<P extends MaterialBufferTarget, B>(
 
     // Selection likewise only changes via a fresh selection Set (or when the
     // body set rebuilt).
+    let selectionChanged = false;
     if (adapter.onSelection) {
       const selection = storeState.selection;
       if (selection !== selectionRef.current || needsRebuild) {
         adapter.onSelection(pipeline, k, count, selection);
         selectionRef.current = selection;
+        selectionChanged = true;
       }
     }
 
@@ -387,7 +393,13 @@ function useSdfPipelineOverlay<P extends MaterialBufferTarget, B>(
         wgpu,
         scene,
         camera,
-        () => adapter.renderFrame(pipeline, wgpu, camera),
+        () =>
+          adapter.renderFrame(
+            pipeline,
+            wgpu,
+            camera,
+            needsRebuild || needsDataUpdate || materialsChanged || selectionChanged,
+          ),
         brepEdgeMode === "visible",
       );
       // Ticket pzvt: publish the camera this frame was PRESENTED with. While

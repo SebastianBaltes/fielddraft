@@ -140,3 +140,36 @@ describe("classifyLineAnchor — arcs and exclusions", () => {
     expect(classifyLineAnchor([0, 0], state, new Set([1, 2, 3]))).toBeNull();
   });
 });
+
+describe("spline tangent legs are not snap targets (ticket 7ad7d649)", () => {
+  const spline = {
+    type: "sketch_spline",
+    params: {
+      points: [0, 0, 10, 10, 20, 0, 30, 10],
+      mode: "interpolate",
+      closed: false,
+    },
+  };
+
+  it("does not project a drawn point onto a leg line", () => {
+    // Cursor near the middle of the start leg (0,0)→(10,10), but away
+    // from the curve and both endpoints: no snap at all.
+    const snap = resolveSnap([5.4, 4.6], sessionOf([spline]), null, 0.5);
+    expect(snap.anchor).toBeNull();
+    expect(snap.snapped).toEqual([5.4, 4.6]);
+  });
+
+  it("does not bind a dropped endpoint to a leg line", () => {
+    const state = buildDraftSketchState([spline]);
+    // Exactly on the start leg's interior: legs are guides — no anchor.
+    expect(classifyLineAnchor([5, 5], state)).toBeNull();
+  });
+
+  it("still binds to the leg's endpoints (real control points)", () => {
+    const state = buildDraftSketchState([spline]);
+    expect(classifyLineAnchor([10, 10], state)).toEqual({
+      kind: "point",
+      id: 2,
+    });
+  });
+});

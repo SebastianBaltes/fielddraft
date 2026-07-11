@@ -63,6 +63,7 @@ import {
   createTransparentGBufferMaterial,
   createBackFaceMaterial,
   createShadeMaterial,
+  createBlitMaterial,
 } from "./sdfDeferredRenderer.shaders";
 
 // ── Constants ───────────────────────────────────────────────────────
@@ -101,6 +102,16 @@ export interface DeferredPipelineState
    *  through to the shader builders, never dereferenced here. */
   bodyIdBuf: unknown;
   clearNode: ComputeNode;
+  /** Off-screen target the shade pass renders into; its colour + depth are
+   *  blitted to the screen each frame. Lets an overlay-only invalidate
+   *  (sketch hover/drag, ticket 40001a3a) replay the cached shade result
+   *  instead of re-running the whole SDF pipeline. */
+  shadeRT: THREE.WebGLRenderTarget;
+  blitScene: THREE.Scene;
+  blitMaterial: MeshBasicNodeMaterial;
+  /** Camera/background fingerprint of the frame cached in `shadeRT`;
+   *  `null` = nothing cached (initial, after resize). */
+  lastFrameKey: string | null;
   width: number;
   height: number;
   needsShadeRebuild: boolean;
@@ -206,6 +217,18 @@ export function initDeferredPipeline(
   shadeCamera.position.set(0, 0, 1);
   shadeCamera.updateProjectionMatrix();
 
+  // Shade-result cache: the shade pass renders here (colour + the per-pixel
+  // depth it reconstructs), and a trivial blit replays it to the screen.
+  const shadeRT = makeRT();
+  const blitMaterial = createBlitMaterial(
+    shadeRT.texture,
+    shadeRT.depthTexture!,
+  );
+  const blitMesh = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), blitMaterial);
+  blitMesh.frustumCulled = false;
+  const blitScene = new THREE.Scene();
+  blitScene.add(blitMesh);
+
   return {
     opaqueRT,
     transparentRT,
@@ -231,6 +254,10 @@ export function initDeferredPipeline(
     bodyIdAttr,
     bodyIdBuf,
     clearNode,
+    shadeRT,
+    blitScene,
+    blitMaterial,
+    lastFrameKey: null,
     width,
     height,
     needsShadeRebuild: false,
@@ -655,7 +682,7 @@ export function resizeDeferredPipeline(
   height: number,
 ): void {
   if (state.width === width && state.height === height) return;
-  for (const rt of [state.opaqueRT, state.transparentRT]) {
+  for (const rt of [state.opaqueRT, state.transparentRT, state.shadeRT]) {
     if (rt.depthTexture) {
       rt.depthTexture.dispose();
       rt.depthTexture = new THREE.DepthTexture(width, height, THREE.FloatType);
@@ -663,6 +690,7 @@ export function resizeDeferredPipeline(
     rt.setSize(width, height);
   }
   state.transparentBackRT.setSize(width, height);
+  state.lastFrameKey = null;
   state.widthU.value = width;
   state.clearNode.count = width * height * BODY_ID_WORDS_PER_PIXEL;
   state.width = width;
@@ -671,10 +699,40 @@ export function resizeDeferredPipeline(
 
 const _savedClearColor = new THREE.Color();
 
+/** Everything OUTSIDE the kernel fingerprints that changes the shade
+ *  result: camera pose + projection, canvas size, background colour.
+ *  When this key AND the scene are unchanged, the cached shadeRT frame
+ *  is byte-identical and the whole SDF pipeline can be skipped. */
+function deferredFrameKey(
+  state: DeferredPipelineState,
+  camera: THREE.Camera,
+  clearColor: THREE.Color,
+  clearAlpha: number,
+): string {
+  return (
+    camera.matrixWorld.elements.join(",") +
+    "|" +
+    camera.projectionMatrix.elements.join(",") +
+    "|" +
+    state.width +
+    "x" +
+    state.height +
+    "|" +
+    clearColor.getHexString() +
+    clearAlpha
+  );
+}
+
 export function renderDeferredFrame(
   state: DeferredPipelineState,
   renderer: WebGPURenderer,
   camera: THREE.Camera,
+  /** Did the SDF scene content change since the last frame (rebuild /
+   *  data update / material / selection upload)? `true` forces a full
+   *  re-render; `false` allows replaying the cached shade result when
+   *  the camera is also unchanged (ticket 40001a3a: overlay-only
+   *  invalidates — sketch hover/drag — must not re-march the SDF). */
+  sceneDirty = true,
 ): void {
   updateCameraUniforms(state, camera);
 
@@ -688,30 +746,46 @@ export function renderDeferredFrame(
   // miss pixels paint it opaquely (ticket a2ps).
   state.bgColorU.value.copy(_savedClearColor);
 
-  // Pass 0: clear body-ID buffer
-  renderer.compute(state.clearNode);
+  const frameKey = deferredFrameKey(
+    state,
+    camera,
+    _savedClearColor,
+    savedClearAlpha,
+  );
+  if (sceneDirty || frameKey !== state.lastFrameKey) {
+    // Pass 0: clear body-ID buffer
+    renderer.compute(state.clearNode);
 
-  // Pass 1: opaque G-buffer
-  renderer.setRenderTarget(state.opaqueRT);
-  renderer.setClearColor(new THREE.Color(0, 0, 0), 0);
-  renderer.clear(true, true, false);
-  renderer.render(state.opaqueScene, camera);
+    // Pass 1: opaque G-buffer
+    renderer.setRenderTarget(state.opaqueRT);
+    renderer.setClearColor(new THREE.Color(0, 0, 0), 0);
+    renderer.clear(true, true, false);
+    renderer.render(state.opaqueScene, camera);
 
-  // Pass 2: transparent G-buffer (front faces)
-  renderer.setRenderTarget(state.transparentRT);
-  renderer.clear(true, true, false);
-  renderer.render(state.transparentScene, camera);
+    // Pass 2: transparent G-buffer (front faces)
+    renderer.setRenderTarget(state.transparentRT);
+    renderer.clear(true, true, false);
+    renderer.render(state.transparentScene, camera);
 
-  // Pass 2b: back-face distances (MAX-blended scalar, no depth buffer)
-  renderer.setRenderTarget(state.transparentBackRT);
-  renderer.clear(true, false, false);
-  renderer.render(state.transparentBackScene, camera);
+    // Pass 2b: back-face distances (MAX-blended scalar, no depth buffer)
+    renderer.setRenderTarget(state.transparentBackRT);
+    renderer.clear(true, false, false);
+    renderer.render(state.transparentBackScene, camera);
 
-  // Pass 3: shade (reads all RTs, composites to screen)
+    // Pass 3: shade (reads all RTs, sphere-traces) into the cache target.
+    renderer.setRenderTarget(state.shadeRT);
+    renderer.clear(true, true, false);
+    renderer.render(state.shadeScene, state.shadeCamera);
+
+    state.lastFrameKey = frameKey;
+  }
+
+  // Blit the (fresh or cached) shade result — colour + per-pixel depth —
+  // to the screen. The depth replay keeps the shared z-buffer contract
+  // with the datum/overlay passes (ticket 1m8g).
   renderer.setRenderTarget(null);
-  renderer.render(state.shadeScene, state.shadeCamera);
-
   renderer.setClearColor(_savedClearColor, savedClearAlpha);
+  renderer.render(state.blitScene, state.shadeCamera);
 }
 
 // ── Async pipeline compilation ─────────────────────────────────────
@@ -747,8 +821,11 @@ export async function compileDeferredPipeline(
   renderer.setRenderTarget(state.transparentBackRT);
   await renderer.compileAsync(state.transparentBackScene, camera);
 
-  renderer.setRenderTarget(null);
+  renderer.setRenderTarget(state.shadeRT);
   await renderer.compileAsync(state.shadeScene, state.shadeCamera);
+
+  renderer.setRenderTarget(null);
+  await renderer.compileAsync(state.blitScene, state.shadeCamera);
 
   renderer.setRenderTarget(prevTarget);
 
@@ -796,8 +873,13 @@ export function disposeDeferredPipeline(
     state.opaqueRT,
     state.transparentRT,
     state.transparentBackRT,
+    state.shadeRT,
   ];
-  const pipelineMaterials = [state.backFaceMaterial, state.shadeMaterial];
+  const pipelineMaterials = [
+    state.backFaceMaterial,
+    state.shadeMaterial,
+    state.blitMaterial,
+  ];
   // disposeAfterGpuIdle falls back to synchronous disposal when no renderer /
   // queue is available, so older callers keep working unchanged.
   disposeAfterGpuIdle(renderer, () => {

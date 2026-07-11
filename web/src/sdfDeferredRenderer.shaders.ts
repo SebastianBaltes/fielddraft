@@ -115,6 +115,35 @@ export function createTransparentGBufferMaterial(
   return material;
 }
 
+// ── Cached-shade blit (ticket 40001a3a) ────────────────────────────
+//
+// Replays the LAST shade result (colour + per-pixel depth) from the
+// shadeRT onto the screen. Used when neither the camera nor the scene
+// changed since the previous frame — e.g. sketch hover/drag overlays
+// invalidating at pointer-move rate — so the expensive sphere-trace
+// shade pass is skipped entirely. Re-emitting the cached DEPTH keeps
+// the shared z-buffer contract with the datum/overlay passes (1m8g).
+export function createBlitMaterial(
+  colorTex: THREE.Texture,
+  depthTex: THREE.Texture,
+): MeshBasicNodeMaterial {
+  const material = new MeshBasicNodeMaterial();
+  material.colorNode = Fn(() => {
+    // Render-target textures sample v-flipped on the fullscreen quad —
+    // same convention as the shade pass reading the G-buffer RTs.
+    const texUv = vec2(uv().x, float(1).sub(uv().y));
+    depth.assign(texture(depthTex, texUv).r).toStack();
+    return texture(colorTex, texUv);
+  })();
+  // Mirror the shade material's raster state so the blended result over
+  // the base-scene clear colour is byte-identical to a fresh shade pass.
+  material.depthWrite = true;
+  material.depthTest = false;
+  material.toneMapped = false;
+  material.transparent = true;
+  return material;
+}
+
 // ── Back-face material (BackSide → worldPos for exit depth) ────────
 
 export function createBackFaceMaterial(

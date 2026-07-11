@@ -32,7 +32,16 @@ export interface Point2 {
 
 export type Entity =
   | { kind: "point"; id: EntityId; at: Point2 }
-  | { kind: "line"; id: EntityId; start: EntityId; end: EntityId }
+  | {
+      kind: "line";
+      id: EntityId;
+      start: EntityId;
+      end: EntityId;
+      /** Guide line (spline tangent leg): constrainable like any line but
+       *  NOT a snap target — a drawn endpoint must not glue itself to a
+       *  handle leg (ticket 7ad7d649). */
+      guide?: boolean;
+    }
   | { kind: "circle"; id: EntityId; center: EntityId; radius: number }
   | {
       kind: "arc";

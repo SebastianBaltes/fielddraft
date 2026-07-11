@@ -232,6 +232,9 @@ export function resolveSnap(
     let bestPt: [number, number] | null = null;
     for (const e of state.entities) {
       if (e.kind !== "line") continue;
+      // Spline tangent legs are guides — never snap-project onto them
+      // (ticket 7ad7d649); their endpoints stay point-snappable.
+      if (e.guide) continue;
       if (
         excludeIds.has(e.id) ||
         excludeIds.has(e.start) ||
@@ -473,6 +476,7 @@ export function classifyLineAnchor(
   }
   for (const e of state.entities) {
     if (e.kind !== "line") continue;
+    if (e.guide) continue;
     if (excludeIds.has(e.id)) continue;
     const a = state.entities.find((x) => x.id === e.start);
     const b = state.entities.find((x) => x.id === e.end);

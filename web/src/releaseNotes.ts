@@ -24,6 +24,28 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.539",
+    entries: [
+      {
+        kind: "feat",
+        scope: "sketch",
+        text: "Spline im Onshape-Look: Tangenten-Kontrollpunkte als weiße Ring-Punkte, Endpunkt-Legs dünn grau; Legs sind keine Snap-Ziele mehr (Endpunkte bleiben snapbar und constrainbar)",
+        tickets: ["7ad7d649"],
+      },
+    ],
+  },
+  {
+    version: "0.6.538",
+    entries: [
+      {
+        kind: "perf",
+        scope: "render",
+        text: "SDF-Deferred cached das Shade-Ergebnis (Farbe + Tiefe) in einem Render-Target: reine Overlay-Invalidates (Sketch-Hover/-Drag, Gizmos) blitten den letzten Frame statt die komplette SDF neu zu marchen — Sketch-Interaktion ruckelt nicht mehr",
+        tickets: ["40001a3a"],
+      },
+    ],
+  },
+  {
     version: "0.6.537",
     entries: [
       {
