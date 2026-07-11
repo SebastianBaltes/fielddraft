@@ -24,6 +24,16 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.531",
+    entries: [
+      {
+        kind: "feat",
+        scope: "mesher",
+        text: "Lichen: freie Kugeln ALLER Größen (r=1/8/50) jetzt strikt wasserdicht ohne Fallbacks — Dreiecks-Loch-Prädikat in der Kandidaten-Vervollständigung (schließt ein Kandidat alle drei Kanten eines exakten 3er-Lochs, ist er die einzige Manifold-Vervollständigung; die Umkugel darf ihn an Dichte-Übergängen nicht mehr blockieren). Wachstum: Schritt-Halbierung bei Wand-Treffern (Sub-h-Features) mit Kaskaden-Bremse und symmetrischem Konflikt-Test gegen das Spacing des nächsten Bestandspunkts.",
+      },
+    ],
+  },
+  {
     version: "0.6.530",
     entries: [
       {

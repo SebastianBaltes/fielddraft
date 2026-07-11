@@ -883,9 +883,26 @@ pub fn triangulate_face_general(
                     a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal).then(a.1.cmp(&b.1))
                 });
                 cands.truncate(6);
+                // DREIECKS-LOCH-PRÄDIKAT (topologisch, kein Gabriel nötig):
+                // schließt ein Kandidat ALLE DREI Kanten eines exakten
+                // 3er-Lochs (beide Nachbar-Kanten ebenfalls offen), ist er
+                // die EINZIGE manifold-Vervollständigung — Gabriel darf ihn
+                // an Dichte-Übergängen ablehnen (dichter Zeuge knapp in der
+                // Umkugel), das Loch bliebe sonst für immer (r50-Kugel).
+                let closes_hole = |w: u32| -> bool {
+                    let e1 = (u.min(w), u.max(w));
+                    let e2 = (v.min(w), v.max(w));
+                    edge_use.get(&e1) == Some(&1) && edge_use.get(&e2) == Some(&1)
+                };
                 let best = cands
-                    .into_iter()
-                    .find(|&(_, w)| !crosses_chain(u, v, w) && gabriel_empty(u, v, w));
+                    .iter()
+                    .copied()
+                    .find(|&(_, w)| closes_hole(w) && !crosses_chain(u, v, w))
+                    .or_else(|| {
+                        cands
+                            .into_iter()
+                            .find(|&(_, w)| !crosses_chain(u, v, w) && gabriel_empty(u, v, w))
+                    });
                 if let Some((_, w)) = best {
                     tris.push([u, v, w]);
                     let mut k3 = [u, v, w];

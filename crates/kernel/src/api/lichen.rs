@@ -1776,7 +1776,7 @@ mod tests {
     /// ist dort frame-frei eindeutig.
     #[test]
     fn lichen_general_free_spheres_gabriel_watertight_no_fallbacks() {
-        for (r, h) in [(1.0f32, 10.0f32), (8.0, 3.0)] {
+        for (r, h) in [(1.0f32, 10.0f32), (8.0, 3.0), (50.0, 10.0)] {
             let mut k = crate::Kernel::new();
             k.add_primitive(Primitive::KIND_SPHERE, BoolOp::TAG_NEW, 0.0, 0.0, 0.0, r, 0.0, 0.0)
                 .unwrap();
@@ -1792,22 +1792,6 @@ mod tests {
         }
     }
 
-    /// Wie oben, große Kugel r=50 — WIP seit der Dichte-Normalisierung
-    /// (v0.6.530): 3 offene Rest-Kanten (vorher wasserdicht bei 15×
-    /// Überdichte); r1/r8 bleiben strikt wasserdicht.
-    #[test]
-    #[ignore = "WIP: r50 nach Dichte-Normalisierung bei 3 offenen Kanten (nm/orient/degen 0)"]
-    fn lichen_general_free_sphere_r50_watertight() {
-        let mut k = crate::Kernel::new();
-        k.add_primitive(Primitive::KIND_SPHERE, BoolOp::TAG_NEW, 0.0, 0.0, 0.0, 50.0, 0.0, 0.0)
-            .unwrap();
-        let out = k.lichen_mesh(
-            r#"{"targetEdgeLength":10.0,"grow":true,"maxPoints":50000,"generalTri":true,"accept":"gabriel","fillHoles":false}"#.into(),
-        );
-        let (_, q) = quality_of(&out);
-        assert!(q.watertight() && q.euler == 2, "{q:?}");
-    }
-    /// Interior surface points must grow whether or not the reach term is on
     /// (ticket: "use reach off ⇒ no interior points" was a bug).
     #[test]
     fn lichen_grows_interior_without_reach() {

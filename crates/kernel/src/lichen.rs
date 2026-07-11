@@ -294,16 +294,28 @@ fn gkey(p: [f32; 3], cell: f32) -> (i32, i32, i32) {
 
 /// Kleinster euklidischer Abstand von `p` zu einem Punkt in `pts` (Spatial-Hash).
 fn nearest_dist(grid: &HashMap<(i32, i32, i32), Vec<u32>>, pts: &[LPoint], cell: f32, p: [f32; 3]) -> f32 {
+    nearest_pt(grid, pts, cell, p).0
+}
+
+/// Wie [`nearest_dist`], liefert zusätzlich das SPACING des nächsten Punkts —
+/// für den symmetrischen Konflikt-Test (ein feiner Kandidat neben groben
+/// Bestandspunkten ist relativ zu DEREN Spacing redundant).
+fn nearest_pt(
+    grid: &HashMap<(i32, i32, i32), Vec<u32>>,
+    pts: &[LPoint],
+    cell: f32,
+    p: [f32; 3],
+) -> (f32, f32) {
     let (kx, ky, kz) = gkey(p, cell);
-    let mut best = f32::MAX;
+    let mut best = (f32::MAX, 0.0f32);
     for dx in -1..=1 {
         for dy in -1..=1 {
             for dz in -1..=1 {
                 if let Some(v) = grid.get(&(kx + dx, ky + dy, kz + dz)) {
                     for &i in v {
                         let d = dist(pts[i as usize].p, p);
-                        if d < best {
-                            best = d;
+                        if d < best.0 {
+                            best = (d, pts[i as usize].space);
                         }
                     }
                 }
@@ -387,32 +399,57 @@ where
         } else {
             tangent_basis(n)
         };
-        for k in 0..6 {
+        'dirs: for k in 0..6 {
             let ang = k as f32 * std::f32::consts::FRAC_PI_3;
             let dir = add(scale(u, ang.cos()), scale(w, ang.sin()));
-            let (cp, cd, cn) = project(add(p, scale(dir, r)), fg);
-            if cd.abs() > 0.2 * r {
-                rej[0] += 1;
-                continue; // nicht auf der Oberfläche gelandet
-            }
-            if !visible(p, cp, r, fg) {
-                rej[1] += 1;
-                continue; // hintere Wand
-            }
-            // Harte Kanten-Wand: der Kandidat muss auf DERSELBEN BRep-Fläche
-            // liegen. Übersprang er eine Kante, ist er auf einer Nachbarfläche
-            // oder außerhalb → verwerfen (Kanten sind harte Grenzen).
-            if !on_face(cp, r) {
-                rej[2] += 1;
-                continue;
-            }
+            // SCHRITT-HALBIERUNG (Sub-h-Features): überspringt der Kandidat
+            // die Fläche (Wand-Treffer / hintere Wand / neben der Fläche),
+            // wird NICHT verworfen, sondern mit halbem Radius nachgesetzt —
+            // auf einem 6-mm-Feature bei r≈3 landete sonst JEDER Kandidat
+            // auf der Nachbarwand und die Fläche wuchs gar nicht.
+            let mut rr = r;
+            let (cp, cd, cn) = 'step: {
+                for _ in 0..5 {
+                    let (cp, cd, cn) = project(add(p, scale(dir, rr)), fg);
+                    if cd.abs() > 0.2 * rr {
+                        rej[0] += 1;
+                        rr *= 0.5;
+                        continue;
+                    }
+                    if !visible(p, cp, rr, fg) {
+                        rej[1] += 1;
+                        rr *= 0.5;
+                        continue;
+                    }
+                    // Harte Kanten-Wand: der Kandidat muss auf DERSELBEN
+                    // BRep-Fläche liegen (Kanten sind harte Grenzen).
+                    if !on_face(cp, rr) {
+                        rej[2] += 1;
+                        rr *= 0.5;
+                        continue;
+                    }
+                    break 'step (cp, cd, cn);
+                }
+                continue 'dirs;
+            };
+            // KASKADEN-BREMSE: der halbierte Schritt gilt nur der PLATZIERUNG
+            // (Abstands-Checks mit rr) — das SPACING des neuen Punkts bleibt
+            // am vollen Radius orientiert, sonst gebären halbierte Punkte
+            // halbierte Kinder (Verdichtungs-Kaskade: Zylinder 0→84 Löcher).
+            let r_full = r;
+            let r = rr;
             // Saubere Abtastung: Kandidat näher als 0,8·r an einem bestehenden
             // Punkt (Spacing ≈ r; eine über-dichte Wolke bricht die leere-
             // Umkreis-Bedingung des Meshers).
             let mut cp = cp;
             let mut cd = cd;
             let mut cn = cn;
-            let nd = nearest_dist(&grid, &pts, cell, cp);
+            // SYMMETRISCHER Konflikt-Test: Abstand gegen das Maximum aus
+            // eigenem (ggf. halbiertem) Radius und dem Spacing des nächsten
+            // Bestandspunkts — sonst nisten sich halbierte Kandidaten in die
+            // Lücken grober Nachbarn (Zylinder-Ringband: 0→84 Löcher).
+            let (nd, nspace) = nearest_pt(&grid, &pts, cell, cp);
+            let r = r.max(nspace.min(r_full));
             if nd < 0.8 * r {
                 // §1.5 KONFLIKT-REBALANCING (Konzept-Schritt 5): NICHT einfach
                 // verwerfen — an Front-Kollisionen und Dichte-Übergängen reißt
@@ -477,7 +514,7 @@ where
             // Trägerfläche); Anzeige-U zusätzlich durch den Kantenabstand
             // beschränkt (Kreis bleibt in der Fläche).
             let cspace =
-                local_radius(cp, cn, h, surf_curv(cp).0, opts, fg).min(1.5 * r);
+                local_radius(cp, cn, h, surf_curv(cp).0, opts, fg).min(1.5 * r_full);
             let cu = cspace.min(brep_dist(cp));
             let j = pts.len();
             pts.push(LPoint { p: cp, sdf: cd, n: cn, u: cu, space: cspace, flag: 1.0 });
