@@ -1487,10 +1487,10 @@ mod tests {
     /// planaren Flächen ist die Tangentialebene konstant, alle Sterne stimmen
     /// überein → das Ergebnis ist ein echtes Delaunay der Fläche.
     #[test]
-    #[ignore = "WIP: Stern-Konsistenz erreicht auf der Box 72 Loch-Kanten (0 non-manifold); \
-                Ablation 2026-07-12: Jitter verschlechtert (103→1762), symmetrischer \
-                Horizont verbessert (103→72), vote_min=2 verschlechtert (→108). \
-                Nächste Hebel: geometrischer Loch-Loop-Walker, Owner-Stitching."]
+    #[ignore = "WIP: Box (h=3, ohne Füller) bei 98 Loch-Kanten — Ablations-Historie: \
+                Jitter 103→1762 (schlechter), sym. Horizont 103→72, Umkugel-verifizierte \
+                Kandidaten-Vervollständigung 128→98; 16 Orientierungs-Konflikte an \
+                Vervollständigungs-Dreiecken offen."]
     fn lichen_general_tri_box_is_watertight() {
         let mut k = box_kernel();
         let out = k.lichen_mesh(
@@ -1502,8 +1502,8 @@ mod tests {
     /// General-Pfad auf gekrümmten Flächen: Zylinder (Band + Kappen) — gleiche
     /// Watertight-Messlatte wie der Chart-Pfad, mit demselben chartlosen Code.
     #[test]
-    #[ignore = "WIP wie box-Test; gekrümmte Sterne divergieren zusätzlich über die \
-                per-Punkt-Frames (~1000 Loch-Kanten auf dem Zylinder)."]
+    #[ignore = "WIP wie box-Test; Zylinder (h=3, ohne Füller, auto) bei 345 Loch-Kanten \
+                (Historie ~1000 → 434 via Cocone-Kopplung → 345 via Vervollständigung)."]
     fn lichen_general_tri_cylinder_is_watertight() {
         let mut k = crate::Kernel::new();
         k.add_primitive(

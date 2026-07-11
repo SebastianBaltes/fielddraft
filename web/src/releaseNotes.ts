@@ -24,6 +24,16 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.528",
+    entries: [
+      {
+        kind: "feat",
+        scope: "mesher",
+        text: "Lichen General-Tri: Umkugel-verifizierte Kandidaten-Vervollständigung — offene Kanten werden geschlossen, wenn das fehlende Delaunay-Dreieck die Umkugel-Prüfung besteht (Prädikat statt Heuristik, Teil des Basis-Algorithmus; deterministisch: kleinster Umkreisradius, Fixpunkt-Iteration mit Kapazitäts-, Ketten- und Degenerations-Wächtern). Box 128→98, Zylinder 434→345 offene Kanten (ohne Loch-Füller); der Füller ist jetzt kapazitäts-bewusst und kann keine non-manifolden Kanten mehr erzeugen.",
+      },
+    ],
+  },
+  {
     version: "0.6.527",
     entries: [
       {

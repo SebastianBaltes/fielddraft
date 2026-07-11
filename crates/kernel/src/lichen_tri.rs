@@ -541,8 +541,9 @@ pub fn triangulate_face_general(
 
     // ── Ketten-Kreuzungs-Verbot: kein Dreieck über eine gesetzte Kante ──
     // 2D-Test in der Ebene des jeweiligen Dreiecks (symmetrisch für alle
-    // Beteiligten). Nur Ketten-Segmente in der Nähe prüfen.
-    tris.retain(|&[a, b, c]| {
+    // Beteiligten). Nur Ketten-Segmente in der Nähe prüfen. Als Closure,
+    // damit auch die Kandidaten-Vervollständigung (unten) ihn nutzt.
+    let crosses_chain = |a: u32, b: u32, c: u32| -> bool {
         let (pa, pb, pc) = (
             points[a as usize],
             points[b as usize],
@@ -579,12 +580,13 @@ pub fn triangulate_face_general(
             let (su, sv) = (to2(pu), to2(pv));
             for e in [(0usize, 1usize), (1, 2), (2, 0)] {
                 if segments_cross(t2[e.0], t2[e.1], su, sv) {
-                    return false;
+                    return true;
                 }
             }
         }
-        true
-    });
+        false
+    };
+    tris.retain(|&[a, b, c]| !crosses_chain(a, b, c));
 
     // ── Fremde Ketten-Kanten sind harte Wände (Betreiber-Demo): am Ecken-
     // Cluster kann eine DRITTE Fläche ein Dreieck über die Ketten-Kante
@@ -604,6 +606,164 @@ pub fn triangulate_face_general(
 
     // ── Ketten-Kanten-Einzelnutzung: Rand-Folds dieser Fläche entfernen ──
     enforce_chain_single_use(points, chains, normals, &mut tris);
+
+    // ── KANDIDATEN-VERVOLLSTÄNDIGUNG (Teil des Basis-Algorithmus, KEIN
+    // kosmetischer Füller: das Umkugel-Prädikat entscheidet): eine offene
+    // Nicht-Ketten-Kante heißt, das Delaunay-Gegenstück existiert, aber
+    // kein Stern hat es vorgeschlagen (Horizont-Effekt; Fächer-Partner des
+    // Tie-Breaks). Für jede offene Kante wird der dritte Punkt gesucht,
+    // dessen Dreieck Umkugel-verifiziert ist und keine Regel verletzt
+    // (Ketten-Kreuzung, fremde Wände, Kapazität: innere Kante ≤2, eigene
+    // Ketten-Kante ≤1 Nutzung). Deterministisch: kleinster Umkreisradius
+    // gewinnt, Kanten in sortierter Reihenfolge, iterieren bis Fixpunkt. ──
+    {
+        let mut edge_use: HashMap<(u32, u32), u32> = HashMap::new();
+        let mut tri_set: HashSet<[u32; 3]> = HashSet::new();
+        for &[a, b, c] in &tris {
+            let mut k3 = [a, b, c];
+            k3.sort_unstable();
+            tri_set.insert(k3);
+            for (x, y) in [(a, b), (b, c), (c, a)] {
+                *edge_use.entry((x.min(y), x.max(y))).or_default() += 1;
+            }
+        }
+        let cap_of = |e: &(u32, u32)| -> u32 {
+            if chain_edges.contains(e) { 1 } else { 2 }
+        };
+        let circum_r2 = |a: u32, b: u32, c: u32| -> f32 {
+            let (pa, pb, pc) = (
+                points[a as usize],
+                points[b as usize],
+                points[c as usize],
+            );
+            let ab = sub(pb, pa);
+            let ac = sub(pc, pa);
+            let ab2 = dot(ab, ab);
+            let ac2 = dot(ac, ac);
+            let abac = dot(ab, ac);
+            let den = 2.0 * (ab2 * ac2 - abac * abac);
+            if den.abs() < 1e-20 {
+                return f32::MAX;
+            }
+            let s_ = (ac2 * (ab2 - abac)) / den;
+            let t_ = (ab2 * (ac2 - abac)) / den;
+            let dc = [s_ * ab[0] + t_ * ac[0], s_ * ab[1] + t_ * ac[1], s_ * ab[2] + t_ * ac[2]];
+            dot(dc, dc)
+        };
+        for _round in 0..8 {
+            let mut open: Vec<(u32, u32)> = edge_use
+                .iter()
+                .filter(|(&e, &u)| u == 1 && !chain_edges.contains(&e))
+                .map(|(&e, _)| e)
+                .collect();
+            open.sort_unstable();
+            let mut progress = false;
+            for (u, v) in open {
+                if edge_use.get(&(u, v)).copied().unwrap_or(0) != 1 {
+                    continue; // durch frühere Ergänzung schon geschlossen
+                }
+                let (pu, pv) = (points[u as usize], points[v as usize]);
+                let mid = [
+                    (pu[0] + pv[0]) * 0.5,
+                    (pu[1] + pv[1]) * 0.5,
+                    (pu[2] + pv[2]) * 0.5,
+                ];
+                let r = eff_r.get(&u).copied().unwrap_or(cell).max(
+                    eff_r.get(&v).copied().unwrap_or(cell),
+                );
+                let nu = normals.get(&u).copied();
+                let (kx, ky, kz) = key(mid);
+                let reach = (r / cell).ceil() as i32 + 1;
+                // Billige Filter zuerst; die TEURE Umkugel-Verifikation läuft
+                // nur über die ≤6 lokalsten Kandidaten (kleinster Umkreis-
+                // radius zuerst) bis zum ersten Treffer.
+                let mut cands: Vec<(f32, u32)> = Vec::new();
+                for dx in -reach..=reach {
+                    for dy in -reach..=reach {
+                        for dz in -reach..=reach {
+                            let Some(bucket) = grid.get(&(kx + dx, ky + dy, kz + dz)) else {
+                                continue;
+                            };
+                            for &w in bucket {
+                                if w == u || w == v {
+                                    continue;
+                                }
+                                let d = sub(points[w as usize], mid);
+                                if dot(d, d) > r * r {
+                                    continue;
+                                }
+                                // Cocone: kein fremdes Blatt verbinden.
+                                if let Some(n) = nu {
+                                    let dl = dot(d, d).sqrt();
+                                    if dl > 1e-9 && dot(d, n).abs() > cocone_sin * dl {
+                                        continue;
+                                    }
+                                }
+                                let mut k3 = [u, v, w];
+                                k3.sort_unstable();
+                                if tri_set.contains(&k3) {
+                                    continue;
+                                }
+                                // Kapazität der beiden neuen Kanten.
+                                let e1 = (u.min(w), u.max(w));
+                                let e2 = (v.min(w), v.max(w));
+                                if edge_use.get(&e1).copied().unwrap_or(0) >= cap_of(&e1)
+                                    || edge_use.get(&e2).copied().unwrap_or(0) >= cap_of(&e2)
+                                {
+                                    continue;
+                                }
+                                // Fremde Ketten-Wände.
+                                if let Some(gce) = global_chain_edges {
+                                    if (gce.contains(&e1) && !chain_edges.contains(&e1))
+                                        || (gce.contains(&e2) && !chain_edges.contains(&e2))
+                                    {
+                                        continue;
+                                    }
+                                }
+                                // Degenerations-Schutz: (fast) kollineare
+                                // Kandidaten stiften nur Orientierungs- und
+                                // Flächen-Müll — sin(Winkel) > 1e-3 fordern.
+                                let ab = sub(pv, pu);
+                                let aw = sub(points[w as usize], pu);
+                                let cr = cross(ab, aw);
+                                let area2 = dot(cr, cr).sqrt();
+                                let lab = dot(ab, ab).sqrt();
+                                let law = dot(aw, aw).sqrt();
+                                if area2 <= 1e-3 * lab * law {
+                                    continue;
+                                }
+                                let r2 = circum_r2(u, v, w);
+                                if r2 <= r * r {
+                                    cands.push((r2, w));
+                                }
+                            }
+                        }
+                    }
+                }
+                cands.sort_by(|a, b| {
+                    a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal).then(a.1.cmp(&b.1))
+                });
+                cands.truncate(6);
+                let best = cands
+                    .into_iter()
+                    .find(|&(_, w)| !crosses_chain(u, v, w) && gabriel_empty(u, v, w));
+                if let Some((_, w)) = best {
+                    tris.push([u, v, w]);
+                    let mut k3 = [u, v, w];
+                    k3.sort_unstable();
+                    tri_set.insert(k3);
+                    for (x, y) in [(u, v), (v, w), (w, u)] {
+                        *edge_use.entry((x.min(y), x.max(y))).or_default() += 1;
+                    }
+                    progress = true;
+                }
+            }
+            if !progress {
+                break;
+            }
+        }
+        tris.sort_unstable();
+    }
 
     // ── Diagnose: Kanten-Zählung (2-Manifold, Löcher) ──
     let mut edge_use: HashMap<(u32, u32), u32> = HashMap::new();
@@ -771,10 +931,31 @@ pub fn triangulate_face_general(
                 }
             }
         }
+        // Kapazitäts-bewusst anfügen: der Füller darf keine Kante über
+        // ihre Manifold-Kapazität heben (innere ≤2, eigene Kette ≤1) — die
+        // Kandidaten-Vervollständigung kann Kanten bereits gefüllt haben.
+        let mut fill_use: HashMap<(u32, u32), u32> = HashMap::new();
+        for &[a, b, c] in &tris {
+            for (x, y) in [(a, b), (b, c), (c, a)] {
+                *fill_use.entry((x.min(y), x.max(y))).or_default() += 1;
+            }
+        }
         for ring in loops_to_fill {
-            tris.extend(crate::mesher_cdt::triangulate_planar_face(
-                points, &[ring], &[], 0.0,
-            ));
+            for t in crate::mesher_cdt::triangulate_planar_face(points, &[ring], &[], 0.0) {
+                let [a, b, c] = t;
+                let ok = [(a, b), (b, c), (c, a)].iter().all(|&(x, y)| {
+                    let e = (x.min(y), x.max(y));
+                    let cap = if chain_edges.contains(&e) { 1 } else { 2 };
+                    fill_use.get(&e).copied().unwrap_or(0) < cap
+                });
+                if !ok {
+                    continue;
+                }
+                for (x, y) in [(a, b), (b, c), (c, a)] {
+                    *fill_use.entry((x.min(y), x.max(y))).or_default() += 1;
+                }
+                tris.push(t);
+            }
         }
         // Der Füller kennt weder fremde Wände noch die Einzelnutzung —
         // beide Regeln nach dem Füllen erneut durchsetzen (Betreiber-Demo:
