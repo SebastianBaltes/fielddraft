@@ -121,6 +121,25 @@ const SORT_COLUMNS: { key: SortKey; label: string }[] = [
   { key: "updated", label: "Updated" },
 ];
 
+/** Page-size options for the issue list; `0` = "All" on one page. The chosen
+ *  size persists in localStorage across sessions. */
+const PAGE_SIZES = [10, 25, 50, 100];
+const DEFAULT_PAGE_SIZE = 25;
+const PAGE_SIZE_KEY = "fielddraft.tickets.pageSize";
+
+function loadPageSize(): number {
+  try {
+    const raw = localStorage.getItem(PAGE_SIZE_KEY);
+    if (raw !== null) {
+      const n = Number(raw);
+      if (n === 0 || PAGE_SIZES.includes(n)) return n;
+    }
+  } catch {
+    /* localStorage unavailable — use the default */
+  }
+  return DEFAULT_PAGE_SIZE;
+}
+
 function TicketList({ user, onOpen }: TicketListProps) {
   const [tickets, setTickets] = useState<TicketSummary[]>([]);
   const [loading, setLoading] = useState(true);
@@ -132,6 +151,9 @@ function TicketList({ user, onOpen }: TicketListProps) {
   // Sort column + direction (ticket a7b63b6). Default: most-recent activity.
   const [sortKey, setSortKey] = useState<SortKey>("updated");
   const [sortAsc, setSortAsc] = useState(false);
+  // Client-side pagination with an adjustable, persisted page size (0 = all).
+  const [pageSize, setPageSize] = useState<number>(loadPageSize);
+  const [page, setPage] = useState(1);
 
   const reload = useCallback(async () => {
     setLoading(true);
@@ -156,6 +178,11 @@ function TicketList({ user, onOpen }: TicketListProps) {
     void reload();
   }, [reload]);
 
+  // A changed filter can shrink the result set — snap back to the first page.
+  useEffect(() => {
+    setPage(1);
+  }, [onlyMine, stateFilter, categoryFilter, query]);
+
   // Client-side sort by the chosen column (the server returns the filtered
   // set; the header toggles key + direction — ticket a7b63b6).
   const sortedTickets = useMemo(() => {
@@ -179,6 +206,26 @@ function TicketList({ user, onOpen }: TicketListProps) {
       (a, b) => dir * key(a).localeCompare(key(b), undefined, { numeric: true }),
     );
   }, [tickets, sortKey, sortAsc]);
+
+  // Slice the sorted set into the current page. pageSize 0 = show all on one.
+  const total = sortedTickets.length;
+  const perPage = pageSize > 0 ? pageSize : Math.max(total, 1);
+  const totalPages = Math.max(1, Math.ceil(total / perPage));
+  const safePage = Math.min(Math.max(1, page), totalPages);
+  const pagedTickets = sortedTickets.slice(
+    (safePage - 1) * perPage,
+    safePage * perPage,
+  );
+
+  const changePageSize = (v: number) => {
+    setPageSize(v);
+    setPage(1);
+    try {
+      localStorage.setItem(PAGE_SIZE_KEY, String(v));
+    } catch {
+      /* ignore persistence failure */
+    }
+  };
 
   const onSort = (key: SortKey) => {
     if (key === sortKey) {
@@ -258,6 +305,7 @@ function TicketList({ user, onOpen }: TicketListProps) {
           No issues match these filters.
         </p>
       ) : (
+        <>
         <div className="ticket-table" data-testid="ticket-list">
           <div className="ticket-head" role="row">
             {SORT_COLUMNS.map((col) => (
@@ -285,7 +333,7 @@ function TicketList({ user, onOpen }: TicketListProps) {
             ))}
           </div>
           <ul className="ticket-rows">
-            {sortedTickets.map((t) => (
+            {pagedTickets.map((t) => (
             <li
               key={t.id}
               className="ticket-row"
@@ -320,6 +368,58 @@ function TicketList({ user, onOpen }: TicketListProps) {
             ))}
           </ul>
         </div>
+        <nav
+          className="ticket-pager"
+          data-testid="ticket-pager"
+          aria-label="Pagination"
+        >
+          <div className="pager-info">
+            <span className="pager-count" data-testid="ticket-total-count">
+              {total} {total === 1 ? "issue" : "issues"}
+            </span>
+            <label className="pager-size">
+              <span>Per page</span>
+              <select
+                className="filter-select"
+                data-testid="tickets-page-size"
+                aria-label="Issues per page"
+                value={pageSize}
+                onChange={(e) => changePageSize(Number(e.target.value))}
+              >
+                {PAGE_SIZES.map((n) => (
+                  <option key={n} value={n}>
+                    {n}
+                  </option>
+                ))}
+                <option value={0}>All</option>
+              </select>
+            </label>
+          </div>
+          <div className="pager-nav">
+            <button
+              type="button"
+              className="secondary"
+              data-testid="ticket-page-prev"
+              disabled={safePage <= 1}
+              onClick={() => setPage((p) => Math.max(1, p - 1))}
+            >
+              ‹ Prev
+            </button>
+            <span className="pager-status" data-testid="ticket-page-status">
+              Page {safePage} of {totalPages}
+            </span>
+            <button
+              type="button"
+              className="secondary"
+              data-testid="ticket-page-next"
+              disabled={safePage >= totalPages}
+              onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+            >
+              Next ›
+            </button>
+          </div>
+        </nav>
+        </>
       )}
     </div>
   );

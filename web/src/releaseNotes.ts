@@ -24,6 +24,16 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.514",
+    entries: [
+      {
+        kind: "feat",
+        scope: "issues",
+        text: "Die Issue-Liste ist jetzt paginiert mit einstellbarer Seitengröße (10/25/50/100 oder „Alle“) — die gewählte Größe bleibt über Sitzungen erhalten. Unten zeigt eine Leiste die Gesamtzahl, den Seitengröße-Selektor und die Vor/Zurück-Navigation mit „Seite X von Y“.",
+      },
+    ],
+  },
+  {
     version: "0.6.513",
     entries: [
       {
