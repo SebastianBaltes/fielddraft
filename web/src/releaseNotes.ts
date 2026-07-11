@@ -31,11 +31,6 @@ export const RELEASE_NOTES: ReleaseNote[] = [
         scope: "render",
         text: "Debug-Overlays verdeckungs-korrekt: Der Renderer-Modus „B-Rep edges: Visible only“ wirkt jetzt auch auf die Lichen-Overlays (Punkte, U(p)-Kreise, Normalen, Wireframe) — sie depth-testen gegen die Körper-Tiefe und ziehen ihre Fragmente per Depth-Bias (WebGPU depthBias über polygonOffset; die Fat-Lines und Punkt-Boxen rasterisieren Dreiecke) minimal zur Kamera, sodass Geometrie exakt auf der Fläche nicht z-fightet. Rückseitige Punkte/Kreise verschwinden hinter dem Körper; X-Ray bleibt der Default. Reiner Tiefen-Effekt — kein Pixel bewegt sich.",
       },
-    ],
-  },
-  {
-    version: "0.6.514",
-    entries: [
       {
         kind: "feat",
         scope: "issues",
