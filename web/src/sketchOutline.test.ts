@@ -100,11 +100,15 @@ describe("collectSketchSessionGeometry", () => {
         params: { points: [0, 0, 5, 5, 10, 0, 15, 5], mode: "control", closed: false },
       },
     ];
-    const { solid, legs, guide, points } = collectSketchSessionGeometry(calls, XY);
+    const { solid, legs, guide, points, controlHandles } =
+      collectSketchSessionGeometry(calls, XY);
     expect(solid.length).toBeGreaterThan(0); // sampled curve
     expect(legs.length).toBe(2 * 6); // start + end tangent legs
     expect(guide.length).toBeGreaterThan(0); // interior control polygon edges
-    expect(points.length).toBe(4 * 3); // 4 control points
+    // Ticket 7ad7d649: the two INTERIOR poles are tangent control points
+    // (white ring markers); only the endpoints stay filled dots.
+    expect(points.length).toBe(2 * 3);
+    expect(controlHandles.length).toBe(2 * 3);
   });
 });
 

@@ -503,7 +503,11 @@ const SKETCH_COLOR_OVER = 0xdc2626;
 // Fixed (non-DOF) sketch colours, mirroring the canvas tokens in SketchCanvas2d.
 const SKETCH_CONSTRUCTION_COLOR = 0xb07820; // COLOR_CONSTRUCTION
 const SKETCH_GUIDE_COLOR = 0x64748b; // COLOR_GUIDE (rgba .6)
-const SKETCH_LEG_COLOR = 0x7c3aed; // COLOR_TANGENT_LEG
+// Spline tangent legs: thin neutral grey, Onshape style (ticket 7ad7d649).
+const SKETCH_LEG_COLOR = 0x9ca3af;
+// Tangent control points: white fill with an accent ring (two stacked dots).
+const SKETCH_CTRL_HANDLE_RING = 0x2563eb;
+const SKETCH_CTRL_HANDLE_FILL = 0xffffff;
 const SKETCH_FILL_COLOR = 0x94a3b8; // COLOR_REGION_FILL
 // Shared sketch render parameters so the active sketch mode and the committed
 // 3D overlay look EXACTLY identical (ticket jjmv): one fill opacity, one stroke
@@ -991,6 +995,11 @@ export function SketchSession3D() {
     if (geom) {
       want.push({ role: "points", pos: geom.points, color, size: SKETCH_POINT_SIZE, order: 998 });
       want.push({ role: "handles", pos: geom.handles, color, size: 6, order: 998 });
+      // Spline tangent control points: white-filled ring markers (Onshape
+      // style, ticket 7ad7d649) — an accent ring dot with a smaller white
+      // dot stacked on top.
+      want.push({ role: "ctrlHandleRing", pos: geom.controlHandles, color: SKETCH_CTRL_HANDLE_RING, size: SKETCH_POINT_SIZE + 3, order: 998.1 });
+      want.push({ role: "ctrlHandleFill", pos: geom.controlHandles, color: SKETCH_CTRL_HANDLE_FILL, size: SKETCH_POINT_SIZE, order: 998.2 });
     }
     if (hover) {
       want.push({ role: "hover", pos: hover.markers, color: SKETCH_HOVER_COLOR, size: 10, order: 998.6 });
