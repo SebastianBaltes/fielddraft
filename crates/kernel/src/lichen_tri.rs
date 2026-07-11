@@ -332,6 +332,12 @@ pub fn triangulate_face_general(
                 }
             }
         }
+        if std::env::var("LICHEN_DEBUG_TRI").is_ok() && (i == members[members.len() / 2]) {
+            eprintln!(
+                "TRI-STAR mid-member {i}: local={} n={:?} p={:?} space={} eff_r={}",
+                local.len(), ni, pi, spacing[i as usize], ri
+            );
+        }
         if local.len() < 2 {
             continue;
         }
@@ -505,6 +511,17 @@ pub fn triangulate_face_general(
         }
     };
     let mut tris: Vec<[u32; 3]> = Vec::new();
+    if std::env::var("LICHEN_DEBUG_TRI").is_ok() {
+        let mut hist = [0usize; 4];
+        for &v in votes.values() {
+            hist[(v as usize).min(3)] += 1;
+        }
+        eprintln!(
+            "TRI votes={} hist(1/2/3+)={}/{}/{} mode={accept_mode} members={} eff_r0={:?}",
+            votes.len(), hist[1], hist[2], hist[3], members.len(),
+            members.first().map(|m| eff_r.get(m).copied())
+        );
+    }
     // Abgelehnte Fast-Konsens-Kandidaten (vote_min − 1 Stimmen) — Diagnose-
     // Overlay (orange): genau die Stellen, an denen die Sterne uneins sind.
     let mut weak_tris: Vec<[u32; 3]> = Vec::new();
@@ -672,6 +689,28 @@ pub fn triangulate_face_general(
                     eff_r.get(&v).copied().unwrap_or(cell),
                 );
                 let nu = normals.get(&u).copied();
+                // FALSCHE-SEITE-SCHUTZ: das existierende Dreieck auf (u,v)
+                // hat einen dritten Punkt x — der neue dritte Punkt w muss
+                // auf der GEGENSEITE der Kante liegen, sonst überlappt das
+                // neue Dreieck das alte (Fold → Orientierungs-Konflikt).
+                let side_ref: Option<f32> = tris.iter().find_map(|&[a, b, c]| {
+                    let has_u = a == u || b == u || c == u;
+                    let has_v = a == v || b == v || c == v;
+                    if !(has_u && has_v) {
+                        return None;
+                    }
+                    let x = if a != u && a != v {
+                        a
+                    } else if b != u && b != v {
+                        b
+                    } else {
+                        c
+                    };
+                    nu.map(|n| {
+                        let s = cross(n, sub(points[v as usize], points[u as usize]));
+                        dot(sub(points[x as usize], mid), s)
+                    })
+                });
                 let (kx, ky, kz) = key(mid);
                 let reach = (r / cell).ceil() as i32 + 1;
                 // Billige Filter zuerst; die TEURE Umkugel-Verifikation läuft
@@ -720,6 +759,14 @@ pub fn triangulate_face_general(
                                         continue;
                                     }
                                 }
+                                // Gegenseiten-Pflicht (s.o.).
+                                if let (Some(sx), Some(n)) = (side_ref, nu) {
+                                    let sdir = cross(n, sub(points[v as usize], points[u as usize]));
+                                    let sw = dot(sub(points[w as usize], mid), sdir);
+                                    if sw * sx >= 0.0 {
+                                        continue;
+                                    }
+                                }
                                 // Degenerations-Schutz: (fast) kollineare
                                 // Kandidaten stiften nur Orientierungs- und
                                 // Flächen-Müll — sin(Winkel) > 1e-3 fordern.
@@ -763,6 +810,84 @@ pub fn triangulate_face_general(
             }
         }
         tris.sort_unstable();
+    }
+
+    // ── GEGENSEITEN-PFLICHT innerer Kanten: die zwei Dreiecke einer
+    // Kante müssen auf verschiedenen Seiten liegen (Tangentialrahmen der
+    // Kante) — zwei gleichseitige Dreiecke sind ein Fold (Überlappung),
+    // den die Orientierungs-Propagation sonst als Konflikt meldet.
+    // Deterministisch: das Dreieck mit kleinerem Umkreisradius bleibt. ──
+    {
+        let mut by_edge: HashMap<(u32, u32), Vec<usize>> = HashMap::new();
+        for (ti, &[a, b, c]) in tris.iter().enumerate() {
+            for (x, y) in [(a, b), (b, c), (c, a)] {
+                by_edge.entry((x.min(y), x.max(y))).or_default().push(ti);
+            }
+        }
+        let circum_r2 = |a: u32, b: u32, c: u32| -> f32 {
+            let (pa, pb, pc) = (
+                points[a as usize],
+                points[b as usize],
+                points[c as usize],
+            );
+            let ab = sub(pb, pa);
+            let ac = sub(pc, pa);
+            let ab2 = dot(ab, ab);
+            let ac2 = dot(ac, ac);
+            let abac = dot(ab, ac);
+            let den = 2.0 * (ab2 * ac2 - abac * abac);
+            if den.abs() < 1e-20 {
+                return f32::MAX;
+            }
+            let s_ = (ac2 * (ab2 - abac)) / den;
+            let t_ = (ab2 * (ac2 - abac)) / den;
+            let dc = [s_ * ab[0] + t_ * ac[0], s_ * ab[1] + t_ * ac[1], s_ * ab[2] + t_ * ac[2]];
+            dot(dc, dc)
+        };
+        let mut edges: Vec<(u32, u32)> = by_edge.keys().copied().collect();
+        edges.sort_unstable();
+        let mut dropped = vec![false; tris.len()];
+        for e in edges {
+            let alive: Vec<usize> =
+                by_edge[&e].iter().copied().filter(|&t| !dropped[t]).collect();
+            if alive.len() != 2 {
+                continue;
+            }
+            let (u, v) = e;
+            let Some(&n) = normals.get(&u) else { continue };
+            let (pu, pv) = (points[u as usize], points[v as usize]);
+            let mid = [(pu[0] + pv[0]) * 0.5, (pu[1] + pv[1]) * 0.5, (pu[2] + pv[2]) * 0.5];
+            let sdir = cross(n, sub(pv, pu));
+            let third = |ti: usize| -> u32 {
+                let [a, b, c] = tris[ti];
+                if a != u && a != v {
+                    a
+                } else if b != u && b != v {
+                    b
+                } else {
+                    c
+                }
+            };
+            let s0 = dot(sub(points[third(alive[0]) as usize], mid), sdir);
+            let s1 = dot(sub(points[third(alive[1]) as usize], mid), sdir);
+            if s0 * s1 <= 0.0 {
+                continue; // Gegenseiten (oder degeneriert) — ok
+            }
+            let t0 = alive[0];
+            let t1 = alive[1];
+            let (r0, r1) = (
+                circum_r2(tris[t0][0], tris[t0][1], tris[t0][2]),
+                circum_r2(tris[t1][0], tris[t1][1], tris[t1][2]),
+            );
+            let drop = if (r0, tris[t0]) > (r1, tris[t1]) { t0 } else { t1 };
+            dropped[drop] = true;
+        }
+        let mut k = 0usize;
+        tris.retain(|_| {
+            let d = dropped[k];
+            k += 1;
+            !d
+        });
     }
 
     // ── Diagnose: Kanten-Zählung (2-Manifold, Löcher) ──

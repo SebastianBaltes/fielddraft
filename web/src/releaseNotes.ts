@@ -24,6 +24,16 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.529",
+    entries: [
+      {
+        kind: "fix",
+        scope: "mesher",
+        text: "Lichen: Wurzel-Bug im Gradientenfeld behoben — der Dual-Gradient ist exakt AUF planaren Flächen null, wodurch alle Wachstums-Punkte die Default-Normale [0,0,1] bekamen: 4 von 6 Box-Flächen blieben komplett ungemesht, Krümmungsschätzung und Stern-Projektion waren vergiftet. Jetzt FD-Fallback (robust_grad), Stern-Normalen exakt aus der Trägerfläche, §1.5-Konflikt-Rebalancing beim Wachstum (Kandidaten werden ausbalanciert statt verworfen) und Gegenseiten-Pflicht innerer Kanten (Folds raus). Alle Testkörper jetzt voll gemesht mit 0 non-manifold, 0 degeneriert, 0 Orientierungs-Konflikten.",
+      },
+    ],
+  },
+  {
     version: "0.6.528",
     entries: [
       {

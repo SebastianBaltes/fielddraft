@@ -831,6 +831,17 @@ impl Kernel {
                 }
                 let on_face = |p: [f32; 3]| face_of(p) == Some(gf);
                 let grown = lichen::grow_surface(&bseeds, h, &opts, &fg, &brep_dist, &on_face);
+                if std::env::var("LICHEN_DEBUG_GROW").is_ok() {
+                    let bad = grown
+                        .iter()
+                        .filter(|g| g.n == [0.0, 0.0, 1.0] || g.n == [0.0, 0.0, -1.0])
+                        .count();
+                    let tiny = grown.iter().filter(|g| g.space < 0.3 * h).count();
+                    eprintln!(
+                        "GROW gf={gf}: n={} default-n={bad} tiny-space={tiny} seeds={}",
+                        grown.len(), bseeds.len()
+                    );
+                }
                 for g in grown {
                     let idx = all.len() as u32;
                     all.push(g);
@@ -908,8 +919,26 @@ impl Kernel {
                             members.push(gi);
                         }
                     }
+                    // Interior-Normalen aus der TRÄGERFLÄCHE (exakt), nicht
+                    // aus dem gespeicherten Punkt-∇f: Default-/Rausch-Normalen
+                    // ([0,0,1]-LPoint-Default!) machten den Cocone-Filter auf
+                    // 4 von 6 Box-Flächen blind — leere Sterne, 0 Dreiecke.
+                    let fsn = |p_world: [f32; 3]| -> [f32; 3] {
+                        let fs = &face_surfs[gf];
+                        let pl = crate::world_to_local(&fs.placement, p_world);
+                        let ps = crate::world_to_local(&fs.transform, pl);
+                        let e = 1e-3f32;
+                        let sd = |q: [f32; 3]| crate::csg::sdf_halfspace(&fs.surface, q);
+                        let g = [
+                            sd([ps[0] + e, ps[1], ps[2]]) - sd([ps[0] - e, ps[1], ps[2]]),
+                            sd([ps[0], ps[1] + e, ps[2]]) - sd([ps[0], ps[1] - e, ps[2]]),
+                            sd([ps[0], ps[1], ps[2] + e]) - sd([ps[0], ps[1], ps[2] - e]),
+                        ];
+                        let gl = crate::quat_rotate(fs.transform.rotation, g);
+                        lichen::unit(crate::quat_rotate(fs.placement.rotation, gl))
+                    };
                     for &gi in &face_interior[gf] {
-                        if nmap.insert(gi, all[gi as usize].n).is_none() {
+                        if nmap.insert(gi, fsn(all[gi as usize].p)).is_none() {
                             members.push(gi);
                         }
                     }
@@ -1487,10 +1516,12 @@ mod tests {
     /// planaren Flächen ist die Tangentialebene konstant, alle Sterne stimmen
     /// überein → das Ergebnis ist ein echtes Delaunay der Fläche.
     #[test]
-    #[ignore = "WIP: Box (h=3, ohne Füller) bei 98 Loch-Kanten — Ablations-Historie: \
-                Jitter 103→1762 (schlechter), sym. Horizont 103→72, Umkugel-verifizierte \
-                Kandidaten-Vervollständigung 128→98; 16 Orientierungs-Konflikte an \
-                Vervollständigungs-Dreiecken offen."]
+    #[ignore = "WIP: seit dem robust_grad-Fix (Dual-Gradient exakt auf planaren Flächen \
+                = 0 → alle Growth-Normalen waren [0,0,1], 4 von 6 Box-Flächen KOMPLETT \
+                ungemesht!) meshen alle 6 Flächen: 12041 tris, 1387 offene Kanten, \
+                0 non-manifold/degeneriert/Orientierung. Die Löcher kommen jetzt aus \
+                der ÜBERDICHTE (~15×, Verdichtungs-Kaskade der Krümmungsschätzung an \
+                Kanten) — nächster Hebel: local_radius/curvature auf planaren Flächen."]
     fn lichen_general_tri_box_is_watertight() {
         let mut k = box_kernel();
         let out = k.lichen_mesh(
@@ -1502,8 +1533,9 @@ mod tests {
     /// General-Pfad auf gekrümmten Flächen: Zylinder (Band + Kappen) — gleiche
     /// Watertight-Messlatte wie der Chart-Pfad, mit demselben chartlosen Code.
     #[test]
-    #[ignore = "WIP wie box-Test; Zylinder (h=3, ohne Füller, auto) bei 345 Loch-Kanten \
-                (Historie ~1000 → 434 via Cocone-Kopplung → 345 via Vervollständigung)."]
+    #[ignore = "WIP wie box-Test; Zylinder seit robust_grad mit gemeshten KAPPEN \
+                (vorher 0 Dreiecke dort): 5910 tris, 828 offene Kanten, Struktur- \
+                Invarianten 0/0/0; Überdichte-Wurzel wie bei der Box."]
     fn lichen_general_tri_cylinder_is_watertight() {
         let mut k = crate::Kernel::new();
         k.add_primitive(

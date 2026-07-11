@@ -144,19 +144,45 @@ fn tangent_basis(n: [f32; 3]) -> ([f32; 3], [f32; 3]) {
     (e1, e2)
 }
 
+/// ∇f mit FD-Fallback: der Dual-Gradient ist EXAKT auf planaren Flächen
+/// null (Abs-Dual bei 0 — die Box liefert d≈1e-10, g=[0,0,0]); Newton
+/// konvergiert Punkte genau dorthin. Zentrale Differenzen retten den Fall —
+/// ohne diesen Fallback bekamen ALLE Box-Growth-Punkte die Default-Normale
+/// [0,0,1], was Wachstums-Frames, Krümmungsschätzung (Überdichte!) und die
+/// Stern-Projektion zugleich vergiftete.
+pub(crate) fn robust_grad<Fg: Fn([f32; 3]) -> (f32, [f32; 3])>(p: [f32; 3], fg: &Fg) -> [f32; 3] {
+    let g = fg(p).1;
+    if dot(g, g) > 1e-12 {
+        return g;
+    }
+    let e = 1e-3f32;
+    [
+        fg([p[0] + e, p[1], p[2]]).0 - fg([p[0] - e, p[1], p[2]]).0,
+        fg([p[0], p[1] + e, p[2]]).0 - fg([p[0], p[1] - e, p[2]]).0,
+        fg([p[0], p[1], p[2] + e]).0 - fg([p[0], p[1], p[2] - e]).0,
+    ]
+}
+
 /// Newton-Projektion auf `f = 0` (echter Step `p -= f·∇f/|∇f|²`). Liefert
 /// `(p, sdf, Einheitsnormale)`.
 fn project<Fg: Fn([f32; 3]) -> (f32, [f32; 3])>(mut p: [f32; 3], fg: &Fg) -> ([f32; 3], f32, [f32; 3]) {
     for _ in 0..5 {
         let (d, g) = fg(p);
-        let g2 = dot(g, g);
-        if g2 < 1e-24 { return (p, d, [0.0, 0.0, 1.0]); }
+        let mut g2 = dot(g, g);
+        let mut g = g;
+        if g2 < 1e-24 {
+            g = robust_grad(p, fg);
+            g2 = dot(g, g);
+            if g2 < 1e-24 {
+                return (p, d, [0.0, 0.0, 1.0]);
+            }
+        }
         let s = d / g2;
         p = [p[0] - s * g[0], p[1] - s * g[1], p[2] - s * g[2]];
         if d.abs() < 1e-5 { break; }
     }
-    let (d, g) = fg(p);
-    (p, d, norm(g))
+    let d = fg(p).0;
+    (p, d, norm(robust_grad(p, fg)))
 }
 
 /// Maximale Hauptkrümmung `κ_max` UND ihre Tangentialrichtung `d_max`
@@ -225,7 +251,7 @@ fn local_radius<Fg>(p: [f32; 3], n: [f32; 3], h: f32, opts: &LichenOptions, fg: 
 where
     Fg: Fn([f32; 3]) -> (f32, [f32; 3]),
 {
-    let gradn = |q: [f32; 3]| norm(fg(q).1);
+    let gradn = |q: [f32; 3]| norm(robust_grad(q, fg));
     let mut r = h;
     let (kmax, _) = curvature(p, n, h, &gradn);
     if kmax > 1e-6 {
@@ -323,7 +349,7 @@ where
     }
     let n_seeds = pts.len();
     let cap = n_seeds + opts.max_points;
-    let gradn = |q: [f32; 3]| norm(fg(q).1);
+    let gradn = |q: [f32; 3]| norm(robust_grad(q, fg));
 
     let mut queue: VecDeque<usize> = (0..n_seeds).collect();
     while let Some(i) = queue.pop_front() {
@@ -358,10 +384,69 @@ where
                 continue;
             }
             // Saubere Abtastung: Kandidat näher als 0,8·r an einem bestehenden
-            // Punkt → verwerfen (Spacing ≈ r; eine über-dichte Wolke bricht die
-            // leere-Umkreis-Bedingung des Meshers).
-            if nearest_dist(&grid, &pts, cell, cp) < 0.8 * r {
-                continue;
+            // Punkt (Spacing ≈ r; eine über-dichte Wolke bricht die leere-
+            // Umkreis-Bedingung des Meshers).
+            let mut cp = cp;
+            let mut cd = cd;
+            let mut cn = cn;
+            let nd = nearest_dist(&grid, &pts, cell, cp);
+            if nd < 0.8 * r {
+                // §1.5 KONFLIKT-REBALANCING (Konzept-Schritt 5): NICHT einfach
+                // verwerfen — an Front-Kollisionen und Dichte-Übergängen reißt
+                // das genau die Lücken (0,8r < Lücke < Dreiecks-tauglich), an
+                // denen die Sterne später uneins sind. Stattdessen den
+                // Kandidaten iterativ von den Konflikt-Nachbarn wegdrücken
+                // (Ziel ≈ 0,85r), neu auf die Fläche projizieren und nur
+                // verwerfen, wenn auch ausbalanciert kein sauberer Abstand
+                // entsteht (dann ist er ECHT redundant).
+                if nd < 0.45 * r {
+                    continue; // redundant nah am Bestand
+                }
+                let mut q = cp;
+                let mut settled = false;
+                for _ in 0..4 {
+                    let (kx, ky, kz) = gkey(q, cell);
+                    let mut disp = [0.0f32; 3];
+                    let mut conflicts = 0;
+                    for dx in -1..=1 {
+                        for dy in -1..=1 {
+                            for dz in -1..=1 {
+                                let Some(v) = grid.get(&(kx + dx, ky + dy, kz + dz)) else {
+                                    continue;
+                                };
+                                for &wi in v {
+                                    let d = sub(q, pts[wi as usize].p);
+                                    let l = len(d);
+                                    if l < 1e-9 || l >= 0.85 * r {
+                                        continue;
+                                    }
+                                    disp = add(disp, scale(d, (0.85 * r - l) / l));
+                                    conflicts += 1;
+                                }
+                            }
+                        }
+                    }
+                    if conflicts == 0 {
+                        settled = true;
+                        break;
+                    }
+                    q = add(q, scale(disp, 0.7));
+                    let (qp, qd, qn) = project(q, fg);
+                    if qd.abs() > 0.2 * r {
+                        break; // von der Fläche gerutscht
+                    }
+                    q = qp;
+                    cd = qd;
+                    cn = qn;
+                }
+                if !settled
+                    || nearest_dist(&grid, &pts, cell, q) < 0.75 * r
+                    || !visible(p, q, r, fg)
+                    || !on_face(q)
+                {
+                    continue;
+                }
+                cp = q;
             }
             // Eigener Spacing-Radius des Kandidaten; Anzeige-U zusätzlich durch
             // den Kantenabstand beschränkt (Kreis bleibt in der Fläche).
@@ -717,6 +802,16 @@ pub fn orient_consistent(all: &[LPoint], tris: &mut [[u32; 3]]) -> usize {
                     if visited[tj] {
                         if !consistent {
                             conflicts += 1;
+                            if std::env::var("LICHEN_DEBUG_ORIENT").is_ok() {
+                                let pf = |i: u32| {
+                                    let lp = &all[i as usize];
+                                    format!("#{i} f{} [{:.2},{:.2},{:.2}]", lp.flag, lp.p[0], lp.p[1], lp.p[2])
+                                };
+                                eprintln!(
+                                    "ORIENT-KONFLIKT Kante {}|{}: tri_i={:?} tri_j={:?} | {} {}",
+                                    u, v, tris[ti], tris[tj], pf(u), pf(v)
+                                );
+                            }
                         }
                         continue;
                     }
