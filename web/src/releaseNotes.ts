@@ -24,6 +24,16 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.537",
+    entries: [
+      {
+        kind: "feat",
+        scope: "issues",
+        text: "Ticket-Liste aufgeräumt: Datum mit Uhrzeit (ohne „Updated"-Präfix), Category-Spalte und -Filter entfernt (ungenutzt); Uhrzeit auch im Ticket-Detail und in Kommentaren",
+      },
+    ],
+  },
+  {
     version: "0.6.536",
     entries: [
       {

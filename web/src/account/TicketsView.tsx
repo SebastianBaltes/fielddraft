@@ -24,7 +24,6 @@ import {
   platformApi,
   artifactUrl,
   type TicketArtifact,
-  type TicketCategory,
   type TicketComment,
   type TicketDetail,
   type TicketListFilter,
@@ -35,9 +34,8 @@ import {
 import { accountErrorMessage } from "./useAccount";
 import { linkify } from "./linkify";
 import {
-  categoryLabel,
   commentVisible,
-  formatDate,
+  formatDateTime,
   personaLabel,
   personaTag,
   stateBucket,
@@ -59,8 +57,6 @@ interface TicketsViewProps {
   /** Navigate list ↔ detail (routes through account.openTicket → URL). */
   onNavigate(id: string | null): void;
 }
-
-const CATEGORIES: TicketCategory[] = ["bug", "feature", "question", "other"];
 
 const STATES: TicketState[] = [
   "triage",
@@ -112,12 +108,11 @@ interface TicketListProps {
 
 /** The click-sortable columns of the issue list (ticket a7b63b6; the `#`
  *  reference column is ticket 066230d9). */
-type SortKey = "number" | "state" | "title" | "category" | "updated";
+type SortKey = "number" | "state" | "title" | "updated";
 const SORT_COLUMNS: { key: SortKey; label: string }[] = [
   { key: "number", label: "#" },
   { key: "state", label: "State" },
   { key: "title", label: "Title" },
-  { key: "category", label: "Category" },
   { key: "updated", label: "Updated" },
 ];
 
@@ -146,7 +141,6 @@ function TicketList({ user, onOpen }: TicketListProps) {
   const [error, setError] = useState<string | null>(null);
   const [onlyMine, setOnlyMine] = useState(false);
   const [stateFilter, setStateFilter] = useState<TicketState | "">("");
-  const [categoryFilter, setCategoryFilter] = useState<TicketCategory | "">("");
   const [query, setQuery] = useState("");
   // Sort column + direction (ticket a7b63b6). Default: most-recent activity.
   const [sortKey, setSortKey] = useState<SortKey>("updated");
@@ -161,7 +155,6 @@ function TicketList({ user, onOpen }: TicketListProps) {
     const filter: TicketListFilter = {
       author: onlyMine ? "me" : undefined,
       state: stateFilter || undefined,
-      category: categoryFilter || undefined,
       q: query || undefined,
     };
     try {
@@ -172,7 +165,7 @@ function TicketList({ user, onOpen }: TicketListProps) {
     } finally {
       setLoading(false);
     }
-  }, [onlyMine, stateFilter, categoryFilter, query]);
+  }, [onlyMine, stateFilter, query]);
 
   useEffect(() => {
     void reload();
@@ -181,7 +174,7 @@ function TicketList({ user, onOpen }: TicketListProps) {
   // A changed filter can shrink the result set — snap back to the first page.
   useEffect(() => {
     setPage(1);
-  }, [onlyMine, stateFilter, categoryFilter, query]);
+  }, [onlyMine, stateFilter, query]);
 
   // Client-side sort by the chosen column (the server returns the filtered
   // set; the header toggles key + direction — ticket a7b63b6).
@@ -195,8 +188,6 @@ function TicketList({ user, onOpen }: TicketListProps) {
           return stateLabel(t.state);
         case "title":
           return t.title;
-        case "category":
-          return categoryLabel(t.category);
         case "updated":
           return t.updated_at;
       }
@@ -261,22 +252,6 @@ function TicketList({ user, onOpen }: TicketListProps) {
           {STATES.map((s) => (
             <option key={s} value={s}>
               {stateLabel(s)}
-            </option>
-          ))}
-        </select>
-        <select
-          className="filter-select"
-          data-testid="tickets-category-filter"
-          aria-label="Filter by category"
-          value={categoryFilter}
-          onChange={(e) =>
-            setCategoryFilter(e.target.value as TicketCategory | "")
-          }
-        >
-          <option value="">All categories</option>
-          {CATEGORIES.map((c) => (
-            <option key={c} value={c}>
-              {categoryLabel(c)}
             </option>
           ))}
         </select>
@@ -357,11 +332,8 @@ function TicketList({ user, onOpen }: TicketListProps) {
                 <span className="row-title" title={t.title}>
                   {t.title}
                 </span>
-                <span className="row-category">
-                  {categoryLabel(t.category)}
-                </span>
                 <span className="row-meta">
-                  Updated {formatDate(t.updated_at)}
+                  {formatDateTime(t.updated_at)}
                 </span>
               </button>
             </li>
@@ -562,9 +534,8 @@ function TicketDetailPanel({
             <h3 className="detail-title">{ticket.title}</h3>
           </div>
           <div className="detail-meta">
-            <span>{categoryLabel(ticket.category)}</span>
-            <span>Opened {formatDate(ticket.created_at)}</span>
-            <span>Updated {formatDate(ticket.updated_at)}</span>
+            <span>Opened {formatDateTime(ticket.created_at)}</span>
+            <span>Updated {formatDateTime(ticket.updated_at)}</span>
           </div>
           <p className="detail-body" data-testid="detail-body">
             {linkify(ticket.body)}
@@ -905,7 +876,7 @@ function Thread({
                     </span>
                   )}
                   <span className="comment-date">
-                    {formatDate(c.created_at)}
+                    {formatDateTime(c.created_at)}
                   </span>
                 </div>
                 <p className="comment-text">{linkify(c.body)}</p>

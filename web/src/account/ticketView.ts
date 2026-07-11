@@ -128,3 +128,17 @@ export function formatDate(iso: string): string {
     day: "numeric",
   });
 }
+
+/** Date + time-of-day for list/thread meta ("11. Juli 2026, 20:34"). Falls
+ *  back to "" on a bad ISO string. */
+export function formatDateTime(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  return d.toLocaleString(undefined, {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
