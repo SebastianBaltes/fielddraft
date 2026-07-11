@@ -77,6 +77,8 @@ impl Kernel {
         }
         let mut all: Vec<LPoint> = Vec::new();
         let mut point_faces: Vec<Vec<(u32, [f32; 3])>> = Vec::new();
+        // Streu-Seeds verwaister Flächen (F2a): gf → globale Punkt-Indizes.
+        let mut face_extra_seeds: HashMap<u32, Vec<u32>> = HashMap::new();
         let mut local_pos: Vec<[f32; 3]> = Vec::new();
         let mut edge_segs: Vec<([f32; 3], [f32; 3])> = Vec::new();
         let mut face_surfs: Vec<FaceSurf> = Vec::new();
@@ -424,6 +426,221 @@ impl Kernel {
                 }
                 face_loops.push(rings);
             }
+
+            // ── F2a: VERWAISTE Branch-Flächen — der Weave lässt Flächen aus,
+            // deren Trim-Nähte er droppt (DL-71 skippt non-Lipschitz-Gruppen;
+            // im Betreiber-Demo bleibt so die KUGEL gegen den Gyroid komplett
+            // ungewebt und ihre ganze Region ungemesht). Der Träger steht
+            // trotzdem im branch_halfspace_map (BoundedCsg = Welt-Frame →
+            // placement = IDENTITY in der FaceSurf-Kette); die Rand-Loops
+            // entstehen durch Verkettung der angrenzenden Kanten-Ketten
+            // (Kanten, deren Punkte alle auf der Surface liegen). Damit
+            // wächst und trianguliert die Fläche wie jede gewebte. ──
+            let woven: HashSet<u32> =
+                brep.faces.iter().map(|f| f.branch_id.as_u32()).collect();
+            let hs_map = crate::brep::weaving::branch_halfspace_map(&bodies[bi]);
+            let mut orphan_ids: Vec<u32> =
+                hs_map.keys().copied().filter(|b| !woven.contains(b)).collect();
+            orphan_ids.sort_unstable();
+            if std::env::var("LICHEN_DEBUG_FACES").is_ok() {
+                eprintln!("ORPHAN candidates: {orphan_ids:?} (woven: {woven:?})");
+            }
+            for bid in orphan_ids {
+                let (hsurf, hxf) = &hs_map[&bid];
+                let on_surf = |gidx: u32| -> bool {
+                    let ps = crate::world_to_local(hxf, all[gidx as usize].p);
+                    crate::csg::sdf_halfspace(hsurf, ps).abs() < (0.02 * h).max(0.05)
+                };
+                // Angrenzende Kanten: alle Kettenpunkte auf der Surface.
+                let mut adj: Vec<u32> = Vec::new();
+                for (eid, idxs) in &edge_chain {
+                    if idxs.len() >= 2 && idxs.iter().all(|&g| on_surf(g)) {
+                        adj.push(*eid);
+                    }
+                }
+                if std::env::var("LICHEN_DEBUG_FACES").is_ok() {
+                    let sample: Vec<String> = edge_chain
+                        .values()
+                        .take(3)
+                        .filter_map(|idxs| idxs.first())
+                        .map(|&g| {
+                            let ps = crate::world_to_local(hxf, all[g as usize].p);
+                            format!("{:.3}", crate::csg::sdf_halfspace(hsurf, ps))
+                        })
+                        .collect();
+                    eprintln!("ORPHAN {bid}: adj={} sample-sdf={sample:?}", adj.len());
+                }
+                adj.sort_unstable();
+                // Ketten an geteilten Endpunkten zu Loops verketten (die
+                // Loop-Struktur der fehlenden Face gibt es ja nicht).
+                let mut rings: Vec<(Vec<u32>, bool)> = Vec::new();
+                let mut used: HashSet<u32> = HashSet::new();
+                for &e0 in &adj {
+                    if used.contains(&e0) {
+                        continue;
+                    }
+                    used.insert(e0);
+                    let mut ring: Vec<u32> = edge_chain[&e0].clone();
+                    if ring.len() >= 2 && ring.first() == ring.last() {
+                        ring.pop(); // geschlossene Kante = fertiger Ring
+                    } else {
+                        loop {
+                            let tail = *ring.last().unwrap();
+                            if ring.len() > 1 && tail == ring[0] {
+                                ring.pop();
+                                break;
+                            }
+                            let Some(&next) = adj.iter().find(|&&e| {
+                                if used.contains(&e) {
+                                    return false;
+                                }
+                                let c = &edge_chain[&e];
+                                c.first() == Some(&tail) || c.last() == Some(&tail)
+                            }) else {
+                                break;
+                            };
+                            used.insert(next);
+                            let mut c = edge_chain[&next].clone();
+                            if c.last() == Some(&tail) {
+                                c.reverse();
+                            }
+                            ring.extend(c.into_iter().skip(1));
+                        }
+                    }
+                    if ring.len() >= 3 {
+                        rings.push((ring, false));
+                    }
+                }
+                let gf = face_surfs.len() as u32;
+                // Pro-Fläche-Normale = ∇(Surface-SDF), Surface-Frame → Welt.
+                let normal_at = |p_world: [f32; 3]| -> [f32; 3] {
+                    let ps = crate::world_to_local(hxf, p_world);
+                    let e = 1e-3f32;
+                    let sd = |q: [f32; 3]| crate::csg::sdf_halfspace(hsurf, q);
+                    let g = [
+                        sd([ps[0] + e, ps[1], ps[2]]) - sd([ps[0] - e, ps[1], ps[2]]),
+                        sd([ps[0], ps[1] + e, ps[2]]) - sd([ps[0], ps[1] - e, ps[2]]),
+                        sd([ps[0], ps[1], ps[2] + e]) - sd([ps[0], ps[1], ps[2] - e]),
+                    ];
+                    lichen::unit(crate::quat_rotate(hxf.rotation, g))
+                };
+                // Kettenlos (die Nähte wurden im Weave gedroppt): FELD-
+                // STREUUNG — Gitter über die Body-AABB, Newton-Projektion auf
+                // die Surface, behalten wo der Punkt AUF dem Body liegt
+                // (|f|≈0) — Surface-Stücke im Material (f<0) oder außerhalb
+                // (f>0) fallen raus. Jeder Gyroid-Zwischenraum bekommt so
+                // seine eigenen Seeds (Patches sind nicht zusammenhängend).
+                let mut scatter: Vec<([f32; 3], [f32; 3])> = Vec::new();
+                if rings.is_empty() {
+                    // Body-AABB; Gyroid-Leafs haben EMPTY-AABB (unendlich) und
+                    // vergiften die Intersection — dann Punktwolken-AABB der
+                    // bereits gesammelten Ecken/Ketten + 2h Marge als Hülle.
+                    let mut bb = bodies[bi].aabb();
+                    if !(bb.max[0] > bb.min[0]) {
+                        bb = crate::csg::Aabb::EMPTY;
+                        for lp in &all {
+                            for a in 0..3 {
+                                bb.min[a] = bb.min[a].min(lp.p[a] - 2.0 * h);
+                                bb.max[a] = bb.max[a].max(lp.p[a] + 2.0 * h);
+                            }
+                        }
+                    }
+                    let ext = (bb.max[0] - bb.min[0])
+                        .max(bb.max[1] - bb.min[1])
+                        .max(bb.max[2] - bb.min[2]);
+                    if ext > 0.0 && ext.is_finite() {
+                        let step = (0.4 * h).max(ext / 64.0);
+                        let (mut rej_newton, mut rej_body, mut rej_dedup, mut tried) =
+                            (0usize, 0usize, 0usize, 0usize);
+                        let n = [
+                            ((bb.max[0] - bb.min[0]) / step).ceil() as i32 + 1,
+                            ((bb.max[1] - bb.min[1]) / step).ceil() as i32 + 1,
+                            ((bb.max[2] - bb.min[2]) / step).ceil() as i32 + 1,
+                        ];
+                        'grid: for ix in 0..n[0] {
+                            for iy in 0..n[1] {
+                                for iz in 0..n[2] {
+                                    let mut p = [
+                                        bb.min[0] + ix as f32 * step,
+                                        bb.min[1] + iy as f32 * step,
+                                        bb.min[2] + iz as f32 * step,
+                                    ];
+                                    // Newton auf die Trägerfläche.
+                                    let mut d = f32::MAX;
+                                    for _ in 0..8 {
+                                        let ps = crate::world_to_local(hxf, p);
+                                        d = crate::csg::sdf_halfspace(hsurf, ps);
+                                        if d.abs() < 1e-3 {
+                                            break;
+                                        }
+                                        let nrm = normal_at(p);
+                                        p = [p[0] - d * nrm[0], p[1] - d * nrm[1], p[2] - d * nrm[2]];
+                                    }
+                                    tried += 1;
+                                    if d.abs() > 0.05 {
+                                        rej_newton += 1;
+                                        continue;
+                                    }
+                                    // Nur AUF dem Body (aktive Boundary-Region).
+                                    if fg(p).0.abs() > 0.05 * h {
+                                        rej_body += 1;
+                                        continue;
+                                    }
+                                    // Dedup gegen bereits gestreute Seeds.
+                                    let min_d2 = (0.7 * h) * (0.7 * h);
+                                    if scatter.iter().any(|(q, _)| {
+                                        let dx = q[0] - p[0];
+                                        let dy = q[1] - p[1];
+                                        let dz = q[2] - p[2];
+                                        dx * dx + dy * dy + dz * dz < min_d2
+                                    }) {
+                                        rej_dedup += 1;
+                                        continue;
+                                    }
+                                    scatter.push((p, normal_at(p)));
+                                    if scatter.len() >= 4000 {
+                                        break 'grid;
+                                    }
+                                }
+                            }
+                        }
+                        if std::env::var("LICHEN_DEBUG_FACES").is_ok() {
+                            eprintln!(
+                                "ORPHAN {bid}: tried={tried} rej_newton={rej_newton} rej_body={rej_body} rej_dedup={rej_dedup} ext={ext} step={step}"
+                            );
+                        }
+                    }
+                }
+                if std::env::var("LICHEN_DEBUG_FACES").is_ok() {
+                    eprintln!("ORPHAN {bid}: rings={} scatter={}", rings.len(), scatter.len());
+                }
+                if rings.is_empty() && scatter.is_empty() {
+                    continue; // kein Oberflächen-Anteil am Body
+                }
+                let mut seen: HashSet<u32> = HashSet::new();
+                for (ring, _) in &rings {
+                    for &gidx in ring {
+                        if seen.insert(gidx) {
+                            let nw = normal_at(all[gidx as usize].p);
+                            point_faces[gidx as usize].push((gf, nw));
+                        }
+                    }
+                }
+                for &(p, nrm) in &scatter {
+                    let idx = all.len() as u32;
+                    let (d, _) = fg(p);
+                    all.push(LPoint { p, sdf: d, n: nrm, u: h, space: h, flag: 1.0 });
+                    point_faces.push(vec![(gf, nrm)]);
+                    local_pos.push([0.0; 3]);
+                    face_extra_seeds.entry(gf).or_default().push(idx);
+                }
+                face_surfs.push(FaceSurf {
+                    surface: hsurf.clone(),
+                    transform: *hxf,
+                    placement: Transform::IDENTITY,
+                });
+                face_loops.push(rings);
+            }
         }
 
         // Welt→Fläche-Klassifikator (harte Kanten-Wand): die BRep-Fläche mit
@@ -470,6 +687,11 @@ impl Kernel {
         // ── Wachstum (§1) pro Fläche, mit harter Kanten-Wand ──
         // Gewachsene Innen-Partikel je Fläche (für den Pro-Fläche-CDT).
         let mut face_interior: Vec<Vec<u32>> = vec![Vec::new(); face_surfs.len()];
+        // Streu-Seeds verwaister Flächen zählen als Innen-Punkte (Mitglieder
+        // der Pro-Fläche-Triangulierung, auch bei grow=false).
+        for (&gf, idxs) in &face_extra_seeds {
+            face_interior[gf as usize].extend(idxs.iter().copied());
+        }
         if opts.grow {
             let n_faces = face_surfs.len() as u32;
             let gf_normal = |pf: &[(u32, [f32; 3])], gf: u32| -> [f32; 3] {
@@ -494,6 +716,12 @@ impl Kernel {
                             space: h,
                             flag: src.flag,
                         });
+                    }
+                }
+                // Streu-Seeds kettenloser verwaister Flächen (F2a).
+                if let Some(extra) = face_extra_seeds.get(&gf) {
+                    for &idx in extra {
+                        bseeds.push(all[idx as usize]);
                     }
                 }
                 if bseeds.is_empty() {
@@ -598,6 +826,14 @@ impl Kernel {
                         Some(&own),
                         Some(&global_chain_edges),
                     );
+                    if std::env::var("LICHEN_DEBUG_FACES").is_ok() {
+                        eprintln!(
+                            "FACE gf={gf} {:?} members={} interior={} tris={} holes={}",
+                            std::mem::discriminant(&face_surfs[gf].surface),
+                            members.len(), face_interior[gf].len(),
+                            res.tris.len(), res.hole_edges
+                        );
+                    }
                     holes += res.hole_edges;
                     nonmani += res.nonmanifold_edges;
                     open_edges.extend(res.open_edges);

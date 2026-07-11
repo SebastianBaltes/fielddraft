@@ -660,9 +660,31 @@ pub fn triangulate_face_general(
                         ring.clear();
                         break;
                     };
+                    // GEOMETRISCHER Walker: an Verzweigungen (Punkt mit
+                    // mehreren offenen Kanten, z.B. Acht-Kreuzungen) die
+                    // schärfste LINKS-Kurve in der Tangentialebene nehmen —
+                    // das läuft die minimalen Defekt-Loops ab, statt an der
+                    // Kreuzung beliebig (erstbester Kandidat) falsch
+                    // abzubiegen und Loops zu verschmelzen.
+                    let p_prev = points[prev as usize];
+                    let p_cur = points[cur as usize];
+                    let n_cur = normals.get(&cur).copied().unwrap_or([0.0, 0.0, 1.0]);
+                    let d_in = sub(p_cur, p_prev);
+                    let turn = |n: u32| -> f64 {
+                        let d_out = sub(points[n as usize], p_cur);
+                        let s = dot(cross(d_in, d_out), n_cur) as f64;
+                        let c = dot(d_in, d_out) as f64;
+                        s.atan2(c)
+                    };
                     let Some(&nxt) = cands
                         .iter()
-                        .find(|&&n| n != prev && !visited.contains(&(cur, n)))
+                        .filter(|&&n| n != prev && !visited.contains(&(cur, n)))
+                        .max_by(|&&n1, &&n2| {
+                            turn(n1)
+                                .partial_cmp(&turn(n2))
+                                .unwrap_or(std::cmp::Ordering::Equal)
+                                .then(n1.cmp(&n2))
+                        })
                     else {
                         ring.clear();
                         break;

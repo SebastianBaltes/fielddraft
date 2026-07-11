@@ -24,6 +24,16 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.526",
+    entries: [
+      {
+        kind: "feat",
+        scope: "mesher",
+        text: "Lichen: verwaiste Branch-Flächen (vom Weave gedroppte Trim-Nähte, DL-71) werden rekonstruiert — Träger aus der Branch-Halfspace-Map, Rand-Loops durch Ketten-Verkettung, kettenlose Flächen per Feld-Streuung (Gitter + Newton-Projektion) besät. Loch-Loop-Walker biegt an Verzweigungen jetzt geometrisch ab (schärfste Linkskurve in der Tangentialebene) statt beliebig.",
+      },
+    ],
+  },
+  {
     version: "0.6.525",
     entries: [
       {
