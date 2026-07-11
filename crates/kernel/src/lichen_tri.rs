@@ -327,20 +327,27 @@ pub fn triangulate_face_general(
                         }
                         // SDF-SICHTLINIE (Konzept §1 Schritt 6): die Sehne
                         // p→q muss nahe der OBERFLÄCHE bleiben. Punkte über
-                        // eine konkave Bucht hinweg sind in 3D nah, aber
-                        // flächenfremd — solche Luft-Nachbarn spannen nicht
-                        // nur Luft-Dreiecke auf, sie VERDRÄNGEN im 2D-
-                        // Delaunay des Sterns auch die echten Nachbarn
-                        // (Betreiber-Screenshot: Speichen quer durch die
-                        // Bucht + fehlende Dreiecke innen). Toleranz =
-                        // Sehnen-Sagitta gekrümmter Flächen (0,15·L) plus
-                        // Spacing-Grundrauschen.
+                        // eine konkave Bucht (Luft) oder QUER DURCH eine
+                        // Kugelkappe (Material!) sind in 3D nah, aber
+                        // flächenfremd. Die erlaubte Eintauchtiefe ist die
+                        // SAGITTA — und die folgt aus dem NORMALEN-KNICK der
+                        // Endpunkte (Kreisbogen: L²/8r = L·θ/8): parallele
+                        // Normalen (flache Wand, Durchquerungs-Sehne) → ~0
+                        // erlaubt; kippende Normalen (Sehne AUF der Kugel) →
+                        // genau die Kugel-Sagitta. Eine pauschale 0,15·L-
+                        // Toleranz ließ Kappen-Durchquerungen durch
+                        // (Betreiber-Screenshot „Kanten durch den Körper").
                         let midp = [
                             (pi[0] + pj[0]) * 0.5,
                             (pi[1] + pj[1]) * 0.5,
                             (pi[2] + pj[2]) * 0.5,
                         ];
-                        if field(midp).abs() > (0.15 * dl).max(0.1 * spacing[i as usize]) {
+                        let theta = {
+                            let nj = normals.get(&j).copied().unwrap_or(ni);
+                            dot(ni, nj).clamp(-1.0, 1.0).acos()
+                        };
+                        let tol = (0.3 * dl * theta).max(0.1 * spacing[i as usize]);
+                        if field(midp).abs() > tol {
                             continue;
                         }
                         local.push((
@@ -1171,7 +1178,21 @@ pub fn triangulate_face_general(
             }
             m.sqrt()
         };
-        field(cen).abs() <= (0.15 * e2max).max(0.1 * spacing[a as usize])
+        // Erlaubte Eintauchtiefe aus dem maximalen Normalen-Knick der
+        // drei Ecken (s. Sichtlinien-Kommentar oben).
+        let theta = {
+            let n0 = normals.get(&a).copied();
+            let n1 = normals.get(&b).copied();
+            let n2 = normals.get(&c).copied();
+            let mut t = 0.0f32;
+            for (x, y) in [(n0, n1), (n1, n2), (n2, n0)] {
+                if let (Some(x), Some(y)) = (x, y) {
+                    t = t.max(dot(x, y).clamp(-1.0, 1.0).acos());
+                }
+            }
+            t
+        };
+        field(cen).abs() <= (0.3 * e2max * theta).max(0.1 * spacing[a as usize])
     });
 
     // ── Orientierung: die Stern-Abstimmung arbeitet auf SORTIERTEN Index-
