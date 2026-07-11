@@ -24,12 +24,23 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.538",
+    entries: [
+      {
+        kind: "perf",
+        scope: "render",
+        text: "SDF-Deferred cached das Shade-Ergebnis (Farbe + Tiefe) in einem Render-Target: reine Overlay-Invalidates (Sketch-Hover/-Drag, Gizmos) blitten den letzten Frame statt die komplette SDF neu zu marchen — Sketch-Interaktion ruckelt nicht mehr",
+        tickets: ["40001a3a"],
+      },
+    ],
+  },
+  {
     version: "0.6.537",
     entries: [
       {
         kind: "feat",
         scope: "issues",
-        text: "Ticket-Liste aufgeräumt: Datum mit Uhrzeit (ohne „Updated"-Präfix), Category-Spalte und -Filter entfernt (ungenutzt); Uhrzeit auch im Ticket-Detail und in Kommentaren",
+        text: "Ticket-Liste aufgeräumt: Datum mit Uhrzeit (ohne „Updated“-Präfix), Category-Spalte und -Filter entfernt (ungenutzt); Uhrzeit auch im Ticket-Detail und in Kommentaren",
       },
     ],
   },
