@@ -24,6 +24,21 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.516",
+    entries: [
+      {
+        kind: "fix",
+        scope: "mobile",
+        text: "Mobile Topbar entschlackt: Auf Phone-Breite (≤768px) bleiben nur Zurück-Pfeil, Burger-Menü, Projekt-Titel und User-Menü — Marke, Versions-Badge, Feature-/Dreiecks-/Größen-Anzeige und die Alarm-Glocke sind ausgeblendet; Fehlermeldungen bleiben sichtbar.",
+      },
+      {
+        kind: "fix",
+        scope: "mobile",
+        text: "Die Seite selbst zoomt und scrollt auf Mobilgeräten nicht mehr: touch-action pan-x/pan-y verbietet dem Browser Pinch- und Doppeltipp-Zoom der Seite (Pinch gehört der 3D-Szene), overscroll-behavior stoppt Pull-to-Refresh/Rubber-Banding, und overflow:hidden auf html/body verhindert jedes Seiten-Scrollen — die App ist eine Single-Page-Fullscreen-Anwendung.",
+      },
+    ],
+  },
+  {
     version: "0.6.515",
     entries: [
       {

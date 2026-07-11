@@ -655,7 +655,7 @@ function AppShell({ account }: { account: UseAccount }) {
                   ◀
                 </button>
               ) : null}
-              FieldDraft{" "}
+              <span className="brand">FieldDraft</span>{" "}
               <button
                 type="button"
                 className="version"
@@ -715,7 +715,7 @@ function AppShell({ account }: { account: UseAccount }) {
                   <span className="error">kernel error: {error.message}</span>
                 ) : state ? (
                   <>
-                    <span data-testid="feature-count">
+                    <span className="feature-count" data-testid="feature-count">
                       {state.features.length} feature
                       {state.features.length === 1 ? "" : "s"}
                     </span>

@@ -15,6 +15,19 @@ body,
   height: 100%;
 }
 
+/* Single-Page-Fullscreen-App (Ticket #321): die SEITE scrollt und zoomt nie —
+   Pinch/Doppeltipp gehören der Szene (Canvas: touch-action none), Scrollen nur
+   inneren Panels (overflow: auto). `touch-action: pan-x pan-y` verbietet dem
+   Browser Pinch-/Doppeltipp-Zoom der Seite (das viewport-Meta allein wird von
+   iOS ignoriert), `overscroll-behavior` stoppt Pull-to-Refresh/Rubber-Banding,
+   `overflow: hidden` jedes Seiten-Scrollen (z.B. wenn die Topbar umbricht). */
+html,
+body {
+  overflow: hidden;
+  overscroll-behavior: none;
+  touch-action: pan-x pan-y;
+}
+
 html {
   /* Respect the user's browser font-size. Never assume 16px. */
   font-size: 100%;
