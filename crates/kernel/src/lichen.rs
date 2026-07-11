@@ -188,7 +188,17 @@ fn project<Fg: Fn([f32; 3]) -> (f32, [f32; 3])>(mut p: [f32; 3], fg: &Fg) -> ([f
 /// Maximale Hauptkrümmung `κ_max` UND ihre Tangentialrichtung `d_max`
 /// (Shape-Operator per zentraler Differenz des Normalenfelds — Muster aus
 /// `mesher_points::metric_at`). `gradn` liefert die Einheitsnormale.
-fn curvature<Gn: Fn([f32; 3]) -> [f32; 3]>(p: [f32; 3], n: [f32; 3], h: f32, gradn: &Gn) -> (f32, [f32; 3]) {
+/// Shape-Operator per FD eines NORMALENFELDS. Der Aufrufer wählt das Feld:
+/// die TRÄGERFLÄCHEN-Normale (glatt, unendlich — keine Kanten-Knicke, kein
+/// Klein-Fenster-Rauschen) ist die korrekte Quelle fürs Wachstum; das Body-
+/// ∇f taugt NICHT (misst an B-Rep-Kanten den Knick als Krümmung → Mikro-
+/// Spacing-Bänder, ~15× Überdichte auf der Box).
+pub fn curvature<Gn: Fn([f32; 3]) -> [f32; 3]>(
+    p: [f32; 3],
+    n: [f32; 3],
+    h: f32,
+    gradn: &Gn,
+) -> (f32, [f32; 3]) {
     let (e1, e2) = tangent_basis(n);
     let delta = (0.1 * h).clamp(1e-3, 0.5);
     let dn = |dir: [f32; 3]| -> [f32; 3] {
@@ -247,13 +257,19 @@ fn reach<Fg: Fn([f32; 3]) -> (f32, [f32; 3])>(p: [f32; 3], n: [f32; 3], cap: f32
 /// unten geklemmt. `cap = h`. Steuert Punktdichte + Graph-Konnektivität; die
 /// Kanten-Grenze übernimmt die harte `on_face`-Wand (nicht mehr die Dichte),
 /// der angezeigte U(p)-Kreis wird separat via `R_BRep` beschränkt.
-fn local_radius<Fg>(p: [f32; 3], n: [f32; 3], h: f32, opts: &LichenOptions, fg: &Fg) -> f32
+fn local_radius<Fg>(
+    p: [f32; 3],
+    n: [f32; 3],
+    h: f32,
+    kmax: f32,
+    opts: &LichenOptions,
+    fg: &Fg,
+) -> f32
 where
     Fg: Fn([f32; 3]) -> (f32, [f32; 3]),
 {
-    let gradn = |q: [f32; 3]| norm(robust_grad(q, fg));
     let mut r = h;
-    let (kmax, _) = curvature(p, n, h, &gradn);
+    let _ = n;
     if kmax > 1e-6 {
         // R_curv = α_rad / κ_max — bindet nur, wo κ_max > α_rad/h (Radius < h/α),
         // sonst dominiert der h-Cap. Auf flachen/leicht gekrümmten Flächen also
@@ -328,18 +344,20 @@ fn visible<Fg: Fn([f32; 3]) -> (f32, [f32; 3])>(p: [f32; 3], q: [f32; 3], r: f32
 /// → `on_face` schlägt fehl → verworfen. So bleibt jede Fläche in ihren Kanten
 /// und wächst nie auf eine andere Fläche oder ins Leere. Liefert die neu
 /// gewachsenen Interior-Punkte (flag 1).
-pub fn grow_surface<Fg, Fb, On>(
+pub fn grow_surface<Fg, Fb, On, Sc>(
     seeds: &[LPoint],
     h: f32,
     opts: &LichenOptions,
     fg: &Fg,
     brep_dist: &Fb,
     on_face: &On,
+    surf_curv: &Sc,
 ) -> Vec<LPoint>
 where
     Fg: Fn([f32; 3]) -> (f32, [f32; 3]),
     Fb: Fn([f32; 3]) -> f32,
-    On: Fn([f32; 3]) -> bool,
+    On: Fn([f32; 3], f32) -> bool,
+    Sc: Fn([f32; 3]) -> (f32, [f32; 3]),
 {
     let cell = h.max(1e-4);
     let mut pts: Vec<LPoint> = seeds.to_vec();
@@ -349,8 +367,8 @@ where
     }
     let n_seeds = pts.len();
     let cap = n_seeds + opts.max_points;
-    let gradn = |q: [f32; 3]| norm(robust_grad(q, fg));
 
+    let mut rej = [0usize; 6]; // sdf, visible, face, redundant, rebalance, ok
     let mut queue: VecDeque<usize> = (0..n_seeds).collect();
     while let Some(i) = queue.pop_front() {
         if pts.len() >= cap {
@@ -358,10 +376,12 @@ where
         }
         let p = pts[i].p;
         let n = pts[i].n;
-        let r = local_radius(p, n, h, opts, fg);
-        // Referenzrichtung u entlang der maximalen Hauptkrümmung (§1.2); auf
-        // planaren/sphärischen Flächen (κ≈0) ein beliebiger Tangentenvektor.
-        let (kmax, dmax) = curvature(p, n, h, &gradn);
+        // Krümmung IMMER von der TRÄGERFLÄCHE (glatt, kantenfrei) — daraus
+        // Wachstums-Radius und Referenzrichtung. GRADING: höchstens ×1.5
+        // gegenüber dem eigenen Spacing (Dichte-Übergänge von dichten
+        // Ketten/Nachbarn ins gröbere Innere bleiben stetig).
+        let (kmax, dmax) = surf_curv(p);
+        let r = local_radius(p, n, h, kmax, opts, fg).min(1.5 * pts[i].space);
         let (u, w) = if kmax > 1e-4 {
             (dmax, cross(n, dmax))
         } else {
@@ -372,15 +392,18 @@ where
             let dir = add(scale(u, ang.cos()), scale(w, ang.sin()));
             let (cp, cd, cn) = project(add(p, scale(dir, r)), fg);
             if cd.abs() > 0.2 * r {
+                rej[0] += 1;
                 continue; // nicht auf der Oberfläche gelandet
             }
             if !visible(p, cp, r, fg) {
+                rej[1] += 1;
                 continue; // hintere Wand
             }
             // Harte Kanten-Wand: der Kandidat muss auf DERSELBEN BRep-Fläche
             // liegen. Übersprang er eine Kante, ist er auf einer Nachbarfläche
             // oder außerhalb → verwerfen (Kanten sind harte Grenzen).
-            if !on_face(cp) {
+            if !on_face(cp, r) {
+                rej[2] += 1;
                 continue;
             }
             // Saubere Abtastung: Kandidat näher als 0,8·r an einem bestehenden
@@ -400,6 +423,7 @@ where
                 // verwerfen, wenn auch ausbalanciert kein sauberer Abstand
                 // entsteht (dann ist er ECHT redundant).
                 if nd < 0.45 * r {
+                    rej[3] += 1;
                     continue; // redundant nah am Bestand
                 }
                 let mut q = cp;
@@ -442,15 +466,18 @@ where
                 if !settled
                     || nearest_dist(&grid, &pts, cell, q) < 0.75 * r
                     || !visible(p, q, r, fg)
-                    || !on_face(q)
+                    || !on_face(q, r)
                 {
+                    rej[4] += 1;
                     continue;
                 }
                 cp = q;
             }
-            // Eigener Spacing-Radius des Kandidaten; Anzeige-U zusätzlich durch
-            // den Kantenabstand beschränkt (Kreis bleibt in der Fläche).
-            let cspace = local_radius(cp, cn, h, opts, fg);
+            // Eigener Spacing-Radius des Kandidaten (Krümmung von der
+            // Trägerfläche); Anzeige-U zusätzlich durch den Kantenabstand
+            // beschränkt (Kreis bleibt in der Fläche).
+            let cspace =
+                local_radius(cp, cn, h, surf_curv(cp).0, opts, fg).min(1.5 * r);
             let cu = cspace.min(brep_dist(cp));
             let j = pts.len();
             pts.push(LPoint { p: cp, sdf: cd, n: cn, u: cu, space: cspace, flag: 1.0 });
@@ -460,6 +487,12 @@ where
                 break;
             }
         }
+    }
+    if std::env::var("LICHEN_DEBUG_GROW").is_ok() {
+        eprintln!(
+            "GROW-REJ sdf={} vis={} face={} redundant={} rebalance={}",
+            rej[0], rej[1], rej[2], rej[3], rej[4]
+        );
     }
     pts.split_off(n_seeds)
 }

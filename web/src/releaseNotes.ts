@@ -24,6 +24,16 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.530",
+    entries: [
+      {
+        kind: "feat",
+        scope: "mesher",
+        text: "Lichen: Zylinder (Mantel + Kappen) im General-Pfad WASSERDICHT (χ=2, aktiver Test). Krümmung fürs Wachstum kommt jetzt von der glatten TRÄGERFLÄCHE statt vom Body-Feld — das Body-∇f maß an B-Rep-Kanten den Knick (Mikro-Spacing-Bänder) bzw. bei kleinem Fenster f32-Rauschen als Krümmung; die ~15-fache Überdichte ist weg (Box 12041→486 Dreiecke bei besserer Qualität, Mesher ~5× schneller). Rand-Seeds vererben ihr echtes Ketten-Spacing mit ≤×1,5-Grading; Fold-Elimination arbeitet seitenweise (auch non-manifolde Mehrfachbelegungen).",
+      },
+    ],
+  },
+  {
     version: "0.6.529",
     entries: [
       {
