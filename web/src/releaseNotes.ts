@@ -24,6 +24,16 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.541",
+    entries: [
+      {
+        kind: "perf",
+        scope: "mesher",
+        text: "Lichen 55× schneller bei feinen Settings (Betreiber-Befund „nicht mal tausend Dreiecke, wo andere Millionen schaffen“): fast-kollineare Umkugel-Kandidaten hatten explodierende Umkreisradien und der Punktfreiheits-Scan iterierte Milliarden Zellen (eine Gyroid-Fläche allein 241 s → 0,2 s; Umkreis > Nachbarschafts-Horizont wird jetzt abgelehnt statt gescannt — nie ein lokales Delaunay-Dreieck). Dazu Kanten-Segment-Spatial-Hash für Abstands- und Vorhang-Tests statt Voll-Scan und radius-beschränkte Nachbarsuche im Wachstum.",
+      },
+    ],
+  },
+  {
     version: "0.6.540",
     entries: [
       {

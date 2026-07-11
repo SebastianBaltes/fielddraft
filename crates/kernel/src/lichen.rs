@@ -292,25 +292,36 @@ fn gkey(p: [f32; 3], cell: f32) -> (i32, i32, i32) {
     ((p[0] / cell).floor() as i32, (p[1] / cell).floor() as i32, (p[2] / cell).floor() as i32)
 }
 
-/// Kleinster euklidischer Abstand von `p` zu einem Punkt in `pts` (Spatial-Hash).
-fn nearest_dist(grid: &HashMap<(i32, i32, i32), Vec<u32>>, pts: &[LPoint], cell: f32, p: [f32; 3]) -> f32 {
-    nearest_pt(grid, pts, cell, p).0
+/// Kleinster Abstand von `p` zu einem Punkt in `pts` INNERHALB `rmax`
+/// (Spatial-Hash, radius-beschränkte Box). Jenseits von `rmax` → MAX.
+fn nearest_dist(
+    grid: &HashMap<(i32, i32, i32), Vec<u32>>,
+    pts: &[LPoint],
+    cell: f32,
+    p: [f32; 3],
+    rmax: f32,
+) -> f32 {
+    nearest_pt(grid, pts, cell, p, rmax).0
 }
 
 /// Wie [`nearest_dist`], liefert zusätzlich das SPACING des nächsten Punkts —
 /// für den symmetrischen Konflikt-Test (ein feiner Kandidat neben groben
-/// Bestandspunkten ist relativ zu DEREN Spacing redundant).
+/// Bestandspunkten ist relativ zu DEREN Spacing redundant). PERF: die Suche
+/// ist auf `rmax` beschränkt — mit feiner Zelle (h/4) skaliert sie mit der
+/// LOKALEN Dichte statt mit ganzen Mikro-Clustern in einer h-Zelle.
 fn nearest_pt(
     grid: &HashMap<(i32, i32, i32), Vec<u32>>,
     pts: &[LPoint],
     cell: f32,
     p: [f32; 3],
+    rmax: f32,
 ) -> (f32, f32) {
     let (kx, ky, kz) = gkey(p, cell);
+    let reach = (rmax / cell).ceil() as i32;
     let mut best = (f32::MAX, 0.0f32);
-    for dx in -1..=1 {
-        for dy in -1..=1 {
-            for dz in -1..=1 {
+    for dx in -reach..=reach {
+        for dy in -reach..=reach {
+            for dz in -reach..=reach {
                 if let Some(v) = grid.get(&(kx + dx, ky + dy, kz + dz)) {
                     for &i in v {
                         let d = dist(pts[i as usize].p, p);
@@ -372,7 +383,7 @@ where
     On: Fn([f32; 3], [f32; 3], f32) -> bool,
     Sc: Fn([f32; 3]) -> (f32, [f32; 3]),
 {
-    let cell = h.max(1e-4);
+    let cell = (0.25 * h).max(1e-4);
     let mut pts: Vec<LPoint> = seeds.to_vec();
     let mut grid: HashMap<(i32, i32, i32), Vec<u32>> = HashMap::new();
     for (i, s) in pts.iter().enumerate() {
@@ -444,8 +455,8 @@ where
                     // mittig und findet Platz. Der symmetrische r_eff-Wächter
                     // (Spacing des nächsten Bestandspunkts, gedeckelt auf
                     // r_full) verhindert das Einnisten neben groben Nachbarn.
-                    let (nd_own, ns_own) = nearest_pt(&grid, &pts, cell, cp);
-                    let (nd_x, ns_x) = nearest_pt(&xgrid, existing, cell, cp);
+                    let (nd_own, ns_own) = nearest_pt(&grid, &pts, cell, cp, r_full);
+                    let (nd_x, ns_x) = nearest_pt(&xgrid, existing, cell, cp, r_full);
                     let (nd, nspace) =
                         if nd_own <= nd_x { (nd_own, ns_own) } else { (nd_x, ns_x) };
                     let r_eff = rr.max(nspace.min(r_full));
@@ -485,9 +496,10 @@ where
                     let (kx, ky, kz) = gkey(q, cell);
                     let mut disp = [0.0f32; 3];
                     let mut conflicts = 0;
-                    for dx in -1..=1 {
-                        for dy in -1..=1 {
-                            for dz in -1..=1 {
+                    let rb_reach = ((0.85 * r) / cell).ceil() as i32;
+                    for dx in -rb_reach..=rb_reach {
+                        for dy in -rb_reach..=rb_reach {
+                            for dz in -rb_reach..=rb_reach {
                                 let Some(v) = grid.get(&(kx + dx, ky + dy, kz + dz)) else {
                                     continue;
                                 };
@@ -517,8 +529,8 @@ where
                     cn = qn;
                 }
                 if !settled
-                    || nearest_dist(&grid, &pts, cell, q)
-                        .min(nearest_dist(&xgrid, existing, cell, q))
+                    || nearest_dist(&grid, &pts, cell, q, r)
+                        .min(nearest_dist(&xgrid, existing, cell, q, r))
                         < 0.75 * r
                     || !visible(p, q, r, fg)
                     || !on_face(p, q, r)

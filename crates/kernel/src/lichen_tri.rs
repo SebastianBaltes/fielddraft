@@ -495,6 +495,14 @@ pub fn triangulate_face_general(
         let dc = sub(pa, centre);
         let r2 = dot(dc, dc);
         let r = r2.sqrt();
+        // PERF-/SINN-DECKEL: fast-kollineare Kandidaten haben explodierende
+        // Umkreisradien — der Punktfreiheits-Scan iterierte dann reach³ mit
+        // riesigem r (Betreiber-Fall: EINE Gyroid-Fläche 241 s). Ein Dreieck
+        // mit Umkreis weit über dem Nachbarschafts-Horizont ist ohnehin nie
+        // ein lokales Delaunay-Dreieck → ablehnen statt scannen.
+        if r > 5.0 * cell {
+            return false;
+        }
         // Punktfreiheit lokal prüfen (Spatial-Hash); Zeugen im Tie-Band sammeln.
         let mut ties: Vec<u32> = Vec::new();
         let (kx, ky, kz) = key(centre);

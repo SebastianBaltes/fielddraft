@@ -663,21 +663,65 @@ impl Kernel {
         // R_BRep (§2.2): echter Punkt-zu-Segment-Abstand zur nächsten BRep-Kante
         // (NICHT nur zum nächsten Abtastpunkt) — so bleibt der U(p)-Kreis stets
         // innerhalb der Fläche und überschreitet nie eine Kante.
+        // PERF: Kanten-Segmente in einen Spatial-Hash (Zelle = h). Der
+        // lineare Scan über ALLE Segmente lief pro Wachstums-Kandidat
+        // mehrfach (brep_dist + Ketten-Vorhang) — bei feinen Settings
+        // zehntausende Segmente × hunderttausende Aufrufe = der größte
+        // Einzelfresser (Betreiber: „andere Verfahren schaffen Millionen
+        // Dreiecke, wir nicht mal tausend").
+        let seg_cell = h.max(1e-3);
+        let seg_key = |p: [f32; 3]| -> (i32, i32, i32) {
+            (
+                (p[0] / seg_cell).floor() as i32,
+                (p[1] / seg_cell).floor() as i32,
+                (p[2] / seg_cell).floor() as i32,
+            )
+        };
+        let mut seg_grid: HashMap<(i32, i32, i32), Vec<u32>> = HashMap::new();
+        for (si, &(a, b)) in edge_segs.iter().enumerate() {
+            let lo = [a[0].min(b[0]), a[1].min(b[1]), a[2].min(b[2])];
+            let hi = [a[0].max(b[0]), a[1].max(b[1]), a[2].max(b[2])];
+            let (k0, k1) = (seg_key(lo), seg_key(hi));
+            for x in k0.0..=k1.0 {
+                for y in k0.1..=k1.1 {
+                    for z in k0.2..=k1.2 {
+                        seg_grid.entry((x, y, z)).or_default().push(si as u32);
+                    }
+                }
+            }
+        }
+        let seg_dist_pt = |p: [f32; 3], si: u32| -> f32 {
+            let (a, b) = edge_segs[si as usize];
+            let ab = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+            let ap = [p[0] - a[0], p[1] - a[1], p[2] - a[2]];
+            let denom = ab[0] * ab[0] + ab[1] * ab[1] + ab[2] * ab[2];
+            let t = if denom > 1e-20 {
+                ((ap[0] * ab[0] + ap[1] * ab[1] + ap[2] * ab[2]) / denom).clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+            let q = [a[0] + ab[0] * t, a[1] + ab[1] * t, a[2] + ab[2] * t];
+            ((p[0] - q[0]).powi(2) + (p[1] - q[1]).powi(2) + (p[2] - q[2]).powi(2)).sqrt()
+        };
+        // Kleinster Segment-Abstand, GEDECKELT auf h: alle Nutzer (U-Kreis-
+        // Deckel, Kanten-Nähe-Checks) interessieren sich nur für Distanzen
+        // unter h — ein ±1-Zellring (Zelle = h) deckt das ab.
         let brep_dist = |p: [f32; 3]| -> f32 {
-            let mut best = f32::INFINITY;
-            for &(a, b) in &edge_segs {
-                let ab = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
-                let ap = [p[0] - a[0], p[1] - a[1], p[2] - a[2]];
-                let denom = ab[0] * ab[0] + ab[1] * ab[1] + ab[2] * ab[2];
-                let t = if denom > 1e-20 {
-                    ((ap[0] * ab[0] + ap[1] * ab[1] + ap[2] * ab[2]) / denom).clamp(0.0, 1.0)
-                } else {
-                    0.0
-                };
-                let q = [a[0] + ab[0] * t, a[1] + ab[1] * t, a[2] + ab[2] * t];
-                let dd = ((p[0] - q[0]).powi(2) + (p[1] - q[1]).powi(2) + (p[2] - q[2]).powi(2)).sqrt();
-                if dd < best {
-                    best = dd;
+            let (kx, ky, kz) = seg_key(p);
+            let mut best = h;
+            for dx in -1..=1 {
+                for dy in -1..=1 {
+                    for dz in -1..=1 {
+                        let Some(v) = seg_grid.get(&(kx + dx, ky + dy, kz + dz)) else {
+                            continue;
+                        };
+                        for &si in v {
+                            let d = seg_dist_pt(p, si);
+                            if d < best {
+                                best = d;
+                            }
+                        }
+                    }
                 }
             }
             best
@@ -792,6 +836,7 @@ impl Kernel {
             out
         };
 
+        let t_setup = std::time::Instant::now();
         // ── Wachstum (§1) pro Fläche, mit harter Kanten-Wand ──
         // Gewachsene Innen-Partikel je Fläche (für den Pro-Fläche-CDT).
         let mut face_interior: Vec<Vec<u32>> = vec![Vec::new(); face_surfs.len()];
@@ -903,23 +948,39 @@ impl Kernel {
                         + (p1[1] - p0[1]).powi(2)
                         + (p1[2] - p0[2]).powi(2))
                     .sqrt();
-                    for &(sa, sb) in &edge_segs {
-                        // Nähe-Kull: Segment-Mitte im Schritt-Umkreis?
-                        let m = [(sa[0] + sb[0]) * 0.5, (sa[1] + sb[1]) * 0.5, (sa[2] + sb[2]) * 0.5];
-                        let dm = ((m[0] - p0[0]).powi(2)
-                            + (m[1] - p0[1]).powi(2)
-                            + (m[2] - p0[2]).powi(2))
-                        .sqrt();
-                        let seg_half = ((sb[0] - sa[0]).powi(2)
-                            + (sb[1] - sa[1]).powi(2)
-                            + (sb[2] - sa[2]).powi(2))
-                        .sqrt()
-                            * 0.5;
-                        if dm > step2 + seg_half + 1e-3 {
-                            continue;
-                        }
-                        if crate::lichen_tri::segments_cross(a2, b2, to2(sa), to2(sb)) {
-                            return false;
+                    // Segment-Spatial-Hash statt Voll-Scan (PERF): der
+                    // Schritt ist ≤ h lang, ±1 Zellring (Zelle = h) genügt.
+                    let (kx, ky, kz) = seg_key(p0);
+                    for dx in -1..=1 {
+                        for dy in -1..=1 {
+                            for dz in -1..=1 {
+                                let Some(v) = seg_grid.get(&(kx + dx, ky + dy, kz + dz)) else {
+                                    continue;
+                                };
+                                for &si in v {
+                                    let (sa, sb) = edge_segs[si as usize];
+                                    let m = [
+                                        (sa[0] + sb[0]) * 0.5,
+                                        (sa[1] + sb[1]) * 0.5,
+                                        (sa[2] + sb[2]) * 0.5,
+                                    ];
+                                    let dm = ((m[0] - p0[0]).powi(2)
+                                        + (m[1] - p0[1]).powi(2)
+                                        + (m[2] - p0[2]).powi(2))
+                                    .sqrt();
+                                    let seg_half = ((sb[0] - sa[0]).powi(2)
+                                        + (sb[1] - sa[1]).powi(2)
+                                        + (sb[2] - sa[2]).powi(2))
+                                    .sqrt()
+                                        * 0.5;
+                                    if dm > step2 + seg_half + 1e-3 {
+                                        continue;
+                                    }
+                                    if crate::lichen_tri::segments_cross(a2, b2, to2(sa), to2(sb)) {
+                                        return false;
+                                    }
+                                }
+                            }
                         }
                     }
                     true
@@ -945,9 +1006,13 @@ impl Kernel {
                 let surf_curv = |q: [f32; 3]| -> (f32, [f32; 3]) {
                     lichen::curvature(q, surf_gradn(q), h, &surf_gradn)
                 };
+                let t_g = std::time::Instant::now();
                 let grown = lichen::grow_surface(
                     &bseeds, &all, h, &opts, &fg, &brep_dist, &on_face, &surf_curv,
                 );
+                if std::env::var("LICHEN_PERF").is_ok() {
+                    eprintln!("PERF grow gf={gf}: {:?} ({} Punkte)", t_g.elapsed(), grown.len());
+                }
                 if std::env::var("LICHEN_DEBUG_GROW").is_ok() {
                     let bad = grown
                         .iter()
@@ -991,6 +1056,9 @@ impl Kernel {
         // Band-Schnitt mit index-geteilter Naht, Pol-Kappen via Ring + Fächer.
         // Torus (doppelt periodisch) und Gyroid (chartlos, F2) bleiben
         // vorerst untrianguliert. ──
+        if std::env::var("LICHEN_PERF").is_ok() {
+            eprintln!("PERF setup+grow gesamt: {:?} ({} Punkte)", t_setup.elapsed(), all.len());
+        }
         let tris = if opts.triangulate && all.len() >= 3 {
             let mut t: Vec<[u32; 3]> = Vec::new();
             // Allgemeiner Pfad (Stern-Konsistenz, chartlos): EIN Code für
@@ -1082,6 +1150,7 @@ impl Kernel {
                     } else {
                         &opts.accept
                     };
+                    let t_t = std::time::Instant::now();
                     let res = crate::lichen_tri::triangulate_face_general(
                         &positions,
                         &nmap,
@@ -1107,6 +1176,12 @@ impl Kernel {
                             std::mem::discriminant(&face_surfs[gf].surface),
                             members.len(), face_interior[gf].len(),
                             res.tris.len(), res.hole_edges
+                        );
+                    }
+                    if std::env::var("LICHEN_PERF").is_ok() {
+                        eprintln!(
+                            "PERF tri gf={gf}: {:?} ({} members, {} tris)",
+                            t_t.elapsed(), members.len(), res.tris.len()
                         );
                     }
                     holes += res.hole_edges;
