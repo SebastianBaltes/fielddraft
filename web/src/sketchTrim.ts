@@ -365,7 +365,9 @@ function dedupeSorted(values: number[]): number[] {
 
 /** Carry forward generic, geometry-independent params (the `construction`
  *  flag today) so a trimmed construction edge stays construction. */
-function carryFlags(params: Record<string, unknown>): Record<string, unknown> {
+export function carryFlags(
+  params: Record<string, unknown>,
+): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   if (params.construction !== undefined) out.construction = params.construction;
   return out;

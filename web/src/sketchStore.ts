@@ -71,7 +71,7 @@ import {
   reeditChamferDistance,
 } from "./sketchChamfer";
 import { extendLine } from "./sketchExtend";
-import { splitCurveAt } from "./sketchSplit";
+import { splitSubCallAt } from "./sketchSplit";
 import { importVectorToSubCalls } from "./importVector";
 import { textToSubCalls, reeditTextGroup, removeTextGroup } from "./sketchText";
 import {
@@ -595,13 +595,13 @@ export class SketchStore {
 
   /**
    * F13: Split — the keep-both sibling of Trim. The curve at
-   * `targetIndex` is cut at `click` into two sub-curves that meet at the
-   * click point; nothing is deleted. The clicked line/arc is replaced in
-   * place by its two pieces (each carrying the target's construction
-   * flag); downstream constraint refs are rewritten by
-   * [`replaceSketchSubCallAt`] and the sketch is re-solved. No-op when
-   * the target isn't a simple line/arc, or the click is at an endpoint /
-   * on a full circle (see sketchSplit.ts). `click` is in sketch mm.
+   * `targetIndex` is cut at `click`; nothing is deleted. Lines/arcs are
+   * replaced by their two pieces; a circle becomes an open 360° arc with
+   * a vertex at the click; a rectangle/polygon flattens with the clicked
+   * edge split (ticket 5f0be545 — see sketchSplit.ts). Replacements
+   * carry the construction flag; downstream constraint refs are
+   * rewritten by [`replaceSketchSubCallAt`] and the sketch is re-solved.
+   * `click` is in sketch mm.
    */
   splitSketchAt(
     targetIndex: number,
@@ -612,22 +612,11 @@ export class SketchStore {
     if (!session.active) return;
     const target = session.subCalls[targetIndex];
     if (!target) return;
-    const cv = curveOfSubCall(target);
-    if (!cv) return; // composites / unsupported kinds: keep v1 simple
 
-    const pieces = splitCurveAt(cv, click);
-    if (!pieces) return;
+    const newCalls = splitSubCallAt(target, click);
+    if (!newCalls) return;
 
-    const carry: Record<string, unknown> =
-      target.params.construction !== undefined
-        ? { construction: target.params.construction }
-        : {};
-    this.updateSketch(
-      reduceReplaceAt(session, targetIndex, [
-        subCallOfCurve(pieces[0], carry),
-        subCallOfCurve(pieces[1], carry),
-      ]),
-    );
+    this.updateSketch(reduceReplaceAt(session, targetIndex, newCalls));
     void solveAndReplace(this);
   }
 

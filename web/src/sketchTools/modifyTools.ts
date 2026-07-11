@@ -10,15 +10,36 @@ import { nearestTrimTarget } from "../sketchTrim";
 import { nearestProjectedEdge } from "../sketchProject";
 import { pickTolMm } from "./toolTypes";
 import { nearestLineSubCall } from "./pickHelpers";
-import type { SketchToolController } from "./toolTypes";
+import { buildDraftSketchState } from "../sketchSession";
+import { hitTestSketchEntity } from "../sketchHitTest";
+import { setHoveredSketchEntity } from "../sketchEntityHoverBridge";
+import type { SketchToolController, ToolContext, ToolPointerEvent } from "./toolTypes";
+
+/** Ticket 1efd4bcb: the single-click edit modes highlight the entity the
+ *  click would edit (amber, like select-mode hover) instead of showing
+ *  the snap-magnetised hover point — the immediate "this piece" feedback
+ *  the ticket asks for. */
+function hoverEditTarget(ctx: ToolContext, ev: ToolPointerEvent): void {
+  const hit = hitTestSketchEntity(
+    buildDraftSketchState(ctx.session.subCalls),
+    ev.raw,
+    pickTolMm(ev.cam),
+  );
+  setHoveredSketchEntity(hit);
+}
 
 // Trim: not a drawing tool — a single click cuts the curve under the
 // cursor at its nearest intersections and drops the picked piece. No
 // drag, no snap, no grid; the raw click decides which segment dies.
 export const trimTool: SketchToolController = {
+  noHoverPoint: true,
   onDown(ctx, ev) {
     ctx.store.trimSketchAt(ev.raw, pickTolMm(ev.cam));
     ctx.requestRedraw();
+  },
+  onHover: hoverEditTarget,
+  onDeactivate() {
+    setHoveredSketchEntity(null);
   },
 };
 
@@ -27,11 +48,16 @@ export const trimTool: SketchToolController = {
 // cursor and cuts it into two pieces meeting at the click point; both
 // halves survive (see store.splitSketchAt / sketchSplit.ts).
 export const splitTool: SketchToolController = {
+  noHoverPoint: true,
   onDown(ctx, ev) {
     const tolMm = pickTolMm(ev.cam);
     const pick = nearestTrimTarget(ctx.session.subCalls, ev.raw, tolMm);
     if (pick !== null) ctx.store.splitSketchAt(pick, ev.raw, tolMm);
     ctx.requestRedraw();
+  },
+  onHover: hoverEditTarget,
+  onDeactivate() {
+    setHoveredSketchEntity(null);
   },
 };
 

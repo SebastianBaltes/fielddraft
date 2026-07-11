@@ -24,6 +24,29 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.535",
+    entries: [
+      {
+        kind: "feat",
+        scope: "sketch",
+        text: "Split funktioniert jetzt auch auf Kreisen (ein Klick setzt einen Vertex — der Kreis wird zum offenen 360°-Arc), Rechtecken und Polygonen (geklickte Kante wird geteilt, Composite zerfällt in Linien)",
+        tickets: ["5f0be545"],
+      },
+      {
+        kind: "feat",
+        scope: "sketch",
+        text: "Trim/Split highlighten das Ziel unter dem Cursor sofort orange statt eines hüpfenden Snap-Punkts",
+        tickets: ["1efd4bcb"],
+      },
+      {
+        kind: "feat",
+        scope: "sketch",
+        text: "Eine im Outliner selektierte Default-Plane (Top/Front/Right) belegt beim Öffnen des Sketch-Tools die Sketch-Plane vor",
+        tickets: ["90f9b34a"],
+      },
+    ],
+  },
+  {
     version: "0.6.534",
     entries: [
       {

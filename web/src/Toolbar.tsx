@@ -12,6 +12,7 @@ import { createFdApi } from "./api/fd";
 import { buildDefaultDefinition } from "./widgets/schema";
 import { FEATURE_TYPE_META } from "./widgets/FeatureDialog";
 import { elementQueryString } from "./elementQuery";
+import { DATUM_PLANE_QUERIES } from "./queryLabels";
 import { buildDraftSketchState } from "./sketchSession";
 import {
   applicableConstraints,
@@ -760,14 +761,19 @@ export function Toolbar({ store, state }: ToolbarProps) {
 
   // Ticket yx6a: the Sketch button opens the session IMMEDIATELY — no
   // face-pick mode first. A pre-selected face becomes the sketch plane
-  // (Onshape convention); otherwise the session starts on XY and the
-  // plane stays editable in the session panel's query picker.
+  // (Onshape convention); a pre-selected default-geometry plane
+  // (Top/Front/Right, ticket 90f9b34a) likewise. Otherwise the session
+  // starts on XY and the plane stays editable in the session panel's
+  // query picker.
   const handleSketchEnter = () => {
     const el = state.selectedElement;
+    const datumQuery = state.selectedDatum
+      ? DATUM_PLANE_QUERIES[state.selectedDatum]
+      : undefined;
     const planeQuery =
       el && el.kind === "face"
         ? `qFace(${el.idHash})`
-        : DEFAULT_SKETCH_PLANE_QUERY;
+        : (datumQuery ?? DEFAULT_SKETCH_PLANE_QUERY);
     store.enterSketch(planeQuery);
   };
 

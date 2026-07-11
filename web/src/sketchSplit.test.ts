@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { splitCurveAt } from "./sketchSplit";
+import { splitCurveAt, splitSubCallAt } from "./sketchSplit";
 import type { Curve, Vec2 } from "./sketchTrim";
 
 const close = (a: number, b: number, eps = 1e-9) => Math.abs(a - b) < eps;
@@ -119,5 +119,59 @@ describe("splitCurveAt — unsupported", () => {
   it("returns null for a full circle", () => {
     const circle: Curve = { kind: "circle", c: [0, 0], r: 5 };
     expect(splitCurveAt(circle, [5, 0])).toBeNull();
+  });
+});
+
+describe("splitSubCallAt — circles and composites (ticket 5f0be545)", () => {
+  it("splits a circle into ONE open 360° arc with the vertex at the click", () => {
+    const out = splitSubCallAt(
+      { type: "sketch_circle", params: { center: [0, 0], radius: 10 } },
+      [10, 0],
+    );
+    expect(out).toHaveLength(1);
+    const p = out![0].params as Record<string, number | number[]>;
+    expect(out![0].type).toBe("sketch_arc");
+    expect(p.center).toEqual([0, 0]);
+    expect(p.radius as number).toBeCloseTo(10, 6);
+    expect(p.start_angle as number).toBeCloseTo(0, 6);
+    expect(p.sweep_angle as number).toBeCloseTo(Math.PI * 2, 6);
+  });
+
+  it("splits a rectangle edge and flattens the composite into lines", () => {
+    const out = splitSubCallAt(
+      {
+        type: "sketch_rectangle",
+        params: { corner_a: [0, 0], corner_b: [10, 10] },
+      },
+      [5, 0], // middle of the bottom edge
+    );
+    // 3 surviving edges + the clicked edge in 2 pieces = 5 lines.
+    expect(out).toHaveLength(5);
+    expect(out!.every((c) => c.type === "sketch_line")).toBe(true);
+    const pieces = out!.filter((c) => {
+      const st = c.params.start as number[];
+      const en = c.params.end as number[];
+      return st[1] === 0 && en[1] === 0;
+    });
+    expect(pieces).toHaveLength(2);
+  });
+
+  it("still splits a plain line (delegates to splitCurveAt)", () => {
+    const out = splitSubCallAt(
+      { type: "sketch_line", params: { start: [0, 0], end: [10, 0] } },
+      [4, 0],
+    );
+    expect(out).toHaveLength(2);
+  });
+
+  it("carries the construction flag onto every replacement", () => {
+    const out = splitSubCallAt(
+      {
+        type: "sketch_circle",
+        params: { center: [0, 0], radius: 5, construction: true },
+      },
+      [5, 0],
+    );
+    expect(out![0].params.construction).toBe(true);
   });
 });
