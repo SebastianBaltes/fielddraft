@@ -24,6 +24,16 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.515",
+    entries: [
+      {
+        kind: "feat",
+        scope: "render",
+        text: "Der Z-Puffer-Offset ist jetzt direkt einstellbar: Bei „B-Rep edges: Visible only“ erscheint in den Settings das Feld „Z-Offset (Depth-Bias)“ (Default 2, 0 = aus). Der Wert steuert, wie stark Kanten und Debug-Overlays im Tiefen-Test zur Kamera gezogen werden (polygonOffset: Factor = −Wert, Units = −2·Wert) — vorher war der Bias fest auf 2 kodiert. Wirkt live auf B-Rep-Kanten und Lichen-Overlays.",
+      },
+    ],
+  },
+  {
     version: "0.6.514",
     entries: [
       {

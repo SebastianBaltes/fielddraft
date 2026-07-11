@@ -64,9 +64,13 @@ const EDGE_PICK_PX = 8;
 export function BRepEdgeOverlay({
   ndc,
   mode,
+  depthBias = 2,
 }: {
   ndc: { x: number; y: number; active: boolean };
   mode: BRepEdgeMode;
+  /** Depth-Bias-Stärke im "visible"-Modus (Setting "Z-Offset"):
+   *  polygonOffsetFactor = −bias, Units = −2·bias. 0 = kein Bias. */
+  depthBias?: number;
 }) {
   const { store, state } = useKernelStore();
   const camera = useThree((s) => s.camera);
@@ -143,6 +147,7 @@ export function BRepEdgeOverlay({
   // depth test against rasterized geometry (SDF-plane crescent, ticket iw6f).
   useEffect(() => {
     const depthTest = mode === "visible";
+    const wantOffset = depthTest && depthBias > 0;
     for (const m of [
       baseMaterialRef.current,
       hoverMaterialRef.current,
@@ -153,15 +158,19 @@ export function BRepEdgeOverlay({
         m.depthTest = depthTest;
         m.needsUpdate = true;
       }
-      if (depthTest && !m.polygonOffset) {
-        // Leichter Bias Richtung Kamera, damit koplanare Kanten nicht z-fighten.
-        m.polygonOffset = true;
-        m.polygonOffsetFactor = -2;
-        m.polygonOffsetUnits = -4;
+      // Bias Richtung Kamera, damit koplanare Kanten nicht z-fighten; Stärke
+      // kommt aus dem Setting (direkte Eingabe neben "Visible only").
+      if (
+        m.polygonOffset !== wantOffset ||
+        (wantOffset && m.polygonOffsetFactor !== -depthBias)
+      ) {
+        m.polygonOffset = wantOffset;
+        m.polygonOffsetFactor = -depthBias;
+        m.polygonOffsetUnits = -2 * depthBias;
         m.needsUpdate = true;
       }
     }
-  }, [mode]);
+  }, [mode, depthBias]);
 
   // Body fingerprint (count + per-body id.version) — the edge cache re-reads
   // exactly when, and only when, the bodies actually change.

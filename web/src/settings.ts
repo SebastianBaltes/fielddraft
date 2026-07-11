@@ -21,6 +21,7 @@ const LS_UNITS = "fielddraft.units";
 const LS_THEME = "fielddraft.theme";
 const LS_RENDER_MODE = "fielddraft.renderMode";
 const LS_BREP_EDGE_MODE = "fielddraft.brepEdgeMode";
+const LS_OVERLAY_DEPTH_BIAS = "fielddraft.overlayDepthBias";
 const LS_MESH_ALGORITHM = "fielddraft.meshAlgorithm";
 const LS_FRAME_LOOP = "fielddraft.frameLoop";
 const LS_PARAMETRIC_WEAVE = "fielddraft.parametricWeave";
@@ -220,6 +221,11 @@ export interface SettingsState {
   renderMode: RenderMode;
   meshAlgorithm: MeshAlgorithm;
   brepEdgeMode: BRepEdgeMode;
+  /** Depth-Bias-Stärke im "visible"-Modus: zieht Kanten/Overlay-Fragmente im
+   * Z-Buffer zur Kamera, damit Geometrie exakt AUF einer Fläche nicht
+   * z-fightet (polygonOffsetFactor = −bias, Units = −2·bias; WebGPU:
+   * depthBias). 0 = aus; wirkungslos außerhalb von "visible". */
+  overlayDepthBias: number;
   frameLoop: FrameLoopMode;
   /** Milestone-1 parametric weaving: exact analytic B-Rep for pure grundforms
    * via CSG branch-pair seeds, skipping the octree. On by default — resolves
@@ -280,6 +286,14 @@ export interface SettingsState {
    * triggers still fire). Because P1/P2 externalize meshes to blobs, the doc
    * PATCH is small, so frequent saves are cheap. */
   cloudSyncIntervalMin: number;
+}
+
+export const DEFAULT_OVERLAY_DEPTH_BIAS = 2;
+
+function clampOverlayDepthBias(v: unknown): number {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return DEFAULT_OVERLAY_DEPTH_BIAS;
+  return Math.min(100, Math.max(0, n));
 }
 
 export const DEFAULT_AUTOSAVE_DEBOUNCE_SEC = 5;
@@ -371,6 +385,7 @@ const BOOT_SETTING_KEYS: (keyof SettingsState)[] = [
   "renderMode",
   "meshAlgorithm",
   "brepEdgeMode",
+  "overlayDepthBias",
   "frameLoop",
   "parametricWeave",
   "dragBrepRecompute",
@@ -407,6 +422,7 @@ export function loadSettings(): SettingsState {
   let renderMode: RenderMode = "sdf-deferred";
   let meshAlgorithm: MeshAlgorithm = "mdc";
   let brepEdgeMode: BRepEdgeMode = "xray";
+  let overlayDepthBias = DEFAULT_OVERLAY_DEPTH_BIAS;
   let frameLoop: FrameLoopMode = "demand";
   let parametricWeave = true;
   let dragBrepRecompute = false;
@@ -433,6 +449,9 @@ export function loadSettings(): SettingsState {
     const rawBrepEdge = localStorage.getItem(LS_BREP_EDGE_MODE);
     if (rawBrepEdge && VALID_BREP_EDGE_MODES.includes(rawBrepEdge as BRepEdgeMode))
       brepEdgeMode = rawBrepEdge as BRepEdgeMode;
+    const rawBias = localStorage.getItem(LS_OVERLAY_DEPTH_BIAS);
+    if (rawBias !== null && Number.isFinite(Number(rawBias)))
+      overlayDepthBias = clampOverlayDepthBias(Number(rawBias));
     const rawFrameLoop = localStorage.getItem(LS_FRAME_LOOP);
     if (rawFrameLoop === "always" || rawFrameLoop === "demand")
       frameLoop = rawFrameLoop;
@@ -460,7 +479,7 @@ export function loadSettings(): SettingsState {
   } catch {
     // localStorage may be unavailable
   }
-  const loaded: SettingsState = { compact, units, theme, renderMode, meshAlgorithm, brepEdgeMode, frameLoop, parametricWeave, dragBrepRecompute, liveExtrudeDrag, showEdgePoints, showOctreeCells, screenSpaceCsg, perspective, controlsPreset, autoReload, autosaveDebounceSec, cloudSyncIntervalMin };
+  const loaded: SettingsState = { compact, units, theme, renderMode, meshAlgorithm, brepEdgeMode, overlayDepthBias, frameLoop, parametricWeave, dragBrepRecompute, liveExtrudeDrag, showEdgePoints, showOctreeCells, screenSpaceCsg, perspective, controlsPreset, autoReload, autosaveDebounceSec, cloudSyncIntervalMin };
   if (bootOverride) {
     const merged = { ...loaded, ...bootOverride };
     bootOverride = null; // one-shot: only the first read (React mount) honors it
@@ -490,6 +509,7 @@ const LS_KEY_BY_SETTING: Partial<Record<keyof SettingsState, string>> = {
   renderMode: LS_RENDER_MODE,
   meshAlgorithm: LS_MESH_ALGORITHM,
   brepEdgeMode: LS_BREP_EDGE_MODE,
+  overlayDepthBias: LS_OVERLAY_DEPTH_BIAS,
   frameLoop: LS_FRAME_LOOP,
   parametricWeave: LS_PARAMETRIC_WEAVE,
   dragBrepRecompute: LS_DRAG_BREP_RECOMPUTE,
@@ -511,6 +531,9 @@ export function updateSetting<K extends keyof SettingsState>(
   key: K,
   value: SettingsState[K],
 ): SettingsState {
+  if (key === "overlayDepthBias") {
+    value = clampOverlayDepthBias(value) as SettingsState[K];
+  }
   if (key === "autosaveDebounceSec") {
     value = clampAutosaveDebounceSec(value) as SettingsState[K];
     autosaveDebounceSecCache = value as number;

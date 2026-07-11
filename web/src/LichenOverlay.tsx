@@ -120,7 +120,14 @@ function rescaleBoxes(
   pd.mesh.instanceMatrix.needsUpdate = true;
 }
 
-export function LichenOverlay({ occluded = false }: { occluded?: boolean } = {}) {
+export function LichenOverlay({
+  occluded = false,
+  depthBias = 2,
+}: {
+  occluded?: boolean;
+  /** Depth-Bias-Stärke im occluded-Modus (Setting "Z-Offset"). */
+  depthBias?: number;
+} = {}) {
   const { store, state } = useKernelStore();
   const params = useSyncExternalStore(subscribeLichenDebug, getLichenDebug);
   const invalidate = useThree((s) => s.invalidate);
@@ -185,9 +192,9 @@ export function LichenOverlay({ occluded = false }: { occluded?: boolean } = {})
     const applyOcclusion = <M extends THREE.Material>(m: M): M => {
       if (occluded) {
         m.depthTest = true;
-        m.polygonOffset = true;
-        m.polygonOffsetFactor = -2;
-        m.polygonOffsetUnits = -4;
+        m.polygonOffset = depthBias > 0;
+        m.polygonOffsetFactor = -depthBias;
+        m.polygonOffsetUnits = -2 * depthBias;
       } else {
         m.depthTest = false;
       }
@@ -554,7 +561,7 @@ export function LichenOverlay({ occluded = false }: { occluded?: boolean } = {})
     }
 
     invalidate();
-  }, [params, store, brepVersion, gl, circle, invalidate, occluded]);
+  }, [params, store, brepVersion, gl, circle, invalidate, occluded, depthBias]);
 
   // Keep the point boxes at a constant PIXEL size on zoom/orbit (mirrors the
   // sketch-dot approach, but driven here so it works in this overlay pass).

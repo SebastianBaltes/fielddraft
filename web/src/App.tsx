@@ -821,6 +821,7 @@ function AppShell({ account }: { account: UseAccount }) {
             <Viewport
               renderMode={settings.renderMode}
               brepEdgeMode={settings.brepEdgeMode}
+              overlayDepthBias={settings.overlayDepthBias}
               frameLoop={settings.frameLoop}
               showEdgePoints={settings.showEdgePoints}
               showOctreeCells={settings.showOctreeCells}

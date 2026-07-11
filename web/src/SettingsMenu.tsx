@@ -1007,6 +1007,33 @@ function SettingsDialog({
                   </select>
                 </div>
 
+                {settings.brepEdgeMode === "visible" && (
+                  <div className="setting-row" data-testid="setting-overlay-depth-bias">
+                    <span
+                      className="setting-label"
+                      title={
+                        "Z-Puffer-Offset für Kanten und Debug-Overlays im " +
+                        "Visible-only-Modus: zieht ihre Fragmente im Tiefen-Test " +
+                        "zur Kamera, damit Geometrie exakt AUF einer Fläche nicht " +
+                        "z-fightet (polygonOffset/depthBias: Factor = −Wert, " +
+                        "Units = −2·Wert). Größer = setzt sich stärker gegen die " +
+                        "Fläche durch, scheint aber früher durch dünne Wände; " +
+                        "0 = aus."
+                      }
+                    >
+                      Z-Offset (Depth-Bias)
+                    </span>
+                    <NumberInput
+                      className="setting-number"
+                      value={settings.overlayDepthBias}
+                      min={0}
+                      max={100}
+                      onChange={(v) => set("overlayDepthBias", v)}
+                      data-testid="setting-overlay-depth-bias-input"
+                    />
+                  </div>
+                )}
+
                 <div className="setting-row" data-testid="setting-frame-loop">
                   <span className="setting-label">Render loop</span>
                   <div className="segmented">
