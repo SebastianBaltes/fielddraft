@@ -58,10 +58,16 @@ pub struct LichenOptions {
     /// gezählt, nicht übermalt).
     pub general_tri: bool,
     /// Akzeptanz-Bedingung des allgemeinen Pfads (schaltbar, Betreiber-Wunsch
-    /// 2026-07-11): `"vote"` = Stern-Konsens (Dreieck in allen 3 Sternen),
-    /// `"gabriel"` = Umkugel-Leere mit deterministischem Fächer-Tie-Break,
-    /// `"hybrid"` = Konsens ODER Umkugel.
+    /// 2026-07-11): `"auto"` (Default) = pro Fläche nach Trägertyp — doppelt
+    /// gekrümmt → Umkugel, planar/abwickelbar → Stern-Konsens; `"vote"` =
+    /// Stern-Konsens (Dreieck in allen 3 Sternen), `"gabriel"` = Umkugel-
+    /// Leere mit deterministischem Fächer-Tie-Break, `"hybrid"` = Konsens
+    /// ODER Umkugel.
     pub accept: String,
+    /// Loch-Füller des General-Pfads (Fallback NACH der Diagnose). Aus =
+    /// der BASIS-Algorithmus wird pur gemessen (Betreiber-Wunsch: der
+    /// Kern muss auch ohne Fallbacks bestehen).
+    pub fill_holes: bool,
 }
 
 impl Default for LichenOptions {
@@ -76,7 +82,8 @@ impl Default for LichenOptions {
             max_points: 20000,
             triangulate: true,
             general_tri: false,
-            accept: "vote".into(),
+            accept: "auto".into(),
+            fill_holes: true,
         }
     }
 }

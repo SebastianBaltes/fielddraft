@@ -173,6 +173,7 @@ export function LichenOverlay({
         maxPoints: params.maxPoints,
         generalTri: params.generalTri,
         accept: params.accept,
+        fillHoles: params.fillHoles,
       }),
     );
     const total = data.length >= 3 ? data[0] : 0;

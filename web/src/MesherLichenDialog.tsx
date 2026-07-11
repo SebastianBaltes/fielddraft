@@ -51,8 +51,10 @@ interface LichenSettings {
   maxPoints: number;
   /** Allgemeine (chartlose) Stern-Konsistenz-Triangulierung statt Chart-CDT. */
   generalTri: boolean;
-  /** Akzeptanz des General-Pfads: Stern-Konsens / Umkugel / Hybrid. */
-  accept: "vote" | "gabriel" | "hybrid";
+  /** Akzeptanz des General-Pfads: Auto / Stern-Konsens / Umkugel / Hybrid. */
+  accept: "auto" | "vote" | "gabriel" | "hybrid";
+  /** Loch-Füller des General-Pfads (aus = Basis-Algorithmus pur). */
+  fillHoles: boolean;
   partOpacity: number;
   strokeWidth: number;
   /** Draw the U(p) reach circle in the tangent plane at each point. */
@@ -78,7 +80,8 @@ const DEFAULTS: LichenSettings = {
   minEdgeSpacing: 0.01,
   maxPoints: 50000,
   generalTri: false,
-  accept: "vote",
+  accept: "auto",
+  fillHoles: true,
   partOpacity: 0.4,
   strokeWidth: 2,
   showCircles: true,
@@ -116,7 +119,10 @@ function loadSettings(): LichenSettings {
       ),
       generalTri: p.generalTri === true,
       accept:
-        p.accept === "gabriel" || p.accept === "hybrid" ? p.accept : "vote",
+        p.accept === "vote" || p.accept === "gabriel" || p.accept === "hybrid"
+          ? p.accept
+          : "auto",
+      fillHoles: p.fillHoles === undefined ? DEFAULTS.fillHoles : p.fillHoles === true,
       partOpacity: clampNum(p.partOpacity, 0, 1, DEFAULTS.partOpacity),
       strokeWidth: clampNum(p.strokeWidth, 0.5, 12, DEFAULTS.strokeWidth),
       showCircles: p.showCircles === undefined ? DEFAULTS.showCircles : p.showCircles === true,
@@ -146,6 +152,7 @@ function lichenParams(s: LichenSettings): LichenDebug {
     maxPoints: s.maxPoints,
     generalTri: s.generalTri,
     accept: s.accept,
+    fillHoles: s.fillHoles,
     partOpacity: s.partOpacity,
     strokeWidth: s.strokeWidth,
     showCircles: s.showCircles,
@@ -171,6 +178,7 @@ export function MesherLichenDialog({ onClose }: { onClose: () => void }) {
   const [maxPoints, setMaxPoints] = useState(initial.maxPoints);
   const [generalTri, setGeneralTri] = useState(initial.generalTri);
   const [accept, setAccept] = useState(initial.accept);
+  const [fillHoles, setFillHoles] = useState(initial.fillHoles);
   const [partOpacity, setPartOpacity] = useState(initial.partOpacity);
   const [strokeWidth, setStrokeWidth] = useState(initial.strokeWidth);
   const [showCircles, setShowCircles] = useState(initial.showCircles);
@@ -194,6 +202,7 @@ export function MesherLichenDialog({ onClose }: { onClose: () => void }) {
       maxPoints,
       generalTri,
       accept,
+      fillHoles,
       partOpacity,
       strokeWidth,
       showCircles,
@@ -209,7 +218,7 @@ export function MesherLichenDialog({ onClose }: { onClose: () => void }) {
     } catch {
       // no localStorage (tests) — non-persistent is fine
     }
-  }, [targetEdgeLength, grow, curvAngleDeg, useReach, reachTol, minEdgeSpacing, maxPoints, generalTri, accept, partOpacity, strokeWidth, showCircles, showPoints, showTriangles, pointSize, showNormals, normalLength]);
+  }, [targetEdgeLength, grow, curvAngleDeg, useReach, reachTol, minEdgeSpacing, maxPoints, generalTri, accept, fillHoles, partOpacity, strokeWidth, showCircles, showPoints, showTriangles, pointSize, showNormals, normalLength]);
   useEffect(() => () => setLichenDebug(null), []);
 
   useEffect(() => {
@@ -473,13 +482,41 @@ export function MesherLichenDialog({ onClose }: { onClose: () => void }) {
               data-testid="mesher-lichen-accept"
               value={accept}
               onChange={(e) =>
-                setAccept(e.currentTarget.value as "vote" | "gabriel" | "hybrid")
+                setAccept(
+                  e.currentTarget.value as "auto" | "vote" | "gabriel" | "hybrid",
+                )
               }
             >
+              <option value="auto">Auto (Trägertyp)</option>
               <option value="vote">Stern-Konsens</option>
               <option value="gabriel">Umkugel (Gabriel)</option>
               <option value="hybrid">Hybrid</option>
             </select>
+          </div>
+        </div>
+      )}
+
+      {generalTri && (
+        <div className="vec-row">
+          <label
+            title={
+              "Loch-Füller des General-Pfads: einfache Defekt-Loops werden " +
+              "nach der Diagnose per CDT geschlossen. AUS = der Basis-" +
+              "Algorithmus wird pur gemessen (Löcher bleiben sichtbar/rot)."
+            }
+          >
+            Loch-Füller
+          </label>
+          <div className="fields">
+            <label className="checkbox">
+              <input
+                type="checkbox"
+                aria-label="Loch-Füller"
+                data-testid="mesher-lichen-fill-holes"
+                checked={fillHoles}
+                onChange={(e) => setFillHoles(e.currentTarget.checked)}
+              />
+            </label>
           </div>
         </div>
       )}

@@ -24,6 +24,16 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.527",
+    entries: [
+      {
+        kind: "feat",
+        scope: "mesher",
+        text: "Lichen General-Tri: freie Kugeln sind jetzt WASSERDICHT (χ=2) — ohne Rand-Topologie, ohne Loch-Füller: Feld-Streuung besät Flächen ohne Rand-Seeds (Gitter + skalen-korrekte Newton-Projektion), und die Umkugel-Akzeptanz trägt den doppelt gekrümmten Fall. Neuer Akzeptanz-Modus „Auto“ (Default): pro Fläche nach Trägertyp — doppelt gekrümmt → Umkugel, planar/abwickelbar → Stern-Konsens (Demo: 165→153 offene Kanten). Loch-Füller im Dialog abschaltbar, um den Basis-Algorithmus pur zu messen.",
+      },
+    ],
+  },
+  {
     version: "0.6.526",
     entries: [
       {

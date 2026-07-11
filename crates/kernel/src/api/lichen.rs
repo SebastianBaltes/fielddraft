@@ -77,8 +77,6 @@ impl Kernel {
         }
         let mut all: Vec<LPoint> = Vec::new();
         let mut point_faces: Vec<Vec<(u32, [f32; 3])>> = Vec::new();
-        // Streu-Seeds verwaister Flächen (F2a): gf → globale Punkt-Indizes.
-        let mut face_extra_seeds: HashMap<u32, Vec<u32>> = HashMap::new();
         let mut local_pos: Vec<[f32; 3]> = Vec::new();
         let mut edge_segs: Vec<([f32; 3], [f32; 3])> = Vec::new();
         let mut face_surfs: Vec<FaceSurf> = Vec::new();
@@ -598,9 +596,10 @@ impl Kernel {
                                         continue;
                                     }
                                     scatter.push((p, normal_at(p)));
-                                    if scatter.len() >= 4000 {
-                                        break 'grid;
-                                    }
+                                    // Existenz-Probe genügt — die eigentlichen
+                                    // Seeds streut der Wachstums-Pass für ALLE
+                                    // Flächen ohne Rand-Seeds einheitlich.
+                                    break 'grid;
                                 }
                             }
                         }
@@ -625,14 +624,6 @@ impl Kernel {
                             point_faces[gidx as usize].push((gf, nw));
                         }
                     }
-                }
-                for &(p, nrm) in &scatter {
-                    let idx = all.len() as u32;
-                    let (d, _) = fg(p);
-                    all.push(LPoint { p, sdf: d, n: nrm, u: h, space: h, flag: 1.0 });
-                    point_faces.push(vec![(gf, nrm)]);
-                    local_pos.push([0.0; 3]);
-                    face_extra_seeds.entry(gf).or_default().push(idx);
                 }
                 face_surfs.push(FaceSurf {
                     surface: hsurf.clone(),
@@ -684,14 +675,118 @@ impl Kernel {
             best
         };
 
+        // ── FELD-STREUUNG für Flächen ohne Rand-Seeds (Betreiber-Punkt:
+        // der Basis-Algorithmus muss OHNE Fallbacks und ohne Rand-Topologie
+        // funktionieren): geschlossene Träger (freie Kugel/Torus/Gyroid)
+        // und loop-lose Orphan-Flächen bekommen Seeds per Gitter über die
+        // Szenen-Hülle + Newton-Projektion auf die Trägerfläche. Behalten
+        // wird nur, was AUF dem Body liegt (|f|≈0) UND in der eigenen
+        // face_of-Region. Newton skalen-korrekt: der Surface-SDF lebt im
+        // lokalen Frame, der Welt-Schritt ist um die Placement-/Transform-
+        // Skala zu strecken (Mini-Kugel: scale 0.02!). ──
+        let scene_bb = {
+            let mut bb = crate::csg::Aabb::EMPTY;
+            for &bi in &active {
+                let b = bodies[bi].aabb();
+                if b.max[0] > b.min[0] {
+                    for a in 0..3 {
+                        bb.min[a] = bb.min[a].min(b.min[a]);
+                        bb.max[a] = bb.max[a].max(b.max[a]);
+                    }
+                }
+            }
+            // Gyroid-Leafs haben EMPTY-AABB (unendlich) — Punkt-Hülle als
+            // Ergänzung, damit die Hülle nie leer ist.
+            for lp in &all {
+                for a in 0..3 {
+                    bb.min[a] = bb.min[a].min(lp.p[a] - 2.0 * h);
+                    bb.max[a] = bb.max[a].max(lp.p[a] + 2.0 * h);
+                }
+            }
+            bb
+        };
+        let scatter_face = |gf: u32| -> Vec<([f32; 3], [f32; 3])> {
+            let fs = &face_surfs[gf as usize];
+            let total_scale =
+                (fs.placement.scale[0] * fs.transform.scale[0]).abs().max(1e-6);
+            let surf_normal = |p_world: [f32; 3]| -> [f32; 3] {
+                let pl = crate::world_to_local(&fs.placement, p_world);
+                let ps = crate::world_to_local(&fs.transform, pl);
+                let e = 1e-3f32;
+                let sd = |q: [f32; 3]| crate::csg::sdf_halfspace(&fs.surface, q);
+                let g = [
+                    sd([ps[0] + e, ps[1], ps[2]]) - sd([ps[0] - e, ps[1], ps[2]]),
+                    sd([ps[0], ps[1] + e, ps[2]]) - sd([ps[0], ps[1], ps[2]]),
+                    sd([ps[0], ps[1], ps[2] + e]) - sd([ps[0], ps[1], ps[2] - e]),
+                ];
+                let gl = crate::quat_rotate(fs.transform.rotation, g);
+                lichen::unit(crate::quat_rotate(fs.placement.rotation, gl))
+            };
+            let mut out: Vec<([f32; 3], [f32; 3])> = Vec::new();
+            let bb = scene_bb;
+            let ext = (bb.max[0] - bb.min[0])
+                .max(bb.max[1] - bb.min[1])
+                .max(bb.max[2] - bb.min[2]);
+            if !(ext > 0.0) || !ext.is_finite() {
+                return out;
+            }
+            let step = (0.4 * h).max(ext / 64.0);
+            let n = [
+                ((bb.max[0] - bb.min[0]) / step).ceil() as i32 + 1,
+                ((bb.max[1] - bb.min[1]) / step).ceil() as i32 + 1,
+                ((bb.max[2] - bb.min[2]) / step).ceil() as i32 + 1,
+            ];
+            'grid: for ix in 0..n[0] {
+                for iy in 0..n[1] {
+                    for iz in 0..n[2] {
+                        let mut p = [
+                            bb.min[0] + ix as f32 * step,
+                            bb.min[1] + iy as f32 * step,
+                            bb.min[2] + iz as f32 * step,
+                        ];
+                        let mut d = f32::MAX;
+                        for _ in 0..12 {
+                            let pl = crate::world_to_local(&fs.placement, p);
+                            let ps = crate::world_to_local(&fs.transform, pl);
+                            d = crate::csg::sdf_halfspace(&fs.surface, ps);
+                            if d.abs() * total_scale < 1e-3 {
+                                break;
+                            }
+                            let nrm = surf_normal(p);
+                            let w = d * total_scale;
+                            p = [p[0] - w * nrm[0], p[1] - w * nrm[1], p[2] - w * nrm[2]];
+                        }
+                        if d.abs() * total_scale > 0.05 {
+                            continue;
+                        }
+                        if fg(p).0.abs() > 0.05 * h {
+                            continue;
+                        }
+                        if face_of(p) != Some(gf) {
+                            continue;
+                        }
+                        let min_d2 = (0.7 * h.min(ext / 8.0)) * (0.7 * h.min(ext / 8.0));
+                        if out.iter().any(|(q, _)| {
+                            let dx = q[0] - p[0];
+                            let dy = q[1] - p[1];
+                            let dz = q[2] - p[2];
+                            dx * dx + dy * dy + dz * dz < min_d2
+                        }) {
+                            continue;
+                        }
+                        out.push((p, surf_normal(p)));
+                        if out.len() >= 4000 {
+                            break 'grid;
+                        }
+                    }
+                }
+            }
+            out
+        };
+
         // ── Wachstum (§1) pro Fläche, mit harter Kanten-Wand ──
         // Gewachsene Innen-Partikel je Fläche (für den Pro-Fläche-CDT).
         let mut face_interior: Vec<Vec<u32>> = vec![Vec::new(); face_surfs.len()];
-        // Streu-Seeds verwaister Flächen zählen als Innen-Punkte (Mitglieder
-        // der Pro-Fläche-Triangulierung, auch bei grow=false).
-        for (&gf, idxs) in &face_extra_seeds {
-            face_interior[gf as usize].extend(idxs.iter().copied());
-        }
         if opts.grow {
             let n_faces = face_surfs.len() as u32;
             let gf_normal = |pf: &[(u32, [f32; 3])], gf: u32| -> [f32; 3] {
@@ -718,9 +813,16 @@ impl Kernel {
                         });
                     }
                 }
-                // Streu-Seeds kettenloser verwaister Flächen (F2a).
-                if let Some(extra) = face_extra_seeds.get(&gf) {
-                    for &idx in extra {
+                // Flächen ohne Rand-Seeds (geschlossene Träger, loop-lose
+                // Orphans): Feld-Streuung liefert die Start-Punkte.
+                if bseeds.is_empty() {
+                    for (p, nrm) in scatter_face(gf) {
+                        let idx = all.len() as u32;
+                        let (d, _) = fg(p);
+                        all.push(LPoint { p, sdf: d, n: nrm, u: h, space: h, flag: 1.0 });
+                        point_faces.push(vec![(gf, nrm)]);
+                        local_pos.push([0.0; 3]);
+                        face_interior[gf as usize].push(idx);
                         bseeds.push(all[idx as usize]);
                     }
                 }
@@ -815,6 +917,25 @@ impl Kernel {
                         continue;
                     }
                     let own = |p: [f32; 3]| face_of(p) == Some(gf as u32);
+                    // "auto" (Default-Empfehlung): Akzeptanz nach Trägertyp —
+                    // DOPPELT gekrümmte Flächen (Kugel/Torus/Gyroid) → Umkugel
+                    // mit Fächer-Tie-Break (gemessen wasserdicht auf freien
+                    // Kugeln r1/r8/r50: 0/0, χ=2 — die Tangential-Sterne
+                    // divergieren dort, Ties sind nie exakt); planare und
+                    // ABWICKELBARE Flächen (Plane/Zylinder/Kegel) → Stern-
+                    // Konsens (dort sind Hex-Ties exakt cozirkulär, der
+                    // Fächer-Partner oft kein Stern-Kandidat: Box 1244 vs.
+                    // 128 offene Kanten).
+                    let face_accept: &str = if opts.accept == "auto" {
+                        match &face_surfs[gf].surface {
+                            HalfSpace::Plane { .. }
+                            | HalfSpace::InfiniteCylinder { .. }
+                            | HalfSpace::Cone { .. } => "vote",
+                            _ => "gabriel",
+                        }
+                    } else {
+                        &opts.accept
+                    };
                     let res = crate::lichen_tri::triangulate_face_general(
                         &positions,
                         &nmap,
@@ -822,9 +943,10 @@ impl Kernel {
                         &members,
                         &loops,
                         opts.curv_angle_deg.to_radians(),
-                        &opts.accept,
+                        face_accept,
                         Some(&own),
                         Some(&global_chain_edges),
+                        opts.fill_holes,
                     );
                     if std::env::var("LICHEN_DEBUG_FACES").is_ok() {
                         eprintln!(
@@ -1579,6 +1701,30 @@ mod tests {
         let _ = k.lichen_mesh(r#"{"targetEdgeLength":10.0,"grow":true,"maxPoints":50000}"#.into());
     }
 
+    /// BASIS-ALGORITHMUS PUR (Betreiber-„Extrapunkt" 2026-07-11): freie
+    /// Kugeln OHNE Rand-Topologie (Seeds aus Feld-Streuung), OHNE Loch-
+    /// Füller, Umkugel-Akzeptanz — müssen WASSERDICHT mit Kugel-Topologie
+    /// (Euler χ=2) herauskommen. Deckt zugleich den Krümmungs-Sweep ab
+    /// (r=1 sub-h, r=8≈h, r=50≫h). Stern-Konsens hat auf denselben Kugeln
+    /// 20/42/127 Loch-Kanten (Tangential-Stern-Divergenz) — die Umkugel
+    /// ist dort frame-frei eindeutig.
+    #[test]
+    fn lichen_general_free_spheres_gabriel_watertight_no_fallbacks() {
+        for (r, h) in [(1.0f32, 10.0f32), (8.0, 3.0), (50.0, 10.0)] {
+            let mut k = crate::Kernel::new();
+            k.add_primitive(Primitive::KIND_SPHERE, BoolOp::TAG_NEW, 0.0, 0.0, 0.0, r, 0.0, 0.0)
+                .unwrap();
+            let out = k.lichen_mesh(format!(
+                r#"{{"targetEdgeLength":{h},"grow":true,"maxPoints":50000,"generalTri":true,"accept":"gabriel","fillHoles":false}}"#
+            ));
+            let (tris, q) = quality_of(&out);
+            assert!(tris > 100, "Kugel r={r} muss substanziell trianguliert sein, got {tris}");
+            assert!(q.watertight(), "Kugel r={r} nicht wasserdicht: {q:?}");
+            assert_eq!(q.euler, 2, "Kugel r={r} hat keine Kugel-Topologie: {q:?}");
+            assert_eq!(q.components, 1, "Kugel r={r}: {q:?}");
+            assert_eq!(q.orientation_violations, 0, "Kugel r={r}: {q:?}");
+        }
+    }
     /// Interior surface points must grow whether or not the reach term is on
     /// (ticket: "use reach off ⇒ no interior points" was a bug).
     #[test]

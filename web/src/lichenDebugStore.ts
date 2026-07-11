@@ -36,10 +36,14 @@ export interface LichenDebug {
   /** ALLGEMEINE (chartlose) Triangulierung über Stern-Konsistenz statt
    *  Chart-CDT — ein Code für plan + gekrümmt; Diagnose-first. */
   generalTri: boolean;
-  /** Akzeptanz-Bedingung des General-Pfads: Stern-Konsens ("vote"),
-   *  Umkugel/Gabriel mit deterministischem Tie-Break ("gabriel"), oder
-   *  beides ("hybrid"). */
-  accept: "vote" | "gabriel" | "hybrid";
+  /** Akzeptanz-Bedingung des General-Pfads: "auto" (pro Fläche nach
+   *  Trägertyp — doppelt gekrümmt → Umkugel, planar/abwickelbar →
+   *  Stern-Konsens), "vote", "gabriel" (Umkugel mit deterministischem
+   *  Tie-Break) oder "hybrid". */
+  accept: "auto" | "vote" | "gabriel" | "hybrid";
+  /** Loch-Füller des General-Pfads (Fallback nach der Diagnose). Aus =
+   *  der Basis-Algorithmus wird pur gemessen. */
+  fillHoles: boolean;
 
   // ── Display knobs (overlay only, ignored by the kernel) ──
   /** Opacity of the rendered part (1 = opaque). Below 1 the solid turns

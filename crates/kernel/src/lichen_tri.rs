@@ -196,6 +196,7 @@ pub fn triangulate_face_general(
     accept: &str,
     owner: Option<&dyn Fn([f32; 3]) -> bool>,
     global_chain_edges: Option<&HashSet<(u32, u32)>>,
+    fill_holes: bool,
 ) -> GeneralFaceMesh {
     let member_set: HashSet<u32> = members.iter().copied().collect();
 
@@ -625,7 +626,7 @@ pub fn triangulate_face_general(
     // offenen Kanten bilden geschlossene Loops; Loops, die mindestens eine
     // NICHT-Ketten-Kante enthalten (= Defekt, keine gewollte Rand-/Loch-
     // Kontur), werden als Polygon im Newell-Frame per CDT gefüllt.
-    if hole_edges > 0 && std::env::var("LICHEN_NO_FILL").is_err() {
+    if hole_edges > 0 && fill_holes && std::env::var("LICHEN_NO_FILL").is_err() {
         // Gerichtete offene Kanten: für die einzige Dreiecks-Nutzung (a,b)
         // die GEGENRICHTUNG (b,a) merken — so umläuft der Loop das Loch.
         let mut open_dir: HashMap<u32, Vec<u32>> = HashMap::new();
