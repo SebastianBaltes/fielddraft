@@ -49,6 +49,10 @@ interface LichenSettings {
   minEdgeSpacing: number;
   /** Hard cap on the particle count. */
   maxPoints: number;
+  /** Allgemeine (chartlose) Stern-Konsistenz-Triangulierung statt Chart-CDT. */
+  generalTri: boolean;
+  /** Akzeptanz des General-Pfads: Stern-Konsens / Umkugel / Hybrid. */
+  accept: "vote" | "gabriel" | "hybrid";
   partOpacity: number;
   strokeWidth: number;
   /** Draw the U(p) reach circle in the tangent plane at each point. */
@@ -73,6 +77,8 @@ const DEFAULTS: LichenSettings = {
   reachTol: 1,
   minEdgeSpacing: 0.01,
   maxPoints: 50000,
+  generalTri: false,
+  accept: "vote",
   partOpacity: 0.4,
   strokeWidth: 2,
   showCircles: true,
@@ -108,6 +114,9 @@ function loadSettings(): LichenSettings {
       maxPoints: Math.round(
         clampNum(p.maxPoints, 1, 2_000_000, DEFAULTS.maxPoints),
       ),
+      generalTri: p.generalTri === true,
+      accept:
+        p.accept === "gabriel" || p.accept === "hybrid" ? p.accept : "vote",
       partOpacity: clampNum(p.partOpacity, 0, 1, DEFAULTS.partOpacity),
       strokeWidth: clampNum(p.strokeWidth, 0.5, 12, DEFAULTS.strokeWidth),
       showCircles: p.showCircles === undefined ? DEFAULTS.showCircles : p.showCircles === true,
@@ -135,6 +144,8 @@ function lichenParams(s: LichenSettings): LichenDebug {
     reachTol: s.reachTol,
     minEdgeSpacing: s.minEdgeSpacing,
     maxPoints: s.maxPoints,
+    generalTri: s.generalTri,
+    accept: s.accept,
     partOpacity: s.partOpacity,
     strokeWidth: s.strokeWidth,
     showCircles: s.showCircles,
@@ -158,6 +169,8 @@ export function MesherLichenDialog({ onClose }: { onClose: () => void }) {
   const [reachTol, setReachTol] = useState(initial.reachTol);
   const [minEdgeSpacing, setMinEdgeSpacing] = useState(initial.minEdgeSpacing);
   const [maxPoints, setMaxPoints] = useState(initial.maxPoints);
+  const [generalTri, setGeneralTri] = useState(initial.generalTri);
+  const [accept, setAccept] = useState(initial.accept);
   const [partOpacity, setPartOpacity] = useState(initial.partOpacity);
   const [strokeWidth, setStrokeWidth] = useState(initial.strokeWidth);
   const [showCircles, setShowCircles] = useState(initial.showCircles);
@@ -179,6 +192,8 @@ export function MesherLichenDialog({ onClose }: { onClose: () => void }) {
       reachTol,
       minEdgeSpacing,
       maxPoints,
+      generalTri,
+      accept,
       partOpacity,
       strokeWidth,
       showCircles,
@@ -194,7 +209,7 @@ export function MesherLichenDialog({ onClose }: { onClose: () => void }) {
     } catch {
       // no localStorage (tests) — non-persistent is fine
     }
-  }, [targetEdgeLength, grow, curvAngleDeg, useReach, reachTol, minEdgeSpacing, maxPoints, partOpacity, strokeWidth, showCircles, showPoints, showTriangles, pointSize, showNormals, normalLength]);
+  }, [targetEdgeLength, grow, curvAngleDeg, useReach, reachTol, minEdgeSpacing, maxPoints, generalTri, accept, partOpacity, strokeWidth, showCircles, showPoints, showTriangles, pointSize, showNormals, normalLength]);
   useEffect(() => () => setLichenDebug(null), []);
 
   useEffect(() => {
@@ -414,6 +429,61 @@ export function MesherLichenDialog({ onClose }: { onClose: () => void }) {
         </div>
       </div>
 
+      <div className="vec-row">
+        <label
+          title={
+            "ALLGEMEINE (chartlose) Triangulierung über Stern-Konsistenz " +
+            "statt Chart-CDT — ein Code für plane, gekrümmte und (künftig) " +
+            "chartlose Flächen. Diagnose-first: Löcher werden rot, fast-" +
+            "einstimmige Kandidaten orange gezeichnet, nichts wird still " +
+            "übermalt."
+          }
+        >
+          General tri
+        </label>
+        <div className="fields">
+          <label className="checkbox">
+            <input
+              type="checkbox"
+              aria-label="General tri"
+              data-testid="mesher-lichen-general-tri"
+              checked={generalTri}
+              onChange={(e) => setGeneralTri(e.currentTarget.checked)}
+            />
+          </label>
+        </div>
+      </div>
+
+      {generalTri && (
+        <div className="vec-row">
+          <label
+            title={
+              "Akzeptanz-Bedingung des General-Pfads: Stern-Konsens (Dreieck " +
+              "muss im 2D-Delaunay-Stern ALLER drei Ecken vorkommen), Umkugel " +
+              "(kleinste Kugel durch die drei Ecken punktfrei, mit " +
+              "deterministischem Fächer-Tie-Break bei exakt cozirkulären " +
+              "Quads), oder Hybrid (Konsens ODER Umkugel)."
+            }
+          >
+            Akzeptanz
+          </label>
+          <div className="fields">
+            <select
+              aria-label="Akzeptanz"
+              data-testid="mesher-lichen-accept"
+              value={accept}
+              onChange={(e) =>
+                setAccept(e.currentTarget.value as "vote" | "gabriel" | "hybrid")
+              }
+            >
+              <option value="vote">Stern-Konsens</option>
+              <option value="gabriel">Umkugel (Gabriel)</option>
+              <option value="hybrid">Hybrid</option>
+            </select>
+          </div>
+        </div>
+      )}
+
       {numRowLikeSlider(
         "Part opacity",
         partOpacity,
@@ -553,6 +623,22 @@ export function MesherLichenDialog({ onClose }: { onClose: () => void }) {
           {stats ? (stats.fallbackTris ?? 0).toLocaleString() : "—"}
         </span>
       </div>
+      {generalTri && (
+        <div className="readout">
+          <span className="k">Loch-Kanten (rot)</span>
+          <span className="v" data-testid="mesher-lichen-hole-edges">
+            {stats ? (stats.holeEdges ?? 0).toLocaleString() : "—"}
+          </span>
+        </div>
+      )}
+      {generalTri && (
+        <div className="readout">
+          <span className="k">2-Stimmen-Kandidaten (orange)</span>
+          <span className="v" data-testid="mesher-lichen-weak-tris">
+            {stats ? (stats.weakTris ?? 0).toLocaleString() : "—"}
+          </span>
+        </div>
+      )}
 
       <div className="legend">
         <span className="seed">seed</span>

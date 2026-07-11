@@ -33,6 +33,13 @@ export interface LichenDebug {
   minEdgeSpacing: number;
   /** Hard cap on the particle count (safety valve). */
   maxPoints: number;
+  /** ALLGEMEINE (chartlose) Triangulierung über Stern-Konsistenz statt
+   *  Chart-CDT — ein Code für plan + gekrümmt; Diagnose-first. */
+  generalTri: boolean;
+  /** Akzeptanz-Bedingung des General-Pfads: Stern-Konsens ("vote"),
+   *  Umkugel/Gabriel mit deterministischem Tie-Break ("gabriel"), oder
+   *  beides ("hybrid"). */
+  accept: "vote" | "gabriel" | "hybrid";
 
   // ── Display knobs (overlay only, ignored by the kernel) ──
   /** Opacity of the rendered part (1 = opaque). Below 1 the solid turns
@@ -94,6 +101,10 @@ export interface LichenStats {
   tris: number;
   /** Of `tris`, how many came from the fallback path — drawn orange. */
   fallbackTris: number;
+  /** General-Pfad-Diagnose: offene Loch-Kanten (rot gezeichnet). */
+  holeEdges: number;
+  /** General-Pfad-Diagnose: abgelehnte Fast-Konsens-Kandidaten (orange). */
+  weakTris: number;
 }
 
 let stats: LichenStats | null = null;

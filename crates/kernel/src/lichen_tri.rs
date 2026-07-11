@@ -40,6 +40,11 @@ pub struct GeneralFaceMesh {
     pub hole_edges: usize,
     /// Kanten mit >2 Dreiecken (dürfen nicht vorkommen).
     pub nonmanifold_edges: usize,
+    /// Die offenen Kanten selbst (VOR dem Loch-Schließen) — fürs Overlay (rot).
+    pub open_edges: Vec<(u32, u32)>,
+    /// Abgelehnte Kandidaten mit `vote_min − 1` Stimmen („fast einstimmig") —
+    /// fürs Overlay (orange): zeigt, WO die Sterne sich uneinig sind.
+    pub weak_tris: Vec<[u32; 3]>,
 }
 
 #[inline]
@@ -88,12 +93,18 @@ fn segments_cross(a: [f64; 2], b: [f64; 2], c: [f64; 2], d: [f64; 2]) -> bool {
 /// * `members`: die globalen Indizes dieser Fläche (Rand + Innen).
 /// * `chains`: geschlossene Rand-Ringe der Fläche (globale Indizes, Wrap
 ///   implizit) — ihre Segmente sind gesetzte Kanten.
+/// * `curv_angle_rad`: der GLOBALE Krümmungsparameter (max. Normalen-Knick
+///   pro Abtastschritt) — koppelt den Cocone-Öffnungswinkel (s.u.).
+/// * `accept`: Akzeptanz-Modus `"vote" | "gabriel" | "hybrid"` (schaltbar aus
+///   dem Dialog; Env `LICHEN_ACCEPT` überstimmt für Experimente).
 pub fn triangulate_face_general(
     points: &[[f32; 3]],
     normals: &HashMap<u32, [f32; 3]>,
     spacing: &[f32],
     members: &[u32],
     chains: &[Vec<u32>],
+    curv_angle_rad: f32,
+    accept: &str,
 ) -> GeneralFaceMesh {
     let member_set: HashSet<u32> = members.iter().copied().collect();
 
@@ -165,6 +176,19 @@ pub fn triangulate_face_general(
         eff_r.insert(i, 2.5 * m);
     }
 
+    // ── Cocone-Öffnungswinkel aus dem GLOBALEN Krümmungsparameter ──
+    // Ein legitimer Nachbar in Abstand r kippt maximal um ≈ r·κ aus der
+    // Tangentialebene; die Abtastung garantiert space ≤ α/κ, der Horizont
+    // reicht bis eff_r = 2.5·space → max. Kipp ≈ 2.5·α. Daher Halbwinkel =
+    // 2.5 × curv_angle, geklemmt auf [15°, 60°]: der Boden fängt ∇f-Rauschen
+    // bei sehr kleinem α ab, die Kappe hält die Blatt-Trennung (Gyroid-
+    // Gegenwand ~90°) intakt. Env `LICHEN_COCONE_DEG` überstimmt (Messung).
+    let cocone_deg: f32 = std::env::var("LICHEN_COCONE_DEG")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or_else(|| (2.5 * curv_angle_rad.to_degrees()).clamp(15.0, 60.0));
+    let cocone_sin = cocone_deg.to_radians().sin();
+
     // ── Stern pro Punkt: Nachbarn → Tangentialebene → 2D-Delaunay ──
     let mut chain_segs: Vec<(u32, u32)> = chain_edges.iter().copied().collect();
     chain_segs.sort_unstable();
@@ -199,12 +223,13 @@ pub fn triangulate_face_general(
                         }
                         // COCONE (Amenta/Bern; Betreiber-Bedingung): Nachbarn
                         // müssen „fast koplanar" zur Tangentialebene liegen —
-                        // |⟨d,n⟩| ≤ sin(30°)·|d|. Ein fremdes Blatt (Gyroid-
-                        // Gegenwand) liegt im Doppelkegel um die Normale und
-                        // wird NIE verbunden; U(p) darf dadurch größer sein
-                        // als der Blatt-Abstand.
+                        // |⟨d,n⟩| ≤ sin(cocone)·|d|, Winkel an den globalen
+                        // Krümmungsparameter gekoppelt (s.o.). Ein fremdes
+                        // Blatt (Gyroid-Gegenwand) liegt im Doppelkegel um die
+                        // Normale und wird NIE verbunden; U(p) darf dadurch
+                        // größer sein als der Blatt-Abstand.
                         let dl = dot(d, d).sqrt();
-                        if dot(d, ni).abs() > 0.5 * dl {
+                        if dot(d, ni).abs() > cocone_sin * dl {
                             continue;
                         }
                         local.push((
@@ -273,6 +298,16 @@ pub fn triangulate_face_general(
     // von anderen Punkten sein. Frame-frei und symmetrisch — sie stellt die
     // Eindeutigkeit her, die per-Stern-Tangentialebenen auf gekrümmten
     // Flächen verlieren; im ebenen Fall degeneriert sie zum Umkreis-Test.
+    // Tie-Break (Betreiber-Frage „stellt die Umkugel Eindeutigkeit her?"):
+    // fast — bei exakt cozirkulären Punktmengen (Hex-Quads des Waben-
+    // Wachstums) liegen ALLE auf EINER Kugel, beide Diagonalen sind leer.
+    // Deshalb DETERMINISTISCHER Fächer-Tie-Break: Zeugen AUF der Kugel
+    // (|d²−r²| ≤ tol·r²) bilden mit dem Dreieck die Tie-Menge S; kanonische
+    // Triangulierung von S = Fächer vom kleinsten globalen Index m aus, in
+    // zyklischer Winkel-Reihenfolge um das Umkreiszentrum. Ein Dreieck wird
+    // nur akzeptiert, wenn es GENAU ein Fächer-Dreieck (m, s_k, s_{k+1}) ist —
+    // beide Sichten desselben Quads wählen so dieselbe Diagonale.
+    const GABRIEL_TOL: f32 = 2e-4;
     let gabriel_empty = |a: u32, b: u32, c: u32| -> bool {
         let (pa, pb, pc) = (
             points[a as usize],
@@ -299,7 +334,8 @@ pub fn triangulate_face_general(
         let dc = sub(pa, centre);
         let r2 = dot(dc, dc);
         let r = r2.sqrt();
-        // Punktfreiheit lokal prüfen (Spatial-Hash).
+        // Punktfreiheit lokal prüfen (Spatial-Hash); Zeugen im Tie-Band sammeln.
+        let mut ties: Vec<u32> = Vec::new();
         let (kx, ky, kz) = key(centre);
         let reach = (r / cell).ceil() as i32 + 1;
         for dx in -reach..=reach {
@@ -313,38 +349,82 @@ pub fn triangulate_face_general(
                             continue;
                         }
                         let d = sub(points[j as usize], centre);
-                        if dot(d, d) < r2 * (1.0 - 1e-4) {
-                            return false;
+                        let d2 = dot(d, d);
+                        if d2 < r2 * (1.0 - GABRIEL_TOL) {
+                            return false; // strikt innen → Umkugel nicht leer
+                        }
+                        if d2 <= r2 * (1.0 + GABRIEL_TOL) {
+                            ties.push(j); // exakt auf der Kugel → Tie-Zeuge
                         }
                     }
                 }
             }
         }
-        true
+        if ties.is_empty() {
+            return true; // strikt leer — eindeutig
+        }
+        // Fächer-Tie-Break über die zyklische Ordnung der Tie-Menge.
+        let n = norm(cross(ab, ac));
+        let (e1, e2) = basis(n);
+        let mut set: Vec<u32> = vec![a, b, c];
+        set.extend(ties);
+        set.sort_unstable();
+        set.dedup();
+        let m = set[0];
+        // Winkel um das Zentrum in der Dreiecks-Ebene; bei exakt gleichem
+        // Winkel entscheidet der Index (stabil, framefrei bis auf die
+        // Dreiecks-Ebene — die für alle Sichten desselben Quads gleich ist).
+        let ang = |i: u32| -> f64 {
+            let d = sub(points[i as usize], centre);
+            (dot(d, e2) as f64).atan2(dot(d, e1) as f64)
+        };
+        let mut ordered: Vec<u32> = set.clone();
+        ordered.sort_by(|&x, &y| {
+            ang(x).partial_cmp(&ang(y)).unwrap_or(std::cmp::Ordering::Equal).then(x.cmp(&y))
+        });
+        // Rotieren, sodass m vorn steht; Fächer = (m, s_k, s_{k+1}).
+        let pos = ordered.iter().position(|&x| x == m).unwrap_or(0);
+        ordered.rotate_left(pos);
+        let tri: HashSet<u32> = [a, b, c].into_iter().collect();
+        if !tri.contains(&m) {
+            return false;
+        }
+        for w in ordered[1..].windows(2) {
+            if tri.contains(&w[0]) && tri.contains(&w[1]) {
+                return true;
+            }
+        }
+        false
     };
-    // Default = Stern-Konsens. Die Umkugel ("gabriel"/"hybrid", Betreiber-
-    // Idee als frame-freie Eindeutigkeit) ist implementiert und vermessen:
-    // sie erbt das Tie-Problem — bei exakt cozirkulären Hex-Quads sind BEIDE
-    // Diagonalen Gabriel-leer (Box: 70 non-manifolde Kanten) — und braucht
-    // erst einen deterministischen Tie-Break, bevor sie den gekrümmten Fall
-    // tragen kann. Als Env-Modus für die nächste Iteration verfügbar.
-    let accept_mode =
-        std::env::var("LICHEN_ACCEPT").unwrap_or_else(|_| "vote".into());
+    // Akzeptanz-Modus: aus dem Dialog (`LichenOptions.accept`), Env
+    // `LICHEN_ACCEPT` überstimmt für Messreihen. "gabriel" = Umkugel mit
+    // deterministischem Fächer-Tie-Break (s.o.), "hybrid" = Stern-Konsens
+    // ODER Umkugel. Kandidaten liefern in allen Modi die Sterne.
+    let accept_mode = std::env::var("LICHEN_ACCEPT").unwrap_or_else(|_| accept.to_string());
     let vote_min: u8 = std::env::var("LICHEN_VOTE_MIN")
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(3);
-    let mut tris: Vec<[u32; 3]> = votes
-        .iter()
-        .filter(|&(&(a, b, c), &v)| match accept_mode.as_str() {
-            "vote" => v >= vote_min,
+    let accepted = |a: u32, b: u32, c: u32, v: u8| -> bool {
+        match accept_mode.as_str() {
             "gabriel" => gabriel_empty(a, b, c),
-            // hybrid: einstimmige Sterne ODER frame-freie Umkugel-Leere.
-            _ => v >= vote_min || gabriel_empty(a, b, c),
-        })
-        .map(|(&(a, b, c), _)| [a, b, c])
-        .collect();
+            "hybrid" => v >= vote_min || gabriel_empty(a, b, c),
+            _ => v >= vote_min,
+        }
+    };
+    let mut tris: Vec<[u32; 3]> = Vec::new();
+    // Abgelehnte Fast-Konsens-Kandidaten (vote_min − 1 Stimmen) — Diagnose-
+    // Overlay (orange): genau die Stellen, an denen die Sterne uneins sind.
+    let mut weak_tris: Vec<[u32; 3]> = Vec::new();
+    for (&(a, b, c), &v) in votes.iter() {
+        if accepted(a, b, c, v) {
+            tris.push([a, b, c]);
+        } else if v + 1 >= vote_min {
+            weak_tris.push([a, b, c]);
+        }
+    }
     tris.sort_unstable();
+    weak_tris.sort_unstable();
 
     // ── Ketten-Kreuzungs-Verbot: kein Dreieck über eine gesetzte Kante ──
     // 2D-Test in der Ebene des jeweiligen Dreiecks (symmetrisch für alle
@@ -401,10 +481,12 @@ pub fn triangulate_face_general(
         }
     }
     let nonmanifold_edges = edge_use.values().filter(|&&u| u > 2).count();
-    let hole_edges = edge_use
+    let open_edges: Vec<(u32, u32)> = edge_use
         .iter()
         .filter(|(&e, &u)| u == 1 && !chain_edges.contains(&e) && member_set.contains(&e.0))
-        .count();
+        .map(|(&e, _)| e)
+        .collect();
+    let hole_edges = open_edges.len();
 
     // ── Loch-Schließen (deterministisch, NACH der Diagnose) ──
     // Stern-Uneinigkeit bleibt an Dichte-Übergängen möglich (der dichte Punkt
@@ -553,5 +635,5 @@ pub fn triangulate_face_general(
         }
     }
 
-    GeneralFaceMesh { tris, hole_edges, nonmanifold_edges }
+    GeneralFaceMesh { tris, hole_edges, nonmanifold_edges, open_edges, weak_tris }
 }

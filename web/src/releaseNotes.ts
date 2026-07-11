@@ -24,6 +24,16 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.523",
+    entries: [
+      {
+        kind: "feat",
+        scope: "mesher",
+        text: "Lichen General-Tri im Dialog schaltbar: „General tri“-Checkbox plus Akzeptanz-Auswahl (Stern-Konsens / Umkugel mit deterministischem Fächer-Tie-Break / Hybrid). Diagnose-Overlay zeigt offene Loch-Kanten rot und Fast-Konsens-Kandidaten orange; der Cocone-Öffnungswinkel ist an den globalen Krümmungswinkel gekoppelt (Zylinder: 434 statt ~1000 Loch-Kanten).",
+      },
+    ],
+  },
+  {
     version: "0.6.522",
     entries: [
       {

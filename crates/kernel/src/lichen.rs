@@ -57,6 +57,11 @@ pub struct LichenOptions {
     /// [`crate::lichen_tri`]. Experimentell, Diagnose-first (Löcher werden
     /// gezählt, nicht übermalt).
     pub general_tri: bool,
+    /// Akzeptanz-Bedingung des allgemeinen Pfads (schaltbar, Betreiber-Wunsch
+    /// 2026-07-11): `"vote"` = Stern-Konsens (Dreieck in allen 3 Sternen),
+    /// `"gabriel"` = Umkugel-Leere mit deterministischem Fächer-Tie-Break,
+    /// `"hybrid"` = Konsens ODER Umkugel.
+    pub accept: String,
 }
 
 impl Default for LichenOptions {
@@ -71,6 +76,7 @@ impl Default for LichenOptions {
             max_points: 20000,
             triangulate: true,
             general_tri: false,
+            accept: "vote".into(),
         }
     }
 }
@@ -546,6 +552,19 @@ pub fn resample_edge_by_curvature(
 /// Index-Offsets exakt wie zuvor liegen. `point_faces[i]` = die Flächen-IDs
 /// (+ zugehörige Normalen) von Punkt `i`.
 pub fn pack(all: &[LPoint], tris: &[[u32; 3]], point_faces: &[Vec<(u32, [f32; 3])>]) -> Vec<f32> {
+    pack_with_diag(all, tris, point_faces, &[], &[])
+}
+
+/// Wie [`pack`], plus DIAGNOSE-Trailing-Block des allgemeinen Tri-Pfads:
+/// `[nOpenEdge, (a,b)×n, nWeakTri, (a,b,c)×n]` NACH dem Face-Normal-Block —
+/// offene Loch-Kanten (rot) und Fast-Konsens-Kandidaten (orange) fürs Overlay.
+pub fn pack_with_diag(
+    all: &[LPoint],
+    tris: &[[u32; 3]],
+    point_faces: &[Vec<(u32, [f32; 3])>],
+    open_edges: &[(u32, u32)],
+    weak_tris: &[[u32; 3]],
+) -> Vec<f32> {
     let n = all.len();
     let mut recs: Vec<f32> = Vec::new();
     let mut rec_count = 0usize;
@@ -577,5 +596,16 @@ pub fn pack(all: &[LPoint], tris: &[[u32; 3]], point_faces: &[Vec<(u32, [f32; 3]
     }
     out.push(rec_count as f32);
     out.extend_from_slice(&recs);
+    out.push(open_edges.len() as f32);
+    for &(a, b) in open_edges {
+        out.push(a as f32);
+        out.push(b as f32);
+    }
+    out.push(weak_tris.len() as f32);
+    for t in weak_tris {
+        out.push(t[0] as f32);
+        out.push(t[1] as f32);
+        out.push(t[2] as f32);
+    }
     out
 }

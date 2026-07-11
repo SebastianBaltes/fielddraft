@@ -497,6 +497,8 @@ impl Kernel {
                 let positions: Vec<[f32; 3]> = all.iter().map(|lp| lp.p).collect();
                 let spacings: Vec<f32> = all.iter().map(|lp| lp.space).collect();
                 let (mut holes, mut nonmani) = (0usize, 0usize);
+                let mut open_edges: Vec<(u32, u32)> = Vec::new();
+                let mut weak_tris: Vec<[u32; 3]> = Vec::new();
                 for gf in 0..face_surfs.len() {
                     let loops: Vec<Vec<u32>> =
                         face_loops[gf].iter().map(|(r, _)| r.clone()).collect();
@@ -533,9 +535,13 @@ impl Kernel {
                         &spacings,
                         &members,
                         &loops,
+                        opts.curv_angle_deg.to_radians(),
+                        &opts.accept,
                     );
                     holes += res.hole_edges;
                     nonmani += res.nonmanifold_edges;
+                    open_edges.extend(res.open_edges);
+                    weak_tris.extend(res.weak_tris);
                     t.extend(res.tris);
                 }
                 if holes + nonmani > 0 {
@@ -543,7 +549,7 @@ impl Kernel {
                         "lichen general-tri: {holes} Loch-Kanten, {nonmani} non-manifold Kanten (Diagnose)"
                     );
                 }
-                return lichen::pack(&all, &t, &point_faces);
+                return lichen::pack_with_diag(&all, &t, &point_faces, &open_edges, &weak_tris);
             }
             for gf in 0..face_surfs.len() {
                 // Rand-Clearance des CDT PRO FLÄCHE aus dem lokalen Punkt-
@@ -753,13 +759,17 @@ mod tests {
         let total = out[0] as usize;
         let tris = out[1] as usize;
         assert!(tris > 0, "advancing front emits real triangles");
-        // Layout: header(3) + points×9 + indices×3 + nFaceRec + faceRec×4.
+        // Layout: header(3) + points×9 + indices×3 + nFaceRec + faceRec×4
+        //         + nOpenEdge + openEdge×2 + nWeakTri + weakTri×3 (Diagnose).
         let idx_end = 3 + total * 9 + tris * 3;
         let n_face = out[idx_end] as usize;
+        let diag = idx_end + 1 + n_face * 4;
+        let n_open = out[diag] as usize;
+        let n_weak = out[diag + 1 + n_open * 2] as usize;
         assert_eq!(
-            idx_end + 1 + n_face * 4,
+            diag + 1 + n_open * 2 + 1 + n_weak * 3,
             out.len(),
-            "flat layout: points + index + face-normal block"
+            "flat layout: points + index + face-normal block + diag block"
         );
         assert!(n_face >= total, "at least one circle record per point (boundary points ≥2)");
         let (mut corners, mut chain, mut surf) = (0u32, 0u32, 0u32);

@@ -171,6 +171,8 @@ export function LichenOverlay({
         reachTol: params.reachTol,
         minEdgeSpacing: params.minEdgeSpacing,
         maxPoints: params.maxPoints,
+        generalTri: params.generalTri,
+        accept: params.accept,
       }),
     );
     const total = data.length >= 3 ? data[0] : 0;
@@ -216,11 +218,22 @@ export function LichenOverlay({
       if (data[P + k * STRIDE + 8] > 0.5) keep.push(k);
     }
     const n = keep.length;
+    // ── Diagnose-Block des General-Pfads (NACH dem Face-Normal-Block):
+    //    [nOpenEdge, (a,b)×n, nWeakTri, (a,b,c)×n] — offene Loch-Kanten (rot)
+    //    und abgelehnte Fast-Konsens-Kandidaten (orange). Chart-Pfad: 0/0. ──
+    const faceBase0 = 3 + total * STRIDE + triCount * 3;
+    const nFaceRec0 = data.length > faceBase0 ? data[faceBase0] : 0;
+    const diagBase = faceBase0 + 1 + nFaceRec0 * 4;
+    const nOpenEdge = data.length > diagBase ? data[diagBase] : 0;
+    const weakBase = diagBase + 1 + nOpenEdge * 2;
+    const nWeakTri = data.length > weakBase ? data[weakBase] : 0;
     setLichenStats({
       cells: n,
       capped: total >= MAX_LEAVES,
       tris: triCount,
       fallbackTris,
+      holeEdges: nOpenEdge,
+      weakTris: nWeakTri,
     });
 
     // Debug octree-edge connectivity mesh over the SHOWN points — the
@@ -275,6 +288,69 @@ export function LichenOverlay({
       };
       buildWire(0, triCount - fallbackTris, 0x111827);
       buildWire(triCount - fallbackTris, triCount, 0xea8c1a);
+    }
+
+    // ── General-Pfad-Diagnose: Loch-Kanten ROT (kräftig, 1.5× Strichstärke),
+    //    Fast-Konsens-Kandidaten (vote_min−1 Stimmen) ORANGE — die
+    //    „Uneinigkeits-Landkarte" der Sterne, nie still übermalt. ──
+    if (params.showTriangles && nOpenEdge + nWeakTri > 0) {
+      const px = (i: number) => rawX(P + i * STRIDE);
+      const py = (i: number) => rawY(P + i * STRIDE);
+      const pz = (i: number) => rawZ(P + i * STRIDE);
+      const drawSegs = (seg: number[], color: number, width: number) => {
+        if (seg.length === 0) return;
+        let obj: THREE.Object3D;
+        if (webgpu) {
+          const lg = new LineSegmentsGeometry();
+          lg.setPositions(new Float32Array(seg));
+          obj = new LineSegments2(
+            lg,
+            applyOcclusion(
+              new Line2NodeMaterial({
+                color,
+                linewidth: width,
+                worldUnits: false,
+                transparent: true,
+                depthWrite: false,
+              }),
+            ),
+          );
+        } else {
+          const lg = new THREE.BufferGeometry();
+          lg.setAttribute("position", new THREE.BufferAttribute(new Float32Array(seg), 3));
+          obj = new THREE.LineSegments(
+            lg,
+            applyOcclusion(
+              new THREE.LineBasicMaterial({
+                color,
+                transparent: true,
+                depthWrite: false,
+                toneMapped: false,
+              }),
+            ),
+          );
+        }
+        obj.layers.enable(OVERLAY_LAYER);
+        obj.renderOrder = 8; // über dem Wireframe
+        group.add(obj);
+      };
+      const holeSeg: number[] = [];
+      for (let e = 0; e < nOpenEdge; e++) {
+        const a = data[diagBase + 1 + e * 2];
+        const b = data[diagBase + 1 + e * 2 + 1];
+        holeSeg.push(px(a), py(a), pz(a), px(b), py(b), pz(b));
+      }
+      drawSegs(holeSeg, 0xdd1122, Math.max(1.5, params.strokeWidth * 1.5));
+      const weakSeg: number[] = [];
+      for (let t = 0; t < nWeakTri; t++) {
+        const a = data[weakBase + 1 + t * 3];
+        const b = data[weakBase + 1 + t * 3 + 1];
+        const c = data[weakBase + 1 + t * 3 + 2];
+        weakSeg.push(px(a), py(a), pz(a), px(b), py(b), pz(b));
+        weakSeg.push(px(b), py(b), pz(b), px(c), py(c), pz(c));
+        weakSeg.push(px(c), py(c), pz(c), px(a), py(a), pz(a));
+      }
+      drawSegs(weakSeg, 0xf59e0b, Math.max(1, params.strokeWidth * 0.8));
     }
     if (n === 0) {
       invalidate();
