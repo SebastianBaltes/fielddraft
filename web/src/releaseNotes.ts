@@ -24,6 +24,17 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.521",
+    entries: [
+      {
+        kind: "fix",
+        scope: "mesher",
+        text: "Lichen: Die Triangulierung nutzt jetzt die Grow-Punkte. Die CDT-Rand-Clearance war fix 0.25·h — bei krümmungsadaptiv dichtem Wachstum (Spacing ≪ h) galt damit jeder gewachsene Punkt als „zu nah am Rand“ und wurde verworfen; die Dreiecke überspannten die Flächen nur mit Rand-Ketten. Jetzt: Clearance pro Fläche aus dem lokalen Punkt-Spacing, plus eine relative Regel im CDT (kein freier Punkt näher als 10% der jeweiligen Constraint-Segmentlänge) gegen Sliver-Dreiecke, wenn dichte Punkte auf grobe Randsegmente treffen.",
+        tickets: ["e6b21b96"],
+      },
+    ],
+  },
+  {
     version: "0.6.520",
     entries: [
       {

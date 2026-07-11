@@ -103,10 +103,23 @@ fn triangulate_uv(
         ex * ex + ey * ey
     };
     let clearance2 = clearance * clearance;
+    // Zusätzlich zur absoluten Clearance eine RELATIVE: näher als 10% der
+    // jeweiligen SEGMENTLÄNGE darf kein freier Punkt an eine Constraint-Kante
+    // (Ticket e6b21b96). Ein dichter Partikel-Teppich (Spacing ≪ h) neben
+    // einem groben Rand-Segment erzeugte sonst Sliver-Dreiecke (Höhe ≈
+    // Clearance, Basis ≈ Segmentlänge); umgekehrt lässt die relative Regel
+    // dichte Punkte an dichten Ketten zu — beide Seiten skalieren mit.
+    const REL_CLEARANCE: f64 = 0.1;
     let too_close = |p: Point2<f64>| -> bool {
         loops2d.iter().any(|lp2d| {
-            (0..lp2d.len())
-                .any(|k| seg_dist2(p, lp2d[k], lp2d[(k + 1) % lp2d.len()]) < clearance2)
+            (0..lp2d.len()).any(|k| {
+                let a = lp2d[k];
+                let b = lp2d[(k + 1) % lp2d.len()];
+                let d2 = seg_dist2(p, a, b);
+                let (dx, dy) = (b.x - a.x, b.y - a.y);
+                let len2 = dx * dx + dy * dy;
+                d2 < clearance2 || d2 < REL_CLEARANCE * REL_CLEARANCE * len2
+            })
         })
     };
 

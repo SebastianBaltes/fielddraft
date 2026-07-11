@@ -492,6 +492,17 @@ impl Kernel {
         let tris = if opts.triangulate && all.len() >= 3 {
             let mut t: Vec<[u32; 3]> = Vec::new();
             for gf in 0..face_surfs.len() {
+                // Rand-Clearance des CDT PRO FLÄCHE aus dem lokalen Punkt-
+                // Spacing, nicht pauschal 0.25·h (Ticket e6b21b96): das
+                // Wachstum verdichtet krümmungsadaptiv weit unter h (r-Floor =
+                // Min. Kantenabstand) — eine 0.25·h-Clearance verwarf dann
+                // JEDEN gewachsenen Punkt der schmalen Flächen als „zu nah am
+                // Rand" und der CDT überspannte die Fläche nur mit Rand-
+                // Ketten-Dreiecken.
+                let clearance = 0.25
+                    * face_interior[gf]
+                        .iter()
+                        .fold(h, |m, &gi| m.min(all[gi as usize].space));
                 let loops: Vec<Vec<u32>> =
                     face_loops[gf].iter().map(|(r, _)| r.clone()).collect();
                 if matches!(face_surfs[gf].surface, HalfSpace::Plane { .. }) {
@@ -500,7 +511,7 @@ impl Kernel {
                         &positions,
                         &loops,
                         &face_interior[gf],
-                        0.25 * h as f64,
+                        clearance as f64,
                     ));
                     continue;
                 }
@@ -627,7 +638,7 @@ impl Kernel {
                     &scaled_interior,
                     period,
                     h_chart,
-                    0.25 * h_chart,
+                    (clearance / ms) as f64,
                     &poles,
                     all.len() as u32,
                     &world_of,
@@ -877,13 +888,31 @@ mod tests {
         )
         .unwrap();
         let out = k.lichen_mesh(
-            r#"{"targetEdgeLength":10.0,"grow":true,"curvAngleDeg":20.0,"minEdgeSpacing":0.05,"maxPoints":20000,"triangulate":false}"#.into(),
+            r#"{"targetEdgeLength":10.0,"grow":true,"curvAngleDeg":20.0,"minEdgeSpacing":0.05,"maxPoints":20000}"#.into(),
         );
         let total = out[0] as usize;
         let surf = (0..total).filter(|&i| out[3 + i * 9 + 8] as i32 == 1).count();
         assert!(
             surf > 30,
             "Krümmungs-Verfeinerung muss auf dem kleinen Zylinder greifen, got {surf} Innenpunkte"
+        );
+        // Ticket e6b21b96: die gewachsenen Punkte müssen auch im CDT LANDEN —
+        // die frühere 0.25·h-Clearance verwarf bei dichtem Wachstum (Spacing
+        // ≪ h) jeden Innenpunkt als „zu nah am Rand", und die Dreiecke
+        // überspannten die Fläche nur mit Rand-Ketten.
+        let tris = out[1] as usize;
+        assert!(tris > 0, "Triangulierung erwartet");
+        let base = 3 + total * 9;
+        let used_surface = (0..tris)
+            .flat_map(|t| (0..3).map(move |k| t * 3 + k))
+            .filter(|&ix| {
+                let pi = out[base + ix] as usize;
+                pi < total && out[3 + pi * 9 + 8] as i32 == 1
+            })
+            .count();
+        assert!(
+            used_surface > 30,
+            "Dreiecke müssen gewachsene Punkte nutzen, got {used_surface} Referenzen"
         );
     }
 
