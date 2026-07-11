@@ -52,6 +52,11 @@ pub struct LichenOptions {
     pub max_points: usize,
     /// Advancing-Front-Triangulierung ausführen. Aus = nur Punktwolke.
     pub triangulate: bool,
+    /// ALLGEMEINE (chartlose) Triangulierung über Stern-Konsistenz statt
+    /// Chart-CDT — ein Code für plan, gekrümmt und (künftig) Gyroid; siehe
+    /// [`crate::lichen_tri`]. Experimentell, Diagnose-first (Löcher werden
+    /// gezählt, nicht übermalt).
+    pub general_tri: bool,
 }
 
 impl Default for LichenOptions {
@@ -65,6 +70,7 @@ impl Default for LichenOptions {
             min_edge_spacing: 0.01,
             max_points: 20000,
             triangulate: true,
+            general_tri: false,
         }
     }
 }

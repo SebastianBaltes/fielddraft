@@ -491,6 +491,60 @@ impl Kernel {
         // vorerst untrianguliert. ──
         let tris = if opts.triangulate && all.len() >= 3 {
             let mut t: Vec<[u32; 3]> = Vec::new();
+            // Allgemeiner Pfad (Stern-Konsistenz, chartlos): EIN Code für
+            // plan + gekrümmt; Diagnose-first (Löcher gezählt, nie übermalt).
+            if opts.general_tri {
+                let positions: Vec<[f32; 3]> = all.iter().map(|lp| lp.p).collect();
+                let spacings: Vec<f32> = all.iter().map(|lp| lp.space).collect();
+                let (mut holes, mut nonmani) = (0usize, 0usize);
+                for gf in 0..face_surfs.len() {
+                    let loops: Vec<Vec<u32>> =
+                        face_loops[gf].iter().map(|(r, _)| r.clone()).collect();
+                    // Mitglieder + Pro-Flächen-Normalen (Randpunkte tragen die
+                    // Normale DIESER Fläche aus dem Trailing-Record; Innen-
+                    // punkte ihr ∇f).
+                    let mut members: Vec<u32> = Vec::new();
+                    let mut nmap: HashMap<u32, [f32; 3]> = HashMap::new();
+                    for ring in &loops {
+                        for &gi in ring {
+                            if nmap.contains_key(&gi) {
+                                continue;
+                            }
+                            let n = point_faces[gi as usize]
+                                .iter()
+                                .find(|&&(g, _)| g == gf as u32)
+                                .map(|&(_, n)| n)
+                                .unwrap_or(all[gi as usize].n);
+                            nmap.insert(gi, n);
+                            members.push(gi);
+                        }
+                    }
+                    for &gi in &face_interior[gf] {
+                        if nmap.insert(gi, all[gi as usize].n).is_none() {
+                            members.push(gi);
+                        }
+                    }
+                    if members.len() < 3 {
+                        continue;
+                    }
+                    let res = crate::lichen_tri::triangulate_face_general(
+                        &positions,
+                        &nmap,
+                        &spacings,
+                        &members,
+                        &loops,
+                    );
+                    holes += res.hole_edges;
+                    nonmani += res.nonmanifold_edges;
+                    t.extend(res.tris);
+                }
+                if holes + nonmani > 0 {
+                    eprintln!(
+                        "lichen general-tri: {holes} Loch-Kanten, {nonmani} non-manifold Kanten (Diagnose)"
+                    );
+                }
+                return lichen::pack(&all, &t, &point_faces);
+            }
             for gf in 0..face_surfs.len() {
                 // Rand-Clearance des CDT PRO FLÄCHE aus dem lokalen Punkt-
                 // Spacing, nicht pauschal 0.25·h (Ticket e6b21b96): das
@@ -926,6 +980,75 @@ mod tests {
             used_surface > 30,
             "Dreiecke müssen gewachsene Punkte nutzen, got {used_surface} Referenzen"
         );
+    }
+
+    /// ALLGEMEINER Pfad (Stern-Konsistenz, chartlos): die Box — der leicht
+    /// prüfbare Planarfall und Referenz gegen den CDT — muss auch dort ein
+    /// GESCHLOSSENES 2-Manifold liefern (Euler 2, keine Loch-Kante). Auf
+    /// planaren Flächen ist die Tangentialebene konstant, alle Sterne stimmen
+    /// überein → das Ergebnis ist ein echtes Delaunay der Fläche.
+    #[test]
+    #[ignore = "WIP: Stern-Konsistenz erreicht auf der Box 72 Loch-Kanten (0 non-manifold); \
+                Ablation 2026-07-12: Jitter verschlechtert (103→1762), symmetrischer \
+                Horizont verbessert (103→72), vote_min=2 verschlechtert (→108). \
+                Nächste Hebel: geometrischer Loch-Loop-Walker, Owner-Stitching."]
+    fn lichen_general_tri_box_is_watertight() {
+        let mut k = box_kernel();
+        let out = k.lichen_mesh(
+            r#"{"targetEdgeLength":3.0,"grow":true,"maxPoints":8000,"generalTri":true}"#.into(),
+        );
+        assert_watertight(&out);
+    }
+
+    /// General-Pfad auf gekrümmten Flächen: Zylinder (Band + Kappen) — gleiche
+    /// Watertight-Messlatte wie der Chart-Pfad, mit demselben chartlosen Code.
+    #[test]
+    #[ignore = "WIP wie box-Test; gekrümmte Sterne divergieren zusätzlich über die \
+                per-Punkt-Frames (~1000 Loch-Kanten auf dem Zylinder)."]
+    fn lichen_general_tri_cylinder_is_watertight() {
+        let mut k = crate::Kernel::new();
+        k.add_primitive(
+            Primitive::KIND_CYLINDER,
+            BoolOp::TAG_NEW,
+            0.0,
+            0.0,
+            0.0,
+            8.0,
+            10.0,
+            0.0,
+        )
+        .unwrap();
+        let out = k.lichen_mesh(
+            r#"{"targetEdgeLength":3.0,"grow":true,"maxPoints":20000,"generalTri":true}"#.into(),
+        );
+        assert_watertight(&out);
+    }
+
+    /// General-Pfad-Smoke: läuft, produziert Dreiecke, KEINE non-manifolden
+    /// Kanten (die Stern-Konsistenz-Garantie — Löcher sind das offene WIP,
+    /// Überlappungen wären ein Regressions-Alarm).
+    #[test]
+    fn lichen_general_tri_box_smoke_no_nonmanifold() {
+        let mut k = box_kernel();
+        let out = k.lichen_mesh(
+            r#"{"targetEdgeLength":3.0,"grow":true,"maxPoints":8000,"generalTri":true}"#.into(),
+        );
+        let total = out[0] as usize;
+        let tris = out[1] as usize;
+        assert!(tris > 100, "General-Pfad muss substanziell triangulieren, got {tris}");
+        let base = 3 + total * 9;
+        let mut edge_use: std::collections::HashMap<(u32, u32), u32> =
+            std::collections::HashMap::new();
+        for t in 0..tris {
+            let a = out[base + t * 3] as u32;
+            let b = out[base + t * 3 + 1] as u32;
+            let c = out[base + t * 3 + 2] as u32;
+            for (x, y) in [(a, b), (b, c), (c, a)] {
+                *edge_use.entry((x.min(y), x.max(y))).or_default() += 1;
+            }
+        }
+        let over = edge_use.values().filter(|&&u| u > 2).count();
+        assert_eq!(over, 0, "Stern-Konsistenz darf keine non-manifolden Kanten erzeugen");
     }
 
     /// Interior surface points must grow whether or not the reach term is on
