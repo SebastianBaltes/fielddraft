@@ -24,6 +24,16 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.518",
+    entries: [
+      {
+        kind: "fix",
+        scope: "mobile",
+        text: "Die Issues-Tabelle ist jetzt scrollbar, wenn sie nicht ins Fenster passt: Auf schmalen Screens pannt sie horizontal (die Spalten behalten ihre Mindestbreite, statt sich zu überlagern — Title kollabierte auf 0 und legte sich über Category); vertikal scrollt die Übersicht wie gehabt im eigenen Container.",
+      },
+    ],
+  },
+  {
     version: "0.6.517",
     entries: [
       {

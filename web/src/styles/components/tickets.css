@@ -207,7 +207,18 @@
     border: 1px solid var(--color-border);
     border-radius: var(--radius-md);
     background: var(--color-bg-elevated);
-    overflow: hidden;
+    /* Passt die Spalten-Grid nicht in die Fensterbreite (Phone), pannt die
+     * Tabelle horizontal, statt Spalten übereinander zu quetschen (der
+     * Title kollabierte auf 0 und legte sich über Category). Kopf und
+     * Zeilen tragen dafür eine gemeinsame Mindestbreite. Vertikal scrollt
+     * der Overview-Body wie gehabt. */
+    overflow-x: auto;
+    overflow-y: hidden;
+
+    & .ticket-head,
+    & .ticket-rows {
+      min-width: 44rem;
+    }
   }
 
   & .ticket-head {
