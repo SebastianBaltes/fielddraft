@@ -24,6 +24,16 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.533",
+    entries: [
+      {
+        kind: "fix",
+        scope: "mesher",
+        text: "Lichen General-Tri: SDF-Sichtlinien-Prüfung (Konzept §1 Schritt 6) in Stern-Nachbarschaft und Dreiecks-Zentroid — Punkte über konkave Buchten hinweg sind in 3D nah, aber flächenfremd; solche Luft-Nachbarn spannten Speichen quer durch die Luft (Betreiber-Screenshot) und verdrängten im 2D-Delaunay der Sterne die echten Nachbarn (fehlende Dreiecke im Inneren). Demo: 123→107 offene Kanten, Sterne kleiner und schneller.",
+      },
+    ],
+  },
+  {
     version: "0.6.532",
     entries: [
       {

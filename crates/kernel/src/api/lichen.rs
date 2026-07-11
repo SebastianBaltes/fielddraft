@@ -1093,6 +1093,7 @@ impl Kernel {
                         Some(&own),
                         Some(&global_chain_edges),
                         opts.fill_holes,
+                        &|p| fg(p).0,
                     );
                     if std::env::var("LICHEN_DEBUG_FACES").is_ok() {
                         eprintln!(

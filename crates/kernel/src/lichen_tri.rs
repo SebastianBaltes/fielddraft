@@ -197,6 +197,7 @@ pub fn triangulate_face_general(
     owner: Option<&dyn Fn([f32; 3]) -> bool>,
     global_chain_edges: Option<&HashSet<(u32, u32)>>,
     fill_holes: bool,
+    field: &dyn Fn([f32; 3]) -> f32,
 ) -> GeneralFaceMesh {
     let member_set: HashSet<u32> = members.iter().copied().collect();
 
@@ -322,6 +323,24 @@ pub fn triangulate_face_general(
                         // größer sein als der Blatt-Abstand.
                         let dl = dot(d, d).sqrt();
                         if dot(d, ni).abs() > cocone_sin * dl {
+                            continue;
+                        }
+                        // SDF-SICHTLINIE (Konzept §1 Schritt 6): die Sehne
+                        // p→q muss nahe der OBERFLÄCHE bleiben. Punkte über
+                        // eine konkave Bucht hinweg sind in 3D nah, aber
+                        // flächenfremd — solche Luft-Nachbarn spannen nicht
+                        // nur Luft-Dreiecke auf, sie VERDRÄNGEN im 2D-
+                        // Delaunay des Sterns auch die echten Nachbarn
+                        // (Betreiber-Screenshot: Speichen quer durch die
+                        // Bucht + fehlende Dreiecke innen). Toleranz =
+                        // Sehnen-Sagitta gekrümmter Flächen (0,15·L) plus
+                        // Spacing-Grundrauschen.
+                        let midp = [
+                            (pi[0] + pj[0]) * 0.5,
+                            (pi[1] + pj[1]) * 0.5,
+                            (pi[2] + pj[2]) * 0.5,
+                        ];
+                        if field(midp).abs() > (0.15 * dl).max(0.1 * spacing[i as usize]) {
                             continue;
                         }
                         local.push((
@@ -1129,6 +1148,32 @@ pub fn triangulate_face_general(
         }
         enforce_chain_single_use(points, chains, normals, &mut tris);
     }
+    // ── FLÄCHEN-TREUE (Konzept §1 Schritt 6, Dreiecks-Ebene): das
+    // Zentroid jedes Dreiecks muss auf der Oberfläche liegen — fängt
+    // Luft-Dreiecke aller Quellen (Sterne, Vervollständigung, Füller)
+    // über konkaven Buchten. Toleranz wie die Sehnen-Sagitta. ──
+    tris.retain(|&[a, b, c]| {
+        let (pa, pb, pc) = (
+            points[a as usize],
+            points[b as usize],
+            points[c as usize],
+        );
+        let cen = [
+            (pa[0] + pb[0] + pc[0]) / 3.0,
+            (pa[1] + pb[1] + pc[1]) / 3.0,
+            (pa[2] + pb[2] + pc[2]) / 3.0,
+        ];
+        let e2max = {
+            let mut m = 0.0f32;
+            for (x, y) in [(pa, pb), (pb, pc), (pc, pa)] {
+                let d = sub(y, x);
+                m = m.max(dot(d, d));
+            }
+            m.sqrt()
+        };
+        field(cen).abs() <= (0.15 * e2max).max(0.1 * spacing[a as usize])
+    });
+
     // ── Orientierung: die Stern-Abstimmung arbeitet auf SORTIERTEN Index-
     // Tripeln, das Winding ist danach beliebig (gemessen: ~770 gleich-
     // gerichtete Doppelkanten auf dem Demo). Jedes Dreieck an der Flächen-
