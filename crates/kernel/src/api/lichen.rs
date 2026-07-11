@@ -316,6 +316,14 @@ impl Kernel {
                     edge_segs.push((pa, pb));
                     all[ia as usize].u = all[ia as usize].u.min(d);
                     all[ib as usize].u = all[ib as usize].u.min(d);
+                    // SPACE = echter Ketten-Nachbarabstand (nicht h!): space
+                    // steuert Stern-Horizont, Grading-Start und den
+                    // symmetrischen Konflikt-Test — ein 0.2-dichter Ketten-
+                    // punkt mit space=10 „beansprucht" sonst 10 mm Platz und
+                    // erklärt ganze Mikro-Patches für redundant (Betreiber-
+                    // Screenshot: Grow auf den Wand-Flächen tot).
+                    all[ia as usize].space = all[ia as usize].space.min(d);
+                    all[ib as usize].space = all[ib as usize].space.min(d);
                 };
                 for w in idxs.windows(2).map(|w| [w[0], w[1]]).collect::<Vec<_>>() {
                     bound_pair(w[0], w[1], &mut all);
@@ -835,13 +843,87 @@ impl Kernel {
                 if bseeds.is_empty() {
                     continue;
                 }
-                // Harte Kanten-Wand (strikter argmin — eine Mit-Minimal-
-                // Toleranz wurde vermessen und VERWORFEN: sie lässt Punkte
-                // knapp jenseits von Kanten zu, Demo 148→229 offene Kanten
-                // + non-manifold. Kehrseite: auf Mikro-Flächen mit dichten
-                // Ketten frisst der argmin fast alle Kandidaten → deren
-                // Innen-Wachstum bleibt eine offene Baustelle).
-                let on_face = |p: [f32; 3], _r: f32| face_of(p) == Some(gf);
+                // TOPOLOGISCHE Kanten-Wand (Betreiber-Screenshot 2026-07-11,
+                // „Grow auf den flachen Seiten tot"): der frühere Distanz-
+                // argmin ist an TANGENTIALEN Verschneidungen (Gyroid schneidet
+                // Box-Ebene fast parallel) ein Münzwurf — beide Flächen sind
+                // dort über mm-Streifen gleich nah, fast jeder Kandidat wurde
+                // gefressen. Die WÄNDE sind aber die KETTEN selbst: ein
+                // Schritt ist gültig, wenn (a) das Ziel auf der EIGENEN
+                // Trägerfläche liegt und (b) der Schritt p→cp keine Ketten-
+                // Kante kreuzt (2D-Test im Tangentialrahmen). Eine bloße
+                // Mit-Minimal-Toleranz wurde zuvor vermessen und verworfen
+                // (Demo 148→229 + non-manifold) — sie hatte keinen Ketten-
+                // Vorhang.
+                let own_dist = |q: [f32; 3]| -> f32 {
+                    let fs = &face_surfs[gf as usize];
+                    let pl = crate::world_to_local(&fs.placement, q);
+                    let ps = crate::world_to_local(&fs.transform, pl);
+                    crate::csg::sdf_halfspace(&fs.surface, ps).abs()
+                };
+                let on_face = |p0: [f32; 3], p1: [f32; 3], rr: f32| -> bool {
+                    // (a) Ziel auf der eigenen Trägerfläche.
+                    if own_dist(p1) > (0.15 * rr).max(0.02 * h) {
+                        return false;
+                    }
+
+                    // (b) Ketten-Vorhang: Schritt kreuzt keine Kanten-Kette.
+                    let n = {
+                        let d = [
+                            (p0[0] + p1[0]) * 0.5,
+                            (p0[1] + p1[1]) * 0.5,
+                            (p0[2] + p1[2]) * 0.5,
+                        ];
+                        // robust_grad: der Dual-Gradient ist exakt auf
+                        // planaren Flächen null (bekannter Wurzel-Bug) —
+                        // ein Müll-Rahmen macht den Kreuzungstest zufällig.
+                        lichen::unit(lichen::robust_grad(d, &fg))
+                    };
+                    let seed = if n[0].abs() < 0.9 { [1.0, 0.0, 0.0] } else { [0.0, 1.0, 0.0] };
+                    let dn = seed[0] * n[0] + seed[1] * n[1] + seed[2] * n[2];
+                    let e1 = lichen::unit([
+                        seed[0] - dn * n[0],
+                        seed[1] - dn * n[1],
+                        seed[2] - dn * n[2],
+                    ]);
+                    let e2 = [
+                        n[1] * e1[2] - n[2] * e1[1],
+                        n[2] * e1[0] - n[0] * e1[2],
+                        n[0] * e1[1] - n[1] * e1[0],
+                    ];
+                    let to2 = |q: [f32; 3]| -> [f64; 2] {
+                        let d = [q[0] - p0[0], q[1] - p0[1], q[2] - p0[2]];
+                        [
+                            (d[0] * e1[0] + d[1] * e1[1] + d[2] * e1[2]) as f64,
+                            (d[0] * e2[0] + d[1] * e2[1] + d[2] * e2[2]) as f64,
+                        ]
+                    };
+                    let (a2, b2) = (to2(p0), to2(p1));
+                    let step2 = ((p1[0] - p0[0]).powi(2)
+                        + (p1[1] - p0[1]).powi(2)
+                        + (p1[2] - p0[2]).powi(2))
+                    .sqrt();
+                    for &(sa, sb) in &edge_segs {
+                        // Nähe-Kull: Segment-Mitte im Schritt-Umkreis?
+                        let m = [(sa[0] + sb[0]) * 0.5, (sa[1] + sb[1]) * 0.5, (sa[2] + sb[2]) * 0.5];
+                        let dm = ((m[0] - p0[0]).powi(2)
+                            + (m[1] - p0[1]).powi(2)
+                            + (m[2] - p0[2]).powi(2))
+                        .sqrt();
+                        let seg_half = ((sb[0] - sa[0]).powi(2)
+                            + (sb[1] - sa[1]).powi(2)
+                            + (sb[2] - sa[2]).powi(2))
+                        .sqrt()
+                            * 0.5;
+                        if dm > step2 + seg_half + 1e-3 {
+                            continue;
+                        }
+                        if crate::lichen_tri::segments_cross(a2, b2, to2(sa), to2(sb)) {
+                            return false;
+                        }
+                    }
+                    true
+                };
                 // Krümmung von der TRÄGERFLÄCHE dieser Fläche: Normalenfeld
                 // aus dem Surface-SDF (glatt, unendlich — misst nie einen
                 // B-Rep-Kanten-Knick und rauscht nicht wie Klein-Fenster-FD
@@ -864,7 +946,7 @@ impl Kernel {
                     lichen::curvature(q, surf_gradn(q), h, &surf_gradn)
                 };
                 let grown = lichen::grow_surface(
-                    &bseeds, h, &opts, &fg, &brep_dist, &on_face, &surf_curv,
+                    &bseeds, &all, h, &opts, &fg, &brep_dist, &on_face, &surf_curv,
                 );
                 if std::env::var("LICHEN_DEBUG_GROW").is_ok() {
                     let bad = grown

@@ -24,6 +24,16 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.532",
+    entries: [
+      {
+        kind: "fix",
+        scope: "mesher",
+        text: "Lichen: Wachstum auf Mikro-Feature-Flächen lebt (Betreiber-Screenshot „Grow auf den flachen Seiten tot“) — drei Wurzeln behoben: Ketten-Punkte tragen jetzt ihr ECHTES Nachbar-Spacing statt h (ein 0,2-mm-dichter Randpunkt „beanspruchte“ sonst 10 mm und erklärte ganze Patches für redundant), die Kanten-Wand ist topologisch (Ziel auf eigener Trägerfläche + Ketten-Vorhang-Kreuzungstest statt Distanz-argmin, der an tangentialen Verschneidungen zum Münzwurf wurde), und das Wachstum sieht die Punkte ANDERER Flächen als Konflikt-Quelle (keine 0,04-mm-Doppelblätter an tangentialen Nähten mehr). Demo-Projekt: beste Werte bisher (123 offene Kanten, alle Strukturmetriken 0).",
+      },
+    ],
+  },
+  {
     version: "0.6.531",
     entries: [
       {
