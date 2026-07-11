@@ -227,6 +227,10 @@ export function LichenOverlay({
     const nOpenEdge = data.length > diagBase ? data[diagBase] : 0;
     const weakBase = diagBase + 1 + nOpenEdge * 2;
     const nWeakTri = data.length > weakBase ? data[weakBase] : 0;
+    // Qualitäts-Block (fix 6 Werte, kernel-berechnet): [boundary, nonmanifold,
+    // degenerate, components, euler, orientationViolations].
+    const qBase = weakBase + 1 + nWeakTri * 3;
+    const qual = (k: number) => (data.length > qBase + k ? data[qBase + k] : 0);
     setLichenStats({
       cells: n,
       capped: total >= MAX_LEAVES,
@@ -234,6 +238,12 @@ export function LichenOverlay({
       fallbackTris,
       holeEdges: nOpenEdge,
       weakTris: nWeakTri,
+      boundaryEdges: qual(0),
+      nonmanifoldEdges: qual(1),
+      degenerateTris: qual(2),
+      components: qual(3),
+      euler: qual(4),
+      orientationViolations: qual(5),
     });
 
     // Debug octree-edge connectivity mesh over the SHOWN points — the

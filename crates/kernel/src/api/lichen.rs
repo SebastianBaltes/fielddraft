@@ -544,6 +544,20 @@ impl Kernel {
                     weak_tris.extend(res.weak_tris);
                     t.extend(res.tris);
                 }
+                // Flächen-übergreifende DUPLIKATE konsolidieren (kein
+                // Qualitäts-Filter — dasselbe Dreieck aus zwei Sichten IST
+                // ein Dreieck): ein Dreieck aus 3 Ketten-Punkten liegt in
+                // den Member-Mengen BEIDER Nachbarflächen und wird von
+                // beiden Sternläufen akzeptiert; kanonischer Schlüssel =
+                // sortiertes Index-Tripel (Demo-Projekt: 305 Duplikate an
+                // den Mikro-Feature-Ketten → 201 non-manifolde Kanten).
+                let mut seen: std::collections::HashSet<[u32; 3]> =
+                    std::collections::HashSet::new();
+                t.retain(|&[a, b, c]| {
+                    let mut k = [a, b, c];
+                    k.sort_unstable();
+                    seen.insert(k)
+                });
                 if holes + nonmani > 0 {
                     eprintln!(
                         "lichen general-tri: {holes} Loch-Kanten, {nonmani} non-manifold Kanten (Diagnose)"
@@ -760,16 +774,17 @@ mod tests {
         let tris = out[1] as usize;
         assert!(tris > 0, "advancing front emits real triangles");
         // Layout: header(3) + points×9 + indices×3 + nFaceRec + faceRec×4
-        //         + nOpenEdge + openEdge×2 + nWeakTri + weakTri×3 (Diagnose).
+        //         + nOpenEdge + openEdge×2 + nWeakTri + weakTri×3 (Diagnose)
+        //         + Qualitäts-Block (6 Werte).
         let idx_end = 3 + total * 9 + tris * 3;
         let n_face = out[idx_end] as usize;
         let diag = idx_end + 1 + n_face * 4;
         let n_open = out[diag] as usize;
         let n_weak = out[diag + 1 + n_open * 2] as usize;
         assert_eq!(
-            diag + 1 + n_open * 2 + 1 + n_weak * 3,
+            diag + 1 + n_open * 2 + 1 + n_weak * 3 + 6,
             out.len(),
-            "flat layout: points + index + face-normal block + diag block"
+            "flat layout: points + index + face-normal block + diag + quality block"
         );
         assert!(n_face >= total, "at least one circle record per point (boundary points ≥2)");
         let (mut corners, mut chain, mut surf) = (0u32, 0u32, 0u32);
@@ -1059,6 +1074,96 @@ mod tests {
         }
         let over = edge_use.values().filter(|&&u| u > 2).count();
         assert_eq!(over, 0, "Stern-Konsistenz darf keine non-manifolden Kanten erzeugen");
+    }
+
+    /// Betreiber-Demo-Projekt (2026-07-11): Kugel r50 ∩ Gyroid (cell 10),
+    /// Zylinder-Bohrung r30, Mikro-Box-Intersect (6×8×6 an der Oberfläche),
+    /// Mini-Kugel (r50 skaliert 0.02) — GENAU das Projekt, mit dem der
+    /// Betreiber das Lichen-Meshing in der App testet. Regressions-Gate für
+    /// die Mesh-QUALITÄT (lichen::mesh_quality) beider Triangulierungs-Pfade.
+    fn demo_project_kernel() -> crate::Kernel {
+        let mut k = crate::Kernel::new();
+        k.load_json(include_str!("../../testdata/lichen_demo_project.json"))
+            .expect("Demo-Projekt lädt");
+        k
+    }
+
+    /// Flat-Buffer → (Positionen, Dreiecke, Qualität).
+    fn quality_of(out: &[f32]) -> (usize, crate::lichen::MeshQuality) {
+        let total = out[0] as usize;
+        let tris = out[1] as usize;
+        let positions: Vec<[f32; 3]> = (0..total)
+            .map(|i| [out[3 + i * 9], out[3 + i * 9 + 1], out[3 + i * 9 + 2]])
+            .collect();
+        let base = 3 + total * 9;
+        let t: Vec<[u32; 3]> = (0..tris)
+            .map(|k| {
+                [
+                    out[base + k * 3] as u32,
+                    out[base + k * 3 + 1] as u32,
+                    out[base + k * 3 + 2] as u32,
+                ]
+            })
+            .collect();
+        (tris, crate::lichen::mesh_quality(&positions, &t))
+    }
+
+    /// Chart-Pfad (Default) auf dem Demo-Projekt — REGRESSIONS-GATE auf die
+    /// gemessenen Ist-Werte (2026-07-11, h=10: tris=1117, boundary=153,
+    /// nonmanifold=24, degenerate=0, components=2). Obergrenzen mit Luft
+    /// gegen Float-Jitter; Ziel (0/0) steht als #[ignore]-WIP darunter.
+    #[test]
+    fn lichen_demo_project_chart_quality() {
+        let mut k = demo_project_kernel();
+        let out = k.lichen_mesh(
+            r#"{"targetEdgeLength":10.0,"grow":true,"maxPoints":50000}"#.into(),
+        );
+        let (tris, q) = quality_of(&out);
+        eprintln!("demo chart: tris={tris} {q:?}");
+        assert!(tris > 500, "Chart-Pfad muss substanziell triangulieren, got {tris}");
+        assert_eq!(q.degenerate_tris, 0, "degenerierte Dreiecke: {q:?}");
+        assert!(q.nonmanifold_edges <= 40, "non-manifold REGRESSION (Stand 24): {q:?}");
+        assert!(q.boundary_edges <= 250, "Rand-Kanten REGRESSION (Stand 153): {q:?}");
+    }
+
+    /// General-Pfad (Stern-Konsistenz) auf dem Demo-Projekt — Gate auf die
+    /// Ist-Werte (2026-07-11, h=10 nach Duplikat-Konsolidierung: tris=1196,
+    /// boundary=153, nonmanifold=168, degenerate=0). Die per-Fläche-Garantie
+    /// (0 non-manifold JE Fläche) hält; global überlappen Flächen an den
+    /// Mikro-Feature-Ketten (Dreiecke aus 3 Ketten-Punkten entstehen in
+    /// BEIDEN Nachbar-Sternläufen mit verschiedener Zerlegung) — nächster
+    /// Hebel: Ketten-Dreiecke einem Owner zuschlagen (Owner-Stitching).
+    #[test]
+    fn lichen_demo_project_general_quality() {
+        let mut k = demo_project_kernel();
+        let out = k.lichen_mesh(
+            r#"{"targetEdgeLength":10.0,"grow":true,"maxPoints":50000,"generalTri":true}"#.into(),
+        );
+        let (tris, q) = quality_of(&out);
+        eprintln!("demo general: tris={tris} {q:?}");
+        assert!(tris > 500, "General-Pfad muss substanziell triangulieren, got {tris}");
+        assert_eq!(q.degenerate_tris, 0, "degenerierte Dreiecke: {q:?}");
+        assert!(q.nonmanifold_edges <= 250, "non-manifold REGRESSION (Stand 168): {q:?}");
+        assert!(q.boundary_edges <= 250, "Rand-Kanten REGRESSION (Stand 153): {q:?}");
+    }
+
+    /// QUALITÄTS-ZIEL auf dem Demo-Projekt: manifold + watertight, beide
+    /// Pfade — WIP: (a) Gyroid-Flächen (chartlos, kein FaceSurf) wachsen noch
+    /// nicht (F2) → offene Ränder an jeder Gyroid-Naht; (b) Flächen-Überlapp
+    /// an Mikro-Feature-Ketten (chart 24 / general 168 non-manifold).
+    #[test]
+    #[ignore = "WIP: Gyroid wächst nicht (F2) + Flächen-Überlapp an Mikro-Ketten — \
+                gemessen 2026-07-11: chart 153/24, general 153/168 (boundary/nonmanifold)"]
+    fn lichen_demo_project_is_watertight() {
+        let mut k = demo_project_kernel();
+        for opts in [
+            r#"{"targetEdgeLength":10.0,"grow":true,"maxPoints":50000}"#,
+            r#"{"targetEdgeLength":10.0,"grow":true,"maxPoints":50000,"generalTri":true}"#,
+        ] {
+            let out = k.lichen_mesh(opts.into());
+            let (_, q) = quality_of(&out);
+            assert!(q.watertight(), "{opts}: {q:?}");
+        }
     }
 
     /// Interior surface points must grow whether or not the reach term is on

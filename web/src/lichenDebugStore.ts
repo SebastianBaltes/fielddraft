@@ -105,6 +105,19 @@ export interface LichenStats {
   holeEdges: number;
   /** General-Pfad-Diagnose: abgelehnte Fast-Konsens-Kandidaten (orange). */
   weakTris: number;
+  /** Qualitäts-Block (beide Pfade, kernel-berechnet über das finale Netz):
+   *  Kanten mit genau einem Dreieck (offener Rand). */
+  boundaryEdges: number;
+  /** Kanten mit >2 Dreiecken (0 = manifold). */
+  nonmanifoldEdges: number;
+  /** Dreiecke mit ~Null-Fläche oder doppelten Ecken. */
+  degenerateTris: number;
+  /** Zusammenhangskomponenten. */
+  components: number;
+  /** Euler-Charakteristik V−E+F (2 je geschlossener Kugel-Komponente). */
+  euler: number;
+  /** Mehrfach gleichgerichtete Kanten (0 = konsistent orientierbar). */
+  orientationViolations: number;
 }
 
 let stats: LichenStats | null = null;

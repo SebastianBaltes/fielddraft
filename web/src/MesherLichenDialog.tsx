@@ -640,6 +640,63 @@ export function MesherLichenDialog({ onClose }: { onClose: () => void }) {
         </div>
       )}
 
+      {/* ── Qualitäts-Kennzahlen des finalen Netzes (kernel-berechnet,
+           beide Pfade): manifold/watertight als ✓/✗ mit Zählern. ── */}
+      <div className="readout">
+        <span
+          className="k"
+          title="Manifold = keine Kante gehört zu mehr als zwei Dreiecken. Zahl = non-manifolde Kanten."
+        >
+          Manifold
+        </span>
+        <span className="v" data-testid="mesher-lichen-manifold">
+          {stats
+            ? (stats.nonmanifoldEdges ?? 0) === 0
+              ? "✓"
+              : `✗ (${(stats.nonmanifoldEdges ?? 0).toLocaleString()} Kanten)`
+            : "—"}
+        </span>
+      </div>
+      <div className="readout">
+        <span
+          className="k"
+          title="Watertight = manifold UND keine offene Rand-Kante (jede Kante hat genau zwei Dreiecke). Zahl = offene Rand-Kanten."
+        >
+          Watertight
+        </span>
+        <span className="v" data-testid="mesher-lichen-watertight">
+          {stats
+            ? (stats.boundaryEdges ?? 0) === 0 && (stats.nonmanifoldEdges ?? 0) === 0
+              ? "✓"
+              : `✗ (${(stats.boundaryEdges ?? 0).toLocaleString()} offen)`
+            : "—"}
+        </span>
+      </div>
+      <div className="readout">
+        <span
+          className="k"
+          title="Dreiecke mit (nahezu) Null-Fläche oder doppelten Ecken — werden NICHT gefiltert, nur gezählt (Diagnose-Prinzip)."
+        >
+          Degenerierte Tris
+        </span>
+        <span className="v" data-testid="mesher-lichen-degenerate">
+          {stats ? (stats.degenerateTris ?? 0).toLocaleString() : "—"}
+        </span>
+      </div>
+      <div className="readout">
+        <span
+          className="k"
+          title="Zusammenhangskomponenten des Netzes · Euler-Charakteristik V−E+F (geschlossene Kugel-Topologie = 2 je Komponente) · mehrfach gleichgerichtete Kanten (0 = konsistent orientierbar)."
+        >
+          Topologie
+        </span>
+        <span className="v" data-testid="mesher-lichen-topology">
+          {stats
+            ? `${(stats.components ?? 0).toLocaleString()} Komp. · χ=${(stats.euler ?? 0).toLocaleString()} · ${(stats.orientationViolations ?? 0).toLocaleString()} Orient.`
+            : "—"}
+        </span>
+      </div>
+
       <div className="legend">
         <span className="seed">seed</span>
         <span className="corner">corner (pinned)</span>

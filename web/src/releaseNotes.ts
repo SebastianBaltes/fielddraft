@@ -24,6 +24,16 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.524",
+    entries: [
+      {
+        kind: "feat",
+        scope: "mesher",
+        text: "Lichen-Dialog zeigt Qualitäts-Kennzahlen des finalen Netzes: Manifold und Watertight als ✓/✗ mit Zählern, degenerierte Dreiecke, Komponenten, Euler-Charakteristik und Orientierungs-Verstöße (kernel-berechnet, beide Triangulierungs-Pfade). Das Betreiber-Demo-Projekt (Kugel∩Gyroid, Bohrung, Mikro-Features) ist jetzt Unit-Test-Fixture mit Qualitäts-Regressions-Gates; flächen-übergreifende Dreiecks-Duplikate des General-Pfads werden konsolidiert.",
+      },
+    ],
+  },
+  {
     version: "0.6.523",
     entries: [
       {

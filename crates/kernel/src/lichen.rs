@@ -551,6 +551,103 @@ pub fn resample_edge_by_curvature(
 /// der `LPoint.n`-Slot. Selbstbeschreibend (Count voran), damit die Punkt- und
 /// Index-Offsets exakt wie zuvor liegen. `point_faces[i]` = die Flächen-IDs
 /// (+ zugehörige Normalen) von Punkt `i`.
+/// Qualitäts-Kennzahlen eines Dreiecksnetzes — geteilt von Unit-Tests,
+/// `pack_with_diag` (→ Lichen-Dialog-Readout) und Diagnose-Ausgaben.
+/// Diagnose-first (Betreiber-Prinzip): alles wird GEZÄHLT, nichts gefiltert.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MeshQuality {
+    /// Kanten mit genau EINEM Dreieck (offener Rand/Loch).
+    pub boundary_edges: usize,
+    /// Kanten mit MEHR als zwei Dreiecken.
+    pub nonmanifold_edges: usize,
+    /// Dreiecke mit (nahezu) Null-Fläche (< 1e-12 mm²) oder doppelten Ecken.
+    pub degenerate_tris: usize,
+    /// Zusammenhangskomponenten über die Dreiecks-Konnektivität.
+    pub components: usize,
+    /// Euler-Charakteristik V − E + F (geschlossene Kugel-Topologie = 2 pro
+    /// Komponente).
+    pub euler: i64,
+    /// Gerichtete Kanten, die MEHRFACH in derselben Richtung vorkommen —
+    /// 0 = konsistent orientierbar (bei manifold+watertight).
+    pub orientation_violations: usize,
+}
+
+impl MeshQuality {
+    pub fn manifold(&self) -> bool {
+        self.nonmanifold_edges == 0
+    }
+    pub fn watertight(&self) -> bool {
+        self.boundary_edges == 0 && self.nonmanifold_edges == 0
+    }
+}
+
+/// Kennzahlen über die finale Dreiecksliste berechnen (Indizes in `points`).
+pub fn mesh_quality(points: &[[f32; 3]], tris: &[[u32; 3]]) -> MeshQuality {
+    use std::collections::HashMap;
+    let mut edge_use: HashMap<(u32, u32), u32> = HashMap::new();
+    let mut dir_use: HashMap<(u32, u32), u32> = HashMap::new();
+    let mut degenerate = 0usize;
+    // Union-Find über die benutzten Vertices.
+    let mut parent: HashMap<u32, u32> = HashMap::new();
+    fn find(parent: &mut HashMap<u32, u32>, x: u32) -> u32 {
+        let p = *parent.entry(x).or_insert(x);
+        if p == x {
+            return x;
+        }
+        let r = find(parent, p);
+        parent.insert(x, r);
+        r
+    }
+    for &[a, b, c] in tris {
+        if a == b || b == c || c == a {
+            degenerate += 1;
+            continue;
+        }
+        let (pa, pb, pc) = (
+            points[a as usize],
+            points[b as usize],
+            points[c as usize],
+        );
+        let u = [pb[0] - pa[0], pb[1] - pa[1], pb[2] - pa[2]];
+        let v = [pc[0] - pa[0], pc[1] - pa[1], pc[2] - pa[2]];
+        let cx = (u[1] * v[2] - u[2] * v[1]) as f64;
+        let cy = (u[2] * v[0] - u[0] * v[2]) as f64;
+        let cz = (u[0] * v[1] - u[1] * v[0]) as f64;
+        if 0.5 * (cx * cx + cy * cy + cz * cz).sqrt() < 1e-12 {
+            degenerate += 1;
+        }
+        for (x, y) in [(a, b), (b, c), (c, a)] {
+            *edge_use.entry((x.min(y), x.max(y))).or_default() += 1;
+            *dir_use.entry((x, y)).or_default() += 1;
+        }
+        let ra = find(&mut parent, a);
+        let rb = find(&mut parent, b);
+        parent.insert(rb, ra);
+        let rb2 = find(&mut parent, b);
+        let rc = find(&mut parent, c);
+        parent.insert(rc, rb2);
+    }
+    let boundary_edges = edge_use.values().filter(|&&u| u == 1).count();
+    let nonmanifold_edges = edge_use.values().filter(|&&u| u > 2).count();
+    let orientation_violations = dir_use.values().filter(|&&u| u > 1).count();
+    let verts: std::collections::HashSet<u32> =
+        tris.iter().flat_map(|t| t.iter().copied()).collect();
+    let mut roots: std::collections::HashSet<u32> = std::collections::HashSet::new();
+    for &v in &verts {
+        let r = find(&mut parent, v);
+        roots.insert(r);
+    }
+    let euler = verts.len() as i64 - edge_use.len() as i64 + tris.len() as i64;
+    MeshQuality {
+        boundary_edges,
+        nonmanifold_edges,
+        degenerate_tris: degenerate,
+        components: roots.len(),
+        euler,
+        orientation_violations,
+    }
+}
+
 pub fn pack(all: &[LPoint], tris: &[[u32; 3]], point_faces: &[Vec<(u32, [f32; 3])>]) -> Vec<f32> {
     pack_with_diag(all, tris, point_faces, &[], &[])
 }
@@ -607,5 +704,15 @@ pub fn pack_with_diag(
         out.push(t[1] as f32);
         out.push(t[2] as f32);
     }
+    // Qualitäts-Block (fix 6 Werte, fürs Dialog-Readout): [boundaryEdges,
+    // nonmanifoldEdges, degenerateTris, components, euler, orientViolations].
+    let positions: Vec<[f32; 3]> = all.iter().map(|lp| lp.p).collect();
+    let q = mesh_quality(&positions, tris);
+    out.push(q.boundary_edges as f32);
+    out.push(q.nonmanifold_edges as f32);
+    out.push(q.degenerate_tris as f32);
+    out.push(q.components as f32);
+    out.push(q.euler as f32);
+    out.push(q.orientation_violations as f32);
     out
 }
