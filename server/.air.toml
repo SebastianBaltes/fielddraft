@@ -12,6 +12,12 @@ exclude_dir = ["tmp", "data"]
 exclude_regex = ["_test\\.go$"]
 delay = 300
 stop_on_error = true
+# Binary nach JEDEM Exit neu starten (2s Pause): stirbt der Server z.B. am
+# DB-Ping beim Boot (DB nach Daemon-Neustart noch nicht oben), zieht air ihn
+# wieder hoch, statt bis zur nächsten Dateiänderung tot im Container zu
+# liegen (Symptom: Container "Up", aber 502 auf allen /api-Routen).
+rerun = true
+rerun_delay = 2000
 
 [log]
 main_only = false
