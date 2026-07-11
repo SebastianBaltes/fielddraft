@@ -86,6 +86,90 @@ fn segments_cross(a: [f64; 2], b: [f64; 2], c: [f64; 2], d: [f64; 2]) -> bool {
     o1 * o2 < 0.0 && o3 * o4 < 0.0
 }
 
+/// Ketten-Kanten-Einzelnutzung EINER Fläche erzwingen (Owner-Stitching II,
+/// Betreiber-Demo): eine Ketten-Kante ist FLÄCHENRAND — pro Fläche darf
+/// genau EIN Dreieck sie nutzen. Zwei Nutzungen = die Triangulierung hat
+/// über den eigenen Rand gefaltet (typisch: Sliver aus 3 aufeinander-
+/// folgenden Kettenpunkten auf der AUSSENSEITE der Kette; sein Zentroid
+/// liegt AUF der Kante, ein SDF-Klassifikator kann ihn nicht zuordnen).
+/// Konfliktregel, deterministisch: bevorzugt bleibt das Dreieck mit
+/// Innen-Drittpunkt, dann das auf der Innen-SEITE der gerichteten Ring-
+/// Kante (s = n × (v−u), Fläche liegt links der Ring-Richtung), zuletzt
+/// das lexikographisch kleinste. Rückgabe: Anzahl entfernter Dreiecke.
+pub fn enforce_chain_single_use(
+    points: &[[f32; 3]],
+    chains: &[Vec<u32>],
+    normals: &HashMap<u32, [f32; 3]>,
+    tris: &mut Vec<[u32; 3]>,
+) -> usize {
+    // Gerichtete Ring-Kanten: (min,max) → (u,v) in Ring-Reihenfolge.
+    let mut dir_of: HashMap<(u32, u32), (u32, u32)> = HashMap::new();
+    let mut chain_pts: HashSet<u32> = HashSet::new();
+    for ring in chains {
+        for k in 0..ring.len() {
+            let a = ring[k];
+            let b = ring[(k + 1) % ring.len()];
+            chain_pts.insert(a);
+            if a != b {
+                dir_of.insert((a.min(b), a.max(b)), (a, b));
+            }
+        }
+    }
+    if dir_of.is_empty() {
+        return 0;
+    }
+    let mut by_edge: HashMap<(u32, u32), Vec<usize>> = HashMap::new();
+    for (ti, &[a, b, c]) in tris.iter().enumerate() {
+        for (x, y) in [(a, b), (b, c), (c, a)] {
+            let e = (x.min(y), x.max(y));
+            if dir_of.contains_key(&e) {
+                by_edge.entry(e).or_default().push(ti);
+            }
+        }
+    }
+    let mut edges: Vec<(u32, u32)> = by_edge.keys().copied().collect();
+    edges.sort_unstable();
+    let mut dropped = vec![false; tris.len()];
+    for e in edges {
+        let alive: Vec<usize> = by_edge[&e].iter().copied().filter(|&t| !dropped[t]).collect();
+        if alive.len() <= 1 {
+            continue;
+        }
+        let (u, v) = dir_of[&e];
+        let (pu, pv) = (points[u as usize], points[v as usize]);
+        let mid = [(pu[0] + pv[0]) * 0.5, (pu[1] + pv[1]) * 0.5, (pu[2] + pv[2]) * 0.5];
+        let n = normals.get(&u).copied().unwrap_or([0.0, 0.0, 1.0]);
+        let s = cross(n, sub(pv, pu));
+        let score = |ti: usize| -> (i32, std::cmp::Reverse<[u32; 3]>) {
+            let [a, b, c] = tris[ti];
+            let third = if (a == u || a == v) && (b == u || b == v) {
+                c
+            } else if (a == u || a == v) && (c == u || c == v) {
+                b
+            } else {
+                a
+            };
+            let interior = i32::from(!chain_pts.contains(&third));
+            let side = i32::from(dot(sub(points[third as usize], mid), s) > 0.0);
+            (interior * 2 + side, std::cmp::Reverse(tris[ti]))
+        };
+        let keep = *alive.iter().max_by_key(|&&t| score(t)).unwrap();
+        for &t in &alive {
+            if t != keep {
+                dropped[t] = true;
+            }
+        }
+    }
+    let before = tris.len();
+    let mut k = 0usize;
+    tris.retain(|_| {
+        let d = dropped[k];
+        k += 1;
+        !d
+    });
+    before - tris.len()
+}
+
 /// Allgemeine Triangulierung EINER Fläche.
 ///
 /// * `points`/`normals`/`spacing`: globale Punkttabelle (Welt), Pro-Punkt-
@@ -97,6 +181,11 @@ fn segments_cross(a: [f64; 2], b: [f64; 2], c: [f64; 2], d: [f64; 2]) -> bool {
 ///   pro Abtastschritt) — koppelt den Cocone-Öffnungswinkel (s.u.).
 /// * `accept`: Akzeptanz-Modus `"vote" | "gabriel" | "hybrid"` (schaltbar aus
 ///   dem Dialog; Env `LICHEN_ACCEPT` überstimmt für Experimente).
+/// * `owner`: OWNER-STITCHING — Ketten-Punkte gehören BEIDEN Nachbarflächen,
+///   also kann ein Dreieck aus 3 Ketten-Punkten in beiden Sternläufen mit
+///   VERSCHIEDENER Zerlegung entstehen (global non-manifold, obwohl jede
+///   Fläche für sich sauber ist). Solche Voll-Ketten-Dreiecke behält nur die
+///   Fläche, deren Klassifikator das Dreieckszentrum beansprucht.
 pub fn triangulate_face_general(
     points: &[[f32; 3]],
     normals: &HashMap<u32, [f32; 3]>,
@@ -105,6 +194,8 @@ pub fn triangulate_face_general(
     chains: &[Vec<u32>],
     curv_angle_rad: f32,
     accept: &str,
+    owner: Option<&dyn Fn([f32; 3]) -> bool>,
+    global_chain_edges: Option<&HashSet<(u32, u32)>>,
 ) -> GeneralFaceMesh {
     let member_set: HashSet<u32> = members.iter().copied().collect();
 
@@ -426,6 +517,27 @@ pub fn triangulate_face_general(
     tris.sort_unstable();
     weak_tris.sort_unstable();
 
+    // ── Owner-Stitching: Voll-Ketten-Dreiecke nur für die eigene Fläche ──
+    if let Some(owner) = owner {
+        let chain_pts: HashSet<u32> =
+            chains.iter().flat_map(|r| r.iter().copied()).collect();
+        tris.retain(|&[a, b, c]| {
+            if !(chain_pts.contains(&a) && chain_pts.contains(&b) && chain_pts.contains(&c)) {
+                return true; // mindestens ein Innen-Punkt → eindeutig unsere
+            }
+            let (pa, pb, pc) = (
+                points[a as usize],
+                points[b as usize],
+                points[c as usize],
+            );
+            owner([
+                (pa[0] + pb[0] + pc[0]) / 3.0,
+                (pa[1] + pb[1] + pc[1]) / 3.0,
+                (pa[2] + pb[2] + pc[2]) / 3.0,
+            ])
+        });
+    }
+
     // ── Ketten-Kreuzungs-Verbot: kein Dreieck über eine gesetzte Kante ──
     // 2D-Test in der Ebene des jeweiligen Dreiecks (symmetrisch für alle
     // Beteiligten). Nur Ketten-Segmente in der Nähe prüfen.
@@ -472,6 +584,25 @@ pub fn triangulate_face_general(
         }
         true
     });
+
+    // ── Fremde Ketten-Kanten sind harte Wände (Betreiber-Demo): am Ecken-
+    // Cluster kann eine DRITTE Fläche ein Dreieck über die Ketten-Kante
+    // eines fremden Flächenpaars spannen — für sie ist die Kante weder
+    // Constraint noch Einzelnutzungs-geschützt. Global verboten. ──
+    if let Some(gce) = global_chain_edges {
+        tris.retain(|&[a, b, c]| {
+            for (x, y) in [(a, b), (b, c), (c, a)] {
+                let e = (x.min(y), x.max(y));
+                if gce.contains(&e) && !chain_edges.contains(&e) {
+                    return false;
+                }
+            }
+            true
+        });
+    }
+
+    // ── Ketten-Kanten-Einzelnutzung: Rand-Folds dieser Fläche entfernen ──
+    enforce_chain_single_use(points, chains, normals, &mut tris);
 
     // ── Diagnose: Kanten-Zählung (2-Manifold, Löcher) ──
     let mut edge_use: HashMap<(u32, u32), u32> = HashMap::new();
@@ -622,7 +753,45 @@ pub fn triangulate_face_general(
                 points, &[ring], &[], 0.0,
             ));
         }
+        // Der Füller kennt weder fremde Wände noch die Einzelnutzung —
+        // beide Regeln nach dem Füllen erneut durchsetzen (Betreiber-Demo:
+        // 2 non-manifolde Rest-Kanten kamen genau von Füll-Dreiecken).
+        if let Some(gce) = global_chain_edges {
+            tris.retain(|&[a, b, c]| {
+                for (x, y) in [(a, b), (b, c), (c, a)] {
+                    let e = (x.min(y), x.max(y));
+                    if gce.contains(&e) && !chain_edges.contains(&e) {
+                        return false;
+                    }
+                }
+                true
+            });
+        }
+        enforce_chain_single_use(points, chains, normals, &mut tris);
     }
+    // ── Orientierung: die Stern-Abstimmung arbeitet auf SORTIERTEN Index-
+    // Tripeln, das Winding ist danach beliebig (gemessen: ~770 gleich-
+    // gerichtete Doppelkanten auf dem Demo). Jedes Dreieck an der Flächen-
+    // Normalen seiner Ecken ausrichten: cross(b−a, c−a) soll mit dem
+    // Normalen-Mittel der drei Ecken übereinstimmen, sonst Ecken tauschen. ──
+    for t in &mut tris {
+        let (pa, pb, pc) = (
+            points[t[0] as usize],
+            points[t[1] as usize],
+            points[t[2] as usize],
+        );
+        let n_tri = cross(sub(pb, pa), sub(pc, pa));
+        let mut n_ref = [0.0f32; 3];
+        for &i in t.iter() {
+            if let Some(n) = normals.get(&i) {
+                n_ref = [n_ref[0] + n[0], n_ref[1] + n[1], n_ref[2] + n[2]];
+            }
+        }
+        if dot(n_tri, n_ref) < 0.0 {
+            t.swap(1, 2);
+        }
+    }
+
     #[cfg(test)]
     for (&(a, b), &u) in edge_use.iter() {
         if u == 1 && !chain_edges.contains(&(a, b)) {

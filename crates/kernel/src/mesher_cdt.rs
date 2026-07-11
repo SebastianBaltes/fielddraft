@@ -49,6 +49,7 @@ fn triangulate_uv(
         ConstrainedDelaunayTriangulation::new();
     let keyf = |p: Point2<f64>| (p.x.to_bits(), p.y.to_bits());
     let mut back: std::collections::HashMap<(u64, u64), u32> = std::collections::HashMap::new();
+    let mut skipped_constraints = 0usize;
 
     let loops2d: Vec<Vec<Point2<f64>>> = loops
         .iter()
@@ -66,10 +67,28 @@ fn triangulate_uv(
             }
             // A failed insertion (degenerate coordinates) degrades this face
             // to "unmeshed" rather than poisoning the whole export.
-            if cdt.add_constraint_edge(a, b).is_err() {
+            let (Ok(ha), Ok(hb)) = (cdt.insert(a), cdt.insert(b)) else {
                 return Vec::new();
+            };
+            if ha == hb {
+                continue;
+            }
+            // KREUZENDE Constraints (z.B. Gyroid-Naht-Ringe, die im
+            // periodischen Chart über ihre Perioden-Kopie laufen) würden
+            // spade PANICKEN lassen. Diagnose-first: das eine Segment
+            // überspringen (lokales Loch, unten als offene Kante zähl- und
+            // sichtbar) statt Crash oder ganze Fläche verwerfen.
+            if cdt.can_add_constraint(ha, hb) {
+                cdt.add_constraint(ha, hb);
+            } else {
+                skipped_constraints += 1;
             }
         }
+    }
+    if skipped_constraints > 0 {
+        eprintln!(
+            "mesher_cdt: {skipped_constraints} kreuzende Rand-Constraints übersprungen (Diagnose)"
+        );
     }
 
     // Even-odd point-in-loops test in 2D (parity over ALL loops: inside the

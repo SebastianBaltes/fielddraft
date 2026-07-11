@@ -172,6 +172,37 @@ impl Kernel {
                         chain = crate::mesher_points::resample_polyline(raw_local, total / 4.0);
                     }
                 }
+                // RING-NAHT-KOHÄRENZ (Betreiber-Demo Kugel∩Gyroid): der
+                // Resampler sieht den Ring als OFFENE Polyline — am Nahtstoß
+                // letzter→erster Punkt kann ein Mini-Restsegment übrig
+                // bleiben (gemessen 0.35 neben 2.82), dessen U-Deckel
+                // (bound_pair nimmt das Minimum der Nachbarsegmente) die
+                // Überdeckungs-Invariante u_a+u_b ≥ d des ersten/letzten
+                // regulären Segments reißt. Letzte Emissionen verwerfen, bis
+                // die drei Naht-Paare die Überdeckungsregel erfüllen — der
+                // Naht-Ort auf einem Ring ist ohnehin ein Abtast-Artefakt.
+                if closed && chain.len() >= 2 {
+                    let dup = usize::from(chain.first() == chain.last());
+                    loop {
+                        let m = chain.len() - dup;
+                        if m <= 4 {
+                            break;
+                        }
+                        let d = |i: usize, j: usize| seg_len(chain[i], chain[j]);
+                        let w = d(m - 1, 0);
+                        let d0 = d(0, 1);
+                        let d1 = d(1, (m - 1).min(2));
+                        let dl = d(m - 2, m - 1);
+                        let dl2 = d(m - 3, m - 2);
+                        let ok_wrap = dl.min(w) + w.min(d0) >= w * 0.9995;
+                        let ok_first = w.min(d0) + d0.min(d1) >= d0 * 0.9995;
+                        let ok_last = dl2.min(dl) + dl.min(w) >= dl * 0.9995;
+                        if ok_wrap && ok_first && ok_last {
+                            break;
+                        }
+                        chain.remove(m - 1);
+                    }
+                }
                 chain
             };
 
@@ -300,6 +331,19 @@ impl Kernel {
             // überdeckt sein — jede Pipeline-Testfahrt prüft das mit.
             #[cfg(test)]
             for (eid, idxs) in &edge_chain {
+                if std::env::var("LICHEN_DEBUG_CHAIN").is_ok() {
+                    let e = &brep.edges[*eid as usize];
+                    let lens: Vec<String> = idxs
+                        .windows(2)
+                        .map(|w| format!("{:.3}", seg_len(all[w[0] as usize].p, all[w[1] as usize].p)))
+                        .collect();
+                    let us: Vec<String> =
+                        idxs.iter().map(|&i| format!("{:.3}", all[i as usize].u)).collect();
+                    eprintln!(
+                        "CHAIN {eid}: n={} closed={} start={:?} end={:?} segs={:?} us={:?}",
+                        idxs.len(), e.start.is_none() && e.end.is_none(), e.start, e.end, lens, us
+                    );
+                }
                 for w in idxs.windows(2) {
                     let (a, b) = (&all[w[0] as usize], &all[w[1] as usize]);
                     let d = seg_len(a.p, b.p);
@@ -496,6 +540,19 @@ impl Kernel {
             if opts.general_tri {
                 let positions: Vec<[f32; 3]> = all.iter().map(|lp| lp.p).collect();
                 let spacings: Vec<f32> = all.iter().map(|lp| lp.space).collect();
+                // Globale Ketten-Kanten ALLER Flächen: harte Wände auch für
+                // Flächen, denen die Kante nicht selbst gehört.
+                let global_chain_edges: HashSet<(u32, u32)> = face_loops
+                    .iter()
+                    .flat_map(|rings| rings.iter())
+                    .flat_map(|(r, _)| {
+                        (0..r.len()).map(move |k| {
+                            let (a, b) = (r[k], r[(k + 1) % r.len()]);
+                            (a.min(b), a.max(b))
+                        })
+                    })
+                    .filter(|&(a, b)| a != b)
+                    .collect();
                 let (mut holes, mut nonmani) = (0usize, 0usize);
                 let mut open_edges: Vec<(u32, u32)> = Vec::new();
                 let mut weak_tris: Vec<[u32; 3]> = Vec::new();
@@ -529,6 +586,7 @@ impl Kernel {
                     if members.len() < 3 {
                         continue;
                     }
+                    let own = |p: [f32; 3]| face_of(p) == Some(gf as u32);
                     let res = crate::lichen_tri::triangulate_face_general(
                         &positions,
                         &nmap,
@@ -537,6 +595,8 @@ impl Kernel {
                         &loops,
                         opts.curv_angle_deg.to_radians(),
                         &opts.accept,
+                        Some(&own),
+                        Some(&global_chain_edges),
                     );
                     holes += res.hole_edges;
                     nonmani += res.nonmanifold_edges;
@@ -558,6 +618,8 @@ impl Kernel {
                     k.sort_unstable();
                     seen.insert(k)
                 });
+                // Orientierung global konsistent machen (auch über Nähte).
+                lichen::orient_consistent(&all, &mut t);
                 if holes + nonmani > 0 {
                     eprintln!(
                         "lichen general-tri: {holes} Loch-Kanten, {nonmani} non-manifold Kanten (Diagnose)"
@@ -579,14 +641,40 @@ impl Kernel {
                         .fold(h, |m, &gi| m.min(all[gi as usize].space));
                 let loops: Vec<Vec<u32>> =
                     face_loops[gf].iter().map(|(r, _)| r.clone()).collect();
+                // Pro-Fläche-Normalen der Ketten-Punkte (für die Innenseiten-
+                // Entscheidung der Ketten-Kanten-Einzelnutzung).
+                let chain_normals = {
+                    let mut m: HashMap<u32, [f32; 3]> = HashMap::new();
+                    for ring in &loops {
+                        for &gi in ring {
+                            let n = point_faces[gi as usize]
+                                .iter()
+                                .find(|&&(g, _)| g == gf as u32)
+                                .map(|&(_, n)| n)
+                                .unwrap_or(all[gi as usize].n);
+                            m.insert(gi, n);
+                        }
+                    }
+                    m
+                };
                 if matches!(face_surfs[gf].surface, HalfSpace::Plane { .. }) {
                     let positions: Vec<[f32; 3]> = all.iter().map(|lp| lp.p).collect();
-                    t.extend(crate::mesher_cdt::triangulate_planar_face(
+                    let mut ft = crate::mesher_cdt::triangulate_planar_face(
                         &positions,
                         &loops,
                         &face_interior[gf],
                         clearance as f64,
-                    ));
+                    );
+                    // Ketten-Kanten-Einzelnutzung: Rand-Folds (Sliver auf der
+                    // Außenseite, Parität am Rand = Münzwurf) entfernen —
+                    // dieselbe Regel wie im General-Pfad.
+                    crate::lichen_tri::enforce_chain_single_use(
+                        &positions,
+                        &loops,
+                        &chain_normals,
+                        &mut ft,
+                    );
+                    t.extend(ft);
                     continue;
                 }
                 let fs = &face_surfs[gf];
@@ -729,7 +817,6 @@ impl Kernel {
                     &world_of,
                     Some(&live),
                 ) {
-                    t.extend(mesh.tris);
                     // Naht-Steiner-/Pol-Punkte als neue Flächenpunkte anhängen
                     // (flag 1); Normale aus ∇f.
                     for p in mesh.aux {
@@ -739,6 +826,18 @@ impl Kernel {
                         point_faces.push(vec![(gf as u32, n)]);
                         local_pos.push([0.0; 3]);
                     }
+                    // Ketten-Kanten-Einzelnutzung wie im planaren Zweig
+                    // (Positionen NACH dem Aux-Anhängen, die Indizes der
+                    // Naht-/Pol-Punkte zeigen in `all`).
+                    let positions: Vec<[f32; 3]> = all.iter().map(|lp| lp.p).collect();
+                    let mut ft = mesh.tris;
+                    crate::lichen_tri::enforce_chain_single_use(
+                        &positions,
+                        &loops,
+                        &chain_normals,
+                        &mut ft,
+                    );
+                    t.extend(ft);
                 }
             }
             t
@@ -746,6 +845,23 @@ impl Kernel {
             Vec::new()
         };
 
+        // Flächen-übergreifende exakte DUPLIKATE konsolidieren (auch der
+        // Chart-Pfad erzeugt sie: ein Dreieck aus 3 Ketten-Punkten einer
+        // Mikro-Fläche entsteht identisch im CDT BEIDER Nachbarflächen —
+        // Demo-Projekt: 24–27 non-manifolde Kanten allein daraus).
+        let tris = {
+            let mut seen: std::collections::HashSet<[u32; 3]> =
+                std::collections::HashSet::new();
+            let mut t = tris;
+            t.retain(|&[a, b, c]| {
+                let mut k = [a, b, c];
+                k.sort_unstable();
+                seen.insert(k)
+            });
+            // Orientierung global konsistent machen (auch über Nähte).
+            lichen::orient_consistent(&all, &mut t);
+            t
+        };
         lichen::pack(&all, &tris, &point_faces)
     }
 }
@@ -1144,10 +1260,10 @@ mod tests {
         (tris, crate::lichen::mesh_quality(&positions, &t))
     }
 
-    /// Chart-Pfad (Default) auf dem Demo-Projekt — REGRESSIONS-GATE auf die
-    /// gemessenen Ist-Werte (2026-07-11, h=10: tris=1117, boundary=153,
-    /// nonmanifold=24, degenerate=0, components=2). Obergrenzen mit Luft
-    /// gegen Float-Jitter; Ziel (0/0) steht als #[ignore]-WIP darunter.
+    /// Chart-Pfad (Default) auf dem Demo-Projekt — Qualitäts-Gate. Stand
+    /// 2026-07-11 (h=10) nach Ketten-Kanten-Einzelnutzung + Orientierungs-
+    /// Propagation: tris=1057, boundary=131 (Gyroid-Nähte, F2 offen),
+    /// nonmanifold=0, degenerate=0, orientierung=0.
     #[test]
     fn lichen_demo_project_chart_quality() {
         let mut k = demo_project_kernel();
@@ -1158,17 +1274,17 @@ mod tests {
         eprintln!("demo chart: tris={tris} {q:?}");
         assert!(tris > 500, "Chart-Pfad muss substanziell triangulieren, got {tris}");
         assert_eq!(q.degenerate_tris, 0, "degenerierte Dreiecke: {q:?}");
-        assert!(q.nonmanifold_edges <= 40, "non-manifold REGRESSION (Stand 24): {q:?}");
-        assert!(q.boundary_edges <= 250, "Rand-Kanten REGRESSION (Stand 153): {q:?}");
+        assert_eq!(q.nonmanifold_edges, 0, "non-manifold (Ketten-Einzelnutzung!): {q:?}");
+        assert_eq!(q.orientation_violations, 0, "Orientierung (Propagation!): {q:?}");
+        assert!(q.boundary_edges <= 250, "Rand-Kanten REGRESSION (Stand 131): {q:?}");
     }
 
-    /// General-Pfad (Stern-Konsistenz) auf dem Demo-Projekt — Gate auf die
-    /// Ist-Werte (2026-07-11, h=10 nach Duplikat-Konsolidierung: tris=1196,
-    /// boundary=153, nonmanifold=168, degenerate=0). Die per-Fläche-Garantie
-    /// (0 non-manifold JE Fläche) hält; global überlappen Flächen an den
-    /// Mikro-Feature-Ketten (Dreiecke aus 3 Ketten-Punkten entstehen in
-    /// BEIDEN Nachbar-Sternläufen mit verschiedener Zerlegung) — nächster
-    /// Hebel: Ketten-Dreiecke einem Owner zuschlagen (Owner-Stitching).
+    /// General-Pfad (Stern-Konsistenz) auf dem Demo-Projekt — Qualitäts-
+    /// Gate. Stand 2026-07-11 (h=10) nach Owner-Stitching (Ketten-Kanten-
+    /// Einzelnutzung je Fläche + fremde Ketten als globale Wände + Filter
+    /// nach dem Loch-Füller) und Orientierungs-Propagation: tris=917,
+    /// boundary=165 (Gyroid-Nähte + Stern-Löcher), nonmanifold=0,
+    /// degenerate=0, orientierung=0.
     #[test]
     fn lichen_demo_project_general_quality() {
         let mut k = demo_project_kernel();
@@ -1179,8 +1295,9 @@ mod tests {
         eprintln!("demo general: tris={tris} {q:?}");
         assert!(tris > 500, "General-Pfad muss substanziell triangulieren, got {tris}");
         assert_eq!(q.degenerate_tris, 0, "degenerierte Dreiecke: {q:?}");
-        assert!(q.nonmanifold_edges <= 250, "non-manifold REGRESSION (Stand 168): {q:?}");
-        assert!(q.boundary_edges <= 250, "Rand-Kanten REGRESSION (Stand 153): {q:?}");
+        assert_eq!(q.nonmanifold_edges, 0, "non-manifold (Ketten-Einzelnutzung!): {q:?}");
+        assert_eq!(q.orientation_violations, 0, "Orientierung (Propagation!): {q:?}");
+        assert!(q.boundary_edges <= 300, "Rand-Kanten REGRESSION (Stand 165): {q:?}");
     }
 
     /// QUALITÄTS-ZIEL auf dem Demo-Projekt: manifold + watertight, beide
@@ -1188,8 +1305,9 @@ mod tests {
     /// nicht (F2) → offene Ränder an jeder Gyroid-Naht; (b) Flächen-Überlapp
     /// an Mikro-Feature-Ketten (chart 24 / general 168 non-manifold).
     #[test]
-    #[ignore = "WIP: Gyroid wächst nicht (F2) + Flächen-Überlapp an Mikro-Ketten — \
-                gemessen 2026-07-11: chart 153/24, general 153/168 (boundary/nonmanifold)"]
+    #[ignore = "WIP: Gyroid-Flächen wachsen nicht (F2) → offene Ränder an jeder \
+                Gyroid-Naht — gemessen 2026-07-11: chart 131, general 165 offene \
+                Kanten (non-manifold/Degeneration/Orientierung sind bereits 0)"]
     fn lichen_demo_project_is_watertight() {
         let mut k = demo_project_kernel();
         for opts in [
@@ -1200,6 +1318,29 @@ mod tests {
             let (_, q) = quality_of(&out);
             assert!(q.watertight(), "{opts}: {q:?}");
         }
+    }
+
+    /// Regressionstest Ring-Naht-Kohärenz (Betreiber-Demo OHNE Mikro-
+    /// Features): die Gyroid∩Kugel-Naht-Ringe rissen die U(p)-Überdeckungs-
+    /// Invariante am Nahtstoß (Mini-Restsegment 0.35 neben 2.82), und ein
+    /// Naht-Ring kreuzte im periodischen Kugel-Chart seine Perioden-Kopie
+    /// (spade-Panic). Beides gefixt: Naht-Paare erfüllen die Überdeckungs-
+    /// regel (Assertion oben läuft mit), kreuzende Constraints werden als
+    /// Diagnose übersprungen. Der Lauf selbst ist das Gate.
+    #[test]
+    fn lichen_gyroid_seam_rings_run_clean() {
+        let a = r#"{"schema_version":1,"name":"A","feature_calls":[
+            {"type":"sphere","id":1,"params":{"op":"new","radius":50,"translate":[0,0,0]}},
+            {"type":"gyroid","id":2,"params":{"op":"intersect","targets":"qCreatedBy(1)",
+                "cell_size":{"unit":"mm","value":10},"thickness":{"unit":"mm","value":1},
+                "blend_radius":{"unit":"mm","value":0},"chamfer_size":{"unit":"mm","value":0},
+                "displace_depth":{"unit":"mm","value":0},"shell_thickness":{"unit":"mm","value":0}}},
+            {"type":"cylinder","id":3,"params":{"op":"remove","targets":"qCreatedBy(1)",
+                "radius":30,"half_height":60,"translate":[0,0,0]}}
+        ],"next_feature_id":10}"#;
+        let mut k = crate::Kernel::new();
+        k.load_json(a).unwrap();
+        let _ = k.lichen_mesh(r#"{"targetEdgeLength":10.0,"grow":true,"maxPoints":50000}"#.into());
     }
 
     /// Interior surface points must grow whether or not the reach term is on

@@ -648,6 +648,83 @@ pub fn mesh_quality(points: &[[f32; 3]], tris: &[[u32; 3]]) -> MeshQuality {
     }
 }
 
+/// Konsistente Orientierung über Kanten-Nachbarschaft propagieren: Seed je
+/// Zusammenhangskomponente an der Feld-Normalen (Mittel der Ecken-Normalen),
+/// dann BFS über manifold-Kanten (genau 2 Dreiecke) — Nachbarn müssen die
+/// geteilte Kante GEGENLÄUFIG durchlaufen. Rückgabe: Konflikte (Kanten, an
+/// denen beide Richtungen erzwungen wären — nur an Defekten möglich).
+pub fn orient_consistent(all: &[LPoint], tris: &mut [[u32; 3]]) -> usize {
+    use std::collections::HashMap;
+    let mut edge_tris: HashMap<(u32, u32), Vec<usize>> = HashMap::new();
+    for (ti, &[a, b, c]) in tris.iter().enumerate() {
+        for (x, y) in [(a, b), (b, c), (c, a)] {
+            edge_tris.entry((x.min(y), x.max(y))).or_default().push(ti);
+        }
+    }
+    // Durchläuft `t` die Kante (u,v) in DIESER Richtung?
+    let runs = |t: &[u32; 3], u: u32, v: u32| -> bool {
+        (t[0] == u && t[1] == v) || (t[1] == u && t[2] == v) || (t[2] == u && t[0] == v)
+    };
+    let mut visited = vec![false; tris.len()];
+    let mut conflicts = 0usize;
+    for seed in 0..tris.len() {
+        if visited[seed] {
+            continue;
+        }
+        // Seed an der Feld-Normalen ausrichten.
+        let t = tris[seed];
+        let (pa, pb, pc) = (
+            all[t[0] as usize].p,
+            all[t[1] as usize].p,
+            all[t[2] as usize].p,
+        );
+        let n_tri = [
+            (pb[1] - pa[1]) * (pc[2] - pa[2]) - (pb[2] - pa[2]) * (pc[1] - pa[1]),
+            (pb[2] - pa[2]) * (pc[0] - pa[0]) - (pb[0] - pa[0]) * (pc[2] - pa[2]),
+            (pb[0] - pa[0]) * (pc[1] - pa[1]) - (pb[1] - pa[1]) * (pc[0] - pa[0]),
+        ];
+        let mut n_ref = [0.0f32; 3];
+        for &i in &t {
+            let n = all[i as usize].n;
+            n_ref = [n_ref[0] + n[0], n_ref[1] + n[1], n_ref[2] + n[2]];
+        }
+        if n_tri[0] * n_ref[0] + n_tri[1] * n_ref[1] + n_tri[2] * n_ref[2] < 0.0 {
+            tris[seed].swap(1, 2);
+        }
+        visited[seed] = true;
+        let mut queue = std::collections::VecDeque::from([seed]);
+        while let Some(ti) = queue.pop_front() {
+            let cur = tris[ti];
+            for (u, v) in [(cur[0], cur[1]), (cur[1], cur[2]), (cur[2], cur[0])] {
+                let e = (u.min(v), u.max(v));
+                let Some(list) = edge_tris.get(&e) else { continue };
+                if list.len() != 2 {
+                    continue; // Rand/Defekt: nicht propagieren
+                }
+                for &tj in list {
+                    if tj == ti {
+                        continue;
+                    }
+                    // Konsistent = Nachbar durchläuft (u,v) GEGENLÄUFIG (v,u).
+                    let consistent = runs(&tris[tj], v, u);
+                    if visited[tj] {
+                        if !consistent {
+                            conflicts += 1;
+                        }
+                        continue;
+                    }
+                    if !consistent {
+                        tris[tj].swap(1, 2);
+                    }
+                    visited[tj] = true;
+                    queue.push_back(tj);
+                }
+            }
+        }
+    }
+    conflicts
+}
+
 pub fn pack(all: &[LPoint], tris: &[[u32; 3]], point_faces: &[Vec<(u32, [f32; 3])>]) -> Vec<f32> {
     pack_with_diag(all, tris, point_faces, &[], &[])
 }

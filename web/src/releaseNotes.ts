@@ -24,6 +24,16 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.525",
+    entries: [
+      {
+        kind: "fix",
+        scope: "mesher",
+        text: "Lichen: Demo-Projekt-Befunde behoben — beide Triangulierungs-Pfade liefern jetzt 0 non-manifolde Kanten und global konsistente Orientierung. Ketten-Kanten-Einzelnutzung pro Fläche (Rand-Folds/Sliver entfernt, gilt auch nach dem Loch-Füller), fremde Ketten-Kanten als globale Wände, Ring-Naht-Kohärenz beim Kanten-Resampling (U(p)-Überdeckungslücke am Nahtstoß geschlossener Ringe), kreuzende Chart-Constraints crashen nicht mehr (Diagnose statt spade-Panic), Orientierungs-Propagation über Kanten-Nachbarschaft.",
+      },
+    ],
+  },
+  {
     version: "0.6.524",
     entries: [
       {
