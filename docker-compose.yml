@@ -7,6 +7,10 @@
 services:
   db:
     image: mariadb:11
+    # Wie server/mesher: nach Crash/Docker-Daemon-Neustart automatisch wieder
+    # hochkommen — eine still liegengebliebene DB äußert sich sonst als 502
+    # auf allen /api-Routen (und der Server crasht am DB-DNS-Fehler).
+    restart: unless-stopped
     environment:
       MYSQL_ROOT_PASSWORD: fielddraft
       MYSQL_DATABASE: fielddraft
