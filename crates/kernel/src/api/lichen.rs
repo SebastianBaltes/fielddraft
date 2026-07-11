@@ -1093,7 +1093,13 @@ impl Kernel {
                         Some(&own),
                         Some(&global_chain_edges),
                         opts.fill_holes,
-                        &|p| fg(p).0,
+                        &fg,
+                        &|p: [f32; 3]| {
+                            let fs = &face_surfs[gf];
+                            let pl = crate::world_to_local(&fs.placement, p);
+                            let ps = crate::world_to_local(&fs.transform, pl);
+                            crate::csg::sdf_halfspace(&fs.surface, ps).abs() <= 0.05 * h
+                        },
                     );
                     if std::env::var("LICHEN_DEBUG_FACES").is_ok() {
                         eprintln!(
@@ -1377,15 +1383,15 @@ mod tests {
 
     /// Demo-Projekt mit den DIALOG-Settings des Betreibers (2026-07-11:
     /// Krümmungswinkel 5°, min. Kantenabstand 0,2, Reach an) — dichter
-    /// abgetastet als die 20°-Gates. WIP-Repro: 25 Orientierungs-Konflikte
-    /// (Folds), sichtbar als „Dreiecke durch die kleine Kugel"; die r=1-
-    /// Mini-Kugel steckt in der 1-mm-Wand und trägt ZWEI Kappen (vorn und
-    /// hinten heraus) — Verdacht: Sterne/Kandidaten verbinden Vorder- und
-    /// Rückkappe derselben Trägerfläche (Cocone blockt nur ~antiparallele
-    /// Normalen; am Kappenrand kippen sie erst allmählich).
+    /// abgetastet als die 20°-Gates. Historie: 25 Orientierungs-Folds an
+    /// der tangentialen Mini-Kugel-Naht („Dreiecke durch die Kugel") —
+    /// seit v0.6.538 GRÜN: die Orientierungs-Propagation LÖST Konflikte
+    /// auf (pro Fold fliegt das Dreieck mit größerem Umkreis; ehrliches
+    /// Loch statt falscher Geometrie) + Regionen-Zugehörigkeit der
+    /// Sichtlinie (projizierter Sehnen-Mittelpunkt muss auf der eigenen
+    /// Trägerfläche liegen). Läuft parallel zur Suite (~4 min, teuerster
+    /// Einzeltest — der Preis der dichten Abtastung).
     #[test]
-    #[ignore = "WIP: 25 Orientierungs-Konflikte bei dichten Betreiber-Settings \
-                (curv 5°, minEdge 0.2, reach) — Doppelkappen-Verdacht Mini-Kugel"]
     fn lichen_demo_user_settings_orientation_clean() {
         let mut k = demo_project_kernel();
         let out = k.lichen_mesh(

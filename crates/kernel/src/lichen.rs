@@ -833,7 +833,64 @@ pub fn mesh_quality(points: &[[f32; 3]], tris: &[[u32; 3]]) -> MeshQuality {
 /// dann BFS über manifold-Kanten (genau 2 Dreiecke) — Nachbarn müssen die
 /// geteilte Kante GEGENLÄUFIG durchlaufen. Rückgabe: Konflikte (Kanten, an
 /// denen beide Richtungen erzwungen wären — nur an Defekten möglich).
-pub fn orient_consistent(all: &[LPoint], tris: &mut [[u32; 3]]) -> usize {
+pub fn orient_consistent(all: &[LPoint], tris: &mut Vec<[u32; 3]>) -> usize {
+    // Konflikte werden nicht nur GEZÄHLT, sondern AUFGELÖST: ein Fold
+    // (zwei Dreiecke durchlaufen eine Kante gleichläufig, obwohl beide
+    // konsistent orientiert sind) ist IMMER geometrisch falsch — an
+    // tangentialen Nähten (Mini-Kugel in der Wand, Betreiber-Repro mit
+    // 25 Konflikten) überleben sie alle seitenbasierten Wächter. Pro
+    // Konflikt fliegt deterministisch das Dreieck mit dem größeren
+    // Umkreisradius; danach wird neu propagiert (max 4 Runden). Das
+    // hinterlässt ein EHRLICHES Loch statt eines falschen Folds.
+    let circum_r2 = |t: &[u32; 3]| -> f32 {
+        let (pa, pb, pc) = (
+            all[t[0] as usize].p,
+            all[t[1] as usize].p,
+            all[t[2] as usize].p,
+        );
+        let ab = [pb[0] - pa[0], pb[1] - pa[1], pb[2] - pa[2]];
+        let ac = [pc[0] - pa[0], pc[1] - pa[1], pc[2] - pa[2]];
+        let ab2 = ab[0] * ab[0] + ab[1] * ab[1] + ab[2] * ab[2];
+        let ac2 = ac[0] * ac[0] + ac[1] * ac[1] + ac[2] * ac[2];
+        let abac = ab[0] * ac[0] + ab[1] * ac[1] + ab[2] * ac[2];
+        let den = 2.0 * (ab2 * ac2 - abac * abac);
+        if den.abs() < 1e-20 {
+            return f32::MAX;
+        }
+        let s_ = (ac2 * (ab2 - abac)) / den;
+        let t_ = (ab2 * (ac2 - abac)) / den;
+        let dc = [
+            s_ * ab[0] + t_ * ac[0],
+            s_ * ab[1] + t_ * ac[1],
+            s_ * ab[2] + t_ * ac[2],
+        ];
+        dc[0] * dc[0] + dc[1] * dc[1] + dc[2] * dc[2]
+    };
+    for _ in 0..4 {
+        let pairs = orient_pass(all, tris);
+        if pairs.is_empty() {
+            return 0;
+        }
+        let mut drop: Vec<usize> = pairs
+            .into_iter()
+            .map(|(ti, tj)| {
+                let (ri, rj) = (circum_r2(&tris[ti]), circum_r2(&tris[tj]));
+                if (ri, tris[ti]) >= (rj, tris[tj]) { ti } else { tj }
+            })
+            .collect();
+        drop.sort_unstable();
+        drop.dedup();
+        for &d in drop.iter().rev() {
+            tris.swap_remove(d);
+        }
+        tris.sort_unstable();
+    }
+    orient_pass(all, tris).len()
+}
+
+/// Ein Propagations-Durchlauf: orientiert `tris` konsistent und liefert die
+/// Konflikt-Paare (Kante von beiden Dreiecken gleichläufig durchlaufen).
+fn orient_pass(all: &[LPoint], tris: &mut [[u32; 3]]) -> Vec<(usize, usize)> {
     use std::collections::HashMap;
     let mut edge_tris: HashMap<(u32, u32), Vec<usize>> = HashMap::new();
     for (ti, &[a, b, c]) in tris.iter().enumerate() {
@@ -846,7 +903,7 @@ pub fn orient_consistent(all: &[LPoint], tris: &mut [[u32; 3]]) -> usize {
         (t[0] == u && t[1] == v) || (t[1] == u && t[2] == v) || (t[2] == u && t[0] == v)
     };
     let mut visited = vec![false; tris.len()];
-    let mut conflicts = 0usize;
+    let mut conflicts: Vec<(usize, usize)> = Vec::new();
     for seed in 0..tris.len() {
         if visited[seed] {
             continue;
@@ -889,7 +946,7 @@ pub fn orient_consistent(all: &[LPoint], tris: &mut [[u32; 3]]) -> usize {
                     let consistent = runs(&tris[tj], v, u);
                     if visited[tj] {
                         if !consistent {
-                            conflicts += 1;
+                            conflicts.push((ti, tj));
                             if std::env::var("LICHEN_DEBUG_ORIENT").is_ok() {
                                 let pf = |i: u32| {
                                     let lp = &all[i as usize];

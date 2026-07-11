@@ -24,6 +24,16 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.540",
+    entries: [
+      {
+        kind: "fix",
+        scope: "mesher",
+        text: "Lichen: Fold-Auflösung in der Orientierungs-Propagation — an tangentialen Nähten (Mini-Kugel in der Wand) überlebten Dreiecks-Folds alle seitenbasierten Wächter („Dreiecke durch die kleine Kugel“, 25 Orientierungs-Konflikte bei dichten Settings); Konflikte werden jetzt aufgelöst (pro Fold fliegt deterministisch das Dreieck mit größerem Umkreis — ehrliches Loch statt falscher Geometrie). Dazu Regionen-Zugehörigkeit in der Sichtlinie: der auf die Oberfläche projizierte Sehnen-Mittelpunkt muss auf der eigenen Trägerfläche liegen. Neues Test-Gate fährt exakt die dichten Betreiber-Settings mit.",
+      },
+    ],
+  },
+  {
     version: "0.6.539",
     entries: [
       {
