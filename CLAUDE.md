@@ -23,7 +23,7 @@ Bei jedem Versions-Bump (`web/package.json`) **einen Eintrag oben** in `web/src/
 
 ## Tickets abarbeiten (wenn nichts anderes ansteht)
 
-User melden Fehler/Feature-Wünsche in-App über **Report Issue…** (F2). Seit dem Dev-Backend-Modus (`just dev-full`, `FIELDDRAFT_DEV_BACKEND=1`) landen Tickets im **Server-Ticket-Store** (Tabelle `tickets`, MariaDB-Container `fielddraft-db-1`); nur ältere Tickets liegen noch als Ordner unter `tickets/open/<id>/` (Format: `tickets/README.md`).
+User melden Fehler/Feature-Wünsche in-App über **Report Issue…** (F2). Tickets gehen IMMER an den **Server-Ticket-Store** (Go-Server, Backend IssueVault via `.env`); der frühere Vite-FS-Sink (`tickets/open/<id>/`, nur ohne `FIELDDRAFT_DEV_BACKEND=1`) wurde entfernt — auch `just dev` braucht fürs Ticket-Anlegen den laufenden Go-Server (`docker compose up -d db server`). Nur historische Tickets liegen noch als Ordner unter `tickets/done/`.
 
 Wenn keine andere Aufgabe ansteht: offene Tickets abarbeiten — Ticket lesen, Screenshot/Attachments ansehen, Projekt zum Reproduzieren laden, Fix/Feature umsetzen, testen, committen+pushen.
 

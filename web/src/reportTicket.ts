@@ -3,10 +3,9 @@
  *
  * The "Report Issue" dialog (ReportDialog.tsx) collects a free-form
  * description, grabs a screenshot of the whole app window and the live
- * project JSON, and POSTs everything to `/api/tickets`. In local dev that
- * endpoint is served by the `ticketWriter` Vite plugin (vite.config.ts),
- * which drops the ticket into `<repo>/tickets/open/<id>/` so the agent can
- * pick it up; in production the Go backend handles the same route.
+ * project JSON, and POSTs everything to `/api/tickets`. The route is always
+ * served by the Go backend (dev: vite proxy → localhost server; prod: same
+ * origin), which persists into its ticket store (IssueVault / db).
  *
  * The screenshot covers the full window — toolbar, panels and the 3D
  * viewport — via html-to-image, which serializes the live DOM and inlines

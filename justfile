@@ -49,6 +49,9 @@ build-wasm:
     printf '%s' "$V" > ../../web/src/wasm/.kernel-version
 
 # Start the Vite dev server (WebGPU-capable Chromium recommended).
+# NOTE: /api (auth, projects, TICKETS) proxies to the Go server on
+# :${FIELDDRAFT_SERVER_PORT:-8080} — without a running backend (just dev-full /
+# dev-air) there is no ticket store; the FS sink under tickets/open/ is gone.
 dev: build-wasm
     @echo "▶ ${FIELDDRAFT_INSTANCE:-fielddraft} dev server on port ${FIELDDRAFT_WEB_PORT:-5173}"
     cd web && {{nvm_use}} && npm run dev -- --host 0.0.0.0
@@ -78,11 +81,7 @@ dev-full: build-wasm
         sleep 1
     done
     echo "▶ login: admin@local / admin — vite on port ${FIELDDRAFT_WEB_PORT:-5173}"
-    # FIELDDRAFT_DEV_BACKEND=1 tells the vite ticketWriter plugin to STOP shadowing
-    # POST /api/tickets to the FS sink and let creates proxy to the Go server (→ its
-    # ticket store: db / issuevault), like prod. Pure `just dev` (no backend) keeps
-    # the FS sink.
-    cd web && {{nvm_use}} && FIELDDRAFT_DEV_BACKEND=1 npm run dev -- --host 0.0.0.0
+    cd web && {{nvm_use}} && npm run dev -- --host 0.0.0.0
 
 # Build the full web bundle (WASM + Vite).
 build: build-wasm
