@@ -77,7 +77,7 @@ fn basis(n: [f32; 3]) -> ([f32; 3], [f32; 3]) {
 }
 
 /// 2D-Segment-Schnitt (echte Kreuzung, geteilte Endpunkte zählen nicht).
-fn segments_cross(a: [f64; 2], b: [f64; 2], c: [f64; 2], d: [f64; 2]) -> bool {
+pub(crate) fn segments_cross(a: [f64; 2], b: [f64; 2], c: [f64; 2], d: [f64; 2]) -> bool {
     let orient = |p: [f64; 2], q: [f64; 2], r: [f64; 2]| -> f64 {
         (q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0])
     };

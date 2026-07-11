@@ -358,6 +358,7 @@ fn visible<Fg: Fn([f32; 3]) -> (f32, [f32; 3])>(p: [f32; 3], q: [f32; 3], r: f32
 /// gewachsenen Interior-Punkte (flag 1).
 pub fn grow_surface<Fg, Fb, On, Sc>(
     seeds: &[LPoint],
+    existing: &[LPoint],
     h: f32,
     opts: &LichenOptions,
     fg: &Fg,
@@ -368,7 +369,7 @@ pub fn grow_surface<Fg, Fb, On, Sc>(
 where
     Fg: Fn([f32; 3]) -> (f32, [f32; 3]),
     Fb: Fn([f32; 3]) -> f32,
-    On: Fn([f32; 3], f32) -> bool,
+    On: Fn([f32; 3], [f32; 3], f32) -> bool,
     Sc: Fn([f32; 3]) -> (f32, [f32; 3]),
 {
     let cell = h.max(1e-4);
@@ -376,6 +377,14 @@ where
     let mut grid: HashMap<(i32, i32, i32), Vec<u32>> = HashMap::new();
     for (i, s) in pts.iter().enumerate() {
         grid.entry(gkey(s.p, cell)).or_default().push(i as u32);
+    }
+    // GLOBALE Punkte (Ketten/Ecken/bereits gewachsene ANDERER Flächen) als
+    // zusätzliche Konflikt-Quelle: an TANGENTIALEN Nähten wachsen zwei fast
+    // parallele Flächen sonst ihre Punkte 0,04 mm übereinander — die Sterne
+    // mischen die Doppelblätter zu Folds (Orientierungs-Konflikte).
+    let mut xgrid: HashMap<(i32, i32, i32), Vec<u32>> = HashMap::new();
+    for (i, s) in existing.iter().enumerate() {
+        xgrid.entry(gkey(s.p, cell)).or_default().push(i as u32);
     }
     let n_seeds = pts.len();
     let cap = n_seeds + opts.max_points;
@@ -407,8 +416,9 @@ where
             // wird NICHT verworfen, sondern mit halbem Radius nachgesetzt —
             // auf einem 6-mm-Feature bei r≈3 landete sonst JEDER Kandidat
             // auf der Nachbarwand und die Fläche wuchs gar nicht.
+            let r_full = r;
             let mut rr = r;
-            let (cp, cd, cn) = 'step: {
+            let (cp, cd, cn, nd, r_eff) = 'step: {
                 for _ in 0..5 {
                     let (cp, cd, cn) = project(add(p, scale(dir, rr)), fg);
                     if cd.abs() > 0.2 * rr {
@@ -423,12 +433,28 @@ where
                     }
                     // Harte Kanten-Wand: der Kandidat muss auf DERSELBEN
                     // BRep-Fläche liegen (Kanten sind harte Grenzen).
-                    if !on_face(cp, rr) {
+                    if !on_face(p, cp, rr) {
                         rej[2] += 1;
                         rr *= 0.5;
                         continue;
                     }
-                    break 'step (cp, cd, cn);
+                    // REDUNDANZ triggert ebenfalls die Halbierung: auf einem
+                    // schmalen Patch landet der volle Schritt direkt an der
+                    // Gegen-Kette (nd winzig) — ein kleinerer Schritt bleibt
+                    // mittig und findet Platz. Der symmetrische r_eff-Wächter
+                    // (Spacing des nächsten Bestandspunkts, gedeckelt auf
+                    // r_full) verhindert das Einnisten neben groben Nachbarn.
+                    let (nd_own, ns_own) = nearest_pt(&grid, &pts, cell, cp);
+                    let (nd_x, ns_x) = nearest_pt(&xgrid, existing, cell, cp);
+                    let (nd, nspace) =
+                        if nd_own <= nd_x { (nd_own, ns_own) } else { (nd_x, ns_x) };
+                    let r_eff = rr.max(nspace.min(r_full));
+                    if nd < 0.45 * r_eff {
+                        rej[3] += 1;
+                        rr *= 0.5;
+                        continue;
+                    }
+                    break 'step (cp, cd, cn, nd, r_eff);
                 }
                 continue 'dirs;
             };
@@ -436,20 +462,14 @@ where
             // (Abstands-Checks mit rr) — das SPACING des neuen Punkts bleibt
             // am vollen Radius orientiert, sonst gebären halbierte Punkte
             // halbierte Kinder (Verdichtungs-Kaskade: Zylinder 0→84 Löcher).
-            let r_full = r;
-            let r = rr;
+            let (cp, cd, cn, nd, r_eff) = (cp, cd, cn, nd, r_eff);
+            let r = r_eff;
             // Saubere Abtastung: Kandidat näher als 0,8·r an einem bestehenden
             // Punkt (Spacing ≈ r; eine über-dichte Wolke bricht die leere-
             // Umkreis-Bedingung des Meshers).
             let mut cp = cp;
             let mut cd = cd;
             let mut cn = cn;
-            // SYMMETRISCHER Konflikt-Test: Abstand gegen das Maximum aus
-            // eigenem (ggf. halbiertem) Radius und dem Spacing des nächsten
-            // Bestandspunkts — sonst nisten sich halbierte Kandidaten in die
-            // Lücken grober Nachbarn (Zylinder-Ringband: 0→84 Löcher).
-            let (nd, nspace) = nearest_pt(&grid, &pts, cell, cp);
-            let r = r.max(nspace.min(r_full));
             if nd < 0.8 * r {
                 // §1.5 KONFLIKT-REBALANCING (Konzept-Schritt 5): NICHT einfach
                 // verwerfen — an Front-Kollisionen und Dichte-Übergängen reißt
@@ -459,10 +479,6 @@ where
                 // (Ziel ≈ 0,85r), neu auf die Fläche projizieren und nur
                 // verwerfen, wenn auch ausbalanciert kein sauberer Abstand
                 // entsteht (dann ist er ECHT redundant).
-                if nd < 0.45 * r {
-                    rej[3] += 1;
-                    continue; // redundant nah am Bestand
-                }
                 let mut q = cp;
                 let mut settled = false;
                 for _ in 0..4 {
@@ -501,9 +517,11 @@ where
                     cn = qn;
                 }
                 if !settled
-                    || nearest_dist(&grid, &pts, cell, q) < 0.75 * r
+                    || nearest_dist(&grid, &pts, cell, q)
+                        .min(nearest_dist(&xgrid, existing, cell, q))
+                        < 0.75 * r
                     || !visible(p, q, r, fg)
-                    || !on_face(q, r)
+                    || !on_face(p, q, r)
                 {
                     rej[4] += 1;
                     continue;
