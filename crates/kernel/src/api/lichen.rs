@@ -633,6 +633,17 @@ impl Kernel {
                     .max(total.scale[2].abs())
                     .max(1e-6);
                 let h_chart = (h / ms) as f64;
+                // Liveness-Prädikat (Ticket 28a95b4e): ein Chart-Zentroid ist
+                // Teil der Fläche, wenn sein Träger-Punkt auf dem BODY liegt.
+                // `world_of` liefert den Punkt exakt AUF dem Träger (Chart→
+                // Welt), also genügt der Body-Feldtest — Sehnen-Fehler der
+                // Dreiecke spielen keine Rolle. Auf geschlossenen Trägern
+                // (Kugel) ist die outer/inner-Parität mehrdeutig: sie füllte
+                // den VERGRABENEN Annulus statt Kappe + Bohrungs-Stück.
+                // Enge Toleranz: live Zentroide liegen via world_of EXAKT auf
+                // dem Träger (Body-|f| ≈ f32-Rauschen), vergrabene ab ~0.05 tief.
+                let live_tol = 0.02f32;
+                let live = |p: [f32; 3]| -> bool { fg(p).0.abs() <= live_tol };
                 if let Some(mesh) = crate::mesher_cdt::triangulate_periodic_face(
                     &scaled,
                     &scaled_interior,
@@ -642,6 +653,7 @@ impl Kernel {
                     &poles,
                     all.len() as u32,
                     &world_of,
+                    Some(&live),
                 ) {
                     t.extend(mesh.tris);
                     // Naht-Steiner-/Pol-Punkte als neue Flächenpunkte anhängen
@@ -1226,5 +1238,6 @@ mod tests {
         assert_eq!(checked, 8, "all eight box corners checked");
     }
 }
+
 
 

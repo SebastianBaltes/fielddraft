@@ -24,6 +24,17 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.522",
+    entries: [
+      {
+        kind: "fix",
+        scope: "mesher",
+        text: "Lichen: Auf geschlossenen Trägern (Kugel) entscheidet jetzt das Body-Feld statt der Loop-Parität, welche Chart-Region vermascht wird. Zwei Loops teilen eine Kugel in drei Regionen — die even-odd-Parität füllte den VERGRABENEN Annulus zwischen Naht-Ring und Bohrungs-Loop (innere Flächen), während die lebendige Kappe und das Bohrungs-Stück leer blieben. Der nicht-windende Chart-Fall prüft Kandidaten und Dreiecks-Zentroide jetzt per Liveness (Träger-Punkt auf dem Body): Kappe vermascht, vergrabene Dreiecke weg.",
+        tickets: ["28a95b4e", "0e9e8f40"],
+      },
+    ],
+  },
+  {
     version: "0.6.521",
     entries: [
       {

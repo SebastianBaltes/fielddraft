@@ -40,6 +40,7 @@ fn triangulate_uv(
     loops: &[Vec<UvPoint>],
     interior: &[UvPoint],
     clearance: f64,
+    keep: Option<&dyn Fn(Point2<f64>) -> bool>,
 ) -> Vec<[u32; 3]> {
     if loops.first().map_or(true, |l| l.len() < 3) {
         return Vec::new();
@@ -125,7 +126,17 @@ fn triangulate_uv(
 
     for &(gi, [u, v]) in interior {
         let p2 = Point2::new(u, v);
-        if !inside(p2) {
+        // Regions-Entscheid: even-odd-Parität — oder, wenn der Caller ein
+        // `keep`-Prädikat stellt (Liveness auf geschlossenen Trägern, Ticket
+        // 28a95b4e), DIESES. Auf einer Kugel ist outer/inner der Loops
+        // mehrdeutig: die Parität füllte den VERGRABENEN Annulus zwischen
+        // Naht-Ring und Bohrungs-Loop, während Kappe + Bohrungs-Stück (die
+        // live Regionen) leer blieben.
+        let admit = match keep {
+            Some(k) => k(p2),
+            None => inside(p2),
+        };
+        if !admit {
             continue; // particle belongs to another region / periodic copy
         }
         if too_close(p2) {
@@ -169,10 +180,23 @@ fn triangulate_uv(
 
     let mut tris = Vec::new();
     for face in cdt.inner_faces() {
-        if state[face.fix().index()] != Some(true) {
+        let [a, b, c] = face.positions();
+        let accept = match keep {
+            // Liveness-Harvest: Zentroid UND Kanten-Mittelpunkte im Chart →
+            // Caller prüft auf dem Träger gegen das Body-Feld. Die Mittel-
+            // punkte fangen Dreiecke, die die Naht überspannen und deren
+            // Zentroid zufällig noch im Live-Band liegt.
+            Some(k) => {
+                k(Point2::new((a.x + b.x + c.x) / 3.0, (a.y + b.y + c.y) / 3.0))
+                    && k(Point2::new((a.x + b.x) / 2.0, (a.y + b.y) / 2.0))
+                    && k(Point2::new((b.x + c.x) / 2.0, (b.y + c.y) / 2.0))
+                    && k(Point2::new((c.x + a.x) / 2.0, (c.y + a.y) / 2.0))
+            }
+            None => state[face.fix().index()] == Some(true),
+        };
+        if !accept {
             continue;
         }
-        let [a, b, c] = face.positions();
         let (Some(&ia), Some(&ib), Some(&ic)) = (
             back.get(&keyf(a)),
             back.get(&keyf(b)),
@@ -260,7 +284,7 @@ pub(crate) fn triangulate_planar_face(
         .map(|lp| lp.iter().map(|&i| (i, to2d(i))).collect())
         .collect();
     let uv_interior: Vec<UvPoint> = interior.iter().map(|&i| (i, to2d(i))).collect();
-    triangulate_uv(&uv_loops, &uv_interior, clearance)
+    triangulate_uv(&uv_loops, &uv_interior, clearance, None)
 }
 
 /// Result of a periodic-chart face triangulation. `aux` are NEW seam Steiner
@@ -320,6 +344,12 @@ pub(crate) fn triangulate_periodic_face(
     poles: &[f64],
     aux_base: u32,
     world_of: &dyn Fn(f64, f64) -> [f32; 3],
+    // Liveness-Prädikat für den NICHT-windenden Fall (Patch auf geschlossenem
+    // Träger, Ticket 28a95b4e): entscheidet die Region statt der even-odd-
+    // Parität — auf einer Kugel teilen zwei Loops die Fläche in DREI Regionen,
+    // und welche davon live sind, weiß nur das Body-Feld. Band/Pol-Fälle
+    // (windende Loops) behalten die Parität (Perioden-Kopien!).
+    keep: Option<&dyn Fn([f32; 3]) -> bool>,
 ) -> Option<PeriodicFaceMesh> {
     if !(period > 0.0) || loops_uv.iter().any(|l| l.len() < 3) || loops_uv.is_empty() {
         return None;
@@ -343,8 +373,18 @@ pub(crate) fn triangulate_periodic_face(
                 (gi, [u - ((u - ref_mean) / period).round() * period, v])
             })
             .collect();
+        let keep_uv = keep.map(|k| {
+            move |p: Point2<f64>| k(world_of(p.x, p.y))
+        });
         return Some(PeriodicFaceMesh {
-            tris: triangulate_uv(&aligned, &aligned_interior, clearance),
+            tris: triangulate_uv(
+                &aligned,
+                &aligned_interior,
+                clearance,
+                keep_uv
+                    .as_ref()
+                    .map(|f| f as &dyn Fn(Point2<f64>) -> bool),
+            ),
             aux: Vec::new(),
         });
     }
@@ -433,6 +473,7 @@ pub(crate) fn triangulate_periodic_face(
             &[],
             pole_idx + 1,
             world_of,
+            None,
         )?;
         let mut tris = sub.tris;
         for i in 0..n_ring {
@@ -547,7 +588,7 @@ pub(crate) fn triangulate_periodic_face(
     }
 
     Some(PeriodicFaceMesh {
-        tris: triangulate_uv(&all_loops, &candidates, clearance),
+        tris: triangulate_uv(&all_loops, &candidates, clearance, None),
         aux,
     })
 }
@@ -675,6 +716,7 @@ mod tests {
             &[],
             17,
             &world_of,
+            None,
         )
         .expect("band must triangulate");
         assert!(!mesh.tris.is_empty());
@@ -720,7 +762,7 @@ mod tests {
             .collect();
         let world_of = |_: f64, _: f64| [0.0f32; 3];
         assert!(
-            triangulate_periodic_face(&[lp], &[], period, 4.0, 1.0, &[], 8, &world_of).is_none()
+            triangulate_periodic_face(&[lp], &[], period, 4.0, 1.0, &[], 8, &world_of, None).is_none()
         );
     }
 
@@ -750,6 +792,7 @@ mod tests {
             &[0.0],
             8,
             &world_of,
+            None,
         )
         .expect("cap must triangulate");
         assert!(!mesh.aux.is_empty(), "ring + pole aux vertices expected");
