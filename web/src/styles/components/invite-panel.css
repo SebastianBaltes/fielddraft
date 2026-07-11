@@ -129,8 +129,16 @@
     text-align: center;
   }
 
+  /* Passt die Tabelle nicht in die Fensterbreite (Phone), pannt sie
+   * horizontal im Wrapper, statt Spalten zu quetschen (wie die
+   * Issues-Tabelle, v0.6.518). */
+  & .table-scroll {
+    overflow-x: auto;
+  }
+
   & .invite-table {
     width: 100%;
+    min-width: 36rem;
     border-collapse: collapse;
     font-size: var(--fs-base);
 

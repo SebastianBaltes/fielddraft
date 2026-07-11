@@ -24,6 +24,16 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.519",
+    entries: [
+      {
+        kind: "fix",
+        scope: "mobile",
+        text: "Auch die Users- und Invites-Tabellen pannen jetzt horizontal, wenn sie nicht in die Fensterbreite passen (gleiches Muster wie die Issues-Tabelle): Scroll-Wrapper + Mindestbreite statt gequetschter Spalten.",
+      },
+    ],
+  },
+  {
     version: "0.6.518",
     entries: [
       {
