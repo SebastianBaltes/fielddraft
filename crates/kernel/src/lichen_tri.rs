@@ -197,6 +197,16 @@ pub fn triangulate_face_general(
                         if dot(d, d) > r * r {
                             continue;
                         }
+                        // COCONE (Amenta/Bern; Betreiber-Bedingung): Nachbarn
+                        // müssen „fast koplanar" zur Tangentialebene liegen —
+                        // |⟨d,n⟩| ≤ sin(30°)·|d|. Ein fremdes Blatt (Gyroid-
+                        // Gegenwand) liegt im Doppelkegel um die Normale und
+                        // wird NIE verbunden; U(p) darf dadurch größer sein
+                        // als der Blatt-Abstand.
+                        let dl = dot(d, d).sqrt();
+                        if dot(d, ni).abs() > 0.5 * dl {
+                            continue;
+                        }
                         local.push((
                             j,
                             Point2::new(dot(d, e1) as f64, dot(d, e2) as f64),
@@ -257,13 +267,81 @@ pub fn triangulate_face_general(
     }
 
     // ── Konsistenz: Dreieck braucht alle drei Sterne ──
+    // ── Akzeptanz: Stern-Konsens ODER Umkugel (Gabriel) ──
+    // Umkugel-Bedingung (Betreiber-Idee): die KLEINSTE Kugel durch die drei
+    // Ecken (Umkreis als Äquator, Zentrum in der Dreiecks-Ebene) muss frei
+    // von anderen Punkten sein. Frame-frei und symmetrisch — sie stellt die
+    // Eindeutigkeit her, die per-Stern-Tangentialebenen auf gekrümmten
+    // Flächen verlieren; im ebenen Fall degeneriert sie zum Umkreis-Test.
+    let gabriel_empty = |a: u32, b: u32, c: u32| -> bool {
+        let (pa, pb, pc) = (
+            points[a as usize],
+            points[b as usize],
+            points[c as usize],
+        );
+        // Umkreiszentrum in der Dreiecks-Ebene (Kramer über Baryzentrik).
+        let ab = sub(pb, pa);
+        let ac = sub(pc, pa);
+        let ab2 = dot(ab, ab);
+        let ac2 = dot(ac, ac);
+        let abac = dot(ab, ac);
+        let den = 2.0 * (ab2 * ac2 - abac * abac);
+        if den.abs() < 1e-20 {
+            return false; // degeneriert
+        }
+        let s_ = (ac2 * (ab2 - abac)) / den;
+        let t_ = (ab2 * (ac2 - abac)) / den;
+        let centre = [
+            pa[0] + s_ * ab[0] + t_ * ac[0],
+            pa[1] + s_ * ab[1] + t_ * ac[1],
+            pa[2] + s_ * ab[2] + t_ * ac[2],
+        ];
+        let dc = sub(pa, centre);
+        let r2 = dot(dc, dc);
+        let r = r2.sqrt();
+        // Punktfreiheit lokal prüfen (Spatial-Hash).
+        let (kx, ky, kz) = key(centre);
+        let reach = (r / cell).ceil() as i32 + 1;
+        for dx in -reach..=reach {
+            for dy in -reach..=reach {
+                for dz in -reach..=reach {
+                    let Some(bucket) = grid.get(&(kx + dx, ky + dy, kz + dz)) else {
+                        continue;
+                    };
+                    for &j in bucket {
+                        if j == a || j == b || j == c {
+                            continue;
+                        }
+                        let d = sub(points[j as usize], centre);
+                        if dot(d, d) < r2 * (1.0 - 1e-4) {
+                            return false;
+                        }
+                    }
+                }
+            }
+        }
+        true
+    };
+    // Default = Stern-Konsens. Die Umkugel ("gabriel"/"hybrid", Betreiber-
+    // Idee als frame-freie Eindeutigkeit) ist implementiert und vermessen:
+    // sie erbt das Tie-Problem — bei exakt cozirkulären Hex-Quads sind BEIDE
+    // Diagonalen Gabriel-leer (Box: 70 non-manifolde Kanten) — und braucht
+    // erst einen deterministischen Tie-Break, bevor sie den gekrümmten Fall
+    // tragen kann. Als Env-Modus für die nächste Iteration verfügbar.
+    let accept_mode =
+        std::env::var("LICHEN_ACCEPT").unwrap_or_else(|_| "vote".into());
     let vote_min: u8 = std::env::var("LICHEN_VOTE_MIN")
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(3);
     let mut tris: Vec<[u32; 3]> = votes
         .iter()
-        .filter(|&(_, &v)| v >= vote_min)
+        .filter(|&(&(a, b, c), &v)| match accept_mode.as_str() {
+            "vote" => v >= vote_min,
+            "gabriel" => gabriel_empty(a, b, c),
+            // hybrid: einstimmige Sterne ODER frame-freie Umkugel-Leere.
+            _ => v >= vote_min || gabriel_empty(a, b, c),
+        })
         .map(|(&(a, b, c), _)| [a, b, c])
         .collect();
     tris.sort_unstable();
