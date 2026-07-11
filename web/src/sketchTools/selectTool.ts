@@ -9,7 +9,13 @@
  */
 
 import { sketchToScreen } from "../sketchCameraBridge";
-import { buildDraftSketchState } from "../sketchSession";
+import { buildDraftSketchState, idsOfSubCall } from "../sketchSession";
+import {
+  anchorConstraints,
+  classifyLineAnchor,
+  resolveSnap,
+  snapRadiusMmFor,
+} from "../sketchSnapResolve";
 import {
   entitiesInBox,
   hitTestSketchEntity,
@@ -90,6 +96,60 @@ function pickSelectionGrip(ev: ToolPointerEvent, grips: Grip[]): Grip | null {
     }
   }
   return best;
+}
+
+/**
+ * Ticket b26062eb: a dragged point-like grip should snap onto committed
+ * geometry and BIND there on drop (coincident / point-on-object), exactly
+ * like a drawn line endpoint does. This resolves, for such a grip, the
+ * point entity id a drop can bind and the ids the snap must ignore — the
+ * dragged point plus every entity of its owning sub-call, so a handle
+ * can't snap onto or bind to its own geometry. Returns `null` for grips
+ * that don't drag a single point (circle rim, arc rim, rect corners, …).
+ */
+function gripBindContext(
+  subCalls: ReadonlyArray<{ type: string; params: Record<string, unknown> }>,
+  grip: Grip,
+): { pointId: number; excludeIds: Set<number> } | null {
+  const call = subCalls[grip.subCallIndex];
+  if (!call) return null;
+  const ids = idsOfSubCall(subCalls, grip.subCallIndex);
+  const own = new Set(ids);
+  // Allocation orders mirror buildDraftSketchState: line = [start, end,
+  // line]; arc = [centre, start, end, arc]; point = [point].
+  if (call.type === "sketch_point" && grip.role === "point" && ids.length >= 1)
+    return { pointId: ids[0], excludeIds: own };
+  if (call.type === "sketch_line" && ids.length >= 3) {
+    if (grip.role === "line-start") return { pointId: ids[0], excludeIds: own };
+    if (grip.role === "line-end") return { pointId: ids[1], excludeIds: own };
+  }
+  if (call.type === "sketch_arc" && ids.length >= 4) {
+    if (grip.role === "arc-start") return { pointId: ids[1], excludeIds: own };
+    if (grip.role === "arc-end") return { pointId: ids[2], excludeIds: own };
+  }
+  return null;
+}
+
+/** Already-committed duplicate of a pending anchor constraint? Coincident
+ *  is symmetric, so both operand orders count as a duplicate. */
+function hasEquivalentConstraint(
+  subCalls: ReadonlyArray<{ type: string; params: Record<string, unknown> }>,
+  call: { type: string; params: Record<string, unknown> },
+): boolean {
+  return subCalls.some((sc) => {
+    if (sc.type !== call.type) return false;
+    if (call.type === "sketch_constraint_coincident") {
+      const a = Number(call.params.a);
+      const b = Number(call.params.b);
+      const sa = Number(sc.params.a);
+      const sb = Number(sc.params.b);
+      return (sa === a && sb === b) || (sa === b && sb === a);
+    }
+    return (
+      Number(sc.params.point) === Number(call.params.point) &&
+      Number(sc.params.curve) === Number(call.params.curve)
+    );
+  });
 }
 
 export const selectTool: SketchToolController = {
@@ -258,7 +318,26 @@ export const selectTool: SketchToolController = {
       // P0.3: the controller solves every frame (continuation model), so
       // constraints stay satisfied as the grip moves — the geometry the
       // user sees is already solved. Ctrl = grid snap (ev.gridded).
-      void ctx.gripDrag.update(ev.gridded);
+      // Ticket b26062eb: a point-like grip snaps onto committed geometry
+      // (vertices, lines, circle/arc rims) on the way, so the drop can
+      // bind there — its own entities are excluded so it can't snap onto
+      // itself.
+      const bind = gripBindContext(ctx.session.subCalls, drag.grip);
+      let target = ev.gridded;
+      if (bind) {
+        const snap = resolveSnap(
+          ev.gridded,
+          ctx.session,
+          null,
+          snapRadiusMmFor(ev.cam),
+          false,
+          [],
+          bind.excludeIds,
+        );
+        ctx.setSnap(snap);
+        target = snap.snapped;
+      }
+      void ctx.gripDrag.update(target);
       ctx.requestRedraw();
       return true;
     }
@@ -301,7 +380,32 @@ export const selectTool: SketchToolController = {
     if (drag.kind === "grip") {
       // Settle the drag: one authoritative solve at the final cursor
       // (coalescing may have dropped the last live frame), then commit.
-      void ctx.gripDrag.finish();
+      // Ticket b26062eb: after settling, classify where the dragged point
+      // LANDED and bind it there persistently — a vertex hit becomes a
+      // coincident, a curve hit (line interior / circle / arc rim) a
+      // point-on-object. Without this the point only sits on the target
+      // visually and drifts off on the next edit (the reported bug: a
+      // line endpoint dropped on a circle didn't move the circle along).
+      const bind = gripBindContext(ctx.session.subCalls, drag.grip);
+      void ctx.gripDrag.finish().then(() => {
+        if (!bind) return;
+        const session = ctx.store.getState().sketchSession;
+        if (!session.active) return;
+        const state = buildDraftSketchState(session.subCalls);
+        const pt = state.entities.find((e) => e.id === bind.pointId);
+        if (!pt || pt.kind !== "point") return;
+        const anchor = classifyLineAnchor(
+          [pt.at.x, pt.at.y],
+          state,
+          bind.excludeIds,
+        );
+        const calls = anchorConstraints(bind.pointId, anchor).filter(
+          (c) => !hasEquivalentConstraint(session.subCalls, c),
+        );
+        if (calls.length === 0) return;
+        ctx.store.pushSketchSubCalls(calls);
+        ctx.scheduleSolverReplay();
+      });
       return;
     }
     if (drag.kind === "translate") {

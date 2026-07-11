@@ -535,10 +535,20 @@ function curveDistance(
   }
   if (e.kind === "arc") {
     const c = entityPoint(state, e.center);
+    const s = entityPoint(state, e.start);
+    const en = entityPoint(state, e.end);
     if (!c) return null;
-    // Best-effort: distance to the full circle the arc lies on.
-    // Angular clamping is refined once arcs become drawable.
-    return Math.abs(dist(cursor, c) - e.radius);
+    if (!s || !en) return Math.abs(dist(cursor, c) - e.radius);
+    // Angular clamp: inside the CCW span start→end the distance is
+    // radial; outside it, it's the distance to the nearer endpoint.
+    const a0 = Math.atan2(s[1] - c[1], s[0] - c[0]);
+    const a1 = Math.atan2(en[1] - c[1], en[0] - c[0]);
+    let span = a1 - a0;
+    while (span <= 0) span += Math.PI * 2;
+    let off = Math.atan2(cursor[1] - c[1], cursor[0] - c[0]) - a0;
+    while (off < 0) off += Math.PI * 2;
+    if (off <= span) return Math.abs(dist(cursor, c) - e.radius);
+    return Math.min(dist(cursor, s), dist(cursor, en));
   }
   if (e.kind === "ellipse") {
     const c = entityPoint(state, e.center);

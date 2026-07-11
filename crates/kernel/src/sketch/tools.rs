@@ -359,7 +359,28 @@ impl SketchToolKind for SketchArcTool {
         def: &Value,
     ) -> Result<(), FeatureError> {
         let d = SketchArcDef::parse(def)?;
-        state.add_point(Point2::new(d.center[0] as f64, d.center[1] as f64));
+        // Full arc entity model: centre + start + end points, then the
+        // arc linking them. Allocation order (centre, start, end, arc)
+        // is load-bearing — the TS mirror (buildDraftSketchState /
+        // sketchGrips / rebuildSubCallsFromSolved) replicates it
+        // byte-for-byte. Endpoint positions derive from the angular
+        // parameterisation; the solver treats them as first-class
+        // points so constraints can bind arc endpoints.
+        let cx = d.center[0] as f64;
+        let cy = d.center[1] as f64;
+        let r = d.radius.max(0.0) as f64;
+        let a0 = d.start_angle as f64;
+        let a1 = a0 + d.sweep_angle as f64;
+        let center = state.add_point(Point2::new(cx, cy));
+        let start = state.add_point(Point2::new(cx + r * a0.cos(), cy + r * a0.sin()));
+        let end = state.add_point(Point2::new(cx + r * a1.cos(), cy + r * a1.sin()));
+        // Solver arcs sweep CCW from start to end — a negative-sweep
+        // (CW) arc swaps the endpoint roles (mirrors the TS session).
+        if d.sweep_angle >= 0.0 {
+            state.add_arc(center, start, end, r);
+        } else {
+            state.add_arc(center, end, start, r);
+        }
         Ok(())
     }
 }

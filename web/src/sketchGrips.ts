@@ -40,6 +40,8 @@ export type GripRole =
   // control handle).
   | "path-vertex"
   | "arc-center"
+  | "arc-start"
+  | "arc-end"
   | "arc-rim";
 
 /** Which coordinate of a sketch_path a `path-vertex` grip edits. */
@@ -297,37 +299,53 @@ function buildGripIndex(subCalls: ReadonlyArray<SubCall>): Map<number, Grip[]> {
         break;
       }
       case "sketch_arc": {
-        // Only the centre point is modelled as an entity. Map it to
-        // both a centre grip and a radius grip placed at the arc's
-        // mid-sweep angle (analogous to a circle's rim).
+        // Full arc entity model (mirrors buildDraftSketchState):
+        // centre + start + end points, then the arc entity. Endpoints
+        // are draggable grips (ticket a243c50f); the mid-sweep rim
+        // grip drags the radius (analogous to a circle's rim).
         const center = asXy(call.params.center);
         if (!center) break;
         const radius = Number(call.params.radius);
         const start = Number(call.params.start_angle);
         const sweep = Number(call.params.sweep_angle);
+        if (
+          !Number.isFinite(radius) ||
+          !Number.isFinite(start) ||
+          !Number.isFinite(sweep)
+        )
+          break;
         const centerId = id++;
+        const startId = id++;
+        const endId = id++;
+        const arcId = id++;
+        const at = (angle: number): [number, number] => [
+          center[0] + radius * Math.cos(angle),
+          center[1] + radius * Math.sin(angle),
+        ];
         const centerGrip: Grip = {
           subCallIndex: i,
           role: "arc-center",
           pos: center,
         };
-        const grips = [centerGrip];
-        if (
-          Number.isFinite(radius) &&
-          Number.isFinite(start) &&
-          Number.isFinite(sweep)
-        ) {
-          const mid = start + sweep / 2;
-          grips.push({
-            subCallIndex: i,
-            role: "arc-rim",
-            pos: [
-              center[0] + radius * Math.cos(mid),
-              center[1] + radius * Math.sin(mid),
-            ],
-          });
-        }
-        byEntity.set(centerId, grips);
+        const startGrip: Grip = {
+          subCallIndex: i,
+          role: "arc-start",
+          pos: at(start),
+        };
+        const endGrip: Grip = {
+          subCallIndex: i,
+          role: "arc-end",
+          pos: at(start + sweep),
+        };
+        const rimGrip: Grip = {
+          subCallIndex: i,
+          role: "arc-rim",
+          pos: at(start + sweep / 2),
+        };
+        byEntity.set(centerId, [centerGrip]);
+        byEntity.set(startId, [startGrip]);
+        byEntity.set(endId, [endGrip]);
+        byEntity.set(arcId, [centerGrip, startGrip, endGrip, rimGrip]);
         break;
       }
       default:
@@ -566,6 +584,34 @@ export function applyGripDrag(
       if (!center) break;
       const radius = Math.hypot(to[0] - center[0], to[1] - center[1]);
       if (radius > 1e-6) replace({ radius });
+      break;
+    }
+    case "arc-start":
+    case "arc-end": {
+      // Dragging an endpoint re-aims its angle AND the radius (the
+      // centre stays put — Onshape behaviour). The other endpoint
+      // keeps its angle; the sweep is re-derived so the arc still
+      // ends at the same angular position, unwrapped to stay near
+      // the previous sweep (so a CW arc doesn't flip CCW mid-drag).
+      const center = asXy(call.params.center);
+      const start = Number(call.params.start_angle);
+      const sweep = Number(call.params.sweep_angle);
+      if (!center || !Number.isFinite(start) || !Number.isFinite(sweep)) break;
+      const radius = Math.hypot(to[0] - center[0], to[1] - center[1]);
+      if (radius <= 1e-6) break;
+      const angle = Math.atan2(to[1] - center[1], to[0] - center[0]);
+      if (grip.role === "arc-start") {
+        const endAngle = start + sweep;
+        let newSweep = endAngle - angle;
+        while (newSweep - sweep > Math.PI) newSweep -= Math.PI * 2;
+        while (newSweep - sweep < -Math.PI) newSweep += Math.PI * 2;
+        replace({ radius, start_angle: angle, sweep_angle: newSweep });
+      } else {
+        let newSweep = angle - start;
+        while (newSweep - sweep > Math.PI) newSweep -= Math.PI * 2;
+        while (newSweep - sweep < -Math.PI) newSweep += Math.PI * 2;
+        replace({ radius, sweep_angle: newSweep });
+      }
       break;
     }
   }

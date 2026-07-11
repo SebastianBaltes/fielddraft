@@ -163,7 +163,7 @@ describe("gripsForSelection", () => {
     });
   });
 
-  it("maps an arc centre to centre + rim grips at the mid-sweep angle", () => {
+  it("maps an arc to centre + endpoint + rim grips (full entity model)", () => {
     const subCalls: SubCall[] = [
       {
         type: "sketch_arc",
@@ -175,9 +175,26 @@ describe("gripsForSelection", () => {
         },
       },
     ];
-    // ids: center=1
-    const grips = gripsForSelection(subCalls, [1]);
-    expect(grips.map((g) => g.role).sort()).toEqual(["arc-center", "arc-rim"]);
+    // ids: center=1, start=2, end=3, arc=4
+    expect(gripsForSelection(subCalls, [1]).map((g) => g.role)).toEqual([
+      "arc-center",
+    ]);
+    expect(gripsForSelection(subCalls, [2])[0]).toMatchObject({
+      role: "arc-start",
+      pos: [10, 0],
+    });
+    const endGrip = gripsForSelection(subCalls, [3])[0];
+    expect(endGrip.role).toBe("arc-end");
+    expect(endGrip.pos[0]).toBeCloseTo(-10, 6);
+    expect(endGrip.pos[1]).toBeCloseTo(0, 6);
+    // Selecting the arc itself exposes all four handles.
+    const grips = gripsForSelection(subCalls, [4]);
+    expect(grips.map((g) => g.role).sort()).toEqual([
+      "arc-center",
+      "arc-end",
+      "arc-rim",
+      "arc-start",
+    ]);
     const rim = grips.find((g) => g.role === "arc-rim")!;
     // mid angle = π/2 → rim at (0, 10)
     expect(rim.pos[0]).toBeCloseTo(0, 6);
@@ -198,6 +215,56 @@ describe("gripsForSelection", () => {
 });
 
 describe("applyGripDrag", () => {
+  it("arc-start drag re-aims angle + radius and keeps the end angle", () => {
+    const subCalls: SubCall[] = [
+      {
+        type: "sketch_arc",
+        params: {
+          center: [0, 0],
+          radius: 10,
+          start_angle: 0,
+          sweep_angle: Math.PI / 2,
+        },
+      },
+    ];
+    const grips = gripsForSelection(subCalls, [4]);
+    const start = grips.find((g) => g.role === "arc-start")!;
+    // Drag the start from (10,0) to (0,-20): angle -π/2, radius 20.
+    const next = applyGripDrag(subCalls, start, [0, -20]);
+    const p = next[0].params as Record<string, number>;
+    expect(p.radius).toBeCloseTo(20, 6);
+    expect(p.start_angle).toBeCloseTo(-Math.PI / 2, 6);
+    // End stays at angle π/2 → sweep grows to π.
+    expect(p.sweep_angle).toBeCloseTo(Math.PI, 6);
+  });
+
+  it("arc-end drag re-derives the sweep without flipping winding", () => {
+    const subCalls: SubCall[] = [
+      {
+        type: "sketch_arc",
+        params: {
+          center: [0, 0],
+          radius: 10,
+          start_angle: 0,
+          sweep_angle: -Math.PI / 2, // CW arc
+        },
+      },
+    ];
+    const grips = gripsForSelection(subCalls, [4]);
+    const end = grips.find((g) => g.role === "arc-end")!;
+    // Drag the end from (0,-10) to (-10·cos45°·√2 …) — to angle -3π/4.
+    const to: [number, number] = [
+      10 * Math.cos(-2.356),
+      10 * Math.sin(-2.356),
+    ];
+    const next = applyGripDrag(subCalls, end, to);
+    const p = next[0].params as Record<string, number>;
+    expect(p.start_angle).toBeCloseTo(0, 6);
+    // Sweep stays CW (negative), just longer.
+    expect(p.sweep_angle).toBeLessThan(0);
+    expect(p.sweep_angle).toBeCloseTo(-2.356, 3);
+  });
+
   const line: SubCall = {
     type: "sketch_line",
     params: { start: [0, 0], end: [40, 0] },

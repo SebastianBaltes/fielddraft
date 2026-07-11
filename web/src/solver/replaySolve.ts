@@ -126,9 +126,37 @@ export function rebuildSubCallsFromSolved(
       return call;
     }
     if (call.type === "sketch_arc") {
+      // Mirrors buildDraftSketchState: centre, start, end points, then
+      // the arc entity. Recover the angular parameterisation from the
+      // solved endpoint positions. The sweep is ambiguous modulo 2π, so
+      // pick the representative closest to the previous sweep — this
+      // preserves the drawn winding (CW arcs stay CW) across solves.
       const center = pointAt(nextId++);
-      if (!center) return call;
-      return { ...call, params: { ...call.params, center } };
+      const start = pointAt(nextId++);
+      const end = pointAt(nextId++);
+      const arcId = nextId++;
+      if (!center || !start || !end) return call;
+      const arc = solved.entities.find((e) => e.id === arcId);
+      const radius =
+        arc && arc.kind === "arc"
+          ? arc.radius
+          : Math.hypot(start[0] - center[0], start[1] - center[1]);
+      const startAngle = Math.atan2(start[1] - center[1], start[0] - center[0]);
+      const endAngle = Math.atan2(end[1] - center[1], end[0] - center[0]);
+      const oldSweep = Number(call.params.sweep_angle) || 0;
+      let sweep = endAngle - startAngle;
+      while (sweep - oldSweep > Math.PI) sweep -= Math.PI * 2;
+      while (sweep - oldSweep < -Math.PI) sweep += Math.PI * 2;
+      return {
+        ...call,
+        params: {
+          ...call.params,
+          center,
+          radius,
+          start_angle: startAngle,
+          sweep_angle: sweep,
+        },
+      };
     }
     if (call.type === "sketch_ellipse") {
       // Mirrors buildDraftSketchState: centre point, focus point, then

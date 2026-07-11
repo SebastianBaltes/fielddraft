@@ -169,6 +169,20 @@ export function noSnap(cursor: [number, number]): SnapResolution {
   };
 }
 
+/** Does `constraint` reference any entity id in `exclude`? Scans every
+ *  own numeric field except the (always `-1`) candidate `id`, so it stays
+ *  correct for every constraint shape the inference engine emits. */
+function referencesExcluded(
+  constraint: Record<string, unknown>,
+  exclude: ReadonlySet<number>,
+): boolean {
+  for (const [key, value] of Object.entries(constraint)) {
+    if (key === "id") continue;
+    if (typeof value === "number" && exclude.has(value)) return true;
+  }
+  return false;
+}
+
 export function resolveSnap(
   cursor: [number, number],
   session: SketchSessionState,
@@ -176,6 +190,10 @@ export function resolveSnap(
   snapRadiusMm: number,
   suppress = false,
   projectedEdges: ProjectedEdge[] = [],
+  /** Entity ids to never snap onto — the grip-drag path passes the
+   *  dragged point and its owning curve so a handle can't bind to
+   *  itself (ticket b26062eb). */
+  excludeIds: ReadonlySet<number> = EMPTY_ID_SET,
 ): SnapResolution {
   if (suppress) {
     return {
@@ -194,7 +212,13 @@ export function resolveSnap(
     cursor: { x: cursor[0], y: cursor[1] },
     drawingLineFrom: dragStart ? DRAFT_DRAG_START_ID : undefined,
     snapDistanceMm: snapRadiusMm,
-  });
+  }).filter(
+    (cand) =>
+      !referencesExcluded(
+        cand.constraint as unknown as Record<string, unknown>,
+        excludeIds,
+      ),
+  );
 
   // Tickets pgyf / ymbp: snap onto an existing SKETCH LINE segment (project the
   // cursor onto the nearest committed line within the snap radius). Lower
@@ -208,6 +232,12 @@ export function resolveSnap(
     let bestPt: [number, number] | null = null;
     for (const e of state.entities) {
       if (e.kind !== "line") continue;
+      if (
+        excludeIds.has(e.id) ||
+        excludeIds.has(e.start) ||
+        excludeIds.has(e.end)
+      )
+        continue;
       const a = state.entities.find((x) => x.id === e.start);
       const b = state.entities.find((x) => x.id === e.end);
       if (!a || !b || a.kind !== "point" || b.kind !== "point") continue;
@@ -238,7 +268,10 @@ export function resolveSnap(
   // centre is itself a coincident target so the commit binds to it. The draft
   // curve isn't a committed entity, so we never snap onto what's being drawn.
   const circleSnap = ((): SnapResolution | null => {
-    const hit = snapToCircles(snapCirclesOf(state), cursor, snapRadiusMm);
+    const circles = snapCirclesOf(state).filter(
+      (c) => !excludeIds.has(c.id) && !excludeIds.has(c.centerId),
+    );
+    const hit = snapToCircles(circles, cursor, snapRadiusMm);
     if (!hit) return null;
     // A centre snap is a coincident-to-point relationship; rim / quadrant land
     // ON the curve, so the commit emits point-on-object (classifyLineAnchor).
@@ -311,6 +344,14 @@ export function resolveSnap(
   }
   const top = cands[0];
   const c = top.constraint;
+  // Ticket 3095b041: REAL geometry beats an orientation-only hint. When
+  // the cursor is within the snap radius of a committed curve (line
+  // projection / circle / arc rim), landing ON that curve — with its
+  // persistent point-on-object binding — is what the user is aiming
+  // for; a horizontal/vertical/parallel hint would otherwise shadow the
+  // curve and the endpoint would fall short of it. Coincident (vertex)
+  // candidates still win below by returning before this check is used.
+  if (c.kind !== "coincident" && curveSnap) return curveSnap;
   // Endpoint / origin snap: pull the cursor onto the target
   // point's coordinates.
   if (c.kind === "coincident") {
@@ -415,17 +456,24 @@ export type AnchorClass =
 // that just happens to pass near an unrelated line.
 const ANCHOR_ON_EPS_MM = 0.1;
 
+const EMPTY_ID_SET: ReadonlySet<number> = new Set();
+
 export function classifyLineAnchor(
   pt: [number, number],
   state: SketchState,
+  /** Entity ids never to bind to — the grip-drag drop passes the dragged
+   *  point and its owning curve (they'd trivially match at distance 0). */
+  excludeIds: ReadonlySet<number> = EMPTY_ID_SET,
 ): AnchorClass {
   for (const e of state.entities) {
+    if (excludeIds.has(e.id)) continue;
     if (e.kind === "point" && dist2d(pt, [e.at.x, e.at.y]) < ANCHOR_ON_EPS_MM) {
       return { kind: "point", id: e.id };
     }
   }
   for (const e of state.entities) {
     if (e.kind !== "line") continue;
+    if (excludeIds.has(e.id)) continue;
     const a = state.entities.find((x) => x.id === e.start);
     const b = state.entities.find((x) => x.id === e.end);
     if (!a || !b || a.kind !== "point" || b.kind !== "point") continue;
@@ -436,6 +484,7 @@ export function classifyLineAnchor(
   // curve with point-on-object, so a later radius change keeps it on the rim.
   // The snap already placed it exactly on the radius, so test radial distance.
   for (const c of snapCirclesOf(state)) {
+    if (excludeIds.has(c.id)) continue;
     const radial = Math.abs(dist2d(pt, c.center) - c.radius);
     if (radial >= ANCHOR_ON_EPS_MM) continue;
     if (c.start !== undefined && c.sweep !== undefined) {

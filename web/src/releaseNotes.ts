@@ -24,6 +24,29 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.532",
+    entries: [
+      {
+        kind: "feat",
+        scope: "sketch",
+        text: "Arcs sind jetzt vollwertige Sketch-Entities: Endpunkte als grabbare Grips (wie Onshape), Arc-Bögen sind snapbar und constrainbar (Point-on-Arc)",
+        tickets: ["a243c50f", "3095b041"],
+      },
+      {
+        kind: "feat",
+        scope: "sketch",
+        text: "Gezogene Punkte/Linien-Endpunkte snappen auf Kreise, Arcs und Linien und binden beim Loslassen persistent (Coincident bzw. Point-on-Object) — ein auf einen Kreisrand gezogener Endpunkt bewegt den Kreis jetzt mit",
+        tickets: ["b26062eb"],
+      },
+      {
+        kind: "fix",
+        scope: "sketch",
+        text: "Beim Zeichnen gewinnt echte Geometrie (Kreis-/Arc-Rand, Linie) über Horizontal-/Vertikal-Hints im Snap-Radius",
+        tickets: ["3095b041"],
+      },
+    ],
+  },
+  {
     version: "0.6.531",
     entries: [
       {
