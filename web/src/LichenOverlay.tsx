@@ -194,7 +194,9 @@ export function LichenOverlay({
         m.depthTest = true;
         m.polygonOffset = depthBias > 0;
         m.polygonOffsetFactor = -depthBias;
-        m.polygonOffsetUnits = -2 * depthBias;
+        // ×200 wie die B-Rep-Kanten: SDF-frag_depth vs Raster-Tiefe weichen
+        // um ~1e-5 NDC ab — Einzel-Units greifen nie (Ticket 65cc6903).
+        m.polygonOffsetUnits = -200 * depthBias;
       } else {
         m.depthTest = false;
       }

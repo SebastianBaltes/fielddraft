@@ -24,6 +24,17 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.520",
+    entries: [
+      {
+        kind: "fix",
+        scope: "render",
+        text: "Der Z-Offset im „Visible only“-Modus wirkt jetzt wirklich — auf B-Rep-Kanten UND Lichen-Overlays. Ursache: polygonOffsetUnits zählt in Schritten des kleinsten Depth-Buffer-Deltas (~2⁻²³), die analytisch geschriebene SDF-Tiefe weicht von der Raster-Tiefe der Kanten aber um ~1e-5 ab — der bisherige Bias war ~100× zu klein, Kanten auf Flächen (z.B. der Ring um die Kugel) verloren den Tiefen-Test. Die Skala ist jetzt headful vermessen (Schwelle zwischen 50 und 200 Units) und auf Units = −200·Wert gesetzt: der Default 2 zeigt den Kugel-Ring vollständig, mit doppelter Marge.",
+        tickets: ["d4fc002a", "65cc6903"],
+      },
+    ],
+  },
+  {
     version: "0.6.519",
     entries: [
       {

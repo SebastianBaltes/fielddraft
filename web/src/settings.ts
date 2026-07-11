@@ -223,8 +223,9 @@ export interface SettingsState {
   brepEdgeMode: BRepEdgeMode;
   /** Depth-Bias-Stärke im "visible"-Modus: zieht Kanten/Overlay-Fragmente im
    * Z-Buffer zur Kamera, damit Geometrie exakt AUF einer Fläche nicht
-   * z-fightet (polygonOffsetFactor = −bias, Units = −2·bias; WebGPU:
-   * depthBias). 0 = aus; wirkungslos außerhalb von "visible". */
+   * z-fightet (polygonOffsetFactor = −bias, Units = −200·bias; WebGPU:
+   * depthBias — die ×200-Skala ist headful vermessen, s. brepEdgeOverlays).
+   * 0 = aus; wirkungslos außerhalb von "visible". */
   overlayDepthBias: number;
   frameLoop: FrameLoopMode;
   /** Milestone-1 parametric weaving: exact analytic B-Rep for pure grundforms

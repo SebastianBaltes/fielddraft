@@ -1016,7 +1016,9 @@ function SettingsDialog({
                         "Visible-only-Modus: zieht ihre Fragmente im Tiefen-Test " +
                         "zur Kamera, damit Geometrie exakt AUF einer Fläche nicht " +
                         "z-fightet (polygonOffset/depthBias: Factor = −Wert, " +
-                        "Units = −2·Wert). Größer = setzt sich stärker gegen die " +
+                        "Units = −200·Wert — die SDF-Tiefe ist analytisch und " +
+                        "weicht von der Raster-Tiefe um viele Depth-Schritte ab). " +
+                        "Größer = setzt sich stärker gegen die " +
                         "Fläche durch, scheint aber früher durch dünne Wände; " +
                         "0 = aus."
                       }
