@@ -750,12 +750,55 @@ export function buildDraftSketchState(
         }
       }
     } else if (call.type === "sketch_arc") {
+      // Full arc entity model (mirrors the kernel SketchArcTool):
+      // centre + start + end points, then the arc linking them. The
+      // endpoint positions derive from the angular parameterisation;
+      // as first-class points they are snappable and constrainable.
       const center = call.params.center;
-      if (Array.isArray(center) && center.length === 2) {
+      const radius = Number(call.params.radius);
+      const a0 = Number(call.params.start_angle);
+      const sweep = Number(call.params.sweep_angle);
+      if (
+        Array.isArray(center) &&
+        center.length === 2 &&
+        Number.isFinite(radius) &&
+        Number.isFinite(a0) &&
+        Number.isFinite(sweep)
+      ) {
+        const cx = Number(center[0]);
+        const cy = Number(center[1]);
+        const r = Math.max(radius, 0);
+        const a1 = a0 + sweep;
+        const centerId = state.next_entity_id++;
         state.entities.push({
           kind: "point",
+          id: centerId,
+          at: { x: cx, y: cy },
+        });
+        const startId = state.next_entity_id++;
+        state.entities.push({
+          kind: "point",
+          id: startId,
+          at: { x: cx + r * Math.cos(a0), y: cy + r * Math.sin(a0) },
+        });
+        const endId = state.next_entity_id++;
+        state.entities.push({
+          kind: "point",
+          id: endId,
+          at: { x: cx + r * Math.cos(a1), y: cy + r * Math.sin(a1) },
+        });
+        // PlaneGCS arcs sweep CCW from start to end. A negative-sweep
+        // (CW) sketch arc covers the SAME set of points as the CCW arc
+        // from its end to its start, so swap the endpoint roles rather
+        // than teaching every consumer about signed sweeps. The point
+        // entities themselves keep their drawn (start/end) order.
+        state.entities.push({
+          kind: "arc",
           id: state.next_entity_id++,
-          at: { x: Number(center[0]), y: Number(center[1]) },
+          center: centerId,
+          start: sweep >= 0 ? startId : endId,
+          end: sweep >= 0 ? endId : startId,
+          radius: r,
         });
       }
     } else if (call.type === "sketch_constraint_horizontal") {

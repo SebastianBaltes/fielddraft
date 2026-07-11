@@ -24,6 +24,73 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.537",
+    entries: [
+      {
+        kind: "feat",
+        scope: "issues",
+        text: "Ticket-Liste aufgeräumt: Datum mit Uhrzeit (ohne „Updated“-Präfix), Category-Spalte und -Filter entfernt (ungenutzt); Uhrzeit auch im Ticket-Detail und in Kommentaren",
+      },
+    ],
+  },
+  {
+    version: "0.6.536",
+    entries: [
+      {
+        kind: "fix",
+        scope: "sketch",
+        text: "Das Trim/Split-Hover-Highlight rendert jetzt auch bei aktivem Edit-Tool (vorher nur im Select-Modus); Arc-Highlights zeichnen nur die Bogen-Spanne statt des vollen Kreises",
+        tickets: ["1efd4bcb"],
+      },
+    ],
+  },
+  {
+    version: "0.6.535",
+    entries: [
+      {
+        kind: "feat",
+        scope: "sketch",
+        text: "Split funktioniert jetzt auch auf Kreisen (ein Klick setzt einen Vertex — der Kreis wird zum offenen 360°-Arc), Rechtecken und Polygonen (geklickte Kante wird geteilt, Composite zerfällt in Linien)",
+        tickets: ["5f0be545"],
+      },
+      {
+        kind: "feat",
+        scope: "sketch",
+        text: "Trim/Split highlighten das Ziel unter dem Cursor sofort orange statt eines hüpfenden Snap-Punkts",
+        tickets: ["1efd4bcb"],
+      },
+      {
+        kind: "feat",
+        scope: "sketch",
+        text: "Eine im Outliner selektierte Default-Plane (Top/Front/Right) belegt beim Öffnen des Sketch-Tools die Sketch-Plane vor",
+        tickets: ["90f9b34a"],
+      },
+    ],
+  },
+  {
+    version: "0.6.534",
+    entries: [
+      {
+        kind: "feat",
+        scope: "sketch",
+        text: "Arcs sind jetzt vollwertige Sketch-Entities: Endpunkte als grabbare Grips (wie Onshape), Arc-Bögen sind snapbar und constrainbar (Point-on-Arc)",
+        tickets: ["a243c50f", "3095b041"],
+      },
+      {
+        kind: "feat",
+        scope: "sketch",
+        text: "Gezogene Punkte/Linien-Endpunkte snappen auf Kreise, Arcs und Linien und binden beim Loslassen persistent (Coincident bzw. Point-on-Object) — ein auf einen Kreisrand gezogener Endpunkt bewegt den Kreis jetzt mit",
+        tickets: ["b26062eb"],
+      },
+      {
+        kind: "fix",
+        scope: "sketch",
+        text: "Beim Zeichnen gewinnt echte Geometrie (Kreis-/Arc-Rand, Linie) über Horizontal-/Vertikal-Hints im Snap-Radius",
+        tickets: ["3095b041"],
+      },
+    ],
+  },
+  {
     version: "0.6.534",
     entries: [
       {

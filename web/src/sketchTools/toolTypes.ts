@@ -226,6 +226,11 @@ export interface SketchToolController {
    *  in-flight drags bypass the tool-mode move postlude (hover fallback,
    *  tool hover highlight, synchronous overlay redraw). */
   selectionGesture?: boolean;
+  /** Suppress the shared hover snap point (the little dot with snap
+   *  magnetism). The single-click edit modes (trim / split / extend)
+   *  highlight their target entity instead — a jumpy point that snaps
+   *  onto curves reads as noise there (ticket 1efd4bcb). */
+  noHoverPoint?: boolean;
 
   onDown?(ctx: ToolContext, ev: ToolPointerEvent): void;
   /** Return true when the move was consumed (an owned drag was updated);

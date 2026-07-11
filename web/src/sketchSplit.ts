@@ -10,14 +10,27 @@
  * downstream constraint refs) and re-solves. The kernel needs no split
  * tool.
  *
- * Scope (v1): simple `sketch_line` and `sketch_arc` only. A full
- * `sketch_circle` can't be split at a single click — one point on a
- * closed loop leaves a single 360° arc, which is no split at all — so we
- * return null for circles and document it here. Composites and every
- * other kind return null too (the caller treats null as "do nothing").
+ * Scope (ticket 5f0be545): lines, arcs, circles and the line-edge
+ * composites (rectangle, polygon).
+ *
+ * - A **circle** splits at a single click into an open 360° arc whose
+ *   endpoints meet at the click — that plants a real vertex on the loop
+ *   (Onshape behaviour), and a second split then yields two true arcs.
+ * - A **rectangle/polygon** flattens into standalone lines with the
+ *   clicked edge split in two — same convention as Trim, which also
+ *   dissolves the composite once an edge is cut.
  */
 
-import type { Curve, Vec2 } from "./sketchTrim";
+import {
+  carryFlags,
+  distToCurve,
+  edgesOfSubCall,
+  subCallOfCurve,
+  type Curve,
+  type Vec2,
+} from "./sketchTrim";
+
+type SubCall = { type: string; params: Record<string, unknown> };
 
 /** Parametric tolerance: a click within this of an endpoint isn't a
  *  meaningful split (it would leave a zero-length piece). Matches the
@@ -102,6 +115,64 @@ export function splitCurveAt(cv: Curve, clickPoint: Vec2): [Curve, Curve] | null
     ];
   }
 
-  // Full circle (or any unsupported kind): no single-click split.
+  // Full circle (or any unsupported kind): no two-piece split — the
+  // circle's single-click case (→ one open 360° arc) lives in
+  // [`splitSubCallAt`], which needs to emit ONE replacement, not two.
   return null;
+}
+
+/**
+ * Split the sub-call `target` at `clickPoint` and return its replacement
+ * sub-calls, or null when no meaningful split exists. Handles what
+ * [`splitCurveAt`] can't:
+ *
+ * - **circle**: one click → ONE open `sketch_arc` spanning the full 360°
+ *   with both endpoints at the click angle. That plants a vertex on the
+ *   loop; splitting the resulting arc again yields two true arcs.
+ * - **rectangle / polygon**: the clicked edge is split in two, every
+ *   sibling edge is carried over as a standalone `sketch_line` (the
+ *   composite dissolves — same convention as Trim).
+ *
+ * Replacements inherit the target's `construction` flag.
+ */
+export function splitSubCallAt(
+  target: SubCall,
+  clickPoint: Vec2,
+): SubCall[] | null {
+  const edges = edgesOfSubCall(target);
+  if (edges.length === 0) return null;
+  const carry = carryFlags(target.params);
+
+  // Which edge did the click land on?
+  let clickedEdge = 0;
+  let bestDist = Infinity;
+  edges.forEach((cv, k) => {
+    const d = distToCurve(clickPoint, cv);
+    if (d < bestDist) {
+      bestDist = d;
+      clickedEdge = k;
+    }
+  });
+  const cv = edges[clickedEdge];
+
+  let replacement: Curve[] | null;
+  if (cv.kind === "circle") {
+    const theta = Math.atan2(clickPoint[1] - cv.c[1], clickPoint[0] - cv.c[0]);
+    replacement = [
+      { kind: "arc", c: cv.c, r: cv.r, start: theta, sweep: TAU },
+    ];
+  } else {
+    replacement = splitCurveAt(cv, clickPoint);
+  }
+  if (!replacement) return null;
+
+  const out: SubCall[] = [];
+  edges.forEach((piece, k) => {
+    if (k === clickedEdge) {
+      out.push(...replacement.map((c) => subCallOfCurve(c, carry)));
+    } else {
+      out.push(subCallOfCurve(piece, carry));
+    }
+  });
+  return out;
 }

@@ -62,6 +62,7 @@ import { clearSketchLabels } from "./sketchLabelBridge";
 import { solveAndReplace } from "./solver/replaySolve";
 import { DragController } from "./solver/dragController";
 import {
+  noSnap,
   projectEdgesToSketchPlane,
   resolveSnap,
   snapRadiusMmFor,
@@ -788,17 +789,24 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
     if (!ownedMove) {
       // Hover path: show a preview point with snap magnetism so
       // the user sees the same feedback a click-to-place would
-      // land on.
-      const snap = resolveSnap(
-        ev.gridded,
-        session,
-        null,
-        snapRadiusMmFor(cam),
-        e.shiftKey,
-        projectedEdgesRef.current,
-      );
-      snapRef.current = snap;
-      hoverRef.current = snap.snapped;
+      // land on. The single-click edit modes (trim / split / extend)
+      // opt out — they highlight their target entity via onHover
+      // instead (ticket 1efd4bcb).
+      if (controllerForTool(session.selectedTool)?.noHoverPoint) {
+        snapRef.current = noSnap(ev.raw);
+        hoverRef.current = null;
+      } else {
+        const snap = resolveSnap(
+          ev.gridded,
+          session,
+          null,
+          snapRadiusMmFor(cam),
+          e.shiftKey,
+          projectedEdgesRef.current,
+        );
+        snapRef.current = snap;
+        hoverRef.current = snap.snapped;
+      }
     }
     // Tool-specific hover highlight — the mirror axis / constraint pick
     // candidate (czqf / 7lxk / o6hx). Routed to the active controller;

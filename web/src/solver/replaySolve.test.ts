@@ -48,6 +48,70 @@ describe("rebuildSubCallsFromSolved", () => {
     expect(rebuilt[0].params).toEqual({ at: [5, 5] });
   });
 
+  it("recovers arc params from the solved centre/start/end points", () => {
+    const original = [
+      {
+        type: "sketch_arc",
+        params: {
+          center: [0, 0],
+          radius: 5,
+          start_angle: 0,
+          sweep_angle: Math.PI / 2,
+        },
+      },
+    ];
+    // Solve moved the whole arc +1 in x (ids: centre=1, start=2, end=3,
+    // arc=4). The rebuilt params must re-derive angles from the points.
+    const solved = buildDraftSketchState(original);
+    for (const e of solved.entities) {
+      if (e.kind === "point") e.at = { x: e.at.x + 1, y: e.at.y };
+    }
+    const rebuilt = rebuildSubCallsFromSolved(original, solved);
+    const p = rebuilt[0].params as Record<string, number[] | number>;
+    expect(p.center).toEqual([1, 0]);
+    expect(p.radius as number).toBeCloseTo(5, 6);
+    expect(p.start_angle as number).toBeCloseTo(0, 6);
+    expect(p.sweep_angle as number).toBeCloseTo(Math.PI / 2, 6);
+  });
+
+  it("keeps a CW arc's negative sweep across an identity solve", () => {
+    const original = [
+      {
+        type: "sketch_arc",
+        params: {
+          center: [0, 0],
+          radius: 5,
+          start_angle: Math.PI / 2,
+          sweep_angle: -Math.PI / 2,
+        },
+      },
+    ];
+    const solved = buildDraftSketchState(original);
+    const rebuilt = rebuildSubCallsFromSolved(original, solved);
+    const p = rebuilt[0].params as Record<string, number>;
+    expect(p.start_angle).toBeCloseTo(Math.PI / 2, 6);
+    expect(p.sweep_angle).toBeCloseTo(-Math.PI / 2, 6);
+  });
+
+  it("advances nextId past the arc so a following line keeps its ids", () => {
+    const original = [
+      {
+        type: "sketch_arc",
+        params: {
+          center: [0, 0],
+          radius: 5,
+          start_angle: 0,
+          sweep_angle: Math.PI,
+        },
+      },
+      { type: "sketch_line", params: { start: [20, 0], end: [30, 0] } },
+    ];
+    // Identity solve: the line (ids 5, 6) must read back its own points.
+    const solved = buildDraftSketchState(original);
+    const rebuilt = rebuildSubCallsFromSolved(original, solved);
+    expect(rebuilt[1].params).toMatchObject({ start: [20, 0], end: [30, 0] });
+  });
+
   // ---- F23 + latent id-advancement fixes -----------------------------
   // The state built by buildDraftSketchState has the exact entity-id
   // allocation the kernel uses. We move a known point to a "solved"

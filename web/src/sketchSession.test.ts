@@ -673,6 +673,64 @@ describe("sketch_ellipse draft state", () => {
   });
 });
 
+describe("sketch_arc draft state", () => {
+  it("pushes centre, start, end points and the arc entity in order", () => {
+    // Mirrors the kernel SketchArcTool::apply: centre (1), start (2),
+    // end (3), arc (4). Endpoints derive from the angular params.
+    const state = buildDraftSketchState([
+      {
+        type: "sketch_arc",
+        params: {
+          center: [10, 0],
+          radius: 5,
+          start_angle: 0,
+          sweep_angle: Math.PI / 2,
+        },
+      },
+    ]);
+    const points = state.entities.filter((e) => e.kind === "point");
+    expect(points).toHaveLength(3);
+    expect(points[0]).toMatchObject({ id: 1, at: { x: 10, y: 0 } });
+    if (points[1].kind === "point") {
+      expect(points[1].at.x).toBeCloseTo(15, 6);
+      expect(points[1].at.y).toBeCloseTo(0, 6);
+    }
+    if (points[2].kind === "point") {
+      expect(points[2].at.x).toBeCloseTo(10, 6);
+      expect(points[2].at.y).toBeCloseTo(5, 6);
+    }
+    const arc = state.entities.find((e) => e.kind === "arc");
+    expect(arc?.id).toBe(4);
+    if (arc && arc.kind === "arc") {
+      expect(arc.center).toBe(1);
+      expect(arc.start).toBe(2);
+      expect(arc.end).toBe(3);
+      expect(arc.radius).toBeCloseTo(5, 6);
+    }
+    expect(state.next_entity_id).toBe(5);
+  });
+
+  it("swaps the arc's endpoint roles for a CW (negative sweep) arc", () => {
+    // PlaneGCS arcs sweep CCW start→end; a CW sketch arc covers the same
+    // points as the CCW arc end→start, so the ARC entity swaps roles
+    // while the point entities keep their drawn order.
+    const state = buildDraftSketchState([
+      {
+        type: "sketch_arc",
+        params: {
+          center: [0, 0],
+          radius: 5,
+          start_angle: Math.PI / 2,
+          sweep_angle: -Math.PI / 2,
+        },
+      },
+    ]);
+    const arc = state.entities.find((e) => e.kind === "arc");
+    expect(arc && arc.kind === "arc" && arc.start).toBe(3); // drawn END point
+    expect(arc && arc.kind === "arc" && arc.end).toBe(2); // drawn START point
+  });
+});
+
 describe("sketch_slot draft state", () => {
   it("pushes exactly two centre points (A then B) with consecutive ids", () => {
     // The kernel's SketchSlotTool::apply registers the two end-cap

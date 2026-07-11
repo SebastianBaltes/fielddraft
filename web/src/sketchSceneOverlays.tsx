@@ -40,6 +40,7 @@ import { SketchDots, makeSketchDots } from "./sketchDots";
 import type { SketchState } from "./solver/types";
 import { displayDegreesOfFreedom } from "./solver/dofPreflight";
 import { gripsForSelection } from "./sketchGrips";
+import { controllerForTool } from "./sketchTools/registry";
 import { getSketchPlaneFrame } from "./sketchCameraBridge";
 import {
   readSketchHud,
@@ -556,10 +557,26 @@ function collectSelectionGeometry(
       const c = pointAt(e.center);
       const r = (e as { radius?: number }).radius;
       if (c && typeof r === "number" && r > 0) {
+        // Arc: highlight only the live CCW span start→end, not the
+        // full circle the arc lies on.
+        let a0 = 0;
+        let span = Math.PI * 2;
+        if (e.kind === "arc") {
+          const sp = pointAt(e.start);
+          const ep = pointAt(e.end);
+          if (sp && ep) {
+            a0 = Math.atan2(sp[1] - c[1], sp[0] - c[0]);
+            span = Math.atan2(ep[1] - c[1], ep[0] - c[0]) - a0;
+            while (span <= 0) span += Math.PI * 2;
+          }
+        }
         const steps = 64;
-        let prev: [number, number] = [c[0] + r, c[1]];
+        let prev: [number, number] = [
+          c[0] + r * Math.cos(a0),
+          c[1] + r * Math.sin(a0),
+        ];
         for (let i = 1; i <= steps; i++) {
-          const t = (i / steps) * Math.PI * 2;
+          const t = a0 + (i / steps) * span;
           const next: [number, number] = [
             c[0] + r * Math.cos(t),
             c[1] + r * Math.sin(t),
@@ -704,13 +721,16 @@ export function SketchSession3D() {
     () => null,
   );
   const hover = useMemo(() => {
+    const toolAllowsHover =
+      session?.selectedTool == null ||
+      controllerForTool(session.selectedTool)?.noHoverPoint === true;
     if (
       !active ||
       !frame ||
       !session ||
       !skState ||
       hoveredEntity === null ||
-      session.selectedTool !== null ||
+      !toolAllowsHover ||
       session.selection.includes(hoveredEntity)
     ) {
       return null;
