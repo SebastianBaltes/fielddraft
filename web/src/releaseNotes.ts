@@ -24,6 +24,17 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.536",
+    entries: [
+      {
+        kind: "fix",
+        scope: "sketch",
+        text: "Das Trim/Split-Hover-Highlight rendert jetzt auch bei aktivem Edit-Tool (vorher nur im Select-Modus); Arc-Highlights zeichnen nur die Bogen-Spanne statt des vollen Kreises",
+        tickets: ["1efd4bcb"],
+      },
+    ],
+  },
+  {
     version: "0.6.535",
     entries: [
       {
