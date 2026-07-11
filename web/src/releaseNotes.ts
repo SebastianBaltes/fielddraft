@@ -24,6 +24,16 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.517",
+    entries: [
+      {
+        kind: "fix",
+        scope: "mobile",
+        text: "Das Burger-Menü öffnet auf Phone-Breite nicht mehr aus dem Screen heraus: Es ist dort kein am Burger verankertes Popover mehr, sondern ein fixes Panel unter der Topbar über die volle Breite — scrollbar, wenn es höher als das Fenster ist; Submenus klappen inline auf (Akkordeon) statt seitlich hinauszulaufen. Die Debug-Dialoge (Mesher, Lichen/PASM, SDF-Plane) sind ebenfalls nie höher als das Fenster und scrollen ihren Inhalt.",
+      },
+    ],
+  },
+  {
     version: "0.6.516",
     entries: [
       {
