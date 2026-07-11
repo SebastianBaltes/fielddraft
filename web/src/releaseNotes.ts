@@ -71,6 +71,11 @@ export const RELEASE_NOTES: ReleaseNote[] = [
     version: "0.6.534",
     entries: [
       {
+        kind: "fix",
+        scope: "mesher",
+        text: "Lichen: Sichtlinien-Toleranz aus dem NORMALEN-KNICK der Endpunkte statt pauschal (Kreisbogen-Sagitta L·θ/8) — die pauschale 0,15·L-Toleranz ließ Sehnen QUER DURCH die Kugelkappe zu (Betreiber-Screenshot „Kanten durch den Körper“), die genauso tief eintauchen wie legitime Sehnen auf der Kugel; parallele Endpunkt-Normalen erlauben jetzt ~0 Eintauchtiefe, kippende genau die Flächen-Sagitta. Demo: 107→59 offene Kanten.",
+      },
+      {
         kind: "feat",
         scope: "sketch",
         text: "Arcs sind jetzt vollwertige Sketch-Entities: Endpunkte als grabbare Grips (wie Onshape), Arc-Bögen sind snapbar und constrainbar (Point-on-Arc)",
@@ -87,16 +92,6 @@ export const RELEASE_NOTES: ReleaseNote[] = [
         scope: "sketch",
         text: "Beim Zeichnen gewinnt echte Geometrie (Kreis-/Arc-Rand, Linie) über Horizontal-/Vertikal-Hints im Snap-Radius",
         tickets: ["3095b041"],
-      },
-    ],
-  },
-  {
-    version: "0.6.534",
-    entries: [
-      {
-        kind: "fix",
-        scope: "mesher",
-        text: "Lichen: Sichtlinien-Toleranz aus dem NORMALEN-KNICK der Endpunkte statt pauschal (Kreisbogen-Sagitta L·θ/8) — die pauschale 0,15·L-Toleranz ließ Sehnen QUER DURCH die Kugelkappe zu (Betreiber-Screenshot „Kanten durch den Körper“), die genauso tief eintauchen wie legitime Sehnen auf der Kugel; parallele Endpunkt-Normalen erlauben jetzt ~0 Eintauchtiefe, kippende genau die Flächen-Sagitta. Demo: 107→59 offene Kanten.",
       },
     ],
   },
