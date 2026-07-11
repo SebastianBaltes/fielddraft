@@ -1375,6 +1375,28 @@ impl Kernel {
 mod tests {
     use fielddraft_protocol::{BoolOp, Primitive};
 
+    /// Demo-Projekt mit den DIALOG-Settings des Betreibers (2026-07-11:
+    /// Krümmungswinkel 5°, min. Kantenabstand 0,2, Reach an) — dichter
+    /// abgetastet als die 20°-Gates. WIP-Repro: 25 Orientierungs-Konflikte
+    /// (Folds), sichtbar als „Dreiecke durch die kleine Kugel"; die r=1-
+    /// Mini-Kugel steckt in der 1-mm-Wand und trägt ZWEI Kappen (vorn und
+    /// hinten heraus) — Verdacht: Sterne/Kandidaten verbinden Vorder- und
+    /// Rückkappe derselben Trägerfläche (Cocone blockt nur ~antiparallele
+    /// Normalen; am Kappenrand kippen sie erst allmählich).
+    #[test]
+    #[ignore = "WIP: 25 Orientierungs-Konflikte bei dichten Betreiber-Settings \
+                (curv 5°, minEdge 0.2, reach) — Doppelkappen-Verdacht Mini-Kugel"]
+    fn lichen_demo_user_settings_orientation_clean() {
+        let mut k = demo_project_kernel();
+        let out = k.lichen_mesh(
+            r#"{"targetEdgeLength":10.0,"grow":true,"curvAngleDeg":5.0,"minEdgeSpacing":0.2,"useReach":true,"reachTol":1.0,"maxPoints":50000,"generalTri":true,"fillHoles":false}"#.into(),
+        );
+        let (tris, q) = quality_of(&out);
+        eprintln!("user-settings general: tris={tris} {q:?}");
+        assert_eq!(q.orientation_violations, 0, "{q:?}");
+        assert_eq!(q.nonmanifold_edges, 0, "{q:?}");
+    }
+
     fn box_kernel() -> crate::Kernel {
         let mut k = crate::Kernel::new();
         k.add_primitive(Primitive::KIND_BOX, BoolOp::TAG_NEW, 0.0, 0.0, 0.0, 10.0, 10.0, 10.0)
