@@ -120,7 +120,7 @@ function rescaleBoxes(
   pd.mesh.instanceMatrix.needsUpdate = true;
 }
 
-export function LichenOverlay() {
+export function LichenOverlay({ occluded = false }: { occluded?: boolean } = {}) {
   const { store, state } = useKernelStore();
   const params = useSyncExternalStore(subscribeLichenDebug, getLichenDebug);
   const invalidate = useThree((s) => s.invalidate);
@@ -174,10 +174,25 @@ export function LichenOverlay() {
     const STRIDE = 9; // [x,y,z,sdf,nx,ny,nz,size,shown]
     const P = 3; // points offset
     const I = 3 + total * STRIDE; // indices offset
-    // KEINERLEI Z-Offset/-Bias mehr: Punkte an ihrer ECHTEN Position, kein Lift,
-    // kein `depthTest`-Override, kein `polygonOffset`. Sichtbarkeit regelt allein
-    // der OVERLAY_LAYER (x-ray, Tiefe geleert) + `depthWrite: false` — exakt wie
-    // das PASM-`MesherOverlay`. (Auf Wunsch des Betreibers komplett entfernt.)
+    // Punkte an ihrer ECHTEN Position — nie ein geometrischer Lift. Sichtbarkeit:
+    //   X-Ray (Default): OVERLAY_LAYER mit geleerter Tiefe + depthWrite:false.
+    //   `occluded` (Setting „B-Rep edges: Visible only"): der Render-Pass behält
+    //   die SDF-Tiefe, die Overlay-Materialien depth-testen dagegen und ziehen
+    //   ihre Fragmente per polygonOffset (WebGPU: depthBias — LineSegments2 und
+    //   die Punkt-Boxen rasterisieren Dreiecke) minimal zur Kamera, damit
+    //   Geometrie EXAKT AUF der Fläche nicht z-fightet. Reiner Tiefen-Effekt,
+    //   kein Pixel bewegt sich — dieselbe Mechanik wie die B-Rep-Kanten (b9xz).
+    const applyOcclusion = <M extends THREE.Material>(m: M): M => {
+      if (occluded) {
+        m.depthTest = true;
+        m.polygonOffset = true;
+        m.polygonOffsetFactor = -2;
+        m.polygonOffsetUnits = -4;
+      } else {
+        m.depthTest = false;
+      }
+      return m;
+    };
     const rawX = (b: number) => data[b];
     const rawY = (b: number) => data[b + 1];
     const rawZ = (b: number) => data[b + 2];
@@ -235,13 +250,15 @@ export function LichenOverlay() {
         lg.setPositions(new Float32Array(seg));
         const wire = new LineSegments2(
           lg,
-          new Line2NodeMaterial({
-            color,
-            linewidth: Math.max(1, params.strokeWidth * 0.6),
-            worldUnits: false,
-            transparent: true,
-            depthWrite: false,
-          }),
+          applyOcclusion(
+            new Line2NodeMaterial({
+              color,
+              linewidth: Math.max(1, params.strokeWidth * 0.6),
+              worldUnits: false,
+              transparent: true,
+              depthWrite: false,
+            }),
+          ),
         );
         wire.layers.enable(OVERLAY_LAYER);
         wire.renderOrder = 4;
@@ -307,10 +324,12 @@ export function LichenOverlay() {
     //    green surface.
     if (params.showPoints && n > 0) {
       const geo = new THREE.BoxGeometry(1, 1, 1);
-      const mat = new THREE.MeshBasicMaterial({
-        toneMapped: false,
-        depthWrite: false,
-      });
+      const mat = applyOcclusion(
+        new THREE.MeshBasicMaterial({
+          toneMapped: false,
+          depthWrite: false,
+        }),
+      );
       const im = new THREE.InstancedMesh(geo, mat, n);
       im.frustumCulled = false;
       const centers = new Float32Array(n * 3);
@@ -411,27 +430,31 @@ export function LichenOverlay() {
           lg.setPositions(new Float32Array(seg));
           circles = new LineSegments2(
             lg,
-            new Line2NodeMaterial({
-              color: 0x2f7f5f,
-              linewidth: Math.max(1, params.strokeWidth * 0.5),
-              worldUnits: false,
-              transparent: true,
-              opacity: 0.7,
-              depthWrite: false,
-            }),
+            applyOcclusion(
+              new Line2NodeMaterial({
+                color: 0x2f7f5f,
+                linewidth: Math.max(1, params.strokeWidth * 0.5),
+                worldUnits: false,
+                transparent: true,
+                opacity: 0.7,
+                depthWrite: false,
+              }),
+            ),
           );
         } else {
           const lg = new THREE.BufferGeometry();
           lg.setAttribute("position", new THREE.BufferAttribute(new Float32Array(seg), 3));
           circles = new THREE.LineSegments(
             lg,
-            new THREE.LineBasicMaterial({
-              color: 0x2f7f5f,
-              transparent: true,
-              opacity: 0.7,
-              depthWrite: false,
-              toneMapped: false,
-            }),
+            applyOcclusion(
+              new THREE.LineBasicMaterial({
+                color: 0x2f7f5f,
+                transparent: true,
+                opacity: 0.7,
+                depthWrite: false,
+                toneMapped: false,
+              }),
+            ),
           );
         }
         circles.layers.enable(OVERLAY_LAYER);
@@ -459,25 +482,29 @@ export function LichenOverlay() {
           lg.setPositions(new Float32Array(seg));
           needles = new LineSegments2(
             lg,
-            new Line2NodeMaterial({
-              color: 0x2288ee,
-              linewidth: Math.max(1, params.strokeWidth),
-              worldUnits: false,
-              transparent: true,
-              depthWrite: false,
-            }),
+            applyOcclusion(
+              new Line2NodeMaterial({
+                color: 0x2288ee,
+                linewidth: Math.max(1, params.strokeWidth),
+                worldUnits: false,
+                transparent: true,
+                depthWrite: false,
+              }),
+            ),
           );
         } else {
           const lg = new THREE.BufferGeometry();
           lg.setAttribute("position", new THREE.BufferAttribute(new Float32Array(seg), 3));
           needles = new THREE.LineSegments(
             lg,
-            new THREE.LineBasicMaterial({
-              color: 0x2288ee,
-              transparent: true,
-              depthWrite: false,
-              toneMapped: false,
-            }),
+            applyOcclusion(
+              new THREE.LineBasicMaterial({
+                color: 0x2288ee,
+                transparent: true,
+                depthWrite: false,
+                toneMapped: false,
+              }),
+            ),
           );
         }
         needles.layers.enable(OVERLAY_LAYER);
@@ -495,13 +522,15 @@ export function LichenOverlay() {
         lg.setColors(lineCol);
         lines = new LineSegments2(
           lg,
-          new Line2NodeMaterial({
-            vertexColors: true,
-            linewidth: params.strokeWidth,
-            worldUnits: false,
-            transparent: true,
-            depthWrite: false,
-          }),
+          applyOcclusion(
+            new Line2NodeMaterial({
+              vertexColors: true,
+              linewidth: params.strokeWidth,
+              worldUnits: false,
+              transparent: true,
+              depthWrite: false,
+            }),
+          ),
         );
       } else {
         const lg = new THREE.BufferGeometry();
@@ -509,12 +538,14 @@ export function LichenOverlay() {
         lg.setAttribute("color", new THREE.BufferAttribute(lineCol, 3));
         lines = new THREE.LineSegments(
           lg,
-          new THREE.LineBasicMaterial({
-            vertexColors: true,
-            transparent: true,
-            depthWrite: false,
-            toneMapped: false,
-          }),
+          applyOcclusion(
+            new THREE.LineBasicMaterial({
+              vertexColors: true,
+              transparent: true,
+              depthWrite: false,
+              toneMapped: false,
+            }),
+          ),
         );
       }
       lines.layers.enable(OVERLAY_LAYER);
@@ -523,7 +554,7 @@ export function LichenOverlay() {
     }
 
     invalidate();
-  }, [params, store, brepVersion, gl, circle, invalidate]);
+  }, [params, store, brepVersion, gl, circle, invalidate, occluded]);
 
   // Keep the point boxes at a constant PIXEL size on zoom/orbit (mirrors the
   // sketch-dot approach, but driven here so it works in this overlay pass).

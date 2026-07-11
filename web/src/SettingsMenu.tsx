@@ -983,7 +983,18 @@ function SettingsDialog({
                 )}
 
                 <div className="setting-row" data-testid="setting-brep-edges">
-                  <span className="setting-label">B-Rep edges</span>
+                  <span
+                    className="setting-label"
+                    title={
+                      "X-Ray: Kanten & Debug-Overlays zeichnen durch den Körper hindurch. " +
+                      "Visible only: verdeckungs-korrekt — Kanten UND Debug-Overlays " +
+                      "(z.B. Lichen-Punkte/-Kreise/-Normalen) depth-testen gegen die " +
+                      "Körper-Tiefe, mit leichtem Depth-Bias gegen Z-Fighting. " +
+                      "Hidden: keine B-Rep-Kanten."
+                    }
+                  >
+                    B-Rep edges
+                  </span>
                   <select
                     className="mode-select"
                     value={settings.brepEdgeMode}
