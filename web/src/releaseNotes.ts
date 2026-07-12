@@ -24,6 +24,16 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.554",
+    entries: [
+      {
+        kind: "fix",
+        scope: "mesher",
+        text: "Lichen: Wächter-Rückbau im globalen Walk (Demo 814 → 303 offene Kanten). Drei Befunde: (1) Das Ketten-Kreuzungs-Verbot cullte weit entfernte Ketten nach dem GRÖSSTEN Spacing der gesamten Punktwolke — im globalen Walk sind das Zentimeter, also wurden Ketten quer durch den Körper in die Dreiecksebene projiziert und „kreuzten“ dort scheinbar (279 von 655 offenen Kanten); jetzt echter 3D-Abstand zum Dreieck. (2) Der Normalen-Guard war mit 30° zu streng — auf dem Gyroid drehen sich benachbarte Flächen-Normalen schon um ~35°. Für die Blatt-Trennung genügt die prinzipielle Grenze „gleiche Halbkugel“ (90°): das Gegenblatt einer dünnen Wand steht ~antiparallel und wird sicher erwischt. (3) Der Cocone-Kegel ist damit ERSATZLOS entfallen — er prüfte gegen die gemittelte Punkt-Normale, die an jeder B-Rep-Kante bedeutungslos ist, und lehnte legitime Kanten-Dreiecke ab. Die dünne Platte bleibt in allen Varianten wasserdicht mit 0 Wand-Durchquerungen.",
+      },
+    ],
+  },
+  {
     version: "0.6.553",
     entries: [
       {

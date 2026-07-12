@@ -676,19 +676,6 @@ pub fn triangulate_global_walk(
         }
         eff_r.insert(i, 2.5 * m);
     }
-    // Cocone-Halbwinkel: im GLOBALEN Walk trennt er nur noch fremde BLÄTTER
-    // (Gegenwand einer dünnen Wand, ~antiparallel) — er darf KANTEN nicht
-    // blockieren (an einer Box-Kante steht der Nachbarpunkt 45° aus der
-    // Tangentialebene der gemittelten Ecken-Normalen). Deshalb ein weiter
-    // Kegel: Halbwinkel 75°, d.h. verboten ist nur, was fast entlang der
-    // Normalen steht. Die Blatt-Trennung leistet zusätzlich die
-    // Sichtlinie (Sehnen-Mittelpunkt muss auf der Oberfläche liegen).
-    let cocone_deg: f32 = std::env::var("LICHEN_COCONE_DEG")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or_else(|| (2.5 * curv_angle_rad.to_degrees()).clamp(60.0, 80.0));
-    let cocone_sin = cocone_deg.to_radians().sin();
-
     // ── NORMALEN-GUARD (Betreiber-Idee 2026-07-12) ──
     // Der Cocone-Filter prüft die RICHTUNG zum Nachbarn (muss ~tangential
     // sein). Bei zwei FAST PARALLELEN Blättern im Abstand t ist eine Sehne
@@ -709,10 +696,20 @@ pub fn triangulate_global_walk(
     // (n_i ∈ N(i), n_j ∈ N(j)) innerhalb der Schwelle gibt — an einer
     // Box-Kante passt die Normale der gemeinsamen Fläche, quer durch eine
     // dünne Wand passt keine.
+    // SCHWELLE = 90° („gleiche Halbkugel"). Vermessen: eine engere Schwelle
+    // (6·α ≈ 30°) lehnt auf dem GYROID legitime Nachbarn ab — dort drehen
+    // sich die Flächen-Normalen benachbarter Punkte schon um ~35°. Für die
+    // Blatt-Trennung ist Strenge auch gar nicht nötig: das Gegenblatt einer
+    // dünnen Wand steht ~ANTIPARALLEL (180°), wird also von jeder Schwelle
+    // unter 180° zuverlässig erwischt. 90° ist die prinzipielle Grenze — eine
+    // gültige Flächenkante verbindet nie zwei Punkte, deren Normalen in
+    // entgegengesetzte Halbräume zeigen. Messung: Demo 461 → 321 offene
+    // Kanten, dünne Platte weiterhin 0 Wand-Durchquerungen und wasserdicht.
     let guard_deg: f32 = std::env::var("LICHEN_NORMAL_GUARD_DEG")
         .ok()
         .and_then(|v| v.parse().ok())
-        .unwrap_or_else(|| (6.0 * curv_angle_rad.to_degrees()).clamp(30.0, 75.0));
+        .unwrap_or(90.0);
+    let _ = curv_angle_rad;
     let guard_cos = guard_deg.to_radians().cos();
     let normals_compatible = |i: u32, j: u32| -> bool {
         let (ni, nj) = (
@@ -838,22 +835,42 @@ pub fn triangulate_global_walk(
             [dot(d, e1) as f64, dot(d, e2) as f64]
         };
         let t2 = [to2(pa), to2(pb), to2(pc)];
+        // Dreiecks-Radius (längste Kante) und Zentroid für den 3D-Nähe-Cull.
         let r_tri = {
             let mut m = 0.0f32;
-            for p in [pb, pc] {
-                let d = sub(p, pa);
+            for (x, y) in [(pa, pb), (pb, pc), (pc, pa)] {
+                let d = sub(y, x);
                 m = m.max(dot(d, d));
             }
             m.sqrt()
         };
+        let cen = [
+            (pa[0] + pb[0] + pc[0]) / 3.0,
+            (pa[1] + pb[1] + pc[1]) / 3.0,
+            (pa[2] + pb[2] + pc[2]) / 3.0,
+        ];
         for &(u, v) in &chain_segs {
             if u == a || u == b || u == c || v == a || v == b || v == c {
                 continue;
             }
             let (pu, pv) = (points[u as usize], points[v as usize]);
-            let du = sub(pu, pa);
-            if dot(du, du).sqrt() > r_tri + cell {
-                continue;
+            // 3D-NÄHE-CULL (echter Punkt-Segment-Abstand zum Zentroid). Der
+            // frühere Cull nutzte `cell` = GRÖSSTES Spacing der gesamten
+            // Wolke — im globalen Walk ist das h (Zentimeter!), also wurden
+            // weit entfernte Ketten in die Dreiecks-Ebene projiziert und
+            // „kreuzten" dort scheinbar. Auf der Demo war das mit 279 von 655
+            // offenen Kanten der größte Einzelblocker.
+            let seg = sub(pv, pu);
+            let l2 = dot(seg, seg).max(1e-20);
+            let t = (dot(sub(cen, pu), seg) / l2).clamp(0.0, 1.0);
+            let q = [
+                pu[0] + t * seg[0],
+                pu[1] + t * seg[1],
+                pu[2] + t * seg[2],
+            ];
+            let dq = sub(q, cen);
+            if dot(dq, dq).sqrt() > r_tri {
+                continue; // Kette liegt außerhalb der Dreiecks-Umgebung
             }
             let (su, sv) = (to2(pu), to2(pv));
             for e in [(0usize, 1usize), (1, 2), (2, 0)] {
@@ -890,20 +907,18 @@ pub fn triangulate_global_walk(
                 return false; // sin(Winkel) ≤ 0.01
             }
         }
-        // NORMALEN-GUARD (s.o.): der eigentliche Blatt-Trenner.
+        // NORMALEN-GUARD (s.o.): DER Blatt-Trenner. Der frühere Cocone-Kegel
+        // ist hier ERSATZLOS entfallen — er prüfte die Richtung zum Nachbarn
+        // gegen die GEMITTELTE Punkt-Normale, die an jeder B-Rep-Kante
+        // bedeutungslos ist (sie zeigt in die Winkelhalbierende), und lehnte
+        // damit legitime Kanten-Dreiecke ab (Demo: 321 → 303 offene Kanten
+        // nach seiner Entfernung; die dünne Platte bleibt bei 0
+        // Wand-Durchquerungen und wasserdicht). Was er leisten sollte —
+        // fremde Blätter fernhalten — leistet der Normalen-Guard exakt und
+        // ohne Kanten-Kollateralschaden.
         for (i, j) in [(a, b), (b, c), (c, a)] {
             if !normals_compatible(i, j) {
                 return false;
-            }
-        }
-        // Cocone (weiter Kegel, s.o.): grober Zusatzfilter.
-        for (i, j) in [(a, b), (b, c), (c, a)] {
-            if let Some(&ni) = normals.get(&i) {
-                let d = sub(points[j as usize], points[i as usize]);
-                let dl = dot(d, d).sqrt();
-                if dl > 1e-9 && dot(d, ni).abs() > cocone_sin * dl {
-                    return false;
-                }
             }
         }
         // SICHTLINIE je Sehne: der Mittelpunkt muss auf der Oberfläche liegen,
