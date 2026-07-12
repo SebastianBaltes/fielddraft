@@ -282,16 +282,48 @@ fn extract_manifold(
         k.sort_unstable();
         k
     };
+    // BEST-FIRST-FRONT (statt FIFO): die Front wird nach der Sicherheit des
+    // aktuellen Dreiecks abgearbeitet — kleinster Umkreisradius zuerst. Ein
+    // FIFO-Walk legt an unsicheren Stellen früh fest und blockiert sich damit
+    // die Halbkanten der später erreichten, sicheren Regionen (gemessen:
+    // 92 % der offenen Kanten hatten ein voll gültiges Dreieck, dessen
+    // Halbkante schon vergeben war).
+    #[derive(PartialEq)]
+    struct FrontItem {
+        prio: f32, // Umkreisradius² des erzeugenden Dreiecks
+        tri: [u32; 3],
+        x: u32,
+        y: u32,
+    }
+    impl Eq for FrontItem {}
+    impl Ord for FrontItem {
+        fn cmp(&self, o: &Self) -> std::cmp::Ordering {
+            // BinaryHeap ist ein MAX-Heap → invertieren (kleinster Radius zuerst),
+            // deterministischer Tie-Break über die Indizes.
+            o.prio
+                .partial_cmp(&self.prio)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| o.tri.cmp(&self.tri))
+                .then_with(|| o.x.cmp(&self.x))
+                .then_with(|| o.y.cmp(&self.y))
+        }
+    }
+    impl PartialOrd for FrontItem {
+        fn partial_cmp(&self, o: &Self) -> Option<std::cmp::Ordering> {
+            Some(self.cmp(o))
+        }
+    }
     let push_tri = |t: [u32; 3],
+                    prio: f32,
                     out: &mut Vec<[u32; 3]>,
                     used: &mut HashSet<[u32; 3]>,
                     half: &mut HashSet<(u32, u32)>,
-                    front: &mut std::collections::VecDeque<([u32; 3], u32, u32)>| {
+                    front: &mut std::collections::BinaryHeap<FrontItem>| {
         used.insert(key3(t));
         out.push(t);
         for (x, y) in [(t[0], t[1]), (t[1], t[2]), (t[2], t[0])] {
             half.insert((x, y));
-            front.push_back((t, x, y));
+            front.push(FrontItem { prio, tri: t, x, y });
         }
     };
     for &seed in &order {
@@ -311,16 +343,21 @@ fn extract_manifold(
         if dot(cross(sub(pb, pa), sub(pc, pa)), nr) < 0.0 {
             s.swap(1, 2);
         }
-        if [(s[0], s[1]), (s[1], s[2]), (s[2], s[0])]
-            .iter()
-            .any(|e| half.contains(e))
-        {
+        // Kein ROGUE-Seed: ein Startdreieck darf keine Kante berühren, die
+        // bereits von der laufenden Fläche benutzt wird — sonst startet
+        // mitten in einem Loch ein zweites, konkurrierendes Blatt und beide
+        // belegen sich gegenseitig die Halbkanten (die gemessene
+        // „Walk-Sackgasse": 92 % der offenen Kanten HÄTTEN ein voll gültiges
+        // Dreieck, dessen Halbkante schon vergeben ist).
+        if [(s[0], s[1]), (s[1], s[2]), (s[2], s[0])].iter().any(|&(a, b)| {
+            half.contains(&(a, b)) || half.contains(&(b, a))
+        }) {
             continue;
         }
-        let mut front: std::collections::VecDeque<([u32; 3], u32, u32)> =
-            std::collections::VecDeque::new();
-        push_tri(s, &mut out, &mut used, &mut half, &mut front);
-        while let Some((t, x, y)) = front.pop_front() {
+        let mut front: std::collections::BinaryHeap<FrontItem> =
+            std::collections::BinaryHeap::new();
+        push_tri(s, circum_r2(s), &mut out, &mut used, &mut half, &mut front);
+        while let Some(FrontItem { tri: t, x, y, .. }) = front.pop() {
             // Der Nachbar durchläuft die Kante GEGENLÄUFIG (y → x).
             if half.contains(&(y, x)) {
                 continue; // Gegenseite bereits belegt
@@ -397,7 +434,8 @@ fn extract_manifold(
             }
             let Some(d) = chosen else { continue };
             let t_new = [y, x, d];
-            push_tri(t_new, &mut out, &mut used, &mut half, &mut front);
+            let prio = circum_r2(t_new);
+            push_tri(t_new, prio, &mut out, &mut used, &mut half, &mut front);
         }
     }
     out
@@ -784,6 +822,57 @@ pub fn triangulate_global_walk(
     let mut open_edges: Vec<(u32, u32)> =
         edge_use.iter().filter(|(_, &u)| u == 1).map(|(&e, _)| e).collect();
     open_edges.sort_unstable();
+
+    // ── FORENSIK (LICHEN_WHY): warum bleibt eine Kante offen? ──
+    if std::env::var("LICHEN_WHY").is_ok() && !open_edges.is_empty() {
+        let mut reasons: HashMap<&'static str, usize> = HashMap::new();
+        for &(u, v) in &open_edges {
+            let mut why = "kein Kandidat im Horizont";
+            let mut best_state = 0u8;
+            for w in near(u, v) {
+                if w == u || w == v {
+                    continue;
+                }
+                let s = if !empty(u, v, w) {
+                    1 // Kugel nicht leer
+                } else if crosses_chain(u, v, w) {
+                    2
+                } else if !valid(u, v, w) {
+                    3 // Kugel leer, aber Wächter (Cocone/Sichtlinie/Zentroid)
+                } else {
+                    4 // vollständig gültig → Kapazität/Walk-Sackgasse
+                };
+                if s > best_state {
+                    best_state = s;
+                }
+            }
+            why = match best_state {
+                1 => "nur nicht-leere Kugeln",
+                2 => "ketten-kreuzung",
+                3 => "gültige Kugel, Wächter blockt (cocone/sichtlinie/zentroid)",
+                4 => "voll gültig → Walk-Sackgasse (Halbkanten belegt)",
+                _ => why,
+            };
+            *reasons.entry(why).or_default() += 1;
+        }
+        let mut rs: Vec<(&str, usize)> = reasons.into_iter().collect();
+        rs.sort_by_key(|&(_, n)| std::cmp::Reverse(n));
+        // Loop-Struktur.
+        let mut adj: HashMap<u32, Vec<u32>> = HashMap::new();
+        for &(u, v) in &open_edges {
+            adj.entry(u).or_default().push(v);
+            adj.entry(v).or_default().push(u);
+        }
+        let dhist: std::collections::BTreeMap<usize, usize> =
+            adj.values().fold(Default::default(), |mut m, l| {
+                *m.entry(l.len()).or_default() += 1;
+                m
+            });
+        eprintln!(
+            "WHY-GLOBAL {} offene Kanten: {rs:?} | Grad-Histogramm: {dhist:?}",
+            open_edges.len()
+        );
+    }
     GeneralFaceMesh {
         hole_edges: open_edges.len(),
         nonmanifold_edges,

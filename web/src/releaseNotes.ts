@@ -24,6 +24,21 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.550",
+    entries: [
+      {
+        kind: "fix",
+        scope: "mesher",
+        text: "Lichen: ε-Sampling respektiert jetzt scharfe Kanten (Feature-Protection). Die Medialachse eines Körpers läuft bis in jede scharfe Kante hinein (der Bisektor zweier Nachbarflächen berührt sie) — die naive lfs-Abtastung verdichtete dort ins Unendliche und zerstörte das Netz (Würfel 263 → 19.097 Punkte, 3.565 offene Kanten). Der Innen-Marsch zählt nur noch echte GEGENBLÄTTER (antiparallele Fußpunkt-Normale); Kanten sind durch ihre B-Rep-Ketten ohnehin exakt abgetastet. Außerdem bindet ε nur noch, wenn wirklich eine Medialachse gefunden wird (vorher refinete der Faktor systematisch jede Fläche). Ergebnis: dünne Wand 103 → 9.279 Punkte, dicker Würfel unverändert.",
+      },
+      {
+        kind: "fix",
+        scope: "mesher",
+        text: "Lichen: der Manifold-Walk arbeitet die Front jetzt best-first ab (sicherstes Dreieck zuerst, kleinster Umkreis) statt FIFO, und Start-Dreiecke dürfen keine bereits benutzte Kante berühren — ein FIFO-Walk legte sich an unsicheren Stellen früh fest und blockierte sich die Halbkanten der später erreichten Regionen.",
+      },
+    ],
+  },
+  {
     version: "0.6.549",
     entries: [
       {

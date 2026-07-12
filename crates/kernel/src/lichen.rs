@@ -303,9 +303,31 @@ fn reach_inner<Fg: Fn([f32; 3]) -> (f32, [f32; 3])>(
     let floor = 1e-4;
     while t < cap {
         let x = sub(p, scale(n, t));
-        let depth = -fg(x).0;
+        let (f, g) = fg(x);
+        let depth = -f;
         if depth < 0.9 * t {
-            return t.max(floor); // Medialachse gekreuzt
+            // MEDIALACHSE gekreuzt — aber WELCHE? Die Medialachse eines
+            // Körpers läuft auch in jede SCHARFE KANTE hinein (der Bisektor
+            // zweier Nachbarflächen berührt die Kante), dort geht lfs → 0 und
+            // eine naive lfs-Abtastung verdichtet an JEDER Box-Kante ins
+            // Unendliche (gemessen: Box 263 → 19097 Punkte, Walk bricht).
+            // Genau deshalb PROTECTEN Cheng/Dey/Ramos scharfe Features: die
+            // Kante ist durch die B-Rep-Kette bereits exakt abgetastet und
+            // braucht keine Flächen-Verdichtung.
+            //
+            // Kriterium: nur ein echtes GEGENBLATT zählt (dünne Wand) — der
+            // Fußpunkt hinter der Achse trägt dann eine ~antiparallele
+            // Normale. Ein Kanten-Bisektor führt auf die Nachbarfläche, deren
+            // Normale quer steht (Box: 90°, dot ≈ 0).
+            let g2 = dot(g, g);
+            if g2 > 1e-20 {
+                let s = f / g2;
+                let q = [x[0] - s * g[0], x[1] - s * g[1], x[2] - s * g[2]];
+                let nq = norm(robust_grad(q, fg));
+                if dot(nq, n) < -0.3 {
+                    return t.max(floor); // Gegenblatt → dünne Wand
+                }
+            }
         }
         t *= 1.25;
     }
@@ -342,8 +364,18 @@ where
     // local feature size einhalten — auch gegen die INNERE Medialachse
     // (dünne Wände!). `lfs_factor` = ε; 0 = aus (altes Verhalten).
     if opts.lfs_factor > 0.0 {
-        let lfs = reach(p, n, h, opts.reach_tol, fg).min(reach_inner(p, n, h, fg));
-        r = r.min(opts.lfs_factor * lfs);
+        // Der Marsch läuft nur so weit, wie die Bedingung überhaupt BINDEN
+        // kann: jenseits von `h/ε` wäre ε·lfs ≥ h und der h-Cap dominiert
+        // ohnehin. Wird dort nichts gefunden, gibt es KEINE lfs-Bedingung —
+        // sonst refinet der Faktor systematisch jede Fläche (Box 263 → 1073
+        // Punkte, obwohl ihre Wand 20 mm dick ist).
+        let cap_lfs = h / opts.lfs_factor;
+        let li = reach_inner(p, n, cap_lfs, fg);
+        let lo = reach(p, n, cap_lfs, opts.reach_tol, fg);
+        let lfs = li.min(lo);
+        if lfs < cap_lfs {
+            r = r.min(opts.lfs_factor * lfs);
+        }
     }
     // Untere Grenze = Min. Kantenabstand (konsistent mit der Kanten-
     // Abtastung), NICHT 0.2·h: der frühere 0.2h-Floor verwarf die gesamte

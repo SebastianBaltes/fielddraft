@@ -2394,13 +2394,17 @@ mod tests {
         for name in ["box", "cyl", "sphere", "torus", "demo"] {
             for acc in ["gabriel", "witness", "vote"] {
                 let extra = std::env::var("LICHEN_MATRIX_EXTRA").unwrap_or_default();
+                let minsp: f32 = std::env::var("LICHEN_MATRIX_MINSP")
+                    .ok()
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(0.1);
                 let mut k = mk(name);
                 let h: f32 = std::env::var("LICHEN_MATRIX_H")
                     .ok()
                     .and_then(|v| v.parse().ok())
                     .unwrap_or(if name == "demo" { 10.0 } else { 3.0 });
                 let opts = format!(
-                    r#"{{"targetEdgeLength":{h},"grow":true,"curvAngleDeg":{curv},"minEdgeSpacing":0.1,"maxPoints":50000,"generalTri":true,"accept":"{acc}","fillHoles":false{extra}}}"#
+                    r#"{{"targetEdgeLength":{h},"grow":true,"curvAngleDeg":{curv},"minEdgeSpacing":{minsp},"maxPoints":50000,"generalTri":true,"accept":"{acc}","fillHoles":false{extra}}}"#
                 );
                 let out = k.lichen_mesh(opts);
                 let total = out[0] as usize;
@@ -2541,6 +2545,66 @@ mod tests {
         assert!(
             on > off * 2,
             "ε-Sampling muss die 1-mm-Wand deutlich feiner abtasten (ohne={off}, mit={on})"
+        );
+
+        // FEATURE-PROTECTION (Cheng/Dey/Ramos): an einer scharfen Kante läuft
+        // die Medialachse des KÖRPERS bis an die Oberfläche (der Bisektor
+        // zweier Nachbarflächen berührt die Kante) — eine naive lfs-Abtastung
+        // verdichtet dort ins Unendliche. Der Innen-Marsch zählt deshalb nur
+        // echte GEGENBLÄTTER (antiparallele Fußpunkt-Normale). Ein dicker
+        // Würfel darf durch ε-Sampling NICHT dichter werden.
+        let cube = |lfs: f32| -> usize {
+            let mut k = box_kernel();
+            let out = k.lichen_mesh(format!(
+                r#"{{"targetEdgeLength":3.0,"grow":true,"curvAngleDeg":20.0,"useReach":true,"reachTol":1.0,"minEdgeSpacing":0.1,"maxPoints":50000,"triangulate":false,"lfsFactor":{lfs}}}"#
+            ));
+            out[0] as usize
+        };
+        let (c_off, c_on) = (cube(0.0), cube(0.5));
+        eprintln!("dicker Würfel: Punkte ohne lfs={c_off}, mit lfs(0.5)={c_on}");
+        assert_eq!(
+            c_on, c_off,
+            "ε-Sampling darf an SCHARFEN KANTEN nicht verdichten (Feature-Protection)"
+        );
+    }
+
+    /// Analyse: wie viele Punkt-PAARE liegen unzulässig nah beieinander
+    /// (Doppelblätter an grazing-Verschneidungen) und wie stehen ihre
+    /// Normalen? Unterscheidet Kollaps-Kandidaten (Normalen gleichgerichtet)
+    /// von echten Gegenblättern dünner Wände (antiparallel).
+    #[test]
+    #[ignore = "Analyse-Werkzeug, kein Gate"]
+    fn zz_duplicate_sheet_stats() {
+        let mut k = demo_project_kernel();
+        let out = k.lichen_mesh(
+            r#"{"targetEdgeLength":10.0,"grow":true,"curvAngleDeg":5.0,"minEdgeSpacing":0.1,"maxPoints":50000,"triangulate":false}"#.into(),
+        );
+        let total = out[0] as usize;
+        let p = |i: usize| [out[3 + i * 9], out[3 + i * 9 + 1], out[3 + i * 9 + 2]];
+        let n = |i: usize| [out[3 + i * 9 + 4], out[3 + i * 9 + 5], out[3 + i * 9 + 6]];
+        let sp = |i: usize| out[3 + i * 9 + 7];
+        let mut near_same = 0usize;
+        let mut near_opp = 0usize;
+        let mut worst = f32::MAX;
+        for i in 0..total {
+            for j in i + 1..total {
+                let (a, b) = (p(i), p(j));
+                let d = ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt();
+                let s = sp(i).min(sp(j)).max(1e-4);
+                if d < 0.5 * s {
+                    let (na, nb) = (n(i), n(j));
+                    let dp = na[0] * nb[0] + na[1] * nb[1] + na[2] * nb[2];
+                    if dp > 0.5 {
+                        near_same += 1;
+                        worst = worst.min(d / s);
+                    } else {
+                        near_opp += 1;
+                    }
+                }
+            }
+        }
+        eprintln!(
+            "Punkte={total}: {near_same} Paare < 0.5·space mit GLEICHER Normale (Kollaps-Kandidaten), {near_opp} mit gegenläufiger (echte Gegenblätter); engstes Verhältnis {worst:.3}"
         );
     }
 
