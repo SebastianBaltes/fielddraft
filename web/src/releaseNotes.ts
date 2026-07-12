@@ -24,6 +24,16 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.556",
+    entries: [
+      {
+        kind: "fix",
+        scope: "mesher",
+        text: "Lichen: der ÄUSSERE Reach erkennt die Medialachse jetzt an der Abflachung des Distanzfelds (wie der innere seit v0.6.549) — die alte Fußpunkt-Verfolgung schlug erst an, wenn der Fußpunkt weiter als die Reach-Toleranz (1 mm) springt, und war damit für einen 0,17-mm-Spalt zwischen zwei Gyroid-Blättern blind. Außerdem hebelt die lfs-Bedingung den Mindest-Kantenabstand jetzt lokal aus: sie ist die Voraussetzung des Umkugel-Theorems, kein Komfort — ein Boden, der sie bricht, erzeugt genau den Zustand, in dem kein einziges Dreieck mehr gültig ist.",
+      },
+    ],
+  },
+  {
     version: "0.6.555",
     entries: [
       {

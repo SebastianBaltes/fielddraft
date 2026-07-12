@@ -301,6 +301,34 @@ pub(crate) fn reach<Fg: Fn([f32; 3]) -> (f32, [f32; 3])>(p: [f32; 3], n: [f32; 3
 /// anderes Blatt näher liegt, wächst |f| langsamer als t. Die Fußpunkt-
 /// Verfolgung des Konzepts (§2.3) versagt hier: auf einer 1-mm-Wand springt
 /// der Fußpunkt nur ~1 mm weit — unter der Standard-Toleranz `reach_tol`.
+/// ÄUSSERER Reach über die ABFLACHUNG des Distanzfelds — die exakte
+/// Entsprechung zu [`reach_inner`] nach außen. Für einen Punkt in Abstand `t`
+/// entlang `+n` gilt `f(x) = t`, solange kein anderes Blatt näher liegt;
+/// sobald die äußere Medialachse gekreuzt ist, wächst f langsamer als t.
+///
+/// Die alte Fußpunkt-Verfolgung ([`reach`], Konzept §2.3) ist hier BLIND:
+/// sie schlägt erst an, wenn der Fußpunkt weiter als `reach_tol` (1 mm)
+/// springt — ein 0,17-mm-Spalt zwischen zwei Gyroid-Blättern bleibt darunter.
+/// Genau dieser Spalt war die Wurzel der irreduziblen Demo-Front: 0,17 mm
+/// Blattabstand bei 0,2 mm Spacing, jedes Dreieck hatte den Gegenblatt-Punkt
+/// in seiner Umkugel.
+pub(crate) fn reach_outer_flat<Fg: Fn([f32; 3]) -> (f32, [f32; 3])>(
+    p: [f32; 3],
+    n: [f32; 3],
+    cap: f32,
+    fg: &Fg,
+) -> f32 {
+    let mut t = 0.02 * cap;
+    while t < cap {
+        let x = add(p, scale(n, t));
+        if fg(x).0 < 0.9 * t {
+            return t.max(1e-4); // äußere Medialachse gekreuzt (Spalt/Fremdblatt)
+        }
+        t *= 1.25;
+    }
+    cap
+}
+
 pub(crate) fn reach_inner<Fg: Fn([f32; 3]) -> (f32, [f32; 3])>(
     p: [f32; 3],
     n: [f32; 3],
@@ -371,6 +399,21 @@ where
     // lfs-ABTASTUNG (ε-Sampling): die Punktdichte muss einen Bruchteil der
     // local feature size einhalten — auch gegen die INNERE Medialachse
     // (dünne Wände!). `lfs_factor` = ε; 0 = aus (altes Verhalten).
+    // Untere Grenze = Min. Kantenabstand (konsistent mit der Kanten-
+    // Abtastung), NICHT 0.2·h: der frühere 0.2h-Floor verwarf die gesamte
+    // Krümmungs-Verfeinerung — auf einem 6-mm-Teil bei h=10 war r überall
+    // auf 2 mm geklemmt, R_curv (z.B. 0.3 mm auf einer Gyroid-Wand) kam nie
+    // zum Zug und das Wachstum fand genau einen Innenpunkt (Ticket ee07b6f1).
+    r = r.clamp(opts.min_edge_spacing.max(1e-4).min(h), h);
+
+    // ε-SAMPLING gegen die lfs — NACH dem Boden und ohne ihn: die lfs-
+    // Bedingung ist die VORAUSSETZUNG des Umkugel-Theorems, kein Komfort.
+    // Ein Mindestabstand, der sie bricht, produziert genau den Zustand, den
+    // wir auf dem Gyroid gemessen haben: zwei Blätter 0,17 mm auseinander bei
+    // 0,2 mm Spacing — jedes Dreieck hat den Gegenblatt-Punkt in seiner
+    // Umkugel und KEIN Kandidat ist mehr gültig. Geometrie, die feiner ist
+    // als der Mindestabstand, erzwingt also lokal feinere Punkte (dieselbe
+    // Regel gilt längst für die Kanten-Überdeckung).
     if opts.lfs_factor > 0.0 {
         // Der Marsch läuft nur so weit, wie die Bedingung überhaupt BINDEN
         // kann: jenseits von `h/ε` wäre ε·lfs ≥ h und der h-Cap dominiert
@@ -379,18 +422,13 @@ where
         // Punkte, obwohl ihre Wand 20 mm dick ist).
         let cap_lfs = h / opts.lfs_factor;
         let li = reach_inner(p, n, cap_lfs, fg);
-        let lo = reach(p, n, cap_lfs, opts.reach_tol, fg);
+        let lo = reach_outer_flat(p, n, cap_lfs, fg);
         let lfs = li.min(lo);
         if lfs < cap_lfs {
-            r = r.min(opts.lfs_factor * lfs);
+            r = r.min((opts.lfs_factor * lfs).max(1e-4));
         }
     }
-    // Untere Grenze = Min. Kantenabstand (konsistent mit der Kanten-
-    // Abtastung), NICHT 0.2·h: der frühere 0.2h-Floor verwarf die gesamte
-    // Krümmungs-Verfeinerung — auf einem 6-mm-Teil bei h=10 war r überall
-    // auf 2 mm geklemmt, R_curv (z.B. 0.3 mm auf einer Gyroid-Wand) kam nie
-    // zum Zug und das Wachstum fand genau einen Innenpunkt (Ticket ee07b6f1).
-    r.clamp(opts.min_edge_spacing.max(1e-4).min(h), h)
+    r
 }
 
 #[inline]
@@ -683,6 +721,15 @@ where
             // Eigener Spacing-Radius des Kandidaten (Krümmung von der
             // Trägerfläche); Anzeige-U zusätzlich durch den Kantenabstand
             // beschränkt (Kreis bleibt in der Fläche).
+            // KEIL-lfs VERMESSEN UND VERWORFEN (2026-07-12): der Versuch, das
+            // Spacing eines Punktes am Abstand zum nächsten GEGENBLATT-Punkt zu
+            // ziehen (die einzige Messung, die einen Keil sehen KANN — der
+            // Strahl-Marsch sieht ihn nicht, weil der Partner quer zur Normalen
+            // liegt), verschlechterte alles: Box 0 → 3 offene Kanten, Demo
+            // 295 → 532. Die lokale Verfeinerung kaskadiert und reißt genau die
+            // Dichte-Übergänge auf, an denen die Sterne sich uneins werden.
+            // Eine keil-korrekte Abtastung braucht ein GLOBAL konsistentes
+            // Dichtefeld (Lipschitz-beschränkt), keine lokale Nachkorrektur.
             let cspace =
                 local_radius(cp, cn, h, surf_curv(cp).0, opts, fg).min(1.5 * r_full);
             let cu = cspace.min(brep_dist(cp));

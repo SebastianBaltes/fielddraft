@@ -201,7 +201,7 @@ impl Kernel {
                     // Marschrichtung ins Material völlig ausreichend.
                     let n = lichen::unit(lichen::robust_grad(pw, &fg));
                     let lfs = lichen::reach_inner(pw, n, cap_lfs, &fg)
-                        .min(lichen::reach(pw, n, cap_lfs, opts.reach_tol, &fg));
+                        .min(lichen::reach_outer_flat(pw, n, cap_lfs, &fg));
                     if lfs < cap_lfs {
                         m = m.min(opts.lfs_factor * lfs);
                     }
@@ -2638,7 +2638,7 @@ mod tests {
     fn zz_duplicate_sheet_stats() {
         let mut k = demo_project_kernel();
         let out = k.lichen_mesh(
-            r#"{"targetEdgeLength":10.0,"grow":true,"curvAngleDeg":5.0,"minEdgeSpacing":0.1,"maxPoints":50000,"triangulate":false}"#.into(),
+            r#"{"targetEdgeLength":10.0,"grow":true,"curvAngleDeg":5.0,"minEdgeSpacing":0.1,"maxPoints":50000,"triangulate":false,"lfsFactor":0.5}"#.into(),
         );
         let total = out[0] as usize;
         let p = |i: usize| [out[3 + i * 9], out[3 + i * 9 + 1], out[3 + i * 9 + 2]];
@@ -2676,6 +2676,32 @@ mod tests {
                 "Punkte={total}: < {f}·space → {same} Paare gleich-orientiert, {opp} gegenläufig (engstes {:.2}·space)",
                 if worst.is_finite() { worst } else { 0.0 }
             );
+        }
+        // Die GEGENBLATT-Paare (< 1·space, gegenläufige Normalen) einzeln:
+        // Position, Spacing, Flag — die Wurzel der irreduziblen Front.
+        let flag = |i: usize| out[3 + i * 9 + 8];
+        let mut shown = 0;
+        for i in 0..total {
+            for j in i + 1..total {
+                let (a, b) = (p(i), p(j));
+                let d = ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt();
+                let s = sp(i).min(sp(j)).max(1e-4);
+                if d >= s {
+                    continue;
+                }
+                let (na, nb) = (n(i), n(j));
+                if na[0] * nb[0] + na[1] * nb[1] + na[2] * nb[2] > -0.3 {
+                    continue;
+                }
+                if shown < 10 {
+                    eprintln!(
+                        "  GEGENBLATT d={d:.3} | {i} sp={:.2} flag={} at [{:.2},{:.2},{:.2}] | {j} sp={:.2} flag={} at [{:.2},{:.2},{:.2}]",
+                        sp(i), flag(i), a[0], a[1], a[2],
+                        sp(j), flag(j), b[0], b[1], b[2]
+                    );
+                    shown += 1;
+                }
+            }
         }
     }
 
