@@ -2,6 +2,7 @@ import { useEffect, useRef } from "react";
 import { useFrame, useThree } from "@react-three/fiber";
 import * as THREE from "three";
 import { OnshapeControls, type RotateMode } from "./onshapeControls";
+import { setViewportControls } from "./viewportControlsBridge";
 import { publishSketchCamera, getSketchPlaneFrame } from "./sketchCameraBridge";
 import { requestOverlayRedraw } from "./sketchOverlayBridge";
 import {
@@ -378,10 +379,14 @@ export function CameraRig({ preset }: { preset: ControlsPresetId }) {
     const savedPose = getCameraPose();
     if (savedPose) controls.target.fromArray(savedPose.target);
     controlsRef.current = controls;
+    // The host div's pointer handlers (box select) need the controls to cancel
+    // a pending touch orbit — they can't reach into R3F state (ticket 2ca6e21c).
+    setViewportControls(controls);
     const previous = get().controls;
     set({ controls: controls as unknown as THREE.Controls });
     return () => {
       set({ controls: previous });
+      setViewportControls(null);
       controls.dispose();
       controlsRef.current = null;
     };

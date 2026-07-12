@@ -368,6 +368,23 @@ export class OnshapeControls extends THREE.Controls {
     }
   }
 
+  /**
+   * Abandon any in-flight TOUCH gesture (ticket 2ca6e21c). The viewport calls
+   * this when a touch pointer-down turns out to start a box-select instead of
+   * a camera orbit: the controls have already seen that pointer-down (they sit
+   * on the canvas, the box handler on the host div above it), so the pending
+   * one-finger rotate must be dropped, or the scene would spin while the box is
+   * dragged. A no-op when no touch is active; mouse gestures are untouched.
+   */
+  cancelTouchGesture(): void {
+    const el = this.domElement as HTMLElement | null;
+    for (const id of this.touches.keys()) el?.releasePointerCapture?.(id);
+    this.touches.clear();
+    this.touchMode = "none";
+    this.pinchPrev = null;
+    this.stopWindowTrackingIfIdle();
+  }
+
   private onTouchUp(e: PointerEvent): void {
     this.touches.delete(e.pointerId);
     (this.domElement as HTMLElement | null)?.releasePointerCapture?.(e.pointerId);

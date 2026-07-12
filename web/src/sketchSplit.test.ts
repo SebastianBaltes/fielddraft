@@ -175,3 +175,74 @@ describe("splitSubCallAt — circles and composites (ticket 5f0be545)", () => {
     expect(out![0].params.construction).toBe(true);
   });
 });
+
+describe("splitSubCallAt — splines (ticket e5482a0a)", () => {
+  const interp = {
+    type: "sketch_spline",
+    params: {
+      points: [0, 0, 10, 10, 20, 0, 30, 10],
+      mode: "interpolate",
+      closed: false,
+    },
+  };
+
+  it("splits an interpolate spline into two splines sharing the click", () => {
+    const out = splitSubCallAt(interp, [20, 0]); // on the third control point
+    expect(out).toHaveLength(2);
+    expect(out!.every((c) => c.type === "sketch_spline")).toBe(true);
+    const a = out![0].params.points as number[];
+    const b = out![1].params.points as number[];
+    // The seam point is shared: last of A == first of B.
+    expect(a.slice(-2)).toEqual(b.slice(0, 2));
+    // Both halves keep the original mode and are open.
+    expect(out![0].params.mode).toBe("interpolate");
+    expect(out![0].params.closed).toBe(false);
+    // Every original point survives across the two halves (plus the seam).
+    expect(a.length + b.length).toBeGreaterThanOrEqual(interp.params.points.length);
+  });
+
+  it("splits a control-mode spline exactly at the click (knot insertion)", () => {
+    const ctrl = {
+      type: "sketch_spline",
+      params: {
+        points: [0, 0, 10, 20, 20, -20, 30, 0],
+        mode: "control",
+        closed: false,
+      },
+    };
+    // Mid-curve click: the B-spline at u=mid is near (15, 0) for this
+    // symmetric polygon.
+    const out = splitSubCallAt(ctrl, [15, 0]);
+    expect(out).toHaveLength(2);
+    const a = out![0].params.points as number[];
+    const b = out![1].params.points as number[];
+    // Halves meet exactly: A's last control == B's first control, and that
+    // point lies ON the original curve (it is the split point).
+    expect(a.slice(-2)[0]).toBeCloseTo(b[0], 9);
+    expect(a.slice(-2)[1]).toBeCloseTo(b[1], 9);
+    expect(a.slice(-2)[0]).toBeCloseTo(15, 1);
+  });
+
+  it("opens a CLOSED spline at the click instead of halving it", () => {
+    const closed = {
+      type: "sketch_spline",
+      params: {
+        points: [0, 0, 10, 10, 20, 0, 10, -10],
+        mode: "interpolate",
+        closed: true,
+      },
+    };
+    const out = splitSubCallAt(closed, [20, 0]);
+    expect(out).toHaveLength(1);
+    expect(out![0].params.closed).toBe(false);
+    const p = out![0].params.points as number[];
+    // Starts and ends at the click point.
+    expect(p.slice(0, 2)[0]).toBeCloseTo(20, 6);
+    expect(p.slice(-2)[0]).toBeCloseTo(20, 6);
+  });
+
+  it("returns null for a click at an endpoint (no meaningful split)", () => {
+    expect(splitSubCallAt(interp, [0, 0])).toBeNull();
+    expect(splitSubCallAt(interp, [30, 10])).toBeNull();
+  });
+});

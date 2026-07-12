@@ -19,16 +19,25 @@
  * - A **rectangle/polygon** flattens into standalone lines with the
  *   clicked edge split in two — same convention as Trim, which also
  *   dissolves the composite once an edge is cut.
+ * - A **spline** splits into two splines sharing the click point (a
+ *   closed one opens at the click); see `splitSplinePoints` for what the
+ *   `sketch_spline` format can and cannot represent exactly.
  */
 
 import {
   carryFlags,
   distToCurve,
   edgesOfSubCall,
+  nearestTrimTarget,
   subCallOfCurve,
   type Curve,
   type Vec2,
 } from "./sketchTrim";
+import {
+  bsplinePoints,
+  catmullRomPoints,
+  splitSplinePoints,
+} from "./sketchSpline";
 
 type SubCall = { type: string; params: Record<string, unknown> };
 
@@ -139,6 +148,11 @@ export function splitSubCallAt(
   target: SubCall,
   clickPoint: Vec2,
 ): SubCall[] | null {
+  // Splines carry no `Curve` form (they are control points + a mode, not
+  // a line/arc/circle), so they get their own split path.
+  if (target.type === "sketch_spline") {
+    return splitSplineSubCall(target, clickPoint);
+  }
   const edges = edgesOfSubCall(target);
   if (edges.length === 0) return null;
   const carry = carryFlags(target.params);
@@ -175,4 +189,110 @@ export function splitSubCallAt(
     }
   });
   return out;
+}
+
+/** Ticket e5482a0a: split a `sketch_spline` at the click. Both halves stay
+ *  splines of the same mode (and keep the construction flag); a closed
+ *  spline opens at the click. */
+function splitSplineSubCall(target: SubCall, clickPoint: Vec2): SubCall[] | null {
+  const raw = target.params.points;
+  if (!Array.isArray(raw) || raw.length < 4) return null;
+  const controls: Vec2[] = [];
+  for (let i = 0; i + 1 < raw.length; i += 2) {
+    const x = Number(raw[i]);
+    const y = Number(raw[i + 1]);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+    controls.push([x, y]);
+  }
+  const mode = target.params.mode === "control" ? "control" : "interpolate";
+  const closed = target.params.closed === true;
+  const halves = splitSplinePoints(controls, mode, closed, clickPoint);
+  if (!halves) return null;
+  return halves.map((pts) => ({
+    type: "sketch_spline",
+    params: {
+      ...target.params,
+      points: pts.flat(),
+      // A split piece is always an open curve (a closed spline OPENS at
+      // the click), so the closed flag never survives.
+      closed: false,
+    },
+  }));
+}
+
+/** Distance from `click` to the sampled curve of a `sketch_spline`
+ *  sub-call, or `null` when the call isn't a (valid) spline. Splines have
+ *  no `Curve` form, so `nearestTrimTarget` can't see them — the Split tool
+ *  picks with {@link nearestSplitTarget} instead (ticket e5482a0a). */
+function distToSplineSubCall(call: SubCall, click: Vec2): number | null {
+  if (call.type !== "sketch_spline") return null;
+  const raw = call.params.points;
+  if (!Array.isArray(raw) || raw.length < 4) return null;
+  const controls: Vec2[] = [];
+  for (let i = 0; i + 1 < raw.length; i += 2) {
+    const x = Number(raw[i]);
+    const y = Number(raw[i + 1]);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+    controls.push([x, y]);
+  }
+  const closed = call.params.closed === true;
+  const poly =
+    call.params.mode === "control"
+      ? bsplinePoints(controls, 3, closed, controls.length * 32)
+      : catmullRomPoints(controls, closed, 32);
+  let best = Infinity;
+  for (let i = 0; i + 1 < poly.length; i++) {
+    const a = poly[i];
+    const b = poly[i + 1];
+    const dx = b[0] - a[0];
+    const dy = b[1] - a[1];
+    const ll = dx * dx + dy * dy;
+    const t =
+      ll < 1e-12
+        ? 0
+        : Math.max(
+            0,
+            Math.min(1, ((click[0] - a[0]) * dx + (click[1] - a[1]) * dy) / ll),
+          );
+    const d = Math.hypot(
+      click[0] - (a[0] + t * dx),
+      click[1] - (a[1] + t * dy),
+    );
+    if (d < best) best = d;
+  }
+  return Number.isFinite(best) ? best : null;
+}
+
+/** Distance from `click` to the nearest EDGE of `call` (what
+ *  `nearestTrimTarget` compares internally), or `null` for edgeless calls. */
+function nearestEdgeDistance(call: SubCall, click: Vec2): number | null {
+  let best = Infinity;
+  for (const cv of edgesOfSubCall(call)) {
+    const d = distToCurve(click, cv);
+    if (d < best) best = d;
+  }
+  return Number.isFinite(best) ? best : null;
+}
+
+/**
+ * Index of the splittable sub-call nearest `click` within `tolMm`, or
+ * `null`. Like [`nearestTrimTarget`] but ALSO sees splines (which carry no
+ * `Curve` form and are therefore invisible to the trim picker).
+ */
+export function nearestSplitTarget(
+  subCalls: ReadonlyArray<SubCall>,
+  click: Vec2,
+  tolMm: number,
+): number | null {
+  let best = nearestTrimTarget(subCalls, click, tolMm);
+  let bestDist =
+    best === null ? tolMm : (nearestEdgeDistance(subCalls[best], click) ?? tolMm);
+  subCalls.forEach((call, i) => {
+    const d = distToSplineSubCall(call, click);
+    if (d !== null && d < bestDist) {
+      bestDist = d;
+      best = i;
+    }
+  });
+  return best;
 }

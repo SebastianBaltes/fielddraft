@@ -24,6 +24,23 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.540",
+    entries: [
+      {
+        kind: "feat",
+        scope: "sketch",
+        text: "Split funktioniert jetzt auch auf Splines: die Kurve wird am Klickpunkt in zwei Splines geteilt (Control-Splines exakt per Knoteninsertion), eine geschlossene Spline öffnet sich am Klick",
+        tickets: ["e5482a0a"],
+      },
+      {
+        kind: "fix",
+        scope: "viewport",
+        text: "Mobile: Ein-Finger-Drag dreht nur noch die Szene und zieht kein Auswahl-Rechteck mehr auf — das Box-Select liegt jetzt auf Doppel-Tipp-und-Ziehen",
+        tickets: ["2ca6e21c"],
+      },
+    ],
+  },
+  {
     version: "0.6.539",
     entries: [
       {

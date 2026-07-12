@@ -124,6 +124,12 @@ import {
   type NdcRect,
   type ProjectFn,
 } from "./boxSelect";
+import { getViewportControls } from "./viewportControlsBridge";
+
+/** Touch box-select gesture (ticket 2ca6e21c): the second tap must land within
+ *  this window, and this close to the first, to read as a double-tap. */
+const DOUBLE_TAP_MS = 350;
+const DOUBLE_TAP_SLOP_PX = 30;
 
 interface PickProbeProps {
   ndc: { x: number; y: number; active: boolean };
@@ -1017,6 +1023,14 @@ export function Viewport({
     y1: number;
   } | null>(null);
   const suppressClickRef = useRef(false);
+  // Ticket 2ca6e21c: on TOUCH a one-finger drag orbits the camera, so it must
+  // NOT also open a box select (the reported bug: the scene rotated while a
+  // selection rectangle was rubber-banding). The box therefore needs its own
+  // touch gesture — a DOUBLE-TAP-AND-DRAG (tap, then tap-hold-drag), the
+  // gesture Onshape's mobile clients use for the same "the finger already means
+  // orbit" conflict. This remembers the previous tap so the next pointer-down
+  // can tell the two apart.
+  const lastTapRef = useRef<{ t: number; x: number; y: number } | null>(null);
 
   const handlePointerMove = (
     event: ReactPointerEvent<HTMLDivElement>,
@@ -1097,13 +1111,29 @@ export function Viewport({
       getActiveQueryPicker()
     )
       return;
-    if (preset.camera.shiftLeftBoxSelect) {
+    const isTouch = event.pointerType === "touch";
+    if (isTouch) {
+      // A plain finger drag is the camera orbit — only a double-tap-and-drag
+      // arms the box (see `lastTapRef`). The controls already saw this
+      // pointer-down (they sit on the canvas below), so cancel their pending
+      // one-finger rotate, otherwise the scene would spin under the box.
+      const tap = lastTapRef.current;
+      const isDoubleTap =
+        tap !== null &&
+        event.timeStamp - tap.t < DOUBLE_TAP_MS &&
+        Math.hypot(event.clientX - tap.x, event.clientY - tap.y) <
+          DOUBLE_TAP_SLOP_PX;
+      if (!isDoubleTap) return;
+      lastTapRef.current = null;
+      getViewportControls()?.cancelTouchGesture();
+    }
+    if (!isTouch && preset.camera.shiftLeftBoxSelect) {
       // Three.js preset: LMB orbits, so the box is gated on Shift (the rig has
       // freed LMB while Shift is down). It may start anywhere — a Shift+click
       // (no drag) still falls through to additive selection; only a Shift+drag
       // grows into a box.
       if (!event.shiftKey) return;
-    } else {
+    } else if (!isTouch) {
       // Free-LMB presets: the box starts only from EMPTY space — nothing
       // hovered, nothing under the ray — so it never eats a plain pick.
       if (getHoveredElement()) return;
@@ -1128,6 +1158,15 @@ export function Viewport({
     const boxRect = boxRectRef.current;
     boxDragRef.current = null;
     boxRectRef.current = null;
+    // Remember a finger TAP (a lift that neither dragged a box nor travelled
+    // far) so the next pointer-down can recognise a double-tap-and-drag and arm
+    // the box select (ticket 2ca6e21c).
+    if (event.pointerType === "touch") {
+      lastTapRef.current =
+        boxRect === null
+          ? { t: event.timeStamp, x: event.clientX, y: event.clientY }
+          : null;
+    }
     if (!drag || boxRect === null) return;
     setBoxRect(null);
     suppressClickRef.current = true;
