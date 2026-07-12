@@ -79,7 +79,11 @@ const DEFAULTS: LichenSettings = {
   reachTol: 1,
   minEdgeSpacing: 0.01,
   maxPoints: 50000,
-  generalTri: false,
+  // Default = REINES General-Verfahren für ALLE Flächen (Betreiber-Wunsch
+  // 2026-07-12): die Chart-Optimierung (planar-CDT/periodischer Chart) ist
+  // Opt-in — polierte Spezialpfade wiegen sonst in falscher Hoffnung, und
+  // planare Flächen sind das Testlabor des chartlosen Algorithmus.
+  generalTri: true,
   accept: "auto",
   fillHoles: true,
   partOpacity: 0.4,
@@ -117,7 +121,8 @@ function loadSettings(): LichenSettings {
       maxPoints: Math.round(
         clampNum(p.maxPoints, 1, 2_000_000, DEFAULTS.maxPoints),
       ),
-      generalTri: p.generalTri === true,
+      generalTri:
+        p.generalTri === undefined ? DEFAULTS.generalTri : p.generalTri === true,
       accept:
         p.accept === "vote" || p.accept === "gabriel" || p.accept === "hybrid"
           ? p.accept
@@ -441,85 +446,84 @@ export function MesherLichenDialog({ onClose }: { onClose: () => void }) {
       <div className="vec-row">
         <label
           title={
-            "ALLGEMEINE (chartlose) Triangulierung über Stern-Konsistenz " +
-            "statt Chart-CDT — ein Code für plane, gekrümmte und (künftig) " +
-            "chartlose Flächen. Diagnose-first: Löcher werden rot, fast-" +
-            "einstimmige Kandidaten orange gezeichnet, nichts wird still " +
-            "übermalt."
+            "AN = analytische Flächen mit Chart werden per Spezialpfad " +
+            "trianguliert (planare Flächen: 2D-CDT im Newell-Frame; " +
+            "Zylinder/Kugel/Kegel: periodischer Chart); nur chartlose " +
+            "Flächen laufen über das General-Verfahren. AUS (Default) = das " +
+            "REINE chartlose Lichen-Verfahren (Stern/Umkugel) für ALLE " +
+            "Flächen — planare Flächen sind das Testlabor des Algorithmus; " +
+            "die Optimierung wiegt einen sonst in falscher Hoffnung."
           }
         >
-          General tri
+          Chart-Optimierung
         </label>
         <div className="fields">
           <label className="checkbox">
             <input
               type="checkbox"
-              aria-label="General tri"
-              data-testid="mesher-lichen-general-tri"
-              checked={generalTri}
-              onChange={(e) => setGeneralTri(e.currentTarget.checked)}
+              aria-label="Chart-Optimierung"
+              data-testid="mesher-lichen-chart-opt"
+              checked={!generalTri}
+              onChange={(e) => setGeneralTri(!e.currentTarget.checked)}
             />
           </label>
         </div>
       </div>
 
-      {generalTri && (
-        <div className="vec-row">
-          <label
-            title={
-              "Akzeptanz-Bedingung des General-Pfads: Stern-Konsens (Dreieck " +
-              "muss im 2D-Delaunay-Stern ALLER drei Ecken vorkommen), Umkugel " +
-              "(kleinste Kugel durch die drei Ecken punktfrei, mit " +
-              "deterministischem Fächer-Tie-Break bei exakt cozirkulären " +
-              "Quads), oder Hybrid (Konsens ODER Umkugel)."
+      <div className="vec-row">
+        <label
+          title={
+            "Akzeptanz-Bedingung des General-Verfahrens (gilt auch für die " +
+            "chartlosen Fallback-Flächen bei aktiver Chart-Optimierung): " +
+            "Stern-Konsens (Dreieck muss im 2D-Delaunay-Stern ALLER drei " +
+            "Ecken vorkommen), Umkugel (kleinste Kugel durch die drei Ecken " +
+            "punktfrei, mit deterministischem Fächer-Tie-Break bei exakt " +
+            "cozirkulären Quads), oder Hybrid (Konsens ODER Umkugel)."
+          }
+        >
+          Akzeptanz
+        </label>
+        <div className="fields">
+          <select
+            aria-label="Akzeptanz"
+            data-testid="mesher-lichen-accept"
+            value={accept}
+            onChange={(e) =>
+              setAccept(
+                e.currentTarget.value as "auto" | "vote" | "gabriel" | "hybrid",
+              )
             }
           >
-            Akzeptanz
-          </label>
-          <div className="fields">
-            <select
-              aria-label="Akzeptanz"
-              data-testid="mesher-lichen-accept"
-              value={accept}
-              onChange={(e) =>
-                setAccept(
-                  e.currentTarget.value as "auto" | "vote" | "gabriel" | "hybrid",
-                )
-              }
-            >
-              <option value="auto">Auto (Trägertyp)</option>
-              <option value="vote">Stern-Konsens</option>
-              <option value="gabriel">Umkugel (Gabriel)</option>
-              <option value="hybrid">Hybrid</option>
-            </select>
-          </div>
+            <option value="auto">Auto (Trägertyp)</option>
+            <option value="vote">Stern-Konsens</option>
+            <option value="gabriel">Umkugel (Gabriel)</option>
+            <option value="hybrid">Hybrid</option>
+          </select>
         </div>
-      )}
+      </div>
 
-      {generalTri && (
-        <div className="vec-row">
-          <label
-            title={
-              "Loch-Füller des General-Pfads: einfache Defekt-Loops werden " +
-              "nach der Diagnose per CDT geschlossen. AUS = der Basis-" +
-              "Algorithmus wird pur gemessen (Löcher bleiben sichtbar/rot)."
-            }
-          >
-            Loch-Füller
+      <div className="vec-row">
+        <label
+          title={
+            "Loch-Füller des General-Verfahrens: einfache Defekt-Loops " +
+            "werden nach der Diagnose per CDT geschlossen. AUS = der Basis-" +
+            "Algorithmus wird pur gemessen (Löcher bleiben sichtbar/rot)."
+          }
+        >
+          Loch-Füller
+        </label>
+        <div className="fields">
+          <label className="checkbox">
+            <input
+              type="checkbox"
+              aria-label="Loch-Füller"
+              data-testid="mesher-lichen-fill-holes"
+              checked={fillHoles}
+              onChange={(e) => setFillHoles(e.currentTarget.checked)}
+            />
           </label>
-          <div className="fields">
-            <label className="checkbox">
-              <input
-                type="checkbox"
-                aria-label="Loch-Füller"
-                data-testid="mesher-lichen-fill-holes"
-                checked={fillHoles}
-                onChange={(e) => setFillHoles(e.currentTarget.checked)}
-              />
-            </label>
-          </div>
         </div>
-      )}
+      </div>
 
       {numRowLikeSlider(
         "Part opacity",

@@ -24,6 +24,16 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.547",
+    entries: [
+      {
+        kind: "feat",
+        scope: "mesher",
+        text: "Lichen: Chart-Optimierung ist jetzt eine explizite Opt-in-Checkbox statt Default (Betreiber-Wunsch) — standardmäßig läuft das REINE chartlose General-Verfahren (Stern/Umkugel) für ALLE Flächen, auch planare (die sind das Testlabor des Algorithmus; der polierte CDT-Spezialpfad wiegt sonst in falscher Hoffnung). Die Checkbox „Chart-Optimierung“ ersetzt „General tri“ mit umgekehrtem Vorzeichen; Akzeptanz-Modus und Loch-Füller sind jetzt in beiden Modi sichtbar (der Chart-Modus nutzt sie für seine chartlosen Fallback-Flächen).",
+      },
+    ],
+  },
+  {
     version: "0.6.546",
     entries: [
       {
