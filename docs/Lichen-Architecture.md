@@ -833,6 +833,52 @@ als Vorgabe für Ketten UND Wachstum verwendet (statt lokal nachzukorrigieren).
 Wo σ unter die Auflösungsgrenze fällt, ist die Topologie sub-resolution und
 gehört kollabiert, nicht abgetastet.
 
+## 8l. Sizing-Field: der letzte strukturelle Baustein (v0.6.558)
+
+Zweimal war vermessen worden, dass **lokale** Verfeinerung das Netz
+verschlechtert, obwohl sie geometrisch korrekter ist (§8j: Keil-Spacing aus der
+Punktwolke → Box 0→3; §8k: feiner Reach-Marsch → Demo 295→619). Die Diagnose
+war beide Male dieselbe: abrupte Dichte-Sprünge, an denen Sterne und Umkugeln
+auseinanderlaufen. `lichen::SizeField` macht es **global**:
+
+1. **Roh-Größe** an Stützstellen: `min(h, α/κ, ε·lfs)` — mit **feinem** Marsch
+   (der grobe meldet seinen ersten Schritt und sieht kleine Spalte nie).
+2. **Lipschitz-Relaxation:** `σ_i = min_j (raw_j + K·|p_i − p_j|)`, K = 0,3,
+   iterativ bis Fixpunkt (σ fällt monoton → terminiert).
+3. **Auswertung:** `σ(x) = min_j (σ_j + K·|x − p_j|)` — automatisch
+   K-Lipschitz auch *zwischen* den Stützstellen.
+4. **Boden = `minEdgeSpacing`** (Auflösungsgrenze). Ohne ihn divergiert das
+   Feld an tangentialen Kontakten, wo lfs → 0.
+
+Die Pipeline läuft dafür **zweimal** (Option `sizingField`, Dialog-Checkbox):
+erst grob für die Stützstellen-Wolke, dann mit dem Feld für **Ketten UND
+Wachstum** — beide Punktquellen folgen jetzt derselben Vorgabe.
+
+**Messung** (Demo, globaler Walk, ε = 0,5, minEdge 0,03):
+
+| | Punkte | Dreiecke | offene Kanten | Rate |
+|---|---|---|---|---|
+| ohne Feld | 4 683 | 8 809 | 623 | 7,1 % |
+| **mit Feld** | 27 639 | 53 982 | 1 398 | **2,6 %** |
+
+Die **relative** Defektrate fällt also deutlich — das Feld tut, was es soll.
+Die absolute Zahl wächst, weil das Netz 6× größer wird. Alle glatten Körper
+bleiben unverändert wasserdicht (Box/Zylinder/Kugel χ=2, Torus χ=0, dünne
+Platte χ=2 mit 0 Wand-Durchquerungen).
+
+**Damit ist das Cocone-Programm vollständig implementiert:**
+
+| Säule | Zustand |
+|---|---|
+| 1. ε-Sample (Punktverteilung) | Sizing-Field, Lipschitz-geglättet, für Ketten + Wachstum |
+| 2. Prädikat (restricted Delaunay) | Zeugen-Umkugel + Normalen-Guard |
+| 3. Manifold-Extraktion | Sheet-Walk (Ball-Pivoting-Regel), global |
+
+Und die verbleibende Front ist keine Lücke im Programm mehr, sondern seine
+**bewiesene Grenze**: an tangentialen Kontakten geht lfs → 0, dort existiert
+keine endliche gültige Abtastung. Die Antwort dort ist der **Kollaps der
+Sub-Resolution-Topologie** — die einzige verbliebene Aufgabe.
+
 ## 9. Kritische Reflexion (2026-07-12)
 
 Bewertung des Konzepts mit dem Wissen aus Sampling-Theorie
