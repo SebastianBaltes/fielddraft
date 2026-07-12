@@ -103,6 +103,22 @@ pub struct LichenOptions {
     /// Punkte, die zwei Flächen gleich nahe sind (Naht-Band), tragen BEIDE
     /// IDs und dürfen deshalb legitim vermitteln.
     pub face_guard: bool,
+    /// DELAUNAY-REFINEMENT (Boissonnat–Oudot): nach dem Walk werden Dreiecke
+    /// gesucht, deren ZEUGEN-KUGEL (die „surface Delaunay ball" — Zentrum auf
+    /// der Fläche, durch die drei Ecken) größer ist als die Ziel-Dichte σ.
+    /// Genau dort ist die Fläche unterabgetastet. Das Kugelzentrum wird als
+    /// neuer Punkt eingefügt und neu vernetzt — bis kein Ball mehr zu groß ist.
+    ///
+    /// Das ist der Algorithmus, den CGAL fährt; er terminiert beweisbar und
+    /// braucht KEIN Punkt-Template. Damit werden die Heuristiken des Waben-
+    /// Wachstums (Redundanz-Schwelle, Rebalancing, Schritt-Halbierung,
+    /// Lücken-Nachlauf) überflüssig — das Wachstum ist dann nur noch Saat.
+    pub refine: bool,
+    /// Schwelle des Refinements: ein Dreieck ist „schlecht", wenn sein
+    /// Zeugen-Ball-Radius > `refine_rho · σ` ist. Ein gleichseitiges Dreieck
+    /// mit Kantenlänge σ hat Umkreisradius σ/√3 ≈ 0,58 σ — Werte um 0,7 sind
+    /// also knapp über „ideal".
+    pub refine_rho: f32,
 }
 
 impl Default for LichenOptions {
@@ -124,6 +140,8 @@ impl Default for LichenOptions {
             lfs_factor: 0.0,
             sizing_field: false,
             face_guard: false,
+            refine: false,
+            refine_rho: 0.7,
         }
     }
 }
@@ -467,6 +485,23 @@ where
     r
 }
 
+/// Ziel-Dichte σ am Ort (öffentlich fürs Refinement): `min(h, α/κ, ε·lfs)`
+/// bzw. das Sizing-Field, wenn eines vorliegt.
+pub fn target_spacing<Fg>(
+    p: [f32; 3],
+    n: [f32; 3],
+    h: f32,
+    opts: &LichenOptions,
+    fg: &Fg,
+    size: Option<&SizeField>,
+) -> f32
+where
+    Fg: Fn([f32; 3]) -> (f32, [f32; 3]),
+{
+    let kmax = curvature(p, n, h, &|q| unit(robust_grad(q, fg))).0;
+    local_radius(p, n, h, kmax, opts, fg, size)
+}
+
 #[inline]
 fn gkey(p: [f32; 3], cell: f32) -> (i32, i32, i32) {
     ((p[0] / cell).floor() as i32, (p[1] / cell).floor() as i32, (p[2] / cell).floor() as i32)
@@ -631,6 +666,62 @@ impl SizeField {
         }
         best
     }
+}
+
+/// ZEUGEN-KUGEL („surface Delaunay ball", Boissonnat–Oudot): die Kugel durch
+/// die drei Ecken, deren Zentrum AUF der Fläche liegt. Konstruktion: vom
+/// Umkreiszentrum (in der Dreiecks-Ebene) entlang der Dreiecks-Normalen per
+/// 1D-Newton auf `f = 0` — dieselbe Rechnung wie das `witness`-Akzeptanz-
+/// prädikat. Rückgabe `(Zentrum, Radius)`; `None`, wenn die duale Gerade die
+/// Fläche im lokalen Fenster nicht trifft.
+///
+/// Der Radius ist das ZENTRALE Maß des Refinements: er misst, wie grob die
+/// Fläche hier abgetastet ist. Ist er größer als die Ziel-Dichte, fehlt genau
+/// im Zentrum ein Punkt — und das Zentrum ist der beste Ort, ihn zu setzen
+/// (er ist maximal weit von allen bestehenden entfernt).
+pub fn witness_ball<Fg: Fn([f32; 3]) -> (f32, [f32; 3])>(
+    a: [f32; 3],
+    b: [f32; 3],
+    c: [f32; 3],
+    cap: f32,
+    fg: &Fg,
+) -> Option<([f32; 3], f32)> {
+    let ab = sub(b, a);
+    let ac = sub(c, a);
+    let ab2 = dot(ab, ab);
+    let ac2 = dot(ac, ac);
+    let abac = dot(ab, ac);
+    let den = 2.0 * (ab2 * ac2 - abac * abac);
+    if den.abs() <= 2e-6 * ab2 * ac2 {
+        return None; // entartet
+    }
+    let s_ = (ac2 * (ab2 - abac)) / den;
+    let t_ = (ab2 * (ac2 - abac)) / den;
+    let c0 = [
+        a[0] + s_ * ab[0] + t_ * ac[0],
+        a[1] + s_ * ab[1] + t_ * ac[1],
+        a[2] + s_ * ab[2] + t_ * ac[2],
+    ];
+    let n_t = norm(cross(ab, ac));
+    let mut t = 0.0f32;
+    for _ in 0..16 {
+        let x = [c0[0] + t * n_t[0], c0[1] + t * n_t[1], c0[2] + t * n_t[2]];
+        let (f, g) = fg(x);
+        if f.abs() < 1e-4 {
+            let r = dist(x, a);
+            return Some((x, r));
+        }
+        let g = if dot(g, g) > 1e-12 { g } else { robust_grad(x, fg) };
+        let dn = dot(g, n_t);
+        if dn.abs() < 1e-6 {
+            return None; // duale Gerade tangential zum Feld
+        }
+        t -= f / dn;
+        if !t.is_finite() || t.abs() > cap {
+            return None;
+        }
+    }
+    None
 }
 
 /// SDF-Sichtlinien-Test `p → q` (§3.4): verwerfen, wenn das Segment am Abgang

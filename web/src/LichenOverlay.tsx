@@ -268,6 +268,8 @@ export function LichenOverlay({
         lfsFactor: params.lfsFactor,
         sizingField: params.sizingField,
         faceGuard: params.faceGuard,
+        refine: params.refine,
+        refineRho: params.refineRho,
       }),
     );
     const total = data.length >= 3 ? data[0] : 0;

@@ -24,6 +24,16 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.563",
+    entries: [
+      {
+        kind: "feat",
+        scope: "mesher",
+        text: "Lichen: Delaunay-Refinement nach Boissonnat–Oudot (der Algorithmus hinter CGAL) — kein Punkt-Template mehr, sondern ein Kriterium. Die Zeugen-Kugel jedes Dreiecks (Zentrum auf der Fläche, durch die drei Ecken) misst, wie grob dort abgetastet ist; ist ihr Radius größer als die Ziel-Dichte, wird in ihr Zentrum ein Punkt eingefügt und neu vernetzt, bis kein Ball mehr zu groß ist. Der Hintergrund ist topologisch: ein reines Sechseck-Netz hat Euler-Charakteristik 0 und kann auf einer Kugel (χ=2) prinzipiell nicht schließen — dort braucht es exakt 12 Fünfecke; ein starres Waben-Muster schiebt diese unvermeidlichen Defekte an willkürliche Stellen, und genau dort reißen die Löcher. Messung: konvergiert sauber (1311 → 58 → 1 → 0 Einfügungen), füllt das vom Betreiber gemeldete punktleere Fünfeck, und ist auf Box/Zylinder/Kugel/Torus ein No-op — dort liefert das Wachstum bereits gute Dreiecke. Wichtig: das Refinement braucht dieselbe Ketten-Clearance wie das Wachstum (an einer B-Rep-Kante sind Dreiecke naturgemäß schmal, ihre Bälle daher groß — ohne die Regel ruinierte es die Box).",
+      },
+    ],
+  },
+  {
     version: "0.6.562",
     entries: [
       {

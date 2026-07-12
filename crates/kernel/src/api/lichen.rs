@@ -1511,18 +1511,217 @@ impl Kernel {
                     } else {
                         None
                     };
-                    let res = crate::lichen_tri::triangulate_global_walk(
-                        &positions,
-                        &nmap,
-                        &normal_sets,
-                        face_sets.as_deref(),
-                        &spacings,
-                        &members,
-                        &global_chain_edges,
-                        opts.curv_angle_deg.to_radians(),
-                        &opts.accept,
-                        &fg,
-                    );
+                    // ── DELAUNAY-REFINEMENT (Boissonnat–Oudot) ──
+                    //
+                    // Der klassische Weg, und der Grund, warum kein ernsthafter
+                    // Mesher ein Punkt-TEMPLATE benutzt: ein reines Sechseck-
+                    // Netz hat Euler-Charakteristik 0 und kann auf einer Kugel
+                    // (χ=2) PRINZIPIELL nicht schließen — dort braucht es exakt
+                    // 12 Fünfecke (Satz, nicht Faustregel), auf einem Sattel
+                    // Siebenecke. Ein starres Waben-Muster schiebt diese
+                    // unvermeidlichen Defekte an willkürliche Stellen; dort
+                    // reißen die Löcher.
+                    //
+                    // Statt eines Templates ein KRITERIUM: die ZEUGEN-KUGEL
+                    // jedes Dreiecks (Zentrum auf der Fläche, durch die drei
+                    // Ecken — dieselbe Kugel, die schon das `witness`-Prädikat
+                    // rechnet) misst, wie grob die Fläche dort abgetastet ist.
+                    // Ist ihr Radius größer als die Ziel-Dichte σ, fehlt genau
+                    // in ihrem Zentrum ein Punkt — und das Zentrum ist der
+                    // BESTE Ort dafür (maximal weit von allen bestehenden).
+                    // Einfügen, neu vernetzen, wiederholen. Terminiert
+                    // beweisbar, weil jeder neue Punkt mindestens σ·ρ von allen
+                    // anderen entfernt ist und die Fläche endliche Ausdehnung
+                    // hat.
+                    //
+                    // Damit werden die Heuristiken des Wachstums (Redundanz-
+                    // Schwelle, Rebalancing, Schritt-Halbierung, Lücken-
+                    // Nachlauf) überflüssig: das Waben-Wachstum ist nur noch
+                    // die SAAT.
+                    let mut positions = positions;
+                    let mut spacings = spacings;
+                    let mut nmap = nmap;
+                    let mut normal_sets = normal_sets;
+                    let mut face_sets = face_sets;
+                    let mut members = members;
+                    let mut res;
+                    let rho = if opts.refine_rho > 0.0 { opts.refine_rho } else { 0.7 };
+                    let rounds = if opts.refine { 12 } else { 1 };
+                    let mut inserted_total = 0usize;
+                    loop {
+                        res = crate::lichen_tri::triangulate_global_walk(
+                            &positions,
+                            &nmap,
+                            &normal_sets,
+                            face_sets.as_deref(),
+                            &spacings,
+                            &members,
+                            &global_chain_edges,
+                            opts.curv_angle_deg.to_radians(),
+                            &opts.accept,
+                            &fg,
+                        );
+                        if !opts.refine || all.len() >= opts.max_points * 4 {
+                            break;
+                        }
+                        // Schlechte Dreiecke: Zeugen-Ball größer als ρ·σ.
+                        // Kandidaten-Zentren sammeln, nach Radius sortiert
+                        // (die gröbste Stelle zuerst — das ist der klassische
+                        // „refine the worst" der Delaunay-Verfeinerung).
+                        let mut cands: Vec<(f32, [f32; 3])> = Vec::new();
+                        for &[a, b, c] in &res.tris {
+                            let sigma = spacings[a as usize]
+                                .min(spacings[b as usize])
+                                .min(spacings[c as usize])
+                                .max(opts.min_edge_spacing.max(1e-4));
+                            let Some((cc, r)) = lichen::witness_ball(
+                                positions[a as usize],
+                                positions[b as usize],
+                                positions[c as usize],
+                                5.0 * h,
+                                &fg,
+                            ) else {
+                                continue;
+                            };
+                            if r > rho * sigma {
+                                cands.push((r, cc));
+                            }
+                        }
+                        // Auch offene Kanten sind unterabgetastet: dort fehlt
+                        // das Gegenstück. Ihr Sehnen-Mittelpunkt, auf die
+                        // Fläche projiziert, ist der natürliche Einfüge-Ort.
+                        for &(a, b) in &res.open_edges {
+                            // Ketten-Kanten sind Flächenrand — dort wird nicht
+                            // verfeinert (die Kette hat ihre eigene Abtastung).
+                            if global_chain_edges.contains(&(a.min(b), a.max(b))) {
+                                continue;
+                            }
+                            let (pa, pb) = (positions[a as usize], positions[b as usize]);
+                            let sigma = spacings[a as usize]
+                                .min(spacings[b as usize])
+                                .max(opts.min_edge_spacing.max(1e-4));
+                            let l = ((pa[0] - pb[0]).powi(2)
+                                + (pa[1] - pb[1]).powi(2)
+                                + (pa[2] - pb[2]).powi(2))
+                            .sqrt();
+                            if l <= 1.2 * sigma {
+                                continue;
+                            }
+                            let mid = [
+                                (pa[0] + pb[0]) * 0.5,
+                                (pa[1] + pb[1]) * 0.5,
+                                (pa[2] + pb[2]) * 0.5,
+                            ];
+                            cands.push((0.5 * l, mid));
+                        }
+                        cands.sort_by(|x, y| y.0.partial_cmp(&x.0).unwrap_or(std::cmp::Ordering::Equal));
+                        // Einfügen mit Separations-Gate — das ist die
+                        // Terminierungs-Garantie: kein neuer Punkt darf näher
+                        // als ρ·σ an einem bestehenden liegen.
+                        let cell = h.max(1e-3);
+                        let key = |p: [f32; 3]| {
+                            (
+                                (p[0] / cell).floor() as i32,
+                                (p[1] / cell).floor() as i32,
+                                (p[2] / cell).floor() as i32,
+                            )
+                        };
+                        let mut grid: HashMap<(i32, i32, i32), Vec<u32>> = HashMap::new();
+                        for (i, p) in positions.iter().enumerate() {
+                            grid.entry(key(*p)).or_default().push(i as u32);
+                        }
+                        let mut inserted = 0usize;
+                        for (_, cc) in cands {
+                            // Auf die Oberfläche setzen (Newton) und prüfen.
+                            let (p, d, n) = {
+                                let mut q = cc;
+                                for _ in 0..6 {
+                                    let (f, g) = fg(q);
+                                    let g2 = g[0] * g[0] + g[1] * g[1] + g[2] * g[2];
+                                    if g2 < 1e-20 {
+                                        break;
+                                    }
+                                    let s = f / g2;
+                                    q = [q[0] - s * g[0], q[1] - s * g[1], q[2] - s * g[2]];
+                                    if f.abs() < 1e-6 {
+                                        break;
+                                    }
+                                }
+                                let (f, _) = fg(q);
+                                (q, f, lichen::unit(lichen::robust_grad(q, &fg)))
+                            };
+                            if d.abs() > (5e-4 * h).max(1e-4) {
+                                continue; // nicht auf der Fläche
+                            }
+                            let Some(gf) = face_of(p) else { continue };
+                            let sp = lichen::target_spacing(p, n, h, &opts, &fg, size);
+                            // KETTEN-CLEARANCE (wie im Wachstum): an einer
+                            // B-Rep-Kante sind Dreiecke naturgemäß schmal, ihre
+                            // Zeugen-Bälle daher groß — ohne diese Regel setzt
+                            // das Refinement dort Punkt um Punkt und ruiniert
+                            // das Netz (Box: 0 → 543 offene Kanten, Punktzahl
+                            // 284 → 1326). Der Rand wird von der KETTE
+                            // abgetastet, nicht von der Fläche.
+                            if brep_dist(p) < 0.7 * sp {
+                                continue;
+                            }
+                            // Separation (Terminierung!).
+                            let (kx, ky, kz) = key(p);
+                            let mut ok = true;
+                            'sep: for dx in -1..=1 {
+                                for dy in -1..=1 {
+                                    for dz in -1..=1 {
+                                        let Some(v) = grid.get(&(kx + dx, ky + dy, kz + dz)) else {
+                                            continue;
+                                        };
+                                        for &j in v {
+                                            let q = positions[j as usize];
+                                            let dd = ((p[0] - q[0]).powi(2)
+                                                + (p[1] - q[1]).powi(2)
+                                                + (p[2] - q[2]).powi(2))
+                                            .sqrt();
+                                            if dd < rho * sp {
+                                                ok = false;
+                                                break 'sep;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            if !ok {
+                                continue;
+                            }
+                            let idx = all.len() as u32;
+                            let nw = lichen::unit(n);
+                            all.push(LPoint { p, sdf: d, n: nw, u: sp, space: sp, flag: 1.0 });
+                            point_faces.push(vec![(gf, nw)]);
+                            local_pos.push([0.0; 3]);
+                            positions.push(p);
+                            spacings.push(sp);
+                            nmap.insert(idx, nw);
+                            normal_sets.push(vec![nw]);
+                            if let Some(fsv) = face_sets.as_mut() {
+                                fsv.push(vec![gf]);
+                            }
+                            members.push(idx);
+                            grid.entry(key(p)).or_default().push(idx);
+                            inserted += 1;
+                        }
+                        inserted_total += inserted;
+                        if inserted == 0 {
+                            break;
+                        }
+                        if std::env::var("LICHEN_DEBUG_REFINE").is_ok() {
+                            eprintln!(
+                                "REFINE: {inserted} Punkte eingefügt (gesamt {inserted_total}, Netz {} Punkte)",
+                                all.len()
+                            );
+                        }
+                        if inserted_total > 8 * opts.max_points {
+                            break;
+                        }
+                    }
+                    let _ = rounds;
                     let mut t = res.tris;
                     lichen::orient_consistent(&all, &mut t);
                     if res.hole_edges + res.nonmanifold_edges > 0 {

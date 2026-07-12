@@ -67,6 +67,12 @@ export interface LichenDebug {
    *  Fläche seiner drei Ecken. Topologisch — sieht, was Normalen nicht sehen
    *  können (tangential sich nähernde Flächen haben ähnliche Normalen). */
   faceGuard: boolean;
+  /** DELAUNAY-REFINEMENT (Boissonnat–Oudot): Dreiecke, deren Zeugen-Kugel
+   *  größer ist als die Ziel-Dichte, bekommen einen Punkt in ihr Zentrum;
+   *  bis kein Ball mehr zu groß ist. Kein Punkt-Template. */
+  refine: boolean;
+  /** Schwelle: Ball-Radius > refineRho · σ = „schlecht". */
+  refineRho: number;
 
   // ── Display knobs (overlay only, ignored by the kernel) ──
   /** Opacity of the rendered part (1 = opaque). Below 1 the solid turns

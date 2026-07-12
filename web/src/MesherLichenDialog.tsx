@@ -71,6 +71,10 @@ interface LichenSettings {
   sizingField: boolean;
   /** Flächen-Guard: Dreieck braucht eine gemeinsame B-Rep-Fläche. */
   faceGuard: boolean;
+  /** Delaunay-Refinement (Boissonnat–Oudot). */
+  refine: boolean;
+  /** Refinement-Schwelle ρ. */
+  refineRho: number;
   partOpacity: number;
   strokeWidth: number;
   /** Draw the U(p) reach circle in the tangent plane at each point. */
@@ -113,6 +117,8 @@ const DEFAULTS: LichenSettings = {
   lfsFactor: 0,
   sizingField: false,
   faceGuard: false,
+  refine: false,
+  refineRho: 1.0,
   partOpacity: 0.4,
   strokeWidth: 2,
   showCircles: true,
@@ -169,6 +175,8 @@ function loadSettings(): LichenSettings {
       sizingField:
         p.sizingField === undefined ? DEFAULTS.sizingField : p.sizingField === true,
       faceGuard: p.faceGuard === undefined ? DEFAULTS.faceGuard : p.faceGuard === true,
+      refine: p.refine === undefined ? DEFAULTS.refine : p.refine === true,
+      refineRho: clampNum(p.refineRho, 0.4, 2, DEFAULTS.refineRho),
       partOpacity: clampNum(p.partOpacity, 0, 1, DEFAULTS.partOpacity),
       strokeWidth: clampNum(p.strokeWidth, 0.5, 12, DEFAULTS.strokeWidth),
       showCircles: p.showCircles === undefined ? DEFAULTS.showCircles : p.showCircles === true,
@@ -209,6 +217,8 @@ function lichenParams(s: LichenSettings): LichenDebug {
     lfsFactor: s.lfsFactor,
     sizingField: s.sizingField,
     faceGuard: s.faceGuard,
+    refine: s.refine,
+    refineRho: s.refineRho,
     fillHoles: s.fillHoles,
     partOpacity: s.partOpacity,
     strokeWidth: s.strokeWidth,
@@ -243,6 +253,8 @@ export function MesherLichenDialog({ onClose }: { onClose: () => void }) {
   const [lfsFactor, setLfsFactor] = useState(initial.lfsFactor);
   const [sizingField, setSizingField] = useState(initial.sizingField);
   const [faceGuard, setFaceGuard] = useState(initial.faceGuard);
+  const [refine, setRefine] = useState(initial.refine);
+  const [refineRho, setRefineRho] = useState(initial.refineRho);
   const [fillHoles, setFillHoles] = useState(initial.fillHoles);
   const [partOpacity, setPartOpacity] = useState(initial.partOpacity);
   const [strokeWidth, setStrokeWidth] = useState(initial.strokeWidth);
@@ -278,6 +290,8 @@ export function MesherLichenDialog({ onClose }: { onClose: () => void }) {
       lfsFactor,
       sizingField,
       faceGuard,
+      refine,
+      refineRho,
       fillHoles,
       partOpacity,
       strokeWidth,
@@ -297,7 +311,7 @@ export function MesherLichenDialog({ onClose }: { onClose: () => void }) {
     } catch {
       // no localStorage (tests) — non-persistent is fine
     }
-  }, [targetEdgeLength, grow, curvAngleDeg, useReach, reachTol, minEdgeSpacing, maxPoints, generalTri, accept, extractWalk, globalWalk, lfsFactor, sizingField, faceGuard, fillHoles, partOpacity, strokeWidth, showCircles, showPoints, showTriangles, showHoleEdges, showWeakTris, showLongEdges, pointSize, showNormals, normalLength]);
+  }, [targetEdgeLength, grow, curvAngleDeg, useReach, reachTol, minEdgeSpacing, maxPoints, generalTri, accept, extractWalk, globalWalk, lfsFactor, sizingField, faceGuard, refine, refineRho, fillHoles, partOpacity, strokeWidth, showCircles, showPoints, showTriangles, showHoleEdges, showWeakTris, showLongEdges, pointSize, showNormals, normalLength]);
   useEffect(() => () => setLichenDebug(null), []);
 
   useEffect(() => {
@@ -709,6 +723,61 @@ export function MesherLichenDialog({ onClose }: { onClose: () => void }) {
               onChange={(e) => setFaceGuard(e.currentTarget.checked)}
             />
           </label>
+        </div>
+      </div>
+
+      <div className="vec-row">
+        <label
+          title={
+            "DELAUNAY-REFINEMENT (Boissonnat–Oudot, der Algorithmus hinter " +
+            "CGAL): kein Punkt-TEMPLATE, sondern ein KRITERIUM. Die " +
+            "Zeugen-Kugel jedes Dreiecks (Zentrum auf der Fläche, durch die " +
+            "drei Ecken) misst, wie grob die Fläche dort abgetastet ist. Ist " +
+            "ihr Radius größer als die Ziel-Dichte σ, fehlt in ihrem Zentrum " +
+            "ein Punkt — der wird dort eingefügt, neu vernetzt, wiederholt. " +
+            "Terminiert beweisbar. Hintergrund: ein reines Sechseck-Netz hat " +
+            "Euler-Charakteristik 0 und kann auf einer Kugel (χ=2) prinzipiell " +
+            "nicht schließen — dort braucht es exakt 12 Fünfecke. Ein starres " +
+            "Waben-Muster schiebt diese Defekte an willkürliche Stellen; dort " +
+            "reißen die Löcher."
+          }
+        >
+          Delaunay-Refinement
+        </label>
+        <div className="fields">
+          <label className="checkbox">
+            <input
+              type="checkbox"
+              aria-label="Delaunay-Refinement"
+              data-testid="mesher-lichen-refine"
+              checked={refine}
+              onChange={(e) => setRefine(e.currentTarget.checked)}
+            />
+          </label>
+        </div>
+      </div>
+
+      <div className="vec-row">
+        <label
+          title={
+            "Schwelle ρ: ein Dreieck gilt als unterabgetastet, wenn sein " +
+            "Zeugen-Ball-Radius > ρ · σ ist. Ein gleichseitiges Dreieck mit " +
+            "Kantenlänge σ hat Umkreisradius σ/√3 ≈ 0,58 — Werte um 1,0 sind " +
+            "sicher, kleinere verfeinern aggressiver (und können an " +
+            "Dichte-Übergängen schaden)."
+          }
+        >
+          ρ (Refinement-Schwelle)
+        </label>
+        <div className="fields">
+          <NumberInput
+            min={0.4}
+            max={2}
+            step={0.1}
+            aria-label="ρ (Refinement-Schwelle)"
+            value={refineRho}
+            onChange={setRefineRho}
+          />
         </div>
       </div>
 
