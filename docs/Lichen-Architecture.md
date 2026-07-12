@@ -790,6 +790,49 @@ Sub-Resolution-Topologie.
 Demo: 302 → 295. Alle Gates unverändert (Box/Zylinder/Kugel χ=2, Torus χ=0,
 dünne Platte χ=2 mit 0 Wand-Durchquerungen).
 
+## 8k. Die Divergenz: warum ε-Sampling an tangentialen Kontakten scheitern MUSS (v0.6.557)
+
+**Befund 19 — der Marsch konnte den Spalt gar nicht sehen.** Der Reach-Marsch
+startete bei `0,02·cap` = **0,4 mm** (h=10, ε=0,5) und kann damit einen
+0,17-mm-Spalt prinzipiell nicht auflösen: er meldet seinen *ersten Schritt* als
+lfs, und das Spacing landet exakt auf 0,5·0,4 = 0,2 — genau der gemessene Wert
+(Blattabstand 0,17 bei Spacing 0,19). Der Startschritt ist jetzt ein Parameter.
+
+**Und dann die entscheidende Messung.** Mit einem feinen Start (0,05·r) *löst*
+der Marsch die Spalte auf — das ist die physikalisch korrekte Messung. Das
+Ergebnis:
+
+| Variante | Demo (offene Kanten) | Punkte | Laufzeit |
+|---|---|---|---|
+| grober Start (heute) | **295** | 2 807 | ~20 s |
+| feiner Start + Auflösungs-Boden | 619 | 6 390 | 2,5 min |
+| feiner Start + freier Boden | — | — | **>15 min, kein Ende** |
+
+**Die korrekte Messung divergiert.** An einem tangentialen Kontakt geht lfs → 0
+und die geforderte Dichte → ∞. Das ist keine Implementierungsschwäche, sondern
+**exakt die Aussage der Theorie**: die ε-Sample-Garantie ist gegen lfs
+formuliert, und an einem Sub-Resolution-Kontakt existiert **keine endliche
+gültige Abtastung**.
+
+**Zwei Irrwege, dieselbe Ursache** (beide im Code dokumentiert):
+
+1. **Feiner Startschritt** (dieser Abschnitt) — Demo 295 → 619.
+2. **Keil-Spacing aus der Punktwolke** (§8j) — Box 0 → 3, Demo 295 → 532.
+
+Beide verfeinern **lokal** und erzeugen dabei abrupte Dichte-Sprünge, an denen
+Sterne und Umkugeln auseinanderlaufen. Die Lehre ist scharf und gilt für jede
+weitere Verfeinerungs-Idee:
+
+> **Verfeinerung ohne ein global konsistentes, Lipschitz-beschränktes
+> Dichtefeld schadet mehr, als sie nützt.**
+
+**Damit ist der nächste Baustein eindeutig benannt** — und es ist der letzte
+strukturelle: ein **Sizing-Field** `σ(x)` mit
+`σ ≤ min(h, α/κ, ε·lfs)` und `|∇σ| ≤ K` (K ≈ 0,3), global relaxiert und *dann*
+als Vorgabe für Ketten UND Wachstum verwendet (statt lokal nachzukorrigieren).
+Wo σ unter die Auflösungsgrenze fällt, ist die Topologie sub-resolution und
+gehört kollabiert, nicht abgetastet.
+
 ## 9. Kritische Reflexion (2026-07-12)
 
 Bewertung des Konzepts mit dem Wissen aus Sampling-Theorie
