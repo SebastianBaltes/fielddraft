@@ -24,6 +24,16 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.551",
+    entries: [
+      {
+        kind: "fix",
+        scope: "mesher",
+        text: "Lichen: Normalen-Guard gegen Wand-Durchquerungen (Betreiber-Idee). Der bisherige Cocone-Filter prüft die RICHTUNG zum Nachbarn (muss ~tangential sein) — bei zwei fast parallelen Blättern im Abstand t ist eine Sehne quer über die Wand zu einem lateral entfernten Punkt aber nahezu tangential (Winkel ≈ atan(t/L)), er kann sie also prinzipiell nicht sehen. Verlässlich ist der Winkel zwischen den NORMALEN beider Endpunkte: quer durch die Wand sind sie ~antiparallel. Scharfe Kanten behalten ihre Sonderbehandlung — geprüft wird über die Normalen-MENGE je Punkt (eine pro angrenzender Fläche, Kantenpunkte tragen zwei). Messung an einer 1-mm-Platte: ohne Guard 111 Wand-Durchquerungen und χ = −67 (34 falsche Henkel quer durch die Platte), mit Guard 0.",
+      },
+    ],
+  },
+  {
     version: "0.6.550",
     entries: [
       {

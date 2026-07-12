@@ -461,6 +461,12 @@ fn extract_manifold(
 pub fn triangulate_global_walk(
     points: &[[f32; 3]],
     normals: &HashMap<u32, [f32; 3]>,
+    // NORMALEN-MENGE je Punkt (eine pro angrenzender Fläche): Flächenpunkte
+    // tragen genau eine, KANTENPUNKTE zwei, Ecken ≥3. Das ist die
+    // „Sonderbehandlung der Kanten" (Betreiber): an einem Knick ist DIE eine
+    // Normale bedeutungslos (der Mittelwert zeigt in die Winkelhalbierende),
+    // die Menge der Flächen-Normalen aber exakt.
+    normal_sets: &[Vec<[f32; 3]>],
     spacing: &[f32],
     members: &[u32],
     chain_edges: &HashSet<(u32, u32)>,
@@ -529,6 +535,49 @@ pub fn triangulate_global_walk(
         .and_then(|v| v.parse().ok())
         .unwrap_or_else(|| (2.5 * curv_angle_rad.to_degrees()).clamp(60.0, 80.0));
     let cocone_sin = cocone_deg.to_radians().sin();
+
+    // ── NORMALEN-GUARD (Betreiber-Idee 2026-07-12) ──
+    // Der Cocone-Filter prüft die RICHTUNG zum Nachbarn (muss ~tangential
+    // sein). Bei zwei FAST PARALLELEN Blättern im Abstand t ist eine Sehne
+    // quer über die Wand zu einem lateral entfernten Punkt aber nahezu
+    // tangential (Winkel ≈ atan(t/L)) — Cocone lässt sie durch, erst recht
+    // mit dem weiten Kegel, den der globale Walk für scharfe Kanten braucht.
+    // Genau das ist die Gyroid-∩-Wand-Situation.
+    //
+    // Das verlässliche Kriterium ist der Winkel zwischen den NORMALEN der
+    // beiden Endpunkte: eine gültige Kante verbindet Punkte derselben
+    // Fläche, deren Normalen sich per Abtast-Bedingung um höchstens den
+    // Krümmungswinkel α pro Schritt drehen (Horizont ≈ 2,5 Schritte →
+    // Schwelle k·α). Auf dem Gegenblatt einer dünnen Wand sind sie
+    // ~antiparallel → sicher abgelehnt, egal wie tangential die Sehne liegt.
+    //
+    // KANTEN: dort ist eine einzelne Normale bedeutungslos. Deshalb wird über
+    // die NORMALEN-MENGE geprüft: die Kante ist gültig, wenn es EIN Paar
+    // (n_i ∈ N(i), n_j ∈ N(j)) innerhalb der Schwelle gibt — an einer
+    // Box-Kante passt die Normale der gemeinsamen Fläche, quer durch eine
+    // dünne Wand passt keine.
+    let guard_deg: f32 = std::env::var("LICHEN_NORMAL_GUARD_DEG")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or_else(|| (6.0 * curv_angle_rad.to_degrees()).clamp(30.0, 75.0));
+    let guard_cos = guard_deg.to_radians().cos();
+    let normals_compatible = |i: u32, j: u32| -> bool {
+        let (ni, nj) = (
+            normal_sets.get(i as usize).map(Vec::as_slice).unwrap_or(&[]),
+            normal_sets.get(j as usize).map(Vec::as_slice).unwrap_or(&[]),
+        );
+        if ni.is_empty() || nj.is_empty() {
+            return true; // keine Information → nicht blockieren
+        }
+        for &a in ni {
+            for &b in nj {
+                if dot(a, b) >= guard_cos {
+                    return true;
+                }
+            }
+        }
+        false
+    };
 
     let mut chain_segs: Vec<(u32, u32)> = chain_edges.iter().copied().collect();
     chain_segs.sort_unstable();
@@ -672,7 +721,13 @@ pub fn triangulate_global_walk(
             points[b as usize],
             points[c as usize],
         );
-        // Cocone (weiter Kegel, s.o.): kein fremdes Blatt verbinden.
+        // NORMALEN-GUARD (s.o.): der eigentliche Blatt-Trenner.
+        for (i, j) in [(a, b), (b, c), (c, a)] {
+            if !normals_compatible(i, j) {
+                return false;
+            }
+        }
+        // Cocone (weiter Kegel, s.o.): grober Zusatzfilter.
         for (i, j) in [(a, b), (b, c), (c, a)] {
             if let Some(&ni) = normals.get(&i) {
                 let d = sub(points[j as usize], points[i as usize]);

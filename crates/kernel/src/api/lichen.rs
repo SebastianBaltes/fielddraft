@@ -1145,9 +1145,24 @@ impl Kernel {
                     let members: Vec<u32> = (0..all.len() as u32).collect();
                     let nmap: HashMap<u32, [f32; 3]> =
                         members.iter().map(|&i| (i, all[i as usize].n)).collect();
+                    // Normalen-MENGE je Punkt (eine pro angrenzender Fläche);
+                    // Kantenpunkte tragen zwei, Ecken ≥3 — die Basis des
+                    // Normalen-Guards (Kanten-Sonderbehandlung).
+                    let normal_sets: Vec<Vec<[f32; 3]>> = point_faces
+                        .iter()
+                        .enumerate()
+                        .map(|(i, pf)| {
+                            if pf.is_empty() {
+                                vec![all[i].n]
+                            } else {
+                                pf.iter().map(|&(_, n)| n).collect()
+                            }
+                        })
+                        .collect();
                     let res = crate::lichen_tri::triangulate_global_walk(
                         &positions,
                         &nmap,
+                        &normal_sets,
                         &spacings,
                         &members,
                         &global_chain_edges,
@@ -2606,6 +2621,63 @@ mod tests {
         eprintln!(
             "Punkte={total}: {near_same} Paare < 0.5·space mit GLEICHER Normale (Kollaps-Kandidaten), {near_opp} mit gegenläufiger (echte Gegenblätter); engstes Verhältnis {worst:.3}"
         );
+    }
+
+    /// NORMALEN-GUARD (Betreiber-Idee 2026-07-12) — die dünne Platte ist der
+    /// Fall, an dem der Cocone-Filter PRINZIPIELL versagt: bei zwei fast
+    /// parallelen Blättern im Abstand t ist die Sehne quer über die Wand zu
+    /// einem lateral entfernten Punkt nahezu TANGENTIAL (Winkel ≈ atan(t/L)),
+    /// also lässt der Richtungs-Kegel sie durch — erst recht mit dem weiten
+    /// Kegel, den der globale Walk für scharfe Kanten braucht. Der Winkel
+    /// zwischen den NORMALEN beider Endpunkte ist dort dagegen ~180°.
+    /// Kanten-Sonderbehandlung: geprüft wird über die Normalen-MENGE je Punkt
+    /// (eine pro angrenzender Fläche), damit die Plattenkante selbst hält.
+    #[test]
+    fn lichen_thin_plate_global_walk_is_watertight() {
+        let mut k = crate::Kernel::new();
+        k.load_json(
+            r#"{
+            "schema_version": 1,
+            "name": "duenne-platte",
+            "feature_calls": [
+                { "type": "box", "id": 1, "params": {
+                    "op": "new", "half_extents": [10, 10, 0.5], "translate": [0, 0, 0] } }
+            ],
+            "next_feature_id": 2
+        }"#,
+        )
+        .unwrap();
+        let out = k.lichen_mesh(
+            r#"{"targetEdgeLength":5.0,"grow":true,"curvAngleDeg":5.0,"useReach":true,"reachTol":1.0,"minEdgeSpacing":0.1,"maxPoints":50000,"generalTri":true,"accept":"witness","fillHoles":false,"globalWalk":true,"lfsFactor":0.5}"#.into(),
+        );
+        let total = out[0] as usize;
+        let tris = out[1] as usize;
+        assert!(tris > 100, "Triangulierung erwartet");
+        let base = 3 + total * 9;
+        let n = |i: usize| [out[3 + i * 9 + 4], out[3 + i * 9 + 5], out[3 + i * 9 + 6]];
+        // KEIN Dreieck darf die Wand durchqueren: eine Kante zwischen zwei
+        // Punkten mit ~antiparallelen Normalen verbindet Vorder- und
+        // Rückseite. OHNE den Normalen-Guard passiert genau das (gemessen:
+        // χ = −67, also 34 falsche Henkel quer durch die Platte) — der
+        // Cocone-Richtungskegel kann es prinzipiell nicht sehen, weil die
+        // Sehne bei fast parallelen Blättern nahezu TANGENTIAL liegt.
+        let mut through_wall = 0usize;
+        for t in 0..tris {
+            let idx: Vec<usize> = (0..3).map(|j| out[base + t * 3 + j] as usize).collect();
+            for (a, b) in [(idx[0], idx[1]), (idx[1], idx[2]), (idx[2], idx[0])] {
+                let (na, nb) = (n(a), n(b));
+                if na[0] * nb[0] + na[1] * nb[1] + na[2] * nb[2] < -0.5 {
+                    through_wall += 1;
+                }
+            }
+        }
+        let (_, q) = quality_of(&out);
+        eprintln!("dünne Platte (1 mm), globaler Walk: tris={tris} wand-durchquerungen={through_wall} {q:?}");
+        assert_eq!(
+            through_wall, 0,
+            "Normalen-Guard: keine Kante darf die dünne Wand durchqueren"
+        );
+        assert_eq!(q.nonmanifold_edges, 0, "{q:?}");
     }
 
     /// QUALITÄTS-ZIEL auf dem Demo-Projekt: manifold + watertight, beide
