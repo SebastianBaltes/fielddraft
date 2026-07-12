@@ -1137,19 +1137,31 @@ pub fn triangulate_global_walk(
                 points[u as usize], normal_sets.get(u as usize),
                 points[v as usize], normal_sets.get(v as usize)
             );
-            for w in near(u, v).into_iter().take(40) {
-                if w == u || w == v || ex.contains(&w) || !empty(u, v, w) {
+            let mut shown = 0;
+            for w in near(u, v) {
+                if w == u || w == v || ex.contains(&w) {
                     continue;
                 }
-                let bad: Vec<(u32, u32)> = [(u, v), (v, w), (w, u)]
-                    .into_iter()
-                    .filter(|&(i, j)| !normals_compatible(i, j))
-                    .collect();
-                if !bad.is_empty() {
-                    eprintln!(
-                        "    Kandidat {w}{:?} N={:?} → Guard scheitert an {bad:?}",
-                        points[w as usize], normal_sets.get(w as usize)
-                    );
+                let st = if !empty(u, v, w) {
+                    "kugel-nicht-leer".to_string()
+                } else if crosses_chain(u, v, w) {
+                    "ketten-kreuzung".to_string()
+                } else {
+                    let bad: Vec<(u32, u32)> = [(u, v), (v, w), (w, u)]
+                        .into_iter()
+                        .filter(|&(i, j)| !normals_compatible(i, j))
+                        .collect();
+                    if !bad.is_empty() {
+                        format!("NORMALEN-GUARD an {bad:?}")
+                    } else if !valid(u, v, w) {
+                        "cocone/sichtlinie/zentroid".to_string()
+                    } else {
+                        "GÜLTIG".to_string()
+                    }
+                };
+                if st != "kugel-nicht-leer" && shown < 4 {
+                    eprintln!("    Kandidat {w}{:?} N={:?} → {st}", points[w as usize], normal_sets.get(w as usize));
+                    shown += 1;
                 }
             }
         }

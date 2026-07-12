@@ -24,6 +24,16 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.553",
+    entries: [
+      {
+        kind: "feat",
+        scope: "mesher",
+        text: "Lichen: die dünne Platte ist wasserdicht — der schärfste Testfall (Gegenblätter 1 mm auseinander, eine nur 1 mm breite Seitenfläche) schließt jetzt vollständig (0 offene Kanten, χ=2, 0 Wand-Durchquerungen), ohne Chart, ohne Loch-Füller. Zwei Wurzeln: (1) die B-Rep-KANTEN folgten dem ε-Sampling nicht — auf der Platte blieb die Kette bei 1,75 mm, während die Flächen auf 0,26 mm verfeinert wurden; ein Ketten-Punkt sitzt dann als grober Fremdkörper in einer dichten Wolke und die leere Umkugel jedes Dreiecks mit ihm ist verletzt. (2) Die erste gewachsene Punktreihe stand auf HALBEM Abstand vor der Kante (0,14 mm neben einer Kette, deren eigene Nachbarn 0,48 mm entfernt sind) — solche Punkte liegen in der Umkugel der Kanten-Dreiecke und machten die schmale Seitenfläche unmeshbar. Jetzt: lfs-Abtastung auch auf den Ketten und eine Ketten-Clearance im Wachstum.",
+      },
+    ],
+  },
+  {
     version: "0.6.552",
     entries: [
       {

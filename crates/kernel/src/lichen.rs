@@ -256,7 +256,7 @@ pub fn curvature<Gn: Fn([f32; 3]) -> [f32; 3]>(
 /// Äußerer Reach via SDF-Marsch entlang `+n` mit Fußpunkt-Verfolgung:
 /// `q(t) = x − f·∇f/|∇f|²`. Springt der Fußpunkt signifikant von `p` weg,
 /// wurde die äußere Medialachse gekreuzt → `R_reach = t`. Sonst `cap`.
-fn reach<Fg: Fn([f32; 3]) -> (f32, [f32; 3])>(p: [f32; 3], n: [f32; 3], cap: f32, tol: f32, fg: &Fg) -> f32 {
+pub(crate) fn reach<Fg: Fn([f32; 3]) -> (f32, [f32; 3])>(p: [f32; 3], n: [f32; 3], cap: f32, tol: f32, fg: &Fg) -> f32 {
     let mut t = 0.1 * cap;
     while t < cap {
         let x = add(p, scale(n, t));
@@ -293,7 +293,7 @@ fn reach<Fg: Fn([f32; 3]) -> (f32, [f32; 3])>(p: [f32; 3], n: [f32; 3], cap: f32
 /// anderes Blatt näher liegt, wächst |f| langsamer als t. Die Fußpunkt-
 /// Verfolgung des Konzepts (§2.3) versagt hier: auf einer 1-mm-Wand springt
 /// der Fußpunkt nur ~1 mm weit — unter der Standard-Toleranz `reach_tol`.
-fn reach_inner<Fg: Fn([f32; 3]) -> (f32, [f32; 3])>(
+pub(crate) fn reach_inner<Fg: Fn([f32; 3]) -> (f32, [f32; 3])>(
     p: [f32; 3],
     n: [f32; 3],
     cap: f32,
@@ -566,6 +566,21 @@ where
                         if nd_own <= nd_x { (nd_own, ns_own) } else { (nd_x, ns_x) };
                     let r_eff = rr.max(nspace.min(r_full));
                     if nd < 0.45 * r_eff {
+                        rej[3] += 1;
+                        rr *= 0.5;
+                        continue;
+                    }
+                    // KETTEN-CLEARANCE (2026-07-12): ein Wachstums-Punkt darf
+                    // nicht dichter an eine B-Rep-KANTE heran als an seine
+                    // Flächen-Nachbarn. Die Schritt-Halbierung setzte die erste
+                    // Reihe sonst auf den halben Abstand (gemessen: 0,14 mm
+                    // neben einer Kette, deren eigene Nachbarn 0,48 mm entfernt
+                    // sind). Solche Punkte liegen IN der Umkugel der
+                    // Kanten-Dreiecke und machen sie ungültig — die
+                    // schmale Seitenfläche einer dünnen Platte blieb deshalb
+                    // ungemesht. Die Fläche muss von der Kante mit dem vollen
+                    // Spacing „abstehen".
+                    if brep_dist(cp) < 0.7 * r_eff {
                         rej[3] += 1;
                         rr *= 0.5;
                         continue;

@@ -176,10 +176,42 @@ impl Kernel {
             // R_BRep.
             // Kette einer Kante bauen: adaptives Resampling (mit Ecken-Rand-
             // Bedingungen fürs Grading) + 4-Punkte-Schutz für Ringe.
+            // ε-SAMPLING DER KETTEN (2026-07-12): die B-Rep-Kanten folgten der
+            // lfs-Abtastung NICHT — auf einer 1-mm-Platte blieb die Kette bei
+            // 1,75 mm, während die Flächen auf 0,26 mm verfeinert wurden. Ein
+            // Ketten-Punkt sitzt dann als grober Fremdkörper in einer dichten
+            // Punktwolke: sein Delaunay-Fächer ist entartet, die leere Umkugel
+            // eines JEDEN Dreiecks mit ihm enthält Flächen-Punkte, und der
+            // einzige Kandidat, den die Umkugel noch zulässt, liegt auf der
+            // GEGENSEITE der Platte (gemessen). Die Kette muss also mindestens
+            // so fein sein wie die Flächen, die an ihr hängen.
+            let edge_lfs_h = |raw_local: &[[f32; 3]]| -> f32 {
+                if opts.lfs_factor <= 0.0 {
+                    return h_local;
+                }
+                let cap_lfs = h / opts.lfs_factor;
+                let mut m = h;
+                let step = (raw_local.len() / 8).max(1);
+                for (i, pl) in raw_local.iter().enumerate() {
+                    if i % step != 0 {
+                        continue;
+                    }
+                    let pw = to_world([pl[0] as f64, pl[1] as f64, pl[2] as f64]);
+                    // An einer B-Rep-Kante ist ∇f die Winkelhalbierende — als
+                    // Marschrichtung ins Material völlig ausreichend.
+                    let n = lichen::unit(lichen::robust_grad(pw, &fg));
+                    let lfs = lichen::reach_inner(pw, n, cap_lfs, &fg)
+                        .min(lichen::reach(pw, n, cap_lfs, opts.reach_tol, &fg));
+                    if lfs < cap_lfs {
+                        m = m.min(opts.lfs_factor * lfs);
+                    }
+                }
+                (m / s.max(1e-6)).min(h_local)
+            };
             let build_chain = |raw_local: &[[f32; 3]], closed: bool, bounds: (f32, f32)| {
                 let mut chain = lichen::resample_edge_by_curvature(
                     raw_local,
-                    h_local,
+                    edge_lfs_h(raw_local),
                     opts.curv_angle_deg.to_radians(),
                     min_spacing_local,
                     bounds,
@@ -2678,6 +2710,18 @@ mod tests {
             "Normalen-Guard: keine Kante darf die dünne Wand durchqueren"
         );
         assert_eq!(q.nonmanifold_edges, 0, "{q:?}");
+        // WASSERDICHT (seit v0.6.553): die dünne Platte ist der schärfste
+        // Fall — Gegenblätter im Abstand 1 mm, eine nur 1 mm breite
+        // Seitenfläche und der volle Wächter-Turm. Drei Bedingungen mussten
+        // dafür zusammenkommen: Normalen-Guard (Blatt-Trennung), ε-Sampling
+        // der KETTEN (die Kante war 7× gröber als die Fläche) und die
+        // KETTEN-CLEARANCE im Wachstum (die erste Punktreihe stand auf halbem
+        // Abstand vor der Kante und vergiftete die Umkugeln der
+        // Seitenflächen-Dreiecke).
+        assert_eq!(q.boundary_edges, 0, "watertight OHNE Fallbacks: {q:?}");
+        assert_eq!(q.orientation_violations, 0, "{q:?}");
+        assert_eq!(q.degenerate_tris, 0, "{q:?}");
+        assert_eq!(q.euler, 2, "geschlossene Platte: χ=2, {q:?}");
     }
 
     /// QUALITÄTS-ZIEL auf dem Demo-Projekt: manifold + watertight, beide
