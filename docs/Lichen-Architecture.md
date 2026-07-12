@@ -879,6 +879,54 @@ Und die verbleibende Front ist keine Lücke im Programm mehr, sondern seine
 keine endliche gültige Abtastung. Die Antwort dort ist der **Kollaps der
 Sub-Resolution-Topologie** — die einzige verbliebene Aufgabe.
 
+## 8m. Flächen-Einfärbung: das topologische Kriterium (v0.6.559)
+
+**Betreiber-Idee:** Punkte mit einer Flächen-ID einfärben (bis an die
+B-Rep-Kanten); nur Punkte derselben Fläche dürfen verbunden werden; Punkte, die
+**zwei** Flächen zugeordnet werden, fallen auf und können weiter geprüft werden.
+
+**Warum das der richtige Zeigefinger ist.** Der Normalen-Guard (§8e) kann eine
+Klasse von Fehlern **prinzipiell nicht sehen**: zwei Flächen, die sich
+**tangential** nähern, haben **ähnliche** Normalen (nicht antiparallel). Genau
+das ist die Gyroid-∩-Box-Situation. Die Flächen-Zugehörigkeit ist dagegen
+**topologisch** und sieht den Unterschied sofort.
+
+**Umsetzung:** jeder Punkt trägt die MENGE der B-Rep-Flächen, auf denen er liegt
+(Naht-Band-Punkte tragen zwei IDs); ein Dreieck ist nur gültig, wenn seine drei
+Ecken eine **gemeinsame** Fläche haben (Option `faceGuard`).
+
+**Messung — die These ist bestätigt:**
+
+| | ohne Flächen-Guard | mit Flächen-Guard |
+|---|---|---|
+| Normalen-Guard blockt | 133 | **15** |
+| Flächen-Guard blockt | — | 75 |
+| Walk-Sackgassen | 28 | 267 |
+| offene Kanten (Demo) | 295 | 393 |
+
+Der Flächen-Guard **subsumiert den Normalen-Guard** (133 → 15). Auf dem Demo
+werden **445 Punkte mehrfach zugeordnet** — die tangentialen Naht-Bänder sind
+real und messbar, genau wie vermutet.
+
+**Warum er als harter Guard trotzdem noch kostet — zwei benennbare Ursachen:**
+
+1. **Die Flächen-TRÄGER sind unendlich.** Eine Ebene endet nicht an ihrer
+   Kante. Die Nähe-Zuordnung misst also **Träger-Nähe, nicht
+   Flächen-Zugehörigkeit**: ein Punkt auf der Deckfläche nahe einer Kante ist
+   auch dem Träger der Seitenfläche nah. Es fehlt ein **Regionen-Test** (liegt
+   der Punkt innerhalb der Loops der Fläche?), nicht bloß eine Distanz. Das ist
+   dieselbe Wurzel wie Irrweg I-5 (Distanz-argmin als Kanten-Wand).
+2. **Gedroppte Trim-Nähte** (Gyroid) lassen Flächen ohne gemeinsame Punkte
+   zurück; der Guard trennt sie dann endgültig — der Schlitz aus §8c kehrt
+   zurück.
+
+**Damit ist der Weg klar:** die Flächen-Einfärbung ist das **richtige**
+Kriterium — sie braucht aber eine **regionen-korrekte** Zugehörigkeit statt
+Träger-Distanz, und die fehlenden Nähte müssen rekonstruiert werden (die
+mehrfach zugeordneten Punkte SIND der Kandidat dafür: sie liegen auf der
+gesuchten Naht). Beides ist umsetzbar und beides adressiert die letzte offene
+Front direkt.
+
 ## 9. Kritische Reflexion (2026-07-12)
 
 Bewertung des Konzepts mit dem Wissen aus Sampling-Theorie
