@@ -747,6 +747,49 @@ globalen Ziel-Kantenlänge (0,1·h = 1 mm bei h = 10) und war damit auf feinen
 Features blind — eine Gyroid-Wand ist selbst nur 1 mm dick. Jetzt zweistufig:
 grob schätzen, Radius ableiten, mit daran gekoppeltem Fenster nachmessen.
 
+## 8j. Der Keil: warum Strahl-Marsch die lfs nicht messen kann (v0.6.556)
+
+**Befund 16 — der äußere Reach war blind wie der innere.** Die lfs-Bedingung
+griff auf dem Gyroid gar nicht, obwohl `lfsFactor` gesetzt war: `reach()`
+(außen) nutzte noch die **Fußpunkt-Verfolgung** des Konzepts, die erst
+anschlägt, wenn der Fußpunkt weiter als `reach_tol` (1 mm) springt — ein
+**0,17-mm-Spalt** zwischen zwei Gyroid-Blättern bleibt darunter. Exakt derselbe
+Fehler, den `reach_inner` in v0.6.549 losgeworden ist. Fix: `reach_outer_flat`
+über die Abflachung des Distanzfelds.
+
+**Befund 17 — der Mindestabstand brach die ε-Garantie.** Der
+`minEdgeSpacing`-Boden klemmte das Spacing auf 0,1, während lfs dort ≤ 0,04
+verlangt. Die lfs-Bedingung ist aber die **Voraussetzung** des
+Umkugel-Theorems, kein Komfort: ein Boden, der sie bricht, erzeugt genau den
+gemessenen Zustand — Blattabstand 0,17 mm bei 0,2 mm Spacing, jedes Dreieck hat
+den Gegenblatt-Punkt in seiner Umkugel, **kein Kandidat ist gültig**. Die lfs
+hebelt den Boden jetzt lokal aus (dieselbe Regel gilt längst für die
+Ketten-Überdeckung).
+
+**Befund 18 (der eigentliche, harte Kern) — der KEIL.** Auch mit korrektem
+Strahl-Marsch bleibt die Verletzung bestehen. Die Vermessung der
+Gegenblatt-Paare zeigt warum: der Partner liegt **nicht entlang der Normalen**,
+sondern quer versetzt (Δ ≈ (−0,17; +0,07; −0,05) bei |Δ| = 0,19). Es ist ein
+**Keil**: zwei Flächen, die sich unter kleinem Winkel nähern. Ein Strahl-Marsch
+entlang ±n kann ihn **strukturell nie finden** — die Medialachse eines Keils
+liegt in der Winkelhalbierenden, nicht auf der Normalen.
+
+**Vermessen und verworfen:** das Spacing am Abstand zum nächsten
+Gegenblatt-Punkt der **Punktwolke** zu ziehen (die einzige Messung, die einen
+Keil sehen *kann*). Ergebnis: Box 0 → 3 offene Kanten, Demo 295 → **532**. Die
+lokale Verfeinerung **kaskadiert** und reißt genau die Dichte-Übergänge auf, an
+denen die Sterne uneins werden. Im Code als Irrweg dokumentiert.
+
+**Damit ist die Anforderung präzise:** eine keil-korrekte Abtastung braucht ein
+**global konsistentes, Lipschitz-beschränktes Dichtefeld** (`space(x)` mit
+|∇space| ≤ const, aus der lfs *aller* Blätter gebildet) — keine lokale
+Nachkorrektur. Das ist der klassische *sizing field* der Delaunay-Refinement-
+Literatur und der nächste Baustein. Alternativ bleibt der Kollaps der
+Sub-Resolution-Topologie.
+
+Demo: 302 → 295. Alle Gates unverändert (Box/Zylinder/Kugel χ=2, Torus χ=0,
+dünne Platte χ=2 mit 0 Wand-Durchquerungen).
+
 ## 9. Kritische Reflexion (2026-07-12)
 
 Bewertung des Konzepts mit dem Wissen aus Sampling-Theorie
