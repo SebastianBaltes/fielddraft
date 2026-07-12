@@ -24,6 +24,16 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.560",
+    entries: [
+      {
+        kind: "fix",
+        scope: "mesher",
+        text: "Lichen: der Flächen-Guard hilft jetzt (Demo 295 → 283 offene Kanten, vorher verschlechterte er auf 393). Zwei Ursachen behoben: (1) REGIONEN-KORREKTHEIT — die Flächen-Träger sind unendlich, eine Ebene endet nicht an ihrer Kante; ein kantennaher Punkt der Deckfläche ist auch dem Träger der Seitenfläche nah und bekam fälschlich deren ID. Eine Zweitzuordnung ist nur dort sinnvoll, wo die beiden Träger am Punkt fast PARALLEL stehen — genau die tangentiale Verschneidung, für die der Guard existiert (an einer scharfen Kante trennt die Kette ohnehin). Mehrfach-Zuordnungen 445 → 176. (2) REGIONEN-VERSCHMELZUNG per Union-Find für Flächen, die sich berühren, aber keine gemeinsame Kette haben (gedroppte Trim-Nähte) — im Demo-Projekt greift sie nicht, die B-Rep ist dort vollständig; der Mechanismus bleibt als Sicherheitsnetz. Die dünne Platte bleibt wasserdicht mit 0 Wand-Durchquerungen.",
+      },
+    ],
+  },
+  {
     version: "0.6.559",
     entries: [
       {

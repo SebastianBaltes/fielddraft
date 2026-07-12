@@ -1188,6 +1188,11 @@ impl Kernel {
                         .ok()
                         .and_then(|v| v.parse().ok())
                         .unwrap_or(0.5);
+                    let tang_deg: f32 = std::env::var("LICHEN_FACE_TANGENT_DEG")
+                        .ok()
+                        .and_then(|v| v.parse().ok())
+                        .unwrap_or(25.0);
+                    let tang_cos = tang_deg.to_radians().cos();
                     let tol = (band * all[i].space).max(1e-4);
                     for (gf, fs) in face_surfs.iter().enumerate() {
                         let gf = gf as u32;
@@ -1207,6 +1212,22 @@ impl Kernel {
                             ];
                             let gl = crate::quat_rotate(fs.transform.rotation, g);
                             let nw = lichen::unit(crate::quat_rotate(fs.placement.rotation, gl));
+                            // REGIONEN-KORREKTHEIT — die Träger sind UNENDLICH!
+                            // Nähe zum TRÄGER heißt NICHT Zugehörigkeit zur
+                            // FLÄCHE: ein kantennaher Punkt der Box-Deckfläche
+                            // ist auch dem Träger der SEITENfläche nah — dort
+                            // steht dieser aber QUER (90°). Eine Zweitzuordnung
+                            // ist nur sinnvoll, wo die beiden Träger am Punkt
+                            // fast PARALLEL sind: genau das ist die TANGENTIALE
+                            // Verschneidung, für die dieser Guard existiert
+                            // (und genau die, die kein normalen-basierter Test
+                            // sehen kann). An einer scharfen Kante trennt die
+                            // Kette ohnehin sauber.
+                            let n_own = all[i].n;
+                            let cos = (nw[0] * n_own[0] + nw[1] * n_own[1] + nw[2] * n_own[2]).abs();
+                            if cos < tang_cos {
+                                continue;
+                            }
                             point_faces[i].push((gf, nw));
                             extra += 1;
                         }
@@ -1328,12 +1349,115 @@ impl Kernel {
                         })
                         .collect();
                     // FLÄCHEN-MENGEN je Punkt (Betreiber-Idee): Grundlage des
-                    // topologischen Flächen-Guards im Walk.
+                    // topologischen Flächen-Guards im Walk — aber auf REGIONEN
+                    // statt Flächen.
+                    //
+                    // REGIONEN-VERSCHMELZUNG: der Weave droppt Trim-Nähte
+                    // (non-Lipschitz, Gyroid). Zwei Flächen, deren Punkte sich
+                    // berühren, die aber KEINE gemeinsame Kette haben, sind
+                    // durch nichts getrennt — die B-Rep ist dort unvollständig.
+                    // Ein Flächen-Guard, der sie trennt, reißt genau den Naht-
+                    // Schlitz auf, den der globale Walk beseitigen sollte.
+                    // Also: solche Flächen werden per Union-Find zu EINER
+                    // Region verschmolzen. Flächen mit ordentlicher Kette
+                    // bleiben getrennt — dort vermitteln die Ketten-Punkte
+                    // (die ohnehin beide IDs tragen).
                     let face_sets: Option<Vec<Vec<u32>>> = if opts.face_guard {
+                        let nf = face_surfs.len();
+                        let mut parent: Vec<u32> = (0..nf as u32).collect();
+                        fn find(par: &mut Vec<u32>, x: u32) -> u32 {
+                            if par[x as usize] == x {
+                                return x;
+                            }
+                            let r = find(par, par[x as usize]);
+                            par[x as usize] = r;
+                            r
+                        }
+                        // Ketten-Punkte je Fläche (aus den Loops).
+                        let chain_of: Vec<HashSet<u32>> = face_loops
+                            .iter()
+                            .map(|rings| rings.iter().flat_map(|(r, _)| r.iter().copied()).collect())
+                            .collect();
+                        // Berührende Flächen-Paare aus der Punktwolke.
+                        let cell = h.max(1e-3);
+                        let key = |p: [f32; 3]| {
+                            (
+                                (p[0] / cell).floor() as i32,
+                                (p[1] / cell).floor() as i32,
+                                (p[2] / cell).floor() as i32,
+                            )
+                        };
+                        let mut grid: HashMap<(i32, i32, i32), Vec<u32>> = HashMap::new();
+                        for gf in 0..nf {
+                            for &gi in &face_interior[gf] {
+                                grid.entry(key(all[gi as usize].p)).or_default().push(gi);
+                            }
+                        }
+                        let face_of_pt = |gi: u32| -> Option<u32> {
+                            point_faces[gi as usize].first().map(|&(g, _)| g)
+                        };
+                        let mut merged = 0usize;
+                        for gf in 0..nf {
+                            for &gi in &face_interior[gf] {
+                                let p = all[gi as usize].p;
+                                let r = 1.5 * all[gi as usize].space;
+                                let (kx, ky, kz) = key(p);
+                                for dx in -1..=1 {
+                                    for dy in -1..=1 {
+                                        for dz in -1..=1 {
+                                            let Some(v) = grid.get(&(kx + dx, ky + dy, kz + dz))
+                                            else {
+                                                continue;
+                                            };
+                                            for &gj in v {
+                                                let Some(g2) = face_of_pt(gj) else { continue };
+                                                if g2 as usize == gf {
+                                                    continue;
+                                                }
+                                                let q = all[gj as usize].p;
+                                                let d = ((p[0] - q[0]).powi(2)
+                                                    + (p[1] - q[1]).powi(2)
+                                                    + (p[2] - q[2]).powi(2))
+                                                .sqrt();
+                                                if d > r {
+                                                    continue;
+                                                }
+                                                // Gemeinsame Kette? Dann ist die
+                                                // Trennung echt.
+                                                let a = &chain_of[gf];
+                                                let b = &chain_of[g2 as usize];
+                                                if a.iter().any(|x| b.contains(x)) {
+                                                    continue;
+                                                }
+                                                let (ra, rb) =
+                                                    (find(&mut parent, gf as u32), find(&mut parent, g2));
+                                                if ra != rb {
+                                                    parent[rb as usize] = ra;
+                                                    merged += 1;
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        if std::env::var("LICHEN_DEBUG_FACES").is_ok() {
+                            eprintln!(
+                                "REGIONEN: {merged} Verschmelzungen (Flächen ohne gemeinsame Kette)"
+                            );
+                        }
                         Some(
                             point_faces
                                 .iter()
-                                .map(|pf| pf.iter().map(|&(g, _)| g).collect())
+                                .map(|pf| {
+                                    let mut v: Vec<u32> = pf
+                                        .iter()
+                                        .map(|&(g, _)| find(&mut parent, g))
+                                        .collect();
+                                    v.sort_unstable();
+                                    v.dedup();
+                                    v
+                                })
                                 .collect(),
                         )
                     } else {
@@ -2866,7 +2990,7 @@ mod tests {
         )
         .unwrap();
         let out = k.lichen_mesh(
-            r#"{"targetEdgeLength":5.0,"grow":true,"curvAngleDeg":5.0,"useReach":true,"reachTol":1.0,"minEdgeSpacing":0.1,"maxPoints":50000,"generalTri":true,"accept":"witness","fillHoles":false,"globalWalk":true,"lfsFactor":0.5}"#.into(),
+            r#"{"targetEdgeLength":5.0,"grow":true,"curvAngleDeg":5.0,"useReach":true,"reachTol":1.0,"minEdgeSpacing":0.1,"maxPoints":50000,"generalTri":true,"accept":"witness","fillHoles":false,"globalWalk":true,"lfsFactor":0.5,"faceGuard":true}"#.into(),
         );
         let total = out[0] as usize;
         let tris = out[1] as usize;
