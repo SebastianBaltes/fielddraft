@@ -927,6 +927,48 @@ mehrfach zugeordneten Punkte SIND der Kandidat dafür: sie liegen auf der
 gesuchten Naht). Beides ist umsetzbar und beides adressiert die letzte offene
 Front direkt.
 
+## 8n. Der Flächen-Guard wird regionen-korrekt — und hilft (v0.6.560)
+
+Die beiden in §8m benannten Ursachen sind behoben. Der Flächen-Guard
+**verbessert** das Demo-Projekt jetzt: **295 → 283** offene Kanten (mit dem
+naiven Guard waren es 393).
+
+**Ursache 1 (die Wurzel) — die Träger sind UNENDLICH.** Eine Ebene endet nicht
+an ihrer Kante. Die Nähe-Zuordnung maß also **Träger-Nähe statt
+Flächen-Zugehörigkeit**: ein kantennaher Punkt der Box-Deckfläche ist auch dem
+Träger der *Seitenfläche* nah und bekam fälschlich deren ID — dieselbe Wurzel
+wie Irrweg I-5 (Distanz-argmin als Kanten-Wand).
+
+Die Korrektur ist präzise und folgt direkt aus dem Zweck des Guards: eine
+**Zweitzuordnung ist nur dort sinnvoll, wo die beiden Träger am Punkt fast
+PARALLEL stehen** — genau die **tangentiale** Verschneidung, für die dieser
+Guard überhaupt existiert (und genau die, die kein normalen-basierter Test
+sehen kann). An einer scharfen Kante (90°) trennt die Kette ohnehin sauber, dort
+darf gar nicht mehrfach zugeordnet werden. Mehrfach-Zuordnungen: **445 → 176**.
+
+**Ursache 2 — Regionen-Verschmelzung (Union-Find).** Flächen, deren Punkte sich
+berühren, die aber **keine gemeinsame Kette** haben, sind durch nichts getrennt
+(gedroppte Trim-Naht) — sie werden zu **einer Region** verschmolzen, damit der
+Guard nicht den Naht-Schlitz aufreißt, den der globale Walk gerade beseitigt
+hat. Messung auf dem Demo: **0 Verschmelzungen** — die B-Rep ist dort
+vollständig, alle berührenden Flächen teilen eine Kette. Der Mechanismus bleibt
+als Sicherheitsnetz für Körper mit gedroppten Nähten.
+
+**Ergebnis:** die 123 verbleibenden Guard-Blockaden sind damit **korrekte**
+Ablehnungen tangentialer Fehlverbindungen — der Guard lehnt ab, was abgelehnt
+gehört, und die Löcher dahinter sind die bekannte Sub-Resolution-Grenze.
+
+**Der Wächter-Turm ist damit fast vollständig durch prinzipielle Kriterien
+ersetzt:**
+
+| Wächter | Status |
+|---|---|
+| Cocone-Kegel | **gestrichen** (§8h) — der Normalen-Guard leistet es exakt |
+| Normalen-Guard | subsumiert vom Flächen-Guard (133 → 15 Blockaden) |
+| **Flächen-Guard** | topologisch, regionen-korrekt — sieht, was Normalen nicht sehen |
+| Sichtlinie/Zentroid | 20 Blockaden — nächster Kandidat für dieselbe Prüfung |
+| Ketten-Kreuzung | 36 Blockaden |
+
 ## 9. Kritische Reflexion (2026-07-12)
 
 Bewertung des Konzepts mit dem Wissen aus Sampling-Theorie
