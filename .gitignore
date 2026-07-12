@@ -70,3 +70,6 @@ deploy/ansible/group_vars/all.yml
 deploy/ansible/group_vars/vault.yml
 cgal-mesher/build/
 server/tmp/
+
+# Onshape import — local API key config (never commit)
+web/.onshape.local.json
