@@ -316,9 +316,10 @@ pub(crate) fn reach_outer_flat<Fg: Fn([f32; 3]) -> (f32, [f32; 3])>(
     p: [f32; 3],
     n: [f32; 3],
     cap: f32,
+    t0: f32,
     fg: &Fg,
 ) -> f32 {
-    let mut t = 0.02 * cap;
+    let mut t = t0.max(1e-5);
     while t < cap {
         let x = add(p, scale(n, t));
         if fg(x).0 < 0.9 * t {
@@ -333,9 +334,10 @@ pub(crate) fn reach_inner<Fg: Fn([f32; 3]) -> (f32, [f32; 3])>(
     p: [f32; 3],
     n: [f32; 3],
     cap: f32,
+    t0: f32,
     fg: &Fg,
 ) -> f32 {
-    let mut t = 0.02 * cap;
+    let mut t = t0.max(1e-5);
     let floor = 1e-4;
     while t < cap {
         let x = sub(p, scale(n, t));
@@ -406,14 +408,19 @@ where
     // zum Zug und das Wachstum fand genau einen Innenpunkt (Ticket ee07b6f1).
     r = r.clamp(opts.min_edge_spacing.max(1e-4).min(h), h);
 
-    // ε-SAMPLING gegen die lfs — NACH dem Boden und ohne ihn: die lfs-
-    // Bedingung ist die VORAUSSETZUNG des Umkugel-Theorems, kein Komfort.
-    // Ein Mindestabstand, der sie bricht, produziert genau den Zustand, den
-    // wir auf dem Gyroid gemessen haben: zwei Blätter 0,17 mm auseinander bei
-    // 0,2 mm Spacing — jedes Dreieck hat den Gegenblatt-Punkt in seiner
-    // Umkugel und KEIN Kandidat ist mehr gültig. Geometrie, die feiner ist
-    // als der Mindestabstand, erzwingt also lokal feinere Punkte (dieselbe
-    // Regel gilt längst für die Kanten-Überdeckung).
+    // ε-SAMPLING gegen die lfs — die Bedingung darf den Mindestabstand lokal
+    // aushebeln (sie ist die VORAUSSETZUNG des Umkugel-Theorems, kein
+    // Komfort; dieselbe Regel gilt längst für die Kanten-Überdeckung).
+    //
+    // ABER: der Marsch startet bewusst GROB (s.u.). Ein feiner Start ist die
+    // physikalisch korrekte Messung und löst die 0,17-mm-Spalte des Gyroids
+    // wirklich auf — er DIVERGIERT aber an tangentialen Kontakten (dort geht
+    // lfs → 0, die geforderte Dichte → ∞): mit feinem Start UND freiem Boden
+    // lief das Demo-Projekt nach 15 Minuten noch immer, mit Boden brach es
+    // auf 619 offene Kanten (statt 295) ein. Genau das sagt die Theorie
+    // voraus — an einem Sub-Resolution-Kontakt gibt es keine endliche gültige
+    // Abtastung, und Verfeinerung OHNE Lipschitz-beschränktes Sizing-Field
+    // schadet mehr, als sie nützt.
     if opts.lfs_factor > 0.0 {
         // Der Marsch läuft nur so weit, wie die Bedingung überhaupt BINDEN
         // kann: jenseits von `h/ε` wäre ε·lfs ≥ h und der h-Cap dominiert
@@ -421,8 +428,11 @@ where
         // sonst refinet der Faktor systematisch jede Fläche (Box 263 → 1073
         // Punkte, obwohl ihre Wand 20 mm dick ist).
         let cap_lfs = h / opts.lfs_factor;
-        let li = reach_inner(p, n, cap_lfs, fg);
-        let lo = reach_outer_flat(p, n, cap_lfs, fg);
+        // STARTSCHRITT bewusst GROB (s. Kommentar oben): 0,05·r wäre die
+        // korrekte Messung, divergiert aber an tangentialen Kontakten.
+        let t0 = 0.02 * cap_lfs;
+        let li = reach_inner(p, n, cap_lfs, t0, fg);
+        let lo = reach_outer_flat(p, n, cap_lfs, t0, fg);
         let lfs = li.min(lo);
         if lfs < cap_lfs {
             r = r.min((opts.lfs_factor * lfs).max(1e-4));

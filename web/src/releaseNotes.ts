@@ -24,6 +24,16 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.557",
+    entries: [
+      {
+        kind: "fix",
+        scope: "mesher",
+        text: "Lichen: die Reach-Märsche bekommen ihren Startschritt jetzt als Parameter (statt fest 0,02·Cap). Damit ist vermessen, wo die Grenze der Abtastung liegt: ein feiner Start löst die 0,17-mm-Spalte zwischen zwei Gyroid-Blättern wirklich auf — divergiert aber an tangentialen Kontakten, wo die local feature size gegen null geht (das Demo-Projekt lief nach 15 Minuten noch immer; mit Auflösungs-Boden brach es auf 619 statt 295 offene Kanten ein). Genau das sagt die Theorie voraus: an einem Sub-Resolution-Kontakt gibt es keine endliche gültige Abtastung. Verfeinerung ohne ein global glattes (Lipschitz-beschränktes) Dichtefeld schadet mehr, als sie nützt — im Code als Irrweg dokumentiert.",
+      },
+    ],
+  },
+  {
     version: "0.6.556",
     entries: [
       {

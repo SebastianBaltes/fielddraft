@@ -200,8 +200,10 @@ impl Kernel {
                     // An einer B-Rep-Kante ist ∇f die Winkelhalbierende — als
                     // Marschrichtung ins Material völlig ausreichend.
                     let n = lichen::unit(lichen::robust_grad(pw, &fg));
-                    let lfs = lichen::reach_inner(pw, n, cap_lfs, &fg)
-                        .min(lichen::reach_outer_flat(pw, n, cap_lfs, &fg));
+                    // Startschritt wie im Wachstum (grob — s. lichen::local_radius).
+                    let t0 = 0.02 * cap_lfs;
+                    let lfs = lichen::reach_inner(pw, n, cap_lfs, t0, &fg)
+                        .min(lichen::reach_outer_flat(pw, n, cap_lfs, t0, &fg));
                     if lfs < cap_lfs {
                         m = m.min(opts.lfs_factor * lfs);
                     }
