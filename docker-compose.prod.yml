@@ -79,6 +79,9 @@ services:
       ISSUEVAULT_PROJECT: "${ISSUEVAULT_PROJECT:-}"
       ISSUEVAULT_INSTALLATION: "${ISSUEVAULT_INSTALLATION:-}"
       ISSUEVAULT_TOKEN: "${ISSUEVAULT_TOKEN:-}"
+      # Onshape import (onshape.go). Unset = the /api/onshape routes answer 503.
+      ONSHAPE_ACCESS_KEY: "${ONSHAPE_ACCESS_KEY:-}"
+      ONSHAPE_SECRET_KEY: "${ONSHAPE_SECRET_KEY:-}"
     volumes:
       - blob-data:/data/blobs
     # NO `ports:` — only Caddy reaches the API (reverse_proxy server:8080).
