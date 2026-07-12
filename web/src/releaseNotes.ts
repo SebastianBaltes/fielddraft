@@ -24,6 +24,16 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.542",
+    entries: [
+      {
+        kind: "fix",
+        scope: "mesher",
+        text: "Lichen: Mesher-Panics vergiften nicht mehr die Session — ein Panic in einer WASM-&mut-Methode setzte das Borrow-Flag dauerhaft, jeder Folgeaufruf warf „recursive use of an object … unsafe aliasing“ und der Viewport war tot. lichenMesh fängt Panics jetzt ab und liefert ein leeres Ergebnis (der eigentliche Panic steht weiterhin in der Konsole).",
+      },
+    ],
+  },
+  {
     version: "0.6.541",
     entries: [
       {

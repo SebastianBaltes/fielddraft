@@ -22,7 +22,29 @@ impl Kernel {
     #[wasm_bindgen(js_name = lichenMesh)]
     pub fn lichen_mesh(&mut self, options_json: String) -> Vec<f32> {
         let opts: LichenOptions = serde_json::from_str(&options_json).unwrap_or_default();
-        self.lichen_mesh_impl(opts, None)
+        // PANIC-FEST: ein Panic in einer &mut-WASM-Methode setzt das
+        // wasm-bindgen-Borrow-Flag dauerhaft — JEDER Folgeaufruf wirft dann
+        // „recursive use of an object … unsafe aliasing" und der Viewport
+        // ist tot (Betreiber-Report). Der Debug-Mesher darf scheitern,
+        // aber nicht die Session vergiften: abfangen, Fehler loggen,
+        // leeres Ergebnis liefern.
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            self.lichen_mesh_impl(opts, None)
+        })) {
+            Ok(out) => out,
+            Err(e) => {
+                let msg = e
+                    .downcast_ref::<String>()
+                    .cloned()
+                    .or_else(|| e.downcast_ref::<&str>().map(|s| s.to_string()))
+                    .unwrap_or_else(|| "unbekannter Panic".into());
+                // eprintln landet nativ auf stderr; im WASM sorgt der
+                // panic-hook bereits für die Konsolen-Ausgabe des Panics
+                // selbst — hier geht es nur um die Session-Rettung.
+                eprintln!("lichenMesh panic: {msg}");
+                vec![0.0, 0.0, 0.0]
+            }
+        }
     }
 
     /// Kern (testbar, per-Body-fähig). `body_filter = None` = ganze Szene.
