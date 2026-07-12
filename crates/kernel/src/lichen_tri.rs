@@ -236,6 +236,12 @@ fn extract_manifold(
         }
     };
     // Umkreisradius² (Seed-Wahl: kleinster zuerst = sicherstes Dreieck).
+    // WICHTIG: entartete Dreiecke (Sliver) liefern hier RELATIV geprüft
+    // f32::MAX — ein absoluter Test (den < 1e-20) versagt bei kleinen
+    // Koordinaten: der Sliver aus drei aufeinanderfolgenden KETTENPUNKTEN
+    // (kollinear, Kantenlänge ~0.1) rutschte durch und bekam sogar r = 0,
+    // galt damit als BESTER Kandidat und blockierte die Fächer aller
+    // Ketten-Punkte (die gemessene Walk-Sackgasse an der dünnen Platte).
     let circum_r2 = |t: [u32; 3]| -> f32 {
         let (pa, pb, pc) = (
             points[t[0] as usize],
@@ -248,7 +254,9 @@ fn extract_manifold(
         let ac2 = dot(ac, ac);
         let abac = dot(ab, ac);
         let den = 2.0 * (ab2 * ac2 - abac * abac);
-        if den.abs() < 1e-20 {
+        // Relativ: die Gram-Determinante gegen das Produkt der Kantenlängen²
+        // (= sin²  des eingeschlossenen Winkels).
+        if den.abs() <= 2e-6 * ab2 * ac2 {
             return f32::MAX;
         }
         let s_ = (ac2 * (ab2 - abac)) / den;
@@ -416,17 +424,27 @@ fn extract_manifold(
             ranked.sort_by(|a, b| {
                 a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal).then(a.1.cmp(&b.1))
             });
+            // STRIKT (Env LICHEN_WALK_STRICT): der Sweep bestimmt EINDEUTIG,
+            // welches Dreieck die Fläche fortsetzt — der erste GÜLTIGE
+            // Kandidat in Winkelordnung. Ist dessen Halbkante schon belegt,
+            // liegt ein echter Konflikt vor: dann lieber ein ehrliches Loch
+            // als den nächstbesten (falschen) Kandidaten zu nehmen, dessen
+            // Fehler sich weiterfrisst (gemessene „Walk-Sackgasse").
+            let strict = std::env::var("LICHEN_WALK_STRICT").is_ok();
             let mut chosen: Option<u32> = None;
             for (_, d) in ranked {
                 let cand = key3([x, y, d]);
                 if used.contains(&cand) {
                     continue;
                 }
-                // Halbkanten-Kapazität: keine Doppelbelegung.
-                if half.contains(&(y, x)) || half.contains(&(x, d)) || half.contains(&(d, y)) {
+                if !valid(x, y, d) {
                     continue;
                 }
-                if !valid(x, y, d) {
+                // Halbkanten-Kapazität: keine Doppelbelegung.
+                if half.contains(&(y, x)) || half.contains(&(x, d)) || half.contains(&(d, y)) {
+                    if strict {
+                        break; // Konflikt → ehrliches Loch statt Fehler-Fortpflanzung
+                    }
                     continue;
                 }
                 chosen = Some(d);
@@ -436,6 +454,141 @@ fn extract_manifold(
             let t_new = [y, x, d];
             let prio = circum_r2(t_new);
             push_tri(t_new, prio, &mut out, &mut used, &mut half, &mut front);
+        }
+    }
+
+    // ── KONFLIKT-AUFLÖSUNG (Umbrella-Reparatur) ──
+    // Die greedy Front kann sich selbst blockieren: die Innen-Triangulierung
+    // wächst über eine Kante hinweg und SATURIERT sie, bevor der Fächer um
+    // einen (dichteren) Ketten-Punkt geschlossen ist — gemessen sind >90 %
+    // aller offenen Kanten von diesem Typ („voll gültiges Dreieck, aber
+    // Halbkante belegt"; die offenen Kanten der dünnen Platte liegen alle an
+    // den Ketten). Der Sweep ist aber EINDEUTIG: das von ihm bestimmte
+    // Dreieck IST die Fläche. Also wird der Blocker verdrängt, wenn das
+    // blockierte Dreieck strikt besser ist (kleinerer Umkreis); die dabei neu
+    // entstehenden offenen Kanten laufen in der nächsten Runde nach
+    // (Flip-Kaskade, deterministisch, Umkreis fällt monoton → terminiert).
+    for _round in 0..8 {
+        let mut open: Vec<(u32, u32)> = half
+            .iter()
+            .filter(|&&(a, b)| !half.contains(&(b, a)))
+            .copied()
+            .collect();
+        open.sort_unstable();
+        if std::env::var("LICHEN_DEBUG_REPAIR").is_ok() {
+            eprintln!("REPAIR-RUNDE {_round}: {} offene Halbkanten", open.len());
+        }
+        if open.is_empty() {
+            break;
+        }
+        let mut progress = false;
+        let mut stat = [0usize; 4]; // kein-kandidat, blocker-besser, gesetzt, verdrängt
+        for (a, b) in open {
+            if !half.contains(&(a, b)) || half.contains(&(b, a)) {
+                continue; // inzwischen geschlossen
+            }
+            let Some(&t_cur) = out
+                .iter()
+                .find(|t| [(t[0], t[1]), (t[1], t[2]), (t[2], t[0])].contains(&(a, b)))
+            else {
+                continue;
+            };
+            let c_cur = apex(t_cur, a, b);
+            let (pa, pb) = (points[a as usize], points[b as usize]);
+            let axis = norm(sub(pb, pa));
+            let perp = |q: [f32; 3]| -> [f32; 3] {
+                let d = sub(q, pa);
+                let s = dot(d, axis);
+                [d[0] - s * axis[0], d[1] - s * axis[1], d[2] - s * axis[2]]
+            };
+            let u_cur = norm(perp(points[c_cur as usize]));
+            let w = cross(axis, u_cur);
+            let mut ranked: Vec<(f32, u32)> = Vec::new();
+            for d in near(a, b) {
+                if d == c_cur || d == a || d == b {
+                    continue;
+                }
+                let pd = perp(points[d as usize]);
+                if dot(pd, pd) < 1e-12 {
+                    continue;
+                }
+                let u_d = norm(pd);
+                let mut ang = dot(u_cur, u_d).clamp(-1.0, 1.0).acos();
+                if dot(w, u_d) < 0.0 {
+                    ang = std::f32::consts::TAU - ang;
+                }
+                if ang < 1e-4 || ang > std::f32::consts::TAU - 1e-4 {
+                    continue;
+                }
+                ranked.push((ang, d));
+            }
+            ranked.sort_by(|x, y| {
+                x.0.partial_cmp(&y.0).unwrap_or(std::cmp::Ordering::Equal).then(x.1.cmp(&y.1))
+            });
+            let Some(&(_, d)) = ranked.iter().find(|&&(_, d)| valid(a, b, d)) else {
+                stat[0] += 1;
+                continue; // ehrliches Loch: kein gültiger Kandidat
+            };
+            let t_new = [b, a, d];
+            if used.contains(&key3(t_new)) {
+                stat[0] += 1;
+                continue;
+            }
+            let mut blockers: Vec<[u32; 3]> = Vec::new();
+            for (x, y) in [(a, d), (d, b)] {
+                if half.contains(&(x, y)) {
+                    if let Some(&tb) = out
+                        .iter()
+                        .find(|t| [(t[0], t[1]), (t[1], t[2]), (t[2], t[0])].contains(&(x, y)))
+                    {
+                        blockers.push(tb);
+                    }
+                }
+            }
+            let r_new = circum_r2(t_new);
+            if std::env::var("LICHEN_DEBUG_REPAIR").is_ok() && !blockers.is_empty() {
+                eprintln!(
+                    "REPAIR ({a},{b}) neu={t_new:?} r={:.4} | Blocker={:?} r={:?} | Winkel-Rang: {}",
+                    r_new.sqrt(),
+                    blockers,
+                    blockers.iter().map(|&t| circum_r2(t).sqrt()).collect::<Vec<_>>(),
+                    ranked.iter().position(|&(_, w)| w == d).unwrap_or(999)
+                );
+            }
+            if !blockers.is_empty()
+                && !blockers.iter().all(|&tb| circum_r2(tb) > r_new * 1.0001)
+            {
+                stat[1] += 1;
+                continue; // Blocker ist nicht schlechter → ehrliches Loch
+            }
+            if blockers.is_empty() {
+                stat[2] += 1;
+            } else {
+                stat[3] += 1;
+            }
+            for tb in blockers {
+                let k = key3(tb);
+                used.remove(&k);
+                for (x, y) in [(tb[0], tb[1]), (tb[1], tb[2]), (tb[2], tb[0])] {
+                    half.remove(&(x, y));
+                }
+                out.retain(|t| key3(*t) != k);
+            }
+            used.insert(key3(t_new));
+            out.push(t_new);
+            for (x, y) in [(t_new[0], t_new[1]), (t_new[1], t_new[2]), (t_new[2], t_new[0])] {
+                half.insert((x, y));
+            }
+            progress = true;
+        }
+        if std::env::var("LICHEN_DEBUG_REPAIR").is_ok() {
+            eprintln!(
+                "  kein-Kandidat={} Blocker-besser={} frei-gesetzt={} verdrängt={}",
+                stat[0], stat[1], stat[2], stat[3]
+            );
+        }
+        if !progress {
+            break;
         }
     }
     out
@@ -721,6 +874,22 @@ pub fn triangulate_global_walk(
             points[b as usize],
             points[c as usize],
         );
+        // DEGENERATIONS-GUARD: (fast) kollineare Dreiecke sind keine Fläche.
+        // Der Sliver aus drei aufeinanderfolgenden KETTENPUNKTEN ist der
+        // Standardfall — er bekommt einen numerisch entarteten Umkreis, gilt
+        // damit in jeder Umkreis-Sortierung als „bester" Kandidat und
+        // blockiert die Fächer aller Ketten-Punkte.
+        {
+            let ab = sub(pb, pa);
+            let ac = sub(pc, pa);
+            let cr = cross(ab, ac);
+            let area2 = dot(cr, cr).sqrt();
+            let lab = dot(ab, ab).sqrt();
+            let lac = dot(ac, ac).sqrt();
+            if area2 <= 1e-2 * lab * lac {
+                return false; // sin(Winkel) ≤ 0.01
+            }
+        }
         // NORMALEN-GUARD (s.o.): der eigentliche Blatt-Trenner.
         for (i, j) in [(a, b), (b, c), (c, a)] {
             if !normals_compatible(i, j) {
@@ -881,11 +1050,21 @@ pub fn triangulate_global_walk(
     // ── FORENSIK (LICHEN_WHY): warum bleibt eine Kante offen? ──
     if std::env::var("LICHEN_WHY").is_ok() && !open_edges.is_empty() {
         let mut reasons: HashMap<&'static str, usize> = HashMap::new();
+        // Die Apexe der BEREITS an (u,v) hängenden Dreiecke ausschließen —
+        // sonst meldet die Forensik das vorhandene Dreieck als „gültigen
+        // Kandidaten" und diagnostiziert eine Sackgasse, wo keine ist.
+        let mut existing_apex: HashMap<(u32, u32), Vec<u32>> = HashMap::new();
+        for &[a, b, c] in &tris {
+            for (x, y, z) in [(a, b, c), (b, c, a), (c, a, b)] {
+                existing_apex.entry((x.min(y), x.max(y))).or_default().push(z);
+            }
+        }
         for &(u, v) in &open_edges {
             let mut why = "kein Kandidat im Horizont";
             let mut best_state = 0u8;
+            let ex = existing_apex.get(&(u.min(v), u.max(v))).cloned().unwrap_or_default();
             for w in near(u, v) {
-                if w == u || w == v {
+                if w == u || w == v || ex.contains(&w) {
                     continue;
                 }
                 let s = if !empty(u, v, w) {
@@ -893,9 +1072,31 @@ pub fn triangulate_global_walk(
                 } else if crosses_chain(u, v, w) {
                     2
                 } else if !valid(u, v, w) {
-                    3 // Kugel leer, aber Wächter (Cocone/Sichtlinie/Zentroid)
+                    // Welcher Wächter genau? (Reihenfolge wie in `valid`)
+                    let deg = {
+                        let (pa, pb, pc) = (
+                            points[u as usize],
+                            points[v as usize],
+                            points[w as usize],
+                        );
+                        let ab = sub(pb, pa);
+                        let ac = sub(pc, pa);
+                        let cr = cross(ab, ac);
+                        dot(cr, cr).sqrt()
+                            <= 1e-2 * dot(ab, ab).sqrt() * dot(ac, ac).sqrt()
+                    };
+                    if deg {
+                        3
+                    } else if [(u, v), (v, w), (w, u)]
+                        .iter()
+                        .any(|&(i, j)| !normals_compatible(i, j))
+                    {
+                        4 // NORMALEN-GUARD
+                    } else {
+                        5 // Cocone / Sichtlinie / Zentroid
+                    }
                 } else {
-                    4 // vollständig gültig → Kapazität/Walk-Sackgasse
+                    6 // vollständig gültig → Walk-Sackgasse
                 };
                 if s > best_state {
                     best_state = s;
@@ -904,8 +1105,10 @@ pub fn triangulate_global_walk(
             why = match best_state {
                 1 => "nur nicht-leere Kugeln",
                 2 => "ketten-kreuzung",
-                3 => "gültige Kugel, Wächter blockt (cocone/sichtlinie/zentroid)",
-                4 => "voll gültig → Walk-Sackgasse (Halbkanten belegt)",
+                3 => "degeneriert (Sliver)",
+                4 => "NORMALEN-GUARD blockt",
+                5 => "cocone/sichtlinie/zentroid blockt",
+                6 => "voll gültig → Walk-Sackgasse (Halbkanten belegt)",
                 _ => why,
             };
             *reasons.entry(why).or_default() += 1;
@@ -927,6 +1130,29 @@ pub fn triangulate_global_walk(
             "WHY-GLOBAL {} offene Kanten: {rs:?} | Grad-Histogramm: {dhist:?}",
             open_edges.len()
         );
+        for &(u, v) in open_edges.iter().take(3) {
+            let ex = existing_apex.get(&(u.min(v), u.max(v))).cloned().unwrap_or_default();
+            eprintln!(
+                "  OPEN {u}{:?} N={:?} — {v}{:?} N={:?}",
+                points[u as usize], normal_sets.get(u as usize),
+                points[v as usize], normal_sets.get(v as usize)
+            );
+            for w in near(u, v).into_iter().take(40) {
+                if w == u || w == v || ex.contains(&w) || !empty(u, v, w) {
+                    continue;
+                }
+                let bad: Vec<(u32, u32)> = [(u, v), (v, w), (w, u)]
+                    .into_iter()
+                    .filter(|&(i, j)| !normals_compatible(i, j))
+                    .collect();
+                if !bad.is_empty() {
+                    eprintln!(
+                        "    Kandidat {w}{:?} N={:?} → Guard scheitert an {bad:?}",
+                        points[w as usize], normal_sets.get(w as usize)
+                    );
+                }
+            }
+        }
     }
     GeneralFaceMesh {
         hole_edges: open_edges.len(),

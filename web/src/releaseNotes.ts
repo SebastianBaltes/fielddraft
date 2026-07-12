@@ -24,6 +24,21 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.552",
+    entries: [
+      {
+        kind: "fix",
+        scope: "mesher",
+        text: "Lichen: Sliver aus drei aufeinanderfolgenden Kettenpunkten vergifteten den Manifold-Walk — ihr Umkreisradius rechnete numerisch zu NULL (der Entartungs-Test war absolut statt relativ), womit sie in jeder Umkreis-Sortierung als „bester“ Kandidat galten und die Fächer aller Kettenpunkte blockierten. Jetzt relativer Entartungs-Test plus ein Degenerations-Guard in der Gültigkeitsprüfung. Dünne Platte: degenerierte Dreiecke 2 → 0, Komponenten 4 → 2, Euler 0 → 2.",
+      },
+      {
+        kind: "fix",
+        scope: "mesher",
+        text: "Lichen: Manifold-Walk kann Konflikte auflösen (Flip-Kaskade) — blockiert ein schlechteres Dreieck den vom Sweep eindeutig bestimmten Nachbarn, wird es verdrängt und die neu entstehenden offenen Kanten laufen nach. Außerdem Loch-Forensik korrigiert: sie zählte bisher das BEREITS VORHANDENE Dreieck als gültigen Kandidaten und meldete dadurch Sackgassen, wo keine waren.",
+      },
+    ],
+  },
+  {
     version: "0.6.551",
     entries: [
       {
