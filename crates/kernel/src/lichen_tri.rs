@@ -1197,6 +1197,48 @@ pub fn triangulate_global_walk(
                 *guard_hist.entry(((best_ang / 30.0) as i32) * 30).or_insert(0usize) += 1;
             }
             *reasons.entry(why).or_default() += 1;
+            // Gezielte Diagnose um einen Ort: LICHEN_WHY_NEAR="x,y,z,r",
+            // mit LICHEN_WHY_DETAIL zusätzlich die Kandidatenliste.
+            if let Ok(spec) = std::env::var("LICHEN_WHY_NEAR") {
+                let q: Vec<f32> = spec.split(',').filter_map(|x| x.parse().ok()).collect();
+                if q.len() == 4 {
+                    let (pu, pv) = (points[u as usize], points[v as usize]);
+                    let m = [
+                        (pu[0] + pv[0]) * 0.5,
+                        (pu[1] + pv[1]) * 0.5,
+                        (pu[2] + pv[2]) * 0.5,
+                    ];
+                    let dd = ((m[0] - q[0]).powi(2) + (m[1] - q[1]).powi(2) + (m[2] - q[2]).powi(2))
+                        .sqrt();
+                    if dd < q[3] {
+                        eprintln!("  NEAR-OPEN #{u}{:?} – #{v}{:?} → {why}", pu, pv);
+                        if std::env::var("LICHEN_WHY_DETAIL").is_ok() {
+                            let mut cands: Vec<(f32, u32)> = near(u, v)
+                                .into_iter()
+                                .filter(|&w| w != u && w != v && !ex.contains(&w))
+                                .map(|w| {
+                                    let e2 = sub(points[w as usize], pu);
+                                    (dot(e2, e2).sqrt(), w)
+                                })
+                                .collect();
+                            cands.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+                            for (dw, w) in cands.into_iter().take(6) {
+                                let ng: Vec<(u32, u32)> = [(u, v), (v, w), (w, u)]
+                                    .into_iter()
+                                    .filter(|&(i, j)| !normals_compatible(i, j))
+                                    .collect();
+                                eprintln!(
+                                    "      cand #{w} d={dw:.3} leer={} kette={} normguard={:?} valid={}",
+                                    empty(u, v, w),
+                                    crosses_chain(u, v, w),
+                                    ng,
+                                    valid(u, v, w)
+                                );
+                            }
+                        }
+                    }
+                }
+            }
         }
         let mut rs: Vec<(&str, usize)> = reasons.into_iter().collect();
         rs.sort_by_key(|&(_, n)| std::cmp::Reverse(n));

@@ -765,6 +765,10 @@ where
                     let (nd, nspace) =
                         if nd_own <= nd_x { (nd_own, ns_own) } else { (nd_x, ns_x) };
                     let r_eff = rr.max(nspace.min(r_full));
+                    // TRENNUNGS-SCHWELLE vermessen (0.45 → 0.8): praktisch
+                    // wirkungslos (Demo 421 → 405 offene Kanten, Mini-Kugel
+                    // unverändert 36). Die Punktverteilung ist NICHT die
+                    // Ursache der Rest-Löcher.
                     if nd < 0.45 * r_eff {
                         rej[3] += 1;
                         rr *= 0.5;

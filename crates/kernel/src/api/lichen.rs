@@ -3034,6 +3034,143 @@ mod tests {
         assert_eq!(q.euler, 2, "geschlossene Platte: χ=2, {q:?}");
     }
 
+    /// Betreiber-Punkt #894 (2026-07-12): Loch MITTEN auf der Mini-Kugel-Kappe
+    /// — das Wachstum hört dort auf. Diagnose der Wachstums-Ablehnungen und
+    /// der Punkt-Verteilung auf der Kugel.
+    #[test]
+    #[ignore = "Analyse-Werkzeug, kein Gate"]
+    fn zz_minisphere_growth_gap() {
+        let mut k = demo_project_kernel();
+        let out = k.lichen_mesh(
+            r#"{"targetEdgeLength":10.0,"grow":true,"curvAngleDeg":5.0,"minEdgeSpacing":0.1,"useReach":true,"reachTol":1.0,"maxPoints":50000,"generalTri":true,"accept":"witness","extractWalk":true,"globalWalk":true,"lfsFactor":0.5,"sizingField":true,"faceGuard":true,"fillHoles":false}"#.into(),
+        );
+        let total = out[0] as usize;
+        let c = [5.2107882f32, 22.11431, 29.24847473977133];
+        let pos = |i: usize| [out[3 + i * 9], out[3 + i * 9 + 1], out[3 + i * 9 + 2]];
+        // Punkte auf der Mini-Kugel (r=1 ± 0.03).
+        let on_sphere: Vec<usize> = (0..total)
+            .filter(|&i| {
+                let p = pos(i);
+                let d = [p[0] - c[0], p[1] - c[1], p[2] - c[2]];
+                ((d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt() - 1.0).abs() < 0.03
+            })
+            .collect();
+        eprintln!("Mini-Kugel: {} Punkte von {total}", on_sphere.len());
+        // Grösste Lücke: für jeden Kugelpunkt der Abstand zum nächsten Nachbarn.
+        let mut worst = (0.0f32, 0usize);
+        let mut hist: std::collections::BTreeMap<i32, usize> = Default::default();
+        for &i in &on_sphere {
+            let p = pos(i);
+            let mut nd = f32::MAX;
+            for &j in &on_sphere {
+                if i == j {
+                    continue;
+                }
+                let q = pos(j);
+                let d = ((p[0] - q[0]).powi(2) + (p[1] - q[1]).powi(2) + (p[2] - q[2]).powi(2)).sqrt();
+                nd = nd.min(d);
+            }
+            if nd > worst.0 {
+                worst = (nd, i);
+            }
+            *hist.entry((nd * 20.0) as i32).or_default() += 1;
+        }
+        eprintln!(
+            "  grösster Nachbar-Abstand {:.3} bei #{} {:?}; NN-Histogramm (0.05er-Klassen): {hist:?}",
+            worst.0, worst.1, pos(worst.1)
+        );
+        // Deckt die Kappe eine Region ohne Punkte? Richtung [0.35,0.02,0.94]
+        // (die Normale von #894) — dort war das Loch.
+        let dir = [0.35f32, 0.02, 0.94];
+        let probe = [c[0] + dir[0], c[1] + dir[1], c[2] + dir[2]];
+        let mut nearest = f32::MAX;
+        for &i in &on_sphere {
+            let p = pos(i);
+            let d = ((p[0] - probe[0]).powi(2) + (p[1] - probe[1]).powi(2) + (p[2] - probe[2]).powi(2)).sqrt();
+            nearest = nearest.min(d);
+        }
+        eprintln!("  Kappen-Mitte {probe:?}: nächster Punkt {:.3} entfernt", nearest);
+        // Werden die Kugel-Punkte im NETZ benutzt?
+        let tris = out[1] as usize;
+        let base = 3 + total * 9;
+        let mut used: std::collections::HashSet<usize> = Default::default();
+        for t in 0..tris {
+            for j in 0..3 {
+                used.insert(out[base + t * 3 + j] as usize);
+            }
+        }
+        let unused: Vec<usize> = on_sphere.iter().copied().filter(|i| !used.contains(i)).collect();
+        eprintln!(
+            "  Kugel-Punkte im Netz benutzt: {}/{} — {} UNBENUTZT",
+            on_sphere.len() - unused.len(),
+            on_sphere.len(),
+            unused.len()
+        );
+        for &i in unused.iter().take(8) {
+            eprintln!("    unbenutzt #{i} {:?} U={:.3}", pos(i), out[3 + i * 9 + 7]);
+        }
+        // Region um die Kappen-Mitte: wie viele Punkte, wie viele benutzt?
+        let near_mid: Vec<usize> = on_sphere
+            .iter()
+            .copied()
+            .filter(|&i| {
+                let p = pos(i);
+                ((p[0] - probe[0]).powi(2) + (p[1] - probe[1]).powi(2) + (p[2] - probe[2]).powi(2))
+                    .sqrt()
+                    < 0.35
+            })
+            .collect();
+        let nm_used = near_mid.iter().filter(|i| used.contains(i)).count();
+        eprintln!(
+            "  Kappen-Mitte (r<0.35): {} Punkte, davon {} im Netz",
+            near_mid.len(),
+            nm_used
+        );
+        // Ist die Kappenmitte von Dreiecken ÜBERDECKT?
+        let mut cover = 0usize;
+        let mut long_near = 0usize;
+        for t in 0..tris {
+            let idx: Vec<usize> = (0..3).map(|j| out[base + t * 3 + j] as usize).collect();
+            let cen = {
+                let mut c3 = [0.0f32; 3];
+                for &i in &idx {
+                    let p = pos(i);
+                    for a in 0..3 {
+                        c3[a] += p[a] / 3.0;
+                    }
+                }
+                c3
+            };
+            let dd = ((cen[0] - probe[0]).powi(2) + (cen[1] - probe[1]).powi(2) + (cen[2] - probe[2]).powi(2)).sqrt();
+            if dd < 0.25 {
+                cover += 1;
+                let mut emax = 0.0f32;
+                for k in 0..3 {
+                    let (a, b) = (pos(idx[k]), pos(idx[(k + 1) % 3]));
+                    emax = emax.max(((a[0]-b[0]).powi(2)+(a[1]-b[1]).powi(2)+(a[2]-b[2]).powi(2)).sqrt());
+                }
+                if emax > 0.3 {
+                    long_near += 1;
+                }
+            }
+        }
+        eprintln!("  Dreiecke mit Zentroid < 0.25 um die Kappen-Mitte: {cover} (davon {long_near} mit Kante > 0.3)");
+        // Offene Kanten irgendwo auf der Mini-Kugel?
+        let idx_end = 3 + total * 9 + tris * 3;
+        let n_face = out[idx_end] as usize;
+        let diag = idx_end + 1 + n_face * 4;
+        let n_open = out[diag] as usize;
+        let mut open_on_sphere = 0usize;
+        for e in 0..n_open {
+            let a = out[diag + 1 + e * 2] as usize;
+            let b2 = out[diag + 1 + e * 2 + 1] as usize;
+            if on_sphere.contains(&a) || on_sphere.contains(&b2) {
+                open_on_sphere += 1;
+            }
+        }
+        eprintln!("  offene Kanten gesamt {n_open}, davon an der Mini-Kugel: {open_on_sphere}");
+    }
+
     /// QUALITÄTS-ZIEL auf dem Demo-Projekt: manifold + watertight, beide
     /// Pfade — WIP: (a) Gyroid-Flächen (chartlos, kein FaceSurf) wachsen noch
     /// nicht (F2) → offene Ränder an jeder Gyroid-Naht; (b) Flächen-Überlapp
