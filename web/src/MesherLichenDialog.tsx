@@ -27,8 +27,14 @@ import {
   setLichenDebug,
   subscribeLichenStats,
   getLichenStats,
+  subscribeLichenSnapshot,
+  getLichenSnapshot,
+  subscribeLichenPick,
+  getLichenPick,
+  setLichenPick,
   type LichenDebug,
 } from "./lichenDebugStore";
+import { inspectPoint, formatPointReport } from "./lichenInspect";
 import { NumberInput } from "./NumberInput";
 
 const SETTINGS_KEY = "fielddraft.debug.lichen";
@@ -73,6 +79,12 @@ interface LichenSettings {
   showPoints: boolean;
   /** Draw the triangle mesh wireframe (once meshing emits it). */
   showTriangles: boolean;
+  /** Loch-Kanten (rot) zeichnen. */
+  showHoleEdges: boolean;
+  /** 2-Stimmen-Kandidaten (orange) zeichnen. */
+  showWeakTris: boolean;
+  /** Überlange Kanten (violett) zeichnen. */
+  showLongEdges: boolean;
   /** Edge length (mm) of the point-marker boxes. */
   pointSize: number;
   /** Draw a needle along each point's ∇f normal. */
@@ -106,6 +118,9 @@ const DEFAULTS: LichenSettings = {
   showCircles: true,
   showPoints: true,
   showTriangles: true,
+  showHoleEdges: true,
+  showWeakTris: true,
+  showLongEdges: true,
   pointSize: 1,
   showNormals: false,
   normalLength: 1,
@@ -160,6 +175,12 @@ function loadSettings(): LichenSettings {
       showPoints: p.showPoints === undefined ? DEFAULTS.showPoints : p.showPoints === true,
       showTriangles:
         p.showTriangles === undefined ? DEFAULTS.showTriangles : p.showTriangles === true,
+      showHoleEdges:
+        p.showHoleEdges === undefined ? DEFAULTS.showHoleEdges : p.showHoleEdges === true,
+      showWeakTris:
+        p.showWeakTris === undefined ? DEFAULTS.showWeakTris : p.showWeakTris === true,
+      showLongEdges:
+        p.showLongEdges === undefined ? DEFAULTS.showLongEdges : p.showLongEdges === true,
       pointSize: clampNum(p.pointSize, 0.5, 100, DEFAULTS.pointSize),
       showNormals: p.showNormals === true,
       normalLength: clampNum(p.normalLength, 0, 1000, DEFAULTS.normalLength),
@@ -194,6 +215,9 @@ function lichenParams(s: LichenSettings): LichenDebug {
     showCircles: s.showCircles,
     showPoints: s.showPoints,
     showTriangles: s.showTriangles,
+    showHoleEdges: s.showHoleEdges,
+    showWeakTris: s.showWeakTris,
+    showLongEdges: s.showLongEdges,
     pointSize: s.pointSize,
     showNormals: s.showNormals,
     normalLength: s.normalLength,
@@ -225,6 +249,12 @@ export function MesherLichenDialog({ onClose }: { onClose: () => void }) {
   const [showCircles, setShowCircles] = useState(initial.showCircles);
   const [showPoints, setShowPoints] = useState(initial.showPoints);
   const [showTriangles, setShowTriangles] = useState(initial.showTriangles);
+  const [showHoleEdges, setShowHoleEdges] = useState(initial.showHoleEdges);
+  const [showWeakTris, setShowWeakTris] = useState(initial.showWeakTris);
+  const [showLongEdges, setShowLongEdges] = useState(initial.showLongEdges);
+  const snapshot = useSyncExternalStore(subscribeLichenSnapshot, getLichenSnapshot);
+  const pick = useSyncExternalStore(subscribeLichenPick, getLichenPick);
+  const [copied, setCopied] = useState(false);
   const [pointSize, setPointSize] = useState(initial.pointSize);
   const [showNormals, setShowNormals] = useState(initial.showNormals);
   const [normalLength, setNormalLength] = useState(initial.normalLength);
@@ -254,6 +284,9 @@ export function MesherLichenDialog({ onClose }: { onClose: () => void }) {
       showCircles,
       showPoints,
       showTriangles,
+      showHoleEdges,
+      showWeakTris,
+      showLongEdges,
       pointSize,
       showNormals,
       normalLength,
@@ -264,7 +297,7 @@ export function MesherLichenDialog({ onClose }: { onClose: () => void }) {
     } catch {
       // no localStorage (tests) — non-persistent is fine
     }
-  }, [targetEdgeLength, grow, curvAngleDeg, useReach, reachTol, minEdgeSpacing, maxPoints, generalTri, accept, extractWalk, globalWalk, lfsFactor, sizingField, faceGuard, fillHoles, partOpacity, strokeWidth, showCircles, showPoints, showTriangles, pointSize, showNormals, normalLength]);
+  }, [targetEdgeLength, grow, curvAngleDeg, useReach, reachTol, minEdgeSpacing, maxPoints, generalTri, accept, extractWalk, globalWalk, lfsFactor, sizingField, faceGuard, fillHoles, partOpacity, strokeWidth, showCircles, showPoints, showTriangles, showHoleEdges, showWeakTris, showLongEdges, pointSize, showNormals, normalLength]);
   useEffect(() => () => setLichenDebug(null), []);
 
   useEffect(() => {
@@ -775,6 +808,60 @@ export function MesherLichenDialog({ onClose }: { onClose: () => void }) {
         </div>
       </div>
 
+      {/* Diagnose-Ebenen einzeln schaltbar (Betreiber-Wunsch): rot = offene
+          Watertight-Kanten, orange = Fast-Konsens-Kandidaten, violett =
+          überlange Kanten (Umkugel-Verletzungs-Verdacht). */}
+      <div className="vec-row">
+        <label title="Offene Kanten des finalen Netzes (Watertight-Verstöße) rot zeichnen.">
+          Loch-Kanten (rot)
+        </label>
+        <div className="fields">
+          <label className="checkbox">
+            <input
+              type="checkbox"
+              aria-label="Loch-Kanten zeichnen"
+              data-testid="mesher-lichen-show-hole-edges"
+              checked={showHoleEdges}
+              onChange={(e) => setShowHoleEdges(e.currentTarget.checked)}
+            />
+          </label>
+        </div>
+      </div>
+
+      <div className="vec-row">
+        <label title="Abgelehnte Fast-Konsens-Kandidaten orange zeichnen.">
+          2-Stimmen (orange)
+        </label>
+        <div className="fields">
+          <label className="checkbox">
+            <input
+              type="checkbox"
+              aria-label="2-Stimmen-Kandidaten zeichnen"
+              data-testid="mesher-lichen-show-weak-tris"
+              checked={showWeakTris}
+              onChange={(e) => setShowWeakTris(e.currentTarget.checked)}
+            />
+          </label>
+        </div>
+      </div>
+
+      <div className="vec-row">
+        <label title="Kanten länger als das 3-fache des lokalen Spacings violett zeichnen (Umkugel-Verletzungs-Verdacht).">
+          Überlange (violett)
+        </label>
+        <div className="fields">
+          <label className="checkbox">
+            <input
+              type="checkbox"
+              aria-label="Überlange Kanten zeichnen"
+              data-testid="mesher-lichen-show-long-edges"
+              checked={showLongEdges}
+              onChange={(e) => setShowLongEdges(e.currentTarget.checked)}
+            />
+          </label>
+        </div>
+      </div>
+
       <div className="vec-row">
         <label title="Draw the U(p) reach circle (radius = local U) in the tangent plane at each point.">
           U(p) circles
@@ -822,6 +909,55 @@ export function MesherLichenDialog({ onClose }: { onClose: () => void }) {
           />
         </div>
       </div>
+
+      {/* ── PUNKT-INSPEKTOR (Betreiber-Wunsch): ALT+Klick im Viewport wählt
+           den bildschirm-nächsten Punkt; hier steht sein vollständiger
+           Diagnose-Block, kopierbar für die Diskussion mit dem Agenten. ── */}
+      <div className="readout">
+        <span className="k" title="ALT+Klick im Viewport wählt den nächsten Lichen-Punkt.">
+          Punkt-Inspektor
+        </span>
+        <span className="v" data-testid="mesher-lichen-pick">
+          {pick == null ? "ALT+Klick im Viewport" : `#${pick}`}
+        </span>
+      </div>
+      {pick != null && snapshot && (() => {
+        const info = inspectPoint(snapshot, pick);
+        if (!info) return null;
+        const report = formatPointReport(info, snapshot, {
+          h: targetEdgeLength,
+          curvAngleDeg,
+          minEdgeSpacing,
+          accept,
+          generalTri,
+          extractWalk,
+          globalWalk,
+          lfsFactor,
+          sizingField,
+          faceGuard,
+          fillHoles,
+        });
+        return (
+          <div className="lichen-pick">
+            <pre data-testid="mesher-lichen-pick-report">{report}</pre>
+            <div className="pick-actions">
+              <button
+                type="button"
+                onClick={() => {
+                  void navigator.clipboard?.writeText(report);
+                  setCopied(true);
+                  window.setTimeout(() => setCopied(false), 1500);
+                }}
+              >
+                {copied ? "Kopiert ✓" : "Diagnose kopieren"}
+              </button>
+              <button type="button" onClick={() => setLichenPick(null)}>
+                Auswahl aufheben
+              </button>
+            </div>
+          </div>
+        );
+      })()}
 
       <div className="readout">
         <span className="k">Points</span>

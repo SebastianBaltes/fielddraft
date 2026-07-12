@@ -84,6 +84,12 @@ export interface LichenDebug {
   showPoints: boolean;
   /** Draw the triangle mesh wireframe (once the triangulation stage emits it). */
   showTriangles: boolean;
+  /** Offene Loch-Kanten (rot) zeichnen — die Watertight-Verstöße. */
+  showHoleEdges: boolean;
+  /** Fast-Konsens-Kandidaten (orange) zeichnen. */
+  showWeakTris: boolean;
+  /** Überlange Kanten (violett) zeichnen — Umkugel-Verletzungs-Verdacht. */
+  showLongEdges: boolean;
   /** Edge length (mm) of the point-marker boxes. */
   pointSize: number;
   /** Draw a needle along each point's ∇f normal (to inspect orientation). */
@@ -168,5 +174,65 @@ export function subscribeLichenStats(listener: () => void): () => void {
   statsListeners.add(listener);
   return () => {
     statsListeners.delete(listener);
+  };
+}
+
+// ── Punkt-Inspektor ──────────────────────────────────────────────────
+// Der Overlay veröffentlicht den geparsten Mesh-Snapshot; ein Klick im
+// Viewport (bei offenem Lichen-Dialog) wählt den bildschirm-nächsten Punkt.
+// Der Dialog rendert daraus einen vollständigen Diagnose-Block, den man
+// per Knopf in die Zwischenablage kopieren und dem Agenten zeigen kann.
+
+export interface LichenSnapshot {
+  /** Rohes Flat-Format des Kernels (siehe `lichen::pack_with_diag`). */
+  data: Float32Array;
+  total: number;
+  triCount: number;
+  /** Offsets in `data`. */
+  P: number;
+  I: number;
+  faceBase: number;
+  nFaceRec: number;
+  diagBase: number;
+  nOpenEdge: number;
+  weakBase: number;
+  nWeakTri: number;
+  longBase: number;
+  nLongEdge: number;
+}
+
+let snapshot: LichenSnapshot | null = null;
+const snapListeners = new Set<() => void>();
+
+export function setLichenSnapshot(next: LichenSnapshot | null): void {
+  snapshot = next;
+  for (const l of snapListeners) l();
+}
+export function getLichenSnapshot(): LichenSnapshot | null {
+  return snapshot;
+}
+export function subscribeLichenSnapshot(listener: () => void): () => void {
+  snapListeners.add(listener);
+  return () => {
+    snapListeners.delete(listener);
+  };
+}
+
+/** Index des angeklickten Punktes (oder `null`). */
+let pick: number | null = null;
+const pickListeners = new Set<() => void>();
+
+export function setLichenPick(next: number | null): void {
+  if (pick === next) return;
+  pick = next;
+  for (const l of pickListeners) l();
+}
+export function getLichenPick(): number | null {
+  return pick;
+}
+export function subscribeLichenPick(listener: () => void): () => void {
+  pickListeners.add(listener);
+  return () => {
+    pickListeners.delete(listener);
   };
 }

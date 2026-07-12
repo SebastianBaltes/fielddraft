@@ -24,6 +24,26 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.561",
+    entries: [
+      {
+        kind: "fix",
+        scope: "mesher",
+        text: "Lichen: die Optionen des Cocone-Stacks kamen im Kernel NIE an — das Overlay reichte Manifold-Extraktion, Globaler Walk, ε (lfs), Sizing-Field und Flächen-Guard nicht weiter, die Checkboxen waren also wirkungslos. Jetzt werden sie übergeben.",
+      },
+      {
+        kind: "feat",
+        scope: "mesher",
+        text: "Lichen: Punkt-Inspektor — ALT+Klick im Viewport wählt den bildschirm-nächsten Mesh-Punkt (magenta markiert) und der Dialog zeigt seinen vollständigen Diagnose-Block: Position, Klasse (Ecke/Kante/Fläche), SDF-Wert, U(p), alle Flächen-Normalen (eine je angrenzender Fläche), Grad, sämtliche Nachbarn mit Abstand und Klasse sowie alle Defekte, die den Punkt berühren (offene Kanten, überlange Kanten, 2-Stimmen-Kandidaten). Ein Knopf kopiert den Block samt Settings in die Zwischenablage — damit lässt sich ein konkreter Punkt eindeutig benennen und besprechen.",
+      },
+      {
+        kind: "feat",
+        scope: "mesher",
+        text: "Lichen: die drei Diagnose-Ebenen sind einzeln abschaltbar — Loch-Kanten (rot), 2-Stimmen-Kandidaten (orange) und überlange Kanten (violett) haben je eine eigene Checkbox.",
+      },
+    ],
+  },
+  {
     version: "0.6.560",
     entries: [
       {

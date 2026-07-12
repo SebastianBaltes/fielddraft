@@ -26,6 +26,11 @@ import {
   getLichenDebug,
   subscribeLichenDebug,
   setLichenStats,
+  setLichenSnapshot,
+  getLichenSnapshot as getLichenSnapshotLocal,
+  setLichenPick,
+  getLichenPick,
+  subscribeLichenPick,
 } from "./lichenDebugStore";
 import { isWebGPURenderer } from "./overlayLineMaterials";
 import { OVERLAY_LAYER } from "./viewportLayers";
@@ -146,6 +151,87 @@ export function LichenOverlay({
   } | null>(null);
   const circle = useMemo(makeCircleTexture, []);
 
+  const pickIdx = useSyncExternalStore(subscribeLichenPick, getLichenPick);
+  const highlightRef = useRef<THREE.Group>(null);
+
+  // ── PUNKT-PICKING (Betreiber-Wunsch): Klick im Viewport wählt den
+  // bildschirm-nächsten Lichen-Punkt. Kein Raycast gegen Geometrie — die
+  // Punkte sind Marker; die Bildschirm-Distanz ist das richtige Maß. Der
+  // Dialog zeigt daraus den vollständigen Diagnose-Block.
+  useEffect(() => {
+    if (!params) return;
+    const el = gl.domElement;
+    const onDown = (ev: PointerEvent) => {
+      if (!ev.altKey) return; // ALT+Klick, damit die normale Selektion frei bleibt
+      const snap = getLichenSnapshotLocal();
+      if (!snap) return;
+      const rect = el.getBoundingClientRect();
+      const mx = ev.clientX - rect.left;
+      const my = ev.clientY - rect.top;
+      const v = new THREE.Vector3();
+      let best = -1;
+      let bestD = 24; // px-Radius
+      for (let i = 0; i < snap.total; i++) {
+        const b = snap.P + i * 9;
+        v.set(snap.data[b], snap.data[b + 1], snap.data[b + 2]).project(camera);
+        const sx = ((v.x + 1) / 2) * rect.width;
+        const sy = ((1 - v.y) / 2) * rect.height;
+        const d = Math.hypot(sx - mx, sy - my);
+        if (d < bestD) {
+          bestD = d;
+          best = i;
+        }
+      }
+      if (best >= 0) {
+        ev.preventDefault();
+        ev.stopPropagation();
+        setLichenPick(best);
+        invalidate();
+      }
+    };
+    el.addEventListener("pointerdown", onDown, { capture: true });
+    return () => el.removeEventListener("pointerdown", onDown, { capture: true });
+  }, [params, gl, camera, invalidate]);
+
+  // Markierung des gewählten Punktes (magenta Kreuz + Kugel).
+  useEffect(() => {
+    const g = highlightRef.current;
+    if (!g) return;
+    disposeChildren(g);
+    const snap = getLichenSnapshotLocal();
+    if (pickIdx == null || !snap || pickIdx >= snap.total) {
+      invalidate();
+      return;
+    }
+    const b = snap.P + pickIdx * 9;
+    const p = new THREE.Vector3(snap.data[b], snap.data[b + 1], snap.data[b + 2]);
+    const sph = new THREE.Mesh(
+      new THREE.SphereGeometry(1, 12, 8),
+      new THREE.MeshBasicMaterial({ color: 0xff00c8, depthTest: false, transparent: true, opacity: 0.9 }),
+    );
+    sph.position.copy(p);
+    sph.userData.lichenPickMarker = true;
+    sph.layers.enable(OVERLAY_LAYER);
+    sph.renderOrder = 12;
+    g.add(sph);
+    invalidate();
+  }, [pickIdx, invalidate]);
+
+  // Marker auf konstante Pixelgröße skalieren.
+  useFrame(() => {
+    const g = highlightRef.current;
+    if (!g || g.children.length === 0) return;
+    const m = g.children[0] as THREE.Mesh;
+    const cam = camera as THREE.PerspectiveCamera;
+    const dist = cam.getWorldPosition(new THREE.Vector3()).distanceTo(m.position);
+    const wpp =
+      cam instanceof THREE.PerspectiveCamera
+        ? (2 * dist * Math.tan(((cam.fov * 0.5 * Math.PI) / 180))) / (size.height || 1)
+        : 0.01;
+    const r = 7 * wpp;
+    m.scale.set(r, r, r);
+  });
+
   const brepVersion = state?.brepVersion ?? 0;
   useEffect(() => {
     const group = groupRef.current;
@@ -174,6 +260,14 @@ export function LichenOverlay({
         generalTri: params.generalTri,
         accept: params.accept,
         fillHoles: params.fillHoles,
+        // Die Optionen des Cocone-Stacks — sie fehlten hier und kamen im
+        // Kernel NIE an: die Dialog-Checkboxen (Manifold-Extraktion, Globaler
+        // Walk, ε, Sizing-Field, Flächen-Guard) waren damit wirkungslos.
+        extractWalk: params.extractWalk,
+        globalWalk: params.globalWalk,
+        lfsFactor: params.lfsFactor,
+        sizingField: params.sizingField,
+        faceGuard: params.faceGuard,
       }),
     );
     const total = data.length >= 3 ? data[0] : 0;
@@ -236,6 +330,24 @@ export function LichenOverlay({
     // degenerate, components, euler, orientationViolations].
     const qBase = longBase + 1 + nLongEdge * 2;
     const qual = (k: number) => (data.length > qBase + k ? data[qBase + k] : 0);
+    // Snapshot fürs Anklicken/Inspizieren veröffentlichen (Betreiber-Wunsch:
+    // einzelne Punkte identifizierbar machen, um sie mit dem Agenten zu
+    // besprechen).
+    setLichenSnapshot({
+      data,
+      total,
+      triCount,
+      P,
+      I,
+      faceBase: faceBase0,
+      nFaceRec: nFaceRec0,
+      diagBase,
+      nOpenEdge,
+      weakBase,
+      nWeakTri,
+      longBase,
+      nLongEdge,
+    });
     setLichenStats({
       cells: n,
       capped: total >= MAX_LEAVES,
@@ -309,7 +421,15 @@ export function LichenOverlay({
     // ── General-Pfad-Diagnose: Loch-Kanten ROT (kräftig, 1.5× Strichstärke),
     //    Fast-Konsens-Kandidaten (vote_min−1 Stimmen) ORANGE — die
     //    „Uneinigkeits-Landkarte" der Sterne, nie still übermalt. ──
-    if (params.showTriangles && nOpenEdge + nWeakTri + nLongEdge > 0) {
+    const drawHoles = params.showHoleEdges !== false;
+    const drawWeak = params.showWeakTris !== false;
+    const drawLong = params.showLongEdges !== false;
+    if (
+      params.showTriangles &&
+      ((drawHoles && nOpenEdge > 0) ||
+        (drawWeak && nWeakTri > 0) ||
+        (drawLong && nLongEdge > 0))
+    ) {
       const px = (i: number) => rawX(P + i * STRIDE);
       const py = (i: number) => rawY(P + i * STRIDE);
       const pz = (i: number) => rawZ(P + i * STRIDE);
@@ -351,14 +471,14 @@ export function LichenOverlay({
         group.add(obj);
       };
       const holeSeg: number[] = [];
-      for (let e = 0; e < nOpenEdge; e++) {
+      for (let e = 0; drawHoles && e < nOpenEdge; e++) {
         const a = data[diagBase + 1 + e * 2];
         const b = data[diagBase + 1 + e * 2 + 1];
         holeSeg.push(px(a), py(a), pz(a), px(b), py(b), pz(b));
       }
       drawSegs(holeSeg, 0xdd1122, Math.max(1.5, params.strokeWidth * 1.5));
       const weakSeg: number[] = [];
-      for (let t = 0; t < nWeakTri; t++) {
+      for (let t = 0; drawWeak && t < nWeakTri; t++) {
         const a = data[weakBase + 1 + t * 3];
         const b = data[weakBase + 1 + t * 3 + 1];
         const c = data[weakBase + 1 + t * 3 + 2];
@@ -370,7 +490,7 @@ export function LichenOverlay({
       // Überlange Kanten VIOLETT (Umkugel-Verletzungs-Verdacht: Länge > 3×
       // lokales Spacing — „Kanten quer durchs Kugelinnere").
       const longSeg: number[] = [];
-      for (let e = 0; e < nLongEdge; e++) {
+      for (let e = 0; drawLong && e < nLongEdge; e++) {
         const a = data[longBase + 1 + e * 2];
         const b = data[longBase + 1 + e * 2 + 1];
         longSeg.push(px(a), py(a), pz(a), px(b), py(b), pz(b));
@@ -681,5 +801,10 @@ export function LichenOverlay({
     };
   }, [circle]);
 
-  return <group ref={groupRef} />;
+  return (
+    <>
+      <group ref={groupRef} />
+      <group ref={highlightRef} />
+    </>
+  );
 }
