@@ -24,6 +24,17 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.545",
+    entries: [
+      {
+        kind: "perf",
+        scope: "render",
+        text: "SDF-Deferred kompiliert nur noch EIN G-Buffer-Shaderpaar statt eines pro Körper: die Body-ID reist jetzt als Geometrie-Attribut statt als in den Shader gebackene Konstante — der WGSL-Quelltext ist damit dokument-unabhängig, der Pipeline-Cache des Browsers greift beim nächsten Laden",
+        tickets: ["853b80c5"],
+      },
+    ],
+  },
+  {
     version: "0.6.544",
     entries: [
       {
