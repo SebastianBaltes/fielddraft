@@ -671,6 +671,40 @@ Demo (Gyroid + tangentiale Mikro-Features): 814 → 651 offene Kanten. Dort geht
 lfs an tangentialen Kontakten gegen 0 — die verbliebene, theoretisch harte
 Front.
 
+## 8h. Wächter-Rückbau: der Turm fällt (v0.6.554)
+
+Mit der korrigierten Forensik ließ sich der Wächter-Turm zum ersten Mal
+gezielt abtragen. Demo (globaler Walk, ε=0,5): **814 → 303 offene Kanten**.
+
+**Befund 11 — das Ketten-Kreuzungs-Verbot cullte falsch.** Sein Nähe-Cull
+nutzte `cell` = das **größte Spacing der gesamten Punktwolke**; im globalen
+Walk ist das `h` (Zentimeter). Damit wurden Ketten-Segmente quer durch den
+ganzen Körper in die Dreiecks-Ebene projiziert und „kreuzten" dort scheinbar.
+Größter Einzelblocker der Demo (279 von 655). Fix: echter 3D-Punkt-Segment-
+Abstand zum Dreiecks-Zentroid.
+
+**Befund 12 — der Normalen-Guard war zu streng.** `6·α ≈ 30°` lehnt auf dem
+**Gyroid** legitime Nachbarn ab (dort drehen sich benachbarte Flächen-Normalen
+schon um ~35°). Für die Blatt-Trennung ist diese Strenge gar nicht nötig: das
+Gegenblatt einer dünnen Wand steht **~antiparallel** und wird von jeder
+Schwelle unter 180° sicher erwischt. Neue Schwelle: **90° („gleiche
+Halbkugel")** — die prinzipielle Grenze, denn eine gültige Flächenkante
+verbindet nie zwei Punkte, deren Normalen in entgegengesetzte Halbräume
+zeigen. Die dünne Platte bleibt bei 0 Wand-Durchquerungen.
+
+**Befund 13 — der Cocone-Kegel ist ERSATZLOS entfallen.** Er prüft die
+Richtung zum Nachbarn gegen die **gemittelte** Punkt-Normale — die an jeder
+B-Rep-Kante bedeutungslos ist (sie zeigt in die Winkelhalbierende) — und
+lehnte damit legitime Kanten-Dreiecke ab. Was er leisten sollte (fremde
+Blätter fernhalten), leistet der Normalen-Guard exakt und ohne
+Kanten-Kollateralschaden. **Damit ist der erste Wächter des Turms gefallen,
+nicht ersetzt, sondern gestrichen.**
+
+Der globale Walk braucht heute nur noch: leere (Zeugen-)Umkugel,
+Normalen-Guard, Sichtlinie/Zentroid auf der Oberfläche, Ketten-Kreuzungs-
+Verbot, Degenerations-Guard. Sichtlinie und Ketten-Verbot sind die nächsten
+Kandidaten für dieselbe Prüfung.
+
 ## 9. Kritische Reflexion (2026-07-12)
 
 Bewertung des Konzepts mit dem Wissen aus Sampling-Theorie
