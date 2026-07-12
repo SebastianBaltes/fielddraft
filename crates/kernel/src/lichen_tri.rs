@@ -620,6 +620,14 @@ pub fn triangulate_global_walk(
     // Normale bedeutungslos (der Mittelwert zeigt in die Winkelhalbierende),
     // die Menge der Flächen-Normalen aber exakt.
     normal_sets: &[Vec<[f32; 3]>],
+    // FLÄCHEN-MENGE je Punkt (Betreiber-Idee 2026-07-12, „Flächen-Einfärbung"):
+    // die B-Rep-Flächen, auf denen der Punkt liegt. Ein Dreieck ist nur gültig,
+    // wenn seine drei Ecken eine GEMEINSAME Fläche haben. Das schließt die
+    // Lücke, die Normalen prinzipiell nicht sehen: an einer TANGENTIALEN
+    // Verschneidung sind die Normalen beider Flächen ähnlich (nicht
+    // antiparallel) — die Flächen-Zugehörigkeit ist aber verschieden.
+    // `None` = Guard aus.
+    face_sets: Option<&[Vec<u32>]>,
     spacing: &[f32],
     members: &[u32],
     chain_edges: &HashSet<(u32, u32)>,
@@ -907,6 +915,25 @@ pub fn triangulate_global_walk(
                 return false; // sin(Winkel) ≤ 0.01
             }
         }
+        // FLÄCHEN-GUARD (topologisch): die drei Ecken brauchen eine gemeinsame
+        // B-Rep-Fläche. Er sieht, was Normalen nicht sehen können — zwei
+        // Flächen, die sich TANGENTIAL nähern, haben ähnliche Normalen, aber
+        // verschiedene IDs.
+        if let Some(fs) = face_sets {
+            let (fa, fb, fc) = (
+                fs.get(a as usize).map(Vec::as_slice).unwrap_or(&[]),
+                fs.get(b as usize).map(Vec::as_slice).unwrap_or(&[]),
+                fs.get(c as usize).map(Vec::as_slice).unwrap_or(&[]),
+            );
+            if !fa.is_empty() && !fb.is_empty() && !fc.is_empty() {
+                let common = fa
+                    .iter()
+                    .any(|x| fb.contains(x) && fc.contains(x));
+                if !common {
+                    return false;
+                }
+            }
+        }
         // NORMALEN-GUARD (s.o.): DER Blatt-Trenner. Der frühere Cocone-Kegel
         // ist hier ERSATZLOS entfallen — er prüfte die Richtung zum Nachbarn
         // gegen die GEMITTELTE Punkt-Normale, die an jeder B-Rep-Kante
@@ -1101,15 +1128,28 @@ pub fn triangulate_global_walk(
                         dot(cr, cr).sqrt()
                             <= 1e-2 * dot(ab, ab).sqrt() * dot(ac, ac).sqrt()
                     };
+                    let face_block = face_sets.map_or(false, |fs| {
+                        let (fa, fb, fc) = (
+                            fs.get(u as usize).map(Vec::as_slice).unwrap_or(&[]),
+                            fs.get(v as usize).map(Vec::as_slice).unwrap_or(&[]),
+                            fs.get(w as usize).map(Vec::as_slice).unwrap_or(&[]),
+                        );
+                        !fa.is_empty()
+                            && !fb.is_empty()
+                            && !fc.is_empty()
+                            && !fa.iter().any(|x| fb.contains(x) && fc.contains(x))
+                    });
                     if deg {
                         3
+                    } else if face_block {
+                        7 // FLÄCHEN-GUARD
                     } else if [(u, v), (v, w), (w, u)]
                         .iter()
                         .any(|&(i, j)| !normals_compatible(i, j))
                     {
                         4 // NORMALEN-GUARD
                     } else {
-                        5 // Cocone / Sichtlinie / Zentroid
+                        5 // Sichtlinie / Zentroid
                     }
                 } else {
                     6 // vollständig gültig → Walk-Sackgasse
@@ -1125,6 +1165,7 @@ pub fn triangulate_global_walk(
                 4 => "NORMALEN-GUARD blockt",
                 5 => "sichtlinie/zentroid blockt",
                 6 => "voll gültig → Walk-Sackgasse (Halbkanten belegt)",
+                7 => "FLÄCHEN-GUARD blockt",
                 _ => why,
             };
             if best_state == 4 {

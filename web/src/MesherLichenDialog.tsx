@@ -63,6 +63,8 @@ interface LichenSettings {
   lfsFactor: number;
   /** Sizing-Field: zweiter Durchgang mit Lipschitz-geglättetem Dichtefeld. */
   sizingField: boolean;
+  /** Flächen-Guard: Dreieck braucht eine gemeinsame B-Rep-Fläche. */
+  faceGuard: boolean;
   partOpacity: number;
   strokeWidth: number;
   /** Draw the U(p) reach circle in the tangent plane at each point. */
@@ -98,6 +100,7 @@ const DEFAULTS: LichenSettings = {
   globalWalk: false,
   lfsFactor: 0,
   sizingField: false,
+  faceGuard: false,
   partOpacity: 0.4,
   strokeWidth: 2,
   showCircles: true,
@@ -150,6 +153,7 @@ function loadSettings(): LichenSettings {
       lfsFactor: clampNum(p.lfsFactor, 0, 1, DEFAULTS.lfsFactor),
       sizingField:
         p.sizingField === undefined ? DEFAULTS.sizingField : p.sizingField === true,
+      faceGuard: p.faceGuard === undefined ? DEFAULTS.faceGuard : p.faceGuard === true,
       partOpacity: clampNum(p.partOpacity, 0, 1, DEFAULTS.partOpacity),
       strokeWidth: clampNum(p.strokeWidth, 0.5, 12, DEFAULTS.strokeWidth),
       showCircles: p.showCircles === undefined ? DEFAULTS.showCircles : p.showCircles === true,
@@ -183,6 +187,7 @@ function lichenParams(s: LichenSettings): LichenDebug {
     globalWalk: s.globalWalk,
     lfsFactor: s.lfsFactor,
     sizingField: s.sizingField,
+    faceGuard: s.faceGuard,
     fillHoles: s.fillHoles,
     partOpacity: s.partOpacity,
     strokeWidth: s.strokeWidth,
@@ -213,6 +218,7 @@ export function MesherLichenDialog({ onClose }: { onClose: () => void }) {
   const [globalWalk, setGlobalWalk] = useState(initial.globalWalk);
   const [lfsFactor, setLfsFactor] = useState(initial.lfsFactor);
   const [sizingField, setSizingField] = useState(initial.sizingField);
+  const [faceGuard, setFaceGuard] = useState(initial.faceGuard);
   const [fillHoles, setFillHoles] = useState(initial.fillHoles);
   const [partOpacity, setPartOpacity] = useState(initial.partOpacity);
   const [strokeWidth, setStrokeWidth] = useState(initial.strokeWidth);
@@ -241,6 +247,7 @@ export function MesherLichenDialog({ onClose }: { onClose: () => void }) {
       globalWalk,
       lfsFactor,
       sizingField,
+      faceGuard,
       fillHoles,
       partOpacity,
       strokeWidth,
@@ -257,7 +264,7 @@ export function MesherLichenDialog({ onClose }: { onClose: () => void }) {
     } catch {
       // no localStorage (tests) — non-persistent is fine
     }
-  }, [targetEdgeLength, grow, curvAngleDeg, useReach, reachTol, minEdgeSpacing, maxPoints, generalTri, accept, extractWalk, globalWalk, lfsFactor, sizingField, fillHoles, partOpacity, strokeWidth, showCircles, showPoints, showTriangles, pointSize, showNormals, normalLength]);
+  }, [targetEdgeLength, grow, curvAngleDeg, useReach, reachTol, minEdgeSpacing, maxPoints, generalTri, accept, extractWalk, globalWalk, lfsFactor, sizingField, faceGuard, fillHoles, partOpacity, strokeWidth, showCircles, showPoints, showTriangles, pointSize, showNormals, normalLength]);
   useEffect(() => () => setLichenDebug(null), []);
 
   useEffect(() => {
@@ -639,6 +646,34 @@ export function MesherLichenDialog({ onClose }: { onClose: () => void }) {
               data-testid="mesher-lichen-sizing-field"
               checked={sizingField}
               onChange={(e) => setSizingField(e.currentTarget.checked)}
+            />
+          </label>
+        </div>
+      </div>
+
+      <div className="vec-row">
+        <label
+          title={
+            "FLÄCHEN-GUARD („Flächen-Einfärbung“): jeder Punkt trägt die Menge " +
+            "der B-Rep-Flächen, auf denen er liegt (Punkte im Naht-Band zweier " +
+            "Flächen tragen zwei IDs); ein Dreieck ist nur gültig, wenn seine " +
+            "drei Ecken eine GEMEINSAME Fläche haben. Ein TOPOLOGISCHES " +
+            "Kriterium — es sieht, was Normalen prinzipiell nicht sehen können: " +
+            "zwei Flächen, die sich TANGENTIAL nähern, haben ÄHNLICHE Normalen. " +
+            "Experimentell: subsumiert den Normalen-Guard, kostet aber derzeit " +
+            "mehr, als er bringt (siehe Release Notes)."
+          }
+        >
+          Flächen-Guard (experimentell)
+        </label>
+        <div className="fields">
+          <label className="checkbox">
+            <input
+              type="checkbox"
+              aria-label="Flächen-Guard"
+              data-testid="mesher-lichen-face-guard"
+              checked={faceGuard}
+              onChange={(e) => setFaceGuard(e.currentTarget.checked)}
             />
           </label>
         </div>

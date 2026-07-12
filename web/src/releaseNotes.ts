@@ -24,6 +24,16 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.559",
+    entries: [
+      {
+        kind: "feat",
+        scope: "mesher",
+        text: "Lichen: Flächen-Guard („Flächen-Einfärbung“, experimentell) — jeder Punkt trägt jetzt die MENGE der B-Rep-Flächen, auf denen er liegt (Punkte im Naht-Band zweier Flächen tragen zwei IDs), und ein Dreieck ist nur gültig, wenn seine drei Ecken eine gemeinsame Fläche haben. Das ist ein TOPOLOGISCHES Kriterium und sieht, was Normalen prinzipiell nicht sehen können: zwei Flächen, die sich TANGENTIAL nähern, haben ÄHNLICHE Normalen (nicht antiparallel), also greift dort kein normalen-basierter Guard. Messung bestätigt die These: die Blockaden des Normalen-Guards fallen von 133 auf 15 — der Flächen-Guard subsumiert ihn. Als harter Guard kostet er derzeit aber noch mehr, als er bringt (Demo 295 → 393 offene Kanten), weil die Flächen-Träger unendlich sind (Über-Zuordnung) und gedroppte Trim-Nähte Flächen ohne gemeinsame Punkte lassen. Default aus.",
+      },
+    ],
+  },
+  {
     version: "0.6.558",
     entries: [
       {

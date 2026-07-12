@@ -62,6 +62,11 @@ export interface LichenDebug {
    *  glätten, alles neu abtasten). Ohne diese Glättung schadet jede
    *  Verfeinerung mehr, als sie nützt. */
   sizingField: boolean;
+  /** FLÄCHEN-GUARD („Flächen-Einfärbung"): jeder Punkt trägt die Menge der
+   *  B-Rep-Flächen, auf denen er liegt; ein Dreieck braucht eine GEMEINSAME
+   *  Fläche seiner drei Ecken. Topologisch — sieht, was Normalen nicht sehen
+   *  können (tangential sich nähernde Flächen haben ähnliche Normalen). */
+  faceGuard: boolean;
 
   // ── Display knobs (overlay only, ignored by the kernel) ──
   /** Opacity of the rendered part (1 = opaque). Below 1 the solid turns

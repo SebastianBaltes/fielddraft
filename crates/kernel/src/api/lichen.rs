@@ -1161,6 +1161,61 @@ impl Kernel {
                     face_interior[gf as usize].push(idx);
                 }
             }
+
+            // ── FLÄCHEN-EINFÄRBUNG (Betreiber-Idee 2026-07-12) ──
+            // Jeder gewachsene Punkt trägt bisher GENAU EINE Flächen-ID (die,
+            // auf der er gewachsen ist). An einer TANGENTIALEN Verschneidung
+            // liegen aber zwei Flächen über einen breiten Streifen fast
+            // aufeinander — dort ist ein Punkt de facto BEIDEN Flächen nahe,
+            // und genau dort scheitert jeder normalen-basierte Guard (die
+            // Normalen sind sich dort ÄHNLICH, nicht antiparallel).
+            //
+            // Also: jeder Punkt bekommt die MENGE aller Flächen, auf denen er
+            // (in Welt-mm) innerhalb einer Spacing-Toleranz liegt. Punkte im
+            // Naht-Band tragen zwei IDs und dürfen legitim vermitteln; Punkte
+            // eindeutig auf einer Fläche bekommen genau eine — und ein Dreieck
+            // ist nur gültig, wenn seine drei Ecken eine GEMEINSAME Fläche
+            // haben (`face_guard`). Das ist eine TOPOLOGISCHE Bedingung, die
+            // der Geometrie nicht ansieht, wie nah sich zwei Blätter kommen.
+            if opts.face_guard {
+                let mut extra = 0usize;
+                for i in 0..all.len() {
+                    if all[i].flag > 1.5 {
+                        continue; // Ketten/Ecken tragen ihre Flächen schon
+                    }
+                    let p = all[i].p;
+                    let band: f32 = std::env::var("LICHEN_FACE_BAND")
+                        .ok()
+                        .and_then(|v| v.parse().ok())
+                        .unwrap_or(0.5);
+                    let tol = (band * all[i].space).max(1e-4);
+                    for (gf, fs) in face_surfs.iter().enumerate() {
+                        let gf = gf as u32;
+                        if point_faces[i].iter().any(|&(g, _)| g == gf) {
+                            continue;
+                        }
+                        let pl = crate::world_to_local(&fs.placement, p);
+                        let ps = crate::world_to_local(&fs.transform, pl);
+                        let d = crate::csg::sdf_halfspace(&fs.surface, ps).abs() * face_scale(fs);
+                        if d <= tol {
+                            let e = 1e-3f32;
+                            let sd = |q: [f32; 3]| crate::csg::sdf_halfspace(&fs.surface, q);
+                            let g = [
+                                sd([ps[0] + e, ps[1], ps[2]]) - sd([ps[0] - e, ps[1], ps[2]]),
+                                sd([ps[0], ps[1] + e, ps[2]]) - sd([ps[0], ps[1] - e, ps[2]]),
+                                sd([ps[0], ps[1], ps[2] + e]) - sd([ps[0], ps[1], ps[2] - e]),
+                            ];
+                            let gl = crate::quat_rotate(fs.transform.rotation, g);
+                            let nw = lichen::unit(crate::quat_rotate(fs.placement.rotation, gl));
+                            point_faces[i].push((gf, nw));
+                            extra += 1;
+                        }
+                    }
+                }
+                if std::env::var("LICHEN_DEBUG_FACES").is_ok() {
+                    eprintln!("FLÄCHEN-EINFÄRBUNG: {extra} Mehrfach-Zuordnungen (Naht-Bänder)");
+                }
+            }
         }
 
         // ── SIZING-FIELD (zweiter Durchgang) ──
@@ -1272,10 +1327,23 @@ impl Kernel {
                             }
                         })
                         .collect();
+                    // FLÄCHEN-MENGEN je Punkt (Betreiber-Idee): Grundlage des
+                    // topologischen Flächen-Guards im Walk.
+                    let face_sets: Option<Vec<Vec<u32>>> = if opts.face_guard {
+                        Some(
+                            point_faces
+                                .iter()
+                                .map(|pf| pf.iter().map(|&(g, _)| g).collect())
+                                .collect(),
+                        )
+                    } else {
+                        None
+                    };
                     let res = crate::lichen_tri::triangulate_global_walk(
                         &positions,
                         &nmap,
                         &normal_sets,
+                        face_sets.as_deref(),
                         &spacings,
                         &members,
                         &global_chain_edges,

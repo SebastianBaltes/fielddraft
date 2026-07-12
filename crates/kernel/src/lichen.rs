@@ -93,6 +93,16 @@ pub struct LichenOptions {
     /// wiederholt. Ohne diese globale Glättung schadet jede Verfeinerung mehr,
     /// als sie nützt (zweimal vermessen: §8j/§8k).
     pub sizing_field: bool,
+    /// FLÄCHEN-GUARD (Betreiber-Idee 2026-07-12): jeder Punkt bekommt die
+    /// Menge der B-Rep-Flächen, auf denen er liegt („Flächen-Einfärbung");
+    /// ein Dreieck ist nur gültig, wenn seine drei Ecken eine GEMEINSAME
+    /// Fläche haben. Das schließt die Lücke, die Normalen prinzipiell nicht
+    /// sehen können: an einer TANGENTIALEN Verschneidung sind die Normalen
+    /// beider Flächen ähnlich (nicht antiparallel), der Normalen-Guard greift
+    /// dort also nicht — die Flächen-Zugehörigkeit ist aber verschieden.
+    /// Punkte, die zwei Flächen gleich nahe sind (Naht-Band), tragen BEIDE
+    /// IDs und dürfen deshalb legitim vermitteln.
+    pub face_guard: bool,
 }
 
 impl Default for LichenOptions {
@@ -113,6 +123,7 @@ impl Default for LichenOptions {
             global_walk: false,
             lfs_factor: 0.0,
             sizing_field: false,
+            face_guard: false,
         }
     }
 }
