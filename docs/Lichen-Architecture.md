@@ -705,6 +705,48 @@ Normalen-Guard, Sichtlinie/Zentroid auf der Oberfläche, Ketten-Kreuzungs-
 Verbot, Degenerations-Guard. Sichtlinie und Ketten-Verbot sind die nächsten
 Kandidaten für dieselbe Prüfung.
 
+## 8i. Die irreduzible Front: Sub-Resolution-Kontakte (v0.6.555)
+
+Die Demo steht nach dem Wächter-Rückbau bei **302 offenen Kanten** (von 814).
+Die Forensik zerlegt sie so:
+
+| Ursache | Anteil |
+|---|---|
+| Normalen-Guard blockt | 134 (davon **70 im 150–180°-Band = KORREKTE** Ablehnungen) |
+| nur nicht-leere Kugeln | 88 |
+| Ketten-Kreuzung | 46 |
+| Walk-Sackgasse | 28 |
+| Sichtlinie/Zentroid | 20 |
+
+**Befund 14 — die beiden größten Posten haben dieselbe Wurzel.** Gemessen
+(`zz_duplicate_sheet_stats`): **18 Punktpaare mit gegenläufigen Normalen liegen
+näher als EIN Spacing** beieinander (engstes 0,56·space). Bei ε-Sampling mit
+ε = 0,5 müsste das Gegenblatt **vier** Spacings entfernt sein — dort greift
+aber der `minEdgeSpacing`-Boden. Jedes Dreieck, das einen dieser Punkte
+enthält, hat seinen Gegenblatt-Partner **in der Umkugel** ⇒ kein Kandidat ist
+gültig („nicht-leere Kugeln"), und der einzige, den die Umkugel noch zuließe,
+liegt auf dem Gegenblatt ⇒ der Normalen-Guard lehnt ihn korrekt ab. Beide
+Symptome, eine Ursache.
+
+**Befund 15 — Verfeinern hilft nachweislich nicht.** minEdge 0,1 → 0,01:
+302 → 827 offene Kanten. Das ist die **tangentiale Annäherung** (Mini-Kugel in
+der Gyroid-Wand), wo lfs → 0 geht: **kein endliches Spacing** erfüllt die
+Abtastbedingung mehr. Die Theorie sagt das exakt voraus — die
+ε-Sample-Garantie ist gegen lfs formuliert, und lfs ist dort null.
+
+**Damit ist die Front theoretisch scharf und die Antwort ist nicht mehr
+Abtastung, sondern KOLLAPS:** Wo zwei Blätter einander näher kommen als die
+Auflösung, ist die Topologie dazwischen sub-resolution und muss zusammenfallen
+(so wie wir es an Ecken-Clustern längst tun). Der frühere Kollaps-Versuch
+scheiterte an der falschen Detektion (er suchte *Duplikate* — davon gibt es
+null); die richtige Detektion ist die **Gegenblatt-Nähe** (gegenläufige
+Normalen, Abstand < Spacing), und sie ist jetzt vermessen und benannt.
+
+Nebenbei gefixt: das **FD-Fenster des Shape-Operators** hing fest an der
+globalen Ziel-Kantenlänge (0,1·h = 1 mm bei h = 10) und war damit auf feinen
+Features blind — eine Gyroid-Wand ist selbst nur 1 mm dick. Jetzt zweistufig:
+grob schätzen, Radius ableiten, mit daran gekoppeltem Fenster nachmessen.
+
 ## 9. Kritische Reflexion (2026-07-12)
 
 Bewertung des Konzepts mit dem Wissen aus Sampling-Theorie
