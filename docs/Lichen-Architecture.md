@@ -584,6 +584,51 @@ fällt ohne den Guard um.
 Probleme ist jetzt aber sauber: **Blatt-Trennung = gelöst (Normalen-Guard),
 Extraktion = offen (Umbrella-Pruning statt greedy Walk).**
 
+## 8f. Ketten-Sliver, Forensik-Korrektur, revidierte Diagnose (v0.6.552)
+
+**Befund 9 — der Sliver mit Umkreisradius NULL.** Auf der dünnen Platte
+blockierte ein einziger Dreieckstyp die Fächer *sämtlicher* Ketten-Punkte: der
+**Sliver aus drei aufeinanderfolgenden Kettenpunkten** (kollinear,
+Kantenlänge ~0,1 mm). Sein Umkreisradius rechnete numerisch zu **0** — der
+Entartungs-Test war ABSOLUT (`den < 1e-20`) und greift bei kleinen Koordinaten
+nicht. Damit galt der Sliver in **jeder** Umkreis-Sortierung als „bester"
+Kandidat (Seed-Wahl, Front-Priorität, Konflikt-Auflösung) und saturierte die
+Ketten-Kanten, bevor die echten Fächer geschlossen waren. Fixes: **relativer**
+Entartungs-Test (Gram-Determinante gegen `|ab|²·|ac|²`) + Degenerations-Guard
+in `valid` (`sin(Winkel) > 0,01`). Platte: degenerierte Dreiecke 2 → 0,
+Komponenten 4 → 2, χ 0 → 2.
+
+**Befund 10 — die Forensik log (Selbstkorrektur).** `LICHEN_WHY` zählte an
+einer offenen Kante das **bereits vorhandene** Dreieck als „gültigen
+Kandidaten" und meldete daraufhin „voll gültig → Walk-Sackgasse". Die gesamte
+§8d-Diagnose („92 % Sackgassen, die Extraktion ist der Engpass") war damit ein
+**Artefakt**. Nach der Korrektur (Apexe der existierenden Dreiecke
+ausschließen) ergibt die Platte ein völlig anderes Bild:
+
+| Ursache | Anteil |
+|---|---|
+| Normalen-Guard blockt | 465 |
+| Ketten-Kreuzungs-Verbot | 72 |
+| Sliver | 3 |
+| Walk-Sackgasse | **0** |
+
+**Die Wächter sind der Engpass, nicht die Extraktion.** Insbesondere ist der
+neue Normalen-Guard (§8e) an scharfen Kanten zu streng: seine Schwelle
+(6·α, geklemmt 30–75°) erlaubt keinen Dreieck-Übergang, dessen Endpunkt-
+Normalen 90° auseinander stehen — an einer Box-Kante trifft das jedes Dreieck
+zwischen zwei *Innen*-Punkten benachbarter Flächen. Die Normalen-MENGE rettet
+nur Dreiecke, an denen ein Ketten-Punkt beteiligt ist. **Nächster Schritt:**
+den Guard feature-bewusst machen (ein Paar darf über eine gemeinsame
+B-Rep-Kante hinweg inkompatibel sein, wenn das Dreieck die Kante nicht kreuzt)
+statt ihn zu lockern — und dann das Ketten-Kreuzungs-Verbot (72) prüfen.
+
+**Methodische Lehre:** Ein Diagnose-Werkzeug ist selbst Code und kann lügen.
+Die „Walk-Sackgasse" hat eine ganze Runde Arbeit (best-first Front, Rogue-Seed-
+Verbot, Flip-Kaskade) in eine Richtung gelenkt, die nicht der Engpass war —
+die Fixes sind einzeln korrekt und bleiben, aber sie waren nicht die Wurzel.
+Vor der nächsten Optimierung: **Forensik gegen einen Fall mit bekannter
+Antwort prüfen.**
+
 ## 9. Kritische Reflexion (2026-07-12)
 
 Bewertung des Konzepts mit dem Wissen aus Sampling-Theorie
