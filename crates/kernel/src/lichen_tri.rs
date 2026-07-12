@@ -1065,6 +1065,7 @@ pub fn triangulate_global_walk(
     // ── FORENSIK (LICHEN_WHY): warum bleibt eine Kante offen? ──
     if std::env::var("LICHEN_WHY").is_ok() && !open_edges.is_empty() {
         let mut reasons: HashMap<&'static str, usize> = HashMap::new();
+        let mut guard_hist: std::collections::BTreeMap<i32, usize> = Default::default();
         // Die Apexe der BEREITS an (u,v) hängenden Dreiecke ausschließen —
         // sonst meldet die Forensik das vorhandene Dreieck als „gültigen
         // Kandidaten" und diagnostiziert eine Sackgasse, wo keine ist.
@@ -1122,10 +1123,38 @@ pub fn triangulate_global_walk(
                 2 => "ketten-kreuzung",
                 3 => "degeneriert (Sliver)",
                 4 => "NORMALEN-GUARD blockt",
-                5 => "cocone/sichtlinie/zentroid blockt",
+                5 => "sichtlinie/zentroid blockt",
                 6 => "voll gültig → Walk-Sackgasse (Halbkanten belegt)",
                 _ => why,
             };
+            if best_state == 4 {
+                // Winkel-Histogramm der Guard-Ablehnungen: >150° = echte
+                // Wand-Durchquerung (korrekt), 90–120° = Grenzfall.
+                let mut best_ang = 180.0f32;
+                let ex2 = existing_apex.get(&(u.min(v), u.max(v))).cloned().unwrap_or_default();
+                for w in near(u, v) {
+                    if w == u || w == v || ex2.contains(&w) || !empty(u, v, w) {
+                        continue;
+                    }
+                    for (i, j) in [(u, v), (v, w), (w, u)] {
+                        if normals_compatible(i, j) {
+                            continue;
+                        }
+                        let (ni, nj) = (
+                            normal_sets.get(i as usize).map(Vec::as_slice).unwrap_or(&[]),
+                            normal_sets.get(j as usize).map(Vec::as_slice).unwrap_or(&[]),
+                        );
+                        let mut best = -1.0f32;
+                        for &x in ni {
+                            for &y in nj {
+                                best = best.max(dot(x, y));
+                            }
+                        }
+                        best_ang = best_ang.min(best.clamp(-1.0, 1.0).acos().to_degrees());
+                    }
+                }
+                *guard_hist.entry(((best_ang / 30.0) as i32) * 30).or_insert(0usize) += 1;
+            }
             *reasons.entry(why).or_default() += 1;
         }
         let mut rs: Vec<(&str, usize)> = reasons.into_iter().collect();
@@ -1145,6 +1174,9 @@ pub fn triangulate_global_walk(
             "WHY-GLOBAL {} offene Kanten: {rs:?} | Grad-Histogramm: {dhist:?}",
             open_edges.len()
         );
+        if !guard_hist.is_empty() {
+            eprintln!("  Guard-Ablehnungen nach Normalen-Winkel (30°-Klassen): {guard_hist:?}");
+        }
         for &(u, v) in open_edges.iter().take(3) {
             let ex = existing_apex.get(&(u.min(v), u.max(v))).cloned().unwrap_or_default();
             eprintln!(
@@ -1167,7 +1199,27 @@ pub fn triangulate_global_walk(
                         .filter(|&(i, j)| !normals_compatible(i, j))
                         .collect();
                     if !bad.is_empty() {
-                        format!("NORMALEN-GUARD an {bad:?}")
+                        // Wie schlimm? bestes Normalen-Paar der schlechtesten Kante.
+                        let worst = bad
+                            .iter()
+                            .map(|&(i, j)| {
+                                let (ni, nj) = (
+                                    normal_sets.get(i as usize).map(Vec::as_slice).unwrap_or(&[]),
+                                    normal_sets.get(j as usize).map(Vec::as_slice).unwrap_or(&[]),
+                                );
+                                let mut best = -1.0f32;
+                                for &x in ni {
+                                    for &y in nj {
+                                        best = best.max(dot(x, y));
+                                    }
+                                }
+                                best
+                            })
+                            .fold(1.0f32, f32::min);
+                        format!(
+                            "NORMALEN-GUARD (bester Winkel {:.0}°)",
+                            worst.clamp(-1.0, 1.0).acos().to_degrees()
+                        )
                     } else if !valid(u, v, w) {
                         "cocone/sichtlinie/zentroid".to_string()
                     } else {
@@ -2194,6 +2246,7 @@ pub fn triangulate_face_general(
     // Schuss ins Blaue. ──
     if std::env::var("LICHEN_WHY").is_ok() && !open_edges.is_empty() {
         let mut reasons: HashMap<&'static str, usize> = HashMap::new();
+        let mut guard_hist: std::collections::BTreeMap<i32, usize> = Default::default();
         for &(u, v) in &open_edges {
             let (pu, pv) = (points[u as usize], points[v as usize]);
             let mid = [

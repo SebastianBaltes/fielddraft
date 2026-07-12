@@ -24,6 +24,16 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.555",
+    entries: [
+      {
+        kind: "fix",
+        scope: "mesher",
+        text: "Lichen: Krümmungs-Schätzung zweistufig — das FD-Fenster des Shape-Operators hing fest an der globalen Ziel-Kantenlänge (0,1·h = 1 mm bei h=10) und war damit auf feinen Features blind (eine Gyroid-Wand ist selbst nur 1 mm dick); jetzt wird erst grob geschätzt, daraus ein Radius abgeleitet und mit einem daran gekoppelten Fenster nachgemessen.",
+      },
+    ],
+  },
+  {
     version: "0.6.554",
     entries: [
       {

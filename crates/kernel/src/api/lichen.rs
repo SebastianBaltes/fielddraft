@@ -1088,8 +1088,22 @@ impl Kernel {
                     let gl = crate::quat_rotate(fs.transform.rotation, g);
                     lichen::unit(crate::quat_rotate(fs.placement.rotation, gl))
                 };
+                // Krümmung ZWEISTUFIG: erst mit dem globalen h grob schätzen,
+                // daraus einen Radius ableiten, dann mit einem an DIESEN
+                // Radius gekoppelten FD-Fenster nachmessen. Ein Fixfenster von
+                // 0,1·h ist auf feinen Features (Gyroid-Wand 1 mm bei h = 10)
+                // blind — es glättet die Krümmung weg, das Wachstum bleibt
+                // grob, und die Normalen benachbarter Punkte drehen sich dann
+                // um 90° statt um den Krümmungswinkel.
                 let surf_curv = |q: [f32; 3]| -> (f32, [f32; 3]) {
-                    lichen::curvature(q, surf_gradn(q), h, &surf_gradn)
+                    let n = surf_gradn(q);
+                    let (k0, _) = lichen::curvature(q, n, h, &surf_gradn);
+                    let scale = if k0 > 1e-6 {
+                        (opts.curv_angle_deg.to_radians() / k0).clamp(opts.min_edge_spacing.max(1e-4), h)
+                    } else {
+                        h
+                    };
+                    lichen::curvature(q, n, scale, &surf_gradn)
                 };
                 #[cfg(not(target_arch = "wasm32"))]
                 let t_g = std::time::Instant::now();
@@ -2630,29 +2644,39 @@ mod tests {
         let p = |i: usize| [out[3 + i * 9], out[3 + i * 9 + 1], out[3 + i * 9 + 2]];
         let n = |i: usize| [out[3 + i * 9 + 4], out[3 + i * 9 + 5], out[3 + i * 9 + 6]];
         let sp = |i: usize| out[3 + i * 9 + 7];
-        let mut near_same = 0usize;
-        let mut near_opp = 0usize;
-        let mut worst = f32::MAX;
-        for i in 0..total {
-            for j in i + 1..total {
-                let (a, b) = (p(i), p(j));
-                let d = ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt();
-                let s = sp(i).min(sp(j)).max(1e-4);
-                if d < 0.5 * s {
-                    let (na, nb) = (n(i), n(j));
-                    let dp = na[0] * nb[0] + na[1] * nb[1] + na[2] * nb[2];
-                    if dp > 0.5 {
-                        near_same += 1;
-                        worst = worst.min(d / s);
-                    } else {
-                        near_opp += 1;
+        // Wie viele Punktpaare kommen sich NÄHER als das lokale Spacing?
+        // Solche Paare vergiften gegenseitig ihre Umkugeln (jedes Dreieck mit
+        // dem einen enthält den anderen) — das ist die Signatur der
+        // TANGENTIALEN Annäherung zweier Flächen (lfs → 0), nicht die von
+        // Duplikaten.
+        for f in [0.5f32, 1.0, 1.5] {
+            let (mut same, mut opp) = (0usize, 0usize);
+            let mut worst = f32::MAX;
+            for i in 0..total {
+                for j in i + 1..total {
+                    let (a, b) = (p(i), p(j));
+                    let d = ((a[0] - b[0]).powi(2)
+                        + (a[1] - b[1]).powi(2)
+                        + (a[2] - b[2]).powi(2))
+                    .sqrt();
+                    let s = sp(i).min(sp(j)).max(1e-4);
+                    if d < f * s {
+                        let (na, nb) = (n(i), n(j));
+                        let dp = na[0] * nb[0] + na[1] * nb[1] + na[2] * nb[2];
+                        if dp > 0.5 {
+                            same += 1;
+                            worst = worst.min(d / s);
+                        } else {
+                            opp += 1;
+                        }
                     }
                 }
             }
+            eprintln!(
+                "Punkte={total}: < {f}·space → {same} Paare gleich-orientiert, {opp} gegenläufig (engstes {:.2}·space)",
+                if worst.is_finite() { worst } else { 0.0 }
+            );
         }
-        eprintln!(
-            "Punkte={total}: {near_same} Paare < 0.5·space mit GLEICHER Normale (Kollaps-Kandidaten), {near_opp} mit gegenläufiger (echte Gegenblätter); engstes Verhältnis {worst:.3}"
-        );
     }
 
     /// NORMALEN-GUARD (Betreiber-Idee 2026-07-12) — die dünne Platte ist der

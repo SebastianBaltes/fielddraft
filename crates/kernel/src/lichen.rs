@@ -221,7 +221,15 @@ pub fn curvature<Gn: Fn([f32; 3]) -> [f32; 3]>(
     gradn: &Gn,
 ) -> (f32, [f32; 3]) {
     let (e1, e2) = tangent_basis(n);
-    let delta = (0.1 * h).clamp(1e-3, 0.5);
+    // FD-Fenster: an die ABTASTSKALA gekoppelt, nicht an h. Der Aufrufer gibt
+    // in `h` die lokale Skala (Spacing), nicht die globale Ziel-Kantenlänge —
+    // sonst misst der Shape-Operator auf einem Gyroid (Wandstärke 1 mm) mit
+    // einem 1-mm-Fenster (0,1 · h bei h = 10) und unterschätzt die Krümmung
+    // dramatisch: die Abtastung bleibt grob, benachbarte Flächen-Normalen
+    // drehen sich um 90–120° statt um den Krümmungswinkel, und die
+    // Blatt-Trennung kann echte Nachbarn nicht mehr von der Gegenwand
+    // unterscheiden (gemessen: 40 Guard-Ablehnungen im 90–120°-Band).
+    let delta = (0.1 * h).clamp(1e-4, 0.5);
     let dn = |dir: [f32; 3]| -> [f32; 3] {
         let gp = gradn(add(p, scale(dir, delta)));
         let gm = gradn(sub(p, scale(dir, delta)));
