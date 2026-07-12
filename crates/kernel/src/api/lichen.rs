@@ -858,6 +858,10 @@ impl Kernel {
             out
         };
 
+        // Phasen-Stoppuhren nur NATIV: std::time::Instant PANICT auf
+        // wasm32 („time not implemented") — die 541er-Instrumentierung
+        // hat damit den Browser-Mesher getötet (Betreiber-Konsole).
+        #[cfg(not(target_arch = "wasm32"))]
         let t_setup = std::time::Instant::now();
         // ── Wachstum (§1) pro Fläche, mit harter Kanten-Wand ──
         // Gewachsene Innen-Partikel je Fläche (für den Pro-Fläche-CDT).
@@ -1028,10 +1032,12 @@ impl Kernel {
                 let surf_curv = |q: [f32; 3]| -> (f32, [f32; 3]) {
                     lichen::curvature(q, surf_gradn(q), h, &surf_gradn)
                 };
+                #[cfg(not(target_arch = "wasm32"))]
                 let t_g = std::time::Instant::now();
                 let grown = lichen::grow_surface(
                     &bseeds, &all, h, &opts, &fg, &brep_dist, &on_face, &surf_curv,
                 );
+                #[cfg(not(target_arch = "wasm32"))]
                 if std::env::var("LICHEN_PERF").is_ok() {
                     eprintln!("PERF grow gf={gf}: {:?} ({} Punkte)", t_g.elapsed(), grown.len());
                 }
@@ -1078,6 +1084,7 @@ impl Kernel {
         // Band-Schnitt mit index-geteilter Naht, Pol-Kappen via Ring + Fächer.
         // Torus (doppelt periodisch) und Gyroid (chartlos, F2) bleiben
         // vorerst untrianguliert. ──
+        #[cfg(not(target_arch = "wasm32"))]
         if std::env::var("LICHEN_PERF").is_ok() {
             eprintln!("PERF setup+grow gesamt: {:?} ({} Punkte)", t_setup.elapsed(), all.len());
         }
@@ -1172,6 +1179,7 @@ impl Kernel {
                     } else {
                         &opts.accept
                     };
+                    #[cfg(not(target_arch = "wasm32"))]
                     let t_t = std::time::Instant::now();
                     let res = crate::lichen_tri::triangulate_face_general(
                         &positions,
@@ -1200,6 +1208,7 @@ impl Kernel {
                             res.tris.len(), res.hole_edges
                         );
                     }
+                    #[cfg(not(target_arch = "wasm32"))]
                     if std::env::var("LICHEN_PERF").is_ok() {
                         eprintln!(
                             "PERF tri gf={gf}: {:?} ({} members, {} tris)",

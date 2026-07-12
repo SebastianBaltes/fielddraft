@@ -24,6 +24,16 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.543",
+    entries: [
+      {
+        kind: "fix",
+        scope: "mesher",
+        text: "Lichen: Browser-Crash der 541er-Version behoben — die Performance-Stoppuhren nutzten std::time::Instant, das auf WASM nicht existiert und sofort panict („time not implemented on this platform“); der Panic vergiftete anschließend die ganze Session (Aliasing-Folgefehler, Auto-Save tot). Timings laufen jetzt nur noch nativ.",
+      },
+    ],
+  },
+  {
     version: "0.6.542",
     entries: [
       {
