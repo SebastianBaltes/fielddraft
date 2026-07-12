@@ -465,6 +465,49 @@ Abtastung, sondern der verallgemeinerte **Mikro-Feature-Kollaps**
 plus der Rückbau des Wächter-Turms, der mit der Extraktion großteils
 redundant wird.
 
+## 8c. Globaler Walk + ε-Sampling (v0.6.549)
+
+**Befund 4 — die Restlöcher sind NAHT-SCHLITZE, keine Sampling-Defekte.** Die
+offenen Kanten der per-Fläche-Extraktion bilden **geschlossene Loops** (Gyroid
+ein 31-Kanten-Loop, Bohrung 11+13, alle Knoten Grad 2). Ursache: wo der Weave
+die Trim-Naht droppt (non-Lipschitz-Gruppen, DL-71), existiert keine geteilte
+Punkt-Kette — beide Nachbarflächen enden mit freiem Rand, ihre Randpunkte sind
+VERSCHIEDEN, im Netz bleibt ein Schlitz. Weder ein anderes Prädikat noch mehr
+Punkte können das schließen: **die Flächen-Zerlegung selbst ist der Defekt**
+(bestätigt: feineres h ändert nichts, die Dichte ist gar nicht h-getrieben).
+
+**Globaler Walk** (`globalWalk`, `lichen_tri::triangulate_global_walk`): EIN
+Netz über die gesamte Punktwolke, keine Flächen-Zerlegung. An echten
+B-Rep-Kanten liegen die Ketten-Punkte ohnehin in beiden Flächen (geteilte
+Indizes) — der Walk läuft hinüber und reproduziert die Kante exakt (der
+Sweep-durch-die-Luft trifft zwangsläufig zuerst den Nachbarflächen-Punkt).
+Ketten-Kanten bleiben Kreuzungs-Verbot (Feature-Linien), sind aber **keine
+Wände** mehr. Der Cocone-Kegel muss dafür weit sein (60–80°), sonst blockiert
+er die Kanten selbst; die Blatt-Trennung leisten Sichtlinie + Zentroid-Test.
+**Gate `lichen_global_walk_watertight_on_smooth_bodies`: Box, Zylinder, Kugel
+χ=2 und TORUS χ=0** — der Torus (im Chart-Pfad nie lösbar, doppelt periodisch)
+fällt als Nebenprodukt ab, und die Genus-1-Topologie wird selbst erkannt.
+
+**ε-Sampling gegen die lfs** (`lfsFactor`, `lichen::reach_inner`): Das
+Konzept (§2.3) ließ den Marsch INS MATERIAL „zur Performance-Optimierung" weg
+und überließ dünne Wände dem Sichtlinien-Test. Das ist die zentrale falsche
+Annahme (R-A2): die local feature size, gegen die das Umkugel-Theorem
+formuliert ist, ist die Distanz zur Medialachse — **innen wie außen**. Auf der
+1-mm-Gyroid-Wand ist lfs ≈ 0,5 mm bei Spacing 0,2 (ε = 0,4 statt ≤ 0,1): die
+leere Umkugel **erreicht das Gegenblatt**. Die Flächen-Zerlegung hat das nur
+maskiert; der globale Walk legt es offen. Erkennung der Medialachse über die
+**Abflachung des Distanzfelds** (`−f(p − t·n) < 0.9·t`) statt über
+Fußpunkt-Verfolgung — die bleibt auf dünnen Wänden unter `reach_tol` und
+detektiert gar nichts. Gate: 1-mm-Wand 103 → 33458 Punkte.
+
+**Offen:** Das Demo-Projekt bleibt im globalen Walk offen (relativer Randanteil
+sinkt mit ε-Sampling von 29 % auf 11 %, absolut noch nicht dicht). Die
+verbleibende Front ist damit sauber isoliert: **tangentiale Kontakte**
+(Mini-Kugel in der Wand, Gyroid ∩ Box fast parallel), wo lfs → 0 geht und
+kein ε die Bedingung mehr erfüllen kann. Dafür ist der verallgemeinerte
+**Mikro-Feature-Kollaps** die theoretisch richtige Antwort (Sub-Resolution-
+Topologie kollabieren statt abtasten), nicht mehr Dichte.
+
 ## 9. Kritische Reflexion (2026-07-12)
 
 Bewertung des Konzepts mit dem Wissen aus Sampling-Theorie
