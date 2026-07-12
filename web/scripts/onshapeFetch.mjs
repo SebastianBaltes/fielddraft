@@ -77,15 +77,19 @@ function loadConfig() {
 /**
  * Onshape HMAC request signing (docs: API keys → "Making signed requests").
  * The signature covers method + a nonce + an RFC-1123 date + content-type +
- * the lowercased path & query. Header set: Date, On-Nonce, Authorization.
+ * path & query. Header set: Date, On-Nonce, Authorization.
+ *
+ * The whole string is lowercased before hashing — including the date, whose
+ * RFC-1123 form ("Mon, 13 Jul 2026 … GMT") carries uppercase. Lowercasing only
+ * method/path yields a signature Onshape rejects with a bare 401.
  */
 function signedHeaders(cfg, method, path, query = "") {
   const nonce = randomBytes(25).toString("hex");
   const authDate = new Date().toUTCString();
   const contentType = "application/json";
-  const toSign =
-    `${method.toLowerCase()}\n${nonce}\n${authDate}\n${contentType}\n` +
-    `${path.toLowerCase()}\n${query.toLowerCase()}\n`;
+  const toSign = (
+    `${method}\n${nonce}\n${authDate}\n${contentType}\n` + `${path}\n${query}\n`
+  ).toLowerCase();
   const hmac = createHmac("sha256", cfg.secretKey)
     .update(toSign)
     .digest("base64");
