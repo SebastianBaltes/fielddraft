@@ -629,6 +629,48 @@ die Fixes sind einzeln korrekt und bleiben, aber sie waren nicht die Wurzel.
 Vor der nächsten Optimierung: **Forensik gegen einen Fall mit bekannter
 Antwort prüfen.**
 
+## 8g. Dünne Platte wasserdicht — beide Wurzeln lagen in der Punktverteilung (v0.6.553)
+
+Nach der Forensik-Korrektur (§8f) zeigte die dünne Platte (1 mm dick,
+Gegenblätter 1 mm auseinander, nur 1 mm breite Seitenfläche) ein klares Bild:
+465 × Normalen-Guard, 72 × Ketten-Kreuzung, **0 × Walk-Sackgasse**. Das
+Nachfassen an konkreten Kanten führte auf **zwei Wurzeln — beide in der
+Punktverteilung**, keine im Prädikat und keine in der Extraktion.
+
+**Wurzel A — die Ketten folgten dem ε-Sampling nicht.** Auf der Platte blieb
+die B-Rep-Kette bei **1,75 mm**, während die Flächen per lfs auf **0,26 mm**
+verfeinert wurden (Faktor 7). Ein Ketten-Punkt sitzt dann als grober
+Fremdkörper in einer dichten Punktwolke: sein Delaunay-Fächer ist entartet,
+die leere Umkugel **jedes** Dreiecks mit ihm enthält Flächen-Punkte — und der
+einzige Kandidat, den die Umkugel überhaupt noch zulässt, liegt auf der
+**Gegenseite der Platte**. Dort greift dann korrekt der Normalen-Guard, und
+die Kante bleibt offen. Der Guard war also nicht die Ursache, sondern der
+*letzte* Wächter, der den Schaden sichtbar machte. Fix: `build_chain` bekommt
+ein lfs-begrenztes `h` (ε-Sampling auch auf den Ketten).
+
+**Wurzel B — die erste Punktreihe stand zu dicht an der Kante.** Die
+Schritt-Halbierung setzte sie auf den **halben** Abstand: 0,14 mm neben einer
+Kette, deren eigene Nachbarn 0,48 mm entfernt sind. Solche Punkte liegen **in
+der Umkugel der Kanten-Dreiecke** und machen sie ungültig — die schmale
+Seitenfläche der Platte blieb deshalb komplett ungemesht. Fix:
+**Ketten-Clearance** im Wachstum (`brep_dist ≥ 0,7 · r_eff`) — die Fläche muss
+von ihrer Kante mit dem vollen Spacing „abstehen".
+
+**Ergebnis:** Platte 556 → 540 (Sliver-Fix) → 326 (Ketten-lfs) → **0** offene
+Kanten, χ = 2, 0 Wand-Durchquerungen, 1 Komponente — ohne Chart, ohne
+Kandidaten-Vervollständigung, ohne Loch-Füller. Gate
+`lichen_thin_plate_global_walk_is_watertight` prüft alles davon.
+
+**Das Muster über alle Befunde hinweg:** jede vermeintliche Prädikat- oder
+Extraktions-Schwäche war am Ende eine **Sampling-Verletzung**. Die Reihenfolge
+der Säulen aus dem Cocone-Programm stimmt also — Säule 1 (ε-Sample) trägt
+alles, und sie muss für **jede** Punktquelle gelten: Wachstum, **Ketten**, und
+den Abstand zwischen beiden.
+
+Demo (Gyroid + tangentiale Mikro-Features): 814 → 651 offene Kanten. Dort geht
+lfs an tangentialen Kontakten gegen 0 — die verbliebene, theoretisch harte
+Front.
+
 ## 9. Kritische Reflexion (2026-07-12)
 
 Bewertung des Konzepts mit dem Wissen aus Sampling-Theorie
