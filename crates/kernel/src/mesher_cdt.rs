@@ -143,6 +143,7 @@ fn triangulate_uv(
         })
     };
 
+    let mut dbg = (0usize, 0usize, 0usize, 0usize); // admit-fail, too_close, ok, insert-fail
     for &(gi, [u, v]) in interior {
         let p2 = Point2::new(u, v);
         // Regions-Entscheid: even-odd-Parität — oder, wenn der Caller ein
@@ -156,15 +157,30 @@ fn triangulate_uv(
             None => inside(p2),
         };
         if !admit {
+            dbg.0 += 1;
             continue; // particle belongs to another region / periodic copy
         }
         if too_close(p2) {
+            dbg.1 += 1;
             continue; // would split (or crowd) a boundary constraint
         }
         if let Ok(h) = cdt.insert(p2) {
+            dbg.2 += 1;
             let pos = cdt.vertex(h).position();
             back.entry(keyf(pos)).or_insert(gi);
+        } else {
+            dbg.3 += 1;
         }
+    }
+    if std::env::var("LICHEN_DEBUG_FACES").is_ok() {
+        eprintln!(
+            "triangulate_uv: interior={} admit-fail={} too_close={} ok={} insert-fail={}",
+            interior.len(),
+            dbg.0,
+            dbg.1,
+            dbg.2,
+            dbg.3
+        );
     }
 
     // ── Harvest: COMBINATORIAL even-odd classification ──
@@ -378,9 +394,43 @@ pub(crate) fn triangulate_periodic_face(
     let winders: Vec<usize> = (0..unwrapped.len())
         .filter(|&i| unwrapped[i].1 != 0)
         .collect();
+    if std::env::var("LICHEN_DEBUG_FACES").is_ok() {
+        eprintln!(
+            "periodic_face: loops={:?} winders={winders:?} interior={} poles={poles:?}",
+            unwrapped.iter().map(|(l, w)| (l.len(), *w)).collect::<Vec<_>>(),
+            interior.len()
+        );
+    }
 
     // ── Case 1: no loop winds — align branches and triangulate directly ──
     if winders.is_empty() {
+        // VOLLWICKEL-WÄCHTER (Lichen, Betreiber-Bild „Spalt in der Kugel"):
+        // eine GESCHLOSSENE Trägerfläche mit nur kleinen Löchern (Kugel, in
+        // der eine Wand steckt → zwei nicht-windende Naht-Ringe) wickelt die
+        // volle Periode, hat aber keine windenden Loops — Case 1 besitzt
+        // keine Naht-Maschinerie: am Chart-Schnitt u = ±P/2 bleibt ein
+        // leerer Meridian-Streifen, den die Chart-Hülle mit langen Welt-
+        // Sehnen überbrückt (degenerierter Spalt). Erkennung über die
+        // u-Überdeckung ALLER Punkte: bleibt keine Lücke ≥ 5% der Periode,
+        // ist die Fläche nicht in EIN Chart-Fenster abwickelbar → None
+        // (der Caller wählt einen chartlosen Pfad).
+        {
+            let mut us: Vec<f64> = unwrapped
+                .iter()
+                .flat_map(|(l, _)| l.iter().map(|&(_, [u, _])| u.rem_euclid(period)))
+                .chain(interior.iter().map(|&(_, [u, _])| u.rem_euclid(period)))
+                .collect();
+            us.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+            if us.len() >= 3 {
+                let mut max_gap = us[0] + period - us[us.len() - 1];
+                for w in us.windows(2) {
+                    max_gap = max_gap.max(w[1] - w[0]);
+                }
+                if max_gap < 0.05 * period {
+                    return None;
+                }
+            }
+        }
         let ref_mean = loop_mean_u(&unwrapped[0].0);
         let aligned: Vec<Vec<UvPoint>> = unwrapped
             .iter()

@@ -415,6 +415,14 @@ impl Kernel {
                 let SurfaceGeometry::Analytic { surface, transform } = &face.surface else {
                     continue; // tessellierte Flächen (Gyroid) hier ausgelassen
                 };
+                if std::env::var("LICHEN_DEBUG_FACES").is_ok() {
+                    eprintln!(
+                        "BREP-FACE fi={fi} {:?} outer.edges={} inner={}",
+                        std::mem::discriminant(surface),
+                        face.outer.edges.len(),
+                        face.inner.len()
+                    );
+                }
                 let gf = face_surfs.len() as u32;
                 face_surfs.push(FaceSurf {
                     surface: surface.clone(),
@@ -667,13 +675,23 @@ impl Kernel {
         // Welt→Fläche-Klassifikator (harte Kanten-Wand): die BRep-Fläche mit
         // kleinstem |Flächen-SDF| am Punkt; `None`, wenn zu weit von allen
         // Flächen (Blend-Region) — dorthin wächst nichts.
+        // SKALEN-KORREKTUR (Betreiber-Bild 3, „Spalt in der Mini-Kugel"):
+        // sdf_halfspace misst im LOKALEN Flächen-Frame — eine Fläche mit
+        // placement-/transform-Skala 0.02 (Mini-Kugel) liefert 50× auf-
+        // geblasene Distanzen. Der argmin über verschieden skalierte
+        // Flächen war damit unfair, und alle Distanz-Schwellen (0.5·h,
+        // on_face-Wand) wirkten pro Fläche verschieden. Immer auf WELT-mm
+        // zurückskalieren.
+        let face_scale = |fs: &FaceSurf| -> f32 {
+            (fs.placement.scale[0] * fs.transform.scale[0]).abs().max(1e-6)
+        };
         let face_of = |p_world: [f32; 3]| -> Option<u32> {
             let mut best = u32::MAX;
             let mut bestd = f32::MAX;
             for (gf, fs) in face_surfs.iter().enumerate() {
                 let p_local = crate::world_to_local(&fs.placement, p_world);
                 let p_surf = crate::world_to_local(&fs.transform, p_local);
-                let d = crate::csg::sdf_halfspace(&fs.surface, p_surf).abs();
+                let d = crate::csg::sdf_halfspace(&fs.surface, p_surf).abs() * face_scale(fs);
                 if d < bestd {
                     bestd = d;
                     best = gf as u32;
@@ -930,11 +948,20 @@ impl Kernel {
                     let fs = &face_surfs[gf as usize];
                     let pl = crate::world_to_local(&fs.placement, q);
                     let ps = crate::world_to_local(&fs.transform, pl);
-                    crate::csg::sdf_halfspace(&fs.surface, ps).abs()
+                    // In Welt-mm (Skalen-Korrektur, s. face_of).
+                    crate::csg::sdf_halfspace(&fs.surface, ps).abs() * face_scale(fs)
                 };
                 let on_face = |p0: [f32; 3], p1: [f32; 3], rr: f32| -> bool {
-                    // (a) Ziel auf der eigenen Trägerfläche.
-                    if own_dist(p1) > (0.15 * rr).max(0.02 * h) {
+                    // (a) Ziel auf der eigenen Trägerfläche. Floor 2e-3·h
+                    // statt 0.02·h: der alte Floor (0.2 mm bei h=10) machte
+                    // die Wand für Sub-h-Features PORÖS — die Gyroid-Wand
+                    // wuchs bis 0.2 mm neben ihren Träger, d.h. quer über
+                    // das Band der Mini-Kugel (Wand–Kugel-Abstand dort
+                    // 0.05–0.15 mm); ihre Übertreter blockierten die echte
+                    // Kugel-Besiedlung als xgrid-Konflikte und fehlten im
+                    // Kugel-Chart → leeres Band, lange Brücken-Sehnen
+                    // (Betreiber-Bild „Spalt in der Kugel").
+                    if own_dist(p1) > (0.15 * rr).max(2e-3 * h) {
                         return false;
                     }
 
@@ -1244,6 +1271,19 @@ impl Kernel {
                 }
                 return lichen::pack_with_diag(&all, &t, &point_faces, &open_edges, &weak_tris);
             }
+            // Globale Ketten-Kanten (für den chartlosen Pro-Flächen-Fallback
+            // unten — fremde Ketten sind dort harte Wände, wie im General-Pfad).
+            let global_chain_edges: HashSet<(u32, u32)> = face_loops
+                .iter()
+                .flat_map(|rings| rings.iter())
+                .flat_map(|(r, _)| {
+                    (0..r.len()).map(move |k| {
+                        let (a, b) = (r[k], r[(k + 1) % r.len()]);
+                        (a.min(b), a.max(b))
+                    })
+                })
+                .filter(|&(a, b)| a != b)
+                .collect();
             for gf in 0..face_surfs.len() {
                 // Rand-Clearance des CDT PRO FLÄCHE aus dem lokalen Punkt-
                 // Spacing, nicht pauschal 0.25·h (Ticket e6b21b96): das
@@ -1294,6 +1334,12 @@ impl Kernel {
                     t.extend(ft);
                     continue;
                 }
+                // Chart-Versuch als benannter Block: schlägt er fehl
+                // (Vollwickel-Kugel, Torus, Gyroid, loop-lose Fläche), fällt
+                // die Fläche unten auf die CHARTLOSE General-Triangulierung
+                // zurück, statt ungemesht zu bleiben (Betreiber-Bilder:
+                // Meridian-Spalt in der Mini-Kugel, Gyroid ganz ohne Mesh).
+                let charted = 'chart: {
                 let fs = &face_surfs[gf];
                 // Chart-Frame: Fläche lokal → Welt = placement ∘ transform
                 // (exakt die Kette des `face_of`-Klassifikators).
@@ -1334,7 +1380,10 @@ impl Kernel {
                     raw_loops.push(lp);
                 }
                 if !chart_ok {
-                    continue; // Torus/Gyroid: chartlos (F2) — bleibt Punktwolke
+                    if std::env::var("LICHEN_DEBUG_FACES").is_ok() {
+                        eprintln!("CHART gf={gf}: kein Chart (loops={})", loops.len());
+                    }
+                    break 'chart false; // Torus/Gyroid/loop-los → Fallback
                 }
                 // θ (und Kugel-Polarwinkel) auf Bogenlänge skalieren, damit
                 // beide Chart-Achsen vergleichbare Einheiten tragen.
@@ -1423,7 +1472,7 @@ impl Kernel {
                 // dem Träger (Body-|f| ≈ f32-Rauschen), vergrabene ab ~0.05 tief.
                 let live_tol = 0.02f32;
                 let live = |p: [f32; 3]| -> bool { fg(p).0.abs() <= live_tol };
-                if let Some(mesh) = crate::mesher_cdt::triangulate_periodic_face(
+                let Some(mesh) = crate::mesher_cdt::triangulate_periodic_face(
                     &scaled,
                     &scaled_interior,
                     period,
@@ -1433,29 +1482,117 @@ impl Kernel {
                     all.len() as u32,
                     &world_of,
                     Some(&live),
-                ) {
-                    // Naht-Steiner-/Pol-Punkte als neue Flächenpunkte anhängen
-                    // (flag 1); Normale aus ∇f.
-                    for p in mesh.aux {
-                        let (d, g) = fg(p);
-                        let n = lichen::unit(g);
-                        all.push(LPoint { p, sdf: d, n, u: h, space: h, flag: 1.0 });
-                        point_faces.push(vec![(gf as u32, n)]);
-                        local_pos.push([0.0; 3]);
-                    }
-                    // Ketten-Kanten-Einzelnutzung wie im planaren Zweig
-                    // (Positionen NACH dem Aux-Anhängen, die Indizes der
-                    // Naht-/Pol-Punkte zeigen in `all`).
-                    let positions: Vec<[f32; 3]> = all.iter().map(|lp| lp.p).collect();
-                    let mut ft = mesh.tris;
-                    crate::lichen_tri::enforce_chain_single_use(
-                        &positions,
-                        &loops,
-                        &chain_normals,
-                        &mut ft,
-                    );
-                    t.extend(ft);
+                ) else {
+                    break 'chart false; // Vollwickel o.ä. → Fallback
+                };
+                // Naht-Steiner-/Pol-Punkte als neue Flächenpunkte anhängen
+                // (flag 1); Normale aus ∇f.
+                for p in mesh.aux {
+                    let (d, g) = fg(p);
+                    let n = lichen::unit(g);
+                    all.push(LPoint { p, sdf: d, n, u: h, space: h, flag: 1.0 });
+                    point_faces.push(vec![(gf as u32, n)]);
+                    local_pos.push([0.0; 3]);
                 }
+                // Ketten-Kanten-Einzelnutzung wie im planaren Zweig
+                // (Positionen NACH dem Aux-Anhängen, die Indizes der
+                // Naht-/Pol-Punkte zeigen in `all`).
+                let positions: Vec<[f32; 3]> = all.iter().map(|lp| lp.p).collect();
+                let mut ft = mesh.tris;
+                crate::lichen_tri::enforce_chain_single_use(
+                    &positions,
+                    &loops,
+                    &chain_normals,
+                    &mut ft,
+                );
+                t.extend(ft);
+                true
+                };
+                if charted {
+                    continue;
+                }
+                // ── CHARTLOS-FALLBACK pro Fläche: General-Triangulierung
+                // (Stern/Umkugel, auto-Akzeptanz) — identische Mechanik wie
+                // der General-Pfad, nur für die Flächen, die kein Chart
+                // tragen. So liefert der Default-Modus (General tri aus)
+                // auch auf Vollwickel-Kugeln, Torus und Gyroid ein Mesh
+                // statt Spalt/Leere. ──
+                let positions: Vec<[f32; 3]> = all.iter().map(|lp| lp.p).collect();
+                let spacings: Vec<f32> = all.iter().map(|lp| lp.space).collect();
+                let mut members: Vec<u32> = Vec::new();
+                let mut nmap: HashMap<u32, [f32; 3]> = HashMap::new();
+                for ring in &loops {
+                    for &gi in ring {
+                        if nmap.contains_key(&gi) {
+                            continue;
+                        }
+                        let n = point_faces[gi as usize]
+                            .iter()
+                            .find(|&&(g, _)| g == gf as u32)
+                            .map(|&(_, n)| n)
+                            .unwrap_or(all[gi as usize].n);
+                        nmap.insert(gi, n);
+                        members.push(gi);
+                    }
+                }
+                let fsn = |p_world: [f32; 3]| -> [f32; 3] {
+                    let fs = &face_surfs[gf];
+                    let pl = crate::world_to_local(&fs.placement, p_world);
+                    let ps = crate::world_to_local(&fs.transform, pl);
+                    let e = 1e-3f32;
+                    let sd = |q: [f32; 3]| crate::csg::sdf_halfspace(&fs.surface, q);
+                    let g = [
+                        sd([ps[0] + e, ps[1], ps[2]]) - sd([ps[0] - e, ps[1], ps[2]]),
+                        sd([ps[0], ps[1] + e, ps[2]]) - sd([ps[0], ps[1] - e, ps[2]]),
+                        sd([ps[0], ps[1], ps[2] + e]) - sd([ps[0], ps[1], ps[2] - e]),
+                    ];
+                    let gl = crate::quat_rotate(fs.transform.rotation, g);
+                    lichen::unit(crate::quat_rotate(fs.placement.rotation, gl))
+                };
+                for &gi in &face_interior[gf] {
+                    if nmap.insert(gi, fsn(all[gi as usize].p)).is_none() {
+                        members.push(gi);
+                    }
+                }
+                if members.len() < 3 {
+                    continue;
+                }
+                let own = |p: [f32; 3]| face_of(p) == Some(gf as u32);
+                let face_accept: &str = match &face_surfs[gf].surface {
+                    HalfSpace::Plane { .. }
+                    | HalfSpace::InfiniteCylinder { .. }
+                    | HalfSpace::Cone { .. } => "vote",
+                    _ => "gabriel",
+                };
+                let res = crate::lichen_tri::triangulate_face_general(
+                    &positions,
+                    &nmap,
+                    &spacings,
+                    &members,
+                    &loops,
+                    opts.curv_angle_deg.to_radians(),
+                    face_accept,
+                    Some(&own),
+                    Some(&global_chain_edges),
+                    opts.fill_holes,
+                    &fg,
+                    &|p: [f32; 3]| {
+                        let fs = &face_surfs[gf];
+                        let pl = crate::world_to_local(&fs.placement, p);
+                        let ps = crate::world_to_local(&fs.transform, pl);
+                        crate::csg::sdf_halfspace(&fs.surface, ps).abs() <= 0.05 * h
+                    },
+                );
+                if std::env::var("LICHEN_DEBUG_FACES").is_ok() {
+                    eprintln!(
+                        "FALLBACK gf={gf} {:?} members={} tris={} holes={}",
+                        std::mem::discriminant(&face_surfs[gf].surface),
+                        members.len(),
+                        res.tris.len(),
+                        res.hole_edges
+                    );
+                }
+                t.extend(res.tris);
             }
             t
         } else {
@@ -1693,18 +1830,26 @@ mod tests {
     /// Schnittebene ist eine planare Scheibe. Ergebnis: geschlossen.
     #[test]
     fn lichen_hemisphere_mesh_is_watertight() {
+        // ECHTES CSG via load_json mit targets: add_primitive(TAG_REMOVE)
+        // hängt ohne targets KEIN Boolean an — der Test lief historisch mit
+        // zwei getrennten Bodies (freie Kugel + Box) und war ein False
+        // Positive: nur die Box war geschlossen, die Kugel blieb komplett
+        // ungemesht (Kappen-Loops existierten nie). Aufgeflogen 2026-07-12
+        // beim Chartlos-Fallback (der die freie Kugel plötzlich meshte).
         let mut k = crate::Kernel::new();
-        k.add_primitive(Primitive::KIND_SPHERE, BoolOp::TAG_NEW, 0.0, 0.0, 0.0, 10.0, 0.0, 0.0)
-            .unwrap();
-        k.add_primitive(
-            Primitive::KIND_BOX,
-            BoolOp::TAG_REMOVE,
-            0.0,
-            -20.0,
-            0.0,
-            25.0,
-            20.0,
-            25.0,
+        k.load_json(
+            r#"{
+            "schema_version": 1,
+            "name": "hemi",
+            "feature_calls": [
+                { "type": "sphere", "id": 1, "params": {
+                    "op": "new", "radius": 10, "translate": [0, 0, 0] } },
+                { "type": "box", "id": 2, "params": {
+                    "op": "remove", "targets": "qCreatedBy(1)",
+                    "half_extents": [25, 20, 25], "translate": [0, -20, 0] } }
+            ],
+            "next_feature_id": 3
+        }"#,
         )
         .unwrap();
         let out = k.lichen_mesh(
@@ -1983,14 +2128,126 @@ mod tests {
         }
     }
 
+    /// SCRATCH-Analyse (Betreiber-Bild 3: Spalt in der Mini-Kugel mit
+    /// degenerierten langen Dreiecken, Chart-Pfad): Dreiecke an der
+    /// Mini-Kugel vermessen — lange Kanten relativ zum lokalen Spacing.
+    #[test]
+    #[ignore = "Analyse-Werkzeug, kein Gate"]
+    fn lichen_scratch_minisphere_chart_analysis() {
+        let mut k = demo_project_kernel();
+        let out = k.lichen_mesh(
+            r#"{"targetEdgeLength":10.0,"grow":true,"curvAngleDeg":5.0,"minEdgeSpacing":0.2,"maxPoints":50000}"#.into(),
+        );
+        let total = out[0] as usize;
+        let tris = out[1] as usize;
+        let pos = |i: usize| -> [f32; 3] { [out[3 + i * 9], out[3 + i * 9 + 1], out[3 + i * 9 + 2]] };
+        let c = [5.2107882f32, 22.11431, 29.24847];
+        let near = |p: [f32; 3]| -> bool {
+            let d = [p[0] - c[0], p[1] - c[1], p[2] - c[2]];
+            (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt() < 1.4
+        };
+        let base = 3 + total * 9;
+        let mut long_edges = 0usize;
+        let mut n_tris = 0usize;
+        for t in 0..tris {
+            let (ia, ib, ic) = (
+                out[base + t * 3] as usize,
+                out[base + t * 3 + 1] as usize,
+                out[base + t * 3 + 2] as usize,
+            );
+            let (a, b, cc) = (pos(ia), pos(ib), pos(ic));
+            if !(near(a) && near(b) && near(cc)) {
+                continue;
+            }
+            n_tris += 1;
+            for (x, y, ix, iy) in [(a, b, ia, ib), (b, cc, ib, ic), (cc, a, ic, ia)] {
+                let d = [y[0] - x[0], y[1] - x[1], y[2] - x[2]];
+                let l = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+                let sp = out[3 + ix * 9 + 7].min(out[3 + iy * 9 + 7]).max(0.05);
+                if l > 4.0 * sp {
+                    long_edges += 1;
+                    eprintln!(
+                        "LANG {ix}({:?})-{iy}({:?}) l={l:.3} u=({:.2},{:.2}) flags=({},{})",
+                        x, y, out[3 + ix * 9 + 7], out[3 + iy * 9 + 7],
+                        out[3 + ix * 9 + 8], out[3 + iy * 9 + 8]
+                    );
+                }
+            }
+        }
+        eprintln!("mini-sphere: {n_tris} tris, {long_edges} lange Kanten (>4×U)");
+        // Vergrabungstiefe entlang der langen Kanten: Sehnen-Punkte auf den
+        // r=1-Träger heben und Body-f auswerten.
+        let bodies: Vec<crate::bvh::BoundedCsg> = k
+            .bodies
+            .iter()
+            .map(|b| {
+                crate::body::build_bounded_with_primitives(&k.decoded, &b.feature_indices).0
+            })
+            .collect();
+        let f = |p: [f32; 3]| -> f32 {
+            bodies
+                .iter()
+                .map(|b| crate::sdf_dual::sdf_gradient(b, p).0)
+                .fold(f32::MAX, f32::min)
+        };
+        for (a, b) in [
+            ([4.6889443f32, 21.933691, 28.414774], [4.802367f32, 22.871819, 28.73919]),
+            ([4.869515f32, 22.775831, 28.5807], [5.0184126f32, 21.280296, 28.731352]),
+        ] {
+            for t in [0.25f32, 0.5, 0.75] {
+                let m = [
+                    a[0] + t * (b[0] - a[0]),
+                    a[1] + t * (b[1] - a[1]),
+                    a[2] + t * (b[2] - a[2]),
+                ];
+                let d = [m[0] - c[0], m[1] - c[1], m[2] - c[2]];
+                let l = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt().max(1e-9);
+                let s = [c[0] + d[0] / l, c[1] + d[1] / l, c[2] + d[2] / l];
+                let mut nd = f32::MAX;
+                let mut nfl = -1.0f32;
+                let mut np = [0.0f32; 3];
+                for i in 0..total {
+                    let p = pos(i);
+                    let dd = [p[0] - s[0], p[1] - s[1], p[2] - s[2]];
+                    let l2 = dd[0] * dd[0] + dd[1] * dd[1] + dd[2] * dd[2];
+                    if l2 < nd {
+                        nd = l2;
+                        nfl = out[3 + i * 9 + 8];
+                        np = p;
+                    }
+                }
+                // Radiale Ausrichtung der Normalen des nächsten Punkts:
+                // ~1 = Kugel-Punkt, sonst Wand-Punkt (Übertreter).
+                let mut ni = 0usize;
+                for i in 0..total {
+                    if pos(i) == np {
+                        ni = i;
+                        break;
+                    }
+                }
+                let nn = [out[3 + ni * 9 + 4], out[3 + ni * 9 + 5], out[3 + ni * 9 + 6]];
+                let rd = [np[0] - c[0], np[1] - c[1], np[2] - c[2]];
+                let rl = (rd[0] * rd[0] + rd[1] * rd[1] + rd[2] * rd[2]).sqrt().max(1e-9);
+                let align =
+                    (nn[0] * rd[0] + nn[1] * rd[1] + nn[2] * rd[2]) / rl;
+                eprintln!(
+                    "  t={t}: chord f={:.4}  surf f={:.4}  nächster d={:.3} flag={nfl} radial·n={align:.2}",
+                    f(m),
+                    f(s),
+                    nd.sqrt()
+                );
+            }
+        }
+    }
+
     /// QUALITÄTS-ZIEL auf dem Demo-Projekt: manifold + watertight, beide
     /// Pfade — WIP: (a) Gyroid-Flächen (chartlos, kein FaceSurf) wachsen noch
     /// nicht (F2) → offene Ränder an jeder Gyroid-Naht; (b) Flächen-Überlapp
     /// an Mikro-Feature-Ketten (chart 24 / general 168 non-manifold).
     #[test]
-    #[ignore = "WIP: Gyroid-Flächen wachsen nicht (F2) → offene Ränder an jeder \
-                Gyroid-Naht — gemessen 2026-07-11: chart 131, general 165 offene \
-                Kanten (non-manifold/Degeneration/Orientierung sind bereits 0)"]
+    #[ignore = "WIP: Rest-Löcher an Gyroid-Nähten/Dichte-Übergängen — gemessen \
+                2026-07-12 (Chartlos-Fallback + Oberflächen-Gate): chart 15, \
+                general 36 offene Kanten (nm/Degeneration/Orientierung sind 0)"]
     fn lichen_demo_project_is_watertight() {
         let mut k = demo_project_kernel();
         for opts in [

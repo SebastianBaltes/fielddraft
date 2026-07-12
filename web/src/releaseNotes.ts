@@ -24,6 +24,16 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.545",
+    entries: [
+      {
+        kind: "fix",
+        scope: "mesher",
+        text: "Lichen: Meridian-Spalt in Kugeln geschlossen und Gyroid-Flächen auch ohne „General tri“ gemesht — geschlossene Träger mit kleinen Löchern (Kugel in einer Wand) wickeln die volle Chart-Periode, ohne dass ein Loop windet; der Chart hatte dort keine Naht und überbrückte den leeren Meridian mit langen degenerierten Sehnen. Solche Flächen (und Torus/Gyroid/loop-lose) fallen jetzt pro Fläche auf die chartlose Stern/Umkugel-Triangulierung zurück. Dazu Skalen-Korrektur des Flächen-Klassifikators (skalierte Träger lieferten 50× aufgeblasene Distanzen) und dichtere Kanten-Wand (Floor 0,02·h → 0,002·h). Demo-Messstand: chart 131→15 offene Kanten. Nebenbefund: der Halbkugel-Watertight-Test war ein False Positive (testete zwei getrennte Bodies) — jetzt echtes CSG und weiterhin grün.",
+      },
+    ],
+  },
+  {
     version: "0.6.544",
     entries: [
       {
