@@ -69,6 +69,23 @@ fn norm(a: [f32; 3]) -> [f32; 3] {
     if l > 1e-12 { [a[0] / l, a[1] / l, a[2] / l] } else { [0.0, 0.0, 1.0] }
 }
 
+/// Newton-Projektion auf `f = 0` (für die Sichtlinien-Prüfung).
+fn project_pt(mut p: [f32; 3], fg: &dyn Fn([f32; 3]) -> (f32, [f32; 3])) -> [f32; 3] {
+    for _ in 0..4 {
+        let (d, g) = fg(p);
+        let g2 = dot(g, g);
+        if g2 < 1e-24 {
+            break;
+        }
+        let s = d / g2;
+        p = [p[0] - s * g[0], p[1] - s * g[1], p[2] - s * g[2]];
+        if d.abs() < 1e-4 {
+            break;
+        }
+    }
+    p
+}
+
 /// Unit-Tangentenbasis ⟂ n.
 fn basis(n: [f32; 3]) -> ([f32; 3], [f32; 3]) {
     let seed = if n[0].abs() < 0.9 { [1.0, 0.0, 0.0] } else { [0.0, 1.0, 0.0] };
@@ -197,7 +214,8 @@ pub fn triangulate_face_general(
     owner: Option<&dyn Fn([f32; 3]) -> bool>,
     global_chain_edges: Option<&HashSet<(u32, u32)>>,
     fill_holes: bool,
-    field: &dyn Fn([f32; 3]) -> f32,
+    fg: &dyn Fn([f32; 3]) -> (f32, [f32; 3]),
+    own_near: &dyn Fn([f32; 3]) -> bool,
 ) -> GeneralFaceMesh {
     let member_set: HashSet<u32> = members.iter().copied().collect();
 
@@ -347,7 +365,26 @@ pub fn triangulate_face_general(
                             dot(ni, nj).clamp(-1.0, 1.0).acos()
                         };
                         let tol = (0.3 * dl * theta).max(0.1 * spacing[i as usize]);
-                        if field(midp).abs() > tol {
+                        let f_mid = fg(midp).0;
+                        if f_mid.abs() > tol {
+                            continue;
+                        }
+                        // REGIONEN-ZUGEHÖRIGKEIT (Doppelkappen-Problem): der
+                        // auf die Body-Oberfläche projizierte Sehnen-Mittel-
+                        // punkt muss auf der EIGENEN Trägerfläche liegen.
+                        // Eine Sehne von der Vorder- zur Rückkappe der in
+                        // der Wand steckenden Mini-Kugel ist aus Kugel-Sicht
+                        // eine LEGITIME Kugel-Sehne (Normalen/Sagitta können
+                        // sie nicht ablehnen) — aber ihr Mittelpunkt
+                        // projiziert auf die WAND, nicht auf die Kugel.
+                        // Perf: liegt mid schon quasi AUF der Oberfläche,
+                        // genügt der direkte own_near-Test (kein Newton).
+                        let probe = if f_mid.abs() <= 0.05 * spacing[i as usize] {
+                            midp
+                        } else {
+                            project_pt(midp, fg)
+                        };
+                        if !own_near(probe) {
                             continue;
                         }
                         local.push((
@@ -458,6 +495,14 @@ pub fn triangulate_face_general(
         let dc = sub(pa, centre);
         let r2 = dot(dc, dc);
         let r = r2.sqrt();
+        // PERF-/SINN-DECKEL: fast-kollineare Kandidaten haben explodierende
+        // Umkreisradien — der Punktfreiheits-Scan iterierte dann reach³ mit
+        // riesigem r (Betreiber-Fall: EINE Gyroid-Fläche 241 s). Ein Dreieck
+        // mit Umkreis weit über dem Nachbarschafts-Horizont ist ohnehin nie
+        // ein lokales Delaunay-Dreieck → ablehnen statt scannen.
+        if r > 5.0 * cell {
+            return false;
+        }
         // Punktfreiheit lokal prüfen (Spatial-Hash); Zeugen im Tie-Band sammeln.
         let mut ties: Vec<u32> = Vec::new();
         let (kx, ky, kz) = key(centre);
@@ -1192,7 +1237,10 @@ pub fn triangulate_face_general(
             }
             t
         };
-        field(cen).abs() <= (0.3 * e2max * theta).max(0.1 * spacing[a as usize])
+        if fg(cen).0.abs() > (0.3 * e2max * theta).max(0.1 * spacing[a as usize]) {
+            return false;
+        }
+        own_near(project_pt(cen, fg))
     });
 
     // ── Orientierung: die Stern-Abstimmung arbeitet auf SORTIERTEN Index-

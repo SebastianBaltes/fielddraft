@@ -24,7 +24,7 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
-    version: "0.6.540",
+    version: "0.6.544",
     entries: [
       {
         kind: "feat",
@@ -37,6 +37,42 @@ export const RELEASE_NOTES: ReleaseNote[] = [
         scope: "viewport",
         text: "Mobile: Ein-Finger-Drag dreht nur noch die Szene und zieht kein Auswahl-Rechteck mehr auf — das Box-Select liegt jetzt auf Doppel-Tipp-und-Ziehen",
         tickets: ["2ca6e21c"],
+    version: "0.6.543",
+    entries: [
+      {
+        kind: "fix",
+        scope: "mesher",
+        text: "Lichen: Browser-Crash der 541er-Version behoben — die Performance-Stoppuhren nutzten std::time::Instant, das auf WASM nicht existiert und sofort panict („time not implemented on this platform“); der Panic vergiftete anschließend die ganze Session (Aliasing-Folgefehler, Auto-Save tot). Timings laufen jetzt nur noch nativ.",
+      },
+    ],
+  },
+  {
+    version: "0.6.542",
+    entries: [
+      {
+        kind: "fix",
+        scope: "mesher",
+        text: "Lichen: Mesher-Panics vergiften nicht mehr die Session — ein Panic in einer WASM-&mut-Methode setzte das Borrow-Flag dauerhaft, jeder Folgeaufruf warf „recursive use of an object … unsafe aliasing“ und der Viewport war tot. lichenMesh fängt Panics jetzt ab und liefert ein leeres Ergebnis (der eigentliche Panic steht weiterhin in der Konsole).",
+      },
+    ],
+  },
+  {
+    version: "0.6.541",
+    entries: [
+      {
+        kind: "perf",
+        scope: "mesher",
+        text: "Lichen 55× schneller bei feinen Settings (Betreiber-Befund „nicht mal tausend Dreiecke, wo andere Millionen schaffen“): fast-kollineare Umkugel-Kandidaten hatten explodierende Umkreisradien und der Punktfreiheits-Scan iterierte Milliarden Zellen (eine Gyroid-Fläche allein 241 s → 0,2 s; Umkreis > Nachbarschafts-Horizont wird jetzt abgelehnt statt gescannt — nie ein lokales Delaunay-Dreieck). Dazu Kanten-Segment-Spatial-Hash für Abstands- und Vorhang-Tests statt Voll-Scan und radius-beschränkte Nachbarsuche im Wachstum.",
+      },
+    ],
+  },
+  {
+    version: "0.6.540",
+    entries: [
+      {
+        kind: "fix",
+        scope: "mesher",
+        text: "Lichen: Fold-Auflösung in der Orientierungs-Propagation — an tangentialen Nähten (Mini-Kugel in der Wand) überlebten Dreiecks-Folds alle seitenbasierten Wächter („Dreiecke durch die kleine Kugel“, 25 Orientierungs-Konflikte bei dichten Settings); Konflikte werden jetzt aufgelöst (pro Fold fliegt deterministisch das Dreieck mit größerem Umkreis — ehrliches Loch statt falscher Geometrie). Dazu Regionen-Zugehörigkeit in der Sichtlinie: der auf die Oberfläche projizierte Sehnen-Mittelpunkt muss auf der eigenen Trägerfläche liegen. Neues Test-Gate fährt exakt die dichten Betreiber-Settings mit.",
       },
     ],
   },
