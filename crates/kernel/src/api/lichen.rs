@@ -53,6 +53,19 @@ impl Kernel {
         opts: LichenOptions,
         body_filter: Option<usize>,
     ) -> Vec<f32> {
+        self.lichen_mesh_sized(opts, body_filter, None)
+    }
+
+    /// Kern mit optionalem SIZING-FIELD. Ist `opts.sizing_field` gesetzt und
+    /// noch kein Feld übergeben, läuft die Pipeline ZWEIMAL: erst grob (um
+    /// eine Stützstellen-Wolke zu bekommen), dann mit dem daraus gebauten,
+    /// Lipschitz-geglätteten Dichtefeld für Ketten UND Wachstum.
+    pub(crate) fn lichen_mesh_sized(
+        &mut self,
+        opts: LichenOptions,
+        body_filter: Option<usize>,
+        size: Option<&lichen::SizeField>,
+    ) -> Vec<f32> {
         let h = if opts.target_edge_length > 0.0 { opts.target_edge_length } else { 4.0 };
 
         // Welt-Felder pro Body (1:1 zu self.bodies, wie im PASM-Pfad).
@@ -186,6 +199,19 @@ impl Kernel {
             // GEGENSEITE der Platte (gemessen). Die Kette muss also mindestens
             // so fein sein wie die Flächen, die an ihr hängen.
             let edge_lfs_h = |raw_local: &[[f32; 3]]| -> f32 {
+                // Mit SIZING-FIELD ist es die Vorgabe (es enthält lfs bereits).
+                if let Some(sf) = size {
+                    let mut m = h;
+                    let step = (raw_local.len() / 16).max(1);
+                    for (i, pl) in raw_local.iter().enumerate() {
+                        if i % step != 0 {
+                            continue;
+                        }
+                        let pw = to_world([pl[0] as f64, pl[1] as f64, pl[2] as f64]);
+                        m = m.min(sf.at(pw));
+                    }
+                    return (m / s.max(1e-6)).min(h_local);
+                }
                 if opts.lfs_factor <= 0.0 {
                     return h_local;
                 }
@@ -1110,7 +1136,7 @@ impl Kernel {
                 #[cfg(not(target_arch = "wasm32"))]
                 let t_g = std::time::Instant::now();
                 let grown = lichen::grow_surface(
-                    &bseeds, &all, h, &opts, &fg, &brep_dist, &on_face, &surf_curv,
+                    &bseeds, &all, h, &opts, &fg, &brep_dist, &on_face, &surf_curv, size,
                 );
                 #[cfg(not(target_arch = "wasm32"))]
                 if std::env::var("LICHEN_PERF").is_ok() {
@@ -1135,6 +1161,45 @@ impl Kernel {
                     face_interior[gf as usize].push(idx);
                 }
             }
+        }
+
+        // ── SIZING-FIELD (zweiter Durchgang) ──
+        // Die Wolke aus diesem groben Lauf dient als STÜTZSTELLEN-Menge: an
+        // ihr wird die lfs mit einem FEINEN Marsch gemessen (der grobe kann
+        // kleine Spalte gar nicht sehen — er meldet seinen ersten Schritt),
+        // das Feld Lipschitz-geglättet und die GESAMTE Abtastung damit
+        // wiederholt. Ohne die globale Glättung schadet jede Verfeinerung mehr,
+        // als sie nützt (zweimal vermessen: feiner Marsch → Demo 295→619,
+        // Keil-Spacing aus der Wolke → Box 0→3).
+        if opts.sizing_field && size.is_none() && opts.grow {
+            let eps = if opts.lfs_factor > 0.0 { opts.lfs_factor } else { 0.5 };
+            let cap_lfs = h / eps;
+            let mut pts: Vec<[f32; 3]> = Vec::with_capacity(all.len());
+            let mut raw: Vec<f32> = Vec::with_capacity(all.len());
+            for lp in &all {
+                let n = lichen::unit(lichen::robust_grad(lp.p, &fg));
+                // FEINER Startschritt, an das lokale Spacing gekoppelt: nur so
+                // wird ein Spalt gefunden, der kleiner ist als das Spacing.
+                let t0 = (0.05 * lp.space).max(1e-5);
+                let lfs = lichen::reach_inner(lp.p, n, cap_lfs, t0, &fg)
+                    .min(lichen::reach_outer_flat(lp.p, n, cap_lfs, t0, &fg));
+                let mut r = h.min(lp.space.max(1e-4));
+                if lfs < cap_lfs {
+                    r = r.min(eps * lfs);
+                }
+                pts.push(lp.p);
+                raw.push(r);
+            }
+            let k_lip: f32 = std::env::var("LICHEN_LIPSCHITZ")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(0.3);
+            let floor = opts.min_edge_spacing.max(1e-4).min(h);
+            let sf = lichen::SizeField::build(pts, raw, k_lip, h, floor);
+            if std::env::var("LICHEN_DEBUG_SIZING").is_ok() {
+                eprintln!("SIZING-FIELD: {} Stützstellen, K={k_lip}, floor={floor}", all.len());
+            }
+            return self.lichen_mesh_sized(opts, body_filter, Some(&sf));
         }
 
         // Rand-Normale (LPoint.n) = Mittel der angrenzenden Flächen-Normalen
@@ -2469,6 +2534,7 @@ mod tests {
                 let opts = format!(
                     r#"{{"targetEdgeLength":{h},"grow":true,"curvAngleDeg":{curv},"minEdgeSpacing":{minsp},"maxPoints":50000,"generalTri":true,"accept":"{acc}","fillHoles":false{extra}}}"#
                 );
+                let _ = &opts;
                 let out = k.lichen_mesh(opts);
                 let total = out[0] as usize;
                 let tris = out[1] as usize;

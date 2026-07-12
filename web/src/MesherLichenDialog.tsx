@@ -61,6 +61,8 @@ interface LichenSettings {
   globalWalk: boolean;
   /** ε-Sampling gegen die local feature size (0 = aus). */
   lfsFactor: number;
+  /** Sizing-Field: zweiter Durchgang mit Lipschitz-geglättetem Dichtefeld. */
+  sizingField: boolean;
   partOpacity: number;
   strokeWidth: number;
   /** Draw the U(p) reach circle in the tangent plane at each point. */
@@ -95,6 +97,7 @@ const DEFAULTS: LichenSettings = {
   extractWalk: false,
   globalWalk: false,
   lfsFactor: 0,
+  sizingField: false,
   partOpacity: 0.4,
   strokeWidth: 2,
   showCircles: true,
@@ -145,6 +148,8 @@ function loadSettings(): LichenSettings {
       globalWalk:
         p.globalWalk === undefined ? DEFAULTS.globalWalk : p.globalWalk === true,
       lfsFactor: clampNum(p.lfsFactor, 0, 1, DEFAULTS.lfsFactor),
+      sizingField:
+        p.sizingField === undefined ? DEFAULTS.sizingField : p.sizingField === true,
       partOpacity: clampNum(p.partOpacity, 0, 1, DEFAULTS.partOpacity),
       strokeWidth: clampNum(p.strokeWidth, 0.5, 12, DEFAULTS.strokeWidth),
       showCircles: p.showCircles === undefined ? DEFAULTS.showCircles : p.showCircles === true,
@@ -177,6 +182,7 @@ function lichenParams(s: LichenSettings): LichenDebug {
     extractWalk: s.extractWalk,
     globalWalk: s.globalWalk,
     lfsFactor: s.lfsFactor,
+    sizingField: s.sizingField,
     fillHoles: s.fillHoles,
     partOpacity: s.partOpacity,
     strokeWidth: s.strokeWidth,
@@ -206,6 +212,7 @@ export function MesherLichenDialog({ onClose }: { onClose: () => void }) {
   const [extractWalk, setExtractWalk] = useState(initial.extractWalk);
   const [globalWalk, setGlobalWalk] = useState(initial.globalWalk);
   const [lfsFactor, setLfsFactor] = useState(initial.lfsFactor);
+  const [sizingField, setSizingField] = useState(initial.sizingField);
   const [fillHoles, setFillHoles] = useState(initial.fillHoles);
   const [partOpacity, setPartOpacity] = useState(initial.partOpacity);
   const [strokeWidth, setStrokeWidth] = useState(initial.strokeWidth);
@@ -233,6 +240,7 @@ export function MesherLichenDialog({ onClose }: { onClose: () => void }) {
       extractWalk,
       globalWalk,
       lfsFactor,
+      sizingField,
       fillHoles,
       partOpacity,
       strokeWidth,
@@ -249,7 +257,7 @@ export function MesherLichenDialog({ onClose }: { onClose: () => void }) {
     } catch {
       // no localStorage (tests) — non-persistent is fine
     }
-  }, [targetEdgeLength, grow, curvAngleDeg, useReach, reachTol, minEdgeSpacing, maxPoints, generalTri, accept, extractWalk, globalWalk, lfsFactor, fillHoles, partOpacity, strokeWidth, showCircles, showPoints, showTriangles, pointSize, showNormals, normalLength]);
+  }, [targetEdgeLength, grow, curvAngleDeg, useReach, reachTol, minEdgeSpacing, maxPoints, generalTri, accept, extractWalk, globalWalk, lfsFactor, sizingField, fillHoles, partOpacity, strokeWidth, showCircles, showPoints, showTriangles, pointSize, showNormals, normalLength]);
   useEffect(() => () => setLichenDebug(null), []);
 
   useEffect(() => {
@@ -605,6 +613,34 @@ export function MesherLichenDialog({ onClose }: { onClose: () => void }) {
             value={lfsFactor}
             onChange={setLfsFactor}
           />
+        </div>
+      </div>
+
+      <div className="vec-row">
+        <label
+          title={
+            "SIZING-FIELD: zweiter Durchgang mit einem global konsistenten, " +
+            "Lipschitz-beschränkten Dichtefeld. Erst wird grob abgetastet, an " +
+            "dieser Wolke die FEINE local feature size gemessen (ein grober " +
+            "Marsch sieht kleine Spalte gar nicht), das Feld geglättet und die " +
+            "GESAMTE Abtastung (Kanten + Wachstum) damit wiederholt. Ohne diese " +
+            "globale Glättung schadet jede Verfeinerung mehr, als sie nützt: " +
+            "sie erzeugt abrupte Dichte-Sprünge, an denen Sterne und Umkugeln " +
+            "auseinanderlaufen. Braucht ε > 0."
+          }
+        >
+          Sizing-Field (Lipschitz)
+        </label>
+        <div className="fields">
+          <label className="checkbox">
+            <input
+              type="checkbox"
+              aria-label="Sizing-Field (Lipschitz)"
+              data-testid="mesher-lichen-sizing-field"
+              checked={sizingField}
+              onChange={(e) => setSizingField(e.currentTarget.checked)}
+            />
+          </label>
         </div>
       </div>
 

@@ -86,6 +86,13 @@ pub struct LichenOptions {
     /// Vorbedingung, unter der die leere Umkugel das Gegenblatt einer dünnen
     /// Wand nicht erreichen kann — ohne sie kompensiert der Wächter-Turm.
     pub lfs_factor: f32,
+    /// SIZING-FIELD: zweiter Durchgang mit einem global konsistenten,
+    /// Lipschitz-beschränkten Dichtefeld (siehe [`SizeField`]). Erst wird
+    /// grob abgetastet, dann an dieser Wolke die FEINE lfs gemessen, das Feld
+    /// geglättet und die GESAMTE Abtastung (Ketten + Wachstum) danach
+    /// wiederholt. Ohne diese globale Glättung schadet jede Verfeinerung mehr,
+    /// als sie nützt (zweimal vermessen: §8j/§8k).
+    pub sizing_field: bool,
 }
 
 impl Default for LichenOptions {
@@ -105,6 +112,7 @@ impl Default for LichenOptions {
             extract_walk: false,
             global_walk: false,
             lfs_factor: 0.0,
+            sizing_field: false,
         }
     }
 }
@@ -383,10 +391,17 @@ fn local_radius<Fg>(
     kmax: f32,
     opts: &LichenOptions,
     fg: &Fg,
+    size: Option<&SizeField>,
 ) -> f32
 where
     Fg: Fn([f32; 3]) -> (f32, [f32; 3]),
 {
+    // Liegt ein SIZING-FIELD vor, IST es die Vorgabe: es enthält bereits
+    // Krümmung, lfs und die Lipschitz-Glättung — die lokalen Terme unten
+    // würden es nur wieder aufrauen.
+    if let Some(sf) = size {
+        return sf.at(p).clamp(opts.min_edge_spacing.max(1e-4).min(h), h);
+    }
     let mut r = h;
     let _ = n;
     if kmax > 1e-6 {
@@ -490,6 +505,123 @@ fn nearest_pt(
     best
 }
 
+/// LIPSCHITZ-BESCHRÄNKTES DICHTEFELD („sizing field", Delaunay-Refinement-
+/// Standard) — der letzte strukturelle Baustein des Cocone-Programms.
+///
+/// Die Messreihen (§8j/§8k der Architektur-Doku) haben zweimal dasselbe
+/// gezeigt: eine LOKALE Verfeinerung (feinerer Reach-Marsch, Keil-Spacing aus
+/// der Punktwolke) erzeugt abrupte Dichte-Sprünge, an denen Sterne und
+/// Umkugeln auseinanderlaufen — sie verschlechtert das Netz, obwohl sie
+/// geometrisch korrekter ist. Was fehlt, ist ein GLOBAL konsistentes
+/// Dichtefeld: eines, dessen Gradient beschränkt ist.
+///
+/// Konstruktion:
+///  1. Roh-Größe an Stützstellen: `raw = min(h, α/κ, ε·lfs)` — mit FEINEM
+///     Marsch (der grobe kann kleine Spalte gar nicht sehen).
+///  2. Lipschitz-Relaxation: `σ_i = min_j (raw_j + K·|p_i − p_j|)`, iterativ
+///     bis Fixpunkt. Damit gilt `|σ(x) − σ(y)| ≤ K·|x − y|` global.
+///  3. Auswertung: `σ(x) = min_j (σ_j + K·|x − p_j|)` — automatisch
+///     K-Lipschitz, auch zwischen den Stützstellen.
+///
+/// `floor` ist die AUFLÖSUNGSGRENZE (Min. Kantenabstand): darunter wird nicht
+/// verfeinert, sondern der Defekt ehrlich ausgewiesen. Ohne diesen Boden
+/// divergiert das Feld an tangentialen Kontakten (lfs → 0).
+pub struct SizeField {
+    pts: Vec<[f32; 3]>,
+    sz: Vec<f32>,
+    grid: HashMap<(i32, i32, i32), Vec<u32>>,
+    cell: f32,
+    k: f32,
+    h: f32,
+}
+
+impl SizeField {
+    /// `k` = Lipschitz-Konstante (≈ 0,3), `floor` = Auflösungsgrenze.
+    pub fn build(pts: Vec<[f32; 3]>, raw: Vec<f32>, k: f32, h: f32, floor: f32) -> Self {
+        let n = pts.len();
+        let mut sz: Vec<f32> = raw.iter().map(|&r| r.clamp(floor, h)).collect();
+        // Zellgröße = der Radius, in dem ein Nachbar σ noch drücken kann:
+        // jenseits von (h − floor)/k kann er es nicht mehr.
+        let cell = ((h - floor) / k.max(1e-3)).clamp(h * 0.25, h * 4.0).max(1e-4);
+        let key = |p: [f32; 3]| -> (i32, i32, i32) {
+            (
+                (p[0] / cell).floor() as i32,
+                (p[1] / cell).floor() as i32,
+                (p[2] / cell).floor() as i32,
+            )
+        };
+        let mut grid: HashMap<(i32, i32, i32), Vec<u32>> = HashMap::new();
+        for (i, p) in pts.iter().enumerate() {
+            grid.entry(key(*p)).or_default().push(i as u32);
+        }
+        // Relaxation: ein Punkt zieht seine Nachbarn nach unten, solange
+        // σ_j > σ_i + k·d. Fixpunkt nach wenigen Sweeps (σ fällt monoton).
+        for _ in 0..16 {
+            let mut changed = false;
+            for i in 0..n {
+                let pi = pts[i];
+                let (kx, ky, kz) = key(pi);
+                let mut best = sz[i];
+                for dx in -1..=1 {
+                    for dy in -1..=1 {
+                        for dz in -1..=1 {
+                            let Some(v) = grid.get(&(kx + dx, ky + dy, kz + dz)) else {
+                                continue;
+                            };
+                            for &j in v {
+                                let j = j as usize;
+                                if j == i {
+                                    continue;
+                                }
+                                let d = dist(pts[j], pi);
+                                let cand = sz[j] + k * d;
+                                if cand < best {
+                                    best = cand;
+                                }
+                            }
+                        }
+                    }
+                }
+                if best < sz[i] - 1e-6 {
+                    sz[i] = best.max(floor);
+                    changed = true;
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
+        Self { pts, sz, grid, cell, k, h }
+    }
+
+    /// K-Lipschitz-Auswertung an beliebiger Stelle.
+    pub fn at(&self, p: [f32; 3]) -> f32 {
+        let (kx, ky, kz) = (
+            (p[0] / self.cell).floor() as i32,
+            (p[1] / self.cell).floor() as i32,
+            (p[2] / self.cell).floor() as i32,
+        );
+        let mut best = self.h;
+        for dx in -1..=1 {
+            for dy in -1..=1 {
+                for dz in -1..=1 {
+                    let Some(v) = self.grid.get(&(kx + dx, ky + dy, kz + dz)) else {
+                        continue;
+                    };
+                    for &j in v {
+                        let j = j as usize;
+                        let cand = self.sz[j] + self.k * dist(self.pts[j], p);
+                        if cand < best {
+                            best = cand;
+                        }
+                    }
+                }
+            }
+        }
+        best
+    }
+}
+
 /// SDF-Sichtlinien-Test `p → q` (§3.4): verwerfen, wenn das Segment am Abgang
 /// von `p` oder `q` oder am Mittelpunkt signifikant (relativ zur lokalen Skala
 /// `r`) ins Material (negatives SDF) eintaucht.
@@ -530,6 +662,7 @@ pub fn grow_surface<Fg, Fb, On, Sc>(
     brep_dist: &Fb,
     on_face: &On,
     surf_curv: &Sc,
+    size: Option<&SizeField>,
 ) -> Vec<LPoint>
 where
     Fg: Fn([f32; 3]) -> (f32, [f32; 3]),
@@ -574,7 +707,7 @@ where
         // gegenüber dem eigenen Spacing (Dichte-Übergänge von dichten
         // Ketten/Nachbarn ins gröbere Innere bleiben stetig).
         let (kmax, dmax) = surf_curv(p);
-        let r = local_radius(p, n, h, kmax, opts, fg).min(1.5 * pts[i].space);
+        let r = local_radius(p, n, h, kmax, opts, fg, size).min(1.5 * pts[i].space);
         let (u, w) = if kmax > 1e-4 {
             (dmax, cross(n, dmax))
         } else {
@@ -741,7 +874,7 @@ where
             // Eine keil-korrekte Abtastung braucht ein GLOBAL konsistentes
             // Dichtefeld (Lipschitz-beschränkt), keine lokale Nachkorrektur.
             let cspace =
-                local_radius(cp, cn, h, surf_curv(cp).0, opts, fg).min(1.5 * r_full);
+                local_radius(cp, cn, h, surf_curv(cp).0, opts, fg, size).min(1.5 * r_full);
             let cu = cspace.min(brep_dist(cp));
             let j = pts.len();
             pts.push(LPoint { p: cp, sdf: cd, n: cn, u: cu, space: cspace, flag: 1.0 });

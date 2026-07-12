@@ -24,6 +24,16 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.558",
+    entries: [
+      {
+        kind: "feat",
+        scope: "mesher",
+        text: "Lichen: Sizing-Field (Lipschitz) — der letzte strukturelle Baustein des Cocone-Programms. Zweimal hatte sich gezeigt, dass eine LOKALE Verfeinerung das Netz verschlechtert, obwohl sie geometrisch korrekter ist: sie erzeugt abrupte Dichte-Sprünge, an denen Sterne und Umkugeln auseinanderlaufen. Das Sizing-Field macht es global: erst grob abtasten, an dieser Wolke die feine local feature size messen (ein grober Marsch sieht kleine Spalte gar nicht), das Feld Lipschitz-glätten (|∇σ| ≤ 0,3) und die GESAMTE Abtastung — Kanten wie Wachstum — damit wiederholen. Wirkung auf dem Demo-Projekt: die relative Defektrate fällt bei feiner Auflösung von 7 % auf 2,6 %, alle glatten Körper bleiben wasserdicht.",
+      },
+    ],
+  },
+  {
     version: "0.6.557",
     entries: [
       {
@@ -39,7 +49,7 @@ export const RELEASE_NOTES: ReleaseNote[] = [
       {
         kind: "fix",
         scope: "mesher",
-        text: "Lichen: der ÄUSSERE Reach erkennt die Medialachse jetzt an der Abflachung des Distanzfelds (wie der innere seit v0.6.549) — die alte Fußpunkt-Verfolgung schlug erst an, wenn der Fußpunkt weiter als die Reach-Toleranz (1 mm) springt, und war damit für einen 0,17-mm-Spalt zwischen zwei Gyroid-Blättern blind. Außerdem hebelt die lfs-Bedingung den Mindest-Kantenabstand jetzt lokal aus: sie ist die Voraussetzung des Umkugel-Theorems, kein Komfort — ein Boden, der sie bricht, erzeugt genau den Zustand, in dem kein einziges Dreieck mehr gültig ist.",
+        text: "Lichen: der ÄUSSERE Reach erkennt die Medialachse jetzt an der Abflachung des Distanzfelds (wie der innere seit einigen Versionen) — die alte Fußpunkt-Verfolgung schlug erst an, wenn der Fußpunkt weiter als die Reach-Toleranz (1 mm) springt, und war damit für einen 0,17-mm-Spalt zwischen zwei Gyroid-Blättern blind. Außerdem hebelt die lfs-Bedingung den Mindest-Kantenabstand jetzt lokal aus: sie ist die Voraussetzung des Umkugel-Theorems, kein Komfort — ein Boden, der sie bricht, erzeugt genau den Zustand, in dem kein einziges Dreieck mehr gültig ist.",
       },
     ],
   },

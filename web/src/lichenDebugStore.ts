@@ -57,6 +57,11 @@ export interface LichenDebug {
    *  Medialachse INNEN wie außen). 0 = aus. Vorbedingung des Umkugel-Theorems:
    *  ohne sie erreicht die leere Kugel auf dünnen Wänden das Gegenblatt. */
   lfsFactor: number;
+  /** SIZING-FIELD: zweiter Durchgang mit global konsistentem, Lipschitz-
+   *  beschränktem Dichtefeld (erst grob abtasten, daran die feine lfs messen,
+   *  glätten, alles neu abtasten). Ohne diese Glättung schadet jede
+   *  Verfeinerung mehr, als sie nützt. */
+  sizingField: boolean;
 
   // ── Display knobs (overlay only, ignored by the kernel) ──
   /** Opacity of the rendered part (1 = opaque). Below 1 the solid turns
