@@ -24,6 +24,16 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.562",
+    entries: [
+      {
+        kind: "fix",
+        scope: "mesher",
+        text: "Lichen: das Wachstum ließ punktleere Löcher mitten auf gekrümmten Flächen stehen (Betreiber-Befund auf der Mini-Kugel: ein Fünfeck von 0,26 mm bei 0,11 mm Punktabstand). Drei Ursachen: (1) Der Ketten-Vorhang cullte nur nach dem Abstand zum Segment-MITTELPUNKT — eine lange Kante, die 1 mm neben der Fläche verläuft, blieb im Test, und die 2D-Projektion in die Tangentialebene ließ sie den 0,1-mm-Schritt scheinbar kreuzen; jetzt echter 3D-Strecken-Abstand. (2) Die Redundanz-Schwelle nahm das Spacing des GRÖBSTEN Nachbarn — an einem Dichte-Übergang verwarf sie damit Kandidaten mitten in der Lücke; mit Sizing-Field wird jetzt die bekannte Ziel-Dichte am Kandidaten benutzt. (3) Das Waben-Wachstum probiert nur SECHS feste Richtungen — eine Lücke, die keine davon trifft, bleibt für immer leer; ein Nachlauf wirft mit 12 Richtungen × zwei Radien und nimmt nur gut separierte Kandidaten (≥ 0,8·σ), kann also keine Überdichte erzeugen.",
+      },
+    ],
+  },
+  {
     version: "0.6.561",
     entries: [
       {

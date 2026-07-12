@@ -705,6 +705,16 @@ where
     // Newton genau dort. Jeder Kandidat wird vor der Aufnahme nachprojiziert
     // und ABSOLUT geprüft; wer nicht auf die Fläche konvergiert, fliegt.
     let surf_tol = (5e-4 * h).max(1e-4);
+    // ORTS-DIAGNOSE des Wachstums: LICHEN_GROW_NEAR="x,y,z,r" protokolliert
+    // JEDE Ablehnung, deren Kandidat in diese Umgebung fiele — so wird
+    // sichtbar, welche Regel ein konkretes Loch verursacht.
+    let grow_near: Option<[f32; 4]> = std::env::var("LICHEN_GROW_NEAR").ok().and_then(|s| {
+        let v: Vec<f32> = s.split(',').filter_map(|x| x.parse().ok()).collect();
+        if v.len() == 4 { Some([v[0], v[1], v[2], v[3]]) } else { None }
+    });
+    let near_probe = |q: [f32; 3]| -> bool {
+        grow_near.map_or(false, |g| dist(q, [g[0], g[1], g[2]]) < g[3])
+    };
     let mut rej = [0usize; 6]; // sdf, visible, face, redundant, rebalance, ok
     let mut queue: VecDeque<usize> = (0..n_seeds).collect();
     while let Some(i) = queue.pop_front() {
@@ -739,11 +749,17 @@ where
                     let (cp, cd, cn) = project(add(p, scale(dir, rr)), fg);
                     if cd.abs() > 0.2 * rr {
                         rej[0] += 1;
+                        if near_probe(cp) {
+                            eprintln!("GROW-NEAR verworfen SDF |f|={:.4} > 0.2*{rr:.3} bei {cp:?}", cd.abs());
+                        }
                         rr *= 0.5;
                         continue;
                     }
                     if !visible(p, cp, rr, fg) {
                         rej[1] += 1;
+                        if near_probe(cp) {
+                            eprintln!("GROW-NEAR verworfen SICHTLINIE bei {cp:?} (von {p:?})");
+                        }
                         rr *= 0.5;
                         continue;
                     }
@@ -751,6 +767,9 @@ where
                     // BRep-Fläche liegen (Kanten sind harte Grenzen).
                     if !on_face(p, cp, rr) {
                         rej[2] += 1;
+                        if near_probe(cp) {
+                            eprintln!("GROW-NEAR verworfen KANTEN-WAND (on_face) bei {cp:?} (von {p:?})");
+                        }
                         rr *= 0.5;
                         continue;
                     }
@@ -764,13 +783,39 @@ where
                     let (nd_x, ns_x) = nearest_pt(&xgrid, existing, cell, cp, r_full);
                     let (nd, nspace) =
                         if nd_own <= nd_x { (nd_own, ns_own) } else { (nd_x, ns_x) };
-                    let r_eff = rr.max(nspace.min(r_full));
+                    // r_eff = die lokal GÜLTIGE Ziel-Dichte.
+                    //
+                    // Ohne Sizing-Field muss sie aus den Nachbarn geschätzt
+                    // werden (der symmetrische Test: ein feiner Kandidat neben
+                    // GROBEN Bestandspunkten ist relativ zu deren Spacing
+                    // redundant). MIT Sizing-Field ist die Ziel-Dichte am Ort
+                    // BEKANNT — und die Schätzung wird dort sogar schädlich:
+                    // an einem Dichte-Übergang (0,1 neben 0,2) hebt sie die
+                    // Redundanz-Schwelle auf 0,45·0,2 = 0,09 und verwirft damit
+                    // Kandidaten MITTEN in einer 0,26-mm-Lücke, die nur 0,077
+                    // von einem Punkt entfernt liegen. Genau so entstand das
+                    // punktleere Fünfeck auf der Mini-Kugel-Kappe
+                    // (Betreiber-Punkt #895). Das Feld ist Lipschitz-glatt, es
+                    // BRAUCHT die Nachbar-Schätzung nicht.
+                    let r_eff = match size {
+                        Some(sf) => sf.at(cp).clamp(opts.min_edge_spacing.max(1e-4).min(h), h),
+                        None => rr.max(nspace.min(r_full)),
+                    };
                     // TRENNUNGS-SCHWELLE vermessen (0.45 → 0.8): praktisch
                     // wirkungslos (Demo 421 → 405 offene Kanten, Mini-Kugel
                     // unverändert 36). Die Punktverteilung ist NICHT die
                     // Ursache der Rest-Löcher.
                     if nd < 0.45 * r_eff {
                         rej[3] += 1;
+                        if near_probe(cp) {
+                            // WELCHER Punkt steht im Weg — eigener oder fremder?
+                            let own_near = nearest_pt(&grid, &pts, cell, cp, r_full);
+                            let x_near = nearest_pt(&xgrid, existing, cell, cp, r_full);
+                            eprintln!(
+                                "GROW-NEAR verworfen REDUNDANT nd={nd:.4} < 0.45*{r_eff:.3} | eigene Fläche d={:.4} | FREMD d={:.4} | bei {cp:?}",
+                                own_near.0, x_near.0
+                            );
+                        }
                         rr *= 0.5;
                         continue;
                     }
@@ -786,6 +831,12 @@ where
                     // Spacing „abstehen".
                     if brep_dist(cp) < 0.7 * r_eff {
                         rej[3] += 1;
+                        if near_probe(cp) {
+                            eprintln!(
+                                "GROW-NEAR verworfen KETTEN-CLEARANCE brep_dist={:.4} < 0.7*{r_eff:.3} bei {cp:?}",
+                                brep_dist(cp)
+                            );
+                        }
                         rr *= 0.5;
                         continue;
                     }
@@ -860,6 +911,15 @@ where
                     || !on_face(p, q, r)
                 {
                     rej[4] += 1;
+                    if near_probe(q) || near_probe(cp) {
+                        eprintln!(
+                            "GROW-NEAR verworfen REBALANCE settled={settled} nd={:.4} vis={} face={} bei {q:?}",
+                            nearest_dist(&grid, &pts, cell, q, r)
+                                .min(nearest_dist(&xgrid, existing, cell, q, r)),
+                            visible(p, q, r, fg),
+                            on_face(p, q, r)
+                        );
+                    }
                     continue;
                 }
                 cp = q;
@@ -900,9 +960,77 @@ where
             }
         }
     }
+    // ── LÜCKEN-FÜLLUNG (Betreiber-Punkt #895, 2026-07-13) ──
+    // Das Waben-Wachstum probiert je Punkt genau SECHS feste Richtungen. Eine
+    // Lücke, die von keiner davon getroffen wird — typisch dort, wo zwei
+    // Wachstumsfronten aneinander vorbeilaufen — bleibt deshalb für immer
+    // leer, auch wenn sie mehrere Spacings groß ist. Auf der Mini-Kugel-Kappe
+    // entstand so ein punktleeres Fünfeck von 0,26 mm bei 0,11 mm Spacing.
+    //
+    // Der Nachlauf wirft dichter: 12 Richtungen × zwei Radien (1,0 und 1,5 σ),
+    // und akzeptiert NUR gut separierte Kandidaten (Abstand ≥ 0,8 σ zu allem
+    // Bestehenden). Er kann per Konstruktion keine Überdichte erzeugen — er
+    // schließt ausschließlich echte Löcher. Läuft bis zum Fixpunkt.
+    let mut filled = 0usize;
+    for _round in 0..6 {
+        let before = pts.len();
+        for i in 0..pts.len() {
+            if pts.len() >= cap {
+                break;
+            }
+            let p = pts[i].p;
+            let n = pts[i].n;
+            let sigma = pts[i].space.max(1e-4);
+            let (kmax, dmax) = surf_curv(p);
+            let (u, w) = if kmax > 1e-4 {
+                (dmax, cross(n, dmax))
+            } else {
+                tangent_basis(n)
+            };
+            for k in 0..12 {
+                let ang = k as f32 * std::f32::consts::TAU / 12.0;
+                let dir = add(scale(u, ang.cos()), scale(w, ang.sin()));
+                for &mul in &[1.0f32, 1.5] {
+                    let rr = sigma * mul;
+                    let (cp, cd, cn) = project(add(p, scale(dir, rr)), fg);
+                    if cd.abs() > surf_tol {
+                        continue;
+                    }
+                    if !visible(p, cp, rr, fg) || !on_face(p, cp, rr) {
+                        continue;
+                    }
+                    // Ziel-Dichte am KANDIDATEN (nicht am Elternpunkt).
+                    let csp = local_radius(cp, cn, h, surf_curv(cp).0, opts, fg, size);
+                    let sep = 0.8 * csp;
+                    let d_own = nearest_dist(&grid, &pts, cell, cp, 2.0 * csp);
+                    let d_x = nearest_dist(&xgrid, existing, cell, cp, 2.0 * csp);
+                    if d_own.min(d_x) < sep {
+                        continue; // keine echte Lücke
+                    }
+                    if brep_dist(cp) < 0.7 * csp {
+                        continue;
+                    }
+                    let j = pts.len();
+                    pts.push(LPoint {
+                        p: cp,
+                        sdf: cd,
+                        n: cn,
+                        u: csp.min(brep_dist(cp)),
+                        space: csp,
+                        flag: 1.0,
+                    });
+                    grid.entry(gkey(cp, cell)).or_default().push(j as u32);
+                    filled += 1;
+                }
+            }
+        }
+        if pts.len() == before {
+            break;
+        }
+    }
     if std::env::var("LICHEN_DEBUG_GROW").is_ok() {
         eprintln!(
-            "GROW-REJ sdf={} vis={} face={} redundant={} rebalance={}",
+            "GROW-REJ sdf={} vis={} face={} redundant={} rebalance={} | Lücken-Füllung: {filled}",
             rej[0], rej[1], rej[2], rej[3], rej[4]
         );
     }

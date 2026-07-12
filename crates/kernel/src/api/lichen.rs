@@ -936,6 +936,51 @@ impl Kernel {
             out
         };
 
+        // Kürzester Abstand zweier Strecken im Raum (für den Ketten-Vorhang).
+        let seg_seg_dist = |p1: [f32; 3], p2: [f32; 3], q1: [f32; 3], q2: [f32; 3]| -> f32 {
+            let d1 = [p2[0] - p1[0], p2[1] - p1[1], p2[2] - p1[2]];
+            let d2 = [q2[0] - q1[0], q2[1] - q1[1], q2[2] - q1[2]];
+            let r = [p1[0] - q1[0], p1[1] - q1[1], p1[2] - q1[2]];
+            let dot3 = |a: [f32; 3], b: [f32; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+            let a = dot3(d1, d1);
+            let e = dot3(d2, d2);
+            let f = dot3(d2, r);
+            let (mut s, mut t);
+            if a <= 1e-12 && e <= 1e-12 {
+                return dot3(r, r).sqrt();
+            }
+            if a <= 1e-12 {
+                s = 0.0;
+                t = (f / e).clamp(0.0, 1.0);
+            } else {
+                let c = dot3(d1, r);
+                if e <= 1e-12 {
+                    t = 0.0;
+                    s = (-c / a).clamp(0.0, 1.0);
+                } else {
+                    let b = dot3(d1, d2);
+                    let denom = a * e - b * b;
+                    s = if denom > 1e-12 {
+                        ((b * f - c * e) / denom).clamp(0.0, 1.0)
+                    } else {
+                        0.0
+                    };
+                    t = (b * s + f) / e;
+                    if t < 0.0 {
+                        t = 0.0;
+                        s = (-c / a).clamp(0.0, 1.0);
+                    } else if t > 1.0 {
+                        t = 1.0;
+                        s = ((b - c) / a).clamp(0.0, 1.0);
+                    }
+                }
+            }
+            let cp1 = [p1[0] + d1[0] * s, p1[1] + d1[1] * s, p1[2] + d1[2] * s];
+            let cp2 = [q1[0] + d2[0] * t, q1[1] + d2[1] * t, q1[2] + d2[2] * t];
+            ((cp1[0] - cp2[0]).powi(2) + (cp1[1] - cp2[1]).powi(2) + (cp1[2] - cp2[2]).powi(2))
+                .sqrt()
+        };
+
         // Phasen-Stoppuhren nur NATIV: std::time::Instant PANICT auf
         // wasm32 („time not implemented") — die 541er-Instrumentierung
         // hat damit den Browser-Mesher getötet (Betreiber-Konsole).
@@ -1072,21 +1117,24 @@ impl Kernel {
                                 };
                                 for &si in v {
                                     let (sa, sb) = edge_segs[si as usize];
-                                    let m = [
-                                        (sa[0] + sb[0]) * 0.5,
-                                        (sa[1] + sb[1]) * 0.5,
-                                        (sa[2] + sb[2]) * 0.5,
-                                    ];
-                                    let dm = ((m[0] - p0[0]).powi(2)
-                                        + (m[1] - p0[1]).powi(2)
-                                        + (m[2] - p0[2]).powi(2))
-                                    .sqrt();
-                                    let seg_half = ((sb[0] - sa[0]).powi(2)
-                                        + (sb[1] - sa[1]).powi(2)
-                                        + (sb[2] - sa[2]).powi(2))
-                                    .sqrt()
-                                        * 0.5;
-                                    if dm > step2 + seg_half + 1e-3 {
+                                    // ECHTER 3D-ABSTAND Schritt ↔ Ketten-Segment.
+                                    //
+                                    // Der frühere Cull nahm nur den Abstand zum
+                                    // Segment-MITTELPUNKT (minus halber Segment-
+                                    // länge) — eine LANGE Kette, die 1 mm neben
+                                    // der Fläche verläuft, blieb damit im Test.
+                                    // Die anschließende 2D-Projektion in die
+                                    // Tangentialebene kollabiert den Abstand aus
+                                    // der Ebene heraus, und die Kette „kreuzt"
+                                    // den 0,1-mm-Schritt scheinbar. Ergebnis:
+                                    // das Wachstum verwarf mitten auf der
+                                    // Mini-Kugel-Kappe reihenweise völlig
+                                    // korrekte Kandidaten (Betreiber-Loch am
+                                    // Punkt #895) — 26 Ablehnungen allein in
+                                    // einem 0,26-mm-Fleck. Dieselbe Fehlerklasse
+                                    // wie im Ketten-Kreuzungs-Verbot des Walks
+                                    // (dort mit `cell` statt echter Distanz).
+                                    if seg_seg_dist(p0, p1, sa, sb) > 0.5 * step2 + 1e-4 {
                                         continue;
                                     }
                                     if crate::lichen_tri::segments_cross(a2, b2, to2(sa), to2(sb)) {
@@ -3041,9 +3089,12 @@ mod tests {
     #[ignore = "Analyse-Werkzeug, kein Gate"]
     fn zz_minisphere_growth_gap() {
         let mut k = demo_project_kernel();
-        let out = k.lichen_mesh(
-            r#"{"targetEdgeLength":10.0,"grow":true,"curvAngleDeg":5.0,"minEdgeSpacing":0.1,"useReach":true,"reachTol":1.0,"maxPoints":50000,"generalTri":true,"accept":"witness","extractWalk":true,"globalWalk":true,"lfsFactor":0.5,"sizingField":true,"faceGuard":true,"fillHoles":false}"#.into(),
-        );
+        // EXAKT die Betreiber-Settings aus dem beigefügten Projekt
+        // (project.json → debug.lichen), per Env überschreibbar.
+        let opts = std::env::var("LICHEN_SCRATCH_OPTS").unwrap_or_else(|_| {
+            r#"{"targetEdgeLength":10.0,"grow":true,"curvAngleDeg":2.0,"useReach":false,"reachTol":1.0,"minEdgeSpacing":0.1,"maxPoints":50000,"generalTri":true,"accept":"witness","extractWalk":true,"globalWalk":true,"lfsFactor":0.1,"sizingField":true,"faceGuard":false,"fillHoles":false}"#.into()
+        });
+        let out = k.lichen_mesh(opts);
         let total = out[0] as usize;
         let c = [5.2107882f32, 22.11431, 29.24847473977133];
         let pos = |i: usize| [out[3 + i * 9], out[3 + i * 9 + 1], out[3 + i * 9 + 2]];
@@ -3169,6 +3220,38 @@ mod tests {
             }
         }
         eprintln!("  offene Kanten gesamt {n_open}, davon an der Mini-Kugel: {open_on_sphere}");
+        // BETREIBER-FÜNFECK: sein Punkt #895 ~[5.567,22.122,30.183] hat offene
+        // Kanten zu ~[5.750,22.209,30.085] und ~[5.524,21.852,30.161]. Liegen
+        // in DIESEM Dreiecksbereich Punkte?
+        let a = [5.567f32, 22.122, 30.183];
+        let b2 = [5.750f32, 22.209, 30.085];
+        let c2 = [5.524f32, 21.852, 30.161];
+        let cen = [
+            (a[0] + b2[0] + c2[0]) / 3.0,
+            (a[1] + b2[1] + c2[1]) / 3.0,
+            (a[2] + b2[2] + c2[2]) / 3.0,
+        ];
+        let mut inside: Vec<(f32, usize)> = Vec::new();
+        for i in 0..total {
+            let p = pos(i);
+            let d = ((p[0] - cen[0]).powi(2) + (p[1] - cen[1]).powi(2) + (p[2] - cen[2]).powi(2)).sqrt();
+            if d < 0.13 {
+                inside.push((d, i));
+            }
+        }
+        inside.sort_by(|x, y| x.0.partial_cmp(&y.0).unwrap());
+        eprintln!(
+            "  Betreiber-Loch (Zentrum {cen:?}): {} Punkte im Radius 0.13",
+            inside.len()
+        );
+        for (d, i) in inside.iter().take(8) {
+            eprintln!(
+                "    #{i} {:?} d={d:.3} flag={} benutzt={}",
+                pos(*i),
+                out[3 + i * 9 + 8],
+                used.contains(i)
+            );
+        }
     }
 
     /// QUALITÄTS-ZIEL auf dem Demo-Projekt: manifold + watertight, beide
