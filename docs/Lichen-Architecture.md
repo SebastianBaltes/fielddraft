@@ -545,6 +545,45 @@ Fassung arbeitet nicht greedy, sondern über den **globalen Kandidaten-Komplex**
 (alle restricted-Delaunay-Dreiecke) mit **Umbrella-/Zirkularordnungs-Pruning**
 pro Vertex. Das ist der letzte fehlende Baustein des Programms.
 
+## 8e. Normalen-Guard: die prinzipielle Lücke des Cocone-Filters (v0.6.551)
+
+**Befund 8 (Betreiber-Idee, vermessen und bestätigt).** Der Cocone-Filter prüft
+die **Richtung** zum Nachbarn: `|⟨d, n_i⟩| ≤ sin(θ)·|d|` — der Nachbar muss
+fast in der Tangentialebene liegen. Bei zwei **fast parallelen Blättern** im
+Abstand *t* ist eine Sehne quer über die Wand zu einem lateral um *L*
+entfernten Punkt aber nahezu tangential (Winkel ≈ `atan(t/L)`, für *L ≫ t*
+beliebig klein). **Cocone kann diese Kante prinzipiell nicht sehen** — erst
+recht nicht mit dem weiten Kegel (60–80°), den der globale Walk für scharfe
+Kanten braucht. Das ist exakt die Gyroid-∩-Wand-Situation.
+
+Das verlässliche Kriterium ist der Winkel zwischen den **Normalen der beiden
+Endpunkte**: quer durch eine dünne Wand sind sie ~antiparallel, egal wie
+tangential die Sehne liegt. Die Abtast-Bedingung garantiert, dass sich die
+Normale pro Schritt um höchstens den Krümmungswinkel α dreht; bei einem
+Horizont von ~2,5 Schritten ist `k·α` die natürliche Schwelle
+(implementiert: 6·α, geklemmt 30–75°, Env `LICHEN_NORMAL_GUARD_DEG`).
+
+**Kanten-Sonderbehandlung** (der Kern der Idee): an einem Knick ist *die eine*
+Normale bedeutungslos (der Mittelwert zeigt in die Winkelhalbierende). Geprüft
+wird deshalb über die **Normalen-MENGE** je Punkt — eine pro angrenzender
+Fläche (Flächenpunkte tragen eine, Kantenpunkte zwei, Ecken ≥3; die Mengen
+existierten längst als `point_faces` fürs Overlay). Die Kante ist gültig, wenn
+**ein Paar** `(n_i ∈ N(i), n_j ∈ N(j))` innerhalb der Schwelle liegt: an einer
+Box-Kante passt die Normale der gemeinsamen Fläche, quer durch eine dünne Wand
+passt keine.
+
+**Messung (1-mm-Platte, globaler Walk):** ohne Guard **111 Wand-Durchquerungen**
+und **χ = −67** (34 falsche Henkel quer durch die Platte); mit Guard **0**
+Durchquerungen, χ = 0. Glatte Körper bleiben unverändert (Box/Zylinder/Kugel
+χ=2, Torus χ=0) — die Normalen-Mengen halten die scharfen Kanten. Gate
+`lichen_thin_plate_global_walk_is_watertight` prüft genau diese Eigenschaft und
+fällt ohne den Guard um.
+
+**Unverändert offen:** die Platte ist damit noch nicht *dicht* (556 Rand-Kanten)
+— das ist die Walk-Sackgasse aus §8d, nicht der Guard. Die Trennung der beiden
+Probleme ist jetzt aber sauber: **Blatt-Trennung = gelöst (Normalen-Guard),
+Extraktion = offen (Umbrella-Pruning statt greedy Walk).**
+
 ## 9. Kritische Reflexion (2026-07-12)
 
 Bewertung des Konzepts mit dem Wissen aus Sampling-Theorie
