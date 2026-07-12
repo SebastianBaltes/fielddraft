@@ -1941,6 +1941,48 @@ mod tests {
         assert!(q.boundary_edges <= 300, "Rand-Kanten REGRESSION (Stand 165): {q:?}");
     }
 
+    /// Betreiber-Bild 2026-07-12: der Grow-Algorithmus emittierte Punkte
+    /// NEBEN dem Körper (Luft-Punkte an konkaven Buchten). Wurzel: die
+    /// Projektions-Toleranz `|f| ≤ 0.2·rr` wächst mit dem Wachstumsradius —
+    /// bei h=10 akzeptierte sie 2 mm Abstand. Hartes Gate: JEDER gewachsene
+    /// Punkt liegt auf der Oberfläche.
+    #[test]
+    fn lichen_grown_points_lie_on_surface() {
+        let mut k = demo_project_kernel();
+        for (name, opts) in [
+            (
+                "chart",
+                r#"{"targetEdgeLength":10.0,"grow":true,"curvAngleDeg":5.0,"minEdgeSpacing":0.2,"maxPoints":50000}"#,
+            ),
+            (
+                "general",
+                r#"{"targetEdgeLength":10.0,"grow":true,"curvAngleDeg":5.0,"minEdgeSpacing":0.2,"maxPoints":50000,"generalTri":true,"fillHoles":false}"#,
+            ),
+        ] {
+            let out = k.lichen_mesh(opts.into());
+            let total = out[0] as usize;
+            let mut worst = [0.0f32; 4]; // Index = flag (1 surf, 2 chain, 3 corner)
+            let mut worst_p = [0.0f32; 3];
+            for i in 0..total {
+                let sdf = out[3 + i * 9 + 3].abs();
+                let flag = (out[3 + i * 9 + 8] as usize).min(3);
+                if flag == 1 && sdf > worst[1] {
+                    worst_p = [out[3 + i * 9], out[3 + i * 9 + 1], out[3 + i * 9 + 2]];
+                }
+                worst[flag] = worst[flag].max(sdf);
+            }
+            eprintln!(
+                "{name}: max |sdf| über {total} Punkte: surf={} chain={} corner={} worst_p={worst_p:?}",
+                worst[1], worst[2], worst[3]
+            );
+            assert!(
+                worst[1] <= 0.1,
+                "{name}: Punkte müssen auf der Oberfläche liegen (|f| ≤ 0.01·h), max {} bei {worst_p:?}",
+                worst[1]
+            );
+        }
+    }
+
     /// QUALITÄTS-ZIEL auf dem Demo-Projekt: manifold + watertight, beide
     /// Pfade — WIP: (a) Gyroid-Flächen (chartlos, kein FaceSurf) wachsen noch
     /// nicht (F2) → offene Ränder an jeder Gyroid-Naht; (b) Flächen-Überlapp

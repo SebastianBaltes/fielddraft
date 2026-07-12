@@ -400,6 +400,13 @@ where
     let n_seeds = pts.len();
     let cap = n_seeds + opts.max_points;
 
+    // HARTES OBERFLÄCHEN-GATE (Betreiber-Bild 2026-07-12, „Grow findet
+    // Punkte außerhalb des Körpers"): die Schritt-Toleranz `|f| ≤ 0.2·rr`
+    // wächst mit dem Wachstumsradius — bei h=10 akzeptierte sie 2 mm Luft.
+    // An Distanzfeld-Graten (konkave Buchten, tangentiale Nähte) stallt
+    // Newton genau dort. Jeder Kandidat wird vor der Aufnahme nachprojiziert
+    // und ABSOLUT geprüft; wer nicht auf die Fläche konvergiert, fliegt.
+    let surf_tol = (5e-4 * h).max(1e-4);
     let mut rej = [0usize; 6]; // sdf, visible, face, redundant, rebalance, ok
     let mut queue: VecDeque<usize> = (0..n_seeds).collect();
     while let Some(i) = queue.pop_front() {
@@ -539,6 +546,18 @@ where
                     continue;
                 }
                 cp = q;
+            }
+            // Oberflächen-Gate (s. surf_tol oben): nachprojizieren, dann
+            // kompromisslos absolut prüfen.
+            if cd.abs() > surf_tol {
+                let (qp, qd, qn) = project(cp, fg);
+                if qd.abs() > surf_tol {
+                    rej[0] += 1;
+                    continue;
+                }
+                cp = qp;
+                cd = qd;
+                cn = qn;
             }
             // Eigener Spacing-Radius des Kandidaten (Krümmung von der
             // Trägerfläche); Anzeige-U zusätzlich durch den Kantenabstand

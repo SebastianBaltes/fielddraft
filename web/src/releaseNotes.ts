@@ -24,6 +24,16 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.544",
+    entries: [
+      {
+        kind: "fix",
+        scope: "mesher",
+        text: "Lichen: das Wachstum emittiert keine Luft-Punkte mehr neben dem Körper — die Projektions-Toleranz wuchs mit dem Wachstumsradius (bei h=10 bis zu 2 mm erlaubter Abstand); jetzt wird jeder Kandidat nachprojiziert und absolut gegen die Oberfläche geprüft (max |f| im Demo: 0,056 → 0,0001 mm). Nebeneffekt: deutlich weniger Loch-Kanten (Demo general 165→30), weil Luft-Punkte die Stern-Nachbarschaften vergifteten.",
+      },
+    ],
+  },
+  {
     version: "0.6.543",
     entries: [
       {
