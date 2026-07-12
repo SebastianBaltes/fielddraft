@@ -5,7 +5,7 @@ Konzept-Dokument beschreibt das *Soll* (die Spezifikation der direkten
 3D-Meshing-Pipeline); dieses Dokument beschreibt das *Ist*: wie Lichen
 tatsächlich gebaut ist, welche Konzept-Teile sich bewährt haben, welche
 ersetzt wurden, was wir dabei gelernt haben — und wo die offenen Baustellen
-liegen. Stand: 2026-07-12 (v0.6.543).
+liegen. Stand: 2026-07-12 (v0.6.545).
 
 ---
 
@@ -39,8 +39,11 @@ Zwei Triangulierungs-Pfade, im Dialog schaltbar (`General tri`):
 
 * **Chart-Pfad** (default): pro B-Rep-Fläche `triangulate_planar_face`
   (Newell-Frame) bzw. `triangulate_periodic_face` (Zylinder/Kugel/Kegel über
-  periodischen Chart). Robust, wasserdicht auf Box/Zylinder/Halbkugel —
-  aber prinzipiell chartgebunden, deckt Torus/Gyroid nicht.
+  periodischen Chart). Robust, wasserdicht auf Box/Zylinder/Halbkugel.
+  Seit v0.6.545 fällt jede chart-unfähige Fläche **pro Fläche auf die
+  General-Triangulierung zurück** (Vollwickel-Kugel, Torus, Gyroid,
+  loop-lose Flächen) — der Chart-Modus ist damit ein Hybrid „Chart wo
+  möglich, chartlos wo nötig".
 * **General-Pfad** (`lichen_tri.rs`): chartlos, Stern-Konsens + Umkugel.
   Das eigentliche Forschungsziel; die planaren Flächen sind dabei der
   Referenz-Testfall (dort gibt es mit dem CDT eine bekannte richtige Antwort).
@@ -296,6 +299,30 @@ Pro Fläche, chartlos:
 * **I-11 AABB-Gate gegen Union-Fusion (DL-73-Kontext):** falscher Stich —
   vor dem Beschuldigen eines räumlichen Gates verifizieren, dass sich die
   Solids wirklich berühren. (Lehre gilt generell.)
+* **I-12 Radius-relative Projektions-Toleranz (bis v0.6.543):** die
+  Wachstums-Akzeptanz `|f| ≤ 0.2·rr` skalierte mit dem Wachstumsradius —
+  bei h=10 waren 2 mm „auf der Oberfläche"; Newton stallt an Distanzfeld-
+  Graten genau dort → Luft-Punkte neben dem Körper, die zusätzlich die
+  Stern-Nachbarschaften vergifteten (Demo 165→30 boundary nach dem Fix).
+  → absolutes Oberflächen-Gate `surf_tol = max(5e-4·h, 1e-4)` mit
+  Nach-Projektion.
+* **I-13 Lokale Frame-Einheiten in Distanz-Schwellen (bis v0.6.544):**
+  `face_of`/`own_dist` verglichen `sdf_halfspace`-Werte verschiedener
+  Flächen ROH — ein Träger mit placement-Skala 0.02 (Mini-Kugel = Kugel
+  r50 × 0.02) liefert 50× aufgeblasene Distanzen; argmin und alle
+  Schwellen wirkten pro Fläche verschieden. → immer auf Welt-mm skalieren.
+* **I-14 `on_face`-Floor 0.02·h (bis v0.6.544):** 0.2 mm Toleranz bei h=10
+  machte die harte Kanten-Wand für Sub-h-Features porös — die Gyroid-Wand
+  wuchs bis 0.2 mm neben ihren Träger quer über das Band der Mini-Kugel;
+  ihre Übertreter blockierten als xgrid-Konflikte die echte Besiedlung.
+  → Floor 2e-3·h.
+* **I-15 Case 1 des periodischen Charts ohne Vollwickel-Schutz (bis
+  v0.6.544):** eine geschlossene Kugel mit zwei kleinen, NICHT windenden
+  Loch-Ringen (Wand steckt in der Kugel) wickelt die volle Periode — Case 1
+  hat keine Naht-Maschinerie, am Chart-Schnitt blieb ein leerer Meridian-
+  Streifen, den die Chart-Hülle mit langen degenerierten Welt-Sehnen
+  überbrückte (Betreiber-Bild „Spalt in der Kugel"). → u-Überdeckungs-
+  Wächter (keine Lücke ≥ 5% der Periode → `None` → chartloser Fallback).
 
 ## 6. Lessons Learned (Arbeitsweise)
 
@@ -314,6 +341,15 @@ Pro Fläche, chartlos:
   sichtbar.
 * **Erst billig filtern/sortieren/deckeln, dann teuer verifizieren** —
   Umkugel-Scans im Debug-Build sind teuer.
+* **Gates können False Positives sein — Prämisse prüfen, nicht nur das
+  Assert:** der Halbkugel-Watertight-Test war seit langem grün, obwohl die
+  Kugelkappe NIE gemesht wurde: `add_primitive(TAG_REMOVE)` hängt ohne
+  `targets` kein CSG an — der Test baute zwei getrennte Bodies, und nur
+  die geschlossene Box erfüllte χ=2. Aufgeflogen erst, als der neue
+  Fallback die freie Kugel plötzlich meshte und „den grünen Test brach".
+  Konsequenz: bei Gate-Brüchen nach einem Fix zuerst fragen, ob der Test
+  je das gemessen hat, was sein Name behauptet (verwandt mit „X Löcher
+  gegen tris-pro-Fläche gegenprüfen").
 
 ## 7. Dedizierte Tests (Stand v0.6.543)
 
@@ -339,30 +375,37 @@ Aktive Gates (`crates/kernel/src/api/lichen.rs`):
 
 ## 8. Offene Punkte
 
+*(Erledigt am 2026-07-12: Luft-Punkte im Wachstum → I-12/v0.6.544;
+Kugel-Meridian-Spalt + „Gyroid ohne Mesh bei General-tri-aus" →
+I-13/I-14/I-15 + Chartlos-Fallback/v0.6.545. Demo-Messstand: chart 15,
+general 36 offene Kanten, beide 0 nm / 0 degen / 0 orient.)*
+
 1. **Stern-Projektions-Entartung auf stark gekrümmten Flächen** (Betreiber-
    Repro curv 1°/minEdge 0.1): Innen-Sterne der r=1-Kugel haben Horizonte
    von mehreren RADIANT Bogen — die Tangential-Projektion ist dort entartet,
    Innen- und Ring-Sterne wählen verschiedene Partner (78 chain↔surf-Löcher
    Ring→Kappen-Innen). Dazu der unaufgeklärte **Widerspruch: warum wachsen
    auf der r=1-Kugel bei curv=1° Punkte mit space≈2 statt α/κ≈0.017?**
-   (space-Kette prüfen; leeres ~1-mm-Band zwischen 0.1er-Ring und ersten
-   Innenpunkten; rebalance-Fails 4422 bei gf6.)
-2. **Gabriel auf der großen Kugel:** breite Spalte mit degeneriertem Mesh
-   (Kanten zu fernen statt nahen Punkten trotz Kandidaten in der eigenen
-   Umkugel) — s. Reflexion R-3/R-4.
-3. **Wachstum findet Punkte außerhalb des Körpers** (Betreiber-Bild 1) —
-   s. Reflexion R-1; Akzeptanz-Toleranz `|f| ≤ 0.2·rr` skaliert mit dem
-   Wachstumsradius statt mit einer Oberflächen-Toleranz.
-4. **Gyroid (F2):** Umkugel-Bedingung vielerorts gebrochen, stellenweise
-   gar kein Mesh; Mikro-Gyroid wächst, aber die Triangulierung trägt nicht.
-   Torus (doppelt periodisch) im Chart-Pfad ebenfalls offen.
-5. **Wachstums-Überdichte / CDT-Verwurf randnaher Partikel** (Chart-Pfad):
+   (space-Kette prüfen; das früher beobachtete leere ~1-mm-Band war
+   vermutlich I-14 — nach dem Fix neu vermessen.)
+2. **Rest-Löcher an Dichte-Übergängen/Gyroid-Nähten:** chart 15 / general
+   36 offene Kanten auf dem Demo (`lichen_demo_project_is_watertight`
+   bleibt #[ignore]-WIP). Umkugel-Bedingung auf dem Gyroid vielerorts
+   verletzt (Betreiber-Bild 5) — vermutlich Punktverteilung, s. R-A1/R-A3.
+3. **Torus (doppelt periodisch)** hat kein Chart — läuft jetzt über den
+   General-Fallback, aber ohne dediziertes Gate.
+4. **Wachstums-Überdichte / CDT-Verwurf randnaher Partikel** (Chart-Pfad):
    usedV≈384 von 879 auf der Box — kosmetisch, aber Dichte-Feinschliff
    steht aus.
-6. **Wurzel-Panic der WASM-Borrow-Vergiftung** (v0.6.542) nicht
+5. **Wurzel-Panic der WASM-Borrow-Vergiftung** (v0.6.542) nicht
    reproduziert — Konsolen-Zeile ÜBER dem Aliasing-Fehler nötig; evtl.
    Geometrie-Edit während der Mesher lief. `catch_unwind`-Muster ggf. auf
    andere `&mut`-Entries ausweiten.
+6. **`own_near`-Schwelle (Regionen-Sichtlinie) ist frame-lokal:**
+   `sdf_halfspace ≤ 0.05·h` in LOKALEN Einheiten — für die 0.02-skalierte
+   Mini-Kugel effektiv 0.01 mm (streng, korrekt), für skala-1-Flächen
+   0.5 mm (lax). Funktioniert derzeit, ist aber dieselbe Fehlerklasse wie
+   I-13; sauber wäre eine Spacing-relative Welt-Toleranz.
 7. **Export-Perspektive:** seit dem CGAL-Service ist Lichen fürs
    Export-Mesh evtl. obsolet — er bleibt der Explorationspfad für
    chartloses direktes 3D-Meshing.
