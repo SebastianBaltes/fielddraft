@@ -24,6 +24,16 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.548",
+    entries: [
+      {
+        kind: "feat",
+        scope: "mesher",
+        text: "Lichen: Manifold-Extraktion (Sheet-Walk) und Zeugen-Umkugel — die Loch-Forensik hat gezeigt, dass ~85 % aller offenen Kanten NICHT am Kugel-Prädikat scheitern, sondern daran, dass eine Nachbarkante bereits von zwei ebenfalls GÜLTIGEN Dreiecken belegt war: es gibt mehr gültige Dreiecke, als in eine Fläche passen. Neue Option „Manifold-Extraktion (Walk)“ läuft die Fläche aus der Kandidaten-Menge heraus (Pivotieren um die Front-Kante) statt greedy zu akzeptieren und die Kapazität zu klemmen — Box, Zylinder, Kugel und Torus sind damit wasserdicht OHNE Kandidaten-Vervollständigung und OHNE Loch-Füller. Dazu der Akzeptanz-Modus „Zeugen-Umkugel (restricted)“: das Kugelzentrum wird per Newton auf die Fläche geschoben (restricted Delaunay statt kleinster Umkugel).",
+      },
+    ],
+  },
+  {
     version: "0.6.547",
     entries: [
       {

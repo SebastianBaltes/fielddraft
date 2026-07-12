@@ -68,6 +68,12 @@ pub struct LichenOptions {
     /// der BASIS-Algorithmus wird pur gemessen (Betreiber-Wunsch: der
     /// Kern muss auch ohne Fallbacks bestehen).
     pub fill_holes: bool,
+    /// MANIFOLD-EXTRAKTION (Cocone-Säule 3) statt greedy Akzeptanz +
+    /// Kapazitäts-Klemme: aus der Kandidaten-Menge wird per Sheet-Walk
+    /// (Pivotieren um die Front-Kante, kleinster Sweep-Winkel durch die Luft)
+    /// eine FLÄCHE herausgelaufen. Ersetzt strukturell die Kandidaten-
+    /// Vervollständigung und den Loch-Füller.
+    pub extract_walk: bool,
 }
 
 impl Default for LichenOptions {
@@ -84,6 +90,7 @@ impl Default for LichenOptions {
             general_tri: false,
             accept: "auto".into(),
             fill_holes: true,
+            extract_walk: false,
         }
     }
 }

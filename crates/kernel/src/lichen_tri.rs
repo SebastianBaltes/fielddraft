@@ -187,6 +187,222 @@ pub fn enforce_chain_single_use(
     before - tris.len()
 }
 
+/// MANIFOLD-EXTRAKTION (Cocone, Säule 3) — Analyse 2026-07-12: die
+/// Kandidaten-Menge (kugel-gültige Dreiecke) enthält systematisch MEHR
+/// gültige Dreiecke, als in ein 2-Manifold passen; die Loch-Forensik zeigte,
+/// dass ~85 % aller offenen Kanten daran scheitern, dass eine Nachbarkante
+/// bereits von zwei — ebenfalls gültigen — Dreiecken belegt ist. Greedy
+/// akzeptieren + Kapazität klemmen ist also strukturell falsch: aus dem
+/// Kandidaten-Komplex muss eine FLÄCHE extrahiert werden.
+///
+/// Verfahren (Sheet-Walk, wie Ball-Pivoting/Amenta et al.): von einem
+/// Seed-Dreieck aus über gerichtete Halbkanten laufen; an jeder Kante wird
+/// unter allen Kandidaten der gewählt, den man ZUERST trifft, wenn man um
+/// die Kante herum durch die LUFT dreht (kleinster positiver Rotationswinkel
+/// um die Kantenachse, ausgehend vom aktuellen Dreieck in Richtung seiner
+/// Außennormalen). Jede Halbkante bekommt so höchstens ein Dreieck → das
+/// Ergebnis ist per Konstruktion 2-manifold und konsistent orientiert;
+/// Ketten-Kanten sind Flächenrand (die Front stoppt dort).
+fn extract_manifold(
+    points: &[[f32; 3]],
+    normals: &HashMap<u32, [f32; 3]>,
+    cands: &[[u32; 3]],
+    chain_edges: &HashSet<(u32, u32)>,
+    // PIVOT-QUELLE: alle Punkte in der Nachbarschaft einer Kante. Die
+    // Stern-Kandidaten allein sind NACHWEISLICH unvollständig (deshalb gab es
+    // die Vervollständigungs-Passe) — der Walk muss selbst pivotieren können,
+    // sonst reißt er genau dort Löcher, wo der Stern nichts vorgeschlagen hat.
+    near: &dyn Fn(u32, u32) -> Vec<u32>,
+    // GÜLTIGKEIT eines pivotierten Dreiecks (leere Umkugel + Wächter).
+    valid: &dyn Fn(u32, u32, u32) -> bool,
+) -> Vec<[u32; 3]> {
+    if cands.is_empty() {
+        return Vec::new();
+    }
+    // Kandidaten je ungerichteter Kante.
+    let mut by_edge: HashMap<(u32, u32), Vec<[u32; 3]>> = HashMap::new();
+    for &t in cands {
+        for (x, y) in [(t[0], t[1]), (t[1], t[2]), (t[2], t[0])] {
+            by_edge.entry((x.min(y), x.max(y))).or_default().push(t);
+        }
+    }
+    let apex = |t: [u32; 3], x: u32, y: u32| -> u32 {
+        if t[0] != x && t[0] != y {
+            t[0]
+        } else if t[1] != x && t[1] != y {
+            t[1]
+        } else {
+            t[2]
+        }
+    };
+    // Umkreisradius² (Seed-Wahl: kleinster zuerst = sicherstes Dreieck).
+    let circum_r2 = |t: [u32; 3]| -> f32 {
+        let (pa, pb, pc) = (
+            points[t[0] as usize],
+            points[t[1] as usize],
+            points[t[2] as usize],
+        );
+        let ab = sub(pb, pa);
+        let ac = sub(pc, pa);
+        let ab2 = dot(ab, ab);
+        let ac2 = dot(ac, ac);
+        let abac = dot(ab, ac);
+        let den = 2.0 * (ab2 * ac2 - abac * abac);
+        if den.abs() < 1e-20 {
+            return f32::MAX;
+        }
+        let s_ = (ac2 * (ab2 - abac)) / den;
+        let t_ = (ab2 * (ac2 - abac)) / den;
+        let dc = [s_ * ab[0] + t_ * ac[0], s_ * ab[1] + t_ * ac[1], s_ * ab[2] + t_ * ac[2]];
+        dot(dc, dc)
+    };
+    // Feld-Normale eines Dreiecks (Mittel der Ecken-Normalen).
+    let n_ref = |t: [u32; 3]| -> [f32; 3] {
+        let mut n = [0.0f32; 3];
+        for &i in t.iter() {
+            if let Some(&ni) = normals.get(&i) {
+                n = [n[0] + ni[0], n[1] + ni[1], n[2] + ni[2]];
+            }
+        }
+        n
+    };
+    // Seeds deterministisch: kleinster Umkreis zuerst.
+    let mut order: Vec<[u32; 3]> = cands.to_vec();
+    order.sort_by(|&a, &b| {
+        circum_r2(a)
+            .partial_cmp(&circum_r2(b))
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then(a.cmp(&b))
+    });
+    let mut used: HashSet<[u32; 3]> = HashSet::new(); // sortierte Tripel
+    let mut half: HashSet<(u32, u32)> = HashSet::new(); // belegte Halbkanten
+    let mut out: Vec<[u32; 3]> = Vec::new();
+    let key3 = |t: [u32; 3]| -> [u32; 3] {
+        let mut k = t;
+        k.sort_unstable();
+        k
+    };
+    let push_tri = |t: [u32; 3],
+                    out: &mut Vec<[u32; 3]>,
+                    used: &mut HashSet<[u32; 3]>,
+                    half: &mut HashSet<(u32, u32)>,
+                    front: &mut std::collections::VecDeque<([u32; 3], u32, u32)>| {
+        used.insert(key3(t));
+        out.push(t);
+        for (x, y) in [(t[0], t[1]), (t[1], t[2]), (t[2], t[0])] {
+            half.insert((x, y));
+            front.push_back((t, x, y));
+        }
+    };
+    for &seed in &order {
+        if used.contains(&key3(seed)) {
+            continue;
+        }
+        // Bereits von der Front belegte Halbkanten dürfen kein zweites Mal
+        // gesetzt werden — ein Seed, dessen Kanten schon voll sind, gehört
+        // nicht mehr auf die Fläche.
+        let mut s = seed;
+        let nr = n_ref(s);
+        let (pa, pb, pc) = (
+            points[s[0] as usize],
+            points[s[1] as usize],
+            points[s[2] as usize],
+        );
+        if dot(cross(sub(pb, pa), sub(pc, pa)), nr) < 0.0 {
+            s.swap(1, 2);
+        }
+        if [(s[0], s[1]), (s[1], s[2]), (s[2], s[0])]
+            .iter()
+            .any(|e| half.contains(e))
+        {
+            continue;
+        }
+        let mut front: std::collections::VecDeque<([u32; 3], u32, u32)> =
+            std::collections::VecDeque::new();
+        push_tri(s, &mut out, &mut used, &mut half, &mut front);
+        while let Some((t, x, y)) = front.pop_front() {
+            // Der Nachbar durchläuft die Kante GEGENLÄUFIG (y → x).
+            if half.contains(&(y, x)) {
+                continue; // Gegenseite bereits belegt
+            }
+            let e = (x.min(y), x.max(y));
+            if chain_edges.contains(&e) {
+                continue; // Flächenrand — die Front endet hier
+            }
+            // Kandidaten-Apexe: Stern-Vorschläge PLUS frei pivotierte Punkte
+            // der Umgebung (die Menge ist die Vereinigung; Gültigkeit prüft
+            // `valid`).
+            let mut apexes: Vec<u32> = by_edge
+                .get(&e)
+                .map(|l| l.iter().map(|&c| apex(c, x, y)).collect())
+                .unwrap_or_default();
+            apexes.extend(near(x, y));
+            apexes.sort_unstable();
+            apexes.dedup();
+            let c_cur = apex(t, x, y);
+            let (px, py) = (points[x as usize], points[y as usize]);
+            let axis = norm(sub(py, px));
+            // Referenz-Halbebene: Richtung vom Kanten-Fußpunkt zum Apex des
+            // aktuellen Dreiecks, senkrecht zur Achse.
+            let perp = |q: [f32; 3]| -> [f32; 3] {
+                let d = sub(q, px);
+                let a = dot(d, axis);
+                [d[0] - a * axis[0], d[1] - a * axis[1], d[2] - a * axis[2]]
+            };
+            let u_cur = norm(perp(points[c_cur as usize]));
+            // Rechte-Hand-Drehung um `axis` führt von u_cur zur Außennormalen
+            // des aktuellen Dreiecks — sweep durch die LUFT.
+            let w = cross(axis, u_cur);
+            // Nach Sweep-Winkel sortiert prüfen (Gültigkeit ist teuer, der
+            // erste gültige Treffer gewinnt = echtes Pivotieren).
+            let mut ranked: Vec<(f32, u32)> = Vec::new();
+            for d in apexes {
+                if d == c_cur || d == x || d == y {
+                    continue;
+                }
+                let pd = perp(points[d as usize]);
+                if dot(pd, pd) < 1e-12 {
+                    continue; // Apex auf der Achse
+                }
+                let u_d = norm(pd);
+                let c = dot(u_cur, u_d).clamp(-1.0, 1.0);
+                let sgn = dot(w, u_d);
+                let mut ang = c.acos();
+                if sgn < 0.0 {
+                    ang = std::f32::consts::TAU - ang;
+                }
+                if ang < 1e-4 || ang > std::f32::consts::TAU - 1e-4 {
+                    continue; // deckungsgleich mit dem aktuellen Dreieck
+                }
+                ranked.push((ang, d));
+            }
+            ranked.sort_by(|a, b| {
+                a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal).then(a.1.cmp(&b.1))
+            });
+            let mut chosen: Option<u32> = None;
+            for (_, d) in ranked {
+                let cand = key3([x, y, d]);
+                if used.contains(&cand) {
+                    continue;
+                }
+                // Halbkanten-Kapazität: keine Doppelbelegung.
+                if half.contains(&(y, x)) || half.contains(&(x, d)) || half.contains(&(d, y)) {
+                    continue;
+                }
+                if !valid(x, y, d) {
+                    continue;
+                }
+                chosen = Some(d);
+                break;
+            }
+            let Some(d) = chosen else { continue };
+            let t_new = [y, x, d];
+            push_tri(t_new, &mut out, &mut used, &mut half, &mut front);
+        }
+    }
+    out
+}
+
 /// Allgemeine Triangulierung EINER Fläche.
 ///
 /// * `points`/`normals`/`spacing`: globale Punkttabelle (Welt), Pro-Punkt-
@@ -214,6 +430,7 @@ pub fn triangulate_face_general(
     owner: Option<&dyn Fn([f32; 3]) -> bool>,
     global_chain_edges: Option<&HashSet<(u32, u32)>>,
     fill_holes: bool,
+    extract_walk_opt: bool,
     fg: &dyn Fn([f32; 3]) -> (f32, [f32; 3]),
     own_near: &dyn Fn([f32; 3]) -> bool,
 ) -> GeneralFaceMesh {
@@ -469,13 +686,13 @@ pub fn triangulate_face_general(
     // nur akzeptiert, wenn es GENAU ein Fächer-Dreieck (m, s_k, s_{k+1}) ist —
     // beide Sichten desselben Quads wählen so dieselbe Diagonale.
     const GABRIEL_TOL: f32 = 2e-4;
-    let gabriel_empty = |a: u32, b: u32, c: u32| -> bool {
+    // Umkreiszentrum in der Dreiecks-Ebene (Kramer über Baryzentrik).
+    let circumcentre = |a: u32, b: u32, c: u32| -> Option<[f32; 3]> {
         let (pa, pb, pc) = (
             points[a as usize],
             points[b as usize],
             points[c as usize],
         );
-        // Umkreiszentrum in der Dreiecks-Ebene (Kramer über Baryzentrik).
         let ab = sub(pb, pa);
         let ac = sub(pc, pa);
         let ab2 = dot(ab, ab);
@@ -483,23 +700,34 @@ pub fn triangulate_face_general(
         let abac = dot(ab, ac);
         let den = 2.0 * (ab2 * ac2 - abac * abac);
         if den.abs() < 1e-20 {
-            return false; // degeneriert
+            return None; // degeneriert
         }
         let s_ = (ac2 * (ab2 - abac)) / den;
         let t_ = (ab2 * (ac2 - abac)) / den;
-        let centre = [
+        Some([
             pa[0] + s_ * ab[0] + t_ * ac[0],
             pa[1] + s_ * ab[1] + t_ * ac[1],
             pa[2] + s_ * ab[2] + t_ * ac[2],
-        ];
+        ])
+    };
+    // Leere-Prüfung EINER Kugel durch (a,b,c) mit gegebenem Zentrum, inkl.
+    // deterministischem Fächer-Tie-Break (siehe Kommentar oben). Geteilt von
+    // Gabriel (Zentrum in der Dreiecks-Ebene = kleinste Kugel) und der
+    // ZEUGEN-Umkugel (Zentrum auf der Fläche = restricted Delaunay).
+    let sphere_empty_fan = |centre: [f32; 3], a: u32, b: u32, c: u32| -> bool {
+        let (pa, pb, pc) = (
+            points[a as usize],
+            points[b as usize],
+            points[c as usize],
+        );
         let dc = sub(pa, centre);
         let r2 = dot(dc, dc);
         let r = r2.sqrt();
         // PERF-/SINN-DECKEL: fast-kollineare Kandidaten haben explodierende
         // Umkreisradien — der Punktfreiheits-Scan iterierte dann reach³ mit
         // riesigem r (Betreiber-Fall: EINE Gyroid-Fläche 241 s). Ein Dreieck
-        // mit Umkreis weit über dem Nachbarschafts-Horizont ist ohnehin nie
-        // ein lokales Delaunay-Dreieck → ablehnen statt scannen.
+        // mit Umkugel weit über dem Nachbarschafts-Horizont ist ohnehin nie
+        // ein lokales (restricted-)Delaunay-Dreieck → ablehnen statt scannen.
         if r > 5.0 * cell {
             return false;
         }
@@ -520,7 +748,7 @@ pub fn triangulate_face_general(
                         let d = sub(points[j as usize], centre);
                         let d2 = dot(d, d);
                         if d2 < r2 * (1.0 - GABRIEL_TOL) {
-                            return false; // strikt innen → Umkugel nicht leer
+                            return false; // strikt innen → Kugel nicht leer
                         }
                         if d2 <= r2 * (1.0 + GABRIEL_TOL) {
                             ties.push(j); // exakt auf der Kugel → Tie-Zeuge
@@ -533,7 +761,7 @@ pub fn triangulate_face_general(
             return true; // strikt leer — eindeutig
         }
         // Fächer-Tie-Break über die zyklische Ordnung der Tie-Menge.
-        let n = norm(cross(ab, ac));
+        let n = norm(cross(sub(pb, pa), sub(pc, pa)));
         let (e1, e2) = basis(n);
         let mut set: Vec<u32> = vec![a, b, c];
         set.extend(ties);
@@ -565,6 +793,65 @@ pub fn triangulate_face_general(
         }
         false
     };
+    let gabriel_empty = |a: u32, b: u32, c: u32| -> bool {
+        circumcentre(a, b, c).map_or(false, |c0| sphere_empty_fan(c0, a, b, c))
+    };
+    // ZEUGEN-UMKUGEL (restricted Delaunay, Cocone-Programm): ein Dreieck
+    // gehört zur flächen-restringierten Delaunay-Triangulierung genau dann,
+    // wenn eine leere Umkugel existiert, deren Zentrum AUF der Fläche liegt —
+    // das Zentrum wird entlang der dualen Geraden (Dreiecks-Normale durchs
+    // Umkreiszentrum) per 1D-Newton auf f = 0 geschoben („umgekehrtes
+    // Raymarching", Betreiber-Formulierung). Auf planaren Flächen ist t = 0
+    // und die Bedingung degeneriert exakt zu Gabriel. Gegenüber der
+    // kleinsten Kugel ist sie auf gekrümmten Flächen ZULÄSSIGER (lehnt
+    // legitime Dreiecke an Dichte-Übergängen nicht ab) — es ist das
+    // Prädikat, für das der Amenta/Bern-Beweis gilt.
+    let witness_empty = |a: u32, b: u32, c: u32| -> bool {
+        let Some(c0) = circumcentre(a, b, c) else {
+            return false;
+        };
+        let (pa, pb, pc) = (
+            points[a as usize],
+            points[b as usize],
+            points[c as usize],
+        );
+        let n_t = norm(cross(sub(pb, pa), sub(pc, pa)));
+        let cap = 5.0 * cell;
+        let mut t = 0.0f32;
+        let mut converged = false;
+        for _ in 0..12 {
+            let x = [c0[0] + t * n_t[0], c0[1] + t * n_t[1], c0[2] + t * n_t[2]];
+            let (f, g) = fg(x);
+            if f.abs() < 1e-3 {
+                converged = true;
+                break;
+            }
+            // robust_grad: der Dual-Gradient ist EXAKT null auf planaren
+            // Flächen (Abs-Dual bei 0) — ohne FD-Fallback stallte der
+            // Newton dort mit dn≈0 (95 von 446 Fails im Demo-Messlauf).
+            let g = if dot(g, g) > 1e-12 { g } else { crate::lichen::robust_grad(x, &fg) };
+            let dn = dot(g, n_t);
+            if dn.abs() < 1e-6 {
+                break; // duale Gerade läuft tangential zum Feld
+            }
+            t -= f / dn;
+            if !t.is_finite() || t.abs() > cap {
+                break; // kein Flächen-Schnitt im lokalen Fenster
+            }
+        }
+        if !converged {
+            if std::env::var("LICHEN_DEBUG_WITNESS").is_ok() {
+                eprintln!("WITNESS-FAIL t={t} c0={c0:?}");
+            }
+            return false; // kein Zeuge auf der Fläche → nicht restricted-Delaunay
+        }
+        sphere_empty_fan(
+            [c0[0] + t * n_t[0], c0[1] + t * n_t[1], c0[2] + t * n_t[2]],
+            a,
+            b,
+            c,
+        )
+    };
     // Akzeptanz-Modus: aus dem Dialog (`LichenOptions.accept`), Env
     // `LICHEN_ACCEPT` überstimmt für Messreihen. "gabriel" = Umkugel mit
     // deterministischem Fächer-Tie-Break (s.o.), "hybrid" = Stern-Konsens
@@ -577,10 +864,22 @@ pub fn triangulate_face_general(
     let accepted = |a: u32, b: u32, c: u32, v: u8| -> bool {
         match accept_mode.as_str() {
             "gabriel" => gabriel_empty(a, b, c),
+            "witness" => witness_empty(a, b, c),
             "hybrid" => v >= vote_min || gabriel_empty(a, b, c),
             _ => v >= vote_min,
         }
     };
+    // Kugel-Prädikat der Kandidaten-Vervollständigung: im witness-Modus
+    // verifiziert auch sie mit der Zeugen-Umkugel (EIN Prädikat überall).
+    let sphere_verify = |a: u32, b: u32, c: u32| -> bool {
+        if accept_mode == "witness" { witness_empty(a, b, c) } else { gabriel_empty(a, b, c) }
+    };
+    // MANIFOLD-EXTRAKTION (Env LICHEN_EXTRACT=walk, Analyse s. extract_manifold):
+    // statt greedy zu akzeptieren und die Kanten-Kapazität zu klemmen, wird aus
+    // der Kandidaten-Menge eine FLÄCHE herausgelaufen. Kandidaten = alle
+    // kugel-gültigen Dreiecke (das Prädikat ist laut Forensik nicht das Problem).
+    let extract_walk =
+        extract_walk_opt || std::env::var("LICHEN_EXTRACT").as_deref() == Ok("walk");
     let mut tris: Vec<[u32; 3]> = Vec::new();
     if std::env::var("LICHEN_DEBUG_TRI").is_ok() {
         let mut hist = [0usize; 4];
@@ -605,6 +904,10 @@ pub fn triangulate_face_general(
     }
     tris.sort_unstable();
     weak_tris.sort_unstable();
+    // Im Walk-Modus sind die akzeptierten Dreiecke nur KANDIDATEN — die
+    // Fläche wird daraus extrahiert (nach den geometrischen Gültigkeits-
+    // Wächtern unten, aber VOR den Kapazitäts-/Seiten-Regeln, die der Walk
+    // strukturell ersetzt).
 
     // ── Owner-Stitching: Voll-Ketten-Dreiecke nur für die eigene Fläche ──
     if let Some(owner) = owner {
@@ -691,6 +994,95 @@ pub fn triangulate_face_general(
             true
         });
     }
+
+    if extract_walk {
+        // Die geometrischen Gültigkeits-Wächter (Ketten-Kreuzung, fremde
+        // Wände) sind oben gelaufen; jetzt die Fläche herauslaufen. Die
+        // nachfolgenden Kapazitäts-/Seiten-/Vervollständigungs-Blöcke
+        // entfallen — der Walk erzeugt per Konstruktion ein 2-Manifold.
+        //
+        // Pivot-Quelle: alle Punkte im Horizont der Kanten-Endpunkte, gefiltert
+        // wie im Stern (Cocone-Kegel + Regionen-Sichtlinie); Gültigkeit = das
+        // gewählte Kugel-Prädikat + Ketten-Regeln.
+        let near = |x: u32, y: u32| -> Vec<u32> {
+            let (px, py) = (points[x as usize], points[y as usize]);
+            let mid = [
+                (px[0] + py[0]) * 0.5,
+                (px[1] + py[1]) * 0.5,
+                (px[2] + py[2]) * 0.5,
+            ];
+            let r = eff_r
+                .get(&x)
+                .copied()
+                .unwrap_or(cell)
+                .max(eff_r.get(&y).copied().unwrap_or(cell));
+            let (kx, ky, kz) = key(mid);
+            let reach = (r / cell).ceil() as i32 + 1;
+            let mut out: Vec<u32> = Vec::new();
+            for dx in -reach..=reach {
+                for dy in -reach..=reach {
+                    for dz in -reach..=reach {
+                        let Some(bucket) = grid.get(&(kx + dx, ky + dy, kz + dz)) else {
+                            continue;
+                        };
+                        for &w in bucket {
+                            if w == x || w == y {
+                                continue;
+                            }
+                            let d = sub(points[w as usize], mid);
+                            if dot(d, d) <= r * r {
+                                out.push(w);
+                            }
+                        }
+                    }
+                }
+            }
+            out
+        };
+        let valid = |a: u32, b: u32, c: u32| -> bool {
+            if crosses_chain(a, b, c) {
+                return false;
+            }
+            if let Some(gce) = global_chain_edges {
+                for (x, y) in [(a, b), (b, c), (c, a)] {
+                    let e = (x.min(y), x.max(y));
+                    if gce.contains(&e) && !chain_edges.contains(&e) {
+                        return false;
+                    }
+                }
+            }
+            // Cocone: kein fremdes Blatt verbinden (an allen drei Ecken).
+            for (i, j) in [(a, b), (b, c), (c, a)] {
+                if let Some(&ni) = normals.get(&i) {
+                    let d = sub(points[j as usize], points[i as usize]);
+                    let dl = dot(d, d).sqrt();
+                    if dl > 1e-9 && dot(d, ni).abs() > cocone_sin * dl {
+                        return false;
+                    }
+                }
+            }
+            // Flächen-Treue: Zentroid auf der eigenen Trägerfläche.
+            let (pa, pb, pc) = (
+                points[a as usize],
+                points[b as usize],
+                points[c as usize],
+            );
+            let cen = [
+                (pa[0] + pb[0] + pc[0]) / 3.0,
+                (pa[1] + pb[1] + pc[1]) / 3.0,
+                (pa[2] + pb[2] + pc[2]) / 3.0,
+            ];
+            if !own_near(project_pt(cen, fg)) {
+                return false;
+            }
+            match accept_mode.as_str() {
+                "witness" => witness_empty(a, b, c),
+                _ => gabriel_empty(a, b, c),
+            }
+        };
+        tris = extract_manifold(points, normals, &tris, &chain_edges, &near, &valid);
+        enforce_chain_single_use(points, chains, normals, &mut tris);
+    } else {
 
     // ── Ketten-Kanten-Einzelnutzung: Rand-Folds dieser Fläche entfernen ──
     enforce_chain_single_use(points, chains, normals, &mut tris);
@@ -972,7 +1364,7 @@ pub fn triangulate_face_general(
                     .or_else(|| {
                         cands
                             .into_iter()
-                            .find(|&(_, w)| !crosses_chain(u, v, w) && gabriel_empty(u, v, w))
+                            .find(|&(_, w)| !crosses_chain(u, v, w) && sphere_verify(u, v, w))
                     });
                 if let Some((_, w)) = best {
                     tris.push([u, v, w]);
@@ -992,6 +1384,8 @@ pub fn triangulate_face_general(
         tris.sort_unstable();
     }
 
+    } // Ende Nicht-Walk-Pfad
+
     // ── Diagnose: Kanten-Zählung (2-Manifold, Löcher) ──
     let mut edge_use: HashMap<(u32, u32), u32> = HashMap::new();
     for &[a, b, c] in &tris {
@@ -1006,6 +1400,125 @@ pub fn triangulate_face_general(
         .map(|(&e, _)| e)
         .collect();
     let hole_edges = open_edges.len();
+
+    // ── LOCH-FORENSIK (Env LICHEN_WHY): für jede offene Kante den nächsten
+    // Kandidaten suchen und protokollieren, WELCHER Wächter das fehlende
+    // Dreieck ablehnt. Ohne diese Zuordnung ist jede Prädikat-Änderung ein
+    // Schuss ins Blaue. ──
+    if std::env::var("LICHEN_WHY").is_ok() && !open_edges.is_empty() {
+        let mut reasons: HashMap<&'static str, usize> = HashMap::new();
+        for &(u, v) in &open_edges {
+            let (pu, pv) = (points[u as usize], points[v as usize]);
+            let mid = [
+                (pu[0] + pv[0]) * 0.5,
+                (pu[1] + pv[1]) * 0.5,
+                (pu[2] + pv[2]) * 0.5,
+            ];
+            let r = eff_r.get(&u).copied().unwrap_or(cell).max(eff_r.get(&v).copied().unwrap_or(cell));
+            // Kandidaten nach Umkreisradius sortiert.
+            let mut cands: Vec<(f32, u32)> = Vec::new();
+            let (kx, ky, kz) = key(mid);
+            let reach = (r / cell).ceil() as i32 + 1;
+            for dx in -reach..=reach {
+                for dy in -reach..=reach {
+                    for dz in -reach..=reach {
+                        let Some(bucket) = grid.get(&(kx + dx, ky + dy, kz + dz)) else { continue };
+                        for &w in bucket {
+                            if w == u || w == v {
+                                continue;
+                            }
+                            let d = sub(points[w as usize], mid);
+                            let dd = dot(d, d);
+                            if dd <= r * r {
+                                cands.push((dd, w));
+                            }
+                        }
+                    }
+                }
+            }
+            cands.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+            cands.truncate(12);
+            let mut why = "kein Kandidat";
+            for &(_, w) in &cands {
+                if crosses_chain(u, v, w) {
+                    why = "ketten-kreuzung";
+                    continue;
+                }
+                if !(gabriel_empty(u, v, w) || witness_empty(u, v, w)) {
+                    why = "kein leeres Kugel-Prädikat";
+                    continue;
+                }
+                // Kugel-gültiger Kandidat gefunden — welcher WÄCHTER blockt?
+                let e1 = (u.min(w), u.max(w));
+                let e2 = (v.min(w), v.max(w));
+                let cap_of = |e: &(u32, u32)| if chain_edges.contains(e) { 1 } else { 2 };
+                if edge_use.get(&e1).copied().unwrap_or(0) >= cap_of(&e1)
+                    || edge_use.get(&e2).copied().unwrap_or(0) >= cap_of(&e2)
+                {
+                    // Sind die BLOCKIERENDEN Dreiecke selbst kugel-gültig?
+                    let blocker_edge =
+                        if edge_use.get(&e1).copied().unwrap_or(0) >= cap_of(&e1) { e1 } else { e2 };
+                    let mut all_valid = true;
+                    let mut any = false;
+                    for &[x, y, z] in tris.iter() {
+                        let es = [
+                            (x.min(y), x.max(y)),
+                            (y.min(z), y.max(z)),
+                            (z.min(x), z.max(x)),
+                        ];
+                        if es.contains(&blocker_edge) {
+                            any = true;
+                            if !(gabriel_empty(x, y, z) || witness_empty(x, y, z)) {
+                                all_valid = false;
+                            }
+                        }
+                    }
+                    why = if !any {
+                        "kapazität (kein Blocker?)"
+                    } else if all_valid {
+                        "kapazität — Blocker sind GÜLTIG (echter Manifold-Konflikt)"
+                    } else {
+                        "kapazität — Blocker ist UNGÜLTIG (falsch akzeptiert)"
+                    };
+                    break;
+                }
+                if let Some(gce) = global_chain_edges {
+                    if (gce.contains(&e1) && !chain_edges.contains(&e1))
+                        || (gce.contains(&e2) && !chain_edges.contains(&e2))
+                    {
+                        why = "fremde Ketten-Wand";
+                        break;
+                    }
+                }
+                // Cocone-Nachbarfilter (an u).
+                if let Some(&nu) = normals.get(&u) {
+                    let d = sub(points[w as usize], points[u as usize]);
+                    let dl = dot(d, d).sqrt();
+                    if dl > 1e-9 && dot(d, nu).abs() > cocone_sin * dl {
+                        why = "cocone";
+                        break;
+                    }
+                }
+                // Sichtlinie/Region (wie im Stern).
+                let pw = points[w as usize];
+                let midw = [
+                    (points[u as usize][0] + pw[0]) * 0.5,
+                    (points[u as usize][1] + pw[1]) * 0.5,
+                    (points[u as usize][2] + pw[2]) * 0.5,
+                ];
+                if !own_near(project_pt(midw, fg)) {
+                    why = "regionen-sichtlinie";
+                    break;
+                }
+                why = "kugel-ok, kein Wächter greift (Kandidaten-Lücke!)";
+                break;
+            }
+            *reasons.entry(why).or_default() += 1;
+        }
+        let mut rs: Vec<(&str, usize)> = reasons.into_iter().collect();
+        rs.sort_by_key(|&(_, n)| std::cmp::Reverse(n));
+        eprintln!("WHY {} offene Kanten: {rs:?}", open_edges.len());
+    }
 
     // ── Loch-Schließen (deterministisch, NACH der Diagnose) ──
     // Stern-Uneinigkeit bleibt an Dichte-Übergängen möglich (der dichte Punkt

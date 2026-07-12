@@ -52,9 +52,11 @@ interface LichenSettings {
   /** Allgemeine (chartlose) Stern-Konsistenz-Triangulierung statt Chart-CDT. */
   generalTri: boolean;
   /** Akzeptanz des General-Pfads: Auto / Stern-Konsens / Umkugel / Hybrid. */
-  accept: "auto" | "vote" | "gabriel" | "hybrid";
+  accept: "auto" | "vote" | "gabriel" | "witness" | "hybrid";
   /** Loch-Füller des General-Pfads (aus = Basis-Algorithmus pur). */
   fillHoles: boolean;
+  /** Manifold-Extraktion (Sheet-Walk) statt greedy Akzeptanz + Kapazität. */
+  extractWalk: boolean;
   partOpacity: number;
   strokeWidth: number;
   /** Draw the U(p) reach circle in the tangent plane at each point. */
@@ -86,6 +88,7 @@ const DEFAULTS: LichenSettings = {
   generalTri: true,
   accept: "auto",
   fillHoles: true,
+  extractWalk: false,
   partOpacity: 0.4,
   strokeWidth: 2,
   showCircles: true,
@@ -124,10 +127,15 @@ function loadSettings(): LichenSettings {
       generalTri:
         p.generalTri === undefined ? DEFAULTS.generalTri : p.generalTri === true,
       accept:
-        p.accept === "vote" || p.accept === "gabriel" || p.accept === "hybrid"
+        p.accept === "vote" ||
+        p.accept === "gabriel" ||
+        p.accept === "witness" ||
+        p.accept === "hybrid"
           ? p.accept
           : "auto",
       fillHoles: p.fillHoles === undefined ? DEFAULTS.fillHoles : p.fillHoles === true,
+      extractWalk:
+        p.extractWalk === undefined ? DEFAULTS.extractWalk : p.extractWalk === true,
       partOpacity: clampNum(p.partOpacity, 0, 1, DEFAULTS.partOpacity),
       strokeWidth: clampNum(p.strokeWidth, 0.5, 12, DEFAULTS.strokeWidth),
       showCircles: p.showCircles === undefined ? DEFAULTS.showCircles : p.showCircles === true,
@@ -157,6 +165,7 @@ function lichenParams(s: LichenSettings): LichenDebug {
     maxPoints: s.maxPoints,
     generalTri: s.generalTri,
     accept: s.accept,
+    extractWalk: s.extractWalk,
     fillHoles: s.fillHoles,
     partOpacity: s.partOpacity,
     strokeWidth: s.strokeWidth,
@@ -183,6 +192,7 @@ export function MesherLichenDialog({ onClose }: { onClose: () => void }) {
   const [maxPoints, setMaxPoints] = useState(initial.maxPoints);
   const [generalTri, setGeneralTri] = useState(initial.generalTri);
   const [accept, setAccept] = useState(initial.accept);
+  const [extractWalk, setExtractWalk] = useState(initial.extractWalk);
   const [fillHoles, setFillHoles] = useState(initial.fillHoles);
   const [partOpacity, setPartOpacity] = useState(initial.partOpacity);
   const [strokeWidth, setStrokeWidth] = useState(initial.strokeWidth);
@@ -207,6 +217,7 @@ export function MesherLichenDialog({ onClose }: { onClose: () => void }) {
       maxPoints,
       generalTri,
       accept,
+      extractWalk,
       fillHoles,
       partOpacity,
       strokeWidth,
@@ -223,7 +234,7 @@ export function MesherLichenDialog({ onClose }: { onClose: () => void }) {
     } catch {
       // no localStorage (tests) — non-persistent is fine
     }
-  }, [targetEdgeLength, grow, curvAngleDeg, useReach, reachTol, minEdgeSpacing, maxPoints, generalTri, accept, fillHoles, partOpacity, strokeWidth, showCircles, showPoints, showTriangles, pointSize, showNormals, normalLength]);
+  }, [targetEdgeLength, grow, curvAngleDeg, useReach, reachTol, minEdgeSpacing, maxPoints, generalTri, accept, extractWalk, fillHoles, partOpacity, strokeWidth, showCircles, showPoints, showTriangles, pointSize, showNormals, normalLength]);
   useEffect(() => () => setLichenDebug(null), []);
 
   useEffect(() => {
@@ -497,8 +508,36 @@ export function MesherLichenDialog({ onClose }: { onClose: () => void }) {
             <option value="auto">Auto (Trägertyp)</option>
             <option value="vote">Stern-Konsens</option>
             <option value="gabriel">Umkugel (Gabriel)</option>
+            <option value="witness">Zeugen-Umkugel (restricted)</option>
             <option value="hybrid">Hybrid</option>
           </select>
+        </div>
+      </div>
+
+      <div className="vec-row">
+        <label
+          title={
+            "MANIFOLD-EXTRAKTION (Cocone-Säule 3): statt Dreiecke greedy zu " +
+            "akzeptieren und die Kanten-Kapazität zu klemmen, wird aus der " +
+            "Kandidaten-Menge eine FLÄCHE herausgelaufen (Pivotieren um die " +
+            "Front-Kante: es gewinnt der Punkt, den man beim Drehen um die " +
+            "Kante durch die Luft ZUERST trifft). Ersetzt Kandidaten-" +
+            "Vervollständigung und Loch-Füller strukturell — auf glatten " +
+            "Körpern wasserdicht ganz ohne Reparaturstufen."
+          }
+        >
+          Manifold-Extraktion (Walk)
+        </label>
+        <div className="fields">
+          <label className="checkbox">
+            <input
+              type="checkbox"
+              aria-label="Manifold-Extraktion (Walk)"
+              data-testid="mesher-lichen-extract-walk"
+              checked={extractWalk}
+              onChange={(e) => setExtractWalk(e.currentTarget.checked)}
+            />
+          </label>
         </div>
       </div>
 

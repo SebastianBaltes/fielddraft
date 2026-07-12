@@ -1223,6 +1223,7 @@ impl Kernel {
                         Some(&own),
                         Some(&global_chain_edges),
                         opts.fill_holes,
+                        opts.extract_walk,
                         &fg,
                         &|p: [f32; 3]| {
                             let fs = &face_surfs[gf];
@@ -1581,6 +1582,7 @@ impl Kernel {
                     Some(&own),
                     Some(&global_chain_edges),
                     opts.fill_holes,
+                    opts.extract_walk,
                     &fg,
                     &|p: [f32; 3]| {
                         let fs = &face_surfs[gf];
@@ -2201,9 +2203,18 @@ mod tests {
         } else {
             demo_project_kernel()
         };
-        let out = k.lichen_mesh(
-            r#"{"targetEdgeLength":10.0,"grow":true,"curvAngleDeg":5.0,"minEdgeSpacing":0.1,"maxPoints":50000}"#.into(),
-        );
+        let curv: f32 = std::env::var("LICHEN_SCRATCH_CURV")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(5.0);
+        let minsp: f32 = std::env::var("LICHEN_SCRATCH_MINSP")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0.1);
+        let gen = std::env::var("LICHEN_SCRATCH_GENERAL").is_ok();
+        let out = k.lichen_mesh(format!(
+            r#"{{"targetEdgeLength":10.0,"grow":true,"curvAngleDeg":{curv},"minEdgeSpacing":{minsp},"maxPoints":50000,"generalTri":{gen},"fillHoles":false}}"#
+        ));
         let total = out[0] as usize;
         let tris = out[1] as usize;
         let pos = |i: usize| -> [f32; 3] { [out[3 + i * 9], out[3 + i * 9 + 1], out[3 + i * 9 + 2]] };
@@ -2223,7 +2234,7 @@ mod tests {
                 n_near[flag] += 1;
                 if flag == 1 {
                     let sp = out[3 + i * 9 + 7];
-                    *space_hist.entry(format!("{:.1}", sp)).or_insert(0usize) += 1;
+                    *space_hist.entry(format!("{:.2}", sp)).or_insert(0usize) += 1;
                 }
             }
             eprintln!(
@@ -2301,6 +2312,103 @@ mod tests {
             let long_base = weak_base + 1 + n_weak * 3;
             let n_long = out[long_base] as usize;
             eprintln!("DIAG: open={n_open} weak={n_weak} long={n_long}");
+        }
+    }
+
+    /// Mess-Matrix des reinen Basis-Algorithmus (ohne Loch-Füller) über
+    /// Testkörper × Akzeptanz-Modi — Analyse-Werkzeug für die Prädikat-
+    /// Entscheidung (gabriel vs. witness vs. vote). Env LICHEN_MATRIX_CURV.
+    #[test]
+    #[ignore = "Mess-Matrix (Analyse), kein Gate"]
+    fn zz_basis_matrix() {
+        let curv: f32 = std::env::var("LICHEN_MATRIX_CURV")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(5.0);
+        let mk = |name: &str| -> crate::Kernel {
+            match name {
+                "box" => box_kernel(),
+                "cyl" => {
+                    let mut k = crate::Kernel::new();
+                    k.add_primitive(Primitive::KIND_CYLINDER, BoolOp::TAG_NEW, 0.0, 0.0, 0.0, 8.0, 10.0, 0.0).unwrap();
+                    k
+                }
+                "sphere" => {
+                    let mut k = crate::Kernel::new();
+                    k.add_primitive(Primitive::KIND_SPHERE, BoolOp::TAG_NEW, 0.0, 0.0, 0.0, 8.0, 0.0, 0.0).unwrap();
+                    k
+                }
+                "torus" => {
+                    let mut k = crate::Kernel::new();
+                    k.add_primitive(Primitive::KIND_TORUS, BoolOp::TAG_NEW, 0.0, 0.0, 0.0, 8.0, 3.0, 0.0).unwrap();
+                    k
+                }
+                _ => demo_project_kernel(),
+            }
+        };
+        for name in ["box", "cyl", "sphere", "torus", "demo"] {
+            for acc in ["gabriel", "witness", "vote"] {
+                let mut k = mk(name);
+                let h = if name == "demo" { 10.0 } else { 3.0 };
+                let opts = format!(
+                    r#"{{"targetEdgeLength":{h},"grow":true,"curvAngleDeg":{curv},"minEdgeSpacing":0.1,"maxPoints":50000,"generalTri":true,"accept":"{acc}","fillHoles":false}}"#
+                );
+                let out = k.lichen_mesh(opts);
+                let total = out[0] as usize;
+                let tris = out[1] as usize;
+                let idx_end = 3 + total * 9 + tris * 3;
+                let n_face = out[idx_end] as usize;
+                let diag = idx_end + 1 + n_face * 4;
+                let n_open = out[diag] as usize;
+                let weak_base = diag + 1 + n_open * 2;
+                let n_weak = out[weak_base] as usize;
+                let long_base = weak_base + 1 + n_weak * 3;
+                let n_long = out[long_base] as usize;
+                let q_base = long_base + 1 + n_long * 2;
+                eprintln!(
+                    "MATRIX {name:>6} {acc:>7}: pts={total:>5} tris={tris:>5} open={:>4} nm={:>3} orient={:>3} long={n_long:>3} weak={n_weak:>4}",
+                    out[q_base] as i64, out[q_base + 1] as i64, out[q_base + 5] as i64
+                );
+            }
+        }
+    }
+
+    /// COCONE-SÄULE 3 (Manifold-Extraktion, 2026-07-12): der Sheet-Walk
+    /// (Env LICHEN_EXTRACT=walk) liefert auf allen glatten Körpern ein
+    /// wasserdichtes 2-Manifold OHNE Kapazitäts-Klemme, OHNE Kandidaten-
+    /// Vervollständigung und OHNE Loch-Füller — er ersetzt sie strukturell.
+    /// Historie: die Loch-Forensik (LICHEN_WHY) zeigte, dass ~85 % aller
+    /// offenen Kanten daran scheiterten, dass eine Nachbarkante bereits von
+    /// zwei — ebenfalls kugel-GÜLTIGEN — Dreiecken belegt war; greedy
+    /// akzeptieren + Kapazität klemmen ist also strukturell falsch.
+    #[test]
+    fn lichen_walk_extraction_watertight_on_smooth_bodies() {
+        for (name, mk) in [
+            ("box", (|| box_kernel()) as fn() -> crate::Kernel),
+            ("cyl", || {
+                let mut k = crate::Kernel::new();
+                k.add_primitive(Primitive::KIND_CYLINDER, BoolOp::TAG_NEW, 0.0, 0.0, 0.0, 8.0, 10.0, 0.0)
+                    .unwrap();
+                k
+            }),
+            ("sphere", || {
+                let mut k = crate::Kernel::new();
+                k.add_primitive(Primitive::KIND_SPHERE, BoolOp::TAG_NEW, 0.0, 0.0, 0.0, 8.0, 0.0, 0.0)
+                    .unwrap();
+                k
+            }),
+        ] {
+            let mut k = mk();
+            let out = k.lichen_mesh(
+                r#"{"targetEdgeLength":3.0,"grow":true,"curvAngleDeg":5.0,"minEdgeSpacing":0.1,"maxPoints":50000,"generalTri":true,"accept":"gabriel","fillHoles":false,"extractWalk":true}"#.into(),
+            );
+            let (tris, q) = quality_of(&out);
+            eprintln!("walk {name}: tris={tris} {q:?}");
+            assert!(tris > 100, "{name}: Triangulierung erwartet");
+            assert_eq!(q.nonmanifold_edges, 0, "{name}: {q:?}");
+            assert_eq!(q.boundary_edges, 0, "{name} watertight OHNE Fallbacks: {q:?}");
+            assert_eq!(q.orientation_violations, 0, "{name}: {q:?}");
+            assert_eq!(q.degenerate_tris, 0, "{name}: {q:?}");
         }
     }
 
