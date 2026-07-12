@@ -57,6 +57,10 @@ interface LichenSettings {
   fillHoles: boolean;
   /** Manifold-Extraktion (Sheet-Walk) statt greedy Akzeptanz + Kapazität. */
   extractWalk: boolean;
+  /** Globaler Walk: ein Netz über die ganze Punktwolke (keine Flächen-Zerlegung). */
+  globalWalk: boolean;
+  /** ε-Sampling gegen die local feature size (0 = aus). */
+  lfsFactor: number;
   partOpacity: number;
   strokeWidth: number;
   /** Draw the U(p) reach circle in the tangent plane at each point. */
@@ -89,6 +93,8 @@ const DEFAULTS: LichenSettings = {
   accept: "auto",
   fillHoles: true,
   extractWalk: false,
+  globalWalk: false,
+  lfsFactor: 0,
   partOpacity: 0.4,
   strokeWidth: 2,
   showCircles: true,
@@ -136,6 +142,9 @@ function loadSettings(): LichenSettings {
       fillHoles: p.fillHoles === undefined ? DEFAULTS.fillHoles : p.fillHoles === true,
       extractWalk:
         p.extractWalk === undefined ? DEFAULTS.extractWalk : p.extractWalk === true,
+      globalWalk:
+        p.globalWalk === undefined ? DEFAULTS.globalWalk : p.globalWalk === true,
+      lfsFactor: clampNum(p.lfsFactor, 0, 1, DEFAULTS.lfsFactor),
       partOpacity: clampNum(p.partOpacity, 0, 1, DEFAULTS.partOpacity),
       strokeWidth: clampNum(p.strokeWidth, 0.5, 12, DEFAULTS.strokeWidth),
       showCircles: p.showCircles === undefined ? DEFAULTS.showCircles : p.showCircles === true,
@@ -166,6 +175,8 @@ function lichenParams(s: LichenSettings): LichenDebug {
     generalTri: s.generalTri,
     accept: s.accept,
     extractWalk: s.extractWalk,
+    globalWalk: s.globalWalk,
+    lfsFactor: s.lfsFactor,
     fillHoles: s.fillHoles,
     partOpacity: s.partOpacity,
     strokeWidth: s.strokeWidth,
@@ -193,6 +204,8 @@ export function MesherLichenDialog({ onClose }: { onClose: () => void }) {
   const [generalTri, setGeneralTri] = useState(initial.generalTri);
   const [accept, setAccept] = useState(initial.accept);
   const [extractWalk, setExtractWalk] = useState(initial.extractWalk);
+  const [globalWalk, setGlobalWalk] = useState(initial.globalWalk);
+  const [lfsFactor, setLfsFactor] = useState(initial.lfsFactor);
   const [fillHoles, setFillHoles] = useState(initial.fillHoles);
   const [partOpacity, setPartOpacity] = useState(initial.partOpacity);
   const [strokeWidth, setStrokeWidth] = useState(initial.strokeWidth);
@@ -218,6 +231,8 @@ export function MesherLichenDialog({ onClose }: { onClose: () => void }) {
       generalTri,
       accept,
       extractWalk,
+      globalWalk,
+      lfsFactor,
       fillHoles,
       partOpacity,
       strokeWidth,
@@ -234,7 +249,7 @@ export function MesherLichenDialog({ onClose }: { onClose: () => void }) {
     } catch {
       // no localStorage (tests) — non-persistent is fine
     }
-  }, [targetEdgeLength, grow, curvAngleDeg, useReach, reachTol, minEdgeSpacing, maxPoints, generalTri, accept, extractWalk, fillHoles, partOpacity, strokeWidth, showCircles, showPoints, showTriangles, pointSize, showNormals, normalLength]);
+  }, [targetEdgeLength, grow, curvAngleDeg, useReach, reachTol, minEdgeSpacing, maxPoints, generalTri, accept, extractWalk, globalWalk, lfsFactor, fillHoles, partOpacity, strokeWidth, showCircles, showPoints, showTriangles, pointSize, showNormals, normalLength]);
   useEffect(() => () => setLichenDebug(null), []);
 
   useEffect(() => {
@@ -538,6 +553,58 @@ export function MesherLichenDialog({ onClose }: { onClose: () => void }) {
               onChange={(e) => setExtractWalk(e.currentTarget.checked)}
             />
           </label>
+        </div>
+      </div>
+
+      <div className="vec-row">
+        <label
+          title={
+            "GLOBALER WALK (Cocone-Programm): EIN Netz über die gesamte " +
+            "Punktwolke statt pro B-Rep-Fläche. Nötig, wo der Weave eine " +
+            "Trim-Naht gedroppt hat (Gyroid): ohne geteilte Punkt-Kette endet " +
+            "jede Fläche mit freiem Rand und es bleibt ein Schlitz. " +
+            "B-Rep-Kanten sind dann Feature-Linien (Kreuzungs-Verbot), aber " +
+            "keine Wände mehr. Erkennt die Topologie selbst (Torus → χ=0). " +
+            "Impliziert die Manifold-Extraktion."
+          }
+        >
+          Globaler Walk
+        </label>
+        <div className="fields">
+          <label className="checkbox">
+            <input
+              type="checkbox"
+              aria-label="Globaler Walk"
+              data-testid="mesher-lichen-global-walk"
+              checked={globalWalk}
+              onChange={(e) => setGlobalWalk(e.currentTarget.checked)}
+            />
+          </label>
+        </div>
+      </div>
+
+      <div className="vec-row">
+        <label
+          title={
+            "ε-SAMPLING gegen die local feature size: die Punktdichte hält " +
+            "space ≤ ε · lfs ein, wobei lfs die Distanz zur Medialachse ist — " +
+            "INNEN wie außen. Das ist die Vorbedingung des Umkugel-Theorems: " +
+            "auf einer dünnen Wand erreicht die leere Kugel sonst das " +
+            "Gegenblatt (die Flächen-Zerlegung hat das bisher nur maskiert). " +
+            "0 = aus. Theorie verlangt ε ≲ 0,1 — Achtung, das kostet Punkte."
+          }
+        >
+          ε (lfs-Abtastung)
+        </label>
+        <div className="fields">
+          <NumberInput
+            min={0}
+            max={1}
+            step={0.1}
+            aria-label="ε (lfs-Abtastung)"
+            value={lfsFactor}
+            onChange={setLfsFactor}
+          />
         </div>
       </div>
 

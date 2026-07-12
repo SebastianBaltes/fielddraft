@@ -1126,6 +1126,51 @@ impl Kernel {
             if opts.general_tri {
                 let positions: Vec<[f32; 3]> = all.iter().map(|lp| lp.p).collect();
                 let spacings: Vec<f32> = all.iter().map(|lp| lp.space).collect();
+                // ── GLOBALER WALK: ein Netz über ALLE Punkte (s. lichen_tri::
+                // triangulate_global_walk). Schließt die Naht-Schlitze an
+                // gedroppten B-Rep-Kanten, die per-Fläche prinzipiell offen
+                // bleiben müssen. ──
+                if opts.global_walk {
+                    let global_chain_edges: HashSet<(u32, u32)> = face_loops
+                        .iter()
+                        .flat_map(|rings| rings.iter())
+                        .flat_map(|(r, _)| {
+                            (0..r.len()).map(move |k| {
+                                let (a, b) = (r[k], r[(k + 1) % r.len()]);
+                                (a.min(b), a.max(b))
+                            })
+                        })
+                        .filter(|&(a, b)| a != b)
+                        .collect();
+                    let members: Vec<u32> = (0..all.len() as u32).collect();
+                    let nmap: HashMap<u32, [f32; 3]> =
+                        members.iter().map(|&i| (i, all[i as usize].n)).collect();
+                    let res = crate::lichen_tri::triangulate_global_walk(
+                        &positions,
+                        &nmap,
+                        &spacings,
+                        &members,
+                        &global_chain_edges,
+                        opts.curv_angle_deg.to_radians(),
+                        &opts.accept,
+                        &fg,
+                    );
+                    let mut t = res.tris;
+                    lichen::orient_consistent(&all, &mut t);
+                    if res.hole_edges + res.nonmanifold_edges > 0 {
+                        eprintln!(
+                            "lichen global-walk: {} Loch-Kanten, {} non-manifold (Diagnose)",
+                            res.hole_edges, res.nonmanifold_edges
+                        );
+                    }
+                    return lichen::pack_with_diag(
+                        &all,
+                        &t,
+                        &point_faces,
+                        &res.open_edges,
+                        &[],
+                    );
+                }
                 // Globale Ketten-Kanten ALLER Flächen: harte Wände auch für
                 // Flächen, denen die Kante nicht selbst gehört.
                 let global_chain_edges: HashSet<(u32, u32)> = face_loops
@@ -2348,10 +2393,14 @@ mod tests {
         };
         for name in ["box", "cyl", "sphere", "torus", "demo"] {
             for acc in ["gabriel", "witness", "vote"] {
+                let extra = std::env::var("LICHEN_MATRIX_EXTRA").unwrap_or_default();
                 let mut k = mk(name);
-                let h = if name == "demo" { 10.0 } else { 3.0 };
+                let h: f32 = std::env::var("LICHEN_MATRIX_H")
+                    .ok()
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(if name == "demo" { 10.0 } else { 3.0 });
                 let opts = format!(
-                    r#"{{"targetEdgeLength":{h},"grow":true,"curvAngleDeg":{curv},"minEdgeSpacing":0.1,"maxPoints":50000,"generalTri":true,"accept":"{acc}","fillHoles":false}}"#
+                    r#"{{"targetEdgeLength":{h},"grow":true,"curvAngleDeg":{curv},"minEdgeSpacing":0.1,"maxPoints":50000,"generalTri":true,"accept":"{acc}","fillHoles":false{extra}}}"#
                 );
                 let out = k.lichen_mesh(opts);
                 let total = out[0] as usize;
@@ -2410,6 +2459,89 @@ mod tests {
             assert_eq!(q.orientation_violations, 0, "{name}: {q:?}");
             assert_eq!(q.degenerate_tris, 0, "{name}: {q:?}");
         }
+    }
+
+    /// GLOBALER WALK (Cocone über die GESAMTE Punktwolke, keine Flächen-
+    /// Zerlegung): Box, Zylinder, Kugel UND Torus sind ein geschlossenes
+    /// 2-Manifold (χ=2) — ohne Chart, ohne Kandidaten-Vervollständigung,
+    /// ohne Loch-Füller, ohne Kapazitäts-Klemme. Der Torus (doppelt
+    /// periodisch, im Chart-Pfad nie lösbar) fällt hier als Nebenprodukt ab.
+    #[test]
+    fn lichen_global_walk_watertight_on_smooth_bodies() {
+        for (name, mk) in [
+            ("box", (|| box_kernel()) as fn() -> crate::Kernel),
+            ("cyl", || {
+                let mut k = crate::Kernel::new();
+                k.add_primitive(Primitive::KIND_CYLINDER, BoolOp::TAG_NEW, 0.0, 0.0, 0.0, 8.0, 10.0, 0.0)
+                    .unwrap();
+                k
+            }),
+            ("sphere", || {
+                let mut k = crate::Kernel::new();
+                k.add_primitive(Primitive::KIND_SPHERE, BoolOp::TAG_NEW, 0.0, 0.0, 0.0, 8.0, 0.0, 0.0)
+                    .unwrap();
+                k
+            }),
+            ("torus", || {
+                let mut k = crate::Kernel::new();
+                k.add_primitive(Primitive::KIND_TORUS, BoolOp::TAG_NEW, 0.0, 0.0, 0.0, 8.0, 3.0, 0.0)
+                    .unwrap();
+                k
+            }),
+        ] {
+            let mut k = mk();
+            let out = k.lichen_mesh(
+                r#"{"targetEdgeLength":3.0,"grow":true,"curvAngleDeg":5.0,"minEdgeSpacing":0.1,"maxPoints":50000,"generalTri":true,"accept":"witness","fillHoles":false,"globalWalk":true}"#.into(),
+            );
+            let (tris, q) = quality_of(&out);
+            eprintln!("global-walk {name}: tris={tris} {q:?}");
+            assert!(tris > 100, "{name}: Triangulierung erwartet");
+            assert_eq!(q.nonmanifold_edges, 0, "{name}: {q:?}");
+            assert_eq!(q.boundary_edges, 0, "{name} watertight OHNE Fallbacks: {q:?}");
+            assert_eq!(q.orientation_violations, 0, "{name}: {q:?}");
+            assert_eq!(q.degenerate_tris, 0, "{name}: {q:?}");
+            // Torus = Genus 1 (χ=0), die übrigen Genus 0 (χ=2).
+            let want = if name == "torus" { 0 } else { 2 };
+            assert_eq!(q.euler, want, "{name}: Topologie {q:?}");
+        }
+    }
+
+    /// ε-SAMPLING (beidseitiger Reach, `lfsFactor`): die Abtastung hält einen
+    /// Bruchteil der local feature size ein — auch gegen die INNERE Medialachse.
+    /// Auf einer dünnen Wand (1 mm) muss das die Punktdichte messbar erhöhen;
+    /// ohne diese Bedingung erreicht die leere Umkugel das Gegenblatt (die
+    /// Flächen-Zerlegung hat das bisher nur maskiert).
+    #[test]
+    fn lichen_lfs_sampling_refines_thin_walls() {
+        let mk = || {
+            let mut k = crate::Kernel::new();
+            k.load_json(
+                r#"{
+                "schema_version": 1,
+                "name": "duenne-wand",
+                "feature_calls": [
+                    { "type": "box", "id": 1, "params": {
+                        "op": "new", "half_extents": [10, 10, 0.5], "translate": [0, 0, 0] } }
+                ],
+                "next_feature_id": 2
+            }"#,
+            )
+            .unwrap();
+            k
+        };
+        let count = |lfs: f32| -> usize {
+            let mut k = mk();
+            let out = k.lichen_mesh(format!(
+                r#"{{"targetEdgeLength":5.0,"grow":true,"curvAngleDeg":20.0,"useReach":true,"reachTol":1.0,"minEdgeSpacing":0.05,"maxPoints":50000,"triangulate":false,"lfsFactor":{lfs}}}"#
+            ));
+            out[0] as usize
+        };
+        let (off, on) = (count(0.0), count(0.5));
+        eprintln!("dünne Wand (1 mm): Punkte ohne lfs={off}, mit lfs(0.5)={on}");
+        assert!(
+            on > off * 2,
+            "ε-Sampling muss die 1-mm-Wand deutlich feiner abtasten (ohne={off}, mit={on})"
+        );
     }
 
     /// QUALITÄTS-ZIEL auf dem Demo-Projekt: manifold + watertight, beide

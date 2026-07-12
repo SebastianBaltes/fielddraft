@@ -403,6 +403,396 @@ fn extract_manifold(
     out
 }
 
+/// GLOBALER WALK (Cocone-Programm, ein Netz über ALLE Punkte).
+///
+/// Analyse 2026-07-12: Die per-Fläche-Extraktion liefert auf glatten Körpern
+/// wasserdichte Netze, lässt aber auf dem Demo geschlossene Loch-LOOPS stehen
+/// (Gyroid 31 Kanten, Bohrung 11+13) — dort, wo der Weave die Trim-NAHT
+/// gedroppt hat (non-Lipschitz-Gruppen, DL-71). Ohne B-Rep-Kante gibt es keine
+/// geteilte Punkt-Kette; beide Nachbarflächen enden mit freiem Rand und ihre
+/// Randpunkte sind VERSCHIEDEN → ein Schlitz im Netz. Kein Prädikat und keine
+/// Abtastung kann das schließen: die Flächen-Zerlegung selbst ist der Defekt.
+///
+/// Der globale Walk kennt keine Flächen: er pivotiert über die GESAMTE
+/// Punktwolke. An echten B-Rep-Kanten liegen die Ketten-Punkte ohnehin in
+/// beiden Flächen (geteilte Indizes) — der Walk läuft dort einfach hinüber und
+/// reproduziert die Kante exakt (der Sweep-durch-die-Luft trifft zwangsläufig
+/// zuerst den Nachbarflächen-Punkt). An gedroppten Nähten verschwindet der
+/// Spalt, weil es gar keine Wand mehr gibt. Ketten-Kanten bleiben
+/// KREUZUNGS-Verbot (Feature-Linien), sind aber keine Wände mehr.
+pub fn triangulate_global_walk(
+    points: &[[f32; 3]],
+    normals: &HashMap<u32, [f32; 3]>,
+    spacing: &[f32],
+    members: &[u32],
+    chain_edges: &HashSet<(u32, u32)>,
+    curv_angle_rad: f32,
+    accept: &str,
+    fg: &dyn Fn([f32; 3]) -> (f32, [f32; 3]),
+) -> GeneralFaceMesh {
+    if members.len() < 3 {
+        return GeneralFaceMesh {
+            tris: Vec::new(),
+            hole_edges: 0,
+            nonmanifold_edges: 0,
+            open_edges: Vec::new(),
+            weak_tris: Vec::new(),
+        };
+    }
+    let cell = members
+        .iter()
+        .map(|&i| spacing[i as usize])
+        .fold(0.1f32, f32::max);
+    let key = |p: [f32; 3]| -> (i32, i32, i32) {
+        (
+            (p[0] / cell).floor() as i32,
+            (p[1] / cell).floor() as i32,
+            (p[2] / cell).floor() as i32,
+        )
+    };
+    let mut grid: HashMap<(i32, i32, i32), Vec<u32>> = HashMap::new();
+    for &i in members {
+        grid.entry(key(points[i as usize])).or_default().push(i);
+    }
+    // Horizont wie im Stern-Pfad (dilatiertes Nachbar-Spacing).
+    let mut eff_r: HashMap<u32, f32> = HashMap::new();
+    for &i in members {
+        let pi = points[i as usize];
+        let ri = 2.5 * spacing[i as usize];
+        let (kx, ky, kz) = key(pi);
+        let reach = (ri / cell).ceil() as i32 + 1;
+        let mut m = spacing[i as usize];
+        for dx in -reach..=reach {
+            for dy in -reach..=reach {
+                for dz in -reach..=reach {
+                    let Some(bucket) = grid.get(&(kx + dx, ky + dy, kz + dz)) else {
+                        continue;
+                    };
+                    for &j in bucket {
+                        let d = sub(points[j as usize], pi);
+                        if dot(d, d) <= ri * ri {
+                            m = m.max(spacing[j as usize]);
+                        }
+                    }
+                }
+            }
+        }
+        eff_r.insert(i, 2.5 * m);
+    }
+    // Cocone-Halbwinkel: im GLOBALEN Walk trennt er nur noch fremde BLÄTTER
+    // (Gegenwand einer dünnen Wand, ~antiparallel) — er darf KANTEN nicht
+    // blockieren (an einer Box-Kante steht der Nachbarpunkt 45° aus der
+    // Tangentialebene der gemittelten Ecken-Normalen). Deshalb ein weiter
+    // Kegel: Halbwinkel 75°, d.h. verboten ist nur, was fast entlang der
+    // Normalen steht. Die Blatt-Trennung leistet zusätzlich die
+    // Sichtlinie (Sehnen-Mittelpunkt muss auf der Oberfläche liegen).
+    let cocone_deg: f32 = std::env::var("LICHEN_COCONE_DEG")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or_else(|| (2.5 * curv_angle_rad.to_degrees()).clamp(60.0, 80.0));
+    let cocone_sin = cocone_deg.to_radians().sin();
+
+    let mut chain_segs: Vec<(u32, u32)> = chain_edges.iter().copied().collect();
+    chain_segs.sort_unstable();
+
+    // Leere Kugel (Gabriel bzw. ZEUGE) über der GESAMTEN Punktwolke.
+    let circumcentre = |a: u32, b: u32, c: u32| -> Option<[f32; 3]> {
+        let (pa, pb, pc) = (
+            points[a as usize],
+            points[b as usize],
+            points[c as usize],
+        );
+        let ab = sub(pb, pa);
+        let ac = sub(pc, pa);
+        let ab2 = dot(ab, ab);
+        let ac2 = dot(ac, ac);
+        let abac = dot(ab, ac);
+        let den = 2.0 * (ab2 * ac2 - abac * abac);
+        if den.abs() < 1e-20 {
+            return None;
+        }
+        let s_ = (ac2 * (ab2 - abac)) / den;
+        let t_ = (ab2 * (ac2 - abac)) / den;
+        Some([
+            pa[0] + s_ * ab[0] + t_ * ac[0],
+            pa[1] + s_ * ab[1] + t_ * ac[1],
+            pa[2] + s_ * ab[2] + t_ * ac[2],
+        ])
+    };
+    const TOL: f32 = 2e-4;
+    let sphere_empty = |centre: [f32; 3], a: u32, b: u32, c: u32| -> bool {
+        let dc = sub(points[a as usize], centre);
+        let r2 = dot(dc, dc);
+        let r = r2.sqrt();
+        if r > 5.0 * cell {
+            return false;
+        }
+        let (kx, ky, kz) = key(centre);
+        let reach = (r / cell).ceil() as i32 + 1;
+        for dx in -reach..=reach {
+            for dy in -reach..=reach {
+                for dz in -reach..=reach {
+                    let Some(bucket) = grid.get(&(kx + dx, ky + dy, kz + dz)) else {
+                        continue;
+                    };
+                    for &j in bucket {
+                        if j == a || j == b || j == c {
+                            continue;
+                        }
+                        let d = sub(points[j as usize], centre);
+                        if dot(d, d) < r2 * (1.0 - TOL) {
+                            return false;
+                        }
+                    }
+                }
+            }
+        }
+        true
+    };
+    let empty = |a: u32, b: u32, c: u32| -> bool {
+        let Some(c0) = circumcentre(a, b, c) else {
+            return false;
+        };
+        if accept != "witness" {
+            return sphere_empty(c0, a, b, c);
+        }
+        // ZEUGEN-Umkugel: Zentrum per 1D-Newton auf f = 0 schieben.
+        let (pa, pb, pc) = (
+            points[a as usize],
+            points[b as usize],
+            points[c as usize],
+        );
+        let n_t = norm(cross(sub(pb, pa), sub(pc, pa)));
+        let cap = 5.0 * cell;
+        let mut t = 0.0f32;
+        for _ in 0..12 {
+            let x = [c0[0] + t * n_t[0], c0[1] + t * n_t[1], c0[2] + t * n_t[2]];
+            let (f, g) = fg(x);
+            if f.abs() < 1e-3 {
+                return sphere_empty(x, a, b, c);
+            }
+            let g = if dot(g, g) > 1e-12 { g } else { crate::lichen::robust_grad(x, &fg) };
+            let dn = dot(g, n_t);
+            if dn.abs() < 1e-6 {
+                break;
+            }
+            t -= f / dn;
+            if !t.is_finite() || t.abs() > cap {
+                break;
+            }
+        }
+        false
+    };
+    // Ketten-Kanten sind FEATURE-Linien: kein Dreieck darf sie kreuzen (sie
+    // dürfen aber Dreiecks-Kanten SEIN — nur so läuft der Walk über die Kante).
+    let crosses_chain = |a: u32, b: u32, c: u32| -> bool {
+        let (pa, pb, pc) = (
+            points[a as usize],
+            points[b as usize],
+            points[c as usize],
+        );
+        let n = norm(cross(sub(pb, pa), sub(pc, pa)));
+        let (e1, e2) = basis(n);
+        let to2 = |p: [f32; 3]| -> [f64; 2] {
+            let d = sub(p, pa);
+            [dot(d, e1) as f64, dot(d, e2) as f64]
+        };
+        let t2 = [to2(pa), to2(pb), to2(pc)];
+        let r_tri = {
+            let mut m = 0.0f32;
+            for p in [pb, pc] {
+                let d = sub(p, pa);
+                m = m.max(dot(d, d));
+            }
+            m.sqrt()
+        };
+        for &(u, v) in &chain_segs {
+            if u == a || u == b || u == c || v == a || v == b || v == c {
+                continue;
+            }
+            let (pu, pv) = (points[u as usize], points[v as usize]);
+            let du = sub(pu, pa);
+            if dot(du, du).sqrt() > r_tri + cell {
+                continue;
+            }
+            let (su, sv) = (to2(pu), to2(pv));
+            for e in [(0usize, 1usize), (1, 2), (2, 0)] {
+                if segments_cross(t2[e.0], t2[e.1], su, sv) {
+                    return true;
+                }
+            }
+        }
+        false
+    };
+    // Gültigkeit: leere Kugel + kein Ketten-Kreuzen + Sichtlinien (Sehnen-
+    // Mittelpunkte und Zentroid auf der KÖRPER-Oberfläche; im globalen Walk
+    // gibt es keine „eigene Trägerfläche" mehr — das Body-Feld ist die
+    // Wahrheit) + Cocone gegen fremde Blätter.
+    let valid = |a: u32, b: u32, c: u32| -> bool {
+        let (pa, pb, pc) = (
+            points[a as usize],
+            points[b as usize],
+            points[c as usize],
+        );
+        // Cocone (weiter Kegel, s.o.): kein fremdes Blatt verbinden.
+        for (i, j) in [(a, b), (b, c), (c, a)] {
+            if let Some(&ni) = normals.get(&i) {
+                let d = sub(points[j as usize], points[i as usize]);
+                let dl = dot(d, d).sqrt();
+                if dl > 1e-9 && dot(d, ni).abs() > cocone_sin * dl {
+                    return false;
+                }
+            }
+        }
+        // SICHTLINIE je Sehne: der Mittelpunkt muss auf der Oberfläche liegen,
+        // erlaubte Eintauchtiefe = Sagitta aus dem Normalen-Knick.
+        for (i, j) in [(a, b), (b, c), (c, a)] {
+            let (pi, pj) = (points[i as usize], points[j as usize]);
+            let mid = [
+                (pi[0] + pj[0]) * 0.5,
+                (pi[1] + pj[1]) * 0.5,
+                (pi[2] + pj[2]) * 0.5,
+            ];
+            let d = sub(pj, pi);
+            let dl = dot(d, d).sqrt();
+            let theta = match (normals.get(&i), normals.get(&j)) {
+                (Some(&ni), Some(&nj)) => dot(ni, nj).clamp(-1.0, 1.0).acos(),
+                _ => 0.0,
+            };
+            let tol = (0.3 * dl * theta).max(0.1 * spacing[i as usize]);
+            if fg(mid).0.abs() > tol {
+                return false;
+            }
+        }
+        if crosses_chain(a, b, c) {
+            return false;
+        }
+        // Zentroid auf der Oberfläche (fängt Luft-Dreiecke über Buchten).
+        let cen = [
+            (pa[0] + pb[0] + pc[0]) / 3.0,
+            (pa[1] + pb[1] + pc[1]) / 3.0,
+            (pa[2] + pb[2] + pc[2]) / 3.0,
+        ];
+        let e_max = {
+            let mut m = 0.0f32;
+            for (x, y) in [(pa, pb), (pb, pc), (pc, pa)] {
+                let d = sub(y, x);
+                m = m.max(dot(d, d));
+            }
+            m.sqrt()
+        };
+        let theta = {
+            let mut t = 0.0f32;
+            for (i, j) in [(a, b), (b, c), (c, a)] {
+                if let (Some(&ni), Some(&nj)) = (normals.get(&i), normals.get(&j)) {
+                    t = t.max(dot(ni, nj).clamp(-1.0, 1.0).acos());
+                }
+            }
+            t
+        };
+        if fg(cen).0.abs() > (0.3 * e_max * theta).max(0.1 * spacing[a as usize]) {
+            return false;
+        }
+        empty(a, b, c)
+    };
+    let near = |x: u32, y: u32| -> Vec<u32> {
+        let (px, py) = (points[x as usize], points[y as usize]);
+        let mid = [
+            (px[0] + py[0]) * 0.5,
+            (px[1] + py[1]) * 0.5,
+            (px[2] + py[2]) * 0.5,
+        ];
+        let r = eff_r
+            .get(&x)
+            .copied()
+            .unwrap_or(cell)
+            .max(eff_r.get(&y).copied().unwrap_or(cell));
+        let (kx, ky, kz) = key(mid);
+        let reach = (r / cell).ceil() as i32 + 1;
+        let mut out: Vec<u32> = Vec::new();
+        for dx in -reach..=reach {
+            for dy in -reach..=reach {
+                for dz in -reach..=reach {
+                    let Some(bucket) = grid.get(&(kx + dx, ky + dy, kz + dz)) else {
+                        continue;
+                    };
+                    for &w in bucket {
+                        if w == x || w == y {
+                            continue;
+                        }
+                        let d = sub(points[w as usize], mid);
+                        if dot(d, d) <= r * r {
+                            out.push(w);
+                        }
+                    }
+                }
+            }
+        }
+        out
+    };
+    // SEEDS: der Walk braucht ein Startdreieck je Zusammenhangskomponente.
+    // Seed-Kandidaten = die engsten gültigen Dreiecke; extract_manifold
+    // sortiert sie selbst nach Umkreisradius und startet neu, solange
+    // unbenutzte Kandidaten übrig sind.
+    let mut seeds: Vec<[u32; 3]> = Vec::new();
+    for &i in members {
+        let pi = points[i as usize];
+        let ri = eff_r[&i];
+        let (kx, ky, kz) = key(pi);
+        let reach = (ri / cell).ceil() as i32 + 1;
+        let mut nb: Vec<(f32, u32)> = Vec::new();
+        for dx in -reach..=reach {
+            for dy in -reach..=reach {
+                for dz in -reach..=reach {
+                    let Some(bucket) = grid.get(&(kx + dx, ky + dy, kz + dz)) else {
+                        continue;
+                    };
+                    for &j in bucket {
+                        if j == i {
+                            continue;
+                        }
+                        let d = sub(points[j as usize], pi);
+                        let dd = dot(d, d);
+                        if dd <= ri * ri {
+                            nb.push((dd, j));
+                        }
+                    }
+                }
+            }
+        }
+        nb.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+        nb.truncate(8);
+        'seed: for a in 0..nb.len() {
+            for b in a + 1..nb.len() {
+                let t = [i, nb[a].1, nb[b].1];
+                if valid(t[0], t[1], t[2]) {
+                    seeds.push(t);
+                    break 'seed;
+                }
+            }
+        }
+    }
+    let tris = extract_manifold(points, normals, &seeds, &HashSet::new(), &near, &valid);
+
+    let mut edge_use: HashMap<(u32, u32), u32> = HashMap::new();
+    for &[a, b, c] in &tris {
+        for (x, y) in [(a, b), (b, c), (c, a)] {
+            *edge_use.entry((x.min(y), x.max(y))).or_default() += 1;
+        }
+    }
+    let nonmanifold_edges = edge_use.values().filter(|&&u| u > 2).count();
+    let mut open_edges: Vec<(u32, u32)> =
+        edge_use.iter().filter(|(_, &u)| u == 1).map(|(&e, _)| e).collect();
+    open_edges.sort_unstable();
+    GeneralFaceMesh {
+        hole_edges: open_edges.len(),
+        nonmanifold_edges,
+        open_edges,
+        weak_tris: Vec::new(),
+        tris,
+    }
+}
+
 /// Allgemeine Triangulierung EINER Fläche.
 ///
 /// * `points`/`normals`/`spacing`: globale Punkttabelle (Welt), Pro-Punkt-
@@ -1518,6 +1908,44 @@ pub fn triangulate_face_general(
         let mut rs: Vec<(&str, usize)> = reasons.into_iter().collect();
         rs.sort_by_key(|&(_, n)| std::cmp::Reverse(n));
         eprintln!("WHY {} offene Kanten: {rs:?}", open_edges.len());
+        // Loop-Struktur der Löcher: Grad-Verteilung + Loop-Längen.
+        let mut deg: HashMap<u32, usize> = HashMap::new();
+        for &(u, v) in &open_edges {
+            *deg.entry(u).or_default() += 1;
+            *deg.entry(v).or_default() += 1;
+        }
+        let mut adj: HashMap<u32, Vec<u32>> = HashMap::new();
+        for &(u, v) in &open_edges {
+            adj.entry(u).or_default().push(v);
+            adj.entry(v).or_default().push(u);
+        }
+        let mut seen: HashSet<u32> = HashSet::new();
+        let mut comps: Vec<(usize, usize)> = Vec::new(); // (verts, edges)
+        for &start in adj.keys() {
+            if seen.contains(&start) {
+                continue;
+            }
+            let mut stack = vec![start];
+            seen.insert(start);
+            let (mut nv, mut ne) = (0usize, 0usize);
+            while let Some(x) = stack.pop() {
+                nv += 1;
+                for &y in adj.get(&x).map(Vec::as_slice).unwrap_or(&[]) {
+                    ne += 1;
+                    if seen.insert(y) {
+                        stack.push(y);
+                    }
+                }
+            }
+            comps.push((nv, ne / 2));
+        }
+        comps.sort_unstable();
+        let dhist: std::collections::BTreeMap<usize, usize> =
+            deg.values().fold(Default::default(), |mut m, &d| {
+                *m.entry(d).or_default() += 1;
+                m
+            });
+        eprintln!("  Loch-Loops (Ecken,Kanten): {comps:?}  Grad-Histogramm: {dhist:?}");
     }
 
     // ── Loch-Schließen (deterministisch, NACH der Diagnose) ──

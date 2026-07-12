@@ -49,6 +49,14 @@ export interface LichenDebug {
    *  eine Fläche herausgelaufen (Pivotieren um die Front-Kante). Ersetzt
    *  Kandidaten-Vervollständigung und Loch-Füller strukturell. */
   extractWalk: boolean;
+  /** GLOBALER WALK: EIN Netz über die gesamte Punktwolke statt pro B-Rep-Fläche
+   *  (Cocone-Programm). Schließt Naht-Schlitze an gedroppten Trim-Kanten und
+   *  erkennt die Topologie selbst (Torus → χ=0). Impliziert die Extraktion. */
+  globalWalk: boolean;
+  /** ε-SAMPLING gegen die local feature size (space ≤ ε·lfs, lfs = Distanz zur
+   *  Medialachse INNEN wie außen). 0 = aus. Vorbedingung des Umkugel-Theorems:
+   *  ohne sie erreicht die leere Kugel auf dünnen Wänden das Gegenblatt. */
+  lfsFactor: number;
 
   // ── Display knobs (overlay only, ignored by the kernel) ──
   /** Opacity of the rendered part (1 = opaque). Below 1 the solid turns

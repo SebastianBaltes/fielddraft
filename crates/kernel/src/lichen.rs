@@ -74,6 +74,18 @@ pub struct LichenOptions {
     /// eine FLÄCHE herausgelaufen. Ersetzt strukturell die Kandidaten-
     /// Vervollständigung und den Loch-Füller.
     pub extract_walk: bool,
+    /// GLOBALER WALK: EIN Netz über die gesamte Punktwolke statt pro B-Rep-
+    /// Fläche. Nötig, wo der Weave Trim-Nähte gedroppt hat (Gyroid): ohne
+    /// geteilte Punkt-Kette endet jede Fläche mit freiem Rand und es bleibt
+    /// ein Schlitz. Ketten-Kanten sind dann Feature-Linien (Kreuzungs-Verbot),
+    /// aber keine Wände mehr. Impliziert die Manifold-Extraktion.
+    pub global_walk: bool,
+    /// ε-SAMPLING gegen die local feature size (`space ≤ ε · lfs`, lfs =
+    /// Distanz zur Medialachse INNEN wie außen). 0 = aus. Theorie (Amenta/
+    /// Bern) verlangt ε ≲ 0,1; praktisch reicht meist mehr. Das ist die
+    /// Vorbedingung, unter der die leere Umkugel das Gegenblatt einer dünnen
+    /// Wand nicht erreichen kann — ohne sie kompensiert der Wächter-Turm.
+    pub lfs_factor: f32,
 }
 
 impl Default for LichenOptions {
@@ -91,6 +103,8 @@ impl Default for LichenOptions {
             accept: "auto".into(),
             fill_holes: true,
             extract_walk: false,
+            global_walk: false,
+            lfs_factor: 0.0,
         }
     }
 }
@@ -260,6 +274,44 @@ fn reach<Fg: Fn([f32; 3]) -> (f32, [f32; 3])>(p: [f32; 3], n: [f32; 3], cap: f32
     cap
 }
 
+/// INNERER Reach — Distanz zur INNEREN Medialachse (Marsch entlang −n ins
+/// Material, mit Fußpunkt-Verfolgung).
+///
+/// Konzept-§2.3 hatte das „zur Performance-Optimierung" ausgelassen und die
+/// Absicherung dünner Wände dem Sichtlinien-Test überlassen. Die Analyse vom
+/// 2026-07-12 zeigt, dass genau diese Annahme FALSCH ist: die local feature
+/// size (gegen die das ε-Sampling-Theorem formuliert ist) ist die Distanz zur
+/// Medialachse — INNEN wie außen. Auf der 1-mm-Gyroid-Wand ist lfs ≈ 0,5 mm,
+/// die Abtastung lag bei 0,2 mm (ε = 0,4 statt ≤ 0,1): die leere Umkugel
+/// erreicht dort das GEGENBLATT. Die Flächen-Zerlegung hat das bisher nur
+/// maskiert (die harte Wand verhinderte flächenübergreifende Kanten); der
+/// globale Walk legt es offen. Der Sichtlinien-/Cocone-Turm ist die
+/// Kompensation dieser Lücke, nicht ihre Lösung.
+/// Erkennung über die ABFLACHUNG des Distanzfelds (robust und billig): solange
+/// keine Medialachse gekreuzt ist, gilt für einen Punkt in Tiefe `t` entlang
+/// −n exakt `−f(x) = t` (p ist ja sein nächster Oberflächenpunkt). Sobald ein
+/// anderes Blatt näher liegt, wächst |f| langsamer als t. Die Fußpunkt-
+/// Verfolgung des Konzepts (§2.3) versagt hier: auf einer 1-mm-Wand springt
+/// der Fußpunkt nur ~1 mm weit — unter der Standard-Toleranz `reach_tol`.
+fn reach_inner<Fg: Fn([f32; 3]) -> (f32, [f32; 3])>(
+    p: [f32; 3],
+    n: [f32; 3],
+    cap: f32,
+    fg: &Fg,
+) -> f32 {
+    let mut t = 0.02 * cap;
+    let floor = 1e-4;
+    while t < cap {
+        let x = sub(p, scale(n, t));
+        let depth = -fg(x).0;
+        if depth < 0.9 * t {
+            return t.max(floor); // Medialachse gekreuzt
+        }
+        t *= 1.25;
+    }
+    cap
+}
+
 /// Spacing-Radius `space = min(cap, R_curv, R_reach)` (§2, OHNE `R_BRep`),
 /// unten geklemmt. `cap = h`. Steuert Punktdichte + Graph-Konnektivität; die
 /// Kanten-Grenze übernimmt die harte `on_face`-Wand (nicht mehr die Dichte),
@@ -285,6 +337,13 @@ where
     }
     if opts.use_reach {
         r = r.min(reach(p, n, h, opts.reach_tol, fg));
+    }
+    // lfs-ABTASTUNG (ε-Sampling): die Punktdichte muss einen Bruchteil der
+    // local feature size einhalten — auch gegen die INNERE Medialachse
+    // (dünne Wände!). `lfs_factor` = ε; 0 = aus (altes Verhalten).
+    if opts.lfs_factor > 0.0 {
+        let lfs = reach(p, n, h, opts.reach_tol, fg).min(reach_inner(p, n, h, fg));
+        r = r.min(opts.lfs_factor * lfs);
     }
     // Untere Grenze = Min. Kantenabstand (konsistent mit der Kanten-
     // Abtastung), NICHT 0.2·h: der frühere 0.2h-Floor verwarf die gesamte

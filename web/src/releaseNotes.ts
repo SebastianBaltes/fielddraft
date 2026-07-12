@@ -24,6 +24,21 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.549",
+    entries: [
+      {
+        kind: "feat",
+        scope: "mesher",
+        text: "Lichen: Globaler Walk (Cocone über die GESAMTE Punktwolke statt pro B-Rep-Fläche) — Box, Zylinder, Kugel UND Torus sind damit ein geschlossenes 2-Manifold ohne Chart, ohne Kandidaten-Vervollständigung, ohne Loch-Füller; der Torus (im Chart-Pfad nie lösbar) fällt als Nebenprodukt ab und wird korrekt als Genus 1 erkannt (χ=0). Nötig war er, weil die per-Fläche-Zerlegung an gedroppten Trim-Nähten (Gyroid) prinzipiell Schlitze lässt: ohne geteilte Punkt-Kette endet jede Fläche mit freiem Rand. Analyse: die Restlöcher waren geschlossene Loops, keine Sampling-Defekte.",
+      },
+      {
+        kind: "feat",
+        scope: "mesher",
+        text: "Lichen: ε-Sampling gegen die local feature size („ε (lfs-Abtastung)“) — die Punktdichte hält jetzt optional space ≤ ε·lfs ein, wobei lfs die Distanz zur Medialachse ist, INNEN wie außen. Das Konzept hatte den Marsch ins Material „zur Performance-Optimierung“ ausgelassen; die Analyse zeigt, dass genau das die Lücke ist: auf einer 1-mm-Wand erreicht die leere Umkugel sonst das Gegenblatt (die Flächen-Zerlegung hat das nur maskiert). Die Medialachse wird über die Abflachung des Distanzfelds erkannt (robust, im Gegensatz zur Fußpunkt-Verfolgung, die auf dünnen Wänden unter der Toleranz bleibt).",
+      },
+    ],
+  },
+  {
     version: "0.6.548",
     entries: [
       {
