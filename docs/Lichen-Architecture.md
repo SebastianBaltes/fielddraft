@@ -412,6 +412,59 @@ general 36 offene Kanten, beide 0 nm / 0 degen / 0 orient.)*
 
 ---
 
+## 8b. Analyse-Durchbruch: die fehlende Säule ist die Manifold-Extraktion (2026-07-12)
+
+Auf Betreiber-Wunsch wurde der **pure Basis-Algorithmus** (Umkugel-Graph +
+Delaunay, ohne Chart-Optimierung, ohne Loch-Füller) systematisch vermessen,
+BEVOR etwas geändert wurde. Werkzeuge: `zz_basis_matrix` (Körper × Akzeptanz-
+Modi) und die Loch-Forensik `LICHEN_WHY` (für jede offene Kante: welcher
+Wächter blockiert das fehlende Dreieck?).
+
+**Befund 1 — die Grundlage trägt.** Box, Zylinder, freie Kugel und Torus sind
+bei 5° in JEDEM Akzeptanz-Modus wasserdicht (0 offen / 0 nm / 0 orient), ohne
+jede Reparaturstufe. Der Basis-Algorithmus ist nicht das Problem.
+
+**Befund 2 — Verfeinern hilft NICHT.** Auf dem Demo-Projekt steigen die
+offenen Kanten mit feinerer Abtastung (minEdge 0.1 → 0.02: 93 → 442). Die
+naive ε-Sampling-Hypothese („mehr Punkte heilen es") ist damit **widerlegt**.
+
+**Befund 3 (die Wurzel) — Kapazitäts-Konflikte mit GÜLTIGEN Blockern.** Für
+~85 % aller offenen Kanten existiert ein kugel-gültiger dritter Punkt; er
+wird von der Kanten-KAPAZITÄT blockiert (die Nachbarkante trägt schon zwei
+Dreiecke) — und die blockierenden Dreiecke sind **selbst gültig**. Es gibt
+also systematisch MEHR gültige Dreiecke, als in ein 2-Manifold passen.
+Greedy akzeptieren + Kapazität klemmen ist strukturell falsch: aus dem
+Kandidaten-Komplex muss eine FLÄCHE **extrahiert** werden. Das ist exakt
+Cocones dritter Schritt (Manifold-Extraktion), den wir nie hatten — nicht
+ein Prädikat- und nicht ein Sampling-Problem.
+
+**Konsequenz (v0.6.548):** `lichen_tri::extract_manifold` — Sheet-Walk über
+gerichtete Halbkanten; an jeder Front-Kante gewinnt der Punkt mit **kleinstem
+Sweep-Winkel um die Kantenachse** (Drehung durch die Luft = Ball-Pivoting-
+Regel). Pivotiert wird über ALLE Punkte im Horizont, nicht nur über
+Stern-Kandidaten (die sind nachweislich unvollständig — genau deshalb gab es
+die Vervollständigungs-Passe). Ergebnis: per Konstruktion 2-manifold und
+konsistent orientiert; Ketten-Kanten sind Flächenrand, die Front endet dort.
+**Box, Zylinder, Kugel und Torus sind damit wasserdicht OHNE Kandidaten-
+Vervollständigung, OHNE Kapazitäts-Klemme und OHNE Loch-Füller** (Gate
+`lichen_walk_extraction_watertight_on_smooth_bodies`).
+
+Dazu die **Zeugen-Umkugel** (`accept: "witness"`, Betreiber-Idee „umgekehrtes
+Raymarching"): das Kugelzentrum wird per 1D-Newton entlang der Dreiecks-
+Normalen auf f = 0 geschoben — das ist das Prädikat des *restricted*
+Delaunay (und damit des Amenta/Bern-Beweises), während unsere Gabriel-Kugel
+(kleinste Kugel) strenger ist und auf gekrümmten Flächen legitime Dreiecke
+ablehnt. Auf planaren Flächen degeneriert sie exakt zu Gabriel.
+
+**Offen:** Das Demo-Projekt (Gyroid + tangentiale Mikro-Features) profitiert
+noch nicht (43 → 43 im gabriel-Walk, 26 im vote-Walk). Dort greift die
+theoretische Grenze: an tangentialen Kontakten geht lfs → 0, ε-Sampling
+verlangte unendliche Dichte. Nächster Schritt ist deshalb NICHT mehr
+Abtastung, sondern der verallgemeinerte **Mikro-Feature-Kollaps**
+(Sub-Resolution-Topologie kollabieren, wie schon an Ecken-Clustern) —
+plus der Rückbau des Wächter-Turms, der mit der Extraktion großteils
+redundant wird.
+
 ## 9. Kritische Reflexion (2026-07-12)
 
 Bewertung des Konzepts mit dem Wissen aus Sampling-Theorie
