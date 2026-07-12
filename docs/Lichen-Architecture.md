@@ -508,6 +508,43 @@ kein ε die Bedingung mehr erfüllen kann. Dafür ist der verallgemeinerte
 **Mikro-Feature-Kollaps** die theoretisch richtige Antwort (Sub-Resolution-
 Topologie kollabieren statt abtasten), nicht mehr Dichte.
 
+## 8d. Kollaps-Hypothese widerlegt, Feature-Protection, Walk-Grenze (v0.6.550)
+
+**Befund 5 — der Mikro-Feature-Kollaps war die falsche Fährte.** Vor dem Bau
+gemessen (`zz_duplicate_sheet_stats`): auf dem Demo gibt es **NULL** Punktpaare
+näher als 0,5·space — weder mit gleich- noch mit gegenläufiger Normale. Die
+globale Konflikt-Quelle des Wachstums (xgrid, I-6-Serie) verhindert
+Doppelblätter längst; es gibt schlicht nichts zu kollabieren. Hypothese
+verworfen, ohne eine Zeile Produktionscode dafür geschrieben zu haben.
+
+**Befund 6 — die Medialachse läuft in jede scharfe Kante.** Das ε-Sampling in
+seiner ersten Fassung zerstörte den Würfel (263 → 19 097 Punkte, 3 565 offene
+Kanten): der Bisektor zweier Nachbarflächen **berührt** die gemeinsame Kante,
+also geht lfs dort gegen 0 und die Verdichtung ist unbegrenzt. Genau deshalb
+*protecten* Cheng/Dey/Ramos scharfe Features. Fix: `reach_inner` zählt nur
+noch echte **Gegenblätter** (Fußpunkt-Normale antiparallel, `dot < −0.3`);
+scharfe Kanten sind über ihre B-Rep-Ketten ohnehin exakt abgetastet. Zweiter
+Fehler derselben Fassung: der Marsch gab bei „nichts gefunden" seinen Cap
+zurück, wodurch ε **systematisch jede** Fläche refinete — jetzt bindet die
+Bedingung nur bei tatsächlich gefundener Medialachse (Marsch-Cap `h/ε`).
+Gate: dünne Wand 103 → 9 279 Punkte, **dicker Würfel punktgleich**.
+
+**Befund 7 — die Grenze des greedy Walks.** Auf der Demo sind 92 % der offenen
+Kanten des globalen Walks vom Typ „**voll gültiges Dreieck, aber Halbkante
+belegt**" (Forensik `LICHEN_WHY`): der Walk legt sich selbst lahm. Best-first-
+Front (kleinster Umkreis zuerst statt FIFO) und das Verbot von Rogue-Seeds
+(ein Startdreieck darf keine schon benutzte Kante berühren) beheben das auf
+allen glatten Körpern, **nicht** auf der Demo — dort bleibt der Randanteil bei
+~17 % und **skaliert mit der Netzgröße, unabhängig von der Abtastung** (ε von
+0,5 bis 0,15 und minEdge bis 0,02 vermessen: keine Konvergenz).
+
+**Damit ist die nächste Front präzise benannt:** nicht Abtastung, nicht
+Prädikat, nicht Kollaps — sondern die **Extraktion selbst**. Der greedy
+Sheet-Walk ist eine Approximation von Cocones Extraktions-Schritt; die echte
+Fassung arbeitet nicht greedy, sondern über den **globalen Kandidaten-Komplex**
+(alle restricted-Delaunay-Dreiecke) mit **Umbrella-/Zirkularordnungs-Pruning**
+pro Vertex. Das ist der letzte fehlende Baustein des Programms.
+
 ## 9. Kritische Reflexion (2026-07-12)
 
 Bewertung des Konzepts mit dem Wissen aus Sampling-Theorie
