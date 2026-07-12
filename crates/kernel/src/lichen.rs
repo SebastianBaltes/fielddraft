@@ -1007,9 +1007,35 @@ pub fn pack(all: &[LPoint], tris: &[[u32; 3]], point_faces: &[Vec<(u32, [f32; 3]
     pack_with_diag(all, tris, point_faces, &[], &[])
 }
 
-/// Wie [`pack`], plus DIAGNOSE-Trailing-Block des allgemeinen Tri-Pfads:
-/// `[nOpenEdge, (a,b)×n, nWeakTri, (a,b,c)×n]` NACH dem Face-Normal-Block —
-/// offene Loch-Kanten (rot) und Fast-Konsens-Kandidaten (orange) fürs Overlay.
+/// ÜBERLANGE Kanten des finalen Netzes: Länge > 3 × max(space der Endpunkte).
+/// Das ist die sichtbare Signatur einer lokalen Umkugel-Verletzung bzw. einer
+/// unbesiedelten Region (Betreiber-Bild „Kanten quer durchs Kugelinnere") —
+/// eine Delaunay-Kante zwischen korrekt abgetasteten Nachbarn ist nie viel
+/// länger als das lokale Spacing. Fürs Overlay (violett) + Dialog-Zähler.
+fn long_edges_of(all: &[LPoint], tris: &[[u32; 3]]) -> Vec<(u32, u32)> {
+    let mut seen: std::collections::HashSet<(u32, u32)> = std::collections::HashSet::new();
+    let mut out: Vec<(u32, u32)> = Vec::new();
+    for &[a, b, c] in tris {
+        for (x, y) in [(a, b), (b, c), (c, a)] {
+            let e = (x.min(y), x.max(y));
+            if !seen.insert(e) {
+                continue;
+            }
+            let (pa, pb) = (&all[e.0 as usize], &all[e.1 as usize]);
+            let l = dist(pa.p, pb.p);
+            if l > 3.0 * pa.space.max(pb.space) {
+                out.push(e);
+            }
+        }
+    }
+    out.sort_unstable();
+    out
+}
+
+/// Wie [`pack`], plus DIAGNOSE-Trailing-Blöcke (beide Pfade):
+/// `[nOpenEdge, (a,b)×n, nWeakTri, (a,b,c)×n, nLongEdge, (a,b)×n]` NACH dem
+/// Face-Normal-Block — offene Loch-Kanten (rot), Fast-Konsens-Kandidaten
+/// (orange) und überlange Kanten (violett, kernel-berechnet) fürs Overlay.
 pub fn pack_with_diag(
     all: &[LPoint],
     tris: &[[u32; 3]],
@@ -1058,6 +1084,12 @@ pub fn pack_with_diag(
         out.push(t[0] as f32);
         out.push(t[1] as f32);
         out.push(t[2] as f32);
+    }
+    let long_edges = long_edges_of(all, tris);
+    out.push(long_edges.len() as f32);
+    for &(a, b) in &long_edges {
+        out.push(a as f32);
+        out.push(b as f32);
     }
     // Qualitäts-Block (fix 6 Werte, fürs Dialog-Readout): [boundaryEdges,
     // nonmanifoldEdges, degenerateTris, components, euler, orientViolations].

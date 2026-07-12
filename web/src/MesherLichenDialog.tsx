@@ -660,22 +660,29 @@ export function MesherLichenDialog({ onClose }: { onClose: () => void }) {
           {stats ? (stats.fallbackTris ?? 0).toLocaleString() : "—"}
         </span>
       </div>
-      {generalTri && (
-        <div className="readout">
-          <span className="k">Loch-Kanten (rot)</span>
-          <span className="v" data-testid="mesher-lichen-hole-edges">
-            {stats ? (stats.holeEdges ?? 0).toLocaleString() : "—"}
-          </span>
-        </div>
-      )}
-      {generalTri && (
-        <div className="readout">
-          <span className="k">2-Stimmen-Kandidaten (orange)</span>
-          <span className="v" data-testid="mesher-lichen-weak-tris">
-            {stats ? (stats.weakTris ?? 0).toLocaleString() : "—"}
-          </span>
-        </div>
-      )}
+      <div className="readout">
+        <span className="k">Loch-Kanten (rot)</span>
+        <span className="v" data-testid="mesher-lichen-hole-edges">
+          {stats ? (stats.holeEdges ?? 0).toLocaleString() : "—"}
+        </span>
+      </div>
+      <div className="readout">
+        <span className="k">2-Stimmen-Kandidaten (orange)</span>
+        <span className="v" data-testid="mesher-lichen-weak-tris">
+          {stats ? (stats.weakTris ?? 0).toLocaleString() : "—"}
+        </span>
+      </div>
+      <div className="readout">
+        <span
+          className="k"
+          title="Kanten des finalen Netzes, die länger als das 3-fache des lokalen Punkt-Spacings sind — sichtbare Signatur einer lokalen Umkugel-Verletzung oder unbesiedelten Region."
+        >
+          Überlange Kanten (violett)
+        </span>
+        <span className="v" data-testid="mesher-lichen-long-edges">
+          {stats ? (stats.longEdges ?? 0).toLocaleString() : "—"}
+        </span>
+      </div>
 
       {/* ── Qualitäts-Kennzahlen des finalen Netzes (kernel-berechnet,
            beide Pfade): manifold/watertight als ✓/✗ mit Zählern. ── */}

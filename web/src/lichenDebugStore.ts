@@ -109,6 +109,10 @@ export interface LichenStats {
   holeEdges: number;
   /** General-Pfad-Diagnose: abgelehnte Fast-Konsens-Kandidaten (orange). */
   weakTris: number;
+  /** Überlange Kanten des finalen Netzes (Länge > 3× lokales Spacing) —
+   *  sichtbare Signatur lokaler Umkugel-Verletzungen bzw. unbesiedelter
+   *  Regionen (violett gezeichnet). Kernel-berechnet, beide Pfade. */
+  longEdges: number;
   /** Qualitäts-Block (beide Pfade, kernel-berechnet über das finale Netz):
    *  Kanten mit genau einem Dreieck (offener Rand). */
   boundaryEdges: number;

@@ -1115,6 +1115,10 @@ impl Kernel {
         if std::env::var("LICHEN_PERF").is_ok() {
             eprintln!("PERF setup+grow gesamt: {:?} ({} Punkte)", t_setup.elapsed(), all.len());
         }
+        // Diagnose fürs Overlay (Chart-Modus): weak-Tris der Fallback-Flächen;
+        // die finalen offenen Kanten werden nach Dedup/Orientierung unten
+        // berechnet (deckungsgleich mit dem Watertight-Zähler).
+        let mut diag_weak: Vec<[u32; 3]> = Vec::new();
         let tris = if opts.triangulate && all.len() >= 3 {
             let mut t: Vec<[u32; 3]> = Vec::new();
             // Allgemeiner Pfad (Stern-Konsistenz, chartlos): EIN Code für
@@ -1271,6 +1275,8 @@ impl Kernel {
                 }
                 return lichen::pack_with_diag(&all, &t, &point_faces, &open_edges, &weak_tris);
             }
+            // Diagnose-Sammlung der Fallback-Flächen (Overlay: orange).
+            let mut fb_weak: Vec<[u32; 3]> = Vec::new();
             // Globale Ketten-Kanten (für den chartlosen Pro-Flächen-Fallback
             // unten — fremde Ketten sind dort harte Wände, wie im General-Pfad).
             let global_chain_edges: HashSet<(u32, u32)> = face_loops
@@ -1592,8 +1598,10 @@ impl Kernel {
                         res.hole_edges
                     );
                 }
+                fb_weak.extend(res.weak_tris);
                 t.extend(res.tris);
             }
+            diag_weak = fb_weak;
             t
         } else {
             Vec::new()
@@ -1616,7 +1624,22 @@ impl Kernel {
             lichen::orient_consistent(&all, &mut t);
             t
         };
-        lichen::pack(&all, &tris, &point_faces)
+        // Watertight-Verstöße farbig (Betreiber-Wunsch): finale offene Kanten
+        // ROT auch im Chart-Modus — bisher zeichnete nur der General-Pfad
+        // seine Diagnose.
+        let open: Vec<(u32, u32)> = {
+            let mut edge_use: HashMap<(u32, u32), u32> = HashMap::new();
+            for &[a, b, c] in &tris {
+                for (x, y) in [(a, b), (b, c), (c, a)] {
+                    *edge_use.entry((x.min(y), x.max(y))).or_default() += 1;
+                }
+            }
+            let mut open: Vec<(u32, u32)> =
+                edge_use.iter().filter(|(_, &u)| u == 1).map(|(&e, _)| e).collect();
+            open.sort_unstable();
+            open
+        };
+        lichen::pack_with_diag(&all, &tris, &point_faces, &open, &diag_weak)
     }
 }
 
@@ -1666,15 +1689,18 @@ mod tests {
         let tris = out[1] as usize;
         assert!(tris > 0, "advancing front emits real triangles");
         // Layout: header(3) + points×9 + indices×3 + nFaceRec + faceRec×4
-        //         + nOpenEdge + openEdge×2 + nWeakTri + weakTri×3 (Diagnose)
-        //         + Qualitäts-Block (6 Werte).
+        //         + nOpenEdge + openEdge×2 + nWeakTri + weakTri×3
+        //         + nLongEdge + longEdge×2 (Diagnose) + Qualitäts-Block (6).
         let idx_end = 3 + total * 9 + tris * 3;
         let n_face = out[idx_end] as usize;
         let diag = idx_end + 1 + n_face * 4;
         let n_open = out[diag] as usize;
-        let n_weak = out[diag + 1 + n_open * 2] as usize;
+        let weak_base = diag + 1 + n_open * 2;
+        let n_weak = out[weak_base] as usize;
+        let long_base = weak_base + 1 + n_weak * 3;
+        let n_long = out[long_base] as usize;
         assert_eq!(
-            diag + 1 + n_open * 2 + 1 + n_weak * 3 + 6,
+            long_base + 1 + n_long * 2 + 6,
             out.len(),
             "flat layout: points + index + face-normal block + diag + quality block"
         );
@@ -2131,17 +2157,106 @@ mod tests {
     /// SCRATCH-Analyse (Betreiber-Bild 3: Spalt in der Mini-Kugel mit
     /// degenerierten langen Dreiecken, Chart-Pfad): Dreiecke an der
     /// Mini-Kugel vermessen — lange Kanten relativ zum lokalen Spacing.
+    /// Demo OHNE Mikro-Box-Intersect = Betreiber-Screenshot-Szene
+    /// (volle Gyroid-Wand + Mini-Kugel r=1).
+    fn demo_no_micro_kernel() -> crate::Kernel {
+        let json = r#"{
+            "schema_version": 1,
+            "name": "Lichen-Demo-ohne-Mikro",
+            "feature_calls": [
+                { "type": "sphere", "id": 1, "params": {
+                    "op": "new", "radius": 50, "translate": [0, 0, 0] } },
+                { "type": "gyroid", "id": 2, "params": {
+                    "op": "intersect", "targets": "qCreatedBy(1)",
+                    "cell_size": { "unit": "mm", "value": 10 },
+                    "thickness": { "unit": "mm", "value": 1 },
+                    "blend_radius": { "unit": "mm", "value": 0 },
+                    "chamfer_size": { "unit": "mm", "value": 0 },
+                    "displace_depth": { "unit": "mm", "value": 0 },
+                    "shell_thickness": { "unit": "mm", "value": 0 } } },
+                { "type": "cylinder", "id": 3, "params": {
+                    "op": "remove", "targets": "qCreatedBy(1)",
+                    "radius": 30, "half_height": 60, "translate": [0, 0, 0] } },
+                { "type": "sphere", "id": 6, "params": {
+                    "op": "add", "targets": "qCreatedBy(2)",
+                    "radius": 50, "translate": [0, 0, 0] } },
+                { "type": "translate", "id": 7, "params": {
+                    "target_id": 6,
+                    "translate": [5.2107882, 22.11431, 29.24847473977133] } },
+                { "type": "scale", "id": 8, "params": {
+                    "target_id": 6, "scale": [0.02, 0.02, 0.02] } }
+            ],
+            "next_feature_id": 10
+        }"#;
+        let mut k = crate::Kernel::new();
+        k.load_json(json).expect("Demo-ohne-Mikro lädt");
+        k
+    }
+
     #[test]
     #[ignore = "Analyse-Werkzeug, kein Gate"]
     fn lichen_scratch_minisphere_chart_analysis() {
-        let mut k = demo_project_kernel();
+        let mut k = if std::env::var("LICHEN_SCRATCH_NO_MICRO").is_ok() {
+            demo_no_micro_kernel()
+        } else {
+            demo_project_kernel()
+        };
         let out = k.lichen_mesh(
-            r#"{"targetEdgeLength":10.0,"grow":true,"curvAngleDeg":5.0,"minEdgeSpacing":0.2,"maxPoints":50000}"#.into(),
+            r#"{"targetEdgeLength":10.0,"grow":true,"curvAngleDeg":5.0,"minEdgeSpacing":0.1,"maxPoints":50000}"#.into(),
         );
         let total = out[0] as usize;
         let tris = out[1] as usize;
         let pos = |i: usize| -> [f32; 3] { [out[3 + i * 9], out[3 + i * 9 + 1], out[3 + i * 9 + 2]] };
         let c = [5.2107882f32, 22.11431, 29.24847];
+        // Punkt-Statistik an der Mini-Kugel: Anzahl + space-Histogramm.
+        {
+            let mut n_near = [0usize; 4];
+            let mut space_hist = std::collections::BTreeMap::new();
+            for i in 0..total {
+                let p = pos(i);
+                let d = [p[0] - c[0], p[1] - c[1], p[2] - c[2]];
+                let r = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+                if (r - 1.0).abs() > 0.05 {
+                    continue;
+                }
+                let flag = (out[3 + i * 9 + 8] as usize).min(3);
+                n_near[flag] += 1;
+                if flag == 1 {
+                    let sp = out[3 + i * 9 + 7];
+                    *space_hist.entry(format!("{:.1}", sp)).or_insert(0usize) += 1;
+                }
+            }
+            eprintln!(
+                "mini r=1±0.05: surf={} chain={} corner={} u-hist(surf)={space_hist:?}",
+                n_near[1], n_near[2], n_near[3]
+            );
+            // CSV-Dump für Kappen-Dichte-Analyse.
+            use std::io::Write;
+            let mut f = std::fs::File::create("/tmp/mini_pts.csv").unwrap();
+            for i in 0..total {
+                let p = pos(i);
+                let d = [p[0] - c[0], p[1] - c[1], p[2] - c[2]];
+                let r = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+                if (r - 1.0).abs() > 0.05 {
+                    continue;
+                }
+                writeln!(f, "{},{},{},{},{}", i, d[0], d[1], d[2], out[3 + i * 9 + 8]).unwrap();
+            }
+            // Dreiecke der Mini-Kugel (alle 3 Ecken nah) für Kanten-Längen je Region.
+            let mut f2 = std::fs::File::create("/tmp/mini_tris.csv").unwrap();
+            let base2 = 3 + total * 9;
+            for t in 0..tris {
+                let idx: Vec<usize> = (0..3).map(|j| out[base2 + t * 3 + j] as usize).collect();
+                let ok = idx.iter().all(|&i| {
+                    let p = pos(i);
+                    let d = [p[0] - c[0], p[1] - c[1], p[2] - c[2]];
+                    ((d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt() - 1.0).abs() < 0.05
+                });
+                if ok {
+                    writeln!(f2, "{},{},{}", idx[0], idx[1], idx[2]).unwrap();
+                }
+            }
+        }
         let near = |p: [f32; 3]| -> bool {
             let d = [p[0] - c[0], p[1] - c[1], p[2] - c[2]];
             (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt() < 1.4
@@ -2175,68 +2290,17 @@ mod tests {
             }
         }
         eprintln!("mini-sphere: {n_tris} tris, {long_edges} lange Kanten (>4×U)");
-        // Vergrabungstiefe entlang der langen Kanten: Sehnen-Punkte auf den
-        // r=1-Träger heben und Body-f auswerten.
-        let bodies: Vec<crate::bvh::BoundedCsg> = k
-            .bodies
-            .iter()
-            .map(|b| {
-                crate::body::build_bounded_with_primitives(&k.decoded, &b.feature_indices).0
-            })
-            .collect();
-        let f = |p: [f32; 3]| -> f32 {
-            bodies
-                .iter()
-                .map(|b| crate::sdf_dual::sdf_gradient(b, p).0)
-                .fold(f32::MAX, f32::min)
-        };
-        for (a, b) in [
-            ([4.6889443f32, 21.933691, 28.414774], [4.802367f32, 22.871819, 28.73919]),
-            ([4.869515f32, 22.775831, 28.5807], [5.0184126f32, 21.280296, 28.731352]),
-        ] {
-            for t in [0.25f32, 0.5, 0.75] {
-                let m = [
-                    a[0] + t * (b[0] - a[0]),
-                    a[1] + t * (b[1] - a[1]),
-                    a[2] + t * (b[2] - a[2]),
-                ];
-                let d = [m[0] - c[0], m[1] - c[1], m[2] - c[2]];
-                let l = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt().max(1e-9);
-                let s = [c[0] + d[0] / l, c[1] + d[1] / l, c[2] + d[2] / l];
-                let mut nd = f32::MAX;
-                let mut nfl = -1.0f32;
-                let mut np = [0.0f32; 3];
-                for i in 0..total {
-                    let p = pos(i);
-                    let dd = [p[0] - s[0], p[1] - s[1], p[2] - s[2]];
-                    let l2 = dd[0] * dd[0] + dd[1] * dd[1] + dd[2] * dd[2];
-                    if l2 < nd {
-                        nd = l2;
-                        nfl = out[3 + i * 9 + 8];
-                        np = p;
-                    }
-                }
-                // Radiale Ausrichtung der Normalen des nächsten Punkts:
-                // ~1 = Kugel-Punkt, sonst Wand-Punkt (Übertreter).
-                let mut ni = 0usize;
-                for i in 0..total {
-                    if pos(i) == np {
-                        ni = i;
-                        break;
-                    }
-                }
-                let nn = [out[3 + ni * 9 + 4], out[3 + ni * 9 + 5], out[3 + ni * 9 + 6]];
-                let rd = [np[0] - c[0], np[1] - c[1], np[2] - c[2]];
-                let rl = (rd[0] * rd[0] + rd[1] * rd[1] + rd[2] * rd[2]).sqrt().max(1e-9);
-                let align =
-                    (nn[0] * rd[0] + nn[1] * rd[1] + nn[2] * rd[2]) / rl;
-                eprintln!(
-                    "  t={t}: chord f={:.4}  surf f={:.4}  nächster d={:.3} flag={nfl} radial·n={align:.2}",
-                    f(m),
-                    f(s),
-                    nd.sqrt()
-                );
-            }
+        // Kernel-Diagnose-Blöcke auslesen (open/weak/long).
+        {
+            let idx_end = 3 + total * 9 + tris * 3;
+            let n_face = out[idx_end] as usize;
+            let diag = idx_end + 1 + n_face * 4;
+            let n_open = out[diag] as usize;
+            let weak_base = diag + 1 + n_open * 2;
+            let n_weak = out[weak_base] as usize;
+            let long_base = weak_base + 1 + n_weak * 3;
+            let n_long = out[long_base] as usize;
+            eprintln!("DIAG: open={n_open} weak={n_weak} long={n_long}");
         }
     }
 

@@ -219,18 +219,22 @@ export function LichenOverlay({
       if (data[P + k * STRIDE + 8] > 0.5) keep.push(k);
     }
     const n = keep.length;
-    // ── Diagnose-Block des General-Pfads (NACH dem Face-Normal-Block):
-    //    [nOpenEdge, (a,b)×n, nWeakTri, (a,b,c)×n] — offene Loch-Kanten (rot)
-    //    und abgelehnte Fast-Konsens-Kandidaten (orange). Chart-Pfad: 0/0. ──
+    // ── Diagnose-Blöcke (NACH dem Face-Normal-Block, beide Pfade):
+    //    [nOpenEdge, (a,b)×n, nWeakTri, (a,b,c)×n, nLongEdge, (a,b)×n] —
+    //    offene Loch-Kanten (rot), abgelehnte Fast-Konsens-Kandidaten
+    //    (orange) und überlange Kanten (violett; Länge > 3× lokales
+    //    Spacing = Umkugel-Verletzungs-Verdacht). ──
     const faceBase0 = 3 + total * STRIDE + triCount * 3;
     const nFaceRec0 = data.length > faceBase0 ? data[faceBase0] : 0;
     const diagBase = faceBase0 + 1 + nFaceRec0 * 4;
     const nOpenEdge = data.length > diagBase ? data[diagBase] : 0;
     const weakBase = diagBase + 1 + nOpenEdge * 2;
     const nWeakTri = data.length > weakBase ? data[weakBase] : 0;
+    const longBase = weakBase + 1 + nWeakTri * 3;
+    const nLongEdge = data.length > longBase ? data[longBase] : 0;
     // Qualitäts-Block (fix 6 Werte, kernel-berechnet): [boundary, nonmanifold,
     // degenerate, components, euler, orientationViolations].
-    const qBase = weakBase + 1 + nWeakTri * 3;
+    const qBase = longBase + 1 + nLongEdge * 2;
     const qual = (k: number) => (data.length > qBase + k ? data[qBase + k] : 0);
     setLichenStats({
       cells: n,
@@ -239,6 +243,7 @@ export function LichenOverlay({
       fallbackTris,
       holeEdges: nOpenEdge,
       weakTris: nWeakTri,
+      longEdges: nLongEdge,
       boundaryEdges: qual(0),
       nonmanifoldEdges: qual(1),
       degenerateTris: qual(2),
@@ -304,7 +309,7 @@ export function LichenOverlay({
     // ── General-Pfad-Diagnose: Loch-Kanten ROT (kräftig, 1.5× Strichstärke),
     //    Fast-Konsens-Kandidaten (vote_min−1 Stimmen) ORANGE — die
     //    „Uneinigkeits-Landkarte" der Sterne, nie still übermalt. ──
-    if (params.showTriangles && nOpenEdge + nWeakTri > 0) {
+    if (params.showTriangles && nOpenEdge + nWeakTri + nLongEdge > 0) {
       const px = (i: number) => rawX(P + i * STRIDE);
       const py = (i: number) => rawY(P + i * STRIDE);
       const pz = (i: number) => rawZ(P + i * STRIDE);
@@ -362,6 +367,15 @@ export function LichenOverlay({
         weakSeg.push(px(c), py(c), pz(c), px(a), py(a), pz(a));
       }
       drawSegs(weakSeg, 0xf59e0b, Math.max(1, params.strokeWidth * 0.8));
+      // Überlange Kanten VIOLETT (Umkugel-Verletzungs-Verdacht: Länge > 3×
+      // lokales Spacing — „Kanten quer durchs Kugelinnere").
+      const longSeg: number[] = [];
+      for (let e = 0; e < nLongEdge; e++) {
+        const a = data[longBase + 1 + e * 2];
+        const b = data[longBase + 1 + e * 2 + 1];
+        longSeg.push(px(a), py(a), pz(a), px(b), py(b), pz(b));
+      }
+      drawSegs(longSeg, 0x9333ea, Math.max(1.5, params.strokeWidth * 1.2));
     }
     if (n === 0) {
       invalidate();

@@ -24,6 +24,16 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.546",
+    entries: [
+      {
+        kind: "feat",
+        scope: "mesher",
+        text: "Lichen: Defekt-Overlay jetzt auch im Chart-Modus (Default) — offene Watertight-Kanten werden ROT gezeichnet (deckungsgleich mit dem Watertight-Zähler), Fast-Konsens-Kandidaten der Fallback-Flächen orange. Neu in beiden Pfaden: ÜBERLANGE Kanten (Länge > 3× lokales Punkt-Spacing) violett markiert plus Dialog-Zähler — die sichtbare Signatur lokaler Umkugel-Verletzungen („Kanten quer durchs Kugelinnere“, Betreiber-Beobachtung).",
+      },
+    ],
+  },
+  {
     version: "0.6.545",
     entries: [
       {
