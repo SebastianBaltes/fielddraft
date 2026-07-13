@@ -212,6 +212,17 @@ ansible-playbook -i inventory.ini deploy.yml --ask-vault-pass -e version=$TAG
 
 ### Ansible playbooks (`deploy/ansible/`)
 
+> **The live deployment does NOT run this.** Production (`https://203.0.113.10.sslip.io`)
+> is deployed by the **devops agent** from **its own** Ansible role on its control
+> node, over the **archive path**: we build the images and `docker save` them into
+> `dist/fielddraft-<version>.image.tar.gz` (`just release-image`), the tarball goes
+> to the control node, and the role does `docker load` + `compose up`. **No registry,
+> no GHCR, no GitHub token** — the `vault_ghcr_*` variables below are unused
+> placeholders there. What lives here is the self-host / reference path; a change
+> made ONLY in `deploy/ansible/` or `docker-compose.prod.yml` **does not reach
+> production**. Anything prod needs must also be mirrored to the devops role (ask
+> that agent) — or be baked INTO the image, like `web/Caddyfile.internal`.
+
 | Playbook | Purpose |
 |---|---|
 | `bootstrap.yml` | One-time: install Docker + compose plugin, lock UFW to 22/80/443, create the `deploy` user, lay out `/opt/fielddraft` + `/data`. |
