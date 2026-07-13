@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   armProjectThumbnailCapture,
   maybeCaptureThumbnail,
+  rearmProjectThumbnailCapture,
   resetThumbnailThrottle,
   takeArmedProjectCapture,
   THUMBNAIL_MIN_INTERVAL_MS,
@@ -103,15 +104,70 @@ describe("armProjectThumbnailCapture / takeArmedProjectCapture", () => {
   beforeEach(() => resetThumbnailThrottle());
 
   it("is one-shot: fires once after arming, then not again", () => {
-    expect(takeArmedProjectCapture()).toBe(false);
-    armProjectThumbnailCapture();
-    expect(takeArmedProjectCapture()).toBe(true);
-    expect(takeArmedProjectCapture()).toBe(false);
+    expect(takeArmedProjectCapture("p1")).toBe(false);
+    armProjectThumbnailCapture("p1");
+    expect(takeArmedProjectCapture("p1")).toBe(true);
+    expect(takeArmedProjectCapture("p1")).toBe(false);
+  });
+
+  // Ticket #343: the arm belongs to ONE project. The geometry of the project we
+  // just left must not consume it — that is how a fresh project ended up wearing
+  // the previous project's picture.
+  it("only fires for the project it was armed for", () => {
+    armProjectThumbnailCapture("new-project");
+    expect(takeArmedProjectCapture("old-project")).toBe(false);
+    expect(takeArmedProjectCapture(null)).toBe(false);
+    expect(takeArmedProjectCapture("new-project")).toBe(true);
+  });
+
+  it("re-arming restores a failed one-shot", () => {
+    armProjectThumbnailCapture("p1");
+    expect(takeArmedProjectCapture("p1")).toBe(true);
+    rearmProjectThumbnailCapture("p1"); // capture failed → try again next mesh
+    expect(takeArmedProjectCapture("p1")).toBe(true);
+    expect(takeArmedProjectCapture("p1")).toBe(false);
   });
 
   it("resetThumbnailThrottle disarms", () => {
-    armProjectThumbnailCapture();
+    armProjectThumbnailCapture("p1");
     resetThumbnailThrottle();
-    expect(takeArmedProjectCapture()).toBe(false);
+    expect(takeArmedProjectCapture("p1")).toBe(false);
+  });
+});
+
+// Ticket #343: the armed one-shot must not be eaten by the throttle window a
+// preceding editor-exit capture claimed — the project would then never get a
+// preview at all (the arm is spent, and nothing re-triggers it).
+describe("forced capture", () => {
+  beforeEach(() => resetThumbnailThrottle());
+
+  it("captures inside the throttle window when forced", async () => {
+    const render = vi.fn().mockResolvedValue(new Blob(["x"]));
+    const sink = vi.fn().mockResolvedValue(undefined);
+    expect(
+      await maybeCaptureThumbnail([body()], sink, { render, nowMs: 0 }),
+    ).toBe(true);
+    // Throttled…
+    expect(
+      await maybeCaptureThumbnail([body()], sink, { render, nowMs: 1000 }),
+    ).toBe(false);
+    // …but the one-shot goes through.
+    expect(
+      await maybeCaptureThumbnail([body()], sink, {
+        render,
+        nowMs: 1000,
+        force: true,
+      }),
+    ).toBe(true);
+    expect(sink).toHaveBeenCalledTimes(2);
+  });
+
+  it("still reports failure when there is no geometry to draw", async () => {
+    const render = vi.fn().mockResolvedValue(new Blob(["x"]));
+    const sink = vi.fn().mockResolvedValue(undefined);
+    expect(await maybeCaptureThumbnail([], sink, { render, force: true })).toBe(
+      false,
+    );
+    expect(render).not.toHaveBeenCalled();
   });
 });

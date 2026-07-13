@@ -35,6 +35,21 @@ import {
 } from "../localProjects";
 import { armProjectThumbnailCapture } from "../thumbnailScheduler";
 import { OnshapeImportDialog } from "./OnshapeImportDialog";
+import { importOnshapeProject } from "../onshape/onshapeProjectImport";
+import {
+  onshapeSourceUrl,
+  type OnshapeSource,
+} from "../onshape/onshapeUrl";
+
+/** The Onshape origin a project carries in its document envelope, or null for
+ *  everything not imported from Onshape (ticket #343). The list response already
+ *  contains `document`, so the card needs no extra fetch to decide. */
+function onshapeSourceOf(p: Project): OnshapeSource | null {
+  const doc = p.document as { onshape?: unknown } | null | undefined;
+  const src = doc?.onshape as OnshapeSource | undefined;
+  if (!src?.documentId || !src.workspaceId || !src.elementId) return null;
+  return src;
+}
 
 /** Which projects the browser lists. `mine` and `public` map to the owner /
  *  gallery endpoints; `all` is their union (logged-in only). */
@@ -200,7 +215,7 @@ export function ProjectsBrowser({
         const created = await platformApi.createProject("Untitled", {});
         // Phase 3c: arm a one-shot thumbnail — the first time the fresh project
         // has geometry, App.tsx snapshots a gallery preview.
-        armProjectThumbnailCapture();
+        armProjectThumbnailCapture(created.id);
         onOpen(created);
       },
       "Could not create a project",
@@ -232,7 +247,7 @@ export function ProjectsBrowser({
           JSON.parse(serializeProject(project)),
         );
         // Phase 3c: capture a preview once the imported geometry is meshed.
-        armProjectThumbnailCapture();
+        armProjectThumbnailCapture(created.id);
         onOpen(created);
       },
       "Could not import the project",
@@ -286,13 +301,57 @@ export function ProjectsBrowser({
       "Could not change visibility",
     );
 
+  // Pull the Onshape Part Studio again and REPLACE this project's document with
+  // the fresh translation (ticket #343). The ids come from the project itself,
+  // so it lands on exactly the studio the original import used; the title
+  // follows the Onshape document name, which may have been renamed since.
+  const reimportOnshape = (p: Project) =>
+    guard(
+      p.id,
+      async () => {
+        const src = onshapeSourceOf(p);
+        if (!src) return;
+        if (
+          !window.confirm(
+            `“${p.name}” neu aus Onshape importieren? Der Feature-Baum wird durch den aktuellen Stand aus Onshape ERSETZT — lokale Änderungen an diesem Projekt gehen verloren.`,
+          )
+        ) {
+          return;
+        }
+        const result = await importOnshapeProject(src, {
+          now: new Date().toISOString(),
+          fallbackName: p.name,
+        });
+        await platformApi.updateProject(p.id, {
+          name: result.project.name,
+          document: JSON.parse(serializeProject(result.project)),
+        });
+        await reload();
+        // A partial translation must not read as a clean success.
+        if (result.errors.length > 0) {
+          throw new Error(
+            `Reimport mit ${result.errors.length} Fehler(n): ${result.errors[0]}`,
+          );
+        }
+      },
+      "Reimport aus Onshape fehlgeschlagen",
+    );
+
   const open = (p: Project) =>
     guard(
       p.id,
       async () => {
         const full = await platformApi.getProject(p.id);
-        if (ownsProject(full)) onOpen(full);
-        else onOpenCopy(full);
+        if (ownsProject(full)) {
+          // Opening arms a one-shot capture too (ticket #343): the gallery image
+          // is refreshed from the model as soon as it is meshed, so a project
+          // whose preview is stale, missing, or from an import that never got
+          // one repairs itself on the next open.
+          armProjectThumbnailCapture(full.id);
+          onOpen(full);
+        } else {
+          onOpenCopy(full);
+        }
       },
       "Could not open the project",
     );
@@ -525,6 +584,29 @@ export function ProjectsBrowser({
                         >
                           Duplicate
                         </button>
+                        {onshapeSourceOf(p) && (
+                          <>
+                            <button
+                              type="button"
+                              className="link"
+                              data-testid={`project-onshape-reimport-${p.id}`}
+                              disabled={busyId !== null}
+                              onClick={() => reimportOnshape(p)}
+                              title="Feature-Baum erneut aus Onshape holen"
+                            >
+                              Reimport
+                            </button>
+                            <a
+                              className="link"
+                              data-testid={`project-onshape-open-${p.id}`}
+                              href={onshapeSourceUrl(onshapeSourceOf(p)!)}
+                              target="_blank"
+                              rel="noreferrer noopener"
+                            >
+                              In Onshape öffnen
+                            </a>
+                          </>
+                        )}
                         <button
                           type="button"
                           className="link danger"

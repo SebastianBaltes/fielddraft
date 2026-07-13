@@ -1,38 +1,23 @@
 /**
  * OnshapeImportDialog — "Aus Onshape…" (Onshape-Import Schritt 4, UI).
  *
- * Modal (SettingsMenu dialog pattern): the user pastes an Onshape document
- * URL, the dialog resolves the Part Studio via the server's signed
- * read-only proxy (`/api/onshape/elements|features`), translates the
- * feature list with `importOnshapeFeatures` and creates a NEW server
- * project from the result.
+ * Modal (SettingsMenu dialog pattern): the user pastes an Onshape document URL,
+ * `importOnshapeProject` (onshape/onshapeProjectImport.ts) pulls and translates
+ * it, and the dialog creates a NEW server project from the result. That module —
+ * not this dialog — owns the pull: the project card's "Reimport" runs the very
+ * same code against the Onshape ids the project remembers (ticket #343).
  *
- * Kernel strategy: a fresh TEMPORARY `Kernel.create()` (same wasm module
- * as the app's live kernel, but its own `WasmKernel` document — the live
- * document is never touched). The importer drives it feature by feature,
- * then `kernel.toJson()` becomes the part tab's document of a new
- * {@link Project} envelope which feeds `platformApi.createProject`,
- * exactly like ProjectsBrowser's `importLocal`. The temp kernel is simply
- * dropped afterwards (no explicit free on the wasm surface; one-shot).
- *
- * Failure policy: translation warnings (yellow) and errors (red) are
- * listed IN the dialog. With errors the project is still created, but the
- * dialog stays open until the user explicitly opens it — visible partial
- * failure, never a silent swallow.
+ * Failure policy: translation warnings (yellow) and errors (red) are listed IN
+ * the dialog. With errors the project is still created, but the dialog stays
+ * open until the user explicitly opens it — visible partial failure, never a
+ * silent swallow.
  */
 
 import { useEffect, useRef, useState } from "react";
 import { platformApi, type Project } from "../api/platform";
 import { accountErrorMessage } from "./useAccount";
-import { Kernel } from "../kernel";
-import { importOnshapeFeatures } from "../onshape/onshapeImport";
-import { parseOnshapeUrl } from "../onshape/onshapeUrl";
-import {
-  createPartTab,
-  serializeProject,
-  PROJECT_SCHEMA_VERSION,
-  type Project as ProjectDoc,
-} from "../project";
+import { importOnshapeProject } from "../onshape/onshapeProjectImport";
+import { serializeProject } from "../project";
 import { armProjectThumbnailCapture } from "../thumbnailScheduler";
 
 interface OnshapeImportDialogProps {
@@ -46,21 +31,6 @@ interface ImportOutcome {
   warnings: string[];
   errors: string[];
   featureCount: number;
-}
-
-/** Minimal element shape of the Onshape elements endpoint. */
-interface OnshapeElement {
-  id?: string;
-  name?: string;
-  elementType?: string;
-}
-
-function elementList(raw: unknown): OnshapeElement[] {
-  if (Array.isArray(raw)) return raw as OnshapeElement[];
-  if (raw && typeof raw === "object" && Array.isArray((raw as any).elements)) {
-    return (raw as any).elements as OnshapeElement[];
-  }
-  return [];
 }
 
 export function OnshapeImportDialog({
@@ -94,7 +64,7 @@ export function OnshapeImportDialog({
   const openCreated = (created: Project) => {
     // Same follow-up as ProjectsBrowser.createEmpty: arm a one-shot
     // thumbnail so the first meshed frame becomes the gallery preview.
-    armProjectThumbnailCapture();
+    armProjectThumbnailCapture(created.id);
     onOpen(created);
     onClose();
   };
@@ -104,60 +74,23 @@ export function OnshapeImportDialog({
     setError(null);
     setOutcome(null);
     try {
-      const ref = parseOnshapeUrl(url);
-      if (!ref) {
-        throw new Error(
-          "Keine Onshape-URL: erwartet …/documents/<id>/w/<id>/e/<id> (oder /d/…)",
-        );
-      }
-
-      // Element auflösen: fehlt /e/… in der URL, nimm das erste Part
-      // Studio des Workspaces. Der Element-Name wird der Projektname.
-      let elementId = ref.elementId;
-      let projectName = "Onshape Import";
-      if (!elementId) {
-        const elements = elementList(
-          await platformApi.getOnshapeElements(ref.documentId, ref.workspaceId),
-        );
-        const studio = elements.find((e) => e.elementType === "PARTSTUDIO");
-        if (!studio?.id) {
-          throw new Error("Kein Part Studio im Onshape-Dokument gefunden");
-        }
-        elementId = studio.id;
-        if (studio.name) projectName = studio.name;
-      }
-
-      const featuresJson = (await platformApi.getOnshapeFeatures(
-        ref.documentId,
-        ref.workspaceId,
-        elementId,
-      )) as { features?: unknown[] };
-
-      // Temporärer Kernel (frisches WASM-Dokument, s. Modul-Doku oben) —
-      // sein Klassen-API deckt das ImportKernel-Interface strukturell ab.
-      const kernel = await Kernel.create();
-      const result = await importOnshapeFeatures(featuresJson as any, kernel);
-
-      // Neues Projekt-Envelope um das importierte Kernel-Dokument, dann
-      // als Server-Projekt anlegen (wie importLocal in ProjectsBrowser).
-      const part = createPartTab("Part 1");
-      part.documentJson = kernel.toJson();
-      const project: ProjectDoc = {
-        schemaVersion: PROJECT_SCHEMA_VERSION,
-        name: projectName,
-        tabs: [part],
-        activeTabId: part.id,
-      };
+      // Pull + translate (shared with the project card's Reimport), then create
+      // the server project. The title is the Onshape DOCUMENT name and the
+      // resolved Onshape ids travel in the envelope, so the card can offer
+      // "Open in Onshape" / "Reimport" later (ticket #343).
+      const result = await importOnshapeProject(url, {
+        now: new Date().toISOString(),
+      });
       const created = await platformApi.createProject(
-        projectName,
-        JSON.parse(serializeProject(project)),
+        result.project.name,
+        JSON.parse(serializeProject(result.project)),
       );
 
       const next: ImportOutcome = {
         created,
         warnings: result.warnings,
         errors: result.errors,
-        featureCount: result.created.length,
+        featureCount: result.featureCount,
       };
       if (next.errors.length === 0 && next.warnings.length === 0) {
         // Sauberer Import → direkt öffnen.

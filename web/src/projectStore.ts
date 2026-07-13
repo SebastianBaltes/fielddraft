@@ -310,6 +310,14 @@ export class ProjectStore {
       // Ticket 5zd3: loading a project replaces the scene wholesale — drop
       // any active sketch session so a stale sketch view can't survive.
       sketchSession: INACTIVE_SKETCH_SESSION,
+      // …and for the same reason drop the meshes: they are the PREVIOUS
+      // document's geometry. The commit below republishes them (worker mode:
+      // asynchronously; fallback: synchronously in refreshMeshCache). Leaving
+      // them meant every consumer of `meshedBodies` saw the old scene for a
+      // moment — the project thumbnail captured in that window showed the
+      // project you came FROM (ticket #343: an Onshape import wearing the
+      // previous project's cube).
+      meshedBodies: [],
     };
     this.core.commit(new Set(), null);
     this.core.autosave.flush();

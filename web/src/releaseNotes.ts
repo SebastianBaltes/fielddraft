@@ -24,6 +24,23 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.582",
+    entries: [
+      {
+        kind: "feat",
+        scope: "onshape",
+        text: "Ein Onshape-Import heißt jetzt wie das Onshape-DOKUMENT (also „Lötkolbenhalter“ statt „Onshape Import“) und merkt sich, woher er kam. Auf der Projektkarte stehen dafür zwei neue Aktionen: „Reimport“ holt den Feature-Baum frisch aus Onshape und ersetzt das Projekt damit (mit Rückfrage; Übersetzungsfehler werden gemeldet statt verschluckt), „In Onshape öffnen“ springt in genau das Part Studio, aus dem importiert wurde.",
+        tickets: ["343"],
+      },
+      {
+        kind: "fix",
+        scope: "projects",
+        text: "Projekte bekommen endlich ein echtes Vorschaubild. Bisher konnte die Aufnahme nur gelingen, wenn man zufällig im Mesh- oder WebGL-Modus arbeitete — in den SDF-Modi (die Voreinstellung) gibt es gar keine Dreiecke, und die Aufnahme zeichnete nichts. Jetzt vermascht sie ihr Dokument bei Bedarf selbst (einmalig, in einem eigenen Hintergrund-Prozess, grob aufgelöst) und zwar beim ÖFFNEN des Projekts, nicht erst beim Verlassen. Zwei weitere Fallen sind mit weg: die Aufnahme eines frisch angelegten Projekts wurde von der 30-Sekunden-Sperre verschluckt, und sie konnte die Geometrie des zuvor geöffneten Projekts erwischen — daher trugen frische Projekte das Bild ihres Vorgängers.",
+        tickets: ["343"],
+      },
+    ],
+  },
+  {
     version: "0.6.581",
     entries: [
       {

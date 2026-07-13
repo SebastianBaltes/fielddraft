@@ -163,6 +163,25 @@ func (s *Server) onshapeGuard(w http.ResponseWriter, r *http.Request, ref *onsha
 	return true
 }
 
+// handleOnshapeDocument returns the document record — the import uses its `name`
+// as the project title (ticket #343: the imported project was called "Onshape
+// Import"; the DOCUMENT name is what the user recognises, e.g. "Lötkolbenhalter").
+// The element (tab) name is a different, usually generic string ("Part Studio 1").
+func (s *Server) handleOnshapeDocument(w http.ResponseWriter, r *http.Request) {
+	documentID := r.URL.Query().Get("documentId")
+	if !validOnshapeID(documentID) {
+		writeErr(w, http.StatusBadRequest, "invalid document id")
+		return
+	}
+	data, err := s.onshape.get("/api/documents/"+documentID, "")
+	if err != nil {
+		log.Printf("onshape document: %v", err)
+		writeErr(w, http.StatusBadGateway, "onshape request failed")
+		return
+	}
+	writeOnshapeJSON(w, data)
+}
+
 // handleOnshapeElements lists the elements (tabs) of a document, so the import
 // dialog can offer the part studios of a pasted URL.
 func (s *Server) handleOnshapeElements(w http.ResponseWriter, r *http.Request) {

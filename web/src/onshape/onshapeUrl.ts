@@ -33,3 +33,26 @@ export function parseOnshapeUrl(input: string): OnshapeDocRef | null {
     elementId: m[3] ?? null,
   };
 }
+
+/**
+ * What an imported project remembers about its Onshape origin (ticket #343).
+ * It rides in the project document envelope (`Project.onshape`), so it survives
+ * save/load, export and cloud sync without a schema change — and it is what the
+ * project card's "Open in Onshape" and "Reimport" act on. The element id is
+ * always resolved here (the import picks the first Part Studio when the pasted
+ * URL had none), so a reimport hits the same Part Studio the user imported.
+ */
+export interface OnshapeSource {
+  documentId: string;
+  workspaceId: string;
+  elementId: string;
+  /** The document name at import time — the project title (e.g. "Lötkolbenhalter"). */
+  documentName?: string;
+  /** When the project was last (re)imported, ISO-8601. */
+  importedAt?: string;
+}
+
+/** The canonical Onshape URL of a source — what "Open in Onshape" navigates to. */
+export function onshapeSourceUrl(src: OnshapeSource): string {
+  return `https://cad.onshape.com/documents/${src.documentId}/w/${src.workspaceId}/e/${src.elementId}`;
+}

@@ -76,6 +76,7 @@ func NewServer(store Store) *Server {
 	s.mux.HandleFunc("DELETE /api/mesh-jobs/{id}", s.handleCancelMeshJob)
 	// Onshape import: signed read-only proxy (onshape.go). The browser cannot
 	// call Onshape directly (no CORS, and the API secret stays server-side).
+	s.mux.HandleFunc("GET /api/onshape/document", s.handleOnshapeDocument)
 	s.mux.HandleFunc("GET /api/onshape/elements", s.handleOnshapeElements)
 	s.mux.HandleFunc("GET /api/onshape/features", s.handleOnshapeFeatures)
 	s.mux.HandleFunc("POST /api/auth/password-reset-request", s.handlePasswordResetRequest)

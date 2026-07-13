@@ -360,6 +360,8 @@ export interface PlatformApi {
 
   // Onshape read-only proxy (server-side HMAC signing; 503 when the server
   // has no API key configured). Raw Onshape JSON — the importer parses it.
+  /** The document record — its `name` is the imported project's title (#343). */
+  getOnshapeDocument(documentId: string): Promise<unknown>;
   /** List a document workspace's elements (tabs). */
   getOnshapeElements(documentId: string, workspaceId: string): Promise<unknown>;
   /** Fetch a Part Studio's feature list. */
@@ -545,6 +547,12 @@ export const platformApi: PlatformApi = {
       throw new ApiError(res.status, await extractError(res));
     }
   },
+
+  getOnshapeDocument: (documentId) =>
+    request<unknown>(
+      `/api/onshape/document?${new URLSearchParams({ documentId })}`,
+      { method: "GET" },
+    ),
 
   getOnshapeElements: (documentId, workspaceId) =>
     request<unknown>(

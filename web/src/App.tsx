@@ -7,11 +7,13 @@ import { BottomTabs } from "./BottomTabs";
 import { useKernelStore } from "./store";
 import {
   armProjectThumbnailCapture,
+  rearmProjectThumbnailCapture,
   cloudThumbnailSink,
   localThumbnailSink,
   maybeCaptureThumbnail,
   takeArmedProjectCapture,
 } from "./thumbnailScheduler";
+import { meshDocumentForThumbnail } from "./thumbnailMesh";
 import { dispatchKeyboardCommand } from "./keyboardCommands";
 import { SettingsMenu } from "./SettingsMenu";
 import { loadSettings, WorkspaceUnitsContext } from "./settings";
@@ -335,29 +337,62 @@ function AppShell({ account }: { account: UseAccount }) {
   // right sink — a cloud project (projectId) uploads via PUT; a local project
   // (currentLocalIdRef) writes to IndexedDB. The offscreen WebGL capture is
   // isolated from the live WebGPU renderer and is throttled + best-effort.
-  const captureThumbnailForCurrent = useCallback(() => {
-    if (!store) return;
-    const s = store.getState();
-    const pid = s.projectId;
-    const localId = currentLocalIdRef.current;
-    if (pid) {
-      void maybeCaptureThumbnail(s.meshedBodies, cloudThumbnailSink(pid));
-    } else if (localId) {
-      void maybeCaptureThumbnail(s.meshedBodies, localThumbnailSink(localId));
-    }
-  }, [store]);
+  const captureThumbnailForCurrent = useCallback(
+    async (force = false): Promise<boolean> => {
+      if (!store) return false;
+      const s = store.getState();
+      const pid = s.projectId;
+      const localId = currentLocalIdRef.current;
+      const sink = pid
+        ? cloudThumbnailSink(pid)
+        : localId
+          ? localThumbnailSink(localId)
+          : null;
+      if (!sink) return false;
+      if (store.kernel.bodyCount() === 0) return false;
 
-  // New-project arming: a project created (empty, imported, or "save current
-  // workspace") arms a one-shot capture. As soon as geometry is ready for the
-  // bound project, snapshot a preview so a fresh project gets a gallery
-  // thumbnail without waiting for the first editor exit. Plain "open an
-  // existing project" never arms — opening never re-captures.
+      // Triangles to draw. `meshedBodies` only exists in the mesh/webgl render
+      // modes (App gates DC meshing on them) — in the SDF modes, which is the
+      // default, it is empty and the capture used to render nothing at all.
+      // Mesh the document on demand instead (ticket #343).
+      const bodies =
+        s.meshedBodies.length > 0
+          ? s.meshedBodies
+          : await meshDocumentForThumbnail(store.kernel.toJson());
+
+      return maybeCaptureThumbnail(bodies, sink, { force });
+    },
+    [store],
+  );
+
+  // One-shot arming: creating OR opening a project arms a capture for THAT
+  // project (thumbnailScheduler). As soon as its geometry is meshed, snapshot a
+  // preview — so the gallery shows the real model right after the project was
+  // opened, not only after the first editor exit (ticket #343). The arm is
+  // keyed by project, so the mesh of the project we came FROM can't consume it,
+  // and it survives a failed attempt (no geometry yet) to try again on the next
+  // mesh. `force` skips the throttle: a one-shot per opened project is exactly
+  // what the gallery wants.
   useEffect(() => {
     if (!store) return;
-    if (!state?.meshedBodies || state.meshedBodies.length === 0) return;
-    if (!takeArmedProjectCapture()) return;
-    captureThumbnailForCurrent();
-  }, [state?.meshedBodies, state?.projectId, store, captureThumbnailForCurrent]);
+    // Trigger on the KERNEL's geometry, not on `meshedBodies` — the latter is
+    // empty in the SDF render modes (see captureThumbnailForCurrent), so keying
+    // on it meant the one-shot never fired in the default mode. `brepVersion`
+    // ticks whenever the document's geometry changes, which is exactly when a
+    // freshly loaded project becomes capturable.
+    if (store.kernel.bodyCount() === 0) return;
+    const key = state?.projectId ?? currentLocalIdRef.current;
+    if (!takeArmedProjectCapture(key)) return;
+    void captureThumbnailForCurrent(true).then((ok) => {
+      if (!ok && key) rearmProjectThumbnailCapture(key);
+    });
+  }, [
+    state?.brepVersion,
+    state?.meshedBodies,
+    state?.projectId,
+    store,
+    captureThumbnailForCurrent,
+  ]);
 
   // WP9 B4: first-login guest-project import. When a guest who has done real
   // local work logs in (or registers) for the first time, offer — once — to
@@ -403,7 +438,7 @@ function AppShell({ account }: { account: UseAccount }) {
     // Bind the freshly-created project to the live workspace (it IS the current
     // workspace) without reloading — same as the dashboard "save current" path.
     currentLocalIdRef.current = null;
-    armProjectThumbnailCapture();
+    armProjectThumbnailCapture(created.id);
     store.setProjectId(created.id);
     setImportPrompt("hidden");
     setImportDecided(true);
@@ -689,7 +724,7 @@ function AppShell({ account }: { account: UseAccount }) {
                           // Now a cloud project — drop any local `.fdraft` save
                           // target so the two bindings can't both be live.
                           clearLocalFileBinding();
-                          armProjectThumbnailCapture();
+                          armProjectThumbnailCapture(created.id);
                           store.setProjectId(created.id);
                         })().catch((err) => {
                           store.showTransientError(

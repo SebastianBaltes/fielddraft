@@ -25,6 +25,7 @@ import type { FieldSkriptRecord } from "./fieldskript/record";
 import { type AssemblyDocument, createEmptyAssembly } from "./assembly";
 import { type CameraPose, parseCameraPose } from "./cameraPoseBridge";
 import { type ProjectDebug, parseProjectDebug } from "./projectDebug";
+import type { OnshapeSource } from "./onshape/onshapeUrl";
 
 export const PROJECT_SCHEMA_VERSION = 1;
 
@@ -92,6 +93,10 @@ export interface Project {
    *  project — especially a ticket repro — re-opens with the exact debug
    *  setup it was captured with. Optional; absent when nothing is active. */
   debug?: ProjectDebug;
+  /** Where this project was imported from, when it came from Onshape (ticket
+   *  #343). Drives the project card's "Open in Onshape" + "Reimport". Absent on
+   *  everything not imported from Onshape. */
+  onshape?: OnshapeSource;
 }
 
 // ── tab id allocation ───────────────────────────────────────────
@@ -395,5 +400,32 @@ export function parseProject(json: string): Project | null {
     ...(parseCameraPose(p.view) ? { view: parseCameraPose(p.view)! } : {}),
     // Optional debug-tool state; malformed blobs are dropped the same way.
     ...(parseProjectDebug(p.debug) ? { debug: parseProjectDebug(p.debug) } : {}),
+    // Optional Onshape origin (ticket #343), same drop-if-malformed rule.
+    ...(parseOnshapeSource(p.onshape)
+      ? { onshape: parseOnshapeSource(p.onshape)! }
+      : {}),
+  };
+}
+
+/** Validate a stored Onshape origin. All three ids must be present and look like
+ *  Onshape ids; anything else is dropped (the project still loads, it just has
+ *  no reimport target). */
+function parseOnshapeSource(raw: unknown): OnshapeSource | null {
+  if (!raw || typeof raw !== "object") return null;
+  const o = raw as Record<string, unknown>;
+  const id = (v: unknown) =>
+    typeof v === "string" && /^[0-9a-f]{24}$/i.test(v) ? v : null;
+  const documentId = id(o.documentId);
+  const workspaceId = id(o.workspaceId);
+  const elementId = id(o.elementId);
+  if (!documentId || !workspaceId || !elementId) return null;
+  return {
+    documentId,
+    workspaceId,
+    elementId,
+    ...(typeof o.documentName === "string"
+      ? { documentName: o.documentName }
+      : {}),
+    ...(typeof o.importedAt === "string" ? { importedAt: o.importedAt } : {}),
   };
 }

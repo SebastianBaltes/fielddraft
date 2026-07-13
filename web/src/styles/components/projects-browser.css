@@ -184,9 +184,13 @@
     color: var(--color-text-subtle);
   }
 
+  /* Wraps: an Onshape-imported card carries two more actions (Reimport, In
+     Onshape öffnen, ticket #343) than fit on one line — without wrapping they
+     pushed Delete out of the card. */
   & .card-actions {
     display: flex;
-    gap: var(--space-3);
+    flex-wrap: wrap;
+    gap: var(--space-2) var(--space-3);
   }
 
   & .link {
@@ -197,6 +201,8 @@
     background: transparent;
     color: var(--color-accent);
     cursor: pointer;
+    text-decoration: none;
+    white-space: nowrap;
 
     &.danger {
       color: var(--color-error-text);
