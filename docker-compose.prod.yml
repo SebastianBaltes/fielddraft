@@ -90,11 +90,26 @@ services:
       # Per-user cap on assistant requests per day (0 = off). The minute-level
       # rate limit stops a burst, not a patient script.
       AICHAT_DAILY_QUOTA: "${AICHAT_DAILY_QUOTA:-}"
+      # Pins the Origin on chat POSTs to this deployment's public name. Compose
+      # passes ONLY the variables named here into the container — a value that
+      # merely sits in .env.prod never reaches the server, and the pin would
+      # silently do nothing.
+      AICHAT_ALLOWED_ORIGINS: "${AICHAT_ALLOWED_ORIGINS:-}"
       # Onshape import (onshape.go). Unset = the /api/onshape routes answer 503.
       ONSHAPE_ACCESS_KEY: "${ONSHAPE_ACCESS_KEY:-}"
       ONSHAPE_SECRET_KEY: "${ONSHAPE_SECRET_KEY:-}"
     volumes:
       - blob-data:/data/blobs
+      # The OpenRouter key as a FILE, read-only (ticket #347). An env var would
+      # sit in `docker inspect`, in /proc/<pid>/environ and in every child
+      # process; a 0600 file on the host does not. Ansible writes it; the server
+      # reads it via OPENROUTER_API_KEY_FILE.
+      #
+      # The host file must EXIST — deploy.yml writes it unconditionally, empty
+      # when there is no key (empty = assistant off). Docker answers a missing
+      # bind source by creating a root-owned DIRECTORY here, which no deploy can
+      # overwrite afterwards.
+      - ./secrets/openrouter.key:/run/secrets/openrouter.key:ro
     # NO `ports:` — only Caddy reaches the API (reverse_proxy server:8080).
     depends_on:
       db:

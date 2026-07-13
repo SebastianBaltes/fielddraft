@@ -42,6 +42,33 @@
         group: "{{ deploy_user }}"
         mode: "0600"
 
+    # The AI assistant's OpenRouter key (ticket #347). It is the one secret that
+    # buys things with real money, so it does NOT travel as an environment
+    # variable: it lands in a 0600 file that only the deploy user can read, and
+    # the compose file mounts it read-only into the container.
+    - name: Ensure the secrets directory exists
+      ansible.builtin.file:
+        path: "{{ app_dir }}/secrets"
+        state: directory
+        owner: "{{ deploy_user }}"
+        group: "{{ deploy_user }}"
+        mode: "0700"
+
+    # Written UNCONDITIONALLY — empty when the vault carries no key. The file has
+    # to EXIST before compose starts: Docker answers a bind mount whose host path
+    # is missing by creating a root-owned DIRECTORY there, and that directory then
+    # (a) is not a key the server can read and (b) is not writable by deploy_user,
+    # so the next deploy WITH a key can no longer place the file. An empty file
+    # reads back as "" — the server logs "no API key" and the assistant stays off.
+    - name: Write the OpenRouter key (0600, never an env var; empty = assistant off)
+      ansible.builtin.copy:
+        content: "{{ vault_openrouter_api_key | default('') }}"
+        dest: "{{ app_dir }}/secrets/openrouter.key"
+        owner: "{{ deploy_user }}"
+        group: "{{ deploy_user }}"
+        mode: "0600"
+      no_log: true
+
     - name: Log in to GHCR (private registry pull)
       community.docker.docker_login:
         registry_url: ghcr.io

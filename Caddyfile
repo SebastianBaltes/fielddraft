@@ -21,6 +21,20 @@
 		reverse_proxy server:8080
 	}
 
+	# ── AI assistant → Go server (ticket #347) ──────────────────────────────
+	# WITHOUT this block the chat is a 404 in production: /aichat/* would fall
+	# through to the SPA handler below and get index.html.
+	#
+	# `flush_interval -1` disables response buffering. The model's answer is a
+	# token stream (SSE); with buffering the user stares at a frozen panel until
+	# the whole turn is finished — which for a CAD tool-loop can be a minute.
+	# There is deliberately no `encode` here either: compression re-buffers.
+	handle /aichat/* {
+		reverse_proxy server:8080 {
+			flush_interval -1
+		}
+	}
+
 	# ── Static SPA with history-API fallback ────────────────────────────────
 	handle {
 		root * /srv

@@ -96,7 +96,11 @@ release-image:
     set -euo pipefail
     V="$(node -p "require('./web/package.json').version")"
     echo "▶ building fielddraft/{server,web}:$V"
-    docker build -t "fielddraft/server:$V" -f server/Dockerfile server
+    # Context is the REPO ROOT, not server/: the Go module `replace`s the AI-chat
+    # proxy to the submodule under third_party/ (ticket #347), and a path outside
+    # the build context does not exist inside the builder. Check out with
+    # --recurse-submodules, or this build has nothing to compile against.
+    docker build -t "fielddraft/server:$V" -f server/Dockerfile .
     docker build -t "fielddraft/web:$V"    -f web/Dockerfile.prod .
     mkdir -p dist
     OUT="dist/fielddraft-$V.image.tar.gz"

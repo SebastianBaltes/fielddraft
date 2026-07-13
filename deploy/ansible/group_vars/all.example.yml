@@ -48,3 +48,17 @@ backup_dir: /data/backups          # local staging for nightly dumps
 backup_keep_daily: 7
 backup_keep_weekly: 4
 backup_hour: 3                     # nightly cron hour (server local time)
+
+# ── AI assistant (ticket #347) ───────────────────────────────────────────────
+# The chat's model allowlist. The FIRST entry is the model the chat talks to;
+# the vision model must be in the list too, or a screenshot turns the turn into
+# a 403. Empty = the defaults in server/aichat.go.
+#aichat_models: "google/gemini-3-flash-preview,anthropic/claude-sonnet-4.5"
+# Assistant requests per user and day (0 = off). The minute rate-limit stops a
+# burst; this stops a patient script. Default 300.
+#aichat_daily_quota: 300
+#
+# The KEY belongs in the VAULT (group_vars/vault.yml), never here:
+#   vault_openrouter_api_key: "sk-or-…"
+# deploy.yml writes it to a 0600 file and mounts it read-only — it is never an
+# environment variable. Leave it out and the assistant stays off.

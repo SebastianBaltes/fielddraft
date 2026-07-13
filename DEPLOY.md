@@ -250,6 +250,36 @@ Required env (full list in `.env.prod.example`): `DOMAIN`, `TLS_EMAIL`,
 `X-Forwarded-For` (correct behind Caddy, which strips client-supplied XFF;
 without a trusted proxy leave it unset — the header is client-spoofable).
 
+### AI assistant (ticket #347)
+
+The assistant proxies model calls through the Go server, so the **OpenRouter key
+lives on the server** — and it is the one secret that spends real money, so it
+never travels as an environment variable (an env var shows up in
+`docker inspect`, in `/proc/<pid>/environ`, and is inherited by every child
+process). Put it in the Vault as `vault_openrouter_api_key`; `deploy.yml` writes
+it to `/opt/fielddraft/secrets/openrouter.key` (0600) and the compose file mounts
+that read-only at `/run/secrets/openrouter.key`, which is what
+`OPENROUTER_API_KEY_FILE` names.
+
+**No key in the Vault = the assistant is simply off** — the server logs
+`ai chat: no API key … chat disabled`, comes up healthy, and the app hides the
+chat. The key file is still written, empty: it must EXIST before compose starts,
+because Docker answers a bind mount whose host path is missing by creating a
+root-owned *directory* there — which is not a key the server can read, and which
+the next deploy (with a key) can no longer overwrite as the deploy user. The same
+holds for a manual run: `touch secrets/openrouter.key` before `compose up`.
+
+Optional knobs in `group_vars/all.yml`: `aichat_models` (comma-separated
+allowlist — the **first** entry is the model the chat talks to, and the vision
+model must be in the list or a screenshot turns the turn into a 403) and
+`aichat_daily_quota` (assistant requests per user and day, default 300, 0 = off —
+the minute-level rate limit stops a burst, not a patient script).
+`AICHAT_ALLOWED_ORIGINS` is pinned to `https://{{ domain }}` by the template.
+
+Caddy proxies `/aichat/*` to the server with `flush_interval -1` — the answer is
+an SSE token stream, and with response buffering the user stares at a frozen
+panel until the whole turn is done.
+
 ### Tickets (IssueVault)
 
 The ticket domain lives in **IssueVault**, the shared external ticket service —
