@@ -69,6 +69,38 @@ func newIssuevaultStore() *issuevaultStore {
 
 // ─── IssueVault wire types ──────────────────────────────────────
 
+// ivBool is a bool that also accepts 0/1 and "true"/"false" on the wire.
+//
+// IssueVault does not validate the shape of `meta` — any writer (a peer
+// installation, an import, an agent posting straight to the REST API) can put a
+// SQL-flavoured 0/1 where a bool belongs. With a plain `bool` that one value
+// fails the ticket's json.Unmarshal, GetTicket returns nil, and the whole ticket
+// 404s: one sloppy comment hides an entire issue. It happened (ticket #345: a
+// dev comment written with internal=0, po_reviewed=1 made #344 and #345
+// unreachable in the app). Reading is therefore lenient; WRITING stays strict —
+// every payload this store sends uses real booleans.
+type ivBool bool
+
+func (b *ivBool) UnmarshalJSON(data []byte) error {
+	var v any
+	if err := json.Unmarshal(data, &v); err != nil {
+		return err
+	}
+	switch x := v.(type) {
+	case bool:
+		*b = ivBool(x)
+	case float64:
+		*b = x != 0
+	case string:
+		*b = x == "true" || x == "1"
+	case nil:
+		*b = false
+	default:
+		return fmt.Errorf("issuevault: cannot read %T as bool", v)
+	}
+	return nil
+}
+
 // ivTicket is IssueVault's ticket representation.
 type ivTicket struct {
 	ID             string            `json:"id"`
@@ -92,8 +124,8 @@ type ivTicket struct {
 
 // ivTicketMeta is the FieldDraft-specific payload carried under ticket.meta.
 type ivTicketMeta struct {
-	POSpam      bool         `json:"po_spam"`
-	POMalicious bool         `json:"po_malicious"`
+	POSpam      ivBool       `json:"po_spam"`
+	POMalicious ivBool       `json:"po_malicious"`
 	POVisionFit *string      `json:"po_vision_fit"`
 	POReason    *string      `json:"po_reason"`
 	POVerdictAt *time.Time   `json:"po_verdict_at"`
@@ -122,9 +154,9 @@ type ivComment struct {
 // ivCommentMeta carries the FieldDraft comment provenance under comment.meta.
 type ivCommentMeta struct {
 	AuthorType string `json:"author_type"` // "user" | "po" | "dev" | "system"
-	Internal   bool   `json:"internal"`
-	Withheld   bool   `json:"withheld"`
-	POReviewed bool   `json:"po_reviewed"`
+	Internal   ivBool `json:"internal"`
+	Withheld   ivBool `json:"withheld"`
+	POReviewed ivBool `json:"po_reviewed"`
 }
 
 // ivFile is IssueVault's file (=FileMeta) representation.
@@ -307,8 +339,8 @@ func mapTicket(iv *ivTicket) *Ticket {
 		Body:        iv.Body,
 		State:       mapIVStatus(iv.ID, iv.Status),
 		Category:    iv.Category,
-		POSpam:      iv.Meta.POSpam,
-		POMalicious: iv.Meta.POMalicious,
+		POSpam:      bool(iv.Meta.POSpam),
+		POMalicious: bool(iv.Meta.POMalicious),
 		POVisionFit: iv.Meta.POVisionFit,
 		POReason:    iv.Meta.POReason,
 		POVerdictAt: iv.Meta.POVerdictAt,
@@ -334,11 +366,11 @@ func mapComment(ticketID string, c *ivComment) *TicketComment {
 		ID:         c.ID,
 		TicketID:   ticketID,
 		AuthorType: AuthorType(c.Meta.AuthorType),
-		Internal:   c.Meta.Internal,
+		Internal:   bool(c.Meta.Internal),
 		Body:       c.Body,
 		CreatedAt:  c.CreatedAt,
-		Withheld:   c.Meta.Withheld,
-		POReviewed: c.Meta.POReviewed,
+		Withheld:   bool(c.Meta.Withheld),
+		POReviewed: bool(c.Meta.POReviewed),
 	}
 	// AuthorID is meaningful only for user comments; po/dev/system carry none.
 	if tc.AuthorType == AuthorUser {

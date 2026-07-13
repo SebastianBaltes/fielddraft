@@ -24,6 +24,17 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.581",
+    entries: [
+      {
+        kind: "fix",
+        scope: "tickets",
+        text: "Ein Ticket konnte durch einen einzigen schludrig geschriebenen Kommentar komplett unerreichbar werden („not found“ statt Detailansicht): steht in dessen Zusatzdaten eine 0 oder 1, wo ein Ja/Nein-Wert erwartet wird, scheiterte das Einlesen des GESAMTEN Tickets. Der Ticket-Speicher liest solche Werte jetzt nachsichtig (0/1 und „true“/„false“ zählen als Ja/Nein); geschrieben werden weiterhin ausschließlich echte Ja/Nein-Werte.",
+        tickets: ["345"],
+      },
+    ],
+  },
+  {
     version: "0.6.580",
     entries: [
       {

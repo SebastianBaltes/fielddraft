@@ -111,3 +111,43 @@ func TestIssuevaultUnknownStatusIsDeadNotOpen(t *testing.T) {
 		t.Fatal("open → resolved must be rejected; repair such tickets at the source")
 	}
 }
+
+// TestIssuevaultLenientMetaBools — a comment whose meta carries SQL-flavoured
+// 0/1 instead of booleans must still decode. IssueVault does not validate `meta`,
+// so any writer can produce them; with a strict bool the ticket's Unmarshal fails
+// and the WHOLE ticket 404s in the app (that is exactly what happened to #344 and
+// #345). Reading is lenient, writing stays strict.
+func TestIssuevaultLenientMetaBools(t *testing.T) {
+	raw := `{
+	  "id": "t1", "number": 7, "title": "T", "body": "B", "status": "triage",
+	  "created_at": "2026-07-13T18:00:00Z", "updated_at": "2026-07-13T18:00:00Z",
+	  "meta": {"po_spam": 0, "po_malicious": 1},
+	  "comments": [
+	    {"id": "c1", "author_kind": "agent", "body": "note",
+	     "created_at": "2026-07-13T18:01:00Z",
+	     "meta": {"author_type": "dev", "internal": 0, "po_reviewed": 1}},
+	    {"id": "c2", "author_kind": "user", "body": "hi",
+	     "created_at": "2026-07-13T18:02:00Z",
+	     "meta": {"author_type": "user", "internal": true, "withheld": "true"}}
+	  ]
+	}`
+	var iv ivTicket
+	if err := json.Unmarshal([]byte(raw), &iv); err != nil {
+		t.Fatalf("lenient decode: %v", err)
+	}
+	tk := mapTicketFull(&iv)
+	if tk.POSpam || !tk.POMalicious {
+		t.Fatalf("ticket meta: po_spam=%v po_malicious=%v, want false/true", tk.POSpam, tk.POMalicious)
+	}
+	if len(tk.Comments) != 2 {
+		t.Fatalf("comments: got %d, want 2", len(tk.Comments))
+	}
+	if tk.Comments[0].Internal || !tk.Comments[0].POReviewed {
+		t.Fatalf("c1: internal=%v po_reviewed=%v, want false/true",
+			tk.Comments[0].Internal, tk.Comments[0].POReviewed)
+	}
+	if !tk.Comments[1].Internal || !tk.Comments[1].Withheld {
+		t.Fatalf("c2: internal=%v withheld=%v, want true/true",
+			tk.Comments[1].Internal, tk.Comments[1].Withheld)
+	}
+}
