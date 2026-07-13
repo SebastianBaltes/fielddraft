@@ -382,3 +382,29 @@ Format: Zeitstempel · Hypothese/Frage · Ergebnis · Entscheidung.
   (twist/bend 0/0, thin 7/0/0, tangent 430/33, coplanar/graze 0);
   38 Lichen-Gates grün; kernel release 1111/1111 grün (inkl. 2 neuer Seed-Weaver-Gates; Displace-Gate bleibt ignored/manuell).
 - Doku: §8t in Lichen-Architecture.md, §8r Punkt 1 GESCHLOSSEN.
+
+## 2026-07-13 20:30 — Displace-Ketten (v0.6.571) + Headful-Abnahme + Team-Koordination
+
+- v0.6.571 (Merge c2acea7): warp_displace_sphere 662→0 (χ=2, H 0.005/0.004).
+  ÜBERRASCHUNG: die 662 kamen komplett aus den REGIONEN (Kugel: 1 Face /
+  0 Kanten) — FaceSurf maß Träger-Abstände gegen die UN-displacte Fläche;
+  der §8r-Verdacht „intraface-Crowding, Regionen helfen nicht" hat sich
+  NICHT bestätigt. FaceSurf.disp (carrier = halfspace − disp, 12 Stellen,
+  Welt-FD-Normalen) + exakter Naht-Weave (DisplacedAnalytic, Seed-
+  Projektion — ohne sie ~60 Duplikat-Fragmente/Kante —, On-Boundary-
+  Aktivität statt Contributor-Test, f64-Politur). Modell-Grenze §8t:
+  disp>0 ⇒ Leaf-SDF außen euklidisch ⇒ Blend-Streifen statt scharfer Naht.
+  Damit ist die GESAMTE Warp-Familie geschlossen. Suite 1111/1111.
+- Headful-WebGPU-Abnahme des Render-Fixes 0.6.568: PASS (0 Loch-Cluster
+  Streifwinkel, Rim max 2 px, marchRelax 0.5548 exakt); dauerhafte Spec
+  web/e2e/displace-march.spec.ts. Backlog-Fund: SDF-only-Commits triggern
+  kein Repaint (Demand-Frameloop). Mess-Fallen im Spec-Header dokumentiert.
+- KOORDINATION mit Peer `fielddraft` (arbeitet an Onshape + „tangentiale
+  Nähte weben"): Er verschob seinen seed_weaver-Umbau, bis mein Displace-
+  Stand auf main lag (jetzt frei, benachrichtigt), arbeitet solange
+  web-only. Sein SSI-Befund (tangential = doppelte Nullstelle ohne
+  Vorzeichenwechsel) bestätigt unsere Kuss-Diagnose; sein konstruktiver
+  Naht-Ansatz (2D-Knick → Kette) wird auch unsere Kuss-Fälle mit Ketten
+  versorgen. Zweimal Release-Note-Gates gerissen (ASCII-Quote erneut;
+  vX.Y.Z-Muster im Text verboten) — beide sofort gefixt; LEKTION: Notes
+  vor Commit IMMER tsc+vitest aus web/ laufen lassen, nicht verketten.
