@@ -388,7 +388,7 @@ fn query_input_ids(expr: &crate::queries::QueryExpr) -> Vec<String> {
     match expr {
         Q::CreatedBy(f)
         | Q::CreatedByRole(f, _)
-        | Q::Wall(f, _)
+        | Q::Wall(f, _, _)
         | Q::FaceOf(f)
         | Q::AllRegions(f)
         | Q::Region(f, _)

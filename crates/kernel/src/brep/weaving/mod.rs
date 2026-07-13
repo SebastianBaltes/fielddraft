@@ -59,7 +59,7 @@ use crate::brep::vec3::norm;
 
 mod canonicalize;
 mod loop_ordering;
-mod sketch_surfaces;
+pub(crate) mod sketch_surfaces;
 mod surface_queries;
 mod surface_registry;
 mod wireframes;

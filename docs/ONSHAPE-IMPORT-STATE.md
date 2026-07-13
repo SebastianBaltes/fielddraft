@@ -7,12 +7,12 @@ Roh-Features + dekodierte Queries als Fixture in web/src/onshape/fixtures/.
 
 ## Stand in einem Satz
 
-Schritte 1–4 sind umgesetzt und getestet; die Abnahme am echten Kernel zeigt
-4 von 7 Kabelbox-Sketches korrekt und parametrisch platziert. Die restlichen 3
-scheitern SICHTBAR an einer Kernel-Grenze (FieldDraft trennt Flächen nur an
-Knicken → ein abgerundetes Rechteck hat EINE Mantelfläche), nicht an der
-Import-Logik. Damit ist die Definition of Done NICHT erfüllt; der Blocker ist
-benannt, eingegrenzt und als nächstes Projekt beschrieben (§ Schritt 5).
+**Definition of Done erfüllt (v0.6.572).** Alle 7 Kabelbox-Sketches importieren
+und liegen auf der Fläche, auf der Onshape sie gezeichnet hat — drei davon auf
+einer SEITE des verrundeten Grundkörpers, was den Tangential-Naht-Umbau im
+Weaver nötig machte (§ Schritt 8). Die Referenzen sind parametrisch: Grundkörper
+ändern → Ebenen wandern mit. Offen sind nur noch drei Fillet-KANTEN-Formen
+(BTON-Ref-Tabelle bzw. projizierter Sketch), keine Sketch-Ebene.
 
 ## Empirische Basis (2026-07-13, Live-API)
 
@@ -202,11 +202,9 @@ regenerieren fehlerfrei, und ihre Ebenen-FRAMES wandern mit, wenn man die
 Tiefe des Grundkörpers ändert (parametrisch, keine tote Geometrie). Extrude,
 Shell und Fillet werden mit übersetzt.
 
-**Was NICHT funktioniert (offener Blocker):** Die 3 Sketches, die in Onshape
-auf einer SEITE des abgerundeten Grundkörpers sitzen (Sketch 4, 5, 8), lassen
-sich nicht platzieren. Sie scheitern SICHTBAR mit benannter Ursache — kein
-stiller XY-Fallback (der Kernel hat auch keinen: eine nicht auflösbare
-Ebene ist ein harter Feature-Fehler).
+**Was damals NICHT funktionierte:** Die 3 Sketches auf einer SEITE des
+abgerundeten Grundkörpers (Sketch 4, 5, 8). Ursache und Lösung siehe
+§ Schritt 8 — seit v0.6.572 importieren auch sie.
 
 ### Wurzel-Ursache: FieldDraft trennt Flächen nur an Knicken
 
@@ -316,12 +314,41 @@ das ganze Constraint verwarf.
   Ursprungsachse); FieldDrafts `symmetric` braucht eine Achsen-ENTITY im
   Sketch, die es dafür nicht gibt.
 
-## Bauplan: tangentiale Nähte weben (der Blocker)
+## Schritt 8 — Tangentiale Nähte GEWOBEN (v0.6.572) — der Blocker ist gefallen
 
-Analyse abgeschlossen, Umsetzung wartet auf freies Revier im `seed_weaver`
-(Nachbaragent `fielddraft-a` baut dort gerade Root-Displace-Ketten). Die
-2D-Vorarbeit (`same_carrier` + `tangential_group_breaks`) liegt als
-`git stash@{0}` bereit.
+Umgesetzt wie im Bauplan unten beschrieben. Ergebnis:
+
+- **Ein abgerundetes Rechteck hat jetzt 8 Seitenflächen** (4 Ebenen + 4
+  Zylinder) statt einer tessellierten Fläche. Neuer Kernel-Test
+  `rounded_rect_extrude_has_eight_analytic_side_faces` + Wasserdicht-Test
+  (10 Flächen, 24 Kanten, 16 Ecken, Euler = 2).
+- **Alle 7 Kabelbox-Sketches importieren**, davon 3 auf einer SEITE des
+  verrundeten Grundkörpers (`qWall(2, 13)` = die linke Wand;
+  `qAdjacentTo(qWall(2, 7), qWall(6, 11))` = die per Boolean-SPLIT
+  disambiguierten Fragmente). Alle regenerieren fehlerfrei und wandern
+  parametrisch mit dem Grundkörper.
+- **Auch die Shell-Innenwände** bekommen ihre Nähte (8 Innenwände) — der
+  Generator versetzt den Knickpunkt um die Wandstärke entlang der gemeinsamen
+  Normale.
+- Kernel-Suite 1111/1111 grün: der Trägerflächen-Split ist regressionsfrei.
+
+### Zwei Bugs, die dabei ans Licht kamen
+
+1. `Context::resolve_fillet_edges` und `resolve_edge_polylines` matchten
+   Kanten-Query-Formen HARTKODIERT — `qCommonEdge` fiel durch und löste
+   „auf keine Kante" auf, obwohl `kernel.resolveQuery` es korrekt fand. Beide
+   routen jetzt über den gemeinsamen Element-Resolver (`resolved_edge_hashes`).
+   Damit ist das Muster jetzt an ALLEN vier Stellen (Ebene, Open-Face, Fillet-
+   Kante, Kanten-Polylinie) einheitlich: eine neue Query-Form funktioniert
+   überall an dem Tag, an dem sie parst.
+2. Onshapes `OFFSET_FACE` (die Shell-Innenwand) war nicht adressierbar. Neue
+   Query-Form: `qWall(op, entity, INNER)` — dieselbe Entity, die andere Seite
+   der Wandstärke. Damit übersetzt „Extrude bis zur Innenwand".
+
+## Bauplan (umgesetzt): tangentiale Nähte weben
+
+Umgesetzt in `crates/kernel/src/brep/tangential_seams.rs` (Generator) plus
+~150 Zeilen Einspeisung im `seed_weaver`.
 
 ### Warum SSI das prinzipiell nicht kann
 
@@ -370,10 +397,7 @@ ohnehin, ihm fehlten bisher nur die homogenen Gruppen. Nachbaragent
 
 ## Nächste Schritte (empfohlene Reihenfolge)
 
-1. **Tangentiale Nähte weben** (der Blocker, eigenes Projekt): Trägerflächen-
-   Split in der G1-Gruppierung + Weaver/SSI, Tessellator und Parametrik-Export
-   für berührende Flächenpaare. Danach: Kabelbox vollständig, und abgerundete
-   Körper werden generell analytisch statt tesselliert.
+1. ~~Tangentiale Nähte weben~~ — **erledigt (v0.6.572, § Schritt 8).**
 2. **BTON-Ref-Tabelle knacken** — Voraussetzung für exakte Kantenmengen
    (Geschwister-Kanten) und für die volle Disambiguierung. Danach: Pattern /
    Hole / Sweep / Loft importieren, und `up_to_face` als echten,

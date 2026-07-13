@@ -72,6 +72,7 @@ pub mod octree;
 pub mod projection;
 pub mod seed_weaver;
 pub mod ssi;
+pub mod tangential_seams;
 pub mod step_export;
 pub mod tessellate;
 pub mod tol;

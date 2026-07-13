@@ -24,6 +24,21 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.572",
+    entries: [
+      {
+        kind: "feat",
+        scope: "kernel",
+        text: "Tangentiale Nähte: Ein abgerundetes Rechteck hat jetzt acht Seitenflächen statt einer. Bisher verschmolz FieldDraft eine Linie mit ihrem tangentialen Verrundungs-Bogen zu EINER Fläche — Flächen wurden nur an Knicken getrennt. Damit existierte „die linke Seite“ eines verrundeten Körpers gar nicht: man konnte dort weder skizzieren noch verrunden, und die ganze Mantelfläche fiel auf Tessellierung zurück. Der Grund war fundamental: die Naht zwischen Ebene und Zylinder ist tangential, und danach kann keine Flächen-Schnitt-Suche greifen (eine Berührung ist eine doppelte Nullstelle ohne Vorzeichenwechsel, und die Kurvenverfolgung wird dort singulär). Neu wird die Naht deshalb nicht gesucht, sondern KONSTRUIERT — sie ist exakt bekannt — und durchläuft danach dieselbe Beschneidung wie jede getracte Kante. Nebengewinn: verrundete Rechtecke und Langlöcher werden analytisch gewoben (exakte Ebenen und Zylinder) statt tesselliert.",
+      },
+      {
+        kind: "feat",
+        scope: "onshape",
+        text: "Onshape-Import: Das Testmodell (Kabelbox) importiert jetzt VOLLSTÄNDIG — alle sieben Sketches liegen auf der Fläche, auf der Onshape sie gezeichnet hat, drei davon auf einer Seite des verrundeten Grundkörpers. Die Referenzen sind parametrisch: ändert man den Grundkörper, wandern die Sketch-Ebenen mit. Neu übersetzt werden außerdem „bis zur Fläche“-Extrudes gegen die Shell-Innenwand (neue Query-Form qWall(op, entity, INNER)) und Fillets auf Kappen-Kanten.",
+      },
+    ],
+  },
+  {
     version: "0.6.571",
     entries: [
       {

@@ -779,6 +779,42 @@ fn build_seed_wireframe_tracked(body: &BoundedCsg, mode: SeedMode) -> Option<See
         }
     }
 
+    // 2c. TANGENTIAL seams — the ones no SSI can seed and no tracer can follow
+    //     (see `brep::tangential_seams`). They are known exactly, so they are
+    //     HANDED to the weave instead of searched for. Their corners go in as
+    //     witnesses FIRST: the cap-rim marches leave the body *grazingly* here
+    //     (a wall plane departs tangentially into its fillet cylinder), so
+    //     activity bisection alone would misplace the corner by √(2·r·eps) —
+    //     millimetres. With the witness present the march snaps to it exactly.
+    let seams = crate::brep::tangential_seams::collect(body);
+    for seam in &seams {
+        for corner in seam.corners.iter().flatten() {
+            let p = corner.pos;
+            // The same activity contract every witness must satisfy: all three
+            // surfaces genuinely on the boundary here. A corner on an OPENED
+            // shell face (its cap does not exist) fails this and is dropped —
+            // which is exactly right.
+            let pf = [p[0] as f32, p[1] as f32, p[2] as f32];
+            let all_active = [
+                (corner.branches[0], corner.branches[1]),
+                (corner.branches[0], corner.branches[2]),
+                (corner.branches[1], corner.branches[2]),
+            ]
+            .iter()
+            .all(|&(x, y)| both_branches_active(body, pf, x, y, eps));
+            if !all_active {
+                if std::env::var("SEED_WEAVER_DEBUG").is_ok() {
+                    eprintln!("SEED-WEAVER seam corner inactive: p={p:?}");
+                }
+                continue;
+            }
+            if witnesses.iter().any(|(w, _)| dist3(*w, p) < witness_merge) {
+                continue;
+            }
+            witnesses.push((p, corner.branches));
+        }
+    }
+
     // 3. Group seeds by canonical (min, max) branch signature, then process each
     //    group, collapsing co-component seeds into a single traced edge.
     let mut groups: HashMap<(u32, u32), Vec<usize>> = HashMap::new();
@@ -962,6 +998,170 @@ fn build_seed_wireframe_tracked(body: &BoundedCsg, mode: SeedMode) -> Option<See
                 samples,
                 closed: traced.closed,
                 ends: traced.ends,
+            });
+        }
+    }
+
+    // 3b. Emit the TANGENTIAL seams as records — AHEAD of the trim clustering,
+    //     so they inherit exactly what a traced record gets: activity trimming,
+    //     corner resolution, and the interior split at crossing vertices. The
+    //     curve itself is exact, so all that is left is to cut it to the parts
+    //     that are really on the body (the Kabelbox cuts its base solid several
+    //     times — an untrimmed seam would hang out into removed material).
+    for seam in &seams {
+        let active_at = |p: [f64; 3]| {
+            both_branches_active(
+                body,
+                [p[0] as f32, p[1] as f32, p[2] as f32],
+                seam.a,
+                seam.b,
+                eps,
+            )
+        };
+        // Bisect an active↔inactive bracket down to the model's own tolerance.
+        let boundary = |inside: [f64; 3], outside: [f64; 3]| -> [f64; 3] {
+            let (mut lo, mut hi) = (inside, outside);
+            for _ in 0..32 {
+                let mid = [
+                    0.5 * (lo[0] + hi[0]),
+                    0.5 * (lo[1] + hi[1]),
+                    0.5 * (lo[2] + hi[2]),
+                ];
+                if active_at(mid) {
+                    lo = mid;
+                } else {
+                    hi = mid;
+                }
+            }
+            lo
+        };
+        // The seam's own corners, as global witness ids (they were pushed in
+        // 2c unless they failed the activity gate).
+        let corner_witness = |p: [f64; 3]| -> Option<usize> {
+            witnesses
+                .iter()
+                .position(|(w, _)| dist3(*w, p) < witness_merge)
+        };
+
+        let n = seam.samples.len();
+        let flags: Vec<bool> = seam.samples.iter().map(|s| active_at(s.point)).collect();
+        if !flags.iter().any(|&f| f) {
+            continue; // wholly trimmed away
+        }
+
+        // A closed seam that is active all the way round stays one ring.
+        if seam.closed && flags.iter().all(|&f| f) {
+            records.push(EdgeRecord {
+                a: seam.a,
+                b: seam.b,
+                samples: seam.samples.clone(),
+                closed: true,
+                ends: (EdgeEnd::Open, EdgeEnd::Open),
+            });
+            continue;
+        }
+
+        // Otherwise: cut into maximal active runs. Indices are cyclic for a
+        // closed seam, linear for an open one.
+        let mut runs: Vec<Vec<usize>> = Vec::new();
+        let mut cur: Vec<usize> = Vec::new();
+        for i in 0..n {
+            if flags[i] {
+                cur.push(i);
+            } else if !cur.is_empty() {
+                runs.push(std::mem::take(&mut cur));
+            }
+        }
+        if !cur.is_empty() {
+            runs.push(cur);
+        }
+        // Cyclic wrap: a closed seam whose run straddles index 0 is ONE run.
+        if seam.closed && runs.len() > 1 && flags[0] && flags[n - 1] {
+            let first = runs.remove(0);
+            runs.last_mut().expect("nonempty").extend(first);
+        }
+
+        for run in runs {
+            let (i0, i1) = (run[0], *run.last().expect("nonempty"));
+            let mut samples: Vec<HermiteSample> =
+                run.iter().map(|&i| seam.samples[i].clone()).collect();
+
+            // Backward end: an inactive neighbour means the seam leaves the
+            // body there (bisect it); no neighbour means the seam's own end.
+            let back = if i0 > 0 || seam.closed {
+                let prev = (i0 + n - 1) % n;
+                if flags[prev] {
+                    None // (cyclic wrap already merged — cannot happen)
+                } else {
+                    Some(boundary(seam.samples[i0].point, seam.samples[prev].point))
+                }
+            } else {
+                None
+            };
+            let fwd = if i1 + 1 < n || seam.closed {
+                let next = (i1 + 1) % n;
+                if flags[next] {
+                    None
+                } else {
+                    Some(boundary(seam.samples[i1].point, seam.samples[next].point))
+                }
+            } else {
+                None
+            };
+
+            let end_for = |trim: Option<[f64; 3]>,
+                           own: Option<&crate::brep::tangential_seams::SeamCorner>|
+             -> EdgeEnd {
+                match trim {
+                    // The seam ran off the body here — a trim terminus, which
+                    // the clustering below turns into a corner vertex.
+                    Some(p) => EdgeEnd::Trim(p),
+                    // It ran to its own end: the cap corner, already a witness.
+                    None => match own.and_then(|c| corner_witness(c.pos)) {
+                        Some(wi) => EdgeEnd::Vertex(wi),
+                        None => EdgeEnd::Open,
+                    },
+                }
+            };
+            let ends = (
+                end_for(back, seam.corners[0].as_ref()),
+                end_for(fwd, seam.corners[1].as_ref()),
+            );
+            // An `Open` end means the seam neither reached a corner nor left
+            // the body — its cap corner failed the activity gate. Nothing can
+            // bound it, so drop it rather than emit a dangling edge.
+            if matches!(ends.0, EdgeEnd::Open) || matches!(ends.1, EdgeEnd::Open) {
+                if std::env::var("SEED_WEAVER_DEBUG").is_ok() {
+                    eprintln!(
+                        "SEED-WEAVER seam unbounded: pair=({:?},{:?}) ends={ends:?}",
+                        seam.a, seam.b
+                    );
+                }
+                continue;
+            }
+            // Pin the exact endpoints: the run's first/last SAMPLE undershoots
+            // the true end by up to one sampling stride.
+            if let EdgeEnd::Trim(p) = ends.0 {
+                samples.insert(0, HermiteSample { point: p, tangent: samples[0].tangent });
+            } else if let Some(c) = seam.corners[0].as_ref() {
+                samples.insert(0, HermiteSample { point: c.pos, tangent: samples[0].tangent });
+            }
+            if let EdgeEnd::Trim(p) = ends.1 {
+                let t = samples.last().expect("nonempty").tangent;
+                samples.push(HermiteSample { point: p, tangent: t });
+            } else if let Some(c) = seam.corners[1].as_ref() {
+                let t = samples.last().expect("nonempty").tangent;
+                samples.push(HermiteSample { point: c.pos, tangent: t });
+            }
+            if samples.len() < 2 {
+                continue;
+            }
+            records.push(EdgeRecord {
+                a: seam.a,
+                b: seam.b,
+                samples,
+                closed: false,
+                ends,
             });
         }
     }

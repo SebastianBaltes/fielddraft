@@ -182,12 +182,17 @@ pub enum QueryExpr {
     /// Onshape import's translation target for `CAP_FACE` /
     /// `SWEPT_FACE` / `BLEND_FACE` creation queries.
     CreatedByRole(FeatureId, FaceRole),
-    /// `qWall(op, entity)` — the lateral wall face(s) of sweep feature
-    /// `op` swept from the sketch entity with stable ordinal `entity`
-    /// (the branch sub-id minted from the sweep's `wall_subs` table —
-    /// naming schema v2). The translation target for Onshape's
-    /// `SWEPT_FACE` queries, whose origin is a sketch entity.
-    Wall(FeatureId, u32),
+    /// `qWall(op, entity[, INNER])` — the lateral wall face of sweep feature
+    /// `op` swept from the sketch entity with stable ordinal `entity` (the
+    /// branch sub-id minted from the sweep's `wall_subs` table — naming
+    /// schema v2). The translation target for Onshape's `SWEPT_FACE`
+    /// queries, whose origin is a sketch entity.
+    ///
+    /// The `INNER` modifier selects that wall's SHELL COUNTERPART — the
+    /// inward-offset face of the hollow, which is a different face of the
+    /// same sweep. Onshape names it `OFFSET_FACE`, and an extrude that runs
+    /// "up to the inner wall" needs exactly this.
+    Wall(FeatureId, u32, bool),
     /// `qIntersection(a, b)` — the elements matched by BOTH sub-queries
     /// (set intersection by identity). Onshape disambiguation queries
     /// compose provenance with topology filters; this is the composition
@@ -251,7 +256,13 @@ impl fmt::Display for QueryExpr {
         match self {
             QueryExpr::CreatedBy(id) => write!(f, "qCreatedBy({id})"),
             QueryExpr::CreatedByRole(id, role) => write!(f, "qCreatedBy({id}, {role})"),
-            QueryExpr::Wall(id, entity) => write!(f, "qWall({id}, {entity})"),
+            QueryExpr::Wall(id, entity, inner) => {
+                if *inner {
+                    write!(f, "qWall({id}, {entity}, INNER)")
+                } else {
+                    write!(f, "qWall({id}, {entity})")
+                }
+            }
             QueryExpr::Intersection(a, b) => write!(f, "qIntersection({a}, {b})"),
             QueryExpr::AdjacentTo(a, b) => write!(f, "qAdjacentTo({a}, {b})"),
             QueryExpr::CommonEdge(a, b) => write!(f, "qCommonEdge({a}, {b})"),
@@ -441,11 +452,23 @@ pub fn parse_query(input: &str) -> Result<QueryExpr, QueryParseError> {
             "qVertex expects one id_hash",
         )?)),
         "qWall" => {
-            let (a, b) = expect_two_ids(&args, "qWall expects op_id and entity ordinal")?;
-            let entity = b.as_u32_if_flat().ok_or(QueryParseError::InvalidFeatureId(
-                "wall entity ordinal must be a plain number".to_string(),
-            ))?;
-            Ok(QueryExpr::Wall(a, entity))
+            if args.len() != 2 && args.len() != 3 {
+                return Err(QueryParseError::MalformedArguments(
+                    "qWall expects op_id, entity ordinal and an optional INNER",
+                ));
+            }
+            let a = parse_feature_id(args[0])?;
+            let entity = parse_feature_id(args[1])?
+                .as_u32_if_flat()
+                .ok_or(QueryParseError::InvalidFeatureId(
+                    "wall entity ordinal must be a plain number".to_string(),
+                ))?;
+            let inner = match args.get(2) {
+                None => false,
+                Some(&"INNER") => true,
+                Some(other) => return Err(QueryParseError::InvalidRole((*other).to_string())),
+            };
+            Ok(QueryExpr::Wall(a, entity, inner))
         }
         "qIntersection" => {
             let (a, b) = expect_two_subqueries(&args, "qIntersection expects two queries")?;
@@ -634,19 +657,19 @@ pub fn resolve_query_topo(
                 }
             }
         }
-        QueryExpr::Wall(f, entity) => {
+        QueryExpr::Wall(f, entity, inner) => {
             let Some(target) = f.as_u32_or_root() else {
                 return Vec::new();
             };
+            let want = if *inner { FaceRole::InnerWall } else { FaceRole::Wall };
             for brep in breps {
                 for i in 0..brep.faces.len() {
                     let face = &brep.faces[i];
                     let b = face.branch_id;
-                    if b.feature_id() == target
-                        && !b.is_inner_wall()
-                        && b.sub() == *entity
-                        && face_role(face) == FaceRole::Wall
-                    {
+                    // An inner wall carries the SAME entity ordinal with the
+                    // inner-wall flag set — mask it off before comparing.
+                    let sub = b.sub() & !crate::csg::BranchId::INNER_WALL_FLAG;
+                    if b.feature_id() == target && sub == *entity && face_role(face) == want {
                         out.push(TopoRef::from_face(brep, FaceId(i as u32)));
                     }
                 }
@@ -1361,8 +1384,43 @@ mod tests {
     #[test]
     fn parses_and_roundtrips_wall() {
         let q = parse_query("qWall(3, 7)").unwrap();
-        assert_eq!(q, QueryExpr::Wall(id(3), 7));
+        assert_eq!(q, QueryExpr::Wall(id(3), 7, false));
         assert_eq!(q.to_string(), "qWall(3, 7)");
+    }
+
+    #[test]
+    fn parses_and_roundtrips_inner_wall() {
+        // The shell counterpart of the same wall — a DIFFERENT face of the
+        // same sweep, which an "extrude up to the inner wall" needs to name.
+        let q = parse_query("qWall(3, 7, INNER)").unwrap();
+        assert_eq!(q, QueryExpr::Wall(id(3), 7, true));
+        assert_eq!(q.to_string(), "qWall(3, 7, INNER)");
+        assert!(matches!(
+            parse_query("qWall(3, 7, OUTER)"),
+            Err(QueryParseError::InvalidRole(_))
+        ));
+    }
+
+    #[test]
+    fn resolve_wall_inner_picks_the_hollow_side() {
+        // Same entity ordinal, two faces: the wall and its inward offset. The
+        // ordinal rides in the sub-id with the inner-wall flag on top, so the
+        // resolver has to mask the flag off before comparing.
+        let f7 = FeatureId::from_u32(7);
+        let mut brep = BRep::new();
+        brep.add_face(plane_face(BranchId::from_feature_sub(&f7, 3)));
+        brep.add_face(plane_face(BranchId::from_feature_sub(&f7, 3).inner_wall()));
+        let outer = resolve_query_topo(
+            std::slice::from_ref(&brep),
+            &QueryExpr::Wall(id(7), 3, false),
+        );
+        let inner = resolve_query_topo(
+            std::slice::from_ref(&brep),
+            &QueryExpr::Wall(id(7), 3, true),
+        );
+        assert_eq!(outer.len(), 1);
+        assert_eq!(inner.len(), 1);
+        assert_ne!(outer[0].id_hash, inner[0].id_hash, "two distinct faces");
     }
 
     #[test]
@@ -1375,7 +1433,7 @@ mod tests {
             QueryExpr::Intersection(
                 Box::new(QueryExpr::CreatedByRole(id(2), FaceRole::Wall)),
                 Box::new(QueryExpr::AdjacentTo(
-                    Box::new(QueryExpr::Wall(id(2), 3)),
+                    Box::new(QueryExpr::Wall(id(2), 3, false)),
                     Box::new(QueryExpr::CreatedByRole(id(9), FaceRole::Blend)),
                 )),
             )
@@ -1431,12 +1489,12 @@ mod tests {
     fn resolve_wall_picks_by_stable_entity_sub() {
         let brep = adjacency_brep();
         let refs =
-            resolve_query_topo(std::slice::from_ref(&brep), &QueryExpr::Wall(id(7), 3));
+            resolve_query_topo(std::slice::from_ref(&brep), &QueryExpr::Wall(id(7), 3, false));
         assert_eq!(refs.len(), 1, "exactly the sub-3 wall");
-        assert!(resolve_query_topo(std::slice::from_ref(&brep), &QueryExpr::Wall(id(7), 5))
+        assert!(resolve_query_topo(std::slice::from_ref(&brep), &QueryExpr::Wall(id(7), 5, false))
             .is_empty());
         // A blend face at sub 0 must NOT satisfy qWall(9, 0).
-        assert!(resolve_query_topo(std::slice::from_ref(&brep), &QueryExpr::Wall(id(9), 0))
+        assert!(resolve_query_topo(std::slice::from_ref(&brep), &QueryExpr::Wall(id(9), 0, false))
             .is_empty());
     }
 
@@ -1445,13 +1503,13 @@ mod tests {
         let brep = adjacency_brep();
         let q = QueryExpr::Intersection(
             Box::new(QueryExpr::CreatedByRole(id(7), FaceRole::Wall)),
-            Box::new(QueryExpr::Wall(id(7), 3)),
+            Box::new(QueryExpr::Wall(id(7), 3, false)),
         );
         let refs = resolve_query_topo(std::slice::from_ref(&brep), &q);
         assert_eq!(refs.len(), 1, "both walls ∩ the sub-3 wall = one face");
         let disjoint = QueryExpr::Intersection(
-            Box::new(QueryExpr::Wall(id(7), 3)),
-            Box::new(QueryExpr::Wall(id(7), 6)),
+            Box::new(QueryExpr::Wall(id(7), 3, false)),
+            Box::new(QueryExpr::Wall(id(7), 6, false)),
         );
         assert!(resolve_query_topo(std::slice::from_ref(&brep), &disjoint).is_empty());
     }
