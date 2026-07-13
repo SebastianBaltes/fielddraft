@@ -253,20 +253,82 @@ Onshape-Modelle mit verrundeten Kanten voll abbilden.
 - `wall_sub_table` sperrt Tabellen mit doppeltem Repräsentanten (zwei Wände
   auf einem Branch wären eine Fläche).
 
+## Schritt 6 — Feature-Import vervollständigt (v0.6.570)
+
+- **THROUGH_ALL exakt statt genähert:** Die Tiefe wird an der Szene GEMESSEN
+  (2× Szenen-Diagonale ab der Sketch-Ebene). Der Überschuss schneidet nur
+  Leerraum weg, das Ergebnis ist identisch zum echten Durchbruch — anders als
+  bei der alten 1000-mm-Konstante, die je nach Bauteilgröße zu klein oder
+  absurd groß war. (Kabelbox: 755 mm statt 1000 mm.)
+- **UP_TO_SURFACE / UP_TO_FACE:** Zielfläche auflösen, Abstand der Sketch-Ebene
+  zu ihr entlang der Extrude-Achse messen, als BLIND-Tiefe übernehmen.
+  Geometrisch exakt, aber GEBACKEN — die Tiefe folgt der Zielfläche nicht mehr,
+  wenn die sich bewegt. Das wird als Warnung gemeldet, nicht verschwiegen. Ein
+  assoziatives „bis zur Fläche" bräuchte einen echten Extrude-Parameter im
+  Kernel (heute gibt es `up_to_face` nur bei Thicken).
+- **Symmetrisch / zweite Richtung:** direkt auf `symmetric` bzw. `depth_back`.
+- **Draft:** wird nicht unterstützt → Warnung statt stillem Ignorieren.
+- **Fillet-Kanten:** Shell-Innenkanten (Boden trifft Innenwand) sind jetzt
+  adressierbar. Dafür war eine Lücke im Rollen-Vokabular zu schließen:
+  `INNER_WALL` fasste Innenwand UND Innen-Cap zusammen, womit genau die
+  Kante zwischen ihnen unbenennbar war. Neu: `INNER_CAP_TOP` /
+  `INNER_CAP_BOTTOM` (der Innen-Cap trägt den Cap-Sub MIT Inner-Flag —
+  `face_role` maskiert das Flag jetzt vor der Klassifikation).
+- **Fillet-Optionen:** nicht-EDGE-Typ → Fehler; andere Steuerung/Querschnitt
+  (Konisch, Chord) → Warnung + Radius-Näherung.
+
+### Offene Lücke: BTON-String-Rückverweise
+
+Onshape komprimiert wiederholte Strings zu Rückverweisen (`R<hex>`). Deren
+Index-Schema ist noch nicht geknackt (weder Token- noch Part-Zählung passt
+konsistent). Folge: zwei GESCHWISTER-Kanten eines Fillets dekodieren zu
+denselben Markern und kollabieren zu EINER Query. Der Import dedupliziert und
+meldet das, statt dieselbe Kante doppelt zu verrunden. Das Knacken der
+Ref-Tabelle ist die Voraussetzung dafür, Kantenmengen exakt zu übernehmen.
+
+## Schritt 7 — Sketch-Übersetzer-Lücken (v0.6.570)
+
+**Der stille Bug:** Onshape bindet die ENDPUNKTE eines Fillet-Bogens an die
+angrenzenden Linien (`<arc>.start` ↔ `<line>.end`). Der Übersetzer registrierte
+für Bögen und Kreise aber nur die Kurve selbst — jede dieser Kopplungen fiel
+durch („unresolved ref") und wurde stumm verworfen. Im Kabelbox-Basis-Sketch
+gingen so 8 von 36 Constraints verloren; die verrundete Ecke hatte im Solver
+keinen Halt mehr. Jetzt trägt jede Kurve Mittelpunkt, Start und Ende in die
+Entity-Map ein (inkl. der `<entityId>.start`-Aliasse, die Onshapes Constraints
+benutzen).
+
+**Neu übersetzt:** alle Bemaßungen — DISTANCE, LENGTH (Onshape bemaßt die
+LINIE, der Kernel misst Punkt-zu-Punkt → über die Endpunkt-Tabelle aufgelöst),
+ANGLE, RADIUS, DIAMETER, mit Einheiten-Umrechnung (mm/cm/m/in/ft, deg/rad) —
+sowie MIDPOINT, FIX und POINT_ON_OBJECT. Zusätzlich werden Enum-Parameter
+(`sketchToolType=FILLET`) nicht mehr als Entity-Referenz missdeutet, was sonst
+das ganze Constraint verwarf.
+
+**Abdeckung an der Kabelbox:** 241 von 297 Constraints (81 %); im Basis-Sketch
+34/36 statt vorher 22/36.
+
+**Bewusst offen** (Geometrie ist da, nur die Assoziativität fehlt):
+- `PROJECTED` (29×) — bindet eine Sketch-Kurve an eine Körperkante. FieldDraft
+  hat mit `sketch_project` das Gegenstück; es fehlt die Übersetzung der
+  Onshape-Kanten-Query auf eine FieldDraft-Query.
+- `OFFSET` (16×), `LINEAR_PATTERN` (2×) — kein direktes Kernel-Gegenstück.
+- `MIRROR` (4×) — Onshape spiegelt um eine EXTERNE Linie (oft eine
+  Ursprungsachse); FieldDrafts `symmetric` braucht eine Achsen-ENTITY im
+  Sketch, die es dafür nicht gibt.
+
 ## Nächste Schritte (empfohlene Reihenfolge)
 
 1. **Tangentiale Nähte weben** (der Blocker, eigenes Projekt): Trägerflächen-
    Split in der G1-Gruppierung + Weaver/SSI, Tessellator und Parametrik-Export
    für berührende Flächenpaare. Danach: Kabelbox vollständig, und abgerundete
    Körper werden generell analytisch statt tesselliert.
-2. **Feature-Import vervollständigen**: End-Conditions (THROUGH_ALL exakt statt
-   1000-mm-Näherung, UP_TO_SURFACE/UP_TO_FACE gegen die gefundene Fläche),
-   Draft, symmetrische/zweiseitige Extrudes, Fillet-Kantenmengen (aktuell nur
-   die Cap∩Wand-Form), Pattern/Hole/Sweep/Loft.
-3. **Sketch-Übersetzer-Lücken**: Fillet-Arcs (Kabelbox Sketch 1 nutzt sie),
-   Bemaßungs-Constraints (DISTANCE/ANGLE/RADIUS/DIAMETER), MIRROR, PROJECTED,
-   MIDPOINT — heute als Warnung gemeldet, Geometrie stimmt, aber der Sketch
-   ist unterbestimmt.
+2. **BTON-Ref-Tabelle knacken** — Voraussetzung für exakte Kantenmengen
+   (Geschwister-Kanten) und für die volle Disambiguierung. Danach: Pattern /
+   Hole / Sweep / Loft importieren, und `up_to_face` als echten,
+   assoziativen Extrude-Parameter im Kernel.
+3. **PROJECTED-Constraints assoziativ machen** — die letzte große
+   Sketch-Lücke (29× in der Kabelbox). Braucht die Übersetzung von Onshapes
+   Kanten-Query auf eine FieldDraft-Query; `sketch_project` existiert bereits.
 4. **OAuth statt Operator-API-Key** (Konzept in server/onshape.go skizziert),
    damit jeder Nutzer seine eigenen Onshape-Dokumente importiert.
 5. **Slot-Tool eigene Kurven-Entities geben** — dann trägt auch ein Slot

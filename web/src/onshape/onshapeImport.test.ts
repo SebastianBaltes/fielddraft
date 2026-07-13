@@ -29,6 +29,10 @@ function mockKernel(): ImportKernel & { calls: { type: string; params: any }[] }
     resolveQuery() {
       return [{ kind: "face", idHash: "1", query: "qFace(1)" }];
     },
+    // A 200 mm cube of "scene": the extent a THROUGH_ALL cut must clear.
+    sceneAabb() {
+      return { min: [0, 0, 0], max: [200, 200, 200], size: [200, 200, 200] };
+    },
   };
 }
 
@@ -60,6 +64,9 @@ describe("importOnshapeFeatures — Kabelbox translation flow", () => {
     expect(extrudes[0].params.profiles).toBe("qCreatedBy(1)");
     expect(extrudes[0].params.depth.value).toBeCloseTo(250); // 25 cm
     expect(extrudes[1].params.operation).toBe("remove");
+    // Extrude 2 is THROUGH_ALL: the depth is MEASURED from the scene (twice
+    // its diagonal), not a hardcoded constant.
+    expect(extrudes[1].params.depth.value).toBeCloseTo(2 * Math.hypot(200, 200, 200));
 
     // Shell opens extrude 1's END cap.
     const shell = kernel.calls.find((c) => c.type === "shell");

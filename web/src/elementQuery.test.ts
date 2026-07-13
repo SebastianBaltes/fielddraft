@@ -154,7 +154,15 @@ describe("queryAcceptedByFilter — wall/composed queries (Schritt 3)", () => {
 
 describe("queryAcceptedByFilter — role-filtered qCreatedBy(op, ROLE)", () => {
   it("is a FACE-level query: accepted by FACE, rejected elsewhere", () => {
-    for (const role of ["WALL", "CAP_TOP", "CAP_BOTTOM", "INNER_WALL", "BLEND"]) {
+    for (const role of [
+      "WALL",
+      "CAP_TOP",
+      "CAP_BOTTOM",
+      "INNER_WALL",
+      "INNER_CAP_TOP",
+      "INNER_CAP_BOTTOM",
+      "BLEND",
+    ]) {
       const q = `qCreatedBy(3, ${role})`;
       expect(queryAcceptedByFilter(q, "FACE")).toBe(true);
       expect(queryAcceptedByFilter(q, "BODY")).toBe(false);

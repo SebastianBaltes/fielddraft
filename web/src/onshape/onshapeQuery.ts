@@ -196,6 +196,14 @@ const DEFAULT_PLANES: Record<string, "top" | "front" | "right"> = {
   Right: "right",
 };
 
+/** Every operation reference in a token stream, in order — `opExtrude`,
+ *  `opShell`, `opFillet`, `wireOp`, … A query that names a face of a
+ *  SHELLED sweep, for instance, carries both the shell op and the sweep
+ *  op that actually owns the face. */
+export function extractOpRefs(tokens: BtonToken[]): OnshapeOpRef[] {
+  return tokens.map(opRefOf).filter((o): o is OnshapeOpRef => o !== null);
+}
+
 /** Does a two-part string look like `<featureId><operation>`? Onshape
  *  feature ids are `F…_<n>` (deterministic per document). */
 function opRefOf(tok: BtonToken): OnshapeOpRef | null {

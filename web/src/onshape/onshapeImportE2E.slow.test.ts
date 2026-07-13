@@ -55,6 +55,12 @@ function wrap(k: WasmKernel): ImportKernel & { raw: WasmKernel } {
       const parsed = JSON.parse(k.resolveQuery(q)) as unknown;
       return Array.isArray(parsed) ? (parsed as any[]) : [];
     },
+    // The geometry readers the end-condition translation measures against —
+    // the same ones the app hands the importer.
+    sceneAabb: () => JSON.parse(k.sceneAabb()),
+    bodyCount: () => k.bodyCount(),
+    bodyBrepFaces: (i: number) => JSON.parse(k.bodyBrepFaces(i)),
+    bodyPlacement: (i: number) => JSON.parse(k.bodyPlacement(i)),
   };
 }
 

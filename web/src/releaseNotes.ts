@@ -24,6 +24,21 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.570",
+    entries: [
+      {
+        kind: "fix",
+        scope: "onshape",
+        text: "Onshape-Sketch-Import — verrundete Ecken hielten nicht: Onshape bindet die ENDPUNKTE eines Fillet-Bogens an die angrenzenden Linien, der Übersetzer registrierte für Bögen und Kreise aber nur die Kurve selbst. Jede dieser Kopplungen ging still verloren, die Ecke fiel unter dem Solver auseinander. Jetzt werden Mittelpunkt, Start und Ende jeder Kurve mitgeführt. Außerdem neu übersetzt: alle Bemaßungen (Abstand, Länge, Winkel, Radius, Durchmesser — mit Einheiten-Umrechnung) sowie Mittelpunkt-, Fix- und Punkt-auf-Objekt-Constraints. An der Kabelbox steigt die Constraint-Übernahme damit von 22/36 auf 34/36 im Basis-Sketch (241/297 über alle sieben).",
+      },
+      {
+        kind: "feat",
+        scope: "onshape",
+        text: "Onshape-Import — End-Conditions und Kanten: THROUGH_ALL wird jetzt an der Szene GEMESSEN statt pauschal genähert (der Schnitt räumt die Szenen-Diagonale, das Ergebnis ist identisch zum Durchbruch); UP_TO_SURFACE/UP_TO_FACE nimmt die Tiefe exakt aus der aufgelösten Zielfläche (gebacken — die Warnung sagt es); symmetrische und zweiseitige Extrudes werden übernommen, ein Draft-Winkel wird gemeldet statt still ignoriert. Fillets: Shell-Innenkanten (Boden trifft Innenwand) sind jetzt adressierbar — dafür unterscheidet das Rollen-Vokabular neu zwischen Innenwand und Innen-Cap (INNER_CAP_TOP/INNER_CAP_BOTTOM); nicht unterscheidbare Geschwister-Kanten werden zusammengefasst und gemeldet statt doppelt verrundet.",
+      },
+    ],
+  },
+  {
     version: "0.6.569",
     entries: [
       {

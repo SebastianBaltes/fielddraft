@@ -245,3 +245,140 @@ describe("translateOnshapeSketch — FieldDraft id allocation matches the kernel
     expect(circle?.id).toBe(6);
   });
 });
+
+describe("translateOnshapeSketch — dimensions and curve points", () => {
+  /** A line plus a tangent fillet arc — the shape every rounded corner has. */
+  const roundedCorner: OnshapeSketchFeature = {
+    btType: "BTMSketch-151",
+    featureType: "newSketch",
+    geometry: [
+      {
+        btType: "BTMSketchCurveSegment-155",
+        entityId: "Line1",
+        startPointId: "Line1.start",
+        endPointId: "Line1.end",
+        startParam: 0,
+        endParam: 0.05,
+        geometry: { btType: "BTCurveGeometryLine-117", pntX: 0, pntY: 0, dirX: 1, dirY: 0 },
+      },
+      { btType: "BTMSketchPoint-158", entityId: "Arc1.start", x: 0.05, y: 0 },
+      { btType: "BTMSketchPoint-158", entityId: "Arc1.end", x: 0.06, y: 0.01 },
+      {
+        btType: "BTMSketchCurveSegment-155",
+        entityId: "Arc1",
+        startPointId: "Arc1.start",
+        endPointId: "Arc1.end",
+        centerId: "Arc1.center",
+        geometry: {
+          btType: "BTCurveGeometryCircle-115",
+          xCenter: 0.05,
+          yCenter: 0.01,
+          radius: 0.01,
+        },
+      },
+    ],
+  };
+
+  it("registers a curve's own points, so a fillet coincidence resolves", () => {
+    // Onshape ties the arc's ENDPOINT to the line's endpoint. Without the
+    // arc's point ids in the map this constraint was silently dropped and
+    // the rounded corner fell apart under the solver.
+    const sketch: OnshapeSketchFeature = {
+      ...roundedCorner,
+      constraints: [
+        {
+          btType: "BTMSketchConstraint-2",
+          constraintType: "COINCIDENT",
+          parameters: [
+            { btType: "BTMParameterString-149", parameterId: "localFirst", value: "Arc1.start" },
+            { btType: "BTMParameterString-149", parameterId: "localSecond", value: "Line1.end" },
+          ],
+        },
+      ],
+    };
+    const { subCalls, diagnostics } = translateOnshapeSketch(sketch);
+    expect(diagnostics.unhandled).toEqual({});
+    // line: start=1, end=2, line=3 → arc: centre=4, start=5, end=6, arc=7.
+    expect(subCalls).toContainEqual({
+      type: "sketch_constraint_coincident",
+      params: { a: 5, b: 2 },
+    });
+  });
+
+  it("translates the dimension constraints with their values", () => {
+    const dim = (
+      constraintType: string,
+      parameters: { btType: string; parameterId: string; value?: string; expression?: string }[],
+    ) => ({ btType: "BTMSketchConstraint-2", constraintType, parameters });
+    const ref = (parameterId: string, value: string) => ({
+      btType: "BTMParameterString-149",
+      parameterId,
+      value,
+    });
+    const qty = (parameterId: string, expression: string) => ({
+      btType: "BTMParameterQuantity-147",
+      parameterId,
+      expression,
+    });
+
+    const sketch: OnshapeSketchFeature = {
+      ...roundedCorner,
+      constraints: [
+        dim("RADIUS", [ref("localFirst", "Arc1"), qty("length", "10 mm")]),
+        dim("LENGTH", [ref("localFirst", "Line1"), qty("length", "5 cm")]),
+        dim("DISTANCE", [
+          ref("localFirst", "Line1.start"),
+          ref("localSecond", "Arc1.end"),
+          qty("length", "1 in"),
+        ]),
+        dim("ANGLE", [ref("localFirst", "Line1"), ref("localSecond", "Arc1"), qty("angle", "45 deg")]),
+      ],
+    };
+    const { subCalls, diagnostics } = translateOnshapeSketch(sketch);
+    expect(diagnostics.unhandled).toEqual({});
+    // Radius on the arc entity (id 7).
+    expect(subCalls).toContainEqual({
+      type: "sketch_constraint_radius",
+      params: { entity: 7, value_mm: 10 },
+    });
+    // LENGTH names the LINE (3) but measures between its endpoints (1, 2).
+    expect(subCalls).toContainEqual({
+      type: "sketch_constraint_distance",
+      params: { entity_a: 1, entity_b: 2, value_mm: 50 },
+    });
+    // Units convert: 1 in = 25.4 mm.
+    expect(subCalls).toContainEqual({
+      type: "sketch_constraint_distance",
+      params: { entity_a: 1, entity_b: 6, value_mm: 25.4 },
+    });
+    expect(subCalls).toContainEqual({
+      type: "sketch_constraint_angle",
+      params: { line_a: 3, line_b: 7, value_deg: 45 },
+    });
+  });
+
+  it("keeps enum params out of the reference slots", () => {
+    // `sketchToolType=FILLET` is an enum, not an entity ref — reading it as
+    // one would fail the lookup and drop the whole constraint.
+    const sketch: OnshapeSketchFeature = {
+      ...roundedCorner,
+      constraints: [
+        {
+          btType: "BTMSketchConstraint-2",
+          constraintType: "TANGENT",
+          parameters: [
+            { btType: "BTMParameterString-149", parameterId: "localFirst", value: "Line1" },
+            { btType: "BTMParameterString-149", parameterId: "localSecond", value: "Arc1" },
+            { btType: "BTMParameterEnum-145", parameterId: "sketchToolType", value: "FILLET" },
+          ],
+        },
+      ],
+    };
+    const { subCalls, diagnostics } = translateOnshapeSketch(sketch);
+    expect(diagnostics.unhandled).toEqual({});
+    expect(subCalls).toContainEqual({
+      type: "sketch_constraint_tangent",
+      params: { line: 3, curve: 7 },
+    });
+  });
+});

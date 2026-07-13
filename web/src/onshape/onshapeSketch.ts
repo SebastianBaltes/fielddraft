@@ -61,6 +61,7 @@ interface OnshapeSketchEntity {
   // curve segment / curve
   startPointId?: string;
   endPointId?: string;
+  centerId?: string;
   startParam?: number;
   endParam?: number;
   geometry?: OnshapeCurveGeom;
@@ -72,7 +73,9 @@ interface OnshapeSketchEntity {
 interface OnshapeConstraintParam {
   btType: string; // "BTMParameterString-149" | "BTMParameterQuantity-147" | …
   parameterId?: string;
-  value?: string;
+  /** BTMParameterString: the referenced entity id. BTMParameterEnum: the tag. */
+  value?: string | number;
+  /** BTMParameterQuantity: the authored value, e.g. `"2 mm"` / `"45 deg"`. */
   expression?: string;
 }
 
@@ -150,6 +153,9 @@ export function translateOnshapeSketch(
   // Onshape id (entityId / pointId) → FieldDraft integer entity id.
   const idMap = new Map<string, number>();
   for (const oid of ORIGIN_IDS) idMap.set(oid, 0);
+  // line entity id → its two endpoint entity ids. A LENGTH dimension names the
+  // LINE, but the kernel measures a distance between two POINTS.
+  const endpointsOf = new Map<number, [number, number]>();
 
   const subCalls: SketchSubCall[] = [];
   // FieldDraft allocates ids in emission order starting at 1 (origin = 0).
@@ -208,7 +214,12 @@ export function translateOnshapeSketch(
       subCalls.push({ type: "sketch_line", params: withConstruction({ start, end }, e) });
       if (e.startPointId) idMap.set(e.startPointId, nextId);
       if (e.endPointId) idMap.set(e.endPointId, nextId + 1);
-      if (e.entityId) idMap.set(e.entityId, nextId + 2);
+      if (e.entityId) {
+        idMap.set(e.entityId, nextId + 2);
+        idMap.set(`${e.entityId}.start`, nextId);
+        idMap.set(`${e.entityId}.end`, nextId + 1);
+        endpointsOf.set(nextId + 2, [nextId, nextId + 1]);
+      }
       nextId += 3; // start, end, line
       continue;
     }
@@ -218,9 +229,14 @@ export function translateOnshapeSketch(
       const center: [number, number] = [mm(g.xCenter), mm(g.yCenter)];
       const radius = mm(g.radius);
       if (isCurve && !isSegment) {
-        // Full circle.
+        // Full circle. The kernel allocates centre, then the circle.
         subCalls.push({ type: "sketch_circle", params: withConstruction({ center, radius }, e) });
-        if (e.entityId) idMap.set(e.entityId, nextId + 1);
+        if (e.centerId) idMap.set(e.centerId, nextId);
+        if (e.entityId) {
+          idMap.set(e.entityId, nextId + 1);
+          // Onshape addresses a curve's own points as `<entityId>.center`.
+          idMap.set(`${e.entityId}.center`, nextId);
+        }
         nextId += 2; // centre, circle
         continue;
       }
@@ -248,7 +264,20 @@ export function translateOnshapeSketch(
           e,
         ),
       });
-      if (e.entityId) idMap.set(e.entityId, nextId + 3);
+      // The kernel allocates centre, start, end, arc — in that order. Register
+      // all four: Onshape's fillet constraints tie the ARC'S ENDPOINTS to the
+      // adjoining lines (`<arc>.start` ↔ `<line>.end`), so an arc that only
+      // registers its curve id loses every one of those coincidences and the
+      // rounded corner falls apart under the solver.
+      if (e.centerId) idMap.set(e.centerId, nextId);
+      if (e.startPointId) idMap.set(e.startPointId, nextId + 1);
+      if (e.endPointId) idMap.set(e.endPointId, nextId + 2);
+      if (e.entityId) {
+        idMap.set(e.entityId, nextId + 3);
+        idMap.set(`${e.entityId}.center`, nextId);
+        idMap.set(`${e.entityId}.start`, nextId + 1);
+        idMap.set(`${e.entityId}.end`, nextId + 2);
+      }
       nextId += 4; // centre, start, end, arc
       continue;
     }
@@ -259,7 +288,7 @@ export function translateOnshapeSketch(
 
   // Pass 3: constraints.
   for (const c of constraints) {
-    const call = translateConstraint(c, idMap, notes);
+    const call = translateConstraint(c, idMap, endpointsOf, notes);
     if (call) subCalls.push(call);
     else bump(`constraint:${c.constraintType ?? c.btType}`);
   }
@@ -287,22 +316,63 @@ function findPointCoords(
   return p && typeof p.x === "number" && typeof p.y === "number" ? [p.x, p.y] : null;
 }
 
+/** Onshape quantity expression → millimetres (`"2 mm"`, `"0.5 in"`, `"1 cm"`). */
+const LEN_TO_MM: Record<string, number> = {
+  mm: 1,
+  millimeter: 1,
+  cm: 10,
+  centimeter: 10,
+  m: 1000,
+  meter: 1000,
+  in: 25.4,
+  inch: 25.4,
+  ft: 304.8,
+};
+
+function quantityMm(expr: string | undefined): number | null {
+  const m = expr?.match(/^\s*(-?[\d.]+)\s*\*?\s*([a-zA-Z]+)\s*$/);
+  if (!m || LEN_TO_MM[m[2]] === undefined) return null;
+  return parseFloat(m[1]) * LEN_TO_MM[m[2]];
+}
+
+/** Onshape angle expression → degrees (`"45 deg"`, `"0.5 rad"`). */
+function quantityDeg(expr: string | undefined): number | null {
+  const m = expr?.match(/^\s*(-?[\d.]+)\s*\*?\s*([a-zA-Z]+)\s*$/);
+  if (!m) return null;
+  const v = parseFloat(m[1]);
+  if (/^deg/.test(m[2])) return v;
+  if (/^rad/.test(m[2])) return (v * 180) / Math.PI;
+  return null;
+}
+
 /**
- * Positional (value-free) constraints only, this spike. Reads the
- * constraint's entity references from its `BTMParameterString` params
- * (`parameterId` "localFirst"/"localSecond"/… → an entityId `value`) and
- * resolves them through `idMap`. Returns `null` for unmapped ids or
- * constraint types we don't handle yet (dimensions, symmetric, …).
+ * Translate one Onshape constraint.
+ *
+ * Entity references come from the `BTMParameterString` params
+ * (`localFirst`/`localSecond`/… → an entityId) and resolve through `idMap`;
+ * a DIMENSION additionally carries its value in a `BTMParameterQuantity`
+ * (`length`/`angle`). Returns `null` for unmapped ids or types with no
+ * FieldDraft counterpart — the caller counts those as unhandled.
  */
 function translateConstraint(
   c: OnshapeConstraint,
   idMap: Map<string, number>,
+  endpointsOf: Map<number, [number, number]>,
   notes: string[],
 ): SketchSubCall | null {
   const refs = new Map<string, number>();
+  const quantities = new Map<string, string>();
   for (const p of c.parameters ?? []) {
+    if (!p.parameterId) continue;
+    if (p.btType.startsWith("BTMParameterQuantity")) {
+      if (typeof p.expression === "string") quantities.set(p.parameterId, p.expression);
+      continue;
+    }
     if (!p.btType.startsWith("BTMParameterString")) continue;
-    if (!p.parameterId || p.value === undefined) continue;
+    if (typeof p.value !== "string") continue;
+    // `sketchToolType` and friends are enums, not refs — only the *local*
+    // reference slots address entities.
+    if (!/^(local|external)/.test(p.parameterId)) continue;
     const fid = idMap.get(p.value);
     if (fid === undefined) {
       notes.push(`constraint ${c.constraintType}: unresolved ref ${p.value}`);
@@ -347,9 +417,72 @@ function translateConstraint(
       if (first !== undefined && second !== undefined)
         return { type: "sketch_constraint_tangent", params: { line: first, curve: second } };
       return null;
+    case "MIDPOINT":
+      if (first !== undefined && second !== undefined)
+        return { type: "sketch_constraint_midpoint", params: { point: first, line: second } };
+      return null;
+    case "FIX":
+      if (single !== undefined)
+        return { type: "sketch_constraint_fix", params: { point: single } };
+      return null;
+    case "SILHOUETTED":
+    case "POINT_ON_OBJECT":
+      if (first !== undefined && second !== undefined)
+        return {
+          type: "sketch_constraint_point_on_object",
+          params: { point: first, curve: second },
+        };
+      return null;
+
+    // ── dimensions: the value rides in a BTMParameterQuantity ──────────
+    case "DISTANCE": {
+      const mmv = quantityMm(quantities.get("length"));
+      if (first === undefined || second === undefined || mmv === null) return null;
+      return {
+        type: "sketch_constraint_distance",
+        params: { entity_a: first, entity_b: second, value_mm: mmv },
+      };
+    }
+    case "LENGTH": {
+      // Onshape dimensions the LINE; the kernel measures point-to-point, so
+      // resolve the line to the two endpoints it allocated.
+      const mmv = quantityMm(quantities.get("length"));
+      const ends = single !== undefined ? endpointsOf.get(single) : undefined;
+      if (!ends || mmv === null) {
+        if (!ends && single !== undefined) {
+          notes.push(`constraint LENGTH: entity ${single} is not a line with endpoints`);
+        }
+        return null;
+      }
+      return {
+        type: "sketch_constraint_distance",
+        params: { entity_a: ends[0], entity_b: ends[1], value_mm: mmv },
+      };
+    }
+    case "ANGLE": {
+      const deg = quantityDeg(quantities.get("angle")) ?? quantityDeg(quantities.get("length"));
+      if (first === undefined || second === undefined || deg === null) return null;
+      return {
+        type: "sketch_constraint_angle",
+        params: { line_a: first, line_b: second, value_deg: deg },
+      };
+    }
+    case "RADIUS": {
+      const mmv = quantityMm(quantities.get("length"));
+      if (single === undefined || mmv === null) return null;
+      return { type: "sketch_constraint_radius", params: { entity: single, value_mm: mmv } };
+    }
+    case "DIAMETER": {
+      const mmv = quantityMm(quantities.get("length"));
+      if (single === undefined || mmv === null) return null;
+      return { type: "sketch_constraint_diameter", params: { entity: single, value_mm: mmv } };
+    }
+
     default:
-      // DISTANCE / ANGLE / RADIUS / DIAMETER (dimensions), MIDPOINT,
-      // SYMMETRIC, FIX, … — need value params / more refs; next stage.
+      // Still open: MIRROR (Onshape mirrors ABOUT AN EXTERNAL LINE — FieldDraft's
+      // `symmetric` needs an in-sketch axis entity, which an origin axis is not),
+      // PROJECTED (ties a sketch curve to an external body edge; the geometry is
+      // already imported, only the associativity is lost), SYMMETRIC.
       return null;
   }
 }

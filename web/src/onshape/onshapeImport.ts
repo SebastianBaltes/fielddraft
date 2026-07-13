@@ -15,18 +15,25 @@
 import {
   decodeOnshapeQueryString,
   decodePlaneQuery,
+  extractOpRefs,
   extractPlaneRef,
   tokenizeBton,
   type OnshapePlaneRef,
 } from "./onshapeQuery";
 import { translateOnshapeSketch, type SketchSubCall } from "./onshapeSketch";
+import { resolvePlaneFrame, type PlaneFrameKernel } from "../sketchPlaneFrame";
 
 /** The kernel surface the importer drives — matches `Kernel` in
- *  `web/src/kernel.ts`; narrow so tests can mock it. */
-export interface ImportKernel {
+ *  `web/src/kernel.ts`; narrow so tests can mock it. The geometry readers
+ *  ({@link PlaneFrameKernel}) are optional: without them the end-condition
+ *  translation degrades to a reported approximation instead of failing. */
+export interface ImportKernel extends Partial<PlaneFrameKernel> {
   addSketch(planeQuery: string, subCalls: SketchSubCall[]): number;
   addFeatureCall(typeName: string, paramsJson: string): number;
   resolveQuery(query: string): { kind: string; idHash: string; query: string }[];
+  /** World AABB of everything built so far — the extent a THROUGH_ALL cut
+   *  has to clear. `{min, max, size}` in mm. */
+  sceneAabb?(): { min: number[]; max: number[]; size: number[] };
 }
 
 export interface OnshapeImportResult {
@@ -109,6 +116,124 @@ function mmOf(pm: AnyMsg | undefined, fallback = 0): number {
 interface SketchRecord {
   fdId: number;
   entityIds: Record<string, number>;
+  /** The FieldDraft plane query the sketch was placed on — the extrude's
+   *  local +Z, and the reference plane every end condition measures from. */
+  planeQuery: string;
+}
+
+/** The depth (mm) a FieldDraft extrude needs, plus how we got there. */
+interface EndCondition {
+  depthMm: number;
+  /** Extrude symmetrically about the sketch plane (Onshape `symmetric`). */
+  symmetric: boolean;
+  /** Second-direction depth (Onshape `hasSecondDirection`). */
+  depthBackMm: number;
+  warnings: string[];
+  error?: string;
+}
+
+/**
+ * Translate Onshape's end condition into a FieldDraft depth.
+ *
+ * - `BLIND` — the authored distance, verbatim.
+ * - `THROUGH_ALL` — a cut to infinity. FieldDraft has no infinite extrude, but
+ *   a slab that clears the whole scene AABB produces the IDENTICAL solid (the
+ *   surplus removes empty space), so we measure the scene instead of guessing
+ *   a constant. Falls back to a reported 1000 mm only when the kernel exposes
+ *   no AABB (a test double).
+ * - `UP_TO_*` — resolve the target face and measure the sketch plane's
+ *   distance to it along the extrude axis. Geometrically exact; the distance
+ *   is BAKED, so it does not track a later move of the target face — that is
+ *   reported, not hidden.
+ */
+function endCondition(
+  params: Map<string, AnyMsg>,
+  kernel: ImportKernel,
+  sketchPlaneQuery: string,
+  name: string,
+  targetFaceQuery: string | undefined,
+): EndCondition {
+  const out: EndCondition = {
+    depthMm: mmOf(params.get("depth"), 25),
+    symmetric: params.get("symmetric")?.value === true,
+    depthBackMm: 0,
+    warnings: [],
+  };
+  const bound = params.get("endBound")?.value ?? "BLIND";
+
+  if (bound === "THROUGH_ALL") {
+    const aabb = kernel.sceneAabb?.();
+    if (aabb) {
+      const [dx, dy, dz] = aabb.size;
+      // Twice the diagonal from the sketch plane clears the scene from any
+      // plane position/orientation — no direction bookkeeping needed.
+      out.depthMm = 2 * Math.hypot(dx, dy, dz);
+    } else {
+      out.depthMm = 1000;
+      out.warnings.push(`${name}: THROUGH_ALL ohne Szenen-AABB → 1000 mm Näherung`);
+    }
+  } else if (bound !== "BLIND") {
+    const frame = frameOf(kernel, sketchPlaneQuery);
+    const target = targetFaceQuery ? frameOf(kernel, targetFaceQuery) : null;
+    if (!frame || !target) {
+      out.error =
+        `${name}: End-Condition ${bound} — Zielfläche nicht auflösbar, ` +
+        `Tiefe nicht bestimmbar`;
+      return out;
+    }
+    // Distance from the sketch plane to the target plane, measured along the
+    // extrude axis (the sketch normal).
+    const d =
+      (target.origin[0] - frame.origin[0]) * frame.normal[0] +
+      (target.origin[1] - frame.origin[1]) * frame.normal[1] +
+      (target.origin[2] - frame.origin[2]) * frame.normal[2];
+    if (Math.abs(d) < 1e-6) {
+      out.error = `${name}: End-Condition ${bound} — Zielfläche liegt in der Sketch-Ebene`;
+      return out;
+    }
+    out.depthMm = Math.abs(d);
+    // The measured distance already carries the direction; the caller's
+    // oppositeDirection flip must not double it.
+    out.warnings.push(
+      `${name}: ${bound} als gemessene Tiefe (${out.depthMm.toFixed(2)} mm) übernommen — ` +
+        `geometrisch exakt, folgt der Zielfläche aber nicht mehr, wenn sie sich bewegt`,
+    );
+    if (d < 0) out.depthMm = -out.depthMm;
+    if (params.get("oppositeDirection")?.value === true) out.depthMm = -out.depthMm;
+    applySecondDirection(params, out, name);
+    if (params.get("hasDraft")?.value === true) {
+      out.warnings.push(`${name}: Draft-Winkel wird nicht unterstützt und ignoriert`);
+    }
+    return out;
+  }
+
+  if (params.get("oppositeDirection")?.value === true) out.depthMm = -out.depthMm;
+  applySecondDirection(params, out, name);
+  if (params.get("hasDraft")?.value === true) {
+    out.warnings.push(`${name}: Draft-Winkel wird nicht unterstützt und ignoriert`);
+  }
+  return out;
+}
+
+function applySecondDirection(
+  params: Map<string, AnyMsg>,
+  out: EndCondition,
+  name: string,
+): void {
+  if (params.get("hasSecondDirection")?.value !== true) return;
+  const bound = params.get("secondDirectionBound")?.value ?? "BLIND";
+  if (bound !== "BLIND") {
+    out.warnings.push(
+      `${name}: zweite Richtung mit ${bound} → als BLIND übernommen`,
+    );
+  }
+  out.depthBackMm = Math.abs(mmOf(params.get("secondDirectionDepth"), 0));
+}
+
+/** The world frame of a face/datum query, via the shared resolver. */
+function frameOf(kernel: ImportKernel, query: string) {
+  if (typeof kernel.bodyCount !== "function") return null;
+  return resolvePlaneFrame(query, kernel as PlaneFrameKernel);
 }
 
 /** Build the FieldDraft plane query for a decoded Onshape plane ref.
@@ -227,7 +352,11 @@ export async function importOnshapeFeatures(
         result.warnings.push(`${name}: ${v}× nicht übersetzt: ${k}`);
       }
       const fdId = kernel.addSketch(built.query, translation.subCalls);
-      sketches.set(feat.featureId, { fdId, entityIds: translation.entityIds });
+      sketches.set(feat.featureId, {
+        fdId,
+        entityIds: translation.entityIds,
+        planeQuery: built.query,
+      });
       result.idMap[feat.featureId] = fdId;
       result.created.push(fdId);
       continue;
@@ -241,15 +370,21 @@ export async function importOnshapeFeatures(
         result.errors.push(`${name}: Profil-Sketch nicht auflösbar — übersprungen`);
         continue;
       }
-      const endBound = params.get("endBound")?.value ?? "BLIND";
-      let depthMm = mmOf(params.get("depth"), 25);
-      if (endBound === "THROUGH_ALL") {
-        depthMm = 1000;
-        result.warnings.push(`${name}: THROUGH_ALL → 1000 mm Näherung`);
-      } else if (endBound !== "BLIND") {
-        result.warnings.push(`${name}: End-Condition ${endBound} → BLIND-Näherung (${depthMm} mm)`);
+      // End condition: BLIND / THROUGH_ALL / UP_TO_* (see `endCondition`).
+      const upToQs = queryStringsOf(params.get("endBoundEntityFace"))[0];
+      let upToQuery: string | undefined;
+      if (upToQs) {
+        const upToRef = await decodePlaneQuery(upToQs);
+        const built = buildPlaneQuery(upToRef, name, result.idMap, sketches);
+        if (built.query) upToQuery = built.query;
       }
-      if (params.get("oppositeDirection")?.value === true) depthMm = -depthMm;
+      const end = endCondition(params, kernel, rec.planeQuery, name, upToQuery);
+      result.warnings.push(...end.warnings);
+      if (end.error) {
+        result.errors.push(end.error);
+        continue;
+      }
+      const depthMm = end.depthMm;
       const opType = params.get("operationType")?.value ?? "NEW";
       const operation =
         opType === "NEW" ? "new" : opType === "REMOVE" ? "remove" : opType === "INTERSECT" ? "intersect" : "add";
@@ -269,6 +404,10 @@ export async function importOnshapeFeatures(
           profiles: `qCreatedBy(${rec.fdId})`,
           depth: { value: depthMm, unit: "mm" },
           operation,
+          ...(end.symmetric ? { symmetric: true } : {}),
+          ...(end.depthBackMm
+            ? { depth_back: { value: end.depthBackMm, unit: "mm" } }
+            : {}),
           ...(targets ? { targets } : {}),
         }),
       );
@@ -301,15 +440,44 @@ export async function importOnshapeFeatures(
     }
 
     if (feat.featureType === "fillet") {
+      const filletType = params.get("filletType")?.value ?? "EDGE";
+      if (filletType !== "EDGE") {
+        result.errors.push(`${name}: Fillet-Typ ${filletType} wird nicht importiert`);
+        continue;
+      }
+      const control = params.get("blendControlType")?.value ?? "RADIUS";
+      if (control !== "RADIUS") {
+        result.warnings.push(`${name}: ${control}-Steuerung → als Radius übernommen`);
+      }
+      const section = params.get("crossSection")?.value ?? "CIRCULAR";
+      if (section !== "CIRCULAR") {
+        result.warnings.push(`${name}: ${section}-Querschnitt → kreisförmig übernommen`);
+      }
       const radiusMm = mmOf(params.get("radius"), 2);
       const edgeQs = queryStringsOf(params.get("entities"));
-      let made = 0;
+
+      // Sibling edges can decode to the same query (the un-resolved BTON
+      // back-references, see `buildFilletEdgeQuery`) — filleting the same
+      // edge twice would stack two blends on it, so de-duplicate and say so.
+      const queries: string[] = [];
       for (const qs of edgeQs) {
         const edgeQuery = await buildFilletEdgeQuery(qs, name, result, sketches);
-        if (!edgeQuery) continue;
+        if (edgeQuery && !queries.includes(edgeQuery)) queries.push(edgeQuery);
+      }
+      if (queries.length && queries.length < edgeQs.length) {
+        result.warnings.push(
+          `${name}: ${edgeQs.length} Onshape-Kanten → ${queries.length} unterscheidbare Query(s); ` +
+            `Geschwister-Kanten sind (noch) nicht auseinanderzuhalten`,
+        );
+      }
+
+      let made = 0;
+      for (const edgeQuery of queries) {
         const matches = kernel.resolveQuery(edgeQuery);
         if (matches.length < 1) {
-          result.errors.push(`${name}: Kanten-Query "${edgeQuery}" löst nichts auf — übersprungen`);
+          result.errors.push(
+            `${name}: Kanten-Query "${edgeQuery}" löst nichts auf — übersprungen`,
+          );
           continue;
         }
         const fdId = kernel.addFeatureCall(
@@ -350,7 +518,23 @@ async function decodeAnyOpRef(qs: string): Promise<string | null> {
   return null;
 }
 
-/** An Onshape fillet edge query (cap ∩ swept wall) → `qCommonEdge(...)`. */
+/**
+ * An Onshape fillet edge query → a FieldDraft `qCommonEdge(faceA, faceB)`.
+ *
+ * An edge is named by the two faces that meet at it, so the translation is
+ * driven by the face markers the query carries:
+ *  - `CAP_FACE` ∩ `SWEPT_FACE` — a cap rim (the box's top/bottom edge).
+ *  - `CAP_EDGE` / `OFFSET_EDGE` — the rim of a SHELLED body: the cap meets
+ *    the shell's inner wall (`OFFSET_*` is Onshape's name for the shell's
+ *    offset surface). The inner wall keeps its outer face's feature id, so
+ *    the FieldDraft form is `qCommonEdge(cap, INNER_WALL)`.
+ *
+ * Known limit: Onshape compresses repeated strings into back-references
+ * whose index scheme we do not resolve yet, so two SIBLING edges of one
+ * fillet (e.g. the two long rim edges) decode to the SAME markers and
+ * collapse into one query. The caller de-duplicates and reports the
+ * collapse rather than filleting the same edge twice.
+ */
 async function buildFilletEdgeQuery(
   qs: string,
   name: string,
@@ -361,28 +545,53 @@ async function buildFilletEdgeQuery(
     const { bton, payload } = await decodeOnshapeQueryString(qs);
     if (!bton) return null;
     const tokens = tokenizeBton(payload);
-    // Reuse the plane extractor: the edge query names a CAP_FACE part
-    // and a SWEPT_FACE part; extract both independently by splitting on
-    // the INTERSECT marker is fragile — instead run the extractor,
-    // which surfaces the cap (isStart) and the swept origin.
     const ref = extractPlaneRef(tokens);
-    const strs = tokens.filter((t) => t.t === "str").map((t) => (t.p2 ? `${t.p1}.${t.p2}` : t.p1));
-    const hasCap = strs.includes("CAP_FACE");
-    if (ref.kind === "swept" && hasCap) {
+    const markers = new Set(
+      tokens.filter((t) => t.t === "str" && t.p1 && !t.p2).map((t) => t.p1 as string),
+    );
+    // The cap side, from the isStart flag (Onshape's START cap = the sketch
+    // plane = FieldDraft CAP_BOTTOM).
+    const isStartIdx = tokens.findIndex((t) => t.t === "str" && t.p1 === "isStart");
+    const boolTok =
+      isStartIdx >= 0 ? tokens.slice(isStartIdx + 1).find((t) => t.t === "bool") : undefined;
+    const capRole = boolTok?.v === true ? "CAP_BOTTOM" : "CAP_TOP";
+
+    // Inside a SHELLED body: the hollow's floor/ceiling meets its side — the
+    // inner cap against the inner wall. Both faces belong to the SWEEP (an
+    // inner face keeps its outer face's feature id); the shell op only
+    // hollowed it, so take the sweep op out of the stream rather than the
+    // query's outermost op.
+    if (markers.has("OFFSET_EDGE") || markers.has("OFFSET_FACE")) {
+      const sweep = extractOpRefs(tokens).find((o) => /^op(Extrude|Revolve|Sweep)$/.test(o.op));
+      const fd = sweep ? result.idMap[sweep.featureId] : undefined;
+      if (fd === undefined) {
+        result.errors.push(`${name}: Shell-Kante — der geschalte Sweep ist nicht importiert`);
+        return null;
+      }
+      const innerCap = capRole === "CAP_TOP" ? "INNER_CAP_TOP" : "INNER_CAP_BOTTOM";
+      return `qCommonEdge(qCreatedBy(${fd}, ${innerCap}), qCreatedBy(${fd}, INNER_WALL))`;
+    }
+
+    // Cap rim: cap ∩ the wall swept from a named sketch entity.
+    if (ref.kind === "swept" && markers.has("CAP_FACE")) {
       const fd = result.idMap[ref.opFeatureId];
-      if (fd === undefined) return null;
+      if (fd === undefined) {
+        result.errors.push(`${name}: Kanten-Query referenziert nicht importiertes Feature`);
+        return null;
+      }
       const wall = wallQuery(ref.origin, fd, name, sketches);
       if (!wall.query) {
         result.errors.push(wall.error ?? `${name}: Fillet-Kante nicht übersetzbar`);
         return null;
       }
-      // isStart of the cap half: find it directly.
-      const isStartIdx = tokens.findIndex((t) => t.t === "str" && t.p1 === "isStart");
-      const boolTok = isStartIdx >= 0 ? tokens.slice(isStartIdx + 1).find((t) => t.t === "bool") : undefined;
-      const role = boolTok?.v === true ? "CAP_BOTTOM" : "CAP_TOP";
-      return `qCommonEdge(qCreatedBy(${fd}, ${role}), ${wall.query})`;
+      return `qCommonEdge(qCreatedBy(${fd}, ${capRole}), ${wall.query})`;
     }
-    result.errors.push(`${name}: Fillet-Kanten-Query-Form nicht unterstützt`);
+
+    result.errors.push(
+      `${name}: Fillet-Kanten-Form nicht übersetzbar (Marker: ${[...markers]
+        .filter((m) => /FACE|EDGE/.test(m))
+        .join(", ") || "keine"})`,
+    );
     return null;
   } catch (e) {
     result.errors.push(`${name}: Fillet-Kante nicht dekodierbar (${e instanceof Error ? e.message : e})`);

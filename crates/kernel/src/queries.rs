@@ -86,8 +86,16 @@ pub enum FaceRole {
     CapTop,
     /// The end cap on the −axis side (`EXTRUDE_CAP_BOTTOM_SUB`).
     CapBottom,
-    /// A shell inner-wall face (`INNER_WALL_FLAG`, DL-75).
+    /// A shell inner-wall face — the inward offset of a lateral wall
+    /// (`INNER_WALL_FLAG`, DL-75).
     InnerWall,
+    /// The inward offset of the +axis cap — a shelled box's inner ceiling.
+    /// Distinct from [`InnerWall`](Self::InnerWall): the edge where a
+    /// hollow's floor meets its side is `INNER_CAP_* ∩ INNER_WALL`, so
+    /// lumping the two would make that edge unaddressable.
+    InnerCapTop,
+    /// The inward offset of the −axis cap — a shelled box's inner floor.
+    InnerCapBottom,
     /// A fillet/chamfer blend carrier face (`HalfSpace::Blend` surface).
     Blend,
 }
@@ -100,6 +108,8 @@ impl FaceRole {
             FaceRole::CapTop => "CAP_TOP",
             FaceRole::CapBottom => "CAP_BOTTOM",
             FaceRole::InnerWall => "INNER_WALL",
+            FaceRole::InnerCapTop => "INNER_CAP_TOP",
+            FaceRole::InnerCapBottom => "INNER_CAP_BOTTOM",
             FaceRole::Blend => "BLEND",
         }
     }
@@ -112,6 +122,8 @@ impl FaceRole {
             "CAP_TOP" => FaceRole::CapTop,
             "CAP_BOTTOM" => FaceRole::CapBottom,
             "INNER_WALL" => FaceRole::InnerWall,
+            "INNER_CAP_TOP" => FaceRole::InnerCapTop,
+            "INNER_CAP_BOTTOM" => FaceRole::InnerCapBottom,
             "BLEND" => FaceRole::Blend,
             _ => return None,
         })
@@ -136,13 +148,21 @@ pub fn face_role(face: &crate::brep::Face) -> FaceRole {
         return FaceRole::Blend;
     }
     let branch = face.branch_id;
-    if branch.is_inner_wall() {
-        return FaceRole::InnerWall;
-    }
-    match branch.sub() {
-        BranchId::EXTRUDE_CAP_TOP_SUB => FaceRole::CapTop,
-        BranchId::EXTRUDE_CAP_BOTTOM_SUB => FaceRole::CapBottom,
-        _ => FaceRole::Wall,
+    // The inner-wall flag rides ON TOP of the outer sub-id, so an inner CAP
+    // still carries the reserved cap sub — strip the flag before classifying.
+    let sub = branch.sub() & !BranchId::INNER_WALL_FLAG;
+    let cap = match sub {
+        BranchId::EXTRUDE_CAP_TOP_SUB => Some(true),
+        BranchId::EXTRUDE_CAP_BOTTOM_SUB => Some(false),
+        _ => None,
+    };
+    match (branch.is_inner_wall(), cap) {
+        (true, Some(true)) => FaceRole::InnerCapTop,
+        (true, Some(false)) => FaceRole::InnerCapBottom,
+        (true, None) => FaceRole::InnerWall,
+        (false, Some(true)) => FaceRole::CapTop,
+        (false, Some(false)) => FaceRole::CapBottom,
+        (false, None) => FaceRole::Wall,
     }
 }
 
@@ -319,7 +339,7 @@ impl fmt::Display for QueryParseError {
             QueryParseError::InvalidRole(raw) => {
                 write!(
                     f,
-                    "invalid face role `{raw}` (expected WALL, CAP_TOP, CAP_BOTTOM, INNER_WALL or BLEND)"
+                    "invalid face role `{raw}` (expected WALL, CAP_TOP, CAP_BOTTOM, INNER_WALL, INNER_CAP_TOP, INNER_CAP_BOTTOM or BLEND)"
                 )
             }
         }
@@ -1034,6 +1054,8 @@ mod tests {
             ("qCreatedBy(3, CAP_TOP)", FaceRole::CapTop),
             ("qCreatedBy(3, CAP_BOTTOM)", FaceRole::CapBottom),
             ("qCreatedBy(3, INNER_WALL)", FaceRole::InnerWall),
+            ("qCreatedBy(3, INNER_CAP_TOP)", FaceRole::InnerCapTop),
+            ("qCreatedBy(3, INNER_CAP_BOTTOM)", FaceRole::InnerCapBottom),
             ("qCreatedBy(3, BLEND)", FaceRole::Blend),
         ] {
             let q = parse_query(raw).unwrap();
@@ -1262,6 +1284,10 @@ mod tests {
             BranchId::EXTRUDE_CAP_BOTTOM_SUB,
         )));
         brep.add_face(plane_face(BranchId::from_feature_sub(&f7, 0).inner_wall()));
+        // The hollow's inner floor: the cap sub WITH the inner-wall flag.
+        brep.add_face(plane_face(
+            BranchId::from_feature_sub(&f7, BranchId::EXTRUDE_CAP_BOTTOM_SUB).inner_wall(),
+        ));
         brep.add_face(blend_face(BranchId::from_feature_sub(&f9, 0)));
         brep
     }
@@ -1275,6 +1301,10 @@ mod tests {
             (FaceRole::CapTop, 1),
             (FaceRole::CapBottom, 1),
             (FaceRole::InnerWall, 1),
+            // The inner floor must NOT read as a plain inner wall — that is
+            // exactly what makes the hollow's floor edge addressable.
+            (FaceRole::InnerCapBottom, 1),
+            (FaceRole::InnerCapTop, 0),
             (FaceRole::Blend, 0), // feature 7 has no blend face
         ] {
             let refs = resolve_query_topo(
@@ -1305,7 +1335,7 @@ mod tests {
 
     #[test]
     fn resolve_created_by_role_union_matches_created_by() {
-        // The five roles partition qCreatedBy(f)'s face set.
+        // The roles partition qCreatedBy(f)'s face set.
         let brep = role_brep();
         let all = resolve_query_topo(std::slice::from_ref(&brep), &QueryExpr::CreatedBy(id(7)));
         let by_role: usize = [
@@ -1313,6 +1343,8 @@ mod tests {
             FaceRole::CapTop,
             FaceRole::CapBottom,
             FaceRole::InnerWall,
+            FaceRole::InnerCapTop,
+            FaceRole::InnerCapBottom,
             FaceRole::Blend,
         ]
         .iter()

@@ -157,7 +157,11 @@ export function queryAcceptedByFilter(query: string, entityFilter?: string): boo
     case "CreatedBy":
       // The role-filtered form `qCreatedBy(op, CAP_TOP)` etc. addresses
       // faces of one feature — a FACE-level query, never a body/region.
-      if (/,\s*(WALL|CAP_TOP|CAP_BOTTOM|INNER_WALL|BLEND)\s*\)/.test(query)) {
+      if (
+        /,\s*(WALL|CAP_TOP|CAP_BOTTOM|INNER_WALL|INNER_CAP_TOP|INNER_CAP_BOTTOM|BLEND)\s*\)/.test(
+          query,
+        )
+      ) {
         return has("FACE");
       }
       // A bare `qCreatedBy(sketch)` is the WHOLE-sketch profile — accepted by a
