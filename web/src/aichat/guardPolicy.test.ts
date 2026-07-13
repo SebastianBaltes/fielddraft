@@ -63,24 +63,44 @@ describe("script guard", () => {
     extraBlocked: [...GUARDED_APP_GLOBALS],
   };
 
-  it("accepts a normal FieldSkript feature — TypeScript, classes, this", () => {
+  // The REAL FieldSkript contract (fielddraft.d.ts + the default template in
+  // project.ts) — copied from working code, not written from memory. That
+  // distinction is not pedantry: the api.ts description once carried an INVENTED
+  // signature here, the model copied it faithfully, and the script failed to
+  // compile (ticket #347). An example is a specification.
+  it("accepts a real FieldSkript feature — TypeScript, classes, this", () => {
     const source = `
 import { fd } from "fielddraft";
 
 export const definition = fd.feature({
-  name: "Plate",
-  parameters: { width: fd.length({ default: 80 }) },
+  name: "Lochreihe",
+  icon: "⬡",
+  parameters: [
+    fd.real("count", { name: "Anzahl", default: 3 }),
+    fd.length("spacing", { name: "Abstand", default: 20 }),
+  ],
 });
 
-class Builder {
+class Row {
   constructor(private ctx: unknown) {}
-  run(id: string, def: { width: number }) {
-    return fd.box(this.ctx, id, { size: [def.width, 60, 5] });
+  place(id: { sub(s: string): unknown }, count: number, spacing: number) {
+    const start = -((count - 1) * spacing) / 2;
+    for (let i = 0; i < count; i++) {
+      fd.opHole(this.ctx, id.sub("h" + i), {
+        diameter: 6,
+        depth: 10,
+        center: [start + i * spacing, 0, 0],
+      });
+    }
   }
 }
 
-export function build(ctx: unknown, id: string, def: { width: number }) {
-  new Builder(ctx).run(id, def);
+export default function build(context: unknown, id: any, def: any) {
+  new Row(context).place(
+    id,
+    Number(def.count.value),
+    Number(def.spacing.value),
+  );
 }`;
     const verdict = guardScript(source, opts);
     expect(verdict.ok, verdict.reason ?? "").toBe(true);

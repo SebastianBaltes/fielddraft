@@ -1090,6 +1090,8 @@ export function Outliner({
                   "row datum-row" + (datumSelected ? " is-selected" : "")
                 }
                 data-testid={`datum-${datum.id}`}
+                data-info-key={`datum-${datum.id}`}
+                data-value={visible ? "visible" : "hidden"}
                 onClick={() => {
                   // An armed FACE picker (e.g. the sketch-plane field)
                   // accepts the datum row as a pick — same affordance as
@@ -1115,6 +1117,11 @@ export function Outliner({
                     "row-datum-visible" + (visible ? " is-visible" : "")
                   }
                   title={visible ? "Hide" : "Show"}
+                  // Ticket #347: the AI assistant reads and operates the UI through
+                  // these keys (baseaichat's readUIState/createUIActions look for
+                  // data-*-key, NOT data-testid). Anything without one is invisible
+                  // to it — and unclickable.
+                  data-button-key={`toggle-datum-${datum.id}`}
                   onClick={(e) => {
                     e.stopPropagation();
                     store.toggleDatumVisible(datum.id);
@@ -1217,6 +1224,10 @@ export function Outliner({
                       (showRbDropBelow ? " rollback-drop-below" : "")
                     }
                     data-testid={`feature-row-${feature.id}`}
+                    // Ticket #347: what the assistant SEES of the tree (its keys
+                    // carry the feature id, so a click maps back to the document).
+                    data-button-key={`select-feature-${feature.id}`}
+                    data-value={feature.name}
                     data-feature-id={feature.id}
                     data-feature-kind={feature.kind}
                     title={feature.error || feature.warning || undefined}
