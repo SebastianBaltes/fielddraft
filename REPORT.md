@@ -21,9 +21,9 @@ Erfolgskriterien:
    nm=0, orient=0, χ=2), Hausdorff (0.021/0.098 mm, Schwellen 0.05/0.15),
    Dreieckszahl 11468 ∈ [7000, 23000], Aspect p99 1.85 ≤ 4, minang 14.9° ≥ 10°.
    Robust bei h=6/10/14, deterministisch. Byte-identisch nach der Härtung.
-2. Bestehende Suite grün: Kernel (release) 1082/1082 ✓, Lichen-Gates 37/37 ✓,
-   Workspace (release) 1159/1159 ✓, Web-Vitest 1679/1679 ✓
-   (Debug-Workspace-Lauf: siehe Abschluss-Abschnitt).
+2. Bestehende Suite grün: Kernel 1082/1082 ✓ (debug UND release),
+   Lichen-Gates 37/37 ✓, Workspace release 1159/1159 ✓, Workspace debug
+   vollständig grün ✓ (0 failed, Kernel-Lib 712 s), Web-Vitest 1679/1679 ✓.
 3. REPORT.md: dieses Dokument ✓
 
 ## Metriken vorher/nachher (Abnahmefall, Betreiber-Settings, release)

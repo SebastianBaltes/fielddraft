@@ -257,3 +257,11 @@ Format: Zeitstempel · Hypothese/Frage · Ergebnis · Entscheidung.
 - Verifikation Orchestrator: Lichen-Gates 37/37, Abnahme-Gate byte-identisch,
   kernel release 1082/1082, workspace release 1159/1159; voller
   Debug-Workspace-Lauf gestartet.
+
+## 2026-07-13 10:20 — Abschluss-Verifikation
+
+- Voller Debug-Workspace-Lauf: 0 failed (Kernel-Lib 1082/1082 in 712 s,
+  alle übrigen Crates grün). Erfolgskriterium 2 vollständig erfüllt.
+- WASM neu gebaut (just build-wasm) — der laufende Dev-Server zeigt den
+  v0.6.567-Stand im Betreiber-Projekt 7d9701… (WASM gitignored, wie Policy).
+- Session-DoD komplett: Abnahme-Gate aktiv+grün, Suiten grün, REPORT.md final.
