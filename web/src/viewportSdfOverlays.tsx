@@ -258,6 +258,29 @@ function useSdfPipelineOverlay<P extends MaterialBufferTarget, B>(
   const matFeaturesRef = useRef<unknown>(null);
   const matOpacityRef = useRef(1);
   const selectionRef = useRef<unknown>(null);
+  /**
+   * Has the SDF scene changed since the last frame that actually RENDERED?
+   *
+   * This must be a ref, not a per-frame local: the fingerprint/material/
+   * selection refs above are written by the frame that DETECTS a change, but
+   * that frame then bails out below (`!readyRef || compilingRef`) without
+   * rendering, because a structural change rebuilds the pipeline and compiles
+   * a shader asynchronously. By the time the compile's `invalidate()` brings
+   * the next frame, every fingerprint compares EQUAL to the refs that frame
+   * already wrote — so a per-frame `sceneDirty` local computed the same way
+   * came out FALSE, and the deferred pipeline's overlay-only fast path
+   * (ticket 40001a3a) then re-blitted its stale cached shadeRT for an
+   * unchanged camera. The canvas kept showing the pre-edit image until the
+   * next camera move changed the frame key — the whole class of "SDF-only
+   * commit doesn't repaint" (displace on/off, blend radius, shell thickness,
+   * twist rate, suppress toggle, …).
+   *
+   * Accumulating the dirt here and clearing it only after a frame has been
+   * presented closes that gap without weakening the fast path: overlay-only
+   * invalidates (sketch hover/drag, export-preview toggle) still leave this
+   * false and still replay the cache.
+   */
+  const sceneDirtyRef = useRef(true);
   // Captured from useFrame so the unmount cleanup can defer the pipeline's GPU
   // disposal until the device is idle (ticket 323i).
   const rendererRef = useRef<WebGPURenderer | null>(null);
@@ -270,6 +293,7 @@ function useSdfPipelineOverlay<P extends MaterialBufferTarget, B>(
     selectionRef.current = null;
     compilingRef.current = false;
     readyRef.current = false;
+    sceneDirtyRef.current = true;
     showCompilationStatus("Initializing…");
 
     return () => {
@@ -295,6 +319,14 @@ function useSdfPipelineOverlay<P extends MaterialBufferTarget, B>(
 
   useFrame(({ gl: renderer, camera }) => {
     if (!store || !pipelineRef.current) return;
+    if (import.meta.env.DEV) {
+      // Demand-frameloop instrumentation (e2e sdf-invalidate.spec.ts): counts
+      // the frames this overlay is ticked on. Paired with __fdSdfMarches (the
+      // EXPENSIVE re-march, counted in sdfDeferredRenderer): a scene at rest
+      // may tick a frame, but it must never re-march.
+      const w = window as unknown as { __fdSdfFrames?: number };
+      w.__fdSdfFrames = (w.__fdSdfFrames ?? 0) + 1;
+    }
     rendererRef.current = renderer as unknown as WebGPURenderer;
     const wgpu = renderer as unknown as WebGPURenderer;
     const pipeline = pipelineRef.current;
@@ -386,6 +418,13 @@ function useSdfPipelineOverlay<P extends MaterialBufferTarget, B>(
       }
     }
 
+    // Carry the dirt forward across the async rebuild/compile gap (see
+    // sceneDirtyRef): the frame that DETECTS the change is usually not the
+    // frame that gets to render it.
+    if (needsRebuild || needsDataUpdate || materialsChanged || selectionChanged) {
+      sceneDirtyRef.current = true;
+    }
+
     if (!readyRef.current || compilingRef.current) return;
 
     try {
@@ -393,15 +432,13 @@ function useSdfPipelineOverlay<P extends MaterialBufferTarget, B>(
         wgpu,
         scene,
         camera,
-        () =>
-          adapter.renderFrame(
-            pipeline,
-            wgpu,
-            camera,
-            needsRebuild || needsDataUpdate || materialsChanged || selectionChanged,
-          ),
+        () => adapter.renderFrame(pipeline, wgpu, camera, sceneDirtyRef.current),
         brepEdgeMode === "visible",
       );
+      // Presented — the pipeline's cache now matches the scene again. Cleared
+      // only AFTER a successful render: a throwing pass leaves the flag set so
+      // the retry still re-marches.
+      sceneDirtyRef.current = false;
       // Ticket pzvt: publish the camera this frame was PRESENTED with. While
       // a shader compile freezes the visible frame, picks keep projecting
       // against this snapshot instead of the (possibly moved) live camera.

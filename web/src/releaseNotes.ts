@@ -24,17 +24,32 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.575",
+    entries: [
+      {
+        kind: "fix",
+        scope: "render",
+        text: "Änderungen, die nur das SDF-Programm betreffen (Displace an/aus, Blend-Radius, Shell-Dicke, Twist-Rate, Unterdrücken/Einblenden eines Features, neuer Körper), zeichnen den Viewport jetzt sofort neu — vorher blieb das alte Bild stehen, bis man die Kamera bewegte. Ursache war keine fehlende Invalidierung, sondern eine Cache-Lücke: Der Frame, der die Änderung ERKENNT, stößt Pipeline-Neubau und Shader-Kompilierung asynchron an und verlässt sich ohne zu zeichnen — seine „gesehen“-Marker (Fingerprints, Material, Selektion) hatte er aber schon geschrieben. Der Frame nach der Kompilierung fand deshalb alles „unverändert“ vor und blittete bei unbewegter Kamera erneut sein zwischengespeichertes Shade-Target, also exakt das Bild von vor der Änderung; nur eine Kamerabewegung brach den Cache. Die Änderung wird jetzt über die Kompilierungslücke hinweg gemerkt und erst nach einem tatsächlich gezeichneten Frame quittiert; der Schnellpfad für reine Overlay-Repaints (Sketch-Hover, Export-Vorschau) bleibt erhalten, und ein ruhendes Bild erzeugt weiterhin keine GPU-Last. Damit ist auch das vermeintliche „Körper wird während der Regeneration unsichtbar“ erledigt — das war dasselbe veraltete Standbild.",
+      },
+      {
+        kind: "fix",
+        scope: "viewport",
+        text: "Die Namensschilder der Datum-Ebenen („Top“, „Front“, „Right“) werden jetzt von Körpern verdeckt, die davor liegen — bisher zeichneten sie ohne Tiefentest durch massives Material hindurch und sahen dort aus wie Löcher im Körper. Die Ebenen selbst waren schon korrekt tiefengetestet; der Ursprungs-Punkt bleibt bewusst durchscheinend, weil er mit 1,5 mm Radius sonst in fast jedem Modell unsichtbar im Material läge.",
+      },
+    ],
+  },
+  {
     version: "0.6.574",
     entries: [
       {
         kind: "fix",
-        scope: "onshape",
-        text: "Onshape-Import scheiterte mit „onshape not configured“ (#339). Ursache war keine Fehlfunktion des Imports, sondern die fehlende Server-Konfiguration: Der Browser darf Onshape nicht direkt rufen (kein CORS, und der Secret Key gehört nie ins Bundle), deshalb signiert der Go-Server die Lese-Endpunkte — ohne API-Key antwortet er konsequent mit 503. Die beiden Variablen ONSHAPE_ACCESS_KEY/ONSHAPE_SECRET_KEY sind jetzt in DEPLOY.md und .env.example dokumentiert, damit die nächste Installation nicht in dieselbe Falle läuft.",
+        scope: "render",
+        text: "Änderungen, die nur das SDF-Programm betreffen (Displace an/aus, Blend-Radius, Shell-Dicke, Twist-Rate, Unterdrücken/Einblenden eines Features, neuer Körper), zeichnen den Viewport jetzt sofort neu — vorher blieb das alte Bild stehen, bis man die Kamera bewegte. Ursache: Der Frame, der die Änderung ERKENNT, stößt Pipeline-Neubau und Shader-Kompilierung asynchron an und verlässt sich ohne zu zeichnen — er hatte seine „gesehen\"-Marker (Fingerprints, Material, Selektion) aber bereits geschrieben. Der Frame nach der Kompilierung fand daher alles „unverändert\" vor, meldete dem Deferred-Renderer sceneDirty=false und blittete bei unbewegter Kamera erneut sein zwischengespeichertes Shade-Target — also exakt das Bild von vor der Änderung. Die Änderung wird jetzt über die Kompilierungslücke hinweg gemerkt und erst nach einem tatsächlich gezeichneten Frame quittiert; der Schnellpfad für reine Overlay-Repaints (Sketch-Hover, Export-Vorschau) bleibt erhalten, und ein ruhendes Bild erzeugt weiterhin keine GPU-Last. Damit verschwindet auch das vermeintliche „Körper wird während der Regeneration unsichtbar\" — das war dasselbe veraltete Standbild.",
       },
       {
         kind: "fix",
-        scope: "onshape",
-        text: "Zwei echte Import-Bugs, die beim Nachstellen von #339 an einem fremden Onshape-Dokument auffielen: (1) Der Query-Decoder stürzte an einem unbekannten, aber wohlgeformten Token ab und riss damit die GESAMTE Kanten-Query mit — solche Token werden jetzt übersprungen statt den Decode zu töten. (2) Die Cap-Seite ignorierte die Extrude-Richtung: Wächst ein Extrude ENTGEGEN der Sketch-Normalen, liegt die Sketch-Ebene am oberen Deckel, nicht am unteren — ein Sketch darauf löste deshalb ins Leere. Beide mit Regressionstests abgesichert.",
+        scope: "viewport",
+        text: "Die Namensschilder der Datum-Ebenen („Top“, „Front“, „Right“) werden jetzt von Körpern verdeckt, die davor liegen — bisher zeichneten sie ohne Tiefentest durch massives Material hindurch und sahen dort aus wie Löcher im Körper. Die Ebenen selbst waren schon korrekt tiefengetestet; der Ursprungs-Punkt bleibt bewusst durchscheinend, weil er mit 1,5 mm Radius sonst in fast jedem Modell unsichtbar im Material läge.",
       },
     ],
   },
