@@ -110,3 +110,38 @@ Format: Zeitstempel · Hypothese/Frage · Ergebnis · Entscheidung.
      Nur additiv → metrik-sicher. Kandidat für den Rest nach Prädikat-Fix.
 - Metrik-Risiken: Korridor gefährdet H(s→m)+Aspect (Untersampling/Randsprung),
   Snap-auf-Kette gefährdet H, Stitching nur Sliver-Risiko, weighted ~neutral.
+
+## 2026-07-13 06:20 — Iteration 3 (Implementierungs-Agent): 312 → 21 (v0.6.565)
+
+- KORRIDOR WIDERLEGT: Cheng–Dey–Ramos-Schutzkorridor voll implementiert und in
+  13 Konfigurationen vermessen — nie besser als 287; ab β≥2 brechen H(m→s) und
+  min-Winkel (Fächer über den Korridor slivern). Kern-Befund: reale Keilwinkel
+  der Nähte sind sinθ ≥ 0.274 (16–24°) — die Blattverschachtelung ist ein
+  RANDphänomen, nicht die Hauptursache. Korridor bleibt als Default-aus-
+  Werkzeug (LICHEN_PROTECT_MODE=grow|hide, β/floor/ringdiv/lip per Env).
+- DIE ECHTEN WURZELN (je per WHY-Forensik isoliert):
+  1. Naht-Band-Einfärbung tang 25° → 10°: mit 25° trug jeder nahtnahe Punkt
+     beide Regionen → Blatt-Restriktion blind („+0 fremdblatt-ignoriert").
+     283 offene nach Fix (open-Verlauf 312→283, H(m→s) 0.026→0.012).
+  2. Normalen-Guard-Ausnahme am Zwickel: 243/283 offene Kanten waren voll
+     gültige Dreiecke, die NUR der 90°-Guard blockte (das Netz muss am spitz
+     zulaufenden Gyroid∩Zylinder-Zwickel legitim >90° um die Spitze). Ausnahme
+     nur bei STRIKT auf der Fläche liegender Sehne (0.25/0.5/0.75-Proben,
+     |f| ≤ 0.15·min-spacing) — schließt zugleich das θ-skalierte Sichtlinien-
+     Schlupfloch; dünne Platte bleibt geschützt. → 31 offene.
+  3. Ketten-Verschweißung: Kettenpunkte VERSCHIEDENER B-Rep-Kanten in
+     Sub-Resolution-Abstand (0.09 mm am Zwickel) teilen einen Mesh-Vertex
+     (weld 1.5·minEdgeSpacing; 1.0→30, 1.5→21, 2.0→29 vermessen) +
+     Kreuzungs-Veto-Ausnahme für Sub-Resolution-nahe fremde Ketten. → 21.
+- Endstand: open 21, nm 0, orient 0, χ −4, H(m→s) 0.021, H(s→m) 0.098
+  (p95 0.002), asp p99 1.85, minang 14.9°, 5738 pts. Suite 1078/1078,
+  Lichen-Gates 33/33.
+- Verworfen zusätzlich: Hidden-Vertex auf Finalstand (21→26), Host-only auch
+  mit Korridor (351/303), Weld-Kollaps ohne Ersatzpunkt (U-Invariante reißt).
+- Rest-21 = 4 Mikro-Zwickel, wo ≥3 fast-parallele Nähte konvergieren
+  (größter @ [9.2, 26.2, 28.7]); Ablehnungen: 13 ketten-kreuzung, 5 nicht-
+  leere Kugeln, 2 Walk-Sackgassen, 1 Guard. Empfehlung des Agenten: nicht
+  Schwellen drehen (nicht-monoton), sondern topologisch — konvergierende
+  Ketten am Zwickel bis zum echten Schnittpunkt verfolgen (Weave droppt den
+  Verbindungs-Vertex, DL-71) bzw. off-vertex-schneidende Ketten-Segmente als
+  EIN Kettenzug re-parametrisieren.

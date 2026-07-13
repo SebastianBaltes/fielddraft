@@ -636,6 +636,10 @@ pub fn triangulate_global_walk(
     contam_regions: &[Vec<u32>],
     face_guard: bool,
     spacing: &[f32],
+    // Kandidaten-Horizont-UNTERGRENZE je Punkt (leer = keine): am Rand des
+    // Ketten-Schutzkorridors sind die Fächer-Partner bis zu R entfernt —
+    // weiter als der 2,5·Spacing-Standard-Horizont sieht.
+    horizon_floor: &[f32],
     members: &[u32],
     chain_edges: &HashSet<(u32, u32)>,
     curv_angle_rad: f32,
@@ -689,7 +693,8 @@ pub fn triangulate_global_walk(
                 }
             }
         }
-        eff_r.insert(i, 2.5 * m);
+        let floor = horizon_floor.get(i as usize).copied().unwrap_or(0.0);
+        eff_r.insert(i, (2.5 * m).max(floor));
     }
     // ── NORMALEN-GUARD (Betreiber-Idee 2026-07-12) ──
     // Der Cocone-Filter prüft die RICHTUNG zum Nachbarn (muss ~tangential
@@ -741,7 +746,35 @@ pub fn triangulate_global_walk(
                 }
             }
         }
-        false
+        // STRIKTE AUSNAHME (2026-07-13, Naht-Apex): am ZWICKEL einer fast-
+        // tangentialen Verschneidung (Gyroid-Wand läuft spitz auf den
+        // Zylinder zu) MUSS das Netz um die Spitze herum von der einen
+        // Wandseite zur anderen laufen — die Endpunkt-Normalen stehen dabei
+        // legitim > 90° zueinander. WHY-Forensik: 243 von 283 offenen Kanten
+        // des Abnahmefalls waren voll gültige Dreiecke, die NUR der
+        // Normalen-Guard blockte (Winkelklassen 90–180°).
+        //
+        // Der Guard existiert gegen das QUERSTICHELN dünner Wände. Sein
+        // eigentliches Schlupfloch ist die θ-skalierte Sichtlinien-Toleranz
+        // ((0.3·l·θ) — bei antiparallelen Normalen ist θ ≈ π und die Sehne
+        // darf fast beliebig tief ins Material). Die Ausnahme schließt
+        // genau dieses Loch: ein >90°-Paar ist NUR erlaubt, wenn die Sehne
+        // STRIKT (nicht θ-skaliert) auf der Oberfläche liegt. Eine Sehne
+        // quer durch eine Platte der Dicke t taucht ~t/2 ein und fällt
+        // durch; die Zwickel-Sehne schmiegt sich an die Fläche an.
+        let (pi, pj) = (points[i as usize], points[j as usize]);
+        let tol = 0.15 * spacing[i as usize].min(spacing[j as usize]);
+        for frac in [0.25f32, 0.5, 0.75] {
+            let q = [
+                pi[0] + frac * (pj[0] - pi[0]),
+                pi[1] + frac * (pj[1] - pi[1]),
+                pi[2] + frac * (pj[2] - pi[2]),
+            ];
+            if fg(q).0.abs() > tol {
+                return false;
+            }
+        }
+        true
     };
 
     let mut chain_segs: Vec<(u32, u32)> = chain_edges.iter().copied().collect();
@@ -1014,6 +1047,33 @@ pub fn triangulate_global_walk(
             let dq = sub(q, cen);
             if dot(dq, dq).sqrt() > r_tri {
                 continue; // Kette liegt außerhalb der Dreiecks-Umgebung
+            }
+            // SUB-RESOLUTION-NÄHE (2026-07-13, Naht-Zwickel): läuft die
+            // fremde Kette näher als ihr eigenes lokales Spacing an einer
+            // DREIECKS-ECKE vorbei, ist die Trennung der beiden Ketten
+            // unterhalb der Abtast-Auflösung — an Zwickeln konvergierender
+            // fast-tangentialer Nähte projizieren solche Ketten quer durch
+            // jeden legitimen Fächer (Rest-Forensik: ausnahmslos
+            // „ketten-kreuzung"). Kein Veto; echte Kreuzungen MITTEN durch
+            // ein Dreieck bleiben verboten (Abstand > Spacing zu allen
+            // Ecken).
+            let tol = spacing
+                .get(u as usize)
+                .copied()
+                .unwrap_or(0.0)
+                .min(spacing.get(v as usize).copied().unwrap_or(0.0));
+            let near_vertex = [pa, pb, pc].iter().any(|&pw| {
+                let tt = (dot(sub(pw, pu), seg) / l2).clamp(0.0, 1.0);
+                let qq = [
+                    pu[0] + tt * seg[0],
+                    pu[1] + tt * seg[1],
+                    pu[2] + tt * seg[2],
+                ];
+                let dd = sub(qq, pw);
+                dot(dd, dd).sqrt() < tol
+            });
+            if near_vertex {
+                continue;
             }
             let (su, sv) = (to2(pu), to2(pv));
             for e in [(0usize, 1usize), (1, 2), (2, 0)] {

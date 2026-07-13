@@ -755,13 +755,17 @@ fn visible<Fg: Fn([f32; 3]) -> (f32, [f32; 3])>(p: [f32; 3], q: [f32; 3], r: f32
 /// → `on_face` schlägt fehl → verworfen. So bleibt jede Fläche in ihren Kanten
 /// und wächst nie auf eine andere Fläche oder ins Leere. Liefert die neu
 /// gewachsenen Interior-Punkte (flag 1).
-pub fn grow_surface<Fg, Fb, On, Sc>(
+pub fn grow_surface<Fg, Fb, Fc, On, Sc>(
     seeds: &[LPoint],
     existing: &[LPoint],
     h: f32,
     opts: &LichenOptions,
     fg: &Fg,
     brep_dist: &Fb,
+    // SCHUTZKORRIDOR fast-tangentialer Ketten (api/lichen.rs): dort dürfen
+    // keine Flächenpunkte entstehen — weder im Wachstum noch im Lücken-
+    // Nachlauf (Refill-Falle!).
+    in_corridor: &Fc,
     on_face: &On,
     surf_curv: &Sc,
     size: Option<&SizeField>,
@@ -769,6 +773,7 @@ pub fn grow_surface<Fg, Fb, On, Sc>(
 where
     Fg: Fn([f32; 3]) -> (f32, [f32; 3]),
     Fb: Fn([f32; 3]) -> f32,
+    Fc: Fn([f32; 3]) -> bool,
     On: Fn([f32; 3], [f32; 3], f32) -> bool,
     Sc: Fn([f32; 3]) -> (f32, [f32; 3]),
 {
@@ -920,12 +925,13 @@ where
                     // schmale Seitenfläche einer dünnen Platte blieb deshalb
                     // ungemesht. Die Fläche muss von der Kante mit dem vollen
                     // Spacing „abstehen".
-                    if brep_dist(cp) < 0.7 * r_eff {
+                    if brep_dist(cp) < 0.7 * r_eff || in_corridor(cp) {
                         rej[3] += 1;
                         if near_probe(cp) {
                             eprintln!(
-                                "GROW-NEAR verworfen KETTEN-CLEARANCE brep_dist={:.4} < 0.7*{r_eff:.3} bei {cp:?}",
-                                brep_dist(cp)
+                                "GROW-NEAR verworfen KETTEN-CLEARANCE brep_dist={:.4} < 0.7*{r_eff:.3} korridor={} bei {cp:?}",
+                                brep_dist(cp),
+                                in_corridor(cp)
                             );
                         }
                         rr *= 0.5;
@@ -1000,6 +1006,7 @@ where
                         < 0.75 * r
                     || !visible(p, q, r, fg)
                     || !on_face(p, q, r)
+                    || in_corridor(q)
                 {
                     rej[4] += 1;
                     if near_probe(q) || near_probe(cp) {
@@ -1098,8 +1105,8 @@ where
                     if d_own.min(d_x) < sep {
                         continue; // keine echte Lücke
                     }
-                    if brep_dist(cp) < 0.7 * csp {
-                        continue;
+                    if brep_dist(cp) < 0.7 * csp || in_corridor(cp) {
+                        continue; // Ketten-Clearance/Schutzkorridor (Refill-Falle!)
                     }
                     let j = pts.len();
                     pts.push(LPoint {

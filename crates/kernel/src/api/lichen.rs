@@ -114,6 +114,15 @@ impl Kernel {
         let mut point_faces: Vec<Vec<(u32, [f32; 3])>> = Vec::new();
         let mut local_pos: Vec<[f32; 3]> = Vec::new();
         let mut edge_segs: Vec<([f32; 3], [f32; 3])> = Vec::new();
+        // Globale Punkt-Indizes je Segment (parallel zu edge_segs): Quelle der
+        // Schutzkorridor-Radien (Keilwinkel steht erst nach der Flächen-
+        // Registrierung der Kettenpunkte fest).
+        let mut edge_seg_idx: Vec<(u32, u32)> = Vec::new();
+        // Ketten-Ausdehnungs-Deckel je Kettenpunkt (Welt-mm): bei GESCHLOSSENEN
+        // Mikro-Ringen (Marker∩Zylinder, Umfang ~4 mm) darf der Schutzkorridor
+        // nicht die ganze eingeschlossene Kappe verschlucken — R wird auf einen
+        // Bruchteil des Ring-Umfangs gedeckelt. Offene Kanten: kein Deckel.
+        let mut ring_cap: HashMap<u32, f32> = HashMap::new();
         let mut face_surfs: Vec<FaceSurf> = Vec::new();
         let mut face_loops: Vec<Vec<(Vec<u32>, bool)>> = Vec::new();
 
@@ -339,6 +348,40 @@ impl Kernel {
                 pedges.push(PEdge { raw_local, closed, vs, ve, collapse });
             }
 
+            // ── KETTEN-VERSCHWEISSUNG (2026-07-13, Naht-Zwickel) ──
+            // Kettenpunkte VERSCHIEDENER B-Rep-Kanten, die näher beieinander
+            // liegen als der Min. Kantenabstand, teilen sich EINEN Mesh-Vertex
+            // — dieselbe Regel wie der Ecken-Cluster oben, nur für die
+            // abgetasteten Ketten. An Zwickeln, wo mehrere fast-tangentiale
+            // Nähte konvergieren (Gyroid-Wand ∩ Zylinder ∩ Box-Kappe), laufen
+            // fremde Ketten sonst SUB-RESOLUTION ineinander (gemessen 0,09 mm
+            // bei minEdgeSpacing 0,1), und das Ketten-Kreuzungs-Verbot
+            // blockiert jeden Dreiecks-Fächer: die letzten 31 offenen Kanten
+            // des Abnahmefalls waren ausnahmslos „ketten-kreuzung". Ein
+            // verschweißter Punkt gehört BEIDEN Ketten — Segmente, die ihn
+            // berühren, sind für den Kreuzungstest per Definition keine
+            // Kreuzung, und er trägt die Flächen/Normalen beider Nähte.
+            // Faktor 1,5 (vermessen 1.0/1.25/1.5/2.0): 1,5 schließt die
+            // meisten Zwickel-Reste (Demo 30 → 21 offene Kanten) bei
+            // unverändertem H/Aspekt; die Nachbarwerte sind schlechter
+            // (nicht-monoton — der Zwickel ist ein Abtast-Artefakt, kein
+            // stetiges Feature).
+            let weld_factor: f32 = std::env::var("LICHEN_WELD_FACTOR")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(1.5);
+            let weld_r = weld_factor * opts.min_edge_spacing.max(0.0);
+            let weld_cell = weld_r.max(1e-3);
+            let wkey = |p: [f32; 3]| -> (i32, i32, i32) {
+                (
+                    (p[0] / weld_cell).floor() as i32,
+                    (p[1] / weld_cell).floor() as i32,
+                    (p[2] / weld_cell).floor() as i32,
+                )
+            };
+            let mut weld_grid: HashMap<(i32, i32, i32), Vec<u32>> = HashMap::new();
+            let mut chain_owner: HashMap<u32, u32> = HashMap::new();
+            let mut welded_pts: HashSet<u32> = HashSet::new();
             let mut edge_chain: HashMap<u32, Vec<u32>> = HashMap::new();
             for (eid, (e, pe)) in brep.edges.iter().zip(&pedges).enumerate() {
                 if pe.collapse {
@@ -374,11 +417,56 @@ impl Kernel {
                 if lo < end {
                     for pl in &chain[lo..end] {
                         let p = to_world([pl[0] as f64, pl[1] as f64, pl[2] as f64]);
+                        // Verschweißung: fremder Kettenpunkt im Weld-Radius?
+                        let mut welded: Option<u32> = None;
+                        if weld_r > 0.0 {
+                            let (kx, ky, kz) = wkey(p);
+                            'weld: for dx in -1..=1 {
+                                for dy in -1..=1 {
+                                    for dz in -1..=1 {
+                                        let Some(v) =
+                                            weld_grid.get(&(kx + dx, ky + dy, kz + dz))
+                                        else {
+                                            continue;
+                                        };
+                                        for &wj in v {
+                                            if chain_owner.get(&wj) == Some(&(eid as u32)) {
+                                                continue; // eigene Kette: nie
+                                            }
+                                            let q = all[wj as usize].p;
+                                            let dd = ((p[0] - q[0]).powi(2)
+                                                + (p[1] - q[1]).powi(2)
+                                                + (p[2] - q[2]).powi(2))
+                                            .sqrt();
+                                            if dd < weld_r {
+                                                welded = Some(wj);
+                                                break 'weld;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        if let Some(wj) = welded {
+                            if idxs.last() != Some(&wj) {
+                                idxs.push(wj);
+                                welded_pts.insert(wj);
+                                continue;
+                            }
+                            // Wiederholtes Weld-Ziel: NICHT kollabieren
+                            // (das übersprungene Sample riss die U(p)-
+                            // Überdeckung des Ersatz-Segments auf, gemessen
+                            // d=0,244 bei u=0,105+0,103) — eigenen Punkt
+                            // emittieren und normal weiterlaufen.
+                        }
                         let (d, _) = fg(p);
-                        idxs.push(all.len() as u32);
+                        let gi = all.len() as u32;
+                        idxs.push(gi);
                         all.push(LPoint { p, sdf: d, n: [0.0, 0.0, 1.0], u: h, space: h, flag: 2.0 });
                         point_faces.push(Vec::new());
                         local_pos.push(*pl);
+                        weld_grid.entry(wkey(p)).or_default().push(gi);
+                        chain_owner.insert(gi, eid as u32);
                     }
                 }
                 if let Some(ve) = e.end {
@@ -396,6 +484,7 @@ impl Kernel {
                         + (pa[2] - pb[2]).powi(2))
                     .sqrt();
                     edge_segs.push((pa, pb));
+                    edge_seg_idx.push((ia, ib));
                     all[ia as usize].u = all[ia as usize].u.min(d);
                     all[ib as usize].u = all[ib as usize].u.min(d);
                     // SPACE = echter Ketten-Nachbarabstand (nicht h!): space
@@ -412,6 +501,17 @@ impl Kernel {
                 }
                 if closed && idxs.len() >= 2 {
                     bound_pair(idxs[idxs.len() - 1], idxs[0], &mut all);
+                }
+                if closed && idxs.len() >= 3 {
+                    let mut lsum = 0.0f32;
+                    for w in idxs.windows(2) {
+                        lsum += seg_len(all[w[0] as usize].p, all[w[1] as usize].p);
+                    }
+                    lsum += seg_len(all[idxs[idxs.len() - 1] as usize].p, all[idxs[0] as usize].p);
+                    for &gi in &idxs {
+                        let e = ring_cap.entry(gi).or_insert(f32::INFINITY);
+                        *e = e.min(lsum);
+                    }
                 }
                 edge_chain.insert(eid as u32, idxs);
             }
@@ -437,8 +537,16 @@ impl Kernel {
                 for w in idxs.windows(2) {
                     let (a, b) = (&all[w[0] as usize], &all[w[1] as usize]);
                     let d = seg_len(a.p, b.p);
+                    // Verschweißte Punkte weichen bis weld_r vom Original-
+                    // Sample ab (Sub-Resolution, gewollt) — das angrenzende
+                    // Segment darf entsprechend länger sein.
+                    let slack = if welded_pts.contains(&w[0]) || welded_pts.contains(&w[1]) {
+                        weld_r
+                    } else {
+                        0.0
+                    };
                     assert!(
-                        a.u + b.u >= d * 0.999,
+                        a.u + b.u + slack >= d * 0.999,
                         "U(p)-Überdeckungslücke auf Kante {eid}: d={d:.4} ua={:.4} ub={:.4} bei {:?}",
                         a.u,
                         b.u,
@@ -827,6 +935,226 @@ impl Kernel {
             best
         };
 
+        // ── SCHUTZKORRIDOR um fast-tangentiale Ketten (Cheng–Dey–Ramos,
+        // „protecting balls", 2026-07-13) ──
+        // Im KEIL einer fast-tangentialen Naht (Gyroid∩Zylinder,
+        // Marker∩Zylinder) unterschreitet der Abstand der beiden Flächen-
+        // blätter (≈ d·sinθ bei Abstand d von der Kette) die lokale
+        // Punktdichte s — die Blätter verschachteln sich räumlich, nahtnahe
+        // Punkte tragen per Naht-Band-Einfärbung BEIDE Regionen und
+        // kontaminieren jede Zeugen-Kugel. Die Kette BESITZT deshalb den
+        // Korridor R(q) ≈ s/sinθ: dort dürfen keine FLÄCHENPUNKTE (flag 1)
+        // existieren; die Dreiecks-Fächer laufen von der Kette direkt zu den
+        // ersten Punkten außerhalb. Kettenpunkte selbst sind nie betroffen.
+        // An senkrechten Kanten (sinθ ≈ 1) bleibt R = 0 — Box & Co. exakt
+        // unverändert (Regressions-Schutz).
+        let protect_beta: f32 = std::env::var("LICHEN_PROTECT_BETA")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(1.0);
+        let protect_floor: f32 = std::env::var("LICHEN_PROTECT_FLOOR")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0.05);
+        let ring_div: f32 = std::env::var("LICHEN_PROTECT_RINGDIV")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(8.0);
+        let protect_lip: f32 = std::env::var("LICHEN_PROTECT_LIP")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0.3);
+        let mut protect_r: Vec<f32> = vec![0.0; all.len()];
+        let mut protect_base: Vec<f32> = vec![0.0; all.len()];
+        let mut dbg_sin: Vec<f32> = Vec::new();
+        let mut dbg_raw_r: Vec<f32> = Vec::new();
+        if protect_beta > 0.0 {
+            for i in 0..all.len() {
+                if all[i].flag < 1.5 {
+                    continue; // nur Ketten/Ecken tragen Schutz
+                }
+                // BASIS = die bestehende 0,7·s-Clearance: jeder Kettenpunkt
+                // trägt sie als R-Untergrenze, damit die Lipschitz-Glättung
+                // unten KEINE Nullen entlang der Kette propagiert (gemessen:
+                // Nullen an quasi-senkrechten Abschnitten drückten die
+                // geschützten Nachbarn chain-weit unter die Wirksamkeits-
+                // Schwelle). Der KEIL-ZUSCHLAG wächst mit der Tangentialität:
+                // R = 0,7·s·(1 + β·(1/sinθ − 1)) — bei sinθ = 1 exakt die
+                // Basis (kein Zusatzschutz, Box unverändert), β skaliert nur
+                // den tangentialen Anteil.
+                let s_q = all[i].space.min(h);
+                let base = 0.7 * s_q;
+                protect_base[i] = base;
+                let mut r = base;
+                let pf = &point_faces[i];
+                if pf.len() >= 2 {
+                    // Keilwinkel: min |n1×n2| über die Flächen-Paare — das
+                    // tangentialste Paar bestimmt den Schutz.
+                    let mut sin_min = 1.0f32;
+                    for a in 0..pf.len() {
+                        for b in a + 1..pf.len() {
+                            let (na, nb) = (pf[a].1, pf[b].1);
+                            let cr = [
+                                na[1] * nb[2] - na[2] * nb[1],
+                                na[2] * nb[0] - na[0] * nb[2],
+                                na[0] * nb[1] - na[1] * nb[0],
+                            ];
+                            let s = (cr[0] * cr[0] + cr[1] * cr[1] + cr[2] * cr[2]).sqrt();
+                            sin_min = sin_min.min(s);
+                        }
+                    }
+                    if std::env::var("LICHEN_DEBUG_PROTECT").is_ok() {
+                        dbg_sin.push(sin_min);
+                    }
+                    r = base * (1.0 + protect_beta * (1.0 / sin_min.max(protect_floor) - 1.0));
+                    if std::env::var("LICHEN_DEBUG_PROTECT").is_ok() {
+                        dbg_raw_r.push(r);
+                    }
+                }
+                // Deckel: (a) Ring-Ausdehnung (Mikro-Ring-Kappen nicht
+                // verschlucken), (b) Zellweite des Segment-Hashs (±1-Ring).
+                if let Some(&l) = ring_cap.get(&(i as u32)) {
+                    r = r.min(l / ring_div).max(base.min(h));
+                }
+                protect_r[i] = r.min(h);
+            }
+            // Lipschitz-Glättung ENTLANG der Ketten (R_i ≤ R_j + K·d):
+            // springende Radien an der sinθ-Klemme sind Dichtesprünge an der
+            // Korridorwand — bekannte Defektquelle. Bellman-Ford über die
+            // Segmente bis zum Fixpunkt (Ketten sind kurz).
+            if protect_lip > 0.0 {
+                let dist3 = |a: [f32; 3], b: [f32; 3]| -> f32 {
+                    ((b[0] - a[0]).powi(2) + (b[1] - a[1]).powi(2) + (b[2] - a[2]).powi(2)).sqrt()
+                };
+                loop {
+                    let mut changed = false;
+                    for &(ia, ib) in &edge_seg_idx {
+                        let d = dist3(all[ia as usize].p, all[ib as usize].p);
+                        let (ra, rb) = (protect_r[ia as usize], protect_r[ib as usize]);
+                        if ra > rb + protect_lip * d + 1e-6 {
+                            protect_r[ia as usize] = rb + protect_lip * d;
+                            changed = true;
+                        } else if rb > ra + protect_lip * d + 1e-6 {
+                            protect_r[ib as usize] = ra + protect_lip * d;
+                            changed = true;
+                        }
+                    }
+                    if !changed {
+                        break;
+                    }
+                }
+            }
+            // Nach der Glättung: Einträge ohne echten Keil-Zuschlag
+            // deaktivieren — die Basis deckt die bestehende Wachstums-
+            // Clearance schon ab, der Korridor soll nur an tangentialen
+            // Abschnitten zusätzlich wirken (Box & Co. unverändert).
+            for i in 0..protect_r.len() {
+                if protect_r[i] <= 1.05 * protect_base[i] {
+                    protect_r[i] = 0.0;
+                }
+            }
+        }
+        let seg_protect: Vec<f32> = edge_seg_idx
+            .iter()
+            .map(|&(ia, ib)| protect_r[ia as usize].max(protect_r[ib as usize]))
+            .collect();
+        let protect_any = seg_protect.iter().any(|&r| r > 0.0);
+        if std::env::var("LICHEN_DEBUG_PROTECT").is_ok() {
+            let n = protect_r.iter().filter(|&&r| r > 0.0).count();
+            let mx = protect_r.iter().cloned().fold(0.0f32, f32::max);
+            let mut hist: std::collections::BTreeMap<i32, usize> = Default::default();
+            for &r in &protect_r {
+                if r > 0.0 {
+                    *hist.entry((r / 0.25) as i32).or_default() += 1;
+                }
+            }
+            let quant = |v: &mut Vec<f32>| -> String {
+                if v.is_empty() {
+                    return "-".into();
+                }
+                v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+                let q = |f: f32| v[((v.len() - 1) as f32 * f) as usize];
+                format!("min={:.3} q25={:.3} q50={:.3} q75={:.3} max={:.3}", q(0.0), q(0.25), q(0.5), q(0.75), q(1.0))
+            };
+            eprintln!(
+                "PROTECT: {n} Kettenpunkte geschützt, R_max={mx:.3} hist(0.25mm-Bins)={hist:?}\n  sinθ: {}\n  R_roh (vor Deckel/Glättung): {}",
+                quant(&mut dbg_sin),
+                quant(&mut dbg_raw_r)
+            );
+        }
+        // Varianten (Forschungs-Schalter): "grow" = Korridor im Wachstum/
+        // Refinement/Streuung erzwingen; "hide" = Punkte wachsen lassen, aber
+        // im globalen Walk KOMPLETT ausblenden (hidden vertices der
+        // gewichteten Delaunay-Triangulation — weder Kandidat noch
+        // Kontaminator); "off" = Korridor aus (DEFAULT).
+        //
+        // VERMESSEN (2026-07-13, 13 Konfigurationen auf dem Abnahmefall):
+        // der Schutzkorridor bringt in KEINER Variante eine Verbesserung —
+        // "hide" ist bestenfalls neutral (312 → 313), "grow" und alle
+        // größeren Radien (β 2–4, alte wie kontinuierliche Formel)
+        // verschlechtern H(m→s)/minang deutlich (Fächer über den Korridor
+        // sacken von der gekrümmten Fläche ab und slivern). Die eigentliche
+        // Krankheit war NICHT die Keil-Überfüllung, sondern (a) die zu
+        // breite Naht-Band-Einfärbung (tang 25° ≥ Keilwinkel 16–24°) und
+        // (b) der Normalen-Guard am Naht-ZWICKEL (243 von 283 Blockaden) —
+        // beides separat gefixt. Der Korridor bleibt als Forschungs-
+        // Werkzeug env-schaltbar.
+        let protect_mode: String =
+            std::env::var("LICHEN_PROTECT_MODE").unwrap_or_else(|_| "off".into());
+        let protect_any = protect_any && protect_mode != "off";
+        let corridor_in_grow = protect_any && protect_mode != "hide";
+        let corridor_hide = protect_any && protect_mode == "hide";
+        // Liegt p im Schutzkorridor irgendeines Ketten-Segments?
+        let in_corridor = |p: [f32; 3]| -> bool {
+            if !protect_any {
+                return false;
+            }
+            let (kx, ky, kz) = seg_key(p);
+            for dx in -1..=1 {
+                for dy in -1..=1 {
+                    for dz in -1..=1 {
+                        let Some(v) = seg_grid.get(&(kx + dx, ky + dy, kz + dz)) else {
+                            continue;
+                        };
+                        for &si in v {
+                            let r = seg_protect[si as usize];
+                            if r > 0.0 && seg_dist_pt(p, si) < r {
+                                return true;
+                            }
+                        }
+                    }
+                }
+            }
+            false
+        };
+        // Kandidaten-Horizont-UNTERGRENZE für den Walk: die Fächer Kette ↔
+        // Korridorrand sind bis zu R lang — der Standard-Horizont (2,5·
+        // Nachbar-Spacing) sieht den Partner sonst nicht (Ketten-Spacing im
+        // Naht-Keil ≈ 0,1 mm, R bis in den mm-Bereich).
+        let corridor_horizon = |p: [f32; 3]| -> f32 {
+            if !protect_any {
+                return 0.0;
+            }
+            let (kx, ky, kz) = seg_key(p);
+            let mut best = 0.0f32;
+            for dx in -1..=1 {
+                for dy in -1..=1 {
+                    for dz in -1..=1 {
+                        let Some(v) = seg_grid.get(&(kx + dx, ky + dy, kz + dz)) else {
+                            continue;
+                        };
+                        for &si in v {
+                            let r = seg_protect[si as usize];
+                            if r > 0.0 && seg_dist_pt(p, si) < (2.0 * r).min(h) {
+                                best = best.max(2.0 * r);
+                            }
+                        }
+                    }
+                }
+            }
+            best
+        };
+
         // ── FELD-STREUUNG für Flächen ohne Rand-Seeds (Betreiber-Punkt:
         // der Basis-Algorithmus muss OHNE Fallbacks und ohne Rand-Topologie
         // funktionieren): geschlossene Träger (freie Kugel/Torus/Gyroid)
@@ -916,6 +1244,9 @@ impl Kernel {
                         }
                         if face_of(p) != Some(gf) {
                             continue;
+                        }
+                        if corridor_in_grow && in_corridor(p) {
+                            continue; // Schutzkorridor der Ketten
                         }
                         let min_d2 = (0.7 * h.min(ext / 8.0)) * (0.7 * h.min(ext / 8.0));
                         if out.iter().any(|(q, _)| {
@@ -1184,7 +1515,16 @@ impl Kernel {
                 #[cfg(not(target_arch = "wasm32"))]
                 let t_g = std::time::Instant::now();
                 let grown = lichen::grow_surface(
-                    &bseeds, &all, h, &opts, &fg, &brep_dist, &on_face, &surf_curv, size,
+                    &bseeds,
+                    &all,
+                    h,
+                    &opts,
+                    &fg,
+                    &brep_dist,
+                    &|p| corridor_in_grow && in_corridor(p),
+                    &on_face,
+                    &surf_curv,
+                    size,
                 );
                 #[cfg(not(target_arch = "wasm32"))]
                 if std::env::var("LICHEN_PERF").is_ok() {
@@ -1243,10 +1583,18 @@ impl Kernel {
                         .ok()
                         .and_then(|v| v.parse().ok())
                         .unwrap_or(0.5);
+                    // 25° → 10° (2026-07-13, vermessen): die Keilwinkel der
+                    // Abnahme-Nähte (Gyroid∩Zylinder, Marker∩Zylinder) liegen
+                    // bei 16–24° — mit 25° wurde dort JEDER nahtnahe Punkt
+                    // doppelt eingefärbt und die blatt-restringierte Zeugen-
+                    // Kugel blind („+0 fremdblatt-ignoriert" in der gesamten
+                    // WHY-Forensik). Mit 10°: Demo 312 → 283 offene Kanten,
+                    // χ −22 → −6, H(m→s) halbiert; 5° ändert nichts mehr
+                    // (gesättigt), Regressions-Gate grün.
                     let tang_deg: f32 = std::env::var("LICHEN_FACE_TANGENT_DEG")
                         .ok()
                         .and_then(|v| v.parse().ok())
-                        .unwrap_or(25.0);
+                        .unwrap_or(10.0);
                     let tang_cos = tang_deg.to_radians().cos();
                     let tol = (band * all[i].space).max(1e-4);
                     for (gf, fs) in face_surfs.iter().enumerate() {
@@ -1386,7 +1734,17 @@ impl Kernel {
                         })
                         .filter(|&(a, b)| a != b)
                         .collect();
-                    let members: Vec<u32> = (0..all.len() as u32).collect();
+                    // HIDDEN-VERTEX-Variante (LICHEN_PROTECT_MODE=hide):
+                    // Flächenpunkte im Schutzkorridor werden dem Walk komplett
+                    // vorenthalten — weder Kandidat noch Kontaminator (wie
+                    // „hidden vertices" der gewichteten Delaunay-Triangulation).
+                    let members: Vec<u32> = (0..all.len() as u32)
+                        .filter(|&i| {
+                            !corridor_hide
+                                || all[i as usize].flag > 1.5
+                                || !in_corridor(all[i as usize].p)
+                        })
+                        .collect();
                     let nmap: HashMap<u32, [f32; 3]> =
                         members.iter().map(|&i| (i, all[i as usize].n)).collect();
                     // Normalen-MENGE je Punkt (eine pro angrenzender Fläche);
@@ -1532,7 +1890,29 @@ impl Kernel {
                         // Kanten): im überfüllten Naht-Keil verheddern sich
                         // die dann unabhängigen Blatt-Triangulierungen.
                         // Kontaminator-Sicht = volle Regionen-Sicht.
-                        let contam = full.clone();
+                        // FORSCHUNGS-SCHALTER (LICHEN_CONTAM=host): Host-only
+                        // ERNEUT vermessen, sobald der Schutzkorridor die
+                        // Keil-Überfüllung beseitigt hat — die damalige
+                        // Verschlechterung war eine Crowding-Folge.
+                        let contam = if std::env::var("LICHEN_CONTAM").as_deref() == Ok("host") {
+                            point_faces
+                                .iter()
+                                .enumerate()
+                                .map(|(i, pf)| {
+                                    if all[i].flag > 1.5 {
+                                        return full[i].clone();
+                                    }
+                                    let mut v: Vec<u32> = pf
+                                        .first()
+                                        .map(|&(g, _)| vec![find(&mut parent, g)])
+                                        .unwrap_or_default();
+                                    v.dedup();
+                                    v
+                                })
+                                .collect()
+                        } else {
+                            full.clone()
+                        };
                         (full, contam)
                     };
                     // ── DELAUNAY-REFINEMENT (Boissonnat–Oudot) ──
@@ -1569,6 +1949,13 @@ impl Kernel {
                     let mut face_sets = face_sets;
                     let mut contam_regions = contam_regions;
                     let mut members = members;
+                    // Horizont-Untergrenze je Punkt (Korridor-Fächer, s.o.);
+                    // leer = keine Untergrenzen.
+                    let mut horizon_floor: Vec<f32> = if protect_any {
+                        all.iter().map(|lp| corridor_horizon(lp.p)).collect()
+                    } else {
+                        Vec::new()
+                    };
                     let mut res;
                     let rho = if opts.refine_rho > 0.0 { opts.refine_rho } else { 0.7 };
                     let rounds = if opts.refine { 12 } else { 1 };
@@ -1582,6 +1969,7 @@ impl Kernel {
                             &contam_regions,
                             opts.face_guard,
                             &spacings,
+                            &horizon_floor,
                             &members,
                             &global_chain_edges,
                             opts.curv_angle_deg.to_radians(),
@@ -1689,8 +2077,8 @@ impl Kernel {
                             // das Netz (Box: 0 → 543 offene Kanten, Punktzahl
                             // 284 → 1326). Der Rand wird von der KETTE
                             // abgetastet, nicht von der Fläche.
-                            if brep_dist(p) < 0.7 * sp {
-                                continue;
+                            if brep_dist(p) < 0.7 * sp || in_corridor(p) {
+                                continue; // Ketten-Clearance/Schutzkorridor
                             }
                             // Separation (Terminierung!).
                             let (kx, ky, kz) = key(p);
@@ -1729,6 +2117,9 @@ impl Kernel {
                             normal_sets.push(vec![nw]);
                             face_sets.push(vec![gf]);
                             contam_regions.push(vec![gf]);
+                            if protect_any {
+                                horizon_floor.push(corridor_horizon(p));
+                            }
                             members.push(idx);
                             grid.entry(key(p)).or_default().push(idx);
                             inserted += 1;

@@ -24,6 +24,16 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.565",
+    entries: [
+      {
+        kind: "fix",
+        scope: "mesher",
+        text: "Lichen: Naht-Risse an fast-tangentialen Verschneidungen weitgehend geschlossen (Gyroid-Ausschnitt 312 → 21 offene Kanten, Hausdorff beidseitig ≤ 0,1 mm, Aspect p99 1,85). Drei Wurzeln, per WHY-Forensik isoliert: (1) Die Naht-Band-Einfärbung (25°-Tangential-Schwelle) gab JEDEM nahtnahen Punkt beide Regionen — die blatt-restringierte Zeugen-Kugel war dadurch wirkungslos; Schwelle jetzt 10° (die realen Keilwinkel liegen bei 16–24°). (2) Der 90°-Normalen-Guard blockte am Zwickel, wo die Gyroid-Wand spitz auf den Zylinder zuläuft, 243 voll gültige Dreiecke — das Netz muss dort legitim >90° um die Spitze laufen; strikte Ausnahme: >90°-Paare nur, wenn die Sehne strikt auf der Fläche liegt (schließt zugleich das θ-skalierte Sichtlinien-Schlupfloch; Platten-Querstiche fallen weiter durch). (3) Kettenpunkte VERSCHIEDENER B-Rep-Kanten im Abstand unterhalb der Auflösung (0,09 mm am Zwickel) teilen jetzt einen Mesh-Vertex (Verschweißung bei 1,5·minEdgeSpacing), und das Ketten-Kreuzungs-Veto ignoriert fremde Ketten, die näher als ihr eigenes Spacing an einer Dreiecks-Ecke vorbeilaufen. Der theoriegeleitete Schutzkorridor (Cheng–Dey–Ramos protecting balls) wurde vollständig implementiert und in 13 Konfigurationen vermessen — nie besser als 287 offene Kanten, bricht ab β≥2 Hausdorff und Winkel; bleibt als Default-aus-Werkzeug (LICHEN_PROTECT_MODE) erhalten. Volle Kernel-Suite 1078/1078 grün.",
+      },
+    ],
+  },
+  {
     version: "0.6.564",
     entries: [
       {
