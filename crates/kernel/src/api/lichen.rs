@@ -383,6 +383,11 @@ impl Kernel {
             let mut chain_owner: HashMap<u32, u32> = HashMap::new();
             let mut welded_pts: HashSet<u32> = HashSet::new();
             let mut edge_chain: HashMap<u32, Vec<u32>> = HashMap::new();
+            // Phase 1 baut nur die Index-Ketten; U/space-Bindung (bound_pair)
+            // und ring_cap folgen in Phase 3. Der Split hält die Stelle
+            // offen, an der eine Ketten-Topologie-Reparatur (Umbau der
+            // Ketten ZWISCHEN Bau und Bindung) ansetzen kann — s. Phase 2.
+            let mut built: Vec<(u32, Vec<u32>, bool)> = Vec::new();
             for (eid, (e, pe)) in brep.edges.iter().zip(&pedges).enumerate() {
                 if pe.collapse {
                     // Offene Mikro-Kante: der geteilte Cluster-Repräsentant
@@ -472,11 +477,32 @@ impl Kernel {
                 if let Some(ve) = e.end {
                     idxs.push(corner_slot[&(ve.0 as usize)]);
                 }
-                // Nachbar-Segmente: R_BRep-Distanzquelle UND U(p)-Deckel
-                // (Ticket 0d94273b) — der Anzeige-Kreis eines Kantenpunkts
-                // reicht höchstens bis zum nächsten Ketten-Nachbarn. Bei
-                // geschlossenen Ringen zählt auch das Schluss-Segment
-                // letzter→erster Punkt.
+                built.push((eid as u32, idxs, closed));
+            }
+
+            // ── Phase 2: SEGMENT-VERSCHWEISSUNG — GEPRÜFT UND VERWORFEN
+            // (2026-07-13). Hypothese: fremde Ketten schneiden sich an den
+            // Rest-Zwickeln OFF-VERTEX unterhalb der Auflösung; ein
+            // gemeinsamer Schnitt-Vertex (Segment-Segment-Weld analog zum
+            // Punkt-Weld) würde das Kreuzungs-Veto lösen. Messung: bei
+            // KEINEM Radius (1–3·weld_r) existiert ein echter Off-Vertex-
+            // Quasi-Schnitt — die nächsten Annäherungen liegen immer an den
+            // Segment-ENDEN (Punkt-Weld-Territorium, aber jenseits weld_r);
+            // die wenigen End-Snap-Einfügungen verschlechterten (21→23 bzw.
+            // 10→11 offene Kanten). Die echte Ursache der „ketten-kreuzung"-
+            // Vetos war die PROJEKTION fremder Blätter in die Dreiecksebene —
+            // gelöst in `lichen_tri.rs` (Regionen-Restriktion + Ebenen-
+            // Abstands-Gate im Kreuzungstest). Der Phasen-Split (Ketten erst
+            // bauen, dann binden) bleibt: er hält die Stelle offen, an der
+            // eine echte Ketten-Topologie-Reparatur ansetzen müsste.
+
+            // ── Phase 3: U/space-Bindung + Ring-Deckel über die finalen
+            // Ketten. Nachbar-Segmente: R_BRep-Distanzquelle UND U(p)-Deckel
+            // (Ticket 0d94273b) — der Anzeige-Kreis eines Kantenpunkts
+            // reicht höchstens bis zum nächsten Ketten-Nachbarn. Bei
+            // geschlossenen Ringen zählt auch das Schluss-Segment
+            // letzter→erster Punkt.
+            for (eid, idxs, closed) in built {
                 let mut bound_pair = |ia: u32, ib: u32, all: &mut Vec<LPoint>| {
                     let (pa, pb) = (all[ia as usize].p, all[ib as usize].p);
                     let d = ((pa[0] - pb[0]).powi(2)
@@ -513,7 +539,7 @@ impl Kernel {
                         *e = e.min(lsum);
                     }
                 }
-                edge_chain.insert(eid as u32, idxs);
+                edge_chain.insert(eid, idxs);
             }
 
             // Überdeckungs-Invariante (nur Tests, Ticket 2e7eab20): jedes

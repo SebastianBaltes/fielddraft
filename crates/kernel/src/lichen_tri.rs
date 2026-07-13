@@ -998,7 +998,9 @@ pub fn triangulate_global_walk(
     };
     // Ketten-Kanten sind FEATURE-Linien: kein Dreieck darf sie kreuzen (sie
     // dürfen aber Dreiecks-Kanten SEIN — nur so läuft der Walk über die Kante).
-    let crosses_chain = |a: u32, b: u32, c: u32| -> bool {
+    // Liefert das ERSTE kreuzende Segment (Diagnose); `crosses_chain` ist der
+    // boolesche Deckel darüber.
+    let crossing_seg = |a: u32, b: u32, c: u32| -> Option<(u32, u32)> {
         let (pa, pb, pc) = (
             points[a as usize],
             points[b as usize],
@@ -1025,9 +1027,30 @@ pub fn triangulate_global_walk(
             (pa[1] + pb[1] + pc[1]) / 3.0,
             (pa[2] + pb[2] + pc[2]) / 3.0,
         ];
+        // BLATT-RESTRIKTION (2026-07-13, wie die Zeugen-Kugel): eine Kette,
+        // die KEINE B-Rep-Region mit dem Dreieck teilt, ist ein fremdes
+        // Blatt — ihre „Kreuzung" ist eine reine Projektion (der Test
+        // projiziert jedes Segment im r_tri-Umkreis in die Dreiecksebene;
+        // am Zwickel liegen fremde Nähte 0,1–0,2 mm ÜBER dem Dreieck und
+        // vetoen jeden legitimen Fächer — Rest-Forensik: 13 von 21 offenen
+        // Kanten). Die Region des Segments = gemeinsame Regionen seiner
+        // Endpunkte (die Kette liegt auf den Flächen, die beide teilen);
+        // ohne Regionen-Info bleibt das Veto konservativ bestehen.
+        let tri_f = tri_regions(a, b, c);
         for &(u, v) in &chain_segs {
             if u == a || u == b || u == c || v == a || v == b || v == c {
                 continue;
+            }
+            if !tri_f.is_empty() {
+                let (fu, fv) = (
+                    face_sets.get(u as usize).map(Vec::as_slice).unwrap_or(&[]),
+                    face_sets.get(v as usize).map(Vec::as_slice).unwrap_or(&[]),
+                );
+                let seg_has_common = fu.iter().any(|x| fv.contains(x));
+                let shares_tri = fu.iter().any(|x| fv.contains(x) && tri_f.contains(x));
+                if seg_has_common && !shares_tri {
+                    continue; // fremdes Blatt — nur Projektion, kein Kreuzen
+                }
             }
             let (pu, pv) = (points[u as usize], points[v as usize]);
             // 3D-NÄHE-CULL (echter Punkt-Segment-Abstand zum Zentroid). Der
@@ -1075,20 +1098,38 @@ pub fn triangulate_global_walk(
             if near_vertex {
                 continue;
             }
+            // EBENEN-ABSTANDS-GATE (2026-07-13): der Test PROJIZIERT das
+            // Segment in die Dreiecksebene — eine Kette, die komplett auf
+            // EINER Seite der Ebene liegt und ihr nie näher kommt als die
+            // halbe lokale Abtastweite, kann das Dreieck nicht durchstoßen
+            // (eine echte Auf-der-Fläche-Kreuzung liegt sagitta-nah an der
+            // Ebene, «0.5·spacing). An Zwickeln konvergierender Nähte
+            // schweben fremde Ketten 0.09–0.14 mm ÜBER dem Dreieck und
+            // vetoen sonst jeden Fächer, auch wenn die Regionen-Restriktion
+            // (unten) mangels gemeinsamer Dreiecks-Region blind ist.
+            let d0 = dot(sub(pu, pa), n);
+            let d1 = dot(sub(pv, pa), n);
+            let tol_pierce = 0.5 * tol;
+            if d0 * d1 > 0.0 && d0.abs().min(d1.abs()) > tol_pierce {
+                continue;
+            }
             let (su, sv) = (to2(pu), to2(pv));
             for e in [(0usize, 1usize), (1, 2), (2, 0)] {
                 if segments_cross(t2[e.0], t2[e.1], su, sv) {
-                    return true;
+                    return Some((u, v));
                 }
             }
         }
-        false
+        None
     };
+    let crosses_chain = |a: u32, b: u32, c: u32| -> bool { crossing_seg(a, b, c).is_some() };
     // Gültigkeit: leere Kugel + kein Ketten-Kreuzen + Sichtlinien (Sehnen-
     // Mittelpunkte und Zentroid auf der KÖRPER-Oberfläche; im globalen Walk
     // gibt es keine „eigene Trägerfläche" mehr — das Body-Feld ist die
-    // Wahrheit) + Cocone gegen fremde Blätter.
-    let valid = |a: u32, b: u32, c: u32| -> bool {
+    // Wahrheit) + Cocone gegen fremde Blätter. `valid_geom` = alles außer
+    // der leeren Kugel (das Naht-Stitching unten braucht genau diese
+    // Trennung: geometrische Wahrheit ja, Abtast-Kriterium nein).
+    let valid_geom = |a: u32, b: u32, c: u32| -> bool {
         let (pa, pb, pc) = (
             points[a as usize],
             points[b as usize],
@@ -1192,8 +1233,9 @@ pub fn triangulate_global_walk(
         if fg(cen).0.abs() > (0.3 * e_max * theta).max(0.1 * spacing[a as usize]) {
             return false;
         }
-        empty(a, b, c)
+        true
     };
+    let valid = |a: u32, b: u32, c: u32| -> bool { valid_geom(a, b, c) && empty(a, b, c) };
     let near = |x: u32, y: u32| -> Vec<u32> {
         let (px, py) = (points[x as usize], points[y as usize]);
         let mid = [
@@ -1271,18 +1313,117 @@ pub fn triangulate_global_walk(
             }
         }
     }
-    let tris = extract_manifold(points, normals, &seeds, &HashSet::new(), &near, &valid);
+    let mut tris = extract_manifold(points, normals, &seeds, &HashSet::new(), &near, &valid);
 
-    let mut edge_use: HashMap<(u32, u32), u32> = HashMap::new();
-    for &[a, b, c] in &tris {
-        for (x, y) in [(a, b), (b, c), (c, a)] {
-            *edge_use.entry((x.min(y), x.max(y))).or_default() += 1;
+    let count_edges = |tris: &[[u32; 3]]| -> HashMap<(u32, u32), u32> {
+        let mut edge_use: HashMap<(u32, u32), u32> = HashMap::new();
+        for &[a, b, c] in tris {
+            for (x, y) in [(a, b), (b, c), (c, a)] {
+                *edge_use.entry((x.min(y), x.max(y))).or_default() += 1;
+            }
         }
-    }
-    let nonmanifold_edges = edge_use.values().filter(|&&u| u > 2).count();
+        edge_use
+    };
+    let mut edge_use = count_edges(&tris);
     let mut open_edges: Vec<(u32, u32)> =
         edge_use.iter().filter(|(_, &u)| u == 1).map(|(&e, _)| e).collect();
     open_edges.sort_unstable();
+
+    // ── NAHT-STITCHING (2026-07-13, deterministischer Post-Pass) ──
+    // Die letzten offenen Kanten des Abnahmefalls sind MIKRO-LOOPS (3–4
+    // Kanten, jeder Rand-Vertex Grad 2) an Zwickeln konvergierender Nähte.
+    // Ihre Schließ-Dreiecke sind voll orientierbar (jede offene Kante hat
+    // genau EINE belegte Halbkante) und liegen strikt auf der Fläche —
+    // abgelehnt wurden sie nur, weil der Zeugen-Newton am SDF-Knick nicht
+    // konvergiert bzw. die Kugel im überfüllten Keil nie leer wird (beides
+    // Abtast-Artefakte, keine Geometrie). Der Post-Pass schließt solche
+    // Loops NUR wenn jedes Dreieck `valid_geom` besteht — Degenerations-
+    // Guard, Normalen-Guard, Sichtlinien je Sehne + Zentroid (θ-skalierte
+    // Sagitta-Toleranz — kein blindes Loch-Stopfen) und Ketten-Kreuzung.
+    // Einzig das Zeugen-Kugel-Kriterium entfällt: das Loch ist topologisch
+    // eindeutig, additiv und manifold-sicher (die neuen Dreiecke belegen
+    // exakt die freien Halbkanten).
+    let stitch_on = std::env::var("LICHEN_STITCH").map(|v| v != "0").unwrap_or(true);
+    if stitch_on && !open_edges.is_empty() {
+        let open_set: HashSet<(u32, u32)> = open_edges.iter().copied().collect();
+        // Gerichteter Loch-Rand: existierende Halbkante (u→v) ⇒ das Loch
+        // wird v→u durchlaufen. Vertizes mit >1 Nachfolger (non-simple)
+        // werden ausgelassen.
+        let mut succ: HashMap<u32, u32> = HashMap::new();
+        let mut bad: HashSet<u32> = HashSet::new();
+        for &[a, b, c] in &tris {
+            for (x, y) in [(a, b), (b, c), (c, a)] {
+                if open_set.contains(&(x.min(y), x.max(y))) && succ.insert(y, x).is_some() {
+                    bad.insert(y);
+                }
+            }
+        }
+        let stitch_ok = |a: u32, b: u32, c: u32| -> bool { valid_geom(a, b, c) };
+        let mut visited: HashSet<u32> = HashSet::new();
+        let mut added: Vec<[u32; 3]> = Vec::new();
+        let mut starts: Vec<u32> = succ.keys().copied().collect();
+        starts.sort_unstable();
+        for &s0 in &starts {
+            if visited.contains(&s0) || bad.contains(&s0) {
+                continue;
+            }
+            // Loop ablaufen (max 5 — Mikro-Löcher; größere bleiben ehrlich offen).
+            let mut ws: Vec<u32> = vec![s0];
+            let ok = loop {
+                let Some(&nx) = succ.get(ws.last().unwrap()) else { break false };
+                if bad.contains(&nx) {
+                    break false;
+                }
+                if nx == s0 {
+                    break true;
+                }
+                if ws.contains(&nx) || ws.len() > 5 {
+                    break false;
+                }
+                ws.push(nx);
+            };
+            for &w in &ws {
+                visited.insert(w);
+            }
+            if !ok {
+                continue;
+            }
+            let fill: Option<Vec<[u32; 3]>> = match ws.len() {
+                3 => {
+                    let t = [ws[0], ws[1], ws[2]];
+                    stitch_ok(t[0], t[1], t[2]).then(|| vec![t])
+                }
+                4 => {
+                    // Diagonale wählen: beide Dreiecke müssen bestehen und die
+                    // Diagonale darf noch nicht belegt sein (Manifold-Schutz).
+                    let free = |x: u32, y: u32| -> bool {
+                        !edge_use.contains_key(&(x.min(y), x.max(y)))
+                    };
+                    let split = |i: usize| -> Option<Vec<[u32; 3]>> {
+                        let (a, b, c, d) =
+                            (ws[i], ws[(i + 1) % 4], ws[(i + 2) % 4], ws[(i + 3) % 4]);
+                        (free(a, c) && stitch_ok(a, b, c) && stitch_ok(a, c, d))
+                            .then(|| vec![[a, b, c], [a, c, d]])
+                    };
+                    split(0).or_else(|| split(1))
+                }
+                _ => None,
+            };
+            if let Some(ts) = fill {
+                added.extend(ts);
+            }
+        }
+        if !added.is_empty() {
+            if std::env::var("LICHEN_WHY").is_ok() {
+                eprintln!("STITCH: {} Mikro-Loop-Dreiecke ergänzt", added.len());
+            }
+            tris.extend(added);
+            edge_use = count_edges(&tris);
+            open_edges = edge_use.iter().filter(|(_, &u)| u == 1).map(|(&e, _)| e).collect();
+            open_edges.sort_unstable();
+        }
+    }
+    let nonmanifold_edges = edge_use.values().filter(|&&u| u > 2).count();
 
     // ── FORENSIK (LICHEN_WHY): warum bleibt eine Kante offen? ──
     if std::env::var("LICHEN_WHY").is_ok() && !open_edges.is_empty() {
@@ -1423,10 +1564,14 @@ pub fn triangulate_global_walk(
                                     .filter(|&(i, j)| !normals_compatible(i, j))
                                     .collect();
                                 let is_empty = empty(u, v, w);
+                                let xseg = crossing_seg(u, v, w);
                                 eprintln!(
-                                    "      cand #{w} d={dw:.3} leer={} kette={} normguard={:?} valid={}{}",
+                                    "      cand #{w} d={dw:.3} leer={} kette={:?} normguard={:?} valid={}{}",
                                     is_empty,
-                                    crosses_chain(u, v, w),
+                                    xseg.map(|(x, y)| format!(
+                                        "{x}{:?}–{y}{:?}",
+                                        points[x as usize], points[y as usize]
+                                    )),
                                     ng,
                                     valid(u, v, w),
                                     if is_empty {

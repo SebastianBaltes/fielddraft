@@ -145,3 +145,42 @@ Format: Zeitstempel · Hypothese/Frage · Ergebnis · Entscheidung.
   Ketten am Zwickel bis zum echten Schnittpunkt verfolgen (Weave droppt den
   Verbindungs-Vertex, DL-71) bzw. off-vertex-schneidende Ketten-Segmente als
   EIN Kettenzug re-parametrisieren.
+
+## 2026-07-13 09:30 — Iteration 4: 21 → 0 (v0.6.566, wasserdicht)
+
+- Ansatz A (Segment-Segment-Verschweißung am Quasi-Schnitt) VOLL implementiert
+  und WIDERLEGT: bei keinem Radius (1–3·weld_r) existiert ein echter
+  Off-Vertex-Quasi-Schnitt — die nächsten Annäherungen fremder Ketten liegen
+  immer an Segment-ENDEN (jenseits weld_r); die wenigen End-Snap-Einfügungen
+  verschlechterten (21→23 bzw. 10→11). Code entfernt; der Phasen-Split
+  (Ketten bauen → binden) bleibt als Ansatzstelle dokumentiert.
+- DIE ECHTE WURZEL der 13 „ketten-kreuzung": neue Forensik (crossing_seg
+  meldet das kreuzende Segment + Koordinaten) zeigt, dass das Veto fremde
+  Nähte trifft, die 0,09–0,14 mm ÜBER der Dreiecksebene schweben — der Test
+  PROJIZIERT jedes Segment im r_tri-Umkreis in die Ebene (r_tri = längste
+  Kante ≫ Blattabstand). Kein Schneiden, reine Projektion.
+  1. BLATT-RESTRIKTION im Kreuzungs-Veto (wie Zeugen-Kugel, Cheng–Dey–
+     Levine): Kette ohne gemeinsame B-Rep-Region mit dem Dreieck kreuzt
+     nicht (Region des Segments = gemeinsame Regionen seiner Endpunkte;
+     ohne Info konservativ). 21 → 10.
+  2. EBENEN-ABSTANDS-GATE: Segment ganz auf EINER Ebenenseite und weiter
+     als 0,5·Spacing von der Ebene kann das Dreieck nicht durchstoßen
+     (echte Auf-der-Fläche-Kreuzung liegt sagitta-nah, ≪0,5·Spacing) —
+     fängt die Fälle, wo die Regionen-Restriktion mangels gemeinsamer
+     Dreiecks-Region (gemischte Ecken am Drei-Flächen-Zwickel) blind ist.
+- REST = Mikro-Loops (3–4 Kanten, alle Rand-Vertizes Grad 2): Schließ-
+  Dreiecke voll orientierbar + strikt auf der Fläche, abgelehnt NUR vom
+  Zeugen-Kriterium (Newton konvergiert am SDF-Knick nicht: „kontaminiert:
+  0 Punkte"; bzw. Kugel im überfüllten Keil nie leer). NAHT-STITCHING als
+  deterministischer Post-Pass (lichen_tri.rs, global walk): Loops ≤5 Kanten
+  schließen, wenn jedes Dreieck `valid_geom` besteht (= valid OHNE leere
+  Kugel: Degenerations-, Normalen-Guard, Sichtlinien θ-toleriert, Ketten-
+  Kreuzung); 4-Loops über die erste manifold-freie Diagonale; additiv,
+  belegt exakt die freien Halbkanten (Kill-Switch LICHEN_STITCH=0).
+  Striktes |f|≤0.15·spacing im Stitch war zu streng: legitime Dreiecke
+  WICKELN am Zwickel um die 90°-Box-Kante (Sehnen-Sagitta ~l/(2√2)).
+- Messreihe: 21 (Start) → 23 (Segweld allein) → 10 (Blatt-Restriktion) →
+  6 (+Stitching, strikt) → **0** (+Ebenen-Gate, Stitch=valid_geom).
+  Endstand h=10: pts 5738, tris 11468, open 0, nm 0, orient 0, χ=2,
+  H(m→s) 0,0213, H(s→m) 0,098 (p95 0,0022), asp p99 1,85, minang 14,9°;
+  h=6 und h=14 ebenfalls open=0. Lichen-Gates 33/33, Suite 1078/1078.

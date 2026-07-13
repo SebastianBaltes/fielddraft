@@ -24,6 +24,16 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.566",
+    entries: [
+      {
+        kind: "fix",
+        scope: "mesher",
+        text: "Lichen: Gyroid-Abnahmefall WASSERDICHT — 21 → 0 offene Kanten (χ=2, 0 non-manifold, Hausdorff/Aspect/Winkel unverändert: H(m→s) 0,021 mm, H(s→m) 0,098 mm, Aspect p99 1,85, min. Winkel 14,9°; auch bei h=6 und h=14 dicht). Zwei Wurzeln, per Kreuzungs-Segment-Forensik isoliert: (1) Das Ketten-Kreuzungs-Veto projiziert jedes nahe Ketten-Segment in die Dreiecksebene — an Zwickeln konvergierender Nähte vetoten dadurch FREMDE Blätter, die 0,1–0,2 mm ÜBER dem Dreieck schweben, jeden legitimen Fächer (13 der letzten 21). Fix: Blatt-Restriktion wie bei der Zeugen-Kugel (Kette ohne gemeinsame B-Rep-Region mit dem Dreieck kreuzt nicht) plus Ebenen-Abstands-Gate (Segment ganz auf einer Seite und weiter als 0,5·Spacing von der Ebene kann nicht durchstoßen). (2) Die verbleibenden Mikro-Löcher (3–4-Kanten-Loops, Grad 2) waren voll orientierbare, strikt auf der Fläche liegende Schließ-Dreiecke, die NUR am Zeugen-Kugel-Kriterium scheiterten (Newton konvergiert am SDF-Knick nicht bzw. Kugel im überfüllten Keil nie leer — Abtast-Artefakte). Neuer deterministischer Naht-Stitching-Post-Pass: Mikro-Loops (≤5 Kanten) werden geschlossen, wenn jedes Dreieck die volle geometrische Gültigkeit (Degenerations-Guard, Normalen-Guard, Sichtlinien, Ketten-Kreuzung) besteht — nur das Zeugen-Kriterium entfällt; additiv und manifold-sicher. Segment-Segment-Verschweißung (Zwickel-Schnittpunkt-Hypothese) implementiert, vermessen, verworfen: es existieren keine Off-Vertex-Quasi-Schnitte. Lichen-Gates 33/33, Kernel-Suite 1078/1078 grün.",
+      },
+    ],
+  },
+  {
     version: "0.6.565",
     entries: [
       {
