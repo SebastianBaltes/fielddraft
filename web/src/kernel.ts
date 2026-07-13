@@ -1098,10 +1098,15 @@ export class Kernel {
   // → exportMeshEnd(). Any document mutation drops the session.
 
   /** Start an export meshing pass; returns the body count to loop.
-   *  `method` selects the generic mesher (`"adaptive"` or
-   *  `"surface-nets"`). */
-  exportMeshBegin(cellSizeMm: number, method: string): number {
-    return this.inner.exportMeshBegin(cellSizeMm, method);
+   *  `method` selects the generic mesher (`"adaptive"`, `"surface-nets"`,
+   *  `"lichen"`, …); `optionsJson` carries the method-specific knobs beyond
+   *  the cell size (camelCase, see `ExportMethodOptions`; `""` = defaults). */
+  exportMeshBegin(
+    cellSizeMm: number,
+    method: string,
+    optionsJson: string,
+  ): number {
+    return this.inner.exportMeshBegin(cellSizeMm, method, optionsJson);
   }
 
   /** Pre-mesh estimate (dense-grid methods only): finest achievable cell

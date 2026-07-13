@@ -150,6 +150,15 @@
     }
   }
 
+  /* Meshing runtime — live while a pass runs, final in the report. Tabular
+     digits so the ticking number doesn't jitter the layout. */
+  & .runtime {
+    font-size: var(--fs-base);
+    color: var(--color-text-muted);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+
   & .progress-block {
     display: flex;
     align-items: center;

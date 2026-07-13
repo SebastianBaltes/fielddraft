@@ -22,7 +22,11 @@ export type ExportFormat = "stl" | "3mf";
  *    edges.
  *  - `cgal-server` — server-side CGAL Mesh_3 via the backend job queue
  *    (plan CGAL-SERVER-MESHING): watertight, 2-manifold, exact protected
- *    B-Rep edges. Needs a server-saved project. */
+ *    B-Rep edges. Needs a server-saved project.
+ *  - `lichen` — the SDF + B-Rep surface mesher (docs/Lichen-Architecture.md):
+ *    B-Rep corners/edges seed the points, curvature-adaptive growth fills the
+ *    faces, a global manifold walk extracts the sheet. Cell size = target edge
+ *    length `h`. */
 export type MeshMethod =
   | "adaptive"
   | "cgal-server"
@@ -36,7 +40,24 @@ export type MeshMethod =
   | "extended-marching-cubes"
   | "macet"
   | "manifold-dc"
-  | "hybrid-pasm";
+  | "hybrid-pasm"
+  | "lichen";
+
+/** Method-specific export knobs beyond the cell size (kernel:
+ *  `export_mesh::ExportMethodOptions`, camelCase JSON). Kept to the MINIMUM the
+ *  export needs — everything else about a method is a fixed preset in the
+ *  kernel (for Lichen: the acceptance configuration, docs §8q). */
+export interface ExportMethodOptions {
+  /** Lichen: max normal-turn per mesh edge in degrees — how finely curved
+   *  faces are resolved (scale-free: `R_curv = α/κ`). Ignored by the other
+   *  methods. */
+  curvAngleDeg: number;
+}
+
+/** Default curvature angle for the Lichen export (kernel default too). 10° =
+ *  0.04 mm chord error on a 10 mm radius, at ~1/27 of the triangles the 2° of
+ *  the acceptance gate costs on a smooth body. */
+export const DEFAULT_CURV_ANGLE_DEG = 10;
 
 /** Per-body slice of the export report (kernel: `BodyExportReport`,
  *  with the `MeshValidation` fields flattened in). */
@@ -155,6 +176,7 @@ export interface MesherExportRequest {
   documentJson: string;
   cellSizeMm: number;
   method: MeshMethod;
+  options: ExportMethodOptions;
   format: ExportFormat;
 }
 

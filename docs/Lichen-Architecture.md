@@ -1416,6 +1416,60 @@ kernel release 1112/1112.
 im globalen Walk — 0 Verbesserungen auf graze UND twist; der Befund
 (Fächer = Punktverteilungsproblem) führte direkt zum Repair-Design.
 
+## 8v. Lichen im Mesh-Export: die Leiter (Ticket faa42489, 2026-07-13)
+
+Lichen ist im Export-Dialog als Meshing-Methode wählbar
+(`export_mesh::MeshMethod::Lichen`). Nach außen hat er **zwei** Regler —
+Ziel-Kantenlänge `h` (das Zellgrößen-Feld) und Krümmungswinkel; alles
+andere ist ein festes Kernel-Preset (`lichen_export_options`) = die
+Abnahme-Konfiguration aus §8q (`generalTri`, `accept:"witness"`,
+`extractWalk`, `globalWalk`, `sizingField`, `useReach:false`,
+`fillHoles:false`, `minEdgeSpacing = 0,01·h`).
+
+**Zwei Defekte, beim Bau gemessen** (Release-Kernel, Body-gefiltert):
+
+| Body | ε = 0 | ε = 0,1 (Abnahme-Wert) |
+|------|-------|------------------------|
+| Würfel 20 mm, h=5 | 180 Δ, χ=2 ✓ | 186 Δ, **8 Komponenten**, χ=16 ✗ |
+| Box + Bohrung, h=2 | 844 Δ, χ=2 ✓ | 223 Δ, 8 Komp., 25 offene ✗ |
+| Abnahme-Ausschnitt, h=10 | 3 offene, χ=1 ✗ | 11 436 Δ, χ=2 ✓ |
+
+1. **ε-Sampling + Sizing-Field zerstört Polyeder.** Auf dem Würfel liefert
+   die Kombination `lfsFactor:0.1` + `sizingField:true` ein *geschlossenes*
+   Netz aus **acht Klümpchen um die Ecken** — alle sechs Flächen fehlen.
+   Jede Option für sich ist harmlos (nur Sizing: 92 Punkte/180 Δ; nur ε:
+   791/1578, χ=2). Das ist die Wiederkehr von „Befund 6“ (§8d: die
+   Medialachse läuft in jede scharfe Kante, lfs → 0) — der dortige Fix
+   (`reach_inner` zählt nur echte Gegenblätter) greift offenbar nicht,
+   sobald das Sizing-Field die lfs-Stützstellen glättet. **Nicht im
+   Mesher gefixt** (eigene Arbeitslinie, Abnahme-Gates hängen dran).
+2. **Die Überdeckungs-Invariante ist auf dünnen Wänden verletzt.** Gyroid ∩
+   Box mit ε = 0 lässt den `assert!` in `api/lichen.rs` feuern
+   („U(p)-Überdeckungslücke auf Kante …“). Wichtig für die Einordnung: die
+   Invariante ist `#[cfg(test)]`-gated (Ticket 2e7eab20) — sie kann im
+   WASM/Produktionspfad **gar nicht** panicken. Das macht sie aber nicht
+   harmlos, im Gegenteil: statt lautem Abbruch mesht der Produktions-Pfad
+   dort **still mit einer Überdeckungslücke** weiter, und die Umkugel-
+   Garantie (§2) ist verletzt. Der `catch_unwind` in `lichen_export_body`
+   ist reine Gürtel-und-Hosenträger-Absicherung für native Test-Läufe, kein
+   WASM-Schutz — der Defekt selbst bleibt zu fixen.
+
+**Konsequenz — der Export klettert eine Leiter** (`lichen_export_body`),
+statt EIN Preset zu behaupten:
+
+* **Sprosse 0:** ε = 0 — korrekt und schnell auf CAD-Körpern.
+* **Sprosse 1:** ε = 0,1 — die Dünnwand-/TPMS-Konfiguration.
+* **sonst:** adaptive Route (MDC), der Bericht nennt den Grund.
+
+Jede Sprosse muss **zwei Tore** passieren: (a) wasserdicht und (b) die
+Fläche wirklich **überdeckt** — max. Hausdorff `surface→mesh` ≤ 0,5·h,
+gemessen gegen die echte SDF (`lichen_metrics::hausdorff`, 3000
+deterministische Stichproben). Tor (a) allein genügt **nicht**: der
+8-Klümpchen-Würfel ist eine tadellose geschlossene 2-Mannigfaltigkeit.
+Nur die Richtung `surface→mesh` sieht fehlende Flächen — genau die
+Lehre aus §8q, hier zum ersten Mal als **Produktions-Tor** statt als
+Test-Metrik. Panics werden pro Sprosse abgefangen.
+
 ## 8r. Offene Fronten (Stand 2026-07-13, v0.6.569)
 
 1. **Displace-Bodies** — **GESCHLOSSEN**, s. §8t (Displace-Kugel

@@ -24,6 +24,23 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.577",
+    entries: [
+      {
+        kind: "feat",
+        scope: "export",
+        text: "Der Mesh-Export kennt jetzt auch den Lichen-Mesher (SDF + B-Rep): B-Rep-Ecken und Kantenzüge setzen die Punkte, ein krümmungsadaptives Wachstum füllt die Flächen, ein globaler Manifold-Walk zieht daraus ein geschlossenes Netz. Sichtbar sind genau zwei Regler — die Ziel-Kantenlänge h (das Zellgrößen-Feld) und der Krümmungswinkel (Voreinstellung 10°, steuert die Feinheit gekrümmter Flächen). Alles andere ist im Kernel als Export-Preset festgezurrt: exakt die Konfiguration, unter der die Abnahme-Gates des Meshers wasserdicht sind, plus zwei harte Prüfungen (geschlossen UND die Fläche wirklich überdeckt) — besteht ein Körper sie nicht, fällt er automatisch auf die adaptive Route zurück, und der Bericht sagt, welche Route ihn geliefert hat. Der Lichen-Debug-Dialog mit allen Schrauben bleibt unverändert bestehen.",
+        tickets: ["faa42489"],
+      },
+      {
+        kind: "feat",
+        scope: "export",
+        text: "Der Mesh-Export zeigt seine Laufzeit — während des Laufs tickt die verstrichene Zeit mit (der Dialog sieht nicht mehr aus, als hinge er), und der Bericht nennt am Ende die Gesamtdauer. Gilt für alle Meshing-Methoden, auch die Server-Route.",
+        tickets: ["6a0354e8"],
+      },
+    ],
+  },
+  {
     version: "0.6.576",
     entries: [
       {

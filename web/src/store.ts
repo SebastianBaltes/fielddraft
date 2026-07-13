@@ -59,6 +59,7 @@ import type { MeshOverlayData } from "./meshIO";
 import type {
   ExportEstimate,
   ExportFormat,
+  ExportMethodOptions,
   ExportOutcome,
   ExportProgress,
   MeshMethod,
@@ -2184,14 +2185,22 @@ export class KernelStore {
   // ── K7.2.1: import/export — implementation in IoStore ─────────────
 
   /** Meshing Phase 0: run the tolerance-driven export pass (worker
-   *  when available) and get bytes + validation report back. */
+   *  when available) and get bytes + validation report back. `options`
+   *  carries the method-specific knobs (Lichen: the curvature angle). */
   exportMeshed(
     format: ExportFormat,
     cellSizeMm: number,
     method: MeshMethod,
+    options: ExportMethodOptions,
     onProgress?: (p: ExportProgress) => void,
   ): Promise<ExportOutcome> {
-    return this.workers.exportMeshed(format, cellSizeMm, method, onProgress);
+    return this.workers.exportMeshed(
+      format,
+      cellSizeMm,
+      method,
+      options,
+      onProgress,
+    );
   }
 
   /** Cheap, synchronous pre-mesh estimate for the export dialog (dense-grid

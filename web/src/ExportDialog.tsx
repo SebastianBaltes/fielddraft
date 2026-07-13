@@ -24,10 +24,13 @@ import type {
   ExportBodyReport,
   ExportEstimate,
   ExportFormat,
+  ExportMethodOptions,
   ExportProgress,
   ExportReport,
   MeshMethod,
 } from "./exportTypes";
+import { DEFAULT_CURV_ANGLE_DEG } from "./exportTypes";
+import { formatDuration } from "./exportDuration";
 import {
   setExportPreview,
   setExportPreviewOpacity,
@@ -41,6 +44,7 @@ import {
 
 const CELL_SIZE_STORAGE_KEY = "fielddraft.export.cellSizeMm";
 const METHOD_STORAGE_KEY = "fielddraft.export.method";
+const CURV_ANGLE_STORAGE_KEY = "fielddraft.export.curvAngleDeg";
 const OPACITY_STORAGE_KEY = "fielddraft.export.previewOpacity";
 const WIREFRAME_STORAGE_KEY = "fielddraft.export.previewWireframe";
 const DEFAULT_CELL_MM = 0.4;
@@ -89,6 +93,8 @@ function initialMethod(): MeshMethod {
       stored === "extended-marching-cubes" ||
       stored === "macet" ||
       stored === "manifold-dc" ||
+      stored === "hybrid-pasm" ||
+      stored === "lichen" ||
       stored === "cgal-server" ||
       stored === "adaptive"
     ) {
@@ -100,23 +106,91 @@ function initialMethod(): MeshMethod {
   return "adaptive";
 }
 
+/** Lichen's curvature angle (deg) — the only Lichen knob the export exposes
+ *  besides the edge length. Everything else is the kernel's fixed export
+ *  preset. */
+function initialCurvAngle(): number {
+  try {
+    const stored = Number(localStorage.getItem(CURV_ANGLE_STORAGE_KEY));
+    if (Number.isFinite(stored) && stored >= 0.5 && stored <= 30) {
+      return stored;
+    }
+  } catch {
+    // no localStorage (tests) — use the default
+  }
+  return DEFAULT_CURV_ANGLE_DEG;
+}
+
+/** What each mesher does, in the user's words. A lookup, not a ternary chain —
+ *  the chain was 12 levels deep before Lichen arrived. */
+const METHOD_HINTS: Record<MeshMethod, string> = {
+  adaptive:
+    "Parametric-first, then adaptive Manifold-DC — exact edges and the fewest triangles for regular CAD solids.",
+  "surface-nets":
+    "Dense grid (every cell evaluated) then QEM decimation, via fast-surface-nets + baby_shark — robust for non-1-Lipschitz fields: gyroid, TPMS, dense helix windings.",
+  "surface-nets-builtin":
+    "Same dense-grid + QEM pipeline, but our own from-scratch implementations — dependency-free alternative to diff against the library path.",
+  "interval-dc":
+    "Interval-arithmetic octree + Manifold DC (fidget): topology-safe subdivision (no Lipschitz assumption) and QEF sharp-edge preservation for closed-form solids. Watertight on smooth solids; sharp/dense feature edges may leave a few non-manifold edges (see the report) — use Surface Nets for guaranteed watertight.",
+  "uniform-dc":
+    "Dense uniform grid with QEF vertex placement — watertight by construction AND feature-preserving (keeps sharp edges), non-1-Lipschitz-safe, then QEM decimation. The all-rounder for sharp-edged solids.",
+  "marching-cubes":
+    "Marching tetrahedra: unambiguous cases → watertight + 2-manifold by construction for ANY field (the robust baseline). Rounds sharp edges; then QEM decimation.",
+  "marching-cubes-33":
+    "Marching Cubes 33 (Lewiner 2003): topologically-controlled MC — tests each ambiguous face/interior against the trilinear surface, so it's manifold, consistent AND watertight for any field, with fewer triangles than the tet mesher. A strong choice for gyroid/TPMS. Then QEM decimation.",
+  "dual-marching-cubes":
+    "Dual Marching Cubes (Nielson 2004): the dual of MC — one point per MC patch joined into quads (manifold variant). Fewer sliver triangles than MC, closed by construction. Then QEM decimation.",
+  "extended-marching-cubes":
+    "Extended Marching Cubes (Kobbelt 2001): MC33 base plus a QEF feature vertex inserted in cells that carry a sharp CSG edge (clamped into the cell against spikes) — recovers crisp boolean edges MC rounds off, while staying watertight.",
+  macet:
+    "MACET (Dietrich/Scheidegger 2009): MC33 topology, but each active edge is transformed to be perpendicular to the surface (gradient + tangential, using the analytic ∇f) and the crossing is re-found by bisection — eliminates skinny/degenerate triangles while staying watertight. Slower (root-finding per edge).",
+  "manifold-dc":
+    "The viewport's own uniform Manifold Dual Contouring with planar-face simplification — now exportable too.",
+  "hybrid-pasm":
+    "Hybrid PASM + B-Rep (kantenexakt): pins the B-Rep corners/edges as a fixed skeleton, relaxes surface particles (PASM Gaussian kernel) and closes each face by constrained Delaunay in its carrier chart; chartless faces (Torus/Gyroid/Custom-SDF) fall to a DC-patch zippered to the exact edges. Here the cell size is read as the target edge length h. Watertight by construction; a body that can't close falls back to the adaptive route.",
+  lichen:
+    "Lichen (SDF + B-Rep): B-Rep corners and edge chains seed the points, a curvature-adaptive growth fills each face and a global manifold walk extracts one closed sheet — sharp edges land exactly on the B-Rep curves, curved faces are resolved by the angle below. Everything else runs the acceptance preset the mesher is gated on; a body that comes back open or uncovered falls back to the adaptive route (the report names the route).",
+  "cgal-server":
+    "Server-side CGAL Mesh_3 (restricted Delaunay refinement): watertight, 2-manifold and exact protected B-Rep edges. Saves the project, meshes on the server and downloads the STL — needs a signed-in, server-saved project.",
+};
+
+/** Methods that read the cell-size field as a target EDGE LENGTH h (a mesh
+ *  spacing), not as a grid cell. */
+function isEdgeLengthMethod(method: MeshMethod): boolean {
+  return method === "hybrid-pasm" || method === "lichen";
+}
+
 interface ExportDialogProps {
   store: KernelStore;
   format: ExportFormat;
   onClose: () => void;
 }
 
+// `startedAt`/`durationMs` (ticket 6a0354e8): the meshing runtime, measured in
+// the WEB around the kernel/worker call — the kernel must not touch
+// `std::time` (panics on wasm32). Applies to every method, local or server.
 type Phase =
   | { kind: "idle" }
-  | { kind: "running"; progress: ExportProgress | null }
-  | { kind: "server-running"; status: string }
-  | { kind: "done"; report: ExportReport; bytes: Uint8Array }
-  | { kind: "server-done"; report: ServerMeshReport; bytes: Uint8Array }
+  | { kind: "running"; progress: ExportProgress | null; startedAt: number }
+  | { kind: "server-running"; status: string; startedAt: number }
+  | {
+      kind: "done";
+      report: ExportReport;
+      bytes: Uint8Array;
+      durationMs: number;
+    }
+  | {
+      kind: "server-done";
+      report: ServerMeshReport;
+      bytes: Uint8Array;
+      durationMs: number;
+    }
   | { kind: "error"; message: string };
 
 export function ExportDialog({ store, format, onClose }: ExportDialogProps) {
   const [cellSizeMm, setCellSizeMm] = useState(initialCellSize());
   const [method, setMethod] = useState<MeshMethod>(initialMethod);
+  const [curvAngleDeg, setCurvAngleDeg] = useState(initialCurvAngle);
   const [phase, setPhase] = useState<Phase>({ kind: "idle" });
   // Preview display controls (crossfade mesh↔SDF solid, wireframe overlay),
   // persisted across sessions.
@@ -178,7 +252,8 @@ export function ExportDialog({ store, format, onClose }: ExportDialogProps) {
     const abort = new AbortController();
     serverAbortRef.current?.abort();
     serverAbortRef.current = abort;
-    setPhase({ kind: "server-running", status: "Saving project…" });
+    const startedAt = performance.now();
+    setPhase({ kind: "server-running", status: "Saving project…", startedAt });
     (async () => {
       const synced = await store.syncToServer();
       const state = store.getState();
@@ -199,7 +274,7 @@ export function ExportDialog({ store, format, onClose }: ExportDialogProps) {
         { cellSizeMm: cellSize, facetDistMult: 0.15 },
         (status) => {
           if (runIdRef.current === runId) {
-            setPhase({ kind: "server-running", status });
+            setPhase({ kind: "server-running", status, startedAt });
           }
         },
         abort.signal,
@@ -212,7 +287,12 @@ export function ExportDialog({ store, format, onClose }: ExportDialogProps) {
         format === "3mf"
           ? store.mesh3mfFromBuffers(preview.positions, preview.indices)
           : result.bytes;
-      setPhase({ kind: "server-done", report: result.report, bytes });
+      setPhase({
+        kind: "server-done",
+        report: result.report,
+        bytes,
+        durationMs: performance.now() - startedAt,
+      });
       setExportPreview(
         preview.positions.length > 0
           ? { positions: preview.positions, indices: preview.indices }
@@ -237,17 +317,29 @@ export function ExportDialog({ store, format, onClose }: ExportDialogProps) {
       return;
     }
     const cellSize = commitCellSize();
+    const options: ExportMethodOptions = { curvAngleDeg };
+    try {
+      localStorage.setItem(CURV_ANGLE_STORAGE_KEY, String(curvAngleDeg));
+    } catch {
+      // ignore
+    }
     const runId = ++runIdRef.current;
-    setPhase({ kind: "running", progress: null });
+    const startedAt = performance.now();
+    setPhase({ kind: "running", progress: null, startedAt });
     store
-      .exportMeshed(format, cellSize, method, (progress) => {
+      .exportMeshed(format, cellSize, method, options, (progress) => {
         if (runIdRef.current === runId) {
-          setPhase({ kind: "running", progress });
+          setPhase({ kind: "running", progress, startedAt });
         }
       })
       .then(({ bytes, report, preview }) => {
         if (runIdRef.current === runId) {
-          setPhase({ kind: "done", report, bytes });
+          setPhase({
+            kind: "done",
+            report,
+            bytes,
+            durationMs: performance.now() - startedAt,
+          });
           // Show the exact export triangles as a solid in the viewport
           // while the (non-modal) dialog stays open — with the persisted
           // crossfade opacity + wireframe state applied.
@@ -270,6 +362,7 @@ export function ExportDialog({ store, format, onClose }: ExportDialogProps) {
       });
   }, [
     commitCellSize,
+    curvAngleDeg,
     store,
     format,
     method,
@@ -312,6 +405,14 @@ export function ExportDialog({ store, format, onClose }: ExportDialogProps) {
   const onCellSizeChange = useCallback(
     (value: number) => {
       setCellSizeMm(value);
+      resetToIdle();
+    },
+    [resetToIdle],
+  );
+
+  const onCurvAngleChange = useCallback(
+    (value: number) => {
+      setCurvAngleDeg(value);
       resetToIdle();
     },
     [resetToIdle],
@@ -447,43 +548,18 @@ export function ExportDialog({ store, format, onClose }: ExportDialogProps) {
           <option value="macet">MACET (edge transforms, quality)</option>
           <option value="manifold-dc">Manifold DC (viewport)</option>
           <option value="hybrid-pasm">CAD (kantenexakt, PASM+B-Rep)</option>
+          <option value="lichen">Lichen (SDF + B-Rep, kantenexakt)</option>
           <option value="cgal-server" disabled={!serverReady}>
             CGAL Mesh_3 (server)
             {!serverReady ? " — save to server first" : ""}
           </option>
         </select>
-        <span className="hint">
-          {method === "cgal-server"
-            ? "Server-side CGAL Mesh_3 (restricted Delaunay refinement): watertight, 2-manifold and exact protected B-Rep edges. Saves the project, meshes on the server and downloads the STL — needs a signed-in, server-saved project."
-            : method === "surface-nets"
-            ? "Dense grid (every cell evaluated) then QEM decimation, via fast-surface-nets + baby_shark — robust for non-1-Lipschitz fields: gyroid, TPMS, dense helix windings."
-            : method === "surface-nets-builtin"
-              ? "Same dense-grid + QEM pipeline, but our own from-scratch implementations — dependency-free alternative to diff against the library path."
-              : method === "interval-dc"
-                ? "Interval-arithmetic octree + Manifold DC (fidget): topology-safe subdivision (no Lipschitz assumption) and QEF sharp-edge preservation for closed-form solids. Watertight on smooth solids; sharp/dense feature edges may leave a few non-manifold edges (see the report) — use Surface Nets for guaranteed watertight."
-                : method === "uniform-dc"
-                  ? "Dense uniform grid with QEF vertex placement — watertight by construction AND feature-preserving (keeps sharp edges), non-1-Lipschitz-safe, then QEM decimation. The all-rounder for sharp-edged solids."
-                  : method === "marching-cubes"
-                    ? "Marching tetrahedra: unambiguous cases → watertight + 2-manifold by construction for ANY field (the robust baseline). Rounds sharp edges; then QEM decimation."
-                    : method === "marching-cubes-33"
-                      ? "Marching Cubes 33 (Lewiner 2003): topologically-controlled MC — tests each ambiguous face/interior against the trilinear surface, so it's manifold, consistent AND watertight for any field, with fewer triangles than the tet mesher. A strong choice for gyroid/TPMS. Then QEM decimation."
-                      : method === "dual-marching-cubes"
-                        ? "Dual Marching Cubes (Nielson 2004): the dual of MC — one point per MC patch joined into quads (manifold variant). Fewer sliver triangles than MC, closed by construction. Then QEM decimation."
-                        : method === "extended-marching-cubes"
-                          ? "Extended Marching Cubes (Kobbelt 2001): MC33 base plus a QEF feature vertex inserted in cells that carry a sharp CSG edge (clamped into the cell against spikes) — recovers crisp boolean edges MC rounds off, while staying watertight."
-                          : method === "macet"
-                            ? "MACET (Dietrich/Scheidegger 2009): MC33 topology, but each active edge is transformed to be perpendicular to the surface (gradient + tangential, using the analytic ∇f) and the crossing is re-found by bisection — eliminates skinny/degenerate triangles while staying watertight. Slower (root-finding per edge)."
-                            : method === "manifold-dc"
-                            ? "The viewport's own uniform Manifold Dual Contouring with planar-face simplification — now exportable too."
-                            : method === "hybrid-pasm"
-                            ? "Hybrid PASM + B-Rep (kantenexakt): pins the B-Rep corners/edges as a fixed skeleton, relaxes surface particles (PASM Gaussian kernel) and closes each face by constrained Delaunay in its carrier chart; chartless faces (Torus/Gyroid/Custom-SDF) fall to a DC-patch zippered to the exact edges. Here the cell size is read as the target edge length h. Watertight by construction; a body that can't close falls back to the adaptive route."
-                            : "Parametric-first, then adaptive Manifold-DC — exact edges and the fewest triangles for regular CAD solids."}
-        </span>
+        <span className="hint">{METHOD_HINTS[method]}</span>
       </div>
 
       <div className="settings-row">
         <label htmlFor="export-cell-size">
-          {method === "hybrid-pasm" ? "Edge length h (mm)" : "Cell size (mm)"}
+          {isEdgeLengthMethod(method) ? "Edge length h (mm)" : "Cell size (mm)"}
         </label>
         <NumberInput
           id="export-cell-size"
@@ -503,7 +579,9 @@ export function ExportDialog({ store, format, onClose }: ExportDialogProps) {
         <span className="hint">
           {method === "hybrid-pasm"
             ? "Target edge length h the mesh aims for — smaller is finer. The whole PASM pipeline (skeleton spacing, kernel radius, CDT clearance) scales off it."
-            : "Grid cell edge per body — smaller is finer. Vertices sit on the exact surface; the report shows the measured deviation."}
+            : method === "lichen"
+              ? "Target edge length h the mesh aims for — smaller is finer. It is Lichen's global spacing: the point growth, the edge chains and the sizing field all scale off it."
+              : "Grid cell edge per body — smaller is finer. Vertices sit on the exact surface; the report shows the measured deviation."}
         </span>
         {estimate?.dense && (
           <span className="hint estimate" data-testid="export-estimate">
@@ -516,6 +594,34 @@ export function ExportDialog({ store, format, onClose }: ExportDialogProps) {
           </span>
         )}
       </div>
+
+      {/* Lichen's second (and last) knob. Everything else about Lichen is a
+          fixed kernel preset — the Debug ▸ Mesher: Lichen dialog stays the
+          place to turn the other twenty screws. */}
+      {method === "lichen" && (
+        <div className="settings-row">
+          <label htmlFor="export-curv-angle">Curvature angle (°)</label>
+          <NumberInput
+            id="export-curv-angle"
+            data-testid="export-curv-angle"
+            min={0.5}
+            max={30}
+            step={0.5}
+            value={curvAngleDeg}
+            onChange={onCurvAngleChange}
+            commitOnChange={false}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && phase.kind !== "running") runExport();
+            }}
+          />
+          <span className="hint">
+            How far the surface normal may turn across one triangle edge —
+            smaller resolves curved faces finer (and costs triangles and time).
+            Scale-free: a 2 mm hole gets as many segments as a 200 mm one. Flat
+            faces are unaffected; there the edge length h rules.
+          </span>
+        </div>
+      )}
 
       {phase.kind === "idle" && (
         <div className="hint-block" data-testid="export-idle">
@@ -535,6 +641,7 @@ export function ExportDialog({ store, format, onClose }: ExportDialogProps) {
             Meshing body {phase.progress?.done ?? 0} /{" "}
             {phase.progress?.total ?? "…"}
           </span>
+          <Elapsed since={phase.startedAt} />
         </div>
       )}
 
@@ -542,6 +649,7 @@ export function ExportDialog({ store, format, onClose }: ExportDialogProps) {
         <div className="progress-block" data-testid="export-server-progress">
           <span className="spinner" aria-hidden="true" />
           <span>{phase.status}</span>
+          <Elapsed since={phase.startedAt} />
           <button type="button" className="secondary" onClick={resetToIdle}>
             Cancel job
           </button>
@@ -563,6 +671,9 @@ export function ExportDialog({ store, format, onClose }: ExportDialogProps) {
               {(phase.report.triangles ?? 0).toLocaleString()} triangles
               {" · "}
               {(phase.report.vertices ?? 0).toLocaleString()} vertices
+            </div>
+            <div className="runtime" data-testid="export-duration">
+              Runtime {formatDuration(phase.durationMs)}
             </div>
           </div>
           <div
@@ -595,7 +706,11 @@ export function ExportDialog({ store, format, onClose }: ExportDialogProps) {
 
       {phase.kind === "done" && (
         <>
-          <ReportView report={phase.report} featureName={featureName} />
+          <ReportView
+            report={phase.report}
+            durationMs={phase.durationMs}
+            featureName={featureName}
+          />
           <div
             className="preview-controls"
             data-testid="export-preview-controls"
@@ -665,11 +780,29 @@ function formatMm(v: number): string {
   return v >= 0.01 ? v.toFixed(3) : v.toFixed(4);
 }
 
+/** Live runtime of a pass in flight — the dialog must never look hung while a
+ *  fine Lichen/CGAL mesh grinds away (ticket 6a0354e8). */
+function Elapsed({ since }: { since: number }) {
+  const [now, setNow] = useState(() => performance.now());
+  useEffect(() => {
+    setNow(performance.now());
+    const handle = setInterval(() => setNow(performance.now()), 200);
+    return () => clearInterval(handle);
+  }, [since]);
+  return (
+    <span className="runtime" data-testid="export-elapsed">
+      {formatDuration(Math.max(0, now - since))}
+    </span>
+  );
+}
+
 function ReportView({
   report,
+  durationMs,
   featureName,
 }: {
   report: ExportReport;
+  durationMs: number;
   featureName: (bodyId: number) => string;
 }) {
   const empty = report.bodies.length === 0;
@@ -705,6 +838,10 @@ function ReportView({
           )}
         </div>
       )}
+
+      <div className="runtime" data-testid="export-duration">
+        Runtime {formatDuration(durationMs)}
+      </div>
 
       {!empty && (
         // Transposed: attributes down the side, one column per body — so a

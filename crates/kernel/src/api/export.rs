@@ -22,11 +22,19 @@ impl Kernel {
 
     /// Start an export meshing pass at `cell_size_mm`. Returns the
     /// number of bodies the caller must feed through
-    /// [`Kernel::export_mesh_body`].
+    /// [`Kernel::export_mesh_body`]. `options_json` carries the
+    /// method-specific knobs beyond the cell size (camelCase, see
+    /// [`crate::export_mesh::ExportMethodOptions`]); `""` = defaults.
     #[wasm_bindgen(js_name = exportMeshBegin)]
-    pub fn export_mesh_begin(&mut self, cell_size_mm: f32, method: String) -> usize {
+    pub fn export_mesh_begin(
+        &mut self,
+        cell_size_mm: f32,
+        method: String,
+        options_json: String,
+    ) -> usize {
         let method = crate::export_mesh::MeshMethod::from_wire(&method);
-        self.export_mesh_begin_internal(cell_size_mm, method)
+        let options = crate::export_mesh::ExportMethodOptions::from_json(&options_json);
+        self.export_mesh_begin_internal(cell_size_mm, method, options)
     }
 
     /// Debug: sample the scene SDF on a `resolution`×`resolution` grid over a

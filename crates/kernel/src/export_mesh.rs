@@ -102,6 +102,15 @@ pub enum MeshMethod {
     /// nonetheless comes back open, the closedness gate falls back to the
     /// adaptive route for that body.
     HybridPasm,
+    /// Lichen (`lichen_mesh_impl`, `docs/Lichen-Architecture.md`): the direct
+    /// SDF + B-Rep surface mesher. B-Rep corners/edge chains seed the point
+    /// set, the honeycomb growth fills each face at a curvature-adaptive
+    /// spacing (sizing field, ε-sampling against the local feature size), and
+    /// the manifold walk extracts ONE 2-manifold sheet over the whole cloud.
+    /// `cell_size_mm` is read as the target edge length `h`; everything else
+    /// is the fixed export preset ([`lichen_export_options`]). Same closedness
+    /// gate as the PASM route — an open body falls back to adaptive.
+    Lichen,
 }
 
 impl MeshMethod {
@@ -119,6 +128,7 @@ impl MeshMethod {
             "macet" => MeshMethod::Macet,
             "manifold-dc" => MeshMethod::ManifoldDc,
             "hybrid-pasm" => MeshMethod::HybridPasm,
+            "lichen" => MeshMethod::Lichen,
             _ => MeshMethod::Adaptive,
         }
     }
@@ -142,6 +152,102 @@ impl MeshMethod {
                 | MeshMethod::SurfaceNets
                 | MeshMethod::SurfaceNetsBuiltin
         )
+    }
+}
+
+/// Runaway guard for the Lichen export route — the point budget per body.
+/// Four times the debug dialog's default: a fine `h` on a real part legitimately
+/// needs far more points than a debug cut-out, and a bound that BINDS would stop
+/// the growth mid-face and leave a hole. This is a safety valve, not a knob.
+pub const LICHEN_EXPORT_MAX_POINTS: usize = 200_000;
+
+/// ε of the Lichen ε-sampling (`space ≤ ε · lfs`) on the thin-wall rung of the
+/// export ladder — the value the acceptance gate runs at (docs §8q).
+pub const LICHEN_EXPORT_LFS: f32 = 0.1;
+
+/// Surface→mesh coverage the Lichen export demands, as a fraction of `h`.
+/// This is a GARBAGE gate, not a quality gate: the acceptance case measures
+/// 0.015·h, so half an edge length leaves an enormous margin while still
+/// catching a mesh that dropped whole faces (see [`Kernel::lichen_export_body`]).
+pub const LICHEN_COVERAGE_TOL_FACTOR: f32 = 0.5;
+
+/// Surface samples for that coverage check (deterministic LCG in
+/// [`crate::lichen_metrics`]).
+const LICHEN_COVERAGE_SAMPLES: usize = 3_000;
+
+/// Method-specific export knobs beyond the cell size (the export dialog's
+/// second, method-dependent input). Wire format: the same camelCase JSON the
+/// Lichen debug dialog speaks, so the two dialogs stay comparable.
+#[derive(Debug, Clone, Copy, PartialEq, serde::Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct ExportMethodOptions {
+    /// Lichen: the max normal-turn per mesh edge in degrees — the curvature
+    /// resolution knob (`R_curv = α/κ_max`, so it is scale-free: a 2 mm hole
+    /// gets as many segments as a 200 mm one). The chord-error analogue of a
+    /// classic STL "angle deviation". Ignored by every other method.
+    pub curv_angle_deg: f32,
+}
+
+impl Default for ExportMethodOptions {
+    fn default() -> Self {
+        // 10°: chord error r·(1−cos 5°) = 0.04 mm on a 10 mm radius — well
+        // inside print tolerance — at ~1/27 of the triangles (and runtime) 2°
+        // costs on a smooth body (measured: sphere r10, h=3 → 676 vs 18 368
+        // triangles). On the acceptance cut-out the two are within 4 % of each
+        // other, so the fine end buys nothing there either.
+        Self { curv_angle_deg: 10.0 }
+    }
+}
+
+impl ExportMethodOptions {
+    /// Parse the dialog's JSON; an empty/invalid blob falls back to the
+    /// defaults (the export must never mesh at accidental values).
+    pub fn from_json(json: &str) -> Self {
+        if json.trim().is_empty() {
+            return Self::default();
+        }
+        serde_json::from_str(json).unwrap_or_default()
+    }
+}
+
+/// The FIXED Lichen export preset. Only the target edge length `h`, the
+/// curvature angle and the ε-sampling factor vary; everything else is pinned to
+/// the configuration the acceptance gates (`docs/Lichen-Architecture.md` §8q)
+/// prove watertight — general (chartless) triangulation, witness-ball
+/// acceptance, global manifold walk, smoothed sizing field, reach term off —
+/// with the hole filler OFF: the export must not paint over a defect, it must
+/// FAIL and let the gate fall back.
+///
+/// `lfs_factor` is the one option the export ladder varies per rung, because no
+/// single value serves both worlds (measured, see [`Kernel::lichen_export_body`]).
+pub fn lichen_export_options(
+    h: f32,
+    curv_angle_deg: f32,
+    lfs_factor: f32,
+) -> crate::lichen::LichenOptions {
+    crate::lichen::LichenOptions {
+        target_edge_length: h,
+        grow: true,
+        curv_angle_deg,
+        // The reach term is OFF in the accepted configuration — the sizing
+        // field already bounds the spacing globally.
+        use_reach: false,
+        reach_tol: 1.0,
+        // Chain densification floor, derived from h (1 % of an edge, never
+        // below 0.02 mm) — keeps tiny circles from exploding into points.
+        min_edge_spacing: (0.01 * h).max(0.02),
+        max_points: LICHEN_EXPORT_MAX_POINTS,
+        triangulate: true,
+        general_tri: true,
+        accept: "witness".into(),
+        fill_holes: false,
+        extract_walk: true,
+        global_walk: true,
+        lfs_factor,
+        sizing_field: true,
+        face_guard: false,
+        refine: false,
+        refine_rho: 0.7,
     }
 }
 
@@ -262,6 +368,8 @@ pub struct ExportReport {
 pub struct ExportSession {
     pub cell_size_mm: f32,
     pub method: MeshMethod,
+    /// Method-specific knobs (currently: the Lichen curvature angle).
+    pub options: ExportMethodOptions,
     pub meshes: Vec<Mesh>,
     pub reports: Vec<BodyExportReport>,
 }
@@ -361,11 +469,15 @@ fn raw_dense_mesh(
     }
 }
 
-/// Convert the flat `mesher_points` output — `[nPoints, nTris, nFallback,
-/// point×9…, index×3…]` (see `Kernel::mesher_points`) — into an indexed
-/// [`Mesh`], keeping only vertices referenced by a triangle (the point table
-/// also carries un-triangulated seed particles and skeleton points).
-fn pasm_floats_to_mesh(out: &[f32]) -> Mesh {
+/// Convert the flat mesher output — `[nPoints, nTris, nFallback, point×9…,
+/// index×3…, …]` — into an indexed [`Mesh`], keeping only vertices referenced
+/// by a triangle (the point table also carries un-triangulated seed particles
+/// and skeleton points). Shared by the PASM (`Kernel::mesher_points`) and
+/// Lichen (`Kernel::lichen_mesh`) routes: both emit the same prefix. Anything
+/// AFTER the index block (Lichen's diagnostic blocks — face normals, open
+/// edges, weak triangles, the quality readout) is NOT geometry and is ignored
+/// by construction, because only `nTris` triangles are read.
+fn flat_points_to_mesh(out: &[f32]) -> Mesh {
     if out.len() < 3 {
         return Mesh::default();
     }
@@ -464,11 +576,13 @@ impl crate::Kernel {
         &mut self,
         cell_size_mm: f32,
         method: MeshMethod,
+        options: ExportMethodOptions,
     ) -> usize {
         let n = self.bodies.len();
         self.export_session = Some(ExportSession {
             cell_size_mm,
             method,
+            options,
             meshes: Vec::with_capacity(n),
             reports: Vec::with_capacity(n),
         });
@@ -482,6 +596,7 @@ impl crate::Kernel {
         let session = self.export_session.as_ref()?;
         let cell_mm = session.cell_size_mm;
         let method = session.method;
+        let options = session.options;
         let body = self.bodies.get(i)?;
         let body_id = body.id.as_u32_or_root().unwrap_or(0);
         let feature_indices = body.feature_indices.clone();
@@ -560,6 +675,18 @@ impl crate::Kernel {
             // particles + per-face CDT; closedness gate falls back to the
             // adaptive route if the body's mesh comes back open.
             self.hybrid_pasm_export_body(i, body_id, &feature_indices, size, cell_mm)
+        } else if method == MeshMethod::Lichen {
+            // ── Lichen (SDF + B-Rep surface mesher) ── B-Rep seeds +
+            // curvature-adaptive growth + global manifold walk; same
+            // closedness gate as the PASM route.
+            self.lichen_export_body(
+                i,
+                body_id,
+                &feature_indices,
+                size,
+                cell_mm,
+                options.curv_angle_deg,
+            )
         } else if matches!(
             method,
             MeshMethod::UniformDc
@@ -773,7 +900,7 @@ impl crate::Kernel {
             ..Default::default()
         };
         let out = self.mesher_points_impl(opts, Some(i));
-        let mut mesh = pasm_floats_to_mesh(&out);
+        let mut mesh = flat_points_to_mesh(&out);
 
         let (bounded, _) =
             crate::body::build_bounded_with_primitives(&self.decoded, feature_indices);
@@ -831,6 +958,182 @@ impl crate::Kernel {
             validation,
         };
         (mesh, report)
+    }
+
+    /// Lichen export for one body (`docs/Lichen-Architecture.md`). Runs the
+    /// Lichen pipeline restricted to body `i` ([`lichen_export_options`]); only
+    /// `cell_mm` (read as the target edge length `h`) and `curv_angle_deg` come
+    /// from the dialog. The flat output is converted by [`flat_points_to_mesh`]
+    /// (the diagnostic blocks after the index block are not geometry and are
+    /// never read).
+    ///
+    /// **The ladder.** No single ε serves both worlds — measured on this branch:
+    ///
+    /// | body | ε = 0 | ε = 0.1 (acceptance value) |
+    /// |------|-------|-----------------------------|
+    /// | box 20 mm | 180 tris, χ=2 ✓ | 186 tris, **8 components**, χ=16 ✗ |
+    /// | box + hole | 844 tris, χ=2 ✓ | 223 tris, 8 comps, 25 open ✗ |
+    /// | gyroid cut-out (acceptance) | 3 open edges, χ=1 ✗ | 11 436 tris, χ=2 ✓ |
+    ///
+    /// The ε-sampling against the local feature size is what makes the
+    /// witness ball safe on thin walls (TPMS), but the medial axis runs INTO
+    /// every sharp edge, so on a polyhedral solid lfs → 0 there and the
+    /// sampling collapses (docs §8d "Befund 6" — evidently not fully cured in
+    /// combination with the sizing field). So the export climbs a ladder:
+    /// ε = 0 first (correct and fast on CAD solids), ε = 0.1 on failure (the
+    /// thin-wall configuration), adaptive route if neither passes.
+    ///
+    /// **The gates.** A rung is accepted only if the mesh is watertight AND it
+    /// COVERS the surface: `max` surface→mesh Hausdorff ≤
+    /// [`LICHEN_COVERAGE_TOL_FACTOR`]·h, measured against the exact SDF
+    /// ([`crate::lichen_metrics::hausdorff`]). Watertightness alone is NOT
+    /// enough — the ε = 0.1 box above is a perfectly closed 2-manifold that
+    /// happens to be eight little blobs around the corners with all six faces
+    /// missing. Only the surface→mesh direction sees that. A panic inside the
+    /// mesher is caught as well (it would otherwise poison the wasm-bindgen
+    /// borrow flag and kill the session — same reason [`Kernel::lichen_mesh`]
+    /// catches it).
+    fn lichen_export_body(
+        &mut self,
+        i: usize,
+        body_id: u32,
+        feature_indices: &[usize],
+        size: [f32; 3],
+        cell_mm: f32,
+        curv_angle_deg: f32,
+    ) -> (Mesh, BodyExportReport) {
+        let (bounded, _) =
+            crate::body::build_bounded_with_primitives(&self.decoded, feature_indices);
+        let sdf = |p: [f32; 3]| bounded.sdf(p, crate::csg::EvalMode::Visual);
+        let mut why = String::new();
+
+        for (rung, lfs) in [(0usize, 0.0f32), (1, LICHEN_EXPORT_LFS)] {
+            let opts = lichen_export_options(cell_mm, curv_angle_deg, lfs);
+            let out = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                self.lichen_mesh_impl(opts, Some(i))
+            }));
+            let out = match out {
+                Ok(out) => out,
+                Err(_) => {
+                    why = "panicked".into();
+                    continue;
+                }
+            };
+            let mut mesh = flat_points_to_mesh(&out);
+            if mesh.indices.is_empty() {
+                why = "empty".into();
+                continue;
+            }
+            let flips = mesh_validate::fix_orientation(&mut mesh, &sdf);
+            let mut validation = mesh_validate::validate_topology(&mesh);
+
+            // Gate 1 — closed. Lichen runs with `fill_holes: false`: a defect
+            // must stay visible, not be painted over.
+            if !validation.watertight {
+                why = format!("open ({} edges)", validation.boundary_edges);
+                continue;
+            }
+            // Gate 2 — covers the surface. See the doc comment: a closed mesh
+            // can still be missing whole faces.
+            let coverage = self.lichen_coverage(&mesh, &bounded, cell_mm);
+            let tol = LICHEN_COVERAGE_TOL_FACTOR * cell_mm;
+            if coverage > tol {
+                why = format!("uncovered surface ({coverage:.2} mm > {tol:.2} mm)");
+                continue;
+            }
+
+            let (max_dev, p95_dev, samples) =
+                mesh_validate::measure_deviation(&mesh, DEVIATION_SAMPLE_BUDGET, &sdf);
+            validation.max_deviation_mm = max_dev;
+            validation.p95_deviation_mm = p95_dev;
+            validation.deviation_samples = samples;
+            let (si, si_complete) =
+                mesh_validate::count_self_intersections(&mesh, SELF_INTERSECT_PAIR_BUDGET);
+
+            let eps = if rung == 0 {
+                String::new()
+            } else {
+                format!(", ε={LICHEN_EXPORT_LFS}")
+            };
+            let report = BodyExportReport {
+                body_id,
+                requested_cell_mm: cell_mm,
+                actual_cell_mm: cell_mm,
+                resolution: 0,
+                cell_limited: false,
+                passthrough: false,
+                parametric: false,
+                parametric_skip_reason: String::new(),
+                adaptive: false,
+                adaptive_skip_reason: String::new(),
+                orientation_repaired: flips,
+                edges_pinned: 0,
+                simplified: false,
+                simplification_rejected: false,
+                thin_cells: 0,
+                self_intersections: si,
+                self_intersections_complete: si_complete,
+                surface_nets: false,
+                interval_dc: false,
+                route: format!("Lichen h={cell_mm:.3} mm, {curv_angle_deg:.0}°{eps}"),
+                dense_triangles: 0,
+                validation,
+            };
+            return (mesh, report);
+        }
+
+        // Neither rung earned the export — never ship a defect.
+        let (m, mut report) = self.mdc_export_body(
+            i,
+            body_id,
+            feature_indices,
+            size,
+            cell_mm,
+            format!("Lichen {why} → adaptive fallback"),
+        );
+        report.route = format!("Lichen {why} → {}", report.route);
+        (m, report)
+    }
+
+    /// Coverage of the body's surface by `mesh`: the max surface→mesh Hausdorff
+    /// distance (mm) against the exact SDF — scattered points Newton-projected
+    /// onto `f = 0` in the body's AABB, each measured to the nearest triangle.
+    /// This is the ONLY direction that sees a missing face (mesh→surface, which
+    /// the report already measures as the deviation, is perfect for a mesh that
+    /// simply left half the body out). Deterministic (fixed LCG).
+    fn lichen_coverage(
+        &self,
+        mesh: &Mesh,
+        bounded: &crate::bvh::BoundedCsg,
+        h: f32,
+    ) -> f32 {
+        let pts: Vec<[f32; 3]> = mesh
+            .positions
+            .chunks_exact(3)
+            .map(|c| [c[0], c[1], c[2]])
+            .collect();
+        let tris: Vec<[u32; 3]> = mesh
+            .indices
+            .chunks_exact(3)
+            .map(|c| [c[0], c[1], c[2]])
+            .collect();
+        if pts.is_empty() || tris.is_empty() {
+            return f32::MAX;
+        }
+        let aabb = bounded.aabb();
+        let f = |p: [f32; 3]| bounded.sdf(p, crate::csg::EvalMode::Visual);
+        let grad = |p: [f32; 3]| crate::sdf_dual::sdf_gradient(bounded, p).1;
+        crate::lichen_metrics::hausdorff(
+            &pts,
+            &tris,
+            f,
+            grad,
+            aabb.min,
+            aabb.max,
+            LICHEN_COVERAGE_SAMPLES,
+            h.max(1e-3),
+        )
+        .surface_to_mesh
     }
 
     /// The uniform-grid MDC pass (Phase 0/1a/1b) — the fallback when
@@ -1681,7 +1984,7 @@ mod tests {
         )
         .unwrap();
 
-        let n = k.export_mesh_begin(0.5, "adaptive".into());
+        let n = k.export_mesh_begin(0.5, "adaptive".into(), String::new());
         assert_eq!(n, 1);
         let body_json = k.export_mesh_body(0);
         assert!(body_json.contains("\"watertight\":true"), "{body_json}");
@@ -1728,7 +2031,7 @@ mod tests {
         cell: f32,
         method: &str,
     ) -> serde_json::Value {
-        let n = k.export_mesh_begin(cell, method.into());
+        let n = k.export_mesh_begin(cell, method.into(), String::new());
         assert!(n >= 1, "expected at least one body");
         for i in 0..n {
             k.export_mesh_body(i);
@@ -2324,6 +2627,129 @@ mod tests {
         );
     }
 
+    /// Ticket faa42489: Lichen is a selectable export tier. A box meshed via
+    /// `lichen` must come back CLOSED, stay on the Lichen route (not fall back
+    /// to adaptive) and hug the planar surface.
+    #[test]
+    fn box_exports_lichen_watertight() {
+        let mut k = crate::Kernel::new();
+        k.add_primitive(Primitive::KIND_BOX, BoolOp::TAG_NEW, 0.0, 0.0, 0.0, 10.0, 10.0, 10.0)
+            .unwrap();
+        let report = export_single_method(&mut k, 5.0, "lichen");
+        assert_eq!(report["all_watertight"], true, "{report}");
+        let route = report["bodies"][0]["route"].as_str().unwrap_or("");
+        assert!(
+            route.starts_with("Lichen h="),
+            "expected the Lichen route, got {route:?}"
+        );
+        assert!(
+            report["max_deviation_mm"].as_f64().unwrap() < 0.05,
+            "planar box should sit on the surface: {report}"
+        );
+        assert!(report["total_triangles"].as_u64().unwrap() >= 12, "{report}");
+    }
+
+    /// A body with THIN WALLS (gyroid ∩ box) is the case the ε-sampling rung
+    /// exists for: rung 0 (ε = 0) leaves it open, so the ladder must climb to
+    /// ε = 0.1 (or, failing that, to the adaptive route) — either way the
+    /// export stays watertight. This is the gate that proves the ladder, not
+    /// just the happy path.
+    #[test]
+    fn thin_walled_body_exports_lichen_watertight() {
+        // A SMALL TPMS block (8 mm cube ∩ gyroid, ~1 mm walls) — the thin-wall
+        // case in a size a test can afford.
+        let mut k = crate::Kernel::new();
+        let b = k
+            .add_primitive(Primitive::KIND_BOX, BoolOp::TAG_NEW, 0.0, 0.0, 0.0, 4.0, 4.0, 4.0)
+            .unwrap();
+        k.add_feature_call(
+            "gyroid",
+            &format!(
+                r#"{{ "cell_size": {{ "value": 10.0, "unit": "mm" }},
+                      "thickness": {{ "value": 1.0, "unit": "mm" }},
+                      "op": "intersect", "targets": "qCreatedBy({b})" }}"#
+            ),
+        )
+        .unwrap();
+        let report = export_single_method(&mut k, 3.0, "lichen");
+        assert_eq!(report["all_watertight"], true, "{report}");
+        assert!(report["total_triangles"].as_u64().unwrap() > 100, "{report}");
+        // Rung 0 (ε = 0) actually PANICS on this body — an internal Lichen
+        // invariant assert (`U(p)-Überdeckungslücke`, api/lichen.rs) — and the
+        // ladder catches it and climbs. Rung 1 must then ship the body itself:
+        // the route says ε, not "→ adaptive fallback".
+        let route = report["bodies"][0]["route"].as_str().unwrap_or("");
+        assert!(route.starts_with("Lichen h="), "route {route:?}");
+        assert!(route.contains("ε="), "expected the ε rung, got {route:?}");
+    }
+
+    /// The Lichen export preset is the ACCEPTED configuration (docs §8q), not
+    /// the library defaults: hole filler off, general path + witness ball +
+    /// global walk + sizing field on, the reach term off, and the two dialog
+    /// knobs (`h`, curvature angle) passed straight through. `min_edge_spacing`
+    /// derives from `h` with a hard floor; `lfs_factor` is the rung of the
+    /// ladder and therefore the only option the caller varies.
+    #[test]
+    fn lichen_export_preset_matches_the_acceptance_configuration() {
+        let o = lichen_export_options(10.0, 2.0, LICHEN_EXPORT_LFS);
+        assert_eq!(o.target_edge_length, 10.0);
+        assert_eq!(o.curv_angle_deg, 2.0);
+        assert!(o.grow && o.triangulate && o.general_tri);
+        assert_eq!(o.accept, "witness");
+        assert!(o.extract_walk && o.global_walk && o.sizing_field);
+        assert!(!o.fill_holes, "the export must never paint over a hole");
+        assert!(!o.use_reach && !o.face_guard && !o.refine);
+        assert_eq!(o.lfs_factor, 0.1);
+        assert!((o.min_edge_spacing - 0.1).abs() < 1e-6, "1 % of h");
+        assert_eq!(o.max_points, LICHEN_EXPORT_MAX_POINTS);
+        // Floor: a sub-mm edge length must not drive the chain spacing to 0.
+        assert_eq!(lichen_export_options(0.5, 2.0, 0.0).min_edge_spacing, 0.02);
+        // Rung 0 of the ladder is the same preset with the ε-sampling off.
+        assert_eq!(lichen_export_options(10.0, 2.0, 0.0).lfs_factor, 0.0);
+    }
+
+    /// Only the cell size and the curvature angle cross the wire; an empty or
+    /// broken options blob falls back to the 10° default rather than meshing at
+    /// an accidental value.
+    #[test]
+    fn export_method_options_parse_and_default() {
+        assert_eq!(ExportMethodOptions::from_json("").curv_angle_deg, 10.0);
+        assert_eq!(ExportMethodOptions::from_json("not json").curv_angle_deg, 10.0);
+        assert_eq!(ExportMethodOptions::from_json("{}").curv_angle_deg, 10.0);
+        assert_eq!(
+            ExportMethodOptions::from_json(r#"{"curvAngleDeg":5.5}"#).curv_angle_deg,
+            5.5
+        );
+    }
+
+    /// The flat mesher buffer → [`Mesh`] conversion (shared by PASM and
+    /// Lichen). Only the `nTris` triangles of the index block are geometry:
+    /// un-referenced points are dropped and Lichen's trailing DIAGNOSTIC
+    /// blocks (face normals, open edges, weak triangles, quality readout) must
+    /// never leak into the exported mesh.
+    #[test]
+    fn flat_buffer_to_mesh_keeps_only_the_real_triangles() {
+        // 4 points, 1 triangle (0,1,2) — point 3 is an untriangulated particle.
+        let pt = |x: f32, y: f32, z: f32| [x, y, z, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0];
+        let mut out: Vec<f32> = vec![4.0, 1.0, 0.0];
+        out.extend_from_slice(&pt(0.0, 0.0, 0.0));
+        out.extend_from_slice(&pt(1.0, 0.0, 0.0));
+        out.extend_from_slice(&pt(0.0, 1.0, 0.0));
+        out.extend_from_slice(&pt(9.0, 9.0, 9.0));
+        out.extend_from_slice(&[0.0, 1.0, 2.0]);
+        // Diagnostic tail (would be a second "triangle" if it were read).
+        out.extend_from_slice(&[1.0, 0.0, 0.0, 0.0, 1.0, 3.0, 3.0, 42.0]);
+
+        let mesh = flat_points_to_mesh(&out);
+        assert_eq!(mesh.triangle_count(), 1);
+        assert_eq!(mesh.indices, vec![0, 1, 2]);
+        assert_eq!(
+            mesh.positions,
+            vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+            "the untriangulated particle and the diag tail must not appear"
+        );
+    }
+
     /// The closedness gate: a body the PASM route can't close (here a bare
     /// gyroid TPMS shell, whose sheets have no closed B-Rep rim) must NOT
     /// ship a hole — the gate falls back to the adaptive route and the export
@@ -2867,7 +3293,7 @@ mod tests {
             5.0,
         )
         .unwrap();
-        k.export_mesh_begin(0.5, "adaptive".into());
+        k.export_mesh_begin(0.5, "adaptive".into(), String::new());
         k.export_mesh_body(0);
         // Any document mutation re-meshes and must drop the session.
         k.add_primitive(
