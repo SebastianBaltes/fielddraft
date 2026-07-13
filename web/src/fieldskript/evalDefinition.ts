@@ -36,7 +36,18 @@ export function evalDefinition(compiledJs: string): FeatureDefinition {
   // CJS factory boundary. Not user-arbitrary in the security sense —
   // see the §11 risk register.
   // eslint-disable-next-line @typescript-eslint/no-implied-eval, no-new-func
-  const factory = new Function("require", "module", "exports", compiledJs) as (
+  // STRICT MODE IS LOAD-BEARING (ticket #347). `new Function` bodies are SLOPPY
+  // by default, and in sloppy mode a plain call binds `this` to `globalThis` —
+  // so `this.fetch(…)` would walk straight past every restriction we place on
+  // agent-written scripts. Sucrase's `imports` transform happens to emit a
+  // "use strict" prologue today; we do not want that guarantee to depend on a
+  // transpiler detail, so we state it ourselves. Prepending it twice is a no-op.
+  const factory = new Function(
+    "require",
+    "module",
+    "exports",
+    '"use strict";\n' + compiledJs,
+  ) as (
     require: (name: string) => unknown,
     module: { exports: Record<string, unknown> },
     exports: Record<string, unknown>,

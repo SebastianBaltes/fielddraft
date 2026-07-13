@@ -18,6 +18,7 @@ import { useEffect, useMemo, useState } from "react";
 import { ChatPanel } from "baseaichat";
 import type { KernelStore } from "../store";
 import { agentOptions, type AIChatConfig } from "./setup";
+import { ScriptProposalCard } from "./ScriptProposalCard";
 
 export function ChatPopup({ store }: { store: KernelStore }) {
   const [config, setConfig] = useState<AIChatConfig | null>(null);
@@ -45,27 +46,37 @@ export function ChatPopup({ store }: { store: KernelStore }) {
   if (!agent) return null;
 
   return (
-    <ChatPanel
-      agent={agent}
-      title="FieldDraft-Assistent"
-      launcherLabel="Assistent"
-      greeting={
-        "Ich kann Fragen zu FieldDraft beantworten und das Modell für dich bauen. " +
-        "Zum Beispiel: „Was ist in diesem Dokument?“ oder „Bau mir eine Grundplatte " +
-        "80 × 60 × 5 mm.“"
-      }
-      placeholder="Frag mich etwas — oder sag mir, was ich bauen soll…"
-      suggestions={[
-        { label: "Was ist in diesem Dokument?", prompt: "Was ist in diesem Dokument?" },
-        {
-          label: "Grundplatte bauen",
-          prompt: "Bau mir eine Grundplatte 80 × 60 × 5 mm.",
-        },
-        {
-          label: "Wie skizziere ich?",
-          prompt: "Wie erstelle ich in FieldDraft eine Skizze und extrudiere sie?",
-        },
-      ]}
-    />
+    <>
+      {/* The assistant may write FieldSkript but never run it — the user does
+        (scriptProposals.ts). Rendered outside the panel so it stays visible
+        even if the user collapses the chat. */}
+      <ScriptProposalCard store={store} />
+      <ChatPanel
+        agent={agent}
+        title="FieldDraft-Assistent"
+        launcherLabel="Assistent"
+        greeting={
+          "Ich kann Fragen zu FieldDraft beantworten und das Modell für dich bauen. " +
+          "Zum Beispiel: „Was ist in diesem Dokument?“ oder „Bau mir eine Grundplatte " +
+          "80 × 60 × 5 mm.“"
+        }
+        placeholder="Frag mich etwas — oder sag mir, was ich bauen soll…"
+        suggestions={[
+          {
+            label: "Was ist in diesem Dokument?",
+            prompt: "Was ist in diesem Dokument?",
+          },
+          {
+            label: "Grundplatte bauen",
+            prompt: "Bau mir eine Grundplatte 80 × 60 × 5 mm.",
+          },
+          {
+            label: "Wie skizziere ich?",
+            prompt:
+              "Wie erstelle ich in FieldDraft eine Skizze und extrudiere sie?",
+          },
+        ]}
+      />
+    </>
   );
 }

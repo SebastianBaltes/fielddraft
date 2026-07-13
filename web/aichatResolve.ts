@@ -37,6 +37,7 @@ const AICHAT_DEPS = [
   "@ai-sdk/openai",
   "@openrouter/ai-sdk-provider",
   "acorn",
+  "acorn-typescript",
   "marked",
   "dompurify",
 ];

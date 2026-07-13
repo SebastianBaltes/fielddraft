@@ -9,7 +9,7 @@
  * types — and report errors in code that is not ours to fix. Vite still bundles
  * the real source; this file only describes the boundary we lean on.
  *
- * Pinned against baseaichat v0.2.0 (submodule tag). If a signature here stops
+ * Pinned against baseaichat v0.3.0 (submodule tag). If a signature here stops
  * matching, that is the pin telling you the library moved — update both together.
  */
 declare module "baseaichat" {
@@ -44,8 +44,19 @@ declare module "baseaichat" {
   export interface GuardResult {
     ok: boolean;
     reason?: string;
+    at?: { line: number; column: number };
   }
   export function guardCode(code: string, options?: GuardOptions): GuardResult;
+
+  export interface ScriptGuardOptions extends GuardOptions {
+    /** Module specifiers a script may import. Empty = no imports at all. */
+    allowImportsFrom?: string[];
+  }
+  /** Guards TYPESCRIPT (classes and `this` allowed) with the same blocklists. */
+  export function guardScript(
+    source: string,
+    options?: ScriptGuardOptions,
+  ): GuardResult;
 
   export interface UIStateOptions {
     root?: ParentNode;
@@ -72,11 +83,7 @@ declare module "baseaichat" {
   ): string;
   export function roundValues(value: unknown, precision: number): unknown;
 
-  export type ProviderName =
-    | "google"
-    | "openai"
-    | "anthropic"
-    | "openrouter";
+  export type ProviderName = "google" | "openai" | "anthropic" | "openrouter";
 
   export interface ChatAgentOptions {
     provider?: ProviderName;

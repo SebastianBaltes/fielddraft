@@ -24,6 +24,23 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.586",
+    entries: [
+      {
+        kind: "feat",
+        scope: "assistant",
+        text: "Der Assistent kann jetzt FieldSkript schreiben — starten darfst nur du. Wenn eine Geometrie parametrisch oder repetitiv genug ist, dass ein Skript besser passt als ein Stapel Einzel-Features, legt er dir den Quelltext vor: mit einem Satz, was er tut, und dem vollständigen Code. Erst dein Klick auf „Ausführen“ kompiliert und installiert ihn als Feature; Verwerfen ist der Standardweg. Der Quelltext wird vorher geprüft (kein window, kein fetch, kein eval, keine fremden Importe) — dass ein Skript im Kernel Geometrie erzeugen und verändern darf, bleibt aber seine Natur: rückgängig machst du es mit Strg+Z.",
+        tickets: ["347"],
+      },
+      {
+        kind: "fix",
+        scope: "fieldskript",
+        text: "Skripte laufen jetzt garantiert im strict mode. Bisher hing das an einem Detail des Transpilers; im laxen Modus hätte ein gewöhnlicher Funktionsaufruf Zugriff auf das globale Objekt gehabt — und damit an allen Beschränkungen vorbei, die für Skripte gelten sollen.",
+        tickets: ["347"],
+      },
+    ],
+  },
+  {
     version: "0.6.585",
     entries: [
       {

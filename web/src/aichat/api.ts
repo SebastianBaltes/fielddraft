@@ -71,6 +71,13 @@ setVariable(name: string, value: number): boolean
 undo(): void
 redo(): void
 
+/** Schlägt ein FieldSkript-Feature vor (TypeScript). Es wird NICHT ausgeführt:
+ *  die Quelle wird geprüft und dem NUTZER vorgelegt, der entscheidet.
+ *  Rückgabe {ok:false, reason, line} → korrigieren und neu vorschlagen.
+ *  Rückgabe {ok:true} → der Nutzer sieht das Skript; behaupte NICHT, es sei
+ *  gelaufen. Erlaubter Import: nur "fielddraft". */
+proposeScript(name: string, source: string, intent: string): { ok: boolean; status: string; reason?: string; line?: number }
+
 // ── Auswahl & Ansicht ─────────────────────────────────────────────────────────
 
 /** Ein Feature auswählen (null = Auswahl leeren). */
@@ -111,4 +118,29 @@ updateFeature(box.id, p);                         // zurückschreiben
 
 // „Was ist in dem Dokument?"
 getDocument();                                    // einfach zurückgeben, nicht erzählen
+
+// „Mach mir ein Feature, das eine Lochreihe erzeugt." → Skript vorschlagen:
+proposeScript("Lochreihe", \`
+import { fd } from "fielddraft";
+
+export const definition = fd.feature({
+  name: "Lochreihe",
+  parameters: {
+    count: fd.real({ default: 5 }),
+    spacing: fd.length({ default: 20 }),
+    diameter: fd.length({ default: 6 }),
+  },
+});
+
+export function build(ctx, id, def) {
+  for (let i = 0; i < def.count; i++) {
+    fd.hole(ctx, id.sub("h" + i), {
+      diameter: def.diameter,
+      depth: 10,
+      translate: [i * def.spacing, 0, 0],
+    });
+  }
+}
+\`, "Erzeugt eine parametrische Reihe von Bohrungen.");
+// → liegt jetzt dem Nutzer vor. NICHT behaupten, es sei gelaufen.
 `;

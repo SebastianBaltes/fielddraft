@@ -37,36 +37,14 @@ import {
 } from "baseaichat";
 import type { KernelStore } from "../store";
 import { createFieldDraftApi } from "./fieldDraftApi";
+import { GUARDED_APP_GLOBALS } from "./guardedGlobals";
 import { API_DESCRIPTION } from "./api";
 import instructions from "./instructions.md?raw";
-
-/**
- * FieldDraft's debug globals — blocked for the agent (guardPolicy.test.ts).
- *
- * They exist only in dev builds, but the v0.2.0 guard is a BLOCKLIST: a free
- * `__fdStore` resolves, and the model would be holding the raw kernel with no
- * curation, no validation and no undo semantics — straight past fieldDraftApi.ts,
- * which is the actual security boundary. There is nothing in them the API does
- * not offer safely.
- */
-export const GUARDED_APP_GLOBALS = [
-  "__fdStore",
-  "__fdKernel",
-  "__threeRenderer",
-  "__fdInvalidate",
-  "__fdSketchCamera",
-  "__fdSketchToScreen",
-  "__fdPerfMonitor",
-  "__fdBenchmark",
-  "__fdTelemetry",
-  "__fdActionLog",
-] as const;
 
 /** The app's own DOM — everything outside the chat panel. */
 function appRoot(): HTMLElement {
   return (
-    (document.querySelector(".fd-shell") as HTMLElement | null) ??
-    document.body
+    (document.querySelector(".fd-shell") as HTMLElement | null) ?? document.body
   );
 }
 

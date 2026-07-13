@@ -18,9 +18,10 @@
  *  2. **Reads hand out COPIES.** A model that mutates a returned object and then
  *     reports success is a classic failure mode; the wire-form params are cloned
  *     on the way out, and `api.ts` says so in the description the model reads.
- *  3. **No script execution.** FieldSkript would let the model run arbitrary
- *     TypeScript in the app — which is the guard's whole point, undone. Writing
- *     scripts is deliberately NOT in this API (see docs/AI-CHAT-PLAN.md).
+ *  3. **Scripts go through the user.** The assistant MAY write FieldSkript (the
+ *     operator accepted that risk), but it cannot run it: `proposeScript` guards
+ *     the source and parks it: the app shows it, and only the user's explicit
+ *     "Ausführen" installs it (scriptProposals.ts).
  *
  * Undo is the real safety net: every turn opens with a checkpoint, so a bad
  * agent turn is one Ctrl+Z away.
@@ -28,6 +29,7 @@
 
 import type { KernelStore } from "../store";
 import { requestView, requestViewFit, type ViewPreset } from "../viewCommands";
+import { proposeScript, type ProposeResult } from "./scriptProposals";
 
 /** The camera presets the assistant may ask for (mirrors ViewPreset). */
 const VIEWS: ViewPreset[] = [
@@ -146,6 +148,19 @@ export function createFieldDraftApi(store: KernelStore) {
     /** Document variables — usable in any numeric field as a formula. */
     setVariable(name: string, value: number): boolean {
       return store.setVariable(name, value);
+    },
+
+    /**
+     * Propose a FieldSkript feature (TypeScript). It is NOT executed: the source
+     * is checked, then shown to the user, who decides. A rejected script comes
+     * back with the reason and the line — fix it and propose again.
+     *
+     * Use this when the wanted geometry is parametric or repetitive enough that
+     * a script beats a pile of features. `name` becomes the feature's name,
+     * `intent` is the one-line explanation the user reads above the code.
+     */
+    proposeScript(name: string, source: string, intent = ""): ProposeResult {
+      return proposeScript(name, source, intent);
     },
 
     undo(): void {

