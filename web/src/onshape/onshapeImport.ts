@@ -121,6 +121,18 @@ interface SketchRecord {
   planeQuery: string;
 }
 
+/** What a translated sweep needs to be referable later. */
+interface SweepRecord {
+  fdId: number;
+  /** Did the extrude grow along the sketch normal (+) or against it (−)?
+   *  It decides which CAP is the sketch-plane side: a FieldDraft slab is
+   *  centred on `depth/2`, so a NEGATIVE depth puts CAP_TOP — not
+   *  CAP_BOTTOM — flush with the sketch plane. Onshape names the caps
+   *  relative to the extrude (`isStart`), so without the sign a cap query
+   *  resolves to the face on the far end, or to nothing at all. */
+  depthPositive: boolean;
+}
+
 /** The depth (mm) a FieldDraft extrude needs, plus how we got there. */
 interface EndCondition {
   depthMm: number;
@@ -243,6 +255,7 @@ function buildPlaneQuery(
   featureName: string,
   idMap: Record<string, number>,
   sketches: Map<string, SketchRecord>,
+  sweeps: Map<string, SweepRecord>,
 ): { query?: string; error?: string } {
   switch (ref.kind) {
     case "default": {
@@ -251,13 +264,17 @@ function buildPlaneQuery(
       return { query: `qCreatedBy(origin_plane_${plane})` };
     }
     case "cap": {
+      const sweep = sweeps.get(ref.opFeatureId);
       const fd = idMap[ref.opFeatureId];
       if (fd === undefined)
         return { error: `${featureName}: Cap-Ebene referenziert nicht importiertes Feature ${ref.opFeatureId}` };
-      // Onshape's START cap is the sketch-plane side = FieldDraft's
-      // CAP_BOTTOM (the extrude slab grows along +z from the sketch).
-      const role = ref.isStart ? "CAP_BOTTOM" : "CAP_TOP";
-      return { query: `qCreatedBy(${fd}, ${role})` };
+      // Onshape's START cap is the SKETCH-PLANE side. Which FieldDraft cap
+      // that is depends on the extrude's direction: growing along +z the
+      // sketch plane is CAP_BOTTOM, growing the other way it is CAP_TOP.
+      const positive = sweep?.depthPositive ?? true;
+      const sketchSide = positive ? "CAP_BOTTOM" : "CAP_TOP";
+      const farSide = positive ? "CAP_TOP" : "CAP_BOTTOM";
+      return { query: `qCreatedBy(${fd}, ${ref.isStart ? sketchSide : farSide})` };
     }
     case "swept": {
       const fd = idMap[ref.opFeatureId];
@@ -313,6 +330,7 @@ export async function importOnshapeFeatures(
 ): Promise<OnshapeImportResult> {
   const result: OnshapeImportResult = { created: [], idMap: {}, warnings: [], errors: [] };
   const sketches = new Map<string, SketchRecord>();
+  const sweeps = new Map<string, SweepRecord>();
 
   for (const raw of featuresJson.features ?? []) {
     const feat = msg(raw);
@@ -330,7 +348,7 @@ export async function importOnshapeFeatures(
         continue;
       }
       const ref = await decodePlaneQuery(planeQs);
-      const built = buildPlaneQuery(ref, name, result.idMap, sketches);
+      const built = buildPlaneQuery(ref, name, result.idMap, sketches, sweeps);
       if (built.error || !built.query) {
         result.errors.push(built.error ?? `${name}: Ebene nicht übersetzbar`);
         continue;
@@ -377,7 +395,7 @@ export async function importOnshapeFeatures(
       let upToQuery: string | undefined;
       if (upToQs) {
         const upToRef = await decodePlaneQuery(upToQs);
-        const built = buildPlaneQuery(upToRef, name, result.idMap, sketches);
+        const built = buildPlaneQuery(upToRef, name, result.idMap, sketches, sweeps);
         if (built.query) upToQuery = built.query;
       }
       const end = endCondition(params, kernel, rec.planeQuery, name, upToQuery);
@@ -414,6 +432,7 @@ export async function importOnshapeFeatures(
         }),
       );
       result.idMap[feat.featureId] = fdId;
+      sweeps.set(feat.featureId, { fdId, depthPositive: depthMm >= 0 });
       result.created.push(fdId);
       continue;
     }
@@ -423,7 +442,7 @@ export async function importOnshapeFeatures(
       const openFaces: string[] = [];
       for (const qs of faceQs) {
         const ref = await decodePlaneQuery(qs);
-        const built = buildPlaneQuery(ref, name, result.idMap, sketches);
+        const built = buildPlaneQuery(ref, name, result.idMap, sketches, sweeps);
         if (built.query) openFaces.push(built.query);
         else result.errors.push(built.error ?? `${name}: Open-Face nicht übersetzbar`);
       }

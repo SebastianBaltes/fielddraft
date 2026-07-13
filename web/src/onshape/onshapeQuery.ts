@@ -20,7 +20,7 @@
  *   `M<hex>` map · `A<hex>` array · `C<hex>` class back-ref (0-based)
  *   `S<hex>$s` string · `S<h1>.<h2>$s1s2` two-part string
  *   `S-<ref>.<h>$suffix` ref+suffix string (ref left unresolved)
- *   `B<hex>$Name` class/enum introduction · `R<hex>` string back-ref
+ *   `B<hex>$Name` class/enum introduction · `R<hex>`/`E<hex>` back-refs
  *   `D-?<hex>` number · `T`/`F` booleans · `%` root marker
  */
 
@@ -132,7 +132,12 @@ export function tokenizeBton(payload: string): BtonToken[] {
       }
       continue;
     }
-    if (c === "R") {
+    if (c === "R" || c === "E") {
+      // `R<hex>` is a string back-reference. `E<hex>` appears where a VALUE
+      // is expected and is likewise a back-reference (structure sharing) —
+      // we do not resolve either, but a well-formed token we happen not to
+      // interpret must never abort the decode: throwing here killed every
+      // edge query of a document that used it.
       i += 1;
       out.push({ t: "ref", n: hex() });
       continue;

@@ -24,6 +24,21 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.574",
+    entries: [
+      {
+        kind: "fix",
+        scope: "onshape",
+        text: "Onshape-Import scheiterte mit „onshape not configured“ (#339). Ursache war keine Fehlfunktion des Imports, sondern die fehlende Server-Konfiguration: Der Browser darf Onshape nicht direkt rufen (kein CORS, und der Secret Key gehört nie ins Bundle), deshalb signiert der Go-Server die Lese-Endpunkte — ohne API-Key antwortet er konsequent mit 503. Die beiden Variablen ONSHAPE_ACCESS_KEY/ONSHAPE_SECRET_KEY sind jetzt in DEPLOY.md und .env.example dokumentiert, damit die nächste Installation nicht in dieselbe Falle läuft.",
+      },
+      {
+        kind: "fix",
+        scope: "onshape",
+        text: "Zwei echte Import-Bugs, die beim Nachstellen von #339 an einem fremden Onshape-Dokument auffielen: (1) Der Query-Decoder stürzte an einem unbekannten, aber wohlgeformten Token ab und riss damit die GESAMTE Kanten-Query mit — solche Token werden jetzt übersprungen statt den Decode zu töten. (2) Die Cap-Seite ignorierte die Extrude-Richtung: Wächst ein Extrude ENTGEGEN der Sketch-Normalen, liegt die Sketch-Ebene am oberen Deckel, nicht am unteren — ein Sketch darauf löste deshalb ins Leere. Beide mit Regressionstests abgesichert.",
+      },
+    ],
+  },
+  {
     version: "0.6.573",
     entries: [
       {

@@ -41,6 +41,29 @@ docker compose up --build -d db server mesher
 
 Dev env vars (host port overrides) live in `.env` — see `.env.example`.
 
+### Onshape import (optional)
+
+The "Aus Onshape…" import needs an Onshape API key **on the server** — the
+browser cannot call Onshape directly (no CORS, and the secret must never reach
+the bundle), so `server/onshape.go` proxies the two read endpoints and signs
+them. Without the key those routes answer `503 onshape not configured`, and the
+import dialog shows exactly that.
+
+Put the key pair in the (gitignored) `.env`; `docker-compose.yml` passes both
+through to the server container:
+
+```bash
+ONSHAPE_ACCESS_KEY=…
+ONSHAPE_SECRET_KEY=…
+# ONSHAPE_URL=https://cad.onshape.com   # optional, this is the default
+```
+
+Get the pair from <https://dev-portal.onshape.com> → API keys. **The key is an
+IDENTITY, not a public-data pass:** it reads everything its Onshape account may
+read. That is why the proxy routes sit behind `requireAuth` — never expose them
+unauthenticated. Restart the server after adding the key
+(`docker compose up -d server`).
+
 ### Full local stack with login (`just dev-full`)
 
 For a working local login, run the DB + Go server (via docker compose) and the

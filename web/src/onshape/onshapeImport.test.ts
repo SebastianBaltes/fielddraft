@@ -88,3 +88,39 @@ describe("importOnshapeFeatures — Kabelbox translation flow", () => {
     expect(result.errors.some((e) => e.includes("löst auf 0"))).toBe(true);
   });
 });
+
+describe("cap side follows the extrude direction (Ticket #339)", () => {
+  /** The REAL Kabelbox base: Sketch 1 → Extrude 1 → Sketch 2 (on the extrude's
+   *  START cap), with the extrude's direction flipped on demand. Hand-writing
+   *  BTON payloads is a trap; these are the live-captured ones. */
+  function baseDoc(oppositeDirection: boolean) {
+    const feats = (kabelbox().features as any[]).map((f) => f.message ?? f);
+    const pick = (name: string) => JSON.parse(JSON.stringify(feats.find((f) => f.name === name)));
+    const extrude = pick("Extrude 1");
+    for (const p of extrude.parameters) {
+      const pm = p.message ?? p;
+      if (pm.parameterId === "oppositeDirection") pm.value = oppositeDirection;
+    }
+    return { features: [pick("Sketch 1"), extrude, pick("Sketch 2")] };
+  }
+
+  it("a positive extrude puts the START cap at CAP_BOTTOM", async () => {
+    const kernel = mockKernel();
+    await importOnshapeFeatures(baseDoc(false), kernel);
+    const sketches = kernel.calls.filter((c) => c.type === "sketch");
+    expect(sketches.length).toBe(2);
+    expect(sketches[1].params.planeQuery).toBe("qCreatedBy(2, CAP_BOTTOM)");
+  });
+
+  it("an extrude AGAINST the normal puts the START cap at CAP_TOP", async () => {
+    // FieldDraft centres the slab on depth/2, so a NEGATIVE depth lays CAP_TOP
+    // — not CAP_BOTTOM — flush with the sketch plane. Getting this backwards
+    // made the sketch's plane query resolve to nothing (ticket #339).
+    const kernel = mockKernel();
+    await importOnshapeFeatures(baseDoc(true), kernel);
+    const extrude = kernel.calls.find((c) => c.type === "extrude")!;
+    expect(extrude.params.depth.value).toBeLessThan(0);
+    const sketches = kernel.calls.filter((c) => c.type === "sketch");
+    expect(sketches[1].params.planeQuery).toBe("qCreatedBy(2, CAP_TOP)");
+  });
+});

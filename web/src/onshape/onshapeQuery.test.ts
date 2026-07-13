@@ -130,3 +130,21 @@ describe("decodePlaneQuery — failure visibility", () => {
     expect(ref.kind).toBe("unsupported");
   });
 });
+
+describe("tokenizeBton — unknown-but-well-formed tokens (Ticket #339)", () => {
+  it("consumes the E<hex> back-reference instead of aborting the decode", () => {
+    // A real document used `E<hex>` where a VALUE was expected. The tokenizer
+    // threw on it, which killed the WHOLE query — every fillet edge of that
+    // document failed to decode. A token we merely do not interpret must not
+    // be a hard stop.
+    const toks = tokenizeBton("%Sc$instanceNameE22R9S9$queryTypeS4$FACE");
+    expect(() => toks).not.toThrow();
+    const literals = toks.filter((t) => t.t === "str").map((t) => t.p1);
+    expect(literals).toContain("instanceName");
+    expect(literals).toContain("FACE"); // the scan survived past the E token
+  });
+
+  it("still rejects genuinely unknown syntax — visibly", () => {
+    expect(() => tokenizeBton("%Z9$nope")).toThrow();
+  });
+});
