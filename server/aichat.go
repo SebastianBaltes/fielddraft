@@ -31,7 +31,15 @@ import (
 //
 // The vision model MUST be listed too — as soon as a screenshot is attached the
 // client switches to it, and an unlisted model turns the whole turn into a 403.
-// Override per deployment with AICHAT_MODELS (comma-separated).
+//
+// Override per deployment with AICHAT_MODELS (comma-separated). The FIRST entry
+// is the model the chat actually talks to — the client takes models[0] from
+// /api/aichat/config (web/src/aichat/setup.ts), so the ORDER is the setting.
+//
+// To see what OpenRouter offers, ask the proxy itself: since baseaichat v0.3.1
+// the allowlist gates POST (inference) only, GET is metadata and passes through.
+//
+//	curl -H 'X-Target-Path: models' http://localhost:8080/aichat/models
 var aichatDefaultModels = []string{
 	"google/gemini-3-flash-preview", // chat + tools + vision (verified via the proxy)
 	"anthropic/claude-haiku-4.5",

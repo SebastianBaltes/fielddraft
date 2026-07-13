@@ -9,7 +9,7 @@
  * types — and report errors in code that is not ours to fix. Vite still bundles
  * the real source; this file only describes the boundary we lean on.
  *
- * Pinned against baseaichat v0.3.0 (submodule tag). If a signature here stops
+ * Pinned against baseaichat v0.3.1 (submodule tag). If a signature here stops
  * matching, that is the pin telling you the library moved — update both together.
  */
 declare module "baseaichat" {
