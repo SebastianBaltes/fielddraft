@@ -240,3 +240,20 @@ Format: Zeitstempel · Hypothese/Frage · Ergebnis · Entscheidung.
 - Iteration-4-Verifikation durch Orchestrator: open=0/χ=2 reproduziert,
   1078/1078 grün, Stitching-Review ok (Grad-2-Loops ≤5, valid_geom-Pflicht,
   Manifold-Schutz, Loops >5 bleiben ehrlich offen).
+
+## 2026-07-13 09:50 — Härtungsphase abgeschlossen (v0.6.567)
+
+- 10-Fälle-Matrix (dünn/Warp/degeneriert/streifend): 4× wasserdicht (a),
+  3× kleine Defekte (b), 3× harte Grenze (c). Details REPORT.md.
+- Vier Härtungs-Fixes gelandet (Phantom-Ketten-Filter chain_seg_ok,
+  Regionen-Merge-Reparatur, Stitch-Loop-Walk + 5er-Fächer,
+  fidget-Displace-Achsfaktoren); DL-70-Displace-Normalisierung implementiert,
+  vermessen, ZURÜCKGEBAUT (Mesher 813→1634; Renderer-Arbeitslinie offen,
+  Befund in bvh.rs).
+- Drei neue aktive Gates (koplanar, graze-alt, thin-tube χ=0); 2 ignored-WIP
+  mit Diagnose (Warp-Bodies, tangentiale Küsse).
+- Fixture-Validierung fing zwei Fixture-Fehler des Härtungs-Agenten
+  (Gyroid-Wandstärke 2ts/√3; Ort mit 0 % Material) — das Muster trägt.
+- Verifikation Orchestrator: Lichen-Gates 37/37, Abnahme-Gate byte-identisch,
+  kernel release 1082/1082, workspace release 1159/1159; voller
+  Debug-Workspace-Lauf gestartet.
