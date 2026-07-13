@@ -24,6 +24,16 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.568",
+    entries: [
+      {
+        kind: "fix",
+        scope: "render",
+        text: "Displace-Körper: Sphere-Marching konnte die Beulen-Fläche überschreiten (Löcher/Artefakte bei Streifwinkeln), weil das Displace-Feld nicht 1-Lipschitz ist (L ≈ 1 + |depth·freq|·√(1+1.3²+0.7²)). Der Renderer bekommt jetzt eine Schrittweiten-Dämpfung 1/L über den bestehenden march-relax-Mechanismus (wie Revolve mit 0.7) — das Feld selbst bleibt bitidentisch unnormalisiert, denn die Feld-Normalisierung wurde in der Härtungs-Session vermessen und macht den Lichen-Mesher messbar schlechter (813 → 1634 offene Kanten; Befund in bvh.rs). Der Mesher ist von dieser Änderung beweisbar unberührt.",
+      },
+    ],
+  },
+  {
     version: "0.6.567",
     entries: [
       {
