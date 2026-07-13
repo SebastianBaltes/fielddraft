@@ -90,6 +90,10 @@ export interface PlaneFrameKernel {
   bodyCount(): number;
   bodyBrepFaces(i: number): BRepFace[];
   bodyPlacement(i: number): Placement;
+  /** Kernel-side query resolution — the authority for every query form
+   *  beyond the two regex fast paths below. Optional so the existing
+   *  test doubles stay valid. */
+  resolveQuery?(query: string): { kind: string; idHash: string }[];
 }
 
 /**
@@ -105,9 +109,19 @@ export function resolvePlaneFrame(
   const datum = planeQuery.match(/^qCreatedBy\((origin_plane_(?:xy|xz|yz))\)$/);
   if (datum) return DATUM_FRAMES[datum[1]];
 
-  const byHash = planeQuery.match(/^qFace\((\d+)\)$/);
+  let byHash = planeQuery.match(/^qFace\((\d+)\)$/);
   const byFeature = planeQuery.match(/^q(?:CreatedBy|FaceOf)\((\d+)\)$/);
-  if (!byHash && !byFeature) return null;
+  if (!byHash && !byFeature) {
+    // Any richer form (`qCreatedBy(op, ROLE)`, `qWall`, `qAdjacentTo`,
+    // fingerprint-carrying `qFace(h @ fp)` …) is resolved by the KERNEL —
+    // the single authority — and comes back as a concrete face id_hash we
+    // then look up below. Keeping the two fast paths above avoids changing
+    // their established first-hit semantics.
+    const resolved = kernel.resolveQuery?.(planeQuery) ?? [];
+    const face = resolved.find((r) => r.kind === "face");
+    if (!face) return null;
+    byHash = [planeQuery, face.idHash] as unknown as RegExpMatchArray;
+  }
 
   let count = 0;
   try {

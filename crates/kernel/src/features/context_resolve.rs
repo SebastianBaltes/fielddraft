@@ -59,6 +59,21 @@ impl<'a> Context<'a> {
                 }
             }
         }
+        // Every RICHER form (`qCreatedBy(op, ROLE)`, `qWall`, `qIntersection`,
+        // `qAdjacentTo`, …) goes through the shared element resolver instead of
+        // a second match arm here that would forever lag the query grammar.
+        for (brep, placement) in woven {
+            let refs = crate::queries::resolve_query_topo(std::slice::from_ref(brep), expr);
+            let Some(r) = refs
+                .iter()
+                .find(|r| r.kind == crate::brep::naming::EntityKind::Face)
+            else {
+                continue;
+            };
+            if let Some(fid) = face_by_hash(brep, r.id_hash) {
+                return Some(crate::sketch::face_plane_frame(brep, fid, placement));
+            }
+        }
         None
     }
 
@@ -83,6 +98,20 @@ impl<'a> Context<'a> {
             QueryExpr::Face(eref) => Some(locate_face(woven, eref)?),
             _ => None,
         };
+        // Richer forms (`qCreatedBy(op, ROLE)`, `qWall`, …) resolve through the
+        // shared element resolver — same reasoning as `resolve_plane_frame`.
+        // Without this a shell's `open_faces: qCreatedBy(op, CAP_TOP)` matched
+        // nothing and the body silently stayed closed.
+        let by_hash: Option<(usize, FaceId)> = match expr {
+            QueryExpr::Face(_) | QueryExpr::CreatedBy(_) | QueryExpr::FaceOf(_) => None,
+            _ => woven.iter().enumerate().find_map(|(bi, (brep, _))| {
+                let refs = crate::queries::resolve_query_topo(std::slice::from_ref(brep), expr);
+                let r = refs
+                    .iter()
+                    .find(|r| r.kind == crate::brep::naming::EntityKind::Face)?;
+                face_by_hash(brep, r.id_hash).map(|fid| (bi, fid))
+            }),
+        };
         for (bi, (brep, placement)) in woven.iter().enumerate() {
             for i in 0..brep.faces.len() {
                 let fid = FaceId(i as u32);
@@ -91,7 +120,7 @@ impl<'a> Context<'a> {
                     QueryExpr::CreatedBy(f) | QueryExpr::FaceOf(f) => f
                         .as_u32_or_root()
                         .is_some_and(|t| brep.faces[i].branch_id.feature_id() == t),
-                    _ => false,
+                    _ => by_hash == Some((bi, fid)),
                 };
                 if !hit {
                     continue;
@@ -802,6 +831,15 @@ fn coplanar(
     off.abs() < 1e-2
 }
 
+
+/// The face of `brep` carrying `id_hash` — the bridge from a resolved
+/// [`TopoRef`](crate::brep::naming::TopoRef) back to an arena handle.
+fn face_by_hash(brep: &crate::brep::BRep, id_hash: u64) -> Option<crate::brep::FaceId> {
+    use crate::brep::naming::TopoRef;
+    (0..brep.faces.len())
+        .map(|i| crate::brep::FaceId(i as u32))
+        .find(|&fid| TopoRef::from_face(brep, fid).id_hash == id_hash)
+}
 
 /// Locate a `qFace` element reference across the woven bodies —
 /// fingerprint-healing included (see [`crate::queries::locate_element`]).

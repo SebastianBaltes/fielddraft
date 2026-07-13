@@ -5,6 +5,15 @@ Plan-Kontext: docs/ONSHAPE-IMPORT-PLAN.md. Testmodell: „Kabelbox" (7 Sketches
 auf 7 verschiedenen Ebenen), live unter den IDs in web/.onshape.local.json;
 Roh-Features + dekodierte Queries als Fixture in web/src/onshape/fixtures/.
 
+## Stand in einem Satz
+
+Schritte 1–4 sind umgesetzt und getestet; die Abnahme am echten Kernel zeigt
+4 von 7 Kabelbox-Sketches korrekt und parametrisch platziert. Die restlichen 3
+scheitern SICHTBAR an einer Kernel-Grenze (FieldDraft trennt Flächen nur an
+Knicken → ein abgerundetes Rechteck hat EINE Mantelfläche), nicht an der
+Import-Logik. Damit ist die Definition of Done NICHT erfüllt; der Blocker ist
+benannt, eingegrenzt und als nächstes Projekt beschrieben (§ Schritt 5).
+
 ## Empirische Basis (2026-07-13, Live-API)
 
 Onshapes queryString ist `query=qCompressed(1.0,"<payload>",id);` mit zwei
@@ -180,6 +189,88 @@ Noch zu bauen (`web/src/onshape/onshapeImport.ts` + UI):
    SECRET_KEY aus web/.onshape.local.json in server/.env), Kabelbox
    importieren, 7 Sketch-Ebenen prüfen, Basiskörper-Änderungstest.
    Release-Note + Versions-Bump erst mit der UI.
+
+## Schritt 5 — E2E am echten Kernel
+
+Der Import läuft in `web/src/onshape/onshapeImportE2E.test.ts` gegen den
+ECHTEN WASM-Kernel (nicht Mock). Ergebnis:
+
+**Was funktioniert (verifiziert):** 4 der 7 Kabelbox-Sketches werden
+importiert und liegen auf einer korrekt aufgelösten Fläche — 2 auf
+Standard-Ebenen, 2 auf Extrude-Caps (`qCreatedBy(op, CAP_*)`). Sie
+regenerieren fehlerfrei, und ihre Ebenen-FRAMES wandern mit, wenn man die
+Tiefe des Grundkörpers ändert (parametrisch, keine tote Geometrie). Extrude,
+Shell und Fillet werden mit übersetzt.
+
+**Was NICHT funktioniert (offener Blocker):** Die 3 Sketches, die in Onshape
+auf einer SEITE des abgerundeten Grundkörpers sitzen (Sketch 4, 5, 8), lassen
+sich nicht platzieren. Sie scheitern SICHTBAR mit benannter Ursache — kein
+stiller XY-Fallback (der Kernel hat auch keinen: eine nicht auflösbare
+Ebene ist ein harter Feature-Fehler).
+
+### Wurzel-Ursache: FieldDraft trennt Flächen nur an Knicken
+
+Eine G1-Randgruppe = eine B-Rep-Fläche, und G1 heißt „tangentenstetig". Beim
+abgerundeten Rechteck (4 Linien + 4 tangentiale Fillet-Bögen) ist die GESAMTE
+Mantelfläche damit EINE Gruppe. Die „linke Wand", auf der Onshapes Sketch 5
+sitzt, existiert in FieldDraft schlicht nicht. Zusätzlich liftet
+`lift_path_group` nur homogene Gruppen (alle Linien → Ebene, ko-zirkulare
+Bögen → Zylinder), eine gemischte Linie-Bogen-Gruppe bekommt gar keinen
+analytischen Träger und fällt auf Tessellierung zurück.
+
+### Irrweg I-1: G1-Gruppen an der Trägerflächen-Grenze trennen (revertiert)
+
+Naheliegend: `g1_continuous` zusätzlich verlangen lassen, dass beide Segmente
+DENSELBEN Träger haben (Linie↔Bogen trennt, kollineare Linien / ko-zirkulare
+Bögen / Bézier-Ketten verschmelzen weiter). Damit hätte das abgerundete
+Rechteck 8 analytische Seitenflächen und `qWall(op, entity)` fände die linke
+Wand.
+
+**Warum es nicht geht:** Der Split erzeugt Flächengrenzen, die TANGENTIAL
+sind (Ebene berührt Zylinder knickfrei). FieldDrafts Weaver findet Kanten
+aber über Branch-Kreuzungen im SDF — eine tangentiale Naht ist numerisch
+degeneriert und wird nicht gewoben. Der Zylinder behält dann nur EINEN Rand,
+und der parametrische Export hält ihn für eine Polkappe
+(`spline_dome_with_pole_exports_parametric_watertight` schlug fehl:
+„cylinder cannot close onto the axis"). Der Split wurde zurückgenommen.
+
+**Der saubere Weg** ist damit klar benannt und ein eigenes Projekt:
+tangentiale Nähte weben (Trägerflächen-Split + SSI/Weaver/Tessellator/
+Parametrik-Export für berührende Flächenpaare). Erst danach kann FieldDraft
+Onshape-Modelle mit verrundeten Kanten voll abbilden.
+
+### Echte Bugs, die der E2E-Lauf mitgefunden hat
+
+- `Context::resolve_plane_frame` und `resolve_open_face` matchten
+  Query-Formen HARTKODIERT (`qCreatedBy`/`qFaceOf`/`qFace`). Jede reichere
+  Form fiel durch — eine Shell mit `open_faces: qCreatedBy(op, CAP_TOP)`
+  öffnete deshalb STILL gar nichts. Beide routen jetzt als Fallback über den
+  gemeinsamen Element-Resolver (`resolve_query_topo`), sind also automatisch
+  für jede künftige Query-Form korrekt.
+- `web/src/sketchPlaneFrame.ts` spiegelte die Query-Auflösung in JS und kannte
+  die neuen Formen nicht (imported Sketches wären im Overlay unsichtbar
+  gewesen). Unbekannte Formen gehen jetzt über `kernel.resolveQuery`.
+- `wall_sub_table` sperrt Tabellen mit doppeltem Repräsentanten (zwei Wände
+  auf einem Branch wären eine Fläche).
+
+## Nächste Schritte (empfohlene Reihenfolge)
+
+1. **Tangentiale Nähte weben** (der Blocker, eigenes Projekt): Trägerflächen-
+   Split in der G1-Gruppierung + Weaver/SSI, Tessellator und Parametrik-Export
+   für berührende Flächenpaare. Danach: Kabelbox vollständig, und abgerundete
+   Körper werden generell analytisch statt tesselliert.
+2. **Feature-Import vervollständigen**: End-Conditions (THROUGH_ALL exakt statt
+   1000-mm-Näherung, UP_TO_SURFACE/UP_TO_FACE gegen die gefundene Fläche),
+   Draft, symmetrische/zweiseitige Extrudes, Fillet-Kantenmengen (aktuell nur
+   die Cap∩Wand-Form), Pattern/Hole/Sweep/Loft.
+3. **Sketch-Übersetzer-Lücken**: Fillet-Arcs (Kabelbox Sketch 1 nutzt sie),
+   Bemaßungs-Constraints (DISTANCE/ANGLE/RADIUS/DIAMETER), MIRROR, PROJECTED,
+   MIDPOINT — heute als Warnung gemeldet, Geometrie stimmt, aber der Sketch
+   ist unterbestimmt.
+4. **OAuth statt Operator-API-Key** (Konzept in server/onshape.go skizziert),
+   damit jeder Nutzer seine eigenen Onshape-Dokumente importiert.
+5. **Slot-Tool eigene Kurven-Entities geben** — dann trägt auch ein Slot
+   stabile Wall-Subs (heute positioneller Fallback).
 
 ## Offene Punkte / Lücken
 

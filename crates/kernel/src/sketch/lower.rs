@@ -907,6 +907,14 @@ pub fn wall_sub_table(tree: &Sketch2d, traced: &[TracedPrim]) -> Option<Vec<u32>
     {
         return None;
     }
+    // Two walls that shared a sub would collapse into ONE branch (and one
+    // face). A table that can't name every wall distinctly is no table.
+    let mut seen: Vec<u32> = out.clone();
+    seen.sort_unstable();
+    seen.dedup();
+    if seen.len() != out.len() {
+        return None;
+    }
     Some(out)
 }
 

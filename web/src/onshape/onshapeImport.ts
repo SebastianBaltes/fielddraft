@@ -214,7 +214,10 @@ export async function importOnshapeFeatures(
         const matches = kernel.resolveQuery(built.query);
         if (matches.length !== 1) {
           result.errors.push(
-            `${name}: Ebenen-Query "${built.query}" löst auf ${matches.length} Flächen auf (erwartet 1) — Sketch übersprungen`,
+            `${name}: Ebenen-Query "${built.query}" löst auf ${matches.length} Flächen auf (erwartet 1) — Sketch übersprungen.` +
+              (built.query.includes("qWall(") && matches.length === 0
+                ? " Ursache ist meist eine tangential verschmolzene Mantelfläche: FieldDraft trennt Flächen nur an Knicken, ein abgerundetes Rechteck hat daher EINE Mantelfläche statt vier Seiten + vier Rundungen (siehe docs/ONSHAPE-IMPORT-STATE.md)."
+                : ""),
           );
           continue;
         }
