@@ -91,7 +91,7 @@ test.describe("Sketch extend", () => {
     ).toBeGreaterThan(before![0] + 1);
 
     await page.getByTestId("sketch-detail-accept").click();
-    await expect(page.getByTestId("feature-count")).toHaveText("1 feature");
+    await expect(page.locator('[data-feature-count="1"]')).toBeVisible();
 
     expect(
       pageErrors.map((e) => e.message),

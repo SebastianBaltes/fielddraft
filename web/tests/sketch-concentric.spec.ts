@@ -159,7 +159,7 @@ test.describe("Sketch concentric constraint", () => {
     expect(hasConcentric).toBe(true);
 
     await page.getByTestId("sketch-detail-accept").click();
-    await expect(page.getByTestId("feature-count")).toHaveText("1 feature");
+    await expect(page.locator('[data-feature-count="1"]')).toBeVisible();
 
     const committed = await page.evaluate(() => {
       const kernel = (

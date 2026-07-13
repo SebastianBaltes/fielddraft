@@ -98,7 +98,7 @@ test.describe("Sketch chain offset", () => {
     ).toBeGreaterThan(4);
 
     await page.getByTestId("sketch-detail-accept").click();
-    await expect(page.getByTestId("feature-count")).toHaveText("1 feature");
+    await expect(page.locator('[data-feature-count="1"]')).toBeVisible();
 
     const committed = await committedSketchTypes(page);
     expect(committed).not.toBeNull();

@@ -226,9 +226,7 @@
       display: none;
     }
 
-    & .meta .feature-count,
-    & .meta .tri-count,
-    & .meta .scene-size {
+    & .meta .tri-count {
       display: none;
     }
   }

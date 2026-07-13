@@ -84,7 +84,7 @@ test.describe("Sketch regular polygon tool", () => {
 
     await page.waitForTimeout(500);
     await page.getByTestId("sketch-detail-accept").click();
-    await expect(page.getByTestId("feature-count")).toHaveText("1 feature");
+    await expect(page.locator('[data-feature-count="1"]')).toBeVisible();
 
     const committed = await committedSketchTypes(page);
     expect(committed).not.toBeNull();

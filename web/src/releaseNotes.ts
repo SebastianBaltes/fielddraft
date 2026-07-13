@@ -24,6 +24,17 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.578",
+    entries: [
+      {
+        kind: "fix",
+        scope: "viewport",
+        text: "Die Anzeige „8 features 100.0 × 100.0 × 100.0 mm“ oben rechts ist entfallen — die Feature-Zahl steht ohnehin im Outliner, die Maße liefert die Part-AABB-Anzeige. Die Dreieckszahl im Mesh-Modus und Fehlermeldungen bleiben.",
+        tickets: ["1ca0124c"],
+      },
+    ],
+  },
+  {
     version: "0.6.577",
     entries: [
       {

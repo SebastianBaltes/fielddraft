@@ -259,8 +259,8 @@ test.describe("Sketch editor smoke", () => {
 
     // 6. Finish the sketch — K6b.3a commits the session as a
     //    real `sketch` FeatureCall on the kernel, so the outliner
-    //    grows a new row and the feature-count badge goes from 0
-    //    to 1. The overlay canvas unmounts and the regular toolbar
+    //    grows a new row und der Feature-Zähler (data-feature-count)
+    //    geht von 0 auf 1. The overlay canvas unmounts and the regular toolbar
     //    comes back. The Detail panel itself is a persistent
     //    Outliner section (ticket pqoe) — it does NOT close; the
     //    signal that the session ended is that its in-session ✓
@@ -269,7 +269,7 @@ test.describe("Sketch editor smoke", () => {
     await expect(page.getByTestId("sketch-detail-accept")).toHaveCount(0);
     await expect(page.getByTestId("sketch-canvas-2d")).toHaveCount(0);
     await expect(page.getByTestId("primitive-split-button")).toBeVisible();
-    await expect(page.getByTestId("feature-count")).toHaveText("1 feature");
+    await expect(page.locator('[data-feature-count="1"]')).toBeVisible();
     // The new row's kind glyph is the sketch pencil. (Datum rows like
     // Origin precede feature rows now, so target the sketch row by kind.)
     const sketchRow = page.locator(
@@ -344,7 +344,7 @@ test.describe("Sketch editor smoke", () => {
     await page.waitForTimeout(700);
 
     await page.getByTestId("sketch-detail-accept").click();
-    await expect(page.getByTestId("feature-count")).toHaveText("1 feature");
+    await expect(page.locator('[data-feature-count="1"]')).toBeVisible();
 
     const committed = await page.evaluate(() => {
       const kernel = (
@@ -412,7 +412,7 @@ test.describe("Sketch editor smoke", () => {
     await page.getByTestId("sketch-tool-apply").click();
     await page.getByTestId("sketch-detail-accept").click();
 
-    await expect(page.getByTestId("feature-count")).toHaveText("1 feature");
+    await expect(page.locator('[data-feature-count="1"]')).toBeVisible();
     const row = page.locator('.fd-outliner .row[data-feature-kind="sketch"]');
     await expect(row).toHaveCount(1);
 
@@ -439,7 +439,7 @@ test.describe("Sketch editor smoke", () => {
     await page.getByTestId("sketch-detail-accept").click();
 
     // Feature count unchanged — replaceSketch kept the id stable.
-    await expect(page.getByTestId("feature-count")).toHaveText("1 feature");
+    await expect(page.locator('[data-feature-count="1"]')).toBeVisible();
 
     const committed = await page.evaluate(() => {
       const kernel = (
@@ -518,7 +518,7 @@ test.describe("Sketch editor smoke", () => {
     await page.waitForTimeout(800);
 
     await page.getByTestId("sketch-detail-accept").click();
-    await expect(page.getByTestId("feature-count")).toHaveText("1 feature");
+    await expect(page.locator('[data-feature-count="1"]')).toBeVisible();
 
     const committed = await page.evaluate(() => {
       const kernel = (
@@ -604,7 +604,7 @@ test.describe("Sketch editor smoke", () => {
     await page.waitForTimeout(800);
 
     await page.getByTestId("sketch-detail-accept").click();
-    await expect(page.getByTestId("feature-count")).toHaveText("1 feature");
+    await expect(page.locator('[data-feature-count="1"]')).toBeVisible();
 
     const committed = await page.evaluate(() => {
       const kernel = (
@@ -686,7 +686,7 @@ test.describe("Sketch editor smoke", () => {
     await page.waitForTimeout(700);
 
     await page.getByTestId("sketch-detail-accept").click();
-    await expect(page.getByTestId("feature-count")).toHaveText("1 feature");
+    await expect(page.locator('[data-feature-count="1"]')).toBeVisible();
 
     const committed = await page.evaluate(() => {
       const kernel = (
@@ -772,7 +772,7 @@ test.describe("Sketch editor smoke", () => {
     await expect(subSpineRows).toHaveCount(1);
 
     await page.getByTestId("sketch-detail-accept").click();
-    await expect(page.getByTestId("feature-count")).toHaveText("1 feature");
+    await expect(page.locator('[data-feature-count="1"]')).toBeVisible();
 
     const committed = await page.evaluate(() => {
       const kernel = (
@@ -829,12 +829,12 @@ test.describe("Sketch editor smoke", () => {
     await page.getByTestId("sketch-tool-apply").click();
     await page.waitForTimeout(400);
     await page.getByTestId("sketch-detail-accept").click();
-    await expect(page.getByTestId("feature-count")).toHaveText("1 feature");
+    await expect(page.locator('[data-feature-count="1"]')).toBeVisible();
 
     // Extrude button enabled after the sketch commits.
     await expect(extrudeBtn).toBeEnabled();
     await extrudeBtn.click();
-    await expect(page.getByTestId("feature-count")).toHaveText("2 features");
+    await expect(page.locator('[data-feature-count="2"]')).toBeVisible();
 
     // Verify the new feature is an extrude via the dev kernel hook.
     const shape = await page.evaluate(() => {
@@ -1071,7 +1071,7 @@ test.describe("Sketch constraint palette (P0.1)", () => {
     await page.waitForTimeout(800); // let the solver land
 
     await page.getByTestId("sketch-detail-accept").click();
-    await expect(page.getByTestId("feature-count")).toHaveText("1 feature");
+    await expect(page.locator('[data-feature-count="1"]')).toBeVisible();
 
     const committed = await readCommittedSubCalls(page);
     expect(committed).not.toBeNull();
@@ -1146,7 +1146,7 @@ test.describe("Sketch constraint palette (P0.1)", () => {
     await page.waitForTimeout(800);
 
     await page.getByTestId("sketch-detail-accept").click();
-    await expect(page.getByTestId("feature-count")).toHaveText("1 feature");
+    await expect(page.locator('[data-feature-count="1"]')).toBeVisible();
 
     const committed = await readCommittedSubCalls(page);
     expect(committed).not.toBeNull();
@@ -1270,7 +1270,7 @@ test.describe("Sketch dimensions (P0.2)", () => {
     await page.waitForTimeout(900);
 
     await page.getByTestId("sketch-detail-accept").click();
-    await expect(page.getByTestId("feature-count")).toHaveText("1 feature");
+    await expect(page.locator('[data-feature-count="1"]')).toBeVisible();
 
     const committed = await readCommittedSubCalls(page);
     expect(committed).not.toBeNull();
@@ -1331,7 +1331,7 @@ test.describe("Sketch dimensions (P0.2)", () => {
     await page.waitForTimeout(900);
 
     await page.getByTestId("sketch-detail-accept").click();
-    await expect(page.getByTestId("feature-count")).toHaveText("1 feature");
+    await expect(page.locator('[data-feature-count="1"]')).toBeVisible();
 
     const committed = await readCommittedSubCalls(page);
     expect(committed).not.toBeNull();
@@ -1455,7 +1455,7 @@ test.describe("Sketch grip-drag (P0.3)", () => {
     await page.waitForTimeout(900);
 
     await page.getByTestId("sketch-detail-accept").click();
-    await expect(page.getByTestId("feature-count")).toHaveText("1 feature");
+    await expect(page.locator('[data-feature-count="1"]')).toBeVisible();
 
     const committed = await readCommittedSubCalls(page);
     expect(committed).not.toBeNull();
@@ -1514,7 +1514,7 @@ test.describe("Sketch grip-drag (P0.3)", () => {
     await page.waitForTimeout(900);
 
     await page.getByTestId("sketch-detail-accept").click();
-    await expect(page.getByTestId("feature-count")).toHaveText("1 feature");
+    await expect(page.locator('[data-feature-count="1"]')).toBeVisible();
 
     const committed = await readCommittedSubCalls(page);
     expect(committed).not.toBeNull();
@@ -1577,7 +1577,7 @@ test.describe("Sketch grip-drag (P0.3)", () => {
     await page.waitForTimeout(900);
 
     await page.getByTestId("sketch-detail-accept").click();
-    await expect(page.getByTestId("feature-count")).toHaveText("1 feature");
+    await expect(page.locator('[data-feature-count="1"]')).toBeVisible();
 
     const committed = await readCommittedSubCalls(page);
     expect(committed).not.toBeNull();
