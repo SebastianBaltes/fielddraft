@@ -52,6 +52,15 @@ RUN npm ci
 COPY web ./
 COPY --from=wasm /out/wasm ./src/wasm
 
+# The AI-chat library is consumed as SOURCE from the submodule, OUTSIDE web/
+# (ticket #347): web/aichatResolve.ts maps `import … from "baseaichat"` to
+# <repo>/third_party/baseaichat/web/src/index.ts. WORKDIR is /app/web, so that
+# resolves to /app/third_party/… — it must exist here or Vite dies with
+# "UNLOADABLE_DEPENDENCY: Could not load ../third_party/baseaichat/web/src/index.ts".
+# It is NOT an npm dependency, so `npm ci` above neither fetches nor misses it.
+# Check out with --recurse-submodules or this COPY has nothing to copy.
+COPY third_party/baseaichat/web /app/third_party/baseaichat/web
+
 # Production build: tsc type-check + Vite bundle with sourcemaps OFF
 # (vite.config.prod.ts sets build.sourcemap: false explicitly). Output: dist/.
 RUN npx tsc -b && npx vite build --config vite.config.prod.ts

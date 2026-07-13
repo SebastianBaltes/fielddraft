@@ -104,8 +104,16 @@ release-image:
     docker build -t "fielddraft/web:$V"    -f web/Dockerfile.prod .
     mkdir -p dist
     OUT="dist/fielddraft-$V.image.tar.gz"
+    # Write to .partial, verify, THEN rename. A shell redirect creates the target
+    # BEFORE `docker save` runs, so a failed save leaves a plausible-looking
+    # 20-byte empty gzip behind — one of those very nearly went to the deploy as
+    # a "release". An archive under dist/ must be loadable, or not exist.
+    TMP="$OUT.partial"
+    trap 'rm -f "$TMP"' EXIT
     echo "▶ saving $OUT"
-    docker save "fielddraft/server:$V" "fielddraft/web:$V" | gzip > "$OUT"
+    docker save "fielddraft/server:$V" "fielddraft/web:$V" | gzip > "$TMP"
+    tar -tzf "$TMP" manifest.json > /dev/null   # loadable archive, or bail
+    mv "$TMP" "$OUT"
     echo "✔ $OUT ($(du -h "$OUT" | cut -f1)) — ship to the server, then devops runs deploy.yml -e only_app=fielddraft"
 
 # Run the fast local test suite: Rust unit tests + Vitest.
