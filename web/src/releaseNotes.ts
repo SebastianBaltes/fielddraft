@@ -34,6 +34,21 @@ export const RELEASE_NOTES: ReleaseNote[] = [
     ],
   },
   {
+    version: "0.6.575",
+    entries: [
+      {
+        kind: "fix",
+        scope: "render",
+        text: "Änderungen, die nur das SDF-Programm betreffen (Displace an/aus, Blend-Radius, Shell-Dicke, Twist-Rate, Unterdrücken/Einblenden eines Features, neuer Körper), zeichnen den Viewport jetzt sofort neu — vorher blieb das alte Bild stehen, bis man die Kamera bewegte. Ursache war keine fehlende Invalidierung, sondern eine Cache-Lücke: Der Frame, der die Änderung ERKENNT, stößt Pipeline-Neubau und Shader-Kompilierung asynchron an und verlässt sich ohne zu zeichnen — seine „gesehen“-Marker (Fingerprints, Material, Selektion) hatte er aber schon geschrieben. Der Frame nach der Kompilierung fand deshalb alles „unverändert“ vor und blittete bei unbewegter Kamera erneut sein zwischengespeichertes Shade-Target, also exakt das Bild von vor der Änderung; nur eine Kamerabewegung brach den Cache. Die Änderung wird jetzt über die Kompilierungslücke hinweg gemerkt und erst nach einem tatsächlich gezeichneten Frame quittiert; der Schnellpfad für reine Overlay-Repaints (Sketch-Hover, Export-Vorschau) bleibt erhalten, und ein ruhendes Bild erzeugt weiterhin keine GPU-Last. Damit ist auch das vermeintliche „Körper wird während der Regeneration unsichtbar“ erledigt — das war dasselbe veraltete Standbild.",
+      },
+      {
+        kind: "fix",
+        scope: "viewport",
+        text: "Die Namensschilder der Datum-Ebenen („Top“, „Front“, „Right“) werden jetzt von Körpern verdeckt, die davor liegen — bisher zeichneten sie ohne Tiefentest durch massives Material hindurch und sahen dort aus wie Löcher im Körper. Die Ebenen selbst waren schon korrekt tiefengetestet; der Ursprungs-Punkt bleibt bewusst durchscheinend, weil er mit 1,5 mm Radius sonst in fast jedem Modell unsichtbar im Material läge.",
+      },
+    ],
+  },
+  {
     version: "0.6.574",
     entries: [
       {
