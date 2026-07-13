@@ -12,6 +12,7 @@
     "preview": "vite preview",
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:slow": "vitest run --config vitest.slow.config.ts",
     "e2e": "playwright test",
     "e2e:install": "playwright install chromium",
     "postinstall": "patch-package"

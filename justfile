@@ -105,10 +105,11 @@ release-image:
     echo "✔ $OUT ($(du -h "$OUT" | cut -f1)) — ship to the server, then devops runs deploy.yml -e only_app=fielddraft"
 
 # Run the fast local test suite: Rust unit tests + Vitest.
-# Playwright smoke tests are intentionally *not* included here —
-# they launch a headed Chromium with real WebGPU and are meant to
-# run on demand (`just test-e2e`) at integration points, not on
-# every feature change.
+# Two suites are intentionally *not* included here, both meant to run
+# on demand at integration points rather than on every feature change:
+#   * Playwright smoke tests (`just test-e2e`) — headed Chromium, real WebGPU.
+#   * The slow kernel-acceptance suite (`just test-slow`) — drives the real
+#     wasm kernel end-to-end (Onshape import), tens of seconds per file.
 test: test-rust test-web
 
 test-rust:
@@ -116,6 +117,11 @@ test-rust:
 
 test-web: build-wasm
     cd web && {{nvm_use}} && npm run test
+
+# Slow acceptance suite (`*.slow.test.ts`): the real wasm kernel driven
+# end-to-end. Run it after kernel/query/import changes.
+test-slow: build-wasm
+    cd web && {{nvm_use}} && npm run test:slow
 
 # E2E (Playwright, headed Chromium + real WebGPU). Catches
 # integration-level regressions that Vitest can't — material /

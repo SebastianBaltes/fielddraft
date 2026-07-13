@@ -17,5 +17,10 @@ export default defineConfig({
     environment: "jsdom",
     globals: true,
     include: ["src/**/*.test.ts", "src/**/*.test.tsx"],
+    // `*.slow.test.ts` drives the REAL wasm kernel end-to-end (weaving the
+    // body after every feature), which costs tens of seconds — too slow for
+    // the edit loop. It runs as its own suite: `npm run test:slow` /
+    // `just test-slow` (see vitest.slow.config.ts).
+    exclude: ["**/node_modules/**", "**/dist/**", "src/**/*.slow.test.ts"],
   },
 });
