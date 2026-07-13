@@ -70,6 +70,18 @@ pub(crate) enum Field<'a> {
         sketch: &'a BoundedSketch2d,
         xf: Transform,
     },
+    /// An analytic half-space under a **domain-warp chain** (Twist / Bend):
+    /// `f(p) = hs(world_to_local(xf, T(p)))` with `T` the chain's closed-form
+    /// rück-warp — the per-face field of a warped body's face, evaluated at
+    /// *warped* world points. A warp is a diffeomorphism, so the field is
+    /// smooth wherever the carrier is and its zero set is exactly the warped
+    /// face. Lets the tracer march the helical edges of a twisted box exactly
+    /// instead of abandoning warped bodies wholesale to the octree sample fits.
+    WarpedAnalytic {
+        hs: HalfSpace,
+        xf: Transform,
+        warps: Vec<crate::sdf_dual::DomainWarp>,
+    },
 }
 
 impl Field<'_> {
@@ -82,6 +94,9 @@ impl Field<'_> {
             // is the well-defined hard branch the B-Rep pipeline extracts in.
             Field::Leaf { node } => bounded_value_grad(node, p, EvalMode::Logical),
             Field::ExtrudeWall { sketch, xf } => extrude_wall_value_grad(sketch, xf, p),
+            Field::WarpedAnalytic { hs, xf, warps } => {
+                crate::sdf_dual::warped_halfspace_value_grad(hs, xf, warps, p)
+            }
         }
     }
 
@@ -94,7 +109,8 @@ impl Field<'_> {
     #[inline]
     fn noise_floor(&self, p: [f64; 3]) -> f64 {
         match self {
-            Field::Analytic { hs: HalfSpace::RevolvedProfile { .. }, .. } => {
+            Field::Analytic { hs: HalfSpace::RevolvedProfile { .. }, .. }
+            | Field::WarpedAnalytic { hs: HalfSpace::RevolvedProfile { .. }, .. } => {
                 let linf = p[0].abs().max(p[1].abs()).max(p[2].abs());
                 64.0 * (f32::EPSILON as f64) * (1.0 + linf)
             }

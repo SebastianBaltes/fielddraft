@@ -1114,6 +1114,136 @@ pub(crate) fn halfspace_value_grad(
     (result.re, d3_grad_f64(&result))
 }
 
+/// One **domain-warp** stage (Twist / Bend) above a subtree, in tree eval
+/// order. The kernel evaluates a warped body as `inner(T(p))` where `T` is the
+/// closed-form *rück-warp* (warped world → unwarped inner space) — exactly the
+/// formulas in [`eval_bounded_d3_open`]'s `Twist`/`Bend` arms. Both directions
+/// are needed by the warped B-Rep route (seed weaver):
+///
+/// - `T` ([`Self::unwarp`], closed form) evaluates warped per-face fields and
+///   pulls warped-space corner guesses back for the analytic corner Newton.
+/// - `W = T⁻¹` ([`Self::warp`]) pushes unwarped SSI seeds / refined corners
+///   forward onto the warped body. For a Twist `W` is closed form (`T`
+///   preserves `y`); for a Bend the rotation angle depends on the *unknown*
+///   pre-image `x`, so `W` runs a 1D Newton on
+///   `g(θ) = rate·(cosθ·q_x + sinθ·q_y) − θ` (well-conditioned under the
+///   Bend validity gate `|rate|·extent < 1`, where `|g'| ≥ 1 − |rate·y| > 0`).
+///
+/// `Displace` is deliberately NOT a stage: it perturbs the *value*, not the
+/// domain — there is no point map to invert.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) enum DomainWarp {
+    /// Rotate XZ by `rate · y` (see `BoundedCsg::Twist`).
+    Twist { rate: f64 },
+    /// Rotate XY by `rate · x` (see `BoundedCsg::Bend`).
+    Bend { rate: f64 },
+}
+
+impl DomainWarp {
+    /// Rück-Warp `T` in dual numbers (for the warped field's exact gradient).
+    fn unwarp_d3(&self, p: [D3; 3]) -> [D3; 3] {
+        match *self {
+            DomainWarp::Twist { rate } => {
+                let angle = D3::from(rate) * p[1];
+                let (s, c) = angle.sin_cos();
+                [p[0] * c - p[2] * s, p[1], p[0] * s + p[2] * c]
+            }
+            DomainWarp::Bend { rate } => {
+                let angle = D3::from(rate) * p[0];
+                let (s, c) = angle.sin_cos();
+                [c * p[0] - s * p[1], s * p[0] + c * p[1], p[2]]
+            }
+        }
+    }
+
+    /// Rück-Warp `T` (warped → unwarped), plain f64.
+    pub(crate) fn unwarp(&self, p: [f64; 3]) -> [f64; 3] {
+        match *self {
+            DomainWarp::Twist { rate } => {
+                let (s, c) = (rate * p[1]).sin_cos();
+                [p[0] * c - p[2] * s, p[1], p[0] * s + p[2] * c]
+            }
+            DomainWarp::Bend { rate } => {
+                let (s, c) = (rate * p[0]).sin_cos();
+                [c * p[0] - s * p[1], s * p[0] + c * p[1], p[2]]
+            }
+        }
+    }
+
+    /// Vorwärts-Warp `W = T⁻¹` (unwarped → warped), plain f64.
+    pub(crate) fn warp(&self, q: [f64; 3]) -> [f64; 3] {
+        match *self {
+            DomainWarp::Twist { rate } => {
+                // T preserves y and rotates (x, z) by θ = rate·y → invert by −θ.
+                let (s, c) = (rate * q[1]).sin_cos();
+                [q[0] * c + q[2] * s, q[1], -q[0] * s + q[2] * c]
+            }
+            DomainWarp::Bend { rate } => {
+                // p = R_xy(−θ)·q with θ = rate·p_x ⇒ solve
+                // g(θ) = rate·(cosθ·q_x + sinθ·q_y) − θ = 0 by Newton.
+                let mut theta = rate * q[0];
+                for _ in 0..32 {
+                    let (s, c) = theta.sin_cos();
+                    let g = rate * (c * q[0] + s * q[1]) - theta;
+                    let dg = rate * (-s * q[0] + c * q[1]) - 1.0;
+                    if dg.abs() < 1e-12 {
+                        break;
+                    }
+                    let step = g / dg;
+                    theta -= step;
+                    if step.abs() < 1e-14 {
+                        break;
+                    }
+                }
+                let (s, c) = theta.sin_cos();
+                [c * q[0] + s * q[1], -s * q[0] + c * q[1], q[2]]
+            }
+        }
+    }
+}
+
+/// Apply a warp CHAIN's rück-warp `T` (warped world → unwarped space), stages
+/// in tree eval order (outermost first) — mirrors the eval descent.
+pub(crate) fn unwarp_chain(warps: &[DomainWarp], p: [f64; 3]) -> [f64; 3] {
+    let mut p = p;
+    for w in warps {
+        p = w.unwarp(p);
+    }
+    p
+}
+
+/// Apply a warp chain's forward map `W = T⁻¹` (unwarped → warped world):
+/// innermost stage first, so `unwarp_chain(warps, warp_chain(warps, q)) == q`.
+pub(crate) fn warp_chain(warps: &[DomainWarp], q: [f64; 3]) -> [f64; 3] {
+    let mut q = q;
+    for w in warps.iter().rev() {
+        q = w.warp(q);
+    }
+    q
+}
+
+/// Value and exact gradient of an analytic per-face [`HalfSpace`] under a
+/// domain-warp chain, at a *warped* world-space point: the field is
+/// `f(p) = hs(world_to_local(xf, T(p)))` with `T` the chain's rück-warp — the
+/// per-face analogue of the kernel eval's `inner(T(p))`. Its zero set is the
+/// warped face; the dual seed carries the warp Jacobian, so the gradient is
+/// exact. With an empty chain this is byte-identical to
+/// [`halfspace_value_grad`].
+pub(crate) fn warped_halfspace_value_grad(
+    hs: &HalfSpace,
+    xf: &Transform,
+    warps: &[DomainWarp],
+    p: [f64; 3],
+) -> (f64, [f64; 3]) {
+    let mut pd = [seed_d3(p[0], 0), seed_d3(p[1], 1), seed_d3(p[2], 2)];
+    for w in warps {
+        pd = w.unwarp_d3(pd);
+    }
+    let local = world_to_local_d3(xf, pd);
+    let result = sdf_halfspace_generic(hs, local);
+    (result.re, d3_grad_f64(&result))
+}
+
 /// Value and exact gradient of an arbitrary [`BoundedCsg`] subtree at a
 /// world-space point, in full f64. Used for the *general* (non-analytic) edge
 /// fields: an Extrude/Revolve/sweep leaf has no closed-form half-space, but its
@@ -1383,6 +1513,63 @@ mod tests {
             PrimitiveModifiers::NONE,
             vec![],
         )
+    }
+
+    #[test]
+    fn domain_warp_roundtrips_and_warped_field_hits_zero_set() {
+        // W ∘ T = id und T ∘ W = id für Twist (geschlossen) und Bend (1D-
+        // Newton in W), einzeln und als Kette — die Grundlage des Warp-B-Rep-
+        // Pfads (Seeds vorwärts, Ecken-Zentren rückwärts).
+        let chains: [&[DomainWarp]; 3] = [
+            &[DomainWarp::Twist { rate: 0.05 }],
+            &[DomainWarp::Bend { rate: 0.05 }],
+            &[DomainWarp::Twist { rate: 0.04 }, DomainWarp::Bend { rate: -0.03 }],
+        ];
+        let pts = [
+            [4.0, 6.0, 4.0],
+            [-4.0, 6.0, -4.0],
+            [3.85, -5.9, 3.85],
+            [-6.0, 3.0, -3.0],
+            [1.0, -2.0, 0.5],
+        ];
+        for chain in chains {
+            for q in pts {
+                let p = warp_chain(chain, q);
+                let back = unwarp_chain(chain, p);
+                for k in 0..3 {
+                    assert!(
+                        (back[k] - q[k]).abs() < 1e-9,
+                        "T(W(q)) ≠ q: {back:?} vs {q:?} ({chain:?})"
+                    );
+                }
+            }
+        }
+
+        // Das gewarpte Flächenfeld: eine Kasten-Ecken-Ebene x = 4 unter Twist.
+        // W bildet UN-gewarpte Ebenenpunkte auf die Nullstellenmenge ab, und
+        // der Dual-Gradient stimmt mit zentralen Differenzen überein.
+        let hs = HalfSpace::Plane { normal: [1.0, 0.0, 0.0], offset: 4.0 };
+        let xf = Transform::IDENTITY;
+        let chain = [DomainWarp::Twist { rate: 0.05 }];
+        for q in [[4.0, 0.0, 0.0], [4.0, 5.0, 2.0], [4.0, -3.0, -3.9]] {
+            let p = warp_chain(&chain, q);
+            let (v, g) = warped_halfspace_value_grad(&hs, &xf, &chain, p);
+            assert!(v.abs() < 1e-9, "W(Ebenenpunkt) nicht auf f = 0: {v}");
+            let e = 1e-5;
+            for k in 0..3 {
+                let mut a = p;
+                let mut b = p;
+                a[k] += e;
+                b[k] -= e;
+                let fd = (warped_halfspace_value_grad(&hs, &xf, &chain, a).0
+                    - warped_halfspace_value_grad(&hs, &xf, &chain, b).0)
+                    / (2.0 * e);
+                assert!(
+                    (g[k] - fd).abs() < 1e-6,
+                    "Dual-Gradient {g:?} ≠ FD ({k}: {fd})"
+                );
+            }
+        }
     }
 
     #[test]

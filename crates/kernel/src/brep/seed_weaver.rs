@@ -34,12 +34,15 @@
 use std::collections::HashMap;
 
 use crate::brep::branch_seed::{seed_branch_pairs, SeedResult};
-use crate::brep::edge_trace::{edge_tangent, project_to_edge, trace_edge, EdgeEnd, TraceParams};
+use crate::brep::edge_trace::{
+    edge_tangent, project_to_edge, trace_edge, EdgeEnd, Field, TraceParams,
+};
 use crate::brep::edge_walker::{
     body_has_warp, branch_field, branch_leaf_map, cluster_positions,
     collect_non_lipschitz_features, extrude_rim_corner, near_traced, refine_triple_vertex,
-    traced_to_hermite, TripleRefine,
+    root_warp_chain, traced_to_hermite, TripleRefine,
 };
+use crate::sdf_dual::{unwarp_chain, warp_chain, DomainWarp};
 use crate::brep::extraction::both_branches_active;
 use crate::brep::vec3::{add, dist as dist3, dot, normalize, scale, sub};
 use crate::brep::weaving::{branch_halfspace_map, finish_weave};
@@ -146,6 +149,9 @@ pub fn weave_branch_seeds_hybrid(body: &BoundedCsg, min_cell: f32) -> Option<BRe
     }
     if skipped.is_empty() {
         return Some(finish_weave(brep, body));
+    }
+    if std::env::var("SEED_WEAVER_DEBUG").is_ok() {
+        eprintln!("SEED-WEAVER hybrid: octree fill for skipped pairs {skipped:?}");
     }
 
     drop_pair_edges(&mut brep, &skipped);
@@ -297,7 +303,15 @@ fn scope_supported(body: &BoundedCsg) -> bool {
 /// other non-Lipschitz features (Thread / Helix / Sweep) stay rejected: they
 /// have no analytic half-space carrier at all, so nothing would resolve.
 fn scope_supported_partial(body: &BoundedCsg) -> bool {
-    !body_has_warp(body) && !has_non_gyroid_non_lipschitz(body)
+    if has_non_gyroid_non_lipschitz(body) {
+        return false;
+    }
+    // Domain warps: admitted when the WHOLE body is one un-warped CSG under a
+    // root Twist/Bend chain ([`root_warp_chain`]) — the SSI seeds and corner
+    // Newton then run in the un-warped space and everything is pushed forward
+    // through the warp's point map W. Partial warps (inside a Boolean) and
+    // Displace (a value warp, no point map) keep the octree fallback.
+    !body_has_warp(body) || root_warp_chain(body).is_some()
 }
 
 /// Any Thread leaf, Helix or Sweep under `node` (the non-Lipschitz features
@@ -385,9 +399,27 @@ fn build_seed_wireframe_tracked(body: &BoundedCsg, mode: SeedMode) -> Option<See
     //    invariant); in `Partial` mode the unresolved pairs are simply absent
     //    from `seeds` (they never produced one), so we just proceed — every pair
     //    that DID seed is still woven, only the unresolvable seams are skipped.
-    let SeedResult { seeds, unresolved } = seed_branch_pairs(body);
+    let SeedResult { mut seeds, unresolved } = seed_branch_pairs(body);
     if mode == SeedMode::Strict && !unresolved.is_empty() {
         return None;
+    }
+    // Domain-warp chain (Twist/Bend at the body root). Non-empty only on the
+    // Partial route (`scope_supported` rejects warps for Strict). The SSI
+    // seeds, the corner Newton and the analytic half-space map all describe
+    // the UN-warped geometry; traces, witnesses and the emitted wireframe live
+    // in the WARPED world. `warp_chain` (W) maps un-warped → warped,
+    // `unwarp_chain` (T) the reverse — see [`crate::sdf_dual::DomainWarp`].
+    let warp: Vec<DomainWarp> = root_warp_chain(body).unwrap_or_default();
+    // SSI seeds lie on the un-warped carriers — push them forward through W
+    // onto the real (warped) edges before tracing / co-component dedup.
+    if !warp.is_empty() {
+        for s in &mut seeds {
+            let w = warp_chain(
+                &warp,
+                [s.point[0] as f64, s.point[1] as f64, s.point[2] as f64],
+            );
+            s.point = [w[0] as f32, w[1] as f32, w[2] as f32];
+        }
     }
     for pair in &unresolved {
         skipped.insert(pair_key(pair.a, pair.b));
@@ -396,6 +428,70 @@ fn build_seed_wireframe_tracked(body: &BoundedCsg, mode: SeedMode) -> Option<See
     // 2. The per-branch field ingredients, built once and shared across seeds.
     let halfspaces = branch_halfspace_map(body);
     let leaf_map = branch_leaf_map(body);
+
+    // Per-branch scalar field. Under a warp chain every analytic carrier
+    // becomes a [`Field::WarpedAnalytic`] (`hs ∘ xf⁻¹ ∘ T` — the warped face's
+    // exact field); a branch without an analytic carrier yields `None`, which
+    // Partial mode skips exactly like an unliftable branch. With no warp this
+    // is byte-identical to [`branch_field`].
+    let field_for = |branch: BranchId| -> Option<Field<'_>> {
+        if warp.is_empty() {
+            return branch_field(&halfspaces, &leaf_map, branch.as_u32());
+        }
+        let (hs, xf) = halfspaces.get(&branch.as_u32())?;
+        Some(Field::WarpedAnalytic {
+            hs: hs.clone(),
+            xf: *xf,
+            warps: warp.clone(),
+        })
+    };
+
+    // f64-Nachpolitur eines analytisch verfeinerten Ecken-Punkts — NUR auf der
+    // Warp-Route. `refine_triple_vertex` iteriert in f32 mit LM-Dämpfung und
+    // akzeptiert Residuen bis knapp unter VERTEX_REFINE_TOL; das ist GRÖBER als
+    // das Aktivitätsband dieses Routers (1e-5·diag ≈ 2e-4 mm hier). Ungewarpt
+    // ist das folgenlos (die Ecke wird nie aktivitäts-geprüft bzw. die Toleranz
+    // reicht historisch); unter Warp fiel damit der Bend-Ecken-Witness durch
+    // die both_branches_active-Prüfung, der Ecken-Cluster degradierte zum
+    // 2-Branch-Zentroid (z um 2.8e-4 daneben). Gauss-Newton in f64 über ALLE
+    // Branch-Felder zieht die UN-gewarpte Ecke auf die gemeinsame Nullstelle
+    // (Dämpfung 1e-12 nur gegen die tangentiale Null-Achse). Auf der
+    // ungewarpten Route bewusst NICHT angewandt: Byte-Identität der
+    // bestehenden Weaves.
+    let polish_corner = |branches: &[BranchId], p0: [f64; 3]| -> [f64; 3] {
+        use nalgebra::{Matrix3, Vector3};
+        let mut p = p0;
+        for _ in 0..8 {
+            let mut jtj = Matrix3::<f64>::zeros();
+            let mut jtf = Vector3::<f64>::zeros();
+            let mut worst = 0.0f64;
+            for b in branches {
+                let Some((hs, xf)) = halfspaces.get(&b.as_u32()) else {
+                    return p0;
+                };
+                let (f, g) = crate::sdf_dual::halfspace_value_grad(hs, xf, p);
+                if !f.is_finite() {
+                    return p0;
+                }
+                worst = worst.max(f.abs());
+                let gv = Vector3::new(g[0], g[1], g[2]);
+                jtj += gv * gv.transpose();
+                jtf += gv * f;
+            }
+            if worst < 1e-12 {
+                break;
+            }
+            let Some(inv) = (jtj + Matrix3::identity() * 1e-12).try_inverse() else {
+                return p0;
+            };
+            let delta = inv * jtf;
+            p = [p[0] - delta[0], p[1] - delta[1], p[2] - delta[2]];
+            if !(p[0].is_finite() && p[1].is_finite() && p[2].is_finite()) {
+                return p0;
+            }
+        }
+        p
+    };
 
     // Absolute length scale for curvature-adaptive tracing and dedup tolerances:
     // the model AABB diagonal (mirrors `build_wireframe`, edge_walker.rs:1585).
@@ -533,11 +629,19 @@ fn build_seed_wireframe_tracked(body: &BoundedCsg, mode: SeedMode) -> Option<See
             let stride = (guesses.len() / GUESS_CAP).max(1);
             for g in guesses.iter().step_by(stride) {
                 let start = [g[0] as f64, g[1] as f64, g[2] as f64];
+                // The corner Newton solves the UN-warped analytic concurrence;
+                // seeds live in the warped world → pull the start back via T.
+                let start = if warp.is_empty() {
+                    start
+                } else {
+                    unwarp_chain(&warp, start)
+                };
                 let TripleRefine::Refined(p) =
                     refine_triple_vertex(&halfspaces, &branches, start)
                 else {
                     continue;
                 };
+                let p = if warp.is_empty() { p } else { polish_corner(&branches, p) };
                 // Only ACTIVE concurrences become witnesses: extended analytic
                 // surfaces concur outside the material too — far off (a cap
                 // plane crossing a box edge line) or even ON the body boundary
@@ -577,6 +681,10 @@ fn build_seed_wireframe_tracked(body: &BoundedCsg, mode: SeedMode) -> Option<See
                         continue;
                     }
                 }
+                // The witness lives in the WARPED world (the marches snap to
+                // it there); the activity test evaluates the real body, so it
+                // needs the warped position too.
+                let p = if warp.is_empty() { p } else { warp_chain(&warp, p) };
                 let pf = [p[0] as f32, p[1] as f32, p[2] as f32];
                 let all_pairs_active = [(0usize, 1usize), (0, 2), (1, 2)]
                     .iter()
@@ -584,6 +692,9 @@ fn build_seed_wireframe_tracked(body: &BoundedCsg, mode: SeedMode) -> Option<See
                         both_branches_active(body, pf, branches[i], branches[j], eps)
                     });
                 if !all_pairs_active {
+                    if std::env::var("SEED_WEAVER_DEBUG").is_ok() {
+                        eprintln!("SEED-WEAVER witness inactive: p={p:?} branches={branches:?}");
+                    }
                     continue;
                 }
                 if witnesses.iter().any(|(w, _)| dist3(*w, p) < witness_merge) {
@@ -638,10 +749,7 @@ fn build_seed_wireframe_tracked(body: &BoundedCsg, mode: SeedMode) -> Option<See
             // inconsistency, so we bail to octree defensively rather than panic.
             // In `Partial` mode an unliftable branch is expected (it is exactly
             // a transition seam we mean to skip), so we drop just this seed.
-            let (Some(fa), Some(fb)) = (
-                branch_field(&halfspaces, &leaf_map, a.as_u32()),
-                branch_field(&halfspaces, &leaf_map, b.as_u32()),
-            ) else {
+            let (Some(fa), Some(fb)) = (field_for(a), field_for(b)) else {
                 if mode == SeedMode::Partial {
                     skipped.insert(pair_key(a, b));
                     continue;
@@ -840,8 +948,21 @@ fn build_seed_wireframe_tracked(body: &BoundedCsg, mode: SeedMode) -> Option<See
 
             // Re-solve the EXACT corner from the analytic surfaces. The raw
             // centroid only seeds it, so the trim band's imprecision washes out.
-            let pos = match refine_triple_vertex(&halfspaces, &branches, centroid) {
+            // Under a warp the Newton runs in the UN-warped space (T on the
+            // centroid) and the corner is mapped back through W — the trim
+            // termini it must cohere with are warped-world points.
+            let refine_seed = if warp.is_empty() {
+                centroid
+            } else {
+                unwarp_chain(&warp, centroid)
+            };
+            let pos = match refine_triple_vertex(&halfspaces, &branches, refine_seed) {
                 TripleRefine::Refined(p) => {
+                    let p = if warp.is_empty() {
+                        p
+                    } else {
+                        warp_chain(&warp, polish_corner(&branches, p))
+                    };
                     // Coherence gate (ticket g4rr): a cluster that gathered the
                     // termini of TWO distinct corners of the same branch triple
                     // still refines cleanly — Newton converges to ONE of the
@@ -882,6 +1003,11 @@ fn build_seed_wireframe_tracked(body: &BoundedCsg, mode: SeedMode) -> Option<See
                 // that, keep the centroid (octree also leaves such a corner at
                 // centroid).
                 TripleRefine::Indeterminate => {
+                    if std::env::var("SEED_WEAVER_DEBUG").is_ok() {
+                        eprintln!(
+                            "SEED-WEAVER Indeterminate corner: centroid={centroid:?} branches={branches:?}"
+                        );
+                    }
                     extrude_rim_corner(&leaf_map, &branches).unwrap_or(centroid)
                 }
                 // The surfaces provably do not concur at one point. Either this
@@ -1034,10 +1160,7 @@ fn build_seed_wireframe_tracked(body: &BoundedCsg, mode: SeedMode) -> Option<See
         // In partial mode an unliftable field here (the record traced but its
         // branch is non-analytic for the split test) means we cannot split — emit
         // the record whole rather than abort the body.
-        let (Some(fa), Some(fb)) = (
-            branch_field(&halfspaces, &leaf_map, rec.a.as_u32()),
-            branch_field(&halfspaces, &leaf_map, rec.b.as_u32()),
-        ) else {
+        let (Some(fa), Some(fb)) = (field_for(rec.a), field_for(rec.b)) else {
             if mode == SeedMode::Partial {
                 let geom = EdgeGeometry::Hermite(rec.samples.clone());
                 if rec.closed {
@@ -1204,6 +1327,119 @@ mod tests {
         );
         let body = BoundedCsg::from_csg(&csg);
         assert!(!scope_supported(&body));
+    }
+
+    /// Warp-B-Rep (2026-07-13): ein Twist/Bend an der WURZEL ist jetzt im
+    /// PARTIAL-Scope (die SSI-Seeds + Ecken-Newton laufen im UN-gewarpten
+    /// Raum und werden durch W vorwärts gemappt); Strict bleibt zu (id_hash-
+    /// Toggle-Invarianz gegen den Oktree gilt dort weiter). Innen liegende
+    /// Warps (nur ein Boolean-Ast gewarpt) und Displace (Wert-Warp ohne
+    /// Punktabbildung) bleiben Oktree-Fallback.
+    #[test]
+    fn partial_scope_admits_root_warp_only() {
+        let twist = BoundedCsg::from_csg(&CsgNode::Twist(
+            Box::new(box_leaf(1, [0.0, 0.0, 0.0], [4.0, 6.0, 4.0])),
+            0.05,
+        ));
+        assert!(scope_supported_partial(&twist), "Root-Twist im Partial-Scope");
+        assert!(!scope_supported(&twist), "Strict bleibt zu");
+
+        let bend = BoundedCsg::from_csg(&CsgNode::Bend(
+            Box::new(box_leaf(1, [0.0, 0.0, 0.0], [6.0, 3.0, 3.0])),
+            0.05,
+        ));
+        assert!(scope_supported_partial(&bend), "Root-Bend im Partial-Scope");
+
+        // Warp nur über EINEM Boolean-Ast: kein gemeinsamer Root-Chain.
+        let inner_warp = BoundedCsg::from_csg(&CsgNode::Union(
+            Box::new(CsgNode::Twist(
+                Box::new(box_leaf(1, [0.0, 0.0, 0.0], [4.0, 6.0, 4.0])),
+                0.05,
+            )),
+            Box::new(CsgNode::Leaf {
+                id: FeatureId::from_u32(2),
+                primitive: Primitive::Sphere { center: [10.0, 0.0, 0.0], radius: 3.0 },
+            }),
+        ));
+        assert!(!scope_supported_partial(&inner_warp), "innerer Warp bleibt Oktree");
+
+        // Displace: reine Wert-Störung, keine invertierbare Punktabbildung.
+        let displace = BoundedCsg::from_csg(&CsgNode::Displace(
+            Box::new(box_leaf(1, [0.0, 0.0, 0.0], [4.0, 4.0, 4.0])),
+            0.3,
+            1.5,
+        ));
+        assert!(!scope_supported_partial(&displace), "Displace bleibt Oktree");
+    }
+
+    /// Warp-B-Rep: der Hybrid-Weave liefert für einen getwisteten Kasten die
+    /// EXAKTE Kasten-Topologie — 8 gewarpte Ecken (W-Bilder der Kasten-Ecken,
+    /// auf der Oberfläche), 12 Kanten (4 Helizes + 8 Deckelkanten, alle an
+    /// echten Ecken gebunden), 6 Flächen — statt der zersplitterten Oktree-
+    /// Sample-Fits (73 Fragmente vor der Änderung).
+    #[test]
+    fn hybrid_weaves_twisted_box_exact_warped_topology() {
+        assert_warped_box_topology(
+            &BoundedCsg::from_csg(&CsgNode::Twist(
+                Box::new(box_leaf(1, [0.0, 0.0, 0.0], [4.0, 6.0, 4.0])),
+                0.05,
+            )),
+            &[DomainWarp::Twist { rate: 0.05 }],
+            [4.0, 6.0, 4.0],
+        );
+    }
+
+    /// Wie [`hybrid_weaves_twisted_box_exact_warped_topology`], für Bend
+    /// (dessen Vorwärts-Warp W den 1D-Newton braucht — s. DomainWarp::warp).
+    #[test]
+    fn hybrid_weaves_bent_box_exact_warped_topology() {
+        assert_warped_box_topology(
+            &BoundedCsg::from_csg(&CsgNode::Bend(
+                Box::new(box_leaf(1, [0.0, 0.0, 0.0], [6.0, 3.0, 3.0])),
+                0.05,
+            )),
+            &[DomainWarp::Bend { rate: 0.05 }],
+            [6.0, 3.0, 3.0],
+        );
+    }
+
+    fn assert_warped_box_topology(
+        body: &BoundedCsg,
+        chain: &[DomainWarp],
+        half: [f64; 3],
+    ) {
+        let brep = weave_branch_seeds_hybrid(body, 0.5).expect("Warp-Body im Partial-Scope");
+        assert_eq!(brep.vertices.len(), 8, "8 gewarpte Ecken");
+        assert_eq!(brep.edges.len(), 12, "12 Kanten");
+        assert_eq!(brep.faces.len(), 6, "6 Flächen");
+        for v in &brep.vertices {
+            let pf = [
+                v.position[0] as f32,
+                v.position[1] as f32,
+                v.position[2] as f32,
+            ];
+            let (d, _) = crate::sdf_dual::sdf_gradient(body, pf);
+            assert!(
+                d.abs() < 1e-3,
+                "Ecke {:?} liegt nicht auf dem gewarpten Körper: f = {d}",
+                v.position
+            );
+            // Rück-Warp T führt die Ecke exakt auf eine UN-gewarpte Kasten-Ecke.
+            let u = unwarp_chain(chain, v.position);
+            for k in 0..3 {
+                assert!(
+                    (u[k].abs() - half[k]).abs() < 1e-5,
+                    "T(Ecke) {u:?} ist keine Kasten-Ecke (±{half:?})"
+                );
+            }
+        }
+        for e in &brep.edges {
+            assert!(
+                e.start.is_some() && e.end.is_some(),
+                "Kante {:?} ohne gebundene Ecken",
+                e.signature
+            );
+        }
     }
 
     #[test]

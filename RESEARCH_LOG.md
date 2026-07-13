@@ -288,3 +288,26 @@ Format: Zeitstempel · Hypothese/Frage · Ergebnis · Entscheidung.
      bestehende build_chain/Weld-Bausteine).
   3. Beide teilen ein warp-bewusstes face_of (W⁻¹-Stufe zwischen placement
      und transform; für Displace ist argmin am selben Punkt korrekt).
+
+## 2026-07-13 13:30 — Offene Punkte 4 + 1 gelandet (v0.6.568/569)
+
+- v0.6.568 (3a078a0): Renderer-Displace-Lipschitz als march_relax-Schritt-
+  dämpfung 1/L (eine Stelle, Muster REVOLVE_MARCH_RELAX; Design-Recherche:
+  Feld-Normalisierung à la DL-70 schadet dem Mesher nur bei aktivem
+  Sizing/lfs — Thread blieb unbestraft, weil sein Feld glatt ist und Sizing
+  default-aus; die „Thread-vom-Lichen-ausgeschlossen"-These war FALSCH).
+  Feld bitidentisch, Mesher beweisbar unberührt. Visuelle Abnahme offen.
+- v0.6.569 (Warp-Paket, Implementierungs-Agent): Twist-Box 864→0 (χ=2!),
+  Bend-Box auf Anhieb 0. Mechanik: DomainWarp{Twist,Bend} in sdf_dual
+  (W geschlossen bzw. 1D-Newton, T = Eval-Formel), Field::WarpedAnalytic
+  im DL-68-Tracer, scope_supported_partial öffnet Root-Warps (Seeds durch
+  W gemappt), f64-Ecken-Politur NUR auf der Warp-Route (f32-refine ließ
+  Bend-Witness durchs 2e-4-Aktivitätsband fallen — Forensik statt
+  Band-Aufweichung), FaceSurf.warp macht face_of/own_dist/Einfärbung/
+  Ketten-Normalen warp-bewusst (Normalen als Welt-FD — Zurückrotieren
+  unterschlüge die Scherung). Neues aktives Gate warp_twist_and_bend.
+  Verifiziert: Abnahme byte-identisch, 38 Gates, kernel 1088/1088.
+- Scope-Grenzen (dokumentiert): Warps innerhalb Booleans, nicht-analytische
+  Branches unter Warp, nicht-Identity-Placement (bestehende Kernel-
+  Inkonsistenz), Displace (separates Paket: Feld-Feature-Linien).
+- Doku-§ für das Warp-Paket in Lichen-Architecture.md steht noch aus.

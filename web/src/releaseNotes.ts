@@ -24,6 +24,16 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.569",
+    entries: [
+      {
+        kind: "feat",
+        scope: "mesher",
+        text: "Lichen: Twist- und Bend-Körper werden wasserdicht gemesht (Twist-Box 864 → 0 offene Kanten, χ=2; Bend-Box auf Anhieb dicht). Gewarpte Körper hatten bisher nur ein Oktree-B-Rep mit zersplitterten Sample-Fit-Nähten und keine Regionen (Lichens Flächen-Klassifikator kannte nur analytische Träger). Jetzt: (1) Der Kernel webt Root-Twist/Bend exakt — SSI-Seeds aus dem ungewarpten Baum werden durch den Vorwärts-Warp gemappt (Twist geschlossen, Bend per 1D-Newton; der Rück-Warp ist die bestehende Eval-Formel) und der DL-68-Tracer verfolgt die gewarpten Kanten-Kurven (Helizes) über ein neues WarpedAnalytic-Feld mit exaktem Dual-Gradienten inkl. Warp-Jacobian; Ecken bekommen eine f64-Nachpolitur (die f32-Toleranz ließ den Bend-Ecken-Zeugen durchs Aktivitätsband fallen). (2) Lichens Flächen-Klassifikation, Wachstum, Einfärbung und Ketten-Normalen sind warp-bewusst (FaceSurf trägt die Warp-Kette; Normalen über Welt-Differenzen statt bloßem Zurückrotieren — sonst fehlt der Scher-Anteil). Neues aktives Gate für beide Warp-Fälle; Abnahme-Gate und alle bestehenden Ergebnisse byte-identisch; Warps innerhalb von Booleans und Displace laufen weiter über den Oktree-Fallback (Displace folgt separat).",
+      },
+    ],
+  },
+  {
     version: "0.6.568",
     entries: [
       {
