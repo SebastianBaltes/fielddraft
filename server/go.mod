@@ -11,3 +11,7 @@ require (
 	filippo.io/edwards25519 v1.1.0 // indirect
 	golang.org/x/sys v0.43.0 // indirect
 )
+
+require github.com/SebastianBaltes/BaseAIChat/server v0.1.0
+
+replace github.com/SebastianBaltes/BaseAIChat/server => ../third_party/baseaichat/server

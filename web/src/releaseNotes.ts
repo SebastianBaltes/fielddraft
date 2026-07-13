@@ -24,6 +24,17 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.584",
+    entries: [
+      {
+        kind: "feat",
+        scope: "assistant",
+        text: "FieldDraft hat einen KI-Assistenten: ein Chat-Popup unten rechts, das Fragen zur Bedienung beantwortet UND das Modell tatsächlich baut — es liest den Feature-Baum, holt sich die echten Parameter-Schemata und legt Features an, auch die selbstgeschriebenen Skript-Features. Sein Code läuft im Browser hinter einer Allowlist-Prüfung und ausschließlich über dieselben Store-Aufrufe, die auch ein Klick auslöst — jede Änderung ist also ganz normal mit Strg+Z zurückzunehmen. Löschen führt er nur nach ausdrücklicher Bestätigung aus, und Skripte schreiben oder ausführen darf er bewusst nicht. Der Zugang läuft über einen serverseitigen Proxy, der den API-Schlüssel hält; ohne konfigurierten Schlüssel ist das Feature komplett aus.",
+        tickets: ["347"],
+      },
+    ],
+  },
+  {
     version: "0.6.583",
     entries: [
       {

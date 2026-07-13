@@ -41,6 +41,12 @@ Querverweise auf „§4.x" zeigen auf `docs/ARCHITECTURE.md`, „§10" auf `docs
 
 ## Quick Start
 
+> **Submodule:** Seit dem KI-Assistenten (#347) hängt der Go-Server an der
+> BaseAIChat-Bibliothek unter `third_party/baseaichat` (Git-Submodule). Klone mit
+> `git clone --recurse-submodules …` — oder hole es in einem bestehenden Checkout
+> mit `git submodule update --init --recursive` nach. Ohne den Inhalt baut der
+> Server nicht (der Go-Modulpfad wird per `replace` dorthin aufgelöst).
+
 ### Entwicklung (lokal, Browser‑only)
 
 Der komplette Modeller läuft im Browser ohne Backend. Gast‑Modus nutzt `localStorage` als einzige Persistenz.

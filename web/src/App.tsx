@@ -1,4 +1,12 @@
-import { StrictMode, useCallback, useEffect, useRef, useState } from "react";
+import {
+  lazy,
+  StrictMode,
+  Suspense,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 import { Outliner } from "./Outliner";
 import { Toolbar } from "./Toolbar";
 import { Viewport } from "./Viewport";
@@ -14,6 +22,12 @@ import {
   takeArmedProjectCapture,
 } from "./thumbnailScheduler";
 import { meshDocumentForThumbnail } from "./thumbnailMesh";
+
+// The AI assistant pulls in the AI SDK — a heavy dependency most sessions never
+// need. Loaded on first render of the shell, not in the app's main chunk.
+const ChatPopup = lazy(() =>
+  import("./aichat/ChatPopup").then((m) => ({ default: m.ChatPopup })),
+);
 import { dispatchKeyboardCommand } from "./keyboardCommands";
 import { SettingsMenu } from "./SettingsMenu";
 import { loadSettings, WorkspaceUnitsContext } from "./settings";
@@ -1049,6 +1063,16 @@ function AppShell({ account }: { account: UseAccount }) {
             onImport={importGuestProject}
             onDismiss={dismissGuestImport}
           />
+        )}
+        {/* AI assistant (ticket #347): a floating chat popup that can answer
+          questions AND drive the document through the store. Lazy — the AI SDK
+          is heavy and most sessions never open it — and only for a logged-in
+          user, because the proxy that spends the tokens is session-gated. It
+          mounts nothing at all when the server has no OpenRouter key. */}
+        {store && account.state.status === "authed" && (
+          <Suspense fallback={null}>
+            <ChatPopup store={store} />
+          </Suspense>
         )}
       </div>
     </WorkspaceUnitsContext.Provider>

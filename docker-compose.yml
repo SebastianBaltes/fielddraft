@@ -28,8 +28,10 @@ services:
 
   server:
     build:
-      context: ./server
-      dockerfile: Dockerfile
+      # Repo root, not ./server — the Go module replaces the AI-chat proxy to the
+      # submodule under third_party/ (ticket #347), which must be in the context.
+      context: .
+      dockerfile: server/Dockerfile
     ports:
       - "${FIELDDRAFT_SERVER_PORT:-8080}:8080"
     environment:
@@ -56,6 +58,10 @@ services:
       # defaults unless overridden. Without a token every ticket call fails 401
       # upstream — loudly, instead of silently writing to a store nobody reads.
       ISSUEVAULT_TOKEN: "${ISSUEVAULT_TOKEN:-}"
+      # AI assistant (ticket #347). The server holds the OpenRouter key and
+      # proxies the model calls; empty = feature off (the app hides the chat).
+      OPENROUTER_API_KEY: "${OPENROUTER_API_KEY:-}"
+      AICHAT_MODELS: "${AICHAT_MODELS:-}"
       ISSUEVAULT_INSTALLATION: "${ISSUEVAULT_INSTALLATION:-}"
       # Onshape import (onshape.go). Unset = the /api/onshape routes answer 503.
       # This key is an identity, not a public-data pass: it reads whatever its

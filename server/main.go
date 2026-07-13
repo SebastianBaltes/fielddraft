@@ -42,6 +42,9 @@ type Server struct {
 	// onshape signs the read-only Onshape calls the import dialog needs
 	// (onshape.go); nil = feature off (no API key), the routes answer 503.
 	onshape *onshapeClient
+	// aichat is the BaseAIChat pass-through proxy (aichat.go); nil = feature off
+	// (no OPENROUTER_API_KEY), and /api/aichat/config reports enabled:false.
+	aichat http.Handler
 }
 
 // NewServer wires the production server: users/projects on `store`, tickets on
@@ -83,6 +86,14 @@ func NewServerWithTickets(store Store, tickets TicketStore) *Server {
 	s.mux.HandleFunc("GET /api/mesh-jobs/{id}", s.handleGetMeshJob)
 	s.mux.HandleFunc("GET /api/mesh-jobs/{id}/artifact", s.handleGetMeshArtifact)
 	s.mux.HandleFunc("DELETE /api/mesh-jobs/{id}", s.handleCancelMeshJob)
+	// AI chat (ticket #347): the model's turns stream through this proxy, which
+	// holds the OpenRouter key. The config route is registered even without a
+	// key — it must be able to answer "disabled" rather than 404.
+	s.aichat = s.newAIChatProxy()
+	if s.aichat != nil {
+		s.mux.Handle("/aichat/", s.aichat)
+	}
+	s.mux.HandleFunc("GET /api/aichat/config", s.handleAIChatConfig)
 	// Onshape import: signed read-only proxy (onshape.go). The browser cannot
 	// call Onshape directly (no CORS, and the API secret stays server-side).
 	s.mux.HandleFunc("GET /api/onshape/document", s.handleOnshapeDocument)

@@ -1,7 +1,7 @@
 {
   "name": "fielddraft-web",
   "private": true,
-  "version": "0.6.583",
+  "version": "0.6.584",
   "type": "module",
   "engines": {
     "node": ">=22"
@@ -18,11 +18,19 @@
     "postinstall": "patch-package"
   },
   "dependencies": {
+    "@ai-sdk/anthropic": "^3.0.96",
+    "@ai-sdk/google": "^3.0.91",
+    "@ai-sdk/openai": "^3.0.84",
+    "@openrouter/ai-sdk-provider": "^2.10.0",
     "@react-three/drei": "^10.7.7",
     "@react-three/fiber": "^9.5.0",
     "@salusoft89/planegcs": "^1.1.7",
+    "acorn": "^8.17.0",
+    "ai": "^6.0.224",
+    "dompurify": "^3.4.12",
     "fflate": "^0.8.3",
     "html-to-image": "^1.11.13",
+    "marked": "^17.0.6",
     "monaco-editor": "^0.55.1",
     "occt-import-js": "^0.0.23",
     "opencascade.js": "^2.0.0-beta.b5ff984",

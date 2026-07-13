@@ -1604,6 +1604,23 @@ export class KernelStore {
     return this.kernel.getFeatureCallParams(id);
   }
 
+  /**
+   * Create a feature of ANY type the kernel knows (`listFeatureTypes`) from its
+   * wire-form params (`schemaForType`) — the generic counterpart to the typed
+   * `addPrimitive` / `addHole` / … helpers the toolbar uses.
+   *
+   * Added for the AI chat (ticket #347), whose whole point is to drive features
+   * it was never hardcoded for — including the user's own FieldSkript features,
+   * which only exist at runtime. It commits like every other mutation, so undo,
+   * regeneration and autosave behave exactly as they do for a toolbar click.
+   * Throws (kernel error) on an unknown type or malformed params.
+   */
+  addFeatureByType(type: string, params: Record<string, unknown> = {}): number {
+    const id = this.kernel.addFeatureCall(type, JSON.stringify(params));
+    this.commit(new Set([id]), id);
+    return id;
+  }
+
   /** K8.8: duplicate a feature call. Returns the new feature
    *  id, or `null` when the kernel rejected the call. */
   duplicateFeature(id: number): number | null {

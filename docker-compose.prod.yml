@@ -44,8 +44,10 @@ services:
   server:
     image: "${REGISTRY:-ghcr.io/sorokan/fielddraft}/server:${TAG:-latest}"
     build:
-      context: ./server
-      dockerfile: Dockerfile
+      # Repo root, not ./server — the Go module replaces the AI-chat proxy to the
+      # submodule under third_party/ (ticket #347), which must be in the context.
+      context: .
+      dockerfile: server/Dockerfile
     restart: unless-stopped
     environment:
       # The Go server runs its embedded migrations on startup (server/migrations.go),
@@ -77,6 +79,10 @@ services:
       ISSUEVAULT_PROJECT: "${ISSUEVAULT_PROJECT:-}"
       ISSUEVAULT_INSTALLATION: "${ISSUEVAULT_INSTALLATION:-}"
       ISSUEVAULT_TOKEN: "${ISSUEVAULT_TOKEN:-}"
+      # AI assistant (ticket #347). The server holds the OpenRouter key and
+      # proxies the model calls; empty = feature off (the app hides the chat).
+      OPENROUTER_API_KEY: "${OPENROUTER_API_KEY:-}"
+      AICHAT_MODELS: "${AICHAT_MODELS:-}"
       # Onshape import (onshape.go). Unset = the /api/onshape routes answer 503.
       ONSHAPE_ACCESS_KEY: "${ONSHAPE_ACCESS_KEY:-}"
       ONSHAPE_SECRET_KEY: "${ONSHAPE_SECRET_KEY:-}"

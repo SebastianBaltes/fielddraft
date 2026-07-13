@@ -254,13 +254,25 @@ function serverPort(mode: string): number {
 }
 
 // https://vitejs.dev/config/
+// The BaseAIChat library (ticket #347) is consumed as SOURCE, not as a built
+// bundle — it lives in the git submodule at third_party/baseaichat, i.e. OUTSIDE
+// this Vite root (web/). Hence the alias, the `fs.allow` widening, and the React
+// dedupe: two React instances would break the library's hooks.
+const REPO_ROOT = resolve(process.cwd(), "..");
+const AICHAT_SRC = resolve(REPO_ROOT, "third_party/baseaichat/web/src/index.ts");
+
 export default defineConfig(({ mode }) => ({
   plugins: [react(), reloadGate(), liveVersion(), kernelStamp(), fileReader()],
+  resolve: {
+    alias: { baseaichat: AICHAT_SRC },
+    dedupe: ["react", "react-dom"],
+  },
   server: {
     port: webPort(mode),
     strictPort: true,
     allowedHosts: true,
     https: hasTailscaleCert ? { cert: certFile, key: keyFile } : undefined,
+    fs: { allow: [REPO_ROOT] },
     // Forward API calls to the local Go server (docker compose / `just dev-full`)
     // so a dev running vite on :5173 gets real auth/invites/projects/tickets.
     // Tickets ALWAYS go to the backend (server ticket store: issuevault/db) —
@@ -268,6 +280,11 @@ export default defineConfig(({ mode }) => ({
     // middleware registers first and keeps handling its own route.
     proxy: {
       "/api": {
+        target: `http://localhost:${serverPort(mode)}`,
+        changeOrigin: true,
+      },
+      // The chat streams SSE through the Go proxy (it holds the OpenRouter key).
+      "/aichat": {
         target: `http://localhost:${serverPort(mode)}`,
         changeOrigin: true,
       },
