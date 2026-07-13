@@ -24,6 +24,17 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.579",
+    entries: [
+      {
+        kind: "fix",
+        scope: "render",
+        text: "Im SDF-Deferred-Renderer waren die Standard-Ebenen (Top/Front/Right) und die B-Rep-Kanten unsichtbar, während der SDF-VM-Renderer beides korrekt zeigte. Ursache: der Renderer schattiert in ein Zwischenbild und spielt dessen Tiefe danach auf die Leinwand zurück — diese Tiefe wurde aus dem Tiefen-Anhang des Zwischenbildes gelesen, und ein solcher Lesevorgang liefert unter WebGPU durchgehend 0. Damit stempelte das Zurückspielen die vorderste Tiefe über das ganze Bild, und alles, was danach gezeichnet wird (Ebenen, Kanten im Modus „nur sichtbare“), wurde vom Tiefentest verworfen. Die Tiefe reist jetzt als zweites Farb-Ziel mit — Ebenen und Kanten sind zurück und werden korrekt vom Körper verdeckt.",
+        tickets: ["344"],
+      },
+    ],
+  },
+  {
     version: "0.6.578",
     entries: [
       {

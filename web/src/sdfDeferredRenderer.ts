@@ -108,7 +108,8 @@ export interface DeferredPipelineState
    *  through to the shader builders, never dereferenced here. */
   bodyIdBuf: unknown;
   clearNode: ComputeNode;
-  /** Off-screen target the shade pass renders into; its colour + depth are
+  /** Off-screen target the shade pass renders into: attachment 0 = colour,
+   *  attachment 1 = the reconstructed scene depth (ticket #344). Both are
    *  blitted to the screen each frame. Lets an overlay-only invalidate
    *  (sketch hover/drag, ticket 40001a3a) replay the cached shade result
    *  instead of re-running the whole SDF pipeline. */
@@ -229,12 +230,25 @@ export function initDeferredPipeline(
   shadeCamera.position.set(0, 0, 1);
   shadeCamera.updateProjectionMatrix();
 
-  // Shade-result cache: the shade pass renders here (colour + the per-pixel
-  // depth it reconstructs), and a trivial blit replays it to the screen.
-  const shadeRT = makeRT();
+  // Shade-result cache: the shade pass renders here and a trivial blit replays
+  // it to the screen. TWO colour attachments — the shaded colour, and the
+  // per-pixel scene depth the shade pass reconstructs (as colour, because a
+  // depth attachment reads back 0 when sampled; ticket #344). The names are the
+  // contract with the shade material's `mrt({ output, depthOut })`, and no depth
+  // attachment is needed: the shade quad neither tests nor writes depth.
+  const shadeRT = new THREE.WebGLRenderTarget(width, height, {
+    type: THREE.FloatType,
+    format: THREE.RGBAFormat,
+    minFilter: THREE.NearestFilter,
+    magFilter: THREE.NearestFilter,
+    depthBuffer: false,
+    count: 2,
+  });
+  shadeRT.textures[0].name = "output";
+  shadeRT.textures[1].name = "depthOut";
   const blitMaterial = createBlitMaterial(
-    shadeRT.texture,
-    shadeRT.depthTexture!,
+    shadeRT.textures[0],
+    shadeRT.textures[1],
   );
   const blitMesh = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), blitMaterial);
   blitMesh.frustumCulled = false;
@@ -705,13 +719,14 @@ export function resizeDeferredPipeline(
   height: number,
 ): void {
   if (state.width === width && state.height === height) return;
-  for (const rt of [state.opaqueRT, state.transparentRT, state.shadeRT]) {
+  for (const rt of [state.opaqueRT, state.transparentRT]) {
     if (rt.depthTexture) {
       rt.depthTexture.dispose();
       rt.depthTexture = new THREE.DepthTexture(width, height, THREE.FloatType);
     }
     rt.setSize(width, height);
   }
+  state.shadeRT.setSize(width, height);
   state.transparentBackRT.setSize(width, height);
   state.lastFrameKey = null;
   state.widthU.value = width;
@@ -814,9 +829,10 @@ export function renderDeferredFrame(
     renderer.clear(true, false, false);
     renderer.render(state.transparentBackScene, camera);
 
-    // Pass 3: shade (reads all RTs, sphere-traces) into the cache target.
+    // Pass 3: shade (reads all RTs, sphere-traces) into the cache target —
+    // colour into attachment 0, the reconstructed scene depth into attachment 1.
     renderer.setRenderTarget(state.shadeRT);
-    renderer.clear(true, true, false);
+    renderer.clear(true, false, false);
     renderer.render(state.shadeScene, state.shadeCamera);
 
     state.lastFrameKey = frameKey;

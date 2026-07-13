@@ -118,16 +118,32 @@ export function emitSceneDepthWrite({
   farU,
   isOrthoU,
 }: any): void {
-  const viewZ = viewMatU.mul(vec4(hitPos, 1.0)).z;
   depth
-    .assign(
-      select(
-        isOrthoU.greaterThan(float(0.5)),
-        viewZToOrthographicDepth(viewZ, nearU, farU),
-        viewZToPerspectiveDepth(viewZ, nearU, farU),
-      ),
-    )
+    .assign(sceneDepthValue({ hitPos, viewMatU, nearU, farU, isOrthoU }))
     .toStack();
+}
+
+/**
+ * The NDC depth value `emitSceneDepthWrite` writes — as a node, for pipelines
+ * that must route the depth somewhere other than the frag-depth builtin. The
+ * deferred renderer shades into an off-screen target and hands the depth on as
+ * a second colour attachment (see `createShadeMaterial`), because sampling a
+ * WebGPU depth attachment back out of a render target reads 0 in three r183
+ * (ticket #344).
+ */
+export function sceneDepthValue({
+  hitPos,
+  viewMatU,
+  nearU,
+  farU,
+  isOrthoU,
+}: any): any {
+  const viewZ = viewMatU.mul(vec4(hitPos, 1.0)).z;
+  return select(
+    isOrthoU.greaterThan(float(0.5)),
+    viewZToOrthographicDepth(viewZ, nearU, farU),
+    viewZToPerspectiveDepth(viewZ, nearU, farU),
+  );
 }
 
 /**

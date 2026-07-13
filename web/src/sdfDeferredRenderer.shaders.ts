@@ -23,7 +23,9 @@ import {
   instanceIndex,
   int,
   min,
+  mrt,
   normalize,
+  property,
   screenCoordinate,
   shiftRight,
   storage,
@@ -44,7 +46,7 @@ import { buildVmSdfEvalFn } from "./sdfVmInterpreter";
 import { SDF_MARCH_STEPS } from "./sdfPipelineCommon";
 import {
   makeDisplacedSdfEval,
-  emitSceneDepthWrite,
+  sceneDepthValue,
   emitUnionMarch,
   shadeSdfHit,
 } from "./sdfPipelineCommon.shaders";
@@ -132,6 +134,9 @@ export function createTransparentGBufferMaterial(
 // invalidating at pointer-move rate — so the expensive sphere-trace
 // shade pass is skipped entirely. Re-emitting the cached DEPTH keeps
 // the shared z-buffer contract with the datum/overlay passes (1m8g).
+//
+// `depthTex` is the shade pass's second COLOUR attachment (its red channel
+// carries the NDC depth), not a depth attachment — see `createShadeMaterial`.
 export function createBlitMaterial(
   colorTex: THREE.Texture,
   depthTex: THREE.Texture,
@@ -242,7 +247,11 @@ export function createShadeMaterial(
   };
 
   const material = new MeshBasicNodeMaterial();
-  material.outputNode = Fn(() => {
+  // The reconstructed scene depth of this pixel — a shader-global the shade
+  // flow writes and the MRT node below routes into the second colour
+  // attachment (see the note at `material.mrtNode`).
+  const sceneDepth = property("float", "fdSceneDepth");
+  const shadeFn = Fn(() => {
     const texUv = vec2(uv().x, float(1).sub(uv().y));
     const opaqueGbuf = texture(opaqueGbufTex, texUv);
     const transGbuf = texture(transGbufTex, texUv);
@@ -395,24 +404,45 @@ export function createShadeMaterial(
       );
     });
 
-    // Write per-pixel canvas depth so the B-Rep edge overlay can occlude in
-    // "visible" mode. `shadePos` is the true raymarched (or opaque) surface
-    // point; reconstruct its perspective depth via the scene camera's view
-    // matrix + near/far (the shade quad itself is drawn with an ortho camera,
-    // so the rasterizer's own depth is meaningless here). Misses write the far
-    // plane so empty pixels never occlude. Harmless in X-Ray/Hidden modes —
-    // there renderOverlayLayer clears depth before drawing the edges.
-    If(hasHit.greaterThan(int(0)), () => {
-      // Shared true-surface depth reconstruction (emitSceneDepthWrite).
-      emitSceneDepthWrite({ hitPos: shadePos, viewMatU, nearU, farU, isOrthoU });
-    }).Else(() => {
-      depth.assign(float(1.0)).toStack();
-    });
+    // Per-pixel scene depth, so the B-Rep edge overlay and the datum planes can
+    // occlude against the body in "visible" mode. `shadePos` is the true
+    // raymarched (or opaque) surface point; its depth is reconstructed via the
+    // scene camera's view matrix + near/far (the shade quad itself is drawn
+    // with an ortho camera, so the rasterizer's own depth is meaningless here).
+    // Misses write the far plane so empty pixels never occlude.
+    sceneDepth.assign(
+      select(
+        hasHit.greaterThan(int(0)),
+        sceneDepthValue({ hitPos: shadePos, viewMatU, nearU, farU, isOrthoU }),
+        float(1.0),
+      ),
+    );
 
     return result;
-  })();
+  });
 
-  material.depthWrite = true;
+  // MRT: colour → attachment 0, the scene depth → attachment 1 (a plain float
+  // colour texture, NOT the target's depth attachment). `renderDeferredFrame`
+  // blits both back to the screen, and the blit re-emits attachment 1 as the
+  // canvas frag-depth — that is what re-establishes the shared z-buffer the
+  // datum/overlay passes test against (ticket 1m8g).
+  //
+  // Why not simply write frag-depth into shadeRT's depth attachment and sample
+  // that? Because reading a WebGPU depth attachment back through a texture
+  // sample sees 0 everywhere in three r183 — verified in-browser against both
+  // this target and the opaque G-buffer's depth (ticket #344): the blit then
+  // stamped depth 0 (the near plane) over the whole canvas and every later pass
+  // was depth-rejected — datum planes gone, edges gone in "visible" mode.
+  // Float COLOUR attachments sample correctly (the G-buffer passes rely on it),
+  // so the depth travels as colour.
+  //
+  // `shadeFn()` is called ONCE: its result feeds attachment 0, and the sceneDepth
+  // property it assigns on the way feeds attachment 1. The march runs once.
+  material.mrtNode = mrt({
+    output: shadeFn(),
+    depthOut: vec4(sceneDepth, 0.0, 0.0, 1.0),
+  });
+  material.depthWrite = false;
   material.depthTest = false;
   material.toneMapped = false;
   material.transparent = true;
