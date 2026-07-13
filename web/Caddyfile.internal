@@ -25,6 +25,21 @@
 		reverse_proxy server:8080
 	}
 
+	# ── AI assistant → Go server (ticket #347) ──────────────────────────────
+	# The chat proxy hangs at /aichat/ — TOP-LEVEL, not under /api/ (see
+	# server/main.go: mux.Handle("/aichat/", …)). Without this block the request
+	# falls through to the SPA handler below and the browser gets index.html
+	# instead of the stream: the assistant is dead in production, silently.
+	#
+	# `flush_interval -1` disables response buffering — the answer is an SSE token
+	# stream, and buffered it arrives only when the whole turn is done (a minute,
+	# for a CAD tool-loop). Deliberately no `encode` either: compression re-buffers.
+	handle /aichat/* {
+		reverse_proxy server:8080 {
+			flush_interval -1
+		}
+	}
+
 	# ── Static SPA with history-API fallback ────────────────────────────────
 	handle {
 		root * /srv
