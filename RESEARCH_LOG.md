@@ -448,3 +448,22 @@ Format: Zeitstempel · Hypothese/Frage · Ergebnis · Entscheidung.
   `lichen_adv_graze_sphere_plane_watertight`, minang ≥ 10 / p99 ≤ 4);
   kernel release 1112/1112 (Workspace komplett grün).
 - Doku: §8u in Lichen-Architecture.md, §8r Punkt 3 GESCHLOSSEN, I-25.
+
+## 2026-07-13 23:00 — ALLE OFFENEN PUNKTE ABGESCHLOSSEN (v0.6.573, main 5bbed87)
+
+- Sliver-Paket gelandet: sliver_repair (Rivara-Bisektion mit Separations-
+  Gate + tangentiales Glätten mit max-min-Wächter + Lawson-Flips) —
+  graze 5,2°→11,8°, twist 12,0°, bend 12,5°, coplanar 12,2°; Abnahme
+  byte-identisch; I-25 (Flips als Erstmaßnahme widerlegt: Walk-Diagonale
+  lokal optimal); §8u neu, §8r Punkt 3 geschlossen. 39 Gates, 1112/1112,
+  Web 1717/1717.
+- Damit sind ALLE vier offenen Punkte aus REPORT.md erledigt:
+  1 Warp-Familie komplett wasserdicht (569/571), 2 Küsse ehrlich
+  geschlossen (Topologie-Weg, I-24; Peer-Tangentialnähte werden Ketten
+  liefern), 3 Sliver behoben (573), 4 Renderer-Displace gefixt+
+  headful-abgenommen (568/571).
+- Peer fielddraft hat parallel brep/tangential_seams.rs begonnen
+  (konstruktiver Naht-Ansatz) — Koordination lief über zwei
+  send_to_agent-Runden, kollisionsfrei sequenziert.
+- Betreiber-Worktree-Änderungen (Backlog.md→Link-Ideen.md) auf Zuruf
+  mit committet.
