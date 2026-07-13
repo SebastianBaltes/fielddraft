@@ -1256,32 +1256,80 @@ falsche Geometrie messen, ein Options-String kann still auf Defaults
 zurückfallen. Validierung der Messmittel VOR der Messung hat in dieser
 Session dreimal Irrläufe verhindert und zweimal Fremd-Fehler gefangen.
 
-## 8r. Offene Fronten (Stand 2026-07-13, v0.6.567)
+## 8s. Warp-Bodies: exakter Twist/Bend-Weave + warp-bewusste Regionen (v0.6.569)
 
-1. **Warp-Bodies (Twist/Bend/Displace)** — Kategorie (c), Gate
-   `lichen_adv_warp_bodies_wip`: diese Bodies verlassen beide
-   Weave-Scopes, es gibt **kein B-Rep → keine Ketten, keine Regionen**;
-   die Twist-Box reißt an ihren helikalen Kanten. Empfehlung:
-   **feld-basierte Feature-Linien-Extraktion** (Normalen-Diskontinuitäten
-   des SDF) als Ketten-Ersatz. Displace zusätzlich: das
-   Wachstums-Crowding auf den Beulen-Flächen ist **intraface** — Regionen
-   helfen dort prinzipiell nicht.
+Die Warp-Front aus §8r Punkt 1 ist für **Twist und Bend geschlossen**
+(Twist-Box 864 → **0** offene Kanten, χ=2; Bend-Box auf Anhieb dicht;
+aktives Gate `lichen_adv_warp_twist_and_bend_watertight`). Der Weg war
+NICHT die feld-basierte Feature-Linien-Extraktion, sondern der exakte
+Weave — der Kernel rechnet den Rück-Warp T ohnehin in geschlossener Form
+(Eval-Formel), also ist der Vorwärts-Warp W = T⁻¹ konstruierbar (Twist
+geschlossen: y-invariante Rotation; Bend: 1D-Newton):
+
+* **Kernel** (`sdf_dual.rs`, `brep/edge_trace.rs`, `brep/seed_weaver.rs`,
+  `brep/edge_walker.rs`): `DomainWarp{Twist,Bend}` + `warp_chain`/
+  `unwarp_chain`; neues Tracer-Feld `Field::WarpedAnalytic{hs, xf, warps}`
+  (Dual-Eval `hs∘xf⁻¹∘T` mit exaktem Gradienten inkl. Warp-Jacobian) —
+  der DL-68-Tracer verfolgt damit die gewarpten Kanten-Kurven (Helizes).
+  `scope_supported_partial` öffnet Root-Twist/Bend: SSI-Seeds aus dem
+  UNGEWARPTEN inner-Baum, durch W gemappt; der Strict-Scope und der
+  id_hash-Kontrakt bleiben unberührt. Zusätzlich nötig (gemessen): eine
+  **f64-Ecken-Nachpolitur** nur auf der Warp-Route — das f32-
+  `refine_triple_vertex` akzeptiert Residuen ~3e-4 über dem
+  2e-4-Aktivitätsband, der Bend-Ecken-Witness fiel sonst durch
+  (Forensik `SEED_WEAVER_DEBUG=1` statt Band-Aufweichung).
+* **Lichen** (`api/lichen.rs`): `FaceSurf.warp` — `surf_pt` läuft
+  Welt → placement⁻¹ → T → transform⁻¹; damit sind `face_of`/`own_dist`/
+  `surf_gradn`/Streuung/Flächen-Einfärbung/Ketten-Punkt-Normalen
+  warp-bewusst. Wichtig: gewarpte Normalen als **Welt-Differenzenquotient**
+  über die komponierte Kette — bloßes Zurückrotieren der lokalen Normale
+  unterschlägt den Scher-Anteil des Warps.
+
+Scope-Grenzen (bewusst, dokumentiert): Warps **innerhalb** eines Booleans
+(nur ein Ast gewarpt), nicht-analytische Branches unter Warp
+(Extrude/Revolve-Wände) und nicht-Identity-Placement (bestehende
+Kernel-Inkonsistenz der carry-Faltung) bleiben Oktree-Fallback.
+**Displace** ist als Wert-Störung nicht koordinaten-invertierbar und
+braucht weiterhin den Feature-Linien-Weg (§8r Punkt 1, Gate
+`lichen_adv_warp_displace_wip`).
+
+## 8r. Offene Fronten (Stand 2026-07-13, v0.6.569)
+
+1. **Displace-Bodies** — Kategorie (c), Gate
+   `lichen_adv_warp_displace_wip` (662 offene): Wert-Störung ohne
+   Koordinaten-Inverse → kein exakter Weave möglich (§8s deckt nur
+   Twist/Bend). Empfehlung: **feld-basierte Feature-Linien-Extraktion**
+   (Normalen-Diskontinuitäten des SDF) als Ketten-Ersatz. Zusätzlich:
+   das Wachstums-Crowding auf den Beulen-Flächen ist **intraface** —
+   Regionen helfen dort prinzipiell nicht.
 2. **Exakt tangentiale Küsse** (Punkt-Kuss Kugel@Platte, Linien-Kuss
    Zylinder@Box-Wand) — Gate `lichen_adv_tangent_kiss_wip`: Blattabstand
    0 am Kontakt ist prinzipiell sub-resolution (die echte lfs→0-Grenze,
-   §8k/§8l). Hier ist zuerst das **ehrliche Soll zu definieren** — comp=2
-   beim Punkt-Kuss bzw. sauberer Pinch beim Linien-Kontakt — statt
-   Wasserdichtheit zu erzwingen; außerdem den **Sizing-Kollaps deckeln**
-   (lfs→0 am Kontakt treibt die Laufzeit auf ~200 s).
+   §8k/§8l). Ehrliches Soll (Design-Analyse 2026-07-13): **zwei getrennte
+   wasserdichte Komponenten** (comp=2, koinzidente aber distinkte
+   Vertices — ein Pinch-Vertex wäre in `mesh_quality` unsichtbar und
+   verfälscht χ). Der zunächst empfohlene **Sizing-Deckel** wurde
+   implementiert und **widerlegt** (I-24): Gegenblatt-lfs am kettenlosen
+   antiparallelen Kollaps zu ignorieren hilft dem Punkt-Kuss mild
+   (33 → 22 bei c=1.0, Laufzeit ×2,6) und ruiniert den Linien-Kuss
+   (430 → **1558**, χ −480) — der r=h-Streifen neben ultradichter
+   Umgebung ist exakt die Dichtesprung-Defektklasse aus I-16/§8j.
+   Werkzeuge bleiben env-gated (`LICHEN_KISS_C`/`LICHEN_KISS_DUMP`,
+   `reach_outer_counter` mit Gegenblatt-dot, Byte-Identitäts-Anker
+   `zz_acceptance_hash`). Der echte Weg ist **topologisch**: den
+   Sub-Resolution-Kontakt erkennen und die Blätter als getrennte
+   Komponenten meshen (Mikro-Feature-Kollaps-Familie).
 3. **Sliver an streifenden Nähten**: der 3,6°-Streifschnitt ist
    wasserdicht, aber mit minang ~5° — derzeit der Preis der
    Wasserdichtheit. Kandidat: **anisotropes Remeshing entlang der Naht**
-   als Nachlauf.
-4. **Renderer-Arbeitslinie Displace-Lipschitz** (Befund in `bvh.rs`,
-   I-21): das Displace-Feld ist nicht 1-Lipschitz (L≈1,8), das Marching
-   kann überschreiten. Die Normalisierung ist für den Renderer richtig
-   und für den Mesher nachweislich schädlich — sie muss
-   renderer-verifiziert und renderer-lokal eingeführt werden.
+   als Nachlauf. (Verwandt: Twist-Helix-Ketten liefern minang 9,0°/p99
+   3,31 — gleiche Sliver-Klasse.)
+4. **Renderer-Arbeitslinie Displace-Lipschitz**: GESCHLOSSEN im Kern
+   (v0.6.568): Schrittweiten-Dämpfung 1/L über `march_relax`
+   (`sdf_compiler.rs`, Muster REVOLVE_MARCH_RELAX) — Feld bitidentisch,
+   Mesher beweisbar unberührt. Offen: visuelle Streifwinkel-Abnahme im
+   headful-WebGPU-Loop; auf Iterations-Cap-Artefakte an Silhouetten
+   achten (mehr Schritte pro Ray).
 
 Weiter offen aus §8 (unverändert): Stern-Projektions-Entartung/R-A3-
 Widerspruch (Punkt 1), Torus-Gate (3), Chart-Überdichte (4),

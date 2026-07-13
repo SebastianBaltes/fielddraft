@@ -109,6 +109,56 @@ impl Kernel {
             surface: HalfSpace,
             transform: Transform,
             placement: Transform,
+            /// Domain-Warp-Kette des Bodys (Twist/Bend an der Wurzel; leer für
+            /// ungewarpte Bodies). `surface`/`transform` beschreiben den
+            /// UN-gewarpten Träger — Welt→Fläche läuft placement⁻¹ → T
+            /// (Rück-Warp) → transform⁻¹ (s. [`crate::sdf_dual::DomainWarp`]).
+            /// Der Chart-/Planar-CDT-Pfad ist NICHT warp-bewusst (die
+            /// adversariale Matrix läuft general_tri+global_walk).
+            warp: Vec<crate::sdf_dual::DomainWarp>,
+        }
+        impl FaceSurf {
+            /// Welt-Punkt → Flächen-Frame. Mit leerer Warp-Kette byte-identisch
+            /// zur historischen Kette placement⁻¹ → transform⁻¹.
+            fn surf_pt(&self, p_world: [f32; 3]) -> [f32; 3] {
+                let pl = crate::world_to_local(&self.placement, p_world);
+                let pl = if self.warp.is_empty() {
+                    pl
+                } else {
+                    let u = crate::sdf_dual::unwarp_chain(
+                        &self.warp,
+                        [pl[0] as f64, pl[1] as f64, pl[2] as f64],
+                    );
+                    [u[0] as f32, u[1] as f32, u[2] as f32]
+                };
+                crate::world_to_local(&self.transform, pl)
+            }
+            /// Welt-Normale aus dem Flächen-SDF. Ungewarpt: symmetrische FD im
+            /// Flächen-Frame, zurückrotiert (die historische Formel, byte-
+            /// identisch). Gewarpt: FD in WELT-Koordinaten über die komponierte
+            /// Kette — bloßes Zurückrotieren würde den Scher-Anteil des Warps
+            /// unterschlagen (±17° bei der Twist-Box-Matrix).
+            fn normal_world(&self, p_world: [f32; 3]) -> [f32; 3] {
+                let e = 1e-3f32;
+                if self.warp.is_empty() {
+                    let ps = self.surf_pt(p_world);
+                    let sd = |q: [f32; 3]| crate::csg::sdf_halfspace(&self.surface, q);
+                    let g = [
+                        sd([ps[0] + e, ps[1], ps[2]]) - sd([ps[0] - e, ps[1], ps[2]]),
+                        sd([ps[0], ps[1] + e, ps[2]]) - sd([ps[0], ps[1] - e, ps[2]]),
+                        sd([ps[0], ps[1], ps[2] + e]) - sd([ps[0], ps[1], ps[2] - e]),
+                    ];
+                    let gl = crate::quat_rotate(self.transform.rotation, g);
+                    return lichen::unit(crate::quat_rotate(self.placement.rotation, gl));
+                }
+                let sd = |q: [f32; 3]| crate::csg::sdf_halfspace(&self.surface, self.surf_pt(q));
+                let p = p_world;
+                lichen::unit([
+                    sd([p[0] + e, p[1], p[2]]) - sd([p[0] - e, p[1], p[2]]),
+                    sd([p[0], p[1] + e, p[2]]) - sd([p[0], p[1] - e, p[2]]),
+                    sd([p[0], p[1], p[2] + e]) - sd([p[0], p[1], p[2] - e]),
+                ])
+            }
         }
         let mut all: Vec<LPoint> = Vec::new();
         let mut point_faces: Vec<Vec<(u32, [f32; 3])>> = Vec::new();
@@ -146,6 +196,12 @@ impl Kernel {
             self.bodies[bi].ensure_brep(&self.decoded, true);
             let placement = self.bodies[bi].placement;
             let Some(brep) = self.bodies[bi].brep_cached() else { continue };
+            // Domain-Warp-Kette des Bodys: die B-Rep-Flächen tragen den
+            // UN-gewarpten Träger (branch_halfspace_map rekursiert durch
+            // Twist/Bend) — jede FaceSurf dieses Bodys bekommt die Kette, damit
+            // face_of/own_dist/Normalen am ECHTEN (gewarpten) Ort messen.
+            let warp_body: Vec<crate::sdf_dual::DomainWarp> =
+                crate::brep::edge_walker::root_warp_chain(&bodies[bi]).unwrap_or_default();
             let s = placement.scale[0];
             let to_world = |p: [f64; 3]| -> [f32; 3] {
                 let scaled = [p[0] as f32 * s, p[1] as f32 * s, p[2] as f32 * s];
@@ -650,6 +706,7 @@ impl Kernel {
                     surface: surface.clone(),
                     transform: *transform,
                     placement,
+                    warp: warp_body.clone(),
                 });
                 let fid = FaceId(fi as u32);
                 let mut rings: Vec<(Vec<u32>, bool)> = Vec::new();
@@ -669,16 +726,22 @@ impl Kernel {
                         if !seen.insert(gidx) {
                             continue;
                         }
-                        let pl = local_pos[gidx as usize];
-                        let nl = crate::brep::face_export::face_normal_at_local(
-                            brep,
-                            fid,
-                            [pl[0] as f64, pl[1] as f64, pl[2] as f64],
-                        );
-                        let nw = lichen::unit(crate::quat_rotate(
-                            placement.rotation,
-                            [nl[0] as f32, nl[1] as f32, nl[2] as f32],
-                        ));
+                        let nw = if warp_body.is_empty() {
+                            let pl = local_pos[gidx as usize];
+                            let nl = crate::brep::face_export::face_normal_at_local(
+                                brep,
+                                fid,
+                                [pl[0] as f64, pl[1] as f64, pl[2] as f64],
+                            );
+                            lichen::unit(crate::quat_rotate(
+                                placement.rotation,
+                                [nl[0] as f32, nl[1] as f32, nl[2] as f32],
+                            ))
+                        } else {
+                            // face_normal_at_local misst am UN-gewarpten Träger
+                            // — unter Warp die komponierte Welt-Normale nehmen.
+                            face_surfs[gf as usize].normal_world(all[gidx as usize].p)
+                        };
                         point_faces[gidx as usize].push((gf, nw));
                     }
                 }
@@ -705,8 +768,18 @@ impl Kernel {
             }
             for bid in orphan_ids {
                 let (hsurf, hxf) = &hs_map[&bid];
+                // FaceSurf VOR den Closures bauen (BoundedCsg = Welt-Frame →
+                // placement = IDENTITY, byte-identisch zur alten direkten
+                // hxf-Kette): so laufen on_surf/normal_at/Newton über dieselbe
+                // warp-bewusste surf_pt/normal_world-Kette wie alle Flächen.
+                let ofs = FaceSurf {
+                    surface: hsurf.clone(),
+                    transform: *hxf,
+                    placement: Transform::IDENTITY,
+                    warp: warp_body.clone(),
+                };
                 let on_surf = |gidx: u32| -> bool {
-                    let ps = crate::world_to_local(hxf, all[gidx as usize].p);
+                    let ps = ofs.surf_pt(all[gidx as usize].p);
                     crate::csg::sdf_halfspace(hsurf, ps).abs() < (0.02 * h).max(0.05)
                 };
                 // Angrenzende Kanten: alle Kettenpunkte auf der Surface.
@@ -770,18 +843,10 @@ impl Kernel {
                     }
                 }
                 let gf = face_surfs.len() as u32;
-                // Pro-Fläche-Normale = ∇(Surface-SDF), Surface-Frame → Welt.
-                let normal_at = |p_world: [f32; 3]| -> [f32; 3] {
-                    let ps = crate::world_to_local(hxf, p_world);
-                    let e = 1e-3f32;
-                    let sd = |q: [f32; 3]| crate::csg::sdf_halfspace(hsurf, q);
-                    let g = [
-                        sd([ps[0] + e, ps[1], ps[2]]) - sd([ps[0] - e, ps[1], ps[2]]),
-                        sd([ps[0], ps[1] + e, ps[2]]) - sd([ps[0], ps[1] - e, ps[2]]),
-                        sd([ps[0], ps[1], ps[2] + e]) - sd([ps[0], ps[1], ps[2] - e]),
-                    ];
-                    lichen::unit(crate::quat_rotate(hxf.rotation, g))
-                };
+                // Pro-Fläche-Normale = ∇(Surface-SDF), Surface-Frame → Welt
+                // (warp-bewusst; placement = IDENTITY → byte-identisch zur
+                // alten hxf-Rotation für ungewarpte Bodies).
+                let normal_at = |p_world: [f32; 3]| -> [f32; 3] { ofs.normal_world(p_world) };
                 // Kettenlos (die Nähte wurden im Weave gedroppt): FELD-
                 // STREUUNG — Gitter über die Body-AABB, Newton-Projektion auf
                 // die Surface, behalten wo der Punkt AUF dem Body liegt
@@ -826,7 +891,7 @@ impl Kernel {
                                     // Newton auf die Trägerfläche.
                                     let mut d = f32::MAX;
                                     for _ in 0..8 {
-                                        let ps = crate::world_to_local(hxf, p);
+                                        let ps = ofs.surf_pt(p);
                                         d = crate::csg::sdf_halfspace(hsurf, ps);
                                         if d.abs() < 1e-3 {
                                             break;
@@ -885,11 +950,7 @@ impl Kernel {
                         }
                     }
                 }
-                face_surfs.push(FaceSurf {
-                    surface: hsurf.clone(),
-                    transform: *hxf,
-                    placement: Transform::IDENTITY,
-                });
+                face_surfs.push(ofs);
                 face_loops.push(rings);
             }
         }
@@ -911,8 +972,7 @@ impl Kernel {
             let mut best = u32::MAX;
             let mut bestd = f32::MAX;
             for (gf, fs) in face_surfs.iter().enumerate() {
-                let p_local = crate::world_to_local(&fs.placement, p_world);
-                let p_surf = crate::world_to_local(&fs.transform, p_local);
+                let p_surf = fs.surf_pt(p_world);
                 let d = crate::csg::sdf_halfspace(&fs.surface, p_surf).abs() * face_scale(fs);
                 if d < bestd {
                     bestd = d;
@@ -1244,8 +1304,13 @@ impl Kernel {
             let total_scale =
                 (fs.placement.scale[0] * fs.transform.scale[0]).abs().max(1e-6);
             let surf_normal = |p_world: [f32; 3]| -> [f32; 3] {
-                let pl = crate::world_to_local(&fs.placement, p_world);
-                let ps = crate::world_to_local(&fs.transform, pl);
+                if !fs.warp.is_empty() {
+                    // Unter Warp: komponierte Welt-FD (s. FaceSurf::normal_world).
+                    return fs.normal_world(p_world);
+                }
+                // Historischer Pfad, byte-identisch (inkl. der einseitigen
+                // y-Differenz) — Streu-Seeds sind Teil des Abnahme-Gates.
+                let ps = fs.surf_pt(p_world);
                 let e = 1e-3f32;
                 let sd = |q: [f32; 3]| crate::csg::sdf_halfspace(&fs.surface, q);
                 let g = [
@@ -1280,8 +1345,7 @@ impl Kernel {
                         ];
                         let mut d = f32::MAX;
                         for _ in 0..12 {
-                            let pl = crate::world_to_local(&fs.placement, p);
-                            let ps = crate::world_to_local(&fs.transform, pl);
+                            let ps = fs.surf_pt(p);
                             d = crate::csg::sdf_halfspace(&fs.surface, ps);
                             if d.abs() * total_scale < 1e-3 {
                                 break;
@@ -1436,10 +1500,8 @@ impl Kernel {
                 // Vorhang.
                 let own_dist = |q: [f32; 3]| -> f32 {
                     let fs = &face_surfs[gf as usize];
-                    let pl = crate::world_to_local(&fs.placement, q);
-                    let ps = crate::world_to_local(&fs.transform, pl);
-                    // In Welt-mm (Skalen-Korrektur, s. face_of).
-                    crate::csg::sdf_halfspace(&fs.surface, ps).abs() * face_scale(fs)
+                    // In Welt-mm (Skalen-Korrektur, s. face_of); warp-bewusst.
+                    crate::csg::sdf_halfspace(&fs.surface, fs.surf_pt(q)).abs() * face_scale(fs)
                 };
                 let on_face = |p0: [f32; 3], p1: [f32; 3], rr: f32| -> bool {
                     // (a) Ziel auf der eigenen Trägerfläche. Floor 2e-3·h
@@ -1536,18 +1598,7 @@ impl Kernel {
                 // B-Rep-Kanten-Knick und rauscht nicht wie Klein-Fenster-FD
                 // am Body-Feld).
                 let surf_gradn = |q: [f32; 3]| -> [f32; 3] {
-                    let fs = &face_surfs[gf as usize];
-                    let pl = crate::world_to_local(&fs.placement, q);
-                    let ps = crate::world_to_local(&fs.transform, pl);
-                    let e = 1e-3f32;
-                    let sd = |w: [f32; 3]| crate::csg::sdf_halfspace(&fs.surface, w);
-                    let g = [
-                        sd([ps[0] + e, ps[1], ps[2]]) - sd([ps[0] - e, ps[1], ps[2]]),
-                        sd([ps[0], ps[1] + e, ps[2]]) - sd([ps[0], ps[1] - e, ps[2]]),
-                        sd([ps[0], ps[1], ps[2] + e]) - sd([ps[0], ps[1], ps[2] - e]),
-                    ];
-                    let gl = crate::quat_rotate(fs.transform.rotation, g);
-                    lichen::unit(crate::quat_rotate(fs.placement.rotation, gl))
+                    face_surfs[gf as usize].normal_world(q)
                 };
                 // Krümmung ZWEISTUFIG: erst mit dem globalen h grob schätzen,
                 // daraus einen Radius ableiten, dann mit einem an DIESEN
@@ -1656,19 +1707,10 @@ impl Kernel {
                         if point_faces[i].iter().any(|&(g, _)| g == gf) {
                             continue;
                         }
-                        let pl = crate::world_to_local(&fs.placement, p);
-                        let ps = crate::world_to_local(&fs.transform, pl);
+                        let ps = fs.surf_pt(p);
                         let d = crate::csg::sdf_halfspace(&fs.surface, ps).abs() * face_scale(fs);
                         if d <= tol {
-                            let e = 1e-3f32;
-                            let sd = |q: [f32; 3]| crate::csg::sdf_halfspace(&fs.surface, q);
-                            let g = [
-                                sd([ps[0] + e, ps[1], ps[2]]) - sd([ps[0] - e, ps[1], ps[2]]),
-                                sd([ps[0], ps[1] + e, ps[2]]) - sd([ps[0], ps[1] - e, ps[2]]),
-                                sd([ps[0], ps[1], ps[2] + e]) - sd([ps[0], ps[1], ps[2] - e]),
-                            ];
-                            let gl = crate::quat_rotate(fs.transform.rotation, g);
-                            let nw = lichen::unit(crate::quat_rotate(fs.placement.rotation, gl));
+                            let nw = fs.normal_world(p);
                             // REGIONEN-KORREKTHEIT — die Träger sind UNENDLICH!
                             // Nähe zum TRÄGER heißt NICHT Zugehörigkeit zur
                             // FLÄCHE: ein kantennaher Punkt der Box-Deckfläche
@@ -1707,6 +1749,35 @@ impl Kernel {
         if opts.sizing_field && size.is_none() && opts.grow {
             let eps = if opts.lfs_factor > 0.0 { opts.lfs_factor } else { 0.5 };
             let cap_lfs = h / eps;
+            let floor = opts.min_edge_spacing.max(1e-4).min(h);
+            // ── KUSS-DECKEL (exakt tangentiale Kontakte, 2026-07-13) ──
+            // An einem tangentialen KUSS (Kugel berührt Platte in einem Punkt,
+            // Zylinder küsst Wand längs einer Linie) läuft die lfs gegen 0 —
+            // unterhalb JEDER Auflösung. Der Floor-Clamp machte daraus einen
+            // 50×-Dichtesprung (r = floor statt Eigen-Spacing) und damit
+            // Crowding + wechselseitige Zeugen-Kugel-Blockade OHNE
+            // vermittelnde Kette (kein transversaler Schnitt → keine
+            // B-Rep-Kante). Deckel: ein Gegenblatt-Beitrag wird IGNORIERT
+            // (das Blatt behält sein Eigen-Spacing aus Krümmung/h), wenn
+            //  (a) lfs < c·floor — der →0-Kollaps; eine echte dünne Wand
+            //      (0,35-mm-Platte: lfs ≈ 0,175 > 1,0·0,1) bleibt unberührt,
+            //  (b) die Gegenseiten-Normale ~antiparallel ist (Gegenblatt,
+            //      kein Kanten-Bisektor) — reach_inner prüft das intern,
+            //      für reach_outer liefert es reach_outer_counter,
+            //  (c) KEINE Kette in Reichweite ist — an einer fast-tangentialen
+            //      NAHT (Gyroid∩Zylinder) läuft die lfs ebenfalls gegen 0,
+            //      dort vermittelt aber die Naht-Kette; nur der kettenlose
+            //      Kollaps ist der Kuss.
+            let kiss_c: f32 = std::env::var("LICHEN_KISS_C")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(0.0);
+            let kiss_chain_r: f32 = std::env::var("LICHEN_KISS_CHAIN_R")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(1.5);
+            let kiss_dump = std::env::var("LICHEN_KISS_DUMP").is_ok();
+            let mut kiss_capped = 0usize;
             let mut pts: Vec<[f32; 3]> = Vec::with_capacity(all.len());
             let mut raw: Vec<f32> = Vec::with_capacity(all.len());
             for lp in &all {
@@ -1714,11 +1785,41 @@ impl Kernel {
                 // FEINER Startschritt, an das lokale Spacing gekoppelt: nur so
                 // wird ein Spalt gefunden, der kleiner ist als das Spacing.
                 let t0 = (0.05 * lp.space).max(1e-5);
-                let lfs = lichen::reach_inner(lp.p, n, cap_lfs, t0, &fg)
-                    .min(lichen::reach_outer_flat(lp.p, n, cap_lfs, t0, &fg));
+                let li = lichen::reach_inner(lp.p, n, cap_lfs, t0, &fg);
+                let (lo, lo_dot) = lichen::reach_outer_counter(lp.p, n, cap_lfs, t0, &fg);
+                let lfs = li.min(lo);
                 let mut r = h.min(lp.space.max(1e-4));
                 if lfs < cap_lfs {
-                    r = r.min(eps * lfs);
+                    // (b): reach_inner schlägt NUR bei ~antiparallelem
+                    // Gegenblatt an (dot < −0.3 intern); für den äußeren
+                    // Marsch liefert reach_outer_counter das dot.
+                    let antipar = if li <= lo { true } else { lo_dot < -0.3 };
+                    if kiss_dump && lfs < 3.0 * floor && antipar {
+                        eprintln!(
+                            "KISS-DUMP p=({:.3},{:.3},{:.3}) lfs={lfs:.4} li={li:.4} lo={lo:.4} dot={lo_dot:.2} chain={:.3} space={:.3}",
+                            lp.p[0], lp.p[1], lp.p[2], brep_dist(lp.p), lp.space
+                        );
+                    }
+                    let kiss = kiss_c > 0.0
+                        && lfs < kiss_c * floor
+                        && antipar
+                        && brep_dist(lp.p) > kiss_chain_r;
+                    if kiss {
+                        // Eigen-Spacing statt Kollaps: h und Krümmung —
+                        // NICHT lp.space, das im Grob-Lauf am Kuss bereits
+                        // auf eps·t0 = floor kollabiert war.
+                        kiss_capped += 1;
+                        r = h;
+                        let kmax = lichen::curvature(lp.p, n, h, &|q| {
+                            lichen::unit(lichen::robust_grad(q, &fg))
+                        })
+                        .0;
+                        if kmax > 1e-6 {
+                            r = r.min(opts.curv_angle_deg.to_radians() / kmax);
+                        }
+                    } else {
+                        r = r.min(eps * lfs);
+                    }
                 }
                 pts.push(lp.p);
                 raw.push(r);
@@ -1727,10 +1828,12 @@ impl Kernel {
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(0.3);
-            let floor = opts.min_edge_spacing.max(1e-4).min(h);
             let sf = lichen::SizeField::build(pts, raw, k_lip, h, floor);
             if std::env::var("LICHEN_DEBUG_SIZING").is_ok() {
-                eprintln!("SIZING-FIELD: {} Stützstellen, K={k_lip}, floor={floor}", all.len());
+                eprintln!(
+                    "SIZING-FIELD: {} Stützstellen, K={k_lip}, floor={floor}, kuss-gekappt={kiss_capped} (c={kiss_c}, chainR={kiss_chain_r})",
+                    all.len()
+                );
             }
             return self.lichen_mesh_sized(opts, body_filter, Some(&sf));
         }
@@ -2303,18 +2406,7 @@ impl Kernel {
                     // ([0,0,1]-LPoint-Default!) machten den Cocone-Filter auf
                     // 4 von 6 Box-Flächen blind — leere Sterne, 0 Dreiecke.
                     let fsn = |p_world: [f32; 3]| -> [f32; 3] {
-                        let fs = &face_surfs[gf];
-                        let pl = crate::world_to_local(&fs.placement, p_world);
-                        let ps = crate::world_to_local(&fs.transform, pl);
-                        let e = 1e-3f32;
-                        let sd = |q: [f32; 3]| crate::csg::sdf_halfspace(&fs.surface, q);
-                        let g = [
-                            sd([ps[0] + e, ps[1], ps[2]]) - sd([ps[0] - e, ps[1], ps[2]]),
-                            sd([ps[0], ps[1] + e, ps[2]]) - sd([ps[0], ps[1] - e, ps[2]]),
-                            sd([ps[0], ps[1], ps[2] + e]) - sd([ps[0], ps[1], ps[2] - e]),
-                        ];
-                        let gl = crate::quat_rotate(fs.transform.rotation, g);
-                        lichen::unit(crate::quat_rotate(fs.placement.rotation, gl))
+                        face_surfs[gf].normal_world(p_world)
                     };
                     for &gi in &face_interior[gf] {
                         if nmap.insert(gi, fsn(all[gi as usize].p)).is_none() {
@@ -2361,9 +2453,7 @@ impl Kernel {
                         &fg,
                         &|p: [f32; 3]| {
                             let fs = &face_surfs[gf];
-                            let pl = crate::world_to_local(&fs.placement, p);
-                            let ps = crate::world_to_local(&fs.transform, pl);
-                            crate::csg::sdf_halfspace(&fs.surface, ps).abs() <= 0.05 * h
+                            crate::csg::sdf_halfspace(&fs.surface, fs.surf_pt(p)).abs() <= 0.05 * h
                         },
                     );
                     if std::env::var("LICHEN_DEBUG_FACES").is_ok() {
@@ -4612,6 +4702,25 @@ mod tests {
     /// BASELINE-MESSREIHE auf dem Abnahmefall (kein Gate — Analyse-Werkzeug).
     /// Default = exakt die Betreiber-Settings aus dem .fdraft.
     /// `cargo test -p fielddraft-kernel --release zz_gyroid_baseline -- --ignored --nocapture`
+    /// BYTE-IDENTITÄTS-ANKER (Analyse-Werkzeug, kein Gate): Hash über die
+    /// rohen f32-Bits des Abnahme-Netzes. Vor/nach jedem Sizing-Eingriff
+    /// laufen lassen — gleicher Hash = das Abnahme-Netz ist byte-identisch.
+    /// `cargo test -p fielddraft-kernel --release zz_acceptance_hash -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn zz_acceptance_hash() {
+        use std::hash::{Hash, Hasher};
+        let mut k = demo_project_kernel();
+        let out = k.lichen_mesh(
+            r#"{"targetEdgeLength":10.0,"grow":true,"curvAngleDeg":2.0,"useReach":false,"reachTol":1.0,"minEdgeSpacing":0.1,"maxPoints":50000,"generalTri":true,"accept":"witness","extractWalk":true,"globalWalk":true,"lfsFactor":0.1,"sizingField":true,"faceGuard":false,"fillHoles":false}"#.into(),
+        );
+        let mut hsh = std::collections::hash_map::DefaultHasher::new();
+        for f in &out {
+            f.to_bits().hash(&mut hsh);
+        }
+        eprintln!("ACCEPT-HASH: n={} hash={:016x}", out.len(), hsh.finish());
+    }
+
     /// Varianten: `LICHEN_GY_EXTRA=',"refine":true'` usw.
     #[test]
     #[ignore]
@@ -5079,6 +5188,42 @@ mod tests {
                     );
                 },
             },
+            AdvCase {
+                // Bend in der XY-Ebene längs x: 0,05 rad/mm → ±17° an den
+                // Enden (Gate |rate|·y_extent = 0.15 < 1, kein Selbstschnitt).
+                // Gegenstück zur Twist-Box: der Vorwärts-Warp W braucht hier
+                // den 1D-Newton (θ hängt vom unbekannten Urbild-x ab).
+                name: "warp_bend_box",
+                json: r#"{
+                    "schema_version": 1, "name": "adv-bend",
+                    "feature_calls": [
+                        { "type": "box", "id": 1, "params": {
+                            "op": "new", "half_extents": [6, 3, 3],
+                            "translate": [0, 0, 0], "bend_rate": 0.05 } }
+                    ],
+                    "next_feature_id": 2
+                }"#,
+                h: 5.0,
+                lo: [-7.0, -5.2, -3.3],
+                hi: [7.0, 5.2, 3.3],
+                cell: 0.4,
+                validate: |f| {
+                    // Zentrum tief innen; bei x≈0 ist der Querschnitt unverbogen.
+                    assert!(f([0.0, 0.0, 0.0]) < -2.5, "Zentrum innen");
+                    assert!(f([0.0, 2.9, 0.0]) < 0.0, "unverbogene Mitte bei x=0 fehlt");
+                    assert!(f([0.0, 3.1, 0.0]) > 0.05, "über der Mitte muss Luft sein");
+                    // Am Ende x=5.9 ist die gerade Ecke HERAUSGEBOGEN:
+                    // T(5.9, 2.9, 0) = (4.80, 4.49, 0) → y > 3 → Luft.
+                    assert!(
+                        f([5.9, 2.9, 0.0]) > 0.05,
+                        "Bend wirkt nicht: gerade Ecke bei x=5.9 noch innen ({})",
+                        f([5.9, 2.9, 0.0])
+                    );
+                    // … und der HERUNTERGEBOGENE Querschnitt ist Material:
+                    // T(5.5, −1.5, 0) = (5.70, 0.05, 0) → innen.
+                    assert!(f([5.5, -1.5, 0.0]) < 0.0, "heruntergebogener Querschnitt fehlt");
+                },
+            },
             // ── Klasse 3: exakt degenerierte Boolesche Kontakte ─────────
             AdvCase {
                 // Zylinder r=5 KÜSST die Box-Wand x=30 exakt längs einer
@@ -5345,7 +5490,8 @@ mod tests {
     /// | thin_plate_diff       | a   |    0 |  2 | 0.035  | 0.072  | 1.46 | 26.6°  |  15 |
     /// | thin_tube             | a   |    0 |  0 | 0.001  | 0.001  | 1.37 | 24.2°  |  11 |
     /// | warp_displace_sphere  | c   |  662 |−62 | 0.145  | 0.466  | 4.07 |  1.5°  |  12 |
-    /// | warp_twist_box        | c   |  864 |−11 | 0.334  | 2.065  | 69.6 |  0.1°  |   7 |
+    /// | warp_twist_box        | a   |    0 |  2 | 0.048  | 0.043  | 3.31 |  9.0°  |   6 |
+    /// | warp_bend_box         | a   |    0 |  2 | 0.006  | 0.005  | 2.28 | 11.6°  |  13 |
     /// | tangent_cyl_box_line  | c   |  430 |−99 | 0.050  | 0.067  | 1.66 | 18.4°  | 200 |
     /// | tangent_sphere_point  | b   |   33 |−17 | 0.023  | 0.032  | 1.76 | 20.4°  |  73 |
     /// | coplanar_union        | a   |    0 |  2 | 0.043  | 0.011  | 2.58 | 10.4°  |  18 |
@@ -5356,6 +5502,11 @@ mod tests {
     /// >5 an Gyroid-Wand∩Box-Kante; sphere_point: Deadlock-Ring um den
     /// Kusspunkt; graze_sphere_plane: wasserdicht, aber Sliver am 3,6°-Streif-
     /// schnitt); (c) = harte Brüche, s. WIP-Tests unten.
+    ///
+    /// Twist/Bend seit 2026-07-13 Abnahme-Niveau (Warp-B-Rep: Seed-Weave im
+    /// UN-gewarpten Raum + Vorwärts-Warp W, `Field::WarpedAnalytic`-Tracer,
+    /// warp-bewusste FaceSurf-Kette in diesem Modul) — war 864/662-Klasse-c
+    /// („Kanten werden Helizes, kein analytisches B-Rep").
     #[test]
     #[ignore]
     fn zz_adversarial_matrix() {
@@ -5438,27 +5589,53 @@ mod tests {
         assert!(r.a.min_angle_deg >= 15.0, "min. Winkel {}°", r.a.min_angle_deg);
     }
 
-    /// WIP (Kategorie c): WARP-BODIES. Twist/Bend/Displace-Bodies verlassen
-    /// beide Weave-Scopes (`seed_weaver::scope_supported*` → kein B-Rep):
-    /// keine Ketten, keine Ecken, keine Regionen — die Twist-Box reißt an
-    /// ihren (helikalen) Kanten auf (864 offen, comp 9, H(s→m) 2.07). Die
-    /// Displace-Kugel ist glatt und bricht trotzdem (662 offen, H(s→m) 0.47):
-    /// Wachstums-Crowding auf der Beulen-Fläche, „nur nicht-leere Kugeln" —
-    /// und das Feld ist nicht 1-Lipschitz (L≈1.8; Befund in bvh.rs — die
-    /// DL-70-Normalisierung wurde implementiert, vermessen (813→1634,
-    /// SCHLECHTER: Sizing verfeinert auf die kleineren |f|) und zurückgebaut).
-    /// Ziel-Zustand: beide Fälle wasserdicht.
+    /// AKTIVES GATE (Warp-B-Rep, 2026-07-13): Twist- und Bend-Bodies bekommen
+    /// echte Ketten + Ecken + Regionen über den Seed-Weave im UN-gewarpten
+    /// Raum (SSI-Seeds + Ecken-Newton auf den Grundform-Trägern, vorwärts
+    /// durch W gemappt, Kanten exakt getract via `Field::WarpedAnalytic`) und
+    /// die warp-bewusste FaceSurf-Kette (face_of/own_dist/Normalen mit
+    /// Rück-Warp-Stufe T zwischen placement⁻¹ und transform⁻¹). Vorher:
+    /// Twist-Box 864 offene Kanten (χ −11, minang 0,1°), Oktree-Sample-Fit-
+    /// Splitter statt Kanten. Ist-Stand: Twist open 0, χ 2, H 0.048/0.043,
+    /// p99 3.31, minang 9,0°; Bend open 0, χ 2, H 0.006/0.005, p99 2.28,
+    /// minang 11,6°.
     #[test]
-    #[ignore = "WIP: Warp-Bodies ohne B-Rep (kein Ketten-Gerüst) + Displace nicht \
-                1-Lipschitz — Twist-Box 864 offen / Displace-Kugel 662 offen; \
-                braucht Ketten-Ersatz (Feld-Feature-Linien) bzw. Wachstums-Fix, \
-                kein kleiner prinzipienfester Hebel gefunden (2026-07-13)"]
-    fn lichen_adv_warp_bodies_wip() {
-        for name in ["warp_displace_sphere", "warp_twist_box"] {
+    fn lichen_adv_warp_twist_and_bend_watertight() {
+        for (name, h_max, p99_max, minang_min) in [
+            ("warp_twist_box", 0.10f32, 4.5f32, 7.0f32),
+            ("warp_bend_box", 0.05, 4.0, 8.0),
+        ] {
             let (r, _) = adv_run(&adv_case(name));
             print_report(name, &r);
-            assert_eq!(r.q.boundary_edges, 0, "{name}: {:?}", r.q);
+            assert_eq!(r.q.boundary_edges, 0, "{name} wasserdicht: {:?}", r.q);
+            assert_eq!(r.q.nonmanifold_edges, 0, "{name}: {:?}", r.q);
+            assert_eq!(r.q.orientation_violations, 0, "{name}: {:?}", r.q);
+            assert_eq!(r.q.degenerate_tris, 0, "{name}: {:?}", r.q);
+            assert_eq!(r.q.components, 1, "{name}: {:?}", r.q);
+            assert_eq!(r.q.euler, 2, "{name} Kugel-Topologie: {:?}", r.q);
+            assert!(r.h.mesh_to_surface <= h_max, "{name} H(m→s)={}", r.h.mesh_to_surface);
+            assert!(r.h.surface_to_mesh <= h_max, "{name} H(s→m)={}", r.h.surface_to_mesh);
+            assert!(r.a.p99 <= p99_max, "{name} aspect p99={}", r.a.p99);
+            assert!(r.a.min_angle_deg >= minang_min, "{name} min. Winkel {}°", r.a.min_angle_deg);
         }
+    }
+
+    /// WIP (Kategorie c): DISPLACE. Die Displace-Kugel ist glatt und bricht
+    /// trotzdem (662 offen, H(s→m) 0.47): Wachstums-Crowding auf der Beulen-
+    /// Fläche, „nur nicht-leere Kugeln" — und das Feld ist nicht 1-Lipschitz
+    /// (L≈1.8; Befund in bvh.rs — die DL-70-Normalisierung wurde implementiert,
+    /// vermessen (813→1634, SCHLECHTER: Sizing verfeinert auf die kleineren
+    /// |f|) und zurückgebaut). Displace ist ein WERT-Warp (keine invertierbare
+    /// Punktabbildung) — der Twist/Bend-Weg (Warp-B-Rep) greift nicht; braucht
+    /// Feld-basierte Feature-Linien. Ziel-Zustand: wasserdicht.
+    #[test]
+    #[ignore = "WIP: Displace nicht 1-Lipschitz und ohne Punktabbildung — \
+                662 offen; braucht Ketten-Ersatz (Feld-Feature-Linien) bzw. \
+                Wachstums-Fix (2026-07-13; Twist/Bend seit Warp-B-Rep grün)"]
+    fn lichen_adv_warp_displace_wip() {
+        let (r, _) = adv_run(&adv_case("warp_displace_sphere"));
+        print_report("warp_displace_sphere", &r);
+        assert_eq!(r.q.boundary_edges, 0, "{:?}", r.q);
     }
 
     /// WIP (Kategorie b/c): EXAKT TANGENTIALE KONTAKTE. Kugel küsst Platte
@@ -5469,10 +5646,23 @@ mod tests {
     /// kann keine Abtastung die Blätter trennen; die B-Rep hat dort keine
     /// Kante (kein transversaler Schnitt). Ehrliches Soll wäre comp=2 mit
     /// zwei wasserdichten Blättern (Punkt) bzw. sauberer Pinch (Linie).
+    ///
+    /// VERMESSEN UND WIDERLEGT (2026-07-13, Kuss-Deckel `LICHEN_KISS_C`):
+    /// den Gegenblatt-lfs-Beitrag am kettenlosen antiparallelen Kollaps zu
+    /// ignorieren (Blatt behält Eigen-Spacing) hilft dem Punkt-Kuss mild
+    /// (33 → 22 bei c=1.0, Laufzeit ×2,6) und RUINIERT den Linien-Kuss
+    /// (430 → 1558, χ −480): der r=h-Streifen neben ultradichter Umgebung
+    /// ist exakt die Dichtesprung-Defektklasse aus I-16/§8j. Der Deckel
+    /// bleibt als Mess-Werkzeug (Default 0.0 = aus, plus LICHEN_KISS_DUMP,
+    /// `reach_outer_counter` liefert das Gegenblatt-dot). Der echte Weg ist
+    /// TOPOLOGISCH: Sub-Resolution-Kontakt erkennen und die Blätter als
+    /// getrennte Komponenten meshen (Mikro-Feature-Kollaps-Familie,
+    /// §8k/§8l), nicht am Sizing drehen.
     #[test]
     #[ignore = "WIP: tangentiale Kontakte — Blattabstand 0 am Kontakt ist \
                 sub-resolution für jede Abtastung; Punkt-Kuss 33 offen, \
-                Linien-Kuss 430 offen (2026-07-13)"]
+                Linien-Kuss 430 offen; Sizing-Deckel vermessen und \
+                widerlegt, braucht Topologie-Behandlung (2026-07-13)"]
     fn lichen_adv_tangent_kiss_wip() {
         for name in ["tangent_sphere_point", "tangent_cyl_box_line"] {
             let (r, _) = adv_run(&adv_case(name));

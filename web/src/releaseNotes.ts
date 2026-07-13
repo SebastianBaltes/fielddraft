@@ -24,12 +24,27 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.569",
+    entries: [
+      {
+        kind: "feat",
+        scope: "mesher",
+        text: "Lichen: Twist- und Bend-Körper werden wasserdicht gemesht (Twist-Box 864 → 0 offene Kanten, χ=2; Bend-Box auf Anhieb dicht). Gewarpte Körper hatten bisher nur ein Oktree-B-Rep mit zersplitterten Sample-Fit-Nähten und keine Regionen (Lichens Flächen-Klassifikator kannte nur analytische Träger). Jetzt: (1) Der Kernel webt Root-Twist/Bend exakt — SSI-Seeds aus dem ungewarpten Baum werden durch den Vorwärts-Warp gemappt (Twist geschlossen, Bend per 1D-Newton; der Rück-Warp ist die bestehende Eval-Formel) und der DL-68-Tracer verfolgt die gewarpten Kanten-Kurven (Helizes) über ein neues WarpedAnalytic-Feld mit exaktem Dual-Gradienten inkl. Warp-Jacobian; Ecken bekommen eine f64-Nachpolitur (die f32-Toleranz ließ den Bend-Ecken-Zeugen durchs Aktivitätsband fallen). (2) Lichens Flächen-Klassifikation, Wachstum, Einfärbung und Ketten-Normalen sind warp-bewusst (FaceSurf trägt die Warp-Kette; Normalen über Welt-Differenzen statt bloßem Zurückrotieren — sonst fehlt der Scher-Anteil). Neues aktives Gate für beide Warp-Fälle; Abnahme-Gate und alle bestehenden Ergebnisse byte-identisch; Warps innerhalb von Booleans und Displace laufen weiter über den Oktree-Fallback (Displace folgt separat).",
+      },
+    ],
+  },
+  {
     version: "0.6.568",
     entries: [
       {
         kind: "feat",
         scope: "onshape",
         text: "Parametrischer Onshape-Import: „Aus Onshape…“ in der Projekt-Übersicht importiert ein Part Studio als FieldDraft-Projekt — Sketches (Geometrie + Constraints) samt ihrer EBENEN als parametrische Referenzen (Standard-Ebenen, Extrude-Caps, Mantelflächen inkl. Boolean-Split-Disambiguierung) plus Extrude/Shell/Fillet in einer Erstübersetzung. Onshapes kodierte Creation-Queries (qCompressed/BTON) werden dekodiert und auf die neuen FieldDraft-Query-Formen abgebildet (qCreatedBy(op, ROLLE), qWall, qAdjacentTo, qCommonEdge); Mantelflächen tragen dafür jetzt stabile Sketch-Entity-Sub-IDs (Naming-Schema v2, bestehende Referenzen heilen über den Fingerprint). Nicht Übersetzbares scheitert sichtbar im Dialog — nie stiller XY-Fallback.",
+      },
+      {
+        kind: "fix",
+        scope: "render",
+        text: "Displace-Körper: Sphere-Marching konnte die Beulen-Fläche überschreiten (Löcher/Artefakte bei Streifwinkeln), weil das Displace-Feld nicht 1-Lipschitz ist (L ≈ 1 + |depth·freq|·√(1+1.3²+0.7²)). Der Renderer bekommt jetzt eine Schrittweiten-Dämpfung 1/L über den bestehenden march-relax-Mechanismus (wie Revolve mit 0.7) — das Feld selbst bleibt bitidentisch unnormalisiert, denn die Feld-Normalisierung wurde in der Härtungs-Session vermessen und macht den Lichen-Mesher messbar schlechter (813 → 1634 offene Kanten; Befund in bvh.rs). Der Mesher ist von dieser Änderung beweisbar unberührt.",
       },
     ],
   },

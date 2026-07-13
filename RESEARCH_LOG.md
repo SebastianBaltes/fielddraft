@@ -288,3 +288,49 @@ Format: Zeitstempel · Hypothese/Frage · Ergebnis · Entscheidung.
      bestehende build_chain/Weld-Bausteine).
   3. Beide teilen ein warp-bewusstes face_of (W⁻¹-Stufe zwischen placement
      und transform; für Displace ist argmin am selben Punkt korrekt).
+
+## 2026-07-13 13:30 — Offene Punkte 4 + 1 gelandet (v0.6.568/569)
+
+- v0.6.568 (3a078a0): Renderer-Displace-Lipschitz als march_relax-Schritt-
+  dämpfung 1/L (eine Stelle, Muster REVOLVE_MARCH_RELAX; Design-Recherche:
+  Feld-Normalisierung à la DL-70 schadet dem Mesher nur bei aktivem
+  Sizing/lfs — Thread blieb unbestraft, weil sein Feld glatt ist und Sizing
+  default-aus; die „Thread-vom-Lichen-ausgeschlossen"-These war FALSCH).
+  Feld bitidentisch, Mesher beweisbar unberührt. Visuelle Abnahme offen.
+- v0.6.569 (Warp-Paket, Implementierungs-Agent): Twist-Box 864→0 (χ=2!),
+  Bend-Box auf Anhieb 0. Mechanik: DomainWarp{Twist,Bend} in sdf_dual
+  (W geschlossen bzw. 1D-Newton, T = Eval-Formel), Field::WarpedAnalytic
+  im DL-68-Tracer, scope_supported_partial öffnet Root-Warps (Seeds durch
+  W gemappt), f64-Ecken-Politur NUR auf der Warp-Route (f32-refine ließ
+  Bend-Witness durchs 2e-4-Aktivitätsband fallen — Forensik statt
+  Band-Aufweichung), FaceSurf.warp macht face_of/own_dist/Einfärbung/
+  Ketten-Normalen warp-bewusst (Normalen als Welt-FD — Zurückrotieren
+  unterschlüge die Scherung). Neues aktives Gate warp_twist_and_bend.
+  Verifiziert: Abnahme byte-identisch, 38 Gates, kernel 1088/1088.
+- Scope-Grenzen (dokumentiert): Warps innerhalb Booleans, nicht-analytische
+  Branches unter Warp, nicht-Identity-Placement (bestehende Kernel-
+  Inkonsistenz), Displace (separates Paket: Feld-Feature-Linien).
+- Doku-§ für das Warp-Paket in Lichen-Architecture.md steht noch aus.
+
+## 2026-07-13 15:40 — Offener Punkt 2 (tangentiale Küsse): Sizing-Deckel WIDERLEGT
+
+- Implementierungs-Agent fiel am Spend-Limit aus; Paket inline zu Ende
+  vermessen. Mechanik (env-gated, Default AUS): Kuss-Deckel LICHEN_KISS_C —
+  Gegenblatt-lfs-Beitrag ignorieren wenn lfs<c·floor ∧ antiparallel
+  (reach_outer_counter liefert das Gegenblatt-dot) ∧ kettenlos
+  (brep_dist>1.5); Eigen-Spacing = h ∧ α/κ (Sizing-Field ERSETZT die
+  Wachstums-Klemme, local_radius wendet α/κ bei Some(sf) nicht mehr an —
+  Krümmung muss also in den Deckel-Zweig).
+- MESSUNG: Abnahme-Netz byte-identisch (Hash-Anker zz_acceptance_hash,
+  auch bei c=1.0 — Bedingung (c) schützt Naht-Zonen). Punkt-Kuss
+  33→22 (c=1.0, χ −17→−10), aber Laufzeit 74→191 s. Linien-Kuss
+  430→**1558** (χ −480!): der r=h-Streifen neben ultradichter Umgebung
+  ist die bekannte Dichtesprung-Defektklasse (I-16/§8j). → WIDERLEGT als
+  Default; bleibt Mess-Werkzeug (Default 0.0).
+- Fazit: Der Kuss braucht TOPOLOGIE-Behandlung (Sub-Resolution-Kontakt
+  erkennen, Blätter als getrennte Komponenten meshen — Mikro-Feature-
+  Kollaps-Familie §8k/§8l), keine Sizing-Kosmetik. WIP-Test-Doku
+  aktualisiert; Werkzeuge bleiben: reach_outer_counter, LICHEN_KISS_DUMP,
+  zz_acceptance_hash (Byte-Identitäts-Anker).
+- Neutralität bei Default verifiziert: 38 Gates grün, thin_plate
+  wert-identisch.

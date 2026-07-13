@@ -154,9 +154,22 @@ pub(crate) fn march_relax(node: &BoundedCsg) -> f32 {
         | BoundedCsg::Morph { left, right, .. } => march_relax(left).min(march_relax(right)),
         BoundedCsg::Twist { inner, .. }
         | BoundedCsg::Bend { inner, .. }
-        | BoundedCsg::Displace { inner, .. }
         | BoundedCsg::Shell { inner, .. }
         | BoundedCsg::Offset { inner, .. } => march_relax(inner),
+        BoundedCsg::Displace { inner, depth, freq, .. } => {
+            // Das Displace-Feld `d − depth·sin(x·f)·sin(1.3·y·f)·sin(0.7·z·f)`
+            // ist nicht 1-Lipschitz: L ≤ 1 + |depth·f|·√(1+1.3²+0.7²) ≈ 1.8
+            // bei depth 0.3 / f 1.5 — Sphere-Marching kann die Beulen-Fläche
+            // überschreiten (Löcher bei Streifwinkeln). Wie bei Revolve wird
+            // der Faktor NICHT ins Feld gebacken (die adversariale Härtung
+            // 2026-07-13 hat die Feld-Normalisierung vermessen: der Lichen-
+            // Mesher wird damit schlechter, 813 → 1634 offene Kanten, weil
+            // das Sizing-Feld auf die kleineren |f| verfeinert — Befund in
+            // bvh.rs), sondern nur als Schritt-Dämpfung an den Renderer
+            // gemeldet. Felder bleiben bitidentisch, der Mesher unberührt.
+            let l = 1.0 + (depth * freq).abs() * (1.0f32 + 1.3 * 1.3 + 0.7 * 0.7).sqrt();
+            march_relax(inner).min(1.0 / l.max(1.0))
+        }
     }
 }
 
@@ -1766,6 +1779,29 @@ mod tests {
     use super::*;
     use crate::csg::{CsgNode, DecodedFeature, EvalMode, PrimitiveModifiers};
     use fielddraft_protocol::{BoolOp, FeatureId, Primitive, Transform};
+
+    /// Displace ist nicht 1-Lipschitz (L ≈ 1 + |depth·freq|·√(1+1.3²+0.7²)) —
+    /// der Renderer bekommt eine Schritt-Dämpfung 1/L, das FELD bleibt
+    /// unnormalisiert (Feld-Normalisierung macht den Lichen-Mesher messbar
+    /// schlechter, siehe bvh.rs-Befund 2026-07-13).
+    #[test]
+    fn displace_march_relax_dampens_by_lipschitz_bound() {
+        let inner = Box::new(BoundedCsg::Empty);
+        let node = |depth: f32, freq: f32| BoundedCsg::Displace {
+            inner: inner.clone(),
+            depth,
+            freq,
+            aabb: crate::csg::Aabb::EMPTY,
+        };
+        // depth 0.3 / freq 1.5 → L = 1 + 0.45·√3.18 ≈ 1.8025 → relax ≈ 0.5548
+        let r = march_relax(&node(0.3, 1.5));
+        let l = 1.0 + 0.45 * (1.0f32 + 1.69 + 0.49).sqrt();
+        assert!((r - 1.0 / l).abs() < 1e-4, "relax={r}, erwartet {}", 1.0 / l);
+        // Nulltiefe → keine Störung → volle Schrittweite.
+        assert_eq!(march_relax(&node(0.0, 5.0)), 1.0);
+        // Vorzeichen egal (|depth·freq|).
+        assert!(march_relax(&node(-0.3, 1.5)) < 0.6);
+    }
 
     fn box_feature(id: u32, op: BoolOp, center: [f32; 3], half: [f32; 3]) -> DecodedFeature {
         DecodedFeature::from_parts(

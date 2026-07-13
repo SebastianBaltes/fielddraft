@@ -356,15 +356,43 @@ pub(crate) fn reach_outer_flat<Fg: Fn([f32; 3]) -> (f32, [f32; 3])>(
     t0: f32,
     fg: &Fg,
 ) -> f32 {
+    reach_outer_counter(p, n, cap, t0, fg).0
+}
+
+/// Wie [`reach_outer_flat`], meldet zusätzlich das Skalarprodukt der
+/// GEGENSEITEN-Normale mit `n`: am Kreuzungspunkt der äußeren Medialachse
+/// wird der Fußpunkt `q = x − f·g/|g|²` auf das nähere Blatt projiziert und
+/// dessen Normale gegen `n` gestellt (analog zum Gegenblatt-Kriterium in
+/// [`reach_inner`]). +1.0 heißt: Cap erreicht (kein Treffer) oder Gradient
+/// degeneriert. Konsument ist der KUSS-DECKEL des Sizing-Felds
+/// (api/lichen.rs): nur ein ~antiparalleles Gegenblatt (dot ≲ −0.3) ist ein
+/// tangentialer Kontakt-Kandidat — ein Kanten-Bisektor führt auf eine QUER
+/// stehende Nachbarfläche und darf nicht gekappt werden.
+pub(crate) fn reach_outer_counter<Fg: Fn([f32; 3]) -> (f32, [f32; 3])>(
+    p: [f32; 3],
+    n: [f32; 3],
+    cap: f32,
+    t0: f32,
+    fg: &Fg,
+) -> (f32, f32) {
     let mut t = t0.max(1e-5);
     while t < cap {
         let x = add(p, scale(n, t));
-        if fg(x).0 < 0.9 * t {
-            return t.max(1e-4); // äußere Medialachse gekreuzt (Spalt/Fremdblatt)
+        let (f, g) = fg(x);
+        if f < 0.9 * t {
+            // äußere Medialachse gekreuzt (Spalt/Fremdblatt)
+            let mut d = 1.0f32;
+            let g2 = dot(g, g);
+            if g2 > 1e-20 {
+                let s = f / g2;
+                let q = [x[0] - s * g[0], x[1] - s * g[1], x[2] - s * g[2]];
+                d = dot(norm(robust_grad(q, fg)), n);
+            }
+            return (t.max(1e-4), d);
         }
         t *= 1.25;
     }
-    cap
+    (cap, 1.0)
 }
 
 pub(crate) fn reach_inner<Fg: Fn([f32; 3]) -> (f32, [f32; 3])>(

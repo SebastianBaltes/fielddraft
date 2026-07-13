@@ -1496,6 +1496,43 @@ pub(crate) fn body_has_warp(node: &BoundedCsg) -> bool {
     }
 }
 
+/// The body's **root warp chain** — the Twist/Bend wrappers sitting above the
+/// whole CSG, in tree eval order (outermost first) — or `None` when the seed
+/// route cannot treat the body as "one un-warped CSG pushed through one point
+/// map":
+///
+/// - no warp at all (chain would be empty — callers use the plain route),
+/// - any warp remaining *inside* the peeled subtree (a warp over only part of
+///   a Boolean has per-branch chains this v1 does not model), or
+/// - a `Displace` anywhere (a value warp, no invertible point map).
+///
+/// With `Some(chain)`, every branch of the body shares this one chain: the
+/// analytic half-space map of the peeled subtree describes the un-warped
+/// geometry, and `crate::sdf_dual::warp_chain` / `unwarp_chain` convert
+/// between the two spaces exactly.
+pub(crate) fn root_warp_chain(body: &BoundedCsg) -> Option<Vec<crate::sdf_dual::DomainWarp>> {
+    use crate::sdf_dual::DomainWarp;
+    let mut chain = Vec::new();
+    let mut node = body;
+    loop {
+        match node {
+            BoundedCsg::Twist { inner, rate, .. } => {
+                chain.push(DomainWarp::Twist { rate: *rate as f64 });
+                node = inner;
+            }
+            BoundedCsg::Bend { inner, rate, .. } => {
+                chain.push(DomainWarp::Bend { rate: *rate as f64 });
+                node = inner;
+            }
+            _ => break,
+        }
+    }
+    if chain.is_empty() || body_has_warp(node) {
+        return None;
+    }
+    Some(chain)
+}
+
 /// A real B-Rep edge between two analytic faces lies on **both** faces. A
 /// subtracted curved primitive (a drilled cylinder), however, makes the
 /// extractor mint *phantom* signature groups: octree cells on the cylinder wall
