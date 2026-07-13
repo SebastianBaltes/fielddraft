@@ -1658,7 +1658,7 @@ fn resolve_profile_query_restricts_to_one_region() {
     );
 
     // Whole sketch: both regions inside.
-    let (whole, _) = resolve_profile_query("qCreatedBy(1)", &sketches).unwrap();
+    let (whole, _, _) = resolve_profile_query("qCreatedBy(1)", &sketches).unwrap();
     assert!(whole.sdf([0.0, 0.0]) < 0.0);
     assert!(whole.sdf([40.0, 0.0]) < 0.0);
 
@@ -1668,7 +1668,7 @@ fn resolve_profile_query_restricts_to_one_region() {
     assert_eq!(regions.len(), 2);
     let circle = regions.iter().find(|r| r.centroid[0] > 20.0).unwrap();
 
-    let (just_circle, _) =
+    let (just_circle, _, _) =
         resolve_profile_query(&format!("qRegion(1, {})", circle.index), &sketches)
             .unwrap();
     assert!(just_circle.sdf([40.0, 0.0]) < 0.0, "circle kept");
@@ -2939,4 +2939,156 @@ fn de_boor(poly: &[[f64; 2]], knots: &[f64], degree: usize, u: f64) -> [f64; 2] 
         }
     }
     d[degree]
+}
+
+// ─── stable wall-sub table (Onshape-Import Schritt 2) ──────────────────
+
+/// Sub-calls of a unit square drawn as four connected lines. With the
+/// origin at entity 0, each line call allocates (start, end, line) →
+/// line entity ids 3, 6, 9, 12.
+fn square_line_calls() -> Vec<FeatureCall> {
+    serde_json::from_value(json!([
+        {"type":"sketch_line","id":"1","params":{"start":[0.0,0.0],"end":[10.0,0.0]}},
+        {"type":"sketch_line","id":"2","params":{"start":[10.0,0.0],"end":[10.0,10.0]}},
+        {"type":"sketch_line","id":"3","params":{"start":[10.0,10.0],"end":[0.0,10.0]}},
+        {"type":"sketch_line","id":"4","params":{"start":[0.0,10.0],"end":[0.0,0.0]}}
+    ]))
+    .unwrap()
+}
+
+#[test]
+fn wall_sub_table_square_uses_line_entity_ids() {
+    let calls = square_line_calls();
+    let (tree, traced) = build_sketch2d_traced(&calls);
+    let table = wall_sub_table(&tree, &traced).expect("attributable profile");
+    assert_eq!(table.len(), 4, "four right-angle walls");
+    let mut got = table.clone();
+    got.sort_unstable();
+    assert_eq!(got, vec![3, 6, 9, 12], "subs are the LINE entity ids");
+}
+
+#[test]
+fn wall_sub_table_circle_uses_circle_entity_id() {
+    let calls: Vec<FeatureCall> = serde_json::from_value(json!([
+        {"type":"sketch_circle","id":"1","params":{"center":[0.0,0.0],"radius":5.0}}
+    ]))
+    .unwrap();
+    let (tree, traced) = build_sketch2d_traced(&calls);
+    // origin=0, center point=1, circle entity=2.
+    assert_eq!(wall_sub_table(&tree, &traced), Some(vec![2]));
+}
+
+#[test]
+fn wall_sub_table_rectangle_maps_group_order() {
+    let calls: Vec<FeatureCall> = serde_json::from_value(json!([
+        {"type":"sketch_rectangle","id":"1","params":{"corner_a":[0.0,0.0],"corner_b":[10.0,6.0]}}
+    ]))
+    .unwrap();
+    let (tree, traced) = build_sketch2d_traced(&calls);
+    // Points 1–4 (bl,br,tr,tl), lines bottom=5, right=6, top=7, left=8.
+    // Rectangle group order is +x, −x, +y, −y → right, left, top, bottom.
+    assert_eq!(wall_sub_table(&tree, &traced), Some(vec![6, 8, 7, 5]));
+}
+
+#[test]
+fn wall_sub_table_survives_earlier_edits() {
+    // THE regression this whole scheme exists for: adding geometry BEFORE
+    // the profile must not re-key its walls. Positional G1 groups shift
+    // (the circle takes group 0); entity-derived subs move with the
+    // entities. (Entity ids themselves shift only if the EARLIER call
+    // changes its allocation count — the same stability contract
+    // constraints and qSketchLine already live on.)
+    let calls = square_line_calls();
+    let (tree, traced) = build_sketch2d_traced(&calls);
+    let before = {
+        let mut t = wall_sub_table(&tree, &traced).unwrap();
+        t.sort_unstable();
+        t
+    };
+
+    // Same square preceded by a construction point (1 entity) — every
+    // line entity id shifts by exactly that call's allocation, which is
+    // what the shared entity-id space defines as identity; the WALL↔ID
+    // binding itself must stay intact (each wall still names its line).
+    let mut with_point: Vec<FeatureCall> = serde_json::from_value(json!([
+        {"type":"sketch_point","id":"9","params":{"at":[99.0,99.0]}}
+    ]))
+    .unwrap();
+    with_point.extend(square_line_calls());
+    let (tree2, traced2) = build_sketch2d_traced(&with_point);
+    let after = {
+        let mut t = wall_sub_table(&tree2, &traced2).unwrap();
+        t.sort_unstable();
+        t
+    };
+    assert_eq!(
+        after,
+        before.iter().map(|s| s + 1).collect::<Vec<_>>(),
+        "walls track their line entities through the id shift"
+    );
+}
+
+#[test]
+fn wall_sub_table_region_restriction_keeps_entity_subs() {
+    // Square (lines 3,6,9,12) + separate circle (center 13, circle 14).
+    let mut calls = square_line_calls();
+    let extra: Vec<FeatureCall> = serde_json::from_value(json!([
+        {"type":"sketch_circle","id":"5","params":{"center":[50.0,0.0],"radius":4.0}}
+    ]))
+    .unwrap();
+    calls.extend(extra);
+
+    let mut sketches = HashMap::new();
+    sketches.insert(
+        id(1),
+        SketchData {
+            state: SketchState::with_origin(),
+            sub_calls: calls,
+            frame: SketchFrame::IDENTITY,
+        },
+    );
+    // Whole sketch: 4 square walls + 1 circle wall.
+    let (_, _, traced) = resolve_profile_query("qCreatedBy(1)", &sketches).unwrap();
+    let regions = {
+        let (full, _, _) = resolve_profile_query("qCreatedBy(1)", &sketches).unwrap();
+        crate::sketch_regions::find_regions(&full, PROFILE_REGION_RESOLUTION)
+    };
+    // Find the circle's region (interior x near 50).
+    let circle_region = regions
+        .iter()
+        .find(|r| (r.interior[0] - 50.0).abs() < 10.0)
+        .expect("circle region found");
+    let (restricted, _, traced_r) = resolve_profile_query(
+        &format!("qRegion(1, {})", circle_region.index),
+        &sketches,
+    )
+    .unwrap();
+    assert_eq!(
+        wall_sub_table(&restricted, &traced_r),
+        Some(vec![14]),
+        "the restricted profile keeps the circle's ENTITY sub, not a renumbered positional 0"
+    );
+    // Sanity: the full profile really has all five walls attributed.
+    let (full, _, traced_f) = resolve_profile_query("qCreatedBy(1)", &sketches).unwrap();
+    assert_eq!(wall_sub_table(&full, &traced_f).map(|t| t.len()), Some(5));
+    let _ = traced;
+}
+
+#[test]
+fn wall_sub_table_falls_back_for_svg_paths() {
+    // `sketch_path` allocates only point entities — no curve provenance,
+    // so the WHOLE sketch stays positional (None), never half-mapped.
+    let calls: Vec<FeatureCall> = serde_json::from_value(json!([
+        {"type":"sketch_path","id":"1","params":{"contours":[
+            {"start":[0.0,0.0],"segments":[
+                {"kind":"line","to":[10.0,0.0]},
+                {"kind":"line","to":[10.0,10.0]},
+                {"kind":"line","to":[0.0,0.0]}
+            ],"closed":true}
+        ]}}
+    ]))
+    .unwrap();
+    let (tree, traced) = build_sketch2d_traced(&calls);
+    assert!(!matches!(tree, Sketch2d::Empty), "path lowered");
+    assert_eq!(wall_sub_table(&tree, &traced), None);
 }

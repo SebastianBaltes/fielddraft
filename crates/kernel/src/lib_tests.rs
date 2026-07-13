@@ -371,6 +371,7 @@ fn add_extrude_lowers_the_referenced_sketch_into_primitive_extrude() {
             sketch,
             half_depth_z,
             center: _,
+            wall_subs: _,
         } => {
             assert!((half_depth_z - 8.0).abs() < 1e-5);
             let aabb = sketch.aabb();

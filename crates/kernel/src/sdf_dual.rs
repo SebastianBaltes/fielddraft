@@ -1714,6 +1714,7 @@ mod tests {
                     sketch,
                     half_depth_z: half_height,
                     center: [0.0, 0.0, 0.0],
+                    wall_subs: None,
                 },
                 transform,
                 PrimitiveModifiers::NONE,
@@ -1796,6 +1797,7 @@ mod tests {
                 Primitive::Revolve {
                     sketch: profile,
                     center: [0.0, 0.0, 0.0],
+                    wall_subs: None,
                 },
                 Transform::IDENTITY,
                 PrimitiveModifiers::NONE,

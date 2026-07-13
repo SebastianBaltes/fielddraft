@@ -67,6 +67,50 @@ impl Kernel {
         serde_json::Value::Array(report).to_string()
     }
 
+    /// Resolve a canonical query string against the current document's
+    /// woven B-Reps (Onshape-Import Schritt 4: the import pipeline checks
+    /// that a translated plane query binds UNIQUELY before storing it).
+    /// Returns a JSON array of matches, each
+    /// `{"kind","idHash","query","centroid":[x,y,z]}` — `query` is the
+    /// fingerprint-carrying canonical element form, `centroid` the
+    /// geometric anchor the importer can disambiguate against. A parse
+    /// error returns `{"error": "..."}` instead of an array.
+    #[wasm_bindgen(js_name = resolveQuery)]
+    pub fn resolve_query(&mut self, query: &str) -> String {
+        let expr = match crate::queries::parse_query(query) {
+            Ok(e) => e,
+            Err(e) => {
+                return serde_json::json!({ "error": e.to_string() }).to_string();
+            }
+        };
+        for body in &mut self.bodies {
+            body.ensure_brep(&self.decoded, self.parametric_weave);
+        }
+        let breps: Vec<crate::brep::BRep> = self
+            .bodies
+            .iter()
+            .filter_map(|b| b.brep_cached())
+            .cloned()
+            .collect();
+        let refs = crate::queries::resolve_query_topo(&breps, &expr);
+        let out: Vec<serde_json::Value> = refs
+            .iter()
+            .map(|r| {
+                serde_json::json!({
+                    "kind": match r.kind {
+                        crate::brep::naming::EntityKind::Vertex => "vertex",
+                        crate::brep::naming::EntityKind::Edge => "edge",
+                        crate::brep::naming::EntityKind::Face => "face",
+                    },
+                    "idHash": r.id_hash.to_string(),
+                    "query": crate::queries::element_query(r).to_string(),
+                    "centroid": r.fingerprint.centroid,
+                })
+            })
+            .collect();
+        serde_json::Value::Array(out).to_string()
+    }
+
     // ── picking / provenance ──────────────────────────────────────────
     //
     // K2 wire-format: the kernel takes a world-space ray (origin +

@@ -25,6 +25,7 @@ fn from_features_lowers_primitive_extrude_to_csgnode_extrude() {
             sketch: circle_sketch,
             half_depth_z: 3.0,
             center: [0.0, 0.0, 0.0],
+            wall_subs: None,
         },
         Transform::IDENTITY,
         PrimitiveModifiers::NONE,
@@ -585,7 +586,7 @@ fn circle_sketch(cx: f32, cy: f32, r: f32) -> Sketch2d {
 /// Thread-like helix: rectangle profile r∈[8,10], y∈[−0.6,0.6],
 /// pitch 2mm, 5 turns, right-handed, no taper.
 fn test_helix() -> CsgNode {
-    CsgNode::Helix {
+    CsgNode::Helix { wall_subs: None,
         id: FeatureId::from_u32(1),
         sketch: Box::new(rect_sketch(9.0, 0.0, 1.0, 0.6)),
         pitch: 2.0,
@@ -791,7 +792,7 @@ fn extrude_of_rectangle_matches_3d_box_primitive() {
     let hy = 4.0;
     let hh = 3.0;
     let sketch = rect_sketch(0.0, 0.0, hx, hy);
-    let extrude = CsgNode::Extrude {
+    let extrude = CsgNode::Extrude { wall_subs: None,
         id: FeatureId::from_u32(1),
         sketch: Box::new(sketch),
         half_height: hh,
@@ -826,7 +827,7 @@ fn extrude_of_rectangle_matches_3d_box_primitive() {
 
 #[test]
 fn extrude_aabb_lifts_sketch_by_half_height() {
-    let extrude = CsgNode::Extrude {
+    let extrude = CsgNode::Extrude { wall_subs: None,
         id: FeatureId::from_u32(1),
         sketch: Box::new(rect_sketch(0.0, 0.0, 5.0, 2.0)),
         half_height: 3.0,
@@ -838,7 +839,7 @@ fn extrude_aabb_lifts_sketch_by_half_height() {
 
 #[test]
 fn extrude_returns_single_contributor() {
-    let extrude = CsgNode::Extrude {
+    let extrude = CsgNode::Extrude { wall_subs: None,
         id: FeatureId::from_u32(42),
         sketch: Box::new(rect_sketch(0.0, 0.0, 5.0, 2.0)),
         half_height: 3.0,
@@ -864,7 +865,7 @@ fn extrude_of_path_square_carries_per_segment_sub_ids() {
         closed: true,
     });
     let fid = 9u32;
-    let extrude = CsgNode::Extrude {
+    let extrude = CsgNode::Extrude { wall_subs: None,
         id: FeatureId::from_u32(fid),
         sketch: Box::new(path),
         half_height: 3.0,
@@ -896,7 +897,7 @@ fn extrude_corner_reports_both_walls_and_rim_reports_wall_and_cap() {
         closed: true,
     });
     let fid = 9u32;
-    let extrude = CsgNode::Extrude {
+    let extrude = CsgNode::Extrude { wall_subs: None,
         id: FeatureId::from_u32(fid),
         sketch: Box::new(path),
         half_height: 3.0,
@@ -942,7 +943,7 @@ fn revolve_of_offset_rectangle_gives_a_hollow_tube() {
     // around Y into a tube: inner radius 3, outer radius 7,
     // axial extent ±10.
     let rect = rect_sketch(5.0, 0.0, 2.0, 10.0);
-    let tube = CsgNode::Revolve {
+    let tube = CsgNode::Revolve { wall_subs: None,
         id: FeatureId::from_u32(1),
         sketch: Box::new(rect),
     };
@@ -963,7 +964,7 @@ fn revolve_of_offset_rectangle_gives_a_hollow_tube() {
 
 #[test]
 fn revolve_aabb_is_the_radial_sweep_of_the_sketch() {
-    let tube = CsgNode::Revolve {
+    let tube = CsgNode::Revolve { wall_subs: None,
         id: FeatureId::from_u32(1),
         sketch: Box::new(rect_sketch(5.0, 0.0, 2.0, 10.0)),
     };
@@ -981,7 +982,7 @@ fn difference_of_two_extrudes_carves_a_washer() {
     let outer = circle_sketch(0.0, 0.0, 10.0);
     let inner = circle_sketch(0.0, 0.0, 4.0);
     let ring = Sketch2d::Difference(Box::new(outer), Box::new(inner));
-    let washer = CsgNode::Extrude {
+    let washer = CsgNode::Extrude { wall_subs: None,
         id: FeatureId::from_u32(1),
         sketch: Box::new(ring),
         half_height: 2.0,

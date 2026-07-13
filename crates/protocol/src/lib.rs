@@ -250,6 +250,14 @@ pub enum Primitive {
         sketch: Sketch2d,
         half_depth_z: f32,
         center: [f32; 3],
+        /// Stable wall sub-ids: positional G1 boundary group `g` of the
+        /// sketch tree → the sketch-entity-derived sub-id that names the
+        /// swept wall face (`wall_subs[g]`). `None` = positional subs
+        /// (legacy numbering; also the fallback when the profile has
+        /// segments without a curve-entity provenance). Built by the
+        /// extrude/revolve/helix features from the sketch's sub-calls.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        wall_subs: Option<Vec<u32>>,
     },
     /// Torus centred at the origin, major radius R (centre of
     /// tube to axis), minor radius r (tube cross-section).
@@ -323,6 +331,9 @@ pub enum Primitive {
     Revolve {
         sketch: Sketch2d,
         center: [f32; 3],
+        /// See [`Primitive::Extrude::wall_subs`].
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        wall_subs: Option<Vec<u32>>,
     },
     /// Helical sweep of a 2D sketch profile around the local Y axis —
     /// the real screw-thread building block (the toy [`Primitive::Thread`]
@@ -346,6 +357,9 @@ pub enum Primitive {
         taper: f32,
         #[serde(default)]
         start_angle: f32,
+        /// See [`Primitive::Extrude::wall_subs`].
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        wall_subs: Option<Vec<u32>>,
     },
     /// User-defined implicit via a compiled scalar expression tape
     /// (fidget-style closed-form math, no loops). `ops` is the postfix

@@ -966,7 +966,7 @@ mod tests {
                 sweep_angle: std::f32::consts::TAU,
             })
         };
-        let leaf_a = BoundedCsg::from_csg(&CsgNode::Extrude {
+        let leaf_a = BoundedCsg::from_csg(&CsgNode::Extrude { wall_subs: None,
             id: FeatureId::from_u32(1),
             sketch: Box::new(sector(1.0)),
             half_height: 1.5,
@@ -985,7 +985,7 @@ mod tests {
                 ],
                 scale: [1.0, 1.0, 1.0],
             },
-            Box::new(CsgNode::Extrude {
+            Box::new(CsgNode::Extrude { wall_subs: None,
                 id: FeatureId::from_u32(2),
                 sketch: Box::new(sector(0.3)),
                 half_height: 1.5,

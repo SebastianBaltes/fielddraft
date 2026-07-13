@@ -152,7 +152,7 @@ fn blob_extrude_node(id: u32, half_height: f32) -> CsgNode {
         ],
         closed: true,
     });
-    CsgNode::Extrude {
+    CsgNode::Extrude { wall_subs: None,
         id: FeatureId::from_u32(id),
         sketch: Box::new(sketch),
         half_height,
@@ -1394,7 +1394,7 @@ use fielddraft_protocol::Sketch2dPrimitive as ProtoSketch2dPrim;
 
 /// Build a `BoundedCsg::Extrude` body directly (mirrors `box_body`).
 fn extrude_body(sketch: ProtoSketch2d, half_height: f32) -> BoundedCsg {
-    let csg = CsgNode::Extrude {
+    let csg = CsgNode::Extrude { wall_subs: None,
         id: FeatureId::from_u32(1),
         sketch: Box::new(sketch),
         half_height,
@@ -1403,7 +1403,7 @@ fn extrude_body(sketch: ProtoSketch2d, half_height: f32) -> BoundedCsg {
 }
 
 fn revolve_body(sketch: ProtoSketch2d) -> BoundedCsg {
-    let csg = CsgNode::Revolve {
+    let csg = CsgNode::Revolve { wall_subs: None,
         id: FeatureId::from_u32(1),
         sketch: Box::new(sketch),
     };
@@ -2108,7 +2108,7 @@ fn leaf_field_traces_curved_cross_feature_seam() {
         start_angle: 0.0,
         sweep_angle: std::f32::consts::TAU,
     });
-    let cyl_z = CsgNode::Extrude {
+    let cyl_z = CsgNode::Extrude { wall_subs: None,
         id: FeatureId::from_u32(1),
         sketch: Box::new(sector),
         half_height: 1.5,
@@ -2204,7 +2204,7 @@ fn leaf_leaf_transversal_seam_consolidates() {
             sweep_angle: std::f32::consts::TAU,
         })
     };
-    let cyl_z = CsgNode::Extrude {
+    let cyl_z = CsgNode::Extrude { wall_subs: None,
         id: FeatureId::from_u32(1),
         sketch: Box::new(sector(1.0)),
         half_height: 1.5,
@@ -2215,7 +2215,7 @@ fn leaf_leaf_transversal_seam_consolidates() {
             rotation: [0.0, std::f32::consts::FRAC_1_SQRT_2, 0.0, std::f32::consts::FRAC_1_SQRT_2],
             scale: [1.0, 1.0, 1.0],
         },
-        Box::new(CsgNode::Extrude {
+        Box::new(CsgNode::Extrude { wall_subs: None,
             id: FeatureId::from_u32(2),
             sketch: Box::new(sector(0.3)),
             half_height: 1.5,

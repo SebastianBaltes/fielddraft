@@ -180,6 +180,7 @@ pub fn lateral_trim_node(
             sketch: Sketch2d::Prim(Sketch2dPrimitive::Polygon { vertices }),
             half_depth_z: half_height,
             center: [0.0, 0.0, 0.0],
+            wall_subs: None,
         },
     };
     Some(CsgNode::Transform(inner_xf, Box::new(leaf)))
@@ -378,7 +379,7 @@ mod tests {
     }
 
     fn blob_carrier() -> CsgNode {
-        CsgNode::Extrude {
+        CsgNode::Extrude { wall_subs: None,
             id: FeatureId::from_u32(1),
             sketch: Box::new(blob_sketch()),
             half_height: 2.0,

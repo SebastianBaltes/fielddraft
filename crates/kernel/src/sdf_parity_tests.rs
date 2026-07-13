@@ -70,13 +70,14 @@ fn primitive_samples() -> Vec<Primitive> {
         Primitive::Sphere { center: [1.5, 0.5, -1.0], radius: 0.75 },
         Primitive::Cylinder { center: [0.0; 3], radius: 2.0, half_height: 3.0 },
         Primitive::Cylinder { center: [-1.0, 2.0, 0.5], radius: 0.5, half_height: 5.0 },
-        Primitive::Extrude { sketch: triangle_sketch(), half_depth_z: 2.0, center: [0.0; 3] },
+        Primitive::Extrude { sketch: triangle_sketch(), half_depth_z: 2.0, center: [0.0; 3], wall_subs: None },
         Primitive::Extrude {
             sketch: circle_sketch(1.0, 1.0, 2.0),
             half_depth_z: 0.5,
             center: [2.0, 0.0, 1.0],
+            wall_subs: None,
         },
-        Primitive::Revolve { sketch: circle_sketch(8.0, 0.0, 2.0), center: [0.0; 3] },
+        Primitive::Revolve { sketch: circle_sketch(8.0, 0.0, 2.0), center: [0.0; 3], wall_subs: None },
         Primitive::Helix {
             sketch: circle_sketch(6.0, 0.0, 1.0),
             center: [0.0; 3],
@@ -85,6 +86,7 @@ fn primitive_samples() -> Vec<Primitive> {
             left_handed: false,
             taper: 0.0,
             start_angle: 0.0,
+            wall_subs: None,
         },
         Primitive::Helix {
             sketch: circle_sketch(5.0, 0.0, 0.8),
@@ -94,6 +96,7 @@ fn primitive_samples() -> Vec<Primitive> {
             left_handed: true,
             taper: 0.05,
             start_angle: 0.7,
+            wall_subs: None,
         },
         Primitive::Torus { center: [0.0; 3], major_radius: 5.0, minor_radius: 1.5 },
         Primitive::Torus { center: [2.0, 1.0, 0.0], major_radius: 3.0, minor_radius: 0.5 },

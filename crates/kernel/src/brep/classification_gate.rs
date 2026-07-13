@@ -61,7 +61,7 @@ fn cylinder_leaf(id: u32, center: [f32; 3], radius: f32, half_height: f32) -> Cs
 }
 
 fn rect_extrude(id: u32, half_extents: [f32; 2], half_height: f32, z_offset: f32) -> CsgNode {
-    let extrude = CsgNode::Extrude {
+    let extrude = CsgNode::Extrude { wall_subs: None,
         id: FeatureId::from_u32(id),
         sketch: Box::new(Sketch2d::Prim(Sketch2dPrimitive::Rectangle {
             center: [0.0, 0.0],
@@ -375,7 +375,7 @@ fn gate_tangent_vase_stack_profile_g1() {
     };
     let line = |a: [f32; 2], b: [f32; 2]| SketchSegment::Line { start: a, end: b };
     // Pot: rectangle r ∈ [0, 5], y ∈ [−4, 0].
-    let pot = CsgNode::Revolve {
+    let pot = CsgNode::Revolve { wall_subs: None,
         id: FeatureId::from_u32(1),
         sketch: Box::new(path(vec![
             line([0.0, -4.0], [5.0, -4.0]),
@@ -387,7 +387,7 @@ fn gate_tangent_vase_stack_profile_g1() {
     // Dome: bottom flat to (5, 0), then a 90° arc (centre (3, 0), R = 2)
     // starting with a VERTICAL tangent — G1 against the pot wall — up to
     // (3, 2), closed by the top flat and the axis.
-    let dome = CsgNode::Revolve {
+    let dome = CsgNode::Revolve { wall_subs: None,
         id: FeatureId::from_u32(2),
         sketch: Box::new(path(vec![
             line([0.0, 0.0], [5.0, 0.0]),
@@ -553,7 +553,7 @@ fn ticket_extrude5() -> CsgNode {
         ],
         closed: true,
     });
-    let extrude = CsgNode::Extrude {
+    let extrude = CsgNode::Extrude { wall_subs: None,
         id: FeatureId::from_u32(5),
         sketch: Box::new(path),
         half_height: 26.456285,
@@ -585,7 +585,7 @@ fn ticket_extrude17() -> CsgNode {
         ],
         closed: true,
     });
-    let extrude = CsgNode::Extrude {
+    let extrude = CsgNode::Extrude { wall_subs: None,
         id: FeatureId::from_u32(17),
         sketch: Box::new(path),
         half_height: 49.372684,
@@ -641,7 +641,7 @@ fn ticket_extrude18() -> CsgNode {
         ],
         closed: true,
     });
-    let extrude = CsgNode::Extrude {
+    let extrude = CsgNode::Extrude { wall_subs: None,
         id: FeatureId::from_u32(18),
         sketch: Box::new(Sketch2d::Union(Box::new(path_a), Box::new(path_b))),
         half_height: 12.5,

@@ -257,6 +257,7 @@ pub(super) fn collect_extrude_halfspaces(
     sketch: &BoundedSketch2d,
     half_height: f32,
     world_transform: &Transform,
+    wall_subs: Option<&[u32]>,
     out: &mut BranchSurfaceMap,
 ) {
     let xf = *world_transform;
@@ -277,7 +278,8 @@ pub(super) fn collect_extrude_halfspaces(
     let mut walls = Vec::new();
     collect_sketch_walls(sketch, 0, &mut walls);
     for (group, wall) in walls {
-        let branch = BranchId::from_feature_sub(id, group);
+        let branch =
+            BranchId::from_feature_sub(id, crate::csg::map_wall_sub(wall_subs, group));
         match wall {
             SketchWall::Line { normal, offset } => {
                 // 2D outward normal lifted to [nx, ny, 0]; offset unchanged.
@@ -324,6 +326,7 @@ pub(super) fn collect_revolve_halfspaces(
     id: &fielddraft_protocol::FeatureId,
     sketch: &BoundedSketch2d,
     world_transform: &Transform,
+    wall_subs: Option<&[u32]>,
     out: &mut BranchSurfaceMap,
 ) {
     let xf = *world_transform;
@@ -333,7 +336,8 @@ pub(super) fn collect_revolve_halfspaces(
     let mut walls = Vec::new();
     collect_sketch_walls(sketch, 0, &mut walls);
     for (group, wall) in walls {
-        let branch = BranchId::from_feature_sub(id, group);
+        let branch =
+            BranchId::from_feature_sub(id, crate::csg::map_wall_sub(wall_subs, group));
         let SketchWall::Line { normal, offset } = wall else {
             // Circle profile revolves into a torus; not enumerated here
             // (would need HalfSpace::Torus placement) → tessellated.
@@ -397,7 +401,8 @@ pub(super) fn collect_revolve_halfspaces(
     let mut groups = Vec::new();
     collect_path_group_segments(sketch, 0, &mut groups);
     for (group, segments, ccw) in groups {
-        let branch = BranchId::from_feature_sub(id, group);
+        let branch =
+            BranchId::from_feature_sub(id, crate::csg::map_wall_sub(wall_subs, group));
         out.entry(branch.as_u32()).or_insert((
             HalfSpace::RevolvedProfile {
                 segments,

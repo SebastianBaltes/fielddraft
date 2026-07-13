@@ -251,6 +251,7 @@ impl FeatureKind for ExtrudeFeature {
                 sketch,
                 half_depth_z,
                 center: [0.0, 0.0, dz],
+                wall_subs: None,
             };
             let transform = crate::compose_transforms(
                 &frame.to_transform(),
@@ -298,6 +299,7 @@ impl FeatureKind for ExtrudeFeature {
         // three states explicitly: resolved-and-extrudable,
         // resolved-but-empty, no-resolve-use-fallback.
         let mut resolved_sketch: Option<::fielddraft_protocol::Sketch2d> = None;
+        let mut sketch_trace: Vec<crate::sketch::TracedPrim> = Vec::new();
         let mut sketch_frame = crate::sketch::SketchFrame::IDENTITY;
         let mut sketch_was_found_but_empty = false;
         // Ticket tgdg: resolve `qCreatedBy`/`qAllRegions`/`qRegion`/`qRegions`
@@ -315,8 +317,9 @@ impl FeatureKind for ExtrudeFeature {
             profile_str,
             &ctx.sketches,
         ) {
-            Some((sketch2d, frame)) => {
+            Some((sketch2d, frame, traced)) => {
                 resolved_sketch = Some(sketch2d);
+                sketch_trace = traced;
                 sketch_frame = frame;
             }
             None => {
@@ -369,11 +372,17 @@ impl FeatureKind for ExtrudeFeature {
         // Direction mode folds into `center[2]` (along local Z / plane normal).
         let center = [d.center[0], d.center[1], d.center[2] + dz];
         let primitive = match resolved_sketch {
-            Some(sketch) => Primitive::Extrude {
-                sketch,
-                half_depth_z,
-                center,
-            },
+            Some(sketch) => {
+                // Stable sketch-entity wall subs (Onshape-Import Schritt 2);
+                // `None` = positional fallback (unattributable profile).
+                let wall_subs = crate::sketch::wall_sub_table(&sketch, &sketch_trace);
+                Primitive::Extrude {
+                    sketch,
+                    half_depth_z,
+                    center,
+                    wall_subs,
+                }
+            }
             None => {
                 // Fallback: legacy hand-written half-extents.
                 positive_f32(

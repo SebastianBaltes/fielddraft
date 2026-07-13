@@ -123,7 +123,7 @@ fn primitive_command(handle: &str, prim: &Primitive) -> Option<Value> {
             "apothem": apothem,
             "halfHeight": half_height
         })),
-        Primitive::Extrude { sketch, half_depth_z, center } => {
+        Primitive::Extrude { sketch, half_depth_z, center, wall_subs: _ } => {
             let wire_pts = sketch_to_wire_pts(sketch);
             if wire_pts.is_empty() {
                 return None;
@@ -138,7 +138,7 @@ fn primitive_command(handle: &str, prim: &Primitive) -> Option<Value> {
                 "cz": center[2]
             }))
         }
-        Primitive::Revolve { sketch, center } => {
+        Primitive::Revolve { sketch, center, wall_subs: _ } => {
             let wire_pts = sketch_to_wire_pts(sketch);
             if wire_pts.is_empty() {
                 return None;
@@ -493,6 +493,7 @@ mod tests {
             sketch,
             half_depth_z: 5.0,
             center: [1.0, 2.0, 3.0],
+            wall_subs: None,
         });
         let cmds = build_step_commands(&[f]);
         let arr = cmds.as_array().unwrap();
@@ -515,6 +516,7 @@ mod tests {
             sketch,
             half_depth_z: 7.0,
             center: [0.0, 0.0, 0.0],
+            wall_subs: None,
         });
         let cmds = build_step_commands(&[f]);
         let arr = cmds.as_array().unwrap();
@@ -535,6 +537,7 @@ mod tests {
             sketch,
             half_depth_z: 3.0,
             center: [0.0, 0.0, 0.0],
+            wall_subs: None,
         });
         let cmds = build_step_commands(&[f]);
         let arr = cmds.as_array().unwrap();
@@ -554,6 +557,7 @@ mod tests {
         let f = make_feature("Revolve", Primitive::Revolve {
             sketch,
             center: [0.0, 0.0, 0.0],
+            wall_subs: None,
         });
         let cmds = build_step_commands(&[f]);
         let arr = cmds.as_array().unwrap();

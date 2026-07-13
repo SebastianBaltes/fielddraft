@@ -111,20 +111,22 @@ impl FeatureKind for HelixFeature {
         // identical to RevolveFeature (a helix without a real profile
         // produces no geometry at all).
         let mut sketch_frame = crate::sketch::SketchFrame::IDENTITY;
-        let sketch = (|| -> Option<::fielddraft_protocol::Sketch2d> {
+        let (sketch, sketch_trace) = (|| -> Option<(
+            ::fielddraft_protocol::Sketch2d,
+            Vec<crate::sketch::TracedPrim>,
+        )> {
             let expr = crate::queries::parse_query(d.profiles.as_str()).ok()?;
             let crate::queries::QueryExpr::CreatedBy(sketch_id) = expr else {
                 return None;
             };
             let sketch_data = ctx.sketches.get(&sketch_id)?;
-            let sketch2d = crate::sketch::build_sketch2d_from_sub_calls(
-                &sketch_data.sub_calls,
-            );
+            let (sketch2d, traced) =
+                crate::sketch::build_sketch2d_traced(&sketch_data.sub_calls);
             if matches!(sketch2d, ::fielddraft_protocol::Sketch2d::Empty) {
                 None
             } else {
                 sketch_frame = sketch_data.frame;
-                Some(sketch2d)
+                Some((sketch2d, traced))
             }
         })()
         .ok_or(FeatureError::MissingParameter {
@@ -173,12 +175,16 @@ impl FeatureKind for HelixFeature {
             }
             None => None,
         };
-        let (sketch, transform) = match axis_2d {
-            None => (sketch, base_transform),
+        let (sketch, sketch_trace, transform) = match axis_2d {
+            None => (sketch, sketch_trace, base_transform),
             Some((a, b)) => {
                 let (m, m_inv) = revolve_axis_alignment(a, b);
                 let aligned = transform_sketch_2d(sketch, &m);
-                (aligned, crate::compose_transforms(&base_transform, &m_inv))
+                (
+                    aligned,
+                    crate::features::revolve::transform_traced_prims(sketch_trace, &m),
+                    crate::compose_transforms(&base_transform, &m_inv),
+                )
             }
         };
 
@@ -205,6 +211,8 @@ impl FeatureKind for HelixFeature {
         if let Some(w) = ctx.merge_scope_warning(d.operation, &target_ids) {
             ctx.warn_feature(id, w);
         }
+        // Stable sketch-entity wall subs (Onshape-Import Schritt 2).
+        let wall_subs = crate::sketch::wall_sub_table(&sketch, &sketch_trace);
         ctx.features.push(DecodedFeature::from_parts(
             id.clone(),
             name,
@@ -219,6 +227,7 @@ impl FeatureKind for HelixFeature {
                 left_handed: d.left_handed,
                 taper: d.taper_angle.to_radians().tan(),
                 start_angle: d.start_angle.to_radians(),
+                wall_subs,
             },
             transform,
             PrimitiveModifiers::NONE,

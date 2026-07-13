@@ -329,13 +329,14 @@ fn emit_node(node: &BoundedCsg, ctx: &mut CompileCtx, open: &crate::csg::OpenBra
             sketch,
             half_height,
             world_transform,
+            wall_subs,
             ..
         } => {
             let excl = open
                 .has_feature(id.as_u32_or_root().unwrap_or(0))
-                .then_some((id, open));
+                .then_some((id, open, wall_subs.as_deref().map(|v| v.as_slice())));
             let mut cap_mask = 3.0_f32;
-            if let Some((id, open)) = excl {
+            if let Some((id, open, _)) = excl {
                 if open.contains_sub(id, crate::csg::BranchId::EXTRUDE_CAP_TOP_SUB) {
                     cap_mask -= 1.0;
                 }
@@ -356,11 +357,12 @@ fn emit_node(node: &BoundedCsg, ctx: &mut CompileCtx, open: &crate::csg::OpenBra
             id,
             sketch,
             world_transform,
+            wall_subs,
             ..
         } => {
             let excl = open
                 .has_feature(id.as_u32_or_root().unwrap_or(0))
-                .then_some((id, open));
+                .then_some((id, open, wall_subs.as_deref().map(|v| v.as_slice())));
             out.push(op(OP_WARP_PUSH));
             emit_warp_transform(world_transform, out);
             out.push(op(OP_WARP_REVOLVE));
@@ -380,6 +382,7 @@ fn emit_node(node: &BoundedCsg, ctx: &mut CompileCtx, open: &crate::csg::OpenBra
             y_anchor,
             r_inner,
             world_transform,
+            wall_subs,
             ..
         } => {
             // Helical unwrap into the profile frame, then the shared 2D
@@ -388,7 +391,7 @@ fn emit_node(node: &BoundedCsg, ctx: &mut CompileCtx, open: &crate::csg::OpenBra
             // interpreter's OP_WARP_HELIX / OP_HELIX_SCALE arms).
             let excl = open
                 .has_feature(id.as_u32_or_root().unwrap_or(0))
-                .then_some((id, open));
+                .then_some((id, open, wall_subs.as_deref().map(|v| v.as_slice())));
             out.push(op(OP_WARP_PUSH));
             emit_warp_transform(world_transform, out);
             out.push(op(OP_WARP_HELIX));
@@ -416,9 +419,10 @@ fn emit_node(node: &BoundedCsg, ctx: &mut CompileCtx, open: &crate::csg::OpenBra
             // shared 2D sketch eval, then the IQ extrude cap-compose (reuses
             // OP_HELIX_SCALE — point.z carries the cap coordinate w). Mirrors
             // `crate::sweep_path::SweepPath::sdf`.
+            // Sweeps keep positional wall subs (no table).
             let excl = open
                 .has_feature(id.as_u32_or_root().unwrap_or(0))
-                .then_some((id, open));
+                .then_some((id, open, None));
             out.push(op(OP_WARP_PUSH));
             emit_warp_transform(world_transform, out);
             out.push(op(OP_WARP_SWEEP));
@@ -843,7 +847,11 @@ fn emit_sketch(
     sketch: &BoundedSketch2d,
     out: &mut Vec<f32>,
     base: u32,
-    excl: Option<(&fielddraft_protocol::FeatureId, &crate::csg::OpenBranchSet<'_>)>,
+    excl: Option<(
+        &fielddraft_protocol::FeatureId,
+        &crate::csg::OpenBranchSet<'_>,
+        Option<&[u32]>,
+    )>,
 ) {
     match sketch {
         BoundedSketch2d::Empty => {
@@ -882,7 +890,11 @@ fn emit_sketch_primitive(
     prim: &Sketch2dPrimitive,
     out: &mut Vec<f32>,
     base: u32,
-    excl: Option<(&fielddraft_protocol::FeatureId, &crate::csg::OpenBranchSet<'_>)>,
+    excl: Option<(
+        &fielddraft_protocol::FeatureId,
+        &crate::csg::OpenBranchSet<'_>,
+        Option<&[u32]>,
+    )>,
 ) {
     match prim {
         Sketch2dPrimitive::Circle { center, radius } => {
@@ -922,16 +934,19 @@ fn emit_sketch_primitive(
             // the NEGATED unsigned distance to the retained groups — an OPEN
             // path record (unsigned) + NEG. Continuous through the opening;
             // see `Sketch2dPrimitive::sdf_retained`.
-            if let Some((id, open)) = excl {
+            if let Some((id, open, ws)) = excl {
                 let groups = fielddraft_protocol::sketch2d::g1_group_segments(
                     segments,
                     fielddraft_protocol::sketch2d::PATH_G1_COS_THRESHOLD,
                 );
-                if groups.iter().any(|g| open.contains_sub(id, base + g)) {
+                // The opened-face set carries STABLE subs; map the
+                // positional group before asking it (wall_subs table).
+                let sub_of = |g: u32| crate::csg::map_wall_sub(ws, base + g);
+                if groups.iter().any(|g| open.contains_sub(id, sub_of(*g))) {
                     let retained: Vec<SketchSegment> = segments
                         .iter()
                         .zip(&groups)
-                        .filter(|(_, g)| !open.contains_sub(id, base + **g))
+                        .filter(|(_, g)| !open.contains_sub(id, sub_of(**g)))
                         .map(|(s, _)| s.clone())
                         .collect();
                     emit_path_record(&retained, false, out);
@@ -1850,6 +1865,7 @@ mod tests {
                     // Non-zero so the parity check exercises the
                     // start-angle path of the opcode stream too.
                     start_angle: 0.6,
+                    wall_subs: None,
                 },
                 Transform::IDENTITY,
                 PrimitiveModifiers::NONE,
@@ -2063,7 +2079,7 @@ mod tests {
             center: [0.0, 0.0],
             half_extents: [5.0, 3.0],
         });
-        let csg = CsgNode::Extrude {
+        let csg = CsgNode::Extrude { wall_subs: None,
             id: FeatureId::from_u32(1),
             sketch: Box::new(sketch),
             half_height: 2.0,
@@ -2095,7 +2111,7 @@ mod tests {
             radius: 4.0,
         });
         let washer = Sketch2d::Difference(Box::new(outer), Box::new(inner));
-        let csg = CsgNode::Extrude {
+        let csg = CsgNode::Extrude { wall_subs: None,
             id: FeatureId::from_u32(1),
             sketch: Box::new(washer),
             half_height: 3.0,
@@ -2121,7 +2137,7 @@ mod tests {
             center: [8.0, 0.0],
             half_extents: [2.0, 5.0],
         });
-        let csg = CsgNode::Revolve {
+        let csg = CsgNode::Revolve { wall_subs: None,
             id: FeatureId::from_u32(1),
             sketch: Box::new(sketch),
         };

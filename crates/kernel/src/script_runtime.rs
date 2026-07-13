@@ -380,28 +380,43 @@ struct QueryHandleDto {
 ///
 /// The returned string is a JSON array of [`QueryHandleDto`]; an empty,
 /// well-formed match is `"[]"`.
+/// The input FeatureIds (Display form) of a query expression, recursing
+/// through composed nodes. Shared by [`resolve_query_global`]'s
+/// contributor extraction.
+fn query_input_ids(expr: &crate::queries::QueryExpr) -> Vec<String> {
+    use crate::queries::QueryExpr as Q;
+    match expr {
+        Q::CreatedBy(f)
+        | Q::CreatedByRole(f, _)
+        | Q::Wall(f, _)
+        | Q::FaceOf(f)
+        | Q::AllRegions(f)
+        | Q::Region(f, _)
+        | Q::Regions(f, _)
+        | Q::SketchLine(f, _) => vec![f.to_string()],
+        Q::EdgeBetween(a, b) => vec![a.to_string(), b.to_string()],
+        Q::Intersection(a, b) | Q::AdjacentTo(a, b) | Q::CommonEdge(a, b) => {
+            let mut ids = query_input_ids(a);
+            for id in query_input_ids(b) {
+                if !ids.contains(&id) {
+                    ids.push(id);
+                }
+            }
+            ids
+        }
+        Q::Face(_) | Q::Edge(_) | Q::Vertex(_) => Vec::new(),
+    }
+}
+
 pub fn resolve_query_global(query: &str) -> Result<String, ScriptError> {
     use crate::brep::naming::EntityKind;
 
     let expr = crate::queries::parse_query(query)
         .map_err(|e| ScriptError::BadQuery(e.to_string()))?;
 
-    // Contributors are the query's own input feature ids (Display form).
-    let contributors: Vec<String> = match &expr {
-        crate::queries::QueryExpr::CreatedBy(f)
-        | crate::queries::QueryExpr::CreatedByRole(f, _)
-        | crate::queries::QueryExpr::FaceOf(f)
-        | crate::queries::QueryExpr::AllRegions(f)
-        | crate::queries::QueryExpr::Region(f, _)
-        | crate::queries::QueryExpr::Regions(f, _)
-        | crate::queries::QueryExpr::SketchLine(f, _) => vec![f.to_string()],
-        crate::queries::QueryExpr::EdgeBetween(a, b) => vec![a.to_string(), b.to_string()],
-        // id_hash-addressed element queries address a concrete element
-        // directly; they carry no contributor FeatureId input.
-        crate::queries::QueryExpr::Face(_)
-        | crate::queries::QueryExpr::Edge(_)
-        | crate::queries::QueryExpr::Vertex(_) => Vec::new(),
-    };
+    // Contributors are the query's own input feature ids (Display form),
+    // recursing through composed nodes.
+    let contributors: Vec<String> = query_input_ids(&expr);
 
     let refs = with_scratch(|s| {
         let breps = s.ensure_breps();

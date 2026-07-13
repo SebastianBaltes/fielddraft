@@ -194,6 +194,7 @@ pub(crate) fn sdf_sketch_or_mesh_primitive(primitive: &Primitive, p: [f32; 3]) -
             sketch,
             half_depth_z,
             center,
+            wall_subs: _,
         } => {
             let local_xy = [p[0] - center[0], p[1] - center[1]];
             let d_xy = sketch.sdf(local_xy);
@@ -207,7 +208,7 @@ pub(crate) fn sdf_sketch_or_mesh_primitive(primitive: &Primitive, p: [f32; 3]) -
         // then evaluate the 2D sketch SDF. Mirrors
         // `CsgNode::Revolve::sdf` so the non-CSG-tree path
         // (picking fallback) returns a sensible distance.
-        Primitive::Revolve { sketch, center } => {
+        Primitive::Revolve { sketch, center, wall_subs: _ } => {
             let dx = p[0] - center[0];
             let dz = p[2] - center[2];
             let r = (dx * dx + dz * dz).sqrt();
@@ -217,7 +218,7 @@ pub(crate) fn sdf_sketch_or_mesh_primitive(primitive: &Primitive, p: [f32; 3]) -
         // evaluate the 2D sketch SDF, Lipschitz-normalised. Mirrors
         // `CsgNode::Helix`'s tree eval for the non-tree (picking) path.
         Primitive::Helix {
-            sketch, center, pitch, turns, left_handed, taper, start_angle,
+            sketch, center, pitch, turns, left_handed, taper, start_angle, wall_subs: _,
         } => {
             let (y_anchor, r_inner) = helix_profile_anchor(sketch);
             let local = [p[0] - center[0], p[1] - center[1], p[2] - center[2]];

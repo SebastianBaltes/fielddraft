@@ -11,6 +11,11 @@ use crate::sketch2d::{SketchSegment};
 pub(crate) struct ChainElement {
     pub(crate) call_index: usize,
     pub(crate) segments: Vec<SketchSegment>,
+    /// The solver curve entity id (line/arc/spline) this element lowered
+    /// from — the stable provenance the wall-sub table is built on.
+    /// `None` when the replay could not attribute one; a loop containing
+    /// such an element gets no stable wall ids (positional fallback).
+    pub(crate) source: Option<u32>,
 }
 
 /// Endpoint-coincidence tolerance for loop inference (mm). Snapped
@@ -78,6 +83,7 @@ pub(crate) fn split_line_tjunctions(elems: &[ChainElement]) -> Vec<ChainElement>
                         out.push(ChainElement {
                             call_index: e.call_index,
                             segments: vec![SketchSegment::Line { start: prev, end: c }],
+                            source: e.source,
                         });
                         prev = c;
                     }
@@ -85,6 +91,7 @@ pub(crate) fn split_line_tjunctions(elems: &[ChainElement]) -> Vec<ChainElement>
                         out.push(ChainElement {
                             call_index: e.call_index,
                             segments: vec![SketchSegment::Line { start: prev, end }],
+                            source: e.source,
                         });
                     }
                     continue;
@@ -96,9 +103,13 @@ pub(crate) fn split_line_tjunctions(elems: &[ChainElement]) -> Vec<ChainElement>
     out
 }
 
+/// One inferred closed loop: the stitched segments plus, per segment, the
+/// solver curve entity id it came from (`None` = unattributed).
+pub(crate) type TracedLoop = (Vec<SketchSegment>, Vec<Option<u32>>);
+
 pub(crate) fn infer_closed_loops(
     elems: &[ChainElement],
-) -> (HashMap<usize, Vec<Vec<SketchSegment>>>, std::collections::HashSet<usize>) {
+) -> (HashMap<usize, Vec<TracedLoop>>, std::collections::HashSet<usize>) {
     // Ticket mdye: split overshooting edges at T-junctions first, so a loop that
     // is only touched partway along another line still closes.
     let elems_owned = split_line_tjunctions(elems);
@@ -106,7 +117,7 @@ pub(crate) fn infer_closed_loops(
     let close = |a: [f32; 2], b: [f32; 2]| {
         (a[0] - b[0]).abs() <= LOOP_JOIN_TOL && (a[1] - b[1]).abs() <= LOOP_JOIN_TOL
     };
-    let mut loops: HashMap<usize, Vec<Vec<SketchSegment>>> = HashMap::new();
+    let mut loops: HashMap<usize, Vec<TracedLoop>> = HashMap::new();
     let mut consumed = std::collections::HashSet::new();
     let mut used = vec![false; elems.len()];
 
@@ -158,6 +169,7 @@ pub(crate) fn infer_closed_loops(
             continue;
         }
         let mut chain: Vec<SketchSegment> = elems[start].segments.clone();
+        let mut sources: Vec<Option<u32>> = vec![elems[start].source; chain.len()];
         let mut members = vec![start];
         used[start] = true;
         let chain_start = chain.first().unwrap().start_point();
@@ -172,9 +184,11 @@ pub(crate) fn infer_closed_loops(
                 let e = elem.segments.last().unwrap().end_point();
                 if close(chain_end, s) {
                     chain.extend(elem.segments.iter().cloned());
+                    sources.extend(std::iter::repeat(elem.source).take(elem.segments.len()));
                     chain_end = e;
                 } else if close(chain_end, e) {
                     chain.extend(elem.segments.iter().rev().map(|sg| sg.reversed()));
+                    sources.extend(std::iter::repeat(elem.source).take(elem.segments.len()));
                     chain_end = s;
                 } else {
                     continue;
@@ -193,7 +207,7 @@ pub(crate) fn infer_closed_loops(
                 consumed.insert(elems[m].call_index);
             }
             let anchor = members.iter().map(|&m| elems[m].call_index).min().unwrap();
-            loops.entry(anchor).or_default().push(chain);
+            loops.entry(anchor).or_default().push((chain, sources));
         } else {
             // Open chain: release the members so they can join a loop
             // seeded from a different start element. `start` itself

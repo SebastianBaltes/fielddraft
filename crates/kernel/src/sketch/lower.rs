@@ -7,6 +7,7 @@ use fielddraft_protocol::{FeatureCall, FeatureId};
 use crate::sketch2d::{ellipse_quad_beziers, Sketch2d, Sketch2dPrimitive, SketchSegment};
 
 use super::loops::{infer_closed_loops, ChainElement, LOOP_JOIN_TOL};
+use fielddraft_protocol::sketch2d::{g1_group_segments, PATH_G1_COS_THRESHOLD};
 use super::spline_math::{bspline_quad_beziers, catmull_rom_quad_beziers};
 use super::frame::SketchFrame;
 use super::tools::{
@@ -46,16 +47,9 @@ use super::SketchData;
 pub fn strip_revolve_axis_segments(sketch: Sketch2d) -> Sketch2d {
     const AXIS_EPS: f32 = 1e-4;
     fn on_axis(seg: &SketchSegment) -> bool {
-        let max_abs_x = match seg {
-            SketchSegment::Line { start, end } => start[0].abs().max(end[0].abs()),
-            SketchSegment::QuadBezier { p0, p1, p2 } => {
-                p0[0].abs().max(p1[0].abs()).max(p2[0].abs())
-            }
-            // A circular arc can't lie on a straight line.
-            SketchSegment::Arc { .. } => return false,
-        };
-        max_abs_x <= AXIS_EPS
+        segment_on_revolve_axis(seg, AXIS_EPS)
     }
+
     match sketch {
         Sketch2d::Prim(Sketch2dPrimitive::Path {
             segments,
@@ -73,6 +67,22 @@ pub fn strip_revolve_axis_segments(sketch: Sketch2d) -> Sketch2d {
         ),
         other => other,
     }
+}
+
+/// Is this segment ON the revolve axis (sketch x = 0)? Shared between
+/// [`strip_revolve_axis_segments`] and the strip-aware prim matching in
+/// [`wall_sub_table`] — both must filter identically or the traced wall
+/// sources desynchronise from the stripped profile.
+pub(crate) fn segment_on_revolve_axis(seg: &SketchSegment, eps: f32) -> bool {
+    let max_abs_x = match seg {
+        SketchSegment::Line { start, end } => start[0].abs().max(end[0].abs()),
+        SketchSegment::QuadBezier { p0, p1, p2 } => {
+            p0[0].abs().max(p1[0].abs()).max(p2[0].abs())
+        }
+        // A circular arc can't lie on a straight line.
+        SketchSegment::Arc { .. } => return false,
+    };
+    max_abs_x <= eps
 }
 
 /// Lower a spline definition to its analytic segment chain —
@@ -151,7 +161,7 @@ pub const PROFILE_REGION_RESOLUTION: u32 = 128;
 pub fn resolve_profile_query(
     query: &str,
     sketches: &std::collections::HashMap<FeatureId, SketchData>,
-) -> Option<(Sketch2d, SketchFrame)> {
+) -> Option<(Sketch2d, SketchFrame, Vec<TracedPrim>)> {
     use crate::queries::QueryExpr;
     let expr = crate::queries::parse_query(query).ok()?;
     let (sketch_id, indices): (FeatureId, Option<Vec<u32>>) = match expr {
@@ -161,7 +171,7 @@ pub fn resolve_profile_query(
         _ => return None,
     };
     let sketch_data = sketches.get(&sketch_id)?;
-    let full = build_sketch2d_from_sub_calls(&sketch_data.sub_calls);
+    let (full, traced) = build_sketch2d_traced(&sketch_data.sub_calls);
     if matches!(full, Sketch2d::Empty) {
         return None;
     }
@@ -188,10 +198,107 @@ pub fn resolve_profile_query(
             restricted
         }
     };
-    Some((sketch, sketch_data.frame))
+    // The trace stays keyed to the FULL tree; `wall_sub_table` matches the
+    // (possibly restricted) tree as an in-order subsequence against it.
+    Some((sketch, sketch_data.frame, traced))
 }
 
 pub fn build_sketch2d_from_sub_calls(sub_calls: &[FeatureCall]) -> Sketch2d {
+    build_sketch2d_traced(sub_calls).0
+}
+
+/// One entry per primitive the lowering emits, in tree DFS (= emission)
+/// order — the provenance record the stable wall-sub table is built from.
+#[derive(Debug, Clone)]
+pub struct TracedPrim {
+    /// Exact clone of the primitive that entered the tree.
+    pub prim: Sketch2dPrimitive,
+    /// Where each boundary group's geometry came from; `None` when the
+    /// lowering couldn't attribute stable ids (sketch_path, mirror copy)
+    /// — a table containing such a prim falls back to positional subs.
+    pub sources: Option<TraceSources>,
+}
+
+/// Stable-source attribution of one primitive's boundary.
+#[derive(Debug, Clone)]
+pub enum TraceSources {
+    /// One stable id per LOCAL boundary group, in group order — the
+    /// fixed-group prims (Rectangle 4, Circle/Sector 1, Polygon n).
+    PerGroup(Vec<u32>),
+    /// One source per PATH SEGMENT; the per-group representative (min id
+    /// over the group's segments) is derived at table-build time, after
+    /// any segment filtering (revolve axis strip) has settled.
+    PerSegment(Vec<Option<u32>>),
+}
+
+/// Entity-allocation record of one sub-call, from the registry replay.
+struct CallAlloc {
+    /// `next_entity_id` before the call — the id of its FIRST entity.
+    first: u32,
+    /// Curve entities (line/circle/arc/ellipse/bspline) the call
+    /// allocated, in allocation order. Empty for pure-point tools
+    /// (slot, polygon) and failed/unknown calls.
+    curves: Vec<u32>,
+}
+
+/// Replay the sub-spine through the REAL tool registry into a scratch
+/// [`SketchState`] and record what each call allocates. The `apply()`
+/// implementations are the single allocation authority (the same code
+/// the regeneration runs), so this can never drift from the kernel —
+/// unlike a third hand-maintained allocation table.
+fn replay_allocations(sub_calls: &[FeatureCall]) -> Vec<CallAlloc> {
+    use fielddraft_solver::Entity;
+    let registry = super::tools::SketchToolRegistry::with_builtins();
+    let mut state = fielddraft_solver::SketchState::with_origin();
+    let mut out = Vec::with_capacity(sub_calls.len());
+    for call in sub_calls {
+        let first = state.next_entity_id;
+        let before = state.entities.len();
+        let applied = registry
+            .get(&call.type_name)
+            .map(|t| t.apply(&mut state, &call.id, &call.params));
+        let mut curves = Vec::new();
+        if let Some(Ok(())) = applied {
+            for e in &state.entities[before..] {
+                match e {
+                    Entity::Line { id, .. }
+                    | Entity::Circle { id, .. }
+                    | Entity::Arc { id, .. }
+                    | Entity::Ellipse { id, .. }
+                    | Entity::BSpline { id, .. } => curves.push(id.0),
+                    _ => {}
+                }
+            }
+        }
+        out.push(CallAlloc { first, curves });
+    }
+    out
+}
+
+/// Push every primitive of an untraceable subtree (sketch_path lowering,
+/// mirror copy) so the in-order matching in [`wall_sub_table`] stays
+/// aligned — with `sources: None`, which poisons the table (positional
+/// fallback) if any of these prims survives into the profile.
+fn push_untraced(tree: &Sketch2d, trace: &mut Vec<TracedPrim>) {
+    match tree {
+        Sketch2d::Empty => {}
+        Sketch2d::Prim(p) => trace.push(TracedPrim { prim: p.clone(), sources: None }),
+        Sketch2d::Union(a, b)
+        | Sketch2d::Difference(a, b)
+        | Sketch2d::Intersection(a, b) => {
+            push_untraced(a, trace);
+            push_untraced(b, trace);
+        }
+        Sketch2d::Offset { inner, .. } => push_untraced(inner, trace),
+    }
+}
+
+/// [`build_sketch2d_from_sub_calls`] plus the per-primitive provenance
+/// trace (in emission order) that [`wall_sub_table`] consumes.
+pub fn build_sketch2d_traced(sub_calls: &[FeatureCall]) -> (Sketch2d, Vec<TracedPrim>) {
+    let allocs = replay_allocations(sub_calls);
+    let curve0 = |idx: usize| allocs.get(idx).and_then(|a| a.curves.first().copied());
+    let mut trace: Vec<TracedPrim> = Vec::new();
     // K7.1 loop inference: free `sketch_line`s and open `sketch_spline`s
     // form no region on their own, but a chain of them whose endpoints
     // coincide (the snap tools guarantee exact coincidence) encloses an
@@ -222,6 +329,7 @@ pub fn build_sketch2d_from_sub_calls(sub_calls: &[FeatureCall]) -> Sketch2d {
                                 start: d.start,
                                 end: d.end,
                             }],
+                            source: curve0(idx),
                         });
                     }
                 }
@@ -234,6 +342,7 @@ pub fn build_sketch2d_from_sub_calls(sub_calls: &[FeatureCall]) -> Sketch2d {
                             chainable.push(ChainElement {
                                 call_index: idx,
                                 segments,
+                                source: curve0(idx),
                             });
                         }
                     }
@@ -260,6 +369,7 @@ pub fn build_sketch2d_from_sub_calls(sub_calls: &[FeatureCall]) -> Sketch2d {
                                 start_angle: d.start_angle,
                                 sweep_angle: d.sweep_angle,
                             }],
+                            source: curve0(idx),
                         });
                     }
                 }
@@ -272,11 +382,13 @@ pub fn build_sketch2d_from_sub_calls(sub_calls: &[FeatureCall]) -> Sketch2d {
     let mut acc: Option<Sketch2d> = None;
     for (idx, call) in sub_calls.iter().enumerate() {
         if let Some(loops) = inferred_loops.remove(&idx) {
-            for segments in loops {
-                let node = Sketch2d::Prim(Sketch2dPrimitive::Path {
-                    segments,
-                    closed: true,
+            for (segments, sources) in loops {
+                let prim = Sketch2dPrimitive::Path { segments, closed: true };
+                trace.push(TracedPrim {
+                    prim: prim.clone(),
+                    sources: Some(TraceSources::PerSegment(sources)),
                 });
+                let node = Sketch2d::Prim(prim);
                 acc = Some(match acc {
                     None => node,
                     Some(prev) => Sketch2d::Union(Box::new(prev), Box::new(node)),
@@ -298,7 +410,10 @@ pub fn build_sketch2d_from_sub_calls(sub_calls: &[FeatureCall]) -> Sketch2d {
         {
             continue;
         }
-        let prim = match call.type_name.as_str() {
+        let prim: Option<(Sketch2dPrimitive, Option<TraceSources>)> = match call
+            .type_name
+            .as_str()
+        {
             "sketch_rectangle" => {
                 let d = match SketchRectangleDef::parse(&call.params) {
                     Ok(d) => d,
@@ -312,10 +427,27 @@ pub fn build_sketch2d_from_sub_calls(sub_calls: &[FeatureCall]) -> Sketch2d {
                     continue;
                 }
                 let center = [0.5 * (min_x + max_x), 0.5 * (min_y + max_y)];
-                Some(Sketch2dPrimitive::Rectangle {
-                    center,
-                    half_extents: [half_x, half_y],
-                })
+                // Group order 0..3 = +x, −x, +y, −y (`sdf_with_edges`);
+                // the tool allocates its four line entities in the order
+                // bottom, right, top, left → [right, left, top, bottom].
+                let sources = allocs
+                    .get(idx)
+                    .filter(|a| a.curves.len() == 4)
+                    .map(|a| {
+                        TraceSources::PerGroup(vec![
+                            a.curves[1],
+                            a.curves[3],
+                            a.curves[2],
+                            a.curves[0],
+                        ])
+                    });
+                Some((
+                    Sketch2dPrimitive::Rectangle {
+                        center,
+                        half_extents: [half_x, half_y],
+                    },
+                    sources,
+                ))
             }
             "sketch_circle" => {
                 let d = match SketchCircleDef::parse(&call.params) {
@@ -325,10 +457,15 @@ pub fn build_sketch2d_from_sub_calls(sub_calls: &[FeatureCall]) -> Sketch2d {
                 if d.radius <= 0.0 {
                     continue;
                 }
-                Some(Sketch2dPrimitive::Circle {
-                    center: d.center,
-                    radius: d.radius,
-                })
+                let sources =
+                    curve0(idx).map(|c| TraceSources::PerGroup(vec![c]));
+                Some((
+                    Sketch2dPrimitive::Circle {
+                        center: d.center,
+                        radius: d.radius,
+                    },
+                    sources,
+                ))
             }
             "sketch_arc" => {
                 let d = match SketchArcDef::parse(&call.params) {
@@ -338,12 +475,18 @@ pub fn build_sketch2d_from_sub_calls(sub_calls: &[FeatureCall]) -> Sketch2d {
                 if d.radius <= 0.0 || d.sweep_angle.abs() < 1e-6 {
                     continue;
                 }
-                Some(Sketch2dPrimitive::Sector {
-                    center: d.center,
-                    radius: d.radius,
-                    start_angle: d.start_angle,
-                    sweep_angle: d.sweep_angle,
-                })
+                // Sector keeps the single-group simplification.
+                let sources =
+                    curve0(idx).map(|c| TraceSources::PerGroup(vec![c]));
+                Some((
+                    Sketch2dPrimitive::Sector {
+                        center: d.center,
+                        radius: d.radius,
+                        start_angle: d.start_angle,
+                        sweep_angle: d.sweep_angle,
+                    },
+                    sources,
+                ))
             }
             "sketch_ellipse" => {
                 let d = match SketchEllipseDef::parse(&call.params) {
@@ -369,10 +512,17 @@ pub fn build_sketch2d_from_sub_calls(sub_calls: &[FeatureCall]) -> Sketch2d {
                 if segs.is_empty() {
                     continue;
                 }
-                Some(Sketch2dPrimitive::Path {
-                    segments: segs,
-                    closed: true,
-                })
+                // The whole ellipse is ONE solver entity — every segment
+                // (and thus every derived group) points at it.
+                let sources = curve0(idx)
+                    .map(|c| TraceSources::PerSegment(vec![Some(c); segs.len()]));
+                Some((
+                    Sketch2dPrimitive::Path {
+                        segments: segs,
+                        closed: true,
+                    },
+                    sources,
+                ))
             }
             "sketch_slot" => {
                 let d = match SketchSlotDef::parse(&call.params) {
@@ -380,10 +530,22 @@ pub fn build_sketch2d_from_sub_calls(sub_calls: &[FeatureCall]) -> Sketch2d {
                     Err(_) => continue,
                 };
                 match slot_path_segments(d.center_a, d.center_b, d.radius) {
-                    Some(segments) => Some(Sketch2dPrimitive::Path {
-                        segments,
-                        closed: true,
-                    }),
+                    Some(segments) => {
+                        // The slot tool allocates only its two centre
+                        // POINTS — anchor the (single, fully-G1) boundary
+                        // on the first of them: unique per call, stable
+                        // in the shared entity-id space.
+                        let sources = allocs.get(idx).map(|a| {
+                            TraceSources::PerSegment(vec![
+                                Some(a.first);
+                                segments.len()
+                            ])
+                        });
+                        Some((
+                            Sketch2dPrimitive::Path { segments, closed: true },
+                            sources,
+                        ))
+                    }
                     None => continue,
                 }
             }
@@ -401,7 +563,15 @@ pub fn build_sketch2d_from_sub_calls(sub_calls: &[FeatureCall]) -> Sketch2d {
                 if verts.len() < 3 {
                     continue;
                 }
-                Some(Sketch2dPrimitive::Polygon { vertices: verts })
+                // Polygon group k = the edge leaving vertex k; the tool
+                // allocates one POINT per vertex in order → anchor edge k
+                // on vertex k's point id (`first + k`).
+                let sources = allocs.get(idx).map(|a| {
+                    TraceSources::PerGroup(
+                        (0..verts.len() as u32).map(|k| a.first + k).collect(),
+                    )
+                });
+                Some((Sketch2dPrimitive::Polygon { vertices: verts }, sources))
             }
             "sketch_spline" => {
                 // Closed splines (and open ones no loop consumed) lower
@@ -415,10 +585,15 @@ pub fn build_sketch2d_from_sub_calls(sub_calls: &[FeatureCall]) -> Sketch2d {
                 if segs.is_empty() {
                     continue;
                 }
-                Some(Sketch2dPrimitive::Path {
-                    segments: segs,
-                    closed: d.closed,
-                })
+                let sources = curve0(idx)
+                    .map(|c| TraceSources::PerSegment(vec![Some(c); segs.len()]));
+                Some((
+                    Sketch2dPrimitive::Path {
+                        segments: segs,
+                        closed: d.closed,
+                    },
+                    sources,
+                ))
             }
             "sketch_path" => {
                 // An explicit line+quad path of one or more contours,
@@ -432,6 +607,10 @@ pub fn build_sketch2d_from_sub_calls(sub_calls: &[FeatureCall]) -> Sketch2d {
                 let Some(node) = build_sketch_path(&d) else {
                     continue;
                 };
+                // SVG paths allocate only point entities — no per-segment
+                // curve provenance. Trace the prims untraced so the
+                // in-order matching stays aligned (table → positional).
+                push_untraced(&node, &mut trace);
                 acc = Some(match acc {
                     None => node,
                     Some(prev) => Sketch2d::Union(Box::new(prev), Box::new(node)),
@@ -444,7 +623,17 @@ pub fn build_sketch2d_from_sub_calls(sub_calls: &[FeatureCall]) -> Sketch2d {
                     Err(_) => continue,
                 };
                 match regular_polygon_vertices(d.center, d.radius, d.sides, d.inscribed) {
-                    Some(verts) => Some(Sketch2dPrimitive::Polygon { vertices: verts }),
+                    Some(verts) => {
+                        // Same vertex-point anchoring as `sketch_polygon` —
+                        // the tool allocates one point per synthesised
+                        // vertex in the same order.
+                        let sources = allocs.get(idx).map(|a| {
+                            TraceSources::PerGroup(
+                                (0..verts.len() as u32).map(|k| a.first + k).collect(),
+                            )
+                        });
+                        Some((Sketch2dPrimitive::Polygon { vertices: verts }, sources))
+                    }
                     None => continue,
                 }
             }
@@ -456,6 +645,11 @@ pub fn build_sketch2d_from_sub_calls(sub_calls: &[FeatureCall]) -> Sketch2d {
                 };
                 if let Some(ref tree) = acc {
                     let mirrored = mirror_sketch2d(tree, d.axis as u32);
+                    // The mirror copy shares its source entities with the
+                    // original — aliased subs would fold two distinct
+                    // walls onto one branch. Trace untraced instead
+                    // (whole-sketch positional fallback).
+                    push_untraced(&mirrored, &mut trace);
                     acc = Some(Sketch2d::Union(
                         Box::new(acc.take().unwrap()),
                         Box::new(mirrored),
@@ -484,14 +678,15 @@ pub fn build_sketch2d_from_sub_calls(sub_calls: &[FeatureCall]) -> Sketch2d {
             }
             _ => None,
         };
-        let Some(prim) = prim else { continue };
+        let Some((prim, sources)) = prim else { continue };
+        trace.push(TracedPrim { prim: prim.clone(), sources });
         let node = Sketch2d::Prim(prim);
         acc = Some(match acc {
             None => node,
             Some(prev) => Sketch2d::Union(Box::new(prev), Box::new(node)),
         });
     }
-    acc.unwrap_or(Sketch2d::Empty)
+    (acc.unwrap_or(Sketch2d::Empty), trace)
 }
 
 /// Mirror a Sketch2d tree across an axis.
@@ -685,4 +880,150 @@ fn slot_path_segments(
             sweep_angle: -pi,
         },
     ])
+}
+
+// ─── stable wall-sub table (Onshape-Import Schritt 2) ────────────────────
+
+/// Build the positional-group → stable-sub table for a profile tree.
+///
+/// Walks `tree` in the same in-order DFS the global boundary-group
+/// numbering uses (`sdf_with_edges`' `edge_count` offsets) and matches
+/// every `Prim` leaf, in order, against the lowering trace — the tree may
+/// be a pruned SUBSEQUENCE of the trace (region restriction) and its Path
+/// prims may have been axis-stripped (revolve profiles); both are handled.
+/// The concatenated per-prim id lists form the table.
+///
+/// Returns `None` — positional fallback, never a half-translated table —
+/// when any surviving prim lacks stable sources (sketch_path, mirror,
+/// replay failure), a prim can't be matched, or an id would collide with
+/// the reserved sub range (caps at `0x7FE`/`0x7FF`, inner-wall flag).
+pub fn wall_sub_table(tree: &Sketch2d, traced: &[TracedPrim]) -> Option<Vec<u32>> {
+    let mut out = Vec::new();
+    let mut cursor = 0usize;
+    collect_wall_subs(tree, traced, &mut cursor, &mut out)?;
+    if out
+        .iter()
+        .any(|&s| s >= crate::csg::BranchId::EXTRUDE_CAP_BOTTOM_SUB)
+    {
+        return None;
+    }
+    Some(out)
+}
+
+fn collect_wall_subs(
+    tree: &Sketch2d,
+    traced: &[TracedPrim],
+    cursor: &mut usize,
+    out: &mut Vec<u32>,
+) -> Option<()> {
+    match tree {
+        Sketch2d::Empty => Some(()),
+        Sketch2d::Prim(p) => {
+            while *cursor < traced.len() {
+                let t = &traced[*cursor];
+                *cursor += 1;
+                if let Some(ids) = prim_wall_ids(p, t) {
+                    out.extend(ids?);
+                    return Some(());
+                }
+            }
+            None
+        }
+        Sketch2d::Union(a, b)
+        | Sketch2d::Difference(a, b)
+        | Sketch2d::Intersection(a, b) => {
+            collect_wall_subs(a, traced, cursor, out)?;
+            collect_wall_subs(b, traced, cursor, out)
+        }
+        Sketch2d::Offset { inner, .. } => collect_wall_subs(inner, traced, cursor, out),
+    }
+}
+
+/// Does trace entry `t` describe final prim `p`? Outer `None` = no match
+/// (try the next trace entry); `Some(inner)` = matched, where inner
+/// `None` = matched but unattributable (poison → positional fallback).
+fn prim_wall_ids(p: &Sketch2dPrimitive, t: &TracedPrim) -> Option<Option<Vec<u32>>> {
+    // Exact match — the common case.
+    if &t.prim == p {
+        return Some(traced_group_ids(p, t.sources.as_ref()));
+    }
+    // Strip-aware match: a revolve profile's closed Path may have lost
+    // its on-axis segments (`strip_revolve_axis_segments`). Filter the
+    // traced Path with the SAME predicate and compare again.
+    if let (
+        Sketch2dPrimitive::Path { segments: fs, closed: fc },
+        Sketch2dPrimitive::Path { segments: ts, closed: tc },
+    ) = (p, &t.prim)
+    {
+        if fc == tc && fs.len() < ts.len() {
+            const AXIS_EPS: f32 = 1e-4;
+            let kept: Vec<&SketchSegment> = ts
+                .iter()
+                .filter(|s| !segment_on_revolve_axis(s, AXIS_EPS))
+                .collect();
+            if kept.len() == fs.len() && kept.iter().zip(fs.iter()).all(|(a, b)| *a == b) {
+                let sources = match &t.sources {
+                    Some(TraceSources::PerSegment(src)) if src.len() == ts.len() => {
+                        let filtered: Vec<Option<u32>> = ts
+                            .iter()
+                            .zip(src.iter())
+                            .filter(|(s, _)| !segment_on_revolve_axis(s, AXIS_EPS))
+                            .map(|(_, id)| *id)
+                            .collect();
+                        Some(TraceSources::PerSegment(filtered))
+                    }
+                    other => other.clone(),
+                };
+                return Some(traced_group_ids(p, sources.as_ref()));
+            }
+        }
+    }
+    None
+}
+
+/// Reduce a matched prim's trace sources to one stable id per LOCAL
+/// boundary group (group order = the prim's `sdf_with_edges` numbering).
+/// `None` = unattributable.
+fn traced_group_ids(
+    p: &Sketch2dPrimitive,
+    sources: Option<&TraceSources>,
+) -> Option<Vec<u32>> {
+    let sources = sources?;
+    let group_count = p.edge_count() as usize;
+    match sources {
+        TraceSources::PerGroup(ids) => {
+            (ids.len() == group_count).then(|| ids.clone())
+        }
+        TraceSources::PerSegment(src) => {
+            let Sketch2dPrimitive::Path { segments, .. } = p else {
+                return None;
+            };
+            if src.len() != segments.len() {
+                return None;
+            }
+            let groups = g1_group_segments(segments, PATH_G1_COS_THRESHOLD);
+            let mut ids: Vec<Option<u32>> = vec![None; group_count];
+            for (g, s) in groups.iter().zip(src.iter()) {
+                let slot = ids.get_mut(*g as usize)?;
+                // Canonical representative: the MIN curve entity id over
+                // the group's segments — deterministic when a G1 group
+                // spans several sketch edges (line + tangent arc chain).
+                *slot = match (*slot, *s) {
+                    (Some(a), Some(b)) => Some(a.min(b)),
+                    (None, other) => other,
+                    (keep, None) => keep,
+                };
+            }
+            // A group with NO attributed segment poisons the prim: a
+            // half-attributed table must not silently mis-name walls.
+            let any_hole = ids
+                .iter()
+                .zip(0..group_count)
+                .any(|(id, _)| id.is_none());
+            if any_hole {
+                return None;
+            }
+            Some(ids.into_iter().map(|i| i.unwrap()).collect())
+        }
+    }
 }

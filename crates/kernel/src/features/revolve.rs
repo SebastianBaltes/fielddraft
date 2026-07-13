@@ -99,7 +99,7 @@ impl FeatureKind for RevolveFeature {
         // invalid with a clear warning — never a garbage solid. A missing /
         // unresolvable profile is exactly that, so we warn and bail out
         // (return Ok without pushing a feature) instead of erroring out.
-        let Some((sketch, sketch_frame)) = crate::sketch::resolve_profile_query(
+        let Some((sketch, sketch_frame, sketch_trace)) = crate::sketch::resolve_profile_query(
             d.profiles.as_str(),
             &ctx.sketches,
         ) else {
@@ -161,7 +161,7 @@ impl FeatureKind for RevolveFeature {
         };
 
         let (a, b) = axis_2d;
-        let (sketch, transform) = {
+        let (sketch, sketch_trace, transform) = {
             let (m, m_inv) = revolve_axis_alignment(a, b);
             let aligned = transform_sketch_2d(sketch.clone(), &m);
             // The revolve SDF folds every query to radius √(x²+z²) ≥ 0 and
@@ -181,10 +181,15 @@ impl FeatureKind for RevolveFeature {
                 let (m2, m_inv2) = revolve_axis_alignment(b, a);
                 (
                     transform_sketch_2d(sketch, &m2),
+                    transform_traced_prims(sketch_trace, &m2),
                     crate::compose_transforms(&base_transform, &m_inv2),
                 )
             } else {
-                (aligned, crate::compose_transforms(&base_transform, &m_inv))
+                (
+                    aligned,
+                    transform_traced_prims(sketch_trace, &m),
+                    crate::compose_transforms(&base_transform, &m_inv),
+                )
             }
         };
 
@@ -194,6 +199,10 @@ impl FeatureKind for RevolveFeature {
         // AFTER `M`, so the picked axis line (now at `x = 0`) is the one
         // that gets stripped.
         let sketch = crate::sketch::strip_revolve_axis_segments(sketch);
+        // Stable sketch-entity wall subs (Onshape-Import Schritt 2). The
+        // trace was transformed alongside the profile; the axis strip is
+        // handled by the strip-aware matching inside `wall_sub_table`.
+        let wall_subs = crate::sketch::wall_sub_table(&sketch, &sketch_trace);
 
         let target_ids = resolve_merge_scope(
             ctx,
@@ -213,6 +222,7 @@ impl FeatureKind for RevolveFeature {
                 // profile + placement (see above), so the primitive's own
                 // centre is always the local origin.
                 center: [0.0, 0.0, 0.0],
+                wall_subs,
             },
             transform,
             PrimitiveModifiers {
@@ -360,6 +370,37 @@ pub(crate) fn revolve_axis_alignment(a: [f32; 2], b: [f32; 2]) -> (Rigid2d, Tran
 ///
 /// [`Rectangle`]: ::fielddraft_protocol::Sketch2dPrimitive::Rectangle
 /// [`Polygon`]: ::fielddraft_protocol::Sketch2dPrimitive::Polygon
+/// Transform a lowering trace with the same rigid map the profile got —
+/// prim clones must stay bit-equal to the tree for the in-order matching
+/// in [`crate::sketch::wall_sub_table`]. The Rectangle → Polygon rewrite
+/// reorders groups: rect [+x, −x, +y, −y] = [right, left, top, bottom] →
+/// polygon edges from vertex k, k = 0.. = [bottom, right, top, left].
+pub(crate) fn transform_traced_prims(
+    traced: Vec<crate::sketch::TracedPrim>,
+    m: &Rigid2d,
+) -> Vec<crate::sketch::TracedPrim> {
+    use ::fielddraft_protocol::{Sketch2d, Sketch2dPrimitive};
+    traced
+        .into_iter()
+        .map(|t| {
+            let was_rect = matches!(t.prim, Sketch2dPrimitive::Rectangle { .. });
+            let prim = match transform_sketch_2d(Sketch2d::Prim(t.prim), m) {
+                Sketch2d::Prim(p) => p,
+                _ => unreachable!("prim transforms stay prims"),
+            };
+            let sources = match (was_rect, t.sources) {
+                (true, Some(crate::sketch::TraceSources::PerGroup(v))) if v.len() == 4 => {
+                    Some(crate::sketch::TraceSources::PerGroup(vec![
+                        v[3], v[0], v[2], v[1],
+                    ]))
+                }
+                (_, s) => s,
+            };
+            crate::sketch::TracedPrim { prim, sources }
+        })
+        .collect()
+}
+
 pub(crate) fn transform_sketch_2d(
     sketch: ::fielddraft_protocol::Sketch2d,
     m: &Rigid2d,

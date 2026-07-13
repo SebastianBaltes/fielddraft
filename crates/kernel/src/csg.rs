@@ -78,8 +78,11 @@ impl BranchId {
     }
 
     /// The per-feature sub-index (the low [`SUB_BITS`](Self::SUB_BITS) bits,
-    /// inner-wall flag included). For a sketch-sweep wall this is the G1
-    /// boundary-group index; for a cap it is one of the reserved cap sub-ids.
+    /// inner-wall flag included). For a sketch-sweep wall this is the STABLE
+    /// sketch-entity ordinal from the sweep's `wall_subs` table (naming
+    /// schema v2) — or the positional G1 boundary-group index when the
+    /// profile has no table (fallback / legacy). For a cap it is one of the
+    /// reserved cap sub-ids.
     pub fn sub(self) -> u32 {
         self.0 & Self::SUB_MASK
     }
@@ -399,6 +402,7 @@ impl Aabb {
                 sketch,
                 half_depth_z,
                 center,
+                wall_subs: _,
             } => {
                 let bb2 = sketch.aabb();
                 if bb2.is_empty() {
@@ -421,7 +425,7 @@ impl Aabb {
             // local Y axis. Radial extent is the max |x| the
             // sketch reaches; Y range comes straight from the
             // sketch's Y extent.
-            Primitive::Revolve { sketch, center } => {
+            Primitive::Revolve { sketch, center, wall_subs: _ } => {
                 let bb2 = sketch.aabb();
                 if bb2.is_empty() {
                     return Self::EMPTY;
@@ -787,6 +791,10 @@ pub enum CsgNode {
         id: FeatureId,
         sketch: Box<Sketch2d>,
         half_height: f32,
+        /// Positional wall group → stable sketch-entity sub (see
+        /// [`Primitive::Extrude`]'s `wall_subs`); `None` = positional.
+        /// `Arc` keeps node clones cheap.
+        wall_subs: Option<std::sync::Arc<Vec<u32>>>,
     },
     /// Revolve a 2D sketch around the local Y axis. The sketch's
     /// `x` coordinate maps to the radial distance
@@ -799,6 +807,8 @@ pub enum CsgNode {
     Revolve {
         id: FeatureId,
         sketch: Box<Sketch2d>,
+        /// See [`CsgNode::Extrude::wall_subs`].
+        wall_subs: Option<std::sync::Arc<Vec<u32>>>,
     },
     /// Helical sweep of a 2D sketch around the local Y axis (see
     /// [`Primitive::Helix`] for the profile/turn semantics). Carries
@@ -815,6 +825,8 @@ pub enum CsgNode {
         start_angle: f32,
         y_anchor: f32,
         r_inner: f32,
+        /// See [`CsgNode::Extrude::wall_subs`].
+        wall_subs: Option<std::sync::Arc<Vec<u32>>>,
     },
     /// General sweep of a 2D sketch profile along an arbitrary spine
     /// polyline. The path is pre-sampled (a
@@ -961,11 +973,13 @@ impl DecodedFeature {
                 ref sketch,
                 half_depth_z,
                 center,
+                ref wall_subs,
             } => {
                 let centered = CsgNode::Extrude {
                     id: id.clone(),
                     sketch: Box::new(sketch.clone()),
                     half_height: half_depth_z,
+                    wall_subs: wall_subs.clone().map(std::sync::Arc::new),
                 };
                 if center == [0.0, 0.0, 0.0] {
                     centered
@@ -980,10 +994,11 @@ impl DecodedFeature {
                     )
                 }
             }
-            Primitive::Revolve { ref sketch, center } => {
+            Primitive::Revolve { ref sketch, center, ref wall_subs } => {
                 let centered = CsgNode::Revolve {
                     id: id.clone(),
                     sketch: Box::new(sketch.clone()),
+                    wall_subs: wall_subs.clone().map(std::sync::Arc::new),
                 };
                 if center == [0.0, 0.0, 0.0] {
                     centered
@@ -1000,6 +1015,7 @@ impl DecodedFeature {
             }
             Primitive::Helix {
                 ref sketch, center, pitch, turns, left_handed, taper, start_angle,
+                ref wall_subs,
             } => {
                 let (y_anchor, r_inner) = crate::helix_profile_anchor(sketch);
                 let centered = CsgNode::Helix {
@@ -1012,6 +1028,7 @@ impl DecodedFeature {
                     start_angle,
                     y_anchor,
                     r_inner,
+                    wall_subs: wall_subs.clone().map(std::sync::Arc::new),
                 };
                 if center == [0.0, 0.0, 0.0] {
                     centered
@@ -1099,22 +1116,25 @@ impl DecodedFeature {
                 CsgNode::Extrude {
                     sketch,
                     half_height,
+                    wall_subs,
                     ..
                 } => {
                     return Some(Primitive::Extrude {
                         sketch: (**sketch).clone(),
                         half_depth_z: *half_height,
                         center: [0.0, 0.0, 0.0],
+                        wall_subs: wall_subs.as_deref().cloned(),
                     })
                 }
-                CsgNode::Revolve { sketch, .. } => {
+                CsgNode::Revolve { sketch, wall_subs, .. } => {
                     return Some(Primitive::Revolve {
                         sketch: (**sketch).clone(),
                         center: [0.0, 0.0, 0.0],
+                        wall_subs: wall_subs.as_deref().cloned(),
                     })
                 }
                 CsgNode::Helix {
-                    sketch, pitch, turns, left_handed, taper, start_angle, ..
+                    sketch, pitch, turns, left_handed, taper, start_angle, wall_subs, ..
                 } => {
                     return Some(Primitive::Helix {
                         sketch: (**sketch).clone(),
@@ -1124,6 +1144,7 @@ impl DecodedFeature {
                         left_handed: *left_handed,
                         taper: *taper,
                         start_angle: *start_angle,
+                        wall_subs: wall_subs.as_deref().cloned(),
                     })
                 }
                 // The extrude/revolve self-centering Transform: restore
@@ -1132,22 +1153,25 @@ impl DecodedFeature {
                     CsgNode::Extrude {
                         sketch,
                         half_height,
+                        wall_subs,
                         ..
                     } => {
                         return Some(Primitive::Extrude {
                             sketch: (**sketch).clone(),
                             half_depth_z: *half_height,
                             center: t.translate,
+                            wall_subs: wall_subs.as_deref().cloned(),
                         })
                     }
-                    CsgNode::Revolve { sketch, .. } => {
+                    CsgNode::Revolve { sketch, wall_subs, .. } => {
                         return Some(Primitive::Revolve {
                             sketch: (**sketch).clone(),
                             center: t.translate,
+                            wall_subs: wall_subs.as_deref().cloned(),
                         })
                     }
                     CsgNode::Helix {
-                        sketch, pitch, turns, left_handed, taper, start_angle, ..
+                        sketch, pitch, turns, left_handed, taper, start_angle, wall_subs, ..
                     } => {
                         return Some(Primitive::Helix {
                             sketch: (**sketch).clone(),
@@ -1157,6 +1181,7 @@ impl DecodedFeature {
                             left_handed: *left_handed,
                             taper: *taper,
                             start_angle: *start_angle,
+                            wall_subs: wall_subs.as_deref().cloned(),
                         })
                     }
                     _ => cur = inner,
@@ -1657,33 +1682,42 @@ impl CsgNode {
                 id,
                 sketch,
                 half_height,
+                wall_subs,
             } => {
                 if open.has_feature(id.as_u32_or_root().unwrap_or(0)) {
-                    let d2 = sketch
-                        .sdf_retained([p[0], p[1]], &mut |g| open.contains_sub(id, g));
+                    let ws = wall_subs.as_deref().map(|v| v.as_slice());
+                    let d2 = sketch.sdf_retained([p[0], p[1]], &mut |g| {
+                        open.contains_sub(id, map_wall_sub(ws, g))
+                    });
                     extrude_retained_combine(id, d2, p[2], *half_height, open)
                 } else {
                     sdf_extrude(sketch.sdf([p[0], p[1]]), p[2], *half_height)
                 }
             }
-            CsgNode::Revolve { id, sketch } => {
+            CsgNode::Revolve { id, sketch, wall_subs } => {
                 let r = (p[0] * p[0] + p[2] * p[2]).sqrt();
                 if open.has_feature(id.as_u32_or_root().unwrap_or(0)) {
-                    sketch.sdf_retained([r, p[1]], &mut |g| open.contains_sub(id, g))
+                    let ws = wall_subs.as_deref().map(|v| v.as_slice());
+                    sketch.sdf_retained([r, p[1]], &mut |g| {
+                        open.contains_sub(id, map_wall_sub(ws, g))
+                    })
                 } else {
                     sketch.sdf([r, p[1]])
                 }
             }
             CsgNode::Helix {
                 id, sketch, pitch, turns, left_handed, taper, start_angle,
-                y_anchor, r_inner,
+                y_anchor, r_inner, wall_subs,
             } => {
                 let (q, ell, scale, _cap_side) = crate::helix_profile_point(
                     p, *pitch, *turns, *left_handed, *taper, *y_anchor, *r_inner,
                     *start_angle,
                 );
                 let d = if open.has_feature(id.as_u32_or_root().unwrap_or(0)) {
-                    sketch.sdf_retained(q, &mut |g| open.contains_sub(id, g))
+                    let ws = wall_subs.as_deref().map(|v| v.as_slice());
+                    sketch.sdf_retained(q, &mut |g| {
+                        open.contains_sub(id, map_wall_sub(ws, g))
+                    })
                 } else {
                     sketch.sdf(q)
                 };
@@ -1913,6 +1947,7 @@ impl CsgNode {
                 id,
                 sketch,
                 half_height,
+                wall_subs,
             } => {
                 // Per-segment identity (DL-46) + cap split (DL-50) +
                 // eps-banded multi-contributors (DL-65): the sketch band
@@ -1921,9 +1956,10 @@ impl CsgNode {
                 // edge names both colliding branches (uniform with analytic
                 // CSG; the both-branches gate no longer needs to special-
                 // case sweeps).
+                let ws = wall_subs.as_deref().map(|v| v.as_slice());
                 if open.has_feature(id.as_u32_or_root().unwrap_or(0)) {
                     let band = sketch.sdf_with_edges_retained([p[0], p[1]], eps, &mut |g| {
-                        open.contains_sub(id, g)
+                        open.contains_sub(id, map_wall_sub(ws, g))
                     });
                     let d = extrude_retained_combine(id, band.distance, p[2], *half_height, open);
                     let c = extrude_contributors_retained(
@@ -1933,30 +1969,32 @@ impl CsgNode {
                         *half_height,
                         eps,
                         open,
+                        ws,
                     );
                     (d, c)
                 } else {
                     let band = sketch.sdf_with_edges([p[0], p[1]], eps);
                     let d = sdf_extrude(band.distance, p[2], *half_height);
-                    let c = extrude_contributors(id, &band, p[2], *half_height, eps);
+                    let c = extrude_contributors(id, &band, p[2], *half_height, eps, ws);
                     (d, c)
                 }
             }
-            CsgNode::Revolve { id, sketch } => {
+            CsgNode::Revolve { id, sketch, wall_subs } => {
                 let r = (p[0] * p[0] + p[2] * p[2]).sqrt();
+                let ws = wall_subs.as_deref().map(|v| v.as_slice());
                 let band = if open.has_feature(id.as_u32_or_root().unwrap_or(0)) {
                     sketch.sdf_with_edges_retained([r, p[1]], eps, &mut |g| {
-                        open.contains_sub(id, g)
+                        open.contains_sub(id, map_wall_sub(ws, g))
                     })
                 } else {
                     sketch.sdf_with_edges([r, p[1]], eps)
                 };
-                let c = revolve_contributors(id, &band);
+                let c = revolve_contributors(id, &band, ws);
                 (band.distance, c)
             }
             CsgNode::Helix {
                 id, sketch, pitch, turns, left_handed, taper, start_angle,
-                y_anchor, r_inner,
+                y_anchor, r_inner, wall_subs,
             } => {
                 let (q, ell, scale, cap_side) = crate::helix_profile_point(
                     p, *pitch, *turns, *left_handed, *taper, *y_anchor, *r_inner,
@@ -1966,12 +2004,15 @@ impl CsgNode {
                 // it by the inverse Lipschitz scale so profile-space edge
                 // matching stays comparable.
                 let beps = eps / scale.max(1e-6);
+                let ws = wall_subs.as_deref().map(|v| v.as_slice());
                 let band = if open.has_feature(id.as_u32_or_root().unwrap_or(0)) {
-                    sketch.sdf_with_edges_retained(q, beps, &mut |g| open.contains_sub(id, g))
+                    sketch.sdf_with_edges_retained(q, beps, &mut |g| {
+                        open.contains_sub(id, map_wall_sub(ws, g))
+                    })
                 } else {
                     sketch.sdf_with_edges(q, beps)
                 };
-                let c = helix_contributors(id, &band, ell, cap_side, beps);
+                let c = helix_contributors(id, &band, ell, cap_side, beps, ws);
                 (crate::helix_compose(band.distance, ell) * scale, c)
             }
             CsgNode::Sweep { id, sketch, path, closed, twist, .. } => {
@@ -1986,7 +2027,10 @@ impl CsgNode {
                         } else {
                             bounded.sdf_with_edges([cs.u, cs.v], eps)
                         };
-                        let c = revolve_contributors(id, &band);
+                        // General sweeps keep positional wall subs (no
+                        // stable-ordinal table yet — Onshape import doesn't
+                        // emit them and the numbering is self-consistent).
+                        let c = revolve_contributors(id, &band, None);
                         (crate::sweep_path::sweep_compose(band.distance, cs.w), c)
                     }
                     None => (f32::INFINITY, Contributors::empty()),
@@ -2191,12 +2235,27 @@ pub(crate) fn extrude_retained_combine(
 /// real edge instead of a singleton. `z`/`half_height` are in the
 /// canonical (centred) local extrude frame, so the cap split is
 /// placement-independent.
+/// Map a positional wall boundary group to the branch sub-id that names
+/// the swept wall face. With a `wall_subs` table (stable sketch-entity
+/// ordinals, see [`Primitive::Extrude`]) the group indexes the table; an
+/// out-of-range group keeps its positional id (defensive — the table is
+/// built for exactly the profile's group count). Without a table the
+/// positional id IS the sub (legacy numbering).
+#[inline]
+pub(crate) fn map_wall_sub(wall_subs: Option<&[u32]>, g: u32) -> u32 {
+    match wall_subs {
+        Some(t) => t.get(g as usize).copied().unwrap_or(g),
+        None => g,
+    }
+}
+
 pub(crate) fn extrude_contributors(
     id: &FeatureId,
     band: &SketchEdgeBand,
     z: f32,
     half_height: f32,
     eps: f32,
+    wall_subs: Option<&[u32]>,
 ) -> Contributors {
     let wall = band.distance;
     let cap = z.abs() - half_height;
@@ -2204,7 +2263,7 @@ pub(crate) fn extrude_contributors(
     let mut c = Contributors::empty();
     if (wall - d_max).abs() <= eps {
         for &g in band.groups() {
-            c.push(BranchId::from_feature_sub(id, g));
+            c.push(BranchId::from_feature_sub(id, map_wall_sub(wall_subs, g)));
         }
     }
     if (cap - d_max).abs() <= eps {
@@ -2219,7 +2278,7 @@ pub(crate) fn extrude_contributors(
     // wall group so the point still has a provenance.
     if c.is_empty() {
         let g = band.groups().first().copied().unwrap_or(0);
-        c.push(BranchId::from_feature_sub(id, g));
+        c.push(BranchId::from_feature_sub(id, map_wall_sub(wall_subs, g)));
     }
     c
 }
@@ -2234,6 +2293,7 @@ pub(crate) fn extrude_contributors_retained(
     half_height: f32,
     eps: f32,
     open: &OpenBranchSet<'_>,
+    wall_subs: Option<&[u32]>,
 ) -> Contributors {
     let wall = band.distance;
     let top = if open.contains_sub(id, BranchId::EXTRUDE_CAP_TOP_SUB) {
@@ -2250,7 +2310,7 @@ pub(crate) fn extrude_contributors_retained(
     let mut c = Contributors::empty();
     if (wall - d_max).abs() <= eps {
         for &g in band.groups() {
-            c.push(BranchId::from_feature_sub(id, g));
+            c.push(BranchId::from_feature_sub(id, map_wall_sub(wall_subs, g)));
         }
     }
     if top.is_finite() && (top - d_max).abs() <= eps {
@@ -2261,7 +2321,7 @@ pub(crate) fn extrude_contributors_retained(
     }
     if c.is_empty() {
         let g = band.groups().first().copied().unwrap_or(0);
-        c.push(BranchId::from_feature_sub(id, g));
+        c.push(BranchId::from_feature_sub(id, map_wall_sub(wall_subs, g)));
     }
     c
 }
@@ -2281,13 +2341,14 @@ pub(crate) fn helix_contributors(
     ell: f32,
     cap_side: f32,
     beps: f32,
+    wall_subs: Option<&[u32]>,
 ) -> Contributors {
     let wall = band.distance;
     let d_max = wall.max(ell);
     let mut c = Contributors::empty();
     if (wall - d_max).abs() <= beps {
         for &g in band.groups() {
-            c.push(BranchId::from_feature_sub(id, g));
+            c.push(BranchId::from_feature_sub(id, map_wall_sub(wall_subs, g)));
         }
     }
     if (ell - d_max).abs() <= beps {
@@ -2300,18 +2361,22 @@ pub(crate) fn helix_contributors(
     }
     if c.is_empty() {
         let g = band.groups().first().copied().unwrap_or(0);
-        c.push(BranchId::from_feature_sub(id, g));
+        c.push(BranchId::from_feature_sub(id, map_wall_sub(wall_subs, g)));
     }
     c
 }
 
-pub(crate) fn revolve_contributors(id: &FeatureId, band: &SketchEdgeBand) -> Contributors {
+pub(crate) fn revolve_contributors(
+    id: &FeatureId,
+    band: &SketchEdgeBand,
+    wall_subs: Option<&[u32]>,
+) -> Contributors {
     let mut c = Contributors::empty();
     for &g in band.groups() {
-        c.push(BranchId::from_feature_sub(id, g));
+        c.push(BranchId::from_feature_sub(id, map_wall_sub(wall_subs, g)));
     }
     if c.is_empty() {
-        c.push(BranchId::from_feature_sub(id, 0));
+        c.push(BranchId::from_feature_sub(id, map_wall_sub(wall_subs, 0)));
     }
     c
 }

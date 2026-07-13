@@ -158,10 +158,12 @@ fn remap_rec(node: CsgNode, base: &FeatureId, counter: &mut u32) -> CsgNode {
     };
     match node {
         CsgNode::Leaf { primitive, .. } => CsgNode::Leaf { id: fresh(), primitive },
-        CsgNode::Extrude { sketch, half_height, .. } => {
-            CsgNode::Extrude { id: fresh(), sketch, half_height }
+        CsgNode::Extrude { sketch, half_height, wall_subs, .. } => {
+            CsgNode::Extrude { id: fresh(), sketch, half_height, wall_subs }
         }
-        CsgNode::Revolve { sketch, .. } => CsgNode::Revolve { id: fresh(), sketch },
+        CsgNode::Revolve { sketch, wall_subs, .. } => {
+            CsgNode::Revolve { id: fresh(), sketch, wall_subs }
+        }
         CsgNode::Transform(t, inner) => {
             CsgNode::Transform(t, Box::new(remap_rec(*inner, base, counter)))
         }

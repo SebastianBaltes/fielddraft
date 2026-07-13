@@ -1526,6 +1526,29 @@ export class Kernel {
     }[];
   }
 
+  /** Resolve a canonical query string against the woven B-Reps
+   *  (Onshape-Import: uniqueness check before storing a translated plane
+   *  query). Each match carries the fingerprint-carrying canonical
+   *  element form plus the body-local centroid for disambiguation. A
+   *  parse error yields an empty list (the importer treats it as
+   *  unresolvable). */
+  resolveQuery(query: string): {
+    kind: "face" | "edge" | "vertex";
+    idHash: string;
+    query: string;
+    centroid: number[];
+  }[] {
+    const parsed = JSON.parse(this.inner.resolveQuery(query)) as unknown;
+    return Array.isArray(parsed)
+      ? (parsed as {
+          kind: "face" | "edge" | "vertex";
+          idHash: string;
+          query: string;
+          centroid: number[];
+        }[])
+      : [];
+  }
+
   /** K9.1: overall scene AABB in mm (conservative CSG bound). */
   sceneAabb(): { min: number[]; max: number[]; size: number[] } {
     return JSON.parse(this.inner.sceneAabb()) as {

@@ -154,11 +154,12 @@ fn push_sketch_walls(
     group_count: u32,
     wall_kind: SurfaceKind,
     aabb: Aabb,
+    wall_subs: Option<&[u32]>,
     out: &mut Vec<Branch>,
 ) {
     for g in 0..group_count {
         out.push(Branch {
-            id: BranchId::from_feature_sub(id, g),
+            id: BranchId::from_feature_sub(id, crate::csg::map_wall_sub(wall_subs, g)),
             kind: wall_kind,
             aabb,
         });
@@ -213,13 +214,14 @@ fn leaf_branches(node: &BoundedCsg) -> Vec<Branch> {
             // HexPrism/ImportedMesh) → octree fallback, no branches.
         }
 
-        BoundedCsg::Extrude { id, sketch, aabb, .. } => {
-            // Wall groups `0 .. edge_count` …
+        BoundedCsg::Extrude { id, sketch, aabb, wall_subs, .. } => {
+            // Wall groups `0 .. edge_count`, mapped to their stable subs …
             push_sketch_walls(
                 id,
                 sketch.edge_count(),
                 SurfaceKind::ExtrudeWall,
                 *aabb,
+                wall_subs.as_deref().map(|v| v.as_slice()),
                 &mut out,
             );
             // … plus the two reserved caps (DL-50).
@@ -235,13 +237,14 @@ fn leaf_branches(node: &BoundedCsg) -> Vec<Branch> {
             }
         }
 
-        BoundedCsg::Revolve { id, sketch, aabb, .. } => {
+        BoundedCsg::Revolve { id, sketch, aabb, wall_subs, .. } => {
             // Revolve has no caps — only wall groups.
             push_sketch_walls(
                 id,
                 sketch.edge_count(),
                 SurfaceKind::RevolveWall,
                 *aabb,
+                wall_subs.as_deref().map(|v| v.as_slice()),
                 &mut out,
             );
         }
@@ -517,7 +520,7 @@ mod tests {
             center: [0.0, 0.0],
             half_extents: [5.0, 3.0],
         });
-        let csg = CsgNode::Extrude {
+        let csg = CsgNode::Extrude { wall_subs: None,
             id: FeatureId::from_u32(7),
             sketch: Box::new(sketch),
             half_height: 2.0,
@@ -558,7 +561,7 @@ mod tests {
             center: [5.0, 0.0],
             half_extents: [2.0, 10.0],
         });
-        let csg = CsgNode::Revolve {
+        let csg = CsgNode::Revolve { wall_subs: None,
             id: FeatureId::from_u32(3),
             sketch: Box::new(sketch),
         };

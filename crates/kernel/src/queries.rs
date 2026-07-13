@@ -162,6 +162,30 @@ pub enum QueryExpr {
     /// Onshape import's translation target for `CAP_FACE` /
     /// `SWEPT_FACE` / `BLEND_FACE` creation queries.
     CreatedByRole(FeatureId, FaceRole),
+    /// `qWall(op, entity)` — the lateral wall face(s) of sweep feature
+    /// `op` swept from the sketch entity with stable ordinal `entity`
+    /// (the branch sub-id minted from the sweep's `wall_subs` table —
+    /// naming schema v2). The translation target for Onshape's
+    /// `SWEPT_FACE` queries, whose origin is a sketch entity.
+    Wall(FeatureId, u32),
+    /// `qIntersection(a, b)` — the elements matched by BOTH sub-queries
+    /// (set intersection by identity). Onshape disambiguation queries
+    /// compose provenance with topology filters; this is the composition
+    /// node. Nests arbitrarily.
+    Intersection(Box<QueryExpr>, Box<QueryExpr>),
+    /// `qCommonEdge(a, b)` — the B-Rep edges shared by a face matched
+    /// by `a` and a face matched by `b`. The import translation for
+    /// Onshape's INTERSECT edge queries (a fillet edge named as "the
+    /// edge where the cap meets this swept wall").
+    CommonEdge(Box<QueryExpr>, Box<QueryExpr>),
+    /// `qAdjacentTo(a, b)` — the faces matched by `a` that share at
+    /// least one B-Rep edge with a face matched by `b`. The FieldDraft
+    /// analogue of Onshape's TOPOLOGY-neighbourhood disambiguation
+    /// (`SWEPT_EDGE` → `TRUE_DEPENDENCY` → `BLEND_FACE`, boolean
+    /// `SPLIT` fragments): after a boolean splits a swept wall into
+    /// several faces of the same branch, adjacency to a named
+    /// neighbour picks the right fragment.
+    AdjacentTo(Box<QueryExpr>, Box<QueryExpr>),
     /// `qFaceOf(id)` — the face(s) owned by a single feature. At
     /// the feature level this is the same set as `CreatedBy`, but
     /// the distinction is preserved so downstream slices can
@@ -207,6 +231,10 @@ impl fmt::Display for QueryExpr {
         match self {
             QueryExpr::CreatedBy(id) => write!(f, "qCreatedBy({id})"),
             QueryExpr::CreatedByRole(id, role) => write!(f, "qCreatedBy({id}, {role})"),
+            QueryExpr::Wall(id, entity) => write!(f, "qWall({id}, {entity})"),
+            QueryExpr::Intersection(a, b) => write!(f, "qIntersection({a}, {b})"),
+            QueryExpr::AdjacentTo(a, b) => write!(f, "qAdjacentTo({a}, {b})"),
+            QueryExpr::CommonEdge(a, b) => write!(f, "qCommonEdge({a}, {b})"),
             QueryExpr::FaceOf(id) => write!(f, "qFaceOf({id})"),
             QueryExpr::EdgeBetween(a, b) => write!(f, "qEdgeBetween({a}, {b})"),
             QueryExpr::AllRegions(id) => write!(f, "qAllRegions({id})"),
@@ -321,10 +349,13 @@ pub fn parse_query(input: &str) -> Result<QueryExpr, QueryParseError> {
             "expected closing ')'",
         ))?;
 
+    // Paren-aware top-level split: composed queries (`qIntersection`,
+    // `qAdjacentTo`) carry whole sub-queries as arguments, whose own
+    // commas must not split the outer argument list.
     let args: Vec<&str> = if args_raw.trim().is_empty() {
         Vec::new()
     } else {
-        args_raw.split(',').map(|s| s.trim()).collect()
+        split_top_level(args_raw)
     };
 
     match name.trim() {
@@ -389,6 +420,25 @@ pub fn parse_query(input: &str) -> Result<QueryExpr, QueryParseError> {
             &args,
             "qVertex expects one id_hash",
         )?)),
+        "qWall" => {
+            let (a, b) = expect_two_ids(&args, "qWall expects op_id and entity ordinal")?;
+            let entity = b.as_u32_if_flat().ok_or(QueryParseError::InvalidFeatureId(
+                "wall entity ordinal must be a plain number".to_string(),
+            ))?;
+            Ok(QueryExpr::Wall(a, entity))
+        }
+        "qIntersection" => {
+            let (a, b) = expect_two_subqueries(&args, "qIntersection expects two queries")?;
+            Ok(QueryExpr::Intersection(Box::new(a), Box::new(b)))
+        }
+        "qAdjacentTo" => {
+            let (a, b) = expect_two_subqueries(&args, "qAdjacentTo expects two queries")?;
+            Ok(QueryExpr::AdjacentTo(Box::new(a), Box::new(b)))
+        }
+        "qCommonEdge" => {
+            let (a, b) = expect_two_subqueries(&args, "qCommonEdge expects two queries")?;
+            Ok(QueryExpr::CommonEdge(Box::new(a), Box::new(b)))
+        }
         "qSketchLine" => {
             let (a, b) = expect_two_ids(&args, "qSketchLine expects sketch_id and line_id")?;
             let line = b.as_u32_if_flat().ok_or(QueryParseError::InvalidFeatureId(
@@ -398,6 +448,37 @@ pub fn parse_query(input: &str) -> Result<QueryExpr, QueryParseError> {
         }
         other => Err(QueryParseError::UnknownQuery(other.to_string())),
     }
+}
+
+/// Split an argument list on TOP-LEVEL commas only — commas inside
+/// nested `q…(…)` sub-queries stay with their argument.
+fn split_top_level(args_raw: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    let mut depth = 0usize;
+    let mut start = 0usize;
+    for (i, ch) in args_raw.char_indices() {
+        match ch {
+            '(' => depth += 1,
+            ')' => depth = depth.saturating_sub(1),
+            ',' if depth == 0 => {
+                out.push(args_raw[start..i].trim());
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    out.push(args_raw[start..].trim());
+    out
+}
+
+fn expect_two_subqueries(
+    args: &[&str],
+    message: &'static str,
+) -> Result<(QueryExpr, QueryExpr), QueryParseError> {
+    if args.len() != 2 {
+        return Err(QueryParseError::MalformedArguments(message));
+    }
+    Ok((parse_query(args[0])?, parse_query(args[1])?))
 }
 
 fn expect_one_id(
@@ -529,6 +610,127 @@ pub fn resolve_query_topo(
                     let face = &brep.faces[i];
                     if face.branch_id.feature_id() == target && face_role(face) == *role {
                         out.push(TopoRef::from_face(brep, FaceId(i as u32)));
+                    }
+                }
+            }
+        }
+        QueryExpr::Wall(f, entity) => {
+            let Some(target) = f.as_u32_or_root() else {
+                return Vec::new();
+            };
+            for brep in breps {
+                for i in 0..brep.faces.len() {
+                    let face = &brep.faces[i];
+                    let b = face.branch_id;
+                    if b.feature_id() == target
+                        && !b.is_inner_wall()
+                        && b.sub() == *entity
+                        && face_role(face) == FaceRole::Wall
+                    {
+                        out.push(TopoRef::from_face(brep, FaceId(i as u32)));
+                    }
+                }
+            }
+        }
+        QueryExpr::Intersection(a, b) => {
+            let b_ids: std::collections::HashSet<u64> = resolve_query_topo(breps, b)
+                .into_iter()
+                .map(|r| r.id_hash)
+                .collect();
+            out = resolve_query_topo(breps, a)
+                .into_iter()
+                .filter(|r| b_ids.contains(&r.id_hash))
+                .collect();
+        }
+        QueryExpr::CommonEdge(a, b) => {
+            use crate::brep::naming::EntityKind;
+            use std::collections::HashSet;
+            let a_ids: HashSet<u64> = resolve_query_topo(breps, a)
+                .into_iter()
+                .filter(|r| r.kind == EntityKind::Face)
+                .map(|r| r.id_hash)
+                .collect();
+            let b_ids: HashSet<u64> = resolve_query_topo(breps, b)
+                .into_iter()
+                .filter(|r| r.kind == EntityKind::Face)
+                .map(|r| r.id_hash)
+                .collect();
+            for brep in breps {
+                let refs: Vec<TopoRef> = (0..brep.faces.len())
+                    .map(|i| TopoRef::from_face(brep, FaceId(i as u32)))
+                    .collect();
+                let edges_of = |i: usize| -> std::collections::HashSet<u32> {
+                    let f = &brep.faces[i];
+                    f.outer
+                        .edges
+                        .iter()
+                        .chain(f.inner.iter().flat_map(|l| l.edges.iter()))
+                        .map(|(e, _)| e.0)
+                        .collect()
+                };
+                let mut shared: Vec<u32> = Vec::new();
+                for i in 0..brep.faces.len() {
+                    if !a_ids.contains(&refs[i].id_hash) {
+                        continue;
+                    }
+                    let ei = edges_of(i);
+                    for j in 0..brep.faces.len() {
+                        if j == i || !b_ids.contains(&refs[j].id_hash) {
+                            continue;
+                        }
+                        for e in ei.intersection(&edges_of(j)) {
+                            shared.push(*e);
+                        }
+                    }
+                }
+                shared.sort_unstable();
+                shared.dedup();
+                for e in shared {
+                    out.push(TopoRef::from_edge(brep, EdgeId(e)));
+                }
+            }
+        }
+        QueryExpr::AdjacentTo(a, b) => {
+            use crate::brep::naming::EntityKind;
+            use std::collections::HashSet;
+            let a_ids: HashSet<u64> = resolve_query_topo(breps, a)
+                .into_iter()
+                .filter(|r| r.kind == EntityKind::Face)
+                .map(|r| r.id_hash)
+                .collect();
+            let b_ids: HashSet<u64> = resolve_query_topo(breps, b)
+                .into_iter()
+                .filter(|r| r.kind == EntityKind::Face)
+                .map(|r| r.id_hash)
+                .collect();
+            for brep in breps {
+                // Face → boundary-edge sets, once per body.
+                let face_edges: Vec<HashSet<u32>> = brep
+                    .faces
+                    .iter()
+                    .map(|f| {
+                        f.outer
+                            .edges
+                            .iter()
+                            .chain(f.inner.iter().flat_map(|l| l.edges.iter()))
+                            .map(|(e, _)| e.0)
+                            .collect()
+                    })
+                    .collect();
+                let refs: Vec<TopoRef> = (0..brep.faces.len())
+                    .map(|i| TopoRef::from_face(brep, FaceId(i as u32)))
+                    .collect();
+                for i in 0..brep.faces.len() {
+                    if !a_ids.contains(&refs[i].id_hash) {
+                        continue;
+                    }
+                    let touches_b = (0..brep.faces.len()).any(|j| {
+                        j != i
+                            && b_ids.contains(&refs[j].id_hash)
+                            && !face_edges[i].is_disjoint(&face_edges[j])
+                    });
+                    if touches_b {
+                        out.push(refs[i]);
                     }
                 }
             }
@@ -1120,6 +1322,121 @@ mod tests {
         })
         .sum();
         assert_eq!(all.len(), by_role, "roles partition the CreatedBy set");
+    }
+
+    // ─── qWall / qIntersection / qAdjacentTo (Schritt 3) ──────
+
+    #[test]
+    fn parses_and_roundtrips_wall() {
+        let q = parse_query("qWall(3, 7)").unwrap();
+        assert_eq!(q, QueryExpr::Wall(id(3), 7));
+        assert_eq!(q.to_string(), "qWall(3, 7)");
+    }
+
+    #[test]
+    fn parses_and_roundtrips_nested_composition() {
+        // Top-level splitting must NOT break on the nested commas.
+        let raw = "qIntersection(qCreatedBy(2, WALL), qAdjacentTo(qWall(2, 3), qCreatedBy(9, BLEND)))";
+        let q = parse_query(raw).unwrap();
+        assert_eq!(
+            q,
+            QueryExpr::Intersection(
+                Box::new(QueryExpr::CreatedByRole(id(2), FaceRole::Wall)),
+                Box::new(QueryExpr::AdjacentTo(
+                    Box::new(QueryExpr::Wall(id(2), 3)),
+                    Box::new(QueryExpr::CreatedByRole(id(9), FaceRole::Blend)),
+                )),
+            )
+        );
+        assert_eq!(q.to_string(), raw, "Display is the canonical wire form");
+        assert_eq!(parse_query(&q.to_string()).unwrap(), q);
+    }
+
+    #[test]
+    fn rejects_malformed_composition() {
+        assert!(matches!(
+            parse_query("qIntersection(qCreatedBy(1))"),
+            Err(QueryParseError::MalformedArguments(_))
+        ));
+        assert!(parse_query("qAdjacentTo(qBogus(1), qCreatedBy(2))").is_err());
+    }
+
+    /// A three-face body with shared edges: wall A (feature 7, sub 3),
+    /// wall B (feature 7, sub 6) and a blend face (feature 9). Edge 0
+    /// joins wall A ↔ blend, edge 1 joins wall A ↔ wall B — so only
+    /// wall A is blend-adjacent.
+    fn adjacency_brep() -> BRep {
+        let f7 = FeatureId::from_u32(7);
+        let f9 = FeatureId::from_u32(9);
+        let mut brep = BRep::new();
+        let e_ab = brep.add_edge(Edge::new(
+            EdgeGeometry::Polyline(vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]]),
+            BranchId::from_feature_sub(&f7, 3),
+            BranchId::from_feature_sub(&f9, 0),
+            None,
+            None,
+        ));
+        let e_aw = brep.add_edge(Edge::new(
+            EdgeGeometry::Polyline(vec![[0.0, 1.0, 0.0], [1.0, 1.0, 0.0]]),
+            BranchId::from_feature_sub(&f7, 3),
+            BranchId::from_feature_sub(&f7, 6),
+            None,
+            None,
+        ));
+        let mut wall_a = plane_face(BranchId::from_feature_sub(&f7, 3));
+        wall_a.outer = Loop::new(vec![(e_ab, false), (e_aw, false)]);
+        let mut wall_b = plane_face(BranchId::from_feature_sub(&f7, 6));
+        wall_b.outer = Loop::new(vec![(e_aw, true)]);
+        let mut blend = blend_face(BranchId::from_feature_sub(&f9, 0));
+        blend.outer = Loop::new(vec![(e_ab, true)]);
+        brep.add_face(wall_a);
+        brep.add_face(wall_b);
+        brep.add_face(blend);
+        brep
+    }
+
+    #[test]
+    fn resolve_wall_picks_by_stable_entity_sub() {
+        let brep = adjacency_brep();
+        let refs =
+            resolve_query_topo(std::slice::from_ref(&brep), &QueryExpr::Wall(id(7), 3));
+        assert_eq!(refs.len(), 1, "exactly the sub-3 wall");
+        assert!(resolve_query_topo(std::slice::from_ref(&brep), &QueryExpr::Wall(id(7), 5))
+            .is_empty());
+        // A blend face at sub 0 must NOT satisfy qWall(9, 0).
+        assert!(resolve_query_topo(std::slice::from_ref(&brep), &QueryExpr::Wall(id(9), 0))
+            .is_empty());
+    }
+
+    #[test]
+    fn resolve_intersection_intersects_by_identity() {
+        let brep = adjacency_brep();
+        let q = QueryExpr::Intersection(
+            Box::new(QueryExpr::CreatedByRole(id(7), FaceRole::Wall)),
+            Box::new(QueryExpr::Wall(id(7), 3)),
+        );
+        let refs = resolve_query_topo(std::slice::from_ref(&brep), &q);
+        assert_eq!(refs.len(), 1, "both walls ∩ the sub-3 wall = one face");
+        let disjoint = QueryExpr::Intersection(
+            Box::new(QueryExpr::Wall(id(7), 3)),
+            Box::new(QueryExpr::Wall(id(7), 6)),
+        );
+        assert!(resolve_query_topo(std::slice::from_ref(&brep), &disjoint).is_empty());
+    }
+
+    #[test]
+    fn resolve_adjacent_to_picks_the_blend_neighbour() {
+        // THE Kabelbox disambiguation shape: of the walls feature 7
+        // swept, pick the one sharing an edge with the fillet's blend.
+        let brep = adjacency_brep();
+        let q = QueryExpr::AdjacentTo(
+            Box::new(QueryExpr::CreatedByRole(id(7), FaceRole::Wall)),
+            Box::new(QueryExpr::CreatedByRole(id(9), FaceRole::Blend)),
+        );
+        let refs = resolve_query_topo(std::slice::from_ref(&brep), &q);
+        assert_eq!(refs.len(), 1, "only wall A touches the blend");
+        let want = TopoRef::from_face(&brep, crate::brep::FaceId(0));
+        assert_eq!(refs[0].id_hash, want.id_hash, "and it is wall A");
     }
 
     // ─── id_hash-addressed element queries (resolve) ──────────

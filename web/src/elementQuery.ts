@@ -139,6 +139,15 @@ export function queryAcceptedByFilter(query: string, entityFilter?: string): boo
       return has("SKETCHLINE");
     case "FaceOf":
       return has("FACE");
+    case "Wall":
+    case "Intersection":
+    case "AdjacentTo":
+      // Wall-by-entity and the composed disambiguation forms
+      // (Onshape-Import Schritt 3) address faces.
+      return has("FACE");
+    case "CommonEdge":
+      // The shared edge of two face sets is an EDGE-level query.
+      return has("EDGE");
     case "Region":
     case "Regions":
     case "AllRegions":

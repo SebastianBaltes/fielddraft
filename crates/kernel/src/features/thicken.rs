@@ -100,6 +100,7 @@ pub(crate) fn thicken_diff_node(
             // Extrude-local z maps to surface-local −y under the rotation
             // below, so the slab centre picks up a sign flip.
             center: [0.0, 0.0, -t.center_y],
+            wall_subs: None,
         },
     };
     let rot_x_90 = fielddraft_protocol::Transform {

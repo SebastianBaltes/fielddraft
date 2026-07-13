@@ -239,7 +239,7 @@ fn main() {
     let outer = Sketch2d::Prim(Sketch2dPrimitive::Circle { center: [0.0, 0.0], radius: 9.0 });
     let inner = Sketch2d::Prim(Sketch2dPrimitive::Circle { center: [0.0, 0.0], radius: 4.0 });
     let washer = Sketch2d::Difference(Box::new(outer), Box::new(inner));
-    let bvh = BoundedCsg::from_csg(&CsgNode::Extrude {
+    let bvh = BoundedCsg::from_csg(&CsgNode::Extrude { wall_subs: None,
         id: FeatureId::from_u32(1),
         sketch: Box::new(washer),
         half_height: 3.0,
@@ -250,7 +250,7 @@ fn main() {
         center: [8.0, 0.0],
         half_extents: [2.0, 5.0],
     });
-    let bvh = BoundedCsg::from_csg(&CsgNode::Revolve {
+    let bvh = BoundedCsg::from_csg(&CsgNode::Revolve { wall_subs: None,
         id: FeatureId::from_u32(1),
         sketch: Box::new(rect),
     });
@@ -294,13 +294,13 @@ fn main() {
             closed: true,
         })
     };
-    let bvh = BoundedCsg::from_csg(&CsgNode::Revolve {
+    let bvh = BoundedCsg::from_csg(&CsgNode::Revolve { wall_subs: None,
         id: FeatureId::from_u32(1),
         sketch: Box::new(path_profile()),
     });
     emit("revolve_path", &bvh, &pts);
 
-    let bvh = BoundedCsg::from_csg(&CsgNode::Extrude {
+    let bvh = BoundedCsg::from_csg(&CsgNode::Extrude { wall_subs: None,
         id: FeatureId::from_u32(1),
         sketch: Box::new(path_profile()),
         half_height: 5.0,
@@ -345,6 +345,7 @@ fn main() {
             left_handed: false,
             taper: 0.05,
             start_angle: 0.4,
+            wall_subs: None,
         },
         xform([0.0, 0.0, 0.0], id, s1),
     )]));
@@ -361,6 +362,7 @@ fn main() {
             left_handed: true,
             taper: 0.0,
             start_angle: 0.0,
+            wall_subs: None,
         },
         xform([2.0, 1.0, -1.0], tilt_quat(), s1),
     )]));

@@ -148,6 +148,7 @@ pub(super) fn collect_halfspaces(node: &BoundedCsg, out: &mut BranchSurfaceMap) 
             collect_revolve_profile_carriers(inner, &mut profiles);
             let opened =
                 |branch: u32| open_faces.iter().any(|f| f.branch == branch);
+            let tables = wall_sub_tables(inner);
             for (key, (hs, xf)) in &sub {
                 // An OPENED face has no inner wall — the cavity passes
                 // through it (retained-boundary erosion).
@@ -201,8 +202,26 @@ pub(super) fn collect_halfspaces(node: &BoundedCsg, out: &mut BranchSurfaceMap) 
                                 ob.feature_id() == f && ob.sub() == n
                             })
                         };
-                        *extend_start = g == 0 || !neighbour_open(g - 1);
-                        *extend_end = !neighbour_open(g + 1);
+                        // Neighbourhood is POSITIONAL (adjacent boundary
+                        // groups along the profile chain). With a stable
+                        // wall_subs table the stored sub is an entity
+                        // ordinal, so translate: position in the table →
+                        // ±1 → back to the neighbours' stable subs.
+                        // Without a table the sub IS the position.
+                        let (prev, next) = match tables.get(&f) {
+                            Some(t) => match t.iter().position(|&s| s == g) {
+                                Some(pos) => (
+                                    pos.checked_sub(1).map(|i| t[i]),
+                                    t.get(pos + 1).copied(),
+                                ),
+                                // Sub not in the table (cap / inner wall /
+                                // foreign) — no chain neighbours.
+                                None => (None, None),
+                            },
+                            None => (g.checked_sub(1), Some(g + 1)),
+                        };
+                        *extend_start = prev.is_none_or(|n| !neighbour_open(n));
+                        *extend_end = next.is_none_or(|n| !neighbour_open(n));
                     }
                     out.entry(BranchId(*key).inner_wall().as_u32())
                         .or_insert((inner_hs, inner_xf));
@@ -215,14 +234,29 @@ pub(super) fn collect_halfspaces(node: &BoundedCsg, out: &mut BranchSurfaceMap) 
             sketch,
             half_height,
             world_transform,
+            wall_subs,
             ..
-        } => collect_extrude_halfspaces(id, sketch, *half_height, world_transform, out),
+        } => collect_extrude_halfspaces(
+            id,
+            sketch,
+            *half_height,
+            world_transform,
+            wall_subs.as_deref().map(|v| v.as_slice()),
+            out,
+        ),
         BoundedCsg::Revolve {
             id,
             sketch,
             world_transform,
+            wall_subs,
             ..
-        } => collect_revolve_halfspaces(id, sketch, world_transform, out),
+        } => collect_revolve_halfspaces(
+            id,
+            sketch,
+            world_transform,
+            wall_subs.as_deref().map(|v| v.as_slice()),
+            out,
+        ),
         // The helix WALL is non-Lipschitz (no analytic carrier), but its two
         // open-end CAPS are planar: every profile point at a fixed sweep angle
         // `θ` lies in the half-plane through the local Y axis at that angle
@@ -267,10 +301,12 @@ fn collect_revolve_profile_carriers(
     out: &mut HashMap<u32, (fielddraft_protocol::HalfSpace, Transform)>,
 ) {
     match node {
-        BoundedCsg::Revolve { id, sketch, world_transform, .. } => {
+        BoundedCsg::Revolve { id, sketch, world_transform, wall_subs, .. } => {
+            let ws = wall_subs.as_deref().map(|v| v.as_slice());
             let mut groups = Vec::new();
             collect_path_group_segments(sketch, 0, &mut groups);
             for (g, segments, ccw) in groups {
+                let g = crate::csg::map_wall_sub(ws, g);
                 out.entry(BranchId::from_feature_sub(id, g).as_u32()).or_insert((
                     fielddraft_protocol::HalfSpace::RevolvedProfile {
                         segments,
@@ -420,3 +456,44 @@ pub(super) fn collect_parity(node: &BoundedCsg, flipped: bool, out: &mut std::co
 }
 
 // ─── Extrude / Revolve analytic faces (DL-50) ────────────────────────────────
+
+/// Collect the stable wall-sub tables of every sketch-sweep leaf under
+/// `node`, keyed by flat feature id. The Shell inner-wall extension logic
+/// needs them to translate a stored (stable) wall sub back into its
+/// POSITIONAL chain neighbourhood — with stable entity-ordinal subs the
+/// `g ± 1` arithmetic no longer walks the profile chain.
+fn wall_sub_tables(node: &BoundedCsg) -> HashMap<u32, std::sync::Arc<Vec<u32>>> {
+    fn walk(node: &BoundedCsg, out: &mut HashMap<u32, std::sync::Arc<Vec<u32>>>) {
+        match node {
+            BoundedCsg::Extrude { id, wall_subs: Some(t), .. }
+            | BoundedCsg::Revolve { id, wall_subs: Some(t), .. }
+            | BoundedCsg::Helix { id, wall_subs: Some(t), .. } => {
+                out.insert(id.as_u32_or_root().unwrap_or(0), t.clone());
+            }
+            BoundedCsg::Union { left, right, .. }
+            | BoundedCsg::Difference { left, right, .. }
+            | BoundedCsg::Intersection { left, right, .. }
+            | BoundedCsg::SmoothUnion { left, right, .. }
+            | BoundedCsg::SmoothDifference { left, right, .. }
+            | BoundedCsg::MaskedBlend { left, right, .. }
+            | BoundedCsg::Morph { left, right, .. } => {
+                walk(left, out);
+                walk(right, out);
+            }
+            BoundedCsg::Twist { inner, .. }
+            | BoundedCsg::Bend { inner, .. }
+            | BoundedCsg::Displace { inner, .. }
+            | BoundedCsg::Shell { inner, .. }
+            | BoundedCsg::Offset { inner, .. } => walk(inner, out),
+            BoundedCsg::Empty
+            | BoundedCsg::Leaf { .. }
+            | BoundedCsg::Extrude { .. }
+            | BoundedCsg::Revolve { .. }
+            | BoundedCsg::Helix { .. }
+            | BoundedCsg::Sweep { .. } => {}
+        }
+    }
+    let mut out = HashMap::new();
+    walk(node, &mut out);
+    out
+}

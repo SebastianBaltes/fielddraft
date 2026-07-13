@@ -97,6 +97,11 @@ export interface OnshapeSketchFeature {
 
 export interface SketchTranslation {
   subCalls: SketchSubCall[];
+  /** Onshape entityId → FieldDraft solver entity id, for every entity the
+   *  translation emitted (curve ids included). The plane translator uses
+   *  this to turn an Onshape `SWEPT_FACE` origin (`<wire>.<suffix>`) into
+   *  the FieldDraft wall ordinal (`qWall(op, <curve id>)`). */
+  entityIds: Record<string, number>;
   diagnostics: {
     /** Onshape btType / constraintType strings we didn't translate, with a
      *  count each — the to-do list a real document surfaces. */
@@ -259,7 +264,11 @@ export function translateOnshapeSketch(
     else bump(`constraint:${c.constraintType ?? c.btType}`);
   }
 
-  return { subCalls, diagnostics: { unhandled, notes } };
+  return {
+    subCalls,
+    entityIds: Object.fromEntries(idMap),
+    diagnostics: { unhandled, notes },
+  };
 }
 
 function withConstruction(

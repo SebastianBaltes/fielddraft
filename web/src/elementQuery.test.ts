@@ -138,6 +138,20 @@ describe("queryAcceptedByFilter — SKETCHREGION profile picker (ticket dhjn)", 
   });
 });
 
+describe("queryAcceptedByFilter — wall/composed queries (Schritt 3)", () => {
+  it("qWall and composed forms are FACE-level", () => {
+    for (const q of [
+      "qWall(3, 7)",
+      "qIntersection(qCreatedBy(2, WALL), qCreatedBy(9, BLEND))",
+      "qAdjacentTo(qWall(2, 3), qCreatedBy(9, BLEND))",
+    ]) {
+      expect(queryAcceptedByFilter(q, "FACE")).toBe(true);
+      expect(queryAcceptedByFilter(q, "EDGE")).toBe(false);
+      expect(queryAcceptedByFilter(q, "BODY")).toBe(false);
+    }
+  });
+});
+
 describe("queryAcceptedByFilter — role-filtered qCreatedBy(op, ROLE)", () => {
   it("is a FACE-level query: accepted by FACE, rejected elsewhere", () => {
     for (const role of ["WALL", "CAP_TOP", "CAP_BOTTOM", "INNER_WALL", "BLEND"]) {

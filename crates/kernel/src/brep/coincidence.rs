@@ -858,7 +858,7 @@ mod tests {
         // analytic faces come from the DL-50 extrude lift, not from
         // primitive_halfspaces — the registry must cover them identically.
         let extrude = |id: u32, z: f32| {
-            let e = CsgNode::Extrude {
+            let e = CsgNode::Extrude { wall_subs: None,
                 id: FeatureId::from_u32(id),
                 sketch: Box::new(Sketch2d::Prim(Sketch2dPrimitive::Rectangle {
                     center: [0.0, 0.0],

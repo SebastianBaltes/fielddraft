@@ -2115,6 +2115,7 @@ fn extrude_derives_profile_extents_from_a_resolved_rectangle_sketch() {
             sketch,
             half_depth_z,
             center: _,
+            wall_subs: _,
         } => {
             assert!((half_depth_z - 6.0).abs() < 1e-5);
             let aabb = sketch.aabb();
@@ -2244,7 +2245,7 @@ fn revolve_lowers_rectangle_sketch_into_primitive_revolve() {
         .find(|f| f.id == revolve_id)
         .expect("revolve spine entry");
     match &revolve_feature.export_primitive().expect("primitive") {
-        Primitive::Revolve { sketch, center } => {
+        Primitive::Revolve { sketch, center, wall_subs: _ } => {
             assert_eq!(*center, [0.0, 0.0, 0.0]);
             let aabb = sketch.aabb();
             assert!((aabb.min[0] - 5.0).abs() < 1e-5);
@@ -2330,7 +2331,7 @@ fn revolve_with_sketch_line_axis_realigns_profile() {
         .find(|f| f.id == revolve_id)
         .expect("revolve spine entry");
     match &revolve_feature.export_primitive().expect("primitive") {
-        Primitive::Revolve { sketch, center } => {
+        Primitive::Revolve { sketch, center, wall_subs: _ } => {
             assert_eq!(*center, [0.0, 0.0, 0.0]);
             let aabb = sketch.aabb();
             assert!((aabb.min[0] - 0.0).abs() < 1e-4, "min x = 0, got {}", aabb.min[0]);
@@ -2990,7 +2991,7 @@ fn extrude_box_top_face_builds_blind_square_slab() {
 
     let ex = ctx2.features.iter().find(|f| f.id == id(2)).expect("extrude");
     let prim = ex.export_primitive().expect("primitive");
-    let Primitive::Extrude { sketch, half_depth_z, center } = prim else {
+    let Primitive::Extrude { sketch, half_depth_z, center, wall_subs: _ } = prim else {
         panic!("expected Primitive::Extrude, got {prim:?}");
     };
     // Blind 5 mm grows [0, 5] along the face normal → half 2.5, centre +2.5.
@@ -3963,7 +3964,7 @@ fn blob_revolve_feature(n: u32) -> DecodedFeature {
         blend_mode: crate::csg::BlendMode::Fillet,
         target_ids: vec![],
         transform: Transform::IDENTITY,
-        node: CsgNode::Revolve { id: id(n), sketch: Box::new(profile) },
+        node: CsgNode::Revolve { wall_subs: None, id: id(n), sketch: Box::new(profile) },
     }
 }
 
@@ -4074,7 +4075,7 @@ fn blob_extrude_feature(n: u32) -> DecodedFeature {
         blend_mode: crate::csg::BlendMode::Fillet,
         target_ids: vec![],
         transform: Transform::IDENTITY,
-        node: CsgNode::Extrude {
+        node: CsgNode::Extrude { wall_subs: None,
             id: id(n),
             sketch: Box::new(profile),
             half_height: 2.0,
@@ -4154,7 +4155,7 @@ fn thicken_one_extrude_wall_trims_to_a_bounded_patch() {
     // quadrants; the one-wall band's XY footprint must be markedly smaller.
     let trimmed_area = xy_footprint(tb);
     let carrier = match blob_extrude_feature(1).node {
-        CsgNode::Extrude { sketch, half_height, .. } => CsgNode::Extrude {
+        CsgNode::Extrude { sketch, half_height, .. } => CsgNode::Extrude { wall_subs: None,
             id: id(9),
             sketch,
             half_height,
@@ -4196,7 +4197,7 @@ fn thicken_isolates_the_carrier_of_a_composite_body() {
         Box::new(CsgNode::Transform(
             Transform { translate: [14.0, 0.0, 0.0], ..Transform::IDENTITY },
             Box::new(match blob_revolve_feature(1).node {
-                CsgNode::Revolve { sketch, .. } => CsgNode::Revolve { id: id(1), sketch },
+                CsgNode::Revolve { sketch, .. } => CsgNode::Revolve { wall_subs: None, id: id(1), sketch },
                 other => other,
             }),
         )),
@@ -6150,4 +6151,151 @@ fn extrude_side_face_resolves_clean_profile_at_user_scale() {
             .or_default() += 1;
     }
     eprintln!("final brep: vert aabb {mn:?}..{mx:?} faces by owner {owners:?}");
+}
+
+// ─── stable wall subs end-to-end (Onshape-Import Schritt 2) ─────────────
+
+fn square_sketch_call(sketch_id: &FeatureId, with_leading_point: bool) -> FeatureCall {
+    let mut sub_calls = vec![];
+    if with_leading_point {
+        sub_calls.push(json!({
+            "type": "sketch_point", "id": "p0",
+            "params": { "at": [99.0, 99.0] }
+        }));
+    }
+    sub_calls.extend([
+        json!({"type":"sketch_line","id":"l1","params":{"start":[0.0,0.0],"end":[10.0,0.0]}}),
+        json!({"type":"sketch_line","id":"l2","params":{"start":[10.0,0.0],"end":[10.0,10.0]}}),
+        json!({"type":"sketch_line","id":"l3","params":{"start":[10.0,10.0],"end":[0.0,10.0]}}),
+        json!({"type":"sketch_line","id":"l4","params":{"start":[0.0,10.0],"end":[0.0,0.0]}}),
+    ]);
+    FeatureCall::new(
+        "sketch",
+        sketch_id.clone(),
+        json!({
+            "plane": "qCreatedBy(origin_plane_xy)",
+            "sub_calls": sub_calls,
+        }),
+    )
+}
+
+fn extrude_square(with_leading_point: bool) -> (Vec<(crate::brep::BRep, fielddraft_protocol::Transform)>, FeatureId) {
+    let registry = FeatureRegistry::with_builtins();
+    let mut doc = empty_ctx();
+    let mut ctx = Context::new(&mut doc);
+    let sketch_id = id(1);
+    let extrude_id = id(2);
+    let extrude_call = FeatureCall::new(
+        "extrude",
+        extrude_id.clone(),
+        json!({
+            "profiles": format!("qCreatedBy({sketch_id})"),
+            "depth": { "value": 8.0, "unit": "mm" },
+        }),
+    );
+    registry
+        .regenerate(
+            &mut ctx,
+            &[square_sketch_call(&sketch_id, with_leading_point), extrude_call],
+            None,
+        )
+        .unwrap();
+    (crate::body::weave_all(&ctx.features), extrude_id)
+}
+
+#[test]
+fn extruded_square_walls_carry_line_entity_subs() {
+    let (woven, extrude_id) = extrude_square(false);
+    assert_eq!(woven.len(), 1, "one body");
+    let (brep, _) = &woven[0];
+    let feat = extrude_id.as_u32_or_root().unwrap();
+    let mut wall_subs: Vec<u32> = brep
+        .faces
+        .iter()
+        .map(|f| f.branch_id)
+        .filter(|b| b.feature_id() == feat && !b.is_inner_wall())
+        .map(|b| b.sub())
+        .filter(|&s| {
+            s != crate::csg::BranchId::EXTRUDE_CAP_TOP_SUB
+                && s != crate::csg::BranchId::EXTRUDE_CAP_BOTTOM_SUB
+        })
+        .collect();
+    wall_subs.sort_unstable();
+    wall_subs.dedup();
+    // Line calls allocate (start, end, line) each → line entities 3, 6, 9, 12.
+    assert_eq!(
+        wall_subs,
+        vec![3, 6, 9, 12],
+        "woven wall faces carry the sketch LINE entity ids as subs"
+    );
+    // Both caps woven too.
+    for cap in [
+        crate::csg::BranchId::EXTRUDE_CAP_TOP_SUB,
+        crate::csg::BranchId::EXTRUDE_CAP_BOTTOM_SUB,
+    ] {
+        assert!(
+            brep.faces
+                .iter()
+                .any(|f| f.branch_id.feature_id() == feat && f.branch_id.sub() == cap),
+            "cap {cap:#x} face woven"
+        );
+    }
+}
+
+#[test]
+fn created_by_role_resolves_extrude_walls_and_caps() {
+    // The Schritt-1 role query against a REAL woven sweep: 4 walls, 1+1 caps.
+    let (woven, extrude_id) = extrude_square(false);
+    let breps: Vec<crate::brep::BRep> = woven.into_iter().map(|(b, _)| b).collect();
+    use crate::queries::{resolve_query_topo, FaceRole, QueryExpr};
+    let count = |role: FaceRole| {
+        resolve_query_topo(&breps, &QueryExpr::CreatedByRole(extrude_id.clone(), role)).len()
+    };
+    assert_eq!(count(FaceRole::Wall), 4, "four square walls");
+    assert_eq!(count(FaceRole::CapTop), 1);
+    assert_eq!(count(FaceRole::CapBottom), 1);
+    assert_eq!(count(FaceRole::InnerWall), 0);
+    assert_eq!(count(FaceRole::Blend), 0);
+}
+
+#[test]
+fn wall_reference_heals_across_entity_id_shift() {
+    // Migration guarantee (naming schema v2): editing the sketch so the
+    // entity ids shift (here: a leading construction point, +1 on every
+    // line id) re-keys the wall hashes — a persisted fingerprint-carrying
+    // reference must HEAL to the geometrically-same wall, not vanish.
+    let (woven_a, _) = extrude_square(false);
+    let (brep_a, _) = &woven_a[0];
+    // Pick a wall face and persist its canonical long-form reference.
+    let wall = (0..brep_a.faces.len())
+        .map(|i| crate::brep::FaceId(i as u32))
+        .find(|&fid| {
+            let b = brep_a.face(fid).branch_id;
+            b.sub() == 3 // the first line's wall
+        })
+        .expect("wall face of line entity 3");
+    let stored = crate::queries::element_query(
+        &crate::brep::naming::TopoRef::from_face(brep_a, wall),
+    );
+
+    let (woven_b, _) = extrude_square(true);
+    let breps_b: Vec<crate::brep::BRep> = woven_b.into_iter().map(|(b, _)| b).collect();
+    let refs = crate::queries::resolve_query_topo(&breps_b, &stored);
+    assert_eq!(refs.len(), 1, "the stored wall reference heals, not drops");
+    // It bound to the same GEOMETRIC wall — now keyed by line entity 4.
+    let healed = breps_b[0]
+        .faces
+        .iter()
+        .find(|f| {
+            crate::brep::naming::TopoRef::from_face(
+                &breps_b[0],
+                crate::brep::FaceId(
+                    breps_b[0].faces.iter().position(|g| std::ptr::eq(*f, g)).unwrap() as u32,
+                ),
+            )
+            .id_hash
+                == refs[0].id_hash
+        })
+        .map(|f| f.branch_id.sub());
+    assert_eq!(healed, Some(4), "healed onto the shifted line entity's wall");
 }

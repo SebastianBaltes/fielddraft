@@ -1185,7 +1185,7 @@ mod tests {
             center: [0.0, 0.0],
             half_extents: [5.0, 3.0],
         });
-        let csg = CsgNode::Extrude {
+        let csg = CsgNode::Extrude { wall_subs: None,
             id: FeatureId::from_u32(7),
             sketch: Box::new(sketch),
             half_height: 2.0,
@@ -1775,7 +1775,7 @@ mod tests {
             center: [0.0, 0.0],
             half_extents: [5.0, 3.0],
         });
-        let body = BoundedCsg::from_csg(&CsgNode::Extrude {
+        let body = BoundedCsg::from_csg(&CsgNode::Extrude { wall_subs: None,
             id: FeatureId::from_u32(7),
             sketch: Box::new(sketch),
             half_height: 2.0,
@@ -1805,7 +1805,7 @@ mod tests {
             center: [5.0, 0.0],
             half_extents: [2.0, 10.0],
         });
-        let body = BoundedCsg::from_csg(&CsgNode::Revolve {
+        let body = BoundedCsg::from_csg(&CsgNode::Revolve { wall_subs: None,
             id: FeatureId::from_u32(3),
             sketch: Box::new(sketch),
         });
@@ -1834,7 +1834,7 @@ mod tests {
             ],
             closed: true,
         });
-        let body = BoundedCsg::from_csg(&CsgNode::Revolve {
+        let body = BoundedCsg::from_csg(&CsgNode::Revolve { wall_subs: None,
             id: FeatureId::from_u32(4),
             sketch: Box::new(profile),
         });
@@ -1867,11 +1867,11 @@ mod tests {
                 half_extents: [2.5, 2.0],
             });
             BoundedCsg::from_csg(&CsgNode::Union(
-                Box::new(CsgNode::Revolve {
+                Box::new(CsgNode::Revolve { wall_subs: None,
                     id: FeatureId::from_u32(3),
                     sketch: Box::new(ring_profile),
                 }),
-                Box::new(CsgNode::Extrude {
+                Box::new(CsgNode::Extrude { wall_subs: None,
                     id: FeatureId::from_u32(7),
                     sketch: Box::new(prism_profile),
                     half_height: 6.0,

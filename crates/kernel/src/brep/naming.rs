@@ -38,6 +38,21 @@
 use serde::{Deserialize, Serialize};
 
 use crate::brep::{BRep, EdgeGeometry, EdgeId, FaceId, SurfaceGeometry, VertexId};
+
+/// Version marker of the branch-sub-id layout the semantic IDs hash over.
+/// Bump on any change that re-keys existing entities — persisted element
+/// references (`qFace(hash @ fingerprint)`) then re-bind through the
+/// fingerprint-healing resolver instead of the exact hash.
+///
+/// - **1** — positional wall subs: a sketch-sweep wall's sub-id was the
+///   G1 boundary-group INDEX of the profile tree (shifted when earlier
+///   sub-calls were added/removed).
+/// - **2** — stable wall subs (Onshape-Import Schritt 2): a wall's sub-id
+///   is the sketch-entity-derived ordinal from the sweep primitive's
+///   `wall_subs` table (min solver curve-entity id of the G1 group);
+///   positional numbering remains the fallback for unattributable
+///   profiles (SVG `sketch_path`, mirror copies, replay failure).
+pub const NAMING_SCHEMA_VERSION: u32 = 2;
 use crate::csg::BranchId;
 
 // ─── deterministic hash ───────────────────────────────────────────────────
@@ -688,7 +703,7 @@ mod tests {
             center: [0.0, 0.0],
             half_extents: [half_x, half_y],
         });
-        let csg = CsgNode::Extrude {
+        let csg = CsgNode::Extrude { wall_subs: None,
             id: FeatureId::from_u32(1),
             sketch: Box::new(sketch),
             half_height: half_z,

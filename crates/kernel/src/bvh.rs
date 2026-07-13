@@ -190,6 +190,9 @@ pub enum BoundedCsg {
         half_height: f32,
         world_transform: Transform,
         aabb: Aabb,
+        /// Positional wall group → stable sketch-entity sub (see
+        /// [`Primitive::Extrude`]'s `wall_subs`); `None` = positional.
+        wall_subs: Option<std::sync::Arc<Vec<u32>>>,
     },
     /// BVH-wrapped revolve. Same sketch-bounding and transform
     /// collapse as [`BoundedCsg::Extrude`]; the query maps 3D to
@@ -199,6 +202,8 @@ pub enum BoundedCsg {
         sketch: Box<BoundedSketch2d>,
         world_transform: Transform,
         aabb: Aabb,
+        /// See [`BoundedCsg::Extrude::wall_subs`].
+        wall_subs: Option<std::sync::Arc<Vec<u32>>>,
     },
     /// BVH-wrapped helical sweep (see [`CsgNode::Helix`]). The query
     /// maps 3D to the profile's `(r, w)` frame via
@@ -216,6 +221,8 @@ pub enum BoundedCsg {
         r_inner: f32,
         world_transform: Transform,
         aabb: Aabb,
+        /// See [`BoundedCsg::Extrude::wall_subs`].
+        wall_subs: Option<std::sync::Arc<Vec<u32>>>,
     },
     /// BVH-wrapped general sweep (see [`CsgNode::Sweep`]). The query is
     /// mapped into the nearest spine point's rotation-minimizing frame via
@@ -520,12 +527,15 @@ impl BoundedCsg {
                 sketch,
                 half_height,
                 world_transform,
+                wall_subs,
                 ..
             } => {
                 let local = world_to_local(world_transform, p);
                 let d = if open.has_feature(id.as_u32_or_root().unwrap_or(0)) {
-                    let d2 = sketch
-                        .sdf_retained([local[0], local[1]], &mut |g| open.contains_sub(id, g));
+                    let ws = wall_subs.as_deref().map(|v| v.as_slice());
+                    let d2 = sketch.sdf_retained([local[0], local[1]], &mut |g| {
+                        open.contains_sub(id, crate::csg::map_wall_sub(ws, g))
+                    });
                     crate::csg::extrude_retained_combine(id, d2, local[2], *half_height, open)
                 } else {
                     sdf_extrude(sketch.sdf([local[0], local[1]]), local[2], *half_height)
@@ -536,12 +546,16 @@ impl BoundedCsg {
                 id,
                 sketch,
                 world_transform,
+                wall_subs,
                 ..
             } => {
                 let local = world_to_local(world_transform, p);
                 let r = (local[0] * local[0] + local[2] * local[2]).sqrt();
                 let d = if open.has_feature(id.as_u32_or_root().unwrap_or(0)) {
-                    sketch.sdf_retained([r, local[1]], &mut |g| open.contains_sub(id, g))
+                    let ws = wall_subs.as_deref().map(|v| v.as_slice());
+                    sketch.sdf_retained([r, local[1]], &mut |g| {
+                        open.contains_sub(id, crate::csg::map_wall_sub(ws, g))
+                    })
                 } else {
                     sketch.sdf([r, local[1]])
                 };
@@ -558,6 +572,7 @@ impl BoundedCsg {
                 y_anchor,
                 r_inner,
                 world_transform,
+                wall_subs,
                 ..
             } => {
                 let local = world_to_local(world_transform, p);
@@ -566,7 +581,10 @@ impl BoundedCsg {
                     *start_angle,
                 );
                 let d = if open.has_feature(id.as_u32_or_root().unwrap_or(0)) {
-                    sketch.sdf_retained(q, &mut |g| open.contains_sub(id, g))
+                    let ws = wall_subs.as_deref().map(|v| v.as_slice());
+                    sketch.sdf_retained(q, &mut |g| {
+                        open.contains_sub(id, crate::csg::map_wall_sub(ws, g))
+                    })
                 } else {
                     sketch.sdf(q)
                 };
@@ -810,9 +828,11 @@ impl BoundedCsg {
                 sketch,
                 half_height,
                 world_transform,
+                wall_subs,
                 ..
             } => {
                 let local = world_to_local(world_transform, p);
+                let ws = wall_subs.as_deref().map(|v| v.as_slice());
                 // Per-segment identity (DL-46) + cap split (DL-50) +
                 // eps-banded multi-contributors (DL-65): the sketch band
                 // reports every boundary group within `eps`, plus the cap
@@ -824,7 +844,7 @@ impl BoundedCsg {
                     let band = sketch.sdf_with_edges_retained(
                         [local[0], local[1]],
                         eps,
-                        &mut |g| open.contains_sub(id, g),
+                        &mut |g| open.contains_sub(id, crate::csg::map_wall_sub(ws, g)),
                     );
                     let d = crate::csg::extrude_retained_combine(
                         id,
@@ -840,13 +860,14 @@ impl BoundedCsg {
                         *half_height,
                         eps,
                         open,
+                        ws,
                     );
                     (d, c)
                 } else {
                     let band = sketch.sdf_with_edges([local[0], local[1]], eps);
                     let d = sdf_extrude(band.distance, local[2], *half_height)
                         * world_transform.min_scale();
-                    let c = extrude_contributors(id, &band, local[2], *half_height, eps);
+                    let c = extrude_contributors(id, &band, local[2], *half_height, eps, ws);
                     (d, c)
                 }
             }
@@ -854,19 +875,21 @@ impl BoundedCsg {
                 id,
                 sketch,
                 world_transform,
+                wall_subs,
                 ..
             } => {
                 let local = world_to_local(world_transform, p);
                 let r = (local[0] * local[0] + local[2] * local[2]).sqrt();
+                let ws = wall_subs.as_deref().map(|v| v.as_slice());
                 let band = if open.has_feature(id.as_u32_or_root().unwrap_or(0)) {
                     sketch.sdf_with_edges_retained([r, local[1]], eps, &mut |g| {
-                        open.contains_sub(id, g)
+                        open.contains_sub(id, crate::csg::map_wall_sub(ws, g))
                     })
                 } else {
                     sketch.sdf_with_edges([r, local[1]], eps)
                 };
                 let d = band.distance * world_transform.min_scale();
-                let c = revolve_contributors(id, &band);
+                let c = revolve_contributors(id, &band, ws);
                 (d, c)
             }
             BoundedCsg::Helix {
@@ -880,6 +903,7 @@ impl BoundedCsg {
                 y_anchor,
                 r_inner,
                 world_transform,
+                wall_subs,
                 ..
             } => {
                 let local = world_to_local(world_transform, p);
@@ -890,8 +914,11 @@ impl BoundedCsg {
                 // Widen the edge band by the inverse Lipschitz scale so
                 // profile-space matching stays comparable to world eps.
                 let beps = eps / scale.max(1e-6);
+                let ws = wall_subs.as_deref().map(|v| v.as_slice());
                 let band = if open.has_feature(id.as_u32_or_root().unwrap_or(0)) {
-                    sketch.sdf_with_edges_retained(q, beps, &mut |g| open.contains_sub(id, g))
+                    sketch.sdf_with_edges_retained(q, beps, &mut |g| {
+                        open.contains_sub(id, crate::csg::map_wall_sub(ws, g))
+                    })
                 } else {
                     sketch.sdf_with_edges(q, beps)
                 };
@@ -899,7 +926,7 @@ impl BoundedCsg {
                     * scale
                     * world_transform.min_scale();
                 // Tag the end caps (ell ties) so they are pickable faces (exus).
-                let c = crate::csg::helix_contributors(id, &band, ell, cap_side, beps);
+                let c = crate::csg::helix_contributors(id, &band, ell, cap_side, beps, ws);
                 (d, c)
             }
             BoundedCsg::Sweep { id, sketch, path, world_transform, .. } => {
@@ -914,7 +941,7 @@ impl BoundedCsg {
                 };
                 let d = crate::sweep_path::sweep_compose(band.distance, cs.w)
                     * world_transform.min_scale();
-                let c = revolve_contributors(id, &band);
+                let c = revolve_contributors(id, &band, None);
                 (d, c)
             }
             BoundedCsg::Morph { left, right, t, .. } => {
@@ -1157,6 +1184,7 @@ fn build(csg: &CsgNode, carry: &Transform) -> BoundedCsg {
             id,
             sketch,
             half_height,
+            wall_subs,
         } => {
             let bounded_sketch = BoundedSketch2d::from_sketch(sketch);
             let s2 = bounded_sketch.aabb();
@@ -1175,9 +1203,10 @@ fn build(csg: &CsgNode, carry: &Transform) -> BoundedCsg {
                 half_height: *half_height,
                 world_transform: *carry,
                 aabb,
+                wall_subs: wall_subs.clone(),
             }
         }
-        CsgNode::Revolve { id, sketch } => {
+        CsgNode::Revolve { id, sketch, wall_subs } => {
             let bounded_sketch = BoundedSketch2d::from_sketch(sketch);
             let s2 = bounded_sketch.aabb();
             let local_aabb = if s2.is_empty() {
@@ -1195,11 +1224,12 @@ fn build(csg: &CsgNode, carry: &Transform) -> BoundedCsg {
                 sketch: Box::new(bounded_sketch),
                 world_transform: *carry,
                 aabb,
+                wall_subs: wall_subs.clone(),
             }
         }
         CsgNode::Helix {
             id, sketch, pitch, turns, left_handed, taper, start_angle,
-            y_anchor, r_inner,
+            y_anchor, r_inner, wall_subs,
         } => {
             let bounded_sketch = BoundedSketch2d::from_sketch(sketch);
             let s2 = bounded_sketch.aabb();
@@ -1227,6 +1257,7 @@ fn build(csg: &CsgNode, carry: &Transform) -> BoundedCsg {
                 r_inner: *r_inner,
                 world_transform: *carry,
                 aabb,
+                wall_subs: wall_subs.clone(),
             }
         }
         CsgNode::Sweep { id, sketch, path, closed, twist } => {
@@ -1885,7 +1916,7 @@ mod tests {
             center: [0.0, 0.0],
             half_extents: [5.0, 3.0],
         });
-        let csg = CsgNode::Extrude {
+        let csg = CsgNode::Extrude { wall_subs: None,
             id: FeatureId::from_u32(1),
             sketch: Box::new(sketch),
             half_height: 2.0,
@@ -1914,7 +1945,7 @@ mod tests {
             center: [0.0, 0.0],
             radius: 5.0,
         });
-        let csg = CsgNode::Extrude {
+        let csg = CsgNode::Extrude { wall_subs: None,
             id: FeatureId::from_u32(7),
             sketch: Box::new(sketch),
             half_height: 2.0,
@@ -1941,7 +1972,7 @@ mod tests {
             center: [5.0, 0.0],
             half_extents: [2.0, 10.0],
         });
-        let csg = CsgNode::Revolve {
+        let csg = CsgNode::Revolve { wall_subs: None,
             id: FeatureId::from_u32(1),
             sketch: Box::new(sketch),
         };
@@ -1968,7 +1999,7 @@ mod tests {
             radius: 10.0,
         });
         let ring = Sketch2d::Difference(Box::new(outer), Box::new(inner));
-        let csg = CsgNode::Extrude {
+        let csg = CsgNode::Extrude { wall_subs: None,
             id: FeatureId::from_u32(1),
             sketch: Box::new(ring),
             half_height: 5.0,

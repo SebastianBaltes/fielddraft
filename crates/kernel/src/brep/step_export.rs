@@ -1198,7 +1198,7 @@ mod tests {
     use fielddraft_protocol::{Sketch2d as ProtoSketch2d, Sketch2dPrimitive as ProtoSketch2dPrim};
 
     fn extrude_brep(sketch: ProtoSketch2d, half_height: f32) -> BRep {
-        let csg = CsgNode::Extrude {
+        let csg = CsgNode::Extrude { wall_subs: None,
             id: FeatureId::from_u32(1),
             sketch: Box::new(sketch),
             half_height,
@@ -1215,7 +1215,7 @@ mod tests {
         let profile = ProtoSketch2d::Prim(ProtoSketch2dPrim::Polygon {
             vertices: vec![[1.0, -1.0], [3.0, -1.0], [1.0, 1.0]],
         });
-        let csg = CsgNode::Revolve {
+        let csg = CsgNode::Revolve { wall_subs: None,
             id: FeatureId::from_u32(1),
             sketch: Box::new(profile),
         };

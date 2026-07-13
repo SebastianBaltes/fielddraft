@@ -140,8 +140,13 @@ fn profile_corners(sketch: &crate::sketch2d::BoundedSketch2d) -> Option<Vec<Prof
 /// added separately. Returns `None` for unsupported bodies/profiles → seed path.
 pub(super) fn build_swept_wireframe(body: &BoundedCsg) -> Option<BRep> {
     match body {
-        BoundedCsg::Revolve { id, sketch, world_transform, .. } => {
-            let corners = profile_corners(sketch)?;
+        BoundedCsg::Revolve { id, sketch, world_transform, wall_subs, .. } => {
+            let ws = wall_subs.as_deref().map(|v| v.as_slice());
+            let mut corners = profile_corners(sketch)?;
+            for c in &mut corners {
+                c.left = crate::csg::map_wall_sub(ws, c.left);
+                c.right = crate::csg::map_wall_sub(ws, c.right);
+            }
             let mut brep = BRep::new();
             for c in corners {
                 // A corner ON the axis traces a point, not a circle — skip it.
@@ -166,9 +171,15 @@ pub(super) fn build_swept_wireframe(body: &BoundedCsg) -> Option<BRep> {
         // `bodyBrepEdges` exports them directly (and a single leaf has no
         // coincidence pruning), so the helix gets its visible edge topology.
         BoundedCsg::Helix {
-            id, sketch, pitch, turns, left_handed, taper, start_angle, y_anchor, world_transform, ..
+            id, sketch, pitch, turns, left_handed, taper, start_angle, y_anchor,
+            world_transform, wall_subs, ..
         } => {
-            let corners = profile_corners(sketch)?;
+            let ws = wall_subs.as_deref().map(|v| v.as_slice());
+            let mut corners = profile_corners(sketch)?;
+            for c in &mut corners {
+                c.left = crate::csg::map_wall_sub(ws, c.left);
+                c.right = crate::csg::map_wall_sub(ws, c.right);
+            }
             if corners.len() < 2 {
                 return None;
             }
