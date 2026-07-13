@@ -81,9 +81,6 @@ type TicketStore interface {
 	ListDeploys() []*Deploy
 }
 
-// Compile-time assertions: both DB-backed stores satisfy TicketStore, so
-// s.tickets = s.store is legal for the default (db) backend.
-var (
-	_ TicketStore = (*memStore)(nil)
-	_ TicketStore = (*sqlStore)(nil)
-)
+// Compile-time assertion for the in-memory test double (ticketstore_mem.go).
+// The one PRODUCTION implementation is issuevaultStore (store_issuevault.go).
+var _ TicketStore = (*memStore)(nil)

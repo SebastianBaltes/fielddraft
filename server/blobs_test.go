@@ -18,7 +18,7 @@ import (
 func registerClient(t *testing.T) (*httptest.Server, *http.Client, *http.Cookie) {
 	t.Helper()
 	store := NewStore()
-	srv := NewServer(store)
+	srv := NewServerWithTickets(store, store.(TicketStore))
 	ts := httptest.NewServer(srv)
 	t.Cleanup(ts.Close)
 

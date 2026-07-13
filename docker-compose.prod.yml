@@ -69,12 +69,10 @@ services:
       # service. Empty disables the feature (mesh routes answer 503).
       MESHER_URL: "http://mesher:9090"
       MESH_WORKERS: "${MESH_WORKERS:-2}"
-      # Ticket backend (server/main.go selectTicketStore). Empty/unset → the
-      # local MariaDB store. Production sets TICKET_BACKEND=issuevault plus the
-      # ISSUEVAULT_* vars (token from Vault) to run on the shared external
-      # IssueVault store; leaving TICKET_BACKEND empty (or =db) is the SQL
-      # rollback. Empty ISSUEVAULT_URL/PROJECT fall back to code defaults.
-      TICKET_BACKEND: "${TICKET_BACKEND:-}"
+      # Tickets live in IssueVault — the only backend (ticket #346). The token
+      # comes from Vault; empty ISSUEVAULT_URL/PROJECT fall back to code
+      # defaults. There is no SQL rollback anymore: the ticket domain has one
+      # store, on purpose.
       ISSUEVAULT_URL: "${ISSUEVAULT_URL:-}"
       ISSUEVAULT_PROJECT: "${ISSUEVAULT_PROJECT:-}"
       ISSUEVAULT_INSTALLATION: "${ISSUEVAULT_INSTALLATION:-}"

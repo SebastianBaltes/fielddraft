@@ -204,13 +204,11 @@ func TestSQLStoreModeration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateUser: %v", err)
 	}
-	tk := store.CreateTicket(author.ID, "Mod test", "body", "bug")
-	if tk == nil {
-		t.Fatal("CreateTicket nil")
-	}
 
-	// B2 — admin alerts CRUD.
-	tid := tk.ID
+	// B2 — admin alerts CRUD. The ticket reference is an ISSUEVAULT id since
+	// ticket #346 — no row in this database backs it, which is exactly why
+	// migration 0008 drops the old foreign key. Storing one must still work.
+	tid := "iv-" + newID()
 	a1 := store.CreateAdminAlert(AlertMaliciousComment, &tid, "spam")
 	a2 := store.CreateAdminAlert(AlertUserBanned, nil, "banned x")
 	if a1 == nil || a2 == nil {
@@ -256,8 +254,6 @@ func TestSQLStoreModeration(t *testing.T) {
 	if !containsUser(store.ListUsers(), admin.ID) {
 		t.Fatal("ListUsers missing the admin")
 	}
-
-	store.DeleteTicket(tk.ID)
 }
 
 func containsUser(us []*User, id string) bool {

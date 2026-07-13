@@ -23,7 +23,7 @@ type ticketTestEnv struct {
 func newTicketEnv(t *testing.T, email string) *ticketTestEnv {
 	t.Helper()
 	store := NewStore()
-	srv := NewServer(store)
+	srv := NewServerWithTickets(store, store.(TicketStore))
 	ts := httptest.NewServer(srv)
 	t.Cleanup(ts.Close)
 

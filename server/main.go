@@ -44,10 +44,19 @@ type Server struct {
 	onshape *onshapeClient
 }
 
+// NewServer wires the production server: users/projects on `store`, tickets on
+// IssueVault (the only ticket backend, see selectTicketStore).
 func NewServer(store Store) *Server {
+	return NewServerWithTickets(store, selectTicketStore())
+}
+
+// NewServerWithTickets is NewServer with the ticket backend injected — the seam
+// the tests use to run the whole ticket API against the in-memory double
+// (memTicketStore) instead of a live IssueVault.
+func NewServerWithTickets(store Store, tickets TicketStore) *Server {
 	s := &Server{
 		store:       store,
-		tickets:     selectTicketStore(store),
+		tickets:     tickets,
 		mux:         http.NewServeMux(),
 		rateLimiter: NewRateLimiter(1.0, 60), // 60 burst, 1/sec refill
 		agentTokens: loadAgentTokens(),
@@ -121,51 +130,23 @@ func NewServer(store Store) *Server {
 	return s
 }
 
-// selectTicketStore picks the ticket-domain backend from the environment (WP15):
+// selectTicketStore returns the ticket-domain backend.
 //
-//   - TICKET_BACKEND unset or "db" (the default) → the existing DB/mem store's
-//     own ticket methods. Byte-identical to before the TicketStore split; the
-//     isolated, self-contained fallback for any checkout that hasn't opted into
-//     an external store.
-//   - TICKET_BACKEND=files → a file-backed store under TICKET_DIR (default
-//     ./tickets), for local dev. The materialized layout doubles as the on-disk
-//     tickets the desktop agents harvest (docs/TICKET-SYNC-AND-AGENTS.md §3.1).
-//   - TICKET_BACKEND=issuevault → the shared external IssueVault service
-//     (store_issuevault.go), configured via ISSUEVAULT_TOKEN + _INSTALLATION
-//     (URL/PROJECT default in-code). This is the store the FieldDraft
-//     installations share (prod + every dev stack); it is injected by the
-//     deploy env — Ansible-Vault in prod, a gitignored .env in dev — NOT by a
-//     committed compose default. All installations share one IssueVault
-//     project, isolated per installation; see DEPLOY.md.
+// IssueVault is the ONLY one (ticket #346). The MariaDB and file-backed stores
+// are gone: two idle backends meant the same ticket domain had three
+// implementations to keep in step, and a missing ISSUEVAULT_TOKEN used to fall
+// back SILENTLY to an isolated local store — a server that looks healthy while
+// every ticket the user files lands somewhere nobody reads. It is configured via
+// ISSUEVAULT_TOKEN + ISSUEVAULT_INSTALLATION (URL/PROJECT default in-code),
+// injected by the deploy env — Ansible-Vault in prod, a gitignored .env in dev.
+// All installations share one IssueVault project, isolated per installation; see
+// DEPLOY.md.
 //
-// The same ticket CRUD/UI/API/agent-harvest runs unchanged over whichever
-// backend is installed.
-func selectTicketStore(store Store) TicketStore {
-	switch os.Getenv("TICKET_BACKEND") {
-	case "files":
-		dir := os.Getenv("TICKET_DIR")
-		if dir == "" {
-			dir = "./tickets"
-		}
-		fs, err := newFileTicketStore(dir)
-		if err != nil {
-			log.Fatalf("ticket store (files) init failed: %v", err)
-		}
-		log.Printf("ticket store: file backend at %s", dir)
-		return fs
-	case "issuevault":
-		// External IssueVault service (store_issuevault.go) instead of MariaDB.
-		return newIssuevaultStore()
-	default:
-		// db (default): the DB/mem store's own ticket methods. Both memStore and
-		// sqlStore implement every TicketStore method (see the compile-time
-		// assertions in ticketstore.go), so this assertion always holds.
-		ts, ok := store.(TicketStore)
-		if !ok {
-			log.Fatalf("ticket store (db): %T does not implement TicketStore", store)
-		}
-		return ts
-	}
+// TESTS pass their own TicketStore to NewServerWithTickets (memTicketStore, the
+// in-memory double). That is a test seam, not a backend: nothing in production
+// can select it.
+func selectTicketStore() TicketStore {
+	return newIssuevaultStore()
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {

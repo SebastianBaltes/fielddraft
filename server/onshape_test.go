@@ -20,7 +20,7 @@ func onshapeTestEnv(t *testing.T, handler http.HandlerFunc) (*httptest.Server, *
 	t.Cleanup(upstream.Close)
 
 	store := NewStore()
-	srv := NewServer(store)
+	srv := NewServerWithTickets(store, store.(TicketStore))
 	srv.onshape = &onshapeClient{
 		baseURL:   upstream.URL,
 		accessKey: "test-access",
@@ -94,7 +94,7 @@ func TestOnshapeRequiresAuth(t *testing.T) {
 
 func TestOnshapeUnconfiguredIs503(t *testing.T) {
 	store := NewStore()
-	srv := NewServer(store)
+	srv := NewServerWithTickets(store, store.(TicketStore))
 	srv.onshape = nil // no API key in the environment
 	ts := httptest.NewServer(srv)
 	defer ts.Close()

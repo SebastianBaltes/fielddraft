@@ -250,15 +250,17 @@ Required env (full list in `.env.prod.example`): `DOMAIN`, `TLS_EMAIL`,
 `X-Forwarded-For` (correct behind Caddy, which strips client-supplied XFF;
 without a trusted proxy leave it unset — the header is client-spoofable).
 
-### Ticket backend (IssueVault)
+### Tickets (IssueVault)
 
-The ticket domain is a pluggable store chosen by `TICKET_BACKEND` at runtime
-(`selectTicketStore` in `server/main.go`): unset (or `db`) ⇒ the local MariaDB
-store (isolated, self-contained). **Production runs on IssueVault**, the shared
-external ticket service — the deploy sets, in the prod env:
+The ticket domain lives in **IssueVault**, the shared external ticket service —
+the ONLY backend (ticket #346). The MariaDB and file-backed stores are gone, and
+with them the `TICKET_BACKEND` switch: two idle backends meant three
+implementations of one domain, and an unset token used to fall back silently to
+an isolated local store — a server that looks healthy while every ticket a user
+files lands where nobody reads it. Now a missing token fails loudly (401
+upstream). The deploy sets, in the prod env:
 
 ```
-TICKET_BACKEND=issuevault
 ISSUEVAULT_URL=…            # optional; falls back to the code default
 ISSUEVAULT_PROJECT=…       # optional; falls back to the code default
 ISSUEVAULT_INSTALLATION=…  # this deployment's installation id
@@ -266,10 +268,9 @@ ISSUEVAULT_TOKEN=…         # installation-bound agent token — SECRET (Vault)
 ```
 
 These come from the deploy's env (Ansible-Vault → the rendered prod `.env`),
-**not** from a committed compose default (whose SQL fallback is the one-command
-rollback: clear `TICKET_BACKEND` / set it to `db` and redeploy). `docker-compose.prod.yml`
-passes all five through with empty defaults, so a break-glass
-`--env-file .env.prod` run honours them too; leave them empty to stay on SQL.
+**not** from a committed compose default. `docker-compose.prod.yml` passes them
+through with empty defaults, so a break-glass `--env-file .env.prod` run honours
+them too.
 
 All FieldDraft installations — production and each developer's dev stack — share
 **one** IssueVault project and are isolated per installation (`scope:"own"`):

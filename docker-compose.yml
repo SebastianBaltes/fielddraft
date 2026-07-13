@@ -49,13 +49,12 @@ services:
       # Server-side CGAL meshing service (internal compose DNS). Empty =
       # feature off, mesh routes answer 503 (plan §P6).
       MESHER_URL: "http://mesher:9090"
-      # Ticket backend (server/main.go selectTicketStore). Empty/unset → local
-      # SQL store (default, isolated). Set TICKET_BACKEND=issuevault in .env to
-      # use the shared external IssueVault store; ISSUEVAULT_TOKEN is the
-      # installation-bound agent token (kept in gitignored .env, never here),
-      # ISSUEVAULT_INSTALLATION stamps created tickets. URL/PROJECT use code
-      # defaults unless overridden.
-      TICKET_BACKEND: "${TICKET_BACKEND:-}"
+      # Tickets live in IssueVault — the only backend (ticket #346; there is no
+      # SQL/file fallback left to select). ISSUEVAULT_TOKEN is the
+      # installation-bound agent token (kept in the gitignored .env, never here),
+      # ISSUEVAULT_INSTALLATION stamps created tickets; URL/PROJECT use code
+      # defaults unless overridden. Without a token every ticket call fails 401
+      # upstream — loudly, instead of silently writing to a store nobody reads.
       ISSUEVAULT_TOKEN: "${ISSUEVAULT_TOKEN:-}"
       ISSUEVAULT_INSTALLATION: "${ISSUEVAULT_INSTALLATION:-}"
       # Onshape import (onshape.go). Unset = the /api/onshape routes answer 503.

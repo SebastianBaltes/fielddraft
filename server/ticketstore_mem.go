@@ -1,8 +1,15 @@
-// memStore — ticket domain (TicketStore implementation over in-memory maps).
+// memStore — ticket domain (TicketStore over in-memory maps).
 //
-// Split out of store_mem.go purely mechanically: tickets, comments, artifacts,
-// work-orders, deploys, and the agent queue queries. Users/projects/sessions/
-// invites/admin-alerts stay in store_mem.go.
+// This is the TEST DOUBLE, not a backend: since ticket #346 production has
+// exactly one ticket store (IssueVault, see selectTicketStore), and nothing can
+// select this one — the tests hand it to NewServerWithTickets explicitly. It
+// stays because the ticket HTTP/agent suites need a fast, hermetic backend that
+// pins the SHARED business rules (state machine + audit comments, PO-review,
+// verdicts, work-order lifecycle) without a live IssueVault; the contract suite
+// (ticketstore_contract_test.go) runs the same body against it.
+//
+// It lives on memStore because the tests already build their users/projects on
+// that store. Users/projects/sessions/invites/admin-alerts are in store_mem.go.
 
 package main
 

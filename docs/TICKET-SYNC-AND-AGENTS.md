@@ -1,5 +1,14 @@
 # FieldDraft — Ticket-Sync & die zwei Prod-Agenten (Architektur & Intention)
 
+> **Status (Ticket #346): der FS-Teil dieses Entwurfs ist Geschichte.** Tickets
+> liegen nur noch in IssueVault; der Go-Server hat kein SQL- und kein
+> Datei-Backend mehr, und die materialisierten `tickets/open|done/<id>/`-Ordner
+> sind aus dem Repo entfernt. Agenten lesen und schreiben Tickets über die App
+> bzw. die IssueVault-REST-API (Vertrag: siehe CLAUDE.md). Was unten über die
+> Datei-Materialisierung und den Snapshot-Sync steht, beschreibt den früheren
+> Stand und ist nur noch historisch zu lesen.
+
+
 > Wie die Desktop-Agenten (`fielddraft-po`, `fielddraft-coding`) an die Tickets
 > des **Prod-Systems** kommen, ohne die Ergonomie des direkten Datei-Zugriffs zu
 > verlieren — und wie die zwei Agenten dabei getrennt und der PO source-los

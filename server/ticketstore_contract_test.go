@@ -1,12 +1,11 @@
-// Contract suite over every TicketStore implementation (WP15).
+// Contract suite for the TicketStore business rules (WP15).
 //
-// One parametrized test body runs identically against memStore, fileTicketStore
-// and sqlStore (the latter auto-skips without TEST_DB_DSN/DB_DSN, like the other
-// MariaDB integration tests). It pins the SHARED business behavior — state
+// It runs against the in-memory store (ticketstore_mem.go, the test double) and
+// pins the SHARED behavior the ticket domain must have whatever backs it — state
 // machine + audit comments, PO-review rule, verdict semantics, work-order
-// lifecycle, literal-substring search, UTC timestamps — so the backends cannot
-// drift apart again. Backend-specific behavior (file layout, blob dirs, SQL
-// details) stays in the per-store test files.
+// lifecycle, literal-substring search, UTC timestamps. Since ticket #346 the one
+// PRODUCTION backend is IssueVault; its own adapter behavior (scoping, lenient
+// meta, status mapping) lives in store_issuevault_test.go.
 //
 // The sqlStore run shares a database with other tests/runs, so every list
 // assertion filters by a per-fixture author id or checks containment instead of
@@ -20,8 +19,8 @@ import (
 	"time"
 )
 
-// ticketStoreFixture is one store-under-test plus a factory for valid ticket
-// author ids (sqlStore has an FK tickets.author_id → users.id).
+// ticketStoreFixture is the store-under-test plus a factory for valid ticket
+// author ids.
 type ticketStoreFixture struct {
 	store     TicketStore
 	newAuthor func(t *testing.T) string
@@ -43,38 +42,7 @@ func memFixture(t *testing.T) ticketStoreFixture {
 	}
 }
 
-func fileFixture(t *testing.T) ticketStoreFixture {
-	t.Helper()
-	fs, err := newFileTicketStore(t.TempDir())
-	if err != nil {
-		t.Fatalf("newFileTicketStore: %v", err)
-	}
-	// The file backend has no user table — any id is a valid author.
-	return ticketStoreFixture{
-		store:     fs,
-		newAuthor: func(t *testing.T) string { return "author-" + newID() },
-	}
-}
-
-func sqlFixture(t *testing.T) ticketStoreFixture {
-	t.Helper()
-	store := newTestSQLStore(t) // skips without a reachable test DB
-	return ticketStoreFixture{
-		store: store,
-		newAuthor: func(t *testing.T) string {
-			t.Helper()
-			u, err := store.CreateUser("author-"+newID()+"@test.com", "A", "pass12345", RoleUser)
-			if err != nil {
-				t.Fatalf("CreateUser: %v", err)
-			}
-			return u.ID
-		},
-	}
-}
-
-func TestTicketStoreContractMem(t *testing.T)  { testTicketStoreContract(t, memFixture) }
-func TestTicketStoreContractFile(t *testing.T) { testTicketStoreContract(t, fileFixture) }
-func TestTicketStoreContractSQL(t *testing.T)  { testTicketStoreContract(t, sqlFixture) }
+func TestTicketStoreContractMem(t *testing.T) { testTicketStoreContract(t, memFixture) }
 
 // mkTicket creates a ticket and registers cleanup (keeps a shared test DB tidy).
 func mkTicket(t *testing.T, f ticketStoreFixture, author, title, body, category string) *Ticket {

@@ -22,7 +22,7 @@ func meshTestEnv(t *testing.T, mesher http.HandlerFunc) (ts *httptest.Server, cl
 	t.Cleanup(fake.Close)
 
 	store := NewStore()
-	srv := NewServer(store)
+	srv := NewServerWithTickets(store, store.(TicketStore))
 	srv.startMeshDispatcher(fake.URL, 1)
 	ts = httptest.NewServer(srv)
 	t.Cleanup(ts.Close)
@@ -213,7 +213,7 @@ func TestMeshJobCancelAndOwnership(t *testing.T) {
 	// No dispatcher on this server: exercises the feature-off 503 and lets
 	// queued jobs sit still so cancel/ownership can be tested race-free.
 	store := NewStore()
-	srv := NewServer(store) // no startMeshDispatcher → mesh feature off
+	srv := NewServerWithTickets(store, store.(TicketStore)) // no startMeshDispatcher → mesh feature off
 	ts := httptest.NewServer(srv)
 	defer ts.Close()
 	client := &http.Client{}

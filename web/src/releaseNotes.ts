@@ -24,6 +24,17 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.583",
+    entries: [
+      {
+        kind: "fix",
+        scope: "tickets",
+        text: "Tickets liegen jetzt ausschließlich in IssueVault — die beiden ungenutzten Ersatz-Ablagen (lokale Datenbank, Dateisystem) sind samt Umschalter entfernt. Das war nicht nur Aufräumen: ohne konfigurierten Zugang fiel der Server stillschweigend auf die lokale Ablage zurück und wirkte gesund, während jedes gemeldete Ticket dort landete, wo niemand hinsieht — jetzt scheitert er stattdessen laut. Nebenbei repariert: Admin-Warnungen mit Ticket-Bezug (bösartiges Ticket, zurückgehaltener Kommentar) konnten gar nicht gespeichert werden, weil die Datenbank auf ihre eigene, längst leere Ticket-Tabelle verwies.",
+        tickets: ["346"],
+      },
+    ],
+  },
+  {
     version: "0.6.582",
     entries: [
       {

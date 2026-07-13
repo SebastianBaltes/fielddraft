@@ -144,7 +144,7 @@ func TestGCDryRun(t *testing.T) {
 func TestGCEndpointAdminGate(t *testing.T) {
 	store := NewStore()
 	ms := store.(*memStore)
-	srv := NewServer(store)
+	srv := NewServerWithTickets(store, store.(TicketStore))
 	ts := httptest.NewServer(srv)
 	defer ts.Close()
 	client := &http.Client{

@@ -29,7 +29,7 @@ func newInvite(t *testing.T, store Store) string {
 
 func TestRegisterLoginProjectCRUD(t *testing.T) {
 	store := NewStore()
-	srv := NewServer(store)
+	srv := NewServerWithTickets(store, store.(TicketStore))
 	ts := httptest.NewServer(srv)
 	defer ts.Close()
 
@@ -263,7 +263,7 @@ func TestClientIPTrustProxy(t *testing.T) {
 
 func TestDuplicateEmailRejects(t *testing.T) {
 	store := NewStore()
-	srv := NewServer(store)
+	srv := NewServerWithTickets(store, store.(TicketStore))
 	ts := httptest.NewServer(srv)
 	defer ts.Close()
 
@@ -286,7 +286,7 @@ func TestDuplicateEmailRejects(t *testing.T) {
 
 func TestPasswordReset(t *testing.T) {
 	store := NewStore()
-	srv := NewServer(store)
+	srv := NewServerWithTickets(store, store.(TicketStore))
 	ts := httptest.NewServer(srv)
 	defer ts.Close()
 
@@ -340,7 +340,7 @@ func TestPasswordReset(t *testing.T) {
 
 func TestPasswordResetInvalidToken(t *testing.T) {
 	store := NewStore()
-	srv := NewServer(store)
+	srv := NewServerWithTickets(store, store.(TicketStore))
 	ts := httptest.NewServer(srv)
 	defer ts.Close()
 
@@ -354,7 +354,7 @@ func TestPasswordResetInvalidToken(t *testing.T) {
 
 func TestThumbnailPutGet(t *testing.T) {
 	store := NewStore()
-	srv := NewServer(store)
+	srv := NewServerWithTickets(store, store.(TicketStore))
 	ts := httptest.NewServer(srv)
 	defer ts.Close()
 
@@ -413,7 +413,7 @@ func TestThumbnailPutGet(t *testing.T) {
 // rejected, a valid invite works, and the same invite cannot be reused.
 func TestRegisterRequiresInvite(t *testing.T) {
 	store := NewStore()
-	srv := NewServer(store)
+	srv := NewServerWithTickets(store, store.(TicketStore))
 	ts := httptest.NewServer(srv)
 	defer ts.Close()
 
@@ -531,7 +531,7 @@ func TestRegisterWithInviteConflictKeepsToken(t *testing.T) {
 // created token actually works for registration.
 func TestInviteAdminEndpoints(t *testing.T) {
 	store := NewStore()
-	srv := NewServer(store)
+	srv := NewServerWithTickets(store, store.(TicketStore))
 	ts := httptest.NewServer(srv)
 	defer ts.Close()
 
@@ -651,7 +651,7 @@ func TestInviteAdminEndpoints(t *testing.T) {
 // tokens return a bare valid=false that leaks nothing else.
 func TestInviteInfoPublic(t *testing.T) {
 	store := NewStore()
-	srv := NewServer(store)
+	srv := NewServerWithTickets(store, store.(TicketStore))
 	ts := httptest.NewServer(srv)
 	defer ts.Close()
 
@@ -730,7 +730,7 @@ func TestInviteInfoPublic(t *testing.T) {
 // (lean) document — backward-compat for asset-free / legacy clients.
 func TestPublishSnapshotSelfContained(t *testing.T) {
 	store := NewStore()
-	srv := NewServer(store)
+	srv := NewServerWithTickets(store, store.(TicketStore))
 	ts := httptest.NewServer(srv)
 	defer ts.Close()
 

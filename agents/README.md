@@ -67,9 +67,10 @@ Both runners read config from the environment (see `lib/apiClient.mjs`):
 | `CODING_SERVICE_TOKEN` | coding | The `coding`-scope Service-Token. Must match the server's `CODING_SERVICE_TOKEN`. |
 | `PO_TICKETS_DIR` | po | The PO's **source-less** tickets dir (default `./po-tickets`). Tickets materialize into `<dir>/open/<id>/`. |
 
-The coding agent's tickets dir is the repo worktree's `tickets/` (materialized to
-`tickets/open/<id>/`, archived to `tickets/done/<id>/`); it is not an env var
-because the coding agent is *defined* by running in the repo worktree.
+The coding agent no longer has a tickets DIR: since ticket #346 tickets live only
+in IssueVault, and the materialized `tickets/open|done/<id>/` folders are gone
+from the repo. It reads and resolves them through the app (Issues tab) or the
+IssueVault REST API.
 
 An **empty/unset token disables that scope server-side** (the server's
 constant-time compare never matches `""`). The client fails fast with a clear

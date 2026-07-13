@@ -33,7 +33,7 @@ func newAgentEnv(t *testing.T) *agentEnv {
 	t.Setenv("CODING_SERVICE_TOKEN", testCodingToken)
 
 	store := NewStore()
-	srv := NewServer(store)
+	srv := NewServerWithTickets(store, store.(TicketStore))
 	ts := httptest.NewServer(srv)
 	t.Cleanup(ts.Close)
 
@@ -144,7 +144,7 @@ func TestAgentAuthDisabledWhenUnset(t *testing.T) {
 	t.Setenv("PO_SERVICE_TOKEN", "")
 	t.Setenv("CODING_SERVICE_TOKEN", "")
 	store := NewStore()
-	srv := NewServer(store)
+	srv := NewServerWithTickets(store, store.(TicketStore))
 	ts := httptest.NewServer(srv)
 	defer ts.Close()
 

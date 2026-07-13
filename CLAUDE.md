@@ -23,7 +23,7 @@ Bei jedem Versions-Bump (`web/package.json`) **einen Eintrag oben** in `web/src/
 
 ## Tickets abarbeiten (wenn nichts anderes ansteht)
 
-User melden Fehler/Feature-Wünsche in-App über **Report Issue…** (F2). Tickets gehen IMMER an den **Server-Ticket-Store** (Go-Server, Backend IssueVault via `.env`); der frühere Vite-FS-Sink (`tickets/open/<id>/`, nur ohne `FIELDDRAFT_DEV_BACKEND=1`) wurde entfernt — auch `just dev` braucht fürs Ticket-Anlegen den laufenden Go-Server (`docker compose up -d db server`). Nur historische Tickets liegen noch als Ordner unter `tickets/done/`.
+User melden Fehler/Feature-Wünsche in-App über **Report Issue…** (F2). Tickets liegen AUSSCHLIESSLICH in **IssueVault** — der Go-Server hat seit #346 kein anderes Ticket-Backend mehr (kein SQL-, kein FS-Fallback, kein `TICKET_BACKEND`-Schalter, keine `tickets/`-Ordner im Repo). Auch `just dev` braucht fürs Ticket-Anlegen den laufenden Go-Server (`docker compose up -d db server`) plus `ISSUEVAULT_TOKEN` in der `.env`.
 
 Wenn keine andere Aufgabe ansteht: offene Tickets abarbeiten — Ticket lesen, Screenshot/Attachments ansehen, Projekt zum Reproduzieren laden, Fix/Feature umsetzen, testen, committen+pushen.
 
