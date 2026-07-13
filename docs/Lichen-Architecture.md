@@ -1308,10 +1308,17 @@ braucht weiterhin den Feature-Linien-Weg (§8r Punkt 1, Gate
    §8k/§8l). Ehrliches Soll (Design-Analyse 2026-07-13): **zwei getrennte
    wasserdichte Komponenten** (comp=2, koinzidente aber distinkte
    Vertices — ein Pinch-Vertex wäre in `mesh_quality` unsichtbar und
-   verfälscht χ); Kern-Fix = **Sizing-Deckel** (Gegenblatt-lfs-Beitrag
-   unter c·floor ignorieren, wenn antiparallel + kettenlos — kappt genau
-   den →0-Kollaps, lässt echte dünne Wände unberührt; löst auch die
-   ~200-s-Laufzeit des Linien-Kusses).
+   verfälscht χ). Der zunächst empfohlene **Sizing-Deckel** wurde
+   implementiert und **widerlegt** (I-24): Gegenblatt-lfs am kettenlosen
+   antiparallelen Kollaps zu ignorieren hilft dem Punkt-Kuss mild
+   (33 → 22 bei c=1.0, Laufzeit ×2,6) und ruiniert den Linien-Kuss
+   (430 → **1558**, χ −480) — der r=h-Streifen neben ultradichter
+   Umgebung ist exakt die Dichtesprung-Defektklasse aus I-16/§8j.
+   Werkzeuge bleiben env-gated (`LICHEN_KISS_C`/`LICHEN_KISS_DUMP`,
+   `reach_outer_counter` mit Gegenblatt-dot, Byte-Identitäts-Anker
+   `zz_acceptance_hash`). Der echte Weg ist **topologisch**: den
+   Sub-Resolution-Kontakt erkennen und die Blätter als getrennte
+   Komponenten meshen (Mikro-Feature-Kollaps-Familie).
 3. **Sliver an streifenden Nähten**: der 3,6°-Streifschnitt ist
    wasserdicht, aber mit minang ~5° — derzeit der Preis der
    Wasserdichtheit. Kandidat: **anisotropes Remeshing entlang der Naht**
