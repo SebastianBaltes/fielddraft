@@ -1275,6 +1275,19 @@ fn build(csg: &CsgNode, carry: &Transform) -> BoundedCsg {
     }
 }
 
+// BEFUND (2026-07-13, adversariale Härtung, bewusst NICHT gefixt): das
+// Displace-Feld `d − depth·sin(x·f)·sin(1.3·y·f)·sin(0.7·z·f)` ist NICHT
+// 1-Lipschitz (L ≤ 1 + |depth·f|·√(1+1.3²+0.7²); depth 0.3/f 1.5 → L≈1.8).
+// Eine DL-70-artige Normalisierung `(d−disp)/L` (Nullstellen identisch, Feld
+// wieder eikonal-sicher) wurde in ALLEN Repräsentationen implementiert und
+// VERMESSEN: der Lichen-Mesher wurde damit messbar SCHLECHTER (Displace-
+// Kugel 813 → 1634 offene Kanten — das Sizing-Feld verfeinert auf die
+// kleineren |f|-Werte und verschärft das Wachstums-Crowding), ohne dass ein
+// anderer Fall profitierte — darum zurückgebaut. Für den RENDERER
+// (Sphere-Marching überschreitet sonst bis Faktor L) bleibt die
+// Normalisierung der richtige Fix, braucht aber eine eigene,
+// renderer-verifizierte Arbeitslinie.
+
 /// Distance from a point to the surface of an AABB. Zero if the point
 /// sits inside the box (the Lipschitz bound is trivial there); the
 /// usual `sqrt(Σ max(0, dist_i)²)` when outside.

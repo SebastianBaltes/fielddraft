@@ -1347,70 +1347,115 @@ pub fn triangulate_global_walk(
     if stitch_on && !open_edges.is_empty() {
         let open_set: HashSet<(u32, u32)> = open_edges.iter().copied().collect();
         // Gerichteter Loch-Rand: existierende Halbkante (u→v) ⇒ das Loch
-        // wird v→u durchlaufen. Vertizes mit >1 Nachfolger (non-simple)
-        // werden ausgelassen.
-        let mut succ: HashMap<u32, u32> = HashMap::new();
-        let mut bad: HashSet<u32> = HashSet::new();
+        // wird v→u durchlaufen. KANTEN-basierter Walk (2026-07-13,
+        // adversariale Härtung): die frühere Vertex-Nachfolger-Map ließ
+        // Vertizes mit >1 Nachfolger komplett aus — zwei Mikro-Loops, die
+        // sich einen Zwickel-Vertex teilen (dünne Gyroid-Wand: zwei 5er-
+        // Loops am Grad-4-Vertex), blieben so beide offen. Jetzt werden
+        // HALBKANTEN konsumiert; an einem geteilten Vertex läuft der Walk
+        // deterministisch über den kleinsten unverbrauchten Nachfolger —
+        // eine falsche Paarung fällt unten durch valid_geom/Manifold-Schutz.
+        let mut succs: HashMap<u32, Vec<u32>> = HashMap::new();
         for &[a, b, c] in &tris {
             for (x, y) in [(a, b), (b, c), (c, a)] {
-                if open_set.contains(&(x.min(y), x.max(y))) && succ.insert(y, x).is_some() {
-                    bad.insert(y);
+                if open_set.contains(&(x.min(y), x.max(y))) {
+                    succs.entry(y).or_default().push(x);
                 }
             }
         }
+        for v in succs.values_mut() {
+            v.sort_unstable();
+        }
         let stitch_ok = |a: u32, b: u32, c: u32| -> bool { valid_geom(a, b, c) };
-        let mut visited: HashSet<u32> = HashSet::new();
+        let mut used: HashSet<(u32, u32)> = HashSet::new(); // gerichtete Loch-Halbkante
         let mut added: Vec<[u32; 3]> = Vec::new();
-        let mut starts: Vec<u32> = succ.keys().copied().collect();
+        let mut starts: Vec<u32> = succs.keys().copied().collect();
         starts.sort_unstable();
         for &s0 in &starts {
-            if visited.contains(&s0) || bad.contains(&s0) {
-                continue;
-            }
-            // Loop ablaufen (max 5 — Mikro-Löcher; größere bleiben ehrlich offen).
-            let mut ws: Vec<u32> = vec![s0];
-            let ok = loop {
-                let Some(&nx) = succ.get(ws.last().unwrap()) else { break false };
-                if bad.contains(&nx) {
-                    break false;
+            'nextloop: loop {
+                // Unverbrauchte Start-Halbkante an s0 suchen.
+                let Some(&n0) = succs[&s0].iter().find(|&&n| !used.contains(&(s0, n)))
+                else {
+                    break 'nextloop;
+                };
+                // Loop ablaufen (max 5 — Mikro-Löcher; größere bleiben
+                // ehrlich offen). Halbkanten nur PROBEWEISE konsumieren.
+                let mut ws: Vec<u32> = vec![s0, n0];
+                let mut path: Vec<(u32, u32)> = vec![(s0, n0)];
+                let ok = loop {
+                    let cur = *ws.last().unwrap();
+                    let nx = succs.get(&cur).and_then(|v| {
+                        v.iter()
+                            .find(|&&n| !used.contains(&(cur, n)) && !path.contains(&(cur, n)))
+                            .copied()
+                    });
+                    let Some(nx) = nx else { break false };
+                    path.push((cur, nx));
+                    if nx == s0 {
+                        break true;
+                    }
+                    if ws.contains(&nx) || ws.len() >= 5 {
+                        break false;
+                    }
+                    ws.push(nx);
+                };
+                if !ok {
+                    // Start-Halbkante als erledigt markieren, sonst Endlosschleife.
+                    used.insert((s0, n0));
+                    continue 'nextloop;
                 }
-                if nx == s0 {
-                    break true;
+                let free = |x: u32, y: u32| -> bool {
+                    !edge_use.contains_key(&(x.min(y), x.max(y)))
+                };
+                let fill: Option<Vec<[u32; 3]>> = match ws.len() {
+                    3 => {
+                        let t = [ws[0], ws[1], ws[2]];
+                        stitch_ok(t[0], t[1], t[2]).then(|| vec![t])
+                    }
+                    4 => {
+                        // Diagonale wählen: beide Dreiecke müssen bestehen und
+                        // die Diagonale darf noch nicht belegt sein
+                        // (Manifold-Schutz).
+                        let split = |i: usize| -> Option<Vec<[u32; 3]>> {
+                            let (a, b, c, d) =
+                                (ws[i], ws[(i + 1) % 4], ws[(i + 2) % 4], ws[(i + 3) % 4]);
+                            (free(a, c) && stitch_ok(a, b, c) && stitch_ok(a, c, d))
+                                .then(|| vec![[a, b, c], [a, c, d]])
+                        };
+                        split(0).or_else(|| split(1))
+                    }
+                    5 => {
+                        // Fächer von einer Ecke (3 Dreiecke, 2 freie
+                        // Diagonalen); alle 5 Rotationen probieren.
+                        let fan = |i: usize| -> Option<Vec<[u32; 3]>> {
+                            let at = |k: usize| ws[(i + k) % 5];
+                            let (a, b, c, d, e) = (at(0), at(1), at(2), at(3), at(4));
+                            (free(a, c)
+                                && free(a, d)
+                                && stitch_ok(a, b, c)
+                                && stitch_ok(a, c, d)
+                                && stitch_ok(a, d, e))
+                            .then(|| vec![[a, b, c], [a, c, d], [a, d, e]])
+                        };
+                        (0..5).find_map(fan)
+                    }
+                    _ => None,
+                };
+                if let Some(ts) = fill {
+                    added.extend(ts);
+                    for &(x, y) in &path {
+                        used.insert((x, y));
+                    }
+                    // Neue Diagonalen sofort als belegt führen, damit kein
+                    // zweiter Loop sie non-manifold macht.
+                    for t in added.iter().rev().take(ws.len() - 2) {
+                        for (x, y) in [(t[0], t[1]), (t[1], t[2]), (t[2], t[0])] {
+                            *edge_use.entry((x.min(y), x.max(y))).or_insert(0) += 1;
+                        }
+                    }
+                } else {
+                    used.insert((s0, n0));
                 }
-                if ws.contains(&nx) || ws.len() > 5 {
-                    break false;
-                }
-                ws.push(nx);
-            };
-            for &w in &ws {
-                visited.insert(w);
-            }
-            if !ok {
-                continue;
-            }
-            let fill: Option<Vec<[u32; 3]>> = match ws.len() {
-                3 => {
-                    let t = [ws[0], ws[1], ws[2]];
-                    stitch_ok(t[0], t[1], t[2]).then(|| vec![t])
-                }
-                4 => {
-                    // Diagonale wählen: beide Dreiecke müssen bestehen und die
-                    // Diagonale darf noch nicht belegt sein (Manifold-Schutz).
-                    let free = |x: u32, y: u32| -> bool {
-                        !edge_use.contains_key(&(x.min(y), x.max(y)))
-                    };
-                    let split = |i: usize| -> Option<Vec<[u32; 3]>> {
-                        let (a, b, c, d) =
-                            (ws[i], ws[(i + 1) % 4], ws[(i + 2) % 4], ws[(i + 3) % 4]);
-                        (free(a, c) && stitch_ok(a, b, c) && stitch_ok(a, c, d))
-                            .then(|| vec![[a, b, c], [a, c, d]])
-                    };
-                    split(0).or_else(|| split(1))
-                }
-                _ => None,
-            };
-            if let Some(ts) = fill {
-                added.extend(ts);
             }
         }
         if !added.is_empty() {

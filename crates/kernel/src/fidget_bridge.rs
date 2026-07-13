@@ -253,9 +253,12 @@ fn node_to_tree(node: &BoundedCsg, p: &[Tree; 3]) -> Result<Tree, String> {
             Ok(node_to_tree(inner, p)? - *delta as f64)
         }
         BoundedCsg::Displace { inner, depth, freq, .. } => {
+            // Achsfaktoren 1.3/0.7 wie in ALLEN übrigen Repräsentationen
+            // (bvh/cell/dual/VM) — vorher wich fidget hier ab (reines
+            // sin·sin·sin ohne Faktoren = eine ANDERE Fläche).
             let bump = (p[0].clone() * *freq as f64).sin()
-                * (p[1].clone() * *freq as f64).sin()
-                * (p[2].clone() * *freq as f64).sin()
+                * (p[1].clone() * *freq as f64 * 1.3).sin()
+                * (p[2].clone() * *freq as f64 * 0.7).sin()
                 * *depth as f64;
             Ok(node_to_tree(inner, p)? - bump)
         }

@@ -125,6 +125,22 @@ impl Kernel {
         let mut ring_cap: HashMap<u32, f32> = HashMap::new();
         let mut face_surfs: Vec<FaceSurf> = Vec::new();
         let mut face_loops: Vec<Vec<(Vec<u32>, bool)>> = Vec::new();
+        // KETTEN-DECKUNG (2026-07-13, adversariale Härtung, koplanare Union):
+        // die Menge aller Segmente, die WIRKLICH auf einer abgetasteten
+        // B-Rep-Kanten-Kette liegen (konsekutive Indizes einer edge_chain).
+        // Die globalen Ketten-Wände unten werden aus RING-Nachbarpaaren
+        // gebaut — bei „unordered fallback loops" des Weave (degenerierte
+        // Topologie, z.B. exakt koplanare Deckflächen zweier Boxen) stehen
+        // dort aber Kanten in beliebiger Reihenfolge, und die Verkettung
+        // erzeugt PHANTOM-Segmente zwischen nicht-benachbarten Ketten-Enden
+        // (gemessen: eine 5,6-mm-Diagonale quer über eine ebene Fläche, die
+        // per Kreuzungs-Veto jeden legitimen Fächer blockte — 38 von 46
+        // offenen Kanten). In einem korrekt geordneten Loop teilen sich
+        // benachbarte Ketten den Gelenk-Vertex (Index-identisch, wird beim
+        // Ring-Bau dedupliziert) — Ring-Paare ⊆ Ketten-Paare. Der Filter
+        // ist also für gesunde Loops ein No-op und droppt exakt die
+        // Phantome.
+        let mut chain_seg_ok: HashSet<(u32, u32)> = HashSet::new();
 
         for &bi in &active {
             self.bodies[bi].ensure_brep(&self.decoded, true);
@@ -578,6 +594,18 @@ impl Kernel {
                         b.u,
                         a.p
                     );
+                }
+            }
+
+            // Ketten-Deckung registrieren (s. Deklaration von chain_seg_ok):
+            // alle konsekutiven Paare jeder Kanten-Kette sind legitime
+            // Ketten-Segmente; alles andere, was ein Ring-Bau später
+            // nebeneinanderstellt, ist Phantom.
+            for idxs in edge_chain.values() {
+                for w in idxs.windows(2) {
+                    if w[0] != w[1] {
+                        chain_seg_ok.insert((w[0].min(w[1]), w[0].max(w[1])));
+                    }
                 }
             }
 
@@ -1759,6 +1787,9 @@ impl Kernel {
                             })
                         })
                         .filter(|&(a, b)| a != b)
+                        // Phantom-Ring-Schlüsse (unordered fallback loops)
+                        // sind keine Ketten — s. chain_seg_ok.
+                        .filter(|e| chain_seg_ok.contains(e))
                         .collect();
                     // HIDDEN-VERTEX-Variante (LICHEN_PROTECT_MODE=hide):
                     // Flächenpunkte im Schutzkorridor werden dem Walk komplett
@@ -1852,7 +1883,6 @@ impl Kernel {
                         for gf in 0..nf {
                             for &gi in &face_interior[gf] {
                                 let p = all[gi as usize].p;
-                                let r = 1.5 * all[gi as usize].space;
                                 let (kx, ky, kz) = key(p);
                                 for dx in -1..=1 {
                                     for dy in -1..=1 {
@@ -1871,7 +1901,47 @@ impl Kernel {
                                                     + (p[1] - q[1]).powi(2)
                                                     + (p[2] - q[2]).powi(2))
                                                 .sqrt();
+                                                // BERÜHREN heißt SUB-RESOLUTION
+                                                // für BEIDE Punkte (2026-07-13,
+                                                // adversariale Härtung): mit
+                                                // r = 1.5·space_i verschmolz der
+                                                // grobe Streu-Seed einer Orphan-
+                                                // Fläche (space = h) ALLES in
+                                                // 7,5 mm Umkreis — beim Punkt-
+                                                // Kuss Kugel-auf-Platte wurden
+                                                // so alle 7 Flächen EINE Region
+                                                // (gemessen: d=6.2 mm als
+                                                // „Berührung" akzeptiert).
+                                                let r = 1.5
+                                                    * all[gi as usize]
+                                                        .space
+                                                        .min(all[gj as usize].space);
                                                 if d > r {
+                                                    continue;
+                                                }
+                                                // ORIENTIERUNGS-GATE (2026-07-13,
+                                                // adversariale Härtung, Punkt-Kuss):
+                                                // eine Region ist ein ORIENTIERBARES
+                                                // Blatt. Zwei Flächen, deren nahe
+                                                // Punkte ANTIPARALLELE Normalen
+                                                // tragen, liegen Rücken an Rücken
+                                                // (tangentialer Kuss, dünner Spalt)
+                                                // — genau die Konfiguration, die
+                                                // die blatt-restringierte Zeugen-
+                                                // Kugel trennen MUSS. Verschmelzen
+                                                // wäre immer falsch (gemessen:
+                                                // Kugel-kuss-Platte, 59 offene
+                                                // Kanten als Deadlock-Ring um den
+                                                // Kusspunkt). Echte gedroppte
+                                                // Trim-Nähte (Gyroid) KREUZEN sich
+                                                // — Keilwinkel ≤ 90°, dot ≥ 0 —
+                                                // und bleiben verschmolzen.
+                                                let ni = all[gi as usize].n;
+                                                let nj = all[gj as usize].n;
+                                                let ndot = ni[0] * nj[0]
+                                                    + ni[1] * nj[1]
+                                                    + ni[2] * nj[2];
+                                                if ndot < -0.7 {
                                                     continue;
                                                 }
                                                 // Gemeinsame Kette? Dann ist die
@@ -1886,6 +1956,12 @@ impl Kernel {
                                                 if ra != rb {
                                                     parent[rb as usize] = ra;
                                                     merged += 1;
+                                                    if std::env::var("LICHEN_DEBUG_FACES").is_ok() {
+                                                        eprintln!(
+                                                            "REGION-MERGE {gf}+{g2} @ {:?} d={d:.3} ndot={ndot:.2}",
+                                                            all[gi as usize].p
+                                                        );
+                                                    }
                                                 }
                                             }
                                         }
@@ -2193,6 +2269,9 @@ impl Kernel {
                         })
                     })
                     .filter(|&(a, b)| a != b)
+                    // Phantom-Ring-Schlüsse (unordered fallback loops)
+                    // sind keine Ketten — s. chain_seg_ok.
+                    .filter(|e| chain_seg_ok.contains(e))
                     .collect();
                 let (mut holes, mut nonmani) = (0usize, 0usize);
                 let mut open_edges: Vec<(u32, u32)> = Vec::new();
@@ -2345,6 +2424,9 @@ impl Kernel {
                     })
                 })
                 .filter(|&(a, b)| a != b)
+                // Phantom-Ring-Schlüsse (unordered fallback loops)
+                // sind keine Ketten — s. chain_seg_ok.
+                .filter(|e| chain_seg_ok.contains(e))
                 .collect();
             for gf in 0..face_surfs.len() {
                 // Rand-Clearance des CDT PRO FLÄCHE aus dem lokalen Punkt-
@@ -4741,6 +4823,661 @@ mod tests {
                 0.5 * (hi[1] - lo[1]),
                 0.5 * (hi[2] - lo[2]),
             );
+        }
+    }
+
+    // ─── Adversariale Matrix (Härtungs-Session 2026-07-13) ──────────────
+    //
+    // Vier Klassen von Gegner-Geometrie: dünne Features, hochfrequente
+    // Domain-Warps, exakt degenerierte Boolesche Kontakte, fast-tangentiale
+    // Verschneidungen. Jede Fixture wird per SDF-Probe VALIDIERT, bevor
+    // irgendeine Netz-Zahl interpretiert wird (False-Positive-Fixtures sind
+    // die gefährlichste Testsorte — siehe Halbkugel-Lektion oben).
+
+    struct AdvCase {
+        name: &'static str,
+        json: &'static str,
+        /// targetEdgeLength; alle übrigen Optionen = Betreiber-Settings.
+        h: f32,
+        lo: [f32; 3],
+        hi: [f32; 3],
+        /// Zellgröße des Hausdorff-Dreiecksgitters.
+        cell: f32,
+        /// SDF-Beweis, dass die Geometrie enthält, was der Name behauptet.
+        validate: fn(&dyn Fn([f32; 3]) -> f32),
+    }
+
+    fn adv_opts(h: f32) -> String {
+        format!(
+            r#"{{"targetEdgeLength":{h},"grow":true,"curvAngleDeg":2.0,"useReach":false,"reachTol":1.0,"minEdgeSpacing":0.1,"maxPoints":50000,"generalTri":true,"accept":"witness","extractWalk":true,"globalWalk":true,"lfsFactor":0.1,"sizingField":true,"faceGuard":false,"fillHoles":false}}"#
+        )
+    }
+
+    /// Breite des ERSTEN Material-Intervalls längs der Strecke a→b (mm).
+    fn adv_wall_width(
+        f: &dyn Fn([f32; 3]) -> f32,
+        a: [f32; 3],
+        b: [f32; 3],
+        steps: usize,
+    ) -> Option<f32> {
+        let p = |t: f32| {
+            [
+                a[0] + (b[0] - a[0]) * t,
+                a[1] + (b[1] - a[1]) * t,
+                a[2] + (b[2] - a[2]) * t,
+            ]
+        };
+        let seg = ((b[0] - a[0]).powi(2) + (b[1] - a[1]).powi(2) + (b[2] - a[2]).powi(2)).sqrt();
+        let mut enter: Option<f32> = None;
+        let mut prev = f(p(0.0));
+        for i in 1..=steps {
+            let t = i as f32 / steps as f32;
+            let cur = f(p(t));
+            if prev > 0.0 && cur <= 0.0 {
+                enter = Some(t);
+            }
+            if prev <= 0.0 && cur > 0.0 {
+                if let Some(e) = enter {
+                    return Some((t - e) * seg);
+                }
+            }
+            prev = cur;
+        }
+        None
+    }
+
+    fn adv_cases() -> Vec<AdvCase> {
+        vec![
+            // ── Klasse 1: dünne Features ────────────────────────────────
+            AdvCase {
+                // Gyroid-Wand ~0,4 mm: thickness ist DIMENSIONSLOS
+                // (|f|<t; nahe der f=0-Ebene ist |∇f|=√3/s) → Wandstärke
+                // ≈ 2·t·s/√3. Erste t=0.23-Fassung maß 0,80 mm — die
+                // Validierung hat den Faktor-2-Fehler selbst gefangen.
+                name: "thin_gyroid_wall",
+                json: r#"{
+                    "schema_version": 1, "name": "adv-thin-gyroid",
+                    "feature_calls": [
+                        { "type": "box", "id": 1, "params": {
+                            "op": "new", "half_extents": [3, 3, 3],
+                            "translate": [1.2, 0.7, 0.4] } },
+                        { "type": "gyroid", "id": 2, "params": {
+                            "op": "intersect", "targets": "qCreatedBy(1)",
+                            "cell_size": { "unit": "mm", "value": 3 },
+                            "thickness": { "unit": "mm", "value": 0.115 },
+                            "blend_radius": { "unit": "mm", "value": 0 },
+                            "chamfer_size": { "unit": "mm", "value": 0 },
+                            "displace_depth": { "unit": "mm", "value": 0 },
+                            "shell_thickness": { "unit": "mm", "value": 0 } } }
+                    ],
+                    "next_feature_id": 3
+                }"#,
+                h: 5.0,
+                lo: [-2.1, -2.6, -2.9],
+                hi: [4.5, 4.0, 3.7],
+                cell: 0.3,
+                validate: |f| {
+                    // Box-Zentrum ist Luft; Richtung (−1,−1,−1) kreuzt die
+                    // eine Gyroid-Wand (f≈(x+y+z)/s nahe Ursprung).
+                    let c = [1.2f32, 0.7, 0.4];
+                    assert!(f(c) > 0.1, "Box-Zentrum muss Luft sein: {}", f(c));
+                    let d = 3.0 / 3.0f32.sqrt();
+                    let b = [c[0] - d, c[1] - d, c[2] - d];
+                    let w = adv_wall_width(f, c, b, 800)
+                        .expect("Gyroid-Wand auf der Diagonale nicht gefunden");
+                    assert!(
+                        (0.2..0.6).contains(&w),
+                        "Gyroid-Wandstärke {w:.3} mm statt ~0,4 — Fixture falsch"
+                    );
+                },
+            },
+            AdvCase {
+                // 0,35-mm-Platte als Box-DIFFERENZ (nicht als dünne Box).
+                name: "thin_plate_diff",
+                json: r#"{
+                    "schema_version": 1, "name": "adv-thin-plate",
+                    "feature_calls": [
+                        { "type": "box", "id": 1, "params": {
+                            "op": "new", "half_extents": [3, 3, 2], "translate": [0, 0, 0] } },
+                        { "type": "box", "id": 2, "params": {
+                            "op": "remove", "targets": "qCreatedBy(1)",
+                            "half_extents": [4, 4, 2], "translate": [0, 0, -0.35] } }
+                    ],
+                    "next_feature_id": 3
+                }"#,
+                h: 5.0,
+                lo: [-3.3, -3.3, 1.3],
+                hi: [3.3, 3.3, 2.3],
+                cell: 0.2,
+                validate: |f| {
+                    assert!(f([0.0, 0.0, 1.825]) < 0.0, "Platten-Mitte muss Material sein");
+                    assert!(f([0.0, 0.0, 1.0]) > 0.1, "unter der Platte muss Luft sein");
+                    assert!(f([0.0, 0.0, 2.2]) > 0.1, "über der Platte muss Luft sein");
+                    let w = adv_wall_width(f, [0.5, -0.5, 1.0], [0.5, -0.5, 2.4], 800)
+                        .expect("Platte nicht gefunden");
+                    assert!(
+                        (0.30..0.42).contains(&w),
+                        "Plattenstärke {w:.3} mm statt 0,35 — Fixture falsch"
+                    );
+                },
+            },
+            AdvCase {
+                // Dünnwandige Röhre: Zylinder-Differenz, Wand 0,35 mm,
+                // Torus-Topologie (χ=0).
+                name: "thin_tube",
+                json: r#"{
+                    "schema_version": 1, "name": "adv-thin-tube",
+                    "feature_calls": [
+                        { "type": "cylinder", "id": 1, "params": {
+                            "op": "new", "radius": 2.5, "half_height": 1.0,
+                            "translate": [0, 0, 0] } },
+                        { "type": "cylinder", "id": 2, "params": {
+                            "op": "remove", "targets": "qCreatedBy(1)",
+                            "radius": 2.15, "half_height": 1.5,
+                            "translate": [0, 0, 0] } }
+                    ],
+                    "next_feature_id": 3
+                }"#,
+                h: 5.0,
+                lo: [-2.8, -1.3, -2.8],
+                hi: [2.8, 1.3, 2.8],
+                cell: 0.2,
+                validate: |f| {
+                    // Zylinderachse = y (radial x/z).
+                    assert!(f([0.0, 0.0, 0.0]) > 0.1, "Röhre muss hohl sein");
+                    assert!(f([2.33, 0.0, 0.0]) < 0.0, "Wandmitte muss Material sein");
+                    assert!(f([1.9, 0.0, 0.0]) > 0.05, "innen an der Wand muss Luft sein");
+                    assert!(f([2.8, 0.0, 0.0]) > 0.05, "außen an der Wand muss Luft sein");
+                    let w = adv_wall_width(f, [1.9, 0.2, 0.0], [2.9, 0.2, 0.0], 800)
+                        .expect("Rohrwand nicht gefunden");
+                    assert!(
+                        (0.30..0.42).contains(&w),
+                        "Rohrwandstärke {w:.3} mm statt 0,35 — Fixture falsch"
+                    );
+                },
+            },
+            // ── Klasse 2: hochfrequente Domain-Warps ────────────────────
+            AdvCase {
+                // Displace: d − depth·sin(xf)·sin(1.3yf)·sin(0.7zf) —
+                // Krümmungsradius der Beulen ~1/(depth·f²) ≈ 1,5 mm,
+                // SDF nicht mehr eikonal (|∇f| bis ~1,8).
+                name: "warp_displace_sphere",
+                json: r#"{
+                    "schema_version": 1, "name": "adv-displace",
+                    "feature_calls": [
+                        { "type": "sphere", "id": 1, "params": {
+                            "op": "new", "radius": 4, "translate": [0, 0, 0],
+                            "displace_depth": 0.3, "displace_freq": 1.5 } }
+                    ],
+                    "next_feature_id": 2
+                }"#,
+                h: 5.0,
+                lo: [-4.7, -4.7, -4.7],
+                hi: [4.7, 4.7, 4.7],
+                cell: 0.3,
+                validate: |f| {
+                    assert!(f([0.0, 0.0, 0.0]) < -3.0, "Kugel-Zentrum muss tief innen sein");
+                    // Nullstellen-Radius über viele Richtungen: die
+                    // Verwerfung muss real sein (Spread > 0,15 mm), sonst
+                    // wurden die displace-Parameter nie angewandt.
+                    let (mut rmin, mut rmax) = (f32::MAX, f32::MIN);
+                    let mut lcg = 0x5EED_u64;
+                    for _ in 0..200 {
+                        let mut v = [0.0f32; 3];
+                        let mut norm = 0.0;
+                        for x in v.iter_mut() {
+                            lcg = lcg.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                            *x = ((lcg >> 40) as f32) / (1u32 << 24) as f32 - 0.5;
+                            norm += *x * *x;
+                        }
+                        let norm = norm.sqrt().max(1e-6);
+                        // Bisektion auf f=0 längs der Richtung.
+                        let (mut a, mut b) = (2.0f32, 4.8f32);
+                        for _ in 0..40 {
+                            let m = 0.5 * (a + b);
+                            let p = [v[0] / norm * m, v[1] / norm * m, v[2] / norm * m];
+                            if f(p) < 0.0 { a = m } else { b = m }
+                        }
+                        rmin = rmin.min(a);
+                        rmax = rmax.max(a);
+                    }
+                    assert!(
+                        rmax - rmin > 0.15 && rmin > 3.4 && rmax < 4.6,
+                        "Displacement fehlt oder explodiert: r ∈ [{rmin:.2}, {rmax:.2}]"
+                    );
+                },
+            },
+            AdvCase {
+                // Twist um die y-Achse: 0,05 rad/mm → ±17° an den Enden,
+                // Kanten werden Helizes (kein analytisches B-Rep).
+                name: "warp_twist_box",
+                json: r#"{
+                    "schema_version": 1, "name": "adv-twist",
+                    "feature_calls": [
+                        { "type": "box", "id": 1, "params": {
+                            "op": "new", "half_extents": [4, 6, 4],
+                            "translate": [0, 0, 0], "twist_rate": 0.05 } }
+                    ],
+                    "next_feature_id": 2
+                }"#,
+                h: 5.0,
+                lo: [-6.0, -6.3, -6.0],
+                hi: [6.0, 6.3, 6.0],
+                cell: 0.4,
+                validate: |f| {
+                    // (0,5.9,0) liegt 0,1 unter der Deckfläche → f≈−0,1.
+                    assert!(f([0.0, 0.0, 0.0]) < -3.5, "Zentrum innen");
+                    assert!(f([0.0, 5.9, 0.0]) < 0.0, "Achse innen");
+                    // Bei y≈0 ist die Ecke unverdreht innen …
+                    assert!(f([3.85, 0.0, 3.85]) < 0.0, "unverdrehte Ecke bei y=0 fehlt");
+                    // … am Ende y=5.9 ist derselbe Punkt HERAUSGEDREHT
+                    // (Rotation um 0,295 rad schiebt ihn aus dem Querschnitt).
+                    assert!(
+                        f([3.85, 5.9, 3.85]) > 0.05,
+                        "Twist wirkt nicht: Ecke bei y=5.9 noch innen ({})",
+                        f([3.85, 5.9, 3.85])
+                    );
+                },
+            },
+            // ── Klasse 3: exakt degenerierte Boolesche Kontakte ─────────
+            AdvCase {
+                // Zylinder r=5 KÜSST die Box-Wand x=30 exakt längs einer
+                // Linie (Zentrum x=35). Antiparallele Normalen im Abstand 0.
+                // Box-Intersect-Ausschnitt um die Kontaktlinie.
+                name: "tangent_cyl_box_line",
+                json: r#"{
+                    "schema_version": 1, "name": "adv-tangent-line",
+                    "feature_calls": [
+                        { "type": "box", "id": 1, "params": {
+                            "op": "new", "half_extents": [30, 10, 10], "translate": [0, 0, 0] } },
+                        { "type": "cylinder", "id": 2, "params": {
+                            "op": "add", "targets": "qCreatedBy(1)",
+                            "radius": 5, "half_height": 8, "translate": [35, 0, 0] } },
+                        { "type": "box", "id": 3, "params": {
+                            "op": "intersect", "targets": "qCreatedBy(1)",
+                            "half_extents": [3, 3, 3], "translate": [30, 0, 0] } }
+                    ],
+                    "next_feature_id": 4
+                }"#,
+                h: 5.0,
+                lo: [26.7, -3.3, -3.3],
+                hi: [33.3, 3.3, 3.3],
+                cell: 0.3,
+                validate: |f| {
+                    assert!(f([30.0, 0.0, 0.0]).abs() < 0.02, "Kusslinie liegt nicht auf x=30");
+                    assert!(f([29.9, 0.0, 0.0]) < 0.0, "Box-Seite fehlt");
+                    assert!(f([30.5, 0.0, 0.0]) < 0.0, "Zylinder-Seite fehlt");
+                    // Der Luft-Keil direkt über der Kusslinie beweist die
+                    // TANGENTIALITÄT (kein Überlapp).
+                    assert!(
+                        f([30.02, 0.0, 1.0]) > 0.0,
+                        "kein Luft-Keil — Zylinder überlappt statt zu küssen"
+                    );
+                },
+            },
+            AdvCase {
+                // Kugel berührt die Platten-Oberseite in GENAU EINEM PUNKT.
+                name: "tangent_sphere_point",
+                json: r#"{
+                    "schema_version": 1, "name": "adv-tangent-point",
+                    "feature_calls": [
+                        { "type": "box", "id": 1, "params": {
+                            "op": "new", "half_extents": [4, 4, 1.5], "translate": [0, 0, 0] } },
+                        { "type": "sphere", "id": 2, "params": {
+                            "op": "add", "targets": "qCreatedBy(1)",
+                            "radius": 3, "translate": [0, 0, 4.5] } }
+                    ],
+                    "next_feature_id": 3
+                }"#,
+                h: 5.0,
+                lo: [-4.3, -4.3, -1.8],
+                hi: [4.3, 4.3, 7.8],
+                cell: 0.3,
+                validate: |f| {
+                    assert!(f([0.0, 0.0, 1.5]).abs() < 0.02, "Kusspunkt nicht bei (0,0,1.5)");
+                    assert!(f([0.0, 0.0, 1.3]) < 0.0, "Box fehlt");
+                    assert!(f([0.0, 0.0, 1.7]) < 0.0, "Kugel fehlt");
+                    // Luft-RING um den Kusspunkt = Ein-Punkt-Tangentialität.
+                    assert!(f([0.5, 0.0, 1.51]) > 0.0, "kein Luftring — Kugel überlappt");
+                    assert!(f([0.0, -0.5, 1.51]) > 0.0, "kein Luftring — Kugel überlappt");
+                },
+            },
+            AdvCase {
+                // Zwei Boxen mit KOPLANAREN Deck-/Bodenflächen (z=±2.5):
+                // die Union hat eine ebene Fläche, unter der zwei SDF-Äste
+                // exakt gleichauf liegen.
+                name: "coplanar_union",
+                json: r#"{
+                    "schema_version": 1, "name": "adv-coplanar",
+                    "feature_calls": [
+                        { "type": "box", "id": 1, "params": {
+                            "op": "new", "half_extents": [4, 4, 2.5], "translate": [0, 0, 0] } },
+                        { "type": "box", "id": 2, "params": {
+                            "op": "add", "targets": "qCreatedBy(1)",
+                            "half_extents": [2, 2, 2.5], "translate": [4.5, 0, 0] } }
+                    ],
+                    "next_feature_id": 3
+                }"#,
+                h: 5.0,
+                lo: [-4.3, -4.3, -2.8],
+                hi: [6.8, 4.3, 2.8],
+                cell: 0.3,
+                validate: |f| {
+                    assert!(f([3.0, 0.0, 0.0]) < 0.0, "Überlapp-Bereich fehlt");
+                    assert!(f([5.5, 0.0, 0.0]) < 0.0, "zweite Box fehlt");
+                    assert!(f([5.0, 3.0, 0.0]) > 0.1, "L-Form falsch: (5,3,0) müsste Luft sein");
+                    assert!(
+                        f([3.25, 0.0, 2.5]).abs() < 1e-3 && f([5.5, 0.0, 2.5]).abs() < 1e-3,
+                        "Deckflächen nicht koplanar auf z=2.5"
+                    );
+                    assert!(f([3.25, 0.0, 2.7]) > 0.1, "über dem Deck muss Luft sein");
+                },
+            },
+            // ── Klasse 4: fast-tangentiale Verschneidungen ──────────────
+            AdvCase {
+                // Der Abnahmefall an ANDEREM Ort: Ausschnitt auf der
+                // Gyroid∩Zylinder-Naht bei (15.75,0,−27.28) — numerisch
+                // gesucht (38 % Material, Naht kreuzt), andere Nahtwinkel
+                // als im Abnahme-Ausschnitt. Erste Ortswahl (−28,−10,10.7)
+                // hatte 0 % Material — von der Validierung gefangen.
+                name: "graze_demo_alt",
+                json: r#"{
+                    "schema_version": 1, "name": "adv-graze-alt",
+                    "feature_calls": [
+                        { "type": "sphere", "id": 1, "params": {
+                            "op": "new", "radius": 50, "translate": [0, 0, 0] } },
+                        { "type": "gyroid", "id": 2, "params": {
+                            "op": "intersect", "targets": "qCreatedBy(1)",
+                            "cell_size": { "unit": "mm", "value": 10 },
+                            "thickness": { "unit": "mm", "value": 1 },
+                            "blend_radius": { "unit": "mm", "value": 0 },
+                            "chamfer_size": { "unit": "mm", "value": 0 },
+                            "displace_depth": { "unit": "mm", "value": 0 },
+                            "shell_thickness": { "unit": "mm", "value": 0 } } },
+                        { "type": "cylinder", "id": 3, "params": {
+                            "op": "remove", "targets": "qCreatedBy(1)",
+                            "radius": 30, "half_height": 60, "translate": [0, 0, 0] } },
+                        { "type": "box", "id": 4, "params": {
+                            "op": "intersect", "targets": "qCreatedBy(1)",
+                            "half_extents": [3, 4, 3], "translate": [0, 0, 0] } },
+                        { "type": "translate", "id": 5, "params": {
+                            "target_id": 4, "translate": [15.75, 0.0, -27.28] } }
+                    ],
+                    "next_feature_id": 6
+                }"#,
+                h: 10.0,
+                lo: [12.45, -4.3, -30.58],
+                hi: [19.05, 4.3, -23.98],
+                cell: 0.5,
+                validate: |f| {
+                    // Material UND Luft im Ausschnitt (Gitterprobe).
+                    let (bc, he) = ([15.75f32, 0.0, -27.28], [3.0f32, 4.0, 3.0]);
+                    let (mut air, mut solid) = (0usize, 0usize);
+                    let n = 12;
+                    for i in 0..n {
+                        for j in 0..n {
+                            for l in 0..n {
+                                let t = |idx: usize, k: usize| {
+                                    bc[k] - 0.95 * he[k]
+                                        + idx as f32 * 1.9 * he[k] / (n - 1) as f32
+                                };
+                                if f([t(i, 0), t(j, 1), t(l, 2)]) > 0.0 { air += 1 } else { solid += 1 }
+                            }
+                        }
+                    }
+                    let frac = solid as f32 / (air + solid) as f32;
+                    assert!(
+                        frac > 0.02 && frac < 0.6,
+                        "Alt-Ausschnitt: {:.0}% Material — Naht nicht getroffen",
+                        frac * 100.0
+                    );
+                    // Zylinderfläche r=30 kreuzt den Ausschnitt (Kappen da).
+                    assert!(f([0.0, 0.0, 0.0]) > 0.5, "außerhalb des Ausschnitts steht Material");
+                    assert!(f([15.75, 10.0, -27.28]) > 0.5, "Box-Intersect greift nicht");
+                },
+            },
+            AdvCase {
+                // Kugel r=50 schneidet die Box-Deckfläche unter ~3,6°:
+                // flacher Rest-Teller r≈3,16 auf z=49,9, umgeben von der
+                // streifenden Kugelfläche.
+                name: "graze_sphere_plane",
+                json: r#"{
+                    "schema_version": 1, "name": "adv-graze-plane",
+                    "feature_calls": [
+                        { "type": "box", "id": 1, "params": {
+                            "op": "new", "half_extents": [6, 6, 6], "translate": [0, 0, 43.9] } },
+                        { "type": "sphere", "id": 2, "params": {
+                            "op": "intersect", "targets": "qCreatedBy(1)",
+                            "radius": 50, "translate": [0, 0, 0] } }
+                    ],
+                    "next_feature_id": 3
+                }"#,
+                h: 5.0,
+                lo: [-6.3, -6.3, 37.6],
+                hi: [6.3, 6.3, 50.2],
+                cell: 0.4,
+                validate: |f| {
+                    assert!(f([0.0, 0.0, 49.85]) < 0.0, "unter dem Teller muss Material sein");
+                    assert!(f([0.0, 0.0, 49.95]) > 0.0, "über dem Teller muss Luft sein");
+                    // Jenseits r=3,16 liegt die Kugelfläche UNTER der Ebene:
+                    assert!(
+                        f([3.0, 3.0, 49.88]) > 0.0,
+                        "Kugel schneidet die Deckfläche nicht (kein Streif-Schnitt)"
+                    );
+                    assert!(f([3.0, 3.0, 49.7]) < 0.0, "Material unter der Kugelfläche fehlt");
+                    assert!(f([0.0, 0.0, 49.9]).abs() < 0.02, "Teller liegt nicht auf z=49.9");
+                },
+            },
+        ]
+    }
+
+    fn adv_run(case: &AdvCase) -> (Report, f32) {
+        let mut k = crate::Kernel::new();
+        k.load_json(case.json).expect("Adversarial-Fixture lädt");
+        {
+            let bodies = scene_bodies(&k);
+            assert_eq!(bodies.len(), 1, "{}: genau ein Body erwartet", case.name);
+            let f = |p: [f32; 3]| crate::sdf_dual::sdf_gradient(&bodies[0], p).0;
+            (case.validate)(&f);
+        }
+        let t0 = std::time::Instant::now();
+        let out = k.lichen_mesh(adv_opts(case.h));
+        let secs = t0.elapsed().as_secs_f32();
+        assert!(out.len() >= 3, "{}: Mesher liefert ein Netz", case.name);
+        (measure(&k, &out, case.lo, case.hi, case.cell), secs)
+    }
+
+    /// B-Rep-Kanten-Dump für einen Matrix-Fall (Analyse-Werkzeug).
+    /// `LICHEN_ADV=coplanar_union cargo test … zz_adversarial_brep_edges -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn zz_adversarial_brep_edges() {
+        let name = std::env::var("LICHEN_ADV").unwrap_or_else(|_| "coplanar_union".into());
+        let case = adv_cases().into_iter().find(|c| c.name == name).expect("Fall existiert");
+        let mut k = crate::Kernel::new();
+        k.load_json(case.json).expect("Fixture lädt");
+        let decoded = k.decoded.clone();
+        let body = &mut k.bodies[0];
+        let brep = body.ensure_brep(&decoded, true);
+        eprintln!(
+            "BREP {name}: {} Vertizes, {} Kanten, {} Faces",
+            brep.vertices.len(),
+            brep.edges.len(),
+            brep.faces.len()
+        );
+        for (i, e) in brep.edges.iter().enumerate() {
+            let asf = |q: &[f64; 3]| [q[0] as f32, q[1] as f32, q[2] as f32];
+            let (kind, n, a, b) = match &e.geometry {
+                crate::brep::EdgeGeometry::Polyline(p) => {
+                    ("poly", p.len(), p.first().map(asf), p.last().map(asf))
+                }
+                crate::brep::EdgeGeometry::Nurbs(_) => (
+                    "nurbs",
+                    0,
+                    e.start.map(|v| brep.vertices[v.0 as usize].position.map(|x| x as f32)),
+                    e.end.map(|v| brep.vertices[v.0 as usize].position.map(|x| x as f32)),
+                ),
+                crate::brep::EdgeGeometry::Hermite(h) => (
+                    "hermite",
+                    h.len(),
+                    h.first().map(|s| [s.point[0] as f32, s.point[1] as f32, s.point[2] as f32]),
+                    h.last().map(|s| [s.point[0] as f32, s.point[1] as f32, s.point[2] as f32]),
+                ),
+            };
+            eprintln!(
+                "  Kante {i}: {kind} n={n} {:?} → {:?} sig={:?}",
+                a, b, e.signature
+            );
+        }
+    }
+
+    /// ADVERSARIALE MESS-MATRIX (Analyse-Werkzeug, kein Gate).
+    /// `cargo test -p fielddraft-kernel --release zz_adversarial_matrix -- --ignored --nocapture`
+    /// Einzelfall: `LICHEN_ADV=thin_tube …`
+    ///
+    /// IST-STAND 2026-07-13 (release, nach Härtung — Ketten-Deckungs-Filter,
+    /// Regionen-Orientierungs-Gate, Sub-Resolution-Berührradius,
+    /// Kanten-Walk-Stitch mit 5er-Fächer):
+    ///
+    /// | Fall                  | Kat | open | χ  | H(m→s) | H(s→m) | p99  | minang | s   |
+    /// |-----------------------|-----|------|----|--------|--------|------|--------|-----|
+    /// | thin_gyroid_wall      | b   |    7 | −1 | 0.035  | 0.095  | 1.46 | 23.0°  |  34 |
+    /// | thin_plate_diff       | a   |    0 |  2 | 0.035  | 0.072  | 1.46 | 26.6°  |  15 |
+    /// | thin_tube             | a   |    0 |  0 | 0.001  | 0.001  | 1.37 | 24.2°  |  11 |
+    /// | warp_displace_sphere  | c   |  662 |−62 | 0.145  | 0.466  | 4.07 |  1.5°  |  12 |
+    /// | warp_twist_box        | c   |  864 |−11 | 0.334  | 2.065  | 69.6 |  0.1°  |   7 |
+    /// | tangent_cyl_box_line  | c   |  430 |−99 | 0.050  | 0.067  | 1.66 | 18.4°  | 200 |
+    /// | tangent_sphere_point  | b   |   33 |−17 | 0.023  | 0.032  | 1.76 | 20.4°  |  73 |
+    /// | coplanar_union        | a   |    0 |  2 | 0.043  | 0.011  | 2.58 | 10.4°  |  18 |
+    /// | graze_demo_alt        | a   |    0 |  2 | 0.026  | 0.027  | 2.08 | 12.4°  |  12 |
+    /// | graze_sphere_plane    | b   |    0 |  2 | 0.003  | 0.003  | 3.97 |  5.2°  |  12 |
+    ///
+    /// (a) = Abnahme-Niveau; (b) = kleine Defekte (thin_gyroid: Zwickel-Loops
+    /// >5 an Gyroid-Wand∩Box-Kante; sphere_point: Deadlock-Ring um den
+    /// Kusspunkt; graze_sphere_plane: wasserdicht, aber Sliver am 3,6°-Streif-
+    /// schnitt); (c) = harte Brüche, s. WIP-Tests unten.
+    #[test]
+    #[ignore]
+    fn zz_adversarial_matrix() {
+        let filter = std::env::var("LICHEN_ADV").unwrap_or_default();
+        for case in adv_cases() {
+            if !filter.is_empty() && case.name != filter {
+                continue;
+            }
+            let (r, secs) = adv_run(&case);
+            print_report(&format!("{} ({secs:.1}s)", case.name), &r);
+        }
+    }
+
+    fn adv_case(name: &str) -> AdvCase {
+        adv_cases().into_iter().find(|c| c.name == name).expect("Fall existiert")
+    }
+
+    /// AKTIVES GATE (adversariale Härtung #1): exakt KOPLANARE Deckflächen
+    /// zweier Union-Boxen. Der Weave liefert dafür „unordered fallback
+    /// loops"; ohne den Ketten-Deckungs-Filter (chain_seg_ok) erzeugten die
+    /// Phantom-Ring-Schlüsse eine 5,6-mm-Diagonal-„Kette" quer über die
+    /// Fläche, deren Kreuzungs-Veto 46 offene Kanten hinterließ. Ist-Stand:
+    /// open 0, χ 2, H(m→s) 0.043 / H(s→m) 0.011, p99 2.58, minang 10.4°.
+    #[test]
+    fn lichen_adv_coplanar_union_watertight() {
+        let (r, _) = adv_run(&adv_case("coplanar_union"));
+        print_report("coplanar_union", &r);
+        assert_eq!(r.q.boundary_edges, 0, "wasserdicht: {:?}", r.q);
+        assert_eq!(r.q.nonmanifold_edges, 0, "{:?}", r.q);
+        assert_eq!(r.q.orientation_violations, 0, "{:?}", r.q);
+        assert_eq!(r.q.degenerate_tris, 0, "{:?}", r.q);
+        assert_eq!(r.q.components, 1, "{:?}", r.q);
+        assert_eq!(r.q.euler, 2, "L-Körper = Kugel-Topologie: {:?}", r.q);
+        assert!(r.h.mesh_to_surface <= 0.1, "H(m→s)={}", r.h.mesh_to_surface);
+        assert!(r.h.surface_to_mesh <= 0.05, "H(s→m)={}", r.h.surface_to_mesh);
+        assert!(r.a.p99 <= 4.0, "aspect p99={}", r.a.p99);
+        assert!(r.a.min_angle_deg >= 8.0, "min. Winkel {}°", r.a.min_angle_deg);
+    }
+
+    /// AKTIVES GATE (adversariale Härtung #2): der Abnahmefall an ANDEREM
+    /// Ort — Gyroid∩Zylinder-Naht bei (15.75,0,−27.28), andere Nahtwinkel.
+    /// Beweist, dass die Naht-Mechanik (Blatt-Restriktion, Naht-Band,
+    /// Ketten-Weld, Kreuzungs-Veto, Stitching) nicht auf den EINEN
+    /// Abnahme-Ausschnitt überangepasst ist. Ist-Stand: open 0, χ 2,
+    /// H(m→s) 0.026 / H(s→m) 0.027, p99 2.08, minang 12.4°.
+    #[test]
+    fn lichen_adv_graze_demo_alt_watertight() {
+        let (r, _) = adv_run(&adv_case("graze_demo_alt"));
+        print_report("graze_demo_alt", &r);
+        assert_eq!(r.q.boundary_edges, 0, "wasserdicht: {:?}", r.q);
+        assert_eq!(r.q.nonmanifold_edges, 0, "{:?}", r.q);
+        assert_eq!(r.q.orientation_violations, 0, "{:?}", r.q);
+        assert_eq!(r.q.degenerate_tris, 0, "{:?}", r.q);
+        assert_eq!(r.q.components, 1, "{:?}", r.q);
+        assert_eq!(r.q.euler, 2, "{:?}", r.q);
+        assert!(r.h.mesh_to_surface <= 0.05, "H(m→s)={}", r.h.mesh_to_surface);
+        assert!(r.h.surface_to_mesh <= 0.1, "H(s→m)={}", r.h.surface_to_mesh);
+        assert!(r.h.surface_to_mesh_p95 <= 0.02, "p95={}", r.h.surface_to_mesh_p95);
+        assert!(r.a.p99 <= 4.0, "aspect p99={}", r.a.p99);
+        assert!(r.a.min_angle_deg >= 10.0, "min. Winkel {}°", r.a.min_angle_deg);
+    }
+
+    /// AKTIVES GATE (adversariale Härtung #3): dünnwandige Röhre (0,35 mm,
+    /// Zylinder-Differenz) — Torus-Topologie als Anker (χ=0!): ein einziges
+    /// Wand-Durchquerungs-Dreieck oder zugeschmiertes Loch kippt χ.
+    /// Ist-Stand: open 0, χ 0, H beidseitig 0.001, p99 1.37, minang 24.2°.
+    #[test]
+    fn lichen_adv_thin_tube_watertight() {
+        let (r, _) = adv_run(&adv_case("thin_tube"));
+        print_report("thin_tube", &r);
+        assert_eq!(r.q.boundary_edges, 0, "wasserdicht: {:?}", r.q);
+        assert_eq!(r.q.nonmanifold_edges, 0, "{:?}", r.q);
+        assert_eq!(r.q.orientation_violations, 0, "{:?}", r.q);
+        assert_eq!(r.q.degenerate_tris, 0, "{:?}", r.q);
+        assert_eq!(r.q.components, 1, "{:?}", r.q);
+        assert_eq!(r.q.euler, 0, "Röhre = Torus-Topologie: {:?}", r.q);
+        assert!(r.h.mesh_to_surface <= 0.02, "H(m→s)={}", r.h.mesh_to_surface);
+        assert!(r.h.surface_to_mesh <= 0.02, "H(s→m)={}", r.h.surface_to_mesh);
+        assert!(r.a.p99 <= 3.0, "aspect p99={}", r.a.p99);
+        assert!(r.a.min_angle_deg >= 15.0, "min. Winkel {}°", r.a.min_angle_deg);
+    }
+
+    /// WIP (Kategorie c): WARP-BODIES. Twist/Bend/Displace-Bodies verlassen
+    /// beide Weave-Scopes (`seed_weaver::scope_supported*` → kein B-Rep):
+    /// keine Ketten, keine Ecken, keine Regionen — die Twist-Box reißt an
+    /// ihren (helikalen) Kanten auf (864 offen, comp 9, H(s→m) 2.07). Die
+    /// Displace-Kugel ist glatt und bricht trotzdem (662 offen, H(s→m) 0.47):
+    /// Wachstums-Crowding auf der Beulen-Fläche, „nur nicht-leere Kugeln" —
+    /// und das Feld ist nicht 1-Lipschitz (L≈1.8; Befund in bvh.rs — die
+    /// DL-70-Normalisierung wurde implementiert, vermessen (813→1634,
+    /// SCHLECHTER: Sizing verfeinert auf die kleineren |f|) und zurückgebaut).
+    /// Ziel-Zustand: beide Fälle wasserdicht.
+    #[test]
+    #[ignore = "WIP: Warp-Bodies ohne B-Rep (kein Ketten-Gerüst) + Displace nicht \
+                1-Lipschitz — Twist-Box 864 offen / Displace-Kugel 662 offen; \
+                braucht Ketten-Ersatz (Feld-Feature-Linien) bzw. Wachstums-Fix, \
+                kein kleiner prinzipienfester Hebel gefunden (2026-07-13)"]
+    fn lichen_adv_warp_bodies_wip() {
+        for name in ["warp_displace_sphere", "warp_twist_box"] {
+            let (r, _) = adv_run(&adv_case(name));
+            print_report(name, &r);
+            assert_eq!(r.q.boundary_edges, 0, "{name}: {:?}", r.q);
+        }
+    }
+
+    /// WIP (Kategorie b/c): EXAKT TANGENTIALE KONTAKTE. Kugel küsst Platte
+    /// in einem PUNKT (33 offen als Deadlock-Ring um den Kusspunkt; vor den
+    /// Regionen-Fixes 59) bzw. Zylinder küsst Box-Wand längs einer LINIE
+    /// (430 offen längs der Kusslinie, 200 s Laufzeit durch lfs→0-Kollaps).
+    /// Am Kontakt ist der Blattabstand exakt 0 — unterhalb JEDER Auflösung
+    /// kann keine Abtastung die Blätter trennen; die B-Rep hat dort keine
+    /// Kante (kein transversaler Schnitt). Ehrliches Soll wäre comp=2 mit
+    /// zwei wasserdichten Blättern (Punkt) bzw. sauberer Pinch (Linie).
+    #[test]
+    #[ignore = "WIP: tangentiale Kontakte — Blattabstand 0 am Kontakt ist \
+                sub-resolution für jede Abtastung; Punkt-Kuss 33 offen, \
+                Linien-Kuss 430 offen (2026-07-13)"]
+    fn lichen_adv_tangent_kiss_wip() {
+        for name in ["tangent_sphere_point", "tangent_cyl_box_line"] {
+            let (r, _) = adv_run(&adv_case(name));
+            print_report(name, &r);
+            assert_eq!(r.q.boundary_edges, 0, "{name}: {:?}", r.q);
         }
     }
 }

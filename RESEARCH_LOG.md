@@ -185,6 +185,51 @@ Format: Zeitstempel · Hypothese/Frage · Ergebnis · Entscheidung.
   H(m→s) 0,0213, H(s→m) 0,098 (p95 0,0022), asp p99 1,85, minang 14,9°;
   h=6 und h=14 ebenfalls open=0. Lichen-Gates 33/33, Suite 1078/1078.
 
+## 2026-07-13 12:30 — Adversariale Härtung (Matrix aus 10 Fällen, 4 Klassen)
+
+- MATRIX (`zz_adversarial_matrix`, ignored; Ist-Werte in der Doku des Tests):
+  dünne Features (Gyroid-Wand 0,4 mm — thickness DIMENSIONSLOS, Wand =
+  2·t·s/√3, die eigene Fixture-Validierung fing den Faktor-2-Irrtum;
+  0,35-mm-Platte als Box-Differenz; 0,35-mm-Röhre), Domain-Warps
+  (Displace-Kugel, Twist-Box), degenerierte Boolesche Kontakte (Linien-Kuss
+  Zylinder@Box-Wand, Punkt-Kuss Kugel@Platte, koplanare Union), streifende
+  Schnitte (Demo-Naht an ANDEREM Ort — erste Ortswahl hatte 0 % Material,
+  ebenfalls von der Validierung gefangen; Kugel schneidet Ebene unter 3,6°).
+- HÄRTUNG 1 — Ketten-Deckungs-Filter (koplanare Union 46 → 0 offene, χ=2):
+  `global_chain_edges` wurde aus RING-Nachbarpaaren gebaut; bei „unordered
+  fallback loops" des Weave (degenerierte koplanare Topologie) entstehen
+  PHANTOM-Segmente zwischen nicht-benachbarten Ketten-Enden (gemessen: eine
+  5,6-mm-Diagonale quer über eine ebene Fläche, Kreuzungs-Veto blockte jeden
+  Fächer). Fix: nur Segmente, die konsekutiv auf einer abgetasteten
+  B-Rep-Kanten-Kette liegen (`chain_seg_ok`) — für gesunde Loops beweisbar
+  No-op (Gelenk-Vertizes sind Index-identisch).
+- HÄRTUNG 2 — Regionen-Verschmelzung repariert (Punkt-Kuss 59 → 33):
+  (a) Orientierungs-Gate: Flächen, deren nahe Punkte ANTIPARALLELE Normalen
+  tragen (ndot < −0,7), verschmelzen nie — Rücken-an-Rücken-Blätter sind
+  exakt das, was die Blatt-Restriktion trennen muss. (b) Berühr-Radius =
+  1,5·min(space_i, space_j) statt nur space_i — der grobe Streu-Seed einer
+  Orphan-Fläche (space=h) verschmolz sonst ALLE Flächen in 7,5 mm Umkreis.
+- HÄRTUNG 3 — Stitch vervollständigt (dünne Gyroid-Wand 10 → 7):
+  kanten-basierter Loop-Walk (Halbkanten-Konsum) statt Vertex-Nachfolger-Map
+  (Grad-4-Zwickel-Vertizes ließen ZWEI Loops offen) + 5er-Loop-Fächer;
+  weiterhin valid_geom-Pflicht je Dreieck, Manifold-Schutz via edge_use.
+  Nebenwirkung positiv auch auf die WIP-Fälle: Displace 813→662,
+  Twist 927→864, Linien-Kuss 452→430; alle (a)-Fälle byte-stabil.
+- WIDERLEGT/ZURÜCKGEBAUT: DL-70-Normalisierung des Displace-Felds
+  ((d−disp)/L, L≈1,8) in ALLEN Repräsentationen implementiert und vermessen:
+  Mesher wird SCHLECHTER (813 → 1634 offene; Sizing verfeinert auf die
+  kleineren |f|-Werte, Crowding verschärft). Für den RENDERER bleibt sie
+  richtig (Marching übersteuert bis Faktor L) — Befund als Kommentar in
+  bvh.rs, eigene Arbeitslinie nötig. BEHALTEN: fidget_bridge-Displace nutzte
+  falsche Achsfaktoren (sin·sin·sin ohne 1.3/0.7 = ANDERE Fläche) — gefixt.
+- NEUE AKTIVE GATES: `lichen_adv_coplanar_union_watertight`,
+  `lichen_adv_graze_demo_alt_watertight` (Naht-Mechanik ist nicht auf den
+  Abnahme-Ausschnitt überangepasst), `lichen_adv_thin_tube_watertight`
+  (χ=0-Torus-Anker). WIP (ignored, präzise Diagnose):
+  `lichen_adv_warp_bodies_wip` (kein B-Rep für Warp-Bodies → keine Ketten),
+  `lichen_adv_tangent_kiss_wip` (Blattabstand 0 am Kontakt = prinzipiell
+  sub-resolution).
+
 ## 2026-07-13 07:40 — Abnahme-Gate aktiv (Task #3)
 
 - `gyroid_cutout_acceptance_four_metrics` als AKTIVER Test in api/lichen.rs:
