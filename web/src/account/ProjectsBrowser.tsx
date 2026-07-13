@@ -34,6 +34,7 @@ import {
   type LocalProjectSummary,
 } from "../localProjects";
 import { armProjectThumbnailCapture } from "../thumbnailScheduler";
+import { OnshapeImportDialog } from "./OnshapeImportDialog";
 
 /** Which projects the browser lists. `mine` and `public` map to the owner /
  *  gallery endpoints; `all` is their union (logged-in only). */
@@ -211,6 +212,10 @@ export function ProjectsBrowser({
   // (uploaded fonts) are not part of a server document and are dropped, as
   // with any server save. Named after the file; opens bound, like New.
   const importInputRef = useRef<HTMLInputElement>(null);
+
+  // Onshape-Import Schritt 4: modal that translates an Onshape Part Studio
+  // into a NEW server project (see OnshapeImportDialog).
+  const [onshapeOpen, setOnshapeOpen] = useState(false);
   const importLocal = (file: File) =>
     guard(
       "__import__",
@@ -336,6 +341,15 @@ export function ProjectsBrowser({
             </button>
             <button
               type="button"
+              className="secondary"
+              data-testid="projects-onshape-import"
+              disabled={busyId !== null}
+              onClick={() => setOnshapeOpen(true)}
+            >
+              Aus Onshape…
+            </button>
+            <button
+              type="button"
               className="primary"
               data-testid="projects-new"
               disabled={busyId !== null}
@@ -358,6 +372,13 @@ export function ProjectsBrowser({
           </>
         )}
       </div>
+
+      {onshapeOpen && (
+        <OnshapeImportDialog
+          onOpen={onOpen}
+          onClose={() => setOnshapeOpen(false)}
+        />
+      )}
 
       {error && (
         <p className="error" role="alert" data-testid="projects-error">

@@ -131,6 +131,56 @@ operationId (`<featureId>op<Kind>`), isStart, sketchEntityId
 (`<wireId>.<entity>`), derivedFrom-Ketten, disambiguationData
 (ORIGINAL_DEPENDENCY originals / TOPOLOGY entities).
 
+### Schritt-4-Bauplan (verbindlich, Stand 129d366)
+
+Erledigt: BTON-Decoder `web/src/onshape/onshapeQuery.ts` (decodePlaneQuery →
+OnshapePlaneRef: default/cap/swept±blend±splitPeer, korpus-getestet),
+`Kernel.resolveQuery(q)` (wasm, JSON-Matches mit centroid),
+`translateOnshapeSketch(...).entityIds` (Onshape-entityId → FD-Solver-ID).
+
+Noch zu bauen (`web/src/onshape/onshapeImport.ts` + UI):
+1. `importOnshapeFeatures(featuresJson, kernel)` — sequenziell über die
+   Feature-Liste, Onshape-featureId → FD-id-Map pflegen:
+   - newSketch: planeQuery bauen (s.u.), `kernel.addSketch(planeQuery,
+     subCalls)`; entityIds je Onshape-Sketch merken.
+   - extrude: profiles=`qCreatedBy(<fdSketch>)` (Sketch-Herkunft: wireOp-
+     FeatureId aus entities-Query bzw. `qSketchRegion(id+"<fid>")`-Regex);
+     depth aus SI-value×1000 (BLIND), THROUGH_ALL→große Tiefe+Warnung,
+     UP_TO_SURFACE→BLIND-Näherung+Warnung; oppositeDirection→Vorzeichen;
+     operation NEW/ADD/REMOVE→new/add/remove; booleanScope(SWEPT_BODY von
+     X)→targets=`qCreatedBy(<fdX>)`. `kernel.addFeatureCall("extrude",…)`.
+   - shell: open_faces = Cap-Query übersetzt (`qCreatedBy(fd, CAP_*)`),
+     thickness SI→mm. Typ "shell".
+   - fillet: je entities-Edge-Query (INTERSECT aus CAP_FACE×SWEPT_FACE):
+     `qCommonEdge(<capQuery>, <sweptQuery>)` → je ein "fillet_edge"
+     (edge, blend_radius=radius·1000).
+2. planeQuery-Bau aus OnshapePlaneRef:
+   - default: top→qCreatedBy(origin_plane_xy), front→…_xz, right→…_yz.
+   - cap: isStart=true→CAP_BOTTOM (Sketch-Seite), false→CAP_TOP —
+     Zuordnung im E2E VERIFIZIEREN, ggf. drehen.
+   - swept: `qWall(<fdExtrude>, <ord>)`, ord = entityIds[origin.entityId]
+     des Quell-Sketches (Curve-ID = Wall-Sub per Schritt 2).
+   - swept+blend/split (Kabelbox 4/8; Achtung: Blend-Fillet FH63… ist im
+     Dokument GELÖSCHT → nur splitPeer nutzbar):
+     `qAdjacentTo(qWall(e1,ord), qWall(<fdPeer>, <peerOrd>))`.
+   - Eindeutigkeit VOR dem Speichern via kernel.resolveQuery prüfen:
+     1 Treffer → Query speichern; 0/mehrere → Import-Fehler im Dialog
+     (sichtbar, mit Feature-Name) — NIE still XY.
+3. UI: Button „Aus Onshape importieren…" in
+   web/src/account/ProjectsBrowser.tsx ({authed}-Block, testid
+   projects-onshape-import), Modal nach SettingsMenu-Muster (fd-Klasse,
+   Overlay/Backdrop/Escape), styles/components/onshape-import.css +
+   @import in styles/index.css; URL-Feld (d/w/e-Parse), platformApi:
+   getOnshapeElements/getOnshapeFeatures (`request` auf
+   /api/onshape/elements|features?documentId=…). Import = neues Projekt
+   (createProject) + öffnen (armProjectThumbnailCapture + onOpen) +
+   importOnshapeFeatures gegen den Kernel des geöffneten Projekts.
+4. Validierung: `just build-wasm` (stale-WASM-Falle!), In-Browser-Test
+   (HTTPS/Tailscale, docker compose Server mit ONSHAPE_ACCESS_KEY/
+   SECRET_KEY aus web/.onshape.local.json in server/.env), Kabelbox
+   importieren, 7 Sketch-Ebenen prüfen, Basiskörper-Änderungstest.
+   Release-Note + Versions-Bump erst mit der UI.
+
 ## Offene Punkte / Lücken
 
 - Übersetzer-Lücken (nach Pipeline schließen): Fillet-Arcs im Sketch,

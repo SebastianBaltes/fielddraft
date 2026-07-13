@@ -64,7 +64,14 @@ async function inflateBase64(b64: string): Promise<string> {
       controller.close();
     },
   });
-  const inflated = source.pipeThrough(new DecompressionStream("deflate"));
+  // Type-only cast: lib.dom types DecompressionStream over `BufferSource`,
+  // which pipeThrough's `ReadableWritablePair<Uint8Array, …>` rejects.
+  const inflated = source.pipeThrough(
+    new DecompressionStream("deflate") as unknown as ReadableWritablePair<
+      Uint8Array,
+      Uint8Array
+    >,
+  );
   return await new Response(inflated).text();
 }
 

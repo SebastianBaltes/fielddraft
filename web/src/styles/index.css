@@ -40,6 +40,7 @@
    admin bell). */
 @import "./components/overview.css";
 @import "./components/projects-browser.css";
+@import "./components/onshape-import.css";
 @import "./components/user-menu.css";
 @import "./components/bell.css";
 

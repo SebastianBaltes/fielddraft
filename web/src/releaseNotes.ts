@@ -24,6 +24,16 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.568",
+    entries: [
+      {
+        kind: "feat",
+        scope: "onshape",
+        text: "Parametrischer Onshape-Import: „Aus Onshape…“ in der Projekt-Übersicht importiert ein Part Studio als FieldDraft-Projekt — Sketches (Geometrie + Constraints) samt ihrer EBENEN als parametrische Referenzen (Standard-Ebenen, Extrude-Caps, Mantelflächen inkl. Boolean-Split-Disambiguierung) plus Extrude/Shell/Fillet in einer Erstübersetzung. Onshapes kodierte Creation-Queries (qCompressed/BTON) werden dekodiert und auf die neuen FieldDraft-Query-Formen abgebildet (qCreatedBy(op, ROLLE), qWall, qAdjacentTo, qCommonEdge); Mantelflächen tragen dafür jetzt stabile Sketch-Entity-Sub-IDs (Naming-Schema v2, bestehende Referenzen heilen über den Fingerprint). Nicht Übersetzbares scheitert sichtbar im Dialog — nie stiller XY-Fallback.",
+      },
+    ],
+  },
+  {
     version: "0.6.567",
     entries: [
       {

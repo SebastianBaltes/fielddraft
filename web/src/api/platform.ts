@@ -358,6 +358,17 @@ export interface PlatformApi {
    *  14cff61). Best-effort — callers swallow failures. */
   putThumbnail(projectId: string, png: Blob): Promise<void>;
 
+  // Onshape read-only proxy (server-side HMAC signing; 503 when the server
+  // has no API key configured). Raw Onshape JSON — the importer parses it.
+  /** List a document workspace's elements (tabs). */
+  getOnshapeElements(documentId: string, workspaceId: string): Promise<unknown>;
+  /** Fetch a Part Studio's feature list. */
+  getOnshapeFeatures(
+    documentId: string,
+    workspaceId: string,
+    elementId: string,
+  ): Promise<unknown>;
+
   // Admin moderation (admin only — the backend re-checks the role on each).
   /** List admin alerts, newest-first. `unseenOnly` adds `?unseen=1`. */
   listAdminAlerts(unseenOnly?: boolean): Promise<AdminAlert[]>;
@@ -534,6 +545,18 @@ export const platformApi: PlatformApi = {
       throw new ApiError(res.status, await extractError(res));
     }
   },
+
+  getOnshapeElements: (documentId, workspaceId) =>
+    request<unknown>(
+      `/api/onshape/elements?${new URLSearchParams({ documentId, workspaceId })}`,
+      { method: "GET" },
+    ),
+
+  getOnshapeFeatures: (documentId, workspaceId, elementId) =>
+    request<unknown>(
+      `/api/onshape/features?${new URLSearchParams({ documentId, workspaceId, elementId })}`,
+      { method: "GET" },
+    ),
 
   listAdminAlerts: (unseenOnly) =>
     request<AdminAlert[]>(`/api/admin/alerts${unseenOnly ? "?unseen=1" : ""}`, {
