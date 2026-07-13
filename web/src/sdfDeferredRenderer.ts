@@ -786,6 +786,15 @@ export function renderDeferredFrame(
     savedClearAlpha,
   );
   if (sceneDirty || frameKey !== state.lastFrameKey) {
+    if (import.meta.env.DEV) {
+      // Instrumentation (e2e sdf-invalidate.spec.ts): counts the EXPENSIVE
+      // path — a full G-buffer + sphere-trace re-march. On a scene that is at
+      // rest (no edit, no camera move) this must stop advancing; a counter
+      // that climbs forever is the "renders continuously" regression that the
+      // sceneDirty fast path exists to prevent.
+      const w = window as unknown as { __fdSdfMarches?: number };
+      w.__fdSdfMarches = (w.__fdSdfMarches ?? 0) + 1;
+    }
     // Pass 0: clear body-ID buffer
     renderer.compute(state.clearNode);
 

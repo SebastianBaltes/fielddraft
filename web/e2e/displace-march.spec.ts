@@ -31,22 +31,26 @@ import { expect, test } from "@playwright/test";
  *    back; body mask + hole test are per-pixel diffs against that frame.
  *    Colour classifiers fail — the displaced surface shades pale/white
  *    (bump normals tilt up to ~40°, killing the saturated body blue), and
- *    the sky is itself a white-blob gradient. Feature SUPPRESSION is no
- *    alternative: suppressed bodies still draw a translucent ghost.
+ *    the sky is itself a white-blob gradient.
  *  - Datum widgets (origin dot + Top/Front/Right plane cards) draw OVER
  *    the body at the canvas centre and would read as fake holes → hidden
  *    via store.toggleDatumVisible. Likewise the xray B-Rep edge overlay
  *    draws seam lines across the body → disabled via localStorage.
- *  - NO real zooming: view presets "1"/"0" fit the scene to a usable
- *    ~130 px radius on their own. Commits that only change the SDF program
- *    (displace on/off) MISS the demand-frameLoop invalidate — the canvas
- *    repaints only on the next camera move (found while these screenshots
- *    came back byte-identical). Repaints are therefore forced with a
- *    camera-neutral −2/+2 wheel nudge, and after each mutation the test
- *    polls until the pixels actually change (the renderer is
- *    deterministic: identical scene ⇒ byte-identical PNG). A displaced
- *    body additionally HIDES during its (minutes-long) regen, so the
- *    measurement waits for a stable frame that actually contains a body.
+ *  - NO camera interaction of any kind: view presets "1"/"0" fit the scene
+ *    to a usable ~130 px radius on their own, and every mutation is expected
+ *    to repaint by itself. This spec USED to force repaints with a
+ *    camera-neutral −2/+2 wheel nudge and to tolerate frames in which the
+ *    body was missing entirely. Both were crutches for ONE renderer bug,
+ *    fixed in v0.6.574 (see e2e/sdf-invalidate.spec.ts): the deferred
+ *    pipeline re-blitted its cached shade target after an SDF-only commit,
+ *    so the canvas kept showing the PREVIOUS image until the camera moved.
+ *    That is also what made the body look like it "vanished during regen" —
+ *    the stale blit being shown was the background frame captured with the
+ *    body translated off-screen. The nudge and the tolerance are gone; the
+ *    spec now waits for a settled frame and asserts the body is THERE.
+ *  - Settling: a frame counts only when the "Building SDF…" curtain is down
+ *    and two consecutive screenshots are byte-identical (the renderer is
+ *    deterministic: identical scene ⇒ byte-identical PNG).
  *
  * Screenshots land in /tmp/displace-march-{front-baseline,front,iso}.png
  * (+ *-bg.png background frames).
@@ -249,30 +253,27 @@ test("v0.6.568: displace sphere marches hole-free at grazing angles (march_relax
     x: canvasBox.x + canvasBox.width / 2,
     y: canvasBox.y + canvasBox.height / 2,
   };
-  /** Force a repaint WITHOUT changing the camera pose: a −2/+2 wheel pair.
-   *  Ortho zoom is multiplicative, so the pair restores the exact camera —
-   *  verified: two consecutive nudges reproduce byte-identical frames.
-   *  (A viewport-resize jiggle does NOT work: it can leave a glitched
-   *  frame with the body layer missing.) */
-  const nudgeRepaint = async () => {
-    await page.mouse.move(midPt.x, midPt.y);
-    await page.mouse.wheel(0, -2);
-    await page.waitForTimeout(200);
-    await page.mouse.wheel(0, 2);
-    await page.waitForTimeout(400);
-  };
-  /** Renderer updates can lag commits — and commits that change ONLY the
-   *  SDF program (e.g. displace on/off) can miss the demand-frameLoop
-   *  invalidate entirely (found during this spec's development: the canvas
-   *  repainted only on the next camera move). Poll for a pixel change and,
-   *  if none comes, force a repaint via a camera-neutral wheel nudge. */
-  const waitRenderChange = async (pre: string, what: string): Promise<void> => {
-    for (let i = 0; i < 25; i++) {
+  /** A frame is usable once the "Building SDF…" curtain is down (it is an
+   *  opaque DOM layer over the canvas, and an element screenshot composites
+   *  it) AND two consecutive screenshots are byte-identical. No nudging: an
+   *  SDF-only commit is required to repaint on its own (v0.6.574). */
+  const settle = async (what: string): Promise<string> => {
+    let last = "";
+    for (let i = 0; i < 90; i++) {
       await page.waitForTimeout(400);
-      if ((await shot()) !== pre) return;
-      if (i === 4 || i === 12) await nudgeRepaint();
+      const busy = await page.evaluate(
+        () =>
+          document.getElementById("fd-shader-compiling")?.style.display !== "none",
+      );
+      if (busy) {
+        last = "";
+        continue;
+      }
+      const s = await shot();
+      if (s === last) return s;
+      last = s;
     }
-    throw new Error(`render never updated after: ${what}`);
+    throw new Error(`frame never settled: ${what}`);
   };
 
   // ── 1) Plain sphere (radius 30): march_relax must be exactly 1 — the
@@ -282,7 +283,10 @@ test("v0.6.568: displace sphere marches hole-free at grazing angles (march_relax
     (window as any).__fdStore?.addPrimitive("sphere"),
   )) as number;
   expect(sphereId).toBeGreaterThan(0);
-  await waitRenderChange(preAdd, "addPrimitive(sphere)");
+  expect(
+    await settle("addPrimitive(sphere)"),
+    "adding the sphere must repaint the canvas by itself",
+  ).not.toBe(preAdd);
 
   const setParams = (patch: Record<string, unknown>) =>
     page.evaluate(
@@ -301,11 +305,15 @@ test("v0.6.568: displace sphere marches hole-free at grazing angles (march_relax
       },
       { sphereId, patch },
     );
-  /** Patch params and wait until the canvas actually shows the change. */
+  /** Patch params and require the canvas to show the change on its own — no
+   *  camera move, no nudge (v0.6.574). */
   const patchAndRender = async (patch: Record<string, unknown>, what: string) => {
     const pre = await shot();
     expect(await setParams(patch), `${what}: params accepted`).toBeTruthy();
-    await waitRenderChange(pre, what);
+    expect(
+      await settle(what),
+      `${what}: the canvas still shows the previous image — an SDF-only commit must repaint without a camera move`,
+    ).not.toBe(pre);
   };
 
   await patchAndRender({ radius: 30 }, "radius 50 → 30");
@@ -351,27 +359,9 @@ test("v0.6.568: displace sphere marches hole-free at grazing angles (march_relax
       { bodyB64, bgB64 },
     );
 
-  /** Wait until the frame (a) shows a body against `bgB64` and (b) is
-   *  STABLE across two polls, then return it. Needed because a displaced
-   *  body HIDES during its regen/weave (which can run for minutes) — the
-   *  first pixel change after a displace patch is the body VANISHING. */
-  const waitBodyRender = async (bgB64: string, what: string): Promise<string> => {
-    let last = "";
-    for (let i = 0; i < 150; i++) {
-      const s = await shot();
-      if (s === last && (await bodyPixelCount(s, bgB64)) > 300) return s;
-      last = s;
-      if (i > 0 && i % 3 === 0) await nudgeRepaint();
-      await page.waitForTimeout(1200);
-    }
-    throw new Error(`no stable body frame: ${what}`);
-  };
-
   // Differential measurement at the CURRENT camera: move the body 1 m off
   // screen for a true background frame, move it back. The bg frame is
-  // camera-only, so one capture serves every measurement at that camera —
-  // important because each geometry change of the DISPLACED body can block
-  // the main thread for a long regen.
+  // camera-only, so one capture serves every measurement at that camera.
   const captureBg = async (bgPath: string): Promise<string> => {
     await patchAndRender({ translate: [1000, 0, 0] }, "translate off-screen (bg frame)");
     const bgB64 = await shot();
@@ -379,8 +369,18 @@ test("v0.6.568: displace sphere marches hole-free at grazing angles (march_relax
     await patchAndRender({ translate: [0, 0, 0] }, "translate back");
     return bgB64;
   };
+  /** Settle, then require the body to actually BE on screen. Strict on
+   *  purpose (v0.6.574): the body must stay visible through a regen — the
+   *  old "poll until some frame happens to contain a body" tolerance was
+   *  hiding the stale-blit bug, whose symptom was exactly a settled frame
+   *  with no body in it. */
   const measure = async (bgB64: string, shotPath: string): Promise<Silhouette> => {
-    const bodyB64 = await waitBodyRender(bgB64, shotPath);
+    const bodyB64 = await settle(shotPath);
+    const px = await bodyPixelCount(bodyB64, bgB64);
+    expect(
+      px,
+      `${shotPath}: the settled frame contains no body (${px} body px) — the body must remain visible across a regeneration`,
+    ).toBeGreaterThan(300);
     await canvas.screenshot({ path: shotPath });
     return analyzeSilhouette(page, bodyB64, bgB64);
   };

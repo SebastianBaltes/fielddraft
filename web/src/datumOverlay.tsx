@@ -52,7 +52,15 @@ function makeLabelMaterial(text: string): THREE.MeshBasicMaterial {
   return new THREE.MeshBasicMaterial({
     map: tex,
     transparent: true,
-    depthTest: false,
+    // TIEFENTEST AN (Ticket 1m8g konsistent gemacht): die Datum-EBENE testet
+    // längst gegen die Körper-Tiefe, ihr Namensschild tat es nicht — eine
+    // Textkarte, die durch massives Material scheint, liest sich im Viewport
+    // wie ein LOCH im Körper (so aufgefallen in der headful-Abnahme, wo die
+    // Karten „Top/Front/Right" als Fehlstellen der Displace-Kugel gezählt
+    // wurden). depthWrite bleibt aus: das Schild ist transluzent und darf die
+    // Tiefe der Overlays hinter sich nicht zerstören.
+    depthTest: true,
+    depthWrite: false,
     side: THREE.DoubleSide,
   });
 }
@@ -163,6 +171,10 @@ export function DatumOverlay() {
   return (
     <group ref={groupRef}>
       {originVisible && (
+        // Der Ursprungs-Punkt bleibt bewusst RÖNTGEN (depthTest aus): mit 1,5 mm
+        // Radius sitzt er in fast jedem Modell tief IM Material und wäre sonst
+        // nie sichtbar — anders als das Ebenen-Schild, das gross ist und
+        // tiefengetestet gehört (s. makeLabelMaterial).
         <mesh>
           <sphereGeometry args={[1.5, 16, 16]} />
           <meshBasicMaterial
