@@ -20,7 +20,8 @@ Erfolgskriterien:
 |---|---|---|---|---|---|---|---|
 | Baseline v0.6.563 | 397 | 0 | 0.010 | 0.080 (p95 0.003) | 1.78 | 18.6° | 5746/11137 |
 | v0.6.564 blatt-restr. Kugel | 312 | 0 | 0.026 | 0.090 (p95 0.003) | 1.78 | 18.6° | 5746/11222 |
-| Schutzkorridor (in Arbeit) | | | | | | | |
+| v0.6.565 Band 10° + Guard-Ausnahme + Ketten-Weld | 21 | 0 | 0.021 | 0.098 (p95 0.002) | 1.85 | 14.9° | 5738/11459 |
+| Zwickel-Topologie (in Arbeit) | | | | | | | |
 
 ## Erforschte Ansätze
 
@@ -29,15 +30,32 @@ Erfolgskriterien:
   glattem Patch (Cheng–Dey–Levine); Regionen aus B-Rep-Flächen + Union-Find
   (Verschmelzung ohne trennende Kette), Naht-Band-Einfärbung immer aktiv.
   397→312, alle Mikro-Löcher entlang der Nähte geschlossen.
+- **Naht-Band 25°→10° + Normalen-Guard-Ausnahme + Ketten-Verschweißung**
+  (v0.6.565): 312→21. (1) Mit 25°-Tangential-Schwelle trug jeder nahtnahe
+  Punkt beide Regionen — die Blatt-Restriktion war blind; reale Keilwinkel
+  16–24°. (2) 243/283 offene Kanten waren voll gültige Dreiecke, die nur der
+  90°-Guard blockte (Netz muss am spitzen Zwickel legitim >90° um die Spitze);
+  Ausnahme nur bei strikt auf der Fläche liegender Sehne — schließt zugleich
+  das θ-skalierte Sichtlinien-Schlupfloch. (3) Kettenpunkte verschiedener
+  B-Rep-Kanten in Sub-Resolution-Abstand teilen einen Mesh-Vertex
+  (weld 1.5·minEdgeSpacing) + Kreuzungs-Veto-Ausnahme.
 
 ### Verworfen (vermessen)
-- Host-only-Kontamination: 312→384 — unabhängige Blatt-Triangulierungen
-  verheddern sich im überfüllten Naht-Keil.
+- **Schutzkorridor um Ketten** (Cheng–Dey–Ramos protecting balls): voll
+  implementiert (Keilwinkel→R, Ring-Deckel, Lipschitz-Glättung, Gates in
+  Wachstum/Rebalance/Füllung/Refinement/Streuung, Hidden-Vertex-Variante),
+  13 Konfigurationen — nie besser als 287; ab β≥2 brechen H(m→s)/minang.
+  Kern-Erkenntnis: reale Keilwinkel sinθ ≥ 0.274 — Blattverschachtelung ist
+  Randphänomen, die Hauptblocker waren Einfärbung + Guard. Bleibt als
+  Default-aus-Werkzeug (LICHEN_PROTECT_MODE).
+- Host-only-Kontamination: 312→384 (auch mit Korridor 351/303) — unabhängige
+  Blatt-Triangulierungen verheddern sich im überfüllten Naht-Keil.
 - Gabriel-Fallback bei Zeugen-Newton-Versagen: →478 — Kugeln ohne
   Flächen-Zentrum lassen falsche Dreiecke zu.
 - faceGuard-Dreiecks-Gate: wirkungslos auf den Nähten (386).
 - Globales minEdgeSpacing-Anheben: 155 offene, aber untersampelt
-  (H(s→m) 0.26 > 0.15) — bestätigt aber die Crowding-Diagnose.
+  (H(s→m) 0.26 > 0.15) — bestätigt aber die Crowding-Diagnose örtlich.
+- Hidden-Vertex zusätzlich zum v0.6.565-Stand: 21→26.
 
 ## Architektur der Lösung
 
