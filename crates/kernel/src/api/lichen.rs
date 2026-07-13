@@ -366,9 +366,42 @@ impl Kernel {
                 (m / s.max(1e-6)).min(h_local)
             };
             let build_chain = |raw_local: &[[f32; 3]], closed: bool, bounds: (f32, f32)| {
+                let elh = edge_lfs_h(raw_local);
+                if std::env::var("LICHEN_DEBUG_CHAIN").is_ok() {
+                    let total: f32 = raw_local.windows(2).map(|w| seg_len(w[0], w[1])).sum();
+                    // Knick-Statistik der ROH-Polyline: Summe der |Knicke| vs.
+                    // direkter Winkel erster→letzter Richtung (Rauschen
+                    // akkumuliert in der Summe, nicht im direkten Winkel).
+                    let dirs: Vec<[f32; 3]> = raw_local
+                        .windows(2)
+                        .map(|w| lichen::unit([w[1][0] - w[0][0], w[1][1] - w[0][1], w[1][2] - w[0][2]]))
+                        .collect();
+                    let mut sum = 0.0f32;
+                    let mut mx = 0.0f32;
+                    for w in dirs.windows(2) {
+                        let d = (w[0][0] * w[1][0] + w[0][1] * w[1][1] + w[0][2] * w[1][2])
+                            .clamp(-1.0, 1.0)
+                            .acos();
+                        sum += d;
+                        mx = mx.max(d);
+                    }
+                    let direct = if dirs.len() >= 2 {
+                        let (a, b) = (dirs[0], dirs[dirs.len() - 1]);
+                        (a[0] * b[0] + a[1] * b[1] + a[2] * b[2]).clamp(-1.0, 1.0).acos()
+                    } else {
+                        0.0
+                    };
+                    let zero = raw_local.windows(2).filter(|w| seg_len(w[0], w[1]) < 1e-7).count();
+                    eprintln!(
+                        "  build_chain: s={s} h_local={h_local:.4} elh={elh:.4} bounds=({:.4},{:.4}) total={total:.4} | roh n={} null-seg={zero} knick-summe={:.2}° max-knick={:.4}° direkt={:.2}° | p0={:?} p1={:?} p2={:?}",
+                        bounds.0, bounds.1, raw_local.len(),
+                        sum.to_degrees(), mx.to_degrees(), direct.to_degrees(),
+                        raw_local.first(), raw_local.get(1), raw_local.get(2)
+                    );
+                }
                 let mut chain = lichen::resample_edge_by_curvature(
                     raw_local,
-                    edge_lfs_h(raw_local),
+                    elh,
                     opts.curv_angle_deg.to_radians(),
                     min_spacing_local,
                     bounds,
@@ -466,6 +499,11 @@ impl Kernel {
                     }
                 }
                 pedges.push(PEdge { raw_local, closed, vs, ve, collapse });
+            }
+            if std::env::var("LICHEN_DEBUG_CHAIN").is_ok() {
+                let mut cg: Vec<(usize, f32)> = corner_gap.iter().map(|(&k, &v)| (k, v)).collect();
+                cg.sort_by(|a, b| a.0.cmp(&b.0));
+                eprintln!("CORNER-GAP: {cg:?}");
             }
 
             // ── KETTEN-VERSCHWEISSUNG (2026-07-13, Naht-Zwickel) ──
@@ -1794,8 +1832,16 @@ impl Kernel {
         // als sie nützt (zweimal vermessen: feiner Marsch → Demo 295→619,
         // Keil-Spacing aus der Wolke → Box 0→3).
         if opts.sizing_field && size.is_none() && opts.grow {
-            let eps = if opts.lfs_factor > 0.0 { opts.lfs_factor } else { 0.5 };
-            let cap_lfs = h / eps;
+            // ε DES FELDES = ε DER ABTASTUNG (2026-07-13, Defekt A).
+            // Vorher stand hier `else { 0.5 }`: mit `lfsFactor = 0` maß der
+            // GROBE Lauf (`local_radius`) gar keine lfs, das Sizing-Field
+            // dahinter aber mit ε = 0,5 — zwei verschiedene Ziel-Dichten in
+            // einer Pipeline, deren zweite auf der Punktwolke der ersten
+            // aufsetzt. Auf der Box-mit-Bohrung riss genau das den ε=0-Pfad
+            // auf (959 offene Kanten, χ −12, während ε=0,1 wasserdicht war).
+            // Das Feld GLÄTTET die Ziel-Dichte, es erfindet keine.
+            let eps = opts.lfs_factor;
+            let cap_lfs = if eps > 0.0 { h / eps } else { 0.0 };
             let floor = opts.min_edge_spacing.max(1e-4).min(h);
             // ── KUSS-DECKEL (exakt tangentiale Kontakte, 2026-07-13) ──
             // An einem tangentialen KUSS (Kugel berührt Platte in einem Punkt,
@@ -1832,11 +1878,16 @@ impl Kernel {
                 // FEINER Startschritt, an das lokale Spacing gekoppelt: nur so
                 // wird ein Spalt gefunden, der kleiner ist als das Spacing.
                 let t0 = (0.05 * lp.space).max(1e-5);
-                let li = lichen::reach_inner(lp.p, n, cap_lfs, t0, &fg);
-                let (lo, lo_dot) = lichen::reach_outer_counter(lp.p, n, cap_lfs, t0, &fg);
+                let (li, lo, lo_dot) = if cap_lfs > 0.0 {
+                    let li = lichen::reach_inner(lp.p, n, cap_lfs, t0, &fg);
+                    let (lo, d) = lichen::reach_outer_counter(lp.p, n, cap_lfs, t0, &fg);
+                    (li, lo, d)
+                } else {
+                    (0.0, 0.0, 1.0) // ε = 0 → keine lfs-Bedingung (s.o.)
+                };
                 let lfs = li.min(lo);
                 let mut r = h.min(lp.space.max(1e-4));
-                if lfs < cap_lfs {
+                if cap_lfs > 0.0 && lfs < cap_lfs {
                     // (b): reach_inner schlägt NUR bei ~antiparallelem
                     // Gegenblatt an (dot < −0.3 intern); für den äußeren
                     // Marsch liefert reach_outer_counter das dot.
@@ -1875,12 +1926,37 @@ impl Kernel {
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(0.3);
+            let sizing_dbg = std::env::var("LICHEN_DEBUG_SIZING").is_ok();
+            let dbg_raw = if sizing_dbg { raw.clone() } else { Vec::new() };
             let sf = lichen::SizeField::build(pts, raw, k_lip, h, floor);
-            if std::env::var("LICHEN_DEBUG_SIZING").is_ok() {
+            if sizing_dbg {
                 eprintln!(
                     "SIZING-FIELD: {} Stützstellen, K={k_lip}, floor={floor}, kuss-gekappt={kiss_capped} (c={kiss_c}, chainR={kiss_chain_r})",
                     all.len()
                 );
+                let mut v = dbg_raw.clone();
+                v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+                let q = |f: f32| v[((v.len() - 1) as f32 * f) as usize];
+                eprintln!(
+                    "  raw: min={:.4} p10={:.4} p50={:.4} p90={:.4} max={:.4}",
+                    q(0.0), q(0.1), q(0.5), q(0.9), q(1.0)
+                );
+                let mut sv: Vec<f32> = all.iter().map(|lp| sf.at(lp.p)).collect();
+                sv.sort_by(|a, b| a.partial_cmp(b).unwrap());
+                let qs = |f: f32| sv[((sv.len() - 1) as f32 * f) as usize];
+                eprintln!(
+                    "  sf(): min={:.4} p10={:.4} p50={:.4} p90={:.4} max={:.4}",
+                    qs(0.0), qs(0.1), qs(0.5), qs(0.9), qs(1.0)
+                );
+                let mut idx: Vec<usize> = (0..all.len()).collect();
+                idx.sort_by(|&a, &b| dbg_raw[a].partial_cmp(&dbg_raw[b]).unwrap());
+                for &i in idx.iter().take(8) {
+                    eprintln!(
+                        "  raw-min[{i}] raw={:.4} flag={} space={:.4} p=({:.3},{:.3},{:.3})",
+                        dbg_raw[i], all[i].flag, all[i].space,
+                        all[i].p[0], all[i].p[1], all[i].p[2]
+                    );
+                }
             }
             return self.lichen_mesh_sized(opts, body_filter, Some(&sf));
         }
@@ -1922,6 +1998,24 @@ impl Kernel {
             if opts.general_tri {
                 let positions: Vec<[f32; 3]> = all.iter().map(|lp| lp.p).collect();
                 let spacings: Vec<f32> = all.iter().map(|lp| lp.space).collect();
+                if std::env::var("LICHEN_DEBUG_WALK").is_ok() {
+                    for flag in [1.0f32, 2.0, 3.0] {
+                        let mut v: Vec<f32> = all
+                            .iter()
+                            .filter(|lp| (lp.flag - flag).abs() < 0.1)
+                            .map(|lp| lp.space)
+                            .collect();
+                        if v.is_empty() {
+                            continue;
+                        }
+                        v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+                        let q = |f: f32| v[((v.len() - 1) as f32 * f) as usize];
+                        eprintln!(
+                            "SPACING flag={flag}: n={} min={:.4} p50={:.4} max={:.4} | sizing={}",
+                            v.len(), q(0.0), q(0.5), q(1.0), size.is_some()
+                        );
+                    }
+                }
                 // ── GLOBALER WALK: ein Netz über ALLE Punkte (s. lichen_tri::
                 // triangulate_global_walk). Schließt die Naht-Schlitze an
                 // gedroppten B-Rep-Kanten, die per-Fläche prinzipiell offen
@@ -5822,6 +5916,295 @@ mod tests {
         assert!(r.h.surface_to_mesh <= 0.02, "H(s→m)={}", r.h.surface_to_mesh);
         assert!(r.a.p99 <= 3.0, "aspect p99={}", r.a.p99);
         assert!(r.a.min_angle_deg >= 15.0, "min. Winkel {}°", r.a.min_angle_deg);
+    }
+
+    // ─── DEFEKT A (§8v Punkt 1): Polyeder unter lfs + Sizing ─────────────
+    //
+    // Zwei reine CAD-Körper (Würfel, Box mit Bohrung) — genau die Klasse, die
+    // der Export-Pfad meshen muss. `lfsFactor:0.1` + `sizingField:true`
+    // gemeinsam zerstören sie (acht Klümpchen um die Ecken, χ=16); jede Option
+    // EINZELN ist harmlos. Diagnose-Runner: alle vier Kombinationen.
+
+    /// Export-Preset (`export_mesh::lichen_export_options`) als JSON, mit
+    /// frei wählbarem ε/Sizing — die Diagnose-Achse von Defekt A.
+    fn poly_opts(h: f32, lfs: f32, sizing: bool) -> String {
+        let mes = (0.01 * h).max(0.02);
+        format!(
+            r#"{{"targetEdgeLength":{h},"grow":true,"curvAngleDeg":10.0,"useReach":false,"reachTol":1.0,"minEdgeSpacing":{mes},"maxPoints":200000,"generalTri":true,"accept":"witness","extractWalk":true,"globalWalk":true,"lfsFactor":{lfs},"sizingField":{sizing},"faceGuard":false,"fillHoles":false}}"#
+        )
+    }
+
+    /// (Name, JSON, h, lo, hi, cell) der beiden Polyeder-Fälle.
+    fn poly_cases() -> Vec<(&'static str, &'static str, f32, [f32; 3], [f32; 3], f32)> {
+        vec![
+            (
+                "cube20",
+                r#"{ "schema_version": 1, "name": "poly-cube",
+                     "feature_calls": [
+                        { "type": "box", "id": 1, "params": {
+                            "op": "new", "half_extents": [10, 10, 10],
+                            "translate": [0, 0, 0] } }],
+                     "next_feature_id": 2 }"#,
+                5.0,
+                [-11.0, -11.0, -11.0],
+                [11.0, 11.0, 11.0],
+                1.0,
+            ),
+            (
+                // ACHTUNG (Fixture-Validierung, §8q): der FieldDraft-Zylinder
+                // steht auf der **Y-Achse** (`half_height` = y). Die erste
+                // Fassung dieser Fixture (Platte flach in z, Bohrung „in z")
+                // war in Wahrheit eine QUER liegende Röhre durch den Klotz —
+                // mit 1-mm-Wänden über/unter der Röhre. Der Mesher hat sie
+                // völlig zu Recht auf 0,1 mm verfeinert (95 000 Punkte); die
+                // Fixture log, nicht der Mesher. Jetzt: Platte 10 mm dick in
+                // **y**, Bohrung r=4 längs y — ein echter CAD-Körper ohne
+                // dünne Wand (lfs = 5 mm).
+                "box_hole",
+                r#"{ "schema_version": 1, "name": "poly-box-hole",
+                     "feature_calls": [
+                        { "type": "box", "id": 1, "params": {
+                            "op": "new", "half_extents": [10, 5, 10],
+                            "translate": [0, 0, 0] } },
+                        { "type": "cylinder", "id": 2, "params": {
+                            "op": "remove", "targets": "qCreatedBy(1)",
+                            "radius": 4, "half_height": 10,
+                            "translate": [0, 0, 0] } }],
+                     "next_feature_id": 3 }"#,
+                2.0,
+                [-11.0, -6.0, -11.0],
+                [11.0, 6.0, 11.0],
+                0.5,
+            ),
+        ]
+    }
+
+    fn poly_run(name: &str, h: f32, lfs: f32, sizing: bool) -> (Report, f32) {
+        let (_, json, _, lo, hi, cell) =
+            poly_cases().into_iter().find(|c| c.0 == name).expect("Polyeder-Fall existiert");
+        let mut k = crate::Kernel::new();
+        k.load_json(json).expect("Polyeder-Fixture lädt");
+        // FIXTURE-VALIDIERUNG (§8q): beweise die Morphologie, BEVOR eine Zahl
+        // interpretiert wird. Die erste box_hole-Fassung war eine Röhre quer
+        // durch den Klotz (Zylinder-Achse = y!), also ein DÜNNWAND-Fall — die
+        // „Über-Verfeinerung" war korrekt und die Fixture falsch.
+        {
+            let bodies = scene_bodies(&k);
+            assert_eq!(bodies.len(), 1, "{name}: genau ein Body");
+            let f = |p: [f32; 3]| crate::sdf_dual::sdf_gradient(&bodies[0], p).0;
+            match name {
+                "cube20" => {
+                    assert!(f([0.0, 0.0, 0.0]) < -9.9, "Würfel: Mitte 10 mm tief");
+                    assert!(f([0.0, 0.0, 10.05]) > 0.0, "Würfel: über der Deckfläche Luft");
+                }
+                "box_hole" => {
+                    // Bohrung längs y (r=4): Achse ist LUFT, r=6 ist Material.
+                    assert!(f([0.0, 0.0, 0.0]) > 3.9, "Bohrung: die Achse muss Luft sein");
+                    assert!(f([6.0, 0.0, 0.0]) < 0.0, "bei r=6 muss Material stehen");
+                    assert!(f([0.0, 5.05, 0.0]) > 0.0, "über der Platte (y=5) Luft");
+                    // Kein Dünnwand-Fall: der dickste Materialquerschnitt vom
+                    // Bohrungsrand nach außen ist 6 mm, die Platte 10 mm dick.
+                    assert!(f([9.0, 0.0, 0.0]) < -0.9, "Platte trägt >= 1 mm Fleisch bei x=9");
+                }
+                _ => {}
+            }
+        }
+        let t0 = std::time::Instant::now();
+        let out = k.lichen_mesh(poly_opts(h, lfs, sizing));
+        let secs = t0.elapsed().as_secs_f32();
+        assert!(out.len() >= 3, "{name}: Mesher liefert ein Netz");
+        (measure(&k, &out, lo, hi, cell), secs)
+    }
+
+    /// AKTIVES GATE (Defekt A, §8w — die Export-Regression aus Ticket
+    /// faa42489): ein reiner CAD-Körper muss mit der ABNAHME-Konfiguration
+    /// (`lfsFactor 0.1` + `sizingField`) wasserdicht UND FLÄCHEN-VOLLSTÄNDIG
+    /// meshen. Beides prüfen ist der Kern des Falls: das kaputte Netz war eine
+    /// tadellose GESCHLOSSENE 2-Mannigfaltigkeit — acht Klümpchen um die Ecken,
+    /// alle sechs Flächen fehlten (open 0, nm 0, orient 0, aber comp 8, χ 16).
+    /// Nur die Richtung Fläche→Netz sieht das: H(s→m) war 10,4 mm bei h = 5.
+    ///
+    /// Ist-Stand: Würfel 1807 Punkte / 3610 Δ, χ=2, comp 1, H beidseitig 0,000
+    /// (exakt planar), asp p99 1,73, minang 18,2°; Platte-mit-Bohrung (h=3)
+    /// χ=0 (Torus-Anker: ein einziges Wand-Durchquerungs-Dreieck kippt ihn).
+    #[test]
+    fn lichen_polyhedra_eps_sampling_watertight_and_complete() {
+        for (name, h) in [("cube20", 5.0f32), ("box_hole", 3.0)] {
+            let (r, secs) = poly_run(name, h, 0.1, true);
+            print_report(&format!("{name} ε=0.1 ({secs:.1}s)"), &r);
+            assert_eq!(r.q.boundary_edges, 0, "{name} wasserdicht: {:?}", r.q);
+            assert_eq!(r.q.nonmanifold_edges, 0, "{name}: {:?}", r.q);
+            assert_eq!(r.q.orientation_violations, 0, "{name}: {:?}", r.q);
+            assert_eq!(r.q.degenerate_tris, 0, "{name}: {:?}", r.q);
+            assert_eq!(r.q.components, 1, "{name} EIN Körper: {:?}", r.q);
+            let chi = if name == "cube20" { 2 } else { 0 };
+            assert_eq!(r.q.euler, chi, "{name} Topologie-Anker: {:?}", r.q);
+            // DIE eigentliche Zusicherung: die Flächen sind DA. Ein Netz aus
+            // Ecken-Klümpchen erfüllt alles obige und fällt genau hier durch.
+            assert!(
+                r.h.surface_to_mesh <= 0.1 * h,
+                "{name} Fläche nicht überdeckt: H(s→m)={} @ {:?}",
+                r.h.surface_to_mesh,
+                r.h.worst_surface_point
+            );
+            assert!(r.h.mesh_to_surface <= 0.05 * h, "{name} H(m→s)={}", r.h.mesh_to_surface);
+            assert!(r.a.p99 <= 4.0, "{name} aspect p99={}", r.a.p99);
+            assert!(r.a.min_angle_deg >= 10.0, "{name} min. Winkel {}°", r.a.min_angle_deg);
+        }
+    }
+
+    /// AKTIVES GATE: dieselben Körper auf SPROSSE 0 der Export-Leiter (ε=0,
+    /// Sizing an) — der billige Pfad für CAD-Körper. Er war ebenfalls kaputt
+    /// (Platte-mit-Bohrung: 959 offene Kanten, χ −12), weil das Sizing-Field
+    /// bei `lfsFactor = 0` ein eigenes ε = 0,5 erfand und damit eine ANDERE
+    /// Zieldichte glättete als der grobe Lauf gemessen hatte.
+    #[test]
+    fn lichen_polyhedra_no_eps_watertight_and_complete() {
+        for (name, h) in [("cube20", 5.0f32), ("box_hole", 3.0)] {
+            let (r, secs) = poly_run(name, h, 0.0, true);
+            print_report(&format!("{name} ε=0 ({secs:.1}s)"), &r);
+            assert_eq!(r.q.boundary_edges, 0, "{name} wasserdicht: {:?}", r.q);
+            assert_eq!(r.q.nonmanifold_edges, 0, "{name}: {:?}", r.q);
+            assert_eq!(r.q.components, 1, "{name}: {:?}", r.q);
+            let chi = if name == "cube20" { 2 } else { 0 };
+            assert_eq!(r.q.euler, chi, "{name} Topologie-Anker: {:?}", r.q);
+            assert!(
+                r.h.surface_to_mesh <= 0.1 * h,
+                "{name} Fläche nicht überdeckt: H(s→m)={}",
+                r.h.surface_to_mesh
+            );
+        }
+    }
+
+    /// DIAGNOSE (kein Gate): die vier ε/Sizing-Kombinationen auf beiden
+    /// Polyedern. `cargo test -p fielddraft-kernel --release zz_defect_a --
+    /// --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn zz_defect_a_polyhedra() {
+        let only = std::env::var("LICHEN_POLY").unwrap_or_default();
+        for (name, _, h, _, _, _) in poly_cases() {
+            if !only.is_empty() && only != name {
+                continue;
+            }
+            // Nur die EXPORT-Konfigurationen (Sizing ist im Preset immer an);
+            // LICHEN_POLY_ALL=1 nimmt die Sizing-losen Vergleichsläufe dazu.
+            let combos: Vec<(f32, bool)> = if std::env::var("LICHEN_POLY_ALL").is_ok() {
+                vec![(0.0, false), (0.1, false), (0.0, true), (0.1, true)]
+            } else {
+                vec![(0.0, true), (0.1, true)]
+            };
+            for (lfs, sizing) in combos {
+                let (r, secs) = poly_run(name, h, lfs, sizing);
+                print_report(&format!("{name} ε={lfs} sz={sizing} ({secs:.1}s)"), &r);
+            }
+        }
+    }
+
+    /// DIAGNOSE: der lfs-Marsch an EINEM Ort (Defekt A, Wurzel 4).
+    /// `LICHEN_REACH_DUMP=1 cargo test … zz_reach_probe -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn zz_reach_probe() {
+        let (_, json, h, _, _, _) =
+            poly_cases().into_iter().find(|c| c.0 == "box_hole").unwrap();
+        let mut k = crate::Kernel::new();
+        k.load_json(json).expect("lädt");
+        let bodies = scene_bodies(&k);
+        let fg = |p: [f32; 3]| crate::sdf_dual::sdf_gradient(&bodies[0], p);
+        let eps = 0.1f32;
+        let cap = h / eps;
+        let t0 = 0.02 * cap;
+        for p in [
+            [0.061f32, 9.515, 5.0],   // Deckfläche, 0,485 mm von der Kante
+            [0.0, 0.0, 5.0],          // Deckflächen-Mitte
+            [10.0, 10.0, 0.0],        // Box-Kante (Ketten-Punkt)
+        ] {
+            let n = crate::lichen::unit(crate::lichen::robust_grad(p, &fg));
+            let li = crate::lichen::reach_inner(p, n, cap, t0, &fg);
+            let (lo, ld) = crate::lichen::reach_outer_counter(p, n, cap, t0, &fg);
+            eprintln!(
+                "REACH p={p:?} n={n:?} f={:.5} | inner={li:.4} outer={lo:.4} (dot {ld:.2}) → lfs={:.4} ε·lfs={:.4}",
+                fg(p).0,
+                li.min(lo),
+                eps * li.min(lo)
+            );
+        }
+    }
+
+    /// DIAGNOSE Defekt B (§8v Punkt 2): die U(p)-Überdeckungs-Invariante der
+    /// Ketten (assert in Phase 3) reißt auf Gyroid∩Box mit ε=0. Der Assert ist
+    /// `#[cfg(test)]` — hier feuert er, im WASM mesht der Pfad still mit Lücke
+    /// weiter. `cargo test -p fielddraft-kernel --release zz_defect_b --
+    /// --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn zz_defect_b_coverage() {
+        let gy = adv_case("thin_gyroid_wall");
+        for (lfs, sizing) in [(0.0f32, true), (0.0, false), (0.1, true)] {
+            let mut k = crate::Kernel::new();
+            k.load_json(gy.json).expect("Fixture lädt");
+            let opts = poly_opts(gy.h, lfs, sizing);
+            let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let out = k.lichen_mesh(opts);
+                let (t, q) = quality_of(&out);
+                (t, q)
+            }));
+            match r {
+                Ok((t, q)) => eprintln!(
+                    "DEFEKT-B gyroid ε={lfs} sz={sizing}: OK tris={t} open={} chi={}",
+                    q.boundary_edges, q.euler
+                ),
+                Err(_) => eprintln!("DEFEKT-B gyroid ε={lfs} sz={sizing}: PANIC (s.o.)"),
+            }
+        }
+        // Der EXAKTE Körper des Export-Gates `thin_walled_body_exports_lichen_
+        // watertight` (8-mm-Würfel ∩ Gyroid, ~1-mm-Wände, h=3): DORT feuerte
+        // der U(p)-Assert auf Sprosse 0 (Doku §8v Punkt 2 / export_mesh.rs).
+        {
+            for lfs in [0.0f32, 0.1] {
+                let mut kk = crate::Kernel::new();
+                let b = kk
+                    .add_primitive(Primitive::KIND_BOX, BoolOp::TAG_NEW, 0.0, 0.0, 0.0, 4.0, 4.0, 4.0)
+                    .unwrap();
+                kk.add_feature_call(
+                    "gyroid",
+                    &format!(
+                        r#"{{ "cell_size": {{ "value": 10.0, "unit": "mm" }},
+                              "thickness": {{ "value": 1.0, "unit": "mm" }},
+                              "op": "intersect", "targets": "qCreatedBy({b})" }}"#
+                    ),
+                )
+                .unwrap();
+                let opts = poly_opts(3.0, lfs, true);
+                let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    let out = kk.lichen_mesh(opts);
+                    quality_of(&out)
+                }));
+                match r {
+                    Ok((t, q)) => eprintln!(
+                        "DEFEKT-B export-body ε={lfs}: OK tris={t} open={} chi={}",
+                        q.boundary_edges, q.euler
+                    ),
+                    Err(_) => eprintln!("DEFEKT-B export-body ε={lfs}: PANIC (U(p)-Assert!)"),
+                }
+            }
+        }
+        for (lfs, sizing) in [(0.0f32, true), (0.1, true)] {
+            let mut k = demo_project_kernel();
+            let opts = poly_opts(10.0, lfs, sizing);
+            let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let out = k.lichen_mesh(opts);
+                quality_of(&out)
+            }));
+            match r {
+                Ok((t, q)) => eprintln!(
+                    "DEFEKT-B demo ε={lfs} sz={sizing}: OK tris={t} open={} chi={}",
+                    q.boundary_edges, q.euler
+                ),
+                Err(_) => eprintln!("DEFEKT-B demo ε={lfs} sz={sizing}: PANIC (s.o.)"),
+            }
+        }
     }
 
     /// WIP (Kategorie b/c): EXAKT TANGENTIALE KONTAKTE. Kugel küsst Platte

@@ -1123,6 +1123,12 @@ pub fn triangulate_global_walk(
         None
     };
     let crosses_chain = |a: u32, b: u32, c: u32| -> bool { crossing_seg(a, b, c).is_some() };
+    // FORENSIK (LICHEN_DEBUG_WALK): welcher Prüfschritt verwirft wie oft?
+    // [degeneriert, flächen-guard, normalen-guard, sichtlinie, ketten-kreuzung,
+    //  zentroid, leere-kugel, ok]
+    let vstats = std::cell::RefCell::new([0usize; 8]);
+    let walk_dbg = std::env::var("LICHEN_DEBUG_WALK").is_ok();
+
     // Gültigkeit: leere Kugel + kein Ketten-Kreuzen + Sichtlinien (Sehnen-
     // Mittelpunkte und Zentroid auf der KÖRPER-Oberfläche; im globalen Walk
     // gibt es keine „eigene Trägerfläche" mehr — das Body-Feld ist die
@@ -1148,6 +1154,9 @@ pub fn triangulate_global_walk(
             let lab = dot(ab, ab).sqrt();
             let lac = dot(ac, ac).sqrt();
             if area2 <= 1e-2 * lab * lac {
+                if walk_dbg {
+                    vstats.borrow_mut()[0] += 1;
+                }
                 return false; // sin(Winkel) ≤ 0.01
             }
         }
@@ -1166,6 +1175,9 @@ pub fn triangulate_global_walk(
                     .iter()
                     .any(|x| fb.contains(x) && fc.contains(x));
                 if !common {
+                    if walk_dbg {
+                        vstats.borrow_mut()[1] += 1;
+                    }
                     return false;
                 }
             }
@@ -1181,6 +1193,9 @@ pub fn triangulate_global_walk(
         // ohne Kanten-Kollateralschaden.
         for (i, j) in [(a, b), (b, c), (c, a)] {
             if !normals_compatible(i, j) {
+                if walk_dbg {
+                    vstats.borrow_mut()[2] += 1;
+                }
                 return false;
             }
         }
@@ -1201,10 +1216,16 @@ pub fn triangulate_global_walk(
             };
             let tol = (0.3 * dl * theta).max(0.1 * spacing[i as usize]);
             if fg(mid).0.abs() > tol {
+                if walk_dbg {
+                    vstats.borrow_mut()[3] += 1;
+                }
                 return false;
             }
         }
         if crosses_chain(a, b, c) {
+            if walk_dbg {
+                vstats.borrow_mut()[4] += 1;
+            }
             return false;
         }
         // Zentroid auf der Oberfläche (fängt Luft-Dreiecke über Buchten).
@@ -1231,11 +1252,28 @@ pub fn triangulate_global_walk(
             t
         };
         if fg(cen).0.abs() > (0.3 * e_max * theta).max(0.1 * spacing[a as usize]) {
+            if walk_dbg {
+                vstats.borrow_mut()[5] += 1;
+            }
             return false;
         }
         true
     };
-    let valid = |a: u32, b: u32, c: u32| -> bool { valid_geom(a, b, c) && empty(a, b, c) };
+    let valid = |a: u32, b: u32, c: u32| -> bool {
+        if !valid_geom(a, b, c) {
+            return false;
+        }
+        if !empty(a, b, c) {
+            if walk_dbg {
+                vstats.borrow_mut()[6] += 1;
+            }
+            return false;
+        }
+        if walk_dbg {
+            vstats.borrow_mut()[7] += 1;
+        }
+        true
+    };
     let near = |x: u32, y: u32| -> Vec<u32> {
         let (px, py) = (points[x as usize], points[y as usize]);
         let mid = [
@@ -1313,7 +1351,26 @@ pub fn triangulate_global_walk(
             }
         }
     }
+    if walk_dbg {
+        let s = *vstats.borrow();
+        let sp: Vec<f32> = members.iter().map(|&i| spacing[i as usize]).collect();
+        let (smin, smax) = sp.iter().fold((f32::MAX, 0.0f32), |(a, b), &x| (a.min(x), b.max(x)));
+        eprintln!(
+            "WALK: members={} cell={cell:.3} spacing[{smin:.3}..{smax:.3}] seeds={} | SEED-Ablehnungen: deg={} guard={} normal={} sicht={} kette={} zentroid={} kugel={} ok={}",
+            members.len(), seeds.len(), s[0], s[1], s[2], s[3], s[4], s[5], s[6], s[7]
+        );
+        *vstats.borrow_mut() = [0usize; 8];
+    }
     let mut tris = extract_manifold(points, normals, &seeds, &HashSet::new(), &near, &valid);
+    if walk_dbg {
+        let s = *vstats.borrow();
+        let used: std::collections::HashSet<u32> = tris.iter().flatten().copied().collect();
+        eprintln!(
+            "WALK: tris={} benutzte Punkte={}/{} | WALK-Ablehnungen: deg={} guard={} normal={} sicht={} kette={} zentroid={} kugel={} ok={}",
+            tris.len(), used.len(), members.len(),
+            s[0], s[1], s[2], s[3], s[4], s[5], s[6], s[7]
+        );
+    }
 
     let count_edges = |tris: &[[u32; 3]]| -> HashMap<(u32, u32), u32> {
         let mut edge_use: HashMap<(u32, u32), u32> = HashMap::new();

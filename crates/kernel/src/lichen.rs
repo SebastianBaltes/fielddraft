@@ -359,6 +359,47 @@ pub(crate) fn reach_outer_flat<Fg: Fn([f32; 3]) -> (f32, [f32; 3])>(
     reach_outer_counter(p, n, cap, t0, fg).0
 }
 
+/// Der WELT-Wert von `f` am Startpunkt. Die beiden Reach-Märsche leiten ihre
+/// Abflachungs-Bedingung aus `|f(p ± t·n)| = t` ab — das gilt aber nur, wenn `p`
+/// EXAKT auf der Fläche liegt. Ketten- und Ecken-Punkte kommen aus der B-Rep
+/// (Kanten-Tessellierung, Ecken-Newton) und liegen bis zu ihrer eigenen Toleranz
+/// daneben; gewachsene Punkte bis `surf_tol`. Ohne Korrektur feuert der Marsch
+/// dann SOFORT im ersten Schritt (`f0 + t < 0.9·t` ⇔ `t < 10·|f0|` für ein
+/// innen liegendes `p`) und meldet eine Mikro-lfs von der Größenordnung des
+/// Start-Offsets — gemessen auf der Box-mit-Bohrung: lfs = 0,0045 mm statt
+/// ≈ 5 mm, das Sizing-Field kollabiert auf den Floor. Beide Märsche messen
+/// deshalb RELATIV zu `f(p)`.
+#[inline]
+fn f0_of<Fg: Fn([f32; 3]) -> (f32, [f32; 3])>(p: [f32; 3], fg: &Fg) -> f32 {
+    if !f0_on() {
+        return 0.0;
+    }
+    let f = fg(p).0;
+    if f.is_finite() {
+        f
+    } else {
+        0.0
+    }
+}
+
+/// Kill-Switches der beiden Reach-Korrekturen (Bisektions-Werkzeug, Default an).
+fn f0_on() -> bool {
+    static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *V.get_or_init(|| std::env::var("LICHEN_REACH_F0").map(|v| v != "0").unwrap_or(true))
+}
+/// SYMMETRISCHER GEGENBLATT-GUARD IM ÄUSSEREN MARSCH — VERMESSEN UND
+/// VERWORFEN (I-27, 2026-07-13, Default AUS). Theoretisch sauber (die
+/// Luftraum-Medialachse läuft in jede konkave Kante, genau spiegelbildlich zu
+/// Befund 6), praktisch schädlich: der Streif-Schnitt Kugel∩Ebene verliert
+/// damit seine Naht-Verfeinerung und reißt auf (0 → **320** offene Kanten,
+/// H(s→m) 0,003 → 3,86). Der äußere Marsch ist auf realen CAD-Körpern also
+/// KEINE Verdichtungsquelle, sondern eine Verdichtungs-NOTWENDIGKEIT an
+/// streifenden Nähten. Opt-in per `LICHEN_OUTER_GUARD=1`.
+fn outer_guard_on() -> bool {
+    static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *V.get_or_init(|| std::env::var("LICHEN_OUTER_GUARD").map(|v| v == "1").unwrap_or(false))
+}
+
 /// Wie [`reach_outer_flat`], meldet zusätzlich das Skalarprodukt der
 /// GEGENSEITEN-Normale mit `n`: am Kreuzungspunkt der äußeren Medialachse
 /// wird der Fußpunkt `q = x − f·g/|g|²` auf das nähere Blatt projiziert und
@@ -375,12 +416,28 @@ pub(crate) fn reach_outer_counter<Fg: Fn([f32; 3]) -> (f32, [f32; 3])>(
     t0: f32,
     fg: &Fg,
 ) -> (f32, f32) {
+    let f0 = f0_of(p, fg);
     let mut t = t0.max(1e-5);
     while t < cap {
         let x = add(p, scale(n, t));
         let (f, g) = fg(x);
-        if f < 0.9 * t {
-            // äußere Medialachse gekreuzt (Spalt/Fremdblatt)
+        if f - f0 < 0.9 * t {
+            // ÄUSSERE Medialachse gekreuzt — aber WELCHE? Symmetrisch zu
+            // [`reach_inner`] (Befund 6, §8d): die Medialachse des LUFTRAUMS
+            // läuft in jede KONKAVE Kante des Körpers hinein (der Bisektor
+            // zweier Nachbarflächen berührt die Kante), dort geht lfs → 0 und
+            // eine naive lfs-Abtastung verdichtet ins Unendliche. Gemessen auf
+            // der Box-mit-Bohrung: 121 749 Stützstellen, Sizing-p50 = 0,06 mm
+            // statt 1 mm, Laufzeit 30 min, 6148 offene Kanten.
+            //
+            // Der Fix ist derselbe wie innen: nur ein echtes GEGENBLATT zählt
+            // (zwei Flächen, die sich über einen Spalt ANSEHEN — Fußpunkt-
+            // Normale ~antiparallel). Ein Kanten-Bisektor führt auf die
+            // Nachbarfläche, deren Normale quer steht (dot ≈ 0); die Kante ist
+            // über ihre B-Rep-Kette ohnehin exakt abgetastet.
+            //
+            // Die Rückgabe des dots bleibt für den KUSS-DECKEL (api/lichen.rs)
+            // erhalten: er ist bei einem Treffer per Konstruktion < −0.3.
             let mut d = 1.0f32;
             let g2 = dot(g, g);
             if g2 > 1e-20 {
@@ -388,7 +445,9 @@ pub(crate) fn reach_outer_counter<Fg: Fn([f32; 3]) -> (f32, [f32; 3])>(
                 let q = [x[0] - s * g[0], x[1] - s * g[1], x[2] - s * g[2]];
                 d = dot(norm(robust_grad(q, fg)), n);
             }
-            return (t.max(1e-4), d);
+            if d < -0.3 || !outer_guard_on() {
+                return (t.max(1e-4), d); // Gegenblatt → echter Spalt
+            }
         }
         t *= 1.25;
     }
@@ -402,12 +461,15 @@ pub(crate) fn reach_inner<Fg: Fn([f32; 3]) -> (f32, [f32; 3])>(
     t0: f32,
     fg: &Fg,
 ) -> f32 {
+    let f0 = f0_of(p, fg);
     let mut t = t0.max(1e-5);
     let floor = 1e-4;
     while t < cap {
         let x = sub(p, scale(n, t));
         let (f, g) = fg(x);
-        let depth = -f;
+        // Tiefe RELATIV zum Startwert (s. `f0_of`): ein Startpunkt, der ein
+        // paar µm neben der Fläche liegt, verfälscht sonst den ersten Schritt.
+        let depth = -(f - f0);
         if depth < 0.9 * t {
             // MEDIALACHSE gekreuzt — aber WELCHE? Die Medialachse eines
             // Körpers läuft auch in jede SCHARFE KANTE hinein (der Bisektor
@@ -921,8 +983,33 @@ where
                     // punktleere Fünfeck auf der Mini-Kugel-Kappe
                     // (Betreiber-Punkt #895). Das Feld ist Lipschitz-glatt, es
                     // BRAUCHT die Nachbar-Schätzung nicht.
+                    // GRADING-KOPPLUNG (2026-07-13, Defekt A — die eigentliche
+                    // Wurzel): der Kandidat wird mit `r = min(σ(p), 1.5·space)`
+                    // PLATZIERT (Grading-Bremse, s.o.), aber gegen `r_eff`
+                    // ANGENOMMEN. Nahm r_eff das rohe Feld σ(cp), widersprachen
+                    // sich beide: an einer dicht abgetasteten KETTE (space =
+                    // 0,089 mm neben σ = 1,8 mm — ein Raster-Rest genügt, s.
+                    // `resample_edge_by_curvature`) landet jeder Kandidat bei
+                    // 1,5·0,089 = 0,13 mm und wird dann als „redundant"
+                    // (< 0,45·1,8) bzw. „zu nah an der Kette" (< 0,7·1,8)
+                    // verworfen — das Wachstum steht STILL. Gemessen am Würfel
+                    // 20 mm mit ε=0,1 + Sizing: 578 Punkte, davon **null**
+                    // Flächenpunkte; acht Ketten-Klümpchen um die Ecken, alle
+                    // sechs Flächen fehlen (χ=16, H(s→m) 10,4 mm).
+                    //
+                    // Annahme-Schwelle und Platzierung müssen dieselbe lokale
+                    // Zieldichte benutzen. Die Grading-Bremse ist dabei die
+                    // schärfere: das Feld ist 0,3-Lipschitz, also gilt
+                    // σ(cp) ≤ 1,45·space, wo `space` selbst aus dem Feld kam —
+                    // die Klemme greift ausschließlich dort, wo `space` NICHT
+                    // aus dem Feld stammt (Ketten-Nachbarabstand). Genau der
+                    // Fall. Auf allen Feld-getriebenen Flächen ist sie ein
+                    // No-op (Abnahme-Netz byte-identisch).
                     let r_eff = match size {
-                        Some(sf) => sf.at(cp).clamp(opts.min_edge_spacing.max(1e-4).min(h), h),
+                        Some(sf) => sf
+                            .at(cp)
+                            .clamp(opts.min_edge_spacing.max(1e-4).min(h), h)
+                            .min(1.5 * pts[i].space),
                         None => rr.max(nspace.min(r_full)),
                     };
                     // TRENNUNGS-SCHWELLE vermessen (0.45 → 0.8): praktisch
@@ -1187,6 +1274,44 @@ pub fn resample_edge_by_curvature(
     if pts.len() < 2 {
         return pts.to_vec();
     }
+    // ── NULL-SEGMENTE TILGEN (2026-07-13, Defekt A) ──
+    // Die B-Rep-Kanten-Tessellierung liefert an den Enden DOPPELTE Samples
+    // (gemessen: 16 Null-Segmente je Box-Kante der Box-mit-Bohrung, alle im
+    // Ecken-Cluster). Ein Null-Segment hat keine Richtung — `norm([0,0,0])`
+    // liefert den Nullvektor, `acos(0) = 90°` und der Knickwinkel-Akkumulator
+    // sieht auf einer KERZENGERADEN Kante einen 90°- (bei zwei entgegen-
+    // gerichteten Nullvektoren sogar 180°-) Knick. Ergebnis: eine
+    // Winkel-Emission direkt hinter der Ecke (0,097 mm statt h = 2 mm), die
+    // über `corner_gap` alle Nachbarketten in die Grading-Kaskade zieht
+    // (Box+Bohrung: 460 → 8149 Punkte, 323 offene Kanten).
+    // Doppelte Punkte tragen keine Geometrie — sie fliegen raus. Die Schwelle
+    // muss dabei an der AUFLÖSUNG hängen, nicht an der Maschinen-Epsilon: die
+    // Tessellierung liefert auch FAST-Duplikate im Nanometer-Bereich (gemessen
+    // an der Box-Kante: Samples 5e-6 mm auseinander, Koordinaten 10.000005 vs
+    // 10.0). Ihre Richtung ist reines Float-Rauschen — der Knickwinkel-
+    // Akkumulator sah dort SIEBEN 180°-Knicke auf einer geraden Kante
+    // (Knick-Summe 1800°). Alles unterhalb eines Tausendstels des Mindest-
+    // abstands ist kein Feature, sondern Rauschen.
+    // Kill-Switch `LICHEN_CHAIN_DEDUP=0` (Bisektions-Werkzeug, wie LICHEN_STITCH):
+    // -1 heißt „nie entfernen" = exakt das alte Verhalten.
+    let dup_tol = if std::env::var("LICHEN_CHAIN_DEDUP").map(|v| v == "0").unwrap_or(false) {
+        -1.0
+    } else {
+        (1e-3 * min_spacing).max(1e-7)
+    };
+    let dedup: Vec<[f32; 3]> = {
+        let mut v: Vec<[f32; 3]> = Vec::with_capacity(pts.len());
+        for &p in pts {
+            if v.last().map_or(true, |&q| dist(q, p) > dup_tol) {
+                v.push(p);
+            }
+        }
+        v
+    };
+    if dedup.len() < 2 {
+        return pts.to_vec();
+    }
+    let pts: &[[f32; 3]] = &dedup;
     // Direkt auf der ORIGINAL-Polyline arbeiten (die B-Rep-Tessellierung ist
     // bereits krümmungsadaptiv): Knickwinkel an den Original-Vertices
     // akkumulieren, Bogenlänge kontinuierlich — lange gerade Segmente werden
@@ -1212,7 +1337,12 @@ pub fn resample_edge_by_curvature(
     }
 
     // ── Pass 1: Emissions-Positionen (h-Länge ODER Knickwinkel) ──
+    // `fixed` markiert die ANKER: Kettenanfang/-ende und die Winkel-Emissionen
+    // (die liegen exakt auf Original-Vertices und dürfen sich nicht bewegen).
+    // Längen-Emissionen sind reine Interpolationen — beliebig verschiebbar; sie
+    // werden in Pass 1b gleichverteilt.
     let mut s_out: Vec<f32> = vec![0.0];
+    let mut fixed: Vec<bool> = vec![true];
     let mut acc_ang = 0.0f32;
     for i in 1..pts.len() {
         // Längen-Unterteilung: alle h Bogenlänge seit der letzten Emission
@@ -1220,6 +1350,7 @@ pub fn resample_edge_by_curvature(
         while cum[i] - *s_out.last().unwrap() >= h {
             let s = s_out.last().unwrap() + h;
             s_out.push(s);
+            fixed.push(false);
             acc_ang = 0.0;
         }
         // Knickwinkel am inneren Vertex i (zwischen den Nachbarsegmenten).
@@ -1231,6 +1362,7 @@ pub fn resample_edge_by_curvature(
             acc_ang += dot(d1, d2).clamp(-1.0, 1.0).acos();
             if acc_ang >= ang_thresh && cum[i] - *s_out.last().unwrap() >= min_spacing {
                 s_out.push(cum[i]);
+                fixed.push(true);
                 acc_ang = 0.0;
             }
         }
@@ -1243,11 +1375,35 @@ pub fn resample_edge_by_curvature(
     // Abstand wird Teil des vorletzten Segments.
     while s_out.len() > 1 && total - *s_out.last().unwrap() < min_spacing {
         s_out.pop();
+        fixed.pop();
     }
+    // ── RASTER-REST (2026-07-13, Defekt A) — die Wurzel, NICHT der Fix ──
+    // Das h-Raster der Längen-Emission lässt am Kettenende einen Rest von
+    // `total mod h` stehen — rein numerisch und beliebig klein (20-mm-Box-Kante
+    // bei h = 1,8101 mm: **0,089 mm**, 20-fach unter dem Ziel, aber 1,8-fach
+    // ÜBER min_spacing). Das Grading (Pass 2) sieht dort einen 20-fachen
+    // Dichtesprung und splittet die GANZE Kette in einer 1,5er-Rampe herunter
+    // (11 → 46 Punkte); über `corner_gap` erbt jede Nachbarkante diese
+    // Randbedingung.
+    //
+    // ZWEI Reparaturen am Raster wurden vermessen und VERWORFEN (I-26):
+    //  * Gleichverteilung je Anker-Intervall (`n = ceil(L/h)`): repariert den
+    //    Würfel, verschiebt aber JEDEN Ketten-Punkt gekrümmter Kanten —
+    //    Abnahmefall 0 → 4 offene Kanten (χ 2 → 0), Streif-Naht 0 → 209.
+    //  * Den Rest-Punkt streichen (Schluss-Segment wird `rest + h`): verletzt
+    //    die Abtast-Garantie „kein Segment länger als h" auf GROBEN Ketten
+    //    (12-mm-Kante bei h=5: 5,5,2 → 5,7) — koplanare Union 0 → 125 offene
+    //    Kanten, Streif-Naht 0 → 63.
+    //
+    // Die Kette DARF also dicht ausfallen — der Schaden entstand erst im
+    // WACHSTUM, wo Platzierung und Annahme zwei verschiedene Zieldichten
+    // benutzten (s. `r_eff` in `grow_surface`). Dort ist der Fix.
     if total - *s_out.last().unwrap() > 1e-9 {
         s_out.push(total);
+        fixed.push(true);
     } else {
         *s_out.last_mut().unwrap() = total;
+        *fixed.last_mut().unwrap() = true;
     }
 
     // ── Pass 2: Grading (Ticket e1a10bcd) — benachbarte Segmentlängen dürfen

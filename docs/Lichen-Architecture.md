@@ -374,6 +374,27 @@ Pro Fläche, chartlos:
   überschreibenden Keys waren Phantome. → echtes JSON-Merge im
   Baseline-Runner; Messwerkzeuge müssen sich selbst beweisen (§8q).
 
+* **I-26 Raster-Rest im Ketten-Resampler reparieren** (zwei Varianten, beide
+  vermessen und verworfen, §8w): (a) **Gleichverteilung je Anker-Intervall**
+  (`n = ceil(L/h)` gleich lange Segmente) repariert den Würfel, verschiebt aber
+  JEDEN Ketten-Punkt gekrümmter Kanten — Abnahmefall 0 → 4 offene Kanten
+  (χ 2 → 0), Streif-Naht 0 → **209**. (b) **Den Rest-Punkt streichen**
+  (Schluss-Segment wird `rest + h`) verletzt die Abtast-Garantie „kein Segment
+  länger als h" auf GROBEN Ketten (12-mm-Kante bei h=5: 5,5,2 → 5,7) —
+  koplanare Union 0 → **125** offene Kanten, Streif-Naht 0 → 63. Lehre: die
+  Ketten-Positionen gekrümmter Nähte sind Teil eines Gleichgewichts aus
+  Naht-Weld, Kreuzungs-Veto und Zeugen-Kugel; man rührt sie nicht ohne Not um.
+  Der Rest DARF stehen bleiben — der Schaden entstand erst im Wachstum
+  (Wurzel 3), und dort gehört der Fix hin.
+* **I-27 Symmetrischer Gegenblatt-Guard im ÄUSSEREN Reach-Marsch:**
+  theoretisch sauber (die Medialachse des LUFTRAUMS läuft spiegelbildlich zu
+  Befund 6 in jede konkave Kante), praktisch schädlich — der Streif-Schnitt
+  Kugel∩Ebene verliert damit seine Naht-Verfeinerung und reißt auf
+  (0 → **320** offene Kanten, H(s→m) 0,003 → 3,86). Der äußere Marsch ist auf
+  realen CAD-Körpern also keine Verdichtungs-QUELLE, sondern eine
+  Verdichtungs-NOTWENDIGKEIT an streifenden Nähten. Bleibt als Opt-in-Werkzeug
+  (`LICHEN_OUTER_GUARD=1`).
+
 ## 6. Lessons Learned (Arbeitsweise)
 
 * **„X Löcher" IMMER gegen tris-pro-Fläche gegenprüfen** — 0-tris-Flächen
@@ -1441,8 +1462,9 @@ Abnahme-Konfiguration aus §8q (`generalTri`, `accept:"witness"`,
    791/1578, χ=2). Das ist die Wiederkehr von „Befund 6“ (§8d: die
    Medialachse läuft in jede scharfe Kante, lfs → 0) — der dortige Fix
    (`reach_inner` zählt nur echte Gegenblätter) greift offenbar nicht,
-   sobald das Sizing-Field die lfs-Stützstellen glättet. **Nicht im
-   Mesher gefixt** (eigene Arbeitslinie, Abnahme-Gates hängen dran).
+   sobald das Sizing-Field die lfs-Stützstellen glättet. → **GESCHLOSSEN,
+   s. §8w** — und die „Wiederkehr von Befund 6" war eine FALSCHE Fährte:
+   der Kanten-Guard funktioniert einwandfrei, die Wurzeln lagen woanders.
 2. **Die Überdeckungs-Invariante ist auf dünnen Wänden verletzt.** Gyroid ∩
    Box mit ε = 0 lässt den `assert!` in `api/lichen.rs` feuern
    („U(p)-Überdeckungslücke auf Kante …“). Wichtig für die Einordnung: die
@@ -1452,7 +1474,8 @@ Abnahme-Konfiguration aus §8q (`generalTri`, `accept:"witness"`,
    dort **still mit einer Überdeckungslücke** weiter, und die Umkugel-
    Garantie (§2) ist verletzt. Der `catch_unwind` in `lichen_export_body`
    ist reine Gürtel-und-Hosenträger-Absicherung für native Test-Läufe, kein
-   WASM-Schutz — der Defekt selbst bleibt zu fixen.
+   WASM-Schutz — der Defekt selbst bleibt zu fixen. → **GESCHLOSSEN, s. §8w**
+   (Wurzel: doppelte Samples in der B-Rep-Kanten-Tessellierung).
 
 **Konsequenz — der Export klettert eine Leiter** (`lichen_export_body`),
 statt EIN Preset zu behaupten:
@@ -1460,6 +1483,14 @@ statt EIN Preset zu behaupten:
 * **Sprosse 0:** ε = 0 — korrekt und schnell auf CAD-Körpern.
 * **Sprosse 1:** ε = 0,1 — die Dünnwand-/TPMS-Konfiguration.
 * **sonst:** adaptive Route (MDC), der Bericht nennt den Grund.
+
+**Die Leiter bleibt — aber aus einem ANDEREN Grund** (Nachmessung nach §8w):
+beide Sprossen sind jetzt korrekt, sie sind nur nicht gleich TEUER. ε-Sampling
+fordert `spacing ≤ ε·lfs`, und auf einer 10 mm dicken Platte sind das 0,5 mm,
+ob der Nutzer sie braucht oder nicht — Würfel 180 → 3610 Δ, Platte+Bohrung
+5456 → 32226 Δ. Auf dem Gyroid-Ausschnitt bleibt ε = 0 dagegen offen
+(3 Kanten). Ein einziges Preset trägt also weiterhin nicht beide Welten;
+die Leiter ist jetzt eine KOSTEN-, keine Korrektheitsfrage.
 
 Jede Sprosse muss **zwei Tore** passieren: (a) wasserdicht und (b) die
 Fläche wirklich **überdeckt** — max. Hausdorff `surface→mesh` ≤ 0,5·h,
@@ -1469,6 +1500,92 @@ deterministische Stichproben). Tor (a) allein genügt **nicht**: der
 Nur die Richtung `surface→mesh` sieht fehlende Flächen — genau die
 Lehre aus §8q, hier zum ersten Mal als **Produktions-Tor** statt als
 Test-Metrik. Panics werden pro Sprosse abgefangen.
+
+## 8w. Die zwei Export-Defekte: vier Wurzeln, keine davon „Befund 6" (2026-07-13)
+
+§8v hatte zwei Defekte notiert und beide auf die Medialachse geschoben. Die
+Forensik widerlegt das: **der Kanten-Guard aus Befund 6 arbeitet korrekt.** Der
+Würfel-Kollaps und die U(p)-Lücke haben vier ganz andere, unabhängige Wurzeln —
+zwei davon außerhalb des Samplings.
+
+### Wurzel 1 — Doppelte Samples in der B-Rep-Kanten-Tessellierung (Defekt B)
+
+`brep::edge_sampling::sample_edge` liefert an jedem Kettenende **16 identische
+Punkte** (gemessen an jeder Box-Kante der Platte-mit-Bohrung), dazu weitere
+Fast-Duplikate im Nanometer-Bereich (`10.000005` neben `10.0`). Ein Null-Segment
+hat keine Richtung: `norm([0,0,0])` ist der Nullvektor, `acos(0) = 90°` — und der
+Knickwinkel-Akkumulator des Resamplers sah damit auf einer **kerzengeraden**
+Kante bis zu sieben **180°-Knicke** (Knick-Summe 1800° statt 0°). Folge: eine
+Krümmungs-Emission 0,097 mm hinter der Ecke. Dieses Mikro-Segment ist die U(p)-
+Lücke (`d=1.4679 ua=ub=0.1875` auf dem 8-mm-Gyroid-Würfel des Export-Gates) und
+zugleich die Zündschnur der Grading-Kaskade unten.
+
+*Fix:* `resample_edge_by_curvature` entfernt Duplikate, bevor es Winkel misst —
+Schwelle an der AUFLÖSUNG (`1e-3·min_spacing`), nicht an der Maschinen-Epsilon.
+Kill-Switch `LICHEN_CHAIN_DEDUP=0`.
+
+### Wurzel 2 — Der Raster-Rest und die Grading-Kaskade (Defekt A, Zündung)
+
+Die Längen-Emission läuft im `h`-Raster und lässt am Kettenende `total mod h`
+übrig: auf der 20-mm-Würfelkante bei h = 1,8101 mm genau **0,089 mm** — 20-fach
+unter dem Ziel, aber 1,8-fach ÜBER `min_spacing`, also unsichtbar für den
+bestehenden Rest-Filter. Das Grading (GRADE = 1,5) sieht dort einen 20-fachen
+Dichtesprung und splittet die **ganze** Kette in einer 1,5er-Rampe herunter
+(11 → 46 Punkte); über `corner_gap` erbt **jede** Nachbarkante diese
+Randbedingung. Der Rest ist reine Numerik — er ist kein Feature.
+
+### Wurzel 3 — Platzierung und Annahme benutzten zwei Zieldichten (Defekt A, Wirkung)
+
+Das ist die eigentliche Wurzel, und sie sitzt im **Wachstum**, nicht im Sampling.
+`grow_surface` PLATZIERT einen Kandidaten mit `r = min(σ(p), 1.5·space)`
+(Grading-Bremse) und NIMMT ihn gegen `r_eff = σ(cp)` an — das rohe Sizing-Field.
+Neben einer dicht abgetasteten Kette (space = 0,089 mm, σ = 1,8 mm) landet jeder
+Kandidat bei 1,5·0,089 = 0,13 mm und fliegt sofort wieder raus: „redundant"
+(< 0,45·σ) bzw. „zu nah an der Kette" (< 0,7·σ). **Das Wachstum steht still.**
+Gemessen am Würfel: 578 Punkte, davon **null** Flächenpunkte (flag=1) — acht
+Ketten-Klümpchen um die Ecken, alle sechs Flächen fehlen, χ = 16, H(s→m) 10,4 mm.
+
+Das erklärt auch, warum jede Option EINZELN harmlos ist: ohne Sizing kommt
+`r_eff` aus den Nachbarn (konsistent mit der Platzierung), ohne ε bleibt die
+Kette grob.
+
+*Fix:* Annahme und Platzierung benutzen dieselbe lokale Zieldichte —
+`r_eff = min(σ(cp), 1.5·space)`. Auf feld-getriebenen Flächen ist das ein No-op
+(σ ist 0,3-Lipschitz, also σ(cp) ≤ 1,45·space); es greift ausschließlich dort, wo
+`space` NICHT aus dem Feld stammt — am Ketten-Nachbarabstand. Genau der Fall.
+
+### Wurzel 4 — Das Sizing-Field erfand ein eigenes ε
+
+Bei `lfsFactor = 0` maß der grobe Lauf gar keine lfs, das Sizing-Field dahinter
+aber mit `ε = 0,5` (ein hartcodierter Default) — zwei verschiedene Zieldichten in
+einer Pipeline, deren zweite auf der Punktwolke der ersten aufsetzt. Auf der
+Platte-mit-Bohrung riss genau das die Sprosse 0 auf (959 offene Kanten, χ −12).
+*Fix:* Das Feld GLÄTTET die Zieldichte, es erfindet keine — `eps = lfs_factor`.
+
+### Messreihe (Release, Export-Preset)
+
+| Fall | vorher | nachher |
+|------|--------|---------|
+| Würfel 20 mm, h=5, ε=0,1 | 578 P / 186 Δ, **8 Komponenten, χ=16**, H(s→m) **10,4** | 1807 P / 3610 Δ, χ=2, comp 1, H 0,000/0,000, minang 18,2° |
+| Platte+Bohrung, h=2, ε=0,1 | 18650 P, χ=0, minang 7,2°, p99 4,19 | 16113 P, χ=0, minang 18,5°, p99 1,99 |
+| Platte+Bohrung, h=2, ε=0 | 11977 P, **959 offen**, χ −12 | 2728 P, **0 offen**, χ=0 |
+| 8-mm-Gyroid-Würfel, h=3, ε=0 | **PANIC** (U(p)-Lücke), 0 Δ | 958 Δ, χ=2, wasserdicht |
+| Abnahme-Ausschnitt h=10 | open 0, χ 2, H(s→m) 0,0980 | open 0, χ 2, H(s→m) **0,0897** (Rest identisch) |
+
+Neue aktive Gates: `lichen_polyhedra_eps_sampling_watertight_and_complete` und
+`lichen_polyhedra_no_eps_watertight_and_complete` (Würfel + Platte-mit-Bohrung,
+beide Sprossen, mit **Flächen-Überdeckung** als Pflicht-Assertion — Wasserdicht
+allein hätte den 8-Klümpchen-Würfel durchgewinkt). Der Abnahme-Hash ändert sich
+(`6e620e39806d3db3` → `dab4fc245e12d0cf`), die Metriken nur zum Besseren.
+
+### Nebenbefund: die Fixture log, nicht der Mesher
+
+Die erste `box_hole`-Fixture („Platte flach in z, Bohrung in z") war in Wahrheit
+eine **quer liegende Röhre** durch den Klotz — der FieldDraft-Zylinder steht auf
+der **y-Achse**. Über/unter der Röhre blieben 1-mm-Wände; der Mesher verfeinerte
+völlig zu Recht auf 0,1 mm (95 000 Punkte, 30 min). Ohne den Marsch-Dump wäre das
+als „Über-Verfeinerungs-Defekt" in die Doku gewandert. Die Fixture-Validierung aus
+§8q steht deshalb jetzt auch vor den Polyeder-Fällen.
 
 ## 8r. Offene Fronten (Stand 2026-07-13, v0.6.569)
 

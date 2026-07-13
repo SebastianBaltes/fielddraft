@@ -24,6 +24,21 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.589",
+    entries: [
+      {
+        kind: "fix",
+        scope: "mesher",
+        text: "Lichen: Polyeder werden mit ε-Abtastung wieder korrekt vermascht. Bisher zerfiel ein 20-mm-Würfel mit lfsFactor + Sizing-Field in acht Klümpchen um die Ecken — ein geschlossenes Netz, dem alle sechs Flächen fehlten. Vier Wurzeln, alle hinter dem Sampling (die naheliegende Vermutung „Medialachse an scharfen Kanten“ war es NICHT — der Kanten-Guard arbeitet einwandfrei): (1) Die Kanten-Abtastung lieferte doppelte Punkte; ein Null-Segment hat keine Richtung, also zählte der Knickwinkel-Akkumulator es als 90°-Knick — eine kerzengerade Box-Kante akkumulierte so bis zu 1800° und setzte Krümmungspunkte 0,1 mm hinter der Ecke. (2) Der Raster-Rest der Kanten-Abtastung (0,09 mm auf 20 mm) löste eine Grading-Kaskade aus, die sich über die Ecken auf alle Nachbarkanten vererbte. (3) Das Wachstum platzierte Punkte mit einem anderen Maß, als es sie annahm — neben einer solchen Mikro-Kette flog jeder Kandidat als „redundant“ wieder heraus und das Flächenwachstum stand still (null Flächenpunkte). (4) Das Sizing-Field erfand bei ausgeschaltetem ε eine eigene Zieldichte. Ergebnis: Würfel 186 → 3610 Dreiecke, χ=2, Hausdorff 0,000; Platte mit Bohrung 959 → 0 offene Kanten. Zwei neue Gates prüfen zwingend auch die FLÄCHEN-ÜBERDECKUNG — wasserdicht allein hätte den Klümpchen-Würfel durchgewinkt.",
+      },
+      {
+        kind: "fix",
+        scope: "mesher",
+        text: "Lichen: die Überdeckungs-Invariante der Kanten-Abtastung hält wieder (sie war auf dünnen Wänden verletzt — im Produktivbetrieb ohne jede Warnung, weil die Prüfung nur in Tests läuft). Ursache waren dieselben doppelten Kettenpunkte: die Phantom-Knicke erzeugten ein Mikro-Segment, das die Abdeckungs-Kreise seiner Endpunkte nicht mehr überdeckten. Duplikate werden jetzt vor der Winkelmessung entfernt; die Invariante hält über alle Testkörper und Konfigurationen.",
+      },
+    ],
+  },
+  {
     version: "0.6.588",
     entries: [
       {

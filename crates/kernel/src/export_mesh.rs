@@ -967,21 +967,23 @@ impl crate::Kernel {
     /// (the diagnostic blocks after the index block are not geometry and are
     /// never read).
     ///
-    /// **The ladder.** No single ε serves both worlds — measured on this branch:
+    /// **The ladder.** Both rungs are now CORRECT (the ε = 0.1 collapse on
+    /// polyhedra was a real kernel defect, fixed 2026-07-13 — docs §8w); the
+    /// ladder survives because they are not equally CHEAP. Measured on this
+    /// branch, release:
     ///
     /// | body | ε = 0 | ε = 0.1 (acceptance value) |
     /// |------|-------|-----------------------------|
-    /// | box 20 mm | 180 tris, χ=2 ✓ | 186 tris, **8 components**, χ=16 ✗ |
-    /// | box + hole | 844 tris, χ=2 ✓ | 223 tris, 8 comps, 25 open ✗ |
-    /// | gyroid cut-out (acceptance) | 3 open edges, χ=1 ✗ | 11 436 tris, χ=2 ✓ |
+    /// | box 20 mm, h=5 | 180 tris, χ=2 ✓ | 3 610 tris, χ=2 ✓ |
+    /// | box + hole, h=2 | 5 456 tris, χ=0 ✓ | 32 226 tris, χ=0 ✓ |
+    /// | gyroid cut-out (acceptance), h=10 | 3 open edges, χ=1 ✗ | 11 456 tris, χ=2 ✓ |
     ///
-    /// The ε-sampling against the local feature size is what makes the
-    /// witness ball safe on thin walls (TPMS), but the medial axis runs INTO
-    /// every sharp edge, so on a polyhedral solid lfs → 0 there and the
-    /// sampling collapses (docs §8d "Befund 6" — evidently not fully cured in
-    /// combination with the sizing field). So the export climbs a ladder:
-    /// ε = 0 first (correct and fast on CAD solids), ε = 0.1 on failure (the
-    /// thin-wall configuration), adaptive route if neither passes.
+    /// ε-sampling demands `spacing ≤ ε·lfs`, and on a 10 mm thick plate that is
+    /// 0.5 mm whether the user asked for it or not — a 6-to-20× triangle bill a
+    /// CAD solid does not need. On a TPMS body it is exactly what makes the
+    /// witness ball safe, and there ε = 0 leaves the mesh open. So the export
+    /// climbs: ε = 0 first (correct AND cheap on CAD solids), ε = 0.1 on failure
+    /// (the thin-wall configuration), adaptive route if neither passes.
     ///
     /// **The gates.** A rung is accepted only if the mesh is watertight AND it
     /// COVERS the surface: `max` surface→mesh Hausdorff ≤
@@ -2649,11 +2651,20 @@ mod tests {
         assert!(report["total_triangles"].as_u64().unwrap() >= 12, "{report}");
     }
 
-    /// A body with THIN WALLS (gyroid ∩ box) is the case the ε-sampling rung
-    /// exists for: rung 0 (ε = 0) leaves it open, so the ladder must climb to
-    /// ε = 0.1 (or, failing that, to the adaptive route) — either way the
-    /// export stays watertight. This is the gate that proves the ladder, not
-    /// just the happy path.
+    /// A body with THIN WALLS (gyroid ∩ box) still has to come back watertight
+    /// AND covered, whichever rung of the ladder carries it.
+    ///
+    /// HISTORY (2026-07-13): rung 0 used to PANIC here — the `U(p)` coverage
+    /// invariant (`api/lichen.rs`) blew up, the ladder caught it and climbed to
+    /// ε = 0.1, and this test asserted exactly that (`route.contains("ε=")`).
+    /// The panic had a real root: the B-Rep edge tessellation emits DUPLICATE
+    /// samples, whose zero-length segments the chain resampler read as 90°/180°
+    /// kinks, so it emitted a curvature point a few µm behind a corner — a
+    /// micro-segment whose `U(p)` circle could not cover its neighbour
+    /// (`docs/Lichen-Architecture.md` §8w). With the duplicates stripped, rung 0
+    /// carries this body itself. The assertion that changed is therefore the one
+    /// that described the DEFECT; the two gates that describe the REQUIREMENT
+    /// (watertight, on the Lichen route, not fallen back to adaptive) stand.
     #[test]
     fn thin_walled_body_exports_lichen_watertight() {
         // A SMALL TPMS block (8 mm cube ∩ gyroid, ~1 mm walls) — the thin-wall
@@ -2674,13 +2685,16 @@ mod tests {
         let report = export_single_method(&mut k, 3.0, "lichen");
         assert_eq!(report["all_watertight"], true, "{report}");
         assert!(report["total_triangles"].as_u64().unwrap() > 100, "{report}");
-        // Rung 0 (ε = 0) actually PANICS on this body — an internal Lichen
-        // invariant assert (`U(p)-Überdeckungslücke`, api/lichen.rs) — and the
-        // ladder catches it and climbs. Rung 1 must then ship the body itself:
-        // the route says ε, not "→ adaptive fallback".
+        // Lichen must SHIP this body itself — no silent fall-back to the
+        // adaptive route (which is what a broken rung would look like from the
+        // outside).
         let route = report["bodies"][0]["route"].as_str().unwrap_or("");
         assert!(route.starts_with("Lichen h="), "route {route:?}");
-        assert!(route.contains("ε="), "expected the ε rung, got {route:?}");
+        assert!(!route.contains("adaptive"), "must not fall back: {route:?}");
+        assert!(
+            report["max_deviation_mm"].as_f64().unwrap() < 0.5,
+            "thin walls must still sit on the surface: {report}"
+        );
     }
 
     /// The Lichen export preset is the ACCEPTED configuration (docs §8q), not

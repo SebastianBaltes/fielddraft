@@ -467,3 +467,56 @@ Format: Zeitstempel · Hypothese/Frage · Ergebnis · Entscheidung.
   send_to_agent-Runden, kollisionsfrei sequenziert.
 - Betreiber-Worktree-Änderungen (Backlog.md→Link-Ideen.md) auf Zuruf
   mit committet.
+
+## 2026-07-13 — Defekt A + B (Export-Ticket faa42489): vier Wurzeln, „Befund 6" war es NICHT
+
+- AUFTRAG: (A) `lfsFactor:0.1` + `sizingField:true` zerstört Polyeder (Würfel →
+  acht geschlossene Klümpchen um die Ecken, alle sechs Flächen fehlen, χ=16);
+  (B) U(p)-Überdeckungs-Invariante reißt auf Gyroid∩Box mit ε=0.
+- ARBEITSHYPOTHESE DES AUFTRAGS (Wiederkehr von Befund 6: Medialachse läuft in
+  jede scharfe Kante) **WIDERLEGT**: der Kanten-Guard in `reach_inner` arbeitet
+  einwandfrei. Forensik: das Sizing-Field des Würfels ist völlig gesund
+  (raw min 1,16 / p50 1,82 mm — kein Kollaps). Der Fehler lag hinter dem
+  Sampling.
+- WURZEL 1 (Defekt B): `sample_edge` liefert **16 doppelte Punkte** je
+  Kettenende. Ein Null-Segment hat keine Richtung → `acos(0) = 90°` → der
+  Knickwinkel-Akkumulator sah auf einer GERADEN Box-Kante bis zu sieben
+  180°-Knicke (Summe 1800°) und emittierte einen Krümmungs-Punkt 0,097 mm hinter
+  der Ecke. Genau dieses Mikro-Segment ist die U(p)-Lücke (reproduziert:
+  `d=1.4679 ua=ub=0.1875`). Fix: Dedup mit AUFLÖSUNGS-Schwelle
+  (`1e-3·min_spacing`) vor der Winkelmessung.
+- WURZEL 2 (Zündung A): Raster-Rest `total mod h` = 0,089 mm auf der 20-mm-Kante
+  (h=1,8101) → Grading-Kaskade (11 → 46 Ketten-Punkte) → `corner_gap` vergiftet
+  alle Nachbarketten.
+- WURZEL 3 (Wirkung A, der eigentliche Fix): `grow_surface` PLATZIERT mit
+  `min(σ, 1.5·space)`, NIMMT aber gegen `r_eff = σ` an. Neben einer 0,089er-Kette
+  landet jeder Kandidat bei 0,13 mm und fliegt als „redundant" (< 0,45·σ=0,81)
+  wieder raus — das Wachstum steht STILL (gemessen: 578 Punkte, davon **0**
+  Flächenpunkte). Fix: `r_eff = min(σ(cp), 1.5·space)` — beweisbar No-op auf
+  feld-getriebenen Flächen (σ ist 0,3-Lipschitz), greift nur an Ketten.
+- WURZEL 4: das Sizing-Field erfand bei `lfsFactor=0` ein eigenes ε=0,5 → andere
+  Zieldichte als der grobe Lauf → Sprosse 0 der Export-Leiter riss auf
+  (Platte+Bohrung 959 offene Kanten). Fix: `eps = lfs_factor`.
+- VERWORFEN (I-26/I-27, je voll implementiert und vermessen): Gleichverteilung
+  der Anker-Intervalle (Abnahme 0→4, Streif-Naht 0→209); Rest-Punkt streichen
+  (koplanar 0→125, Streif 0→63); symmetrischer Gegenblatt-Guard im ÄUSSEREN
+  Marsch (Streif-Naht 0→320 — der äußere Marsch ist an streifenden Nähten eine
+  Verdichtungs-NOTWENDIGKEIT, keine -Quelle).
+- FIXTURE-FALLE (die §8q-Lehre bestätigt sich zum vierten Mal): die erste
+  `box_hole`-Fixture war eine QUER liegende Röhre (FieldDraft-Zylinder = y-Achse)
+  mit 1-mm-Wänden — der Mesher verfeinerte zu Recht auf 95 000 Punkte. Der
+  Marsch-Dump hat es gefangen, bevor daraus ein „Defekt" wurde.
+- MESSREIHE: Würfel ε=0,1 578P/186Δ/χ16 → **1807P/3610Δ/χ2**, H(s→m) 10,4 → 0,000;
+  Platte+Bohrung ε=0 11977P/959 offen → **2728P/0 offen/χ0**, ε=0,1 minang
+  7,2° → 18,5°; 8-mm-Gyroid-Würfel ε=0 **PANIC** → 958Δ/χ2.
+- REGRESSIONEN: Abnahme-Gate grün (open 0, χ 2, H(m→s) 0,0213, H(s→m) **0,0897**
+  statt 0,0980, p95 0,0022, p99 1,85, minang 14,9° — alles gleich oder besser;
+  Hash ändert sich wie freigegeben: 6e620e39806d3db3 → dab4fc245e12d0cf).
+  42 Lichen-Gates grün (2 neue), Matrix: alle aktiven Gates dicht, Formgüte
+  breit besser (minang 12° → 19–22° auf coplanar/graze/twist/bend); die beiden
+  WIP-Fälle leicht schlechter (thin_gyroid_wall 7→11, tangent 430→448 / 33→39).
+  Volle Suite release: kernel 1121, workspace 0 failed.
+- EXPORT-LEITER: bleibt — aber aus einem ANDEREN Grund. Beide Sprossen sind jetzt
+  korrekt, nur nicht gleich teuer (ε-Sampling fordert 0,5 mm auf einer 10-mm-Platte
+  → Würfel 180 → 3610 Δ). ε=0 bleibt auf dem Gyroid-Ausschnitt offen. Die Leiter
+  ist damit eine KOSTEN-, keine Korrektheitsfrage.
