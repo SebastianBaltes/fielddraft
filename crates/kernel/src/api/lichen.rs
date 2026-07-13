@@ -1225,7 +1225,14 @@ impl Kernel {
             // ist nur gültig, wenn seine drei Ecken eine GEMEINSAME Fläche
             // haben (`face_guard`). Das ist eine TOPOLOGISCHE Bedingung, die
             // der Geometrie nicht ansieht, wie nah sich zwei Blätter kommen.
-            if opts.face_guard {
+            // Immer einfärben (nicht nur bei aktivem Guard): die Zweitzuordnung
+            // liefert (1) die zweite Normale nahtnaher Punkte für den
+            // Normalen-Guard und (2) die Regionen-Basis der BLATT-RESTRINGIERTEN
+            // Leere-Kugel-Prüfung — ohne sie blockieren sich an einer
+            // fast-tangentialen Naht (Gyroid∩Zylinder) beide Blätter
+            // wechselseitig: der Blattabstand unterschreitet dort den
+            // Punktabstand, jede Zeugen-Kugel enthält Fremdblatt-Punkte.
+            {
                 let mut extra = 0usize;
                 for i in 0..all.len() {
                     if all[i].flag > 1.5 {
@@ -1410,7 +1417,20 @@ impl Kernel {
                     // Region verschmolzen. Flächen mit ordentlicher Kette
                     // bleiben getrennt — dort vermitteln die Ketten-Punkte
                     // (die ohnehin beide IDs tragen).
-                    let face_sets: Option<Vec<Vec<u32>>> = if opts.face_guard {
+                    // Regionen IMMER berechnen: die blatt-restringierte
+                    // Leere-Kugel-Prüfung braucht sie auch bei inaktivem Guard.
+                    // Zwei Sichten pro Punkt:
+                    // - `face_sets` (VOLL, inkl. Naht-Band-Zweitfarbe): wer darf
+                    //   zusammen ein Dreieck bilden (Vermittler-Rolle).
+                    // - `contam_regions` (HOST-only für Flächenpunkte): als
+                    //   KONTAMINATOR zählt ein gewachsener Punkt nur auf seinem
+                    //   Host-Blatt. Im Keil einer fast-tangentialen Naht sind
+                    //   die Blätter dichter beieinander als die Punktdichte —
+                    //   mit der Voll-Sicht (beide Farben) blockieren sich dort
+                    //   beide Blätter wechselseitig; mit der Host-Sicht
+                    //   triangulieren sie unabhängig und teilen sich die Kette
+                    //   (Ketten-/Eckpunkte kontaminieren weiter beidseitig).
+                    let (face_sets, contam_regions): (Vec<Vec<u32>>, Vec<Vec<u32>>) = {
                         let nf = face_surfs.len();
                         let mut parent: Vec<u32> = (0..nf as u32).collect();
                         fn find(par: &mut Vec<u32>, x: u32) -> u32 {
@@ -1494,22 +1514,26 @@ impl Kernel {
                                 "REGIONEN: {merged} Verschmelzungen (Flächen ohne gemeinsame Kette)"
                             );
                         }
-                        Some(
-                            point_faces
-                                .iter()
-                                .map(|pf| {
-                                    let mut v: Vec<u32> = pf
-                                        .iter()
-                                        .map(|&(g, _)| find(&mut parent, g))
-                                        .collect();
-                                    v.sort_unstable();
-                                    v.dedup();
-                                    v
-                                })
-                                .collect(),
-                        )
-                    } else {
-                        None
+                        let full: Vec<Vec<u32>> = point_faces
+                            .iter()
+                            .map(|pf| {
+                                let mut v: Vec<u32> = pf
+                                    .iter()
+                                    .map(|&(g, _)| find(&mut parent, g))
+                                    .collect();
+                                v.sort_unstable();
+                                v.dedup();
+                                v
+                            })
+                            .collect();
+                        // VERMESSEN (2026-07-13, RESEARCH_LOG): Host-only-
+                        // Kontamination für Flächenpunkte (nur die Wuchs-
+                        // Fläche zählt) machte es SCHLECHTER (312 → 384 offene
+                        // Kanten): im überfüllten Naht-Keil verheddern sich
+                        // die dann unabhängigen Blatt-Triangulierungen.
+                        // Kontaminator-Sicht = volle Regionen-Sicht.
+                        let contam = full.clone();
+                        (full, contam)
                     };
                     // ── DELAUNAY-REFINEMENT (Boissonnat–Oudot) ──
                     //
@@ -1543,6 +1567,7 @@ impl Kernel {
                     let mut nmap = nmap;
                     let mut normal_sets = normal_sets;
                     let mut face_sets = face_sets;
+                    let mut contam_regions = contam_regions;
                     let mut members = members;
                     let mut res;
                     let rho = if opts.refine_rho > 0.0 { opts.refine_rho } else { 0.7 };
@@ -1553,7 +1578,9 @@ impl Kernel {
                             &positions,
                             &nmap,
                             &normal_sets,
-                            face_sets.as_deref(),
+                            &face_sets,
+                            &contam_regions,
+                            opts.face_guard,
                             &spacings,
                             &members,
                             &global_chain_edges,
@@ -1700,9 +1727,8 @@ impl Kernel {
                             spacings.push(sp);
                             nmap.insert(idx, nw);
                             normal_sets.push(vec![nw]);
-                            if let Some(fsv) = face_sets.as_mut() {
-                                fsv.push(vec![gf]);
-                            }
+                            face_sets.push(vec![gf]);
+                            contam_regions.push(vec![gf]);
                             members.push(idx);
                             grid.entry(key(p)).or_default().push(idx);
                             inserted += 1;
@@ -4050,9 +4076,21 @@ mod tests {
             .collect();
         for h in hs {
             let mut k = demo_project_kernel();
-            let opts = format!(
-                r#"{{"targetEdgeLength":{h},"grow":true,"curvAngleDeg":2.0,"useReach":false,"reachTol":1.0,"minEdgeSpacing":0.1,"maxPoints":50000,"generalTri":true,"accept":"witness","extractWalk":true,"globalWalk":true,"lfsFactor":0.1,"sizingField":true,"faceGuard":false,"fillHoles":false{extra}}}"#
-            );
+            // Extra-Optionen als ECHTES JSON-Merge (String-Anhängen erzeugt
+            // Duplikat-Keys → serde-Fehler → Default-Optionen → Phantom-Werte).
+            let mut base: serde_json::Value = serde_json::from_str(&format!(
+                r#"{{"targetEdgeLength":{h},"grow":true,"curvAngleDeg":2.0,"useReach":false,"reachTol":1.0,"minEdgeSpacing":0.1,"maxPoints":50000,"generalTri":true,"accept":"witness","extractWalk":true,"globalWalk":true,"lfsFactor":0.1,"sizingField":true,"faceGuard":false,"fillHoles":false}}"#
+            ))
+            .unwrap();
+            if !extra.is_empty() {
+                let patch: serde_json::Value =
+                    serde_json::from_str(&format!("{{{}}}", extra.trim_start_matches(',')))
+                        .expect("LICHEN_GY_EXTRA ist kein gültiges JSON-Objekt-Innere");
+                for (kk, vv) in patch.as_object().unwrap() {
+                    base[kk] = vv.clone();
+                }
+            }
+            let opts = base.to_string();
             let t0 = std::time::Instant::now();
             let out = k.lichen_mesh(opts);
             let secs = t0.elapsed().as_secs_f32();
@@ -4063,6 +4101,51 @@ mod tests {
             let (lo, hi) = demo_cutout_aabb(0.3);
             let rep = measure(&k, &out, lo, hi, 0.5);
             print_report(&format!("h={h} ({secs:.1}s)"), &rep);
+        }
+    }
+
+    /// Welche B-Rep-Kanten (= Ketten-Quelle) bekommt der Demo-Body wirklich?
+    /// Der Gyroid-Body überspringt das Oktree-Weben (DL-71) und läuft über
+    /// `weave_branch_seeds_partial` — hier steht, was der Pfad liefert.
+    /// `cargo test -p fielddraft-kernel --release zz_gyroid_brep_edges -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn zz_gyroid_brep_edges() {
+        let mut k = demo_project_kernel();
+        assert_eq!(k.bodies.len(), 1);
+        let decoded = k.decoded.clone();
+        let body = &mut k.bodies[0];
+        let placement = body.placement;
+        let brep = body.ensure_brep(&decoded, true);
+        eprintln!(
+            "BREP: {} Vertizes, {} Kanten, {} Faces",
+            brep.vertices.len(),
+            brep.edges.len(),
+            brep.faces.len()
+        );
+        for (i, e) in brep.edges.iter().enumerate() {
+            let kind = match &e.geometry {
+                crate::brep::EdgeGeometry::Polyline(_) => "poly",
+                crate::brep::EdgeGeometry::Hermite(_) => "hermite",
+                crate::brep::EdgeGeometry::Nurbs(_) => "nurbs",
+            };
+            let pts: Vec<[f64; 3]> = crate::brep::edge_sampling::sample_edge(&e.geometry);
+            eprint!("  [{kind}] ");
+            let (mut lo, mut hi) = ([f64::MAX; 3], [f64::MIN; 3]);
+            for p in &pts {
+                for k in 0..3 {
+                    lo[k] = lo[k].min(p[k]);
+                    hi[k] = hi[k].max(p[k]);
+                }
+            }
+            // Kanten sind body-LOKAL — Welt = placement anwenden.
+            eprintln!(
+                "  Kante {i}: sig={:?} samples={} lokal-bbox=[{:.1},{:.1},{:.1}]..[{:.1},{:.1},{:.1}] placement.t={:?}",
+                e.signature,
+                pts.len(),
+                lo[0], lo[1], lo[2], hi[0], hi[1], hi[2],
+                placement.translate,
+            );
         }
     }
 
@@ -4144,8 +4227,16 @@ mod tests {
             clusters.len(),
             sizes.iter().map(|(s, _)| *s).take(20).collect::<Vec<_>>()
         );
+        let flag_of = |i: u32| out[3 + i as usize * 9 + 8] as i32;
         for (sz, root) in sizes.iter().take(12) {
             let edges = &clusters[root];
+            // Endpunkt-Flags: sind die offenen Kanten Ketten-Punkte (2/3)
+            // oder Flächen-Punkte (1)?
+            let mut flags: std::collections::BTreeMap<(i32, i32), usize> = Default::default();
+            for &(a, b) in edges.iter() {
+                let (fa, fb) = (flag_of(a), flag_of(b));
+                *flags.entry((fa.min(fb), fa.max(fb))).or_default() += 1;
+            }
             // Häufigkeit: welche ZWEI Flächen sind der Kantenmitte am nächsten?
             let mut tally: std::collections::BTreeMap<String, usize> = Default::default();
             let mut lo = [f32::MAX; 3];
@@ -4176,7 +4267,7 @@ mod tests {
                 0.5 * (lo[2] + hi[2]),
             ];
             eprintln!(
-                "  Cluster {sz:>4} Kanten @ [{:.1},{:.1},{:.1}] ± [{:.1},{:.1},{:.1}]: {tally:?}",
+                "  Cluster {sz:>4} Kanten @ [{:.1},{:.1},{:.1}] ± [{:.1},{:.1},{:.1}]: {tally:?} Flags={flags:?}",
                 mid[0],
                 mid[1],
                 mid[2],

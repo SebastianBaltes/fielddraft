@@ -24,6 +24,16 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.564",
+    entries: [
+      {
+        kind: "fix",
+        scope: "mesher",
+        text: "Lichen: blatt-restringierte Zeugen-Kugel (restricted Delaunay je glattem Patch, nach Cheng–Dey–Levine). An einer fast-tangentialen Naht (Gyroid∩Zylinder im Betreiber-Testfall) unterschreitet der Abstand der beiden Flächenblätter den Punktabstand — die Zeugen-Kugel jedes nahtnahen Dreiecks enthielt damit zwangsläufig Punkte des Gegenblatts, beide Blätter blockierten sich wechselseitig und die Naht blieb als Riss offen. Jetzt zählen nur Punkte, die eine B-Rep-Region mit dem Dreieck teilen, als Kontamination; Ketten-Punkte tragen beide Regionen und wirken weiter beidseitig, dünne Wände bleiben geschützt (beide Blätter derselben Fläche = dieselbe Region). Die Flächen-Einfärbung + Regionen-Verschmelzung laufen dafür immer (bisher nur bei aktivem Flächen-Guard). Gyroid-Ausschnitt: 397 → 312 offene Kanten, alle Mikro-Löcher entlang der Nähte geschlossen; Box/Zylinder/Kugel/Torus/dünne Platte unverändert wasserdicht.",
+      },
+    ],
+  },
+  {
     version: "0.6.563",
     entries: [
       {

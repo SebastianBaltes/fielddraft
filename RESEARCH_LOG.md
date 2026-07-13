@@ -50,3 +50,43 @@ Format: Zeitstempel · Hypothese/Frage · Ergebnis · Entscheidung.
   (`step_classifier.rs:220`). Ohne Kette: kein Ketten-Sampling, kein Vorhang,
   keine Pflichtpunkte auf der Naht → beide Blätter wachsen an den Knick heran
   und werden nicht vernäht. Subagent prüft die Ketten-Pipeline (läuft).
+
+## 2026-07-13 03:40 — H1 präzisiert: Ketten EXISTIEREN, der Konsum scheitert
+
+- Empirie (`zz_gyroid_brep_edges`): der Seed-Weaver liefert dem Body 16 Kanten
+  — inkl. Gyroid∩Zylinder (977 Samples), Gyroid∩Box, Marker∩Zylinder. H1
+  („keine Ketten") in der starken Form widerlegt; alle Nähte haben Ketten und
+  werden als Pflichtpunkte (flag 2) eingespeist.
+- Flag-Forensik: im Hauptcluster 106 offene KETTEN-Segmente (nur 1 Dreieck
+  statt 2) + 123 Flächenpunkt-Risse parallel zur Naht → EINE Seite der Naht
+  vernäht, die andere scheitert.
+- `empty_why`-Instrumentierung (Diagnose-Zwilling von `empty`): zwei Ursachen:
+  (a) Zeugen-Newton scheitert an Ketten-Slivern (degeneriert, unkritisch),
+  (b) KONTAMINATION: an der fast-tangentialen Naht ist der Blattabstand
+  (~0,04 mm) kleiner als der Punktabstand (~0,1 mm) — jede Zeugen-Kugel
+  enthält Gegenblatt-Punkte, beide Blätter blockieren sich WECHSELSEITIG.
+  Der Normalen-Guard kann tangentiale Blätter prinzipiell nicht trennen.
+
+## 2026-07-13 04:10 — Iteration 1: blatt-restringierte Zeugen-Kugel (v0.6.564)
+
+- Fix: Leere-Kugel-Prüfung zählt nur Punkte, die eine B-Rep-REGION mit dem
+  Dreieck teilen (restricted Delaunay je glattem Patch, Cheng–Dey–Levine);
+  Einfärbung+Regionen laufen immer, Flächen-Guard bleibt opt-in.
+- Messung: 397 → **312** offene Kanten; ALLE Mikro-Löcher zu (15 → 4 Cluster);
+  33/33 Lichen-Gates grün (Box/Zylinder/Kugel/Torus/Platte unverändert).
+- VERWORFEN (vermessen, zurückgebaut):
+  - Host-only-Kontamination (nur Wuchs-Fläche zählt): 312 → 384 — die dann
+    unabhängigen Blatt-Triangulierungen verheddern sich im überfüllten Keil.
+  - Gabriel-Fallback bei Newton-Versagen: 384 → 478 — Kugeln ohne
+    Flächen-Zentrum lassen falsche Dreiecke zu.
+  - faceGuard:true (korrekt gemessen nach JSON-Merge-Fix): wirkungslos (386).
+- WERKZEUG-BUG gefunden: LICHEN_GY_EXTRA per String-Anhängen erzeugte
+  Duplikat-Keys → serde-Fehler → DEFAULT-Optionen. Frühere faceGuard/refine-
+  „Messungen" mit überschreibenden Keys waren Phantome. Jetzt echtes
+  JSON-Merge im Baseline-Runner.
+- Crowding-Hypothese bestätigt: minEdgeSpacing 0.3 → 155 offene Kanten (aber
+  H(s→m) 0,26 = untersampelt). Das Sizing-Field kollabiert die Dichte im
+  Naht-Keil (lfs→0 am Knick), Blätter verschachteln sich. → Nächster Schritt:
+  SCHUTZKORRIDOR um Ketten (Cheng–Dey–Ramos protecting balls): keine
+  Flächenpunkte, wo Blattabstand < Punktabstand; Korridor-Breite aus
+  Keilwinkel der beiden Ketten-Normalen.

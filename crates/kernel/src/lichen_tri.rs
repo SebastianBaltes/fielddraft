@@ -621,13 +621,20 @@ pub fn triangulate_global_walk(
     // die Menge der Flächen-Normalen aber exakt.
     normal_sets: &[Vec<[f32; 3]>],
     // FLÄCHEN-MENGE je Punkt (Betreiber-Idee 2026-07-12, „Flächen-Einfärbung"):
-    // die B-Rep-Flächen, auf denen der Punkt liegt. Ein Dreieck ist nur gültig,
-    // wenn seine drei Ecken eine GEMEINSAME Fläche haben. Das schließt die
-    // Lücke, die Normalen prinzipiell nicht sehen: an einer TANGENTIALEN
-    // Verschneidung sind die Normalen beider Flächen ähnlich (nicht
-    // antiparallel) — die Flächen-Zugehörigkeit ist aber verschieden.
-    // `None` = Guard aus.
-    face_sets: Option<&[Vec<u32>]>,
+    // die B-Rep-REGIONEN, auf denen der Punkt liegt (Flächen, per Union-Find
+    // verschmolzen, wo keine Kette sie trennt). Zwei Verwendungen:
+    // 1. BLATT-RESTRINGIERTE Leere-Kugel (immer an): an einer fast-
+    //    tangentialen Naht unterschreitet der Blattabstand den Punktabstand —
+    //    Punkte einer FREMDEN Region kontaminieren die Zeugen-Kugel nicht.
+    //    Ketten-Punkte tragen beide Regionen und wirken beidseitig.
+    // 2. FLÄCHEN-GUARD (`face_guard`): ein Dreieck ist nur gültig, wenn seine
+    //    drei Ecken eine gemeinsame Region haben — sieht tangentiale
+    //    Verschneidungen, die Normalen prinzipiell nicht sehen.
+    face_sets: &[Vec<u32>],
+    // Kontaminator-Sicht (HOST-only für Flächenpunkte, voll für Ketten/Ecken):
+    // wer eine fremde Zeugen-Kugel „verunreinigen" darf — siehe api/lichen.rs.
+    contam_regions: &[Vec<u32>],
+    face_guard: bool,
     spacing: &[f32],
     members: &[u32],
     chain_edges: &HashSet<(u32, u32)>,
@@ -765,6 +772,20 @@ pub fn triangulate_global_walk(
         ])
     };
     const TOL: f32 = 2e-4;
+    // Gemeinsame REGIONEN der drei Ecken — die Blatt-Identität des Dreiecks.
+    // Leer, sobald eine Ecke keine Regionen-Info hat (→ keine Restriktion,
+    // konservativ streng).
+    let tri_regions = |a: u32, b: u32, c: u32| -> Vec<u32> {
+        let (fa, fb, fc) = (
+            face_sets.get(a as usize).map(Vec::as_slice).unwrap_or(&[]),
+            face_sets.get(b as usize).map(Vec::as_slice).unwrap_or(&[]),
+            face_sets.get(c as usize).map(Vec::as_slice).unwrap_or(&[]),
+        );
+        if fa.is_empty() || fb.is_empty() || fc.is_empty() {
+            return Vec::new();
+        }
+        fa.iter().copied().filter(|x| fb.contains(x) && fc.contains(x)).collect()
+    };
     let sphere_empty = |centre: [f32; 3], a: u32, b: u32, c: u32| -> bool {
         let dc = sub(points[a as usize], centre);
         let r2 = dot(dc, dc);
@@ -772,6 +793,15 @@ pub fn triangulate_global_walk(
         if r > 5.0 * cell {
             return false;
         }
+        // BLATT-RESTRIKTION (restricted Delaunay je glattem Patch, Cheng–Dey–
+        // Levine): nur Punkte, die eine Region mit dem Dreieck teilen (oder
+        // ohne Regionen-Info), zählen als Kontamination. Fremdblatt-Punkte im
+        // Keil einer fast-tangentialen Naht blockieren sonst JEDEN Kandidaten
+        // beider Blätter wechselseitig (Gyroid∩Zylinder: Blattabstand 0,04 mm
+        // bei Punktabstand 0,1 mm). Dünne Wände bleiben geschützt: beide
+        // Blätter derselben Fläche tragen dieselbe Region, und Flächen OHNE
+        // trennende Kette sind zu einer Region verschmolzen.
+        let tri_f = tri_regions(a, b, c);
         let (kx, ky, kz) = key(centre);
         let reach = (r / cell).ceil() as i32 + 1;
         for dx in -reach..=reach {
@@ -786,6 +816,15 @@ pub fn triangulate_global_walk(
                         }
                         let d = sub(points[j as usize], centre);
                         if dot(d, d) < r2 * (1.0 - TOL) {
+                            if !tri_f.is_empty() {
+                                let fj = contam_regions
+                                    .get(j as usize)
+                                    .map(Vec::as_slice)
+                                    .unwrap_or(&[]);
+                                if !fj.is_empty() && !fj.iter().any(|x| tri_f.contains(x)) {
+                                    continue; // fremdes Blatt — zählt nicht
+                                }
+                            }
                             return false;
                         }
                     }
@@ -826,7 +865,103 @@ pub fn triangulate_global_walk(
                 break;
             }
         }
+        // KEIN Gabriel-Fallback bei Newton-Versagen — vermessen (RESEARCH_LOG
+        // 2026-07-13): die ungeschobene Umkreiskugel als Ersatzkriterium
+        // riss MEHR auf (384 → 478 offene Kanten), weil sie im Naht-Keil
+        // Dreiecke zulässt, deren Zeugen-Zentrum gar nicht auf der Fläche
+        // liegt. Ablehnen ist dort ehrlicher.
         false
+    };
+    // DIAGNOSE-Zwilling von `empty`: WARUM ist die Kugel nicht leer? Meldet
+    // Newton-Versagen (Zeugen-Zentrum nicht auf f=0 gefunden — am Knick ist
+    // ∇f unstetig!) getrennt von echter Kontamination (wer liegt drin, wie
+    // tief, Ketten-Punkt?). Nur von der WHY-Forensik benutzt.
+    let empty_why = |a: u32, b: u32, c: u32| -> String {
+        let Some(c0) = circumcentre(a, b, c) else {
+            return "kein Umkreis (degeneriert)".into();
+        };
+        let mut centre = c0;
+        let mut note = String::new();
+        if accept == "witness" {
+            let (pa, pb, pc) = (
+                points[a as usize],
+                points[b as usize],
+                points[c as usize],
+            );
+            let n_t = norm(cross(sub(pb, pa), sub(pc, pa)));
+            let cap = 5.0 * cell;
+            let mut t = 0.0f32;
+            let mut found = false;
+            for _ in 0..12 {
+                let x = [c0[0] + t * n_t[0], c0[1] + t * n_t[1], c0[2] + t * n_t[2]];
+                let (f, g) = fg(x);
+                if f.abs() < 1e-3 {
+                    centre = x;
+                    found = true;
+                    break;
+                }
+                let g = if dot(g, g) > 1e-12 { g } else { crate::lichen::robust_grad(x, &fg) };
+                let dn = dot(g, n_t);
+                if dn.abs() < 1e-6 {
+                    note = format!("NEWTON-STALL→Gabriel (t={t:.4}); ");
+                    break;
+                }
+                t -= f / dn;
+                if !t.is_finite() || t.abs() > cap {
+                    note = format!("NEWTON-DIVERGENZ→Gabriel (t={t:.3}); ");
+                    break;
+                }
+            }
+            if !found && note.is_empty() {
+                note = "NEWTON-12-Iter→Gabriel; ".into();
+            }
+        }
+        let chain_pts: std::collections::HashSet<u32> =
+            chain_segs.iter().flat_map(|&(u, v)| [u, v]).collect();
+        let dc = sub(points[a as usize], centre);
+        let r2 = dot(dc, dc);
+        if r2.sqrt() > 5.0 * cell {
+            return format!("Radius {:.3} > 5·cell", r2.sqrt());
+        }
+        let tri_f = tri_regions(a, b, c);
+        let mut skipped_region = 0usize;
+        let mut off: Vec<(f32, u32)> = Vec::new();
+        for (j, pj) in points.iter().enumerate() {
+            let j = j as u32;
+            if j == a || j == b || j == c {
+                continue;
+            }
+            let d = sub(*pj, centre);
+            let q = dot(d, d);
+            if q < r2 * (1.0 - TOL) {
+                if !tri_f.is_empty() {
+                    let fj = contam_regions.get(j as usize).map(Vec::as_slice).unwrap_or(&[]);
+                    if !fj.is_empty() && !fj.iter().any(|x| tri_f.contains(x)) {
+                        skipped_region += 1;
+                        continue;
+                    }
+                }
+                off.push((q.sqrt() / r2.sqrt(), j));
+            }
+        }
+        off.sort_by(|x, y| x.0.partial_cmp(&y.0).unwrap());
+        let s: Vec<String> = off
+            .iter()
+            .take(4)
+            .map(|&(ratio, j)| {
+                format!(
+                    "#{j}{}@{:.2}r",
+                    if chain_pts.contains(&j) { "K" } else { "" },
+                    ratio
+                )
+            })
+            .collect();
+        format!(
+            "{note}kontaminiert: {} Punkte [{}] r={:.4} (+{skipped_region} fremdblatt-ignoriert)",
+            off.len(),
+            s.join(", "),
+            r2.sqrt()
+        )
     };
     // Ketten-Kanten sind FEATURE-Linien: kein Dreieck darf sie kreuzen (sie
     // dürfen aber Dreiecks-Kanten SEIN — nur so läuft der Walk über die Kante).
@@ -915,15 +1050,15 @@ pub fn triangulate_global_walk(
                 return false; // sin(Winkel) ≤ 0.01
             }
         }
-        // FLÄCHEN-GUARD (topologisch): die drei Ecken brauchen eine gemeinsame
-        // B-Rep-Fläche. Er sieht, was Normalen nicht sehen können — zwei
-        // Flächen, die sich TANGENTIAL nähern, haben ähnliche Normalen, aber
-        // verschiedene IDs.
-        if let Some(fs) = face_sets {
+        // FLÄCHEN-GUARD (topologisch, opt-in): die drei Ecken brauchen eine
+        // gemeinsame B-Rep-Region. Er sieht, was Normalen nicht sehen können —
+        // zwei Flächen, die sich TANGENTIAL nähern, haben ähnliche Normalen,
+        // aber verschiedene IDs.
+        if face_guard {
             let (fa, fb, fc) = (
-                fs.get(a as usize).map(Vec::as_slice).unwrap_or(&[]),
-                fs.get(b as usize).map(Vec::as_slice).unwrap_or(&[]),
-                fs.get(c as usize).map(Vec::as_slice).unwrap_or(&[]),
+                face_sets.get(a as usize).map(Vec::as_slice).unwrap_or(&[]),
+                face_sets.get(b as usize).map(Vec::as_slice).unwrap_or(&[]),
+                face_sets.get(c as usize).map(Vec::as_slice).unwrap_or(&[]),
             );
             if !fa.is_empty() && !fb.is_empty() && !fc.is_empty() {
                 let common = fa
@@ -1128,17 +1263,17 @@ pub fn triangulate_global_walk(
                         dot(cr, cr).sqrt()
                             <= 1e-2 * dot(ab, ab).sqrt() * dot(ac, ac).sqrt()
                     };
-                    let face_block = face_sets.map_or(false, |fs| {
+                    let face_block = face_guard && {
                         let (fa, fb, fc) = (
-                            fs.get(u as usize).map(Vec::as_slice).unwrap_or(&[]),
-                            fs.get(v as usize).map(Vec::as_slice).unwrap_or(&[]),
-                            fs.get(w as usize).map(Vec::as_slice).unwrap_or(&[]),
+                            face_sets.get(u as usize).map(Vec::as_slice).unwrap_or(&[]),
+                            face_sets.get(v as usize).map(Vec::as_slice).unwrap_or(&[]),
+                            face_sets.get(w as usize).map(Vec::as_slice).unwrap_or(&[]),
                         );
                         !fa.is_empty()
                             && !fb.is_empty()
                             && !fc.is_empty()
                             && !fa.iter().any(|x| fb.contains(x) && fc.contains(x))
-                    });
+                    };
                     if deg {
                         3
                     } else if face_block {
@@ -1227,12 +1362,18 @@ pub fn triangulate_global_walk(
                                     .into_iter()
                                     .filter(|&(i, j)| !normals_compatible(i, j))
                                     .collect();
+                                let is_empty = empty(u, v, w);
                                 eprintln!(
-                                    "      cand #{w} d={dw:.3} leer={} kette={} normguard={:?} valid={}",
-                                    empty(u, v, w),
+                                    "      cand #{w} d={dw:.3} leer={} kette={} normguard={:?} valid={}{}",
+                                    is_empty,
                                     crosses_chain(u, v, w),
                                     ng,
-                                    valid(u, v, w)
+                                    valid(u, v, w),
+                                    if is_empty {
+                                        String::new()
+                                    } else {
+                                        format!(" | {}", empty_why(u, v, w))
+                                    }
                                 );
                             }
                         }
