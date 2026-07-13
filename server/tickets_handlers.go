@@ -249,15 +249,16 @@ func (s *Server) handlePatchTicket(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// State change. The author gets the safe subset in userMaySetState (close /
-	// park to backlog / un-park / reopen, ticket 066230d9); the admin may drive
-	// any validated transition (PO/dev moves).
+	// park to backlog / un-park / reopen, ticket 066230d9) and stays bound to the
+	// §7.2 transition graph. The ADMIN sets any state directly (ticket #345) —
+	// the graph guards the automated flow, not the operator driving it.
 	if body.State != nil {
 		to := TicketState(*body.State)
 		if !isAdmin && !userMaySetState(t.State, to) {
 			writeErr(w, http.StatusForbidden, "only admins may set this state")
 			return
 		}
-		if _, err := s.tickets.SetTicketState(id, to); err != nil {
+		if _, err := s.tickets.SetTicketState(id, to, isAdmin); err != nil {
 			writeStoreError(w, err)
 			return
 		}

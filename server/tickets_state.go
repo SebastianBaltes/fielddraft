@@ -133,8 +133,22 @@ func canTransition(from, to TicketState) bool {
 
 // validateTransition returns the matching *httpError for an illegal move, or nil.
 func validateTransition(from, to TicketState) error {
+	return validateStateChange(from, to, false)
+}
+
+// validateStateChange is validateTransition plus the admin override (ticket
+// #345): with `direct`, only the TARGET is checked — any known state may be set
+// from any state, the transition graph is skipped. A no-op (from == to) stays an
+// error either way, so no meaningless audit comment is written.
+func validateStateChange(from, to TicketState, direct bool) error {
 	if !validState(to) {
 		return errUnknownState
+	}
+	if direct {
+		if from == to {
+			return errInvalidTransition
+		}
+		return nil
 	}
 	if !canTransition(from, to) {
 		return errInvalidTransition

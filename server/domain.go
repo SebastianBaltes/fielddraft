@@ -80,8 +80,14 @@ func newComment(ticketID string, authorType AuthorType, authorID *string, body s
 // applyStateChange validates the from→to move against the §7.2 state machine
 // and, if legal, applies it to t (state + updated_at). It returns the audit
 // `system` comment body the store must append. t is only mutated on success.
-func applyStateChange(t *Ticket, to TicketState, at time.Time) (audit string, err error) {
-	if err := validateTransition(t.State, to); err != nil {
+//
+// `direct` is the ADMIN OVERRIDE (ticket #345): it skips the transition graph
+// so an operator can set any state from any state — the graph exists to keep the
+// automated user→PO→dev flow honest, not to handcuff the operator who runs it,
+// and it is the only way to rescue a ticket parked in a state with no legal way
+// out. The state itself is still validated: an unknown value is never written.
+func applyStateChange(t *Ticket, to TicketState, at time.Time, direct bool) (audit string, err error) {
+	if err := validateStateChange(t.State, to, direct); err != nil {
 		return "", err
 	}
 	from := t.State

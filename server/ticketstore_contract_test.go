@@ -209,7 +209,7 @@ func testTicketStoreContract(t *testing.T, newFixture func(t *testing.T) ticketS
 		f := newFixture(t)
 		author := f.newAuthor(t)
 		tk := mkTicket(t, f, author, "spammy", "buy now", "")
-		if _, err := f.store.SetTicketState(tk.ID, StateRejectedSpam); err != nil {
+		if _, err := f.store.SetTicketState(tk.ID, StateRejectedSpam, false); err != nil {
 			t.Fatalf("reject: %v", err)
 		}
 		// A stranger doesn't see it.
@@ -231,7 +231,7 @@ func testTicketStoreContract(t *testing.T, newFixture func(t *testing.T) ticketS
 		tk := mkTicket(t, f, author, "t", "b", "")
 
 		// Legal move appends a system audit comment.
-		moved, err := f.store.SetTicketState(tk.ID, StateAccepted)
+		moved, err := f.store.SetTicketState(tk.ID, StateAccepted, false)
 		if err != nil || moved.State != StateAccepted {
 			t.Fatalf("legal transition: %v / %+v", err, moved)
 		}
@@ -245,16 +245,16 @@ func testTicketStoreContract(t *testing.T, newFixture func(t *testing.T) ticketS
 		}
 
 		// Illegal move / unknown state / no-op / missing ticket.
-		if _, err := f.store.SetTicketState(tk.ID, StateClosed); err != errInvalidTransition {
+		if _, err := f.store.SetTicketState(tk.ID, StateClosed, false); err != errInvalidTransition {
 			t.Fatalf("illegal transition err = %v, want errInvalidTransition", err)
 		}
-		if _, err := f.store.SetTicketState(tk.ID, TicketState("bogus")); err != errUnknownState {
+		if _, err := f.store.SetTicketState(tk.ID, TicketState("bogus"), false); err != errUnknownState {
 			t.Fatalf("unknown state err = %v, want errUnknownState", err)
 		}
-		if _, err := f.store.SetTicketState(tk.ID, StateAccepted); err != errInvalidTransition {
+		if _, err := f.store.SetTicketState(tk.ID, StateAccepted, false); err != errInvalidTransition {
 			t.Fatalf("no-op transition err = %v, want errInvalidTransition", err)
 		}
-		if _, err := f.store.SetTicketState("does-not-exist", StateAccepted); err != errTicketMissing {
+		if _, err := f.store.SetTicketState("does-not-exist", StateAccepted, false); err != errTicketMissing {
 			t.Fatalf("missing ticket err = %v, want errTicketMissing", err)
 		}
 		// Failed moves left no extra audit comments and no state change.
@@ -393,7 +393,7 @@ func testTicketStoreContract(t *testing.T, newFixture func(t *testing.T) ticketS
 		f := newFixture(t)
 		author := f.newAuthor(t)
 		tk := mkTicket(t, f, author, "t", "b", "")
-		if _, err := f.store.SetTicketState(tk.ID, StateAccepted); err != nil {
+		if _, err := f.store.SetTicketState(tk.ID, StateAccepted, false); err != nil {
 			t.Fatalf("accept: %v", err)
 		}
 

@@ -185,12 +185,12 @@ func (s *sqlStore) getTicketRow(id string) *Ticket {
 	return s.scanTicket(row.Scan)
 }
 
-func (s *sqlStore) SetTicketState(id string, to TicketState) (*Ticket, error) {
+func (s *sqlStore) SetTicketState(id string, to TicketState, direct bool) (*Ticket, error) {
 	t := s.getTicketRow(id)
 	if t == nil {
 		return nil, errTicketMissing
 	}
-	audit, err := applyStateChange(t, to, now())
+	audit, err := applyStateChange(t, to, now(), direct)
 	if err != nil {
 		return nil, err
 	}

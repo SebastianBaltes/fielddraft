@@ -320,3 +320,107 @@ describe("TicketsView — list-only (WP13)", () => {
     expect(byTestId("create-submit")).toBeNull();
   });
 });
+
+/* State picker + delete (ticket #345). The options themselves are the subject of
+ * settableStates in ticketView.test.ts; here it's the wiring. */
+describe("TicketsView — set state / delete", () => {
+  const options = () =>
+    Array.from(
+      byTestId<HTMLSelectElement>("detail-set-state")!.options,
+      (o) => o.value,
+    );
+
+  function pick(state: string) {
+    const select = byTestId<HTMLSelectElement>("detail-set-state")!;
+    select.value = state;
+    act(() => select.dispatchEvent(new Event("change", { bubbles: true })));
+  }
+
+  it("lets an admin set any state directly — even one the graph forbids", async () => {
+    vi.spyOn(platform.platformApi, "getTicket").mockResolvedValue(
+      detail({ state: "triage", author_id: "someone-else" }),
+    );
+    const update = vi
+      .spyOn(platform.platformApi, "updateTicket")
+      .mockResolvedValue(detail({ state: "resolved" }));
+    mount({ ticketId: "t1", isAdmin: true });
+    await flush();
+
+    // triage → resolved is not a machine edge, but the admin may jump there.
+    expect(options()).toContain("resolved");
+    expect(options()).not.toContain("triage"); // the current state is a no-op
+    pick("resolved");
+    await flush();
+
+    expect(update).toHaveBeenCalledWith("t1", { state: "resolved" });
+    expect(byTestId("detail-state")!.textContent).toBe("Resolved");
+  });
+
+  it("offers the author only their safe subset", async () => {
+    vi.spyOn(platform.platformApi, "getTicket").mockResolvedValue(
+      detail({ state: "triage" }), // author_id = u1 = USER
+    );
+    mount({ ticketId: "t1" });
+    await flush();
+    expect(options().sort()).toEqual(["", "backlog", "closed"]);
+  });
+
+  it("offers a stranger no state picker and no delete", async () => {
+    vi.spyOn(platform.platformApi, "getTicket").mockResolvedValue(
+      detail({ author_id: "someone-else" }),
+    );
+    mount({ ticketId: "t1" });
+    await flush();
+    expect(byTestId("detail-set-state")).toBeNull();
+    expect(byTestId("detail-delete-ticket")).toBeNull();
+  });
+
+  it("deletes after a confirm and navigates back", async () => {
+    vi.spyOn(platform.platformApi, "getTicket").mockResolvedValue(detail());
+    const del = vi
+      .spyOn(platform.platformApi, "deleteTicket")
+      .mockResolvedValue(undefined);
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    const onNavigate = vi.fn();
+    mount({ ticketId: "t1", onNavigate });
+    await flush();
+
+    act(() => byTestId<HTMLButtonElement>("detail-delete-ticket")!.click());
+    await flush();
+
+    expect(del).toHaveBeenCalledWith("t1");
+    expect(onNavigate).toHaveBeenCalledWith(null); // back to the list
+  });
+
+  it("does not delete when the confirm is declined", async () => {
+    vi.spyOn(platform.platformApi, "getTicket").mockResolvedValue(detail());
+    const del = vi
+      .spyOn(platform.platformApi, "deleteTicket")
+      .mockResolvedValue(undefined);
+    vi.spyOn(window, "confirm").mockReturnValue(false);
+    mount({ ticketId: "t1" });
+    await flush();
+
+    act(() => byTestId<HTMLButtonElement>("detail-delete-ticket")!.click());
+    await flush();
+
+    expect(del).not.toHaveBeenCalled();
+  });
+
+  it("surfaces a failed state change and keeps the old state", async () => {
+    vi.spyOn(platform.platformApi, "getTicket").mockResolvedValue(
+      detail({ state: "triage" }),
+    );
+    vi.spyOn(platform.platformApi, "updateTicket").mockRejectedValue(
+      new Error("illegal state transition"),
+    );
+    mount({ ticketId: "t1" });
+    await flush();
+    pick("closed");
+    await flush();
+    expect(byTestId("detail-error")!.textContent).toContain(
+      "illegal state transition",
+    );
+    expect(byTestId("detail-state")!.textContent).toBe("Triage");
+  });
+});

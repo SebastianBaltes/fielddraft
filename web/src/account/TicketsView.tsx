@@ -38,9 +38,11 @@ import {
   formatDateTime,
   personaLabel,
   personaTag,
+  settableStates,
   stateBucket,
   stateLabel,
   ticketRef,
+  TICKET_STATES,
 } from "./ticketView";
 
 interface TicketsViewProps {
@@ -57,20 +59,6 @@ interface TicketsViewProps {
   /** Navigate list ↔ detail (routes through account.openTicket → URL). */
   onNavigate(id: string | null): void;
 }
-
-const STATES: TicketState[] = [
-  "triage",
-  "needs_info",
-  "accepted",
-  "in_progress",
-  "deploying",
-  "resolved",
-  "closed",
-  "declined",
-  "backlog",
-  "rejected_spam",
-  "rejected_malicious",
-];
 
 export function TicketsView({
   user,
@@ -249,7 +237,7 @@ function TicketList({ user, onOpen }: TicketListProps) {
           onChange={(e) => setStateFilter(e.target.value as TicketState | "")}
         >
           <option value="">All states</option>
-          {STATES.map((s) => (
+          {TICKET_STATES.map((s) => (
             <option key={s} value={s}>
               {stateLabel(s)}
             </option>
@@ -437,44 +425,50 @@ function TicketDetailPanel({
   }, [reload]);
 
   const isAuthor = !!user && !!ticket && ticket.author_id === user.id;
-  // The author gets a safe subset of the state machine (ticket 066230d9,
-  // mirrors server userMaySetState): close their ticket, park it to `backlog`
-  // (recorded, do-not-work), un-park it, and reopen it. Everything else is
-  // admin/PO-driven.
-  const st = ticket?.state;
-  const canClose =
-    isAuthor &&
-    (st === "triage" ||
-      st === "needs_info" ||
-      st === "declined" ||
-      st === "backlog" ||
-      st === "resolved");
-  const canReopen = isAuthor && (st === "resolved" || st === "closed");
-  const canBacklog = isAuthor && (st === "triage" || st === "needs_info");
-  const canUnpark = isAuthor && st === "backlog";
+  // What this viewer may set the state to — admins anything, the author the safe
+  // subset (ticket #345, see settableStates). The server re-checks it.
+  const stateOptions = ticket
+    ? settableStates(ticket.state, { isAdmin, isAuthor })
+    : [];
+  // Delete is admin-or-author, same as the server's DELETE /api/tickets/{id}.
+  const canDelete = isAdmin || isAuthor;
 
-  const setState = async (state: TicketState, failMsg: string) => {
+  const setState = async (state: TicketState) => {
     setBusy(true);
     setError(null);
     try {
-      const updated = await platformApi.updateTicket(id, { state });
-      setTicket(updated);
+      setTicket(await platformApi.updateTicket(id, { state }));
     } catch (err) {
-      setError(accountErrorMessage(err, failMsg));
+      setError(
+        accountErrorMessage(
+          err,
+          `Could not set the issue to ${stateLabel(state)}`,
+        ),
+      );
     } finally {
       setBusy(false);
     }
   };
-  const close = () => setState("closed", "Could not close the issue");
-  // Reopen a resolved ticket → in_progress ("the fix didn't stick"); a closed
-  // one → triage (re-evaluate through the PO).
-  const reopen = () =>
-    setState(
-      st === "closed" ? "triage" : "in_progress",
-      "Could not reopen the issue",
-    );
-  const backlog = () => setState("backlog", "Could not move the issue to backlog");
-  const unpark = () => setState("triage", "Could not take the issue out of backlog");
+
+  const remove = async () => {
+    if (!ticket) return;
+    if (
+      !window.confirm(
+        `Delete ${ticketRef(ticket.number)} “${ticket.title}” for good? This cannot be undone.`,
+      )
+    ) {
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      await platformApi.deleteTicket(id);
+      onBack();
+    } catch (err) {
+      setError(accountErrorMessage(err, "Could not delete the issue"));
+      setBusy(false);
+    }
+  };
 
   if (loading) {
     return (
@@ -540,62 +534,51 @@ function TicketDetailPanel({
           <p className="detail-body" data-testid="detail-body">
             {linkify(ticket.body)}
           </p>
-          {isAuthor && (
+          {(isAuthor || isAdmin) && (
             <div className="detail-author-actions">
-              <button
-                type="button"
-                className="secondary"
-                data-testid="detail-edit"
-                disabled={busy}
-                onClick={() => setEditing(true)}
-              >
-                Edit
-              </button>
-              {canBacklog && (
+              {isAuthor && (
                 <button
                   type="button"
                   className="secondary"
-                  data-testid="detail-backlog-ticket"
+                  data-testid="detail-edit"
                   disabled={busy}
-                  onClick={backlog}
-                  title="Notiert, aber vom Agenten vorerst nicht bearbeiten"
+                  onClick={() => setEditing(true)}
                 >
-                  Move to backlog
+                  Edit
                 </button>
               )}
-              {canUnpark && (
-                <button
-                  type="button"
-                  className="secondary"
-                  data-testid="detail-unpark-ticket"
-                  disabled={busy}
-                  onClick={unpark}
-                  title="Zurück in Triage — der Agent darf es wieder bearbeiten"
-                >
-                  Out of backlog
-                </button>
+              {stateOptions.length > 0 && (
+                <label className="detail-state-set">
+                  <span>Set state</span>
+                  <select
+                    data-testid="detail-set-state"
+                    aria-label="Set issue state"
+                    disabled={busy}
+                    value=""
+                    onChange={(e) => {
+                      const next = e.target.value as TicketState;
+                      if (next) void setState(next);
+                    }}
+                  >
+                    <option value="">{stateLabel(ticket.state)}…</option>
+                    {stateOptions.map((s) => (
+                      <option key={s} value={s}>
+                        {stateLabel(s)}
+                      </option>
+                    ))}
+                  </select>
+                </label>
               )}
-              {canClose && (
+              {canDelete && (
                 <button
                   type="button"
-                  className="secondary"
-                  data-testid="detail-close-ticket"
+                  className="danger"
+                  data-testid="detail-delete-ticket"
                   disabled={busy}
-                  onClick={close}
+                  onClick={() => void remove()}
+                  title="Ticket endgültig löschen"
                 >
-                  Close issue
-                </button>
-              )}
-              {canReopen && (
-                <button
-                  type="button"
-                  className="secondary"
-                  data-testid="detail-reopen-ticket"
-                  disabled={busy}
-                  onClick={reopen}
-                  title="Ticket wieder öffnen"
-                >
-                  Reopen
+                  Delete
                 </button>
               )}
             </div>

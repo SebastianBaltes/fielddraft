@@ -334,7 +334,8 @@ func TestLegalStateTransition(t *testing.T) {
 	resp.Body.Close()
 }
 
-// TestIllegalStateTransition — a disallowed move is rejected with 400.
+// TestIllegalStateTransition — the admin sets any state DIRECTLY (ticket #345),
+// but an unknown state and a non-admin's arbitrary move are still rejected.
 func TestIllegalStateTransition(t *testing.T) {
 	e := newTicketEnv(t, "illegal@test.com")
 	resp := e.do(t, "POST", "/api/tickets", `{"title":"X","body":"y"}`, e.cookies)
@@ -344,14 +345,26 @@ func TestIllegalStateTransition(t *testing.T) {
 
 	adminCookies := seedAdminCookies(t, e, "boss2@test.com")
 
-	// triage → resolved is NOT a legal edge → 400.
+	// triage → resolved is not a graph edge, but the ADMIN may set it directly.
+	resp = e.do(t, "PATCH", "/api/tickets/"+tk.ID, `{"state":"resolved"}`, adminCookies)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("admin direct state: got %d, want 200", resp.StatusCode)
+	}
+	var set ticketDetailResponse
+	json.NewDecoder(resp.Body).Decode(&set)
+	resp.Body.Close()
+	if set.State != StateResolved {
+		t.Fatalf("admin direct state: got %q, want resolved", set.State)
+	}
+
+	// Setting the state it already has is a no-op → rejected (no audit noise).
 	resp = e.do(t, "PATCH", "/api/tickets/"+tk.ID, `{"state":"resolved"}`, adminCookies)
 	if resp.StatusCode != http.StatusBadRequest {
-		t.Fatalf("illegal transition: got %d, want 400", resp.StatusCode)
+		t.Fatalf("no-op state: got %d, want 400", resp.StatusCode)
 	}
 	resp.Body.Close()
 
-	// An unknown state value is also rejected.
+	// An unknown state value is rejected even for the admin.
 	resp = e.do(t, "PATCH", "/api/tickets/"+tk.ID, `{"state":"banana"}`, adminCookies)
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("unknown state: got %d, want 400", resp.StatusCode)
@@ -365,13 +378,13 @@ func TestIllegalStateTransition(t *testing.T) {
 	}
 	resp.Body.Close()
 
-	// The ticket is still in triage (no illegal move took effect).
+	// Only the admin's direct move took effect; every rejected one left no trace.
 	resp = e.do(t, "GET", "/api/tickets/"+tk.ID, "", e.cookies)
 	var after ticketDetailResponse
 	json.NewDecoder(resp.Body).Decode(&after)
 	resp.Body.Close()
-	if after.State != StateTriage {
-		t.Fatalf("state after rejected moves = %q, want triage", after.State)
+	if after.State != StateResolved {
+		t.Fatalf("state after rejected moves = %q, want resolved", after.State)
 	}
 }
 

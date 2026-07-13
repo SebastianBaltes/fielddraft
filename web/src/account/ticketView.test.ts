@@ -5,9 +5,11 @@ import {
   commentVisible,
   personaLabel,
   personaTag,
+  settableStates,
   stateBucket,
   stateLabel,
   ticketRef,
+  TICKET_STATES,
 } from "./ticketView";
 
 function comment(over: Partial<TicketComment> = {}): TicketComment {
@@ -72,6 +74,54 @@ describe("ticketView helpers", () => {
     expect(categoryLabel("bug")).toBe("Bug");
     expect(categoryLabel(null)).toBe("Uncategorized");
     expect(categoryLabel("nonsense")).toBe("Uncategorized");
+  });
+
+  // Ticket #345 — mirrors the server: admin sets anything directly, the author
+  // gets the safe subset, everyone else nothing.
+  describe("settableStates", () => {
+    const admin = { isAdmin: true, isAuthor: false };
+    const author = { isAdmin: false, isAuthor: true };
+    const stranger = { isAdmin: false, isAuthor: false };
+
+    it("gives the admin every state except the one it already has", () => {
+      expect(settableStates("triage", admin)).toEqual(
+        TICKET_STATES.filter((s) => s !== "triage"),
+      );
+      // Not a graph edge — the admin may still jump straight there.
+      expect(settableStates("triage", admin)).toContain("resolved");
+      expect(settableStates("rejected_spam", admin)).toContain("triage");
+    });
+
+    it("gives the author close + park from triage", () => {
+      expect(settableStates("triage", author)).toEqual(["closed", "backlog"]);
+      expect(settableStates("needs_info", author)).toEqual([
+        "closed",
+        "backlog",
+      ]);
+    });
+
+    it("gives the author un-park, reopen and close where they apply", () => {
+      expect(settableStates("backlog", author)).toEqual(["triage", "closed"]);
+      expect(settableStates("closed", author)).toEqual(["triage"]);
+      expect(settableStates("resolved", author)).toEqual([
+        "in_progress",
+        "closed",
+      ]);
+      expect(settableStates("declined", author)).toEqual(["closed"]);
+    });
+
+    it("gives the author nothing mid-flow or from a terminal state", () => {
+      expect(settableStates("accepted", author)).toEqual([]);
+      expect(settableStates("in_progress", author)).toEqual([]);
+      expect(settableStates("deploying", author)).toEqual([]);
+      expect(settableStates("rejected_spam", author)).toEqual([]);
+    });
+
+    it("gives a stranger nothing at all", () => {
+      for (const s of TICKET_STATES) {
+        expect(settableStates(s, stranger)).toEqual([]);
+      }
+    });
   });
 
   describe("commentVisible (defense-in-depth)", () => {

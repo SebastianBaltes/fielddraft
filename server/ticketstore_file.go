@@ -392,14 +392,14 @@ func (s *fileTicketStore) SetTicketCategory(id, category string) *Ticket {
 	return bareTicket(ft)
 }
 
-func (s *fileTicketStore) SetTicketState(id string, to TicketState) (*Ticket, error) {
+func (s *fileTicketStore) SetTicketState(id string, to TicketState, direct bool) (*Ticket, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	ft := s.load(id)
 	if ft == nil {
 		return nil, errTicketMissing
 	}
-	audit, err := applyStateChange(&ft.Ticket, to, now())
+	audit, err := applyStateChange(&ft.Ticket, to, now(), direct)
 	if err != nil {
 		return nil, err
 	}

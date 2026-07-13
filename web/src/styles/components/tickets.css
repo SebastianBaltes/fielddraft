@@ -404,7 +404,33 @@
   & .detail-author-actions {
     display: flex;
     flex-wrap: wrap;
+    align-items: center;
     gap: var(--space-2);
+
+    /* The state picker (ticket #345) — label + select side by side, so it sits
+       on the action row like a button rather than stacking above it. */
+    & .detail-state-set {
+      display: flex;
+      align-items: center;
+      gap: var(--space-2);
+      font-size: var(--fs-base);
+      color: var(--color-text-muted);
+
+      & select {
+        font-family: inherit;
+        font-size: var(--fs-base);
+        padding: var(--space-2) var(--space-3);
+        border: 1px solid var(--color-border);
+        border-radius: var(--radius-sm);
+        background: var(--color-bg-elevated);
+        color: var(--color-text);
+      }
+    }
+
+    & button.danger {
+      border-color: var(--color-error-text);
+      color: var(--color-error-text);
+    }
   }
 
   /* ── forms (create / edit / comment) ────────────────────── */

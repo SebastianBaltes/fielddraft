@@ -40,6 +40,61 @@ export function ticketRef(number: number): string {
   return `#${number}`;
 }
 
+/** Every state of the §7.2 machine, in flow order. */
+export const TICKET_STATES: TicketState[] = [
+  "triage",
+  "needs_info",
+  "accepted",
+  "in_progress",
+  "deploying",
+  "resolved",
+  "closed",
+  "declined",
+  "backlog",
+  "rejected_spam",
+  "rejected_malicious",
+];
+
+/**
+ * The states the viewer may move this ticket to — what the detail panel's state
+ * picker offers (ticket #345). Mirrors the server (`userMaySetState` +
+ * `handlePatchTicket`), which stays the authority:
+ *
+ *   · ADMIN — every state, directly, no matter where the ticket stands. The
+ *     transition graph guards the automated user→PO→dev flow, not the operator
+ *     driving it, and a direct set is the only way out of a dead-end state.
+ *   · AUTHOR — the safe subset (ticket 066230d9): close, park to backlog,
+ *     un-park, reopen a resolved one.
+ *   · anyone else — nothing.
+ *
+ * The current state is never offered (a no-op the server rejects).
+ */
+export function settableStates(
+  current: TicketState,
+  opts: { isAdmin: boolean; isAuthor: boolean },
+): TicketState[] {
+  if (opts.isAdmin) return TICKET_STATES.filter((s) => s !== current);
+  if (!opts.isAuthor) return [];
+  const allowed: TicketState[] = [];
+  // close: from a pre-work or resolved state (not mid-flow, not terminal).
+  if (
+    current === "triage" ||
+    current === "needs_info" ||
+    current === "declined" ||
+    current === "backlog" ||
+    current === "resolved"
+  ) {
+    allowed.push("closed");
+  }
+  // park a not-yet-worked ticket.
+  if (current === "triage" || current === "needs_info") allowed.push("backlog");
+  // un-park, or reopen a closed one → re-triage.
+  if (current === "backlog" || current === "closed") allowed.push("triage");
+  // reopen a resolved one — "the fix didn't stick".
+  if (current === "resolved") allowed.push("in_progress");
+  return TICKET_STATES.filter((s) => allowed.includes(s));
+}
+
 /** Coarse status bucket driving the badge color: open work, parked, done, or
  *  rejected. Used as a `state-<bucket>` modifier class on the badge. */
 export type StateBucket = "open" | "progress" | "backlog" | "done" | "rejected";

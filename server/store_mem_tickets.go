@@ -131,14 +131,14 @@ func (s *memStore) SetTicketCategory(id, category string) *Ticket {
 	return cloneTicket(t)
 }
 
-func (s *memStore) SetTicketState(id string, to TicketState) (*Ticket, error) {
+func (s *memStore) SetTicketState(id string, to TicketState, direct bool) (*Ticket, error) {
 	s.mu.Lock()
 	t, ok := s.tickets[id]
 	if !ok {
 		s.mu.Unlock()
 		return nil, errTicketMissing
 	}
-	audit, err := applyStateChange(t, to, now())
+	audit, err := applyStateChange(t, to, now(), direct)
 	if err != nil {
 		s.mu.Unlock()
 		return nil, err

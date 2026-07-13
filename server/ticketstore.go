@@ -42,7 +42,9 @@ type TicketStore interface {
 	GetTicket(id string) *Ticket // hydrated with comments + artifacts
 	ListTickets(f TicketFilter) []*Ticket
 	UpdateTicket(id, title, body string) *Ticket // author edit of title/body
-	SetTicketState(id string, to TicketState) (*Ticket, error)
+	// SetTicketState moves the ticket. `direct` is the admin override: it skips
+	// the §7.2 transition graph (any known state from any state, ticket #345).
+	SetTicketState(id string, to TicketState, direct bool) (*Ticket, error)
 	SetTicketCategory(id, category string) *Ticket // PO verdict classification (§8.3)
 	SetPOVerdict(id string, v POVerdict) (*Ticket, error)
 	DeleteTicket(id string) bool

@@ -42,7 +42,7 @@ func TestFileStoreOnDiskLayout(t *testing.T) {
 func TestFileStoreTerminalStateMovesToDone(t *testing.T) {
 	fs := newFileStore(t)
 	tk := fs.CreateTicket("author", "spammy", "buy now", "")
-	if _, err := fs.SetTicketState(tk.ID, StateRejectedSpam); err != nil {
+	if _, err := fs.SetTicketState(tk.ID, StateRejectedSpam, false); err != nil {
 		t.Fatalf("reject: %v", err)
 	}
 	if !dirExists(fs.doneDir(tk.ID)) {

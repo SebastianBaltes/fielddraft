@@ -614,7 +614,7 @@ func TestPOQueue(t *testing.T) {
 	}
 
 	// Move id2 to needs_info, then have the user reply → it should re-surface.
-	if _, err := e.tickets.SetTicketState(id2, StateNeedsInfo); err != nil {
+	if _, err := e.tickets.SetTicketState(id2, StateNeedsInfo, false); err != nil {
 		t.Fatalf("to needs_info: %v", err)
 	}
 	resp = e.agentReq(t, "GET", "/api/agent/queue", testPOToken, "", nil)

@@ -591,7 +591,7 @@ func (s *Server) handleAgentState(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	to := TicketState(body.State)
-	if _, err := s.tickets.SetTicketState(id, to); err != nil {
+	if _, err := s.tickets.SetTicketState(id, to, false); err != nil {
 		writeStoreError(w, err)
 		return
 	}
@@ -612,7 +612,7 @@ func (s *Server) handleClaimWorkOrder(w http.ResponseWriter, r *http.Request) {
 	}
 	// Drive the ticket accepted→in_progress (§10.1). If it's already moved on,
 	// keep the claim but don't fail.
-	if _, terr := s.tickets.SetTicketState(ticketID, StateInProgress); terr != nil {
+	if _, terr := s.tickets.SetTicketState(ticketID, StateInProgress, false); terr != nil {
 		logStateNote(ticketID, "claim", terr)
 	}
 	json.NewEncoder(w).Encode(map[string]any{
@@ -665,7 +665,7 @@ func (s *Server) handleCompleteWorkOrder(w http.ResponseWriter, r *http.Request)
 	}
 	// The move was validated above; if a concurrent actor won the race in
 	// between, keep the completion and just log — consistent with claim.
-	if _, terr := s.tickets.SetTicketState(ticketID, target); terr != nil {
+	if _, terr := s.tickets.SetTicketState(ticketID, target, false); terr != nil {
 		logStateNote(ticketID, "complete", terr)
 	}
 	json.NewEncoder(w).Encode(map[string]any{

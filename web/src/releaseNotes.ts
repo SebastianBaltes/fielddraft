@@ -24,6 +24,17 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.580",
+    entries: [
+      {
+        kind: "feat",
+        scope: "tickets",
+        text: "Der Ticket-Zustand lässt sich jetzt direkt setzen: in der Issue-Ansicht steht neben „Edit“ ein Auswahlfeld „Set state“, dazu ein „Delete“-Knopf (mit Rückfrage). Als Admin sind ALLE Zustände wählbar — auch Sprünge, die der Ablauf-Graph nicht als Kante kennt (etwa Triage → Resolved); der Graph hält den automatischen Fluss User → PO → Dev sauber, soll aber den Betreiber nicht fesseln, und nur so kommt ein Ticket aus einer Sackgasse wieder heraus. Der Autor eines Tickets bekommt weiterhin genau sein sicheres Teilset (schließen, in den Backlog parken, entparken, wieder öffnen) — die vier Spezial-Knöpfe dafür sind im Auswahlfeld aufgegangen.",
+        tickets: ["345"],
+      },
+    ],
+  },
+  {
     version: "0.6.579",
     entries: [
       {

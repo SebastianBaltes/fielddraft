@@ -516,12 +516,12 @@ func (s *issuevaultStore) UpdateTicket(id, title, body string) *Ticket {
 	return mapTicket(&iv)
 }
 
-func (s *issuevaultStore) SetTicketState(id string, to TicketState) (*Ticket, error) {
+func (s *issuevaultStore) SetTicketState(id string, to TicketState, direct bool) (*Ticket, error) {
 	cur := s.GetTicket(id)
 	if cur == nil {
 		return nil, errTicketMissing
 	}
-	if err := validateTransition(cur.State, to); err != nil {
+	if err := validateStateChange(cur.State, to, direct); err != nil {
 		return nil, err
 	}
 	patch := map[string]any{
