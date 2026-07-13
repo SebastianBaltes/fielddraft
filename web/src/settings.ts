@@ -205,8 +205,10 @@ export type MeshAlgorithm = "mdc" | "mt";
  *               "always", its "demand" path is missing an invalidate trigger. */
 export type FrameLoopMode = "demand" | "always";
 /** How the analytic B-Rep edge wireframe is drawn:
- *   - "xray":    all edges, never occluded by faces (current default)
- *   - "visible": only edges that are not hidden behind a face
+ *   - "xray":    all edges, never occluded by faces
+ *   - "visible": only edges that are not hidden behind a face (default —
+ *                CAD convention; back-side edges shining through solid
+ *                material read like cracks in the body)
  *   - "none":    don't draw the B-Rep wireframe at all */
 export type BRepEdgeMode = "xray" | "visible" | "none";
 
@@ -422,7 +424,10 @@ export function loadSettings(): SettingsState {
   let theme: ThemeChoice = "light";
   let renderMode: RenderMode = "sdf-deferred";
   let meshAlgorithm: MeshAlgorithm = "mdc";
-  let brepEdgeMode: BRepEdgeMode = "xray";
+  // CAD-Konvention (Onshape/SolidWorks): nur die SICHTBAREN Kanten zeichnen —
+  // Rückseitenkanten, die durch massives Material scheinen, lesen sich wie
+  // Risse im Körper. "xray" bleibt als Modus erhalten (Debug/Durchblick).
+  let brepEdgeMode: BRepEdgeMode = "visible";
   let overlayDepthBias = DEFAULT_OVERLAY_DEPTH_BIAS;
   let frameLoop: FrameLoopMode = "demand";
   let parametricWeave = true;

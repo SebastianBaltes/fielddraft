@@ -463,7 +463,7 @@ describe("loadSettings", () => {
       theme: "light",
       renderMode: "sdf-deferred",
       meshAlgorithm: "mdc",
-      brepEdgeMode: "xray",
+      brepEdgeMode: "visible",
       overlayDepthBias: 2,
       frameLoop: "demand",
       parametricWeave: true,
@@ -487,6 +487,9 @@ describe("loadSettings", () => {
       JSON.stringify({ lengthUnit: "mm", lengthDecimals: "0.12", angleUnit: "rad", angleDecimals: "0.1" }),
     );
     localStorage.setItem("fielddraft.theme", "dark");
+    // Nicht-Default (Default ist "visible") — sonst prüft die Zeile unten nur
+    // den Fallback, nicht das Lesen.
+    localStorage.setItem("fielddraft.brepEdgeMode", "xray");
 
     const s = loadSettings();
     expect(s).toEqual({
