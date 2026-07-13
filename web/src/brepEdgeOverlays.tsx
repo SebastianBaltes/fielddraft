@@ -133,8 +133,8 @@ export function BRepEdgeOverlay({
     }),
   );
 
-  // "visible" mode hides edges occluded by faces, so the line materials must
-  // depth-test. "xray" (default) and "none" keep depthTest off. Depth comes
+  // "visible" mode (the default) hides edges occluded by faces, so the line
+  // materials must depth-test. "xray" and "none" keep depthTest off. Depth comes
   // from the meshes in mesh render mode; the SDF overlays additionally write
   // depth and skip the depth-clear in "visible" mode (see renderOverlayLayer).
   //

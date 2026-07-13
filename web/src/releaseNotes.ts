@@ -24,6 +24,16 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.576",
+    entries: [
+      {
+        kind: "fix",
+        scope: "viewport",
+        text: "B-Rep-Kanten werden standardmäßig nur noch gezeichnet, wo sie sichtbar sind (CAD-Konvention wie in Onshape/SolidWorks). Bisher war „X-Ray“ der Default: Rückseitenkanten schienen durch massives Material hindurch und lasen sich wie Risse im Körper — in der Displace-Abnahme wurden sie sogar als Fehlstellen mitgezählt. Der X-Ray-Modus bleibt im Einstellungsmenü erhalten (Durchblick/Debug); wer ihn schon einmal bewusst gewählt hat, behält seine Einstellung.",
+      },
+    ],
+  },
+  {
     version: "0.6.574",
     entries: [
       {
