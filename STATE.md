@@ -40,13 +40,36 @@ ist damit sinnlos (< ¼ Periode); der Abnahmefall ist das Demo-Projekt selbst.
 - Test-Infrastruktur in `api/lichen.rs`: `scene_bodies`, `mesh_of`, `measure`,
   `print_report`, Baseline-Runner `zz_gyroid_baseline` (env-steuerbar).
 
+## Messstand (Abnahmefall, Betreiber-Settings, release)
+
+| Stand | open | H(m→s) | H(s→m) | asp p99 | minang |
+|---|---|---|---|---|---|
+| Baseline (v0.6.563) | 397 | 0.010 | 0.080 | 1.78 | 18.6° |
+| + blatt-restr. Kugel (v0.6.564, committed) | **312** | 0.026 | 0.090 | 1.78 | 18.6° |
+
+Alle 312 offenen Kanten liegen auf 2 fast-tangentialen Nähten
+(Gyroid∩Zylinder ~232, Marker∩Zylinder 72). Diagnose: Keil-Überfüllung —
+Sizing-Field kollabiert am Knick (lfs→0), Blattabstand < Punktabstand,
+Blätter verschachteln sich. Beleg: minEdgeSpacing 0.3 → 155 offene (aber
+untersampelt, H(s→m) 0.26).
+
 ## Offen / Nächste Schritte
 
-1. Fixture-Validierung von der falschen r=15-Annahme auf das Demo-Projekt
-   umstellen (Ausschnitt-Region proben: Luft UND Material, Marker = Material).
-2. Baseline auf Demo mit Betreiber-Settings messen (± `refine`).
-3. Abnahme-Gate als nicht-ignorierter Test (Schwellen aus Baseline + Theorie).
-4. Iterationsschleife auf Defekten (worst_surface_point zur Lokalisierung).
+1. **LÄUFT (Subagent)**: Schutzkorridor um Ketten (Cheng–Dey–Ramos):
+   R(q)=β·s(q)/max(sinθ,0.05) aus Keilwinkel der Ketten-Normalen; Wachstum/
+   Refinement/Waisen-Streuung meiden Korridor; ggf. Ketten-Vergröberung an
+   tangentialen Abschnitten.
+2. Abnahme-Gate als nicht-ignorierter Test (Schwellen: open=0, nm=0, orient=0,
+   H(m→s)≤0.05, H(s→m)≤0.15, asp p99≤4, minang≥10°, Dreieckszahl-Band).
+3. Volle Suite + REPORT.md.
+
+## Verworfene Ansätze (vermessen — nicht wiederholen)
+
+- Host-only-Kontamination: 312→384. Gabriel-Fallback: →478.
+- faceGuard:true: wirkungslos (386). minEdgeSpacing global: untersampelt.
+- WERKZEUG-FALLE: Optionen-Merge per String-Anhängen → Duplikat-Key →
+  serde-Fehler → Default-Optionen (Phantom-Messungen). Baseline-Runner
+  merged jetzt echtes JSON.
 
 ## Bekannter Kontext aus Vorarbeit (Commits 9dc3883 u. davor)
 
