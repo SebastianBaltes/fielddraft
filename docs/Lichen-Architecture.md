@@ -5,7 +5,7 @@ Konzept-Dokument beschreibt das *Soll* (die Spezifikation der direkten
 3D-Meshing-Pipeline); dieses Dokument beschreibt das *Ist*: wie Lichen
 tatsächlich gebaut ist, welche Konzept-Teile sich bewährt haben, welche
 ersetzt wurden, was wir dabei gelernt haben — und wo die offenen Baustellen
-liegen. Stand: 2026-07-12 (v0.6.545).
+liegen. Stand: 2026-07-13 (v0.6.567).
 
 ---
 
@@ -323,6 +323,56 @@ Pro Fläche, chartlos:
   Streifen, den die Chart-Hülle mit langen degenerierten Welt-Sehnen
   überbrückte (Betreiber-Bild „Spalt in der Kugel"). → u-Überdeckungs-
   Wächter (keine Lücke ≥ 5% der Periode → `None` → chartloser Fallback).
+* **I-16 Schutzkorridor um Ketten (protecting balls, Cheng–Dey–Ramos):**
+  voll implementiert (Keilwinkel→Radius, Ring-Deckel, Lipschitz-Glättung,
+  Gates in Wachstum/Rebalance/Füllung/Refinement/Streuung, Hidden-Vertex-
+  Variante) und in **13 Konfigurationen** vermessen — nie besser als 287
+  offene Kanten (Baseline 312); ab β≥2 brechen H(m→s) und min-Winkel
+  (Fächer slivern über den Korridor). Begründung des Scheiterns: die realen
+  Keilwinkel der Abnahme-Nähte sind **sinθ ≥ 0.274** (16–24°) — die
+  Blattverschachtelung, gegen die der Korridor schützt, ist ein
+  RANDphänomen; die Hauptblocker waren Naht-Band-Einfärbung + Normalen-
+  Guard (§8o). Bleibt als Default-aus-Werkzeug erhalten
+  (`LICHEN_PROTECT_MODE=grow|hide` + β/floor/ringdiv/lip per Env).
+* **I-17 Host-only-Kontamination** (Zeugen-Kugel zählt nur Punkte der
+  Wuchs-Fläche): 312 → 384 (mit Korridor 351/303) — die dann voneinander
+  unabhängigen Blatt-Triangulierungen verheddern sich im überfüllten
+  Naht-Keil. Die Restriktion muss symmetrisch über GETEILTE Regionen laufen
+  (§8o), nicht einseitig über den Host.
+* **I-18 Gabriel-Fallback bei Zeugen-Newton-Versagen:** → 478 — Kugeln
+  ohne Flächen-Zentrum lassen falsche Dreiecke zu. Newton-Versagen ist ein
+  Signal (SDF-Knick), kein Anlass, das Prädikat zu lockern.
+* **I-19 Hidden-Vertex (gewichtete Zeugen-Kugel)** zusätzlich zum
+  v0.6.565-Stand: 21 → 26 — Punkte im Schutzradius komplett zu ignorieren
+  entfernt auch legitime Zeugen.
+* **I-20 Segment-Segment-Ketten-Verschweißung** (Zwickel-Schnittpunkt-
+  Hypothese): voll implementiert (Ericson-Closest-Pair, Schnitt-Vertex in
+  beide Ketten), 4 Radien (1–3·weld_r) vermessen — es existieren **keine
+  Off-Vertex-Quasi-Schnitte**; die nächsten Annäherungen fremder Ketten
+  liegen immer an Segment-ENDEN jenseits weld_r, die wenigen End-Snap-
+  Einfügungen verschlechterten (21→23 bzw. 10→11). Die echten Blocker waren
+  Projektions-Falsch-Positive des Kreuzungstests (§8o). Code entfernt; der
+  Phasen-Split der Ketten-Erzeugung (bauen → binden) bleibt als
+  Ansatzstelle.
+* **I-21 DL-70-Displace-Normalisierung für den MESHER:** `(d−disp)/L`
+  (L≈1,8) in ALLEN Repräsentationen implementiert und vermessen — der
+  Mesher wird SCHLECHTER (Displace-Kugel 813 → 1634 offene Kanten: das
+  Sizing verfeinert auf die kleineren |f|-Werte, das Crowding verschärft
+  sich). Für den **Renderer** bleibt die Normalisierung richtig (Marching
+  übersteuert sonst bis Faktor L) — Befund als Kommentar in `bvh.rs`,
+  eigene Arbeitslinie (§8r). Behalten wurde nur der fidget_bridge-Fix
+  (falsche Achsfaktoren: sin·sin·sin ohne 1.3/0.7 war eine ANDERE Fläche).
+* **I-22 Globales `minEdgeSpacing`-Anheben** (0.3 statt 0.1): 155 offene
+  Kanten, aber **untersampelt** (H(s→m) 0,26 > Schwelle 0,15). Der
+  Befund bestätigt die Crowding-Diagnose örtlich (das Sizing-Field
+  kollabiert die Dichte im Naht-Keil), taugt aber nicht als Fix — er kauft
+  Topologie mit Genauigkeit.
+* **I-23 (Werkzeug) Options-Merge per String-Anhängen:** `LICHEN_GY_EXTRA`
+  wurde per String-Konkatenation in das Options-JSON gehängt — ein
+  Duplikat-Key ergibt einen serde-Fehler und der Runner fiel still auf die
+  **Default-Optionen** zurück. Frühere faceGuard/refine-„Messungen" mit
+  überschreibenden Keys waren Phantome. → echtes JSON-Merge im
+  Baseline-Runner; Messwerkzeuge müssen sich selbst beweisen (§8q).
 
 ## 6. Lessons Learned (Arbeitsweise)
 
@@ -351,7 +401,7 @@ Pro Fläche, chartlos:
   je das gemessen hat, was sein Name behauptet (verwandt mit „X Löcher
   gegen tris-pro-Fläche gegenprüfen").
 
-## 7. Dedizierte Tests (Stand v0.6.543)
+## 7. Dedizierte Tests (Stand v0.6.567)
 
 Aktive Gates (`crates/kernel/src/api/lichen.rs`):
 
@@ -369,16 +419,28 @@ Aktive Gates (`crates/kernel/src/api/lichen.rs`):
 * `growth_refines_below_h_on_small_curved_part`, `lichen_gyroid_seam_rings_run_clean`,
   Format-/Normalen-Tests.
 * Überdeckungs-Invariante `u_a+u_b ≥ d` als Assertion in jeder Testfahrt.
+* **Abnahme-Gate** (seit v0.6.566): `gyroid_cutout_acceptance_four_metrics`
+  — das Betreiber-Projekt mit Betreiber-Settings besteht alle vier
+  Metriken (Details §8q).
+* **Adversarial-Gates** (seit v0.6.567):
+  `lichen_adv_coplanar_union_watertight`,
+  `lichen_adv_graze_demo_alt_watertight`,
+  `lichen_adv_thin_tube_watertight` (χ=0-Torus-Anker).
 
 `#[ignore]`-WIP (die ehrliche Watertight-Front):
-`lichen_general_tri_box_is_watertight`, `lichen_demo_project_is_watertight`.
+`lichen_general_tri_box_is_watertight`, `lichen_demo_project_is_watertight`
+(Default-Settings h=10; die Betreiber-Settings-Fassung ist seit v0.6.566
+wasserdicht und als Abnahme-Gate aktiv), `lichen_adv_warp_bodies_wip`,
+`lichen_adv_tangent_kiss_wip` (harte Grenzen mit präziser Diagnose, §8r).
 
 ## 8. Offene Punkte
 
 *(Erledigt am 2026-07-12: Luft-Punkte im Wachstum → I-12/v0.6.544;
 Kugel-Meridian-Spalt + „Gyroid ohne Mesh bei General-tri-aus" →
 I-13/I-14/I-15 + Chartlos-Fallback/v0.6.545. Demo-Messstand: chart 15,
-general 36 offene Kanten, beide 0 nm / 0 degen / 0 orient.)*
+general 36 offene Kanten, beide 0 nm / 0 degen / 0 orient.
+Erledigt am 2026-07-13: die Naht-Front — der Abnahmefall ist wasserdicht,
+397 → 0 offene Kanten, χ=2 → §8o/§8p; aktueller Front-Stand → §8r.)*
 
 1. **Stern-Projektions-Entartung auf stark gekrümmten Flächen** (Betreiber-
    Repro curv 1°/minEdge 0.1): Innen-Sterne der r=1-Kugel haben Horizonte
@@ -388,10 +450,13 @@ general 36 offene Kanten, beide 0 nm / 0 degen / 0 orient.)*
    auf der r=1-Kugel bei curv=1° Punkte mit space≈2 statt α/κ≈0.017?**
    (space-Kette prüfen; das früher beobachtete leere ~1-mm-Band war
    vermutlich I-14 — nach dem Fix neu vermessen.)
-2. **Rest-Löcher an Dichte-Übergängen/Gyroid-Nähten:** chart 15 / general
-   36 offene Kanten auf dem Demo (`lichen_demo_project_is_watertight`
-   bleibt #[ignore]-WIP). Umkugel-Bedingung auf dem Gyroid vielerorts
-   verletzt (Betreiber-Bild 5) — vermutlich Punktverteilung, s. R-A1/R-A3.
+2. **Rest-Löcher an Dichte-Übergängen/Gyroid-Nähten: GESCHLOSSEN
+   2026-07-13** für den globalen Walk mit Betreiber-Settings (397 → 0,
+   §8o/§8p, aktives Abnahme-Gate §8q). Die hier vermutete
+   Punktverteilungs-Ursache (R-A1/R-A3) war falsch: die Wurzel lag in
+   der Zeugen-Kugel-AKZEPTANZ am Naht-Keil. Der Default-Settings-
+   Chart/General-Lauf (`lichen_demo_project_is_watertight`) bleibt
+   #[ignore]-WIP.
 3. **Torus (doppelt periodisch)** hat kein Chart — läuft jetzt über den
    General-Fallback, aber ohne dediziertes Gate.
 4. **Wachstums-Überdichte / CDT-Verwurf randnaher Partikel** (Chart-Pfad):
@@ -507,6 +572,15 @@ verbleibende Front ist damit sauber isoliert: **tangentiale Kontakte**
 kein ε die Bedingung mehr erfüllen kann. Dafür ist der verallgemeinerte
 **Mikro-Feature-Kollaps** die theoretisch richtige Antwort (Sub-Resolution-
 Topologie kollabieren statt abtasten), nicht mehr Dichte.
+
+*Nachtrag 2026-07-13: Die „Naht-Schlitz"-Diagnose ist für den Abnahmefall
+präzisiert und die Front GESCHLOSSEN. Die Empirie (`zz_gyroid_brep_edges`)
+widerlegte die starke Form der Ketten-Hypothese: der Seed-Weaver liefert dem
+Demo-Body 16 Kanten inkl. Gyroid∩Zylinder (977 Samples) — alle Nähte HABEN
+Ketten und speisen Pflichtpunkte (flag 2) ein. Der Defekt lag nicht in der
+Flächen-Zerlegung, sondern in der Zeugen-Kugel-AKZEPTANZ am fast-tangentialen
+Naht-Keil → §8o. Der Regionen-Verschmelzungs-Mechanismus (§8n) bleibt das
+Sicherheitsnetz für wirklich gedroppte Nähte.*
 
 ## 8d. Kollaps-Hypothese widerlegt, Feature-Protection, Walk-Grenze (v0.6.550)
 
@@ -747,6 +821,11 @@ globalen Ziel-Kantenlänge (0,1·h = 1 mm bei h = 10) und war damit auf feinen
 Features blind — eine Gyroid-Wand ist selbst nur 1 mm dick. Jetzt zweistufig:
 grob schätzen, Radius ableiten, mit daran gekoppeltem Fenster nachmessen.
 
+*Nachtrag 2026-07-13: „irreduzibel" gilt nur für EXAKT tangentiale Kontakte
+(Blattabstand 0). Die fast-tangentialen Nähte des Abnahmefalls haben reale
+Keilwinkel sinθ ≥ 0.274 — dort war nicht die Abtastung, sondern die
+Akzeptanz der Engpass, und die Front ist geschlossen → §8o.*
+
 ## 8j. Der Keil: warum Strahl-Marsch die lfs nicht messen kann (v0.6.556)
 
 **Befund 16 — der äußere Reach war blind wie der innere.** Die lfs-Bedingung
@@ -879,6 +958,11 @@ Und die verbleibende Front ist keine Lücke im Programm mehr, sondern seine
 keine endliche gültige Abtastung. Die Antwort dort ist der **Kollaps der
 Sub-Resolution-Topologie** — die einzige verbliebene Aufgabe.
 
+*Nachtrag 2026-07-13: „einzige verbliebene Aufgabe" war zu pauschal. Die
+fast-tangentialen Nähte (der ganze Abnahmefall) sind KEINE lfs→0-Fälle —
+sie scheiterten an der Akzeptanz und sind ohne Kollaps geschlossen (§8o/§8p).
+Die lfs→0-Grenze bleibt nur für exakt tangentiale Küsse real (§8r).*
+
 ## 8m. Flächen-Einfärbung: das topologische Kriterium (v0.6.559)
 
 **Betreiber-Idee:** Punkte mit einer Flächen-ID einfärben (bis an die
@@ -968,6 +1052,241 @@ ersetzt:**
 | **Flächen-Guard** | topologisch, regionen-korrekt — sieht, was Normalen nicht sehen |
 | Sichtlinie/Zentroid | 20 Blockaden — nächster Kandidat für dieselbe Prüfung |
 | Ketten-Kreuzung | 36 Blockaden |
+
+*Nachtrag 2026-07-13: Der Stand hat sich verschoben — die
+Regionen-Einfärbung ist wichtiger geworden, der Guard selbst unwichtiger.
+(a) Als DREIECKS-Gate ist `faceGuard` auf den Nähten wirkungslos (386
+offene Kanten, korrekt gemessen erst nach dem JSON-Merge-Fix, I-23 —
+frühere Guard-Messungen waren teils Phantome) und bleibt opt-in. (b) Die
+dahinterliegende Infrastruktur (Einfärbung + Union-Find-Regionen +
+Naht-Band) läuft dagegen IMMER und trägt seit v0.6.564 die
+blatt-restringierte Zeugen-Kugel und das Kreuzungs-Veto (§8o) — das
+topologische Kriterium hat gewonnen, nur an anderer Stelle: im Prädikat
+statt als Dreiecks-Filter. (c) Das Naht-Band wurde von 25° auf 10°
+verengt (mit 25° trug jeder nahtnahe Punkt beide Regionen — die
+Restriktion war blind; reale Keilwinkel 16–24°). (d) Die
+Regionen-Verschmelzung wurde in v0.6.567 repariert: Flächen mit
+ANTIPARALLELEN Normalen nahe Punkte (ndot < −0,7) verschmelzen nie
+(Rücken-an-Rücken-Blätter sind genau das, was die Restriktion trennen
+muss), und der Berühr-Radius ist 1,5·min(space_i, space_j) statt nur
+space_i (der grobe Streu-Seed einer Orphan-Fläche verschmolz sonst alle
+Flächen in 7,5 mm Umkreis). Punkt-Kuss-Fall: 59 → 33 offene Kanten.*
+
+## 8o. Der Naht-Keil: fast-tangentiale Verschneidungen (v0.6.564–566)
+
+Die Forschungssession 2026-07-13 hat die Naht-Front geschlossen: der
+**Abnahmefall** (das Betreiber-Projekt 7d9701…, byte-gleich mit
+`demo_project_kernel()`, mit den Betreiber-Settings — curvAngleDeg 2,
+lfsFactor 0.1, sizingField, accept witness) ging von **397 offenen Kanten
+auf 0** (χ=2, konsistent orientiert, deterministisch, robust bei h=6/10/14).
+Hausdorff/Aspect waren schon in der Baseline gut (H(m→s) 0,010 mm) — die
+EINE scheiternde Metrik war Manifoldness, und `refine:true` war ein No-op
+(identisch 397): kein Dichte-, sondern ein Akzeptanz-Problem.
+
+### Die Kausalkette
+
+Alle 397 offenen Kanten lagen auf **fast-tangentialen Zwei-Flächen-
+Schnittkurven** (Forensik `zz_gyroid_open_edge_clusters`: 258 Gyroid∩
+Zylinder, 72 Marker∩Zylinder, ~40 Box∩Gyroid, Rest Mikro-Löcher). Die
+naheliegende Hypothese „keine Ketten für diese Nähte" wurde **widerlegt**
+(`zz_gyroid_brep_edges`): alle Nähte haben Ketten und Pflichtpunkte. Die
+`empty_why`-Instrumentierung (Diagnose-Zwilling von `empty` in
+`lichen_tri.rs`) fand die Wurzel in der Zeugen-Kugel-Akzeptanz:
+
+* Im Naht-Keil unterschreitet der **Blattabstand (~0,04 mm) den
+  Punktabstand (~0,1 mm)** — jede Zeugen-Kugel enthält Gegenblatt-Punkte,
+  beide Blätter blockieren sich **wechselseitig**. EINE Seite der Naht
+  vernäht, die andere scheitert (106 offene Ketten-Segmente + 123
+  Flächenpunkt-Risse parallel zur Naht).
+* Der **Normalen-Guard ist hier prinzipiell blind**: tangential sich
+  nähernde Blätter haben ÄHNLICHE Normalen (die §8m-These, jetzt am
+  Abnahmefall bestätigt). Daneben scheitert der Zeugen-Newton an
+  Ketten-Slivern (degeneriert, unkritisch).
+
+### Die vier Fix-Schichten (jede einzeln vermessen)
+
+1. **Blatt-restringierte Zeugen-Kugel** (v0.6.564, `sphere_empty`/
+   `tri_regions` in `lichen_tri.rs`): die Leere-Prüfung zählt nur Punkte,
+   die eine **B-Rep-REGION mit dem Dreieck teilen** — restricted Delaunay
+   je glattem Patch (Cheng–Dey–Levine). Regionen = Flächen ∪ Union-Find
+   (§8n-Nachtrag); Einfärbung läuft immer, der Flächen-Guard als
+   Dreiecks-Gate bleibt opt-in. **397 → 312**, ALLE Mikro-Löcher zu
+   (15 → 4 Cluster), 33/33 Gates unverändert grün.
+2. **Naht-Band 10°** (v0.6.565): die 25°-Tangential-Schwelle der
+   Zweitzuordnung machte die Restriktion **blind** — jeder nahtnahe Punkt
+   trug beide Regionen („+0 fremdblatt-ignoriert" in der Forensik), denn
+   die realen Keilwinkel sind 16–24°. **312 → 283** (H(m→s) 0,026 → 0,012).
+3. **Normalen-Guard-Ausnahme am Zwickel** (v0.6.565): 243/283 offene
+   Kanten waren voll gültige Dreiecke, die NUR der 90°-Guard blockte — am
+   spitz zulaufenden Gyroid∩Zylinder-Zwickel muss sich das Netz legitim
+   um mehr als 90° um die Spitze wickeln. Die Ausnahme gilt nur bei
+   **strikt auf der Fläche liegender Sehne** (0.25/0.5/0.75-Proben,
+   |f| ≤ 0.15·min-spacing) — das schließt zugleich das θ-skalierte
+   Sichtlinien-Schlupfloch, und die dünne Platte bleibt geschützt
+   (Gegenblatt-Sehnen tauchen ins Material). **283 → 31.**
+4. **Ketten-Weld + Kreuzungs-Veto-Korrekturen** (v0.6.565/566):
+   Kettenpunkte VERSCHIEDENER B-Rep-Kanten in Sub-Resolution-Abstand
+   (0,09 mm am Zwickel) teilen einen Mesh-Vertex — Weld-Radius
+   **1.5·minEdgeSpacing** (vermessen: 1.0→30, 1.5→21, 2.0→29). Die
+   letzten 13 „ketten-kreuzung"-Ablehnungen waren **Projektions-Falsch-
+   Positive**: das Veto projiziert jedes Segment im r_tri-Umkreis in die
+   Dreiecksebene (r_tri = längste Kante ≫ Blattabstand) und traf fremde
+   Nähte, die 0,09–0,14 mm ÜBER der Ebene schweben — kein Schneiden,
+   reine Projektion. Korrekturen: (a) **Blatt-Restriktion auch im Veto**
+   (Kette ohne gemeinsame B-Rep-Region mit dem Dreieck kreuzt nicht;
+   Segment-Region = gemeinsame Regionen seiner Endpunkte, ohne Info
+   konservativ) → 21 → 10; (b) **Ebenen-Abstands-Gate** (Segment ganz auf
+   EINER Ebenenseite und > 0,5·Spacing von der Ebene kann nicht
+   durchstoßen — echte Auf-der-Fläche-Kreuzungen liegen sagitta-nah) für
+   die Fälle, wo die Regionen-Restriktion am Drei-Flächen-Zwickel blind
+   ist; (c) **Ketten-Deckungs-Filter `chain_seg_ok`** (v0.6.567): die
+   globalen Ketten-Segmente wurden aus RING-Nachbarpaaren gebaut — bei
+   „unordered fallback loops" des Weave entstehen **Phantom-Segmente**
+   zwischen nicht-benachbarten Ketten-Enden (gemessen: eine
+   5,6-mm-Diagonale quer über eine ebene Fläche, die jeden Fächer
+   blockte). Jetzt zählen nur Segmente, die konsekutiv auf einer
+   abgetasteten B-Rep-Kanten-Kette liegen — für gesunde Loops beweisbar
+   No-op (Gelenk-Vertizes sind Index-identisch). Koplanare Union:
+   46 → 0.
+
+**Messreihe: 397 → 312 → 21 → 0** (der letzte Schritt inkl. Stitching,
+§8p). Endstand: 5738 pts / 11468 tris, open 0, nm 0, orient 0, **χ=2**,
+H(m→s) 0,021, H(s→m) 0,098 (p95 0,002), asp p99 1,85, minang 14,9°.
+
+Die verworfenen Gegenentwürfe derselben Session (Schutzkorridor,
+Host-only, Gabriel-Fallback, Hidden-Vertex, Segment-Segment-Weld,
+globales minEdgeSpacing) stehen als **I-16…I-22** in der Irrwege-Liste —
+zwei davon (Korridor, Segweld) waren theoriegeleitete Großansätze, die
+voll implementiert, vermessen und von der Messung geschlagen wurden.
+
+## 8p. Naht-Stitching-Post-Pass (v0.6.566/567)
+
+Nach den vier Schichten aus §8o blieben **Mikro-Loops** (3–4 Kanten, alle
+Rand-Vertizes Grad 2 — die §8c-Loop-Struktur im Kleinen). Ihre
+Schließ-Dreiecke sind voll orientierbar und liegen strikt auf der Fläche;
+abgelehnt wurden sie NUR vom Zeugen-Kriterium, und zwar aus zwei ehrlich
+benennbaren Gründen: der Zeugen-Newton **konvergiert am SDF-Knick nicht**
+(„kontaminiert: 0 Punkte" — es gibt gar keinen Kontaminator), bzw. die
+Kugel im überfüllten Keil wird nie leer. Das Prädikat ist dort also nicht
+falsch, sondern **nicht auswertbar** — genau dafür existiert der Post-Pass.
+
+Mechanik (`lichen_tri.rs`, nach dem globalen Walk):
+
+* **Kantenbasierter Loop-Walk** über die freien Halbkanten
+  (Halbkanten-Konsum). Die erste Fassung lief über eine
+  Vertex-Nachfolger-Map und ließ an Grad-4-Zwickel-Vertizes ZWEI Loops
+  offen — der Kanten-Walk (Härtung v0.6.567) behebt das.
+* **Nur Mikro-Loops ≤ 5 Kanten** werden geschlossen: 3er direkt, 4er über
+  die erste manifold-freie Diagonale, 5er als Fächer. **Größere Loops
+  bleiben ehrlich offen** (Diagnose-first-Prinzip aus §2.5 — kein
+  CDT-Füller durch die Hintertür).
+* **`valid_geom`-Pflicht je Dreieck** = die VOLLE Gültigkeit außer der
+  Zeugen-Kugel: Degenerations-Guard, Normalen-Guard (inkl.
+  Auf-der-Fläche-Ausnahme), Sichtlinie (θ-toleriert), Ketten-Kreuzungs-
+  Verbot. Das ist der Grund, warum der Pass kein „blindes Stopfen" ist:
+  ausgesetzt wird exakt das eine Kriterium, das an dieser Stelle
+  nachweislich nur an seiner numerischen Auswertbarkeit scheitert.
+  (Ein zusätzliches striktes |f| ≤ 0.15·spacing war vermessen zu streng:
+  legitime Dreiecke WICKELN am Zwickel um die 90°-Box-Kante,
+  Sehnen-Sagitta ~l/(2√2).)
+* **Additiv und manifold-sicher**: der Pass belegt exakt die freien
+  Halbkanten (edge_use-Schutz), entfernt oder verschiebt nichts —
+  metrik-sicher per Konstruktion. **Kill-Switch `LICHEN_STITCH=0`.**
+
+Messung: 10 → 6 (strikte Fassung) → **0** (valid_geom-Fassung) auf dem
+Abnahmefall; der Kanten-Walk der Härtung brachte zusätzlich die dünne
+Gyroid-Wand 10 → 7 und verbesserte nebenbei die WIP-Fälle (Displace
+813 → 662, Twist 927 → 864, Linien-Kuss 452 → 430) bei byte-stabilen
+Kategorie-a-Fällen.
+
+## 8q. Mess- und Abnahme-Werk (v0.6.564–567)
+
+Die Session hat erstmals ein eigenständiges Messfundament gebaut — und es
+hat sich mehrfach selbst bezahlt gemacht.
+
+* **`crates/kernel/src/lichen_metrics.rs`**: beidseitige Hausdorff-Distanz
+  **gegen die echte SDF** — Mesh→Fläche als max |f| über dichte
+  Dreiecks-Stichproben (sieht Ausreißer und Sehnen-Fehler, keine Löcher);
+  Fläche→Mesh über gestreute, per Newton auf f=0 projizierte Punkte in
+  der Sampling-Box (= Ausschnitt-AABB ∪ Marker-AABB + Rand — DIESE
+  Richtung sieht Löcher; kein Referenz-Netz nötig, weil die echte SDF da
+  ist). Dazu Aspect-Statistik; alles deterministisch (fester Seed), damit
+  Messreihen vergleichbar sind.
+* **Fixture-Validierungs-Prinzip**: jede Test-Fixture beweist zuerst ihre
+  eigene Morphologie (Materialanteil, Vorzeichenwechsel entlang Proben),
+  bevor gemessen wird. Das fing **drei falsche Fixtures**: (1) die
+  r=15-Gyroid-Kugel — `Primitive::Gyroid` hat **dimensionsloses
+  thickness** und Periode **2π·cell_size ≈ 62,8 mm** (`sdf_eval.rs`),
+  thickness=1 ergibt 82 % Material statt dünner Wände; ein r=15-Ausschnitt
+  (< ¼ Periode) ist nicht repräsentativ. (2) Der Gyroid-Wandstärke-Irrtum
+  des Härtungs-Agenten (Wand = 2·t·s/√3, Faktor 2). (3) Ein
+  Streif-Naht-Ort mit 0 % Material. Semantik-Notiz: die Feature-Doku sagt
+  „Distance between repeating cells in mm" — stimmt nicht mit der
+  Implementierung überein; eine Änderung bräche bestehende Projekte, also
+  nur dokumentiert.
+* **Abnahme-Gate `gyroid_cutout_acceptance_four_metrics`** (aktiv,
+  `api/lichen.rs`): Betreiber-Projekt + Betreiber-Settings 1:1, vier
+  Metriken — **Manifold** (open=0, nm=0, orient=0, deg=0, comp=1, **χ=2**
+  als Regressions-Anker), **Hausdorff** (m→s ≤ 0,05, s→m ≤ 0,15,
+  p95 ≤ 0,02 mm), **Dreieckszahl** ∈ [7000, 23000], **Formgüte**
+  (asp p99 ≤ 4, minang ≥ 10°). Release ~12 s — der Abnahmefall IST der
+  kleine Ausschnitt, deshalb CI-tauglich.
+* **Adversariale Matrix `zz_adversarial_matrix`** (ignored, Ist-Werte im
+  Test-Doc): 10 Fälle in 4 Klassen (dünne Features, Domain-Warps,
+  degenerierte Boolesche Kontakte, streifende Schnitte), einsortiert in
+  **(a) wasserdicht** — dünne Platte 0,35 mm, dünnes Rohr (χ=0!),
+  koplanare Union, Streif-Naht an ANDEREM Ort; **(b) kleine Defekte** —
+  dünne Gyroid-Wand 7 offene (Zwickel-Loops >5), Punkt-Kuss 33,
+  3,6°-Streifschnitt wasserdicht aber Sliver (minang 5,2°); **(c) harte
+  Grenzen** — Warp-Bodies, exakt tangentialer Kuss (§8r). Drei
+  (a)-Fälle sind **neue aktive Gates**:
+  `lichen_adv_coplanar_union_watertight`,
+  `lichen_adv_graze_demo_alt_watertight` (beweist: die Naht-Mechanik ist
+  nicht auf den Abnahme-Ausschnitt überangepasst) und
+  `lichen_adv_thin_tube_watertight` (χ=0-Torus-Anker).
+* **Forensik-Werkzeuge**: `empty_why` (Diagnose-Zwilling der Zeugen-Kugel:
+  Kontaminatoren vs. Newton-Versagen), Open-Edge-Cluster-/Flag-Forensik,
+  `crossing_seg` (welches Segment vetoit, mit Koordinaten), Ketten-Dumps —
+  plus der **JSON-Merge-Baseline-Runner** (nach I-23: Optionen werden
+  strukturell gemerged, nie als String angehängt).
+
+Die Lehre über allem: **Messwerkzeuge müssen sich selbst beweisen** — ein
+Diagnose-Werkzeug ist Code und kann lügen (§8f), eine Fixture kann die
+falsche Geometrie messen, ein Options-String kann still auf Defaults
+zurückfallen. Validierung der Messmittel VOR der Messung hat in dieser
+Session dreimal Irrläufe verhindert und zweimal Fremd-Fehler gefangen.
+
+## 8r. Offene Fronten (Stand 2026-07-13, v0.6.567)
+
+1. **Warp-Bodies (Twist/Bend/Displace)** — Kategorie (c), Gate
+   `lichen_adv_warp_bodies_wip`: diese Bodies verlassen beide
+   Weave-Scopes, es gibt **kein B-Rep → keine Ketten, keine Regionen**;
+   die Twist-Box reißt an ihren helikalen Kanten. Empfehlung:
+   **feld-basierte Feature-Linien-Extraktion** (Normalen-Diskontinuitäten
+   des SDF) als Ketten-Ersatz. Displace zusätzlich: das
+   Wachstums-Crowding auf den Beulen-Flächen ist **intraface** — Regionen
+   helfen dort prinzipiell nicht.
+2. **Exakt tangentiale Küsse** (Punkt-Kuss Kugel@Platte, Linien-Kuss
+   Zylinder@Box-Wand) — Gate `lichen_adv_tangent_kiss_wip`: Blattabstand
+   0 am Kontakt ist prinzipiell sub-resolution (die echte lfs→0-Grenze,
+   §8k/§8l). Hier ist zuerst das **ehrliche Soll zu definieren** — comp=2
+   beim Punkt-Kuss bzw. sauberer Pinch beim Linien-Kontakt — statt
+   Wasserdichtheit zu erzwingen; außerdem den **Sizing-Kollaps deckeln**
+   (lfs→0 am Kontakt treibt die Laufzeit auf ~200 s).
+3. **Sliver an streifenden Nähten**: der 3,6°-Streifschnitt ist
+   wasserdicht, aber mit minang ~5° — derzeit der Preis der
+   Wasserdichtheit. Kandidat: **anisotropes Remeshing entlang der Naht**
+   als Nachlauf.
+4. **Renderer-Arbeitslinie Displace-Lipschitz** (Befund in `bvh.rs`,
+   I-21): das Displace-Feld ist nicht 1-Lipschitz (L≈1,8), das Marching
+   kann überschreiten. Die Normalisierung ist für den Renderer richtig
+   und für den Mesher nachweislich schädlich — sie muss
+   renderer-verifiziert und renderer-lokal eingeführt werden.
+
+Weiter offen aus §8 (unverändert): Stern-Projektions-Entartung/R-A3-
+Widerspruch (Punkt 1), Torus-Gate (3), Chart-Überdichte (4),
+WASM-Borrow-Wurzel (5), frame-lokale `own_near`-Schwelle (6),
+Export-Perspektive (7).
 
 ## 9. Kritische Reflexion (2026-07-12)
 

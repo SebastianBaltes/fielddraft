@@ -265,3 +265,26 @@ Format: Zeitstempel · Hypothese/Frage · Ergebnis · Entscheidung.
 - WASM neu gebaut (just build-wasm) — der laufende Dev-Server zeigt den
   v0.6.567-Stand im Betreiber-Projekt 7d9701… (WASM gitignored, wie Policy).
 - Session-DoD komplett: Abnahme-Gate aktiv+grün, Suiten grün, REPORT.md final.
+
+## 2026-07-13 11:30 — Fortsetzung: Betreiber-Auftrag (Doku, Merge, offene Punkte)
+
+- origin/main in lichen-research gemerged (86e93fb): Konflikte package.json
+  (ours 0.6.567) + releaseNotes (Peer nutzte 0.6.544/545 parallel — gelöst
+  als EIN Block pro Version mit beiden Entries, dokumentierte Lektion).
+  Dabei ASCII-Quote-Breaker in eigener 567er-Note gefunden+gefixt (b6e8a13,
+  dieselbe Falle wie Peers 537er). Post-Merge grün: 37 Gates, Abnahme-Gate,
+  Web 1694/1694, tsc 0.
+- RESEARCH (read-only Agent) Warp-Bodies: Twist{Box} ist NICHT space-filling
+  → Oktree-Weave läuft, ABER unter Warp werden halfspaces+leaf_map geleert
+  (edge_walker.rs:1731) → alle Nähte = zersplitterte Sample-Fits; zusätzlich
+  nimmt Lichens face_surfs nur SurfaceGeometry::Analytic → keine Regionen,
+  kein Wachstum. Design-Empfehlung:
+  1. Twist/Bend: `WarpedHalfspace`-Field (Dual-Eval sdf_halfspace∘W⁻¹, W⁻¹
+     existiert geschlossen in sdf_dual.rs:383) + SSI-Seeds aus dem
+     UNGEWARPTEN inner-Baum, vorwärts durch W gemappt, trace_edge mit zwei
+     WarpedHalfspace-Feldern; scope_supported_partial öffnen.
+  2. Displace (Wert-Störung, nicht invertierbar): Feld-basierte
+     Feature-Linien (Normalen-Sprung in der Punktwolke + Bisektion +
+     bestehende build_chain/Weld-Bausteine).
+  3. Beide teilen ein warp-bewusstes face_of (W⁻¹-Stufe zwischen placement
+     und transform; für Displace ist argmin am selben Punkt korrekt).
