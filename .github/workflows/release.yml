@@ -26,7 +26,21 @@ jobs:
     name: build + push GHCR images
     runs-on: ubuntu-latest
     steps:
+      # `submodules: recursive` is NOT optional (ticket #347): the server's go.mod
+      # `replace`s the AI-chat proxy to third_party/baseaichat. Without the
+      # submodule the module graph has nothing to resolve and the server image
+      # does not build — the release would push web+mesher and silently no server.
+      #
+      # BaseAIChat is a PRIVATE repo, and the automatic GITHUB_TOKEN is scoped to
+      # THIS repository only — it cannot clone a second private repo. So the
+      # checkout needs SUBMODULE_TOKEN: a fine-grained PAT with `Contents: read`
+      # on BOTH SebastianBaltes/BaseAIChat and .../fielddraft (checkout uses this
+      # token for the main repo too). Without the secret the submodule step fails
+      # with "Authentication failed" — that is a MISSING SECRET, not a broken URL.
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          token: ${{ secrets.SUBMODULE_TOKEN || secrets.GITHUB_TOKEN }}
 
       # The tag without the leading refs/tags/ — e.g. v0.6.339. The deploy side
       # passes this same string as `-e version=<tag>` / TAG=<tag>.
@@ -50,11 +64,14 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # --- server image: static Go binary (context = ./server) --------------
+      # --- server image: static Go binary (context = REPO ROOT) --------------
+      # The context is the repo root, not ./server: the Dockerfile COPYs
+      # third_party/baseaichat/server (the go.mod `replace` target), and a path
+      # outside the build context does not exist inside the builder.
       - name: Build + push server image
         uses: docker/build-push-action@v6
         with:
-          context: ./server
+          context: .
           file: server/Dockerfile
           push: true
           tags: |
