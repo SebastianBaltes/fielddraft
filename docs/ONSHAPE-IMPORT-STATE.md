@@ -316,6 +316,58 @@ das ganze Constraint verwarf.
   Ursprungsachse); FieldDrafts `symmetric` braucht eine Achsen-ENTITY im
   Sketch, die es dafür nicht gibt.
 
+## Bauplan: tangentiale Nähte weben (der Blocker)
+
+Analyse abgeschlossen, Umsetzung wartet auf freies Revier im `seed_weaver`
+(Nachbaragent `fielddraft-a` baut dort gerade Root-Displace-Ketten). Die
+2D-Vorarbeit (`same_carrier` + `tangential_group_breaks`) liegt als
+`git stash@{0}` bereit.
+
+### Warum SSI das prinzipiell nicht kann
+
+Beide SSI-Pfade (`coaxial_revolution` und `scan_components`) finden
+Schnittkurven über VORZEICHENWECHSEL. Eine tangentiale Berührung ist eine
+DOPPELTE Nullstelle ohne Vorzeichenwechsel — sie wird nicht gefunden, egal wie
+fein man abtastet. Und selbst mit Seed scheitert das Tracing: die
+SSI-Continuation löst ein Newton-System aus beiden Gradienten, die bei
+Tangentialität parallel sind (singulär). Konsequent dazu verwirft das
+Witness-Gate im `seed_weaver` Ecken, deren drei Normalen den 3-Raum nicht
+aufspannen — bei einer tangentialen Ecke sind zwei davon parallel.
+
+**Der Weaver ist auf transversale Schnitte gebaut.** Tangentiale Nähte muss man
+ihm GEBEN, nicht suchen lassen.
+
+### Der Weg: konstruktive Naht-Injektion
+
+Die Naht ist exakt bekannt — sie ist das geschweifte Bild des 2D-Knickpunkts:
+
+1. **2D (protocol/sketch2d.rs):** `g1_continuous` trennt zusätzlich an der
+   Trägerflächen-Grenze (`same_carrier`: Linie↔Bogen trennt; kollineare Linien,
+   ko-zirkulare Bögen, Bézier-Ketten verschmelzen weiter).
+   `tangential_group_breaks` liefert genau die Gruppengrenzen, die TANGENTIAL
+   sind (Knick-Grenzen bleiben außen vor — die seedet SSI korrekt).
+2. **Naht-Generator (neue Datei, kollisionsfrei):** pro Sweep-Leaf und
+   Knickpunkt `p`:
+   - Extrude → gerade Naht von `xf·(p, −h)` nach `xf·(p, +h)`.
+   - Revolve → Kreis mit Radius `p.x` auf Höhe `p.y` (Pol-Punkte mit `r≈0`
+     überspringen).
+   - Shell-Innenwände → derselbe Knickpunkt, um die Wandstärke entlang der
+     Innennormale versetzt.
+   Dazu die Ecken (Naht-Endpunkte am Cap) als KONSTRUKTIVE Witnesses — sie
+   müssen am Rang-Gate vorbei, weil sie exakt bekannt sind.
+3. **Injektion in `seed_weaver`:** die Naht als synthetischen `EdgeRecord`
+   einspeisen, BEVOR die Nachbearbeitung läuft. Damit erbt sie Aktivitäts-
+   Trimmung und Ecken-Split — sonst ragt sie in weggeschnittene Bereiche
+   (die Kabelbox schneidet den Grundkörper mehrfach).
+
+### Nebengewinn
+
+Danach werden abgerundete Rechtecke und Slots ANALYTISCH gewoben (8 Flächen
+statt eines tessellierten Blobs) — `lift_path_group` liftet homogene Gruppen
+ohnehin, ihm fehlten bisher nur die homogenen Gruppen. Nachbaragent
+`fielddraft-a` meldet außerdem Bedarf: seine offenen Lichen-Kuss-Fälle
+(Punkt-/Linien-Kontakt) bekämen mit diesen Nähten vermittelnde Ketten.
+
 ## Nächste Schritte (empfohlene Reihenfolge)
 
 1. **Tangentiale Nähte weben** (der Blocker, eigenes Projekt): Trägerflächen-
