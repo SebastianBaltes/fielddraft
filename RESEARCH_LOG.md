@@ -90,3 +90,23 @@ Format: Zeitstempel · Hypothese/Frage · Ergebnis · Entscheidung.
   SCHUTZKORRIDOR um Ketten (Cheng–Dey–Ramos protecting balls): keine
   Flächenpunkte, wo Blattabstand < Punktabstand; Korridor-Breite aus
   Keilwinkel der beiden Ketten-Normalen.
+
+## 2026-07-13 04:50 — Ideen-Agent-Review des Korridor-Plans
+
+- Web-Suite grün (1679/1679), REPORT.md-Gerüst angelegt.
+- Ideen-Agent (read-only) bestätigt Diagnose, warnt vor drei Korridor-Fallen:
+  (1) Lücken-Füllung (lichen.rs ~1054+, #895) füllt den Korridor wieder auf —
+  muss gaten; (2) Marker∩Zylinder ist geschlossener Mikro-Ring r≈1 — Korridor
+  mit sinθ-Klemme 0.05 (R≈2 mm) verschluckt die ganze Kappe; (3) R-Sprünge an
+  der sinθ-Klemmgrenze = Dichtesprung-Defektquelle → R längs Kette glätten.
+- Bessere Hebel laut Review (an Implementierungs-Agent weitergegeben):
+  1. GEWICHTETE Zeugen-Kugel / hidden vertices (power distance, Cheng–Dey–
+     Ramos): Punkte im Schutzradius w_q eines Kettenpunkts werden im Walk
+     komplett ignoriert (weder Kandidat noch Kontaminator) — Korridor am
+     Prädikat statt im Wachstum: kein Refill, kein Dichtesprung im Wachstum.
+  2. NAHT-SCHLITZ-STITCHING als deterministischer Post-Pass: offene Ketten-
+     Kanten haben genau eine belegte Halbkante (§8c: Grad-2-Loops); dritten
+     Punkt auf dem Gegenblatt suchen, Sliver verwerfen, crosses_chain achten.
+     Nur additiv → metrik-sicher. Kandidat für den Rest nach Prädikat-Fix.
+- Metrik-Risiken: Korridor gefährdet H(s→m)+Aspect (Untersampling/Randsprung),
+  Snap-auf-Kette gefährdet H, Stitching nur Sliver-Risiko, weighted ~neutral.
