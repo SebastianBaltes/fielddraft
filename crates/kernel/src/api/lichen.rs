@@ -2392,6 +2392,81 @@ impl Kernel {
                     }
                     let _ = rounds;
                     let mut t = res.tris;
+                    // ── SLIVER-REPAIR (§8r Punkt 3): Ketten-Fächer an
+                    // streifenden Nähten gradieren (Rivara-Split +
+                    // tangentiales Glätten mit max-min-Wächter +
+                    // Lawson-Flips; `lichen_tri::sliver_repair`). Aktiviert
+                    // sich NUR bei Dreiecken < 12° — Netze ohne Sliver
+                    // bleiben byte-identisch (Abnahmefall: minang 14,9°).
+                    // Kill-Switch LICHEN_SLIVER=0.
+                    let sliver_on =
+                        std::env::var("LICHEN_SLIVER").map(|v| v != "0").unwrap_or(true);
+                    let sliver_deg: f32 = std::env::var("LICHEN_SLIVER_DEG")
+                        .ok()
+                        .and_then(|v| v.parse().ok())
+                        .unwrap_or(12.0);
+                    if sliver_on && !t.is_empty() {
+                        let mut fixed: Vec<bool> =
+                            all.iter().map(|lp| lp.flag > 1.5).collect();
+                        for &(a, b) in &global_chain_edges {
+                            fixed[a as usize] = true;
+                            fixed[b as usize] = true;
+                        }
+                        let n0 = positions.len();
+                        let stats = crate::lichen_tri::sliver_repair(
+                            &mut positions,
+                            &mut spacings,
+                            &mut face_sets,
+                            &mut fixed,
+                            &mut t,
+                            &global_chain_edges,
+                            sliver_deg,
+                            &fg,
+                            &|p_old, p_new| face_of(p_new) == face_of(p_old),
+                        );
+                        if stats.splits + stats.moves + stats.flips > 0 {
+                            // `all`/point_faces mit den verschobenen und neuen
+                            // Punkten synchron halten (pack liest `all`).
+                            for i in 0..n0 {
+                                if positions[i] != all[i].p {
+                                    let p = positions[i];
+                                    let n = lichen::unit(lichen::robust_grad(p, &fg));
+                                    all[i].p = p;
+                                    all[i].sdf = fg(p).0;
+                                    all[i].n = n;
+                                    for e in point_faces[i].iter_mut() {
+                                        e.1 = n;
+                                    }
+                                }
+                            }
+                            for i in n0..positions.len() {
+                                let p = positions[i];
+                                let n = lichen::unit(lichen::robust_grad(p, &fg));
+                                let sp = spacings[i];
+                                all.push(LPoint {
+                                    p,
+                                    sdf: fg(p).0,
+                                    n,
+                                    u: sp,
+                                    space: sp,
+                                    flag: 1.0,
+                                });
+                                point_faces
+                                    .push(face_of(p).map(|gf| vec![(gf, n)]).unwrap_or_default());
+                                local_pos.push([0.0; 3]);
+                            }
+                            if std::env::var("LICHEN_SLIVER_STATS").is_ok() {
+                                eprintln!(
+                                    "SLIVER-REPAIR: {} Splits, {} Moves, {} Flips | minang {:.1}° → {:.1}°",
+                                    stats.splits,
+                                    stats.moves,
+                                    stats.flips,
+                                    stats.before_min_deg,
+                                    stats.after_min_deg
+                                );
+                            }
+                        }
+                    }
                     lichen::orient_consistent(&all, &mut t);
                     if res.hole_edges + res.nonmanifold_edges > 0 {
                         eprintln!(
@@ -5534,9 +5609,10 @@ mod tests {
     /// `cargo test -p fielddraft-kernel --release zz_adversarial_matrix -- --ignored --nocapture`
     /// Einzelfall: `LICHEN_ADV=thin_tube …`
     ///
-    /// IST-STAND 2026-07-13 (release, nach Härtung — Ketten-Deckungs-Filter,
-    /// Regionen-Orientierungs-Gate, Sub-Resolution-Berührradius,
-    /// Kanten-Walk-Stitch mit 5er-Fächer):
+    /// IST-STAND 2026-07-13 (release, nach Härtung + Sliver-Repair —
+    /// Ketten-Deckungs-Filter, Regionen-Orientierungs-Gate, Sub-Resolution-
+    /// Berührradius, Kanten-Walk-Stitch mit 5er-Fächer,
+    /// `lichen_tri::sliver_repair` als Default-Post-Pass):
     ///
     /// | Fall                  | Kat | open | χ  | H(m→s) | H(s→m) | p99  | minang | s   |
     /// |-----------------------|-----|------|----|--------|--------|------|--------|-----|
@@ -5544,18 +5620,25 @@ mod tests {
     /// | thin_plate_diff       | a   |    0 |  2 | 0.035  | 0.072  | 1.46 | 26.6°  |  15 |
     /// | thin_tube             | a   |    0 |  0 | 0.001  | 0.001  | 1.37 | 24.2°  |  11 |
     /// | warp_displace_sphere  | a   |    0 |  2 | 0.005  | 0.004  | 1.55 | 22.6°  |  85 |
-    /// | warp_twist_box        | a   |    0 |  2 | 0.048  | 0.043  | 3.31 |  9.0°  |   6 |
-    /// | warp_bend_box         | a   |    0 |  2 | 0.006  | 0.005  | 2.28 | 11.6°  |  13 |
+    /// | warp_twist_box        | a   |    0 |  2 | 0.048  | 0.043  | 3.17 | 12.0°  |   6 |
+    /// | warp_bend_box         | a   |    0 |  2 | 0.006  | 0.005  | 2.22 | 12.5°  |   9 |
     /// | tangent_cyl_box_line  | c   |  430 |−99 | 0.050  | 0.067  | 1.66 | 18.4°  | 200 |
     /// | tangent_sphere_point  | b   |   33 |−17 | 0.023  | 0.032  | 1.76 | 20.4°  |  73 |
-    /// | coplanar_union        | a   |    0 |  2 | 0.043  | 0.011  | 2.58 | 10.4°  |  18 |
+    /// | coplanar_union        | a   |    0 |  2 | 0.043  | 0.011  | 2.58 | 12.2°  |  18 |
     /// | graze_demo_alt        | a   |    0 |  2 | 0.026  | 0.027  | 2.08 | 12.4°  |  12 |
-    /// | graze_sphere_plane    | b   |    0 |  2 | 0.003  | 0.003  | 3.97 |  5.2°  |  12 |
+    /// | graze_sphere_plane    | a   |    0 |  2 | 0.003  | 0.003  | 3.09 | 11.8°  |  12 |
     ///
     /// (a) = Abnahme-Niveau; (b) = kleine Defekte (thin_gyroid: Zwickel-Loops
     /// >5 an Gyroid-Wand∩Box-Kante; sphere_point: Deadlock-Ring um den
-    /// Kusspunkt; graze_sphere_plane: wasserdicht, aber Sliver am 3,6°-Streif-
-    /// schnitt); (c) = harte Brüche, s. WIP-Tests unten.
+    /// Kusspunkt); (c) = harte Brüche, s. WIP-Tests unten.
+    ///
+    /// graze_sphere_plane war Kategorie b (Sliver am 3,6°-Streifschnitt,
+    /// minang 5,2°/p99 3,97): der Sliver-Repair (Rivara-Split + max-min-
+    /// Glätten + Lawson-Flips, s. `lichen_tri::sliver_repair`) hebt ihn auf
+    /// 11,8°/3,09 — Kanten-Flips ALLEIN waren vermessen machtlos (0 von 462
+    /// Sub-12°-Paaren verbesserbar; die Fächer über der dichten Kette sind
+    /// ein Punktverteilungs-, kein Konnektivitätsproblem). Twist/Bend/
+    /// Coplanar profitieren mit (9,0→12,0 / 11,6→12,5 / 10,4→12,2°).
     ///
     /// Twist/Bend seit 2026-07-13 Abnahme-Niveau (Warp-B-Rep: Seed-Weave im
     /// UN-gewarpten Raum + Vorwärts-Warp W, `Field::WarpedAnalytic`-Tracer,
@@ -5587,7 +5670,8 @@ mod tests {
     /// loops"; ohne den Ketten-Deckungs-Filter (chain_seg_ok) erzeugten die
     /// Phantom-Ring-Schlüsse eine 5,6-mm-Diagonal-„Kette" quer über die
     /// Fläche, deren Kreuzungs-Veto 46 offene Kanten hinterließ. Ist-Stand:
-    /// open 0, χ 2, H(m→s) 0.043 / H(s→m) 0.011, p99 2.58, minang 10.4°.
+    /// open 0, χ 2, H(m→s) 0.043 / H(s→m) 0.011, p99 2.58, minang 12.2°
+    /// (10.4° vor dem Sliver-Repair-Post-Pass).
     #[test]
     fn lichen_adv_coplanar_union_watertight() {
         let (r, _) = adv_run(&adv_case("coplanar_union"));
@@ -5627,6 +5711,33 @@ mod tests {
         assert!(r.a.min_angle_deg >= 10.0, "min. Winkel {}°", r.a.min_angle_deg);
     }
 
+    /// AKTIVES GATE (Sliver-Repair, 2026-07-13, §8r Punkt 3): Kugel r=50
+    /// schneidet die Box-Deckfläche unter 3,6° — wasserdicht war der Fall
+    /// schon (v0.6.567), aber mit Slivern entlang der Streifnaht (minang
+    /// 5,2°, p99 3,97): die Naht-KURVE ist kurvatur-getrieben dicht
+    /// abgetastet (curvAngleDeg 2° auf r≈3,16 → 0,1-mm-Schritte), beide
+    /// TRÄGER sind fast eben (Flächenpunkte ~1 mm) — der Dichtesprung
+    /// erzwingt Ketten-Fächer. `lichen_tri::sliver_repair` (Rivara-Split +
+    /// tangentiales max-min-Glätten + Lawson-Flips, default-an) gradiert
+    /// die Fläche in die Kette. Ist-Stand: open 0, χ 2, H(m→s) 0.003 /
+    /// H(s→m) 0.003, p99 3.09, minang 11.8°. Schwellen = Sliver-Ziel
+    /// (minang ≥ 10°, p99 ≤ 4) + Manifold/Hausdorff-Erhalt.
+    #[test]
+    fn lichen_adv_graze_sphere_plane_watertight() {
+        let (r, _) = adv_run(&adv_case("graze_sphere_plane"));
+        print_report("graze_sphere_plane", &r);
+        assert_eq!(r.q.boundary_edges, 0, "wasserdicht: {:?}", r.q);
+        assert_eq!(r.q.nonmanifold_edges, 0, "{:?}", r.q);
+        assert_eq!(r.q.orientation_violations, 0, "{:?}", r.q);
+        assert_eq!(r.q.degenerate_tris, 0, "{:?}", r.q);
+        assert_eq!(r.q.components, 1, "{:?}", r.q);
+        assert_eq!(r.q.euler, 2, "Teller-Körper = Kugel-Topologie: {:?}", r.q);
+        assert!(r.h.mesh_to_surface <= 0.02, "H(m→s)={}", r.h.mesh_to_surface);
+        assert!(r.h.surface_to_mesh <= 0.02, "H(s→m)={}", r.h.surface_to_mesh);
+        assert!(r.a.p99 <= 4.0, "aspect p99={}", r.a.p99);
+        assert!(r.a.min_angle_deg >= 10.0, "min. Winkel {}°", r.a.min_angle_deg);
+    }
+
     /// AKTIVES GATE (adversariale Härtung #3): dünnwandige Röhre (0,35 mm,
     /// Zylinder-Differenz) — Torus-Topologie als Anker (χ=0!): ein einziges
     /// Wand-Durchquerungs-Dreieck oder zugeschmiertes Loch kippt χ.
@@ -5654,9 +5765,10 @@ mod tests {
     /// die warp-bewusste FaceSurf-Kette (face_of/own_dist/Normalen mit
     /// Rück-Warp-Stufe T zwischen placement⁻¹ und transform⁻¹). Vorher:
     /// Twist-Box 864 offene Kanten (χ −11, minang 0,1°), Oktree-Sample-Fit-
-    /// Splitter statt Kanten. Ist-Stand: Twist open 0, χ 2, H 0.048/0.043,
-    /// p99 3.31, minang 9,0°; Bend open 0, χ 2, H 0.006/0.005, p99 2.28,
-    /// minang 11,6°.
+    /// Splitter statt Kanten. Ist-Stand (mit Sliver-Repair-Post-Pass):
+    /// Twist open 0, χ 2, H 0.048/0.043, p99 3.17, minang 12,0° (vorher
+    /// 3.31/9,0°); Bend open 0, χ 2, H 0.006/0.005, p99 2.22, minang 12,5°
+    /// (vorher 2.28/11,6°).
     #[test]
     fn lichen_adv_warp_twist_and_bend_watertight() {
         for (name, h_max, p99_max, minang_min) in [

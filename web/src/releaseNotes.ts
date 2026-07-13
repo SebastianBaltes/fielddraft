@@ -24,6 +24,16 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.573",
+    entries: [
+      {
+        kind: "fix",
+        scope: "mesher",
+        text: "Lichen: Sliver-Reparatur an streifenden Nähten und Ketten-Fächern (Streifschnitt 3,6°: min. Winkel 5,2° → 11,8°, Aspect p99 3,97 → 3,09; Twist-Box 9,0° → 12,0°, Bend und koplanare Vereinigung ebenfalls verbessert). Wurzel per Winkel-Histogramm-Forensik: Sliver sind Ketten-Fächer — 0,1-mm-Ketten-Kante an der Naht-Kurve gegen ~1-mm-Flächenpunkte als Apex, ein intrinsischer Dichtesprung. Neuer Post-Pass nach dem globalen Walk (Default an, Kill-Switch vorhanden): Rivara-Bisektion der längsten Nicht-Ketten-Kante je Sliver (Newton-Mittelpunkt, Separations-Gate gegen Fast-Duplikate — ohne das stallt die Reparatur bei 6,5°), tangentiales Glätten mit striktem max-min-Winkel-Wächter (Ketten und Ecken bleiben fix, Regionsgate, Sagitta-Sehnen-Prüfung), Lawson-Flips (nie über Ketten, Blatt-Restriktion). Wasserdichtheit, Orientierung und Hausdorff bleiben in allen Fällen erhalten; der Gyroid-Abnahmefall ist byte-identisch (Pass dort inaktiv). Kanten-Flips als Erstmaßnahme wurden vermessen und verworfen (0 von 462 Kanten verbesserbar — die Walk-Diagonale ist lokal optimal; erst nach Split und Glätten tragen Flips). Neues aktives Gate für den Streifschnitt.",
+      },
+    ],
+  },
+  {
     version: "0.6.572",
     entries: [
       {

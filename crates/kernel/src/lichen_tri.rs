@@ -1716,6 +1716,571 @@ pub fn triangulate_global_walk(
     }
 }
 
+/// Ergebnis-Statistik des Sliver-Repairs (Forensik/Log).
+pub struct SliverRepairStats {
+    pub splits: usize,
+    pub flips: usize,
+    pub moves: usize,
+    pub before_min_deg: f32,
+    pub after_min_deg: f32,
+}
+
+/// SLIVER-REPAIR (2026-07-13, §8r Punkt 3: Sliver an streifenden Nähten).
+///
+/// Befund (Forensik `LICHEN_SLIVER_STATS`, graze_sphere_plane): die
+/// schlechtesten Dreiecke sind KETTEN-FÄCHER — Basis = Ketten-Kante
+/// (0,1 mm, kurvatur-getrieben: curvAngleDeg 2° auf der Naht-KURVE
+/// r≈3,16), Apex = Flächenpunkt in ~1 mm Höhe (flächen-getrieben: beide
+/// Träger sind fast eben). Der Dichtesprung Kette↔Fläche ist INTRINSISCH
+/// (Kurven-Krümmung ≠ Flächen-Krümmung); reine Kanten-Flips sind dagegen
+/// beweisbar machtlos — vermessen: 0 von 462 Sub-12°-Paaren (graze) bzw.
+/// 0 von 216 (twist) hätten durch einen Flip einen besseren min-Winkel
+/// bekommen (die Diagonale des Walks ist bereits lokal optimal, und die
+/// Alternative über drei fast-kollineare Kettenpunkte ist degeneriert).
+///
+/// Der Repair GRADIERT deshalb die Fläche in die dichte Kette hinein —
+/// die klassische Qualitäts-Schleife „split worst / relax / flip":
+///
+/// 1. **Längste-Kante-Bisektion (Rivara)** der Sliver-Dreiecke: der
+///    Mittelpunkt der längsten Nicht-Ketten-Kante wird per Newton auf
+///    f = 0 projiziert; beide anliegenden Dreiecke werden geteilt
+///    (konform, manifold- und χ-erhaltend: V+1, E+3, F+2). Kein Split
+///    unter 2·lokalem Spacing (Terminierung).
+/// 2. **Tangentiales Glätten mit max-min-Winkel-Wächter**: Umbrella-Ziel
+///    (Nachbar-Zentroid), Verschiebung in die Tangentialebene projiziert,
+///    Newton-Reprojektion auf f = 0; akzeptiert NUR, wenn der schlechteste
+///    Winkel der inzidenten Dreiecke STRIKT wächst (λ-Backtracking
+///    1/0,5/0,25). Ketten-/Eckpunkte (fixed) bleiben unangetastet;
+///    `region_ok` (face_of-Vergleich) hält Punkte auf ihrem Blatt.
+/// 3. **Kanten-Flips** (Lawson, min-Winkel-maximierend): nie über
+///    Ketten-Kanten, Diagonale muss manifold-frei sein, Blatt-Restriktion
+///    über `face_sets`, Sehnen-Check der neuen Diagonale (θ-skalierte
+///    Sagitta wie `valid_geom`).
+///
+/// Der Pass aktiviert sich NUR, wo Dreiecke unter `deg_thresh` liegen —
+/// Netze ohne Sliver (Abnahmefall: minang 14,9°) bleiben byte-identisch.
+/// Positionen bleiben auf f = 0 (Hausdorff-kontrolliert); die Topologie-
+/// Operationen erhalten Geschlossenheit, Orientierung und χ per
+/// Konstruktion. Kill-Switch `LICHEN_SLIVER=0`.
+#[allow(clippy::too_many_arguments)]
+pub fn sliver_repair(
+    points: &mut Vec<[f32; 3]>,
+    spacing: &mut Vec<f32>,
+    face_sets: &mut Vec<Vec<u32>>,
+    fixed: &mut Vec<bool>,
+    tris: &mut Vec<[u32; 3]>,
+    chain_edges: &HashSet<(u32, u32)>,
+    deg_thresh: f32,
+    fg: &dyn Fn([f32; 3]) -> (f32, [f32; 3]),
+    region_ok: &dyn Fn([f32; 3], [f32; 3]) -> bool,
+) -> SliverRepairStats {
+    let thresh = deg_thresh.to_radians();
+    let tri_min_angle = |pts: &[[f32; 3]], a: u32, b: u32, c: u32| -> f32 {
+        let (pa, pb, pc) = (pts[a as usize], pts[b as usize], pts[c as usize]);
+        let ang = |p: [f32; 3], q: [f32; 3], r: [f32; 3]| -> f32 {
+            let u = sub(q, p);
+            let v = sub(r, p);
+            let l = (dot(u, u) * dot(v, v)).sqrt();
+            if l < 1e-20 {
+                return 0.0;
+            }
+            (dot(u, v) / l).clamp(-1.0, 1.0).acos()
+        };
+        ang(pa, pb, pc).min(ang(pb, pc, pa)).min(ang(pc, pa, pb))
+    };
+    let global_min = |pts: &[[f32; 3]], tris: &[[u32; 3]]| -> f32 {
+        tris.iter()
+            .map(|&[a, b, c]| tri_min_angle(pts, a, b, c))
+            .fold(f32::MAX, f32::min)
+    };
+    let mut stats = SliverRepairStats {
+        splits: 0,
+        flips: 0,
+        moves: 0,
+        before_min_deg: global_min(points, tris).to_degrees(),
+        after_min_deg: 0.0,
+    };
+    // Früh raus: kein Sliver → der Pass fasst NICHTS an (Byte-Stabilität).
+    if stats.before_min_deg.to_radians() >= thresh || tris.is_empty() {
+        stats.after_min_deg = stats.before_min_deg;
+        return stats;
+    }
+    // Winkel-Histogramm (2°-Klassen, < 20°) — Forensik vor/nach.
+    let angle_hist = |pts: &[[f32; 3]], tris: &[[u32; 3]]| {
+        let mut h: std::collections::BTreeMap<i32, usize> = Default::default();
+        for &[a, b, c] in tris {
+            let m = tri_min_angle(pts, a, b, c).to_degrees();
+            if m < 20.0 {
+                *h.entry((m / 2.0) as i32 * 2).or_default() += 1;
+            }
+        }
+        h
+    };
+    if std::env::var("LICHEN_SLIVER_STATS").is_ok() {
+        eprintln!("SLIVER-HISTOGRAMM vor: {:?}", angle_hist(points, tris));
+    }
+    // Sehnen-Toleranz wie `valid_geom`: Sagitta aus dem Normalen-Knick.
+    let chord_ok = |pts: &[[f32; 3]], i: u32, j: u32, sp: f32| -> bool {
+        let (pi, pj) = (pts[i as usize], pts[j as usize]);
+        let mid = [
+            (pi[0] + pj[0]) * 0.5,
+            (pi[1] + pj[1]) * 0.5,
+            (pi[2] + pj[2]) * 0.5,
+        ];
+        let d = sub(pj, pi);
+        let dl = dot(d, d).sqrt();
+        let (ni, nj) = (norm(fg(pi).1), norm(fg(pj).1));
+        let theta = dot(ni, nj).clamp(-1.0, 1.0).acos();
+        fg(mid).0.abs() <= (0.3 * dl * theta).max(0.1 * sp)
+    };
+    // Regionen-Verträglichkeit zweier Punkte (leer = keine Info = ok).
+    let regions_share = |face_sets: &[Vec<u32>], a: u32, b: u32| -> bool {
+        let (fa, fb) = (
+            face_sets.get(a as usize).map(Vec::as_slice).unwrap_or(&[]),
+            face_sets.get(b as usize).map(Vec::as_slice).unwrap_or(&[]),
+        );
+        fa.is_empty() || fb.is_empty() || fa.iter().any(|x| fb.contains(x))
+    };
+    for _round in 0..8 {
+        // ── Kanten-Index (jede Runde frisch — billig, deterministisch) ──
+        let mut by_edge: HashMap<(u32, u32), Vec<usize>> = HashMap::new();
+        for (ti, &[a, b, c]) in tris.iter().enumerate() {
+            for (x, y) in [(a, b), (b, c), (c, a)] {
+                by_edge.entry((x.min(y), x.max(y))).or_default().push(ti);
+            }
+        }
+        let sliver_tris: Vec<usize> = (0..tris.len())
+            .filter(|&ti| {
+                let [a, b, c] = tris[ti];
+                tri_min_angle(points, a, b, c) < thresh
+            })
+            .collect();
+        if sliver_tris.is_empty() {
+            break;
+        }
+        // ── 1. RIVARA-SPLITS: längste Nicht-Ketten-Kante jedes Slivers ──
+        let mut split_edges: Vec<(u32, u32)> = Vec::new();
+        for &ti in &sliver_tris {
+            let [a, b, c] = tris[ti];
+            let mut best: Option<(f32, (u32, u32))> = None;
+            for (x, y) in [(a, b), (b, c), (c, a)] {
+                let e = (x.min(y), x.max(y));
+                if chain_edges.contains(&e) {
+                    continue;
+                }
+                let d = sub(points[y as usize], points[x as usize]);
+                let l = dot(d, d).sqrt();
+                // Terminierungs-Floor: nichts unter 2·lokalem Spacing teilen.
+                if l < 2.0 * spacing[x as usize].min(spacing[y as usize]) {
+                    continue;
+                }
+                if best.map(|(bl, _)| l > bl).unwrap_or(true) {
+                    best = Some((l, e));
+                }
+            }
+            if let Some((_, e)) = best {
+                split_edges.push(e);
+            }
+        }
+        split_edges.sort_unstable();
+        split_edges.dedup();
+        let mut splits = 0usize;
+        for e in split_edges {
+            let Some(ts) = by_edge.get(&e) else { continue };
+            if ts.len() != 2 {
+                continue; // Rand/non-manifold — nicht anfassen
+            }
+            let (x, y) = e;
+            // Der Index kann durch frühere Splits stale sein: beide
+            // Dreiecke müssen die Kante NOCH enthalten.
+            let has_e = |t: [u32; 3]| {
+                [(t[0], t[1]), (t[1], t[2]), (t[2], t[0])]
+                    .iter()
+                    .any(|&(p, q)| (p.min(q), p.max(q)) == e)
+            };
+            if !has_e(tris[ts[0]]) || !has_e(tris[ts[1]]) {
+                continue;
+            }
+            if !regions_share(face_sets, x, y) {
+                continue;
+            }
+            let (px, py) = (points[x as usize], points[y as usize]);
+            let mid0 = [
+                (px[0] + py[0]) * 0.5,
+                (px[1] + py[1]) * 0.5,
+                (px[2] + py[2]) * 0.5,
+            ];
+            let m = project_pt(mid0, fg);
+            let d = sub(py, px);
+            let l = dot(d, d).sqrt();
+            // Projektion muss konvergieren und in der Nähe bleiben.
+            if fg(m).0.abs() > 0.02 * l {
+                continue;
+            }
+            let drift = sub(m, mid0);
+            if dot(drift, drift).sqrt() > 0.35 * l {
+                continue;
+            }
+            // SEPARATIONS-GATE (wie im Delaunay-Refinement): kein neuer
+            // Punkt näher als 0,3·l an einem bestehenden — sonst erzeugen
+            // die Mittelpunkte zweier fast-paralleler Fächer-Beine ein
+            // NEUES Sliver-Paar (gemessen: 0,025-mm-Kanten zwischen
+            // Split-Punkten, Stall bei 6,5°).
+            let min_sep = 0.3 * l;
+            let too_close = points.iter().enumerate().any(|(j, q)| {
+                if j == x as usize || j == y as usize {
+                    return false;
+                }
+                let dq = sub(*q, m);
+                dot(dq, dq) < min_sep * min_sep
+            });
+            if too_close {
+                continue;
+            }
+            let (i1, i2) = (ts[0], ts[1]);
+            let mi = points.len() as u32;
+            // Neue Dreiecke dürfen nicht degeneriert sein.
+            let mut pts_new = points.clone();
+            pts_new.push(m);
+            let mut ok = true;
+            for &ti in &[i1, i2] {
+                let t = tris[ti];
+                let ap = if t[0] != x && t[0] != y {
+                    t[0]
+                } else if t[1] != x && t[1] != y {
+                    t[1]
+                } else {
+                    t[2]
+                };
+                for &(p, q) in &[(x, ap), (y, ap)] {
+                    if tri_min_angle(&pts_new, p, q, mi) < 0.5f32.to_radians() {
+                        ok = false;
+                    }
+                }
+            }
+            if !ok {
+                continue;
+            }
+            points.push(m);
+            spacing.push(0.5 * l);
+            // Region = Schnitt der Endpunkt-Regionen (der Mittelpunkt liegt
+            // auf demselben Blatt wie die Kante).
+            let (fx, fy) = (
+                face_sets.get(x as usize).cloned().unwrap_or_default(),
+                face_sets.get(y as usize).cloned().unwrap_or_default(),
+            );
+            let inter: Vec<u32> = if fx.is_empty() {
+                fy
+            } else if fy.is_empty() {
+                fx
+            } else {
+                fx.into_iter().filter(|g| fy.contains(g)).collect()
+            };
+            face_sets.push(inter);
+            fixed.push(false);
+            // Beide anliegenden Dreiecke orientierungserhaltend teilen:
+            // (…,x,y,…) → (…,x,m,…) + (…,m,y,…).
+            for &ti in &[i1, i2] {
+                let t = tris[ti];
+                let mut t1 = t;
+                let mut t2 = t;
+                for k in 0..3 {
+                    let (p, q) = (t[k], t[(k + 1) % 3]);
+                    if (p.min(q), p.max(q)) == e {
+                        t1[(k + 1) % 3] = mi; // (…, p, m, …)
+                        t2[k] = mi; // (…, m, q, …)
+                        break;
+                    }
+                }
+                tris[ti] = t1;
+                tris.push(t2);
+            }
+            // by_edge ist jetzt stale für die 2 Dreiecke — Kanten von e aus
+            // dem Index nehmen, damit kein zweiter Split sie anfasst.
+            by_edge.remove(&e);
+            splits += 1;
+        }
+        stats.splits += splits;
+        // ── 2. GLÄTTEN (Gauss-Seidel, max-min-Winkel-Wächter) ──
+        // Aktive Menge: Nicht-Fix-Vertizes in ≤2 Ringen um einen Sliver.
+        let mut inc: HashMap<u32, Vec<usize>> = HashMap::new();
+        let mut nbr: HashMap<u32, Vec<u32>> = HashMap::new();
+        for (ti, &[a, b, c]) in tris.iter().enumerate() {
+            for &v in &[a, b, c] {
+                inc.entry(v).or_default().push(ti);
+            }
+            for (x, y) in [(a, b), (b, c), (c, a)] {
+                nbr.entry(x).or_default().push(y);
+                nbr.entry(y).or_default().push(x);
+            }
+        }
+        for v in nbr.values_mut() {
+            v.sort_unstable();
+            v.dedup();
+        }
+        let mut active: HashSet<u32> = HashSet::new();
+        for (ti, &[a, b, c]) in tris.iter().enumerate() {
+            let _ = ti;
+            if tri_min_angle(points, a, b, c) < thresh {
+                for &v in &[a, b, c] {
+                    active.insert(v);
+                }
+            }
+        }
+        for _ in 0..2 {
+            let cur: Vec<u32> = active.iter().copied().collect();
+            for v in cur {
+                if let Some(ns) = nbr.get(&v) {
+                    active.extend(ns.iter().copied());
+                }
+            }
+        }
+        let mut order: Vec<u32> = active
+            .iter()
+            .copied()
+            .filter(|&v| !fixed.get(v as usize).copied().unwrap_or(true))
+            .collect();
+        order.sort_unstable();
+        let mut moves = 0usize;
+        for _pass in 0..3 {
+            let mut moved_this = 0usize;
+            for &v in &order {
+                let Some(ns) = nbr.get(&v) else { continue };
+                let Some(its) = inc.get(&v) else { continue };
+                if ns.len() < 3 || its.is_empty() {
+                    continue;
+                }
+                let p = points[v as usize];
+                // Umbrella-Ziel: Zentroid der Nachbarn.
+                let mut c = [0.0f32; 3];
+                for &w in ns {
+                    let q = points[w as usize];
+                    c = [c[0] + q[0], c[1] + q[1], c[2] + q[2]];
+                }
+                let k = ns.len() as f32;
+                let c = [c[0] / k, c[1] / k, c[2] / k];
+                let mut d = sub(c, p);
+                // Tangential projizieren.
+                let n = norm(fg(p).1);
+                let dn = dot(d, n);
+                d = [d[0] - dn * n[0], d[1] - dn * n[1], d[2] - dn * n[2]];
+                let dl = dot(d, d).sqrt();
+                if dl < 1e-3 * spacing[v as usize] {
+                    continue;
+                }
+                // Aktueller schlechtester inzidenter Winkel.
+                let old_min = its
+                    .iter()
+                    .map(|&ti| {
+                        let [a, b, cc] = tris[ti];
+                        tri_min_angle(points, a, b, cc)
+                    })
+                    .fold(f32::MAX, f32::min);
+                let mut accepted = false;
+                for lam in [1.0f32, 0.5, 0.25] {
+                    let q0 = [
+                        p[0] + lam * d[0],
+                        p[1] + lam * d[1],
+                        p[2] + lam * d[2],
+                    ];
+                    let q = project_pt(q0, fg);
+                    if fg(q).0.abs() > 0.01 * spacing[v as usize].max(0.05) {
+                        continue;
+                    }
+                    let mv = sub(q, p);
+                    if dot(mv, mv).sqrt() > 0.75 * spacing[v as usize] {
+                        continue;
+                    }
+                    // Probe-Position einsetzen; BILLIGE Wächter zuerst
+                    // (Winkel/Orientierung ohne fg), teure (Region/Sehnen
+                    // mit Feld-Evals) nur für Kandidaten, die sie brauchen.
+                    points[v as usize] = q;
+                    let mut ok = true;
+                    let mut new_min = f32::MAX;
+                    for &ti in its {
+                        let [a, b, cc] = tris[ti];
+                        let m = tri_min_angle(points, a, b, cc);
+                        new_min = new_min.min(m);
+                        // Orientierung darf nicht kippen: Dreiecksnormale
+                        // bleibt in der Halbkugel der Vertex-Normale.
+                        let (pa, pb, pc) = (
+                            points[a as usize],
+                            points[b as usize],
+                            points[cc as usize],
+                        );
+                        let tn = cross(sub(pb, pa), sub(pc, pa));
+                        if dot(norm(tn), n).abs() < 0.5 {
+                            ok = false;
+                            break;
+                        }
+                    }
+                    // STRIKTE Verbesserung des lokalen Minimums.
+                    if !ok || new_min <= old_min * 1.0001 {
+                        points[v as usize] = p;
+                        continue;
+                    }
+                    if !region_ok(p, q) {
+                        points[v as usize] = p;
+                        continue;
+                    }
+                    // Sehnen auf der Fläche halten.
+                    for &w in ns {
+                        if !chord_ok(points, v, w, spacing[v as usize]) {
+                            ok = false;
+                            break;
+                        }
+                    }
+                    if !ok {
+                        points[v as usize] = p;
+                        continue;
+                    }
+                    accepted = true;
+                    break;
+                }
+                if accepted {
+                    moved_this += 1;
+                }
+            }
+            moves += moved_this;
+            if moved_this == 0 {
+                break;
+            }
+        }
+        stats.moves += moves;
+        // ── 3. FLIPS (Lawson, min-Winkel-maximierend) ──
+        let mut flips = 0usize;
+        for _fr in 0..10 {
+            let mut by_edge: HashMap<(u32, u32), Vec<usize>> = HashMap::new();
+            for (ti, &[a, b, c]) in tris.iter().enumerate() {
+                for (x, y) in [(a, b), (b, c), (c, a)] {
+                    by_edge.entry((x.min(y), x.max(y))).or_default().push(ti);
+                }
+            }
+            let mut edges: Vec<(u32, u32)> = by_edge
+                .iter()
+                .filter(|(_, v)| v.len() == 2)
+                .map(|(&e, _)| e)
+                .collect();
+            edges.sort_unstable();
+            let mut dirty: Vec<bool> = vec![false; tris.len()];
+            let mut new_diag: HashSet<(u32, u32)> = HashSet::new();
+            let mut fl = 0usize;
+            for e in edges {
+                if chain_edges.contains(&e) {
+                    continue;
+                }
+                let (i1, i2) = (by_edge[&e][0], by_edge[&e][1]);
+                if dirty[i1] || dirty[i2] {
+                    continue;
+                }
+                let (t1, t2) = (tris[i1], tris[i2]);
+                let Some(&(u, v)) = [(t1[0], t1[1]), (t1[1], t1[2]), (t1[2], t1[0])]
+                    .iter()
+                    .find(|&&(x, y)| (x.min(y), x.max(y)) == e)
+                else {
+                    continue;
+                };
+                if ![(t2[0], t2[1]), (t2[1], t2[2]), (t2[2], t2[0])].contains(&(v, u)) {
+                    continue; // lokal inkonsistente Orientierung — kein Flip
+                }
+                let ap = |t: [u32; 3]| -> u32 {
+                    if t[0] != u && t[0] != v {
+                        t[0]
+                    } else if t[1] != u && t[1] != v {
+                        t[1]
+                    } else {
+                        t[2]
+                    }
+                };
+                let (a, b) = (ap(t1), ap(t2));
+                if a == b {
+                    continue;
+                }
+                let diag = (a.min(b), a.max(b));
+                if by_edge.contains_key(&diag) || new_diag.contains(&diag) {
+                    continue; // Manifold-Schutz
+                }
+                let old = tri_min_angle(points, t1[0], t1[1], t1[2])
+                    .min(tri_min_angle(points, t2[0], t2[1], t2[2]));
+                if old >= thresh {
+                    continue; // gute Paare nicht anfassen (Byte-Stabilität)
+                }
+                let new =
+                    tri_min_angle(points, a, u, b).min(tri_min_angle(points, b, v, a));
+                if new <= old * 1.001 {
+                    continue;
+                }
+                if !regions_share(face_sets, a, b) {
+                    continue;
+                }
+                let sp = spacing[a as usize].min(spacing[b as usize]);
+                if !chord_ok(points, a, b, sp) {
+                    continue;
+                }
+                // Randkanten v→a, a→u (t1) und u→b, b→v (t2) bleiben
+                // erhalten; Diagonale läuft b→a / a→b.
+                tris[i1] = [a, u, b];
+                tris[i2] = [b, v, a];
+                dirty[i1] = true;
+                dirty[i2] = true;
+                new_diag.insert(diag);
+                fl += 1;
+            }
+            flips += fl;
+            if fl == 0 {
+                break;
+            }
+        }
+        stats.flips += flips;
+        if std::env::var("LICHEN_SLIVER_STATS").is_ok() {
+            eprintln!(
+                "SLIVER-RUNDE {_round}: splits={splits} moves={moves} flips={flips} | minang {:.2}°",
+                global_min(points, tris).to_degrees()
+            );
+        }
+        if splits + moves + flips == 0 {
+            break;
+        }
+    }
+    stats.after_min_deg = global_min(points, tris).to_degrees();
+    if std::env::var("LICHEN_SLIVER_STATS").is_ok() {
+        eprintln!("SLIVER-HISTOGRAMM nach: {:?}", angle_hist(points, tris));
+        let mut worst: Vec<(f32, [u32; 3])> = tris
+            .iter()
+            .map(|&[a, b, c]| (tri_min_angle(points, a, b, c).to_degrees(), [a, b, c]))
+            .filter(|&(m, _)| m < deg_thresh)
+            .collect();
+        worst.sort_by(|x, y| x.0.partial_cmp(&y.0).unwrap_or(std::cmp::Ordering::Equal));
+        eprintln!("SLIVER-REST: {} Dreiecke < {deg_thresh}°", worst.len());
+        for &(m, [a, b, c]) in worst.iter().take(12) {
+            let ek = |x: u32, y: u32| -> String {
+                let e = (x.min(y), x.max(y));
+                let d = sub(points[y as usize], points[x as usize]);
+                format!(
+                    "{}{:.3}",
+                    if chain_edges.contains(&e) { "K" } else { "-" },
+                    dot(d, d).sqrt()
+                )
+            };
+            let fx = |x: u32| {
+                format!(
+                    "{}{}sp{:.2}",
+                    x,
+                    if fixed.get(x as usize).copied().unwrap_or(false) { "F" } else { "f" },
+                    spacing[x as usize]
+                )
+            };
+            eprintln!(
+                "  {m:.1}° [{},{},{}] ab={} bc={} ca={} @ {:?}",
+                fx(a), fx(b), fx(c),
+                ek(a, b), ek(b, c), ek(c, a),
+                points[a as usize]
+            );
+        }
+    }
+    stats
+}
+
 /// Allgemeine Triangulierung EINER Fläche.
 ///
 /// * `points`/`normals`/`spacing`: globale Punkttabelle (Welt), Pro-Punkt-

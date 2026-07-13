@@ -1,0 +1,5 @@
+* [https://github.com/timschmidt/csgrs](https://github.com/timschmidt/csgrs)
+* [https://github.com/cheind/sdftoolbox](https://github.com/cheind/sdftoolbox)
+* [https://github.com/kaist-visual-ai-group/odc](https://github.com/kaist-visual-ai-group/odc)
+* [https://github.com/sgsellan/gpytoolbox](https://github.com/sgsellan/gpytoolbox)
+* [https://crates.io/crates/delaunay](https://crates.io/crates/delaunay)

@@ -1350,6 +1350,72 @@ Feldern < 1e-6) und `hybrid_displaced_box_mixed_sign_chain_samples_on_body`
 (gemischtes Regime → alle emittierten Ketten-Samples auf dem realen
 Body, nichts schwebt im Blend-Streifen).
 
+## 8u. Sliver-Repair: streifende Nähte formsauber (2026-07-13, Fortsetzung)
+
+Die Sliver-Front aus §8r Punkt 3 ist **geschlossen** (graze_sphere_plane
+minang 5,2° → **11,8°**, asp p99 3,97 → 3,09, bei unverändertem open 0 /
+χ 2 / H 0.003; neues aktives Gate
+`lichen_adv_graze_sphere_plane_watertight` mit minang ≥ 10° / p99 ≤ 4).
+
+### Die Wurzel (Forensik `LICHEN_SLIVER_STATS`)
+
+Die schlechtesten Dreiecke sind **Ketten-Fächer**: Basis = Ketten-Kante
+(0,1 mm — die Naht-KURVE r≈3,16 wird kurvatur-getrieben abgetastet,
+curvAngleDeg 2° ⇒ r·θ ≈ 0,11), Apex = Flächenpunkt in ~1 mm Höhe (beide
+TRÄGER sind fast eben, die Flächen-Abtastung bleibt grob). Der
+Dichtesprung Kette↔Fläche ist **intrinsisch** (Kurven-Krümmung ≠
+Flächen-Krümmung) — kein Fehler im Sizing, sondern zwei verschiedene,
+je für sich korrekte Kriterien.
+
+**Kanten-Flips allein sind beweisbar machtlos** (vermessen, I-25): von
+462 Sub-12°-Paaren (graze) bzw. 216 (twist) hätte KEIN einziger Flip den
+min-Winkel verbessert — die Walk-Diagonale ist bereits lokal optimal,
+und die Alternative über drei fast-kollineare Kettenpunkte ist noch
+schlechter. Ein Fächer über einer dichten Kette ist ein
+**Punktverteilungs-, kein Konnektivitätsproblem**.
+
+### Der Pass (`lichen_tri::sliver_repair`, default-an, Kill-Switch `LICHEN_SLIVER=0`)
+
+Klassische Qualitäts-Schleife „split worst / relax / flip" NACH dem
+globalen Walk (api/lichen.rs, vor `orient_consistent`), aktiviert sich
+NUR bei Dreiecken unter `LICHEN_SLIVER_DEG` (Default 12°) — **Netze ohne
+Sliver bleiben byte-identisch** (Abnahmefall minang 14,9°: Hash-Anker
+`zz_acceptance_hash` unverändert `6e620e39806d3db3`):
+
+1. **Rivara-Bisektion**: längste Nicht-Ketten-Kante jedes Slivers am
+   Newton-projizierten Mittelpunkt teilen (konform, χ/Orientierung/
+   Manifold-erhaltend: V+1, E+3, F+2). Floor 2·lokales Spacing
+   (Terminierung) und **Separations-Gate 0,3·l** gegen Fast-Duplikate —
+   ohne das Gate erzeugen die Mittelpunkte zweier fast-paralleler
+   Fächer-Beine ein NEUES Sliver-Paar (gemessen: 0,025-mm-Kanten,
+   Stall bei 6,5°).
+2. **Tangentiales Glätten mit max-min-Wächter**: Umbrella-Ziel, in die
+   Tangentialebene projiziert, Newton-Reprojektion auf f=0,
+   λ-Backtracking (1/0,5/0,25); akzeptiert nur bei STRIKTER Verbesserung
+   des schlechtesten inzidenten Winkels (dadurch kann der Pass nirgends
+   verschlechtern und keine Kette überklettern — die Fächer-Winkel
+   degenerieren, bevor ein Punkt die Naht erreicht). Ketten-/Eckpunkte
+   (flag > 1,5 ∪ Ketten-Kanten-Vertizes) bleiben FIX; `region_ok`
+   (face_of-Vergleich) hält Punkte auf ihrem Blatt; Sehnen-Check mit der
+   θ-skalierten Sagitta-Toleranz aus `valid_geom`.
+3. **Lawson-Flips** (min-Winkel-maximierend, nur Paare < Schwelle): nie
+   über Ketten-Kanten, Diagonale manifold-frei, Blatt-Restriktion über
+   `face_sets`, Sehnen-Check der Diagonale. Nach Splits+Glätten finden
+   die Flips wieder Arbeit (198 auf graze) — als Erstmaßnahme waren sie
+   nutzlos (s.o.).
+
+Neue Punkte werden in `all`/`point_faces` nachgezogen (Region = Schnitt
+der Endpunkt-Regionen, Normale = ∇f); verschobene Punkte bekommen
+Normale/sdf frisch. Messreihe graze: 5,2° → 6,5° (ohne Separations-Gate)
+→ **11,8°** (mit), Laufzeit unverändert ~12 s. Mitgenommen: Twist 9,0 →
+12,0° (p99 3,31 → 3,17), Bend 11,6 → 12,5°, Coplanar 10,4 → 12,2°; alle
+übrigen Matrix-Fälle wert-identisch, Abnahme byte-identisch,
+kernel release 1112/1112.
+
+**Irrweg I-25 (vermessen, zurückgebaut):** reiner Kanten-Flip-Post-Pass
+im globalen Walk — 0 Verbesserungen auf graze UND twist; der Befund
+(Fächer = Punktverteilungsproblem) führte direkt zum Repair-Design.
+
 ## 8r. Offene Fronten (Stand 2026-07-13, v0.6.569)
 
 1. **Displace-Bodies** — **GESCHLOSSEN**, s. §8t (Displace-Kugel
@@ -1376,11 +1442,11 @@ Body, nichts schwebt im Blend-Streifen).
    `zz_acceptance_hash`). Der echte Weg ist **topologisch**: den
    Sub-Resolution-Kontakt erkennen und die Blätter als getrennte
    Komponenten meshen (Mikro-Feature-Kollaps-Familie).
-3. **Sliver an streifenden Nähten**: der 3,6°-Streifschnitt ist
-   wasserdicht, aber mit minang ~5° — derzeit der Preis der
-   Wasserdichtheit. Kandidat: **anisotropes Remeshing entlang der Naht**
-   als Nachlauf. (Verwandt: Twist-Helix-Ketten liefern minang 9,0°/p99
-   3,31 — gleiche Sliver-Klasse.)
+3. **Sliver an streifenden Nähten** — **GESCHLOSSEN**, s. §8u
+   (`lichen_tri::sliver_repair`: Rivara-Split + max-min-Glätten +
+   Lawson-Flips als Default-Post-Pass; graze 5,2 → 11,8°, Twist
+   9,0 → 12,0°, Gate `lichen_adv_graze_sphere_plane_watertight`).
+   Reine Kanten-Flips wurden vermessen und widerlegt (I-25).
 4. **Renderer-Arbeitslinie Displace-Lipschitz**: GESCHLOSSEN im Kern
    (v0.6.568): Schrittweiten-Dämpfung 1/L über `march_relax`
    (`sdf_compiler.rs`, Muster REVOLVE_MARCH_RELAX) — Feld bitidentisch,

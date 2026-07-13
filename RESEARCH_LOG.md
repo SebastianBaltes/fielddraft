@@ -408,3 +408,43 @@ Format: Zeitstempel · Hypothese/Frage · Ergebnis · Entscheidung.
   versorgen. Zweimal Release-Note-Gates gerissen (ASCII-Quote erneut;
   vX.Y.Z-Muster im Text verboten) — beide sofort gefixt; LEKTION: Notes
   vor Commit IMMER tsc+vitest aus web/ laufen lassen, nicht verketten.
+
+## 2026-07-13 — Sliver an streifenden Nähten: 5,2° → 11,8° (§8r Punkt 3 geschlossen)
+
+- AUFTRAG: graze_sphere_plane minang ≥ 10° / asp p99 ≤ 4 ohne Verlust von
+  Wasserdichtheit/Hausdorff; Kandidaten (1) Glätten+Reprojektion,
+  (2) Kanten-Flips, (3) Kollaps.
+- FLIPS ALLEIN WIDERLEGT (I-25): Lawson-Pass im globalen Walk voll
+  implementiert und mit Ablehnungszählern vermessen — 0 von 462
+  Sub-12°-Paaren (graze) bzw. 0 von 216 (twist) wären durch einen Flip
+  besser geworden („schlechter"=alle): die Walk-Diagonale ist lokal
+  optimal, die Alternative über drei fast-kollineare Kettenpunkte
+  degeneriert. Code zurückgebaut.
+- FORENSIK (LICHEN_SLIVER_STATS, Winkel-Histogramm + Worst-Dump): die
+  Sliver sind KETTEN-FÄCHER — Basis = Ketten-Kante 0,1 mm
+  (kurvatur-getrieben: curvAngleDeg 2° auf der Naht-Kurve r≈3,16),
+  Apex = Flächenpunkt ~1 mm (Träger fast eben). Dichtesprung
+  Kette↔Fläche ist intrinsisch (Kurven- ≠ Flächen-Krümmung) →
+  Punktverteilungs-, kein Konnektivitätsproblem.
+- FIX: `lichen_tri::sliver_repair` (Default-an, LICHEN_SLIVER=0,
+  Schwelle LICHEN_SLIVER_DEG=12°), Post-Pass nach dem Walk in
+  api/lichen.rs: (1) Rivara-Längste-Kante-Bisektion der Sliver
+  (Newton-projizierter Mittelpunkt, Floor 2·Spacing,
+  SEPARATIONS-GATE 0,3·l — ohne das Gate stall bei 6,5° durch
+  Fast-Duplikat-Einfügungen 0,025 mm), (2) tangentiales Glätten mit
+  STRIKTEM max-min-Winkel-Wächter (λ-Backtracking, region_ok=face_of,
+  Sehnen-Sagitta-Check; Ketten/Ecken fix), (3) Lawson-Flips (nie über
+  Ketten, Blatt-Restriktion, manifold-frei). χ/Orientierung/comp
+  per Konstruktion erhalten; neue Punkte in all/point_faces nachgezogen.
+- MESSREIHE graze: 5,2° (Baseline) → 6,5° (ohne Separations-Gate,
+  37→18 s nach Guard-Reordering) → **11,8°/p99 3,09** (mit Gate, 12,5 s,
+  H 0.0031/0.0026 UNVERÄNDERT, open 0, χ 2). Twist 9,0→12,0°
+  (p99 3,31→3,17), Bend 11,6→12,5°, Coplanar 10,4→12,2° — alle übrigen
+  Matrix-Fälle wert-identisch (thin 7/0/0, displace 0, tangent 430/33,
+  graze_alt 12,4° unberührt: Schwelle 12° greift dort nicht).
+- REGRESSIONEN: Abnahme-Gate grün und BYTE-IDENTISCH (zz_acceptance_hash
+  6e620e39806d3db3 — Pass aktiviert sich nur unter 12°, Abnahme-minang
+  14,9°); Lichen-Gates 39/39 (neu:
+  `lichen_adv_graze_sphere_plane_watertight`, minang ≥ 10 / p99 ≤ 4);
+  kernel release 1112/1112 (Workspace komplett grün).
+- Doku: §8u in Lichen-Architecture.md, §8r Punkt 3 GESCHLOSSEN, I-25.
