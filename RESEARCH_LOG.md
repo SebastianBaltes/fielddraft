@@ -334,3 +334,51 @@ Format: Zeitstempel · Hypothese/Frage · Ergebnis · Entscheidung.
   zz_acceptance_hash (Byte-Identitäts-Anker).
 - Neutralität bei Default verifiziert: 38 Gates grün, thin_plate
   wert-identisch.
+
+## 2026-07-13 — Displace-Paket: 662 → 0 (Regionen waren der Hebel, nicht Ketten)
+
+- AUFTRAG: warp_displace_sphere (662 offene) via echte Ketten + Regionen,
+  Bauplan analog Warp-Paket v0.6.569 (Field::DisplacedAnalytic, Seed-Weaver-
+  Öffnung, displace-bewusste FaceSurf).
+- BEFUND VOR ARBEITSBEGINN: die Matrix-Kugel hat 1 Face / 0 Kanten (BREP-
+  Forensik) — für DIESEN Fall existieren gar keine Nähte. Die 662 offenen
+  kamen komplett aus den REGIONEN: face_of/own_dist/On-Surface-Gates maßen
+  gegen den UN-displacten Kugel-Träger (|disp| ≈ 0,3 mm als „Abstand"),
+  Normalen ignorierten die Beulen (bis ~40° falsch → Krümmung/Sizing/Guards
+  blind).
+- SCHRITT 1 — FaceSurf.disp + carrier() (halfspace − disp, Welt-FD-Normalen;
+  alle 12 Konsum-Stellen inkl. Orphan-/Streu-/Fallback-Pfad):
+  **662 → 0**, χ=2, comp=1, H 0.0051/0.0040, p99 1.55, minang 22.6°.
+  Punkte 5189 → 17401, Laufzeit 12 → ~85 s: EHRLICHE Krümmungs-Verfeinerung
+  der Beulen (kein Crowding-Defekt; §8r-Verdacht „intraface, Regionen helfen
+  nicht" WIDERLEGT — kein Sizing-Eingriff, I-21/I-24 unangetastet).
+- SCHRITT 2 — Ketten für displaced Booleans (Bauplan-Teil 1+2):
+  displaced_halfspace_value_grad (sdf_dual), Field::DisplacedAnalytic
+  (edge_trace), root_displace (edge_walker), Seed-Weaver-Öffnung. Drei
+  gemessene Stolpersteine:
+  (a) both_branches_active attributiert Contributors im UN-displacten
+      eps-Band → jeder Naht-Punkt „inactive"; Displace-Route prüft
+      stattdessen On-Boundary |f_body| ≤ eps (Punkte liegen per
+      Konstruktion auf beiden displacten Feldern).
+  (b) Co-Komponenten-Dedup: un-displacte SSI-Seeds liegen 0,3 mm neben der
+      displacten Polyline (near_tol 0,017) → ~60 Duplikat-Fragmente je
+      Kante; Fix = project_to_edge-Projektion jedes Seeds vor dem Tracen.
+  (c) MODELL-GRENZE (Geometrie, kein Bug): wo disp > 0 ist die Leaf-SDF
+      außen EUKLIDISCH → runder Blend-Streifen statt scharfer Naht; die
+      displacten Felder konkurrieren (√3−1)·disp AUSSERHALB des Bodys —
+      Aktivitäts-Test verwirft korrekt. Displaced Booleans = piecewise
+      scharfe Ketten (disp<0) + kettenlose Blend-Streifen.
+- GATES NEU: lichen_adv_warp_displace_watertight (voller Assertions-Satz,
+  ~85 s → #[ignore]d, manuell/CI via --ignored),
+  hybrid_weaves_displaced_box_exact_topology_carved_regime (disp<0-Fixture
+  x∈[8,16]/y∈[3,15]/z∈[−19,−11], sin-Fenster ohne Vorzeichenwechsel →
+  exakte 8/12/6-Topologie, Kanten-Samples < 1e-6 auf beiden displacten
+  Feldern), hybrid_displaced_box_mixed_sign_chain_samples_on_body (alle
+  emittierten Samples auf dem realen Body). Scope-Test aktualisiert
+  (Root-Displace im Partial-Scope, Twist-unter-Displace bleibt Oktree).
+- REGRESSIONEN: Abnahme byte-identisch (zz_acceptance_hash
+  6e620e39806d3db3 vor UND nach, gegen git-stash-Baseline gemessen);
+  volle Matrix nach Schritt 1 wert-identisch in allen 10 übrigen Fällen
+  (twist/bend 0/0, thin 7/0/0, tangent 430/33, coplanar/graze 0);
+  38 Lichen-Gates grün; kernel release 1111/1111 grün (inkl. 2 neuer Seed-Weaver-Gates; Displace-Gate bleibt ignored/manuell).
+- Doku: §8t in Lichen-Architecture.md, §8r Punkt 1 GESCHLOSSEN.

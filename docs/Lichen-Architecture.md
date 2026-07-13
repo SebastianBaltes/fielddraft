@@ -1289,19 +1289,76 @@ Scope-Grenzen (bewusst, dokumentiert): Warps **innerhalb** eines Booleans
 (nur ein Ast gewarpt), nicht-analytische Branches unter Warp
 (Extrude/Revolve-Wände) und nicht-Identity-Placement (bestehende
 Kernel-Inkonsistenz der carry-Faltung) bleiben Oktree-Fallback.
-**Displace** ist als Wert-Störung nicht koordinaten-invertierbar und
-braucht weiterhin den Feature-Linien-Weg (§8r Punkt 1, Gate
-`lichen_adv_warp_displace_wip`).
+**Displace** ist als Wert-Störung nicht koordinaten-invertierbar —
+geschlossen über den WERT-Weg in §8t (Gate
+`lichen_adv_warp_displace_watertight`).
+
+## 8t. Displace-Bodies: displace-bewusste Regionen + Wert-Feld-Weave (2026-07-13, Fortsetzung)
+
+Die Displace-Front aus §8r Punkt 1 ist **geschlossen** (Displace-Kugel
+662 → **0** offene Kanten, χ=2, comp=1, H 0.005/0.004, minang 22.6°;
+Gate `lichen_adv_warp_displace_watertight`, wegen ~85 s release bewusst
+`#[ignore]`d, mit vollem Assertions-Satz für manuelle/CI-Läufe). Zwei
+unabhängige Bausteine:
+
+* **Displace-bewusste FaceSurf-Kette** (`api/lichen.rs`,
+  `FaceSurf.disp` + `FaceSurf::carrier`): das Träger-FELD jeder Prüfung
+  ist `sdf_halfspace(surface, surf_pt(p)) − disp(p)/s` mit
+  `disp(p) = Σ depth·sin(x·f)·sin(1.3·y·f)·sin(0.7·z·f)` am Body-lokalen
+  Punkt — exakt die Kernel-Eval-Formel. Konsumenten: `face_of`,
+  `own_dist`, alle On-Surface-Gates (Streuung, Naht-Band, general_tri-
+  Prädikate, Fallback-Pfad), Orphan-Newton und die Normalen
+  (`normal_world` = Welt-FD über `carrier`). **Das war der ganze Hebel
+  für die Matrix-Kugel** (1 Face, 0 Kanten): vorher maßen die
+  On-Surface-Prüfungen |disp| ≈ 0,3 mm als „Abstand" und verwarfen
+  legitime Punkte, und die Normalen ignorierten die Beulen (bis ~40°
+  falsch → Krümmung/Sizing/Guards alle blind). Der §8r-Verdacht
+  „intraface-Crowding, Regionen helfen prinzipiell nicht" hat sich
+  dabei NICHT bestätigt: korrekte Träger-Felder + Normalen allein
+  schließen alles; der Preis ist ehrliche Krümmungs-Verfeinerung
+  (5 189 → 17 401 Punkte, 12 → ~85 s) — kein Sizing-Eingriff nötig
+  (I-21/I-24 bleiben unangetastet).
+* **Ketten für displaced Booleans** (`sdf_dual.rs`
+  `displaced_halfspace_value_grad`, `edge_trace.rs`
+  `Field::DisplacedAnalytic`, `edge_walker.rs` `root_displace`,
+  `seed_weaver.rs`): kein Punkt-Map W — die Naht zweier Flächen ist die
+  gemeinsame Nullstelle der beiden DISPLACTEN Flächen-Felder
+  `g(p) = s·hs(xf⁻¹ p) − disp(p)` (glatt, exakter Dual-Gradient).
+  `scope_supported_partial` öffnet Root-Displace (Kette nur an der
+  Wurzel, kein Twist/Bend darunter — sonst Oktree wie bisher); die
+  UN-displacten SSI-Seeds werden **per `project_to_edge` auf die
+  displacte Naht gezogen** (ohne das: jeder Seed re-traced dieselbe
+  Kante, ~60 Duplikat-Fragmente je Kasten-Kante — gemessen); Ecken =
+  `refine_triple_vertex` (un-displacte Konkurrenz) + f64-`polish_corner`
+  über die displacten Felder. Zwei Aktivitäts-Anpassungen waren nötig:
+  `both_branches_active` attributiert Contributors im UN-displacten
+  eps-Band (die reale Naht liegt |disp| ≫ eps daneben) — die
+  Displace-Route prüft stattdessen On-Boundary `|f_body| ≤ eps` (ihre
+  Punkte liegen per Konstruktion auf beiden displacten Feldern).
+
+**Modell-Grenze (ehrlich, gemessen):** wo `disp > 0` (Beule nach
+AUSSEN), ist die Leaf-SDF außen die EUKLIDISCHE Kanten-/Ecken-Distanz —
+die displacte Oberfläche ist dort ein RUNDER Blend-Streifen (Radius
+~disp), KEINE scharfe Naht; die displacten Flächen-Felder konkurrieren
+(√3−1)·disp AUSSERHALB des Bodys, und der Aktivitäts-Test verwirft
+solche Zeugen/Abschnitte KORREKT. Ein displaced Boolean hat also
+piecewise scharfe Ketten (disp<0-Abschnitte, exakt gewebt) und
+kettenlose Blend-Streifen (glatt — Wachstum + Regionen tragen sie).
+Gates: `hybrid_weaves_displaced_box_exact_topology_carved_regime`
+(disp<0-Regime → exakte 8/12/6-Topologie, Samples auf beiden displacten
+Feldern < 1e-6) und `hybrid_displaced_box_mixed_sign_chain_samples_on_body`
+(gemischtes Regime → alle emittierten Ketten-Samples auf dem realen
+Body, nichts schwebt im Blend-Streifen).
 
 ## 8r. Offene Fronten (Stand 2026-07-13, v0.6.569)
 
-1. **Displace-Bodies** — Kategorie (c), Gate
-   `lichen_adv_warp_displace_wip` (662 offene): Wert-Störung ohne
-   Koordinaten-Inverse → kein exakter Weave möglich (§8s deckt nur
-   Twist/Bend). Empfehlung: **feld-basierte Feature-Linien-Extraktion**
-   (Normalen-Diskontinuitäten des SDF) als Ketten-Ersatz. Zusätzlich:
-   das Wachstums-Crowding auf den Beulen-Flächen ist **intraface** —
-   Regionen helfen dort prinzipiell nicht.
+1. **Displace-Bodies** — **GESCHLOSSEN**, s. §8t (Displace-Kugel
+   662 → 0, Gate `lichen_adv_warp_displace_watertight`). Die früher
+   empfohlene feld-basierte Feature-Linien-Extraktion war NICHT nötig;
+   der Fehler lag in den Regionen (un-displacte Träger-Felder), nicht
+   im Sampling. Rest: displaced Booleans mit disp>0-Naht-Abschnitten
+   haben dort ehrlich keine Ketten (runde Blend-Streifen, §8t
+   Modell-Grenze) — bislang ohne gemessenen Mesh-Defekt.
 2. **Exakt tangentiale Küsse** (Punkt-Kuss Kugel@Platte, Linien-Kuss
    Zylinder@Box-Wand) — Gate `lichen_adv_tangent_kiss_wip`: Blattabstand
    0 am Kontakt ist prinzipiell sub-resolution (die echte lfs→0-Grenze,

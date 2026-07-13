@@ -24,6 +24,16 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.571",
+    entries: [
+      {
+        kind: "feat",
+        scope: "mesher",
+        text: "Lichen: Displace-Körper werden wasserdicht gemesht (Displace-Kugel 662 → 0 offene Kanten, χ=2, Hausdorff beidseitig ≤ 0,005 mm) — damit ist die gesamte Warp-Familie (Twist/Bend/Displace) geschlossen. Überraschender Kern-Befund: Die 662 offenen Kanten kamen komplett aus den REGIONEN, nicht aus fehlenden Ketten (die Kugel hat eine Fläche und null Kanten) — die Träger-Klassifikation maß Abstände gegen die UN-displacte Fläche und verwarf legitime Punkte als „0,3 mm daneben". Fix: FaceSurf rechnet das Träger-Feld jetzt displace-bewusst (Halbraum − Beulen-Term, Normalen als Welt-Differenzenquotient); dazu webt der Kernel Root-Displace-Nähte exakt (Field::DisplacedAnalytic im DL-68-Tracer, SSI-Seeds per Newton auf die displacte Naht projiziert, f64-Ecken-Politur). Ehrlich dokumentierte Modell-Grenze: wo der Beulen-Term positiv ist, wird die Leaf-SDF außen euklidisch und die Naht zum runden Blend-Streifen — exakte Ketten-Topologie gilt im eingeschnittenen Regime, im gemischten liegen alle Samples nachweislich auf dem Body. Zusätzlich headful-WebGPU-Abnahme des v0.6.568-Render-Fixes: 0 Marching-Löcher an Streifwinkeln, Silhouette artefaktfrei, marchRelax-Anker 0,5548 — als dauerhafte e2e-Spec (displace-march.spec.ts). Nebenbefund fürs Backlog: SDF-only-Commits (Displace an/aus) lösen im Demand-Frameloop kein Repaint aus. Abnahme-Gate byte-identisch, Suite 1111/1111.",
+      },
+    ],
+  },
+  {
     version: "0.6.570",
     entries: [
       {

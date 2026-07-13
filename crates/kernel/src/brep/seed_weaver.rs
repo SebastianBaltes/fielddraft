@@ -40,7 +40,7 @@ use crate::brep::edge_trace::{
 use crate::brep::edge_walker::{
     body_has_warp, branch_field, branch_leaf_map, cluster_positions,
     collect_non_lipschitz_features, extrude_rim_corner, near_traced, refine_triple_vertex,
-    root_warp_chain, traced_to_hermite, TripleRefine,
+    root_displace, root_warp_chain, traced_to_hermite, TripleRefine,
 };
 use crate::sdf_dual::{unwarp_chain, warp_chain, DomainWarp};
 use crate::brep::extraction::both_branches_active;
@@ -309,9 +309,14 @@ fn scope_supported_partial(body: &BoundedCsg) -> bool {
     // Domain warps: admitted when the WHOLE body is one un-warped CSG under a
     // root Twist/Bend chain ([`root_warp_chain`]) — the SSI seeds and corner
     // Newton then run in the un-warped space and everything is pushed forward
-    // through the warp's point map W. Partial warps (inside a Boolean) and
-    // Displace (a value warp, no point map) keep the octree fallback.
-    !body_has_warp(body) || root_warp_chain(body).is_some()
+    // through the warp's point map W. A root Displace chain
+    // ([`root_displace`]) is a VALUE perturbation with no point map, but the
+    // seam of two faces is the common zero of the two DISPLACED per-face
+    // fields ([`Field::DisplacedAnalytic`]): the un-displaced SSI seeds land
+    // within Newton range (|disp| ≤ Σ depth) and `project_to_edge` pulls them
+    // on. Partial warps (inside a Boolean) and mixed Twist/Bend-under-Displace
+    // keep the octree fallback.
+    !body_has_warp(body) || root_warp_chain(body).is_some() || root_displace(body).is_some()
 }
 
 /// Any Thread leaf, Helix or Sweep under `node` (the non-Lipschitz features
@@ -410,6 +415,11 @@ fn build_seed_wireframe_tracked(body: &BoundedCsg, mode: SeedMode) -> Option<See
     // in the WARPED world. `warp_chain` (W) maps un-warped → warped,
     // `unwarp_chain` (T) the reverse — see [`crate::sdf_dual::DomainWarp`].
     let warp: Vec<DomainWarp> = root_warp_chain(body).unwrap_or_default();
+    // Root displace chain (mutually exclusive with `warp`: `root_warp_chain`
+    // rejects any Displace, `root_displace` rejects any Twist/Bend). Seeds
+    // need no forward map — the traces run on the DISPLACED per-face fields
+    // and `project_to_edge` pulls each un-displaced seed onto the real seam.
+    let disp: Vec<(f64, f64)> = root_displace(body).unwrap_or_default();
     // SSI seeds lie on the un-warped carriers — push them forward through W
     // onto the real (warped) edges before tracing / co-component dedup.
     if !warp.is_empty() {
@@ -435,6 +445,14 @@ fn build_seed_wireframe_tracked(body: &BoundedCsg, mode: SeedMode) -> Option<See
     // Partial mode skips exactly like an unliftable branch. With no warp this
     // is byte-identical to [`branch_field`].
     let field_for = |branch: BranchId| -> Option<Field<'_>> {
+        if !disp.is_empty() {
+            let (hs, xf) = halfspaces.get(&branch.as_u32())?;
+            return Some(Field::DisplacedAnalytic {
+                hs: hs.clone(),
+                xf: *xf,
+                disp: disp.clone(),
+            });
+        }
         if warp.is_empty() {
             return branch_field(&halfspaces, &leaf_map, branch.as_u32());
         }
@@ -445,6 +463,26 @@ fn build_seed_wireframe_tracked(body: &BoundedCsg, mode: SeedMode) -> Option<See
             warps: warp.clone(),
         })
     };
+
+    // Displace-Route: die SSI-Seeds liegen auf den UN-displacten Trägern —
+    // |disp| ≤ Σ depth neben der echten Naht, also weit außerhalb des
+    // Co-Komponenten-Dedup-Radius (`near_tol`): ohne Projektion würde JEDER
+    // Seed dieselbe Kante erneut tracen (gemessen: ~60 Duplikat-Fragmente je
+    // Kasten-Kante). Es gibt kein Punkt-Map W; stattdessen zieht der
+    // 2D-Newton (`project_to_edge`) jeden Seed auf die gemeinsame Nullstelle
+    // der beiden DISPLACTEN Flächen-Felder. Nicht-konvergierende Seeds
+    // bleiben unprojiziert (trace_edge projiziert selbst erneut/verwirft).
+    if !disp.is_empty() {
+        for s in &mut seeds {
+            let (Some(fa), Some(fb)) = (field_for(s.a), field_for(s.b)) else {
+                continue;
+            };
+            let q = [s.point[0] as f64, s.point[1] as f64, s.point[2] as f64];
+            if let Some(p) = project_to_edge(&fa, &fb, q) {
+                s.point = [p[0] as f32, p[1] as f32, p[2] as f32];
+            }
+        }
+    }
 
     // f64-Nachpolitur eines analytisch verfeinerten Ecken-Punkts — NUR auf der
     // Warp-Route. `refine_triple_vertex` iteriert in f32 mit LM-Dämpfung und
@@ -458,6 +496,11 @@ fn build_seed_wireframe_tracked(body: &BoundedCsg, mode: SeedMode) -> Option<See
     // (Dämpfung 1e-12 nur gegen die tangentiale Null-Achse). Auf der
     // ungewarpten Route bewusst NICHT angewandt: Byte-Identität der
     // bestehenden Weaves.
+    //
+    // DISPLACE-Route: dieselbe f64-Nachpolitur, aber über die DISPLACTEN
+    // Felder (hs − disp) — `refine_triple_vertex` löst die UN-displacte
+    // Konkurrenz, die echte Ecke liegt auf dem displacten Body (≤ Σ depth
+    // daneben); der Gauss-Newton zieht sie dorthin.
     let polish_corner = |branches: &[BranchId], p0: [f64; 3]| -> [f64; 3] {
         use nalgebra::{Matrix3, Vector3};
         let mut p = p0;
@@ -469,7 +512,11 @@ fn build_seed_wireframe_tracked(body: &BoundedCsg, mode: SeedMode) -> Option<See
                 let Some((hs, xf)) = halfspaces.get(&b.as_u32()) else {
                     return p0;
                 };
-                let (f, g) = crate::sdf_dual::halfspace_value_grad(hs, xf, p);
+                let (f, g) = if disp.is_empty() {
+                    crate::sdf_dual::halfspace_value_grad(hs, xf, p)
+                } else {
+                    crate::sdf_dual::displaced_halfspace_value_grad(hs, xf, &disp, p)
+                };
                 if !f.is_finite() {
                     return p0;
                 }
@@ -546,6 +593,21 @@ fn build_seed_wireframe_tracked(body: &BoundedCsg, mode: SeedMode) -> Option<See
     // reprojects onto the curve (`bisect_active`), so the band no longer needs to
     // exceed the chord sagitta of a march step.
     let eps = (1e-5 * diag) as f32;
+
+    // Aktivitäts-Prädikat der DISPLACE-Route. `both_branches_active` prüft
+    // die Contributor-Menge des Evaluators — die aber im UN-displacten
+    // eps-Band attributiert wird (`BoundedCsg::Displace` zieht `disp` nur vom
+    // WERT ab): die reale displacte Naht liegt |disp| ≈ depth ≫ eps neben den
+    // Trägern, jeder Naht-Punkt wäre „inactive". Die Route reicht dem Test
+    // aber ausschließlich Punkte, die per Konstruktion auf BEIDEN displacten
+    // Flächen-Feldern liegen (`project_to_edge` / Ecken-Politur) — dort ist
+    // die On-Boundary-Prüfung |f_body| ≤ eps (reales displactes Feld) das
+    // ganze verbleibende Kriterium: jenseits eines Trims läuft die
+    // A∩B-Kurve ins Material (f < −eps) oder in die Luft (f > eps).
+    let displaced_on_boundary = |pf: [f32; 3]| -> bool {
+        let (f, _) = body.evaluate(pf, eps, crate::csg::EvalMode::Logical);
+        f.abs() <= eps
+    };
 
     // Co-component seed dedup radius and corner-cluster gap, both scaled to the
     // model. A second seed of the SAME component (SSI emits several per curve)
@@ -641,7 +703,13 @@ fn build_seed_wireframe_tracked(body: &BoundedCsg, mode: SeedMode) -> Option<See
                 else {
                     continue;
                 };
-                let p = if warp.is_empty() { p } else { polish_corner(&branches, p) };
+                // Warp: Politur im UN-gewarpten Raum. Displace: Politur zieht
+                // die un-displacte Ecke auf die DISPLACTE Konkurrenz.
+                let p = if warp.is_empty() && disp.is_empty() {
+                    p
+                } else {
+                    polish_corner(&branches, p)
+                };
                 // Only ACTIVE concurrences become witnesses: extended analytic
                 // surfaces concur outside the material too — far off (a cap
                 // plane crossing a box edge line) or even ON the body boundary
@@ -686,11 +754,17 @@ fn build_seed_wireframe_tracked(body: &BoundedCsg, mode: SeedMode) -> Option<See
                 // needs the warped position too.
                 let p = if warp.is_empty() { p } else { warp_chain(&warp, p) };
                 let pf = [p[0] as f32, p[1] as f32, p[2] as f32];
-                let all_pairs_active = [(0usize, 1usize), (0, 2), (1, 2)]
-                    .iter()
-                    .all(|&(i, j)| {
-                        both_branches_active(body, pf, branches[i], branches[j], eps)
-                    });
+                let all_pairs_active = if disp.is_empty() {
+                    [(0usize, 1usize), (0, 2), (1, 2)]
+                        .iter()
+                        .all(|&(i, j)| {
+                            both_branches_active(body, pf, branches[i], branches[j], eps)
+                        })
+                } else {
+                    // Displace: die Ecke liegt nach der Politur exakt auf den
+                    // drei displacten Feldern — On-Boundary genügt (s.o.).
+                    displaced_on_boundary(pf)
+                };
                 if !all_pairs_active {
                     if std::env::var("SEED_WEAVER_DEBUG").is_ok() {
                         eprintln!("SEED-WEAVER witness inactive: p={p:?} branches={branches:?}");
@@ -758,7 +832,14 @@ fn build_seed_wireframe_tracked(body: &BoundedCsg, mode: SeedMode) -> Option<See
             };
 
             let active = |p: [f64; 3]| {
-                both_branches_active(body, [p[0] as f32, p[1] as f32, p[2] as f32], a, b, eps)
+                let pf = [p[0] as f32, p[1] as f32, p[2] as f32];
+                if disp.is_empty() {
+                    both_branches_active(body, pf, a, b, eps)
+                } else {
+                    // Displace-Route: der Tracer reicht nur Punkte auf beiden
+                    // displacten Feldern herein — On-Boundary genügt (s.o.).
+                    displaced_on_boundary(pf)
+                }
             };
             let seed_pt = [
                 seed.point[0] as f64,
@@ -774,6 +855,9 @@ fn build_seed_wireframe_tracked(body: &BoundedCsg, mode: SeedMode) -> Option<See
                 &params,
                 Some(&active as &dyn Fn([f64; 3]) -> bool),
             ) else {
+                if std::env::var("SEED_WEAVER_TRACE_DEBUG").is_ok() {
+                    eprintln!("TRACE none: pair=({a:?},{b:?}) seed={seed_pt:?}");
+                }
                 // The seed sat in a trimmed-away (inactive) region — this branch
                 // pair does meet, but not on the real model boundary here. Not a
                 // failure: skip the seed (proven safe by
@@ -781,6 +865,14 @@ fn build_seed_wireframe_tracked(body: &BoundedCsg, mode: SeedMode) -> Option<See
                 continue;
             };
 
+            if std::env::var("SEED_WEAVER_TRACE_DEBUG").is_ok() {
+                eprintln!(
+                    "TRACE pair=({a:?},{b:?}) pts={} closed={} ends={:?} seed={seed_pt:?}",
+                    traced.points.len(),
+                    traced.closed,
+                    traced.ends
+                );
+            }
             // A closed ring carries `(Open, Open)` ends by construction (it has no
             // termini) — only an OPEN arc's `Open` end signals a stalled march. On
             // the seed path there is no sample-fit backstop for a stall, so an open
@@ -958,10 +1050,14 @@ fn build_seed_wireframe_tracked(body: &BoundedCsg, mode: SeedMode) -> Option<See
             };
             let pos = match refine_triple_vertex(&halfspaces, &branches, refine_seed) {
                 TripleRefine::Refined(p) => {
-                    let p = if warp.is_empty() {
-                        p
-                    } else {
+                    let p = if !warp.is_empty() {
                         warp_chain(&warp, polish_corner(&branches, p))
+                    } else if !disp.is_empty() {
+                        // Kein Punkt-Map: die Politur über die displacten
+                        // Felder IST der Weg auf den realen Body.
+                        polish_corner(&branches, p)
+                    } else {
+                        p
                     };
                     // Coherence gate (ticket g4rr): a cluster that gathered the
                     // termini of TWO distinct corners of the same branch triple
@@ -1333,8 +1429,12 @@ mod tests {
     /// PARTIAL-Scope (die SSI-Seeds + Ecken-Newton laufen im UN-gewarpten
     /// Raum und werden durch W vorwärts gemappt); Strict bleibt zu (id_hash-
     /// Toggle-Invarianz gegen den Oktree gilt dort weiter). Innen liegende
-    /// Warps (nur ein Boolean-Ast gewarpt) und Displace (Wert-Warp ohne
-    /// Punktabbildung) bleiben Oktree-Fallback.
+    /// Warps (nur ein Boolean-Ast gewarpt) bleiben Oktree-Fallback.
+    /// Displace-B-Rep (2026-07-13, Fortsetzung): ein ROOT-Displace ist
+    /// ebenfalls im Partial-Scope — kein Punkt-Map, aber die Naht ist die
+    /// gemeinsame Nullstelle der displacten Flächen-Felder
+    /// ([`Field::DisplacedAnalytic`]); Twist/Bend UNTER dem Displace bleibt
+    /// Oktree.
     #[test]
     fn partial_scope_admits_root_warp_only() {
         let twist = BoundedCsg::from_csg(&CsgNode::Twist(
@@ -1363,13 +1463,29 @@ mod tests {
         ));
         assert!(!scope_supported_partial(&inner_warp), "innerer Warp bleibt Oktree");
 
-        // Displace: reine Wert-Störung, keine invertierbare Punktabbildung.
+        // Displace an der Wurzel: Wert-Störung ohne Punktabbildung, aber die
+        // displacten Flächen-Felder tragen den Seed-Weave → Partial-Scope.
         let displace = BoundedCsg::from_csg(&CsgNode::Displace(
             Box::new(box_leaf(1, [0.0, 0.0, 0.0], [4.0, 4.0, 4.0])),
             0.3,
             1.5,
         ));
-        assert!(!scope_supported_partial(&displace), "Displace bleibt Oktree");
+        assert!(
+            scope_supported_partial(&displace),
+            "Root-Displace im Partial-Scope"
+        );
+        assert!(!scope_supported(&displace), "Strict bleibt zu");
+
+        // Twist UNTER dem Displace: keine der beiden Root-Ketten greift.
+        let mixed = BoundedCsg::from_csg(&CsgNode::Displace(
+            Box::new(CsgNode::Twist(
+                Box::new(box_leaf(1, [0.0, 0.0, 0.0], [4.0, 6.0, 4.0])),
+                0.05,
+            )),
+            0.3,
+            1.5,
+        ));
+        assert!(!scope_supported_partial(&mixed), "Twist unter Displace bleibt Oktree");
     }
 
     /// Warp-B-Rep: der Hybrid-Weave liefert für einen getwisteten Kasten die
@@ -1440,6 +1556,148 @@ mod tests {
                 e.signature
             );
         }
+    }
+
+    /// Displace-B-Rep, GESCHNITZTER Fall (disp < 0 auf allen Nähten): der
+    /// Hybrid-Weave liefert die EXAKTE Kasten-Topologie — 8 Ecken (Gauss-
+    /// Newton-Nullstellen der drei DISPLACTEN Flächen-Felder, auf der realen
+    /// Oberfläche), 12 Kanten, 6 Flächen — statt des Oktree-Fallbacks
+    /// (Displace war vorher pauschal aus dem Scope, §8r Punkt 1).
+    ///
+    /// GRENZE DES MODELLS (bewusst, ehrlich): wo disp > 0 (Beule nach AUSSEN),
+    /// ist die Box-SDF außen die EUKLIDISCHE Ecken-/Kanten-Distanz — die
+    /// displacte Oberfläche ist dort ein RUNDER Blend-Streifen (Radius ~disp),
+    /// KEINE scharfe Naht, und die drei displacten Flächen-Felder konkurrieren
+    /// nirgends auf dem Body (die gemeinsame Nullstelle liegt (√3−1)·disp
+    /// AUSSERHALB). Der Aktivitäts-Test verwirft solche Zeugen korrekt; die
+    /// Fixture hier liegt deshalb ganz im disp-<-0-Regime (Achsen-Fenster ohne
+    /// sin-Vorzeichenwechsel, ein Faktor negativ).
+    #[test]
+    fn hybrid_weaves_displaced_box_exact_topology_carved_regime() {
+        let (depth, freq) = (0.3f32, 0.1f32);
+        // x∈[8,16]: sin(0.1x)>0; y∈[3,15]: sin(0.13y)>0; z∈[−19,−11]:
+        // sin(0.07z)<0 → disp<0 überall auf dem Kasten.
+        let center = [12.0f64, 9.0, -15.0];
+        let half = [4.0f64, 6.0, 4.0];
+        let body = BoundedCsg::from_csg(&CsgNode::Displace(
+            Box::new(box_leaf(1, [12.0, 9.0, -15.0], [4.0, 6.0, 4.0])),
+            depth,
+            freq,
+        ));
+        let brep = weave_branch_seeds_hybrid(&body, 0.5).expect("Displace-Body im Partial-Scope");
+        if std::env::var("SEED_WEAVER_DEBUG").is_ok() {
+            let mut hist: std::collections::BTreeMap<(u32, u32), (usize, f64)> = Default::default();
+            for e in &brep.edges {
+                let k = pair_key(e.signature.0, e.signature.1);
+                let len = match &e.geometry {
+                    EdgeGeometry::Hermite(s) => s
+                        .windows(2)
+                        .map(|w| dist3(w[0].point, w[1].point))
+                        .sum::<f64>(),
+                    _ => -1.0,
+                };
+                let ent = hist.entry(k).or_insert((0, 0.0));
+                ent.0 += 1;
+                ent.1 += len;
+            }
+            for (k, (n, l)) in &hist {
+                eprintln!("EDGE-HIST {k:?}: {n} Fragmente, Σlen={l:.3}");
+            }
+        }
+        assert_eq!(brep.vertices.len(), 8, "8 displacte Ecken");
+        assert_eq!(brep.edges.len(), 12, "12 Kanten");
+        assert_eq!(brep.faces.len(), 6, "6 Flächen");
+        for v in &brep.vertices {
+            let pf = [
+                v.position[0] as f32,
+                v.position[1] as f32,
+                v.position[2] as f32,
+            ];
+            let (d, _) = crate::sdf_dual::sdf_gradient(&body, pf);
+            assert!(
+                d.abs() < 1e-3,
+                "Ecke {:?} liegt nicht auf dem displacten Körper: f = {d}",
+                v.position
+            );
+            // Die Ecke ist die Nullstelle der displacten Felder — nahe der
+            // un-displacten Kasten-Ecke (|disp| ≤ depth), aber NICHT darauf.
+            for k in 0..3 {
+                assert!(
+                    ((v.position[k] - center[k]).abs() - half[k]).abs() < 3.0 * depth as f64,
+                    "Ecke {:?} zu weit von der Kasten-Ecke (Achse {k})",
+                    v.position
+                );
+            }
+        }
+        // Kanten-Samples liegen auf BEIDEN displacten Flächen-Feldern (also
+        // auf der echten Naht), nicht auf den un-displacten Trägern.
+        let halfspaces = branch_halfspace_map(&body);
+        let disp: Vec<(f64, f64)> = vec![(depth as f64, freq as f64)];
+        let mut checked = 0usize;
+        for e in &brep.edges {
+            assert!(
+                e.start.is_some() && e.end.is_some(),
+                "Kante {:?} ohne gebundene Ecken",
+                e.signature
+            );
+            let pts: Vec<[f64; 3]> = match &e.geometry {
+                EdgeGeometry::Hermite(samples) => samples.iter().map(|s| s.point).collect(),
+                EdgeGeometry::Polyline(p) => p.clone(),
+                // Piecewise-kubische Bézier-Kette (hermite_to_nurbs): jeder
+                // 3. Kontrollpunkt ist ein On-Curve-Hermite-Sample.
+                EdgeGeometry::Nurbs(c) => c.control_points.iter().copied().step_by(3).collect(),
+            };
+            for p in pts.iter().step_by(4) {
+                for br in [e.signature.0, e.signature.1] {
+                    let (hs, xf) = &halfspaces[&br.as_u32()];
+                    let (f, _) =
+                        crate::sdf_dual::displaced_halfspace_value_grad(hs, xf, &disp, *p);
+                    assert!(
+                        f.abs() < 1e-6,
+                        "Kanten-Sample {p:?} nicht auf displacter Fläche {br:?}: g = {f}"
+                    );
+                    checked += 1;
+                }
+            }
+        }
+        assert!(checked > 0, "keine Kanten-Samples geprüft");
+    }
+
+    /// Displace-B-Rep, GEMISCHTER Fall (disp wechselt das Vorzeichen längs
+    /// der Kanten): keine exakte Kasten-Topologie möglich (s.o. — die
+    /// disp>0-Abschnitte sind runde Blend-Streifen ohne scharfe Naht). Der
+    /// ehrliche Kontrakt: der Weave läuft durch, und JEDER emittierte
+    /// Ketten-Sample liegt auf dem realen displacten Body (nichts schwebt im
+    /// Blend-Streifen oder in der Luft).
+    #[test]
+    fn hybrid_displaced_box_mixed_sign_chain_samples_on_body() {
+        let body = BoundedCsg::from_csg(&CsgNode::Displace(
+            Box::new(box_leaf(1, [0.0, 0.0, 0.0], [4.0, 6.0, 4.0])),
+            0.3,
+            1.5,
+        ));
+        let brep = weave_branch_seeds_hybrid(&body, 0.5).expect("Displace-Body im Partial-Scope");
+        assert!(!brep.edges.is_empty(), "geschnitzte Naht-Abschnitte müssen weben");
+        let mut checked = 0usize;
+        for e in &brep.edges {
+            let pts: Vec<[f64; 3]> = match &e.geometry {
+                EdgeGeometry::Hermite(samples) => samples.iter().map(|s| s.point).collect(),
+                EdgeGeometry::Polyline(p) => p.clone(),
+                // Piecewise-kubische Bézier-Kette (hermite_to_nurbs): jeder
+                // 3. Kontrollpunkt ist ein On-Curve-Hermite-Sample.
+                EdgeGeometry::Nurbs(c) => c.control_points.iter().copied().step_by(3).collect(),
+            };
+            for p in pts.iter().step_by(4) {
+                let pf = [p[0] as f32, p[1] as f32, p[2] as f32];
+                let (d, _) = crate::sdf_dual::sdf_gradient(&body, pf);
+                assert!(
+                    d.abs() < 2e-3,
+                    "Ketten-Sample {p:?} nicht auf dem displacten Body: f = {d}"
+                );
+                checked += 1;
+            }
+        }
+        assert!(checked > 0, "keine Kanten-Samples geprüft");
     }
 
     #[test]

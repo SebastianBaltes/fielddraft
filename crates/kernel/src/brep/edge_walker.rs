@@ -1533,6 +1533,35 @@ pub(crate) fn root_warp_chain(body: &BoundedCsg) -> Option<Vec<crate::sdf_dual::
     Some(chain)
 }
 
+/// The body's **root displace chain** — the `Displace` wrappers sitting above
+/// the whole CSG, as `(depth, freq)` stages in tree eval order — or `None`
+/// when the seed route cannot treat the body as "one un-displaced CSG whose
+/// per-face fields are value-perturbed by `disp(p)`":
+///
+/// - no displace at all (chain would be empty — callers use the plain route),
+/// - any Twist/Bend/Displace remaining *inside* the peeled subtree (a domain
+///   warp under the displace would need the composed chain this v1 does not
+///   model; a nested non-root displace has per-branch value shifts).
+///
+/// Unlike a domain warp there is no point map to push seeds through: the seam
+/// of two faces on the displaced body is the common zero of the two DISPLACED
+/// per-face fields `g(p) = hs(xf⁻¹ p) − disp(p)` ([`Field::DisplacedAnalytic`]),
+/// and the displacement is a bounded value shift (|disp| ≤ Σ depth), so the
+/// un-displaced SSI seeds land within Newton range of the true seam —
+/// `project_to_edge` pulls them on.
+pub(crate) fn root_displace(body: &BoundedCsg) -> Option<Vec<(f64, f64)>> {
+    let mut chain = Vec::new();
+    let mut node = body;
+    while let BoundedCsg::Displace { inner, depth, freq, .. } = node {
+        chain.push((*depth as f64, *freq as f64));
+        node = inner;
+    }
+    if chain.is_empty() || body_has_warp(node) {
+        return None;
+    }
+    Some(chain)
+}
+
 /// A real B-Rep edge between two analytic faces lies on **both** faces. A
 /// subtracted curved primitive (a drilled cylinder), however, makes the
 /// extractor mint *phantom* signature groups: octree cells on the cylinder wall

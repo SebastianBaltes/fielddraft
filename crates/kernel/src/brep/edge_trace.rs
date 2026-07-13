@@ -82,6 +82,20 @@ pub(crate) enum Field<'a> {
         xf: Transform,
         warps: Vec<crate::sdf_dual::DomainWarp>,
     },
+    /// An analytic half-space under a root **displace chain**:
+    /// `g(p) = s·hs(xf⁻¹ p) − Σ depth·sin(x·f)·sin(1.3·y·f)·sin(0.7·z·f)` —
+    /// the per-face field of a displaced body's face
+    /// (`BoundedCsg::Displace`, a VALUE perturbation with no coordinate
+    /// inverse, so unlike [`WarpedAnalytic`](Self::WarpedAnalytic) there is no
+    /// point map: seeds from the un-displaced carriers land within Newton
+    /// range (|disp| ≤ Σ depth) and [`project_to_edge`] pulls them onto the
+    /// displaced seam). Smooth wherever the carrier is; exact dual gradient.
+    DisplacedAnalytic {
+        hs: HalfSpace,
+        xf: Transform,
+        /// `(depth, freq)` per root `Displace` stage, world/body frame.
+        disp: Vec<(f64, f64)>,
+    },
 }
 
 impl Field<'_> {
@@ -97,6 +111,9 @@ impl Field<'_> {
             Field::WarpedAnalytic { hs, xf, warps } => {
                 crate::sdf_dual::warped_halfspace_value_grad(hs, xf, warps, p)
             }
+            Field::DisplacedAnalytic { hs, xf, disp } => {
+                crate::sdf_dual::displaced_halfspace_value_grad(hs, xf, disp, p)
+            }
         }
     }
 
@@ -110,7 +127,8 @@ impl Field<'_> {
     fn noise_floor(&self, p: [f64; 3]) -> f64 {
         match self {
             Field::Analytic { hs: HalfSpace::RevolvedProfile { .. }, .. }
-            | Field::WarpedAnalytic { hs: HalfSpace::RevolvedProfile { .. }, .. } => {
+            | Field::WarpedAnalytic { hs: HalfSpace::RevolvedProfile { .. }, .. }
+            | Field::DisplacedAnalytic { hs: HalfSpace::RevolvedProfile { .. }, .. } => {
                 let linf = p[0].abs().max(p[1].abs()).max(p[2].abs());
                 64.0 * (f32::EPSILON as f64) * (1.0 + linf)
             }

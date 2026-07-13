@@ -116,8 +116,46 @@ impl Kernel {
             /// Der Chart-/Planar-CDT-Pfad ist NICHT warp-bewusst (die
             /// adversariale Matrix läuft general_tri+global_walk).
             warp: Vec<crate::sdf_dual::DomainWarp>,
+            /// Root-Displace-Kette des Bodys (`(depth, freq)` je Stufe, leer
+            /// für unverformte Bodies). Displace ist eine WERT-Störung
+            /// (d − disp(p), keine Koordinaten-Inverse) — der Träger bleibt
+            /// die UN-displacte Fläche, aber das Träger-FELD jeder Prüfung
+            /// (`face_of`/`own_dist`/On-Surface-Gates/Normalen) muss
+            /// `halfspace − disp` sein, sonst messen die On-Surface-Prüfungen
+            /// |disp| ≈ depth als „Abstand" und verwerfen legitime Punkte.
+            disp: Vec<(f32, f32)>,
         }
         impl FaceSurf {
+            /// Wert-Störung `disp(p)` am Body-lokalen Punkt (Welt →
+            /// placement⁻¹): `Σ depth·sin(x·f)·sin(1.3·y·f)·sin(0.7·z·f)` —
+            /// exakt die Displace-Formel des Kernel-Evals (sdf_dual.rs).
+            fn disp_at(&self, p_world: [f32; 3]) -> f32 {
+                if self.disp.is_empty() {
+                    return 0.0;
+                }
+                let pl = crate::world_to_local(&self.placement, p_world);
+                let mut s = 0.0f32;
+                for &(depth, freq) in &self.disp {
+                    s += depth
+                        * (pl[0] * freq).sin()
+                        * (pl[1] * freq * 1.3).sin()
+                        * (pl[2] * freq * 0.7).sin();
+                }
+                s
+            }
+            /// Träger-FELD in Flächen-Frame-Einheiten: `sdf_halfspace(surface,
+            /// surf_pt(p)) − disp(p)/s_transform`. Mit leerer Displace-Kette
+            /// byte-identisch zum historischen Ausdruck (dieselben Float-Ops).
+            fn carrier(&self, p_world: [f32; 3]) -> f32 {
+                let base = crate::csg::sdf_halfspace(&self.surface, self.surf_pt(p_world));
+                if self.disp.is_empty() {
+                    base
+                } else {
+                    // disp lebt in Body-lokalen mm; Flächen-Frame = Body-lokal
+                    // / transform.scale.
+                    base - self.disp_at(p_world) / self.transform.scale[0].abs().max(1e-6)
+                }
+            }
             /// Welt-Punkt → Flächen-Frame. Mit leerer Warp-Kette byte-identisch
             /// zur historischen Kette placement⁻¹ → transform⁻¹.
             fn surf_pt(&self, p_world: [f32; 3]) -> [f32; 3] {
@@ -140,7 +178,7 @@ impl Kernel {
             /// unterschlagen (±17° bei der Twist-Box-Matrix).
             fn normal_world(&self, p_world: [f32; 3]) -> [f32; 3] {
                 let e = 1e-3f32;
-                if self.warp.is_empty() {
+                if self.warp.is_empty() && self.disp.is_empty() {
                     let ps = self.surf_pt(p_world);
                     let sd = |q: [f32; 3]| crate::csg::sdf_halfspace(&self.surface, q);
                     let g = [
@@ -151,7 +189,10 @@ impl Kernel {
                     let gl = crate::quat_rotate(self.transform.rotation, g);
                     return lichen::unit(crate::quat_rotate(self.placement.rotation, gl));
                 }
-                let sd = |q: [f32; 3]| crate::csg::sdf_halfspace(&self.surface, self.surf_pt(q));
+                // Warp ODER Displace: Welt-FD über das komponierte Träger-Feld
+                // (Displace-Anteil via `carrier` — die Beulen-Normale kippt bis
+                // ~40° gegen den un-displacten Träger).
+                let sd = |q: [f32; 3]| self.carrier(q);
                 let p = p_world;
                 lichen::unit([
                     sd([p[0] + e, p[1], p[2]]) - sd([p[0] - e, p[1], p[2]]),
@@ -202,6 +243,13 @@ impl Kernel {
             // face_of/own_dist/Normalen am ECHTEN (gewarpten) Ort messen.
             let warp_body: Vec<crate::sdf_dual::DomainWarp> =
                 crate::brep::edge_walker::root_warp_chain(&bodies[bi]).unwrap_or_default();
+            // Root-Displace-Kette (Wert-Störung, §8r Punkt 1): der B-Rep trägt
+            // den UN-displacten Träger — jede FaceSurf bekommt die Kette,
+            // damit face_of/own_dist/On-Surface-Gates/Normalen gegen das
+            // DISPLACTE Träger-Feld (halfspace − disp) messen.
+            let disp_body: Vec<(f32, f32)> = crate::brep::edge_walker::root_displace(&bodies[bi])
+                .map(|v| v.into_iter().map(|(d, f)| (d as f32, f as f32)).collect())
+                .unwrap_or_default();
             let s = placement.scale[0];
             let to_world = |p: [f64; 3]| -> [f32; 3] {
                 let scaled = [p[0] as f32 * s, p[1] as f32 * s, p[2] as f32 * s];
@@ -707,6 +755,7 @@ impl Kernel {
                     transform: *transform,
                     placement,
                     warp: warp_body.clone(),
+                    disp: disp_body.clone(),
                 });
                 let fid = FaceId(fi as u32);
                 let mut rings: Vec<(Vec<u32>, bool)> = Vec::new();
@@ -726,7 +775,7 @@ impl Kernel {
                         if !seen.insert(gidx) {
                             continue;
                         }
-                        let nw = if warp_body.is_empty() {
+                        let nw = if warp_body.is_empty() && disp_body.is_empty() {
                             let pl = local_pos[gidx as usize];
                             let nl = crate::brep::face_export::face_normal_at_local(
                                 brep,
@@ -777,10 +826,10 @@ impl Kernel {
                     transform: *hxf,
                     placement: Transform::IDENTITY,
                     warp: warp_body.clone(),
+                    disp: disp_body.clone(),
                 };
                 let on_surf = |gidx: u32| -> bool {
-                    let ps = ofs.surf_pt(all[gidx as usize].p);
-                    crate::csg::sdf_halfspace(hsurf, ps).abs() < (0.02 * h).max(0.05)
+                    ofs.carrier(all[gidx as usize].p).abs() < (0.02 * h).max(0.05)
                 };
                 // Angrenzende Kanten: alle Kettenpunkte auf der Surface.
                 let mut adj: Vec<u32> = Vec::new();
@@ -891,8 +940,7 @@ impl Kernel {
                                     // Newton auf die Trägerfläche.
                                     let mut d = f32::MAX;
                                     for _ in 0..8 {
-                                        let ps = ofs.surf_pt(p);
-                                        d = crate::csg::sdf_halfspace(hsurf, ps);
+                                        d = ofs.carrier(p);
                                         if d.abs() < 1e-3 {
                                             break;
                                         }
@@ -972,8 +1020,7 @@ impl Kernel {
             let mut best = u32::MAX;
             let mut bestd = f32::MAX;
             for (gf, fs) in face_surfs.iter().enumerate() {
-                let p_surf = fs.surf_pt(p_world);
-                let d = crate::csg::sdf_halfspace(&fs.surface, p_surf).abs() * face_scale(fs);
+                let d = fs.carrier(p_world).abs() * face_scale(fs);
                 if d < bestd {
                     bestd = d;
                     best = gf as u32;
@@ -1304,8 +1351,9 @@ impl Kernel {
             let total_scale =
                 (fs.placement.scale[0] * fs.transform.scale[0]).abs().max(1e-6);
             let surf_normal = |p_world: [f32; 3]| -> [f32; 3] {
-                if !fs.warp.is_empty() {
-                    // Unter Warp: komponierte Welt-FD (s. FaceSurf::normal_world).
+                if !fs.warp.is_empty() || !fs.disp.is_empty() {
+                    // Unter Warp/Displace: komponierte Welt-FD
+                    // (s. FaceSurf::normal_world).
                     return fs.normal_world(p_world);
                 }
                 // Historischer Pfad, byte-identisch (inkl. der einseitigen
@@ -1345,8 +1393,7 @@ impl Kernel {
                         ];
                         let mut d = f32::MAX;
                         for _ in 0..12 {
-                            let ps = fs.surf_pt(p);
-                            d = crate::csg::sdf_halfspace(&fs.surface, ps);
+                            d = fs.carrier(p);
                             if d.abs() * total_scale < 1e-3 {
                                 break;
                             }
@@ -1500,8 +1547,9 @@ impl Kernel {
                 // Vorhang.
                 let own_dist = |q: [f32; 3]| -> f32 {
                     let fs = &face_surfs[gf as usize];
-                    // In Welt-mm (Skalen-Korrektur, s. face_of); warp-bewusst.
-                    crate::csg::sdf_halfspace(&fs.surface, fs.surf_pt(q)).abs() * face_scale(fs)
+                    // In Welt-mm (Skalen-Korrektur, s. face_of); warp-/
+                    // displace-bewusst.
+                    fs.carrier(q).abs() * face_scale(fs)
                 };
                 let on_face = |p0: [f32; 3], p1: [f32; 3], rr: f32| -> bool {
                     // (a) Ziel auf der eigenen Trägerfläche. Floor 2e-3·h
@@ -1707,8 +1755,7 @@ impl Kernel {
                         if point_faces[i].iter().any(|&(g, _)| g == gf) {
                             continue;
                         }
-                        let ps = fs.surf_pt(p);
-                        let d = crate::csg::sdf_halfspace(&fs.surface, ps).abs() * face_scale(fs);
+                        let d = fs.carrier(p).abs() * face_scale(fs);
                         if d <= tol {
                             let nw = fs.normal_world(p);
                             // REGIONEN-KORREKTHEIT — die Träger sind UNENDLICH!
@@ -2453,7 +2500,7 @@ impl Kernel {
                         &fg,
                         &|p: [f32; 3]| {
                             let fs = &face_surfs[gf];
-                            crate::csg::sdf_halfspace(&fs.surface, fs.surf_pt(p)).abs() <= 0.05 * h
+                            fs.carrier(p).abs() <= 0.05 * h
                         },
                     );
                     if std::env::var("LICHEN_DEBUG_FACES").is_ok() {
@@ -2771,6 +2818,10 @@ impl Kernel {
                 }
                 let fsn = |p_world: [f32; 3]| -> [f32; 3] {
                     let fs = &face_surfs[gf];
+                    if !fs.disp.is_empty() {
+                        // Displace: Welt-FD über das displacte Träger-Feld.
+                        return fs.normal_world(p_world);
+                    }
                     let pl = crate::world_to_local(&fs.placement, p_world);
                     let ps = crate::world_to_local(&fs.transform, pl);
                     let e = 1e-3f32;
@@ -2813,6 +2864,9 @@ impl Kernel {
                     &fg,
                     &|p: [f32; 3]| {
                         let fs = &face_surfs[gf];
+                        if !fs.disp.is_empty() {
+                            return fs.carrier(p).abs() <= 0.05 * h;
+                        }
                         let pl = crate::world_to_local(&fs.placement, p);
                         let ps = crate::world_to_local(&fs.transform, pl);
                         crate::csg::sdf_halfspace(&fs.surface, ps).abs() <= 0.05 * h
@@ -5489,7 +5543,7 @@ mod tests {
     /// | thin_gyroid_wall      | b   |    7 | −1 | 0.035  | 0.095  | 1.46 | 23.0°  |  34 |
     /// | thin_plate_diff       | a   |    0 |  2 | 0.035  | 0.072  | 1.46 | 26.6°  |  15 |
     /// | thin_tube             | a   |    0 |  0 | 0.001  | 0.001  | 1.37 | 24.2°  |  11 |
-    /// | warp_displace_sphere  | c   |  662 |−62 | 0.145  | 0.466  | 4.07 |  1.5°  |  12 |
+    /// | warp_displace_sphere  | a   |    0 |  2 | 0.005  | 0.004  | 1.55 | 22.6°  |  85 |
     /// | warp_twist_box        | a   |    0 |  2 | 0.048  | 0.043  | 3.31 |  9.0°  |   6 |
     /// | warp_bend_box         | a   |    0 |  2 | 0.006  | 0.005  | 2.28 | 11.6°  |  13 |
     /// | tangent_cyl_box_line  | c   |  430 |−99 | 0.050  | 0.067  | 1.66 | 18.4°  | 200 |
@@ -5507,6 +5561,10 @@ mod tests {
     /// UN-gewarpten Raum + Vorwärts-Warp W, `Field::WarpedAnalytic`-Tracer,
     /// warp-bewusste FaceSurf-Kette in diesem Modul) — war 864/662-Klasse-c
     /// („Kanten werden Helizes, kein analytisches B-Rep").
+    /// Displace seit 2026-07-13 (Fortsetzung) Abnahme-Niveau (displace-
+    /// bewusste FaceSurf-Kette `carrier = halfspace − disp`; Ketten für
+    /// displaced Booleans via `Field::DisplacedAnalytic`-Seed-Weave) — war
+    /// 662-Klasse-c; s. `lichen_adv_warp_displace_watertight`.
     #[test]
     #[ignore]
     fn zz_adversarial_matrix() {
@@ -5620,22 +5678,38 @@ mod tests {
         }
     }
 
-    /// WIP (Kategorie c): DISPLACE. Die Displace-Kugel ist glatt und bricht
-    /// trotzdem (662 offen, H(s→m) 0.47): Wachstums-Crowding auf der Beulen-
-    /// Fläche, „nur nicht-leere Kugeln" — und das Feld ist nicht 1-Lipschitz
-    /// (L≈1.8; Befund in bvh.rs — die DL-70-Normalisierung wurde implementiert,
-    /// vermessen (813→1634, SCHLECHTER: Sizing verfeinert auf die kleineren
-    /// |f|) und zurückgebaut). Displace ist ein WERT-Warp (keine invertierbare
-    /// Punktabbildung) — der Twist/Bend-Weg (Warp-B-Rep) greift nicht; braucht
-    /// Feld-basierte Feature-Linien. Ziel-Zustand: wasserdicht.
+    /// AKTIVES GATE (Displace-B-Rep, 2026-07-13): Displace-Bodies bekommen
+    /// die displace-bewusste FaceSurf-Kette — das Träger-FELD jeder Prüfung
+    /// ist `halfspace − disp(p)` (`FaceSurf::carrier`), Normalen als Welt-FD
+    /// darüber. Vorher maßen face_of/own_dist/On-Surface-Gates |disp| ≈ 0.3 mm
+    /// als „Abstand" und die Normalen ignorierten die Beulen (bis ~40° falsch)
+    /// → 662 offene Kanten, χ −62, comp 2, H(s→m) 0.47. Ist-Stand: open 0,
+    /// χ 2, comp 1, H 0.005/0.004, p99 1.55, minang 22.6° — der §8r-Verdacht
+    /// „intraface-Crowding, Regionen helfen nicht" hat sich NICHT bestätigt:
+    /// die korrekten Träger-Felder/Normalen allein schließen alles (Preis:
+    /// ehrliche Krümmungs-Verfeinerung, 5189 → 17401 Punkte, ~85 s release).
+    /// Ketten-Seite (displaced Booleans): Seed-Weave via
+    /// `Field::DisplacedAnalytic`, s. seed_weaver-Gates
+    /// `hybrid_weaves_displaced_box_exact_topology_carved_regime` /
+    /// `hybrid_displaced_box_mixed_sign_chain_samples_on_body`.
+    /// (Nicht-Lipschitz-Befund L≈1.8 bleibt dokumentiert in bvh.rs; die
+    /// DL-70-Normalisierung bleibt für den Mesher widerlegt.)
     #[test]
-    #[ignore = "WIP: Displace nicht 1-Lipschitz und ohne Punktabbildung — \
-                662 offen; braucht Ketten-Ersatz (Feld-Feature-Linien) bzw. \
-                Wachstums-Fix (2026-07-13; Twist/Bend seit Warp-B-Rep grün)"]
-    fn lichen_adv_warp_displace_wip() {
+    #[ignore = "aktives Displace-Gate, aber ~85 s release — bewusst nicht im \
+                Default-Lauf; CI/manuell: cargo test … lichen_adv_warp_displace_watertight -- --ignored"]
+    fn lichen_adv_warp_displace_watertight() {
         let (r, _) = adv_run(&adv_case("warp_displace_sphere"));
         print_report("warp_displace_sphere", &r);
-        assert_eq!(r.q.boundary_edges, 0, "{:?}", r.q);
+        assert_eq!(r.q.boundary_edges, 0, "wasserdicht: {:?}", r.q);
+        assert_eq!(r.q.nonmanifold_edges, 0, "{:?}", r.q);
+        assert_eq!(r.q.orientation_violations, 0, "{:?}", r.q);
+        assert_eq!(r.q.degenerate_tris, 0, "{:?}", r.q);
+        assert_eq!(r.q.components, 1, "{:?}", r.q);
+        assert_eq!(r.q.euler, 2, "Kugel-Topologie: {:?}", r.q);
+        assert!(r.h.mesh_to_surface <= 0.02, "H(m→s)={}", r.h.mesh_to_surface);
+        assert!(r.h.surface_to_mesh <= 0.02, "H(s→m)={}", r.h.surface_to_mesh);
+        assert!(r.a.p99 <= 3.0, "aspect p99={}", r.a.p99);
+        assert!(r.a.min_angle_deg >= 15.0, "min. Winkel {}°", r.a.min_angle_deg);
     }
 
     /// WIP (Kategorie b/c): EXAKT TANGENTIALE KONTAKTE. Kugel küsst Platte

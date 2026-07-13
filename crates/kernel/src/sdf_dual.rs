@@ -1244,6 +1244,37 @@ pub(crate) fn warped_halfspace_value_grad(
     (result.re, d3_grad_f64(&result))
 }
 
+/// Value and exact gradient of an analytic per-face [`HalfSpace`] under a
+/// root **displace chain**, at a world-space point: the field is
+/// `g(p) = s·hs(world_to_local(xf, p)) − Σ depth·sin(x·f)·sin(1.3·y·f)·sin(0.7·z·f)`
+/// — the per-face analogue of the kernel eval's `inner(p) − disp(p)`
+/// (`BoundedCsg::Displace`). Unlike a domain warp there is no point map: the
+/// displacement perturbs the *value*, so the un-displaced face SDF is rescaled
+/// to carrier units (`s = xf.scale`) before the world-frame `disp(p)` is
+/// subtracted. Its zero set is the displaced face; the dual seed carries the
+/// exact gradient of both terms. With an empty chain and `s = 1` this is the
+/// plain [`halfspace_value_grad`] (times 1).
+pub(crate) fn displaced_halfspace_value_grad(
+    hs: &HalfSpace,
+    xf: &Transform,
+    disp: &[(f64, f64)],
+    p: [f64; 3],
+) -> (f64, [f64; 3]) {
+    let pd = [seed_d3(p[0], 0), seed_d3(p[1], 1), seed_d3(p[2], 2)];
+    let local = world_to_local_d3(xf, pd);
+    let s = (xf.scale[0] as f64).abs().max(1e-12);
+    let mut result = sdf_halfspace_generic(hs, local) * D3::from(s);
+    for &(depth, freq) in disp {
+        let f = D3::from(freq);
+        result = result
+            - D3::from(depth)
+                * (pd[0] * f).sin()
+                * (pd[1] * f * D3::from(1.3)).sin()
+                * (pd[2] * f * D3::from(0.7)).sin();
+    }
+    (result.re, d3_grad_f64(&result))
+}
+
 /// Value and exact gradient of an arbitrary [`BoundedCsg`] subtree at a
 /// world-space point, in full f64. Used for the *general* (non-analytic) edge
 /// fields: an Extrude/Revolve/sweep leaf has no closed-form half-space, but its
