@@ -4065,6 +4065,127 @@ mod tests {
             print_report(&format!("h={h} ({secs:.1}s)"), &rep);
         }
     }
+
+    /// ORTS-FORENSIK der offenen Kanten: Ketten-Cluster + Klassifikation nach
+    /// nächster Teilfläche (Gyroid-Wand, Zylinder-Mantel, Box-Kappen, Marker,
+    /// Außenkugel). `cargo test -p fielddraft-kernel --release
+    /// zz_gyroid_open_edge_clusters -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn zz_gyroid_open_edge_clusters() {
+        let mut k = demo_project_kernel();
+        let opts = std::env::var("LICHEN_SCRATCH_OPTS").unwrap_or_else(|_| {
+            r#"{"targetEdgeLength":10.0,"grow":true,"curvAngleDeg":2.0,"useReach":false,"reachTol":1.0,"minEdgeSpacing":0.1,"maxPoints":50000,"generalTri":true,"accept":"witness","extractWalk":true,"globalWalk":true,"lfsFactor":0.1,"sizingField":true,"faceGuard":false,"fillHoles":false}"#.into()
+        });
+        let out = k.lichen_mesh(opts);
+        let (pts, tris) = mesh_of(&out);
+
+        // Offene Kanten = Kanten mit genau einem Dreieck.
+        let mut count: std::collections::HashMap<(u32, u32), u32> = Default::default();
+        for t in &tris {
+            for (a, b) in [(t[0], t[1]), (t[1], t[2]), (t[2], t[0])] {
+                *count.entry((a.min(b), a.max(b))).or_default() += 1;
+            }
+        }
+        let open: Vec<(u32, u32)> =
+            count.iter().filter(|(_, &c)| c == 1).map(|(&e, _)| e).collect();
+
+        // Union-Find über gemeinsame Vertizes → Ketten-Cluster.
+        let mut parent: std::collections::HashMap<u32, u32> = Default::default();
+        fn find(parent: &mut std::collections::HashMap<u32, u32>, x: u32) -> u32 {
+            let p = *parent.get(&x).unwrap_or(&x);
+            if p == x {
+                return x;
+            }
+            let r = find(parent, p);
+            parent.insert(x, r);
+            r
+        }
+        for &(a, b) in &open {
+            let (ra, rb) = (find(&mut parent, a), find(&mut parent, b));
+            if ra != rb {
+                parent.insert(ra, rb);
+            }
+        }
+        let mut clusters: std::collections::HashMap<u32, Vec<(u32, u32)>> = Default::default();
+        for &(a, b) in &open {
+            let r = find(&mut parent, a);
+            clusters.entry(r).or_default().push((a, b));
+        }
+
+        // Klassifikation: Abstand der Kantenmitte zu jeder Teilfläche.
+        let bc = [7.970_110_7f32, 22.314_295, 29.869_688];
+        let he = [3.0f32, 4.0, 3.0];
+        let mc = [5.210_788_2f32, 22.114_31, 29.248_474];
+        let surf = |p: [f32; 3]| -> Vec<(&'static str, f32)> {
+            let s = 10.0f32;
+            let f = (p[0] / s).sin() * (p[1] / s).cos()
+                + (p[1] / s).sin() * (p[2] / s).cos()
+                + (p[2] / s).sin() * (p[0] / s).cos();
+            let gy = (f.abs() - 1.0).abs() * s * 0.2887;
+            let cyl = ((p[0] * p[0] + p[2] * p[2]).sqrt() - 30.0).abs();
+            let sph = ((p[0] * p[0] + p[1] * p[1] + p[2] * p[2]).sqrt() - 50.0).abs();
+            let boxd = (0..3)
+                .map(|k| (he[k] - (p[k] - bc[k]).abs()).abs())
+                .fold(f32::MAX, f32::min);
+            let mk = (((p[0] - mc[0]).powi(2) + (p[1] - mc[1]).powi(2) + (p[2] - mc[2]).powi(2))
+                .sqrt()
+                - 1.0)
+                .abs();
+            vec![("gyroid", gy), ("zylinder", cyl), ("kugel50", sph), ("box", boxd), ("marker", mk)]
+        };
+
+        let mut sizes: Vec<(usize, u32)> =
+            clusters.iter().map(|(&r, v)| (v.len(), r)).collect();
+        sizes.sort_unstable_by(|a, b| b.cmp(a));
+        eprintln!(
+            "OFFENE KANTEN: {} in {} Ketten-Clustern (Groessen: {:?})",
+            open.len(),
+            clusters.len(),
+            sizes.iter().map(|(s, _)| *s).take(20).collect::<Vec<_>>()
+        );
+        for (sz, root) in sizes.iter().take(12) {
+            let edges = &clusters[root];
+            // Häufigkeit: welche ZWEI Flächen sind der Kantenmitte am nächsten?
+            let mut tally: std::collections::BTreeMap<String, usize> = Default::default();
+            let mut lo = [f32::MAX; 3];
+            let mut hi = [f32::MIN; 3];
+            for &(a, b) in edges.iter() {
+                let (pa, pb) = (pts[a as usize], pts[b as usize]);
+                let m = [
+                    0.5 * (pa[0] + pb[0]),
+                    0.5 * (pa[1] + pb[1]),
+                    0.5 * (pa[2] + pb[2]),
+                ];
+                for k in 0..3 {
+                    lo[k] = lo[k].min(m[k]);
+                    hi[k] = hi[k].max(m[k]);
+                }
+                let mut d = surf(m);
+                d.sort_by(|x, y| x.1.partial_cmp(&y.1).unwrap());
+                let key = if d[1].1 < 0.35 {
+                    format!("{}+{}", d[0].0.min(d[1].0), d[0].0.max(d[1].0))
+                } else {
+                    format!("{} (solo, 2.: {} {:.2})", d[0].0, d[1].0, d[1].1)
+                };
+                *tally.entry(key).or_default() += 1;
+            }
+            let mid = [
+                0.5 * (lo[0] + hi[0]),
+                0.5 * (lo[1] + hi[1]),
+                0.5 * (lo[2] + hi[2]),
+            ];
+            eprintln!(
+                "  Cluster {sz:>4} Kanten @ [{:.1},{:.1},{:.1}] ± [{:.1},{:.1},{:.1}]: {tally:?}",
+                mid[0],
+                mid[1],
+                mid[2],
+                0.5 * (hi[0] - lo[0]),
+                0.5 * (hi[1] - lo[1]),
+                0.5 * (hi[2] - lo[2]),
+            );
+        }
+    }
 }
 
 
