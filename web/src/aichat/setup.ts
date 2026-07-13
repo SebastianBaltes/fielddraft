@@ -1,14 +1,22 @@
 /**
  * Wiring of the chat agent (ticket #347): API + guard + prompt + context.
  *
- * Four decisions live here, and each one has a reason:
+ * Five decisions live here, and each one has a reason:
  *
- *  · **Undo is the safety net, not the guard.** The guard controls WHICH
- *    functions the model can reach; it says nothing about whether the result is
- *    what the user wanted. Every API mutation commits through the store, so each
- *    one is a normal undo step — a bad turn is Ctrl+Z, as often as it made
- *    changes. (A single undo step per TURN would need undo grouping in the
- *    kernel; that does not exist yet and is not worth faking here.)
+ *  · **The API object IS the security boundary — not the guard.** Since
+ *    baseaichat v0.2.0 the guard is a BLOCKLIST: it restricts language
+ *    constructs (`this`, prototype chain, `window`, `fetch`, `import()`, …), not
+ *    the vocabulary, so an unknown free identifier now PASSES. That is what makes
+ *    a deep, dynamic API like the KernelStore usable at all — and it means the
+ *    only thing standing between the model and the raw kernel is what we put in
+ *    the API object. Hence `extraBlocked` below: FieldDraft installs debug
+ *    globals (`__fdStore`, `__fdKernel`, `__threeRenderer`, …) in dev builds, and
+ *    those would hand the model the unguarded kernel straight past this file.
+ *  · **Undo is the safety net, not the guard.** The guard says nothing about
+ *    whether the RESULT is what the user wanted. Every API mutation commits
+ *    through the store, so each one is a normal undo step — a bad turn is Ctrl+Z,
+ *    as often as it made changes. (One undo step per TURN would need undo
+ *    grouping in the kernel; that does not exist yet and is not worth faking.)
  *  · **The app context is a SUMMARY, never the store.** `JSON.stringify(store)`
  *    per turn would blow up cost and context. The model gets the feature list
  *    (id/type/name), selection, scene size — and pulls schemas and parameters on
@@ -31,6 +39,28 @@ import type { KernelStore } from "../store";
 import { createFieldDraftApi } from "./fieldDraftApi";
 import { API_DESCRIPTION } from "./api";
 import instructions from "./instructions.md?raw";
+
+/**
+ * FieldDraft's debug globals — blocked for the agent (guardPolicy.test.ts).
+ *
+ * They exist only in dev builds, but the v0.2.0 guard is a BLOCKLIST: a free
+ * `__fdStore` resolves, and the model would be holding the raw kernel with no
+ * curation, no validation and no undo semantics — straight past fieldDraftApi.ts,
+ * which is the actual security boundary. There is nothing in them the API does
+ * not offer safely.
+ */
+export const GUARDED_APP_GLOBALS = [
+  "__fdStore",
+  "__fdKernel",
+  "__threeRenderer",
+  "__fdInvalidate",
+  "__fdSketchCamera",
+  "__fdSketchToScreen",
+  "__fdPerfMonitor",
+  "__fdBenchmark",
+  "__fdTelemetry",
+  "__fdActionLog",
+] as const;
 
 /** The app's own DOM — everything outside the chat panel. */
 function appRoot(): HTMLElement {
@@ -63,6 +93,7 @@ export function agentOptions(
       readUIState: () => readUIState({ root: appRoot() }),
     },
     transformResult: (r) => roundValues(r, 3),
+    extraBlocked: [...GUARDED_APP_GLOBALS],
     // CAD sequences are longer than a to-do list's: a plate with four holes and
     // a fillet is already a dozen calls.
     maxCallsPerWindow: 120,

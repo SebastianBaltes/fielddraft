@@ -24,6 +24,17 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.585",
+    entries: [
+      {
+        kind: "fix",
+        scope: "assistant",
+        text: "Der Schutzwall um den KI-Assistenten ist nachgezogen: Die Chat-Bibliothek prüft den vom Modell geschriebenen Code seit ihrer Version 0.2.0 nicht mehr gegen eine Liste erlaubter Namen, sondern nur noch gegen verbotene Sprachkonstrukte — unbekannte Bezeichner gehen also durch. Damit wären die internen Debug-Schnittstellen der App (window.__fdStore, __fdKernel, __threeRenderer, …) für den Assistenten erreichbar gewesen, vorbei an der kuratierten API mit ihrer Prüfung, Regeneration und Undo-Semantik. Sie sind jetzt ausdrücklich gesperrt, und ein Test hält das fest.",
+        tickets: ["347"],
+      },
+    ],
+  },
+  {
     version: "0.6.584",
     entries: [
       {

@@ -1,4 +1,5 @@
 import { defineConfig, loadEnv, type Plugin } from "vite";
+import { aichatAliases } from "./aichatResolve";
 import react from "@vitejs/plugin-react";
 import { existsSync, readFileSync } from "node:fs";
 import { join, resolve, isAbsolute, sep } from "node:path";
@@ -254,17 +255,16 @@ function serverPort(mode: string): number {
 }
 
 // https://vitejs.dev/config/
-// The BaseAIChat library (ticket #347) is consumed as SOURCE, not as a built
-// bundle — it lives in the git submodule at third_party/baseaichat, i.e. OUTSIDE
-// this Vite root (web/). Hence the alias, the `fs.allow` widening, and the React
-// dedupe: two React instances would break the library's hooks.
+// The BaseAIChat library (ticket #347) is consumed as SOURCE from the submodule
+// at third_party/ — OUTSIDE this Vite root. `aichatAliases` maps it and every
+// package it imports into web/node_modules (see aichatResolve.ts); `fs.allow`
+// lets the dev server serve files from up there at all.
 const REPO_ROOT = resolve(process.cwd(), "..");
-const AICHAT_SRC = resolve(REPO_ROOT, "third_party/baseaichat/web/src/index.ts");
 
 export default defineConfig(({ mode }) => ({
   plugins: [react(), reloadGate(), liveVersion(), kernelStamp(), fileReader()],
   resolve: {
-    alias: { baseaichat: AICHAT_SRC },
+    alias: aichatAliases,
     dedupe: ["react", "react-dom"],
   },
   server: {

@@ -9,7 +9,7 @@
  * types — and report errors in code that is not ours to fix. Vite still bundles
  * the real source; this file only describes the boundary we lean on.
  *
- * Pinned against baseaichat v0.1.0 (submodule commit). If a signature here stops
+ * Pinned against baseaichat v0.2.0 (submodule tag). If a signature here stops
  * matching, that is the pin telling you the library moved — update both together.
  */
 declare module "baseaichat" {
@@ -27,9 +27,25 @@ declare module "baseaichat" {
     timeoutMs?: number;
     maxCallsPerWindow?: number;
     rateWindowMs?: number;
-    extraGlobals?: string[];
+    /** Additional globals the guard must reject (v0.2.0: the guard is a
+     *  blocklist, so app-specific globals have to be named here). */
+    extraBlocked?: string[];
+    /** Globals to un-block from the default list. */
+    allowBlocked?: string[];
   }
   export function createEvaluator(options: EvaluatorOptions): Evaluator;
+
+  export interface GuardOptions {
+    extraBlocked?: string[];
+    allowBlocked?: string[];
+    maxLength?: number;
+    maxNodes?: number;
+  }
+  export interface GuardResult {
+    ok: boolean;
+    reason?: string;
+  }
+  export function guardCode(code: string, options?: GuardOptions): GuardResult;
 
   export interface UIStateOptions {
     root?: ParentNode;

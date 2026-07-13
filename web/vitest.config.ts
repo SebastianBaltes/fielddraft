@@ -1,10 +1,15 @@
 import { defineConfig } from "vitest/config";
+import { aichatAliases } from "./aichatResolve";
 
 // Vitest 3 still pulls Vite 6 internally, which clashes types with the top-
 // level Vite 8 install if we also load the React plugin here. Our unit tests
 // are pure TS (no JSX), so we keep this config plugin-free and let the tsc
 // pre-check run via `tsc -b` in the build step.
 export default defineConfig({
+  // The AI-chat library is consumed as SOURCE from the git submodule (ticket
+  // #347) — the same alias map the dev server uses, so the guard-policy test
+  // exercises the REAL guard instead of a stub of it.
+  resolve: { alias: aichatAliases },
   // The build-time `define` globals (injected by vite.config.ts in dev/build)
   // are not present in vitest. The App shell reads __APP_VERSION__/
   // __KERNEL_EXPECTED__ at render, so provide inert literals here — without them

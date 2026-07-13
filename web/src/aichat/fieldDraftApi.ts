@@ -1,10 +1,13 @@
 /**
  * The API the chat agent writes JavaScript against (ticket #347).
  *
- * BaseAIChat runs its agent loop IN THE BROWSER: the model emits JS, an AST
- * guard checks it against an allowlist, and it runs against exactly the object
- * this module builds. So this file — not the model, not the prompt — decides
- * what the assistant can do to a user's CAD document.
+ * BaseAIChat runs its agent loop IN THE BROWSER: the model emits JS, an AST guard
+ * strips the dangerous language constructs, and the code then runs against
+ * exactly the object this module builds. Since baseaichat v0.2.0 that guard is a
+ * BLOCKLIST — it no longer knows the API and no longer restricts which names may
+ * be called. So this file is not "one of two" defences: it IS the boundary. What
+ * is not in this object, the assistant cannot do (see setup.ts `extraBlocked` for
+ * the app globals that would otherwise sneak past it).
  *
  * Three rules it is built on:
  *
