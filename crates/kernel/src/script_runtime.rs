@@ -389,6 +389,7 @@ pub fn resolve_query_global(query: &str) -> Result<String, ScriptError> {
     // Contributors are the query's own input feature ids (Display form).
     let contributors: Vec<String> = match &expr {
         crate::queries::QueryExpr::CreatedBy(f)
+        | crate::queries::QueryExpr::CreatedByRole(f, _)
         | crate::queries::QueryExpr::FaceOf(f)
         | crate::queries::QueryExpr::AllRegions(f)
         | crate::queries::QueryExpr::Region(f, _)

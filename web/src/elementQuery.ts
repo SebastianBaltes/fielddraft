@@ -146,6 +146,11 @@ export function queryAcceptedByFilter(query: string, entityFilter?: string): boo
       // SKETCHREGION profile picker (ticket dhjn).
       return has("FACE") || has("SKETCHREGION");
     case "CreatedBy":
+      // The role-filtered form `qCreatedBy(op, CAP_TOP)` etc. addresses
+      // faces of one feature — a FACE-level query, never a body/region.
+      if (/,\s*(WALL|CAP_TOP|CAP_BOTTOM|INNER_WALL|BLEND)\s*\)/.test(query)) {
+        return has("FACE");
+      }
       // A bare `qCreatedBy(sketch)` is the WHOLE-sketch profile — accepted by a
       // SKETCHREGION picker too (it's the "all regions" case).
       if (has("SKETCHREGION") && !/origin_plane_/.test(query)) return true;

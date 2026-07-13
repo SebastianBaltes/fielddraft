@@ -138,6 +138,18 @@ describe("queryAcceptedByFilter — SKETCHREGION profile picker (ticket dhjn)", 
   });
 });
 
+describe("queryAcceptedByFilter — role-filtered qCreatedBy(op, ROLE)", () => {
+  it("is a FACE-level query: accepted by FACE, rejected elsewhere", () => {
+    for (const role of ["WALL", "CAP_TOP", "CAP_BOTTOM", "INNER_WALL", "BLEND"]) {
+      const q = `qCreatedBy(3, ${role})`;
+      expect(queryAcceptedByFilter(q, "FACE")).toBe(true);
+      expect(queryAcceptedByFilter(q, "BODY")).toBe(false);
+      expect(queryAcceptedByFilter(q, "SKETCHREGION")).toBe(false);
+      expect(queryAcceptedByFilter(q, "EDGE")).toBe(false);
+    }
+  });
+});
+
 describe("queryAcceptedByFilter (axis picker hardening)", () => {
   it("no filter accepts every query", () => {
     for (const q of ["qEdge(1)", "qFace(1)", "qCreatedBy(2)", "qCreatedBy(origin_plane_xy)"]) {

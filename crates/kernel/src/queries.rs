@@ -68,6 +68,84 @@ impl From<&crate::brep::naming::TopoRef> for ElementRef {
     }
 }
 
+/// The role a B-Rep face plays within its owning feature — a pure
+/// formalisation of the sub-id bit layout that has always been there
+/// (`BranchId::EXTRUDE_CAP_TOP_SUB` / `…_BOTTOM_SUB` /
+/// `INNER_WALL_FLAG`; blend carriers are recognised by their
+/// [`HalfSpace::Blend`](fielddraft_protocol::HalfSpace) surface, since a
+/// fillet mints its faces at sub 0). Nothing about the layout moves —
+/// existing id hashes are untouched. The role vocabulary is what the
+/// Onshape import needs to translate `CAP_FACE` / `SWEPT_FACE` /
+/// `BLEND_FACE` creation queries onto FieldDraft faces.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FaceRole {
+    /// A lateral sweep wall (sketch boundary group) or a primitive's
+    /// ordinary sub-face — everything the reserved sub-ids don't claim.
+    Wall,
+    /// The extrude/helix end cap on the +axis side (`EXTRUDE_CAP_TOP_SUB`).
+    CapTop,
+    /// The end cap on the −axis side (`EXTRUDE_CAP_BOTTOM_SUB`).
+    CapBottom,
+    /// A shell inner-wall face (`INNER_WALL_FLAG`, DL-75).
+    InnerWall,
+    /// A fillet/chamfer blend carrier face (`HalfSpace::Blend` surface).
+    Blend,
+}
+
+impl FaceRole {
+    /// Canonical token used in the query string form (`qCreatedBy(3, CAP_TOP)`).
+    pub fn token(self) -> &'static str {
+        match self {
+            FaceRole::Wall => "WALL",
+            FaceRole::CapTop => "CAP_TOP",
+            FaceRole::CapBottom => "CAP_BOTTOM",
+            FaceRole::InnerWall => "INNER_WALL",
+            FaceRole::Blend => "BLEND",
+        }
+    }
+
+    /// Parse the canonical token (case-sensitive — the string form is a
+    /// wire format, not user input).
+    pub fn from_token(token: &str) -> Option<Self> {
+        Some(match token {
+            "WALL" => FaceRole::Wall,
+            "CAP_TOP" => FaceRole::CapTop,
+            "CAP_BOTTOM" => FaceRole::CapBottom,
+            "INNER_WALL" => FaceRole::InnerWall,
+            "BLEND" => FaceRole::Blend,
+            _ => return None,
+        })
+    }
+}
+
+impl fmt::Display for FaceRole {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.token())
+    }
+}
+
+/// Classify the role a face plays within its owning feature — the single
+/// authority mapping the existing bit layout (and the blend surface
+/// class) onto [`FaceRole`]. Blend wins first: a fillet's carrier face is
+/// minted at sub 0, which would otherwise read as `Wall`.
+pub fn face_role(face: &crate::brep::Face) -> FaceRole {
+    use crate::brep::SurfaceGeometry;
+    use crate::csg::BranchId;
+    use fielddraft_protocol::HalfSpace;
+    if let SurfaceGeometry::Analytic { surface: HalfSpace::Blend { .. }, .. } = &face.surface {
+        return FaceRole::Blend;
+    }
+    let branch = face.branch_id;
+    if branch.is_inner_wall() {
+        return FaceRole::InnerWall;
+    }
+    match branch.sub() {
+        BranchId::EXTRUDE_CAP_TOP_SUB => FaceRole::CapTop,
+        BranchId::EXTRUDE_CAP_BOTTOM_SUB => FaceRole::CapBottom,
+        _ => FaceRole::Wall,
+    }
+}
+
 /// Parsed form of a `q…(…)` query string. Three variants match the
 /// README's "query minimum" vocabulary.
 ///
@@ -78,6 +156,12 @@ pub enum QueryExpr {
     /// as its sole contributor. Semantically: "the geometry this
     /// feature produced and nothing else touched".
     CreatedBy(FeatureId),
+    /// `qCreatedBy(id, ROLE)` — the faces feature `id` produced,
+    /// narrowed to one [`FaceRole`] (`qCreatedBy(3, CAP_TOP)`). The
+    /// role-filtered sibling of [`CreatedBy`](Self::CreatedBy); the
+    /// Onshape import's translation target for `CAP_FACE` /
+    /// `SWEPT_FACE` / `BLEND_FACE` creation queries.
+    CreatedByRole(FeatureId, FaceRole),
     /// `qFaceOf(id)` — the face(s) owned by a single feature. At
     /// the feature level this is the same set as `CreatedBy`, but
     /// the distinction is preserved so downstream slices can
@@ -122,6 +206,7 @@ impl fmt::Display for QueryExpr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             QueryExpr::CreatedBy(id) => write!(f, "qCreatedBy({id})"),
+            QueryExpr::CreatedByRole(id, role) => write!(f, "qCreatedBy({id}, {role})"),
             QueryExpr::FaceOf(id) => write!(f, "qFaceOf({id})"),
             QueryExpr::EdgeBetween(a, b) => write!(f, "qEdgeBetween({a}, {b})"),
             QueryExpr::AllRegions(id) => write!(f, "qAllRegions({id})"),
@@ -180,6 +265,9 @@ pub enum QueryParseError {
     /// The `@`-suffixed fingerprint block of an element query was not a
     /// list of 4 (face/vertex) or 7 (edge) floats. Carries the block.
     InvalidFingerprint(String),
+    /// The role argument of `qCreatedBy(id, ROLE)` was not a known
+    /// [`FaceRole`] token. Carries the offending token.
+    InvalidRole(String),
 }
 
 impl fmt::Display for QueryParseError {
@@ -199,6 +287,12 @@ impl fmt::Display for QueryParseError {
             }
             QueryParseError::InvalidFingerprint(raw) => {
                 write!(f, "invalid fingerprint block in query: `{raw}`")
+            }
+            QueryParseError::InvalidRole(raw) => {
+                write!(
+                    f,
+                    "invalid face role `{raw}` (expected WALL, CAP_TOP, CAP_BOTTOM, INNER_WALL or BLEND)"
+                )
             }
         }
     }
@@ -234,10 +328,18 @@ pub fn parse_query(input: &str) -> Result<QueryExpr, QueryParseError> {
     };
 
     match name.trim() {
-        "qCreatedBy" => {
-            let id = expect_one_id(&args, "qCreatedBy expects one id")?;
-            Ok(QueryExpr::CreatedBy(id))
-        }
+        "qCreatedBy" => match args.len() {
+            1 => Ok(QueryExpr::CreatedBy(parse_feature_id(args[0])?)),
+            2 => {
+                let id = parse_feature_id(args[0])?;
+                let role = FaceRole::from_token(args[1])
+                    .ok_or_else(|| QueryParseError::InvalidRole(args[1].to_string()))?;
+                Ok(QueryExpr::CreatedByRole(id, role))
+            }
+            _ => Err(QueryParseError::MalformedArguments(
+                "qCreatedBy expects one id, optionally followed by a face role",
+            )),
+        },
         "qFaceOf" => {
             let id = expect_one_id(&args, "qFaceOf expects one id")?;
             Ok(QueryExpr::FaceOf(id))
@@ -413,6 +515,19 @@ pub fn resolve_query_topo(
             for brep in breps {
                 for i in 0..brep.faces.len() {
                     if brep.faces[i].branch_id.feature_id() == target {
+                        out.push(TopoRef::from_face(brep, FaceId(i as u32)));
+                    }
+                }
+            }
+        }
+        QueryExpr::CreatedByRole(f, role) => {
+            let Some(target) = f.as_u32_or_root() else {
+                return Vec::new();
+            };
+            for brep in breps {
+                for i in 0..brep.faces.len() {
+                    let face = &brep.faces[i];
+                    if face.branch_id.feature_id() == target && face_role(face) == *role {
                         out.push(TopoRef::from_face(brep, FaceId(i as u32)));
                     }
                 }
@@ -638,8 +753,10 @@ mod tests {
 
     #[test]
     fn rejects_wrong_arity_for_created_by() {
+        // Two args are the role form now — a non-role second arg is an
+        // invalid role, not a generic arity error.
         let err = parse_query("qCreatedBy(1, 2)").unwrap_err();
-        assert!(matches!(err, QueryParseError::MalformedArguments(_)));
+        assert_eq!(err, QueryParseError::InvalidRole("2".to_string()));
     }
 
     #[test]
@@ -703,6 +820,36 @@ mod tests {
     #[test]
     fn rejects_wrong_arity_for_face() {
         let err = parse_query("qFace(1, 2)").unwrap_err();
+        assert!(matches!(err, QueryParseError::MalformedArguments(_)));
+    }
+
+    // ─── qCreatedBy(id, ROLE) — parse ─────────────────────────
+
+    #[test]
+    fn parses_created_by_with_role() {
+        for (raw, role) in [
+            ("qCreatedBy(3, WALL)", FaceRole::Wall),
+            ("qCreatedBy(3, CAP_TOP)", FaceRole::CapTop),
+            ("qCreatedBy(3, CAP_BOTTOM)", FaceRole::CapBottom),
+            ("qCreatedBy(3, INNER_WALL)", FaceRole::InnerWall),
+            ("qCreatedBy(3, BLEND)", FaceRole::Blend),
+        ] {
+            let q = parse_query(raw).unwrap();
+            assert_eq!(q, QueryExpr::CreatedByRole(id(3), role), "{raw}");
+            // Display is the canonical wire form and must re-parse.
+            assert_eq!(q.to_string(), raw);
+        }
+    }
+
+    #[test]
+    fn rejects_unknown_role_token() {
+        let err = parse_query("qCreatedBy(3, TOP_CAP)").unwrap_err();
+        assert_eq!(err, QueryParseError::InvalidRole("TOP_CAP".to_string()));
+    }
+
+    #[test]
+    fn rejects_three_args_for_created_by() {
+        let err = parse_query("qCreatedBy(3, CAP_TOP, WALL)").unwrap_err();
         assert!(matches!(err, QueryParseError::MalformedArguments(_)));
     }
 
@@ -870,6 +1017,109 @@ mod tests {
         let first = resolve_query_topo(std::slice::from_ref(&brep), &QueryExpr::CreatedBy(id(5)));
         let second = resolve_query_topo(&[brep], &QueryExpr::CreatedBy(id(5)));
         assert_eq!(first, second, "two calls give identical output");
+    }
+
+    // ─── qCreatedBy(id, ROLE) — resolve ───────────────────────
+
+    /// A face with the procedural blend-carrier surface (what a fillet
+    /// mints, at sub 0 of the fillet feature's id).
+    fn blend_face(branch: BranchId) -> Face {
+        let wall = HalfSpace::Plane { normal: [0.0, 0.0, 1.0], offset: 0.0 };
+        Face {
+            branch_id: branch,
+            surface: SurfaceGeometry::Analytic {
+                surface: HalfSpace::Blend {
+                    a: Box::new(wall.clone()),
+                    a_transform: Transform::IDENTITY,
+                    a_flip: false,
+                    b: Box::new(wall),
+                    b_transform: Transform::IDENTITY,
+                    b_flip: false,
+                    radius: 1.0,
+                    chamfer: false,
+                    is_difference: false,
+                },
+                transform: Transform::IDENTITY,
+            },
+            outer: Loop::default(),
+            inner: Vec::new(),
+        }
+    }
+
+    /// An extrude-shaped feature 7: two wall groups (subs 0, 1), the two
+    /// caps, one shell inner wall — plus a blend face of fillet feature 9.
+    fn role_brep() -> BRep {
+        let f7 = FeatureId::from_u32(7);
+        let f9 = FeatureId::from_u32(9);
+        let mut brep = BRep::new();
+        brep.add_face(plane_face(BranchId::from_feature_sub(&f7, 0)));
+        brep.add_face(plane_face(BranchId::from_feature_sub(&f7, 1)));
+        brep.add_face(plane_face(BranchId::from_feature_sub(&f7, BranchId::EXTRUDE_CAP_TOP_SUB)));
+        brep.add_face(plane_face(BranchId::from_feature_sub(
+            &f7,
+            BranchId::EXTRUDE_CAP_BOTTOM_SUB,
+        )));
+        brep.add_face(plane_face(BranchId::from_feature_sub(&f7, 0).inner_wall()));
+        brep.add_face(blend_face(BranchId::from_feature_sub(&f9, 0)));
+        brep
+    }
+
+    #[test]
+    fn resolve_created_by_role_filters_by_role() {
+        let brep = role_brep();
+        let f7 = id(7);
+        for (role, want) in [
+            (FaceRole::Wall, 2),
+            (FaceRole::CapTop, 1),
+            (FaceRole::CapBottom, 1),
+            (FaceRole::InnerWall, 1),
+            (FaceRole::Blend, 0), // feature 7 has no blend face
+        ] {
+            let refs = resolve_query_topo(
+                std::slice::from_ref(&brep),
+                &QueryExpr::CreatedByRole(f7.clone(), role),
+            );
+            assert_eq!(refs.len(), want, "role {role}");
+            assert!(refs.iter().all(|r| r.kind == EntityKind::Face));
+        }
+    }
+
+    #[test]
+    fn resolve_created_by_role_blend_names_the_fillet_face() {
+        let brep = role_brep();
+        let refs = resolve_query_topo(
+            std::slice::from_ref(&brep),
+            &QueryExpr::CreatedByRole(id(9), FaceRole::Blend),
+        );
+        assert_eq!(refs.len(), 1, "exactly the fillet's blend carrier");
+        // The blend face is minted at sub 0 — WITHOUT the surface check it
+        // would masquerade as a wall. The role classifier must not.
+        let walls = resolve_query_topo(
+            std::slice::from_ref(&brep),
+            &QueryExpr::CreatedByRole(id(9), FaceRole::Wall),
+        );
+        assert!(walls.is_empty(), "a blend carrier is not a wall");
+    }
+
+    #[test]
+    fn resolve_created_by_role_union_matches_created_by() {
+        // The five roles partition qCreatedBy(f)'s face set.
+        let brep = role_brep();
+        let all = resolve_query_topo(std::slice::from_ref(&brep), &QueryExpr::CreatedBy(id(7)));
+        let by_role: usize = [
+            FaceRole::Wall,
+            FaceRole::CapTop,
+            FaceRole::CapBottom,
+            FaceRole::InnerWall,
+            FaceRole::Blend,
+        ]
+        .iter()
+        .map(|&r| {
+            resolve_query_topo(std::slice::from_ref(&brep), &QueryExpr::CreatedByRole(id(7), r))
+                .len()
+        })
+        .sum();
+        assert_eq!(all.len(), by_role, "roles partition the CreatedBy set");
     }
 
     // ─── id_hash-addressed element queries (resolve) ──────────
