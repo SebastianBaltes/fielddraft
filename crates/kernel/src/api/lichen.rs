@@ -4478,6 +4478,55 @@ mod tests {
         }
     }
 
+    /// ABNAHME-GATE (Definition of Done der Lichen-Session 2026-07-13):
+    /// der Gyroid-Kugel-Ausschnitt besteht alle vier Metriken mit den
+    /// Betreiber-Settings. Schwellen = Theorie-Ziel + gemessener Headroom
+    /// (Ist v0.6.566: open 0, χ 2, H(m→s) 0.021, H(s→m) 0.098/p95 0.0022,
+    /// asp p99 1.85, minang 14.9°, 11468 tris) — NICHT nachträglich
+    /// aufweichen; wer hier anschlägt, hat eine echte Regression.
+    /// Laufzeit: ~12 s release, ~5,5 min debug (läuft parallel zur übrigen
+    /// Suite; gleiche Größenordnung wie das aktive Betreiber-Settings-Gate).
+    #[test]
+    fn gyroid_cutout_acceptance_four_metrics() {
+        let mut k = demo_project_kernel();
+        // Exakt die Betreiber-Settings aus dem .fdraft (debug.lichen).
+        let out = k.lichen_mesh(
+            r#"{"targetEdgeLength":10.0,"grow":true,"curvAngleDeg":2.0,"useReach":false,"reachTol":1.0,"minEdgeSpacing":0.1,"maxPoints":50000,"generalTri":true,"accept":"witness","extractWalk":true,"globalWalk":true,"lfsFactor":0.1,"sizingField":true,"faceGuard":false,"fillHoles":false}"#.into(),
+        );
+        assert!(out.len() >= 3, "Mesher liefert ein Netz");
+        let (lo, hi) = demo_cutout_aabb(0.3);
+        let r = measure(&k, &out, lo, hi, 0.5);
+        print_report("ABNAHME", &r);
+
+        // 1. MANIFOLD: geschlossene, konsistent orientierte 2-Mannigfaltigkeit.
+        assert_eq!(r.q.boundary_edges, 0, "wasserdicht: {:?}", r.q);
+        assert_eq!(r.q.nonmanifold_edges, 0, "{:?}", r.q);
+        assert_eq!(r.q.orientation_violations, 0, "{:?}", r.q);
+        assert_eq!(r.q.degenerate_tris, 0, "{:?}", r.q);
+        assert_eq!(r.q.components, 1, "ein zusammenhängender Body: {:?}", r.q);
+        // χ=2 = Kugel-Topologie des Ausschnitts (Regressions-Anker gegen
+        // Phantom-Henkel/-Tunnel; bei legitimer Fixture-Änderung neu ableiten).
+        assert_eq!(r.q.euler, 2, "{:?}", r.q);
+
+        // 2. HAUSDORFF beidseitig (mm): m→s = liegt das Netz auf der Fläche,
+        //    s→m = überdeckt es sie (sieht Löcher/fehlende Stücke).
+        assert!(r.h.mesh_to_surface <= 0.05, "H(m→s)={} > 0.05", r.h.mesh_to_surface);
+        assert!(r.h.surface_to_mesh <= 0.15, "H(s→m)={} > 0.15 @ {:?}", r.h.surface_to_mesh, r.h.worst_surface_point);
+        assert!(r.h.surface_to_mesh_p95 <= 0.02, "p95={} > 0.02", r.h.surface_to_mesh_p95);
+
+        // 3. DREIECKSZAHL: Band gegen Kollaps (halbes Netz) und Explosion
+        //    (Verdichtungs-Kaskade); Ist 11468.
+        assert!(
+            (7000..=23000).contains(&r.tris),
+            "Dreieckszahl {} außerhalb [7000, 23000]",
+            r.tris
+        );
+
+        // 4. ASPECT RATIO / Formgüte.
+        assert!(r.a.p99 <= 4.0, "aspect p99={} > 4", r.a.p99);
+        assert!(r.a.min_angle_deg >= 10.0, "min. Winkel {}° < 10°", r.a.min_angle_deg);
+    }
+
     /// BASELINE-MESSREIHE auf dem Abnahmefall (kein Gate — Analyse-Werkzeug).
     /// Default = exakt die Betreiber-Settings aus dem .fdraft.
     /// `cargo test -p fielddraft-kernel --release zz_gyroid_baseline -- --ignored --nocapture`

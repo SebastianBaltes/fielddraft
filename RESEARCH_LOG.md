@@ -184,3 +184,14 @@ Format: Zeitstempel · Hypothese/Frage · Ergebnis · Entscheidung.
   Endstand h=10: pts 5738, tris 11468, open 0, nm 0, orient 0, χ=2,
   H(m→s) 0,0213, H(s→m) 0,098 (p95 0,0022), asp p99 1,85, minang 14,9°;
   h=6 und h=14 ebenfalls open=0. Lichen-Gates 33/33, Suite 1078/1078.
+
+## 2026-07-13 07:40 — Abnahme-Gate aktiv (Task #3)
+
+- `gyroid_cutout_acceptance_four_metrics` als AKTIVER Test in api/lichen.rs:
+  Manifold (open=0, nm=0, orient=0, deg=0, comp=1, χ=2 als Regressions-Anker),
+  Hausdorff (m→s ≤ 0.05, s→m ≤ 0.15, p95 ≤ 0.02), Dreieckszahl-Band
+  [7000, 23000], Aspect (p99 ≤ 4, minang ≥ 10°). Betreiber-Settings 1:1.
+  Grün in release (12 s); Debug-Laufzeit wird vermessen.
+- Iteration-4-Verifikation durch Orchestrator: open=0/χ=2 reproduziert,
+  1078/1078 grün, Stitching-Review ok (Grad-2-Loops ≤5, valid_geom-Pflicht,
+  Manifold-Schutz, Loops >5 bleiben ehrlich offen).

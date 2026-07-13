@@ -8,10 +8,12 @@
 *(ausstehend — Status der Erfolgskriterien mit Zahlen)*
 
 Erfolgskriterien:
-1. Gyroid-Kugel-Ausschnitt besteht 4-Metriken-Suite: **offen** (Manifold-Metrik
-   ist der Blocker; Hausdorff/Aspect/Dreieckszahl bereits im Ziel)
-2. Bestehende Suite grün: Web 1679/1679 ✓ (2026-07-13 03:09); Kernel-Lichen-
-   Gates 33/33 ✓; volle Workspace-Suite am Ende erneut
+1. Gyroid-Kugel-Ausschnitt besteht 4-Metriken-Suite: **ERFÜLLT** (v0.6.566) —
+   aktives Gate `gyroid_cutout_acceptance_four_metrics`: Manifold (open=0,
+   nm=0, orient=0, χ=2), Hausdorff (0.021/0.098 mm, Schwellen 0.05/0.15),
+   Dreieckszahl 11468 ∈ [7000, 23000], Aspect p99 1.85 ≤ 4, minang 14.9° ≥ 10°.
+2. Bestehende Suite grün: Kernel 1078/1078 ✓, Lichen-Gates 33/33 ✓,
+   Web 1679/1679 ✓; volle Workspace-Suite am Sessionende erneut.
 3. REPORT.md: dieses Dokument
 
 ## Metriken vorher/nachher (Abnahmefall, Betreiber-Settings, release)
@@ -21,7 +23,9 @@ Erfolgskriterien:
 | Baseline v0.6.563 | 397 | 0 | 0.010 | 0.080 (p95 0.003) | 1.78 | 18.6° | 5746/11137 |
 | v0.6.564 blatt-restr. Kugel | 312 | 0 | 0.026 | 0.090 (p95 0.003) | 1.78 | 18.6° | 5746/11222 |
 | v0.6.565 Band 10° + Guard-Ausnahme + Ketten-Weld | 21 | 0 | 0.021 | 0.098 (p95 0.002) | 1.85 | 14.9° | 5738/11459 |
-| Zwickel-Topologie (in Arbeit) | | | | | | | |
+| **v0.6.566 Kreuzungs-Fixes + Naht-Stitching** | **0** (χ=2) | 0 | 0.021 | 0.098 (p95 0.002) | 1.85 | 14.9° | 5738/11468 |
+
+Robustheit: open=0 auch bei h=6 und h=14; deterministisch (identische Läufe).
 
 ## Erforschte Ansätze
 
@@ -30,6 +34,14 @@ Erfolgskriterien:
   glattem Patch (Cheng–Dey–Levine); Regionen aus B-Rep-Flächen + Union-Find
   (Verschmelzung ohne trennende Kette), Naht-Band-Einfärbung immer aktiv.
   397→312, alle Mikro-Löcher entlang der Nähte geschlossen.
+- **Kreuzungs-Veto-Korrekturen + Naht-Stitching** (v0.6.566): 21→0. Die
+  letzten „Ketten-Kreuzungen" waren Projektions-Falsch-Positive (fremde
+  Nähte 0,1 mm ÜBER der Dreiecksebene, in die Ebene projiziert): Blatt-
+  Restriktion + Ebenen-Abstands-Gate im Veto (21→10). Rest = Mikro-Loops
+  (≤5 Kanten, Grad-2-Rand), die nachweislich nur am Zeugen-Newton am
+  SDF-Knick scheiterten: deterministischer Stitching-Post-Pass, jedes
+  Dreieck muss die volle Geometrie-Gültigkeit (valid_geom inkl.
+  Sichtlinien) bestehen — kein blindes Stopfen (10→0, χ=2).
 - **Naht-Band 25°→10° + Normalen-Guard-Ausnahme + Ketten-Verschweißung**
   (v0.6.565): 312→21. (1) Mit 25°-Tangential-Schwelle trug jeder nahtnahe
   Punkt beide Regionen — die Blatt-Restriktion war blind; reale Keilwinkel
@@ -56,6 +68,11 @@ Erfolgskriterien:
 - Globales minEdgeSpacing-Anheben: 155 offene, aber untersampelt
   (H(s→m) 0.26 > 0.15) — bestätigt aber die Crowding-Diagnose örtlich.
 - Hidden-Vertex zusätzlich zum v0.6.565-Stand: 21→26.
+- **Segment-Segment-Ketten-Verschweißung** (Zwickel-Schnittpunkt-Hypothese):
+  voll implementiert (Ericson-Closest-Pair, Schnitt-Vertex in beide Ketten),
+  4 Radien vermessen — es existieren keine Off-Vertex-Quasi-Schnitte; die
+  echten Blocker waren Projektions-Falsch-Positive des Kreuzungstests.
+  Implementierung entfernt, Phasen-Split der Ketten-Erzeugung bleibt.
 
 ## Architektur der Lösung
 
