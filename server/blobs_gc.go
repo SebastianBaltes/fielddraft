@@ -2,8 +2,10 @@
 //
 // The content-addressed blob store (sqlStore's /data/blobs, memStore's blobs
 // map) is SHARED: it holds project-document blobs, thumbnails, snapshot
-// documents, mesh-job STLs, ticket artifacts, AND the mesh/font asset blobs a
-// lean project document references by sha256 hash. Over time a save ORPHANS an
+// documents, mesh-job STLs, AND the mesh/font asset blobs a lean project
+// document references by sha256 hash. (Ticket artifacts left the SQL store with
+// ticket #346 — they live in IssueVault now; the in-memory test double still
+// keeps them, and still reports them as referenced.) Over time a save ORPHANS an
 // asset blob — a newer document version stops referencing a mesh/font hash, but
 // the immutable blob lingers forever (the store only grows, see the former
 // blobs_handlers.go TODO(GC)).
@@ -13,7 +15,7 @@
 //
 //   1. Two reference sources are UNIONed into the live set (collectReferenced-
 //      BlobHashes): every ref held directly in a store column (documents,
-//      thumbnails, snapshots, mesh artifacts, ticket artifacts) PLUS every
+//      thumbnails, snapshots, mesh artifacts) PLUS every
 //      embedded mesh/font hash found by walking each project document. A blob in
 //      EITHER set is never touched. The walk biases toward OVER-collection — a
 //      stray extra hash only spares an orphan, it can never delete a live blob.

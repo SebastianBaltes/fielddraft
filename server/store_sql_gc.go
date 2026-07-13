@@ -44,16 +44,21 @@ func (s *sqlStore) AllProjectDocuments() ([]json.RawMessage, error) {
 }
 
 // ListReferencedRefs returns every blob ref held directly in a store column:
-// project documents + thumbnails, snapshot documents, mesh-job STLs and ticket
-// artifacts. Deleting one of these would drop live data, so GC treats them all
-// as referenced. Any query error is returned (⇒ GC aborts, deletes nothing).
+// project documents + thumbnails, snapshot documents and mesh-job STLs. Deleting
+// one of these would drop live data, so GC treats them all as referenced. Any
+// query error is returned (⇒ GC aborts, deletes nothing).
+//
+// Ticket artifacts are NOT in this list anymore (ticket #346): tickets live in
+// IssueVault, which holds their artifacts as its own files, and the ticket_*
+// tables are dropped (migration 0009). Old artifact blobs left in the store are
+// therefore unreferenced — the GC is opt-in, so nothing removes them until an
+// operator says so.
 func (s *sqlStore) ListReferencedRefs() ([]string, error) {
 	queries := []string{
-		`SELECT document_ref  FROM projects         WHERE document_ref  IS NOT NULL`,
-		`SELECT thumbnail_ref FROM projects         WHERE thumbnail_ref IS NOT NULL`,
-		`SELECT document_ref  FROM snapshots        WHERE document_ref  IS NOT NULL`,
-		`SELECT blob_ref      FROM mesh_jobs        WHERE blob_ref <> ''`,
-		`SELECT blob_ref      FROM ticket_artifacts WHERE blob_ref <> ''`,
+		`SELECT document_ref  FROM projects  WHERE document_ref  IS NOT NULL`,
+		`SELECT thumbnail_ref FROM projects  WHERE thumbnail_ref IS NOT NULL`,
+		`SELECT document_ref  FROM snapshots WHERE document_ref  IS NOT NULL`,
+		`SELECT blob_ref      FROM mesh_jobs WHERE blob_ref <> ''`,
 	}
 	var refs []string
 	for _, q := range queries {
