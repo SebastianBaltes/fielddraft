@@ -118,9 +118,13 @@ export function acceptScriptProposal(
   const proposal = pending;
   if (!proposal) return { ok: false, error: "no pending script" };
 
+  // A script needs a tab to live in. If it does not COMPILE, drop the tab again
+  // — otherwise a failed proposal leaves an empty "My Feature" tab behind, and
+  // the user has to clean up after a mistake the assistant made.
   const tabId = store.createTab("script");
   const saved = store.saveScriptTab(tabId, proposal.source);
   if (!saved.ok) {
+    store.deleteTab(tabId);
     return { ok: false, error: saved.error };
   }
   const featureId = store.insertScriptInstance(saved.record.id);

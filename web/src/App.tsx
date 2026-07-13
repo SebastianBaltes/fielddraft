@@ -23,11 +23,6 @@ import {
 } from "./thumbnailScheduler";
 import { meshDocumentForThumbnail } from "./thumbnailMesh";
 
-// The AI assistant pulls in the AI SDK — a heavy dependency most sessions never
-// need. Loaded on first render of the shell, not in the app's main chunk.
-const ChatPopup = lazy(() =>
-  import("./aichat/ChatPopup").then((m) => ({ default: m.ChatPopup })),
-);
 import { dispatchKeyboardCommand } from "./keyboardCommands";
 import { SettingsMenu } from "./SettingsMenu";
 import { loadSettings, WorkspaceUnitsContext } from "./settings";
@@ -67,6 +62,12 @@ import {
   isLocalDirty,
   isLocalFileBound,
 } from "./localFileBridge";
+
+// The AI assistant pulls in the AI SDK — a heavy dependency most sessions never
+// need. Loaded on first render of the shell, not in the app's main chunk.
+const ChatPopup = lazy(() =>
+  import("./aichat/ChatPopup").then((m) => ({ default: m.ChatPopup })),
+);
 
 // WP11: the deployed build gates the whole app behind login. The gate is a
 // build flag (default OFF) so local `just dev`, the Playwright e2e and offline
@@ -289,8 +290,7 @@ function AppShell({ account }: { account: UseAccount }) {
       try {
         writable =
           typeof handle.requestPermission !== "function" ||
-          (await handle.requestPermission({ mode: "readwrite" })) ===
-            "granted";
+          (await handle.requestPermission({ mode: "readwrite" })) === "granted";
       } catch {
         writable = false;
       }
@@ -628,7 +628,13 @@ function AppShell({ account }: { account: UseAccount }) {
     }
     // account methods are stable useCallbacks; store is a stable singleton.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [account.enterProject, account.openTicket, account.selectTab, account.showOverview, store]);
+  }, [
+    account.enterProject,
+    account.openTicket,
+    account.selectTab,
+    account.showOverview,
+    store,
+  ]);
 
   // openServerProject is redefined per render (it closes over `account`);
   // the route handler reads the latest through a ref.
@@ -710,7 +716,9 @@ function AppShell({ account }: { account: UseAccount }) {
                 className="version"
                 title="Release Notes anzeigen"
                 data-testid="version-badge"
-                onClick={() => window.dispatchEvent(new Event("fd:release-notes"))}
+                onClick={() =>
+                  window.dispatchEvent(new Event("fd:release-notes"))
+                }
               >
                 v{__APP_VERSION__}
               </button>

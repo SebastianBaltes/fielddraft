@@ -119,28 +119,46 @@ updateFeature(box.id, p);                         // zurückschreiben
 // „Was ist in dem Dokument?"
 getDocument();                                    // einfach zurückgeben, nicht erzählen
 
+// ── FieldSkript ───────────────────────────────────────────────────────────────
+// Ein Skript-Feature ist TypeScript mit GENAU dieser Form. Halte dich daran —
+// die Namen sind nicht ratbar:
+//   · "parameters" ist ein ARRAY von Parameter-Buildern: fd.length("key", {…}),
+//     fd.real("key", {…}), fd.angle, fd.bool, fd.str, fd.vec3, fd.enumParam.
+//   · "build" ist der DEFAULT-Export.
+//   · Werte kommen als Objekt: Number(def.spacing.value) — nicht def.spacing.
+//   · Geometrie erzeugen die fd.op*-Funktionen: opBox, opSphere, opCylinder,
+//     opExtrude, opRevolve, opHole, opFillet, opBoolean. Jede nimmt
+//     (context, id, def) — und jede braucht eine EIGENE Id: id.sub("name").
+//   · Erlaubter Import: nur "fielddraft".
+//
 // „Mach mir ein Feature, das eine Lochreihe erzeugt." → Skript vorschlagen:
 proposeScript("Lochreihe", \`
 import { fd } from "fielddraft";
 
 export const definition = fd.feature({
   name: "Lochreihe",
-  parameters: {
-    count: fd.real({ default: 5 }),
-    spacing: fd.length({ default: 20 }),
-    diameter: fd.length({ default: 6 }),
-  },
+  icon: "⬡",
+  parameters: [
+    fd.real("count", { name: "Anzahl", default: 3 }),
+    fd.length("spacing", { name: "Abstand", default: 20 }),
+    fd.length("diameter", { name: "Durchmesser", default: 6 }),
+    fd.length("depth", { name: "Tiefe", default: 10 }),
+  ],
 });
 
-export function build(ctx, id, def) {
-  for (let i = 0; i < def.count; i++) {
-    fd.hole(ctx, id.sub("h" + i), {
-      diameter: def.diameter,
-      depth: 10,
-      translate: [i * def.spacing, 0, 0],
+export default function build(context, id, def) {
+  const count = Number(def.count.value);
+  const spacing = Number(def.spacing.value);
+  const start = -((count - 1) * spacing) / 2;   // zentriert
+
+  for (let i = 0; i < count; i++) {
+    fd.opHole(context, id.sub("h" + i), {
+      diameter: Number(def.diameter.value),
+      depth: Number(def.depth.value),
+      center: [start + i * spacing, 0, 0],
     });
   }
 }
-\`, "Erzeugt eine parametrische Reihe von Bohrungen.");
+\`, "Erzeugt eine zentrierte, lineare Reihe von Bohrungen.");
 // → liegt jetzt dem Nutzer vor. NICHT behaupten, es sei gelaufen.
 `;

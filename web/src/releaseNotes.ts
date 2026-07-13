@@ -24,6 +24,23 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.587",
+    entries: [
+      {
+        kind: "fix",
+        scope: "assistant",
+        text: "Der Assistent schreibt jetzt gültiges FieldSkript. In der Beschreibung, aus der er lernt, stand ein erfundenes Beispiel — Parameter als Objekt statt als Liste, falsche Werteform, falscher Export. Er hat es brav kopiert, und das Skript ließ sich nicht übersetzen. Jetzt steht dort die echte Signatur (Parameter-Liste, Default-Export, Werte über .value, fd.op*-Funktionen). Schlägt eine Übersetzung trotzdem fehl, räumt FieldDraft den angelegten Skript-Tab wieder weg, statt einen leeren zurückzulassen.",
+        tickets: ["347"],
+      },
+      {
+        kind: "fix",
+        scope: "app",
+        text: "Der Assistent erschien nicht und das Vorschaubild-Meshing brach ab: eine Konstante stand zwischen den Import-Zeilen, was die Hot-Reload-Transformation zerlegt hat.",
+        tickets: ["347"],
+      },
+    ],
+  },
+  {
     version: "0.6.586",
     entries: [
       {
