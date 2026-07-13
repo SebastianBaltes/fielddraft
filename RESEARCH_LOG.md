@@ -311,3 +311,26 @@ Format: Zeitstempel · Hypothese/Frage · Ergebnis · Entscheidung.
   Branches unter Warp, nicht-Identity-Placement (bestehende Kernel-
   Inkonsistenz), Displace (separates Paket: Feld-Feature-Linien).
 - Doku-§ für das Warp-Paket in Lichen-Architecture.md steht noch aus.
+
+## 2026-07-13 15:40 — Offener Punkt 2 (tangentiale Küsse): Sizing-Deckel WIDERLEGT
+
+- Implementierungs-Agent fiel am Spend-Limit aus; Paket inline zu Ende
+  vermessen. Mechanik (env-gated, Default AUS): Kuss-Deckel LICHEN_KISS_C —
+  Gegenblatt-lfs-Beitrag ignorieren wenn lfs<c·floor ∧ antiparallel
+  (reach_outer_counter liefert das Gegenblatt-dot) ∧ kettenlos
+  (brep_dist>1.5); Eigen-Spacing = h ∧ α/κ (Sizing-Field ERSETZT die
+  Wachstums-Klemme, local_radius wendet α/κ bei Some(sf) nicht mehr an —
+  Krümmung muss also in den Deckel-Zweig).
+- MESSUNG: Abnahme-Netz byte-identisch (Hash-Anker zz_acceptance_hash,
+  auch bei c=1.0 — Bedingung (c) schützt Naht-Zonen). Punkt-Kuss
+  33→22 (c=1.0, χ −17→−10), aber Laufzeit 74→191 s. Linien-Kuss
+  430→**1558** (χ −480!): der r=h-Streifen neben ultradichter Umgebung
+  ist die bekannte Dichtesprung-Defektklasse (I-16/§8j). → WIDERLEGT als
+  Default; bleibt Mess-Werkzeug (Default 0.0).
+- Fazit: Der Kuss braucht TOPOLOGIE-Behandlung (Sub-Resolution-Kontakt
+  erkennen, Blätter als getrennte Komponenten meshen — Mikro-Feature-
+  Kollaps-Familie §8k/§8l), keine Sizing-Kosmetik. WIP-Test-Doku
+  aktualisiert; Werkzeuge bleiben: reach_outer_counter, LICHEN_KISS_DUMP,
+  zz_acceptance_hash (Byte-Identitäts-Anker).
+- Neutralität bei Default verifiziert: 38 Gates grün, thin_plate
+  wert-identisch.

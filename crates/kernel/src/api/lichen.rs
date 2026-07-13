@@ -1749,6 +1749,35 @@ impl Kernel {
         if opts.sizing_field && size.is_none() && opts.grow {
             let eps = if opts.lfs_factor > 0.0 { opts.lfs_factor } else { 0.5 };
             let cap_lfs = h / eps;
+            let floor = opts.min_edge_spacing.max(1e-4).min(h);
+            // ── KUSS-DECKEL (exakt tangentiale Kontakte, 2026-07-13) ──
+            // An einem tangentialen KUSS (Kugel berührt Platte in einem Punkt,
+            // Zylinder küsst Wand längs einer Linie) läuft die lfs gegen 0 —
+            // unterhalb JEDER Auflösung. Der Floor-Clamp machte daraus einen
+            // 50×-Dichtesprung (r = floor statt Eigen-Spacing) und damit
+            // Crowding + wechselseitige Zeugen-Kugel-Blockade OHNE
+            // vermittelnde Kette (kein transversaler Schnitt → keine
+            // B-Rep-Kante). Deckel: ein Gegenblatt-Beitrag wird IGNORIERT
+            // (das Blatt behält sein Eigen-Spacing aus Krümmung/h), wenn
+            //  (a) lfs < c·floor — der →0-Kollaps; eine echte dünne Wand
+            //      (0,35-mm-Platte: lfs ≈ 0,175 > 1,0·0,1) bleibt unberührt,
+            //  (b) die Gegenseiten-Normale ~antiparallel ist (Gegenblatt,
+            //      kein Kanten-Bisektor) — reach_inner prüft das intern,
+            //      für reach_outer liefert es reach_outer_counter,
+            //  (c) KEINE Kette in Reichweite ist — an einer fast-tangentialen
+            //      NAHT (Gyroid∩Zylinder) läuft die lfs ebenfalls gegen 0,
+            //      dort vermittelt aber die Naht-Kette; nur der kettenlose
+            //      Kollaps ist der Kuss.
+            let kiss_c: f32 = std::env::var("LICHEN_KISS_C")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(0.0);
+            let kiss_chain_r: f32 = std::env::var("LICHEN_KISS_CHAIN_R")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(1.5);
+            let kiss_dump = std::env::var("LICHEN_KISS_DUMP").is_ok();
+            let mut kiss_capped = 0usize;
             let mut pts: Vec<[f32; 3]> = Vec::with_capacity(all.len());
             let mut raw: Vec<f32> = Vec::with_capacity(all.len());
             for lp in &all {
@@ -1756,11 +1785,41 @@ impl Kernel {
                 // FEINER Startschritt, an das lokale Spacing gekoppelt: nur so
                 // wird ein Spalt gefunden, der kleiner ist als das Spacing.
                 let t0 = (0.05 * lp.space).max(1e-5);
-                let lfs = lichen::reach_inner(lp.p, n, cap_lfs, t0, &fg)
-                    .min(lichen::reach_outer_flat(lp.p, n, cap_lfs, t0, &fg));
+                let li = lichen::reach_inner(lp.p, n, cap_lfs, t0, &fg);
+                let (lo, lo_dot) = lichen::reach_outer_counter(lp.p, n, cap_lfs, t0, &fg);
+                let lfs = li.min(lo);
                 let mut r = h.min(lp.space.max(1e-4));
                 if lfs < cap_lfs {
-                    r = r.min(eps * lfs);
+                    // (b): reach_inner schlägt NUR bei ~antiparallelem
+                    // Gegenblatt an (dot < −0.3 intern); für den äußeren
+                    // Marsch liefert reach_outer_counter das dot.
+                    let antipar = if li <= lo { true } else { lo_dot < -0.3 };
+                    if kiss_dump && lfs < 3.0 * floor && antipar {
+                        eprintln!(
+                            "KISS-DUMP p=({:.3},{:.3},{:.3}) lfs={lfs:.4} li={li:.4} lo={lo:.4} dot={lo_dot:.2} chain={:.3} space={:.3}",
+                            lp.p[0], lp.p[1], lp.p[2], brep_dist(lp.p), lp.space
+                        );
+                    }
+                    let kiss = kiss_c > 0.0
+                        && lfs < kiss_c * floor
+                        && antipar
+                        && brep_dist(lp.p) > kiss_chain_r;
+                    if kiss {
+                        // Eigen-Spacing statt Kollaps: h und Krümmung —
+                        // NICHT lp.space, das im Grob-Lauf am Kuss bereits
+                        // auf eps·t0 = floor kollabiert war.
+                        kiss_capped += 1;
+                        r = h;
+                        let kmax = lichen::curvature(lp.p, n, h, &|q| {
+                            lichen::unit(lichen::robust_grad(q, &fg))
+                        })
+                        .0;
+                        if kmax > 1e-6 {
+                            r = r.min(opts.curv_angle_deg.to_radians() / kmax);
+                        }
+                    } else {
+                        r = r.min(eps * lfs);
+                    }
                 }
                 pts.push(lp.p);
                 raw.push(r);
@@ -1769,10 +1828,12 @@ impl Kernel {
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(0.3);
-            let floor = opts.min_edge_spacing.max(1e-4).min(h);
             let sf = lichen::SizeField::build(pts, raw, k_lip, h, floor);
             if std::env::var("LICHEN_DEBUG_SIZING").is_ok() {
-                eprintln!("SIZING-FIELD: {} Stützstellen, K={k_lip}, floor={floor}", all.len());
+                eprintln!(
+                    "SIZING-FIELD: {} Stützstellen, K={k_lip}, floor={floor}, kuss-gekappt={kiss_capped} (c={kiss_c}, chainR={kiss_chain_r})",
+                    all.len()
+                );
             }
             return self.lichen_mesh_sized(opts, body_filter, Some(&sf));
         }
@@ -4641,6 +4702,25 @@ mod tests {
     /// BASELINE-MESSREIHE auf dem Abnahmefall (kein Gate — Analyse-Werkzeug).
     /// Default = exakt die Betreiber-Settings aus dem .fdraft.
     /// `cargo test -p fielddraft-kernel --release zz_gyroid_baseline -- --ignored --nocapture`
+    /// BYTE-IDENTITÄTS-ANKER (Analyse-Werkzeug, kein Gate): Hash über die
+    /// rohen f32-Bits des Abnahme-Netzes. Vor/nach jedem Sizing-Eingriff
+    /// laufen lassen — gleicher Hash = das Abnahme-Netz ist byte-identisch.
+    /// `cargo test -p fielddraft-kernel --release zz_acceptance_hash -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn zz_acceptance_hash() {
+        use std::hash::{Hash, Hasher};
+        let mut k = demo_project_kernel();
+        let out = k.lichen_mesh(
+            r#"{"targetEdgeLength":10.0,"grow":true,"curvAngleDeg":2.0,"useReach":false,"reachTol":1.0,"minEdgeSpacing":0.1,"maxPoints":50000,"generalTri":true,"accept":"witness","extractWalk":true,"globalWalk":true,"lfsFactor":0.1,"sizingField":true,"faceGuard":false,"fillHoles":false}"#.into(),
+        );
+        let mut hsh = std::collections::hash_map::DefaultHasher::new();
+        for f in &out {
+            f.to_bits().hash(&mut hsh);
+        }
+        eprintln!("ACCEPT-HASH: n={} hash={:016x}", out.len(), hsh.finish());
+    }
+
     /// Varianten: `LICHEN_GY_EXTRA=',"refine":true'` usw.
     #[test]
     #[ignore]
@@ -5566,10 +5646,23 @@ mod tests {
     /// kann keine Abtastung die Blätter trennen; die B-Rep hat dort keine
     /// Kante (kein transversaler Schnitt). Ehrliches Soll wäre comp=2 mit
     /// zwei wasserdichten Blättern (Punkt) bzw. sauberer Pinch (Linie).
+    ///
+    /// VERMESSEN UND WIDERLEGT (2026-07-13, Kuss-Deckel `LICHEN_KISS_C`):
+    /// den Gegenblatt-lfs-Beitrag am kettenlosen antiparallelen Kollaps zu
+    /// ignorieren (Blatt behält Eigen-Spacing) hilft dem Punkt-Kuss mild
+    /// (33 → 22 bei c=1.0, Laufzeit ×2,6) und RUINIERT den Linien-Kuss
+    /// (430 → 1558, χ −480): der r=h-Streifen neben ultradichter Umgebung
+    /// ist exakt die Dichtesprung-Defektklasse aus I-16/§8j. Der Deckel
+    /// bleibt als Mess-Werkzeug (Default 0.0 = aus, plus LICHEN_KISS_DUMP,
+    /// `reach_outer_counter` liefert das Gegenblatt-dot). Der echte Weg ist
+    /// TOPOLOGISCH: Sub-Resolution-Kontakt erkennen und die Blätter als
+    /// getrennte Komponenten meshen (Mikro-Feature-Kollaps-Familie,
+    /// §8k/§8l), nicht am Sizing drehen.
     #[test]
     #[ignore = "WIP: tangentiale Kontakte — Blattabstand 0 am Kontakt ist \
                 sub-resolution für jede Abtastung; Punkt-Kuss 33 offen, \
-                Linien-Kuss 430 offen (2026-07-13)"]
+                Linien-Kuss 430 offen; Sizing-Deckel vermessen und \
+                widerlegt, braucht Topologie-Behandlung (2026-07-13)"]
     fn lichen_adv_tangent_kiss_wip() {
         for name in ["tangent_sphere_point", "tangent_cyl_box_line"] {
             let (r, _) = adv_run(&adv_case(name));
