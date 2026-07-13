@@ -228,7 +228,7 @@ pub(super) fn collect_path_group_segments(
 /// Winding sign of a closed path via the shoelace area of its segment-endpoint
 /// chords. Arc bulges shift the area but not its sign for any sane (simple,
 /// non-self-intersecting) profile, which is all the outward-normal choice needs.
-pub(super) fn path_chord_signed_area(segments: &[SketchSegment]) -> f32 {
+pub(crate) fn path_chord_signed_area(segments: &[SketchSegment]) -> f32 {
     let mut area = 0.0f32;
     for s in segments {
         let a = s.start_point();

@@ -947,10 +947,44 @@ pub fn split_y_monotone(seg: &SketchSegment) -> Vec<SketchSegment> {
     }
 }
 
-/// Are `prev → cur` G1-continuous (shared endpoint, aligned tangents)? The
-/// pairwise predicate behind [`g1_group_segments`], usable incrementally so
-/// the SDF hot path can derive group ids without allocating the full vec.
-fn g1_continuous(prev: &SketchSegment, cur: &SketchSegment, cos_threshold: f32) -> bool {
+/// Do `prev` and `cur` sweep into the SAME carrier surface? A boundary group
+/// becomes ONE B-Rep face, and a face has one surface: a straight segment
+/// sweeps to a plane, a circular arc to a cylinder, a Bézier to a free-form
+/// carrier. Tangency alone does not make two segments one face — a line
+/// tangent to a fillet arc is a plane meeting a cylinder.
+///
+/// Same-kind pairs still fuse (that is what the tangency test is for):
+/// collinear lines share a plane, co-circular arcs share a cylinder, and a
+/// Bézier chain is one free-form carrier. Arcs must additionally agree on
+/// their circle — two tangent arcs of different radius are two cylinders.
+/// (`lift_path_group` re-verifies both conditions before it lifts an
+/// analytic carrier, so this predicate only has to avoid fusing what could
+/// never lift.)
+fn same_carrier(prev: &SketchSegment, cur: &SketchSegment) -> bool {
+    match (prev, cur) {
+        (SketchSegment::Line { .. }, SketchSegment::Line { .. }) => true,
+        (SketchSegment::QuadBezier { .. }, SketchSegment::QuadBezier { .. }) => true,
+        (
+            SketchSegment::Arc { center: ca, radius: ra, .. },
+            SketchSegment::Arc { center: cb, radius: rb, .. },
+        ) => {
+            let tol = (ra.abs() * 1e-5).max(1e-6);
+            (ca[0] - cb[0]).abs() <= tol
+                && (ca[1] - cb[1]).abs() <= tol
+                && (ra - rb).abs() <= tol
+        }
+        _ => false,
+    }
+}
+
+/// Are `prev → cur` tangent at their shared endpoint (shared point, aligned
+/// tangents)? The geometric half of [`g1_continuous`], without the carrier
+/// test — so a TANGENT carrier change (line → fillet arc) still answers
+/// `true`. That is exactly the group boundary whose swept seam is a
+/// tangential one, which no SSI can seed (a double root has no sign change)
+/// and which the weave therefore has to construct; see
+/// [`tangential_group_breaks`].
+pub fn tangent_at_joint(prev: &SketchSegment, cur: &SketchSegment, cos_threshold: f32) -> bool {
     let prev_end = prev.end_point();
     let cur_start = cur.start_point();
     let dx = cur_start[0] - prev_end[0];
@@ -961,6 +995,43 @@ fn g1_continuous(prev: &SketchSegment, cur: &SketchSegment, cos_threshold: f32) 
     let t_prev = prev.tangent_at_end();
     let t_cur = cur.tangent_at_start();
     t_prev[0] * t_cur[0] + t_prev[1] * t_cur[1] > cos_threshold
+}
+
+/// Are `prev → cur` G1-continuous (tangent) AND carried by the same swept
+/// surface? The pairwise predicate behind [`g1_group_segments`], usable
+/// incrementally so the SDF hot path can derive group ids without allocating
+/// the full vec.
+fn g1_continuous(prev: &SketchSegment, cur: &SketchSegment, cos_threshold: f32) -> bool {
+    tangent_at_joint(prev, cur, cos_threshold) && same_carrier(prev, cur)
+}
+
+/// The joints of a CLOSED boundary chain where the group changes *smoothly* —
+/// tangent, but a different carrier surface (line → arc, arc → line, …).
+/// Returns `(segment index i, group of i−1, group of i, joint point)`: the
+/// swept image of that point is the seam between the two wall faces, and it
+/// is the one seam an SSI-based weave provably cannot find. A CREASE joint
+/// (non-tangent) is absent — those seams intersect transversally and seed
+/// normally.
+pub fn tangential_group_breaks(
+    segments: &[SketchSegment],
+    cos_threshold: f32,
+) -> Vec<(usize, u32, u32, [f32; 2])> {
+    let n = segments.len();
+    if n < 2 {
+        return Vec::new();
+    }
+    let groups = g1_group_segments(segments, cos_threshold);
+    let mut out = Vec::new();
+    for i in 0..n {
+        let prev = (i + n - 1) % n;
+        if groups[i] == groups[prev] {
+            continue;
+        }
+        if tangent_at_joint(&segments[prev], &segments[i], cos_threshold) {
+            out.push((i, groups[prev], groups[i], segments[i].start_point()));
+        }
+    }
+    out
 }
 
 /// Distance from `p` to the axis-aligned box `[lo, hi]` (zero inside).

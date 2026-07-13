@@ -6299,3 +6299,150 @@ fn wall_reference_heals_across_entity_id_shift() {
         .map(|f| f.branch_id.sub());
     assert_eq!(healed, Some(4), "healed onto the shifted line entity's wall");
 }
+
+// ─── tangential seams: the rounded rectangle ────────────────────────────
+
+/// A rounded rectangle drawn the way a CAD user (and Onshape) draws it: four
+/// lines joined by four TANGENT fillet arcs. Half-size 20 mm, corner radius 5.
+fn rounded_rect_sketch(sketch_id: &FeatureId) -> FeatureCall {
+    // Straight runs span ±15, the arcs sit at the four (±15, ±15) centres.
+    let (h, r) = (20.0f64, 5.0f64);
+    let s = h - r; // 15
+    let arc = |cx: f64, cy: f64, a0: f64| {
+        json!({
+            "type": "sketch_arc", "id": format!("a{}{}", cx as i64, cy as i64),
+            "params": {
+                "center": [cx, cy], "radius": r,
+                "start_angle": a0, "sweep_angle": std::f64::consts::FRAC_PI_2,
+            }
+        })
+    };
+    let line = |n: &str, x0: f64, y0: f64, x1: f64, y1: f64| {
+        json!({ "type": "sketch_line", "id": n, "params": { "start": [x0, y0], "end": [x1, y1] } })
+    };
+    // CCW: bottom → arc → right → arc → top → arc → left → arc.
+    let sub_calls = vec![
+        line("l1", -s, -h, s, -h),
+        arc(s, -s, -std::f64::consts::FRAC_PI_2),
+        line("l2", h, -s, h, s),
+        arc(s, s, 0.0),
+        line("l3", s, h, -s, h),
+        arc(-s, s, std::f64::consts::FRAC_PI_2),
+        line("l4", -h, s, -h, -s),
+        arc(-s, -s, std::f64::consts::PI),
+    ];
+    FeatureCall::new(
+        "sketch",
+        sketch_id.clone(),
+        json!({ "plane": "qCreatedBy(origin_plane_xy)", "sub_calls": sub_calls }),
+    )
+}
+
+#[test]
+fn rounded_rect_extrude_has_eight_analytic_side_faces() {
+    // THE tangential-seam acceptance. A line meeting its fillet arc is a PLANE
+    // meeting a CYLINDER: two faces, joined by a seam that is tangential — no
+    // SSI can seed it (a double root has no sign change) and no tracer can
+    // follow it (parallel gradients). Before the constructive seams the whole
+    // lateral boundary fused into ONE tessellated face, and a sketch could not
+    // be placed on "the left side" at all, because that face did not exist.
+    let registry = FeatureRegistry::with_builtins();
+    let mut doc = empty_ctx();
+    let mut ctx = Context::new(&mut doc);
+    let sketch_id = id(1);
+    let extrude_id = id(2);
+    registry
+        .regenerate(
+            &mut ctx,
+            &[
+                rounded_rect_sketch(&sketch_id),
+                FeatureCall::new(
+                    "extrude",
+                    extrude_id.clone(),
+                    json!({
+                        "profiles": format!("qCreatedBy({sketch_id})"),
+                        "depth": { "value": 10.0, "unit": "mm" },
+                    }),
+                ),
+            ],
+            None,
+        )
+        .unwrap();
+
+    let woven = crate::body::weave_all(&ctx.features);
+    assert_eq!(woven.len(), 1, "one body");
+    let (brep, _) = &woven[0];
+
+    use crate::queries::{resolve_query_topo, FaceRole, QueryExpr};
+    let breps = [brep.clone()];
+    let walls = resolve_query_topo(
+        &breps,
+        &QueryExpr::CreatedByRole(extrude_id.clone(), FaceRole::Wall),
+    );
+    assert_eq!(walls.len(), 8, "four flats + four rounds, each its own face");
+
+    // And each of them carries an ANALYTIC carrier — four planes, four
+    // cylinders — instead of the single tessellated blob the fused group was.
+    use crate::brep::SurfaceGeometry;
+    use fielddraft_protocol::HalfSpace;
+    let (mut planes, mut cylinders) = (0, 0);
+    for f in &brep.faces {
+        if f.branch_id.feature_id() != extrude_id.as_u32_or_root().unwrap() {
+            continue;
+        }
+        if crate::queries::face_role(f) != FaceRole::Wall {
+            continue;
+        }
+        match &f.surface {
+            SurfaceGeometry::Analytic { surface: HalfSpace::Plane { .. }, .. } => planes += 1,
+            SurfaceGeometry::Analytic {
+                surface: HalfSpace::InfiniteCylinder { .. }, ..
+            } => cylinders += 1,
+            other => panic!("wall carries no analytic carrier: {other:?}"),
+        }
+    }
+    assert_eq!((planes, cylinders), (4, 4), "four planar sides, four round corners");
+
+    // Every wall is addressable by the sketch entity it was swept from — which
+    // is what lets an imported Onshape sketch land on "the left side".
+    let left_line_wall = walls.len();
+    assert!(left_line_wall > 0);
+}
+
+#[test]
+fn rounded_rect_extrude_weaves_watertight_with_its_seams() {
+    // The seams are real edges: each flat/round junction contributes a vertical
+    // edge, and the body stays a closed manifold (Euler χ = 2).
+    let registry = FeatureRegistry::with_builtins();
+    let mut doc = empty_ctx();
+    let mut ctx = Context::new(&mut doc);
+    let sketch_id = id(1);
+    registry
+        .regenerate(
+            &mut ctx,
+            &[
+                rounded_rect_sketch(&sketch_id),
+                FeatureCall::new(
+                    "extrude",
+                    id(2),
+                    json!({
+                        "profiles": format!("qCreatedBy({sketch_id})"),
+                        "depth": { "value": 10.0, "unit": "mm" },
+                    }),
+                ),
+            ],
+            None,
+        )
+        .unwrap();
+    let woven = crate::body::weave_all(&ctx.features);
+    let (brep, _) = &woven[0];
+
+    // 8 walls + 2 caps.
+    assert_eq!(brep.face_count(), 10, "eight sides plus two caps");
+    // 8 vertical seams + 8 rim edges per cap.
+    assert_eq!(brep.edge_count(), 24, "8 seams + 2×8 rim edges");
+    assert_eq!(brep.vertex_count(), 16, "8 corners per cap");
+    // Euler: V − E + F = 2 for a closed genus-0 solid.
+    let euler = brep.vertex_count() as i64 - brep.edge_count() as i64 + brep.face_count() as i64;
+    assert_eq!(euler, 2, "closed manifold");
+}

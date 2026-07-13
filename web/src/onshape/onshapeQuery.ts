@@ -183,6 +183,9 @@ export type OnshapePlaneRef =
       kind: "swept";
       opFeatureId: string;
       origin: OnshapeEntityOrigin;
+      /** Onshape `OFFSET_FACE`: not the wall itself but its SHELL
+       *  counterpart — the inward-offset face of the hollow. */
+      offset?: boolean;
       /** Fillet whose BLEND_FACE disambiguates the fragment (split faces). */
       blendFilletId?: string;
       /** The split peer's swept origin (boolean SPLIT disambiguation). */
@@ -302,6 +305,8 @@ export function extractPlaneRef(tokens: BtonToken[]): OnshapePlaneRef {
       opFeatureId: extrudes[0].op.featureId,
       origin: primary,
     };
+    // A shelled body's inner wall is a face of the SAME sweep, offset inward.
+    if (has("OFFSET_FACE")) out.offset = true;
     if (has("BLEND_FACE") && fillets.length >= 1) {
       out.blendFilletId = fillets[0].op.featureId;
     }

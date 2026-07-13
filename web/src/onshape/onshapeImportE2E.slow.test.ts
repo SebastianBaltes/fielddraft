@@ -2,21 +2,21 @@
  * End-to-end acceptance of the Onshape import against the REAL wasm
  * kernel (Onshape-Import Schritt 5) — the Kabelbox part studio.
  *
- * Semantics note: a sketch's plane query is resolved MID-HISTORY (against
- * the body as of that feature), exactly like Onshape's rollback state —
- * so the acceptance signal is "the sketch feature regenerates without an
- * error", not "its query still binds at the end of the document" (a later
- * cut may legitimately consume the face it was drawn on). The kernel has
- * NO silent fallback: an unresolvable plane is a hard feature error.
+ * THE acceptance criterion of the whole import project: all SEVEN sketches
+ * land, each on the face Onshape drew it on, and the references are
+ * PARAMETRIC — change the base body and the planes travel with it.
  *
- * What this pins down (see docs/ONSHAPE-IMPORT-STATE.md):
- *  - Every imported sketch regenerates cleanly on a resolved face, and
- *    its plane FRAME travels when the base body's depth changes.
- *  - Sketches whose Onshape plane has no FieldDraft counterpart fail
- *    VISIBLY, never silently on XY. That is currently the case for the
- *    three sketches on a SIDE of the rounded-rectangle base: FieldDraft
- *    separates faces at CREASES, so a rounded rectangle has ONE
- *    tangentially fused lateral face, not four sides + four rounds.
+ * Three of them sit on a SIDE of the rounded-rectangle base, which only
+ * became possible with the constructive tangential seams
+ * (`brep::tangential_seams`): before those, a line and its fillet arc fused
+ * into ONE lateral face and "the left side" did not exist as a face at all.
+ *
+ * Semantics note: a sketch's plane query is resolved MID-HISTORY (against
+ * the body as of that feature), exactly like Onshape's rollback state — so
+ * the acceptance signal is "the sketch feature regenerates without an
+ * error", not "its query still binds at the end of the document" (a later
+ * cut may legitimately consume the face it was drawn on). The kernel has NO
+ * silent fallback: an unresolvable plane is a hard feature error.
  *
  * Needs a current `just build-wasm` (the stale-wasm trap).
  */
@@ -105,31 +105,40 @@ describe("Onshape import — Kabelbox end-to-end (real kernel)", () => {
     result = await importOnshapeFeatures(kabelbox(), kernel);
   }, 180_000);
 
-  it("regenerates every imported sketch on a resolved face — none on a guessed plane", () => {
+  it("imports ALL SEVEN sketches, each on its own resolved face", () => {
     const sketches = sketchCalls(kernel.raw);
+    expect(sketches.length, `errors: ${result.errors.join(" | ")}`).toBe(7);
+
+    // Every one regenerates — i.e. its plane query resolved to a real face
+    // mid-history. The kernel has no silent fallback, so this IS the proof.
     const errors = regenErrors(kernel.raw);
     for (const s of sketches) {
       expect(errors.get(String(s.id)), `sketch #${s.id} regen`).toBeUndefined();
     }
 
-    // Exactly the two Onshape default-plane sketches use a datum; every
-    // other imported sketch sits on a RESOLVED face of a prior feature.
     const planes = sketches.map((s) => s.params.plane as string);
-    const datums = planes.filter((p) => p.startsWith("qCreatedBy(origin_plane_"));
-    expect(datums.length).toBe(2);
-    expect(planes.length).toBeGreaterThan(datums.length);
+    // Two datums (Onshape's default planes), two extrude caps, and three on
+    // the SIDES of the rounded base — the ones the tangential seams unlocked.
+    expect(planes.filter((p) => p.startsWith("qCreatedBy(origin_plane_")).length).toBe(2);
+    expect(planes.filter((p) => /qCreatedBy\(\d+, CAP_/.test(p)).length).toBe(2);
+    expect(planes.filter((p) => p.includes("qWall(")).length).toBe(3);
   });
 
-  it("names the tangential-fusion limit instead of silently defaulting to XY", () => {
-    // The known gap: sketches on a SIDE of the rounded-rectangle base.
-    const wallErrors = result.errors.filter((e) => e.includes("qWall(") && e.includes("Ebenen-Query"));
-    expect(wallErrors.length).toBeGreaterThan(0);
-    for (const e of wallErrors) {
-      expect(e).toMatch(/tangential verschmolzene Mantelfläche/);
-    }
-    // And none of them quietly became an XY sketch.
+  it("places a sketch on a SIDE of the rounded base — the tangential-seam payoff", () => {
+    // Sketch 5 sits on the wall swept from the base profile's left LINE. That
+    // face only exists because the line's plane and its fillet cylinder are
+    // separate faces now, joined by a constructive tangential seam.
     const planes = sketchCalls(kernel.raw).map((s) => s.params.plane as string);
-    expect(planes.filter((p) => p === "qCreatedBy(origin_plane_xy)").length).toBe(2);
+    const wall = planes.find((p) => /^qWall\(\d+, \d+\)$/.test(p));
+    expect(wall, `no plain wall plane among ${planes.join(", ")}`).toBeTruthy();
+    const hits = kernel.resolveQuery(wall!);
+    expect(hits.length, `${wall} must bind exactly one face`).toBe(1);
+    expect(hits[0].kind).toBe("face");
+
+    // And the disambiguated ones (boolean SPLIT of a wall) bind uniquely too.
+    for (const p of planes.filter((q) => q.startsWith("qAdjacentTo("))) {
+      expect(kernel.resolveQuery(p).length, p).toBe(1);
+    }
   });
 
   it("sketch plane FRAMES follow the base body when its depth changes", { timeout: 180_000 }, () => {

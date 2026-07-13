@@ -536,6 +536,8 @@ impl<'a> Context<'a> {
             },
             _ => None,
         };
+        let by_hash = resolved_edge_hashes(woven, expr);
+
         let mut out = Vec::new();
         for (bi, (brep, placement)) in woven.iter().enumerate() {
             for i in 0..brep.edges.len() {
@@ -554,7 +556,8 @@ impl<'a> Context<'a> {
                         matches!((fa, fb), (Some(fa), Some(fb))
                             if (s0 == fa && s1 == fb) || (s0 == fb && s1 == fa))
                     }
-                    _ => false,
+                    _ => by_hash
+                        .contains(&crate::brep::naming::TopoRef::from_edge(brep, id).id_hash),
                 };
                 if !hit {
                     continue;
@@ -619,6 +622,7 @@ impl<'a> Context<'a> {
             },
             _ => None,
         };
+        let by_hash = resolved_edge_hashes(woven, expr);
         let mut out = Vec::new();
         for (bi, (brep, placement)) in woven.iter().enumerate() {
             for i in 0..brep.edges.len() {
@@ -634,7 +638,8 @@ impl<'a> Context<'a> {
                         matches!((fa, fb), (Some(fa), Some(fb))
                             if (s0 == fa && s1 == fb) || (s0 == fb && s1 == fa))
                     }
-                    _ => false,
+                    _ => by_hash
+                        .contains(&crate::brep::naming::TopoRef::from_edge(brep, id).id_hash),
                 };
                 if !hit {
                     continue;
@@ -831,6 +836,29 @@ fn coplanar(
     off.abs() < 1e-2
 }
 
+
+/// The id_hashes a RICHER edge query (`qCommonEdge(a, b)`, …) resolves to.
+/// The two native forms (`qEdge`, `qEdgeBetween`) keep their own fast paths;
+/// everything else goes through the shared element resolver, so a new query
+/// form works in every edge consumer the day it parses — instead of silently
+/// resolving to nothing until each consumer grows another match arm.
+fn resolved_edge_hashes(
+    woven: &[(crate::brep::BRep, fielddraft_protocol::Transform)],
+    expr: &crate::queries::QueryExpr,
+) -> std::collections::HashSet<u64> {
+    use crate::queries::QueryExpr;
+    if matches!(expr, QueryExpr::Edge(_) | QueryExpr::EdgeBetween(_, _)) {
+        return Default::default();
+    }
+    woven
+        .iter()
+        .flat_map(|(brep, _)| {
+            crate::queries::resolve_query_topo(std::slice::from_ref(brep), expr)
+        })
+        .filter(|r| r.kind == crate::brep::naming::EntityKind::Edge)
+        .map(|r| r.id_hash)
+        .collect()
+}
 
 /// The face of `brep` carrying `id_hash` — the bridge from a resolved
 /// [`TopoRef`](crate::brep::naming::TopoRef) back to an arena handle.

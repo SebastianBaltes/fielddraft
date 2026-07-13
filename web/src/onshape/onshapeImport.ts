@@ -263,7 +263,7 @@ function buildPlaneQuery(
       const fd = idMap[ref.opFeatureId];
       if (fd === undefined)
         return { error: `${featureName}: Wand-Ebene referenziert nicht importiertes Feature ${ref.opFeatureId}` };
-      const wall = wallQuery(ref.origin, fd, featureName, sketches);
+      const wall = wallQuery(ref.origin, fd, featureName, sketches, ref.offset === true);
       if (wall.error) return wall;
       let query = wall.query!;
       // Disambiguation: adjacency to the blend face (when the fillet
@@ -294,6 +294,7 @@ function wallQuery(
   fdOp: number,
   featureName: string,
   sketches: Map<string, SketchRecord>,
+  inner = false,
 ): { query?: string; error?: string } {
   const rec = sketches.get(origin.sketchFeatureId);
   if (!rec)
@@ -301,7 +302,8 @@ function wallQuery(
   const ord = rec.entityIds[origin.entityId];
   if (ord === undefined)
     return { error: `${featureName}: Sketch-Entity ${origin.entityId} nicht in der Übersetzung` };
-  return { query: `qWall(${fdOp}, ${ord})` };
+  // Onshape's OFFSET_FACE is the shell's inward counterpart of that wall.
+  return { query: inner ? `qWall(${fdOp}, ${ord}, INNER)` : `qWall(${fdOp}, ${ord})` };
 }
 
 /** Import a fetched Onshape feature list into the kernel. */
