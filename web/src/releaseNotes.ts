@@ -24,6 +24,17 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.588",
+    entries: [
+      {
+        kind: "fix",
+        scope: "assistant",
+        text: "Die Assistenten-Route ist gegen Missbrauch gehärtet. Sie war schon vorher nur für eingeloggte Nutzer offen (anonym: abgewiesen; gesperrte Konten verlieren ihre Sitzung), und die Modell-Liste war fest verdrahtet — neu sind drei Dinge: ein Tageskontingent pro Nutzer (die Minutenbremse hält einen Ausbruch auf, nicht einen geduldigen Skriptschreiber), eine Sperre gegen Anfragen, die eine fremde Seite im Namen deines Browsers abschickt, und die Möglichkeit, den API-Schlüssel aus einer Datei statt aus einer Umgebungsvariable zu lesen — die steht sonst in jeder Prozessliste.",
+        tickets: ["347"],
+      },
+    ],
+  },
+  {
     version: "0.6.587",
     entries: [
       {

@@ -82,7 +82,14 @@ services:
       # AI assistant (ticket #347). The server holds the OpenRouter key and
       # proxies the model calls; empty = feature off (the app hides the chat).
       OPENROUTER_API_KEY: "${OPENROUTER_API_KEY:-}"
+      # Preferred over the env var in a real deployment: the key is read from a
+      # FILE (a mounted secret). An env var is visible in `docker inspect` and in
+      # /proc/<pid>/environ; a 0600 file is not.
+      OPENROUTER_API_KEY_FILE: "${OPENROUTER_API_KEY_FILE:-}"
       AICHAT_MODELS: "${AICHAT_MODELS:-}"
+      # Per-user cap on assistant requests per day (0 = off). The minute-level
+      # rate limit stops a burst, not a patient script.
+      AICHAT_DAILY_QUOTA: "${AICHAT_DAILY_QUOTA:-}"
       # Onshape import (onshape.go). Unset = the /api/onshape routes answer 503.
       ONSHAPE_ACCESS_KEY: "${ONSHAPE_ACCESS_KEY:-}"
       ONSHAPE_SECRET_KEY: "${ONSHAPE_SECRET_KEY:-}"
