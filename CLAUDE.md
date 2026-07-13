@@ -28,8 +28,11 @@ User melden Fehler/Feature-Wünsche in-App über **Report Issue…** (F2). Ticke
 Wenn keine andere Aufgabe ansteht: offene Tickets abarbeiten — Ticket lesen, Screenshot/Attachments ansehen, Projekt zum Reproduzieren laden, Fix/Feature umsetzen, testen, committen+pushen.
 
 **Beim Erledigen eines Tickets immer beides:**
-1. **Ticket-Kommentar** hinterlassen, der den Fix/Status inhaltlich erklärt und **auf die GitHub-Commits verlinkt** (`https://github.com/SebastianBaltes/fielddraft/commit/<hash>`). Server-Tickets: Insert in `ticket_comments` mit `author_type='dev'`, `internal=0`, `po_reviewed=1`, `author_id=NULL`, `id=REPLACE(UUID(),'-','')`. FS-Tickets: `resolution.md` (Commit-Hash + Kurzfassung) in den Ordner.
-2. **Status setzen:** Server-Tickets `state='resolved'`; FS-Tickets den Ordner nach `tickets/done/<id>/` verschieben.
+1. **Ticket-Kommentar** hinterlassen, der den Fix/Status inhaltlich erklärt und **auf die GitHub-Commits verlinkt** (`https://github.com/SebastianBaltes/fielddraft/commit/<hash>`).
+2. **Status setzen:** `resolved`.
+
+Beides geht am einfachsten **in der App** (Issues-Tab: Kommentarfeld + „Set state") — der Go-Server schreibt dann garantiert das richtige Format. Wer stattdessen direkt an die IssueVault-REST-API geht (`POST /tickets/<id>/comments`, `PATCH /tickets/<id>`), muss den Vertrag selbst einhalten:
+`author_kind: "agent"`, `meta: {author_type: "dev", internal: false, po_reviewed: true}` — **echte Booleans, keine 0/1**. IssueVault validiert `meta` nicht; eine 0 statt `false` ließ früher das Einlesen des ganzen Tickets scheitern (#345). Der Server liest solche Werte inzwischen nachsichtig, schreiben soll sie trotzdem niemand.
 
 **Reihenfolge — nicht stur ältestes-zuerst, sondern nach Wirkung sortieren:**
 1. **Regressionen zuerst** — was eine kürzliche Änderung kaputt gemacht hat, hat oberste Priorität (Arbeitsfähigkeit wiederherstellen).
