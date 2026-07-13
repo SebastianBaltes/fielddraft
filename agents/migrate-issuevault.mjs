@@ -132,7 +132,12 @@ function parseTicket(dir) {
     title: t.title || "(untitled)",
     body,
     state: "closed",
-    status: t.status || "resolved",
+    // The FOLDER is the state — we only ever walk tickets/done/. ticket.json's
+    // `status` is written once at CREATION time and never updated on the move to
+    // done/, so it still says "open" on long-finished tickets. Trusting it once
+    // imported 60 done tickets as open (and IssueVault has no status whitelist,
+    // so the bad value stuck).
+    status: "resolved",
     category: "",
     author: "user",
     assignee: "",

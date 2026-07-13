@@ -90,3 +90,24 @@ func TestIssuevaultListTicketsResolvedProjectWide(t *testing.T) {
 		t.Fatalf("triage calls = %+v, want [own(triage)]", calls)
 	}
 }
+
+// TestIssuevaultUnknownStatusIsDeadNotOpen pins the trap that mis-imported 60
+// finished tickets: IssueVault does not whitelist `status`, so a bad writer can
+// leave a ticket in a state FieldDraft has never heard of. It then looks like a
+// perfectly normal open ticket in every listing — but NO transition out of it is
+// legal, so it can never be resolved. The value must survive verbatim (silently
+// healing it would hide the corruption) and be recognisable as invalid.
+func TestIssuevaultUnknownStatusIsDeadNotOpen(t *testing.T) {
+	tk := mapTicket(&ivTicket{ID: "20260609-190836-sff3", Status: "open"})
+
+	if tk.State != TicketState("open") {
+		t.Fatalf("state = %q, want the raw %q (no silent healing)", tk.State, "open")
+	}
+	if validState(tk.State) {
+		t.Fatal(`"open" must NOT be a valid TicketState — it is not in the state machine`)
+	}
+	// The dead end itself: the state a finished ticket belongs in is unreachable.
+	if err := validateTransition(tk.State, StateResolved); err == nil {
+		t.Fatal("open → resolved must be rejected; repair such tickets at the source")
+	}
+}

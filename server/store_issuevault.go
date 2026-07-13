@@ -247,6 +247,25 @@ func (s *issuevaultStore) postSystemComment(ticketID, body string) {
 
 // ─── mapping helpers (IssueVault → FieldDraft) ──────────────────
 
+// mapIVStatus adopts IssueVault's `status` as the FieldDraft TicketState.
+//
+// IssueVault does NOT whitelist that field, so any writer — an import, a peer
+// installation — can park a ticket in a state this server has never heard of.
+// Such a ticket is DEAD: validateTransition rejects every move out of it, so it
+// can never be resolved, only deleted. It happened: a one-shot import wrote
+// status "open" (see agents/migrate-issuevault.mjs) and 60 long-finished
+// tickets came back looking open forever.
+//
+// The value is kept VERBATIM — silently rewriting it to a legal state would
+// hide the corruption instead of showing it. The log line is the alarm.
+func mapIVStatus(id, status string) TicketState {
+	s := TicketState(status)
+	if !validState(s) {
+		log.Printf("issuevault: ticket %s has unknown status %q — no legal transition out of it", id, status)
+	}
+	return s
+}
+
 // derivedIVState maps a FieldDraft state to IssueVault's coarse open/closed.
 func derivedIVState(s TicketState) string {
 	switch s {
@@ -286,7 +305,7 @@ func mapTicket(iv *ivTicket) *Ticket {
 		AuthorID:    iv.Author,
 		Title:       iv.Title,
 		Body:        iv.Body,
-		State:       TicketState(iv.Status),
+		State:       mapIVStatus(iv.ID, iv.Status),
 		Category:    iv.Category,
 		POSpam:      iv.Meta.POSpam,
 		POMalicious: iv.Meta.POMalicious,
