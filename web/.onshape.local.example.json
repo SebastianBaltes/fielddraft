@@ -1,0 +1,9 @@
+{
+  "_comment": "Copy to web/.onshape.local.json (gitignored) and fill in. API key from Onshape → Dev Portal → API keys. IDs from a Part Studio URL: cad.onshape.com/documents/{documentId}/w/{workspaceId}/e/{elementId}",
+  "accessKey": "",
+  "secretKey": "",
+  "documentId": "",
+  "workspaceId": "",
+  "elementId": "",
+  "baseUrl": "https://cad.onshape.com"
+}

@@ -39,6 +39,9 @@ type Server struct {
 	// mesh is the running mesh-job dispatcher (mesher.go); nil = feature off
 	// (MESHER_URL unset), the mesh routes answer 503.
 	mesh *meshDispatch
+	// onshape signs the read-only Onshape calls the import dialog needs
+	// (onshape.go); nil = feature off (no API key), the routes answer 503.
+	onshape *onshapeClient
 }
 
 func NewServer(store Store) *Server {
@@ -49,6 +52,7 @@ func NewServer(store Store) *Server {
 		rateLimiter: NewRateLimiter(1.0, 60), // 60 burst, 1/sec refill
 		agentTokens: loadAgentTokens(),
 		trustProxy:  os.Getenv("TRUST_PROXY") == "1",
+		onshape:     newOnshapeClient(),
 	}
 	s.mux.HandleFunc("POST /api/auth/register", s.handleRegister)
 	s.mux.HandleFunc("POST /api/auth/login", s.handleLogin)
@@ -70,6 +74,10 @@ func NewServer(store Store) *Server {
 	s.mux.HandleFunc("GET /api/mesh-jobs/{id}", s.handleGetMeshJob)
 	s.mux.HandleFunc("GET /api/mesh-jobs/{id}/artifact", s.handleGetMeshArtifact)
 	s.mux.HandleFunc("DELETE /api/mesh-jobs/{id}", s.handleCancelMeshJob)
+	// Onshape import: signed read-only proxy (onshape.go). The browser cannot
+	// call Onshape directly (no CORS, and the API secret stays server-side).
+	s.mux.HandleFunc("GET /api/onshape/elements", s.handleOnshapeElements)
+	s.mux.HandleFunc("GET /api/onshape/features", s.handleOnshapeFeatures)
 	s.mux.HandleFunc("POST /api/auth/password-reset-request", s.handlePasswordResetRequest)
 	s.mux.HandleFunc("POST /api/auth/password-reset", s.handlePasswordReset)
 	s.mux.HandleFunc("GET /api/projects/{id}/thumbnail", s.handleGetThumbnail)

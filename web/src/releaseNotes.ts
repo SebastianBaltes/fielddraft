@@ -272,6 +272,12 @@ export const RELEASE_NOTES: ReleaseNote[] = [
     version: "0.6.545",
     entries: [
       {
+        kind: "perf",
+        scope: "render",
+        text: "SDF-Deferred kompiliert nur noch EIN G-Buffer-Shaderpaar statt eines pro Körper: die Body-ID reist jetzt als Geometrie-Attribut statt als in den Shader gebackene Konstante — der WGSL-Quelltext ist damit dokument-unabhängig, der Pipeline-Cache des Browsers greift beim nächsten Laden",
+        tickets: ["853b80c5"],
+      },
+      {
         kind: "fix",
         scope: "mesher",
         text: "Lichen: Meridian-Spalt in Kugeln geschlossen und Gyroid-Flächen auch ohne „General tri“ gemesht — geschlossene Träger mit kleinen Löchern (Kugel in einer Wand) wickeln die volle Chart-Periode, ohne dass ein Loop windet; der Chart hatte dort keine Naht und überbrückte den leeren Meridian mit langen degenerierten Sehnen. Solche Flächen (und Torus/Gyroid/loop-lose) fallen jetzt pro Fläche auf die chartlose Stern/Umkugel-Triangulierung zurück. Dazu Skalen-Korrektur des Flächen-Klassifikators (skalierte Träger lieferten 50× aufgeblasene Distanzen) und dichtere Kanten-Wand (Floor 0,02·h → 0,002·h). Demo-Messstand: chart 131→15 offene Kanten. Nebenbefund: der Halbkugel-Watertight-Test war ein False Positive (testete zwei getrennte Bodies) — jetzt echtes CSG und weiterhin grün.",
@@ -281,6 +287,18 @@ export const RELEASE_NOTES: ReleaseNote[] = [
   {
     version: "0.6.544",
     entries: [
+      {
+        kind: "feat",
+        scope: "sketch",
+        text: "Split funktioniert jetzt auch auf Splines: die Kurve wird am Klickpunkt in zwei Splines geteilt (Control-Splines exakt per Knoteninsertion), eine geschlossene Spline öffnet sich am Klick",
+        tickets: ["e5482a0a"],
+      },
+      {
+        kind: "fix",
+        scope: "viewport",
+        text: "Mobile: Ein-Finger-Drag dreht nur noch die Szene und zieht kein Auswahl-Rechteck mehr auf — das Box-Select liegt jetzt auf Doppel-Tipp-und-Ziehen",
+        tickets: ["2ca6e21c"],
+      },
       {
         kind: "fix",
         scope: "mesher",

@@ -177,6 +177,22 @@ describe("OnshapeControls touch gestures", () => {
     c.dispose();
   });
 
+  it("cancelTouchGesture drops a pending one-finger orbit (ticket 2ca6e21c)", () => {
+    // The viewport calls this when a touch pointer-down turns out to start a
+    // box select: the controls already saw the down, so their pending rotate
+    // must be abandoned or the scene spins under the selection rectangle.
+    const cam = cameraLookingAt([0, 0, 100], [0, 0, 0]);
+    const c = new OnshapeControls(cam, makeEl());
+    const h = handlers(c);
+    const before = cam.position.clone();
+    h.onPointerDown(touch(1, 100, 100));
+    c.cancelTouchGesture();
+    h.onPointerMove(touch(1, 200, 160)); // well past the rotate threshold
+    h.onPointerUp(touch(1, 200, 160));
+    expect(cam.position.distanceTo(before)).toBe(0);
+    c.dispose();
+  });
+
   it("a one-finger tap (below threshold) leaves the camera untouched", () => {
     const cam = cameraLookingAt([0, 0, 100], [0, 0, 0]);
     const c = new OnshapeControls(cam, makeEl());

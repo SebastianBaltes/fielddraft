@@ -58,6 +58,11 @@ services:
       TICKET_BACKEND: "${TICKET_BACKEND:-}"
       ISSUEVAULT_TOKEN: "${ISSUEVAULT_TOKEN:-}"
       ISSUEVAULT_INSTALLATION: "${ISSUEVAULT_INSTALLATION:-}"
+      # Onshape import (onshape.go). Unset = the /api/onshape routes answer 503.
+      # This key is an identity, not a public-data pass: it reads whatever its
+      # Onshape account may read, so the routes stay behind requireAuth.
+      ONSHAPE_ACCESS_KEY: "${ONSHAPE_ACCESS_KEY:-}"
+      ONSHAPE_SECRET_KEY: "${ONSHAPE_SECRET_KEY:-}"
     volumes:
       - blob-data:/data/blobs
     restart: unless-stopped

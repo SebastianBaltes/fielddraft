@@ -89,6 +89,12 @@ export interface DeferredPipelineState
   shadeCamera: THREE.OrthographicCamera;
   shadeMaterial: MeshBasicNodeMaterial;
   backFaceMaterial: MeshBasicNodeMaterial;
+  /** ONE opaque + ONE transparent G-buffer material for every body — the
+   *  body id travels on the geometry (`bodyId` attribute), not in the shader
+   *  source, so the whole app compiles a single G-buffer program instead of
+   *  one per body (ticket 853b80c5). */
+  gbufferMaterial: MeshBasicNodeMaterial;
+  transparentGbufferMaterial: MeshBasicNodeMaterial;
   selectionBuf: UniformArrayNode<"float">;
   selectionData: Float32Array;
   widthU: UniformNode<"float", number>;
@@ -176,11 +182,17 @@ export function initDeferredPipeline(
     camU.camFwdU,
     camU.isOrthoU,
   );
+  const gbufferMaterial = createGBufferMaterial();
 
   const { bodyIdAttr, bodyIdBuf, clearNode } = createBodyIdBuffer(
     MAX_PIXELS,
     width,
     height,
+  );
+
+  const transparentGbufferMaterial = createTransparentGBufferMaterial(
+    bodyIdBuf,
+    widthU,
   );
 
   const shadeMaterial = createShadeMaterial(
@@ -240,6 +252,8 @@ export function initDeferredPipeline(
     shadeCamera,
     shadeMaterial,
     backFaceMaterial,
+    gbufferMaterial,
+    transparentGbufferMaterial,
     ...opBufs,
     ...matBufs,
     ...camU,
@@ -312,10 +326,13 @@ export function updateDeferredData(
             // destroyed" → corrupted/smeared render that persists. Same race
             // the rebuild/teardown paths already guard (fg9o/323i).
             const retiredGeo = m.geometry;
-            m.geometry = new THREE.BoxGeometry(
-              bodyAABB[3] - bodyAABB[0] + pad * 2,
-              bodyAABB[4] - bodyAABB[1] + pad * 2,
-              bodyAABB[5] - bodyAABB[2] + pad * 2,
+            m.geometry = tagBodyId(
+              new THREE.BoxGeometry(
+                bodyAABB[3] - bodyAABB[0] + pad * 2,
+                bodyAABB[4] - bodyAABB[1] + pad * 2,
+                bodyAABB[5] - bodyAABB[2] + pad * 2,
+              ),
+              bodyIndex,
             );
             disposeAfterGpuIdle(renderer, () => retiredGeo.dispose());
             m.position.set(
@@ -337,6 +354,7 @@ export function updateDeferredData(
           if (m.userData.geoKey !== key) {
             const fresh = createPrimitiveGeometry(leaf);
             if (fresh) {
+              tagBodyId(fresh, bodyIndex);
               const retiredGeo = m.geometry;
               m.geometry = fresh;
               m.userData.geoKey = key;
@@ -389,40 +407,31 @@ export function rebuildDeferredBodies(
   // until the device confirms it's done with every in-flight submit. Destroying
   // them synchronously raced the previous frame's submit → "Buffer used in
   // submit while destroyed" → frozen device.
-  const retired: {
-    geometry: THREE.BufferGeometry;
-    material?: THREE.Material;
-  }[] = [];
+  // Only GEOMETRIES retire — the G-buffer / back-face materials are shared
+  // across every body and live on the pipeline state (ticket 853b80c5); they
+  // are disposed once, in disposeDeferredPipeline.
+  const retired: THREE.BufferGeometry[] = [];
   for (const meshes of state.bodyOpaqueMeshes.values()) {
     for (const m of meshes) {
       state.opaqueScene.remove(m);
-      retired.push({
-        geometry: m.geometry,
-        material: m.material as THREE.Material,
-      });
+      retired.push(m.geometry);
     }
   }
   for (const meshes of state.bodyTransparentMeshes.values()) {
     for (const m of meshes) {
       state.transparentScene.remove(m);
-      retired.push({
-        geometry: m.geometry,
-        material: m.material as THREE.Material,
-      });
+      retired.push(m.geometry);
     }
   }
   for (const meshes of state.bodyBackMeshes.values()) {
     for (const m of meshes) {
       state.transparentBackScene.remove(m);
-      retired.push({ geometry: m.geometry });
+      retired.push(m.geometry);
     }
   }
   const retiredTextures = state.volumeTextures;
   disposeAfterGpuIdle(renderer, () => {
-    for (const r of retired) {
-      r.geometry.dispose();
-      r.material?.dispose();
-    }
+    for (const g of retired) g.dispose();
     for (const tex of retiredTextures) tex.dispose();
   });
   state.bodyOpaqueMeshes.clear();
@@ -445,12 +454,8 @@ export function rebuildDeferredBodies(
     if (bodyIndex >= DEFERRED_MAX_BODIES) continue;
     if (!ranges.has(bodyIndex)) continue;
 
-    const gbufMaterial = createGBufferMaterial(bodyIndex);
-    const transMat = createTransparentGBufferMaterial(
-      bodyIndex,
-      state.bodyIdBuf,
-      state.widthU,
-    );
+    const gbufMaterial = state.gbufferMaterial;
+    const transMat = state.transparentGbufferMaterial;
     const opaqueMeshes: THREE.Mesh[] = [];
     const transMeshes: THREE.Mesh[] = [];
     const backMeshes: THREE.Mesh[] = [];
@@ -460,13 +465,20 @@ export function rebuildDeferredBodies(
         ? ([aabb[0], aabb[1], aabb[2], aabb[3], aabb[4], aabb[5]] as const)
         : computeLeafAABB(hybridInfo.leaves);
       if (bodyAABB) {
-        addAabbBox(bodyAABB, transMat, state.transparentScene, transMeshes);
+        addAabbBox(
+          bodyAABB,
+          transMat,
+          state.transparentScene,
+          transMeshes,
+          bodyIndex,
+        );
         transMeshes[transMeshes.length - 1].userData.isAabb = true;
         addAabbBox(
           bodyAABB,
           state.backFaceMaterial,
           state.transparentBackScene,
           backMeshes,
+          bodyIndex,
         );
         backMeshes[backMeshes.length - 1].userData.isAabb = true;
       }
@@ -476,6 +488,7 @@ export function rebuildDeferredBodies(
         if (leaf.role === "skip") continue;
         const geo = createPrimitiveGeometry(leaf);
         if (!geo) continue;
+        tagBodyId(geo, bodyIndex);
         // Record the geometry key so a later data-only update (ticket c9ic)
         // can tell a shape edit (depth/profile) from a pure transform.
         const gKey = leafGeoKey(leaf);
@@ -520,6 +533,7 @@ export function rebuildDeferredBodies(
           // Coverage-Aufweitung (Silhouetten-Dilatation) folgt in späterem Schritt.
           const tGeo = createPrimitiveGeometry(leaf);
           if (tGeo) {
+            tagBodyId(tGeo, bodyIndex);
             const tMesh = new THREE.Mesh(tGeo, transMat);
             applyLeafTransform(tMesh, leaf);
             tMesh.frustumCulled = false;
@@ -531,6 +545,7 @@ export function rebuildDeferredBodies(
 
           const bGeo = createPrimitiveGeometry(leaf);
           if (bGeo) {
+            tagBodyId(bGeo, bodyIndex);
             const bMesh = new THREE.Mesh(bGeo, state.backFaceMaterial);
             applyLeafTransform(bMesh, leaf);
             bMesh.frustumCulled = false;
@@ -551,13 +566,20 @@ export function rebuildDeferredBodies(
           ? ([aabb[0], aabb[1], aabb[2], aabb[3], aabb[4], aabb[5]] as const)
           : computeLeafAABB(hybridInfo.leaves);
         if (bodyAABB) {
-          addAabbBox(bodyAABB, transMat, state.transparentScene, transMeshes);
+          addAabbBox(
+            bodyAABB,
+            transMat,
+            state.transparentScene,
+            transMeshes,
+            bodyIndex,
+          );
           transMeshes[transMeshes.length - 1].userData.isAabb = true;
           addAabbBox(
             bodyAABB,
             state.backFaceMaterial,
             state.transparentBackScene,
             backMeshes,
+            bodyIndex,
           );
           backMeshes[backMeshes.length - 1].userData.isAabb = true;
         }
@@ -586,12 +608,13 @@ function addAabbBox(
   material: MeshBasicNodeMaterial,
   scene: THREE.Scene,
   meshes: THREE.Mesh[],
+  bodyIndex: number,
 ): void {
   const pad = AABB_HULL_PAD;
   const sx = aabb[3] - aabb[0] + pad * 2;
   const sy = aabb[4] - aabb[1] + pad * 2;
   const sz = aabb[5] - aabb[2] + pad * 2;
-  const geo = new THREE.BoxGeometry(sx, sy, sz);
+  const geo = tagBodyId(new THREE.BoxGeometry(sx, sy, sz), bodyIndex);
   const mesh = new THREE.Mesh(geo, material);
   mesh.position.set(
     (aabb[0] + aabb[3]) * 0.5,
@@ -695,6 +718,16 @@ export function resizeDeferredPipeline(
   state.clearNode.count = width * height * BODY_ID_WORDS_PER_PIXEL;
   state.width = width;
   state.height = height;
+}
+
+/** Stamp the body id (bodyIndex + 1) onto every vertex of a proxy geometry.
+ *  The G-buffer shaders read it as an attribute instead of a baked constant,
+ *  so ONE program serves every body (ticket 853b80c5). */
+function tagBodyId(geo: THREE.BufferGeometry, bodyIndex: number): THREE.BufferGeometry {
+  const count = geo.getAttribute("position")?.count ?? 0;
+  const ids = new Float32Array(count).fill(bodyIndex + 1);
+  geo.setAttribute("bodyId", new THREE.BufferAttribute(ids, 1));
+  return geo;
 }
 
 const _savedClearColor = new THREE.Color();
@@ -850,16 +883,10 @@ export function disposeDeferredPipeline(
   const geometries: THREE.BufferGeometry[] = [];
   const materials: THREE.Material[] = [];
   for (const meshes of state.bodyOpaqueMeshes.values()) {
-    for (const m of meshes) {
-      geometries.push(m.geometry);
-      materials.push(m.material as THREE.Material);
-    }
+    for (const m of meshes) geometries.push(m.geometry);
   }
   for (const meshes of state.bodyTransparentMeshes.values()) {
-    for (const m of meshes) {
-      geometries.push(m.geometry);
-      materials.push(m.material as THREE.Material);
-    }
+    for (const m of meshes) geometries.push(m.geometry);
   }
   for (const meshes of state.bodyBackMeshes.values()) {
     for (const m of meshes) geometries.push(m.geometry);
@@ -879,6 +906,8 @@ export function disposeDeferredPipeline(
     state.backFaceMaterial,
     state.shadeMaterial,
     state.blitMaterial,
+    state.gbufferMaterial,
+    state.transparentGbufferMaterial,
   ];
   // disposeAfterGpuIdle falls back to synchronous disposal when no renderer /
   // queue is available, so older callers keep working unchanged.

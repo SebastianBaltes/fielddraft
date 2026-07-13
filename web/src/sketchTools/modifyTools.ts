@@ -7,6 +7,7 @@
  */
 
 import { nearestTrimTarget } from "../sketchTrim";
+import { nearestSplitTarget } from "../sketchSplit";
 import { nearestProjectedEdge } from "../sketchProject";
 import { pickTolMm } from "./toolTypes";
 import { nearestLineSubCall } from "./pickHelpers";
@@ -51,7 +52,9 @@ export const splitTool: SketchToolController = {
   noHoverPoint: true,
   onDown(ctx, ev) {
     const tolMm = pickTolMm(ev.cam);
-    const pick = nearestTrimTarget(ctx.session.subCalls, ev.raw, tolMm);
+    // Splines are splittable but carry no `Curve` form — nearestSplitTarget
+    // sees them, nearestTrimTarget doesn't (ticket e5482a0a).
+    const pick = nearestSplitTarget(ctx.session.subCalls, ev.raw, tolMm);
     if (pick !== null) ctx.store.splitSketchAt(pick, ev.raw, tolMm);
     ctx.requestRedraw();
   },

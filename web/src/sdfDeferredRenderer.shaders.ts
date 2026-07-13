@@ -14,6 +14,7 @@ import {
   If,
   atomicAdd,
   atomicLoad,
+  attribute,
   atomicOr,
   atomicStore,
   bitAnd,
@@ -69,11 +70,20 @@ export function createBodyIdBuffer(maxPixels: number, width: number, height: num
 
 // ── G-Buffer material ───────────────────────────────────────────────
 
-export function createGBufferMaterial(bodyIndex: number): MeshBasicNodeMaterial {
+// The body id rides on the GEOMETRY as a per-vertex attribute (value =
+// bodyIndex + 1, 0 means "empty"), NOT baked into the shader as a constant
+// (ticket 853b80c5). Baking it produced one distinct WGSL program per body:
+// every scene had to compile N G-buffer shaders, and no two documents shared
+// a pipeline-cache entry. With the id as an attribute the source is invariant,
+// so the whole app compiles ONE opaque + ONE transparent G-buffer program —
+// and the browser's on-disk pipeline cache hits on the next load.
+const BODY_ID_ATTR = "bodyId";
+
+export function createGBufferMaterial(): MeshBasicNodeMaterial {
   const material = new MeshBasicNodeMaterial();
   material.outputNode = Fn(() => {
     const worldPos = modelWorldMatrix.mul(vec4(positionGeometry, 1)).xyz;
-    return vec4(worldPos, float(bodyIndex + 1));
+    return vec4(worldPos, attribute(BODY_ID_ATTR, "float"));
   })();
   material.depthWrite = true;
   material.depthTest = true;
@@ -85,7 +95,6 @@ export function createGBufferMaterial(bodyIndex: number): MeshBasicNodeMaterial 
 // ── Transparent G-Buffer material (+ packed body-ID insertion) ─────
 
 export function createTransparentGBufferMaterial(
-  bodyIndex: number,
   bodyIdBuf: any,
   widthU: any,
 ): MeshBasicNodeMaterial {
@@ -97,7 +106,7 @@ export function createTransparentGBufferMaterial(
     const pixelIdx = py.mul(int(widthU)).add(px);
     const word0Idx = pixelIdx.mul(BODY_ID_WORDS_PER_PIXEL);
     const word1Idx = word0Idx.add(1);
-    const encodedId = uint(bodyIndex + 1);
+    const encodedId = uint(attribute(BODY_ID_ATTR, "float"));
     const oldWord0 = atomicAdd(bodyIdBuf.element(word0Idx), uint(0x10000));
     const oldCount = bitAnd(shiftRight(oldWord0, uint(16)), uint(0xffff));
     If(oldCount.equal(uint(0)), () => {
@@ -106,7 +115,7 @@ export function createTransparentGBufferMaterial(
     If(oldCount.equal(uint(1)), () => {
       atomicOr(bodyIdBuf.element(word1Idx), encodedId);
     });
-    return vec4(worldPos, float(bodyIndex + 1));
+    return vec4(worldPos, attribute(BODY_ID_ATTR, "float"));
   })();
   material.depthWrite = true;
   material.depthTest = true;

@@ -200,3 +200,207 @@ export function bsplinePoints(
   }
   return out;
 }
+
+// ── Split (ticket e5482a0a) ────────────────────────────────────────
+//
+// The Split tool cuts a curve at a click point. A `sketch_spline` stores
+// ONLY its control points + mode + closed flag — the knot vector is
+// implied (clamped-uniform / periodic), so an EXACT split (whose halves
+// generally need non-uniform knots) is not representable in this format.
+// Both halves therefore stay ordinary `sketch_spline`s:
+//
+//   - **interpolate** (Catmull-Rom): the click point is inserted into the
+//     point list and the list is cut there. Every original point still
+//     lies on its half — only the tangent AT THE SEAM is re-derived (each
+//     half gets its own natural end tangent), so the shape can differ
+//     slightly right at the cut.
+//   - **control** (cubic B-spline): the control polygon is split exactly
+//     (Boehm knot insertion to multiplicity `degree` at the split
+//     parameter), so both halves start/end exactly at the click point and
+//     inherit the true sub-curve's control points; only their implied
+//     uniform re-parameterisation differs from the exact sub-curve.
+//
+// A CLOSED spline has no two halves — one click opens the loop AT the
+// click (the same convention Split uses on a full circle: it plants a
+// vertex and leaves one open curve).
+
+/** Nearest point on a sampled polyline: its index into `poly` plus the
+ *  parameter `s ∈ [0, 1]` of the whole polyline (arc-length-free, i.e.
+ *  sample-index based — enough to locate the span). */
+function nearestSample(
+  poly: Vec2[],
+  click: Vec2,
+): { index: number; point: Vec2 } | null {
+  if (poly.length < 2) return null;
+  let bestD = Infinity;
+  let bestI = 0;
+  let bestP: Vec2 = poly[0];
+  for (let i = 0; i + 1 < poly.length; i++) {
+    const a = poly[i];
+    const b = poly[i + 1];
+    const dx = b[0] - a[0];
+    const dy = b[1] - a[1];
+    const ll = dx * dx + dy * dy;
+    const t =
+      ll < 1e-12
+        ? 0
+        : Math.max(
+            0,
+            Math.min(
+              1,
+              ((click[0] - a[0]) * dx + (click[1] - a[1]) * dy) / ll,
+            ),
+          );
+    const p: Vec2 = [a[0] + t * dx, a[1] + t * dy];
+    const d = Math.hypot(click[0] - p[0], click[1] - p[1]);
+    if (d < bestD) {
+      bestD = d;
+      bestI = i + t; // fractional sample index
+      bestP = p;
+    }
+  }
+  return { index: bestI, point: bestP };
+}
+
+/** One Boehm knot insertion of `u` into (`poly`, `knots`, `degree`). */
+function insertKnot(
+  poly: Vec2[],
+  knots: number[],
+  degree: number,
+  u: number,
+): { poly: Vec2[]; knots: number[] } {
+  const n = poly.length;
+  // Span k: knots[k] <= u < knots[k+1] (same convention as deBoor).
+  let k = degree;
+  while (k + 1 <= n - 1 && knots[k + 1] <= u) k++;
+  const out: Vec2[] = [];
+  for (let i = 0; i <= k - degree; i++) out.push(poly[i]);
+  for (let i = k - degree + 1; i <= k; i++) {
+    const denom = knots[i + degree] - knots[i];
+    const a = Math.abs(denom) < 1e-12 ? 0 : (u - knots[i]) / denom;
+    out.push([
+      (1 - a) * poly[i - 1][0] + a * poly[i][0],
+      (1 - a) * poly[i - 1][1] + a * poly[i][1],
+    ]);
+  }
+  for (let i = k; i < n; i++) out.push(poly[i]);
+  const newKnots = [...knots.slice(0, k + 1), u, ...knots.slice(k + 1)];
+  return { poly: out, knots: newKnots };
+}
+
+/** Clamped-uniform knot vector for `n` controls of degree `deg` — the
+ *  scheme {@link bsplinePoints} implies for an OPEN spline. */
+function clampedKnots(n: number, deg: number): number[] {
+  const interior = n - deg - 1;
+  const knots: number[] = [];
+  for (let i = 0; i <= deg; i++) knots.push(0);
+  for (let i = 1; i <= interior; i++) knots.push(i);
+  const last = interior + 1;
+  for (let i = 0; i <= deg; i++) knots.push(last);
+  return knots;
+}
+
+/**
+ * Split an OPEN control-polygon B-spline at parameter `u`, returning the
+ * two control polygons. Boehm-inserts `u` until its multiplicity equals
+ * the degree; the shared control point is then the curve point at `u`
+ * and the polygon splits there.
+ */
+function splitBSplineControls(
+  controls: Vec2[],
+  degree: number,
+  u: number,
+): [Vec2[], Vec2[]] | null {
+  const n = controls.length;
+  const deg = Math.min(Math.max(1, Math.floor(degree)), n - 1);
+  let poly = controls.slice();
+  let knots = clampedKnots(n, deg);
+  for (let r = 0; r < deg; r++) {
+    const ins = insertKnot(poly, knots, deg, u);
+    poly = ins.poly;
+    knots = ins.knots;
+  }
+  // With multiplicity == degree the curve point at `u` IS a control point:
+  // the one whose Greville abscissa is u, i.e. the control whose knot
+  // window `knots[j+1 .. j+deg]` is exactly the inserted group. With the
+  // group starting at knot index i0 that is j = i0 − 1.
+  let j = -1;
+  for (let i = 0; i < knots.length; i++) {
+    if (Math.abs(knots[i] - u) < 1e-9) {
+      j = i - 1;
+      break;
+    }
+  }
+  if (j <= 0 || j >= poly.length - 1) return null;
+  const left = poly.slice(0, j + 1);
+  const right = poly.slice(j);
+  if (left.length < 2 || right.length < 2) return null;
+  return [left, right];
+}
+
+/**
+ * Split a spline's control points at `click`.
+ *
+ * Returns the point lists of the two halves for an OPEN spline, or a
+ * SINGLE list (the opened loop, starting and ending at the click) for a
+ * closed one. `null` when the click lands on/near an endpoint (nothing
+ * meaningful to cut) or the spline is degenerate.
+ */
+export function splitSplinePoints(
+  controls: Vec2[],
+  mode: "control" | "interpolate",
+  closed: boolean,
+  click: Vec2,
+): Vec2[][] | null {
+  const n = controls.length;
+  if (n < 2) return null;
+  const isControl = mode === "control";
+  const SAMPLES_PER_SPAN = 32;
+  const spans = closed ? n : n - 1;
+
+  if (isControl && !closed) {
+    // Exact control-polygon split via knot insertion. Locate the split
+    // parameter by sampling the same clamped-uniform domain bsplinePoints
+    // walks, then map the nearest sample back to `u`.
+    const deg = Math.min(3, n - 1);
+    const total = spans * SAMPLES_PER_SPAN;
+    const poly = bsplinePoints(controls, 3, false, total);
+    const hit = nearestSample(poly, click);
+    if (!hit) return null;
+    const knots = clampedKnots(n, deg);
+    const uHi = knots[knots.length - 1];
+    const u = (hit.index / total) * uHi;
+    // Too close to either end → no meaningful split.
+    if (u <= 1e-6 || u >= uHi - 1e-6) return null;
+    return splitBSplineControls(controls, 3, u);
+  }
+
+  // Interpolate (and any closed spline): cut the POINT LIST at the click,
+  // inserting the click point as the shared seam vertex.
+  const total = spans * SAMPLES_PER_SPAN;
+  const poly = isControl
+    ? bsplinePoints(controls, 3, closed, total)
+    : catmullRomPoints(controls, closed, SAMPLES_PER_SPAN);
+  const hit = nearestSample(poly, click);
+  if (!hit) return null;
+  const span = Math.min(spans - 1, Math.floor(hit.index / SAMPLES_PER_SPAN));
+  const p = hit.point;
+
+  if (closed) {
+    // Open the loop at the click: walk the points from the split forward
+    // once around, with the split point at both ends.
+    const out: Vec2[] = [p];
+    for (let i = 0; i < n; i++) out.push(controls[(span + 1 + i) % n]);
+    out.push(p);
+    return [out];
+  }
+
+  // Reject a click that lands essentially on an endpoint (a zero-length
+  // half is no split).
+  const near = (a: Vec2, b: Vec2) => Math.hypot(a[0] - b[0], a[1] - b[1]) < 1e-6;
+  if (near(p, controls[0]) || near(p, controls[n - 1])) return null;
+  const left = [...controls.slice(0, span + 1), p];
+  const right = [p, ...controls.slice(span + 1)];
+  if (left.length < 2 || right.length < 2) return null;
+  return [left, right];
+}
