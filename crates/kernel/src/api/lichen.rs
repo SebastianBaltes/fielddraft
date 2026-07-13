@@ -3829,6 +3829,242 @@ mod tests {
         }
         assert_eq!(checked, 8, "all eight box corners checked");
     }
+
+    // ════════════════════════════════════════════════════════════════════
+    //  GYROID-KUGEL-AUSSCHNITT — der Abnahme-Testfall
+    // ════════════════════════════════════════════════════════════════════
+    //
+    // Der Abnahmefall ist `demo_project_kernel()` — das ist byte-genau das
+    // Betreiber-Projekt (.fdraft 2026-07-13): Kugel r=50 ∩ Gyroid(cell 10,
+    // thickness 1) ∖ Zylinder r=30, per Box-Intersect auf einen
+    // 6×8×6-mm-Ausschnitt bei (7.97, 22.31, 29.87) reduziert, plus
+    // Marker-Kugel r=1 bei (5.21, 22.11, 29.25). „Ausschnitt“ ist wörtlich:
+    // klein genug für CI, und er enthält genau die Betreiber-Defektstelle
+    // (Punkt #894, Loch auf der Mini-Kugel-Kappe).
+    //
+    // KEINE skalierte Ersatz-Fixture: `Primitive::Gyroid` hat die Periode
+    // 2π·cell_size (≈ 62,8 mm) und ein DIMENSIONSLOSES thickness (|f|<t im
+    // f-Wertebereich ±1,5 ⇒ hier ~82 % Material, dicke Wände). Eine „kleine
+    // Kugel mit denselben Parametern“ hat darum eine völlig andere
+    // Morphologie — dieser Irrweg ist in RESEARCH_LOG.md dokumentiert.
+
+    /// AABB des Abnahme-Ausschnitts: Box (3,4,3)@(7.97,22.31,29.87) ∪
+    /// Marker-Kugel r=1 @(5.21,22.11,29.25), plus `pad` Rand.
+    fn demo_cutout_aabb(pad: f32) -> ([f32; 3], [f32; 3]) {
+        let bc = [7.970_110_7f32, 22.314_295, 29.869_688];
+        let he = [3.0f32, 4.0, 3.0];
+        let mc = [5.210_788_2f32, 22.114_31, 29.248_474];
+        let mut lo = [0.0f32; 3];
+        let mut hi = [0.0f32; 3];
+        for k in 0..3 {
+            lo[k] = (bc[k] - he[k]).min(mc[k] - 1.0) - pad;
+            hi[k] = (bc[k] + he[k]).max(mc[k] + 1.0) + pad;
+        }
+        (lo, hi)
+    }
+
+    /// Das Szenen-Feld (sdf, ∇f) — dieselbe argmin-Definition wie im Mesher,
+    /// damit die Metrik gegen GENAU die Fläche misst, die gemesht wurde.
+    fn scene_bodies(k: &crate::Kernel) -> Vec<crate::bvh::BoundedCsg> {
+        k.bodies
+            .iter()
+            .map(|b| crate::body::build_bounded_with_primitives(&k.decoded, &b.feature_indices).0)
+            .collect()
+    }
+
+    /// Flat-Buffer → (Punkte, Dreiecke).
+    fn mesh_of(out: &[f32]) -> (Vec<[f32; 3]>, Vec<[u32; 3]>) {
+        let total = out[0] as usize;
+        let tris = out[1] as usize;
+        let pts: Vec<[f32; 3]> = (0..total)
+            .map(|i| [out[3 + i * 9], out[3 + i * 9 + 1], out[3 + i * 9 + 2]])
+            .collect();
+        let base = 3 + total * 9;
+        let t: Vec<[u32; 3]> = (0..tris)
+            .map(|k| {
+                [
+                    out[base + k * 3] as u32,
+                    out[base + k * 3 + 1] as u32,
+                    out[base + k * 3 + 2] as u32,
+                ]
+            })
+            .collect();
+        (pts, t)
+    }
+
+    /// Alle vier Abnahme-Metriken auf einmal.
+    struct Report {
+        pts: usize,
+        tris: usize,
+        q: crate::lichen::MeshQuality,
+        h: crate::lichen_metrics::Hausdorff,
+        a: crate::lichen_metrics::AspectStats,
+    }
+
+    fn measure(k: &crate::Kernel, out: &[f32], lo: [f32; 3], hi: [f32; 3], cell: f32) -> Report {
+        let (pts, tris) = mesh_of(out);
+        let bodies = scene_bodies(k);
+        let field = |p: [f32; 3]| -> (f32, [f32; 3]) {
+            let mut bd = f32::MAX;
+            let mut bg = [0.0f32, 0.0, 1.0];
+            for b in &bodies {
+                let (d, g) = crate::sdf_dual::sdf_gradient(b, p);
+                if d < bd {
+                    bd = d;
+                    bg = g;
+                }
+            }
+            (bd, bg)
+        };
+        let h = crate::lichen_metrics::hausdorff(
+            &pts,
+            &tris,
+            |p| field(p).0,
+            |p| field(p).1,
+            lo,
+            hi,
+            4000,
+            cell,
+        );
+        Report {
+            pts: pts.len(),
+            tris: tris.len(),
+            q: crate::lichen::mesh_quality(&pts, &tris),
+            h,
+            a: crate::lichen_metrics::aspect_stats(&pts, &tris),
+        }
+    }
+
+    fn print_report(tag: &str, r: &Report) {
+        eprintln!(
+            "GYROID {tag:>22}: pts={:>6} tris={:>6} | open={:>5} nm={:>4} orient={:>4} deg={:>3} comp={:>3} chi={:>6} | H(m→s)={:.4} H(s→m)={:.4} p95={:.4} | asp p99={:.2} max={:.1} minang={:.1}°",
+            r.pts,
+            r.tris,
+            r.q.boundary_edges,
+            r.q.nonmanifold_edges,
+            r.q.orientation_violations,
+            r.q.degenerate_tris,
+            r.q.components,
+            r.q.euler,
+            r.h.mesh_to_surface,
+            r.h.surface_to_mesh,
+            r.h.surface_to_mesh_p95,
+            r.a.p99,
+            r.a.max,
+            r.a.min_angle_deg,
+        );
+    }
+
+    /// FIXTURE-VALIDIERUNG. Ein Testfall, der die Geometrie gar nicht enthält,
+    /// die sein Name behauptet, ist die gefährlichste Sorte grüner Test —
+    /// genau so war der Halbkugel-Test monatelang ein False Positive
+    /// (`add_primitive(REMOVE)` ohne `targets` → gar kein CSG). Also: BEWEISE,
+    /// dass der Ausschnitt wirklich Gyroid-Struktur, Box-Kappen und die
+    /// Marker-Kugel enthält, bevor irgendeine Zahl aus dem Netz interpretiert
+    /// wird.
+    #[test]
+    fn gyroid_cutout_fixture_really_contains_the_cutout() {
+        let k = demo_project_kernel();
+        let bodies = scene_bodies(&k);
+        assert_eq!(bodies.len(), 1, "Ein Body erwartet — sonst hängt das CSG nicht");
+        let f = |p: [f32; 3]| crate::sdf_dual::sdf_gradient(&bodies[0], p).0;
+
+        // Im Box-Ausschnitt muss BEIDES vorkommen: Material und Luft. Der
+        // Materialanteil ist KLEIN (~6 %): am Box-Zentrum ist |f| ≈ 1,106,
+        // die Gyroid-Wand (|f| < 1) streift den Ausschnitt also nur
+        // fast-tangential — genau das macht den Fall schwer. Dazu zählen wir
+        // Material ABSEITS der Marker-Kugel getrennt, damit „nur der Marker
+        // ist da“ nicht als Gyroid durchgeht.
+        let bc = [7.970_110_7f32, 22.314_295, 29.869_688];
+        let he = [3.0f32, 4.0, 3.0];
+        let mc = [5.210_788_2f32, 22.114_31, 29.248_474];
+        let (mut air, mut solid, mut solid_off_marker) = (0, 0, 0);
+        let n = 16;
+        for i in 0..n {
+            for j in 0..n {
+                for l in 0..n {
+                    let t = |idx: usize, k: usize| {
+                        bc[k] - 0.95 * he[k] + idx as f32 * 1.9 * he[k] / (n - 1) as f32
+                    };
+                    let p = [t(i, 0), t(j, 1), t(l, 2)];
+                    if f(p) > 0.0 {
+                        air += 1;
+                    } else {
+                        solid += 1;
+                        let dm = ((p[0] - mc[0]).powi(2)
+                            + (p[1] - mc[1]).powi(2)
+                            + (p[2] - mc[2]).powi(2))
+                        .sqrt();
+                        if dm > 1.6 {
+                            solid_off_marker += 1;
+                        }
+                    }
+                }
+            }
+        }
+        let frac = solid as f32 / (air + solid) as f32;
+        eprintln!(
+            "Ausschnitt-Inneres ({n}³ Gitter): Luft={air} Material={solid} ({:.0}%), davon abseits Marker: {solid_off_marker}",
+            frac * 100.0
+        );
+        assert!(
+            frac > 0.02 && frac < 0.5,
+            "Ausschnitt ist {:.0}% Material — Geometrie hat sich strukturell geändert",
+            frac * 100.0
+        );
+        assert!(
+            solid_off_marker > 50,
+            "Material besteht nur aus der Marker-Kugel — Gyroid/Zylinder-Kappe fehlen im Ausschnitt"
+        );
+
+        // Die Marker-Kugel (r=1) ist Material, ihr Zentrum liegt innen.
+        let mc = [5.210_788_2f32, 22.114_31, 29.248_474];
+        let dm = f(mc);
+        eprintln!("Marker-Zentrum: f={dm:.3}");
+        assert!(dm < -0.5, "Marker-Kugel fehlt (f am Zentrum = {dm:.3}, erwartet ≲ −0.9)");
+
+        // AUSSERHALB des Ausschnitts (+ Marker) ist nichts: der Rest der
+        // Gyroid-Kugel wurde vom Box-Intersect entfernt.
+        for p in [
+            [0.0f32, 0.0, 0.0],
+            [-20.0, 10.0, 5.0],
+            [bc[0] + he[0] + 3.0, bc[1], bc[2]],
+            [bc[0], bc[1] - he[1] - 3.0, bc[2]],
+        ] {
+            assert!(f(p) > 0.5, "Bei {p:?} steht Material — Box-Intersect greift nicht (f={})", f(p));
+        }
+    }
+
+    /// BASELINE-MESSREIHE auf dem Abnahmefall (kein Gate — Analyse-Werkzeug).
+    /// Default = exakt die Betreiber-Settings aus dem .fdraft.
+    /// `cargo test -p fielddraft-kernel --release zz_gyroid_baseline -- --ignored --nocapture`
+    /// Varianten: `LICHEN_GY_EXTRA=',"refine":true'` usw.
+    #[test]
+    #[ignore]
+    fn zz_gyroid_baseline() {
+        let extra = std::env::var("LICHEN_GY_EXTRA").unwrap_or_default();
+        let hs: Vec<f32> = std::env::var("LICHEN_GY_H")
+            .unwrap_or_else(|_| "10.0".into())
+            .split(',')
+            .filter_map(|v| v.trim().parse().ok())
+            .collect();
+        for h in hs {
+            let mut k = demo_project_kernel();
+            let opts = format!(
+                r#"{{"targetEdgeLength":{h},"grow":true,"curvAngleDeg":2.0,"useReach":false,"reachTol":1.0,"minEdgeSpacing":0.1,"maxPoints":50000,"generalTri":true,"accept":"witness","extractWalk":true,"globalWalk":true,"lfsFactor":0.1,"sizingField":true,"faceGuard":false,"fillHoles":false{extra}}}"#
+            );
+            let t0 = std::time::Instant::now();
+            let out = k.lichen_mesh(opts);
+            let secs = t0.elapsed().as_secs_f32();
+            if out.len() < 3 {
+                eprintln!("GYROID h={h}: LEER");
+                continue;
+            }
+            let (lo, hi) = demo_cutout_aabb(0.3);
+            let rep = measure(&k, &out, lo, hi, 0.5);
+            print_report(&format!("h={h} ({secs:.1}s)"), &rep);
+        }
+    }
 }
 
 
