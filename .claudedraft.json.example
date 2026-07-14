@@ -11,8 +11,16 @@
     "Worker). Nur wenn GAR KEIN Kernel da ist (frischer Clone), wird blockierend",
     "gebaut — sonst startet die App gegen einen fehlenden Import."
   ],
+  "_comment_startup_timeout_sec": [
+    "Deckt den EINEN Fall ab, in dem oben blockierend gebaut wird: ein frischer",
+    "Clone ohne web/src/wasm. Der Daemon wartet sonst nur 30s auf den Port und",
+    "gibt mit 500 auf, waehrend der Kernel noch kompiliert (gemessen: 89s bis der",
+    "Port stand). Im Normalfall bindet Vite in ~1s, dann greift der Wert nie.",
+    "Seit ClaudeDraft v2.9.1; 0/fehlend = 30s."
+  ],
   "webapp": {
     "port": 5173,
+    "startup_timeout_sec": 300,
     "start_cmd": "export NVM_DIR=\"$HOME/.nvm\" && . \"$NVM_DIR/nvm.sh\" && nvm use node && source ~/.cargo/env && { if [ -f web/src/wasm/fielddraft_kernel.js ]; then (just build-wasm 2>&1 | sed 's/^/[wasm] /' &); else echo '[wasm] kein Kernel vorhanden — erster Build laeuft blockierend'; just build-wasm; fi; } && cd web && npm run dev -- --host 0.0.0.0",
     "path": "/",
     "scheme": "https"
