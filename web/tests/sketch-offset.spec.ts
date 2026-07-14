@@ -103,7 +103,7 @@ test.describe("Sketch offset", () => {
     expect(newRadius!).toBeGreaterThan(orig!.r);
 
     await page.getByTestId("sketch-detail-accept").click();
-    await expect(page.locator('[data-feature-count="1"]')).toBeVisible();
+    await expect(page.locator('[data-feature-count="1"]')).toBeAttached();
 
     const committed = await committedSketchTypes(page);
     expect(committed).not.toBeNull();

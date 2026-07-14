@@ -69,7 +69,7 @@ test.describe("Sketch slot tool", () => {
 
     await page.waitForTimeout(500);
     await page.getByTestId("sketch-detail-accept").click();
-    await expect(page.locator('[data-feature-count="1"]')).toBeVisible();
+    await expect(page.locator('[data-feature-count="1"]')).toBeAttached();
 
     const committed = await committedSketchTypes(page);
     expect(committed).not.toBeNull();

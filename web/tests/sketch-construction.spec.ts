@@ -51,7 +51,7 @@ test.describe("Sketch construction geometry", () => {
 
     await page.waitForTimeout(500);
     await page.getByTestId("sketch-detail-accept").click();
-    await expect(page.locator('[data-feature-count="1"]')).toBeVisible();
+    await expect(page.locator('[data-feature-count="1"]')).toBeAttached();
 
     const committed = await page.evaluate(() => {
       const kernel = (

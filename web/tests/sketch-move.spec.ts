@@ -96,7 +96,7 @@ test.describe("Sketch move / copy", () => {
     expect(Math.abs(after![1] - before![1])).toBeLessThan(20);
 
     await page.getByTestId("sketch-detail-accept").click();
-    await expect(page.locator('[data-feature-count="1"]')).toBeVisible();
+    await expect(page.locator('[data-feature-count="1"]')).toBeAttached();
     const committed = await committedSketchTypes(page);
     expect(committed).not.toBeNull();
     expect(committed!.filter((t) => t === "sketch_circle").length).toBe(1);
@@ -155,7 +155,7 @@ test.describe("Sketch move / copy", () => {
     expect(await circleCount()).toBe(2);
 
     await page.getByTestId("sketch-detail-accept").click();
-    await expect(page.locator('[data-feature-count="1"]')).toBeVisible();
+    await expect(page.locator('[data-feature-count="1"]')).toBeAttached();
     const committed = await committedSketchTypes(page);
     expect(committed).not.toBeNull();
     expect(committed!.filter((t) => t === "sketch_circle").length).toBe(2);

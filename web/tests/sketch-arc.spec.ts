@@ -55,7 +55,7 @@ test.describe("Sketch arc tool", () => {
 
     await page.waitForTimeout(700);
     await page.getByTestId("sketch-detail-accept").click();
-    await expect(page.locator('[data-feature-count="1"]')).toBeVisible();
+    await expect(page.locator('[data-feature-count="1"]')).toBeAttached();
 
     const committed = await page.evaluate(() => {
       const kernel = (

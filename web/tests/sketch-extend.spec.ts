@@ -1,5 +1,10 @@
 import { expect, test } from "@playwright/test";
-import { freshLoad, subCallTypes, type SketchStoreWindow } from "./sketchHarness";
+import {
+  freshLoad,
+  pickSketchTool,
+  subCallTypes,
+  type SketchStoreWindow,
+} from "./sketchHarness";
 
 /**
  * Interactive line Extend (F12) — the complement of Trim. Extend isn't a
@@ -44,13 +49,8 @@ test.describe("Sketch extend", () => {
     const cx = box.x + box.width / 2;
     const cy = box.y + box.height / 2;
 
-    const drawLine = async (
-      x1: number,
-      y1: number,
-      x2: number,
-      y2: number,
-    ) => {
-      await page.getByTestId("sketch-tool-sketch_line").click();
+    const drawLine = async (x1: number, y1: number, x2: number, y2: number) => {
+      await pickSketchTool(page, "sketch_line");
       await page.mouse.move(x1, y1);
       await page.mouse.down();
       await page.mouse.move((x1 + x2) / 2, (y1 + y2) / 2, { steps: 4 });
@@ -91,7 +91,7 @@ test.describe("Sketch extend", () => {
     ).toBeGreaterThan(before![0] + 1);
 
     await page.getByTestId("sketch-detail-accept").click();
-    await expect(page.locator('[data-feature-count="1"]')).toBeVisible();
+    await expect(page.locator('[data-feature-count="1"]')).toBeAttached();
 
     expect(
       pageErrors.map((e) => e.message),

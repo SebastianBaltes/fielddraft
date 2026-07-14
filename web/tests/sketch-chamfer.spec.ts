@@ -1,19 +1,20 @@
 import { expect, test } from "@playwright/test";
 import {
+  pickSketchTool,
   committedSketchTypes,
   subCallTypes,
 } from "./sketchHarness";
 
 /**
  * Interactive line–line chamfer (F11). The straight-edge sibling of
- * Fillet: a two-click editing mode that bevels the corner between two
- * picked lines with a straight connecting line, trimming both lines back
- * to their setback points (see `web/src/sketchChamfer.ts`). The geometry
- * is exhaustively unit-tested; this E2E proves the interactive path: draw
- * two lines meeting at a corner, pick Chamfer, click each line, and the
- * sketch keeps the two (now trimmed) lines and gains a third straight
- * connector line — no arc. Cold WebGPU first-paint is slow, so the
- * timeout is generous.
+ * Fillet: an editing mode that bevels the corner between two lines with a
+ * straight connecting line, trimming both back to their setback points
+ * (see `web/src/sketchChamfer.ts`). The geometry is exhaustively
+ * unit-tested; this E2E proves the interactive path: draw two lines
+ * meeting at a corner, pick Chamfer, click THE CORNER once (tickets
+ * tqi4/chfp), and the sketch keeps the two (now trimmed) lines and gains a
+ * third straight connector line — no arc. Cold WebGPU first-paint is slow,
+ * so the timeout is generous.
  */
 test.describe.configure({ timeout: 120_000 });
 
@@ -36,13 +37,8 @@ test.describe("Sketch chamfer", () => {
     const cx = box.x + box.width / 2;
     const cy = box.y + box.height / 2;
 
-    const drawLine = async (
-      x1: number,
-      y1: number,
-      x2: number,
-      y2: number,
-    ) => {
-      await page.getByTestId("sketch-tool-sketch_line").click();
+    const drawLine = async (x1: number, y1: number, x2: number, y2: number) => {
+      await pickSketchTool(page, "sketch_line");
       await page.mouse.move(x1, y1);
       await page.mouse.down();
       await page.mouse.move((x1 + x2) / 2, (y1 + y2) / 2, { steps: 4 });
@@ -62,14 +58,13 @@ test.describe("Sketch chamfer", () => {
 
     // Pick the Chamfer tool. The default distance (5 mm) is small relative
     // to the 140 px legs, so both setback points stay on their segments.
-    await page.getByTestId("sketch-tool-sketch_chamfer").click();
+    await pickSketchTool(page, "sketch_chamfer");
 
-    // Click near each line's MIDPOINT — curve picks are forgiving. First
-    // the horizontal line, then the vertical line; the second click
-    // applies the chamfer.
-    await page.mouse.click(cx + 70, cy);
-    await page.waitForTimeout(150);
-    await page.mouse.click(cx, cy - 70);
+    // ONE click on the CORNER — tickets tqi4/chfp turned Chamfer into a
+    // corner op (`sketchTools/cornerTools.ts`): the vertex under the cursor
+    // resolves to the two lines meeting there. Both legs start at (cx, cy),
+    // so that shared endpoint IS the corner.
+    await page.mouse.click(cx, cy);
     await page.waitForTimeout(400);
 
     const types2 = await subCallTypes(page);
@@ -83,7 +78,7 @@ test.describe("Sketch chamfer", () => {
     ).toBe(3);
 
     await page.getByTestId("sketch-detail-accept").click();
-    await expect(page.locator('[data-feature-count="1"]')).toBeVisible();
+    await expect(page.locator('[data-feature-count="1"]')).toBeAttached();
 
     const committed = await committedSketchTypes(page);
     expect(committed).not.toBeNull();

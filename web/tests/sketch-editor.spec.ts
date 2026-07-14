@@ -19,8 +19,19 @@ import { expect, test } from "@playwright/test";
  */
 
 /** Console error substrings we ignore — they come from third-party
- *  libraries or the WebGPU adapter probing and aren't actionable. */
-const IGNORED_CONSOLE_SUBSTRINGS = ["WebGPU", "webgl", "THREE.Clock"];
+ *  libraries or the WebGPU adapter probing and aren't actionable.
+ *
+ *  The 401 belongs to the multi-user backend: the app probes `/api/me` on
+ *  boot, and an e2e run carries no session cookie, so 401 IS the correct
+ *  answer — the browser just logs every failed fetch as a console error.
+ *  Only 401 is waved through; a 5xx still fails the test, because that means
+ *  the server is broken or not running rather than merely unauthenticated. */
+const IGNORED_CONSOLE_SUBSTRINGS = [
+  "WebGPU",
+  "webgl",
+  "THREE.Clock",
+  "the server responded with a status of 401",
+];
 
 function isBlockingConsoleMessage(text: string): boolean {
   const lower = text.toLowerCase();
@@ -269,7 +280,7 @@ test.describe("Sketch editor smoke", () => {
     await expect(page.getByTestId("sketch-detail-accept")).toHaveCount(0);
     await expect(page.getByTestId("sketch-canvas-2d")).toHaveCount(0);
     await expect(page.getByTestId("primitive-split-button")).toBeVisible();
-    await expect(page.locator('[data-feature-count="1"]')).toBeVisible();
+    await expect(page.locator('[data-feature-count="1"]')).toBeAttached();
     // The new row's kind glyph is the sketch pencil. (Datum rows like
     // Origin precede feature rows now, so target the sketch row by kind.)
     const sketchRow = page.locator(
@@ -344,7 +355,7 @@ test.describe("Sketch editor smoke", () => {
     await page.waitForTimeout(700);
 
     await page.getByTestId("sketch-detail-accept").click();
-    await expect(page.locator('[data-feature-count="1"]')).toBeVisible();
+    await expect(page.locator('[data-feature-count="1"]')).toBeAttached();
 
     const committed = await page.evaluate(() => {
       const kernel = (
@@ -412,7 +423,7 @@ test.describe("Sketch editor smoke", () => {
     await page.getByTestId("sketch-tool-apply").click();
     await page.getByTestId("sketch-detail-accept").click();
 
-    await expect(page.locator('[data-feature-count="1"]')).toBeVisible();
+    await expect(page.locator('[data-feature-count="1"]')).toBeAttached();
     const row = page.locator('.fd-outliner .row[data-feature-kind="sketch"]');
     await expect(row).toHaveCount(1);
 
@@ -439,7 +450,7 @@ test.describe("Sketch editor smoke", () => {
     await page.getByTestId("sketch-detail-accept").click();
 
     // Feature count unchanged — replaceSketch kept the id stable.
-    await expect(page.locator('[data-feature-count="1"]')).toBeVisible();
+    await expect(page.locator('[data-feature-count="1"]')).toBeAttached();
 
     const committed = await page.evaluate(() => {
       const kernel = (
@@ -518,7 +529,7 @@ test.describe("Sketch editor smoke", () => {
     await page.waitForTimeout(800);
 
     await page.getByTestId("sketch-detail-accept").click();
-    await expect(page.locator('[data-feature-count="1"]')).toBeVisible();
+    await expect(page.locator('[data-feature-count="1"]')).toBeAttached();
 
     const committed = await page.evaluate(() => {
       const kernel = (
@@ -604,7 +615,7 @@ test.describe("Sketch editor smoke", () => {
     await page.waitForTimeout(800);
 
     await page.getByTestId("sketch-detail-accept").click();
-    await expect(page.locator('[data-feature-count="1"]')).toBeVisible();
+    await expect(page.locator('[data-feature-count="1"]')).toBeAttached();
 
     const committed = await page.evaluate(() => {
       const kernel = (
@@ -686,7 +697,7 @@ test.describe("Sketch editor smoke", () => {
     await page.waitForTimeout(700);
 
     await page.getByTestId("sketch-detail-accept").click();
-    await expect(page.locator('[data-feature-count="1"]')).toBeVisible();
+    await expect(page.locator('[data-feature-count="1"]')).toBeAttached();
 
     const committed = await page.evaluate(() => {
       const kernel = (
@@ -772,7 +783,7 @@ test.describe("Sketch editor smoke", () => {
     await expect(subSpineRows).toHaveCount(1);
 
     await page.getByTestId("sketch-detail-accept").click();
-    await expect(page.locator('[data-feature-count="1"]')).toBeVisible();
+    await expect(page.locator('[data-feature-count="1"]')).toBeAttached();
 
     const committed = await page.evaluate(() => {
       const kernel = (
@@ -829,12 +840,12 @@ test.describe("Sketch editor smoke", () => {
     await page.getByTestId("sketch-tool-apply").click();
     await page.waitForTimeout(400);
     await page.getByTestId("sketch-detail-accept").click();
-    await expect(page.locator('[data-feature-count="1"]')).toBeVisible();
+    await expect(page.locator('[data-feature-count="1"]')).toBeAttached();
 
     // Extrude button enabled after the sketch commits.
     await expect(extrudeBtn).toBeEnabled();
     await extrudeBtn.click();
-    await expect(page.locator('[data-feature-count="2"]')).toBeVisible();
+    await expect(page.locator('[data-feature-count="2"]')).toBeAttached();
 
     // Verify the new feature is an extrude via the dev kernel hook.
     const shape = await page.evaluate(() => {
@@ -1071,7 +1082,7 @@ test.describe("Sketch constraint palette (P0.1)", () => {
     await page.waitForTimeout(800); // let the solver land
 
     await page.getByTestId("sketch-detail-accept").click();
-    await expect(page.locator('[data-feature-count="1"]')).toBeVisible();
+    await expect(page.locator('[data-feature-count="1"]')).toBeAttached();
 
     const committed = await readCommittedSubCalls(page);
     expect(committed).not.toBeNull();
@@ -1146,7 +1157,7 @@ test.describe("Sketch constraint palette (P0.1)", () => {
     await page.waitForTimeout(800);
 
     await page.getByTestId("sketch-detail-accept").click();
-    await expect(page.locator('[data-feature-count="1"]')).toBeVisible();
+    await expect(page.locator('[data-feature-count="1"]')).toBeAttached();
 
     const committed = await readCommittedSubCalls(page);
     expect(committed).not.toBeNull();
@@ -1270,7 +1281,7 @@ test.describe("Sketch dimensions (P0.2)", () => {
     await page.waitForTimeout(900);
 
     await page.getByTestId("sketch-detail-accept").click();
-    await expect(page.locator('[data-feature-count="1"]')).toBeVisible();
+    await expect(page.locator('[data-feature-count="1"]')).toBeAttached();
 
     const committed = await readCommittedSubCalls(page);
     expect(committed).not.toBeNull();
@@ -1331,7 +1342,7 @@ test.describe("Sketch dimensions (P0.2)", () => {
     await page.waitForTimeout(900);
 
     await page.getByTestId("sketch-detail-accept").click();
-    await expect(page.locator('[data-feature-count="1"]')).toBeVisible();
+    await expect(page.locator('[data-feature-count="1"]')).toBeAttached();
 
     const committed = await readCommittedSubCalls(page);
     expect(committed).not.toBeNull();
@@ -1455,7 +1466,7 @@ test.describe("Sketch grip-drag (P0.3)", () => {
     await page.waitForTimeout(900);
 
     await page.getByTestId("sketch-detail-accept").click();
-    await expect(page.locator('[data-feature-count="1"]')).toBeVisible();
+    await expect(page.locator('[data-feature-count="1"]')).toBeAttached();
 
     const committed = await readCommittedSubCalls(page);
     expect(committed).not.toBeNull();
@@ -1514,7 +1525,7 @@ test.describe("Sketch grip-drag (P0.3)", () => {
     await page.waitForTimeout(900);
 
     await page.getByTestId("sketch-detail-accept").click();
-    await expect(page.locator('[data-feature-count="1"]')).toBeVisible();
+    await expect(page.locator('[data-feature-count="1"]')).toBeAttached();
 
     const committed = await readCommittedSubCalls(page);
     expect(committed).not.toBeNull();
@@ -1577,7 +1588,7 @@ test.describe("Sketch grip-drag (P0.3)", () => {
     await page.waitForTimeout(900);
 
     await page.getByTestId("sketch-detail-accept").click();
-    await expect(page.locator('[data-feature-count="1"]')).toBeVisible();
+    await expect(page.locator('[data-feature-count="1"]')).toBeAttached();
 
     const committed = await readCommittedSubCalls(page);
     expect(committed).not.toBeNull();

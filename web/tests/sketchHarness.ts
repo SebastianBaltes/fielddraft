@@ -65,7 +65,12 @@ export async function settleSketchCamera(page: Page): Promise<void> {
     page.evaluate(() => {
       const c = (window as unknown as SketchStoreWindow).__fdSketchCamera?.();
       return c
-        ? { zoom: c.zoom, centerU: c.centerU, centerV: c.centerV, version: c.version }
+        ? {
+            zoom: c.zoom,
+            centerU: c.centerU,
+            centerV: c.centerV,
+            version: c.version,
+          }
         : null;
     });
   let cam = await read();
@@ -138,6 +143,31 @@ export async function clickSketchPoint(
 }
 
 /**
+ * Pick a sketch tool — IDEMPOTENT, and that is the whole point. Ticket daa8
+ * made the toolbar button a toggle: clicking the ACTIVE tool detaches it (back
+ * to select mode), which is how a chained Line/polyline ends. A helper that
+ * clicks the button before every stroke therefore ARMS the tool for the first
+ * stroke and DISARMS it for the second — the second drag then lands in select
+ * mode and grip-drags the geometry it was supposed to draw next to. Clicking
+ * only when the button isn't already `is-active` keeps repeated strokes honest.
+ *
+ * Grouped tools (rectangle / circle) are fronted by a split-button whose
+ * primary carries the active state, so they resolve through the group testid.
+ */
+export async function pickSketchTool(page: Page, tool: string): Promise<void> {
+  const group: Record<string, string> = {
+    sketch_rectangle: "sketch-tool-rectangle-group",
+    sketch_circle: "sketch-tool-circle-group",
+  };
+  const groupId = group[tool];
+  const button = groupId
+    ? page.getByTestId(groupId).locator("button.tool.primary")
+    : page.getByTestId(`sketch-tool-${tool}`);
+  const cls = (await button.getAttribute("class")) ?? "";
+  if (!cls.split(/\s+/).includes("is-active")) await button.click();
+}
+
+/**
  * Ticket 87a1: the geometry list, per-tool edit block, empty-state and the
  * constraint manager now live inside the "Geometry & Constraints" sub-accordion
  * (testid `geometry-section`, header `geometry-header`) which is COLLAPSED BY
@@ -167,7 +197,9 @@ export async function subCallTypes(page: Page): Promise<string[]> {
 }
 
 /** The committed sketch's sub-call types (after Finish). */
-export async function committedSketchTypes(page: Page): Promise<string[] | null> {
+export async function committedSketchTypes(
+  page: Page,
+): Promise<string[] | null> {
   return page.evaluate(() => {
     const kernel = (window as unknown as SketchStoreWindow).__fdKernel;
     if (!kernel) return null;

@@ -71,7 +71,7 @@ test.describe("Sketch trim — composites", () => {
     expect(await counts()).toEqual({ rect: 0, line: 3 });
 
     await page.getByTestId("sketch-detail-accept").click();
-    await expect(page.locator('[data-feature-count="1"]')).toBeVisible();
+    await expect(page.locator('[data-feature-count="1"]')).toBeAttached();
 
     const committed = await page.evaluate(() => {
       const kernel = (

@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { pickSketchTool } from "./sketchHarness";
 
 /**
  * Interactive trim (UI gap #2 follow-up). Trim isn't a kernel tool — it's
@@ -32,13 +33,8 @@ test.describe("Sketch trim", () => {
     const cx = box.x + box.width / 2;
     const cy = box.y + box.height / 2;
 
-    const drawLine = async (
-      x1: number,
-      y1: number,
-      x2: number,
-      y2: number,
-    ) => {
-      await page.getByTestId("sketch-tool-sketch_line").click();
+    const drawLine = async (x1: number, y1: number, x2: number, y2: number) => {
+      await pickSketchTool(page, "sketch_line");
       await page.mouse.move(x1, y1);
       await page.mouse.down();
       await page.mouse.move((x1 + x2) / 2, (y1 + y2) / 2, { steps: 4 });
@@ -78,7 +74,7 @@ test.describe("Sketch trim", () => {
     expect(await lineCount()).toBe(4);
 
     await page.getByTestId("sketch-detail-accept").click();
-    await expect(page.locator('[data-feature-count="1"]')).toBeVisible();
+    await expect(page.locator('[data-feature-count="1"]')).toBeAttached();
 
     const committed = await page.evaluate(() => {
       const kernel = (

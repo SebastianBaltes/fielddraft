@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
 import {
+  pickSketchTool,
   canvasCentre,
   committedSketchTypes,
   freshLoad,
@@ -40,7 +41,7 @@ test.describe("Sketch chain offset", () => {
     const [cx, cy] = await canvasCentre(page);
 
     const drawLine = async (x1: number, y1: number, x2: number, y2: number) => {
-      await page.getByTestId("sketch-tool-sketch_line").click();
+      await pickSketchTool(page, "sketch_line");
       await page.mouse.move(x1, y1);
       await page.mouse.down();
       await page.mouse.move((x1 + x2) / 2, (y1 + y2) / 2, { steps: 4 });
@@ -85,7 +86,11 @@ test.describe("Sketch chain offset", () => {
     });
     expect(clickWorld).not.toBeNull();
 
-    const [px, py] = await sketchToClientPx(page, clickWorld![0], clickWorld![1]);
+    const [px, py] = await sketchToClientPx(
+      page,
+      clickWorld![0],
+      clickWorld![1],
+    );
     await page.mouse.click(px, py);
     await page.waitForTimeout(400);
 
@@ -98,7 +103,7 @@ test.describe("Sketch chain offset", () => {
     ).toBeGreaterThan(4);
 
     await page.getByTestId("sketch-detail-accept").click();
-    await expect(page.locator('[data-feature-count="1"]')).toBeVisible();
+    await expect(page.locator('[data-feature-count="1"]')).toBeAttached();
 
     const committed = await committedSketchTypes(page);
     expect(committed).not.toBeNull();

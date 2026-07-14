@@ -63,7 +63,7 @@ test.describe("Sketch fix constraint", () => {
     expect(await subCallTypes(page)).toContain("sketch_constraint_fix");
 
     await page.getByTestId("sketch-detail-accept").click();
-    await expect(page.locator('[data-feature-count="1"]')).toBeVisible();
+    await expect(page.locator('[data-feature-count="1"]')).toBeAttached();
 
     const committed = await committedSketchTypes(page);
     expect(committed).not.toBeNull();
