@@ -59,7 +59,15 @@ test.describe("Sketch conflict diagnostics", () => {
     await page.mouse.up();
     await page.waitForTimeout(300);
 
-    expect(await subCallTypes(page)).toEqual(["sketch_line"]);
+    // The drag is near-horizontal IN SKETCH SPACE (the overlay projects through
+    // the real plane frame, so a screen-diagonal drag is not a sketch-diagonal
+    // one), and the line tool infers the matching constraint from the end snap.
+    // That inferred horizontal is exactly what this test then over-constrains
+    // against below — it belongs here.
+    expect(await subCallTypes(page)).toEqual([
+      "sketch_line",
+      "sketch_constraint_horizontal",
+    ]);
 
     // Select JUST the line entity by clicking its midpoint on the canvas
     // (the panel row would select the endpoints too, and the line-constraint

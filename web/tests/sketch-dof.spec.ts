@@ -1,5 +1,10 @@
 import { expect, test } from "@playwright/test";
-import { canvasCentre, freshLoad, subCallTypes } from "./sketchHarness";
+import {
+  freshLoad,
+  settleSketchCamera,
+  sketchToClientPx,
+  subCallTypes,
+} from "./sketchHarness";
 
 /**
  * Degrees-of-freedom HUD (F5). The DoF math itself is unit-tested in
@@ -33,12 +38,20 @@ test.describe("Sketch DoF readout", () => {
 
     // Draw a line via raw pixel offsets from the canvas centre — camera
     // independent, so it always lands on-canvas.
-    const [cx, cy] = await canvasCentre(page);
     await page.getByTestId("sketch-tool-sketch_line").click();
-    await page.mouse.move(cx - 100, cy - 60);
+    // Draw the line deliberately OFF-AXIS **in sketch space**. The old drag was
+    // screen-diagonal (200 x 120 px) and looked off-axis — but the overlay
+    // projects through the real plane frame, so that screen diagonal lands
+    // near-horizontal in sketch coordinates and the line tool dutifully infers
+    // a `sketch_constraint_horizontal`. This test wants a FREE line, so pick
+    // the endpoints in sketch mm and project them.
+    await settleSketchCamera(page);
+    const [ax, ay] = await sketchToClientPx(page, -40, -20);
+    const [bx, by] = await sketchToClientPx(page, 40, 20);
+    await page.mouse.move(ax, ay);
     await page.mouse.down();
-    await page.mouse.move(cx, cy, { steps: 5 });
-    await page.mouse.move(cx + 100, cy + 60, { steps: 10 });
+    await page.mouse.move((ax + bx) / 2, (ay + by) / 2, { steps: 5 });
+    await page.mouse.move(bx, by, { steps: 10 });
     await page.mouse.up();
     await page.waitForTimeout(300);
 

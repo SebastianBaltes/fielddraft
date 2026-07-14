@@ -55,8 +55,16 @@ test.describe("Sketch elements panel", () => {
     await page.mouse.up();
     await page.waitForTimeout(300);
 
+    // The line drag is near-horizontal IN SKETCH SPACE (the overlay projects
+    // through the real plane frame, so a screen-diagonal drag is not a
+    // sketch-diagonal one), so the line tool infers a horizontal constraint
+    // from the end snap and it lands between the two geometry calls.
     const types = await subCallTypes(page);
-    expect(types).toEqual(["sketch_line", "sketch_circle"]);
+    expect(types).toEqual([
+      "sketch_line",
+      "sketch_constraint_horizontal",
+      "sketch_circle",
+    ]);
 
     // The Geometry section header is present with the right count.
     const geomHeader = page.getByTestId("sketch-elements-geometry");
