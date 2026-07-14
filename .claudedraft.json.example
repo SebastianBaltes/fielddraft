@@ -1,7 +1,19 @@
 {
+  "_comment_start_cmd": [
+    "Der WASM-Build laeuft im HINTERGRUND, Vite bindet den Port sofort (~1s).",
+    "Grund: der ClaudeDraft-Daemon pollt nur 30s auf den Port (internal/webapp/",
+    "manager.go: 'Vite is typically <2s'). `just build-wasm` braucht aber selbst",
+    "im LEERLAUF ~48s (wasm-pack laeuft immer durch, auch wenn cargo nichts tut),",
+    "kalt mehrere Minuten. Blockierend gebaut kann die Webapp also NIE aufgehen —",
+    "der Daemon gibt mit 500 auf, waehrend der Kernel noch kompiliert.",
+    "Vite serviert derweil den vorhandenen Kernel und laedt neu, sobald der frische",
+    "in web/src/wasm landet (der .kernel-version-Guard meldet einen echt veralteten",
+    "Worker). Nur wenn GAR KEIN Kernel da ist (frischer Clone), wird blockierend",
+    "gebaut — sonst startet die App gegen einen fehlenden Import."
+  ],
   "webapp": {
     "port": 5173,
-    "start_cmd": "export NVM_DIR=\"$HOME/.nvm\" && . \"$NVM_DIR/nvm.sh\" && nvm use node && source ~/.cargo/env && just build-wasm && cd web && npm run dev -- --host 0.0.0.0",
+    "start_cmd": "export NVM_DIR=\"$HOME/.nvm\" && . \"$NVM_DIR/nvm.sh\" && nvm use node && source ~/.cargo/env && { if [ -f web/src/wasm/fielddraft_kernel.js ]; then (just build-wasm 2>&1 | sed 's/^/[wasm] /' &); else echo '[wasm] kein Kernel vorhanden — erster Build laeuft blockierend'; just build-wasm; fi; } && cd web && npm run dev -- --host 0.0.0.0",
     "path": "/",
     "scheme": "https"
   }
