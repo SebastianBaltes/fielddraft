@@ -6529,3 +6529,64 @@ fn ticket_350_fillet_march_region_covers_every_moved_surface_point() {
          fillet is invisible exactly as in #350",
     );
 }
+
+/// #348 „Die BREP-Kante laeuft falsch" — S-foermig an der Rundung vorbei.
+///
+/// An der runden Nut-Stirn treffen die beiden Wandflaechen die Rundung TANGENTIAL.
+/// Beide Tangentenlinien tragen eigene Eck-Vertices, nur ~5 mm voneinander entfernt
+/// — und `vertex_ahead` fing beim Beenden eines Marsches den naechstgelegenen
+/// Vertex, der „voraus" lag, ohne den Abstand QUER zur Tangente zu pruefen. Der
+/// Marsch lief also die ganze Laenge der EINEN Naht und snappte sein Ende auf den
+/// Vertex der ANDEREN: eine Kante, die unten an der +y-Naht beginnt und oben an der
+/// -y-Naht endet. Genau die S-Form aus dem Screenshot.
+///
+/// Die Invariante, die das festnagelt: an der Stirn (x ≈ 19.46) ist jede Kante
+/// entweder eine SENKRECHTE Naht (konstantes y) oder ein KAPPEN-Bogen (konstantes
+/// z). Eine Kante, die BEIDES aendert, ueberbrueckt die zwei Nahtlinien — die gibt
+/// es in der Geometrie nicht.
+#[test]
+fn ticket_348_no_edge_bridges_the_two_tangent_seams() {
+    #[derive(serde::Deserialize)]
+    struct Doc {
+        feature_calls: Vec<FeatureCall>,
+    }
+    let doc: Doc = serde_json::from_str(include_str!("testdata/ticket_348_brep_edge.json"))
+        .expect("fixture parses");
+
+    let registry = FeatureRegistry::with_builtins();
+    let mut d = empty_ctx();
+    let mut ctx = Context::new(&mut d);
+    let errs = registry.regenerate(&mut ctx, &doc.feature_calls, None);
+    assert!(errs.0.is_empty(), "document regenerates cleanly: {errs:?}");
+
+    const TIP_X: f64 = 19.46; // die Rundung der Nut-Stirn
+    let woven = ctx.brep_cache.ensure(&ctx.features);
+    let mut seams = 0usize;
+
+    for (brep, _placement) in woven.iter() {
+        for e in brep.edges.iter() {
+            let pts = crate::brep::edge_sampling::sample_edge_dense(&e.geometry, 12);
+            if pts.len() < 2 {
+                continue;
+            }
+            let (a, b) = (pts[0], pts[pts.len() - 1]);
+            let on_tip = (a[0] - TIP_X).abs() < 0.3 && (b[0] - TIP_X).abs() < 0.3;
+            if !on_tip {
+                continue;
+            }
+            let dy = (a[1] - b[1]).abs();
+            let dz = (a[2] - b[2]).abs();
+            if dy < 0.1 {
+                seams += 1;
+            }
+            assert!(
+                dy < 0.1 || dz < 0.1,
+                "edge bridges the two tangent seams: ({:.2},{:.2},{:.2}) → ({:.2},{:.2},{:.2}) \
+                 — dy={dy:.2} dz={dz:.2}. It runs down one seam and ends on the other (#348).",
+                a[0], a[1], a[2], b[0], b[1], b[2],
+            );
+        }
+    }
+
+    assert!(seams >= 2, "the tip really has its two vertical seams (test not vacuous)");
+}

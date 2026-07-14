@@ -24,6 +24,17 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.592",
+    entries: [
+      {
+        kind: "fix",
+        scope: "brep",
+        text: "Eine Kante lief an einer runden Nut-Stirn S-förmig quer über die Rundung statt der Nutwand zu folgen. Wo eine Rundung eine Wand tangential berührt, liegen die Eckpunkte beider Nahtlinien nur wenige Millimeter auseinander; beim Abschluss einer Kante wurde der nächstgelegene Eckpunkt „voraus" gegriffen, ohne zu prüfen, ob er überhaupt seitlich auf der Kurve liegt. Die Kante lief dann die eine Naht entlang und endete auf der anderen. Nebeneffekt: eine Fläche, die an dieser Falschkante zerbrach, schließt sich wieder.",
+        tickets: ["#348"],
+      },
+    ],
+  },
+  {
     version: "0.6.591",
     entries: [
       {

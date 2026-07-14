@@ -618,12 +618,32 @@ fn vertex_ahead(
 ) -> Option<usize> {
     let mut best: Option<(usize, f64)> = None;
     for (i, &v) in vertices.iter().enumerate() {
-        let d = dist(v, cur);
+        let w = sub(v, cur);
+        let d = norm(w);
         if d > reach {
             continue;
         }
         // Ahead = the step toward v has a positive component along the tangent.
-        if dot(normalize(sub(v, cur)), t) <= 0.0 {
+        let along = dot(w, t);
+        if along <= 0.0 {
+            continue;
+        }
+        // ...and ON the curve, not merely ahead of it (#348). Distance alone lets
+        // the march capture a vertex that sits SIDEWAYS off the tangent: a branch
+        // pair can meet in two disjoint parallel curves (two cylinders share two
+        // lines), each carrying its own bounding vertices a few mm apart. The
+        // march then ran the whole length of one curve and snapped its end onto
+        // the other curve's vertex — the S-shaped edge of ticket #348, whose first
+        // control point sat 5 mm off the line every other point lay on.
+        //
+        // The curve leaves `cur` along `t`, so a vertex it can legitimately reach
+        // stays close to that ray: over the capture distance (`reach` = 1.5·step)
+        // a curve of radius R deviates by only (1.5·step)²/2R — far below one step
+        // for any radius the marcher can follow at all. `reach/3` (= step/2) is
+        // therefore generous for every real edge and still an order of magnitude
+        // tighter than the 5 mm sideways grab that produced #348.
+        let lateral = norm(sub(w, scale(t, along)));
+        if lateral > reach / 3.0 {
             continue;
         }
         if best.is_none_or(|(_, bd)| d < bd) {
