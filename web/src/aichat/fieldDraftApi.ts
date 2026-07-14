@@ -30,6 +30,10 @@
 import type { KernelStore } from "../store";
 import { requestView, requestViewFit, type ViewPreset } from "../viewCommands";
 import { proposeScript, type ProposeResult } from "./scriptProposals";
+// The shapes the assistant is told about live in the CONTRACT (api.ts) — one
+// definition, so a change here that the description does not know about cannot
+// compile. See the header there.
+import type { DocumentSummary } from "./api";
 
 /** The camera presets the assistant may ask for (mirrors ViewPreset). */
 const VIEWS: ViewPreset[] = [
@@ -41,27 +45,6 @@ const VIEWS: ViewPreset[] = [
   "bottom",
   "iso",
 ];
-
-/** A feature as the assistant sees it — no kernel handles, no live references. */
-export interface FeatureInfo {
-  id: number;
-  type: string;
-  name: string;
-  suppressed: boolean;
-}
-
-/** What the assistant is told about the document before each turn. */
-export interface DocumentSummary {
-  featureCount: number;
-  bodyCount: number;
-  features: FeatureInfo[];
-  selection: number[];
-  /** Feature id of the sketch being edited, or null when not in a sketch. */
-  activeSketch: number | null;
-  variables: { name: string; value: number | string }[];
-  /** Scene bounding-box size in mm, [x, y, z]. */
-  sceneSize: [number, number, number];
-}
 
 function clone<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
@@ -178,9 +161,9 @@ export function createFieldDraftApi(store: KernelStore) {
       else store.selectOnly(id, "list");
     },
 
-    /** Point the camera at a standard view: "front" | "back" | "left" |
-     *  "right" | "top" | "bottom" | "iso". */
-    setView(preset: string): void {
+    /** Point the camera at a standard view. The parameter is typed, but the caller
+     *  is EVALUATED MODEL CODE — the runtime guard below is the real check. */
+    setView(preset: ViewPreset): void {
       if (!VIEWS.includes(preset as ViewPreset)) {
         throw new Error(
           `Unknown view "${preset}" — one of: ${VIEWS.join(", ")}`,

@@ -64,7 +64,9 @@ declare module "baseaichat" {
     precision?: number;
     context?: unknown;
   }
-  export function readUIState(options?: UIStateOptions): unknown;
+  export function readUIState(
+    options?: UIStateOptions,
+  ): Record<string, unknown>;
 
   export interface UIActionOptions {
     root?: ParentNode;
@@ -74,7 +76,23 @@ declare module "baseaichat" {
     rateWindowMs?: number;
     onAction?: (action: string, testId: string) => void;
   }
-  export type UIActions = Record<string, (...args: never[]) => unknown>;
+  /**
+   * The FOUR functions the library actually returns (browser/uiActions.ts) — named
+   * one by one, on purpose. This used to be `Record<string, (...args: never[]) =>
+   * unknown>`, which types every member as "some function": our agent API could
+   * then bind `click: ui.clickElement` even if the library had no such function,
+   * and the compiler shrugged. These four are the ones whose names the model-facing
+   * description got wrong — they are exactly the ones that must be checked.
+   *
+   * The keys are the LIBRARY's names. What the model gets to call is decided in
+   * setup.ts (`click: ui.clickElement`), not here.
+   */
+  export interface UIActions {
+    highlightElement(key: string): void;
+    clickElement(key: string): void;
+    selectOption(key: string, option: string): void;
+    fillInput(key: string, value: string | number): void;
+  }
   export function createUIActions(options?: UIActionOptions): UIActions;
 
   export function expandRuntimeTypes(
