@@ -6446,3 +6446,86 @@ fn rounded_rect_extrude_weaves_watertight_with_its_seams() {
     let euler = brep.vertex_count() as i64 - brep.edge_count() as i64 + brep.face_count() as i64;
     assert_eq!(euler, 2, "closed manifold");
 }
+
+/// #350 „Fillet hat keinen Effekt" — der Fillet WAR da, man konnte ihn nur nicht
+/// sehen.
+///
+/// Der Deferred-Renderer (der Default) zeichnet die Leaf-Meshes hart und marschiert
+/// die SDF nur in den `sdf_regions`, die [`BoundedCsg::classify_for_hybrid`] meldet.
+/// Fuer `MaskedBlend` war diese Region auf den blossen Ueberlapp der beiden Operanden
+/// beschnitten — aber der Rundungswulst quillt an einer Difference-Kante AUS dem
+/// Schneidwerkzeug HERAUS, in Material, das das Werkzeug nie beruehrt. Ergebnis im
+/// Originaldokument des Tickets: von 9672 Punkten, an denen der Fillet die Oberflaeche
+/// wirklich verschiebt, lagen 9665 ausserhalb jeder March-Region — 99,9 % des Fillets
+/// waren unsichtbar.
+///
+/// Die Invariante, die das fuer JEDEN Blend festnagelt: wo der Blend das VORZEICHEN
+/// der SDF kippt, bewegt er die Oberflaeche — und genau dort MUSS marschiert werden.
+/// (Blosse Feldaenderungen tief im Material zaehlen nicht: sie verschieben nichts.)
+#[test]
+fn ticket_350_fillet_march_region_covers_every_moved_surface_point() {
+    use crate::csg::EvalMode;
+
+    #[derive(serde::Deserialize)]
+    struct Doc {
+        feature_calls: Vec<FeatureCall>,
+    }
+    let doc: Doc = serde_json::from_str(include_str!("testdata/ticket_350_fillet.json"))
+        .expect("fixture parses");
+
+    let registry = FeatureRegistry::with_builtins();
+    let mut d = empty_ctx();
+    let mut ctx = Context::new(&mut d);
+    let errs = registry.regenerate(&mut ctx, &doc.feature_calls, None);
+    assert!(errs.0.is_empty(), "document regenerates cleanly: {errs:?}");
+    assert_eq!(ctx.edge_fillets.len(), 1, "the fillet_edge call resolved its edge");
+
+    let hard = crate::csg::CsgNode::from_decoded(&ctx.features);
+    let filleted = hard.clone().apply_edge_fillets(&ctx.edge_fillets);
+    assert_eq!(count_masked_blends(&filleted), 1, "the junction became a MaskedBlend");
+
+    let info = crate::bvh::BoundedCsg::from_csg(&filleted).classify_for_hybrid();
+    assert!(!info.sdf_regions.is_empty(), "the blend yields a march region");
+
+    let in_any_region = |p: [f32; 3]| {
+        info.sdf_regions.iter().any(|r| {
+            let a = &r.aabb;
+            p[0] >= a[0] && p[1] >= a[1] && p[2] >= a[2]
+                && p[0] <= a[3] && p[1] <= a[4] && p[2] <= a[5]
+        })
+    };
+
+    let poly = &ctx.edge_fillets[0].mask_polyline;
+    let (mut moved, mut moved_outside) = (0usize, 0usize);
+    let mut witness = [0.0f32; 3];
+    for pt in poly.iter() {
+        for dx in -14..=14 {
+            for dy in -14..=14 {
+                for dz in -2..=2 {
+                    let p = [
+                        pt[0] + dx as f32 * 0.5,
+                        pt[1] + dy as f32 * 0.5,
+                        pt[2] + dz as f32 * 0.5,
+                    ];
+                    let inside_hard = hard.sdf(p, EvalMode::Visual) < 0.0;
+                    let inside_filleted = filleted.sdf(p, EvalMode::Visual) < 0.0;
+                    if inside_hard != inside_filleted {
+                        moved += 1;
+                        if !in_any_region(p) {
+                            moved_outside += 1;
+                            witness = p;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    assert!(moved > 0, "the fillet moves the surface at all");
+    assert_eq!(
+        moved_outside, 0,
+        "{moved_outside} of {moved} moved surface points lie OUTSIDE every march region \
+         (e.g. {witness:?}) — the deferred renderer draws the hard mesh there, so the \
+         fillet is invisible exactly as in #350",
+    );
+}

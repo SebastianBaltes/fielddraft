@@ -24,6 +24,17 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.591",
+    entries: [
+      {
+        kind: "fix",
+        scope: "fillet",
+        text: "Ein Fillet blieb im Standard-Renderer unsichtbar — er war die ganze Zeit da. Der Renderer zeichnet die Körper als harte Meshes und rechnet die echte Feldgeometrie nur in den Zonen, die der Kernel ihm dafür meldet; für einen Kanten-Fillet war diese Zone auf den Überlapp der beiden beteiligten Körper beschnitten. Der Rundungswulst quillt an einer Schnittkante aber aus dem Schneidwerkzeug heraus, in Material, das das Werkzeug nie berührt. Im Beispiel des Tickets (Radius 10 an der Wand einer 8 mm breiten Nut) lagen 99,9 % der Rundung außerhalb der gerechneten Zone und wurden nie gezeichnet.",
+        tickets: ["#350"],
+      },
+    ],
+  },
+  {
     version: "0.6.590",
     entries: [
       {

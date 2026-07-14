@@ -1436,8 +1436,23 @@ fn classify_walk(node: &BoundedCsg, info: &mut HybridInfo, role: &str, warp: Opt
         BoundedCsg::MaskedBlend { left, right, mask_polyline, mask_radius, blend_radius, is_difference, .. } => {
             info.is_union_only = false;
             let tube_aabb = polyline_tube_aabb(mask_polyline, *mask_radius).expanded(*blend_radius);
+            // `.expanded(blend_radius)` on the operand overlap is NOT optional — the
+            // same expansion SmoothUnion/SmoothDifference above already do. The blend
+            // does not stay inside the two operands' overlap: at a Difference edge the
+            // round BULGES OUT of the cutting tool, into the solid the tool never
+            // touches. Clipped to the bare overlap, that bulge falls outside every
+            // sdf_region — and the deferred renderer draws the HARD leaf mesh there,
+            // so the fillet is invisible (ticket #350: a r=10 fillet on the wall of an
+            // 8 mm slot changed the field at 7697 sampled points OUTSIDE the region,
+            // by up to 5.6 mm; the marched sliver that remained sat exactly on the
+            // region boundary).
+            //
+            // Correctness of the bound: the blend only deviates from min/max within
+            // ~blend_radius of BOTH surfaces, so every affected point lies within
+            // blend_radius of each operand's AABB — i.e. inside the overlap expanded
+            // by blend_radius. The tube then clips it back to the selected edge.
             let overlap = Aabb::intersect(
-                Aabb::intersect(left.aabb(), right.aabb()),
+                Aabb::intersect(left.aabb(), right.aabb()).expanded(*blend_radius),
                 tube_aabb,
             );
             if !overlap.is_empty() {
