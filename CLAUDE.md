@@ -17,9 +17,18 @@ Volle Deployment-Anleitung in `DEPLOY.md`.
 
 ## Release Notes pflegen
 
-Bei jedem Versions-Bump (`web/package.json`) **einen Eintrag oben** in `web/src/releaseNotes.ts` ergänzen (neueste Version zuerst): `{ kind: "feat" | "fix" | "perf", text, scope?, tickets? }`. Diese Datei ist die handgepflegte SSOT für die In-App-Release-Notes (Menü „Release Notes…" + Klick aufs Versions-Badge). Die Historie wurde einmalig aus den Commits geseedet (`web/scripts/genReleaseNotes.mjs`) — das Skript nur zum kompletten Neu-Aufbau erneut laufen lassen, nicht im Build.
+Bei jedem Versions-Bump (`web/package.json`) **einen Abschnitt oben** in `web/src/releaseNotes.md` ergänzen (neueste Version zuerst):
 
-**Erzwungen** durch den `commit-msg`-Hook (`.githooks/commit-msg`, aktiv via `just setup-hooks` bzw. automatisch bei `just install`): ein Commit, dessen Subject `feat|fix|perf …(vX.Y.Z)` ist, wird abgelehnt, wenn `releaseNotes.ts` keinen Eintrag für diese Version hat. `docs/chore/refactor/test/revert/merge` und versionslose Commits sind ausgenommen (nicht release-note-würdig).
+    ## 0.6.594
+    - fix(scope) #ticket: Was der Nutzer davon merkt.
+
+`kind` ist `feat | fix | perf`; `(scope)` und `#ticket` sind optional, der Text ist frei. Diese Datei ist **reiner Text und die SSOT** für die In-App-Release-Notes (Menü „Release Notes…" + Klick aufs Versions-Badge). `releaseNotes.ts` ist nur noch der **Parser** — dort steht kein Text mehr.
+
+**Warum das wichtig ist:** Früher lagen die Sätze als TS-String-Literale in `releaseNotes.ts`. Damit war Prosa Code, und ein einziges ASCII-`"` in einem deutschen Satz beendete den String → `tsc` bricht ab → **der gesamte Prod-Build ist tot**. Das ist viermal passiert, zuletzt auf `main`. In der `.md` sind Anführungszeichen, Backslashes und Klammern **harmlos**. Eine kaputte Zeile kann die App auch nicht mehr leeren: der Parser sammelt sie in `malformed`, und `releaseNotes.test.ts` lässt CI daran scheitern — nicht den Nutzer.
+
+Die Historie wurde einmalig aus den Commits geseedet (`web/scripts/genReleaseNotes.mjs > src/releaseNotes.md`) — das Skript nur zum kompletten Neu-Aufbau erneut laufen lassen, nicht im Build.
+
+**Erzwungen** durch den `commit-msg`-Hook (`.githooks/commit-msg`, aktiv via `just setup-hooks` bzw. automatisch bei `just install`): ein Commit, dessen Subject `feat|fix|perf …(vX.Y.Z)` ist, wird abgelehnt, wenn `releaseNotes.md` keinen `## X.Y.Z`-Abschnitt hat. `docs/chore/refactor/test/revert/merge` und versionslose Commits sind ausgenommen (nicht release-note-würdig).
 
 ## Tickets abarbeiten (wenn nichts anderes ansteht)
 
