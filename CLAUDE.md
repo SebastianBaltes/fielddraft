@@ -38,10 +38,13 @@ Wenn keine andere Aufgabe ansteht: offene Tickets abarbeiten — Ticket lesen, S
 
 **Beim Erledigen eines Tickets immer beides:**
 1. **Ticket-Kommentar** hinterlassen, der den Fix/Status inhaltlich erklärt und **auf die GitHub-Commits verlinkt** (`https://github.com/SebastianBaltes/fielddraft/commit/<hash>`).
-2. **Status setzen:** `resolved`.
+2. **Ticket schließen** — und das sind bei der REST-API **ZWEI Felder**, nicht eines (s. u.).
 
 Beides geht am einfachsten **in der App** (Issues-Tab: Kommentarfeld + „Set state") — der Go-Server schreibt dann garantiert das richtige Format. Wer stattdessen direkt an die IssueVault-REST-API geht (`POST /tickets/<id>/comments`, `PATCH /tickets/<id>`), muss den Vertrag selbst einhalten:
-`author_kind: "agent"`, `meta: {author_type: "dev", internal: false, po_reviewed: true}` — **echte Booleans, keine 0/1**. IssueVault validiert `meta` nicht; eine 0 statt `false` ließ früher das Einlesen des ganzen Tickets scheitern (#345). Der Server liest solche Werte inzwischen nachsichtig, schreiben soll sie trotzdem niemand.
+
+- **`state` und `status` sind NICHT dasselbe.** `state` kennt nur `open`/`closed`; die eigentliche FieldDraft-Zustandsmaschine (`server/tickets_state.go`) läuft über `status` (`triage`, `needs_info`, `accepted`, `in_progress`, `resolved`, `backlog`, …). Ein `PATCH {"state": "resolved"}` wird mit **400** abgelehnt. Ein `PATCH {"status": "resolved"}` geht durch — lässt das Ticket aber **weiterhin als offen erscheinen**. Genau so sind vier Tickets monatelang als „offen" herumgelegen, obwohl sie längst gefixt waren. Erledigt heißt: **`status: "resolved"` UND `state: "closed"`** (so stehen alle 308 abgeschlossenen Tickets).
+- **Zurückgestellt statt erledigt:** `status: "needs_info"`, wenn du auf eine Antwort des Nutzers wartest — die Agenten-Warteschlange (`server/agent.go`) holt solche Tickets **automatisch zurück, sobald der Nutzer kommentiert**. `status: "backlog"` heißt „geparkt, niemand wartet". Beides mit `state: "open"` lassen.
+- `author_kind: "agent"`, `meta: {author_type: "dev", internal: false, po_reviewed: true}` — **echte Booleans, keine 0/1**. IssueVault validiert `meta` nicht; eine 0 statt `false` ließ früher das Einlesen des ganzen Tickets scheitern (#345). Der Server liest solche Werte inzwischen nachsichtig, schreiben soll sie trotzdem niemand.
 
 **Reihenfolge — nicht stur ältestes-zuerst, sondern nach Wirkung sortieren:**
 1. **Regressionen zuerst** — was eine kürzliche Änderung kaputt gemacht hat, hat oberste Priorität (Arbeitsfähigkeit wiederherstellen).
