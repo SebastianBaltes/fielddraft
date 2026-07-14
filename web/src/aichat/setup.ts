@@ -101,11 +101,7 @@ export function agentOptions(
   };
 
   const evaluate = createEvaluator({
-    // Vendor boundary: EvaluatorOptions.api is `Record<string, unknown>`, and a TS
-    // interface has no index signature — an ANNOTATED object is rejected (TS2322).
-    // baseaichat is widening this to `object`; drop the cast when we bump the
-    // submodule. The annotation above is what does the checking, not this line.
-    api: agentApi as unknown as Record<string, unknown>,
+    api: agentApi,
     transformResult: (r) => roundValues(r, 3),
     extraBlocked: [...GUARDED_APP_GLOBALS],
     // CAD sequences are longer than a to-do list's: a plate with four holes and
