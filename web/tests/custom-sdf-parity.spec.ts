@@ -108,8 +108,20 @@ test("custom sdf: GPU expression interpreter matches the CPU mirror", async ({ p
             aabb[1] + ((aabb[4] - aabb[1]) * iy) / n,
             aabb[2] + ((aabb[5] - aabb[2]) * iz) / n,
           ]);
-    const gpu = (await probe(pts, 0)) as number[];
     const cpu = pts.map((p) => kernel.bodySdfEval(0, p[0], p[1], p[2]) as number);
+    // The opcode buffer is uploaded on a demand-driven frame, so the FIRST
+    // probe of a freshly-loaded body can read a not-yet-populated tape and come
+    // back as the 1e30 "empty" sentinel — the single-point gate above only
+    // proves ONE point has landed, not the whole grid. Re-probe the full set
+    // until it agrees with the CPU (or give up after a bounded number of tries;
+    // the assertion below still reports the real worst-case if it never does).
+    let gpu = (await probe(pts, 0)) as number[];
+    for (let attempt = 0; attempt < 20; attempt++) {
+      const worst = Math.max(...gpu.map((g, i) => Math.abs(g - cpu[i])));
+      if (worst < 1e-2) break;
+      await new Promise((r) => requestAnimationFrame(() => r(null)));
+      gpu = (await probe(pts, 0)) as number[];
+    }
     return { pts, gpu, cpu, aabb };
   });
 
