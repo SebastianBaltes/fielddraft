@@ -12,14 +12,17 @@ import {
 
 /**
  * Interactive mirror (F14). Mirror isn't a kernel feature tool — it's an
- * editing mode (like Trim/Fillet): the user selects source geometry, picks
- * the Mirror tool, then clicks an axis LINE; every selected simple-geometry
- * sub-call (line/circle/arc) is reflected across that line and appended as an
- * editable copy (see `web/src/sketchMirror.ts` + store.mirrorSketchSelection).
+ * editing mode (like Trim/Fillet). Tickets jq6i/ps21 turned it into the
+ * Onshape TWO-STEP flow (`sketchTools/mirrorTool.ts`): the first click picks
+ * the AXIS LINE, and every click after that mirrors the entity under the
+ * cursor across it, live. There is no select-first step any more — picking the
+ * axis explicitly CLEARS the selection — so a test that pre-selects and then
+ * only clicks the axis mirrors nothing at all.
  *
  * The reflection geometry is exhaustively unit-tested; this E2E proves the
  * interactive path: draw a circle on the LEFT and a vertical axis line in the
- * MIDDLE, select the circle, mirror across the axis → the session and the
+ * MIDDLE, pick Mirror, click the axis, then click the circle's RIM (the circle
+ * hit-test matches a click at centre-distance ≈ radius) → the session and the
  * committed sketch each hold TWO circles. Cold WebGPU first-paint is slow, so
  * the timeout is generous.
  */
@@ -59,53 +62,41 @@ test.describe("Sketch mirror", () => {
 
     expect(await circleCount()).toBe(1);
 
-    // SELECT mode: pick the circle by clicking its solved centre. Read the
-    // committed centre coord and project it to a client pixel at click time.
-    await page.getByTestId("sketch-tool-select").click();
-    await settleSketchCamera(page);
-
-    const circleCentre = await page.evaluate(() => {
+    // Read the solved circle (centre + radius) and the axis line, so both
+    // clicks below land on real geometry rather than on remembered pixels.
+    const geom = await page.evaluate(() => {
       const calls =
         (window as unknown as SketchStoreWindow).__fdStore?.state.sketchSession
           .subCalls ?? [];
       const c = calls.find((s) => s.type === "sketch_circle");
-      const ctr = (c?.params?.center ?? null) as [number, number] | null;
-      return ctr;
-    });
-    expect(circleCentre).not.toBeNull();
-    const [ccx, ccy] = await sketchToClientPx(
-      page,
-      circleCentre![0],
-      circleCentre![1],
-    );
-    await page.mouse.click(ccx, ccy);
-    await page.waitForTimeout(200);
-
-    const selection = await page.evaluate(
-      () =>
-        (window as unknown as SketchStoreWindow).__fdStore?.state.sketchSession
-          .selection ?? [],
-    );
-    expect(selection.length).toBeGreaterThan(0);
-
-    // Mirror: pick the tool (keeps the selection), then click the axis line
-    // at its MIDPOINT (projected from the solved line endpoints).
-    await page.getByTestId("sketch-tool-sketch_mirror").click();
-    await settleSketchCamera(page);
-
-    const axisMid = await page.evaluate(() => {
-      const calls =
-        (window as unknown as SketchStoreWindow).__fdStore?.state.sketchSession
-          .subCalls ?? [];
       const l = calls.find((s) => s.type === "sketch_line");
+      const centre = (c?.params?.center ?? null) as [number, number] | null;
+      const radius = (c?.params?.radius ?? null) as number | null;
       const a = (l?.params?.start ?? null) as [number, number] | null;
       const b = (l?.params?.end ?? null) as [number, number] | null;
-      if (!a || !b) return null;
-      return [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2] as [number, number];
+      if (!centre || radius === null || !a || !b) return null;
+      return {
+        rim: [centre[0] + radius, centre[1]] as [number, number],
+        axisMid: [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2] as [number, number],
+      };
     });
-    expect(axisMid).not.toBeNull();
-    const [amx, amy] = await sketchToClientPx(page, axisMid![0], axisMid![1]);
+    expect(geom, "solved circle + axis line").not.toBeNull();
+
+    await pickSketchTool(page, "sketch_mirror");
+    await settleSketchCamera(page);
+
+    // Step 1: the axis.
+    const [amx, amy] = await sketchToClientPx(
+      page,
+      geom!.axisMid[0],
+      geom!.axisMid[1],
+    );
     await page.mouse.click(amx, amy);
+    await page.waitForTimeout(200);
+
+    // Step 2: the part to mirror — its rim, not its centre.
+    const [crx, cry] = await sketchToClientPx(page, geom!.rim[0], geom!.rim[1]);
+    await page.mouse.click(crx, cry);
     await page.waitForTimeout(400);
 
     expect(await circleCount()).toBe(2);

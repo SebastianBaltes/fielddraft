@@ -1,5 +1,10 @@
 import { expect, test } from "@playwright/test";
-import { expandGeometrySection, pickSketchTool } from "./sketchHarness";
+import {
+  expandGeometrySection,
+  pickSketchTool,
+  settleSketchCamera,
+  sketchToClientPx,
+} from "./sketchHarness";
 
 /**
  * Concentric constraint via the palette. The solver, draft-state rebuild,
@@ -13,71 +18,29 @@ import { expandGeometrySection, pickSketchTool } from "./sketchHarness";
 test.describe.configure({ timeout: 120_000 });
 
 /**
- * Settle the live ortho camera and return a sketch→screen projector that
- * mirrors `sketchToScreen()` with the overlay's measured viewport. The R3F
- * camera publishes its zoom asynchronously after the WebGPU canvas mounts,
- * so poll until two reads a frame apart agree and the camera has published.
+ * A sketch→screen projector built on the app's OWN projection. The local
+ * hand-rolled version this replaces re-derived it as
+ * `centre + (u - cam.centerU) * cam.zoom` — but `centerU`/`centerV` no longer
+ * exist on the published camera (the overlay lifts (u, v) through the plane
+ * frame and projects with the live camera), so every coordinate came out NaN
+ * and the drag died as `Input.dispatchMouseEvent: Invalid parameters`.
  */
 async function makeProjector(page: import("@playwright/test").Page) {
-  const overlay = page.getByTestId("sketch-canvas-2d");
-  const box = await overlay.boundingBox();
-  expect(box).not.toBeNull();
-  const readCam = () =>
-    page.evaluate(() => {
-      const hook = (
-        window as unknown as {
-          __fdSketchCamera?: () => {
-            zoom: number;
-            centerU: number;
-            centerV: number;
-            version: number;
-          };
-        }
-      ).__fdSketchCamera;
-      const c = hook?.();
-      return c
-        ? { zoom: c.zoom, centerU: c.centerU, centerV: c.centerV, version: c.version }
-        : null;
-    });
-  let cam = await readCam();
-  for (let i = 0; i < 40; i++) {
-    await page.waitForTimeout(100);
-    const next = await readCam();
-    if (
-      next &&
-      cam &&
-      next.version > 0 &&
-      next.zoom === cam.zoom &&
-      next.centerU === cam.centerU &&
-      next.centerV === cam.centerV
-    ) {
-      cam = next;
-      break;
-    }
-    cam = next;
-  }
-  expect(cam).not.toBeNull();
-  expect(cam!.version).toBeGreaterThan(0);
-  const b = box!;
-  const c = cam!;
-  return (u: number, v: number): [number, number] => {
-    const px = b.x + b.width / 2 + (u - c.centerU) * c.zoom;
-    const py = b.y + b.height / 2 - (v - c.centerV) * c.zoom;
-    return [px, py];
-  };
+  await settleSketchCamera(page);
+  return (u: number, v: number) => sketchToClientPx(page, u, v);
 }
 
 /** Draw a circle by dragging centre→rim, using the projector so the
  *  centre / radius land on known sketch coordinates. */
 async function drawCircle(
   page: import("@playwright/test").Page,
-  project: (u: number, v: number) => [number, number],
+  project: (u: number, v: number) => Promise<[number, number]>,
   center: [number, number],
   radiusMm: number,
 ) {
   await pickSketchTool(page, "sketch_circle");
-  const [csx, csy] = project(center[0], center[1]);
-  const [rsx, rsy] = project(center[0] + radiusMm, center[1]);
+  const [csx, csy] = await project(center[0], center[1]);
+  const [rsx, rsy] = await project(center[0] + radiusMm, center[1]);
   await page.mouse.move(csx, csy);
   await page.mouse.down();
   await page.mouse.move(csx + 8, csy + 4, { steps: 5 });
@@ -127,8 +90,8 @@ test.describe("Sketch concentric constraint", () => {
     // Drop to select mode and pick both circles on their rims (the circle
     // hit-test matches a click whose distance to the centre ≈ radius).
     await page.getByTestId("sketch-tool-select").click();
-    const [p1x, p1y] = project(c1[0] + r1, c1[1]); // rim of circle 1
-    const [p2x, p2y] = project(c2[0] + r2, c2[1]); // rim of circle 2
+    const [p1x, p1y] = await project(c1[0] + r1, c1[1]); // rim of circle 1
+    const [p2x, p2y] = await project(c2[0] + r2, c2[1]); // rim of circle 2
     await page.mouse.click(p1x, p1y);
     await page.waitForTimeout(120); // let the store/overlay settle the pick
     await page.mouse.click(p2x, p2y);

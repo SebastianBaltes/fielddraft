@@ -79,11 +79,36 @@ test.describe("Sketch move / copy", () => {
     );
     expect(selection.length).toBeGreaterThan(0);
 
-    // Move: base click then target click, offset to the RIGHT by ~80 px.
-    await page.getByTestId("sketch-tool-sketch_move").click();
-    await page.mouse.click(cx - 100, cy); // base
+    // Move: base click then target click, offset along the sketch's +u axis.
+    //
+    // Two constraints, both learned the hard way:
+    //  - Derive BOTH clicks in SKETCH space and project them. Nudging the
+    //    target by N screen pixels at constant screen-y (what this used to do)
+    //    is not a pure +u move: since the sketch-in-3D rebuild the overlay
+    //    projects through the real plane frame, screen-horizontal is not
+    //    sketch-horizontal, and the supposedly untouched v drifted by 40 mm.
+    //  - The BASE click must land on EMPTY SPACE. `moveTool` only records a
+    //    base→target base point when the press hits nothing; a press ON an
+    //    entity arms a direct click-drag instead, and a click that never drags
+    //    moves nothing at all. So base off to the LEFT of the circle, clear of
+    //    its rim — not on its centre.
+    const dU = 40;
+    const radius = await page.evaluate(() => {
+      const calls =
+        (window as unknown as SketchStoreWindow).__fdStore?.state.sketchSession
+          .subCalls ?? [];
+      const c = calls.find((s) => s.type === "sketch_circle");
+      return (c?.params?.radius ?? null) as number | null;
+    });
+    expect(radius).not.toBeNull();
+    const baseU = before![0] - (radius! + 15);
+
+    await pickSketchTool(page, "sketch_move");
+    const [mbx, mby] = await sketchToClientPx(page, baseU, before![1]);
+    await page.mouse.click(mbx, mby); // base: empty space left of the circle
     await page.waitForTimeout(120);
-    await page.mouse.click(cx - 20, cy); // target (+80 px in screen X)
+    const [mtx, mty] = await sketchToClientPx(page, baseU + dU, before![1]);
+    await page.mouse.click(mtx, mty); // target: +dU along sketch u
     await page.waitForTimeout(400);
 
     // Still exactly one circle (in-place, no new geometry).
@@ -91,10 +116,10 @@ test.describe("Sketch move / copy", () => {
 
     const after = await firstCircleCentre(page);
     expect(after).not.toBeNull();
-    // The centre moved to the right (+X in sketch space). Snapping can nudge
-    // the magnitude, so just assert a meaningful positive shift in X.
-    expect(after![0] - before![0]).toBeGreaterThan(20);
-    expect(Math.abs(after![1] - before![1])).toBeLessThan(20);
+    // Moved along +u by roughly dU; v is untouched. Snapping can nudge the
+    // magnitude, so allow generous slack rather than asserting dU exactly.
+    expect(after![0] - before![0]).toBeGreaterThan(dU / 2);
+    expect(Math.abs(after![1] - before![1])).toBeLessThan(dU / 4);
 
     await page.getByTestId("sketch-detail-accept").click();
     await expect(page.locator('[data-feature-count="1"]')).toBeAttached();
