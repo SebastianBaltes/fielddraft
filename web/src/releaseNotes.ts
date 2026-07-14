@@ -24,6 +24,23 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.590",
+    entries: [
+      {
+        kind: "fix",
+        scope: "assistant",
+        text: "Der Assistent kann die Oberfläche wirklich bedienen: Klicken und Felder füllen waren ihm beschrieben, aber nie implementiert — er rief treu auf, was er las, und lief in einen Fehler.",
+        tickets: ["#347"],
+      },
+      {
+        kind: "fix",
+        scope: "assistant",
+        text: "Der Assistent kennt wieder die Feature-Typen und Variablen, die es im Dokument gerade wirklich gibt — statt einer Platzhalter-Zeile, die ihm nichts verriet.",
+        tickets: ["#347"],
+      },
+    ],
+  },
+  {
     version: "0.6.589",
     entries: [
       {

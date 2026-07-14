@@ -16,7 +16,39 @@
     "noUnusedLocals": true,
     "noUnusedParameters": true,
     "noFallthroughCasesInSwitch": true,
-    "types": ["vitest/globals", "node"]
+    "types": ["vitest/globals", "node"],
+
+    // The AI-chat library is consumed as SOURCE from the submodule (ticket #347).
+    // These paths MIRROR web/aichatResolve.ts — that file is the map Vite and
+    // Vitest use; this is the same map for `tsc`. Without it, tsc would fall back
+    // to a hand-written baseaichat.d.ts: an ambient CLAIM about someone else's
+    // code, which was wrong in exactly the way that cost us the working UI actions
+    // (it typed `UIActions` as "some functions", so binding `click: ui.clickElement`
+    // compiled even though no such function existed). Now the library's real
+    // signatures are the authority.
+    //
+    // The dependency entries are not optional: the library lives OUTSIDE web/, so
+    // Node resolution walks up from third_party/ and never reaches web/node_modules
+    // — its own `import "react"` would not resolve at all.
+    // React maps to its TYPES, not to node_modules/react: the runtime entry is
+    // plain JS, and pointing tsc at it would strip @types/react from OUR files too
+    // (every `import React` degraded to implicit any).
+    "paths": {
+      "baseaichat": ["../third_party/baseaichat/web/src/index.ts"],
+      "react": ["./node_modules/@types/react"],
+      "react/*": ["./node_modules/@types/react/*"],
+      "react-dom": ["./node_modules/@types/react-dom"],
+      "react-dom/*": ["./node_modules/@types/react-dom/*"],
+      "ai": ["./node_modules/ai"],
+      "@ai-sdk/*": ["./node_modules/@ai-sdk/*"],
+      "@openrouter/ai-sdk-provider": [
+        "./node_modules/@openrouter/ai-sdk-provider"
+      ],
+      "acorn": ["./node_modules/acorn"],
+      "acorn-typescript": ["./node_modules/acorn-typescript"],
+      "marked": ["./node_modules/marked"],
+      "dompurify": ["./node_modules/dompurify"]
+    }
   },
   "include": ["src", "tests", "vite.config.ts", "vitest.config.ts", "playwright.config.ts"]
 }

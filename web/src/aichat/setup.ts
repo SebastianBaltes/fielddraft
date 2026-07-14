@@ -38,7 +38,10 @@ import {
 import type { KernelStore } from "../store";
 import { createFieldDraftApi } from "./fieldDraftApi";
 import { GUARDED_APP_GLOBALS } from "./guardedGlobals";
-import { API_DESCRIPTION } from "./api";
+import type { FieldDraftAgentApi } from "./api";
+// The description the model reads IS the contract file — same bytes the compiler
+// checks below. expandRuntimeTypes trims it to the @api-start/@api-end section.
+import apiSource from "./api.ts?raw";
 import instructions from "./instructions.md?raw";
 
 /** The app's own DOM — everything outside the chat panel. */
@@ -63,13 +66,42 @@ export function agentOptions(
   models: string[],
 ): ChatAgentOptions {
   const api = createFieldDraftApi(store);
+  const ui = createUIActions({ root: appRoot() });
+
+  // THE CONTRACT: the annotation binds this object to the description the model
+  // reads (api.ts). Describe something nobody implements and the build fails —
+  // which is exactly how `click`/`setValue` were promised to the model for months
+  // while the real functions were called `clickElement`/`fillInput`.
+  //
+  // Listed one by one on purpose. A spread (`{ ...api, ...ui }`) slips past the
+  // excess-property check, and then a function sits in the model's scope that the
+  // description knows nothing about.
+  const agentApi: FieldDraftAgentApi = {
+    getDocument: api.getDocument,
+    listFeatureTypes: api.listFeatureTypes,
+    schemaForType: api.schemaForType,
+    getFeature: api.getFeature,
+    addFeature: api.addFeature,
+    updateFeature: api.updateFeature,
+    renameFeature: api.renameFeature,
+    setFeatureSuppressed: api.setFeatureSuppressed,
+    removeFeature: api.removeFeature,
+    setVariable: api.setVariable,
+    undo: api.undo,
+    redo: api.redo,
+    proposeScript: api.proposeScript,
+    select: api.select,
+    setView: api.setView,
+    fitView: api.fitView,
+    readUIState: () => readUIState({ root: appRoot() }),
+    click: ui.clickElement,
+    setValue: ui.fillInput,
+    selectOption: ui.selectOption,
+    highlightElement: ui.highlightElement,
+  };
 
   const evaluate = createEvaluator({
-    api: {
-      ...api,
-      ...createUIActions({ root: appRoot() }),
-      readUIState: () => readUIState({ root: appRoot() }),
-    },
+    api: agentApi,
     transformResult: (r) => roundValues(r, 3),
     extraBlocked: [...GUARDED_APP_GLOBALS],
     // CAD sequences are longer than a to-do list's: a plate with four holes and
@@ -77,9 +109,11 @@ export function agentOptions(
     maxCallsPerWindow: 120,
   });
 
-  // Filled with the values that exist RIGHT NOW — including the user's own
-  // script features, which no static description could know about.
-  const description = expandRuntimeTypes(API_DESCRIPTION, {
+  // Filled with the values that exist RIGHT NOW — including the user's own script
+  // features, which no static description could know about. The `// @values` lines
+  // in api.ts must be LINE comments above a `type X = string;`: inside a JSDoc
+  // block the regex never matches and the model silently sees no values at all.
+  const description = expandRuntimeTypes(apiSource, {
     featureTypes: store.kernel.listFeatureTypes(),
     variableNames: store.getState().variables.map((v) => v.name),
   });
