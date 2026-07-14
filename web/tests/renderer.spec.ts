@@ -16,6 +16,21 @@ async function waitForShaderCompile(page: import("@playwright/test").Page) {
   );
 }
 
+/**
+ * Open the render-mode dropdown. The menu button only opens a MENU; the render
+ * mode lives one level deeper, in the Settings DIALOG behind its "Settings…"
+ * item. Reaching straight for the select after clicking the trigger finds
+ * nothing and waits for it until the test times out.
+ */
+async function openRenderModeSelect(page: import("@playwright/test").Page) {
+  await page.getByTestId("settings-menu-trigger").click();
+  await expect(page.getByTestId("settings-menu-popover")).toBeVisible();
+  await page.getByTestId("menu-settings").click();
+  const select = page.getByTestId("setting-render-mode-select");
+  await expect(select).toBeVisible();
+  return select;
+}
+
 test.describe("SDF Renderer: mode switching & rendering", () => {
   test.beforeEach(async ({ page }) => {
     await page.goto("/");
@@ -61,19 +76,18 @@ test.describe("SDF Renderer: mode switching & rendering", () => {
       await waitForShaderCompile(page);
       await page.waitForTimeout(1000);
 
-      // Verify the HUD reports the correct mode
+      // Verify the HUD reports the correct mode. The toggle is F9 — F2 opens
+      // the Report Issue dialog, so pressing it here left the HUD closed and
+      // the read below waited for it until the test timed out (the `.catch()`
+      // never fires: a locator read has no timeout of its own).
       await page.evaluate(() => {
         window.dispatchEvent(
-          new KeyboardEvent("keydown", { key: "F2", code: "F2", keyCode: 113, bubbles: true }),
+          new KeyboardEvent("keydown", { key: "F9", code: "F9", keyCode: 120, bubbles: true }),
         );
       });
-      await page.waitForTimeout(500);
-
-      const hudText = await page.locator("[data-testid='perf-hud']").textContent()
-        .catch(() => null);
-      if (hudText) {
-        expect(hudText).toContain(mode);
-      }
+      const hud = page.locator("[data-testid='perf-hud']");
+      await expect(hud).toBeVisible();
+      expect(await hud.textContent()).toContain(mode);
 
       // Verify bodies are present
       const bodyCount = await page.evaluate(() => {
@@ -93,20 +107,19 @@ test.describe("SDF Renderer: mode switching & rendering", () => {
     });
   }
 
-  test("settings menu shows only sdf-vm and sdf-deferred", async ({ page }) => {
+  test("settings offers every render mode", async ({ page }) => {
     await page.goto("/");
     await page.waitForTimeout(500);
 
-    // Open settings
-    await page.getByTestId("settings-menu-trigger").click();
-    await expect(page.getByTestId("settings-menu-popover")).toBeVisible();
-
-    // Check render mode dropdown options
-    const options = await page
-      .getByTestId("setting-render-mode-select")
-      .locator("option")
-      .allTextContents();
-    expect(options).toEqual(["SDF VM", "Deferred"]);
+    const select = await openRenderModeSelect(page);
+    const options = await select.locator("option").allTextContents();
+    expect(options).toEqual([
+      "SDF VM",
+      "SDF Deferred",
+      "Mesh",
+      "B-Rep",
+      "WebGL",
+    ]);
   });
 
   test("render mode persists to localStorage", async ({ page }) => {
@@ -117,12 +130,11 @@ test.describe("SDF Renderer: mode switching & rendering", () => {
     await page.waitForTimeout(500);
 
     // Open settings and verify sdf-vm is selected
-    await page.getByTestId("settings-menu-trigger").click();
-    const value = await page.getByTestId("setting-render-mode-select").inputValue();
-    expect(value).toBe("sdf-vm");
+    const select = await openRenderModeSelect(page);
+    expect(await select.inputValue()).toBe("sdf-vm");
 
     // Switch to sdf-deferred
-    await page.getByTestId("setting-render-mode-select").selectOption("sdf-deferred");
+    await select.selectOption("sdf-deferred");
     await page.waitForTimeout(200);
 
     // Verify localStorage updated
@@ -157,8 +169,8 @@ test.describe("SDF Renderer: mode switching & rendering", () => {
     expect(countBefore).toBe(1);
 
     // Switch to sdf-vm
-    await page.getByTestId("settings-menu-trigger").click();
-    await page.getByTestId("setting-render-mode-select").selectOption("sdf-vm");
+    const select = await openRenderModeSelect(page);
+    await select.selectOption("sdf-vm");
     await page.waitForTimeout(2000);
 
     // Body count must be preserved
