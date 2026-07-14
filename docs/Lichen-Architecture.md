@@ -1587,7 +1587,7 @@ völlig zu Recht auf 0,1 mm (95 000 Punkte, 30 min). Ohne den Marsch-Dump wäre 
 als „Über-Verfeinerungs-Defekt" in die Doku gewandert. Die Fixture-Validierung aus
 §8q steht deshalb jetzt auch vor den Polyeder-Fällen.
 
-## 8r. Offene Fronten (Stand 2026-07-13, v0.6.569)
+## 8r. Offene Fronten (Stand 2026-07-14, v0.6.589)
 
 1. **Displace-Bodies** — **GESCHLOSSEN**, s. §8t (Displace-Kugel
    662 → 0, Gate `lichen_adv_warp_displace_watertight`). Die früher
@@ -1750,3 +1750,90 @@ bisherigen Empirie. Ohne Anspruch auf Vollständigkeit.
 5. **Umkugel-Zeugen-Gegenprobe:** für jede akzeptierte Kante die 3D-nächsten
    k Punkte listen; liegt einer davon nicht im Kandidaten-Set des Sterns,
    ist der Horizont/Filter der Täter (unterscheidet R-F1 von R-F3).
+
+---
+
+## 10. Lehren aus der Forschungssession (2026-07-13/14, v0.6.563 → v0.6.589)
+
+Die Session hat den Abnahmefall von 397 offenen Kanten auf 0 gebracht, die
+gesamte Warp-Familie geschlossen, die Sliver beseitigt, Lichen in den Export
+gehoben und zwei stille Kernel-Defekte gefunden. Was davon **übertragbar**
+ist — nicht die Fixes, sondern die Denkfehler und die Werkzeuge:
+
+### 10.1 Wasserdicht ist KEIN Korrektheitsbeweis
+
+Der Klümpchen-Würfel (§8w) war ein **tadelloses geschlossenes 2-Manifold**:
+0 offene Kanten, 0 non-manifold, konsistent orientiert — und ihm fehlten
+**alle sechs Flächen**. Jede Abnahme, die nur Manifoldness prüft, hätte ihn
+durchgewinkt. Seither ist die **Flächen-Überdeckung** (Hausdorff
+`surface→mesh` gegen die echte SDF) ein Pflicht-Tor: in den beiden
+Polyeder-Gates, im Abnahme-Gate und in jeder Sprosse der Export-Leiter.
+**Regel: Ein Netz muss beweisen, dass es die Fläche TRIFFT — nicht nur, dass
+es geschlossen ist.**
+
+### 10.2 Die Leithypothese war öfter falsch als richtig — die Messung entschied
+
+Fünf gut begründete, aus der Literatur bzw. der eigenen Doku abgeleitete
+Hypothesen, vier davon **widerlegt**:
+
+| Hypothese | Erwartung | Messung |
+|---|---|---|
+| Schutzkorridor (Cheng–Dey–Ramos, I-16) | schließt den Naht-Keil | nie besser als 287 offene; bricht H/Winkel |
+| Kuss-Sizing-Deckel (I-24) | löst tangentiale Kontakte | Linien-Kuss 430 → **1558** |
+| „Befund 6" (Medialachse an Kanten) | Ursache des Polyeder-Zerfalls | Kanten-Guard arbeitet einwandfrei; Wurzel lag **hinter** dem Sampling |
+| Intraface-Crowding bei Displace | Regionen helfen prinzipiell nicht | Regionen waren **die ganze** Ursache (662 → 0) |
+| Feld-Feature-Linien für Warp-Bodies | einziger Weg ohne B-Rep | exakter Warp-Weave war möglich und besser |
+
+Konsequenz für die Arbeitsweise: **jede Hypothese bekommt zuerst ein
+Messwerkzeug, nicht einen Patch.** Ein Ansatz, der drei Iterationen lang
+keine messbare Verbesserung bringt, wird als Irrweg protokolliert (I-16…I-27)
+und zurückgebaut — der Code bleibt höchstens als env-gated Werkzeug.
+
+### 10.3 Zwei wiederkehrende Defektklassen
+
+* **„Platzieren ≠ Annehmen".** `grow_surface` setzte Punkte mit
+  `min(σ, 1.5·space)`, prüfte sie aber gegen `σ(cp)` — neben einer
+  Mikro-Kette flog danach **jeder** Kandidat als redundant heraus und das
+  Flächenwachstum stand still (0 Flächenpunkte, §8w). Wo ein Algorithmus
+  zwei Maße für dieselbe Größe hat, driften sie auseinander.
+* **Degenerierte Geometrie erzeugt Phantom-Signale.** Doppelte Kettenpunkte
+  → Null-Segmente → `acos(0) = 90°` → eine **kerzengerade Box-Kante**
+  akkumulierte 1800° Krümmung (§8w). Jeder Winkel-, Normalen- oder
+  Tangenten-Akkumulator braucht ein Vorfilter gegen Nullen — sonst misst er
+  Rauschen als Feature.
+
+### 10.4 Werkzeuge müssen sich selbst beweisen
+
+* **Fixture-Validierung** (§8q) hat in dieser Session **drei** falsche
+  Testkörper gefangen, bevor aus ihnen „Defekte" wurden — darunter eine
+  angebliche „Box mit Bohrung", die in Wahrheit eine quer liegende Röhre mit
+  1-mm-Restwänden war (der Mesher verfeinerte völlig zu Recht auf 95 000
+  Punkte). Ein Test, der die Geometrie nicht enthält, die sein Name
+  behauptet, ist die gefährlichste Sorte grüner Test.
+* **Der JSON-Merge-Bug** (I-23): Optionen per String-Anhängen erzeugten
+  Duplikat-Keys → serde-Fehler → **stille Default-Optionen**. Alle
+  „Messungen" davor waren Phantome. Messwerkzeuge sind Code und brauchen
+  Tests.
+* **`#[cfg(test)]`-Invarianten sind kein Schutz, sondern ein Melder.** Die
+  U(p)-Überdeckung war auf dünnen Wänden verletzt; im Produktivpfad meshte
+  Lichen dort **still** mit einer Lücke weiter (§8w). Eine Invariante, die
+  nur im Test feuert, sagt nichts über die Produktion — sie sagt nur, dass
+  der Defekt existiert.
+
+### 10.5 Env-Kill-Switches als Bisektions-Werkzeug
+
+Jeder nicht-triviale Mechanismus ist einzeln abschaltbar (`LICHEN_STITCH`,
+`LICHEN_CHAIN_DEDUP`, `LICHEN_REACH_F0`, `LICHEN_PROTECT_MODE`,
+`LICHEN_KISS_C`, `LICHEN_OUTER_GUARD`, `LICHEN_SLIVER`). Das erlaubt es, bei
+einer Regression in Minuten zu bisezieren, statt Commits zu durchsuchen —
+und hält verworfene Ansätze als Mess-Werkzeug am Leben, ohne sie im
+Default-Pfad zu dulden.
+
+### 10.6 Was der Abnahmefall gelehrt hat
+
+Der Betreiber-Testfall („Gyroid-Kugel-Ausschnitt") war kein Zufallsfund: Der
+Box-Ausschnitt macht ihn **CI-schnell** (12 s), und die Gyroid-Wand streift
+ihn **fast-tangential** — genau die Pathologie, an der die Zeugen-Kugel
+scheitert. Ein einzelner, gut gewählter, kleiner Testfall hat mehr Defekte
+freigelegt als die gesamte adversariale Matrix danach. **Ein echter
+Nutzer-Fall schlägt zehn erfundene.**
