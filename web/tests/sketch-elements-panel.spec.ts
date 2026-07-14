@@ -119,13 +119,19 @@ test.describe("Sketch elements panel", () => {
       expect(consSelection.length).toBeGreaterThan(0);
     }
 
-    // Delete a geometry row via its delete button — the sub-call count drops,
-    // and the click does NOT leak into a row-select (stopPropagation).
-    const before = (await subCallTypes(page)).length;
+    // Delete a geometry row via its delete button. The count drops by MORE than
+    // one: removing a line CASCADES to the constraints that referenced it (here
+    // its horizontal), so `before - 1` was never the right arithmetic. State the
+    // actual contract instead — the line and its constraint are gone, the circle
+    // survives, and the click does NOT leak into a row-select (stopPropagation).
+    const before = await subCallTypes(page);
     await page.getByTestId(`sketch-sub-row-delete-0`).click();
     await page.waitForTimeout(300);
-    const after = (await subCallTypes(page)).length;
-    expect(after).toBe(before - 1);
+    const after = await subCallTypes(page);
+    expect(after.length).toBeLessThan(before.length);
+    expect(after).not.toContain("sketch_line");
+    expect(after).not.toContain("sketch_constraint_horizontal");
+    expect(after).toContain("sketch_circle");
 
     // No uncaught page errors.
     await settleSketchCamera(page);

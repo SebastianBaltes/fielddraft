@@ -89,23 +89,21 @@ test.describe("Sketch conflict diagnostics", () => {
       await page.waitForTimeout(200);
     };
 
-    await page.getByTestId("sketch-tool-select").click();
-    await selectLine();
-    await expect(page.getByTestId("sketch-constraint-horizontal")).toBeVisible();
-    await page.getByTestId("sketch-constraint-horizontal").click();
-    await page.waitForTimeout(800); // let the solver land
-
-    expect(await subCallTypes(page)).toContain("sketch_constraint_horizontal");
-
-    // Re-select the line and apply Horizontal AGAIN — a second identical
-    // horizontal constraint is over-constraining: PlaneGCS reports it as
-    // redundant (horizontal+vertical, by contrast, is satisfiable by a
-    // zero-length line, so it would NOT flag).
+    // Apply Horizontal from the palette. The line ALREADY carries the inferred
+    // horizontal from the drag, so this single apply is the over-constraint:
+    // two identical horizontals, which PlaneGCS reports as redundant.
+    // (Horizontal+vertical, by contrast, is satisfiable by a zero-length line,
+    // so it would NOT flag.) This test used to apply Horizontal TWICE — back
+    // when the drag inferred nothing. With the inferred one that made THREE, and
+    // deleting the single flagged constraint still left a redundant pair, so the
+    // summary never went away.
     await page.getByTestId("sketch-tool-select").click();
     await selectLine();
     await expect(page.getByTestId("sketch-constraint-horizontal")).toBeVisible();
     await page.getByTestId("sketch-constraint-horizontal").click();
     await page.waitForTimeout(1000); // let the solver land + diagnostics thread
+
+    expect(await subCallTypes(page)).toContain("sketch_constraint_horizontal");
 
     // The diagnostics summary appears, and at least one constraint row carries
     // a diagnostics badge. Tolerant about conflict vs redundant and which

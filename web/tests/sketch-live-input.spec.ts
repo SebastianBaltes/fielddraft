@@ -1,4 +1,10 @@
 import { expect, test } from "@playwright/test";
+import {
+  pickSketchTool,
+  settleSketchCamera,
+  sketchToClientPx,
+  subCallTypes,
+} from "./sketchHarness";
 
 /**
  * F18: live numeric input while drawing a LINE ("type-while-drawing").
@@ -34,32 +40,44 @@ test.describe("Sketch live numeric input (line)", () => {
     await page.waitForTimeout(600);
 
     await page.getByTestId("enter-sketch").click();
-    await page.getByTestId("sketch-tool-sketch_line").click();
+    await pickSketchTool(page, "sketch_line");
+    await settleSketchCamera(page);
 
-    const overlay = page.getByTestId("sketch-canvas-2d");
-    const box = await overlay.boundingBox();
-    expect(box).not.toBeNull();
-    if (!box) return;
-    const cx = box.x + box.width / 2;
-    const cy = box.y + box.height / 2;
-
-    // Click (no drag) to start the pending line in the positive quadrant.
-    const startSx = cx + 80;
-    const startSy = cy + 80;
-    await page.mouse.move(startSx, startSy);
+    // Draw the line by dragging between two SKETCH points (deliberately
+    // off-axis, so the tool infers no horizontal/vertical constraint).
+    const a: [number, number] = [-30, -20];
+    const b: [number, number] = [30, 20];
+    const [ax, ay] = await sketchToClientPx(page, a[0], a[1]);
+    const [bx, by] = await sketchToClientPx(page, b[0], b[1]);
+    await page.mouse.move(ax, ay);
     await page.mouse.down();
+    await page.mouse.move((ax + bx) / 2, (ay + by) / 2, { steps: 5 });
+    await page.mouse.move(bx, by, { steps: 10 });
     await page.mouse.up();
+    await page.waitForTimeout(200);
+    expect(await subCallTypes(page)).toContain("sketch_line");
 
-    // Move the cursor to the right so the live direction ≈ 0° — the typed
-    // length will then commit roughly horizontally. (Direction is only a
-    // fallback; we type the length, leave the angle to the live value.)
-    await page.mouse.move(startSx + 120, startSy, { steps: 6 });
+    // The length editor opens by CLICKING THE PLACED LINE'S DIMENSION READOUT.
+    // There is no live length/angle HUD on the rubber-band any more — this test
+    // used to click-start a pending line, move the cursor and wait for
+    // `sketch-live-length` + `sketch-live-angle` to appear; the angle field no
+    // longer exists at all, and the length field only shows for the readout of
+    // the most recently placed line (`lineTool` -> `openLineLengthEditor`).
+    //
+    // The readout sits at the line's screen midpoint, pushed out along the
+    // screen normal by LABEL_OFFSET_PX = 18 (see `sketchCanvasHud.ts`); the hit
+    // radius is 24 px.
+    const mx = (ax + bx) / 2;
+    const my = (ay + by) / 2;
+    const dx = bx - ax;
+    const dy = by - ay;
+    const screenLen = Math.hypot(dx, dy);
+    const anchorX = mx + (dy / screenLen) * 18;
+    const anchorY = my + (-dx / screenLen) * 18;
+    await page.mouse.click(anchorX, anchorY);
 
-    // The HUD should be visible with the length field focused.
     const lengthField = page.getByTestId("sketch-live-length");
-    const angleField = page.getByTestId("sketch-live-angle");
     await expect(lengthField).toBeVisible();
-    await expect(angleField).toBeVisible();
 
     // Type an exact length and commit with Enter.
     await lengthField.click();

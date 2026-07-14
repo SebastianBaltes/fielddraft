@@ -1,5 +1,9 @@
 import { expect, test } from "@playwright/test";
-import { pickSketchTool } from "./sketchHarness";
+import {
+  pickSketchTool,
+  settleSketchCamera,
+  sketchToClientPx,
+} from "./sketchHarness";
 
 /**
  * Trimming a composite (rectangle / polygon). Trim isn't a kernel tool — it
@@ -65,8 +69,40 @@ test.describe("Sketch trim — composites", () => {
 
     // Trim: pick the mode, click the middle of the top edge (uncrossed) — it
     // is removed and the rectangle decomposes into the three other edges.
-    await page.getByTestId("sketch-tool-sketch_trim").click();
-    await page.mouse.click(cx, cy - 80);
+    //
+    // The midpoint must be derived in SKETCH space and projected. The rectangle
+    // is axis-aligned in sketch coordinates (corner_a/corner_b), but the overlay
+    // projects through the real plane frame, so on screen it is a rotated
+    // quadrilateral — the screen point "straight above the centre" that this
+    // used to click lies on no edge at all, and nothing got trimmed.
+    const topMid = await page.evaluate(() => {
+      const calls =
+        (
+          window as unknown as {
+            __fdStore?: {
+              state: {
+                sketchSession: {
+                  subCalls: Array<{
+                    type: string;
+                    params?: Record<string, unknown>;
+                  }>;
+                };
+              };
+            };
+          }
+        ).__fdStore?.state.sketchSession.subCalls ?? [];
+      const r = calls.find((c) => c.type === "sketch_rectangle");
+      const a = r?.params?.corner_a as [number, number] | undefined;
+      const b = r?.params?.corner_b as [number, number] | undefined;
+      if (!a || !b) return null;
+      return [(a[0] + b[0]) / 2, Math.max(a[1], b[1])] as [number, number];
+    });
+    expect(topMid, "solved rectangle corners").not.toBeNull();
+
+    await pickSketchTool(page, "sketch_trim");
+    await settleSketchCamera(page);
+    const [tx, ty] = await sketchToClientPx(page, topMid![0], topMid![1]);
+    await page.mouse.click(tx, ty);
     await page.waitForTimeout(400);
 
     expect(await counts()).toEqual({ rect: 0, line: 3 });

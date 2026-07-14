@@ -80,11 +80,14 @@ test.describe("Sketch project (use external geometry)", () => {
     await page.mouse.click(px, py);
     await page.waitForTimeout(300);
 
-    // 4) A construction sketch_line must have been adopted. No line was
-    //    drawn manually, so any sketch_line here came from the Project tool.
+    // 4) The edge must have been adopted as a construction sub-call. The tool
+    //    emits an ASSOCIATIVE `sketch_project` whenever the picked edge carries
+    //    a B-Rep id (`modifyTools.ts` -> projectTool), keeping the sketch tied
+    //    to `qEdge(<idHash>)`; the plain `sketch_line` is only the fallback for
+    //    an edge with no id. A box edge has one, so expect the associative form.
     const types = await subCallTypes(page);
-    expect(types, "no sketch_line adopted from the projected edge").toContain(
-      "sketch_line",
+    expect(types, "no edge adopted by the Project tool").toContain(
+      "sketch_project",
     );
 
     const adopted = await page.evaluate(() => {
@@ -104,12 +107,12 @@ test.describe("Sketch project (use external geometry)", () => {
           }
         ).__fdStore?.state.sketchSession.subCalls ?? [];
       return calls.some(
-        (c) => c.type === "sketch_line" && c.params?.construction === true,
+        (c) => c.type === "sketch_project" && c.params?.construction === true,
       );
     });
     expect(
       adopted,
-      "adopted line is not flagged construction",
+      "adopted edge is not flagged construction",
     ).toBe(true);
 
     // 5) Finish and assert a clean page.

@@ -64,7 +64,7 @@ test.describe("Sketch text", () => {
           page.evaluate(
             () =>
               (window as unknown as SketchStoreWindow).__fdStore?.state
-                .sketchTextFontReady === true,
+                .sketchToolParams?.textFontReady === true,
           ),
         { timeout: 30_000 },
       )

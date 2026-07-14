@@ -62,71 +62,83 @@ test.describe("Sketch box-select / marquee", () => {
       "sketch_circle",
     ]);
 
-    // Read the committed circle centres so we can project them to pixels.
-    const centres = await page.evaluate(() => {
+    // Read the committed circles (centre + radius). Everything below is built
+    // in SKETCH space and projected, because that is the space the marquee
+    // itself works in: `selectTool` keeps the drag corners in sketch mm, tests
+    // containment with an axis-aligned box in sketch mm, and even decides
+    // enclosing-vs-crossing from the sketch-u direction. A marquee laid out in
+    // screen pixels (what this used to do) is a rotated quadrilateral over
+    // there — its box contained nothing, and its direction could even flip.
+    const circles = await page.evaluate(() => {
       const calls =
         (window as unknown as SketchStoreWindow).__fdStore?.state.sketchSession
           .subCalls ?? [];
       return calls
         .filter((c) => c.type === "sketch_circle")
-        .map((c) => c.params?.center as [number, number]);
+        .map((c) => ({
+          centre: c.params?.center as [number, number],
+          radius: c.params?.radius as number,
+        }));
     });
-    expect(centres.length).toBe(3);
+    expect(circles.length).toBe(3);
 
-    // Sort centres by x so [left, middle, right] is unambiguous regardless
-    // of draw order.
-    centres.sort((a, b) => a[0] - b[0]);
-    const [left, middle, right] = centres;
+    circles.sort((a, b) => a.centre[0] - b.centre[0]);
+    const [left, middle, right] = circles;
+    const r = Math.max(left.radius, middle.radius, right.radius);
+    const pad = r + 10;
 
     await page.getByTestId("sketch-tool-select").click();
     await settleSketchCamera(page);
 
-    // ── Enclosing (LEFT→RIGHT): a box around the LEFT + MIDDLE circles,
-    // excluding the RIGHT one. Project the relevant centres; build a box
-    // that comfortably contains left+middle (centres ± radius ≈ a few mm)
-    // and stops well short of right.
-    const [lpx, lpy] = await sketchToClientPx(page, left[0], left[1]);
-    const [mpx] = await sketchToClientPx(page, middle[0], middle[1]);
-    const [rpx] = await sketchToClientPx(page, right[0], right[1]);
+    // ── Enclosing (LEFT→RIGHT in sketch u): a box that fully contains the LEFT
+    // and MIDDLE circles and stops between MIDDLE and RIGHT.
+    const u0 = left.centre[0] - pad;
+    const u1 = (middle.centre[0] + right.centre[0]) / 2;
+    const v0 = Math.min(left.centre[1], middle.centre[1]) - pad;
+    const v1 = Math.max(left.centre[1], middle.centre[1]) + pad;
+    expect(u1, "box must clear the middle circle").toBeGreaterThan(
+      middle.centre[0] + r,
+    );
 
-    // Generous vertical padding (circle radii project to a handful of px).
-    const padY = 60;
-    // Horizontal box edges: start a bit left of the left circle, end
-    // between the middle and right circles.
-    const x0 = lpx - 50;
-    const x1 = (mpx + rpx) / 2;
-    const y0 = lpy - padY;
-    const y1 = lpy + padY;
-
-    // Drag LEFT→RIGHT (x0 < x1) = enclosing.
-    await page.mouse.move(x0, y0);
+    const [e0x, e0y] = await sketchToClientPx(page, u0, v0);
+    const [e1x, e1y] = await sketchToClientPx(page, u1, v1);
+    await page.mouse.move(e0x, e0y);
     await page.mouse.down();
-    await page.mouse.move((x0 + x1) / 2, y1, { steps: 5 });
-    await page.mouse.move(x1, y1, { steps: 5 });
+    await page.mouse.move((e0x + e1x) / 2, (e0y + e1y) / 2, { steps: 5 });
+    await page.mouse.move(e1x, e1y, { steps: 5 });
     await page.mouse.up();
     await page.waitForTimeout(200);
 
-    // Two circles enclosed: each circle contributes its centre point plus
-    // the circle curve, so the selection holds 4 entities (2 circles + 2
-    // centres). The load-bearing fact is "2 circles in, the 3rd out". The
-    // right circle's exclusion is verified below: clearing then crossing
-    // ONLY the right circle yields a fresh, smaller selection.
+    // Two circles enclosed: each contributes its centre point plus the circle
+    // curve, so the selection holds 4 entities (2 circles + 2 centres).
     const enclosingSel = await sketchSelection(page);
     expect(enclosingSel.length).toBe(4);
 
-    // Clear with a plain click on clearly empty space (top-left corner).
-    await page.mouse.click(cx - 250, cy - 150);
+    // Clear with a plain click on empty sketch space, left of the left circle.
+    const [gapX, gapY] = await sketchToClientPx(
+      page,
+      left.centre[0] - r - 15,
+      (v0 + v1) / 2,
+    );
+    await page.mouse.click(gapX, gapY);
     await page.waitForTimeout(150);
     expect((await sketchSelection(page)).length).toBe(0);
 
-    // ── Crossing (RIGHT→LEFT): a box that merely CLIPS the right circle's
-    // rim. Start right of the right circle and drag left into its edge.
-    const [rpx2, rpy2] = await sketchToClientPx(page, right[0], right[1]);
-    const cx0 = rpx2 + 40; // right of the circle
-    const cx1 = rpx2 + 5; // just into the right rim, RIGHT→LEFT
-    await page.mouse.move(cx0, rpy2 - 50);
+    // ── Crossing (RIGHT→LEFT in sketch u): a box that merely CLIPS the right
+    // circle's rim — it starts clear of the circle and drags back onto it.
+    const [c0x, c0y] = await sketchToClientPx(
+      page,
+      right.centre[0] + r + 20,
+      right.centre[1] - r - 20,
+    );
+    const [c1x, c1y] = await sketchToClientPx(
+      page,
+      right.centre[0] + r - 5,
+      right.centre[1] + r + 20,
+    );
+    await page.mouse.move(c0x, c0y);
     await page.mouse.down();
-    await page.mouse.move(cx1, rpy2 + 50, { steps: 8 });
+    await page.mouse.move(c1x, c1y, { steps: 8 });
     await page.mouse.up();
     await page.waitForTimeout(200);
 

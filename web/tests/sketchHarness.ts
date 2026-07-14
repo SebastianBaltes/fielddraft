@@ -29,8 +29,9 @@ export interface SketchStoreWindow {
         selectedTool: string | null;
         subCalls: Array<{ type: string; params?: Record<string, unknown> }>;
       };
-      /** F24: true once the selected glyph font is parsed and ready. */
-      sketchTextFontReady?: boolean;
+      /** F24: true once the selected glyph font is parsed and ready. Lives on
+       *  the tool params, not the session root. */
+      sketchToolParams?: { textFontReady?: boolean };
     };
   };
   __fdKernel?: {
