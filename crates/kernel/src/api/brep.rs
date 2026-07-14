@@ -13,10 +13,19 @@ impl Kernel {
     /// (`setBrepSuppressed`): `true` when serving body `i` costs no weave —
     /// either suppression is off, or the body's cached B-Rep is still
     /// current (e.g. after a pure move, whose placement-invariant key is
-    /// unchanged). `false` means "emit an empty payload"; as a side effect
-    /// the body's `placement` has been refreshed.
+    /// unchanged). `false` means "emit an empty payload".
+    ///
+    /// The bounds check is the gate keeping its own promise. A document can
+    /// legitimately regenerate to ZERO bodies — an incomplete revolve warns
+    /// and produces none (ticket ni56) — and JS may still ask for body 0.
+    /// Without the check the `||` short-circuits past `bodies[i]` whenever
+    /// suppression is off, the caller falls straight into `self.bodies[i]`,
+    /// and the out-of-bounds panic ABORTS THE WHOLE WASM INSTANCE: the app
+    /// dies with a bare `RuntimeError: unreachable` instead of the query
+    /// simply coming back empty.
     fn brep_export_allowed(&mut self, i: usize) -> bool {
-        !self.brep_suppressed || self.bodies[i].brep_is_current(&self.decoded)
+        i < self.bodies.len()
+            && (!self.brep_suppressed || self.bodies[i].brep_is_current(&self.decoded))
     }
 
     /// Counts of the body's feature-based B-Rep entities as a JSON
@@ -237,7 +246,11 @@ impl Kernel {
     #[wasm_bindgen(js_name = bodyOctreeCells)]
     pub fn body_octree_cells(&mut self, i: usize) -> String {
         if !self.brep_export_allowed(i) {
-            let p = self.bodies[i].placement; // refreshed by the gate
+            // Suppressed-but-present body: hand back its placement with no
+            // cells, so a pure move still positions the (empty) overlay. No
+            // body at all: there is no placement to report — `i` is simply
+            // out of range, so report nothing rather than indexing into it.
+            let p = self.bodies.get(i).map(|b| b.placement).unwrap_or_default();
             return serde_json::json!({
                 "translate": p.translate,
                 "rotation": p.rotation,

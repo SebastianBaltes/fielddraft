@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
 import {
+  pickSketchTool,
   canvasCentre,
   committedSketchTypes,
   freshLoad,
@@ -25,9 +26,11 @@ test.describe("Sketch ellipse tool", () => {
     await freshLoad(page);
 
     await page.getByTestId("enter-sketch").click();
-    const toolButton = page.getByTestId("sketch-tool-sketch_ellipse");
-    await expect(toolButton).toBeVisible();
-    await toolButton.click();
+    // Ellipse lives in the circle split-button's flyout (ticket pqoe): its row
+    // stays mounted but parked off-screen while the flyout is collapsed, so a
+    // direct click resolves the element and then waits forever for it to become
+    // clickable. pickSketchTool opens the flyout first.
+    await pickSketchTool(page, "sketch_ellipse");
 
     const [cx, cy] = await canvasCentre(page);
 

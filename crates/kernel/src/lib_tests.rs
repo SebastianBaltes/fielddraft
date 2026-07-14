@@ -3919,3 +3919,40 @@ fn feature_id_is_descendant_of(child: &FeatureId, ancestor: &FeatureId) -> bool 
     false
 }
 
+
+/// The `sdf-vm-vase-parity` E2E died with a bare WASM `RuntimeError:
+/// unreachable` inside `bodyBrepFaces` — a Rust panic, stripped of its message
+/// on the way into JS. Two things had to line up: the fixture's revolve carried
+/// no `axis` (required since ticket ni56, no implicit local-Y fallback), so it
+/// warned and produced NO body; and the B-Rep export then indexed `bodies[0]`
+/// of an empty list. This pins the healthy half: a revolve with an axis builds
+/// a body whose B-Rep exports faces.
+#[test]
+fn vase_revolve_builds_a_body_with_brep_faces() {
+    let mut k = Kernel::new();
+    k.load_json(include_str!("testdata/vase_revolve.json"))
+        .expect("vase document loads");
+    assert!(
+        k.feature_warnings.is_empty(),
+        "vase regenerates cleanly, got {:?}",
+        k.feature_warnings
+    );
+    assert_eq!(k.bodies.len(), 1, "the revolved vase is one body");
+    let faces = parse_json_array(&k.body_brep_faces(0));
+    assert!(!faces.is_empty(), "a revolved vase has B-Rep faces");
+}
+
+/// …and this pins the other half: an out-of-range body index must come back
+/// EMPTY, not abort the WASM instance. A document can legitimately regenerate
+/// to zero bodies (an incomplete revolve is exactly that), and JS still asks
+/// for body 0 — that must not kill the kernel for the whole session.
+#[test]
+fn brep_exports_on_a_missing_body_are_empty_not_a_trap() {
+    let mut k = Kernel::new();
+    assert_eq!(k.bodies.len(), 0, "a fresh kernel has no bodies");
+    assert_eq!(k.body_brep_faces(0), "[]");
+    assert_eq!(k.body_brep_edges(0), "[]");
+    assert_eq!(k.body_brep_vertices(0), "[]");
+    let counts: serde_json::Value = serde_json::from_str(&k.body_brep_counts(0)).unwrap();
+    assert_eq!(counts["faces"], 0);
+}

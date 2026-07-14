@@ -24,6 +24,16 @@ export interface ReleaseNote {
 /** All releases, newest first. */
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: "0.6.591",
+    entries: [
+      {
+        kind: "fix",
+        scope: "kernel",
+        text: "Ein Dokument ohne fertigen Körper (z. B. ein Revolve, dem noch die Achse fehlt) legt nicht mehr den ganzen Kernel lahm: die Flächen-Abfrage kommt jetzt leer zurück, statt die Sitzung mit einem Absturz zu beenden.",
+      },
+    ],
+  },
+  {
     version: "0.6.590",
     entries: [
       {

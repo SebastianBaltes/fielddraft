@@ -37,12 +37,17 @@ export interface SketchStoreWindow {
     listFeatures: () => Array<{ id: number; kind: string }>;
     getSketchSubCalls: (id: number) => Array<{ type: string }>;
   };
+  /** The live sketch camera. Mirrors `SketchCameraState` — note there is no
+   *  `centerU`/`centerV`: since the sketch-in-3D rebuild the overlay projects
+   *  through the real plane frame and camera, not a 2D pan/zoom pair. */
   __fdSketchCamera?: () => {
     zoom: number;
-    centerU: number;
-    centerV: number;
     version: number;
   };
+  /** The app's OWN sketch→screen projection (canvas-local CSS px), i.e. the
+   *  exact inverse of the overlay's hit-test. Tests must project with this
+   *  rather than re-deriving it. */
+  __fdSketchToScreen?: (u: number, v: number) => [number, number];
 }
 
 /** Clear persisted project state and start fresh. */
@@ -59,19 +64,17 @@ export async function freshLoad(page: Page): Promise<void> {
   await page.waitForTimeout(600);
 }
 
-/** Wait until the ortho camera stops moving (publishes async + auto-fits). */
+/**
+ * Wait until the sketch camera has published a SETTLED, FINITE zoom — the app
+ * mounts the WebGPU canvas first and auto-fits a frame later, so an early read
+ * gives `version = 0` or a zoom of Infinity. Anything projected off that camera
+ * comes out NaN.
+ */
 export async function settleSketchCamera(page: Page): Promise<void> {
   const read = () =>
     page.evaluate(() => {
       const c = (window as unknown as SketchStoreWindow).__fdSketchCamera?.();
-      return c
-        ? {
-            zoom: c.zoom,
-            centerU: c.centerU,
-            centerV: c.centerV,
-            version: c.version,
-          }
-        : null;
+      return c ? { zoom: c.zoom, version: c.version } : null;
     });
   let cam = await read();
   for (let i = 0; i < 50; i++) {
@@ -83,9 +86,7 @@ export async function settleSketchCamera(page: Page): Promise<void> {
       next.version > 0 &&
       Number.isFinite(next.zoom) &&
       next.zoom > 0 &&
-      next.zoom === cam.zoom &&
-      next.centerU === cam.centerU &&
-      next.centerV === cam.centerV
+      next.zoom === cam.zoom
     ) {
       cam = next;
       break;
@@ -94,10 +95,6 @@ export async function settleSketchCamera(page: Page): Promise<void> {
   }
   expect(cam, "sketch camera never published").not.toBeNull();
   expect(cam!.version).toBeGreaterThan(0);
-  // A published-but-not-yet-fitted camera reports zoom = Infinity/NaN, which
-  // silently poisons every projection built on it — the click then reaches
-  // Playwright as NaN px and dies as "Input.dispatchMouseEvent: Invalid
-  // parameters", metres away from the real cause. Settle on a FINITE zoom.
   expect(
     Number.isFinite(cam!.zoom) && cam!.zoom > 0,
     `sketch camera zoom never became finite (got ${cam!.zoom})`,
@@ -112,7 +109,19 @@ export async function canvasCentre(page: Page): Promise<[number, number]> {
 }
 
 /** Project a sketch (u, v) to a client pixel IN-PAGE using the live rect +
- *  camera — the exact inverse of the app's `screenToSketch`. */
+ *  camera — the exact inverse of the app's `screenToSketch`.
+ *
+ * Projects through the app's OWN `__fdSketchToScreen`, and that is the whole
+ * point. This helper used to re-derive the projection by hand as
+ * `centre + (u - cam.centerU) * cam.zoom` — a flat 2D pan/zoom. Since the
+ * sketch-in-3D rebuild the overlay instead lifts (u, v) into world space
+ * through the active plane frame and projects with the live camera, and
+ * `centerU`/`centerV` were dropped from the published camera altogether. The
+ * hand-rolled formula therefore read `undefined`, every projection came out
+ * NaN, and the click died inside Playwright as "Input.dispatchMouseEvent:
+ * Invalid parameters" — nowhere near the actual cause. Commit 6b60445 already
+ * learned this for `sketch-editor`'s local projector; the shared harness never
+ * got the memo. Ask the app where a point is; don't guess. */
 export async function sketchToClientPx(
   page: Page,
   u: number,
@@ -124,21 +133,23 @@ export async function sketchToClientPx(
         '[data-testid="sketch-canvas-2d"]',
       ) as HTMLElement;
       const r = cv.getBoundingClientRect();
-      const cam = (window as unknown as SketchStoreWindow).__fdSketchCamera!();
-      return [
-        r.left + r.width / 2 + (u - cam.centerU) * cam.zoom,
-        r.top + r.height / 2 - (v - cam.centerV) * cam.zoom,
-      ] as [number, number];
+      const toScreen = (window as unknown as SketchStoreWindow)
+        .__fdSketchToScreen;
+      if (!toScreen) return null;
+      // Canvas-LOCAL CSS px — add the box origin for absolute client px.
+      const [lx, ly] = toScreen(u, v);
+      return [r.left + lx, r.top + ly] as [number, number];
     },
     { u, v },
   );
+  expect(px, "__fdSketchToScreen hook missing (dev build only)").not.toBeNull();
   // Fail here, naming the culprit, rather than handing NaN to page.mouse and
   // getting "Input.dispatchMouseEvent: Invalid parameters" three calls later.
   expect(
-    Number.isFinite(px[0]) && Number.isFinite(px[1]),
-    `projection of sketch (${u}, ${v}) is not finite (got ${px[0]}, ${px[1]}) — camera not settled?`,
+    Number.isFinite(px![0]) && Number.isFinite(px![1]),
+    `projection of sketch (${u}, ${v}) is not finite (got ${px![0]}, ${px![1]}) — camera not settled?`,
   ).toBe(true);
-  return px;
+  return px!;
 }
 
 /** Click the committed sketch point at (u, v). Settles the camera first so

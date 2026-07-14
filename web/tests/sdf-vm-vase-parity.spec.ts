@@ -52,7 +52,17 @@ const VASE_DOC = JSON.stringify({
         ],
       },
     },
-    { type: "revolve", id: 2, params: { profiles: "qCreatedBy(1)" } },
+    // The axis is REQUIRED (ticket ni56) — there is no implicit local-Y
+    // fallback any more. Entity 8 is `l1`, the vertical leg from (0,-70) to
+    // (0,68): the sketch allocates three solver ids per line (start, end,
+    // line) after its five free points, so l1's line lands on 8. Without it
+    // the revolve warns, builds NO body, and every body query below is a
+    // query about a body that does not exist.
+    {
+      type: "revolve",
+      id: 2,
+      params: { profiles: "qCreatedBy(1)", axis: "qSketchLine(1, 8)" },
+    },
   ],
   next_feature_id: 3,
 });
