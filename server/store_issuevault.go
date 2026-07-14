@@ -1,8 +1,9 @@
 // issuevaultStore — a TicketStore backed by the external IssueVault service.
 //
-// Selected with TICKET_BACKEND=issuevault. Instead of MariaDB, the whole ticket
-// domain (tickets / comments / artifacts / work-orders / verdicts / deploys) is
-// persisted in IssueVault over its REST API. The FieldDraft domain models are
+// The ONLY ticket backend (ticket #346) — there is no switch to select it and no
+// fallback behind it. Instead of MariaDB, the whole ticket domain (tickets /
+// comments / artifacts / work-orders / verdicts / deploys) is persisted in
+// IssueVault over its REST API. The FieldDraft domain models are
 // mapped onto IssueVault's generic ticket shape:
 //
 //   - FieldDraft TicketState  ⇄ IssueVault `status` (verbatim string); the

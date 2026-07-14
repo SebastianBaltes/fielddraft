@@ -1,5 +1,5 @@
 // Shared domain logic — the single home for business rules that every store
-// implementation (memStore, sqlStore, fileTicketStore) must apply identically.
+// implementation (memStore, sqlStore, issuevaultStore) must apply identically.
 //
 // Everything here is storage-agnostic: password hashing parameters, TTLs,
 // comment construction (incl. the PO-review rule), and the ticket state-machine
@@ -124,7 +124,7 @@ func applyPOVerdict(t *Ticket, v POVerdict, at time.Time) (audit string, err err
 // ─── search semantics ───────────────────────────────────────────
 
 // escapeLike escapes the SQL LIKE metacharacters (% _ \) so a user query is
-// matched as a literal substring — the same semantics memStore/fileTicketStore
+// matched as a literal substring — the same semantics memStore/issuevaultStore
 // implement with strings.Contains.
 func escapeLike(s string) string {
 	s = strings.ReplaceAll(s, `\`, `\\`)
