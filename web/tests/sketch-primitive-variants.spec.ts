@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
 import {
+  pickSketchTool,
   canvasCentre,
   committedSketchTypes,
   freshLoad,
@@ -35,7 +36,7 @@ test.describe("Sketch primitive variants", () => {
     await freshLoad(page);
     await page.getByTestId("enter-sketch").click();
     await expect(page.getByTestId("sketch-canvas-2d")).toBeVisible();
-    await page.getByTestId("sketch-tool-sketch_rectangle_center").click();
+    await pickSketchTool(page, "sketch_rectangle_center");
 
     const [cx, cy] = await canvasCentre(page);
     await page.mouse.move(cx, cy);
@@ -64,7 +65,7 @@ test.describe("Sketch primitive variants", () => {
     await freshLoad(page);
     await page.getByTestId("enter-sketch").click();
     await expect(page.getByTestId("sketch-canvas-2d")).toBeVisible();
-    await page.getByTestId("sketch-tool-sketch_circle_3p").click();
+    await pickSketchTool(page, "sketch_circle_3p");
 
     const [cx, cy] = await canvasCentre(page);
     // Three non-collinear points: right, top, left.
@@ -94,7 +95,7 @@ test.describe("Sketch primitive variants", () => {
     await freshLoad(page);
     await page.getByTestId("enter-sketch").click();
     await expect(page.getByTestId("sketch-canvas-2d")).toBeVisible();
-    await page.getByTestId("sketch-tool-sketch_rectangle_3p").click();
+    await pickSketchTool(page, "sketch_rectangle_3p");
 
     const [cx, cy] = await canvasCentre(page);
     // p1 → p2 sets the base edge (slanted to avoid axis auto-constraints),

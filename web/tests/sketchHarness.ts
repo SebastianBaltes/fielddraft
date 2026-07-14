@@ -81,6 +81,8 @@ export async function settleSketchCamera(page: Page): Promise<void> {
       next &&
       cam &&
       next.version > 0 &&
+      Number.isFinite(next.zoom) &&
+      next.zoom > 0 &&
       next.zoom === cam.zoom &&
       next.centerU === cam.centerU &&
       next.centerV === cam.centerV
@@ -92,6 +94,14 @@ export async function settleSketchCamera(page: Page): Promise<void> {
   }
   expect(cam, "sketch camera never published").not.toBeNull();
   expect(cam!.version).toBeGreaterThan(0);
+  // A published-but-not-yet-fitted camera reports zoom = Infinity/NaN, which
+  // silently poisons every projection built on it — the click then reaches
+  // Playwright as NaN px and dies as "Input.dispatchMouseEvent: Invalid
+  // parameters", metres away from the real cause. Settle on a FINITE zoom.
+  expect(
+    Number.isFinite(cam!.zoom) && cam!.zoom > 0,
+    `sketch camera zoom never became finite (got ${cam!.zoom})`,
+  ).toBe(true);
 }
 
 /** Canvas-centre client pixel, for camera-independent draw gestures. */
@@ -108,7 +118,7 @@ export async function sketchToClientPx(
   u: number,
   v: number,
 ): Promise<[number, number]> {
-  return page.evaluate(
+  const px = await page.evaluate(
     ({ u, v }) => {
       const cv = document.querySelector(
         '[data-testid="sketch-canvas-2d"]',
@@ -122,6 +132,13 @@ export async function sketchToClientPx(
     },
     { u, v },
   );
+  // Fail here, naming the culprit, rather than handing NaN to page.mouse and
+  // getting "Input.dispatchMouseEvent: Invalid parameters" three calls later.
+  expect(
+    Number.isFinite(px[0]) && Number.isFinite(px[1]),
+    `projection of sketch (${u}, ${v}) is not finite (got ${px[0]}, ${px[1]}) — camera not settled?`,
+  ).toBe(true);
+  return px;
 }
 
 /** Click the committed sketch point at (u, v). Settles the camera first so
@@ -142,29 +159,61 @@ export async function clickSketchPoint(
   );
 }
 
+/** The sketch tools that live inside a split-button flyout (ticket pqoe),
+ *  mapped to their group's testid. Everything else is a flat tool button. */
+const SKETCH_TOOL_GROUPS: Record<string, string> = {
+  sketch_circle: "sketch-tool-circle-group",
+  sketch_circle_3p: "sketch-tool-circle-group",
+  sketch_ellipse: "sketch-tool-circle-group",
+  sketch_rectangle: "sketch-tool-rectangle-group",
+  sketch_rectangle_center: "sketch-tool-rectangle-group",
+  sketch_rectangle_3p: "sketch-tool-rectangle-group",
+};
+
+function hasClass(cls: string | null, name: string): boolean {
+  return (cls ?? "").split(/\s+/).includes(name);
+}
+
 /**
- * Pick a sketch tool — IDEMPOTENT, and that is the whole point. Ticket daa8
- * made the toolbar button a toggle: clicking the ACTIVE tool detaches it (back
- * to select mode), which is how a chained Line/polyline ends. A helper that
- * clicks the button before every stroke therefore ARMS the tool for the first
- * stroke and DISARMS it for the second — the second drag then lands in select
- * mode and grip-drags the geometry it was supposed to draw next to. Clicking
- * only when the button isn't already `is-active` keeps repeated strokes honest.
+ * Pick a sketch tool. The two things this guards against are why it exists —
+ * both are ways the toolbar stopped being a plain row of buttons:
  *
- * Grouped tools (rectangle / circle) are fronted by a split-button whose
- * primary carries the active state, so they resolve through the group testid.
+ *  1. IDEMPOTENCE (ticket daa8). The button is a TOGGLE: clicking the ACTIVE
+ *     tool detaches it back to select mode — that is how a chained Line ends.
+ *     A helper that clicks before every stroke therefore ARMS the tool for the
+ *     first stroke and DISARMS it for the second, and that second drag lands in
+ *     select mode and grip-drags the geometry it was supposed to draw next to.
+ *     So: click only when the tool isn't already active.
+ *
+ *  2. THE FLYOUT (ticket pqoe). Circle/rectangle/ellipse variants are no longer
+ *     flat buttons; they are rows in a split-button dropdown. The rows stay
+ *     MOUNTED while the flyout is collapsed but are parked off-screen, so
+ *     `getByTestId("sketch-tool-sketch_circle").click()` resolves and then hangs
+ *     until the test times out — the element exists but never becomes clickable.
+ *     So: open the flyout via its chevron first, then click the row.
  */
 export async function pickSketchTool(page: Page, tool: string): Promise<void> {
-  const group: Record<string, string> = {
-    sketch_rectangle: "sketch-tool-rectangle-group",
-    sketch_circle: "sketch-tool-circle-group",
-  };
-  const groupId = group[tool];
-  const button = groupId
-    ? page.getByTestId(groupId).locator("button.tool.primary")
-    : page.getByTestId(`sketch-tool-${tool}`);
-  const cls = (await button.getAttribute("class")) ?? "";
-  if (!cls.split(/\s+/).includes("is-active")) await button.click();
+  const groupId = SKETCH_TOOL_GROUPS[tool];
+  if (!groupId) {
+    const button = page.getByTestId(`sketch-tool-${tool}`);
+    if (!hasClass(await button.getAttribute("class"), "is-active"))
+      await button.click();
+    return;
+  }
+  const group = page.getByTestId(groupId);
+  const row = page.getByTestId(`sketch-tool-${tool}`);
+  // The group's primary is `is-active` only while one of ITS members is the
+  // selected tool; the row is `is-active` while it is the variant the group
+  // currently fronts (which is also true from mere last-used memory). Both
+  // together mean THIS tool is armed — clicking again would toggle it off.
+  const armed =
+    hasClass(
+      await group.locator("button.tool.primary").getAttribute("class"),
+      "is-active",
+    ) && hasClass(await row.getAttribute("class"), "is-active");
+  if (armed) return;
+  await group.getByTestId(`${groupId}-chevron`).click();
+  await row.click();
 }
 
 /**

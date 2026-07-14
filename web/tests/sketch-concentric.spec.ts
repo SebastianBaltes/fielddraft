@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { expandGeometrySection } from "./sketchHarness";
+import { expandGeometrySection, pickSketchTool } from "./sketchHarness";
 
 /**
  * Concentric constraint via the palette. The solver, draft-state rebuild,
@@ -75,7 +75,7 @@ async function drawCircle(
   center: [number, number],
   radiusMm: number,
 ) {
-  await page.getByTestId("sketch-tool-sketch_circle").click();
+  await pickSketchTool(page, "sketch_circle");
   const [csx, csy] = project(center[0], center[1]);
   const [rsx, rsy] = project(center[0] + radiusMm, center[1]);
   await page.mouse.move(csx, csy);

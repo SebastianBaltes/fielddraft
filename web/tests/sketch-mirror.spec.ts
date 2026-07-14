@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
 import {
+  pickSketchTool,
   canvasCentre,
   committedSketchTypes,
   freshLoad,
@@ -37,7 +38,7 @@ test.describe("Sketch mirror", () => {
     const [cx, cy] = await canvasCentre(page);
 
     // Circle on the LEFT: centre at cx-100, dragged out to a small radius.
-    await page.getByTestId("sketch-tool-sketch_circle").click();
+    await pickSketchTool(page, "sketch_circle");
     await page.mouse.move(cx - 100, cy);
     await page.mouse.down();
     await page.mouse.move(cx - 70, cy, { steps: 6 });

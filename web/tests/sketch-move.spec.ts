@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
 import {
+  pickSketchTool,
   canvasCentre,
   committedSketchTypes,
   freshLoad,
@@ -50,7 +51,7 @@ test.describe("Sketch move / copy", () => {
     const [cx, cy] = await canvasCentre(page);
 
     // A single circle on the LEFT so the move target stays on-canvas.
-    await page.getByTestId("sketch-tool-sketch_circle").click();
+    await pickSketchTool(page, "sketch_circle");
     await page.mouse.move(cx - 120, cy);
     await page.mouse.down();
     await page.mouse.move(cx - 95, cy, { steps: 6 });
@@ -118,7 +119,7 @@ test.describe("Sketch move / copy", () => {
 
     const [cx, cy] = await canvasCentre(page);
 
-    await page.getByTestId("sketch-tool-sketch_circle").click();
+    await pickSketchTool(page, "sketch_circle");
     await page.mouse.move(cx - 120, cy);
     await page.mouse.down();
     await page.mouse.move(cx - 95, cy, { steps: 6 });

@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
 import {
+  pickSketchTool,
   canvasCentre,
   expandGeometrySection,
   freshLoad,
@@ -47,7 +48,7 @@ test.describe("Sketch elements panel", () => {
     await page.waitForTimeout(300);
 
     // Draw a circle.
-    await page.getByTestId("sketch-tool-sketch_circle").click();
+    await pickSketchTool(page, "sketch_circle");
     await page.mouse.move(cx - 80, cy + 80);
     await page.mouse.down();
     await page.mouse.move(cx - 40, cy + 80, { steps: 6 });

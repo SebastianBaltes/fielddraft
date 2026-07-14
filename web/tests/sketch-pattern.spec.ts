@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
 import {
+  pickSketchTool,
   canvasCentre,
   committedSketchTypes,
   freshLoad,
@@ -37,7 +38,7 @@ test.describe("Sketch pattern", () => {
     const [cx, cy] = await canvasCentre(page);
 
     // A single circle on the LEFT (so its copies stay on-canvas to the right).
-    await page.getByTestId("sketch-tool-sketch_circle").click();
+    await pickSketchTool(page, "sketch_circle");
     await page.mouse.move(cx - 120, cy);
     await page.mouse.down();
     await page.mouse.move(cx - 95, cy, { steps: 6 });

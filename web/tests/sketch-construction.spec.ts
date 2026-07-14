@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { expandGeometrySection } from "./sketchHarness";
+import { expandGeometrySection, pickSketchTool } from "./sketchHarness";
 
 /**
  * Construction geometry (UI gap #5). A drawn element can be flagged as
@@ -32,7 +32,7 @@ test.describe("Sketch construction geometry", () => {
     const cy = box.y + box.height / 2;
 
     // Draw a circle via a centre→rim drag.
-    await page.getByTestId("sketch-tool-sketch_circle").click();
+    await pickSketchTool(page, "sketch_circle");
     await page.mouse.move(cx, cy);
     await page.mouse.down();
     await page.mouse.move(cx + 30, cy, { steps: 4 });

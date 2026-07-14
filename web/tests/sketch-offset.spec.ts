@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
 import {
+  pickSketchTool,
   canvasCentre,
   committedSketchTypes,
   freshLoad,
@@ -39,7 +40,7 @@ test.describe("Sketch offset", () => {
     const [cx, cy] = await canvasCentre(page);
 
     // Draw a circle centred at the canvas centre with a small radius.
-    await page.getByTestId("sketch-tool-sketch_circle").click();
+    await pickSketchTool(page, "sketch_circle");
     await page.mouse.move(cx, cy);
     await page.mouse.down();
     await page.mouse.move(cx + 60, cy, { steps: 6 });

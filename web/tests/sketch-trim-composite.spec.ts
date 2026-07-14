@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { pickSketchTool } from "./sketchHarness";
 
 /**
  * Trimming a composite (rectangle / polygon). Trim isn't a kernel tool — it
@@ -34,7 +35,7 @@ test.describe("Sketch trim — composites", () => {
     const cy = box.y + box.height / 2;
 
     // Draw a rectangle centred on the origin via a drag gesture.
-    await page.getByTestId("sketch-tool-sketch_rectangle").click();
+    await pickSketchTool(page, "sketch_rectangle");
     await page.mouse.move(cx - 120, cy - 80);
     await page.mouse.down();
     await page.mouse.move(cx, cy, { steps: 5 });

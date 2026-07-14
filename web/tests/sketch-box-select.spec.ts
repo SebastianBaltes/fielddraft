@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
 import {
+  pickSketchTool,
   canvasCentre,
   freshLoad,
   settleSketchCamera,
@@ -48,7 +49,7 @@ test.describe("Sketch box-select / marquee", () => {
     // a centre-drag: down at the centre, out to the rim.
     const offsets = [-180, 0, 180];
     for (const dx of offsets) {
-      await page.getByTestId("sketch-tool-sketch_circle").click();
+      await pickSketchTool(page, "sketch_circle");
       await page.mouse.move(cx + dx, cy);
       await page.mouse.down();
       await page.mouse.move(cx + dx + 25, cy, { steps: 5 });

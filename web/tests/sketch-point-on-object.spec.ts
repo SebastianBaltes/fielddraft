@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
 import {
+  pickSketchTool,
   canvasCentre,
   clickSketchPoint,
   committedSketchTypes,
@@ -49,7 +50,7 @@ test.describe("Sketch point-on-object constraint", () => {
 
     // Draw a circle elsewhere (centre below-right of the line, dragged out
     // to a rim). Again purely pixel offsets.
-    await page.getByTestId("sketch-tool-sketch_circle").click();
+    await pickSketchTool(page, "sketch_circle");
     await page.mouse.move(cx + 40, cy + 70);
     await page.mouse.down();
     await page.mouse.move(cx + 60, cy + 70, { steps: 5 });
