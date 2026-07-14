@@ -49,6 +49,19 @@ export function MeasurePanel() {
     [store, state?.measureSelection, state?.features],
   );
 
+  // The NUMBERS, memoized (ticket #349). `measureDistance` on an edge↔face pair
+  // is O(polyline points × face triangles) — tens of milliseconds on a real part.
+  // It must not run per render, and this panel re-renders a LOT: `PickProbe`
+  // (Viewport.tsx) calls `kernel.pick` in a `useFrame` and pushes the fresh
+  // result into React state on EVERY frame the pointer is over the canvas — which
+  // is every frame of a camera pan. Unmemoized, the pan then paid the full
+  // distance computation 60× a second, and the camera visibly stuttered as soon
+  // as an edge-to-face distance was on screen.
+  //
+  // `resolved` only changes when the selection or the geometry changes, so the
+  // measurement is computed exactly when it can actually differ.
+  const measured = useMemo(() => computeMeasured(resolved), [resolved]);
+
   if (!state?.measureMode) return null;
 
   const fmt = (mm: number) => formatLength(mm, lengthUnit, decimals);
@@ -88,7 +101,7 @@ export function MeasurePanel() {
         </ul>
       )}
 
-      {renderReadout(resolved, fmt)}
+      {renderReadout(measured, fmt)}
     </div>
   );
 }
@@ -113,31 +126,32 @@ function fmtVec(v: Vec3): string {
   return v.map((c) => c.toFixed(2)).join(", ");
 }
 
-function renderReadout(
+/** What the panel reports — the expensive part, computed once per selection. */
+type Measured =
+  | { kind: "none" }
+  | { kind: "single"; geom: MeasureGeom }
+  | {
+      kind: "pair";
+      dist: ReturnType<typeof measureDistance>;
+      /** Axis distance between two circular rims, when both entities are one. */
+      centerDist: number | null;
+    };
+
+/** The whole measurement, isolated from React so it can be memoized (#349). */
+export function computeMeasured(
   resolved: Array<{ el: PickedElement; geom: MeasureGeom | null }>,
-  fmt: (mm: number) => string,
-) {
+): Measured {
   const have = resolved.filter((r) => r.geom) as Array<{
     el: PickedElement;
     geom: MeasureGeom;
   }>;
-  if (have.length === 0) return null;
+  if (have.length === 0) return { kind: "none" };
+  if (have.length === 1) return { kind: "single", geom: have[0].geom };
 
-  // ── single entity ────────────────────────────────────────────
-  if (have.length === 1) {
-    return (
-      <div className="readout" data-testid="measure-readout">
-        {renderSingle(have[0].geom, fmt)}
-      </div>
-    );
-  }
-
-  // ── two entities → distance (all combinations) ───────────────
   const a = have[0].geom;
   const b = have[1].geom;
-  const dist = measureDistance(a, b);
+  const dist = measureDistance(a, b); // O(points × triangles) — see the useMemo
 
-  // Axis distance between two circular rims (both edges + both circular).
   let centerDist: number | null = null;
   if (a.kind === "edge" && b.kind === "edge") {
     const ea = measureSingle(a);
@@ -148,6 +162,23 @@ function renderReadout(
       centerDist = Math.hypot(c1[0] - c0[0], c1[1] - c0[1], c1[2] - c0[2]);
     }
   }
+  return { kind: "pair", dist, centerDist };
+}
+
+function renderReadout(measured: Measured, fmt: (mm: number) => string) {
+  if (measured.kind === "none") return null;
+
+  // ── single entity ────────────────────────────────────────────
+  if (measured.kind === "single") {
+    return (
+      <div className="readout" data-testid="measure-readout">
+        {renderSingle(measured.geom, fmt)}
+      </div>
+    );
+  }
+
+  // ── two entities → distance (all combinations) ───────────────
+  const { dist, centerDist } = measured;
 
   return (
     <div className="readout" data-testid="measure-readout">
