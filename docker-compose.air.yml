@@ -1,11 +1,17 @@
 # Dev-Override: Go-Server mit air-Live-Reload statt gebautem Image.
-# Nutzung: just dev-air   (oder: docker compose -f docker-compose.yml
-#                          -f docker-compose.air.yml up -d db server mesher)
+# Nutzung: just dev-full / just dev-air   (oder: docker compose -f
+#          docker-compose.yml -f docker-compose.air.yml up -d db server mesher)
 # ./server ist ins Container-Dateisystem gemountet; air baut bei jeder
 # .go-Änderung neu und startet den Prozess durch. Modul-/Build-Caches
 # liegen in benannten Volumes, damit der Rebuild nach dem ersten Lauf
-# Sekunden statt Minuten dauert. Environment/Ports erbt der Service aus
-# docker-compose.yml (Compose merged Overrides).
+# Sekunden statt Minuten dauert. Environment/Ports/depends_on erbt der
+# Service aus docker-compose.yml (Compose merged Overrides).
+#
+# WICHTIG: server/go.mod hat seit #347 `replace … => ../third_party/baseaichat/
+# server`. Von /app (= ./server) aus zeigt das auf /third_party — deshalb MUSS
+# das Submodul mitgemountet werden, sonst scheitert `go build` im air-Container
+# ("no such file or directory"). Genau das hatte dev-air stillschweigend kaputt
+# gemacht, sodass alle aufs statische Image zurückfielen (→ 38h-alte Container).
 services:
   server:
     build: !reset null
@@ -14,6 +20,7 @@ services:
     command: sh -c "go install github.com/air-verse/air@latest && air -c .air.toml"
     volumes:
       - ./server:/app
+      - ./third_party:/third_party:ro
       - go-mod-cache:/go/pkg/mod
       - go-build-cache:/root/.cache/go-build
       - blob-data:/data/blobs

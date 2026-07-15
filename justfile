@@ -48,35 +48,37 @@ build-wasm:
     cd crates/kernel && FIELDDRAFT_VERSION="$V" wasm-pack build --target web --out-dir ../../web/src/wasm --out-name fielddraft_kernel
     printf '%s' "$V" > ../../web/src/wasm/.kernel-version
 
-# Start the Vite dev server (WebGPU-capable Chromium recommended).
+# Start ONLY the Vite dev server (WebGPU-capable Chromium recommended).
 # NOTE: /api (auth, projects, TICKETS) proxies to the Go server on
-# :${FIELDDRAFT_SERVER_PORT:-8080} — without a running backend (just dev-full /
-# dev-air) there is no ticket store; the FS sink under tickets/open/ is gone.
+# :${FIELDDRAFT_SERVER_PORT:-8080}. Without a backend (use `just dev-full`)
+# there is no ticket store — tickets live in IssueVault via the Go server.
 dev: build-wasm
     @echo "▶ ${FIELDDRAFT_INSTANCE:-fielddraft} dev server on port ${FIELDDRAFT_WEB_PORT:-5173}"
     cd web && {{nvm_use}} && npm run dev -- --host 0.0.0.0
 
-# Full local stack: MariaDB + Go server (docker compose) + Vite dev server.
-# Brings up db+server in the background (seeds admin@local / admin on a fresh
-# DB), waits for the server to be healthy, then runs vite — which proxies /api
-# to the local Go server (see web/vite.config.ts). Gives a working local login.
-# Stop the backend afterwards with `docker compose down`.
-# Wie dev-full, aber der Go-Server läuft mit air-Live-Reload: jede Änderung
-# unter server/*.go baut & startet ihn automatisch neu (docker-compose.air.yml
-# mountet ./server in einen golang-Container; Caches in benannten Volumes).
-# Zurück zum gebauten Image: `just dev-full` bzw. `docker compose up -d --build server`.
+# Backend only, with LIVE-RELOAD: db + air-server + mesher, then follow the
+# server log. air rebuilds & restarts the Go server on every change under
+# server/*.go (docker-compose.air.yml). Use this for backend-only work;
+# `just dev-full` is the same live-reloading server plus vite.
 dev-air:
     docker compose -f docker-compose.yml -f docker-compose.air.yml up -d db server mesher
     docker compose logs -f server
 
+# Full local stack with a LIVE-RELOADING Go server: MariaDB + air-server +
+# mesher (docker compose) + Vite. The Go server rebuilds & restarts ITSELF on
+# every server/*.go change (air) — no more stale hand-built containers serving
+# old code. Seeds admin@local / admin on a fresh DB; vite proxies /api to the
+# server (web/vite.config.ts). Stop the backend with `docker compose down`.
+# The first start is slower (air pulls its toolchain + cold build); later
+# rebuilds take seconds.
 dev-full: build-wasm
     #!/usr/bin/env bash
     set -euo pipefail
-    echo "▶ bringing up db + server + mesher (docker compose)…"
-    docker compose up --build -d db server mesher
-    echo "▶ waiting for the Go server on :${FIELDDRAFT_SERVER_PORT:-8080}…"
+    echo "▶ bringing up db + air-server (live-reload) + mesher…"
+    docker compose -f docker-compose.yml -f docker-compose.air.yml up -d db server mesher
+    echo "▶ waiting for the Go server on :${FIELDDRAFT_SERVER_PORT:-8080} (first air build is slow)…"
     # Any HTTP response (even 401/404) means the server is up and migrations ran.
-    for i in $(seq 1 60); do
+    for i in $(seq 1 120); do
         if curl -s -o /dev/null "http://localhost:${FIELDDRAFT_SERVER_PORT:-8080}/api/me"; then break; fi
         sleep 1
     done
