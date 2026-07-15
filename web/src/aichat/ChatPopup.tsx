@@ -61,22 +61,8 @@ export function ChatPopup({ store }: { store: KernelStore }) {
           agent={agent}
           title="FieldDraft-Assistent"
           launcherLabel="Assistent"
-          greeting={
-            "Ich kann Fragen zu FieldDraft beantworten und das Modell für dich " +
-            "bauen. Zum Beispiel: „Bau mir eine Grundplatte 80 × 60 × 5 mm.“"
-          }
-          placeholder="Frag mich etwas — oder sag mir, was ich bauen soll…"
-          suggestions={[
-            {
-              label: "Grundplatte bauen",
-              prompt: "Bau mir eine Grundplatte 80 × 60 × 5 mm.",
-            },
-            {
-              label: "Wie skizziere ich?",
-              prompt:
-                "Wie erstelle ich in FieldDraft eine Skizze und extrudiere sie?",
-            },
-          ]}
+          greeting="Ich kann Fragen zu FieldDraft beantworten und das Modell für dich bauen."
+          placeholder="Frag mich…"
         />
       </div>
     </>
