@@ -220,7 +220,7 @@ func TestVerdictAcceptedCreatesWorkOrder(t *testing.T) {
 		"spam": false, "malicious": false, "vision_fit": "fit",
 		"confidence": 0.9, "category": "bug",
 		"reason": "legit repro", "public_reply": "Thanks, we are on it!",
-		"next_state": "accepted",
+		"next_state": "in_progress",
 		"work_order": {"ticket_id":"` + id + `","type":"bug","summary":"fix extrude crash","acceptance_criteria":["no crash"]}
 	}`
 	resp := e.agentReq(t, "POST", "/api/tickets/"+id+"/verdict", testPOToken, verdict, nil)
@@ -235,7 +235,7 @@ func TestVerdictAcceptedCreatesWorkOrder(t *testing.T) {
 	resp.Body.Close()
 
 	// State moved to accepted, classification recorded.
-	if out.Ticket.State != StateAccepted {
+	if out.Ticket.State != StateInProgress {
 		t.Fatalf("state = %q, want accepted", out.Ticket.State)
 	}
 	if out.Ticket.Category == nil || *out.Ticket.Category != "bug" {
@@ -274,7 +274,7 @@ func TestVerdictAcceptedRequiresWorkOrder(t *testing.T) {
 	id := e.createTicket(t, `{"title":"x","body":"y"}`)
 
 	resp := e.agentReq(t, "POST", "/api/tickets/"+id+"/verdict", testPOToken,
-		`{"vision_fit":"fit","category":"bug","next_state":"accepted"}`, nil)
+		`{"vision_fit":"fit","category":"bug","next_state":"in_progress"}`, nil)
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("accept without work_order: got %d, want 400", resp.StatusCode)
@@ -288,12 +288,12 @@ func TestVerdictDeclined(t *testing.T) {
 	id := e.createTicket(t, `{"title":"x","body":"y"}`)
 
 	resp := e.agentReq(t, "POST", "/api/tickets/"+id+"/verdict", testPOToken,
-		`{"vision_fit":"off","category":"feature","reason":"out of scope","public_reply":"Not a fit, sorry!","next_state":"declined"}`, nil)
+		`{"vision_fit":"off","category":"feature","reason":"out of scope","public_reply":"Not a fit, sorry!","next_state":"rejected"}`, nil)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("decline verdict: got %d, want 200", resp.StatusCode)
 	}
 	resp.Body.Close()
-	if e.tickets.GetTicket(id).State != StateDeclined {
+	if e.tickets.GetTicket(id).State != StateRejected {
 		t.Fatal("state not declined")
 	}
 	if e.tickets.GetWorkOrder(id) != nil {
@@ -303,7 +303,7 @@ func TestVerdictDeclined(t *testing.T) {
 	// Providing a work_order on a non-accept verdict is rejected.
 	id2 := e.createTicket(t, `{"title":"a","body":"b"}`)
 	resp = e.agentReq(t, "POST", "/api/tickets/"+id2+"/verdict", testPOToken,
-		`{"next_state":"declined","work_order":{"x":1}}`, nil)
+		`{"next_state":"rejected","work_order":{"x":1}}`, nil)
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("decline with work_order: got %d, want 400", resp.StatusCode)
@@ -365,7 +365,7 @@ func TestWorkOrderClaimComplete(t *testing.T) {
 	id := e.createTicket(t, `{"title":"x","body":"y"}`)
 
 	// Accept (creates the work-order) via the verdict route.
-	accept := `{"vision_fit":"fit","category":"bug","next_state":"accepted","work_order":{"summary":"do it"}}`
+	accept := `{"vision_fit":"fit","category":"bug","next_state":"in_progress","work_order":{"summary":"do it"}}`
 	resp := e.agentReq(t, "POST", "/api/tickets/"+id+"/verdict", testPOToken, accept, nil)
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
@@ -412,8 +412,8 @@ func TestWorkOrderClaimComplete(t *testing.T) {
 		t.Fatal("deploy id empty")
 	}
 
-	// Complete → deploying (legal from in_progress), completed_at + deploy link.
-	complete := `{"deploy_id":"` + dep.ID + `","next_state":"deploying"}`
+	// Complete → closed (legal from in_progress), completed_at + deploy link.
+	complete := `{"deploy_id":"` + dep.ID + `","next_state":"closed"}`
 	resp = e.agentReq(t, "POST", "/api/work-orders/"+id+"/complete", testCodingToken, complete, nil)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("complete: got %d, want 200", resp.StatusCode)
@@ -423,8 +423,8 @@ func TestWorkOrderClaimComplete(t *testing.T) {
 	if wo.CompletedAt == nil || wo.DeployID == nil || *wo.DeployID != dep.ID {
 		t.Fatalf("work-order not completed/linked: %+v", wo)
 	}
-	if e.tickets.GetTicket(id).State != StateDeploying {
-		t.Fatal("ticket not deploying after complete")
+	if e.tickets.GetTicket(id).State != StateClosed {
+		t.Fatal("ticket not closed after complete")
 	}
 	// No longer in the coding queue.
 	q = e.agentReq(t, "GET", "/api/agent/queue", testCodingToken, "", nil)
@@ -434,9 +434,11 @@ func TestWorkOrderClaimComplete(t *testing.T) {
 		t.Fatalf("completed ticket still in coding queue: %+v", queue.Items)
 	}
 
-	// Double-complete → 409, and the original completion stays untouched.
+	// Double-complete → 409, and the original completion stays untouched. The
+	// next_state must be a LEGAL move (closed→in_progress reopen) so the handler
+	// reaches the already-completed check instead of failing the transition first.
 	resp = e.agentReq(t, "POST", "/api/work-orders/"+id+"/complete", testCodingToken,
-		`{"next_state":"resolved"}`, nil)
+		`{"next_state":"in_progress"}`, nil)
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusConflict {
 		t.Fatalf("double complete: got %d, want 409", resp.StatusCode)
@@ -453,15 +455,16 @@ func TestWorkOrderClaimComplete(t *testing.T) {
 func TestCompleteWorkOrderValidatesTransitionFirst(t *testing.T) {
 	e := newAgentEnv(t)
 	id := e.createTicket(t, `{"title":"x","body":"y"}`)
-	accept := `{"vision_fit":"fit","category":"bug","next_state":"accepted","work_order":{"summary":"do it"}}`
+	accept := `{"vision_fit":"fit","category":"bug","next_state":"in_progress","work_order":{"summary":"do it"}}`
 	resp := e.agentReq(t, "POST", "/api/tickets/"+id+"/verdict", testPOToken, accept, nil)
 	resp.Body.Close()
 	resp = e.agentReq(t, "POST", "/api/work-orders/"+id+"/claim", testCodingToken, "", nil)
 	resp.Body.Close()
 
-	// in_progress → closed is not a legal move → 400, nothing mutated.
+	// in_progress → triage is not a legal move → 400, nothing mutated. (in_progress
+	// → closed IS legal now, so it can no longer serve as the invalid case.)
 	resp = e.agentReq(t, "POST", "/api/work-orders/"+id+"/complete", testCodingToken,
-		`{"next_state":"closed"}`, nil)
+		`{"next_state":"triage"}`, nil)
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("invalid next_state: got %d, want 400", resp.StatusCode)
@@ -588,9 +591,9 @@ func TestAgentCommentAndState(t *testing.T) {
 		t.Fatal("state not needs_info")
 	}
 
-	// Illegal transition → 400.
+	// Invalid state value → 400 (deploying no longer exists in the enum).
 	resp = e.agentReq(t, "PATCH", "/api/tickets/"+id+"/agent-state", testPOToken,
-		`{"state":"resolved"}`, nil)
+		`{"state":"deploying"}`, nil)
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("illegal agent-state: got %d, want 400", resp.StatusCode)

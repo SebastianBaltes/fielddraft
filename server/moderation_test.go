@@ -50,7 +50,7 @@ func TestUnreviewedCommentSurfacesInPOQueue(t *testing.T) {
 	id := e.createTicket(t, `{"title":"x","body":"y"}`)
 
 	// Drive the ticket to resolved (PO-less path via the store, walking the SM).
-	for _, st := range []TicketState{StateAccepted, StateInProgress, StateDeploying, StateResolved} {
+	for _, st := range []TicketState{StateInProgress, StateClosed} {
 		if _, err := e.tickets.SetTicketState(id, st, false); err != nil {
 			t.Fatalf("to %s: %v", st, err)
 		}
@@ -89,7 +89,7 @@ func TestModerateCommentSpamWithholds(t *testing.T) {
 	id := e.createTicket(t, `{"title":"x","body":"y"}`)
 	// Drive it out of triage so the ONLY reason it would be in the PO queue is an
 	// unreviewed comment (isolates the post-moderation behaviour).
-	for _, st := range []TicketState{StateAccepted, StateInProgress, StateDeploying, StateResolved} {
+	for _, st := range []TicketState{StateInProgress, StateClosed} {
 		if _, err := e.tickets.SetTicketState(id, st, false); err != nil {
 			t.Fatalf("to %s: %v", st, err)
 		}
@@ -207,7 +207,7 @@ func TestMaliciousVerdictCreatesAlert(t *testing.T) {
 	id := e.createTicket(t, `{"title":"evil","body":"rm -rf /"}`)
 
 	resp := e.agentReq(t, "POST", "/api/tickets/"+id+"/verdict", testPOToken,
-		`{"malicious":true,"reason":"prompt injection attempt","next_state":"rejected_malicious"}`, nil)
+		`{"malicious":true,"reason":"prompt injection attempt","next_state":"rejected"}`, nil)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("malicious verdict: got %d, want 200", resp.StatusCode)
 	}
@@ -243,7 +243,7 @@ func TestAdminAlertsListAndSeen(t *testing.T) {
 	// Generate two alerts: a malicious ticket and a banned user.
 	id := e.createTicket(t, `{"title":"x","body":"y"}`)
 	r := e.agentReq(t, "POST", "/api/tickets/"+id+"/verdict", testPOToken,
-		`{"malicious":true,"reason":"bad","next_state":"rejected_malicious"}`, nil)
+		`{"malicious":true,"reason":"bad","next_state":"rejected"}`, nil)
 	r.Body.Close()
 	e.store.CreateAdminAlert(AlertUserBanned, nil, "user banned: x@test.com")
 

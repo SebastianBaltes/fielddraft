@@ -6,8 +6,9 @@
 // IssueVault over its REST API. The FieldDraft domain models are
 // mapped onto IssueVault's generic ticket shape:
 //
-//   - FieldDraft TicketState  ⇄ IssueVault `status` (verbatim string); the
-//     coarse open/closed `state` is DERIVED from it (derivedIVState).
+//   - FieldDraft TicketState  ⇄ IssueVault `state` — the SAME six-value enum
+//     (IssueVault 0.4.x validates it and owns closed_at); a 1:1 read/write, no
+//     open/closed derivation and no free-form status to reconcile anymore.
 //   - PO verdict fields + the one-per-ticket work-order live under ticket `meta`
 //     (IssueVault applies RFC 7386 JSON-merge-patch to `meta`, so partial
 //     updates merge in without clobbering siblings — the work-order lifecycle
@@ -109,8 +110,8 @@ type ivTicket struct {
 	Number         int               `json:"number"`
 	Title          string            `json:"title"`
 	Body           string            `json:"body"`
-	State          string            `json:"state"`  // "open" | "closed" (derived)
-	Status         string            `json:"status"` // FieldDraft TicketState verbatim
+	State          string            `json:"state"`             // the six-value enum (§7.2) — IssueVault's only state field since 0.4.x
+	Version        string            `json:"version,omitempty"` // opaque fix marker, stamped on close
 	Category       *string           `json:"category"`
 	Author         string            `json:"author"`
 	Assignee       *string           `json:"assignee"`
@@ -280,34 +281,30 @@ func (s *issuevaultStore) postSystemComment(ticketID, body string) {
 
 // ─── mapping helpers (IssueVault → FieldDraft) ──────────────────
 
-// mapIVStatus adopts IssueVault's `status` as the FieldDraft TicketState.
+// mapIVState adopts IssueVault's `state` as the FieldDraft TicketState. Since
+// IssueVault 0.4.x enforces the same six-value enum, this is a 1:1 read — no
+// derived open/closed, no free-form status to reconcile.
 //
-// IssueVault does NOT whitelist that field, so any writer — an import, a peer
-// installation — can park a ticket in a state this server has never heard of.
-// Such a ticket is DEAD: validateTransition rejects every move out of it, so it
-// can never be resolved, only deleted. It happened: a one-shot import wrote
-// status "open" (see agents/migrate-issuevault.mjs) and 60 long-finished
-// tickets came back looking open forever.
-//
-// The value is kept VERBATIM — silently rewriting it to a legal state would
-// hide the corruption instead of showing it. The log line is the alarm.
-func mapIVStatus(id, status string) TicketState {
-	s := TicketState(status)
+// IssueVault now VALIDATES the field on write (unknown → 400), so the old
+// corruption (a rogue writer parking a ticket in an unknown state, leaving it
+// dead) can no longer be persisted. The guard stays as a cheap tripwire against
+// an enum drift between the two services; verbatim value + a log line, never a
+// silent rewrite.
+func mapIVState(id, state string) TicketState {
+	s := TicketState(state)
 	if !validState(s) {
-		log.Printf("issuevault: ticket %s has unknown status %q — no legal transition out of it", id, status)
+		log.Printf("issuevault: ticket %s has unknown state %q — enum drift with the store?", id, state)
 	}
 	return s
 }
 
-// derivedIVState maps a FieldDraft state to IssueVault's coarse open/closed.
-func derivedIVState(s TicketState) string {
-	switch s {
-	case StateResolved, StateClosed, StateDeclined, StateRejectedSpam, StateRejectedMalicious:
-		return "closed"
-	default:
-		return "open"
-	}
+// openStates / closedStates split the six-value enum for list filters. `parked`
+// counts as OPEN (non-terminal) but is excluded from the ACTIVE work queues
+// separately (agent.go) — being open and being workable are not the same thing.
+var openStates = []string{
+	string(StateTriage), string(StateNeedsInfo), string(StateInProgress), string(StateParked),
 }
+var closedStates = []string{string(StateClosed), string(StateRejected)}
 
 // ivAuthorKind maps a FieldDraft author type to IssueVault's coarse author_kind.
 func ivAuthorKind(at AuthorType) string {
@@ -338,7 +335,7 @@ func mapTicket(iv *ivTicket) *Ticket {
 		AuthorID:    iv.Author,
 		Title:       iv.Title,
 		Body:        iv.Body,
-		State:       mapIVStatus(iv.ID, iv.Status),
+		State:       mapIVState(iv.ID, iv.State),
 		Category:    iv.Category,
 		POSpam:      bool(iv.Meta.POSpam),
 		POMalicious: bool(iv.Meta.POMalicious),
@@ -429,11 +426,10 @@ func (s *issuevaultStore) CreateTicket(authorID, title, body, category string) *
 		"title":           title,
 		"body":            body,
 		"category":        emptyToNil(category),
-		"status":          string(StateTriage), // §7.2 initial state
 		"author":          authorID,
-		// NB: IssueVault's create endpoint manages `state` itself (defaults open);
-		// it rejects a client-supplied `state`. State is set on later PATCHes.
-		"meta":            map[string]any{},
+		// IssueVault's create endpoint sets the initial state itself (triage) and
+		// rejects a client-supplied state; the first real move is a later PATCH.
+		"meta": map[string]any{},
 	}
 	var iv ivTicket
 	if err := s.doJSON(http.MethodPost, "/tickets", payload, &iv); err != nil {
@@ -459,14 +455,14 @@ func (s *issuevaultStore) ListTickets(f TicketFilter) []*Ticket {
 	// scope:"project" (verified with IssueVault) and GET any ticket of the project
 	// by id — the per-state isolation is this adapter's choice, not a token
 	// boundary. So a peer installation's resolved ticket also lists AND opens.
-	mk := func(scope string, status []string) map[string]any {
+	mk := func(scope string, states []string) map[string]any {
 		// limit:500 is IssueVault's max page size (the default is 100, and >500
 		// silently clamps back to 100). Without it the list truncates at 100 —
 		// material now that the shared project holds 300+ tickets. TODO: paginate
 		// (via number/updated_since cursors) if a scope ever exceeds 500.
 		pred := map[string]any{"scope": scope, "limit": 500}
-		if status != nil {
-			pred["status"] = status
+		if states != nil {
+			pred["state"] = states
 		}
 		if f.Category != "" {
 			pred["category"] = f.Category
@@ -490,8 +486,8 @@ func (s *issuevaultStore) ListTickets(f TicketFilter) []*Ticket {
 				continue
 			}
 			// Visibility (§7.3): hide rejected tickets unless the viewer is admin
-			// or the ticket's own author. (Resolved is never rejected, so the
-			// project-wide resolved set always passes.)
+			// or the ticket's own author. (closed is never rejected, so the
+			// project-wide shared set always passes.)
 			if isRejected(t.State) && !f.ViewerIsAdmin && t.AuthorID != f.ViewerID {
 				continue
 			}
@@ -509,19 +505,20 @@ func (s *issuevaultStore) ListTickets(f TicketFilter) []*Ticket {
 		return true
 	}
 
-	resolved := []string{string(StateResolved)}
+	// `closed` is the shared, finished set — inherently shareable (migrates to
+	// main), so it is read PROJECT-WIDE; every other state stays own-only. This
+	// was `resolved` before the 0.4.x collapse; resolved folded into closed.
+	shared := []string{string(StateClosed)}
 	switch f.State {
-	case StateResolved:
-		// Only resolved requested → all installations' resolved.
-		if !run(mk("project", resolved)) {
+	case StateClosed:
+		if !run(mk("project", shared)) {
 			return nil
 		}
 	case "":
 		// All states → the viewer's OWN (every state) PLUS every installation's
-		// resolved, merged and de-duplicated by id (own resolved appears first,
-		// peer resolved is added after).
+		// closed set, merged and de-duplicated by id.
 		run(mk("own", nil))
-		run(mk("project", resolved))
+		run(mk("project", shared))
 	default:
 		// A specific non-resolved state → the viewer's own installation only.
 		if !run(mk("own", []string{string(f.State)})) {
@@ -557,10 +554,10 @@ func (s *issuevaultStore) SetTicketState(id string, to TicketState, direct bool)
 	if err := validateStateChange(cur.State, to, direct); err != nil {
 		return nil, err
 	}
-	patch := map[string]any{
-		"status": string(to),
-		"state":  derivedIVState(to),
-	}
+	// One field now. IssueVault validates the enum (unknown → 400) and manages
+	// closed_at itself on terminal states, so this adapter writes neither an
+	// open/closed derivation nor closed_at.
+	patch := map[string]any{"state": string(to)}
 	if err := s.doJSON(http.MethodPatch, "/tickets/"+id, patch, nil); err != nil {
 		return nil, err
 	}
@@ -595,9 +592,8 @@ func (s *issuevaultStore) SetPOVerdict(id string, v POVerdict) (*Ticket, error) 
 		"po_verdict_at": now,
 	}
 	patch := map[string]any{
-		"status": string(v.State),
-		"state":  derivedIVState(v.State),
-		"meta":   meta,
+		"state": string(v.State),
+		"meta":  meta,
 	}
 	if err := s.doJSON(http.MethodPatch, "/tickets/"+id, patch, nil); err != nil {
 		return nil, err
@@ -847,8 +843,8 @@ func (s *issuevaultStore) CompleteWorkOrder(ticketID, deployID string) (*WorkOrd
 
 func (s *issuevaultStore) ListAcceptedWithOpenWorkOrder() []*Ticket {
 	pred := map[string]any{
-		"scope":  "own",
-		"status": []string{string(StateAccepted)},
+		"scope": "own",
+		"state": []string{string(StateInProgress)},
 		"meta": []map[string]any{
 			{"path": "work_order", "op": "notnull"},
 			{"path": "work_order.completed_at", "op": "isnull"},

@@ -469,7 +469,7 @@ func (s *memStore) ListAcceptedWithOpenWorkOrder() []*Ticket {
 	defer s.mu.RUnlock()
 	var out []*Ticket
 	for _, t := range s.tickets {
-		if t.State != StateAccepted {
+		if t.State != StateInProgress {
 			continue
 		}
 		wo, ok := s.workOrders[t.ID]

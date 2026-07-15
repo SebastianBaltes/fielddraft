@@ -13,9 +13,9 @@ import (
 // the search predicates and returns canned tickets by scope.
 func TestIssuevaultListTicketsResolvedProjectWide(t *testing.T) {
 	type call struct {
-		scope     string
-		hasStatus bool
-		status    string
+		scope    string
+		hasState bool
+		state    string
 	}
 	var calls []call
 
@@ -28,22 +28,22 @@ func TestIssuevaultListTicketsResolvedProjectWide(t *testing.T) {
 		_ = json.NewDecoder(r.Body).Decode(&pred)
 		c := call{}
 		c.scope, _ = pred["scope"].(string)
-		if st, ok := pred["status"].([]any); ok && len(st) > 0 {
-			c.hasStatus = true
-			c.status, _ = st[0].(string)
+		if st, ok := pred["state"].([]any); ok && len(st) > 0 {
+			c.hasState = true
+			c.state, _ = st[0].(string)
 		}
 		calls = append(calls, c)
 
 		// Canned tickets per query.
 		var ivs []ivTicket
 		switch {
-		case c.scope == "own" && !c.hasStatus:
-			ivs = []ivTicket{{ID: "own-triage", Status: "triage"}, {ID: "own-res", Status: "resolved"}}
-		case c.scope == "own" && c.status == "triage":
-			ivs = []ivTicket{{ID: "own-triage", Status: "triage"}}
-		case c.scope == "project" && c.status == "resolved":
+		case c.scope == "own" && !c.hasState:
+			ivs = []ivTicket{{ID: "own-triage", State: "triage"}, {ID: "own-res", State: "closed"}}
+		case c.scope == "own" && c.state == "triage":
+			ivs = []ivTicket{{ID: "own-triage", State: "triage"}}
+		case c.scope == "project" && c.state == "closed":
 			// own-res overlaps with the own query above → must dedup by id.
-			ivs = []ivTicket{{ID: "own-res", Status: "resolved"}, {ID: "peer-res", Status: "resolved"}}
+			ivs = []ivTicket{{ID: "own-res", State: "closed"}, {ID: "peer-res", State: "closed"}}
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"tickets": ivs})
 	}))
@@ -65,18 +65,18 @@ func TestIssuevaultListTicketsResolvedProjectWide(t *testing.T) {
 	if len(got) != 3 || !got["own-triage"] || !got["own-res"] || !got["peer-res"] {
 		t.Fatalf("all-states set = %v, want {own-triage, own-res, peer-res}", got)
 	}
-	if len(calls) != 2 || calls[0].scope != "own" || calls[0].hasStatus ||
-		calls[1].scope != "project" || calls[1].status != "resolved" {
+	if len(calls) != 2 || calls[0].scope != "own" || calls[0].hasState ||
+		calls[1].scope != "project" || calls[1].state != "closed" {
 		t.Fatalf("all-states calls = %+v, want [own(no status), project(resolved)]", calls)
 	}
 
 	// (2) Resolved filter → ONLY the project-wide resolved query.
 	calls = nil
-	got = ids(s.ListTickets(TicketFilter{State: StateResolved}))
+	got = ids(s.ListTickets(TicketFilter{State: StateClosed}))
 	if len(got) != 2 || !got["own-res"] || !got["peer-res"] {
 		t.Fatalf("resolved set = %v, want {own-res, peer-res}", got)
 	}
-	if len(calls) != 1 || calls[0].scope != "project" || calls[0].status != "resolved" {
+	if len(calls) != 1 || calls[0].scope != "project" || calls[0].state != "closed" {
 		t.Fatalf("resolved calls = %+v, want [project(resolved)]", calls)
 	}
 
@@ -86,7 +86,7 @@ func TestIssuevaultListTicketsResolvedProjectWide(t *testing.T) {
 	if len(got) != 1 || !got["own-triage"] {
 		t.Fatalf("triage set = %v, want {own-triage}", got)
 	}
-	if len(calls) != 1 || calls[0].scope != "own" || calls[0].status != "triage" {
+	if len(calls) != 1 || calls[0].scope != "own" || calls[0].state != "triage" {
 		t.Fatalf("triage calls = %+v, want [own(triage)]", calls)
 	}
 }
@@ -98,7 +98,7 @@ func TestIssuevaultListTicketsResolvedProjectWide(t *testing.T) {
 // legal, so it can never be resolved. The value must survive verbatim (silently
 // healing it would hide the corruption) and be recognisable as invalid.
 func TestIssuevaultUnknownStatusIsDeadNotOpen(t *testing.T) {
-	tk := mapTicket(&ivTicket{ID: "20260609-190836-sff3", Status: "open"})
+	tk := mapTicket(&ivTicket{ID: "20260609-190836-sff3", State: "open"})
 
 	if tk.State != TicketState("open") {
 		t.Fatalf("state = %q, want the raw %q (no silent healing)", tk.State, "open")
@@ -107,8 +107,8 @@ func TestIssuevaultUnknownStatusIsDeadNotOpen(t *testing.T) {
 		t.Fatal(`"open" must NOT be a valid TicketState — it is not in the state machine`)
 	}
 	// The dead end itself: the state a finished ticket belongs in is unreachable.
-	if err := validateTransition(tk.State, StateResolved); err == nil {
-		t.Fatal("open → resolved must be rejected; repair such tickets at the source")
+	if err := validateTransition(tk.State, StateClosed); err == nil {
+		t.Fatal("open → closed must be rejected; repair such tickets at the source")
 	}
 }
 
