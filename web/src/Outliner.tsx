@@ -9,10 +9,16 @@ import {
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
   type KeyboardEvent as ReactKeyboardEvent,
   type MouseEvent,
   type PointerEvent as ReactPointerEvent,
 } from "react";
+import {
+  getFilletZoneIds,
+  setFilletZoneShown,
+  subscribeFilletZones,
+} from "./filletDebugStore";
 import { type FeatureSummary } from "./kernel";
 import { NumberInput } from "./NumberInput";
 import { baseUnitLabel, variableDisplayText } from "./variableInput";
@@ -174,6 +180,8 @@ export function Outliner({
   // switching between two features of the same kind picks up
   // each one's own values, not a shared default.
   const [dialogDraft, setDialogDraft] = useState<Record<string, unknown>>({});
+  // Debug (#350): which fillet_edge features currently show their zone overlay.
+  const filletZoneIds = useSyncExternalStore(subscribeFilletZones, getFilletZoneIds);
   // Element/body selection → related outliner rows (ticket r36f): the
   // features owning the selected B-Rep element (or contributing to the
   // highlighted body) render with the GUI selection background, so picking
@@ -1562,6 +1570,20 @@ export function Outliner({
               onChange={() => store.toggleFeatureSuppressed(selectedFeature.id)}
             />
             Reference only (transparent overlay)
+          </label>
+        </div>
+      ) : null}
+      {!sketchSession.active && selectedFeature?.kind === "fillet_edge" ? (
+        <div className="fd-fillet-zone-toggle">
+          <label>
+            <input
+              type="checkbox"
+              checked={filletZoneIds.has(selectedFeature.id)}
+              onChange={(e) =>
+                setFilletZoneShown(selectedFeature.id, e.target.checked)
+              }
+            />
+            Fillet-Zone anzeigen (Debug)
           </label>
         </div>
       ) : null}

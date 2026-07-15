@@ -1215,7 +1215,8 @@
   }
 }
 
-.fd-mesh-mode-toggle {
+.fd-mesh-mode-toggle,
+.fd-fillet-zone-toggle {
   padding: var(--space-2) var(--space-3);
   font-size: var(--fs-base);
   color: var(--color-text-muted);

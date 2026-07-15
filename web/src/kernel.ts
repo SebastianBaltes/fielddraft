@@ -114,6 +114,17 @@ export interface BRepEdge {
   faces: number[];
 }
 
+/** One resolved edge-fillet zone (debug overlay, #350). The `polyline` is the
+ *  world-space edge the fillet rounds; `maskRadius` (= `blendRadius ×
+ *  FILLET_MASK_SCALE`) is the radius of the capsule/pill the blend is masked
+ *  to — exactly the region that shapes the SDF. */
+export interface FilletZone {
+  filletId: number | null;
+  polyline: [number, number, number][];
+  maskRadius: number;
+  blendRadius: number;
+}
+
 /** One topology-octree leaf cell (debug overlay). `min`/`max` are the cell's
  *  axis-aligned bounds in the **body-local** frame; `class` is 0=Face, 1=Edge,
  *  2=Vertex. Fold to world via the parent {@link OctreeCells} placement. */
@@ -646,6 +657,13 @@ export class Kernel {
    */
   bodyBrepEdges(i: number): BRepEdge[] {
     return JSON.parse(this.inner.bodyBrepEdges(i)) as BRepEdge[];
+  }
+
+  /** Resolved edge-fillet zones (debug, #350): each active `fillet_edge`'s
+   *  masked capsule (edge polyline + `maskRadius`). Drawn by the fillet
+   *  debug overlay when the fillet detail checkbox is on. */
+  filletZones(): FilletZone[] {
+    return JSON.parse(this.inner.filletZones()) as FilletZone[];
   }
 
   /**

@@ -80,6 +80,7 @@ import { SdfPlaneOverlay } from "./SdfPlaneOverlay";
 import { MesherOverlay } from "./MesherOverlay";
 import { LichenOverlay } from "./LichenOverlay";
 import { PartAabbOverlay } from "./PartAabbOverlay";
+import { FilletZoneOverlay } from "./FilletZoneOverlay";
 import { PartAabbPanel } from "./PartAabbPanel";
 import { PREVIEW_LAYER } from "./viewportLayers";
 import { PerfHud, PerfProbe } from "./perfMonitor";
@@ -747,6 +748,7 @@ function WebGLViewport({
         <MesherOverlay />
         <LichenOverlay occluded={brepEdgeMode === "visible"} depthBias={overlayDepthBias} />
         <PartAabbOverlay />
+        <FilletZoneOverlay />
         {/* Opt-in experiment (default off): Screen-Space-CSG Stage 1
             (docs/ADAPTIVE-RENDERING-PLAN.md, Achse 3, Phase 3). Mounts an
             extra A−B composite pass over the parametric hulls. When the flag is
@@ -1732,6 +1734,7 @@ export function Viewport({
                 <MesherOverlay />
                 <LichenOverlay occluded={brepEdgeMode === "visible"} depthBias={overlayDepthBias} />
                 <PartAabbOverlay />
+                <FilletZoneOverlay />
                 {/* All B-Rep overlays hide during a suppressed gizmo drag:
                   the kernel serves no fresh weave then, and even cached
                   edges only refresh per 50ms commit — they'd trail the

@@ -30,6 +30,29 @@ impl Kernel {
         serde_json::to_string(&result).map_err(|e| JsError::new(&e.to_string()))
     }
 
+    /// Debug (#350): the resolved edge-fillet zones as a JSON array. For every
+    /// active `fillet_edge` it returns the world-space edge polyline and the
+    /// mask radius (`blend_radius × FILLET_MASK_SCALE`) — the capsule/pill the
+    /// blend is masked to, i.e. exactly what shapes the SDF. The UI draws this
+    /// on demand from a per-feature debug checkbox so a fillet's reach is
+    /// visible. Empty array when no fillets are resolved.
+    #[wasm_bindgen(js_name = filletZones)]
+    pub fn fillet_zones(&self) -> String {
+        let zones: Vec<serde_json::Value> = self
+            .edge_fillets
+            .iter()
+            .map(|f| {
+                serde_json::json!({
+                    "filletId": f.fillet_id.as_u32_or_root(),
+                    "polyline": f.mask_polyline,
+                    "maskRadius": f.mask_radius,
+                    "blendRadius": f.blend_radius,
+                })
+            })
+            .collect();
+        serde_json::to_string(&zones).unwrap_or_else(|_| "[]".to_string())
+    }
+
     /// PERSISTENT-NAMING-PLAN N4 — self-healing documents. Walks every
     /// feature call's params, finds element queries (`qFace`/`qEdge`/
     /// `qVertex`, single or in a MultiQuery list) and re-canonicalises them
