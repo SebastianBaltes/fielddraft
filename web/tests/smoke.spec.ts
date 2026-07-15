@@ -1,4 +1,37 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Download } from "@playwright/test";
+
+/**
+ * Trigger an STL download through the current UI and return the Download.
+ *
+ * The old flat `export-stl` toolbar button is gone: STL export now lives in the
+ * menu ("STL…" → `menu-export-stl`) and opens the two-step ExportDialog — click
+ * `export-mesh` to run the client mesher, then `export-save` (shown once the
+ * mesh phase is "done") fires the actual file download. Meshing runs on a
+ * worker after a cold WebGPU start, so the save button gets a generous wait.
+ */
+async function exportStlDownload(
+  page: import("@playwright/test").Page,
+): Promise<Download> {
+  await page.getByTestId("settings-menu-trigger").click();
+  // "STL…" lives in the hover-revealed "Export ▸" submenu, so hover its
+  // trigger before the item is clickable.
+  await page.getByTestId("menu-export").hover();
+  await page.getByTestId("menu-export-stl").click();
+  await expect(page.getByTestId("export-dialog")).toBeVisible();
+  await page.getByTestId("export-mesh").click();
+  const save = page.getByTestId("export-save");
+  await expect(save).toBeVisible({ timeout: 60_000 });
+  const [download] = await Promise.all([
+    page.waitForEvent("download"),
+    save.click(),
+  ]);
+  // Save leaves the dialog OPEN (in its "done" state, showing export-save, not
+  // export-mesh). Close it so a second export in the same test opens a fresh
+  // dialog instead of hanging on a export-mesh button that isn't there.
+  await page.keyboard.press("Escape");
+  await expect(page.getByTestId("export-dialog")).toBeHidden();
+  return download;
+}
 
 test.describe("FieldDraft smoke", () => {
   test.beforeEach(async ({ page }) => {
@@ -37,7 +70,12 @@ test.describe("FieldDraft smoke", () => {
       (msg) =>
         !msg.includes("WebGPU") &&
         !msg.toLowerCase().includes("webgl") &&
-        !msg.includes("THREE.Clock"),
+        !msg.includes("THREE.Clock") &&
+        // The multi-user backend answers `/api/me` with 401 when the e2e run
+        // carries no session cookie — that is the correct response, the browser
+        // just logs every failed fetch as a console error. Only 401 passes; a
+        // 5xx still fails (server broken, not merely unauthenticated).
+        !msg.includes("the server responded with a status of 401"),
     );
     expect(blocking, `unexpected console errors:\n${blocking.join("\n")}`).toEqual([]);
   });
@@ -50,27 +88,25 @@ test.describe("FieldDraft smoke", () => {
     await page.evaluate(() => { (window as unknown as { __fdStore?: { addPrimitive: (k: string) => void } }).__fdStore?.addPrimitive("sphere"); });
     await expect(page.locator('[data-feature-count="1"]')).toBeAttached();
     await expect(page.getByTestId("feature-row-1")).toBeVisible();
-    await expect(page.getByTestId("feature-row-1")).toHaveAttribute(
-      "data-feature-op",
-      "union",
-    );
 
-    // Switch the next-add op to Difference and add a box.
+    // Switch the next-add op to Difference and add a box. (The per-row op
+    // toggle + `data-feature-op` attribute were removed in 68dc07d — Boolean is
+    // its own feature now — so we no longer assert the op on the row; the flow
+    // still exercises setNextOp + a second add.)
     await page.evaluate(() => { (window as unknown as { __fdStore?: { setNextOp: (op: number) => void } }).__fdStore?.setNextOp(1); });
     await page.evaluate(() => { (window as unknown as { __fdStore?: { addPrimitive: (k: string) => void } }).__fdStore?.addPrimitive("box"); });
     await expect(page.locator('[data-feature-count="2"]')).toBeAttached();
-    await expect(page.getByTestId("feature-row-2")).toHaveAttribute(
-      "data-feature-op",
-      "difference",
-    );
+    await expect(page.getByTestId("feature-row-2")).toBeVisible();
 
-    // Undo removes the box.
-    await page.getByTestId("undo").click();
+    // Undo removes the box. The flat `undo`/`redo` toolbar buttons are gone —
+    // undo/redo live in the menu now, but the keyboard shortcuts are the
+    // canonical path (keyboardCommands.ts): Ctrl+Z / Ctrl+Shift+Z.
+    await page.keyboard.press("Control+z");
     await expect(page.locator('[data-feature-count="1"]')).toBeAttached();
     await expect(page.getByTestId("feature-row-2")).toHaveCount(0);
 
     // Redo brings it back.
-    await page.getByTestId("redo").click();
+    await page.keyboard.press("Control+Shift+z");
     await expect(page.locator('[data-feature-count="2"]')).toBeAttached();
     await expect(page.getByTestId("feature-row-2")).toBeVisible();
 
@@ -91,25 +127,11 @@ test.describe("FieldDraft smoke", () => {
     await expect(page.locator('[data-feature-count="1"]')).toBeAttached();
   });
 
-  test("M2: per-row op cycle button advances union → difference → intersect", async ({
-    page,
-  }) => {
-    await page.goto("/");
-    await page.waitForTimeout(400);
-    await page.evaluate(() => { (window as unknown as { __fdStore?: { addPrimitive: (k: string) => void } }).__fdStore?.addPrimitive("sphere"); });
-
-    const row = page.getByTestId("feature-row-1");
-    await expect(row).toHaveAttribute("data-feature-op", "union");
-
-    // Click the op button (the small "+" / "−" / "∩" inside the row).
-    const opButton = row.locator(".op");
-    await opButton.click();
-    await expect(row).toHaveAttribute("data-feature-op", "difference");
-    await opButton.click();
-    await expect(row).toHaveAttribute("data-feature-op", "intersect");
-    await opButton.click();
-    await expect(row).toHaveAttribute("data-feature-op", "union");
-  });
+  // (Removed) "M2: per-row op cycle button advances union → difference →
+  // intersect": the per-feature op toggle it drove was deleted in 68dc07d
+  // ("remove per-feature op toggles") — Boolean is a dedicated feature now, so
+  // there is no `.op` button or `data-feature-op` attribute on a row to cycle.
+  // The Boolean feature has its own coverage; nothing here to modernise.
 
   test("K1: mesh renderer shows the dual-contoured two-primitive subtraction", async ({
     page,
@@ -215,30 +237,19 @@ test.describe("FieldDraft smoke", () => {
     ).toBeGreaterThan(0);
   });
 
-  test("K7.2.1: Export STL button downloads a non-empty binary file", async ({ page }) => {
+  test("K7.2.1: Export STL downloads a non-empty binary file", async ({ page }) => {
     await page.goto("/");
     await page.waitForTimeout(400);
 
-    // Export button is disabled on the empty document.
-    const button = page.getByTestId("export-stl");
-    await expect(button).toBeDisabled();
-
-    // Add a box so the exporter has one body to serialise.
+    // Add a box so the exporter has one body to serialise. (The old
+    // "disabled on an empty document" check went away with the flat toolbar
+    // button — export is a menu → dialog now; the dialog just meshes whatever
+    // bodies exist.)
     await page.evaluate(() => { (window as unknown as { __fdStore?: { addPrimitive: (k: string) => void } }).__fdStore?.addPrimitive("box"); });
     await expect(page.locator('[data-feature-count="1"]')).toBeAttached();
-    await expect(button).toBeEnabled();
 
-    // The mesher runs on a worker so the kernel's own body
-    // cache stays empty until the exporter forces a sync
-    // rebuild (which `exportStlBinary` does internally, see
-    // K7.2 kernel side). No client-side wait needed.
-
-    // Kick off the download and wait for Playwright to notice
-    // the file save event.
-    const [download] = await Promise.all([
-      page.waitForEvent("download"),
-      button.click(),
-    ]);
+    // Run the export through the menu → dialog flow and wait for the download.
+    const download = await exportStlDownload(page);
     expect(download.suggestedFilename()).toBe("fielddraft.stl");
 
     // Peek the file size via Playwright's download path helper —
@@ -345,10 +356,7 @@ test.describe("FieldDraft smoke", () => {
 
     // Export STL — a patterned scene should produce a
     // meaningfully larger mesh than the single-box case.
-    const [download] = await Promise.all([
-      page.waitForEvent("download"),
-      page.getByTestId("export-stl").click(),
-    ]);
+    const download = await exportStlDownload(page);
     const path = await download.path();
     expect(path).not.toBeNull();
     const fs = await import("node:fs/promises");
@@ -399,10 +407,7 @@ test.describe("FieldDraft smoke", () => {
     // Export STL — six boxes distributed around a ring
     // produce a mesh strictly larger than a single box at
     // the default DC resolution.
-    const [download] = await Promise.all([
-      page.waitForEvent("download"),
-      page.getByTestId("export-stl").click(),
-    ]);
+    const download = await exportStlDownload(page);
     const path = await download.path();
     expect(path).not.toBeNull();
     const fs = await import("node:fs/promises");
@@ -449,10 +454,7 @@ test.describe("FieldDraft smoke", () => {
 
     // Export STL — source + one mirrored clone is strictly
     // larger than the single-box case.
-    const [download] = await Promise.all([
-      page.waitForEvent("download"),
-      page.getByTestId("export-stl").click(),
-    ]);
+    const download = await exportStlDownload(page);
     const path = await download.path();
     expect(path).not.toBeNull();
     const fs = await import("node:fs/promises");
@@ -543,6 +545,13 @@ test.describe("FieldDraft smoke", () => {
       if (!store) throw new Error("__fdStore not exposed");
       store.enterSketch("qCreatedBy(origin_plane_xy)");
       store.pushSketchSubCalls([
+        // A vertical line on x=0: the revolve AXIS. Since ticket ni56 a revolve
+        // needs an explicit axis (no implicit local-Y fallback), so a bare
+        // rectangle revolved with no axis produces NO body (empty 84-byte STL).
+        {
+          type: "sketch_line",
+          params: { start: [0, -10], end: [0, 10] },
+        },
         {
           type: "sketch_rectangle",
           params: {
@@ -559,6 +568,39 @@ test.describe("FieldDraft smoke", () => {
     await page.waitForTimeout(100);
     await expect(revolveBtn).toBeEnabled();
     await revolveBtn.click();
+    await page.waitForTimeout(200);
+
+    // The revolve was created with `profiles` but no axis (the UI's query
+    // picker would fill it). Set it to the x=0 axis line. The sketch line's
+    // solver entity id isn't exposed directly, so probe the low ids and keep
+    // the one that yields a non-empty body — the same tactic the vase parity
+    // fixture uses.
+    const revolveId = await page.evaluate(() => {
+      const kernel = (window as unknown as { __fdKernel?: { listFeatures: () => Array<{ id: number; kind: string }> } }).__fdKernel;
+      return kernel?.listFeatures().find((f) => f.kind === "revolve")?.id ?? null;
+    });
+    expect(revolveId).not.toBeNull();
+    const axisOk = await page.evaluate(
+      ({ sid, rid }) => {
+        const w = window as unknown as {
+          __fdKernel?: {
+            getFeatureCallParams: (id: number) => Record<string, unknown>;
+            replaceFeatureCallParams: (id: number, p: Record<string, unknown>) => void;
+            bodyCount: () => number;
+          };
+        };
+        const kernel = w.__fdKernel;
+        if (!kernel) return false;
+        const base = kernel.getFeatureCallParams(rid);
+        for (let entity = 1; entity <= 24; entity++) {
+          kernel.replaceFeatureCallParams(rid, { ...base, axis: `qSketchLine(${sid}, ${entity})` });
+          if (kernel.bodyCount() > 0) return true;
+        }
+        return false;
+      },
+      { sid: sketchId as number, rid: revolveId as number },
+    );
+    expect(axisOk, "no axis entity id yielded a revolved body").toBe(true);
     await page.waitForTimeout(200);
 
     const after = await page.evaluate(() => {
@@ -578,10 +620,7 @@ test.describe("FieldDraft smoke", () => {
     // Export STL — a revolved 4 mm tube with 20 mm height
     // produces well over 1 KB of triangles at the default DC
     // resolution.
-    const [download] = await Promise.all([
-      page.waitForEvent("download"),
-      page.getByTestId("export-stl").click(),
-    ]);
+    const download = await exportStlDownload(page);
     const path = await download.path();
     expect(path).not.toBeNull();
     const fs = await import("node:fs/promises");
@@ -833,15 +872,13 @@ test.describe("FieldDraft smoke", () => {
     await page.evaluate(() => { (window as unknown as { __fdStore?: { addHole: () => void } }).__fdStore?.addHole(); });
     await expect(page.locator('[data-feature-count="2"]')).toBeAttached();
 
-    // The hole row advertises its kind as `hole`, is op=difference,
-    // and carries diameter/depth in its wire-form params.
+    // The hole row advertises its kind as `hole` and carries diameter/depth in
+    // its wire-form params. (The `data-feature-op` attribute went away in
+    // 68dc07d; a hole is inherently a subtraction, verified via its params /
+    // the exported geometry below, not a per-row op badge.)
     await expect(page.getByTestId("feature-row-2")).toHaveAttribute(
       "data-feature-kind",
       "hole",
-    );
-    await expect(page.getByTestId("feature-row-2")).toHaveAttribute(
-      "data-feature-op",
-      "difference",
     );
 
     const params = await page.evaluate(() => {
@@ -861,10 +898,7 @@ test.describe("FieldDraft smoke", () => {
     expect(depth?.value).toBeCloseTo(40, 5);
 
     // Export STL — box minus hole produces a valid mesh.
-    const [download] = await Promise.all([
-      page.waitForEvent("download"),
-      page.getByTestId("export-stl").click(),
-    ]);
+    const download = await exportStlDownload(page);
     const path = await download.path();
     expect(path).not.toBeNull();
     const fs = await import("node:fs/promises");
@@ -901,6 +935,8 @@ test.describe("FieldDraft smoke", () => {
     await expect(page.getByTestId("variable-row-depth")).toBeVisible();
     await expect(page.getByTestId("variable-row-width")).toBeVisible();
 
+    // listVariables() now carries `kind` + `formula` per entry (ticket 8ar9);
+    // project to {name, value} so these assertions test what they mean to.
     const kernelVars = async () =>
       page.evaluate(() => {
         const kernel = (
@@ -910,7 +946,9 @@ test.describe("FieldDraft smoke", () => {
             };
           }
         ).__fdKernel;
-        return kernel ? kernel.listVariables() : null;
+        return kernel
+          ? kernel.listVariables().map((v) => ({ name: v.name, value: v.value }))
+          : null;
       });
     expect(await kernelVars()).toEqual([
       { name: "depth", value: 30 },
@@ -1015,10 +1053,7 @@ test.describe("FieldDraft smoke", () => {
     // left). Either direction proves the formula got
     // re-resolved.
     const exportStlSize = async () => {
-      const [download] = await Promise.all([
-        page.waitForEvent("download"),
-        page.getByTestId("export-stl").click(),
-      ]);
+      const download = await exportStlDownload(page);
       const p = await download.path();
       const fs = await import("node:fs/promises");
       return (await fs.stat(p!)).size;
@@ -1063,16 +1098,15 @@ test.describe("FieldDraft smoke", () => {
     });
     await page.waitForTimeout(100);
 
-    // Find the Diameter field's "ƒx" toggle and click it —
-    // switches from number to formula text input.
-    const fxButtons = page.locator(".fd-feature-dialog .formula-toggle");
-    await fxButtons.first().click();
-    await page.waitForTimeout(50);
-
-    // The formula input should now be visible; type a formula.
-    const formulaInput = page.locator(".fd-feature-dialog .input.is-formula").first();
-    await expect(formulaInput).toBeVisible();
-    await formulaInput.fill("=d * 2");
+    // There is no "ƒx" toggle any more (ticket nlij): a scalar field doubles as
+    // its own formula input — you just type `=…` into the same box and the
+    // field reads literal-vs-formula from the text (looksLikeFormula). So target
+    // the Diameter field and type the formula straight in; the input then
+    // carries the `is-formula` class.
+    const diameterField = page.getByLabel(/diameter/i).first();
+    await diameterField.fill("=d * 2");
+    await diameterField.press("Enter");
+    await expect(diameterField).toHaveClass(/is-formula/);
     await page.waitForTimeout(200);
 
     // The wire-form params should carry the formula string.
@@ -1138,10 +1172,7 @@ test.describe("FieldDraft smoke", () => {
     });
     await page.waitForTimeout(200);
 
-    const [download] = await Promise.all([
-      page.waitForEvent("download"),
-      page.getByTestId("export-stl").click(),
-    ]);
+    const download = await exportStlDownload(page);
     const path = await download.path();
     expect(path).not.toBeNull();
     const fs = await import("node:fs/promises");
