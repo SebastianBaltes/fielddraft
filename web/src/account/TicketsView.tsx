@@ -36,8 +36,8 @@ import { linkify } from "./linkify";
 import {
   commentVisible,
   formatDateTime,
-  personaLabel,
-  personaTag,
+  commentAuthorLabel,
+  commentAuthorTag,
   settableStates,
   stateBucket,
   stateLabel,
@@ -859,12 +859,12 @@ function Thread({
               data-testid={`comment-${c.id}`}
             >
               <span className="persona-tag" aria-hidden="true">
-                {personaTag(c.author_type)}
+                {commentAuthorTag(c)}
               </span>
               <div className="comment-body">
                 <div className="comment-head">
                   <span className="persona-name">
-                    {personaLabel(c.author_type)}
+                    {commentAuthorLabel(c)}
                   </span>
                   {c.internal && (
                     <span className="internal-tag" title="Admin-only dev note">

@@ -179,12 +179,17 @@ type TicketComment struct {
 	ID         string     `json:"id"`
 	TicketID   string     `json:"ticket_id"`
 	AuthorType AuthorType `json:"author_type"`
-	AuthorID   *string    `json:"author_id"` // nil for po/dev/system
-	Internal   bool       `json:"internal"`  // dev notes: admin only, never user
-	Body       string     `json:"body"`
-	CreatedAt  time.Time  `json:"created_at"`
-	Withheld   bool       `json:"withheld"`    // leak-filter hold (§4.2)
-	POReviewed bool       `json:"po_reviewed"` // PO post-moderation done (§4.2/§8)
+	AuthorID   *string    `json:"author_id"` // nil for po/dev/automated-system
+	// AuthorName is the human author's display name, resolved from AuthorID at
+	// serialization (#359). Present for user comments and for state-change audits
+	// a human triggered — so the thread shows "Sebastian" instead of "SYS". Empty
+	// for automated/system events (no human actor). Never persisted.
+	AuthorName string    `json:"author_name,omitempty"`
+	Internal   bool      `json:"internal"` // dev notes: admin only, never user
+	Body       string    `json:"body"`
+	CreatedAt  time.Time `json:"created_at"`
+	Withheld   bool      `json:"withheld"`    // leak-filter hold (§4.2)
+	POReviewed bool      `json:"po_reviewed"` // PO post-moderation done (§4.2/§8)
 }
 
 // TicketArtifact is a content-addressed repro blob attached to a ticket.

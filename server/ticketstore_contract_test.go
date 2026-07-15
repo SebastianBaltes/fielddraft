@@ -211,6 +211,23 @@ func testTicketStoreContract(t *testing.T, newFixture func(t *testing.T) ticketS
 		if !cs[0].POReviewed {
 			t.Fatal("system audit comment must be po_reviewed")
 		}
+		// Unattributed move (no actor) carries no human id (#359).
+		if cs[0].AuthorID != nil {
+			t.Fatalf("automated audit should have no actor: %+v", cs[0])
+		}
+
+		// #359: a move attributed to a human tags the audit with that actor id,
+		// while staying a system/audit line — so the thread can show their name.
+		// On a fresh ticket, so the illegal-move checks below still see `tk` in
+		// in_progress.
+		tk2 := mkTicket(t, f, author, "t2", "b2", "")
+		if _, err := f.store.SetTicketState(tk2.ID, StateInProgress, false, author); err != nil {
+			t.Fatalf("attributed transition: %v", err)
+		}
+		a2 := f.store.ListComments(tk2.ID)
+		if len(a2) != 1 || a2[0].AuthorType != AuthorSystem || a2[0].AuthorID == nil || *a2[0].AuthorID != author {
+			t.Fatalf("attributed audit should carry actor %q: %+v", author, a2)
+		}
 
 		// Illegal move / unknown state / no-op / missing ticket.
 		if _, err := f.store.SetTicketState(tk.ID, StateTriage, false); err != errInvalidTransition {

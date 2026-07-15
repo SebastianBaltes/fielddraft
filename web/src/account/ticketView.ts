@@ -126,6 +126,29 @@ export function personaTag(author: AuthorType): string {
   }
 }
 
+type AuthoredComment = Pick<TicketComment, "author_type" | "author_name">;
+
+/** Initials for an avatar tag: "Sebastian Baltes" → "SB", "sorokan" → "SO". */
+function initials(name: string): string {
+  const parts = name.split(/\s+/).filter(Boolean);
+  if (parts.length === 0) return "?";
+  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+  return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+}
+
+/** The name shown for a comment's author (#359): the resolved human name when
+ *  present, else the generic persona label ("User" / "System" / …). */
+export function commentAuthorLabel(c: AuthoredComment): string {
+  return c.author_name?.trim() || personaLabel(c.author_type);
+}
+
+/** The avatar tag for a comment (#359): initials of the human name when present,
+ *  else the persona tag (U / PO / DEV / SYS). */
+export function commentAuthorTag(c: AuthoredComment): string {
+  const name = c.author_name?.trim();
+  return name ? initials(name) : personaTag(c.author_type);
+}
+
 /** Whether a comment may render at all for the given viewer. The backend
  *  already filters internal `dev` notes + withheld comments for non-admins, but
  *  we guard again in the UI as defense-in-depth (§7.4). */

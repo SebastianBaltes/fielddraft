@@ -138,6 +138,10 @@ export interface TicketComment {
   ticket_id: string;
   author_type: AuthorType;
   author_id: string | null;
+  /** The human author's display name (#359). Set for user comments and for
+   *  state-change audits a human triggered; absent for automated system events.
+   *  When present the thread shows it instead of the bare persona label. */
+  author_name?: string;
   internal: boolean;
   body: string;
   created_at: string;

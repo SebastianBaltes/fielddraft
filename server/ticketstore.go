@@ -46,7 +46,9 @@ type TicketStore interface {
 	UpdateTicket(id, title, body string) *Ticket // author edit of title/body
 	// SetTicketState moves the ticket. `direct` is the admin override: it skips
 	// the §7.2 transition graph (any known state from any state, ticket #345).
-	SetTicketState(id string, to TicketState, direct bool) (*Ticket, error)
+	// Optional actorID is the human who triggered the move (#359) — it attributes
+	// the audit comment by name; omit it for automated/system transitions.
+	SetTicketState(id string, to TicketState, direct bool, actorID ...string) (*Ticket, error)
 	SetTicketCategory(id, category string) *Ticket // PO verdict classification (§8.3)
 	SetPOVerdict(id string, v POVerdict) (*Ticket, error)
 	DeleteTicket(id string) bool

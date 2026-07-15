@@ -12,6 +12,9 @@ Format, eine Zeile je Eintrag:
 kind = feat | fix | perf. scope und #tickets sind optional. Folgezeilen, die
 eingerückt sind, gehören zum Text davor (Umbruch erlaubt).
 
+## 0.6.600
+- feat(tickets) #359: In der Ticket-Diskussion steht jetzt der Name der Person, die einen Statuswechsel ausgelöst oder einen Kommentar geschrieben hat — statt des generischen „System" bzw. „User". Rein automatische Vorgänge bleiben „System".
+
 ## 0.6.599
 - fix(assistant) #360: Der FieldDraft-Assistent ist besser lesbar — alle Texte im Dialog sind jetzt mindestens 1rem groß und der graue Text hat mehr Kontrast. Der „Was ist in diesem Dokument?"-Vorschlag ist weg; „Grundplatte bauen" und „Wie skizziere ich?" bleiben.
 

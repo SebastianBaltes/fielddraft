@@ -268,11 +268,19 @@ func (s *issuevaultStore) getTicketRaw(id string) *ivTicket {
 }
 
 // postSystemComment appends a `system` audit comment (state/verdict trail).
-func (s *issuevaultStore) postSystemComment(ticketID, body string) {
+// postSystemComment appends a `system` audit comment. actorID is the human who
+// triggered it, if any (#359): it rides along in the `author` field so the audit
+// can be attributed by name, while author_kind/author_type stay `system` (the
+// line is still an audit event, not a user post). "" = an automated transition
+// with no human actor.
+func (s *issuevaultStore) postSystemComment(ticketID, body, actorID string) {
 	payload := map[string]any{
 		"author_kind": "system",
 		"body":        body,
 		"meta":        map[string]any{"author_type": string(AuthorSystem)},
+	}
+	if actorID != "" {
+		payload["author"] = actorID
 	}
 	if err := s.doJSON(http.MethodPost, "/tickets/"+ticketID+"/comments", payload, nil); err != nil {
 		log.Printf("issuevault: system comment on %s: %v", ticketID, err)
@@ -326,6 +334,16 @@ func emptyToNil(s string) *string {
 	return &s
 }
 
+// firstActor picks the human actor id from a variadic SetTicketState call, or ""
+// when none was supplied — an automated/system transition with no human behind it
+// (#359).
+func firstActor(actorID []string) string {
+	if len(actorID) > 0 {
+		return actorID[0]
+	}
+	return ""
+}
+
 func mapTicket(iv *ivTicket) *Ticket {
 	return &Ticket{
 		ID: iv.ID,
@@ -371,8 +389,11 @@ func mapComment(ticketID string, c *ivComment) *TicketComment {
 		Withheld:   bool(c.Meta.Withheld),
 		POReviewed: bool(c.Meta.POReviewed),
 	}
-	// AuthorID is meaningful only for user comments; po/dev/system carry none.
-	if tc.AuthorType == AuthorUser {
+	// AuthorID identifies the human behind a comment: a user comment, or a
+	// state-change audit a user triggered (#359 — the audit is author_type=system
+	// but still carries the actor's id so the thread can show their name). PO/dev
+	// and automated system events carry none.
+	if tc.AuthorType == AuthorUser || tc.AuthorType == AuthorSystem {
 		tc.AuthorID = emptyToNil(c.Author)
 	}
 	return tc
@@ -547,7 +568,7 @@ func (s *issuevaultStore) UpdateTicket(id, title, body string) *Ticket {
 	return mapTicket(&iv)
 }
 
-func (s *issuevaultStore) SetTicketState(id string, to TicketState, direct bool) (*Ticket, error) {
+func (s *issuevaultStore) SetTicketState(id string, to TicketState, direct bool, actorID ...string) (*Ticket, error) {
 	cur := s.GetTicket(id)
 	if cur == nil {
 		return nil, errTicketMissing
@@ -562,7 +583,7 @@ func (s *issuevaultStore) SetTicketState(id string, to TicketState, direct bool)
 	if err := s.doJSON(http.MethodPatch, "/tickets/"+id, patch, nil); err != nil {
 		return nil, err
 	}
-	s.postSystemComment(id, "state: "+string(cur.State)+" → "+string(to))
+	s.postSystemComment(id, "state: "+string(cur.State)+" → "+string(to), firstActor(actorID))
 	return s.GetTicket(id), nil
 }
 
@@ -599,7 +620,7 @@ func (s *issuevaultStore) SetPOVerdict(id string, v POVerdict) (*Ticket, error) 
 	if err := s.doJSON(http.MethodPatch, "/tickets/"+id, patch, nil); err != nil {
 		return nil, err
 	}
-	s.postSystemComment(id, "po verdict: "+string(cur.State)+" → "+string(v.State))
+	s.postSystemComment(id, "po verdict: "+string(cur.State)+" → "+string(v.State), "")
 	return s.GetTicket(id), nil
 }
 

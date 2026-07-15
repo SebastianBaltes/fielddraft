@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import type { TicketComment, TicketState } from "../api/platform";
 import {
   categoryLabel,
+  commentAuthorLabel,
+  commentAuthorTag,
   commentVisible,
   personaLabel,
   personaTag,
@@ -60,6 +62,24 @@ describe("ticketView helpers", () => {
     expect(personaLabel("system")).toBe("System");
     expect(personaTag("dev")).toBe("DEV");
     expect(personaTag("user")).toBe("U");
+  });
+
+  it("shows the human name over the persona when author_name is set (#359)", () => {
+    // A state-change audit a user triggered: author_type=system, but named.
+    const audit = comment({ author_type: "system", author_name: "Sebastian Baltes" });
+    expect(commentAuthorLabel(audit)).toBe("Sebastian Baltes");
+    expect(commentAuthorTag(audit)).toBe("SB");
+
+    // A user comment with the poster's name.
+    const mine = comment({ author_type: "user", author_name: "sorokan" });
+    expect(commentAuthorLabel(mine)).toBe("sorokan");
+    expect(commentAuthorTag(mine)).toBe("SO");
+  });
+
+  it("falls back to the persona for automated events with no name (#359)", () => {
+    const sys = comment({ author_type: "system", author_name: undefined });
+    expect(commentAuthorLabel(sys)).toBe("System");
+    expect(commentAuthorTag(sys)).toBe("SYS");
   });
 
   it("labels categories with an Uncategorized fallback", () => {
