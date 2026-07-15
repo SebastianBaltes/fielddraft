@@ -869,16 +869,29 @@ function Thread({
   >([]);
   const [attachError, setAttachError] = useState("");
   const fileInputRef = useRef<HTMLInputElement>(null);
+  // Fallback-name counter for clipboard images, which usually arrive with no
+  // (or a generic) filename — mirrors ReportDialog's pasteCounter. A plain
+  // counter (not Date.now()/Math.random()) keeps the naming deterministic
+  // for tests.
+  const pasteCounter = useRef(0);
 
   // Defense-in-depth: the backend already filters internal/withheld comments
   // for non-admins, but never render one we shouldn't.
   const visible = comments.filter((c) => commentVisible(c, isAdmin));
 
+  // Shared by the paperclip picker AND clipboard paste (#372, #381) — both
+  // just hand this a list of Files.
   const addFiles = async (files: Iterable<File>) => {
     const errors: string[] = [];
     const added: { file: File; attachment: TicketAttachment }[] = [];
     for (const file of files) {
-      const result = await fileToAttachment(file, file.name || "attachment");
+      let fallbackName = file.name;
+      if (!fallbackName) {
+        pasteCounter.current += 1;
+        const ext = file.type === "image/png" ? ".png" : "";
+        fallbackName = `pasted-${pasteCounter.current}${ext}`;
+      }
+      const result = await fileToAttachment(file, fallbackName);
       if ("error" in result) errors.push(result.error);
       else added.push({ file, attachment: result });
     }
@@ -888,6 +901,25 @@ function Thread({
 
   const removeFile = (index: number) => {
     setPendingFiles((prev) => prev.filter((_, i) => i !== index));
+  };
+
+  // #381: Ctrl+V an image into the comment box attaches it, same as picking
+  // it via the paperclip. Only clipboard payloads that actually carry an
+  // image are intercepted — a plain text paste (or a paste of files that
+  // happen not to be images) must keep the browser's default behaviour.
+  const onCommentPaste = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    const items = e.clipboardData?.items;
+    if (!items) return;
+    const images: File[] = [];
+    for (const item of Array.from(items)) {
+      if (item.kind === "file" && item.type.startsWith("image/")) {
+        const file = item.getAsFile();
+        if (file) images.push(file);
+      }
+    }
+    if (images.length === 0) return;
+    e.preventDefault();
+    void addFiles(images);
   };
 
   const post = async () => {
@@ -971,6 +1003,7 @@ function Thread({
             placeholder="Add a comment…"
             disabled={pending}
             onChange={(e) => setDraft(e.target.value)}
+            onPaste={onCommentPaste}
           />
           <div className="attach-row">
             <button

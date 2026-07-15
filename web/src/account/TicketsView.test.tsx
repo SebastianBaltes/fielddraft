@@ -368,6 +368,60 @@ describe("TicketsView — detail", () => {
     expect(byTestId("comment-attachments")).toBeNull();
   });
 
+  it("pastes a clipboard image into the comment box as an attachment (#381)", async () => {
+    vi.spyOn(platform.platformApi, "getTicket").mockResolvedValue(detail());
+    mount({ ticketId: "t1" });
+    await flush();
+
+    const input = byTestId<HTMLTextAreaElement>("comment-input")!;
+    const image = new File(["fake-png-bytes"], "image.png", {
+      type: "image/png",
+    });
+    // jsdom doesn't implement DataTransfer/DataTransferItem — mock the shape
+    // TicketsView reads (clipboardData.items with kind/type/getAsFile), same
+    // approach as ReportDialog.test.tsx's paste test.
+    const pasteEvent = new Event("paste", {
+      bubbles: true,
+      cancelable: true,
+    }) as ClipboardEvent;
+    Object.defineProperty(pasteEvent, "clipboardData", {
+      value: { items: [{ kind: "file", type: "image/png", getAsFile: () => image }] },
+    });
+    act(() => {
+      input.dispatchEvent(pasteEvent);
+    });
+    await flushTasks();
+
+    const thumbs = byTestId("comment-attachments");
+    expect(thumbs).toBeTruthy();
+    expect(thumbs!.textContent).toContain("image.png");
+    // A paste that actually carried an image is intercepted.
+    expect(pasteEvent.defaultPrevented).toBe(true);
+  });
+
+  it("does not attach anything on a plain text paste (#381)", async () => {
+    vi.spyOn(platform.platformApi, "getTicket").mockResolvedValue(detail());
+    mount({ ticketId: "t1" });
+    await flush();
+
+    const input = byTestId<HTMLTextAreaElement>("comment-input")!;
+    const pasteEvent = new Event("paste", {
+      bubbles: true,
+      cancelable: true,
+    }) as ClipboardEvent;
+    Object.defineProperty(pasteEvent, "clipboardData", {
+      value: { items: [{ kind: "string", type: "text/plain", getAsFile: () => null }] },
+    });
+    act(() => {
+      input.dispatchEvent(pasteEvent);
+    });
+    await flushTasks();
+
+    expect(byTestId("comment-attachments")).toBeNull();
+    // Text pastes must keep the browser's default behaviour.
+    expect(pasteEvent.defaultPrevented).toBe(false);
+  });
+
   it("loads the .fdraft artifact via onLoadFdraft", async () => {
     vi.spyOn(platform.platformApi, "getTicket").mockResolvedValue(
       detail({

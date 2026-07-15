@@ -12,6 +12,9 @@ Format, eine Zeile je Eintrag:
 kind = feat | fix | perf. scope und #tickets sind optional. Folgezeilen, die
 eingerückt sind, gehören zum Text davor (Umbruch erlaubt).
 
+## 0.13.0
+- feat(tickets) #381: Bild aus der Zwischenablage per Strg+V direkt in die Kommentar-Eingabe eines Tickets einfügen — landet als Anhang-Thumb, genau wie über den Büroklammern-Button (#372).
+
 ## 0.12.3
 - fix(tickets) #377: Die Version-Spalte in der Ticket-Liste blieb leer, obwohl Tickets längst eine Version trugen — der Go-Server ließ das Feld in der Listen-Zusammenfassung (`ticketSummary`) weg. Die Version wird jetzt in jeder Listen-Antwort mitgeliefert.
 
