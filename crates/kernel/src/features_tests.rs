@@ -6988,52 +6988,55 @@ fn ticket_382_filleted_field_lipschitz_probe() {
     let hi = [bb.max[0]+ext[0]*0.5, bb.max[1]+ext[1]*0.5, bb.max[2]+ext[2]*0.5];
     let center = [(bb.min[0]+bb.max[0])*0.5,(bb.min[1]+bb.max[1])*0.5,(bb.min[2]+bb.max[2])*0.5];
 
-    // A fan of rays from the +Z / -X hemisphere (where the fillet lives) through
-    // the body, dense enough that the step is well under the blend radius.
-    let mut worst_f = 0.0f32; let mut worst_f_at = [0.0;3];
+    let _ = center;
+    // FULL 3-D gradient magnitude via central differences on a DENSE grid, with
+    // a small eps (2e-3 mm) — sphere-tracing needs |∇f| ≤ 1 in EVERY direction,
+    // not just along one ray. The first #382 fix passed a coarse along-ray probe
+    // (which only sees the directional derivative ∂f/∂dir ≤ |∇f| and reported
+    // 1.0) yet the render was still degenerate: the round smin's gradient is √2
+    // PERPENDICULAR to the fillet surface, which an axial ray misses. This grid
+    // catches it. Also tracks the worst value on the zero-set (|f| < 0.5 mm),
+    // which is exactly where the sphere-trace terminates.
+    let eps = 2e-3f32;
+    let gradmag = |ops: &[f32], p: [f32; 3]| {
+        let d = |dx: f32, dy: f32, dz: f32| eval_opcodes(ops, [p[0]+dx, p[1]+dy, p[2]+dz]);
+        let gx = (d(eps,0.0,0.0) - d(-eps,0.0,0.0)) / (2.0*eps);
+        let gy = (d(0.0,eps,0.0) - d(0.0,-eps,0.0)) / (2.0*eps);
+        let gz = (d(0.0,0.0,eps) - d(0.0,0.0,-eps)) / (2.0*eps);
+        (gx*gx+gy*gy+gz*gz).sqrt()
+    };
+    let mut worst_f = 0.0f32; let mut worst_f_at = [0.0;3]; let mut worst_f_val = 0.0f32;
     let mut worst_h = 0.0f32;
-    let mut n_jump_f = 0usize; let mut n_jump_h = 0usize;
-    let n = 24i32; let steps = 2000i32;
-    for ax in 0..=n { for ay in 0..=n {
-        let sx = lo[0] + (hi[0]-lo[0])*(ax as f32/n as f32);
-        let sy = lo[1] + (hi[1]-lo[1])*(ay as f32/n as f32);
-        let start = [sx, sy, hi[2] + ext[2]*0.5];
-        let dir = [center[0]-start[0], center[1]-start[1], center[2]-start[2]];
-        let ds = (dir[0]*dir[0]+dir[1]*dir[1]+dir[2]*dir[2]).sqrt() / steps as f32;
-        let mut prev_f = eval_opcodes(&cf.opcodes, start);
-        let mut prev_h = eval_opcodes(&ch.opcodes, start);
-        for s in 1..=steps {
-            let f = s as f32/steps as f32;
-            let p = [start[0]+dir[0]*f, start[1]+dir[1]*f, start[2]+dir[2]*f];
-            let df = eval_opcodes(&cf.opcodes, p);
-            let dh = eval_opcodes(&ch.opcodes, p);
-            let rf = (df-prev_f).abs()/ds;
-            let rh = (dh-prev_h).abs()/ds;
-            if rf > worst_f { worst_f = rf; worst_f_at = p; }
-            if rh > worst_h { worst_h = rh; }
-            // A "jump" = local slope > 2× the ideal Lipschitz bound of 1.
-            if rf > 2.0 { n_jump_f += 1; }
-            if rh > 2.0 { n_jump_h += 1; }
-            prev_f = df; prev_h = dh;
+    let mut worst_surf = 0.0f32; let mut worst_surf_at = [0.0;3];
+    let mut n_over_105 = 0usize;
+    let n = 90i32;
+    for ix in 0..=n { for iy in 0..=n { for iz in 0..=n {
+        let t = |i: i32, l: f32, h: f32| l + (h-l)*(i as f32/n as f32);
+        let p = [t(ix,lo[0],hi[0]), t(iy,lo[1],hi[1]), t(iz,lo[2],hi[2])];
+        let gf = gradmag(&cf.opcodes, p);
+        let gh = gradmag(&ch.opcodes, p);
+        if gf > worst_f { worst_f = gf; worst_f_at = p; worst_f_val = eval_opcodes(&cf.opcodes, p); }
+        if gh > worst_h { worst_h = gh; }
+        if gf > 1.05 { n_over_105 += 1; }
+        if eval_opcodes(&cf.opcodes, p).abs() < 0.5 && gf > worst_surf {
+            worst_surf = gf; worst_surf_at = p;
         }
-    }}
+    }}}
     eprintln!(
-        "ticket_382 Lipschitz: worst |Δd|/Δs  filleted={worst_f:.3} (at {worst_f_at:?})  hard={worst_h:.3}"
+        "ticket_382 Lipschitz(∇): worst |∇f| filleted={worst_f:.3} (at {worst_f_at:?}, f={worst_f_val:.2})  hard={worst_h:.3}"
     );
     eprintln!(
-        "ticket_382 jumps (slope>2): filleted={n_jump_f}  hard={n_jump_h}"
+        "ticket_382 on-surface(|f|<0.5): worst |∇f|={worst_surf:.3} (at {worst_surf_at:?})   samples>1.05={n_over_105}"
     );
-    // Before the fix the filleted render field jumped (worst ratio ≈ 108, 133
-    // jump points) — a discontinuity that tunnelled the sdf-vm sphere-trace and
-    // greyed the model. The continuous cross-fade (`masked_blend_render_fade`)
-    // must keep the slope within the march-relax safety bound (L ≤ 2.5).
+    // Before this fix the FULL gradient hit |∇f| ≈ 1.44 (≈√2) right at the fillet
+    // surface — a valid distance UNDER-bound needs |∇f| ≤ 1, and √2 makes the
+    // sphere-trace overstep the concave fillet (degenerate render, not grey). The
+    // √2 Lipschitz-normalisation + flat-shell fade (`masked_blend_render_fade`)
+    // must bring it to ≤ ~1.05.
     assert!(
-        worst_f <= 3.0,
-        "the FILLETED render field must be continuous (Lipschitz ≤ ~2.5) — worst |Δd|/Δs = {worst_f} \
-         at {worst_f_at:?}; a value ≫ 1 is the sdf-vm grey-out discontinuity (#382)",
-    );
-    assert_eq!(
-        n_jump_f, 0,
-        "no discontinuity jumps allowed in the filleted render field (#382)",
+        worst_f <= 1.05,
+        "the FILLETED render field must be a ≤1-Lipschitz distance bound — worst |∇f| = {worst_f} \
+         at {worst_f_at:?} (f={worst_f_val}); > 1 means the sdf-vm sphere-trace oversteps the fillet (#382)",
     );
 }
+

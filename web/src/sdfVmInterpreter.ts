@@ -728,15 +728,15 @@ export function buildVmSdfEvalFn(
         const maskR = rd(), blendR = rd(), mode = rd();
         const isDiff = rd();
         const db = popV(), da = popV();
-        // #382: CONTINUOUS mask cross-fade (mirror of Rust
+        // #382: genuine ≤1-Lipschitz mask blend (mirror of Rust
         // `masked_blend_render_fade`). `maskD` is the unsigned distance to the
         // polyline; the signed tube distance is `maskD - maskR` (< 0 inside).
-        // A HARD `step` switch made the render field discontinuous (jump up to
-        // `blendR`) → the sdf-vm sphere-trace tunnelled through the surface and
-        // the model greyed out, while the mesh (sign-only DC) was fine. We
-        // cross-fade `hard → blended` with a C1 smoothstep over a band of one
-        // `blendR`, sitting in the tube's outer shell where blended≈hard, so the
-        // fillet surface is preserved. `march_relax` damps the residual slope.
+        // Two ingredients (see the Rust doc-comment for the maths):
+        // (1) a WIDE cross-fade band (one blendR) keeps `∇w ≤ 1.5/band` small so
+        //     the smoothstep adds negligible slope; (2) divide the whole result
+        //     by the circular smin's Lipschitz constant √2 → a valid distance
+        //     UNDER-bound (|∇| ≤ 1, never oversteps the concave fillet) whose
+        //     zero-set (the fillet surface) is IDENTICAL. `march_relax` is 1.0.
         // hardW: 1 outside the tube (→ sharp/hard), 0 deep inside (→ blended).
         const band = max(blendR, float(1e-3));
         const xw = clamp(maskR.sub(maskD).div(band), 0.0, 1.0).toVar();
@@ -748,7 +748,7 @@ export function buildVmSdfEvalFn(
         const dSharp = max(da, db.negate());
         const uResult = uSmooth.mix(uSharp, hardW);
         const dResult = dSmooth.mix(dSharp, hardW);
-        pushV(uResult.mix(dResult, isDiff));
+        pushV(uResult.mix(dResult, isDiff).mul(float(Math.SQRT1_2)));
 
       }).ElseIf(tag.equal(int(OP_END)), () => {
         Break();

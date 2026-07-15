@@ -12,6 +12,13 @@ Format, eine Zeile je Eintrag:
 kind = feat | fix | perf. scope und #tickets sind optional. Folgezeilen, die
 eingerückt sind, gehören zum Text davor (Umbruch erlaubt).
 
+## 0.14.1
+- fix(fillet) #382: Im Render-Modus sdf-vm wird ein Kanten-Fillet jetzt sauber
+  statt degeneriert/artefaktig dargestellt. Das gemischte Distanzfeld war am
+  Fillet-Übergang mit Steigung bis √2 nicht mehr 1-Lipschitz, sodass der
+  Sphere-Tracer die konkave Fillet-Fläche überschritt; das Render-Feld wird nun
+  auf die Lipschitz-Konstante des Smin normalisiert (gleiche Nullfläche, |∇|≤1).
+
 ## 0.14.0
 - feat(voxel) #379: Debug ▸ Voxel füllt die Szene jetzt nur noch, solange der
   Dialog offen ist — genau wie Debug ▸ Lichen/Mesher —, statt über einen
