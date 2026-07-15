@@ -112,6 +112,11 @@ const DEFAULTS: LichenSettings = {
   generalTri: true,
   accept: "auto",
   fillHoles: true,
+  // Spezialpfade bewusst OPT-IN (#363): der Default ist die robuste Baseline,
+  // die über beliebige Körper vorhersagbar liefert. Jeder dieser Schalter hat
+  // eine dokumentierte Fehlermode oder ist ein Mess-Werkzeug — ε-Sampling
+  // (`lfsFactor`) etwa explodiert an Tangential-Kontakten, wo lfs→0 geht
+  // (Lichen-Architecture §8b/§8c); `faceGuard`/`refine` sind Default-aus-Tools.
   extractWalk: false,
   globalWalk: false,
   lfsFactor: 0,
@@ -121,7 +126,16 @@ const DEFAULTS: LichenSettings = {
   refineRho: 1.0,
   partOpacity: 0.4,
   strokeWidth: 2,
-  showCircles: true,
+  // Debug-Overlays beim Öffnen (#363): der Default zeigt das ERGEBNIS + die
+  // Problem-Diagnostik, nicht jedes Sampling-Detail auf einmal.
+  //  - Mesh (`showTriangles`) + Punkt-Marker (`showPoints`, farbcodiert nach
+  //    Ecke/Kante/Fläche) sind die Signatur des Lichen-Debuggers → an.
+  //  - Loch-/Weak-/Long-Kanten sind SELBST-VERBERGEND: auf einem gesunden Netz
+  //    fast leer, sie stören also nie und markieren nur echte Probleme → an.
+  //  - `showCircles` (U(p)-Reach-Kreis an JEDEM Punkt) und `showNormals`
+  //    (∇f-Nadel an jedem Punkt) zeichnen dagegen dicht überall und decken das
+  //    Netz zu — reine Drill-in-Werkzeuge → per Default AUS.
+  showCircles: false,
   showPoints: true,
   showTriangles: true,
   showHoleEdges: true,
