@@ -734,7 +734,7 @@ test.describe("FieldDraft smoke", () => {
     // Reorder participates in undo: the two edge-case clicks
     // above were no-ops, so one undo rewinds the sphere-down
     // move that restored the original order.
-    await page.getByTestId("undo").click();
+    await page.keyboard.press("Control+z"); // undo moved to the menu; shortcut is canonical
     expect(await kindsAt()).toEqual(["sphere", "box", "cylinder"]);
 
     expect(
@@ -783,7 +783,7 @@ test.describe("FieldDraft smoke", () => {
 
     // Undo reverses the suppress — so does clicking the button
     // a second time. Verify both paths.
-    await page.getByTestId("undo").click();
+    await page.keyboard.press("Control+z"); // undo moved to the menu; shortcut is canonical
     await expect(page.getByTestId("feature-row-2")).toHaveAttribute(
       "data-feature-suppressed",
       "false",
@@ -849,7 +849,7 @@ test.describe("FieldDraft smoke", () => {
     expect(cloneTranslate[2]).toBeCloseTo(sourceTranslate[2], 5);
 
     // Undo rolls back the duplicate cleanly.
-    await page.getByTestId("undo").click();
+    await page.keyboard.press("Control+z"); // undo moved to the menu; shortcut is canonical
     await expect(page.locator('[data-feature-count="1"]')).toBeAttached();
     await expect(page.getByTestId("feature-row-2")).toHaveCount(0);
 
