@@ -728,15 +728,26 @@ export function buildVmSdfEvalFn(
         const maskR = rd(), blendR = rd(), mode = rd();
         const isDiff = rd();
         const db = popV(), da = popV();
-        // Subtract the tube radius (sdfCapsule3dFn above used r=0, so maskD
-        // is the unsigned distance to the polyline; the tube is `dist - r`).
-        const tMask = float(0).step(maskD.sub(maskR));
+        // #382: CONTINUOUS mask cross-fade (mirror of Rust
+        // `masked_blend_render_fade`). `maskD` is the unsigned distance to the
+        // polyline; the signed tube distance is `maskD - maskR` (< 0 inside).
+        // A HARD `step` switch made the render field discontinuous (jump up to
+        // `blendR`) → the sdf-vm sphere-trace tunnelled through the surface and
+        // the model greyed out, while the mesh (sign-only DC) was fine. We
+        // cross-fade `hard → blended` with a C1 smoothstep over a band of one
+        // `blendR`, sitting in the tube's outer shell where blended≈hard, so the
+        // fillet surface is preserved. `march_relax` damps the residual slope.
+        // hardW: 1 outside the tube (→ sharp/hard), 0 deep inside (→ blended).
+        const band = max(blendR, float(1e-3));
+        const xw = clamp(maskR.sub(maskD).div(band), 0.0, 1.0).toVar();
+        const blendW = xw.mul(xw).mul(float(3).sub(xw.mul(2)));
+        const hardW = float(1).sub(blendW);
         const uSmooth = blendMinFn({ a: da, b: db, r: blendR, mode });
         const uSharp = min(da, db);
         const dSmooth = blendMinFn({ a: da.negate(), b: db, r: blendR, mode }).negate();
         const dSharp = max(da, db.negate());
-        const uResult = uSmooth.mix(uSharp, tMask);
-        const dResult = dSmooth.mix(dSharp, tMask);
+        const uResult = uSmooth.mix(uSharp, hardW);
+        const dResult = dSmooth.mix(dSharp, hardW);
         pushV(uResult.mix(dResult, isDiff));
 
       }).ElseIf(tag.equal(int(OP_END)), () => {

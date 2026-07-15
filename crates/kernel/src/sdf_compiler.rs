@@ -150,8 +150,19 @@ pub(crate) fn march_relax(node: &BoundedCsg) -> f32 {
         | BoundedCsg::Intersection { left, right, .. }
         | BoundedCsg::SmoothUnion { left, right, .. }
         | BoundedCsg::SmoothDifference { left, right, .. }
-        | BoundedCsg::MaskedBlend { left, right, .. }
         | BoundedCsg::Morph { left, right, .. } => march_relax(left).min(march_relax(right)),
+        BoundedCsg::MaskedBlend { left, right, .. } => {
+            // #382: the render field cross-fades the masked blend over a band
+            // of one `blend_r` (`masked_blend_render_fade`), so it is continuous
+            // but not 1-Lipschitz: L ≤ 1 + |blended−hard|·|∇w| ≤ 1 + blend_r·1.5/band
+            // = 1 + 1.5 = 2.5. Damp the march step by 1/L so sphere-tracing
+            // cannot overstep the fillet surface (like Displace/Revolve). Not
+            // baked into the field — the mesher is untouched.
+            const MASKED_BLEND_MARCH_RELAX: f32 = 1.0 / 2.5;
+            march_relax(left)
+                .min(march_relax(right))
+                .min(MASKED_BLEND_MARCH_RELAX)
+        }
         BoundedCsg::Twist { inner, .. }
         | BoundedCsg::Bend { inner, .. }
         | BoundedCsg::Shell { inner, .. }
@@ -1497,16 +1508,13 @@ pub fn eval_opcodes_with_volumes(
                 let db = pop_v!();
                 let da = pop_v!();
                 let mask_d = crate::csg::sdf_polyline_tube(pt, &polyline, mask_r);
-                let result = if mask_d < 0.0 {
-                    if is_diff {
-                        -blend_min_eval(-da, db, blend_r, mode)
-                    } else {
-                        blend_min_eval(da, db, blend_r, mode)
-                    }
+                let blended = if is_diff {
+                    -blend_min_eval(-da, db, blend_r, mode)
                 } else {
-                    crate::csg::hard_combine(is_diff, da, db)
+                    blend_min_eval(da, db, blend_r, mode)
                 };
-                push_v!(result);
+                let hard = crate::csg::hard_combine(is_diff, da, db);
+                push_v!(masked_blend_render_fade(mask_d, blended, hard, blend_r));
             }
 
             OP_PRIM_TEX3D => {
@@ -1752,6 +1760,39 @@ fn sdf_sector_2d(
         let to_center = r;
         d_circ.max(0.0).min(to_edge.min(to_center))
     }
+}
+
+/// #382: continuous mask cross-fade for the RENDER path (compiled opcodes +
+/// TSL shader) — NOT the mesh/weave path (`csg::sdf` / `evaluate_open`, which
+/// keeps the hard switch and is unaffected).
+///
+/// The masked blend chooses between the smin-`blended` value (inside the tube)
+/// and the `hard` combine (outside). A HARD switch at the tube boundary makes
+/// the compiled field DISCONTINUOUS — it jumps by up to `blend_r` across the
+/// mask surface (measured |Δd|/Δs ≈ 108 on the #373 fixture). Dual-contouring
+/// only reads the SIGN at cell corners, so the mesh is fine; sphere-tracing
+/// needs the field to be a valid distance BOUND (≈1-Lipschitz), and a jump lets
+/// the ray step straight THROUGH the surface → every pixel misses → grey
+/// (#382). We cross-fade `hard → blended` over a `band` just inside the
+/// boundary with a C1 smoothstep, so the render field is continuous. `march_relax`
+/// then damps the residual bounded slope (L ≤ 1 + 1.5·blend_r/band).
+///
+/// The band sits in the OUTER shell of the tube, where `blended ≈ hard` anyway
+/// (the smin only deviates from the hard min within `blend_r` of the edge, i.e.
+/// deep inside the tube), so the fillet surface itself is preserved.
+pub(crate) fn masked_blend_render_fade(mask_d: f32, blended: f32, hard: f32, blend_r: f32) -> f32 {
+    let band = masked_blend_fade_band(blend_r);
+    // w: 1 deep inside (mask_d ≤ −band → fully blended), 0 at/outside the
+    // boundary (mask_d ≥ 0 → hard). C1 via smoothstep.
+    let x = ((-mask_d) / band).clamp(0.0, 1.0);
+    let w = x * x * (3.0 - 2.0 * x);
+    hard + (blended - hard) * w
+}
+
+/// Cross-fade band width (mm). One `blend_r` keeps the residual Lipschitz bound
+/// at ≤ 1 + 1.5 = 2.5 (→ `march_relax` 0.4). Mirrored in the TSL shader.
+pub(crate) fn masked_blend_fade_band(blend_r: f32) -> f32 {
+    blend_r.max(1e-3)
 }
 
 fn blend_min_eval(a: f32, b: f32, r: f32, mode: f32) -> f32 {

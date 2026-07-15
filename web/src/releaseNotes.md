@@ -12,6 +12,9 @@ Format, eine Zeile je Eintrag:
 kind = feat | fix | perf. scope und #tickets sind optional. Folgezeilen, die
 eingerückt sind, gehören zum Text davor (Umbruch erlaubt).
 
+## 0.13.1
+- fix(fillet) #382: Sobald ein Kanten-Fillet im Dokument war, verschwand das Modell im Render-Modus sdf-vm fast komplett (grau), während der Mesh-Modus korrekt blieb. Der maskierte Blend schaltete an der Masken-Grenze hart um und riss so ein Loch (Sprung bis Blend-Radius) ins Distanzfeld — der Sphere-Trace tunnelte hindurch, der Mesh (nur Vorzeichen) merkte nichts. Der Render-Pfad blendet den Übergang jetzt stetig aus (Cross-Fade + gedämpfte Schrittweite); Mesh und B-Rep bleiben unverändert.
+
 ## 0.13.0
 - feat(tickets) #381: Bild aus der Zwischenablage per Strg+V direkt in die Kommentar-Eingabe eines Tickets einfügen — landet als Anhang-Thumb, genau wie über den Büroklammern-Button (#372).
 

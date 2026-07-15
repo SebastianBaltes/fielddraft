@@ -6841,3 +6841,199 @@ fn ticket_348_no_edge_bridges_the_two_tangent_seams() {
 
     assert!(seams >= 2, "the tip really has its two vertical seams (test not vacuous)");
 }
+
+/// #382 headless field-finiteness scan: the sdf-vm GPU ray-march collapses to
+/// GREY the moment a fillet exists, while the mesh shader is fine. Grey means
+/// every pixel stays background — the classic signature of a march that never
+/// converges because the compiled field goes NaN/Inf (or absurd) SOMEWHERE
+/// along the ray, not just near the edge. #373's test only sampled near the
+/// fillet edge and was finite there; this one sweeps the WHOLE scene AABB
+/// (grown 50%) on a 40³ grid PLUS a fan of rays from outside toward the centre,
+/// and flags any point where the FILLETED compiled field is non-finite or
+/// absurd while the UN-filleted field is fine.
+#[test]
+fn ticket_382_filleted_field_is_finite_everywhere() {
+    use crate::sdf_compiler::{compile_body, eval_opcodes};
+    let mut k = crate::Kernel::new();
+    k.load_json(include_str!("testdata/ticket_373_document.json"))
+        .expect("document loads");
+    assert_eq!(k.edge_fillets.len(), 1, "fillet resolved");
+    let idx: Vec<usize> = (0..k.decoded.len()).collect();
+
+    let filleted = crate::body::build_bounded_for_body_rounded(
+        &k.decoded, &idx, k.global_round, &k.edge_fillets,
+    );
+    let hard = crate::body::build_bounded_for_body_rounded(&k.decoded, &idx, None, &[]);
+    let cf = compile_body(&filleted);
+    let ch = compile_body(&hard);
+
+    // Grow the scene AABB by 50% each side (the ray-march starts well outside).
+    let bb = filleted.aabb();
+    let ext = [
+        bb.max[0] - bb.min[0],
+        bb.max[1] - bb.min[1],
+        bb.max[2] - bb.min[2],
+    ];
+    let lo = [
+        bb.min[0] - ext[0] * 0.5,
+        bb.min[1] - ext[1] * 0.5,
+        bb.min[2] - ext[2] * 0.5,
+    ];
+    let hi = [
+        bb.max[0] + ext[0] * 0.5,
+        bb.max[1] + ext[1] * 0.5,
+        bb.max[2] + ext[2] * 0.5,
+    ];
+    eprintln!("ticket_382: aabb min={:?} max={:?}", bb.min, bb.max);
+
+    // Plausibility bound: field magnitude should never exceed ~10× the scene
+    // diagonal. Anything larger (or non-finite) is the grey-out suspect.
+    let diag = (ext[0] * ext[0] + ext[1] * ext[1] + ext[2] * ext[2]).sqrt();
+    let absurd = diag * 100.0;
+
+    let mut bad: Vec<(String, [f32; 3], f32, f32)> = Vec::new();
+    let n = 40i32;
+    for ix in 0..=n {
+        for iy in 0..=n {
+            for iz in 0..=n {
+                let t = |i: i32, l: f32, h: f32| l + (h - l) * (i as f32 / n as f32);
+                let p = [t(ix, lo[0], hi[0]), t(iy, lo[1], hi[1]), t(iz, lo[2], hi[2])];
+                let df = eval_opcodes(&cf.opcodes, p);
+                let dh = eval_opcodes(&ch.opcodes, p);
+                let f_bad = !df.is_finite() || df.abs() > absurd;
+                let h_bad = !dh.is_finite() || dh.abs() > absurd;
+                if f_bad && !h_bad {
+                    if bad.len() < 20 {
+                        bad.push(("grid".into(), p, df, dh));
+                    }
+                }
+            }
+        }
+    }
+
+    // Ray-march simulation: from 8 corners of the grown AABB toward the centre,
+    // small fixed steps — mirrors what the shader does. Flag any non-finite /
+    // absurd sample the filleted field produces that the hard field does not.
+    let center = [
+        (bb.min[0] + bb.max[0]) * 0.5,
+        (bb.min[1] + bb.max[1]) * 0.5,
+        (bb.min[2] + bb.max[2]) * 0.5,
+    ];
+    let corners = [
+        [lo[0], lo[1], lo[2]], [hi[0], lo[1], lo[2]],
+        [lo[0], hi[1], lo[2]], [hi[0], hi[1], lo[2]],
+        [lo[0], lo[1], hi[2]], [hi[0], lo[1], hi[2]],
+        [lo[0], hi[1], hi[2]], [hi[0], hi[1], hi[2]],
+    ];
+    let steps = 400i32;
+    for c in corners {
+        let dir = [center[0] - c[0], center[1] - c[1], center[2] - c[2]];
+        for s in 0..=steps {
+            let f = s as f32 / steps as f32;
+            let p = [c[0] + dir[0] * f, c[1] + dir[1] * f, c[2] + dir[2] * f];
+            let df = eval_opcodes(&cf.opcodes, p);
+            let dh = eval_opcodes(&ch.opcodes, p);
+            let f_bad = !df.is_finite() || df.abs() > absurd;
+            let h_bad = !dh.is_finite() || dh.abs() > absurd;
+            if f_bad && !h_bad && bad.len() < 40 {
+                bad.push(("ray".into(), p, df, dh));
+            }
+        }
+    }
+
+    if !bad.is_empty() {
+        eprintln!("ticket_382: {} bad samples (filleted non-finite/absurd, hard fine):", bad.len());
+        for (kind, p, df, dh) in bad.iter().take(20) {
+            eprintln!("  [{kind}] p={p:?} filleted={df} hard={dh}");
+        }
+    }
+    assert!(
+        bad.is_empty(),
+        "the FILLETED compiled field is non-finite or absurd at {} sampled point(s) where the \
+         hard field is fine — this is the sdf-vm grey-out cause (a NaN/Inf along the ray kills \
+         the pixel). First: {:?}",
+        bad.len(),
+        bad.first(),
+    );
+}
+
+/// #382 (part 2) LIPSCHITZ / discontinuity probe. The field being finite is
+/// NECESSARY but not SUFFICIENT for the sdf-vm sphere-trace: sphere tracing
+/// requires the SDF to be a valid distance BOUND (|∇d| ≤ 1). The masked blend
+/// switches HARD (a `step` on the mask-tube boundary) from the smin-blended
+/// value inside the tube to the plain hard-combine outside — the two differ by
+/// up to `blend_r`, so the field can JUMP discontinuously across the mask
+/// boundary. A jump larger than the march step lets the ray tunnel THROUGH the
+/// surface and miss it (→ grey), while the mesh DC (sign at cell corners) is
+/// unaffected. This measures the worst |Δd|/Δs ratio along dense rays for the
+/// FILLETED vs the HARD field — a filleted ratio ≫ 1 where hard stays ≈1 is the
+/// grey-out cause.
+#[test]
+fn ticket_382_filleted_field_lipschitz_probe() {
+    use crate::sdf_compiler::{compile_body, eval_opcodes};
+    let mut k = crate::Kernel::new();
+    k.load_json(include_str!("testdata/ticket_373_document.json"))
+        .expect("document loads");
+    let idx: Vec<usize> = (0..k.decoded.len()).collect();
+    let filleted = crate::body::build_bounded_for_body_rounded(
+        &k.decoded, &idx, k.global_round, &k.edge_fillets,
+    );
+    let hard = crate::body::build_bounded_for_body_rounded(&k.decoded, &idx, None, &[]);
+    let cf = compile_body(&filleted);
+    let ch = compile_body(&hard);
+
+    let bb = filleted.aabb();
+    let ext = [bb.max[0]-bb.min[0], bb.max[1]-bb.min[1], bb.max[2]-bb.min[2]];
+    let lo = [bb.min[0]-ext[0]*0.5, bb.min[1]-ext[1]*0.5, bb.min[2]-ext[2]*0.5];
+    let hi = [bb.max[0]+ext[0]*0.5, bb.max[1]+ext[1]*0.5, bb.max[2]+ext[2]*0.5];
+    let center = [(bb.min[0]+bb.max[0])*0.5,(bb.min[1]+bb.max[1])*0.5,(bb.min[2]+bb.max[2])*0.5];
+
+    // A fan of rays from the +Z / -X hemisphere (where the fillet lives) through
+    // the body, dense enough that the step is well under the blend radius.
+    let mut worst_f = 0.0f32; let mut worst_f_at = [0.0;3];
+    let mut worst_h = 0.0f32;
+    let mut n_jump_f = 0usize; let mut n_jump_h = 0usize;
+    let n = 24i32; let steps = 2000i32;
+    for ax in 0..=n { for ay in 0..=n {
+        let sx = lo[0] + (hi[0]-lo[0])*(ax as f32/n as f32);
+        let sy = lo[1] + (hi[1]-lo[1])*(ay as f32/n as f32);
+        let start = [sx, sy, hi[2] + ext[2]*0.5];
+        let dir = [center[0]-start[0], center[1]-start[1], center[2]-start[2]];
+        let ds = (dir[0]*dir[0]+dir[1]*dir[1]+dir[2]*dir[2]).sqrt() / steps as f32;
+        let mut prev_f = eval_opcodes(&cf.opcodes, start);
+        let mut prev_h = eval_opcodes(&ch.opcodes, start);
+        for s in 1..=steps {
+            let f = s as f32/steps as f32;
+            let p = [start[0]+dir[0]*f, start[1]+dir[1]*f, start[2]+dir[2]*f];
+            let df = eval_opcodes(&cf.opcodes, p);
+            let dh = eval_opcodes(&ch.opcodes, p);
+            let rf = (df-prev_f).abs()/ds;
+            let rh = (dh-prev_h).abs()/ds;
+            if rf > worst_f { worst_f = rf; worst_f_at = p; }
+            if rh > worst_h { worst_h = rh; }
+            // A "jump" = local slope > 2× the ideal Lipschitz bound of 1.
+            if rf > 2.0 { n_jump_f += 1; }
+            if rh > 2.0 { n_jump_h += 1; }
+            prev_f = df; prev_h = dh;
+        }
+    }}
+    eprintln!(
+        "ticket_382 Lipschitz: worst |Δd|/Δs  filleted={worst_f:.3} (at {worst_f_at:?})  hard={worst_h:.3}"
+    );
+    eprintln!(
+        "ticket_382 jumps (slope>2): filleted={n_jump_f}  hard={n_jump_h}"
+    );
+    // Before the fix the filleted render field jumped (worst ratio ≈ 108, 133
+    // jump points) — a discontinuity that tunnelled the sdf-vm sphere-trace and
+    // greyed the model. The continuous cross-fade (`masked_blend_render_fade`)
+    // must keep the slope within the march-relax safety bound (L ≤ 2.5).
+    assert!(
+        worst_f <= 3.0,
+        "the FILLETED render field must be continuous (Lipschitz ≤ ~2.5) — worst |Δd|/Δs = {worst_f} \
+         at {worst_f_at:?}; a value ≫ 1 is the sdf-vm grey-out discontinuity (#382)",
+    );
+    assert_eq!(
+        n_jump_f, 0,
+        "no discontinuity jumps allowed in the filleted render field (#382)",
+    );
+}
