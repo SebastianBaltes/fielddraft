@@ -12,6 +12,9 @@ Format, eine Zeile je Eintrag:
 kind = feat | fix | perf. scope und #tickets sind optional. Folgezeilen, die
 eingerückt sind, gehören zum Text davor (Umbruch erlaubt).
 
+## 0.12.1
+- fix(screenSpaceCsg) #370: Screen-Space-CSG (experimentelles Setting) komponiert keine Bodys mehr, deren Minuend aus mehreren aneinanderstoßenden Leaves besteht (z.B. zwei Extrudes auf demselben Profil) — sie waren großflächig durchsichtig gerendert (Boden-Grid schien durch die Deckfläche). Solche Bodys nutzen jetzt wieder den regulären, korrekten Mesh-Renderpfad.
+
 ## 0.12.0
 - feat(aichat) #361: Admins können im Assistent-Dialog das OpenRouter-Modell per Dropdown im Panel-Header umschalten; andere Nutzer sehen kein Dropdown und bekommen weiter das erste erlaubte Modell.
 

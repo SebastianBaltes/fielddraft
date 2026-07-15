@@ -30,6 +30,29 @@
  *     vorerst nur opak zusammen (kein Z-Fight-Resolve). Ehrlich offen.
  *   - Mehrere Subtrahenden pro Body in EINEM Pass (aktuell: ein A−B-Pass je
  *     Subtrahend, sequenziell — korrekt, aber nicht der billigste Pfad).
+ *   - MEHRTEILIGER Minuend (Ticket #370): `bodyNeedsSubtractionPass` verlangt
+ *     GENAU EINEN `role:"mesh"`-Leaf. Grund: die A-Front/A-Back-G-Buffer-Capture
+ *     ist eine EINZIGE Tiefenschicht über ALLE Minuend-Leaves hinweg (Standard-
+ *     Depth-Test, nächste Fläche gewinnt) — das setzt voraus, dass die Minuend-
+ *     Vorder-/Rückfläche je Pixel aus EINEM zusammenhängenden Leaf stammt. Ein
+ *     typisches Muster bricht das: zwei separate Extrude-Leaves, die exakt
+ *     aneinanderstoßen (z.B. "Extrude new" + "Extrude add" auf demselben Profil,
+ *     Ticket #370s Lötkolbenhalter-Body: Leaf A z∈[-12,0], Leaf B z∈[0,3]). Die
+ *     A-Back-Capture (BackSide, nächste-Fläche-gewinnt) trifft dann NICHT die
+ *     wahre Austrittsfläche (z=-12), sondern die interne, zufällig nähere
+ *     Berührungsnaht (z=0, Leaf Bs Boden-Cap) — dieser zu flache `aBackDepth`
+ *     lässt den Shader/`classifySubtractionPixel`s Discard-Zweig
+ *     (`bBack >= aBackDepth`) an fast jedem Schnitt-Pixel auslösen → große
+ *     Flächen werden komplett verworfen (Ticket #370: halbe Deckfläche
+ *     durchsichtig, Boden-Grid scheint durch). Reproduziert + verifiziert per
+ *     `cargo test ticket_370` gegen `testdata/ticket_373_document.json`
+ *     (derselbe Body: `leaves=[mesh z∈[-12,0], skip, mesh z∈[0,3]]`). Ein
+ *     Mehrschicht-Fix (A-Depth-Peeling wie beim B-Layer-2-Peel oben) ist NICHT
+ *     headless verifizierbar (reines GPU-Zustandsproblem: Depth-Func-Polarität
+ *     + Clear-Depth-Konvention) — daher hier die konservative, headless
+ *     testbare Gegenmaßnahme: solche Bodies NICHT über SS-CSG komponieren,
+ *     sondern (wie bisher ohne SS-CSG) über den korrekten DC-Mesh-Pfad
+ *     rendern lassen.
  */
 
 import * as THREE from "three";
@@ -218,12 +241,27 @@ export function collectCsgOperands(leaves: HybridLeafInfo[]): CsgOperands {
 
 /**
  * Lohnt sich ein Screen-Space-CSG-Pass für diesen Body? Nur wenn es überhaupt
- * einen Subtrahenden gibt UND einen Minuenden — sonst ist nichts zu schneiden
- * und der bestehende Pfad ist exakt richtig.
+ * einen Subtrahenden gibt UND GENAU EINEN Minuenden — sonst ist nichts zu
+ * schneiden bzw. der Minuend ist mehrteilig und der bestehende (DC-Mesh-)Pfad
+ * ist exakt richtig.
+ *
+ * `minuend.length === 1` statt nur `> 0` ist die #370-Gegenmaßnahme: bei ZWEI
+ * ODER MEHR Minuend-Leaves fasst die A-Front/A-Back-G-Buffer-Capture sie zu
+ * EINER Tiefenschicht zusammen (Standard-Depth-Test über alle Leaves hinweg).
+ * Stoßen zwei Leaves aneinander (z.B. zwei Extrudes auf demselben Profil,
+ * "new" + "add" — der Lötkolbenhalter-Body aus #370), trifft die A-Back-Capture
+ * an vielen Pixeln die INTERNE Berührungsnaht statt der wahren Austrittsfläche
+ * → der Composite-Shader verwirft (discard) an diesen Pixeln komplett, statt
+ * die Schnittfläche zu zeigen (großflächig durchsichtige Bereiche, siehe
+ * Moduldoc oben). Ein korrekter Mehrschicht-Fix bräuchte A-seitiges
+ * Depth-Peeling (wie der B-Layer-2-Peel) — GPU-seitig, nicht headless
+ * verifizierbar. Diese Gate-Bedingung ist die headless testbare, konservative
+ * Absicherung: solche Bodies fallen auf den bestehenden, korrekten DC-Mesh-Pfad
+ * zurück statt fehlerhaft komponiert zu werden.
  */
 export function bodyNeedsSubtractionPass(leaves: HybridLeafInfo[]): boolean {
   const { minuend, subtrahend } = collectCsgOperands(leaves);
-  return minuend.length > 0 && subtrahend.length > 0;
+  return minuend.length === 1 && subtrahend.length > 0;
 }
 
 /* ──────────────────────────────────────────────────────────────────────────

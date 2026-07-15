@@ -214,6 +214,29 @@ describe("bodyNeedsSubtractionPass — lohnt sich ein A−B-Pass?", () => {
   it("false bei leerem Body", () => {
     expect(bodyNeedsSubtractionPass([])).toBe(false);
   });
+
+  // Ticket #370: mehrteiliger Minuend (2 mesh-Leaves + 1 skip-Leaf) — GENAU der
+  // Lötkolbenhalter-Body ("Extrude new" z∈[-12,0] + "Extrude add" z∈[0,3],
+  // beide role:"mesh", stoßen bei z=0 aneinander; role:"skip" = Schlitz-Cutter).
+  // Reproduziert per `cargo test ticket_370_dump_hybrid_leaves` gegen
+  // testdata/ticket_373_document.json: leaves = [mesh, skip, mesh]. Die
+  // A-Front/A-Back-G-Buffer-Capture ist eine einzige Tiefenschicht über ALLE
+  // Minuend-Leaves — bei zwei aneinanderstoßenden Leaves trifft die A-Back-
+  // Capture die interne Berührungsnaht statt der wahren Austrittsfläche, was im
+  // Composite-Shader zu großflächigem Discard führt (durchsichtige Deckfläche,
+  // Boden-Grid scheint durch). Der Body muss daher NICHT über SS-CSG
+  // komponiert werden, sondern auf den bestehenden DC-Mesh-Pfad zurückfallen.
+  it("false bei mehrteiligem Minuend (#370: zwei aneinanderstoßende mesh-Leaves + skip)", () => {
+    expect(
+      bodyNeedsSubtractionPass([leaf("mesh"), leaf("skip"), leaf("mesh")]),
+    ).toBe(false);
+  });
+
+  it("true bei GENAU einem Minuend-Leaf + mehreren Subtrahenden (unverändert erlaubt)", () => {
+    expect(
+      bodyNeedsSubtractionPass([leaf("mesh"), leaf("skip"), leaf("skip")]),
+    ).toBe(true);
+  });
 });
 
 describe("classifyIntersectionPixel — A ∩ B Intervall-Klassifikation", () => {
