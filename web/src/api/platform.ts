@@ -121,6 +121,11 @@ export interface TicketSummary {
   /** Short human/agent-friendly reference, shown as "#N" (ticket 066230d9). */
   number: number;
   author_id: string;
+  /** The opener's human display name, resolved server-side the same way
+   *  comment authors resolve theirs (#359 → fillAuthorNames; ticket #365
+   *  gives the list its own Author column instead of a bare id). Empty when
+   *  the user record is gone. */
+  author_name?: string;
   title: string;
   state: TicketState;
   /** The release the fix shipped in — set on close, "" while open. */

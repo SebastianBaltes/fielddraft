@@ -42,6 +42,7 @@ import {
   settableStates,
   stateBucket,
   stateLabel,
+  ticketAuthorLabel,
   ticketRef,
   TICKET_STATES,
 } from "./ticketView";
@@ -96,12 +97,13 @@ interface TicketListProps {
 }
 
 /** The click-sortable columns of the issue list (ticket a7b63b6; the `#`
- *  reference column is ticket 066230d9). */
-type SortKey = "number" | "state" | "title" | "version" | "updated";
+ *  reference column is ticket 066230d9; the Author column is ticket #365). */
+type SortKey = "number" | "state" | "title" | "author" | "version" | "updated";
 const SORT_COLUMNS: { key: SortKey; label: string }[] = [
   { key: "number", label: "#" },
   { key: "state", label: "State" },
   { key: "title", label: "Title" },
+  { key: "author", label: "Author" },
   { key: "version", label: "Version" },
   { key: "updated", label: "Updated" },
 ];
@@ -180,6 +182,8 @@ function TicketList({ user, onOpen }: TicketListProps) {
           return t.version;
         case "title":
           return t.title;
+        case "author":
+          return ticketAuthorLabel(t);
         case "updated":
           return t.updated_at;
       }
@@ -323,6 +327,13 @@ function TicketList({ user, onOpen }: TicketListProps) {
                 </span>
                 <span className="row-title" title={t.title}>
                   {t.title}
+                </span>
+                <span
+                  className="row-author"
+                  data-testid={`ticket-author-${t.id}`}
+                  title={ticketAuthorLabel(t)}
+                >
+                  {ticketAuthorLabel(t)}
                 </span>
                 <span
                   className="row-version"

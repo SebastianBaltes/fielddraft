@@ -10,6 +10,7 @@ import {
   settableStates,
   stateBucket,
   stateLabel,
+  ticketAuthorLabel,
   ticketRef,
   TICKET_STATES,
 } from "./ticketView";
@@ -80,6 +81,15 @@ describe("ticketView helpers", () => {
     const sys = comment({ author_type: "system", author_name: undefined });
     expect(commentAuthorLabel(sys)).toBe("System");
     expect(commentAuthorTag(sys)).toBe("SYS");
+  });
+
+  it("labels the list's Author column with the resolved name, falling back to Unknown (#365)", () => {
+    expect(ticketAuthorLabel({ author_name: "Sebastian Baltes" })).toBe(
+      "Sebastian Baltes",
+    );
+    expect(ticketAuthorLabel({ author_name: "  " })).toBe("Unknown");
+    expect(ticketAuthorLabel({ author_name: undefined })).toBe("Unknown");
+    expect(ticketAuthorLabel({})).toBe("Unknown");
   });
 
   it("labels categories with an Uncategorized fallback", () => {

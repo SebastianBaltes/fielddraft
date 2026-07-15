@@ -12,6 +12,9 @@ Format, eine Zeile je Eintrag:
 kind = feat | fix | perf. scope und #tickets sind optional. Folgezeilen, die
 eingerückt sind, gehören zum Text davor (Umbruch erlaubt).
 
+## 0.10.0
+- feat(tickets) #365: Die Ticket-Liste zeigt jetzt eine eigene, sortierbare „Author"-Spalte mit dem aufgelösten Namen des Ticket-Erstellers statt der rohen User-ID.
+
 ## 0.9.0
 - feat(voxel) #369: Neuer Render-Modus „Voxel" füllt die Geometrie mit Würfeln in einer im Debug-Dialog (Debug ▸ Voxel…) einstellbaren Auflösung. Im Dialog lässt sich ein Snapshot speichern, die Geometrie ändern (z.B. Fillet hinzufügen), erneut snapshotten und der Unterschied zu einem gewählten Referenz-Snapshot anzeigen — hinzugekommene Voxel grün, entfernte rot, plus quantitative Auswertung (Anzahl hinzugekommen/entfernt/unverändert und Volumen-Delta). Dasselbe geht programmatisch über die Konsole via window.__fdVoxel (snapshot/diff).
 

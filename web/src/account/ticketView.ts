@@ -5,7 +5,12 @@
  * testable and shared by the list + detail views.
  */
 
-import type { AuthorType, TicketComment, TicketState } from "../api/platform";
+import type {
+  AuthorType,
+  TicketComment,
+  TicketState,
+  TicketSummary,
+} from "../api/platform";
 
 /** Human-readable label for a ticket state (the six-value enum). */
 export function stateLabel(state: TicketState): string {
@@ -28,6 +33,13 @@ export function stateLabel(state: TicketState): string {
 /** The short "#N" reference for a ticket (ticket 066230d9). */
 export function ticketRef(number: number): string {
   return `#${number}`;
+}
+
+/** The list's Author column label (ticket #365): the resolved human name the
+ *  server sends alongside each row, same resolution path as comment authors
+ *  (#359 → commentAuthorLabel). Falls back to "Unknown" for a deleted user. */
+export function ticketAuthorLabel(t: Pick<TicketSummary, "author_name">): string {
+  return t.author_name?.trim() || "Unknown";
 }
 
 /** Every state of the machine, in flow order (the six-value enum). */

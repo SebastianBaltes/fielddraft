@@ -27,6 +27,7 @@ function summary(over: Partial<TicketSummary> = {}): TicketSummary {
     id: "t1",
     number: 1,
     author_id: "u1",
+    author_name: "Ada",
     title: "Crash on extrude",
     state: "triage",
     version: "",
@@ -153,6 +154,33 @@ describe("TicketsView — list", () => {
     expect(list).toHaveBeenLastCalledWith(
       expect.objectContaining({ author: "me" }),
     );
+  });
+
+  it("shows the resolved author name as its own sortable column (#365)", async () => {
+    vi.spyOn(platform.platformApi, "listTickets").mockResolvedValue([
+      summary({ id: "a", author_name: "Zoe", updated_at: "2026-06-01T00:00:00Z" }),
+      summary({ id: "b", author_name: "Ada", updated_at: "2026-06-02T00:00:00Z" }),
+    ]);
+    mount();
+    await flush();
+    expect(byTestId("ticket-author-a")?.textContent).toBe("Zoe");
+    expect(byTestId("ticket-author-b")?.textContent).toBe("Ada");
+
+    // Sorting by Author (ascending on first click) reorders the rows A→Z.
+    act(() => byTestId<HTMLButtonElement>("ticket-sort-author")!.click());
+    await flush();
+    const rows = container.querySelectorAll('[data-testid^="ticket-row-"]');
+    expect(rows[0].getAttribute("data-testid")).toBe("ticket-row-b"); // Ada
+    expect(rows[1].getAttribute("data-testid")).toBe("ticket-row-a"); // Zoe
+  });
+
+  it("falls back to 'Unknown' when the server sends no author_name (#365)", async () => {
+    vi.spyOn(platform.platformApi, "listTickets").mockResolvedValue([
+      summary({ author_name: undefined }),
+    ]);
+    mount();
+    await flush();
+    expect(byTestId("ticket-author-t1")?.textContent).toBe("Unknown");
   });
 
   it("shows an empty state when nothing matches", async () => {

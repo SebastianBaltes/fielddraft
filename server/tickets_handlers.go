@@ -180,6 +180,7 @@ func (s *Server) handleListTickets(w http.ResponseWriter, r *http.Request) {
 	for _, t := range tickets {
 		out = append(out, summarize(t))
 	}
+	s.fillAuthorNamesSummary(out)
 	json.NewEncoder(w).Encode(out)
 }
 
@@ -465,14 +466,19 @@ func (s *Server) handleGetArtifact(w http.ResponseWriter, r *http.Request) {
 
 // ticketSummary is one row in the list view (no thread, no body blob).
 type ticketSummary struct {
-	ID        string      `json:"id"`
-	Number    int         `json:"number"`
-	AuthorID  string      `json:"author_id"`
-	Title     string      `json:"title"`
-	State     TicketState `json:"state"`
-	Category  *string     `json:"category"`
-	CreatedAt time.Time   `json:"created_at"`
-	UpdatedAt time.Time   `json:"updated_at"`
+	ID       string `json:"id"`
+	Number   int    `json:"number"`
+	AuthorID string `json:"author_id"`
+	// AuthorName is the opener's human display name, resolved from AuthorID
+	// the same way comments resolve theirs (#359 → fillAuthorNames; ticket
+	// #365 gives the list its own "Author" column instead of a bare id).
+	// Empty when the user record is gone.
+	AuthorName string      `json:"author_name,omitempty"`
+	Title      string      `json:"title"`
+	State      TicketState `json:"state"`
+	Category   *string     `json:"category"`
+	CreatedAt  time.Time   `json:"created_at"`
+	UpdatedAt  time.Time   `json:"updated_at"`
 }
 
 func summarize(t *Ticket) ticketSummary {
@@ -522,6 +528,17 @@ func (s *Server) fillAuthorNames(comments []*TicketComment) {
 		}
 		if u := s.store.GetUser(*c.AuthorID); u != nil {
 			c.AuthorName = u.DisplayName
+		}
+	}
+}
+
+// fillAuthorNamesSummary is fillAuthorNames' counterpart for the list view
+// (ticket #365): resolves each row's AuthorID to the opener's display name so
+// the list's Author column shows a human name, not a raw id.
+func (s *Server) fillAuthorNamesSummary(rows []ticketSummary) {
+	for i := range rows {
+		if u := s.store.GetUser(rows[i].AuthorID); u != nil {
+			rows[i].AuthorName = u.DisplayName
 		}
 	}
 }
