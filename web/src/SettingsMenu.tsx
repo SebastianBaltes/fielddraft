@@ -382,19 +382,6 @@ export function SettingsMenu({
             type="button"
             role="menuitem"
             className="menu-item"
-            data-testid="menu-share"
-            disabled={!hasFeatures || !state?.projectId || !inProject}
-            onClick={() => menuAction(() => store?.publishProject())}
-          >
-            Share
-          </button>
-
-          <div className="menu-separator" role="separator" />
-
-          <button
-            type="button"
-            role="menuitem"
-            className="menu-item"
             data-testid="menu-undo"
             disabled={!state?.canUndo || !inProject}
             onClick={() => menuAction(() => { store?.undo(); })}

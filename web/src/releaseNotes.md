@@ -12,6 +12,9 @@ Format, eine Zeile je Eintrag:
 kind = feat | fix | perf. scope und #tickets sind optional. Folgezeilen, die
 eingerückt sind, gehören zum Text davor (Umbruch erlaubt).
 
+## 0.6.602
+- fix(ui) #362: Der funktionslose „Share"-Menüpunkt ist entfernt.
+
 ## 0.6.601
 - fix(kernel): Ein Dokument ohne fertigen Körper (z. B. ein Revolve, dem noch die Achse fehlt) legt nicht mehr den ganzen Kernel lahm: die Flächen-Abfrage kommt jetzt leer zurück, statt die Sitzung mit einem Absturz zu beenden.
 
