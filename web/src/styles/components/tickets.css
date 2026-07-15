@@ -444,14 +444,35 @@
     /* #358: delete is a trash icon pushed to the right edge, set apart from the
        everyday Edit / Set-state actions so it doesn't read as one of them. The
        confirm dialog in remove() is the safety net. */
+    /* #366: a proper icon button — no background, no border, real padding, a
+       red glyph (SVG, currentColor), a red-tinted hover and a pointer cursor.
+       Matches the established .icon-btn / .dialog-close affordance instead of
+       riding on .danger (which drew a bordered button). */
     & button.icon-delete {
       margin-left: auto;
-      padding-inline: var(--space-2);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: var(--space-2);
+      border: none;
+      background: transparent;
+      border-radius: var(--radius-sm);
+      color: var(--color-error-text);
+      cursor: pointer;
+      line-height: 1;
 
-      & .glyph {
+      & svg {
         display: block;
-        font-size: var(--fs-md);
-        line-height: 1;
+      }
+
+      &:not(:disabled):hover {
+        background: color-mix(in srgb, var(--color-error) 14%, transparent);
+        color: var(--color-error);
+      }
+
+      &:disabled {
+        cursor: default;
+        opacity: 0.45;
       }
     }
   }

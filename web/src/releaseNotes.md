@@ -12,6 +12,9 @@ Format, eine Zeile je Eintrag:
 kind = feat | fix | perf. scope und #tickets sind optional. Folgezeilen, die
 eingerückt sind, gehören zum Text davor (Umbruch erlaubt).
 
+## 0.6.603
+- fix(ui) #366: Der Löschen-Button in der Ticket-Detailansicht ist jetzt ein sauberer Icon-Button — Papierkorb-Symbol in Rot, ohne Rahmen/Hintergrund, mit Hover-Effekt und Zeiger-Cursor.
+
 ## 0.6.602
 - fix(ui) #362: Der funktionslose „Share"-Menüpunkt ist entfernt.
 
