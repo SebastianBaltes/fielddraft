@@ -440,6 +440,20 @@
       border-color: var(--color-error-text);
       color: var(--color-error-text);
     }
+
+    /* #358: delete is a trash icon pushed to the right edge, set apart from the
+       everyday Edit / Set-state actions so it doesn't read as one of them. The
+       confirm dialog in remove() is the safety net. */
+    & button.icon-delete {
+      margin-left: auto;
+      padding-inline: var(--space-2);
+
+      & .glyph {
+        display: block;
+        font-size: var(--fs-md);
+        line-height: 1;
+      }
+    }
   }
 
   /* ── forms (create / edit / comment) ────────────────────── */

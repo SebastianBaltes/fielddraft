@@ -12,6 +12,9 @@ Format, eine Zeile je Eintrag:
 kind = feat | fix | perf. scope und #tickets sind optional. Folgezeilen, die
 eingerückt sind, gehören zum Text davor (Umbruch erlaubt).
 
+## 0.6.598
+- fix(tickets) #358: Der Löschen-Button in der Ticket-Detailansicht ist jetzt ein Papierkorb-Symbol am rechten Rand, klar abgesetzt von Bearbeiten und Status statt als weiterer Text-Button — die Sicherheitsabfrage bleibt.
+
 ## 0.6.597
 - feat(release-notes) #357: Ticket-Nummern in den Release Notes (z.B. #347) sind jetzt anklickbar und öffnen das zugehörige Ticket in der Issues-Ansicht. Interne Kürzel ohne Ticket bleiben schlichter Text.
 

@@ -582,13 +582,16 @@ function TicketDetailPanel({
               {canDelete && (
                 <button
                   type="button"
-                  className="danger"
+                  className="danger icon-delete"
                   data-testid="detail-delete-ticket"
                   disabled={busy}
                   onClick={() => void remove()}
+                  aria-label="Ticket endgültig löschen"
                   title="Ticket endgültig löschen"
                 >
-                  Delete
+                  <span className="glyph" aria-hidden="true">
+                    🗑
+                  </span>
                 </button>
               )}
             </div>
