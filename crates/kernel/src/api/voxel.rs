@@ -97,7 +97,15 @@ impl Kernel {
         let bodies: Vec<crate::bvh::BoundedCsg> = self
             .bodies
             .iter()
-            .map(|b| crate::body::build_bounded_with_primitives(&self.decoded, &b.feature_indices).0)
+            .map(|b| {
+                crate::body::build_bounded_with_primitives_rounded(
+                    &self.decoded,
+                    &b.feature_indices,
+                    self.global_round,
+                    &self.edge_fillets,
+                )
+                .0
+            })
             .collect();
         let mut occ = vec![0u8; dims[0] * dims[1] * dims[2]];
         let mut idx = 0usize;

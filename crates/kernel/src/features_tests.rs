@@ -6720,6 +6720,67 @@ fn ticket_373_dump_opcode_stream() {
     );
 }
 
+/// #380 headless self-validation: the voxel-debug diff (`voxelizeOccupancy`,
+/// #369) must actually SEE the edge fillet from #373. Root cause was that
+/// `voxelize_occupancy` built each body via `build_bounded_with_primitives`
+/// (the plain, non-rounded builder — `global_round: None`, `edge_fillets: &[]`)
+/// instead of `build_bounded_with_primitives_rounded(..., k.global_round,
+/// &k.edge_fillets)`, the same call `build_mesh_for`/`compile_sdf_for` in
+/// kernel_core.rs make. So the sampled field never carried the fillet and the
+/// diff was always empty. This test loads the #373 fixture twice — once as-is
+/// (fillet present) and once with the trailing `fillet_edge` feature call
+/// stripped (fillet absent) — and asserts the two occupancy grids differ.
+#[test]
+fn ticket_380_voxel_diff_sees_the_fillet() {
+    let mut with_fillet = crate::Kernel::new();
+    with_fillet
+        .load_json(include_str!("testdata/ticket_373_document.json"))
+        .expect("document loads");
+    assert_eq!(with_fillet.edge_fillets.len(), 1, "fillet resolved");
+
+    // Same document, minus the trailing fillet_edge feature call.
+    let mut doc: serde_json::Value =
+        serde_json::from_str(include_str!("testdata/ticket_373_document.json"))
+            .expect("fixture parses as JSON");
+    let calls = doc["feature_calls"].as_array_mut().expect("feature_calls array");
+    let popped = calls.pop().expect("at least one feature call");
+    assert_eq!(popped["type"], "fillet_edge", "the last feature call must be the fillet");
+    let without_fillet_json = serde_json::to_string(&doc).expect("re-serializes");
+
+    let mut without_fillet = crate::Kernel::new();
+    without_fillet
+        .load_json(&without_fillet_json)
+        .expect("stripped document loads");
+    assert_eq!(without_fillet.edge_fillets.len(), 0, "no fillet left in the stripped document");
+
+    // Resolution 48: the fillet's blend_radius is 10 mm on a ~48 mm-diameter
+    // part, so it must resolve cleanly at this grid density.
+    const RES: u32 = 48;
+    let info_a = with_fillet.voxel_grid_info(RES);
+    let info_b = without_fillet.voxel_grid_info(RES);
+    assert!(!info_a.is_empty() && !info_b.is_empty(), "both scenes must voxelise");
+    assert_eq!(
+        &info_a[0..3], &info_b[0..3],
+        "removing the fillet must not change the grid dims (same base body, tiny geometry delta)"
+    );
+
+    let occ_a = with_fillet.voxelize_occupancy(RES);
+    let occ_b = without_fillet.voxelize_occupancy(RES);
+    assert_eq!(occ_a.len(), occ_b.len(), "same grid ⇒ same occupancy length");
+
+    let changed = occ_a.iter().zip(occ_b.iter()).filter(|(a, b)| a != b).count();
+    eprintln!(
+        "ticket_380: {changed} of {} voxels changed between filleted and un-filleted occupancy \
+         (res={RES})",
+        occ_a.len()
+    );
+    assert!(
+        changed > 0,
+        "the voxel occupancy MUST differ once the fillet is present — 0 means \
+         voxelize_occupancy is still sampling the non-fillet field (#380)",
+    );
+}
+
 /// #348 „Die BREP-Kante laeuft falsch" — S-foermig an der Rundung vorbei.
 ///
 /// An der runden Nut-Stirn treffen die beiden Wandflaechen die Rundung TANGENTIAL.

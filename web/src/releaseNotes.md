@@ -12,6 +12,9 @@ Format, eine Zeile je Eintrag:
 kind = feat | fix | perf. scope und #tickets sind optional. Folgezeilen, die
 eingerückt sind, gehören zum Text davor (Umbruch erlaubt).
 
+## 0.12.2
+- fix(voxel) #380: Der Voxel-Debug-Diff (Debug ▸ Voxel) samplete das ungefillette Feld — der Kanten-Fillet (#373) tauchte im Occupancy-Vergleich nicht auf. `voxelizeOccupancy` baut jeden Body jetzt über denselben gerundeten Builder wie Mesh- und SDF-Render-Pfad, der Fillet erscheint im Diff.
+
 ## 0.12.1
 - fix(screenSpaceCsg) #370: Screen-Space-CSG (experimentelles Setting) komponiert keine Bodys mehr, deren Minuend aus mehreren aneinanderstoßenden Leaves besteht (z.B. zwei Extrudes auf demselben Profil) — sie waren großflächig durchsichtig gerendert (Boden-Grid schien durch die Deckfläche). Solche Bodys nutzen jetzt wieder den regulären, korrekten Mesh-Renderpfad.
 
