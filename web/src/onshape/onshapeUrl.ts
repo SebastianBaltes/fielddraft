@@ -48,11 +48,23 @@ export interface OnshapeSource {
   elementId: string;
   /** The document name at import time — the project title (e.g. "Lötkolbenhalter"). */
   documentName?: string;
+  /** The full Onshape document URL the import was resolved from (ticket #376).
+   *  Redundant with the three ids (see {@link onshapeSourceUrl}) but stored
+   *  explicitly so it survives save/load without recomputation and so a saved
+   *  project reveals its Onshape origin to a human reading the raw JSON, not
+   *  just to code that knows the URL scheme. */
+  url?: string;
   /** When the project was last (re)imported, ISO-8601. */
   importedAt?: string;
 }
 
-/** The canonical Onshape URL of a source — what "Open in Onshape" navigates to. */
+/** The canonical Onshape URL of a source — what "Open in Onshape" navigates to.
+ *  Prefers the stored {@link OnshapeSource.url} (the exact URL the import was
+ *  resolved from) and falls back to reconstructing it from the three ids for
+ *  sources persisted before ticket #376 added the `url` field. */
 export function onshapeSourceUrl(src: OnshapeSource): string {
-  return `https://cad.onshape.com/documents/${src.documentId}/w/${src.workspaceId}/e/${src.elementId}`;
+  return (
+    src.url ??
+    `https://cad.onshape.com/documents/${src.documentId}/w/${src.workspaceId}/e/${src.elementId}`
+  );
 }

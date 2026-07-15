@@ -16,6 +16,7 @@ import { platformApi } from "../api/platform";
 import { Kernel } from "../kernel";
 import { importOnshapeFeatures } from "./onshapeImport";
 import {
+  onshapeSourceUrl,
   parseOnshapeUrl,
   type OnshapeDocRef,
   type OnshapeSource,
@@ -99,6 +100,17 @@ export async function importOnshapeProject(
           return parsed;
         })()
       : src;
+  // The URL to remember on the source (ticket #376). Only trust the pasted
+  // string when it already named the Part Studio (`/e/…`) — one that stopped
+  // after the workspace resolves to a DIFFERENT (guessed) element below, so
+  // remembering it verbatim would point "Open in Onshape" at the wrong studio.
+  // Otherwise fall back to a prior source's own URL (reimport — keeps a
+  // share-link `/d/…` form instead of silently normalizing it away), and only
+  // reconstruct from the ids as a last resort.
+  const pastedUrl =
+    typeof src === "string" && ref.elementId ? src : undefined;
+  const priorUrl =
+    typeof src === "object" && "url" in src ? (src as OnshapeSource).url : undefined;
 
   const elementId = await resolveElementId({
     documentId: ref.documentId,
@@ -131,6 +143,10 @@ export async function importOnshapeProject(
     documentName: name,
     importedAt: opts.now,
   };
+  source.url =
+    pastedUrl ??
+    priorUrl ??
+    onshapeSourceUrl(source);
 
   return {
     project: {

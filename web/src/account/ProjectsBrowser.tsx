@@ -602,6 +602,11 @@ export function ProjectsBrowser({
                               href={onshapeSourceUrl(onshapeSourceOf(p)!)}
                               target="_blank"
                               rel="noreferrer noopener"
+                              title={
+                                onshapeSourceOf(p)!.documentName
+                                  ? `${onshapeSourceOf(p)!.documentName} — ${onshapeSourceUrl(onshapeSourceOf(p)!)}`
+                                  : onshapeSourceUrl(onshapeSourceOf(p)!)
+                              }
                             >
                               In Onshape öffnen
                             </a>

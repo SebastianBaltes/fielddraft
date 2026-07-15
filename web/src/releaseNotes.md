@@ -12,6 +12,14 @@ Format, eine Zeile je Eintrag:
 kind = feat | fix | perf. scope und #tickets sind optional. Folgezeilen, die
 eingerückt sind, gehören zum Text davor (Umbruch erlaubt).
 
+## 0.14.2
+- fix(onshape) #376: Ein aus Onshape importiertes Projekt merkt sich jetzt auch
+  die Onshape-Dokument-URL (`onshape.url`) im gespeicherten `.fdraft` — bisher
+  trug `Project.onshape` nur die drei IDs, die URL ging beim Speichern/Laden
+  verloren und war im Projekt-JSON nicht mehr sichtbar. „In Onshape öffnen“ in
+  der Projektübersicht nutzt jetzt diese gespeicherte URL (mit Tooltip auf den
+  Dokumentnamen) statt sie aus den IDs zu rekonstruieren.
+
 ## 0.14.1
 - fix(fillet) #382: Im Render-Modus sdf-vm wird ein Kanten-Fillet jetzt sauber
   statt degeneriert/artefaktig dargestellt. Das gemischte Distanzfeld war am

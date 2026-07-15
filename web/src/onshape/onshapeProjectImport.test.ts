@@ -51,6 +51,7 @@ describe("importOnshapeProject", () => {
       workspaceId: WS,
       elementId: EL,
       documentName: "Lötkolbenhalter",
+      url: URL_WITH_ELEMENT,
       importedAt: NOW,
     });
     expect(result.featureCount).toBe(2);
@@ -84,6 +85,12 @@ describe("importOnshapeProject", () => {
     expect(result.project.onshape?.elementId).toBe(EL);
     // …and the title is the document's, not the element's ("Part Studio 1").
     expect(result.project.name).toBe("Lötkolbenhalter");
+    // The pasted URL had no `/e/…`, so the stored url is reconstructed with the
+    // RESOLVED element — never the ambiguous element-less URL the user pasted
+    // (ticket #376).
+    expect(result.project.onshape?.url).toBe(
+      `https://cad.onshape.com/documents/${DOC}/w/${WS}/e/${EL}`,
+    );
   });
 
   it("reimports from a stored source without touching the elements endpoint", async () => {
@@ -104,6 +111,11 @@ describe("importOnshapeProject", () => {
     expect(features).toHaveBeenCalledWith(DOC, WS, EL);
     // A rename in Onshape follows through on reimport.
     expect(result.project.name).toBe("Lötkolbenhalter v2");
+    // No prior `url` on the stored source (`{documentId,workspaceId,elementId}`
+    // only) and no pasted string either — reconstructed from the ids.
+    expect(result.project.onshape?.url).toBe(
+      `https://cad.onshape.com/documents/${DOC}/w/${WS}/e/${EL}`,
+    );
   });
 
   it("keeps the old name when Onshape cannot tell us the document name", async () => {
@@ -126,5 +138,27 @@ describe("importOnshapeProject", () => {
     await expect(
       importOnshapeProject("https://example.com/nope", { now: NOW }),
     ).rejects.toThrow(/Onshape-URL/);
+  });
+
+  it("keeps a reimported source's own url (e.g. a /d/… share link) instead of normalizing it", async () => {
+    vi.spyOn(platform.platformApi, "getOnshapeDocument").mockResolvedValue({
+      name: "Lötkolbenhalter",
+    });
+    vi.spyOn(platform.platformApi, "getOnshapeFeatures").mockResolvedValue({
+      features: [],
+    });
+    const shareUrl = `https://cad.onshape.com/d/${DOC}/w/${WS}/e/${EL}`;
+
+    const result = await importOnshapeProject(
+      {
+        documentId: DOC,
+        workspaceId: WS,
+        elementId: EL,
+        url: shareUrl,
+      },
+      { now: NOW },
+    );
+
+    expect(result.project.onshape?.url).toBe(shareUrl);
   });
 });

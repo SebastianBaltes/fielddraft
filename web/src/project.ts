@@ -426,6 +426,7 @@ function parseOnshapeSource(raw: unknown): OnshapeSource | null {
     ...(typeof o.documentName === "string"
       ? { documentName: o.documentName }
       : {}),
+    ...(typeof o.url === "string" ? { url: o.url } : {}),
     ...(typeof o.importedAt === "string" ? { importedAt: o.importedAt } : {}),
   };
 }
