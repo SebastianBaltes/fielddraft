@@ -51,32 +51,34 @@ export function ChatPopup({ store }: { store: KernelStore }) {
         (scriptProposals.ts). Rendered outside the panel so it stays visible
         even if the user collapses the chat. */}
       <ScriptProposalCard store={store} />
-      <ChatPanel
-        agent={agent}
-        title="FieldDraft-Assistent"
-        launcherLabel="Assistent"
-        greeting={
-          "Ich kann Fragen zu FieldDraft beantworten und das Modell für dich bauen. " +
-          "Zum Beispiel: „Was ist in diesem Dokument?“ oder „Bau mir eine Grundplatte " +
-          "80 × 60 × 5 mm.“"
-        }
-        placeholder="Frag mich etwas — oder sag mir, was ich bauen soll…"
-        suggestions={[
-          {
-            label: "Was ist in diesem Dokument?",
-            prompt: "Was ist in diesem Dokument?",
-          },
-          {
-            label: "Grundplatte bauen",
-            prompt: "Bau mir eine Grundplatte 80 × 60 × 5 mm.",
-          },
-          {
-            label: "Wie skizziere ich?",
-            prompt:
-              "Wie erstelle ich in FieldDraft eine Skizze und extrudiere sie?",
-          },
-        ]}
-      />
+      {/* #360: the panel's own styling ships small (11–15 px) low-contrast text.
+        This wrapper scopes FieldDraft's readability overrides (aichat.css) to the
+        embedded BaseAIChat panel — the panel renders in-tree (no portal), so a
+        `.fd-aichat` ancestor reliably out-specifies the submodule's `.bac-*`
+        rules without touching third_party. */}
+      <div className="fd-aichat">
+        <ChatPanel
+          agent={agent}
+          title="FieldDraft-Assistent"
+          launcherLabel="Assistent"
+          greeting={
+            "Ich kann Fragen zu FieldDraft beantworten und das Modell für dich " +
+            "bauen. Zum Beispiel: „Bau mir eine Grundplatte 80 × 60 × 5 mm.“"
+          }
+          placeholder="Frag mich etwas — oder sag mir, was ich bauen soll…"
+          suggestions={[
+            {
+              label: "Grundplatte bauen",
+              prompt: "Bau mir eine Grundplatte 80 × 60 × 5 mm.",
+            },
+            {
+              label: "Wie skizziere ich?",
+              prompt:
+                "Wie erstelle ich in FieldDraft eine Skizze und extrudiere sie?",
+            },
+          ]}
+        />
+      </div>
     </>
   );
 }

@@ -12,6 +12,9 @@ Format, eine Zeile je Eintrag:
 kind = feat | fix | perf. scope und #tickets sind optional. Folgezeilen, die
 eingerückt sind, gehören zum Text davor (Umbruch erlaubt).
 
+## 0.6.599
+- fix(assistant) #360: Der FieldDraft-Assistent ist besser lesbar — alle Texte im Dialog sind jetzt mindestens 1rem groß und der graue Text hat mehr Kontrast. Der „Was ist in diesem Dokument?"-Vorschlag ist weg; „Grundplatte bauen" und „Wie skizziere ich?" bleiben.
+
 ## 0.6.598
 - fix(tickets) #358: Der Löschen-Button in der Ticket-Detailansicht ist jetzt ein Papierkorb-Symbol am rechten Rand, klar abgesetzt von Bearbeiten und Status statt als weiterer Text-Button — die Sicherheitsabfrage bleibt.
 

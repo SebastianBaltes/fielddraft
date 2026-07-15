@@ -23,6 +23,7 @@
 @import "./components/mesher-dialog.css";
 @import "./components/mesher-pasm-dialog.css";
 @import "./components/release-notes.css";
+@import "./components/aichat.css";
 @import "./components/perf-hud.css";
 @import "./components/loading-overlay.css";
 @import "./components/fieldskript-editor.css";

@@ -1,0 +1,40 @@
+/* FieldDraft overrides for the embedded BaseAIChat panel
+   (third_party/baseaichat, ChatPanel.css).
+
+   Ticket #360: the panel ships 11–15 px text and a low-contrast muted token,
+   which reads poorly. We re-theme through the panel's public `--bac-*` custom
+   properties and lift every text run to >= 1rem (web/CLAUDE.md), scoped under
+   `.fd-aichat` (the wrapper in ChatPopup.tsx). The panel renders in-tree (no
+   portal), so this ancestor reliably out-specifies the submodule's own `.bac-*`
+   rules (0,2,0 > 0,1,0) regardless of stylesheet load order — no third_party
+   edit needed. */
+
+.fd-aichat {
+  & .bac-panel {
+    /* Darker muted text so the greeting/banner runs are legible (was #64748b).
+       The panel's dark theme lightens it instead — matched here at equal
+       specificity so our light value never bleeds onto a dark surface. */
+    --bac-text-muted: #475569;
+
+    @media (prefers-color-scheme: dark) {
+      --bac-text-muted: #cbd5e1;
+    }
+  }
+
+  /* Every text run at least 1rem. The markdown body uses em units, so it scales
+     off `.bac-message` automatically. */
+  & .bac-launcher,
+  & .bac-header h2,
+  & .bac-header-actions button,
+  & .bac-greeting,
+  & .bac-message,
+  & .bac-banner,
+  & .bac-suggestions button,
+  & .bac-attachment button,
+  & .bac-tool,
+  & .bac-tool pre,
+  & .bac-composer textarea,
+  & .bac-send {
+    font-size: 1rem;
+  }
+}
