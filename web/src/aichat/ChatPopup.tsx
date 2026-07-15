@@ -8,7 +8,10 @@
  *    `enabled:false` when no OpenRouter key is configured — then nothing mounts,
  *    rather than a chat that fails on the first message.
  *  · **The model comes from the SERVER.** The proxy's allowlist is the authority;
- *    a hardcoded client-side model id would just earn a 403.
+ *    a hardcoded client-side model id would just earn a 403. Admins may pick
+ *    among the allowlisted models via a header dropdown (ticket #361) — the
+ *    request still goes through the same proxy allowlist, so an admin can only
+ *    ever select a model the server already permits.
  *
  * Loaded lazily by App.tsx: the AI SDK is heavy and most sessions never open the
  * chat.
@@ -20,8 +23,26 @@ import type { KernelStore } from "../store";
 import { agentOptions, type AIChatConfig } from "./setup";
 import { ScriptProposalCard } from "./ScriptProposalCard";
 
-export function ChatPopup({ store }: { store: KernelStore }) {
+/** Shortens `provider/model-id` to just the model id for the dropdown label —
+ *  the provider prefix is implied (OpenRouter) and only adds noise. */
+function modelLabel(model: string): string {
+  const slash = model.indexOf("/");
+  return slash === -1 ? model : model.slice(slash + 1);
+}
+
+export function ChatPopup({
+  store,
+  isAdmin = false,
+}: {
+  store: KernelStore;
+  /** Admins get a model picker in the panel header (ticket #361); everyone
+   *  else gets the server's default model with no control over it. */
+  isAdmin?: boolean;
+}) {
   const [config, setConfig] = useState<AIChatConfig | null>(null);
+  const [selectedModel, setSelectedModel] = useState<string | undefined>(
+    undefined,
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -39,11 +60,30 @@ export function ChatPopup({ store }: { store: KernelStore }) {
   }, []);
 
   const agent = useMemo(
-    () => (config?.enabled ? agentOptions(store, config.models) : null),
-    [store, config],
+    () =>
+      config?.enabled
+        ? agentOptions(store, config.models, selectedModel)
+        : null,
+    [store, config, selectedModel],
   );
 
   if (!agent) return null;
+
+  const headerExtra =
+    isAdmin && config && config.models.length > 1 ? (
+      <select
+        className="fd-aichat-model-select"
+        aria-label="OpenRouter-Modell"
+        value={selectedModel ?? config.models[0]}
+        onChange={(e) => setSelectedModel(e.target.value)}
+      >
+        {config.models.map((m) => (
+          <option key={m} value={m}>
+            {modelLabel(m)}
+          </option>
+        ))}
+      </select>
+    ) : undefined;
 
   return (
     <>
@@ -63,6 +103,7 @@ export function ChatPopup({ store }: { store: KernelStore }) {
           launcherLabel="Assistent"
           greeting="Ich kann Fragen zu FieldDraft beantworten und das Modell für dich bauen."
           placeholder="Frag mich…"
+          headerExtra={headerExtra}
         />
       </div>
     </>

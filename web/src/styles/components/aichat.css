@@ -37,4 +37,27 @@
   & .bac-send {
     font-size: 1rem;
   }
+
+  /* Admin-only OpenRouter model picker (ticket #361), rendered into the
+     panel's `headerExtra` slot — between the title and the clear/close
+     buttons, so it has to stay compact. */
+  & .fd-aichat-model-select {
+    max-width: 11rem;
+    padding: var(--space-1) var(--space-2);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-sm);
+    background: var(--color-bg-elevated);
+    color: var(--color-text);
+    font-size: 1rem;
+    font-family: inherit;
+
+    &:hover {
+      border-color: var(--color-border-strong);
+    }
+
+    &:focus-visible {
+      outline: 2px solid var(--color-accent);
+      outline-offset: 1px;
+    }
+  }
 }

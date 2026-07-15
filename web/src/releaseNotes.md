@@ -12,6 +12,9 @@ Format, eine Zeile je Eintrag:
 kind = feat | fix | perf. scope und #tickets sind optional. Folgezeilen, die
 eingerückt sind, gehören zum Text davor (Umbruch erlaubt).
 
+## 0.12.0
+- feat(aichat) #361: Admins können im Assistent-Dialog das OpenRouter-Modell per Dropdown im Panel-Header umschalten; andere Nutzer sehen kein Dropdown und bekommen weiter das erste erlaubte Modell.
+
 ## 0.11.1
 - fix(aichat) #375: Assistent-Dialog aufgeräumt — kürzerer Placeholder „Frag mich…", Beispiel-Chips
   und das Bau-Beispiel im Begrüßungstext entfernt; Clear-Button zeigt jetzt ein Papierkorb-Icon statt

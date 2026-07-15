@@ -1103,7 +1103,7 @@ function AppShell({ account }: { account: UseAccount }) {
           mounts nothing at all when the server has no OpenRouter key. */}
         {store && account.state.status === "authed" && (
           <Suspense fallback={null}>
-            <ChatPopup store={store} />
+            <ChatPopup store={store} isAdmin={account.isAdmin} />
           </Suspense>
         )}
       </div>

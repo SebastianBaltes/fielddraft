@@ -60,10 +60,15 @@ export interface AIChatConfig {
  * Build the options for `<ChatPanel agent={…}>`. `models` comes from the server
  * (/api/aichat/config): the proxy's allowlist is the authority, so the client
  * never asks for a model that would come back as a 403.
+ *
+ * `selectedModel` lets an admin override the default via the header dropdown
+ * (ticket #361) — it must still be one of `models`, since that allowlist is
+ * enforced server-side regardless of what the client sends.
  */
 export function agentOptions(
   store: KernelStore,
   models: string[],
+  selectedModel?: string,
 ): ChatAgentOptions {
   const api = createFieldDraftApi(store);
   const ui = createUIActions({ root: appRoot() });
@@ -118,7 +123,7 @@ export function agentOptions(
     variableNames: store.getState().variables.map((v) => v.name),
   });
 
-  const model = models[0] ?? "google/gemini-3-flash-preview";
+  const model = selectedModel ?? models[0] ?? "google/gemini-3-flash-preview";
 
   return {
     provider: "openrouter",
