@@ -336,6 +336,7 @@ func mapTicket(iv *ivTicket) *Ticket {
 		Title:       iv.Title,
 		Body:        iv.Body,
 		State:       mapIVState(iv.ID, iv.State),
+		Version:     iv.Version,
 		Category:    iv.Category,
 		POSpam:      bool(iv.Meta.POSpam),
 		POMalicious: bool(iv.Meta.POMalicious),

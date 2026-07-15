@@ -201,7 +201,7 @@
   /* Shared column grid so the sortable header and the data rows line up
    *  (ticket a7b63b6): # · State · Title (flex) · Category · Updated. The
    *  leading `#` reference column is ticket 066230d9. */
-  --ticket-cols: 3.5rem 6rem minmax(0, 1fr) 12rem;
+  --ticket-cols: 3.5rem 6rem minmax(0, 1fr) 6rem 12rem;
 
   & .ticket-table {
     border: 1px solid var(--color-border);
@@ -310,6 +310,15 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  & .row-version {
+    font-variant-numeric: tabular-nums;
+    font-size: var(--fs-md);
+    color: var(--color-text-subtle);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 
   & .row-meta {

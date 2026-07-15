@@ -12,6 +12,10 @@ Format, eine Zeile je Eintrag:
 kind = feat | fix | perf. scope und #tickets sind optional. Folgezeilen, die
 eingerückt sind, gehören zum Text davor (Umbruch erlaubt).
 
+## 0.6.596
+- fix(tickets) #357: Der Zustand eines Tickets wird wieder angezeigt, und das Status-Auswahlmenü zeigt die aktuellen Zustände (Triage, Needs info, In progress, Parked, Closed, Rejected) statt der alten. Grund war, dass die App noch das alte, umfangreichere Zustandsmodell kannte, während der Server längst auf das schlankere umgestellt war.
+- feat(tickets) #357: Die Ticket-Liste hat eine Spalte "Version" — bei geschlossenen Tickets steht dort die Release, in der der Fix ausgeliefert wurde (sobald sie beim Schließen gesetzt wird).
+
 ## 0.6.595
 - fix(tickets): Ticket-Zustände laufen jetzt über das vereinfachte IssueVault-Modell (ein State-Feld statt zweier). Für Melder ändern sich nur ein paar Namen — „erledigt" heißt jetzt einheitlich „geschlossen", Abgelehntes „rejected", und zurückgestellte Tickets („parked") tauchen nicht mehr bei jeder Antwort in der Bearbeitungsschlange auf.
 

@@ -156,6 +156,10 @@ type Ticket struct {
 	Title       string      `json:"title"`
 	Body        string      `json:"body"`
 	State       TicketState `json:"state"`
+	// Version is the fix marker stamped when the ticket was closed (empty while
+	// open, and empty on tickets closed before this existed). Opaque — set by the
+	// closer to the release the fix shipped in (IssueVault 0.4.1).
+	Version     string      `json:"version"`
 	Category    *string     `json:"category"` // bug|feature|question|other, or nil
 	POSpam      bool        `json:"po_spam"`
 	POMalicious bool        `json:"po_malicious"`

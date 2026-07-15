@@ -94,19 +94,15 @@ export interface PublishResult {
 
 /* ── tickets (WP4) ─────────────────────────────────────────────── */
 
-/** A ticket's position in the §7.2 state machine. Mirrors server `TicketState`. */
+/** A ticket's position in the state machine. Mirrors server `TicketState` — the
+ *  six-value enum since the IssueVault 0.4.x collapse (server/models.go). */
 export type TicketState =
   | "triage"
   | "needs_info"
-  | "accepted"
   | "in_progress"
-  | "deploying"
-  | "resolved"
+  | "parked"
   | "closed"
-  | "declined"
-  | "backlog"
-  | "rejected_spam"
-  | "rejected_malicious";
+  | "rejected";
 
 /** Who wrote a ticket comment (§4 security context). Mirrors server `AuthorType`.
  *  `user` / `po` / `system` are user-visible; `dev` is admin-only. */
@@ -127,6 +123,8 @@ export interface TicketSummary {
   author_id: string;
   title: string;
   state: TicketState;
+  /** The release the fix shipped in — set on close, "" while open. */
+  version: string;
   category: string | null;
   created_at: string;
   updated_at: string;
@@ -196,6 +194,8 @@ export interface TicketDetail {
   title: string;
   body: string;
   state: TicketState;
+  /** The release the fix shipped in — set on close, "" while open. */
+  version: string;
   category: string | null;
   po_spam: boolean;
   po_malicious: boolean;
