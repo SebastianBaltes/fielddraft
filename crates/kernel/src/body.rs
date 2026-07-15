@@ -27,7 +27,7 @@ use crate::brep::octree::Octree;
 use crate::brep::weaving::{weave, weave_parametric};
 use crate::brep::BRep;
 use crate::bvh::BoundedCsg;
-use crate::csg::{Aabb, CsgNode, DecodedFeature};
+use crate::csg::{Aabb, CsgNode, DecodedFeature, EdgeFillet};
 use crate::dc::Mesh;
 use crate::sdf_compiler::CompiledSdf;
 
@@ -958,19 +958,27 @@ fn hash_feature_geometry(f: &DecodedFeature, hasher: &mut DefaultHasher) {
 /// the logic: take the body's subset of features, fold them into a
 /// `CsgNode` via `from_features`, then BVH-wrap.
 pub fn build_bounded_for_body(features: &[DecodedFeature], indices: &[usize]) -> BoundedCsg {
-    build_bounded_for_body_rounded(features, indices, None)
+    build_bounded_for_body_rounded(features, indices, None, &[])
 }
 
 /// Like [`build_bounded_for_body`] but rounds every Boolean junction by
 /// `global_round` first (feature `round_all`, d). Used by the GPU-SDF compile
 /// path so the ray-marched render shows the deburred edges.
+///
+/// `edge_fillets` are the per-edge fillets (`fillet_edge`) resolved during
+/// regen: they must be applied HERE, not only in the pick tree, or the mesher
+/// and the GPU-SDF renderer march the un-filleted field and the fillet is
+/// invisible in every mode (#350). Edge fillets run BEFORE the global round —
+/// the round then only fills the remaining hard junctions and leaves the
+/// per-edge `MaskedBlend` nodes untouched.
 pub fn build_bounded_for_body_rounded(
     features: &[DecodedFeature],
     indices: &[usize],
     global_round: Option<f32>,
+    edge_fillets: &[EdgeFillet],
 ) -> BoundedCsg {
     let sub: Vec<DecodedFeature> = indices.iter().map(|&i| features[i].clone()).collect();
-    let mut csg = CsgNode::from_decoded(&sub);
+    let mut csg = CsgNode::from_decoded(&sub).apply_edge_fillets(edge_fillets);
     if let Some(r) = global_round {
         csg = csg.apply_global_round(r);
     }
@@ -1004,7 +1012,7 @@ pub fn build_bounded_with_primitives(
     features: &[DecodedFeature],
     indices: &[usize],
 ) -> (BoundedCsg, std::collections::HashMap<u32, fielddraft_protocol::Primitive>) {
-    build_bounded_with_primitives_rounded(features, indices, None)
+    build_bounded_with_primitives_rounded(features, indices, None, &[])
 }
 
 /// Like [`build_bounded_with_primitives`] but rounds every Boolean junction by
@@ -1015,9 +1023,10 @@ pub fn build_bounded_with_primitives_rounded(
     features: &[DecodedFeature],
     indices: &[usize],
     global_round: Option<f32>,
+    edge_fillets: &[EdgeFillet],
 ) -> (BoundedCsg, std::collections::HashMap<u32, fielddraft_protocol::Primitive>) {
     let sub: Vec<DecodedFeature> = indices.iter().map(|&i| features[i].clone()).collect();
-    let mut csg = CsgNode::from_decoded(&sub);
+    let mut csg = CsgNode::from_decoded(&sub).apply_edge_fillets(edge_fillets);
     if let Some(r) = global_round {
         csg = csg.apply_global_round(r);
     }

@@ -359,6 +359,7 @@ impl Kernel {
             &self.decoded,
             feature_indices,
             self.global_round,
+            &self.edge_fillets,
         );
         let prim_refs: std::collections::HashMap<u32, &Primitive> =
             prims.iter().map(|(k, v)| (*k, v)).collect();
@@ -386,6 +387,7 @@ impl Kernel {
             &self.decoded,
             feature_indices,
             self.global_round,
+            &self.edge_fillets,
         );
         sdf_compiler::compile_body(&bounded)
     }

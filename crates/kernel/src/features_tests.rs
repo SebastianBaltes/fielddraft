@@ -6530,6 +6530,61 @@ fn ticket_350_fillet_march_region_covers_every_moved_surface_point() {
     );
 }
 
+/// #350, the REAL bug (reopened twice): the earlier test above only proves the
+/// per-edge fillet works when `apply_edge_fillets` is called by hand. But the
+/// live mesher (`build_mesh_for`) and GPU-SDF renderer (`compile_sdf_for`) build
+/// their body CSG through `build_bounded_*` — and those NEVER applied the edge
+/// fillets. Only the pick tree (`queries_pick`) did. So the fillet reached
+/// picking but not a single thing the user sees: mesh, SDF-VM and SDF-deferred
+/// all marched the un-filleted field → "nach Fillet ändert sich nichts, auch im
+/// SDF nicht". This test drives the SAME builder the renderer/mesher use and
+/// fails unless the fillet actually reaches that field.
+#[test]
+fn ticket_350_edge_fillet_reaches_render_and_mesh_body() {
+    use crate::csg::EvalMode;
+    let mut k = crate::Kernel::new();
+    k.load_json(include_str!("testdata/ticket_350_fillet.json"))
+        .expect("document loads");
+    assert_eq!(k.edge_fillets.len(), 1, "the fillet_edge call resolved its edge");
+    let idx: Vec<usize> = (0..k.decoded.len()).collect();
+
+    // The exact builder the GPU-SDF render (`compile_sdf_for`) and — via
+    // `build_bounded_with_primitives_rounded` — the mesher (`build_mesh_for`)
+    // call. `render` carries the resolved edge fillets; `hard` is the same body
+    // with none, i.e. the field before the round.
+    let render =
+        crate::body::build_bounded_for_body_rounded(&k.decoded, &idx, k.global_round, &k.edge_fillets);
+    let hard = crate::body::build_bounded_for_body_rounded(&k.decoded, &idx, None, &[]);
+
+    // Near the fillet edge the rendered field must move the surface relative to
+    // the hard field. Before the fix these were identical everywhere → #350.
+    let poly = &k.edge_fillets[0].mask_polyline;
+    let mut moved = 0usize;
+    for pt in poly {
+        for dx in -14..=14 {
+            for dy in -14..=14 {
+                for dz in -2..=2 {
+                    let p = [
+                        pt[0] + dx as f32 * 0.5,
+                        pt[1] + dy as f32 * 0.5,
+                        pt[2] + dz as f32 * 0.5,
+                    ];
+                    if (render.sdf(p, EvalMode::Visual) < 0.0)
+                        != (hard.sdf(p, EvalMode::Visual) < 0.0)
+                    {
+                        moved += 1;
+                    }
+                }
+            }
+        }
+    }
+    assert!(
+        moved > 0,
+        "the render/mesh body must reflect the edge fillet — {moved} surface points moved; \
+         0 means the fillet never reached the field the user marches (#350)",
+    );
+}
+
 /// #348 „Die BREP-Kante laeuft falsch" — S-foermig an der Rundung vorbei.
 ///
 /// An der runden Nut-Stirn treffen die beiden Wandflaechen die Rundung TANGENTIAL.
