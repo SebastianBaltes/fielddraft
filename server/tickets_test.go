@@ -694,6 +694,33 @@ func TestTicketNumberAssignedAndIncrements(t *testing.T) {
 	}
 }
 
+// TestSummarizeCarriesVersion — #377: the list view's ticketSummary dropped
+// the Version field entirely, so the UI's Version column stayed empty even
+// though IssueVault had long since backfilled it onto the full ticket. A
+// direct unit test of summarize() pins the field down without needing a
+// backend that can actually set Version (the in-memory test Store has no way
+// to stamp it — only the IssueVault-backed store does, via mapTicket).
+func TestSummarizeCarriesVersion(t *testing.T) {
+	tk := &Ticket{ID: "t1", Number: 42, Title: "x", State: StateClosed, Version: "0.12.3"}
+	got := summarize(tk)
+	if got.Version != "0.12.3" {
+		t.Fatalf("summarize().Version = %q, want %q", got.Version, "0.12.3")
+	}
+
+	// Also empty on an open ticket, and — critically — still present as the
+	// JSON key "version" (no omitempty): the web TicketSummary.version is a
+	// required string, and the list's sort-by-version comparator calls
+	// .localeCompare() on it, which throws on undefined.
+	open := &Ticket{ID: "t2", Number: 43, Title: "y", State: StateTriage}
+	b, err := json.Marshal(summarize(open))
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !strings.Contains(string(b), `"version":""`) {
+		t.Fatalf("summary JSON missing version key for open ticket: %s", b)
+	}
+}
+
 // Ticket 066230d9: the author may park a ticket to `backlog`, un-park it, close
 // it, and reopen a closed ticket — a non-author may not.
 func TestAuthorBacklogCloseReopen(t *testing.T) {

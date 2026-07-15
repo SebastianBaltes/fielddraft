@@ -477,8 +477,16 @@ type ticketSummary struct {
 	Title      string      `json:"title"`
 	State      TicketState `json:"state"`
 	Category   *string     `json:"category"`
-	CreatedAt  time.Time   `json:"created_at"`
-	UpdatedAt  time.Time   `json:"updated_at"`
+	// Version is the fix marker stamped when the ticket was closed (empty
+	// while open — #377: the list view dropped this field entirely, so the
+	// UI's Version column was always empty even though the ticket detail
+	// carried it). No omitempty: TicketSummary.version on the web side is a
+	// required string field (mirrors Ticket.Version in models.go), and the
+	// list's sort-by-version comparator calls .localeCompare() on it — an
+	// absent key would surface as undefined and throw.
+	Version   string    `json:"version"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 func summarize(t *Ticket) ticketSummary {
@@ -489,6 +497,7 @@ func summarize(t *Ticket) ticketSummary {
 		Title:     t.Title,
 		State:     t.State,
 		Category:  t.Category,
+		Version:   t.Version,
 		CreatedAt: t.CreatedAt,
 		UpdatedAt: t.UpdatedAt,
 	}

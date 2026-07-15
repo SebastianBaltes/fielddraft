@@ -12,6 +12,9 @@ Format, eine Zeile je Eintrag:
 kind = feat | fix | perf. scope und #tickets sind optional. Folgezeilen, die
 eingerückt sind, gehören zum Text davor (Umbruch erlaubt).
 
+## 0.12.3
+- fix(tickets) #377: Die Version-Spalte in der Ticket-Liste blieb leer, obwohl Tickets längst eine Version trugen — der Go-Server ließ das Feld in der Listen-Zusammenfassung (`ticketSummary`) weg. Die Version wird jetzt in jeder Listen-Antwort mitgeliefert.
+
 ## 0.12.2
 - fix(voxel) #380: Der Voxel-Debug-Diff (Debug ▸ Voxel) samplete das ungefillette Feld — der Kanten-Fillet (#373) tauchte im Occupancy-Vergleich nicht auf. `voxelizeOccupancy` baut jeden Body jetzt über denselben gerundeten Builder wie Mesh- und SDF-Render-Pfad, der Fillet erscheint im Diff.
 
