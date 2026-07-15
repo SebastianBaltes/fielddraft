@@ -12,6 +12,9 @@ Format, eine Zeile je Eintrag:
 kind = feat | fix | perf. scope und #tickets sind optional. Folgezeilen, die
 eingerückt sind, gehören zum Text davor (Umbruch erlaubt).
 
+## 0.6.595
+- fix(tickets): Ticket-Zustände laufen jetzt über das vereinfachte IssueVault-Modell (ein State-Feld statt zweier). Für Melder ändern sich nur ein paar Namen — „erledigt" heißt jetzt einheitlich „geschlossen", Abgelehntes „rejected", und zurückgestellte Tickets („parked") tauchen nicht mehr bei jeder Antwort in der Bearbeitungsschlange auf.
+
 ## 0.6.594
 - fix(build): Release Notes können den Build nicht mehr kaputt machen. Sie lagen bisher als Programmcode vor — ein einziges gerades Anführungszeichen in einem deutschen Satz beendete den Text-String und legte den kompletten Produktions-Build lahm (viermal passiert). Jetzt sind sie eine reine Textdatei: Anführungszeichen, Backslashes, Klammern — alles harmlos. Eine fehlerhafte Zeile kann die Anzeige auch nicht mehr leeren, sie fällt stattdessen in den Tests auf.
 - fix(ui) #348 #349 #350: Ticket-Nummern in den Release Notes wurden mit doppeltem Rautezeichen angezeigt (##348).
