@@ -1,0 +1,1177 @@
+{
+  "schema_version": 2,
+  "name": "Untitled",
+  "feature_calls": [
+    {
+      "type": "sketch",
+      "id": 1,
+      "params": {
+        "plane": "qCreatedBy(origin_plane_xy)",
+        "sub_calls": [
+          {
+            "id": 1,
+            "params": {
+              "center": [
+                0,
+                0
+              ],
+              "radius": 21.435
+            },
+            "type": "sketch_circle"
+          },
+          {
+            "id": 2,
+            "params": {
+              "center": [
+                0,
+                0
+              ],
+              "radius": 24
+            },
+            "type": "sketch_circle"
+          },
+          {
+            "id": 3,
+            "params": {
+              "entity": 2,
+              "value_mm": 42.87
+            },
+            "type": "sketch_constraint_diameter"
+          },
+          {
+            "id": 4,
+            "params": {
+              "a": 3,
+              "b": 1
+            },
+            "type": "sketch_constraint_coincident"
+          },
+          {
+            "id": 5,
+            "params": {
+              "entity": 4,
+              "value_mm": 48
+            },
+            "type": "sketch_constraint_diameter"
+          }
+        ]
+      }
+    },
+    {
+      "type": "extrude",
+      "id": 2,
+      "params": {
+        "depth": {
+          "unit": "mm",
+          "value": -12
+        },
+        "display_name": "Extrude 1",
+        "operation": "new",
+        "profiles": "qCreatedBy(1)"
+      }
+    },
+    {
+      "type": "extrude",
+      "id": 3,
+      "params": {
+        "depth": {
+          "unit": "mm",
+          "value": 3
+        },
+        "display_name": "Extrude 2",
+        "operation": "add",
+        "profiles": "qCreatedBy(1)",
+        "targets": "qCreatedBy(2)"
+      }
+    },
+    {
+      "type": "sketch",
+      "id": 4,
+      "params": {
+        "plane": "qCreatedBy(2, CAP_BOTTOM)",
+        "sub_calls": [
+          {
+            "id": 1,
+            "params": {
+              "at": [
+                -9.165,
+                -8.72
+              ]
+            },
+            "type": "sketch_point"
+          },
+          {
+            "id": 2,
+            "params": {
+              "at": [
+                9.165,
+                -8.72
+              ]
+            },
+            "type": "sketch_point"
+          },
+          {
+            "id": 3,
+            "params": {
+              "at": [
+                -9.165,
+                8.72
+              ]
+            },
+            "type": "sketch_point"
+          },
+          {
+            "id": 4,
+            "params": {
+              "at": [
+                9.165,
+                8.72
+              ]
+            },
+            "type": "sketch_point"
+          },
+          {
+            "id": 5,
+            "params": {
+              "end": [
+                1.165,
+                -8.72
+              ],
+              "start": [
+                -1.165,
+                -8.72
+              ]
+            },
+            "type": "sketch_line"
+          },
+          {
+            "id": 6,
+            "params": {
+              "end": [
+                1.165,
+                8.72
+              ],
+              "start": [
+                -1.165,
+                8.72
+              ]
+            },
+            "type": "sketch_line"
+          },
+          {
+            "id": 7,
+            "params": {
+              "end": [
+                -9.165,
+                0.72
+              ],
+              "start": [
+                -9.165,
+                -0.72
+              ]
+            },
+            "type": "sketch_line"
+          },
+          {
+            "id": 8,
+            "params": {
+              "end": [
+                9.165,
+                0.72
+              ],
+              "start": [
+                9.165,
+                -0.72
+              ]
+            },
+            "type": "sketch_line"
+          },
+          {
+            "id": 9,
+            "params": {
+              "center": [
+                -1.165,
+                -0.72
+              ],
+              "radius": 8,
+              "start_angle": -3.1415926535897936,
+              "sweep_angle": 1.5707963267948966
+            },
+            "type": "sketch_arc"
+          },
+          {
+            "id": 10,
+            "params": {
+              "center": [
+                1.165,
+                -0.72
+              ],
+              "radius": 8,
+              "start_angle": -1.5707963267948966,
+              "sweep_angle": 1.5707963267948968
+            },
+            "type": "sketch_arc"
+          },
+          {
+            "id": 11,
+            "params": {
+              "center": [
+                -1.165,
+                0.72
+              ],
+              "radius": 8,
+              "start_angle": -4.71238898038469,
+              "sweep_angle": 1.5707963267948966
+            },
+            "type": "sketch_arc"
+          },
+          {
+            "id": 12,
+            "params": {
+              "center": [
+                1.165,
+                0.72
+              ],
+              "radius": 8,
+              "start_angle": -1.8973538018496323e-16,
+              "sweep_angle": 1.5707963267948968
+            },
+            "type": "sketch_arc"
+          },
+          {
+            "id": 13,
+            "params": {
+              "line_a": 10,
+              "line_b": 13
+            },
+            "type": "sketch_constraint_perpendicular"
+          },
+          {
+            "id": 14,
+            "params": {
+              "line_a": 7,
+              "line_b": 10
+            },
+            "type": "sketch_constraint_parallel"
+          },
+          {
+            "id": 15,
+            "params": {
+              "line_a": 13,
+              "line_b": 16
+            },
+            "type": "sketch_constraint_parallel"
+          },
+          {
+            "id": 16,
+            "params": {
+              "line": 10
+            },
+            "type": "sketch_constraint_horizontal"
+          },
+          {
+            "id": 17,
+            "params": {
+              "entity_a": 1,
+              "entity_b": 3,
+              "value_mm": 17.44
+            },
+            "type": "sketch_constraint_distance"
+          },
+          {
+            "id": 18,
+            "params": {
+              "a": 1,
+              "b": 13
+            },
+            "type": "sketch_constraint_coincident"
+          },
+          {
+            "id": 19,
+            "params": {
+              "a": 1,
+              "b": 7
+            },
+            "type": "sketch_constraint_coincident"
+          },
+          {
+            "id": 20,
+            "params": {
+              "a": 18,
+              "b": 11
+            },
+            "type": "sketch_constraint_coincident"
+          },
+          {
+            "id": 21,
+            "params": {
+              "a": 19,
+              "b": 5
+            },
+            "type": "sketch_constraint_coincident"
+          },
+          {
+            "id": 22,
+            "params": {
+              "curve": 20,
+              "line": 7
+            },
+            "type": "sketch_constraint_tangent"
+          },
+          {
+            "id": 23,
+            "params": {
+              "curve": 20,
+              "line": 13
+            },
+            "type": "sketch_constraint_tangent"
+          },
+          {
+            "id": 24,
+            "params": {
+              "entity": 20,
+              "value_mm": 8
+            },
+            "type": "sketch_constraint_radius"
+          },
+          {
+            "id": 25,
+            "params": {
+              "a": 2,
+              "b": 16
+            },
+            "type": "sketch_constraint_coincident"
+          },
+          {
+            "id": 26,
+            "params": {
+              "a": 2,
+              "b": 7
+            },
+            "type": "sketch_constraint_coincident"
+          },
+          {
+            "id": 27,
+            "params": {
+              "a": 22,
+              "b": 6
+            },
+            "type": "sketch_constraint_coincident"
+          },
+          {
+            "id": 28,
+            "params": {
+              "a": 23,
+              "b": 14
+            },
+            "type": "sketch_constraint_coincident"
+          },
+          {
+            "id": 29,
+            "params": {
+              "curve": 24,
+              "line": 7
+            },
+            "type": "sketch_constraint_tangent"
+          },
+          {
+            "id": 30,
+            "params": {
+              "curve": 24,
+              "line": 16
+            },
+            "type": "sketch_constraint_tangent"
+          },
+          {
+            "id": 31,
+            "params": {
+              "entity_a": 24,
+              "entity_b": 20
+            },
+            "type": "sketch_constraint_equal"
+          },
+          {
+            "id": 32,
+            "params": {
+              "entity_a": 3,
+              "entity_b": 4,
+              "value_mm": 18.33
+            },
+            "type": "sketch_constraint_distance"
+          },
+          {
+            "id": 33,
+            "params": {
+              "a": 3,
+              "b": 13
+            },
+            "type": "sketch_constraint_coincident"
+          },
+          {
+            "id": 34,
+            "params": {
+              "a": 3,
+              "b": 10
+            },
+            "type": "sketch_constraint_coincident"
+          },
+          {
+            "id": 35,
+            "params": {
+              "a": 26,
+              "b": 8
+            },
+            "type": "sketch_constraint_coincident"
+          },
+          {
+            "id": 36,
+            "params": {
+              "a": 27,
+              "b": 12
+            },
+            "type": "sketch_constraint_coincident"
+          },
+          {
+            "id": 37,
+            "params": {
+              "curve": 28,
+              "line": 10
+            },
+            "type": "sketch_constraint_tangent"
+          },
+          {
+            "id": 38,
+            "params": {
+              "curve": 28,
+              "line": 13
+            },
+            "type": "sketch_constraint_tangent"
+          },
+          {
+            "id": 39,
+            "params": {
+              "entity_a": 28,
+              "entity_b": 20
+            },
+            "type": "sketch_constraint_equal"
+          },
+          {
+            "id": 40,
+            "params": {
+              "a": 4,
+              "b": 16
+            },
+            "type": "sketch_constraint_coincident"
+          },
+          {
+            "id": 41,
+            "params": {
+              "a": 4,
+              "b": 10
+            },
+            "type": "sketch_constraint_coincident"
+          },
+          {
+            "id": 42,
+            "params": {
+              "a": 30,
+              "b": 15
+            },
+            "type": "sketch_constraint_coincident"
+          },
+          {
+            "id": 43,
+            "params": {
+              "a": 31,
+              "b": 9
+            },
+            "type": "sketch_constraint_coincident"
+          },
+          {
+            "id": 44,
+            "params": {
+              "curve": 32,
+              "line": 10
+            },
+            "type": "sketch_constraint_tangent"
+          },
+          {
+            "id": 45,
+            "params": {
+              "curve": 32,
+              "line": 16
+            },
+            "type": "sketch_constraint_tangent"
+          },
+          {
+            "id": 46,
+            "params": {
+              "entity_a": 32,
+              "entity_b": 20
+            },
+            "type": "sketch_constraint_equal"
+          }
+        ]
+      }
+    },
+    {
+      "type": "sketch",
+      "id": 5,
+      "params": {
+        "plane": "qCreatedBy(3, CAP_TOP)",
+        "sub_calls": [
+          {
+            "id": 1,
+            "params": {
+              "at": [
+                -9.4,
+                8.75
+              ]
+            },
+            "type": "sketch_point"
+          },
+          {
+            "id": 2,
+            "params": {
+              "at": [
+                -9.4,
+                -8.75
+              ]
+            },
+            "type": "sketch_point"
+          },
+          {
+            "id": 3,
+            "params": {
+              "at": [
+                9.4,
+                -8.75
+              ]
+            },
+            "type": "sketch_point"
+          },
+          {
+            "id": 4,
+            "params": {
+              "at": [
+                9.4,
+                8.75
+              ]
+            },
+            "type": "sketch_point"
+          },
+          {
+            "id": 5,
+            "params": {
+              "end": [
+                1.4,
+                8.75
+              ],
+              "start": [
+                -1.4,
+                8.75
+              ]
+            },
+            "type": "sketch_line"
+          },
+          {
+            "id": 6,
+            "params": {
+              "end": [
+                1.4,
+                -8.75
+              ],
+              "start": [
+                -1.4,
+                -8.75
+              ]
+            },
+            "type": "sketch_line"
+          },
+          {
+            "id": 7,
+            "params": {
+              "end": [
+                -9.4,
+                -0.75
+              ],
+              "start": [
+                -9.4,
+                0.75
+              ]
+            },
+            "type": "sketch_line"
+          },
+          {
+            "id": 8,
+            "params": {
+              "end": [
+                9.4,
+                -0.75
+              ],
+              "start": [
+                9.4,
+                0.75
+              ]
+            },
+            "type": "sketch_line"
+          },
+          {
+            "id": 9,
+            "params": {
+              "center": [
+                -1.4,
+                0.75
+              ],
+              "radius": 8,
+              "start_angle": 1.5707963267948954,
+              "sweep_angle": 1.5707963267948963
+            },
+            "type": "sketch_arc"
+          },
+          {
+            "id": 10,
+            "params": {
+              "center": [
+                -1.4,
+                -0.75
+              ],
+              "radius": 8,
+              "start_angle": -3.141592653589793,
+              "sweep_angle": 1.5707963267948966
+            },
+            "type": "sketch_arc"
+          },
+          {
+            "id": 11,
+            "params": {
+              "center": [
+                1.4,
+                -0.75
+              ],
+              "radius": 8,
+              "start_angle": -1.5707963267948966,
+              "sweep_angle": 1.5707963267948966
+            },
+            "type": "sketch_arc"
+          },
+          {
+            "id": 12,
+            "params": {
+              "center": [
+                1.4,
+                0.75
+              ],
+              "radius": 8,
+              "start_angle": 5.4210108624275216e-17,
+              "sweep_angle": 1.5707963267948966
+            },
+            "type": "sketch_arc"
+          },
+          {
+            "id": 13,
+            "params": {
+              "line_a": 10,
+              "line_b": 13
+            },
+            "type": "sketch_constraint_perpendicular"
+          },
+          {
+            "id": 14,
+            "params": {
+              "line_a": 7,
+              "line_b": 10
+            },
+            "type": "sketch_constraint_parallel"
+          },
+          {
+            "id": 15,
+            "params": {
+              "line_a": 13,
+              "line_b": 16
+            },
+            "type": "sketch_constraint_parallel"
+          },
+          {
+            "id": 16,
+            "params": {
+              "line": 10
+            },
+            "type": "sketch_constraint_horizontal"
+          },
+          {
+            "id": 17,
+            "params": {
+              "entity_a": 1,
+              "entity_b": 4,
+              "value_mm": 18.8
+            },
+            "type": "sketch_constraint_distance"
+          },
+          {
+            "id": 18,
+            "params": {
+              "a": 1,
+              "b": 13
+            },
+            "type": "sketch_constraint_coincident"
+          },
+          {
+            "id": 19,
+            "params": {
+              "a": 1,
+              "b": 7
+            },
+            "type": "sketch_constraint_coincident"
+          },
+          {
+            "id": 20,
+            "params": {
+              "a": 18,
+              "b": 5
+            },
+            "type": "sketch_constraint_coincident"
+          },
+          {
+            "id": 21,
+            "params": {
+              "a": 19,
+              "b": 11
+            },
+            "type": "sketch_constraint_coincident"
+          },
+          {
+            "id": 22,
+            "params": {
+              "curve": 20,
+              "line": 7
+            },
+            "type": "sketch_constraint_tangent"
+          },
+          {
+            "id": 23,
+            "params": {
+              "curve": 20,
+              "line": 13
+            },
+            "type": "sketch_constraint_tangent"
+          },
+          {
+            "id": 24,
+            "params": {
+              "entity": 20,
+              "value_mm": 8
+            },
+            "type": "sketch_constraint_radius"
+          },
+          {
+            "id": 25,
+            "params": {
+              "a": 2,
+              "b": 13
+            },
+            "type": "sketch_constraint_coincident"
+          },
+          {
+            "id": 26,
+            "params": {
+              "a": 2,
+              "b": 10
+            },
+            "type": "sketch_constraint_coincident"
+          },
+          {
+            "id": 27,
+            "params": {
+              "a": 22,
+              "b": 12
+            },
+            "type": "sketch_constraint_coincident"
+          },
+          {
+            "id": 28,
+            "params": {
+              "a": 23,
+              "b": 8
+            },
+            "type": "sketch_constraint_coincident"
+          },
+          {
+            "id": 29,
+            "params": {
+              "curve": 24,
+              "line": 10
+            },
+            "type": "sketch_constraint_tangent"
+          },
+          {
+            "id": 30,
+            "params": {
+              "curve": 24,
+              "line": 13
+            },
+            "type": "sketch_constraint_tangent"
+          },
+          {
+            "id": 31,
+            "params": {
+              "entity_a": 24,
+              "entity_b": 20
+            },
+            "type": "sketch_constraint_equal"
+          },
+          {
+            "id": 32,
+            "params": {
+              "entity_a": 4,
+              "entity_b": 3,
+              "value_mm": 17.5
+            },
+            "type": "sketch_constraint_distance"
+          },
+          {
+            "id": 33,
+            "params": {
+              "a": 3,
+              "b": 16
+            },
+            "type": "sketch_constraint_coincident"
+          },
+          {
+            "id": 34,
+            "params": {
+              "a": 3,
+              "b": 10
+            },
+            "type": "sketch_constraint_coincident"
+          },
+          {
+            "id": 35,
+            "params": {
+              "a": 26,
+              "b": 9
+            },
+            "type": "sketch_constraint_coincident"
+          },
+          {
+            "id": 36,
+            "params": {
+              "a": 27,
+              "b": 15
+            },
+            "type": "sketch_constraint_coincident"
+          },
+          {
+            "id": 37,
+            "params": {
+              "curve": 28,
+              "line": 10
+            },
+            "type": "sketch_constraint_tangent"
+          },
+          {
+            "id": 38,
+            "params": {
+              "curve": 28,
+              "line": 16
+            },
+            "type": "sketch_constraint_tangent"
+          },
+          {
+            "id": 39,
+            "params": {
+              "entity_a": 28,
+              "entity_b": 20
+            },
+            "type": "sketch_constraint_equal"
+          },
+          {
+            "id": 40,
+            "params": {
+              "a": 4,
+              "b": 16
+            },
+            "type": "sketch_constraint_coincident"
+          },
+          {
+            "id": 41,
+            "params": {
+              "a": 4,
+              "b": 7
+            },
+            "type": "sketch_constraint_coincident"
+          },
+          {
+            "id": 42,
+            "params": {
+              "a": 30,
+              "b": 14
+            },
+            "type": "sketch_constraint_coincident"
+          },
+          {
+            "id": 43,
+            "params": {
+              "a": 31,
+              "b": 6
+            },
+            "type": "sketch_constraint_coincident"
+          },
+          {
+            "id": 44,
+            "params": {
+              "curve": 32,
+              "line": 7
+            },
+            "type": "sketch_constraint_tangent"
+          },
+          {
+            "id": 45,
+            "params": {
+              "curve": 32,
+              "line": 16
+            },
+            "type": "sketch_constraint_tangent"
+          },
+          {
+            "id": 46,
+            "params": {
+              "entity_a": 32,
+              "entity_b": 20
+            },
+            "type": "sketch_constraint_equal"
+          }
+        ]
+      }
+    },
+    {
+      "type": "sketch",
+      "id": 6,
+      "params": {
+        "plane": "qCreatedBy(3, CAP_TOP)",
+        "sub_calls": [
+          {
+            "id": 1,
+            "params": {
+              "end": [
+                4,
+                -31.417143213
+              ],
+              "start": [
+                4,
+                6.82311516
+              ]
+            },
+            "type": "sketch_line"
+          },
+          {
+            "id": 2,
+            "params": {
+              "end": [
+                -4,
+                -31.417143213
+              ],
+              "start": [
+                4,
+                -31.417143213
+              ]
+            },
+            "type": "sketch_line"
+          },
+          {
+            "id": 3,
+            "params": {
+              "end": [
+                -4,
+                6.82311516
+              ],
+              "start": [
+                -4,
+                -31.417143213
+              ]
+            },
+            "type": "sketch_line"
+          },
+          {
+            "id": 4,
+            "params": {
+              "center": [
+                0,
+                19.461420318
+              ],
+              "radius": 2.538579682
+            },
+            "type": "sketch_circle"
+          },
+          {
+            "id": 5,
+            "params": {
+              "end": [
+                2.538579682,
+                19.461420318
+              ],
+              "start": [
+                4,
+                6.82311516
+              ]
+            },
+            "type": "sketch_line"
+          },
+          {
+            "id": 6,
+            "params": {
+              "end": [
+                -2.538579682,
+                19.461420318
+              ],
+              "start": [
+                2.538579682,
+                19.461420318
+              ]
+            },
+            "type": "sketch_line"
+          },
+          {
+            "id": 7,
+            "params": {
+              "end": [
+                -4,
+                6.82311516
+              ],
+              "start": [
+                -2.538579682,
+                19.461420318
+              ]
+            },
+            "type": "sketch_line"
+          },
+          {
+            "id": 8,
+            "params": {
+              "a": 4,
+              "b": 2
+            },
+            "type": "sketch_constraint_coincident"
+          },
+          {
+            "id": 9,
+            "params": {
+              "line_a": 6,
+              "line_b": 3
+            },
+            "type": "sketch_constraint_perpendicular"
+          },
+          {
+            "id": 10,
+            "params": {
+              "a": 7,
+              "b": 5
+            },
+            "type": "sketch_constraint_coincident"
+          },
+          {
+            "id": 11,
+            "params": {
+              "line_a": 9,
+              "line_b": 6
+            },
+            "type": "sketch_constraint_perpendicular"
+          },
+          {
+            "id": 12,
+            "params": {
+              "line": 8
+            },
+            "type": "sketch_constraint_horizontal"
+          },
+          {
+            "id": 13,
+            "params": {
+              "line": 10
+            },
+            "type": "sketch_constraint_vertical"
+          },
+          {
+            "id": 14,
+            "params": {
+              "a": 12,
+              "b": 1
+            },
+            "type": "sketch_constraint_coincident"
+          },
+          {
+            "id": 15,
+            "params": {
+              "a": 15,
+              "b": 13
+            },
+            "type": "sketch_constraint_coincident"
+          },
+          {
+            "id": 16,
+            "params": {
+              "line": 17
+            },
+            "type": "sketch_constraint_horizontal"
+          },
+          {
+            "id": 17,
+            "params": {
+              "a": 18,
+              "b": 16
+            },
+            "type": "sketch_constraint_coincident"
+          },
+          {
+            "id": 18,
+            "params": {
+              "a": 19,
+              "b": 8
+            },
+            "type": "sketch_constraint_coincident"
+          },
+          {
+            "id": 19,
+            "params": {
+              "a": 17,
+              "b": 10
+            },
+            "type": "sketch_constraint_coincident"
+          },
+          {
+            "id": 20,
+            "params": {
+              "entity_a": 4,
+              "entity_b": 5,
+              "value_mm": 8
+            },
+            "type": "sketch_constraint_distance"
+          },
+          {
+            "id": 21,
+            "params": {
+              "a": 13,
+              "b": 11
+            },
+            "type": "sketch_constraint_coincident"
+          }
+        ]
+      }
+    },
+    {
+      "type": "extrude",
+      "id": 7,
+      "params": {
+        "depth": {
+          "unit": "mm",
+          "value": -25
+        },
+        "display_name": "Extrude 3",
+        "operation": "remove",
+        "profiles": "qCreatedBy(6)",
+        "targets": "qCreatedBy(2)"
+      }
+    }
+  ],
+  "next_feature_id": 8
+}

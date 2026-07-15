@@ -1,18 +1,21 @@
 #!/usr/bin/env node
-// One-shot seeder for src/releaseNotes.ts from the git history.
+// One-shot seeder for src/releaseNotes.md from the git history.
 //
 // The project's commit discipline is the source of truth: every user-facing
 // commit ends in `(… vX.Y.Z)` and carries a conventional-commit type. This
 // script parses `git log`, keeps the release-note-worthy types (feat/fix/perf),
-// groups them by version (newest first), and emits the typed RELEASE_NOTES
-// array.
+// groups them by version (newest first), and emits the PLAIN-TEXT notes file.
+//
+// Plain text, not TypeScript: a quote inside a German sentence used to close the
+// string literal and kill `tsc` (four times). releaseNotes.ts is only the parser
+// now; the text can contain anything.
 //
 // It is a DEV CONVENIENCE, run by hand to (re)seed history — NOT part of the
 // build. Going forward the data file is the hand-maintained SSOT: add one entry
 // per version bump (see CLAUDE.md's "bump version on every change" rule). Re-run
 // only to rebuild the whole list from scratch.
 //
-//   node scripts/genReleaseNotes.mjs > src/releaseNotes.ts
+//   node scripts/genReleaseNotes.mjs > src/releaseNotes.md
 //
 import { execSync } from "node:child_process";
 
@@ -82,30 +85,33 @@ const releases = [...byVersion.entries()]
   .sort((a, b) => semverDesc(a[0], b[0]))
   .map(([version, b]) => ({ version, entries: b.entries }));
 
-const header = `// AUTO-SEEDED from git history by scripts/genReleaseNotes.mjs, then the
-// hand-maintained SSOT for the in-app release notes. Add one entry per version
-// bump (newest version first); re-run the seeder only to rebuild from scratch.
+const header = `# FieldDraft — Release Notes
 
-export type ReleaseNoteKind = "feat" | "fix" | "perf";
+Die SSOT der In-App-Release-Notes. REINER TEXT, kein Code: ein Anführungszeichen,
+ein Backslash oder ein Semikolon im Text kann hier nichts kaputt machen.
 
-export interface ReleaseNoteEntry {
-  /** feat = new capability, fix = bug fix, perf = performance. */
-  kind: ReleaseNoteKind;
-  /** Short user-facing description (German, mirrors the commit subject). */
-  text: string;
-  /** Originating subsystem/scope, e.g. "extrude", "sketch". */
-  scope?: string;
-  /** Originating ticket id(s), if the change came from a Report Issue ticket. */
-  tickets?: string[];
-}
+Format, eine Zeile je Eintrag:
 
-export interface ReleaseNote {
-  /** Semantic version without the leading "v", e.g. "0.6.342". */
-  version: string;
-  entries: ReleaseNoteEntry[];
-}
+    ## <version>
+    - <kind>(<scope>) [#ticket …]: <text>
 
-/** All releases, newest first. */
-export const RELEASE_NOTES: ReleaseNote[] = `;
+kind = feat | fix | perf. scope und #tickets sind optional. Eingerückte
+Folgezeilen gehören zum Text darüber (Umbruch erlaubt).
 
-process.stdout.write(header + JSON.stringify(releases, null, 2) + ";\n");
+`;
+
+const body = releases
+  .map((rel) => {
+    const lines = rel.entries.map((e) => {
+      const scope = e.scope ? `(${e.scope})` : "";
+      const tickets = e.tickets?.length
+        ? " " + e.tickets.map((t) => "#" + String(t).replace(/^#+/, "")).join(" ")
+        : "";
+      // Der Text wird NICHT escaped — genau das ist der Punkt.
+      return `- ${e.kind}${scope}${tickets}: ${e.text.replace(/\s+/g, " ").trim()}`;
+    });
+    return `## ${rel.version}\n${lines.join("\n")}\n`;
+  })
+  .join("\n");
+
+process.stdout.write(header + body);

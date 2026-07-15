@@ -2,9 +2,13 @@
 # Ensure user-facing versioned commits also ship a release note.
 #
 # When a commit subject is a feat/fix/perf change carrying a version token
-# (`… vX.Y.Z`), web/src/releaseNotes.ts must contain a matching entry. Other
-# commit types (docs/chore/refactor/test/style/build/revert/merge) and
-# version-less subjects are exempt — they are not release-note-worthy.
+# (`… vX.Y.Z`), web/src/releaseNotes.md must contain a matching `## X.Y.Z`
+# section. Other commit types (docs/chore/refactor/test/style/build/revert/merge)
+# and version-less subjects are exempt — they are not release-note-worthy.
+#
+# The notes are PLAIN TEXT (releaseNotes.md), not TypeScript: a quote or a
+# backslash in a sentence can no longer break the build (it did, four times —
+# see the header of releaseNotes.ts, which is now only the parser).
 #
 # Activate once per checkout: `just setup-hooks` (or `git config core.hooksPath
 # .githooks`). See CLAUDE.md → "Release Notes pflegen".
@@ -19,27 +23,24 @@ if [[ ! "$subject" =~ ^(feat|fix|perf)(\([^\)]*\))?:.*v([0-9]+\.[0-9]+\.[0-9]+) 
 fi
 version="${BASH_REMATCH[3]}"
 
-# Check the STAGED releaseNotes (what this commit records). If the file is not
-# staged, `:path` resolves to the index = current HEAD content, which won't
-# carry the new entry → the check correctly fails.
-notes="$(git show ":web/src/releaseNotes.ts" 2>/dev/null || true)"
-[[ -z "$notes" ]] && notes="$(cat web/src/releaseNotes.ts 2>/dev/null || true)"
+# Check the STAGED notes (what this commit records). If the file is not staged,
+# `:path` resolves to the index = current HEAD content, which won't carry the new
+# entry → the check correctly fails.
+notes="$(git show ":web/src/releaseNotes.md" 2>/dev/null || true)"
+[[ -z "$notes" ]] && notes="$(cat web/src/releaseNotes.md 2>/dev/null || true)"
 
-# Match both the JSON-style (`"version": "…"`) and prettier's unquoted-key
-# (`version: "…"`) forms — releaseNotes.ts is prettier-normalised since v0.6.349.
-if ! grep -qE "\"?version\"?: \"$version\"" <<< "$notes"; then
+if ! grep -qE "^## $version\$" <<< "$notes"; then
   cat >&2 <<EOF
 ✖ Release-Notes-Eintrag für v$version fehlt.
 
-  Das ist ein feat/fix/perf-Commit — web/src/releaseNotes.ts braucht oben in
-  RELEASE_NOTES einen Eintrag:
+  Das ist ein feat/fix/perf-Commit — web/src/releaseNotes.md braucht OBEN einen
+  Abschnitt (neueste Version zuerst):
 
-      {
-        "version": "$version",
-        "entries": [
-          { "kind": "feat|fix|perf", "text": "…", "scope": "…", "tickets": ["…"] }
-        ]
-      }
+      ## $version
+      - fix(scope) #ticket: Was der Nutzer davon merkt.
+
+  kind = feat | fix | perf. scope und #ticket sind optional, der Text ist frei —
+  Anführungszeichen und Sonderzeichen sind hier harmlos (es ist kein Code).
 
   Eintrag ergänzen, Datei stagen (git add), erneut committen.
   (Siehe CLAUDE.md → "Release Notes pflegen".)

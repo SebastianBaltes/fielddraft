@@ -506,6 +506,24 @@ function AppShell({ account }: { account: UseAccount }) {
     return () => window.removeEventListener("fd:open-ticket", onOpenTicket);
   }, [account]);
 
+  // Release notes reference tickets by their per-project number ("#347").
+  // IssueVault has no by-number lookup, but the ticket list carries both number
+  // and id — so resolve client-side, then open the Issues detail. If the number
+  // isn't among the visible tickets (or the fetch fails), land on the list.
+  const openTicketByNumber = useCallback(
+    async (ref: string) => {
+      const n = Number(ref);
+      try {
+        const tickets = await platformApi.listTickets();
+        const hit = tickets.find((t) => t.number === n);
+        account.openTicket(hit ? hit.id : null);
+      } catch {
+        account.openTicket(null);
+      }
+    },
+    [account],
+  );
+
   // Global keyboard shortcuts. The routing table (key→command + context
   // gates: text-entry guard, script-tab gate, sketch-session scoping,
   // preset view keys) lives in keyboardCommands.ts — the shell only
@@ -758,6 +776,11 @@ function AppShell({ account }: { account: UseAccount }) {
                         });
                       }
                     : null
+                }
+                onOpenTicket={
+                  account.state.status === "authed"
+                    ? openTicketByNumber
+                    : undefined
                 }
               />
               {/* Ticket C: the current project's name next to the logo — click

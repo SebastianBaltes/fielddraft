@@ -36,8 +36,8 @@ import { linkify } from "./linkify";
 import {
   commentVisible,
   formatDateTime,
-  personaLabel,
-  personaTag,
+  commentAuthorLabel,
+  commentAuthorTag,
   settableStates,
   stateBucket,
   stateLabel,
@@ -96,11 +96,12 @@ interface TicketListProps {
 
 /** The click-sortable columns of the issue list (ticket a7b63b6; the `#`
  *  reference column is ticket 066230d9). */
-type SortKey = "number" | "state" | "title" | "updated";
+type SortKey = "number" | "state" | "title" | "version" | "updated";
 const SORT_COLUMNS: { key: SortKey; label: string }[] = [
   { key: "number", label: "#" },
   { key: "state", label: "State" },
   { key: "title", label: "Title" },
+  { key: "version", label: "Version" },
   { key: "updated", label: "Updated" },
 ];
 
@@ -174,6 +175,8 @@ function TicketList({ user, onOpen }: TicketListProps) {
           return String(t.number);
         case "state":
           return stateLabel(t.state);
+        case "version":
+          return t.version;
         case "title":
           return t.title;
         case "updated":
@@ -319,6 +322,13 @@ function TicketList({ user, onOpen }: TicketListProps) {
                 </span>
                 <span className="row-title" title={t.title}>
                   {t.title}
+                </span>
+                <span
+                  className="row-version"
+                  data-testid={`ticket-version-${t.id}`}
+                  title={t.version ? `Behoben in ${t.version}` : ""}
+                >
+                  {t.version}
                 </span>
                 <span className="row-meta">
                   {formatDateTime(t.updated_at)}
@@ -572,13 +582,16 @@ function TicketDetailPanel({
               {canDelete && (
                 <button
                   type="button"
-                  className="danger"
+                  className="danger icon-delete"
                   data-testid="detail-delete-ticket"
                   disabled={busy}
                   onClick={() => void remove()}
+                  aria-label="Ticket endgültig löschen"
                   title="Ticket endgültig löschen"
                 >
-                  Delete
+                  <span className="glyph" aria-hidden="true">
+                    🗑
+                  </span>
                 </button>
               )}
             </div>
@@ -846,12 +859,12 @@ function Thread({
               data-testid={`comment-${c.id}`}
             >
               <span className="persona-tag" aria-hidden="true">
-                {personaTag(c.author_type)}
+                {commentAuthorTag(c)}
               </span>
               <div className="comment-body">
                 <div className="comment-head">
                   <span className="persona-name">
-                    {personaLabel(c.author_type)}
+                    {commentAuthorLabel(c)}
                   </span>
                   {c.internal && (
                     <span className="internal-tag" title="Admin-only dev note">

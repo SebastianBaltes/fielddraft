@@ -1,16 +1,18 @@
-// The TicketStore interface — the pluggable ticket domain (WP15).
+// The TicketStore interface — the ticket domain (WP15).
 //
 // The ticket / comment / artifact / work-order / verdict / agent-queue methods
 // were factored off Store into their own interface so the ticket domain can be
-// backed independently of users/projects/sessions. Two impls satisfy it:
+// backed independently of users/projects/sessions.
 //
-//   - the existing Store (memStore + sqlStore) — its ticket methods ARE the DB
-//     backend. Selecting TICKET_BACKEND=db (the default, and the only prod path)
-//     wires s.tickets = s.store, so the behavior is byte-identical to before
-//     this split.
-//   - fileTicketStore (ticketstore_file.go) — a file-backed store under a base
-//     dir, for local dev (TICKET_BACKEND=files). The materialized layout doubles
-//     as the on-disk tickets the desktop agents harvest (§3.1).
+// **IssueVault is the ONLY backend** (ticket #346): there is no TICKET_BACKEND
+// switch, no SQL ticket path (migrations 0008/0009 dropped those tables) and no
+// file-backed store — `fileTicketStore` is gone. Two impls satisfy the interface
+// today:
+//
+//   - issuevaultStore (store_issuevault.go) — production, and the only path a
+//     running server ever takes.
+//   - memStore (ticketstore_mem.go) — in-memory, for TESTS only. It exists so the
+//     contract tests can run without a network; nothing wires it in production.
 //
 // The ticket + agent HTTP handlers call s.tickets.X for these methods; only
 // users/projects/sessions/invites/admin_alerts stay on s.store.
@@ -34,8 +36,8 @@ var (
 	errDeployMissing      = &httpError{http.StatusNotFound, "deploy not found"}
 )
 
-// TicketStore is the pluggable ticket domain (§7–§11). Both memStore/sqlStore
-// (DB backend) and fileTicketStore (local file backend) implement it.
+// TicketStore is the ticket domain (§7–§11). Implemented by issuevaultStore
+// (production) and memStore (tests) — see the file header.
 type TicketStore interface {
 	// Tickets (GitHub-Issues-like, §7).
 	CreateTicket(authorID, title, body, category string) *Ticket
@@ -44,7 +46,9 @@ type TicketStore interface {
 	UpdateTicket(id, title, body string) *Ticket // author edit of title/body
 	// SetTicketState moves the ticket. `direct` is the admin override: it skips
 	// the §7.2 transition graph (any known state from any state, ticket #345).
-	SetTicketState(id string, to TicketState, direct bool) (*Ticket, error)
+	// Optional actorID is the human who triggered the move (#359) — it attributes
+	// the audit comment by name; omit it for automated/system transitions.
+	SetTicketState(id string, to TicketState, direct bool, actorID ...string) (*Ticket, error)
 	SetTicketCategory(id, category string) *Ticket // PO verdict classification (§8.3)
 	SetPOVerdict(id string, v POVerdict) (*Ticket, error)
 	DeleteTicket(id string) bool

@@ -241,8 +241,11 @@ func (s *Server) poQueue() []agentQueueTicket {
 	for _, t := range s.tickets.ListTickets(TicketFilter{State: StateTriage, ViewerIsAdmin: true}) {
 		add(t)
 	}
-	// needs_info / declined with a new user comment since the last po/system one.
-	for _, st := range []TicketState{StateNeedsInfo, StateDeclined} {
+	// needs_info with a new user comment since the last po/system one. (A rejected
+	// ticket is NOT auto-revived on a comment — that would drag spam/malicious back
+	// into the queue on any reply; objecting to a rejection is an explicit reopen
+	// rejected→triage, ticket #… IssueVault 0.4.x collapse.)
+	for _, st := range []TicketState{StateNeedsInfo} {
 		for _, t := range s.tickets.ListTickets(TicketFilter{State: st, ViewerIsAdmin: true}) {
 			full := s.tickets.GetTicket(t.ID)
 			if full != nil && hasNewUserComment(full.Comments) {
@@ -369,14 +372,17 @@ func (s *Server) handleVerdict(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "invalid category")
 		return
 	}
-	// work_order present iff accepting.
+	// work_order present iff accepting. "Accept" is now the move INTO in_progress
+	// via this PO-verdict path (accepted folded into in_progress); a reopen to
+	// in_progress goes through the separate SetTicketState path, which carries no
+	// work-order. The WO's existence is what the coding queue keys on.
 	hasWO := isJSONPresent(req.WorkOrder)
-	if next == StateAccepted && !hasWO {
-		writeErr(w, http.StatusBadRequest, "work_order required when next_state is accepted")
+	if next == StateInProgress && !hasWO {
+		writeErr(w, http.StatusBadRequest, "work_order required when accepting (next_state in_progress)")
 		return
 	}
-	if next != StateAccepted && hasWO {
-		writeErr(w, http.StatusBadRequest, "work_order only allowed when next_state is accepted")
+	if next != StateInProgress && hasWO {
+		writeErr(w, http.StatusBadRequest, "work_order only allowed when accepting (next_state in_progress)")
 		return
 	}
 
@@ -414,9 +420,9 @@ func (s *Server) handleVerdict(w http.ResponseWriter, r *http.Request) {
 		replyComment = s.postPOComment(id, req.PublicReply)
 	}
 
-	// ── on accepted: create the work-order from the payload ──
+	// ── on accept (→ in_progress): create the work-order from the payload ──
 	var wo *WorkOrder
-	if next == StateAccepted {
+	if next == StateInProgress {
 		created, err := s.tickets.CreateWorkOrder(id, req.WorkOrder)
 		if err != nil {
 			writeStoreError(w, err)
@@ -645,9 +651,10 @@ func (s *Server) handleCompleteWorkOrder(w http.ResponseWriter, r *http.Request)
 		writeErr(w, http.StatusNotFound, "not found")
 		return
 	}
-	// Default target is `resolved`; the body may pick another legal state
-	// (e.g. deploying, or needs_info if the dev needs clarification).
-	target := StateResolved
+	// Default target is `closed` (resolved folded into closed on the 0.4.x
+	// collapse); the body may pick another legal state (e.g. needs_info if the dev
+	// needs clarification, or parked).
+	target := StateClosed
 	if req.NextState != "" {
 		target = TicketState(req.NextState)
 	}

@@ -23,6 +23,12 @@ const KIND_LABEL: Record<ReleaseNoteKind, string> = {
 
 interface ReleaseNotesDialogProps {
   onClose: () => void;
+  /** Open the IssueVault ticket behind a numeric release-note reference
+   *  (e.g. "347"). Provided only when signed in — without it the refs render
+   *  as plain tags, since the Issues view needs auth. Non-numeric references
+   *  (internal change-codes like "nwmi") are never linked: they aren't
+   *  tickets. */
+  onOpenTicket?: (ref: string) => void;
 }
 
 /** Keep only the releases (and entries) whose text/version/scope/ticket match
@@ -47,7 +53,15 @@ function filterReleases(query: string): ReleaseNote[] {
   return out;
 }
 
-export function ReleaseNotesDialog({ onClose }: ReleaseNotesDialogProps) {
+/** A release note references a real IssueVault ticket only when the ref is
+ *  purely numeric (the per-project ticket number). Alphabetic refs are internal
+ *  change-codes with nothing to link to. */
+const isTicketNumber = (ref: string) => /^\d+$/.test(ref);
+
+export function ReleaseNotesDialog({
+  onClose,
+  onOpenTicket,
+}: ReleaseNotesDialogProps) {
   const [query, setQuery] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -137,11 +151,24 @@ export function ReleaseNotesDialog({ onClose }: ReleaseNotesDialogProps) {
                           <span className="entry-scope">{entry.scope}</span>
                         )}
                         {entry.text}
-                        {entry.tickets?.map((t) => (
-                          <span className="entry-ticket" key={t}>
-                            #{t}
-                          </span>
-                        ))}
+                        {entry.tickets?.map((t) =>
+                          onOpenTicket && isTicketNumber(t) ? (
+                            <button
+                              type="button"
+                              className="entry-ticket ticket-link"
+                              key={t}
+                              data-testid={`release-note-ticket-${t}`}
+                              title={`Ticket #${t} öffnen`}
+                              onClick={() => onOpenTicket(t)}
+                            >
+                              #{t}
+                            </button>
+                          ) : (
+                            <span className="entry-ticket" key={t}>
+                              #{t}
+                            </span>
+                          ),
+                        )}
                       </span>
                     </li>
                   ))}

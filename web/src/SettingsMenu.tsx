@@ -141,6 +141,9 @@ interface SettingsMenuProps {
    *  `null` when unavailable (guest, or already bound) — the menu item
    *  renders disabled with a hint then. */
   onSaveToCloud: (() => void) | null;
+  /** Open the IssueVault ticket behind a numeric release-note reference.
+   *  `undefined` for guests (no Issues access) → refs render as plain tags. */
+  onOpenTicket?: (ref: string) => void;
 }
 
 export function SettingsMenu({
@@ -152,6 +155,7 @@ export function SettingsMenu({
   onEnterProject,
   onOpenLocal,
   onSaveToCloud,
+  onOpenTicket,
 }: SettingsMenuProps) {
   const [open, setOpen] = useState(false);
   const [settingsDialogOpen, setSettingsDialogOpen] = useState(false);
@@ -569,7 +573,17 @@ export function SettingsMenu({
 
       {releaseNotesOpen && (
         <Suspense fallback={null}>
-          <ReleaseNotesDialog onClose={() => setReleaseNotesOpen(false)} />
+          <ReleaseNotesDialog
+            onClose={() => setReleaseNotesOpen(false)}
+            onOpenTicket={
+              onOpenTicket
+                ? (ref) => {
+                    setReleaseNotesOpen(false);
+                    onOpenTicket(ref);
+                  }
+                : undefined
+            }
+          />
         </Suspense>
       )}
 

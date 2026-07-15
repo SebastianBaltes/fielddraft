@@ -29,6 +29,7 @@ function summary(over: Partial<TicketSummary> = {}): TicketSummary {
     author_id: "u1",
     title: "Crash on extrude",
     state: "triage",
+    version: "",
     category: "bug",
     created_at: "2026-05-01T00:00:00Z",
     updated_at: "2026-06-01T00:00:00Z",
@@ -44,6 +45,7 @@ function detail(over: Partial<TicketDetail> = {}): TicketDetail {
     title: "Crash on extrude",
     body: "It explodes",
     state: "triage",
+    version: "",
     category: "bug",
     po_spam: false,
     po_malicious: false,
@@ -338,22 +340,22 @@ describe("TicketsView — set state / delete", () => {
 
   it("lets an admin set any state directly — even one the graph forbids", async () => {
     vi.spyOn(platform.platformApi, "getTicket").mockResolvedValue(
-      detail({ state: "triage", author_id: "someone-else" }),
+      detail({ state: "closed", author_id: "someone-else" }),
     );
     const update = vi
       .spyOn(platform.platformApi, "updateTicket")
-      .mockResolvedValue(detail({ state: "resolved" }));
+      .mockResolvedValue(detail({ state: "rejected" }));
     mount({ ticketId: "t1", isAdmin: true });
     await flush();
 
-    // triage → resolved is not a machine edge, but the admin may jump there.
-    expect(options()).toContain("resolved");
-    expect(options()).not.toContain("triage"); // the current state is a no-op
-    pick("resolved");
+    // closed → rejected is not a machine edge, but the admin may jump there.
+    expect(options()).toContain("rejected");
+    expect(options()).not.toContain("closed"); // the current state is a no-op
+    pick("rejected");
     await flush();
 
-    expect(update).toHaveBeenCalledWith("t1", { state: "resolved" });
-    expect(byTestId("detail-state")!.textContent).toBe("Resolved");
+    expect(update).toHaveBeenCalledWith("t1", { state: "rejected" });
+    expect(byTestId("detail-state")!.textContent).toBe("Rejected");
   });
 
   it("offers the author only their safe subset", async () => {
@@ -362,7 +364,7 @@ describe("TicketsView — set state / delete", () => {
     );
     mount({ ticketId: "t1" });
     await flush();
-    expect(options().sort()).toEqual(["", "backlog", "closed"]);
+    expect(options().sort()).toEqual(["", "closed", "parked"]);
   });
 
   it("offers a stranger no state picker and no delete", async () => {

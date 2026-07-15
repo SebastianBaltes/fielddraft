@@ -106,11 +106,10 @@ type Store interface {
 	GetSnapshot(id string) *Snapshot
 
 	// The ticket domain (tickets / comments / artifacts / work-orders / deploys)
-	// is factored out into the pluggable TicketStore interface (ticketstore.go)
-	// so it can be file-backed for local dev. Both memStore and sqlStore still
-	// implement every TicketStore method, so a *Store also satisfies TicketStore
-	// — the DB backend is simply the existing store's ticket methods (no behavior
-	// change). See Server.tickets and TICKET_BACKEND selection in NewServer.
+	// lives in the separate TicketStore interface (ticketstore.go) and is NOT part
+	// of Store: it is backed by IssueVault, the only backend (ticket #346). sqlStore
+	// has no ticket methods anymore and the tables are dropped (migrations
+	// 0008/0009). See Server.tickets.
 
 	// Mesh jobs (server-side CGAL meshing, plan §P4). The STL result is a
 	// content-addressed blob; MeshJobArtifact is owner-gated like GetMeshJob.

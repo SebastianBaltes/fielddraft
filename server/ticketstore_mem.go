@@ -138,7 +138,7 @@ func (s *memStore) SetTicketCategory(id, category string) *Ticket {
 	return cloneTicket(t)
 }
 
-func (s *memStore) SetTicketState(id string, to TicketState, direct bool) (*Ticket, error) {
+func (s *memStore) SetTicketState(id string, to TicketState, direct bool, actorID ...string) (*Ticket, error) {
 	s.mu.Lock()
 	t, ok := s.tickets[id]
 	if !ok {
@@ -152,7 +152,7 @@ func (s *memStore) SetTicketState(id string, to TicketState, direct bool) (*Tick
 	}
 	out := cloneTicket(t)
 	s.mu.Unlock()
-	s.appendSystemComment(id, audit)
+	s.appendSystemComment(id, audit, firstActor(actorID))
 	return out, nil
 }
 
@@ -170,7 +170,7 @@ func (s *memStore) SetPOVerdict(id string, v POVerdict) (*Ticket, error) {
 	}
 	out := cloneTicket(t)
 	s.mu.Unlock()
-	s.appendSystemComment(id, audit)
+	s.appendSystemComment(id, audit, "")
 	return out, nil
 }
 
@@ -187,9 +187,12 @@ func (s *memStore) DeleteTicket(id string) bool {
 	return true
 }
 
-// appendSystemComment records a state-change audit entry. Locks internally.
-func (s *memStore) appendSystemComment(ticketID, body string) {
-	s.AddComment(ticketID, AuthorSystem, nil, body, false)
+// appendSystemComment records a state-change audit entry. actorID (#359) is the
+// human who triggered it, or "" for an automated transition; it becomes the
+// audit comment's AuthorID so the thread can show the actor's name. Locks
+// internally.
+func (s *memStore) appendSystemComment(ticketID, body, actorID string) {
+	s.AddComment(ticketID, AuthorSystem, emptyToNil(actorID), body, false)
 }
 
 func (s *memStore) AddComment(ticketID string, authorType AuthorType, authorID *string, body string, internal bool) *TicketComment {
@@ -469,7 +472,7 @@ func (s *memStore) ListAcceptedWithOpenWorkOrder() []*Ticket {
 	defer s.mu.RUnlock()
 	var out []*Ticket
 	for _, t := range s.tickets {
-		if t.State != StateAccepted {
+		if t.State != StateInProgress {
 			continue
 		}
 		wo, ok := s.workOrders[t.ID]

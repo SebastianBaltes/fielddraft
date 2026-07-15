@@ -7,31 +7,21 @@
 
 import type { AuthorType, TicketComment, TicketState } from "../api/platform";
 
-/** Human-readable label for a ticket state (§7.2). */
+/** Human-readable label for a ticket state (the six-value enum). */
 export function stateLabel(state: TicketState): string {
   switch (state) {
     case "triage":
       return "Triage";
     case "needs_info":
       return "Needs info";
-    case "accepted":
-      return "Accepted";
     case "in_progress":
       return "In progress";
-    case "deploying":
-      return "Deploying";
-    case "resolved":
-      return "Resolved";
+    case "parked":
+      return "Parked";
     case "closed":
       return "Closed";
-    case "declined":
-      return "Declined";
-    case "backlog":
-      return "Backlog";
-    case "rejected_spam":
-      return "Rejected (spam)";
-    case "rejected_malicious":
-      return "Rejected (malicious)";
+    case "rejected":
+      return "Rejected";
   }
 }
 
@@ -40,19 +30,14 @@ export function ticketRef(number: number): string {
   return `#${number}`;
 }
 
-/** Every state of the §7.2 machine, in flow order. */
+/** Every state of the machine, in flow order (the six-value enum). */
 export const TICKET_STATES: TicketState[] = [
   "triage",
   "needs_info",
-  "accepted",
   "in_progress",
-  "deploying",
-  "resolved",
+  "parked",
   "closed",
-  "declined",
-  "backlog",
-  "rejected_spam",
-  "rejected_malicious",
+  "rejected",
 ];
 
 /**
@@ -63,8 +48,7 @@ export const TICKET_STATES: TicketState[] = [
  *   · ADMIN — every state, directly, no matter where the ticket stands. The
  *     transition graph guards the automated user→PO→dev flow, not the operator
  *     driving it, and a direct set is the only way out of a dead-end state.
- *   · AUTHOR — the safe subset (ticket 066230d9): close, park to backlog,
- *     un-park, reopen a resolved one.
+ *   · AUTHOR — the safe subset (ticket 066230d9): close, park, un-park, reopen.
  *   · anyone else — nothing.
  *
  * The current state is never offered (a no-op the server rejects).
@@ -76,22 +60,21 @@ export function settableStates(
   if (opts.isAdmin) return TICKET_STATES.filter((s) => s !== current);
   if (!opts.isAuthor) return [];
   const allowed: TicketState[] = [];
-  // close: from a pre-work or resolved state (not mid-flow, not terminal).
+  // close: from anywhere that isn't already terminal.
   if (
     current === "triage" ||
     current === "needs_info" ||
-    current === "declined" ||
-    current === "backlog" ||
-    current === "resolved"
+    current === "in_progress" ||
+    current === "parked"
   ) {
     allowed.push("closed");
   }
-  // park a not-yet-worked ticket.
-  if (current === "triage" || current === "needs_info") allowed.push("backlog");
-  // un-park, or reopen a closed one → re-triage.
-  if (current === "backlog" || current === "closed") allowed.push("triage");
-  // reopen a resolved one — "the fix didn't stick".
-  if (current === "resolved") allowed.push("in_progress");
+  // park a not-yet-finished ticket.
+  if (current === "triage" || current === "needs_info") allowed.push("parked");
+  // un-park (parked→triage) or reopen a closed one → re-triage.
+  if (current === "parked" || current === "closed") allowed.push("triage");
+  // reopen a closed one — "the fix didn't stick".
+  if (current === "closed") allowed.push("in_progress");
   return TICKET_STATES.filter((s) => allowed.includes(s));
 }
 
@@ -103,19 +86,14 @@ export function stateBucket(state: TicketState): StateBucket {
   switch (state) {
     case "triage":
     case "needs_info":
-    case "accepted":
-    case "declined":
       return "open";
     case "in_progress":
-    case "deploying":
       return "progress";
-    case "backlog":
+    case "parked":
       return "backlog";
-    case "resolved":
     case "closed":
       return "done";
-    case "rejected_spam":
-    case "rejected_malicious":
+    case "rejected":
       return "rejected";
   }
 }
@@ -146,6 +124,29 @@ export function personaTag(author: AuthorType): string {
     case "system":
       return "SYS";
   }
+}
+
+type AuthoredComment = Pick<TicketComment, "author_type" | "author_name">;
+
+/** Initials for an avatar tag: "Sebastian Baltes" → "SB", "sorokan" → "SO". */
+function initials(name: string): string {
+  const parts = name.split(/\s+/).filter(Boolean);
+  if (parts.length === 0) return "?";
+  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+  return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+}
+
+/** The name shown for a comment's author (#359): the resolved human name when
+ *  present, else the generic persona label ("User" / "System" / …). */
+export function commentAuthorLabel(c: AuthoredComment): string {
+  return c.author_name?.trim() || personaLabel(c.author_type);
+}
+
+/** The avatar tag for a comment (#359): initials of the human name when present,
+ *  else the persona tag (U / PO / DEV / SYS). */
+export function commentAuthorTag(c: AuthoredComment): string {
+  const name = c.author_name?.trim();
+  return name ? initials(name) : personaTag(c.author_type);
 }
 
 /** Whether a comment may render at all for the given viewer. The backend

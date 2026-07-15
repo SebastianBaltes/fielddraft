@@ -99,4 +99,45 @@ describe("ReleaseNotesDialog", () => {
     ).not.toBeNull();
     expect(container.querySelectorAll(".release").length).toBe(0);
   });
+
+  it("links a numeric ticket ref and calls onOpenTicket with it", () => {
+    const opened: string[] = [];
+    act(() =>
+      root.render(
+        <ReleaseNotesDialog
+          onClose={() => {}}
+          onOpenTicket={(ref) => opened.push(ref)}
+        />,
+      ),
+    );
+    setFilter("347");
+    const link = container.querySelector<HTMLButtonElement>(
+      '[data-testid="release-note-ticket-347"]',
+    );
+    expect(link).not.toBeNull();
+    expect(link!.tagName).toBe("BUTTON");
+    expect(link!.classList.contains("ticket-link")).toBe(true);
+    act(() => link!.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    expect(opened).toEqual(["347"]);
+  });
+
+  it("never links a non-numeric change-code, even with onOpenTicket", () => {
+    act(() =>
+      root.render(
+        <ReleaseNotesDialog onClose={() => {}} onOpenTicket={() => {}} />,
+      ),
+    );
+    setFilter("20fc");
+    expect(container.textContent).toContain("#20fc");
+    // No ticket-link button anywhere in the filtered view — "20fc" is an
+    // internal code, not an openable ticket.
+    expect(container.querySelector("button.ticket-link")).toBeNull();
+  });
+
+  it("renders numeric refs as plain tags when onOpenTicket is absent (guest)", () => {
+    act(() => root.render(<ReleaseNotesDialog onClose={() => {}} />));
+    setFilter("347");
+    expect(container.textContent).toContain("#347");
+    expect(container.querySelector("button.ticket-link")).toBeNull();
+  });
 });

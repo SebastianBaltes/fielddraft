@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import type { TicketComment, TicketState } from "../api/platform";
 import {
   categoryLabel,
+  commentAuthorLabel,
+  commentAuthorTag,
   commentVisible,
   personaLabel,
   personaTag,
@@ -31,15 +33,10 @@ describe("ticketView helpers", () => {
     const states: TicketState[] = [
       "triage",
       "needs_info",
-      "accepted",
       "in_progress",
-      "deploying",
-      "resolved",
+      "parked",
       "closed",
-      "declined",
-      "backlog",
-      "rejected_spam",
-      "rejected_malicious",
+      "rejected",
     ];
     for (const s of states) {
       expect(stateLabel(s)).toBeTruthy();
@@ -50,12 +47,9 @@ describe("ticketView helpers", () => {
     expect(stateBucket("triage")).toBe("open");
     expect(stateBucket("needs_info")).toBe("open");
     expect(stateBucket("in_progress")).toBe("progress");
-    expect(stateBucket("deploying")).toBe("progress");
-    expect(stateBucket("backlog")).toBe("backlog");
-    expect(stateBucket("resolved")).toBe("done");
+    expect(stateBucket("parked")).toBe("backlog");
     expect(stateBucket("closed")).toBe("done");
-    expect(stateBucket("rejected_spam")).toBe("rejected");
-    expect(stateBucket("rejected_malicious")).toBe("rejected");
+    expect(stateBucket("rejected")).toBe("rejected");
   });
 
   it("formats the short #N reference", () => {
@@ -68,6 +62,24 @@ describe("ticketView helpers", () => {
     expect(personaLabel("system")).toBe("System");
     expect(personaTag("dev")).toBe("DEV");
     expect(personaTag("user")).toBe("U");
+  });
+
+  it("shows the human name over the persona when author_name is set (#359)", () => {
+    // A state-change audit a user triggered: author_type=system, but named.
+    const audit = comment({ author_type: "system", author_name: "Sebastian Baltes" });
+    expect(commentAuthorLabel(audit)).toBe("Sebastian Baltes");
+    expect(commentAuthorTag(audit)).toBe("SB");
+
+    // A user comment with the poster's name.
+    const mine = comment({ author_type: "user", author_name: "sorokan" });
+    expect(commentAuthorLabel(mine)).toBe("sorokan");
+    expect(commentAuthorTag(mine)).toBe("SO");
+  });
+
+  it("falls back to the persona for automated events with no name (#359)", () => {
+    const sys = comment({ author_type: "system", author_name: undefined });
+    expect(commentAuthorLabel(sys)).toBe("System");
+    expect(commentAuthorTag(sys)).toBe("SYS");
   });
 
   it("labels categories with an Uncategorized fallback", () => {
@@ -88,33 +100,26 @@ describe("ticketView helpers", () => {
         TICKET_STATES.filter((s) => s !== "triage"),
       );
       // Not a graph edge — the admin may still jump straight there.
-      expect(settableStates("triage", admin)).toContain("resolved");
-      expect(settableStates("rejected_spam", admin)).toContain("triage");
+      expect(settableStates("triage", admin)).toContain("closed");
+      expect(settableStates("rejected", admin)).toContain("triage");
     });
 
-    it("gives the author close + park from triage", () => {
-      expect(settableStates("triage", author)).toEqual(["closed", "backlog"]);
-      expect(settableStates("needs_info", author)).toEqual([
-        "closed",
-        "backlog",
-      ]);
+    it("gives the author close + park from triage/needs_info", () => {
+      expect(settableStates("triage", author)).toEqual(["parked", "closed"]);
+      expect(settableStates("needs_info", author)).toEqual(["parked", "closed"]);
     });
 
     it("gives the author un-park, reopen and close where they apply", () => {
-      expect(settableStates("backlog", author)).toEqual(["triage", "closed"]);
-      expect(settableStates("closed", author)).toEqual(["triage"]);
-      expect(settableStates("resolved", author)).toEqual([
-        "in_progress",
-        "closed",
-      ]);
-      expect(settableStates("declined", author)).toEqual(["closed"]);
+      // parked → un-park (triage) or close.
+      expect(settableStates("parked", author)).toEqual(["triage", "closed"]);
+      // closed → reopen to triage, or straight back to work ("didn't stick").
+      expect(settableStates("closed", author)).toEqual(["triage", "in_progress"]);
+      // in_progress → the author may still close their own ticket.
+      expect(settableStates("in_progress", author)).toEqual(["closed"]);
     });
 
-    it("gives the author nothing mid-flow or from a terminal state", () => {
-      expect(settableStates("accepted", author)).toEqual([]);
-      expect(settableStates("in_progress", author)).toEqual([]);
-      expect(settableStates("deploying", author)).toEqual([]);
-      expect(settableStates("rejected_spam", author)).toEqual([]);
+    it("gives the author nothing from a terminal reject", () => {
+      expect(settableStates("rejected", author)).toEqual([]);
     });
 
     it("gives a stranger nothing at all", () => {

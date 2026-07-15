@@ -177,7 +177,7 @@ func testTicketStoreContract(t *testing.T, newFixture func(t *testing.T) ticketS
 		f := newFixture(t)
 		author := f.newAuthor(t)
 		tk := mkTicket(t, f, author, "spammy", "buy now", "")
-		if _, err := f.store.SetTicketState(tk.ID, StateRejectedSpam, false); err != nil {
+		if _, err := f.store.SetTicketState(tk.ID, StateRejected, false); err != nil {
 			t.Fatalf("reject: %v", err)
 		}
 		// A stranger doesn't see it.
@@ -199,34 +199,51 @@ func testTicketStoreContract(t *testing.T, newFixture func(t *testing.T) ticketS
 		tk := mkTicket(t, f, author, "t", "b", "")
 
 		// Legal move appends a system audit comment.
-		moved, err := f.store.SetTicketState(tk.ID, StateAccepted, false)
-		if err != nil || moved.State != StateAccepted {
+		moved, err := f.store.SetTicketState(tk.ID, StateInProgress, false)
+		if err != nil || moved.State != StateInProgress {
 			t.Fatalf("legal transition: %v / %+v", err, moved)
 		}
 		cs := f.store.ListComments(tk.ID)
-		if len(cs) != 1 || cs[0].AuthorType != AuthorSystem || cs[0].Body != "state: triage → accepted" {
+		if len(cs) != 1 || cs[0].AuthorType != AuthorSystem || cs[0].Body != "state: triage → in_progress" {
 			t.Fatalf("audit comment: %+v", cs)
 		}
 		// The audit comment is born reviewed (PO-review rule).
 		if !cs[0].POReviewed {
 			t.Fatal("system audit comment must be po_reviewed")
 		}
+		// Unattributed move (no actor) carries no human id (#359).
+		if cs[0].AuthorID != nil {
+			t.Fatalf("automated audit should have no actor: %+v", cs[0])
+		}
+
+		// #359: a move attributed to a human tags the audit with that actor id,
+		// while staying a system/audit line — so the thread can show their name.
+		// On a fresh ticket, so the illegal-move checks below still see `tk` in
+		// in_progress.
+		tk2 := mkTicket(t, f, author, "t2", "b2", "")
+		if _, err := f.store.SetTicketState(tk2.ID, StateInProgress, false, author); err != nil {
+			t.Fatalf("attributed transition: %v", err)
+		}
+		a2 := f.store.ListComments(tk2.ID)
+		if len(a2) != 1 || a2[0].AuthorType != AuthorSystem || a2[0].AuthorID == nil || *a2[0].AuthorID != author {
+			t.Fatalf("attributed audit should carry actor %q: %+v", author, a2)
+		}
 
 		// Illegal move / unknown state / no-op / missing ticket.
-		if _, err := f.store.SetTicketState(tk.ID, StateClosed, false); err != errInvalidTransition {
+		if _, err := f.store.SetTicketState(tk.ID, StateTriage, false); err != errInvalidTransition {
 			t.Fatalf("illegal transition err = %v, want errInvalidTransition", err)
 		}
 		if _, err := f.store.SetTicketState(tk.ID, TicketState("bogus"), false); err != errUnknownState {
 			t.Fatalf("unknown state err = %v, want errUnknownState", err)
 		}
-		if _, err := f.store.SetTicketState(tk.ID, StateAccepted, false); err != errInvalidTransition {
+		if _, err := f.store.SetTicketState(tk.ID, StateInProgress, false); err != errInvalidTransition {
 			t.Fatalf("no-op transition err = %v, want errInvalidTransition", err)
 		}
-		if _, err := f.store.SetTicketState("does-not-exist", StateAccepted, false); err != errTicketMissing {
+		if _, err := f.store.SetTicketState("does-not-exist", StateInProgress, false); err != errTicketMissing {
 			t.Fatalf("missing ticket err = %v, want errTicketMissing", err)
 		}
 		// Failed moves left no extra audit comments and no state change.
-		if got := f.store.GetTicket(tk.ID); got.State != StateAccepted || len(got.Comments) != 1 {
+		if got := f.store.GetTicket(tk.ID); got.State != StateInProgress || len(got.Comments) != 1 {
 			t.Fatalf("state/comments after rejected moves: %+v", got)
 		}
 	})
@@ -237,8 +254,8 @@ func testTicketStoreContract(t *testing.T, newFixture func(t *testing.T) ticketS
 		tk := mkTicket(t, f, author, "t", "b", "")
 
 		fit := "fit"
-		out, err := f.store.SetPOVerdict(tk.ID, POVerdict{VisionFit: &fit, Reason: "legit", State: StateAccepted})
-		if err != nil || out.State != StateAccepted {
+		out, err := f.store.SetPOVerdict(tk.ID, POVerdict{VisionFit: &fit, Reason: "legit", State: StateInProgress})
+		if err != nil || out.State != StateInProgress {
 			t.Fatalf("SetPOVerdict: %v / %+v", err, out)
 		}
 		full := f.store.GetTicket(tk.ID)
@@ -253,12 +270,12 @@ func testTicketStoreContract(t *testing.T, newFixture func(t *testing.T) ticketS
 		}
 		// Audit comment.
 		cs := f.store.ListComments(tk.ID)
-		if len(cs) != 1 || cs[0].Body != "po verdict: triage → accepted" {
+		if len(cs) != 1 || cs[0].Body != "po verdict: triage → in_progress" {
 			t.Fatalf("verdict audit comment: %+v", cs)
 		}
 		// A second verdict with an empty reason clears the previous one
 		// (divergence d: sql did, mem/file kept the stale value).
-		if _, err := f.store.SetPOVerdict(tk.ID, POVerdict{State: StateDeclined}); err != nil {
+		if _, err := f.store.SetPOVerdict(tk.ID, POVerdict{State: StateRejected}); err != nil {
 			t.Fatalf("second verdict: %v", err)
 		}
 		full = f.store.GetTicket(tk.ID)
@@ -266,10 +283,10 @@ func testTicketStoreContract(t *testing.T, newFixture func(t *testing.T) ticketS
 			t.Fatalf("po_reason not cleared by empty-reason verdict: %v", *full.POReason)
 		}
 		// Illegal verdict target / missing ticket.
-		if _, err := f.store.SetPOVerdict(tk.ID, POVerdict{State: StateResolved}); err != errInvalidTransition {
+		if _, err := f.store.SetPOVerdict(tk.ID, POVerdict{State: StateClosed}); err != errInvalidTransition {
 			t.Fatalf("illegal verdict err = %v", err)
 		}
-		if _, err := f.store.SetPOVerdict("does-not-exist", POVerdict{State: StateAccepted}); err != errTicketMissing {
+		if _, err := f.store.SetPOVerdict("does-not-exist", POVerdict{State: StateInProgress}); err != errTicketMissing {
 			t.Fatalf("missing ticket verdict err = %v", err)
 		}
 	})
@@ -361,7 +378,7 @@ func testTicketStoreContract(t *testing.T, newFixture func(t *testing.T) ticketS
 		f := newFixture(t)
 		author := f.newAuthor(t)
 		tk := mkTicket(t, f, author, "t", "b", "")
-		if _, err := f.store.SetTicketState(tk.ID, StateAccepted, false); err != nil {
+		if _, err := f.store.SetTicketState(tk.ID, StateInProgress, false); err != nil {
 			t.Fatalf("accept: %v", err)
 		}
 

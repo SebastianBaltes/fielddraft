@@ -91,7 +91,7 @@ func (s *Server) handleCreateTicket(w http.ResponseWriter, r *http.Request) {
 		full = t
 	}
 	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(ticketDetail(full, user, false))
+	json.NewEncoder(w).Encode(s.ticketDetail(full, user, false))
 }
 
 // persistArtifacts decodes and stores every repro blob carried by a
@@ -199,7 +199,7 @@ func (s *Server) handleGetTicket(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, "not found")
 		return
 	}
-	json.NewEncoder(w).Encode(ticketDetail(t, user, isAdmin))
+	json.NewEncoder(w).Encode(s.ticketDetail(t, user, isAdmin))
 }
 
 // ─── update / delete ────────────────────────────────────────────
@@ -258,14 +258,15 @@ func (s *Server) handlePatchTicket(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusForbidden, "only admins may set this state")
 			return
 		}
-		if _, err := s.tickets.SetTicketState(id, to, isAdmin); err != nil {
+		// Attribute the audit line to the human who moved it (#359).
+		if _, err := s.tickets.SetTicketState(id, to, isAdmin, user.ID); err != nil {
 			writeStoreError(w, err)
 			return
 		}
 	}
 
 	full := s.tickets.GetTicket(id)
-	json.NewEncoder(w).Encode(ticketDetail(full, user, isAdmin))
+	json.NewEncoder(w).Encode(s.ticketDetail(full, user, isAdmin))
 }
 
 func (s *Server) handleDeleteTicket(w http.ResponseWriter, r *http.Request) {
@@ -310,8 +311,9 @@ func (s *Server) handleListComments(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, "not found")
 		return
 	}
-	comments := s.tickets.ListComments(id)
-	json.NewEncoder(w).Encode(visibleComments(comments, isAdmin))
+	comments := visibleComments(s.tickets.ListComments(id), isAdmin)
+	s.fillAuthorNames(comments)
+	json.NewEncoder(w).Encode(comments)
 }
 
 func (s *Server) handleAddComment(w http.ResponseWriter, r *http.Request) {
@@ -349,6 +351,7 @@ func (s *Server) handleAddComment(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "could not add comment")
 		return
 	}
+	c.AuthorName = user.DisplayName // #359: show the poster's name right away
 	w.WriteHeader(http.StatusCreated)
 	json.NewEncoder(w).Encode(c)
 }
@@ -427,8 +430,9 @@ type ticketDetailResponse struct {
 // ticketDetail builds the detail payload, filtering internal `dev` comments for
 // non-admins (§7.3: user-visible are user / po / system; dev internal notes are
 // admin-only).
-func ticketDetail(t *Ticket, viewer *User, isAdmin bool) ticketDetailResponse {
+func (s *Server) ticketDetail(t *Ticket, viewer *User, isAdmin bool) ticketDetailResponse {
 	visible := visibleComments(t.Comments, isAdmin)
+	s.fillAuthorNames(visible)
 	artifacts := t.Artifacts
 	if artifacts == nil {
 		artifacts = []*TicketArtifact{}
@@ -437,6 +441,21 @@ func ticketDetail(t *Ticket, viewer *User, isAdmin bool) ticketDetailResponse {
 		visible = []*TicketComment{}
 	}
 	return ticketDetailResponse{Ticket: t, Comments: visible, Artifacts: artifacts}
+}
+
+// fillAuthorNames resolves each comment's AuthorID to the author's display name
+// (#359), so the thread shows "Sebastian" instead of the bare "User"/"System"
+// persona. Comments with no human actor (automated system events, po/dev) are
+// left untouched.
+func (s *Server) fillAuthorNames(comments []*TicketComment) {
+	for _, c := range comments {
+		if c.AuthorID == nil {
+			continue
+		}
+		if u := s.store.GetUser(*c.AuthorID); u != nil {
+			c.AuthorName = u.DisplayName
+		}
+	}
 }
 
 // visibleComments drops internal (dev) and withheld (leak-filtered) comments for

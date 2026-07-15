@@ -62,15 +62,15 @@ func TestIssuevaultLiveE2E(t *testing.T) {
 		t.Fatalf("comment author_type=%q want user", uc.AuthorType)
 	}
 
-	// ── PO verdict triage→accepted + meta round-trip (proves meta is an OBJECT) ──
+	// ── PO verdict triage→in_progress + meta round-trip (proves meta is an OBJECT) ──
 	reason := "looks legit"
 	fit := "fit"
-	acc, err := s.SetPOVerdict(id, POVerdict{Spam: false, Malicious: false, VisionFit: &fit, Reason: reason, State: StateAccepted})
+	acc, err := s.SetPOVerdict(id, POVerdict{Spam: false, Malicious: false, VisionFit: &fit, Reason: reason, State: StateInProgress})
 	if err != nil {
 		t.Fatalf("SetPOVerdict: %v", err)
 	}
-	if acc.State != StateAccepted {
-		t.Fatalf("post-verdict state=%q want accepted", acc.State)
+	if acc.State != StateInProgress {
+		t.Fatalf("post-verdict state=%q want in_progress", acc.State)
 	}
 	if acc.POReason == nil || *acc.POReason != reason {
 		t.Fatalf("po_reason did not round-trip through meta: %v (meta likely not decoded as object)", acc.POReason)
@@ -79,10 +79,10 @@ func TestIssuevaultLiveE2E(t *testing.T) {
 		t.Fatalf("po_vision_fit did not round-trip: %v", acc.POVisionFit)
 	}
 
-	// ── list by status (RISK: bare string vs array) — must find the accepted ticket ──
-	list := s.ListTickets(TicketFilter{State: StateAccepted, ViewerIsAdmin: true})
+	// ── list by state (array filter) — must find the in_progress ticket ──
+	list := s.ListTickets(TicketFilter{State: StateInProgress, ViewerIsAdmin: true})
 	if !containsID(list, id) {
-		t.Fatalf("ListTickets(state=accepted) did not return %s (status filter shape?) — got %d", id, len(list))
+		t.Fatalf("ListTickets(state=in_progress) did not return %s (state filter shape?) — got %d", id, len(list))
 	}
 
 	// ── work-order lifecycle: create → claim → complete ──

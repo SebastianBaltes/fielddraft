@@ -6446,3 +6446,147 @@ fn rounded_rect_extrude_weaves_watertight_with_its_seams() {
     let euler = brep.vertex_count() as i64 - brep.edge_count() as i64 + brep.face_count() as i64;
     assert_eq!(euler, 2, "closed manifold");
 }
+
+/// #350 „Fillet hat keinen Effekt" — der Fillet WAR da, man konnte ihn nur nicht
+/// sehen.
+///
+/// Der Deferred-Renderer (der Default) zeichnet die Leaf-Meshes hart und marschiert
+/// die SDF nur in den `sdf_regions`, die [`BoundedCsg::classify_for_hybrid`] meldet.
+/// Fuer `MaskedBlend` war diese Region auf den blossen Ueberlapp der beiden Operanden
+/// beschnitten — aber der Rundungswulst quillt an einer Difference-Kante AUS dem
+/// Schneidwerkzeug HERAUS, in Material, das das Werkzeug nie beruehrt. Ergebnis im
+/// Originaldokument des Tickets: von 9672 Punkten, an denen der Fillet die Oberflaeche
+/// wirklich verschiebt, lagen 9665 ausserhalb jeder March-Region — 99,9 % des Fillets
+/// waren unsichtbar.
+///
+/// Die Invariante, die das fuer JEDEN Blend festnagelt: wo der Blend das VORZEICHEN
+/// der SDF kippt, bewegt er die Oberflaeche — und genau dort MUSS marschiert werden.
+/// (Blosse Feldaenderungen tief im Material zaehlen nicht: sie verschieben nichts.)
+#[test]
+fn ticket_350_fillet_march_region_covers_every_moved_surface_point() {
+    use crate::csg::EvalMode;
+
+    #[derive(serde::Deserialize)]
+    struct Doc {
+        feature_calls: Vec<FeatureCall>,
+    }
+    let doc: Doc = serde_json::from_str(include_str!("testdata/ticket_350_fillet.json"))
+        .expect("fixture parses");
+
+    let registry = FeatureRegistry::with_builtins();
+    let mut d = empty_ctx();
+    let mut ctx = Context::new(&mut d);
+    let errs = registry.regenerate(&mut ctx, &doc.feature_calls, None);
+    assert!(errs.0.is_empty(), "document regenerates cleanly: {errs:?}");
+    assert_eq!(ctx.edge_fillets.len(), 1, "the fillet_edge call resolved its edge");
+
+    let hard = crate::csg::CsgNode::from_decoded(&ctx.features);
+    let filleted = hard.clone().apply_edge_fillets(&ctx.edge_fillets);
+    assert_eq!(count_masked_blends(&filleted), 1, "the junction became a MaskedBlend");
+
+    let info = crate::bvh::BoundedCsg::from_csg(&filleted).classify_for_hybrid();
+    assert!(!info.sdf_regions.is_empty(), "the blend yields a march region");
+
+    let in_any_region = |p: [f32; 3]| {
+        info.sdf_regions.iter().any(|r| {
+            let a = &r.aabb;
+            p[0] >= a[0] && p[1] >= a[1] && p[2] >= a[2]
+                && p[0] <= a[3] && p[1] <= a[4] && p[2] <= a[5]
+        })
+    };
+
+    let poly = &ctx.edge_fillets[0].mask_polyline;
+    let (mut moved, mut moved_outside) = (0usize, 0usize);
+    let mut witness = [0.0f32; 3];
+    for pt in poly.iter() {
+        for dx in -14..=14 {
+            for dy in -14..=14 {
+                for dz in -2..=2 {
+                    let p = [
+                        pt[0] + dx as f32 * 0.5,
+                        pt[1] + dy as f32 * 0.5,
+                        pt[2] + dz as f32 * 0.5,
+                    ];
+                    let inside_hard = hard.sdf(p, EvalMode::Visual) < 0.0;
+                    let inside_filleted = filleted.sdf(p, EvalMode::Visual) < 0.0;
+                    if inside_hard != inside_filleted {
+                        moved += 1;
+                        if !in_any_region(p) {
+                            moved_outside += 1;
+                            witness = p;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    assert!(moved > 0, "the fillet moves the surface at all");
+    assert_eq!(
+        moved_outside, 0,
+        "{moved_outside} of {moved} moved surface points lie OUTSIDE every march region \
+         (e.g. {witness:?}) — the deferred renderer draws the hard mesh there, so the \
+         fillet is invisible exactly as in #350",
+    );
+}
+
+/// #348 „Die BREP-Kante laeuft falsch" — S-foermig an der Rundung vorbei.
+///
+/// An der runden Nut-Stirn treffen die beiden Wandflaechen die Rundung TANGENTIAL.
+/// Beide Tangentenlinien tragen eigene Eck-Vertices, nur ~5 mm voneinander entfernt
+/// — und `vertex_ahead` fing beim Beenden eines Marsches den naechstgelegenen
+/// Vertex, der „voraus" lag, ohne den Abstand QUER zur Tangente zu pruefen. Der
+/// Marsch lief also die ganze Laenge der EINEN Naht und snappte sein Ende auf den
+/// Vertex der ANDEREN: eine Kante, die unten an der +y-Naht beginnt und oben an der
+/// -y-Naht endet. Genau die S-Form aus dem Screenshot.
+///
+/// Die Invariante, die das festnagelt: an der Stirn (x ≈ 19.46) ist jede Kante
+/// entweder eine SENKRECHTE Naht (konstantes y) oder ein KAPPEN-Bogen (konstantes
+/// z). Eine Kante, die BEIDES aendert, ueberbrueckt die zwei Nahtlinien — die gibt
+/// es in der Geometrie nicht.
+#[test]
+fn ticket_348_no_edge_bridges_the_two_tangent_seams() {
+    #[derive(serde::Deserialize)]
+    struct Doc {
+        feature_calls: Vec<FeatureCall>,
+    }
+    let doc: Doc = serde_json::from_str(include_str!("testdata/ticket_348_brep_edge.json"))
+        .expect("fixture parses");
+
+    let registry = FeatureRegistry::with_builtins();
+    let mut d = empty_ctx();
+    let mut ctx = Context::new(&mut d);
+    let errs = registry.regenerate(&mut ctx, &doc.feature_calls, None);
+    assert!(errs.0.is_empty(), "document regenerates cleanly: {errs:?}");
+
+    const TIP_X: f64 = 19.46; // die Rundung der Nut-Stirn
+    let woven = ctx.brep_cache.ensure(&ctx.features);
+    let mut seams = 0usize;
+
+    for (brep, _placement) in woven.iter() {
+        for e in brep.edges.iter() {
+            let pts = crate::brep::edge_sampling::sample_edge_dense(&e.geometry, 12);
+            if pts.len() < 2 {
+                continue;
+            }
+            let (a, b) = (pts[0], pts[pts.len() - 1]);
+            let on_tip = (a[0] - TIP_X).abs() < 0.3 && (b[0] - TIP_X).abs() < 0.3;
+            if !on_tip {
+                continue;
+            }
+            let dy = (a[1] - b[1]).abs();
+            let dz = (a[2] - b[2]).abs();
+            if dy < 0.1 {
+                seams += 1;
+            }
+            assert!(
+                dy < 0.1 || dz < 0.1,
+                "edge bridges the two tangent seams: ({:.2},{:.2},{:.2}) → ({:.2},{:.2},{:.2}) \
+                 — dy={dy:.2} dz={dz:.2}. It runs down one seam and ends on the other (#348).",
+                a[0], a[1], a[2], b[0], b[1], b[2],
+            );
+        }
+    }
+
+    assert!(seams >= 2, "the tip really has its two vertical seams (test not vacuous)");
+}

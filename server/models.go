@@ -90,23 +90,36 @@ func (i *Invite) Status(now time.Time) string {
 
 // ─── tickets ────────────────────────────────────────────────────
 
-// TicketState is a ticket's position in the §7.2 state machine.
+// TicketState is a ticket's position in the state machine — the SAME six-value
+// enum IssueVault 0.4.x enforces (there is no separate open/closed field and no
+// free-form status anymore). FieldDraft used to carry eleven states in
+// IssueVault's opaque `status` string; the store now reduced to one validated
+// `state`, so this collapsed to match (§7.2).
+//
+// The three merges and where their old distinctions went:
+//   - accepted/deploying → in_progress. "Accepted" is no longer a state: the
+//     truth for the PO→coding hand-off is the WORK-ORDER's existence (the agent
+//     queue already keys on that, not on the state).
+//   - resolved → closed. "Fixed, deploy-verification pending" vs. "done" is now
+//     carried by the fix `version` stamped on close, not by a separate state.
+//   - declined/rejected_spam/rejected_malicious → rejected. The reason lives in
+//     the PO verdict + a comment, not in the state.
 type TicketState string
 
 const (
-	StateTriage            TicketState = "triage" // initial
-	StateNeedsInfo         TicketState = "needs_info"
-	StateAccepted          TicketState = "accepted"
-	StateInProgress        TicketState = "in_progress"
-	StateDeploying         TicketState = "deploying"
-	StateResolved          TicketState = "resolved"
-	StateClosed            TicketState = "closed"
-	StateDeclined          TicketState = "declined"
-	// StateBacklog: recorded, but the agent should NOT work it — a user-set
-	// parking state outside the triage→…→resolved flow (ticket 066230d9).
-	StateBacklog           TicketState = "backlog"
-	StateRejectedSpam      TicketState = "rejected_spam"
-	StateRejectedMalicious TicketState = "rejected_malicious"
+	StateTriage     TicketState = "triage" // initial
+	StateNeedsInfo  TicketState = "needs_info"
+	StateInProgress TicketState = "in_progress"
+	// StateParked: team-parked (external dependency / "later"). Non-terminal, but
+	// UNLIKE needs_info a user comment does NOT pull it back into a queue — the
+	// active queues exclude it and un-parking is an explicit state change. This is
+	// the one old distinction (backlog vs. needs_info) that survives the collapse,
+	// as a first-class state (IssueVault 0.4.2).
+	StateParked TicketState = "parked"
+	// StateClosed / StateRejected are terminal. IssueVault sets closed_at itself
+	// on entry and clears it on leave — this adapter never writes closed_at.
+	StateClosed   TicketState = "closed"
+	StateRejected TicketState = "rejected"
 )
 
 // AuthorType is who wrote a ticket comment (§4 security context).
@@ -143,6 +156,10 @@ type Ticket struct {
 	Title       string      `json:"title"`
 	Body        string      `json:"body"`
 	State       TicketState `json:"state"`
+	// Version is the fix marker stamped when the ticket was closed (empty while
+	// open, and empty on tickets closed before this existed). Opaque — set by the
+	// closer to the release the fix shipped in (IssueVault 0.4.1).
+	Version     string      `json:"version"`
 	Category    *string     `json:"category"` // bug|feature|question|other, or nil
 	POSpam      bool        `json:"po_spam"`
 	POMalicious bool        `json:"po_malicious"`
@@ -162,12 +179,17 @@ type TicketComment struct {
 	ID         string     `json:"id"`
 	TicketID   string     `json:"ticket_id"`
 	AuthorType AuthorType `json:"author_type"`
-	AuthorID   *string    `json:"author_id"` // nil for po/dev/system
-	Internal   bool       `json:"internal"`  // dev notes: admin only, never user
-	Body       string     `json:"body"`
-	CreatedAt  time.Time  `json:"created_at"`
-	Withheld   bool       `json:"withheld"`    // leak-filter hold (§4.2)
-	POReviewed bool       `json:"po_reviewed"` // PO post-moderation done (§4.2/§8)
+	AuthorID   *string    `json:"author_id"` // nil for po/dev/automated-system
+	// AuthorName is the human author's display name, resolved from AuthorID at
+	// serialization (#359). Present for user comments and for state-change audits
+	// a human triggered — so the thread shows "Sebastian" instead of "SYS". Empty
+	// for automated/system events (no human actor). Never persisted.
+	AuthorName string    `json:"author_name,omitempty"`
+	Internal   bool      `json:"internal"` // dev notes: admin only, never user
+	Body       string    `json:"body"`
+	CreatedAt  time.Time `json:"created_at"`
+	Withheld   bool      `json:"withheld"`    // leak-filter hold (§4.2)
+	POReviewed bool      `json:"po_reviewed"` // PO post-moderation done (§4.2/§8)
 }
 
 // TicketArtifact is a content-addressed repro blob attached to a ticket.
@@ -299,7 +321,7 @@ type MeshJob struct {
 	PartID     string        `json:"part_id"`
 	ParamsJSON string        `json:"params_json"`
 	Status     MeshJobStatus `json:"status"`
-	BlobRef    string        `json:"-"` // content-addressed STL blob (done only)
+	BlobRef    string        `json:"-"`           // content-addressed STL blob (done only)
 	ReportJSON string        `json:"report_json"` // mesher report (done only)
 	Error      string        `json:"error"`       // failure detail (error only)
 	CreatedAt  time.Time     `json:"created_at"`

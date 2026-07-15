@@ -296,20 +296,20 @@ func TestLegalStateTransition(t *testing.T) {
 	adminCookies := seedAdminCookies(t, e, "boss@test.com")
 
 	// Admin: triage → accepted (legal).
-	resp = e.do(t, "PATCH", "/api/tickets/"+tk.ID, `{"state":"accepted"}`, adminCookies)
+	resp = e.do(t, "PATCH", "/api/tickets/"+tk.ID, `{"state":"in_progress"}`, adminCookies)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("legal transition: got %d, want 200", resp.StatusCode)
 	}
 	var updated ticketDetailResponse
 	json.NewDecoder(resp.Body).Decode(&updated)
 	resp.Body.Close()
-	if updated.State != StateAccepted {
+	if updated.State != StateInProgress {
 		t.Fatalf("state after transition = %q, want accepted", updated.State)
 	}
 	// An audit system comment was appended.
 	foundSystem := false
 	for _, c := range updated.Comments {
-		if c.AuthorType == AuthorSystem && strings.Contains(c.Body, "accepted") {
+		if c.AuthorType == AuthorSystem && strings.Contains(c.Body, "in_progress") {
 			foundSystem = true
 		}
 	}
@@ -317,8 +317,9 @@ func TestLegalStateTransition(t *testing.T) {
 		t.Fatalf("no system audit comment after transition: %+v", updated.Comments)
 	}
 
-	// Continue the dev chain: accepted → in_progress → deploying → resolved.
-	for _, st := range []string{"in_progress", "deploying", "resolved"} {
+	// Continue the dev chain: in_progress → needs_info → in_progress (a few legal
+	// moves, each audited); leave it non-terminal for the author-close below.
+	for _, st := range []string{"needs_info", "in_progress"} {
 		resp = e.do(t, "PATCH", "/api/tickets/"+tk.ID, `{"state":"`+st+`"}`, adminCookies)
 		if resp.StatusCode != http.StatusOK {
 			t.Fatalf("transition to %s: got %d, want 200", st, resp.StatusCode)
@@ -326,7 +327,7 @@ func TestLegalStateTransition(t *testing.T) {
 		resp.Body.Close()
 	}
 
-	// Author may close a resolved ticket (resolved → closed).
+	// Author may close their own ticket (in_progress → closed).
 	resp = e.do(t, "PATCH", "/api/tickets/"+tk.ID, `{"state":"closed"}`, e.cookies)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("author close: got %d, want 200", resp.StatusCode)
@@ -345,20 +346,20 @@ func TestIllegalStateTransition(t *testing.T) {
 
 	adminCookies := seedAdminCookies(t, e, "boss2@test.com")
 
-	// triage → resolved is not a graph edge, but the ADMIN may set it directly.
-	resp = e.do(t, "PATCH", "/api/tickets/"+tk.ID, `{"state":"resolved"}`, adminCookies)
+	// triage → closed is not a graph edge, but the ADMIN may set it directly.
+	resp = e.do(t, "PATCH", "/api/tickets/"+tk.ID, `{"state":"closed"}`, adminCookies)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("admin direct state: got %d, want 200", resp.StatusCode)
 	}
 	var set ticketDetailResponse
 	json.NewDecoder(resp.Body).Decode(&set)
 	resp.Body.Close()
-	if set.State != StateResolved {
+	if set.State != StateClosed {
 		t.Fatalf("admin direct state: got %q, want resolved", set.State)
 	}
 
 	// Setting the state it already has is a no-op → rejected (no audit noise).
-	resp = e.do(t, "PATCH", "/api/tickets/"+tk.ID, `{"state":"resolved"}`, adminCookies)
+	resp = e.do(t, "PATCH", "/api/tickets/"+tk.ID, `{"state":"closed"}`, adminCookies)
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("no-op state: got %d, want 400", resp.StatusCode)
 	}
@@ -371,8 +372,8 @@ func TestIllegalStateTransition(t *testing.T) {
 	}
 	resp.Body.Close()
 
-	// A non-admin may not set arbitrary state (only close).
-	resp = e.do(t, "PATCH", "/api/tickets/"+tk.ID, `{"state":"accepted"}`, e.cookies)
+	// A non-admin may not set arbitrary state (close/park/reopen only; not reject).
+	resp = e.do(t, "PATCH", "/api/tickets/"+tk.ID, `{"state":"rejected"}`, e.cookies)
 	if resp.StatusCode != http.StatusForbidden {
 		t.Fatalf("non-admin state: got %d, want 403", resp.StatusCode)
 	}
@@ -383,7 +384,7 @@ func TestIllegalStateTransition(t *testing.T) {
 	var after ticketDetailResponse
 	json.NewDecoder(resp.Body).Decode(&after)
 	resp.Body.Close()
-	if after.State != StateResolved {
+	if after.State != StateClosed {
 		t.Fatalf("state after rejected moves = %q, want resolved", after.State)
 	}
 }
@@ -400,7 +401,7 @@ func TestRejectedTicketVisibility(t *testing.T) {
 	adminCookies := seedAdminCookies(t, e, "boss3@test.com")
 
 	// Admin marks it rejected_spam (legal triage → rejected_spam).
-	resp = e.do(t, "PATCH", "/api/tickets/"+tk.ID, `{"state":"rejected_spam"}`, adminCookies)
+	resp = e.do(t, "PATCH", "/api/tickets/"+tk.ID, `{"state":"rejected"}`, adminCookies)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("reject: got %d", resp.StatusCode)
 	}
@@ -555,7 +556,7 @@ func TestAuthorReopensResolvedTicket(t *testing.T) {
 
 	// Drive to resolved via admin.
 	adminCookies := seedAdminCookies(t, e, "reopen-admin@test.com")
-	for _, s := range []string{"accepted", "in_progress", "deploying", "resolved"} {
+	for _, s := range []string{"in_progress", "closed"} {
 		resp = e.do(t, "PATCH", "/api/tickets/"+tk.ID, `{"state":"`+s+`"}`, adminCookies)
 		if resp.StatusCode != http.StatusOK {
 			t.Fatalf("admin →%s: got %d, want 200", s, resp.StatusCode)
@@ -643,12 +644,12 @@ func TestAuthorBacklogCloseReopen(t *testing.T) {
 
 	// A stranger may not touch someone else's ticket state.
 	strangerCookies := seedUserCookies(t, e, "stranger@test.com")
-	if code, _ := patch("backlog", strangerCookies); code != http.StatusForbidden {
+	if code, _ := patch("parked", strangerCookies); code != http.StatusForbidden {
 		t.Fatalf("stranger park: got %d, want 403", code)
 	}
 
-	// Author: triage → backlog (park).
-	if code, st := patch("backlog", e.cookies); code != http.StatusOK || st != StateBacklog {
+	// Author: triage → parked (park).
+	if code, st := patch("parked", e.cookies); code != http.StatusOK || st != StateParked {
 		t.Fatalf("author park: got %d / %q, want 200 / backlog", code, st)
 	}
 	// backlog → triage (un-park).
