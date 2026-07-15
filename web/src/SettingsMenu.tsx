@@ -977,7 +977,6 @@ function SettingsDialog({
                     <option value="mesh">Mesh</option>
                     <option value="brep">B-Rep</option>
                     <option value="webgl">WebGL</option>
-                    <option value="voxel">Voxel</option>
                   </select>
                 </div>
 

@@ -5,14 +5,16 @@
  * subscribe/getSnapshot pair (like `mesherDebugStore`). It publishes the voxel
  * DISPLAY state the viewport (`VoxelOverlay`) reads:
  *
- *   · `solidActive` — the "voxel" render mode is on ⇒ draw the current scene's
- *     occupancy as solid cubes (the overlay voxelises live, reacting to
- *     geometry changes);
+ *   · `solidActive` — the Voxel dialog (`VoxelDialog`) is open ⇒ draw the
+ *     current scene's occupancy as solid cubes (the overlay voxelises live,
+ *     reacting to geometry changes). Set on mount / cleared on unmount by the
+ *     dialog itself (#379), mirroring how `mesherDebugStore`/`lichenDebugStore`
+ *     scope their overlays to their dialog's lifetime — NOT a render mode.
  *   · `diff` — the dialog / console published a before/after diff ⇒ draw the
  *     added voxels green and the removed voxels red (unchanged optionally grey).
  *
- * The requested resolution is persisted so the render mode has a value even
- * before the dialog is ever opened.
+ * The requested resolution is persisted so it has a value even before the
+ * dialog is ever opened.
  */
 
 const RES_KEY = "fielddraft.debug.voxel.resolution";
@@ -104,8 +106,9 @@ export function setVoxelResolution(n: number): void {
   publish({ resolution: clamped });
 }
 
-/** The "voxel" render mode toggles this — the overlay then draws the current
- *  scene's occupancy as solid cubes. */
+/** The Voxel dialog's open state toggles this (set true on mount, false on
+ *  unmount) — the overlay then draws the current scene's occupancy as solid
+ *  cubes for as long as the dialog stays open. */
 export function setVoxelSolidActive(active: boolean): void {
   if (active === display.solidActive) return;
   publish({ solidActive: active });

@@ -7,9 +7,11 @@
  * the difference as GREEN (added) / RED (removed) voxels plus a quantitative
  * readout (added / removed / unchanged counts and the volume delta).
  *
- * The solid voxel fill itself is shown by the "Voxel" RENDER MODE; the diff
- * overlay is drawn on top in ANY render mode. Non-modal + draggable, like the
- * Mesher dialog. Console equivalent: `window.__fdVoxel`.
+ * The solid voxel fill is shown for as long as THIS DIALOG stays open (#379,
+ * like Debug ▸ Mesher / Debug ▸ Lichen scope their overlays to their own
+ * dialog) — it is not tied to a render mode. The diff overlay is drawn on top
+ * in ANY render mode. Non-modal + draggable, like the Mesher dialog. Console
+ * equivalent: `window.__fdVoxel`.
  */
 
 import {
@@ -29,6 +31,7 @@ import {
   setVoxelDiff,
   setVoxelResolution,
   setVoxelShowUnchanged,
+  setVoxelSolidActive,
   subscribeVoxelDisplay,
 } from "./voxelDebugStore";
 import { diffSnapshots, type VoxelSnapshot } from "./voxelSnapshot";
@@ -59,15 +62,23 @@ export function VoxelDialog({ onClose }: { onClose: () => void }) {
   const [readout, setReadout] = useState<DiffReadout | null>(null);
   const [message, setMessage] = useState<string | null>(null);
 
-  // Publish the resolution to the store (drives the "voxel" render mode +
-  // the console API default) whenever it changes.
+  // Publish the resolution to the store (drives the solid fill + the console
+  // API default) whenever it changes.
   useEffect(() => {
     setVoxelResolution(resolution);
   }, [resolution]);
 
-  // Clear the diff overlay when the dialog closes — it is a transient
-  // measurement, not persistent scene state.
-  useEffect(() => () => setVoxelDiff(null), []);
+  // The solid voxel fill is active for exactly as long as this dialog is
+  // open (#379) — mirrors Debug ▸ Mesher / Debug ▸ Lichen. Clear the diff
+  // overlay on close too: it is a transient measurement, not persistent
+  // scene state.
+  useEffect(() => {
+    setVoxelSolidActive(true);
+    return () => {
+      setVoxelSolidActive(false);
+      setVoxelDiff(null);
+    };
+  }, []);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -206,8 +217,9 @@ export function VoxelDialog({ onClose }: { onClose: () => void }) {
       </div>
 
       <p className="hint">
-        Render-Modus „Voxel" zeigt die Füllung. Speichere einen Snapshot,
-        ändere die Geometrie, speichere erneut und zeige den Unterschied.
+        Solange dieser Dialog offen ist, wird die Szene voxelisiert dargestellt.
+        Speichere einen Snapshot, ändere die Geometrie, speichere erneut und
+        zeige den Unterschied.
       </p>
 
       <div className="btn-row">

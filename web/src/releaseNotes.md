@@ -12,6 +12,12 @@ Format, eine Zeile je Eintrag:
 kind = feat | fix | perf. scope und #tickets sind optional. Folgezeilen, die
 eingerückt sind, gehören zum Text davor (Umbruch erlaubt).
 
+## 0.14.0
+- feat(voxel) #379: Debug ▸ Voxel füllt die Szene jetzt nur noch, solange der
+  Dialog offen ist — genau wie Debug ▸ Lichen/Mesher —, statt über einen
+  eigenen Render-Modus geschaltet zu werden; die Voxel sind zudem mit dem
+  Material des Objekts licht-schattiert statt flach selbstleuchtend.
+
 ## 0.13.1
 - fix(fillet) #382: Sobald ein Kanten-Fillet im Dokument war, verschwand das Modell im Render-Modus sdf-vm fast komplett (grau), während der Mesh-Modus korrekt blieb. Der maskierte Blend schaltete an der Masken-Grenze hart um und riss so ein Loch (Sprung bis Blend-Radius) ins Distanzfeld — der Sphere-Trace tunnelte hindurch, der Mesh (nur Vorzeichen) merkte nichts. Der Render-Pfad blendet den Übergang jetzt stetig aus (Cross-Fade + gedämpfte Schrittweite); Mesh und B-Rep bleiben unverändert.
 

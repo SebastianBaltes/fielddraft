@@ -34,4 +34,13 @@ describe("setBootSettings (deep-link override)", () => {
     expect(s.bogusKey).toBeUndefined();
     expect(s.renderMode).toBe("sdf-vm");
   });
+
+  // #379: "voxel" was removed from RenderMode — the solid fill is now scoped
+  // to the Voxel dialog's open state, not a render mode. A tab that still has
+  // the old value in localStorage must fall back cleanly to the default, not
+  // crash or resurrect the removed mode.
+  it("falls back to the default render mode for a stale 'voxel' localStorage value", () => {
+    localStorage.setItem("fielddraft.renderMode", "voxel");
+    expect(loadSettings().renderMode).toBe("sdf-deferred");
+  });
 });

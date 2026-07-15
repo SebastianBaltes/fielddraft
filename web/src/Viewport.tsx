@@ -79,7 +79,6 @@ import { ExportPreviewMesh } from "./exportPreviewMesh";
 import { SdfPlaneOverlay } from "./SdfPlaneOverlay";
 import { MesherOverlay } from "./MesherOverlay";
 import { VoxelOverlay } from "./VoxelOverlay";
-import { setVoxelSolidActive } from "./voxelDebugStore";
 import { LichenOverlay } from "./LichenOverlay";
 import { PartAabbOverlay } from "./PartAabbOverlay";
 import { FilletZoneOverlay } from "./FilletZoneOverlay";
@@ -1530,13 +1529,6 @@ export function Viewport({
 
   const isWebGL = renderMode === "webgl";
 
-  // Voxel render mode (#369): the VoxelOverlay (mounted in both roots) draws the
-  // current scene's occupancy as solid cubes while this is on. The diff overlay
-  // it also owns shows in ANY mode, so the overlay stays mounted regardless.
-  useEffect(() => {
-    setVoxelSolidActive(renderMode === "voxel");
-    return () => setVoxelSolidActive(false);
-  }, [renderMode]);
   // Ticket 814w: the WebGL render path now uses the SAME host-pointer handlers
   // as the WebGPU path. They are renderer-independent — every pick rays through
   // `getPublishedPickCamera()` (which WebGLViewport publishes) into
