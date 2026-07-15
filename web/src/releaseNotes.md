@@ -12,6 +12,9 @@ Format, eine Zeile je Eintrag:
 kind = feat | fix | perf. scope und #tickets sind optional. Folgezeilen, die
 eingerückt sind, gehören zum Text davor (Umbruch erlaubt).
 
+## 0.6.597
+- feat(release-notes) #357: Ticket-Nummern in den Release Notes (z.B. #347) sind jetzt anklickbar und öffnen das zugehörige Ticket in der Issues-Ansicht. Interne Kürzel ohne Ticket bleiben schlichter Text.
+
 ## 0.6.596
 - fix(tickets) #357: Der Zustand eines Tickets wird wieder angezeigt, und das Status-Auswahlmenü zeigt die aktuellen Zustände (Triage, Needs info, In progress, Parked, Closed, Rejected) statt der alten. Grund war, dass die App noch das alte, umfangreichere Zustandsmodell kannte, während der Server längst auf das schlankere umgestellt war.
 - feat(tickets) #357: Die Ticket-Liste hat eine Spalte "Version" — bei geschlossenen Tickets steht dort die Release, in der der Fix ausgeliefert wurde (sobald sie beim Schließen gesetzt wird).
