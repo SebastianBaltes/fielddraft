@@ -38,6 +38,7 @@ export const DEBUG_DIALOG_SPECS = [
   { id: "mesher", settingsKey: "fielddraft.debug.mesher", exclusiveGroup: "mesher" },
   { id: "mesherPasm", settingsKey: "fielddraft.debug.mesherPasm", exclusiveGroup: "mesher" },
   { id: "lichen", settingsKey: "fielddraft.debug.lichen", exclusiveGroup: undefined },
+  { id: "voxel", settingsKey: "fielddraft.debug.voxel", exclusiveGroup: undefined },
 ] as const satisfies readonly DebugDialogSpec[];
 
 /** Union of the registered dialog ids ("sdfPlane" | "mesher" | …). */

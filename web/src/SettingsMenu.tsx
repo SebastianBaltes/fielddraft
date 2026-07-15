@@ -26,6 +26,7 @@ import { SdfPlaneDialog } from "./SdfPlaneDialog";
 import { MesherDialog } from "./MesherDialog";
 import { MesherPasmDialog } from "./MesherPasmDialog";
 import { MesherLichenDialog } from "./MesherLichenDialog";
+import { VoxelDialog } from "./VoxelDialog";
 import {
   getDebugDialogs,
   setDebugDialogOpen,
@@ -48,6 +49,7 @@ const DEBUG_DIALOG_UI: Record<
     Component: MesherPasmDialog,
   },
   lichen: { label: "Mesher: Lichen…", testId: "menu-debug-lichen", Component: MesherLichenDialog },
+  voxel: { label: "Voxel…", testId: "menu-debug-voxel", Component: VoxelDialog },
 };
 
 // Lazy: the dialog pulls the full release-note history (releaseNotes.ts,
@@ -965,6 +967,7 @@ function SettingsDialog({
                     <option value="mesh">Mesh</option>
                     <option value="brep">B-Rep</option>
                     <option value="webgl">WebGL</option>
+                    <option value="voxel">Voxel</option>
                   </select>
                 </div>
 
