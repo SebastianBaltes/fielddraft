@@ -13,3 +13,4 @@ mod gizmo;
 mod queries_pick;
 mod sketch;
 mod variables;
+mod voxel;

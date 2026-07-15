@@ -3956,3 +3956,46 @@ fn brep_exports_on_a_missing_body_are_empty_not_a_trap() {
     let counts: serde_json::Value = serde_json::from_str(&k.body_brep_counts(0)).unwrap();
     assert_eq!(counts["faces"], 0);
 }
+
+// ─── #369: voxel-debug sampling ───────────────────────────
+
+#[test]
+fn voxelize_occupancy_matches_box_volume() {
+    // A 20×20×20 box (half-extents 10) centred at the origin, voxelised at 40
+    // voxels along the longest axis (spacing 0.5 mm). The occupied count must
+    // match the analytic volume ratio: (20³)/(0.5³) = 8000/0.125 = 64000.
+    let mut k = Kernel::new();
+    k.add_primitive(
+        Primitive::KIND_BOX,
+        BoolOp::TAG_NEW,
+        0.0, 0.0, 0.0,
+        10.0, 10.0, 10.0,
+    )
+    .unwrap();
+
+    let info = k.voxel_grid_info(40);
+    // [nx, ny, nz, ox, oy, oz, spacing]
+    assert_eq!(info.len(), 7, "grid info must be 7 floats");
+    let (nx, ny, nz) = (info[0] as usize, info[1] as usize, info[2] as usize);
+    let spacing = info[6];
+    assert!((spacing - 0.5).abs() < 1e-4, "spacing {spacing} != 0.5");
+    // 40 interior voxels + a 1-voxel border on each side per axis = 42.
+    assert_eq!([nx, ny, nz], [42, 42, 42], "dims incl. border");
+
+    let occ = k.voxelize_occupancy(40);
+    assert_eq!(occ.len(), nx * ny * nz, "occupancy length = grid volume");
+    let count = occ.iter().filter(|&&v| v == 1).count();
+    let expected = 64_000i64;
+    let rel = (count as i64 - expected).abs() as f64 / expected as f64;
+    assert!(rel < 0.02, "occupied {count} not within 2% of {expected}");
+
+    // Every occupied byte is exactly 1, every other exactly 0.
+    assert!(occ.iter().all(|&v| v == 0 || v == 1));
+}
+
+#[test]
+fn voxelize_empty_scene_is_empty() {
+    let k = Kernel::new();
+    assert!(k.voxel_grid_info(32).is_empty());
+    assert!(k.voxelize_occupancy(32).is_empty());
+}
