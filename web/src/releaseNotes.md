@@ -12,6 +12,9 @@ Format, eine Zeile je Eintrag:
 kind = feat | fix | perf. scope und #tickets sind optional. Folgezeilen, die
 eingerückt sind, gehören zum Text davor (Umbruch erlaubt).
 
+## 0.7.1
+- fix(aichat) #371: Der Anhängen-Button im Assistent-Chat zeigt jetzt eine Büroklammer statt eines Bilderrahmen-Symbols — passender zur eigentlichen Funktion (Screenshot anhängen).
+
 ## 0.7.0
 - fix(fillet) #350: „Kante runden" (Fillet) wirkt jetzt in ALLEN Ansichten — Mesh, SDF-VM und SDF-Deferred — und verändert auch das erzeugte Mesh. Bisher erreichte der Fillet nur den Auswahl-/Pick-Baum, aber nicht das Feld, das Mesher und Renderer tatsächlich auswerten, sodass sich sichtbar nichts änderte.
 - feat(fillet) #350: Die Fillet-Details haben eine Debug-Checkbox „Fillet-Zone anzeigen", die die maskierte Zone — die Pill/Kapsel um die Kante, in der der Blend das Feld formt — als transparentes Overlay einblendet.
