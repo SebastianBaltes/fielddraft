@@ -127,6 +127,7 @@ func NewServerWithTickets(store Store, tickets TicketStore) *Server {
 	s.mux.HandleFunc("GET /api/tickets/{id}/comments", s.handleListComments)
 	s.mux.HandleFunc("POST /api/tickets/{id}/comments", s.handleAddComment)
 	s.mux.HandleFunc("GET /api/tickets/{id}/artifacts/{artifactId}", s.handleGetArtifact)
+	s.mux.HandleFunc("POST /api/tickets/{id}/files", s.handleAddTicketFile)
 	// PO per-comment moderation (Service-Token, po scope; WP8 §4.2/§8).
 	s.mux.HandleFunc("POST /api/tickets/{ticketId}/comments/{commentId}/verdict", s.handleCommentVerdict)
 	// Agent / work-order API (Service-Token auth; WP6, §8–§11).

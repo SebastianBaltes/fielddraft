@@ -519,6 +519,110 @@
     gap: var(--space-2);
   }
 
+  /* ── comment-box attachments (#372) ────────────────────────
+     Icon-only paperclip button + thumbnail strip — mirrors the Report-Issue
+     dialog's attach flow (report-dialog.css .attach-button/.thumb) so both
+     "attach a file" affordances in the app look and behave the same. */
+  & .attach-row {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+  }
+
+  & .attach-button {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 2.25rem;
+    height: 2.25rem;
+    padding: 0;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-sm);
+    background: var(--color-bg-elevated);
+    color: var(--color-text);
+    font-size: var(--fs-lg);
+    line-height: 1;
+    cursor: pointer;
+
+    &:not(:disabled):hover {
+      background: var(--color-bg-hover);
+    }
+
+    &:disabled {
+      cursor: default;
+      opacity: 0.6;
+    }
+  }
+
+  & .attachments {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-2);
+  }
+
+  & .thumb {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: var(--space-1);
+    width: 84px;
+
+    & img {
+      width: 84px;
+      height: 64px;
+      object-fit: cover;
+      border: 1px solid var(--color-border);
+      border-radius: var(--radius-sm);
+      background: var(--color-bg-sunken);
+    }
+
+    & .file-chip {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 84px;
+      height: 64px;
+      border: 1px solid var(--color-border);
+      border-radius: var(--radius-sm);
+      background: var(--color-bg-sunken);
+      color: var(--color-text-muted);
+      font-size: var(--fs-base);
+      font-weight: var(--fw-semibold);
+    }
+
+    & .thumb-name {
+      max-width: 84px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-size: var(--fs-base);
+      color: var(--color-text-muted);
+    }
+
+    & .thumb-x {
+      position: absolute;
+      top: calc(-1 * var(--space-1));
+      right: calc(-1 * var(--space-1));
+      width: 22px;
+      height: 22px;
+      padding: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      line-height: 1;
+      border-radius: 50%;
+      background: var(--color-bg-elevated);
+      color: var(--color-text);
+      box-shadow: var(--shadow-sm, 0 1px 3px rgba(0, 0, 0, 0.2));
+
+      &:not(:disabled):hover {
+        background: var(--color-bg-hover);
+        color: var(--color-error);
+      }
+    }
+  }
+
   /* ── artifacts ──────────────────────────────────────────── */
   & .artifacts {
     display: flex;

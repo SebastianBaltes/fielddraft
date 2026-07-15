@@ -103,6 +103,14 @@ async function flush() {
   });
 }
 
+// FileReader (jsdom) delivers results on the macrotask queue — flush it so
+// the async addFiles pipeline (fileToAttachment) lands before asserting.
+async function flushTasks() {
+  await act(async () => {
+    await new Promise((r) => setTimeout(r, 0));
+  });
+}
+
 function byTestId<T extends HTMLElement = HTMLElement>(id: string): T | null {
   return container.querySelector<T>(`[data-testid="${id}"]`);
 }
@@ -281,6 +289,55 @@ describe("TicketsView — detail", () => {
     expect(add).toHaveBeenCalledWith("t1", "my reply");
     // reload → a second getTicket.
     expect(get).toHaveBeenCalledTimes(2);
+  });
+
+  it("attaches a file via the paperclip button, shows a thumb, and uploads it on submit (#372)", async () => {
+    vi.spyOn(platform.platformApi, "getTicket").mockResolvedValue(detail());
+    const add = vi
+      .spyOn(platform.platformApi, "addComment")
+      .mockResolvedValue(comment({ id: "new", body: "see attached" }));
+    const addFile = vi
+      .spyOn(platform.platformApi, "addTicketFile")
+      .mockResolvedValue({
+        id: "art1",
+        ticket_id: "t1",
+        kind: "attachment",
+        blob_ref: "sha256:x",
+        mime: "text/plain",
+        size: 5,
+        name: "notes.txt",
+        created_at: "2026-06-02T00:00:00Z",
+      });
+    mount({ ticketId: "t1" });
+    await flush();
+
+    const file = new File(["hello"], "notes.txt", { type: "text/plain" });
+    const fileInput = byTestId<HTMLInputElement>("comment-file-input")!;
+    Object.defineProperty(fileInput, "files", { value: [file] });
+    act(() => {
+      fileInput.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await flushTasks();
+
+    const thumbs = byTestId("comment-attachments")!;
+    expect(thumbs.textContent).toContain("notes.txt");
+
+    const input = byTestId<HTMLTextAreaElement>("comment-input")!;
+    const setValue = Object.getOwnPropertyDescriptor(
+      HTMLTextAreaElement.prototype,
+      "value",
+    )!.set!;
+    act(() => {
+      setValue.call(input, "see attached");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    act(() => byTestId<HTMLButtonElement>("comment-submit")!.click());
+    await flush();
+
+    expect(add).toHaveBeenCalledWith("t1", "see attached");
+    expect(addFile).toHaveBeenCalledWith("t1", file);
+    // The thumb strip clears once the comment (and its attachment) is posted.
+    expect(byTestId("comment-attachments")).toBeNull();
   });
 
   it("loads the .fdraft artifact via onLoadFdraft", async () => {

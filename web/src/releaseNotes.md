@@ -12,6 +12,9 @@ Format, eine Zeile je Eintrag:
 kind = feat | fix | perf. scope und #tickets sind optional. Folgezeilen, die
 eingerückt sind, gehören zum Text davor (Umbruch erlaubt).
 
+## 0.8.0
+- feat(tickets) #372: In der Ticket-Kommentarbox kannst du jetzt über einen Büroklammer-Button Dateien anhängen — sie erscheinen als Vorschau-Thumbnails (Bilder als Bild, andere Dateien als Endungs-Chip) und werden beim Absenden des Kommentars mit hochgeladen, genau wie bei „Report Issue…".
+
 ## 0.7.1
 - fix(aichat) #371: Der Anhängen-Button im Assistent-Chat zeigt jetzt eine Büroklammer statt eines Bilderrahmen-Symbols — passender zur eigentlichen Funktion (Screenshot anhängen).
 

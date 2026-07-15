@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -354,6 +355,73 @@ func (s *Server) handleAddComment(w http.ResponseWriter, r *http.Request) {
 	c.AuthorName = user.DisplayName // #359: show the poster's name right away
 	w.WriteHeader(http.StatusCreated)
 	json.NewEncoder(w).Encode(c)
+}
+
+// maxTicketFileBytes caps one comment-box attachment upload. Mirrors the
+// client's MAX_ATTACHMENT_BYTES (web/src/reportTicket.ts) — base64 inflates
+// ~4/3 there, but this endpoint takes raw bytes, so the cap is the same.
+const maxTicketFileBytes = 8 << 20
+
+// handleAddTicketFile (#372) lets a logged-in user attach a file to an
+// EXISTING ticket from the comment box — separate from the bulk
+// create-time payload persistArtifacts handles. The body is the raw file
+// bytes (not JSON): Content-Type carries the mime, X-Filename the original
+// name (percent-encoded by the client so non-ASCII names survive the header).
+// Always stored as ArtifactAttachment — kind is not client-selectable, so a
+// comment upload can never masquerade as the ticket's `fdraft`/`screenshot`
+// artifact.
+func (s *Server) handleAddTicketFile(w http.ResponseWriter, r *http.Request) {
+	_, user := s.requireAuth(r)
+	if user == nil {
+		writeErr(w, http.StatusUnauthorized, "not authenticated")
+		return
+	}
+	id := r.PathValue("id")
+	t := s.tickets.GetTicket(id)
+	if t == nil {
+		writeErr(w, http.StatusNotFound, "not found")
+		return
+	}
+	isAdmin := user.Role == RoleAdmin
+	if isRejected(t.State) && !isAdmin && t.AuthorID != user.ID {
+		writeErr(w, http.StatusNotFound, "not found")
+		return
+	}
+
+	name := "attachment"
+	if raw := r.Header.Get("X-Filename"); raw != "" {
+		if decoded, err := url.QueryUnescape(raw); err == nil && decoded != "" {
+			name = decoded
+		} else {
+			name = raw
+		}
+	}
+	mime := r.Header.Get("Content-Type")
+	if mime == "" {
+		mime = "application/octet-stream"
+	}
+
+	data, err := io.ReadAll(io.LimitReader(r.Body, maxTicketFileBytes+1))
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "could not read file")
+		return
+	}
+	if len(data) == 0 {
+		writeErr(w, http.StatusBadRequest, "empty file")
+		return
+	}
+	if len(data) > maxTicketFileBytes {
+		writeErr(w, http.StatusRequestEntityTooLarge, "file too large")
+		return
+	}
+
+	art := s.tickets.AddArtifact(id, ArtifactAttachment, name, mime, data)
+	if art == nil {
+		writeErr(w, http.StatusInternalServerError, "could not store file")
+		return
+	}
+	w.WriteHeader(http.StatusCreated)
+	json.NewEncoder(w).Encode(art)
 }
 
 // ─── artifact download ──────────────────────────────────────────

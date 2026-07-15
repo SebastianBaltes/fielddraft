@@ -19,7 +19,7 @@
  * button.
  */
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   platformApi,
   artifactUrl,
@@ -31,6 +31,7 @@ import {
   type TicketSummary,
   type User,
 } from "../api/platform";
+import { fileToAttachment, type TicketAttachment } from "../reportTicket";
 import { accountErrorMessage } from "./useAccount";
 import { linkify } from "./linkify";
 import {
@@ -837,10 +838,35 @@ function Thread({
   const [draft, setDraft] = useState("");
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // #372: files picked via the paperclip button, held as thumbs until the
+  // comment is posted — same shape as the Report-Issue dialog's attachment
+  // picker (reportTicket.ts), plus the original File (upload needs raw bytes,
+  // the preview just needs the data URL).
+  const [pendingFiles, setPendingFiles] = useState<
+    { file: File; attachment: TicketAttachment }[]
+  >([]);
+  const [attachError, setAttachError] = useState("");
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Defense-in-depth: the backend already filters internal/withheld comments
   // for non-admins, but never render one we shouldn't.
   const visible = comments.filter((c) => commentVisible(c, isAdmin));
+
+  const addFiles = async (files: Iterable<File>) => {
+    const errors: string[] = [];
+    const added: { file: File; attachment: TicketAttachment }[] = [];
+    for (const file of files) {
+      const result = await fileToAttachment(file, file.name || "attachment");
+      if ("error" in result) errors.push(result.error);
+      else added.push({ file, attachment: result });
+    }
+    if (added.length > 0) setPendingFiles((prev) => [...prev, ...added]);
+    setAttachError(errors.join("; "));
+  };
+
+  const removeFile = (index: number) => {
+    setPendingFiles((prev) => prev.filter((_, i) => i !== index));
+  };
 
   const post = async () => {
     if (draft.trim().length === 0 || pending) return;
@@ -848,7 +874,22 @@ function Thread({
     setError(null);
     try {
       await platformApi.addComment(ticketId, draft.trim());
+      // The comment itself is already posted — an attachment failure should
+      // not look like the whole comment failed, so upload best-effort and
+      // just report which files didn't make it.
+      const failed: string[] = [];
+      for (const { file } of pendingFiles) {
+        try {
+          await platformApi.addTicketFile(ticketId, file);
+        } catch {
+          failed.push(file.name);
+        }
+      }
       setDraft("");
+      setPendingFiles([]);
+      if (failed.length > 0) {
+        setError(`Comment posted, but could not attach: ${failed.join(", ")}`);
+      }
       onPosted();
     } catch (err) {
       setError(accountErrorMessage(err, "Could not post your comment"));
@@ -907,6 +948,62 @@ function Thread({
             disabled={pending}
             onChange={(e) => setDraft(e.target.value)}
           />
+          <div className="attach-row">
+            <button
+              type="button"
+              className="attach-button"
+              data-testid="comment-attach"
+              aria-label="Attach files"
+              title="Attach files"
+              disabled={pending}
+              onClick={() => fileInputRef.current?.click()}
+            >
+              📎
+            </button>
+            <span className="hint">Attach files</span>
+          </div>
+          <input
+            ref={fileInputRef}
+            type="file"
+            multiple
+            hidden
+            data-testid="comment-file-input"
+            onChange={(e) => {
+              if (e.target.files) void addFiles(e.target.files);
+              e.target.value = "";
+            }}
+          />
+          {pendingFiles.length > 0 ? (
+            <div className="attachments" data-testid="comment-attachments">
+              {pendingFiles.map(({ attachment: a }, i) => (
+                <div className="thumb" key={`${a.name}-${i}`} title={a.name}>
+                  {a.mime.startsWith("image/") ? (
+                    <img src={a.dataUrl} alt={a.name} />
+                  ) : (
+                    <span className="file-chip">
+                      {a.name.split(".").pop()?.toUpperCase() ?? "FILE"}
+                    </span>
+                  )}
+                  <span className="thumb-name">{a.name}</span>
+                  <button
+                    type="button"
+                    className="thumb-x"
+                    aria-label={`Remove ${a.name}`}
+                    data-testid={`comment-attachment-remove-${i}`}
+                    disabled={pending}
+                    onClick={() => removeFile(i)}
+                  >
+                    ×
+                  </button>
+                </div>
+              ))}
+            </div>
+          ) : null}
+          {attachError ? (
+            <p className="error" role="alert">
+              {attachError}
+            </p>
+          ) : null}
           {error && (
             <p className="error" role="alert" data-testid="comment-error">
               {error}

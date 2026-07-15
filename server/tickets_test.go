@@ -284,6 +284,80 @@ func TestCommentRoundTrip(t *testing.T) {
 	resp.Body.Close()
 }
 
+// TestAddTicketFile (#372) — the comment-box paperclip upload: raw bytes,
+// Content-Type + X-Filename headers, always stored as ArtifactAttachment
+// (not client-selectable), and it shows up in the ticket's artifact list.
+func TestAddTicketFile(t *testing.T) {
+	e := newTicketEnv(t, "attacher@test.com")
+	resp := e.do(t, "POST", "/api/tickets", `{"title":"Needs a file","body":"see attached"}`, e.cookies)
+	var tk ticketDetailResponse
+	json.NewDecoder(resp.Body).Decode(&tk)
+	resp.Body.Close()
+
+	req, err := http.NewRequest("POST", e.srv.URL+"/api/tickets/"+tk.ID+"/files", strings.NewReader("PNGDATA"))
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("Content-Type", "image/png")
+	req.Header.Set("X-Filename", "a%20photo.png")
+	for _, c := range e.cookies {
+		req.AddCookie(c)
+	}
+	resp, err = e.client.Do(req)
+	if err != nil {
+		t.Fatalf("upload: %v", err)
+	}
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("upload: got %d, want 201", resp.StatusCode)
+	}
+	var art TicketArtifact
+	json.NewDecoder(resp.Body).Decode(&art)
+	resp.Body.Close()
+	if art.Kind != ArtifactAttachment {
+		t.Fatalf("kind = %q, want attachment (must not be client-selectable)", art.Kind)
+	}
+	if art.Name != "a photo.png" {
+		t.Fatalf("name = %q, want the decoded X-Filename", art.Name)
+	}
+	if art.Mime != "image/png" {
+		t.Fatalf("mime = %q, want image/png", art.Mime)
+	}
+
+	// It shows up on the ticket.
+	resp = e.do(t, "GET", "/api/tickets/"+tk.ID, "", e.cookies)
+	var full ticketDetailResponse
+	json.NewDecoder(resp.Body).Decode(&full)
+	resp.Body.Close()
+	if len(full.Artifacts) != 1 || full.Artifacts[0].ID != art.ID {
+		t.Fatalf("ticket artifacts = %+v, want the uploaded file", full.Artifacts)
+	}
+
+	// Empty body → 400.
+	req2, _ := http.NewRequest("POST", e.srv.URL+"/api/tickets/"+tk.ID+"/files", strings.NewReader(""))
+	for _, c := range e.cookies {
+		req2.AddCookie(c)
+	}
+	resp, err = e.client.Do(req2)
+	if err != nil {
+		t.Fatalf("empty upload: %v", err)
+	}
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("empty upload: got %d, want 400", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	// No session → 401.
+	req3, _ := http.NewRequest("POST", e.srv.URL+"/api/tickets/"+tk.ID+"/files", strings.NewReader("x"))
+	resp, err = e.client.Do(req3)
+	if err != nil {
+		t.Fatalf("unauth upload: %v", err)
+	}
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("unauth upload: got %d, want 401", resp.StatusCode)
+	}
+	resp.Body.Close()
+}
+
 // TestLegalStateTransition — an admin drives triage → accepted; the audit
 // `system` comment is appended.
 func TestLegalStateTransition(t *testing.T) {

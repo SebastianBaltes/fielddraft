@@ -356,6 +356,11 @@ export interface PlatformApi {
   deleteTicket(id: string): Promise<void>;
   listComments(id: string): Promise<TicketComment[]>;
   addComment(id: string, body: string): Promise<TicketComment>;
+  /** Attach a file to an EXISTING ticket (the comment box's paperclip button,
+   *  #372) — separate from the bulk create-time payload createTicket sends.
+   *  Always lands as an `attachment` artifact; the server does not let the
+   *  client pick the kind. */
+  addTicketFile(ticketId: string, file: File): Promise<TicketArtifact>;
   /** Fetch an artifact blob's raw bytes (e.g. the `.fdraft` ZIP to load). */
   fetchArtifact(ticketId: string, artifactId: string): Promise<ArrayBuffer>;
   /** Upload a project's preview thumbnail (raw PNG bytes, owner only, ticket
@@ -528,6 +533,27 @@ export const platformApi: PlatformApi = {
       method: "POST",
       body: { body },
     }),
+
+  async addTicketFile(ticketId, file) {
+    // Raw bytes (not JSON), mirroring putThumbnail — the name rides in a
+    // header, percent-encoded so non-ASCII filenames survive it.
+    const res = await fetch(
+      `/api/tickets/${encodeURIComponent(ticketId)}/files`,
+      {
+        method: "POST",
+        credentials: "include",
+        headers: {
+          "Content-Type": file.type || "application/octet-stream",
+          "X-Filename": encodeURIComponent(file.name),
+        },
+        body: file,
+      },
+    );
+    if (!res.ok) {
+      throw new ApiError(res.status, await extractError(res));
+    }
+    return res.json();
+  },
 
   async fetchArtifact(ticketId, artifactId) {
     const res = await fetch(artifactUrl(ticketId, artifactId), {
