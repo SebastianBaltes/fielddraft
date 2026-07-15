@@ -6613,7 +6613,10 @@ fn ticket_373_compiled_sdf_carries_the_fillet() {
         "the fillet must add opcodes to the compiled SDF ({} vs {})",
         cf.opcodes.len(), ch.opcodes.len(),
     );
-    let _ = OP_MASKED_BLEND; // (lowered, not emitted verbatim — kept for reference)
+    // The fillet emits exactly ONE OP_MASKED_BLEND verbatim (0x40) — proven by
+    // `ticket_373_dump_opcode_stream` (index 93, 19-point polyline, is_diff=1).
+    let mb_hits = cf.opcodes.iter().filter(|v| v.to_bits() == OP_MASKED_BLEND).count();
+    assert_eq!(mb_hits, 1, "the fillet emits one OP_MASKED_BLEND tag, not a lowered form");
 
     let poly = &k.edge_fillets[0].mask_polyline;
     let (mut moved_cpu, mut moved_vm) = (0usize, 0usize);
@@ -6665,6 +6668,55 @@ fn ticket_373_compiled_sdf_carries_the_fillet() {
          marches) must move — {moved_body} moved; 0 means the fillet never reached the field the \
          renderer samples. Proven >0 here → any remaining #373 'no effect' is a web render-path \
          issue (e.g. screen-space CSG on leaf meshes), NOT the kernel.",
+    );
+}
+
+/// #373 opcode-stream dump: prints the EXACT tags the filleted body's compiled
+/// SDF emits, so the TSL-interpreter audit has a ground-truth reference. The
+/// mystery to settle: does the edge fillet emit `OP_MASKED_BLEND` (0x40) or is
+/// it lowered to other ops? This test proves it verbatim.
+#[test]
+fn ticket_373_dump_opcode_stream() {
+    use crate::sdf_compiler::{compile_body, OP_MASKED_BLEND, OP_END};
+    let mut k = crate::Kernel::new();
+    k.load_json(include_str!("testdata/ticket_373_document.json"))
+        .expect("document loads");
+    assert_eq!(k.edge_fillets.len(), 1, "fillet resolved");
+    let idx: Vec<usize> = (0..k.decoded.len()).collect();
+    let filleted = crate::body::build_bounded_for_body_rounded(
+        &k.decoded, &idx, k.global_round, &k.edge_fillets,
+    );
+    let cf = compile_body(&filleted);
+
+    // Scan the raw stream for the OP_MASKED_BLEND (0x40) tag bit-pattern. A
+    // data float that happens to bit-equal 0x40 (== 8.96e-44, a denormal) is
+    // effectively impossible from real geometry, so a bits==0x40 hit at a
+    // plausible position is the tag. We print the index + trailing operands.
+    let ops = &cf.opcodes;
+    let hits: Vec<usize> = ops
+        .iter()
+        .enumerate()
+        .filter(|(_, v)| v.to_bits() == OP_MASKED_BLEND)
+        .map(|(i, _)| i)
+        .collect();
+    eprintln!("ticket_373: opcode buffer len = {}", ops.len());
+    eprintln!("OP_MASKED_BLEND(0x40) bit-pattern hits at indices: {hits:?}");
+    for &h in &hits {
+        let n = ops[h + 1] as usize;
+        let tail = h + 2 + 3 * n;
+        if tail + 3 < ops.len() {
+            eprintln!(
+                "  @ {h}: n_polyline={n}, mask_r={}, blend_r={}, mode={}, is_diff={}",
+                ops[tail], ops[tail + 1], ops[tail + 2], ops[tail + 3],
+            );
+        }
+    }
+    // Also confirm the stream terminates with OP_END.
+    assert_eq!(ops.last().unwrap().to_bits(), OP_END, "stream ends with OP_END");
+    assert_eq!(
+        hits.len(), 1,
+        "the edge fillet MUST emit exactly one OP_MASKED_BLEND (0x40) tag; \
+         the old test comment claiming it is 'lowered, not emitted verbatim' is WRONG",
     );
 }
 
