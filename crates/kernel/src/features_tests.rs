@@ -6585,6 +6585,89 @@ fn ticket_350_edge_fillet_reaches_render_and_mesh_body() {
     );
 }
 
+/// #373 diagnostic: does the COMPILED SDF (opcodes) that sdf-vm marches carry
+/// the edge fillet? The mesh/CPU-eval test above proves `build_bounded_*` +
+/// `CsgNode::sdf` round the field — but sdf-vm evaluates the compiled opcodes
+/// (`compile_body` → `eval_opcodes`), a different interpreter. This checks the
+/// whole compile→VM path the renderer actually uses.
+#[test]
+fn ticket_373_compiled_sdf_carries_the_fillet() {
+    use crate::sdf_compiler::{compile_body, eval_opcodes, OP_MASKED_BLEND};
+    let mut k = crate::Kernel::new();
+    k.load_json(include_str!("testdata/ticket_373_document.json"))
+        .expect("document loads");
+    assert_eq!(k.edge_fillets.len(), 1, "fillet resolved");
+    let idx: Vec<usize> = (0..k.decoded.len()).collect();
+
+    let filleted = crate::body::build_bounded_for_body_rounded(
+        &k.decoded, &idx, k.global_round, &k.edge_fillets,
+    );
+    let hard = crate::body::build_bounded_for_body_rounded(&k.decoded, &idx, None, &[]);
+    let cf = compile_body(&filleted);
+    let ch = compile_body(&hard);
+
+    // The fillet grows the compiled program (the masked blend lowers to a
+    // capsule mask + smin), so the filleted opcodes must differ from hard.
+    assert!(
+        cf.opcodes.len() > ch.opcodes.len(),
+        "the fillet must add opcodes to the compiled SDF ({} vs {})",
+        cf.opcodes.len(), ch.opcodes.len(),
+    );
+    let _ = OP_MASKED_BLEND; // (lowered, not emitted verbatim — kept for reference)
+
+    let poly = &k.edge_fillets[0].mask_polyline;
+    let (mut moved_cpu, mut moved_vm) = (0usize, 0usize);
+    for pt in poly {
+        for dx in -14..=14 {
+            for dy in -14..=14 {
+                for dz in -2..=2 {
+                    let p = [pt[0] + dx as f32 * 0.5, pt[1] + dy as f32 * 0.5, pt[2] + dz as f32 * 0.5];
+                    use crate::csg::EvalMode;
+                    if (filleted.sdf(p, EvalMode::Visual) < 0.0) != (hard.sdf(p, EvalMode::Visual) < 0.0) {
+                        moved_cpu += 1;
+                    }
+                    if (eval_opcodes(&cf.opcodes, p) < 0.0) != (eval_opcodes(&ch.opcodes, p) < 0.0) {
+                        moved_vm += 1;
+                    }
+                }
+            }
+        }
+    }
+    // The DECISIVE check: the body's STORED compiled_sdf — the exact opcode
+    // stream the web reads via `bodySdfOpcodesView` and marches in sdf-vm.
+    // Built during load's `rebuild_mesh_internal` → `compile_sdf_for`. If this
+    // rounds, the kernel is fully correct end-to-end and #373 is a web-render
+    // bug; if not, the load-time rebuild dropped the fillet.
+    let mut moved_body = 0usize;
+    for pt in poly {
+        for dx in -14..=14 {
+            for dy in -14..=14 {
+                for dz in -2..=2 {
+                    let p = [pt[0] + dx as f32 * 0.5, pt[1] + dy as f32 * 0.5, pt[2] + dz as f32 * 0.5];
+                    if (k.body_sdf_eval(0, p[0], p[1], p[2]) < 0.0)
+                        != (eval_opcodes(&ch.opcodes, p) < 0.0)
+                    {
+                        moved_body += 1;
+                    }
+                }
+            }
+        }
+    }
+    assert!(moved_cpu > 0, "CPU field must move (build_bounded fix)");
+    assert!(
+        moved_vm > 0,
+        "compiled-opcode VM eval must move — {moved_vm} moved; the renderer marches opcodes, \
+         not CsgNode::sdf",
+    );
+    assert!(
+        moved_body > 0,
+        "the body's STORED compiled_sdf (what the web reads via bodySdfOpcodesView and sdf-vm \
+         marches) must move — {moved_body} moved; 0 means the fillet never reached the field the \
+         renderer samples. Proven >0 here → any remaining #373 'no effect' is a web render-path \
+         issue (e.g. screen-space CSG on leaf meshes), NOT the kernel.",
+    );
+}
+
 /// #348 „Die BREP-Kante laeuft falsch" — S-foermig an der Rundung vorbei.
 ///
 /// An der runden Nut-Stirn treffen die beiden Wandflaechen die Rundung TANGENTIAL.
