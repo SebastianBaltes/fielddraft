@@ -195,7 +195,7 @@ export function useWorkspaceUnits(): WorkspaceUnits {
 /* ── Setting types ──────────────────────────────────────────── */
 
 export type ThemeChoice = "light" | "dark";
-export type RenderMode = "sdf-vm" | "sdf-deferred" | "mesh" | "brep" | "webgl";
+export type RenderMode = "sdf-vm" | "sdf-deferred" | "mesh" | "brep" | "webgl" | "voxel";
 export type MeshAlgorithm = "mdc" | "mt";
 /** R3F render scheduling:
  *   - "demand": render only when something invalidates the canvas (default,
@@ -212,7 +212,7 @@ export type FrameLoopMode = "demand" | "always";
  *   - "none":    don't draw the B-Rep wireframe at all */
 export type BRepEdgeMode = "xray" | "visible" | "none";
 
-const VALID_RENDER_MODES: RenderMode[] = ["sdf-vm", "sdf-deferred", "mesh", "brep", "webgl"];
+const VALID_RENDER_MODES: RenderMode[] = ["sdf-vm", "sdf-deferred", "mesh", "brep", "webgl", "voxel"];
 const VALID_MESH_ALGORITHMS: MeshAlgorithm[] = ["mdc", "mt"];
 const VALID_BREP_EDGE_MODES: BRepEdgeMode[] = ["xray", "visible", "none"];
 

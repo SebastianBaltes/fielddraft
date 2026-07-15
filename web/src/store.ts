@@ -37,6 +37,12 @@ import { subscribeDebugDialogs } from "./projectDebug";
 import { subscribePartAabb } from "./partAabbStore";
 import { subscribeSdfPlane } from "./sdfPlaneStore";
 import { subscribeMesherDebug } from "./mesherDebugStore";
+import {
+  diffSnapshots,
+  type VoxelSnapshot,
+  type VoxelDiff,
+} from "./voxelSnapshot";
+import { getVoxelResolution } from "./voxelDebugStore";
 import { subscribeLichenDebug } from "./lichenDebugStore";
 import {
   parseVariableInput,
@@ -2259,6 +2265,25 @@ export class KernelStore {
     return this.kernel.mesherPoints(optionsJson);
   }
 
+  /** Voxel debug (#369): sample the scene solid on a regular cube grid of
+   *  `resolution` voxels along the longest scene-AABB axis. Returns the grid
+   *  geometry + a row-major occupancy array (1 inside / 0 outside) + the
+   *  occupied count, or `null` for an empty scene. Both wasm arrays are copies
+   *  owned by JS, so a snapshot stays valid after further edits — that is what
+   *  lets the dialog/console diff a before/after pair. Synchronous main-thread
+   *  eval of the exact mesher field. */
+  voxelize(resolution: number): VoxelSnapshot | null {
+    const info = this.kernel.voxelGridInfo(resolution);
+    if (info.length < 7) return null;
+    const dims: [number, number, number] = [info[0], info[1], info[2]];
+    const origin: [number, number, number] = [info[3], info[4], info[5]];
+    const spacing = info[6];
+    const occupancy = this.kernel.voxelizeOccupancy(resolution);
+    let count = 0;
+    for (let i = 0; i < occupancy.length; i++) if (occupancy[i]) count++;
+    return { dims, origin, spacing, occupancy, count };
+  }
+
   /** Debug ▸ Mesher Lichen: the flat overlay format the PASM mesher emits
    *  (`[nPoints, nTris, nFallbackTris, points×9, indices]`). Synchronous
    *  main-thread eval. */
@@ -2443,6 +2468,26 @@ export async function getStore(): Promise<KernelStore> {
       // explicit Open, ticket 4z37) — not the captured boot handle, or a
       // pending edit after graduation would be lost on unload.
       window.addEventListener("beforeunload", () => store.flushAutosave());
+      // Voxel-Debug console API (#369): pull a voxel snapshot of the current
+      // scene and diff two snapshots straight from DevTools — the workflow the
+      // operator asked for (snapshot → add a feature → snapshot again → diff).
+      // Exposed unconditionally (not DEV-gated like __fdStore): it is a
+      // read-only measurement tool the operator explicitly requested.
+      (
+        window as unknown as {
+          __fdVoxel?: {
+            snapshot: (resolution?: number) => VoxelSnapshot | null;
+            diff: (
+              a: VoxelSnapshot,
+              b: VoxelSnapshot,
+            ) => VoxelDiff | { error: string };
+          };
+        }
+      ).__fdVoxel = {
+        snapshot: (resolution?: number) =>
+          store.voxelize(resolution ?? getVoxelResolution()),
+        diff: (a: VoxelSnapshot, b: VoxelSnapshot) => diffSnapshots(a, b),
+      };
       // Dev-mode test hook: expose the kernel + store handles on
       // window so Playwright specs can peek non-UI state (current
       // sub-spine, diagnostics, raw feature calls) without

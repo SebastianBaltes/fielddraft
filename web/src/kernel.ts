@@ -1172,6 +1172,18 @@ export class Kernel {
     return this.inner.lichenMesh(json);
   }
 
+  /** Debug ▸ Voxel (#369): grid geometry for `resolution` voxels along the
+   *  longest scene-AABB axis, `[nx, ny, nz, ox, oy, oz, spacing]` or `[]`. */
+  voxelGridInfo(resolution: number): Float32Array {
+    return this.inner.voxelGridInfo(resolution);
+  }
+
+  /** Debug ▸ Voxel (#369): row-major occupancy (1 inside / 0 outside), x
+   *  fastest then y then z, over the grid of {@link Kernel.voxelGridInfo}. */
+  voxelizeOccupancy(resolution: number): Uint8Array {
+    return this.inner.voxelizeOccupancy(resolution);
+  }
+
   /** Mesh + validate body `i`; returns its report JSON ("" without a
    *  running session). */
   exportMeshBody(i: number): string {
