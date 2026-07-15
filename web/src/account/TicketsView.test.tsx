@@ -448,6 +448,54 @@ describe("TicketsView — detail", () => {
       expect(byTestId("detail-edit")).toBeNull();
     });
   });
+
+  // Ticket #364 (teil A): "#N" refs in the body/comments open that ticket.
+  describe("ticket-reference links", () => {
+    it("renders a '#N' ref in the body as a link wired to onOpenTicketByNumber", async () => {
+      vi.spyOn(platform.platformApi, "getTicket").mockResolvedValue(
+        detail({ body: "Duplicate of #12, see there." }),
+      );
+      const onOpenTicketByNumber = vi.fn();
+      mount({ ticketId: "t1", onOpenTicketByNumber });
+      await flush();
+
+      const link = container.querySelector(
+        '[data-testid="detail-body"] button.ticket-ref-link',
+      ) as HTMLButtonElement;
+      expect(link).toBeTruthy();
+      expect(link.textContent).toBe("#12");
+      act(() => link.click());
+      expect(onOpenTicketByNumber).toHaveBeenCalledWith("12");
+    });
+
+    it("renders a '#N' ref in a comment as a link too", async () => {
+      vi.spyOn(platform.platformApi, "getTicket").mockResolvedValue(
+        detail({ comments: [comment({ body: "same as #7" })] }),
+      );
+      const onOpenTicketByNumber = vi.fn();
+      mount({ ticketId: "t1", onOpenTicketByNumber });
+      await flush();
+
+      const link = container.querySelector(
+        '[data-testid="ticket-thread"] button.ticket-ref-link',
+      ) as HTMLButtonElement;
+      expect(link.textContent).toBe("#7");
+      act(() => link.click());
+      expect(onOpenTicketByNumber).toHaveBeenCalledWith("7");
+    });
+
+    it("renders '#N' as plain text without an onOpenTicketByNumber handler", async () => {
+      vi.spyOn(platform.platformApi, "getTicket").mockResolvedValue(
+        detail({ body: "Duplicate of #12." }),
+      );
+      mount({ ticketId: "t1" }); // no onOpenTicketByNumber passed
+      await flush();
+      expect(byTestId("detail-body")!.textContent).toContain("#12");
+      expect(
+        container.querySelector('[data-testid="detail-body"] button'),
+      ).toBeNull();
+    });
+  });
 });
 
 describe("TicketsView — list-only (WP13)", () => {

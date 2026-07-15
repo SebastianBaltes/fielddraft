@@ -67,6 +67,7 @@ function mount(account: UseAccount) {
         onOpenLocalProject={() => {}}
         onLoadFdraft={() => {}}
         boundProjectId={null}
+        onOpenTicketByNumber={() => {}}
       />,
     );
   });

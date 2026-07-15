@@ -60,6 +60,10 @@ interface TicketsViewProps {
   ticketId: string | null;
   /** Navigate list ↔ detail (routes through account.openTicket → URL). */
   onNavigate(id: string | null): void;
+  /** Resolve a "#N" ticket reference inside a body/comment text (ticket #364)
+   *  to its id and open it. Optional so a caller without the App.tsx-level
+   *  resolver still renders refs as plain text. */
+  onOpenTicketByNumber?(ref: string): void;
 }
 
 export function TicketsView({
@@ -68,6 +72,7 @@ export function TicketsView({
   onLoadFdraft,
   ticketId,
   onNavigate,
+  onOpenTicketByNumber,
 }: TicketsViewProps) {
   // Controlled master/detail: the list or a single ticket id. There is no
   // create mode — issues are filed via the "Report Issue…" flow. The key
@@ -82,6 +87,7 @@ export function TicketsView({
         isAdmin={isAdmin}
         onLoadFdraft={onLoadFdraft}
         onBack={() => onNavigate(null)}
+        onOpenTicketByNumber={onOpenTicketByNumber}
       />
     );
   }
@@ -415,6 +421,7 @@ interface TicketDetailPanelProps {
   isAdmin: boolean;
   onLoadFdraft(bytes: ArrayBuffer): void;
   onBack(): void;
+  onOpenTicketByNumber?(ref: string): void;
 }
 
 function TicketDetailPanel({
@@ -423,6 +430,7 @@ function TicketDetailPanel({
   isAdmin,
   onLoadFdraft,
   onBack,
+  onOpenTicketByNumber,
 }: TicketDetailPanelProps) {
   const [ticket, setTicket] = useState<TicketDetail | null>(null);
   const [loading, setLoading] = useState(true);
@@ -554,7 +562,7 @@ function TicketDetailPanel({
             <span>Updated {formatDateTime(ticket.updated_at)}</span>
           </div>
           <p className="detail-body" data-testid="detail-body">
-            {linkify(ticket.body)}
+            {linkify(ticket.body, onOpenTicketByNumber)}
           </p>
           {(isAuthor || isAdmin) && (
             <div className="detail-author-actions">
@@ -638,6 +646,7 @@ function TicketDetailPanel({
         canComment={!!user}
         onPosted={() => void reload()}
         ticketId={ticket.id}
+        onOpenTicketByNumber={onOpenTicketByNumber}
       />
     </div>
   );
@@ -839,12 +848,14 @@ function Thread({
   isAdmin,
   canComment,
   onPosted,
+  onOpenTicketByNumber,
 }: {
   ticketId: string;
   comments: TicketComment[];
   isAdmin: boolean;
   canComment: boolean;
   onPosted(): void;
+  onOpenTicketByNumber?(ref: string): void;
 }) {
   const [draft, setDraft] = useState("");
   const [pending, setPending] = useState(false);
@@ -941,7 +952,9 @@ function Thread({
                     {formatDateTime(c.created_at)}
                   </span>
                 </div>
-                <p className="comment-text">{linkify(c.body)}</p>
+                <p className="comment-text">
+                  {linkify(c.body, onOpenTicketByNumber)}
+                </p>
               </div>
             </li>
           ))}

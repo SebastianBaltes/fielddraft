@@ -419,6 +419,24 @@
     white-space: pre-wrap;
   }
 
+  /* "#N" ticket references inside body/comment text (ticket #364) — a
+   *  <button> (not <a>, there's no href to navigate) styled like the
+   *  autolinked URLs it sits next to. */
+  & .ticket-ref-link {
+    border: none;
+    background: transparent;
+    padding: 0;
+    margin: 0;
+    font: inherit;
+    color: var(--color-accent);
+    cursor: pointer;
+
+    &:hover {
+      color: var(--color-accent-hover);
+      text-decoration: underline;
+    }
+  }
+
   & .detail-author-actions {
     display: flex;
     flex-wrap: wrap;

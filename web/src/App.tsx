@@ -874,6 +874,7 @@ function AppShell({ account }: { account: UseAccount }) {
             onOpenLocalProject={openLocalProjectById}
             onLoadFdraft={loadFdraftBytes}
             boundProjectId={state?.projectId ?? null}
+            onOpenTicketByNumber={openTicketByNumber}
           />
         ) : null}
         {/* MT-A: both workspaces stay mounted; we toggle visibility with

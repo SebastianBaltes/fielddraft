@@ -30,6 +30,9 @@ interface OverviewProps {
   onLoadFdraft(bytes: ArrayBuffer): void;
   /** The currently-bound server project id, if any (highlighted). */
   boundProjectId: string | null;
+  /** Resolve a "#N" ticket reference (in a ticket body/comment, ticket #364)
+   *  to its id and open it in the Issues detail. */
+  onOpenTicketByNumber(ref: string): void;
 }
 
 const BASE_TABS: { key: OverviewTab; label: string }[] = [
@@ -49,6 +52,7 @@ export function Overview({
   onOpenLocalProject,
   onLoadFdraft,
   boundProjectId,
+  onOpenTicketByNumber,
 }: OverviewProps) {
   const { state, isAdmin, selectTab, openTicket } = account;
   const tabs = isAdmin ? [...BASE_TABS, ...ADMIN_TABS] : BASE_TABS;
@@ -98,6 +102,7 @@ export function Overview({
             onLoadFdraft={onLoadFdraft}
             ticketId={state.ticketDetail}
             onNavigate={(id) => openTicket(id)}
+            onOpenTicketByNumber={onOpenTicketByNumber}
           />
         )}
         {active === "invites" && isAdmin && <InvitePanel />}
