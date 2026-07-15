@@ -205,12 +205,17 @@
   inset: 0;
   z-index: 200;
   background: rgba(0, 0, 0, 0.25);
-  display: flex;
-  align-items: center;
-  justify-content: center;
 }
 
+/* #368: draggable via the header, like every other dialog. Centered by
+ * default (top/left 50% + transform); a drag sets `left`/`top` in px via
+ * inline style and must also clear the centering transform, so the dialog
+ * jumps to being positioned by its top-left corner under the pointer. */
 .fd-settings-dialog {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
   background: var(--color-bg-elevated);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-lg);
@@ -223,6 +228,9 @@
     align-items: center;
     justify-content: space-between;
     padding: var(--space-4) var(--space-4) var(--space-2);
+    cursor: move;
+    touch-action: none;
+    user-select: none;
   }
 
   & .dialog-title {

@@ -12,6 +12,10 @@ Format, eine Zeile je Eintrag:
 kind = feat | fix | perf. scope und #tickets sind optional. Folgezeilen, die
 eingerückt sind, gehören zum Text davor (Umbruch erlaubt).
 
+## 0.11.0
+- feat(settings) #368: Der Settings-Dialog lässt sich jetzt wie alle anderen Dialoge per Kopfzeile verschieben.
+- fix(projects) #374: Die Buttons „Import…“ und „Aus Onshape…“ im Projekte-Bereich sind jetzt wie „New project“ gestylt statt unstyled.
+
 ## 0.10.0
 - feat(tickets) #365: Die Ticket-Liste zeigt jetzt eine eigene, sortierbare „Author"-Spalte mit dem aufgelösten Namen des Ticket-Erstellers statt der rohen User-ID.
 - feat(tickets) #378: Der Titel eines Issues ist in der Detail-Ansicht nachträglich editierbar — nicht mehr nur der Autor, sondern auch Admins können den Titel per „Edit"-Button ändern.

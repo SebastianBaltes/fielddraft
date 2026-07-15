@@ -27,6 +27,7 @@ import { MesherDialog } from "./MesherDialog";
 import { MesherPasmDialog } from "./MesherPasmDialog";
 import { MesherLichenDialog } from "./MesherLichenDialog";
 import { VoxelDialog } from "./VoxelDialog";
+import { useDialogDrag } from "./useDialogDrag";
 import {
   getDebugDialogs,
   setDebugDialogOpen,
@@ -798,6 +799,9 @@ function SettingsDialog({
   const [activeTab, setActiveTab] = useState<SettingsTab>("ui");
   const dialogRef = useRef<HTMLDivElement>(null);
 
+  // #368: draggable via the header, like every other dialog.
+  const { positionStyle, onHeaderDown, onHeaderMove, onHeaderUp } = useDialogDrag();
+
   useEffect(() => {
     const handleKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
@@ -840,8 +844,14 @@ function SettingsDialog({
         role="dialog"
         aria-label="Settings"
         data-testid="settings-dialog"
+        style={positionStyle}
       >
-        <div className="dialog-header">
+        <div
+          className="dialog-header"
+          onPointerDown={onHeaderDown}
+          onPointerMove={onHeaderMove}
+          onPointerUp={onHeaderUp}
+        >
           <h3 className="dialog-title">Settings</h3>
           <button
             type="button"

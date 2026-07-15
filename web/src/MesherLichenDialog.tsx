@@ -15,14 +15,12 @@
  */
 
 import {
-  useCallback,
   useEffect,
   useMemo,
-  useRef,
   useState,
   useSyncExternalStore,
-  type PointerEvent as ReactPointerEvent,
 } from "react";
+import { useDialogDrag } from "./useDialogDrag";
 import {
   setLichenDebug,
   subscribeLichenStats,
@@ -340,29 +338,7 @@ export function MesherLichenDialog({ onClose }: { onClose: () => void }) {
   }, [onClose]);
 
   // ── Drag the header ───────────────────────────────────────────────
-  const [pos, setPos] = useState<{ x: number; y: number } | null>(null);
-  const dragRef = useRef<{ dx: number; dy: number } | null>(null);
-  const onHeaderDown = useCallback((e: ReactPointerEvent) => {
-    if ((e.target as HTMLElement).closest("button")) return;
-    const dialog = e.currentTarget.parentElement as HTMLElement | null;
-    if (!dialog) return;
-    const r = dialog.getBoundingClientRect();
-    dragRef.current = { dx: e.clientX - r.left, dy: e.clientY - r.top };
-    setPos({ x: r.left, y: r.top });
-    e.currentTarget.setPointerCapture(e.pointerId);
-  }, []);
-  const onHeaderMove = useCallback((e: ReactPointerEvent) => {
-    const d = dragRef.current;
-    if (!d) return;
-    setPos({
-      x: Math.max(0, Math.min(window.innerWidth - 80, e.clientX - d.dx)),
-      y: Math.max(0, Math.min(window.innerHeight - 40, e.clientY - d.dy)),
-    });
-  }, []);
-  const onHeaderUp = useCallback((e: ReactPointerEvent) => {
-    dragRef.current = null;
-    e.currentTarget.releasePointerCapture(e.pointerId);
-  }, []);
+  const { positionStyle, onHeaderDown, onHeaderMove, onHeaderUp } = useDialogDrag();
 
   return (
     <div
@@ -370,7 +346,7 @@ export function MesherLichenDialog({ onClose }: { onClose: () => void }) {
       role="dialog"
       aria-label="Mesher Lichen"
       data-testid="mesher-lichen-dialog"
-      style={pos ? { left: pos.x, top: pos.y, right: "auto" } : undefined}
+      style={positionStyle}
     >
       <div
         className="dialog-header"
