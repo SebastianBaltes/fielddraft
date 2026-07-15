@@ -395,6 +395,59 @@ describe("TicketsView — detail", () => {
     expect(platform.platformApi.fetchArtifact).toHaveBeenCalledWith("t1", "a1");
     expect(onLoadFdraft).toHaveBeenCalledWith(bytes);
   });
+
+  // Ticket #378: the title is editable after the fact, not just at creation.
+  describe("editing the title", () => {
+    it("lets the author edit the title and refreshes the detail view", async () => {
+      vi.spyOn(platform.platformApi, "getTicket").mockResolvedValue(detail());
+      const update = vi
+        .spyOn(platform.platformApi, "updateTicket")
+        .mockResolvedValue(detail({ title: "Crash on revolve" }));
+      mount({ ticketId: "t1" }); // USER (u1) is the author of detail()
+      await flush();
+
+      act(() => byTestId<HTMLButtonElement>("detail-edit")!.click());
+      await flush();
+      const titleInput = byTestId<HTMLInputElement>("edit-title")!;
+      const setValue = Object.getOwnPropertyDescriptor(
+        HTMLInputElement.prototype,
+        "value",
+      )!.set!;
+      act(() => {
+        setValue.call(titleInput, "Crash on revolve");
+        titleInput.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+      act(() => byTestId<HTMLButtonElement>("edit-save")!.click());
+      await flush();
+
+      expect(update).toHaveBeenCalledWith(
+        "t1",
+        expect.objectContaining({ title: "Crash on revolve" }),
+      );
+      expect(byTestId("ticket-detail")!.textContent).toContain(
+        "Crash on revolve",
+      );
+      expect(byTestId("edit-title")).toBeNull(); // edit mode closed
+    });
+
+    it("lets an admin edit someone else's title too", async () => {
+      vi.spyOn(platform.platformApi, "getTicket").mockResolvedValue(
+        detail({ author_id: "someone-else" }),
+      );
+      mount({ ticketId: "t1", isAdmin: true });
+      await flush();
+      expect(byTestId("detail-edit")).toBeTruthy();
+    });
+
+    it("offers no Edit button to a non-author, non-admin viewer", async () => {
+      vi.spyOn(platform.platformApi, "getTicket").mockResolvedValue(
+        detail({ author_id: "someone-else" }),
+      );
+      mount({ ticketId: "t1", isAdmin: false });
+      await flush();
+      expect(byTestId("detail-edit")).toBeNull();
+    });
+  });
 });
 
 describe("TicketsView — list-only (WP13)", () => {

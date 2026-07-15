@@ -558,17 +558,17 @@ function TicketDetailPanel({
           </p>
           {(isAuthor || isAdmin) && (
             <div className="detail-author-actions">
-              {isAuthor && (
-                <button
-                  type="button"
-                  className="secondary"
-                  data-testid="detail-edit"
-                  disabled={busy}
-                  onClick={() => setEditing(true)}
-                >
-                  Edit
-                </button>
-              )}
+              {/* Title/body edit (ticket #378): author or admin, mirroring
+               *  canDelete's permission split just below. */}
+              <button
+                type="button"
+                className="secondary"
+                data-testid="detail-edit"
+                disabled={busy}
+                onClick={() => setEditing(true)}
+              >
+                Edit
+              </button>
               {stateOptions.length > 0 && (
                 <label className="detail-state-set">
                   <span>Set state</span>
