@@ -12,6 +12,9 @@ Format, eine Zeile je Eintrag:
 kind = feat | fix | perf. scope und #tickets sind optional. Folgezeilen, die
 eingerückt sind, gehören zum Text davor (Umbruch erlaubt).
 
+## 0.16.0
+- feat(onshape) #388: Aus Onshape importierte Projekte zeigen neben dem Titel einen Link zur Onshape-Originalseite und einen Reimport-Button, der nach Bestätigung den Feature-Baum frisch aus Onshape holt.
+
 ## 0.15.0
 - feat(issues) #387: Schreibt ein Agent einen Ticket-Kommentar, steht im
   Kommentar-Kopf jetzt dezent, welcher Subagent die Arbeit tatsächlich gemacht

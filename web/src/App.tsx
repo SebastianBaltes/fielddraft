@@ -29,6 +29,7 @@ import { loadSettings, WorkspaceUnitsContext } from "./settings";
 import type { SettingsState } from "./settings";
 import { cloudSyncIfDirty, startCloudSyncTimer } from "./cloudSyncScheduler";
 import { ProjectTitle } from "./ProjectTitle";
+import { OnshapeProjectActions } from "./OnshapeProjectActions";
 import { CONTROLS_PRESETS, viewShortcutRow } from "./controlsPreset";
 import {
   useAccount,
@@ -786,7 +787,16 @@ function AppShell({ account }: { account: UseAccount }) {
               {/* Ticket C: the current project's name next to the logo — click
                   to rename inline (modeling view only). */}
               {inProject && store && state ? (
-                <ProjectTitle store={store} name={state.project.name} />
+                <>
+                  <ProjectTitle store={store} name={state.project.name} />
+                  {/* Ticket #388: link to the Onshape original + reimport,
+                      shown only for a project with an Onshape origin. */}
+                  <OnshapeProjectActions
+                    store={store}
+                    onshape={state.project.onshape}
+                    projectName={state.project.name}
+                  />
+                </>
               ) : null}
             </div>
             {inProject ? (

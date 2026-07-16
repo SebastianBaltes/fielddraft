@@ -1,0 +1,141 @@
+/* Topbar Onshape actions for the currently open project (OnshapeProjectActions.tsx,
+ * ticket #388). Shown only for a project with an Onshape origin, next to
+ * ProjectTitle inside `.fd-shell > .topbar .title`. One top-level class; the
+ * confirm dialog nests inside it too — its `position: fixed` overlay works
+ * regardless of DOM ancestry. */
+
+.fd-onshape-project-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+
+  & .icon-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 26px;
+    height: 26px;
+    padding: 0;
+    font-size: var(--fs-md);
+    line-height: 1;
+    cursor: pointer;
+    border: 1px solid transparent;
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: var(--color-text-muted);
+    text-decoration: none;
+
+    &:not(:disabled):hover {
+      background: var(--color-bg-hover);
+      color: var(--color-text);
+    }
+  }
+
+  & .confirm-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 200;
+    background: rgba(0, 0, 0, 0.25);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  & .dialog {
+    background: var(--color-bg-elevated);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-lg);
+    width: 30rem;
+    max-width: 90vw;
+  }
+
+  & .dialog-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: var(--space-4) var(--space-4) var(--space-2);
+  }
+
+  & .dialog-title {
+    margin: 0;
+    font-size: var(--fs-md);
+    font-weight: var(--fw-semibold);
+    color: var(--color-text);
+  }
+
+  & .dialog-close {
+    background: none;
+    border: none;
+    cursor: pointer;
+    font-size: var(--fs-lg);
+    color: var(--color-text-muted);
+    padding: var(--space-1);
+    border-radius: var(--radius-sm);
+    line-height: 1;
+
+    &:hover {
+      background: var(--color-bg-hover);
+      color: var(--color-text);
+    }
+  }
+
+  & .dialog-body {
+    padding: var(--space-3) var(--space-4) var(--space-4);
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3);
+  }
+
+  & .warning {
+    margin: 0;
+    font-size: var(--fs-base);
+    color: var(--color-text);
+  }
+
+  & .error {
+    margin: 0;
+    font-size: var(--fs-base);
+    color: var(--color-error-text);
+  }
+
+  & .actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: var(--space-2);
+  }
+
+  & button.primary,
+  & button.secondary {
+    font-family: inherit;
+    font-size: var(--fs-base);
+    padding: var(--space-2) var(--space-4);
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--color-border);
+    cursor: pointer;
+
+    &:disabled {
+      opacity: 0.5;
+      cursor: default;
+    }
+  }
+
+  & button.primary {
+    background: var(--color-accent);
+    color: var(--color-text-on-accent, white);
+    border-color: var(--color-accent);
+
+    &:not(:disabled):hover {
+      filter: brightness(1.05);
+    }
+  }
+
+  & button.secondary {
+    background: var(--color-bg);
+    color: var(--color-text);
+
+    &:not(:disabled):hover {
+      background: var(--color-bg-hover);
+    }
+  }
+}
