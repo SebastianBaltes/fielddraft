@@ -37,6 +37,7 @@ import { linkify } from "./linkify";
 import {
   commentVisible,
   formatDateTime,
+  commentAgentProvenance,
   commentAuthorLabel,
   commentAuthorTag,
   settableStates,
@@ -961,7 +962,9 @@ function Thread({
         </p>
       ) : (
         <ul className="comments">
-          {visible.map((c) => (
+          {visible.map((c) => {
+            const agent = commentAgentProvenance(c);
+            return (
             <li
               key={c.id}
               className={`comment persona-${c.author_type}${c.internal ? " internal" : ""}`}
@@ -980,6 +983,15 @@ function Thread({
                       internal
                     </span>
                   )}
+                  {agent && (
+                    <span
+                      className="agent-tag"
+                      title={agent.title}
+                      data-testid={`comment-agent-${c.id}`}
+                    >
+                      {agent.label}
+                    </span>
+                  )}
                   <span className="comment-date">
                     {formatDateTime(c.created_at)}
                   </span>
@@ -989,7 +1001,8 @@ function Thread({
                 </p>
               </div>
             </li>
-          ))}
+            );
+          })}
         </ul>
       )}
 

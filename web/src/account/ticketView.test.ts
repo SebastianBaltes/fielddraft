@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { TicketComment, TicketState } from "../api/platform";
 import {
   categoryLabel,
+  commentAgentProvenance,
   commentAuthorLabel,
   commentAuthorTag,
   commentVisible,
@@ -136,6 +137,64 @@ describe("ticketView helpers", () => {
       for (const s of TICKET_STATES) {
         expect(settableStates(s, stranger)).toEqual([]);
       }
+    });
+  });
+
+  describe("commentAgentProvenance (#387)", () => {
+    const stamped = { agent_model: "claude-opus-4-8", agent_effort: "high" };
+
+    it("names the subagent's model and effort on an agent comment", () => {
+      const p = commentAgentProvenance(
+        comment({ author_type: "dev", ...stamped }),
+      );
+      expect(p?.label).toBe("claude-opus-4-8 · effort high");
+      expect(p?.title).toContain("subagent");
+      expect(p?.title).toContain("claude-opus-4-8");
+      expect(p?.title).toContain("high");
+    });
+
+    it("shows it for both agent personas (author_kind=agent: po + dev)", () => {
+      for (const author_type of ["po", "dev"] as const) {
+        expect(
+          commentAgentProvenance(comment({ author_type, ...stamped })),
+        ).not.toBeNull();
+      }
+    });
+
+    it("never shows it for non-agent authors, even if stamped", () => {
+      // A user/system comment carrying the fields is not agent provenance —
+      // the tag would be a lie about who did the work.
+      for (const author_type of ["user", "system"] as const) {
+        expect(
+          commentAgentProvenance(comment({ author_type, ...stamped })),
+        ).toBeNull();
+      }
+    });
+
+    it("is purely additive: nothing to show on unstamped comments", () => {
+      // Every comment predating #387 — must render exactly as before.
+      expect(commentAgentProvenance(comment({ author_type: "dev" }))).toBeNull();
+    });
+
+    it("treats blank strings as absent", () => {
+      expect(
+        commentAgentProvenance(
+          comment({ author_type: "dev", agent_model: "  ", agent_effort: "" }),
+        ),
+      ).toBeNull();
+    });
+
+    it("renders whichever single field is present", () => {
+      expect(
+        commentAgentProvenance(
+          comment({ author_type: "dev", agent_model: "claude-opus-4-8" }),
+        )?.label,
+      ).toBe("claude-opus-4-8");
+      expect(
+        commentAgentProvenance(
+          comment({ author_type: "dev", agent_effort: "low" }),
+        )?.label,
+      ).toBe("effort low");
     });
   });
 

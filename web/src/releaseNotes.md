@@ -12,6 +12,15 @@ Format, eine Zeile je Eintrag:
 kind = feat | fix | perf. scope und #tickets sind optional. Folgezeilen, die
 eingerückt sind, gehören zum Text davor (Umbruch erlaubt).
 
+## 0.15.0
+- feat(issues) #387: Schreibt ein Agent einen Ticket-Kommentar, steht im
+  Kommentar-Kopf jetzt dezent, welcher Subagent die Arbeit tatsächlich gemacht
+  hat — Modell und Effort, z.B. „claude-opus-4-8 · effort high“ (Tooltip mit
+  Langform). Gemeint ist der Subagent, der Analyse/Implementierung wirklich
+  durchgeführt hat, nicht der Hauptagent, der die Ergebnisse nur zusammenfasst.
+  Rein additiv: Kommentare ohne diese Angabe (alle bisherigen) sehen aus wie
+  vorher, und bei Nutzer-/System-Kommentaren erscheint die Angabe nie.
+
 ## 0.14.2
 - fix(onshape) #376: Ein aus Onshape importiertes Projekt merkt sich jetzt auch
   die Onshape-Dokument-URL (`onshape.url`) im gespeicherten `.fdraft` — bisher

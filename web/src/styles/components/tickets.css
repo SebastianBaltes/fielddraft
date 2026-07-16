@@ -818,6 +818,19 @@
     border: 1px solid var(--color-warning);
   }
 
+  /* Which subagent did the work behind an agent comment (#387). Deliberately
+     quiet: provenance, not a headline — it must not outshout the author. */
+  & .agent-tag {
+    font-size: var(--fs-base);
+    padding: 0 var(--space-2);
+    border-radius: var(--radius-pill);
+    background: var(--color-bg-sunken);
+    color: var(--color-text-muted);
+    border: 1px solid var(--color-border);
+    font-family: var(--font-family-mono);
+    cursor: help;
+  }
+
   & .comment-date {
     margin-left: auto;
     font-size: var(--fs-base);

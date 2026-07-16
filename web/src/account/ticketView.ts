@@ -161,6 +161,46 @@ export function commentAuthorTag(c: AuthoredComment): string {
   return name ? initials(name) : personaTag(c.author_type);
 }
 
+/** Whether a comment's author is an agent — the `author_kind: "agent"` of the
+ *  IssueVault wire format, which the server splits into the `po` and `dev`
+ *  personas (`ivAuthorKind`). `user` and `system` are not agents. */
+export function isAgentComment(c: Pick<TicketComment, "author_type">): boolean {
+  return c.author_type === "po" || c.author_type === "dev";
+}
+
+/** Which subagent did the work behind an agent comment (#387).
+ *
+ *  The point of the ticket: what is shown must be the subagent that actually ran
+ *  the analysis/implementation, not a main agent that only summarized it. That
+ *  is a writer-side promise (see CLAUDE.md) — here we only decide whether to
+ *  show what was stamped.
+ *
+ *  Purely additive: returns null (→ nothing renders, no placeholder) unless the
+ *  author is an agent AND at least one field carries a real value. Old comments
+ *  have neither, so they look exactly as before.
+ */
+export interface AgentProvenance {
+  /** Compact text for the comment header. */
+  label: string;
+  /** Long form for the tooltip. */
+  title: string;
+}
+
+export function commentAgentProvenance(
+  c: Pick<TicketComment, "author_type" | "agent_model" | "agent_effort">,
+): AgentProvenance | null {
+  if (!isAgentComment(c)) return null;
+  const model = c.agent_model?.trim() || "";
+  const effort = c.agent_effort?.trim() || "";
+  if (!model && !effort) return null;
+  const label = [model, effort && `effort ${effort}`].filter(Boolean).join(" · ");
+  const detail = [
+    model && `model ${model}`,
+    effort && `effort ${effort}`,
+  ].filter(Boolean).join(", ");
+  return { label, title: `Analysis/implementation by subagent — ${detail}` };
+}
+
 /** Whether a comment may render at all for the given viewer. The backend
  *  already filters internal `dev` notes + withheld comments for non-admins, but
  *  we guard again in the UI as defense-in-depth (§7.4). */

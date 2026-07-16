@@ -294,6 +294,50 @@ describe("TicketsView — detail", () => {
     expect(byTestId("comment-secret")).toBeTruthy();
   });
 
+  it("shows the subagent that did the work on an agent comment (#387)", async () => {
+    vi.spyOn(platform.platformApi, "getTicket").mockResolvedValue(
+      detail({
+        comments: [
+          comment({
+            id: "dev1",
+            author_type: "dev",
+            body: "fixed it",
+            agent_model: "claude-opus-4-8",
+            agent_effort: "high",
+          }),
+        ],
+      }),
+    );
+    mount({ ticketId: "t1", isAdmin: true });
+    await flush();
+    const tag = byTestId("comment-agent-dev1");
+    expect(tag?.textContent).toBe("claude-opus-4-8 · effort high");
+    expect(tag?.getAttribute("title")).toContain("subagent");
+  });
+
+  it("shows no provenance on unstamped or non-agent comments (#387)", async () => {
+    vi.spyOn(platform.platformApi, "getTicket").mockResolvedValue(
+      detail({
+        comments: [
+          // agent, but never stamped (every comment predating #387)
+          comment({ id: "old", author_type: "dev", body: "legacy note" }),
+          // a user comment is never agent provenance, stamped or not
+          comment({
+            id: "usr",
+            author_type: "user",
+            body: "hi",
+            agent_model: "claude-opus-4-8",
+          }),
+        ],
+      }),
+    );
+    mount({ ticketId: "t1", isAdmin: true });
+    await flush();
+    expect(byTestId("comment-old")).toBeTruthy();
+    expect(byTestId("comment-agent-old")).toBeNull();
+    expect(byTestId("comment-agent-usr")).toBeNull();
+  });
+
   it("posts a comment and reloads the thread", async () => {
     const get = vi
       .spyOn(platform.platformApi, "getTicket")

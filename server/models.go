@@ -190,6 +190,13 @@ type TicketComment struct {
 	CreatedAt  time.Time `json:"created_at"`
 	Withheld   bool      `json:"withheld"`    // leak-filter hold (§4.2)
 	POReviewed bool      `json:"po_reviewed"` // PO post-moderation done (§4.2/§8)
+	// AgentModel/AgentEffort name the subagent that actually did the analysis or
+	// implementation behind an agent comment (#387) — deliberately NOT the
+	// orchestrating main agent when that one only summarizes someone else's work.
+	// Carried verbatim from the comment's IssueVault `meta`; empty when unstamped
+	// (every comment predating this), in which case the UI shows nothing.
+	AgentModel  string `json:"agent_model,omitempty"`
+	AgentEffort string `json:"agent_effort,omitempty"`
 }
 
 // TicketArtifact is a content-addressed repro blob attached to a ticket.

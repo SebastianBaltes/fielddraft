@@ -151,6 +151,11 @@ export interface TicketComment {
   body: string;
   created_at: string;
   withheld: boolean;
+  /** The subagent that actually did the analysis/implementation behind an agent
+   *  comment (#387) — not the main agent when it merely summarizes. Absent on
+   *  unstamped comments; the thread then shows no provenance at all. */
+  agent_model?: string;
+  agent_effort?: string;
 }
 
 /* ── admin moderation (WP8/WP9) ────────────────────────────────── */

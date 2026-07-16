@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -149,5 +150,54 @@ func TestIssuevaultLenientMetaBools(t *testing.T) {
 	if !tk.Comments[1].Internal || !tk.Comments[1].Withheld {
 		t.Fatalf("c2: internal=%v withheld=%v, want true/true",
 			tk.Comments[1].Internal, tk.Comments[1].Withheld)
+	}
+}
+
+// TestIssuevaultCommentAgentProvenance — the subagent that actually did the work
+// rides along in comment.meta (#387) and must survive the trip to the UI. The
+// typed ivCommentMeta is the real filter here: a field missing from that struct
+// is silently dropped, and the app would show nothing. Unstamped comments keep
+// the fields empty (the UI then renders no provenance at all).
+func TestIssuevaultCommentAgentProvenance(t *testing.T) {
+	raw := `{
+	  "id": "t1", "number": 7, "title": "T", "body": "B", "status": "triage",
+	  "created_at": "2026-07-16T18:00:00Z", "updated_at": "2026-07-16T18:00:00Z",
+	  "meta": {},
+	  "comments": [
+	    {"id": "c1", "author_kind": "agent", "body": "did the work",
+	     "created_at": "2026-07-16T18:01:00Z",
+	     "meta": {"author_type": "dev", "agent_model": "claude-opus-4-8",
+	              "agent_effort": "high"}},
+	    {"id": "c2", "author_kind": "agent", "body": "legacy note",
+	     "created_at": "2026-07-16T18:02:00Z",
+	     "meta": {"author_type": "dev"}}
+	  ]
+	}`
+	var iv ivTicket
+	if err := json.Unmarshal([]byte(raw), &iv); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	tk := mapTicketFull(&iv)
+	if len(tk.Comments) != 2 {
+		t.Fatalf("comments: got %d, want 2", len(tk.Comments))
+	}
+	if got := tk.Comments[0].AgentModel; got != "claude-opus-4-8" {
+		t.Fatalf("c1 agent_model: got %q, want %q", got, "claude-opus-4-8")
+	}
+	if got := tk.Comments[0].AgentEffort; got != "high" {
+		t.Fatalf("c1 agent_effort: got %q, want %q", got, "high")
+	}
+	if tk.Comments[1].AgentModel != "" || tk.Comments[1].AgentEffort != "" {
+		t.Fatalf("c2 must stay unstamped: model=%q effort=%q",
+			tk.Comments[1].AgentModel, tk.Comments[1].AgentEffort)
+	}
+	// The wire form must omit them entirely when unstamped, so old comments are
+	// byte-for-byte what they were before this feature.
+	b, err := json.Marshal(tk.Comments[1])
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if strings.Contains(string(b), "agent_model") {
+		t.Fatalf("unstamped comment must not carry agent_model: %s", b)
 	}
 }

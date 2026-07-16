@@ -154,11 +154,17 @@ type ivComment struct {
 }
 
 // ivCommentMeta carries the FieldDraft comment provenance under comment.meta.
+// IssueVault does not validate `meta` — it is a free object — so this struct is
+// the actual filter: a field that is not listed here is silently dropped on read.
 type ivCommentMeta struct {
 	AuthorType string `json:"author_type"` // "user" | "po" | "dev" | "system"
 	Internal   ivBool `json:"internal"`
 	Withheld   ivBool `json:"withheld"`
 	POReviewed ivBool `json:"po_reviewed"`
+	// Which subagent actually did the work behind an agent comment (#387). Set by
+	// the writing agent; optional and free-form (IssueVault stores it as-is).
+	AgentModel  string `json:"agent_model"`
+	AgentEffort string `json:"agent_effort"`
 }
 
 // ivFile is IssueVault's file (=FileMeta) representation.
@@ -388,6 +394,10 @@ func mapComment(ticketID string, c *ivComment) *TicketComment {
 		CreatedAt:  c.CreatedAt,
 		Withheld:   bool(c.Meta.Withheld),
 		POReviewed: bool(c.Meta.POReviewed),
+		// #387: passed through verbatim, no interpretation. Whether it is shown is
+		// the UI's call (agent comments only, and only when non-empty).
+		AgentModel:  c.Meta.AgentModel,
+		AgentEffort: c.Meta.AgentEffort,
 	}
 	// AuthorID identifies the human behind a comment: a user comment, or a
 	// state-change audit a user triggered (#359 — the audit is author_type=system
