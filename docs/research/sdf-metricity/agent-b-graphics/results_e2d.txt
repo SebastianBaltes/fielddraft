@@ -1,0 +1,5 @@
+    δ  Hausdorff  max Feld→wahr  max wahr→Feld
+  0.2     0.0438         0.0438         0.0338   (größter Defekt bei p=(-0.00,+1.07))
+  0.4     0.1131         0.1131         0.0794   (größter Defekt bei p=(-0.00,+0.87))
+  0.6     0.2545         0.2545         0.1408   (größter Defekt bei p=(-0.00,+0.67))
+  0.8     0.4728         0.4728         0.2249   (größter Defekt bei p=(-0.00,+0.47))

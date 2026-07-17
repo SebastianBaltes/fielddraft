@@ -1,6 +1,12 @@
 [workspace]
 resolver = "2"
-members = ["crates/protocol", "crates/kernel", "crates/features-macros", "crates/solver"]
+members = [
+    "crates/protocol",
+    "crates/kernel",
+    "crates/features-macros",
+    "crates/solver",
+    "crates/metricity-lab",
+]
 
 [workspace.package]
 version = "0.5.21"

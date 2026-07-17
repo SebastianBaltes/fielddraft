@@ -1,0 +1,24 @@
+== A: Sphere-Trace, Union zweier Halbebenen γ=30° (konkave Luft-Ecke) ==
+  geom raw (Mesher-Feld)       tunnel/miss: 3410/4000 (85.25%)  steps(mean/p95):    1.8/     2
+  geom /sqrt2 (#382)           tunnel/miss:    0/4000 ( 0.00%)  steps(mean/p95):    5.8/     7
+  geom /sqrt2 + relax 0.75     tunnel/miss:    0/4000 ( 0.00%)  steps(mean/p95):   10.7/    12
+  circ_cd raw                  tunnel/miss:    0/4000 ( 0.00%)  steps(mean/p95):    4.0/     5
+== A2: Intersection γ=30° (konvexe Kante, grazing) ==
+  geom raw                     tunnel/miss:  966/3440 (24.15%)  steps(mean/p95):    6.1/    31
+  geom /sqrt2                  tunnel/miss:    0/3440 ( 0.00%)  steps(mean/p95):    8.3/    37
+  geom /sqrt2 + relax 0.75     tunnel/miss:    0/3440 ( 0.00%)  steps(mean/p95):   12.3/    51
+  circ_cd raw                  tunnel/miss:    0/3440 ( 0.00%)  steps(mean/p95):    7.0/    29
+== B: max|∇f| und Überschätzung über Kettenlänge N (smin-Union-Kette) ==
+  N  geom |∇f|max  geom over  cd |∇f|max  cd over
+  2         1.248      1.167       1.000    1.000
+  3         1.241      1.167       1.000    1.000
+  4         1.246      1.167       1.000    1.000
+  6         1.247      1.167       1.000    1.000
+  8         1.243      1.166       1.000    1.000
+ 12         1.247      1.167       1.000    1.000
+== C: Sampson f/|∇f| — near-band Fehler und Sicherheit ==
+case                  roh over  S over  roh n50   S n50  roh n10   S n10
+circ_geom union30        1.366   1.363   0.1825  0.1058   0.0362  0.0037
+rvachev_r0 union60       0.994   1.271   0.9700  0.1362   0.1853  0.0269
+twist(0.35)+box          1.414   1.251   0.1961  0.1524   0.0395  0.0556
+hard_min 2 Kreise        1.000   1.000   0.1047  0.1047   0.0134  0.0134

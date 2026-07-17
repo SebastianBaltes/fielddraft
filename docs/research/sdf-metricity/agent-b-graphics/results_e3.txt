@@ -1,0 +1,9 @@
+== A: Twist(0.35)+Box — roh vs. FD-Sampson vs. AD-Sampson ==
+                over   near50   near10
+roh            1.414   0.1961   0.0395
+FD-Sampson     1.251   0.1524   0.0556
+AD-Sampson     1.251   0.1524   0.0556
+== B: Segment-Tracing vs. globale Dämpfung (Twist(0.35)+Box) ==
+  naiv volle Schritte      tunnel:  495/2159 (22.93%)  steps(mean/p95):     9.3/    23
+  global 1/L=0.276         tunnel:    0/2159 ( 0.00%)  steps(mean/p95):    47.6/    90
+  segment-lokal (Galin)    tunnel:    0/2159 ( 0.00%)  steps(mean/p95):    16.6/    34

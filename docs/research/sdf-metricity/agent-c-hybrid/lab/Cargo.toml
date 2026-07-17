@@ -1,0 +1,11 @@
+[package]
+name = "hybrid-lab"
+version = "0.1.0"
+edition = "2021"
+
+# Absichtlich dependency-frei (offline lauffähig, kein Workspace-Mitglied).
+[workspace]
+
+[profile.release]
+debug = false
+opt-level = 3
