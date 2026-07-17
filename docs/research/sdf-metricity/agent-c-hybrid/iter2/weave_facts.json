@@ -1,0 +1,109 @@
+{
+  "box_boss_cyl__tessellate_tol0.01": {
+    "build_ms": 22.52761,
+    "ok": true,
+    "tris": 34038
+  },
+  "box_boss_cyl__tessellate_tol0.05": {
+    "build_ms": 2.029434,
+    "ok": true,
+    "tris": 2614
+  },
+  "box_boss_cyl__tessellate_tol0.2": {
+    "build_ms": 0.699933,
+    "ok": true,
+    "tris": 458
+  },
+  "box_boss_cyl__weave_all": {
+    "edges": 18,
+    "face_kinds": {
+      "cylinder": 1,
+      "plane": 8
+    },
+    "faces": 9,
+    "note": "production weave (Body::ensure_brep route) — edge fillets are NOT applied here (build_bounded_for_body_local has no edge_fillets parameter)",
+    "vertices": 12
+  },
+  "box_union_cyl__tessellate_tol0.01": {
+    "error": "face 6: unsupported winding configuration (outer -1, 2 inner)",
+    "ok": false
+  },
+  "box_union_cyl__tessellate_tol0.05": {
+    "error": "face 6: unsupported winding configuration (outer -1, 2 inner)",
+    "ok": false
+  },
+  "box_union_cyl__tessellate_tol0.2": {
+    "error": "face 6: unsupported winding configuration (outer -1, 2 inner)",
+    "ok": false
+  },
+  "box_union_cyl__weave_all": {
+    "edges": 20,
+    "face_kinds": {
+      "cylinder": 1,
+      "plane": 9
+    },
+    "faces": 10,
+    "note": "production weave (Body::ensure_brep route) — edge fillets are NOT applied here (build_bounded_for_body_local has no edge_fillets parameter)",
+    "vertices": 12
+  },
+  "fillet_step__direct_filleted_weave": {
+    "blend_faces": 1,
+    "face_kinds": {
+      "blend": 1,
+      "plane": 11
+    },
+    "faces": 12,
+    "tessellate_result": {
+      "error": "face 3: loop is not a connected ring",
+      "ok": false
+    }
+  },
+  "fillet_step__tessellate_tol0.01": {
+    "build_ms": 0.319978,
+    "ok": true,
+    "tris": 28
+  },
+  "fillet_step__tessellate_tol0.05": {
+    "build_ms": 0.325493,
+    "ok": true,
+    "tris": 28
+  },
+  "fillet_step__tessellate_tol0.2": {
+    "build_ms": 0.326016,
+    "ok": true,
+    "tris": 28
+  },
+  "fillet_step__weave_all": {
+    "edges": 24,
+    "face_kinds": {
+      "plane": 11
+    },
+    "faces": 11,
+    "note": "production weave (Body::ensure_brep route) — edge fillets are NOT applied here (build_bounded_for_body_local has no edge_fillets parameter)",
+    "vertices": 16
+  },
+  "pocket__tessellate_tol0.01": {
+    "build_ms": 0.324538,
+    "ok": true,
+    "tris": 28
+  },
+  "pocket__tessellate_tol0.05": {
+    "build_ms": 0.324517,
+    "ok": true,
+    "tris": 28
+  },
+  "pocket__tessellate_tol0.2": {
+    "build_ms": 0.32523799999999997,
+    "ok": true,
+    "tris": 28
+  },
+  "pocket__weave_all": {
+    "edges": 24,
+    "face_kinds": {
+      "plane": 11
+    },
+    "faces": 11,
+    "note": "production weave (Body::ensure_brep route) — edge fillets are NOT applied here (build_bounded_for_body_local has no edge_fillets parameter)",
+    "vertices": 16
+  }
+}

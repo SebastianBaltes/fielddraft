@@ -1,0 +1,9 @@
+scene,method,n,mean_abs_mm,p95_mm,max_abs_mm,bias_mm,evals_per_query,us_per_query
+plate_boss_under_boss,raw,55,4.363186,8.513878,8.513878,-4.363186,1,0.0
+plate_boss_under_boss,hopflax32,55,0.095065,0.514768,0.957168,0.095065,2283,53.8
+plate_boss_under_boss,hopflax64,55,0.048969,0.221333,0.381313,0.048961,2128,51.0
+plate_boss_under_boss,hopflax128,55,0.030801,0.088778,0.233998,0.030801,3118,76.0
+plate_bore_thin_wall,raw,45,0.000000,0.000000,0.000000,-0.000000,1,0.0
+plate_bore_thin_wall,hopflax32,45,0.000000,0.000000,0.000000,-0.000000,105,2.6
+plate_bore_thin_wall,hopflax64,45,0.000000,0.000000,0.000000,-0.000000,139,3.7
+plate_bore_thin_wall,hopflax128,45,0.000000,0.000000,0.000000,-0.000000,198,5.5

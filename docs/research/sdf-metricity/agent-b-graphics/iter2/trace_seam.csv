@@ -1,0 +1,6 @@
+policy,rays,tunnel_pct,miss_pct,steps_mean,steps_p95
+old_fade_relax1,4000,0.000,0.000,15.28,36
+old_nofade_relax1,4000,0.000,0.000,10.00,26
+new_fade_relax1,4000,0.000,0.000,15.98,38
+new_nofade_relax1,4000,0.000,0.000,10.60,27
+old_fade_relax075,4000,0.000,0.000,21.33,49

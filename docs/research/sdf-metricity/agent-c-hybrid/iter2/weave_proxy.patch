@@ -1,0 +1,931 @@
+diff --git a/crates/metricity-lab/src/bin/weave_proxy.rs b/crates/metricity-lab/src/bin/weave_proxy.rs
+new file mode 100644
+index 00000000..4f10e2e4
+--- /dev/null
++++ b/crates/metricity-lab/src/bin/weave_proxy.rs
+@@ -0,0 +1,925 @@
++//! Agent C (Hybrid), Iteration 2 — Experiment 2 der gemeinsamen Charta:
++//! **B-Rep-Proxy-Distanz gegen ECHTE Kernel-Artefakte** statt Hand-Meshes.
++//!
++//! Szenen (echte Feature-API, `FeatureRegistry::regenerate`):
++//!   S1 `pocket`        Box − Box (Tasche, einspringende Kanten + Phantom-Flächen)
++//!   S2 `box_union_cyl` Box ∪ Zylinder (konkave Nähte)
++//!   S3 `fillet_step`   Box − Box mit `fillet_edge` r=3 (MaskedBlend im Feld)
++//!
++//! Gemessen wird je Szene:
++//!   * Feld (CsgNode::sdf, Visual) und kompiliertes Tape (`eval_opcodes`)
++//!   * Proxy-Distanz: `tessellate_brep(weave, tol)`-Mesh + BVH,
++//!     Vorzeichen aus dem Feld — bei 2–3 tol-Stufen
++//!   * S3 zusätzlich: DC-Render-Mesh des gefilleteten Felds (das einzige
++//!     Kernel-Artefakt, das die Fillet-Geometrie heute trägt)
++//!   * Ground Truth aus dem metricity-lab-Harness (Brute Force, validiert)
++//!   * Fehler gesondert im Fillet-Band (Kapsel um die verrundete Kante)
++//!   * Hybrid-Blend-Regel (Band ≥ 4× Diskrepanz): Überschätzung + ∇-Spikes
++//!
++//! Lauf: `cargo run -p metricity-lab --release --bin weave_proxy -- <outdir>`
++
++use std::collections::BTreeMap;
++use std::io::Write as _;
++use std::path::{Path, PathBuf};
++
++use fielddraft_kernel::body::weave_all;
++use fielddraft_kernel::brep::naming::TopoRef;
++use fielddraft_kernel::brep::tessellate::tessellate_brep;
++use fielddraft_kernel::brep::{EdgeId, SurfaceGeometry};
++use fielddraft_kernel::bvh::BoundedCsg;
++use fielddraft_kernel::csg::{CsgNode, DecodedFeature, EdgeFillet};
++use fielddraft_kernel::features::{Context, FeatureRegistry};
++use fielddraft_kernel::sdf_compiler::compile_body;
++use fielddraft_protocol::{Document, FeatureCall, FeatureId, HalfSpace, Transform};
++use metricity_lab::metrics::{
++    gradient_report, sample_near_surface, sample_uniform, Stats, MID_BAND_REL, NEAR_BAND_REL,
++};
++use metricity_lab::util::SplitMix64;
++use metricity_lab::{CsgField, Field, FnField, GroundTruth, GtOptions, TapeField};
++use serde_json::json;
++
++// ───────────────────────── Mini-Vec + Punkt-Dreieck (Ericson) ────────────────
++// Übernommen aus Iteration 1 (agent-c-hybrid/lab): dependency-freier BVH.
++
++type V3 = [f64; 3];
++fn sub(a: V3, b: V3) -> V3 {
++    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
++}
++fn add(a: V3, b: V3) -> V3 {
++    [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
++}
++fn scale(a: V3, s: f64) -> V3 {
++    [a[0] * s, a[1] * s, a[2] * s]
++}
++fn dot(a: V3, b: V3) -> f64 {
++    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
++}
++
++fn closest_on_tri(p: V3, a: V3, b: V3, c: V3) -> V3 {
++    let ab = sub(b, a);
++    let ac = sub(c, a);
++    let ap = sub(p, a);
++    let d1 = dot(ab, ap);
++    let d2 = dot(ac, ap);
++    if d1 <= 0.0 && d2 <= 0.0 {
++        return a;
++    }
++    let bp = sub(p, b);
++    let d3 = dot(ab, bp);
++    let d4 = dot(ac, bp);
++    if d3 >= 0.0 && d4 <= d3 {
++        return b;
++    }
++    let vc = d1 * d4 - d3 * d2;
++    if vc <= 0.0 && d1 >= 0.0 && d3 <= 0.0 {
++        let v = d1 / (d1 - d3);
++        return add(a, scale(ab, v));
++    }
++    let cp = sub(p, c);
++    let d5 = dot(ab, cp);
++    let d6 = dot(ac, cp);
++    if d6 >= 0.0 && d5 <= d6 {
++        return c;
++    }
++    let vb = d5 * d2 - d1 * d6;
++    if vb <= 0.0 && d2 >= 0.0 && d6 <= 0.0 {
++        let w = d2 / (d2 - d6);
++        return add(a, scale(ac, w));
++    }
++    let va = d3 * d6 - d5 * d4;
++    if va <= 0.0 && (d4 - d3) >= 0.0 && (d5 - d6) >= 0.0 {
++        let w = (d4 - d3) / ((d4 - d3) + (d5 - d6));
++        return add(b, scale(sub(c, b), w));
++    }
++    let denom = 1.0 / (va + vb + vc);
++    let v = vb * denom;
++    let w = vc * denom;
++    add(a, add(scale(ab, v), scale(ac, w)))
++}
++
++struct TriMesh {
++    v: Vec<V3>,
++    t: Vec<[u32; 3]>,
++}
++
++impl TriMesh {
++    /// Kernel-`Mesh` (f32-Positions + Index-Buffer) → f64-TriMesh.
++    fn from_kernel(mesh: &fielddraft_kernel::dc::Mesh) -> TriMesh {
++        let v: Vec<V3> = mesh
++            .positions
++            .chunks_exact(3)
++            .map(|c| [c[0] as f64, c[1] as f64, c[2] as f64])
++            .collect();
++        let t: Vec<[u32; 3]> =
++            mesh.indices.chunks_exact(3).map(|c| [c[0], c[1], c[2]]).collect();
++        TriMesh { v, t }
++    }
++}
++
++#[derive(Clone, Copy)]
++struct Aabb64 {
++    min: V3,
++    max: V3,
++}
++impl Aabb64 {
++    const EMPTY: Aabb64 = Aabb64 { min: [f64::MAX; 3], max: [f64::MIN; 3] };
++    fn grow(&mut self, p: V3) {
++        for k in 0..3 {
++            self.min[k] = self.min[k].min(p[k]);
++            self.max[k] = self.max[k].max(p[k]);
++        }
++    }
++    fn dist2(&self, p: V3) -> f64 {
++        let mut d = 0.0;
++        for k in 0..3 {
++            let v = if p[k] < self.min[k] {
++                self.min[k] - p[k]
++            } else if p[k] > self.max[k] {
++                p[k] - self.max[k]
++            } else {
++                0.0
++            };
++            d += v * v;
++        }
++        d
++    }
++}
++
++struct BvhNode {
++    bb: Aabb64,
++    left: u32,
++    right: u32,
++    start: u32,
++    count: u32,
++}
++
++struct Bvh {
++    nodes: Vec<BvhNode>,
++    order: Vec<u32>,
++}
++
++impl Bvh {
++    fn build(mesh: &TriMesh) -> Bvh {
++        let n = mesh.t.len();
++        let mut order: Vec<u32> = (0..n as u32).collect();
++        let cents: Vec<V3> = mesh
++            .t
++            .iter()
++            .map(|t| {
++                let (a, b, c) =
++                    (mesh.v[t[0] as usize], mesh.v[t[1] as usize], mesh.v[t[2] as usize]);
++                scale(add(add(a, b), c), 1.0 / 3.0)
++            })
++            .collect();
++        let mut nodes = Vec::with_capacity(2 * n);
++        Self::build_rec(mesh, &cents, &mut order, 0, n, &mut nodes);
++        Bvh { nodes, order }
++    }
++    fn build_rec(
++        mesh: &TriMesh,
++        cents: &[V3],
++        order: &mut [u32],
++        start: usize,
++        count: usize,
++        nodes: &mut Vec<BvhNode>,
++    ) -> u32 {
++        let mut bb = Aabb64::EMPTY;
++        for &ti in &order[start..start + count] {
++            let t = mesh.t[ti as usize];
++            for &vi in &t {
++                bb.grow(mesh.v[vi as usize]);
++            }
++        }
++        let idx = nodes.len() as u32;
++        nodes.push(BvhNode { bb, left: 0, right: 0, start: start as u32, count: count as u32 });
++        if count <= 4 {
++            return idx;
++        }
++        let mut cb = Aabb64::EMPTY;
++        for &ti in &order[start..start + count] {
++            cb.grow(cents[ti as usize]);
++        }
++        let ext = sub(cb.max, cb.min);
++        let axis = if ext[0] >= ext[1] && ext[0] >= ext[2] {
++            0
++        } else if ext[1] >= ext[2] {
++            1
++        } else {
++            2
++        };
++        let seg = &mut order[start..start + count];
++        let mid = count / 2;
++        seg.select_nth_unstable_by(mid, |&a, &b| {
++            cents[a as usize][axis].partial_cmp(&cents[b as usize][axis]).unwrap()
++        });
++        let l = Self::build_rec(mesh, cents, order, start, mid, nodes);
++        let r = Self::build_rec(mesh, cents, order, start + mid, count - mid, nodes);
++        nodes[idx as usize].left = l;
++        nodes[idx as usize].right = r;
++        nodes[idx as usize].count = 0;
++        idx
++    }
++    /// Unsignierte Distanz Punkt→Mesh (exakter Nearest, BVH-Pruning).
++    fn dist(&self, mesh: &TriMesh, p: V3) -> f64 {
++        let mut best = f64::MAX;
++        let mut stack = [0u32; 64];
++        let mut sp = 0usize;
++        stack[sp] = 0;
++        sp += 1;
++        while sp > 0 {
++            sp -= 1;
++            let node = &self.nodes[stack[sp] as usize];
++            if node.bb.dist2(p) >= best {
++                continue;
++            }
++            if node.count > 0 {
++                for i in node.start..node.start + node.count {
++                    let t = mesh.t[self.order[i as usize] as usize];
++                    let q = closest_on_tri(
++                        p,
++                        mesh.v[t[0] as usize],
++                        mesh.v[t[1] as usize],
++                        mesh.v[t[2] as usize],
++                    );
++                    let d2 = {
++                        let d = sub(p, q);
++                        dot(d, d)
++                    };
++                    if d2 < best {
++                        best = d2;
++                    }
++                }
++            } else {
++                let (l, r) = (node.left, node.right);
++                let dl = self.nodes[l as usize].bb.dist2(p);
++                let dr = self.nodes[r as usize].bb.dist2(p);
++                let (first, second, dfirst, dsecond) =
++                    if dl <= dr { (l, r, dl, dr) } else { (r, l, dr, dl) };
++                if dsecond < best {
++                    stack[sp] = second;
++                    sp += 1;
++                }
++                if dfirst < best {
++                    stack[sp] = first;
++                    sp += 1;
++                }
++            }
++        }
++        best.sqrt()
++    }
++}
++
++/// Proxy-Feld: Betrag = BVH-Punkt-Mesh-Distanz, Vorzeichen aus dem
++/// (Schranken-)Feld — das Rezept aus Iteration 1 (Architektur-Skizze §2).
++struct ProxyField<'a> {
++    mesh: &'a TriMesh,
++    bvh: &'a Bvh,
++    sign_field: &'a dyn Field,
++}
++
++impl Field for ProxyField<'_> {
++    fn eval(&self, p: [f64; 3]) -> f64 {
++        let s = if self.sign_field.eval(p) < 0.0 { -1.0 } else { 1.0 };
++        s * self.bvh.dist(self.mesh, p)
++    }
++}
++
++// ───────────────────────── Szenenbau über die echte Feature-API ──────────────
++
++fn id(n: u32) -> FeatureId {
++    FeatureId::from_u32(n)
++}
++
++/// Regeneriert `calls` über die echte Registry und gibt die dekodierte
++/// Feature-Spine + gesammelte Edge-Fillets zurück (geklont, damit der
++/// Document-Borrow endet).
++fn regen(calls: &[FeatureCall]) -> (Vec<DecodedFeature>, Vec<EdgeFillet>) {
++    let registry = FeatureRegistry::with_builtins();
++    let mut doc = Document::default();
++    let mut ctx = Context::new(&mut doc);
++    registry.regenerate(&mut ctx, calls, None).unwrap();
++    (ctx.features.clone(), ctx.edge_fillets.clone())
++}
++
++/// S3: Step-Geometrie (Box − Box) → Kanten-Query-Hash der Rim-Kante
++/// (Feature-1×Feature-2), dann `fillet_edge` r=3 — exakt das Muster aus
++/// `features_tests::step_geometry` (DL-61), synchron via `weave_all`.
++fn build_fillet_scene(
++    blend_radius: f32,
++) -> (Vec<DecodedFeature>, Vec<EdgeFillet>) {
++    let registry = FeatureRegistry::with_builtins();
++    let mut doc = Document::default();
++    let mut ctx = Context::new(&mut doc);
++    registry
++        .regenerate(
++            &mut ctx,
++            &[
++                FeatureCall::new("box", id(1), json!({ "half_extents": [10.0, 10.0, 10.0] })),
++                FeatureCall::new(
++                    "box",
++                    id(2),
++                    json!({
++                        "half_extents": [5.0, 5.0, 5.0],
++                        "center": [0.0, 0.0, 10.0],
++                        "op": "remove",
++                        "targets": "qCreatedBy(1)",
++                    }),
++                ),
++            ],
++            None,
++        )
++        .unwrap();
++
++    // Synchroner Weave: genau so erzwingen es die Kernel-Tests — die
++    // Kanten-Query löst gegen das fertige B-Rep aus `weave_all` auf.
++    let woven = weave_all(&ctx.features);
++    assert_eq!(woven.len(), 1, "one connected body");
++    let (brep, _placement) = &woven[0];
++    let mut edge_hash = None;
++    for i in 0..brep.edges.len() {
++        let e = brep.edge(EdgeId(i as u32));
++        let (s0, s1) = (e.signature.0.feature_id(), e.signature.1.feature_id());
++        if (s0 == 1 && s1 == 2) || (s0 == 2 && s1 == 1) {
++            edge_hash = Some(TopoRef::from_edge(brep, EdgeId(i as u32)).id_hash);
++            break;
++        }
++    }
++    let edge_hash = edge_hash.expect("feature-1×feature-2 rim edge exists");
++
++    registry
++        .regenerate(
++            &mut ctx,
++            &[FeatureCall::new(
++                "fillet_edge",
++                id(3),
++                json!({ "edge": format!("qEdge({edge_hash})"), "blend_radius": blend_radius }),
++            )],
++            None,
++        )
++        .unwrap();
++    assert_eq!(ctx.edge_fillets.len(), 1, "one fillet resolved");
++    (ctx.features.clone(), ctx.edge_fillets.clone())
++}
++
++// ───────────────────────── Messhelfer ────────────────────────────────────────
++
++/// Banded-Report wie `metrics::distance_errors`, aber gegen VORBERECHNETE
++/// GT-Werte (die GT ist teuer; wir messen viele Varianten je Punktmenge).
++struct Banded {
++    near_out: Stats,
++    near_in: Stats,
++    mid_out: Stats,
++    mid_in: Stats,
++    far_out: Stats,
++    far_in: Stats,
++    overall: Stats,
++}
++
++fn banded(field: &dyn Field, pts: &[V3], dtrue: &[f64], model_size: f64) -> Banded {
++    let errs: Vec<(f64, f64)> = pts
++        .iter()
++        .zip(dtrue.iter())
++        .map(|(&p, &d)| (d, field.eval(p) - d))
++        .filter(|(d, e)| d.is_finite() && e.is_finite())
++        .collect();
++    let near = NEAR_BAND_REL * model_size;
++    let mid = MID_BAND_REL * model_size;
++    let band = |lo: f64, hi: f64, inside: bool| -> Stats {
++        Stats::from_signed(
++            errs.iter()
++                .filter(|(d, _)| {
++                    let a = d.abs();
++                    a >= lo && a < hi && ((*d < 0.0) == inside)
++                })
++                .map(|(_, e)| *e)
++                .collect(),
++        )
++    };
++    Banded {
++        near_out: band(0.0, near, false),
++        near_in: band(0.0, near, true),
++        mid_out: band(near, mid, false),
++        mid_in: band(near, mid, true),
++        far_out: band(mid, f64::INFINITY, false),
++        far_in: band(mid, f64::INFINITY, true),
++        overall: Stats::from_signed(errs.iter().map(|(_, e)| *e).collect()),
++    }
++}
++
++fn bench_ns(field: &dyn Field, pts: &[V3], n: usize) -> f64 {
++    let mut acc = 0.0f64;
++    for &p in pts.iter().take(1000) {
++        acc += field.eval(p);
++    }
++    let start = std::time::Instant::now();
++    for i in 0..n {
++        acc += field.eval(pts[i % pts.len()]);
++    }
++    let dt = start.elapsed().as_secs_f64();
++    std::hint::black_box(acc);
++    dt / n as f64 * 1e9
++}
++
++fn stats_csv(s: &Stats) -> String {
++    format!("{},{:.6},{:.6},{:.6},{:.6}", s.count, s.mean, s.p95, s.max, s.mean_signed)
++}
++
++/// Distanz Punkt → Polylinie (Segmente), für das Fillet-Band.
++fn dist_to_polyline(p: V3, poly: &[V3]) -> f64 {
++    let mut best = f64::MAX;
++    for w in poly.windows(2) {
++        let (a, b) = (w[0], w[1]);
++        let ab = sub(b, a);
++        let denom = dot(ab, ab);
++        let t = if denom > 0.0 { (dot(sub(p, a), ab) / denom).clamp(0.0, 1.0) } else { 0.0 };
++        let q = add(a, scale(ab, t));
++        let d = sub(p, q);
++        best = best.min(dot(d, d));
++    }
++    best.sqrt()
++}
++
++fn smoothstep(a: f64, b: f64, x: f64) -> f64 {
++    let t = ((x - a) / (b - a)).clamp(0.0, 1.0);
++    t * t * (3.0 - 2.0 * t)
++}
++
++fn central_grad_norm(f: &dyn Field, p: V3, h: f64) -> f64 {
++    let mut g = [0.0f64; 3];
++    for k in 0..3 {
++        let mut pp = p;
++        let mut pm = p;
++        pp[k] += h;
++        pm[k] -= h;
++        g[k] = (f.eval(pp) - f.eval(pm)) / (2.0 * h);
++    }
++    (g[0] * g[0] + g[1] * g[1] + g[2] * g[2]).sqrt()
++}
++
++// ───────────────────────── Hauptlauf ─────────────────────────────────────────
++
++struct SceneData {
++    name: &'static str,
++    features: Vec<DecodedFeature>,
++    fillets: Vec<EdgeFillet>,
++}
++
++fn main() {
++    let out: PathBuf = std::env::args()
++        .nth(1)
++        .map(PathBuf::from)
++        .unwrap_or_else(|| PathBuf::from("weave_proxy_out"));
++    std::fs::create_dir_all(&out).unwrap();
++
++    let scenes = vec![
++        SceneData {
++            name: "pocket",
++            features: {
++                let (f, _) = regen(&[
++                    FeatureCall::new("box", id(1), json!({ "half_extents": [10.0, 10.0, 10.0] })),
++                    FeatureCall::new(
++                        "box",
++                        id(2),
++                        json!({
++                            "half_extents": [5.0, 5.0, 5.0],
++                            "center": [0.0, 0.0, 10.0],
++                            "op": "remove",
++                            "targets": "qCreatedBy(1)",
++                        }),
++                    ),
++                ]);
++                f
++            },
++            fillets: vec![],
++        },
++        SceneData {
++            name: "box_union_cyl",
++            features: {
++                let (f, _) = regen(&[
++                    FeatureCall::new("box", id(1), json!({ "half_extents": [10.0, 10.0, 10.0] })),
++                    FeatureCall::new(
++                        "cylinder",
++                        id(2),
++                        json!({
++                            "radius": 6.0,
++                            "half_height": 14.0,
++                            "translate": [8.0, 0.0, 0.0],
++                            "op": "add",
++                            "targets": "qCreatedBy(1)",
++                        }),
++                    ),
++                ]);
++                f
++            },
++            fillets: vec![],
++        },
++        SceneData {
++            // Zylinder-Boss mittig auf der Box-Oberseite: die konkave Naht
++            // ist ein geschlossener Kreis — die Band-Topologie, die c-M2
++            // (Torus-Band) als sauberste Manifold-Konfiguration ausweist.
++            name: "box_boss_cyl",
++            features: {
++                let (f, _) = regen(&[
++                    FeatureCall::new("box", id(1), json!({ "half_extents": [10.0, 10.0, 10.0] })),
++                    FeatureCall::new(
++                        "cylinder",
++                        id(2),
++                        json!({
++                            "radius": 6.0,
++                            "half_height": 8.0,
++                            "translate": [0.0, 0.0, 10.0],
++                            "op": "add",
++                            "targets": "qCreatedBy(1)",
++                        }),
++                    ),
++                ]);
++                f
++            },
++            fillets: vec![],
++        },
++        {
++            let (features, fillets) = build_fillet_scene(3.0);
++            SceneData { name: "fillet_step", features, fillets }
++        },
++    ];
++
++    let mut summary_rows: Vec<String> = Vec::new();
++    let mut band_rows: Vec<String> = Vec::new();
++    let mut blend_rows: Vec<String> = Vec::new();
++    let mut facts = BTreeMap::<String, serde_json::Value>::new();
++
++    for scene in &scenes {
++        eprintln!("── scene {} ──", scene.name);
++        // IST-Feld: dekodierte Features (+ Fillets) — identisch zum
++        // Mesher-/Render-CSG (`build_bounded_*_rounded`).
++        let node: CsgNode = CsgNode::from_decoded(&scene.features)
++            .apply_edge_fillets(&scene.fillets);
++        let field = CsgField::visual(&node);
++        let bounded = BoundedCsg::from_csg(&node);
++        let compiled = compile_body(&bounded);
++        let tape = TapeField { compiled: &compiled };
++
++        let a = node.aabb();
++        // Domain BEWUSST über die Body-AABB hinaus gepolstert (20 % der
++        // größten Kante): die Phantom-Flächen-Regionen der Iteration 1
++        // (überstehende Operanden, z. B. über der Taschenöffnung) liegen
++        // AUSSERHALB der Ergebnis-AABB — ohne Polster misst man dort nie.
++        let (mut lo, mut hi) = (
++            [a.min[0] as f64, a.min[1] as f64, a.min[2] as f64],
++            [a.max[0] as f64, a.max[1] as f64, a.max[2] as f64],
++        );
++        let pad = 0.2 * (0..3).map(|k| hi[k] - lo[k]).fold(0.0f64, f64::max);
++        for k in 0..3 {
++            lo[k] -= pad;
++            hi[k] += pad;
++        }
++
++        // Ground Truth auf der Nullmenge des IST-Felds (Harness-Verfahren).
++        let gt_opts = GtOptions { grid: if scene.fillets.is_empty() { 96 } else { 128 }, ..GtOptions::default() };
++        let t0 = std::time::Instant::now();
++        let gt = GroundTruth::build(&field, lo, hi, &gt_opts);
++        eprintln!("  GT built: {} surface pts, {:.1}s", gt.n_surface_points(), t0.elapsed().as_secs_f64());
++        let model_size = gt.model_size;
++
++        // Punktmengen (deterministisch, Seeds publiziert).
++        let mut pts = sample_uniform(lo, hi, 3000, 42);
++        let near = sample_near_surface(&gt, 3000, 0.05, 43);
++        pts.extend_from_slice(&near);
++        let t0 = std::time::Instant::now();
++        let dtrue: Vec<f64> = {
++            use rayon::prelude::*;
++            pts.par_iter().map(|&p| gt.distance(p)).collect()
++        };
++        eprintln!("  GT distances: {} pts, {:.1}s", pts.len(), t0.elapsed().as_secs_f64());
++
++        // ── Kernel-Artefakt 1: Produktions-Weave (`weave_all`) ──────────
++        let woven = weave_all(&scene.features);
++        assert_eq!(woven.len(), 1, "one body expected");
++        let (brep, placement) = &woven[0];
++        let mut kinds = BTreeMap::<&'static str, usize>::new();
++        for f in &brep.faces {
++            *kinds.entry(fielddraft_kernel::brep::face_export::surface_kind(&f.surface)).or_insert(0) += 1;
++        }
++        facts.insert(
++            format!("{}__weave_all", scene.name),
++            json!({
++                "faces": brep.face_count(),
++                "edges": brep.edge_count(),
++                "vertices": brep.vertex_count(),
++                "face_kinds": kinds.iter().map(|(k, v)| (k.to_string(), *v)).collect::<BTreeMap<_, _>>(),
++                "note": "production weave (Body::ensure_brep route) — edge fillets are NOT applied here (build_bounded_for_body_local has no edge_fillets parameter)",
++            }),
++        );
++
++        // Feld + Tape in die Summary.
++        for (vname, f) in [("field_visual", &field as &dyn Field), ("tape", &tape as &dyn Field)] {
++            let b = banded(f, &pts, &dtrue, model_size);
++            let grad = gradient_report(f, model_size, &pts, &near, 44);
++            let ns = bench_ns(f, &pts, 200_000);
++            summary_rows.push(format!(
++                "{},{},na,{},{},{},{},{},{},{},{:.4},{:.4},{:.4},{:.4},{:.1}",
++                scene.name, vname,
++                stats_csv(&b.near_out), stats_csv(&b.near_in),
++                stats_csv(&b.mid_out), stats_csv(&b.mid_in),
++                stats_csv(&b.far_out), stats_csv(&b.far_in),
++                stats_csv(&b.overall),
++                grad.dev.mean, grad.dev.p95, grad.dev.max, grad.seam_jump.p95, ns
++            ));
++        }
++
++        // ── Proxy aus tessellate_brep bei 3 tol-Stufen ──────────────────
++        let mut proxy_for_blend: Option<(TriMesh, Bvh)> = None;
++        for tol in [0.2f64, 0.05, 0.01] {
++            let t0 = std::time::Instant::now();
++            let tess = tessellate_brep(brep, placement, tol);
++            match tess {
++                Ok(mesh) => {
++                    let tm = TriMesh::from_kernel(&mesh);
++                    let bvh = Bvh::build(&tm);
++                    let build_ms = t0.elapsed().as_secs_f64() * 1e3;
++                    let proxy = ProxyField { mesh: &tm, bvh: &bvh, sign_field: &field };
++                    let b = banded(&proxy, &pts, &dtrue, model_size);
++                    let grad = gradient_report(&proxy, model_size, &pts, &near, 44);
++                    let ns = bench_ns(&proxy, &pts, 200_000);
++                    eprintln!(
++                        "  proxy tol={tol}: {} tris, build {build_ms:.1} ms, near_out max {:.4} mm, {ns:.0} ns/q",
++                        tm.t.len(), b.near_out.max
++                    );
++                    summary_rows.push(format!(
++                        "{},proxy_tess,{tol},{},{},{},{},{},{},{},{:.4},{:.4},{:.4},{:.4},{:.1}",
++                        scene.name,
++                        stats_csv(&b.near_out), stats_csv(&b.near_in),
++                        stats_csv(&b.mid_out), stats_csv(&b.mid_in),
++                        stats_csv(&b.far_out), stats_csv(&b.far_in),
++                        stats_csv(&b.overall),
++                        grad.dev.mean, grad.dev.p95, grad.dev.max, grad.seam_jump.p95, ns
++                    ));
++                    facts.insert(
++                        format!("{}__tessellate_tol{}", scene.name, tol),
++                        json!({ "ok": true, "tris": tm.t.len(), "build_ms": build_ms }),
++                    );
++                    if (tol - 0.05).abs() < 1e-9 {
++                        proxy_for_blend = Some((tm, bvh));
++                    }
++                }
++                Err(e) => {
++                    eprintln!("  proxy tol={tol}: tessellate_brep FAILED: {e}");
++                    facts.insert(
++                        format!("{}__tessellate_tol{}", scene.name, tol),
++                        json!({ "ok": false, "error": e }),
++                    );
++                }
++            }
++        }
++
++        // ── DC-Render-Mesh als Fallback-Artefakt ────────────────────────
++        // Für Fillet-Szenen (das einzige Artefakt mit Fillet-Geometrie,
++        // #350) und für Szenen, deren Weave-Tesselation scheitert.
++        let mut dc_meshes: Vec<(String, TriMesh)> = Vec::new();
++        if !scene.fillets.is_empty() || proxy_for_blend.is_none() {
++            let resolutions: &[u32] = if scene.fillets.is_empty() { &[256] } else { &[128, 256] };
++            for &res in resolutions {
++                let t0 = std::time::Instant::now();
++                let m = fielddraft_kernel::dc::dual_contour(&bounded, res);
++                let tm = TriMesh::from_kernel(&m);
++                eprintln!(
++                    "  dc res={res}: {} tris, {:.1}s",
++                    tm.t.len(),
++                    t0.elapsed().as_secs_f64()
++                );
++                dc_meshes.push((format!("proxy_dc{res}"), tm));
++            }
++            for (vname, tm) in &dc_meshes {
++                let bvh = Bvh::build(tm);
++                let proxy = ProxyField { mesh: tm, bvh: &bvh, sign_field: &field };
++                let b = banded(&proxy, &pts, &dtrue, model_size);
++                let grad = gradient_report(&proxy, model_size, &pts, &near, 44);
++                let ns = bench_ns(&proxy, &pts, 200_000);
++                summary_rows.push(format!(
++                    "{},{vname},na,{},{},{},{},{},{},{},{:.4},{:.4},{:.4},{:.4},{:.1}",
++                    scene.name,
++                    stats_csv(&b.near_out), stats_csv(&b.near_in),
++                    stats_csv(&b.mid_out), stats_csv(&b.mid_in),
++                    stats_csv(&b.far_out), stats_csv(&b.far_in),
++                    stats_csv(&b.overall),
++                    grad.dev.mean, grad.dev.p95, grad.dev.max, grad.seam_jump.p95, ns
++                ));
++            }
++        }
++
++        // ── S3: gefilleteter Direkt-Weave (c-M1-Route) ───────────────────
++        if !scene.fillets.is_empty() {
++            // Direkter Weave des gefilleteten CSG — webt der Weaver die
++            // Blend-Zone als eigene Face? (c-M1 sagt ja.)
++            let bb = bounded.aabb();
++            let largest = bb.size().into_iter().fold(0.0_f32, f32::max);
++            let min_cell = (largest / 48.0).clamp(1e-3, 10.0);
++            let octree = fielddraft_kernel::brep::octree::Octree::build(&bounded, min_cell);
++            let fbrep = fielddraft_kernel::brep::weaving::weave(&bounded, &octree);
++            let blend_faces = fbrep
++                .faces
++                .iter()
++                .filter(|f| {
++                    matches!(
++                        &f.surface,
++                        SurfaceGeometry::Analytic { surface: HalfSpace::Blend { .. }, .. }
++                    )
++                })
++                .count();
++            let mut fkinds = BTreeMap::<&'static str, usize>::new();
++            for f in &fbrep.faces {
++                *fkinds
++                    .entry(fielddraft_kernel::brep::face_export::surface_kind(&f.surface))
++                    .or_insert(0) += 1;
++            }
++            let tess_res = tessellate_brep(&fbrep, &Transform::IDENTITY, 0.05);
++            facts.insert(
++                format!("{}__direct_filleted_weave", scene.name),
++                json!({
++                    "faces": fbrep.face_count(),
++                    "blend_faces": blend_faces,
++                    "face_kinds": fkinds.iter().map(|(k, v)| (k.to_string(), *v)).collect::<BTreeMap<_, _>>(),
++                    "tessellate_result": match &tess_res {
++                        Ok(m) => json!({ "ok": true, "tris": m.indices.len() / 3 }),
++                        Err(e) => json!({ "ok": false, "error": e }),
++                    },
++                }),
++            );
++            eprintln!(
++                "  direct filleted weave: {} faces, {} blend faces; tessellate: {:?}",
++                fbrep.face_count(),
++                blend_faces,
++                tess_res.as_ref().map(|m| m.indices.len() / 3).map_err(|e| e.clone())
++            );
++
++            // ── Fillet-Band: Kapsel um die maskierte Kante, r ≤ 2.5·r_f ──
++            let fillet = &scene.fillets[0];
++            let poly: Vec<V3> = fillet
++                .mask_polyline
++                .iter()
++                .map(|p| [p[0] as f64, p[1] as f64, p[2] as f64])
++                .collect();
++            let r_f = fillet.blend_radius as f64;
++            let mut rng = SplitMix64::new(45);
++            let mut band_pts: Vec<V3> = Vec::with_capacity(2500);
++            while band_pts.len() < 2500 {
++                let si = (rng.next_u64() as usize) % (poly.len() - 1);
++                let t = rng.next_f64();
++                let base = add(poly[si], scale(sub(poly[si + 1], poly[si]), t));
++                let u = rng.unit_dir();
++                let p = add(base, scale(u, rng.next_f64() * 2.5 * r_f));
++                band_pts.push(p);
++            }
++            let band_true: Vec<f64> = {
++                use rayon::prelude::*;
++                band_pts.par_iter().map(|&p| gt.distance(p)).collect()
++            };
++
++            let dc_bvhs: Vec<(String, &TriMesh, Bvh)> = dc_meshes
++                .iter()
++                .map(|(n, tm)| (n.clone(), tm, Bvh::build(tm)))
++                .collect();
++            let mut band_variants: Vec<(String, Box<dyn Field + '_>)> = vec![
++                ("field_visual".into(), Box::new(CsgField::visual(&node))),
++                ("tape".into(), Box::new(TapeField { compiled: &compiled })),
++            ];
++            if let Some((tm, bvh)) = &proxy_for_blend {
++                band_variants.push((
++                    "proxy_tess_sharp_tol0.05".into(),
++                    Box::new(ProxyField { mesh: tm, bvh, sign_field: &field }),
++                ));
++            }
++            for (n, tm, bvh) in &dc_bvhs {
++                band_variants.push((
++                    n.clone(),
++                    Box::new(ProxyField { mesh: tm, bvh, sign_field: &field }),
++                ));
++            }
++            for (vname, f) in &band_variants {
++                let errs: Vec<f64> = band_pts
++                    .iter()
++                    .zip(band_true.iter())
++                    .map(|(&p, &d)| f.eval(p) - d)
++                    .filter(|e| e.is_finite())
++                    .collect();
++                let s = Stats::from_signed(errs);
++                // Gradientennorm im Band.
++                let h = model_size * 1e-3;
++                let gnorms: Vec<f64> = band_pts
++                    .iter()
++                    .map(|&p| central_grad_norm(f.as_ref(), p, h))
++                    .filter(|g| g.is_finite())
++                    .collect();
++                let gdev = Stats::from_signed(gnorms.iter().map(|g| g - 1.0).collect());
++                band_rows.push(format!(
++                    "{},{vname},{},{:.6},{:.6},{:.6},{:.6},{:.4},{:.4}",
++                    scene.name, s.count, s.mean, s.p95, s.max, s.mean_signed, gdev.p95, gdev.max
++                ));
++                eprintln!(
++                    "  band {vname}: mean {:.4} p95 {:.4} max {:.4} bias {:+.4}",
++                    s.mean, s.p95, s.max, s.mean_signed
++                );
++            }
++        }
++
++        // ── Hybrid-Blend-Regel (Iteration-1-Regel: Band ≥ 4× Diskrepanz) ─
++        // Diskrepanz Δ = max |f − d_wahr| über die Nahfeld-Punkte.
++        // Gemessen für JEDEN verfügbaren Proxy — auch den (in der
++        // Fillet-Zone falschen) scharfen Tess-Proxy, um die Konsequenz
++        // eines geometrisch falschen Nahfelds im Blend zu beziffern.
++        let mut blend_proxies: Vec<(String, &TriMesh)> = Vec::new();
++        if let Some((tm, _)) = &proxy_for_blend {
++            blend_proxies.push(("proxy_tess_tol0.05".into(), tm));
++        }
++        if let Some((n, tm)) = dc_meshes.iter().last() {
++            blend_proxies.push((n.clone(), tm));
++        }
++        for (pname, tm) in &blend_proxies {
++            let tm: &TriMesh = tm;
++            let bvh = Bvh::build(tm);
++            let delta = pts
++                .iter()
++                .zip(dtrue.iter())
++                .filter(|(_, &d)| d.abs() < NEAR_BAND_REL * model_size)
++                .map(|(&p, &d)| (field.eval(p) - d).abs())
++                .fold(0.0f64, f64::max);
++            let tau_in = 1.0f64;
++            for mult in [1.0f64, 2.0, 4.0, 8.0] {
++                let width = (mult * delta).max(1e-6);
++                let h_field = FnField(|p: [f64; 3]| {
++                    let f = field.eval(p);
++                    let s = if f < 0.0 { -1.0 } else { 1.0 };
++                    let d_near = s * bvh.dist(tm, p);
++                    let w = smoothstep(tau_in, tau_in + width, f.abs());
++                    d_near * (1.0 - w) + f * w
++                });
++                // Überschätzung getrennt außen/innen: außen ist sie die
++                // Marsch-Sicherheits-Frage (Overstep), innen bedeutet
++                // positiver Fehler "Feld meldet zu wenig Tiefe" (Shell/
++                // Wandstärke) — dort erbt h jenseits des Bands schlicht
++                // den Feld-Fehler.
++                let mut max_over_out = f64::NEG_INFINITY;
++                let mut max_over_in = f64::NEG_INFINITY;
++                for (i, &p) in pts.iter().enumerate() {
++                    let e = h_field.eval(p) - dtrue[i];
++                    if !e.is_finite() {
++                        continue;
++                    }
++                    if dtrue[i] > 0.0 {
++                        max_over_out = max_over_out.max(e);
++                    } else {
++                        max_over_in = max_over_in.max(e);
++                    }
++                }
++                let hstep = model_size * 1e-3;
++                let max_grad = pts
++                    .iter()
++                    .map(|&p| central_grad_norm(&h_field, p, hstep))
++                    .filter(|g| g.is_finite())
++                    .fold(0.0f64, f64::max);
++                blend_rows.push(format!(
++                    "{},{pname},{:.4},{mult},{:.4},{:.6},{:.6},{:.4}",
++                    scene.name, delta, width, max_over_out, max_over_in, max_grad
++                ));
++                eprintln!(
++                    "  blend mult={mult}: Δ={delta:.4} width={width:.4} over_out={max_over_out:.6} over_in={max_over_in:.6} max_grad={max_grad:.4}"
++                );
++            }
++        }
++    }
++
++    // ── Dateien schreiben ────────────────────────────────────────────────
++    let stats_hdr = |p: &str| {
++        format!("{p}_count,{p}_mean,{p}_p95,{p}_max,{p}_bias")
++    };
++    let header = format!(
++        "scene,variant,tol,{},{},{},{},{},{},{},grad_dev_mean,grad_dev_p95,grad_dev_max,seam_jump_p95,ns_per_eval",
++        stats_hdr("near_out"), stats_hdr("near_in"), stats_hdr("mid_out"),
++        stats_hdr("mid_in"), stats_hdr("far_out"), stats_hdr("far_in"), stats_hdr("overall"),
++    );
++    write_csv(&out.join("summary.csv"), &header, &summary_rows);
++    write_csv(
++        &out.join("fillet_band.csv"),
++        "scene,variant,count,mean,p95,max,bias,grad_dev_p95,grad_dev_max",
++        &band_rows,
++    );
++    write_csv(
++        &out.join("blend_rule.csv"),
++        "scene,proxy,delta_mm,band_mult,band_mm,max_overshoot_out_mm,max_overshoot_in_mm,max_grad_norm",
++        &blend_rows,
++    );
++    std::fs::write(
++        out.join("weave_facts.json"),
++        serde_json::to_string_pretty(&facts).unwrap(),
++    )
++    .unwrap();
++    eprintln!("done → {}", out.display());
++}
++
++fn write_csv(path: &Path, header: &str, rows: &[String]) {
++    let mut f = std::fs::File::create(path).unwrap();
++    writeln!(f, "{header}").unwrap();
++    for r in rows {
++        writeln!(f, "{r}").unwrap();
++    }
++}

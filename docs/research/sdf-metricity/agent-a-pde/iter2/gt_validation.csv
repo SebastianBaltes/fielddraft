@@ -1,0 +1,3 @@
+scene,n_points,max_abs_diff_mm,mean_abs_diff_mm
+plate_bore,400,1.893612e-3,3.864837e-5
+plate_boss,400,1.425943e-1,6.665236e-4

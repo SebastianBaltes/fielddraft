@@ -1,9 +1,11 @@
-# Synthese Iteration 1 — SDF-Distanzerhaltung unter Modellieroperationen
+# Synthese — SDF-Distanzerhaltung unter Modellieroperationen
 
-Stand 2026-07-18, nach Abschluss von fünf unabhängigen, gegenseitig nicht
-verankerten Agenten (Harness + vier Forschungsrichtungen). Primärquellen sind
-die `LOG.md` der Agenten-Verzeichnisse und die Baseline unter
-`results/baseline/`; dieses Dokument bewertet und ordnet.
+Stand 2026-07-18. Abschnitte 1–5: Iteration 1 (fünf unabhängige, gegenseitig
+nicht verankerte Agenten: Harness + vier Forschungsrichtungen). Abschnitte 6–8:
+Iteration 2 (vier Experimente am echten Kernel, in isolierten Worktrees) und
+die daraus folgende Integrationsempfehlung. Primärquellen sind die `LOG.md` /
+`LOG-iter2.md` der Agenten-Verzeichnisse und `results/baseline/`; dieses
+Dokument bewertet und ordnet.
 
 ## 1. Das Problem ist präziser als „Booleans zerstören die Distanz"
 
@@ -216,7 +218,128 @@ Alle auf `crates/metricity-lab` (Ground Truth validiert ≤ 2.4e-4 rel.):
    Regression); Zweikanal-AD in `eval_opcodes` als CPU-Referenz,
    validiert an Offset/Shell-Isoflächen-Genauigkeit (2D-Prognose −15 % → −2 %).
 
-## 5. Bezug zu #384 (Opus-Hypothesen) und #386
+## 5. Iteration 2 — Ergebnisse (echter Kernel, echte Tapes)
+
+Alle vier Experimente aus §4 wurden durchgeführt (Artefakte: `agent-*/iter2/`,
+je LOG-iter2.md + Patch + CSVs; Patches NICHT gemergt, liegen als `*.patch`).
+
+### Exp 1 — Circular-CD-Tausch: Rollout-Gate BESTANDEN, unter Auflagen
+
+Patch in allen vier CPU-Spiegeln (`csg.rs::smin_poly`,
+`sdf_compiler.rs::blend_min_eval`, `sdf_dual.rs`, `fidget_bridge.rs`).
+Gemessen: Zero-Set-Parität ≤ 2.6e-5 mm (smin-freie Szenen bit-identisch);
+‖∇f‖ 1.22 → 1.0001; Überschätzung → 0; Trace mit vollen Schritten ohne ÷√2
+tunnelfrei und 1.5× schneller als heute (2.0× vs ÷√2+relax). **Das Alt-Feld
+tunnelt real** (chain_02 1.77 %, chain_16 2.93 % bei vollen Schritten).
+Mesher-Gate: alle 220 fillet/mesh/weave/lichen/golden-Tests grün — die
+Bisektrix-Unterschätzung schlägt NICHT auf Mesh-Sizing durch. Einziger
+Testbruch kodierte die Alt-Innen-Inflation als Soll (Fix im Patch).
+Auflagen: WGSL/TSL-Mirror im selben Commit; MaskedBlend-Visual-Pfad hat mit
+CD einen harten Wertesprung (1−1/√2)·r an der Masken-Tube-Grenze (Nullmenge
+unberührt — Crossfade spiegeln oder dokumentieren); Chamfer behält Dämpfung
+bis zum CD-Gegenstück; CPU-Kosten +18–31 % auf smin-lastigen Szenen.
+Neu: CD-Unterschätzung ist nichtlokal (chain_16-Fernfeld bis 0.45·r
+konservativ zu kurz, wo alt exakt war — für |f|-Abfragen relevant).
+
+### Exp 2 — Weave-Proxy: Fillet-Risiko BESTÄTIGT, Ausweg gefunden
+
+Die Fillet-Zonen-Frage ist mit NEIN beantwortet, dreifach belegt: der
+Produktions-Weave wendet Edge-Fillets gar nicht an (11/11 planare Faces am
+gefilleteten Body); der Direkt-Weave webt zwar 1 Blend-Face, aber
+`tessellate_brep` verweigert („procedural blend carrier", dazu
+Runout-Loop-Fehler); der scharfe Proxy liegt im Fillet-Band exakt um
+r·(√2−1) daneben, tol-unabhängig. Zusätzlich: `tessellate_brep` scheitert
+auch fillet-frei an durchstoßenden Unions; Genauigkeits-Boden 0.123 mm aus
+der Naht-Polyline. **Ausweg gemessen:** das DC/MDC-Mesh des gefilleteten
+Felds als Proxy — Fillet-Band mean ~0.001 mm, 3 Größenordnungen besser als
+Feld/Tape. Auf tesselierbaren Weaves gilt Nahfeld-Fehler ≡ tol (bis
+0.0076 mm); Phantom-/Innen-Fehler 2–3.5 mm → 0.01–0.04 mm. Korrektur an
+Iteration 1: „Hybrid-Blend überschätzt nie" bricht bei Fillets (hartes Feld
+dort lokal Überschätzer); ∇-Spikes stammen primär aus
+Vorzeichen-Inkonsistenz, nicht Bandbreite.
+
+### Exp 3 — Offset/Shell-Showdown: Ball-Extremum gewinnt, Klassifikation gratis
+
+`plate_bore` (Differenz) mit analytischer f64-Ground-Truth: roh `f−δ` ist
+topologisch falsch — Fan-Fehler (√2−1)·δ bestätigt, und ab δ > Überstand des
+Subtrahenden wird die Bohrung zugedeckelt (Phantom-Material, unbeschränkt).
+**Ball-Extremum-Dilation:** mean < 1 % von δ ab ~45 Evals/Query, einseitig
+konservativ, funktioniert unverändert auf MaskedBlend-Pseudo-SDFs;
+Negativbefund: max-Fehler plateaut 1.8–3 % (Torus-Zonen). **2×2-Pushdown
+gemessen:** Union-outward + Differenz-inward roh exakt (2e-6), duale Fälle
+kaputt (Union-innen bis 9.4 mm) — zur Compile-Zeit entscheidbar. **FSM in 3D
+bestätigt seitenschädlich** (exakte Seiten 0 → 0.1–0.23 mm) und für
+Offset-Isoflächen überall schlechter als Ball; Nische Wandstärke-Heatmaps
+(Break-even ~1200 Punkte). Wandstärke-Einzelpunkte: Hopf–Lax 64 dirs
+(71 % Unterschätzung → 0.03–0.1 mm, ~51 µs, 64 dirs dominiert 32 in
+Genauigkeit UND Kosten; Achtung positiver Sampling-Bias). Nebenbefund:
+Harness-Kompass-GT überschätzt an konkaven Junction-Kreisen bis 0.14 mm.
+
+### Exp 4 — Relax-Sicherheit + AD: Status quo undicht, beide Verdicts positiv
+
+**Der heutige Kernel dämpft SmoothUnion gar nicht** — realistische
+smin-Ketten tunneln heute 0.6–1.8 % der Rays bis 0.57 mm. Flaches 0.75:
+m=4-Stack 24.3 % Penetration (max 1.77 mm), m=8 42–46 %; tiefenbewusstes
+1/√(1+m): 0 %. MaskedBlend ist dank ÷√2 stapelfest (Neutralität bestätigt).
+Negativbefund: Pfadzählung überkonservativ auf getrennten Ketten (chain_16:
+3.5× Schritte) — braucht Blendzonen-Ko-Lokalisierung, falls ohne CD-Tausch
+produktiv. **Zweikanal-AD** (`sdf_tape_ad.rs`-Prototyp): Wertparität 1.9e-6,
+Kosten 1.0–2.2× eines Evals (FD: 7–8×); FD-Tie-Artefakt in 3D bis 1.93×
+(AD exakt 1.000); bandiertes Wurzel-Sampson: Offset-Iso −13.7 % → −0.6 %,
+Shell −12.7 % → −1.0 %, exakt blind für Fußpunktfehler (Taxonomie bestätigt).
+
+## 6. Finale Empfehlung: Kernel-Integrationspfad
+
+Reihenfolge nach Nutzen/Risiko; jede Stufe unabhängig shipbar und durch
+Messdaten gedeckt. Ausgangs-Patches liegen in `agent-*/iter2/*.patch`.
+
+**Stufe 1 — Circular-CD-smin (fix + perf zugleich).** Tausch in den vier
+CPU-Spiegeln + WGSL/TSL-Mirror (`sdfVmInterpreter.ts`) in EINEM Commit;
+MaskedBlend-Visual-Crossfade spiegeln (Wertesprung-Auflage); danach ÷√2-Fade
+und `MASKED_BLEND_MARCH_RELAX` entfernen. Behebt reale Tunnel im heutigen
+SmoothUnion-Pfad und macht Traces 1.5–2× schneller. Gate war grün (220
+Mesher-Tests), ein Alt-Semantik-Test wird mitgefixt. Chamfer: Dämpfung
+behalten, CD-Gegenstück als Folgearbeit.
+
+**Stufe 2 — Lipschitz-Netz zur Compile-Zeit.** `lipschitz_sq_bound` aus dem
+Exp-4-Patch als Sicherheitsnetz für Chamfer/Morph/Displace/Exoten (ersetzt
+flache Konstanten); für smin nach Stufe 1 neutral. Vor Aktivierung auf
+smin-Pfaden ohne Stufe 1: Blendzonen-Ko-Lokalisierung ergänzen.
+
+**Stufe 3 — Offset/Shell korrekt.** (a) Compile-Zeit-2×2-Klassifikation:
+exakte Fälle (Union-outward, Differenz-inward) wörtlich `f−δ`; (b) kaputte
+Fälle im Abfrage-/Mesher-Pfad via Ball-Extremum (~16 dirs × 4 Starts,
+~170 Evals/Query) — nie per Pixel; (c) `f−δ` auf Differenz-außen nirgends
+mehr anbieten (topologisch falsch). Wandstärke: Hopf–Lax-64 punktweise,
+seitenselektives FSM nur für Heatmaps.
+
+**Stufe 4 — Zweikanal-AD als Infrastruktur.** `sdf_tape_ad.rs` produktiv
+(CPU zuerst): exakte Gradienten für Mesher-Projektion, bandiertes Sampson
+(Offset-Politur), λ-Akkumulation, Hopf–Lax-Beschleunigung. FD-Gradienten in
+metrischen Pfaden abschaffen. WGSL-Version (4 Register/Slot) separat.
+
+**Stufe 5 — Nahfeld-Wahrheitsschicht (Forschung → Produkt).** Kurzfristig:
+DC/MDC-Mesh als Proxy, wo das Fillet-Gate zieht (O(0.2 mm)). Mittelfristig:
+Blend-Face-Tesselation in `tessellate_brep` (Spike, s. §7), dann Weave-Proxy
+mit Fehler ≡ tol als Quelle für Messen/Offset-Samples/Mesher-Seeds.
+
+Nicht tun (jetzt dreifach belegt): globale Skalierungen als Reparatur,
+`f−δ` auf Nicht-SDF-Seiten, nicht-seitenselektives Redistancing als
+Feld-Ersatz, FD-Gradienten für Metrik-Korrekturen.
+
+## 7. Offene Punkte für Iteration 3
+
+1. **Blend-Face-Tesselations-Spike** in `tessellate_brep` (inkl.
+   Runout-Loop-Topologie) — hebt den Weave-Proxy auf Fehler ≡ tol im
+   Fillet-Band (Erwartung r·(√2−1) → ≤ tol) und adressiert nebenbei die
+   durchstoßende-Union-Verweigerung.
+2. **MaskedBlend-Visual-Crossfade** unter CD (Wertesprung-Auflage aus Exp 1).
+3. **Chamfer-CD-Gegenstück** (Formel-Herleitung + gleiche Gates).
+4. **Blendzonen-Ko-Lokalisierung** für das Lipschitz-Netz (nur nötig, wenn
+   Stufe 2 vor/ohne Stufe 1 aktiviert wird).
+5. Harness-GT an konkaven Junction-Kreisen härten (0.14-mm-Befund aus Exp 3).
+
+## 8. Bezug zu #384 (Opus-Hypothesen) und #386 — Stand Iteration 1
 
 - Opus' Karte der verlierenden Ops: bestätigt und präzisiert (seitenselektiv).
 - Voxel-FSM on-demand: bestätigt machbar (0.4 s/64 MB), aber als

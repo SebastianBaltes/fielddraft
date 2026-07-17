@@ -1,0 +1,1095 @@
+diff --git a/crates/metricity-lab/src/bin/offset_stack.rs b/crates/metricity-lab/src/bin/offset_stack.rs
+new file mode 100644
+index 00000000..a6d17bee
+--- /dev/null
++++ b/crates/metricity-lab/src/bin/offset_stack.rs
+@@ -0,0 +1,1089 @@
++//! Iteration-2 / Experiment 3 (Agent A, #384): 3D-Offset/Shell-Showdown auf
++//! echten Kernel-Feldern.
++//!
++//! Szenen (produktionsnaher CAD-Fall, direkt gegen die Kernel-API):
++//!   * `plate_bore`   — Platte (Box 80×20×50) − Zylinder-Bohrung (r=8, durch),
++//!                      max-Wurzel → Outward-Offset strukturell kaputt (Fan).
++//!   * `plate_boss`   — Platte ∪ Zylinder-Boss (r=12), min-Wurzel →
++//!                      Outward-Offset beweisbar exakt, INNEN kaputt (Phantom).
++//!   * `plate_bore_fillet` — wie plate_bore, Bohrungsmund per MaskedBlend
++//!                      gefillet (r_blend=3, Maske r=6) — smin-Zone im Weg.
++//!
++//! Verglichene Offset-Ansätze für Outward-δ ∈ {0.5, 2, 5} mm (Isofläche
++//! {g = 0} gegen die WAHRE Offsetfläche = {d_wahr = δ}):
++//!   a. roh          g = f − δ
++//!   b. ball         g = min_{‖y−x‖≤δ} f(y)  (Ball-Extremum-Dilation, A5;
++//!                   Kugel-Richtungs-Samples + Kompass-Verfeinerung)
++//!   c. pushdown     Klassifikation: Dilation kommutiert mit min (Union),
++//!                   NICHT mit max (Differenz) — gemessen als roh-Fehler auf
++//!                   Union- vs Differenz-Szene, outward vs inward (2×2).
++//!   d. fsm          ~200³-Fast-Sweeping-Redistanzierung des echten Feldes,
++//!                   trilineare Abfrage, g = d_fsm − δ.
++//! Zusätzlich Shell-Fall: Innentiefen roh vs punktweises Hopf–Lax
++//! (Ball-Maximum-Iteration) an dünner Wand (bore) und unter der Boss-Naht.
++//!
++//! Ground Truth: für plate_bore/plate_boss ANALYTISCH (exakte Distanz zur
++//! realen Oberfläche, f64), validiert gegen die Harness-GroundTruth; für die
++//! Fillet-Variante die Harness-GroundTruth (Doppel-GT-Muster aus HARNESS.md).
++//!
++//! Lauf:  cargo run -p metricity-lab --release --bin offset_stack -- <outdir>
++
++use std::fs;
++use std::path::PathBuf;
++use std::sync::atomic::{AtomicU64, Ordering};
++use std::time::Instant;
++
++use fielddraft_kernel::bvh::BoundedCsg;
++use fielddraft_kernel::csg::{BlendMode, BlendProvenance, CsgNode};
++use fielddraft_kernel::sdf_compiler::compile_body;
++use fielddraft_protocol::{FeatureId, Primitive};
++use metricity_lab::field::TapeField;
++use metricity_lab::util::{add, normalize, ortho_basis, scale, sub, SplitMix64};
++use metricity_lab::{CsgField, Field, GroundTruth, GtOptions};
++use rayon::prelude::*;
++
++// ── Szenen-Geometrie (mm) ──────────────────────────────────────────
++
++const HX: f64 = 40.0;
++const HY: f64 = 10.0;
++const HZ: f64 = 25.0;
++const BORE_CX: f64 = 28.0;
++const BORE_R: f64 = 8.0;
++const BOSS_R: f64 = 12.0;
++const BOSS_TOP: f64 = 41.0;
++const BOSS_BOT: f64 = 9.0; // Zylinder-Unterkante (verdeckt, 1 mm in der Platte)
++
++fn leaf(i: u32, primitive: Primitive) -> CsgNode {
++    CsgNode::Leaf { id: FeatureId::from_u32(i), primitive }
++}
++
++fn plate() -> CsgNode {
++    leaf(1, Primitive::Box { center: [0.0; 3], half_extents: [HX as f32, HY as f32, HZ as f32] })
++}
++
++fn bore_cyl() -> CsgNode {
++    leaf(
++        2,
++        Primitive::Cylinder {
++            center: [BORE_CX as f32, 0.0, 0.0],
++            radius: BORE_R as f32,
++            half_height: 14.0,
++        },
++    )
++}
++
++fn plate_bore() -> CsgNode {
++    CsgNode::Difference(Box::new(plate()), Box::new(bore_cyl()))
++}
++
++fn plate_boss() -> CsgNode {
++    let boss = leaf(
++        2,
++        Primitive::Cylinder {
++            center: [0.0, 25.0, 0.0],
++            radius: BOSS_R as f32,
++            half_height: 16.0,
++        },
++    );
++    CsgNode::Union(Box::new(plate()), Box::new(boss))
++}
++
++fn plate_bore_fillet() -> CsgNode {
++    let ring: Vec<[f32; 3]> = (0..=16)
++        .map(|i| {
++            let a = i as f32 / 16.0 * std::f32::consts::TAU;
++            [BORE_CX as f32 + BORE_R as f32 * a.cos(), HY as f32, BORE_R as f32 * a.sin()]
++        })
++        .collect();
++    CsgNode::MaskedBlend {
++        a: Box::new(plate()),
++        b: Box::new(bore_cyl()),
++        mask_polyline: ring,
++        mask_radius: 6.0,
++        blend_radius: 3.0,
++        blend_mode: BlendMode::Fillet,
++        is_difference: true,
++        provenance: BlendProvenance::NONE,
++    }
++}
++
++// ── Analytische Ground Truth (exakte Distanz zur realen Oberfläche) ─
++
++fn hyp(a: f64, b: f64) -> f64 {
++    (a * a + b * b).sqrt()
++}
++
++fn dist3(a: [f64; 3], b: [f64; 3]) -> f64 {
++    let d = sub(a, b);
++    (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt()
++}
++
++/// Distanz zum achsparallelen Rechteck `fixed_axis = c`, übrige Achsen in
++/// `[-h1, h1] × [-h2, h2]`.
++fn rect_dist(p: [f64; 3], fixed_axis: usize, c: f64, h1: f64, h2: f64) -> f64 {
++    let (a1, a2) = ((fixed_axis + 1) % 3, (fixed_axis + 2) % 3);
++    let mut q = [0.0; 3];
++    q[fixed_axis] = c;
++    q[a1] = p[a1].clamp(-h1, h1);
++    q[a2] = p[a2].clamp(-h2, h2);
++    dist3(p, q)
++}
++
++/// Platte − Bohrung: Oberfläche = Boxrand ∖ (2 offene Mund-Scheiben)
++/// ∪ Bohrungswand {ρ=R, |y|≤HY}. Scheiben liegen strikt im Deckel/Boden
++/// (Randabstand ≥ 4 mm), Clamp-Punkte der Boxflächen landen nie in der
++/// Scheibe.
++fn d_true_bore(p: [f64; 3]) -> f64 {
++    let rho = hyp(p[0] - BORE_CX, p[2]);
++    let mut best = f64::INFINITY;
++    // 4 Seitenflächen (x = ±HX über y,z; z = ±HZ über x,y).
++    for s in [-1.0, 1.0] {
++        best = best.min(rect_dist(p, 0, s * HX, HY, HZ)); // y=a1, z=a2
++        best = best.min(rect_dist(p, 2, s * HZ, HX, HY)); // x=a1, y=a2
++    }
++    // Deckel/Boden y=±HY mit Loch ρ<R.
++    for s in [-1.0, 1.0] {
++        let py = s * HY;
++        let qx = p[0].clamp(-HX, HX);
++        let qz = p[2].clamp(-HZ, HZ);
++        if hyp(qx - BORE_CX, qz) >= BORE_R {
++            best = best.min(dist3(p, [qx, py, qz]));
++        } else {
++            // nächster Punkt der Fläche∖Scheibe liegt auf dem Mundkreis
++            best = best.min(hyp(rho - BORE_R, p[1] - py));
++        }
++    }
++    // Bohrungswand.
++    let dy = (p[1].abs() - HY).max(0.0);
++    best = best.min(hyp(rho - BORE_R, dy));
++    let inside =
++        p[0].abs() < HX && p[1].abs() < HY && p[2].abs() < HZ && rho > BORE_R;
++    if inside { -best } else { best }
++}
++
++/// Platte ∪ Boss: Oberfläche = Boxrand ∖ (offene Fußabdruck-Scheibe im
++/// Deckel) ∪ Boss-Mantel {ρ=R, HY≤y≤TOP} ∪ Boss-Deckscheibe.
++fn d_true_boss(p: [f64; 3]) -> f64 {
++    let rho = hyp(p[0], p[2]);
++    let mut best = f64::INFINITY;
++    for s in [-1.0, 1.0] {
++        best = best.min(rect_dist(p, 0, s * HX, HY, HZ));
++        best = best.min(rect_dist(p, 2, s * HZ, HX, HY));
++    }
++    // Boden voll.
++    best = best.min(rect_dist(p, 1, -HY, HZ, HX)); // fixed=y → a1=z, a2=x
++    // Deckel mit Loch ρ<BOSS_R.
++    {
++        let qz = p[2].clamp(-HZ, HZ);
++        let qx = p[0].clamp(-HX, HX);
++        if hyp(qx, qz) >= BOSS_R {
++            best = best.min(dist3(p, [qx, HY, qz]));
++        } else {
++            best = best.min(hyp(rho - BOSS_R, p[1] - HY));
++        }
++    }
++    // Boss-Mantel (sichtbarer Teil y ∈ [HY, TOP]).
++    let yc = p[1].clamp(HY, BOSS_TOP);
++    best = best.min(hyp(rho - BOSS_R, p[1] - yc));
++    // Boss-Deckscheibe.
++    if rho <= BOSS_R {
++        best = best.min((p[1] - BOSS_TOP).abs());
++    } else {
++        best = best.min(hyp(rho - BOSS_R, p[1] - BOSS_TOP));
++    }
++    let inside_box = p[0].abs() < HX && p[1].abs() < HY && p[2].abs() < HZ;
++    let inside_boss = rho < BOSS_R && p[1] > BOSS_BOT && p[1] < BOSS_TOP;
++    if inside_box || inside_boss { -best } else { best }
++}
++
++// ── Feld-Wrapper ───────────────────────────────────────────────────
++
++/// Zählt Basisfeld-Evals (Pflicht-Metrik 4).
++struct Counting<'a> {
++    inner: &'a dyn Field,
++    n: AtomicU64,
++}
++
++impl<'a> Counting<'a> {
++    fn new(inner: &'a dyn Field) -> Self {
++        Self { inner, n: AtomicU64::new(0) }
++    }
++    fn count(&self) -> u64 {
++        self.n.load(Ordering::Relaxed)
++    }
++    fn reset(&self) {
++        self.n.store(0, Ordering::Relaxed);
++    }
++}
++
++impl Field for Counting<'_> {
++    fn eval(&self, p: [f64; 3]) -> f64 {
++        self.n.fetch_add(1, Ordering::Relaxed);
++        self.inner.eval(p)
++    }
++}
++
++/// Fibonacci-Kugel-Richtungen (deterministisch, gleichverteilt).
++fn fib_dirs(n: usize) -> Vec<[f64; 3]> {
++    let ga = std::f64::consts::PI * (3.0 - 5.0f64.sqrt());
++    (0..n)
++        .map(|i| {
++            let y = 1.0 - 2.0 * (i as f64 + 0.5) / n as f64;
++            let r = (1.0 - y * y).max(0.0).sqrt();
++            let a = ga * i as f64;
++            [r * a.cos(), y, r * a.sin()]
++        })
++        .collect()
++}
++
++/// Extremum von f über der abgeschlossenen Kugel B(x, rad):
++/// Zentrum + Kugel-Richtungs-Samples, dann Kompass-Verfeinerung der
++/// `starts` besten Richtungen auf der Richtungskugel (das Extremum liegt
++/// am Zero-Übergang auf dem Rand; Multi-Start gegen multimodale
++/// Richtungs-Landschaften an Kanten/Tori).
++fn ball_extremum(
++    f: &dyn Field,
++    x: [f64; 3],
++    rad: f64,
++    dirs: &[[f64; 3]],
++    starts: usize,
++    maximize: bool,
++) -> f64 {
++    let sgn = if maximize { -1.0 } else { 1.0 };
++    let ev = |u: [f64; 3]| sgn * f.eval(add(x, scale(u, rad)));
++    let mut best = sgn * f.eval(x);
++    let mut vals: Vec<(f64, usize)> = Vec::with_capacity(dirs.len());
++    for (i, &u) in dirs.iter().enumerate() {
++        let v = ev(u);
++        vals.push((v, i));
++        if v < best {
++            best = v;
++        }
++    }
++    if starts > 0 {
++        vals.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
++        for &(_, i0) in vals.iter().take(starts) {
++            let mut u = dirs[i0];
++            let mut local = ev(u); // (Re-Eval vermeiden wäre möglich; vernachlässigbar)
++            let mut alpha = 0.5f64;
++            let mut rounds = 0;
++            while alpha > 0.02 && rounds < 60 {
++                rounds += 1;
++                let (e1, e2) = ortho_basis(u);
++                let mut improved = false;
++                for d in [e1, scale(e1, -1.0), e2, scale(e2, -1.0)] {
++                    if let Some(c) = normalize(add(scale(u, alpha.cos()), scale(d, alpha.sin()))) {
++                        let v = ev(c);
++                        if v < local - 1e-12 {
++                            local = v;
++                            u = c;
++                            improved = true;
++                        }
++                    }
++                }
++                if !improved {
++                    alpha *= 0.5;
++                }
++            }
++            best = best.min(local);
++        }
++    }
++    sgn * best
++}
++
++/// Ansatz (b): Ball-Extremum-Dilation/Erosion als Feld.
++struct BallField<'a> {
++    f: &'a dyn Field,
++    delta: f64,
++    dirs: Vec<[f64; 3]>,
++    starts: usize,
++    /// true = Dilation (min über Ball), false = Erosion (max über Ball).
++    dilate: bool,
++}
++
++impl Field for BallField<'_> {
++    fn eval(&self, p: [f64; 3]) -> f64 {
++        ball_extremum(self.f, p, self.delta, &self.dirs, self.starts, !self.dilate)
++    }
++}
++
++/// Punktweises Hopf–Lax für die INNENTIEFE (Shell-Fall): kleinstes t mit
++/// max_{‖y−x‖≤t} f(y) = 0. Sicher, weil |f| die Tiefe konservativ
++/// unterschätzt (Union-innen) — Iteration t ← t − max_ball(f).
++fn hopf_lax_depth(f: &dyn Field, x: [f64; 3], dirs: &[[f64; 3]], tol: f64, tmax: f64) -> f64 {
++    let f0 = f.eval(x);
++    if f0 >= 0.0 {
++        return 0.0;
++    }
++    let mut t = -f0;
++    for _ in 0..50 {
++        let m = -ball_extremum(f, x, t, dirs, 2, true);
++        if m.abs() <= tol {
++            return t;
++        }
++        t += m; // m>0: wachsen; m<0: Überschuss zurücknehmen
++        if t <= 0.0 {
++            return 0.0;
++        }
++        if t > tmax {
++            return t;
++        }
++    }
++    t
++}
++
++// ── Fast Sweeping (Ansatz d) ───────────────────────────────────────
++
++struct Fsm {
++    n: [usize; 3],
++    lo: [f64; 3],
++    h: f64,
++    /// signierte redistanzierte Werte, Layout ((k·ny + j)·nx + i)
++    d: Vec<f32>,
++}
++
++struct FsmTimings {
++    cells: usize,
++    t_sample: f64,
++    t_band: f64,
++    t_sweep: f64,
++    sweep_sets: usize,
++    mem_mb: f64,
++}
++
++fn godunov3(a: f32, b: f32, c: f32, h: f32) -> f32 {
++    let (mut a1, mut a2, mut a3) = (a, b, c);
++    if a1 > a2 {
++        std::mem::swap(&mut a1, &mut a2);
++    }
++    if a2 > a3 {
++        std::mem::swap(&mut a2, &mut a3);
++    }
++    if a1 > a2 {
++        std::mem::swap(&mut a1, &mut a2);
++    }
++    let mut t = a1 + h;
++    if t > a2 {
++        t = 0.5 * (a1 + a2 + (2.0 * h * h - (a1 - a2) * (a1 - a2)).max(0.0).sqrt());
++        if t > a3 {
++            let s = a1 + a2 + a3;
++            let q = a1 * a1 + a2 * a2 + a3 * a3;
++            let disc = (s * s - 3.0 * (q - h * h)).max(0.0);
++            t = (s + disc.sqrt()) / 3.0;
++        }
++    }
++    t
++}
++
++fn fsm_build(f: &dyn Field, lo: [f64; 3], hi: [f64; 3], n_long: usize) -> (Fsm, FsmTimings) {
++    const BIG: f32 = 1e10;
++    let ext = sub(hi, lo);
++    let h = ext[0].max(ext[1]).max(ext[2]) / (n_long - 1) as f64;
++    let n = [
++        (ext[0] / h).round() as usize + 1,
++        (ext[1] / h).round() as usize + 1,
++        (ext[2] / h).round() as usize + 1,
++    ];
++    let (nx, ny, nz) = (n[0], n[1], n[2]);
++    let cells = nx * ny * nz;
++    let idx = |i: usize, j: usize, k: usize| (k * ny + j) * nx + i;
++
++    // (a) Feld-Sampling des echten Kernel-Felds (parallel über z-Slices).
++    let t0 = Instant::now();
++    let fval: Vec<f32> = (0..nz)
++        .into_par_iter()
++        .flat_map_iter(|k| {
++            let mut slice = Vec::with_capacity(nx * ny);
++            for j in 0..ny {
++                for i in 0..nx {
++                    let p = [
++                        lo[0] + i as f64 * h,
++                        lo[1] + j as f64 * h,
++                        lo[2] + k as f64 * h,
++                    ];
++                    slice.push(f.eval(p) as f32);
++                }
++            }
++            slice
++        })
++        .collect();
++    let t_sample = t0.elapsed().as_secs_f64();
++
++    // (b) Band-Init: Zellen mit Vorzeichenwechsel zu einem 6-Nachbarn
++    // werden auf |f| gepinnt (Subcell-artiger Zero-Set-Erhalt).
++    let t0 = Instant::now();
++    let mut u = vec![BIG; cells];
++    let mut band = vec![false; cells];
++    for k in 0..nz {
++        for j in 0..ny {
++            for i in 0..nx {
++                let v = fval[idx(i, j, k)];
++                let neg = v < 0.0;
++                let mut cut = false;
++                if i + 1 < nx && (fval[idx(i + 1, j, k)] < 0.0) != neg {
++                    cut = true;
++                }
++                if i > 0 && (fval[idx(i - 1, j, k)] < 0.0) != neg {
++                    cut = true;
++                }
++                if j + 1 < ny && (fval[idx(i, j + 1, k)] < 0.0) != neg {
++                    cut = true;
++                }
++                if j > 0 && (fval[idx(i, j - 1, k)] < 0.0) != neg {
++                    cut = true;
++                }
++                if k + 1 < nz && (fval[idx(i, j, k + 1)] < 0.0) != neg {
++                    cut = true;
++                }
++                if k > 0 && (fval[idx(i, j, k - 1)] < 0.0) != neg {
++                    cut = true;
++                }
++                if cut {
++                    band[idx(i, j, k)] = true;
++                    u[idx(i, j, k)] = v.abs();
++                }
++            }
++        }
++    }
++    let t_band = t0.elapsed().as_secs_f64();
++
++    // (c) Gauss-Seidel-Sweeps, 8 Orderings, bis Konvergenz.
++    let t0 = Instant::now();
++    let hf = h as f32;
++    let mut sweep_sets = 0usize;
++    loop {
++        sweep_sets += 1;
++        let mut maxch = 0f32;
++        for order in 0..8u8 {
++            let (si, sj, sk) = (order & 1 != 0, order & 2 != 0, order & 4 != 0);
++            for kk in 0..nz {
++                let k = if sk { nz - 1 - kk } else { kk };
++                for jj in 0..ny {
++                    let j = if sj { ny - 1 - jj } else { jj };
++                    for ii in 0..nx {
++                        let i = if si { nx - 1 - ii } else { ii };
++                        let id = idx(i, j, k);
++                        if band[id] {
++                            continue;
++                        }
++                        let ax = {
++                            let l = if i > 0 { u[idx(i - 1, j, k)] } else { BIG };
++                            let r = if i + 1 < nx { u[idx(i + 1, j, k)] } else { BIG };
++                            l.min(r)
++                        };
++                        let ay = {
++                            let l = if j > 0 { u[idx(i, j - 1, k)] } else { BIG };
++                            let r = if j + 1 < ny { u[idx(i, j + 1, k)] } else { BIG };
++                            l.min(r)
++                        };
++                        let az = {
++                            let l = if k > 0 { u[idx(i, j, k - 1)] } else { BIG };
++                            let r = if k + 1 < nz { u[idx(i, j, k + 1)] } else { BIG };
++                            l.min(r)
++                        };
++                        let t = godunov3(ax, ay, az, hf);
++                        if t < u[id] {
++                            maxch = maxch.max(u[id] - t);
++                            u[id] = t;
++                        }
++                    }
++                }
++            }
++        }
++        if maxch < 1e-4 || sweep_sets >= 4 {
++            break;
++        }
++    }
++    let t_sweep = t0.elapsed().as_secs_f64();
++
++    let d: Vec<f32> = fval
++        .iter()
++        .zip(u.iter())
++        .map(|(&f0, &uu)| if f0 < 0.0 { -uu } else { uu })
++        .collect();
++    let mem_mb = (cells * 4 * 2) as f64 / (1024.0 * 1024.0);
++    (
++        Fsm { n, lo, h, d },
++        FsmTimings { cells, t_sample, t_band, t_sweep, sweep_sets, mem_mb },
++    )
++}
++
++impl Field for Fsm {
++    /// Trilineare Abfrage (geclampt auf das Gitter).
++    fn eval(&self, p: [f64; 3]) -> f64 {
++        let (nx, ny) = (self.n[0], self.n[1]);
++        let idx = |i: usize, j: usize, k: usize| (k * ny + j) * nx + i;
++        let mut c = [0usize; 3];
++        let mut t = [0f64; 3];
++        for a in 0..3 {
++            let x = ((p[a] - self.lo[a]) / self.h).clamp(0.0, (self.n[a] - 1) as f64);
++            let i = (x.floor() as usize).min(self.n[a] - 2);
++            c[a] = i;
++            t[a] = x - i as f64;
++        }
++        let v = |di: usize, dj: usize, dk: usize| self.d[idx(c[0] + di, c[1] + dj, c[2] + dk)] as f64;
++        let lerp = |a: f64, b: f64, s: f64| a + (b - a) * s;
++        let c00 = lerp(v(0, 0, 0), v(1, 0, 0), t[0]);
++        let c10 = lerp(v(0, 1, 0), v(1, 1, 0), t[0]);
++        let c01 = lerp(v(0, 0, 1), v(1, 0, 1), t[0]);
++        let c11 = lerp(v(0, 1, 1), v(1, 1, 1), t[0]);
++        lerp(lerp(c00, c10, t[1]), lerp(c01, c11, t[1]), t[2])
++    }
++}
++
++// ── Isoflächen-Sampling & Statistik ────────────────────────────────
++
++/// Punkte auf {g = 0} via Achsen-Linien-March + Bisektion (GT-Stufe-1-
++/// Muster inkl. Sub-Step-Jitter gegen kommensurable Gitter).
++fn march_isosurface(g: &dyn Field, lo: [f64; 3], hi: [f64; 3], m: usize) -> Vec<[f64; 3]> {
++    let step = [
++        (hi[0] - lo[0]) / (m - 1) as f64,
++        (hi[1] - lo[1]) / (m - 1) as f64,
++        (hi[2] - lo[2]) / (m - 1) as f64,
++    ];
++    let tol = 1e-6;
++    let lines: Vec<(usize, usize, usize)> = (0..3)
++        .flat_map(|axis| (0..m).flat_map(move |i| (0..m).map(move |j| (axis, i, j))))
++        .collect();
++    lines
++        .par_iter()
++        .flat_map_iter(|&(axis, i, j)| {
++            let (a1, a2) = ((axis + 1) % 3, (axis + 2) % 3);
++            let mut base = [0.0f64; 3];
++            base[a1] = lo[a1] + i as f64 * step[a1];
++            base[a2] = lo[a2] + j as f64 * step[a2];
++            let jitter = {
++                let mut rng = SplitMix64::new(
++                    0x0FF5E7 ^ ((axis as u64) << 40 | (i as u64) << 20 | j as u64),
++                );
++                rng.next_f64()
++            };
++            let mut out = Vec::new();
++            let mut t_prev = lo[axis];
++            base[axis] = t_prev;
++            let mut f_prev = g.eval(base);
++            for k in 1..=m {
++                let t = (lo[axis] + (k as f64 - 1.0 + jitter) * step[axis]).min(hi[axis]);
++                base[axis] = t;
++                let f = g.eval(base);
++                if f_prev.is_finite() && f.is_finite() && (f_prev < 0.0) != (f < 0.0) {
++                    // Bisektion
++                    let (mut a, mut b) = (t_prev, t);
++                    let mut sa = f_prev < 0.0;
++                    for _ in 0..60 {
++                        if b - a <= tol {
++                            break;
++                        }
++                        let mid = 0.5 * (a + b);
++                        base[axis] = mid;
++                        let sm = g.eval(base) < 0.0;
++                        if sm == sa {
++                            a = mid;
++                            sa = sm;
++                        } else {
++                            b = mid;
++                        }
++                    }
++                    let mut p = base;
++                    p[axis] = 0.5 * (a + b);
++                    out.push(p);
++                    base[axis] = t;
++                }
++                t_prev = t;
++                f_prev = f;
++            }
++            out
++        })
++        .collect()
++}
++
++#[derive(Clone, Debug)]
++struct Stat {
++    n: usize,
++    mean_abs: f64,
++    p95: f64,
++    max_abs: f64,
++    bias: f64,
++}
++
++fn stat_of(mut errs: Vec<f64>) -> Stat {
++    if errs.is_empty() {
++        return Stat { n: 0, mean_abs: 0.0, p95: 0.0, max_abs: 0.0, bias: 0.0 };
++    }
++    let n = errs.len();
++    let bias = errs.iter().sum::<f64>() / n as f64;
++    for e in errs.iter_mut() {
++        *e = e.abs();
++    }
++    errs.sort_by(|a, b| a.partial_cmp(b).unwrap());
++    Stat {
++        n,
++        mean_abs: errs.iter().sum::<f64>() / n as f64,
++        p95: errs[((n as f64 * 0.95) as usize).min(n - 1)],
++        max_abs: *errs.last().unwrap(),
++        bias,
++    }
++}
++
++// ── CSV-Helfer ─────────────────────────────────────────────────────
++
++struct Csv {
++    path: PathBuf,
++    buf: String,
++}
++
++impl Csv {
++    fn new(dir: &PathBuf, name: &str, header: &str) -> Self {
++        Self { path: dir.join(name), buf: format!("{header}\n") }
++    }
++    fn row(&mut self, line: String) {
++        self.buf.push_str(&line);
++        self.buf.push('\n');
++    }
++    fn write(&self) {
++        fs::write(&self.path, &self.buf).expect("csv write");
++        eprintln!("wrote {}", self.path.display());
++    }
++}
++
++// ── Mess-Baustein: Isoflächen-Fehler + Kosten eines Ansatzes ───────
++
++#[allow(clippy::too_many_arguments)]
++fn measure(
++    csv: &mut Csv,
++    scene: &str,
++    approach: &str,
++    direction: &str,
++    delta: f64,
++    g: &dyn Field,
++    counter: &AtomicU64,
++    truth: &(dyn Fn([f64; 3]) -> f64 + Sync),
++    lo: [f64; 3],
++    hi: [f64; 3],
++    m: usize,
++) -> Stat {
++    let pts = march_isosurface(g, lo, hi, m);
++    // Fehler: |d_wahr(p)| − δ, signiert (+ = Fläche zu weit draußen).
++    let errs: Vec<f64> = pts.par_iter().map(|&p| truth(p).abs() - delta).collect();
++    let st = stat_of(errs);
++    // Kosten pro Abfrage: Basisfeld-Evals + Zeit an den Isoflächen-Punkten.
++    counter.store(0, Ordering::Relaxed);
++    let t0 = Instant::now();
++    let mut acc = 0.0;
++    let n_cost = pts.len().min(2000).max(1);
++    for &p in pts.iter().take(n_cost) {
++        acc += g.eval(p);
++    }
++    std::hint::black_box(acc);
++    let us = t0.elapsed().as_secs_f64() * 1e6 / n_cost as f64;
++    let epq = counter.load(Ordering::Relaxed) as f64 / n_cost as f64;
++    csv.row(format!(
++        "{scene},{approach},{direction},{delta},{},{:.6},{:.6},{:.6},{:.6},{:.1},{:.2}",
++        st.n, st.mean_abs, st.p95, st.max_abs, st.bias, epq, us
++    ));
++    eprintln!(
++        "  {scene}/{approach}/{direction} δ={delta}: n={} mean={:.4} p95={:.4} max={:.4} \
++         bias={:+.4} | {:.0} evals/q {:.1} µs/q",
++        st.n, st.mean_abs, st.p95, st.max_abs, st.bias, epq, us
++    );
++    st
++}
++
++// ── Hauptlauf ──────────────────────────────────────────────────────
++
++fn main() {
++    let out: PathBuf = std::env::args()
++        .nth(1)
++        .unwrap_or_else(|| "offset_stack_out".into())
++        .into();
++    fs::create_dir_all(&out).expect("outdir");
++
++    let node_bore = plate_bore();
++    let node_boss = plate_boss();
++    let node_fillet = plate_bore_fillet();
++    let f_bore = CsgField::visual(&node_bore);
++    let f_boss = CsgField::visual(&node_boss);
++    let f_fillet = CsgField::visual(&node_fillet);
++
++    // Tape-Parität (harte Booleans: Tape == Visual erwartet; Fillet
++    // divergiert wegen #382-Render-Fade — dokumentiert, nicht gemessen).
++    {
++        let compiled = compile_body(&BoundedCsg::from_csg(&node_bore));
++        let tape = TapeField { compiled: &compiled };
++        let mut rng = SplitMix64::new(99);
++        let mut dmax = 0.0f64;
++        for _ in 0..2000 {
++            let p = [rng.range(-48.0, 48.0), rng.range(-20.0, 20.0), rng.range(-33.0, 33.0)];
++            dmax = dmax.max((f_bore.eval(p) - tape.eval(p)).abs());
++        }
++        eprintln!("tape parity plate_bore: max|visual − tape| = {dmax:.3e} mm");
++    }
++
++    // ── Validierung analytische GT vs Harness-GT ───────────────────
++    {
++        let mut csv = Csv::new(
++            &out,
++            "gt_validation.csv",
++            "scene,n_points,max_abs_diff_mm,mean_abs_diff_mm",
++        );
++        for (name, node, truth) in [
++            ("plate_bore", &node_bore, d_true_bore as fn([f64; 3]) -> f64),
++            ("plate_boss", &node_boss, d_true_boss as fn([f64; 3]) -> f64),
++        ] {
++            let f = CsgField::visual(node);
++            let a = node.aabb();
++            let lo = [a.min[0] as f64, a.min[1] as f64, a.min[2] as f64];
++            let hi = [a.max[0] as f64, a.max[1] as f64, a.max[2] as f64];
++            let gt = GroundTruth::build(&f, lo, hi, &GtOptions::default());
++            let mut rng = SplitMix64::new(4242);
++            let pts: Vec<[f64; 3]> = (0..400)
++                .map(|_| {
++                    [
++                        rng.range(lo[0] - 6.0, hi[0] + 6.0),
++                        rng.range(lo[1] - 6.0, hi[1] + 6.0),
++                        rng.range(lo[2] - 6.0, hi[2] + 6.0),
++                    ]
++                })
++                .collect();
++            let diffs: Vec<f64> = pts
++                .par_iter()
++                .map(|&p| (gt.distance(p) - truth(p)).abs())
++                .collect();
++            let (imax, dmax) = diffs
++                .iter()
++                .enumerate()
++                .fold((0usize, 0.0f64), |a, (i, &d)| if d > a.1 { (i, d) } else { a });
++            let dmean = diffs.iter().sum::<f64>() / diffs.len() as f64;
++            let pw = pts[imax];
++            eprintln!(
++                "GT validation {name}: max {dmax:.3e} mean {dmean:.3e} mm | worst p=({:.2},{:.2},{:.2}) harness={:.4} analytic={:.4}",
++                pw[0], pw[1], pw[2], gt.distance(pw), truth(pw)
++            );
++            csv.row(format!("{name},{},{dmax:.6e},{dmean:.6e}", diffs.len()));
++        }
++        csv.write();
++    }
++
++    let deltas = [0.5, 2.0, 5.0];
++    let march_m = 40usize;
++
++    let mut iso_csv = Csv::new(
++        &out,
++        "offset_iso.csv",
++        "scene,approach,direction,delta_mm,n_pts,mean_abs_mm,p95_mm,max_abs_mm,bias_mm,\
++         evals_per_query,us_per_query",
++    );
++
++    // ── plate_bore: der Showdown (a, b, d) ─────────────────────────
++    let bore_lo = [-HX, -HY, -HZ];
++    let bore_hi = [HX, HY, HZ];
++    let cnt_bore = Counting::new(&f_bore);
++
++    // FSM einmal bauen (Domain: AABB + 8 mm, damit δ=5-Isofläche drin liegt).
++    let pad = 8.0;
++    let flo = [bore_lo[0] - pad, -14.0 - pad, bore_lo[2] - pad];
++    let fhi = [bore_hi[0] + pad, 14.0 + pad, bore_hi[2] + pad];
++    eprintln!("building FSM grid on plate_bore …");
++    cnt_bore.reset();
++    let (fsm, ft) = fsm_build(&cnt_bore, flo, fhi, 200);
++    let fsm_evals = cnt_bore.count();
++    {
++        let mut csv = Csv::new(
++            &out,
++            "fsm_build.csv",
++            "scene,nx,ny,nz,cells,h_mm,t_sample_s,sample_evals,t_band_s,t_sweep_s,sweep_sets,mem_mb",
++        );
++        csv.row(format!(
++            "plate_bore,{},{},{},{},{:.5},{:.3},{},{:.3},{:.3},{},{:.1}",
++            fsm.n[0], fsm.n[1], fsm.n[2], ft.cells, fsm.h, ft.t_sample, fsm_evals, ft.t_band,
++            ft.t_sweep, ft.sweep_sets, ft.mem_mb
++        ));
++        csv.write();
++        eprintln!(
++            "FSM: {}×{}×{} = {} cells, h={:.3} mm, sample {:.2}s ({} evals), band {:.2}s, \
++             sweeps {:.2}s ({} sets), {:.0} MB",
++            fsm.n[0], fsm.n[1], fsm.n[2], ft.cells, fsm.h, ft.t_sample, fsm_evals, ft.t_band,
++            ft.t_sweep, ft.sweep_sets, ft.mem_mb
++        );
++    }
++
++    for &delta in &deltas {
++        let mlo = [bore_lo[0] - delta - 3.0, bore_lo[1] - delta - 3.0, bore_lo[2] - delta - 3.0];
++        let mhi = [bore_hi[0] + delta + 3.0, bore_hi[1] + delta + 3.0, bore_hi[2] + delta + 3.0];
++        // a. roh
++        let raw = |p: [f64; 3]| cnt_bore.eval(p) - delta;
++        measure(
++            &mut iso_csv, "plate_bore", "raw", "out", delta,
++            &metricity_lab::FnField(raw), &cnt_bore.n, &d_true_bore, mlo, mhi, march_m,
++        );
++        // b. Ball-Dilation (Hauptkonfiguration 32 Richtungen + Kompass)
++        let ball = BallField { f: &cnt_bore, delta, dirs: fib_dirs(32), starts: 2, dilate: true };
++        measure(
++            &mut iso_csv, "plate_bore", "ball32r", "out", delta,
++            &ball, &cnt_bore.n, &d_true_bore, mlo, mhi, march_m,
++        );
++        // d. FSM (Isofläche muss im Gitter liegen)
++        let g_fsm = |p: [f64; 3]| fsm.eval(p) - delta;
++        let glo = [flo[0] + fsm.h, flo[1] + fsm.h, flo[2] + fsm.h];
++        let ghi = [fhi[0] - fsm.h, fhi[1] - fsm.h, fhi[2] - fsm.h];
++        measure(
++            &mut iso_csv, "plate_bore", "fsm200", "out", delta,
++            &metricity_lab::FnField(g_fsm), &cnt_bore.n, &d_true_bore, glo, ghi, march_m,
++        );
++    }
++
++    // ── Ball-Budget-Sweep (δ = 2): Evals ↔ Fehler ──────────────────
++    {
++        let mut csv = Csv::new(
++            &out,
++            "ball_sweep.csv",
++            "delta_mm,n_dirs,starts,n_pts,mean_abs_mm,p95_mm,max_abs_mm,rel_max_pct,evals_per_query",
++        );
++        let delta = 2.0;
++        let mlo = [bore_lo[0] - delta - 3.0, bore_lo[1] - delta - 3.0, bore_lo[2] - delta - 3.0];
++        let mhi = [bore_hi[0] + delta + 3.0, bore_hi[1] + delta + 3.0, bore_hi[2] + delta + 3.0];
++        for n_dirs in [8usize, 16, 32, 64, 128] {
++            for starts in [0usize, 1, 4] {
++                let ball =
++                    BallField { f: &cnt_bore, delta, dirs: fib_dirs(n_dirs), starts, dilate: true };
++                let pts = march_isosurface(&ball, mlo, mhi, 32);
++                let errs: Vec<f64> =
++                    pts.par_iter().map(|&p| d_true_bore(p).abs() - delta).collect();
++                let st = stat_of(errs);
++                cnt_bore.reset();
++                let n_cost = pts.len().min(1500).max(1);
++                let mut acc = 0.0;
++                for &p in pts.iter().take(n_cost) {
++                    acc += ball.eval(p);
++                }
++                std::hint::black_box(acc);
++                let epq = cnt_bore.count() as f64 / n_cost as f64;
++                csv.row(format!(
++                    "{delta},{n_dirs},{starts},{},{:.6},{:.6},{:.6},{:.3},{:.1}",
++                    st.n, st.mean_abs, st.p95, st.max_abs, st.max_abs / delta * 100.0, epq
++                ));
++                eprintln!(
++                    "  ball sweep dirs={n_dirs} starts={starts}: max={:.4} mm ({:.2} % von δ), \
++                     {:.0} evals/q",
++                    st.max_abs, st.max_abs / delta * 100.0, epq
++                );
++            }
++        }
++        csv.write();
++    }
++
++    // ── FSM-Seitenselektivität: Feldfehler roh vs FSM, innen/außen ─
++    {
++        let mut csv = Csv::new(
++            &out,
++            "fsm_side_selectivity.csv",
++            "scene,band,side,field,n,mean_abs_mm,p95_mm,max_abs_mm,bias_mm",
++        );
++        let mut rng = SplitMix64::new(7777);
++        let pts: Vec<[f64; 3]> = (0..12000)
++            .map(|_| {
++                [
++                    rng.range(flo[0] + fsm.h, fhi[0] - fsm.h),
++                    rng.range(flo[1] + fsm.h, fhi[1] - fsm.h),
++                    rng.range(flo[2] + fsm.h, fhi[2] - fsm.h),
++                ]
++            })
++            .collect();
++        let rows: Vec<(f64, f64, f64)> = pts
++            .par_iter()
++            .map(|&p| {
++                let dt = d_true_bore(p);
++                (dt, f_bore.eval(p) - dt, fsm.eval(p) - dt)
++            })
++            .collect();
++        for (band, blo, bhi) in [("near(<2mm)", 0.0, 2.0), ("mid(2-10mm)", 2.0, 10.0), ("far(>10mm)", 10.0, f64::MAX)] {
++            for (side, inside) in [("out", false), ("in", true)] {
++                for (fieldname, sel) in
++                    [("raw", 1usize), ("fsm", 2usize)]
++                {
++                    let errs: Vec<f64> = rows
++                        .iter()
++                        .filter(|(d, _, _)| {
++                            let a = d.abs();
++                            a >= blo && a < bhi && ((*d < 0.0) == inside)
++                        })
++                        .map(|r| if sel == 1 { r.1 } else { r.2 })
++                        .collect();
++                    let st = stat_of(errs);
++                    csv.row(format!(
++                        "plate_bore,{band},{side},{fieldname},{},{:.6},{:.6},{:.6},{:.6}",
++                        st.n, st.mean_abs, st.p95, st.max_abs, st.bias
++                    ));
++                }
++            }
++        }
++        csv.write();
++    }
++
++    // ── c. Pushdown-Klassifikation: Union vs Differenz, out vs in ──
++    // roh outward auf Union (exakt erwartet), roh inward auf Differenz
++    // (exakt erwartet), roh inward auf Union (kaputt erwartet, Phantom),
++    // roh outward auf Differenz (kaputt, siehe Haupttabelle); dazu
++    // Ball-Erosion als Reparatur des kaputten Union-inward-Falls.
++    {
++        let cnt_boss = Counting::new(&f_boss);
++        let boss_lo = [-HX, -HY, -HZ];
++        let boss_hi = [HX, BOSS_TOP, HZ];
++        let t_in = 1.5f64; // Erosion (bore-Wand ist 4 mm → t < 2 nicht-degeneriert)
++        let d_out = 2.0f64;
++
++        // Union outward (exakt erwartet).
++        let mlo = [boss_lo[0] - d_out - 3.0, boss_lo[1] - d_out - 3.0, boss_lo[2] - d_out - 3.0];
++        let mhi = [boss_hi[0] + d_out + 3.0, boss_hi[1] + d_out + 3.0, boss_hi[2] + d_out + 3.0];
++        let raw_out = |p: [f64; 3]| cnt_boss.eval(p) - d_out;
++        measure(
++            &mut iso_csv, "plate_boss", "raw", "out", d_out,
++            &metricity_lab::FnField(raw_out), &cnt_boss.n, &d_true_boss, mlo, mhi, march_m,
++        );
++        // Union inward (kaputt erwartet).
++        let raw_in = |p: [f64; 3]| cnt_boss.eval(p) + t_in;
++        measure(
++            &mut iso_csv, "plate_boss", "raw", "in", t_in,
++            &metricity_lab::FnField(raw_in), &cnt_boss.n, &d_true_boss, boss_lo, boss_hi, march_m,
++        );
++        // Union inward per Ball-Erosion (Reparatur).
++        let ball_ero =
++            BallField { f: &cnt_boss, delta: t_in, dirs: fib_dirs(32), starts: 2, dilate: false };
++        measure(
++            &mut iso_csv, "plate_boss", "ball32r", "in", t_in, &ball_ero, &cnt_boss.n,
++            &d_true_boss, boss_lo, boss_hi, march_m,
++        );
++        // Differenz inward (exakt erwartet).
++        let raw_in_bore = |p: [f64; 3]| cnt_bore.eval(p) + t_in;
++        measure(
++            &mut iso_csv, "plate_bore", "raw", "in", t_in,
++            &metricity_lab::FnField(raw_in_bore), &cnt_bore.n, &d_true_bore, bore_lo, bore_hi,
++            march_m,
++        );
++    }
++
++    // ── Fillet-Variante: Harness-GT, roh vs Ball ───────────────────
++    {
++        eprintln!("building harness GT for plate_bore_fillet …");
++        let a = node_fillet.aabb();
++        let lo = [a.min[0] as f64, a.min[1] as f64, a.min[2] as f64];
++        let hi = [a.max[0] as f64, a.max[1] as f64, a.max[2] as f64];
++        let gt = GroundTruth::build(&f_fillet, lo, hi, &GtOptions::default());
++        let cnt_fil = Counting::new(&f_fillet);
++        let truth = |p: [f64; 3]| gt.distance(p);
++        for &delta in &deltas {
++            let mlo = [lo[0] - delta - 3.0, lo[1] - delta - 3.0, lo[2] - delta - 3.0];
++            let mhi = [hi[0] + delta + 3.0, hi[1] + delta + 3.0, hi[2] + delta + 3.0];
++            let raw = |p: [f64; 3]| cnt_fil.eval(p) - delta;
++            measure(
++                &mut iso_csv, "plate_bore_fillet", "raw", "out", delta,
++                &metricity_lab::FnField(raw), &cnt_fil.n, &truth, mlo, mhi, 32,
++            );
++            let ball =
++                BallField { f: &cnt_fil, delta, dirs: fib_dirs(32), starts: 2, dilate: true };
++            measure(
++                &mut iso_csv, "plate_bore_fillet", "ball32r", "out", delta,
++                &ball, &cnt_fil.n, &truth, mlo, mhi, 32,
++            );
++        }
++    }
++
++    iso_csv.write();
++
++    // ── Shell-Fall: Innentiefen roh vs Hopf–Lax ────────────────────
++    {
++        let mut csv = Csv::new(
++            &out,
++            "inner_depth.csv",
++            "scene,method,n,mean_abs_mm,p95_mm,max_abs_mm,bias_mm,evals_per_query,us_per_query",
++        );
++
++        // (1) plate_boss: Punkte in der Platte unter dem Boss-Fuß —
++        // |f| misst zur PHANTOM-Deckelfläche (Union innen kaputt).
++        let mut pts = Vec::new();
++        for &r in &[0.0, 3.0, 6.0, 9.0] {
++            for ka in 0..6 {
++                let a = ka as f64 / 6.0 * std::f64::consts::TAU + 0.3;
++                for &y in &[5.0, 8.0, 9.5] {
++                    let p = [r * a.cos(), y, r * a.sin()];
++                    if d_true_boss(p) < 0.0 {
++                        pts.push(p);
++                    }
++                    if r == 0.0 {
++                        break;
++                    }
++                }
++                if r == 0.0 {
++                    break;
++                }
++            }
++        }
++        // (2) plate_bore: dünnste Wand (4 mm zwischen Bohrung und x-Fläche)
++        // — Differenz innen ist beweisbar exakt (Negativ-Kontrolle).
++        let mut pts_bore = Vec::new();
++        for &x in &[36.5, 37.0, 38.0, 39.0, 39.5] {
++            for &y in &[-6.0, 0.0, 6.0] {
++                for &z in &[-4.0, 0.0, 4.0] {
++                    let p = [x, y, z];
++                    if d_true_bore(p) < 0.0 {
++                        pts_bore.push(p);
++                    }
++                }
++            }
++        }
++
++        for (scene, pts, f, cnt, truth) in [
++            (
++                "plate_boss_under_boss",
++                &pts,
++                &f_boss as &dyn Field,
++                Counting::new(&f_boss),
++                d_true_boss as fn([f64; 3]) -> f64,
++            ),
++            (
++                "plate_bore_thin_wall",
++                &pts_bore,
++                &f_bore as &dyn Field,
++                Counting::new(&f_bore),
++                d_true_bore as fn([f64; 3]) -> f64,
++            ),
++        ] {
++            // roh: Tiefe = |f|
++            let errs: Vec<f64> = pts.iter().map(|&p| -f.eval(p) - truth(p).abs()).collect();
++            let st = stat_of(errs);
++            csv.row(format!(
++                "{scene},raw,{},{:.6},{:.6},{:.6},{:.6},1,0.0",
++                st.n, st.mean_abs, st.p95, st.max_abs, st.bias
++            ));
++            eprintln!(
++                "  {scene}/raw: n={} mean={:.4} max={:.4} bias={:+.4}",
++                st.n, st.mean_abs, st.max_abs, st.bias
++            );
++            // Hopf–Lax mit wachsendem Richtungsbudget.
++            for n_dirs in [32usize, 64, 128] {
++                let hd = fib_dirs(n_dirs);
++                cnt.reset();
++                let t0 = Instant::now();
++                let errs: Vec<f64> = pts
++                    .iter()
++                    .map(|&p| hopf_lax_depth(&cnt, p, &hd, 1e-3, 60.0) - truth(p).abs())
++                    .collect();
++                let us = t0.elapsed().as_secs_f64() * 1e6 / pts.len().max(1) as f64;
++                let epq = cnt.count() as f64 / pts.len().max(1) as f64;
++                let st = stat_of(errs);
++                csv.row(format!(
++                    "{scene},hopflax{n_dirs},{},{:.6},{:.6},{:.6},{:.6},{:.0},{:.1}",
++                    st.n, st.mean_abs, st.p95, st.max_abs, st.bias, epq, us
++                ));
++                eprintln!(
++                    "  {scene}/hopflax{n_dirs}: n={} mean={:.4} max={:.4} bias={:+.4} | \
++                     {:.0} evals/q {:.1} µs/q",
++                    st.n, st.mean_abs, st.max_abs, st.bias, epq, us
++                );
++            }
++        }
++        csv.write();
++    }
++
++    eprintln!("done → {}", out.display());
++}

@@ -1,0 +1,195 @@
+diff --git a/crates/kernel/src/csg.rs b/crates/kernel/src/csg.rs
+index 4b6b9817..687ab131 100644
+--- a/crates/kernel/src/csg.rs
++++ b/crates/kernel/src/csg.rs
+@@ -2395,7 +2395,16 @@ pub(crate) fn revolve_contributors(
+ /// and cell-prune margins carry `r`, which covers it.
+ ///
+ /// Reference: <https://iquilezles.org/articles/smin/> (round union).
++///
++/// #384 Iteration-2 experiment: when [`SMIN_CIRC_CD`] is set (default), this
++/// dispatches to IQ's **Circular (CD)** variant instead — identical zero set
++/// (same fillet arc), but a convex-combination blend that is 1-Lipschitz for
++/// 1-Lipschitz inputs and never overestimates distance. The legacy
++/// circular-geometrical form stays available for A/B measurement.
+ pub(crate) fn smin_poly(da: f32, db: f32, r: f32) -> f32 {
++    if smin_circ_cd_enabled().load(std::sync::atomic::Ordering::Relaxed) {
++        return smin_circ_cd(da, db, r);
++    }
+     if r <= 0.0 {
+         return da.min(db);
+     }
+@@ -2404,6 +2413,36 @@ pub(crate) fn smin_poly(da: f32, db: f32, r: f32) -> f32 {
+     da.min(db).max(r) - (ua * ua + ub * ub).sqrt()
+ }
+ 
++/// #384 experiment switch: `true` = IQ Circular-CD smin (1-Lipschitz distance
++/// under-bound), `false` = legacy circular-geometrical smin (exact arc
++/// distance in the arc region, √2-Lipschitz). Both share the same zero set.
++/// Initialised from env `FD_SMIN_CIRC_CD` ("0" = legacy; unset/other = CD),
++/// runtime-flippable for A/B measurement. Experiment-only; a production
++/// rollout would hard-swap the formula.
++pub fn smin_circ_cd_enabled() -> &'static std::sync::atomic::AtomicBool {
++    static S: std::sync::OnceLock<std::sync::atomic::AtomicBool> = std::sync::OnceLock::new();
++    S.get_or_init(|| {
++        std::sync::atomic::AtomicBool::new(
++            std::env::var("FD_SMIN_CIRC_CD").map(|v| v != "0").unwrap_or(true),
++        )
++    })
++}
++
++/// IQ's Circular (CD family) smooth minimum:
++/// `min(a,b) − (r/2)·(1 + h − √(1 − h·(h−2)))` with `h = max(r − |a−b|, 0)/r`.
++/// Zero set identical to the circular-geometrical [`smin_poly`] (the exact
++/// circle `(r−a)² + (r−b)² = r²` in the two distances' plane); the blend is a
++/// convex combination (`∂f/∂a + ∂f/∂b = 1`, both in `[0,1]`), hence
++/// 1-Lipschitz and a guaranteed distance UNDER-estimator. Max undershoot below
++/// `min` is `(1 − 1/√2)·r ≈ 0.293·r` on the seam bisector (`a = b`).
++pub(crate) fn smin_circ_cd(da: f32, db: f32, r: f32) -> f32 {
++    if r <= 0.0 {
++        return da.min(db);
++    }
++    let h = (r - (da - db).abs()).max(0.0) / r;
++    da.min(db) - r * 0.5 * (1.0 + h - (1.0 - h * (h - 2.0)).sqrt())
++}
++
+ /// Recursively descend through Union/SmoothUnion nodes in `tree`,
+ /// applying `op(subtree, wrapper)` only to the branch(es) that
+ /// contain a leaf whose root_ancestor matches one of `target_ids`.
+diff --git a/crates/kernel/src/csg_tests.rs b/crates/kernel/src/csg_tests.rs
+index 0997bd95..a913559c 100644
+--- a/crates/kernel/src/csg_tests.rs
++++ b/crates/kernel/src/csg_tests.rs
+@@ -1114,10 +1114,15 @@ fn apply_global_round_rounds_a_union_edge() {
+     };
+     let hard = CsgNode::Union(Box::new(a.clone()), Box::new(b.clone()));
+     let rounded = hard.clone().apply_global_round(3.0);
+-    // The convex edge sits where the two top faces (y=10) and side faces
+-    // (x=10) meet, near (10, 10, 0). Just outside, the round pulls the field
+-    // more negative (adds the fillet material).
+-    let p = [10.0, 10.0, 0.0];
++    // A union round adds fillet material at the CONCAVE seam — here where
++    // box a's top face (y=10, x<0) meets box b's side face (x=0, y>10).
++    // Probe just outside that corner, equidistant to both faces (da=db=1,
++    // inside the blend radius): the smooth field must drop below the hard
++    // min. (The old probe point (10,10,0) sat 10 mm deep inside box b —
++    // outside the blend's arc region — and only passed because the legacy
++    // circular-geometrical smin inflates interior values without bound;
++    // the #384 Circular-CD smin is exactly `min` there.)
++    let p = [-1.0, 11.0, 0.0];
+     let d_hard = hard.sdf(p, EvalMode::Visual);
+     let d_round = rounded.sdf(p, EvalMode::Visual);
+     assert!(d_round < d_hard, "round {d_round} not < hard {d_hard}");
+diff --git a/crates/kernel/src/fidget_bridge.rs b/crates/kernel/src/fidget_bridge.rs
+index ce237879..3fa80fec 100644
+--- a/crates/kernel/src/fidget_bridge.rs
++++ b/crates/kernel/src/fidget_bridge.rs
+@@ -178,6 +178,14 @@ fn smin_poly(da: &Tree, db: &Tree, r: f64) -> Tree {
+     if r <= 0.0 {
+         return da.clone().min(db.clone());
+     }
++    if crate::csg::smin_circ_cd_enabled().load(std::sync::atomic::Ordering::Relaxed) {
++        // #384 Circular-CD (mirrors `csg::smin_circ_cd`):
++        // min − (r/2)·(1 + h − √(1 − h·(h−2))), h = relu(r − |a−b|)/r.
++        let h = relu(neg((da.clone() - db.clone()).abs()) + r) * (1.0 / r);
++        let s = (neg(h.clone() * (h.clone() - 2.0)) + 1.0).sqrt();
++        let min_ab = da.clone().min(db.clone());
++        return min_ab - (h + 1.0 - s) * (r * 0.5);
++    }
+     let ua = relu(neg(da.clone()) + r);
+     let ub = relu(neg(db.clone()) + r);
+     let min_ab = da.clone().min(db.clone());
+diff --git a/crates/kernel/src/sdf_compiler.rs b/crates/kernel/src/sdf_compiler.rs
+index ad403686..127c54c1 100644
+--- a/crates/kernel/src/sdf_compiler.rs
++++ b/crates/kernel/src/sdf_compiler.rs
+@@ -1799,7 +1799,26 @@ pub(crate) fn masked_blend_render_fade(mask_d: f32, blended: f32, hard: f32, ble
+     let w = x * x * (3.0 - 2.0 * x);
+     let f = hard + (blended - hard) * w;
+     // √2 Lipschitz-normalisation — same zero-set, |∇(f/√2)| ≤ 1.
+-    f * std::f32::consts::FRAC_1_SQRT_2
++    // #384 experiment switch: with the Circular-CD smin (1-Lipschitz) the
++    // global ÷√2 is hypothesised obsolete; `MB_FADE_DIV_SQRT2 = false`
++    // measures the un-faded field.
++    if mb_fade_div_sqrt2_enabled().load(std::sync::atomic::Ordering::Relaxed) {
++        f * std::f32::consts::FRAC_1_SQRT_2
++    } else {
++        f
++    }
++}
++
++/// #384 experiment switch for [`masked_blend_render_fade`]'s global ÷√2.
++/// Initialised from env `FD_MB_FADE_SQRT2` ("0" = no division); default
++/// `true` = today's shipped behaviour. Runtime-flippable for A/B measurement.
++pub fn mb_fade_div_sqrt2_enabled() -> &'static std::sync::atomic::AtomicBool {
++    static S: std::sync::OnceLock<std::sync::atomic::AtomicBool> = std::sync::OnceLock::new();
++    S.get_or_init(|| {
++        std::sync::atomic::AtomicBool::new(
++            std::env::var("FD_MB_FADE_SQRT2").map(|v| v != "0").unwrap_or(true),
++        )
++    })
+ }
+ 
+ /// Cross-fade band width (mm). A WIDE band (one `blend_r`) keeps `∇w ≤ 1.5/band`
+@@ -1812,16 +1831,10 @@ pub(crate) fn masked_blend_fade_band(blend_r: f32) -> f32 {
+ 
+ fn blend_min_eval(a: f32, b: f32, r: f32, mode: f32) -> f32 {
+     if mode < 0.5 {
+-        // Fillet — EXACT circular smin (IQ round union), matching
+-        // `csg::smin_poly`. Was a quadratic mix-form here (r/4 undershoot,
+-        // and no `r <= 0` guard → div-by-zero); now byte-consistent with the
+-        // CPU/dual/fidget family.
+-        if r <= 0.0 {
+-            return a.min(b);
+-        }
+-        let ua = (r - a).max(0.0);
+-        let ub = (r - b).max(0.0);
+-        a.min(b).max(r) - (ua * ua + ub * ub).sqrt()
++        // Fillet — delegates to `csg::smin_poly` so the tape stays
++        // byte-consistent with the CPU/dual/fidget family, including the
++        // #384 Circular-CD experiment switch (`csg::SMIN_CIRC_CD`).
++        crate::csg::smin_poly(a, b, r)
+     } else {
+         // Chamfer
+         a.min(b).min((a + b - r) * std::f32::consts::FRAC_1_SQRT_2)
+diff --git a/crates/kernel/src/sdf_dual.rs b/crates/kernel/src/sdf_dual.rs
+index e184acf8..e991a866 100644
+--- a/crates/kernel/src/sdf_dual.rs
++++ b/crates/kernel/src/sdf_dual.rs
+@@ -163,9 +163,13 @@ fn sdf_extrude_generic<T: DualNum<f64> + Copy + PartialOrd>(d2: T, z: T, half_h:
+     outside + inside
+ }
+ 
+-/// Generic exact-circular smin. Mirrors `crate::csg::smin_poly`:
+-/// `max(r, min) − ‖(max(r−da,0), max(r−db,0))‖`.
++/// Generic exact-circular smin. Mirrors `crate::csg::smin_poly` including the
++/// #384 Circular-CD experiment switch (`csg::SMIN_CIRC_CD`), so dual-number
++/// values/gradients stay consistent with the scalar field.
+ fn smin_poly_generic<T: DualNum<f64> + Copy + PartialOrd>(da: T, db: T, r: T) -> T {
++    if crate::csg::smin_circ_cd_enabled().load(std::sync::atomic::Ordering::Relaxed) {
++        return smin_circ_cd_generic(da, db, r);
++    }
+     if r.re() <= 0.0 {
+         return if da < db { da } else { db };
+     }
+@@ -183,6 +187,20 @@ fn smin_poly_generic<T: DualNum<f64> + Copy + PartialOrd>(da: T, db: T, r: T) ->
+     outer - safe_sqrt(ua * ua + ub * ub)
+ }
+ 
++/// Generic IQ Circular-CD smin. Mirrors `crate::csg::smin_circ_cd`:
++/// `min(a,b) − (r/2)·(1 + h − √(1 − h·(h−2)))`, `h = max(r − |a−b|, 0)/r`.
++fn smin_circ_cd_generic<T: DualNum<f64> + Copy + PartialOrd>(da: T, db: T, r: T) -> T {
++    if r.re() <= 0.0 {
++        return if da < db { da } else { db };
++    }
++    let zero = T::from(0.0);
++    let one = T::from(1.0);
++    let hn = r - (da - db).abs();
++    let h = (if hn > zero { hn } else { zero }) / r;
++    let min_ab = if da < db { da } else { db };
++    min_ab - r * T::from(0.5) * (one + h - safe_sqrt(one - h * (h - T::from(2.0))))
++}
++
+ /// Generic chamfer union. Mirrors `crate::csg::chamfer_union`.
+ fn chamfer_union_generic<T: DualNum<f64> + Copy + PartialOrd>(da: T, db: T, r: T) -> T {
+     let sqrt_half = T::from(std::f64::consts::FRAC_1_SQRT_2);

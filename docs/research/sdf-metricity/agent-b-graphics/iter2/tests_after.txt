@@ -1,0 +1,7 @@
+# Gate-Lauf CD (Default), voller Workspace --no-fail-fast (vor Test-Fix): 1218 passed, 1 failed
+#   einziger Fehlschlag: csg::tests::apply_global_round_rounds_a_union_edge (Wert-Semantik, s. LOG-iter2.md §6)
+# Nach Test-Fix (Probe-Punkt auf konkave Naht): Kernel-Suite komplett gruen:
+test result: ok. 1135 passed; 0 failed; 23 ignored; 0 measured; 0 filtered out; finished in 61.19s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+# Uebrige Workspace-Suites (unveraendert seit vollem Lauf): alle gruen; Referenz alt: 1219 passed, 0 failed.

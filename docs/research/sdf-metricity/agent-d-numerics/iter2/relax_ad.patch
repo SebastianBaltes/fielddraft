@@ -1,0 +1,1328 @@
+diff --git a/crates/kernel/src/lib.rs b/crates/kernel/src/lib.rs
+index 2e8b834e..27017ca7 100644
+--- a/crates/kernel/src/lib.rs
++++ b/crates/kernel/src/lib.rs
+@@ -45,6 +45,7 @@ pub mod raycast;
+ pub mod step_classifier;
+ pub mod step_commands;
+ pub mod sdf_compiler;
++pub mod sdf_tape_ad;
+ pub mod sketch2d;
+ pub mod sketch;
+ pub mod path_provider;
+diff --git a/crates/kernel/src/sdf_compiler.rs b/crates/kernel/src/sdf_compiler.rs
+index ad403686..47e8c73f 100644
+--- a/crates/kernel/src/sdf_compiler.rs
++++ b/crates/kernel/src/sdf_compiler.rs
+@@ -181,6 +181,95 @@ pub(crate) fn march_relax(node: &BoundedCsg) -> f32 {
+     }
+ }
+ 
++// ── Forschung #384 / Iteration 2 (Agent D): tiefenbewusstes march_relax ──
++//
++// Compile-Zeit-Analyse der smin-Schachtelung eines Tape-Pfads. Das
++// zirkuläre smin kombiniert die Gradienten seiner Zweige in QUADRATUR
++// (|∇f|² ≤ |∇a|² + |∇b|², Arc-Gewichte sind ein Einheitsvektor), harte
++// min/max/Morph nehmen den Winner-Branch (max). Daraus folgt für einen
++// koinzidenten Stack aus m geschachtelten smins die scharfe Schranke
++// L = √(1+m) (Iteration-1-Messung: exakt erreicht) — das flache 0.75
++// ist ab m ≥ 1 mit tiefem Überlapp unsicher (0.75·√2 > 1).
++
++/// Maximale Zahl geschachtelter smin-Ops (SmoothUnion/SmoothDifference)
++/// entlang eines Pfads des Baums. MaskedBlend zählt NICHT: sein
++/// kompiliertes Render-Feld ist durch den #382-Fade bereits ÷√2
++/// normalisiert (siehe [`lipschitz_sq_bound`]).
++pub fn max_smin_nesting(node: &BoundedCsg) -> u32 {
++    match node {
++        BoundedCsg::Empty
++        | BoundedCsg::Leaf { .. }
++        | BoundedCsg::Extrude { .. }
++        | BoundedCsg::Helix { .. }
++        | BoundedCsg::Sweep { .. }
++        | BoundedCsg::Revolve { .. } => 0,
++        BoundedCsg::SmoothUnion { left, right, .. }
++        | BoundedCsg::SmoothDifference { left, right, .. } => {
++            1 + max_smin_nesting(left).max(max_smin_nesting(right))
++        }
++        BoundedCsg::Union { left, right, .. }
++        | BoundedCsg::Difference { left, right, .. }
++        | BoundedCsg::Intersection { left, right, .. }
++        | BoundedCsg::Morph { left, right, .. }
++        | BoundedCsg::MaskedBlend { left, right, .. } => {
++            max_smin_nesting(left).max(max_smin_nesting(right))
++        }
++        BoundedCsg::Twist { inner, .. }
++        | BoundedCsg::Bend { inner, .. }
++        | BoundedCsg::Shell { inner, .. }
++        | BoundedCsg::Offset { inner, .. }
++        | BoundedCsg::Displace { inner, .. } => max_smin_nesting(inner),
++    }
++}
++
++/// Obere Schranke für L² des KOMPILIERTEN Render-Felds (Tape-Semantik,
++/// nicht `CsgNode::sdf`!), rein strukturell aus dem Baum:
++///
++/// * Leaves sind ≤1-Lipschitz (Gyroid/Thread/Custom normalisieren intern;
++///   Displace/Revolve-Restrisiken deckt weiterhin [`march_relax`]).
++/// * min/max/Morph: Winner-Branch → `max(L_a², L_b²)`.
++/// * smin (Fillet wie Chamfer): Quadratur → `L_a² + L_b²`
++///   (Chamfer: ((L_a+L_b)/√2)² ≤ L_a²+L_b²).
++/// * MaskedBlend: der #382-Render-Fade teilt durch √2 →
++///   `max(L_hard², L_blend²/2) ≤ max(L_a², L_b²)` — neutral.
++///
++/// Für einen koinzidenten Stack aus m smins über Einheits-Leaves ergibt
++/// das exakt `1 + m`, also die Politik `relax = 1/√(1+m)`.
++pub fn lipschitz_sq_bound(node: &BoundedCsg) -> f32 {
++    match node {
++        BoundedCsg::Empty
++        | BoundedCsg::Leaf { .. }
++        | BoundedCsg::Extrude { .. }
++        | BoundedCsg::Helix { .. }
++        | BoundedCsg::Sweep { .. }
++        | BoundedCsg::Revolve { .. } => 1.0,
++        BoundedCsg::SmoothUnion { left, right, .. }
++        | BoundedCsg::SmoothDifference { left, right, .. } => {
++            lipschitz_sq_bound(left) + lipschitz_sq_bound(right)
++        }
++        BoundedCsg::Union { left, right, .. }
++        | BoundedCsg::Difference { left, right, .. }
++        | BoundedCsg::Intersection { left, right, .. }
++        | BoundedCsg::Morph { left, right, .. }
++        | BoundedCsg::MaskedBlend { left, right, .. } => {
++            lipschitz_sq_bound(left).max(lipschitz_sq_bound(right))
++        }
++        BoundedCsg::Twist { inner, .. }
++        | BoundedCsg::Bend { inner, .. }
++        | BoundedCsg::Shell { inner, .. }
++        | BoundedCsg::Offset { inner, .. }
++        | BoundedCsg::Displace { inner, .. } => lipschitz_sq_bound(inner),
++    }
++}
++
++/// Tiefenbewusste Schritt-Dämpfung: heutiges per-Feature-[`march_relax`]
++/// UND-verknüpft mit `1/√(L²)` aus der smin-Schachtelungsanalyse.
++/// Für smin-freie Bäume identisch zum Status quo (keine Verlangsamung);
++/// auf einem koinzidenten m-Stack `1/√(1+m)`.
++pub fn march_relax_depth_aware(node: &BoundedCsg) -> f32 {
++    march_relax(node).min(1.0 / lipschitz_sq_bound(node).max(1.0).sqrt())
++}
++
+ fn op(tag: u32) -> f32 {
+     f32::from_bits(tag)
+ }
+@@ -1583,7 +1672,7 @@ fn world_to_local_inline(
+     [rotated[0] / scale[0], rotated[1] / scale[1], rotated[2] / scale[2]]
+ }
+ 
+-fn sdf_box_local(p: [f32; 3], half: [f32; 3]) -> f32 {
++pub(crate) fn sdf_box_local(p: [f32; 3], half: [f32; 3]) -> f32 {
+     let q = [
+         p[0].abs() - half[0],
+         p[1].abs() - half[1],
+@@ -1594,11 +1683,11 @@ fn sdf_box_local(p: [f32; 3], half: [f32; 3]) -> f32 {
+     outside + inside
+ }
+ 
+-fn sdf_sphere_local(p: [f32; 3], r: f32) -> f32 {
++pub(crate) fn sdf_sphere_local(p: [f32; 3], r: f32) -> f32 {
+     (p[0] * p[0] + p[1] * p[1] + p[2] * p[2]).sqrt() - r
+ }
+ 
+-fn sdf_cylinder_local(p: [f32; 3], r: f32, hh: f32) -> f32 {
++pub(crate) fn sdf_cylinder_local(p: [f32; 3], r: f32, hh: f32) -> f32 {
+     let radial = (p[0] * p[0] + p[2] * p[2]).sqrt() - r;
+     let axial = p[1].abs() - hh;
+     let outside = radial.max(0.0).hypot(axial.max(0.0));
+@@ -1810,7 +1899,7 @@ pub(crate) fn masked_blend_fade_band(blend_r: f32) -> f32 {
+     blend_r.max(1e-3)
+ }
+ 
+-fn blend_min_eval(a: f32, b: f32, r: f32, mode: f32) -> f32 {
++pub(crate) fn blend_min_eval(a: f32, b: f32, r: f32, mode: f32) -> f32 {
+     if mode < 0.5 {
+         // Fillet — EXACT circular smin (IQ round union), matching
+         // `csg::smin_poly`. Was a quadratic mix-form here (r/4 undershoot,
+diff --git a/crates/kernel/src/sdf_tape_ad.rs b/crates/kernel/src/sdf_tape_ad.rs
+new file mode 100644
+index 00000000..de2be569
+--- /dev/null
++++ b/crates/kernel/src/sdf_tape_ad.rs
+@@ -0,0 +1,529 @@
++//! Forschung #384 / Iteration 2 (Agent D): Zweikanal-Forward-AD durch das
++//! kompilierte Bytecode-Tape (CPU-Referenz, Prototyp — KEIN WGSL-Spiegel).
++//!
++//! Jedes Value-Stack-Register führt `(val, grad)`; min/max/Shell/Difference
++//! propagieren den **Winner-Branch** (exakt wie der Wert-Eval entscheidet),
++//! smin die Arc-Gewichte aus `blend_min_weights`-Logik. Dadurch gibt es —
++//! anders als bei zentralen Differenzen — an Tie-Flächen KEINE Ast-Mittelung
++//! und damit keine künstliche `f/|g| > d_wahr`-Überschätzung (Iteration-1-
++//! Befund E2-FD).
++//!
++//! Domain-Warps werden über eine mitgeführte 3×3-Jacobi-Matrix
++//! `J = ∂pt/∂world` gekettet (`grad_world = Jᵀ·grad_pt`). Unterstützt ist
++//! die 3D-Kernmenge (Primitive Box/Sphere/Cylinder/Torus/Capsule/Const,
++//! alle Booleans, smin Fillet+Chamfer, Shell/Offset/Morph/Neg/Displace,
++//! MaskedBlend inkl. #382-Render-Fade, Warps Transform/Twist/Bend);
++//! 2D-Profile/Helix/Sweep/Gyroid/Tex3D liefern `None` (Prototyp-Scope).
++
++use crate::quat_rotate;
++use crate::sdf_compiler::*;
++
++/// Zweikanal-Register: Feldwert + Gradient bzgl. des WELT-Punkts.
++#[derive(Debug, Clone, Copy)]
++pub struct Dual {
++    pub v: f32,
++    pub g: [f32; 3],
++}
++
++impl Dual {
++    fn new(v: f32, g: [f32; 3]) -> Self {
++        Self { v, g }
++    }
++    fn neg(self) -> Self {
++        Self::new(-self.v, [-self.g[0], -self.g[1], -self.g[2]])
++    }
++}
++
++type Mat3 = [[f32; 3]; 3]; // row-major: m[i][j] = ∂pt_i/∂world_j
++
++const ID3: Mat3 = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
++
++/// `Jᵀ·g` — kettet einen Gradienten bzgl. `pt` auf Welt-Koordinaten.
++fn chain(jac: &Mat3, g: [f32; 3]) -> [f32; 3] {
++    [
++        jac[0][0] * g[0] + jac[1][0] * g[1] + jac[2][0] * g[2],
++        jac[0][1] * g[0] + jac[1][1] * g[1] + jac[2][1] * g[2],
++        jac[0][2] * g[0] + jac[1][2] * g[1] + jac[2][2] * g[2],
++    ]
++}
++
++/// `A·B` (row-major).
++fn matmul(a: &Mat3, b: &Mat3) -> Mat3 {
++    let mut out = [[0.0f32; 3]; 3];
++    for i in 0..3 {
++        for j in 0..3 {
++            out[i][j] = a[i][0] * b[0][j] + a[i][1] * b[1][j] + a[i][2] * b[2][j];
++        }
++    }
++    out
++}
++
++fn norm3(v: [f32; 3]) -> f32 {
++    (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt()
++}
++
++// ── Analytische Primitiv-Gradienten (lokaler Frame) ────────────────
++
++fn grad_sphere_local(p: [f32; 3], _r: f32) -> [f32; 3] {
++    let l = norm3(p);
++    if l > 1e-12 {
++        [p[0] / l, p[1] / l, p[2] / l]
++    } else {
++        [0.0, 0.0, 1.0]
++    }
++}
++
++fn grad_box_local(p: [f32; 3], half: [f32; 3]) -> [f32; 3] {
++    let q = [p[0].abs() - half[0], p[1].abs() - half[1], p[2].abs() - half[2]];
++    let qp = [q[0].max(0.0), q[1].max(0.0), q[2].max(0.0)];
++    let out_len = norm3(qp);
++    let mut g = if out_len > 1e-12 {
++        [qp[0] / out_len, qp[1] / out_len, qp[2] / out_len]
++    } else {
++        // innen: aktive Fläche = argmax q_i
++        let mut g = [0.0f32; 3];
++        let i = if q[0] >= q[1] && q[0] >= q[2] {
++            0
++        } else if q[1] >= q[2] {
++            1
++        } else {
++            2
++        };
++        g[i] = 1.0;
++        g
++    };
++    for i in 0..3 {
++        g[i] *= p[i].signum();
++    }
++    g
++}
++
++fn grad_cylinder_local(p: [f32; 3], r: f32, hh: f32) -> [f32; 3] {
++    let rl = (p[0] * p[0] + p[2] * p[2]).sqrt();
++    let radial = rl - r;
++    let axial = p[1].abs() - hh;
++    let rdir = if rl > 1e-12 { [p[0] / rl, 0.0, p[2] / rl] } else { [1.0, 0.0, 0.0] };
++    let adir = [0.0, p[1].signum(), 0.0];
++    if radial > 0.0 && axial > 0.0 {
++        let l = radial.hypot(axial);
++        [
++            rdir[0] * radial / l,
++            adir[1] * axial / l,
++            rdir[2] * radial / l,
++        ]
++    } else if radial >= axial {
++        rdir
++    } else {
++        adir
++    }
++}
++
++fn grad_torus_local(p: [f32; 3], major: f32, _minor: f32) -> [f32; 3] {
++    let rl = (p[0] * p[0] + p[2] * p[2]).sqrt();
++    let q0 = rl - major;
++    let l = (q0 * q0 + p[1] * p[1]).sqrt();
++    if l < 1e-12 || rl < 1e-12 {
++        return [0.0, 1.0, 0.0];
++    }
++    [q0 / l * p[0] / rl, p[1] / l, q0 / l * p[2] / rl]
++}
++
++fn grad_capsule_local(p: [f32; 3], _r: f32, hh: f32) -> [f32; 3] {
++    let yc = p[1].clamp(-hh, hh);
++    let d = [p[0], p[1] - yc, p[2]];
++    let l = norm3(d);
++    if l > 1e-12 {
++        [d[0] / l, d[1] / l, d[2] / l]
++    } else {
++        [1.0, 0.0, 0.0]
++    }
++}
++
++/// smin-Fillet (zirkuläres round-min) als Dual: Arc-Gewichte `(ua, ub)/L`.
++fn dual_smin_fillet(a: Dual, b: Dual, r: f32) -> Dual {
++    if r <= 0.0 {
++        return if a.v <= b.v { a } else { b };
++    }
++    let ua = r - a.v;
++    let ub = r - b.v;
++    if ua <= 0.0 || ub <= 0.0 {
++        return if a.v <= b.v { a } else { b };
++    }
++    let l = (ua * ua + ub * ub).sqrt();
++    let v = a.v.min(b.v).max(r) - l;
++    let (wa, wb) = if l > 1e-12 { (ua / l, ub / l) } else { (0.5, 0.5) };
++    Dual::new(
++        v,
++        [
++            wa * a.g[0] + wb * b.g[0],
++            wa * a.g[1] + wb * b.g[1],
++            wa * a.g[2] + wb * b.g[2],
++        ],
++    )
++}
++
++fn dual_smin_chamfer(a: Dual, b: Dual, r: f32) -> Dual {
++    let s = std::f32::consts::FRAC_1_SQRT_2;
++    let cham = (a.v + b.v - r) * s;
++    let hard = if a.v <= b.v { a } else { b };
++    if cham < hard.v {
++        Dual::new(
++            cham,
++            [
++                s * (a.g[0] + b.g[0]),
++                s * (a.g[1] + b.g[1]),
++                s * (a.g[2] + b.g[2]),
++            ],
++        )
++    } else {
++        hard
++    }
++}
++
++fn dual_blend_min(a: Dual, b: Dual, r: f32, mode: f32) -> Dual {
++    if mode < 0.5 {
++        dual_smin_fillet(a, b, r)
++    } else {
++        dual_smin_chamfer(a, b, r)
++    }
++}
++
++/// Kapsel-Tube um eine Polyline: Wert + Gradient bzgl. `pt` (Winner-Segment).
++fn dual_polyline_tube(pt: [f32; 3], polyline: &[[f32; 3]], radius: f32) -> (f32, [f32; 3]) {
++    if polyline.is_empty() {
++        return (f32::INFINITY, [0.0, 0.0, 1.0]);
++    }
++    let mut best = f32::INFINITY;
++    let mut best_g = [0.0f32, 0.0, 1.0];
++    let segs: Vec<([f32; 3], [f32; 3])> = if polyline.len() == 1 {
++        vec![(polyline[0], polyline[0])]
++    } else {
++        polyline.windows(2).map(|w| (w[0], w[1])).collect()
++    };
++    for (a, b) in segs {
++        let ab = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
++        let denom = ab[0] * ab[0] + ab[1] * ab[1] + ab[2] * ab[2];
++        let t = if denom > 1e-12 {
++            ((pt[0] - a[0]) * ab[0] + (pt[1] - a[1]) * ab[1] + (pt[2] - a[2]) * ab[2]) / denom
++        } else {
++            0.0
++        }
++        .clamp(0.0, 1.0);
++        let foot = [a[0] + ab[0] * t, a[1] + ab[1] * t, a[2] + ab[2] * t];
++        let d = [pt[0] - foot[0], pt[1] - foot[1], pt[2] - foot[2]];
++        let l = norm3(d);
++        let v = l - radius;
++        if v < best {
++            best = v;
++            best_g = if l > 1e-12 { [d[0] / l, d[1] / l, d[2] / l] } else { [0.0, 0.0, 1.0] };
++        }
++    }
++    (best, best_g)
++}
++
++/// Zweikanal-Eval des kompilierten Tapes: `(f, ∇f)` am Welt-Punkt.
++/// `None`, wenn das Tape einen im Prototyp nicht unterstützten Opcode
++/// enthält (2D-Profile, Helix, Sweep, Gyroid, Thread, Tex3D, Custom).
++pub fn eval_opcodes_dual(opcodes: &[f32], world_point: [f32; 3]) -> Option<Dual> {
++    const VSTACK: usize = 8;
++    const PSTACK: usize = 4;
++    let mut vs = [Dual::new(0.0, [0.0; 3]); VSTACK];
++    let mut vsp: usize = 0;
++    let mut ps = [([0.0f32; 3], ID3); PSTACK];
++    let mut psp: usize = 0;
++    let mut pt = world_point;
++    let mut jac = ID3;
++    let mut pc: usize = 0;
++
++    macro_rules! push_v {
++        ($v:expr) => {{
++            vs[vsp] = $v;
++            vsp += 1;
++        }};
++    }
++    macro_rules! pop_v {
++        () => {{
++            vsp -= 1;
++            vs[vsp]
++        }};
++    }
++    macro_rules! rd {
++        () => {{
++            let v = opcodes[pc];
++            pc += 1;
++            v
++        }};
++    }
++    macro_rules! rd3 {
++        () => {{
++            let a = opcodes[pc];
++            let b = opcodes[pc + 1];
++            let c = opcodes[pc + 2];
++            pc += 3;
++            [a, b, c]
++        }};
++    }
++    // Transform lesen, lokalen Punkt + Gradient-Rückkettung liefern:
++    // local = diag(1/s)·R⁻¹·(pt − t); grad_pt = R·(g_local/s)·min_s.
++    macro_rules! prim {
++        ($sdf:expr, $grad:expr) => {{
++            let translate = rd3!();
++            let quat = [rd!(), rd!(), rd!(), rd!()];
++            let scale = rd3!();
++            let centered = [pt[0] - translate[0], pt[1] - translate[1], pt[2] - translate[2]];
++            let qc = [-quat[0], -quat[1], -quat[2], quat[3]];
++            let rotated = quat_rotate(qc, centered);
++            let local = [rotated[0] / scale[0], rotated[1] / scale[1], rotated[2] / scale[2]];
++            let min_s = scale[0].min(scale[1]).min(scale[2]);
++            let v = $sdf(local) * min_s;
++            let gl = $grad(local);
++            let g_pt = quat_rotate(
++                quat,
++                [gl[0] / scale[0] * min_s, gl[1] / scale[1] * min_s, gl[2] / scale[2] * min_s],
++            );
++            push_v!(Dual::new(v, chain(&jac, g_pt)));
++        }};
++    }
++
++    while pc < opcodes.len() {
++        let tag = opcodes[pc].to_bits();
++        pc += 1;
++        match tag {
++            OP_PRIM_BOX => {
++                let he_at = pc + 10;
++                let he = [opcodes[he_at], opcodes[he_at + 1], opcodes[he_at + 2]];
++                prim!(|l| sdf_box_local(l, he), |l| grad_box_local(l, he));
++                pc += 3; // half_extents nach dem Transform
++            }
++            OP_PRIM_SPHERE => {
++                let r = opcodes[pc + 10];
++                prim!(|l| sdf_sphere_local(l, r), |l| grad_sphere_local(l, r));
++                pc += 1;
++            }
++            OP_PRIM_CYLINDER => {
++                let r = opcodes[pc + 10];
++                let hh = opcodes[pc + 11];
++                prim!(|l| sdf_cylinder_local(l, r, hh), |l| grad_cylinder_local(l, r, hh));
++                pc += 2;
++            }
++            OP_PRIM_TORUS => {
++                let major = opcodes[pc + 10];
++                let minor = opcodes[pc + 11];
++                prim!(
++                    |l: [f32; 3]| {
++                        let q0 = (l[0] * l[0] + l[2] * l[2]).sqrt() - major;
++                        (q0 * q0 + l[1] * l[1]).sqrt() - minor
++                    },
++                    |l| grad_torus_local(l, major, minor)
++                );
++                pc += 2;
++            }
++            OP_PRIM_CAPSULE => {
++                let r = opcodes[pc + 10];
++                let hh = opcodes[pc + 11];
++                prim!(
++                    |l: [f32; 3]| {
++                        let rv = (l[0] * l[0] + l[2] * l[2]).sqrt();
++                        let dy = l[1] - l[1].clamp(-hh, hh);
++                        (rv * rv + dy * dy).sqrt() - r
++                    },
++                    |l| grad_capsule_local(l, r, hh)
++                );
++                pc += 2;
++            }
++            OP_PRIM_CONST => {
++                let v = rd!();
++                push_v!(Dual::new(v, [0.0; 3]));
++            }
++            OP_UNION => {
++                let b = pop_v!();
++                let a = pop_v!();
++                push_v!(if a.v <= b.v { a } else { b });
++            }
++            OP_DIFFERENCE => {
++                let b = pop_v!();
++                let a = pop_v!();
++                let nb = b.neg();
++                push_v!(if a.v >= nb.v { a } else { nb });
++            }
++            OP_INTERSECT => {
++                let b = pop_v!();
++                let a = pop_v!();
++                push_v!(if a.v >= b.v { a } else { b });
++            }
++            OP_SMOOTH_UNION => {
++                let r = rd!();
++                let mode = rd!();
++                let b = pop_v!();
++                let a = pop_v!();
++                push_v!(dual_blend_min(a, b, r, mode));
++            }
++            OP_SMOOTH_DIFF => {
++                let r = rd!();
++                let mode = rd!();
++                let b = pop_v!();
++                let a = pop_v!();
++                push_v!(dual_blend_min(a.neg(), b, r, mode).neg());
++            }
++            OP_SHELL => {
++                let thickness = rd!();
++                let d = pop_v!();
++                let inner = Dual::new(-(d.v + thickness), [-d.g[0], -d.g[1], -d.g[2]]);
++                push_v!(if d.v >= inner.v { d } else { inner });
++            }
++            OP_MORPH => {
++                let t = rd!();
++                let b = pop_v!();
++                let a = pop_v!();
++                push_v!(Dual::new(
++                    (1.0 - t) * a.v + t * b.v,
++                    [
++                        (1.0 - t) * a.g[0] + t * b.g[0],
++                        (1.0 - t) * a.g[1] + t * b.g[1],
++                        (1.0 - t) * a.g[2] + t * b.g[2],
++                    ]
++                ));
++            }
++            OP_DISPLACE_VAL => {
++                let depth = rd!();
++                let freq = rd!();
++                let d = pop_v!();
++                let (sx, cx) = (pt[0] * freq).sin_cos();
++                let (sy, cy) = (pt[1] * freq * 1.3).sin_cos();
++                let (sz, cz) = (pt[2] * freq * 0.7).sin_cos();
++                let disp = depth * sx * sy * sz;
++                let g_pt = [
++                    depth * freq * cx * sy * sz,
++                    depth * freq * 1.3 * sx * cy * sz,
++                    depth * freq * 0.7 * sx * sy * cz,
++                ];
++                let gw = chain(&jac, g_pt);
++                push_v!(Dual::new(
++                    d.v - disp,
++                    [d.g[0] - gw[0], d.g[1] - gw[1], d.g[2] - gw[2]]
++                ));
++            }
++            OP_OFFSET_2D => {
++                let dist = rd!();
++                let d = pop_v!();
++                push_v!(Dual::new(d.v - dist, d.g));
++            }
++            OP_NEG => {
++                let v = pop_v!();
++                push_v!(v.neg());
++            }
++            OP_WARP_PUSH => {
++                ps[psp] = (pt, jac);
++                psp += 1;
++            }
++            OP_WARP_POP => {
++                psp -= 1;
++                let (p, j) = ps[psp];
++                pt = p;
++                jac = j;
++            }
++            OP_WARP_TRANSFORM => {
++                let translate = rd3!();
++                let quat = [rd!(), rd!(), rd!(), rd!()];
++                let scale = rd3!();
++                let centered = [pt[0] - translate[0], pt[1] - translate[1], pt[2] - translate[2]];
++                let qc = [-quat[0], -quat[1], -quat[2], quat[3]];
++                let rotated = quat_rotate(qc, centered);
++                pt = [rotated[0] / scale[0], rotated[1] / scale[1], rotated[2] / scale[2]];
++                // J' = diag(1/s)·R⁻¹·J — spaltenweise via quat_rotate.
++                let mut jw = [[0.0f32; 3]; 3];
++                for j in 0..3 {
++                    let col = [jac[0][j], jac[1][j], jac[2][j]];
++                    let rc = quat_rotate(qc, col);
++                    jw[0][j] = rc[0] / scale[0];
++                    jw[1][j] = rc[1] / scale[1];
++                    jw[2][j] = rc[2] / scale[2];
++                }
++                jac = jw;
++            }
++            OP_WARP_TWIST => {
++                let rate = rd!();
++                let angle = rate * pt[1];
++                let (s, c) = angle.sin_cos();
++                let (px, pz) = (pt[0], pt[2]);
++                let nx = c * px - s * pz;
++                let nz = s * px + c * pz;
++                // ∂(nx,y,nz)/∂(x,y,z)
++                let jw: Mat3 = [
++                    [c, -rate * nz, -s],
++                    [0.0, 1.0, 0.0],
++                    [s, rate * nx, c],
++                ];
++                pt = [nx, pt[1], nz];
++                jac = matmul(&jw, &jac);
++            }
++            OP_WARP_BEND => {
++                let rate = rd!();
++                let angle = rate * pt[0];
++                let (s, c) = angle.sin_cos();
++                let (px, py) = (pt[0], pt[1]);
++                let nx = c * px - s * py;
++                let ny = s * px + c * py;
++                let jw: Mat3 = [
++                    [c - rate * ny, -s, 0.0],
++                    [s + rate * nx, c, 0.0],
++                    [0.0, 0.0, 1.0],
++                ];
++                pt = [nx, ny, pt[2]];
++                jac = matmul(&jw, &jac);
++            }
++            OP_MASKED_BLEND => {
++                let n = rd!() as usize;
++                let mut polyline: Vec<[f32; 3]> = Vec::with_capacity(n);
++                for _ in 0..n {
++                    polyline.push(rd3!());
++                }
++                let mask_r = rd!();
++                let blend_r = rd!();
++                let mode = rd!();
++                let is_diff = rd!() > 0.5;
++                let db = pop_v!();
++                let da = pop_v!();
++                let (mask_d, mask_g_pt) = dual_polyline_tube(pt, &polyline, mask_r);
++                let mask_g = chain(&jac, mask_g_pt);
++                let blended = if is_diff {
++                    dual_blend_min(da.neg(), db, blend_r, mode).neg()
++                } else {
++                    dual_blend_min(da, db, blend_r, mode)
++                };
++                let hard = if is_diff {
++                    let nb = db.neg();
++                    if da.v >= nb.v { da } else { nb }
++                } else if da.v <= db.v {
++                    da
++                } else {
++                    db
++                };
++                // #382-Render-Fade: f = (hard + (blended−hard)·w(x))/√2,
++                // x = clamp(−mask_d/band, 0, 1), w = x²(3−2x).
++                let band = masked_blend_fade_band(blend_r);
++                let x = ((-mask_d) / band).clamp(0.0, 1.0);
++                let w = x * x * (3.0 - 2.0 * x);
++                let dw_dx = 6.0 * x * (1.0 - x);
++                let s = std::f32::consts::FRAC_1_SQRT_2;
++                let v = (hard.v + (blended.v - hard.v) * w) * s;
++                let mut g = [0.0f32; 3];
++                for i in 0..3 {
++                    g[i] = (hard.g[i] * (1.0 - w)
++                        + blended.g[i] * w
++                        + (blended.v - hard.v) * dw_dx * (-mask_g[i] / band))
++                        * s;
++                }
++                push_v!(Dual::new(v, g));
++            }
++            OP_END => break,
++            _ => return None, // Prototyp: Opcode nicht unterstützt
++        }
++    }
++
++    if vsp > 0 {
++        Some(vs[vsp - 1])
++    } else {
++        None
++    }
++}
+diff --git a/crates/metricity-lab/src/bin/iter2_relax_ad.rs b/crates/metricity-lab/src/bin/iter2_relax_ad.rs
+new file mode 100644
+index 00000000..cbd5e246
+--- /dev/null
++++ b/crates/metricity-lab/src/bin/iter2_relax_ad.rs
+@@ -0,0 +1,643 @@
++//! Iteration 2, Experiment 4 (Agent D): tiefenbewusstes march_relax +
++//! Zweikanal-AD am echten Bytecode-Tape, in 3D gegen metricity-lab-GT.
++//!
++//! Läufe: `cargo run -p metricity-lab --release --bin iter2_relax_ad -- <outdir>`
++//!
++//! Teile:
++//!  A) Sphere-Trace-Sicherheit: Penetrationsrate/-tiefe für relax ∈
++//!     {1.0, 0.75, depth-aware 1/√(1+m)} auf koinzidenten/fast-koinzidenten
++//!     smin-Stacks (m=2,4,8), MaskedBlend-Stack und realen Fillet-Szenen;
++//!     Schrittzahl-Regression auf gutartigem Korpus.
++//!  B) Zweikanal-AD durchs Tape (`sdf_tape_ad::eval_opcodes_dual`):
++//!     Tie-Flächen-FD-Artefakt, vertrauensbandiertes Wurzel-Sampson auf
++//!     Offset-Isoflächen, Kosten AD vs 1 Eval vs 1+6 FD-Evals.
++
++use std::fmt::Write as _;
++use std::fs;
++use std::time::Instant;
++
++use fielddraft_kernel::bvh::BoundedCsg;
++use fielddraft_kernel::csg::{BlendMode, BlendProvenance, CsgNode};
++use fielddraft_kernel::sdf_compiler::{
++    compile_body, eval_opcodes_with_volumes, lipschitz_sq_bound, march_relax_depth_aware,
++    max_smin_nesting, CompiledSdf,
++};
++use fielddraft_kernel::sdf_tape_ad::eval_opcodes_dual;
++use fielddraft_protocol::{FeatureId, Primitive};
++
++use metricity_lab::ground_truth::central_gradient;
++use metricity_lab::scenes;
++use metricity_lab::util::{add, norm, normalize, scale, sub, SplitMix64};
++use metricity_lab::{Field, GroundTruth, GtOptions, TapeField};
++
++// ── Szenen ─────────────────────────────────────────────────────────
++
++fn sphere(i: u32, center: [f32; 3], radius: f32) -> CsgNode {
++    CsgNode::Leaf {
++        id: FeatureId::from_u32(i),
++        primitive: Primitive::Sphere { center, radius },
++    }
++}
++
++/// Koinzidenter (jitter=0) bzw. fast-koinzidenter smin-Stack:
++/// m SmoothUnion-Ops über m+1 Kugeln r=30 am (fast) selben Ort,
++/// r_blend=6 — der Quadratur-Adversar (L = √(1+m)).
++fn smin_stack(m_ops: usize, jitter: f32) -> (String, CsgNode) {
++    let mut rng = SplitMix64::new(0x57AC_0000 + m_ops as u64);
++    let mut node = sphere(1, [0.0; 3], 30.0);
++    for i in 0..m_ops {
++        let c = [
++            (jitter as f64 * (rng.next_f64() * 2.0 - 1.0)) as f32,
++            (jitter as f64 * (rng.next_f64() * 2.0 - 1.0)) as f32,
++            (jitter as f64 * (rng.next_f64() * 2.0 - 1.0)) as f32,
++        ];
++        node = CsgNode::SmoothUnion(
++            Box::new(node),
++            Box::new(sphere((i + 2) as u32, c, 30.0)),
++            6.0,
++            BlendMode::Fillet,
++        );
++    }
++    let tag = if jitter > 0.0 { "near" } else { "coin" };
++    (format!("stack_{tag}_m{m_ops:02}"), node)
++}
++
++/// MaskedBlend-Stack am selben Ort: prüft die Vorhersage, dass der
++/// #382-÷√2-Fade den Stack im TAPE Lipschitz-neutral macht (L ≤ 1).
++fn masked_stack(m_ops: usize) -> (String, CsgNode) {
++    let ring = vec![
++        [-30.0, 0.0, -30.0],
++        [30.0, 0.0, -30.0],
++        [30.0, 0.0, 30.0],
++        [-30.0, 0.0, 30.0],
++        [-30.0, 0.0, -30.0],
++    ];
++    let mut node = sphere(1, [0.0; 3], 30.0);
++    for i in 0..m_ops {
++        node = CsgNode::MaskedBlend {
++            a: Box::new(node),
++            b: Box::new(sphere((i + 2) as u32, [0.0; 3], 30.0)),
++            mask_polyline: ring.clone(),
++            mask_radius: 80.0, // Maske deckt die ganze Kugel — Blend überall aktiv
++            blend_radius: 6.0,
++            blend_mode: BlendMode::Fillet,
++            is_difference: false,
++            provenance: BlendProvenance::NONE,
++        };
++    }
++    (format!("mb_stack_m{m_ops:02}"), node)
++}
++
++/// Tief überlappende SmoothUnion zweier Kugeln (3D-Gegenstück zur
++/// 2D-cx=0.6-Konfiguration) — Neck-/Offset-Testszene.
++fn offset_smin() -> (String, CsgNode) {
++    let node = CsgNode::SmoothUnion(
++        Box::new(sphere(1, [-24.0, 0.0, 0.0], 40.0)),
++        Box::new(sphere(2, [24.0, 0.0, 0.0], 40.0)),
++        6.0,
++        BlendMode::Fillet,
++    );
++    ("offset_smin".into(), node)
++}
++
++struct Prepared {
++    name: String,
++    compiled: CompiledSdf,
++    m: u32,
++    lip_sq: f32,
++    relax_depth: f32,
++    model: f64,
++    lo: [f64; 3],
++    hi: [f64; 3],
++}
++
++fn prepare(name: &str, node: &CsgNode) -> Prepared {
++    let bounded = BoundedCsg::from_csg(node);
++    let compiled = compile_body(&bounded);
++    let aabb = node.aabb();
++    let lo = [aabb.min[0] as f64, aabb.min[1] as f64, aabb.min[2] as f64];
++    let hi = [aabb.max[0] as f64, aabb.max[1] as f64, aabb.max[2] as f64];
++    let model = (hi[0] - lo[0]).max(hi[1] - lo[1]).max(hi[2] - lo[2]);
++    Prepared {
++        name: name.to_string(),
++        m: max_smin_nesting(&bounded),
++        lip_sq: lipschitz_sq_bound(&bounded),
++        relax_depth: march_relax_depth_aware(&bounded),
++        compiled,
++        model,
++        lo,
++        hi,
++    }
++}
++
++fn tape_eval(c: &CompiledSdf, p: [f64; 3]) -> f64 {
++    eval_opcodes_with_volumes(&c.opcodes, [p[0] as f32, p[1] as f32, p[2] as f32], &c.volumes)
++        as f64
++}
++
++// ── Trace-Simulation ───────────────────────────────────────────────
++
++struct TraceStats {
++    rays: usize,
++    hits: usize,
++    misses: usize,
++    pen: usize,
++    pen_depth_mean: f64,
++    pen_depth_max: f64,
++    steps_mean_hit: f64,
++}
++
++/// Sphere-Trace-Simulation auf `eval_opcodes`: Rays von außen auf
++/// GT-Oberflächenpunkte, Schritt `t += max(f·relax, ε)`.
++/// Penetration = Hit-Punkt liegt hinter der wahren Fläche (GT signiert,
++/// GT auf der Tape-EIGENEN Nullmenge — kein Vorzeichen-Mismatch).
++fn trace(pre: &Prepared, gt: &GroundTruth<'_>, relax: f64, n_rays: usize, seed: u64) -> TraceStats {
++    let mut rng = SplitMix64::new(seed);
++    let surf = gt.surface_points();
++    let tol_hit = 2e-4 * pre.model;
++    let pen_tol = 1e-3 * pre.model;
++    let eps = tol_hit * 0.5;
++    let t_max = pre.model * 2.0;
++    let launch = 0.35 * pre.model;
++    let max_steps = 6000usize;
++
++    let mut hits = 0usize;
++    let mut misses = 0usize;
++    let mut pen = 0usize;
++    let mut pen_sum = 0.0f64;
++    let mut pen_max = 0.0f64;
++    let mut steps_sum = 0usize;
++
++    for _ in 0..n_rays {
++        let q = surf[(rng.next_u64() as usize) % surf.len()];
++        // Startpunkt außerhalb suchen (Feld > 0).
++        let mut o = [0.0f64; 3];
++        let mut ok = false;
++        for _ in 0..16 {
++            let u = rng.unit_dir();
++            o = add(q, scale(u, launch));
++            if tape_eval(&pre.compiled, o) > 0.05 * pre.model {
++                ok = true;
++                break;
++            }
++        }
++        if !ok {
++            continue;
++        }
++        // Ziel: Oberflächenpunkt mit leichtem tangentialem Jitter.
++        let jit = scale(rng.unit_dir(), 0.02 * pre.model);
++        let dir = match normalize(sub(add(q, jit), o)) {
++            Some(d) => d,
++            None => continue,
++        };
++        let mut t = 0.0f64;
++        let mut hit = false;
++        let mut steps = 0usize;
++        while steps < max_steps && t < t_max {
++            let p = add(o, scale(dir, t));
++            let f = tape_eval(&pre.compiled, p);
++            if f < tol_hit {
++                hit = true;
++                hits += 1;
++                steps_sum += steps;
++                let d_true = gt.distance(p);
++                if d_true < -pen_tol {
++                    pen += 1;
++                    pen_sum += -d_true;
++                    pen_max = pen_max.max(-d_true);
++                }
++                break;
++            }
++            t += (f * relax).max(eps);
++            steps += 1;
++        }
++        if !hit {
++            misses += 1;
++        }
++    }
++    TraceStats {
++        rays: n_rays,
++        hits,
++        misses,
++        pen,
++        pen_depth_mean: if pen > 0 { pen_sum / pen as f64 } else { 0.0 },
++        pen_depth_max: pen_max,
++        steps_mean_hit: if hits > 0 { steps_sum as f64 / hits as f64 } else { f64::NAN },
++    }
++}
++
++// ── AD-Helfer ──────────────────────────────────────────────────────
++
++fn ad_grad(c: &CompiledSdf, p: [f64; 3]) -> Option<(f64, [f64; 3])> {
++    eval_opcodes_dual(&c.opcodes, [p[0] as f32, p[1] as f32, p[2] as f32]).map(|d| {
++        (
++            d.v as f64,
++            [d.g[0] as f64, d.g[1] as f64, d.g[2] as f64],
++        )
++    })
++}
++
++fn main() {
++    let out_dir = std::env::args().nth(1).unwrap_or_else(|| "iter2_out".into());
++    fs::create_dir_all(&out_dir).expect("outdir");
++    let gt_opts = GtOptions::default();
++
++    // ── Szenenlisten ───────────────────────────────────────────────
++    let mut adversarial: Vec<(String, CsgNode)> = vec![];
++    for m in [2usize, 4, 8] {
++        adversarial.push(smin_stack(m, 0.0));
++        adversarial.push(smin_stack(m, 0.3));
++    }
++    adversarial.push(masked_stack(4));
++    adversarial.push(offset_smin());
++    for name in ["masked_blend_edge", "smin_chain_04"] {
++        let s = scenes::scene_by_name(name).unwrap();
++        adversarial.push((s.name, s.node));
++    }
++
++    let benign_names = [
++        "sphere",
++        "box",
++        "rot_box",
++        "thin_wall_02p0pct",
++        "tangent_spheres_m25p0pct",
++        "deep_csg_08",
++        "smin_chain_02",
++        "smin_chain_08",
++        "smin_chain_16",
++        "masked_blend_edge",
++    ];
++
++    // ── A) Trace-Sicherheit + Schrittzahlen ────────────────────────
++    let mut csv_adv = String::from(
++        "scene,m_smin,lip_sq,policy,relax,rays,hits,misses,pen,pen_rate,pen_depth_mean_mm,pen_depth_max_mm,steps_mean_hit\n",
++    );
++    let mut csv_ben = csv_adv.clone();
++
++    let mut run_traces = |list: &[(String, CsgNode)], csv: &mut String, n_rays: usize| {
++        for (name, node) in list {
++            let pre = prepare(name, node);
++            let tape_field = TapeField { compiled: &pre.compiled };
++            let t0 = Instant::now();
++            let gt = GroundTruth::build(&tape_field, pre.lo, pre.hi, &gt_opts);
++            eprintln!(
++                "[gt] {name}: {} surface pts, {:.1}s (m={}, L²={:.2}, relax_depth={:.3})",
++                gt.n_surface_points(),
++                t0.elapsed().as_secs_f64(),
++                pre.m,
++                pre.lip_sq,
++                pre.relax_depth
++            );
++            let policies: [(&str, f64); 3] = [
++                ("full_1.0", 1.0),
++                ("flat_0.75", 0.75),
++                ("depth_aware", pre.relax_depth as f64),
++            ];
++            for (pname, relax) in policies {
++                let st = trace(&pre, &gt, relax, n_rays, 0xBEEF ^ pre.m as u64);
++                writeln!(
++                    csv,
++                    "{},{},{:.3},{},{:.4},{},{},{},{},{:.4},{:.4},{:.4},{:.2}",
++                    name,
++                    pre.m,
++                    pre.lip_sq,
++                    pname,
++                    relax,
++                    st.rays,
++                    st.hits,
++                    st.misses,
++                    st.pen,
++                    st.pen as f64 / st.hits.max(1) as f64,
++                    st.pen_depth_mean,
++                    st.pen_depth_max,
++                    st.steps_mean_hit
++                )
++                .unwrap();
++                eprintln!(
++                    "  {pname:<12} relax={relax:.3}: hits {}/{} pen {} ({:.1}%), depth mean {:.3} max {:.3} mm, steps {:.1}",
++                    st.hits, st.rays, st.pen,
++                    100.0 * st.pen as f64 / st.hits.max(1) as f64,
++                    st.pen_depth_mean, st.pen_depth_max, st.steps_mean_hit
++                );
++            }
++        }
++    };
++
++    run_traces(&adversarial, &mut csv_adv, 400);
++    let benign: Vec<(String, CsgNode)> = benign_names
++        .iter()
++        .map(|n| {
++            let s = scenes::scene_by_name(n).unwrap();
++            (s.name, s.node)
++        })
++        .collect();
++    run_traces(&benign, &mut csv_ben, 400);
++    fs::write(format!("{out_dir}/trace_adversarial.csv"), &csv_adv).unwrap();
++    fs::write(format!("{out_dir}/trace_benign.csv"), &csv_ben).unwrap();
++
++    // ── B0) AD-Sanity: Wert-Parität + Gradient vs FD (glatte Zonen) ─
++    let mut csv_sane = String::from("scene,n,max_val_diff,grad_normdiff_med,grad_normdiff_p95\n");
++    for (name, node) in adversarial.iter().chain(benign.iter().take(6)) {
++        let pre = prepare(name, node);
++        let tape_field = TapeField { compiled: &pre.compiled };
++        let mut rng = SplitMix64::new(0x5A5A);
++        let mut max_dv = 0.0f64;
++        let mut diffs: Vec<f64> = vec![];
++        let mut n_used = 0;
++        for _ in 0..3000 {
++            let p = [
++                rng.range(pre.lo[0], pre.hi[0]),
++                rng.range(pre.lo[1], pre.hi[1]),
++                rng.range(pre.lo[2], pre.hi[2]),
++            ];
++            let Some((v, g)) = ad_grad(&pre.compiled, p) else { continue };
++            n_used += 1;
++            max_dv = max_dv.max((v - tape_eval(&pre.compiled, p)).abs());
++            let gf = central_gradient(&tape_field, p, 1e-3 * pre.model);
++            let dn = norm(sub(g, gf));
++            diffs.push(dn);
++        }
++        diffs.sort_by(|a, b| a.total_cmp(b));
++        if !diffs.is_empty() {
++            writeln!(
++                csv_sane,
++                "{},{},{:.3e},{:.4},{:.4}",
++                name,
++                n_used,
++                max_dv,
++                diffs[diffs.len() / 2],
++                diffs[diffs.len() * 95 / 100]
++            )
++            .unwrap();
++        } else {
++            writeln!(csv_sane, "{name},0,unsupported,,").unwrap();
++        }
++    }
++    fs::write(format!("{out_dir}/sanity_ad.csv"), &csv_sane).unwrap();
++    eprintln!("[sanity] geschrieben");
++
++    // ── B1) FD-Tie-Flächen-Artefakt in 3D ─────────────────────────
++    // Harte Union, überlappend: außen ist f exakt (= d_wahr); an der
++    // Naht mittelt FD beide Äste → f/|g_fd| > d_wahr. AD: Winner-Branch.
++    let mut csv_fd = String::from(
++        "scene,grad_kind,h_mm,n,ratio_mean,ratio_p99,ratio_max,frac_over_1p05\n",
++    );
++    for scene_name in ["tangent_spheres_m25p0pct", "thin_wall_02p0pct"] {
++        let s = scenes::scene_by_name(scene_name).unwrap();
++        let pre = prepare(&s.name, &s.node);
++        let tape_field = TapeField { compiled: &pre.compiled };
++        let gt = GroundTruth::build(&tape_field, pre.lo, pre.hi, &gt_opts);
++        let mut rng = SplitMix64::new(0xF00D);
++        let surf = gt.surface_points();
++        let mut pts: Vec<[f64; 3]> = vec![];
++        while pts.len() < 3000 {
++            let q = surf[(rng.next_u64() as usize) % surf.len()];
++            let u = rng.unit_dir();
++            let p = add(q, scale(u, rng.range(0.0, 0.03 * pre.model)));
++            if tape_eval(&pre.compiled, p) > 1e-3 * pre.model {
++                pts.push(p);
++            }
++        }
++        let kinds: Vec<(String, f64)> = vec![
++            ("fd".into(), 1e-2 * pre.model),
++            ("fd".into(), 1e-3 * pre.model),
++            ("fd".into(), 1e-4 * pre.model),
++            ("ad".into(), 0.0),
++        ];
++        for (kind, h) in kinds {
++            let mut ratios: Vec<f64> = vec![];
++            for &p in &pts {
++                let f = tape_eval(&pre.compiled, p);
++                let gnorm = if kind == "fd" {
++                    norm(central_gradient(&tape_field, p, h))
++                } else {
++                    match ad_grad(&pre.compiled, p) {
++                        Some((_, g)) => norm(g),
++                        None => continue,
++                    }
++                };
++                if gnorm < 1e-6 {
++                    continue;
++                }
++                let d_true = gt.distance(p);
++                if d_true < 5e-4 * pre.model {
++                    continue;
++                }
++                ratios.push((f / gnorm) / d_true);
++            }
++            ratios.sort_by(|a, b| a.total_cmp(b));
++            let n = ratios.len();
++            if n == 0 {
++                continue;
++            }
++            let mean = ratios.iter().sum::<f64>() / n as f64;
++            let over = ratios.iter().filter(|r| **r > 1.05).count() as f64 / n as f64;
++            writeln!(
++                csv_fd,
++                "{},{},{:.4},{},{:.4},{:.4},{:.4},{:.4}",
++                scene_name,
++                kind,
++                h,
++                n,
++                mean,
++                ratios[n * 99 / 100],
++                ratios[n - 1],
++                over
++            )
++            .unwrap();
++            eprintln!(
++                "[fd-tie] {scene_name} {kind} h={h:.3}: max ratio {:.3}, p99 {:.3}, >1.05: {:.1}%",
++                ratios[n - 1],
++                ratios[n * 99 / 100],
++                over * 100.0
++            );
++        }
++    }
++    fs::write(format!("{out_dir}/fd_vs_ad_ties.csv"), &csv_fd).unwrap();
++
++    // ── B2) Vertrauensbandiertes Wurzel-Sampson auf Offset-Isoflächen ─
++    // Isofläche {F_variante = δ} entlang der Außen-Normalen suchen; die
++    // wahre Distanz des Treffpunkts zur Nullmenge (GT) sollte δ sein.
++    let r_blend = 6.0f64;
++    let mut csv_off = String::from(
++        "scene,delta_mm,variant,n,relerr_min,relerr_mean,relerr_max\n",
++    );
++    for (name, node) in [offset_smin(), smin_stack(4, 0.0)] {
++        let pre = prepare(&name, &node);
++        let tape_field = TapeField { compiled: &pre.compiled };
++        let gt = GroundTruth::build(&tape_field, pre.lo, pre.hi, &gt_opts);
++        let surf = gt.surface_points();
++        let mut rng = SplitMix64::new(0x0FF5E7);
++        // Variante: 0 = roh, 1 = Sampson (AD), 2 = Sampson bandiert.
++        let variant_eval = |p: [f64; 3], variant: usize| -> Option<f64> {
++            match variant {
++                0 => Some(tape_eval(&pre.compiled, p)),
++                _ => {
++                    let (f, g) = ad_grad(&pre.compiled, p)?;
++                    let gn = norm(g).max(0.25);
++                    if variant == 1 {
++                        Some(f / gn)
++                    } else {
++                        // Band: volle Korrektur für |f| ≤ r_blend, smoothstep-
++                        // Ausblendung bis 2·r_blend, außerhalb roh.
++                        let x = (((f.abs() - r_blend) / r_blend).clamp(0.0, 1.0)) as f64;
++                        let fade = 1.0 - x * x * (3.0 - 2.0 * x);
++                        let g_eff = 1.0 + (gn - 1.0) * fade;
++                        Some(f / g_eff)
++                    }
++                }
++            }
++        };
++        for delta in [1.0f64, 2.0, 3.0, 6.0, 12.0, -2.0] {
++            for variant in 0..3usize {
++                let vname = ["raw", "sampson", "sampson_banded"][variant];
++                let mut errs: Vec<f64> = vec![];
++                let mut tries = 0;
++                while errs.len() < 250 && tries < 4000 {
++                    tries += 1;
++                    let q = surf[(rng.next_u64() as usize) % surf.len()];
++                    let Some((_, gq)) = ad_grad(&pre.compiled, q) else { break };
++                    let Some(nrm) = normalize(gq) else { continue };
++                    let dir = if delta >= 0.0 { nrm } else { scale(nrm, -1.0) };
++                    // Ersten Crossing-Punkt von F_var = δ suchen + Bisektion.
++                    let t_lim = delta.abs() * 3.0 + 3.0 * r_blend;
++                    let mut t_lo = 0.0f64;
++                    let mut found = None;
++                    let mut steps = 0;
++                    let mut t = 0.0f64;
++                    let target = delta;
++                    let sgn = delta.signum();
++                    while t < t_lim && steps < 400 {
++                        let p = add(q, scale(dir, t));
++                        let Some(v) = variant_eval(p, variant) else { break };
++                        if sgn * (v - target) >= 0.0 && t > 0.0 {
++                            found = Some((t_lo, t));
++                            break;
++                        }
++                        t_lo = t;
++                        t += 0.25;
++                        steps += 1;
++                    }
++                    let Some((mut a, mut b)) = found else { continue };
++                    for _ in 0..40 {
++                        let mid = 0.5 * (a + b);
++                        let p = add(q, scale(dir, mid));
++                        let v = variant_eval(p, variant).unwrap_or(target);
++                        if sgn * (v - target) >= 0.0 {
++                            b = mid;
++                        } else {
++                            a = mid;
++                        }
++                    }
++                    let p = add(q, scale(dir, 0.5 * (a + b)));
++                    let d_true = gt.distance(p);
++                    // relerr: wie weit liegt die gefundene Isofläche von der
++                    // Soll-Distanz |δ| entfernt (signiert; − = zu nah).
++                    errs.push((d_true.abs() - delta.abs()) / delta.abs());
++                }
++                if errs.is_empty() {
++                    continue;
++                }
++                errs.sort_by(|x, y| x.total_cmp(y));
++                let mean = errs.iter().sum::<f64>() / errs.len() as f64;
++                writeln!(
++                    csv_off,
++                    "{},{},{},{},{:.4},{:.4},{:.4}",
++                    name,
++                    delta,
++                    vname,
++                    errs.len(),
++                    errs[0],
++                    mean,
++                    errs[errs.len() - 1]
++                )
++                .unwrap();
++                eprintln!(
++                    "[offset] {name} δ={delta} {vname}: relerr min {:.3} mean {:.3} max {:.3} (n={})",
++                    errs[0], mean, errs[errs.len() - 1], errs.len()
++                );
++            }
++        }
++    }
++    fs::write(format!("{out_dir}/sampson_offsets.csv"), &csv_off).unwrap();
++
++    // ── B3) Kosten: 1 Eval vs Dual-Eval vs 1+6 FD-Evals ────────────
++    let mut csv_cost = String::from(
++        "scene,opcodes,value_ns,dual_ns,fd7_ns,dual_over_value,fd7_over_value\n",
++    );
++    let cost_list = vec![
++        smin_stack(4, 0.0),
++        offset_smin(),
++        {
++            let s = scenes::scene_by_name("masked_blend_edge").unwrap();
++            (s.name, s.node)
++        },
++        {
++            let s = scenes::scene_by_name("deep_csg_08").unwrap();
++            (s.name, s.node)
++        },
++    ];
++    for (name, node) in cost_list {
++        let pre = prepare(&name, &node);
++        let mut rng = SplitMix64::new(0xC057);
++        let pts: Vec<[f32; 3]> = (0..4096)
++            .map(|_| {
++                [
++                    rng.range(pre.lo[0], pre.hi[0]) as f32,
++                    rng.range(pre.lo[1], pre.hi[1]) as f32,
++                    rng.range(pre.lo[2], pre.hi[2]) as f32,
++                ]
++            })
++            .collect();
++        let n = 300_000usize;
++        let h = (1e-3 * pre.model) as f32;
++        let bench = |f: &dyn Fn([f32; 3]) -> f32| -> f64 {
++            let mut acc = 0.0f32;
++            for p in pts.iter().take(1000) {
++                acc += f(*p);
++            }
++            let t0 = Instant::now();
++            for i in 0..n {
++                acc += f(pts[i % pts.len()]);
++            }
++            let dt = t0.elapsed().as_secs_f64();
++            std::hint::black_box(acc);
++            dt / n as f64 * 1e9
++        };
++        let ops = &pre.compiled.opcodes;
++        let vols = &pre.compiled.volumes;
++        let v_ns = bench(&|p| eval_opcodes_with_volumes(ops, p, vols));
++        let d_ns = bench(&|p| eval_opcodes_dual(ops, p).map(|d| d.v).unwrap_or(0.0));
++        let fd_ns = bench(&|p| {
++            let mut acc = eval_opcodes_with_volumes(ops, p, vols);
++            for ax in 0..3 {
++                let mut pp = p;
++                pp[ax] += h;
++                acc += eval_opcodes_with_volumes(ops, pp, vols);
++                pp[ax] -= 2.0 * h;
++                acc += eval_opcodes_with_volumes(ops, pp, vols);
++            }
++            acc
++        });
++        writeln!(
++            csv_cost,
++            "{},{},{:.1},{:.1},{:.1},{:.2},{:.2}",
++            name,
++            pre.compiled.opcodes.len(),
++            v_ns,
++            d_ns,
++            fd_ns,
++            d_ns / v_ns,
++            fd_ns / v_ns
++        )
++        .unwrap();
++        eprintln!(
++            "[cost] {name}: value {v_ns:.0} ns, dual {d_ns:.0} ns ({:.2}×), fd7 {fd_ns:.0} ns ({:.2}×)",
++            d_ns / v_ns,
++            fd_ns / v_ns
++        );
++    }
++    fs::write(format!("{out_dir}/ad_cost.csv"), &csv_cost).unwrap();
++
++    eprintln!("Fertig. Ergebnisse in {out_dir}/");
++}

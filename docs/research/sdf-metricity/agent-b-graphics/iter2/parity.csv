@@ -1,0 +1,11 @@
+scene,kind,max_root_dev_mm,n_roots_old,n_roots_new,unmatched,sign_mismatch,sign_pts,max_abs_field_diff_mm
+masked_blend_edge,smin,0.000002,7784,7784,0,0,50000,
+smin_chain_02,smin,0.000026,9152,9152,0,0,50000,
+smin_chain_16,smin,0.000025,7838,7838,0,0,50000,
+tangent_spheres_p10p0pct,hard,,,,,,,0.000e0
+tangent_spheres_p01p0pct,hard,,,,,,,0.000e0
+tangent_spheres_p00p0pct,hard,,,,,,,0.000e0
+tangent_spheres_m01p0pct,hard,,,,,,,0.000e0
+tangent_spheres_m25p0pct,hard,,,,,,,0.000e0
+thin_wall_05p0pct,hard,,,,,,,0.000e0
+thin_wall_00p5pct,hard,,,,,,,0.000e0

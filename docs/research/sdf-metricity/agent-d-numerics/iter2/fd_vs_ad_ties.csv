@@ -1,0 +1,9 @@
+scene,grad_kind,h_mm,n,ratio_mean,ratio_p99,ratio_max,frac_over_1p05
+tangent_spheres_m25p0pct,fd,1.5000,3000,1.0116,1.5541,1.9275,0.0243
+tangent_spheres_m25p0pct,fd,0.1500,3000,1.0012,1.0000,1.8095,0.0027
+tangent_spheres_m25p0pct,fd,0.0150,3000,1.0002,1.0002,1.6384,0.0003
+tangent_spheres_m25p0pct,ad,0.0000,3000,1.0000,1.0000,1.0001,0.0000
+thin_wall_02p0pct,fd,1.0000,3000,1.0088,1.3306,1.4142,0.0350
+thin_wall_02p0pct,fd,0.1000,3000,1.0006,1.0000,1.4142,0.0020
+thin_wall_02p0pct,fd,0.0100,3000,1.0001,1.0002,1.4132,0.0003
+thin_wall_02p0pct,ad,0.0000,3000,1.0000,1.0000,1.0000,0.0000

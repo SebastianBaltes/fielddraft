@@ -1,0 +1,757 @@
+//! #384 Iteration 2, Experiment 1 — Circular-CD-smin-Tausch REAL im Kernel.
+//!
+//! Misst am gepatchten Kernel (Laufzeit-Schalter `csg::smin_circ_cd_enabled`,
+//! `sdf_compiler::mb_fade_div_sqrt2_enabled`):
+//!   1. Zero-Set-Parität alt/neu (dichte Linien-Scans + Bisektion, Hausdorff
+//!      entlang der Linien; Vorzeichen-Parität an Zufallspunkten).
+//!   2. Feldmetriken alt/neu gegen gemeinsame Ground Truth (|f−d| nach
+//!      Bändern, ‖∇f‖-Statistik, Überschätzung max(f−d,0) außen).
+//!   3. Sphere-Trace-Simulation auf `eval_opcodes` (Tape): Tunnelraten und
+//!      Schrittzahlen unter {smin alt/neu} × {÷√2-Fade an/aus}, relax = 1.
+//!
+//! Usage: cargo run -p metricity-lab --release --bin iter2_circ_cd -- <outdir>
+//!
+//! WICHTIG: Der globale Schalter wird NUR phasenweise (sequentiell)
+//! umgeschaltet; innerhalb einer Phase ist er konstant (rayon-sicher).
+
+use std::io::Write;
+use std::sync::atomic::Ordering;
+
+use fielddraft_kernel::bvh::BoundedCsg;
+use fielddraft_kernel::csg::smin_circ_cd_enabled;
+use fielddraft_kernel::sdf_compiler::{compile_body, mb_fade_div_sqrt2_enabled};
+use metricity_lab::metrics::{sample_near_surface, sample_uniform, Stats};
+use metricity_lab::ground_truth::central_gradient;
+use metricity_lab::util::{add, norm, normalize, scale, sub, SplitMix64};
+use metricity_lab::{CsgField, Field, GroundTruth, GtOptions, TapeField};
+use metricity_lab::scenes;
+use rayon::prelude::*;
+
+fn set_cd(on: bool) {
+    smin_circ_cd_enabled().store(on, Ordering::SeqCst);
+}
+fn set_fade(on: bool) {
+    mb_fade_div_sqrt2_enabled().store(on, Ordering::SeqCst);
+}
+
+fn aabb_f64(node: &fielddraft_kernel::csg::CsgNode) -> ([f64; 3], [f64; 3]) {
+    let a = node.aabb();
+    (
+        [a.min[0] as f64, a.min[1] as f64, a.min[2] as f64],
+        [a.max[0] as f64, a.max[1] as f64, a.max[2] as f64],
+    )
+}
+
+// ── 1. Zero-Set-Parität ────────────────────────────────────────────
+
+/// Nullstellen entlang einer Linie `o + t·dir`, t ∈ [0, len]:
+/// `steps` Samples, Vorzeichenwechsel per Bisektion (48 Iter) verfeinert.
+fn line_roots(f: &dyn Field, o: [f64; 3], dir: [f64; 3], len: f64, steps: usize) -> Vec<f64> {
+    let mut roots = Vec::new();
+    let dt = len / steps as f64;
+    let mut prev = f.eval(o);
+    for i in 1..=steps {
+        let t = i as f64 * dt;
+        let v = f.eval(add(o, scale(dir, t)));
+        if prev == 0.0 {
+            roots.push(t - dt);
+        } else if prev.signum() != v.signum() && v != 0.0 {
+            let (mut a, mut b) = (t - dt, t);
+            let mut fa = prev;
+            for _ in 0..48 {
+                let m = 0.5 * (a + b);
+                let fm = f.eval(add(o, scale(dir, m)));
+                if fm == 0.0 {
+                    a = m;
+                    b = m;
+                    break;
+                }
+                if fa.signum() != fm.signum() {
+                    b = m;
+                } else {
+                    a = m;
+                    fa = fm;
+                }
+            }
+            roots.push(0.5 * (a + b));
+        }
+        prev = v;
+    }
+    roots
+}
+
+struct ParityResult {
+    max_dev: f64,
+    n_roots_old: usize,
+    n_roots_new: usize,
+    unmatched: usize,
+    sign_mismatch: usize,
+    sign_pts: usize,
+}
+
+/// Hausdorff-artige Maximalabweichung der Nullstellen entlang dichter
+/// Achsen-Linien, alt vs. neu, plus Vorzeichen-Parität an Zufallspunkten.
+fn zero_parity(node: &fielddraft_kernel::csg::CsgNode, lines: usize, steps: usize) -> ParityResult {
+    let (lo0, hi0) = aabb_f64(node);
+    let size = (hi0[0] - lo0[0]).max(hi0[1] - lo0[1]).max(hi0[2] - lo0[2]);
+    let pad = 0.04 * size;
+    let lo = [lo0[0] - pad, lo0[1] - pad, lo0[2] - pad];
+    let hi = [hi0[0] + pad, hi0[1] + pad, hi0[2] + pad];
+    let field = CsgField::visual(node);
+
+    // Linien sammeln (Achse d, Gitter über die beiden Querachsen).
+    let mut line_defs: Vec<([f64; 3], [f64; 3], f64)> = Vec::new();
+    for d in 0..3 {
+        let (u, v) = ((d + 1) % 3, (d + 2) % 3);
+        for i in 0..lines {
+            for j in 0..lines {
+                let fu = (i as f64 + 0.5) / lines as f64;
+                let fv = (j as f64 + 0.5) / lines as f64;
+                let mut o = lo;
+                o[u] = lo[u] + fu * (hi[u] - lo[u]);
+                o[v] = lo[v] + fv * (hi[v] - lo[v]);
+                let mut dir = [0.0; 3];
+                dir[d] = 1.0;
+                line_defs.push((o, dir, hi[d] - lo[d]));
+            }
+        }
+    }
+
+    set_cd(false);
+    let roots_old: Vec<Vec<f64>> = line_defs
+        .par_iter()
+        .map(|&(o, dir, len)| line_roots(&field, o, dir, len, steps))
+        .collect();
+    set_cd(true);
+    let roots_new: Vec<Vec<f64>> = line_defs
+        .par_iter()
+        .map(|&(o, dir, len)| line_roots(&field, o, dir, len, steps))
+        .collect();
+
+    let mut max_dev = 0.0f64;
+    let mut unmatched = 0usize;
+    let (mut n_old, mut n_new) = (0usize, 0usize);
+    let match_tol = 0.5; // mm — darüber gilt eine Nullstelle als unmatched
+    for (ro, rn) in roots_old.iter().zip(roots_new.iter()) {
+        n_old += ro.len();
+        n_new += rn.len();
+        for (a_set, b_set) in [(ro, rn), (rn, ro)] {
+            for &t in a_set {
+                let best = b_set
+                    .iter()
+                    .map(|&s| (s - t).abs())
+                    .fold(f64::INFINITY, f64::min);
+                if best > match_tol {
+                    unmatched += 1;
+                } else {
+                    max_dev = max_dev.max(best);
+                }
+            }
+        }
+    }
+
+    // Vorzeichen-Parität.
+    let pts = sample_uniform(lo, hi, 50_000, 777);
+    set_cd(false);
+    let s_old: Vec<f64> = pts.par_iter().map(|&p| field.eval(p)).collect();
+    set_cd(true);
+    let s_new: Vec<f64> = pts.par_iter().map(|&p| field.eval(p)).collect();
+    let sign_mismatch = s_old
+        .iter()
+        .zip(s_new.iter())
+        .filter(|(a, b)| (**a < 0.0) != (**b < 0.0))
+        .count();
+
+    ParityResult {
+        max_dev,
+        n_roots_old: n_old,
+        n_roots_new: n_new,
+        unmatched,
+        sign_mismatch,
+        sign_pts: pts.len(),
+    }
+}
+
+/// Bit-Identität alt/neu (für Szenen ohne smin-Knoten).
+fn field_identity(node: &fielddraft_kernel::csg::CsgNode) -> f64 {
+    let (lo, hi) = aabb_f64(node);
+    let field = CsgField::visual(node);
+    let pts = sample_uniform(lo, hi, 50_000, 4242);
+    set_cd(false);
+    let a: Vec<f64> = pts.par_iter().map(|&p| field.eval(p)).collect();
+    set_cd(true);
+    let b: Vec<f64> = pts.par_iter().map(|&p| field.eval(p)).collect();
+    a.iter()
+        .zip(b.iter())
+        .map(|(x, y)| (x - y).abs())
+        .fold(0.0, f64::max)
+}
+
+// ── 2. Feldmetriken ────────────────────────────────────────────────
+
+struct BandStats {
+    near_out: Stats,
+    near_in: Stats,
+    mid_out: Stats,
+    mid_in: Stats,
+    far_out: Stats,
+    far_in: Stats,
+    /// max(f − d, 0) über Außenpunkte — Rollout-relevante Überschätzung.
+    over_out_max: f64,
+    over_out_p99: f64,
+}
+
+fn band_stats(rows: &[(f64, f64)], size: f64) -> BandStats {
+    let near = 0.02 * size;
+    let mid = 0.10 * size;
+    let band = |lo: f64, hi: f64, inside: bool| -> Stats {
+        Stats::from_signed(
+            rows.iter()
+                .filter(|(d, _)| {
+                    let a = d.abs();
+                    a >= lo && a < hi && ((*d < 0.0) == inside)
+                })
+                .map(|(_, e)| *e)
+                .collect(),
+        )
+    };
+    let mut overs: Vec<f64> = rows
+        .iter()
+        .filter(|(d, _)| *d >= 0.0)
+        .map(|(_, e)| e.max(0.0))
+        .collect();
+    overs.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let over_out_max = overs.last().copied().unwrap_or(0.0);
+    let over_out_p99 = if overs.is_empty() {
+        0.0
+    } else {
+        overs[((overs.len() as f64 * 0.99) as usize).min(overs.len() - 1)]
+    };
+    BandStats {
+        near_out: band(0.0, near, false),
+        near_in: band(0.0, near, true),
+        mid_out: band(near, mid, false),
+        mid_in: band(near, mid, true),
+        far_out: band(mid, f64::INFINITY, false),
+        far_in: band(mid, f64::INFINITY, true),
+        over_out_max,
+        over_out_p99,
+    }
+}
+
+struct GradStats {
+    dev: Stats,
+    norm_max: f64,
+    norm_p99: f64,
+}
+
+fn grad_stats(field: &dyn Field, pts: &[[f64; 3]], h: f64) -> GradStats {
+    let mut norms: Vec<f64> = pts
+        .par_iter()
+        .map(|&p| norm(central_gradient(field, p, h)))
+        .filter(|n| n.is_finite())
+        .collect();
+    norms.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let norm_max = norms.last().copied().unwrap_or(0.0);
+    let norm_p99 = norms[((norms.len() as f64 * 0.99) as usize).min(norms.len().saturating_sub(1))];
+    GradStats {
+        dev: Stats::from_signed(norms.iter().map(|n| n - 1.0).collect()),
+        norm_max,
+        norm_p99,
+    }
+}
+
+// ── 3. Sphere-Trace-Simulation auf dem Tape ────────────────────────
+
+struct TracePolicy {
+    name: &'static str,
+    cd: bool,
+    fade: bool,
+    relax: f64,
+}
+
+struct TraceResult {
+    tunnel_pct: f64,
+    miss_pct: f64,
+    steps_mean: f64,
+    steps_p95: f64,
+    rays_hit_gt: usize,
+}
+
+/// GT-Erstschnitt entlang des Strahls: dichter Marsch + Bisektion auf dem
+/// VISUAL-Feld (Nullmenge = für alt/neu identisch, s. Parität).
+fn gt_first_hit(field: &dyn Field, o: [f64; 3], dir: [f64; 3], t_max: f64, steps: usize) -> Option<f64> {
+    let dt = t_max / steps as f64;
+    let mut prev = field.eval(o);
+    for i in 1..=steps {
+        let t = i as f64 * dt;
+        let v = field.eval(add(o, scale(dir, t)));
+        if prev > 0.0 && v <= 0.0 {
+            let (mut a, mut b) = (t - dt, t);
+            for _ in 0..48 {
+                let m = 0.5 * (a + b);
+                if field.eval(add(o, scale(dir, m))) > 0.0 {
+                    a = m;
+                } else {
+                    b = m;
+                }
+            }
+            return Some(0.5 * (a + b));
+        }
+        prev = v;
+    }
+    None
+}
+
+fn sphere_trace(
+    field: &dyn Field,
+    o: [f64; 3],
+    dir: [f64; 3],
+    t_max: f64,
+    relax: f64,
+    hit_eps: f64,
+    max_steps: usize,
+) -> (Option<f64>, usize) {
+    let mut t = 0.0f64;
+    for step in 1..=max_steps {
+        let f = field.eval(add(o, scale(dir, t)));
+        if f < hit_eps {
+            return (Some(t), step);
+        }
+        t += (f * relax).max(hit_eps * 0.5);
+        if t > t_max {
+            return (None, step);
+        }
+    }
+    (Some(t), max_steps)
+}
+
+fn trace_scene(
+    node: &fielddraft_kernel::csg::CsgNode,
+    policies: &[TracePolicy],
+    n_rays: usize,
+) -> Vec<TraceResult> {
+    let (lo, hi) = aabb_f64(node);
+    let c = [
+        0.5 * (lo[0] + hi[0]),
+        0.5 * (lo[1] + hi[1]),
+        0.5 * (lo[2] + hi[2]),
+    ];
+    let half = [
+        0.5 * (hi[0] - lo[0]),
+        0.5 * (hi[1] - lo[1]),
+        0.5 * (hi[2] - lo[2]),
+    ];
+    let rad = 1.6 * norm(half);
+    let size = 2.0 * norm(half);
+
+    // Strahlen: Ursprung auf Kugel, Ziel uniform im AABB.
+    let mut rng = SplitMix64::new(0xB001_u64 ^ 0x384);
+    let rays: Vec<([f64; 3], [f64; 3])> = (0..n_rays * 2)
+        .map(|_| {
+            let u = rng.unit_dir();
+            let o = add(c, scale(u, rad));
+            let tgt = [
+                rng.range(lo[0], hi[0]),
+                rng.range(lo[1], hi[1]),
+                rng.range(lo[2], hi[2]),
+            ];
+            let dir = normalize(sub(tgt, o)).unwrap_or([0.0, 0.0, 1.0]);
+            (o, dir)
+        })
+        .collect();
+
+    // GT-Schnitte auf dem Visual-Feld (Schalter-Stand egal für die
+    // Nullmenge; wir nehmen CD=true = Default).
+    set_cd(true);
+    let visual = CsgField::visual(node);
+    let t_max = 2.2 * rad;
+    let gt_hits: Vec<Option<f64>> = rays
+        .par_iter()
+        .map(|&(o, dir)| gt_first_hit(&visual, o, dir, t_max, 6000))
+        .collect();
+
+    // Nur Strahlen, die die Oberfläche wirklich treffen.
+    let hit_rays: Vec<(([f64; 3], [f64; 3]), f64)> = rays
+        .iter()
+        .zip(gt_hits.iter())
+        .filter_map(|(&r, &h)| h.map(|t| (r, t)))
+        .take(n_rays)
+        .collect();
+
+    let compiled = compile_body(&BoundedCsg::from_csg(node));
+    let tape = TapeField { compiled: &compiled };
+    let hit_eps = 0.05; // mm
+    let tunnel_tol = 0.1; // mm
+
+    policies
+        .iter()
+        .map(|pol| {
+            set_cd(pol.cd);
+            set_fade(pol.fade);
+            let results: Vec<(bool, bool, usize)> = hit_rays
+                .par_iter()
+                .map(|&((o, dir), t_gt)| {
+                    let (hit, steps) =
+                        sphere_trace(&tape, o, dir, t_max, pol.relax, hit_eps, 512);
+                    match hit {
+                        Some(t) => (t > t_gt + tunnel_tol, false, steps),
+                        None => (true, true, steps),
+                    }
+                })
+                .collect();
+            // Schalter zurück auf Default, bevor der nächste kommt.
+            set_cd(true);
+            set_fade(true);
+            let n = results.len().max(1);
+            let tunnels = results.iter().filter(|(t, _, _)| *t).count();
+            let misses = results.iter().filter(|(_, m, _)| *m).count();
+            let mut steps: Vec<usize> = results
+                .iter()
+                .filter(|(t, _, _)| !*t)
+                .map(|(_, _, s)| *s)
+                .collect();
+            steps.sort_unstable();
+            let steps_mean = if steps.is_empty() {
+                f64::NAN
+            } else {
+                steps.iter().sum::<usize>() as f64 / steps.len() as f64
+            };
+            let steps_p95 = if steps.is_empty() {
+                f64::NAN
+            } else {
+                steps[((steps.len() as f64 * 0.95) as usize).min(steps.len() - 1)] as f64
+            };
+            let _ = size;
+            TraceResult {
+                tunnel_pct: 100.0 * tunnels as f64 / n as f64,
+                miss_pct: 100.0 * misses as f64 / n as f64,
+                steps_mean,
+                steps_p95,
+                rays_hit_gt: hit_rays.len(),
+            }
+        })
+        .collect()
+}
+
+// ── Phase 5: Probes (Maskengrenzen-Sprung + seam-gezielter Trace) ──
+
+/// Visual-Feld-Profil entlang der Wedge-Bisektrix durch die Masken-Tube-
+/// Grenze von `masked_blend_edge` (Kante bei (12,20,0), Bisektrix (1,1,0)/√2,
+/// Tube-Rand bei t = mask_r = 15). Quantifiziert den Wertesprung des harten
+/// Masken-Switches unter alt/neu.
+fn probe_mask_jump(out_dir: &str) {
+    let scene = scenes::scene_by_name("masked_blend_edge").unwrap();
+    let field = CsgField::visual(&scene.node);
+    let compiled = compile_body(&BoundedCsg::from_csg(&scene.node));
+    let tape = TapeField { compiled: &compiled };
+    let e = [12.0, 20.0, 0.0];
+    let s = std::f64::consts::FRAC_1_SQRT_2;
+    let u = [s, s, 0.0];
+    let (t0, t1, n) = (12.0, 18.0, 3000usize);
+    let dt = (t1 - t0) / n as f64;
+    let mut rows = String::from("t,f_vis_old,f_vis_new,f_tape_old_fade,f_tape_new_fade\n");
+    let mut prof = |cd: bool, fade: bool, f: &dyn Field| -> Vec<f64> {
+        set_cd(cd);
+        set_fade(fade);
+        let v = (0..=n)
+            .map(|i| f.eval(add(e, scale(u, t0 + i as f64 * dt))))
+            .collect();
+        set_cd(true);
+        set_fade(true);
+        v
+    };
+    let vis_old = prof(false, true, &field);
+    let vis_new = prof(true, true, &field);
+    let tape_old = prof(false, true, &tape);
+    let tape_new = prof(true, true, &tape);
+    let max_jump = |v: &[f64]| -> f64 {
+        v.windows(2).map(|w| (w[1] - w[0]).abs()).fold(0.0, f64::max)
+    };
+    println!(
+        "[jump] visual max|Δf| über dt={:.4}: old={:.5} new={:.5} | tape(fade): old={:.5} new={:.5}",
+        dt, max_jump(&vis_old), max_jump(&vis_new), max_jump(&tape_old), max_jump(&tape_new)
+    );
+    for i in 0..=n {
+        rows.push_str(&format!(
+            "{:.4},{:.6},{:.6},{:.6},{:.6}\n",
+            t0 + i as f64 * dt, vis_old[i], vis_new[i], tape_old[i], tape_new[i]
+        ));
+    }
+    std::fs::write(format!("{out_dir}/mask_jump_profile.csv"), rows).unwrap();
+}
+
+/// Seam-gezielter Trace auf masked_blend_edge: Ray-Ziele auf den
+/// Junction-Ring gejittert (Ball r=6) — der #386-Stressfall (Rays in den
+/// konkaven Fillet-Keil), statt uniformer AABB-Ziele.
+fn trace_seam(out_dir: &str, policies: &[TracePolicy], n_rays: usize) {
+    let scene = scenes::scene_by_name("masked_blend_edge").unwrap();
+    let node = &scene.node;
+    let (lo, hi) = aabb_f64(node);
+    let c = [0.5 * (lo[0] + hi[0]), 0.5 * (lo[1] + hi[1]), 0.5 * (lo[2] + hi[2])];
+    let half = [0.5 * (hi[0] - lo[0]), 0.5 * (hi[1] - lo[1]), 0.5 * (hi[2] - lo[2])];
+    let rad = 1.6 * norm(half);
+    // Ring: Quadrat x,z = ±12 auf y = 20.
+    let ring = [
+        [-12.0, 20.0, -12.0],
+        [12.0, 20.0, -12.0],
+        [12.0, 20.0, 12.0],
+        [-12.0, 20.0, 12.0],
+        [-12.0, 20.0, -12.0],
+    ];
+    let mut rng = SplitMix64::new(0x5EA0_386);
+    let rays: Vec<([f64; 3], [f64; 3])> = (0..n_rays * 2)
+        .map(|_| {
+            let seg = (rng.next_u64() % 4) as usize;
+            let f = rng.next_f64();
+            let a = ring[seg];
+            let b = ring[seg + 1];
+            let base = [
+                a[0] + f * (b[0] - a[0]),
+                a[1] + f * (b[1] - a[1]),
+                a[2] + f * (b[2] - a[2]),
+            ];
+            let j = scale(rng.unit_dir(), 6.0 * rng.next_f64());
+            let tgt = add(base, j);
+            let o = add(c, scale(rng.unit_dir(), rad));
+            let dir = normalize(sub(tgt, o)).unwrap_or([0.0, 0.0, 1.0]);
+            (o, dir)
+        })
+        .collect();
+    set_cd(true);
+    let visual = CsgField::visual(node);
+    let t_max = 2.2 * rad;
+    let gt_hits: Vec<Option<f64>> = rays
+        .par_iter()
+        .map(|&(o, dir)| gt_first_hit(&visual, o, dir, t_max, 6000))
+        .collect();
+    let hit_rays: Vec<(([f64; 3], [f64; 3]), f64)> = rays
+        .iter()
+        .zip(gt_hits.iter())
+        .filter_map(|(&r, &h)| h.map(|t| (r, t)))
+        .take(n_rays)
+        .collect();
+    let compiled = compile_body(&BoundedCsg::from_csg(node));
+    let tape = TapeField { compiled: &compiled };
+    let (hit_eps, tunnel_tol) = (0.05, 0.1);
+    let mut csv = String::from("policy,rays,tunnel_pct,miss_pct,steps_mean,steps_p95\n");
+    for pol in policies {
+        set_cd(pol.cd);
+        set_fade(pol.fade);
+        let results: Vec<(bool, bool, usize)> = hit_rays
+            .par_iter()
+            .map(|&((o, dir), t_gt)| {
+                let (hit, steps) = sphere_trace(&tape, o, dir, t_max, pol.relax, hit_eps, 512);
+                match hit {
+                    Some(t) => (t > t_gt + tunnel_tol, false, steps),
+                    None => (true, true, steps),
+                }
+            })
+            .collect();
+        set_cd(true);
+        set_fade(true);
+        let n = results.len().max(1);
+        let tunnels = results.iter().filter(|(t, _, _)| *t).count();
+        let misses = results.iter().filter(|(_, m, _)| *m).count();
+        let mut steps: Vec<usize> = results.iter().filter(|(t, _, _)| !*t).map(|(_, _, s)| *s).collect();
+        steps.sort_unstable();
+        let (sm, sp) = if steps.is_empty() {
+            (f64::NAN, f64::NAN)
+        } else {
+            (
+                steps.iter().sum::<usize>() as f64 / steps.len() as f64,
+                steps[((steps.len() as f64 * 0.95) as usize).min(steps.len() - 1)] as f64,
+            )
+        };
+        println!(
+            "[seam] {}: tunnel={:.2}% miss={:.2}% steps mean={:.1} p95={:.0} (rays={})",
+            pol.name, 100.0 * tunnels as f64 / n as f64, 100.0 * misses as f64 / n as f64,
+            sm, sp, hit_rays.len()
+        );
+        csv.push_str(&format!(
+            "{},{},{:.3},{:.3},{:.2},{:.0}\n",
+            pol.name, hit_rays.len(), 100.0 * tunnels as f64 / n as f64,
+            100.0 * misses as f64 / n as f64, sm, sp
+        ));
+    }
+    std::fs::write(format!("{out_dir}/trace_seam.csv"), csv).unwrap();
+}
+
+// ── main ───────────────────────────────────────────────────────────
+
+fn main() {
+    let out_dir = std::env::args()
+        .nth(1)
+        .unwrap_or_else(|| "iter2_out".to_string());
+    std::fs::create_dir_all(&out_dir).unwrap();
+    let probe_only = std::env::args().nth(2).as_deref() == Some("probe");
+    if probe_only {
+        let policies = [
+            TracePolicy { name: "old_fade_relax1", cd: false, fade: true, relax: 1.0 },
+            TracePolicy { name: "old_nofade_relax1", cd: false, fade: false, relax: 1.0 },
+            TracePolicy { name: "new_fade_relax1", cd: true, fade: true, relax: 1.0 },
+            TracePolicy { name: "new_nofade_relax1", cd: true, fade: false, relax: 1.0 },
+            TracePolicy { name: "old_fade_relax075", cd: false, fade: true, relax: 0.75 },
+        ];
+        probe_mask_jump(&out_dir);
+        trace_seam(&out_dir, &policies, 4000);
+        println!("probe done → {out_dir}");
+        return;
+    }
+
+    let smin_scenes = ["masked_blend_edge", "smin_chain_02", "smin_chain_16"];
+    let hard_scenes = [
+        "tangent_spheres_p10p0pct",
+        "tangent_spheres_p01p0pct",
+        "tangent_spheres_p00p0pct",
+        "tangent_spheres_m01p0pct",
+        "tangent_spheres_m25p0pct",
+        "thin_wall_05p0pct",
+        "thin_wall_00p5pct",
+    ];
+
+    // ── Phase 1: Zero-Set-Parität ──────────────────────────────────
+    let mut csv = String::from(
+        "scene,kind,max_root_dev_mm,n_roots_old,n_roots_new,unmatched,sign_mismatch,sign_pts,max_abs_field_diff_mm\n",
+    );
+    for name in smin_scenes {
+        let scene = scenes::scene_by_name(name).unwrap();
+        let steps = 2048;
+        let p = zero_parity(&scene.node, 48, steps);
+        println!(
+            "[parity] {name}: max_dev={:.6} mm, roots {} vs {}, unmatched={}, sign {}/{}",
+            p.max_dev, p.n_roots_old, p.n_roots_new, p.unmatched, p.sign_mismatch, p.sign_pts
+        );
+        csv.push_str(&format!(
+            "{name},smin,{:.6},{},{},{},{},{},\n",
+            p.max_dev, p.n_roots_old, p.n_roots_new, p.unmatched, p.sign_mismatch, p.sign_pts
+        ));
+    }
+    for name in hard_scenes {
+        let scene = scenes::scene_by_name(name).unwrap();
+        let d = field_identity(&scene.node);
+        println!("[identity] {name}: max |f_old − f_new| = {d:.3e} mm");
+        csv.push_str(&format!("{name},hard,,,,,,,{d:.3e}\n"));
+    }
+    std::fs::write(format!("{out_dir}/parity.csv"), &csv).unwrap();
+
+    // ── Phase 2: Feldmetriken ──────────────────────────────────────
+    let mut csv = String::from(
+        "scene,variant,band,count,mean,p95,max,mean_signed\n",
+    );
+    let mut csv2 = String::from(
+        "scene,variant,grad_dev_mean,grad_dev_p95,grad_dev_max,grad_norm_p99,grad_norm_max,over_out_p99,over_out_max\n",
+    );
+    for name in smin_scenes {
+        let scene = scenes::scene_by_name(name).unwrap();
+        let (lo, hi) = aabb_f64(&scene.node);
+        let field = CsgField::visual(&scene.node);
+
+        // GT auf dem ALT-Feld bauen und alle d_wahr mit ALT-Schalter cachen.
+        set_cd(false);
+        let mut opts = GtOptions::default();
+        if scene.gt_grid > 0 {
+            opts.grid = scene.gt_grid;
+        }
+        let gt = GroundTruth::build(&field, lo, hi, &opts);
+        let margin = 0.15 * gt.model_size;
+        let ulo = [lo[0] - margin, lo[1] - margin, lo[2] - margin];
+        let uhi = [hi[0] + margin, hi[1] + margin, hi[2] + margin];
+        let mut pts = sample_uniform(ulo, uhi, 6000, 42);
+        pts.extend_from_slice(&sample_near_surface(&gt, 6000, 0.05, 43));
+        let d_true: Vec<f64> = pts.par_iter().map(|&p| gt.distance(p)).collect();
+
+        for (variant, cd) in [("old", false), ("new", true)] {
+            set_cd(cd);
+            let f_vals: Vec<f64> = pts.par_iter().map(|&p| field.eval(p)).collect();
+            let rows: Vec<(f64, f64)> = d_true
+                .iter()
+                .zip(f_vals.iter())
+                .filter(|(d, f)| d.is_finite() && f.is_finite())
+                .map(|(&d, &f)| (d, f - d))
+                .collect();
+            let bs = band_stats(&rows, gt.model_size);
+            for (bname, s) in [
+                ("near_out", &bs.near_out),
+                ("near_in", &bs.near_in),
+                ("mid_out", &bs.mid_out),
+                ("mid_in", &bs.mid_in),
+                ("far_out", &bs.far_out),
+                ("far_in", &bs.far_in),
+            ] {
+                csv.push_str(&format!(
+                    "{name},{variant},{bname},{},{:.6},{:.6},{:.6},{:.6}\n",
+                    s.count, s.mean, s.p95, s.max, s.mean_signed
+                ));
+            }
+            let gs = grad_stats(&field, &pts, gt.model_size * 1e-3);
+            println!(
+                "[field] {name}/{variant}: near_out max={:.4} bias={:.4} | grad max={:.4} p99={:.4} | over_out max={:.4}",
+                bs.near_out.max, bs.near_out.mean_signed, gs.norm_max, gs.norm_p99, bs.over_out_max
+            );
+            csv2.push_str(&format!(
+                "{name},{variant},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6}\n",
+                gs.dev.mean, gs.dev.p95, gs.dev.max, gs.norm_p99, gs.norm_max, bs.over_out_p99, bs.over_out_max
+            ));
+        }
+        set_cd(true);
+    }
+    std::fs::write(format!("{out_dir}/field_bands.csv"), &csv).unwrap();
+    std::fs::write(format!("{out_dir}/field_grad_over.csv"), &csv2).unwrap();
+
+    // ── Phase 3: Trace-Simulation ──────────────────────────────────
+    let policies = [
+        TracePolicy { name: "old_fade_relax1", cd: false, fade: true, relax: 1.0 },
+        TracePolicy { name: "old_nofade_relax1", cd: false, fade: false, relax: 1.0 },
+        TracePolicy { name: "new_fade_relax1", cd: true, fade: true, relax: 1.0 },
+        TracePolicy { name: "new_nofade_relax1", cd: true, fade: false, relax: 1.0 },
+        TracePolicy { name: "old_fade_relax075", cd: false, fade: true, relax: 0.75 },
+    ];
+    let mut csv = String::from(
+        "scene,policy,rays,tunnel_pct,miss_pct,steps_mean,steps_p95\n",
+    );
+    for name in ["masked_blend_edge", "smin_chain_02", "smin_chain_16", "tangent_spheres_m01p0pct"] {
+        let scene = scenes::scene_by_name(name).unwrap();
+        let results = trace_scene(&scene.node, &policies, 3000);
+        for (pol, r) in policies.iter().zip(results.iter()) {
+            println!(
+                "[trace] {name}/{}: tunnel={:.2}% miss={:.2}% steps mean={:.1} p95={:.0} (rays={})",
+                pol.name, r.tunnel_pct, r.miss_pct, r.steps_mean, r.steps_p95, r.rays_hit_gt
+            );
+            csv.push_str(&format!(
+                "{name},{},{},{:.3},{:.3},{:.2},{:.0}\n",
+                pol.name, r.rays_hit_gt, r.tunnel_pct, r.miss_pct, r.steps_mean, r.steps_p95
+            ));
+        }
+    }
+    std::fs::write(format!("{out_dir}/trace.csv"), &csv).unwrap();
+
+    // ── Phase 4: Kosten ────────────────────────────────────────────
+    let mut csv = String::from("scene,variant,csg_ns_per_eval,tape_ns_per_eval\n");
+    for name in smin_scenes {
+        let scene = scenes::scene_by_name(name).unwrap();
+        let (lo, hi) = aabb_f64(&scene.node);
+        let field = CsgField::visual(&scene.node);
+        let compiled = compile_body(&BoundedCsg::from_csg(&scene.node));
+        let tape = TapeField { compiled: &compiled };
+        let pts = sample_uniform(lo, hi, 4096, 99);
+        for (variant, cd) in [("old", false), ("new", true)] {
+            set_cd(cd);
+            let c = metricity_lab::metrics::cost_report(&field, &tape, &pts, 1_000_000);
+            println!(
+                "[cost] {name}/{variant}: csg {:.1} ns/eval, tape {:.1} ns/eval",
+                c.csg_ns_per_eval, c.tape_ns_per_eval
+            );
+            csv.push_str(&format!(
+                "{name},{variant},{:.2},{:.2}\n",
+                c.csg_ns_per_eval, c.tape_ns_per_eval
+            ));
+        }
+        set_cd(true);
+    }
+    std::fs::write(format!("{out_dir}/cost.csv"), &csv).unwrap();
+
+    let mut f = std::fs::File::create(format!("{out_dir}/DONE")).unwrap();
+    writeln!(f, "ok").unwrap();
+    println!("done → {out_dir}");
+}

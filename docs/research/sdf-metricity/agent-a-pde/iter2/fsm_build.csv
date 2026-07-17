@@ -1,0 +1,2 @@
+scene,nx,ny,nz,cells,h_mm,t_sample_s,sample_evals,t_band_s,t_sweep_s,sweep_sets,mem_mb
+plate_bore,200,92,138,2539200,0.48241,0.099,2539200,0.014,0.201,2,19.4

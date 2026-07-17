@@ -1,0 +1,7 @@
+scene,variant,csg_ns_per_eval,tape_ns_per_eval
+masked_blend_edge,old,31.52,57.97
+masked_blend_edge,new,31.29,57.71
+smin_chain_02,old,16.19,40.16
+smin_chain_02,new,15.77,44.32
+smin_chain_16,old,159.89,355.20
+smin_chain_16,new,208.77,417.51

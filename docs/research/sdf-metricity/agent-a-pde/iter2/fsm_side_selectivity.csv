@@ -1,0 +1,13 @@
+scene,band,side,field,n,mean_abs_mm,p95_mm,max_abs_mm,bias_mm
+plate_bore,near(<2mm),out,raw,1334,0.001793,0.000001,0.484345,-0.001792
+plate_bore,near(<2mm),out,fsm,1334,0.015785,0.159715,0.424259,0.014242
+plate_bore,near(<2mm),in,raw,1111,0.000000,0.000001,0.000002,0.000000
+plate_bore,near(<2mm),in,fsm,1111,0.005532,0.033637,0.199677,0.004148
+plate_bore,mid(2-10mm),out,raw,6178,0.020909,0.000002,5.870765,-0.020909
+plate_bore,mid(2-10mm),out,fsm,6178,0.104889,0.463619,0.848106,0.101739
+plate_bore,mid(2-10mm),in,raw,2307,0.000000,0.000001,0.000003,-0.000000
+plate_bore,mid(2-10mm),in,fsm,2307,0.013183,0.093650,0.228656,0.008038
+plate_bore,far(>10mm),out,raw,1070,0.037146,0.000002,3.284756,-0.037145
+plate_bore,far(>10mm),out,fsm,1070,0.219188,0.656817,0.906257,0.219188
+plate_bore,far(>10mm),in,raw,0,0.000000,0.000000,0.000000,0.000000
+plate_bore,far(>10mm),in,fsm,0,0.000000,0.000000,0.000000,0.000000

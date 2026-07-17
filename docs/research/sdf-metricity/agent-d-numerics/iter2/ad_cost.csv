@@ -1,0 +1,5 @@
+scene,opcodes,value_ns,dual_ns,fd7_ns,dual_over_value,fd7_over_value
+stack_coin_m04,73,106.6,105.8,780.7,0.99,7.33
+offset_smin,28,38.9,40.4,307.6,1.04,7.90
+masked_blend_edge,50,55.8,125.1,443.6,2.24,7.95
+deep_csg_08,127,96.0,184.6,702.0,1.92,7.31
