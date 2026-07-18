@@ -1507,8 +1507,11 @@ impl CsgNode {
     /// exacter, which is the entry point for the analytic per-leaf folding
     /// (sphere/torus `r ± δ`, 2D-profile offsetting) of the `offset_tree`
     /// product plan. That folding is deliberately NOT done here: it changes
-    /// leaf `Primitive` identity, which the feature-snap / B-Rep-carrier
-    /// paths consume — a separate step with its own consumers audit.
+    /// leaf `Primitive` parameters, which the feature-snap / B-Rep-carrier
+    /// paths consume — it lives in the separate follow-up pass
+    /// [`Self::fold_offset_leaves`] (Phase A2, consumers audit in
+    /// docs/OFFSET-TREE-AUDIT.md), which every build path runs right after
+    /// this one.
     pub fn push_down_offsets(self) -> Self {
         match self {
             CsgNode::Offset(inner, delta) => inner.push_down_offset(delta),
@@ -1615,6 +1618,97 @@ impl CsgNode {
             // warp ops, Shell, leaves): keep today's `f − δ` right here. Leaf
             // fields are exact SDFs, so `f − δ` on a leaf IS the exact offset.
             other => CsgNode::Offset(Box::new(other.push_down_offsets()), delta),
+        }
+    }
+
+    /// offset_tree Phase A2 (#384): faltet **Erosions**-Offsets
+    /// (`Offset(blatt, δ)` mit `δ < 0`) in ein neues Blatt derselben
+    /// Familie mit geschrumpften Parametern ein — läuft direkt NACH
+    /// [`Self::push_down_offsets`] (der die Offsets an die Blätter
+    /// geschoben hat) in ALLEN Baupfaden, auch dem Weave-Baupfad
+    /// (`body::build_bounded_for_body_local`), damit Mesher-Feld,
+    /// B-Rep-Carrier und hs_map dieselbe Nullmenge beschreiben
+    /// (docs/OFFSET-TREE-AUDIT.md, Punkt 1).
+    ///
+    /// Regeln, Identitätsvertrag (FeatureId + Sub-Face-Raum bleiben) und
+    /// Verweigerungs-Doktrin: [`crate::offset_fold`]. Dilation (`δ > 0`)
+    /// bleibt unangetastet — `f − δ` ist auf einem exakten Blatt bereits
+    /// das exakte Dilations-SDF.
+    pub fn fold_offset_leaves(self) -> Self {
+        match self {
+            CsgNode::Offset(inner, delta) => {
+                let inner = inner.fold_offset_leaves();
+                if delta < 0.0 {
+                    if let Some(folded) = crate::offset_fold::try_fold_erosion(&inner, -delta) {
+                        return folded;
+                    }
+                }
+                CsgNode::Offset(Box::new(inner), delta)
+            }
+            CsgNode::Union(a, b) => CsgNode::Union(
+                Box::new(a.fold_offset_leaves()),
+                Box::new(b.fold_offset_leaves()),
+            ),
+            CsgNode::Difference(a, b) => CsgNode::Difference(
+                Box::new(a.fold_offset_leaves()),
+                Box::new(b.fold_offset_leaves()),
+            ),
+            CsgNode::Intersection(a, b) => CsgNode::Intersection(
+                Box::new(a.fold_offset_leaves()),
+                Box::new(b.fold_offset_leaves()),
+            ),
+            CsgNode::SmoothUnion(a, b, r, m) => CsgNode::SmoothUnion(
+                Box::new(a.fold_offset_leaves()),
+                Box::new(b.fold_offset_leaves()),
+                r,
+                m,
+            ),
+            CsgNode::SmoothDifference(a, b, r, m) => CsgNode::SmoothDifference(
+                Box::new(a.fold_offset_leaves()),
+                Box::new(b.fold_offset_leaves()),
+                r,
+                m,
+            ),
+            CsgNode::Morph(a, b, t) => CsgNode::Morph(
+                Box::new(a.fold_offset_leaves()),
+                Box::new(b.fold_offset_leaves()),
+                t,
+            ),
+            CsgNode::MaskedBlend {
+                a,
+                b,
+                mask_polyline,
+                mask_radius,
+                blend_radius,
+                blend_mode,
+                is_difference,
+                provenance,
+            } => CsgNode::MaskedBlend {
+                a: Box::new(a.fold_offset_leaves()),
+                b: Box::new(b.fold_offset_leaves()),
+                mask_polyline,
+                mask_radius,
+                blend_radius,
+                blend_mode,
+                is_difference,
+                provenance,
+            },
+            CsgNode::Transform(t, inner) => {
+                CsgNode::Transform(t, Box::new(inner.fold_offset_leaves()))
+            }
+            CsgNode::Twist(inner, rate) => {
+                CsgNode::Twist(Box::new(inner.fold_offset_leaves()), rate)
+            }
+            CsgNode::Bend(inner, rate) => {
+                CsgNode::Bend(Box::new(inner.fold_offset_leaves()), rate)
+            }
+            CsgNode::Displace(inner, d, f) => {
+                CsgNode::Displace(Box::new(inner.fold_offset_leaves()), d, f)
+            }
+            CsgNode::Shell(inner, t, open) => {
+                CsgNode::Shell(Box::new(inner.fold_offset_leaves()), t, open)
+            }
+            other => other,
         }
     }
 
@@ -3445,11 +3539,11 @@ pub(crate) fn grad_halfspace(hs: &HalfSpace, p: [f32; 3]) -> [f32; 3] {
 /// offset. Those inner walls fall back to a tessellated face, like other
 /// non-analytic surfaces in the weaver.
 pub fn offset_halfspace_inward(hs: &HalfSpace, thickness: f32) -> Option<HalfSpace> {
-    let shrink = |r: f32| (r - thickness > 1e-4).then_some(r - thickness);
+    let shrink = |r: f32| shrink_param(r, thickness);
     match hs {
         HalfSpace::Plane { normal, offset } => Some(HalfSpace::Plane {
             normal: *normal,
-            offset: offset - thickness,
+            offset: offset_scalar_inward(*offset, thickness),
         }),
         HalfSpace::InfiniteCylinder { radius } => {
             shrink(*radius).map(|radius| HalfSpace::InfiniteCylinder { radius })
@@ -3480,6 +3574,30 @@ pub fn offset_halfspace_inward(hs: &HalfSpace, thickness: f32) -> Option<HalfSpa
             })
         }
     }
+}
+
+/// SSOT der Offset-Skalar-Arithmetik: der um `t` nach innen verschobene
+/// Flächenparameter ist IMMER der eine Ausdruck `v − t`. Sowohl
+/// [`offset_halfspace_inward`] (Carrier-Verschiebung an Stopp-Knoten /
+/// Shell-Innenwand) als auch das Blatt-Einfalten
+/// ([`crate::offset_fold`], Phase A2 #384) rechnen hierüber, damit ein
+/// gefaltetes `r − a` **bit-exakt** gleich dem verschobenen Carrier eines
+/// Nachbar-Knotens ist — die analytische Koinzidenz-Klassifikation des
+/// Weave vergleicht Parameter exakt (Leitregel: Koinzidenz analytisch,
+/// nie Sampling-Epsilon).
+#[inline]
+pub(crate) fn offset_scalar_inward(v: f32, t: f32) -> f32 {
+    v - t
+}
+
+/// Gated Variante von [`offset_scalar_inward`] für Parameter, die positiv
+/// bleiben müssen (Radien, Halbhöhen, Halbausdehnungen): `None`, wenn der
+/// geschrumpfte Wert ≤ 1e-4 mm — dieselbe Degenerationsgrenze, die
+/// [`offset_halfspace_inward`] seit jeher verwendet.
+#[inline]
+pub(crate) fn shrink_param(v: f32, t: f32) -> Option<f32> {
+    let s = offset_scalar_inward(v, t);
+    (s > 1e-4).then_some(s)
 }
 
 #[cfg(test)]

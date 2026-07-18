@@ -77,7 +77,7 @@ Zielgenauigkeit: Nullstellenmenge des Offsets auf Kurventoleranz
 ## 4. Pass-Pipeline
 
 Regen-Pfad nach vollem Ausbau (heute produktiv bis einschließlich
-`push_down_offsets`; die offset_tree-Erweiterungen sind die Phasen A–C):
+Phase A / `fold_offset_leaves`, v0.16.6; offen sind die Phasen B–D):
 
 ```mermaid
 graph TD
@@ -94,6 +94,15 @@ graph TD
 ```
 
 ## 5. Phase A — Analytisches Blatt-Einfalten
+
+**Status: umgesetzt in v0.16.6** (`crates/kernel/src/offset_fold.rs`,
+`CsgNode::fold_offset_leaves`), mit dem per Audit
+(docs/OFFSET-TREE-AUDIT.md) eingeschränkten Scope: NUR Erosions-Folds
+(δ<0) in-family, Dilation bleibt `f − δ`, kein neuer Primitive-Variant;
+QuadBezier-Profile und achsberührende Revolves verweigern. Join-Bögen
+(neue Verrundungswände aus dem 2D-Offset) bekommen deterministische
+Sub-Ids aus einem reservierten Band (0x700+), weil sie eigene Carrier
+tragen. Messwerte: `iter3-offset-tree/a2_fold_check.csv`.
 
 Ziel: `Offset(Leaf, δ)` durch ein **neues Blatt mit offsetteten Parametern**
 ersetzen, wo die Trägerklasse offset-abgeschlossen ist. Motivation: `f − δ`

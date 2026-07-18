@@ -985,7 +985,10 @@ pub fn build_bounded_for_body_rounded(
     // #384 Stufe 3a: normalise Offsets down to the exactest subtrees LAST, so
     // the pass sees the final node shapes (fillets → MaskedBlend, round →
     // SmoothUnion) and correctly stops at them. Zero-set-preserving.
-    csg = csg.push_down_offsets();
+    // Phase A2: dann Erosions-Offsets an den Blättern analytisch einfalten
+    // (`fold_offset_leaves`) — korrigiert die Nullmenge dort, wo das Blatt
+    // vorher kein exaktes SDF war (Profil-Booleans, Sketch2d::Offset).
+    csg = csg.push_down_offsets().fold_offset_leaves();
     BoundedCsg::from_csg(&csg)
 }
 
@@ -1008,7 +1011,17 @@ pub fn build_bounded_for_body_local(
     // land in the same body-local frame as the leaves. Earlier this modifier was
     // skipped precisely because that frame correction was missing.
     let sub: Vec<DecodedFeature> = indices.iter().map(|&i| features[i].clone()).collect();
-    let csg = CsgNode::from_decoded(&sub);
+    // offset_tree Phase A2 (#384), Audit-Punkt 1: der Weave-Baupfad MUSS
+    // dieselbe Offset-Normalisierung fahren wie die Mesher-/Render-Pfade
+    // (Pushdown + Blatt-Einfalten), sonst divergieren B-Rep-Kanten und
+    // gemarchtes Feld überall dort, wo der Fold die Nullmenge korrigiert —
+    // Feature-Snap-Pins fielen still weg (export_mesh, ON_SURFACE_TOL) und
+    // CGAL-Schutzkanten lägen neben der Fläche (native_prepare). Edge-
+    // Fillets/Global-Round bleiben hier wie bisher außen vor (der Weave
+    // webt den harten Baum).
+    let csg = CsgNode::from_decoded(&sub)
+        .push_down_offsets()
+        .fold_offset_leaves();
     BoundedCsg::from_csg_with_carry(&csg, &crate::inverse(placement))
 }
 
@@ -1034,10 +1047,14 @@ pub fn build_bounded_with_primitives_rounded(
     if let Some(r) = global_round {
         csg = csg.apply_global_round(r);
     }
-    // #384 Stufe 3a — same normalisation as `build_bounded_for_body_rounded`.
-    // Runs BEFORE the primitive-map extraction, which is order-irrelevant
-    // today (the pass moves Offset nodes, never rewrites leaf primitives).
-    csg = csg.push_down_offsets();
+    // #384 Stufe 3a + Phase A2 — same normalisation as
+    // `build_bounded_for_body_rounded`. Runs BEFORE the primitive-map
+    // extraction, and that order is now LOAD-BEARING: `fold_offset_leaves`
+    // rewrites leaf primitive parameters, and the map must carry the
+    // FOLDED parameters (they describe what the mesher marches —
+    // docs/OFFSET-TREE-AUDIT.md, Konsument 1). Leaf FeatureIds are
+    // fold-invariant, so the map keys are unchanged.
+    csg = csg.push_down_offsets().fold_offset_leaves();
     let prims: std::collections::HashMap<u32, fielddraft_protocol::Primitive> = csg
         .leaf_primitives()
         .into_iter()

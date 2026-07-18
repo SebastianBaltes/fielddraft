@@ -39,6 +39,11 @@ baby_shark = "0.3"
 # wasm getrandom js shims.
 fidget = { version = "0.3", default-features = false }
 spade = "2.15"
+# offset_tree Phase A2 (#384): exakte 2D-Profil-Offsets/-Booleans mit
+# Bulge-Bogensegmenten für das analytische Blatt-Einfalten von
+# Erosions-Offsets (Auswahl-Spike: docs/research/sdf-metricity/
+# iter3-offset-tree/A1-OFFSET-LIB.md). Pure Rust, wasm-tauglich.
+cavalier_contours = "0.7"
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 console_error_panic_hook = "0.1"

@@ -12,6 +12,9 @@ Format, eine Zeile je Eintrag:
 kind = feat | fix | perf. scope und #tickets sind optional. Folgezeilen, die
 eingerückt sind, gehören zum Text davor (Umbruch erlaubt).
 
+## 0.16.6
+- perf(sdf) #384: offset_tree Phase A — Erosions-Offsets werden jetzt analytisch in die Blätter eingefaltet. Ein nach innen gerichteter Offset auf Kugel, Zylinder, Box, Torus oder Kegel(-stumpf) wird zur Regen-Zeit durch dasselbe Primitiv mit geschrumpften Parametern ersetzt; bei Extrudes und achsenfernen Revolves wird das 2D-Profil geometrisch offsettiert (Profil-Booleans und Skizzen-Offsets werden dafür exakt aufgelöst, inklusive Wand-Identitäten). Das Feld ist damit wieder ein exaktes Distanzfeld statt „f − δ“: gemessene Außenfeld-Fehler bis 6,5 mm (Differenz-Profil-Fan) und Innenfehler bis 0,4 mm (Offset-Profil-Ridge) fallen auf Mess-Rauschen, und beim erodierten Vereinigungs-Profil sitzt die Oberfläche am Hals jetzt geometrisch richtig (vorher bis 4 mm daneben). Wo kein exakter Umbau existiert (Bézier-Profile, achsberührende Revolves, Verjüngung unter null), bleibt ehrlich das bisherige Verhalten stehen. B-Rep-Kanten, Feature-Snap und Face-Identitäten folgen der eingefalteten Fläche — der Weave-Baupfad fährt jetzt dieselbe Offset-Normalisierung wie Mesher und Renderer.
+
 ## 0.16.5
 - fix(sdf) #390: Achsberührendes Revolve erzeugt keine Phantom-Oberfläche mehr auf der Rotationsachse. Profilkanten, die auf der Achse liegen (etwa die Schließkante eines Zylinder- oder Kugel-Halbprofils), sind nach der Rotation Körperinneres — das Distanzfeld behandelte sie aber weiterhin als Wand: Sphere-Tracing konnte eine unsichtbare „Nadel“ entlang der Achse treffen, und innen auf der Achse las das Feld 0 statt der echten Tiefe. Die Achs-Kanten werden jetzt für alle Profilformen (Rechteck, Polygon, Kreissektor, Pfad) und auch in booleschen Profilen (z. B. Bohrung bis zur Achse) entfernt; achsenferne Revolves bleiben bit-identisch exakt.
 

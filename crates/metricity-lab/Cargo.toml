@@ -37,3 +37,9 @@ i_overlay = "7"
 rayon = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+
+# A2-Verifikation Erosions-Blatt-Einfalten (#384, offset_tree Phase A2):
+# metricity-Vergleich f−δ vs. gefaltetes Blatt, Ausgabe a2_fold_check.csv.
+[[bin]]
+name = "a2_fold_check"
+path = "src/bin/a2_fold_check.rs"

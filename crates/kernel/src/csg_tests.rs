@@ -1991,3 +1991,675 @@ fn offset_pushdown_merges_stacked_offsets() {
     }
     pd_assert_fields_equal(&orig, &pushed, 1e-4, "stacked offsets");
 }
+
+// ─── offset_tree Phase A2 (#384): Erosions-Blatt-Einfalten ──────────────
+
+fn fold_leaf(id: u32, primitive: Primitive) -> CsgNode {
+    CsgNode::Leaf { id: FeatureId::from_u32(id), primitive }
+}
+
+/// Erosions-Fold der analytischen Familien: Parameter schrumpfen in-family,
+/// die Blatt-Id bleibt, das Feld ist das exakte SDF des erodierten Körpers.
+#[test]
+fn fold_erosion_analytic_families_shrink_in_family() {
+    let a = 1.5f32;
+    // Kugel
+    let folded = CsgNode::Offset(
+        Box::new(fold_leaf(1, Primitive::Sphere { center: [1.0, 2.0, 3.0], radius: 7.25 })),
+        -a,
+    )
+    .fold_offset_leaves();
+    match &folded {
+        CsgNode::Leaf { id, primitive: Primitive::Sphere { center, radius } } => {
+            assert_eq!(id, &FeatureId::from_u32(1));
+            assert_eq!(center, &[1.0, 2.0, 3.0]);
+            assert_eq!(radius.to_bits(), (7.25f32 - a).to_bits());
+        }
+        other => panic!("sphere erosion must fold, got {other:?}"),
+    }
+    // Zylinder: Radius UND Halbhöhe schrumpfen.
+    let folded = CsgNode::Offset(
+        Box::new(fold_leaf(2, Primitive::Cylinder { center: [0.0; 3], radius: 10.0, half_height: 6.0 })),
+        -a,
+    )
+    .fold_offset_leaves();
+    match &folded {
+        CsgNode::Leaf { primitive: Primitive::Cylinder { radius, half_height, .. }, .. } => {
+            assert_eq!(radius.to_bits(), (10.0f32 - a).to_bits());
+            assert_eq!(half_height.to_bits(), (6.0f32 - a).to_bits());
+        }
+        other => panic!("cylinder erosion must fold, got {other:?}"),
+    }
+    // Box: geschrumpfte Box (KEIN neuer Variant).
+    let folded = CsgNode::Offset(
+        Box::new(fold_leaf(3, Primitive::Box { center: [0.0; 3], half_extents: [10.0, 8.0, 4.0] })),
+        -a,
+    )
+    .fold_offset_leaves();
+    match &folded {
+        CsgNode::Leaf { primitive: Primitive::Box { half_extents, .. }, .. } => {
+            assert_eq!(half_extents[0].to_bits(), (10.0f32 - a).to_bits());
+            assert_eq!(half_extents[1].to_bits(), (8.0f32 - a).to_bits());
+            assert_eq!(half_extents[2].to_bits(), (4.0f32 - a).to_bits());
+        }
+        other => panic!("box erosion must fold, got {other:?}"),
+    }
+    // Torus: nur der Rohrradius schrumpft.
+    let folded = CsgNode::Offset(
+        Box::new(fold_leaf(4, Primitive::Torus { center: [0.0; 3], major_radius: 20.0, minor_radius: 5.0 })),
+        -a,
+    )
+    .fold_offset_leaves();
+    match &folded {
+        CsgNode::Leaf { primitive: Primitive::Torus { major_radius, minor_radius, .. }, .. } => {
+            assert_eq!(major_radius.to_bits(), 20.0f32.to_bits());
+            assert_eq!(minor_radius.to_bits(), (5.0f32 - a).to_bits());
+        }
+        other => panic!("torus erosion must fold, got {other:?}"),
+    }
+    // Feld-Identität: gefaltete Kugel == analytisch geschrumpfte Kugel;
+    // Nullmenge identisch mit f − δ (auf exakten Blättern nullmengen-exakt).
+    let orig = CsgNode::Offset(
+        Box::new(fold_leaf(1, Primitive::Sphere { center: [0.0; 3], radius: 7.25 })),
+        -a,
+    );
+    let folded = orig.clone().fold_offset_leaves();
+    pd_assert_fields_equal(&folded, &pd_sphere(1, [0.0; 3], 7.25 - a), 1e-5, "eroded sphere");
+    pd_assert_fields_equal(&orig, &folded, 1e-4, "sphere: f−δ == gefaltet (exaktes Blatt)");
+}
+
+/// Kegelstumpf: Wandneigung bleibt erhalten, Deckel und Wand rücken exakt
+/// um `a` ein — Nullmenge identisch zu `f + a` (Innenfeld des Frustums ist
+/// exakt), Parameter aus der Halbraum-Erosions-Identität.
+#[test]
+fn fold_erosion_cone_shifts_apex_keeps_slope() {
+    let (rb, rt, hh, a) = (10.0f32, 4.0f32, 6.0f32, 1.0f32);
+    let orig = CsgNode::Offset(
+        Box::new(fold_leaf(9, Primitive::Cone { r_bottom: rb, r_top: rt, half_height: hh })),
+        -a,
+    );
+    let folded = orig.clone().fold_offset_leaves();
+    let (rb2, rt2, hh2) = match &folded {
+        CsgNode::Leaf { primitive: Primitive::Cone { r_bottom, r_top, half_height }, .. } => {
+            (*r_bottom, *r_top, *half_height)
+        }
+        other => panic!("cone erosion must fold, got {other:?}"),
+    };
+    assert_eq!(hh2.to_bits(), (hh - a).to_bits());
+    // Neigung erhalten (reell exakt, f32 bis auf Rundung).
+    let slope0 = (rb - rt) / (2.0 * hh);
+    let slope1 = (rb2 - rt2) / (2.0 * hh2);
+    assert!((slope0 - slope1).abs() < 1e-6, "slope {slope0} vs {slope1}");
+    // Nullmengen-Abgleich an Wand und Deckeln: f+a und das gefaltete Feld
+    // verschwinden an denselben Punkten.
+    let wall_mid = 0.5 * (rb2 + rt2);
+    for p in [
+        [wall_mid, 0.0, 0.0],
+        [0.0, hh2, 0.0],
+        [0.0, -hh2, 0.0],
+    ] {
+        let df = folded.sdf(p, EvalMode::Visual);
+        let du = orig.sdf(p, EvalMode::Visual);
+        assert!(df.abs() < 1e-4, "folded cone surface at {p:?}: {df}");
+        assert!(du.abs() < 1e-4, "unfolded cone surface at {p:?}: {du}");
+    }
+}
+
+/// Blocker 2 (Audit): Fold-Arithmetik ≡ `offset_halfspace_inward` bit-exakt
+/// je Carrier-Familie — dieselbe SSOT-Funktion speist beide Seiten.
+#[test]
+fn fold_matches_offset_halfspace_inward_bit_exact_per_family() {
+    let a = 0.7f32;
+    let cases: Vec<Primitive> = vec![
+        Primitive::Sphere { center: [0.0; 3], radius: 7.25 },
+        Primitive::Cylinder { center: [0.0; 3], radius: 9.1, half_height: 5.3 },
+        Primitive::Box { center: [0.0; 3], half_extents: [10.0, 8.0, 4.0] },
+        Primitive::Torus { center: [0.0; 3], major_radius: 20.0, minor_radius: 5.5 },
+    ];
+    for prim in cases {
+        let folded = match CsgNode::Offset(Box::new(fold_leaf(1, prim.clone())), -a)
+            .fold_offset_leaves()
+        {
+            CsgNode::Leaf { primitive, .. } => primitive,
+            other => panic!("{prim:?} must fold, got {other:?}"),
+        };
+        let hs0 = primitive_halfspaces(&prim).expect("enumerable");
+        let hs1 = primitive_halfspaces(&folded).expect("enumerable");
+        assert_eq!(hs0.faces().len(), hs1.faces().len(), "face count preserved");
+        for (f0, f1) in hs0.faces().iter().zip(hs1.faces()) {
+            assert_eq!(f0.sub, f1.sub, "sub-face numbering preserved ({prim:?})");
+            let shifted = offset_halfspace_inward(&f0.half_space, a)
+                .expect("family supports inward offset");
+            // Bit-exakter Parameter-Vergleich über die rmp-Serialisierung
+            // (f32-bit-treu, gleiche Kodierung wie der Body-Cache-Hash).
+            let a_bytes = rmp_serde::to_vec(&shifted).unwrap();
+            let b_bytes = rmp_serde::to_vec(&f1.half_space).unwrap();
+            assert_eq!(a_bytes, b_bytes, "carrier drift on {prim:?} sub {}", f0.sub);
+        }
+    }
+    // Cone: Deckel-Ebenen bit-exakt; die Wand hat KEIN offset_halfspace_-
+    // inward-Gegenstück (Nappen trennen sich — dokumentierte Familienlücke),
+    // der Fold bleibt trotzdem in-family (eigene Apex-Verschiebung).
+    let cone = Primitive::Cone { r_bottom: 10.0, r_top: 4.0, half_height: 6.0 };
+    let hs = primitive_halfspaces(&cone).unwrap();
+    assert!(offset_halfspace_inward(&hs.faces()[0].half_space, a).is_none());
+}
+
+/// Blocker 3 (Audit): der Fold erhält FeatureId-Schlüssel
+/// (`leaf_primitives`) und den BranchId-Raum (`branch_halfspace_map`);
+/// die Carrier des gefalteten Blatts sind bit-gleich zu denen, die der
+/// Registry-Offset-Arm für den ungefalteten Baum verschiebt.
+#[test]
+fn fold_preserves_leaf_keys_and_branch_map_keys() {
+    let tree = CsgNode::Union(
+        Box::new(CsgNode::Offset(
+            Box::new(fold_leaf(1, Primitive::Box { center: [0.0; 3], half_extents: [10.0, 8.0, 6.0] })),
+            -1.25,
+        )),
+        Box::new(pd_sphere(2, [30.0, 0.0, 0.0], 5.0)),
+    );
+    let folded = tree.clone().fold_offset_leaves();
+
+    let keys = |n: &CsgNode| {
+        let mut v: Vec<u32> = n.leaf_primitives().keys().copied().collect();
+        v.sort_unstable();
+        v
+    };
+    assert_eq!(keys(&tree), keys(&folded), "leaf_primitives keys must survive the fold");
+
+    let map_pre = crate::brep::weaving::branch_halfspace_map(&crate::bvh::BoundedCsg::from_csg(&tree));
+    let map_post =
+        crate::brep::weaving::branch_halfspace_map(&crate::bvh::BoundedCsg::from_csg(&folded));
+    let mut k_pre: Vec<u32> = map_pre.keys().copied().collect();
+    let mut k_post: Vec<u32> = map_post.keys().copied().collect();
+    k_pre.sort_unstable();
+    k_post.sort_unstable();
+    assert_eq!(k_pre, k_post, "BranchId space must survive the fold");
+    for (k, (hs_pre, _)) in &map_pre {
+        let (hs_post, _) = &map_post[k];
+        let a_bytes = rmp_serde::to_vec(hs_pre).unwrap();
+        let b_bytes = rmp_serde::to_vec(hs_post).unwrap();
+        assert_eq!(a_bytes, b_bytes, "carrier of branch {k} drifted between offset arm and fold");
+    }
+}
+
+/// Verweigerungs-Doktrin: degenerierte Parameter, Familien außerhalb des
+/// A2-Scopes und Dilation bleiben unangetastet (`f − δ` steht).
+#[test]
+fn fold_refuses_degenerate_out_of_scope_and_dilation() {
+    // Degeneriert: Erosion ≥ Radius.
+    let n = CsgNode::Offset(
+        Box::new(fold_leaf(1, Primitive::Sphere { center: [0.0; 3], radius: 2.0 })),
+        -2.5,
+    )
+    .fold_offset_leaves();
+    assert!(matches!(n, CsgNode::Offset(_, d) if d == -2.5), "degenerate must refuse");
+    // Out-of-scope-Familie (Capsule ist nicht in der Audit-Liste).
+    let n = CsgNode::Offset(
+        Box::new(fold_leaf(2, Primitive::Capsule { radius: 5.0, half_height: 4.0 })),
+        -1.0,
+    )
+    .fold_offset_leaves();
+    assert!(matches!(n, CsgNode::Offset(_, _)), "capsule is out of scope for A2");
+    // Dilation bleibt f − δ (auf exakten Blättern bereits exakt).
+    let n = CsgNode::Offset(
+        Box::new(fold_leaf(3, Primitive::Sphere { center: [0.0; 3], radius: 2.0 })),
+        1.5,
+    )
+    .fold_offset_leaves();
+    assert!(matches!(n, CsgNode::Offset(_, d) if d == 1.5), "dilation must stay f − δ");
+    // Erosions-Stopp-Knoten (Union) wird nicht angefasst — Phase B.
+    let n = CsgNode::Offset(
+        Box::new(CsgNode::Union(
+            Box::new(pd_sphere(1, [0.0; 3], 10.0)),
+            Box::new(pd_sphere(2, [12.0, 0.0, 0.0], 10.0)),
+        )),
+        -2.0,
+    )
+    .fold_offset_leaves();
+    assert!(matches!(n, CsgNode::Offset(_, _)), "union at erosion is a Phase-B stop");
+}
+
+/// Union-PROFIL-Erosion (der nullmengen-korrigierende Leitfall): zwei
+/// überlappende Kreise als Extrude-Profil, Erosion 2 mm. `f − δ` legt die
+/// Nullmenge auf die Vereinigung der r−2-Kreise (Halsbereich fälschlich
+/// ausgehöhlt); der Fold liefert die wahre Minkowski-Erosion mit
+/// Join-Bögen an den Reflex-Kreuzungen — und propagiert `wall_subs`.
+#[test]
+fn fold_extrude_union_profile_corrects_zero_set_and_wall_subs() {
+    let sketch = ProtoSketch2d::Union(
+        Box::new(ProtoSketch2d::Prim(ProtoSketch2dPrimitive::Circle {
+            center: [-8.0, 0.0],
+            radius: 10.0,
+        })),
+        Box::new(ProtoSketch2d::Prim(ProtoSketch2dPrimitive::Circle {
+            center: [8.0, 0.0],
+            radius: 10.0,
+        })),
+    );
+    let orig = CsgNode::Offset(
+        Box::new(CsgNode::Extrude {
+            id: FeatureId::from_u32(5),
+            sketch: Box::new(sketch),
+            half_height: 12.0,
+            wall_subs: Some(std::sync::Arc::new(vec![7, 9])),
+        }),
+        -2.0,
+    );
+    let folded = orig.clone().fold_offset_leaves();
+    let table = match &folded {
+        CsgNode::Extrude { id, half_height, wall_subs, .. } => {
+            assert_eq!(id, &FeatureId::from_u32(5), "FeatureId bleibt");
+            assert_eq!(*half_height, 10.0, "half_height − |δ|");
+            wall_subs.as_ref().expect("propagierte Tabelle").as_ref().clone()
+        }
+        other => panic!("union profile erosion must fold, got {other:?}"),
+    };
+    // Zwei Quellwände (Subs 7 und 9) + zwei Join-Bögen aus dem Band.
+    let mut t = table.clone();
+    t.sort_unstable();
+    assert_eq!(t, vec![7, 9, 0x700, 0x701], "wall_subs propagation: {table:?}");
+
+    // Nullmengen-Korrektur am Hals: die wahre Erosionsgrenze liegt bei
+    // (0, ±4) (Join-Bogen r=2 um die Kreuzung (0, ±6)); der Ursprung liegt
+    // 4 mm TIEF im erodierten Körper. f − δ legt ihn fälschlich AUF die
+    // Nullmenge (min-Feld sieht die weggeschnittene Kreiswand).
+    let du = orig.sdf([0.0, 0.0, 0.0], EvalMode::Visual);
+    assert!(du.abs() < 1e-4, "f−δ places the origin ON its zero set: {du}");
+    // Innen-Probe knapp neben der Symmetriezeile y=0 (exakt auf y=0 liegen
+    // die Bogen-Nahtpunkte der rekonstruierten Arcs — die Even-Odd-Parität
+    // von Path-Bögen ist auf der Nahtzeile eine bekannte, vorbestehende
+    // Fragilität): wahre Tiefe = |p − (0,6)| − 2.
+    let p_neck = [0.37f32, 0.11, 0.0];
+    let true_depth = (0.37f32.powi(2) + (6.0 - 0.11f32).powi(2)).sqrt() - 2.0;
+    let df = folded.sdf(p_neck, EvalMode::Visual);
+    assert!(
+        (df + true_depth).abs() < 1e-3,
+        "true erosion depth at the neck: {df} vs −{true_depth}",
+    );
+    let du_neck = orig.sdf(p_neck, EvalMode::Visual);
+    assert!(du_neck > -0.5, "f−δ misreads the neck as near-boundary: {du_neck}");
+    for p in [[0.0f32, 4.0, 0.0], [0.0, -4.0, 0.0], [-16.0, 0.0, 0.0], [16.0, 0.0, 0.0]] {
+        let d = folded.sdf(p, EvalMode::Visual);
+        assert!(d.abs() < 1e-3, "eroded boundary at {p:?}: {d}");
+    }
+    // Deckel: an z = ±10 endet der erodierte Körper.
+    let d = folded.sdf([-8.0, 1.3, 10.0], EvalMode::Visual);
+    assert!(d.abs() < 1e-3, "eroded cap at z=10: {d}");
+}
+
+/// Differenz-Profil (Leitszene iter3_extrude_bool_profile): Rechteck minus
+/// Randkreis, Erosion 2 mm. Die gespaltene Oberkante behält ZWEIMAL die
+/// stabile Sub der Quellwand (gleiche Carrier-Semantik wie eine durch
+/// einen Slot gespaltene Box-Fläche), der Kerb-Bogen behält die Kreis-Sub.
+#[test]
+fn fold_extrude_difference_profile_propagates_split_wall_subs() {
+    let sketch = ProtoSketch2d::Difference(
+        Box::new(ProtoSketch2d::Prim(ProtoSketch2dPrimitive::Rectangle {
+            center: [0.0, 0.0],
+            half_extents: [30.0, 15.0],
+        })),
+        Box::new(ProtoSketch2d::Prim(ProtoSketch2dPrimitive::Circle {
+            center: [0.0, 15.0],
+            radius: 10.0,
+        })),
+    );
+    let orig = CsgNode::Offset(
+        Box::new(CsgNode::Extrude {
+            id: FeatureId::from_u32(3),
+            sketch: Box::new(sketch),
+            half_height: 12.0,
+            wall_subs: Some(std::sync::Arc::new(vec![10, 11, 12, 13, 20])),
+        }),
+        -2.0,
+    );
+    let folded = orig.clone().fold_offset_leaves();
+    let table = match &folded {
+        CsgNode::Extrude { half_height, wall_subs, .. } => {
+            assert_eq!(*half_height, 10.0);
+            wall_subs.as_ref().expect("Tabelle").as_ref().clone()
+        }
+        other => panic!("difference profile erosion must fold, got {other:?}"),
+    };
+    let mut t = table.clone();
+    t.sort_unstable();
+    assert_eq!(
+        t,
+        vec![10, 11, 12, 12, 13, 20],
+        "split top wall keeps its sub twice, notch arc keeps the circle sub: {table:?}",
+    );
+    // Geometrie: Boden bei y=−13, rechte Wand x=28, Kerb-Bogen r=12 →
+    // tiefster Punkt (0, 3).
+    for p in [[0.0f32, -13.0, 0.0], [28.0, 0.0, 0.0], [0.0, 3.0, 0.0]] {
+        let d = folded.sdf(p, EvalMode::Visual);
+        assert!(d.abs() < 1e-3, "eroded boundary at {p:?}: {d}");
+    }
+    assert!(folded.sdf([0.0, -5.0, 0.0], EvalMode::Visual) < -1.0, "interior stays solid");
+}
+
+/// `Sketch2d::Offset` im Profil wird VOR dem Fold geometrisch aufgelöst
+/// (Leitszene iter3_extrude_offset_profile: L-Polygon +4 dilatiert), dann
+/// erodiert — Wände liegen bei Netto +3, Verrundungsbögen an den konvexen
+/// Ecken bekommen deterministische Band-Subs.
+#[test]
+fn fold_extrude_resolves_sketch_offset_before_folding() {
+    let l_poly = ProtoSketch2d::Prim(ProtoSketch2dPrimitive::Polygon {
+        vertices: vec![
+            [-20.0, -20.0],
+            [20.0, -20.0],
+            [20.0, 0.0],
+            [0.0, 0.0],
+            [0.0, 20.0],
+            [-20.0, 20.0],
+        ],
+    });
+    let sketch = ProtoSketch2d::Offset { inner: Box::new(l_poly), distance: 4.0 };
+    let orig = CsgNode::Offset(
+        Box::new(CsgNode::Extrude {
+            id: FeatureId::from_u32(8),
+            sketch: Box::new(sketch),
+            half_height: 10.0,
+            wall_subs: None,
+        }),
+        -1.0,
+    );
+    let folded = orig.clone().fold_offset_leaves();
+    let table = match &folded {
+        CsgNode::Extrude { half_height, wall_subs, .. } => {
+            assert_eq!(*half_height, 9.0);
+            wall_subs.as_ref().expect("Tabelle").as_ref().clone()
+        }
+        other => panic!("offset profile erosion must fold, got {other:?}"),
+    };
+    // Positionale Original-Subs (Polygon-Gruppen 0..5) bleiben erhalten;
+    // Join-Bögen liegen im Band.
+    let originals: Vec<u32> = table.iter().copied().filter(|&s| s < 0x700).collect();
+    let joins: Vec<u32> = table.iter().copied().filter(|&s| s >= 0x700).collect();
+    let mut o = originals.clone();
+    o.sort_unstable();
+    o.dedup();
+    assert_eq!(o, vec![0, 1, 2, 3, 4, 5], "alle sechs L-Wände benannt: {table:?}");
+    assert!(!joins.is_empty(), "konvexe Ecken müssen Verrundungs-Subs tragen");
+    // Netto-Offset +3: rechte Wand des unteren Arms bei x = 23, Boden bei
+    // y = −23; Verrundungsbogen r=3 um die Ecke (20, −20).
+    for p in [[23.0f32, -10.0, 0.0], [0.0, -23.0, 0.0]] {
+        let d = folded.sdf(p, EvalMode::Visual);
+        assert!(d.abs() < 1e-3, "net +3 boundary at {p:?}: {d}");
+    }
+    let s = 3.0 / 2.0f32.sqrt();
+    let d = folded.sdf([20.0 + s, -20.0 - s, 0.0], EvalMode::Visual);
+    assert!(d.abs() < 1e-3, "corner join arc r=3 at (20,−20): {d}");
+}
+
+/// Extrude-Verweigerungen: QuadBezier-Profil und Erosion ≥ Halbhöhe.
+#[test]
+fn fold_extrude_refusals_keep_f_minus_delta() {
+    let bez = ProtoSketch2d::Prim(ProtoSketch2dPrimitive::Path {
+        segments: vec![
+            fielddraft_protocol::sketch2d::SketchSegment::Line { start: [0.0, 0.0], end: [4.0, 0.0] },
+            fielddraft_protocol::sketch2d::SketchSegment::QuadBezier {
+                p0: [4.0, 0.0],
+                p1: [4.0, 4.0],
+                p2: [0.0, 4.0],
+            },
+            fielddraft_protocol::sketch2d::SketchSegment::Line { start: [0.0, 4.0], end: [0.0, 0.0] },
+        ],
+        closed: true,
+    });
+    let n = CsgNode::Offset(
+        Box::new(CsgNode::Extrude {
+            id: FeatureId::from_u32(1),
+            sketch: Box::new(bez),
+            half_height: 5.0,
+            wall_subs: None,
+        }),
+        -0.5,
+    )
+    .fold_offset_leaves();
+    assert!(matches!(n, CsgNode::Offset(_, _)), "QuadBezier profile must refuse");
+
+    let circle = ProtoSketch2d::Prim(ProtoSketch2dPrimitive::Circle { center: [0.0, 0.0], radius: 10.0 });
+    let n = CsgNode::Offset(
+        Box::new(CsgNode::Extrude {
+            id: FeatureId::from_u32(1),
+            sketch: Box::new(circle),
+            half_height: 5.0,
+            wall_subs: None,
+        }),
+        -5.5,
+    )
+    .fold_offset_leaves();
+    assert!(matches!(n, CsgNode::Offset(_, _)), "erosion ≥ half_height must refuse");
+}
+
+/// In-family-Schnellpfad: Kreis-/Rechteck-Profile schrumpfen ohne Umbau,
+/// `wall_subs` bleiben unverändert (Gruppenstruktur identisch).
+#[test]
+fn fold_extrude_in_family_circle_keeps_wall_subs() {
+    let ws = std::sync::Arc::new(vec![42u32]);
+    let n = CsgNode::Offset(
+        Box::new(CsgNode::Extrude {
+            id: FeatureId::from_u32(1),
+            sketch: Box::new(ProtoSketch2d::Prim(ProtoSketch2dPrimitive::Circle {
+                center: [2.0, 3.0],
+                radius: 10.0,
+            })),
+            half_height: 5.0,
+            wall_subs: Some(ws.clone()),
+        }),
+        -1.5,
+    )
+    .fold_offset_leaves();
+    match &n {
+        CsgNode::Extrude { sketch, half_height, wall_subs, .. } => {
+            assert_eq!(*half_height, 3.5);
+            match sketch.as_ref() {
+                ProtoSketch2d::Prim(ProtoSketch2dPrimitive::Circle { center, radius }) => {
+                    assert_eq!(center, &[2.0, 3.0]);
+                    assert_eq!(radius.to_bits(), (10.0f32 - 1.5).to_bits());
+                }
+                other => panic!("circle must stay a circle, got {other:?}"),
+            }
+            assert!(std::sync::Arc::ptr_eq(wall_subs.as_ref().unwrap(), &ws), "wall_subs untouched");
+        }
+        other => panic!("circle extrude must fold in-family, got {other:?}"),
+    }
+}
+
+/// Revolve: achsenfernes Ring-Profil (Leitszene iter3_revolve_ring_arcs)
+/// erodiert im Meridian; achsberührendes Profil verweigert (#390-Gate).
+#[test]
+fn fold_revolve_ring_erodes_meridian_and_gates_axis() {
+    use fielddraft_protocol::sketch2d::SketchSegment as Seg;
+    use std::f32::consts::PI;
+    let seg_line = |a: [f32; 2], b: [f32; 2]| Seg::Line { start: a, end: b };
+    let seg_arc = |c: [f32; 2], r: f32, a0: f32, sw: f32| Seg::Arc {
+        center: c,
+        radius: r,
+        start_angle: a0,
+        sweep_angle: sw,
+    };
+    // Gerundetes Rechteck u ∈ [18, 32], v ∈ [−10, 10], Ecken r=3.
+    let ring = ProtoSketch2d::Prim(ProtoSketch2dPrimitive::Path {
+        segments: vec![
+            seg_line([21.0, -10.0], [29.0, -10.0]),
+            seg_arc([29.0, -7.0], 3.0, -PI / 2.0, PI / 2.0),
+            seg_line([32.0, -7.0], [32.0, 7.0]),
+            seg_arc([29.0, 7.0], 3.0, 0.0, PI / 2.0),
+            seg_line([29.0, 10.0], [21.0, 10.0]),
+            seg_arc([21.0, 7.0], 3.0, PI / 2.0, PI / 2.0),
+            seg_line([18.0, 7.0], [18.0, -7.0]),
+            seg_arc([21.0, -7.0], 3.0, PI, PI / 2.0),
+        ],
+        closed: true,
+    });
+    let orig = CsgNode::Offset(
+        Box::new(CsgNode::Revolve {
+            id: FeatureId::from_u32(2),
+            sketch: Box::new(ring),
+            wall_subs: None,
+        }),
+        -1.0,
+    );
+    let folded = orig.clone().fold_offset_leaves();
+    let table = match &folded {
+        CsgNode::Revolve { id, wall_subs, .. } => {
+            assert_eq!(id, &FeatureId::from_u32(2));
+            wall_subs.as_ref().expect("Tabelle").as_ref().clone()
+        }
+        other => panic!("off-axis revolve erosion must fold, got {other:?}"),
+    };
+    // 8 G1-Gruppen (Linie/Bogen wechseln Carrier), alle konvex → keine
+    // Join-Bögen; die Tabelle ist eine Permutation der Originalgruppen.
+    let mut t = table.clone();
+    t.sort_unstable();
+    assert_eq!(t, (0u32..8).collect::<Vec<_>>(), "table: {table:?}");
+    // Erodierter Ring: u ∈ [19, 31] → Punkte auf Innen-/Außenwand.
+    for p in [[19.0f32, 0.0, 0.0], [31.0, 0.0, 0.0], [25.0, 9.0, 0.0]] {
+        let d = folded.sdf(p, EvalMode::Visual);
+        assert!(d.abs() < 2e-3, "eroded revolve boundary at {p:?}: {d}");
+    }
+    assert!(folded.sdf([25.0, 0.0, 0.0], EvalMode::Visual) < -5.0, "core stays solid");
+
+    // Achsberührendes Profil: Fold verweigern (Phantom-Nullmengen-Gate).
+    let solid = ProtoSketch2d::Prim(ProtoSketch2dPrimitive::Rectangle {
+        center: [15.0, 0.0],
+        half_extents: [15.0, 20.0],
+    });
+    let n = CsgNode::Offset(
+        Box::new(CsgNode::Revolve {
+            id: FeatureId::from_u32(2),
+            sketch: Box::new(solid),
+            wall_subs: None,
+        }),
+        -2.0,
+    )
+    .fold_offset_leaves();
+    assert!(matches!(n, CsgNode::Offset(_, _)), "axis-touching revolve must refuse");
+}
+
+/// Pushdown + Fold als Pipeline (wie in den Body-Baupfaden): die Erosion
+/// einer Differenz landet nach dem Pushdown an den Blättern und faltet
+/// dort in-family; das Feld bleibt punktweise das der ungefalteten Kette.
+#[test]
+fn pushdown_then_fold_pipeline_on_difference() {
+    let orig = CsgNode::Offset(
+        Box::new(CsgNode::Difference(
+            Box::new(pd_sphere(1, [0.0; 3], 10.0)),
+            Box::new(pd_sphere(2, [8.0, 0.0, 0.0], 4.0)),
+        )),
+        -1.5,
+    );
+    let processed = orig.clone().push_down_offsets().fold_offset_leaves();
+    match &processed {
+        CsgNode::Difference(l, r) => {
+            // Minuend: Erosion → gefaltetes Blatt r − 1.5.
+            assert!(
+                matches!(**l, CsgNode::Leaf { primitive: Primitive::Sphere { radius, .. }, .. } if radius == 8.5),
+                "minuend must fold to r−1.5, got {l:?}",
+            );
+            // Subtrahend: Dilation (+1.5) bleibt f − δ.
+            assert!(
+                matches!(**r, CsgNode::Offset(_, d) if d == 1.5),
+                "subtrahend dilation must stay f − δ, got {r:?}",
+            );
+        }
+        other => panic!("expected Difference, got {other:?}"),
+    }
+    pd_assert_fields_equal(&orig, &processed, 1e-4, "pushdown+fold difference");
+}
+
+/// Blocker 1 + 6 (Audit): der Weave-Baupfad (`build_bounded_for_body_local`)
+/// fährt dieselbe Pushdown+Fold-Normalisierung wie der Mesher-/Opcode-Pfad.
+/// Beweis am nullmengen-korrigierenden Leitfall (Union-Profil-Erosion, wo
+/// f − δ und wahres Offset am Hals 4 mm auseinanderliegen): JEDE gewobene
+/// B-Rep-Kante liegt auf der Nullmenge des kompilierten Opcode-Felds
+/// (|f| < 0.02 mm — die ON_SURFACE_TOL-Klasse, unter der Feature-Snap-Pins
+/// still verworfen würden und CGAL-Schutzkanten neben der Fläche lägen).
+#[test]
+fn weave_edges_lie_on_the_folded_opcode_field() {
+    let sketch = ProtoSketch2d::Union(
+        Box::new(ProtoSketch2d::Prim(ProtoSketch2dPrimitive::Circle {
+            center: [-8.0, 0.0],
+            radius: 10.0,
+        })),
+        Box::new(ProtoSketch2d::Prim(ProtoSketch2dPrimitive::Circle {
+            center: [8.0, 0.0],
+            radius: 10.0,
+        })),
+    );
+    let feature = DecodedFeature {
+        id: FeatureId::from_u32(1),
+        name: "eroded peanut".into(),
+        op: BoolOp::New,
+        blend_radius: 0.0,
+        blend_mode: BlendMode::Fillet,
+        target_ids: vec![],
+        transform: Transform::IDENTITY,
+        node: CsgNode::Offset(
+            Box::new(CsgNode::Extrude {
+                id: FeatureId::from_u32(1),
+                sketch: Box::new(sketch),
+                half_height: 12.0,
+                wall_subs: Some(std::sync::Arc::new(vec![7, 9])),
+            }),
+            -2.0,
+        ),
+    };
+    let features = vec![feature];
+    let parts = crate::body::partition(&features);
+    assert_eq!(parts.len(), 1);
+    let mut body = crate::body::Body {
+        id: parts[0].seed_id(&features),
+        feature_indices: parts[0].feature_indices.clone(),
+        aabb: parts[0].aabb,
+        payload_hash: 0,
+        geometry_hash: 0,
+        transform_hash: 0,
+        mesh_resolution: 0,
+        mesh: crate::dc::Mesh::default(),
+        version: 1,
+        transform_delta: None,
+        last_mesh_transforms: Vec::new(),
+        compiled_sdf: None,
+        placement: Transform::IDENTITY,
+        brep: None,
+    };
+    body.ensure_brep(&features, true);
+    let brep = body.brep_cached().expect("weave produced a B-Rep");
+    assert!(!brep.edges.is_empty(), "eroded extrude must weave edges (cap rims)");
+
+    // Opcode-Feld aus dem Mesher-Baupfad (mit Pushdown + Fold).
+    let (bounded, _) =
+        crate::body::build_bounded_with_primitives(&features, &body.feature_indices);
+    let compiled = crate::sdf_compiler::compile_body(&bounded);
+    assert!(compiled.volumes.is_empty());
+
+    // Placement ist Identity — Body-lokale Kantenpunkte SIND Weltpunkte.
+    assert_eq!(body.placement.translate, [0.0, 0.0, 0.0]);
+    let mut checked = 0usize;
+    for e in &brep.edges {
+        for p in crate::brep::edge_sampling::sample_edge(&e.geometry) {
+            let w = [p[0] as f32, p[1] as f32, p[2] as f32];
+            let f = crate::sdf_compiler::eval_opcodes(&compiled.opcodes, w);
+            assert!(
+                f.abs() < 0.02,
+                "B-Rep edge point {w:?} lies {f} mm off the folded field (weave/field split)",
+            );
+            checked += 1;
+        }
+    }
+    assert!(checked > 16, "expected a real edge sampling, got {checked} points");
+
+    // Und die Kanten beschreiben den ERODIERTEN Körper: alle Punkte liegen
+    // innerhalb der erodierten Hülle (|x| ≤ 16 + ε), keiner auf der alten
+    // r=10-Kontur (max |x| = 18).
+    for e in &brep.edges {
+        for p in crate::brep::edge_sampling::sample_edge(&e.geometry) {
+            assert!(
+                p[0].abs() <= 16.0 + 1e-3,
+                "edge point {p:?} lies outside the eroded body (unfolded weave?)",
+            );
+        }
+    }
+}

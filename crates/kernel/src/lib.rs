@@ -9,6 +9,7 @@ pub mod brep;
 pub mod bvh;
 pub mod cell_csg;
 pub mod csg;
+mod offset_fold;
 pub mod sdf_dual;
 pub mod dc;
 pub mod mdc;

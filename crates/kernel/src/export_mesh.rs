@@ -3138,6 +3138,55 @@ mod tests {
         assert!(exact_on_rim > 12, "exact rim vertices: {exact_on_rim}");
     }
 
+    /// offset_tree Phase A2 (#384), Audit Konsument 3: Feature-Snap auf
+    /// einem EROSIONS-offsetteten Extrude mit Boolean-Profil. Der Fold
+    /// läuft in Mesher- UND Weave-Baupfad; lägen die gewobenen Kanten auf
+    /// der ungefalteten f−δ-Fläche, würde der ON_SURFACE_TOL-Wächter
+    /// (0.02 mm) alle Pins still verwerfen — `edges_pinned > 0` ist der
+    /// End-to-End-Beweis, dass Feld und B-Rep dieselbe Nullmenge tragen.
+    #[test]
+    fn eroded_extrude_body_still_pins_brep_edges() {
+        use crate::csg::CsgNode;
+        use fielddraft_protocol::{Sketch2d, Sketch2dPrimitive};
+        let mut k = crate::Kernel::new();
+        // Platzhalter-Primitiv in der Größe der UNGEFALTETEN Hülle, damit
+        // Body-Partition und Grid-AABB passen; der Geometrie-Baum wird
+        // darunter direkt auf den Erosions-Offset-Baum gesetzt (es gibt
+        // noch kein Offset-Produkt-Feature — Phase D).
+        k.add_primitive(Primitive::KIND_BOX, BoolOp::TAG_NEW, 0.0, 0.0, 0.0, 30.0, 15.0, 12.0)
+            .unwrap();
+        // Leitszene iter3_extrude_bool_profile: Rechteck minus Randkreis.
+        let sketch = Sketch2d::Difference(
+            Box::new(Sketch2d::Prim(Sketch2dPrimitive::Rectangle {
+                center: [0.0, 0.0],
+                half_extents: [30.0, 15.0],
+            })),
+            Box::new(Sketch2d::Prim(Sketch2dPrimitive::Circle {
+                center: [0.0, 15.0],
+                radius: 10.0,
+            })),
+        );
+        let fid = k.decoded[0].id.clone();
+        k.decoded[0].node = CsgNode::Offset(
+            Box::new(CsgNode::Extrude {
+                id: fid,
+                sketch: Box::new(sketch),
+                half_height: 12.0,
+                wall_subs: Some(std::sync::Arc::new(vec![10, 11, 12, 13, 20])),
+            }),
+            -2.0,
+        );
+        let idx = k.bodies[0].feature_indices.clone();
+        let size = k.bodies[0].aabb.size();
+        let (_, report) = k.mdc_export_body(0, 1, &idx, size, 0.6, String::new());
+        assert!(
+            report.edges_pinned > 0,
+            "feature snap must pin onto the folded edges, pinned {}",
+            report.edges_pinned
+        );
+        assert!(report.validation.watertight, "{:?}", report.validation);
+    }
+
     /// Phase 1d: a feature thinner than the sampling lattice must be
     /// flagged. A 0.28 mm SLIT inside a solid box (cells 0.6 mm): the
     /// box AABB pins the grid, the slit sits between two corner
