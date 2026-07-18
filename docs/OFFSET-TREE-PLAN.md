@@ -245,10 +245,18 @@ Kante nach Weave-Refresh.
   Worst-Case IM Band), Toleranz-Staffelung (Render 0.01 mm / Export
   0.001 mm), Opcode-Budget (`SDF_MAX_OPCODES`) beobachten. Offene Frage:
   f32-GPU-Verhalten der Bogen-Distanz + Gating (Spike war f64).
-* **Provenance/Picking.** Korrekturkörper haben keine Feature-Blatt-
-  Identität; Contributor-Tracking, Face-Picking und Sub-Face-Zuordnung
-  toter Flächen im Feature-UI brauchen eine Regel (Vorschlag: Kanal erbt
-  die Provenance der beiden Kanten-Eltern). Ungelöst, vor Phase B klären.
+* **Provenance/Picking — ENTSCHIEDEN (vor Phase B, 2026-07-18).**
+  Dreiteilige Regel, konsistent mit der A2-Konvention für Join-Bögen:
+  (1) **FeatureId des Kanal-Terms = das Offset/Shell-Feature selbst** —
+  das Feature, das den Körper synthetisiert hat, ist der Contributor
+  (Feature-UI, Suppression, tote Flächen hängen damit am richtigen
+  Eintrag). (2) **Sub-Face-Ids aus dem reservierten Band 0x700+**,
+  deterministisch aus dem geordneten Provenance-Paar der beiden
+  Kanten-Eltern abgeleitet (stabil über Regens, solange die Kante stabil
+  ist; Kollisionswächter gegen echte Feature-Subs wie in A2). (3)
+  **Picking/Hover löst zweistufig auf:** primär das Offset/Shell-Feature,
+  sekundär die beiden Eltern-Flächen-Provenances als Mess-/Snap-Referenz
+  (der Kanal „erbt" die Eltern also für Bemaßung, nicht für Identität).
 * **Interaktion mit Edge-Fillets/MaskedBlend- und smin-Stopps.** Der
   Pushdown stoppt an Blend-Knoten — dort gibt es keinen exakten Offset
   (Blendflächen sind keine Offset-abgeschlossene Klasse). Offset über
