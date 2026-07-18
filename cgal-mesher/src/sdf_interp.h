@@ -68,6 +68,7 @@ enum : uint32_t {
   OP_WARP_SWEEP     = 0x38,
 
   OP_MASKED_BLEND   = 0x40,
+  OP_ARC_CHANNEL    = 0x41,
 
   OP_END            = 0xFF,
 };
@@ -459,13 +460,14 @@ inline float sdf_sector_2d(const float p[2], const float center[2], float radius
 
 inline float blend_min_eval(float a, float b, float r, float mode) {
   if (mode < 0.5f) {
-    // Fillet — EXACT circular smin (IQ round union), matching the Rust
-    // kernel's csg::smin_poly. Was a quadratic mix-form (r/4 undershoot, no
-    // r<=0 guard); now byte-consistent with the authoritative interpreter.
+    // Fillet — Circular-CD smin (#384 Stufe 1, v0.16.2), 1:1-Spiegel des
+    // Rust-Kernels csg::smin_poly: min − (r/2)·(1 + h − sqrt(1 − h·(h−2)))
+    // mit h = max(r − |a−b|, 0)/r. (Die vorige Form war das alte IQ
+    // round-union — sie überschätzte Distanzen quer zur Naht; der
+    // Golden-Check meldete die Drift auf den smooth_union-Szenen.)
     if (r <= 0.0f) return fminf_(a, b);
-    float ua = fmaxf_(r - a, 0.0f);
-    float ub = fmaxf_(r - b, 0.0f);
-    return fmaxf_(fminf_(a, b), r) - std::sqrt(ua * ua + ub * ub);
+    float h = fmaxf_(r - std::fabs(a - b), 0.0f) / r;
+    return fminf_(a, b) - r * 0.5f * (1.0f + h - std::sqrt(1.0f - h * (h - 2.0f)));
   }
   // Chamfer
   const float FRAC_1_SQRT_2 = 0.70710678f;
@@ -1068,14 +1070,146 @@ inline float eval_opcodes(const float* opcodes, int n, float wx, float wy,
                                                    mask_r));
           }
         }
-        float result;
-        if (mask_d < 0.0f) {
-          result = is_diff ? -blend_min_eval(-da, db, blend_r, mode)
-                           : blend_min_eval(da, db, blend_r, mode);
-        } else {
-          result = is_diff ? fmaxf_(da, -db) : fminf_(da, db);
+        // #382/#384: EIN Feld für alle Pfade — C1-Crossfade hart → CD-Blend
+        // über die innere Tube-Schale (Spiegel von Rust
+        // csg::masked_blend_combine; mask_d hier bereits signiert, d. h.
+        // Distanz zur Polyline minus mask_r wie im Rust-Arm).
+        float signed_mask = mask_d;  // sdf_capsule_3d liefert bereits dist − mask_r
+        float blended = is_diff ? -blend_min_eval(-da, db, blend_r, mode)
+                                : blend_min_eval(da, db, blend_r, mode);
+        float hard = is_diff ? fmaxf_(da, -db) : fminf_(da, db);
+        float band = fmaxf_(blend_r, 1e-3f);
+        float xw = clampf_((-signed_mask) / band, 0.0f, 1.0f);
+        float w = xw * xw * (3.0f - 2.0f * xw);
+        push_v(hard + (blended - hard) * w);
+        break;
+      }
+
+      case OP_ARC_CHANNEL: {
+        // offset_tree Phase B (#384): Kanal-Korrekturkoerper an einem
+        // dualen Offset-Stopp — 1:1-Spiegel des Rust-CPU-Interpreters
+        // (sdf_compiler.rs OP_ARC_CHANNEL / offset_channel::channel_apply),
+        // inklusive des exakten Bounding-Sphere-Skips. Header 9 Floats,
+        // je Bogen 27: c(3) u(3) v(3) r sweep(<0 = Segment) bc(3) br
+        // m1s(3) m2s(3) m1e(3) m2e(3).
+        const int kArc = 27;
+        int n = (int)rd();
+        bool concave = rd() > 0.5f;
+        float delta = rd();
+        float trust = rd();
+        float gate_w = rd();
+        float bc[3] = {rd(), rd(), rd()};
+        float br = rd();
+        int base = pc;
+        pc += n * kArc;
+        float d = pop_v();
+        float dbs = std::sqrt(sq_(pt[0] - bc[0]) + sq_(pt[1] - bc[1]) +
+                              sq_(pt[2] - bc[2])) - br;
+        if (trust - dbs <= (concave ? -d : d)) {
+          push_v(d);
+          break;
         }
-        push_v(result);
+        float best = FD_FLT_MAX;
+        float best_q[3] = {pt[0], pt[1], pt[2]};
+        float best_m1[3] = {0, 0, 0};
+        float best_m2[3] = {0, 0, 0};
+        for (int k = 0; k < n; ++k) {
+          const float* a = opcodes + base + k * kArc;
+          float dbc = std::sqrt(sq_(pt[0] - a[11]) + sq_(pt[1] - a[12]) +
+                                sq_(pt[2] - a[13]));
+          if (dbc - a[14] >= best) continue;
+          const float* c = a + 0;
+          const float* u = a + 3;
+          const float* v = a + 6;
+          float r = a[9];
+          float sweep = a[10];
+          float de, q[3], t;
+          if (sweep < 0.0f) {
+            float len = fmaxf_(r, 1e-12f);
+            float dp = (pt[0] - c[0]) * u[0] + (pt[1] - c[1]) * u[1] +
+                       (pt[2] - c[2]) * u[2];
+            t = clampf_(dp / len, 0.0f, 1.0f);
+            q[0] = c[0] + u[0] * (t * len);
+            q[1] = c[1] + u[1] * (t * len);
+            q[2] = c[2] + u[2] * (t * len);
+            de = std::sqrt(sq_(pt[0] - q[0]) + sq_(pt[1] - q[1]) +
+                           sq_(pt[2] - q[2]));
+          } else {
+            float dc[3] = {pt[0] - c[0], pt[1] - c[1], pt[2] - c[2]};
+            float x = dc[0] * u[0] + dc[1] * u[1] + dc[2] * u[2];
+            float y = dc[0] * v[0] + dc[1] * v[1] + dc[2] * v[2];
+            float rho = std::sqrt(x * x + y * y);
+            if (rho < 1e-9f) {
+              q[0] = c[0] + u[0] * r;
+              q[1] = c[1] + u[1] * r;
+              q[2] = c[2] + u[2] * r;
+              t = 0.0f;
+            } else {
+              float phi = std::atan2(y, x);
+              if (phi < 0.0f) phi += 6.2831853f;
+              if (phi <= sweep) {
+                float cs = std::cos(phi), sn = std::sin(phi);
+                q[0] = c[0] + r * (u[0] * cs + v[0] * sn);
+                q[1] = c[1] + r * (u[1] * cs + v[1] * sn);
+                q[2] = c[2] + r * (u[2] * cs + v[2] * sn);
+                t = phi / sweep;
+              } else {
+                float csw = std::cos(sweep), ssw = std::sin(sweep);
+                float q0[3] = {c[0] + u[0] * r, c[1] + u[1] * r,
+                               c[2] + u[2] * r};
+                float q1[3] = {c[0] + r * (u[0] * csw + v[0] * ssw),
+                               c[1] + r * (u[1] * csw + v[1] * ssw),
+                               c[2] + r * (u[2] * csw + v[2] * ssw)};
+                float d0 = std::sqrt(sq_(pt[0] - q0[0]) + sq_(pt[1] - q0[1]) +
+                                     sq_(pt[2] - q0[2]));
+                float d1 = std::sqrt(sq_(pt[0] - q1[0]) + sq_(pt[1] - q1[1]) +
+                                     sq_(pt[2] - q1[2]));
+                if (d0 <= d1) {
+                  q[0] = q0[0]; q[1] = q0[1]; q[2] = q0[2];
+                  t = 0.0f;
+                } else {
+                  q[0] = q1[0]; q[1] = q1[1]; q[2] = q1[2];
+                  t = 1.0f;
+                }
+              }
+            }
+            de = std::sqrt(sq_(pt[0] - q[0]) + sq_(pt[1] - q[1]) +
+                           sq_(pt[2] - q[2]));
+          }
+          if (de < best) {
+            best = de;
+            best_q[0] = q[0]; best_q[1] = q[1]; best_q[2] = q[2];
+            const float* m1s = a + 15;
+            const float* m2s = a + 18;
+            const float* m1e = a + 21;
+            const float* m2e = a + 24;
+            float m1[3], m2[3];
+            for (int i = 0; i < 3; ++i) {
+              m1[i] = m1s[i] + (m1e[i] - m1s[i]) * t;
+              m2[i] = m2s[i] + (m2e[i] - m2s[i]) * t;
+            }
+            float n1 = std::sqrt(sq_(m1[0]) + sq_(m1[1]) + sq_(m1[2]));
+            float n2 = std::sqrt(sq_(m2[0]) + sq_(m2[1]) + sq_(m2[2]));
+            for (int i = 0; i < 3; ++i) {
+              best_m1[i] = n1 > 1e-9f ? m1[i] / n1 : m1s[i];
+              best_m2[i] = n2 > 1e-9f ? m2[i] / n2 : m2s[i];
+            }
+          }
+        }
+        if (best >= FD_FLT_MAX) {
+          push_v(d);
+          break;
+        }
+        float dq[3] = {pt[0] - best_q[0], pt[1] - best_q[1],
+                       pt[2] - best_q[2]};
+        float s1 = dq[0] * best_m1[0] + dq[1] * best_m1[1] +
+                   dq[2] * best_m1[2];
+        float s2 = dq[0] * best_m2[0] + dq[1] * best_m2[1] +
+                   dq[2] * best_m2[2];
+        float gate = concave ? gate_w - d : gate_w + d;
+        float w = fminf_(fminf_(fminf_(s1, s2), best - delta),
+                         fminf_(trust - best, gate));
+        push_v(concave ? fminf_(d, -w) : fmaxf_(d, w));
         break;
       }
 

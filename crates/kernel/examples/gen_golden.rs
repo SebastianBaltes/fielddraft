@@ -536,4 +536,79 @@ fn main() {
         xform([1.0, -2.0, 0.5], tilt_quat(), s1),
     )]));
     emit("custom_sdf_sinsphere", &bvh, &pts);
+
+    // ── Kanal-Korrekturkörper (OP_ARC_CHANNEL, offset_tree Phase B) ────
+    // Kleiner Steinmetz (+δ über Schnitt zweier orthogonaler Zylinder,
+    // konvexer Keil-Abzug, gebogene Naht → echte Bögen) und ein
+    // Union-Dieder-Notch (−δ, konkaver Sliver-Zusatz, gerade Naht →
+    // Segmente). Beide durch die echte Synthese, damit der Strom exakt
+    // die Produktions-Payloads trägt.
+    let half = std::f32::consts::FRAC_1_SQRT_2;
+    let stein = CsgNode::Offset(
+        Box::new(CsgNode::Intersection(
+            Box::new(CsgNode::Transform(
+                xform([0.0; 3], [half, 0.0, 0.0, half], s1),
+                Box::new(CsgNode::Leaf {
+                    id: FeatureId::from_u32(1),
+                    primitive: Primitive::Cylinder {
+                        center: [0.0; 3],
+                        radius: 9.0,
+                        half_height: 18.0,
+                    },
+                }),
+            )),
+            Box::new(CsgNode::Transform(
+                xform([0.0; 3], [0.0, 0.0, -half, half], s1),
+                Box::new(CsgNode::Leaf {
+                    id: FeatureId::from_u32(2),
+                    primitive: Primitive::Cylinder {
+                        center: [0.0; 3],
+                        radius: 6.0,
+                        half_height: 18.0,
+                    },
+                }),
+            )),
+        )),
+        1.5,
+    );
+    let bvh = fielddraft_kernel::offset_channel::synthesize_offset_channels(
+        BoundedCsg::from_csg(&stein),
+        0.01,
+    );
+    let (n_ch, _) = fielddraft_kernel::offset_channel::count_channels(&bvh);
+    assert!(n_ch > 0, "golden arc_channel_steinmetz: Synthese lieferte keine Kanäle");
+    emit("arc_channel_steinmetz", &bvh, &pts);
+
+    let notch = CsgNode::Offset(
+        Box::new(CsgNode::Union(
+            Box::new(CsgNode::Transform(
+                xform([0.0, -10.0, 0.0], id, s1),
+                Box::new(CsgNode::Leaf {
+                    id: FeatureId::from_u32(1),
+                    primitive: Primitive::Box {
+                        center: [0.0; 3],
+                        half_extents: [20.0, 10.0, 12.0],
+                    },
+                }),
+            )),
+            Box::new(CsgNode::Transform(
+                xform([10.0, 0.0, 0.0], [0.0, 0.0, half, half], s1),
+                Box::new(CsgNode::Leaf {
+                    id: FeatureId::from_u32(2),
+                    primitive: Primitive::Box {
+                        center: [0.0; 3],
+                        half_extents: [20.0, 10.0, 12.0],
+                    },
+                }),
+            )),
+        )),
+        -1.5,
+    );
+    let bvh = fielddraft_kernel::offset_channel::synthesize_offset_channels(
+        BoundedCsg::from_csg(&notch),
+        0.01,
+    );
+    let (n_ch, _) = fielddraft_kernel::offset_channel::count_channels(&bvh);
+    assert!(n_ch > 0, "golden arc_channel_notch: Synthese lieferte keine Kanäle");
+    emit("arc_channel_notch", &bvh, &pts);
 }
