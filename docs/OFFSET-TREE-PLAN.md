@@ -195,9 +195,13 @@ enge Features) werden in Phase C per Witness geprüft.
 **Tests:** Steinmetz-Szene aus dem Spike als Regressionstest (Ziele:
 ≤ 0.01 mm mit 32 Bögen, ≤ 0.001 mm mit 128 Bögen gesamt); Außenfeld-
 Überschätzung ≤ Kurventoleranz (March-Sicherheit); Tape-Parität CPU/GPU
-< 1e-6-Klasse wie bei allen Opcodes; ein konkaver Fall (Union bei −δ /
-Shell-Innennaht) zusätzlich zum konvexen Spike-Fall — der ist bisher NICHT
-gemessen.
+< 1e-6-Klasse wie bei allen Opcodes; der konkave Fall (Union bei −δ /
+Shell-Innennaht) ist seit der B0-Messreihe quantifiziert
+(`iter3-offset-tree/B0-CONCAVE-SEAM.md`): echter Nullmengenfehler
+(fehlendes Material) NUR am −δ-Union-Stopp, Sliver-Tiefe
+δ·(1/sin(α/2) − 1) auf 1–4 % bestätigt (α=90°: 0.41·δ); alle anderen
+konkaven Erosionsnähte (Difference, Intersection, Folds, Shell) sind
+nullmengen-exakt und brauchen keinen Korrekturkörper.
 
 ## 7. Phase C — Topologie, Pruning, Weave-Refresh
 
@@ -270,10 +274,18 @@ Kante nach Weave-Refresh.
   Approximationen sind — R&R nennen genau das als Grund ihrer
   PCC-Entscheidung. V1-Politik: zulassen, aber Toleranzen addieren und ab
   Kaskadentiefe 2 warnen.
-* **Konkaver Kanal ungemessen.** Der Spike hat nur den konvexen Fall
-  (Schnitt, Materialabzug) quantifiziert; der konkave Additionsfall
-  (Shell-Innennaht) ist Konstruktion nach demselben Muster, braucht aber
-  eine eigene Messreihe (Phase-B-Test).
+* **Konkaver Kanal — GEMESSEN (B0, 2026-07-19).** Messreihe
+  `iter3-offset-tree/B0-CONCAVE-SEAM.md` (+ `b0_concave_seam.csv`,
+  Bin `b0_concave_seam`): der konkave Additionsfall existiert als
+  echter Nullmengenfehler ausschließlich am dualen Stopp −δ an Union
+  (Sliver δ·(1/sin(α/2) − 1), fehlendes Material, reiner
+  Fußpunktfehler ‖∇f‖=1); L-Extrude-Fold, Box-minus-Box, Dieder per
+  Intersection und beide Shell-Bauarten sind nullmengen-exakt (nur
+  march-sichere Metrik-Unterschätzung ≤ (1−sin(α/2))·r). Ab α ≥ 150°
+  liegt der Sliver unter 0.07·δ → Pruning-Kriterium für Phase C.
+  Bonus-Befund: die Phase-D-Expansion S ∖ Offset(S, −t) ist an der
+  Box-Shell auch METRISCH exakt, während der heutige
+  `CsgNode::Shell`-Modifier an den Innenkanten ~0.29·r Fehler trägt.
 * **Nichtkonvexe Normalkegel-Überlappung** bei großem δ: Restrisiko per
   Witness + Ball-Extremum prüfen (Phase C), keine Exaktheitsgarantie im
   Überlappungsgebiet.

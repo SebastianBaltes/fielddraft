@@ -43,3 +43,11 @@ serde_json = "1"
 [[bin]]
 name = "a2_fold_check"
 path = "src/bin/a2_fold_check.rs"
+
+# B0-Messreihe konkave Shell-Naht (#384, offset_tree Phase B):
+# Erosion an konkaven Nähten (L-Extrude, Tasche, Dieder-Sweep, Shell)
+# gegen brute-force Ground Truth des WAHR erodierten Solids.
+# Ausgabe b0_concave_seam.csv.
+[[bin]]
+name = "b0_concave_seam"
+path = "src/bin/b0_concave_seam.rs"
