@@ -76,6 +76,16 @@ pub const OP_WARP_SWEEP: u32     = 0x38; // +4 header (N, closed, total_len, twi
 // Masked blend — pops 2 (da, db), evaluates capsule mask, pushes 1.
 pub const OP_MASKED_BLEND: u32   = 0x40; // +var: n + n×point(3) + mask_r+blend_r+mode+is_diff
 
+// offset_tree Phase B (#384): Kanal-Korrekturkörper an einem dualen
+// Offset-Stopp — pops den naiven Stopp-Wert d, pusht die korrigierte
+// Distanz (CPU-Referenz: `offset_channel::channel_apply`).
+// Header (8): n_arcs + concave(0/1) + delta + trust_gate… genau:
+//   n_arcs(1) + concave(1) + delta(1) + trust(1) + gate(1) +
+//   bound_c(3) + bound_r(1) = 9
+// je Bogen (27): c(3) u(3) v(3) r(1) sweep(1; −1 = Segment) bc(3) br(1)
+//   m1s(3) m2s(3) m1e(3) m2e(3).
+pub const OP_ARC_CHANNEL: u32    = 0x41; // +9+27N
+
 pub const OP_END: u32            = 0xFF;
 
 // ── Compiled output ────────────────────────────────────────────────
@@ -306,6 +316,12 @@ pub(crate) fn lipschitz_bound(node: &BoundedCsg) -> f32 {
         BoundedCsg::Shell { inner, .. } | BoundedCsg::Offset { inner, .. } => {
             lipschitz_bound(inner)
         }
+
+        // offset_tree Phase B: der Kanal-Term ist ein min/max-Gewinner aus
+        // 1-Lipschitz-Quellen (Distanz-zur-Kurve minus Konstante, Ebenen-
+        // Dots mit Einheitsvektoren, ±d + Konstante) — Winner-Branch wie
+        // die harten Booleans, komponiert neutral (Plan §6).
+        BoundedCsg::ArcChannel { inner, .. } => lipschitz_bound(inner).max(1.0),
     }
 }
 
@@ -412,6 +428,36 @@ fn emit_node(node: &BoundedCsg, ctx: &mut CompileCtx, open: &crate::csg::OpenBra
             let out = &mut ctx.opcodes;
             out.push(op(OP_OFFSET_2D));
             out.push(*delta);
+        }
+        BoundedCsg::ArcChannel { inner, channels, .. } => {
+            // offset_tree Phase B: naiver Stopp zuerst, dann je Kanal EIN
+            // OP_ARC_CHANNEL (pops d, pusht korrigiert) — sequenziell wie
+            // `offset_channel::channels_apply`.
+            emit_node(inner, ctx, open);
+            let out = &mut ctx.opcodes;
+            for ch in channels {
+                out.push(op(OP_ARC_CHANNEL));
+                out.push(ch.arcs.len() as f32);
+                out.push(if ch.concave { 1.0 } else { 0.0 });
+                out.push(ch.delta);
+                out.push(ch.trust);
+                out.push(ch.gate);
+                out.extend_from_slice(&ch.bound_c);
+                out.push(ch.bound_r);
+                for a in &ch.arcs {
+                    out.extend_from_slice(&a.c);
+                    out.extend_from_slice(&a.u);
+                    out.extend_from_slice(&a.v);
+                    out.push(a.r);
+                    out.push(a.sweep);
+                    out.extend_from_slice(&a.bc);
+                    out.push(a.br);
+                    out.extend_from_slice(&a.m1s);
+                    out.extend_from_slice(&a.m2s);
+                    out.extend_from_slice(&a.m1e);
+                    out.extend_from_slice(&a.m2e);
+                }
+            }
         }
         BoundedCsg::Shell {
             inner,
@@ -1640,6 +1686,132 @@ pub fn eval_opcodes_with_volumes(
                 };
                 let hard = crate::csg::hard_combine(is_diff, da, db);
                 push_v!(crate::csg::masked_blend_combine(mask_d, blended, hard, blend_r));
+            }
+
+            // ── Kanal-Korrekturkörper (offset_tree Phase B) ────
+            // 1:1-Spiegel von `offset_channel::channel_apply` auf dem
+            // Opcode-Strom (inkl. des exakten Bounding-Sphere-Skips —
+            // feldwert-identisch, reine Kostenoptimierung).
+            OP_ARC_CHANNEL => {
+                const ARC_STRIDE: usize = 27;
+                let n = rd!() as usize;
+                let concave = rd!() > 0.5;
+                let delta = rd!();
+                let trust = rd!();
+                let gate_w = rd!();
+                let bc = rd3!();
+                let br = rd!();
+                let arc_base = pc;
+                pc += n * ARC_STRIDE;
+                let d = pop_v!();
+                let v3 = |i: usize| [opcodes[i], opcodes[i + 1], opcodes[i + 2]];
+                let dist3 = |a: [f32; 3], b: [f32; 3]| {
+                    ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2))
+                        .sqrt()
+                };
+                let dbs = dist3(pt, bc) - br;
+                if trust - dbs <= if concave { -d } else { d } {
+                    push_v!(d);
+                    continue;
+                }
+                // argmin über die Bögen.
+                let mut best = f32::INFINITY;
+                let mut best_q = pt;
+                let mut best_m1 = [0.0f32; 3];
+                let mut best_m2 = [0.0f32; 3];
+                for k in 0..n {
+                    let b = arc_base + k * ARC_STRIDE;
+                    let abc = v3(b + 11);
+                    let abr = opcodes[b + 14];
+                    if dist3(pt, abc) - abr >= best {
+                        continue;
+                    }
+                    let c = v3(b);
+                    let u = v3(b + 3);
+                    let v = v3(b + 6);
+                    let r = opcodes[b + 9];
+                    let sweep = opcodes[b + 10];
+                    let (de, q, t) = if sweep < 0.0 {
+                        // Segment c → c + u·r.
+                        let len = r.max(1e-12);
+                        let t = (((pt[0] - c[0]) * u[0]
+                            + (pt[1] - c[1]) * u[1]
+                            + (pt[2] - c[2]) * u[2])
+                            / len)
+                            .clamp(0.0, 1.0);
+                        let q = [
+                            c[0] + u[0] * (t * len),
+                            c[1] + u[1] * (t * len),
+                            c[2] + u[2] * (t * len),
+                        ];
+                        (dist3(pt, q), q, t)
+                    } else {
+                        let dc = [pt[0] - c[0], pt[1] - c[1], pt[2] - c[2]];
+                        let x = dc[0] * u[0] + dc[1] * u[1] + dc[2] * u[2];
+                        let y = dc[0] * v[0] + dc[1] * v[1] + dc[2] * v[2];
+                        let rho = (x * x + y * y).sqrt();
+                        let arc_point = |phi: f32| -> [f32; 3] {
+                            let (s, cs) = phi.sin_cos();
+                            [
+                                c[0] + r * (u[0] * cs + v[0] * s),
+                                c[1] + r * (u[1] * cs + v[1] * s),
+                                c[2] + r * (u[2] * cs + v[2] * s),
+                            ]
+                        };
+                        if rho < 1e-9 {
+                            let q = arc_point(0.0);
+                            (dist3(pt, q), q, 0.0)
+                        } else {
+                            let mut phi = y.atan2(x);
+                            if phi < 0.0 {
+                                phi += std::f32::consts::TAU;
+                            }
+                            if phi <= sweep {
+                                let q = arc_point(phi);
+                                (dist3(pt, q), q, phi / sweep)
+                            } else {
+                                let q0 = arc_point(0.0);
+                                let q1 = arc_point(sweep);
+                                let d0 = dist3(pt, q0);
+                                let d1 = dist3(pt, q1);
+                                if d0 <= d1 {
+                                    (d0, q0, 0.0)
+                                } else {
+                                    (d1, q1, 1.0)
+                                }
+                            }
+                        }
+                    };
+                    if de < best {
+                        best = de;
+                        best_q = q;
+                        let nl = |a: [f32; 3], bb: [f32; 3]| -> [f32; 3] {
+                            let w = [
+                                a[0] + (bb[0] - a[0]) * t,
+                                a[1] + (bb[1] - a[1]) * t,
+                                a[2] + (bb[2] - a[2]) * t,
+                            ];
+                            let nn = (w[0] * w[0] + w[1] * w[1] + w[2] * w[2]).sqrt();
+                            if nn > 1e-9 {
+                                [w[0] / nn, w[1] / nn, w[2] / nn]
+                            } else {
+                                a
+                            }
+                        };
+                        best_m1 = nl(v3(b + 15), v3(b + 21));
+                        best_m2 = nl(v3(b + 18), v3(b + 24));
+                    }
+                }
+                if !best.is_finite() {
+                    push_v!(d);
+                    continue;
+                }
+                let dq = [pt[0] - best_q[0], pt[1] - best_q[1], pt[2] - best_q[2]];
+                let s1 = dq[0] * best_m1[0] + dq[1] * best_m1[1] + dq[2] * best_m1[2];
+                let s2 = dq[0] * best_m2[0] + dq[1] * best_m2[1] + dq[2] * best_m2[2];
+                let gate = if concave { gate_w - d } else { gate_w + d };
+                let w = s1.min(s2).min(best - delta).min(trust - best).min(gate);
+                push_v!(if concave { d.min(-w) } else { d.max(w) });
             }
 
             OP_PRIM_TEX3D => {

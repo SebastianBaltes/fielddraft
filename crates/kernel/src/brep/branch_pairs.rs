@@ -306,7 +306,8 @@ fn walk(node: &BoundedCsg, out: &mut Vec<Branch>) {
         BoundedCsg::Twist { inner, .. }
         | BoundedCsg::Bend { inner, .. }
         | BoundedCsg::Displace { inner, .. }
-        | BoundedCsg::Offset { inner, .. } => walk(inner, out),
+        | BoundedCsg::Offset { inner, .. }
+        | BoundedCsg::ArcChannel { inner, .. } => walk(inner, out),
     }
 }
 
@@ -446,7 +447,8 @@ fn collect_pairs(node: &BoundedCsg, out: &mut Vec<BranchPair>) -> Vec<Branch> {
         BoundedCsg::Twist { inner, .. }
         | BoundedCsg::Bend { inner, .. }
         | BoundedCsg::Displace { inner, .. }
-        | BoundedCsg::Offset { inner, .. } => collect_pairs(inner, out),
+        | BoundedCsg::Offset { inner, .. }
+        | BoundedCsg::ArcChannel { inner, .. } => collect_pairs(inner, out),
     }
 }
 

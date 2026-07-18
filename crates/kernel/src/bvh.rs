@@ -257,6 +257,18 @@ pub enum BoundedCsg {
         t: f32,
         aabb: Aabb,
     },
+    /// offset_tree Phase B (#384): Kanal-Korrekturkörper an einem dualen
+    /// Offset-Stopp. `inner` ist der Stopp selbst (`Offset { Union/…, δ }`,
+    /// naives `f − δ`); die `channels` korrigieren dessen Nullmenge entlang
+    /// der Naht-Kurven (konvexer Keil subtrahiert, konkaver Sliver addiert
+    /// — [`crate::offset_channel`]). Existiert NUR in `BoundedCsg` (die
+    /// Synthese läuft nach `from_csg` in den Mesh-/SDF-Baupfaden); der
+    /// logische [`CsgNode`]-Baum bleibt kanalfrei.
+    ArcChannel {
+        inner: Box<BoundedCsg>,
+        channels: Vec<crate::offset_channel::OffsetChannel>,
+        aabb: Aabb,
+    },
 }
 
 impl BoundedCsg {
@@ -299,7 +311,8 @@ impl BoundedCsg {
             | BoundedCsg::Helix { aabb, .. }
             | BoundedCsg::Sweep { aabb, .. }
             | BoundedCsg::MaskedBlend { aabb, .. }
-            | BoundedCsg::Morph { aabb, .. } => *aabb,
+            | BoundedCsg::Morph { aabb, .. }
+            | BoundedCsg::ArcChannel { aabb, .. } => *aabb,
         }
     }
 
@@ -335,7 +348,8 @@ impl BoundedCsg {
             | BoundedCsg::Bend { inner, .. }
             | BoundedCsg::Displace { inner, .. }
             | BoundedCsg::Offset { inner, .. }
-            | BoundedCsg::Shell { inner, .. } => {
+            | BoundedCsg::Shell { inner, .. }
+            | BoundedCsg::ArcChannel { inner, .. } => {
                 inner.collect_leaf_transforms(out);
             }
             BoundedCsg::Extrude { .. }
@@ -495,6 +509,13 @@ impl BoundedCsg {
                 crate::csg::shell_wall_sdf(d, d_ret, *thickness)
             }
             BoundedCsg::Offset { inner, delta, .. } => inner.sdf_open(p, mode, open) - delta,
+            // offset_tree Phase B: naiver Stopp-Wert + Kanal-Korrekturen.
+            // Modus-unabhängig — der Kanal IST die korrekte harte Geometrie
+            // (wie MaskedBlend: die Fläche ist real, kein Render-Effekt).
+            BoundedCsg::ArcChannel { inner, channels, .. } => {
+                let d = inner.sdf_open(p, mode, open);
+                crate::offset_channel::channels_apply(d, p, channels)
+            }
             BoundedCsg::MaskedBlend {
                 left,
                 right,
@@ -769,6 +790,26 @@ impl BoundedCsg {
             BoundedCsg::Offset { inner, delta, .. } => {
                 let (d, c) = inner.evaluate_open(p, eps, mode, open);
                 (d - delta, c)
+            }
+            // offset_tree Phase B (Plan §9, Provenance-Regel): gewinnt der
+            // Kanal-Term klar (> eps), gehört die Fläche dem Kanal-Branch
+            // (0x700+-Band); im eps-Band an der Naht tragen Eltern UND
+            // Kanal bei (Mess-/Snap-Referenz der Eltern bleibt erreichbar).
+            BoundedCsg::ArcChannel { inner, channels, .. } => {
+                let (d0, mut c) = inner.evaluate_open(p, eps, mode, open);
+                let mut d = d0;
+                for ch in channels {
+                    let nd = crate::offset_channel::channel_apply(d, p, ch);
+                    if nd != d {
+                        if (nd - d).abs() > eps {
+                            c = Contributors::single(crate::csg::BranchId(ch.branch));
+                        } else {
+                            c.push(crate::csg::BranchId(ch.branch));
+                        }
+                        d = nd;
+                    }
+                }
+                (d, c)
             }
             BoundedCsg::MaskedBlend {
                 left,
@@ -1494,7 +1535,8 @@ fn classify_walk(node: &BoundedCsg, info: &mut HybridInfo, role: &str, warp: Opt
         BoundedCsg::Displace { .. }
         | BoundedCsg::Shell { .. }
         | BoundedCsg::Offset { .. }
-        | BoundedCsg::Morph { .. } => {
+        | BoundedCsg::Morph { .. }
+        | BoundedCsg::ArcChannel { .. } => {
             info.is_union_only = false;
             info.needs_full_sdf = true;
         }

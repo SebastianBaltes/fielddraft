@@ -10,6 +10,7 @@ pub mod bvh;
 pub mod cell_csg;
 pub mod csg;
 mod offset_fold;
+pub mod offset_channel;
 pub mod sdf_dual;
 pub mod dc;
 pub mod mdc;

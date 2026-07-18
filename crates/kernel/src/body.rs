@@ -356,7 +356,8 @@ fn bounded_contains_space_filling(node: &BoundedCsg) -> bool {
         | BoundedCsg::Bend { inner, .. }
         | BoundedCsg::Displace { inner, .. }
         | BoundedCsg::Offset { inner, .. }
-        | BoundedCsg::Shell { inner, .. } => bounded_contains_space_filling(inner),
+        | BoundedCsg::Shell { inner, .. }
+        | BoundedCsg::ArcChannel { inner, .. } => bounded_contains_space_filling(inner),
         // A helical sweep counts as weave-excluded too (DL-71 family):
         // the thread surface would make the octree refine on thousands
         // of cells for non-Lipschitz seams the weaver discards anyway.
@@ -989,7 +990,15 @@ pub fn build_bounded_for_body_rounded(
     // (`fold_offset_leaves`) — korrigiert die Nullmenge dort, wo das Blatt
     // vorher kein exaktes SDF war (Profil-Booleans, Sketch2d::Offset).
     csg = csg.push_down_offsets().fold_offset_leaves();
-    BoundedCsg::from_csg(&csg)
+    // Phase B: Kanal-Korrekturkörper an den dualen Stopp-Knoten (läuft auf
+    // dem BoundedCsg, Transforms bereits welt-gefaltet). Synchron zur
+    // Regen-Zeit — die Naht-Kurven kommen aus SSI-Seeds + Feld-Tracing,
+    // nicht aus dem (asynchronen) Produktions-Weave. Der Weave-Baupfad
+    // (`build_bounded_for_body_local`) bleibt bewusst kanalfrei (Phase C).
+    crate::offset_channel::synthesize_offset_channels(
+        BoundedCsg::from_csg(&csg),
+        crate::offset_channel::DEFAULT_CHANNEL_TOL,
+    )
 }
 
 /// Like [`build_bounded_for_body`], but builds the `BoundedCsg` in the
@@ -1060,7 +1069,13 @@ pub fn build_bounded_with_primitives_rounded(
         .into_iter()
         .map(|(k, v)| (k, v.clone()))
         .collect();
-    (BoundedCsg::from_csg(&csg), prims)
+    // Phase B: Kanal-Synthese wie in `build_bounded_for_body_rounded` —
+    // NACH der Primitive-Map (Kanäle ändern keine Blatt-Parameter).
+    let bounded = crate::offset_channel::synthesize_offset_channels(
+        BoundedCsg::from_csg(&csg),
+        crate::offset_channel::DEFAULT_CHANNEL_TOL,
+    );
+    (bounded, prims)
 }
 
 #[cfg(test)]

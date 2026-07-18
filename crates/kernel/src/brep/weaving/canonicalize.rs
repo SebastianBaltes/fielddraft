@@ -1187,7 +1187,8 @@ fn collect_blend_specs(node: &BoundedCsg, out: &mut Vec<BlendSeamSpec>) {
         | BoundedCsg::Bend { inner, .. }
         | BoundedCsg::Displace { inner, .. }
         | BoundedCsg::Shell { inner, .. }
-        | BoundedCsg::Offset { inner, .. } => collect_blend_specs(inner, out),
+        | BoundedCsg::Offset { inner, .. }
+        | BoundedCsg::ArcChannel { inner, .. } => collect_blend_specs(inner, out),
         BoundedCsg::Leaf { .. }
         | BoundedCsg::Extrude { .. }
         | BoundedCsg::Revolve { .. }

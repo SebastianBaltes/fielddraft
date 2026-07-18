@@ -267,8 +267,184 @@ fn node_to_tree(node: &BoundedCsg, p: &[Tree; 3]) -> Result<Tree, String> {
             let db = node_to_tree(right, p)?;
             Ok(da * (1.0 - *t as f64) + db * *t as f64)
         }
+        // offset_tree Phase B: exakter symbolischer Spiegel des Kanal-Terms
+        // (`offset_channel::channel_apply`) — argmin-Bogen und min/max-
+        // Gewinner via `compare`-Selects, Bogen-Distanz closed-form mit
+        // `atan2`. Kein Bounding-Sphere-Skip (feldwert-identisch, der Skip
+        // ist reine Laufzeit-Optimierung der numerischen Interpreter).
+        BoundedCsg::ArcChannel { inner, channels, .. } => {
+            let mut d = node_to_tree(inner, p)?;
+            for ch in channels {
+                d = channel_to_tree(&d, p, ch);
+            }
+            Ok(d)
+        }
         BoundedCsg::Empty => Err("empty body".into()),
         _ => Err("node contains a sketch/data carrier not expressible for interval-DC".into()),
+    }
+}
+
+// ─── offset_tree Phase B: Kanal-Korrektur als Tree ──────────────────
+
+/// `x` wenn `a < b`, sonst `y` (bei Gleichheit `y`) — numerischer Select
+/// über `compare` (−1/0/+1) ohne Verzweigung.
+fn select_lt(a: &Tree, b: &Tree, x: &Tree, y: &Tree) -> Tree {
+    let m = relu(b.clone().compare(a.clone())); // 1 wenn b > a, sonst 0
+    y.clone() + (x.clone() - y.clone()) * m
+}
+
+fn t_dot(a: &[Tree; 3], b: &[Tree; 3]) -> Tree {
+    a[0].clone() * b[0].clone() + a[1].clone() * b[1].clone() + a[2].clone() * b[2].clone()
+}
+
+fn t_sub(a: &[Tree; 3], b: &[Tree; 3]) -> [Tree; 3] {
+    [
+        a[0].clone() - b[0].clone(),
+        a[1].clone() - b[1].clone(),
+        a[2].clone() - b[2].clone(),
+    ]
+}
+
+fn t_const3(v: [f32; 3]) -> [Tree; 3] {
+    [
+        Tree::from(v[0] as f64),
+        Tree::from(v[1] as f64),
+        Tree::from(v[2] as f64),
+    ]
+}
+
+fn t_norm(a: &[Tree; 3]) -> Tree {
+    t_dot(a, a).sqrt()
+}
+
+/// Spiegel von [`crate::offset_channel::channel_apply`] als Tree.
+fn channel_to_tree(
+    d: &Tree,
+    p: &[Tree; 3],
+    ch: &crate::offset_channel::OffsetChannel,
+) -> Tree {
+    // Laufende argmin-Register: (best, q, m1, m2) als Trees.
+    let mut best = Tree::from(f64::INFINITY.min(1e30));
+    let mut best_q = p.clone();
+    let mut best_m1 = t_const3([0.0; 3]);
+    let mut best_m2 = t_const3([0.0; 3]);
+
+    for arc in &ch.arcs {
+        let (de, q, t) = if arc.sweep < 0.0 {
+            // Segment c → c + u·r.
+            let c = t_const3(arc.c);
+            let u = t_const3(arc.u);
+            let len = (arc.r as f64).max(1e-12);
+            let t = (t_dot(&t_sub(p, &c), &u) * (1.0 / len)).max(0.0).min(1.0);
+            let q = [
+                c[0].clone() + u[0].clone() * t.clone() * len,
+                c[1].clone() + u[1].clone() * t.clone() * len,
+                c[2].clone() + u[2].clone() * t.clone() * len,
+            ];
+            (t_norm(&t_sub(p, &q)), q, t)
+        } else {
+            let c = t_const3(arc.c);
+            let u = t_const3(arc.u);
+            let v = t_const3(arc.v);
+            let dc = t_sub(p, &c);
+            let x = t_dot(&dc, &u);
+            let y = t_dot(&dc, &v);
+            let mut phi = y.clone().atan2(x.clone());
+            // φ < 0 → φ + 2π (in [0, 2π) heben).
+            let zero = Tree::from(0.0);
+            let phi_shift = phi.clone() + std::f64::consts::TAU;
+            phi = select_lt(&phi, &zero, &phi_shift, &phi);
+            let arc_point = |ph: &Tree| -> [Tree; 3] {
+                let (s, co) = (ph.clone().sin(), ph.clone().cos());
+                [
+                    c[0].clone() + (u[0].clone() * co.clone() + v[0].clone() * s.clone()) * arc.r as f64,
+                    c[1].clone() + (u[1].clone() * co.clone() + v[1].clone() * s.clone()) * arc.r as f64,
+                    c[2].clone() + (u[2].clone() * co.clone() + v[2].clone() * s.clone()) * arc.r as f64,
+                ]
+            };
+            let sweep = Tree::from(arc.sweep as f64);
+            let q_in = arc_point(&phi);
+            let q0 = arc_point(&Tree::from(0.0));
+            let q1 = arc_point(&sweep);
+            let d_in = t_norm(&t_sub(p, &q_in));
+            let d0 = t_norm(&t_sub(p, &q0));
+            let d1 = t_norm(&t_sub(p, &q1));
+            // Endpunkt-Fall: näherer der beiden Enden.
+            let d_end = d0.clone().min(d1.clone());
+            let t_end = select_lt(&d1, &d0, &Tree::from(1.0), &Tree::from(0.0));
+            let q_end = [
+                select_lt(&d1, &d0, &q1[0], &q0[0]),
+                select_lt(&d1, &d0, &q1[1], &q0[1]),
+                select_lt(&d1, &d0, &q1[2], &q0[2]),
+            ];
+            // In-Range-Select: φ ≤ sweep? (sweep < φ → Endpunkt).
+            let in_range = |x_in: &Tree, x_out: &Tree| select_lt(&sweep, &phi, x_out, x_in);
+            let de = in_range(&d_in, &d_end);
+            let q = [
+                in_range(&q_in[0], &q_end[0]),
+                in_range(&q_in[1], &q_end[1]),
+                in_range(&q_in[2], &q_end[2]),
+            ];
+            let t = in_range(&(phi.clone() * (1.0 / arc.sweep as f64)), &t_end);
+            (de, q, t)
+        };
+        // m-Vektoren am Fußpunkt (nlerp) — Normierung symbolisch.
+        let lerp3 = |a: [f32; 3], b: [f32; 3]| -> [Tree; 3] {
+            let a = t_const3(a);
+            let b = t_const3(b);
+            [
+                a[0].clone() + (b[0].clone() - a[0].clone()) * t.clone(),
+                a[1].clone() + (b[1].clone() - a[1].clone()) * t.clone(),
+                a[2].clone() + (b[2].clone() - a[2].clone()) * t.clone(),
+            ]
+        };
+        let normed = |w: [Tree; 3]| -> [Tree; 3] {
+            let n = t_norm(&w).max(1e-9);
+            [
+                w[0].clone() * n.clone().recip(),
+                w[1].clone() * n.clone().recip(),
+                w[2].clone() * n.recip(),
+            ]
+        };
+        let m1 = normed(lerp3(arc.m1s, arc.m1e));
+        let m2 = normed(lerp3(arc.m2s, arc.m2e));
+        // Läuft der Bogen das argmin an? (de < best → übernehmen.)
+        let upd = |x: &Tree, y: &Tree| select_lt(&de, &best, x, y);
+        best_q = [
+            upd(&q[0], &best_q[0]),
+            upd(&q[1], &best_q[1]),
+            upd(&q[2], &best_q[2]),
+        ];
+        best_m1 = [
+            upd(&m1[0], &best_m1[0]),
+            upd(&m1[1], &best_m1[1]),
+            upd(&m1[2], &best_m1[2]),
+        ];
+        best_m2 = [
+            upd(&m2[0], &best_m2[0]),
+            upd(&m2[1], &best_m2[1]),
+            upd(&m2[2], &best_m2[2]),
+        ];
+        best = best.min(de);
+    }
+
+    let dq = t_sub(p, &best_q);
+    let s1 = t_dot(&dq, &best_m1);
+    let s2 = t_dot(&dq, &best_m2);
+    let gate = if ch.concave {
+        Tree::from(ch.gate as f64) - d.clone()
+    } else {
+        Tree::from(ch.gate as f64) + d.clone()
+    };
+    let w = s1
+        .min(s2)
+        .min(best.clone() - ch.delta as f64)
+        .min(neg(best) + ch.trust as f64)
+        .min(gate);
+    if ch.concave {
+        d.clone().min(neg(w))
+    } else {
+        d.clone().max(w)
     }
 }
 
@@ -408,4 +584,85 @@ fn weld_and_clean(positions: &[f32], indices: &[u32]) -> (Vec<f32>, Vec<u32>) {
         out.extend_from_slice(&[a, b, c]);
     }
     (welded, out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::csg::{CsgNode, EvalMode};
+    use fidget::shape::EzShape;
+    use fielddraft_protocol::FeatureId;
+
+    /// offset_tree Phase B: der symbolische Kanal-Spiegel (`channel_to_tree`,
+    /// compare-Selects + atan2) muss den CPU-Referenzwert der Baum-Eval
+    /// reproduzieren — Steinmetz-Fixture mit echten Bögen, kantennahe Punkte.
+    #[test]
+    fn arc_channel_fidget_tree_matches_cpu() {
+        let half = std::f32::consts::FRAC_1_SQRT_2;
+        let cyl = |id: u32, r: f32, rot: [f32; 4]| {
+            CsgNode::Transform(
+                Transform {
+                    translate: [0.0; 3],
+                    rotation: rot,
+                    scale: [1.0; 3],
+                },
+                Box::new(CsgNode::Leaf {
+                    id: FeatureId::from_u32(id),
+                    primitive: Primitive::Cylinder {
+                        center: [0.0; 3],
+                        radius: r,
+                        half_height: 18.0,
+                    },
+                }),
+            )
+        };
+        let node = CsgNode::Offset(
+            Box::new(CsgNode::Intersection(
+                Box::new(cyl(1, 9.0, [half, 0.0, 0.0, half])),
+                Box::new(cyl(2, 6.0, [0.0, 0.0, -half, half])),
+            )),
+            1.5,
+        );
+        let bounded = crate::offset_channel::synthesize_offset_channels(
+            crate::bvh::BoundedCsg::from_csg(&node),
+            0.01,
+        );
+        let (n_ch, _) = crate::offset_channel::count_channels(&bounded);
+        assert!(n_ch > 0, "Fixture ohne Kanäle");
+
+        let (x, y, z) = Tree::axes();
+        let tree = node_to_tree(&bounded, &[x, y, z]).expect("fidget-Übersetzung");
+        let shape = VmShape::from(tree);
+        let mut eval = VmShape::new_point_eval();
+        let tape = shape.ez_point_tape();
+
+        // Kantennahe + globale Punkte (deterministisch).
+        let mut worst = 0.0f32;
+        let mut k = 0u64;
+        let mut next = || {
+            k = k.wrapping_add(0x9E3779B97F4A7C15);
+            let mut v = k;
+            v = (v ^ (v >> 30)).wrapping_mul(0xBF58476D1CE4E5B9);
+            (v >> 40) as f32 / (1u64 << 24) as f32 * 2.0 - 1.0
+        };
+        for _ in 0..800 {
+            let th = next() * std::f32::consts::PI;
+            let sx = if next() > 0.0 { 1.0 } else { -1.0 };
+            let ey = 6.0 * th.cos();
+            let ez = 6.0 * th.sin();
+            let ex = sx * (81.0f32 - ey * ey).sqrt();
+            let p = [
+                ex + next() * 4.0,
+                ey + next() * 4.0,
+                ez + next() * 4.0,
+            ];
+            let d_cpu = bounded.sdf(p, EvalMode::Visual);
+            let (d_fid, _) = eval.eval(&tape, p[0], p[1], p[2]).expect("fidget eval");
+            worst = worst.max((d_cpu - d_fid).abs());
+        }
+        assert!(
+            worst < 5e-4,
+            "fidget-Kanal-Spiegel weicht ab: max |Δ| = {worst:.6}"
+        );
+    }
 }

@@ -404,6 +404,55 @@ fn eval_bounded_d3_open(
         BoundedCsg::Offset { inner, delta, .. } => {
             eval_bounded_d3_open(inner, p, mode, open) - D3::from(*delta as f64)
         }
+        // offset_tree Phase B: Dual-Spiegel des Kanal-Terms. Selektion
+        // (argmin-Bogen, min/max-Gewinner) läuft auf den Realteilen; die
+        // Gating-Daten q*/m̂ des nächsten Kurvenpunkts werden als Konstanten
+        // eingefroren — für den Distanzterm ist das der Enveloppen-Satz
+        // (∂de/∂x = (x−q*)/|x−q*| exakt), für die s-Terme erster Ordnung
+        // korrekt (die Fußpunkt-Drift ist ein O(κ·|x−q*|)-Nebenterm).
+        BoundedCsg::ArcChannel { inner, channels, .. } => {
+            let mut d = eval_bounded_d3_open(inner, p, mode, open);
+            let p_re = [p[0].re as f32, p[1].re as f32, p[2].re as f32];
+            for ch in channels {
+                if crate::offset_channel::channel_skip(d.re as f32, p_re, ch) {
+                    continue;
+                }
+                let Some((_, q, m1, m2)) = crate::offset_channel::channel_nearest(p_re, ch)
+                else {
+                    continue;
+                };
+                let dq = [
+                    p[0] - D3::from(q[0] as f64),
+                    p[1] - D3::from(q[1] as f64),
+                    p[2] - D3::from(q[2] as f64),
+                ];
+                let de = (dq[0] * dq[0] + dq[1] * dq[1] + dq[2] * dq[2]).sqrt();
+                let s1 = dq[0] * D3::from(m1[0] as f64)
+                    + dq[1] * D3::from(m1[1] as f64)
+                    + dq[2] * D3::from(m1[2] as f64);
+                let s2 = dq[0] * D3::from(m2[0] as f64)
+                    + dq[1] * D3::from(m2[1] as f64)
+                    + dq[2] * D3::from(m2[2] as f64);
+                let gate = if ch.concave {
+                    D3::from(ch.gate as f64) - d
+                } else {
+                    D3::from(ch.gate as f64) + d
+                };
+                let min_d3 = |a: D3, b: D3| if a.re <= b.re { a } else { b };
+                let w = min_d3(
+                    min_d3(min_d3(s1, s2), de - D3::from(ch.delta as f64)),
+                    min_d3(D3::from(ch.trust as f64) - de, gate),
+                );
+                d = if ch.concave {
+                    if d.re <= (-w).re { d } else { -w }
+                } else if d.re >= w.re {
+                    d
+                } else {
+                    w
+                };
+            }
+            d
+        }
         BoundedCsg::Shell { inner, thickness, open_faces, .. } => {
             // Retained-boundary shell (mirrors `crate::csg::shell_wall_sdf`):
             // wall = max(d, −(d_ret + t)) with d_ret the inner subtree under

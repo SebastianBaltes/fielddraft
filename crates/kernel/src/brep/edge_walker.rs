@@ -657,7 +657,8 @@ fn collect_leaf_nodes<'a>(node: &'a BoundedCsg, out: &mut HashMap<u32, &'a Bound
         BoundedCsg::Twist { inner, .. }
         | BoundedCsg::Bend { inner, .. }
         | BoundedCsg::Displace { inner, .. }
-        | BoundedCsg::Shell { inner, .. } => collect_leaf_nodes(inner, out),
+        | BoundedCsg::Shell { inner, .. }
+        | BoundedCsg::ArcChannel { inner, .. } => collect_leaf_nodes(inner, out),
         BoundedCsg::Offset { inner, .. } => {
             // The face field for an offset is the *offset* surface, so map the
             // carrier's leaf ids to THIS Offset node — `Field::Leaf` then traces
@@ -718,7 +719,8 @@ pub(crate) fn collect_non_lipschitz_features(node: &BoundedCsg, out: &mut std::c
         | BoundedCsg::Bend { inner, .. }
         | BoundedCsg::Displace { inner, .. }
         | BoundedCsg::Offset { inner, .. }
-        | BoundedCsg::Shell { inner, .. } => collect_non_lipschitz_features(inner, out),
+        | BoundedCsg::Shell { inner, .. }
+        | BoundedCsg::ArcChannel { inner, .. } => collect_non_lipschitz_features(inner, out),
         BoundedCsg::Extrude { .. } | BoundedCsg::Revolve { .. } | BoundedCsg::Empty => {}
     }
 }
@@ -1486,7 +1488,9 @@ pub(crate) fn body_has_warp(node: &BoundedCsg) -> bool {
         // folds `δ` into the half-space so it still matches the real surface, and
         // the phantom filter stays valid. Recurse so an offset *over* a warp is
         // still caught by the inner node.
-        BoundedCsg::Shell { inner, .. } | BoundedCsg::Offset { inner, .. } => body_has_warp(inner),
+        BoundedCsg::Shell { inner, .. }
+        | BoundedCsg::Offset { inner, .. }
+        | BoundedCsg::ArcChannel { inner, .. } => body_has_warp(inner),
         BoundedCsg::Leaf { .. }
         | BoundedCsg::Extrude { .. }
         | BoundedCsg::Revolve { .. }

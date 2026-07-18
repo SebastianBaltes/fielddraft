@@ -121,7 +121,8 @@ fn walk(node: &BoundedCsg, shell: Option<f32>, out: &mut Vec<TangentialSeam>) {
         BoundedCsg::Twist { inner, .. }
         | BoundedCsg::Bend { inner, .. }
         | BoundedCsg::Displace { inner, .. }
-        | BoundedCsg::Offset { inner, .. } => walk(inner, shell, out),
+        | BoundedCsg::Offset { inner, .. }
+        | BoundedCsg::ArcChannel { inner, .. } => walk(inner, shell, out),
         BoundedCsg::Empty
         | BoundedCsg::Leaf { .. }
         | BoundedCsg::Helix { .. }

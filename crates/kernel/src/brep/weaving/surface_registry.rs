@@ -110,7 +110,8 @@ pub(super) fn collect_halfspaces(node: &BoundedCsg, out: &mut BranchSurfaceMap) 
         }
         BoundedCsg::Twist { inner, .. }
         | BoundedCsg::Bend { inner, .. }
-        | BoundedCsg::Displace { inner, .. } => collect_halfspaces(inner, out),
+        | BoundedCsg::Displace { inner, .. }
+        | BoundedCsg::ArcChannel { inner, .. } => collect_halfspaces(inner, out),
         BoundedCsg::Offset { inner, delta, .. } => {
             // A `δ`-offset shifts each analytic face's surface parameter by `δ`
             // along its normal, keeping the same family and placement — the same
@@ -333,7 +334,8 @@ fn collect_revolve_profile_carriers(
         | BoundedCsg::Bend { inner, .. }
         | BoundedCsg::Displace { inner, .. }
         | BoundedCsg::Shell { inner, .. }
-        | BoundedCsg::Offset { inner, .. } => collect_revolve_profile_carriers(inner, out),
+        | BoundedCsg::Offset { inner, .. }
+        | BoundedCsg::ArcChannel { inner, .. } => collect_revolve_profile_carriers(inner, out),
         BoundedCsg::Leaf { .. }
         | BoundedCsg::Extrude { .. }
         | BoundedCsg::Helix { .. }
@@ -442,6 +444,7 @@ pub(super) fn collect_parity(node: &BoundedCsg, flipped: bool, out: &mut std::co
             collect_parity(left, flipped, out);
             collect_parity(right, !flipped, out);
         }
+        BoundedCsg::ArcChannel { inner, .. } => collect_parity(inner, flipped, out),
         BoundedCsg::MaskedBlend { left, right, is_difference, .. } => {
             collect_parity(left, flipped, out);
             collect_parity(right, flipped != *is_difference, out);
@@ -484,7 +487,8 @@ fn wall_sub_tables(node: &BoundedCsg) -> HashMap<u32, std::sync::Arc<Vec<u32>>> 
             | BoundedCsg::Bend { inner, .. }
             | BoundedCsg::Displace { inner, .. }
             | BoundedCsg::Shell { inner, .. }
-            | BoundedCsg::Offset { inner, .. } => walk(inner, out),
+            | BoundedCsg::Offset { inner, .. }
+            | BoundedCsg::ArcChannel { inner, .. } => walk(inner, out),
             BoundedCsg::Empty
             | BoundedCsg::Leaf { .. }
             | BoundedCsg::Extrude { .. }
