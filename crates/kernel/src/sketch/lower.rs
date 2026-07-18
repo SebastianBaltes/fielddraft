@@ -34,20 +34,44 @@ use super::SketchData;
 // one sketch are unioned together so a sketch with several
 // overlapping shapes lowers to one filled area.
 
-/// Drop closed-Path boundary segments that lie ON the revolve axis
+/// Drop profile boundary pieces that lie ON the revolve axis
 /// (sketch x = 0). The half-profile of a body of revolution is
 /// conventionally closed by an edge along the axis; revolving makes
 /// that edge interior, not surface — keeping it would leave a phantom
-/// zero-distance "wall" along the whole axis (a 2 mm shell then leaves
-/// a solid rod standing in the middle, and the weave grows a
+/// zero-distance "wall" along the whole axis (#390: a phantom
+/// zero-set the sphere tracer hits as a thin needle, a 2 mm shell
+/// leaves a solid rod standing in the middle, and the weave grows a
 /// degenerate radius-0 cylinder face). Dropping the segments keeps the
 /// even-odd parity for every sample at r ≥ 0 — a +x ray cast from
-/// r ≥ 0 never crosses x = 0 — while the distance magnitude now comes
-/// from the real wall.
+/// r ≥ 0 never crosses x = 0 (`line_crossings` needs `p.x < x_cross`
+/// and an on-axis wall has `x_cross = 0`) — while the distance
+/// magnitude now comes from the real walls at r > 0. This is the
+/// exact revolved SDF: the surface of the solid of revolution is the
+/// revolution of `∂Ω ∩ {r > 0}` only, and for a query at r ≥ 0 the
+/// nearest point of a revolved circle always lies in the same
+/// meridian half-plane, so "2D distance to the off-axis boundary"
+/// IS the 3D distance. The strip only removes zero-set pieces and
+/// never bends the meridian map, so the "meridian map is 1-Lipschitz"
+/// proof behind `march_relax = 1.0` for Revolve is untouched.
+///
+/// Handles every profile form a revolve can see (#390):
+/// - `Path { closed: true }`: on-axis segments are filtered out.
+/// - `Rectangle` / `Polygon` / `Sector` with an on-axis boundary
+///   edge: lowered to the equivalent closed `Path` (via
+///   [`revolve_prim_boundary`]) with the on-axis segments dropped.
+///   Prims WITHOUT an on-axis edge stay untouched, so off-axis
+///   revolves (measured exact, ≤ 2.7e-4 mm) are bit-identical.
+/// - Booleans and `Offset` recurse into BOTH children: a subtracted
+///   region's axis edge is just as phantom (it would put a zero-set
+///   needle inside the bore), and an inward `Offset` of an unstripped
+///   profile would grow the phantom wall into a phantom tube.
+///
+/// All SDF mirrors (CSG-tree eval, compiled tape, dual-number eval,
+/// TSL/WGSL interpreter via the tape) consume the stripped `Sketch2d`,
+/// so field/tape parity is preserved by construction.
 pub fn strip_revolve_axis_segments(sketch: Sketch2d) -> Sketch2d {
-    const AXIS_EPS: f32 = 1e-4;
     fn on_axis(seg: &SketchSegment) -> bool {
-        segment_on_revolve_axis(seg, AXIS_EPS)
+        segment_on_revolve_axis(seg, REVOLVE_AXIS_EPS)
     }
 
     match sketch {
@@ -61,11 +85,125 @@ pub fn strip_revolve_axis_segments(sketch: Sketch2d) -> Sketch2d {
                 closed: true,
             })
         }
+        Sketch2d::Prim(prim) => {
+            match revolve_prim_boundary(&prim) {
+                Some(chain) if chain.iter().any(|(s, _)| on_axis(s)) => {
+                    let kept: Vec<SketchSegment> = chain
+                        .into_iter()
+                        .filter(|(s, _)| !on_axis(s))
+                        .map(|(s, _)| s)
+                        .collect();
+                    Sketch2d::Prim(Sketch2dPrimitive::Path {
+                        segments: kept,
+                        closed: true,
+                    })
+                }
+                _ => Sketch2d::Prim(prim),
+            }
+        }
         Sketch2d::Union(a, b) => Sketch2d::Union(
             Box::new(strip_revolve_axis_segments(*a)),
             Box::new(strip_revolve_axis_segments(*b)),
         ),
+        Sketch2d::Difference(a, b) => Sketch2d::Difference(
+            Box::new(strip_revolve_axis_segments(*a)),
+            Box::new(strip_revolve_axis_segments(*b)),
+        ),
+        Sketch2d::Intersection(a, b) => Sketch2d::Intersection(
+            Box::new(strip_revolve_axis_segments(*a)),
+            Box::new(strip_revolve_axis_segments(*b)),
+        ),
+        Sketch2d::Offset { inner, distance } => Sketch2d::Offset {
+            inner: Box::new(strip_revolve_axis_segments(*inner)),
+            distance,
+        },
         other => other,
+    }
+}
+
+/// Tolerance for "this boundary edge lies ON the revolve axis". Shared
+/// by [`strip_revolve_axis_segments`] and the strip-aware trace
+/// matching in [`wall_sub_table`].
+pub(crate) const REVOLVE_AXIS_EPS: f32 = 1e-4;
+
+/// The boundary of a fixed-shape prim as a closed segment chain, each
+/// segment tagged with the prim's OWN boundary-group index (the
+/// numbering `sdf_with_edge` uses). `None` for prim kinds that either
+/// are handled directly (`Path`) or cannot carry a straight on-axis
+/// edge (`Circle`). Shared between [`strip_revolve_axis_segments`] and
+/// the conversion-aware trace matching in [`wall_sub_table`] — both
+/// must lower identically or the traced wall sources desynchronise
+/// from the stripped profile.
+pub(crate) fn revolve_prim_boundary(
+    prim: &Sketch2dPrimitive,
+) -> Option<Vec<(SketchSegment, u32)>> {
+    match prim {
+        Sketch2dPrimitive::Rectangle {
+            center: [cx, cy],
+            half_extents: [hx, hy],
+        } => {
+            // CCW chain; group order of `Rectangle::sdf_with_edge` is
+            // 0=+x, 1=−x, 2=+y, 3=−y.
+            let (l, r, b, t) = (cx - hx, cx + hx, cy - hy, cy + hy);
+            Some(vec![
+                (SketchSegment::Line { start: [l, b], end: [r, b] }, 3),
+                (SketchSegment::Line { start: [r, b], end: [r, t] }, 0),
+                (SketchSegment::Line { start: [r, t], end: [l, t] }, 2),
+                (SketchSegment::Line { start: [l, t], end: [l, b] }, 1),
+            ])
+        }
+        Sketch2dPrimitive::Polygon { vertices } => {
+            if vertices.len() < 3 {
+                return None;
+            }
+            // Edge id = start-vertex index (`sdf_polygon_with_edge`).
+            Some(
+                (0..vertices.len())
+                    .map(|i| {
+                        let j = (i + 1) % vertices.len();
+                        (
+                            SketchSegment::Line {
+                                start: vertices[i],
+                                end: vertices[j],
+                            },
+                            i as u32,
+                        )
+                    })
+                    .collect(),
+            )
+        }
+        Sketch2dPrimitive::Sector {
+            center,
+            radius,
+            start_angle,
+            sweep_angle,
+        } => {
+            let end_angle = start_angle + sweep_angle;
+            let p0 = [
+                center[0] + radius * start_angle.cos(),
+                center[1] + radius * start_angle.sin(),
+            ];
+            let p1 = [
+                center[0] + radius * end_angle.cos(),
+                center[1] + radius * end_angle.sin(),
+            ];
+            // Group indices are positional only — sector traces carry a
+            // single source id, so `traced_group_ids` falls back anyway.
+            Some(vec![
+                (SketchSegment::Line { start: *center, end: p0 }, 0),
+                (
+                    SketchSegment::Arc {
+                        center: *center,
+                        radius: *radius,
+                        start_angle: *start_angle,
+                        sweep_angle: *sweep_angle,
+                    },
+                    1,
+                ),
+                (SketchSegment::Line { start: p1, end: *center }, 2),
+            ])
+        }
+        Sketch2dPrimitive::Circle { .. } | Sketch2dPrimitive::Path { .. } => None,
     }
 }
 
@@ -964,10 +1102,9 @@ fn prim_wall_ids(p: &Sketch2dPrimitive, t: &TracedPrim) -> Option<Option<Vec<u32
     ) = (p, &t.prim)
     {
         if fc == tc && fs.len() < ts.len() {
-            const AXIS_EPS: f32 = 1e-4;
             let kept: Vec<&SketchSegment> = ts
                 .iter()
-                .filter(|s| !segment_on_revolve_axis(s, AXIS_EPS))
+                .filter(|s| !segment_on_revolve_axis(s, REVOLVE_AXIS_EPS))
                 .collect();
             if kept.len() == fs.len() && kept.iter().zip(fs.iter()).all(|(a, b)| *a == b) {
                 let sources = match &t.sources {
@@ -975,7 +1112,7 @@ fn prim_wall_ids(p: &Sketch2dPrimitive, t: &TracedPrim) -> Option<Option<Vec<u32
                         let filtered: Vec<Option<u32>> = ts
                             .iter()
                             .zip(src.iter())
-                            .filter(|(s, _)| !segment_on_revolve_axis(s, AXIS_EPS))
+                            .filter(|(s, _)| !segment_on_revolve_axis(s, REVOLVE_AXIS_EPS))
                             .map(|(_, id)| *id)
                             .collect();
                         Some(TraceSources::PerSegment(filtered))
@@ -983,6 +1120,43 @@ fn prim_wall_ids(p: &Sketch2dPrimitive, t: &TracedPrim) -> Option<Option<Vec<u32
                     other => other.clone(),
                 };
                 return Some(traced_group_ids(p, sources.as_ref()));
+            }
+        }
+    }
+    // Conversion-aware match (#390): an axis-touching Rectangle /
+    // Polygon / Sector was lowered to a closed Path with its on-axis
+    // edges dropped (`strip_revolve_axis_segments`). Re-run the SAME
+    // conversion on the traced prim and compare the kept chain; the
+    // traced per-GROUP sources are remapped to per-SEGMENT sources via
+    // the chain's original-group tags.
+    if let Sketch2dPrimitive::Path { segments: fs, closed: true } = p {
+        if let Some(chain) = revolve_prim_boundary(&t.prim) {
+            if chain
+                .iter()
+                .any(|(s, _)| segment_on_revolve_axis(s, REVOLVE_AXIS_EPS))
+            {
+                let kept: Vec<&(SketchSegment, u32)> = chain
+                    .iter()
+                    .filter(|(s, _)| !segment_on_revolve_axis(s, REVOLVE_AXIS_EPS))
+                    .collect();
+                if kept.len() == fs.len()
+                    && kept.iter().zip(fs.iter()).all(|((a, _), b)| a == b)
+                {
+                    let sources = match &t.sources {
+                        Some(TraceSources::PerGroup(ids))
+                            if ids.len() == t.prim.edge_count() as usize =>
+                        {
+                            Some(TraceSources::PerSegment(
+                                kept.iter().map(|(_, g)| Some(ids[*g as usize])).collect(),
+                            ))
+                        }
+                        // Anything else (e.g. a Sector's single source
+                        // id) is unattributable → poison to the
+                        // positional fallback, never a mis-named wall.
+                        _ => None,
+                    };
+                    return Some(traced_group_ids(p, sources.as_ref()));
+                }
             }
         }
     }

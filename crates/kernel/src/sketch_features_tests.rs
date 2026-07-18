@@ -2991,6 +2991,23 @@ fn wall_sub_table_rectangle_maps_group_order() {
 }
 
 #[test]
+fn wall_sub_table_maps_axis_stripped_rectangle_prim() {
+    // #390: an axis-touching rectangle PRIM is lowered to a closed
+    // Path with the on-axis wall dropped (`strip_revolve_axis_segments`
+    // on a revolve profile). The traced Rectangle's per-group entity
+    // ids must remap onto the three surviving Path walls.
+    let calls: Vec<FeatureCall> = serde_json::from_value(json!([
+        {"type":"sketch_rectangle","id":"1","params":{"corner_a":[0.0,-6.0],"corner_b":[10.0,6.0]}}
+    ]))
+    .unwrap();
+    let (tree, traced) = build_sketch2d_traced(&calls);
+    let stripped = crate::sketch::strip_revolve_axis_segments(tree);
+    // Chain order after the strip: bottom, right, top (left = axis wall
+    // dropped). Entity ids: bottom=5, right=6, top=7, left=8.
+    assert_eq!(wall_sub_table(&stripped, &traced), Some(vec![5, 6, 7]));
+}
+
+#[test]
 fn wall_sub_table_survives_earlier_edits() {
     // THE regression this whole scheme exists for: adding geometry BEFORE
     // the profile must not re-key its walls. Positional G1 groups shift

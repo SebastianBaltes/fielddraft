@@ -567,7 +567,7 @@ fn contributors_push_dedupes_and_caps() {
 
 // ─── extrude / revolve ─────────────────────────────────────────
 
-use crate::sketch2d::{Sketch2d, Sketch2dPrimitive};
+use crate::sketch2d::{Sketch2d, Sketch2dPrimitive, SketchSegment};
 
 fn rect_sketch(cx: f32, cy: f32, hx: f32, hy: f32) -> Sketch2d {
     Sketch2d::Prim(Sketch2dPrimitive::Rectangle {
@@ -960,6 +960,148 @@ fn revolve_of_offset_rectangle_gives_a_hollow_tube() {
     // Different angular direction — rotational symmetry check.
     assert!(tube.sdf([0.0, 0.0, 7.0], EvalMode::Visual).abs() < 1e-4);
     assert!(tube.sdf([0.0, 0.0, 3.0], EvalMode::Visual).abs() < 1e-4);
+}
+
+// ─── #390: axis-touching revolve — no phantom zero-set on the axis ───
+//
+// The profile boundary that lies ON the revolve axis is interior after
+// revolution, not surface. Before the fix the compiled field carried a
+// phantom zero-set along the whole axis (a5_axis_scan in the #384
+// iter3 spike): inside a revolved cylinder the field on the axis read
+// ~0 instead of the true −min(radius, cap distance). The strip runs at
+// `CsgNode::from_parts` (and in the features pipeline), so these tests
+// build via `Primitive::Revolve` exactly like the product.
+
+/// Lower a `Primitive::Revolve` the way the product does (via
+/// `from_parts`, which enforces the axis-strip invariant).
+fn revolve_node(sketch: Sketch2d) -> CsgNode {
+    CsgNode::from_decoded(&[DecodedFeature::from_parts(
+        FeatureId::from_u32(1),
+        "revolve".to_string(),
+        BoolOp::New,
+        Primitive::Revolve {
+            sketch,
+            center: [0.0, 0.0, 0.0],
+            wall_subs: None,
+        },
+        Transform::IDENTITY,
+        PrimitiveModifiers::NONE,
+        vec![],
+    )])
+}
+
+#[test]
+fn axis_touching_rectangle_revolve_is_the_exact_cylinder_sdf() {
+    // Rectangle u ∈ [0, 30], v ∈ [−20, 20] revolved around Y → the
+    // cylinder r = 30, |y| ≤ 20 (the a5 spike scene).
+    let node = revolve_node(rect_sketch(15.0, 0.0, 15.0, 20.0));
+    let truth = |r: f32, y: f32| -> f32 {
+        let dr = r - 30.0;
+        let dy = y.abs() - 20.0;
+        if dr > 0.0 || dy > 0.0 {
+            (dr.max(0.0).powi(2) + dy.max(0.0).powi(2)).sqrt()
+        } else {
+            dr.max(dy)
+        }
+    };
+    // Radial scan through the axis at y = 0 — the a5 line scan. Before
+    // the fix f(x→0) → 0 (phantom wall); the true value is −20.
+    for i in 0..=100 {
+        let x = 29.9 * i as f32 / 100.0;
+        let f = node.sdf([x, 0.0, 0.0], EvalMode::Visual);
+        let t = truth(x, 0.0);
+        assert!((f - t).abs() < 1e-3, "x={x}: f={f}, truth={t}");
+    }
+    // Directly ON the axis: deep inside, the caps dominate.
+    for y in [0.0f32, 10.0, -19.0, 19.5] {
+        let f = node.sdf([0.0, y, 0.0], EvalMode::Visual);
+        let t = truth(0.0, y);
+        assert!((f - t).abs() < 1e-3, "axis y={y}: f={f}, truth={t}");
+        assert!(f < -0.4, "axis y={y} must be clearly inside, got {f}");
+    }
+    // Above the cap on the axis: outside, distance to the cap plane.
+    let f = node.sdf([0.0, 25.0, 0.0], EvalMode::Visual);
+    assert!((f - 5.0).abs() < 1e-3, "axis above cap: f={f}, truth=5");
+}
+
+#[test]
+fn axis_diameter_sector_revolve_is_the_exact_sphere_sdf() {
+    // Half-disk (pie wedge from −90° to +90°, diameter on the axis)
+    // revolved around Y → the sphere r = 10. The sector's two radial
+    // edges lie on the axis and must be stripped.
+    let node = revolve_node(Sketch2d::Prim(Sketch2dPrimitive::Sector {
+        center: [0.0, 0.0],
+        radius: 10.0,
+        start_angle: -std::f32::consts::FRAC_PI_2,
+        sweep_angle: std::f32::consts::PI,
+    }));
+    for (p, t) in [
+        ([0.0f32, 0.0, 0.0], -10.0f32), // centre
+        ([0.0, 6.0, 0.0], -4.0),        // on the axis, inside
+        ([0.0, -6.0, 0.0], -4.0),
+        ([5.0, 0.0, 0.0], -5.0),
+        ([0.0, 14.0, 0.0], 4.0),        // on the axis, above the pole
+        ([0.0, 0.0, 10.0], 0.0),        // equator surface
+    ] {
+        let f = node.sdf(p, EvalMode::Visual);
+        assert!((f - t).abs() < 1e-3, "p={p:?}: f={f}, truth={t}");
+    }
+}
+
+#[test]
+fn axis_touching_difference_revolve_has_no_phantom_needle_in_the_bore() {
+    // (rect r ∈ [0,30]) − (rect r ∈ [0,10], taller) revolved → tube
+    // with inner radius 10. The subtracted region's axis edge must be
+    // stripped too, or the field reads 0 along the axis inside the
+    // bore where the true distance is +10.
+    let profile = Sketch2d::Difference(
+        Box::new(rect_sketch(15.0, 0.0, 15.0, 20.0)),
+        Box::new(rect_sketch(5.0, 0.0, 5.0, 25.0)),
+    );
+    let node = revolve_node(profile);
+    let f_axis = node.sdf([0.0, 0.0, 0.0], EvalMode::Visual);
+    assert!(
+        (f_axis - 10.0).abs() < 1e-3,
+        "axis inside the bore must be +10 to the inner wall, got {f_axis}"
+    );
+    // The inner wall itself.
+    assert!(node.sdf([10.0, 0.0, 0.0], EvalMode::Visual).abs() < 1e-3);
+    // Between the walls: inside.
+    assert!(node.sdf([20.0, 0.0, 0.0], EvalMode::Visual) < -9.0);
+}
+
+#[test]
+fn off_axis_profiles_are_untouched_by_the_axis_strip() {
+    // The strip must be a no-op for profiles that keep clear of the
+    // axis — off-axis revolve exactness is measured and locked.
+    let ring = rect_sketch(25.0, 0.0, 7.0, 10.0);
+    assert_eq!(
+        crate::sketch::strip_revolve_axis_segments(ring.clone()),
+        ring
+    );
+    let circle = circle_sketch(8.0, 0.0, 2.0);
+    assert_eq!(
+        crate::sketch::strip_revolve_axis_segments(circle.clone()),
+        circle
+    );
+}
+
+#[test]
+fn axis_strip_converts_touching_rectangle_to_a_three_wall_path() {
+    let stripped =
+        crate::sketch::strip_revolve_axis_segments(rect_sketch(15.0, 0.0, 15.0, 20.0));
+    let Sketch2d::Prim(Sketch2dPrimitive::Path { segments, closed: true }) = &stripped
+    else {
+        panic!("expected a closed Path, got {stripped:?}");
+    };
+    assert_eq!(segments.len(), 3, "left wall dropped, got {segments:?}");
+    // No kept segment may touch the axis.
+    for s in segments {
+        let SketchSegment::Line { start, end } = s else {
+            panic!("rect walls are lines")
+        };
+        assert!(start[0].abs() > 1e-4 || end[0].abs() > 1e-4);
+    }
 }
 
 #[test]

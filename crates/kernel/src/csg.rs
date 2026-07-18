@@ -995,9 +995,20 @@ impl DecodedFeature {
                 }
             }
             Primitive::Revolve { ref sketch, center, ref wall_subs } => {
+                // #390 invariant: a Revolve node's profile must carry NO
+                // boundary on the revolve axis — an on-axis edge is
+                // interior after revolution, and its zero-set would be a
+                // phantom "needle" along the whole axis. The features
+                // pipeline strips before wall-sub extraction already;
+                // re-running here is idempotent and covers every direct
+                // `Primitive::Revolve` constructor (tests, imports). The
+                // strip never bends the meridian map, so Revolve's
+                // 1-Lipschitz `march_relax = 1.0` proof is untouched.
                 let centered = CsgNode::Revolve {
                     id: id.clone(),
-                    sketch: Box::new(sketch.clone()),
+                    sketch: Box::new(crate::sketch::strip_revolve_axis_segments(
+                        sketch.clone(),
+                    )),
                     wall_subs: wall_subs.clone().map(std::sync::Arc::new),
                 };
                 if center == [0.0, 0.0, 0.0] {

@@ -2409,6 +2409,49 @@ mod tests {
     }
 
     #[test]
+    fn axis_touching_revolve_tape_matches_field_and_analytic_truth() {
+        // #390: rectangle u ∈ [0,30], v ∈ [−20,20] revolved around Y →
+        // cylinder r=30, |y| ≤ 20. Built via `from_parts` like the
+        // product, so the axis-strip invariant holds; field and tape
+        // must agree AND carry no phantom zero-set on the axis.
+        use crate::sketch2d::{Sketch2d, Sketch2dPrimitive};
+        let feature = DecodedFeature::from_parts(
+            FeatureId::from_u32(1),
+            "revolve".to_string(),
+            BoolOp::New,
+            Primitive::Revolve {
+                sketch: Sketch2d::Prim(Sketch2dPrimitive::Rectangle {
+                    center: [15.0, 0.0],
+                    half_extents: [15.0, 20.0],
+                }),
+                center: [0.0, 0.0, 0.0],
+                wall_subs: None,
+            },
+            Transform::IDENTITY,
+            PrimitiveModifiers::NONE,
+            vec![],
+        );
+        let bvh = BoundedCsg::from_csg(&CsgNode::from_decoded(&[feature]));
+        let compiled = compile_body(&bvh);
+        let points = [
+            [0.0, 0.0, 0.0],   // dead centre on the axis
+            [0.0, 15.0, 0.0],  // on the axis near the top cap
+            [0.5, 0.0, 0.0],   // just off the axis
+            [15.0, 0.0, 0.0],  // mid-wall
+            [30.0, 0.0, 0.0],  // outer surface
+            [0.0, 25.0, 0.0],  // outside, above the cap on the axis
+            [35.0, 0.0, 0.0],  // outside radially
+        ];
+        assert_sdf_match(&bvh, &compiled, &points, 1e-3);
+        // Analytic truth on the axis: caps dominate (−20), the phantom
+        // pre-fix value was ~0.
+        let f0 = eval_opcodes(&compiled.opcodes, [0.0, 0.0, 0.0]);
+        assert!((f0 - (-20.0)).abs() < 1e-3, "axis centre: {f0} != -20");
+        let f1 = eval_opcodes(&compiled.opcodes, [0.0, 15.0, 0.0]);
+        assert!((f1 - (-5.0)).abs() < 1e-3, "axis near cap: {f1} != -5");
+    }
+
+    #[test]
     fn mixed_scene_matches_bvh() {
         let features = vec![
             box_feature(1, BoolOp::New, [0.0, 0.0, 0.0], [20.0, 20.0, 20.0]),

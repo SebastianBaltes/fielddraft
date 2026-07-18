@@ -12,6 +12,9 @@ Format, eine Zeile je Eintrag:
 kind = feat | fix | perf. scope und #tickets sind optional. Folgezeilen, die
 eingerückt sind, gehören zum Text davor (Umbruch erlaubt).
 
+## 0.16.5
+- fix(sdf) #390: Achsberührendes Revolve erzeugt keine Phantom-Oberfläche mehr auf der Rotationsachse. Profilkanten, die auf der Achse liegen (etwa die Schließkante eines Zylinder- oder Kugel-Halbprofils), sind nach der Rotation Körperinneres — das Distanzfeld behandelte sie aber weiterhin als Wand: Sphere-Tracing konnte eine unsichtbare „Nadel“ entlang der Achse treffen, und innen auf der Achse las das Feld 0 statt der echten Tiefe. Die Achs-Kanten werden jetzt für alle Profilformen (Rechteck, Polygon, Kreissektor, Pfad) und auch in booleschen Profilen (z. B. Bohrung bis zur Achse) entfernt; achsenferne Revolves bleiben bit-identisch exakt.
+
 ## 0.16.4
 - perf(sdf) #384: Offset-Pushdown durch Union und Differenz — die beiden nachweislich exakten Fälle der Minkowski-Algebra (Aufdicken über Vereinigungen, Abtragen über Differenzen und Schnitte, wobei der Subtrahend den gegenläufigen Offset bekommt) werden jetzt zur Regen-Zeit als Baum-Umschreibung bis auf die Blätter durchgereicht. Dort sitzt der Offset auf exakten Feldern statt auf dem nur noch under-bound kombinierten Feld — die strukturelle Grundlage für analytisch gefaltete Offsets und Shell-Korrekturkörper aus dem „offset_tree“-Plan. Nullstellenmenge und Renderbild bleiben unverändert.
 
