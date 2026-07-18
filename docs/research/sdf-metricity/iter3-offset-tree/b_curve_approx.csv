@@ -1,0 +1,17 @@
+kind,n_per_loop,max_err_mm
+polyline,8,1.7011364
+polyline,16,0.4845624
+polyline,32,0.1270476
+polyline,64,0.0321824
+polyline,128,0.0080728
+polyline,256,0.0020199
+polyline,512,0.0005051
+polyline,1024,0.0001263
+polyline,2048,0.0000316
+arcspline,4,0.6806674
+arcspline,8,0.1093052
+arcspline,16,0.0125138
+arcspline,32,0.0018149
+arcspline,64,0.0002316
+arcspline,128,0.0000290
+arcspline,256,0.0000036

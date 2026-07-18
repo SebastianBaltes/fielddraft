@@ -432,3 +432,21 @@ Ground-Truth-Vergleich via metricity-lab) — vor der
 Blend-Face-Tesselation aus §7, falls Offset/Shell fürs Produkt zentral ist.
 Ergänzend geparkt: #389 (Render-Modus „sdf-vm (dual)", Zweikanal-AD durchs
 Tape für lokale Schrittweiten + exakte Normalen).
+
+**Spike DURCHGEFÜHRT (2026-07-18) — Konzept trägt.** Volle Messreihen in
+`iter3-offset-tree/LOG.md` (+ CSVs, Prototyp
+`metricity-lab/src/bin/iter3_offset_tree.rs`). Verdikte: **(A)** Extrude
+eines Path-Profils und achsenfernes Revolve sind heute schon exakte SDFs
+(≤ 2.7e-4 mm; Meridian-Identität am Kernel verifiziert); nicht exakt sind
+nur 2D-Booleans im Profil, `Sketch2d::Offset` (f−δ) und — neuer
+Kernel-Befund — achsberührendes Revolve (Phantom-Nullmenge auf der Achse).
+**(B)** Das wörtliche §9-Keil-Rezept konvergiert NICHT (Restfehler ~0.27·δ
+bei schiefem Dihedral); mit **Normalkegel-Gating am nächsten Kurvenpunkt**
+konvergiert der Fehler δ-unabhängig auf die Kurventoleranz: ≤ 0.001 mm mit
+128 Bögen gesamt, ~720 ns/Eval; Arc-Splines brauchen ~8× weniger Elemente
+als Polylinien. Außenfeld march-sicher. **(C)** Die R&R-Zerlegung ist als
+Mengen-Identität für jedes δ exakt (Topologiewechsel automatisch korrekt);
+Restarbeit: Blatt-Parameter-Kollaps (parametrisch/Clipper, billig),
+Tote-Körper-Pruning (Intervall + Ball-Orakel-Witness), Weave-Refresh nur für
+Folge-Feature-Adjazenz. Konvexitätsbeweis für C2 gilt konvex; kaskadierte
+Offsets und nichtkonvexe Kegel-Überlappungen sind die offenen Ecken.

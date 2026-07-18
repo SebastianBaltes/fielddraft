@@ -12,6 +12,12 @@ crate-type = ["rlib"]
 name = "metricity-lab"
 path = "src/main.rs"
 
+# Iteration-3-Forschungs-Spike "offset_tree" (#384, SYNTHESIS §9).
+# Reiner Experiment-Code, kein Produktionspfad.
+[[bin]]
+name = "iter3_offset_tree"
+path = "src/bin/iter3_offset_tree.rs"
+
 [dependencies]
 fielddraft-kernel = { path = "../kernel" }
 fielddraft-protocol = { path = "../protocol" }

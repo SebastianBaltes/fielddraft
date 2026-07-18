@@ -1,0 +1,9 @@
+variant,n_per_loop,ns_per_eval
+naiv,0,8.5
+c2_poly,64,481.3
+c2_poly,256,977.3
+c2_poly,1024,2732.0
+c2_arc,16,287.8
+c2_arc,64,717.5
+c2_arc,128,1242.0
+gt_identity_dense200k,200000,289744.5

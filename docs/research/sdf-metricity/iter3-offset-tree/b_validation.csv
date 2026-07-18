@@ -1,0 +1,6 @@
+check,value
+identity_vs_dykstra_max_abs_diff_mm,2.957e-9
+dykstra_mean_iters,7.7
+dykstra_max_iters,72
+ball_sign_disagreements_of_3000,9
+ball_sign_disagreement_max_margin_mm,3.329e-2
