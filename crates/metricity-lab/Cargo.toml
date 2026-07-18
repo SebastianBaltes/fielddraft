@@ -18,12 +18,22 @@ path = "src/main.rs"
 name = "iter3_offset_tree"
 path = "src/bin/iter3_offset_tree.rs"
 
+# A1-Auswahl-Spike 2D-Offset-Bibliothek (#384, OFFSET-TREE-PLAN §5).
+# Kandidaten-Vergleich cavalier_contours vs. i_overlay (Flatten-Referenz).
+# Dependencies NUR hier im Lab, NICHT im Kernel-Crate.
+[[bin]]
+name = "a1_offset_lib_spike"
+path = "src/bin/a1_offset_lib_spike.rs"
+
 [dependencies]
 fielddraft-kernel = { path = "../kernel" }
 fielddraft-protocol = { path = "../protocol" }
 # Nearest-neighbour queries for the ground-truth surface point cloud.
 # Library statt Handrollen (siehe MEMORY: prefer libraries).
 kiddo = "5"
+# A1-Spike: Kandidaten für 2D-Profil-Offset/Booleans (nur Lab-Dependency).
+cavalier_contours = "0.7"
+i_overlay = "7"
 rayon = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
