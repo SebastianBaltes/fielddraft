@@ -126,56 +126,185 @@ pub fn compile_body(node: &BoundedCsg) -> CompiledSdf {
 }
 
 /// Conservative raymarch STEP factor for a body's tree (see
-/// [`CompiledSdf::march_relax`]) — the min over its features. A feature whose
-/// SDF can locally over-estimate distance (sphere-march would overshoot a thin
-/// wall) declares a factor < 1.
-///
-/// Revolve is the case Ticket 1wnm needs: its (spline) profile field can be
-/// non-Lipschitz AND it is frequently shelled, so the gyroid/helix trick of
-/// baking the factor into the FIELD is unsafe (it would change the shell wall
-/// thickness). Gyroid and Helix already normalise their FIELD (gyroid ·0.2887,
-/// `OP_HELIX_SCALE`), so they need no step relax here (factor 1.0).
-const REVOLVE_MARCH_RELAX: f32 = 0.7;
-
+/// [`CompiledSdf::march_relax`]): `1 / L` with `L = lipschitz_bound(node)`,
+/// the compile-time Lipschitz net (#384, SYNTHESIS §6 Stufe 2). The factor
+/// scales only the STEP, never the field — zero set and shell wall thickness
+/// stay exact (Ticket 1wnm).
 pub(crate) fn march_relax(node: &BoundedCsg) -> f32 {
+    1.0 / lipschitz_bound(node)
+}
+
+/// Largest coordinate-radius `√(x² + z²)` a point of `aabb` can have —
+/// the twist warp's lever arm (its Jacobian stretch grows with that radius).
+fn max_radius_xz(aabb: &crate::csg::Aabb) -> f32 {
+    if aabb.is_empty() {
+        return 0.0;
+    }
+    let rx = aabb.max[0].abs().max(aabb.min[0].abs());
+    let rz = aabb.max[2].abs().max(aabb.min[2].abs());
+    (rx * rx + rz * rz).sqrt()
+}
+
+/// `√(x² + y²)`-analogue of [`max_radius_xz`] for the bend warp.
+fn max_radius_xy(aabb: &crate::csg::Aabb) -> f32 {
+    if aabb.is_empty() {
+        return 0.0;
+    }
+    let rx = aabb.max[0].abs().max(aabb.min[0].abs());
+    let ry = aabb.max[1].abs().max(aabb.min[1].abs());
+    (rx * rx + ry * ry).sqrt()
+}
+
+/// Compile-time upper bound on the Lipschitz constant of the COMPILED render
+/// field of `node` (#384, SYNTHESIS §2 Lösung B / §6 Stufe 2). Replaces the
+/// former per-feature guess constants (`REVOLVE_MARCH_RELAX = 0.7` etc.) with
+/// derived formulas that compose along the tree: warps multiply, additive
+/// displacements add, boolean branches take the winner. Every arm carries its
+/// derivation — no magic numbers.
+///
+/// Semantics: sphere marching with step `f·(1/L)` is safe when the field
+/// never overestimates the true distance by more than `L`. A field built from
+/// exact leaf distances composed through the ops below satisfies
+/// `f(p) ≤ L · d_true(p)` with the returned `L`.
+///
+/// Honest overconservativity (documented, measured in
+/// `metricity-lab --bin stage2_relax_net`):
+/// * The bound is ONE scalar per body — a Twist on one union branch damps
+///   marching over the whole body, even where rays never approach the twisted
+///   part (spatial co-localisation not implemented; SYNTHESIS §5 Exp 4 —
+///   after Stufe 1, smin is neutral here, so the chain_16-style 3.5× blowup
+///   cannot occur; the residual cost is bounded by the worst single feature).
+/// * Nested Chamfer chains converge to `L∞ = 1/(√2−1) ≈ 2.414` even when the
+///   chamfer zones are spatially disjoint (real L there ≈ √2).
+pub(crate) fn lipschitz_bound(node: &BoundedCsg) -> f32 {
     match node {
+        // ── 1-Lipschitz sources ────────────────────────────────────
+        // Leaf primitives: exact local SDFs; anisotropic placement scale is
+        // conservative by construction (localise divides per-axis, the result
+        // is multiplied by min(scale) → per-axis gradient min(scale)/scale_i
+        // ≤ 1, an UNDER-estimate).
+        // Gyroid leaf: field `(|g| − t)·s·0.2887` with `g = sin·cos + …`;
+        // each partial of g is `a·cos − b·sin` with a² + b² ≤ 2, so
+        // ‖∇g‖ ≤ √6 and L ≤ 0.2887·√6 = 1/√2 < 1 (0.2887 = 1/(2√3)).
+        // Extrude: exact analytic 2D profile distance (OP_PRIM2D_PATH carries
+        // the analytic segments — sdf_path is the exact minimum) combined
+        // with the cap distance via exact box-composition; × min-scale as
+        // above.
+        // Revolve: the meridian map `(x,y,z) → (√(x²+z²), y)` is 1-Lipschitz
+        // (reverse triangle inequality on the xz-plane), and every profile
+        // boundary point at r ≥ 0 IS a surface point of the solid with the
+        // same (r, y) — so `d2d ∘ meridian` never overestimates the true 3D
+        // distance, inside or outside. The former blanket 0.7
+        // (`REVOLVE_MARCH_RELAX`, Ticket 1wnm: "spline profile field can be
+        // non-Lipschitz") is obsolete: the tape's 2D path distance is the
+        // exact analytic minimum, not a spline approximation. Verified by
+        // trace measurement (stage2_relax_net: 0 penetrations at full steps).
+        // Helix: `OP_HELIX_SCALE` bakes `min_scale · lipschitz` into the
+        // FIELD at emission — already normalised.
+        // Sweep: the RMF frame lookup is gated at build time (κ·r < 1
+        // pre-flight gate); within the gate the mapping stays contractive on
+        // the tube the profile occupies. Known honesty gap: near the gate
+        // limit the stretch approaches 1/(1−κ·r) and is NOT reflected here —
+        // same behaviour as before (factor 1.0), flagged in #384.
         BoundedCsg::Empty
         | BoundedCsg::Leaf { .. }
         | BoundedCsg::Extrude { .. }
+        | BoundedCsg::Revolve { .. }
         | BoundedCsg::Helix { .. }
         | BoundedCsg::Sweep { .. } => 1.0,
-        BoundedCsg::Revolve { .. } => REVOLVE_MARCH_RELAX,
+
+        // ── Hard booleans: winner branch ───────────────────────────
+        // min/max are sup-norm contractions — the gradient is the winning
+        // child's gradient (SYNTHESIS §1: no amplification over depth).
         BoundedCsg::Union { left, right, .. }
         | BoundedCsg::Difference { left, right, .. }
-        | BoundedCsg::Intersection { left, right, .. }
-        | BoundedCsg::SmoothUnion { left, right, .. }
-        | BoundedCsg::SmoothDifference { left, right, .. }
-        | BoundedCsg::Morph { left, right, .. } => march_relax(left).min(march_relax(right)),
-        BoundedCsg::MaskedBlend { left, right, .. } => {
-            // #382/#384: the masked blend uses the Circular-CD smin (a
-            // pointwise distance UNDER-bound) cross-faded toward the hard
-            // combine (`csg::masked_blend_combine`, f ≤ hard everywhere), so
-            // the field never overestimates distance — no step damping beyond
-            // the children's own bounds, and no √2 normalisation anywhere.
-            march_relax(left).min(march_relax(right))
+        | BoundedCsg::Intersection { left, right, .. } => {
+            lipschitz_bound(left).max(lipschitz_bound(right))
         }
-        BoundedCsg::Twist { inner, .. }
-        | BoundedCsg::Bend { inner, .. }
-        | BoundedCsg::Shell { inner, .. }
-        | BoundedCsg::Offset { inner, .. } => march_relax(inner),
+
+        // ── Blends ─────────────────────────────────────────────────
+        // Fillet: the Circular-CD smin (`csg::smin_poly`, v0.16.2) is a
+        // CONVEX combination of its inputs (∂f/∂a + ∂f/∂b = 1, both ≥ 0) →
+        // L = max(L_a, L_b), stack-neutral (SYNTHESIS §5 Exp 1; the old
+        // quadratic form grew in quadrature, √(1+m) per m nested smins).
+        // Chamfer: `min(a, b, (a+b−r)/√2)` — the cut-plane term has gradient
+        // `(∇a+∇b)/√2`, so L = max(L_a, L_b, (L_a+L_b)/√2); for unit inputs
+        // that is √2 (the chamfer face between acute walls genuinely
+        // overestimates: growth rate `2·cos(θ/2)/√2` exceeds 1 for θ < 90°).
+        // Chamfer chains converge: L ← (L+1)/√2 has fixed point 1/(√2−1).
+        BoundedCsg::SmoothUnion { left, right, mode, .. }
+        | BoundedCsg::SmoothDifference { left, right, mode, .. } => {
+            let ll = lipschitz_bound(left);
+            let lr = lipschitz_bound(right);
+            match mode {
+                BlendMode::Fillet => ll.max(lr),
+                BlendMode::Chamfer => {
+                    ll.max(lr).max((ll + lr) * std::f32::consts::FRAC_1_SQRT_2)
+                }
+            }
+        }
+        BoundedCsg::MaskedBlend { left, right, blend_mode, .. } => {
+            // #382/#384: `csg::masked_blend_combine` cross-fades hard → CD
+            // blend with blended ≤ hard pointwise, so the FILLET field never
+            // overestimates distance — neutral. The CHAMFER blend inside the
+            // mask tube is the same cut-plane construction as above and
+            // inherits its (L_a+L_b)/√2 term.
+            let ll = lipschitz_bound(left);
+            let lr = lipschitz_bound(right);
+            match blend_mode {
+                BlendMode::Fillet => ll.max(lr),
+                BlendMode::Chamfer => {
+                    ll.max(lr).max((ll + lr) * std::f32::consts::FRAC_1_SQRT_2)
+                }
+            }
+        }
+        // Morph `f = (1−t)·a + t·b` is a fixed convex combination:
+        // L = (1−t)·L_a + t·L_b (≤ max of the two).
+        BoundedCsg::Morph { left, right, t, .. } => {
+            let tt = t.clamp(0.0, 1.0);
+            (1.0 - tt) * lipschitz_bound(left) + tt * lipschitz_bound(right)
+        }
+
+        // ── Domain warps: composition multiplies ───────────────────
+        // Twist `T(p) = (R(rate·y)·p_xz, y)`: the Jacobian is the xz-rotation
+        // plus the column ∂T/∂y = (rate·R'·p_xz, 1) with ‖rate·R'·p_xz‖ =
+        // |rate|·r. Operator norm ≤ 1 + |rate|·r (Galin et al. 2020; proof:
+        // ‖Ju‖² ≤ (√(u_x²+u_z²) + |u_y|·|rate|·r)² + u_y² ≤ (1 + |rate|·r)²).
+        // r is bounded by the largest xz-radius the twisted SURFACE can have:
+        // the twist preserves each point's xz-radius, so the surface stays
+        // within the inner child's AABB radius. L(f∘T) ≤ L_f · L_T.
+        BoundedCsg::Twist { inner, rate, .. } => {
+            let r = max_radius_xz(&inner.aabb());
+            lipschitz_bound(inner) * (1.0 + rate.abs() * r)
+        }
+        // Bend `B(p) = (R(rate·x)·p_xy, z)` — same structure with the lever
+        // arm in the xy-plane: L_B ≤ 1 + |rate|·max‖p_xy‖ over the inner
+        // child's AABB.
+        BoundedCsg::Bend { inner, rate, .. } => {
+            let r = max_radius_xy(&inner.aabb());
+            lipschitz_bound(inner) * (1.0 + rate.abs() * r)
+        }
+
+        // ── Additive displacement: constants add ───────────────────
+        // `f − depth·sin(x·f)·sin(1.3·y·f)·sin(0.7·z·f)`: the displacement's
+        // gradient is bounded per axis by |depth·freq|·{1, 1.3, 0.7}, so its
+        // norm by |depth·freq|·√(1+1.3²+0.7²) ≈ 1.783·|depth·freq|, and
+        // L_total ≤ L_inner + that term (gradients of sums add). The factor
+        // is NOT baked into the field — field normalisation measurably harms
+        // the Lichen mesher (813 → 1634 open edges, Befund 2026-07-13 in
+        // bvh.rs); it is only reported to the renderer as step damping.
         BoundedCsg::Displace { inner, depth, freq, .. } => {
-            // Das Displace-Feld `d − depth·sin(x·f)·sin(1.3·y·f)·sin(0.7·z·f)`
-            // ist nicht 1-Lipschitz: L ≤ 1 + |depth·f|·√(1+1.3²+0.7²) ≈ 1.8
-            // bei depth 0.3 / f 1.5 — Sphere-Marching kann die Beulen-Fläche
-            // überschreiten (Löcher bei Streifwinkeln). Wie bei Revolve wird
-            // der Faktor NICHT ins Feld gebacken (die adversariale Härtung
-            // 2026-07-13 hat die Feld-Normalisierung vermessen: der Lichen-
-            // Mesher wird damit schlechter, 813 → 1634 offene Kanten, weil
-            // das Sizing-Feld auf die kleineren |f| verfeinert — Befund in
-            // bvh.rs), sondern nur als Schritt-Dämpfung an den Renderer
-            // gemeldet. Felder bleiben bitidentisch, der Mesher unberührt.
-            let l = 1.0 + (depth * freq).abs() * (1.0f32 + 1.3 * 1.3 + 0.7 * 0.7).sqrt();
-            march_relax(inner).min(1.0 / l.max(1.0))
+            let grad_norm = (1.0f32 + 1.3 * 1.3 + 0.7 * 0.7).sqrt();
+            lipschitz_bound(inner) + (depth * freq).abs() * grad_norm
+        }
+
+        // ── L-neutral unaries ──────────────────────────────────────
+        // Shell `max(d, −(d+t))` is a winner branch of two fields with the
+        // child's L; Offset `d − δ` shifts the value, not the gradient (and
+        // a level-set offset of an L-Lipschitz field never overestimates by
+        // more than L: dist(p, {f=c}) ≥ (f(p)−c)/L).
+        BoundedCsg::Shell { inner, .. } | BoundedCsg::Offset { inner, .. } => {
+            lipschitz_bound(inner)
         }
     }
 }
@@ -1798,6 +1927,98 @@ mod tests {
         assert_eq!(march_relax(&node(0.0, 5.0)), 1.0);
         // Vorzeichen egal (|depth·freq|).
         assert!(march_relax(&node(-0.3, 1.5)) < 0.6);
+    }
+
+    /// #384 Stufe 2: hergeleitete Lipschitz-Schranken statt Pauschalen.
+    #[test]
+    fn lipschitz_net_derived_bounds() {
+        use crate::csg::BlendMode;
+        use crate::sketch2d::{Sketch2d, Sketch2dPrimitive};
+
+        let boxp = |id: u32, half: [f32; 3]| CsgNode::Leaf {
+            id: FeatureId::from_u32(id),
+            primitive: Primitive::Box { center: [0.0; 3], half_extents: half },
+        };
+        let relax = |n: &CsgNode| march_relax(&BoundedCsg::from_csg(n));
+
+        // Revolve: Meridian-Map + exakte analytische 2D-Distanz → 1-Lipschitz.
+        // Die frühere 0.7-Pauschale (REVOLVE_MARCH_RELAX) ist obsolet.
+        let revolve = CsgNode::Revolve {
+            wall_subs: None,
+            id: FeatureId::from_u32(1),
+            sketch: Box::new(Sketch2d::Prim(Sketch2dPrimitive::Rectangle {
+                center: [5.0, 0.0],
+                half_extents: [2.0, 4.0],
+            })),
+        };
+        assert_eq!(relax(&revolve), 1.0);
+
+        // Twist: L = 1 + |rate|·r_max mit r_max = max √(x²+z²) über die
+        // Kind-AABB (Box halb [30,50,10] → r = √(900+100)).
+        let rate = std::f32::consts::FRAC_PI_2 / 100.0;
+        let twist = CsgNode::Twist(Box::new(boxp(1, [30.0, 50.0, 10.0])), rate);
+        let expect = 1.0 / (1.0 + rate * (900.0f32 + 100.0).sqrt());
+        let r = relax(&twist);
+        assert!((r - expect).abs() < 1e-4, "twist relax={r}, erwartet {expect}");
+
+        // Bend: Hebelarm in xy (Box halb [50,8,8] → r = √(2500+64)).
+        let bend = CsgNode::Bend(Box::new(boxp(1, [50.0, 8.0, 8.0])), rate);
+        let expect = 1.0 / (1.0 + rate * (2500.0f32 + 64.0).sqrt());
+        let r = relax(&bend);
+        assert!((r - expect).abs() < 1e-4, "bend relax={r}, erwartet {expect}");
+
+        // Fillet (Circular-CD, Konvexkombination) bleibt neutral …
+        let fillet = CsgNode::SmoothUnion(
+            Box::new(boxp(1, [10.0; 3])),
+            Box::new(boxp(2, [10.0; 3])),
+            3.0,
+            BlendMode::Fillet,
+        );
+        assert_eq!(relax(&fillet), 1.0);
+
+        // … Chamfer nicht: Schnittebenen-Term (∇a+∇b)/√2 → L = √2.
+        let chamfer = |inner: CsgNode| {
+            CsgNode::SmoothUnion(
+                Box::new(inner),
+                Box::new(boxp(9, [10.0; 3])),
+                3.0,
+                BlendMode::Chamfer,
+            )
+        };
+        let c1 = chamfer(boxp(1, [10.0; 3]));
+        let r = relax(&c1);
+        assert!(
+            (r - std::f32::consts::FRAC_1_SQRT_2).abs() < 1e-6,
+            "chamfer relax={r}"
+        );
+        // Verschachtelte Chamfer konvergieren (L ← (L+1)/√2, Fixpunkt
+        // 1/(√2−1) ≈ 2.414) statt unbegrenzt zu wachsen.
+        let mut node = boxp(1, [10.0; 3]);
+        for _ in 0..12 {
+            node = chamfer(node);
+        }
+        let r = relax(&node);
+        assert!(r > 1.0 / 2.4143 - 1e-4, "chamfer-Kette relax={r} unter Fixpunkt");
+        assert!(r < std::f32::consts::FRAC_1_SQRT_2, "chamfer-Kette relax={r} zu lasch");
+
+        // Stapelung: Twist ∘ Displace multipliziert/addiert entlang des Pfads
+        // (Warp × (1 + Displace-Term)) statt min() der Einzelwerte.
+        let displaced = CsgNode::Displace(Box::new(boxp(1, [30.0, 50.0, 10.0])), 0.3, 1.5);
+        let stacked = CsgNode::Twist(Box::new(displaced), rate);
+        let l_disp = 1.0 + 0.45 * (1.0f32 + 1.69 + 0.49).sqrt();
+        // Displace bläht die AABB um depth auf — Hebelarm entsprechend größer.
+        let bb = BoundedCsg::from_csg(&CsgNode::Displace(
+            Box::new(boxp(1, [30.0, 50.0, 10.0])),
+            0.3,
+            1.5,
+        ))
+        .aabb();
+        let rx = bb.max[0].abs().max(bb.min[0].abs());
+        let rz = bb.max[2].abs().max(bb.min[2].abs());
+        let l_twist = 1.0 + rate * (rx * rx + rz * rz).sqrt();
+        let expect = 1.0 / (l_disp * l_twist);
+        let r = relax(&stacked);
+        assert!((r - expect).abs() < 1e-4, "stack relax={r}, erwartet {expect}");
     }
 
     fn box_feature(id: u32, op: BoolOp, center: [f32; 3], half: [f32; 3]) -> DecodedFeature {

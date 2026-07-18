@@ -306,6 +306,25 @@ Exp-4-Patch als Sicherheitsnetz für Chamfer/Morph/Displace/Exoten (ersetzt
 flache Konstanten); für smin nach Stufe 1 neutral. Vor Aktivierung auf
 smin-Pfaden ohne Stufe 1: Blendzonen-Ko-Lokalisierung ergänzen.
 
+*Umgesetzt (v0.16.3, `sdf_compiler::lipschitz_bound`):* `march_relax = 1/L`
+mit hergeleiteten, komponierenden Schranken — Twist/Bend `L·(1+|rate|·r_max)`
+(Hebelarm aus der Kind-AABB), Displace additiv `+|depth·freq|·√3.18`, Chamfer
+(auch MaskedBlend-Chamfer) `max(L_a, L_b, (L_a+L_b)/√2)`, Fillet-CD und harte
+Booleans neutral (max), Morph Konvex-Lerp. **Revolve ist als 1-Lipschitz
+hergeleitet** (Meridian-Map = Umkehr-Dreiecksungleichung + exakte analytische
+2D-Pfaddistanz) — die 0.7-Pauschale aus Ticket 1wnm war unnötig, empirisch
+bestätigt (max |f|/|d| \= 1.0001, 0 Tunnel bei vollen Schritten, \~39 %
+weniger Schritte). Messung `stage2_relax_net`: twist\_box 5.9 % → 0 %,
+bend\_bar 16.2 % → 0 %, twist\_thin\_wall 3.8 % → 0 %, chamfer\_plates
+5.3 % → 0 % Penetration (Schrittzahl dort \~1.6–2×); gyroid\_box bleibt bei
+relax 1 tunnelfrei (Feld-Normalisierung 0.2887 \= 1/(2√3), L ≤ √6/(2√3)
+\= 1/√2). Ko-Lokalisierung erwies sich als unnötig: smin ist nach Stufe 1
+neutral, Chamfer-Ketten konvergieren gegen L∞ \= 1/(√2−1) ≈ 2.414. Ehrliche
+Rest-Überkonservativität: EIN Skalar pro Körper (der schlechteste Zweig dämpft
+den ganzen Body) und der Chamfer-Ketten-Fixpunkt auch bei räumlich getrennten
+Fasen; Sweep-Krümmungsstreckung (1/(1−κ·r) nahe am Gate) weiterhin ungedeckt
+(Faktor 1.0 wie zuvor).
+
 **Stufe 3 — Offset/Shell korrekt.** (a) Compile-Zeit-2×2-Klassifikation:
 exakte Fälle (Union-outward, Differenz-inward) wörtlich `f−δ`; (b) kaputte
 Fälle im Abfrage-/Mesher-Pfad via Ball-Extremum (\~16 dirs × 4 Starts,

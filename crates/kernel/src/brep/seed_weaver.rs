@@ -2538,12 +2538,13 @@ mod tests {
     #[test]
     fn octree_revolve_union_extrude_does_not_degenerate() {
         // Regression Ticket qmvn: der Octree-BRep-Weave degenerierte für Körper
-        // mit Revolve, weil seine Zell-Klassifikation eine Lipschitz-1-Distanz
-        // voraussetzt, die der Revolve-SDF verletzt (er ÜBERSCHÄTZT die Distanz).
-        // Oberflächenzellen, durch die die Revolve-Fläche tatsächlich läuft,
-        // sahen `f_min > diag` → wurden fälschlich als `Empty` weggeschnitten →
-        // verlorene Edge/Vertex-Seeds. Der relax-korrigierte Lipschitz-Bracket
-        // (`diag / march_relax`) fängt diese überschätzten Zellen wieder ein.
+        // mit Revolve; der Fix führte den relax-korrigierten Lipschitz-Bracket
+        // (`diag / march_relax`) ein, der überschätzte Oberflächenzellen wieder
+        // einfängt. Seit #384 Stufe 2 ist Revolve als 1-Lipschitz hergeleitet
+        // (relax = 1.0) — der Test prüft den Bracket-Mechanismus daher mit
+        // einem ERZWUNGENEN relax < 1 (er gilt weiterhin für echte
+        // Über-Schätzer wie Twist/Displace/Chamfer) plus den unveränderten
+        // Weave auf dem Revolve-Body.
         //
         // Aufbau: ein Rechteck-Profil bei r ∈ [3, 7], y ∈ [−4, 4] um Y revolved
         // (ein Ring/Rohr) ∪ ein überlappendes Extrude-Prisma, das in die
@@ -2574,14 +2575,17 @@ mod tests {
         };
         let body = make_body();
 
-        // Dieser Körper triggert die Korrektur überhaupt erst: sein
-        // `march_relax` muss < 1 sein (Revolve = 0.7), sonst testet der Vergleich
-        // unten nichts.
+        // #384 Stufe 2: Das Revolve-Tape-Feld ist als 1-Lipschitz hergeleitet
+        // (Meridian-Map + exakte 2D-Distanz), `march_relax` ist daher 1.0 —
+        // die frühere 0.7-Pauschale ist weg. Der Bracket-MECHANISMUS (Ticket
+        // qmvn) bleibt für echte Über-Schätzer (Twist/Displace/Chamfer)
+        // nötig; dieser Test erzwingt ihn deshalb explizit mit relax = 0.7
+        // statt über den Body-Wert.
         let relax = crate::sdf_compiler::march_relax(&body);
-        assert!(relax < 1.0, "Revolve-Union muss relax < 1 haben, war {relax}");
+        assert_eq!(relax, 1.0, "Revolve-Union ist 1-Lipschitz, war {relax}");
 
         let cfg = OctreeConfig::with_min_cell_size(0.5);
-        let octree = Octree::build_with(&body, cfg);
+        let octree = Octree::build_with_bracket_relax_for_test(&body, cfg, 0.7);
 
         // Kern-Assertion (discriminating): der relax-korrigierte Bracket muss
         // STRIKT MEHR oberflächennahe Edge/Vertex-Zellen behalten als der
@@ -2603,6 +2607,19 @@ mod tests {
             corrected > uncorrected,
             "relax-Korrektur muss mehr Oberflächenzellen behalten: \
              korrigiert={corrected} vs. unkorrigiert={uncorrected}"
+        );
+
+        // Produktionspfad-Absicherung (#384 Stufe 2): auch mit dem
+        // body-eigenen relax = 1.0 (nackter Lipschitz-Bracket) darf die
+        // Klassifikation keine Revolve-Oberflächenzellen verlieren — sonst
+        // wäre die 1-Lipschitz-Herleitung falsch.
+        let production = Octree::build_with(&body, cfg);
+        let brep_prod = weave(&body, &production);
+        assert!(
+            brep_prod.validate().is_ok() && !brep_prod.faces.is_empty(),
+            "Produktions-Weave (relax 1.0) degeneriert: {:?}, {} Faces",
+            brep_prod.validate(),
+            brep_prod.faces.len()
         );
 
         // Und der gewobene BRep ist wohlgeformt und nicht-degeneriert.

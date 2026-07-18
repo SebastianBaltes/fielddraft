@@ -12,6 +12,9 @@ Format, eine Zeile je Eintrag:
 kind = feat | fix | perf. scope und #tickets sind optional. Folgezeilen, die
 eingerückt sind, gehören zum Text davor (Umbruch erlaubt).
 
+## 0.16.3
+- perf(sdf) #384: Compile-Zeit-Lipschitz-Netz statt march_relax-Pauschalen — der Kernel leitet die Marsch-Schrittdämpfung jetzt pro Körper aus den Operationen her (Twist/Bend nach Verdrehrate und Hebelarm, Displace nach Amplitude·Frequenz, Chamfer analytisch ×1/√2) statt aus handgeschätzten Konstanten. Getwistete, gebogene und gefaste Körper tunneln damit nicht mehr (bis 16 % der Strahlen stachen zuvor durch), und Revolve-Körper rendern rund 40 % schneller, weil die alte 0,7-Pauschale nachweislich unnötig war.
+
 ## 0.16.2
 - perf(sdf) #384: Neues zirkuläres Smooth-Minimum (Quílez Circular-CD) in Kernel und Renderer — gleiche Fillet-Geometrie, aber das Distanzfeld übertreibt nie mehr. Der Sphere-March kann dadurch volle Schritte gehen (bisher tunnelte er auf smin-Ketten real durch Oberflächen), die √2-Dämpfung des Kanten-Fillet-Render-Felds entfällt, und CPU, GPU und Mesher rechnen jetzt ein und dasselbe Feld.
 

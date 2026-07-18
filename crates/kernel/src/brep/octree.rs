@@ -28,12 +28,14 @@
 //! The surface-proximity guard `f_min ≤ diag` below assumes a Lipschitz-1
 //! field (`|∇sdf| ≤ 1`), so that a corner within `diag` of the surface really
 //! bounds a surface crossing through the cell. Some fields VIOLATE this and
-//! over-estimate the distance — chiefly Revolve, whose 2D-(r,y) profile field
-//! lacks the radial correction and reports `f_min > diag` for cells the
-//! surface actually threads. We therefore widen the bracket by the body-wide
-//! `march_relax` factor (≤ 1, Revolve = 0.7): `bracket = diag / relax`, so an
-//! over-estimating revolve cell is no longer wrongly pruned as `Empty`
-//! (Ticket qmvn). With a Lipschitz field (`relax = 1`) the bracket is
+//! over-estimate the distance — Twist/Bend (domain-warp stretch), Displace
+//! (additive gradient) and Chamfer blends (cut-plane term (∇a+∇b)/√2). We
+//! therefore widen the bracket by the body-wide `march_relax` factor (≤ 1,
+//! since #384 Stufe 2 derived per-op: `1/L` of the composed tree, see
+//! [`crate::sdf_compiler::lipschitz_bound`]): `bracket = diag / relax`, so an
+//! over-estimating cell is no longer wrongly pruned as `Empty` (Ticket qmvn;
+//! Revolve, the original trigger, is meanwhile derived 1-Lipschitz and no
+//! longer damped). With a Lipschitz field (`relax = 1`) the bracket is
 //! unchanged.
 //!
 //! | class       | condition                                                |
@@ -242,12 +244,12 @@ impl Octree {
 
         // Lipschitz-Korrektur (Ticket qmvn): Die Klassifikation unten setzt
         // eine Lipschitz-1-Distanz voraus (|∇sdf| ≤ 1), damit die
-        // Oberflächen-Näheschranke `f_min ≤ diag` zuverlässig ist. Der
-        // Revolve-SDF überschätzt aber die Distanz (2D-(r,y)-Profilabstand
-        // ohne Radialkorrektur), genau dafür existiert der körperweite
-        // `march_relax`-Faktor (≤ 1, Revolve = 0.7). Wir reichen ihn durch und
-        // weiten die Schranke um `1/relax`, sodass überschätzte Oberflächen-
-        // zellen nicht fälschlich als `Empty` weggeschnitten werden.
+        // Oberflächen-Näheschranke `f_min ≤ diag` zuverlässig ist. Felder mit
+        // L > 1 (Twist/Bend/Displace/Chamfer) überschätzen die Distanz; genau
+        // das quantifiziert der körperweite `march_relax`-Faktor (= 1/L aus
+        // dem Compile-Zeit-Lipschitz-Netz, #384 Stufe 2). Wir reichen ihn
+        // durch und weiten die Schranke um `1/relax`, sodass überschätzte
+        // Oberflächenzellen nicht fälschlich als `Empty` weggeschnitten werden.
         let relax = crate::sdf_compiler::march_relax(body).clamp(f32::MIN_POSITIVE, 1.0);
         let spec_root = CellCsg::full(body);
         let root_samples = gather_samples(&spec_root, &cfg, root);
@@ -543,13 +545,13 @@ fn classify(
     let diag = (size[0] * size[0] + size[1] * size[1] + size[2] * size[2]).sqrt();
 
     // Lipschitz-Bracket (Ticket qmvn): Die Näheschranke unten geht davon aus,
-    // dass `|sdf|` eine echte Distanz ist (Lipschitz-1). Felder wie Revolve
-    // ÜBERSCHÄTZEN die Distanz und melden `f_min > diag`, obwohl die Fläche
-    // durch die Zelle läuft — sie würden fälschlich als `Empty` weggeschnitten.
-    // Der körperweite `march_relax` (≤ 1) quantifiziert die Überschätzung
-    // (Revolve = 0.7 ⇒ Feld ist um Faktor ~1/0.7 zu groß); wir weiten die
-    // Schranke entsprechend: `bracket = diag / relax`. relax = 1 (Lipschitz)
-    // lässt die Schranke unverändert.
+    // dass `|sdf|` eine echte Distanz ist (Lipschitz-1). Felder mit L > 1
+    // (Twist/Bend/Displace/Chamfer) ÜBERSCHÄTZEN die Distanz und melden
+    // `f_min > diag`, obwohl die Fläche durch die Zelle läuft — sie würden
+    // fälschlich als `Empty` weggeschnitten. Der körperweite `march_relax`
+    // (= 1/L des Compile-Zeit-Lipschitz-Netzes, #384) quantifiziert die
+    // Überschätzung; wir weiten die Schranke entsprechend: `bracket =
+    // diag / relax`. relax = 1 (Lipschitz) lässt die Schranke unverändert.
     let bracket = diag / relax;
 
     // Distinct branch set across all samples.
