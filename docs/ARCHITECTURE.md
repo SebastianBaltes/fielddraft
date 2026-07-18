@@ -204,7 +204,7 @@ The `CsgNode` enum (16 variants) represents the constructive solid geometry tree
 
 #### BVH & Bounded CSG (`bvh.rs`)
 
-`BoundedCsg` mirrors `CsgNode` but adds precomputed world-space AABBs at every node and collapses transform chains at leaves. This eliminates intermediate transform nodes from the hot evaluation path and enables spatial culling.
+`BoundedCsg` mirrors `CsgNode` but adds precomputed world-space AABBs at every node and collapses transform chains at leaves. This eliminates intermediate transform nodes from the hot evaluation path and enables spatial culling. Before the `BoundedCsg` is built, `body.rs::build_bounded_*_rounded` runs `CsgNode::push_down_offsets` (#384, v0.16.4) as the last tree pass after edge fillets and global round: it pushes `Offset` nodes through the exactly-commuting Boolean cases (+δ through Union, −δ through Intersection/Difference with the subtrahend's sign flipped) down to leaves/stop nodes — zero-set-preserving, and the entry point for the offset\_tree expansion (`docs/OFFSET-TREE-PLAN.md`).
 
 #### SDF Compiler (`sdf_compiler.rs`)
 
