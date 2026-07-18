@@ -12,6 +12,9 @@ Format, eine Zeile je Eintrag:
 kind = feat | fix | perf. scope und #tickets sind optional. Folgezeilen, die
 eingerückt sind, gehören zum Text davor (Umbruch erlaubt).
 
+## 0.16.1
+- fix(sdf-vm) #386: Loop-Zähler-Härtung im GPU-Interpreter — der Masken-Blend zählt seine Polylinien-Schleife jetzt wie alle anderen Ops über einen echten Integer statt über einen Float, und eine leere Maske kann den Programmzähler nicht mehr aus dem Tritt bringen (Kandidat für die „graue Wand“ im sdf-vm-Modus).
+
 ## 0.16.0
 - feat(onshape) #388: Aus Onshape importierte Projekte zeigen neben dem Titel einen Link zur Onshape-Originalseite und einen Reimport-Button, der nach Bestätigung den Feature-Baum frisch aus Onshape holt.
 

@@ -695,22 +695,35 @@ export function buildVmSdfEvalFn(
         // mask SDF is the min over capsules along consecutive segments
         // (a 2-point polyline reduces to the single-capsule case; a
         // 1-point polyline is a sphere).
-        const n = rd().toVar();
-        const firstX = rd().toVar(), firstY = rd().toVar(), firstZ = rd().toVar();
-        const prevX = float(firstX).toVar();
-        const prevY = float(firstY).toVar();
-        const prevZ = float(firstZ).toVar();
+        // #386 hardening: `n` drives a data-dependent loop AND the pc
+        // advance — read it through the same explicit int cast every other
+        // variable-length op uses (a float loop bound risks trip-count
+        // drift, and any pc desync here makes the stack read garbage).
+        const n = floatToIntFn({ v: rd() }).toVar();
+        const prevX = float(0).toVar();
+        const prevY = float(0).toVar();
+        const prevZ = float(0).toVar();
         const maskD = float(1e30).toVar();
-        // Single-point polyline → sphere at the first point (radius added
-        // below once maskR is read). Handle via a zero-length capsule.
-        If(n.lessThanEqual(int(1)), () => {
-          maskD.assign(
-            sqrt(
-              ptx.sub(firstX).mul(ptx.sub(firstX))
-                .add(pty.sub(firstY).mul(pty.sub(firstY)))
-                .add(ptz.sub(firstZ).mul(ptz.sub(firstZ))),
-            ),
-          );
+        // #386: only read the first point if it exists. The Rust
+        // interpreter reads exactly `n` points, so an unconditional
+        // 3-float read would desync the pc for n == 0 (empty polyline →
+        // mask stays at +inf → hard combine, mirroring
+        // `csg::sdf_polyline_tube`).
+        If(n.greaterThanEqual(int(1)), () => {
+          prevX.assign(rd());
+          prevY.assign(rd());
+          prevZ.assign(rd());
+          // Single-point polyline → sphere at the first point (radius added
+          // below once maskR is read). Handle via a zero-length capsule.
+          If(n.equal(int(1)), () => {
+            maskD.assign(
+              sqrt(
+                ptx.sub(prevX).mul(ptx.sub(prevX))
+                  .add(pty.sub(prevY).mul(pty.sub(prevY)))
+                  .add(ptz.sub(prevZ).mul(ptz.sub(prevZ))),
+              ),
+            );
+          });
         });
         Loop(n.sub(1), () => {
           const cx = rd().toVar(), cy = rd().toVar(), cz = rd().toVar();
