@@ -1546,3 +1546,306 @@ fn targeted_intersect_only_wraps_target_subtree() {
         "cube centre must stay solid, got sdf = {cube_centre}",
     );
 }
+
+// ─── #384 Stufe 3a: Offset-Pushdown (exakte Minkowski-Fälle) ────────────────
+
+/// Sphere leaf helper for the pushdown tests — spheres are offset-closed
+/// (`offset(sphere r, δ) = sphere r+δ`), which gives an analytic ground
+/// truth for the field comparison.
+fn pd_sphere(id: u32, center: [f32; 3], radius: f32) -> CsgNode {
+    CsgNode::Leaf {
+        id: FeatureId::from_u32(id),
+        primitive: Primitive::Sphere { center, radius },
+    }
+}
+
+/// Deterministic probe cloud spanning inside, surface band and far field.
+fn pd_cloud() -> Vec<[f32; 3]> {
+    let mut pts = Vec::new();
+    let mut i = 0u32;
+    for x in -8..=8 {
+        for y in -8..=8 {
+            for z in -8..=8 {
+                // Blue-noise-ish jitter from a tiny LCG so no probe sits on
+                // a min/max tie by construction.
+                i = i.wrapping_mul(1664525).wrapping_add(1013904223);
+                let j = (i >> 16) as f32 / 65536.0 - 0.5;
+                pts.push([x as f32 * 3.0 + j, y as f32 * 3.0 - j, z as f32 * 3.0 + j]);
+            }
+        }
+    }
+    pts
+}
+
+/// Field identity |f_a − f_b| < tol on the probe cloud.
+fn pd_assert_fields_equal(a: &CsgNode, b: &CsgNode, tol: f32, what: &str) {
+    for p in pd_cloud() {
+        let da = a.sdf(p, EvalMode::Visual);
+        let db = b.sdf(p, EvalMode::Visual);
+        assert!(
+            (da - db).abs() < tol,
+            "{what}: field mismatch at {p:?}: {da} vs {db}",
+        );
+    }
+}
+
+#[test]
+fn offset_pushdown_union_outward_lands_on_leaves_and_matches_ground_truth() {
+    let a = pd_sphere(1, [0.0, 0.0, 0.0], 10.0);
+    let b = pd_sphere(2, [12.0, 0.0, 0.0], 6.0);
+    let delta = 2.5;
+    let orig = CsgNode::Offset(
+        Box::new(CsgNode::Union(Box::new(a.clone()), Box::new(b.clone()))),
+        delta,
+    );
+    let pushed = orig.clone().push_down_offsets();
+
+    // Structure: Union(Offset(Leaf), Offset(Leaf)) — the offset reached the leaves.
+    match &pushed {
+        CsgNode::Union(l, r) => {
+            assert!(
+                matches!(**l, CsgNode::Offset(ref c, d) if d == delta && matches!(**c, CsgNode::Leaf { .. })),
+                "left arm should be Offset(Leaf, +δ), got {l:?}",
+            );
+            assert!(
+                matches!(**r, CsgNode::Offset(ref c, d) if d == delta && matches!(**c, CsgNode::Leaf { .. })),
+                "right arm should be Offset(Leaf, +δ), got {r:?}",
+            );
+        }
+        other => panic!("expected Union at root after pushdown, got {other:?}"),
+    }
+
+    // Field: identical to the un-pushed tree AND to the analytic ground
+    // truth (union of the analytically dilated spheres).
+    pd_assert_fields_equal(&orig, &pushed, 1e-4, "union outward, pushed vs orig");
+    let ground_truth = CsgNode::Union(
+        Box::new(pd_sphere(1, [0.0, 0.0, 0.0], 10.0 + delta)),
+        Box::new(pd_sphere(2, [12.0, 0.0, 0.0], 6.0 + delta)),
+    );
+    pd_assert_fields_equal(&pushed, &ground_truth, 1e-4, "union outward, pushed vs analytic");
+}
+
+#[test]
+fn offset_pushdown_difference_inward_flips_subtrahend_and_matches_ground_truth() {
+    let a = pd_sphere(1, [0.0, 0.0, 0.0], 10.0);
+    let b = pd_sphere(2, [8.0, 0.0, 0.0], 4.0);
+    let delta = -1.5; // inward
+    let orig = CsgNode::Offset(
+        Box::new(CsgNode::Difference(Box::new(a.clone()), Box::new(b.clone()))),
+        delta,
+    );
+    let pushed = orig.clone().push_down_offsets();
+
+    // Structure: Difference(Offset(Leaf, −δ), Offset(Leaf, +δ)) — the
+    // subtrahend takes the OPPOSITE offset (erode minuend, dilate subtrahend).
+    match &pushed {
+        CsgNode::Difference(l, r) => {
+            assert!(
+                matches!(**l, CsgNode::Offset(_, d) if d == delta),
+                "minuend should keep the inward offset −1.5, got {l:?}",
+            );
+            assert!(
+                matches!(**r, CsgNode::Offset(_, d) if d == -delta),
+                "subtrahend should take the flipped offset +1.5, got {r:?}",
+            );
+        }
+        other => panic!("expected Difference at root after pushdown, got {other:?}"),
+    }
+
+    pd_assert_fields_equal(&orig, &pushed, 1e-4, "difference inward, pushed vs orig");
+    // Analytic ground truth: erode(A \ B, 1.5) = erode(A, 1.5) \ dilate(B, 1.5).
+    let ground_truth = CsgNode::Difference(
+        Box::new(pd_sphere(1, [0.0, 0.0, 0.0], 10.0 - 1.5)),
+        Box::new(pd_sphere(2, [8.0, 0.0, 0.0], 4.0 + 1.5)),
+    );
+    pd_assert_fields_equal(&pushed, &ground_truth, 1e-4, "difference inward, pushed vs analytic");
+}
+
+#[test]
+fn offset_pushdown_intersection_inward_distributes() {
+    let a = pd_sphere(1, [0.0, 0.0, 0.0], 10.0);
+    let b = pd_sphere(2, [6.0, 0.0, 0.0], 10.0);
+    let orig = CsgNode::Offset(
+        Box::new(CsgNode::Intersection(Box::new(a), Box::new(b))),
+        -2.0,
+    );
+    let pushed = orig.clone().push_down_offsets();
+    match &pushed {
+        CsgNode::Intersection(l, r) => {
+            assert!(matches!(**l, CsgNode::Offset(_, d) if d == -2.0));
+            assert!(matches!(**r, CsgNode::Offset(_, d) if d == -2.0));
+        }
+        other => panic!("expected Intersection at root, got {other:?}"),
+    }
+    pd_assert_fields_equal(&orig, &pushed, 1e-4, "intersection inward");
+}
+
+#[test]
+fn offset_pushdown_stops_at_non_exact_boolean_cases() {
+    let a = pd_sphere(1, [0.0, 0.0, 0.0], 10.0);
+    let b = pd_sphere(2, [6.0, 0.0, 0.0], 8.0);
+
+    // Outward over Intersection: NOT exact (channel bodies at the seam) —
+    // must keep today's `f − δ` at the boolean.
+    let inter_out = CsgNode::Offset(
+        Box::new(CsgNode::Intersection(Box::new(a.clone()), Box::new(b.clone()))),
+        2.0,
+    );
+    assert!(
+        matches!(
+            inter_out.clone().push_down_offsets(),
+            CsgNode::Offset(ref c, d) if d == 2.0 && matches!(**c, CsgNode::Intersection(_, _))
+        ),
+        "outward offset must stop above Intersection",
+    );
+
+    // Inward over Union: NOT exact — stop.
+    let union_in = CsgNode::Offset(
+        Box::new(CsgNode::Union(Box::new(a.clone()), Box::new(b.clone()))),
+        -2.0,
+    );
+    assert!(
+        matches!(
+            union_in.clone().push_down_offsets(),
+            CsgNode::Offset(ref c, d) if d == -2.0 && matches!(**c, CsgNode::Union(_, _))
+        ),
+        "inward offset must stop above Union",
+    );
+
+    // Outward over Difference: NOT exact — stop.
+    let diff_out = CsgNode::Offset(
+        Box::new(CsgNode::Difference(Box::new(a.clone()), Box::new(b.clone()))),
+        2.0,
+    );
+    assert!(
+        matches!(
+            diff_out.clone().push_down_offsets(),
+            CsgNode::Offset(ref c, d) if d == 2.0 && matches!(**c, CsgNode::Difference(_, _))
+        ),
+        "outward offset must stop above Difference",
+    );
+
+    // smin: no exact commutation — stop.
+    let smin = CsgNode::Offset(
+        Box::new(CsgNode::SmoothUnion(
+            Box::new(a.clone()),
+            Box::new(b.clone()),
+            3.0,
+            BlendMode::Fillet,
+        )),
+        2.0,
+    );
+    assert!(
+        matches!(
+            smin.clone().push_down_offsets(),
+            CsgNode::Offset(ref c, d) if d == 2.0 && matches!(**c, CsgNode::SmoothUnion(_, _, _, _))
+        ),
+        "offset must stop above SmoothUnion",
+    );
+
+    // Regression: the stop cases keep today's field bit-for-bit.
+    for (node, what) in [
+        (&inter_out, "intersection outward"),
+        (&union_in, "union inward"),
+        (&diff_out, "difference outward"),
+        (&smin, "smooth union"),
+    ] {
+        pd_assert_fields_equal(node, &node.clone().push_down_offsets(), 1e-6, what);
+    }
+}
+
+#[test]
+fn offset_pushdown_recurses_into_flipped_subtrahend_union() {
+    // erode(A \ (B ∪ C)): the subtrahend flips to +δ, and +δ keeps pushing
+    // through the inner Union.
+    let a = pd_sphere(1, [0.0, 0.0, 0.0], 12.0);
+    let b = pd_sphere(2, [5.0, 0.0, 0.0], 4.0);
+    let c = pd_sphere(3, [-5.0, 0.0, 0.0], 4.0);
+    let orig = CsgNode::Offset(
+        Box::new(CsgNode::Difference(
+            Box::new(a),
+            Box::new(CsgNode::Union(Box::new(b), Box::new(c))),
+        )),
+        -1.0,
+    );
+    let pushed = orig.clone().push_down_offsets();
+    match &pushed {
+        CsgNode::Difference(l, r) => {
+            assert!(matches!(**l, CsgNode::Offset(_, d) if d == -1.0));
+            match &**r {
+                CsgNode::Union(u, v) => {
+                    assert!(matches!(**u, CsgNode::Offset(_, d) if d == 1.0));
+                    assert!(matches!(**v, CsgNode::Offset(_, d) if d == 1.0));
+                }
+                other => panic!("subtrahend should stay a Union of dilated leaves, got {other:?}"),
+            }
+        }
+        other => panic!("expected Difference at root, got {other:?}"),
+    }
+    pd_assert_fields_equal(&orig, &pushed, 1e-4, "difference with union subtrahend");
+}
+
+#[test]
+fn offset_pushdown_passes_rigid_transform_but_stops_at_scale() {
+    let leaf = pd_sphere(1, [0.0, 0.0, 0.0], 5.0);
+    let rigid = Transform {
+        translate: [3.0, 1.0, -2.0],
+        rotation: [0.0, 0.0, 0.0, 1.0],
+        scale: [1.0, 1.0, 1.0],
+    };
+    let orig = CsgNode::Offset(
+        Box::new(CsgNode::Transform(
+            rigid,
+            Box::new(CsgNode::Union(
+                Box::new(leaf.clone()),
+                Box::new(pd_sphere(2, [4.0, 0.0, 0.0], 3.0)),
+            )),
+        )),
+        1.0,
+    );
+    let pushed = orig.clone().push_down_offsets();
+    assert!(
+        matches!(
+            pushed,
+            CsgNode::Transform(_, ref c) if matches!(**c, CsgNode::Union(_, _))
+        ),
+        "rigid transform must be traversed, got {pushed:?}",
+    );
+    pd_assert_fields_equal(&orig, &orig.clone().push_down_offsets(), 1e-4, "rigid transform");
+
+    let scaled = Transform {
+        translate: [0.0, 0.0, 0.0],
+        rotation: [0.0, 0.0, 0.0, 1.0],
+        scale: [2.0, 1.0, 1.0],
+    };
+    let orig_scaled = CsgNode::Offset(
+        Box::new(CsgNode::Transform(scaled, Box::new(leaf))),
+        1.0,
+    );
+    assert!(
+        matches!(
+            orig_scaled.clone().push_down_offsets(),
+            CsgNode::Offset(ref c, _) if matches!(**c, CsgNode::Transform(_, _))
+        ),
+        "non-unit scale must stop the pushdown",
+    );
+}
+
+#[test]
+fn offset_pushdown_merges_stacked_offsets() {
+    // Offset(Offset(U, +1), +2) evaluates as f − 3 today; the pushdown must
+    // fold the sum and distribute it.
+    let u = CsgNode::Union(
+        Box::new(pd_sphere(1, [0.0, 0.0, 0.0], 8.0)),
+        Box::new(pd_sphere(2, [10.0, 0.0, 0.0], 5.0)),
+    );
+    let orig = CsgNode::Offset(Box::new(CsgNode::Offset(Box::new(u), 1.0)), 2.0);
+    let pushed = orig.clone().push_down_offsets();
+    match &pushed {
+        CsgNode::Union(l, _) => {
+            assert!(matches!(**l, CsgNode::Offset(_, d) if (d - 3.0).abs() < 1e-6));
+        }
+        other => panic!("expected Union after merging stacked offsets, got {other:?}"),
+    }
+    pd_assert_fields_equal(&orig, &pushed, 1e-4, "stacked offsets");
+}

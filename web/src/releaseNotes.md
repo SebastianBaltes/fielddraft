@@ -12,6 +12,9 @@ Format, eine Zeile je Eintrag:
 kind = feat | fix | perf. scope und #tickets sind optional. Folgezeilen, die
 eingerückt sind, gehören zum Text davor (Umbruch erlaubt).
 
+## 0.16.4
+- perf(sdf) #384: Offset-Pushdown durch Union und Differenz — die beiden nachweislich exakten Fälle der Minkowski-Algebra (Aufdicken über Vereinigungen, Abtragen über Differenzen und Schnitte, wobei der Subtrahend den gegenläufigen Offset bekommt) werden jetzt zur Regen-Zeit als Baum-Umschreibung bis auf die Blätter durchgereicht. Dort sitzt der Offset auf exakten Feldern statt auf dem nur noch under-bound kombinierten Feld — die strukturelle Grundlage für analytisch gefaltete Offsets und Shell-Korrekturkörper aus dem „offset_tree“-Plan. Nullstellenmenge und Renderbild bleiben unverändert.
+
 ## 0.16.3
 - perf(sdf) #384: Compile-Zeit-Lipschitz-Netz statt march_relax-Pauschalen — der Kernel leitet die Marsch-Schrittdämpfung jetzt pro Körper aus den Operationen her (Twist/Bend nach Verdrehrate und Hebelarm, Displace nach Amplitude·Frequenz, Chamfer analytisch ×1/√2) statt aus handgeschätzten Konstanten. Getwistete, gebogene und gefaste Körper tunneln damit nicht mehr (bis 16 % der Strahlen stachen zuvor durch), und Revolve-Körper rendern rund 40 % schneller, weil die alte 0,7-Pauschale nachweislich unnötig war.
 

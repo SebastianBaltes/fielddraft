@@ -982,6 +982,10 @@ pub fn build_bounded_for_body_rounded(
     if let Some(r) = global_round {
         csg = csg.apply_global_round(r);
     }
+    // #384 Stufe 3a: normalise Offsets down to the exactest subtrees LAST, so
+    // the pass sees the final node shapes (fillets → MaskedBlend, round →
+    // SmoothUnion) and correctly stops at them. Zero-set-preserving.
+    csg = csg.push_down_offsets();
     BoundedCsg::from_csg(&csg)
 }
 
@@ -1030,6 +1034,10 @@ pub fn build_bounded_with_primitives_rounded(
     if let Some(r) = global_round {
         csg = csg.apply_global_round(r);
     }
+    // #384 Stufe 3a — same normalisation as `build_bounded_for_body_rounded`.
+    // Runs BEFORE the primitive-map extraction, which is order-irrelevant
+    // today (the pass moves Offset nodes, never rewrites leaf primitives).
+    csg = csg.push_down_offsets();
     let prims: std::collections::HashMap<u32, fielddraft_protocol::Primitive> = csg
         .leaf_primitives()
         .into_iter()

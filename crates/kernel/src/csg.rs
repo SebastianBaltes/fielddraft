@@ -1468,6 +1468,145 @@ impl CsgNode {
         }
     }
 
+    /// #384 Stufe 3a: push every [`CsgNode::Offset`] down through the Boolean
+    /// nodes where the Minkowski algebra is EXACT (measured in
+    /// `docs/research/sdf-metricity/SYNTHESIS.md`, 2×2-Klassifikation):
+    ///
+    /// * **outward** (`δ > 0`, dilation) distributes over **Union**:
+    ///   `offset(A ∪ B, +δ) = offset(A, +δ) ∪ offset(B, +δ)`;
+    /// * **inward** (`δ < 0`, erosion) distributes over **Intersection**
+    ///   (`erode(A ∩ B) = erode(A) ∩ erode(B)`) and over **Difference**
+    ///   with the subtrahend taking the *opposite* offset:
+    ///   `offset(A \ B, −δ) = offset(A, −δ) \ offset(B, +δ)`.
+    ///
+    /// Rigid `Transform`s (unit scale) commute with the offset and are
+    /// traversed; stacked `Offset`s merge their deltas (today's evaluator
+    /// already computes `f − δ₁ − δ₂`, so the sum is behaviour-preserving).
+    /// Everywhere else the pushdown STOPS and the node keeps today's `f − δ`
+    /// fallback: the dual Boolean cases (Intersection/Difference at `+δ`,
+    /// Union at `−δ`) differ from the true offset by channel bodies along
+    /// the intersection curves (Rossignac & Requicha 1986 — the future
+    /// `offset_tree` correction pass, NOT this step), and smin/MaskedBlend/
+    /// Morph/warp/Shell nodes have no exact offset commutation at all.
+    ///
+    /// The rewrite is zero-set-preserving by construction (in the exact
+    /// cases `min`/`max` are translation-equivariant, so the field is even
+    /// pointwise identical) — its value is structural: after the pass the
+    /// offset sits on leaves / deeper subtrees whose fields are exact or
+    /// exacter, which is the entry point for the analytic per-leaf folding
+    /// (sphere/torus `r ± δ`, 2D-profile offsetting) of the `offset_tree`
+    /// product plan. That folding is deliberately NOT done here: it changes
+    /// leaf `Primitive` identity, which the feature-snap / B-Rep-carrier
+    /// paths consume — a separate step with its own consumers audit.
+    pub fn push_down_offsets(self) -> Self {
+        match self {
+            CsgNode::Offset(inner, delta) => inner.push_down_offset(delta),
+            CsgNode::Union(a, b) => CsgNode::Union(
+                Box::new(a.push_down_offsets()),
+                Box::new(b.push_down_offsets()),
+            ),
+            CsgNode::Difference(a, b) => CsgNode::Difference(
+                Box::new(a.push_down_offsets()),
+                Box::new(b.push_down_offsets()),
+            ),
+            CsgNode::Intersection(a, b) => CsgNode::Intersection(
+                Box::new(a.push_down_offsets()),
+                Box::new(b.push_down_offsets()),
+            ),
+            CsgNode::SmoothUnion(a, b, r, m) => CsgNode::SmoothUnion(
+                Box::new(a.push_down_offsets()),
+                Box::new(b.push_down_offsets()),
+                r,
+                m,
+            ),
+            CsgNode::SmoothDifference(a, b, r, m) => CsgNode::SmoothDifference(
+                Box::new(a.push_down_offsets()),
+                Box::new(b.push_down_offsets()),
+                r,
+                m,
+            ),
+            CsgNode::Morph(a, b, t) => CsgNode::Morph(
+                Box::new(a.push_down_offsets()),
+                Box::new(b.push_down_offsets()),
+                t,
+            ),
+            CsgNode::MaskedBlend {
+                a,
+                b,
+                mask_polyline,
+                mask_radius,
+                blend_radius,
+                blend_mode,
+                is_difference,
+                provenance,
+            } => CsgNode::MaskedBlend {
+                a: Box::new(a.push_down_offsets()),
+                b: Box::new(b.push_down_offsets()),
+                mask_polyline,
+                mask_radius,
+                blend_radius,
+                blend_mode,
+                is_difference,
+                provenance,
+            },
+            CsgNode::Transform(t, inner) => {
+                CsgNode::Transform(t, Box::new(inner.push_down_offsets()))
+            }
+            CsgNode::Twist(inner, rate) => {
+                CsgNode::Twist(Box::new(inner.push_down_offsets()), rate)
+            }
+            CsgNode::Bend(inner, rate) => {
+                CsgNode::Bend(Box::new(inner.push_down_offsets()), rate)
+            }
+            CsgNode::Displace(inner, d, f) => {
+                CsgNode::Displace(Box::new(inner.push_down_offsets()), d, f)
+            }
+            CsgNode::Shell(inner, t, open) => {
+                CsgNode::Shell(Box::new(inner.push_down_offsets()), t, open)
+            }
+            other => other,
+        }
+    }
+
+    /// Push one pending offset `delta` into `self` — the recursive worker of
+    /// [`Self::push_down_offsets`]. Returns a tree whose field is pointwise
+    /// identical to `Offset(self, delta)`.
+    fn push_down_offset(self, delta: f32) -> Self {
+        if delta == 0.0 {
+            // `f − 0` is the identity — drop the node, keep normalising below.
+            return self.push_down_offsets();
+        }
+        match self {
+            // Stacked offsets evaluate as `f − δ₂ − δ` today; fold the sum and
+            // let its sign pick the exact rules.
+            CsgNode::Offset(inner, d2) => inner.push_down_offset(delta + d2),
+            CsgNode::Union(a, b) if delta > 0.0 => CsgNode::Union(
+                Box::new(a.push_down_offset(delta)),
+                Box::new(b.push_down_offset(delta)),
+            ),
+            CsgNode::Intersection(a, b) if delta < 0.0 => CsgNode::Intersection(
+                Box::new(a.push_down_offset(delta)),
+                Box::new(b.push_down_offset(delta)),
+            ),
+            // Erosion of a difference erodes the minuend and DILATES the
+            // subtrahend: `erode(A \ B) = erode(A) \ dilate(B)`.
+            CsgNode::Difference(a, b) if delta < 0.0 => CsgNode::Difference(
+                Box::new(a.push_down_offset(delta)),
+                Box::new(b.push_down_offset(-delta)),
+            ),
+            // A rigid placement (unit scale) is an isometry — offset commutes.
+            // Any non-unit scale breaks the metric (the evaluator multiplies by
+            // `min_scale`), so the pushdown stops above it.
+            CsgNode::Transform(t, inner) if t.scale == [1.0, 1.0, 1.0] => {
+                CsgNode::Transform(t, Box::new(inner.push_down_offset(delta)))
+            }
+            // Everything else (dual Boolean cases, smin/MaskedBlend/Morph,
+            // warp ops, Shell, leaves): keep today's `f − δ` right here. Leaf
+            // fields are exact SDFs, so `f − δ` on a leaf IS the exact offset.
+            other => CsgNode::Offset(Box::new(other.push_down_offsets()), delta),
+        }
+    }
+
     /// K3.5C: collect a map of leaf FeatureId → Primitive reference.
     pub fn leaf_primitives(&self) -> std::collections::HashMap<u32, &Primitive> {
         let mut out = std::collections::HashMap::new();
