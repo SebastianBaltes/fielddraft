@@ -566,7 +566,7 @@ impl Aabb {
 /// propagates through the provenance-aware `evaluate` fold, so every
 /// surface hit can be traced back to the primitives that produced it.
 /// K10.2: how to blend the junction between two Boolean
-/// operands. Fillet uses the exact-circular smin ([`smin_poly`], a true
+/// operands. Fillet uses the circular smin ([`smin_poly`], zero set a true
 /// circular arc of radius `r` between planar walls); Chamfer uses a linear
 /// 45° cut.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -1665,18 +1665,23 @@ impl CsgNode {
                 // identity is the blend's provenance branch, see
                 // `evaluate_open`). Logical == Visual since the blend-carrier
                 // work; before it, Logical degraded to the hard combine.
+                // #384: ONE field for all paths — the same cross-faded combine
+                // the compiled tape / TSL shader evaluates (the former hard
+                // switch at the tube boundary jumped by up to (1−1/√2)·r
+                // under the Circular-CD smin).
                 let da = a.sdf_open(p, mode, open);
                 let db_raw = b.sdf_open(p, mode, open);
                 let mask_d = sdf_polyline_tube(p, mask_polyline, *mask_radius);
-                if mask_d < 0.0 {
-                    if *is_difference {
-                        -blend_min(-da, db_raw, *blend_radius, *blend_mode)
-                    } else {
-                        blend_min(da, db_raw, *blend_radius, *blend_mode)
-                    }
-                } else {
-                    hard_combine(*is_difference, da, db_raw)
+                let hard = hard_combine(*is_difference, da, db_raw);
+                if mask_d >= 0.0 {
+                    return hard;
                 }
+                let blended = if *is_difference {
+                    -blend_min(-da, db_raw, *blend_radius, *blend_mode)
+                } else {
+                    blend_min(da, db_raw, *blend_radius, *blend_mode)
+                };
+                masked_blend_combine(mask_d, blended, hard, *blend_radius)
             }
             CsgNode::Extrude {
                 id,
@@ -1913,12 +1918,17 @@ impl CsgNode {
                 }
                 // Inside the mask tube: geometry is the blend (mode-
                 // independent — the fillet is the body's real surface).
+                // #384: the VALUE is the same cross-faded field as everywhere
+                // else (`masked_blend_combine`); only the contributor logic
+                // below keeps its own gating.
                 let (ba, bb) = if *is_difference { (-da, db_raw) } else { (da, db_raw) };
-                let d = if *is_difference {
+                let blended = if *is_difference {
                     -blend_min(-da, db_raw, *blend_radius, *blend_mode)
                 } else {
                     blend_min(da, db_raw, *blend_radius, *blend_mode)
                 };
+                let hard_d = hard_combine(*is_difference, da, db_raw);
+                let d = masked_blend_combine(mask_d, blended, hard_d, *blend_radius);
                 if provenance.branch == 0 {
                     // No B-Rep identity (hand-built node): legacy semantics,
                     // both operand sets merged.
@@ -2381,27 +2391,34 @@ pub(crate) fn revolve_contributors(
     c
 }
 
-/// K10.0 / c-M-b: **exact circular** smooth minimum (IQ's rounded variant).
-/// `r` is the blend radius. Between two half-spaces the zero level set is a
-/// TRUE circular arc of radius `r` (centre at `(r, r)` in the two distances'
-/// plane), so a filleted planar edge has a measurable radius — unlike the old
-/// cubic polynomial, whose cross-section only *approximated* a round. When the
-/// inputs are far apart (`min(da,db) >= r`) it degenerates to `min(da, db)`.
+/// K10.0 / c-M-b / #384: **circular** smooth minimum, IQ's Circular (CD)
+/// variant. `r` is the blend radius. Between two half-spaces the zero level
+/// set is a TRUE circular arc of radius `r` (centre at `(r, r)` in the two
+/// distances' plane) — bit-for-bit the SAME zero set as the previous
+/// circular-geometrical form (`max(r, min) − ‖(relu(r−da), relu(r−db))‖`),
+/// so a filleted planar edge keeps its measurable radius. When the inputs
+/// are far apart (`|da − db| ≥ r`) it degenerates to `min(da, db)`.
 ///
-/// `f = max(r, min(da,db)) − ‖(max(r−da,0), max(r−db,0))‖`. In the arc region
-/// this is the exact Euclidean distance to the fillet circle; the gradient is
-/// the arc normal `((r−da), (r−db)) / L` (see [`blend_min_weights`]). Max
-/// undershoot below `min` is `(√2 − 1)·r ≈ 0.414 r` at `da = db = 0` — the AABB
-/// and cell-prune margins carry `r`, which covers it.
+/// `f = min(da,db) − (r/2)·(1 + h − √(1 − h·(h−2)))` with
+/// `h = max(r − |da−db|, 0)/r`. Unlike the old form this is a CONVEX
+/// combination of the inputs (`∂f/∂a + ∂f/∂b = 1`, both in `[0, 1]`, see
+/// [`blend_min_weights`]): for 1-Lipschitz inputs the result is 1-Lipschitz
+/// everywhere and NEVER overestimates distance — the old form was √2-Lipschitz
+/// perpendicular to the seam and inflated interior values without bound
+/// (measured: real tunneling on smin chains, ‖∇f‖ 1.22 → 1.0001 after the
+/// swap; docs/research/sdf-metricity/SYNTHESIS.md §5 Exp 1). Trade-off: the
+/// under-estimation is non-local — on the seam bisector (`da = db`) the value
+/// sits `(1 − 1/√2)·r ≈ 0.293·r` below `min` even far from the corner. Max
+/// undershoot below `min` is that same `0.293·r`; the AABB and cell-prune
+/// margins carry `r`, which covers it.
 ///
-/// Reference: <https://iquilezles.org/articles/smin/> (round union).
+/// Reference: <https://iquilezles.org/articles/smin/> (circular, CD family).
 pub(crate) fn smin_poly(da: f32, db: f32, r: f32) -> f32 {
     if r <= 0.0 {
         return da.min(db);
     }
-    let ua = (r - da).max(0.0);
-    let ub = (r - db).max(0.0);
-    da.min(db).max(r) - (ua * ua + ub * ub).sqrt()
+    let h = (r - (da - db).abs()).max(0.0) / r;
+    da.min(db) - r * 0.5 * (1.0 + h - (1.0 - h * (h - 2.0)).sqrt())
 }
 
 /// Recursively descend through Union/SmoothUnion nodes in `tree`,
@@ -2654,6 +2671,35 @@ pub(crate) fn blend_min(da: f32, db: f32, r: f32, mode: BlendMode) -> f32 {
         BlendMode::Fillet => smin_poly(da, db, r),
         BlendMode::Chamfer => chamfer_union(da, db, r),
     }
+}
+
+/// #382/#384: THE masked-blend combine — ONE field for every path (CPU
+/// `csg::sdf`, weave `evaluate_open`, compiled opcode tape, dual numbers,
+/// TSL/WGSL shader). Cross-fades `hard → blended` with a C1 smoothstep across
+/// the tube's inner shell band (`mask_d ∈ [−band, 0]`): a HARD switch at the
+/// tube boundary would make the field DISCONTINUOUS — under the Circular-CD
+/// smin the blend sits up to `(1 − 1/√2)·blend_r` below `hard` on the seam
+/// bisector even at the tube boundary, so the jump is real (#382 grey wall
+/// symptomatics). Since the CD smin is itself 1-Lipschitz, the old global ÷√2
+/// Lipschitz normalisation (`masked_blend_render_fade`) is GONE — the fade
+/// keeps `f ≤ hard` pointwise (blended ≤ hard always), so the field never
+/// overestimates distance and the sphere-trace cannot overstep.
+#[inline]
+pub(crate) fn masked_blend_combine(mask_d: f32, blended: f32, hard: f32, blend_r: f32) -> f32 {
+    let band = masked_blend_fade_band(blend_r);
+    // w: 1 deep inside (mask_d ≤ −band → fully blended), 0 at/outside the
+    // boundary (mask_d ≥ 0 → hard). C1 via smoothstep.
+    let x = ((-mask_d) / band).clamp(0.0, 1.0);
+    let w = x * x * (3.0 - 2.0 * x);
+    hard + (blended - hard) * w
+}
+
+/// Cross-fade band width (mm) for [`masked_blend_combine`]. A WIDE band (one
+/// `blend_r`) keeps `∇w ≤ 1.5/band` small so the fade adds little slope.
+/// Mirrored in the TSL shader (`sdfVmInterpreter.ts`, `OP_MASKED_BLEND`).
+#[inline]
+pub(crate) fn masked_blend_fade_band(blend_r: f32) -> f32 {
+    blend_r.max(1e-3)
 }
 
 /// The hard (non-blended) masked-blend combine: subtraction (`da ∖ db`) or
@@ -3102,10 +3148,14 @@ fn blend_wall_value_grad(hs: &HalfSpace, xf: &Transform, flip: bool, p: [f32; 3]
     if flip { (-v, [-g[0], -g[1], -g[2]]) } else { (v, g) }
 }
 
-/// Partial derivatives `(∂f/∂a, ∂f/∂b)` of [`blend_min`]. For the circular
-/// smin (arc region) the weights are the arc normal `((r−a), (r−b)) / L`; for
-/// the chamfer they are the active plane's coefficients. Used to combine the
-/// two wall gradients of a [`HalfSpace::Blend`] carrier.
+/// Partial derivatives `(∂f/∂a, ∂f/∂b)` of [`blend_min`]. For the #384
+/// Circular-CD smin they are the convex weights `(1 − s, s)` toward the
+/// nearer input, with `s = ½·(1 − (1−h)/√(1 + h·(2−h)))` and
+/// `h = max(r − |a−b|, 0)/r` (they sum to 1; `(½, ½)` on the bisector,
+/// `(1, 0)` outside the blend strip — on the fillet's zero set the combined
+/// direction matches the old arc normal). For the chamfer they are the active
+/// plane's coefficients. Used to combine the two wall gradients of a
+/// [`HalfSpace::Blend`] carrier.
 fn blend_min_weights(da: f32, db: f32, r: f32, mode: BlendMode) -> (f32, f32) {
     match mode {
         BlendMode::Fillet => {
@@ -3113,18 +3163,14 @@ fn blend_min_weights(da: f32, db: f32, r: f32, mode: BlendMode) -> (f32, f32) {
             if r <= 0.0 {
                 return pick;
             }
-            // Arc region iff both inputs are within `r` of the corner (so
-            // `max(r, min) = r` AND both `u` components are positive).
-            let ua = r - da;
-            let ub = r - db;
-            if ua <= 0.0 || ub <= 0.0 {
+            let h = (r - (da - db).abs()).max(0.0) / r;
+            if h <= 0.0 {
                 return pick;
             }
-            let l = (ua * ua + ub * ub).sqrt();
-            if l <= 1e-12 {
-                return (0.5, 0.5);
-            }
-            (ua / l, ub / l)
+            // s = s'(h)/r — the far input's share; h→0 gives the hard pick,
+            // h = 1 (bisector) gives (½, ½). Continuous at both ends.
+            let s = 0.5 * (1.0 - (1.0 - h) / (1.0 + h * (2.0 - h)).sqrt());
+            if da <= db { (1.0 - s, s) } else { (s, 1.0 - s) }
         }
         BlendMode::Chamfer => {
             let chamfer = (da + db - r) * std::f32::consts::FRAC_1_SQRT_2;

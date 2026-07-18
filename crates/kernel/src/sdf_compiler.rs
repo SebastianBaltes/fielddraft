@@ -152,12 +152,11 @@ pub(crate) fn march_relax(node: &BoundedCsg) -> f32 {
         | BoundedCsg::SmoothDifference { left, right, .. }
         | BoundedCsg::Morph { left, right, .. } => march_relax(left).min(march_relax(right)),
         BoundedCsg::MaskedBlend { left, right, .. } => {
-            // #382: the render field confines the mask cross-fade to the tube's
-            // flat outer shell (zero fade gradient) and divides the whole masked
-            // blend by the smin's Lipschitz constant √2 (`masked_blend_render_fade`),
-            // so it is a genuine ≤1-Lipschitz distance under-bound — no extra step
-            // damping beyond the children's own bounds. Not baked into the field:
-            // the mesher/weave path (`csg::sdf`) is untouched.
+            // #382/#384: the masked blend uses the Circular-CD smin (a
+            // pointwise distance UNDER-bound) cross-faded toward the hard
+            // combine (`csg::masked_blend_combine`, f ≤ hard everywhere), so
+            // the field never overestimates distance — no step damping beyond
+            // the children's own bounds, and no √2 normalisation anywhere.
             march_relax(left).min(march_relax(right))
         }
         BoundedCsg::Twist { inner, .. }
@@ -1511,7 +1510,7 @@ pub fn eval_opcodes_with_volumes(
                     blend_min_eval(da, db, blend_r, mode)
                 };
                 let hard = crate::csg::hard_combine(is_diff, da, db);
-                push_v!(masked_blend_render_fade(mask_d, blended, hard, blend_r));
+                push_v!(crate::csg::masked_blend_combine(mask_d, blended, hard, blend_r));
             }
 
             OP_PRIM_TEX3D => {
@@ -1759,69 +1758,11 @@ fn sdf_sector_2d(
     }
 }
 
-/// #382: continuous mask cross-fade for the RENDER path (compiled opcodes +
-/// TSL shader) — NOT the mesh/weave path (`csg::sdf` / `evaluate_open`, which
-/// keeps the hard switch and is unaffected).
-///
-/// The masked blend chooses between the smin-`blended` value (inside the tube)
-/// and the `hard` combine (outside). A HARD switch at the tube boundary makes
-/// the compiled field DISCONTINUOUS — it jumps by up to `blend_r` across the
-/// mask surface (measured |Δd|/Δs ≈ 108 on the #373 fixture). Dual-contouring
-/// only reads the SIGN at cell corners, so the mesh is fine; sphere-tracing
-/// needs the field to be a valid distance BOUND (≈1-Lipschitz), and a jump lets
-/// the ray step straight THROUGH the surface → every pixel misses → grey
-/// (#382). The first #382 pass cross-faded `hard → blended` with a C1
-/// smoothstep, which removed the JUMP but left the field only L ≤ 2.5 (a full
-/// 3-D gradient probe measured |∇f| ≈ √2 right at the fillet surface). A field
-/// with L > 1 — even without a jump — makes the sphere-trace OVERSTEP the
-/// concave fillet, so the render is degenerate/artefacted even though it is no
-/// longer grey. This makes the render field a genuine ≤1-Lipschitz distance
-/// under-bound with two ingredients:
-///
-/// 1. **A WIDE cross-fade band (one `blend_r`).** `∇w ≤ 1.5/band`, so a wide
-///    band keeps the smoothstep's own gradient small; the band sits in the
-///    tube's outer shell where `blended ≈ hard`, so `(blended − hard)·∇w` — the
-///    fade's Lipschitz contribution — stays tiny (≈ 0.03 on the #373 fixture; a
-///    NARROWER band would double `∇w` and make this the dominant term).
-/// 2. **√2 Lipschitz-normalisation.** The circular smin has `|∇blended|² =
-///    1 + 2αβ·cosθ ≤ 2` (α²+β²=1, αβ≤½), so `blended` is √2-Lipschitz — this,
-///    not the (now-removed) jump, was the residual degeneration: a field with
-///    L > 1 makes the sphere-trace OVERSTEP the concave fillet. Dividing the
-///    whole render field by √2 turns it into a valid ≤1-Lipschitz distance
-///    UNDER-bound (never oversteps) whose zero-set is IDENTICAL (`f = 0 ⇔
-///    f/√2 = 0`) — the fillet surface is preserved exactly. Measured worst
-///    |∇f| drops from ≈ 1.44 to ≈ 1.02, so `march_relax(MaskedBlend)` is 1.0.
-pub(crate) fn masked_blend_render_fade(mask_d: f32, blended: f32, hard: f32, blend_r: f32) -> f32 {
-    let band = masked_blend_fade_band(blend_r);
-    // w: 1 deep inside (mask_d ≤ −band → fully blended), 0 at/outside the
-    // boundary (mask_d ≥ 0 → hard). C1 via smoothstep.
-    let x = ((-mask_d) / band).clamp(0.0, 1.0);
-    let w = x * x * (3.0 - 2.0 * x);
-    let f = hard + (blended - hard) * w;
-    // √2 Lipschitz-normalisation — same zero-set, |∇(f/√2)| ≤ 1.
-    f * std::f32::consts::FRAC_1_SQRT_2
-}
-
-/// Cross-fade band width (mm). A WIDE band (one `blend_r`) keeps `∇w ≤ 1.5/band`
-/// small so the fade adds negligible slope; the smin's √2 is handled by the
-/// Lipschitz-normalisation in `masked_blend_render_fade`. Mirrored in the TSL
-/// shader.
-pub(crate) fn masked_blend_fade_band(blend_r: f32) -> f32 {
-    blend_r.max(1e-3)
-}
-
 fn blend_min_eval(a: f32, b: f32, r: f32, mode: f32) -> f32 {
     if mode < 0.5 {
-        // Fillet — EXACT circular smin (IQ round union), matching
-        // `csg::smin_poly`. Was a quadratic mix-form here (r/4 undershoot,
-        // and no `r <= 0` guard → div-by-zero); now byte-consistent with the
-        // CPU/dual/fidget family.
-        if r <= 0.0 {
-            return a.min(b);
-        }
-        let ua = (r - a).max(0.0);
-        let ub = (r - b).max(0.0);
-        a.min(b).max(r) - (ua * ua + ub * ub).sqrt()
+        // Fillet — delegates to `csg::smin_poly` (#384 Circular-CD smin) so
+        // the tape stays byte-consistent with the CPU/dual/fidget family.
+        crate::csg::smin_poly(a, b, r)
     } else {
         // Chamfer
         a.min(b).min((a + b - r) * std::f32::consts::FRAC_1_SQRT_2)

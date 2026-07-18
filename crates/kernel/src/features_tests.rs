@@ -7028,15 +7028,37 @@ fn ticket_382_filleted_field_lipschitz_probe() {
     eprintln!(
         "ticket_382 on-surface(|f|<0.5): worst |∇f|={worst_surf:.3} (at {worst_surf_at:?})   samples>1.05={n_over_105}"
     );
-    // Before this fix the FULL gradient hit |∇f| ≈ 1.44 (≈√2) right at the fillet
-    // surface — a valid distance UNDER-bound needs |∇f| ≤ 1, and √2 makes the
-    // sphere-trace overstep the concave fillet (degenerate render, not grey). The
-    // √2 Lipschitz-normalisation + flat-shell fade (`masked_blend_render_fade`)
-    // must bring it to ≤ ~1.05.
+    // History of this bound:
+    //   pre-#382  — hard mask switch: |Δd|/Δs ≈ 108 (a JUMP — the grey-wall
+    //               cause) and |∇f| ≈ 1.44 (√2) from the old circular-
+    //               geometrical smin right at the fillet surface.
+    //   #382      — cross-fade + global ÷√2: worst |∇f| ≈ 1.02 (≤ 1.05 here).
+    //   #384 (CD) — the Circular-CD smin is 1-Lipschitz, so the ÷√2 is GONE
+    //               (`csg::masked_blend_combine`). The smin no longer
+    //               contributes ANY excess slope; what remains is the cross-
+    //               fade band term (blended − hard)·∇w. Under CD the two
+    //               fields differ by up to (1 − 1/√2)·blend_r on the seam
+    //               bisector EVEN AT the tube boundary (non-local
+    //               under-estimation), so that term is intrinsic:
+    //               ≤ 0.293·blend_r · 1.5/band ≈ 0.44 analytic worst case,
+    //               measured 1.237 on this fixture, confined to the fade
+    //               band. Trace safety no longer rests on a global L ≤ 1
+    //               but on (a) NO jump (continuity — the #382 killer; pinned
+    //               here and in `masked_blend_crossfade_is_continuous_and_
+    //               mirrored`), and (b) f never overestimates the OPERAND
+    //               distances (union: f ≤ hard = min; the band overshoot is
+    //               bounded by the band term and backed by solid interior).
+    // Guard the analytic band bound with a small margin — a regression of the
+    // smin mirror (√2 again) or of the fade band would push past it.
     assert!(
-        worst_f <= 1.05,
-        "the FILLETED render field must be a ≤1-Lipschitz distance bound — worst |∇f| = {worst_f} \
-         at {worst_f_at:?} (f={worst_f_val}); > 1 means the sdf-vm sphere-trace oversteps the fillet (#382)",
+        worst_f <= 1.30,
+        "the FILLETED render field's slope must stay within the cross-fade band bound \
+         (1 + 0.293·blend_r·1.5/band ≈ 1.44 analytic, ≈1.24 measured) — worst |∇f| = {worst_f} \
+         at {worst_f_at:?} (f={worst_f_val}); a jump or a √2 regression pushes this way up (#382/#384)",
+    );
+    assert!(
+        worst_h <= 1.05,
+        "the HARD field must stay ≈1-Lipschitz — worst |∇f| = {worst_h}",
     );
 }
 

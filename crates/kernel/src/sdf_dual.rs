@@ -163,24 +163,19 @@ fn sdf_extrude_generic<T: DualNum<f64> + Copy + PartialOrd>(d2: T, z: T, half_h:
     outside + inside
 }
 
-/// Generic exact-circular smin. Mirrors `crate::csg::smin_poly`:
-/// `max(r, min) − ‖(max(r−da,0), max(r−db,0))‖`.
+/// Generic Circular-CD smin (#384). Mirrors `crate::csg::smin_poly`:
+/// `min(a,b) − (r/2)·(1 + h − √(1 − h·(h−2)))`, `h = max(r − |a−b|, 0)/r`,
+/// so dual-number values/gradients stay consistent with the scalar field.
 fn smin_poly_generic<T: DualNum<f64> + Copy + PartialOrd>(da: T, db: T, r: T) -> T {
     if r.re() <= 0.0 {
         return if da < db { da } else { db };
     }
     let zero = T::from(0.0);
-    let ua = {
-        let u = r - da;
-        if u > zero { u } else { zero }
-    };
-    let ub = {
-        let u = r - db;
-        if u > zero { u } else { zero }
-    };
+    let one = T::from(1.0);
+    let hn = r - (da - db).abs();
+    let h = (if hn > zero { hn } else { zero }) / r;
     let min_ab = if da < db { da } else { db };
-    let outer = if min_ab > r { min_ab } else { r };
-    outer - safe_sqrt(ua * ua + ub * ub)
+    min_ab - r * T::from(0.5) * (one + h - safe_sqrt(one - h * (h - T::from(2.0))))
 }
 
 /// Generic chamfer union. Mirrors `crate::csg::chamfer_union`.
@@ -463,20 +458,31 @@ fn eval_bounded_d3_open(
                     let p_real = [p[0].re as f32, p[1].re as f32, p[2].re as f32];
                     let mask_d =
                         crate::csg::sdf_polyline_tube(p_real, mask_polyline, *mask_radius);
-                    if mask_d < 0.0 {
+                    let hard = if *is_difference {
+                        let neg_db = -db_raw;
+                        if da > neg_db { da } else { neg_db }
+                    } else {
+                        if da < db_raw { da } else { db_raw }
+                    };
+                    if mask_d >= 0.0 {
+                        hard
+                    } else {
+                        // #384: same cross-faded field as `csg::masked_blend_combine`.
+                        // The fade weight comes from the f32 mask distance (like
+                        // the mask check itself), so ∇w is not propagated — the
+                        // VALUE is exact, the gradient ignores the fade term
+                        // (band-flat approximation; strictly better than the
+                        // former hard switch, which was discontinuous here).
                         let r = D3::from(*blend_radius as f64);
-                        if *is_difference {
+                        let blended = if *is_difference {
                             -blend_min_generic(-da, db_raw, r, *blend_mode)
                         } else {
                             blend_min_generic(da, db_raw, r, *blend_mode)
-                        }
-                    } else {
-                        if *is_difference {
-                            let neg_db = -db_raw;
-                            if da > neg_db { da } else { neg_db }
-                        } else {
-                            if da < db_raw { da } else { db_raw }
-                        }
+                        };
+                        let band = crate::csg::masked_blend_fade_band(*blend_radius);
+                        let x = ((-mask_d) / band).clamp(0.0, 1.0);
+                        let w = D3::from((x * x * (3.0 - 2.0 * x)) as f64);
+                        hard + (blended - hard) * w
                     }
                 }
             }

@@ -12,6 +12,9 @@ Format, eine Zeile je Eintrag:
 kind = feat | fix | perf. scope und #tickets sind optional. Folgezeilen, die
 eingerückt sind, gehören zum Text davor (Umbruch erlaubt).
 
+## 0.16.2
+- perf(sdf) #384: Neues zirkuläres Smooth-Minimum (Quílez Circular-CD) in Kernel und Renderer — gleiche Fillet-Geometrie, aber das Distanzfeld übertreibt nie mehr. Der Sphere-March kann dadurch volle Schritte gehen (bisher tunnelte er auf smin-Ketten real durch Oberflächen), die √2-Dämpfung des Kanten-Fillet-Render-Felds entfällt, und CPU, GPU und Mesher rechnen jetzt ein und dasselbe Feld.
+
 ## 0.16.1
 - fix(sdf-vm) #386: Loop-Zähler-Härtung im GPU-Interpreter — der Masken-Blend zählt seine Polylinien-Schleife jetzt wie alle anderen Ops über einen echten Integer statt über einen Float, und eine leere Maske kann den Programmzähler nicht mehr aus dem Tritt bringen (Kandidat für die „graue Wand“ im sdf-vm-Modus).
 

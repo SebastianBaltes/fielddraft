@@ -1114,10 +1114,15 @@ fn apply_global_round_rounds_a_union_edge() {
     };
     let hard = CsgNode::Union(Box::new(a.clone()), Box::new(b.clone()));
     let rounded = hard.clone().apply_global_round(3.0);
-    // The convex edge sits where the two top faces (y=10) and side faces
-    // (x=10) meet, near (10, 10, 0). Just outside, the round pulls the field
-    // more negative (adds the fillet material).
-    let p = [10.0, 10.0, 0.0];
+    // A union round adds fillet material at the CONCAVE seam — here where
+    // box a's top face (y=10, x<0) meets box b's side face (x=0, y>10).
+    // Probe just outside that corner, equidistant to both faces (da=db=1,
+    // inside the blend radius): the smooth field must drop below the hard
+    // min. (The old probe point (10,10,0) sat 10 mm deep inside box b —
+    // outside the blend's arc region — and only passed because the legacy
+    // circular-geometrical smin inflates interior values without bound;
+    // the #384 Circular-CD smin is exactly `min` there.)
+    let p = [-1.0, 11.0, 0.0];
     let d_hard = hard.sdf(p, EvalMode::Visual);
     let d_round = rounded.sdf(p, EvalMode::Visual);
     assert!(d_round < d_hard, "round {d_round} not < hard {d_hard}");
@@ -1202,6 +1207,108 @@ fn masked_blend_fillets_only_inside_the_capsule() {
     // Logical mode always uses hard ops.
     let d_logical = masked.sdf(p_inside_mask, EvalMode::Logical);
     assert_eq!(d_logical, d_hard);
+}
+
+/// #384 Rollout-Auflage (SYNTHESIS §5 Exp 1 / §6 Stufe 1): under the
+/// Circular-CD smin the blend sits `(1 − 1/√2)·blend_r ≈ 0.29·blend_r` below
+/// the hard min on the seam bisector EVEN AT the mask-tube boundary (the CD
+/// under-estimation is non-local), so a hard switch there would tear a real
+/// value jump into the field. This pins down both halves of the Auflage:
+/// (1) the cross-fade (`masked_blend_combine`) keeps the field CONTINUOUS
+/// across both band edges (tube boundary and inner band edge), values
+/// point-wise compared on either side; (2) the CPU tree and the compiled
+/// opcode tape — the field the TSL shader mirrors term-for-term — produce
+/// the SAME field on all three zones (outside / band / deep inside).
+#[test]
+fn masked_blend_crossfade_is_continuous_and_mirrored() {
+    let a = CsgNode::Leaf {
+        id: FeatureId::from_u32(1),
+        primitive: Primitive::Box {
+            center: [0.0, 0.0, 0.0],
+            half_extents: [10.0, 10.0, 10.0],
+        },
+    };
+    let b = CsgNode::Leaf {
+        id: FeatureId::from_u32(2),
+        primitive: Primitive::Box {
+            center: [10.0, 0.0, 0.0],
+            half_extents: [10.0, 10.0, 10.0],
+        },
+    };
+    let blend_r = 4.0_f32;
+    let masked = CsgNode::MaskedBlend {
+        a: Box::new(a.clone()),
+        b: Box::new(b.clone()),
+        mask_polyline: vec![[10.0, -15.0, 0.0], [10.0, 15.0, 0.0]],
+        mask_radius: 5.0,
+        blend_radius: blend_r,
+        blend_mode: super::BlendMode::Fillet,
+        is_difference: false,
+        provenance: super::BlendProvenance::NONE,
+    };
+    let compiled = crate::sdf_compiler::compile_body(&crate::bvh::BoundedCsg::from_csg(&masked));
+
+    // Probe line: y = 12 (2 mm above both top faces, so da = db = 2 — the
+    // seam bisector, worst case for the CD undershoot), z = 0, x ∈ [4, 9.6].
+    // The mask distance there is (10 − x) − 5: tube boundary at x = 5, inner
+    // band edge (band = blend_r) at x = 9.
+    let f = |x: f32| masked.sdf([x, 12.0, 0.0], EvalMode::Visual);
+
+    // The CD gap the fade has to bridge is REAL at the tube boundary:
+    // hard = 2, blended = smin(2, 2, 4) = 2 − (1 − 1/√2)·4 ≈ 0.83.
+    let gap = (1.0 - std::f32::consts::FRAC_1_SQRT_2) * blend_r;
+    let smin_bis = super::smin_poly(2.0, 2.0, blend_r);
+    assert!(
+        ((2.0 - smin_bis) - gap).abs() < 1e-5,
+        "bisector undershoot {} != (1 − 1/√2)·r {}",
+        2.0 - smin_bis,
+        gap
+    );
+
+    // (1a) Continuity: walk across both band edges; the field's slope along
+    // x is bounded (≤ 1 from the operands + gap·∇w ≤ 1.17·0.375 from the
+    // fade), so consecutive samples may differ by ~1.5·step — a hard switch
+    // would show the full ≈1.17 jump at x = 5.
+    let step = 0.005_f32;
+    let mut x = 4.0_f32;
+    let mut prev = f(x);
+    while x < 9.6 {
+        x += step;
+        let cur = f(x);
+        assert!(
+            (cur - prev).abs() <= 2.0 * step,
+            "field jumps by {} at x = {x} — cross-fade torn",
+            (cur - prev).abs()
+        );
+        prev = cur;
+    }
+
+    // (1b) Point-wise on either side of both band edges.
+    for edge in [5.0_f32, 9.0] {
+        let (lo, hi) = (f(edge - 1e-3), f(edge + 1e-3));
+        assert!(
+            (hi - lo).abs() < 5e-3,
+            "band edge x = {edge}: {lo} vs {hi} — discontinuous"
+        );
+    }
+    // Outside the tube the field IS the hard combine; deep inside the band
+    // it IS the blend.
+    assert!((f(4.5) - 2.0).abs() < 1e-5, "outside tube must be hard min");
+    assert!((f(9.5) - smin_bis).abs() < 1e-5, "deep inside must be the blend");
+
+    // (2) The compiled tape (mirrored 1:1 by the TSL shader) computes the
+    // SAME field in all three zones — including inside the fade band.
+    for &x in &[4.0, 4.9, 5.1, 6.0, 7.0, 8.5, 8.9, 9.1, 9.5] {
+        for &(y, z) in &[(12.0_f32, 0.0_f32), (11.0, 3.0), (9.0, 0.0)] {
+            let p = [x, y, z];
+            let d_tree = masked.sdf(p, EvalMode::Visual);
+            let d_tape = crate::sdf_compiler::eval_opcodes(&compiled.opcodes, p);
+            assert!(
+                (d_tree - d_tape).abs() < 1e-4,
+                "tree {d_tree} != tape {d_tape} at {p:?}"
+            );
+        }
+    }
 }
 
 #[test]

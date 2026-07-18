@@ -226,12 +226,13 @@ export const sdfThreadFn = wgslFn(`
 export const blendMinFn = wgslFn(`
   fn fd_blend_min(a: f32, b: f32, r: f32, mode: f32) -> f32 {
     if (mode < 0.5) {
-      // Fillet — exact circular smin (IQ round union), matching the Rust
-      // kernel's csg::smin_poly: max(r, min) - length(max(r-a,0), max(r-b,0)).
+      // Fillet — Circular-CD smin (#384), matching the Rust kernel's
+      // csg::smin_poly: min(a,b) - (r/2)*(1 + h - sqrt(1 - h*(h-2))) with
+      // h = max(r - |a-b|, 0)/r. Same zero set as the old circular-
+      // geometrical form, but 1-Lipschitz everywhere (never overestimates).
       if (r <= 0.0) { return min(a, b); }
-      let ua = max(r - a, 0.0);
-      let ub = max(r - b, 0.0);
-      return max(min(a, b), r) - sqrt(ua * ua + ub * ub);
+      let h = max(r - abs(a - b), 0.0) / r;
+      return min(a, b) - r * 0.5 * (1.0 + h - sqrt(1.0 - h * (h - 2.0)));
     } else {
       return min(min(a, b), (a + b - r) * 0.70710678);
     }

@@ -741,15 +741,14 @@ export function buildVmSdfEvalFn(
         const maskR = rd(), blendR = rd(), mode = rd();
         const isDiff = rd();
         const db = popV(), da = popV();
-        // #382: genuine ≤1-Lipschitz mask blend (mirror of Rust
-        // `masked_blend_render_fade`). `maskD` is the unsigned distance to the
-        // polyline; the signed tube distance is `maskD - maskR` (< 0 inside).
-        // Two ingredients (see the Rust doc-comment for the maths):
-        // (1) a WIDE cross-fade band (one blendR) keeps `∇w ≤ 1.5/band` small so
-        //     the smoothstep adds negligible slope; (2) divide the whole result
-        //     by the circular smin's Lipschitz constant √2 → a valid distance
-        //     UNDER-bound (|∇| ≤ 1, never oversteps the concave fillet) whose
-        //     zero-set (the fillet surface) is IDENTICAL. `march_relax` is 1.0.
+        // #382/#384: mirror of Rust `csg::masked_blend_combine` — ONE field
+        // for all paths. `maskD` is the unsigned distance to the polyline;
+        // the signed tube distance is `maskD - maskR` (< 0 inside). A WIDE
+        // C1 cross-fade band (one blendR, `∇w ≤ 1.5/band`) fades hard →
+        // blended across the tube's inner shell; the Circular-CD smin is
+        // itself 1-Lipschitz and `f ≤ hard` pointwise, so the field never
+        // overestimates distance — the former global ×1/√2 Lipschitz
+        // normalisation is GONE. `march_relax` stays 1.0.
         // hardW: 1 outside the tube (→ sharp/hard), 0 deep inside (→ blended).
         const band = max(blendR, float(1e-3));
         const xw = clamp(maskR.sub(maskD).div(band), 0.0, 1.0).toVar();
@@ -761,7 +760,7 @@ export function buildVmSdfEvalFn(
         const dSharp = max(da, db.negate());
         const uResult = uSmooth.mix(uSharp, hardW);
         const dResult = dSmooth.mix(dSharp, hardW);
-        pushV(uResult.mix(dResult, isDiff).mul(float(Math.SQRT1_2)));
+        pushV(uResult.mix(dResult, isDiff));
 
       }).ElseIf(tag.equal(int(OP_END)), () => {
         Break();
