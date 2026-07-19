@@ -87,6 +87,30 @@ fn custom_sdf_maps_to_its_kind_and_carries_the_formula_hint() {
 }
 
 #[test]
+fn offset_maps_to_its_kind_not_unknown() {
+    // Phase D5: the `offset` feature must resolve to the "offset" outliner
+    // kind — NOT "unknown". `static_kind_name` is a hardcoded identity
+    // whitelist and originally omitted "offset", so `listFeatures` reported
+    // kind "unknown". The outliner then showed a "?" glyph AND the detail
+    // panel's `schemaForType("unknown")` lookup failed, leaving "No feature
+    // selected" with no way to pick the target body or the signed amount —
+    // the offset feature was uneditable via the UI even though the kernel
+    // expansion rendered correctly. Same failure mode the custom_sdf ticket
+    // fixed (see `custom_sdf_maps_to_its_kind_and_carries_the_formula_hint`).
+    assert_eq!(
+        crate::Kernel::static_kind_name("offset"),
+        "offset",
+        "offset must not fall through to \"unknown\""
+    );
+    let registry = FeatureRegistry::with_builtins();
+    assert!(registry.get("offset").is_some(), "offset registered");
+    assert!(
+        registry.schema_for("offset").is_some(),
+        "offset schema resolvable so the detail editor renders"
+    );
+}
+
+#[test]
 fn type_names_contains_all_four_builtins() {
     let registry = FeatureRegistry::with_builtins();
     let mut names = registry.type_names();

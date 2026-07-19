@@ -476,6 +476,7 @@ impl Kernel {
             "mirror" => "mirror",
             "boolean" => "boolean",
             "shell" => "shell",
+            "offset" => "offset",
             "thicken" => "thicken",
             "torus" => "torus",
             "translate" => "translate",

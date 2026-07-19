@@ -12,6 +12,9 @@ Format, eine Zeile je Eintrag:
 kind = feat | fix | perf. scope und #tickets sind optional. Folgezeilen, die
 eingerückt sind, gehören zum Text davor (Umbruch erlaubt).
 
+## 0.17.2
+- fix(sdf) #384: offset_tree Phase D — das Offset-Feature ließ sich in der Baumansicht nicht bearbeiten: Es zeigte ein „?"-Symbol und beim Anwählen „No feature selected" statt der Parameter, sodass sich weder Ziel-Körper noch Betrag setzen ließen. Der Kernel meldete den Feature-Typ intern als „unbekannt"; jetzt wird „offset" korrekt aufgelöst, das Symbol erscheint und der Editor mit Körper-Auswahl und Betrag öffnet sich.
+
 ## 0.17.1
 - fix(sdf) #384: offset_tree Phase D — ein Offset auf einem verdrehten oder gebogenen Körper (Twist/Bend) meldet jetzt einen klaren Feature-Fehler, statt still ein ungenaues Feld zu erzeugen. Eine Verdrehung ist keine Isometrie und hat keinen exakten Offset; wer sie offsetten will, entfernt sie oder setzt den Offset davor.
 
