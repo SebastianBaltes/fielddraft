@@ -12,6 +12,9 @@ Format, eine Zeile je Eintrag:
 kind = feat | fix | perf. scope und #tickets sind optional. Folgezeilen, die
 eingerückt sind, gehören zum Text davor (Umbruch erlaubt).
 
+## 0.17.1
+- fix(sdf) #384: offset_tree Phase D — ein Offset auf einem verdrehten oder gebogenen Körper (Twist/Bend) meldet jetzt einen klaren Feature-Fehler, statt still ein ungenaues Feld zu erzeugen. Eine Verdrehung ist keine Isometrie und hat keinen exakten Offset; wer sie offsetten will, entfernt sie oder setzt den Offset davor.
+
 ## 0.17.0
 - feat(sdf) #384: offset_tree Phase D — neues Feature „Offset“. Wähle einen oder mehrere Körper und einen signierten Betrag; positiv wächst die Oberfläche nach außen (Dilation), negativ nach innen (Erosion). Der Offset ist kein Näherungsfeld mehr, sondern wird zur Bauzeit exakt in den Körper einexpandiert — dieselbe Maschinerie aus den Phasen A–C: der Betrag wandert an die Blätter, Erosionen falten sich exakt ein, und an den Boolean-Nähten korrigieren Kanalkörper die Distanz. Der Scope ist Pflicht (wie bei Remove/Intersect): ohne gewählten Zielkörper bleibt das Feature mit einem Hinweis leer, statt still nichts zu tun. Betrag als Millimeter-Eingabe im Dialog. (Shell nutzt diese Expansion noch nicht — folgt.)
 

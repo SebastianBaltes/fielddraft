@@ -242,6 +242,56 @@ fn sphere_and_cylinder_also_land_on_the_spine() {
 }
 
 #[test]
+fn offset_on_a_twisted_body_is_refused() {
+    // A twist has no exact offset (not an isometry). The offset feature must
+    // refuse with an error rather than leave a silent f−δ approximation
+    // (offset_tree Phase D4, docs/OFFSET-TREE-PLAN.md §2/§8).
+    let registry = FeatureRegistry::with_builtins();
+    let mut doc = empty_ctx();
+    let mut ctx = Context::new(&mut doc);
+    let calls = vec![
+        FeatureCall::new(
+            "box",
+            id(1),
+            json!({ "half_extents": [10.0, 10.0, 10.0], "twist_rate": 0.4 }),
+        ),
+        FeatureCall::new(
+            "offset",
+            id(2),
+            json!({ "targets": "qCreatedBy(1)", "delta": { "value": 2.0, "unit": "mm" } }),
+        ),
+    ];
+    let errors = registry.regenerate(&mut ctx, &calls, None);
+    assert_eq!(errors.0.len(), 1, "the offset must refuse the twisted body");
+    assert_eq!(errors.0[0].0, id(2));
+    assert!(matches!(
+        errors.0[0].1,
+        FeatureError::InvalidParameter { feature: "offset", name: "targets", .. }
+    ));
+    // Error tolerance: the box still lands; only the offset is skipped.
+    assert_eq!(ctx.features.len(), 1);
+}
+
+#[test]
+fn offset_on_a_plain_body_is_accepted() {
+    // The same setup without the twist folds cleanly — the offset lands.
+    let registry = FeatureRegistry::with_builtins();
+    let mut doc = empty_ctx();
+    let mut ctx = Context::new(&mut doc);
+    let calls = vec![
+        FeatureCall::new("box", id(1), json!({ "half_extents": [10.0, 10.0, 10.0] })),
+        FeatureCall::new(
+            "offset",
+            id(2),
+            json!({ "targets": "qCreatedBy(1)", "delta": { "value": 2.0, "unit": "mm" } }),
+        ),
+    ];
+    let errors = registry.regenerate(&mut ctx, &calls, None);
+    assert!(errors.0.is_empty(), "plain body: offset must be accepted");
+    assert_eq!(ctx.features.len(), 2);
+}
+
+#[test]
 fn unknown_feature_type_is_an_error() {
     let registry = FeatureRegistry::with_builtins();
     let mut doc = empty_ctx();

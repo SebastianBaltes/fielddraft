@@ -1799,6 +1799,34 @@ impl CsgNode {
         }
     }
 
+    /// True if the subtree contains a domain warp (Twist/Bend). An offset over
+    /// a warp has no exact expansion — the warp is not an isometry, so no
+    /// offset-closed class survives it (docs/OFFSET-TREE-PLAN.md §2). The
+    /// `offset` feature uses this to refuse with a clear error rather than
+    /// leave a silent `f − δ` approximation.
+    pub(crate) fn contains_warp(&self) -> bool {
+        match self {
+            CsgNode::Twist(..) | CsgNode::Bend(..) => true,
+            CsgNode::Transform(_, inner)
+            | CsgNode::Shell(inner, _, _)
+            | CsgNode::Offset(inner, _)
+            | CsgNode::Displace(inner, _, _) => inner.contains_warp(),
+            CsgNode::Union(a, b)
+            | CsgNode::Difference(a, b)
+            | CsgNode::Intersection(a, b)
+            | CsgNode::SmoothUnion(a, b, _, _)
+            | CsgNode::SmoothDifference(a, b, _, _)
+            | CsgNode::Morph(a, b, _)
+            | CsgNode::MaskedBlend { a, b, .. } => a.contains_warp() || b.contains_warp(),
+            CsgNode::Leaf { .. }
+            | CsgNode::Extrude { .. }
+            | CsgNode::Revolve { .. }
+            | CsgNode::Helix { .. }
+            | CsgNode::Sweep { .. }
+            | CsgNode::Empty => false,
+        }
+    }
+
     pub fn leaf_ids(&self) -> Vec<FeatureId> {
         let mut out = Vec::new();
         self.collect_leaf_ids(&mut out);

@@ -80,6 +80,32 @@ impl FeatureKind for OffsetFeature {
             return Ok(());
         }
 
+        // Twist/Bend haben keinen exakten Offset (keine Isometrie, Plan §2) —
+        // statt still ein `f − δ` stehen zu lassen, klar abweisen. Der Scope
+        // eines Zielkörpers ist die Feature-Gruppe seiner Partition.
+        let parts = crate::body::partition(&ctx.features);
+        let warped = parts.iter().any(|p| {
+            let in_scope = p.feature_indices.iter().any(|&fi| {
+                target_ids
+                    .iter()
+                    .any(|t| ctx.features[fi].id.root_ancestor() == t)
+            });
+            in_scope
+                && p.feature_indices
+                    .iter()
+                    .any(|&fi| ctx.features[fi].node.contains_warp())
+        });
+        if warped {
+            return Err(FeatureError::InvalidParameter {
+                feature: OffsetDef::TYPE_NAME,
+                name: "targets",
+                message: "Offset auf einem Körper mit Twist/Bend ist nicht möglich — \
+                          eine Verdrehung/Biegung hat keinen exakten Offset. Entferne \
+                          den Twist/Bend oder setze den Offset davor."
+                    .to_string(),
+            });
+        }
+
         let name = optional_display_name(def, || format!("Offset {id}"));
 
         ctx.features.push(DecodedFeature {

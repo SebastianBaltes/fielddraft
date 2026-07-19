@@ -308,10 +308,14 @@ Regressionen unverändert grün.
 ist produktiv in v0.17.0 (`crates/kernel/src/features/offset.rs`,
 Sentinel `Offset(Empty, δ)` → `csg::wrap_offset` in `from_decoded`,
 wasm-Export `addOffset`, Toolbar-Button, schema-getriebener Dialog).
+D4 — **Twist/Bend im Offset-Scope → Feature-Fehler** statt stillem f−δ —
+ist produktiv in v0.17.1 (`CsgNode::contains_warp`, Guard in
+`OffsetFeature::execute` über die Partition des Zielkörpers). Shell trägt
+den Guard erst mit D2, weil sein heutiger Feld-Modifier `max(d,−(d+t))`
+auf verdrehten Körpern gültig bleibt.
 Offen: D2 (Shell-Backend von `max(d,−(d+t))` auf die Expansion
-S−Offset(S,−t) umstellen) und D4 (Twist/Bend im Scope → Feature-Fehler
-statt stillem f−δ) — beides eigene Folge-Bumps. Shell bleibt bis dahin
-der heutige Feld-Modifier.
+S−Offset(S,−t) umstellen). Shell bleibt bis dahin der heutige
+Feld-Modifier.
 
 * **Feature „Offset"** (±δ, ein Wert) und **Feature „Shell"**
   (Wandstärke t, optional offene Faces — ersetzt langfristig den heutigen
