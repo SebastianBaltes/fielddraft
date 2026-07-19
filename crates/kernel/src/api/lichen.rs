@@ -72,7 +72,7 @@ impl Kernel {
         let bodies: Vec<crate::bvh::BoundedCsg> = self
             .bodies
             .iter()
-            .map(|b| crate::body::build_bounded_with_primitives(&self.decoded, &b.feature_indices).0)
+            .map(|b| crate::body::build_bounded_with_primitives(&self.decoded, &b.feature_indices, crate::offset_channel::CHANNEL_TOL_RENDER).0)
             .collect();
         let active: Vec<usize> = match body_filter {
             Some(i) if i < bodies.len() => vec![i],
@@ -4706,7 +4706,7 @@ mod tests {
     fn scene_bodies(k: &crate::Kernel) -> Vec<crate::bvh::BoundedCsg> {
         k.bodies
             .iter()
-            .map(|b| crate::body::build_bounded_with_primitives(&k.decoded, &b.feature_indices).0)
+            .map(|b| crate::body::build_bounded_with_primitives(&k.decoded, &b.feature_indices, crate::offset_channel::CHANNEL_TOL_RENDER).0)
             .collect()
     }
 

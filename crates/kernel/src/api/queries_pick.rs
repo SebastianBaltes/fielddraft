@@ -134,6 +134,40 @@ impl Kernel {
         serde_json::Value::Array(out).to_string()
     }
 
+    /// offset_tree Phase C3 (#384): Diagnose der Kanal-Korrekturkörper je
+    /// Body — Kanäle/Bögen des expandierten Weave-Baums plus das billige
+    /// **Vorwarnsignal** (`interference`: Zahl der Kurvenpaare mit
+    /// Kurve-Kurve-Distanz < δ_a+δ_b bzw. Selbstannäherung — dort ist die
+    /// Kanal-Kantenliste strukturell verdächtig, der Octree-Weave des
+    /// expandierten Körpers ist der maßgebliche Detektor). JSON-Array in
+    /// Body-Reihenfolge: `[{"channels","arcs","interference"}, …]`.
+    #[wasm_bindgen(js_name = offsetChannelDiagnostics)]
+    pub fn offset_channel_diagnostics(&self) -> String {
+        let out: Vec<serde_json::Value> = self
+            .bodies
+            .iter()
+            .map(|b| {
+                let bounded = crate::body::build_bounded_for_body_local(
+                    &self.decoded,
+                    &b.feature_indices,
+                    &b.placement,
+                );
+                let (n_ch, n_arcs) = crate::offset_channel::count_channels(&bounded);
+                let interference = if n_ch > 0 {
+                    crate::offset_channel::channels_interference(&bounded)
+                } else {
+                    0
+                };
+                serde_json::json!({
+                    "channels": n_ch,
+                    "arcs": n_arcs,
+                    "interference": interference,
+                })
+            })
+            .collect();
+        serde_json::Value::Array(out).to_string()
+    }
+
     // ── picking / provenance ──────────────────────────────────────────
     //
     // K2 wire-format: the kernel takes a world-space ray (origin +
@@ -144,9 +178,18 @@ impl Kernel {
     /// Sphere-trace a ray through the current CSG tree and return a
     /// JSON description of the first hit, if any. See `raycast.rs`
     /// for the numerical scheme.
+    ///
+    /// offset_tree Phase C5 (#384): der Pick-Baum fährt dieselbe
+    /// Offset-Normalisierung wie die Render-/Mesh-Baupfade (Pushdown →
+    /// Blatt-Fold → Kanal-Synthese → Pruning, Render-Toleranz) — sonst
+    /// liegt die Ray-Tiefe nahe Offset-Nähten bis ~0.4·δ neben der
+    /// gerenderten Fläche und Kanal-Flächen sind nicht pickbar
+    /// (Memory-Gotcha „Edge-Fillet Render-Pfad"). Gecacht in
+    /// `Kernel::pick_tree` (invalidiert je Remesh), damit die
+    /// Kanal-Synthese pro Regen statt pro Hover läuft.
     #[wasm_bindgen(js_name = pick)]
     pub fn pick(
-        &self,
+        &mut self,
         ox: f32,
         oy: f32,
         oz: f32,
@@ -154,11 +197,24 @@ impl Kernel {
         dy: f32,
         dz: f32,
     ) -> String {
-        let csg = CsgNode::from_decoded(&self.decoded)
-            .apply_edge_fillets(&self.edge_fillets);
-        let bounded = BoundedCsg::from_csg(&csg);
+        if self.pick_tree.is_none() {
+            let csg = CsgNode::from_decoded(&self.decoded)
+                .apply_edge_fillets(&self.edge_fillets)
+                .push_down_offsets()
+                .fold_offset_leaves();
+            let mut bounded = crate::offset_channel::synthesize_offset_channels(
+                BoundedCsg::from_csg(&csg),
+                crate::offset_channel::CHANNEL_TOL_RENDER,
+            );
+            crate::offset_channel::prune_dead_channels(
+                &mut bounded,
+                crate::offset_channel::CHANNEL_TOL_RENDER,
+            );
+            self.pick_tree = Some(bounded);
+        }
+        let bounded = self.pick_tree.as_ref().unwrap();
         let params = RaycastParams::default();
-        match raycast(&bounded, [ox, oy, oz], [dx, dy, dz], params) {
+        match raycast(bounded, [ox, oy, oz], [dx, dy, dz], params) {
             None => r#"{"hit":false}"#.to_string(),
             Some(hit) => {
                 // Two parallel arrays, both tiny and stable — hand-formatted

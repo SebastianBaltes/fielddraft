@@ -85,7 +85,7 @@ impl Kernel {
             .bodies
             .iter()
             .map(|b| {
-                crate::body::build_bounded_with_primitives(&self.decoded, &b.feature_indices).0
+                crate::body::build_bounded_with_primitives(&self.decoded, &b.feature_indices, crate::offset_channel::CHANNEL_TOL_EXPORT).0
             })
             .collect();
 
@@ -153,7 +153,7 @@ impl Kernel {
             .bodies
             .iter()
             .map(|b| {
-                crate::body::build_bounded_with_primitives(&self.decoded, &b.feature_indices).0
+                crate::body::build_bounded_with_primitives(&self.decoded, &b.feature_indices, crate::offset_channel::CHANNEL_TOL_EXPORT).0
             })
             .collect();
         let active: Vec<usize> = match body_filter {

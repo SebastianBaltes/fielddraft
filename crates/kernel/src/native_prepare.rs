@@ -61,6 +61,7 @@ pub fn prepare_interchange(document_json: &str, params_json: &str) -> Result<Str
         let (bounded, _) = crate::body::build_bounded_with_primitives(
             &k.decoded,
             &k.bodies[bi].feature_indices,
+            crate::offset_channel::CHANNEL_TOL_EXPORT,
         );
         let compiled = crate::sdf_compiler::compile_body(&bounded);
         if !compiled.volumes.is_empty() {

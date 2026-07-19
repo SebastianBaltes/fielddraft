@@ -1346,7 +1346,7 @@ fn list_features_exports_per_feature_regen_error() {
 
 #[test]
 fn pick_returns_miss_when_document_empty() {
-    let k = Kernel::new();
+    let mut k = Kernel::new();
     let json = k.pick(0.0, 100.0, 0.0, 0.0, -1.0, 0.0);
     assert!(json.contains("\"hit\":false"), "{json}");
 }

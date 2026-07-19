@@ -198,8 +198,19 @@ impl Body {
             // is non-Lipschitz garbage we discard anyway. Skip the octree+weave
             // outright; the renderer covers the shape. A *separate* clean body
             // (union → its own partition) still weaves normally.
+            // offset_tree Phase C3 (#384): trägt der expandierte Körper
+            // Kanal-Korrekturkörper, ist NUR die Octree-Route wahrheitsgemäß
+            // — die parametrischen/hybriden Weaver enumerieren keine
+            // Kanal-Branches und würden die naiven Kanten des Stopps weben,
+            // während das Feld bereits die korrigierte Naht zeigt
+            // (Weave-Refresh, Plan §7.3). Das billige Vorwarnsignal
+            // (`channels_interference`) meldet zusätzlich strukturell
+            // verdächtige Kurvenpaare; die Topologie entscheidet hier
+            // ohnehin der Octree-Weave als teurer Detektor.
+            let has_channels = crate::offset_channel::count_channels(&bounded).0 > 0
+                || crate::offset_channel::count_vertex_spheres(&bounded) > 0;
             let brep = if let Some(parametric_brep) =
-                parametric.then(|| weave_parametric(&bounded)).flatten()
+                (parametric && !has_channels).then(|| weave_parametric(&bounded)).flatten()
             {
                 // Constructive/analytic weave — no octree at all. Tried FIRST so
                 // a Helix/Sweep, whose surface is weave-excluded from the octree
@@ -220,7 +231,7 @@ impl Body {
                     .then(|| crate::brep::seed_weaver::weave_branch_seeds_partial(&bounded))
                     .flatten()
                     .unwrap_or_default()
-            } else if let Some(hybrid) = parametric
+            } else if let Some(hybrid) = (parametric && !has_channels)
                 .then(|| {
                     crate::brep::seed_weaver::weave_branch_seeds_hybrid(
                         &bounded,
@@ -959,7 +970,13 @@ fn hash_feature_geometry(f: &DecodedFeature, hasher: &mut DefaultHasher) {
 /// the logic: take the body's subset of features, fold them into a
 /// `CsgNode` via `from_features`, then BVH-wrap.
 pub fn build_bounded_for_body(features: &[DecodedFeature], indices: &[usize]) -> BoundedCsg {
-    build_bounded_for_body_rounded(features, indices, None, &[])
+    build_bounded_for_body_rounded(
+        features,
+        indices,
+        None,
+        &[],
+        crate::offset_channel::CHANNEL_TOL_RENDER,
+    )
 }
 
 /// Like [`build_bounded_for_body`] but rounds every Boolean junction by
@@ -977,6 +994,7 @@ pub fn build_bounded_for_body_rounded(
     indices: &[usize],
     global_round: Option<f32>,
     edge_fillets: &[EdgeFillet],
+    channel_tol: f32,
 ) -> BoundedCsg {
     let sub: Vec<DecodedFeature> = indices.iter().map(|&i| features[i].clone()).collect();
     let mut csg = CsgNode::from_decoded(&sub).apply_edge_fillets(edge_fillets);
@@ -993,12 +1011,16 @@ pub fn build_bounded_for_body_rounded(
     // Phase B: Kanal-Korrekturkörper an den dualen Stopp-Knoten (läuft auf
     // dem BoundedCsg, Transforms bereits welt-gefaltet). Synchron zur
     // Regen-Zeit — die Naht-Kurven kommen aus SSI-Seeds + Feld-Tracing,
-    // nicht aus dem (asynchronen) Produktions-Weave. Der Weave-Baupfad
-    // (`build_bounded_for_body_local`) bleibt bewusst kanalfrei (Phase C).
-    crate::offset_channel::synthesize_offset_channels(
+    // nicht aus dem (asynchronen) Produktions-Weave. `channel_tol` ist die
+    // Staffel-Toleranz des Baupfads (Render 0.01 / Export 0.001, Plan §9).
+    // Phase C2: tote Kanäle anschließend gegen Union-Nachbarterme prunen
+    // (zertifiziert feld-neutral im Oberflächenband, nur Kosten).
+    let mut bounded = crate::offset_channel::synthesize_offset_channels(
         BoundedCsg::from_csg(&csg),
-        crate::offset_channel::DEFAULT_CHANNEL_TOL,
-    )
+        channel_tol,
+    );
+    crate::offset_channel::prune_dead_channels(&mut bounded, channel_tol);
+    bounded
 }
 
 /// Like [`build_bounded_for_body`], but builds the `BoundedCsg` in the
@@ -1031,14 +1053,31 @@ pub fn build_bounded_for_body_local(
     let csg = CsgNode::from_decoded(&sub)
         .push_down_offsets()
         .fold_offset_leaves();
-    BoundedCsg::from_csg_with_carry(&csg, &crate::inverse(placement))
+    // offset_tree Phase C3 (#384, Weave-Refresh): auch der Weave sieht den
+    // EXPANDIERTEN Körper — Kanal-Korrekturen inklusive —, damit
+    // Folge-Features (Fillet auf offsetteter Kante, zweiter Offset) echte
+    // Kanten des Offset-Ergebnisses bekommen statt der naiven `f − δ`-
+    // Geometrie. Bodies mit Kanälen nimmt `ensure_brep` auf die
+    // Octree-Route (der teure, existierende Detektor); die parametrischen
+    // Weaver würden die naiven Kanten weben (sie kennen keine
+    // Kanal-Branches) und bleiben dort außen vor.
+    let mut bounded = crate::offset_channel::synthesize_offset_channels(
+        BoundedCsg::from_csg_with_carry(&csg, &crate::inverse(placement)),
+        crate::offset_channel::CHANNEL_TOL_RENDER,
+    );
+    crate::offset_channel::prune_dead_channels(
+        &mut bounded,
+        crate::offset_channel::CHANNEL_TOL_RENDER,
+    );
+    bounded
 }
 
 pub fn build_bounded_with_primitives(
     features: &[DecodedFeature],
     indices: &[usize],
+    channel_tol: f32,
 ) -> (BoundedCsg, std::collections::HashMap<u32, fielddraft_protocol::Primitive>) {
-    build_bounded_with_primitives_rounded(features, indices, None, &[])
+    build_bounded_with_primitives_rounded(features, indices, None, &[], channel_tol)
 }
 
 /// Like [`build_bounded_with_primitives`] but rounds every Boolean junction by
@@ -1050,6 +1089,7 @@ pub fn build_bounded_with_primitives_rounded(
     indices: &[usize],
     global_round: Option<f32>,
     edge_fillets: &[EdgeFillet],
+    channel_tol: f32,
 ) -> (BoundedCsg, std::collections::HashMap<u32, fielddraft_protocol::Primitive>) {
     let sub: Vec<DecodedFeature> = indices.iter().map(|&i| features[i].clone()).collect();
     let mut csg = CsgNode::from_decoded(&sub).apply_edge_fillets(edge_fillets);
@@ -1071,10 +1111,12 @@ pub fn build_bounded_with_primitives_rounded(
         .collect();
     // Phase B: Kanal-Synthese wie in `build_bounded_for_body_rounded` —
     // NACH der Primitive-Map (Kanäle ändern keine Blatt-Parameter).
-    let bounded = crate::offset_channel::synthesize_offset_channels(
+    // Phase C2: Toleranz-Staffel + Dead-Channel-Pruning wie dort.
+    let mut bounded = crate::offset_channel::synthesize_offset_channels(
         BoundedCsg::from_csg(&csg),
-        crate::offset_channel::DEFAULT_CHANNEL_TOL,
+        channel_tol,
     );
+    crate::offset_channel::prune_dead_channels(&mut bounded, channel_tol);
     (bounded, prims)
 }
 

@@ -103,6 +103,7 @@ impl Kernel {
                     &b.feature_indices,
                     self.global_round,
                     &self.edge_fillets,
+                    crate::offset_channel::CHANNEL_TOL_RENDER,
                 )
                 .0
             })

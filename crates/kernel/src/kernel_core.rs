@@ -125,6 +125,14 @@ pub struct Kernel {
     /// `exportMeshBegin`/`exportMeshBody`. Dropped on every mesh
     /// rebuild — a mutation invalidates the pass. Runtime-only.
     pub(crate) export_session: Option<crate::export_mesh::ExportSession>,
+    /// offset_tree Phase C5 (#384): lazily built Pick-Baum mit derselben
+    /// Offset-Normalisierung wie die Render-/Mesh-Baupfade (Pushdown →
+    /// Blatt-Fold → Kanal-Synthese → Pruning). Vor C5 baute `pick` den
+    /// Baum je Aufruf OHNE die Pässe — Ray-Tiefe nahe Nähten bis ~0.4·δ
+    /// daneben, Kanal-Flächen unpickbar. Invalide nach jedem Remesh
+    /// (`rebuild_mesh_internal` setzt `None`); der Cache macht die teure
+    /// Kanal-Synthese pro Regen statt pro Hover-Pick bezahlbar.
+    pub(crate) pick_tree: Option<crate::bvh::BoundedCsg>,
 }
 
 impl Kernel {
@@ -171,6 +179,8 @@ impl Kernel {
         // Any remesh invalidates an in-flight export session — its
         // meshes/reports were built against the previous body list.
         self.export_session = None;
+        // …and the cached pick tree (C5): it mirrors decoded + fillets.
+        self.pick_tree = None;
         // DL-61 C2b: `self.decoded` is produced solely by
         // `bootstrap_features_from_calls`; every path that changes
         // `feature_calls` (mutators, undo/redo, load) re-bootstraps
@@ -360,6 +370,7 @@ impl Kernel {
             feature_indices,
             self.global_round,
             &self.edge_fillets,
+            crate::offset_channel::CHANNEL_TOL_RENDER,
         );
         let prim_refs: std::collections::HashMap<u32, &Primitive> =
             prims.iter().map(|(k, v)| (*k, v)).collect();
@@ -388,6 +399,7 @@ impl Kernel {
             feature_indices,
             self.global_round,
             &self.edge_fillets,
+            crate::offset_channel::CHANNEL_TOL_RENDER,
         );
         sdf_compiler::compile_body(&bounded)
     }

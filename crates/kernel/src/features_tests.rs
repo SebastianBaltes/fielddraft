@@ -6553,8 +6553,8 @@ fn ticket_350_edge_fillet_reaches_render_and_mesh_body() {
     // call. `render` carries the resolved edge fillets; `hard` is the same body
     // with none, i.e. the field before the round.
     let render =
-        crate::body::build_bounded_for_body_rounded(&k.decoded, &idx, k.global_round, &k.edge_fillets);
-    let hard = crate::body::build_bounded_for_body_rounded(&k.decoded, &idx, None, &[]);
+        crate::body::build_bounded_for_body_rounded(&k.decoded, &idx, k.global_round, &k.edge_fillets, crate::offset_channel::CHANNEL_TOL_RENDER);
+    let hard = crate::body::build_bounded_for_body_rounded(&k.decoded, &idx, None, &[], crate::offset_channel::CHANNEL_TOL_RENDER);
 
     // Near the fillet edge the rendered field must move the surface relative to
     // the hard field. Before the fix these were identical everywhere → #350.
@@ -6601,8 +6601,9 @@ fn ticket_373_compiled_sdf_carries_the_fillet() {
 
     let filleted = crate::body::build_bounded_for_body_rounded(
         &k.decoded, &idx, k.global_round, &k.edge_fillets,
+        crate::offset_channel::CHANNEL_TOL_RENDER,
     );
-    let hard = crate::body::build_bounded_for_body_rounded(&k.decoded, &idx, None, &[]);
+    let hard = crate::body::build_bounded_for_body_rounded(&k.decoded, &idx, None, &[], crate::offset_channel::CHANNEL_TOL_RENDER);
     let cf = compile_body(&filleted);
     let ch = compile_body(&hard);
 
@@ -6685,6 +6686,7 @@ fn ticket_373_dump_opcode_stream() {
     let idx: Vec<usize> = (0..k.decoded.len()).collect();
     let filleted = crate::body::build_bounded_for_body_rounded(
         &k.decoded, &idx, k.global_round, &k.edge_fillets,
+        crate::offset_channel::CHANNEL_TOL_RENDER,
     );
     let cf = compile_body(&filleted);
 
@@ -6862,8 +6864,9 @@ fn ticket_382_filleted_field_is_finite_everywhere() {
 
     let filleted = crate::body::build_bounded_for_body_rounded(
         &k.decoded, &idx, k.global_round, &k.edge_fillets,
+        crate::offset_channel::CHANNEL_TOL_RENDER,
     );
-    let hard = crate::body::build_bounded_for_body_rounded(&k.decoded, &idx, None, &[]);
+    let hard = crate::body::build_bounded_for_body_rounded(&k.decoded, &idx, None, &[], crate::offset_channel::CHANNEL_TOL_RENDER);
     let cf = compile_body(&filleted);
     let ch = compile_body(&hard);
 
@@ -6977,8 +6980,9 @@ fn ticket_382_filleted_field_lipschitz_probe() {
     let idx: Vec<usize> = (0..k.decoded.len()).collect();
     let filleted = crate::body::build_bounded_for_body_rounded(
         &k.decoded, &idx, k.global_round, &k.edge_fillets,
+        crate::offset_channel::CHANNEL_TOL_RENDER,
     );
-    let hard = crate::body::build_bounded_for_body_rounded(&k.decoded, &idx, None, &[]);
+    let hard = crate::body::build_bounded_for_body_rounded(&k.decoded, &idx, None, &[], crate::offset_channel::CHANNEL_TOL_RENDER);
     let cf = compile_body(&filleted);
     let ch = compile_body(&hard);
 

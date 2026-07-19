@@ -545,7 +545,7 @@ impl crate::Kernel {
             any_limited |= limited;
 
             let (bounded, prims) =
-                crate::body::build_bounded_with_primitives(&self.decoded, &body.feature_indices);
+                crate::body::build_bounded_with_primitives(&self.decoded, &body.feature_indices, crate::offset_channel::CHANNEL_TOL_EXPORT);
             let res_c = res_t.min(ESTIMATE_COARSE_RES);
             let coarse = raw_dense_mesh(&bounded, &prims, method, res_c);
             let scale = (res_t as f64 / res_c.max(1) as f64).powi(2);
@@ -607,7 +607,7 @@ impl crate::Kernel {
         // whole body, leaving the few-mm clipped region coarse (ticket 8l06).
         // The BoundedCsg AABB now tightens intersections, so it's the real
         // extent the export must grid.
-        let size = crate::body::build_bounded_with_primitives(&self.decoded, &feature_indices)
+        let size = crate::body::build_bounded_with_primitives(&self.decoded, &feature_indices, crate::offset_channel::CHANNEL_TOL_EXPORT)
             .0
             .aabb()
             .size();
@@ -774,7 +774,7 @@ impl crate::Kernel {
     ) -> (Mesh, BodyExportReport) {
         let (resolution, actual_cell, cell_limited) = derive_export_resolution(size, cell_mm);
         let (bounded, prims) =
-            crate::body::build_bounded_with_primitives(&self.decoded, feature_indices);
+            crate::body::build_bounded_with_primitives(&self.decoded, feature_indices, crate::offset_channel::CHANNEL_TOL_EXPORT);
         let prim_refs: std::collections::HashMap<u32, &Primitive> =
             prims.iter().map(|(k, v)| (*k, v)).collect();
         let sdf = |p: [f32; 3]| bounded.sdf(p, crate::csg::EvalMode::Visual);
@@ -903,7 +903,7 @@ impl crate::Kernel {
         let mut mesh = flat_points_to_mesh(&out);
 
         let (bounded, _) =
-            crate::body::build_bounded_with_primitives(&self.decoded, feature_indices);
+            crate::body::build_bounded_with_primitives(&self.decoded, feature_indices, crate::offset_channel::CHANNEL_TOL_EXPORT);
         let sdf = |p: [f32; 3]| bounded.sdf(p, crate::csg::EvalMode::Visual);
         let flips = mesh_validate::fix_orientation(&mut mesh, &sdf);
         let mut validation = mesh_validate::validate_topology(&mesh);
@@ -1005,7 +1005,7 @@ impl crate::Kernel {
         curv_angle_deg: f32,
     ) -> (Mesh, BodyExportReport) {
         let (bounded, _) =
-            crate::body::build_bounded_with_primitives(&self.decoded, feature_indices);
+            crate::body::build_bounded_with_primitives(&self.decoded, feature_indices, crate::offset_channel::CHANNEL_TOL_EXPORT);
         let sdf = |p: [f32; 3]| bounded.sdf(p, crate::csg::EvalMode::Visual);
         let mut why = String::new();
 
@@ -1278,7 +1278,7 @@ impl crate::Kernel {
     ) -> (Mesh, BodyExportReport) {
         let (resolution, actual_cell, cell_limited) = derive_export_resolution(size, cell_mm);
         let (bounded, _prims) =
-            crate::body::build_bounded_with_primitives(&self.decoded, feature_indices);
+            crate::body::build_bounded_with_primitives(&self.decoded, feature_indices, crate::offset_channel::CHANNEL_TOL_EXPORT);
         let sdf = |p: [f32; 3]| bounded.sdf(p, crate::csg::EvalMode::Visual);
         let _ = body_index;
 
@@ -1370,7 +1370,7 @@ impl crate::Kernel {
         cell_mm: f32,
     ) -> (Mesh, BodyExportReport) {
         let (bounded, _prims) =
-            crate::body::build_bounded_with_primitives(&self.decoded, feature_indices);
+            crate::body::build_bounded_with_primitives(&self.decoded, feature_indices, crate::offset_channel::CHANNEL_TOL_EXPORT);
         let aabb = bounded.aabb();
         let (resolution, actual_cell, cell_limited) = derive_export_resolution(size, cell_mm);
 
@@ -1441,7 +1441,7 @@ impl crate::Kernel {
     ) -> (Mesh, BodyExportReport) {
         let (resolution, actual_cell, cell_limited) = derive_export_resolution(size, cell_mm);
         let (bounded, prims) =
-            crate::body::build_bounded_with_primitives(&self.decoded, feature_indices);
+            crate::body::build_bounded_with_primitives(&self.decoded, feature_indices, crate::offset_channel::CHANNEL_TOL_EXPORT);
         let sdf = |p: [f32; 3]| bounded.sdf(p, crate::csg::EvalMode::Visual);
 
         // `decimate` = follow the dense mesh with QEM. The
@@ -2094,7 +2094,7 @@ mod tests {
         let idx = k.bodies[0].feature_indices.clone();
         let size = k.bodies[0].aabb.size();
         let (res_t, _, _) = derive_export_resolution(size, cell);
-        let (bounded, _) = crate::body::build_bounded_with_primitives(&k.decoded, &idx);
+        let (bounded, _) = crate::body::build_bounded_with_primitives(&k.decoded, &idx, crate::offset_channel::CHANNEL_TOL_EXPORT);
         let truth = crate::marching_tets::marching_tets(&bounded, res_t).triangle_count() as f64;
         let ratio = est.total_est_triangles as f64 / truth.max(1.0);
         assert!(
@@ -2155,7 +2155,7 @@ mod tests {
     fn intersection_aabb_tightens_to_the_clip() {
         let k = ticket_8l06_kernel();
         let idx = k.bodies[0].feature_indices.clone();
-        let (bounded, _) = crate::body::build_bounded_with_primitives(&k.decoded, &idx);
+        let (bounded, _) = crate::body::build_bounded_with_primitives(&k.decoded, &idx, crate::offset_channel::CHANNEL_TOL_EXPORT);
         let size = bounded.aabb().size();
         assert!(
             size[0] < 7.0 && size[1] < 9.0 && size[2] < 7.0,

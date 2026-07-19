@@ -38,6 +38,7 @@ impl Kernel {
             rollback_after: None,
             regen_brep_cache: body::BrepCache::new(),
             export_session: None,
+            pick_tree: None,
         };
         // Seed the mesh buffer (empty document → empty mesh, but we
         // still want the version counter and buffers initialised).
