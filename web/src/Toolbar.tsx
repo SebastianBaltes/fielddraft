@@ -1497,6 +1497,14 @@ export function Toolbar({ store, state }: ToolbarProps) {
           label="Round All"
         />
         <FeatureButton
+          kind="offset"
+          title="Offset a body's surface — pick bodies and a signed amount in the dialog"
+          testId="add-offset"
+          disabled={!hasFeatures}
+          onClick={() => store.addOffset()}
+          label="Offset"
+        />
+        <FeatureButton
           kind="mate_connector"
           title="Place a mate connector (Ctrl+M)"
           testId="add-mate-connector"

@@ -1302,6 +1302,19 @@ impl CsgNode {
                     continue;
                 }
             }
+            // The `offset` feature is the same kind of post-process: the sentinel
+            // `Offset(Empty, δ)` wraps the accumulated subtree of its target body
+            // in a real `CsgNode::Offset`, which the `push_down_offsets` /
+            // `fold_offset_leaves` / channel passes then expand at build time
+            // (#384 offset_tree, docs/OFFSET-TREE-PLAN.md §8). Internal offsets
+            // (thicken's `Offset(leaf, …)`) have a non-`Empty` inner and are left
+            // untouched here.
+            if let CsgNode::Offset(inner, delta) = &f.node {
+                if matches!(**inner, CsgNode::Empty) {
+                    acc = wrap_offset(acc, &f.target_ids, *delta);
+                    continue;
+                }
+            }
             let leaf = f.placed_node();
             let blend_r = f.blend_radius;
             let blend_mode = f.blend_mode;
@@ -2733,6 +2746,47 @@ fn wrap_shell(
         // Difference / Intersection / etc. keep a body together — never split
         // them to shell only the base. Wrap the whole node.
         other => CsgNode::Shell(Box::new(other), thickness, open.to_vec()),
+    }
+}
+
+/// Wrap the target body's accumulated subtree in a `CsgNode::Offset(_, δ)`
+/// (the `offset` feature sentinel; mirrors [`wrap_shell`]). Recurses through
+/// unions so only the branch that carries a target feature is offset, never a
+/// sibling body; any body-preserving node (Difference/Intersection/…) is
+/// wrapped whole.
+fn wrap_offset(tree: CsgNode, target_ids: &[FeatureId], delta: f32) -> CsgNode {
+    if !tree.contains_any_target(target_ids) {
+        return tree;
+    }
+    match tree {
+        CsgNode::Union(a, b) => {
+            let a_has = a.contains_any_target(target_ids);
+            let b_has = b.contains_any_target(target_ids);
+            match (a_has, b_has) {
+                (true, false) => {
+                    CsgNode::Union(Box::new(wrap_offset(*a, target_ids, delta)), b)
+                }
+                (false, true) => {
+                    CsgNode::Union(a, Box::new(wrap_offset(*b, target_ids, delta)))
+                }
+                _ => CsgNode::Offset(Box::new(CsgNode::Union(a, b)), delta),
+            }
+        }
+        CsgNode::SmoothUnion(a, b, r, m) => {
+            let a_has = a.contains_any_target(target_ids);
+            let b_has = b.contains_any_target(target_ids);
+            match (a_has, b_has) {
+                (true, false) => {
+                    CsgNode::SmoothUnion(Box::new(wrap_offset(*a, target_ids, delta)), b, r, m)
+                }
+                (false, true) => {
+                    CsgNode::SmoothUnion(a, Box::new(wrap_offset(*b, target_ids, delta)), r, m)
+                }
+                _ => CsgNode::Offset(Box::new(CsgNode::SmoothUnion(a, b, r, m)), delta),
+            }
+        }
+        // Difference / Intersection / etc. keep a body together — wrap whole.
+        other => CsgNode::Offset(Box::new(other), delta),
     }
 }
 

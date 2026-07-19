@@ -62,6 +62,62 @@ fn box_feature(id: u32, op: BoolOp, center: [f32; 3], half: [f32; 3]) -> Decoded
     )
 }
 
+/// A body-offset modifier: the sentinel `Offset(Empty, δ)` node on a
+/// `Remove` feature targeting `target`, exactly as `OffsetFeature` emits it.
+fn offset_feature(id: u32, target: u32, delta: f32) -> DecodedFeature {
+    DecodedFeature {
+        id: FeatureId::from_u32(id),
+        name: format!("Offset {id}"),
+        op: BoolOp::Remove,
+        blend_radius: 0.0,
+        blend_mode: BlendMode::Fillet,
+        target_ids: vec![FeatureId::from_u32(target)],
+        transform: Transform::IDENTITY,
+        node: CsgNode::Offset(Box::new(CsgNode::Empty), delta),
+    }
+}
+
+#[test]
+fn offset_sentinel_dilates_and_erodes_the_target_body() {
+    // A 20³ box (face at x=10). +3 mm offset moves the face to x=13; the
+    // expansion passes keep the field exact there. −4 mm erodes to x=6.
+    for (delta, face) in [(3.0_f32, 13.0_f32), (-4.0, 6.0)] {
+        let features = vec![
+            box_feature(1, BoolOp::New, [0.0, 0.0, 0.0], [10.0, 10.0, 10.0]),
+            offset_feature(2, 1, delta),
+        ];
+        let tree = CsgNode::from_decoded(&features)
+            .push_down_offsets()
+            .fold_offset_leaves();
+        let on_face = tree.sdf([face, 0.0, 0.0], EvalMode::Logical).abs();
+        assert!(on_face < 0.01, "delta {delta}: face at x={face} expected ~0, got {on_face}");
+        // Still solid just inside, hollow-free just outside.
+        assert!(tree.sdf([face - 0.5, 0.0, 0.0], EvalMode::Logical) < 0.0, "delta {delta}: inside");
+        assert!(tree.sdf([face + 0.5, 0.0, 0.0], EvalMode::Logical) > 0.0, "delta {delta}: outside");
+    }
+}
+
+#[test]
+fn scoped_offset_leaves_a_sibling_body_untouched() {
+    // Two disjoint boxes; offset scoped to body #1 only. Body #2's face at
+    // x=25 must stay put while body #1's face at x=10 grows to x=13.
+    let features = vec![
+        box_feature(1, BoolOp::New, [0.0, 0.0, 0.0], [10.0, 10.0, 10.0]),
+        box_feature(2, BoolOp::New, [40.0, 0.0, 0.0], [15.0, 10.0, 10.0]),
+        offset_feature(3, 1, 3.0),
+    ];
+    let tree = CsgNode::from_decoded(&features)
+        .push_down_offsets()
+        .fold_offset_leaves();
+    // Body #1 grew.
+    assert!(tree.sdf([13.0, 0.0, 0.0], EvalMode::Logical).abs() < 0.01, "body #1 face moved to 13");
+    // Body #2's near face (x=25) is unchanged: boundary on it, and the gap
+    // just outside it (x=24) stays hollow — a wrongly-dilated body #2 would
+    // have moved its face to x=22 and made x=24 solid.
+    assert!(tree.sdf([25.0, 0.0, 0.0], EvalMode::Logical).abs() < 0.01, "body #2 face still at 25");
+    assert!(tree.sdf([24.0, 0.0, 0.0], EvalMode::Logical) > 0.0, "body #2 not dilated past 25");
+}
+
 /// A body-shell modifier: the sentinel `Shell(Empty, t, open)` node on a
 /// `Difference` feature targeting `target`, exactly as `ShellFeature`
 /// emits it.

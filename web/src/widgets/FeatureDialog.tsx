@@ -121,6 +121,7 @@ export const FEATURE_TYPE_META: Record<
   fillet_edge: { label: "Fillet Edge", glyph: "◠" },
   round_all: { label: "Round All Edges", glyph: "⬭" },
   shell: { label: "Shell", glyph: "⬚" },
+  offset: { label: "Offset", glyph: "◉" },
   thicken: { label: "Thicken", glyph: "◗" },
   sweep: { label: "Sweep", glyph: "↝" },
   boolean: { label: "Boolean", glyph: "⊕" },

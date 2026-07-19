@@ -293,6 +293,7 @@ export type FeatureKindName =
   | "fillet_edge"
   | "round_all"
   | "shell"
+  | "offset"
   | "sweep"
   | "imported_mesh"
   | "translate"
@@ -1495,6 +1496,13 @@ export class Kernel {
   /** d: round every Boolean-junction edge globally with `radiusMm` (0 clears). */
   addRoundAll(radiusMm: number): number {
     return this.inner.addRoundAll(radiusMm);
+  }
+
+  /** #384 offset_tree: signed body offset. `targets` is a comma-separated list
+   *  of `qCreatedBy(...)` body queries (empty creates the feature so its dialog
+   *  can be filled); `deltaMm > 0` dilates, `< 0` erodes. */
+  addOffset(targets: string, deltaMm: number): number {
+    return this.inner.addOffset(targets, deltaMm);
   }
 
   /** Extrude one or more coplanar planar faces (P1). `faces` is a

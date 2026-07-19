@@ -608,6 +608,22 @@ export class KernelStore {
     return id;
   }
 
+  /** #384 offset_tree: add an `offset` feature. Bodies (scope) and the signed
+   *  offset are picked in the dialog (schema-driven); the feature emits no
+   *  geometry until at least one body is scoped. */
+  addOffset(deltaMm = 1): number {
+    let id: number;
+    try {
+      id = this.kernel.addOffset("", deltaMm);
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error("fielddraft: addOffset failed", err);
+      return -1;
+    }
+    this.commit(new Set([id]), id);
+    return id;
+  }
+
   /** d: round every Boolean-junction edge globally with `radiusMm`. */
   addRoundAll(radiusMm = 2): number {
     let id: number;

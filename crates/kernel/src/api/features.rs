@@ -596,6 +596,20 @@ impl Kernel {
         }))
     }
 
+    /// Add an `offset` feature (#384 offset_tree): grow (`delta_mm > 0`) or
+    /// shrink (`delta_mm < 0`) the surface of the scoped bodies by a signed
+    /// amount. `targets` is one or more comma-separated body queries
+    /// (`qCreatedBy(<feature_id>)`); empty targets leave the feature waiting for
+    /// a scope pick in the dialog. The offset expands to an exact tree at build
+    /// time (docs/OFFSET-TREE-PLAN.md §8).
+    #[wasm_bindgen(js_name = addOffset)]
+    pub fn add_offset(&mut self, targets: String, delta_mm: f32) -> Result<u32, JsError> {
+        self.push_feature_call("offset", serde_json::json!({
+            "targets": targets,
+            "delta": { "value": delta_mm, "unit": "mm" },
+        }))
+    }
+
     /// Extrude one or more coplanar B-Rep faces (P1). `faces` is one or more
     /// comma-separated planar face queries (e.g. `qFace(<id_hash>)`); their
     /// boundary loops are projected into their shared plane and swept by

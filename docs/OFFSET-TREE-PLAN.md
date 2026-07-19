@@ -304,6 +304,15 @@ Regressionen unverändert grün.
 
 ## 8. Phase D — UI/Feature-Ebene
 
+**Status: teilweise umgesetzt.** D1 — das **Offset-Feature** (±δ, scoped)
+ist produktiv in v0.17.0 (`crates/kernel/src/features/offset.rs`,
+Sentinel `Offset(Empty, δ)` → `csg::wrap_offset` in `from_decoded`,
+wasm-Export `addOffset`, Toolbar-Button, schema-getriebener Dialog).
+Offen: D2 (Shell-Backend von `max(d,−(d+t))` auf die Expansion
+S−Offset(S,−t) umstellen) und D4 (Twist/Bend im Scope → Feature-Fehler
+statt stillem f−δ) — beides eigene Folge-Bumps. Shell bleibt bis dahin
+der heutige Feld-Modifier.
+
 * **Feature „Offset"** (±δ, ein Wert) und **Feature „Shell"**
   (Wandstärke t, optional offene Faces — ersetzt langfristig den heutigen
   feldbasierten `CsgNode::Shell`-Modifier `max(d, −(d+t))` durch
