@@ -77,8 +77,8 @@ Zielgenauigkeit: Nullstellenmenge des Offsets auf Kurventoleranz
 ## 4. Pass-Pipeline
 
 Regen-Pfad nach vollem Ausbau (heute produktiv bis einschließlich
-Phase B / `synthesize_offset_channels`, v0.16.7; offen sind die
-Phasen C–D):
+Phase C / Pruning + Vertex-Kugeln + Weave-/Pick-Expansion, v0.16.8;
+offen ist Phase D, die Feature-Ebene):
 
 ```mermaid
 graph TD
@@ -176,11 +176,13 @@ Kegel-Leckage über Luftspalte strukturell abschalten. Messwerte
 (Steinmetz, `offset_channel_tests.rs`): Zero-Set-Fehler 0.0022 mm bei
 54 Bögen (Render-Klasse, Ziel ≤ 0.01) bzw. 0.00046 mm bei 127 Bögen
 (Export-Klasse, Ziel ≤ 0.001 mit 128); notch_union-Sliver (α=90°/60°,
-δ=2) geschlossen auf < 0.02 mm; Tape-Parität < 2e-5; CGAL-Golden 28
-Szenen grün. Offen für Phase C/D: Ecken-Kugeln an Triple-Junctions
-(Kanäle enden dort), Kanal-Provenance hängt bis zum echten
-Offset/Shell-Feature am kleineren Eltern-Feature (0x700+-Band steht),
-Pick-Baum ohne Kanäle, Weave-Refresh.
+δ=2) geschlossen auf < 0.02 mm; Tape-Parität < 2e-5; CGAL-Golden grün.
+Die Phase-B-Restlücken (Ecken-Kugeln, Pick-Baum, Weave-Refresh) und
+drei latente Phase-B-Fehler (Achsparallelen-Blindheit der Naht-Newton,
+Gate-Weite c·δ statt (c−1)·δ, Klemm-/Gate-Vermischung der konkaven
+Formel) sind in Phase C geschlossen — Details in §7. Offen bleibt nur:
+Kanal-Provenance hängt bis zum echten Offset/Shell-Feature am kleineren
+Eltern-Feature (0x700+-Band steht).
 
 Ziel: An den Stopp-Knoten der dualen Fälle (Intersection/Difference bei +δ,
 Union bei −δ) das verbleibende `f − δ` durch die exakte R&R-Zerlegung
@@ -228,26 +230,77 @@ nullmengen-exakt und brauchen keinen Korrekturkörper.
 
 ## 7. Phase C — Topologie, Pruning, Weave-Refresh
 
-Die Expansion ist mengen-exakt für jedes δ — diese Phase ist Kosten- und
-Folge-Feature-Hygiene, keine Korrektheitsrettung (LOG.md Teil C):
+**Status: umgesetzt in v0.16.8** (plus die zwei Phase-B-Restlücken
+Ecken-Kugeln und Pick-Baum). Gelandet ist:
 
-1. **Blatt-Parameter-Kollaps bei Erosion:** r−δ ≤ 0, half_height ≤ 0,
-   2D-Profil verschwindet (liefert der Clipper-Offset topologisch exakt und
-   gratis). Rein parametrisch, keine Heuristik; Ergebnis = leeres Blatt bzw.
-   Feature-Fehler (error-toleranter Regen zeigt ihn rot an).
-2. **Tote Korrekturkörper prunen** (nur Kosten/Provenance): Vorstufe
-   Intervall-Arithmetik (Kanal-AABB gegen garantierte Innen-Boxen der
-   Nachbarterme), Rest per Witness-Punkte auf dem Kanal-Rand +
-   Ball-Extremum-Orakel (einige Dutzend Punkte à ~170 Evals, SYNTHESIS §5).
-3. **Vorwarnsignal für Folge-Features:** Kanal-Selbstschnitte und
-   Kanal-Paar-Schnitte (Kurve-Kurve-Distanz < 2δ, 1D-BVH, billig) markieren,
-   wann die Kantenlisten des Ergebnisses ungültig sind → **Weave-Refresh**
-   des expandierten Körpers, damit Fillet/zweiter Offset auf S↑δ echte
-   Kanten sehen. Der Weave selbst ist der (teure, existierende) Detektor.
+1. **C1 — Blatt-Parameter-Kollaps** (`offset_fold::FoldOutcome::Collapsed`):
+   r−|δ| ≤ 0, half_height ≤ 0 (Slab-Kollaps distribuiert exakt über die
+   Prisma-Intersektion), 2D-Profil verschwindet (cavalier topologisch
+   exakt) → `CsgNode::Empty` statt `f − δ`. Rein parametrisch; der
+   Feature-Fehler-Pfad kommt mit dem echten Offset/Shell-Feature (Phase D,
+   das δ gegen die Zielgeometrie prüfen kann).
+2. **C2 — Toleranz-Staffel + Dead-Channel-Pruning:**
+   `CHANNEL_TOL_RENDER = 0.01` (Viewport-Mesh, GPU-SDF, Pick, Weave) /
+   `CHANNEL_TOL_EXPORT = 0.001` (STL/3MF, CGAL-Server) als expliziter
+   Builder-Parameter (`body::build_bounded_*`); das B0-Toleranz-Pruning
+   (δ·(c−1) < tol) läuft damit je Baupfad. `prune_dead_channels` entfernt
+   Kanäle, deren Wirk-Schlauch von einem **Union-Nachbarterm** beweisbar
+   tief überdeckt ist — Intervall-Vorstufe (AABB-Containment) + zertifiziertes
+   Lipschitz-Cover über die Bogen-Bounding-Sphären statt Sampling-Witness:
+   im Band |f| ≤ `PRUNE_BAND` bit-identisch, nirgends ein Vorzeichenwechsel
+   (Beweisskizze am Funktions-Doc; das Ball-Extremum-Orakel war dafür nicht
+   nötig, weil das Komposit den berechneten Nachbar-min selbst enthält).
+3. **C3 — Weave-Refresh + Vorwarnsignal:** `build_bounded_for_body_local`
+   expandiert jetzt auch (Kanäle + Vertex-Kugeln); Bodies mit Kanälen nimmt
+   `ensure_brep` zwingend auf die Octree-Route (parametrische Weaver kennen
+   keine Kanal-Branches und wöben die naiven Kanten). Vorwarnsignal
+   `channels_interference` (Kurve-Kurve-Distanz < δ_a+δ_b bzw.
+   Selbstannäherung, Bounding-Sphären + Punkt-Sampling) via
+   `Kernel::offsetChannelDiagnostics`.
+4. **C4 — Ecken-Kugeln an Triple-Junctions** (`VertexSphere`,
+   `OP_VERTEX_SPHERE` 0x42 in allen fünf Spiegeln + Golden-Szene
+   `vertex_sphere_corner`): Detektion aus den am Composite-Gate
+   **blockierten Trace-Enden** (dritter Member bekannt), 3-Feld-Newton auf
+   den Triple-Punkt, Kegel-Facetten-Gates ĝ_ij ∝ ν_i×ν_j, c_v analytisch
+   (äquilibrierte Richtung + Kanten-Bisektoren). Kanal-Spines werden per
+   Segment **bis in die Vertices verlängert** (R&R: Kanten enden in Ecken)
+   — erst damit ist die Endpunkt-Ball-Kappe die auf den Naht-Fächer
+   beschränkte Vertex-Kugel. > 3 Flächen an einer Ecke / degenerierte
+   Kegel → Verweigerung (f−δ bleibt konservativ).
+5. **C5 — Pick-Baum:** `Kernel::pick` fährt dieselbe Offset-Normalisierung
+   (Pushdown → Fold → Kanäle → Pruning, Render-Toleranz), gecacht in
+   `Kernel::pick_tree` (invalidiert je Remesh) — Kanal-Flächen sind pickbar
+   (0x700+-Band-Provenance), Ray-Tiefe deckt sich mit dem Render-Feld.
 
-**Tests:** Shell mit t > lokale Wandstärke (Bohrung schließt sich korrekt,
-kein Geisterkörper); Erosion bis zum Verschwinden; Fillet auf offsetteter
-Kante nach Weave-Refresh.
+Die C4-Arbeit hat drei latente **Phase-B-Fehler** aufgedeckt und behoben
+(alle fünf Evaluator-Spiegel nachgezogen, Golden 29 Szenen grün):
+
+* **Achsparallelen-Blindheit:** `project_to_seam` landete bei
+  achsparallelen Ebenen-Carriern bit-exakt auf der Naht (sqrt(0)-NaN der
+  Dual-Gradienten) — die gesamte Kanal-Synthese fiel für achsparallele
+  Unions still aus; die rotierten Notch-/Steinmetz-Fixtures hatten das
+  maskiert. Fix: Konvergenz-Check vor dem Schritt + 0.995-Dämpfung.
+  Dazu ein Exponierungs-Witness (Carrier-Normalen-FD), der die dadurch
+  neu erreichbaren SCHEIN-Nähte an tangentialen Kanten-Kontakten
+  (koplanare Deckel) explizit verweigert.
+* **Gate-Weite:** Phase B setzte `G = c·δ` — ein δ über dem Maximalbedarf
+  `(c−1)·δ`; an trunkierten Kurven-Enden leckte die Endpunkt-Kappe bis
+  ~δ Material über das Ende hinaus. Jetzt `G = (c−1)·δ + 4·tol`.
+* **Klemme vs. Gate:** die konkave Formel `min(d, −w)` klemmte auch bei
+  w ≤ 0 (Gate negativ) — das verfälschte d, öffnete das naive Gate des
+  NÄCHSTEN Kanals und kippte an Ecken Vorzeichen. Jetzt Rollen-Trennung:
+  `w_geo` (Geometrie) trägt Addition (w > 0) UND march-sichere
+  Luft-Distanzschranke (w_geo ≤ 0), das Gate kappt nur die Addition.
+
+**Tests** (alle in `offset_channel_tests.rs` / `csg_tests.rs`): Shell mit
+t > lokale Wandstärke (Kavität kollabiert, Feld ≡ Solid); Union-Profil
+Erosion bis zum Verschwinden (exakter Vanish-Punkt statt verfrühtem
+f−δ-Löschen); Fillet auf offsetteter Kante nach Weave-Refresh; Box-Ecke
+konkav unter Erosion: Ecken-Nullmengenfehler naiv 1.38 mm →
+Kanäle-allein 0.72 mm → mit Vertex-Kugel ≤ 0.03 mm (δ=2, α=90°),
+Außen-Überschätzung ≤ 0.03 mm; Pruning-Feld-Diff bit-identisch im Band;
+Tape-/Dual-/fidget-Parität für OP_VERTEX_SPHERE; Steinmetz-/notch-
+Regressionen unverändert grün.
 
 ## 8. Phase D — UI/Feature-Ebene
 
