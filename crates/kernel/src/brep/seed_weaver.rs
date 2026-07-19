@@ -342,6 +342,7 @@ fn has_non_gyroid_non_lipschitz(node: &BoundedCsg) -> bool {
         | BoundedCsg::Displace { inner, .. }
         | BoundedCsg::Offset { inner, .. }
         | BoundedCsg::Shell { inner, .. }
+        | BoundedCsg::InnerWall { inner, .. }
         | BoundedCsg::ArcChannel { inner, .. } => has_non_gyroid_non_lipschitz(inner),
         BoundedCsg::Extrude { .. } | BoundedCsg::Revolve { .. } | BoundedCsg::Empty => false,
     }

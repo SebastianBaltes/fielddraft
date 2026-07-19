@@ -745,6 +745,27 @@ pub enum CsgNode {
     /// [`OpenSurface`]). With no open faces this is a closed inward shell of
     /// uniform thickness. See [`open_shell_sdf`].
     Shell(Box<CsgNode>, f32, Vec<OpenSurface>),
+    /// #384 Phase D2: a transparent FIELD pass-through that remaps its child's
+    /// contributor set onto the DL-75 shell inner-wall band. Its distance is
+    /// *identical* to the child (`d` unchanged); only the provenance is
+    /// rewritten via [`Contributors::mapped_inner`] so the copied inner wall
+    /// gets distinct, selectable branch ids — exactly what the field-based
+    /// closed shell did inline at [`CsgNode::Shell`]'s `evaluate_open` arm.
+    ///
+    /// A dualised closed shell expands to
+    /// `Difference(body, InnerWall(Offset(body, −t)))` (see
+    /// [`CsgNode::expand_shells`]): the subtracted eroded copy IS the inner
+    /// wall, so wrapping it in `InnerWall` reproduces the old
+    /// `c_ret.mapped_inner()` classification while the erosion inherits the
+    /// exact, already-validated offset path (push_down_offsets +
+    /// fold_offset_leaves + ArcChannel) instead of the inexact
+    /// `max(d, −(d+t))` field modifier.
+    ///
+    /// Because [`BranchId::INNER_WALL_FLAG`] is a single bit, only ONE level
+    /// of nesting is meaningful (like shell-of-shell) — `mapped_inner` is
+    /// idempotent. Every non-provenance traversal recurses transparently into
+    /// the child.
+    InnerWall(Box<CsgNode>),
     /// General SDF offset: `child.sdf(p) − δ`. A positive `δ` dilates the body
     /// (grows the surface outward along its normal by `δ`); a negative `δ`
     /// erodes it. Self-intersection-free by construction (a virtue of the SDF
@@ -1122,6 +1143,7 @@ impl DecodedFeature {
                 | CsgNode::Bend(inner, _)
                 | CsgNode::Displace(inner, _, _)
                 | CsgNode::Offset(inner, _)
+                | CsgNode::InnerWall(inner)
                 | CsgNode::Shell(inner, _, _) => cur = inner,
                 CsgNode::Leaf { primitive, .. } => return Some(primitive.clone()),
                 CsgNode::Extrude {
@@ -1236,6 +1258,7 @@ impl CsgNode {
                         .all(|f| all_finite(&f.surface) && all_finite(&f.placement))
                     && inner.all_finite()
             }
+            CsgNode::InnerWall(inner) => inner.all_finite(),
             CsgNode::Morph(a, b, t) => t.is_finite() && a.all_finite() && b.all_finite(),
             CsgNode::MaskedBlend {
                 a,
@@ -1395,6 +1418,9 @@ impl CsgNode {
             CsgNode::Offset(inner, delta) => {
                 CsgNode::Offset(Box::new(inner.apply_edge_fillets(fillets)), delta)
             }
+            CsgNode::InnerWall(inner) => {
+                CsgNode::InnerWall(Box::new(inner.apply_edge_fillets(fillets)))
+            }
             CsgNode::Displace(inner, d, f) => {
                 CsgNode::Displace(Box::new(inner.apply_edge_fillets(fillets)), d, f)
             }
@@ -1485,9 +1511,122 @@ impl CsgNode {
             CsgNode::Offset(inner, delta) => {
                 CsgNode::Offset(Box::new(inner.apply_global_round(r)), delta)
             }
+            CsgNode::InnerWall(inner) => {
+                CsgNode::InnerWall(Box::new(inner.apply_global_round(r)))
+            }
             CsgNode::Displace(inner, d, f) => {
                 CsgNode::Displace(Box::new(inner.apply_global_round(r)), d, f)
             }
+            other => other,
+        }
+    }
+
+    /// #384 Phase D2: structurally expand every CLOSED shell (empty
+    /// `open_faces`) into its complement duality so it inherits the exact,
+    /// already-validated offset erosion path instead of the metrically
+    /// inexact `max(d, −(d+t))` field modifier.
+    ///
+    /// Runs recursively over the whole tree, IMMEDIATELY BEFORE
+    /// [`Self::push_down_offsets`] in every build path (so the synthesised
+    /// `Offset(body, −t)` is picked up by the pushdown / `fold_offset_leaves`
+    /// / ArcChannel passes) and AFTER `apply_edge_fillets`/`apply_global_round`
+    /// (so those never see the artificial inner-wall `Difference`).
+    ///
+    /// Rewrite for a closed shell:
+    ///
+    ///   `Shell(body, t, [])  →  Difference(body, InnerWall(Offset(body, −t)))`
+    ///
+    /// Field check (before folding): `Difference(A, B)` evaluates to
+    /// `max(dA, −dB)`; here `B = Offset(body, −t)` evaluates to
+    /// `d − (−t) = d + t` (the evaluator computes `inner.sdf − δ`, so
+    /// `δ = −t` gives `d + t`). Thus the field is `max(d, −(d + t))` —
+    /// bit-identical to today's closed [`CsgNode::Shell`] modifier
+    /// ([`shell_wall_sdf`] with `d_ret = d`) BEFORE any folding. AFTER
+    /// `fold_offset_leaves` the erosion becomes an exact leaf offset, so the
+    /// inner wall is metrically exact: strictly ≥ today's quality, with no
+    /// regression on non-foldable leaves (they keep the same `f − δ` fallback,
+    /// hence the same field).
+    ///
+    /// OPEN shells (non-empty `open_faces`) are left UNCHANGED on the
+    /// [`CsgNode::Shell`] field path: their retained-face masking (`d_ret` is a
+    /// per-sub-face field mask) has no clean complement-duality expression.
+    ///
+    /// The [`InnerWall`](CsgNode::InnerWall) wrapper reproduces the DL-75
+    /// inner-wall contributor remap the closed shell did inline
+    /// (`c_ret.mapped_inner()`), so selection/picking of the cavity surface is
+    /// unchanged.
+    pub fn expand_shells(self) -> Self {
+        match self {
+            CsgNode::Shell(inner, t, open) => {
+                let e = inner.expand_shells();
+                if open.is_empty() {
+                    CsgNode::Difference(
+                        Box::new(e.clone()),
+                        Box::new(CsgNode::InnerWall(Box::new(CsgNode::Offset(
+                            Box::new(e),
+                            -t,
+                        )))),
+                    )
+                } else {
+                    CsgNode::Shell(Box::new(e), t, open)
+                }
+            }
+            CsgNode::InnerWall(inner) => CsgNode::InnerWall(Box::new(inner.expand_shells())),
+            CsgNode::Offset(inner, delta) => {
+                CsgNode::Offset(Box::new(inner.expand_shells()), delta)
+            }
+            CsgNode::Union(a, b) => {
+                CsgNode::Union(Box::new(a.expand_shells()), Box::new(b.expand_shells()))
+            }
+            CsgNode::Difference(a, b) => {
+                CsgNode::Difference(Box::new(a.expand_shells()), Box::new(b.expand_shells()))
+            }
+            CsgNode::Intersection(a, b) => {
+                CsgNode::Intersection(Box::new(a.expand_shells()), Box::new(b.expand_shells()))
+            }
+            CsgNode::SmoothUnion(a, b, r, m) => CsgNode::SmoothUnion(
+                Box::new(a.expand_shells()),
+                Box::new(b.expand_shells()),
+                r,
+                m,
+            ),
+            CsgNode::SmoothDifference(a, b, r, m) => CsgNode::SmoothDifference(
+                Box::new(a.expand_shells()),
+                Box::new(b.expand_shells()),
+                r,
+                m,
+            ),
+            CsgNode::Morph(a, b, t) => {
+                CsgNode::Morph(Box::new(a.expand_shells()), Box::new(b.expand_shells()), t)
+            }
+            CsgNode::MaskedBlend {
+                a,
+                b,
+                mask_polyline,
+                mask_radius,
+                blend_radius,
+                blend_mode,
+                is_difference,
+                provenance,
+            } => CsgNode::MaskedBlend {
+                a: Box::new(a.expand_shells()),
+                b: Box::new(b.expand_shells()),
+                mask_polyline,
+                mask_radius,
+                blend_radius,
+                blend_mode,
+                is_difference,
+                provenance,
+            },
+            CsgNode::Transform(t, inner) => {
+                CsgNode::Transform(t, Box::new(inner.expand_shells()))
+            }
+            CsgNode::Twist(inner, rate) => CsgNode::Twist(Box::new(inner.expand_shells()), rate),
+            CsgNode::Bend(inner, rate) => CsgNode::Bend(Box::new(inner.expand_shells()), rate),
+            CsgNode::Displace(inner, d, f) => {
+                CsgNode::Displace(Box::new(inner.expand_shells()), d, f)
+            }
+            // No CsgNode children (leaves, sketch lifts, empty).
             other => other,
         }
     }
@@ -1590,6 +1729,12 @@ impl CsgNode {
             }
             CsgNode::Shell(inner, t, open) => {
                 CsgNode::Shell(Box::new(inner.push_down_offsets()), t, open)
+            }
+            // #384 D2: transparent — the eroded copy inside must have its own
+            // `Offset` pushed down to the leaves (this pass runs right AFTER
+            // `expand_shells`, so `InnerWall(Offset(body, −t))` is present here).
+            CsgNode::InnerWall(inner) => {
+                CsgNode::InnerWall(Box::new(inner.push_down_offsets()))
             }
             other => other,
         }
@@ -1730,6 +1875,13 @@ impl CsgNode {
             CsgNode::Shell(inner, t, open) => {
                 CsgNode::Shell(Box::new(inner.fold_offset_leaves()), t, open)
             }
+            // #384 D2: transparent — the eroded inner-wall copy's leaf offsets
+            // (`Offset(leaf, −t)`, produced by the preceding `push_down_offsets`)
+            // must be folded here too, or the inner wall keeps the inexact
+            // `f − δ` field and the metric gain is lost.
+            CsgNode::InnerWall(inner) => {
+                CsgNode::InnerWall(Box::new(inner.fold_offset_leaves()))
+            }
             other => other,
         }
     }
@@ -1754,6 +1906,15 @@ impl CsgNode {
             | CsgNode::Shell(inner, _, _)
             | CsgNode::Offset(inner, _)
             | CsgNode::Displace(inner, _, _) => inner.collect_leaf_primitives(out),
+            // #384 D2: do NOT descend into the dualised inner wall. Its eroded
+            // copy shares the outer body's FeatureId, and this map is keyed by
+            // feature id (the mesh contributor buffer is feature-collapsed, so
+            // inner/outer verts cannot be told apart in developable-face
+            // simplification anyway). Recursing would let the eroded primitive
+            // overwrite the OUTER one and snap the visible outer surface inward.
+            // Skipping keeps the outer primitive, matching the pre-D2 closed
+            // shell (where the inner wall was never a separate leaf).
+            CsgNode::InnerWall(_) => {}
             CsgNode::Union(a, b)
             | CsgNode::Difference(a, b)
             | CsgNode::Intersection(a, b)
@@ -1782,6 +1943,7 @@ impl CsgNode {
             | CsgNode::Twist(inner, _)
             | CsgNode::Bend(inner, _)
             | CsgNode::Shell(inner, _, _)
+            | CsgNode::InnerWall(inner)
             | CsgNode::Offset(inner, _)
             | CsgNode::Displace(inner, _, _) => inner.contains_any_target(target_ids),
             CsgNode::Union(a, b)
@@ -1809,6 +1971,7 @@ impl CsgNode {
             CsgNode::Twist(..) | CsgNode::Bend(..) => true,
             CsgNode::Transform(_, inner)
             | CsgNode::Shell(inner, _, _)
+            | CsgNode::InnerWall(inner)
             | CsgNode::Offset(inner, _)
             | CsgNode::Displace(inner, _, _) => inner.contains_warp(),
             CsgNode::Union(a, b)
@@ -1840,6 +2003,7 @@ impl CsgNode {
             | CsgNode::Twist(inner, _)
             | CsgNode::Bend(inner, _)
             | CsgNode::Shell(inner, _, _)
+            | CsgNode::InnerWall(inner)
             | CsgNode::Offset(inner, _)
             | CsgNode::Displace(inner, _, _) => inner.collect_leaf_ids(out),
             CsgNode::Union(a, b)
@@ -1939,6 +2103,9 @@ impl CsgNode {
                 shell_wall_sdf(d, d_ret, *thickness)
             }
             CsgNode::Offset(inner, delta) => inner.sdf_open(p, mode, open) - delta,
+            // #384 D2: field-transparent — the inner-wall remap only rewrites
+            // provenance (see `evaluate_open`); the distance is the child's.
+            CsgNode::InnerWall(inner) => inner.sdf_open(p, mode, open),
             CsgNode::Morph(a, b, t) => {
                 let da = a.sdf_open(p, mode, open);
                 let db = b.sdf_open(p, mode, open);
@@ -2178,6 +2345,13 @@ impl CsgNode {
                 let (d, c) = inner.evaluate_open(p, eps, mode, open);
                 (d - delta, c)
             }
+            // #384 D2: field-identical to the child, contributors remapped to the
+            // DL-75 inner-wall band — the provenance half of the dualised closed
+            // shell (mirror of the old `Shell` arm's `c_ret.mapped_inner()`).
+            CsgNode::InnerWall(inner) => {
+                let (d, c) = inner.evaluate_open(p, eps, mode, open);
+                (d, c.mapped_inner())
+            }
             CsgNode::Morph(a, b, t) => {
                 let (da, ca) = a.evaluate_open(p, eps, mode, open);
                 let (db, cb) = b.evaluate_open(p, eps, mode, open);
@@ -2397,6 +2571,8 @@ impl CsgNode {
             // Inward shell ⊆ the solid (the outer surface is preserved), so
             // the bounds are exactly the child's — no expansion.
             CsgNode::Shell(inner, _thickness, _open) => inner.aabb(),
+            // #384 D2: field-transparent → bounds are the child's.
+            CsgNode::InnerWall(inner) => inner.aabb(),
             // A `δ`-dilation grows the bounds by `δ`; an erosion shrinks them.
             // Expanding by `|δ|` is a conservative superset for either sign.
             CsgNode::Offset(inner, delta) => {

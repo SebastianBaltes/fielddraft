@@ -141,6 +141,14 @@ pub enum CellCsg<'a> {
         inner: Box<CellCsg<'a>>,
         delta: f32,
     },
+    /// #384 D2: field-transparent inner-wall provenance remap (mirror of
+    /// [`BoundedCsg::InnerWall`]). `sdf` is the child's; `evaluate` remaps the
+    /// contributors via `mapped_inner`, so octree cells on a dualised closed
+    /// shell's cavity carry inner-wall branch ids instead of colliding with the
+    /// outer body's ids.
+    InnerWall {
+        inner: Box<CellCsg<'a>>,
+    },
 }
 
 /// A specialized tree plus its conservative field bounds over the cell.
@@ -206,6 +214,7 @@ impl<'a> CellCsg<'a> {
                 combine_shell(inner.specialize(cell), *thickness)
             }
             CellCsg::Offset { inner, delta } => combine_offset(inner.specialize(cell), *delta),
+            CellCsg::InnerWall { inner } => combine_inner_wall(inner.specialize(cell)),
         }
     }
 
@@ -253,6 +262,7 @@ impl<'a> CellCsg<'a> {
                 crate::csg::shell_wall_sdf(d, d, *thickness)
             }
             CellCsg::Offset { inner, delta } => inner.sdf(p, mode) - delta,
+            CellCsg::InnerWall { inner } => inner.sdf(p, mode),
         }
     }
 
@@ -328,6 +338,10 @@ impl<'a> CellCsg<'a> {
                 let (d, c) = inner.evaluate(p, eps, mode);
                 (d - delta, c)
             }
+            CellCsg::InnerWall { inner } => {
+                let (d, c) = inner.evaluate(p, eps, mode);
+                (d, c.mapped_inner())
+            }
         }
     }
 }
@@ -389,6 +403,12 @@ fn specialize_node<'a>(node: &'a BoundedCsg, cell: &SpecCell) -> CellSpec<'a> {
         BoundedCsg::Offset { inner, delta, .. } => {
             combine_offset(specialize_node(inner, cell), *delta)
         }
+        // #384 D2: keep the InnerWall wrapper so `evaluate` still remaps the
+        // eroded copy's contributors into the DL-75 inner-wall band — the octree
+        // classifies via `CellCsg::evaluate`, so stripping it would collapse the
+        // cavity branches onto the outer body's ids (and lose the cavity in the
+        // weave). Bounds are the child's (field-transparent).
+        BoundedCsg::InnerWall { inner, .. } => combine_inner_wall(specialize_node(inner, cell)),
         // Opaque: leaves, sketch carriers, warps, masked blends, open
         // shells, Empty. Bounds via one centre eval + Lipschitz ball,
         // sharpened by the AABB gap where the cell is outside.
@@ -616,6 +636,16 @@ fn combine_offset<'a>(s_inner: CellSpec<'a>, delta: f32) -> CellSpec<'a> {
     }
 }
 
+// #384 D2: field-transparent wrapper — bounds are the child's; only `evaluate`
+// differs (it remaps the contributors into the inner-wall band).
+fn combine_inner_wall<'a>(s_inner: CellSpec<'a>) -> CellSpec<'a> {
+    CellSpec {
+        lo: s_inner.lo,
+        hi: s_inner.hi,
+        tree: CellCsg::InnerWall { inner: Box::new(s_inner.tree) },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -801,6 +831,7 @@ mod tests {
                 }
                 CellCsg::Displace { inner, .. }
                 | CellCsg::Shell { inner, .. }
+                | CellCsg::InnerWall { inner }
                 | CellCsg::Offset { inner, .. } => count_leaves(inner),
             }
         }

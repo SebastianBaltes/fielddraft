@@ -367,6 +367,7 @@ fn bounded_contains_space_filling(node: &BoundedCsg) -> bool {
         | BoundedCsg::Bend { inner, .. }
         | BoundedCsg::Displace { inner, .. }
         | BoundedCsg::Offset { inner, .. }
+        | BoundedCsg::InnerWall { inner, .. }
         | BoundedCsg::Shell { inner, .. }
         | BoundedCsg::ArcChannel { inner, .. } => bounded_contains_space_filling(inner),
         // A helical sweep counts as weave-excluded too (DL-71 family):
@@ -1007,7 +1008,11 @@ pub fn build_bounded_for_body_rounded(
     // Phase A2: dann Erosions-Offsets an den Blättern analytisch einfalten
     // (`fold_offset_leaves`) — korrigiert die Nullmenge dort, wo das Blatt
     // vorher kein exaktes SDF war (Profil-Booleans, Sketch2d::Offset).
-    csg = csg.push_down_offsets().fold_offset_leaves();
+    // Phase D2: davor geschlossene Shells zur Komplement-Dualität expandieren,
+    // damit die Innenwand denselben exakten Offset-Erosionspfad erbt (läuft
+    // NACH apply_edge_fillets/apply_global_round, sodass die künstliche
+    // Innenwand-Difference weder gefillet noch gerundet wird).
+    csg = csg.expand_shells().push_down_offsets().fold_offset_leaves();
     // Phase B: Kanal-Korrekturkörper an den dualen Stopp-Knoten (läuft auf
     // dem BoundedCsg, Transforms bereits welt-gefaltet). Synchron zur
     // Regen-Zeit — die Naht-Kurven kommen aus SSI-Seeds + Feld-Tracing,
@@ -1050,7 +1055,11 @@ pub fn build_bounded_for_body_local(
     // CGAL-Schutzkanten lägen neben der Fläche (native_prepare). Edge-
     // Fillets/Global-Round bleiben hier wie bisher außen vor (der Weave
     // webt den harten Baum).
+    // Phase D2: geschlossene Shells auch im Weave-Baupfad expandieren, damit
+    // Innenwand-Feld, B-Rep-Carrier und hs_map dieselbe (exakte) Nullmenge
+    // beschreiben — sonst divergierten sie an der dualisierten Innenwand.
     let csg = CsgNode::from_decoded(&sub)
+        .expand_shells()
         .push_down_offsets()
         .fold_offset_leaves();
     // offset_tree Phase C3 (#384, Weave-Refresh): auch der Weave sieht den

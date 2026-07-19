@@ -109,6 +109,11 @@ fn project_branch_analytic(hs: &HalfSpace, xf: &Transform, p: [f32; 3]) -> Optio
 pub(crate) fn body_contains_shell(body: &BoundedCsg) -> bool {
     match body {
         BoundedCsg::Shell { .. } => true,
+        // #384 D2: a dualised closed shell carries no `BoundedCsg::Shell`, but
+        // its `InnerWall` copy owns DL-75 inner-wall carriers just the same, so
+        // the analytic branch-projection path must engage (else the inner wall
+        // falls to the generic octree projection).
+        BoundedCsg::InnerWall { .. } => true,
         BoundedCsg::Leaf { .. } | BoundedCsg::Empty => false,
         BoundedCsg::Union { left, right, .. }
         | BoundedCsg::Difference { left, right, .. }
@@ -375,6 +380,7 @@ fn body_prefers_wide_seed(body: &BoundedCsg) -> bool {
         // stays an exact Euclidean field (wide seed OK), offset-of-sweep/warp
         // stays tight. Recursing into the carrier picks the right one.
         BoundedCsg::Shell { inner, .. }
+        | BoundedCsg::InnerWall { inner, .. }
         | BoundedCsg::Offset { inner, .. }
         | BoundedCsg::ArcChannel { inner, .. } => {
             body_prefers_wide_seed(inner)

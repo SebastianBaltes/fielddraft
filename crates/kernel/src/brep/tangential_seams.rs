@@ -122,6 +122,9 @@ fn walk(node: &BoundedCsg, shell: Option<f32>, out: &mut Vec<TangentialSeam>) {
         | BoundedCsg::Bend { inner, .. }
         | BoundedCsg::Displace { inner, .. }
         | BoundedCsg::Offset { inner, .. }
+        // #384 D2: the eroded copy is already at its offset position, so pass the
+        // ambient `shell` through unchanged (do NOT re-offset by a thickness).
+        | BoundedCsg::InnerWall { inner, .. }
         | BoundedCsg::ArcChannel { inner, .. } => walk(inner, shell, out),
         BoundedCsg::Empty
         | BoundedCsg::Leaf { .. }

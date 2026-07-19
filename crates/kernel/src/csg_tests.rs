@@ -335,6 +335,145 @@ fn inner_wall_branch_id_scheme() {
     assert_ne!(cap.as_u32(), cap.inner_wall().as_u32());
 }
 
+// ─── #384 Phase D2: closed-shell → complement-duality expansion ──────────────
+
+fn box_leaf(id: u32, half: [f32; 3]) -> CsgNode {
+    CsgNode::Leaf {
+        id: FeatureId::from_u32(id),
+        primitive: Primitive::Box {
+            center: [0.0, 0.0, 0.0],
+            half_extents: half,
+        },
+    }
+}
+
+#[test]
+fn expand_shells_closed_field_matches_raw_shell_before_folding() {
+    // A closed shell dualises to `Difference(body, InnerWall(Offset(body, −t)))`,
+    // whose field (BEFORE folding) is bit-for-bit the old `max(d, −(d+t))`
+    // modifier: `Difference` = `max(dA, −dB)`, and `Offset(body, −t)` evaluates
+    // to `d − (−t) = d + t`, so the whole node is `max(d, −(d+t))`.
+    let t = 2.0;
+    let inner = box_leaf(1, [10.0, 10.0, 10.0]);
+    let shell = CsgNode::Shell(Box::new(inner.clone()), t, vec![]);
+    let expanded = shell.clone().expand_shells();
+
+    // Structural: the expansion is exactly the documented complement duality.
+    match &expanded {
+        CsgNode::Difference(a, b) => {
+            assert!(matches!(**a, CsgNode::Leaf { .. }));
+            match &**b {
+                CsgNode::InnerWall(off) => {
+                    assert!(matches!(**off, CsgNode::Offset(_, d) if d == -t));
+                }
+                other => panic!("expected InnerWall(Offset), got {other:?}"),
+            }
+        }
+        other => panic!("expected Difference, got {other:?}"),
+    }
+
+    for p in [
+        [0.0, 0.0, 0.0],
+        [9.0, 0.0, 0.0],
+        [8.0, 0.0, 0.0],
+        [5.0, 3.0, -7.0],
+        [8.5, 8.5, 0.0],
+        [12.0, 0.0, 0.0],
+    ] {
+        let d = inner.sdf(p, EvalMode::Logical);
+        let raw = d.max(-(d + t));
+        let shell_field = shell.sdf(p, EvalMode::Logical);
+        let expanded_field = expanded.sdf(p, EvalMode::Logical);
+        assert!(
+            (expanded_field - raw).abs() < 1e-5,
+            "at {p:?}: expanded {expanded_field} != raw max(d,-(d+t)) {raw}"
+        );
+        assert!(
+            (expanded_field - shell_field).abs() < 1e-5,
+            "at {p:?}: expanded {expanded_field} != Shell node {shell_field}"
+        );
+    }
+}
+
+#[test]
+fn expand_shells_then_fold_makes_the_inner_wall_metrically_exact() {
+    // The dual erosion `Offset(box, −t)` folds to a smaller box leaf (Phase A2),
+    // so the inner wall of a box shell becomes the EXACT euclidean box-8 surface
+    // instead of the SDF-offset `−(d+t)` approximation. They diverge in the wall
+    // corner region, where the box's own SDF and its inward-offset disagree.
+    let t = 2.0;
+    let shell = CsgNode::Shell(Box::new(box_leaf(1, [10.0, 10.0, 10.0])), t, vec![]);
+    let folded = shell
+        .clone()
+        .expand_shells()
+        .push_down_offsets()
+        .fold_offset_leaves();
+
+    // Corner wall point: inside box-10 (d = −1.5), outside box-8 by √0.5.
+    let p = [8.5, 8.5, 0.0];
+    let raw = shell.sdf(p, EvalMode::Logical); // max(−1.5, −(−1.5+2)) = −0.5
+    let fold = folded.sdf(p, EvalMode::Logical); // max(−1.5, −√0.5)   = −√0.5
+    let truth = -(0.5f32.sqrt()); // exact: nearest surface is the inner box-8 corner
+
+    assert!((raw - (-0.5)).abs() < 1e-4, "raw shell field is the inexact −0.5, got {raw}");
+    assert!(
+        (fold - truth).abs() < 1e-4,
+        "folded inner wall should equal the euclidean {truth}, got {fold}"
+    );
+    // And it is measurably closer to the analytic truth than the raw modifier.
+    assert!(
+        (fold - truth).abs() + 0.1 < (raw - truth).abs(),
+        "fold ({fold}) must beat raw ({raw}) vs truth {truth}"
+    );
+}
+
+#[test]
+fn expand_shells_leaves_open_shells_on_the_field_path() {
+    // An OPEN shell (non-empty open_faces) has no clean complement duality
+    // (the retained-face masking is a per-sub-face field mask) — it must stay a
+    // `CsgNode::Shell` so it keeps the existing open-face field path.
+    let open = vec![OpenSurface {
+        branch: BranchId::from_feature_sub(&FeatureId::from_u32(1), 4).as_u32(),
+        surface: HalfSpace::Plane { normal: [0.0, 0.0, 1.0], offset: 10.0 },
+        placement: Transform::IDENTITY,
+    }];
+    let shell = CsgNode::Shell(Box::new(box_leaf(1, [10.0, 10.0, 10.0])), 2.0, open);
+    let expanded = shell.expand_shells();
+    match expanded {
+        CsgNode::Shell(_, _, ref o) => assert_eq!(o.len(), 1, "opening intact"),
+        other => panic!("open shell must stay a Shell, got {other:?}"),
+    }
+}
+
+#[test]
+fn expanded_closed_shell_tags_inner_wall_contributors() {
+    // The `InnerWall` wrapper remaps the eroded copy's contributors onto the
+    // DL-75 inner-wall band, so a point on the cavity surface reports an
+    // inner-wall branch while a point on the outer surface does not.
+    let shell = CsgNode::Shell(Box::new(box_leaf(1, [10.0, 10.0, 10.0])), 2.0, vec![]);
+    let folded = shell
+        .expand_shells()
+        .push_down_offsets()
+        .fold_offset_leaves();
+
+    // Inner cavity face at x = 8: the InnerWall term wins the combine_max.
+    let (_, c_in) = folded.evaluate([8.0, 0.0, 0.0], 0.1, EvalMode::Logical);
+    assert!(
+        c_in.as_slice().iter().any(|b| b.is_inner_wall()),
+        "inner-wall point must carry an inner-wall contributor, got {:?}",
+        c_in.as_slice()
+    );
+
+    // Outer face at x = 10: the outer body term wins — no inner-wall flag.
+    let (_, c_out) = folded.evaluate([10.0, 0.0, 0.0], 0.1, EvalMode::Logical);
+    assert!(!c_out.as_slice().is_empty(), "outer face has a contributor");
+    assert!(
+        c_out.as_slice().iter().all(|b| !b.is_inner_wall()),
+        "outer-wall point must have no inner-wall contributor, got {:?}",
+        c_out.as_slice()
+    );
+}
+
 #[test]
 fn empty_tree_has_infinite_sdf_and_empty_aabb() {
     let tree = CsgNode::from_decoded(&[]);

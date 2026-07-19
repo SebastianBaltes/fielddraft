@@ -1349,6 +1349,49 @@ fn shell_weave_produces_inner_wall_faces() {
 }
 
 #[test]
+fn dualised_closed_shell_weaves_inner_wall_faces() {
+    // #384 D2: run a closed shell through the build-time complement expansion
+    // (`expand_shells → push_down_offsets → fold_offset_leaves`), so it becomes
+    // `Difference(box, InnerWall(box_eroded))` instead of a `BoundedCsg::Shell`.
+    // The weave must STILL surface 6 outer + 6 inner-wall faces: the `InnerWall`
+    // wrapper remaps the eroded copy's branches/carriers into the DL-75
+    // inner-wall band (branch_pairs + surface_registry + parity), reproducing
+    // the pre-D2 `Shell` weave through the new structural path.
+    let half = 2.0_f32;
+    let thickness = 0.5_f32;
+    let csg = CsgNode::Shell(
+        Box::new(CsgNode::Leaf {
+            id: FeatureId::from_u32(1),
+            primitive: Primitive::Box {
+                center: [0.0, 0.0, 0.0],
+                half_extents: [half, half, half],
+            },
+        }),
+        thickness,
+        Vec::new(),
+    )
+    .expand_shells()
+    .push_down_offsets()
+    .fold_offset_leaves();
+    let body = BoundedCsg::from_csg(&csg);
+    let octree = Octree::build(&body, 0.1);
+    let brep = weave(&body, &octree);
+    assert_eq!(brep.validate(), Ok(()), "dualised shell B-Rep must be well-formed");
+
+    let inner = brep
+        .faces
+        .iter()
+        .filter(|f| f.branch_id.is_inner_wall())
+        .count();
+    let outer = brep.faces.iter().filter(|f| !f.branch_id.is_inner_wall()).count();
+    assert_eq!(outer, 6, "6 outer faces preserved");
+    assert_eq!(inner, 6, "6 inner-wall faces (the cavity)");
+    for f in brep.faces.iter().filter(|f| f.branch_id.is_inner_wall()) {
+        assert_eq!(f.branch_id.feature_id(), 1, "inner wall stays selectable");
+    }
+}
+
+#[test]
 fn open_shell_weaves_inner_wall_and_keeps_outer_faces() {
     // DL-75: the realistic case — a box hollowed and opened at its +Z face.
     // The weave must stay watertight-valid and surface BOTH outer faces and

@@ -404,6 +404,9 @@ fn eval_bounded_d3_open(
         BoundedCsg::Offset { inner, delta, .. } => {
             eval_bounded_d3_open(inner, p, mode, open) - D3::from(*delta as f64)
         }
+        // #384 D2: field-transparent (provenance-only remap; the dual field is
+        // the child's).
+        BoundedCsg::InnerWall { inner, .. } => eval_bounded_d3_open(inner, p, mode, open),
         // offset_tree Phase B: Dual-Spiegel des Kanal-Terms. Selektion
         // (argmin-Bogen, min/max-Gewinner) läuft auf den Realteilen; die
         // Gating-Daten q*/m̂ des nächsten Kurvenpunkts werden als Konstanten

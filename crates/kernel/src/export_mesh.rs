@@ -1945,7 +1945,9 @@ fn check_node_analytic(node: &crate::csg::CsgNode) -> Result<(), String> {
             }
             Ok(())
         }
-        N::Transform(_, a) | N::Shell(a, _, _) | N::Offset(a, _) => check_node_analytic(a),
+        N::Transform(_, a) | N::Shell(a, _, _) | N::InnerWall(a) | N::Offset(a, _) => {
+            check_node_analytic(a)
+        }
         N::Union(a, b) | N::Difference(a, b) | N::Intersection(a, b) => {
             check_node_analytic(a)?;
             check_node_analytic(b)

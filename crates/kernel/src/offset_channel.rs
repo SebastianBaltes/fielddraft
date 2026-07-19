@@ -1789,6 +1789,12 @@ pub fn synthesize_offset_channels(node: BoundedCsg, tol: f32) -> BoundedCsg {
             open_faces,
             aabb,
         },
+        // #384 D2: recurse into the eroded copy so any dual offset stop inside it
+        // (a shelled boolean body) gets its channel correction bodies too.
+        BoundedCsg::InnerWall { inner, aabb } => BoundedCsg::InnerWall {
+            inner: Box::new(synthesize_offset_channels(*inner, tol)),
+            aabb,
+        },
         BoundedCsg::ArcChannel { inner, channels, verts, aabb } => BoundedCsg::ArcChannel {
             inner: Box::new(synthesize_offset_channels(*inner, tol)),
             channels,

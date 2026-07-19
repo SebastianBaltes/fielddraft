@@ -320,9 +320,9 @@ pub(crate) fn lipschitz_bound(node: &BoundedCsg) -> f32 {
         // child's L; Offset `d − δ` shifts the value, not the gradient (and
         // a level-set offset of an L-Lipschitz field never overestimates by
         // more than L: dist(p, {f=c}) ≥ (f(p)−c)/L).
-        BoundedCsg::Shell { inner, .. } | BoundedCsg::Offset { inner, .. } => {
-            lipschitz_bound(inner)
-        }
+        BoundedCsg::Shell { inner, .. }
+        | BoundedCsg::InnerWall { inner, .. }
+        | BoundedCsg::Offset { inner, .. } => lipschitz_bound(inner),
 
         // offset_tree Phase B: der Kanal-Term ist ein min/max-Gewinner aus
         // 1-Lipschitz-Quellen (Distanz-zur-Kurve minus Konstante, Ebenen-
@@ -436,6 +436,10 @@ fn emit_node(node: &BoundedCsg, ctx: &mut CompileCtx, open: &crate::csg::OpenBra
             out.push(op(OP_OFFSET_2D));
             out.push(*delta);
         }
+        // #384 D2: InnerWall is a No-Op on the distance tape (it only rewrites
+        // provenance, which the tape does not track) — emit the child unchanged.
+        // This keeps the GPU-TSL and CGAL-C++ backends untouched.
+        BoundedCsg::InnerWall { inner, .. } => emit_node(inner, ctx, open),
         BoundedCsg::ArcChannel { inner, channels, verts, .. } => {
             // offset_tree Phase B: naiver Stopp zuerst, dann je Kanal EIN
             // OP_ARC_CHANNEL (pops d, pusht korrigiert) — sequenziell wie

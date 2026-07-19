@@ -298,6 +298,20 @@ fn walk(node: &BoundedCsg, out: &mut Vec<Branch>) {
             out.extend(walls);
         }
 
+        // #384 D2: the dualised closed shell's eroded copy. Its branches ARE the
+        // cavity inner wall, so remap every one to the DL-75 inner-wall band —
+        // the same ids the registry's inner-wall carriers and the SDF
+        // `evaluate_open` remap use. The outer branches come from the enclosing
+        // `Difference`'s other operand (the un-eroded body), so we emit ONLY the
+        // walls here (mirror of the `Shell` arm's `walls`, minus the outer copy).
+        BoundedCsg::InnerWall { inner, .. } => {
+            let before = out.len();
+            walk(inner, out);
+            for b in &mut out[before..] {
+                b.id = b.id.inner_wall();
+            }
+        }
+
         // Single-child carriers: recurse the inner subtree. Twist/Bend/Displace
         // are out-of-scope warps (their *own* surface is non-analytic), but the
         // branches of the wrapped geometry must still be enumerated; Offset
@@ -440,6 +454,25 @@ fn collect_pairs(node: &BoundedCsg, out: &mut Vec<BranchPair>) -> Vec<Branch> {
             let mut all = bs;
             all.extend(walls);
             all
+        }
+
+        // #384 D2: the dualised closed shell's eroded copy — remap its branch
+        // list AND its intrinsic pairs (the cavity's own corners) to the DL-75
+        // inner-wall band. Setting the same flag bit on both endpoints preserves
+        // the canonical `a <= b` ordering (all subs are `< INNER_WALL_FLAG` in a
+        // freshly eroded copy). The outer×inner-wall rim pairs are produced by
+        // the enclosing `Difference`'s cross-pairing.
+        BoundedCsg::InnerWall { inner, .. } => {
+            let mut sub = Vec::new();
+            let bs = collect_pairs(inner, &mut sub);
+            for p in &mut sub {
+                p.a = p.a.inner_wall();
+                p.b = p.b.inner_wall();
+            }
+            out.extend(sub);
+            bs.into_iter()
+                .map(|b| Branch { id: b.id.inner_wall(), ..b })
+                .collect()
         }
 
         // Single-child carriers: pass through the inner branch list, no pair at

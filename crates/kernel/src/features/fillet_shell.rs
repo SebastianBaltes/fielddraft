@@ -254,6 +254,34 @@ impl FeatureKind for ShellFeature {
             })
             .unwrap_or_else(|| vec![owner.clone()]);
 
+        // #384 D2: a Twist/Bend has no exact offset (it is not an isometry, Plan
+        // §2), and the dualised closed shell erodes via that exact offset path —
+        // so refuse rather than leave a silent, metrically wrong wall. Mirror of
+        // `OffsetFeature::execute`'s guard: a target body whose partition carries
+        // a warp is out of scope for shelling.
+        let warped = parts.iter().any(|p| {
+            let in_scope = p.feature_indices.iter().any(|&fi| {
+                target_ids
+                    .iter()
+                    .any(|t| ctx.features[fi].id.root_ancestor() == t)
+            });
+            in_scope
+                && p.feature_indices
+                    .iter()
+                    .any(|&fi| ctx.features[fi].node.contains_warp())
+        });
+        if warped {
+            return Err(FeatureError::InvalidParameter {
+                feature: ShellDef::TYPE_NAME,
+                name: "open_faces",
+                message: "Shell auf einem Körper mit Twist/Bend ist nicht möglich — \
+                          eine Verdrehung/Biegung hat keinen exakten Offset, den die \
+                          Innenwand-Erosion bräuchte. Entferne den Twist/Bend oder \
+                          setze die Shell davor."
+                    .to_string(),
+            });
+        }
+
         ctx.features.push(DecodedFeature {
             id: id.clone(),
             name: "Shell".to_string(),

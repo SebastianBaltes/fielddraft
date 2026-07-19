@@ -128,6 +128,20 @@ pub(super) fn collect_halfspaces(node: &BoundedCsg, out: &mut BranchSurfaceMap) 
                 }
             }
         }
+        BoundedCsg::InnerWall { inner, .. } => {
+            // #384 D2: the dualised closed shell's eroded copy. Its carriers are
+            // already at the inward-offset positions (the enclosing `Offset` /
+            // the folded leaves shifted them by −t), so we only need to REKEY
+            // them into the DL-75 inner-wall branch band — the same ids the
+            // enumerator tags and `evaluate_open` reports. This reproduces the
+            // `Shell` arm's inner-wall registration (`offset_halfspace_inward`
+            // + `.inner_wall()` key) without re-deriving the offset.
+            let mut sub = HashMap::new();
+            collect_halfspaces(inner, &mut sub);
+            for (key, entry) in sub {
+                out.entry(BranchId(key).inner_wall().as_u32()).or_insert(entry);
+            }
+        }
         BoundedCsg::Shell { inner, thickness, open_faces, .. } => {
             // The outer faces are geometrically unchanged (the shell preserves
             // `d = 0`), so they keep their entries. Additionally register each
@@ -334,6 +348,7 @@ fn collect_revolve_profile_carriers(
         | BoundedCsg::Bend { inner, .. }
         | BoundedCsg::Displace { inner, .. }
         | BoundedCsg::Shell { inner, .. }
+        | BoundedCsg::InnerWall { inner, .. }
         | BoundedCsg::Offset { inner, .. }
         | BoundedCsg::ArcChannel { inner, .. } => collect_revolve_profile_carriers(inner, out),
         BoundedCsg::Leaf { .. }
@@ -449,6 +464,14 @@ pub(super) fn collect_parity(node: &BoundedCsg, flipped: bool, out: &mut std::co
             collect_parity(left, flipped, out);
             collect_parity(right, flipped != *is_difference, out);
         }
+        // #384 D2: the inner wall's inward-facing normal is encoded by
+        // `is_complemented`'s XOR with `is_inner_wall`, NOT by a subtree flip.
+        // The eroded copy shares the outer body's feature ids, so letting the
+        // enclosing `Difference`'s `!flipped` reach it would wrongly complement
+        // the OUTER faces too (the `complemented` set is keyed by feature id).
+        // Negate that flip back to the outer body's base parity — InnerWall is
+        // always the Difference's right child (see `expand_shells`).
+        BoundedCsg::InnerWall { inner, .. } => collect_parity(inner, !flipped, out),
         BoundedCsg::Twist { inner, .. }
         | BoundedCsg::Bend { inner, .. }
         | BoundedCsg::Displace { inner, .. }
@@ -487,6 +510,7 @@ fn wall_sub_tables(node: &BoundedCsg) -> HashMap<u32, std::sync::Arc<Vec<u32>>> 
             | BoundedCsg::Bend { inner, .. }
             | BoundedCsg::Displace { inner, .. }
             | BoundedCsg::Shell { inner, .. }
+            | BoundedCsg::InnerWall { inner, .. }
             | BoundedCsg::Offset { inner, .. }
             | BoundedCsg::ArcChannel { inner, .. } => walk(inner, out),
             BoundedCsg::Empty

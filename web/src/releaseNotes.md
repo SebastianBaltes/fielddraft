@@ -12,6 +12,9 @@ Format, eine Zeile je Eintrag:
 kind = feat | fix | perf. scope und #tickets sind optional. Folgezeilen, die
 eingerückt sind, gehören zum Text davor (Umbruch erlaubt).
 
+## 0.17.3
+- perf(sdf) #384: offset_tree Phase D2 — geschlossene Shell-Wände sind jetzt maßhaltig. Bisher wurde die Innenwand einer Shell über ein Näherungsfeld gelegt, das im Wandinneren (besonders an Ecken und Kehlen) um bis zu ~0,29·Wandstärke daneben lag; die Wand konnte dort dünner oder dicker wirken als eingestellt. Die Shell wird intern nun exakt als „Körper minus nach innen versetzter Körper" aufgebaut und erbt damit den präzisen Offset-Pfad — die Wandstärke stimmt bis auf Bruchteile eines Millimeters. Offene Shells (mit entfernten Flächen) bleiben unverändert. Zusätzlich: eine Shell auf einem mit Twist/Bend verdrehten Körper wird jetzt mit klarer Meldung abgelehnt, statt still eine falsche Wand zu erzeugen.
+
 ## 0.17.2
 - fix(sdf) #384: offset_tree Phase D — das Offset-Feature ließ sich in der Baumansicht nicht bearbeiten: Es zeigte ein „?"-Symbol und beim Anwählen „No feature selected" statt der Parameter, sodass sich weder Ziel-Körper noch Betrag setzen ließen. Der Kernel meldete den Feature-Typ intern als „unbekannt"; jetzt wird „offset" korrekt aufgelöst, das Symbol erscheint und der Editor mit Körper-Auswahl und Betrag öffnet sich.
 

@@ -179,6 +179,16 @@ pub enum BoundedCsg {
         delta: f32,
         aabb: Aabb,
     },
+    /// #384 Phase D2: BVH mirror of [`CsgNode::InnerWall`] — a field-transparent
+    /// pass-through that remaps its child's contributor set onto the DL-75 shell
+    /// inner-wall band (`mapped_inner`). An `InnerWall` can survive to the
+    /// `BoundedCsg` (it is never folded away): it is the subtracted eroded copy
+    /// of a dualised closed shell, `Difference(body, InnerWall(Offset(body,
+    /// −t)))`. The AABB is the child's (no field change).
+    InnerWall {
+        inner: Box<BoundedCsg>,
+        aabb: Aabb,
+    },
     /// BVH-wrapped extrude. The 2D sketch is materialised into a
     /// [`BoundedSketch2d`] at construction time so every 3D query
     /// hits the pruned 2D path. `world_transform` carries the
@@ -310,6 +320,7 @@ impl BoundedCsg {
             | BoundedCsg::Displace { aabb, .. }
             | BoundedCsg::Shell { aabb, .. }
             | BoundedCsg::Offset { aabb, .. }
+            | BoundedCsg::InnerWall { aabb, .. }
             | BoundedCsg::Extrude { aabb, .. }
             | BoundedCsg::Revolve { aabb, .. }
             | BoundedCsg::Helix { aabb, .. }
@@ -352,6 +363,7 @@ impl BoundedCsg {
             | BoundedCsg::Bend { inner, .. }
             | BoundedCsg::Displace { inner, .. }
             | BoundedCsg::Offset { inner, .. }
+            | BoundedCsg::InnerWall { inner, .. }
             | BoundedCsg::Shell { inner, .. }
             | BoundedCsg::ArcChannel { inner, .. } => {
                 inner.collect_leaf_transforms(out);
@@ -513,6 +525,8 @@ impl BoundedCsg {
                 crate::csg::shell_wall_sdf(d, d_ret, *thickness)
             }
             BoundedCsg::Offset { inner, delta, .. } => inner.sdf_open(p, mode, open) - delta,
+            // #384 D2: field-transparent (provenance-only remap at eval time).
+            BoundedCsg::InnerWall { inner, .. } => inner.sdf_open(p, mode, open),
             // offset_tree Phase B: naiver Stopp-Wert + Kanal-Korrekturen.
             // Modus-unabhängig — der Kanal IST die korrekte harte Geometrie
             // (wie MaskedBlend: die Fläche ist real, kein Render-Effekt).
@@ -795,6 +809,13 @@ impl BoundedCsg {
             BoundedCsg::Offset { inner, delta, .. } => {
                 let (d, c) = inner.evaluate_open(p, eps, mode, open);
                 (d - delta, c)
+            }
+            // #384 D2: field-identical to the child, contributors remapped to
+            // the DL-75 inner-wall band — mirror of `CsgNode::InnerWall`'s
+            // `evaluate_open` arm (the provenance half of the dualised shell).
+            BoundedCsg::InnerWall { inner, .. } => {
+                let (d, c) = inner.evaluate_open(p, eps, mode, open);
+                (d, c.mapped_inner())
             }
             // offset_tree Phase B (Plan §9, Provenance-Regel): gewinnt der
             // Kanal-Term klar (> eps), gehört die Fläche dem Kanal-Branch
@@ -1213,6 +1234,16 @@ fn build(csg: &CsgNode, carry: &Transform) -> BoundedCsg {
                 aabb,
             }
         }
+        CsgNode::InnerWall(inner) => {
+            // Field-transparent: bounds are the child's, provenance is remapped
+            // to the inner-wall band at eval time (see `evaluate_open`).
+            let child = build(inner, carry);
+            let aabb = child.aabb();
+            BoundedCsg::InnerWall {
+                inner: Box::new(child),
+                aabb,
+            }
+        }
         CsgNode::MaskedBlend {
             a,
             b,
@@ -1552,6 +1583,7 @@ fn classify_walk(node: &BoundedCsg, info: &mut HybridInfo, role: &str, warp: Opt
         BoundedCsg::Displace { .. }
         | BoundedCsg::Shell { .. }
         | BoundedCsg::Offset { .. }
+        | BoundedCsg::InnerWall { .. }
         | BoundedCsg::Morph { .. }
         | BoundedCsg::ArcChannel { .. } => {
             info.is_union_only = false;

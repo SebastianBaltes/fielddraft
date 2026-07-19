@@ -316,6 +316,58 @@ fn offset_on_a_plain_body_is_accepted() {
 }
 
 #[test]
+fn shell_on_a_twisted_body_is_refused() {
+    // #384 D2: a closed shell erodes via the exact offset path, which a Twist
+    // has no exact expansion for. When a shellable body's partition contains a
+    // twisted feature the shell must refuse (mirror of the offset D4 guard).
+    // Setup: a plain box with a twisted box unioned INTO it (targeted, over-
+    // lapping Add → one partition), so the plain box's far face still resolves
+    // cleanly but the twist lives in the shell's target scope.
+    let registry = FeatureRegistry::with_builtins();
+    let mut doc = empty_ctx();
+    let mut ctx = Context::new(&mut doc);
+    let calls = vec![
+        FeatureCall::new(
+            "box",
+            id(1),
+            json!({ "half_extents": [10.0, 10.0, 10.0], "op": "new" }),
+        ),
+        FeatureCall::new(
+            "box",
+            id(2),
+            json!({
+                "half_extents": [10.0, 10.0, 10.0],
+                "translate": [15.0, 0.0, 0.0],
+                "twist_rate": 0.1,
+                "op": "add",
+                "targets": "qCreatedBy(1)"
+            }),
+        ),
+        FeatureCall::new(
+            "shell",
+            id(3),
+            json!({
+                "open_faces": "qCreatedBy(1)",
+                "thickness": { "value": 2.0, "unit": "mm" }
+            }),
+        ),
+    ];
+    let errors = registry.regenerate(&mut ctx, &calls, None);
+    assert_eq!(errors.0.len(), 1, "the shell must refuse the twisted partition");
+    assert_eq!(errors.0[0].0, id(3));
+    assert!(
+        matches!(
+            errors.0[0].1,
+            FeatureError::InvalidParameter { feature: "shell", .. }
+        ),
+        "expected a shell InvalidParameter, got {:?}",
+        errors.0[0].1
+    );
+    // Error tolerance: the two boxes still land; only the shell is skipped.
+    assert_eq!(ctx.features.len(), 2);
+}
+
+#[test]
 fn unknown_feature_type_is_an_error() {
     let registry = FeatureRegistry::with_builtins();
     let mut doc = empty_ctx();
