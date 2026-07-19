@@ -1639,8 +1639,17 @@ impl CsgNode {
             CsgNode::Offset(inner, delta) => {
                 let inner = inner.fold_offset_leaves();
                 if delta < 0.0 {
-                    if let Some(folded) = crate::offset_fold::try_fold_erosion(&inner, -delta) {
-                        return folded;
+                    match crate::offset_fold::try_fold_erosion(&inner, -delta) {
+                        Some(crate::offset_fold::FoldOutcome::Folded(folded)) => return folded,
+                        // Phase C1 (#384, Plan §7.1): parametrischer Kollaps —
+                        // die Erosion verschluckt das Blatt vollständig. Das
+                        // leere Blatt ist die WAHRE Erosionsmenge; `f − δ` auf
+                        // einem inexakten Profil-Feld ließe hier Geisterkörper
+                        // stehen (Innen-Ridge bis 1.53 mm, a_summary.csv).
+                        Some(crate::offset_fold::FoldOutcome::Collapsed) => {
+                            return CsgNode::Empty;
+                        }
+                        None => {}
                     }
                 }
                 CsgNode::Offset(Box::new(inner), delta)

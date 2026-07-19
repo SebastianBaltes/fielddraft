@@ -80,46 +80,79 @@ const JOIN_ARC_SUB_BASE: u32 = 0x700;
 
 // ─── Einstieg: ein Erosions-Offset über einem Blattknoten falten ─────────
 
+/// Ergebnis eines Blatt-Fold-Versuchs (Phase C1 erweitert den A2-Fold um
+/// den **parametrischen Kollaps**).
+pub(crate) enum FoldOutcome {
+    /// Neues Blatt derselben Familie mit geschrumpften Parametern.
+    Folded(CsgNode),
+    /// Die Erosion verschluckt das Blatt vollständig — parametrisch
+    /// exakt entschieden (r−a ≤ 0, half_height−a ≤ 0, 2D-Profil
+    /// verschwindet im cavalier-Offset). Der Aufrufer ersetzt das Blatt
+    /// durch [`CsgNode::Empty`]; das ist topologisch die WAHRE Erosion,
+    /// kein Fallback (Plan §7.1: keine Heuristik, kein `f − δ`, das auf
+    /// inexakten Profil-Feldern Geisterkörper stehen ließe).
+    Collapsed,
+}
+
+/// Ergebnis der Primitiv-Parameter-Erosion.
+enum PrimFold {
+    Shrunk(Primitive),
+    Collapsed,
+}
+
 /// Versucht, `Offset(node, −a)` (Erosion um `a > 0`) als neues Blatt
-/// derselben Familie darzustellen. `None` = verweigern (`f − δ` bleibt).
-pub(crate) fn try_fold_erosion(node: &CsgNode, a: f32) -> Option<CsgNode> {
+/// derselben Familie darzustellen. `None` = verweigern (`f − δ` bleibt);
+/// [`FoldOutcome::Collapsed`] = das Blatt verschwindet exakt (Phase C1).
+pub(crate) fn try_fold_erosion(node: &CsgNode, a: f32) -> Option<FoldOutcome> {
     if !(a > 0.0) || !a.is_finite() {
         return None;
     }
     match node {
-        CsgNode::Leaf { id, primitive } => fold_primitive_erosion(primitive, a)
-            .map(|p| CsgNode::Leaf { id: id.clone(), primitive: p }),
+        CsgNode::Leaf { id, primitive } => match fold_primitive_erosion(primitive, a)? {
+            PrimFold::Shrunk(p) => Some(FoldOutcome::Folded(CsgNode::Leaf {
+                id: id.clone(),
+                primitive: p,
+            })),
+            PrimFold::Collapsed => Some(FoldOutcome::Collapsed),
+        },
         CsgNode::Extrude { id, sketch, half_height, wall_subs } => {
-            let hh2 = shrink_param(*half_height, a)?;
+            // Erosion distribuiert exakt über die Prisma-Intersektion:
+            // kollabiert der Höhen-Slab (hh − a ≤ 0), ist die wahre Erosion
+            // leer — unabhängig davon, ob das Profil faltbar wäre.
+            let Some(hh2) = shrink_param(*half_height, a) else {
+                return Some(FoldOutcome::Collapsed);
+            };
             let folded = erode_profile(sketch, wall_subs.as_deref().map(|v| v.as_slice()), a, false)?;
             Some(match folded {
-                ErodedProfile::InFamily(s) => CsgNode::Extrude {
+                ErodedProfile::Vanished => FoldOutcome::Collapsed,
+                ErodedProfile::InFamily(s) => FoldOutcome::Folded(CsgNode::Extrude {
                     id: id.clone(),
                     sketch: Box::new(s),
                     half_height: hh2,
                     wall_subs: wall_subs.clone(),
-                },
-                ErodedProfile::Rebuilt(s, ws) => CsgNode::Extrude {
+                }),
+                ErodedProfile::Rebuilt(s, ws) => FoldOutcome::Folded(CsgNode::Extrude {
                     id: id.clone(),
                     sketch: Box::new(s),
                     half_height: hh2,
                     wall_subs: Some(std::sync::Arc::new(ws)),
-                },
+                }),
             })
         }
         CsgNode::Revolve { id, sketch, wall_subs } => {
             let folded = erode_profile(sketch, wall_subs.as_deref().map(|v| v.as_slice()), a, true)?;
             Some(match folded {
-                ErodedProfile::InFamily(s) => CsgNode::Revolve {
+                ErodedProfile::Vanished => FoldOutcome::Collapsed,
+                ErodedProfile::InFamily(s) => FoldOutcome::Folded(CsgNode::Revolve {
                     id: id.clone(),
                     sketch: Box::new(s),
                     wall_subs: wall_subs.clone(),
-                },
-                ErodedProfile::Rebuilt(s, ws) => CsgNode::Revolve {
+                }),
+                ErodedProfile::Rebuilt(s, ws) => FoldOutcome::Folded(CsgNode::Revolve {
                     id: id.clone(),
                     sketch: Box::new(s),
                     wall_subs: Some(std::sync::Arc::new(ws)),
-                },
+                }),
             })
         }
         _ => None,
@@ -128,30 +161,48 @@ pub(crate) fn try_fold_erosion(node: &CsgNode, a: f32) -> Option<CsgNode> {
 
 /// Erosions-Fold der analytischen Primitive (Audit-Familienliste — KEIN
 /// neuer Variant, keine Erweiterung auf ungelistete Familien).
-pub(crate) fn fold_primitive_erosion(prim: &Primitive, a: f32) -> Option<Primitive> {
+/// `PrimFold::Collapsed`, wenn ein tragender Parameter unter die
+/// Degenerationsgrenze schrumpft — dort ist die WAHRE Erosion die leere
+/// Menge (Kugel/Zylinder/Box/Torus-Rohr sind Intersektionen bzw.
+/// Sweeps, deren Minkowski-Erosion mit dem Parameter kollabiert).
+fn fold_primitive_erosion(prim: &Primitive, a: f32) -> Option<PrimFold> {
+    // Kollaps-bewusster Schrumpf: `None` von `shrink_param` heißt hier
+    // IMMER Kollaps (der Parameter trägt die letzte Ausdehnung der Familie).
+    macro_rules! shrink_or_collapse {
+        ($v:expr) => {
+            match shrink_param($v, a) {
+                Some(s) => s,
+                None => return Some(PrimFold::Collapsed),
+            }
+        };
+    }
     match prim {
-        Primitive::Sphere { center, radius } => Some(Primitive::Sphere {
+        Primitive::Sphere { center, radius } => Some(PrimFold::Shrunk(Primitive::Sphere {
             center: *center,
-            radius: shrink_param(*radius, a)?,
-        }),
-        Primitive::Cylinder { center, radius, half_height } => Some(Primitive::Cylinder {
-            center: *center,
-            radius: shrink_param(*radius, a)?,
-            half_height: shrink_param(*half_height, a)?,
-        }),
-        Primitive::Box { center, half_extents } => Some(Primitive::Box {
+            radius: shrink_or_collapse!(*radius),
+        })),
+        Primitive::Cylinder { center, radius, half_height } => {
+            Some(PrimFold::Shrunk(Primitive::Cylinder {
+                center: *center,
+                radius: shrink_or_collapse!(*radius),
+                half_height: shrink_or_collapse!(*half_height),
+            }))
+        }
+        Primitive::Box { center, half_extents } => Some(PrimFold::Shrunk(Primitive::Box {
             center: *center,
             half_extents: [
-                shrink_param(half_extents[0], a)?,
-                shrink_param(half_extents[1], a)?,
-                shrink_param(half_extents[2], a)?,
+                shrink_or_collapse!(half_extents[0]),
+                shrink_or_collapse!(half_extents[1]),
+                shrink_or_collapse!(half_extents[2]),
             ],
-        }),
-        Primitive::Torus { center, major_radius, minor_radius } => Some(Primitive::Torus {
-            center: *center,
-            major_radius: *major_radius,
-            minor_radius: shrink_param(*minor_radius, a)?,
-        }),
+        })),
+        Primitive::Torus { center, major_radius, minor_radius } => {
+            Some(PrimFold::Shrunk(Primitive::Torus {
+                center: *center,
+                major_radius: *major_radius,
+                minor_radius: shrink_or_collapse!(*minor_radius),
+            }))
+        }
         // Kegelstumpf: Erosion = Intersektion der erodierten Halbräume.
         // Deckel rücken um `a` ein (`hh − a`), die Wand rückt senkrecht um
         // `a` ein → radial um `a·slant/(2hh)`; die Radien an den NEUEN
@@ -162,7 +213,7 @@ pub(crate) fn fold_primitive_erosion(prim: &Primitive, a: f32) -> Option<Primiti
             if !(hh > 0.0) {
                 return None;
             }
-            let hh2 = shrink_param(hh, a)?;
+            let hh2 = shrink_or_collapse!(hh);
             let dr = r_bottom - r_top;
             let two_hh = 2.0 * hh;
             let slant = (dr * dr + two_hh * two_hh).sqrt();
@@ -170,10 +221,23 @@ pub(crate) fn fold_primitive_erosion(prim: &Primitive, a: f32) -> Option<Primiti
             let tilt = a * dr / two_hh;
             let r_b2 = offset_scalar_inward(r_bottom - tilt, radial);
             let r_t2 = offset_scalar_inward(*r_top + tilt, radial);
+            if r_b2 <= 1e-4 && r_t2 <= 1e-4 {
+                // Beide Radien der Wandgeraden weg → Radialausdehnung über
+                // die gesamte (bereits gültige) Resthöhe ≤ 0: leer.
+                return Some(PrimFold::Collapsed);
+            }
             if r_b2 <= 1e-4 || r_t2 <= 1e-4 {
+                // Nur eine Seite kollabiert: die wahre Erosion ist ein
+                // KÜRZERER Kegel mit Spitze — nicht in-family darstellbar,
+                // ohne die Deckelhöhen zu verschieben → verweigern
+                // (`f − δ` am exakten Kegel-Blatt bleibt nullmengen-exakt).
                 return None;
             }
-            Some(Primitive::Cone { r_bottom: r_b2, r_top: r_t2, half_height: hh2 })
+            Some(PrimFold::Shrunk(Primitive::Cone {
+                r_bottom: r_b2,
+                r_top: r_t2,
+                half_height: hh2,
+            }))
         }
         // Alles andere (HexPrism/Ellipsoid/Capsule/Thread/Gyroid/Mesh/
         // Sweeps als Primitive): nicht im A2-Scope → verweigern.
@@ -193,6 +257,10 @@ pub(crate) enum ErodedProfile {
     /// Sub-Id; bei ursprünglich positionalen Subs die ORIGINAL-Gruppen-Ids,
     /// womit der persistierte Sub-Raum erhalten bleibt).
     Rebuilt(Sketch2d, Vec<u32>),
+    /// Phase C1: das erodierte Profil ist LEER — cavalier_contours (bzw.
+    /// der in-family-Schrumpf) hat den Kollaps topologisch exakt
+    /// entschieden. Der Sweep-Körper verschwindet vollständig.
+    Vanished,
 }
 
 /// Erodiert ein Sweep-Profil geometrisch um `a` (mm). `revolve_gate`
@@ -218,7 +286,9 @@ pub(crate) fn erode_profile(
                 {
                     return None;
                 }
-                let r2 = shrink_param(*radius, a)?;
+                let Some(r2) = shrink_param(*radius, a) else {
+                    return Some(ErodedProfile::Vanished); // C1: r − a ≤ 0
+                };
                 return Some(ErodedProfile::InFamily(Sketch2d::Prim(
                     Sketch2dPrimitive::Circle { center: *center, radius: r2 },
                 )));
@@ -229,8 +299,12 @@ pub(crate) fn erode_profile(
                 {
                     return None;
                 }
-                let hx = shrink_param(half_extents[0], a)?;
-                let hy = shrink_param(half_extents[1], a)?;
+                let (Some(hx), Some(hy)) = (
+                    shrink_param(half_extents[0], a),
+                    shrink_param(half_extents[1], a),
+                ) else {
+                    return Some(ErodedProfile::Vanished); // C1: he − a ≤ 0
+                };
                 return Some(ErodedProfile::InFamily(Sketch2d::Prim(
                     Sketch2dPrimitive::Rectangle { center: *center, half_extents: [hx, hy] },
                 )));
@@ -244,14 +318,18 @@ pub(crate) fn erode_profile(
     let mut base = 0u32;
     let region = resolve_region(sketch, &mut base)?;
     if region.is_empty() {
-        return None; // leeres/verschwundenes Profil: Parameter-Kollaps ist Phase C
+        // C1: das Original-Profil löst bereits zur leeren Region auf —
+        // der Sweep trägt kein Material, die Erosion erst recht nicht.
+        return Some(ErodedProfile::Vanished);
     }
     if revolve_gate && !region_off_axis(&region) {
         return None;
     }
     let eroded = offset_region(&region, a64)?;
     if eroded.is_empty() {
-        return None;
+        // C1: cavalier hat den Kollaps topologisch exakt entschieden
+        // (Insel verschwindet, Profil unter 2a Breite): leeres Profil.
+        return Some(ErodedProfile::Vanished);
     }
     if revolve_gate && !region_off_axis(&eroded) {
         return None;

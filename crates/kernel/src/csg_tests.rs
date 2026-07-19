@@ -2105,6 +2105,128 @@ fn fold_erosion_cone_shifts_apex_keeps_slope() {
     }
 }
 
+// ─── offset_tree Phase C1 (#384): Blatt-Parameter-Kollaps bei Erosion ────
+
+/// C1: Erosion über die Trägergröße hinaus kollabiert das Blatt zu
+/// [`CsgNode::Empty`] — parametrisch exakt, kein `f − δ`-Fallback.
+#[test]
+fn fold_erosion_collapse_yields_empty_leaf() {
+    // Kugel r=5, Erosion 5 → leer (r − a ≤ Degenerationsgrenze).
+    let folded = CsgNode::Offset(
+        Box::new(fold_leaf(1, Primitive::Sphere { center: [1.0, 2.0, 3.0], radius: 5.0 })),
+        -5.0,
+    )
+    .fold_offset_leaves();
+    assert!(matches!(folded, CsgNode::Empty), "sphere must collapse, got {folded:?}");
+
+    // Box: die KLEINSTE Halbausdehnung entscheidet.
+    let folded = CsgNode::Offset(
+        Box::new(fold_leaf(2, Primitive::Box { center: [0.0; 3], half_extents: [10.0, 1.5, 8.0] })),
+        -1.5,
+    )
+    .fold_offset_leaves();
+    assert!(matches!(folded, CsgNode::Empty), "box must collapse, got {folded:?}");
+
+    // Zylinder: Höhen-Slab kollabiert vor dem Radius.
+    let folded = CsgNode::Offset(
+        Box::new(fold_leaf(3, Primitive::Cylinder { center: [0.0; 3], radius: 9.0, half_height: 2.0 })),
+        -2.0,
+    )
+    .fold_offset_leaves();
+    assert!(matches!(folded, CsgNode::Empty), "cylinder must collapse, got {folded:?}");
+
+    // Knapp UNTER der Grenze: weiterhin normales In-family-Falten.
+    let folded = CsgNode::Offset(
+        Box::new(fold_leaf(4, Primitive::Sphere { center: [0.0; 3], radius: 5.0 })),
+        -4.99,
+    )
+    .fold_offset_leaves();
+    assert!(
+        matches!(&folded, CsgNode::Leaf { primitive: Primitive::Sphere { .. }, .. }),
+        "borderline erosion must still fold in-family, got {folded:?}"
+    );
+}
+
+/// C1, „Erosion bis zum Verschwinden" (Plan §7-Test) am PROFIL-BOOLEAN:
+/// das Union-Profil hat kein exaktes 2D-SDF (min unterschätzt die Tiefe
+/// an der inneren Naht), `f − δ` löscht Material daher VERFRÜHT; der
+/// geometrische Fold hält es exakt — und cavalier entscheidet den
+/// echten Kollaps topologisch exakt → leeres Blatt statt Raten.
+#[test]
+fn fold_erosion_union_profile_exact_vanish_point() {
+    use crate::sketch2d::{Sketch2d, Sketch2dPrimitive};
+    // Peanut-Profil: zwei Kreise r=3 um (±2, 0). Wahre Taillen-Tiefe bei
+    // (0,0): √(9−4) ≈ 2.236; naives min meldet dort nur 1.0.
+    let profile = Sketch2d::Union(
+        Box::new(Sketch2d::Prim(Sketch2dPrimitive::Circle { center: [-2.0, 0.0], radius: 3.0 })),
+        Box::new(Sketch2d::Prim(Sketch2dPrimitive::Circle { center: [2.0, 0.0], radius: 3.0 })),
+    );
+    let extrude = |id: u32| CsgNode::Extrude {
+        id: FeatureId::from_u32(id),
+        sketch: Box::new(profile.clone()),
+        half_height: 10.0,
+        wall_subs: None,
+    };
+    // a = 2.0 < wahre Taillen-Tiefe: der Fold hält die Taille als
+    // Material; das naive f − δ hätte sie verfrüht gelöscht.
+    let folded = CsgNode::Offset(Box::new(extrude(7)), -2.0).fold_offset_leaves();
+    assert!(matches!(&folded, CsgNode::Extrude { .. }), "moderate erosion must fold");
+    let waist = [0.0f32, 0.0, 0.0];
+    let df = folded.sdf(waist, EvalMode::Visual);
+    assert!(df < -0.1, "folded field must keep the waist as material ({df})");
+    let naive = CsgNode::Offset(Box::new(extrude(7)), -2.0);
+    let dn = naive.sdf(waist, EvalMode::Visual);
+    assert!(
+        dn > 0.5,
+        "fixture self-check: naive f−δ erases the waist prematurely ({dn})"
+    );
+    // a = 3.05 > größter Innkreis (r=3): wahre Erosion leer → Empty (C1).
+    let gone = CsgNode::Offset(Box::new(extrude(8)), -3.05).fold_offset_leaves();
+    assert!(matches!(gone, CsgNode::Empty), "over-erosion must collapse to Empty");
+}
+
+/// C1, Plan §7-Test „Shell mit t > lokale Wandstärke": die
+/// Shell-Expansions-Bauart `Difference(S, Offset(S, −t))` — bei t über
+/// der halben Plattendicke kollabiert die Kavität zu Empty, die Bohrung
+/// „schließt sich" korrekt (kein Geisterkörper in der Kavität, Feld ≡ S).
+#[test]
+fn shell_expansion_overthick_wall_collapses_cavity() {
+    let plate = |id: u32| {
+        CsgNode::Difference(
+            Box::new(fold_leaf(id, Primitive::Box { center: [0.0; 3], half_extents: [30.0, 3.0, 20.0] })),
+            Box::new(CsgNode::Transform(
+                Transform::IDENTITY,
+                Box::new(fold_leaf(id + 1, Primitive::Cylinder {
+                    center: [0.0; 3],
+                    radius: 4.0,
+                    half_height: 10.0,
+                })),
+            )),
+        )
+    };
+    // t = 3.5 > halbe Plattendicke 3: erode(Box) kollabiert; die Kavität
+    // Offset(S,−t) = erode(Box) ∖ dilate(Cyl) wird leer.
+    let cavity = CsgNode::Offset(Box::new(plate(1)), -3.5)
+        .push_down_offsets()
+        .fold_offset_leaves();
+    let shell = CsgNode::Difference(Box::new(plate(1)), Box::new(cavity));
+    let solid = plate(1);
+    let mut rng_state = 0x1234_5678_u64;
+    let mut rnd = move || {
+        rng_state = rng_state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        ((rng_state >> 33) as f32 / (1u64 << 31) as f32) * 2.0 - 1.0
+    };
+    for _ in 0..2000 {
+        let p = [rnd() * 32.0, rnd() * 5.0, rnd() * 22.0];
+        let a = shell.sdf(p, EvalMode::Visual);
+        let b = solid.sdf(p, EvalMode::Visual);
+        assert!(
+            (a - b).abs() < 1e-4,
+            "over-thick shell must equal the solid at {p:?}: {a} vs {b}"
+        );
+    }
+}
+
 /// Blocker 2 (Audit): Fold-Arithmetik ≡ `offset_halfspace_inward` bit-exakt
 /// je Carrier-Familie — dieselbe SSOT-Funktion speist beide Seiten.
 #[test]
@@ -2183,17 +2305,19 @@ fn fold_preserves_leaf_keys_and_branch_map_keys() {
     }
 }
 
-/// Verweigerungs-Doktrin: degenerierte Parameter, Familien außerhalb des
-/// A2-Scopes und Dilation bleiben unangetastet (`f − δ` steht).
+/// Verweigerungs-Doktrin: Familien außerhalb des A2-Scopes und Dilation
+/// bleiben unangetastet (`f − δ` steht). Erosion ÜBER die Trägergröße ist
+/// seit Phase C1 KEIN Verweigerungsfall mehr, sondern der exakte
+/// parametrische Kollaps (leeres Blatt, Plan §7.1).
 #[test]
 fn fold_refuses_degenerate_out_of_scope_and_dilation() {
-    // Degeneriert: Erosion ≥ Radius.
+    // Erosion ≥ Radius: Phase C1 — kollabiert exakt zu Empty.
     let n = CsgNode::Offset(
         Box::new(fold_leaf(1, Primitive::Sphere { center: [0.0; 3], radius: 2.0 })),
         -2.5,
     )
     .fold_offset_leaves();
-    assert!(matches!(n, CsgNode::Offset(_, d) if d == -2.5), "degenerate must refuse");
+    assert!(matches!(n, CsgNode::Empty), "over-erosion collapses to Empty (C1)");
     // Out-of-scope-Familie (Capsule ist nicht in der Audit-Liste).
     let n = CsgNode::Offset(
         Box::new(fold_leaf(2, Primitive::Capsule { radius: 5.0, half_height: 4.0 })),
@@ -2429,7 +2553,9 @@ fn fold_extrude_refusals_keep_f_minus_delta() {
         -5.5,
     )
     .fold_offset_leaves();
-    assert!(matches!(n, CsgNode::Offset(_, _)), "erosion ≥ half_height must refuse");
+    // Phase C1: Erosion ≥ half_height ist der exakte Slab-Kollaps
+    // (Erosion distribuiert über die Prisma-Intersektion) → Empty.
+    assert!(matches!(n, CsgNode::Empty), "erosion ≥ half_height collapses to Empty (C1)");
 }
 
 /// In-family-Schnellpfad: Kreis-/Rechteck-Profile schrumpfen ohne Umbau,
@@ -2631,7 +2757,7 @@ fn weave_edges_lie_on_the_folded_opcode_field() {
 
     // Opcode-Feld aus dem Mesher-Baupfad (mit Pushdown + Fold).
     let (bounded, _) =
-        crate::body::build_bounded_with_primitives(&features, &body.feature_indices);
+        crate::body::build_bounded_with_primitives(&features, &body.feature_indices, crate::offset_channel::CHANNEL_TOL_RENDER);
     let compiled = crate::sdf_compiler::compile_body(&bounded);
     assert!(compiled.volumes.is_empty());
 
