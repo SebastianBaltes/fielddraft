@@ -51,7 +51,7 @@ import {
   OP_WARP_PUSH, OP_WARP_POP, OP_WARP_TWIST, OP_WARP_BEND,
   OP_WARP_TRANSFORM, OP_WARP_REVOLVE,
   OP_WARP_HELIX, OP_HELIX_SCALE, OP_WARP_SWEEP,
-  OP_MASKED_BLEND, OP_END,
+  OP_MASKED_BLEND, OP_ARC_CHANNEL, OP_END,
   worldToLocalFn, halfspaceLocalFn, sdfBoxFn, sdfSphereFn, sdfCylinderFn,
   sdfTorusFn, sdfConeFn, sdfCapsuleFn, sdfHexPrismFn,
   sdfEllipsoidFn, sdfGyroidFn, sdfThreadFn,
@@ -761,6 +761,130 @@ export function buildVmSdfEvalFn(
         const uResult = uSmooth.mix(uSharp, hardW);
         const dResult = dSmooth.mix(dSharp, hardW);
         pushV(uResult.mix(dResult, isDiff));
+
+      }).ElseIf(tag.equal(int(OP_ARC_CHANNEL)), () => {
+        // offset_tree Phase B (#384): Kanal-Korrekturkörper an einem dualen
+        // Offset-Stopp — 1:1-Spiegel der CPU-Referenz
+        // (`kernel offset_channel::channel_apply` / `eval_opcodes`
+        // OP_ARC_CHANNEL-Arm), inklusive des exakten Bounding-Sphere-Skips
+        // (feldwert-identisch). Header: n(1) concave(1) delta(1) trust(1)
+        // gate(1) bound_c(3) bound_r(1); je Bogen 27 Floats:
+        // c(3) u(3) v(3) r(1) sweep(1; <0 = Segment) bc(3) br(1)
+        // m1s(3) m2s(3) m1e(3) m2e(3).
+        const nArcs = floatToIntFn({ v: rd() }).toVar();
+        const concave = rd().toVar();
+        const delta = rd().toVar();
+        const trust = rd().toVar();
+        const gateW = rd().toVar();
+        const bcx = rd(), bcy = rd(), bcz = rd();
+        const br = rd().toVar();
+        const arcBase = pc.toVar();
+        pc.addAssign(nArcs.mul(27));
+        const d = popV().toVar();
+
+        const p = vec3(ptx, pty, ptz).toVar();
+        const dbs = p.sub(vec3(bcx, bcy, bcz)).length().sub(br);
+        const signedD = concave.greaterThan(0.5).select(d.negate(), d);
+        const result = float(0).toVar();
+        If(trust.sub(dbs).lessThanEqual(signedD), () => {
+          result.assign(d);
+        }).Else(() => {
+          // argmin über die Bögen (Bounding-Sphere-Pruning je Bogen).
+          const best = float(1e30).toVar();
+          const bestQ = vec3(0, 0, 0).toVar();
+          const bestM1 = vec3(0, 0, 0).toVar();
+          const bestM2 = vec3(0, 0, 0).toVar();
+          const kk = int(0).toVar();
+          const rdA = (base: any, off: number) => opBuf.element(base.add(int(off)));
+          const rdA3 = (base: any, off: number) =>
+            vec3(
+              opBuf.element(base.add(int(off))),
+              opBuf.element(base.add(int(off + 1))),
+              opBuf.element(base.add(int(off + 2))),
+            );
+          Loop(nArcs, () => {
+            const b = arcBase.add(kk.mul(27)).toVar();
+            const abc = rdA3(b, 11);
+            const abr = rdA(b, 14);
+            If(p.sub(abc).length().sub(abr).lessThan(best), () => {
+              const c = rdA3(b, 0).toVar();
+              const u = rdA3(b, 3).toVar();
+              const v = rdA3(b, 6).toVar();
+              const r = rdA(b, 9).toVar();
+              const sweep = rdA(b, 10).toVar();
+              const de = float(0).toVar();
+              const q = vec3(0, 0, 0).toVar();
+              const t = float(0).toVar();
+              If(sweep.lessThan(0.0), () => {
+                // Segment c → c + u·r.
+                const len = max(r, 1e-12);
+                t.assign(clamp(p.sub(c).dot(u).div(len), 0.0, 1.0));
+                q.assign(c.add(u.mul(t.mul(len))));
+                de.assign(p.sub(q).length());
+              }).Else(() => {
+                const dc = p.sub(c).toVar();
+                const x = dc.dot(u).toVar();
+                const y = dc.dot(v).toVar();
+                const rho = x.mul(x).add(y.mul(y)).sqrt();
+                If(rho.lessThan(1e-9), () => {
+                  q.assign(c.add(u.mul(r)));
+                  t.assign(0.0);
+                  de.assign(p.sub(q).length());
+                }).Else(() => {
+                  const phi = atan2Fn({ y, x }).toVar();
+                  If(phi.lessThan(0.0), () => {
+                    phi.addAssign(6.2831853);
+                  });
+                  If(phi.lessThanEqual(sweep), () => {
+                    const cs = phi.cos(), sn = phi.sin();
+                    q.assign(c.add(u.mul(cs).add(v.mul(sn)).mul(r)));
+                    t.assign(phi.div(sweep));
+                    de.assign(p.sub(q).length());
+                  }).Else(() => {
+                    const q0 = c.add(u.mul(r)).toVar();
+                    const csw = sweep.cos(), ssw = sweep.sin();
+                    const q1 = c.add(u.mul(csw).add(v.mul(ssw)).mul(r)).toVar();
+                    const d0 = p.sub(q0).length().toVar();
+                    const d1 = p.sub(q1).length().toVar();
+                    If(d0.lessThanEqual(d1), () => {
+                      q.assign(q0);
+                      t.assign(0.0);
+                      de.assign(d0);
+                    }).Else(() => {
+                      q.assign(q1);
+                      t.assign(1.0);
+                      de.assign(d1);
+                    });
+                  });
+                });
+              });
+              If(de.lessThan(best), () => {
+                best.assign(de);
+                bestQ.assign(q);
+                // nlerp der dualen Kegelvektoren am Fußpunkt.
+                const m1 = rdA3(b, 15).add(rdA3(b, 21).sub(rdA3(b, 15)).mul(t)).toVar();
+                const m2 = rdA3(b, 18).add(rdA3(b, 24).sub(rdA3(b, 18)).mul(t)).toVar();
+                const n1 = m1.length(), n2 = m2.length();
+                bestM1.assign(n1.greaterThan(1e-9).select(m1.div(n1), rdA3(b, 15)));
+                bestM2.assign(n2.greaterThan(1e-9).select(m2.div(n2), rdA3(b, 18)));
+              });
+            });
+            kk.addAssign(1);
+          });
+          If(best.greaterThanEqual(1e29), () => {
+            result.assign(d);
+          }).Else(() => {
+            const dq = p.sub(bestQ);
+            const s1 = dq.dot(bestM1);
+            const s2 = dq.dot(bestM2);
+            const gate = concave.greaterThan(0.5).select(gateW.sub(d), gateW.add(d));
+            const w = min(min(min(s1, s2), min(best.sub(delta), trust.sub(best))), gate);
+            result.assign(
+              concave.greaterThan(0.5).select(min(d, w.negate()), max(d, w)),
+            );
+          });
+        });
+        pushV(result);
 
       }).ElseIf(tag.equal(int(OP_END)), () => {
         Break();

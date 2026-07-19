@@ -57,6 +57,11 @@ export const OP_HELIX_SCALE    = 0x37;
 export const OP_WARP_SWEEP     = 0x38;
 
 export const OP_MASKED_BLEND   = 0x40;
+// offset_tree Phase B (#384): Kanal-Korrekturkörper an einem dualen
+// Offset-Stopp — pops den naiven Stopp-Wert, pusht die korrigierte
+// Distanz. Header 9 Floats + 27 je Bogen (Spiegel von
+// `kernel/src/offset_channel.rs::channel_apply`).
+export const OP_ARC_CHANNEL    = 0x41;
 
 export const OP_END            = 0xFF;
 

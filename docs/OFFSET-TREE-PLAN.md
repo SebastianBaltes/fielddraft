@@ -77,7 +77,8 @@ Zielgenauigkeit: Nullstellenmenge des Offsets auf Kurventoleranz
 ## 4. Pass-Pipeline
 
 Regen-Pfad nach vollem Ausbau (heute produktiv bis einschließlich
-Phase A / `fold_offset_leaves`, v0.16.6; offen sind die Phasen B–D):
+Phase B / `synthesize_offset_channels`, v0.16.7; offen sind die
+Phasen C–D):
 
 ```mermaid
 graph TD
@@ -158,6 +159,28 @@ CGAL-Server-Meshers (Opcode-Änderungen); Feature-Snap-E2E an einer
 offsetteten Kante.
 
 ## 6. Phase B — Kanal-Korrekturkörper an den dualen Fällen
+
+**Status: umgesetzt in v0.16.7** (`crates/kernel/src/offset_channel.rs`,
+`BoundedCsg::ArcChannel`, Opcode `OP_ARC_CHANNEL` 0x41 in allen fünf
+Evaluatoren: Baum-Eval, CPU-Interpreter, sdf-vm/deferred-TSL,
+fidget-Bridge, CGAL-C++). Gewählte Verfügbarkeits-Architektur:
+**synchron, einstufig** — die Kantenliste kommt nicht aus dem
+asynchronen Produktions-Weave, sondern aus dessen Seed-Maschinerie
+(Branch-Enumeration + SSI-Seeds) plus krümmungs-adaptivem Feld-Tracer
+auf den Member-Feldern des Stopps, direkt in
+`build_bounded_*_rounded`; Weave-Baupfad und Pick-Baum bleiben naiv
+(Weave-Refresh = Phase C). Gegenüber dem Spike trägt der Keil zwei
+zusätzliche Nichtkonvexitäts-Wächter-Terme (Trust-Radius `K − de`,
+Naiv-Gate `±d + c·δ`), die die Nullmenge beweisbar nicht ändern, aber
+Kegel-Leckage über Luftspalte strukturell abschalten. Messwerte
+(Steinmetz, `offset_channel_tests.rs`): Zero-Set-Fehler 0.0022 mm bei
+54 Bögen (Render-Klasse, Ziel ≤ 0.01) bzw. 0.00046 mm bei 127 Bögen
+(Export-Klasse, Ziel ≤ 0.001 mit 128); notch_union-Sliver (α=90°/60°,
+δ=2) geschlossen auf < 0.02 mm; Tape-Parität < 2e-5; CGAL-Golden 28
+Szenen grün. Offen für Phase C/D: Ecken-Kugeln an Triple-Junctions
+(Kanäle enden dort), Kanal-Provenance hängt bis zum echten
+Offset/Shell-Feature am kleineren Eltern-Feature (0x700+-Band steht),
+Pick-Baum ohne Kanäle, Weave-Refresh.
 
 Ziel: An den Stopp-Knoten der dualen Fälle (Intersection/Difference bei +δ,
 Union bei −δ) das verbleibende `f − δ` durch die exakte R&R-Zerlegung
