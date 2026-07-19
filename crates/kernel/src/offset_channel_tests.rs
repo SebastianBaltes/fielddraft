@@ -719,6 +719,414 @@ fn tangential_seams_are_skipped() {
     assert_eq!(n_ch, 0, "tangentiale Nähte dürfen keine Kanäle bekommen");
 }
 
+// ─── Phase C2: Dead-Channel-Pruning ─────────────────────────────────
+
+/// Union-Nachbar überdeckt den kompletten Notch-Naht-Schlauch tief mit
+/// Material → der Kanal ist tot und wird gepruned; das Feld bleibt im
+/// Oberflächenband (|f| ≤ 0.9·PRUNE_BAND) bit-identisch und flippt
+/// nirgends ein Vorzeichen (Zertifikat, siehe `prune_dead_channels`).
+#[test]
+fn prune_dead_channel_under_union_neighbor_is_band_neutral() {
+    let covered = CsgNode::Union(
+        Box::new(notch_union_node(90.0, 2.0)),
+        Box::new(leaf_box(9, [70.0, 70.0, 70.0])),
+    );
+    let unpruned = synth(&covered, 0.005);
+    let (n0, _) = count_channels(&unpruned);
+    assert!(n0 >= 1, "fixture self-check: channel must be synthesized");
+
+    let mut pruned = synth(&covered, 0.005);
+    let stats = prune_dead_channels(&mut pruned, 0.005);
+    let (n1, _) = count_channels(&pruned);
+    assert_eq!(n1, 0, "covered channel must be pruned (stats {stats:?})");
+    assert_eq!(stats.pruned, n0);
+
+    let mut rng = Rng(0xC2C2);
+    let mut band_checked = 0usize;
+    for _ in 0..20000 {
+        let p = [
+            rng.range(-90.0, 90.0) as f32,
+            rng.range(-90.0, 90.0) as f32,
+            rng.range(-90.0, 90.0) as f32,
+        ];
+        let a = unpruned.sdf(p, EvalMode::Visual);
+        let b = pruned.sdf(p, EvalMode::Visual);
+        // Nie ein Vorzeichenwechsel, nirgends.
+        assert_eq!(a > 0.0, b > 0.0, "sign flip at {p:?}: {a} vs {b}");
+        // Im Oberflächenband bit-identisch.
+        if a.abs() <= 0.9 * PRUNE_BAND {
+            assert_eq!(a.to_bits(), b.to_bits(), "band diff at {p:?}: {a} vs {b}");
+            band_checked += 1;
+        }
+    }
+    assert!(band_checked > 100, "band sampling too thin ({band_checked})");
+}
+
+/// Gegenprobe: ein FERNER Union-Nachbar überdeckt nichts — der Kanal
+/// bleibt (Pruning ist konservativ, Intervall-Vorstufe + Zertifikat).
+#[test]
+fn prune_keeps_channel_without_coverage() {
+    let apart = CsgNode::Union(
+        Box::new(notch_union_node(90.0, 2.0)),
+        Box::new(CsgNode::Transform(
+            Transform {
+                translate: [400.0, 0.0, 0.0],
+                rotation: [0.0, 0.0, 0.0, 1.0],
+                scale: [1.0; 3],
+            },
+            Box::new(leaf_box(9, [20.0, 20.0, 20.0])),
+        )),
+    );
+    let mut tree = synth(&apart, 0.005);
+    let (n0, _) = count_channels(&tree);
+    assert!(n0 >= 1);
+    let stats = prune_dead_channels(&mut tree, 0.005);
+    let (n1, _) = count_channels(&tree);
+    assert_eq!(n1, n0, "uncovered channel must survive (stats {stats:?})");
+    assert_eq!(stats.pruned, 0);
+}
+
+// ─── Phase C4: Vertex-Kugeln an Triple-Junctions ────────────────────
+
+/// Drei orthogonale Platten (Boden + zwei Wände) bilden eine konkave
+/// Raumecke; Material lokal {x≤0} ∪ {y≤0} ∪ {z≤0}, Luft = +Oktant.
+fn corner_union_node(delta: f64) -> CsgNode {
+    let plate = |id: u32, c: [f32; 3], h: [f32; 3]| {
+        CsgNode::Transform(
+            Transform {
+                translate: c,
+                rotation: [0.0, 0.0, 0.0, 1.0],
+                scale: [1.0; 3],
+            },
+            Box::new(leaf_box(id, h)),
+        )
+    };
+    CsgNode::Offset(
+        Box::new(CsgNode::Union(
+            Box::new(CsgNode::Union(
+                Box::new(plate(1, [0.0, -5.0, 0.0], [40.0, 5.0, 40.0])),
+                Box::new(plate(2, [-5.0, 0.0, 0.0], [5.0, 40.0, 40.0])),
+            )),
+            Box::new(plate(3, [0.0, 0.0, -5.0], [40.0, 40.0, 5.0])),
+        )),
+        -(delta as f32),
+    )
+}
+
+/// Exaktes lokales Referenz-SDF des wahr erodierten Ecken-Körpers:
+/// Material ⇔ dist(p, +Oktant) ≥ δ; nahe der Ecke (|p|∞ ≤ 5 ≪
+/// Plattendicke 10) ist `δ − dist` das exakte SDF.
+fn corner_reference(delta: f64) -> impl Fn([f64; 3]) -> f64 {
+    move |p: [f64; 3]| {
+        let dx = p[0].min(0.0);
+        let dy = p[1].min(0.0);
+        let dz = p[2].min(0.0);
+        delta - (dx * dx + dy * dy + dz * dz).sqrt()
+    }
+}
+
+/// Entfernt alle Vertex-Kugeln (Messhilfe „Kanäle-ohne-C4").
+fn strip_verts(node: &mut BoundedCsg) {
+    match node {
+        BoundedCsg::ArcChannel { inner, verts, .. } => {
+            verts.clear();
+            strip_verts(inner);
+        }
+        BoundedCsg::Union { left, right, .. }
+        | BoundedCsg::Difference { left, right, .. }
+        | BoundedCsg::Intersection { left, right, .. } => {
+            strip_verts(left);
+            strip_verts(right);
+        }
+        BoundedCsg::Offset { inner, .. } => strip_verts(inner),
+        _ => {}
+    }
+}
+
+/// Nullmengen-Fehler an der Ecke entlang radialer Strahlen in den
+/// Material-Oktanten (wahre Fläche = Kugel-Patch r = δ um die Ecke).
+fn corner_zero_err(tree: &BoundedCsg, delta: f64, n_rays: usize, seed: u64) -> f64 {
+    let reference = corner_reference(delta);
+    let field = |p: [f64; 3]| -> f64 {
+        tree.sdf([p[0] as f32, p[1] as f32, p[2] as f32], EvalMode::Visual) as f64
+    };
+    let mut rng = Rng(seed);
+    let mut max_err = 0.0f64;
+    let mut hits = 0usize;
+    while hits < n_rays {
+        // Richtung strikt im −Oktanten (Kugel-Patch-Zone, Abstand zu den
+        // Facetten, damit die Referenz dort exakt der Patch ist).
+        let u = [
+            -rng.range(0.25, 1.0),
+            -rng.range(0.25, 1.0),
+            -rng.range(0.25, 1.0),
+        ];
+        let n = norm64(u);
+        let u = scale64(u, 1.0 / n);
+        let eval_r = |r: f64| field(scale64(u, r));
+        // Vorzeichenwechsel im Fenster um r = δ suchen (erosionsseitig
+        // liegt die naive Fläche bei bis zu δ·√3).
+        let r_lo = (delta * 0.5).max(0.05);
+        let r_hi = delta * 2.2;
+        let mut prev_r = r_lo;
+        let mut prev_s = eval_r(r_lo) > 0.0;
+        let mut found = None;
+        for k in 1..=96 {
+            let r = r_lo + (r_hi - r_lo) * k as f64 / 96.0;
+            let s = eval_r(r) > 0.0;
+            if s != prev_s {
+                let (mut lo, mut hi) = (prev_r, r);
+                for _ in 0..44 {
+                    let m = 0.5 * (lo + hi);
+                    if (eval_r(m) > 0.0) == prev_s {
+                        lo = m;
+                    } else {
+                        hi = m;
+                    }
+                }
+                found = Some(hi);
+                break;
+            }
+            prev_r = r;
+            prev_s = s;
+        }
+        if let Some(r0) = found {
+            max_err = max_err.max(reference(scale64(u, r0)).abs());
+            hits += 1;
+        }
+    }
+    max_err
+}
+
+/// Plan §7 / C4: Box-Ecke konkav unter Erosion — die Vertex-Kugel
+/// schließt den Ecken-Nullmengenfehler, den die Kanäle allein lassen.
+#[test]
+fn triple_junction_vertex_sphere_closes_corner() {
+    let delta = 2.0f64;
+    let node = corner_union_node(delta);
+    let corrected = synth(&node, 0.005);
+    let n_verts = count_vertex_spheres(&corrected);
+    assert!(
+        n_verts >= 1,
+        "triple junction must synthesize a vertex sphere (got {n_verts})"
+    );
+    let (n_ch, _) = count_channels(&corrected);
+    assert!(n_ch >= 3, "expected ≥ 3 seam channels, got {n_ch}");
+
+    // Vorher/Nachher-Messung (metricity-lab-Stil):
+    let naive = BoundedCsg::from_csg(&node);
+    let mut channels_only = synth(&node, 0.005);
+    strip_verts(&mut channels_only);
+
+    let err_naive = corner_zero_err(&naive, delta, 300, 0xC4C4);
+    let err_channels = corner_zero_err(&channels_only, delta, 300, 0xC4C4);
+    let err_full = corner_zero_err(&corrected, delta, 300, 0xC4C4);
+
+    // Selbstchecks der Messreihe: naiv ≈ δ·(√3−1)-Klasse an der Ecke,
+    // Kanäle allein lassen einen Ecken-Rest.
+    assert!(
+        err_naive > 0.5,
+        "fixture self-check: naive corner error too small ({err_naive:.4})"
+    );
+    assert!(
+        err_full <= 0.03,
+        "corner zero-set error after C4: {err_full:.5} mm (naive {err_naive:.4}, channels-only {err_channels:.4})"
+    );
+    assert!(
+        err_full < err_channels * 0.5 || err_channels <= 0.03,
+        "vertex sphere must clearly improve on channels-only ({err_channels:.4} → {err_full:.4})"
+    );
+
+    // March-Sicherheit: Außenfeld (Luftseite) überschätzt die wahre
+    // Distanz im Ecken-Band nicht über die Toleranzklasse hinaus.
+    let reference = corner_reference(delta);
+    let mut rng = Rng(0xAFFE);
+    let mut worst_over = f64::NEG_INFINITY;
+    for _ in 0..4000 {
+        let u = [
+            -rng.range(0.1, 1.0),
+            -rng.range(0.1, 1.0),
+            -rng.range(0.1, 1.0),
+        ];
+        let n = norm64(u);
+        let u = scale64(u, 1.0 / n);
+        let p = scale64(u, delta * rng.range(0.1, 0.95));
+        let f_ref = reference(p); // > 0: wahre Luft (Innenrest der Ecke)
+        if f_ref <= 0.0 {
+            continue;
+        }
+        let f = corrected.sdf([p[0] as f32, p[1] as f32, p[2] as f32], EvalMode::Visual) as f64;
+        worst_over = worst_over.max(f - f_ref);
+    }
+    assert!(
+        worst_over <= 0.03,
+        "corner outside overestimation {worst_over:.5} mm"
+    );
+}
+
+// ─── Phase C3: Weave-Refresh des expandierten Körpers ───────────────
+
+/// Plan §7.3: der Weave-Baupfad sieht den EXPANDIERTEN Körper. Kanten des
+/// eroded-Notch-B-Reps liegen auf dem korrigierten Feld; die naive
+/// Naht-Ecke (die im korrigierten Feld ≈ 0.8 mm tief im Material liegt)
+/// taucht nicht mehr als Kante auf. Ein Edge-Fillet, dessen Mask-Polyline
+/// auf der offsetteten Naht liegt, verformt das Feld genau dort.
+#[test]
+fn weave_refresh_offset_body_and_fillet_on_offset_edge() {
+    use fielddraft_protocol::BoolOp;
+
+    let mut f = crate::csg::DecodedFeature::from_parts(
+        FeatureId::from_u32(1),
+        "notch".into(),
+        BoolOp::New,
+        Primitive::Box { center: [0.0; 3], half_extents: [1.0; 3] },
+        Transform::IDENTITY,
+        crate::csg::PrimitiveModifiers::NONE,
+        vec![],
+    );
+    f.node = notch_union_node(90.0, 2.0);
+    let features = vec![f];
+
+    // Weave-Baupfad: expandiert (Kanäle enthalten).
+    let bounded = crate::body::build_bounded_for_body_local(
+        &features,
+        &[0],
+        &Transform::IDENTITY,
+    );
+    let (n_ch, _) = count_channels(&bounded);
+    assert!(n_ch >= 1, "weave build path must carry channels (C3)");
+
+    // Voll weben (Octree-Route — ensure_brep erzwingt sie bei Kanälen).
+    let woven = crate::body::weave_all(&features);
+    assert_eq!(woven.len(), 1);
+    let (brep, _) = &woven[0];
+    assert!(brep.edge_count() > 0, "eroded notch must weave edges");
+
+    let mut deepest = 0.0f32;
+    let mut n_pts = 0usize;
+    let mut on_edge = |p: [f32; 3]| {
+        // Box-Enden ausnehmen (|z| < 40; die Kappen sind hier egal).
+        if p[2].abs() > 40.0 {
+            return;
+        }
+        let d = bounded.sdf(p, EvalMode::Visual);
+        deepest = deepest.min(d);
+        n_pts += 1;
+    };
+    for e in &brep.edges {
+        for p in crate::brep::edge_sampling::sample_edge(&e.geometry) {
+            on_edge([p[0] as f32, p[1] as f32, p[2] as f32]);
+        }
+    }
+    assert!(n_pts > 10, "expected sampled edge points, got {n_pts}");
+    // Kanten liegen auf dem KORRIGIERTEN Feld: nirgends tief im Material.
+    // (Die naive Naht-Ecke läge bei ≈ −0.8 im korrigierten Feld.)
+    assert!(
+        deepest > -0.3,
+        "woven edge dives {deepest} mm into the corrected field — stale naive edge list"
+    );
+
+    // Fixture-Selbstcheck: im NAIVEN Baum (ohne Kanäle) existiert die
+    // Naht-Ecke, und sie liegt im korrigierten Feld im Material.
+    let naive_corner = {
+        // α=90°: naive Ecke bei r = δ/sin(45°) auf der Material-Bisektrix.
+        let bis = [-(0.0f32 + (-1.0)), -(1.0 + 0.0)]; // Richtung siehe notch_check
+        let n = (bis[0] * bis[0] + bis[1] * bis[1]).sqrt();
+        let r = 2.0f32 / (45.0f32).to_radians().sin();
+        [bis[0] / n * r, bis[1] / n * r, 0.0]
+    };
+    let d_corner = bounded.sdf(naive_corner, EvalMode::Visual);
+    assert!(
+        d_corner < -0.3,
+        "fixture self-check: naive seam corner should be buried ({d_corner})"
+    );
+
+    // Fillet auf der offsetteten Naht: Mask-Polyline entlang des
+    // Rinnen-Bodens (Punkt der korrigierten Nullmenge auf der Bisektrix,
+    // r = δ). Das Feld MUSS sich im Tube ändern und fern davon nicht.
+    let groove = {
+        let bis = [-(0.0f32 + (-1.0)), -(1.0 + 0.0)];
+        let n = (bis[0] * bis[0] + bis[1] * bis[1]).sqrt();
+        [bis[0] / n * 2.0, bis[1] / n * 2.0]
+    };
+    let fillet = crate::csg::EdgeFillet {
+        fillet_id: FeatureId::from_u32(99),
+        feature_a: FeatureId::from_u32(1),
+        feature_b: FeatureId::from_u32(2),
+        branch_a: 0,
+        branch_b: 0,
+        mask_polyline: vec![
+            [groove[0], groove[1], -10.0],
+            [groove[0], groove[1], 10.0],
+        ],
+        mask_radius: 6.0,
+        blend_radius: 3.0,
+        blend_mode: crate::csg::BlendMode::Fillet,
+    };
+    let plain = crate::body::build_bounded_for_body_rounded(
+        &features, &[0], None, &[], CHANNEL_TOL_RENDER,
+    );
+    let filleted = crate::body::build_bounded_for_body_rounded(
+        &features, &[0], None, std::slice::from_ref(&fillet), CHANNEL_TOL_RENDER,
+    );
+    let probe_in = [groove[0], groove[1], 0.0];
+    let din = (plain.sdf(probe_in, EvalMode::Visual)
+        - filleted.sdf(probe_in, EvalMode::Visual))
+    .abs();
+    assert!(
+        din > 0.05,
+        "fillet on the offset edge must reshape the field in the mask tube (Δ={din})"
+    );
+    // Fern des Tubes bleibt der Unterschied in der Sliver-Klasse
+    // (≤ δ·(1/sin(α/2)−1) ≈ 0.83): der MaskedBlend stoppt den Pushdown,
+    // Kanäle entfallen mit Fillet ganz (dokumentierte §9-Einschränkung
+    // „Offset über Blend bleibt f−δ") — aber der Fillet selbst wirkt
+    // nicht über seinen Tube hinaus.
+    let probe_far = [groove[0], groove[1], 45.0];
+    let dfar = (plain.sdf(probe_far, EvalMode::Visual)
+        - filleted.sdf(probe_far, EvalMode::Visual))
+    .abs();
+    assert!(
+        dfar < 0.9,
+        "far-field difference must stay in the sliver class (Δfar={dfar})"
+    );
+}
+
+/// Tape-/Dual-Parität des OP_VERTEX_SPHERE (alle Spiegel identisch).
+#[test]
+fn vertex_sphere_tape_and_dual_parity() {
+    let node = corner_union_node(2.0);
+    let bounded = synth(&node, 0.005);
+    assert!(count_vertex_spheres(&bounded) >= 1);
+    let compiled = crate::sdf_compiler::compile_body(&bounded);
+    assert!(
+        compiled
+            .opcodes
+            .iter()
+            .any(|v| v.to_bits() == crate::sdf_compiler::OP_VERTEX_SPHERE),
+        "kompiliertes Tape enthält kein OP_VERTEX_SPHERE"
+    );
+    let mut rng = Rng(4711);
+    let mut max_tape = 0.0f32;
+    let mut max_dual = 0.0f32;
+    for _ in 0..4000 {
+        let near_corner = rng.f() < 0.5;
+        let s = if near_corner { 6.0 } else { 45.0 };
+        let p = [
+            rng.range(-s, s) as f32,
+            rng.range(-s, s) as f32,
+            rng.range(-s, s) as f32,
+        ];
+        let d_tree = bounded.sdf(p, EvalMode::Visual);
+        let d_tape = crate::sdf_compiler::eval_opcodes(&compiled.opcodes, p);
+        max_tape = max_tape.max((d_tree - d_tape).abs());
+        let (d_dual, _) = crate::sdf_dual::sdf_gradient(&bounded, p);
+        max_dual = max_dual.max((d_tree - d_dual).abs());
+    }
+    assert!(max_tape < 2e-5, "Tape-Parität verletzt: {max_tape:.3e}");
+    assert!(max_dual < 2e-5, "Dual-Parität verletzt: {max_dual:.3e}");
+}
+
 #[test]
 fn channel_provenance_uses_reserved_band() {
     let node = steinmetz_node(2.0);
@@ -749,4 +1157,6 @@ fn channel_provenance_uses_reserved_band() {
     collect(&bounded2, &mut branches2);
     assert_eq!(branches, branches2, "Kanal-Provenance ist nicht deterministisch");
 }
+
+
 

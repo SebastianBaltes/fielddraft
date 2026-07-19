@@ -272,10 +272,13 @@ fn node_to_tree(node: &BoundedCsg, p: &[Tree; 3]) -> Result<Tree, String> {
         // Gewinner via `compare`-Selects, Bogen-Distanz closed-form mit
         // `atan2`. Kein Bounding-Sphere-Skip (feldwert-identisch, der Skip
         // ist reine Laufzeit-Optimierung der numerischen Interpreter).
-        BoundedCsg::ArcChannel { inner, channels, .. } => {
+        BoundedCsg::ArcChannel { inner, channels, verts, .. } => {
             let mut d = node_to_tree(inner, p)?;
             for ch in channels {
                 d = channel_to_tree(&d, p, ch);
+            }
+            for vs in verts {
+                d = vertex_to_tree(&d, p, vs);
             }
             Ok(d)
         }
@@ -436,13 +439,55 @@ fn channel_to_tree(
     } else {
         Tree::from(ch.gate as f64) + d.clone()
     };
-    let w = s1
+    // Rollen-Trennung (C4) — Spiegel von `channel_apply`.
+    let w_geo = s1
         .min(s2)
         .min(best.clone() - ch.delta as f64)
-        .min(neg(best) + ch.trust as f64)
-        .min(gate);
+        .min(neg(best) + ch.trust as f64);
+    let w = w_geo.clone().min(gate);
     if ch.concave {
-        d.clone().min(neg(w))
+        let zero = Tree::from(0.0);
+        let clamp = d.clone().min(neg(w_geo.clone()));
+        let inactive = select_lt(&zero, &w_geo, d, &clamp);
+        let active = d.clone().min(neg(w.clone()));
+        select_lt(&zero, &w, &active, &inactive)
+    } else {
+        d.clone().max(w)
+    }
+}
+
+/// Spiegel von [`crate::offset_channel::vertex_apply`] als Tree
+/// (offset_tree Phase C4). Deutlich einfacher als der Kanal: Punkt-Spine,
+/// keine argmin-Selektion — ρ = |p − v|, drei konstante Gates.
+fn vertex_to_tree(
+    d: &Tree,
+    p: &[Tree; 3],
+    vs: &crate::offset_channel::VertexSphere,
+) -> Tree {
+    let v = t_const3(vs.v);
+    let dq = t_sub(p, &v);
+    let rho = t_norm(&dq);
+    let s1 = t_dot(&dq, &t_const3(vs.gates[0]));
+    let s2 = t_dot(&dq, &t_const3(vs.gates[1]));
+    let s3 = t_dot(&dq, &t_const3(vs.gates[2]));
+    let gate = if vs.concave {
+        Tree::from(vs.gate as f64) - d.clone()
+    } else {
+        Tree::from(vs.gate as f64) + d.clone()
+    };
+    // Rollen-Trennung (C4) — Spiegel von `vertex_apply`.
+    let w_geo = s1
+        .min(s2)
+        .min(s3)
+        .min(rho.clone() - vs.delta as f64)
+        .min(neg(rho) + vs.trust as f64);
+    let w = w_geo.clone().min(gate);
+    if vs.concave {
+        let zero = Tree::from(0.0);
+        let clamp = d.clone().min(neg(w_geo.clone()));
+        let inactive = select_lt(&zero, &w_geo, d, &clamp);
+        let active = d.clone().min(neg(w.clone()));
+        select_lt(&zero, &w, &active, &inactive)
     } else {
         d.clone().max(w)
     }
@@ -663,6 +708,66 @@ mod tests {
         assert!(
             worst < 5e-4,
             "fidget-Kanal-Spiegel weicht ab: max |Δ| = {worst:.6}"
+        );
+    }
+
+    /// offset_tree Phase C4: der symbolische Vertex-Kugel-Spiegel
+    /// (`vertex_to_tree`) ist wertgleich zur CPU-Referenz.
+    #[test]
+    fn vertex_sphere_fidget_tree_matches_cpu() {
+        use crate::csg::CsgNode;
+        use fielddraft_protocol::{FeatureId, Primitive, Transform};
+        let plate = |fid: u32, c: [f32; 3], h: [f32; 3]| {
+            CsgNode::Transform(
+                Transform {
+                    translate: c,
+                    rotation: [0.0, 0.0, 0.0, 1.0],
+                    scale: [1.0; 3],
+                },
+                Box::new(CsgNode::Leaf {
+                    id: FeatureId::from_u32(fid),
+                    primitive: Primitive::Box { center: [0.0; 3], half_extents: h },
+                }),
+            )
+        };
+        let corner = CsgNode::Offset(
+            Box::new(CsgNode::Union(
+                Box::new(CsgNode::Union(
+                    Box::new(plate(1, [0.0, -5.0, 0.0], [20.0, 5.0, 20.0])),
+                    Box::new(plate(2, [-5.0, 0.0, 0.0], [5.0, 20.0, 20.0])),
+                )),
+                Box::new(plate(3, [0.0, 0.0, -5.0], [20.0, 20.0, 5.0])),
+            )),
+            -1.5,
+        );
+        let bounded = crate::offset_channel::synthesize_offset_channels(
+            crate::bvh::BoundedCsg::from_csg(&corner),
+            0.01,
+        );
+        assert!(
+            crate::offset_channel::count_vertex_spheres(&bounded) > 0,
+            "Fixture ohne Vertex-Kugeln"
+        );
+        let (x, y, z) = Tree::axes();
+        let tree = node_to_tree(&bounded, &[x, y, z]).expect("fidget-Übersetzung");
+        let shape = VmShape::from(tree);
+        let mut eval = VmShape::new_point_eval();
+        let tape = shape.ez_point_tape();
+        let mut seed = 0xC4F1u64;
+        let mut next = move || {
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+            ((seed >> 33) as f32 / (1u64 << 31) as f32) * 2.0 - 1.0
+        };
+        let mut worst = 0.0f32;
+        for _ in 0..1500 {
+            let p = [next() * 8.0, next() * 8.0, next() * 8.0];
+            let d_cpu = bounded.sdf(p, EvalMode::Visual);
+            let (d_fid, _) = eval.eval(&tape, p[0], p[1], p[2]).expect("fidget eval");
+            worst = worst.max((d_cpu - d_fid).abs());
+        }
+        assert!(
+            worst < 5e-4,
+            "fidget-Vertex-Spiegel weicht ab: max |Δ| = {worst:.6}"
         );
     }
 }

@@ -86,6 +86,13 @@ pub const OP_MASKED_BLEND: u32   = 0x40; // +var: n + n×point(3) + mask_r+blend
 //   m1s(3) m2s(3) m1e(3) m2e(3).
 pub const OP_ARC_CHANNEL: u32    = 0x41; // +9+27N
 
+// offset_tree Phase C4 (#384): Rossignac–Requicha-Vertex-Kugel an einer
+// Triple-Junction — pops den Stopp-Wert d, pusht die korrigierte Distanz
+// (CPU-Referenz: `offset_channel::vertex_apply`).
+// Payload (16): concave(1) + delta(1) + trust(1) + gate(1) + v(3) +
+//   g1(3) + g2(3) + g3(3).
+pub const OP_VERTEX_SPHERE: u32  = 0x42; // +16
+
 pub const OP_END: u32            = 0xFF;
 
 // ── Compiled output ────────────────────────────────────────────────
@@ -429,10 +436,11 @@ fn emit_node(node: &BoundedCsg, ctx: &mut CompileCtx, open: &crate::csg::OpenBra
             out.push(op(OP_OFFSET_2D));
             out.push(*delta);
         }
-        BoundedCsg::ArcChannel { inner, channels, .. } => {
+        BoundedCsg::ArcChannel { inner, channels, verts, .. } => {
             // offset_tree Phase B: naiver Stopp zuerst, dann je Kanal EIN
             // OP_ARC_CHANNEL (pops d, pusht korrigiert) — sequenziell wie
-            // `offset_channel::channels_apply`.
+            // `offset_channel::channels_apply`. Phase C4: danach je
+            // Vertex-Kugel EIN OP_VERTEX_SPHERE (`verts_apply`).
             emit_node(inner, ctx, open);
             let out = &mut ctx.opcodes;
             for ch in channels {
@@ -457,6 +465,17 @@ fn emit_node(node: &BoundedCsg, ctx: &mut CompileCtx, open: &crate::csg::OpenBra
                     out.extend_from_slice(&a.m1e);
                     out.extend_from_slice(&a.m2e);
                 }
+            }
+            for vs in verts {
+                out.push(op(OP_VERTEX_SPHERE));
+                out.push(if vs.concave { 1.0 } else { 0.0 });
+                out.push(vs.delta);
+                out.push(vs.trust);
+                out.push(vs.gate);
+                out.extend_from_slice(&vs.v);
+                out.extend_from_slice(&vs.gates[0]);
+                out.extend_from_slice(&vs.gates[1]);
+                out.extend_from_slice(&vs.gates[2]);
             }
         }
         BoundedCsg::Shell {
@@ -1810,8 +1829,59 @@ pub fn eval_opcodes_with_volumes(
                 let s1 = dq[0] * best_m1[0] + dq[1] * best_m1[1] + dq[2] * best_m1[2];
                 let s2 = dq[0] * best_m2[0] + dq[1] * best_m2[1] + dq[2] * best_m2[2];
                 let gate = if concave { gate_w - d } else { gate_w + d };
-                let w = s1.min(s2).min(best - delta).min(trust - best).min(gate);
-                push_v!(if concave { d.min(-w) } else { d.max(w) });
+                // Rollen-Trennung (C4): Geometrie-Klemme vs. Add-Gate —
+                // 1:1-Spiegel von `channel_apply`.
+                let w_geo = s1.min(s2).min(best - delta).min(trust - best);
+                let w = w_geo.min(gate);
+                push_v!(if concave {
+                    if w > 0.0 {
+                        d.min(-w)
+                    } else if w_geo <= 0.0 {
+                        d.min(-w_geo)
+                    } else {
+                        d
+                    }
+                } else {
+                    d.max(w)
+                });
+            }
+
+            // ── Vertex-Kugel (offset_tree Phase C4) ────
+            // 1:1-Spiegel von `offset_channel::vertex_apply`.
+            OP_VERTEX_SPHERE => {
+                let concave = rd!() > 0.5;
+                let delta = rd!();
+                let trust = rd!();
+                let gate_w = rd!();
+                let v = rd3!();
+                let g1 = rd3!();
+                let g2 = rd3!();
+                let g3 = rd3!();
+                let d = pop_v!();
+                let dq = [pt[0] - v[0], pt[1] - v[1], pt[2] - v[2]];
+                let rho = (dq[0] * dq[0] + dq[1] * dq[1] + dq[2] * dq[2]).sqrt();
+                if trust - rho <= if concave { -d } else { d } {
+                    push_v!(d);
+                    continue;
+                }
+                let s1 = dq[0] * g1[0] + dq[1] * g1[1] + dq[2] * g1[2];
+                let s2 = dq[0] * g2[0] + dq[1] * g2[1] + dq[2] * g2[2];
+                let s3 = dq[0] * g3[0] + dq[1] * g3[1] + dq[2] * g3[2];
+                let gate = if concave { gate_w - d } else { gate_w + d };
+                // Rollen-Trennung (C4) — 1:1-Spiegel von `vertex_apply`.
+                let w_geo = s1.min(s2).min(s3).min(rho - delta).min(trust - rho);
+                let w = w_geo.min(gate);
+                push_v!(if concave {
+                    if w > 0.0 {
+                        d.min(-w)
+                    } else if w_geo <= 0.0 {
+                        d.min(-w_geo)
+                    } else {
+                        d
+                    }
+                } else {
+                    d.max(w)
+                });
             }
 
             OP_PRIM_TEX3D => {

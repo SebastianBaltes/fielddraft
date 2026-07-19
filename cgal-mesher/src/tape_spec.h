@@ -107,6 +107,7 @@ inline int payload_len(const float* buf, int n, uint32_t tag, int pc) {
       int np = (int)buf[pc];
       return 9 + 27 * np;
     }
+    case OP_VERTEX_SPHERE: return 16;
     case OP_END: return 0;
     default: return -1;
   }
@@ -126,6 +127,7 @@ inline int value_pops(uint32_t tag) {
     case OP_MASKED_BLEND: return 2;
     case OP_SHELL:
     case OP_ARC_CHANNEL:
+    case OP_VERTEX_SPHERE:
     case OP_DISPLACE_VAL:
     case OP_EXTRUDE:
     case OP_REVOLVE_SCALE:

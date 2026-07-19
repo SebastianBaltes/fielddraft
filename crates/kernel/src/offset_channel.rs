@@ -20,7 +20,13 @@
 //! q*        = nächster Punkt der Kanten-Kurve zu x (Arc-Spline)
 //! m̂_A, m̂_B  = duale Kegelvektoren  m_A ∝ n_A − (n_A·n_B)·n_B  (auf der Kurve)
 //! w(x)      = min( ⟨x−q*, m̂_A⟩, ⟨x−q*, m̂_B⟩, |x−q*| − δ, K − |x−q*|, gate )
-//! konvex:   f = max(d, w)          konkav:  f = min(d, −w)   (m̂ negiert gespeichert)
+//! w_geo     = min(⟨x−q*, m̂_A⟩, ⟨x−q*, m̂_B⟩, |x−q*| − δ, K − |x−q*|)
+//! w         = min(w_geo, gate)
+//! konvex:   f = max(d, w)
+//! konkav:   f = min(d, −w)      falls w > 0        (Sliver addieren)
+//!           f = min(d, −w_geo)  falls w_geo ≤ 0    (Luft-Distanzschranke)
+//!           f = d               sonst              (Gate kappt Addition)
+//! (m̂ für konkav negiert gespeichert)
 //! ```
 //!
 //! Die zwei zusätzlichen min-Terme gegenüber dem Spike sind
@@ -34,10 +40,14 @@
 //!   ist stetig (er nutzt `de` selbst, nicht die Bounding-Sphere); die
 //!   Bounding-Sphere liefert nur den **exakten** Skip
 //!   (`K − de_lower ≤ d` ⇒ Ergebnis == d, reine Kostenoptimierung).
-//! * `gate = d + c·δ` (konvex) bzw. `c·δ − d` (konkav): kappt die Wirkung
-//!   strikt auf die Umgebung der naiven Oberfläche; `c = 1/cos(γ_max/2)`
-//!   bzw. `1/sin(α_min/2)` ist gerade groß genug, dass die legitime
-//!   Korrektur (Tiefe (c−1)·δ) nie gekappt wird.
+//! * `gate = d + G` (konvex) bzw. `G − d` (konkav) mit `G = (c−1)·δ + 4·tol`,
+//!   `c = 1/cos(γ_max/2)` bzw. `1/sin(α_min/2)`: kappt die Wirkung strikt
+//!   auf das legitime Band um die naive Oberfläche — der Maximalbedarf
+//!   `max(de − δ ∓ d)` über das Keil-/Sliver-Band ist exakt `(c−1)·δ`
+//!   (am naiven Scheitel, d = 0). Phase B hatte hier `c·δ` (ein δ zu
+//!   weit): an trunkierten Kurven-Enden (Triple-Junctions) leckte die
+//!   Endpunkt-Ball-Kappe dadurch bis ~δ Material über das Ende hinaus;
+//!   seit C4 ist das Band scharf und die Ecke gehört der Vertex-Kugel.
 //!
 //! Restrisiko (Plan §9, Phase-C-Witness): Fremdgeometrie NÄHER als K an
 //! der Kurve im Kegelgebiet — dort gibt es keine Exaktheitsgarantie.
@@ -118,6 +128,43 @@ pub struct OffsetChannel {
     pub bound_c: [f32; 3],
     pub bound_r: f32,
     /// Provenance-BranchId des Kanal-Terms (0x700+-Band, Plan §9).
+    pub branch: u32,
+}
+
+/// offset_tree Phase C4 (#384): Rossignac–Requicha-**Vertex-Kugel** an
+/// einer Triple-Junction. Wo drei Member-Flächen in einem Punkt `v`
+/// zusammenstoßen, enden die Kanal-Kurven am `on_composite_boundary`-Gate
+/// und lokal bleibt `f − δ` — ein echter Nullmengen-Fehler (konvexe Ecke
+/// unter Dilation: Überschuss bis δ·(c_v − 1); konkave Ecke unter
+/// Erosion: fehlende Material-Kugel, Komplement-Dualität). Der
+/// Korrekturterm ist die C2-Konstruktion mit Punkt-Spine:
+///
+/// ```text
+/// w(x) = min(⟨x−v, ĝ₁⟩, ⟨x−v, ĝ₂⟩, ⟨x−v, ĝ₃⟩, |x−v| − δ, K − |x−v|, gate)
+/// konvex:  f = max(d, w)      konkav:  f = min(d, −w)
+/// ```
+///
+/// Die `gates` sind die drei Facetten-Normalen des Normalkegels bei `v`
+/// (ĝ_ij ∝ ν_i × ν_j, orientiert mit ĝ_ij·ν_k > 0; ν = Member-Normale,
+/// für konkav negiert gespeichert — Auswertung vorzeichenfrei identisch
+/// zur Kanal-Dualität). Innerhalb des Kegels ist der nächste Punkt des
+/// (lokalen) Trieders exakt `v`, `|x−v| − δ` also die exakte
+/// Offset-Distanz; außerhalb ist w < 0 und der Term neutral. Mehr als
+/// drei Flächen an einer Ecke → Verweigerung (Synthese).
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct VertexSphere {
+    pub v: [f32; 3],
+    /// Drei Kegel-Facetten-Normalen (Einheitslänge; konkav negiert).
+    pub gates: [[f32; 3]; 3],
+    /// |δ| des Stopps (> 0).
+    pub delta: f32,
+    /// `true`: −δ-an-Union-Stopp (Material addieren).
+    pub concave: bool,
+    /// Trust-Radius K um `v` (> δ).
+    pub trust: f32,
+    /// Gate-Weite G = c_v·δ + Marge.
+    pub gate: f32,
+    /// Provenance-BranchId (0x700+-Band, Plan §9).
     pub branch: u32,
 }
 
@@ -254,13 +301,28 @@ pub fn channel_apply(d: f32, p: [f32; 3], ch: &OffsetChannel) -> f32 {
     let s1 = dot(dq, m1);
     let s2 = dot(dq, m2);
     let gate = if ch.concave { ch.gate - d } else { ch.gate + d };
-    let w = s1
-        .min(s2)
-        .min(de - ch.delta)
-        .min(ch.trust - de)
-        .min(gate);
+    // Zwei getrennte Rollen (C4-Korrektur der Phase-B-Formel):
+    // * `w_geo` (reine Geometrie-Terme) trägt BEIDE Seiten: > 0 ⇒ Punkt
+    //   liegt im Sliver (Material addieren); ≤ 0 ⇒ −w_geo ist eine
+    //   march-sichere Distanzschranke zur Sliver-Hülle (Luftseite —
+    //   ohne sie überschätzt das naive Feld die Distanz im Eckenball
+    //   um bis zu (1−1/√3)·ρ).
+    // * Das `gate` kappt NUR die Addition. Phase B mischte es in die
+    //   Klemme: ein negatives Gate klemmte d außerhalb des Bands auf
+    //   den Gate-Rest herunter, das Gate des NÄCHSTEN Kanals prüfte
+    //   `gate − d` gegen dieses geklemmte statt das naive d und öffnete
+    //   fälschlich — an Triple-Junctions addierte der zweite Kanal
+    //   Material in wahre Luft (Vorzeichen-Kipp am Ecken-Fixture).
+    let w_geo = s1.min(s2).min(de - ch.delta).min(ch.trust - de);
+    let w = w_geo.min(gate);
     if ch.concave {
-        d.min(-w)
+        if w > 0.0 {
+            d.min(-w)
+        } else if w_geo <= 0.0 {
+            d.min(-w_geo)
+        } else {
+            d
+        }
     } else {
         d.max(w)
     }
@@ -272,6 +334,69 @@ pub fn channels_apply(mut d: f32, p: [f32; 3], channels: &[OffsetChannel]) -> f3
         d = channel_apply(d, p, ch);
     }
     d
+}
+
+/// Wendet EINE Vertex-Kugel auf den Stopp-Wert `d` an (Phase C4) — die
+/// CPU-Referenz aller Spiegel (Opcode-Interpreter, WGSL, TSL, C++,
+/// fidget, Dual). Struktur identisch zu [`channel_apply`], nur mit
+/// Punkt-Spine (`q* = v`, drei Gates statt zwei interpolierten).
+pub fn vertex_apply(d: f32, p: [f32; 3], vs: &VertexSphere) -> f32 {
+    let dq = sub(p, vs.v);
+    let rho = norm(dq);
+    // Exakter Fernfeld-Skip (Spiegel von `channel_skip`, Sphäre = Punkt).
+    if vs.trust - rho <= if vs.concave { -d } else { d } {
+        return d;
+    }
+    let s1 = dot(dq, vs.gates[0]);
+    let s2 = dot(dq, vs.gates[1]);
+    let s3 = dot(dq, vs.gates[2]);
+    let gate = if vs.concave { vs.gate - d } else { vs.gate + d };
+    // Rollen-Trennung wie in [`channel_apply`]: Geometrie-Klemme
+    // (march-sichere Luftseite) vs. Gate (kappt nur die Addition).
+    let w_geo = s1
+        .min(s2)
+        .min(s3)
+        .min(rho - vs.delta)
+        .min(vs.trust - rho);
+    let w = w_geo.min(gate);
+    if vs.concave {
+        if w > 0.0 {
+            d.min(-w)
+        } else if w_geo <= 0.0 {
+            d.min(-w_geo)
+        } else {
+            d
+        }
+    } else {
+        d.max(w)
+    }
+}
+
+/// Alle Vertex-Kugeln eines Stopps anwenden (nach den Kanälen).
+pub fn verts_apply(mut d: f32, p: [f32; 3], verts: &[VertexSphere]) -> f32 {
+    for vs in verts {
+        d = vertex_apply(d, p, vs);
+    }
+    d
+}
+
+/// Konservative AABB der Vertex-Kugeln (nur konkav ADDIERT Material).
+pub fn verts_aabb(verts: &[VertexSphere]) -> Aabb {
+    let mut bb = Aabb::EMPTY;
+    for vs in verts {
+        if !vs.concave {
+            continue;
+        }
+        let r = vs.trust;
+        bb = Aabb::union(
+            bb,
+            Aabb {
+                min: [vs.v[0] - r, vs.v[1] - r, vs.v[2] - r],
+                max: [vs.v[0] + r, vs.v[1] + r, vs.v[2] + r],
+            },
+        );
+    }
+    bb
 }
 
 /// Konservative AABB eines Kanal-Satzes: Kurven-Bounds + Wirkradius.
@@ -297,10 +422,15 @@ pub fn channels_aabb(channels: &[OffsetChannel]) -> Aabb {
 
 // ─── Synthese ────────────────────────────────────────────────────────────────
 
-/// Standard-Zieltoleranz der Kurvenapproximation in mm (Zero-Set-Klasse).
-/// 0.005 mm liegt zwischen Render- (0.01) und Export-Klasse (0.001); die
-/// Staffelung (Plan §9) ist Phase C.
-pub const DEFAULT_CHANNEL_TOL: f32 = 0.005;
+/// Toleranz-Staffel (Plan §9, Phase C2): Zieltoleranz der
+/// Kurvenapproximation UND Schwelle des B0-Toleranz-Prunings in
+/// [`build_channel`] (prognostizierter Naht-Fehler δ·(c−1) < tol ⇒ kein
+/// Kanal — bei α ≥ 150° liegt der Sliver unter 0.07·δ, B0-CONCAVE-SEAM).
+/// **Render-Klasse** (Viewport-Mesh, GPU-SDF, Pick, Weave): 0.01 mm.
+pub const CHANNEL_TOL_RENDER: f32 = 0.01;
+
+/// **Export-Klasse** (STL/3MF-Export, CGAL-Server-Mesher): 0.001 mm.
+pub const CHANNEL_TOL_EXPORT: f32 = 0.001;
 
 /// Budget: maximale Bögen je Stopp-Knoten (alle Kanäle zusammen). Ein
 /// Kanal der 0.001-mm-Klasse braucht ~64 Bögen je Steinmetz-Loop; ein
@@ -380,7 +510,7 @@ struct SeamPoint {
 /// Gradienten (tangentiale Naht).
 fn project_to_seam(a: &Member, b: &Member, start: [f32; 3], scale: f32) -> Option<SeamPoint> {
     let mut p = start;
-    for _ in 0..24 {
+    for _ in 0..32 {
         let (fa, ga) = a.value_grad(p);
         let (fb, gb) = b.value_grad(p);
         let na = norm(ga);
@@ -396,36 +526,37 @@ fn project_to_seam(a: &Member, b: &Member, start: [f32; 3], scale: f32) -> Optio
         }
         let ga = [ga[0] / na, ga[1] / na, ga[2] / na];
         let gb = [gb[0] / nb, gb[1] / nb, gb[2] / nb];
+        let fa_n = fa / na;
+        let fb_n = fb / nb;
+        // Konvergenz VOR dem Schritt prüfen und die HIER (endlich)
+        // ausgewerteten Normalen zurückgeben. Der frühere Ablauf
+        // (erst Schritt, dann Neu-Auswertung am Ziel) landete bei
+        // achsparallelen Ebenen-Carriern BIT-EXAKT auf der Naht —
+        // dort zieht der Dual-Gradient sqrt(0)-NaNs, JEDER Jitter-Start
+        // konvergierte zurück auf den singulären Punkt und die gesamte
+        // Kanal-Synthese fiel für achsparallele Unions still aus
+        // (Phase-C-Befund; die rotierten Notch-/Steinmetz-Fixtures
+        // haben das maskiert).
+        if fa_n.abs().max(fb_n.abs()) < 1e-5 * scale.max(1.0) {
+            return Some(SeamPoint { p, n1: ga, n2: gb });
+        }
         let c = dot(ga, gb);
         let det = 1.0 - c * c;
         if det < 1e-6 {
             return None; // tangential
         }
         // Löse fa·? — Schritt in span(ga, gb): p ← p − (α·ga + β·gb)
-        // mit [1 c; c 1]·[α β]ᵀ = [fa/|ga|… bereits normiert: fa, fb].
-        let fa_n = fa / na;
-        let fb_n = fb / nb;
-        let alpha = (fa_n - c * fb_n) / det;
-        let beta = (fb_n - c * fa_n) / det;
+        // mit [1 c; c 1]·[α β]ᵀ = [fa, fb] (normiert). Leicht gedämpft
+        // (0.995), damit der Iterierte nie bit-exakt auf dem Carrier
+        // landet — der Restabstand (≲ 0.5 % des letzten Residuums) liegt
+        // Größenordnungen unter jeder Fit-Toleranz.
+        let alpha = 0.995 * (fa_n - c * fb_n) / det;
+        let beta = 0.995 * (fb_n - c * fa_n) / det;
         p = [
             p[0] - alpha * ga[0] - beta * gb[0],
             p[1] - alpha * ga[1] - beta * gb[1],
             p[2] - alpha * ga[2] - beta * gb[2],
         ];
-        if fa_n.abs().max(fb_n.abs()) < 1e-5 * scale.max(1.0) {
-            let (_, ga) = a.value_grad(p);
-            let (_, gb) = b.value_grad(p);
-            let na = norm(ga);
-            let nb = norm(gb);
-            if na < 1e-6 || nb < 1e-6 {
-                return None;
-            }
-            return Some(SeamPoint {
-                p,
-                n1: [ga[0] / na, ga[1] / na, ga[2] / na],
-                n2: [gb[0] / nb, gb[1] / nb, gb[2] / nb],
-            });
-        }
     }
     None
 }
@@ -441,26 +572,118 @@ fn on_composite_boundary(
     union_form: bool,
     eps: f32,
 ) -> bool {
+    blocking_member(members, &[skip.0, skip.1], p, union_form, eps).is_none()
+}
+
+/// Wie [`on_composite_boundary`], liefert aber den ERSTEN verletzenden
+/// Member — den Kandidaten-Dritten einer Triple-Junction (Phase C4).
+fn blocking_member(
+    members: &[Member],
+    skip: &[usize],
+    p: [f32; 3],
+    union_form: bool,
+    eps: f32,
+) -> Option<usize> {
     for (k, m) in members.iter().enumerate() {
-        if k == skip.0 || k == skip.1 {
+        if skip.contains(&k) {
             continue;
         }
         let v = m.value(p);
         if union_form {
             if v <= eps {
-                return false;
+                return Some(k);
             }
         } else if v >= -eps {
-            return false;
+            return Some(k);
         }
     }
-    true
+    None
+}
+
+/// Newton-Projektion auf die gemeinsame Nullmenge DREIER Member-Felder
+/// (Triple-Punkt, Phase C4). Liefert Punkt + die drei Einheits-Normalen.
+/// `None` bei Nicht-Konvergenz oder degenerierter Gradienten-Basis.
+fn project_to_vertex(
+    members: &[Member],
+    tri: [usize; 3],
+    start: [f32; 3],
+    scale: f32,
+) -> Option<([f32; 3], [[f32; 3]; 3])> {
+    // Der Startpunkt ist ein projizierter Naht-Punkt und liegt EXAKT auf
+    // zwei Blattflächen — dort ziehen Dual-Gradienten sqrt(0)-NaNs (wie
+    // bei den SSI-Seeds). Deterministische Jitter heilen das; Newton
+    // zieht zurück auf den Triple-Punkt.
+    let jit = (scale * 1e-4).max(1e-4);
+    'jitter: for off in [
+        [0.0, 0.0, 0.0],
+        [jit, jit, jit],
+        [-jit, jit, -jit],
+        [jit, -jit, jit],
+        [-jit, -jit, -jit],
+    ] {
+        let mut p = [start[0] + off[0], start[1] + off[1], start[2] + off[2]];
+        for _ in 0..32 {
+            let mut f = [0.0f32; 3];
+            let mut g = [[0.0f32; 3]; 3];
+            for (r, &mi) in tri.iter().enumerate() {
+                let (v, gr) = members[mi].value_grad(p);
+                let n = norm(gr);
+                if !(v.is_finite() && n.is_finite()) || n < 1e-6 {
+                    continue 'jitter;
+                }
+                f[r] = v / n;
+                g[r] = [gr[0] / n, gr[1] / n, gr[2] / n];
+            }
+            // Konvergenz VOR dem Schritt prüfen und die HIER (endlich)
+            // ausgewerteten Normalen zurückgeben — eine erneute Auswertung
+            // exakt AUF dem Triple-Punkt wäre wieder NaN-gefährdet.
+            if f[0].abs().max(f[1].abs()).max(f[2].abs()) < 1e-5 * scale.max(1.0) {
+                return Some((p, g));
+            }
+            // 3×3-Solve (Cramer): g · Δ = f, p ← p − Δ.
+            let det = g[0][0] * (g[1][1] * g[2][2] - g[1][2] * g[2][1])
+                - g[0][1] * (g[1][0] * g[2][2] - g[1][2] * g[2][0])
+                + g[0][2] * (g[1][0] * g[2][1] - g[1][1] * g[2][0]);
+            if det.abs() < 1e-4 {
+                continue 'jitter; // (nahezu) koplanare Normalen
+            }
+            let col = |c: usize, rhs: &[f32; 3]| -> [[f32; 3]; 3] {
+                let mut m = g;
+                for r in 0..3 {
+                    m[r][c] = rhs[r];
+                }
+                m
+            };
+            let det3 = |m: &[[f32; 3]; 3]| -> f32 {
+                m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1])
+                    - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0])
+                    + m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0])
+            };
+            // Leicht gedämpft wie `project_to_seam`: bit-exaktes Landen
+            // auf den Carriern (sqrt(0)-NaN) strukturell vermeiden.
+            let dx = 0.995 * det3(&col(0, &f)) / det;
+            let dy = 0.995 * det3(&col(1, &f)) / det;
+            let dz = 0.995 * det3(&col(2, &f)) / det;
+            p = [p[0] - dx, p[1] - dy, p[2] - dz];
+        }
+    }
+    None
+}
+
+/// Ein am Composite-Gate abgebrochenes Trace-Ende: der blockierende
+/// dritte Member und der blockierte Punkt — Triple-Junction-Kandidat
+/// (Phase C4).
+#[derive(Clone, Copy)]
+struct BlockedEnd {
+    k: usize,
+    p: [f32; 3],
 }
 
 /// Prädiktor-Korrektor-Trace der Naht zwischen Member `i` und `j` ab
 /// `seed`, in beide Richtungen, bis Loop-Schluss / Gate-Ende / Budget.
 /// Liefert die geordnete Punktkette (bei Loop: geschlossen OHNE
-/// dupliziertes Ende) und ob es ein geschlossener Loop ist.
+/// dupliziertes Ende), ob es ein geschlossener Loop ist, und die am
+/// Composite-Gate blockierten Enden (Triple-Kandidaten, Phase C4).
 fn trace_seam(
     members: &[Member],
     i: usize,
@@ -470,7 +693,7 @@ fn trace_seam(
     step: f32,
     fit_tol: f32,
     gate_eps: f32,
-) -> Option<(Vec<SeamPoint>, bool)> {
+) -> Option<(Vec<SeamPoint>, bool, Vec<BlockedEnd>)> {
     let a = &members[i];
     let b = &members[j];
     let tangent = |sp: &SeamPoint| -> Option<[f32; 3]> {
@@ -495,7 +718,7 @@ fn trace_seam(
     // geschätzt und der Schritt nachgeführt.
     let step_max = step;
     let step_min = (fit_tol * 4.0).min(step_max);
-    let march = |dir_sign: f32| -> (Vec<SeamPoint>, bool) {
+    let march = |dir_sign: f32| -> (Vec<SeamPoint>, bool, Option<BlockedEnd>) {
         let mut pts: Vec<SeamPoint> = Vec::new();
         let mut cur = seed;
         let mut prev_t: Option<[f32; 3]> = None;
@@ -530,35 +753,39 @@ fn trace_seam(
             if moved < h * 0.25 || moved > h * 2.5 {
                 break;
             }
-            if !on_composite_boundary(members, (i, j), next.p, union_form, gate_eps) {
-                break;
+            if let Some(k) =
+                blocking_member(members, &[i, j], next.p, union_form, gate_eps)
+            {
+                // Triple-Kandidat: die Naht (i,j) läuft in Member k hinein.
+                return (pts, false, Some(BlockedEnd { k, p: next.p }));
             }
             // Loop-Schluss gegen den SEED (nur vorwärts).
             if dir_sign > 0.0 && pts.len() > 3 && norm(sub(next.p, seed.p)) < h * 0.75 {
                 pts.push(next);
-                return (pts, true);
+                return (pts, true, None);
             }
             pts.push(next);
             prev_t = Some(t);
             cur = next;
         }
-        (pts, false)
+        (pts, false, None)
     };
 
-    let (fwd, closed) = march(1.0);
+    let (fwd, closed, blocked_f) = march(1.0);
     if closed {
         let mut pts = vec![seed];
         pts.extend(fwd);
-        return Some((pts, true));
+        return Some((pts, true, Vec::new()));
     }
-    let (bwd, _) = march(-1.0);
+    let (bwd, _, blocked_b) = march(-1.0);
     let mut pts: Vec<SeamPoint> = bwd.into_iter().rev().collect();
     pts.push(seed);
     pts.extend(fwd);
+    let blocked: Vec<BlockedEnd> = blocked_b.into_iter().chain(blocked_f).collect();
     if pts.len() < 3 {
         return None;
     }
-    Some((pts, false))
+    Some((pts, false, blocked))
 }
 
 // ─── Arc-Spline-Fit (PCC) ───────────────────────────────────────────────────
@@ -789,6 +1016,181 @@ struct StopCtx {
     tol: f32,
 }
 
+// ─── Phase C4: Vertex-Kugel-Synthese an Triple-Junctions ────────────────────
+
+/// Triple-Junction-Kandidat: sortiertes Member-Tripel + blockierter Punkt.
+struct TripleCand {
+    tri: [usize; 3],
+    p: [f32; 3],
+}
+
+/// Überschuss-Faktor c_v der Ecke: max über Richtungen d im Normalkegel
+/// von 1/max_k⟨d, ν_k⟩. Das Minimum von max_k⟨d, ν_k⟩ über den Kegel
+/// liegt an der **äquilibrierten Richtung** (alle drei Dots gleich —
+/// Lösung von [ν]·d = 1) oder auf einer Kegel-Kante (Paar-Bisektor,
+/// falls der dritte Dot dort kleiner ist). Analytisch statt Gitter: ein
+/// Baryzentrik-Sampling unterschätzte c_v am Orthogonal-Trieder um 8 %
+/// — genug, um mit der (c−1)·δ-Gate-Kappe die tiefste Ecken-Korrektur
+/// abzuschneiden. ∞ bei degeneriertem Kegel (Aufrufer verweigert).
+fn vertex_c_factor(nu: &[[f32; 3]; 3]) -> f32 {
+    let det3 = |m: &[[f32; 3]; 3]| -> f32 {
+        m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1])
+            - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0])
+            + m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0])
+    };
+    let mut worst = 1.0f32;
+    // Kandidat 1: äquilibrierte Richtung [ν]·d = (1,1,1).
+    let det = det3(nu);
+    if det.abs() < 1e-6 {
+        return f32::INFINITY;
+    }
+    let col = |c: usize| -> [[f32; 3]; 3] {
+        let mut m = *nu;
+        for r in 0..3 {
+            m[r][c] = 1.0;
+        }
+        m
+    };
+    let d = [det3(&col(0)) / det, det3(&col(1)) / det, det3(&col(2)) / det];
+    let l = norm(d);
+    if !(l.is_finite()) || l < 1e-6 {
+        return f32::INFINITY;
+    }
+    let deq = [d[0] / l, d[1] / l, d[2] / l];
+    let meq = dot(deq, nu[0]).max(dot(deq, nu[1])).max(dot(deq, nu[2]));
+    if meq < 1e-3 {
+        return f32::INFINITY;
+    }
+    worst = worst.max(1.0 / meq);
+    // Kandidaten 2: Paar-Bisektoren (Kegel-Kanten).
+    for (a, b) in [(0usize, 1usize), (1, 2), (2, 0)] {
+        let s = [
+            nu[a][0] + nu[b][0],
+            nu[a][1] + nu[b][1],
+            nu[a][2] + nu[b][2],
+        ];
+        let l = norm(s);
+        if l < 1e-4 {
+            return f32::INFINITY;
+        }
+        let bd = [s[0] / l, s[1] / l, s[2] / l];
+        let m = dot(bd, nu[0]).max(dot(bd, nu[1])).max(dot(bd, nu[2]));
+        if m < 1e-3 {
+            return f32::INFINITY;
+        }
+        worst = worst.max(1.0 / m);
+    }
+    worst * 1.005
+}
+
+/// Baut aus den blockierten Trace-Enden die Vertex-Kugeln eines Stopps
+/// (Phase C4). Verweigerungs-Doktrin: degenerierte Kegel (koplanar,
+/// > 3 Flächen im Cluster, Newton-Nichtkonvergenz, zu spitze Ecke)
+/// liefern KEINEN Term — dort bleibt lokal `f − δ`, konservativ.
+fn synthesize_vertices(
+    members: &[Member],
+    cands: &[TripleCand],
+    ctx: &StopCtx,
+    union_form: bool,
+    gate_eps: f32,
+    scale: f32,
+    min_feat: &[u32],
+    vert_idx: &mut u32,
+) -> Vec<VertexSphere> {
+    let mut verts: Vec<VertexSphere> = Vec::new();
+    let mut solved: Vec<([f32; 3], [usize; 3], bool)> = Vec::new(); // (v, tri, accepted)
+    let cluster_r = (scale * 1e-3).max(10.0 * gate_eps);
+    'cand: for cand in cands {
+        // Cluster-Dedup: derselbe Eckpunkt fällt aus bis zu drei
+        // Paar-Traces heraus (und aus beiden Trace-Richtungen).
+        for (v, tri, _) in &solved {
+            if norm(sub(cand.p, *v)) < cluster_r && *tri == cand.tri {
+                continue 'cand;
+            }
+        }
+        let Some((v, mut normals)) =
+            project_to_vertex(members, cand.tri, cand.p, scale)
+        else {
+            continue;
+        };
+        for (sv, st, _) in &solved {
+            if norm(sub(v, *sv)) < cluster_r {
+                // Zweites Tripel am selben Punkt (> 3 Flächen an der Ecke):
+                // beide verweigern — der Kegel ist kein Trieder.
+                if *st != cand.tri {
+                    if let Some(pos) = verts
+                        .iter()
+                        .position(|w| norm(sub(w.v, *sv)) < cluster_r)
+                    {
+                        verts.remove(pos);
+                    }
+                }
+                solved.push((v, cand.tri, false));
+                continue 'cand;
+            }
+        }
+        solved.push((v, cand.tri, true));
+        // Ecke muss auf dem Composite-Rand liegen (alle ÜBRIGEN Member
+        // strikt materialseitig).
+        if blocking_member(members, &cand.tri, v, union_form, gate_eps).is_some() {
+            continue;
+        }
+        // Dualität: konkav (−δ an Union) arbeitet auf dem Komplement —
+        // Normalen negiert, Auswertung identisch (wie Kanal-m̂).
+        if ctx.concave {
+            for n in normals.iter_mut() {
+                *n = [-n[0], -n[1], -n[2]];
+            }
+        }
+        // Kegel-Facetten-Gates: ĝ_ab ∝ ν_a × ν_b, orientiert zu ν_c.
+        let mut gates = [[0.0f32; 3]; 3];
+        let pairs = [(0usize, 1usize, 2usize), (1, 2, 0), (2, 0, 1)];
+        for (gi, &(a, b, c)) in pairs.iter().enumerate() {
+            let g = [
+                normals[a][1] * normals[b][2] - normals[a][2] * normals[b][1],
+                normals[a][2] * normals[b][0] - normals[a][0] * normals[b][2],
+                normals[a][0] * normals[b][1] - normals[a][1] * normals[b][0],
+            ];
+            let l = norm(g);
+            if l < 1e-4 {
+                continue 'cand; // Paar quasi-parallel — kein Trieder
+            }
+            let s = if dot(g, normals[c]) >= 0.0 { 1.0 } else { -1.0 };
+            gates[gi] = [s * g[0] / l, s * g[1] / l, s * g[2] / l];
+        }
+        // Spitzheit + Toleranz-Pruning (Spiegel der Kanal-Gates).
+        let c_v = vertex_c_factor(&normals);
+        if !c_v.is_finite() || 1.0 / c_v < MIN_HALF_ANGLE_SIN {
+            continue; // zu spitz/degeneriert — verweigern
+        }
+        if ctx.delta * (c_v - 1.0) < ctx.tol {
+            continue; // Ecken-Fehler unter Toleranz — kein Term nötig
+        }
+        // Gate wie beim Kanal auf das legitime Band gekappt (s. o.):
+        // Maximalbedarf (c_v − 1)·δ am naiven Eck-Scheitel.
+        let gate = ctx.delta * (c_v - 1.0) + 4.0 * ctx.tol;
+        let trust = ctx.delta * c_v + 0.5 * ctx.delta + 8.0 * ctx.tol;
+        // Provenance: Owner = kleinste beteiligte Feature-Id, Sub aus dem
+        // 0x700+-Band (Fortsetzung des Kanal-Zählers, deterministisch).
+        let owner = cand.tri.iter().map(|&m| min_feat[m]).min().unwrap_or(0);
+        let sub = 0x700 + (*vert_idx % 0xFD);
+        *vert_idx += 1;
+        verts.push(VertexSphere {
+            v,
+            gates,
+            delta: ctx.delta,
+            concave: ctx.concave,
+            trust,
+            gate,
+            branch: (owner << 12) | sub,
+        });
+        if verts.len() >= 64 {
+            break;
+        }
+    }
+    verts
+}
+
 /// Baut aus einer getracten Naht-Kurve einen [`OffsetChannel`].
 /// `None` = verweigern (tangential, spitzwinklig, Budget).
 fn build_channel(
@@ -864,7 +1266,17 @@ fn build_channel(
     }
 
     let c_factor = 1.0 / min_half;
-    let gate = ctx.delta * c_factor + 4.0 * ctx.tol;
+    // Gate-Weite: die legitime Korrektur braucht w ≤ de − δ ∓ d, deren
+    // Maximum über das Sliver-/Keil-Band ist (c − 1)·δ (am naiven
+    // Scheitel, d = 0; Herleitung entlang der Bisektrix: de − δ ∓ d =
+    // r·(1 − sin(α/2)) ≤ δ·(1/sin − 1)). Phase B setzte hier c·δ — ein
+    // volles δ zu weit: an TRUNKIERTEN Kurven-Enden (Triple-Junctions,
+    // Deckelkanten) leckte die Endpunkt-Ball-Kappe dadurch bis zu ~δ
+    // Material über das Ende hinaus (Phase-C4-Befund am Ecken-Fixture).
+    // Mit (c − 1)·δ + Marge ist die Wirkung exakt auf das legitime Band
+    // um die naive Fläche gekappt; die Ecke selbst schließt die
+    // Vertex-Kugel (C4).
+    let gate = ctx.delta * (c_factor - 1.0) + 4.0 * ctx.tol;
     let trust = ctx.delta * c_factor + 0.5 * ctx.delta + 8.0 * ctx.tol;
     Some(OffsetChannel {
         arcs,
@@ -878,15 +1290,19 @@ fn build_channel(
     })
 }
 
-/// Synthetisiert die Kanal-Korrekturkörper für EINEN Stopp-Knoten
-/// (`Offset { inner, delta }` mit dualem Boolean-Kind). Liefert die
-/// Kanal-Liste oder leer (= vollständige Verweigerung, `f − δ` bleibt).
-fn synthesize_stop(inner: &BoundedCsg, delta: f32, tol: f32) -> Vec<OffsetChannel> {
+/// Synthetisiert Kanal-Korrekturkörper + Vertex-Kugeln für EINEN
+/// Stopp-Knoten (`Offset { inner, delta }` mit dualem Boolean-Kind).
+/// Leere Listen = vollständige Verweigerung, `f − δ` bleibt.
+fn synthesize_stop(
+    inner: &BoundedCsg,
+    delta: f32,
+    tol: f32,
+) -> (Vec<OffsetChannel>, Vec<VertexSphere>) {
     let union_form = delta < 0.0;
     let mut members = Vec::new();
     flatten_members(inner, union_form, 1.0, &mut members);
     if members.len() < 2 {
-        return Vec::new();
+        return (Vec::new(), Vec::new());
     }
     let ctx = StopCtx {
         delta: delta.abs(),
@@ -907,11 +1323,26 @@ fn synthesize_stop(inner: &BoundedCsg, delta: f32, tol: f32) -> Vec<OffsetChanne
         .collect();
 
     let mut channels: Vec<OffsetChannel> = Vec::new();
+    // Blockierte Enden je Kanal (Index in `channels`, Trace-Schrittweite,
+    // Enden) — für das Spine-Snapping an die Vertex-Kugeln (C4).
+    let mut chan_ends: Vec<(usize, f32, Vec<BlockedEnd>)> = Vec::new();
     let mut total_arcs = 0usize;
     let mut claimed: Vec<[f32; 3]> = Vec::new(); // Punkte bereits getracter Kurven
     let mut channel_idx = 0u32;
 
     let gate_eps = (ctx.delta * 1e-3).max(1e-4);
+
+    // Phase C4: Triple-Junction-Kandidaten (blockierte Trace-Enden) +
+    // globale Skala + kleinste Feature-Id je Member (Vertex-Provenance).
+    let mut triple_cands: Vec<TripleCand> = Vec::new();
+    let gscale = {
+        let sz = inner.aabb().size();
+        sz[0].max(sz[1]).max(sz[2]).max(ctx.delta)
+    };
+    let min_feat: Vec<u32> = branch_lists
+        .iter()
+        .map(|bl| bl.iter().map(|b| b.id.feature_id()).min().unwrap_or(0))
+        .collect();
 
     for i in 0..members.len() {
         for j in (i + 1)..members.len() {
@@ -947,7 +1378,13 @@ fn synthesize_stop(inner: &BoundedCsg, delta: f32, tol: f32) -> Vec<OffsetChanne
                     for comp in seeds {
                         for seed in comp {
                             if total_arcs >= MAX_ARCS_PER_STOP {
-                                return channels; // Budget: bisherige Kanäle behalten
+                                // Budget: bisherige Kanäle behalten; Vertex-
+                                // Synthese aus den bis hier gesammelten Enden.
+                                let verts = synthesize_vertices(
+                                    &members, &triple_cands, &ctx, union_form,
+                                    gate_eps, gscale, &min_feat, &mut channel_idx,
+                                );
+                                return (channels, verts);
                             }
                             // Schon von einer früheren Kurve abgedeckt?
                             if claimed.iter().any(|q| norm(sub(*q, seed)) < step * 1.5) {
@@ -992,13 +1429,119 @@ fn synthesize_stop(inner: &BoundedCsg, delta: f32, tol: f32) -> Vec<OffsetChanne
                                 continue;
                             }
                             let fit_tol = (ctx.tol * 0.5).max(1e-5);
-                            let Some((pts, closed)) =
+                            let Some((pts, closed, blocked)) =
                                 trace_seam(&members, i, j, sp, union_form, step, fit_tol, gate_eps)
                             else {
                                 continue;
                             };
+                            // Phase C4: blockierte Enden als Triple-Kandidaten
+                            // merken (sortiertes Member-Tripel).
+                            for be in &blocked {
+                                let mut tri = [i, j, be.k];
+                                tri.sort_unstable();
+                                triple_cands.push(TripleCand { tri, p: be.p });
+                            }
                             for p in &pts {
                                 claimed.push(p.p);
+                            }
+                            // Exponierungs-Witness (Phase C): eine echte
+                            // Komposit-Kante verlangt, dass BEIDE Flächen an
+                            // der Naht frei liegen — der Schritt von der
+                            // Naht entlang der Normale von Fläche i muss
+                            // strikt auf der Luftseite (Union) bzw. strikt
+                            // im Material (Intersection) des ANDEREN Members
+                            // landen. An tangentialen Kanten-Kontakten
+                            // (koplanare Deckel überlappender Boxen) liegt
+                            // die Feld-Falte auf der Fremdfläche selbst
+                            // (Wert ≈ 0) — es gibt keinen Luftkeil, der
+                            // Kanal wäre begraben. (Vor der Trace-
+                            // Robustheits-Reparatur scheiterten diese Nähte
+                            // still an sqrt(0)-NaNs; der Wächter macht die
+                            // Verweigerung explizit.)
+                            // Nur die Union-Form braucht den Witness: bei
+                            // Intersection/Difference ist eine Fläche am
+                            // Naht-Punkt automatisch exponiert, sobald die
+                            // Normalen nicht parallel sind (Luft = IRGENDEIN
+                            // verletztes Constraint). Die Probe-Normalen
+                            // kommen aus den CARRIER-Implicits (FD), nicht
+                            // aus den Feld-Gradienten — auf Blatt-KANTEN
+                            // (koplanare Deckel) liefert das Feld diagonale
+                            // Pseudo-Normalen, die den Witness unterlaufen.
+                            if union_form {
+                                let h = (ctx.delta * 4e-3).max(4.0 * gate_eps);
+                                let fd = h * 0.25;
+                                let carrier_n = |hs: &fielddraft_protocol::HalfSpace,
+                                                 xf: &fielddraft_protocol::Transform,
+                                                 p: [f32; 3]|
+                                 -> Option<[f32; 3]> {
+                                    let f = |q: [f32; 3]| {
+                                        crate::csg::sdf_halfspace(
+                                            hs,
+                                            crate::transform::world_to_local(xf, q),
+                                        )
+                                    };
+                                    let g = [
+                                        f([p[0] + fd, p[1], p[2]]) - f([p[0] - fd, p[1], p[2]]),
+                                        f([p[0], p[1] + fd, p[2]]) - f([p[0], p[1] - fd, p[2]]),
+                                        f([p[0], p[1], p[2] + fd]) - f([p[0], p[1], p[2] - fd]),
+                                    ];
+                                    let l = norm(g);
+                                    if !l.is_finite() || l < 1e-9 {
+                                        return None;
+                                    }
+                                    Some([g[0] / l, g[1] / l, g[2] / l])
+                                };
+                                let mut probed = 0usize;
+                                let mut buried = 0usize;
+                                for sp in pts.iter().step_by(4) {
+                                    probed += 1;
+                                    let (Some(nc_a), Some(nc_b)) = (
+                                        carrier_n(hs_a, xf_a, sp.p),
+                                        carrier_n(hs_b, xf_b, sp.p),
+                                    ) else {
+                                        buried += 1;
+                                        continue;
+                                    };
+                                    // Fläche i ist an der Naht exponiert, wenn
+                                    // der Schritt IN der Flächenebene zur
+                                    // Luftseite von j (u_i ∝ n_j ⊥ n_i) auf
+                                    // der Fläche BLEIBT (|f_i| klein — sonst
+                                    // endet der Face-Patch an der Naht, der
+                                    // Blatt-KANTEN-Fall) und dort j-Luft ist.
+                                    let mut exposed = true;
+                                    for (n_i, n_j, m_i, m_j) in [
+                                        (nc_a, nc_b, &members[i], &members[j]),
+                                        (nc_b, nc_a, &members[j], &members[i]),
+                                    ] {
+                                        let c = dot(n_j, n_i);
+                                        let u = [
+                                            n_j[0] - c * n_i[0],
+                                            n_j[1] - c * n_i[1],
+                                            n_j[2] - c * n_i[2],
+                                        ];
+                                        let l = norm(u);
+                                        if l < 1e-4 {
+                                            exposed = false;
+                                            break;
+                                        }
+                                        let probe = [
+                                            sp.p[0] + h * u[0] / l,
+                                            sp.p[1] + h * u[1] / l,
+                                            sp.p[2] + h * u[2] / l,
+                                        ];
+                                        exposed &= m_i.value(probe).abs() < 0.1 * h
+                                            && m_j.value(probe) > 0.1 * h;
+                                        if !exposed {
+                                            break;
+                                        }
+                                    }
+                                    if !exposed {
+                                        buried += 1;
+                                    }
+                                }
+                                if probed > 0 && buried * 2 > probed {
+                                    continue; // verweigern — kein echter Luftkeil
+                                }
                             }
                             // Provenance: geordnetes Eltern-Paar → Owner =
                             // kleinere Feature-Id, Sub aus dem 0x700+-Band
@@ -1018,9 +1561,19 @@ fn synthesize_stop(inner: &BoundedCsg, delta: f32, tol: f32) -> Vec<OffsetChanne
                             if let Some(ch) = build_channel(&pts, closed, &ctx, branch) {
                                 total_arcs += ch.arcs.len();
                                 if total_arcs > MAX_ARCS_PER_STOP {
-                                    return channels;
+                                    let verts = synthesize_vertices(
+                                        &members, &triple_cands, &ctx, union_form,
+                                        gate_eps, gscale, &min_feat, &mut channel_idx,
+                                    );
+                                    snap_channel_ends_to_vertices(
+                                        &mut channels, &chan_ends, &verts,
+                                    );
+                                    return (channels, verts);
                                 }
                                 channel_idx += 1;
+                                if !blocked.is_empty() {
+                                    chan_ends.push((channels.len(), step, blocked.clone()));
+                                }
                                 channels.push(ch);
                             }
                         }
@@ -1029,7 +1582,98 @@ fn synthesize_stop(inner: &BoundedCsg, delta: f32, tol: f32) -> Vec<OffsetChanne
             }
         }
     }
-    channels
+    let verts = synthesize_vertices(
+        &members, &triple_cands, &ctx, union_form, gate_eps, gscale, &min_feat,
+        &mut channel_idx,
+    );
+    snap_channel_ends_to_vertices(&mut channels, &chan_ends, &verts);
+    (channels, verts)
+}
+
+/// C4-Spine-Snapping: verlängert Kanal-Kurven, deren Trace am
+/// `on_composite_boundary`-Gate VOR einer Triple-Junction stoppte (der
+/// Prädiktor bleibt ~1 Schritt vor der Ecke stehen), per Segment bis zum
+/// gelösten Vertex. Erst damit misst `de` die Distanz zur VOLLEN Naht:
+/// die Endpunkt-Ball-Kappe des kurzen Spines behauptete sonst
+/// `de − δ ≥ 0` in der wahren Luft-Kugel der Ecke (Über-Addition), und
+/// zwischen Trace-Ende und Ecke fehlte umgekehrt der Sliver. Mit dem
+/// Snap ist die End-Kappe exakt die auf den Naht-Fächer beschränkte
+/// Vertex-Kugel (R&R: Kanten-Kanäle enden IN den Vertices). Die dualen
+/// Kegelvektoren des Endpunkts werden konstant fortgeschrieben
+/// (Verlängerung ≤ ~2.5 Schritte, Fehler in der Fit-Toleranz-Klasse).
+fn snap_channel_ends_to_vertices(
+    channels: &mut [OffsetChannel],
+    chan_ends: &[(usize, f32, Vec<BlockedEnd>)],
+    verts: &[VertexSphere],
+) {
+    if verts.is_empty() {
+        return;
+    }
+    for (ci, step, ends) in chan_ends {
+        let ch = &mut channels[*ci];
+        if ch.arcs.is_empty() {
+            continue;
+        }
+        let snap_r = 3.0 * *step;
+        for be in ends {
+            let Some(v) = verts
+                .iter()
+                .map(|vs| vs.v)
+                .filter(|v| norm(sub(*v, be.p)) < snap_r)
+                .min_by(|a, b| {
+                    norm(sub(*a, be.p))
+                        .partial_cmp(&norm(sub(*b, be.p)))
+                        .unwrap()
+                })
+            else {
+                continue;
+            };
+            let start = arc_point_at(&ch.arcs[0], 0.0);
+            let end = arc_point_at(ch.arcs.last().unwrap(), 1.0);
+            let (at_start, q) = if norm(sub(start, be.p)) <= norm(sub(end, be.p)) {
+                (true, start)
+            } else {
+                (false, end)
+            };
+            if norm(sub(v, q)) < 1e-4 || norm(sub(v, q)) > snap_r {
+                continue;
+            }
+            let seg = if at_start {
+                segment_arc(v, q)
+            } else {
+                segment_arc(q, v)
+            };
+            let Some(mut seg) = seg else { continue };
+            if at_start {
+                let a0 = &ch.arcs[0];
+                seg.m1s = a0.m1s;
+                seg.m2s = a0.m2s;
+                seg.m1e = a0.m1s;
+                seg.m2e = a0.m2s;
+            } else {
+                let al = ch.arcs.last().unwrap();
+                seg.m1s = al.m1e;
+                seg.m2s = al.m2e;
+                seg.m1e = al.m1e;
+                seg.m2e = al.m2e;
+            }
+            if at_start {
+                // Prepend (Kurvenordnung bleibt Start → Ende).
+                let mut arcs = Vec::with_capacity(ch.arcs.len() + 1);
+                arcs.push(seg);
+                arcs.append(&mut ch.arcs.to_vec());
+                ch.arcs = arcs;
+            } else {
+                ch.arcs.push(seg);
+            }
+            // Kurven-Bounding-Sphere nachziehen.
+            let mut br = ch.bound_r;
+            for a in &ch.arcs {
+                br = br.max(norm(sub(a.bc, ch.bound_c)) + a.br);
+            }
+            ch.bound_r = br;
+        }
+    }
 }
 
 /// offset_tree Phase B: Baum-Pass über [`BoundedCsg`] — hängt an jeden
@@ -1049,15 +1693,19 @@ pub fn synthesize_offset_channels(node: BoundedCsg, tol: f32) -> BoundedCsg {
             if !dual_stop || delta == 0.0 || !delta.is_finite() {
                 return BoundedCsg::Offset { inner, delta, aabb };
             }
-            let channels = synthesize_stop(&inner, delta, tol);
+            let (channels, verts) = synthesize_stop(&inner, delta, tol);
             let stop = BoundedCsg::Offset { inner, delta, aabb };
-            if channels.is_empty() {
+            if channels.is_empty() && verts.is_empty() {
                 return stop;
             }
-            let aabb = Aabb::union(stop.aabb(), channels_aabb(&channels));
+            let aabb = Aabb::union(
+                Aabb::union(stop.aabb(), channels_aabb(&channels)),
+                verts_aabb(&verts),
+            );
             BoundedCsg::ArcChannel {
                 inner: Box::new(stop),
                 channels,
+                verts,
                 aabb,
             }
         }
@@ -1141,9 +1789,10 @@ pub fn synthesize_offset_channels(node: BoundedCsg, tol: f32) -> BoundedCsg {
             open_faces,
             aabb,
         },
-        BoundedCsg::ArcChannel { inner, channels, aabb } => BoundedCsg::ArcChannel {
+        BoundedCsg::ArcChannel { inner, channels, verts, aabb } => BoundedCsg::ArcChannel {
             inner: Box::new(synthesize_offset_channels(*inner, tol)),
             channels,
+            verts,
             aabb,
         },
         other @ (BoundedCsg::Empty
@@ -1153,6 +1802,263 @@ pub fn synthesize_offset_channels(node: BoundedCsg, tol: f32) -> BoundedCsg {
         | BoundedCsg::Helix { .. }
         | BoundedCsg::Sweep { .. }) => other,
     }
+}
+
+// ─── Phase C2: Dead-Channel-Pruning gegen Union-Nachbarterme ────────────────
+
+/// Halbweite des Oberflächenbands, in dem Pruning beweisbar feld-neutral
+/// ist: innerhalb `|f| ≤ PRUNE_BAND` ändert ein gepruneter Kanal weder
+/// einen Feldwert noch irgendwo ein Vorzeichen (Beweisskizze am
+/// [`prune_dead_channels`]-Doc). Außerhalb des Bands ändern sich nur
+/// Innen-/Fernfeld-BETRÄGE — dieselbe Konzession, die der Keil selbst
+/// schon macht (Plan §2, „keine Innen-Betragsgarantie").
+pub const PRUNE_BAND: f32 = 1.0;
+
+/// Bilanz eines [`prune_dead_channels`]-Laufs (Tests/Telemetrie).
+#[derive(Debug, Default, Clone, Copy)]
+pub struct PruneStats {
+    pub pruned: usize,
+    pub kept: usize,
+}
+
+/// offset_tree Phase C2 (#384, Plan §7.2): entfernt **tote**
+/// Kanal-Korrekturkörper — Kanäle, deren gesamtes Wirkgebiet von einem
+/// Union-NACHBARTERM so tief mit Material überdeckt ist, dass der Kanal
+/// das Kompositfeld im Oberflächenband nachweislich nicht ändert. Reine
+/// Kosten-/Provenance-Hygiene, nie Korrektheit (LOG.md Teil C).
+///
+/// **Zertifikat (kein Sampling-Risiko):** Sei `ch` ein Kanal am Stopp S,
+/// erreichbar von der Wurzel AUSSCHLIESSLICH über Union-Knoten, und `n̂`
+/// das (berechnete) Minimum der dabei eingesammelten Geschwister-Felder.
+/// Das Komposit ist dann `min(chain(S), n̂, …)` mit `chain` = die übrigen
+/// Kanäle des Knotens (monoton, 1-Lipschitz, |chain−roh| ≤ ΣGates =: G).
+/// Auf dem ROHEN Stoppfeld gilt: die Naht-Kurve liegt auf dessen
+/// Nullmenge, also ist jede Kanal-Wertänderung bei Kurvenabstand
+/// `de ≥ trust + s` betragsmäßig ≥ `de − trust ≥ s` und **vorzeichenrein**
+/// (beide Werte gleiches Vorzeichen). Fordert man also
+/// `n̂ ≤ −(PRUNE_BAND + G)` überall im Schlauch
+/// `T = {de ≤ trust + PRUNE_BAND + G}`, dann ist jede Änderung im Band
+/// `|Komposit| ≤ PRUNE_BAND` unmöglich (in T drückt `n̂` das Komposit
+/// unter −PRUNE_BAND, außerhalb T liegen beide Werte jenseits des Bands,
+/// gleichvorzeichlich) — Nullmenge und Band-Werte sind bit-identisch.
+/// Die T-Abdeckung wird über die Bogen-Bounding-Sphären zertifiziert:
+/// `n̂(bc) ≤ −(PRUNE_BAND + G) − L·(trust + PRUNE_BAND + G + br)` mit
+/// `L` = Lipschitz-Schranke des Nachbarfelds (Stufe-2-Netz).
+///
+/// Vorstufe Intervall-Arithmetik: Kanäle, deren Wirk-Box in keiner
+/// Nachbar-AABB liegt, können nicht überdeckt sein — keine Evals.
+pub fn prune_dead_channels(root: &mut BoundedCsg, _tol: f32) -> PruneStats {
+    let mut stats = PruneStats::default();
+    fn region_box(ch: &OffsetChannel, reach: f32) -> Aabb {
+        let r = ch.bound_r + reach;
+        Aabb {
+            min: [ch.bound_c[0] - r, ch.bound_c[1] - r, ch.bound_c[2] - r],
+            max: [ch.bound_c[0] + r, ch.bound_c[1] + r, ch.bound_c[2] + r],
+        }
+    }
+    fn box_contains(outer: &Aabb, inner: &Aabb) -> bool {
+        !outer.is_empty()
+            && !inner.is_empty()
+            && (0..3).all(|k| outer.min[k] <= inner.min[k] && outer.max[k] >= inner.max[k])
+    }
+    fn walk(node: &mut BoundedCsg, neighbors: &[&BoundedCsg], stats: &mut PruneStats) {
+        match node {
+            BoundedCsg::Union { left, right, .. } => {
+                {
+                    let mut ctx: Vec<&BoundedCsg> = neighbors.to_vec();
+                    ctx.push(&**right);
+                    walk(left, &ctx, stats);
+                }
+                let mut ctx: Vec<&BoundedCsg> = neighbors.to_vec();
+                ctx.push(&**left);
+                walk(right, &ctx, stats);
+            }
+            BoundedCsg::ArcChannel { inner, channels, verts, aabb } => {
+                if !neighbors.is_empty() {
+                    let g_sum: f32 = channels.iter().map(|c| c.gate).sum();
+                    let lips: Vec<f32> = neighbors
+                        .iter()
+                        .map(|n| crate::sdf_compiler::lipschitz_bound(n).max(1e-3))
+                        .collect();
+                    channels.retain(|ch| {
+                        let depth = PRUNE_BAND + g_sum;
+                        let reach = ch.trust + depth;
+                        let rb = region_box(ch, reach);
+                        // Intervall-Vorstufe: ohne AABB-Überdeckung keine Evals.
+                        if !neighbors.iter().any(|n| box_contains(&n.aabb(), &rb)) {
+                            stats.kept += 1;
+                            return true;
+                        }
+                        // Zertifikat je Bogen-Bounding-Sphere: n̂ tief genug?
+                        let dead = ch.arcs.iter().all(|a| {
+                            let mut nhat = f32::INFINITY;
+                            for (n, l) in neighbors.iter().zip(lips.iter()) {
+                                let v = n.sdf(a.bc, EvalMode::Visual);
+                                nhat = nhat.min(v + l * (reach + a.br));
+                            }
+                            nhat <= -depth
+                        });
+                        if dead {
+                            stats.pruned += 1;
+                        } else {
+                            stats.kept += 1;
+                        }
+                        !dead
+                    });
+                    // AABB nachziehen (nur der konkave Fall trug bei).
+                    // Vertex-Kugeln werden nicht gepruned (Zwergkosten:
+                    // 16 Floats, kein argmin-Scan).
+                    *aabb = Aabb::union(
+                        Aabb::union(inner.aabb(), channels_aabb(channels)),
+                        verts_aabb(verts),
+                    );
+                }
+                // Tiefer liegende Stopps sehen dieselben Union-Nachbarn NICHT
+                // mehr zertifiziert (der Pfad ist kein reiner min-Pfad mehr,
+                // sobald weitere Knotenarten dazwischen liegen) — Kontext
+                // endet hier bewusst.
+                walk(inner, &[], stats);
+            }
+            BoundedCsg::Difference { left, right, .. }
+            | BoundedCsg::Intersection { left, right, .. }
+            | BoundedCsg::SmoothUnion { left, right, .. }
+            | BoundedCsg::SmoothDifference { left, right, .. }
+            | BoundedCsg::MaskedBlend { left, right, .. }
+            | BoundedCsg::Morph { left, right, .. } => {
+                walk(left, &[], stats);
+                walk(right, &[], stats);
+            }
+            BoundedCsg::Twist { inner, .. }
+            | BoundedCsg::Bend { inner, .. }
+            | BoundedCsg::Displace { inner, .. }
+            | BoundedCsg::Shell { inner, .. }
+            | BoundedCsg::Offset { inner, .. } => walk(inner, &[], stats),
+            _ => {}
+        }
+    }
+    walk(root, &[], &mut stats);
+    stats
+}
+
+// ─── Phase C3: Vorwarnsignal — Kanal-Selbst-/Paar-Schnitte ──────────────────
+
+/// offset_tree Phase C3 (#384, Plan §7.3): billiges Vorwarnsignal, dass
+/// die Kanal-Kantenliste des Ergebnisses strukturell verdächtig ist —
+/// zwei Naht-Kurven kommen sich näher als die Summe ihrer Wirkradien
+/// (Kurve-Kurve-Distanz < δ_a + δ_b, Normalkegel-Überlappung möglich,
+/// Plan §9 „Nichtkonvexe Normalkegel-Überlappung"), oder eine Kurve
+/// kommt sich selbst über nicht-benachbarte Bögen so nahe
+/// (Selbstschnitt der Offset-Fläche). Der teure, existierende Detektor
+/// für die dann nötige echte Topologie ist der Weave des expandierten
+/// Körpers (`body::ensure_brep` nimmt bei Kanälen die Octree-Route).
+/// Liefert die Zahl der auffälligen Kurvenpaare (0 = unauffällig).
+pub fn channels_interference(root: &BoundedCsg) -> usize {
+    fn collect<'a>(n: &'a BoundedCsg, out: &mut Vec<&'a OffsetChannel>) {
+        match n {
+            BoundedCsg::ArcChannel { inner, channels, .. } => {
+                out.extend(channels.iter());
+                collect(inner, out);
+            }
+            BoundedCsg::Union { left, right, .. }
+            | BoundedCsg::Difference { left, right, .. }
+            | BoundedCsg::Intersection { left, right, .. }
+            | BoundedCsg::SmoothUnion { left, right, .. }
+            | BoundedCsg::SmoothDifference { left, right, .. }
+            | BoundedCsg::MaskedBlend { left, right, .. }
+            | BoundedCsg::Morph { left, right, .. } => {
+                collect(left, out);
+                collect(right, out);
+            }
+            BoundedCsg::Twist { inner, .. }
+            | BoundedCsg::Bend { inner, .. }
+            | BoundedCsg::Displace { inner, .. }
+            | BoundedCsg::Shell { inner, .. }
+            | BoundedCsg::Offset { inner, .. } => collect(inner, out),
+            _ => {}
+        }
+    }
+    // Bogen-Paar-Distanz: Bounding-Sphere-Schranke, verfeinert durch
+    // Punkt-Sampling (8 Stützstellen je Bogen — für ein VORWARNSIGNAL
+    // ausreichend; die Entscheidung fällt der Weave).
+    fn arcs_close(a: &ChannelArc, b: &ChannelArc, lim: f32) -> bool {
+        if norm(sub(a.bc, b.bc)) - a.br - b.br >= lim {
+            return false;
+        }
+        for i in 0..8 {
+            let pa = arc_point_at(a, i as f32 / 7.0);
+            for j in 0..8 {
+                if norm(sub(pa, arc_point_at(b, j as f32 / 7.0))) < lim {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+    let mut chans = Vec::new();
+    collect(root, &mut chans);
+    let mut hits = 0usize;
+    for i in 0..chans.len() {
+        let a = chans[i];
+        // Selbstschnitt: nicht-benachbarte Bögen derselben Kurve.
+        let n = a.arcs.len();
+        let self_hit = (0..n).any(|k| {
+            ((k + 2)..n).any(|m| {
+                // Wrap-Nachbarn (geschlossener Loop) ausnehmen.
+                if k == 0 && m == n - 1 {
+                    return false;
+                }
+                arcs_close(&a.arcs[k], &a.arcs[m], 2.0 * a.delta)
+            })
+        });
+        if self_hit {
+            hits += 1;
+        }
+        for b in chans.iter().skip(i + 1) {
+            let lim = a.delta + b.delta;
+            if norm(sub(a.bound_c, b.bound_c)) - a.bound_r - b.bound_r >= lim {
+                continue;
+            }
+            let close = a
+                .arcs
+                .iter()
+                .any(|aa| b.arcs.iter().any(|bb| arcs_close(aa, bb, lim)));
+            if close {
+                hits += 1;
+            }
+        }
+    }
+    hits
+}
+
+/// Debug-Helfer: zählt Vertex-Kugeln im Baum (Tests, Telemetrie, C4).
+pub fn count_vertex_spheres(node: &BoundedCsg) -> usize {
+    fn walk(n: &BoundedCsg, acc: &mut usize) {
+        match n {
+            BoundedCsg::ArcChannel { inner, verts, .. } => {
+                *acc += verts.len();
+                walk(inner, acc);
+            }
+            BoundedCsg::Union { left, right, .. }
+            | BoundedCsg::Difference { left, right, .. }
+            | BoundedCsg::Intersection { left, right, .. }
+            | BoundedCsg::SmoothUnion { left, right, .. }
+            | BoundedCsg::SmoothDifference { left, right, .. }
+            | BoundedCsg::MaskedBlend { left, right, .. }
+            | BoundedCsg::Morph { left, right, .. } => {
+                walk(left, acc);
+                walk(right, acc);
+            }
+            BoundedCsg::Twist { inner, .. }
+            | BoundedCsg::Bend { inner, .. }
+            | BoundedCsg::Displace { inner, .. }
+            | BoundedCsg::Shell { inner, .. }
+            | BoundedCsg::Offset { inner, .. } => walk(inner, acc),
+            _ => {}
+        }
+    }
+    let mut acc = 0;
+    walk(node, &mut acc);
+    acc
 }
 
 /// Debug-Helfer: zählt Kanäle/Bögen im Baum (Tests, Telemetrie).

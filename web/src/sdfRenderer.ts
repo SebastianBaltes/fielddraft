@@ -62,6 +62,9 @@ export const OP_MASKED_BLEND   = 0x40;
 // Distanz. Header 9 Floats + 27 je Bogen (Spiegel von
 // `kernel/src/offset_channel.rs::channel_apply`).
 export const OP_ARC_CHANNEL    = 0x41;
+// offset_tree Phase C4 (#384): Vertex-Kugel an einer Triple-Junction.
+// Payload (16): concave, delta, trust, gate, v(3), g1(3), g2(3), g3(3).
+export const OP_VERTEX_SPHERE  = 0x42;
 
 export const OP_END            = 0xFF;
 

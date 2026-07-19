@@ -267,6 +267,10 @@ pub enum BoundedCsg {
     ArcChannel {
         inner: Box<BoundedCsg>,
         channels: Vec<crate::offset_channel::OffsetChannel>,
+        /// Phase C4: Rossignac–Requicha-Vertex-Kugeln an Triple-Junctions
+        /// (angewandt NACH den Kanälen; max/min-assoziativ, Reihenfolge
+        /// feldwert-neutral).
+        verts: Vec<crate::offset_channel::VertexSphere>,
         aabb: Aabb,
     },
 }
@@ -512,9 +516,10 @@ impl BoundedCsg {
             // offset_tree Phase B: naiver Stopp-Wert + Kanal-Korrekturen.
             // Modus-unabhängig — der Kanal IST die korrekte harte Geometrie
             // (wie MaskedBlend: die Fläche ist real, kein Render-Effekt).
-            BoundedCsg::ArcChannel { inner, channels, .. } => {
+            BoundedCsg::ArcChannel { inner, channels, verts, .. } => {
                 let d = inner.sdf_open(p, mode, open);
-                crate::offset_channel::channels_apply(d, p, channels)
+                let d = crate::offset_channel::channels_apply(d, p, channels);
+                crate::offset_channel::verts_apply(d, p, verts)
             }
             BoundedCsg::MaskedBlend {
                 left,
@@ -795,7 +800,7 @@ impl BoundedCsg {
             // Kanal-Term klar (> eps), gehört die Fläche dem Kanal-Branch
             // (0x700+-Band); im eps-Band an der Naht tragen Eltern UND
             // Kanal bei (Mess-/Snap-Referenz der Eltern bleibt erreichbar).
-            BoundedCsg::ArcChannel { inner, channels, .. } => {
+            BoundedCsg::ArcChannel { inner, channels, verts, .. } => {
                 let (d0, mut c) = inner.evaluate_open(p, eps, mode, open);
                 let mut d = d0;
                 for ch in channels {
@@ -805,6 +810,18 @@ impl BoundedCsg {
                             c = Contributors::single(crate::csg::BranchId(ch.branch));
                         } else {
                             c.push(crate::csg::BranchId(ch.branch));
+                        }
+                        d = nd;
+                    }
+                }
+                // Phase C4: Vertex-Kugeln mit derselben Provenance-Regel.
+                for vs in verts {
+                    let nd = crate::offset_channel::vertex_apply(d, p, vs);
+                    if nd != d {
+                        if (nd - d).abs() > eps {
+                            c = Contributors::single(crate::csg::BranchId(vs.branch));
+                        } else {
+                            c.push(crate::csg::BranchId(vs.branch));
                         }
                         d = nd;
                     }

@@ -410,7 +410,7 @@ fn eval_bounded_d3_open(
         // eingefroren — für den Distanzterm ist das der Enveloppen-Satz
         // (∂de/∂x = (x−q*)/|x−q*| exakt), für die s-Terme erster Ordnung
         // korrekt (die Fußpunkt-Drift ist ein O(κ·|x−q*|)-Nebenterm).
-        BoundedCsg::ArcChannel { inner, channels, .. } => {
+        BoundedCsg::ArcChannel { inner, channels, verts, .. } => {
             let mut d = eval_bounded_d3_open(inner, p, mode, open);
             let p_re = [p[0].re as f32, p[1].re as f32, p[2].re as f32];
             for ch in channels {
@@ -439,12 +439,71 @@ fn eval_bounded_d3_open(
                     D3::from(ch.gate as f64) + d
                 };
                 let min_d3 = |a: D3, b: D3| if a.re <= b.re { a } else { b };
-                let w = min_d3(
-                    min_d3(min_d3(s1, s2), de - D3::from(ch.delta as f64)),
-                    min_d3(D3::from(ch.trust as f64) - de, gate),
+                // Rollen-Trennung (C4) — Spiegel von `channel_apply`.
+                let w_geo = min_d3(
+                    min_d3(s1, s2),
+                    min_d3(
+                        de - D3::from(ch.delta as f64),
+                        D3::from(ch.trust as f64) - de,
+                    ),
                 );
+                let w = min_d3(w_geo, gate);
                 d = if ch.concave {
-                    if d.re <= (-w).re { d } else { -w }
+                    if w.re > 0.0 {
+                        if d.re <= (-w).re { d } else { -w }
+                    } else if w_geo.re <= 0.0 {
+                        if d.re <= (-w_geo).re { d } else { -w_geo }
+                    } else {
+                        d
+                    }
+                } else if d.re >= w.re {
+                    d
+                } else {
+                    w
+                };
+            }
+            // Phase C4: Vertex-Kugeln — Dual-Spiegel von `vertex_apply`.
+            // v/ĝ sind Konstanten; ∂ρ/∂x = (x−v)/ρ ist exakt (Enveloppe).
+            for vs in verts {
+                let dq = [
+                    p[0] - D3::from(vs.v[0] as f64),
+                    p[1] - D3::from(vs.v[1] as f64),
+                    p[2] - D3::from(vs.v[2] as f64),
+                ];
+                let rho = (dq[0] * dq[0] + dq[1] * dq[1] + dq[2] * dq[2]).sqrt();
+                let skip = vs.trust as f64 - rho.re
+                    <= if vs.concave { -d.re } else { d.re };
+                if skip {
+                    continue;
+                }
+                let sdot = |g: [f32; 3]| {
+                    dq[0] * D3::from(g[0] as f64)
+                        + dq[1] * D3::from(g[1] as f64)
+                        + dq[2] * D3::from(g[2] as f64)
+                };
+                let s1 = sdot(vs.gates[0]);
+                let s2 = sdot(vs.gates[1]);
+                let s3 = sdot(vs.gates[2]);
+                let gate = if vs.concave {
+                    D3::from(vs.gate as f64) - d
+                } else {
+                    D3::from(vs.gate as f64) + d
+                };
+                let min_d3 = |a: D3, b: D3| if a.re <= b.re { a } else { b };
+                // Rollen-Trennung (C4) — Spiegel von `vertex_apply`.
+                let w_geo = min_d3(
+                    min_d3(min_d3(s1, s2), min_d3(s3, rho - D3::from(vs.delta as f64))),
+                    D3::from(vs.trust as f64) - rho,
+                );
+                let w = min_d3(w_geo, gate);
+                d = if vs.concave {
+                    if w.re > 0.0 {
+                        if d.re <= (-w).re { d } else { -w }
+                    } else if w_geo.re <= 0.0 {
+                        if d.re <= (-w_geo).re { d } else { -w_geo }
+                    } else {
+                        d
+                    }
                 } else if d.re >= w.re {
                     d
                 } else {

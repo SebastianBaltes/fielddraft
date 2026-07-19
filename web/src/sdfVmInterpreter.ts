@@ -51,7 +51,7 @@ import {
   OP_WARP_PUSH, OP_WARP_POP, OP_WARP_TWIST, OP_WARP_BEND,
   OP_WARP_TRANSFORM, OP_WARP_REVOLVE,
   OP_WARP_HELIX, OP_HELIX_SCALE, OP_WARP_SWEEP,
-  OP_MASKED_BLEND, OP_ARC_CHANNEL, OP_END,
+  OP_MASKED_BLEND, OP_ARC_CHANNEL, OP_VERTEX_SPHERE, OP_END,
   worldToLocalFn, halfspaceLocalFn, sdfBoxFn, sdfSphereFn, sdfCylinderFn,
   sdfTorusFn, sdfConeFn, sdfCapsuleFn, sdfHexPrismFn,
   sdfEllipsoidFn, sdfGyroidFn, sdfThreadFn,
@@ -878,11 +878,58 @@ export function buildVmSdfEvalFn(
             const s1 = dq.dot(bestM1);
             const s2 = dq.dot(bestM2);
             const gate = concave.greaterThan(0.5).select(gateW.sub(d), gateW.add(d));
-            const w = min(min(min(s1, s2), min(best.sub(delta), trust.sub(best))), gate);
+            // Rollen-Trennung (C4, CPU-Referenz channel_apply):
+            // Geometrie-Klemme (Luft-Distanzschranke) vs. Add-Gate.
+            const wGeo = min(min(s1, s2), min(best.sub(delta), trust.sub(best)));
+            const w = min(wGeo, gate);
+            const inactive = wGeo.greaterThan(0.0).select(d, min(d, wGeo.negate()));
+            const concRes = w.greaterThan(0.0).select(min(d, w.negate()), inactive);
             result.assign(
-              concave.greaterThan(0.5).select(min(d, w.negate()), max(d, w)),
+              concave.greaterThan(0.5).select(concRes, max(d, w)),
             );
           });
+        });
+        pushV(result);
+
+      }).ElseIf(tag.equal(int(OP_VERTEX_SPHERE)), () => {
+        // offset_tree Phase C4 (#384): Rossignac–Requicha-Vertex-Kugel an
+        // einer Triple-Junction — 1:1-Spiegel der CPU-Referenz
+        // (`kernel offset_channel::vertex_apply` / `eval_opcodes`
+        // OP_VERTEX_SPHERE-Arm), inklusive des exakten Fernfeld-Skips.
+        // Payload (16): concave(1) delta(1) trust(1) gate(1) v(3)
+        // g1(3) g2(3) g3(3).
+        const concave = rd().toVar();
+        const delta = rd().toVar();
+        const trust = rd().toVar();
+        const gateW = rd().toVar();
+        const vx = rd(), vy = rd(), vz = rd();
+        const g1 = vec3(rd(), rd(), rd()).toVar();
+        const g2 = vec3(rd(), rd(), rd()).toVar();
+        const g3 = vec3(rd(), rd(), rd()).toVar();
+        const d = popV().toVar();
+        const p = vec3(ptx, pty, ptz).toVar();
+        const dq = p.sub(vec3(vx, vy, vz)).toVar();
+        const rho = dq.length().toVar();
+        const signedD = concave.greaterThan(0.5).select(d.negate(), d);
+        const result = float(0).toVar();
+        If(trust.sub(rho).lessThanEqual(signedD), () => {
+          result.assign(d);
+        }).Else(() => {
+          const s1 = dq.dot(g1);
+          const s2 = dq.dot(g2);
+          const s3 = dq.dot(g3);
+          const gate = concave.greaterThan(0.5).select(gateW.sub(d), gateW.add(d));
+          // Rollen-Trennung (C4, CPU-Referenz vertex_apply).
+          const wGeo = min(
+            min(min(s1, s2), min(s3, rho.sub(delta))),
+            trust.sub(rho),
+          );
+          const w = min(wGeo, gate);
+          const inactive = wGeo.greaterThan(0.0).select(d, min(d, wGeo.negate()));
+          const concRes = w.greaterThan(0.0).select(min(d, w.negate()), inactive);
+          result.assign(
+            concave.greaterThan(0.5).select(concRes, max(d, w)),
+          );
         });
         pushV(result);
 

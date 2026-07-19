@@ -69,6 +69,7 @@ enum : uint32_t {
 
   OP_MASKED_BLEND   = 0x40,
   OP_ARC_CHANNEL    = 0x41,
+  OP_VERTEX_SPHERE  = 0x42,
 
   OP_END            = 0xFF,
 };
@@ -1207,9 +1208,49 @@ inline float eval_opcodes(const float* opcodes, int n, float wx, float wy,
         float s2 = dq[0] * best_m2[0] + dq[1] * best_m2[1] +
                    dq[2] * best_m2[2];
         float gate = concave ? gate_w - d : gate_w + d;
-        float w = fminf_(fminf_(fminf_(s1, s2), best - delta),
-                         fminf_(trust - best, gate));
-        push_v(concave ? fminf_(d, -w) : fmaxf_(d, w));
+        // Rollen-Trennung (C4, CPU-Referenz channel_apply): Geometrie-
+        // Klemme (Luft-Distanzschranke) vs. Add-Gate.
+        float w_geo = fminf_(fminf_(s1, s2), fminf_(best - delta, trust - best));
+        float w = fminf_(w_geo, gate);
+        push_v(concave
+                   ? (w > 0.0f ? fminf_(d, -w)
+                               : (w_geo <= 0.0f ? fminf_(d, -w_geo) : d))
+                   : fmaxf_(d, w));
+        break;
+      }
+
+      case OP_VERTEX_SPHERE: {
+        // offset_tree Phase C4 (#384): Rossignac-Requicha-Vertex-Kugel an
+        // einer Triple-Junction — 1:1-Spiegel des Rust-CPU-Interpreters
+        // (sdf_compiler.rs OP_VERTEX_SPHERE / offset_channel::vertex_apply).
+        // Payload 16: concave delta trust gate v(3) g1(3) g2(3) g3(3).
+        bool concave = rd() > 0.5f;
+        float delta = rd();
+        float trust = rd();
+        float gate_w = rd();
+        float v[3] = {rd(), rd(), rd()};
+        float g1[3] = {rd(), rd(), rd()};
+        float g2[3] = {rd(), rd(), rd()};
+        float g3[3] = {rd(), rd(), rd()};
+        float d = pop_v();
+        float dq[3] = {pt[0] - v[0], pt[1] - v[1], pt[2] - v[2]};
+        float rho = std::sqrt(sq_(dq[0]) + sq_(dq[1]) + sq_(dq[2]));
+        if (trust - rho <= (concave ? -d : d)) {
+          push_v(d);
+          break;
+        }
+        float s1 = dq[0] * g1[0] + dq[1] * g1[1] + dq[2] * g1[2];
+        float s2 = dq[0] * g2[0] + dq[1] * g2[1] + dq[2] * g2[2];
+        float s3 = dq[0] * g3[0] + dq[1] * g3[1] + dq[2] * g3[2];
+        float gate = concave ? gate_w - d : gate_w + d;
+        // Rollen-Trennung (C4, CPU-Referenz vertex_apply).
+        float w_geo = fminf_(fminf_(fminf_(s1, s2), fminf_(s3, rho - delta)),
+                             trust - rho);
+        float w = fminf_(w_geo, gate);
+        push_v(concave
+                   ? (w > 0.0f ? fminf_(d, -w)
+                               : (w_geo <= 0.0f ? fminf_(d, -w_geo) : d))
+                   : fmaxf_(d, w));
         break;
       }
 

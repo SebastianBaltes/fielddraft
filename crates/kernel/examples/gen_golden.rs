@@ -611,4 +611,36 @@ fn main() {
     let (n_ch, _) = fielddraft_kernel::offset_channel::count_channels(&bvh);
     assert!(n_ch > 0, "golden arc_channel_notch: Synthese lieferte keine Kanäle");
     emit("arc_channel_notch", &bvh, &pts);
+
+    // ── Vertex-Kugel (OP_VERTEX_SPHERE, offset_tree Phase C4) ────
+    // Konkave Raum-Ecke aus drei orthogonalen Platten, erodiert: die
+    // Triple-Junctions synthetisieren Vertex-Kugeln (Rossignac–Requicha),
+    // durch die echte Synthese, damit der Strom die Produktions-Payloads
+    // trägt.
+    let plate = |fid: u32, c: [f32; 3], h: [f32; 3]| {
+        CsgNode::Transform(
+            xform(c, id, s1),
+            Box::new(CsgNode::Leaf {
+                id: FeatureId::from_u32(fid),
+                primitive: Primitive::Box { center: [0.0; 3], half_extents: h },
+            }),
+        )
+    };
+    let corner = CsgNode::Offset(
+        Box::new(CsgNode::Union(
+            Box::new(CsgNode::Union(
+                Box::new(plate(1, [0.0, -5.0, 0.0], [20.0, 5.0, 20.0])),
+                Box::new(plate(2, [-5.0, 0.0, 0.0], [5.0, 20.0, 20.0])),
+            )),
+            Box::new(plate(3, [0.0, 0.0, -5.0], [20.0, 20.0, 5.0])),
+        )),
+        -1.5,
+    );
+    let bvh = fielddraft_kernel::offset_channel::synthesize_offset_channels(
+        BoundedCsg::from_csg(&corner),
+        0.01,
+    );
+    let n_v = fielddraft_kernel::offset_channel::count_vertex_spheres(&bvh);
+    assert!(n_v > 0, "golden vertex_sphere_corner: Synthese lieferte keine Vertex-Kugeln");
+    emit("vertex_sphere_corner", &bvh, &pts);
 }
