@@ -2114,6 +2114,191 @@ fn synthesize_contact_prisms_dilation(
     res
 }
 
+// ─── F396/#398 Phase 1: Kontakt-Clip als Datensatz für die ∂P-Rim-Synthese ───
+//
+// Der `RimFillet` (F396-RIM-OPCODE-DESIGN.md) braucht die GEKLIPPTE Kontakt-
+// Kontur P samt Frame, den beteiligten Member-Flächen und deren SOLID-Außen-
+// normalen. Genau diese Daten fallen beim Kontakt-Prisma-Verschnitt
+// (`synthesize_contact_prisms` / `_dilation`) an, werden dort aber verworfen.
+// [`contact_clips`] rekonstruiert sie als reine Datensätze — eine faithful,
+// ISOLIERTE Spiegelung der Prisma-Accept/Refuse-Logik (identische Detektion,
+// identischer Sutherland–Hodgman-Verschnitt, identische duale Sicherheits-
+// Probe). Sie hängt NICHTS in den Baum und ändert das ausgelieferte Feld
+// nicht; sie wird ausschließlich von `offset_rim` (Synthese) + dessen Tests
+// konsumiert. Phase 2 darf `synthesize_contact_prisms` darauf zurückführen,
+// um die Duplikation zu tilgen; Phase 1 hält beide Pfade getrennt, damit der
+// Regen-Pfad garantiert bit-identisch bleibt.
+
+/// Ein Kontakt-Verschnitt (Polygon P in der Kontaktebene Π + Frame + die zwei
+/// beteiligten Member-Flächen), aus dem `offset_rim` die ∂P-Reflexkanten
+/// ableitet. Alle Vektoren in Welt-f64.
+pub(crate) struct ContactClip {
+    /// Π-Normale (Welt, Einheit). Die geklippte Kontur liegt auf `n·x = o`.
+    pub(crate) n: [f64; 3],
+    /// In-Ebenen-Basis (e1, e2) zur Rück-Projektion (2D → Welt:
+    /// `w = u·e1 + v·e2 + o·n`).
+    pub(crate) e1: [f64; 3],
+    pub(crate) e2: [f64; 3],
+    pub(crate) o: f64,
+    /// Geklippte Kontaktkontur P (CCW, In-Ebenen-2D).
+    pub(crate) p2d: Vec<[f64; 2]>,
+    /// Member-i-Fläche als CCW-Rechteck (In-Ebenen-2D) — der Clip-Subjekt.
+    pub(crate) la: Vec<[f64; 2]>,
+    /// Member-j-Fläche als CCW-Rechteck (In-Ebenen-2D) — der Clip.
+    pub(crate) lb: Vec<[f64; 2]>,
+    /// SOLID-Außennormale (Welt) der Member-i-Kontaktfläche (`sign_i · n̂_box`).
+    pub(crate) n_i: [f64; 3],
+    /// SOLID-Außennormale (Welt) der Member-j-Kontaktfläche (`sign_j · n̂_box`).
+    pub(crate) n_j: [f64; 3],
+    /// Member-Vorzeichen (`+1` additiv, `−1` subtrahiert) — bestimmt, ob die
+    /// In-Ebenen-Wandnormale einer Stufen-Kante ins Material oder in die Luft
+    /// zeigt (Komplement-Dualität, F396 §1.4).
+    pub(crate) sign_i: f32,
+    pub(crate) sign_j: f32,
+}
+
+#[inline]
+fn fscl(a: [f64; 3], s: f64) -> [f64; 3] {
+    [a[0] * s, a[1] * s, a[2] * s]
+}
+
+/// Rekonstruiert die Kontakt-Verschnitte eines Stopp-Kind-Baums als Datensätze
+/// (KEIN Baum-Eingriff, feldneutral). `delta_signed < 0` = Erosion/konkav
+/// (Union-Form), `> 0` = Dilation/konvex (Intersection/Difference-Form). Nur
+/// Box-Box-Kontakte; degenerierte/duale-unsichere Verschnitte werden — exakt
+/// wie in der Prisma-Synthese — verworfen.
+pub(crate) fn contact_clips(inner: &BoundedCsg, delta_signed: f64) -> Vec<ContactClip> {
+    let concave = delta_signed < 0.0;
+    let union_form = concave;
+    let mut members = Vec::new();
+    flatten_members(inner, union_form, 1.0, &mut members);
+    let delta = delta_signed.abs();
+    let coincide_tol = (0.5 * delta).max(1e-3);
+    let overlap_min = (0.5 * delta).max(1e-3);
+
+    let faces: Vec<Option<Vec<ContactFace>>> =
+        members.iter().map(|m| box_contact_faces(m.node)).collect();
+    // Erosion (Stufe 1) verweigert komplett, sobald ein Kontakt-Partner keine
+    // Box ist (P nicht exakt bestimmbar) — Spiegel von `synthesize_contact_prisms`.
+    if concave && faces.iter().any(|f| f.is_none()) {
+        return Vec::new();
+    }
+
+    let mut out = Vec::new();
+    let mut idx = 0u32;
+    for i in 0..members.len() {
+        for j in (i + 1)..members.len() {
+            let (Some(fi), Some(fj)) = (&faces[i], &faces[j]) else {
+                continue;
+            };
+            let si = members[i].sign as f64;
+            let sj = members[j].sign as f64;
+            for fa in fi {
+                for fb in fj {
+                    // Detektion: koplanar-antiparallel + koinzident. Erosion an
+                    // den WAHREN Normalen, Dilation an den effektiven (Komplement).
+                    let n = if concave {
+                        if fdot(fa.n, fb.n) > -0.9995 {
+                            continue;
+                        }
+                        if (fa.o + fb.o).abs() > coincide_tol {
+                            continue;
+                        }
+                        fnrm(fa.n)
+                    } else {
+                        let eff_i = fscl(fa.n, -si);
+                        let eff_j = fscl(fb.n, -sj);
+                        if fdot(eff_i, eff_j) > -0.9995 {
+                            continue;
+                        }
+                        if (-si * fa.o + -sj * fb.o).abs() > coincide_tol {
+                            continue;
+                        }
+                        fnrm(eff_i)
+                    };
+                    let o = fdot(n, fa.loop3[0]);
+                    let (e1, e2, _) = plane_frame(n);
+                    let proj = |w: &[f64; 3]| -> [f64; 2] { [fdot(e1, *w), fdot(e2, *w)] };
+                    let mut la: Vec<[f64; 2]> = fa.loop3.iter().map(proj).collect();
+                    let mut lb: Vec<[f64; 2]> = fb.loop3.iter().map(proj).collect();
+                    if area2d(&la) < 0.0 {
+                        la.reverse();
+                    }
+                    if area2d(&lb) < 0.0 {
+                        lb.reverse();
+                    }
+                    let clip_tol = (1e-3 * delta).max(1e-4);
+                    let mut p2d = cleanup_poly(clip_convex(&la, &lb), clip_tol);
+                    if p2d.len() < 3 {
+                        continue;
+                    }
+                    if area2d(&p2d) < 0.0 {
+                        p2d.reverse();
+                    }
+                    let ap = area2d(&p2d).abs();
+                    if ap < overlap_min * overlap_min {
+                        continue;
+                    }
+                    // Cap-Tiefen wie in der Prisma-Synthese (für die duale
+                    // Sicherheits-Probe, die entscheidet, ob hier ein Prisma —
+                    // und damit ein Rim — überhaupt platziert würde).
+                    let (depth_neg, depth_pos) = if concave {
+                        (fa.depth, fb.depth)
+                    } else {
+                        let cen = {
+                            let (mut cx, mut cy) = (0.0f64, 0.0);
+                            for q in &p2d {
+                                cx += q[0];
+                                cy += q[1];
+                            }
+                            [cx / p2d.len() as f64, cy / p2d.len() as f64]
+                        };
+                        let p_circ = p2d
+                            .iter()
+                            .map(|q| ((q[0] - cen[0]).powi(2) + (q[1] - cen[1]).powi(2)).sqrt())
+                            .fold(0.0f64, f64::max);
+                        let margin = p_circ + 1.5 * delta;
+                        (
+                            if si < 0.0 { fa.depth } else { margin },
+                            if sj < 0.0 { fb.depth } else { margin },
+                        )
+                    };
+                    let feat = 0x0007_0000 | (idx & 0xFFFF);
+                    let Some(prism) =
+                        build_prism_member(&p2d, e1, e2, n, o, depth_neg, depth_pos, feat)
+                    else {
+                        continue;
+                    };
+                    let guard = (2e-3 * delta as f32).max(1e-3);
+                    let safe = if concave {
+                        prism_subset_of_union(&prism, &members, guard)
+                    } else {
+                        prism_outside_inner(&prism, &members, guard)
+                    };
+                    if !safe {
+                        continue;
+                    }
+                    idx += 1;
+                    out.push(ContactClip {
+                        n,
+                        e1,
+                        e2,
+                        o,
+                        p2d,
+                        la,
+                        lb,
+                        n_i: fscl(fa.n, si),
+                        n_j: fscl(fb.n, sj),
+                        sign_i: members[i].sign,
+                        sign_j: members[j].sign,
+                    });
+                }
+            }
+        }
+    }
+    out
+}
+
 // STUFE 2 (∂P-Rim-Kanäle + C4-Vertex-Kugeln) ist OFFEN (Rückfall-Klausel #395).
 // Der geplante Weg (Design §3.1/§3.4): ∂P in bündige (α≈180°, kein Kanal) und
 // Stufen-Segmente zerlegen (Klassifikation über point-in-loop der beiden

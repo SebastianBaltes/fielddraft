@@ -12,6 +12,7 @@ pub mod csg;
 mod offset_fold;
 pub mod offset_capability;
 pub mod offset_channel;
+pub mod offset_rim;
 pub mod offset_invariants;
 pub mod sdf_dual;
 pub mod dc;
