@@ -1785,6 +1785,17 @@ impl CsgNode {
             CsgNode::Transform(t, inner) => {
                 CsgNode::Transform(t, Box::new(inner.push_down_offset(delta)))
             }
+            // InnerWall is field-transparent (it only remaps contributor ids),
+            // so an offset commutes: `Offset(InnerWall(X), δ)` ≡
+            // `InnerWall(Offset(X, δ))`. Keeping the wrapper OUTSIDE preserves
+            // the pipeline invariant that InnerWall stays the direct right
+            // child of its Difference (F1 aus dem #384-Fuzz-Harness: erosion
+            // over a closed shell dilates the cavity subtrahend — without this
+            // arm the offset wrapped the InnerWall and broke `collect_parity`'s
+            // structural assumption, and the cavity never folded).
+            CsgNode::InnerWall(inner) => {
+                CsgNode::InnerWall(Box::new(inner.push_down_offset(delta)))
+            }
             // Unreachable: `offset_can_push_through` returned true, so `self`
             // is one of the variants above. Keep the `f − δ` fallback as a
             // belt-and-braces net rather than a panic.
@@ -3054,6 +3065,8 @@ pub(crate) fn offset_can_push_through(inner: &CsgNode, delta: f32) -> bool {
         // A rigid placement (unit scale) is an isometry; a non-unit scale
         // breaks the metric (the evaluator multiplies by `min_scale`).
         CsgNode::Transform(t, _) => t.scale == [1.0, 1.0, 1.0],
+        // Field-transparent contributor-id wrapper — offset commutes through.
+        CsgNode::InnerWall(_) => true,
         _ => false,
     }
 }

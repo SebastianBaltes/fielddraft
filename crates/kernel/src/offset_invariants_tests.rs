@@ -209,6 +209,43 @@ fn neg_innerwall_left_of_difference_is_flagged() {
 }
 
 #[test]
+fn pos_erosion_over_closed_shell_keeps_innerwall_and_folds() {
+    // Befund F1 aus dem #384-Fuzz-Harness: Offset(closed_shell, δ<0). Der
+    // Pushdown dilatiert den InnerWall-Subtrahenden der expandierten Shell;
+    // vor dem Fix blieb der Offset ÜBER dem InnerWall stehen (Invariante 4
+    // verletzt, Höhle ungefaltet). InnerWall ist feld-transparent, also muss
+    // der Offset hindurchkommutieren.
+    let node = CsgNode::Offset(
+        Box::new(CsgNode::Shell(Box::new(box_leaf(1, [25.0, 25.0, 25.0])), 3.0, Vec::new())),
+        -2.0,
+    );
+
+    let expanded = node.clone().expand_shells();
+    let pushed = expanded.clone().push_down_offsets();
+    assert!(check_inner_wall_position(&pushed).is_ok(), "{:?}", check_inner_wall_position(&pushed));
+    assert!(check_offsets_pushed(&pushed).is_ok(), "{:?}", check_offsets_pushed(&pushed));
+
+    // Pushdown ist feld-exakt: vor dem Falten punktweise identisch zur
+    // unge-pushten Expansion.
+    for p in [[0.0, 0.0, 0.0], [24.0, 0.0, 0.0], [21.5, 21.5, 0.0], [30.0, 5.0, -3.0]] {
+        let a = expanded.sdf(p, crate::csg::EvalMode::Visual);
+        let b = pushed.sdf(p, crate::csg::EvalMode::Visual);
+        assert_eq!(a.to_bits(), b.to_bits(), "field drift at {p:?}: {a} vs {b}");
+    }
+
+    // Nach dem Falten: Höhle exakt eingefaltet — kein Offset-Node mehr im
+    // gesamten Baum (Außen-Erosion UND dilatierte Höhle sind Box-faltbar).
+    let folded = pushed.fold_offset_leaves();
+    assert!(check_offset_leaves_folded(&folded).is_ok());
+    assert!(check_inner_wall_position(&folded).is_ok());
+    fn count_offsets(n: &CsgNode) -> usize {
+        let own = usize::from(matches!(n, CsgNode::Offset(..)));
+        own + children(n).iter().map(|(c, _)| count_offsets(c)).sum::<usize>()
+    }
+    assert_eq!(count_offsets(&folded), 0, "cavity/outer offsets must fold: {folded:?}");
+}
+
+#[test]
 fn neg_innerwall_under_union_is_flagged() {
     let bad = CsgNode::Union(
         Box::new(box_leaf(1, [5.0, 5.0, 5.0])),

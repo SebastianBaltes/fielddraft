@@ -12,6 +12,9 @@ Format, eine Zeile je Eintrag:
 kind = feat | fix | perf. scope und #tickets sind optional. Folgezeilen, die
 eingerückt sind, gehören zum Text davor (Umbruch erlaubt).
 
+## 0.18.1
+- fix(sdf) #384: Ein negatives Offset (Erosion) auf einem Körper mit geschlossener Shell ergab bisher an der Innenwand nur eine Näherung — die Höhle wurde beim internen Umbau nicht mit eingefaltet, die Wandstärke stimmte nach dem Offset nur ungefähr. Jetzt kommutiert das Offset korrekt durch die Innenwand-Struktur, die Höhle faltet exakt mit und die Wand bleibt maßhaltig. Aufgedeckt durch den neuen Property-Fuzz-Harness, der zufällige degenerierte Offset/Shell-Geometrien gegen die gemessene Ground Truth prüft.
+
 ## 0.18.0
 - feat(sdf) #384: Offset- und Shell-Features zeigen jetzt an, wie maßhaltig ihr Ergebnis ist. Bisher blieb überall dort, wo die exakte Baum-Expansion an einer Stelle nicht möglich war, still eine Näherung („f−δ“) stehen — man erfuhr nicht, dass das Ergebnis dort nur ungefähr stimmt. Neu trägt jedes Offset/Shell-Feature einen Status: „exakt“ (vollständig analytisch gefaltet, keine Korrektur nötig), „toleranzbeschränkt“ (an Boolean-Nähten über Arc-Spline-Kanäle auf eine bekannte Toleranz genähert), „Näherung“ (irgendwo blieb f−δ stehen — die Nullmenge kann lokal abweichen, der Fehler ist nicht beschränkt) oder „nicht unterstützt“ (Twist/Bend im Scope, wird weiterhin abgelehnt). In der Baumansicht erscheint bei nicht-exakten Features ein Abzeichen mit Tooltip, im Feature-Editor ein Hinweisbanner mit den konkreten Gründen (z. B. „Profil enthält ein Bézier-Segment“, „Revolve-Profil berührt die Rotationsachse“ oder „Offset über einer Kanten-Fillet-Fläche“). Das Feld selbst bleibt unverändert — die Statuserhebung ist rein additiv.
 
