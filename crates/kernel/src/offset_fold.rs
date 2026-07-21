@@ -100,6 +100,17 @@ enum PrimFold {
     Collapsed,
 }
 
+/// Ob [`try_fold_erosion`] `Offset(node, −a)` KONSUMIEREN würde (in ein neues
+/// Blatt falten oder exakt zu [`CsgNode::Empty`] kollabieren). Das ist die
+/// SSOT, die der Pipeline-Invarianten-Checker
+/// ([`crate::offset_invariants::check_offset_leaves_folded`]) negiert, um zu
+/// beweisen, dass jeder verbliebene Erosions-Offset über einem Blatt eine
+/// ECHTE, dokumentierte Verweigerung ist — keine Parallel-Implementierung,
+/// sondern derselbe Entscheider wie im Pass.
+pub(crate) fn fold_would_accept(node: &CsgNode, a: f32) -> bool {
+    try_fold_erosion(node, a).is_some()
+}
+
 /// Versucht, `Offset(node, −a)` (Erosion um `a > 0`) als neues Blatt
 /// derselben Familie darzustellen. `None` = verweigern (`f − δ` bleibt);
 /// [`FoldOutcome::Collapsed`] = das Blatt verschwindet exakt (Phase C1).

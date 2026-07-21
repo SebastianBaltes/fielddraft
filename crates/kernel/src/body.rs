@@ -1040,7 +1040,16 @@ pub fn build_bounded_for_body_reported(
     // damit die Innenwand denselben exakten Offset-Erosionspfad erbt (läuft
     // NACH apply_edge_fillets/apply_global_round, sodass die künstliche
     // Innenwand-Difference weder gefillet noch gerundet wird).
-    csg = csg.expand_shells().push_down_offsets().fold_offset_leaves();
+    // #384 Follow-up 2: die Pipeline als Compiler-Pipeline mit geprüften
+    // Nachbedingungen fahren — jeder Pass wird von einem debug-only Invarianten-
+    // Gate (`crate::offset_invariants`) abgenommen. In Release-Builds sind die
+    // Gates wegkompiliert (null Kosten, keine Rückwirkung aufs Feld).
+    csg = csg.expand_shells();
+    crate::offset_invariants::assert_after_expand_shells(&csg);
+    csg = csg.push_down_offsets();
+    crate::offset_invariants::assert_after_push_down_offsets(&csg);
+    csg = csg.fold_offset_leaves();
+    crate::offset_invariants::assert_after_fold_offset_leaves(&csg);
     // #384 offset_capability: classify the NON-dual residual offsets (fold
     // refusals + inexact carriers) on the post-fold tree; the dual seams are
     // classified during channel synthesis below. Read-only, no field effect.
@@ -1091,10 +1100,17 @@ pub fn build_bounded_for_body_local(
     // Phase D2: geschlossene Shells auch im Weave-Baupfad expandieren, damit
     // Innenwand-Feld, B-Rep-Carrier und hs_map dieselbe (exakte) Nullmenge
     // beschreiben — sonst divergierten sie an der dualisierten Innenwand.
-    let csg = CsgNode::from_decoded(&sub)
-        .expand_shells()
-        .push_down_offsets()
-        .fold_offset_leaves();
+    // #384 Follow-up 2: Weave-Baupfad fährt dieselbe Pipeline mit denselben
+    // debug-only Invarianten-Gates wie die Mesher-/Render-Pfade.
+    let csg = {
+        let mut c = CsgNode::from_decoded(&sub).expand_shells();
+        crate::offset_invariants::assert_after_expand_shells(&c);
+        c = c.push_down_offsets();
+        crate::offset_invariants::assert_after_push_down_offsets(&c);
+        c = c.fold_offset_leaves();
+        crate::offset_invariants::assert_after_fold_offset_leaves(&c);
+        c
+    };
     // offset_tree Phase C3 (#384, Weave-Refresh): auch der Weave sieht den
     // EXPANDIERTEN Körper — Kanal-Korrekturen inklusive —, damit
     // Folge-Features (Fillet auf offsetteter Kante, zweiter Offset) echte
@@ -1145,7 +1161,14 @@ pub fn build_bounded_with_primitives_rounded(
     // FOLDED parameters (they describe what the mesher marches —
     // docs/OFFSET-TREE-AUDIT.md, Konsument 1). Leaf FeatureIds are
     // fold-invariant, so the map keys are unchanged.
-    csg = csg.push_down_offsets().fold_offset_leaves();
+    // #384 Follow-up 2: dieselben debug-only Invarianten-Gates. Dieser Pfad
+    // ruft KEIN `expand_shells` (er extrahiert nur die Primitive-Map), daher
+    // wird die Kein-geschlossener-Shell-Invariante hier bewusst nicht geprüft;
+    // die Pushdown- und Fold-Nachbedingungen (inkl. InnerWall-Position) gelten.
+    csg = csg.push_down_offsets();
+    crate::offset_invariants::assert_after_push_down_offsets(&csg);
+    csg = csg.fold_offset_leaves();
+    crate::offset_invariants::assert_after_fold_offset_leaves(&csg);
     let prims: std::collections::HashMap<u32, fielddraft_protocol::Primitive> = csg
         .leaf_primitives()
         .into_iter()

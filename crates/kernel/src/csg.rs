@@ -1748,33 +1748,46 @@ impl CsgNode {
             // `f − 0` is the identity — drop the node, keep normalising below.
             return self.push_down_offsets();
         }
+        // Single source of truth for the pushdown decision, shared verbatim
+        // with the post-pass invariant checker
+        // ([`crate::offset_invariants::check_offsets_pushed`]): if the offset
+        // cannot be pushed through this node, it STOPS here and keeps today's
+        // `f − δ` fallback. The match below then only ever destructures a
+        // variant the predicate has already blessed as pushable.
+        if !offset_can_push_through(&self, delta) {
+            // Everything the predicate rejects (dual Boolean cases,
+            // smin/MaskedBlend/Morph, warp ops, Shell, scaled transforms,
+            // leaves): keep today's `f − δ` right here. Leaf fields are exact
+            // SDFs, so `f − δ` on a leaf IS the exact offset.
+            return CsgNode::Offset(Box::new(self.push_down_offsets()), delta);
+        }
         match self {
             // Stacked offsets evaluate as `f − δ₂ − δ` today; fold the sum and
             // let its sign pick the exact rules.
             CsgNode::Offset(inner, d2) => inner.push_down_offset(delta + d2),
-            CsgNode::Union(a, b) if delta > 0.0 => CsgNode::Union(
+            // Dilation (`δ > 0`) distributes over Union.
+            CsgNode::Union(a, b) => CsgNode::Union(
                 Box::new(a.push_down_offset(delta)),
                 Box::new(b.push_down_offset(delta)),
             ),
-            CsgNode::Intersection(a, b) if delta < 0.0 => CsgNode::Intersection(
+            // Erosion (`δ < 0`) distributes over Intersection.
+            CsgNode::Intersection(a, b) => CsgNode::Intersection(
                 Box::new(a.push_down_offset(delta)),
                 Box::new(b.push_down_offset(delta)),
             ),
             // Erosion of a difference erodes the minuend and DILATES the
             // subtrahend: `erode(A \ B) = erode(A) \ dilate(B)`.
-            CsgNode::Difference(a, b) if delta < 0.0 => CsgNode::Difference(
+            CsgNode::Difference(a, b) => CsgNode::Difference(
                 Box::new(a.push_down_offset(delta)),
                 Box::new(b.push_down_offset(-delta)),
             ),
             // A rigid placement (unit scale) is an isometry — offset commutes.
-            // Any non-unit scale breaks the metric (the evaluator multiplies by
-            // `min_scale`), so the pushdown stops above it.
-            CsgNode::Transform(t, inner) if t.scale == [1.0, 1.0, 1.0] => {
+            CsgNode::Transform(t, inner) => {
                 CsgNode::Transform(t, Box::new(inner.push_down_offset(delta)))
             }
-            // Everything else (dual Boolean cases, smin/MaskedBlend/Morph,
-            // warp ops, Shell, leaves): keep today's `f − δ` right here. Leaf
-            // fields are exact SDFs, so `f − δ` on a leaf IS the exact offset.
+            // Unreachable: `offset_can_push_through` returned true, so `self`
+            // is one of the variants above. Keep the `f − δ` fallback as a
+            // belt-and-braces net rather than a panic.
             other => CsgNode::Offset(Box::new(other.push_down_offsets()), delta),
         }
     }
@@ -3012,6 +3025,36 @@ fn wrap_shell(
         // Difference / Intersection / etc. keep a body together — never split
         // them to shell only the base. Wrap the whole node.
         other => CsgNode::Shell(Box::new(other), thickness, open.to_vec()),
+    }
+}
+
+// ─── #384 offset pipeline decision predicates ────────────────────────────
+
+/// The single pushdown decision of [`CsgNode::push_down_offset`]: may a pending
+/// offset of `delta` be pushed *through* `inner` (rather than left standing as a
+/// residual `Offset(inner, delta)`)?
+///
+/// This is the SSOT the pass and its post-pass invariant checker
+/// ([`crate::offset_invariants::check_offsets_pushed`]) both consult, so the
+/// contract can never drift from the transform. The exact 2×2 Minkowski algebra
+/// (docs/research/sdf-metricity/SYNTHESIS.md): dilation distributes over Union,
+/// erosion over Intersection/Difference; rigid transforms and stacked offsets
+/// always commute; everything else stops.
+pub(crate) fn offset_can_push_through(inner: &CsgNode, delta: f32) -> bool {
+    if delta == 0.0 {
+        // `f − 0` is the identity — `push_down_offset` drops it entirely, so a
+        // δ=0 offset is always eliminable and must never survive the pass.
+        return true;
+    }
+    match inner {
+        // Stacked offsets always merge (`f − δ₂ − δ`).
+        CsgNode::Offset(..) => true,
+        CsgNode::Union(..) => delta > 0.0,
+        CsgNode::Intersection(..) | CsgNode::Difference(..) => delta < 0.0,
+        // A rigid placement (unit scale) is an isometry; a non-unit scale
+        // breaks the metric (the evaluator multiplies by `min_scale`).
+        CsgNode::Transform(t, _) => t.scale == [1.0, 1.0, 1.0],
+        _ => false,
     }
 }
 

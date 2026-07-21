@@ -94,6 +94,55 @@ graph TD
     BC --> OC["compile_body → Opcodes\n(sdf-vm / deferred / Mesher / Weave)"]
 ```
 
+### 4.1 Pipeline-Invarianten (geprüfter Vertrag)
+
+Die Pass-Reihenfolge ist ein **Vertrag**, kein zufälliger Aufrufstapel. Sie
+lautet in jedem Baupfad (`body::build_bounded_for_body_reported`,
+`build_bounded_for_body_local` (Weave) und `build_bounded_with_primitives_rounded`)
+fest: erst `expand_shells`, dann `push_down_offsets`, dann `fold_offset_leaves`
+(danach `collect_offset_capability`, Kanal-Synthese und Pruning). Der
+Primitive-Map-Pfad ruft `expand_shells` bewusst NICHT — er extrahiert nur die
+gefalteten Blatt-Parameter —, fährt aber dieselben zwei folgenden Pässe.
+
+Jede Stufe hat eine formale Nachbedingung. Sie sind als pure, read-only
+Funktionen `check_*` in `crates/kernel/src/offset_invariants.rs` festgeschrieben
+und werden über die `assert_after_*`-Helfer per `debug_assert`-Semantik
+unmittelbar nach jedem Pass in ALLEN Baupfaden abgenommen. In Release-Builds
+(Produktions-WASM) faltet `cfg!(debug_assertions)` den ganzen Block weg — null
+Laufzeitkosten, keine Rückwirkung auf die Feld-Auswertung.
+
+Die vier Invarianten:
+
+1. **Nach `expand_shells`:** Es steht kein GESCHLOSSENER Shell-Node mehr im
+   Baum. Jeder verbliebene `CsgNode::Shell` trägt offene Flächen (nicht-leerer
+   `Vec<OpenSurface>` — der dokumentierte Feld-Pfad für offene Shells); ein
+   geschlossener (leerer Vektor) hätte zu
+   `Difference(body, InnerWall(Offset(body, −t)))` expandiert werden müssen.
+2. **Nach `push_down_offsets`:** Kein Offset-Node steht mehr über einem Knoten,
+   durch den der Pass ihn hätte schieben können — also weder pushbare Union bei
+   δ>0, noch pushbare Intersection/Difference bei δ<0, noch rigide Transform,
+   noch ein weiterer (stapelbarer) Offset, noch ein δ=0. Der Checker nutzt
+   dieselbe Entscheidungsfunktion `offset_can_push_through`, die
+   `push_down_offset` selbst gatet — es gibt keine zweite, driftfähige Kopie
+   der Regel.
+3. **Nach `fold_offset_leaves`:** Jedes verbliebene
+   `Offset(Leaf|Extrude|Revolve, δ)` mit Erosion (δ<0) ist eine ECHTE,
+   dokumentierte Verweigerung. Der Checker negiert `fold_would_accept` — den
+   Wrapper um genau denselben `try_fold_erosion`, den der Fold-Pass ausführt.
+   Würde der Fold den Rest akzeptieren (einfalten oder zu `Empty`
+   kollabieren), ist das ein Fehler. Dilation (δ>0) bleibt bewusst als „f − δ"
+   stehen und ist keine Verletzung.
+4. **InnerWall-Positionsinvariante (durchgehend ab `expand_shells`):**
+   `CsgNode::InnerWall` kommt im gesamten Baum AUSSCHLIESSLICH als rechtes Kind
+   einer `Difference` vor. `collect_parity` (csg.rs) und die Surface-Registry
+   setzen das hart voraus; die Invariante gilt in jeder späteren Pipelinestufe.
+
+Nicht-Drift ist hier das Entwurfsprinzip: die beiden Entscheidungsträger der
+Pässe (`offset_can_push_through` für den Pushdown, `try_fold_erosion` für den
+Fold) sind die einzige Quelle der Wahrheit — Pass UND Checker rufen dieselbe
+Funktion. Ein Checker kann so nie eine andere Meinung als der Pass haben, den
+er absichert.
+
 ## 5. Phase A — Analytisches Blatt-Einfalten
 
 **Status: umgesetzt in v0.16.6** (`crates/kernel/src/offset_fold.rs`,
