@@ -318,6 +318,42 @@
     color: var(--color-error);
   }
 
+  /* #384 offset_capability: banner explaining that an Offset/Shell result is
+     toleranzbeschränkt or a Näherung (f−δ), with the reasons. */
+  & .capability-note {
+    font-size: var(--fs-base);
+    padding: var(--space-2) var(--space-3);
+    margin-bottom: var(--space-3);
+    border-radius: var(--radius-sm);
+    border: 1px solid transparent;
+
+    & .capability-head {
+      font-weight: var(--fw-semibold);
+    }
+
+    & .capability-reasons {
+      margin: var(--space-1) 0 0;
+      padding-left: var(--space-4);
+
+      & li {
+        margin-top: var(--space-1);
+      }
+    }
+
+    &.capability-tolerance_bounded {
+      color: var(--color-warning);
+      background: var(--color-warning-soft, rgba(176, 120, 32, 0.12));
+      border-color: var(--color-warning-soft, rgba(176, 120, 32, 0.3));
+    }
+
+    &.capability-conservative,
+    &.capability-unsupported {
+      color: var(--color-error-text);
+      background: var(--color-error-soft, rgba(181, 59, 59, 0.12));
+      border-color: var(--color-error-soft, rgba(181, 59, 59, 0.3));
+    }
+  }
+
   /* ── K6a.1: segmented tab row (ui_hint = horizontal_enum) ── */
   & .tab-row {
     display: grid;

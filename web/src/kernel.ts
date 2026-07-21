@@ -399,6 +399,25 @@ export interface FeatureSummary {
    *  paints the row in the warning colour and shows this as the tooltip.
    *  Omitted when the feature has a valid scope. */
   warning?: string;
+  /** #384: for an `offset`/`shell` feature, the capability contract of its
+   *  regen-time expansion. Omitted for every other feature kind. */
+  capability?: FeatureCapability;
+}
+
+/** #384 offset_capability: how dimension-true an Offset/Shell result is.
+ *  `exact` — fully analytic; `tolerance_bounded` — arc-spline corrected to a
+ *  known tolerance; `conservative` — `f − δ` left standing somewhere (unbounded
+ *  local deviation); `unsupported` — rejected (Twist/Bend in scope). */
+export type CapabilityStatus =
+  | "exact"
+  | "tolerance_bounded"
+  | "conservative"
+  | "unsupported";
+
+export interface FeatureCapability {
+  status: CapabilityStatus;
+  /** Human-readable reasons for a non-exact status (conservative first). */
+  reasons?: string[];
 }
 
 let wasmInitPromise: Promise<WasmExports> | null = null;

@@ -607,6 +607,32 @@
     }
   }
 
+  /* #384 offset_capability: pill next to an Offset/Shell feature name showing
+     whether the result is exact (no badge), toleranzbeschränkt or a
+     Näherung. Reuses the constraint-badge pill idiom. */
+  & .row .capability-badge {
+    flex: none;
+    margin-left: var(--space-1);
+    font-size: var(--fs-base);
+    font-weight: var(--fw-semibold);
+    line-height: 1;
+    padding: 2px var(--space-2);
+    border-radius: var(--radius-pill);
+    letter-spacing: 0.02em;
+    white-space: nowrap;
+
+    &.capability-tolerance_bounded {
+      color: var(--color-warning);
+      background: var(--color-warning-soft, rgba(176, 120, 32, 0.14));
+    }
+
+    &.capability-conservative,
+    &.capability-unsupported {
+      color: var(--color-error-text);
+      background: var(--color-error-soft, rgba(181, 59, 59, 0.14));
+    }
+  }
+
   & .row.rollback-drop-above::before {
     content: "";
     position: absolute;

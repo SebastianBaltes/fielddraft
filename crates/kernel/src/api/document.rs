@@ -35,6 +35,7 @@ impl Kernel {
             mate_connectors: Vec::new(),
             feature_errors: std::collections::HashMap::new(),
             feature_warnings: std::collections::HashMap::new(),
+            feature_capabilities: std::collections::HashMap::new(),
             rollback_after: None,
             regen_brep_cache: body::BrepCache::new(),
             export_session: None,

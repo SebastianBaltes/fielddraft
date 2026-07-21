@@ -32,6 +32,13 @@ struct FeatureSummary {
     /// red translucent preview.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     warning: Option<String>,
+    /// #384 offset_capability: for an `offset`/`shell` feature, the
+    /// machine-readable capability contract of its regen-time expansion
+    /// (exact / tolerance_bounded / conservative / unsupported + reasons). The
+    /// outliner badges it and the FeatureDialog shows the reasons; omitted for
+    /// every other feature kind.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    capability: Option<crate::offset_capability::FeatureCapability>,
 }
 
 /// Collect every `qCreatedBy(<feature_id>)` reference embedded in a feature
@@ -156,6 +163,7 @@ impl Kernel {
                     rolled_back: rb,
                     error: self.feature_errors.get(&call.id).cloned(),
                     warning: self.feature_warnings.get(&call.id).cloned(),
+                    capability: self.feature_capabilities.get(&call.id).cloned(),
                 });
             } else {
                 // K8.9: hole pushes its spine entry under a
@@ -221,6 +229,7 @@ impl Kernel {
                     rolled_back: rb,
                     error: self.feature_errors.get(&call.id).cloned(),
                     warning: self.feature_warnings.get(&call.id).cloned(),
+                    capability: self.feature_capabilities.get(&call.id).cloned(),
                 });
             }
         }

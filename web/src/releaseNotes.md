@@ -12,6 +12,9 @@ Format, eine Zeile je Eintrag:
 kind = feat | fix | perf. scope und #tickets sind optional. Folgezeilen, die
 eingerückt sind, gehören zum Text davor (Umbruch erlaubt).
 
+## 0.18.0
+- feat(sdf) #384: Offset- und Shell-Features zeigen jetzt an, wie maßhaltig ihr Ergebnis ist. Bisher blieb überall dort, wo die exakte Baum-Expansion an einer Stelle nicht möglich war, still eine Näherung („f−δ“) stehen — man erfuhr nicht, dass das Ergebnis dort nur ungefähr stimmt. Neu trägt jedes Offset/Shell-Feature einen Status: „exakt“ (vollständig analytisch gefaltet, keine Korrektur nötig), „toleranzbeschränkt“ (an Boolean-Nähten über Arc-Spline-Kanäle auf eine bekannte Toleranz genähert), „Näherung“ (irgendwo blieb f−δ stehen — die Nullmenge kann lokal abweichen, der Fehler ist nicht beschränkt) oder „nicht unterstützt“ (Twist/Bend im Scope, wird weiterhin abgelehnt). In der Baumansicht erscheint bei nicht-exakten Features ein Abzeichen mit Tooltip, im Feature-Editor ein Hinweisbanner mit den konkreten Gründen (z. B. „Profil enthält ein Bézier-Segment“, „Revolve-Profil berührt die Rotationsachse“ oder „Offset über einer Kanten-Fillet-Fläche“). Das Feld selbst bleibt unverändert — die Statuserhebung ist rein additiv.
+
 ## 0.17.3
 - perf(sdf) #384: offset_tree Phase D2 — geschlossene Shell-Wände sind jetzt maßhaltig. Bisher wurde die Innenwand einer Shell über ein Näherungsfeld gelegt, das im Wandinneren (besonders an Ecken und Kehlen) um bis zu ~0,29·Wandstärke daneben lag; die Wand konnte dort dünner oder dicker wirken als eingestellt. Die Shell wird intern nun exakt als „Körper minus nach innen versetzter Körper" aufgebaut und erbt damit den präzisen Offset-Pfad — die Wandstärke stimmt bis auf Bruchteile eines Millimeters. Offene Shells (mit entfernten Flächen) bleiben unverändert. Zusätzlich: eine Shell auf einem mit Twist/Bend verdrehten Körper wird jetzt mit klarer Meldung abgelehnt, statt still eine falsche Wand zu erzeugen.
 

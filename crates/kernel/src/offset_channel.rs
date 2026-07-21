@@ -1198,6 +1198,7 @@ fn build_channel(
     closed: bool,
     ctx: &StopCtx,
     branch: u32,
+    report: &mut crate::offset_capability::CapabilityReport,
 ) -> Option<OffsetChannel> {
     // Winkel-Statistik: γ = Winkel zwischen den Normalen.
     let mut min_half = f32::INFINITY; // konkav: sin(α/2) = cos(γ/2)? s. u.
@@ -1216,14 +1217,26 @@ fn build_channel(
         worst_c = worst_c.max(1.0 / ch.max(1e-3));
     }
     if !min_half.is_finite() {
-        return None; // durchgehend tangential
+        // Durchgehend tangential — es gibt keine echte Dieder-Naht, also
+        // keinen f−δ-Fehler zu korrigieren (benign, kein Downgrade).
+        return None;
     }
     if min_half < MIN_HALF_ANGLE_SIN {
-        return None; // zu spitz — verweigern (f − δ bleibt)
+        // Zu spitz — kein Kanal; der f−δ-Fehler an der Naht bleibt unbeschränkt.
+        report.note_conservative(
+            "Boolean-Naht mit zu spitzem Winkel — keine Kanal-Korrektur möglich, Näherung f−δ.",
+        );
+        return None;
     }
     // Prognostizierter Naht-Fehler ohne Kanal: δ·(c − 1). Liegt er unter
-    // der Toleranz, lohnt kein Kanal (Pruning-Kriterium der B0-Messreihe).
+    // der Toleranz, lohnt kein Kanal (Pruning-Kriterium der B0-Messreihe) —
+    // die Naht bleibt f−δ, aber der Fehler ist beweisbar ≤ tol
+    // (toleranzbeschränkt, nicht unbeschränkt).
     if ctx.delta * (worst_c - 1.0) < ctx.tol {
+        report.note_tolerance(format!(
+            "Flache Boolean-Naht ohne Kanal — Näherungsfehler beweisbar ≤ {} mm.",
+            ctx.tol
+        ));
         return None;
     }
 
@@ -1297,6 +1310,7 @@ fn synthesize_stop(
     inner: &BoundedCsg,
     delta: f32,
     tol: f32,
+    report: &mut crate::offset_capability::CapabilityReport,
 ) -> (Vec<OffsetChannel>, Vec<VertexSphere>) {
     let union_form = delta < 0.0;
     let mut members = Vec::new();
@@ -1357,10 +1371,19 @@ fn synthesize_stop(
 
             for ba in &branch_lists[i] {
                 let Some((hs_a, xf_a)) = branch_maps[i].get(&ba.id.as_u32()) else {
+                    // Member ohne analytische Halfspace-Karte (Sweep, Gyroid,
+                    // Mesh) — seine Nähte lassen sich nicht per Kanal
+                    // korrigieren; f−δ bleibt dort unbeschränkt.
+                    report.note_conservative(
+                        "Boolean-Naht an einer nicht abbildbaren Fläche (Sweep/Gyroid/Mesh ohne Halfspace-Karte) — keine Kanal-Korrektur, Näherung f−δ.",
+                    );
                     continue;
                 };
                 for bb in &branch_lists[j] {
                     let Some((hs_b, xf_b)) = branch_maps[j].get(&bb.id.as_u32()) else {
+                        report.note_conservative(
+                            "Boolean-Naht an einer nicht abbildbaren Fläche (Sweep/Gyroid/Mesh ohne Halfspace-Karte) — keine Kanal-Korrektur, Näherung f−δ.",
+                        );
                         continue;
                     };
                     let pair_box = Aabb::intersect(
@@ -1373,13 +1396,25 @@ fn synthesize_stop(
                     let seeds = match crate::brep::ssi::ssi_seeds(hs_a, xf_a, hs_b, xf_b, &pair_box)
                     {
                         crate::brep::ssi::SsiResult::Components(c) => c,
-                        crate::brep::ssi::SsiResult::Unsupported => continue,
+                        crate::brep::ssi::SsiResult::Unsupported => {
+                            // SSI kann dieses Flächenpaar (Torus, Gyroid∩Gyroid,
+                            // Sweep) nicht seeden — die Naht bleibt unkorrigiert.
+                            report.note_conservative(
+                                "Boolean-Naht auf einer Fläche, die die Kanal-Synthese nicht seeden kann (Torus/Gyroid/Sweep) — Näherung f−δ.",
+                            );
+                            continue;
+                        }
                     };
                     for comp in seeds {
                         for seed in comp {
                             if total_arcs >= MAX_ARCS_PER_STOP {
                                 // Budget: bisherige Kanäle behalten; Vertex-
                                 // Synthese aus den bis hier gesammelten Enden.
+                                // Kein stiller Cap (#384 offset_capability):
+                                // die restlichen Nähte bleiben f−δ.
+                                report.note_conservative(
+                                    "Kanal-Budget an einem Boolean-Stopp erschöpft — verbleibende Nähte bleiben unkorrigiert, Näherung f−δ.",
+                                );
                                 let verts = synthesize_vertices(
                                     &members, &triple_cands, &ctx, union_form,
                                     gate_eps, gscale, &min_feat, &mut channel_idx,
@@ -1558,9 +1593,13 @@ fn synthesize_stop(
                             }
                             let sub = 0x700 + (channel_idx % 0xFD);
                             let branch = (pa.feature_id() << 12) | sub;
-                            if let Some(ch) = build_channel(&pts, closed, &ctx, branch) {
+                            if let Some(ch) = build_channel(&pts, closed, &ctx, branch, report) {
                                 total_arcs += ch.arcs.len();
                                 if total_arcs > MAX_ARCS_PER_STOP {
+                                    // Kein stiller Cap (#384 offset_capability).
+                                    report.note_conservative(
+                                        "Kanal-Budget an einem Boolean-Stopp erschöpft — verbleibende Nähte bleiben unkorrigiert, Näherung f−δ.",
+                                    );
                                     let verts = synthesize_vertices(
                                         &members, &triple_cands, &ctx, union_form,
                                         gate_eps, gscale, &min_feat, &mut channel_idx,
@@ -1681,9 +1720,24 @@ fn snap_channel_ends_to_vertices(
 /// ([`BoundedCsg::ArcChannel`]). Läuft in den Mesh-/SDF-Baupfaden nach
 /// `from_csg`; Weave-/Pick-Pfade bleiben in Phase B auf dem naiven Baum.
 pub fn synthesize_offset_channels(node: BoundedCsg, tol: f32) -> BoundedCsg {
+    let mut report = crate::offset_capability::CapabilityReport::new();
+    synthesize_offset_channels_reported(node, tol, &mut report)
+}
+
+/// Like [`synthesize_offset_channels`] but records the per-stop capability
+/// outcome into `report` (#384 offset_capability). Geometrically identical to
+/// the plain entry point — the report is purely additive, so the field stays
+/// bit-identical: a corrected dual seam is toleranzbeschränkt (arc-spline
+/// approximation to `tol`), a dual seam whose synthesis refused stays
+/// conservative (`f − δ`).
+pub fn synthesize_offset_channels_reported(
+    node: BoundedCsg,
+    tol: f32,
+    report: &mut crate::offset_capability::CapabilityReport,
+) -> BoundedCsg {
     match node {
         BoundedCsg::Offset { inner, delta, aabb } => {
-            let inner = Box::new(synthesize_offset_channels(*inner, tol));
+            let inner = Box::new(synthesize_offset_channels_reported(*inner, tol, report));
             let dual_stop = match (&*inner, delta) {
                 (BoundedCsg::Union { .. }, d) if d < 0.0 => true,
                 (BoundedCsg::Intersection { .. }, d) if d > 0.0 => true,
@@ -1693,11 +1747,20 @@ pub fn synthesize_offset_channels(node: BoundedCsg, tol: f32) -> BoundedCsg {
             if !dual_stop || delta == 0.0 || !delta.is_finite() {
                 return BoundedCsg::Offset { inner, delta, aabb };
             }
-            let (channels, verts) = synthesize_stop(&inner, delta, tol);
+            // `synthesize_stop` records the per-seam outcome into `report`
+            // (conservative for genuine geometric refusals — unsupported SSI
+            // surfaces, too-sharp angles, missing halfspace maps; tolerance for
+            // below-threshold seams). An empty result therefore needs no
+            // blanket note: it is either already flagged conservative there or
+            // was genuinely correction-free (benign).
+            let (channels, verts) = synthesize_stop(&inner, delta, tol, report);
             let stop = BoundedCsg::Offset { inner, delta, aabb };
             if channels.is_empty() && verts.is_empty() {
                 return stop;
             }
+            report.note_tolerance(format!(
+                "Duale Boolean-Kante über Arc-Spline-Kanäle toleranzbeschränkt korrigiert (Ziel-Toleranz ≤ {tol} mm)."
+            ));
             let aabb = Aabb::union(
                 Aabb::union(stop.aabb(), channels_aabb(&channels)),
                 verts_aabb(&verts),
@@ -1710,39 +1773,39 @@ pub fn synthesize_offset_channels(node: BoundedCsg, tol: f32) -> BoundedCsg {
             }
         }
         BoundedCsg::Union { left, right, aabb } => BoundedCsg::Union {
-            left: Box::new(synthesize_offset_channels(*left, tol)),
-            right: Box::new(synthesize_offset_channels(*right, tol)),
+            left: Box::new(synthesize_offset_channels_reported(*left, tol, report)),
+            right: Box::new(synthesize_offset_channels_reported(*right, tol, report)),
             aabb,
         },
         BoundedCsg::Difference { left, right, aabb } => BoundedCsg::Difference {
-            left: Box::new(synthesize_offset_channels(*left, tol)),
-            right: Box::new(synthesize_offset_channels(*right, tol)),
+            left: Box::new(synthesize_offset_channels_reported(*left, tol, report)),
+            right: Box::new(synthesize_offset_channels_reported(*right, tol, report)),
             aabb,
         },
         BoundedCsg::Intersection { left, right, aabb } => BoundedCsg::Intersection {
-            left: Box::new(synthesize_offset_channels(*left, tol)),
-            right: Box::new(synthesize_offset_channels(*right, tol)),
+            left: Box::new(synthesize_offset_channels_reported(*left, tol, report)),
+            right: Box::new(synthesize_offset_channels_reported(*right, tol, report)),
             aabb,
         },
         BoundedCsg::SmoothUnion { left, right, radius, mode, aabb } => BoundedCsg::SmoothUnion {
-            left: Box::new(synthesize_offset_channels(*left, tol)),
-            right: Box::new(synthesize_offset_channels(*right, tol)),
+            left: Box::new(synthesize_offset_channels_reported(*left, tol, report)),
+            right: Box::new(synthesize_offset_channels_reported(*right, tol, report)),
             radius,
             mode,
             aabb,
         },
         BoundedCsg::SmoothDifference { left, right, radius, mode, aabb } => {
             BoundedCsg::SmoothDifference {
-                left: Box::new(synthesize_offset_channels(*left, tol)),
-                right: Box::new(synthesize_offset_channels(*right, tol)),
+                left: Box::new(synthesize_offset_channels_reported(*left, tol, report)),
+                right: Box::new(synthesize_offset_channels_reported(*right, tol, report)),
                 radius,
                 mode,
                 aabb,
             }
         }
         BoundedCsg::Morph { left, right, t, aabb } => BoundedCsg::Morph {
-            left: Box::new(synthesize_offset_channels(*left, tol)),
-            right: Box::new(synthesize_offset_channels(*right, tol)),
+            left: Box::new(synthesize_offset_channels_reported(*left, tol, report)),
+            right: Box::new(synthesize_offset_channels_reported(*right, tol, report)),
             t,
             aabb,
         },
@@ -1757,8 +1820,8 @@ pub fn synthesize_offset_channels(node: BoundedCsg, tol: f32) -> BoundedCsg {
             provenance,
             aabb,
         } => BoundedCsg::MaskedBlend {
-            left: Box::new(synthesize_offset_channels(*left, tol)),
-            right: Box::new(synthesize_offset_channels(*right, tol)),
+            left: Box::new(synthesize_offset_channels_reported(*left, tol, report)),
+            right: Box::new(synthesize_offset_channels_reported(*right, tol, report)),
             mask_polyline,
             mask_radius,
             blend_radius,
@@ -1768,23 +1831,23 @@ pub fn synthesize_offset_channels(node: BoundedCsg, tol: f32) -> BoundedCsg {
             aabb,
         },
         BoundedCsg::Twist { inner, rate, aabb } => BoundedCsg::Twist {
-            inner: Box::new(synthesize_offset_channels(*inner, tol)),
+            inner: Box::new(synthesize_offset_channels_reported(*inner, tol, report)),
             rate,
             aabb,
         },
         BoundedCsg::Bend { inner, rate, aabb } => BoundedCsg::Bend {
-            inner: Box::new(synthesize_offset_channels(*inner, tol)),
+            inner: Box::new(synthesize_offset_channels_reported(*inner, tol, report)),
             rate,
             aabb,
         },
         BoundedCsg::Displace { inner, depth, freq, aabb } => BoundedCsg::Displace {
-            inner: Box::new(synthesize_offset_channels(*inner, tol)),
+            inner: Box::new(synthesize_offset_channels_reported(*inner, tol, report)),
             depth,
             freq,
             aabb,
         },
         BoundedCsg::Shell { inner, thickness, open_faces, aabb } => BoundedCsg::Shell {
-            inner: Box::new(synthesize_offset_channels(*inner, tol)),
+            inner: Box::new(synthesize_offset_channels_reported(*inner, tol, report)),
             thickness,
             open_faces,
             aabb,
@@ -1792,11 +1855,11 @@ pub fn synthesize_offset_channels(node: BoundedCsg, tol: f32) -> BoundedCsg {
         // #384 D2: recurse into the eroded copy so any dual offset stop inside it
         // (a shelled boolean body) gets its channel correction bodies too.
         BoundedCsg::InnerWall { inner, aabb } => BoundedCsg::InnerWall {
-            inner: Box::new(synthesize_offset_channels(*inner, tol)),
+            inner: Box::new(synthesize_offset_channels_reported(*inner, tol, report)),
             aabb,
         },
         BoundedCsg::ArcChannel { inner, channels, verts, aabb } => BoundedCsg::ArcChannel {
-            inner: Box::new(synthesize_offset_channels(*inner, tol)),
+            inner: Box::new(synthesize_offset_channels_reported(*inner, tol, report)),
             channels,
             verts,
             aabb,

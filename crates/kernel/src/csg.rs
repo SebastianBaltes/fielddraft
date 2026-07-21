@@ -1886,6 +1886,68 @@ impl CsgNode {
         }
     }
 
+    /// #384 offset_capability: read-only walk that records the capability
+    /// downgrades of every residual `Offset(inner, δ)` still standing after
+    /// `push_down_offsets` + `fold_offset_leaves`. This handles the **non-dual**
+    /// stops only — the dual Boolean seams (`Union` at δ<0, `Intersection` /
+    /// `Difference` at δ>0) are classified at channel-synthesis time
+    /// (`offset_channel::synthesize_offset_channels_reported`), so they are
+    /// deliberately skipped here to avoid double counting.
+    ///
+    /// Purely additive: never mutates the tree, so the field is unaffected.
+    pub fn collect_offset_capability(
+        &self,
+        report: &mut crate::offset_capability::CapabilityReport,
+    ) {
+        match self {
+            CsgNode::Offset(inner, delta) => {
+                let d = *delta;
+                if d != 0.0 && d.is_finite() && !offset_is_dual_stop(inner, d) {
+                    classify_residual_offset(inner, d, report);
+                }
+                inner.collect_offset_capability(report);
+            }
+            CsgNode::Union(a, b)
+            | CsgNode::Difference(a, b)
+            | CsgNode::Intersection(a, b)
+            | CsgNode::SmoothUnion(a, b, _, _)
+            | CsgNode::SmoothDifference(a, b, _, _)
+            | CsgNode::Morph(a, b, _) => {
+                a.collect_offset_capability(report);
+                b.collect_offset_capability(report);
+            }
+            CsgNode::MaskedBlend { a, b, .. } => {
+                a.collect_offset_capability(report);
+                b.collect_offset_capability(report);
+            }
+            CsgNode::Shell(inner, _, _) => {
+                // Nach `expand_shells` sind geschlossene Shells wegkompiliert —
+                // ein residualer Shell-Knoten ist eine OFFENE Shell auf dem
+                // Feld-Pfad. Ihre Innenwand ist die Nullmenge von `d + t` des
+                // Kind-Felds: maßhaltig nur, wenn das Kind-Feld eine exakte
+                // Distanz ist (einzelnes exaktes Blatt unter höchstens rigiden
+                // Transforms). Über Booleans/Blends drift die Wand wie f−δ.
+                if !subtree_field_is_exact_distance(inner) {
+                    report.note_conservative(
+                        "Offene Shell auf einem zusammengesetzten Körper — die Wand folgt dem Feld-Pfad, an Boolean-Nähten ist die Wandstärke nur näherungsweise maßhaltig.",
+                    );
+                }
+                inner.collect_offset_capability(report);
+            }
+            CsgNode::Transform(_, inner)
+            | CsgNode::Twist(inner, _)
+            | CsgNode::Bend(inner, _)
+            | CsgNode::Displace(inner, _, _)
+            | CsgNode::InnerWall(inner) => inner.collect_offset_capability(report),
+            CsgNode::Empty
+            | CsgNode::Leaf { .. }
+            | CsgNode::Extrude { .. }
+            | CsgNode::Revolve { .. }
+            | CsgNode::Helix { .. }
+            | CsgNode::Sweep { .. } => {}
+        }
+    }
+
     /// K3.5C: collect a map of leaf FeatureId → Primitive reference.
     pub fn leaf_primitives(&self) -> std::collections::HashMap<u32, &Primitive> {
         let mut out = std::collections::HashMap::new();
@@ -2950,6 +3012,205 @@ fn wrap_shell(
         // Difference / Intersection / etc. keep a body together — never split
         // them to shell only the base. Wrap the whole node.
         other => CsgNode::Shell(Box::new(other), thickness, open.to_vec()),
+    }
+}
+
+// ─── #384 offset_capability helpers ──────────────────────────────────────
+
+/// The dual Boolean offset stops that [`offset_channel::synthesize_offset_channels`]
+/// tries to correct with arc-spline channels (mirror of its `dual_stop`
+/// predicate): `Union` under erosion, `Intersection`/`Difference` under
+/// dilation. These are classified at synthesis time, NOT by
+/// [`CsgNode::collect_offset_capability`].
+fn offset_is_dual_stop(inner: &CsgNode, delta: f32) -> bool {
+    match inner {
+        CsgNode::Union(..) => delta < 0.0,
+        CsgNode::Intersection(..) | CsgNode::Difference(..) => delta > 0.0,
+        _ => false,
+    }
+}
+
+/// Records the capability reason of a NON-dual residual `Offset(inner, δ)`.
+/// Dilation (`δ > 0`) `f − δ` on an exact leaf carrier IS the exact offset
+/// SDF, so it is left silent (exact); only inexact carriers and refused
+/// erosion folds are recorded conservative.
+fn classify_residual_offset(
+    inner: &CsgNode,
+    delta: f32,
+    report: &mut crate::offset_capability::CapabilityReport,
+) {
+    let erosion = delta < 0.0;
+    match inner {
+        // Exact-SDF leaf under dilation → exact (silent). A residual EROSION
+        // on a leaf means `fold_offset_leaves` refused it (a foldable leaf
+        // would have been folded away or collapsed). A leaf whose own field is
+        // NOT an exact distance (Gyroid, CustomSdf, Thread, non-spherical
+        // Ellipsoid) makes even the dilation `f − δ` only approximate.
+        CsgNode::Leaf { primitive, .. } => {
+            if !leaf_sdf_is_exact_distance(primitive) {
+                report.note_conservative(format!(
+                    "Offset auf einem {} — dessen Feld ist selbst keine exakte Distanz, f−δ trifft die Offset-Fläche nur näherungsweise.",
+                    primitive_family_name(primitive)
+                ));
+            } else if erosion {
+                report.note_conservative(format!(
+                    "Offset über einem {}-Primitiv ist nicht analytisch faltbar — Näherung f−δ (Nullmenge nur näherungsweise maßhaltig).",
+                    primitive_family_name(primitive)
+                ));
+            }
+        }
+        CsgNode::Extrude { sketch, .. } => {
+            if erosion {
+                if sketch_has_quadbezier(sketch) {
+                    report.note_conservative(
+                        "Extrude-Profil enthält ein Bézier-Segment — analytisches Falten nicht möglich, Näherung f−δ.",
+                    );
+                } else {
+                    report.note_conservative(
+                        "Extrude-Profil lässt sich nicht exakt erodieren (offen, selbstschneidend oder zu tief verschachtelt) — Näherung f−δ.",
+                    );
+                }
+            }
+        }
+        CsgNode::Revolve { sketch, .. } => {
+            if erosion {
+                if sketch_has_quadbezier(sketch) {
+                    report.note_conservative(
+                        "Revolve-Profil enthält ein Bézier-Segment — analytisches Falten nicht möglich, Näherung f−δ.",
+                    );
+                } else if revolve_touches_axis(sketch) {
+                    report.note_conservative(
+                        "Revolve-Profil berührt die Rotationsachse (#390) — kein exakter Meridian-Offset, Näherung f−δ.",
+                    );
+                } else {
+                    report.note_conservative(
+                        "Revolve-Profil lässt sich nicht exakt erodieren — Näherung f−δ.",
+                    );
+                }
+            }
+        }
+        CsgNode::Helix { .. } | CsgNode::Sweep { .. } => {
+            if erosion {
+                report.note_conservative(
+                    "Offset über einem Sweep/Helix ist nicht analytisch faltbar — Näherung f−δ.",
+                );
+            }
+        }
+        CsgNode::SmoothUnion(..) | CsgNode::SmoothDifference(..) => {
+            report.note_conservative(
+                "Offset über einer gerundeten Verrundungsfläche (Smooth-Union/-Difference) — keine offset-abgeschlossene Fläche, Näherung f−δ.",
+            );
+        }
+        CsgNode::MaskedBlend { .. } => {
+            report.note_conservative(
+                "Offset über einer Kanten-Fillet-Fläche (MaskedBlend) — keine offset-abgeschlossene Fläche, Näherung f−δ.",
+            );
+        }
+        CsgNode::Morph(..) => {
+            report.note_conservative(
+                "Offset über einem Morph — keine offset-abgeschlossene Fläche, Näherung f−δ.",
+            );
+        }
+        CsgNode::Twist(..) | CsgNode::Bend(..) | CsgNode::Displace(..) => {
+            report.note_conservative(
+                "Offset über einer Verformung (Twist/Bend/Displace) — kein exakter Offset, Näherung f−δ.",
+            );
+        }
+        CsgNode::Transform(..) => {
+            // push_down_offsets already commutes rigid transforms; a residual
+            // here is a non-uniformly scaled transform.
+            report.note_conservative(
+                "Offset über einem ungleichmäßig skalierten Transform — kein exakter Offset, Näherung f−δ.",
+            );
+        }
+        // Non-dual booleans (e.g. dilation of a union) are exact under the
+        // pushdown and would have been pushed to the leaves; empty / nested
+        // wrappers are handled by the recursion. Nothing to record.
+        CsgNode::Union(..)
+        | CsgNode::Intersection(..)
+        | CsgNode::Difference(..)
+        | CsgNode::InnerWall(_)
+        | CsgNode::Shell(..)
+        | CsgNode::Offset(..)
+        | CsgNode::Empty => {}
+    }
+}
+
+/// Short human name of a primitive family for capability reasons.
+fn primitive_family_name(p: &Primitive) -> &'static str {
+    match p {
+        Primitive::Sphere { .. } => "Kugel",
+        Primitive::Box { .. } => "Quader",
+        Primitive::Cylinder { .. } => "Zylinder",
+        Primitive::Torus { .. } => "Torus",
+        Primitive::Cone { .. } => "Kegel",
+        Primitive::Capsule { .. } => "Kapsel",
+        Primitive::Ellipsoid { .. } => "Ellipsoid",
+        Primitive::HexPrism { .. } => "Sechskant-Prisma",
+        Primitive::Thread { .. } => "Gewinde",
+        Primitive::Gyroid { .. } => "Gyroid",
+        Primitive::ImportedMesh { .. } => "importiertes Mesh",
+        Primitive::CustomSdf { .. } => "benutzerdefiniertes SDF",
+        Primitive::Extrude { .. } => "Extrude",
+        Primitive::Revolve { .. } => "Revolve",
+        Primitive::Helix { .. } => "Helix",
+    }
+}
+
+/// Whether a 2D sweep profile contains a quadratic Bézier segment (the family
+/// `fold_offset_leaves` refuses because cavalier_contours has no arc-exact
+/// Bézier offset).
+fn sketch_has_quadbezier(sketch: &Sketch2d) -> bool {
+    use crate::sketch2d::{Sketch2dPrimitive, SketchSegment};
+    match sketch {
+        Sketch2d::Empty => false,
+        Sketch2d::Prim(Sketch2dPrimitive::Path { segments, .. }) => segments
+            .iter()
+            .any(|s| matches!(s, SketchSegment::QuadBezier { .. })),
+        Sketch2d::Prim(_) => false,
+        Sketch2d::Union(a, b)
+        | Sketch2d::Difference(a, b)
+        | Sketch2d::Intersection(a, b) => sketch_has_quadbezier(a) || sketch_has_quadbezier(b),
+        Sketch2d::Offset { inner, .. } => sketch_has_quadbezier(inner),
+    }
+}
+
+/// Whether a revolve meridian profile reaches (or crosses) the rotation axis
+/// (`x ≤ ε`), the #390 phantom-null-set gate that makes the erosion fold
+/// refuse.
+fn revolve_touches_axis(sketch: &Sketch2d) -> bool {
+    let bb = sketch.aabb();
+    bb.min[0] <= 1e-4
+}
+
+/// Whether a leaf primitive's field is an exact Euclidean distance, so that
+/// `f − δ`'s zero set IS the true offset surface. NOT exact: Gyroid
+/// (`|trig| − t`), CustomSdf (only Lipschitz-bounded, arbitrary user tape),
+/// Thread (groove carved via max into a cylinder — non-distance at the carve
+/// seam), and the non-spherical Ellipsoid (scale-normalised bound
+/// `(len(p/r)−1)·r_min`, exact only when all radii coincide).
+fn leaf_sdf_is_exact_distance(p: &Primitive) -> bool {
+    match p {
+        Primitive::Gyroid { .. } | Primitive::CustomSdf { .. } | Primitive::Thread { .. } => false,
+        Primitive::Ellipsoid { radii } => radii[0] == radii[1] && radii[1] == radii[2],
+        _ => true,
+    }
+}
+
+/// Whether a subtree's field is an exact Euclidean distance: a single exact
+/// leaf (or exact-2D-distance Extrude/Revolve) under at most RIGID transforms.
+/// Everything composite (Booleans, Blends, Warps, Offsets, Shells) is not —
+/// used by the open-shell capability check.
+fn subtree_field_is_exact_distance(node: &CsgNode) -> bool {
+    match node {
+        CsgNode::Leaf { primitive, .. } => leaf_sdf_is_exact_distance(primitive),
+        // Extrude/Revolve leaves evaluate an exact 2D distance → exact 3D SDF
+        // (offset_tree doctrine, docs/OFFSET-TREE-PLAN.md).
+        CsgNode::Extrude { .. } | CsgNode::Revolve { .. } => true,
+        CsgNode::Transform(t, inner) => {
+            t.scale == [1.0; 3] && subtree_field_is_exact_distance(inner)
+        }
+        _ => false,
     }
 }
 

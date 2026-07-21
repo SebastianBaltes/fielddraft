@@ -19,7 +19,7 @@ import {
   setFilletZoneShown,
   subscribeFilletZones,
 } from "./filletDebugStore";
-import { type FeatureSummary } from "./kernel";
+import { type FeatureSummary, type FeatureCapability } from "./kernel";
 import { NumberInput } from "./NumberInput";
 import { baseUnitLabel, variableDisplayText } from "./variableInput";
 import type { FeatureFolder, KernelStore, StoreState } from "./store";
@@ -61,6 +61,36 @@ export function kindGlyph(
   const script = scriptTypeFor(kind, scriptTypes);
   if (script) return script.icon;
   return FEATURE_TYPE_META[kind]?.glyph ?? "?";
+}
+
+/** #384: short outliner badge label for an Offset/Shell capability status. */
+export function capabilityBadgeLabel(status: FeatureCapability["status"]): string {
+  switch (status) {
+    case "tolerance_bounded":
+      return "≈ toleranzbeschränkt";
+    case "conservative":
+      return "≈ Näherung";
+    case "unsupported":
+      return "nicht unterstützt";
+    default:
+      return "";
+  }
+}
+
+/** #384: tooltip for an Offset/Shell capability badge — a one-line verdict
+ *  plus the human-readable reasons. */
+export function capabilityTooltip(cap: FeatureCapability): string {
+  const head =
+    cap.status === "tolerance_bounded"
+      ? "Ergebnis toleranzbeschränkt — auf eine bekannte Toleranz genähert (Arc-Spline-Kanäle)."
+      : cap.status === "conservative"
+        ? "Ergebnis ist eine Näherung (f−δ) — die Nullmenge kann lokal von der wahren Offset-Fläche abweichen (Fehler nicht beschränkt)."
+        : "Offset/Shell ist hier nicht möglich.";
+  const reasons =
+    cap.reasons && cap.reasons.length
+      ? "\n\n" + cap.reasons.map((r) => "• " + r).join("\n")
+      : "";
+  return head + reasons;
 }
 
 export function prettifyFeatureName(
@@ -1318,6 +1348,19 @@ export function Outliner({
                         )}
                       </span>
                     )}
+                    {feature.capability &&
+                    feature.capability.status !== "exact" ? (
+                      <span
+                        className={
+                          "badge capability-badge capability-" +
+                          feature.capability.status
+                        }
+                        data-testid={`feature-capability-${feature.id}`}
+                        title={capabilityTooltip(feature.capability)}
+                      >
+                        {capabilityBadgeLabel(feature.capability.status)}
+                      </span>
+                    ) : null}
                     {feature.kind === "sketch" ? (
                       <button
                         type="button"
@@ -1554,6 +1597,7 @@ export function Outliner({
                 definition={dialogDraft}
                 onChange={handleDialogChange}
                 error={selectedFeature?.error ?? null}
+                capability={selectedFeature?.capability ?? null}
                 showTitle={false}
               />
             ) : (

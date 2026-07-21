@@ -66,6 +66,7 @@ import {
   PRESET_CATEGORIES,
   applyPreset,
 } from "./materialPresets";
+import type { FeatureCapability } from "../kernel";
 
 export interface FeatureDialogProps {
   /** The parsed schema for the feature type being edited. */
@@ -87,6 +88,10 @@ export interface FeatureDialogProps {
    *  title red, with the message as the hover tooltip — Onshape-style
    *  feature-error signalling. */
   error?: string | null;
+  /** #384: capability contract of an Offset/Shell feature. When present and
+   *  non-exact, the dialog shows a banner explaining whether the result is
+   *  toleranzbeschränkt or an approximation, with the reasons. */
+  capability?: FeatureCapability | null;
   /** Whether to render the kind title row (glyph + label) in the header
    *  (ticket gqjt). Defaults to true. The Outliner's Detail panel sets it
    *  false because its own panel header already shows the feature's
@@ -182,6 +187,7 @@ export function FeatureDialog({
   onCancel,
   footer,
   error,
+  capability,
   showTitle = true,
 }: FeatureDialogProps) {
   const handleParamChange = (key: string, next: unknown) => {
@@ -238,6 +244,27 @@ export function FeatureDialog({
         </div>
       ) : null}
       <div className="body">
+        {capability && capability.status !== "exact" ? (
+          <div
+            className={"capability-note capability-" + capability.status}
+            data-testid="feature-capability-note"
+          >
+            <div className="capability-head">
+              {capability.status === "tolerance_bounded"
+                ? "Ergebnis toleranzbeschränkt — auf eine bekannte Toleranz genähert."
+                : capability.status === "conservative"
+                  ? "Ergebnis ist eine Näherung (f−δ) — lokal nicht garantiert maßhaltig."
+                  : "Offset/Shell ist hier nicht möglich."}
+            </div>
+            {capability.reasons && capability.reasons.length ? (
+              <ul className="capability-reasons">
+                {capability.reasons.map((r, i) => (
+                  <li key={i}>{r}</li>
+                ))}
+              </ul>
+            ) : null}
+          </div>
+        ) : null}
         <ParamList
           params={schema.params}
           definition={definition}

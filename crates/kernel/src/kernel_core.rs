@@ -109,6 +109,14 @@ pub struct Kernel {
     /// preview); `listFeatures` exports the message so the UI paints the row
     /// in the warning colour with this tooltip.
     pub(crate) feature_warnings: std::collections::HashMap<FeatureId, String>,
+    /// #384 offset_capability: per Offset/Shell feature, the machine-readable
+    /// capability contract of its regen-time expansion (exact /
+    /// tolerance_bounded / conservative / unsupported + reasons). Computed at
+    /// the end of `bootstrap_features_from_calls`; `listFeatures` exports it so
+    /// the UI can badge whether the offset/shell result is exact, bounded, or
+    /// an approximation.
+    pub(crate) feature_capabilities:
+        std::collections::HashMap<FeatureId, crate::offset_capability::FeatureCapability>,
     /// Rollback bar position: if set, features at index >= this value
     /// are skipped during regeneration (but stay in the document).
     pub(crate) rollback_after: Option<usize>,
@@ -721,7 +729,84 @@ impl Kernel {
             .into_iter()
             .map(|(id, e)| (id, e.to_string()))
             .collect();
+        // #384 offset_capability: derive the per-feature capability contract of
+        // every Offset/Shell feature from the same regen-time expansion the
+        // mesher/renderer run. Cheap no-op for documents without offset/shell.
+        self.feature_capabilities = self.compute_feature_capabilities();
         Ok(())
+    }
+
+    /// #384 offset_capability: build the per-feature capability map for every
+    /// `offset`/`shell` feature. Runs the real regen-time expansion
+    /// (`build_bounded_for_body_reported`, same passes as the render path) on
+    /// each body that carries such a feature, collecting the downgrade reasons,
+    /// then attributes the body-level status to the offset/shell features in
+    /// that body. Attribution is per-body (v1): when a body carries more than
+    /// one offset/shell feature the status/reasons describe the combined
+    /// result and a cascade note is appended (docs/OFFSET-TREE-PLAN.md §9).
+    /// Twist/Bend-in-scope features never reach expansion — they already error
+    /// out — and are surfaced as `unsupported` via the feature-error map.
+    fn compute_feature_capabilities(
+        &self,
+    ) -> std::collections::HashMap<FeatureId, crate::offset_capability::FeatureCapability> {
+        use crate::offset_capability::{CapabilityReport, FeatureCapability};
+        let mut out = std::collections::HashMap::new();
+        // Every offset/shell feature id from the (persisted) call list.
+        let os_ids: Vec<FeatureId> = self
+            .document
+            .feature_calls
+            .iter()
+            .filter(|c| c.type_name == "offset" || c.type_name == "shell")
+            .map(|c| c.id.clone())
+            .collect();
+        if os_ids.is_empty() {
+            return out;
+        }
+        // Default: exact, or unsupported when the feature errored (Twist/Bend).
+        for id in &os_ids {
+            let cap = if self.feature_errors.contains_key(id) {
+                FeatureCapability::unsupported()
+            } else {
+                FeatureCapability::exact()
+            };
+            out.insert(id.clone(), cap);
+        }
+        // Per body: run the real expansion once, attribute to its active
+        // (non-errored) offset/shell features.
+        for part in crate::body::partition(&self.decoded) {
+            let active: Vec<FeatureId> = part
+                .feature_indices
+                .iter()
+                .map(|&fi| self.decoded[fi].id.clone())
+                .filter(|id| os_ids.contains(id) && !self.feature_errors.contains_key(id))
+                .collect();
+            if active.is_empty() {
+                continue;
+            }
+            let mut report = CapabilityReport::new();
+            let _ = crate::body::build_bounded_for_body_reported(
+                &self.decoded,
+                &part.feature_indices,
+                self.global_round,
+                &self.edge_fillets,
+                crate::offset_channel::CHANNEL_TOL_RENDER,
+                &mut report,
+            );
+            let status = report.status();
+            let mut reasons = report.reasons();
+            if active.len() > 1 {
+                reasons.push(
+                    "Mehrere Offset/Shell-Features auf diesem Körper — Status und Gründe \
+                     beschreiben das kombinierte Ergebnis (Kaskade); ab Kaskadentiefe 2 \
+                     addieren sich die Toleranzen."
+                        .to_string(),
+                );
+            }
+            for id in active {
+                out.insert(id, FeatureCapability { status, reasons: reasons.clone() });
+            }
+        }
+        out
     }
 
 

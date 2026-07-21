@@ -997,6 +997,34 @@ pub fn build_bounded_for_body_rounded(
     edge_fillets: &[EdgeFillet],
     channel_tol: f32,
 ) -> BoundedCsg {
+    // Delegate to the report-aware path with a throwaway report — geometry is
+    // identical, so every existing caller (and every field test) sees the same
+    // BoundedCsg (#384 offset_capability, field bit-identity).
+    let mut report = crate::offset_capability::CapabilityReport::new();
+    build_bounded_for_body_reported(
+        features,
+        indices,
+        global_round,
+        edge_fillets,
+        channel_tol,
+        &mut report,
+    )
+}
+
+/// Like [`build_bounded_for_body_rounded`] but also collects the per-body
+/// Offset/Shell capability report (#384): which residual `f − δ` stayed
+/// standing (conservative) and which dual seams were arc-spline corrected
+/// (tolerance-bounded). The report is purely additive — the returned
+/// `BoundedCsg` is byte-for-byte what `build_bounded_for_body_rounded`
+/// produces.
+pub fn build_bounded_for_body_reported(
+    features: &[DecodedFeature],
+    indices: &[usize],
+    global_round: Option<f32>,
+    edge_fillets: &[EdgeFillet],
+    channel_tol: f32,
+    report: &mut crate::offset_capability::CapabilityReport,
+) -> BoundedCsg {
     let sub: Vec<DecodedFeature> = indices.iter().map(|&i| features[i].clone()).collect();
     let mut csg = CsgNode::from_decoded(&sub).apply_edge_fillets(edge_fillets);
     if let Some(r) = global_round {
@@ -1013,6 +1041,10 @@ pub fn build_bounded_for_body_rounded(
     // NACH apply_edge_fillets/apply_global_round, sodass die künstliche
     // Innenwand-Difference weder gefillet noch gerundet wird).
     csg = csg.expand_shells().push_down_offsets().fold_offset_leaves();
+    // #384 offset_capability: classify the NON-dual residual offsets (fold
+    // refusals + inexact carriers) on the post-fold tree; the dual seams are
+    // classified during channel synthesis below. Read-only, no field effect.
+    csg.collect_offset_capability(report);
     // Phase B: Kanal-Korrekturkörper an den dualen Stopp-Knoten (läuft auf
     // dem BoundedCsg, Transforms bereits welt-gefaltet). Synchron zur
     // Regen-Zeit — die Naht-Kurven kommen aus SSI-Seeds + Feld-Tracing,
@@ -1020,9 +1052,10 @@ pub fn build_bounded_for_body_rounded(
     // Staffel-Toleranz des Baupfads (Render 0.01 / Export 0.001, Plan §9).
     // Phase C2: tote Kanäle anschließend gegen Union-Nachbarterme prunen
     // (zertifiziert feld-neutral im Oberflächenband, nur Kosten).
-    let mut bounded = crate::offset_channel::synthesize_offset_channels(
+    let mut bounded = crate::offset_channel::synthesize_offset_channels_reported(
         BoundedCsg::from_csg(&csg),
         channel_tol,
+        report,
     );
     crate::offset_channel::prune_dead_channels(&mut bounded, channel_tol);
     bounded
