@@ -12,6 +12,9 @@ Format, eine Zeile je Eintrag:
 kind = feat | fix | perf. scope und #tickets sind optional. Folgezeilen, die
 eingerückt sind, gehören zum Text davor (Umbruch erlaubt).
 
+## 0.18.4
+- fix(sdf) #395 #384: Das Kontakt-Prisma aus 0.18.3 korrigiert jetzt auch den Dilations-Fall (Komplement-Dualität): Bei positivem Offset oder Shell über einer Difference/Intersection mit koplanarer Kontaktfläche — der Klassiker ist die bündig ausgeschnittene Tasche (flush cut) — legte das naive Feld einen Phantom-Grat über den Taschenmund (bis über 6 mm Abweichung, teils unter falscher Zusage). Der Kernel hängt das Prisma dort als Schnitt-Constraint vor das +δ; das Prisma entfernt beweisbar nirgends echtes Material. Der Status ist „toleranzbeschränkt“ mit Restschranke ≈0,75·δ am Kontaktrand. Nicht exakt fassbare Kontakte (gekrümmt, Nicht-Box, tangential berührend) melden weiterhin ehrlich „Näherung“ — diese Meldung war beim Umbau kurz entfallen und ist wiederhergestellt.
+
 ## 0.18.3
 - fix(sdf) #395 #384: Der in 0.18.2 nur ehrlich gemeldete Fehler an bündig gestapelten Körpern ist jetzt geometrisch behoben: Bei Erosion (negatives Offset, Shell) über einer Union mit koplanarer Kontaktfläche baut der Kernel ein Kontakt-Prisma über dem exakten Kontaktpolygon und hängt es als gewöhnlichen Union-Member vor das Offset — der flächige Phantom-Schlitz auf der submergierten Fläche (bisher bis über 8 mm Abweichung) verschwindet. Bei gleichem Querschnitt ist das Ergebnis metrisch exakt, sonst „toleranzbeschränkt“ mit bewiesener Restschranke ≈0,75·δ am Kontaktrand (der schmale Randsaum; Stufe 2 schließt ihn später). Das Prisma füllt beweisbar nie über die Union hinaus. Nicht exakt fassbare Kontakte (gekrümmt, Nicht-Box) bleiben ehrlich „Näherung“ wie bisher.
 

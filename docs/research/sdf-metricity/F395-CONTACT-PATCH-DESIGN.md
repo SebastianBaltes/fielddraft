@@ -358,11 +358,12 @@ bestehenden Kanal 1–2 Tage, C4-Ecken-Anschluss 1 Tag, Golden/Tests 1 Tag.
   weiteren Offsets) — Plan-§9-Kaskaden-Politik (Toleranzen addieren, ab Tiefe 2
   warnen).
 
-## 4b. Umsetzungs-Status (Stand 2026-07-21, #395 Stufe 1)
+## 4b. Umsetzungs-Status (Stand 2026-07-21, #395 Stufe 1 + Stufe 3)
 
-**Stufe 1 (Kontakt-Prisma) ist umgesetzt und im Baupfad.** Stufe 2 (∂P-Rim-
-Kanäle + C4-Vertex-Kugeln) bleibt bewusst OFFEN (Rückfall-Klausel) — ein
-sauberes Prisma schlägt zwei halbe Bausteine.
+**Stufe 1 (Kontakt-Prisma, Erosion) und Stufe 3 (Kontakt-Prisma, Dilation per
+Komplement-Dualität) sind umgesetzt und im Baupfad.** Stufe 2 (∂P-Rim-Kanäle +
+C4-Vertex-Kugeln) bleibt für BEIDE Vorzeichen bewusst OFFEN (Rückfall-Klausel) —
+der ∂P-Rand bleibt als ehrliche B0-Schranke ≈0.75·δ gemeldet.
 
 Umgesetzt in `crates/kernel/src/offset_channel.rs`:
 
@@ -395,7 +396,81 @@ Umgesetzt in `crates/kernel/src/offset_channel.rs`:
   B0-Sliver-Schranke am ∂P-Rand (Kanten δ·(1/sin(α/2)−1) ≈ 0.41·δ, Ecken
   (√3−1)·δ ≈ 0.73·δ; gemeldet als ≈0.75·δ). Die #394-`note_conservative`-
   Degradierung entfällt genau dann; sie bleibt für Nicht-Box-Member, gekrümmte
-  Kontakte, degenerierten Verschnitt und den Dilations-Fall (Stufe 3).
+  Kontakte und degenerierten Verschnitt.
+
+## 4c. Umsetzungs-Status Stufe 3 (Dilation, Komplement-Dualität, 2026-07-21)
+
+Der symmetrische DILATIONS-Fall (`+δ` über Intersection/Difference) ist per
+Komplement-Dualität umgesetzt (`synthesize_contact_prisms_dilation` +
+`prism_outside_inner` in `offset_channel.rs`).
+
+- **Orientierungs-Herleitung (verifiziert per Feldprobe).** In der Komplement-
+  Union `min(−s_i·f_i)` (De-Morgan-Komplement der inneren `max(s_i·f_i)`) ist die
+  effektive Außennormale eines Members `eff = −sign·n` und der effektive Offset
+  `O = −sign·o` (sign aus `flatten_members`; ein Difference-Rechtskind trägt −1).
+  Die Stufe-1-Erkennung läuft damit unverändert auf `eff_i·eff_j < −0.9995`,
+  `(O_i+O_j)≈0`. **Für einen Difference A−B (s_A=+1, s_B=−1) heißt das: die zwei
+  Kontaktflächen haben PARALLELE wahre Außennormalen (n_A∥n_B, koinzident)** —
+  geometrisch die bündig ausgeschnittene Tasche (flush cut), deren Taschenmund
+  koplanar mit einer A-Außenfläche liegt. (Der Erosions-Fall hat anti-parallele
+  wahre Normalen; die Effektiv-Normalen-Formulierung eint beide.)
+- **Feldform der Einhängung.** `f_korr = max(f_i, −f_S) − δ`, ausgedrückt als
+  `Difference{ inner, S }` (BoundedCsg-Feld `max(f_L, −f_R)`) VOR dem `+δ`. KEIN
+  neuer Opcode — alle fünf Evaluator-Spiegel sehen ein gewöhnliches Extrude als
+  Difference-Rechtskind. Report-unabhängig → Feld bit-identisch.
+- **Cap-Tiefen.** Ein Member, dessen Komplement-Solid die BOX ist (sign=−1, der
+  Subtrahend), liefert seine echte Box-Dicke; ein Member, dessen Komplement
+  `¬box` (sign=+1, unbeschränkt) ist, bekommt eine Marge `p_circ + 1.5·δ`
+  (Zirkumradius von P + Offset-Band). Die Feldprobe belegt: eine zu kleine Marge
+  (< ~inradius P) lässt den Phantom-Fin zurückkehren, weil dann die +cap-Distanz
+  statt der Seitenwand dominiert; erst mit `cap ≥ lateraler Reichweite von P`
+  fällt der Restfehler auf die B0-Keilklasse.
+- **Duale Sicherheit (Analogon zu S⊆U).** Statt `S ⊆ U` (Union) gilt hier
+  `S ⊆ {f_inner ≥ 0}` (Komplement des inneren Solids) — im Komplement-Bild wieder
+  `S ⊆ U'`. `prism_outside_inner` prüft stichprobenartig (an keinem tiefen S-Punkt
+  darf `max_i(member.value) < −guard` gelten); Verletzung → Prisma verwerfen,
+  conservative bleibt. Feld-Gittertest (40³) `dilation_prism_removes_no_inner_material`
+  bestätigt: die Korrektur entfernt nirgends inneres Material.
+- **Kein Exakt-Tier.** Weil das ¬box-Komplement unbeschränkt ist, gibt es kein
+  metrisch-exaktes `S = U'` — der Dilations-Prisma-Stopp ist **immer
+  `tolerance_bounded`** mit der B0-Keil-Schranke ≈0.75·δ am ∂P-Rand (konvexes
+  Analogon zum konkaven Erosions-Sliver).
+- **SSI-Unterdrückung.** Wie Stufe 1 werden die koplanar korrigierten Member-Paare
+  aus der SSI-Naht-Synthese ausgenommen: ihre Naht am koinzidenten Kontakt ist
+  dieselbe degenerierte, die #394 zur Verweigerung zwang. Entscheidung: der
+  Kontakt gehört dem Prisma; der ∂P-Rand-Keil bleibt die ehrliche ≈0.75·δ-Toleranz
+  (Stufe-2-Rim für beide Vorzeichen offen — der Stufe-2-Negativbefund gilt dual).
+- **Erkennungs-Gate.** Die Erosions-Heuristik `coplanar_interface_present` nutzt
+  WAHRE Normalen (anti-parallel) und feuert für den parallel-normalen Difference-
+  Kontakt NICHT; die Dilations-Erkennung sitzt darum in
+  `synthesize_contact_prisms_dilation` selbst (effektive Normalen) und wird für
+  jeden Dilations-Stopp aufgerufen. Nicht-Box-Kontakte (Zylinder, Sweep) werden
+  dort nicht erkannt → kein Fehlfeuern; die Kanal-Synthese meldet deren Nähte
+  weiterhin selbst.
+- **Ehrlichkeits-Fallback (Review-Nachtrag).** Baut die Dilations-Synthese KEIN
+  Prisma und liegt auch keine Verweigerung vor, prüft der Stopp zusätzlich die
+  #394-Heuristik `coplanar_interface_present` (wahre Normalen): feuert sie
+  (anti-paralleler koplanarer/tangentialer Kontakt planarer Carrier, auch
+  Nicht-Box wie Extrude), bleibt die `conservative`-Degradierung wie vor
+  Stufe 3 — sie war beim Branch-Umbau still entfallen. Bekannter blinder
+  Fleck bleibt die **parallel-normale Nicht-Box-Tasche** (Extrude-flush-cut):
+  weder Prisma (kein Box-Loop) noch Heuristik (wahre Normalen parallel) sehen
+  sie — die sign-bewusste Verallgemeinerung von `coplanar_interface_present`
+  (eff = −sign·n̂) ist ein eigener Programmpunkt und braucht Kalibrierung
+  gegen Dünnwand-Shells (Wandstärke < 0.5·δ würde sonst koinzident wirken).
+
+**Empirie (offset_fuzz-Familie `CoplanarDilation`, neu).** OFFSET_FUZZ_ITERS=128:
+128/128 Szenen `tolerance_bounded` (0 conservative), p99 der Nullmengen-Abweichung
+min 0.0000 / median 0.272 / max 2.861 mm — alle unter der B0-Schranke 0.75·δ (δ bis
+4). **Baseline HEAD (ohne die Stufe-3-Korrektur):** dieselbe Familie zeigt den
+Phantom-Fin ungetilgt, p99 median 3.66 / max 6.32 mm (unter falschem
+`tolerance_bounded` bzw. `conservative`). Der volle Fuzz (9 Familien × 128) bleibt
+grün (0 harte Befunde); die CGAL-Golden-Alt-Szenen sind byte-identisch, neue Szene
+`contact_prism_pocket_dilation` verankert die Extrude-als-Difference-Kind-Parität.
+
+#395 ist damit inhaltlich komplett bis auf **nicht-konvexe P** (planar-facettierte
+Extrude-Flächen jenseits von Box-Rechtecken) und den separaten **∂P-Rand-Opcode**
+(Stufe 2, für beide Vorzeichen bewusst offen).
 
 **Empirie (offset_fuzz, OFFSET_FUZZ_ITERS=128, 1024 Szenen):** grün.
 Alle 68 `TangentialContact`-coplanar-boxes-Szenen wechseln von `conservative`
@@ -469,20 +544,28 @@ führen.
 - `crates/metricity-lab/tests/f395_contact_patch.rs` — Prototyp + Messung
   (Prisma, ∂P-Rim-Kanal, C4-Ecken-Port [synthetisiert, nicht angewandt],
   Gegenproben; `f395_contact_patch_report` CI, `f395_delta_sweep` `#[ignore]`).
-- `crates/kernel/src/offset_channel.rs` — **Produktions-Umsetzung Stufe 1**
+- `crates/kernel/src/offset_channel.rs` — **Produktions-Umsetzung Stufe 1 + 3**
   (`synthesize_contact_prisms`, `box_contact_faces`, `clip_convex`,
-  `build_prism_member`, `prism_subset_of_union`, Einhängung in
-  `synthesize_stop`/`synthesize_offset_channels_reported`, SSI-Unterdrückung
-  für koplanare Paare). Siehe §4b.
+  `build_prism_member`, `prism_subset_of_union`; Stufe 3:
+  `synthesize_contact_prisms_dilation`, `prism_outside_inner`, Difference-
+  Einhängung in `synthesize_offset_channels_reported`; SSI-Unterdrückung für
+  koplanare Paare beider Vorzeichen). Siehe §4b/§4c.
 - `crates/kernel/src/offset_capability_tests.rs` — Unit-Tests: koplanarer
   Stapel → tolerance_bounded + Phantom-Schlitz-Feldprobe, gleicher Querschnitt →
   exact (S = U), transversale Union/disjunkt unverändert, S ⊆ U-Feld-Stichprobe,
   Kugel-auf-Box feuert kein Prisma.
+- `crates/kernel/src/offset_capability_tests.rs` — Stufe-3-Unit-Tests:
+  `dilation_flush_pocket_difference_is_tolerance_bounded` (Phantom-Fin-Feldprobe),
+  `dilation_prism_removes_no_inner_material` (40³ duale Sicherheit),
+  `dilation_touching_difference_does_not_trigger_prism`,
+  `dilation_curved_subtrahend_does_not_trigger_prism`.
 - `crates/kernel/examples/gen_golden.rs` — Golden-Szenen `contact_prism_stack`
-  (Stufe, tolerance_bounded) + `contact_prism_equal` (S = U, exact) für die
+  (Stufe, tolerance_bounded) + `contact_prism_equal` (S = U, exact) + Stufe 3
+  `contact_prism_pocket_dilation` (Extrude als Difference-RECHTSKIND) für die
   CGAL-C++-Parität des Prisma-Extrudes.
 - `crates/metricity-lab/tests/offset_fuzz.rs` — P3 liest bei Prisma-Korrektur
-  die B0-Sliver-Toleranz (≈0.75·δ) statt `channel_tol` (Stufe-2-Rim offen).
+  die B0-Sliver-Toleranz (≈0.75·δ) statt `channel_tol` (Stufe-2-Rim offen); neue
+  Familie `CoplanarDilation` + Reporting-Test `coplanar_dilation_family_stats`.
 - `docs/OFFSET-TREE-PLAN.md` — Prisma-Baustein in die Phase-B/C-Beschreibung.
 - dieses Dokument.
 

@@ -354,6 +354,154 @@ fn contact_prism_stays_inside_union() {
     assert_eq!(violations, 0, "S ⊄ U: Prisma fügt Material außerhalb der Union hinzu");
 }
 
+// ─── #395 Stufe 3: Kontakt-Prisma für den DILATIONS-Fall (Difference) ────
+
+/// Bündig ausgeschnittene Tasche: A minus B, wobei B's +x-Fläche koplanar mit
+/// A's +x-Fläche liegt (flush cut). Unter DILATION +δ legt `max(f_A, −f_B) − δ`
+/// einen Phantom-Fin über den Taschenmund P (versiegelt ihn). Das Kontakt-Prisma
+/// als Schnitt-Constraint `max(f_A, −f_B, −f_S) − δ` (Komplement-Dualität) tilgt
+/// ihn → tolerance_bounded, und die Feldprobe zeigt: der Punkt über P ist nach
+/// der Korrektur außen (statt fälschlich solide).
+fn flush_pocket_difference(delta: f32) -> (CsgNode, CsgNode, CsgNode) {
+    let a = leaf_box(1, [10.0, 10.0, 10.0]); // x,y,z ∈ [−10,10]
+    // B: he[5,4,4] @ (5,0,0) → x∈[0,10], y,z∈[−4,4]; +x-Fläche bei x=10 (bündig,
+    // parallele wahre Normale zu A's +x-Fläche → Difference-Kontakt).
+    let b = CsgNode::Transform(
+        Transform { translate: [5.0, 0.0, 0.0], rotation: [0.0, 0.0, 0.0, 1.0], scale: [1.0; 3] },
+        Box::new(leaf_box(2, [5.0, 4.0, 4.0])),
+    );
+    let node = CsgNode::Offset(Box::new(CsgNode::Difference(Box::new(a.clone()), Box::new(b.clone()))), delta);
+    (node, a, b)
+}
+
+#[test]
+fn dilation_flush_pocket_difference_is_tolerance_bounded() {
+    let delta = 2.0f32;
+    let (node, a, b) = flush_pocket_difference(delta);
+    let (field, report) = compile_for(node);
+    assert_eq!(
+        report.status(),
+        CapabilityStatus::ToleranceBounded,
+        "koplanarer Dilations-Kontakt muss seit #395 Stufe 3 korrigiert sein — reasons: {:?}",
+        report.reasons()
+    );
+    assert!(
+        report.reasons().iter().any(|r| r.contains("Kontakt-Prisma") && r.contains("Dilations-Stopp")),
+        "erwartete Dilations-Prisma-Notiz, got {:?}",
+        report.reasons()
+    );
+    assert!(
+        !report.reasons().iter().any(|r| r.contains("Stufe 3, Offset")),
+        "die alte Stufe-3-conservative-Notiz darf hier nicht mehr feuern — {:?}",
+        report.reasons()
+    );
+
+    // Feld-Probe: der Phantom-Fin lag über dem Taschenmund (P = y,z∈[−4,4]) knapp
+    // außerhalb der Kontaktebene x=10. Dort war `max(f_A,−f_B)−δ` fälschlich < 0
+    // (Fin versiegelt die Tasche); mit dem Prisma muss es jetzt > 0 sein (außen).
+    let fa = BoundedCsg::from_csg(&a);
+    let fb = BoundedCsg::from_csg(&b);
+    let phantom = [10.5f32, 0.0, 0.0];
+    let naive = fa.sdf(phantom, EvalMode::Visual).max(-fb.sdf(phantom, EvalMode::Visual)) - delta;
+    assert!(naive < 0.0, "Testaufbau: naiver Phantom-Fin-Punkt sollte < 0 sein (war {naive})");
+    let corrected = field.sdf(phantom, EvalMode::Visual);
+    assert!(
+        corrected > 0.0,
+        "Phantom-Fin nicht getilgt: f({phantom:?}) = {corrected} (soll > 0, wahre Dilation ist dort außen)"
+    );
+}
+
+/// Gegenprobe „kein Fehlfeuern": ein Difference, dessen Subtrahend AUSSERHALB von
+/// A liegt und A nur an einer Fläche berührt (anti-parallele wahre Normalen),
+/// erzeugt KEINEN submergierten Kontakt → das Dilations-Prisma feuert nicht.
+#[test]
+fn dilation_touching_difference_does_not_trigger_prism() {
+    let a = leaf_box(1, [10.0, 10.0, 10.0]); // x∈[−10,10]
+    // B @ (−20,0,0): x∈[−30,−10]; B's +x-Fläche bei x=−10 ≡ A's −x-Fläche
+    // (anti-parallele WAHRE Normalen → im Komplement PARALLEL → kein Kontakt).
+    let b = CsgNode::Transform(
+        Transform { translate: [-20.0, 0.0, 0.0], rotation: [0.0, 0.0, 0.0, 1.0], scale: [1.0; 3] },
+        Box::new(leaf_box(2, [10.0, 10.0, 10.0])),
+    );
+    let node = CsgNode::Offset(Box::new(CsgNode::Difference(Box::new(a), Box::new(b))), 2.0);
+    let report = report_for(node);
+    assert!(
+        !report.reasons().iter().any(|r| r.contains("Kontakt-Prisma")),
+        "berührender (nicht submergierter) Difference-Kontakt darf kein Dilations-Prisma auslösen — {:?}",
+        report.reasons()
+    );
+    // Ehrlichkeits-Fallback (#394): der tangentiale Kontakt hat KEINE Prisma-
+    // Korrektur bekommen — dann muss die conservative-Degradierung bleiben
+    // (wie vor Stufe 3), nicht still entfallen.
+    assert_eq!(
+        report.status(),
+        CapabilityStatus::Conservative,
+        "tangentialer Dilations-Kontakt ohne Prisma muss conservative bleiben — {:?}",
+        report.reasons()
+    );
+    assert!(
+        report.reasons().iter().any(|r| r.contains("ohne Prisma-Korrektur")),
+        "erwartete den Ehrlichkeits-Fallback am Dilations-Stopp — {:?}",
+        report.reasons()
+    );
+}
+
+/// Duale Sicherheit (Analogon zu `contact_prism_stays_inside_union`, 40³): das
+/// Dilations-Prisma (und die Kanäle) dürfen NIRGENDS Material entfernen, das der
+/// innere Körper hat. Formal: wo das korrigierte Feld gegenüber dem naiven
+/// `max(f_A,−f_B)−δ` Material entfernt hat (corrected > naive), muss der Punkt
+/// AUSSERHALB des inneren Solids liegen (`max(f_A,−f_B) ≥ −guard`).
+#[test]
+fn dilation_prism_removes_no_inner_material() {
+    let delta = 2.0f32;
+    let (node, a, b) = flush_pocket_difference(delta);
+    let (field, _report) = compile_for(node);
+    let fa = BoundedCsg::from_csg(&a);
+    let fb = BoundedCsg::from_csg(&b);
+    let guard = 0.05f32;
+    let (lo, hi) = ([-14.0f32, -14.0, -14.0], [22.0f32, 14.0, 14.0]);
+    let n = 40;
+    let mut violations = 0;
+    for ix in 0..=n {
+        for iy in 0..=n {
+            for iz in 0..=n {
+                let p = [
+                    lo[0] + (hi[0] - lo[0]) * ix as f32 / n as f32,
+                    lo[1] + (hi[1] - lo[1]) * iy as f32 / n as f32,
+                    lo[2] + (hi[2] - lo[2]) * iz as f32 / n as f32,
+                ];
+                let f_inner = fa.sdf(p, EvalMode::Visual).max(-fb.sdf(p, EvalMode::Visual));
+                let naive = f_inner - delta;
+                let corrected = field.sdf(p, EvalMode::Visual);
+                // Dilation-Korrekturen sind rein subtraktiv (corrected ≥ naive).
+                if corrected > naive + 1e-3 && f_inner < -guard {
+                    // Material entfernt, obwohl der Punkt klar im inneren Solid liegt.
+                    violations += 1;
+                }
+            }
+        }
+    }
+    assert_eq!(violations, 0, "Dilations-Prisma entfernt Material aus dem inneren Solid (S ⊄ ¬inner)");
+}
+
+/// Gekrümmter Subtrahend (Kugel schneidet A) unter Dilation: keine planare
+/// Box-Kontaktfläche → das Dilations-Prisma feuert NICHT (keine Falschkorrektur).
+#[test]
+fn dilation_curved_subtrahend_does_not_trigger_prism() {
+    let a = leaf_box(1, [12.0, 12.0, 12.0]);
+    let sph = CsgNode::Leaf {
+        id: id(2),
+        primitive: Primitive::Sphere { center: [12.0, 0.0, 0.0], radius: 8.0 },
+    };
+    let node = CsgNode::Offset(Box::new(CsgNode::Difference(Box::new(a), Box::new(sph))), 2.0);
+    let report = report_for(node);
+    assert!(
+        !report.reasons().iter().any(|r| r.contains("Kontakt-Prisma")),
+        "gekrümmter Subtrahend darf kein Dilations-Prisma auslösen — {:?}",
+        report.reasons()
+    );
+}
+
 // ─── (d) axis-touching revolve → conservative (with reason) ──────────────
 
 #[test]

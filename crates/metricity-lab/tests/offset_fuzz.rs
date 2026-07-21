@@ -90,6 +90,11 @@ enum Family {
     /// Tangentialkontakt (Kugel berührt Box-Fläche / koplanare Boxen) +
     /// Erosions-Offset → degenerierte Naht.
     TangentialContact,
+    /// #395 Stufe 3: koplanarer submergierter Kontakt unter DILATION — bündig
+    /// ausgeschnittene Tasche (Difference A−B, B's +x-Fläche koplanar mit A's
+    /// +x-Fläche) + `+δ`. `max(f_A,−f_B)−δ` legt einen Phantom-Fin über den
+    /// Taschenmund; das Kontakt-Prisma (Komplement-Dualität) tilgt ihn.
+    CoplanarDilation,
     /// Kleines Feature vs. großes |δ| — δ nahe/über der halben Kantenlänge,
     /// Topologie-Kollaps als Grenzfall.
     SmallFeatureVsLargeDelta,
@@ -110,6 +115,7 @@ const FAMILIES: &[Family] = &[
     Family::RotatedOffsetBox,
     Family::RotatedUnionOffset,
     Family::TangentialContact,
+    Family::CoplanarDilation,
     Family::SmallFeatureVsLargeDelta,
     Family::MultiFaceCorner,
     Family::StackedDualStops,
@@ -279,6 +285,48 @@ fn generate(family: Family, seed: u64) -> Scene {
                 family,
                 seed,
                 params: format!("{desc} delta={delta:.3}"),
+                node: offset(base.clone(), delta),
+                reference: Some((base, delta)),
+                channel_tol: tol,
+            }
+        }
+        Family::CoplanarDilation => {
+            // Bündig ausgeschnittene Tasche: A = Box, B stanzt eine schmalere
+            // Box aus, deren +x-Fläche mit A's +x-Fläche koplanar ist (flush).
+            // → submergierter koplanarer Kontakt am Taschenmund unter Dilation.
+            let ax = rng.range(12.0, 22.0) as f32;
+            let ay = rng.range(12.0, 22.0) as f32;
+            let az = rng.range(12.0, 22.0) as f32;
+            // Taschen-Halbmaße: strikt schmaler in y/z (echtes Sub-Rechteck mit
+            // ∂P-Stufen), endliche Tiefe < 2·ax (Sackloch, nicht durch).
+            let py = rng.range(3.0, (ay - 2.0) as f64) as f32;
+            let pz = rng.range(3.0, (az - 2.0) as f64) as f32;
+            let pdepth_half = rng.range(4.0, (ax - 1.0) as f64) as f32;
+            // Optionaler In-Ebenen-Versatz (partial overlap → ∂P mit Ecken).
+            let oy = rng.range(-(ay - py) as f64 * 0.5, (ay - py) as f64 * 0.5) as f32;
+            let oz = rng.range(-(az - pz) as f64 * 0.5, (az - pz) as f64 * 0.5) as f32;
+            // B-Zentrum: +x-Fläche bündig bei x = ax → cx = ax − pdepth_half.
+            let b = xform(
+                Transform {
+                    translate: [ax - pdepth_half, oy, oz],
+                    rotation: [0.0, 0.0, 0.0, 1.0],
+                    scale: [1.0; 3],
+                },
+                leaf_box(2, [pdepth_half, py, pz]),
+            );
+            let mut base = diff(leaf_box(1, [ax, ay, az]), b);
+            // Optional die ganze Szene rigide rotieren (nicht achsparallel).
+            let rotate_globally = rng.next_f64() < 0.5;
+            if rotate_globally {
+                base = xform(rigid(&mut rng, [0.0; 3]), base);
+            }
+            let delta = rng.range(1.0, 4.0) as f32;
+            Scene {
+                family,
+                seed,
+                params: format!(
+                    "a=[{ax:.1},{ay:.1},{az:.1}] p=[{pdepth_half:.1},{py:.1},{pz:.1}] off=[{oy:.1},{oz:.1}] rot={rotate_globally} delta={delta:.3}"
+                ),
                 node: offset(base.clone(), delta),
                 reference: Some((base, delta)),
                 channel_tol: tol,
@@ -811,6 +859,55 @@ fn offset_shell_property_fuzz() {
         "offset/shell property fuzz fand {} harte Verletzung(en):\n{}",
         findings.len(),
         findings.join("\n")
+    );
+}
+
+/// #395 Stufe 3: Statistik der Dilations-Koplanar-Familie (Status-Verteilung +
+/// p99/median/max der Nullmengen-Abweichung). Reines Reporting — der harte
+/// Vertrags-Check läuft in `offset_shell_property_fuzz` (check_p3). Skaliert mit
+/// `OFFSET_FUZZ_ITERS`.
+#[test]
+fn coplanar_dilation_family_stats() {
+    let iters = iters();
+    let mut n_tol = 0usize;
+    let mut n_exact = 0usize;
+    let mut n_cons = 0usize;
+    let mut n_other = 0usize;
+    let mut p99s: Vec<f64> = Vec::new();
+    for seed in 0..iters as u64 {
+        let scene = generate(Family::CoplanarDilation, seed);
+        let mut findings = Vec::new();
+        let comp = run_pipeline(&scene, &mut findings);
+        match comp.report.status() {
+            CapabilityStatus::ToleranceBounded => n_tol += 1,
+            CapabilityStatus::Exact => n_exact += 1,
+            CapabilityStatus::Conservative => n_cons += 1,
+            _ => n_other += 1,
+        }
+        if let Some((base, delta)) = &scene.reference {
+            if let Some(z) = zero_set_error(&comp.field, base, *delta, P3_GRID, P3_PROBE, scene.seed) {
+                p99s.push(z.p99);
+            }
+        }
+        assert!(findings.is_empty(), "P1/P2-Befund: {}", findings.join("\n"));
+    }
+    p99s.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let (mn, md, mx) = if p99s.is_empty() {
+        (0.0, 0.0, 0.0)
+    } else {
+        (p99s[0], p99s[p99s.len() / 2], *p99s.last().unwrap())
+    };
+    eprintln!(
+        "[coplanar_dilation] {iters} Szenen: tolerance_bounded={n_tol} exact={n_exact} \
+         conservative={n_cons} other={n_other}; p99 der Nullmengen-Abweichung über {} gemessene \
+         Szenen: min={mn:.4} median={md:.4} max={mx:.4} mm",
+        p99s.len()
+    );
+    // Kern-Zusicherung: die Korrektur greift (die Mehrheit ist tolerance_bounded,
+    // NICHT conservative — der Phantom-Fin ist getilgt).
+    assert!(
+        n_tol > n_cons,
+        "Dilations-Prisma greift nicht mehrheitlich (tol={n_tol} cons={n_cons})"
     );
 }
 

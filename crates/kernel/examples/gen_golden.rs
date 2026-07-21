@@ -694,4 +694,52 @@ fn main() {
         0.01,
     );
     emit("contact_prism_equal", &bvh, &pts);
+
+    // #395 Stufe 3 (Komplement-Dualität): DILATION über einer Difference mit
+    // bündig ausgeschnittener Tasche. A minus B, B's +x-Fläche koplanar mit A's
+    // +x-Fläche → `max(f_A,−f_B)+δ` legt einen Phantom-Fin über den Taschenmund.
+    // Die Synthese hängt das Kontakt-Prisma als Difference-RECHTSKIND (Schnitt-
+    // Constraint `−f_S`, reguläres Extrude, KEIN neuer Opcode) VOR das +δ. Diese
+    // Golden-Szene verankert die CGAL-C++-Parität des Extrude-als-Difference-Kind.
+    let pocket = CsgNode::Offset(
+        Box::new(CsgNode::Difference(
+            Box::new(CsgNode::Leaf {
+                id: FeatureId::from_u32(1),
+                primitive: Primitive::Box { center: [0.0; 3], half_extents: [12.0, 12.0, 12.0] },
+            }),
+            Box::new(CsgNode::Transform(
+                // B: he[6,5,4] @ (6,0,0) → +x-Fläche bei x=12 (bündig mit A).
+                xform([6.0, 0.0, 0.0], id, s1),
+                Box::new(CsgNode::Leaf {
+                    id: FeatureId::from_u32(2),
+                    primitive: Primitive::Box { center: [0.0; 3], half_extents: [6.0, 5.0, 4.0] },
+                }),
+            )),
+        )),
+        2.0,
+    );
+    let bvh = fielddraft_kernel::offset_channel::synthesize_offset_channels(
+        BoundedCsg::from_csg(&pocket),
+        0.01,
+    );
+    // Sicherstellen, dass die Szene wirklich ein Prisma trägt (Difference-Kind).
+    fn has_diff_prism(n: &BoundedCsg) -> bool {
+        match n {
+            BoundedCsg::Difference { right, .. } => matches!(**right, BoundedCsg::Extrude { .. }),
+            BoundedCsg::Offset { inner, .. }
+            | BoundedCsg::ArcChannel { inner, .. } => has_diff_prism(inner),
+            _ => false,
+        }
+    }
+    assert!(
+        has_diff_prism(match &bvh {
+            BoundedCsg::ArcChannel { inner, .. } => inner,
+            other => other,
+        }) || {
+            // Offset direkt: inner ist die Difference.
+            if let BoundedCsg::Offset { inner, .. } = &bvh { has_diff_prism(inner) } else { false }
+        },
+        "golden contact_prism_pocket_dilation: kein Difference-Prisma synthetisiert"
+    );
+    emit("contact_prism_pocket_dilation", &bvh, &pts);
 }

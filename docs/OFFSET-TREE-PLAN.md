@@ -354,10 +354,16 @@ Die C4-Arbeit hat drei latente **Phase-B-Fehler** aufgedeckt und behoben
   `tolerance_bounded` mit der ehrlichen B0-Sliver-Schranke am Kontaktrand ∂P
   (Kanten ≈0.41·δ, Ecken ≈0.73·δ). Die SSI-Naht-Synthese wird für ein so
   korrigiertes Member-Paar unterdrückt (ihre koinzident/tangential degenerierten
-  Nähte würden sonst Material über Π hinaus lecken, S ⊄ U). **Stufe 2** (∂P-Rim-
-  Kanäle + C4-Vertex-Kugeln zum Schließen des Rand-Slivers) ist noch OFFEN
-  (Rückfall-Klausel), ebenso der symmetrische Dilations-Fall (Stufe 3,
-  Komplement-Dualität). SSOT: `docs/research/sdf-metricity/F395-CONTACT-PATCH-DESIGN.md`.
+  Nähte würden sonst Material über Π hinaus lecken, S ⊄ U). Der symmetrische
+  **Dilations-Fall (Stufe 3, `+δ` über Intersection/Difference)** ist per
+  Komplement-Dualität umgesetzt: dasselbe Prisma als SCHNITT-Constraint
+  `max(f_i, −f_S) − δ` (`Difference{ inner, S }`, effektive Normale −sign·n; für
+  einen Difference-Kontakt heißt das PARALLELE wahre Normalen = bündig
+  ausgeschnittene Tasche). Duale Sicherheit `S ⊆ {f_inner ≥ 0}`; kein Exakt-Tier
+  (¬box unbeschränkt), immer `tolerance_bounded` mit der B0-Keil-Schranke ≈0.75·δ.
+  **Stufe 2** (∂P-Rim-Kanäle + C4-Vertex-Kugeln zum Schließen des Rand-Slivers)
+  bleibt für BEIDE Vorzeichen OFFEN (Rückfall-Klausel; der Stufe-2-Negativbefund
+  gilt dual). SSOT: `docs/research/sdf-metricity/F395-CONTACT-PATCH-DESIGN.md`.
 * **Gate-Weite:** Phase B setzte `G = c·δ` — ein δ über dem Maximalbedarf
   `(c−1)·δ`; an trunkierten Kurven-Enden leckte die Endpunkt-Kappe bis
   ~δ Material über das Ende hinaus. Jetzt `G = (c−1)·δ + 4·tol`.

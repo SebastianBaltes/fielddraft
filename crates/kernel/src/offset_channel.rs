@@ -1906,6 +1906,197 @@ fn prism_subset_of_union(prism: &BoundedCsg, members: &[Member], guard: f32) -> 
     true
 }
 
+// ─── F395 Stufe 3: Kontakt-Prisma für den DILATIONS-Fall (Komplement-Dualität) ─
+//
+// Dilation `+δ` über einer Intersection/Difference mit koplanarer submergierter
+// Kontaktfläche: `max(f_i) − δ` legt einen Phantom-Fin über das Kontaktpolygon P
+// (dual zum Erosions-Schlitz). Per Komplement-Dualität ist das die Stufe-1-
+// Situation im Komplement: die inneren Constraints `max(s_i·f_i)` haben das
+// Komplement `min(−s_i·f_i)` (Union von Komplementen), und Stufe 1 hängt dort ein
+// Kontakt-Prisma S als zusätzlichen Union-Member. Rück-negiert heißt das:
+//
+//     f_korr(p) = max(f_i, −f_S) − δ   (Prisma als SCHNITT-Constraint subtrahiert)
+//
+// Das ist exakt `Difference{ inner, S }` (Feld `max(f_inner, −f_S)`) VOR dem `+δ`
+// — KEIN neuer Opcode, alle fünf Evaluator-Spiegel sehen ein gewöhnliches Extrude
+// als Difference-Rechtskind.
+//
+// **Orientierung (hergeleitet + per Feldprobe verifiziert):** in der Komplement-
+// Union ist die effektive Außennormale eines Members `eff = −sign·n` (sign aus
+// `flatten_members`: ein Difference-Rechtskind trägt −1). Die Stufe-1-Erkennung
+// (anti-parallel + koinzident) läuft damit auf `eff_i·eff_j < −0.9995` und
+// `(O_i+O_j)≈0` mit `O = −sign·o`. Für einen Difference A−B (s_A=+1, s_B=−1) heißt
+// das: die BEIDEN Kontaktflächen haben **parallele** wahre Außennormalen (n_A∥n_B,
+// koinzident) — geometrisch die bündig ausgeschnittene Tasche (flush cut), deren
+// Taschenmund koplanar mit einer A-Außenfläche liegt.
+//
+// **Cap-Tiefen:** ein Member, dessen Komplement-Solid die BOX selbst ist (sign=−1,
+// z. B. der subtrahierte Körper), liefert seine echte Box-Dicke als Cap. Ein
+// Member, dessen Komplement-Solid `¬box` ist (sign=+1), hat auf seiner Seite keine
+// endliche Dicke — das Prisma bekommt dort eine Marge `p_circ + 1.5·δ` (die
+// Feldprobe zeigt: eine Marge < ~inradius(P) lässt den Fin zurückkehren; erst mit
+// `cap ≥ lateraler Reichweite von P` dominiert die Seitenwand-Distanz und der
+// Restfehler fällt auf die B0-Keilklasse ≤ 0.75·δ am ∂P-Rand).
+//
+// **Duale Sicherheit (Analogon zu S⊆U):** das Prisma darf nur dort subtrahieren,
+// wo die wahre Dilation Luft hat, d. h. `S ⊆ {f_inner ≥ 0}` (Komplement des inneren
+// Solids). `prism_outside_inner` prüft das stichprobenartig; Verletzung → verwerfen,
+// conservative bleibt.
+
+/// Duale Sicherheits-Stichprobe `S ⊆ {f_inner ≥ 0}` (Design §4, Komplement-Bild):
+/// an keinem Punkt tief in S (`f_S < −guard`) darf das innere Feld tief im Material
+/// liegen (`max_i(member.value) < −guard`) — sonst würde `max(f_inner,−f_S)`
+/// echtes Material entfernen. Spiegel von [`prism_subset_of_union`].
+fn prism_outside_inner(prism: &BoundedCsg, members: &[Member], guard: f32) -> bool {
+    let bb = prism.aabb();
+    if bb.is_empty() {
+        return true;
+    }
+    let n = 6;
+    for ix in 0..=n {
+        for iy in 0..=n {
+            for iz in 0..=n {
+                let p = [
+                    bb.min[0] + (bb.max[0] - bb.min[0]) * ix as f32 / n as f32,
+                    bb.min[1] + (bb.max[1] - bb.min[1]) * iy as f32 / n as f32,
+                    bb.min[2] + (bb.max[2] - bb.min[2]) * iz as f32 / n as f32,
+                ];
+                let fs = prism.sdf(p, EvalMode::Visual);
+                if fs < -guard {
+                    let fi = members
+                        .iter()
+                        .map(|m| m.value(p))
+                        .fold(f32::NEG_INFINITY, f32::max);
+                    if fi < -guard {
+                        return false;
+                    }
+                }
+            }
+        }
+    }
+    true
+}
+
+/// Baut die Kontakt-Prismen für den DILATIONS-Fall (Design §1.4, Stufe 3): sign-
+/// bewusste Erkennung koplanarer submergierter Kontaktflächen über die Komplement-
+/// Dualität, gleicher Sutherland–Hodgman-Verschnitt, gleiche Verweigerungs-
+/// Ehrlichkeit. Die Prismen werden vom Aufrufer als `Difference`-Rechtskind
+/// (Schnitt-Constraint `−f_S`) VOR das `+δ` gehängt. Nur Box-Box-Kontakte;
+/// mindestens ein Nicht-Box-Partner an einem sonst gültigen Kandidaten → `refused`.
+fn synthesize_contact_prisms_dilation(
+    members: &[Member],
+    ctx: &StopCtx,
+    min_feat: &[u32],
+    prism_idx: &mut u32,
+) -> ContactResult {
+    let mut res = ContactResult {
+        prisms: Vec::new(),
+        exact: false, // Dilation-Prisma verspricht nie S=U' (¬box unbeschränkt) → immer toleranzbeschränkt.
+        refused: false,
+        rim_bound: 0.0,
+        pairs: Vec::new(),
+    };
+    let delta = ctx.delta as f64;
+    let coincide_tol = (0.5 * delta).max(1e-3);
+    let overlap_min = (0.5 * delta).max(1e-3);
+
+    // Box-Flächen je Member (nur Boxen liefern welche). Nicht-Box-Member (Zylinder,
+    // Sweep, …) liefern keine — ihre Kontakte werden hier nicht erkannt; die
+    // Kanal-Synthese meldet ggf. selbst conservative. Nur wenn ein sonst gültiger
+    // (koinzident+anti-parallel-effektiver) Box-Kandidat NICHT baubar ist,
+    // verweigern wir explizit.
+    let faces: Vec<Option<Vec<ContactFace>>> =
+        members.iter().map(|m| box_contact_faces(m.node)).collect();
+
+    for i in 0..members.len() {
+        for j in (i + 1)..members.len() {
+            let (Some(fi), Some(fj)) = (&faces[i], &faces[j]) else {
+                continue;
+            };
+            let si = members[i].sign as f64;
+            let sj = members[j].sign as f64;
+            for fa in fi {
+                for fb in fj {
+                    // Effektive (Komplement-)Normalen und -Offsets: eff = −sign·n,
+                    // O = −sign·o. Stufe-1-Erkennung im Komplement.
+                    let eff_i = [-si * fa.n[0], -si * fa.n[1], -si * fa.n[2]];
+                    let eff_j = [-sj * fb.n[0], -sj * fb.n[1], -sj * fb.n[2]];
+                    if fdot(eff_i, eff_j) > -0.9995 {
+                        continue;
+                    }
+                    let oi = -si * fa.o;
+                    let oj = -sj * fb.o;
+                    if (oi + oj).abs() > coincide_tol {
+                        continue;
+                    }
+                    let n = fnrm(eff_i); // Komplement-Außennormale von Member i (Π-Normale).
+                    let (e1, e2, _) = plane_frame(n);
+                    let proj = |w: &[f64; 3]| -> [f64; 2] { [fdot(e1, *w), fdot(e2, *w)] };
+                    let mut la: Vec<[f64; 2]> = fa.loop3.iter().map(proj).collect();
+                    let mut lb: Vec<[f64; 2]> = fb.loop3.iter().map(proj).collect();
+                    if area2d(&la) < 0.0 {
+                        la.reverse();
+                    }
+                    if area2d(&lb) < 0.0 {
+                        lb.reverse();
+                    }
+                    let clip_tol = (1e-3 * delta).max(1e-4);
+                    let p2d = cleanup_poly(clip_convex(&la, &lb), clip_tol);
+                    if p2d.len() < 3 {
+                        continue; // Kanten-/Punktkontakt
+                    }
+                    let ap = area2d(&p2d).abs();
+                    if ap < overlap_min * overlap_min {
+                        continue;
+                    }
+                    // Zirkumradius von P (In-Ebenen) → Cap-Marge der ¬box-Seite.
+                    let cen = {
+                        let (mut cx, mut cy) = (0.0f64, 0.0);
+                        for q in &p2d {
+                            cx += q[0];
+                            cy += q[1];
+                        }
+                        [cx / p2d.len() as f64, cy / p2d.len() as f64]
+                    };
+                    let p_circ = p2d
+                        .iter()
+                        .map(|q| ((q[0] - cen[0]).powi(2) + (q[1] - cen[1]).powi(2)).sqrt())
+                        .fold(0.0f64, f64::max);
+                    let margin = p_circ + 1.5 * delta;
+                    // Cap-Tiefen: −n-Seite = Member i, +n-Seite = Member j. Box-
+                    // Komplement (sign=−1) → echte Box-Dicke; ¬box (sign=+1) → Marge.
+                    let depth_neg = if si < 0.0 { fa.depth } else { margin };
+                    let depth_pos = if sj < 0.0 { fb.depth } else { margin };
+                    let o = fdot(n, fa.loop3[0]);
+                    let feat = 0x0007_0000 | (*prism_idx & 0xFFFF);
+                    let Some(prism) =
+                        build_prism_member(&p2d, e1, e2, n, o, depth_neg, depth_pos, feat)
+                    else {
+                        continue;
+                    };
+                    // Duale Sicherheit S ⊆ {f_inner ≥ 0}.
+                    let guard = (2e-3 * delta as f32).max(1e-3);
+                    if !prism_outside_inner(&prism, members, guard) {
+                        res.refused = true;
+                        continue;
+                    }
+                    let _owner = min_feat[i].min(min_feat[j]);
+                    *prism_idx += 1;
+                    res.prisms.push(prism);
+                    if !res.pairs.contains(&(i, j)) {
+                        res.pairs.push((i, j));
+                    }
+                    // Restfehler: konvexer B0-Keil am Kontaktrand ∂P (dual zum
+                    // konkaven Sliver), ehrlich als ≈0.75·δ gemeldet (Stufe-2-Rim
+                    // offen — dasselbe Argument wie im Erosions-Fall).
+                    res.rim_bound = res.rim_bound.max(0.75 * ctx.delta);
+                }
+            }
+        }
+    }
+    res
+}
+
 // STUFE 2 (∂P-Rim-Kanäle + C4-Vertex-Kugeln) ist OFFEN (Rückfall-Klausel #395).
 // Der geplante Weg (Design §3.1/§3.4): ∂P in bündige (α≈180°, kein Kanal) und
 // Stufen-Segmente zerlegen (Klassifikation über point-in-loop der beiden
@@ -1970,8 +2161,9 @@ fn synthesize_stop(
     // Member-Paare mit Kontakt-Prisma → ihre (degenerierte) SSI-Naht-Synthese
     // wird unten übersprungen.
     let mut prism_pairs: Vec<(usize, usize)> = Vec::new();
-    if coplanar_interface_present(&branch_maps, &branch_lists, ctx.delta) {
-        if union_form {
+    if union_form {
+        // #395 Stufe 1: EROSION über Union — koplanares Kontakt-Prisma als Union-Member.
+        if coplanar_interface_present(&branch_maps, &branch_lists, ctx.delta) {
             let mut prism_idx = 0u32;
             let contact = synthesize_contact_prisms(&members, &ctx, &min_feat, &mut prism_idx);
             if contact.prisms.is_empty() {
@@ -2004,13 +2196,43 @@ fn synthesize_stop(
                 }
                 // Exakt (S = U): keine Notiz — der Stopp bleibt `exact`.
             }
-        } else {
-            // Dilation über Intersection/Difference: Kontakt-Prisma als
-            // Schnitt-Constraint ist Stufe 3 (Komplement-Dualität), NICHT
-            // dieser Scope → #394-Ehrlichkeit bleibt.
+        }
+    } else {
+        // #395 Stufe 3: DILATION über Intersection/Difference — koplanares
+        // Kontakt-Prisma als Schnitt-Constraint (Komplement-Dualität). Sign-
+        // bewusste Erkennung auf den gefalteten Membern (die Erosions-Gate-Heuristik
+        // `coplanar_interface_present` nutzt WAHRE Normalen und feuert für den
+        // parallel-normalen Difference-Kontakt nicht — die Erkennung sitzt darum in
+        // der Prisma-Funktion selbst, effektive Normalen −sign·n).
+        let mut prism_idx = 0u32;
+        let contact =
+            synthesize_contact_prisms_dilation(&members, &ctx, &min_feat, &mut prism_idx);
+        if !contact.prisms.is_empty() {
+            prisms = contact.prisms;
+            prism_pairs = contact.pairs;
+            report.note_tolerance(format!(
+                "Koplanare submergierte Kontaktfläche an einem Dilations-Stopp per Kontakt-Prisma \
+                 (Komplement-Dualität) korrigiert; Restfehler = konvexer B0-Keil am Kontaktrand ∂P \
+                 ≤ {:.3} mm (≈0.75·δ; Stufe-2-Rim offen).",
+                contact.rim_bound
+            ));
+        } else if contact.refused {
             report.note_conservative(
-                "Koplanarer/tangentialer Kontakt an einem Dilations-Stopp (Intersection/Difference) — \
-                 Prisma-Korrektur ist Stufe 3, Offset in der Kontaktzone bleibt Näherung f+δ.",
+                "Koplanarer Kontakt an einem Dilations-Stopp (Intersection/Difference) ohne exakt \
+                 bestimmbares Kontaktpolygon (Nicht-Box-Member/degenerierter Verschnitt) — Offset \
+                 in der Kontaktzone bleibt Näherung f+δ.",
+            );
+        } else if coplanar_interface_present(&branch_maps, &branch_lists, ctx.delta) {
+            // Ehrlichkeits-Fallback (#394): die Prisma-Synthese sieht nur Box-
+            // Member; ein koplanarer/tangentialer Kontakt planarer Nicht-Box-
+            // Carrier (Extrude, …) am Dilations-Stopp bliebe sonst STILL ohne
+            // Notiz — vor Stufe 3 meldete genau dieser Zweig conservative.
+            // (Die Heuristik prüft ECHTE Normalen; die parallel-normale
+            // Nicht-Box-Tasche bleibt ein bekannter blinder Fleck — sign-
+            // bewusste Verallgemeinerung ist ein eigener Programmpunkt.)
+            report.note_conservative(
+                "Koplanarer/tangentialer Kontakt an einem Dilations-Stopp (Intersection/Difference) \
+                 ohne Prisma-Korrektur — Offset in der Kontaktzone bleibt Näherung f+δ.",
             );
         }
     }
@@ -2436,22 +2658,37 @@ pub fn synthesize_offset_channels_reported(
             // blanket note: it is either already flagged conservative there or
             // was genuinely correction-free (benign).
             let (channels, verts, prisms) = synthesize_stop(&inner, delta, tol, report);
-            // #395 Stufe 1: die Kontakt-Prismen als reguläre Union-Member VOR
-            // dem −δ in den gefalteten Baum hängen (Design §3.2). min(f_i, f_S)
-            // füllt den Phantom-Schlitz; da S ⊆ U bleibt die naive Union-
-            // Nullmenge unverändert, nur die Erosions-Nullmenge wird korrekt.
-            // Report-unabhängig (rein geometrisch) → das Feld bleibt zwischen
-            // Report-/Nicht-Report-Pfad bit-identisch.
+            // #395: die Kontakt-Prismen als reguläre Boolean-Member VOR dem ±δ in
+            // den gefalteten Baum hängen (Design §3.2). Da S ⊆ U (Erosion) bzw.
+            // S ⊆ {f_inner ≥ 0} (Dilation) bleibt die naive Boolean-Nullmenge
+            // unverändert, nur die Offset-Nullmenge wird korrekt. Report-unabhängig
+            // (rein geometrisch) → das Feld bleibt zwischen Report-/Nicht-Report-
+            // Pfad bit-identisch.
+            //   Erosion `−δ` über Union: `min(f_i, f_S)` (Union-Member, füllt den
+            //     Phantom-Schlitz — Stufe 1).
+            //   Dilation `+δ` über Intersection/Difference: `max(f_inner, −f_S)`
+            //     (Difference-Rechtskind, tilgt den Phantom-Fin — Stufe 3,
+            //     Komplement-Dualität).
             let inner: Box<BoundedCsg> = if prisms.is_empty() {
                 inner
             } else {
                 let mut node = *inner;
                 for prism in prisms {
-                    let bb = Aabb::union(node.aabb(), prism.aabb());
-                    node = BoundedCsg::Union {
-                        left: Box::new(node),
-                        right: Box::new(prism),
-                        aabb: bb,
+                    node = if delta < 0.0 {
+                        let bb = Aabb::union(node.aabb(), prism.aabb());
+                        BoundedCsg::Union {
+                            left: Box::new(node),
+                            right: Box::new(prism),
+                            aabb: bb,
+                        }
+                    } else {
+                        // Difference: das Ergebnis kann nur schrumpfen → linke AABB.
+                        let bb = node.aabb();
+                        BoundedCsg::Difference {
+                            left: Box::new(node),
+                            right: Box::new(prism),
+                            aabb: bb,
+                        }
                     };
                 }
                 Box::new(node)
