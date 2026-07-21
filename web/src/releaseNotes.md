@@ -12,6 +12,9 @@ Format, eine Zeile je Eintrag:
 kind = feat | fix | perf. scope und #tickets sind optional. Folgezeilen, die
 eingerückt sind, gehören zum Text davor (Umbruch erlaubt).
 
+## 0.18.5
+- fix(sdf) #397 #384: Die Ehrlichkeits-Erkennung für koplanare Kontakte am Dilations-Stopp ist jetzt vorzeichen-bewusst: Eine bündig ausgeschnittene Tasche aus Nicht-Box-Körpern (z. B. Extrude minus Extrude, flush cut) blieb bisher ganz ohne Warnung — der Phantom-Grat über dem Taschenmund lag unter einer zu guten Zusage. Der Kernel prüft nun zusätzlich die effektiven (Komplement-)Normalen und stuft solche Kontakte ehrlich auf „Näherung“ herab. Dünnwandige Shells sind über eine enge Koinzidenz-Toleranz sauber abgegrenzt und behalten ihre bisherige (bessere) Bewertung; Geometrie und Felder ändern sich nicht — es geht rein um die ehrliche Statusmeldung.
+
 ## 0.18.4
 - fix(sdf) #395 #384: Das Kontakt-Prisma aus 0.18.3 korrigiert jetzt auch den Dilations-Fall (Komplement-Dualität): Bei positivem Offset oder Shell über einer Difference/Intersection mit koplanarer Kontaktfläche — der Klassiker ist die bündig ausgeschnittene Tasche (flush cut) — legte das naive Feld einen Phantom-Grat über den Taschenmund (bis über 6 mm Abweichung, teils unter falscher Zusage). Der Kernel hängt das Prisma dort als Schnitt-Constraint vor das +δ; das Prisma entfernt beweisbar nirgends echtes Material. Der Status ist „toleranzbeschränkt“ mit Restschranke ≈0,75·δ am Kontaktrand. Nicht exakt fassbare Kontakte (gekrümmt, Nicht-Box, tangential berührend) melden weiterhin ehrlich „Näherung“ — diese Meldung war beim Umbau kurz entfallen und ist wiederhergestellt.
 

@@ -452,12 +452,22 @@ Komplement-Dualität umgesetzt (`synthesize_contact_prisms_dilation` +
   #394-Heuristik `coplanar_interface_present` (wahre Normalen): feuert sie
   (anti-paralleler koplanarer/tangentialer Kontakt planarer Carrier, auch
   Nicht-Box wie Extrude), bleibt die `conservative`-Degradierung wie vor
-  Stufe 3 — sie war beim Branch-Umbau still entfallen. Bekannter blinder
-  Fleck bleibt die **parallel-normale Nicht-Box-Tasche** (Extrude-flush-cut):
-  weder Prisma (kein Box-Loop) noch Heuristik (wahre Normalen parallel) sehen
-  sie — die sign-bewusste Verallgemeinerung von `coplanar_interface_present`
-  (eff = −sign·n̂) ist ein eigener Programmpunkt und braucht Kalibrierung
-  gegen Dünnwand-Shells (Wandstärke < 0.5·δ würde sonst koinzident wirken).
+  Stufe 3 — sie war beim Branch-Umbau still entfallen. Der damals verbliebene
+  blinde Fleck **parallel-normale Nicht-Box-Tasche** (Extrude-flush-cut: weder
+  Prisma noch wahre-Normalen-Heuristik sehen sie) ist seit **#397** geschlossen:
+  der Fallback prüft zusätzlich die **effektiven** Normalen/Offsets
+  (eff = −sign·n̂, O = −sign·o) mit ENGER Koinzidenz-Toleranz 0,02·δ (≥1e-3).
+  Die enge Toleranz ist die Dünnwand-Abgrenzung: bei sign-Flip sähen die zwei
+  Außenflächen einer Wand der Stärke w effektiv anti-parallel aus mit
+  |O_i+O_j| = w — die lockere 0,5·δ-Toleranz würde jede Wand w < 0,5·δ fälschlich
+  koinzident werten. Echte Flush-Cuts sind bis auf f32-Rundung koinzident
+  (~1e-4); kalibriert per Wandstärken-Reihe w ∈ {0,3…2}·δ (Status identisch zu
+  vorher, Box-Shells laufen ohnehin über die Prisma-Synthese) und Fuzz-Histogramm
+  (bit-identisch). Der Erosions-Pfad ruft die Heuristik mit signs≡+1 auf und ist
+  beweisbar bit-identisch zur Vor-#397-Fassung (gemeinsamer Vorzeichen-Flip kürzt
+  sich in Skalarprodukt und Offset-Summe). Restlücke: Wände unterhalb 0,02·δ
+  (< 0,04 mm bei δ=2) würden als koinzident gewertet — unterhalb jeder sinnvollen
+  Wandstärke.
 
 **Empirie (offset_fuzz-Familie `CoplanarDilation`, neu).** OFFSET_FUZZ_ITERS=128:
 128/128 Szenen `tolerance_bounded` (0 conservative), p99 der Nullmengen-Abweichung

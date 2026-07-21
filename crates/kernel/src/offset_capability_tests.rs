@@ -698,6 +698,147 @@ fn twisted_offset_is_unsupported_end_to_end() {
     assert_eq!(cap.status, CapabilityStatus::Unsupported);
 }
 
+// ─── #397 sign-bewusste Koplanaritäts-Heuristik am Dilations-Stopp ────────
+
+fn rect_extrude(fid: u32, cx: f32, cy: f32, hx: f32, hy: f32, hh: f32) -> CsgNode {
+    CsgNode::Extrude {
+        id: id(fid),
+        sketch: Box::new(Sketch2d::Prim(Sketch2dPrimitive::Rectangle {
+            center: [cx, cy],
+            half_extents: [hx, hy],
+        })),
+        half_height: hh,
+        wall_subs: None,
+    }
+}
+
+/// Bündig ausgeschnittene Tasche aus NICHT-Box-Carriern (Extrude − Extrude): B's
+/// +x-Seitenwand (x=10) ist koplanar mit A's +x-Seitenwand. Die WAHREN Normalen
+/// sind PARALLEL (beide +x) — deshalb sah weder die Prisma-Synthese (kein Box-
+/// Loop) noch die alte Heuristik (wahre Normalen) diesen Kontakt (#395 §4c
+/// „blinder Fleck"). Effektiv (De-Morgan-Komplement, Difference-Rechtskind trägt
+/// −1) sind sie anti-parallel und koinzident → seit #397 löst der eff-Pfad die
+/// ehrliche conservative-Notiz aus.
+fn extrude_flush_pocket(delta: f32) -> CsgNode {
+    // A: x,y,z ∈ [−10,10]; B: x∈[0,10], y,z∈[−4,4].
+    let a = rect_extrude(1, 0.0, 0.0, 10.0, 10.0, 10.0);
+    let b = rect_extrude(2, 5.0, 0.0, 5.0, 4.0, 4.0);
+    CsgNode::Offset(Box::new(CsgNode::Difference(Box::new(a), Box::new(b))), delta)
+}
+
+#[test]
+fn extrude_flush_pocket_dilation_is_conservative_397() {
+    let delta = 2.0f32;
+    let node = extrude_flush_pocket(delta);
+    let report = report_for(node);
+    // Vor #397: fälschlich `tolerance_bounded` (zu gute Zusage über dem Phantom-
+    // Fin, den ein Arc-Spline-Kanal nicht flächig korrigiert). Seit #397:
+    // ehrliche conservative-Degradierung.
+    assert_eq!(
+        report.status(),
+        CapabilityStatus::Conservative,
+        "parallel-normale Nicht-Box-Tasche muss seit #397 conservative sein — reasons: {:?}",
+        report.reasons()
+    );
+    assert!(
+        report.reasons().iter().any(|r| r.contains("ohne Prisma-Korrektur")),
+        "erwartete den sign-bewussten Ehrlichkeits-Fallback — {:?}",
+        report.reasons()
+    );
+
+    // Feld-Probe: BELEG, dass unter der (vorher zu guten) Zusage real ein
+    // Phantom-Grat sitzt. Am Taschenmund knapp jenseits x=10 ist `max(f_A,−f_B)−δ`
+    // fälschlich < 0 (naiver Fin versiegelt die Tasche), obwohl die WAHRE Dilation
+    // dort außen ist: der nächste echte Körperpunkt (Mundrand [10,±4,·]) liegt
+    // ≈ 4 mm entfernt, also > δ = 2 mm → der ganze δ-Ball um den Punkt ist Luft.
+    let a = rect_extrude(1, 0.0, 0.0, 10.0, 10.0, 10.0);
+    let b = rect_extrude(2, 5.0, 0.0, 5.0, 4.0, 4.0);
+    let fa = BoundedCsg::from_csg(&a);
+    let fb = BoundedCsg::from_csg(&b);
+    let phantom = [10.5f32, 0.0, 0.0];
+    let naive =
+        fa.sdf(phantom, EvalMode::Visual).max(-fb.sdf(phantom, EvalMode::Visual)) - delta;
+    assert!(
+        naive < 0.0,
+        "Testaufbau: naiver Phantom-Fin sollte < 0 (fälschlich solide) sein, war {naive}"
+    );
+    // Der δ-Ball um den Punkt ist restlos außerhalb des wahren Solids A−B (die
+    // CSG-Vorzeichen von max(f_A,−f_B) sind exakt, auch wenn der Betrag
+    // unterschätzt): das belegt d(phantom, A−B) > δ ⇒ wahre Dilation = Luft.
+    let m = 6;
+    for ix in -m..=m {
+        for iy in -m..=m {
+            for iz in -m..=m {
+                let d = [
+                    ix as f32 / m as f32,
+                    iy as f32 / m as f32,
+                    iz as f32 / m as f32,
+                ];
+                if d[0] * d[0] + d[1] * d[1] + d[2] * d[2] > 1.0 {
+                    continue;
+                }
+                let r = 0.98 * delta;
+                let q = [phantom[0] + d[0] * r, phantom[1] + d[1] * r, phantom[2] + d[2] * r];
+                let inside = fa
+                    .sdf(q, EvalMode::Visual)
+                    .max(-fb.sdf(q, EvalMode::Visual));
+                assert!(
+                    inside > 0.0,
+                    "der δ-Ball um den Phantom-Punkt darf kein wahres Material enthalten (q={q:?}, f={inside}) — sonst wäre die naive Zusage nicht falsch"
+                );
+            }
+        }
+    }
+}
+
+/// PFLICHT-Kalibrierung #397: Dünnwand-Shells (Difference outer − inner) dürfen
+/// durch die sign-bewusste Verallgemeinerung NICHT ihre (bessere) Zusage
+/// verlieren. Der Status muss für jede Wandstärke w ∈ {0.3,0.5,0.8,1.0,2.0}·δ
+/// exakt der HEAD-Baseline entsprechen (vor #397 per Print-Harness gemessen).
+/// Box-Shells laufen über die Dilations-Prisma-Synthese (inert gegen #397); die
+/// Extrude-Shells erreichen den eff-Fallback und belegen, dass die enge
+/// Koinzidenz-Toleranz (0.02·δ) jede Wand ≥ 0.3·δ verwirft.
+#[test]
+fn thin_wall_shell_status_unchanged_397() {
+    let delta = 2.0f32;
+    let ho = 10.0f32;
+    // (w/δ, erwarteter BOX-Status, erwarteter EXTRUDE-Status) — HEAD-Baseline.
+    let expect = [
+        (0.3f32, CapabilityStatus::ToleranceBounded, CapabilityStatus::Exact),
+        (0.5, CapabilityStatus::ToleranceBounded, CapabilityStatus::Exact),
+        (0.8, CapabilityStatus::Exact, CapabilityStatus::Exact),
+        (1.0, CapabilityStatus::Exact, CapabilityStatus::Exact),
+        (2.0, CapabilityStatus::Exact, CapabilityStatus::Exact),
+    ];
+    for (f, want_box, want_ext) in expect {
+        let w = f * delta;
+        let box_shell = CsgNode::Offset(
+            Box::new(CsgNode::Difference(
+                Box::new(leaf_box(1, [ho, ho, ho])),
+                Box::new(leaf_box(2, [ho - w, ho - w, ho - w])),
+            )),
+            delta,
+        );
+        let ext_shell = CsgNode::Offset(
+            Box::new(CsgNode::Difference(
+                Box::new(rect_extrude(1, 0.0, 0.0, ho, ho, ho)),
+                Box::new(rect_extrude(2, 0.0, 0.0, ho - w, ho - w, ho - w)),
+            )),
+            delta,
+        );
+        assert_eq!(
+            report_for(box_shell).status(),
+            want_box,
+            "Box-Dünnwand w/δ={f} Status ≠ HEAD-Baseline"
+        );
+        assert_eq!(
+            report_for(ext_shell).status(),
+            want_ext,
+            "Extrude-Dünnwand w/δ={f} Status ≠ HEAD-Baseline (eff-Fallback darf nicht feuern)"
+        );
+    }
+}
+
 #[test]
 fn plain_offset_is_exact_end_to_end() {
     let mut k = crate::Kernel::new();

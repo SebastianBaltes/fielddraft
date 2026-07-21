@@ -1331,13 +1331,26 @@ fn build_channel(
 fn coplanar_interface_present(
     branch_maps: &[crate::brep::BranchSurfaceMap],
     branch_lists: &[Vec<crate::brep::branch_pairs::Branch>],
+    signs: &[f32],
     delta_abs: f32,
+    coincide_tol: f32,
 ) -> bool {
-    // Welt-Ebenen `(n̂, o, Flächen-AABB)` je Member aus den planaren Carriern.
+    // Welt-Ebenen `(n̂_eff, O_eff, Flächen-AABB)` je Member aus den planaren
+    // Carriern. #397: **sign-bewusst** — die für den Stopp relevante
+    // Orientierung ist die EFFEKTIVE Normale `eff = −sign·n̂` (und der effektive
+    // Offset `O = −sign·o`), mit `sign` aus `flatten_members` (Difference-
+    // Rechtskind trägt −1). In der Erosions-Normalform sind alle Vorzeichen +1,
+    // dann ist `eff = −n̂`, `O = −o`: der gemeinsame Vorzeichen-Flip lässt den
+    // anti-parallel/koinzidenz-Test (Skalarprodukt, |O_i+O_j|) BIT-IDENTISCH —
+    // der Erosions-Pfad ändert sein Verhalten nicht. Am Dilations-Stopp
+    // (De-Morgan-Komplement) macht `eff` aus dem parallel-normalen Difference-
+    // Kontakt (flush cut) einen anti-parallelen — genau den blinden Fleck, den
+    // die WAHRE-Normalen-Fassung nicht sah.
     let planes: Vec<Vec<([f32; 3], f32, Aabb)>> = branch_lists
         .iter()
         .zip(branch_maps.iter())
-        .map(|(bl, map)| {
+        .zip(signs.iter())
+        .map(|((bl, map), &sign)| {
             let mut out = Vec::new();
             for b in bl {
                 let Some((fielddraft_protocol::HalfSpace::Plane { normal, offset }, xf)) =
@@ -1357,15 +1370,19 @@ fn coplanar_interface_present(
                 let wp = crate::transform::quat_rotate(xf.rotation, sp);
                 let wp = [wp[0] + xf.translate[0], wp[1] + xf.translate[1], wp[2] + xf.translate[2]];
                 let wo = dot(wn, wp);
-                out.push((wn, wo, b.aabb));
+                // Effektive (Komplement-)Normale/-Offset.
+                let en = [-sign * wn[0], -sign * wn[1], -sign * wn[2]];
+                let eo = -sign * wo;
+                out.push((en, eo, b.aabb));
             }
             out
         })
         .collect();
 
     // Toleranzen δ-skaliert: ein flächiger Kontakt innerhalb ~½δ ist bereits
-    // der degenerierte Fall (die Kontaktzone liegt im Offset-Band).
-    let coincide_tol = (0.5 * delta_abs).max(1e-3);
+    // der degenerierte Fall (die Kontaktzone liegt im Offset-Band). Die
+    // Koinzidenz-Toleranz kommt vom Aufrufer (der eff-Pfad braucht eine engere
+    // — s. Aufruf-Doku).
     let overlap_min = (0.5 * delta_abs).max(1e-3);
     for i in 0..planes.len() {
         for j in (i + 1)..planes.len() {
@@ -2149,6 +2166,17 @@ fn synthesize_stop(
         .map(|bl| bl.iter().map(|b| b.id.feature_id()).min().unwrap_or(0))
         .collect();
 
+    // Vorzeichen je Member (Normalform) für die sign-bewusste Koplanaritäts-
+    // Heuristik. In `union_form` sind alle +1; ein Difference-Rechtskind am
+    // Dilations-Stopp trägt −1 (De Morgan, `flatten_members`).
+    let signs: Vec<f32> = members.iter().map(|m| m.sign).collect();
+    // Die Heuristik mit WAHREN Carrier-Normalen: alle Vorzeichen +1 ⇒
+    // `eff = −n̂` ⇒ der anti-parallel/koinzident-Test läuft auf die rohen
+    // Carrier-Normalen (Verhalten vor #397). Lockere Koinzidenz 0.5·δ wie
+    // gehabt (bündige Boxen berühren sich mit ~1 ULP).
+    let signs_true: Vec<f32> = vec![1.0; members.len()];
+    let coincide_true = (0.5 * ctx.delta).max(1e-3);
+
     let mut channels: Vec<OffsetChannel> = Vec::new();
     // #395 (Befund F2, Fix): koplanarer submergierter Grenzflächen-Kontakt.
     // Bei EROSION über Union bauen wir das Kontakt-Prisma (Stufe 1) + die
@@ -2163,7 +2191,15 @@ fn synthesize_stop(
     let mut prism_pairs: Vec<(usize, usize)> = Vec::new();
     if union_form {
         // #395 Stufe 1: EROSION über Union — koplanares Kontakt-Prisma als Union-Member.
-        if coplanar_interface_present(&branch_maps, &branch_lists, ctx.delta) {
+        // Erkennung über die rohen Carrier-Normalen (union_form: signs≡+1 ⇒ die
+        // sign-bewusste Fassung ist hier bit-identisch zur Vor-#397-Heuristik).
+        if coplanar_interface_present(
+            &branch_maps,
+            &branch_lists,
+            &signs_true,
+            ctx.delta,
+            coincide_true,
+        ) {
             let mut prism_idx = 0u32;
             let contact = synthesize_contact_prisms(&members, &ctx, &min_feat, &mut prism_idx);
             if contact.prisms.is_empty() {
@@ -2222,14 +2258,46 @@ fn synthesize_stop(
                  bestimmbares Kontaktpolygon (Nicht-Box-Member/degenerierter Verschnitt) — Offset \
                  in der Kontaktzone bleibt Näherung f+δ.",
             );
-        } else if coplanar_interface_present(&branch_maps, &branch_lists, ctx.delta) {
-            // Ehrlichkeits-Fallback (#394): die Prisma-Synthese sieht nur Box-
-            // Member; ein koplanarer/tangentialer Kontakt planarer Nicht-Box-
+        } else if {
+            // Ehrlichkeits-Fallback (#394 + #397): die Prisma-Synthese sieht nur
+            // Box-Member; ein koplanarer/tangentialer Kontakt planarer Nicht-Box-
             // Carrier (Extrude, …) am Dilations-Stopp bliebe sonst STILL ohne
-            // Notiz — vor Stufe 3 meldete genau dieser Zweig conservative.
-            // (Die Heuristik prüft ECHTE Normalen; die parallel-normale
-            // Nicht-Box-Tasche bleibt ein bekannter blinder Fleck — sign-
-            // bewusste Verallgemeinerung ist ein eigener Programmpunkt.)
+            // Notiz. Er wird über ZWEI Erkennungen abgedeckt (OR):
+            //
+            //  (a) WAHRE Carrier-Normalen (signs≡+1, lockere Koinzidenz 0.5·δ):
+            //      der vor #397 bestehende Zweig — anti-parallel-normale Kontakte
+            //      (z. B. berührende Difference, koplanare Intersection).
+            //  (b) EFFEKTIVE Normalen (echte Member-Vorzeichen, ENGE Koinzidenz):
+            //      #397-Verallgemeinerung — die parallel-normale Nicht-Box-Tasche
+            //      (Extrude-flush-cut A−B), deren wahre Normalen parallel, deren
+            //      effektive (De-Morgan-Komplement) aber anti-parallel sind.
+            //
+            // **Dünnwand-Abgrenzung (PFLICHT-Kalibrierung #397):** bei sign-Flip
+            // sehen die zwei Außenflächen einer dünnen Wand (Box/Extrude − kleinere
+            // Box/Extrude, Wandstärke w) effektiv anti-parallel aus, und ihre
+            // Ebenen-Offsets unterscheiden sich um genau w (|O_i+O_j| = w). Mit der
+            // lockeren 0.5·δ-Koinzidenz aus (a) würde jede Wand w < 0.5·δ fälschlich
+            // als koinzidenter submergierter Kontakt gelten → legitime Dünnwände zu
+            // conservative degradiert (nicht akzeptabel). Ein ECHTER submergierter
+            // Kontakt (flush cut) ist dagegen bis auf f32-Transform-Rundung
+            // koinzident (|O_i+O_j| ~1e-4). Die enge Toleranz (0.02·δ, ≥1e-3) trennt
+            // beide sauber: sie fängt die Rundungsklasse, verwirft aber jede Wand
+            // ≥ ~0.3·δ (Kalibrierung δ=2: 0.04 mm ≪ 0.6 mm dünnste getestete Wand).
+            let coincide_eff = (0.02 * ctx.delta).max(1e-3);
+            coplanar_interface_present(
+                &branch_maps,
+                &branch_lists,
+                &signs_true,
+                ctx.delta,
+                coincide_true,
+            ) || coplanar_interface_present(
+                &branch_maps,
+                &branch_lists,
+                &signs,
+                ctx.delta,
+                coincide_eff,
+            )
+        } {
             report.note_conservative(
                 "Koplanarer/tangentialer Kontakt an einem Dilations-Stopp (Intersection/Difference) \
                  ohne Prisma-Korrektur — Offset in der Kontaktzone bleibt Näherung f+δ.",
