@@ -748,6 +748,52 @@ fn eval_bounded_d3_open(
     }
 }
 
+/// Dual-Spiegel von [`crate::offset_rim::apply_rims_f32`] (offset_tree Phase 2,
+/// #398) — analog zum ArcChannel-Dual-Arm. Die Nearest-Feature-Auswahl und die
+/// drei Masken laufen (wie dort `channel_nearest`) auf den f32-Realteilen über
+/// [`crate::offset_rim::select_rim_f32`]; nur der Distanzterm `de = |p − q|`
+/// fließt dual. Der Lotfußpunkt `q` wird als Konstante eingefroren →
+/// `∂de/∂p = (p − q)/de` ist exakt (Enveloppen-Satz), im aktiven Band also
+/// `‖∇‖ = 1` (radiale Einheitsrichtung). Es gibt (noch) keinen
+/// `BoundedCsg::Rim`-Knoten (Emission erst Phase 4), darum ist dies eine
+/// freistehende Funktion für die Phase-2-Paritätstests; der Werte-Kanal
+/// (`.re`) ist identisch zum CPU-Opcode-Pfad.
+// Noch nicht im Regen verdrahtet (kein `BoundedCsg::Rim`-Knoten bis Phase 4) —
+// Phase 4 ruft dies aus einem Rim-Arm von `eval_bounded_d3` auf, analog zum
+// ArcChannel-Arm. Bis dahin nur vom Phase-2-Paritätstest genutzt.
+#[allow(dead_code)]
+pub(crate) fn apply_rims_dual(
+    g: D3,
+    p: [D3; 3],
+    concave: bool,
+    recs: &[crate::offset_rim::RimRecord],
+) -> D3 {
+    let p_re = [p[0].re as f32, p[1].re as f32, p[2].re as f32];
+    let Some((i, q, _de)) = crate::offset_rim::select_rim_f32(p_re, concave, recs) else {
+        return g;
+    };
+    let dq = [
+        p[0] - D3::from(q[0] as f64),
+        p[1] - D3::from(q[1] as f64),
+        p[2] - D3::from(q[2] as f64),
+    ];
+    let de = (dq[0] * dq[0] + dq[1] * dq[1] + dq[2] * dq[2]).sqrt();
+    let delta = D3::from(recs[i].delta as f64);
+    let corr = if concave { delta - de } else { de - delta };
+    // Konkav min(g, corr), konvex max(g, corr) — Selektion auf den Realteilen.
+    if concave {
+        if g.re <= corr.re {
+            g
+        } else {
+            corr
+        }
+    } else if g.re >= corr.re {
+        g
+    } else {
+        corr
+    }
+}
+
 /// Dual retained-boundary leaf SDF: the max over the primitive's RETAINED
 /// half-space faces (mirrors `crate::csg::leaf_sdf_retained`).
 fn eval_leaf_retained_d3(
@@ -1574,6 +1620,59 @@ mod tests {
                 [g[0], g[1], g[2]]
             );
         }
+    }
+
+    #[test]
+    fn rim_dual_value_matches_cpu_and_gradient_is_unit() {
+        // offset_tree Phase 2 (#398): der Dual-Spiegel `apply_rims_dual` hat
+        // denselben Werte-Kanal wie der CPU-Opcode-Pfad, und im aktiven Band
+        // (abseits Masken-/Cap-Rändern) ist ‖∇‖ ≈ 1 (radiale Distanz).
+        use crate::offset_rim::{RimFeature, RimRecord};
+        // Eine Box-Stack-Reflexkante (v=7, x=10, entlang z), konkav, δ=1.
+        let feat = RimFeature {
+            a: [10.0, 7.0, -6.0],
+            b: [10.0, 7.0, 6.0],
+            n_a: [1.0, 0.0, 0.0],
+            n_b: [0.0, 1.0, 0.0],
+            n_c: [0.0; 3],
+            delta: 1.0,
+            trust: 3.0,
+            concave: true,
+        };
+        let recs = [RimRecord::from_feature(&feat)];
+
+        let mut seed = 0x51EDu64;
+        let mut rand = || {
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+            ((seed >> 33) as f64) / (1u64 << 31) as f64
+        };
+        let mut max_val = 0.0f32;
+        let mut max_grad = 0.0f64;
+        for _ in 0..400 {
+            let a_off = 0.15 + 0.35 * rand(); // ∈ (0.15, 0.5)
+            let b_off = 0.15 + 0.35 * rand();
+            let z0 = -3.0 + 6.0 * rand(); // Cap-Inneres (t ∈ [0.25, 0.75])
+            let p = [10.0 - a_off as f32, 7.0 - b_off as f32, z0 as f32];
+            // g so groß, dass min(g, corr) = corr (der Rim gewinnt sicher).
+            let g_active = 1.0e3f32;
+
+            let mut tape = vec![f32::from_bits(crate::sdf_compiler::OP_PRIM_CONST), g_active];
+            crate::sdf_compiler::encode_rim_block(true, &recs, &mut tape);
+            let cpu = crate::sdf_compiler::eval_opcodes(&tape, p);
+
+            let pd = [
+                seed_d3(p[0] as f64, 0),
+                seed_d3(p[1] as f64, 1),
+                seed_d3(p[2] as f64, 2),
+            ];
+            let res = apply_rims_dual(D3::from(g_active as f64), pd, true, &recs);
+            max_val = max_val.max((res.re as f32 - cpu).abs());
+            let ge = res.eps.unwrap_generic(nalgebra::Const::<3>, nalgebra::Const::<1>);
+            let gn = (ge[0] * ge[0] + ge[1] * ge[1] + ge[2] * ge[2]).sqrt();
+            max_grad = max_grad.max((gn - 1.0).abs());
+        }
+        assert!(max_val < 2e-5, "Dual-Wert ≠ CPU-Opcode: max |Δ| = {max_val:.3e}");
+        assert!(max_grad < 1e-3, "Rim-Gradienten-Norm weicht um {max_grad:.3e} von 1 ab");
     }
 
     #[test]

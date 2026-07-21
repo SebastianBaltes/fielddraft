@@ -187,6 +187,135 @@ pub fn apply_rims(g: f64, p: [f64; 3], rims: &[RimFeature]) -> f64 {
     }
 }
 
+// ─── f32-Opcode-Form (offset_tree Phase 2, #398) ─────────────────────────────
+
+#[inline]
+fn sub32(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
+    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
+}
+#[inline]
+fn dot32(a: [f32; 3], b: [f32; 3]) -> f32 {
+    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+}
+#[inline]
+fn norm32(a: [f32; 3]) -> f32 {
+    dot32(a, a).sqrt()
+}
+
+/// f32-Record EINES Rand-Fillet-Features, wie ihn der Opcode-Strom trägt: die
+/// verlustbehaftete f32-Projektion eines [`RimFeature`]. `concave` ist NICHT
+/// Teil des Records — es ist pro Offset-Stopp homogen (die Nearest-Feature-
+/// Komposition mischt konkav/konvex nie innerhalb eines Stopps) und steht im
+/// Block-Header. Ein Record ist genau ein maskiertes Kanten- oder Ecken-Feature;
+/// die punkt-abhängige Nearest-Feature-Auswahl wird erst zur Auswertung
+/// aufgelöst.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RimRecord {
+    pub a: [f32; 3],
+    pub b: [f32; 3],
+    pub n_a: [f32; 3],
+    pub n_b: [f32; 3],
+    pub n_c: [f32; 3],
+    pub delta: f32,
+    pub trust: f32,
+}
+
+impl RimRecord {
+    /// f32-Projektion eines Welt-f64-[`RimFeature`]. `concave` wandert (homogen
+    /// je Stopp) in den Block-Header und ist hier nicht Teil des Records.
+    pub fn from_feature(f: &RimFeature) -> RimRecord {
+        let c = |v: [f64; 3]| [v[0] as f32, v[1] as f32, v[2] as f32];
+        RimRecord {
+            a: c(f.a),
+            b: c(f.b),
+            n_a: c(f.n_a),
+            n_b: c(f.n_b),
+            n_c: c(f.n_c),
+            delta: f.delta as f32,
+            trust: f.trust as f32,
+        }
+    }
+}
+
+/// Radialdistanz + (geklemmter) Lotfußpunkt `q` + (ungeklemmter) Parameter `t`.
+/// f32-Spiegel von [`RimFeature::closest_t`].
+fn rim_closest_t(rec: &RimRecord, p: [f32; 3]) -> (f32, [f32; 3], f32) {
+    let d = sub32(rec.b, rec.a);
+    let len2 = dot32(d, d);
+    if len2 < 1e-24 {
+        return (norm32(sub32(p, rec.a)), rec.a, 0.0);
+    }
+    let t_raw = dot32(sub32(p, rec.a), d) / len2;
+    let t = t_raw.clamp(0.0, 1.0);
+    let q = [rec.a[0] + d[0] * t, rec.a[1] + d[1] * t, rec.a[2] + d[2] * t];
+    (norm32(sub32(p, q)), q, t_raw)
+}
+
+/// Nearest-Feature-Auswahl (f32) — das maskierte Feature mit kleinster
+/// Kanten-Distanz. Masken exakt wie [`RimFeature::value`] (Trust, End-Caps
+/// `t ∈ [0, 1]` strikt mit `cap_eps = 1e-6`, Wand-Halbräume mit `eps = 1e-9`,
+/// ungenutzte `n_c = [0; 3]` → Maske true). Bei Gleichstand gewinnt der ERSTE
+/// Kandidat (wie [`apply_rims`]). Rückgabe: (Index, Lotfußpunkt `q`,
+/// Kanten-Distanz `de`). Anker sowohl für den CPU-Opcode als auch für den
+/// Dual-Spiegel (`sdf_dual::apply_rims_dual`).
+pub fn select_rim_f32(
+    p: [f32; 3],
+    concave: bool,
+    recs: &[RimRecord],
+) -> Option<(usize, [f32; 3], f32)> {
+    let mut best: Option<(usize, [f32; 3], f32)> = None;
+    for (i, rec) in recs.iter().enumerate() {
+        let (de, q, t) = rim_closest_t(rec, p);
+        if de > rec.trust {
+            continue;
+        }
+        let seg = norm32(sub32(rec.b, rec.a));
+        if seg > 1e-9 {
+            let cap_eps = 1e-6;
+            if t < -cap_eps || t > 1.0 + cap_eps {
+                continue;
+            }
+        }
+        let dq = sub32(p, q);
+        let eps = 1e-9;
+        let side = |n: [f32; 3]| -> bool {
+            if norm32(n) < 0.5 {
+                return true; // ungenutzte dritte Wand
+            }
+            if concave {
+                dot32(dq, n) <= eps
+            } else {
+                dot32(dq, n) >= -eps
+            }
+        };
+        if !(side(rec.n_a) && side(rec.n_b) && side(rec.n_c)) {
+            continue;
+        }
+        match best {
+            Some((_, _, bd)) if bd <= de => {}
+            _ => best = Some((i, q, de)),
+        }
+    }
+    best
+}
+
+/// f32-Spiegel von [`apply_rims`] — die Referenz für den CPU-Opcode-Decode.
+/// Konkav: `min(g, δ − de_nearest)`; konvex: `max(g, de_nearest − δ)`. Leerer
+/// Satz oder kein maskiertes Feature ⇒ `g` unverändert.
+pub fn apply_rims_f32(g: f32, p: [f32; 3], concave: bool, recs: &[RimRecord]) -> f32 {
+    match select_rim_f32(p, concave, recs) {
+        Some((i, _, de)) => {
+            let d = recs[i].delta;
+            if concave {
+                g.min(d - de)
+            } else {
+                g.max(de - d)
+            }
+        }
+        None => g,
+    }
+}
+
 // ─── Synthese ───────────────────────────────────────────────────────────────
 
 /// Wie eine ∂P-Kante zur Kontur des Kontakt-Members steht.
@@ -597,6 +726,142 @@ mod tests {
         assert!((norm(vx.n_a) - 1.0).abs() < 1e-9);
         assert!((norm(vx.n_b) - 1.0).abs() < 1e-9);
         assert!((norm(vx.n_c) - 1.0).abs() < 1e-9, "n_c (Kontaktwand) gesetzt");
+    }
+
+    // ─── Phase 2: f32-Opcode-Parität ───────────────────────────────────────
+
+    use crate::sdf_compiler::{encode_rim_block, eval_opcodes, OP_PRIM_CONST};
+
+    /// Baut ein Test-Tape `[OP_PRIM_CONST g] ++ OP_RIM_FILLET-Block` und wertet
+    /// es aus (der Rim-Opcode pops g, pusht die Korrektur). KEIN Regen-Pfad.
+    fn eval_rim_tape(g: f32, p: [f32; 3], concave: bool, recs: &[RimRecord]) -> f32 {
+        let mut tape = vec![f32::from_bits(OP_PRIM_CONST), g];
+        encode_rim_block(concave, recs, &mut tape);
+        eval_opcodes(&tape, p)
+    }
+
+    struct Lcg(u64);
+    impl Lcg {
+        fn f(&mut self) -> f32 {
+            self.0 = self.0.wrapping_mul(6364136223846793005).wrapping_add(1);
+            ((self.0 >> 33) as f32) / (1u64 << 31) as f32
+        }
+        fn r(&mut self, lo: f32, hi: f32) -> f32 {
+            lo + (hi - lo) * self.f()
+        }
+    }
+
+    #[test]
+    fn rim_opcode_matches_f32_reference() {
+        // Der eval_opcodes-Decode ist bit-identisch zu `apply_rims_f32`.
+        let clip = clip_axis(true);
+        let mut rims64 = Vec::new();
+        rims_from_clip(&clip, -1.5, &mut rims64);
+        let recs: Vec<RimRecord> = rims64.iter().map(RimRecord::from_feature).collect();
+        assert!(recs.len() >= 4);
+        let mut rng = Lcg(0x1234_5678);
+        for _ in 0..5000 {
+            let p = [rng.r(2.0, 18.0), rng.r(-12.0, 12.0), rng.r(-12.0, 12.0)];
+            let g = rng.r(-5.0, 5.0);
+            let want = apply_rims_f32(g, p, true, &recs);
+            let got = eval_rim_tape(g, p, true, &recs);
+            assert_eq!(
+                got.to_bits(),
+                want.to_bits(),
+                "Opcode ≠ apply_rims_f32 bei p={p:?} g={g}: {got} vs {want}"
+            );
+        }
+    }
+
+    #[test]
+    fn rim_f32_matches_f64_reference() {
+        // f32-Referenz ~ f64-Vertrag `apply_rims` im ∂P-Band (f32-Toleranz).
+        for concave in [true, false] {
+            let clip = clip_axis(concave);
+            let mut rims64 = Vec::new();
+            let ds = if concave { -2.0 } else { 2.0 };
+            rims_from_clip(&clip, ds, &mut rims64);
+            let recs: Vec<RimRecord> = rims64.iter().map(RimRecord::from_feature).collect();
+            let mut rng = Lcg(if concave { 0xAAAA } else { 0xBBBB });
+            let mut max_diff = 0.0f32;
+            for _ in 0..20000 {
+                // Punkte ums Kontaktband x≈10, y∈[−9,9], z∈[−8,8].
+                let p64 = [
+                    rng.r(6.0, 13.0) as f64,
+                    rng.r(-9.0, 9.0) as f64,
+                    rng.r(-8.0, 8.0) as f64,
+                ];
+                let p = [p64[0] as f32, p64[1] as f32, p64[2] as f32];
+                let g = rng.r(-4.0, 4.0);
+                let want = apply_rims(g as f64, p64, &rims64) as f32;
+                let got = apply_rims_f32(g, p, concave, &recs);
+                max_diff = max_diff.max((got - want).abs());
+                // Nie über-/unterfüllen: der Opcode-Wert darf die Referenz feld-
+                // seitig nicht unterschreiten (konkav) bzw. überschreiten
+                // (konvex) — über die f32-Rundung (~1e-3 bei Szenengröße ≤32 mm)
+                // hinaus. Das ist die harte Sicherheits-Invariante.
+                if concave {
+                    assert!(
+                        got >= want - 3e-3,
+                        "konkav underfill: got {got} < want {want} bei p={p:?}"
+                    );
+                } else {
+                    assert!(
+                        got <= want + 3e-3,
+                        "konvex overshoot: got {got} > want {want} bei p={p:?}"
+                    );
+                }
+            }
+            assert!(
+                max_diff < 3e-3,
+                "f32↔f64-Parität ({}) verletzt: max |Δ| = {max_diff:.3e}",
+                if concave { "konkav" } else { "konvex" }
+            );
+        }
+    }
+
+    #[test]
+    fn rim_nearest_feature_rounds_corner() {
+        // Box-Stack-Ecke: zwei benachbarte ∂P-Kanten. An einem Punkt mit
+        // de1 ≠ de2 MUSS die Nearest-Feature-Auswahl das NÄCHSTE Feature nehmen
+        // (δ − min de). Sequenzielles min über beide Terme = δ − max de wäre ein
+        // Fehler (Über-Fill) — der Assert stellt die Rundung sicher.
+        let clip = clip_axis(true);
+        let mut rims64 = Vec::new();
+        rims_from_clip(&clip, -1.0, &mut rims64);
+        let recs: Vec<RimRecord> = rims64.iter().map(RimRecord::from_feature).collect();
+        // Punkt im 3. Quadranten der (v=7,x=10)- und (u=6→z=−6,x=10)-Ecke.
+        let p = [9.7f32, 6.5, -5.6];
+        // Alle maskierten (de, corr = δ − de) sammeln.
+        let mut masked: Vec<(f32, f32)> = Vec::new();
+        for r in &rims64 {
+            if let Some(v) = r.value([p[0] as f64, p[1] as f64, p[2] as f64]) {
+                masked.push((r.closest([p[0] as f64, p[1] as f64, p[2] as f64]).0 as f32, v as f32));
+            }
+        }
+        assert!(masked.len() >= 2, "Ecke braucht ≥2 maskierte Kanten, hat {}", masked.len());
+        let nearest = masked.iter().cloned().fold((f32::INFINITY, 0.0), |acc, x| if x.0 < acc.0 { x } else { acc });
+        let seq_min = masked.iter().map(|&(_, c)| c).fold(f32::INFINITY, f32::min);
+        // Die Nearest-Distanzen der zwei Ecken-Kanten sind verschieden →
+        // Nearest-corr ≠ sequenzielles min.
+        assert!(nearest.1 > seq_min + 0.01, "Ecke degeneriert (min==max): nearest={:?} seq={}", nearest, seq_min);
+        // Große Basis g ⇒ min(g, corr) = corr: der Opcode nimmt die NÄCHSTE.
+        let got = eval_rim_tape(100.0, p, true, &recs);
+        assert!(
+            (got - nearest.1).abs() < 1e-4,
+            "Nearest-Feature verletzt: got {got}, erwartet {} (nicht seq-min {seq_min})",
+            nearest.1
+        );
+    }
+
+    #[test]
+    fn rim_empty_block_is_neutral() {
+        let p = [3.0f32, 4.0, 5.0];
+        for concave in [true, false] {
+            assert_eq!(apply_rims_f32(1.234, p, concave, &[]), 1.234);
+            let got = eval_rim_tape(1.234, p, concave, &[]);
+            assert_eq!(got.to_bits(), 1.234f32.to_bits(), "leerer Block muss neutral sein");
+        }
     }
 
     #[test]

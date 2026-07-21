@@ -93,6 +93,18 @@ pub const OP_ARC_CHANNEL: u32    = 0x41; // +9+27N
 //   g1(3) + g2(3) + g3(3).
 pub const OP_VERTEX_SPHERE: u32  = 0x42; // +16
 
+// offset_tree Phase 2 (#398): Rand-Fillet an den ∂P-Reflexkanten des
+// Kontakt-Prismas — pops den naiven (Prisma-)Stopp-Wert g, pusht die
+// Nearest-Feature-korrigierte Distanz (CPU-Referenz:
+// `offset_rim::apply_rims_f32`; f64-Vertrag: `offset_rim::apply_rims`).
+// Header (2): n_features(1) + concave(1; 0/1, homogen je Stopp).
+// je Feature (17 = RIM_STRIDE): a(3) b(3) n_a(3) n_b(3) n_c(3) delta(1) trust(1);
+//   ein Record = f32-Projektion EINES `offset_rim::RimFeature` (ohne concave).
+// Wird in Phase 2 NICHT im Regen emittiert (nur Tests konstruieren Blöcke) —
+// das ausgelieferte Feld bleibt bit-identisch; Phase 4 schaltet die Emission
+// scharf, sobald alle Evaluator-Spiegel (WGSL/TSL/CGAL/fidget) stehen.
+pub const OP_RIM_FILLET: u32     = 0x43; // +2+17N
+
 pub const OP_END: u32            = 0xFF;
 
 // ── Compiled output ────────────────────────────────────────────────
@@ -334,6 +346,29 @@ pub(crate) fn lipschitz_bound(node: &BoundedCsg) -> f32 {
 
 fn op(tag: u32) -> f32 {
     f32::from_bits(tag)
+}
+
+/// Stride EINES Rand-Fillet-Records im `OP_RIM_FILLET`-Block (offset_tree
+/// Phase 2, #398): `a(3) b(3) n_a(3) n_b(3) n_c(3) delta(1) trust(1)`.
+pub const RIM_STRIDE: usize = 17;
+
+/// Hängt EINEN `OP_RIM_FILLET`-Block (Header + Records) an `out` an — analog
+/// zur Kanal-Emission, aber NICHT im Regen-Pfad aufgerufen (Phase 2: nur
+/// Tests). `concave` ist homogen je Offset-Stopp (Header). Der Decode-Spiegel
+/// ist der `OP_RIM_FILLET`-Arm in [`eval_opcodes`].
+pub fn encode_rim_block(concave: bool, recs: &[crate::offset_rim::RimRecord], out: &mut Vec<f32>) {
+    out.push(op(OP_RIM_FILLET));
+    out.push(recs.len() as f32);
+    out.push(if concave { 1.0 } else { 0.0 });
+    for r in recs {
+        out.extend_from_slice(&r.a);
+        out.extend_from_slice(&r.b);
+        out.extend_from_slice(&r.n_a);
+        out.extend_from_slice(&r.n_b);
+        out.extend_from_slice(&r.n_c);
+        out.push(r.delta);
+        out.push(r.trust);
+    }
 }
 
 fn blend_mode_f32(m: BlendMode) -> f32 {
@@ -1885,6 +1920,89 @@ pub fn eval_opcodes_with_volumes(
                     }
                 } else {
                     d.max(w)
+                });
+            }
+
+            // ── Rand-Fillet (offset_tree Phase 2, #398) ────
+            // 1:1-Spiegel von `offset_rim::apply_rims_f32` auf dem Opcode-Strom:
+            // Nearest-Feature-Komposition (kleinste Kanten-Distanz gewinnt, bei
+            // Gleichstand der ERSTE Kandidat), δ−de konkav / de−δ konvex, mit den
+            // drei Masken der f64-Referenz (Trust; End-Caps t∈[0,1] strikt mit
+            // cap_eps 1e-6; Wand-Halbräume mit eps 1e-9; ungenutzte n_c=[0;3]
+            // → Maske true). Pops g, pusht die korrigierte Distanz.
+            OP_RIM_FILLET => {
+                let n = rd!() as usize;
+                let concave = rd!() > 0.5;
+                let rim_base = pc;
+                pc += n * RIM_STRIDE;
+                let g = pop_v!();
+                let v3 = |i: usize| [opcodes[i], opcodes[i + 1], opcodes[i + 2]];
+                let dot3 = |a: [f32; 3], b: [f32; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+                let dist3 = |a: [f32; 3], b: [f32; 3]| {
+                    ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt()
+                };
+                let mut best_de = f32::INFINITY;
+                let mut best_corr = 0.0f32;
+                for k in 0..n {
+                    let b = rim_base + k * RIM_STRIDE;
+                    let ra = v3(b);
+                    let rb = v3(b + 3);
+                    let n_a = v3(b + 6);
+                    let n_b = v3(b + 9);
+                    let n_c = v3(b + 12);
+                    let delta = opcodes[b + 15];
+                    let trust = opcodes[b + 16];
+                    // closest_t: geklemmter Lotfußpunkt q, ungeklemmter Parameter t.
+                    let d = [rb[0] - ra[0], rb[1] - ra[1], rb[2] - ra[2]];
+                    let len2 = dot3(d, d);
+                    let (de, q, t) = if len2 < 1e-24 {
+                        (dist3(pt, ra), ra, 0.0)
+                    } else {
+                        let t_raw = ((pt[0] - ra[0]) * d[0]
+                            + (pt[1] - ra[1]) * d[1]
+                            + (pt[2] - ra[2]) * d[2])
+                            / len2;
+                        let tc = t_raw.clamp(0.0, 1.0);
+                        let q = [ra[0] + d[0] * tc, ra[1] + d[1] * tc, ra[2] + d[2] * tc];
+                        (dist3(pt, q), q, t_raw)
+                    };
+                    if de > trust {
+                        continue;
+                    }
+                    let seg = dist3(rb, ra);
+                    if seg > 1e-9 && (t < -1e-6 || t > 1.0 + 1e-6) {
+                        continue;
+                    }
+                    let dq = [pt[0] - q[0], pt[1] - q[1], pt[2] - q[2]];
+                    let side = |nn: [f32; 3]| -> bool {
+                        if dist3(nn, [0.0; 3]) < 0.5 {
+                            return true; // ungenutzte dritte Wand
+                        }
+                        let s = dot3(dq, nn);
+                        if concave {
+                            s <= 1e-9
+                        } else {
+                            s >= -1e-9
+                        }
+                    };
+                    if !(side(n_a) && side(n_b) && side(n_c)) {
+                        continue;
+                    }
+                    // Nearest-Feature: strikt kleineres de gewinnt (Gleichstand
+                    // → erster Kandidat, wie `apply_rims`).
+                    if de < best_de {
+                        best_de = de;
+                        best_corr = if concave { delta - de } else { de - delta };
+                    }
+                }
+                push_v!(if best_de.is_finite() {
+                    if concave {
+                        g.min(best_corr)
+                    } else {
+                        g.max(best_corr)
+                    }
+                } else {
+                    g
                 });
             }
 

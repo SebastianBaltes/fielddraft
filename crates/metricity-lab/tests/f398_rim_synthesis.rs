@@ -26,7 +26,10 @@ use fielddraft_kernel::offset_capability::CapabilityReport;
 use fielddraft_kernel::offset_channel::{
     prune_dead_channels, synthesize_offset_channels_reported, CHANNEL_TOL_RENDER,
 };
-use fielddraft_kernel::offset_rim::{apply_rims, synthesize_rim_features_for_tree, RimFeature};
+use fielddraft_kernel::offset_rim::{
+    apply_rims, synthesize_rim_features_for_tree, RimFeature, RimRecord,
+};
+use fielddraft_kernel::sdf_compiler::{encode_rim_block, eval_opcodes, OP_PRIM_CONST};
 use fielddraft_protocol::{FeatureId, Primitive, Transform};
 
 use metricity_lab::field::{CsgField, Field, FnField};
@@ -253,6 +256,109 @@ fn run_scene(s: &Scene, grid: usize, probe: usize) {
     }
     // Over-Fill exakt 0 (bis auf GT-/f32-Rauschen).
     assert!(overfill < 0.05 * da + 0.02, "{} δ={}: Over-Fill {:.4} zu groß", s.name, s.delta, overfill);
+}
+
+// ─── Phase 2: CPU-Opcode-Parität gegen die f64-Referenz ─────────────────────
+
+/// Wertet den `OP_RIM_FILLET`-Opcode auf `g` aus (Tape `[CONST g] ++ Block`).
+/// KEIN Regen-Pfad — nur der Test konstruiert das Tape.
+fn eval_rim_opcode(g: f32, p: [f32; 3], concave: bool, recs: &[RimRecord]) -> f32 {
+    let mut tape = vec![f32::from_bits(OP_PRIM_CONST), g];
+    encode_rim_block(concave, recs, &mut tape);
+    eval_opcodes(&tape, p)
+}
+
+/// Parität des f32-Opcodes gegen den f64-Vertrag `apply_rims` auf den
+/// SYNTHETISIERTEN Features der Phase-1-Szenen. Zwei Invarianten je Szene:
+/// (1) `max |Opcode − Referenz|` im ∂P-Band unter f32-Toleranz;
+/// (2) KEINE Über-Fill: der Opcode-Wert unterschreitet (konkav) bzw.
+///     überschreitet (konvex) die Referenz nie über die f32-Rundung hinaus —
+///     besonders an den Masken-/Cap-Rändern (gezielt ±1e-5 um die Halbraum-
+///     Grenzen an Π geprobt).
+fn parity_scene(s: &Scene) {
+    let (field, _report) = compile_prism_field(&s.node);
+    let root = folded_root(&s.node);
+    let rims = synthesize_rim_features_for_tree(&root);
+    assert!(!rims.is_empty(), "{}: Synthese lieferte keine Features", s.name);
+    let recs: Vec<RimRecord> = rims.iter().map(RimRecord::from_feature).collect();
+    let concave = s.delta < 0.0;
+    let da = s.delta.abs() as f64;
+
+    let fa = field.aabb();
+    let lo = [fa.min[0] as f64 - 1.0, fa.min[1] as f64 - 1.0, fa.min[2] as f64 - 1.0];
+    let hi = [fa.max[0] as f64 + 1.0, fa.max[1] as f64 + 1.0, fa.max[2] as f64 + 1.0];
+
+    let mut rng = SplitMix64::new(0xF398 ^ (da.to_bits()));
+    let mut samples: Vec<[f64; 3]> = Vec::new();
+    // (a) ∂P-Band-Samples: nahe der Reflexkurve, im Korrektur-Band.
+    let mut tries = 0;
+    while samples.len() < 6000 && tries < 400_000 {
+        tries += 1;
+        let p = [
+            lo[0] + (hi[0] - lo[0]) * (rng.next_u64() as f64 / u64::MAX as f64),
+            lo[1] + (hi[1] - lo[1]) * (rng.next_u64() as f64 / u64::MAX as f64),
+            lo[2] + (hi[2] - lo[2]) * (rng.next_u64() as f64 / u64::MAX as f64),
+        ];
+        if near_rim_dist(p, &rims) < 1.4 * da {
+            samples.push(p);
+        }
+    }
+    // (b) Masken-Rand-Proben, in ECHTER Bandgeometrie verankert: für jeden
+    //     bereits maskiert-aktiven Band-Punkt zusätzlich ±1e-5 entlang der
+    //     Wand-Normalen der aktiven Kante — das kreuzt die Halbraum-Grenze
+    //     ⟨p−q, n̂⟩ = 0 genau dort, wo δ−de ≈ g (Design §4.3). Die f32-Rundung
+    //     darf die Maske verschieben, aber nie überfüllen.
+    let band0 = samples.clone();
+    for &p in band0.iter().take(1500) {
+        for r in &rims {
+            if r.value(p).is_none() {
+                continue;
+            }
+            for &n in &[r.n_a, r.n_b, r.n_c] {
+                if norm(n) < 0.5 {
+                    continue;
+                }
+                for &e in &[-1e-5, 1e-5] {
+                    samples.push([p[0] + e * n[0], p[1] + e * n[1], p[2] + e * n[2]]);
+                }
+            }
+        }
+    }
+
+    let mut max_diff = 0.0f64;
+    let mut max_overfill = 0.0f64;
+    for &p in &samples {
+        let pf = [p[0] as f32, p[1] as f32, p[2] as f32];
+        let g = field.sdf(pf, EvalMode::Visual);
+        let want = apply_rims(g as f64, p, &rims);
+        let got = eval_rim_opcode(g, pf, concave, &recs) as f64;
+        max_diff = max_diff.max((got - want).abs());
+        // Über-Fill = Feld-seitiges Unterschreiten (konkav) / Überschreiten (konvex).
+        let of = if concave { want - got } else { got - want };
+        max_overfill = max_overfill.max(of);
+    }
+    eprintln!(
+        "[{:>15} δ={:+.1}] rims={} parity max|Δ|={:.2e}  max-overfill={:.2e}",
+        s.name, s.delta, rims.len(), max_diff, max_overfill
+    );
+    // f32-Toleranz bei Szenengröße ≤ ~34 mm: ~1e-4; Masken-Flips an Π sind
+    // wertstetig (δ−de = g) → kein Sprung. Großzügige, aber harte Schranke.
+    assert!(max_diff < 5e-4, "{}: Opcode↔f64 max|Δ| {:.3e} zu groß", s.name, max_diff);
+    // Über-Fill nur bis zur f32-Rundung (nie strukturell).
+    assert!(max_overfill < 5e-4, "{}: Opcode überfüllt um {:.3e}", s.name, max_overfill);
+}
+
+#[test]
+fn f398_rim_opcode_parity() {
+    eprintln!("=== #398 Phase 2 — Opcode↔f64-Parität ===");
+    for &d in &[0.5f64, 1.0, 2.0] {
+        parity_scene(&scene_box_stack(d, None));
+    }
+    parity_scene(&scene_box_stack(1.0, Some(quat_axis_angle([0.3, 1.0, 0.5], 0.7))));
+    parity_scene(&scene_box_stack(2.0, Some(quat_axis_angle([0.3, 1.0, 0.5], 0.7))));
+    for &d in &[1.0f64, 2.0, 4.0] {
+        parity_scene(&scene_flush_pocket(d));
+    }
 }
 
 #[test]
