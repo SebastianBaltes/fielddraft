@@ -76,9 +76,9 @@ Zielgenauigkeit: Nullstellenmenge des Offsets auf Kurventoleranz
 
 ## 4. Pass-Pipeline
 
-Regen-Pfad nach vollem Ausbau (heute produktiv bis einschließlich
-Phase C / Pruning + Vertex-Kugeln + Weave-/Pick-Expansion, v0.16.8;
-offen ist Phase D, die Feature-Ebene):
+Regen-Pfad nach vollem Ausbau (heute produktiv KOMPLETT, Phasen A–D,
+v0.17.3; geschlossene Shells laufen seit D2 zusätzlich durch
+`expand_shells` unmittelbar vor `push_down_offsets`):
 
 ```mermaid
 graph TD
@@ -304,18 +304,27 @@ Regressionen unverändert grün.
 
 ## 8. Phase D — UI/Feature-Ebene
 
-**Status: teilweise umgesetzt.** D1 — das **Offset-Feature** (±δ, scoped)
+**Status: KOMPLETT umgesetzt.** D1 — das **Offset-Feature** (±δ, scoped)
 ist produktiv in v0.17.0 (`crates/kernel/src/features/offset.rs`,
 Sentinel `Offset(Empty, δ)` → `csg::wrap_offset` in `from_decoded`,
 wasm-Export `addOffset`, Toolbar-Button, schema-getriebener Dialog).
 D4 — **Twist/Bend im Offset-Scope → Feature-Fehler** statt stillem f−δ —
 ist produktiv in v0.17.1 (`CsgNode::contains_warp`, Guard in
-`OffsetFeature::execute` über die Partition des Zielkörpers). Shell trägt
-den Guard erst mit D2, weil sein heutiger Feld-Modifier `max(d,−(d+t))`
-auf verdrehten Körpern gültig bleibt.
-Offen: D2 (Shell-Backend von `max(d,−(d+t))` auf die Expansion
-S−Offset(S,−t) umstellen). Shell bleibt bis dahin der heutige
-Feld-Modifier.
+`OffsetFeature::execute` über die Partition des Zielkörpers).
+D5 — Real-WebGPU-Sichttest — bestanden in v0.17.2 (deckte den
+`static_kind_name`-Bug des Offset-Features auf, dort mitgefixt).
+D2 — **Shell via Komplement-Dualität** — produktiv in v0.17.3
+(`CsgNode::expand_shells` vor `push_down_offsets` in allen drei
+Baupfaden): GESCHLOSSENE Shells expandieren zu
+`Difference(S, InnerWall(Offset(S, −t)))`; nach `fold_offset_leaves`
+ist die Innenwand metrisch exakt. `CsgNode::InnerWall` ist im Feld
+transparent und remappt nur die Contributors der Höhle via
+`mapped_inner()` ins DL-75-Inner-Wall-Band (kein neuer Distanz-Opcode,
+GPU-TSL/CGAL unberührt). OFFENE Shells behalten bewusst den Feld-Pfad
+(`OFFSET_2D` + `DIFFERENCE`-Lowering) — der per-Teilfläche maskierte
+`d_ret`-Anteil ist nicht sauber dualisierbar; das ist die dokumentierte
+Ausnahme, KEIN stiller Fallback. Twist/Bend-Guard gilt seit D2 auch
+für Shell.
 
 * **Feature „Offset"** (±δ, ein Wert) und **Feature „Shell"**
   (Wandstärke t, optional offene Faces — ersetzt langfristig den heutigen
