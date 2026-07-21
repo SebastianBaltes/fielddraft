@@ -9,7 +9,8 @@
 
 use fielddraft_kernel::bvh::BoundedCsg;
 use fielddraft_kernel::csg::{BlendMode, BranchId, CsgNode, DecodedFeature, OpenSurface, PrimitiveModifiers};
-use fielddraft_kernel::sdf_compiler::{compile_body, eval_opcodes};
+use fielddraft_kernel::offset_rim::{synthesize_rim_features_for_tree, RimRecord};
+use fielddraft_kernel::sdf_compiler::{compile_body, encode_rim_block, eval_opcodes, OP_END};
 use fielddraft_protocol::sketch2d::{Sketch2d, Sketch2dPrimitive, SketchSegment};
 use fielddraft_protocol::{BoolOp, FeatureId, Primitive, SdfExprOp, Transform};
 
@@ -65,6 +66,52 @@ fn emit(name: &str, bvh: &BoundedCsg, pts: &[[f32; 3]]) {
     for &p in pts {
         let d = eval_opcodes(&compiled.opcodes, p);
         // hex-float-ish: print with full f32 precision via {:e}
+        println!("PT {} {} {} {}", p[0], p[1], p[2], d);
+    }
+    println!("END");
+}
+
+/// Rand-Fillet-Golden (#398 Phase 3): Emission ist im Regen-Pfad AUS, also
+/// wird das Tape HIER von Hand gebaut — Basisfeld `base` (kompiliert, ohne das
+/// abschließende `OP_END`) plus ein `OP_RIM_FILLET`-Block, den die echte
+/// Synthese aus dem gefalteten Offset-Baum ableitet. So trägt der Strom die
+/// Produktions-Payloads, und der C++-Interpreter wird gegen `eval_opcodes`
+/// (den Rust-Autoritäts-Decode) geprüft. `concave = delta < 0` (Erosion).
+fn emit_rim(name: &str, base: &BoundedCsg, offset_node: &CsgNode, concave: bool, pts: &[[f32; 3]]) {
+    let folded = offset_node
+        .clone()
+        .expand_shells()
+        .push_down_offsets()
+        .fold_offset_leaves();
+    let root = BoundedCsg::from_csg(&folded);
+    let rims = synthesize_rim_features_for_tree(&root);
+    assert!(!rims.is_empty(), "golden {name}: Synthese lieferte keine Rim-Features");
+    let recs: Vec<RimRecord> = rims.iter().map(RimRecord::from_feature).collect();
+
+    let compiled = compile_body(base);
+    let mut ops = compiled.opcodes;
+    let end = ops.pop();
+    assert_eq!(
+        end.map(f32::to_bits),
+        Some(OP_END),
+        "golden {name}: Basis-Tape endet nicht auf OP_END"
+    );
+    encode_rim_block(concave, &recs, &mut ops);
+    ops.push(f32::from_bits(OP_END));
+
+    println!("SCENE {name}");
+    let a = &compiled.aabb;
+    println!(
+        "AABB {} {} {} {} {} {}",
+        a.min[0], a.min[1], a.min[2], a.max[0], a.max[1], a.max[2]
+    );
+    println!("NOPS {}", ops.len());
+    for op in &ops {
+        println!("OP {:08x}", op.to_bits());
+    }
+    println!("NPTS {}", pts.len());
+    for &p in pts {
+        let d = eval_opcodes(&ops, p);
         println!("PT {} {} {} {}", p[0], p[1], p[2], d);
     }
     println!("END");
@@ -742,4 +789,55 @@ fn main() {
         "golden contact_prism_pocket_dilation: kein Difference-Prisma synthetisiert"
     );
     emit("contact_prism_pocket_dilation", &bvh, &pts);
+
+    // ── Rand-Fillet (OP_RIM_FILLET, offset_tree Phase 3, #398) ─────────
+    // Emission ist im Regen-Pfad noch AUS; das Tape wird in `emit_rim` von
+    // Hand aus Basisfeld + synthetisiertem Rim-Block gebaut. Zwei Szenen für
+    // beide Vorzeichen-Zweige: Box-Stack-Erosion (−δ, konkav → δ−de) und
+    // bündige Tasche unter Dilation (+δ, konvex → de−δ). Beide durch die
+    // echte `synthesize_rim_features_for_tree`, damit der Strom exakt die
+    // Produktions-Payloads (a,b,n_a,n_b,n_c,δ,trust) trägt.
+    let rim_box_stack = |delta_abs: f32| -> (BoundedCsg, CsgNode) {
+        let he_a = [10.0f32, 10.0, 10.0];
+        let he_b = [8.0f32, 7.0, 6.0];
+        let bx = he_a[0] + he_b[0];
+        let a_leaf = CsgNode::Leaf {
+            id: FeatureId::from_u32(1),
+            primitive: Primitive::Box { center: [0.0; 3], half_extents: he_a },
+        };
+        let b_leaf = CsgNode::Transform(
+            xform([bx, 0.0, 0.0], id, s1),
+            Box::new(CsgNode::Leaf {
+                id: FeatureId::from_u32(2),
+                primitive: Primitive::Box { center: [0.0; 3], half_extents: he_b },
+            }),
+        );
+        let base = CsgNode::Union(Box::new(a_leaf), Box::new(b_leaf));
+        let node = CsgNode::Offset(Box::new(base.clone()), -delta_abs);
+        (BoundedCsg::from_csg(&base), node)
+    };
+    let (base, node) = rim_box_stack(1.5);
+    emit_rim("rim_box_stack", &base, &node, true, &pts);
+
+    let rim_flush_pocket = |delta_abs: f32| -> (BoundedCsg, CsgNode) {
+        let ha = [16.0f32, 16.0, 16.0];
+        let (pdx, py, pz) = (10.0f32, 7.0, 6.0);
+        let a = CsgNode::Leaf {
+            id: FeatureId::from_u32(1),
+            primitive: Primitive::Box { center: [0.0; 3], half_extents: ha },
+        };
+        let bcx = ha[0] - pdx;
+        let b = CsgNode::Transform(
+            xform([bcx, 0.0, 0.0], id, s1),
+            Box::new(CsgNode::Leaf {
+                id: FeatureId::from_u32(2),
+                primitive: Primitive::Box { center: [0.0; 3], half_extents: [pdx, py, pz] },
+            }),
+        );
+        let base = CsgNode::Difference(Box::new(a), Box::new(b));
+        let node = CsgNode::Offset(Box::new(base.clone()), delta_abs);
+        (BoundedCsg::from_csg(&base), node)
+    };
+    let (base, node) = rim_flush_pocket(2.0);
+    emit_rim("rim_flush_pocket", &base, &node, false, &pts);
 }

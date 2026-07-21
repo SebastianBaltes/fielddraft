@@ -108,6 +108,13 @@ inline int payload_len(const float* buf, int n, uint32_t tag, int pc) {
       return 9 + 27 * np;
     }
     case OP_VERTEX_SPHERE: return 16;
+    case OP_RIM_FILLET: {
+      // Header n(1) concave(1), je Record 17 Floats (offset_tree Phase 3,
+      // #398) — variable Laenge wie ArcChannel/MaskedBlend.
+      if (pc >= n) return -1;
+      int np = (int)buf[pc];
+      return 2 + 17 * np;
+    }
     case OP_END: return 0;
     default: return -1;
   }
@@ -128,6 +135,7 @@ inline int value_pops(uint32_t tag) {
     case OP_SHELL:
     case OP_ARC_CHANNEL:
     case OP_VERTEX_SPHERE:
+    case OP_RIM_FILLET:
     case OP_DISPLACE_VAL:
     case OP_EXTRUDE:
     case OP_REVOLVE_SCALE:

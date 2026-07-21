@@ -65,6 +65,11 @@ export const OP_ARC_CHANNEL    = 0x41;
 // offset_tree Phase C4 (#384): Vertex-Kugel an einer Triple-Junction.
 // Payload (16): concave, delta, trust, gate, v(3), g1(3), g2(3), g3(3).
 export const OP_VERTEX_SPHERE  = 0x42;
+// offset_tree Phase 3 (#398): Rand-Fillet an ∂P-Kanten — pops den naiven
+// Offset-Stopp, pusht die korrigierte Distanz (Nearest-Feature). Header
+// n(1) concave(1), je Record 17 Floats: a(3) b(3) n_a(3) n_b(3) n_c(3)
+// delta(1) trust(1). Spiegel von `kernel/src/offset_rim.rs::apply_rims_f32`.
+export const OP_RIM_FILLET     = 0x43;
 
 export const OP_END            = 0xFF;
 

@@ -70,6 +70,7 @@ enum : uint32_t {
   OP_MASKED_BLEND   = 0x40,
   OP_ARC_CHANNEL    = 0x41,
   OP_VERTEX_SPHERE  = 0x42,
+  OP_RIM_FILLET     = 0x43,
 
   OP_END            = 0xFF,
 };
@@ -1251,6 +1252,80 @@ inline float eval_opcodes(const float* opcodes, int n, float wx, float wy,
                    ? (w > 0.0f ? fminf_(d, -w)
                                : (w_geo <= 0.0f ? fminf_(d, -w_geo) : d))
                    : fmaxf_(d, w));
+        break;
+      }
+
+      case OP_RIM_FILLET: {
+        // offset_tree Phase 3 (#398): Rand-Fillet an ∂P-Kanten — 1:1-Spiegel
+        // des Rust-CPU-Interpreters (sdf_compiler.rs OP_RIM_FILLET /
+        // offset_rim::apply_rims_f32). Nearest-Feature-Komposition: strikt
+        // kleinstes de gewinnt (Gleichstand → erster Kandidat), delta-de
+        // konkav / de-delta konvex, mit den drei Masken der Referenz — Trust
+        // (de <= trust), End-Caps (t in [0,1] strikt, cap_eps 1e-6, nur wenn
+        // seg > 1e-9) und Wand-Halbraeume (eps 1e-9; ungenutzte n_c mit
+        // Norm < 0.5 -> Maske true). Header n(1) concave(1), je Record 17
+        // Floats: a(3) b(3) n_a(3) n_b(3) n_c(3) delta(1) trust(1).
+        const int kRim = 17;
+        int n = (int)rd();
+        bool concave = rd() > 0.5f;
+        int base = pc;
+        pc += n * kRim;
+        float g = pop_v();
+        float best_de = FD_FLT_MAX;
+        float best_corr = 0.0f;
+        for (int k = 0; k < n; ++k) {
+          const float* rec = opcodes + base + k * kRim;
+          const float* ra = rec + 0;
+          const float* rb = rec + 3;
+          const float* n_a = rec + 6;
+          const float* n_b = rec + 9;
+          const float* n_c = rec + 12;
+          float delta = rec[15];
+          float trust = rec[16];
+          // closest_t: geklemmter Lotfusspunkt q, ungeklemmter Parameter t.
+          float d[3] = {rb[0] - ra[0], rb[1] - ra[1], rb[2] - ra[2]};
+          float len2 = d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
+          float de, q[3], t;
+          if (len2 < 1e-24f) {
+            q[0] = ra[0]; q[1] = ra[1]; q[2] = ra[2];
+            t = 0.0f;
+            de = std::sqrt(sq_(pt[0] - ra[0]) + sq_(pt[1] - ra[1]) +
+                           sq_(pt[2] - ra[2]));
+          } else {
+            float t_raw = ((pt[0] - ra[0]) * d[0] + (pt[1] - ra[1]) * d[1] +
+                           (pt[2] - ra[2]) * d[2]) / len2;
+            float tc = clampf_(t_raw, 0.0f, 1.0f);
+            q[0] = ra[0] + d[0] * tc;
+            q[1] = ra[1] + d[1] * tc;
+            q[2] = ra[2] + d[2] * tc;
+            de = std::sqrt(sq_(pt[0] - q[0]) + sq_(pt[1] - q[1]) +
+                           sq_(pt[2] - q[2]));
+            t = t_raw;
+          }
+          if (de > trust) continue;
+          float seg = std::sqrt(sq_(rb[0] - ra[0]) + sq_(rb[1] - ra[1]) +
+                                sq_(rb[2] - ra[2]));
+          if (seg > 1e-9f && (t < -1e-6f || t > 1.0f + 1e-6f)) continue;
+          float dq[3] = {pt[0] - q[0], pt[1] - q[1], pt[2] - q[2]};
+          auto side = [&](const float* nn) -> bool {
+            if (std::sqrt(sq_(nn[0]) + sq_(nn[1]) + sq_(nn[2])) < 0.5f)
+              return true;  // ungenutzte dritte Wand
+            float s = dq[0] * nn[0] + dq[1] * nn[1] + dq[2] * nn[2];
+            return concave ? (s <= 1e-9f) : (s >= -1e-9f);
+          };
+          if (!(side(n_a) && side(n_b) && side(n_c))) continue;
+          // Nearest-Feature: strikt kleineres de gewinnt (Gleichstand ->
+          // erster Kandidat, wie apply_rims_f32).
+          if (de < best_de) {
+            best_de = de;
+            best_corr = concave ? (delta - de) : (de - delta);
+          }
+        }
+        if (best_de < FD_FLT_MAX) {
+          push_v(concave ? fminf_(g, best_corr) : fmaxf_(g, best_corr));
+        } else {
+          push_v(g);
+        }
         break;
       }
 

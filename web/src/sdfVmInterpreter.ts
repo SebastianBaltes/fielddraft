@@ -51,7 +51,7 @@ import {
   OP_WARP_PUSH, OP_WARP_POP, OP_WARP_TWIST, OP_WARP_BEND,
   OP_WARP_TRANSFORM, OP_WARP_REVOLVE,
   OP_WARP_HELIX, OP_HELIX_SCALE, OP_WARP_SWEEP,
-  OP_MASKED_BLEND, OP_ARC_CHANNEL, OP_VERTEX_SPHERE, OP_END,
+  OP_MASKED_BLEND, OP_ARC_CHANNEL, OP_VERTEX_SPHERE, OP_RIM_FILLET, OP_END,
   worldToLocalFn, halfspaceLocalFn, sdfBoxFn, sdfSphereFn, sdfCylinderFn,
   sdfTorusFn, sdfConeFn, sdfCapsuleFn, sdfHexPrismFn,
   sdfEllipsoidFn, sdfGyroidFn, sdfThreadFn,
@@ -932,6 +932,97 @@ export function buildVmSdfEvalFn(
           );
         });
         pushV(result);
+
+      }).ElseIf(tag.equal(int(OP_RIM_FILLET)), () => {
+        // offset_tree Phase 3 (#398): Rand-Fillet an ∂P-Kanten — 1:1-Spiegel
+        // der CPU-Referenz (`kernel offset_rim::apply_rims_f32` /
+        // `eval_opcodes` OP_RIM_FILLET-Arm). Nearest-Feature-Komposition:
+        // strikt kleinstes de gewinnt (Gleichstand → erster Kandidat), δ−de
+        // konkav / de−δ konvex, mit den drei Masken der Referenz — Trust
+        // (de ≤ trust), End-Caps (t∈[0,1] strikt, cap_eps 1e-6, nur wenn
+        // seg > 1e-9) und Wand-Halbräume (eps 1e-9; ungenutzte n_c mit
+        // Norm < 0.5 → Maske true). Header: n(1) concave(1); je Record 17
+        // Floats: a(3) b(3) n_a(3) n_b(3) n_c(3) delta(1) trust(1). Flache
+        // Schleife aus drei Dots + Selects (KEIN setLayout, Regression o6ia).
+        const nRim = floatToIntFn({ v: rd() }).toVar();
+        const concave = rd().toVar();
+        const rimBase = pc.toVar();
+        pc.addAssign(nRim.mul(17));
+        const g = popV().toVar();
+
+        const p = vec3(ptx, pty, ptz).toVar();
+        const bestDe = float(1e30).toVar();
+        const bestCorr = float(0).toVar();
+        const kk = int(0).toVar();
+        const rdR = (base: any, off: number) => opBuf.element(base.add(int(off)));
+        const rdR3 = (base: any, off: number) =>
+          vec3(
+            opBuf.element(base.add(int(off))),
+            opBuf.element(base.add(int(off + 1))),
+            opBuf.element(base.add(int(off + 2))),
+          );
+        Loop(nRim, () => {
+          const b = rimBase.add(kk.mul(17)).toVar();
+          const ra = rdR3(b, 0).toVar();
+          const rb = rdR3(b, 3).toVar();
+          const nA = rdR3(b, 6).toVar();
+          const nB = rdR3(b, 9).toVar();
+          const nC = rdR3(b, 12).toVar();
+          const delta = rdR(b, 15).toVar();
+          const trust = rdR(b, 16).toVar();
+          // closest_t: geklemmter Lotfußpunkt q, ungeklemmter Parameter t.
+          const dseg = rb.sub(ra).toVar();
+          const len2 = dseg.dot(dseg).toVar();
+          const q = vec3(0, 0, 0).toVar();
+          const de = float(0).toVar();
+          const t = float(0).toVar();
+          If(len2.lessThan(1e-24), () => {
+            q.assign(ra);
+            t.assign(0.0);
+            de.assign(p.sub(ra).length());
+          }).Else(() => {
+            const traw = p.sub(ra).dot(dseg).div(len2).toVar();
+            const tc = clamp(traw, 0.0, 1.0);
+            q.assign(ra.add(dseg.mul(tc)));
+            de.assign(p.sub(q).length());
+            t.assign(traw);
+          });
+          const dq = p.sub(q).toVar();
+          // Wand-Halbraum-Maske: norm(nn) < 0.5 → ungenutzt → true; sonst
+          // konkav dot ≤ 1e-9, konvex dot ≥ −1e-9. Als {0,1}-Float, damit
+          // das Produkt der drei Masken den Kombi-Keep liefert.
+          const sideMask = (nn: any) => {
+            const s = dq.dot(nn);
+            const pass = concave.greaterThan(0.5)
+              .select(s.lessThanEqual(1e-9), s.greaterThanEqual(-1e-9))
+              .select(1.0, 0.0);
+            return nn.length().greaterThanEqual(0.5).select(pass, 1.0);
+          };
+          const keepSide = sideMask(nA).mul(sideMask(nB)).mul(sideMask(nC));
+          // Trust-Maske (de ≤ trust) und End-Cap-Maske (nur bei seg > 1e-9,
+          // t strikt außerhalb [−1e-6, 1+1e-6] → verwerfen).
+          const trustKeep = de.lessThanEqual(trust).select(1.0, 0.0);
+          const seg = rb.sub(ra).length();
+          const outOfRange = max(
+            t.lessThan(-1e-6).select(1.0, 0.0),
+            t.greaterThan(1.000001).select(1.0, 0.0),
+          );
+          const capReject = seg.greaterThan(1e-9).select(1.0, 0.0).mul(outOfRange);
+          const keep = trustKeep.mul(float(1).sub(capReject)).mul(keepSide);
+          // Nearest-Feature: strikt kleineres de gewinnt (verworfene Records
+          // erhalten de=1e30, treffen die strikte <-Bedingung nie).
+          const effDe = keep.greaterThan(0.5).select(de, float(1e30));
+          If(effDe.lessThan(bestDe), () => {
+            bestDe.assign(de);
+            bestCorr.assign(concave.greaterThan(0.5).select(delta.sub(de), de.sub(delta)));
+          });
+          kk.addAssign(1);
+        });
+        const rimResult = bestDe.lessThan(1e29).select(
+          concave.greaterThan(0.5).select(min(g, bestCorr), max(g, bestCorr)),
+          g,
+        );
+        pushV(rimResult);
 
       }).ElseIf(tag.equal(int(OP_END)), () => {
         Break();
