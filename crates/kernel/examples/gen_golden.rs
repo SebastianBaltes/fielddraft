@@ -643,4 +643,55 @@ fn main() {
     let n_v = fielddraft_kernel::offset_channel::count_vertex_spheres(&bvh);
     assert!(n_v > 0, "golden vertex_sphere_corner: Synthese lieferte keine Vertex-Kugeln");
     emit("vertex_sphere_corner", &bvh, &pts);
+
+    // #395 Kontakt-Prisma: zwei bündig gestapelte Boxen mit UNGLEICHEM
+    // Querschnitt unter Erosion. Die Synthese hängt ein Kontakt-Prisma
+    // (reguläres Extrude, KEIN neuer Opcode) als Union-Member VOR das −δ, das
+    // den submergierten Phantom-Schlitz füllt. Der CGAL-C++-Interpreter rechnet
+    // dieses Extrude 1:1 mit — diese Golden-Szene verankert die Parität.
+    let stack = CsgNode::Offset(
+        Box::new(CsgNode::Union(
+            Box::new(CsgNode::Leaf {
+                id: FeatureId::from_u32(1),
+                primitive: Primitive::Box { center: [0.0; 3], half_extents: [12.0, 12.0, 12.0] },
+            }),
+            Box::new(CsgNode::Transform(
+                xform([24.0, 3.0, 2.0], id, s1),
+                Box::new(CsgNode::Leaf {
+                    id: FeatureId::from_u32(2),
+                    primitive: Primitive::Box { center: [0.0; 3], half_extents: [12.0, 9.0, 8.0] },
+                }),
+            )),
+        )),
+        -2.0,
+    );
+    let bvh = fielddraft_kernel::offset_channel::synthesize_offset_channels(
+        BoundedCsg::from_csg(&stack),
+        0.01,
+    );
+    emit("contact_prism_stack", &bvh, &pts);
+
+    // #395 Gleicher Querschnitt: das Prisma IST die Union (S = U), die Erosion
+    // ist metrisch exakt (eine geschrumpfte Doppel-Box).
+    let equal = CsgNode::Offset(
+        Box::new(CsgNode::Union(
+            Box::new(CsgNode::Leaf {
+                id: FeatureId::from_u32(1),
+                primitive: Primitive::Box { center: [0.0; 3], half_extents: [12.0, 12.0, 12.0] },
+            }),
+            Box::new(CsgNode::Transform(
+                xform([24.0, 0.0, 0.0], id, s1),
+                Box::new(CsgNode::Leaf {
+                    id: FeatureId::from_u32(2),
+                    primitive: Primitive::Box { center: [0.0; 3], half_extents: [12.0, 12.0, 12.0] },
+                }),
+            )),
+        )),
+        -2.0,
+    );
+    let bvh = fielddraft_kernel::offset_channel::synthesize_offset_channels(
+        BoundedCsg::from_csg(&equal),
+        0.01,
+    );
+    emit("contact_prism_equal", &bvh, &pts);
 }

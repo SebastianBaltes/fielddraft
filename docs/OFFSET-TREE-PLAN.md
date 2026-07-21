@@ -338,6 +338,26 @@ Die C4-Arbeit hat drei latente **Phase-B-Fehler** aufgedeckt und behoben
   Kinder (`offset_channel::coplanar_interface_present`) macht `min(A,B)∓δ` an
   der submergierten Fläche zur blossen Näherung — der Stopp meldet dort
   ehrlich `conservative` statt still `exact`/`tolerance_bounded` zu bleiben.
+  **Seit #395 wird dieser Fall bei EROSION über Union nicht nur gemeldet,
+  sondern KORRIGIERT — siehe „Kontakt-Prisma" unten.**
+* **Kontakt-Prisma (#395, Erosion über Union — F2-Fix):** Ist der koplanare
+  Kontakt exakt bestimmbar (planare Box-Flächen), baut die Synthese ein
+  **Kontakt-Prisma** S = Extrude(P) über dem Kontaktpolygon P (2D-Verschnitt
+  der beiden Carrier-Flächen-Loops, Sutherland–Hodgman auf den konvexen
+  Rechtecken) und hängt es als **regulären Union-Member VOR das −δ** in den
+  gefalteten Baum (`BoundedCsg::Extrude`, orientiertes `world_transform` =
+  Π-Frame — KEIN neuer Opcode, alle fünf Spiegel + CGAL sehen ein gewöhnliches
+  Extrude). `min(f_i, f_S) − δ` tilgt so den flächigen Phantom-Schlitz auf Π;
+  weil S ⊆ U (zur Bauzeit am Feld stichprobenartig verifiziert), ändert das die
+  naive Union-Nullmenge nicht, nur die Erosions-Nullmenge wird korrekt. Status
+  steigt auf `exact` (P = voller Querschnitt beider Member ⇒ S = U) bzw.
+  `tolerance_bounded` mit der ehrlichen B0-Sliver-Schranke am Kontaktrand ∂P
+  (Kanten ≈0.41·δ, Ecken ≈0.73·δ). Die SSI-Naht-Synthese wird für ein so
+  korrigiertes Member-Paar unterdrückt (ihre koinzident/tangential degenerierten
+  Nähte würden sonst Material über Π hinaus lecken, S ⊄ U). **Stufe 2** (∂P-Rim-
+  Kanäle + C4-Vertex-Kugeln zum Schließen des Rand-Slivers) ist noch OFFEN
+  (Rückfall-Klausel), ebenso der symmetrische Dilations-Fall (Stufe 3,
+  Komplement-Dualität). SSOT: `docs/research/sdf-metricity/F395-CONTACT-PATCH-DESIGN.md`.
 * **Gate-Weite:** Phase B setzte `G = c·δ` — ein δ über dem Maximalbedarf
   `(c−1)·δ`; an trunkierten Kurven-Enden leckte die Endpunkt-Kappe bis
   ~δ Material über das Ende hinaus. Jetzt `G = (c−1)·δ + 4·tol`.

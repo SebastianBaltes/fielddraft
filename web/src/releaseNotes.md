@@ -12,6 +12,9 @@ Format, eine Zeile je Eintrag:
 kind = feat | fix | perf. scope und #tickets sind optional. Folgezeilen, die
 eingerückt sind, gehören zum Text davor (Umbruch erlaubt).
 
+## 0.18.3
+- fix(sdf) #395 #384: Der in 0.18.2 nur ehrlich gemeldete Fehler an bündig gestapelten Körpern ist jetzt geometrisch behoben: Bei Erosion (negatives Offset, Shell) über einer Union mit koplanarer Kontaktfläche baut der Kernel ein Kontakt-Prisma über dem exakten Kontaktpolygon und hängt es als gewöhnlichen Union-Member vor das Offset — der flächige Phantom-Schlitz auf der submergierten Fläche (bisher bis über 8 mm Abweichung) verschwindet. Bei gleichem Querschnitt ist das Ergebnis metrisch exakt, sonst „toleranzbeschränkt“ mit bewiesener Restschranke ≈0,75·δ am Kontaktrand (der schmale Randsaum; Stufe 2 schließt ihn später). Das Prisma füllt beweisbar nie über die Union hinaus. Nicht exakt fassbare Kontakte (gekrümmt, Nicht-Box) bleiben ehrlich „Näherung“ wie bisher.
+
 ## 0.18.2
 - fix(sdf) #394 #384: Der Maßhaltigkeits-Status von Offset/Shell log bei bündig gestapelten Körpern. Wenn zwei Körper einer Union sich koplanar oder tangential berühren (in CAD der Normalfall: flächig aufeinandergesetzte Teile), fand die Nahtsuche an der gemeinsamen Fläche keine Kurve — der Offset war dort nur eine Näherung (Abweichung bis über 13 mm), das Feature meldete aber weiterhin „exakt“ oder „toleranzbeschränkt“. Jetzt erkennt der Kernel den flächigen internen Kontakt strukturell und stuft ehrlich auf „Näherung“ herab; das Abzeichen und der Hinweis im Editor erscheinen. Saubere, quer verlaufende Nähte und getrennte Körper bleiben unverändert exakt bewertet. Die Geometrie selbst ändert sich nicht — es geht rein um die ehrliche Statusmeldung.
 

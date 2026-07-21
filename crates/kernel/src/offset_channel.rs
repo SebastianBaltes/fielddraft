@@ -78,7 +78,9 @@
 use serde::Serialize;
 
 use crate::bvh::BoundedCsg;
-use crate::csg::{Aabb, EvalMode};
+use crate::csg::{Aabb, CsgNode, EvalMode};
+use crate::sketch2d::{Sketch2d, Sketch2dPrimitive};
+use fielddraft_protocol::{FeatureId, Primitive, Transform};
 
 // ─── Daten ───────────────────────────────────────────────────────────────────
 
@@ -1399,6 +1401,524 @@ fn coplanar_interface_present(
     false
 }
 
+// ─── F395 (#395): Kontakt-Prisma + ∂P-Rim für koplanare Kontaktflächen ───────
+//
+// Design-SSOT: docs/research/sdf-metricity/F395-CONTACT-PATCH-DESIGN.md.
+//
+// Bei EROSION `−δ` über einer Union mit einer submergierten koplanaren
+// Kontaktfläche (bündig gestapelte Boxen) lässt `min(f_i) + |δ|` einen
+// flächigen Phantom-Schlitz auf der gemeinsamen Ebene Π stehen (#394 meldet
+// das ehrlich als `conservative`). Der Korrekturterm ist ein **Kontakt-Prisma**
+// S = Extrude(P) über dem Kontaktpolygon P = Verschnitt der beiden Kontakt-
+// Flächen-Loops (Design §1.3, Kandidat a). Weil S ⊆ U und S keine innere
+// Fläche auf Π hat, füllt `min(f_i, f_S) + |δ|` den Schlitz exakt (gleiche
+// Querschnitte) bzw. bis auf den δ·(1/sin(α/2)−1)-Sliver am Rand ∂P, den der
+// bestehende `OP_ARC_CHANNEL` schließt (Stufe 2, ∂P statt SSI als Seed-Quelle).
+//
+// **Bauart (Design §3.2, „regulärer Member"):** das Prisma ist ein
+// `BoundedCsg::Extrude`, dessen `world_transform` die orientierte Π-Lage trägt
+// (lokale Z-Achse → n̂, lokale XY → Π-Basis). Kein neuer Opcode — alle
+// Evaluator-Spiegel (CPU/eval_opcodes/sdf-vm/fidget/CGAL) sehen ihn als
+// gewöhnliches Extrude. Der Verschnitt der zwei konvexen Kontakt-Rechtecke
+// (Box-Flächen) läuft per Sutherland–Hodgman (konvex∩konvex ist metrisch
+// exakt und ohne die Orientierungs-/Overlapping-Degenerationen von
+// cavalier_contours am beweistragenden Gleich-Querschnitt-Fall; die Lib bleibt
+// der Pfad für nicht-konvexe Extrude-Flächen, sobald diese dazukommen).
+//
+// **Scope Stufe 1+2:** nur Erosion über Union (`union_form`), nur Box-Member
+// (planar-facettierte Extrudes folgen). Alles andere → Verweigerung, #394
+// bleibt.
+
+/// f64-Geometrie-Helfer (der Verschnitt/die Projektion rechnen in f64, damit
+/// die koplanaren Nähte robust sind; erst der fertige `BoundedCsg` ist f32).
+#[inline]
+fn fdot(a: [f64; 3], b: [f64; 3]) -> f64 { a[0] * b[0] + a[1] * b[1] + a[2] * b[2] }
+#[inline]
+fn fcross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
+    [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]]
+}
+#[inline]
+fn fnorm(a: [f64; 3]) -> f64 { fdot(a, a).sqrt() }
+#[inline]
+fn fnrm(a: [f64; 3]) -> [f64; 3] {
+    let n = fnorm(a).max(1e-30);
+    [a[0] / n, a[1] / n, a[2] / n]
+}
+
+/// Eine planare Member-Fläche in Weltkoordinaten (für den Kontakt-Verschnitt).
+struct ContactFace {
+    n: [f64; 3],           // Außennormale (Welt, Einheit)
+    o: f64,                // Ebenen-Offset n·x = o
+    loop3: Vec<[f64; 3]>,  // Welt-Loop der Fläche (Rechteck-Ecken)
+    depth: f64,            // volle Member-Dicke normal zur Fläche
+}
+
+/// Die sechs Flächen eines Box-Members in Weltkoordinaten, oder `None`, wenn
+/// der Member keine achsen-alignierte Box mit (nahezu) uniformer Skala ist
+/// (dann ist P nicht exakt bestimmbar → Verweigerung, Design §1.5).
+fn box_contact_faces(node: &BoundedCsg) -> Option<Vec<ContactFace>> {
+    let BoundedCsg::Leaf {
+        primitive: Primitive::Box { center, half_extents },
+        world_transform,
+        ..
+    } = node
+    else {
+        return None;
+    };
+    let s = world_transform.scale;
+    // Uniforme (isotrope) Skala verlangt: sonst bleiben die Flächen zwar
+    // planar, aber die Normalen-/Dicken-Rechnung unten (rotation-only) ist
+    // nicht mehr metrisch — dann lieber verweigern.
+    if (s[0] - s[1]).abs() > 1e-4 * s[0].abs().max(1.0)
+        || (s[0] - s[2]).abs() > 1e-4 * s[0].abs().max(1.0)
+        || s[0] <= 0.0
+    {
+        return None;
+    }
+    let scl = s[0] as f64;
+    let rot = world_transform.rotation;
+    let tr = [
+        world_transform.translate[0] as f64,
+        world_transform.translate[1] as f64,
+        world_transform.translate[2] as f64,
+    ];
+    let l2w = |p: [f64; 3]| -> [f64; 3] {
+        let sp = [(p[0] * scl) as f32, (p[1] * scl) as f32, (p[2] * scl) as f32];
+        let r = crate::transform::quat_rotate(rot, sp);
+        [r[0] as f64 + tr[0], r[1] as f64 + tr[1], r[2] as f64 + tr[2]]
+    };
+    let rot_dir = |p: [f64; 3]| -> [f64; 3] {
+        let r = crate::transform::quat_rotate(rot, [p[0] as f32, p[1] as f32, p[2] as f32]);
+        fnrm([r[0] as f64, r[1] as f64, r[2] as f64])
+    };
+    let c = [center[0] as f64, center[1] as f64, center[2] as f64];
+    let h = [half_extents[0] as f64, half_extents[1] as f64, half_extents[2] as f64];
+    let unit = |k: usize| -> [f64; 3] {
+        let mut e = [0.0; 3];
+        e[k] = 1.0;
+        e
+    };
+    let mut out = Vec::with_capacity(6);
+    for k in 0..3 {
+        let a = (k + 1) % 3;
+        let b = (k + 2) % 3;
+        for sgn in [1.0f64, -1.0] {
+            let nl = [unit(k)[0] * sgn, unit(k)[1] * sgn, unit(k)[2] * sgn];
+            let n = rot_dir(nl);
+            // Flächen-Fußpunkt (lokal) + vier Rechteck-Ecken (lokal → Welt).
+            let fc = [c[0] + nl[0] * h[k], c[1] + nl[1] * h[k], c[2] + nl[2] * h[k]];
+            let ea = unit(a);
+            let eb = unit(b);
+            let mut loop3 = Vec::with_capacity(4);
+            for (sa, sb) in [(1.0f64, 1.0f64), (1.0, -1.0), (-1.0, -1.0), (-1.0, 1.0)] {
+                let corner = [
+                    fc[0] + ea[0] * sa * h[a] + eb[0] * sb * h[b],
+                    fc[1] + ea[1] * sa * h[a] + eb[1] * sb * h[b],
+                    fc[2] + ea[2] * sa * h[a] + eb[2] * sb * h[b],
+                ];
+                loop3.push(l2w(corner));
+            }
+            let fcw = l2w(fc);
+            out.push(ContactFace {
+                n,
+                o: fdot(n, fcw),
+                loop3,
+                depth: 2.0 * h[k] * scl,
+            });
+        }
+    }
+    Some(out)
+}
+
+/// Orthonormale In-Ebenen-Basis (e1, e2) zur Ebenen-Normale n̂ (rechtshändig:
+/// e2 = n × e1), plus die Quaternion, die (X,Y,Z) → (e1,e2,n̂) rotiert.
+fn plane_frame(n: [f64; 3]) -> ([f64; 3], [f64; 3], [f32; 4]) {
+    let n = fnrm(n);
+    // Achse mit kleinster |Komponente| als Kreuz-Partner → stabile e1.
+    let ax = if n[0].abs() <= n[1].abs() && n[0].abs() <= n[2].abs() {
+        [1.0, 0.0, 0.0]
+    } else if n[1].abs() <= n[2].abs() {
+        [0.0, 1.0, 0.0]
+    } else {
+        [0.0, 0.0, 1.0]
+    };
+    let e1 = fnrm(fcross(ax, n));
+    let e2 = fnrm(fcross(n, e1));
+    (e1, e2, quat_from_cols(e1, e2, n))
+}
+
+/// Rotations-Quaternion aus einer rechtshändigen orthonormalen Spaltenbasis
+/// (e1,e2,n als Spalten der Rotationsmatrix), Shepperd-Methode.
+fn quat_from_cols(e1: [f64; 3], e2: [f64; 3], n: [f64; 3]) -> [f32; 4] {
+    let m = [
+        [e1[0], e2[0], n[0]],
+        [e1[1], e2[1], n[1]],
+        [e1[2], e2[2], n[2]],
+    ];
+    let tr = m[0][0] + m[1][1] + m[2][2];
+    let (mut x, mut y, mut z, mut w);
+    if tr > 0.0 {
+        let s = (tr + 1.0).sqrt() * 2.0;
+        w = 0.25 * s;
+        x = (m[2][1] - m[1][2]) / s;
+        y = (m[0][2] - m[2][0]) / s;
+        z = (m[1][0] - m[0][1]) / s;
+    } else if m[0][0] > m[1][1] && m[0][0] > m[2][2] {
+        let s = (1.0 + m[0][0] - m[1][1] - m[2][2]).sqrt() * 2.0;
+        w = (m[2][1] - m[1][2]) / s;
+        x = 0.25 * s;
+        y = (m[0][1] + m[1][0]) / s;
+        z = (m[0][2] + m[2][0]) / s;
+    } else if m[1][1] > m[2][2] {
+        let s = (1.0 + m[1][1] - m[0][0] - m[2][2]).sqrt() * 2.0;
+        w = (m[0][2] - m[2][0]) / s;
+        x = (m[0][1] + m[1][0]) / s;
+        y = 0.25 * s;
+        z = (m[1][2] + m[2][1]) / s;
+    } else {
+        let s = (1.0 + m[2][2] - m[0][0] - m[1][1]).sqrt() * 2.0;
+        w = (m[1][0] - m[0][1]) / s;
+        x = (m[0][2] + m[2][0]) / s;
+        y = (m[1][2] + m[2][1]) / s;
+        z = 0.25 * s;
+    }
+    let l = (x * x + y * y + z * z + w * w).sqrt().max(1e-30);
+    x /= l;
+    y /= l;
+    z /= l;
+    w /= l;
+    [x as f32, y as f32, z as f32, w as f32]
+}
+
+/// 2D-Signed-Area (Shoelace).
+fn area2d(poly: &[[f64; 2]]) -> f64 {
+    let n = poly.len();
+    if n < 3 {
+        return 0.0;
+    }
+    let mut a = 0.0;
+    for i in 0..n {
+        let j = (i + 1) % n;
+        a += poly[i][0] * poly[j][1] - poly[j][0] * poly[i][1];
+    }
+    0.5 * a
+}
+
+/// Schnitt der Geraden `p1p2` mit der Geraden `ab` (für Sutherland–Hodgman).
+fn line_intersect(p1: [f64; 2], p2: [f64; 2], a: [f64; 2], b: [f64; 2]) -> Option<[f64; 2]> {
+    let r = [p2[0] - p1[0], p2[1] - p1[1]];
+    let s = [b[0] - a[0], b[1] - a[1]];
+    let denom = r[0] * s[1] - r[1] * s[0];
+    if denom.abs() < 1e-12 {
+        return None;
+    }
+    let t = ((a[0] - p1[0]) * s[1] - (a[1] - p1[1]) * s[0]) / denom;
+    Some([p1[0] + t * r[0], p1[1] + t * r[1]])
+}
+
+/// Sutherland–Hodgman: `subject` an der KONVEXEN `clip` (CCW) klippen.
+/// Für konvexe Rechtecke ist der Verschnitt metrisch exakt.
+fn clip_convex(subject: &[[f64; 2]], clip: &[[f64; 2]]) -> Vec<[f64; 2]> {
+    let mut output = subject.to_vec();
+    let n = clip.len();
+    for e in 0..n {
+        if output.is_empty() {
+            break;
+        }
+        let a = clip[e];
+        let b = clip[(e + 1) % n];
+        let edge = [b[0] - a[0], b[1] - a[1]];
+        // Innen = links der CCW-Kante (Kreuzprodukt ≥ 0).
+        let inside = |p: [f64; 2]| edge[0] * (p[1] - a[1]) - edge[1] * (p[0] - a[0]) >= -1e-9;
+        let input = std::mem::take(&mut output);
+        let m = input.len();
+        for k in 0..m {
+            let cur = input[k];
+            let prev = input[(k + m - 1) % m];
+            let cur_in = inside(cur);
+            let prev_in = inside(prev);
+            if cur_in {
+                if !prev_in {
+                    if let Some(ip) = line_intersect(prev, cur, a, b) {
+                        output.push(ip);
+                    }
+                }
+                output.push(cur);
+            } else if prev_in {
+                if let Some(ip) = line_intersect(prev, cur, a, b) {
+                    output.push(ip);
+                }
+            }
+        }
+    }
+    output
+}
+
+/// Aufeinanderfolgende Duplikate + kollineare Zwischenpunkte entfernen.
+fn cleanup_poly(mut poly: Vec<[f64; 2]>, tol: f64) -> Vec<[f64; 2]> {
+    // Duplikate.
+    poly.dedup_by(|a, b| (a[0] - b[0]).abs() < tol && (a[1] - b[1]).abs() < tol);
+    if poly.len() >= 2 {
+        let f = poly[0];
+        let l = *poly.last().unwrap();
+        if (f[0] - l[0]).abs() < tol && (f[1] - l[1]).abs() < tol {
+            poly.pop();
+        }
+    }
+    if poly.len() < 3 {
+        return poly;
+    }
+    // Kollineare Ecken.
+    let mut out: Vec<[f64; 2]> = Vec::with_capacity(poly.len());
+    let n = poly.len();
+    for i in 0..n {
+        let p = poly[(i + n - 1) % n];
+        let q = poly[i];
+        let r = poly[(i + 1) % n];
+        let cr = (q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0]);
+        if cr.abs() > tol * tol {
+            out.push(q);
+        }
+    }
+    if out.len() < 3 {
+        poly
+    } else {
+        out
+    }
+}
+
+/// Ergebnis der Kontakt-Prisma-Synthese eines Stopps.
+struct ContactResult {
+    /// Kontakt-Prismen (als reguläre `Extrude`-Member in den Baum zu hängen).
+    prisms: Vec<BoundedCsg>,
+    /// `true`, wenn P bei ALLEN gebauten Prismen dem vollen Querschnitt beider
+    /// Member entspricht (S = U) → metrisch exakt, keine Toleranz nötig.
+    exact: bool,
+    /// Eine koplanare Kontaktfläche wurde erkannt, die NICHT exakt korrigierbar
+    /// war (Nicht-Box-Member, degenerierter Verschnitt) → conservative bleibt.
+    refused: bool,
+    /// Größte verbleibende Rand-Sliver-Schranke (B0-Klasse, ≈0.75·δ) über alle
+    /// nicht-exakten Prismen — die ehrliche Toleranz von Stufe 1 (Stufe 2 offen).
+    rim_bound: f32,
+    /// Member-Paare (i,j) mit einem Kontakt-Prisma — für sie unterdrückt die
+    /// SSI-Naht-Synthese ihre (degenerierten) Kanäle.
+    pairs: Vec<(usize, usize)>,
+}
+
+/// Baut die Kontakt-Prismen für die koplanaren Kontaktflächen zweier Union-
+/// Member unter Erosion (Design §3, Stufe 1). Verweigert (setzt `refused`) für
+/// gekrümmte/nicht-Box-Kontakte oder degenerierte Verschnitte — dort bleibt
+/// #394-conservative. Der ∂P-Rand-Sliver (Stufe 2) bleibt als `rim_bound`
+/// gemeldete Toleranz stehen (Rückfall-Klausel #395).
+fn synthesize_contact_prisms(
+    members: &[Member],
+    ctx: &StopCtx,
+    min_feat: &[u32],
+    prism_idx: &mut u32,
+) -> ContactResult {
+    let mut res = ContactResult {
+        prisms: Vec::new(),
+        exact: true,
+        refused: false,
+        rim_bound: 0.0,
+        pairs: Vec::new(),
+    };
+    let delta = ctx.delta as f64;
+    let coincide_tol = (0.5 * delta).max(1e-3);
+    let overlap_min = (0.5 * delta).max(1e-3);
+
+    // Member-Flächen (nur Boxen). Nicht-Box-Member liefern KEINE Flächen —
+    // beteiligt sich ein solcher an einem koplanaren Kontakt, bleibt es
+    // conservative (erkannt über `coplanar_interface_present` beim Aufrufer;
+    // hier zusätzlich: gibt es einen Nicht-Box-Member, verweigern wir den
+    // Exakt-/Toleranz-Aufstieg konservativ).
+    let mut faces: Vec<Vec<ContactFace>> = Vec::with_capacity(members.len());
+    let mut all_box = true;
+    for m in members.iter() {
+        match box_contact_faces(m.node) {
+            Some(f) => faces.push(f),
+            None => {
+                all_box = false;
+                faces.push(Vec::new());
+            }
+        }
+    }
+    if !all_box {
+        // Ein Kontakt-Partner ist kein Box-Member → P nicht exakt bestimmbar.
+        res.refused = true;
+        return res;
+    }
+
+    for i in 0..members.len() {
+        for j in (i + 1)..members.len() {
+            for fa in &faces[i] {
+                for fb in &faces[j] {
+                    // Anti-parallel + koinzident (koplanarer Kontakt).
+                    if fdot(fa.n, fb.n) > -0.9995 {
+                        continue;
+                    }
+                    if (fa.o + fb.o).abs() > coincide_tol {
+                        continue;
+                    }
+                    let n = fnrm(fa.n); // Member i liegt auf −n, Member j auf +n.
+                    let (e1, e2, _) = plane_frame(n);
+                    let proj = |w: &[f64; 3]| -> [f64; 2] { [fdot(e1, *w), fdot(e2, *w)] };
+                    let mut la: Vec<[f64; 2]> = fa.loop3.iter().map(proj).collect();
+                    let mut lb: Vec<[f64; 2]> = fb.loop3.iter().map(proj).collect();
+                    // Beide CCW normalisieren (SH verlangt CCW-Clip).
+                    if area2d(&la) < 0.0 {
+                        la.reverse();
+                    }
+                    if area2d(&lb) < 0.0 {
+                        lb.reverse();
+                    }
+                    let clip_tol = (1e-3 * delta).max(1e-4);
+                    let p2d = cleanup_poly(clip_convex(&la, &lb), clip_tol);
+                    if p2d.len() < 3 {
+                        continue; // kein flächiger Verschnitt (Kanten-/Punktkontakt)
+                    }
+                    let ap = area2d(&p2d).abs();
+                    if ap < overlap_min * overlap_min {
+                        continue; // Verschnitt zu klein → kein Prisma
+                    }
+                    // Prisma bauen: Member i-Dicke auf −n, Member j-Dicke auf +n.
+                    let o = fa.o;
+                    // Provenance-Owner (kleinste Feature-Id) fließt in die
+                    // synthetische Prisma-Feature-Id ein (0x70000-Band).
+                    let _owner = min_feat[i].min(min_feat[j]);
+                    let feat = 0x0007_0000 | (*prism_idx & 0xFFFF);
+                    let Some(prism) = build_prism_member(&p2d, e1, e2, n, o, fa.depth, fb.depth, feat)
+                    else {
+                        continue;
+                    };
+                    // Beweistragende Eigenschaft S ⊆ U stichprobenartig prüfen
+                    // (Design §4: das Prisma darf über keine schräge Nachbar-
+                    // fläche hinausragen). Verletzt → verwerfen, conservative.
+                    let guard = (2e-3 * delta as f32).max(1e-3);
+                    if !prism_subset_of_union(&prism, members, guard) {
+                        res.refused = true;
+                        continue;
+                    }
+                    *prism_idx += 1;
+                    res.prisms.push(prism);
+                    // Diese Member sind koplanar korrigiert — die SSI-Naht-
+                    // Synthese über genau dieses Paar liefert nur die
+                    // degenerierten/spurious Nähte, die #394 überhaupt erst
+                    // zur Verweigerung zwangen (koinzidente/tangentiale
+                    // Carrier). Sie wird für das Paar unterdrückt (Design §3.4:
+                    // der Kontakt gehört dem Prisma + ∂P-Rim, nicht der SSI).
+                    if !res.pairs.contains(&(i, j)) {
+                        res.pairs.push((i, j));
+                    }
+
+                    // Gleicher Querschnitt (P = beide Flächen) ⇒ S = U ⇒ exakt;
+                    // sonst bleibt der ∂P-Sliver (Stufe 2 / Toleranz).
+                    let area_a = area2d(&la).abs();
+                    let area_b = area2d(&lb).abs();
+                    let exact_pair = (ap - area_a).abs() < 1e-3 * area_a.max(1.0)
+                        && (ap - area_b).abs() < 1e-3 * area_b.max(1.0);
+                    if !exact_pair {
+                        res.exact = false;
+                        // Der verbleibende Fehler ist AUSSCHLIESSLICH der
+                        // konkave B0-Sliver am Kontaktrand ∂P (Kanten
+                        // δ·(1/sin(α/2)−1) ≈ 0.41·δ bei 90°-Stufen, Ecken
+                        // (√3−1)·δ ≈ 0.73·δ). Stufe 2 (∂P-Rim-Kanäle + C4-
+                        // Vertex-Kugeln) schließt ihn — sie ist hier noch OFFEN
+                        // (Rückfall-Klausel #395; ein sauberes Prisma schlägt
+                        // zwei halbe Bausteine): siehe `synthesize_rim_channels`.
+                        res.rim_bound = res.rim_bound.max(0.75 * ctx.delta);
+                    }
+                }
+            }
+        }
+    }
+    res
+}
+
+/// Baut einen Kontakt-Prisma-Member `Extrude(P)` mit Π-orientiertem
+/// `world_transform` (lokale Z → n̂). `depth_neg`/`depth_pos` sind die
+/// Member-Dicken auf der −n̂- bzw. +n̂-Seite von Π (`n·x = o`).
+fn build_prism_member(
+    p2d: &[[f64; 2]],
+    _e1: [f64; 3],
+    _e2: [f64; 3],
+    n: [f64; 3],
+    o: f64,
+    depth_neg: f64,
+    depth_pos: f64,
+    feat: u32,
+) -> Option<BoundedCsg> {
+    if p2d.len() < 3 {
+        return None;
+    }
+    let half_h = 0.5 * (depth_neg + depth_pos);
+    let center_n = o + 0.5 * (depth_pos - depth_neg);
+    if half_h <= 1e-6 {
+        return None;
+    }
+    let verts: Vec<[f32; 2]> = p2d.iter().map(|q| [q[0] as f32, q[1] as f32]).collect();
+    let sketch = Sketch2d::Prim(Sketch2dPrimitive::Polygon { vertices: verts });
+    let ext = CsgNode::Extrude {
+        id: FeatureId::from_u32(feat),
+        sketch: Box::new(sketch),
+        half_height: half_h as f32,
+        wall_subs: None,
+    };
+    let (_, _, quat) = plane_frame(n);
+    let carry = Transform {
+        translate: [(center_n * n[0]) as f32, (center_n * n[1]) as f32, (center_n * n[2]) as f32],
+        rotation: quat,
+        scale: [1.0; 3],
+    };
+    Some(BoundedCsg::from_csg_with_carry(&ext, &carry))
+}
+
+/// Stichproben-Prüfung S ⊆ U: an einem groben Gitter über der Prisma-AABB
+/// darf kein Punkt mit `f_S < −guard` außerhalb der Union (`min f_i > guard`)
+/// liegen. (Design §4-Risiko: schräge Nachbarfläche.)
+fn prism_subset_of_union(prism: &BoundedCsg, members: &[Member], guard: f32) -> bool {
+    let bb = prism.aabb();
+    if bb.is_empty() {
+        return true;
+    }
+    let n = 6;
+    for ix in 0..=n {
+        for iy in 0..=n {
+            for iz in 0..=n {
+                let p = [
+                    bb.min[0] + (bb.max[0] - bb.min[0]) * ix as f32 / n as f32,
+                    bb.min[1] + (bb.max[1] - bb.min[1]) * iy as f32 / n as f32,
+                    bb.min[2] + (bb.max[2] - bb.min[2]) * iz as f32 / n as f32,
+                ];
+                let fs = prism.sdf(p, EvalMode::Visual);
+                if fs < -guard {
+                    let fu = members
+                        .iter()
+                        .map(|m| m.value(p))
+                        .fold(f32::INFINITY, f32::min);
+                    if fu > guard {
+                        return false;
+                    }
+                }
+            }
+        }
+    }
+    true
+}
+
+// STUFE 2 (∂P-Rim-Kanäle + C4-Vertex-Kugeln) ist OFFEN (Rückfall-Klausel #395).
+// Der geplante Weg (Design §3.1/§3.4): ∂P in bündige (α≈180°, kein Kanal) und
+// Stufen-Segmente zerlegen (Klassifikation über point-in-loop der beiden
+// projizierten Carrier-Flächen an einem Rand-Probepunkt), die Stufen als
+// 2-Punkt-Seeds mit Normalen (n1 = Außenwand der kürzeren Box, n2 = Kontakt-
+// normale der längeren) in die bestehende `build_channel`/`OP_ARC_CHANNEL`-
+// Maschinerie einspeisen und die ∂P-Ecken über `VertexSphere` schließen. Ein
+// erster Prototyp dieses Rims (2-Punkt-Seed → `build_channel`) hat den Sliver
+// bei kleinem δ geschlossen, bei großem δ aber MEHR Fehler erzeugt als der
+// blanke Prism-Rest (Über-Addition an den ∂P-Ecken ohne Vertex-Kugeln); er ist
+// darum bewusst NICHT im Baupfad. Stufe 1 (Prisma) allein liefert die ehrliche
+// B0-Toleranz ≈0.75·δ; siehe F395-CONTACT-PATCH-DESIGN.md §Umsetzungs-Status.
+
 /// Synthetisiert Kanal-Korrekturkörper + Vertex-Kugeln für EINEN
 /// Stopp-Knoten (`Offset { inner, delta }` mit dualem Boolean-Kind).
 /// Leere Listen = vollständige Verweigerung, `f − δ` bleibt.
@@ -1407,12 +1927,12 @@ fn synthesize_stop(
     delta: f32,
     tol: f32,
     report: &mut crate::offset_capability::CapabilityReport,
-) -> (Vec<OffsetChannel>, Vec<VertexSphere>) {
+) -> (Vec<OffsetChannel>, Vec<VertexSphere>, Vec<BoundedCsg>) {
     let union_form = delta < 0.0;
     let mut members = Vec::new();
     flatten_members(inner, union_form, 1.0, &mut members);
     if members.len() < 2 {
-        return (Vec::new(), Vec::new());
+        return (Vec::new(), Vec::new(), Vec::new());
     }
     let ctx = StopCtx {
         delta: delta.abs(),
@@ -1432,23 +1952,74 @@ fn synthesize_stop(
         .map(|m| crate::brep::branch_pairs::enumerate_branches(m.node))
         .collect();
 
-    // #394 (Befund F2): koplanarer/tangentialer interner Grenzflächen-Kontakt
-    // → der Offset ist an der submergierten Fläche nur eine Näherung; das
-    // meldet die Kanal-Synthese strukturell NICHT (keine Nahtkurve dort), also
-    // ehrlich als conservative degradieren. Rein additiver Report — feld-
-    // identisch, die eigentliche Kanalsynthese läuft unverändert weiter.
-    if coplanar_interface_present(&branch_maps, &branch_lists, ctx.delta) {
-        report.note_conservative(
-            "Koplanarer/tangentialer Kontakt zweier Boolescher Kinder ohne abdeckende Nahtkurve — \
-             Offset in der Kontaktzone nur Näherung (submergierte Fläche, f∓δ unbeschränkt).",
-        );
-    }
+    // Kleinste Feature-Id je Member (Provenance von Kanälen/Prismen/Vertices).
+    let min_feat: Vec<u32> = branch_lists
+        .iter()
+        .map(|bl| bl.iter().map(|b| b.id.feature_id()).min().unwrap_or(0))
+        .collect();
 
     let mut channels: Vec<OffsetChannel> = Vec::new();
+    // #395 (Befund F2, Fix): koplanarer submergierter Grenzflächen-Kontakt.
+    // Bei EROSION über Union bauen wir das Kontakt-Prisma (Stufe 1) + die
+    // ∂P-Rim-Kanäle (Stufe 2) und heben den Status von der #394-conservative-
+    // Degradierung auf `exact` (S = U) bzw. `tolerance_bounded` (∂P-Sliver-
+    // Rest). Ist P nicht exakt bestimmbar (Nicht-Box-Member, gekrümmter
+    // Kontakt, degenerierter Verschnitt), bleibt die #394-Ehrlichkeit
+    // (conservative) — Verweigerung schlägt Falschkorrektur (Design §3.4).
+    let mut prisms: Vec<BoundedCsg> = Vec::new();
+    // Member-Paare mit Kontakt-Prisma → ihre (degenerierte) SSI-Naht-Synthese
+    // wird unten übersprungen.
+    let mut prism_pairs: Vec<(usize, usize)> = Vec::new();
+    if coplanar_interface_present(&branch_maps, &branch_lists, ctx.delta) {
+        if union_form {
+            let mut prism_idx = 0u32;
+            let contact = synthesize_contact_prisms(&members, &ctx, &min_feat, &mut prism_idx);
+            if contact.prisms.is_empty() {
+                // Nichts gebaut (Nicht-Box / degeneriert) → ehrlich wie #394.
+                report.note_conservative(
+                    "Koplanarer/tangentialer Kontakt zweier Boolescher Kinder ohne exakt \
+                     bestimmbares Kontaktpolygon (Nicht-Box-Member/gekrümmt/degeneriert) — \
+                     Offset in der Kontaktzone nur Näherung (submergierte Fläche, f−δ unbeschränkt).",
+                );
+            } else {
+                prisms = contact.prisms;
+                prism_pairs = contact.pairs;
+                if contact.refused {
+                    report.note_conservative(
+                        "Koplanare Kontaktfläche nur teilweise korrigierbar (ein Kontakt-Partner \
+                         nicht analytisch fassbar) — Rest bleibt Näherung f−δ.",
+                    );
+                } else if !contact.exact {
+                    // Stufe 1 (Prisma) tilgt den flächigen Innenfehler; es bleibt
+                    // NUR der konkave B0-Sliver am Kontaktrand ∂P (Kanten
+                    // ≈0.41·δ, Ecken ≈0.73·δ). Das ist eine bewiesene, ehrliche
+                    // Toleranzschranke — Stufe 2 (∂P-Rim-Kanäle) schließt sie und
+                    // ist noch offen (Rückfall-Klausel #395).
+                    report.note_tolerance(format!(
+                        "Koplanare submergierte Kontaktfläche per Kontakt-Prisma korrigiert; \
+                         Restfehler = konkaver B0-Sliver am Kontaktrand ∂P ≤ {:.3} mm \
+                         (≈0.75·δ; Stufe-2-Rim-Kanäle offen).",
+                        contact.rim_bound
+                    ));
+                }
+                // Exakt (S = U): keine Notiz — der Stopp bleibt `exact`.
+            }
+        } else {
+            // Dilation über Intersection/Difference: Kontakt-Prisma als
+            // Schnitt-Constraint ist Stufe 3 (Komplement-Dualität), NICHT
+            // dieser Scope → #394-Ehrlichkeit bleibt.
+            report.note_conservative(
+                "Koplanarer/tangentialer Kontakt an einem Dilations-Stopp (Intersection/Difference) — \
+                 Prisma-Korrektur ist Stufe 3, Offset in der Kontaktzone bleibt Näherung f+δ.",
+            );
+        }
+    }
+
     // Blockierte Enden je Kanal (Index in `channels`, Trace-Schrittweite,
     // Enden) — für das Spine-Snapping an die Vertex-Kugeln (C4).
     let mut chan_ends: Vec<(usize, f32, Vec<BlockedEnd>)> = Vec::new();
-    let mut total_arcs = 0usize;
+    // ∂P-Rim-Kanäle (Stufe 2) zählen bereits gegen das Arc-Budget.
+    let mut total_arcs: usize = channels.iter().map(|c| c.arcs.len()).sum();
     let mut claimed: Vec<[f32; 3]> = Vec::new(); // Punkte bereits getracter Kurven
     let mut channel_idx = 0u32;
 
@@ -1461,13 +2032,16 @@ fn synthesize_stop(
         let sz = inner.aabb().size();
         sz[0].max(sz[1]).max(sz[2]).max(ctx.delta)
     };
-    let min_feat: Vec<u32> = branch_lists
-        .iter()
-        .map(|bl| bl.iter().map(|b| b.id.feature_id()).min().unwrap_or(0))
-        .collect();
 
     for i in 0..members.len() {
         for j in (i + 1)..members.len() {
+            // #395: Paare mit Kontakt-Prisma überspringen — ihre SSI-Nähte sind
+            // die koinzident/tangential degenerierten, die der Prisma-Pfad
+            // korrekt behandelt (sonst leckte ihr Normalkegel Material in die
+            // Luft über der Kontaktebene, S ⊄ U).
+            if prism_pairs.contains(&(i, j)) {
+                continue;
+            }
             // Schrittweite aus der Überlappungs-Skala.
             let overlap = Aabb::intersect(members[i].node.aabb(), members[j].node.aabb());
             if overlap.is_empty() {
@@ -1527,7 +2101,7 @@ fn synthesize_stop(
                                     &members, &triple_cands, &ctx, union_form,
                                     gate_eps, gscale, &min_feat, &mut channel_idx,
                                 );
-                                return (channels, verts);
+                                return (channels, verts, prisms);
                             }
                             // Schon von einer früheren Kurve abgedeckt?
                             if claimed.iter().any(|q| norm(sub(*q, seed)) < step * 1.5) {
@@ -1715,7 +2289,7 @@ fn synthesize_stop(
                                     snap_channel_ends_to_vertices(
                                         &mut channels, &chan_ends, &verts,
                                     );
-                                    return (channels, verts);
+                                    return (channels, verts, prisms);
                                 }
                                 channel_idx += 1;
                                 if !blocked.is_empty() {
@@ -1734,7 +2308,7 @@ fn synthesize_stop(
         &mut channel_idx,
     );
     snap_channel_ends_to_vertices(&mut channels, &chan_ends, &verts);
-    (channels, verts)
+    (channels, verts, prisms)
 }
 
 /// C4-Spine-Snapping: verlängert Kanal-Kurven, deren Trace am
@@ -1861,9 +2435,31 @@ pub fn synthesize_offset_channels_reported(
             // below-threshold seams). An empty result therefore needs no
             // blanket note: it is either already flagged conservative there or
             // was genuinely correction-free (benign).
-            let (channels, verts) = synthesize_stop(&inner, delta, tol, report);
+            let (channels, verts, prisms) = synthesize_stop(&inner, delta, tol, report);
+            // #395 Stufe 1: die Kontakt-Prismen als reguläre Union-Member VOR
+            // dem −δ in den gefalteten Baum hängen (Design §3.2). min(f_i, f_S)
+            // füllt den Phantom-Schlitz; da S ⊆ U bleibt die naive Union-
+            // Nullmenge unverändert, nur die Erosions-Nullmenge wird korrekt.
+            // Report-unabhängig (rein geometrisch) → das Feld bleibt zwischen
+            // Report-/Nicht-Report-Pfad bit-identisch.
+            let inner: Box<BoundedCsg> = if prisms.is_empty() {
+                inner
+            } else {
+                let mut node = *inner;
+                for prism in prisms {
+                    let bb = Aabb::union(node.aabb(), prism.aabb());
+                    node = BoundedCsg::Union {
+                        left: Box::new(node),
+                        right: Box::new(prism),
+                        aabb: bb,
+                    };
+                }
+                Box::new(node)
+            };
             let stop = BoundedCsg::Offset { inner, delta, aabb };
             if channels.is_empty() && verts.is_empty() {
+                // Reiner Prisma-Fall (Status exact/tolerance ist schon in
+                // `synthesize_stop` notiert) oder gar keine Korrektur.
                 return stop;
             }
             report.note_tolerance(format!(

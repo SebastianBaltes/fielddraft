@@ -358,11 +358,84 @@ bestehenden Kanal 1–2 Tage, C4-Ecken-Anschluss 1 Tag, Golden/Tests 1 Tag.
   weiteren Offsets) — Plan-§9-Kaskaden-Politik (Toleranzen addieren, ab Tiefe 2
   warnen).
 
+## 4b. Umsetzungs-Status (Stand 2026-07-21, #395 Stufe 1)
+
+**Stufe 1 (Kontakt-Prisma) ist umgesetzt und im Baupfad.** Stufe 2 (∂P-Rim-
+Kanäle + C4-Vertex-Kugeln) bleibt bewusst OFFEN (Rückfall-Klausel) — ein
+sauberes Prisma schlägt zwei halbe Bausteine.
+
+Umgesetzt in `crates/kernel/src/offset_channel.rs`:
+
+- **Kontakt-Erkennung + P:** `synthesize_contact_prisms` scannt zur Regen-Zeit
+  die Box-Flächen der Union-Member (`box_contact_faces`, analytisch aus
+  `Primitive::Box` + `world_transform`), findet anti-parallele koinzidente
+  Flächenpaare, projiziert beide Flächen-Loops in die Π-Basis und verschneidet
+  sie. Der Verschnitt ist **Sutherland–Hodgman** (`clip_convex`): Box-Flächen
+  sind konvexe Rechtecke, dafür ist konvex∩konvex metrisch exakt und ohne die
+  Orientierungs-/Overlapping-Degenerationen von `cavalier_contours` am
+  beweistragenden Gleich-Querschnitt-Fall (S = U). `cavalier_contours` bleibt
+  der Weg für nicht-konvexe Extrude-Flächen, sobald diese dazukommen.
+- **Bauart „regulärer Member" (Design §3.2):** das Prisma ist ein
+  `BoundedCsg::Extrude` (`build_prism_member` → `Sketch2dPrimitive::Polygon` +
+  `from_csg_with_carry` mit Π-Frame-Quaternion). KEIN neuer Opcode — alle
+  Evaluator-Spiegel (CPU csg.rs, eval_opcodes, sdf-vm/deferred-TSL, fidget,
+  CGAL-C++) sehen es als gewöhnliches Extrude. Es wird als Union-Member VOR das
+  `−δ` in den gefalteten Baum gehängt (`synthesize_offset_channels_reported`),
+  report-unabhängig → Feld bit-identisch zwischen Report-/Nicht-Report-Pfad.
+- **Cap-Tiefen + S ⊆ U:** die Cap-Tiefen kommen aus der echten Member-Dicke
+  normal zu Π; die beweistragende Eigenschaft S ⊆ U wird zur Bauzeit
+  stichprobenartig am Feld verifiziert (`prism_subset_of_union`) — verletzt
+  (schräge Nachbarfläche) → Prisma verworfen, `conservative` bleibt.
+- **SSI-Unterdrückung:** für ein koplanar korrigiertes Member-Paar wird die
+  SSI-Naht-Synthese übersprungen — ihre Nähte an einem koinzidenten/tangentialen
+  Kontakt sind genau die degenerierten, die #394 zur Verweigerung zwangen (ohne
+  Unterdrückung leckte ihr Normalkegel Material in die Luft über Π, S ⊄ U).
+- **Capability:** greift die Korrektur → `exact`, wenn P dem vollen Querschnitt
+  beider Member entspricht (S = U); sonst `tolerance_bounded` mit der ehrlichen
+  B0-Sliver-Schranke am ∂P-Rand (Kanten δ·(1/sin(α/2)−1) ≈ 0.41·δ, Ecken
+  (√3−1)·δ ≈ 0.73·δ; gemeldet als ≈0.75·δ). Die #394-`note_conservative`-
+  Degradierung entfällt genau dann; sie bleibt für Nicht-Box-Member, gekrümmte
+  Kontakte, degenerierten Verschnitt und den Dilations-Fall (Stufe 3).
+
+**Empirie (offset_fuzz, OFFSET_FUZZ_ITERS=128, 1024 Szenen):** grün.
+Alle 68 `TangentialContact`-coplanar-boxes-Szenen wechseln von `conservative`
+auf `tolerance_bounded` (p99 der Nullmengen-Abweichung: min 0.0022 / median
+0.606 / max 1.45 mm, alle unter der B0-Schranke 0.75·δ; Mittel ≈0.06 mm, d. h.
+der flächige Innenfehler von bis > 9 mm ist getilgt, es bleibt nur der δ-schmale
+Rand-Saum). Gegenproben (Dieder `RotatedUnionOffset`, Kugel-auf-Box, disjunkt)
+bleiben strukturell UNVERÄNDERT — mein Code läuft nur im Zweig
+`coplanar_interface_present && union_form`, sonst ist der Pfad identisch; die
+CGAL-Golden-Ausgabe der 29 Alt-Szenen ist byte-identisch.
+
+**Stufe 2 (OFFEN):** Ein erster Rim-Prototyp (∂P-Stufen-Segmente als 2-Punkt-
+Seeds → `build_channel`) schloss den Sliver bei kleinem δ, erzeugte bei großem
+δ aber MEHR Fehler als der blanke Prism-Rest (Über-Addition an den ∂P-Ecken
+ohne Vertex-Kugeln, p99 ≈ δ). Er ist darum NICHT im Baupfad. Der saubere Weg
+(∂P-Klassifikation bündig/Stufe, Stufen als Seeds, Ecken als `VertexSphere`)
+ist in `offset_channel.rs` als Kommentar-Skizze festgehalten; die exakte
+Kernel-`channel_apply`/`vertex_apply`-Maschinerie mit ihren (c−1)·δ-Gates ist
+maßgeblich, nicht der f64-Prototyp-Port.
+
 ## 5. Geschriebene Dateien
 
 - `crates/metricity-lab/tests/f395_contact_patch.rs` — Prototyp + Messung
   (Prisma, ∂P-Rim-Kanal, C4-Ecken-Port [synthetisiert, nicht angewandt],
   Gegenproben; `f395_contact_patch_report` CI, `f395_delta_sweep` `#[ignore]`).
+- `crates/kernel/src/offset_channel.rs` — **Produktions-Umsetzung Stufe 1**
+  (`synthesize_contact_prisms`, `box_contact_faces`, `clip_convex`,
+  `build_prism_member`, `prism_subset_of_union`, Einhängung in
+  `synthesize_stop`/`synthesize_offset_channels_reported`, SSI-Unterdrückung
+  für koplanare Paare). Siehe §4b.
+- `crates/kernel/src/offset_capability_tests.rs` — Unit-Tests: koplanarer
+  Stapel → tolerance_bounded + Phantom-Schlitz-Feldprobe, gleicher Querschnitt →
+  exact (S = U), transversale Union/disjunkt unverändert, S ⊆ U-Feld-Stichprobe,
+  Kugel-auf-Box feuert kein Prisma.
+- `crates/kernel/examples/gen_golden.rs` — Golden-Szenen `contact_prism_stack`
+  (Stufe, tolerance_bounded) + `contact_prism_equal` (S = U, exact) für die
+  CGAL-C++-Parität des Prisma-Extrudes.
+- `crates/metricity-lab/tests/offset_fuzz.rs` — P3 liest bei Prisma-Korrektur
+  die B0-Sliver-Toleranz (≈0.75·δ) statt `channel_tol` (Stufe-2-Rim offen).
+- `docs/OFFSET-TREE-PLAN.md` — Prisma-Baustein in die Phase-B/C-Beschreibung.
 - dieses Dokument.
 
 ## 6. Verweise

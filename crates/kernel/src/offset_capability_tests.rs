@@ -35,6 +35,12 @@ fn leaf_box(fid: u32, h: [f32; 3]) -> CsgNode {
 /// collected capability report (mirror of `build_bounded_for_body_reported`
 /// without the feature-decode wrapping).
 fn report_for(node: CsgNode) -> CapabilityReport {
+    compile_for(node).1
+}
+
+/// Like [`report_for`] but also returns the compiled (channel-synthesised,
+/// pruned) `BoundedCsg` field — for #395 field-probe tests.
+fn compile_for(node: CsgNode) -> (BoundedCsg, CapabilityReport) {
     let csg = node.expand_shells().push_down_offsets().fold_offset_leaves();
     let mut report = CapabilityReport::new();
     csg.collect_offset_capability(&mut report);
@@ -44,7 +50,7 @@ fn report_for(node: CsgNode) -> CapabilityReport {
         &mut report,
     );
     prune_dead_channels(&mut bounded, CHANNEL_TOL_RENDER);
-    report
+    (bounded, report)
 }
 
 /// A closed sweep profile that contains a quadratic Bézier segment (the family
@@ -137,14 +143,16 @@ fn offset_over_union_is_tolerance_bounded() {
     );
 }
 
-// ─── #394 Ehrlichkeits-Heuristik (Befund F2): koplanarer Kontakt ─────────
+// ─── #395 Kontakt-Prisma (Befund F2, Fix): koplanarer Kontakt ────────────
 
-/// Zwei bündig gestapelte Boxen (gemeinsame koplanare Fläche, verschiedene
-/// Quer-Ausdehnung → submergierte interne Grenzfläche) unter Erosion: der
-/// dualen Union-Erosion `min(A,B)−δ` fehlt an der submergierten Fläche jede
-/// abdeckende Naht; das muss seit #394 ehrlich als conservative erscheinen.
+/// Zwei bündig gestapelte Boxen mit UNGLEICHEM Querschnitt (submergierte
+/// interne Grenzfläche) unter Erosion. Vor #395 meldete der Kernel das ehrlich
+/// als `conservative` (#394); seit dem Kontakt-Prisma + ∂P-Rim ist der Fehler
+/// getilgt → `tolerance_bounded` (Prism exakt bis auf den δ·(1/sin(α/2)−1)-
+/// Sliver am Rand, den der Arc-Kanal schließt). Feld-Probe: der frühere
+/// Phantom-Schlitz ist geschlossen.
 #[test]
-fn coplanar_stacked_boxes_erosion_is_conservative() {
+fn coplanar_stacked_boxes_erosion_is_tolerance_bounded() {
     let b1 = leaf_box(1, [10.0, 10.0, 10.0]);
     // Bündig an x = 10 (b1.+x-Fläche ≡ b2.−x-Fläche), aber schmaler in y/z
     // → die gemeinsame Fläche ist eine echte, submergierte 2D-Grenzfläche.
@@ -156,20 +164,91 @@ fn coplanar_stacked_boxes_erosion_is_conservative() {
         },
         Box::new(leaf_box(2, [8.0, 7.0, 6.0])),
     );
-    let node = CsgNode::Offset(Box::new(CsgNode::Union(Box::new(b1), Box::new(b2))), -1.5);
-    let report = report_for(node);
-    assert_eq!(
-        report.status(),
-        CapabilityStatus::Conservative,
-        "reasons: {:?}",
+    let node = CsgNode::Offset(
+        Box::new(CsgNode::Union(Box::new(b1.clone()), Box::new(b2.clone()))),
+        -1.5,
+    );
+    let (field, report) = compile_for(node);
+    assert!(
+        matches!(
+            report.status(),
+            CapabilityStatus::ToleranceBounded | CapabilityStatus::Exact
+        ),
+        "koplanarer Stapel muss seit #395 korrigiert sein — reasons: {:?}",
         report.reasons()
     );
     assert!(
-        report
+        !report.reasons().iter().any(|r| r.contains("unbeschränkt")),
+        "der Rest darf nicht mehr unbeschränkt sein — reasons: {:?}",
+        report.reasons()
+    );
+
+    // Feld-Probe: der Phantom-Schlitz lag im submergierten Kern (|y|≤7,|z|≤6)
+    // bei x knapp jenseits der naiven Erosions-Wand (x = 10 − δ = 8.5). Dort war
+    // das naive Feld `min(A,B)+δ` fälschlich > 0 (Loch); mit dem Prisma muss es
+    // jetzt < 0 sein (solides Material).
+    let phantom = [9.5f32, 0.0, 0.0];
+    let naive_min = b1_b2_min(&b1, &b2, phantom);
+    let naive = naive_min + 1.5; // min − delta, delta = −1.5
+    assert!(naive > 0.0, "Testaufbau: naiver Phantom-Punkt sollte >0 sein (war {naive})");
+    let corrected = field.sdf(phantom, EvalMode::Visual);
+    assert!(
+        corrected < 0.0,
+        "Phantom-Schlitz nicht geschlossen: f({phantom:?}) = {corrected} (soll < 0)"
+    );
+}
+
+/// Feld-Ground-Truth-Helfer: das naive `min(f_A, f_B)` an einem Punkt.
+fn b1_b2_min(b1: &CsgNode, b2: &CsgNode, p: [f32; 3]) -> f32 {
+    let f1 = BoundedCsg::from_csg(b1).sdf(p, EvalMode::Visual);
+    let f2 = BoundedCsg::from_csg(b2).sdf(p, EvalMode::Visual);
+    f1.min(f2)
+}
+
+/// GLEICHER Querschnitt (Union = eine größere Box): das Kontakt-Prisma IST die
+/// Union (S = U), die Erosion ist metrisch **exakt** — kein Toleranz-Downgrade.
+#[test]
+fn coplanar_equal_boxes_erosion_is_exact() {
+    let b1 = leaf_box(1, [10.0, 10.0, 10.0]);
+    let b2 = CsgNode::Transform(
+        Transform {
+            translate: [20.0, 0.0, 0.0],
+            rotation: [0.0, 0.0, 0.0, 1.0],
+            scale: [1.0; 3],
+        },
+        Box::new(leaf_box(2, [10.0, 10.0, 10.0])),
+    );
+    let node = CsgNode::Offset(Box::new(CsgNode::Union(Box::new(b1), Box::new(b2))), -2.0);
+    let report = report_for(node);
+    assert_eq!(
+        report.status(),
+        CapabilityStatus::Exact,
+        "gleicher Querschnitt → S = U → exakt; reasons: {:?}",
+        report.reasons()
+    );
+}
+
+/// Gekrümmter Kontakt (Kugel bündig auf Box-Fläche): kein planarer Carrier
+/// koinzident mit der Box-Fläche → das Kontakt-Prisma feuert NICHT, der Status
+/// bleibt unverändert (keine Falschkorrektur, Design §1.5).
+#[test]
+fn sphere_flush_on_box_does_not_trigger_prism() {
+    let b = leaf_box(1, [15.0, 15.0, 15.0]);
+    let sph = CsgNode::Leaf {
+        id: id(2),
+        primitive: Primitive::Sphere { center: [0.0, 0.0, 15.0 + 8.0], radius: 8.0 },
+    };
+    let node = CsgNode::Offset(Box::new(CsgNode::Union(Box::new(b), Box::new(sph))), -2.0);
+    let report = report_for(node);
+    // Der Prisma-Pfad darf hier nie eine Toleranz-/Exakt-Zusage aus einem
+    // koplanaren Prisma erfinden; die Kugel-Naht bleibt wie gehabt (die
+    // Kanal-Synthese entscheidet — nie eine koplanar-Prisma-Notiz).
+    assert!(
+        !report
             .reasons()
             .iter()
-            .any(|r| r.contains("Koplanar") || r.contains("submergierte")),
-        "expected a coplanar/submerged-face reason, got {:?}",
+            .any(|r| r.contains("Kontakt-Prisma")),
+        "gekrümmter Kontakt darf kein Kontakt-Prisma auslösen — reasons: {:?}",
         report.reasons()
     );
 }
@@ -218,6 +297,61 @@ fn disjoint_union_erosion_is_exact() {
         "disjunkte Kinder dürfen nicht degradiert werden — reasons: {:?}",
         report.reasons()
     );
+}
+
+/// S ⊆ U (Design §4, beweistragende Eigenschaft): das Kontakt-Prisma darf kein
+/// Material AUSSERHALB der Union hinzufügen. Feld-Test: an jedem Punkt, der
+/// klar (> |δ|) außerhalb von U = min(A,B) liegt, muss das korrigierte
+/// Erosions-Feld positiv (außen) bleiben — sonst hätte das Prisma über eine
+/// Nachbarfläche hinaus gefüllt.
+#[test]
+fn contact_prism_stays_inside_union() {
+    let b1 = leaf_box(1, [12.0, 12.0, 12.0]);
+    // In y/z versetzt + schmaler → echtes Schnitt-Sub-Rechteck, Stufen an ∂P.
+    let b2 = CsgNode::Transform(
+        Transform {
+            translate: [22.0, 5.0, 3.0],
+            rotation: [0.0, 0.0, 0.0, 1.0],
+            scale: [1.0; 3],
+        },
+        Box::new(leaf_box(2, [10.0, 9.0, 8.0])),
+    );
+    let delta = -2.0f32;
+    let node = CsgNode::Offset(
+        Box::new(CsgNode::Union(Box::new(b1.clone()), Box::new(b2.clone()))),
+        delta,
+    );
+    let (field, _report) = compile_for(node);
+    let fb1 = BoundedCsg::from_csg(&b1);
+    let fb2 = BoundedCsg::from_csg(&b2);
+    let guard = 0.05f32;
+    let da = delta.abs();
+    // Gitter über die gepolsterte Szene.
+    let (lo, hi) = ([-16.0f32, -18.0, -18.0], [36.0f32, 18.0, 14.0]);
+    let n = 40;
+    let mut violations = 0;
+    for ix in 0..=n {
+        for iy in 0..=n {
+            for iz in 0..=n {
+                let p = [
+                    lo[0] + (hi[0] - lo[0]) * ix as f32 / n as f32,
+                    lo[1] + (hi[1] - lo[1]) * iy as f32 / n as f32,
+                    lo[2] + (hi[2] - lo[2]) * iz as f32 / n as f32,
+                ];
+                let u = fb1
+                    .sdf(p, EvalMode::Visual)
+                    .min(fb2.sdf(p, EvalMode::Visual));
+                if u > da + guard {
+                    // Klar außerhalb U (und damit außerhalb der Erosion U⊖δ):
+                    // das korrigierte Feld muss außen sein.
+                    if field.sdf(p, EvalMode::Visual) <= 0.0 {
+                        violations += 1;
+                    }
+                }
+            }
+        }
+    }
+    assert_eq!(violations, 0, "S ⊄ U: Prisma fügt Material außerhalb der Union hinzu");
 }
 
 // ─── (d) axis-touching revolve → conservative (with reason) ──────────────
@@ -432,3 +566,4 @@ fn plain_offset_is_exact_end_to_end() {
     let cap = k.feature_capabilities.get(&id(2)).expect("offset capability present");
     assert_eq!(cap.status, CapabilityStatus::Exact, "reasons: {:?}", cap.reasons);
 }
+

@@ -707,10 +707,25 @@ fn check_p3(
         return false;
     };
 
-    // Schwellen: robuster Messboden + (bei tolerance_bounded) channel_tol.
+    // Schwellen: robuster Messboden + (bei tolerance_bounded) die zugesagte
+    // Toleranz. Für Arc-Spline-Kanäle ist das `channel_tol`; für einen
+    // #395-Kontakt-Prisma OHNE Stufe-2-Rim ist die ehrliche Zusage die
+    // B0-Sliver-Klasse am Kontaktrand ∂P — Kanten ≈0.41·δ, Ecken ≈(√3−1)·δ
+    // ≈0.73·δ (der Prisma tilgt den flächigen 2D-Innenfehler, es bleibt nur
+    // der δ-schmale konkave Saum, Design §1.2/§Umsetzungs-Status). Die Zusage
+    // steht wörtlich im Report; wir lesen sie hier ab, statt eine
+    // channel_tol-Genauigkeit zu unterstellen, die Stufe 1 nicht verspricht.
     let exact_tol = exact_rel * z.model_size;
+    let prism_only = comp
+        .report
+        .reasons()
+        .iter()
+        .any(|r| r.contains("Kontakt-Prisma"));
     let threshold = match status {
         CapabilityStatus::Exact => exact_tol,
+        CapabilityStatus::ToleranceBounded if prism_only => {
+            exact_tol + 0.75 * (*delta).abs() as f64 + scene.channel_tol as f64
+        }
         CapabilityStatus::ToleranceBounded => exact_tol + scene.channel_tol as f64,
         _ => unreachable!(),
     };
