@@ -407,14 +407,62 @@ bleiben strukturell UNVERÄNDERT — mein Code läuft nur im Zweig
 `coplanar_interface_present && union_form`, sonst ist der Pfad identisch; die
 CGAL-Golden-Ausgabe der 29 Alt-Szenen ist byte-identisch.
 
-**Stufe 2 (OFFEN):** Ein erster Rim-Prototyp (∂P-Stufen-Segmente als 2-Punkt-
-Seeds → `build_channel`) schloss den Sliver bei kleinem δ, erzeugte bei großem
-δ aber MEHR Fehler als der blanke Prism-Rest (Über-Addition an den ∂P-Ecken
-ohne Vertex-Kugeln, p99 ≈ δ). Er ist darum NICHT im Baupfad. Der saubere Weg
-(∂P-Klassifikation bündig/Stufe, Stufen als Seeds, Ecken als `VertexSphere`)
-ist in `offset_channel.rs` als Kommentar-Skizze festgehalten; die exakte
-Kernel-`channel_apply`/`vertex_apply`-Maschinerie mit ihren (c−1)·δ-Gates ist
-maßgeblich, nicht der f64-Prototyp-Port.
+**Stufe 2 (OFFEN — negativer Befund, 2026-07-21):** Ein erster Rim-Prototyp
+(∂P-Stufen-Segmente als 2-Punkt-Seeds → `build_channel`) schloss den Sliver bei
+kleinem δ, erzeugte bei großem δ aber MEHR Fehler als der blanke Prism-Rest
+(Über-Addition, p99 ≈ δ). Er ist darum NICHT im Baupfad.
+
+Ein zweiter, VOLLSTÄNDIGER Versuch (∂P-Rim-Kanäle als 2-Punkt-Seeds durch
+`build_channel` PLUS analytische C4-`VertexSphere` an den Ecken, beides in die
+regulären Stopp-Listen gehängt, mit Beschränkung auf ENTHALTENE Kontaktpolygone
+= saubere orthogonale Trieder) reproduzierte denselben Fehlermodus und ist
+**mit der bestehenden `channel_apply`/`vertex_apply`-Maschinerie architektonisch
+nicht lösbar.** Der δ-Sweep am beweistragenden enthaltenen Kontakt
+(he[10,10,10] ⊃ he[8,7,6]) zeigte statt Monotonie eine Verschlechterung:
+
+| δ | Stufe 1 p99 (Prisma) | Stufe 2 p99 (Prisma+Rim+Ecken) |
+|---|---|---|
+| 0.5 | 0.197 | 0.157 |
+| 1 | 0.184 | **0.454** |
+| 2 | 0.598 | **2.000** |
+
+**Ursache (exakt lokalisiert, `offset_fuzz::f395_diag`, δ=2, Punkt
+(10, 6.17, −3.82) auf der Kontaktebene x=10, innerhalb P):** Die ∂P-Kante des
+konkaven Reflex-Edge liegt IN der submergierten Kontaktebene Π. Der konkave
+Kanal-Trust-Ball (Radius ~c·δ um die ∂P-Kante) überlappt zwangsläufig den
+**submergierten inneren Rahmenstreifen** (Breite ~δ·√2 entlang ∂P auf Π). Dort
+ist die WAHRE Erosion U⊖δ **Luft** (per Ball-Test verifiziert: `ball(p,δ) ⊄ U`,
+weil die Erosion sich δ von der Kontaktfläche zurückzieht) — das Prisma gibt
+dort korrekt f > 0. Der konkave Kanal, konstruiert um an einem Reflex-Edge
+Material zu ADDIEREN, füllt diesen Rahmen aber über zwei Wege:
+
+- **Luftseiten-Klemme** (`w_geo ≤ 0 → d.min(−w_geo)`): auf Π gilt
+  s₁ = ⟨x−q*, m̂₁⟩ = 0 (m̂₁ ∝ Kontaktnormale, Π ist ihr Nullraum), also
+  w_geo = 0 ⇒ `d.min(0) = 0` ⇒ Phantom-Flächenpatch genau auf Π (der Schlitz,
+  den das Prisma gerade getilgt hat, kehrt zurück).
+- **Additivzweig** (`w > 0 → d.min(−w)`): im b1-seitigen Keil (x < δ innerhalb
+  Π) füllt der Kanal echtes Material in Punkte, die wahre Luft sind
+  (z. B. (9, 6.17, −5): `ball ⊄ U`).
+
+Die C4-Vertex-Kugeln teilen dieselbe Klemme (`v3`-Ecke füllt (10,6.17,−3.82)
+ebenso auf 0) und verschlimmern die Ecken zusätzlich — sie sind KEIN Gegenmittel.
+Beide Wege sind unlösbar, ohne `channel_apply`/`vertex_apply` selbst zu ändern
+(die Luftseiten-Klemme ist für die transversalen SSI-Nähte beweistragend und
+über CGAL-C++/WGSL/fidget bit-identisch gespiegelt — ein Eingriff bräche die
+Evaluator-Parität und die Golden-Szenen). Der Kernunterschied zu einer echten
+SSI-Naht: dort ist das naive Feld d im gesamten Wirkgebiet ≈ 0 (der Miter sitzt
+an der Naht), hier ist d auf der submergierten Seite groß-positiv (Prisma-Luft),
+und der Kanal kann „Reflex-Fillet-Material" nicht von „Rückzugs-Luft" trennen —
+beide liegen innerhalb δ·√2 derselben ∂P-Kante auf derselben (−n₂)-Seite.
+
+**Konsequenz:** Der Baupfad bleibt bei Stufe 1. Der Restfehler am Kontaktrand
+∂P ist ehrlich als B0-Sliver ≈0.75·δ (`tolerance_bounded`) gemeldet. Eine
+korrekte Stufe 2 bräuchte eine ANDERE Korrektur-Repräsentation als den
+SSI-Kanal — etwa ein zweites, kantenlokales konvexes Constraint, das den
+submergierten Rahmen explizit als Luft schützt (halfspace-gated), oder einen
+eigenen „additiv-only + halbraum-maskierten" Korrektur-Opcode. Beides sprengt
+den #395-Scope (neuer Opcode + alle Evaluator-Spiegel) und ist als Stufe 3 zu
+führen.
 
 ## 5. Geschriebene Dateien
 
