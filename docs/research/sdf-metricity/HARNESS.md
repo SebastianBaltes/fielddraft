@@ -219,6 +219,78 @@ durchweg 1.2–2.3× LANGSAMER als der direkte `CsgNode::sdf`-Eval
 der CPU-Referenz — Korrektur-Operatoren sollten ihre Kosten gegen
 BEIDE Spalten ausweisen.
 
+## Offset/Shell-Property-Harness (#384)
+
+`crates/metricity-lab/tests/offset_fuzz.rs` — ein seeded,
+reproduzierbarer Property-Harness (kein cargo-fuzz, gewöhnliche
+`#[test]`s mit dem in-crate `SplitMix64`; der Seed steckt in jeder
+Fehlermeldung). Er würfelt degenerierte Offset/Shell-Szenen und prüft je
+Szene drei Eigenschaftsklassen.
+
+**Familien** (Szenen-Enum, je `OFFSET_FUZZ_ITERS` Szenen — Default 32):
+`RotatedOffsetBox` (rotierte Naht, beide Vorzeichen), `RotatedUnionOffset`
+(Erosion über Dieder-Union, optional global rotiert), `TangentialContact`
+(Kugel-auf-Box-Fläche bzw. koplanare Boxen + Erosion), `SmallFeatureVsLargeDelta`
+(|δ| nahe/über halber Kante → Kollaps als Grenzfall), `MultiFaceCorner`
+(konvexe ≥4-Flächen-Spitze aus Boolean-Kette + Erosion), `StackedDualStops`
+(Difference-Dilation + Union-Erosion, Offset über Offset),
+`ClosedShellBoolean` (geschlossene Shell auf Boolean), `OffsetShellCombo`
+(Dilation über geschlossener Shell).
+
+**Properties.** P1 — nach jeder Pipelinestufe werden die vier
+`offset_invariants::check_*` DIREKT aufgerufen (nicht via debug_assert);
+jede Verletzung ist ein Befund. P2 — `synthesize_offset_channels_reported`
++ `prune_dead_channels` panikt nie, das Feld ist überall endlich, ein Punkt
+weit außen ist positiv (Erosions-Kollaps ist gültige Geometrie, kein
+Befund). P3 (Kern) — der `CapabilityReport` wird gegen die Ground Truth
+gemessen: für jeden Feld-Oberflächenpunkt `p` ist `|d_base(p) − δ|` die
+Distanz zur WAHREN Offset-Fläche (`d_base` = GT-Abstand zum Grundkörper,
+Doppel-GT). `exact`/`tolerance_bounded` müssen die Schranke halten,
+`conservative` trägt keine.
+
+**Schwellen — empirisch geeicht, nicht geraten.** Der GT-Boden wird an
+bekannten EXAKTEN Fällen kalibriert. Die glatte Kugel-Dilation gibt
+~1e-7·Modellgröße; maßgeblich ist aber ein Panel rotierter Box-DILATIONEN
+(~2e-4·Modellgröße p99), denn AUSSEN-Punkte der Rundungspatches gegen
+scharfe Box-ECKEN sind die schwerste GT-Messlage (Punkt-Features, Kompass-
+Stranding). P3 erzwingt das ROBUSTE **p99** (nicht max): vereinzeltes
+GT-Stranding lebt im Extrem-Schwanz, eine echte VERTEILTE Abweichung hebt
+das p99. Schwelle: `exact` = `3·sharp_rel·model_size` (Boden ≈4e-4),
+`tolerance_bounded` = zusätzlich `+ channel_tol`. Max wird zusätzlich
+berichtet.
+
+**Reproduktion.** Ein Failure nennt `[Familie seed=N params]`. Default-
+Lauf: `cargo test -p metricity-lab --test offset_fuzz`. Langer Lauf:
+`OFFSET_FUZZ_ITERS=320 cargo test -p metricity-lab --test offset_fuzz
+offset_shell_property_fuzz -- --nocapture`. Eine Einzelszene baut man mit
+`generate(Family::X, seed)`.
+
+**Aufgedeckte Befunde** (echte, verifizierte Pipeline-/Vertrags-Lücken;
+NICHT im Zuge des Harness gefixt, je als `#[ignore]`-Minimalrepro
+festgehalten, damit der CI-Gate grün bleibt):
+
+- **F1 (BEHOBEN)** — `Offset(closed_shell, δ<0)` brach Pipeline-Invariante 4:
+  `push_down` schob die Erosion durch die shell-expandierte `Difference` und
+  dilatierte den `InnerWall`-Subtrahenden; da `offset_can_push_through`
+  InnerWall ablehnte, umschloss ein `Offset` den InnerWall → er saß nicht mehr
+  direkt als `Difference.r`, und die Höhle faltete nie. Fix: InnerWall ist
+  feld-transparent, der Offset kommutiert jetzt hindurch
+  (`Offset(InnerWall(X), δ)` ≡ `InnerWall(Offset(X, δ))`) — Erosion über
+  geschlossener Shell faltet damit exakt. Regressionstest:
+  `offset_invariants_tests::pos_erosion_over_closed_shell_keeps_innerwall_and_folds`;
+  die Familie `OffsetShellCombo` würfelt wieder beide Vorzeichen.
+- **F2** — `finding_f2_union_erosion_spurious_interior_surface`:
+  DEGENERIERTE Union-Erosion (koplanare/tangentiale Flächen) weicht in der
+  Nullmenge stark ab (bis >13 mm, p99/mean im mm-Bereich), Status bleibt
+  `exact`/`tolerance_bounded`. `min(A,B)−δ` unterschätzt in der Überlappung
+  die wahre Tiefe (submergierte Flächen); die Arc-Spline-Kanäle korrigieren
+  nur die sichtbare Naht. SAUBERE Union-Erosion (symmetrische Kugel-auf-Box,
+  Dieder-Unionen) erodiert dagegen metrisch exakt — daher werden nur die
+  Union-Erosions-Familien (`RotatedUnionOffset`, `TangentialContact`) beim
+  P3-Gate nicht HART erzwungen (Messwerte werden als „offene Befunde"
+  berichtet). Verifikation als GT-Artefakt ausgeschlossen: eine unabhängige
+  Roh-Nearest-Neighbor-Distanz bestätigt die refinierte GT-Distanz.
+
 ## Bekannte Limitationen des Harness
 
 - **GT misst gegen die Nullmenge des Feldes**, nicht gegen eine
