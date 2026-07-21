@@ -331,7 +331,13 @@ Die C4-Arbeit hat drei latente **Phase-B-Fehler** aufgedeckt und behoben
   maskiert. Fix: Konvergenz-Check vor dem Schritt + 0.995-Dämpfung.
   Dazu ein Exponierungs-Witness (Carrier-Normalen-FD), der die dadurch
   neu erreichbaren SCHEIN-Nähte an tangentialen Kanten-Kontakten
-  (koplanare Deckel) explizit verweigert.
+  (koplanare Deckel) explizit verweigert. Diese Verweigerung wird seit #394
+  (Ehrlichkeits-Heuristik, Befund F2) zusätzlich als Capability-Downgrade
+  gemeldet: ein koplanarer/tangentialer, koinzidenter, gegenläufig
+  orientierter, flächig überlappender Carrier-Kontakt zweier Boolescher
+  Kinder (`offset_channel::coplanar_interface_present`) macht `min(A,B)∓δ` an
+  der submergierten Fläche zur blossen Näherung — der Stopp meldet dort
+  ehrlich `conservative` statt still `exact`/`tolerance_bounded` zu bleiben.
 * **Gate-Weite:** Phase B setzte `G = c·δ` — ein δ über dem Maximalbedarf
   `(c−1)·δ`; an trunkierten Kurven-Enden leckte die Endpunkt-Kappe bis
   ~δ Material über das Ende hinaus. Jetzt `G = (c−1)·δ + 4·tol`.

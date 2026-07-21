@@ -137,6 +137,89 @@ fn offset_over_union_is_tolerance_bounded() {
     );
 }
 
+// ─── #394 Ehrlichkeits-Heuristik (Befund F2): koplanarer Kontakt ─────────
+
+/// Zwei bündig gestapelte Boxen (gemeinsame koplanare Fläche, verschiedene
+/// Quer-Ausdehnung → submergierte interne Grenzfläche) unter Erosion: der
+/// dualen Union-Erosion `min(A,B)−δ` fehlt an der submergierten Fläche jede
+/// abdeckende Naht; das muss seit #394 ehrlich als conservative erscheinen.
+#[test]
+fn coplanar_stacked_boxes_erosion_is_conservative() {
+    let b1 = leaf_box(1, [10.0, 10.0, 10.0]);
+    // Bündig an x = 10 (b1.+x-Fläche ≡ b2.−x-Fläche), aber schmaler in y/z
+    // → die gemeinsame Fläche ist eine echte, submergierte 2D-Grenzfläche.
+    let b2 = CsgNode::Transform(
+        Transform {
+            translate: [18.0, 0.0, 0.0],
+            rotation: [0.0, 0.0, 0.0, 1.0],
+            scale: [1.0; 3],
+        },
+        Box::new(leaf_box(2, [8.0, 7.0, 6.0])),
+    );
+    let node = CsgNode::Offset(Box::new(CsgNode::Union(Box::new(b1), Box::new(b2))), -1.5);
+    let report = report_for(node);
+    assert_eq!(
+        report.status(),
+        CapabilityStatus::Conservative,
+        "reasons: {:?}",
+        report.reasons()
+    );
+    assert!(
+        report
+            .reasons()
+            .iter()
+            .any(|r| r.contains("Koplanar") || r.contains("submergierte")),
+        "expected a coplanar/submerged-face reason, got {:?}",
+        report.reasons()
+    );
+}
+
+/// Gegenprobe: eine TRANSVERSALE Dieder-Union (Luftkeil, echte Nahtkurve)
+/// unter Erosion wird von der Kanal-Synthese korrigiert und darf NICHT von
+/// der Ehrlichkeits-Heuristik degradiert werden — die Normalen an der Naht
+/// sind nicht anti-parallel, es gibt keinen koplanaren internen Kontakt.
+#[test]
+fn transversal_union_erosion_is_not_degraded() {
+    let report = report_for(notch_union_node(90.0, 2.0));
+    assert_eq!(
+        report.status(),
+        CapabilityStatus::ToleranceBounded,
+        "transversale Union darf nicht conservative werden — reasons: {:?}",
+        report.reasons()
+    );
+    assert!(
+        !report
+            .reasons()
+            .iter()
+            .any(|r| r.contains("Koplanar") || r.contains("submergierte")),
+        "transversale Naht fälschlich als koplanar gemeldet: {:?}",
+        report.reasons()
+    );
+}
+
+/// Gegenprobe: DISJUNKTE Kinder (kein Kontakt) erodieren unabhängig und
+/// metrisch exakt — kein dualer Naht-Fehler, keine Degradierung.
+#[test]
+fn disjoint_union_erosion_is_exact() {
+    let b1 = leaf_box(1, [10.0, 10.0, 10.0]);
+    let b2 = CsgNode::Transform(
+        Transform {
+            translate: [40.0, 0.0, 0.0],
+            rotation: [0.0, 0.0, 0.0, 1.0],
+            scale: [1.0; 3],
+        },
+        Box::new(leaf_box(2, [10.0, 10.0, 10.0])),
+    );
+    let node = CsgNode::Offset(Box::new(CsgNode::Union(Box::new(b1), Box::new(b2))), -1.5);
+    let report = report_for(node);
+    assert_eq!(
+        report.status(),
+        CapabilityStatus::Exact,
+        "disjunkte Kinder dürfen nicht degradiert werden — reasons: {:?}",
+        report.reasons()
+    );
+}
+
 // ─── (d) axis-touching revolve → conservative (with reason) ──────────────
 
 #[test]

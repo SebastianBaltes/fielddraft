@@ -12,6 +12,9 @@ Format, eine Zeile je Eintrag:
 kind = feat | fix | perf. scope und #tickets sind optional. Folgezeilen, die
 eingerückt sind, gehören zum Text davor (Umbruch erlaubt).
 
+## 0.18.2
+- fix(sdf) #394 #384: Der Maßhaltigkeits-Status von Offset/Shell log bei bündig gestapelten Körpern. Wenn zwei Körper einer Union sich koplanar oder tangential berühren (in CAD der Normalfall: flächig aufeinandergesetzte Teile), fand die Nahtsuche an der gemeinsamen Fläche keine Kurve — der Offset war dort nur eine Näherung (Abweichung bis über 13 mm), das Feature meldete aber weiterhin „exakt“ oder „toleranzbeschränkt“. Jetzt erkennt der Kernel den flächigen internen Kontakt strukturell und stuft ehrlich auf „Näherung“ herab; das Abzeichen und der Hinweis im Editor erscheinen. Saubere, quer verlaufende Nähte und getrennte Körper bleiben unverändert exakt bewertet. Die Geometrie selbst ändert sich nicht — es geht rein um die ehrliche Statusmeldung.
+
 ## 0.18.1
 - fix(sdf) #384: Ein negatives Offset (Erosion) auf einem Körper mit geschlossener Shell ergab bisher an der Innenwand nur eine Näherung — die Höhle wurde beim internen Umbau nicht mit eingefaltet, die Wandstärke stimmte nach dem Offset nur ungefähr. Jetzt kommutiert das Offset korrekt durch die Innenwand-Struktur, die Höhle faltet exakt mit und die Wand bleibt maßhaltig. Aufgedeckt durch den neuen Property-Fuzz-Harness, der zufällige degenerierte Offset/Shell-Geometrien gegen die gemessene Ground Truth prüft.
 

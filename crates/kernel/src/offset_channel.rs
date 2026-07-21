@@ -1303,6 +1303,102 @@ fn build_channel(
     })
 }
 
+/// #394 (Ehrlichkeits-Heuristik, Befund F2 des #384-Fuzz): Erkennt einen
+/// **koplanaren/tangentialen internen Grenzflächen-Kontakt** zwischen zwei
+/// Booleschen Membern eines dualen Stopps — zwei planare Carrier-Flächen,
+/// die in WELT-Koordinaten koinzident, gegenläufig orientiert
+/// (anti-parallel) und in ≥2 Achsen flächig überlappend sind.
+///
+/// Das ist genau der F2-Fall: bündig gestapelte/berührende Boxen. Dort
+/// unterschätzt `min(A, B)` an der submergierten gemeinsamen Fläche die
+/// wahre Tiefe (die nächste Primitivfläche liegt IM Nachbar-Körper); an
+/// einem zero-thickness-Kontakt findet die SSI-Nahtsuche keine abdeckende
+/// Nahtkurve, und ein Arc-Spline-Kanal (1D-Kurve) kann einen flächigen 2D-
+/// Grenzbereich ohnehin nicht korrigieren. `min(A, B) ∓ δ` bleibt dort nur
+/// eine Näherung — der gemessene Nullmengen-Fehler liegt weit über jeder
+/// Toleranz (Fuzz p99 ≫ 1 mm), während Status ohne diese Heuristik
+/// fälschlich `exact`/`tolerance_bounded` bliebe.
+///
+/// **Rein struktureller Test** aus den Carrier-Halfspace-Karten — kein
+/// Sampling, keine Feldauswertung. Er meldet nur (Kandidat 1 ist reine
+/// Ehrlichkeit, s. offset_capability-Doku); das Feld bleibt bit-identisch.
+/// TRANSVERSALE Dieder-Nähte (nᵢ·nⱼ weg von −1) korrigiert die Kanal-
+/// Synthese exakt/toleranzbeschränkt und lösen NICHT aus; tangentiale
+/// Punkt-/Kurvenkontakte gekrümmter Flächen (Kugel-auf-Box — kein planarer
+/// Carrier koinzident mit der Box-Fläche) lösen ebenfalls NICHT aus.
+fn coplanar_interface_present(
+    branch_maps: &[crate::brep::BranchSurfaceMap],
+    branch_lists: &[Vec<crate::brep::branch_pairs::Branch>],
+    delta_abs: f32,
+) -> bool {
+    // Welt-Ebenen `(n̂, o, Flächen-AABB)` je Member aus den planaren Carriern.
+    let planes: Vec<Vec<([f32; 3], f32, Aabb)>> = branch_lists
+        .iter()
+        .zip(branch_maps.iter())
+        .map(|(bl, map)| {
+            let mut out = Vec::new();
+            for b in bl {
+                let Some((fielddraft_protocol::HalfSpace::Plane { normal, offset }, xf)) =
+                    map.get(&b.id.as_u32())
+                else {
+                    continue;
+                };
+                let wn = crate::transform::quat_rotate(xf.rotation, *normal);
+                let ln = norm(wn);
+                if ln < 1e-6 {
+                    continue;
+                }
+                let wn = [wn[0] / ln, wn[1] / ln, wn[2] / ln];
+                // Lokaler Ebenen-Fußpunkt `n·offset` → Welt (uniforme Skala).
+                let lp = [normal[0] * offset, normal[1] * offset, normal[2] * offset];
+                let sp = [lp[0] * xf.scale[0], lp[1] * xf.scale[1], lp[2] * xf.scale[2]];
+                let wp = crate::transform::quat_rotate(xf.rotation, sp);
+                let wp = [wp[0] + xf.translate[0], wp[1] + xf.translate[1], wp[2] + xf.translate[2]];
+                let wo = dot(wn, wp);
+                out.push((wn, wo, b.aabb));
+            }
+            out
+        })
+        .collect();
+
+    // Toleranzen δ-skaliert: ein flächiger Kontakt innerhalb ~½δ ist bereits
+    // der degenerierte Fall (die Kontaktzone liegt im Offset-Band).
+    let coincide_tol = (0.5 * delta_abs).max(1e-3);
+    let overlap_min = (0.5 * delta_abs).max(1e-3);
+    for i in 0..planes.len() {
+        for j in (i + 1)..planes.len() {
+            for &(ni, oi, ai) in &planes[i] {
+                for &(nj, oj, aj) in &planes[j] {
+                    // Anti-parallel + koinzident (der Vorzeichen-Flip der
+                    // Normale kippt zugleich das Vorzeichen von o).
+                    if dot(ni, nj) > -0.9995 {
+                        continue;
+                    }
+                    if (oi + oj).abs() > coincide_tol {
+                        continue;
+                    }
+                    // Echte 2D-Grenzfläche (≥2 Achsen mit Überlapp), kein
+                    // blosser Kanten-/Punktkontakt. Der `gap` überbrückt die
+                    // f32-Rundung zweier eigentlich koinzidenter Flächen-AABBs
+                    // (bündige Boxen berühren sich in der Normalachse mit ~1 ULP
+                    // Lücke → `intersect` sonst leer); er ist ≪ overlap_min,
+                    // erzeugt also keine falsche 2D-Überlappung an Kanten.
+                    let gap = (0.05 * delta_abs).max(1e-2);
+                    let ov = Aabb::intersect(ai.expanded(gap), aj.expanded(gap));
+                    if ov.is_empty() {
+                        continue;
+                    }
+                    let sz = ov.size();
+                    if (0..3).filter(|&k| sz[k] > overlap_min).count() >= 2 {
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+    false
+}
+
 /// Synthetisiert Kanal-Korrekturkörper + Vertex-Kugeln für EINEN
 /// Stopp-Knoten (`Offset { inner, delta }` mit dualem Boolean-Kind).
 /// Leere Listen = vollständige Verweigerung, `f − δ` bleibt.
@@ -1335,6 +1431,18 @@ fn synthesize_stop(
         .iter()
         .map(|m| crate::brep::branch_pairs::enumerate_branches(m.node))
         .collect();
+
+    // #394 (Befund F2): koplanarer/tangentialer interner Grenzflächen-Kontakt
+    // → der Offset ist an der submergierten Fläche nur eine Näherung; das
+    // meldet die Kanal-Synthese strukturell NICHT (keine Nahtkurve dort), also
+    // ehrlich als conservative degradieren. Rein additiver Report — feld-
+    // identisch, die eigentliche Kanalsynthese läuft unverändert weiter.
+    if coplanar_interface_present(&branch_maps, &branch_lists, ctx.delta) {
+        report.note_conservative(
+            "Koplanarer/tangentialer Kontakt zweier Boolescher Kinder ohne abdeckende Nahtkurve — \
+             Offset in der Kontaktzone nur Näherung (submergierte Fläche, f∓δ unbeschränkt).",
+        );
+    }
 
     let mut channels: Vec<OffsetChannel> = Vec::new();
     // Blockierte Enden je Kanal (Index in `channels`, Trace-Schrittweite,

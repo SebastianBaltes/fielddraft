@@ -279,17 +279,31 @@ festgehalten, damit der CI-Gate grün bleibt):
   geschlossener Shell faltet damit exakt. Regressionstest:
   `offset_invariants_tests::pos_erosion_over_closed_shell_keeps_innerwall_and_folds`;
   die Familie `OffsetShellCombo` würfelt wieder beide Vorzeichen.
-- **F2** — `finding_f2_union_erosion_spurious_interior_surface`:
-  DEGENERIERTE Union-Erosion (koplanare/tangentiale Flächen) weicht in der
-  Nullmenge stark ab (bis >13 mm, p99/mean im mm-Bereich), Status bleibt
-  `exact`/`tolerance_bounded`. `min(A,B)−δ` unterschätzt in der Überlappung
-  die wahre Tiefe (submergierte Flächen); die Arc-Spline-Kanäle korrigieren
-  nur die sichtbare Naht. SAUBERE Union-Erosion (symmetrische Kugel-auf-Box,
-  Dieder-Unionen) erodiert dagegen metrisch exakt — daher werden nur die
-  Union-Erosions-Familien (`RotatedUnionOffset`, `TangentialContact`) beim
-  P3-Gate nicht HART erzwungen (Messwerte werden als „offene Befunde"
-  berichtet). Verifikation als GT-Artefakt ausgeschlossen: eine unabhängige
-  Roh-Nearest-Neighbor-Distanz bestätigt die refinierte GT-Distanz.
+- **F2 (BEHOBEN)** — DEGENERIERTE Union-Erosion (koplanarer/tangentialer
+  Flächenkontakt) wich in der Nullmenge stark ab (bis >13 mm, p99/mean im
+  mm-Bereich), Status blieb fälschlich `exact`/`tolerance_bounded`.
+  `min(A,B)−δ` unterschätzt an der submergierten gemeinsamen Fläche die wahre
+  Tiefe; an einem zero-thickness-Kontakt findet die SSI-Nahtsuche keine
+  abdeckende Nahtkurve, und ein Arc-Spline-Kanal (1D-Kurve) kann den flächigen
+  2D-Grenzbereich ohnehin nicht korrigieren. **Fix (Ehrlichkeits-Heuristik,
+  #394):** der Kernel erkennt den koinzidenten, gegenläufig orientierten
+  (anti-parallel), flächig überlappenden Carrier-Flächen-Kontakt rein
+  strukturell aus den Halfspace-Karten
+  (`offset_channel::coplanar_interface_present`) und meldet den Stopp ehrlich
+  als `conservative` (feld-identisch, reiner Report — Kandidat 1). SAUBERE,
+  transversale Union-Erosion (Dieder-Unionen, Kugel-auf-Box) erodiert
+  weiterhin metrisch exakt und bleibt unangetastet. Damit erzwingt P3 nun
+  BEIDE Union-Erosions-Familien (`RotatedUnionOffset`, `TangentialContact`)
+  HART; die `p3_enforced`-Ausnahme und der `#[ignore]`-Minimalrepro sind
+  entfernt. **P3-Robustheit:** der Gate fordert seither BEIDE Schranken —
+  p99 UND Mittelwert über der Zusage. Grund: die GT-Kompass-Raffinierung
+  strandet vereinzelt an scharfen konkaven Naht-End-Triple-Junctions (s.
+  „Bekannte Limitationen"), was p99 grid-instabil zwischen ~0 und mehreren mm
+  springen lässt, während das Mittel ~1e-4·size bleibt. Ein echter
+  Vertragsbruch ist dagegen flächig (hoher p99 UND hoher Mittelwert), F2 selbst
+  wird ohnehin schon vom Kernel degradiert. Die Doppel-Schranke verhindert
+  also, dass isoliertes GT-Stranding als Lüge quittiert wird, ohne einen echten
+  Befund zu verstecken.
 
 ## Bekannte Limitationen des Harness
 
