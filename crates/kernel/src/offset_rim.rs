@@ -13,7 +13,10 @@
 //!   BEIDER Member — dort ist das Prisma-Feld schon exakt, KEIN Fillet) vs.
 //!   **Stufe** (Reflexkante: der Prisma-Rand taucht in die Wand des größeren
 //!   Members) klassifiziert. Die Klassifikation ist rein analytisch (Kanten-auf-
-//!   Rechteck-Rand-Test in der Kontaktebene), kein Sampling-Epsilon.
+//!   Kontur-Rand-Test in der Kontaktebene, `edge_on_contour`), kein
+//!   Sampling-Epsilon. FC Phase 3 (#398): die Klassifikation läuft über
+//!   beliebige (auch nicht-konvexe) Member-Konturen; Reflex-Vertices von P
+//!   bleiben ehrlich ungerundet (Design §5).
 //! * Die zwei Wand-Außennormalen einer Stufen-Kante werden als SOLID-Außen-
 //!   normalen orientiert (`n̂_A` = Kontaktfläche des Über-Standers, `n̂_B` = Seiten-
 //!   wand des Rand-Members). Die Halbraum-Maske ist konkav Material-seitig
@@ -247,6 +250,13 @@ impl RimRecord {
 pub struct RimBlock {
     pub concave: bool,
     pub recs: Vec<RimRecord>,
+    /// Ehrlicher B0-Restfehler (≈0.75·δ) an ∂P-Stellen, die der Rim NICHT
+    /// rundet: Reflex-(Konkav-)Vertices eines nicht-konvexen Kontakts P und
+    /// Bogen-Stufen (Design §5 — dort verwöben Kontakt-Rim und intrinsische
+    /// SSI-Naht, die #395-Stufe-2-Klemme). `0.0`, wenn der Rim den ganzen
+    /// ∂P-Saum schließt (konvexes P wie Box-Box). REIN für die Capability —
+    /// NICHT Teil des Tapes (`encode_rim_block` liest nur `concave`+`recs`).
+    pub residual_bound: f32,
 }
 
 impl RimBlock {
@@ -255,9 +265,10 @@ impl RimBlock {
     /// vollständige Verweigerung ⇒ `None` (kein leerer Block emittiert). Die
     /// Records kommen aus derselben `contact_clips`-Quelle wie die Prisma-
     /// Emission (faithful Accept/Refuse-Mirror), damit Fillet und Prisma
-    /// deckungsgleich sind.
+    /// deckungsgleich sind. `residual_bound` meldet den ehrlichen ∂P-Rest an
+    /// Reflex-Vertices/Bögen (0 bei konvexem P).
     pub fn from_stop(inner: &BoundedCsg, delta_signed: f32) -> Option<RimBlock> {
-        let feats = synthesize_rim_features(inner, delta_signed);
+        let (feats, residual) = synth_rim_features(inner, delta_signed);
         if feats.is_empty() {
             return None;
         }
@@ -265,6 +276,7 @@ impl RimBlock {
         Some(RimBlock {
             concave: delta_signed < 0.0,
             recs,
+            residual_bound: residual as f32,
         })
     }
 }
@@ -363,17 +375,23 @@ enum EdgeClass {
     Degenerate,
 }
 
-/// Liegt das Segment `a–b` (bis auf `tol`) auf einer Randlinie des CCW-Rechtecks
-/// `rect`? Rein analytischer Kollinearitäts-/Koinzidenz-Test (Lot-Distanz beider
-/// Endpunkte zu einer der vier Kanten-Geraden), KEIN Sampling-Epsilon.
-fn edge_on_rect(rect: &[[f64; 2]], a: [f64; 2], b: [f64; 2], tol: f64) -> bool {
-    let m = rect.len();
+/// Liegt das Segment `a–b` (bis auf `tol`) auf einer Randlinie der (beliebigen,
+/// auch nicht-konvexen) CCW-Kontur `contour`? Rein analytischer Kollinearitäts-/
+/// Koinzidenz-Test (Lot-Distanz beider Endpunkte zu je einer Kanten-Geraden der
+/// Kontur), KEIN Sampling-Epsilon. FC Phase 3 (#398): Verallgemeinerung von
+/// `edge_on_rect` (vier Rechteck-Geraden) auf einen Loop mit beliebig vielen
+/// Geraden-Segmenten — für ein Rechteck bit-identisch zum vorigen Test (dieselbe
+/// Schleife über dieselben vier Kanten). Bogen-tragende Kontur-Segmente
+/// (Member-Bulge) werden hier nicht behandelt; die Facetten-Konturen `la`/`lb`
+/// sind Polygon-Züge (aus `loop3`), Bogen-∂P-Kanten filtert der Aufrufer vorab.
+fn edge_on_contour(contour: &[[f64; 2]], a: [f64; 2], b: [f64; 2], tol: f64) -> bool {
+    let m = contour.len();
     if m < 2 {
         return false;
     }
     for k in 0..m {
-        let r0 = rect[k];
-        let r1 = rect[(k + 1) % m];
+        let r0 = contour[k];
+        let r1 = contour[(k + 1) % m];
         let d = [r1[0] - r0[0], r1[1] - r0[1]];
         let len = (d[0] * d[0] + d[1] * d[1]).sqrt();
         if len < 1e-12 {
@@ -387,10 +405,12 @@ fn edge_on_rect(rect: &[[f64; 2]], a: [f64; 2], b: [f64; 2], tol: f64) -> bool {
     false
 }
 
-/// Klassifiziert eine ∂P-Kante über die beiden projizierten Member-Rechtecke.
+/// Klassifiziert eine ∂P-Kante über die beiden projizierten Member-Konturen
+/// (`la`/`lb` — für Boxen Rechtecke, für Extrude-Deckel/-Mantel beliebige
+/// Polygon-Züge).
 fn classify_edge(clip: &ContactClip, a: [f64; 2], b: [f64; 2], tol: f64) -> EdgeClass {
-    let on_i = edge_on_rect(&clip.la, a, b, tol);
-    let on_j = edge_on_rect(&clip.lb, a, b, tol);
+    let on_i = edge_on_contour(&clip.la, a, b, tol);
+    let on_j = edge_on_contour(&clip.lb, a, b, tol);
     match (on_i, on_j) {
         (true, true) => EdgeClass::Flush,
         // Kante auf j's Rand, IM Inneren von i → Über-Stander i, Wand = j.
@@ -431,28 +451,116 @@ struct StepEdge {
     end_world: [f64; 3],
 }
 
-/// Leitet die Rand-Fillet-Features EINES Kontakt-Verschnitts ab.
-fn rims_from_clip(clip: &ContactClip, delta_signed: f64, out: &mut Vec<RimFeature>) {
+/// Leitet die Rand-Fillet-Features EINES Kontakt-Verschnitts ab. FC Phase 3
+/// (#398): die ∂P-Loops kommen aus den Zusammenhangskomponenten des Kontakts
+/// (`ContactClip.components` — äußere Kontur + Löcher, Design §3/§5). Fehlen
+/// `components` (direkt konstruierte Clips der Unit-Tests), fällt die Synthese
+/// auf das Ein-Polygon-`p2d` zurück. `residual` sammelt den ehrlichen B0-Rest
+/// (≈0.75·δ) an ungerundeten ∂P-Reflex-Vertices/Bögen.
+fn rims_from_clip(
+    clip: &ContactClip,
+    delta_signed: f64,
+    out: &mut Vec<RimFeature>,
+    residual: &mut f64,
+) {
     let concave = delta_signed < 0.0;
     let da = delta_signed.abs();
     if da <= 0.0 {
         return;
     }
     let trust = 3.0 * da;
-    let n = clip.p2d.len();
-    if n < 3 {
-        return;
-    }
     // Koinzidenz-Toleranz für den Kanten-auf-Rand-Test: großzügig gegenüber
     // f64-Rundung/rotierten Frames, aber weit unter dem Über-Stand (½·(Fläche_A
     // − Fläche_B)) einer echten Stufe.
     let tol = (1e-3 * da).max(1e-5);
 
+    if clip.components.is_empty() {
+        // Fallback: Ein-Polygon-P (offset_rim-Unit-Tests). Für den echten
+        // Regen-Pfad ist `components` stets befüllt (Box-Box: genau EINE gerade
+        // Komponente == p2d, byte-identisch zu diesem Fallback).
+        rim_loop(clip, &clip.p2d, None, false, concave, da, trust, tol, out, residual);
+    } else {
+        for comp in &clip.components {
+            rim_loop(
+                clip,
+                &comp.outer.verts,
+                Some(&comp.outer.bulges),
+                false,
+                concave,
+                da,
+                trust,
+                tol,
+                out,
+                residual,
+            );
+            for hole in &comp.holes {
+                rim_loop(
+                    clip,
+                    &hole.verts,
+                    Some(&hole.bulges),
+                    true,
+                    concave,
+                    da,
+                    trust,
+                    tol,
+                    out,
+                    residual,
+                );
+            }
+        }
+    }
+}
+
+/// Verarbeitet EINEN geschlossenen ∂P-Loop (äußere Kontur oder Loch) einer
+/// Kontakt-Komponente: klassifiziert jede GERADE Kante über `edge_on_contour`,
+/// synthetisiert die Stufen-Kanten-Fillets samt Konkavitäts-Gate und meldet den
+/// ehrlichen B0-Rest an Reflex-Vertices/Bögen. `is_hole` kehrt die
+/// In-Ebenen-Außennormale um (bei einem Loch zeigt „weg vom Material" in den
+/// Hohlraum).
+#[allow(clippy::too_many_arguments)]
+fn rim_loop(
+    clip: &ContactClip,
+    verts: &[[f64; 2]],
+    bulges: Option<&[f64]>,
+    is_hole: bool,
+    concave: bool,
+    da: f64,
+    trust: f64,
+    tol: f64,
+    out: &mut Vec<RimFeature>,
+    residual: &mut f64,
+) {
+    let n = verts.len();
+    if n < 3 {
+        return;
+    }
+    // Nicht-konvexer Loop (Reflex-Vertex vorhanden): der Trust-Radius der
+    // Kanten-Fillets wird auf δ (= Fillet-Radius) begrenzt. Bei einem konvexen
+    // P (Box, Zwei-Insel-Rechtecke) darf eine Kante über 3·δ füllen — die
+    // Nearest-Feature-Komposition + End-Caps halten das exakt (Over-Fill = 0,
+    // Box-Golden byte-identisch). Bei nicht-konvexem P reicht die Slab einer
+    // FERNEN Stufen-Kante über 3·δ in die Reflex-Schneise (Kerbe) und würde dort
+    // δ−de < 0 als Material fehlinterpretieren (Over-Fill). Mit Trust = δ ist der
+    // Beitrag jenseits des Fillet-Radius exakt 0 (δ−δ = 0 an der Trust-Grenze),
+    // die Kerbe bleibt ehrlich ungefüllt (Design §5). Box behält 3·δ.
+    let has_reflex = loop_has_reflex(verts);
+    let edge_trust = if has_reflex { da } else { trust };
     let mut steps: Vec<StepEdge> = Vec::new();
     let mut edge_feats: Vec<RimFeature> = Vec::new();
+    let mut loop_residual = has_reflex;
     for k in 0..n {
-        let u0 = clip.p2d[k];
-        let u1 = clip.p2d[(k + 1) % n];
+        // Bogen-Kante (Member/∂P-Bulge ≠ 0): der Rim trägt nur gerade
+        // Segment-Spines (RimFeature ist segment-basiert). Ehrlich ungerundet
+        // lassen (Design §5: Bogen-Stufe → kein Fillet, B0-Rest bleibt); die
+        // ChannelArc-Spine-Variante ist P4-Scope.
+        if let Some(b) = bulges {
+            if b.get(k).copied().unwrap_or(0.0).abs() > 1e-12 {
+                loop_residual = true;
+                continue;
+            }
+        }
+        let u0 = verts[k];
+        let u1 = verts[(k + 1) % n];
         let a3 = lift(clip, u0);
         let b3 = lift(clip, u1);
         // Kante Länge ~0 → überspringen (Degeneration).
@@ -464,9 +572,15 @@ fn rims_from_clip(clip: &ContactClip, delta_signed: f64, out: &mut Vec<RimFeatur
             EdgeClass::Step { wall } => wall,
             _ => continue, // bündig / degeneriert → kein Fillet
         };
-        // In-Ebenen-Außennormale der CCW-Kante (weg vom P-Inneren): (dy, −dx).
+        // In-Ebenen-Außennormale der CCW-Kante (weg vom P-MATERIAL): äußere
+        // Kontur → rechts (dy, −dx); Loch (Material außen) → in den Hohlraum,
+        // links (−dy, dx).
         let d2 = [u1[0] - u0[0], u1[1] - u0[1]];
-        let out2 = nrm2([d2[1], -d2[0]]);
+        let out2 = if is_hole {
+            nrm2([-d2[1], d2[0]])
+        } else {
+            nrm2([d2[1], -d2[0]])
+        };
         // Über-Stander liefert n_a (dessen SOLID-Kontaktflächen-Außennormale),
         // Wand-Member liefert n_b (SOLID-Seitenwand = sign · In-Ebenen-Außen).
         let (contact_n, wall_sign) = if wall == 1 {
@@ -483,7 +597,7 @@ fn rims_from_clip(clip: &ContactClip, delta_signed: f64, out: &mut Vec<RimFeatur
             n_b: wall_n,
             n_c: [0.0; 3],
             delta: da,
-            trust,
+            trust: edge_trust,
             concave,
         };
         edge_feats.push(feat);
@@ -497,31 +611,66 @@ fn rims_from_clip(clip: &ContactClip, delta_signed: f64, out: &mut Vec<RimFeatur
         });
     }
 
-    // Konkavitäts-Gate (#398 Phase 4): der additive/subtraktive Fillet ist NUR
-    // im ENTHALTENEN Kontakt gültig — dort, wo der Über-Stander die gesamte
-    // Kontur des kleineren Members überragt ("A steht überall über B über",
-    // Design §1.1). Genau dann liegt P VOLLSTÄNDIG im Inneren EINER Fläche und
-    // ALLE ∂P-Stufen-Kanten teilen sich denselben Wand-Member — jede ist eine
-    // echte konkave (Erosion) bzw. konvexe (Dilation) Reflexkante.
+    // Konkavitäts-Gate (#398 Phase 4, per Loop): der additive/subtraktive Fillet
+    // ist NUR im ENTHALTENEN Kontakt gültig — dort, wo der Über-Stander die
+    // gesamte Kontur des kleineren Members überragt ("A steht überall über B",
+    // Design §1.1/§5). Genau dann liegt dieser Loop VOLLSTÄNDIG im Inneren EINER
+    // Fläche und ALLE seine ∂P-Stufen-Kanten teilen sich denselben Wand-Member.
     //
-    // Bei einem VERSETZTEN (staggered) Kontakt dagegen wechseln sich A- und
-    // B-Ränder an ∂P ab: an den A-Rändern (Wand = i) tritt eine Fläche des
-    // Über-Standers frei zu Tage — die Kante ist dort KONVEX (eine Stufe nach
-    // unten), kein konkaver Sliver. Der (konkave) Fillet würde sie fälschlich
-    // auffüllen (Over-Fill bis δ). Solche Kontakte lässt die Prisma-Korrektur
-    // (submergiertes P) korrekt stehen; der Rim VERWEIGERT hier komplett —
-    // gemischte Wand-Member ⇒ kein homogener Reflex ⇒ kein Fillet. (Das ist
-    // auch der Grund, warum `synthesize_vertices` in der Praxis nie feuert: ein
-    // Trieder-Vertex verlangt ZWEI verschiedene Wand-Member an einer Ecke, was
-    // dieses Gate ausschließt — der echte √3-Reflex-Vertex entsteht nur an
-    // Nicht-Box-Kontakten/3-Wege-Nähten, Design §1.3.)
-    if let Some(&first) = steps.first().map(|s| &s.wall_member) {
-        if steps.iter().any(|s| s.wall_member != first) {
-            return; // gemischt → versetzter Kontakt, konvexe Kanten → Verweigerung
+    // Bei einem VERSETZTEN (staggered) Kontakt wechseln sich A- und B-Ränder an
+    // ∂P ab: an den A-Rändern (Wand = i) tritt eine Fläche des Über-Standers frei
+    // zu Tage — die Kante ist dort KONVEX (Stufe nach unten), kein konkaver
+    // Sliver. Der (konkave) Fillet würde sie fälschlich auffüllen (Over-Fill bis
+    // δ). Gemischte Wand-Member ⇒ Loop komplett verweigert.
+    match steps.first().map(|s| s.wall_member) {
+        Some(first) => {
+            if steps.iter().any(|s| s.wall_member != first) {
+                return; // gemischt → versetzter Kontakt, konvexe Kanten → Verweigerung
+            }
         }
+        None => return, // keine Stufen-Kanten in diesem Loop
+    }
+
+    // Reflex-(Konkav-)Vertices eines nicht-konvexen ∂P bleiben bewusst
+    // UNGERUNDET (Design §5, `has_reflex` oben): dort verwöben Kontakt-Rim und
+    // intrinsische konkave Körperkante (SSI-Naht) zum Trieder-Misch — die
+    // #395-Stufe-2-Klemme. Die adjazenten Kanten-Fillets enden an ihren
+    // End-Caps, die Vertex-Umgebung bleibt auf dem Prisma-Wert → lokaler
+    // B0-Unterschuss (≈0.75·δ), NIE Überschuss. Ehrlich melden statt falsch
+    // runden (auch für Bogen-Stufen, `loop_residual`).
+    if loop_residual {
+        *residual = residual.max(0.75 * da);
     }
     out.extend(edge_feats);
-    synthesize_vertices(&steps, da, trust, concave, out);
+    synthesize_vertices(&steps, da, edge_trust, concave, out);
+}
+
+/// Hat der geschlossene Polygon-Loop mindestens einen Reflex-(nicht-konvexen)
+/// Vertex? Orientierungs-unabhängig über einen Vorzeichenwechsel der
+/// aufeinanderfolgenden Kanten-Kreuzprodukte (konvex ⇒ alle gleiches Vorzeichen).
+/// Kollineare Ecken (Kreuz ≈ 0) zählen nicht. Ein Dreieck ist stets konvex.
+fn loop_has_reflex(verts: &[[f64; 2]]) -> bool {
+    let n = verts.len();
+    if n < 4 {
+        return false;
+    }
+    let mut sign = 0i32;
+    for k in 0..n {
+        let p = verts[(k + n - 1) % n];
+        let q = verts[k];
+        let r = verts[(k + 1) % n];
+        let cr = (q[0] - p[0]) * (r[1] - q[1]) - (q[1] - p[1]) * (r[0] - q[0]);
+        if cr.abs() < 1e-12 {
+            continue;
+        }
+        let s = if cr > 0.0 { 1 } else { -1 };
+        if sign == 0 {
+            sign = s;
+        } else if sign != s {
+            return true;
+        }
+    }
+    false
 }
 
 /// Trihedraler Reflex-Vertex: treffen an einer ∂P-Ecke zwei Stufen-Kanten mit
@@ -582,12 +731,20 @@ fn nrm2(a: [f64; 2]) -> [f64; 2] {
 /// Dilation) in Welt-Koordinaten-`BoundedCsg`-Form. Leere Liste = keine
 /// koplanaren Box-Kontakte oder vollständige Verweigerung.
 pub fn synthesize_rim_features(inner: &BoundedCsg, delta_signed: f32) -> Vec<RimFeature> {
+    synth_rim_features(inner, delta_signed).0
+}
+
+/// Wie [`synthesize_rim_features`], liefert zusätzlich den ehrlichen B0-Rest
+/// (≈0.75·δ) an ungerundeten ∂P-Reflex-Vertices/Bögen (`0.0` bei konvexem P wie
+/// Box-Box). Anker für [`RimBlock::from_stop`] und die Capability-Meldung.
+pub fn synth_rim_features(inner: &BoundedCsg, delta_signed: f32) -> (Vec<RimFeature>, f64) {
     let ds = delta_signed as f64;
     let mut out = Vec::new();
+    let mut residual = 0.0f64;
     for clip in contact_clips(inner, ds) {
-        rims_from_clip(&clip, ds, &mut out);
+        rims_from_clip(&clip, ds, &mut out, &mut residual);
     }
-    out
+    (out, residual)
 }
 
 /// Läuft den ganzen (gefalteten) `BoundedCsg`-Baum ab und sammelt die Rand-
@@ -702,7 +859,7 @@ mod tests {
     fn concave_normals_point_into_material() {
         let clip = clip_axis(true);
         let mut rims = Vec::new();
-        rims_from_clip(&clip, -1.0, &mut rims);
+        rims_from_clip(&clip, -1.0, &mut rims, &mut 0.0);
         assert_eq!(rims.len(), 4, "vier Stufen-Kanten, keine Trieder-Vertizes");
         for r in &rims {
             assert!(r.concave);
@@ -726,7 +883,7 @@ mod tests {
         // Dilation: sign_j = −1 kehrt die Seitenwand-Normale ins Luft-Vorzeichen.
         let clip = clip_axis(false);
         let mut rims = Vec::new();
-        rims_from_clip(&clip, 1.0, &mut rims);
+        rims_from_clip(&clip, 1.0, &mut rims, &mut 0.0);
         assert_eq!(rims.len(), 4);
         let top = rims
             .iter()
@@ -745,7 +902,7 @@ mod tests {
         // Vertex-Feature.
         let clip = clip_axis(true);
         let mut rims = Vec::new();
-        rims_from_clip(&clip, -1.0, &mut rims);
+        rims_from_clip(&clip, -1.0, &mut rims, &mut 0.0);
         assert!(
             rims.iter().all(|r| r.a != r.b),
             "keine Punkt-Fillets (a==b) beim Box-Stack erwartet"
@@ -814,7 +971,7 @@ mod tests {
         // Der eval_opcodes-Decode ist bit-identisch zu `apply_rims_f32`.
         let clip = clip_axis(true);
         let mut rims64 = Vec::new();
-        rims_from_clip(&clip, -1.5, &mut rims64);
+        rims_from_clip(&clip, -1.5, &mut rims64, &mut 0.0);
         let recs: Vec<RimRecord> = rims64.iter().map(RimRecord::from_feature).collect();
         assert!(recs.len() >= 4);
         let mut rng = Lcg(0x1234_5678);
@@ -838,7 +995,7 @@ mod tests {
             let clip = clip_axis(concave);
             let mut rims64 = Vec::new();
             let ds = if concave { -2.0 } else { 2.0 };
-            rims_from_clip(&clip, ds, &mut rims64);
+            rims_from_clip(&clip, ds, &mut rims64, &mut 0.0);
             let recs: Vec<RimRecord> = rims64.iter().map(RimRecord::from_feature).collect();
             let mut rng = Lcg(if concave { 0xAAAA } else { 0xBBBB });
             let mut max_diff = 0.0f32;
@@ -886,7 +1043,7 @@ mod tests {
         // Fehler (Über-Fill) — der Assert stellt die Rundung sicher.
         let clip = clip_axis(true);
         let mut rims64 = Vec::new();
-        rims_from_clip(&clip, -1.0, &mut rims64);
+        rims_from_clip(&clip, -1.0, &mut rims64, &mut 0.0);
         let recs: Vec<RimRecord> = rims64.iter().map(RimRecord::from_feature).collect();
         // Punkt im 3. Quadranten der (v=7,x=10)- und (u=6→z=−6,x=10)-Ecke.
         let p = [9.7f32, 6.5, -5.6];
@@ -928,12 +1085,12 @@ mod tests {
         let mut clip = clip_axis(true);
         clip.p2d = vec![[0.0, 0.0], [1.0, 0.0]]; // < 3 Ecken
         let mut rims = Vec::new();
-        rims_from_clip(&clip, -1.0, &mut rims);
+        rims_from_clip(&clip, -1.0, &mut rims, &mut 0.0);
         assert!(rims.is_empty(), "P < 3 Ecken → keine Features");
         // δ = 0 → keine Features.
         let clip2 = clip_axis(true);
         let mut rims2 = Vec::new();
-        rims_from_clip(&clip2, 0.0, &mut rims2);
+        rims_from_clip(&clip2, 0.0, &mut rims2, &mut 0.0);
         assert!(rims2.is_empty(), "δ=0 → keine Features");
     }
 }

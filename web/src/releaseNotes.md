@@ -12,6 +12,9 @@ Format, eine Zeile je Eintrag:
 kind = feat | fix | perf. scope und #tickets sind optional. Folgezeilen, die
 eingerückt sind, gehören zum Text davor (Umbruch erlaubt).
 
+## 0.21.0
+- feat(sdf) #398 #384: Der Rand-Fillet an koplanaren Kontaktflächen greift jetzt auch bei Nicht-Box-Kontakten: gerade Kontaktrand-Kanten beliebiger (auch nicht-konvexer) Konturen werden sauber verrundet, jede Kontaktinsel bekommt ihren eigenen Saum. An einspringenden Ecken und Bogen-Kanten bleibt bewusst ein kleiner, ehrlich gemeldeter Rest stehen — die Genauigkeits-Angabe nennt dessen Schranke jetzt explizit, statt pauschal zu warnen.
+
 ## 0.20.0
 - feat(sdf) #398 #384: Offset/Shell korrigieren koplanare Kontaktflächen jetzt auch zwischen Nicht-Box-Körpern: Bei bündig gedockten Extrudes (auch mit nicht-konvexen Profilen wie L-Formen) wird der Kontakt exakt verschnitten und pro Kontaktinsel ein eigener Korrekturkörper eingesetzt — der bisherige „Phantom-Schlitz“ an solchen Nahtstellen verschwindet, und die Genauigkeits-Angabe steigt von „konservativ“ auf „toleranz-beschränkt“. Kontakte mit Bogen-Konturen werden weiterhin ehrlich als Näherung gemeldet (folgt in einer späteren Phase).
 

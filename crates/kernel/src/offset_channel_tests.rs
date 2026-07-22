@@ -1530,3 +1530,147 @@ fn fc2_two_component_contact_builds_two_prisms() {
         "Lücke zwischen den Inseln → außen"
     );
 }
+
+// ─── FC Phase 3 (#398): ∂P-Rand-Fillet auf nicht-konvexe Kontakte ────────────
+// (docs/research/sdf-metricity/FC-NONCONVEX-CONTACT-DESIGN.md §5). Der Rim
+// (`offset_rim::edge_on_contour`) rundet die GERADEN ∂P-Stufen-Kanten beliebiger
+// (auch nicht-konvexer) Kontakt-Konturen; Reflex-(Konkav-)Vertices bleiben
+// bewusst ungerundet (ehrlicher B0-Rest, Design §5).
+
+/// Gefalteter Regen-Pfad-Baum → Rim-Features (wie f398_rim_synthesis::folded_root).
+fn rim_features_of(node: &CsgNode) -> Vec<crate::offset_rim::RimFeature> {
+    let folded = node
+        .clone()
+        .expand_shells()
+        .push_down_offsets()
+        .fold_offset_leaves();
+    crate::offset_rim::synthesize_rim_features_for_tree(&BoundedCsg::from_csg(&folded))
+}
+
+/// (a) Box + Add-gedockter L-Extrude (enthaltener nicht-konvexer Kontakt): die
+/// GERADEN ∂P-Stufen-Kanten bekommen Rim-Fillets, der EINE Reflex-Vertex der L
+/// bleibt ehrlich ungerundet (Capability nennt den B0-Rest). Over-Fill = 0 in
+/// der Reflex-Schneise.
+#[test]
+fn fc3_lcontact_rim_fillets_straight_edges_reflex_honest() {
+    let l = [[-6.0, -6.0], [6.0, -6.0], [6.0, -2.0], [-2.0, -2.0], [-2.0, 6.0], [-6.0, 6.0]];
+    let box_a = CsgNode::Transform(
+        Transform { translate: [0.0, 0.0, -5.0], rotation: [0.0, 0.0, 0.0, 1.0], scale: [1.0; 3] },
+        Box::new(leaf_box(1, [10.0, 10.0, 5.0])),
+    );
+    let ext_b = poly_extrude(2, &l, 5.0, 5.0);
+    let delta = 2.0f32;
+    let node = CsgNode::Offset(Box::new(CsgNode::Union(Box::new(box_a), Box::new(ext_b))), -delta);
+
+    // (1) Die geraden ∂P-Kanten der L erzeugen Fillets (≥4 Stufen-Kanten), OHNE
+    //     Trieder-Vertex (homogener Wand-Member → Nearest-Feature genügt; der
+    //     Reflex-Vertex bleibt ungerundet, kein `a == b`).
+    let rims = rim_features_of(&node);
+    let n_edges = rims.iter().filter(|r| r.a != r.b).count();
+    assert!(n_edges >= 4, "L-Kontakt: erwarte ≥4 gerade Stufen-Kanten-Fillets, got {n_edges}");
+    assert!(
+        rims.iter().all(|r| r.a != r.b),
+        "enthaltener L-Kontakt: kein Punkt-Fillet (Reflex-Vertex bleibt ungerundet)"
+    );
+
+    // (2) Kompiliertes Feld (Prisma + Rim) + Capability.
+    let naive = BoundedCsg::from_csg(&node);
+    let mut report = CapabilityReport::new();
+    let corrected =
+        synthesize_offset_channels_reported(BoundedCsg::from_csg(&node), 0.01, &mut report);
+    assert_eq!(report.status(), CapabilityStatus::ToleranceBounded, "{:?}", report.reasons());
+    // Capability meldet den Reflex-/nicht-konvex-Rest EHRLICH (nicht bloß „≤ tol").
+    assert!(
+        report
+            .reasons()
+            .iter()
+            .any(|r| r.contains("nicht-konvex") && r.contains("Reflex")),
+        "Capability muss den nicht-konvexen Reflex-Rest ehrlich nennen: {:?}",
+        report.reasons()
+    );
+
+    // (3) Der Rim FÜLLT mindestens einen geraden Kanten-Sliver: irgendwo im
+    //     Kontakt-Band verkleinert `apply_rims` das naive Feld (Rundung/Fill).
+    let mut saw_fill = false;
+    for gi in 0..40usize {
+        for gj in 0..40usize {
+            for gk in 0..14usize {
+                let p = [
+                    -8.0 + 16.0 * gi as f64 / 39.0,
+                    -8.0 + 16.0 * gj as f64 / 39.0,
+                    -1.6 + 3.2 * gk as f64 / 13.0,
+                ];
+                let pf = [p[0] as f32, p[1] as f32, p[2] as f32];
+                let g_naive = naive.sdf(pf, EvalMode::Visual) as f64;
+                let g_rim = crate::offset_rim::apply_rims(g_naive, p, &rims);
+                if g_rim < g_naive - 0.1 {
+                    saw_fill = true;
+                }
+            }
+        }
+    }
+    assert!(saw_fill, "Rim muss mindestens einen geraden Kanten-Sliver enger machen (füllen)");
+
+    // (4) Reflex-Schneise (Kerbe bei (-2,-2)) über der Box bleibt ehrlich
+    //     ungefüllt: das kompilierte Feld ist dort POSITIV (kein Over-Fill).
+    for p in [[-1.5f32, -1.5, 0.3], [0.0, 0.0, 0.0], [-1.0, -1.0, 0.5], [-0.5, -0.5, 0.2]] {
+        assert!(
+            corrected.sdf(p, EvalMode::Visual) > 0.0,
+            "Reflex-Kerbe {p:?} → kein Over-Fill (positiv), got {}",
+            corrected.sdf(p, EvalMode::Visual)
+        );
+    }
+}
+
+/// (b) Zwei-Insel-Kontakt: zwei disjunkte, ENTHALTENE (konvexe, homogene)
+/// Quadrat-Extrudes auf EINER großen Box-Deckelfläche. Jede Insel ist ein
+/// eigener koplanarer Kontakt → beide bekommen Rim-Fillets, der Rim schließt den
+/// ganzen ∂P-Saum (kein Reflex-Rest → Capability „≤ tol"). (Die bracket-Inseln
+/// aus `fc2_two_component_contact_builds_two_prisms` sind hingegen VERSETZT —
+/// gemischte Wand-Member je Insel → Rim korrekt verweigert, Design §5.)
+#[test]
+fn fc3_two_island_contact_both_get_rims() {
+    // Große Box (Deckel z=0, 20×20) + zwei enthaltene 3×3-Quadrat-Extrudes.
+    let box_a = CsgNode::Transform(
+        Transform { translate: [0.0, 0.0, -5.0], rotation: [0.0, 0.0, 0.0, 1.0], scale: [1.0; 3] },
+        Box::new(leaf_box(1, [10.0, 10.0, 5.0])),
+    );
+    let sq1 = [[-6.5, -1.5], [-3.5, -1.5], [-3.5, 1.5], [-6.5, 1.5]]; // Zentrum (-5,0)
+    let sq2 = [[3.5, -1.5], [6.5, -1.5], [6.5, 1.5], [3.5, 1.5]]; // Zentrum (5,0)
+    let e1 = poly_extrude(2, &sq1, 5.0, 5.0);
+    let e2 = poly_extrude(3, &sq2, 5.0, 5.0);
+    let delta = 1.0f32;
+    let node = CsgNode::Offset(
+        Box::new(CsgNode::Union(Box::new(box_a), Box::new(CsgNode::Union(Box::new(e1), Box::new(e2))))),
+        -delta,
+    );
+
+    let rims = rim_features_of(&node);
+    assert!(!rims.is_empty(), "Zwei-Insel-Kontakt muss Rim-Features erzeugen");
+    // Jede Insel (um (-5,0) bzw. (5,0)) muss MINDESTENS ein Kanten-Fillet tragen
+    // (Kanten-Mittelpunkt in der Insel-AABB).
+    let mid_in = |r: &crate::offset_rim::RimFeature, cx: f64, cy: f64| {
+        let m = [(r.a[0] + r.b[0]) * 0.5, (r.a[1] + r.b[1]) * 0.5];
+        (m[0] - cx).abs() <= 2.5 && (m[1] - cy).abs() <= 2.5
+    };
+    let isle1 = rims.iter().filter(|r| r.a != r.b).any(|r| mid_in(r, -5.0, 0.0));
+    let isle2 = rims.iter().filter(|r| r.a != r.b).any(|r| mid_in(r, 5.0, 0.0));
+    assert!(isle1, "Insel 1 (um (-5,0)) muss ein Rim-Fillet tragen");
+    assert!(isle2, "Insel 2 (um (5,0)) muss ein Rim-Fillet tragen");
+
+    // Konvexe Inseln → kein Reflex-Rest: Capability meldet den ∂P-Saum als auf
+    // `tol` geschlossen (NICHT den nicht-konvexen 0.75·δ-Rest).
+    let mut report = CapabilityReport::new();
+    let _ = synthesize_offset_channels_reported(BoundedCsg::from_csg(&node), 0.01, &mut report);
+    assert_eq!(report.status(), CapabilityStatus::ToleranceBounded, "{:?}", report.reasons());
+    assert!(
+        report.reasons().iter().any(|r| r.contains("OP_RIM_FILLET")),
+        "Rim muss greifen: {:?}",
+        report.reasons()
+    );
+    assert!(
+        !report.reasons().iter().any(|r| r.contains("Reflex")),
+        "konvexe Inseln → KEIN Reflex-Rest in der Capability: {:?}",
+        report.reasons()
+    );
+}
