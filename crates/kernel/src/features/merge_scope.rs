@@ -3,6 +3,8 @@
 
 use fielddraft_protocol::{BoolOp, FeatureId};
 
+use crate::csg::DecodedFeature;
+
 use super::{Context};
 // ─── parameter helpers for the K1 primitives ─────────────────────
 
@@ -42,6 +44,46 @@ pub(crate) fn resolve_merge_scope(
         return ctx.current_body_seed_ids();
     }
     Vec::new()
+}
+
+/// Expand named body targets to the FULL set of member feature ids of every
+/// owner body they name. A `qCreatedBy(f)` query points at *one* feature, but
+/// a body assembled by Add-primitive docking (or a Boolean union) spreads
+/// across several features, each contributing a sibling subtree under its OWN
+/// feature id. A body-scoped post-process (offset, shell) must wrap the WHOLE
+/// body tree, not just the named feature's branch — otherwise the docked
+/// members are left at original size while only the named feature's subtree is
+/// transformed (#399). Walk the current [`crate::body::partition`] and collect
+/// every member's root id of each part that holds a named target.
+///
+/// `features` must be the decoded spine *before* the calling feature is pushed
+/// (the part the target lives in must already exist). Returns the named ids
+/// unchanged when no partition matches (a not-yet-present / standalone target).
+pub(crate) fn expand_to_owner_body_members(
+    features: &[DecodedFeature],
+    named: &[FeatureId],
+) -> Vec<FeatureId> {
+    if named.is_empty() {
+        return Vec::new();
+    }
+    let parts = crate::body::partition(features);
+    let mut out: Vec<FeatureId> = Vec::new();
+    for part in &parts {
+        let holds_named = part.feature_indices.iter().any(|&fi| {
+            let root = features[fi].id.root_ancestor();
+            named.iter().any(|t| root == t)
+        });
+        if !holds_named {
+            continue;
+        }
+        for &fi in &part.feature_indices {
+            let root = features[fi].id.root_ancestor().clone();
+            if !out.contains(&root) {
+                out.push(root);
+            }
+        }
+    }
+    if out.is_empty() { named.to_vec() } else { out }
 }
 
 /// Non-fatal warning for a feature-implicit boolean whose merge scope is

@@ -21,7 +21,7 @@ use fielddraft_protocol::{BoolOp, FeatureId, Transform};
 
 use crate::csg::{CsgNode, DecodedFeature};
 
-use super::merge_scope::target_ids_from_queries;
+use super::merge_scope::{expand_to_owner_body_members, target_ids_from_queries};
 use super::{Context, FeatureError, FeatureKind, FeatureSchema, optional_display_name};
 
 /// `offset` — signierter Offset (±δ) eines oder mehrerer Zielkörper.
@@ -63,8 +63,8 @@ impl FeatureKind for OffsetFeature {
         // (kein Regen-Fehler) und den Nutzer per nicht-fataler Warnung auf die
         // Scope-Pflicht hinweisen; sobald ein Körper gewählt ist, erscheint der
         // Offset.
-        let target_ids = target_ids_from_queries(&d.targets);
-        if target_ids.is_empty() {
+        let named = target_ids_from_queries(&d.targets);
+        if named.is_empty() {
             ctx.warn_feature(
                 id,
                 "Kein Zielkörper gewählt — das Offset-Feature braucht einen \
@@ -73,6 +73,19 @@ impl FeatureKind for OffsetFeature {
             );
             return Ok(());
         }
+
+        // A `qCreatedBy(f)` query names a BODY, not a single feature's subtree.
+        // When that body was assembled by Add-primitive docking (or a Boolean
+        // union), it spans several sibling subtrees under distinct feature ids;
+        // scoping the offset to just the named id would erode only that member
+        // and leave the docked siblings at original size (#399). Expand to the
+        // owner body's full member set so `wrap_offset` wraps the entire body
+        // tree — exactly as the Difference path (a Remove keeps the body
+        // together, so its whole subtree is already wrapped). The Difference
+        // path never split because a `Difference` node stays under one branch;
+        // the Add path splits because docked members live in sibling `Union`
+        // branches that carry their own ids.
+        let target_ids = expand_to_owner_body_members(&ctx.features, &named);
 
         // δ = 0 ist die Identität — nichts zu tun.
         let delta = d.delta.to_mm();

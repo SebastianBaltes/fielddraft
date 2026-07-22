@@ -839,6 +839,84 @@ fn thin_wall_shell_status_unchanged_397() {
     }
 }
 
+// ─── #399 Offset auf Add-gedocktem Mehr-Member-Body ──────────────────────
+//
+// Ein Offset, dessen Ziel-Body per Add-Primitive-Docking aus MEHREREN
+// Features besteht, muss den GESAMTEN Body-Baum einfalten — nicht nur den
+// Teilbaum des im `targets`-Query genannten Features. Vor dem Fix wrappte
+// `wrap_offset` nur den Union-Zweig des benannten Features (A), der
+// Add-gedockte Member (B) blieb in Originalgröße stehen; die Capability log
+// zudem „exact" über einer objektiv falschen Teilmengen-Erosion.
+#[test]
+fn offset_on_add_docked_multi_member_body_erodes_whole_body_399() {
+    let mut k = crate::Kernel::new();
+    k.document.feature_calls = vec![
+        // A: New, he 10³ → x,y,z ∈ [−10,10].
+        FeatureCall::new("box", id(1), json!({ "half_extents": [10.0, 10.0, 10.0] })),
+        // B: Add gedockt in A, he [8,7,6] @ +18 → x ∈ [10,26] (bündiger Stack).
+        FeatureCall::new(
+            "box",
+            id(2),
+            json!({
+                "half_extents": [8.0, 7.0, 6.0],
+                "translate": [18.0, 0.0, 0.0],
+                "op": "add",
+                "targets": "qCreatedBy(1)"
+            }),
+        ),
+        // Offset −1.5 auf den Body (per qCreatedBy(A) benannt).
+        FeatureCall::new(
+            "offset",
+            id(3),
+            json!({ "targets": "qCreatedBy(1)", "delta": { "value": -1.5, "unit": "mm" } }),
+        ),
+    ];
+    k.bootstrap_features_from_calls().unwrap();
+    // Leere Bodies → Index-Panik in bodies_mesh.rs; erst nach Mesh-Rebuild
+    // steht das kompilierte SDF.
+    k.rebuild_mesh_internal();
+    assert!(!k.feature_errors.contains_key(&id(3)), "offset darf nicht fehlern");
+
+    // (a) Feldproben: die GESAMTE Union ist erodiert.
+    //  • Connector innen (x∈[8.5,11.5] um die Mittellinie): d(9.25,0,0) < 0.
+    let d_conn = k.body_sdf_eval(0, 9.25, 0.0, 0.0);
+    assert!(
+        d_conn < 0.0,
+        "Connector muss innen sein (d(9.25,0,0)<0), war {d_conn} — B nicht eingefaltet?"
+    );
+    //  • B's +x-Fläche bei 24.5 statt 26: d(24,0,0) ≈ −0.5 (innen, 0.5 von der Fläche).
+    let d_bx = k.body_sdf_eval(0, 24.0, 0.0, 0.0);
+    assert!(
+        d_bx < 0.0 && (d_bx - (-0.5)).abs() < 0.25,
+        "B's +x-Fläche muss bei 24.5 liegen (d(24,0,0)≈−0.5), war {d_bx}"
+    );
+
+    // (b) Capability darf NIE „exact" sein: Erosion eines bündigen Stacks
+    //     erzeugt Kontakt-Prisma + Rand-Fillet (tolerance_bounded).
+    let cap = k.feature_capabilities.get(&id(3)).expect("offset capability present");
+    assert_ne!(
+        cap.status,
+        CapabilityStatus::Exact,
+        "Erosion eines zusammenhängenden Mehr-Member-Bodies ist nicht exakt — reasons: {:?}",
+        cap.reasons
+    );
+    // Beim bündigen Stack läuft der Fall regulär durch die Pipeline und landet
+    // ehrlich bei ToleranceBounded (Kontakt-Prisma + ∂P-Rand-Fillet).
+    assert_eq!(
+        cap.status,
+        CapabilityStatus::ToleranceBounded,
+        "bündiger Stack → tolerance_bounded — reasons: {:?}",
+        cap.reasons
+    );
+    // Das kompilierte Tape trägt den Rand-Fillet-Block (OP_RIM_FILLET 0x43).
+    let has_rim = k.bodies[0]
+        .compiled_sdf
+        .as_ref()
+        .map(|s| s.opcodes.iter().any(|&o| o.to_bits() == crate::sdf_compiler::OP_RIM_FILLET))
+        .unwrap_or(false);
+    assert!(has_rim, "Tape muss den Rand-Fillet-Block (OP_RIM_FILLET) enthalten");
+}
+
 #[test]
 fn plain_offset_is_exact_end_to_end() {
     let mut k = crate::Kernel::new();

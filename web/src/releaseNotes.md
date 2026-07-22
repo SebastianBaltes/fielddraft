@@ -12,6 +12,9 @@ Format, eine Zeile je Eintrag:
 kind = feat | fix | perf. scope und #tickets sind optional. Folgezeilen, die
 eingerückt sind, gehören zum Text davor (Umbruch erlaubt).
 
+## 0.19.2
+- fix(sdf) #399: Ein Offset auf einen Body, der per Add-Docking aus mehreren Features besteht, erodierte bisher nur das im Ziel-Query genannte Feature — die angedockten Member blieben in Originalgröße stehen (Loch im Verbindungsbereich), und die Genauigkeits-Angabe behauptete fälschlich „exakt“. Der Offset erfasst jetzt immer den ganzen Body samt aller Member (wie es beim Abzieh-Pfad schon immer der Fall war), läuft regulär durch die Korrektur-Pipeline (Kontakt-Prisma + Rand-Fillet) und meldet die Genauigkeit ehrlich.
+
 ## 0.19.1
 - fix(sdf) #392: Skizzen-Pfade aus mehreren Bögen desselben Kreises (z. B. ein aus zwei Halbkreisen gezeichneter Vollkreis) konnten exakt auf der Naht-Symmetrielinie sporadisch innen/außen verwechseln — sichtbar als vereinzelte Pixel-Artefakte auf Symmetrieebenen und als potenzieller Störer für Mesher-Seeds. Aufeinanderfolgende Bögen desselben Kreises werden jetzt beim Auswerten und beim GPU/Mesher-Lowering zu einem Bogen verschmolzen, sodass die fragile Naht gar nicht mehr existiert; alle Evaluatoren klassifizieren dieselbe normalisierte Kontur.
 
