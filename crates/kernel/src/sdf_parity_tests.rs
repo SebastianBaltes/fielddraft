@@ -135,6 +135,9 @@ fn primitive_samples() -> Vec<Primitive> {
             | Primitive::Gyroid { .. }
             | Primitive::Revolve { .. }
             | Primitive::Helix { .. }
+            // #385 P1: Loft lowers to a placeholder extrude before it reaches a
+            // CSG leaf, so it has no direct leaf-parity sample here (P2 adds one).
+            | Primitive::Loft { .. }
             | Primitive::CustomSdf { .. } => {}
         }
     }

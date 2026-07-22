@@ -161,7 +161,10 @@ fn primitive_command(handle: &str, prim: &Primitive) -> Option<Value> {
         | Primitive::Helix { .. }
         | Primitive::Gyroid { .. }
         | Primitive::ImportedMesh { .. }
-        | Primitive::CustomSdf { .. } => None,
+        | Primitive::CustomSdf { .. }
+        // #385 P1: no dedicated OCCT loft command yet (P2). The placeholder
+        // lowering emits an extrude instead, so this leaf arm is unreached.
+        | Primitive::Loft { .. } => None,
     }
 }
 

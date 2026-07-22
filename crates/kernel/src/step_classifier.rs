@@ -226,6 +226,14 @@ fn classify_primitive(p: &Primitive) -> StepSupport {
         Primitive::CustomSdf { .. } => StepSupport::Excluded(
             "user-defined SDF expression not representable in B-Rep".into(),
         ),
+        // #385 P1: a loft lowers to a placeholder extrude before it ever reaches
+        // a leaf classifier, so this arm is effectively unreached in P1. Its
+        // honest STEP class is Hard once P2 gives it a real B-Rep (it caps flat
+        // like an extrude/revolve); track the P1 placeholder as degraded so the
+        // classification does not silently over-promise.
+        Primitive::Loft { .. } => StepSupport::Degraded(
+            vec!["loft (P1) exported as first-profile extrude approximation".into()],
+        ),
     }
 }
 

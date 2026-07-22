@@ -16,8 +16,9 @@ fn empty_ctx() -> Document {
 #[test]
 fn with_builtins_registers_the_k1_primitives_and_k4_5_8_extrude() {
     let registry = FeatureRegistry::with_builtins();
-    assert_eq!(registry.len(), 32);
+    assert_eq!(registry.len(), 33);
     assert!(registry.get("box").is_some());
+    assert!(registry.get("loft").is_some());
     assert!(registry.get("offset").is_some());
     assert!(registry.get("sphere").is_some());
     assert!(registry.get("cylinder").is_some());
@@ -134,6 +135,7 @@ fn type_names_contains_all_four_builtins() {
             "hole",
             "imported_mesh",
             "linear_pattern",
+            "loft",
             "mate_connector",
             "material",
             "mirror",
@@ -7194,3 +7196,183 @@ fn ticket_382_filleted_field_lipschitz_probe() {
     );
 }
 
+// ─── #385 P1: loft resolve + placeholder lowering ────────────────
+
+/// Insert a centred-rectangle sketch (half-extent `half`) under `sketch_id`
+/// on the given plane `frame`, so a `qCreatedBy(sketch_id)` profile query
+/// resolves to it.
+fn insert_rect_sketch(
+    ctx: &mut Context<'_>,
+    sketch_id: FeatureId,
+    half: f32,
+    frame: crate::sketch::SketchFrame,
+) {
+    use crate::sketch::SketchData;
+    use fielddraft_solver::SketchState;
+    let calls = vec![::fielddraft_protocol::FeatureCall::new(
+        "sketch_rectangle",
+        id(900),
+        json!({ "corner_a": [-half, -half], "corner_b": [half, half] }),
+    )];
+    ctx.sketches.insert(
+        sketch_id,
+        SketchData {
+            state: SketchState::with_origin(),
+            sub_calls: calls,
+            frame,
+        },
+    );
+}
+
+/// A +Z-normal plane frame at height `z`.
+fn z_frame(z: f32) -> crate::sketch::SketchFrame {
+    crate::sketch::SketchFrame {
+        origin: [0.0, 0.0, z],
+        x_axis: [1.0, 0.0, 0.0],
+        y_axis: [0.0, 1.0, 0.0],
+        normal: [0.0, 0.0, 1.0],
+    }
+}
+
+#[test]
+fn loft_resolves_two_parallel_regions_to_sorted_sections() {
+    let mut doc = empty_ctx();
+    let mut ctx = Context::new(&mut doc);
+    insert_rect_sketch(&mut ctx, id(1), 10.0, z_frame(0.0));
+    insert_rect_sketch(&mut ctx, id(2), 5.0, z_frame(10.0));
+
+    let (sections, frame) = ctx
+        .resolve_loft_profiles(&["qCreatedBy(1)".into(), "qCreatedBy(2)".into()])
+        .expect("two parallel profiles resolve");
+    assert_eq!(sections.len(), 2);
+    assert!((sections[0].offset - 0.0).abs() < 1e-4, "first offset 0");
+    assert!((sections[1].offset - 10.0).abs() < 1e-4, "second offset 10");
+    // Section 0 is the z=0 rectangle (half 10): [7,7] is inside it.
+    assert!(sections[0].sketch.sdf([7.0, 7.0]) < 0.0, "first = big rect");
+    assert!(sections[1].sketch.sdf([7.0, 7.0]) > 0.0, "second = small rect");
+    // Shared frame sits on the first section's plane, normal along +Z.
+    assert!((frame.origin[2] - 0.0).abs() < 1e-4);
+    assert!((frame.normal[2] - 1.0).abs() < 1e-4);
+}
+
+#[test]
+fn loft_sorts_profiles_when_queries_are_reversed() {
+    let mut doc = empty_ctx();
+    let mut ctx = Context::new(&mut doc);
+    insert_rect_sketch(&mut ctx, id(1), 10.0, z_frame(0.0)); // low, big
+    insert_rect_sketch(&mut ctx, id(2), 5.0, z_frame(10.0)); // high, small
+
+    // Give the higher profile FIRST; the resolver must still sort by axis.
+    let (sections, frame) = ctx
+        .resolve_loft_profiles(&["qCreatedBy(2)".into(), "qCreatedBy(1)".into()])
+        .expect("reversed order still resolves");
+    assert_eq!(sections.len(), 2);
+    assert!((sections[0].offset - 0.0).abs() < 1e-4);
+    assert!((sections[1].offset - 10.0).abs() < 1e-4);
+    // Sorted-first is still the z=0 big rectangle, regardless of query order.
+    assert!(sections[0].sketch.sdf([7.0, 7.0]) < 0.0, "sorted-first = big rect");
+    assert!((frame.origin[2] - 0.0).abs() < 1e-4, "frame on the low plane");
+}
+
+#[test]
+fn loft_rejects_a_single_profile() {
+    let mut doc = empty_ctx();
+    let mut ctx = Context::new(&mut doc);
+    insert_rect_sketch(&mut ctx, id(1), 10.0, z_frame(0.0));
+    let err = ctx
+        .resolve_loft_profiles(&["qCreatedBy(1)".into()])
+        .unwrap_err();
+    assert!(err.contains("at least two"), "got: {err}");
+}
+
+#[test]
+fn loft_rejects_tilted_planes() {
+    let mut doc = empty_ctx();
+    let mut ctx = Context::new(&mut doc);
+    insert_rect_sketch(&mut ctx, id(1), 10.0, z_frame(0.0));
+    // Second plane tilted 45° about X — normal (0, -0.707, 0.707), not ∥ +Z.
+    let s = std::f32::consts::FRAC_1_SQRT_2;
+    insert_rect_sketch(
+        &mut ctx,
+        id(2),
+        5.0,
+        crate::sketch::SketchFrame {
+            origin: [0.0, 0.0, 10.0],
+            x_axis: [1.0, 0.0, 0.0],
+            y_axis: [0.0, s, s],
+            normal: [0.0, -s, s],
+        },
+    );
+    let err = ctx
+        .resolve_loft_profiles(&["qCreatedBy(1)".into(), "qCreatedBy(2)".into()])
+        .unwrap_err();
+    assert!(err.contains("not parallel"), "got: {err}");
+}
+
+#[test]
+fn loft_rejects_anti_parallel_planes() {
+    // A bottom-face-style profile whose normal points AGAINST the first
+    // profile's: with per-section 2D coords (P1) the shared frame would turn
+    // left-handed and mirror the geometry, so the resolver must refuse it.
+    let mut doc = empty_ctx();
+    let mut ctx = Context::new(&mut doc);
+    insert_rect_sketch(&mut ctx, id(1), 10.0, z_frame(0.0));
+    insert_rect_sketch(
+        &mut ctx,
+        id(2),
+        5.0,
+        crate::sketch::SketchFrame {
+            origin: [0.0, 0.0, 10.0],
+            x_axis: [1.0, 0.0, 0.0],
+            y_axis: [0.0, -1.0, 0.0],
+            normal: [0.0, 0.0, -1.0],
+        },
+    );
+    let err = ctx
+        .resolve_loft_profiles(&["qCreatedBy(1)".into(), "qCreatedBy(2)".into()])
+        .unwrap_err();
+    assert!(err.contains("opposite direction"), "got: {err}");
+}
+
+#[test]
+fn loft_rejects_two_profiles_on_the_same_plane() {
+    let mut doc = empty_ctx();
+    let mut ctx = Context::new(&mut doc);
+    insert_rect_sketch(&mut ctx, id(1), 10.0, z_frame(0.0));
+    insert_rect_sketch(&mut ctx, id(2), 5.0, z_frame(0.0)); // same plane!
+    let err = ctx
+        .resolve_loft_profiles(&["qCreatedBy(1)".into(), "qCreatedBy(2)".into()])
+        .unwrap_err();
+    assert!(err.contains("same plane"), "got: {err}");
+}
+
+#[test]
+fn loft_feature_executes_and_lowers_to_p1_placeholder_extrude() {
+    // The `loft` FeatureCall parses, resolves two profiles and pushes a
+    // DecodedFeature that regenerates without panic. P1 lowers it to a
+    // placeholder extrude of the first profile over the full span
+    // (half_depth_z = span/2 = 5), so `export_primitive` reports an Extrude.
+    let mut doc = empty_ctx();
+    let mut ctx = Context::new(&mut doc);
+    insert_rect_sketch(&mut ctx, id(1), 10.0, z_frame(0.0));
+    insert_rect_sketch(&mut ctx, id(2), 5.0, z_frame(10.0));
+
+    let def = json!({
+        "profiles": "qCreatedBy(1), qCreatedBy(2)",
+    });
+    LoftFeature.execute(&mut ctx, &id(3), &def).unwrap();
+    assert_eq!(ctx.features.len(), 1);
+    match ctx.features[0].export_primitive().expect("placeholder primitive") {
+        Primitive::Extrude { half_depth_z, sketch, .. } => {
+            assert!((half_depth_z - 5.0).abs() < 1e-4, "span/2 = 5");
+            assert!(sketch.sdf([7.0, 7.0]) < 0.0, "placeholder uses first (big) profile");
+        }
+        other => panic!("expected P1 placeholder Extrude, got {other:?}"),
+    }
+}
+
+#[test]
+fn loft_feature_is_registered_in_with_builtins() {
+    let registry = FeatureRegistry::with_builtins();
+    assert!(registry.get("loft").is_some());
+}

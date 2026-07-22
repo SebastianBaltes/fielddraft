@@ -519,6 +519,36 @@ impl Aabb {
                 min: [-half_extents[0], -half_extents[1], -half_extents[2]],
                 max: [half_extents[0], half_extents[1], half_extents[2]],
             },
+            // #385 P1: the loft stacks its profiles along local Z; the honest
+            // bound is the union of each profile's 2D AABB lifted onto its own
+            // offset plane (lateral profile shifts already live inside each
+            // sketch's XY extent). The P1 placeholder lowering (a first-profile
+            // extrude) never routes through here — it becomes a `CsgNode::Extrude`
+            // in `from_parts` — but keeping the arm exact means a direct
+            // `Primitive::Loft` AABB query is correct for P2.
+            Primitive::Loft { profiles, center, .. } => {
+                let mut acc = Self::EMPTY;
+                for s in profiles {
+                    let bb2 = s.sketch.aabb();
+                    if bb2.is_empty() {
+                        continue;
+                    }
+                    let slab = Self {
+                        min: [
+                            center[0] + bb2.min[0],
+                            center[1] + bb2.min[1],
+                            center[2] + s.offset,
+                        ],
+                        max: [
+                            center[0] + bb2.max[0],
+                            center[1] + bb2.max[1],
+                            center[2] + s.offset,
+                        ],
+                    };
+                    acc = if acc.is_empty() { slab } else { Self::union(acc, slab) };
+                }
+                acc
+            }
         }
     }
 
@@ -1068,6 +1098,41 @@ impl DecodedFeature {
                     CsgNode::Transform(
                         Transform {
                             translate: center,
+                            rotation: [0.0, 0.0, 0.0, 1.0],
+                            scale: [1.0, 1.0, 1.0],
+                        },
+                        Box::new(centered),
+                    )
+                }
+            }
+            // #385 P1 PLACEHOLDER: a loft lowers to a plain extrude of its FIRST
+            // profile spanning the full offset range `[offset_0, offset_last]`.
+            // This is AABB-honest and watertight (it IS a real extrude solid),
+            // so the feature regenerates, meshes and renders without panic while
+            // introducing NO half-baked morph semantics. The real z-bracketed
+            // cross-section morph (`CsgNode::Loft` + opcodes) arrives in P2.
+            // TODO(#385 P2): replace with the dedicated CsgNode::Loft node.
+            Primitive::Loft { profiles, center, wall_subs } => {
+                let z0 = profiles.first().map(|s| s.offset).unwrap_or(0.0);
+                let z1 = profiles.last().map(|s| s.offset).unwrap_or(0.0);
+                let half_height = ((z1 - z0) * 0.5).abs();
+                let sketch = profiles
+                    .first()
+                    .map(|s| s.sketch.clone())
+                    .unwrap_or(Sketch2d::Empty);
+                let centered = CsgNode::Extrude {
+                    id: id.clone(),
+                    sketch: Box::new(sketch),
+                    half_height,
+                    wall_subs: wall_subs.map(std::sync::Arc::new),
+                };
+                let mid_z = center[2] + (z0 + z1) * 0.5;
+                if center[0] == 0.0 && center[1] == 0.0 && mid_z == 0.0 {
+                    centered
+                } else {
+                    CsgNode::Transform(
+                        Transform {
+                            translate: [center[0], center[1], mid_z],
                             rotation: [0.0, 0.0, 0.0, 1.0],
                             scale: [1.0, 1.0, 1.0],
                         },
@@ -3210,6 +3275,7 @@ fn primitive_family_name(p: &Primitive) -> &'static str {
         Primitive::Extrude { .. } => "Extrude",
         Primitive::Revolve { .. } => "Revolve",
         Primitive::Helix { .. } => "Helix",
+        Primitive::Loft { .. } => "Loft",
     }
 }
 

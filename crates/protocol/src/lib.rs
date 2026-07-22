@@ -375,6 +375,34 @@ pub enum Primitive {
         lipschitz: f32,
         half_extents: [f32; 3],
     },
+    /// #385 P1: N-profile loft. Interpolates between `profiles` (≥ 2 parallel
+    /// 2D cross-sections stacked along the local Z / loft axis) into a solid
+    /// that passes through every profile and caps flat at the end profiles.
+    /// Each [`LoftSection`] carries its full [`Sketch2d`] cross-section and its
+    /// `offset` along the loft axis (Z), relative to the first section. `center`
+    /// positions the stack in world space; `wall_subs` mirrors the
+    /// [`Primitive::Extrude`] convention for stable side-wall face ids.
+    ///
+    /// The sections are pre-sorted by ascending `offset` and guaranteed
+    /// distinct by the resolver. The real z-bracketed cross-section morph SDF is
+    /// P2; P1 lowers this to a placeholder extrude of the first profile over the
+    /// full span (see `DecodedFeature::from_parts`).
+    Loft {
+        profiles: Vec<LoftSection>,
+        center: [f32; 3],
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        wall_subs: Option<Vec<u32>>,
+    },
+}
+
+/// #385 P1: one cross-section of a [`Primitive::Loft`] — a full 2D
+/// [`Sketch2d`] profile placed at `offset` along the loft axis (local Z),
+/// measured relative to the first section (so the first section always has
+/// `offset == 0.0`). Sections are stored sorted by ascending `offset`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LoftSection {
+    pub sketch: Sketch2d,
+    pub offset: f32,
 }
 
 /// One instruction of a [`Primitive::CustomSdf`] expression tape — a
@@ -498,6 +526,7 @@ impl Primitive {
     pub const KIND_ELLIPSOID: u32 = 12;
     pub const KIND_HELIX: u32 = 13;
     pub const KIND_CUSTOM_SDF: u32 = 14;
+    pub const KIND_LOFT: u32 = 15;
 
     pub fn kind_tag(&self) -> u32 {
         match self {
@@ -516,6 +545,7 @@ impl Primitive {
             Primitive::ImportedMesh { .. } => Self::KIND_IMPORTED_MESH,
             Primitive::Ellipsoid { .. } => Self::KIND_ELLIPSOID,
             Primitive::CustomSdf { .. } => Self::KIND_CUSTOM_SDF,
+            Primitive::Loft { .. } => Self::KIND_LOFT,
         }
     }
 
@@ -575,6 +605,7 @@ impl Primitive {
             Primitive::ImportedMesh { .. } => "Imported mesh",
             Primitive::Ellipsoid { .. } => "Ellipsoid",
             Primitive::CustomSdf { .. } => "Custom SDF",
+            Primitive::Loft { .. } => "Loft",
         }
     }
 }

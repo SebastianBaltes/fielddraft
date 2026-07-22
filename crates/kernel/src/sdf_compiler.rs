@@ -1004,7 +1004,14 @@ fn emit_leaf_primitive(prim: &Primitive, t: &Transform, ctx: &mut CompileCtx) {
             out.push(*depth);
             out.push(*half_height);
         }
-        Primitive::Extrude { .. } | Primitive::Revolve { .. } | Primitive::Helix { .. } => {
+        // #385 P1: Loft (like Extrude/Revolve/Helix) is emitted as a BoundedCsg
+        // node, never a leaf primitive; the placeholder lowering additionally
+        // turns it into an extrude before compilation. This fallback const keeps
+        // the leaf emitter total. TODO(#385 P2): dedicated OP_WARP_LOFT.
+        Primitive::Extrude { .. }
+        | Primitive::Revolve { .. }
+        | Primitive::Helix { .. }
+        | Primitive::Loft { .. } => {
             out.push(op(OP_PRIM_CONST));
             out.push(0.0);
         }

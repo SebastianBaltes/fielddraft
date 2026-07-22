@@ -231,6 +231,138 @@ impl<'a> Context<'a> {
         Ok((region.unwrap(), frame))
     }
 
+    /// #385 P1: resolve N profile queries into an ordered list of
+    /// [`LoftSection`]s plus the shared world [`SketchFrame`] the loft stacks
+    /// along.
+    ///
+    /// Each query resolves like an extrude profile: a `qFace(...)` selection
+    /// routes through [`Context::resolve_extrude_faces`] (single planar face),
+    /// everything else through [`crate::sketch::resolve_profile_query`] (sketch
+    /// region). The **loft axis** is the first resolved profile's plane normal;
+    /// every other profile plane must be **co-directional** with it
+    /// (`n_i·n_0 > 1 − 1e-6` — anti-parallel normals are rejected too, because
+    /// each section keeps its own 2D coordinates in P1 and an opposing basis
+    /// would mirror the geometry; P2's per-section reframing lifts this).
+    /// Laterally-shifted planes are allowed. Sections are sorted by their signed
+    /// projection onto the axis and their `offset` is expressed relative to the
+    /// first (lowest) section, so `profiles[0].offset == 0`.
+    ///
+    /// The returned frame is the first *sorted* section's own frame (its
+    /// in-plane axes, origin on its plane) with the loft axis as normal — all
+    /// normals are co-directional, so this frame is right-handed and
+    /// `frame.to_transform()` places the section stack correctly with local +Z
+    /// along the loft axis.
+    ///
+    /// Errors (returned as a message the caller wraps in a [`FeatureError`]):
+    /// fewer than two resolvable profiles, a profile that resolves to no closed
+    /// region, a non-parallel or opposing (flipped) plane, or two profiles on
+    /// the same plane (duplicate offset).
+    pub fn resolve_loft_profiles(
+        &mut self,
+        queries: &[String],
+    ) -> Result<(Vec<::fielddraft_protocol::LoftSection>, crate::sketch::SketchFrame), String> {
+        use crate::queries::QueryExpr;
+
+        // 1. Resolve each query → (sketch, frame). A face routes through the
+        //    face-extrude path; anything else through the sketch-region path.
+        let mut resolved: Vec<(::fielddraft_protocol::Sketch2d, crate::sketch::SketchFrame)> =
+            Vec::new();
+        for q in queries {
+            let is_face = matches!(crate::queries::parse_query(q), Ok(QueryExpr::Face(_)));
+            if is_face {
+                let (sketch, frame) = self.resolve_extrude_faces(std::slice::from_ref(q))?;
+                resolved.push((sketch, frame));
+            } else {
+                match crate::sketch::resolve_profile_query(q, &self.sketches) {
+                    Some((sketch, frame, _traced)) => resolved.push((sketch, frame)),
+                    None => {
+                        return Err(format!(
+                            "loft profile `{q}` resolved no closed sketch region — draw a \
+                             rectangle, circle or polygon first, or pick a planar face"
+                        ));
+                    }
+                }
+            }
+        }
+
+        if resolved.len() < 2 {
+            return Err(format!(
+                "a loft needs at least two profiles; got {}",
+                resolved.len()
+            ));
+        }
+
+        // 2. Loft axis = first profile's plane normal. Every other plane must be
+        //    CO-DIRECTIONAL (not merely parallel): each section keeps its own 2D
+        //    coordinates in P1, so an anti-parallel basis would make the shared
+        //    frame left-handed and mirror the geometry. Lateral shifts are fine.
+        let axis = resolved[0].1.normal;
+        let o0 = resolved[0].1.origin;
+        let dot = |a: [f32; 3], b: [f32; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+        for (i, (_, f)) in resolved.iter().enumerate().skip(1) {
+            let c = dot(f.normal, axis);
+            if c <= 1.0 - 1e-6 {
+                return Err(if c < -(1.0 - 1e-6) {
+                    format!(
+                        "loft profile #{i} faces the opposite direction of the first \
+                         profile's plane (flipped profiles are not supported yet — pick \
+                         faces/planes whose normals point the same way)"
+                    )
+                } else {
+                    format!(
+                        "loft profile #{i} is not parallel to the first profile's plane \
+                         (tilted profiles are not supported yet; n·n0 = {c:.6})"
+                    )
+                });
+            }
+        }
+
+        // 3. Signed projection of each profile origin onto the axis, relative to
+        //    the first resolved profile. Sort ascending along the axis.
+        let mut with_key: Vec<(::fielddraft_protocol::Sketch2d, crate::sketch::SketchFrame, f32)> =
+            resolved
+                .into_iter()
+                .map(|(s, f)| {
+                    let d = [f.origin[0] - o0[0], f.origin[1] - o0[1], f.origin[2] - o0[2]];
+                    let key = dot(d, axis);
+                    (s, f, key)
+                })
+                .collect();
+        with_key.sort_by(|a, b| a.2.partial_cmp(&b.2).unwrap_or(std::cmp::Ordering::Equal));
+
+        // 4. Reject two profiles on the same plane (duplicate offset).
+        for w in with_key.windows(2) {
+            if (w[1].2 - w[0].2).abs() < 1e-4 {
+                return Err(
+                    "two loft profiles lie on the same plane — profiles must sit on distinct \
+                     parallel planes"
+                        .to_string(),
+                );
+            }
+        }
+
+        // 5. Baseline offsets to the first sorted section and build the section
+        //    list. The shared frame keeps the first resolved profile's in-plane
+        //    basis and axis normal, with the origin lifted onto the first sorted
+        //    section's plane so local Z=0 sits at `profiles[0]`.
+        let base_key = with_key[0].2;
+        let sections: Vec<::fielddraft_protocol::LoftSection> = with_key
+            .iter()
+            .map(|(s, _, key)| ::fielddraft_protocol::LoftSection {
+                sketch: s.clone(),
+                offset: key - base_key,
+            })
+            .collect();
+        let ref0 = &with_key[0].1; // first sorted section's own frame
+        let frame = crate::sketch::SketchFrame {
+            origin: ref0.origin,
+            x_axis: ref0.x_axis,
+            y_axis: ref0.y_axis,
+            normal: axis,
+        };
+        Ok((sections, frame))
+    }
+
     /// Feature ids of the body that owns the first resolvable `qFace(...)` in
     /// `queries` — the explicit target a face-driven feature (extrude grown from
     /// a body face) docks into. A face-extrude is flush with its parent by
