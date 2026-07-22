@@ -281,6 +281,12 @@ pub enum BoundedCsg {
         /// (angewandt NACH den Kanälen; max/min-assoziativ, Reihenfolge
         /// feldwert-neutral).
         verts: Vec<crate::offset_channel::VertexSphere>,
+        /// Phase 4 (#398): ∂P-Rand-Fillet-Blöcke des Stopps (homogen konkav/
+        /// konvex je Block). Der Compiler emittiert je Block ein
+        /// `OP_RIM_FILLET` NACH dem Basisfeld; die Nearest-Feature-Korrektur
+        /// schließt den δ-schmalen Sliver/Keil am Kontaktrand, den das
+        /// Kontakt-Prisma stehen lässt ([`crate::offset_rim`]).
+        rims: Vec<crate::offset_rim::RimBlock>,
         aabb: Aabb,
     },
 }
@@ -530,10 +536,18 @@ impl BoundedCsg {
             // offset_tree Phase B: naiver Stopp-Wert + Kanal-Korrekturen.
             // Modus-unabhängig — der Kanal IST die korrekte harte Geometrie
             // (wie MaskedBlend: die Fläche ist real, kein Render-Effekt).
-            BoundedCsg::ArcChannel { inner, channels, verts, .. } => {
+            BoundedCsg::ArcChannel { inner, channels, verts, rims, .. } => {
                 let d = inner.sdf_open(p, mode, open);
                 let d = crate::offset_channel::channels_apply(d, p, channels);
-                crate::offset_channel::verts_apply(d, p, verts)
+                let d = crate::offset_channel::verts_apply(d, p, verts);
+                // Phase 4 (#398): ∂P-Rand-Fillet NACH Kanälen/Vertices
+                // (disjunkte Masken, Reihenfolge feldwert-neutral). Spiegel des
+                // `OP_RIM_FILLET`-Decodes und des Dual-Arms.
+                let mut d = d;
+                for block in rims {
+                    d = crate::offset_rim::apply_rims_f32(d, p, block.concave, &block.recs);
+                }
+                d
             }
             BoundedCsg::MaskedBlend {
                 left,
@@ -821,7 +835,7 @@ impl BoundedCsg {
             // Kanal-Term klar (> eps), gehört die Fläche dem Kanal-Branch
             // (0x700+-Band); im eps-Band an der Naht tragen Eltern UND
             // Kanal bei (Mess-/Snap-Referenz der Eltern bleibt erreichbar).
-            BoundedCsg::ArcChannel { inner, channels, verts, .. } => {
+            BoundedCsg::ArcChannel { inner, channels, verts, rims, .. } => {
                 let (d0, mut c) = inner.evaluate_open(p, eps, mode, open);
                 let mut d = d0;
                 for ch in channels {
@@ -846,6 +860,13 @@ impl BoundedCsg {
                         }
                         d = nd;
                     }
+                }
+                // Phase 4 (#398): ∂P-Rand-Fillet. Der Record trägt keine eigene
+                // Branch-Id — die Fillet-Fläche rundet die Kontakt-WÄNDE, deren
+                // Provenance (Eltern/Kanal) erhalten bleibt. Der Feldwert MUSS
+                // hier mit `sdf_open` übereinstimmen, sonst driften Meshing/Pick.
+                for block in rims {
+                    d = crate::offset_rim::apply_rims_f32(d, p, block.concave, &block.recs);
                 }
                 (d, c)
             }

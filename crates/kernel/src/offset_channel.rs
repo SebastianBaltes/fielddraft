@@ -422,6 +422,32 @@ pub fn channels_aabb(channels: &[OffsetChannel]) -> Aabb {
     bb
 }
 
+/// Konservative AABB eines Rand-Fillet-Satzes (offset_tree Phase 4, #398).
+/// Nur der konkave Fall ADDIERT Material (Fillet füllt den Sliver); der Zusatz
+/// liegt innerhalb `trust` um das Kanten-Segment (Kapsel). Der konvexe Fall
+/// schrumpft nur — trägt nichts zur AABB bei (wie bei Kanälen/Vertices).
+pub fn rims_aabb(rims: &[crate::offset_rim::RimBlock]) -> Aabb {
+    let mut bb = Aabb::EMPTY;
+    for block in rims {
+        if !block.concave {
+            continue;
+        }
+        for r in &block.recs {
+            let t = r.trust;
+            for p in [r.a, r.b] {
+                bb = Aabb::union(
+                    bb,
+                    Aabb {
+                        min: [p[0] - t, p[1] - t, p[2] - t],
+                        max: [p[0] + t, p[1] + t, p[2] + t],
+                    },
+                );
+            }
+        }
+    }
+    bb
+}
+
 // ─── Synthese ────────────────────────────────────────────────────────────────
 
 /// Toleranz-Staffel (Plan §9, Phase C2): Zieltoleranz der
@@ -2125,9 +2151,25 @@ fn synthesize_contact_prisms_dilation(
 // identischer Sutherland–Hodgman-Verschnitt, identische duale Sicherheits-
 // Probe). Sie hängt NICHTS in den Baum und ändert das ausgelieferte Feld
 // nicht; sie wird ausschließlich von `offset_rim` (Synthese) + dessen Tests
-// konsumiert. Phase 2 darf `synthesize_contact_prisms` darauf zurückführen,
-// um die Duplikation zu tilgen; Phase 1 hält beide Pfade getrennt, damit der
-// Regen-Pfad garantiert bit-identisch bleibt.
+// konsumiert.
+//
+// **Phase-4-Entscheidung (#398, Vereinheitlichung bewusst NICHT vollzogen):**
+// Die TEURE, fehleranfällige Logik ist bereits geteilt — `box_contact_faces`,
+// `clip_convex`, `cleanup_poly`, `plane_frame`, `build_prism_member`,
+// `prism_subset_of_union`/`prism_outside_inner` haben je genau EINE Definition
+// und werden von allen drei Pfaden (`synthesize_contact_prisms`, `_dilation`,
+// `contact_clips`) aufgerufen. Verbleibende „Duplikation" ist NUR die dünne
+// Paar-Iterations-Orchestrierung — und die erzeugt Ausgaben in
+// VERSCHIEDENEN Zahlendomänen: der Prisma-Pfad baut f32-`Extrude`-Geometrie
+// (deren Vertizes byte-genau ins Golden-Tape fließen — verpflichtender
+// Docker-Build-Gate), der Clip-Pfad liefert f64-`ContactClip`-Records. Ein
+// gemeinsamer Extraktor müsste beide in EINEM Durchlauf ableiten; das zwänge
+// entweder die f32-Prismen-Vertizes durch f64-Zwischenwerte (ULP-Drift →
+// Golden-Byte-Änderung) oder die Rim-Records durch f32-Rundung (Drift der
+// emittierten Rim-Block-Bytes). Beides ist NICHT beweisbar bit-neutral, und
+// die Goldens gaten auf Byte-Identität. Feldstabilität schlägt DRY: die
+// Orchestrierungen bleiben getrennt (Golden byte-identisch verifiziert,
+// f398 + Offset-Fuzz grün).
 
 /// Ein Kontakt-Verschnitt (Polygon P in der Kontaktebene Π + Frame + die zwei
 /// beteiligten Member-Flächen), aus dem `offset_rim` die ∂P-Reflexkanten
@@ -2320,13 +2362,21 @@ fn synthesize_stop(
     delta: f32,
     tol: f32,
     report: &mut crate::offset_capability::CapabilityReport,
-) -> (Vec<OffsetChannel>, Vec<VertexSphere>, Vec<BoundedCsg>) {
+) -> (Vec<OffsetChannel>, Vec<VertexSphere>, Vec<BoundedCsg>, Vec<crate::offset_rim::RimBlock>) {
     let union_form = delta < 0.0;
     let mut members = Vec::new();
     flatten_members(inner, union_form, 1.0, &mut members);
     if members.len() < 2 {
-        return (Vec::new(), Vec::new(), Vec::new());
+        return (Vec::new(), Vec::new(), Vec::new(), Vec::new());
     }
+    // Phase 4 (#398): der ∂P-Rand-Fillet dieses Stopps aus DERSELBEN
+    // `contact_clips`-Quelle wie die Prismen (faithful Accept/Refuse-Mirror,
+    // Konkavitäts-Gate inklusive → leer bei versetztem Kontakt). Wird unten in
+    // den Tolerance-Notes berücksichtigt (schließt den ∂P-Sliver auf tol) und
+    // an den ArcChannel-Knoten weitergereicht.
+    let rims: Vec<crate::offset_rim::RimBlock> =
+        crate::offset_rim::RimBlock::from_stop(inner, delta).into_iter().collect();
+    let rim_closes = !rims.is_empty();
     let ctx = StopCtx {
         delta: delta.abs(),
         concave: union_form,
@@ -2402,16 +2452,26 @@ fn synthesize_stop(
                         "Koplanare Kontaktfläche nur teilweise korrigierbar (ein Kontakt-Partner \
                          nicht analytisch fassbar) — Rest bleibt Näherung f−δ.",
                     );
+                } else if rim_closes {
+                    // Stufe 1 (Prisma) tilgt den flächigen Innenfehler; Stufe 2
+                    // (∂P-Rand-Fillet, OP_RIM_FILLET) rundet den verbleibenden
+                    // konkaven B0-Sliver am Kontaktrand ∂P metrisch exakt auf
+                    // Radius δ. Rest = nur noch die Fillet-Approximation an die
+                    // Bau-Toleranz `tol` (wie ein Kanal), nicht mehr 0.75·δ.
+                    report.note_tolerance(format!(
+                        "Koplanare submergierte Kontaktfläche per Kontakt-Prisma + ∂P-Rand-Fillet \
+                         (OP_RIM_FILLET) korrigiert; Restfehler = Fillet-Approximation ≤ {tol} mm \
+                         (Bau-Toleranz)."
+                    ));
                 } else if !contact.exact {
-                    // Stufe 1 (Prisma) tilgt den flächigen Innenfehler; es bleibt
-                    // NUR der konkave B0-Sliver am Kontaktrand ∂P (Kanten
-                    // ≈0.41·δ, Ecken ≈0.73·δ). Das ist eine bewiesene, ehrliche
-                    // Toleranzschranke — Stufe 2 (∂P-Rim-Kanäle) schließt sie und
-                    // ist noch offen (Rückfall-Klausel #395).
+                    // Prisma gebaut, aber der Rand-Fillet VERWEIGERT (versetzter/
+                    // gemischter Kontakt mit konvexen ∂P-Kanten — Konkavitäts-
+                    // Gate, Design §1.1). Es bleibt der ehrliche B0-Sliver/-Keil
+                    // am Kontaktrand ∂P (Kanten ≈0.41·δ, Ecken ≈0.73·δ).
                     report.note_tolerance(format!(
                         "Koplanare submergierte Kontaktfläche per Kontakt-Prisma korrigiert; \
                          Restfehler = konkaver B0-Sliver am Kontaktrand ∂P ≤ {:.3} mm \
-                         (≈0.75·δ; Stufe-2-Rim-Kanäle offen).",
+                         (≈0.75·δ; Rand-Fillet am versetzten Kontakt verweigert).",
                         contact.rim_bound
                     ));
                 }
@@ -2431,12 +2491,20 @@ fn synthesize_stop(
         if !contact.prisms.is_empty() {
             prisms = contact.prisms;
             prism_pairs = contact.pairs;
-            report.note_tolerance(format!(
-                "Koplanare submergierte Kontaktfläche an einem Dilations-Stopp per Kontakt-Prisma \
-                 (Komplement-Dualität) korrigiert; Restfehler = konvexer B0-Keil am Kontaktrand ∂P \
-                 ≤ {:.3} mm (≈0.75·δ; Stufe-2-Rim offen).",
-                contact.rim_bound
-            ));
+            if rim_closes {
+                report.note_tolerance(format!(
+                    "Koplanare submergierte Kontaktfläche an einem Dilations-Stopp per Kontakt-Prisma \
+                     (Komplement-Dualität) + ∂P-Rand-Fillet (OP_RIM_FILLET) korrigiert; Restfehler = \
+                     Fillet-Approximation ≤ {tol} mm (Bau-Toleranz)."
+                ));
+            } else {
+                report.note_tolerance(format!(
+                    "Koplanare submergierte Kontaktfläche an einem Dilations-Stopp per Kontakt-Prisma \
+                     (Komplement-Dualität) korrigiert; Restfehler = konvexer B0-Keil am Kontaktrand ∂P \
+                     ≤ {:.3} mm (≈0.75·δ; Rand-Fillet am versetzten Kontakt verweigert).",
+                    contact.rim_bound
+                ));
+            }
         } else if contact.refused {
             report.note_conservative(
                 "Koplanarer Kontakt an einem Dilations-Stopp (Intersection/Difference) ohne exakt \
@@ -2576,7 +2644,7 @@ fn synthesize_stop(
                                     &members, &triple_cands, &ctx, union_form,
                                     gate_eps, gscale, &min_feat, &mut channel_idx,
                                 );
-                                return (channels, verts, prisms);
+                                return (channels, verts, prisms, rims);
                             }
                             // Schon von einer früheren Kurve abgedeckt?
                             if claimed.iter().any(|q| norm(sub(*q, seed)) < step * 1.5) {
@@ -2764,7 +2832,7 @@ fn synthesize_stop(
                                     snap_channel_ends_to_vertices(
                                         &mut channels, &chan_ends, &verts,
                                     );
-                                    return (channels, verts, prisms);
+                                    return (channels, verts, prisms, rims);
                                 }
                                 channel_idx += 1;
                                 if !blocked.is_empty() {
@@ -2783,7 +2851,7 @@ fn synthesize_stop(
         &mut channel_idx,
     );
     snap_channel_ends_to_vertices(&mut channels, &chan_ends, &verts);
-    (channels, verts, prisms)
+    (channels, verts, prisms, rims)
 }
 
 /// C4-Spine-Snapping: verlängert Kanal-Kurven, deren Trace am
@@ -2910,7 +2978,12 @@ pub fn synthesize_offset_channels_reported(
             // below-threshold seams). An empty result therefore needs no
             // blanket note: it is either already flagged conservative there or
             // was genuinely correction-free (benign).
-            let (channels, verts, prisms) = synthesize_stop(&inner, delta, tol, report);
+            // Phase 4 (#398): `synthesize_stop` liefert jetzt auch die ∂P-Rand-
+            // Fillet-Blöcke des Stopps (dieselbe `contact_clips`-Quelle wie die
+            // Prismen, Konkavitäts-Gate inklusive) — sie schließen den δ-schmalen
+            // Sliver/Keil, den das Prisma stehen lässt, und fließen in die
+            // Capability-Note (Rest = tol statt 0.75·δ).
+            let (channels, verts, prisms, rims) = synthesize_stop(&inner, delta, tol, report);
             // #395: die Kontakt-Prismen als reguläre Boolean-Member VOR dem ±δ in
             // den gefalteten Baum hängen (Design §3.2). Da S ⊆ U (Erosion) bzw.
             // S ⊆ {f_inner ≥ 0} (Dilation) bleibt die naive Boolean-Nullmenge
@@ -2947,22 +3020,28 @@ pub fn synthesize_offset_channels_reported(
                 Box::new(node)
             };
             let stop = BoundedCsg::Offset { inner, delta, aabb };
-            if channels.is_empty() && verts.is_empty() {
+            if channels.is_empty() && verts.is_empty() && rims.is_empty() {
                 // Reiner Prisma-Fall (Status exact/tolerance ist schon in
                 // `synthesize_stop` notiert) oder gar keine Korrektur.
                 return stop;
             }
-            report.note_tolerance(format!(
-                "Duale Boolean-Kante über Arc-Spline-Kanäle toleranzbeschränkt korrigiert (Ziel-Toleranz ≤ {tol} mm)."
-            ));
+            if !channels.is_empty() || !verts.is_empty() {
+                report.note_tolerance(format!(
+                    "Duale Boolean-Kante über Arc-Spline-Kanäle toleranzbeschränkt korrigiert (Ziel-Toleranz ≤ {tol} mm)."
+                ));
+            }
             let aabb = Aabb::union(
-                Aabb::union(stop.aabb(), channels_aabb(&channels)),
-                verts_aabb(&verts),
+                Aabb::union(
+                    Aabb::union(stop.aabb(), channels_aabb(&channels)),
+                    verts_aabb(&verts),
+                ),
+                rims_aabb(&rims),
             );
             BoundedCsg::ArcChannel {
                 inner: Box::new(stop),
                 channels,
                 verts,
+                rims,
                 aabb,
             }
         }
@@ -3052,10 +3131,11 @@ pub fn synthesize_offset_channels_reported(
             inner: Box::new(synthesize_offset_channels_reported(*inner, tol, report)),
             aabb,
         },
-        BoundedCsg::ArcChannel { inner, channels, verts, aabb } => BoundedCsg::ArcChannel {
+        BoundedCsg::ArcChannel { inner, channels, verts, rims, aabb } => BoundedCsg::ArcChannel {
             inner: Box::new(synthesize_offset_channels_reported(*inner, tol, report)),
             channels,
             verts,
+            rims,
             aabb,
         },
         other @ (BoundedCsg::Empty
@@ -3136,7 +3216,7 @@ pub fn prune_dead_channels(root: &mut BoundedCsg, _tol: f32) -> PruneStats {
                 ctx.push(&**left);
                 walk(right, &ctx, stats);
             }
-            BoundedCsg::ArcChannel { inner, channels, verts, aabb } => {
+            BoundedCsg::ArcChannel { inner, channels, verts, rims, aabb } => {
                 if !neighbors.is_empty() {
                     let g_sum: f32 = channels.iter().map(|c| c.gate).sum();
                     let lips: Vec<f32> = neighbors
@@ -3172,8 +3252,11 @@ pub fn prune_dead_channels(root: &mut BoundedCsg, _tol: f32) -> PruneStats {
                     // Vertex-Kugeln werden nicht gepruned (Zwergkosten:
                     // 16 Floats, kein argmin-Scan).
                     *aabb = Aabb::union(
-                        Aabb::union(inner.aabb(), channels_aabb(channels)),
-                        verts_aabb(verts),
+                        Aabb::union(
+                            Aabb::union(inner.aabb(), channels_aabb(channels)),
+                            verts_aabb(verts),
+                        ),
+                        rims_aabb(rims),
                     );
                 }
                 // Tiefer liegende Stopps sehen dieselben Union-Nachbarn NICHT

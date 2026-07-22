@@ -413,7 +413,7 @@ fn eval_bounded_d3_open(
         // eingefroren — für den Distanzterm ist das der Enveloppen-Satz
         // (∂de/∂x = (x−q*)/|x−q*| exakt), für die s-Terme erster Ordnung
         // korrekt (die Fußpunkt-Drift ist ein O(κ·|x−q*|)-Nebenterm).
-        BoundedCsg::ArcChannel { inner, channels, verts, .. } => {
+        BoundedCsg::ArcChannel { inner, channels, verts, rims, .. } => {
             let mut d = eval_bounded_d3_open(inner, p, mode, open);
             let p_re = [p[0].re as f32, p[1].re as f32, p[2].re as f32];
             for ch in channels {
@@ -512,6 +512,11 @@ fn eval_bounded_d3_open(
                 } else {
                     w
                 };
+            }
+            // Phase 4 (#398): ∂P-Rand-Fillet — Dual-Spiegel von `apply_rims_f32`
+            // (dieselbe Stopp-Semantik/Reihenfolge wie der f32- und CPU-Pfad).
+            for block in rims {
+                d = apply_rims_dual(d, p, block.concave, &block.recs);
             }
             d
         }
@@ -754,14 +759,9 @@ fn eval_bounded_d3_open(
 /// [`crate::offset_rim::select_rim_f32`]; nur der Distanzterm `de = |p − q|`
 /// fließt dual. Der Lotfußpunkt `q` wird als Konstante eingefroren →
 /// `∂de/∂p = (p − q)/de` ist exakt (Enveloppen-Satz), im aktiven Band also
-/// `‖∇‖ = 1` (radiale Einheitsrichtung). Es gibt (noch) keinen
-/// `BoundedCsg::Rim`-Knoten (Emission erst Phase 4), darum ist dies eine
-/// freistehende Funktion für die Phase-2-Paritätstests; der Werte-Kanal
-/// (`.re`) ist identisch zum CPU-Opcode-Pfad.
-// Noch nicht im Regen verdrahtet (kein `BoundedCsg::Rim`-Knoten bis Phase 4) —
-// Phase 4 ruft dies aus einem Rim-Arm von `eval_bounded_d3` auf, analog zum
-// ArcChannel-Arm. Bis dahin nur vom Phase-2-Paritätstest genutzt.
-#[allow(dead_code)]
+/// `‖∇‖ = 1` (radiale Einheitsrichtung). Phase 4 (#398) ruft dies aus dem
+/// `ArcChannel`-Arm von [`eval_bounded_d3_open`] je Rim-Block auf (NACH den
+/// Kanälen/Vertices); der Werte-Kanal (`.re`) ist identisch zum CPU-Opcode-Pfad.
 pub(crate) fn apply_rims_dual(
     g: D3,
     p: [D3; 3],

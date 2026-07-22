@@ -12,6 +12,9 @@ Format, eine Zeile je Eintrag:
 kind = feat | fix | perf. scope und #tickets sind optional. Folgezeilen, die
 eingerückt sind, gehören zum Text davor (Umbruch erlaubt).
 
+## 0.19.0
+- feat(sdf) #398 #384: Rand-Fillets an koplanaren Kontaktflächen sind scharfgeschaltet: Wo bisher nach der Kontakt-Prisma-Korrektur ein δ-schmaler Sliver (Erosion) bzw. Keil (Dilation) am Kontaktrand stehen blieb (Restfehler bis ≈0,75·δ), rundet der neue OP_RIM_FILLET-Opcode diesen Rand jetzt metrisch exakt auf Radius δ — der Restfehler sinkt auf die Bau-Toleranz. Wirkt in allen Evaluatoren gleich (CPU, GPU-Renderer, Meshing, Ableitungen); die Capability-Meldung im Offset/Shell-Feature weist den verbesserten Rest ehrlich aus. Versetzte („staggered“) Kontakte, deren Randkanten konvex sind, werden bewusst nicht gefillett — dort bleibt die bisherige ehrliche Zusage bestehen, statt Material fälschlich aufzufüllen.
+
 ## 0.18.5
 - fix(sdf) #397 #384: Die Ehrlichkeits-Erkennung für koplanare Kontakte am Dilations-Stopp ist jetzt vorzeichen-bewusst: Eine bündig ausgeschnittene Tasche aus Nicht-Box-Körpern (z. B. Extrude minus Extrude, flush cut) blieb bisher ganz ohne Warnung — der Phantom-Grat über dem Taschenmund lag unter einer zu guten Zusage. Der Kernel prüft nun zusätzlich die effektiven (Komplement-)Normalen und stuft solche Kontakte ehrlich auf „Näherung“ herab. Dünnwandige Shells sind über eine enge Koinzidenz-Toleranz sauber abgegrenzt und behalten ihre bisherige (bessere) Bewertung; Geometrie und Felder ändern sich nicht — es geht rein um die ehrliche Statusmeldung.
 

@@ -272,13 +272,18 @@ fn node_to_tree(node: &BoundedCsg, p: &[Tree; 3]) -> Result<Tree, String> {
         // Gewinner via `compare`-Selects, Bogen-Distanz closed-form mit
         // `atan2`. Kein Bounding-Sphere-Skip (feldwert-identisch, der Skip
         // ist reine Laufzeit-Optimierung der numerischen Interpreter).
-        BoundedCsg::ArcChannel { inner, channels, verts, .. } => {
+        BoundedCsg::ArcChannel { inner, channels, verts, rims, .. } => {
             let mut d = node_to_tree(inner, p)?;
             for ch in channels {
                 d = channel_to_tree(&d, p, ch);
             }
             for vs in verts {
                 d = vertex_to_tree(&d, p, vs);
+            }
+            // offset_tree Phase 4 (#398): ∂P-Rand-Fillet als Tree — symbolischer
+            // Spiegel von `offset_rim::apply_rims_f32`.
+            for block in rims {
+                d = rim_to_tree(&d, p, block);
             }
             Ok(d)
         }
@@ -491,6 +496,87 @@ fn vertex_to_tree(
     } else {
         d.clone().max(w)
     }
+}
+
+/// Spiegel von [`crate::offset_rim::apply_rims_f32`] als Tree (offset_tree
+/// Phase 4, #398). Hard-Mask-Nearest-Select: je Record eine EXAKTE 0/1-Maske
+/// (Trust · End-Caps · Wand-Halbräume — jedes Indikator `1 − relu(compare)` ist
+/// exakt 0 oder 1), maskiert-heraus ⇒ maskierte Distanz `de_eff = BIG` → der
+/// Record scheidet aus dem argmin aus. Der Gewinner (kleinste maskierte
+/// Distanz, ERSTER bei Gleichstand) bestimmt `corr = concave ? δ−de : de−δ`,
+/// komponiert via `min`/`max`. Kein aktiver Record (`any = 0`) ⇒ `d` unverändert.
+/// eps-Literale exakt wie [`crate::offset_rim::select_rim_f32`].
+fn rim_to_tree(d: &Tree, p: &[Tree; 3], block: &crate::offset_rim::RimBlock) -> Tree {
+    let concave = block.concave;
+    let big = 1e30_f64;
+    // 1 wenn a ≤ b, sonst 0 (compare(a,b) = +1 gdw a > b).
+    let le = |a: &Tree, b: &Tree| Tree::from(1.0) - relu(a.clone().compare(b.clone()));
+    // 1 wenn a ≥ b, sonst 0.
+    let ge = |a: &Tree, b: &Tree| Tree::from(1.0) - relu(b.clone().compare(a.clone()));
+    let blend = |flag: &Tree, x: &Tree, y: &Tree| y.clone() + (x.clone() - y.clone()) * flag.clone();
+
+    let mut best_de = Tree::from(big);
+    let mut win_de = Tree::from(big);
+    let mut win_delta = Tree::from(0.0);
+    let mut any = Tree::from(0.0);
+
+    for rec in &block.recs {
+        let dvec = [rec.b[0] - rec.a[0], rec.b[1] - rec.a[1], rec.b[2] - rec.a[2]];
+        let len2 = (dvec[0] * dvec[0] + dvec[1] * dvec[1] + dvec[2] * dvec[2]) as f64;
+        let a3 = t_const3(rec.a);
+        let (de, q, t_opt): (Tree, [Tree; 3], Option<Tree>) = if len2 < 1e-24 {
+            // Punkt-Spine (a == b): keine End-Cap-Maske.
+            (t_norm(&t_sub(p, &a3)), a3.clone(), None)
+        } else {
+            let inv = 1.0 / len2;
+            let dv = t_const3(dvec);
+            let t_raw = t_dot(&t_sub(p, &a3), &dv) * inv;
+            let t = t_raw.clone().max(0.0).min(1.0);
+            let q = [
+                a3[0].clone() + dv[0].clone() * t.clone(),
+                a3[1].clone() + dv[1].clone() * t.clone(),
+                a3[2].clone() + dv[2].clone() * t.clone(),
+            ];
+            (t_norm(&t_sub(p, &q)), q, Some(t_raw))
+        };
+        let dq = t_sub(p, &q);
+        // Maske: Trust.
+        let mut pass = le(&de, &Tree::from(rec.trust as f64));
+        // End-Caps t ∈ [−cap, 1+cap] (nur echtes Segment).
+        if let Some(t_raw) = &t_opt {
+            let cap = 1e-6;
+            pass = pass * ge(t_raw, &Tree::from(-cap)) * le(t_raw, &Tree::from(1.0 + cap));
+        }
+        // Wand-Halbräume (ungenutzte Wand |n| < 0.5 → Maske true, in Rust entschieden).
+        let eps = 1e-9;
+        for n in [rec.n_a, rec.n_b, rec.n_c] {
+            let nn = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
+            if nn < 0.5 {
+                continue;
+            }
+            let dot = t_dot(&dq, &t_const3(n));
+            let ind = if concave {
+                le(&dot, &Tree::from(eps)) // dot ≤ eps
+            } else {
+                ge(&dot, &Tree::from(-eps)) // dot ≥ −eps
+            };
+            pass = pass * ind;
+        }
+        let de_eff = blend(&pass, &de, &Tree::from(big));
+        // Neuer argmin gdw best_de > de_eff (strikt → erster gewinnt bei Gleichstand).
+        let is_new = relu(best_de.clone().compare(de_eff.clone()));
+        win_de = blend(&is_new, &de, &win_de);
+        win_delta = blend(&is_new, &Tree::from(rec.delta as f64), &win_delta);
+        best_de = blend(&is_new, &de_eff, &best_de);
+        any = any.max(is_new);
+    }
+    let corr = if concave {
+        win_delta - win_de
+    } else {
+        win_de - win_delta
+    };
+    let candidate = if concave { d.clone().min(corr) } else { d.clone().max(corr) };
+    blend(&any, &candidate, d)
 }
 
 /// Mesh a body with fidget's interval-octree Manifold Dual Contouring.

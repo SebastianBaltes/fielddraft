@@ -136,6 +136,40 @@ fn scene_flush_pocket(delta_abs: f64) -> Scene {
     Scene { name: "flush_pocket", node, base, delta: delta_abs as f32 }
 }
 
+/// #398 Phase 4 — Trieder-Vertex aus der ECHTEN Synthese. Zwei bündig
+/// gestoßene Platten mit in BEIDEN Querschnitts-Achsen VERSETZTEM (staggered)
+/// Kontakt: der Kontakt-Verschnitt `P = A_face ∩ B_face` ist ein Rechteck,
+/// dessen vier Ränder ABWECHSELND von Member A und B stammen. An genau den
+/// zwei ∂P-Ecken, wo eine A-Kante auf eine B-Kante trifft, stoßen Stufen-
+/// Kanten aus VERSCHIEDENEN Membern mit nicht-parallelen Seitenwänden
+/// zusammen → `synthesize_vertices` setzt dort einen echten Trieder-Vertex
+/// (`a == b`, `n_c ≠ 0`). Das ist der EINZIGE Kernel-Pfad, der einen
+/// Punkt-Fillet emittiert (Box-Stack/Pocket erzeugen nur Kanten, weil dort P
+/// ganz in einer Fläche liegt — alle ∂P-Kanten teilen sich denselben
+/// Wand-Member). Erosion (−δ), damit `concave` und die Union-Form greifen.
+fn scene_stagger_trihedral(delta_abs: f64) -> Scene {
+    let he_a = [10.0f32, 10.0, 10.0];
+    let he_b = [8.0f32, 7.0, 6.0];
+    let bx = he_a[0] + he_b[0]; // bündiger Kontakt bei x = he_a[0] = 10
+    let a_leaf = CsgNode::Leaf {
+        id: id(1),
+        primitive: Primitive::Box { center: [0.0; 3], half_extents: he_a },
+    };
+    // B in y und z um (+5,+5) versetzt: A_face y,z∈[−10,10]; B_face
+    // y∈[−2,12], z∈[−1,11] → P: y∈[−2,10], z∈[−1,10]. Ränder y=−2,z=−1 (B),
+    // y=10,z=10 (A) → gemischte Ecken (−2,10) und (10,−1).
+    let b_leaf = CsgNode::Transform(
+        Transform { translate: [bx, 5.0, 5.0], rotation: [0.0, 0.0, 0.0, 1.0], scale: [1.0; 3] },
+        Box::new(CsgNode::Leaf {
+            id: id(2),
+            primitive: Primitive::Box { center: [0.0; 3], half_extents: he_b },
+        }),
+    );
+    let base = CsgNode::Union(Box::new(a_leaf), Box::new(b_leaf));
+    let node = CsgNode::Offset(Box::new(base.clone()), -(delta_abs as f32));
+    Scene { name: "stagger_trihedral", node, base, delta: -(delta_abs as f32) }
+}
+
 // ─── Messung (Doppel-GT wie offset_fuzz / f396) ─────────────────────────────
 
 struct Zs { p99: f64, max: f64, mean: f64, n: usize }
@@ -387,6 +421,62 @@ fn f398_rim_synthesis_report() {
             -d, np99, nmax, nmax / d, fp99, fp99 / d, over);
         assert!(fp99 < 0.2 * d, "trihedral δ={d}: Vertex-Fillet erreicht Ziel nicht (p99 {fp99:.4})");
         assert!(over < 0.15 * d + 0.05, "trihedral δ={d}: Vertex-Fillet überfüllt ({over:.4})");
+    }
+}
+
+/// #398 Phase 4 — Trieder-Vertex-Pfad + Konkavitäts-Gate.
+///
+/// Der EINZIGE Kernel-Pfad zu einem Trieder-Vertex (`synthesize_vertices`)
+/// verlangt an einer ∂P-Ecke zwei Stufen-Kanten aus VERSCHIEDENEN Wand-Membern
+/// — das gibt es nur bei einem VERSETZTEN (staggered) Kontakt. Ein solcher
+/// Kontakt hat aber KONVEXE ∂P-Kanten (der Über-Stander tritt frei zu Tage);
+/// der konkave Erosions-Fillet würde sie um bis zu δ ÜBERFÜLLEN. Deshalb
+/// verweigert das Konkavitäts-Gate (gemischte Wand-Member) den gesamten
+/// versetzten Kontakt: kein Fillet, kein Vertex — der Prisma-Korrektur bleibt
+/// der (korrekt) submergierte Teil P. Damit ist ein FELD-korrekter Trieder-
+/// Vertex über die aktuelle (paarweise, Box-)Synthese NICHT erreichbar (Design
+/// §1.3: der echte √3-Reflex-Vertex ist eine Ehrlichkeits-Worst-Case-Schranke,
+/// in reiner f64 isoliert — s. `f398_rim_synthesis_report`).
+///
+/// Dieser Test verankert BEIDE Aussagen empirisch:
+/// (a) Der versetzte Kontakt wird verweigert (`rims` leer) — sonst wäre das
+///     scharfgeschaltete Emittieren eine Over-Fill-REGRESSION.
+/// (b) Das REAL kompilierte Feld (inkl. Prisma + jetzt aktivem OP_RIM_FILLET)
+///     überfüllt am versetzten Kontakt NICHT (Doppel-GT, over-fill ≈ 0).
+#[test]
+fn f398_rim_staggered_contact_refused() {
+    let grid = 64;
+    eprintln!("=== #398 Phase 4 — versetzter Kontakt: Gate + kein Over-Fill ===");
+    for &d in &[1.0f64, 2.0] {
+        let s = scene_stagger_trihedral(d);
+        let root = folded_root(&s.node);
+        let rims = synthesize_rim_features_for_tree(&root);
+
+        // (a) Konkavitäts-Gate: der versetzte Kontakt liefert KEINE Rim-Features.
+        assert!(
+            rims.is_empty(),
+            "stagger δ={d}: versetzter Kontakt darf keinen Fillet erzeugen, got {} Features \
+             ({} Vertizes)",
+            rims.len(),
+            rims.iter().filter(|r| r.a == r.b).count()
+        );
+
+        // (b) Das reale, scharfgeschaltete Feld überfüllt nicht.
+        let (field, _report) = compile_prism_field(&s.node);
+        let base_field = CsgField::visual(&s.base);
+        let baabb = s.base.aabb();
+        let blo = [baabb.min[0] as f64, baabb.min[1] as f64, baabb.min[2] as f64];
+        let bhi = [baabb.max[0] as f64, baabb.max[1] as f64, baabb.max[2] as f64];
+        let base_gt =
+            GroundTruth::build(&base_field, blo, bhi, &GtOptions { grid, ..GtOptions::default() });
+        let fa = field.aabb();
+        let flo = [fa.min[0] as f64 - 1.0, fa.min[1] as f64 - 1.0, fa.min[2] as f64 - 1.0];
+        let fhi = [fa.max[0] as f64 + 1.0, fa.max[1] as f64 + 1.0, fa.max[2] as f64 + 1.0];
+        let real = BoundedField(&field);
+        let overfill = dual_safety_overfill(&real, &base_gt, flo, fhi, s.delta as f64, 48);
+        eprintln!("[ stagger δ={:+.1}] rims={} (verweigert)  real-Feld over-fill={:.4} mm", -d, rims.len(), overfill);
+        // Prisma-only: submergiertes P korrekt gefüllt, konvexe Kanten scharf → over-fill ≈ 0.
+        assert!(overfill < 0.05 * d + 0.02, "stagger δ={d}: reales Feld überfüllt ({overfill:.4})");
     }
 }
 

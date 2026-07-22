@@ -237,6 +237,38 @@ impl RimRecord {
     }
 }
 
+/// Ein homogener Rand-Fillet-Block EINES dualen Offset-Stopps (offset_tree
+/// Phase 4, #398): alle Records teilen `concave` (die Nearest-Feature-
+/// Komposition mischt konkav/konvex nie innerhalb eines Stopps). Trägt der
+/// [`crate::bvh::BoundedCsg::ArcChannel`]-Korrekturknoten; der Compiler
+/// emittiert je Block genau EIN [`crate::sdf_compiler::encode_rim_block`]
+/// NACH dem Basisfeld-Wert des Stopps.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RimBlock {
+    pub concave: bool,
+    pub recs: Vec<RimRecord>,
+}
+
+impl RimBlock {
+    /// Synthetisiert den Rim-Block eines dualen Offset-Stopps (`inner` = das
+    /// Boolean-Kind, `delta_signed` = das ±δ des Stopps). Leerer Kontakt oder
+    /// vollständige Verweigerung ⇒ `None` (kein leerer Block emittiert). Die
+    /// Records kommen aus derselben `contact_clips`-Quelle wie die Prisma-
+    /// Emission (faithful Accept/Refuse-Mirror), damit Fillet und Prisma
+    /// deckungsgleich sind.
+    pub fn from_stop(inner: &BoundedCsg, delta_signed: f32) -> Option<RimBlock> {
+        let feats = synthesize_rim_features(inner, delta_signed);
+        if feats.is_empty() {
+            return None;
+        }
+        let recs: Vec<RimRecord> = feats.iter().map(RimRecord::from_feature).collect();
+        Some(RimBlock {
+            concave: delta_signed < 0.0,
+            recs,
+        })
+    }
+}
+
 /// Radialdistanz + (geklemmter) Lotfußpunkt `q` + (ungeklemmter) Parameter `t`.
 /// f32-Spiegel von [`RimFeature::closest_t`].
 fn rim_closest_t(rec: &RimRecord, p: [f32; 3]) -> (f32, [f32; 3], f32) {
@@ -417,6 +449,7 @@ fn rims_from_clip(clip: &ContactClip, delta_signed: f64, out: &mut Vec<RimFeatur
     let tol = (1e-3 * da).max(1e-5);
 
     let mut steps: Vec<StepEdge> = Vec::new();
+    let mut edge_feats: Vec<RimFeature> = Vec::new();
     for k in 0..n {
         let u0 = clip.p2d[k];
         let u1 = clip.p2d[(k + 1) % n];
@@ -453,7 +486,7 @@ fn rims_from_clip(clip: &ContactClip, delta_signed: f64, out: &mut Vec<RimFeatur
             trust,
             concave,
         };
-        out.push(feat);
+        edge_feats.push(feat);
         steps.push(StepEdge {
             wall_member: wall,
             contact_n,
@@ -464,6 +497,30 @@ fn rims_from_clip(clip: &ContactClip, delta_signed: f64, out: &mut Vec<RimFeatur
         });
     }
 
+    // Konkavitäts-Gate (#398 Phase 4): der additive/subtraktive Fillet ist NUR
+    // im ENTHALTENEN Kontakt gültig — dort, wo der Über-Stander die gesamte
+    // Kontur des kleineren Members überragt ("A steht überall über B über",
+    // Design §1.1). Genau dann liegt P VOLLSTÄNDIG im Inneren EINER Fläche und
+    // ALLE ∂P-Stufen-Kanten teilen sich denselben Wand-Member — jede ist eine
+    // echte konkave (Erosion) bzw. konvexe (Dilation) Reflexkante.
+    //
+    // Bei einem VERSETZTEN (staggered) Kontakt dagegen wechseln sich A- und
+    // B-Ränder an ∂P ab: an den A-Rändern (Wand = i) tritt eine Fläche des
+    // Über-Standers frei zu Tage — die Kante ist dort KONVEX (eine Stufe nach
+    // unten), kein konkaver Sliver. Der (konkave) Fillet würde sie fälschlich
+    // auffüllen (Over-Fill bis δ). Solche Kontakte lässt die Prisma-Korrektur
+    // (submergiertes P) korrekt stehen; der Rim VERWEIGERT hier komplett —
+    // gemischte Wand-Member ⇒ kein homogener Reflex ⇒ kein Fillet. (Das ist
+    // auch der Grund, warum `synthesize_vertices` in der Praxis nie feuert: ein
+    // Trieder-Vertex verlangt ZWEI verschiedene Wand-Member an einer Ecke, was
+    // dieses Gate ausschließt — der echte √3-Reflex-Vertex entsteht nur an
+    // Nicht-Box-Kontakten/3-Wege-Nähten, Design §1.3.)
+    if let Some(&first) = steps.first().map(|s| &s.wall_member) {
+        if steps.iter().any(|s| s.wall_member != first) {
+            return; // gemischt → versetzter Kontakt, konvexe Kanten → Verweigerung
+        }
+    }
+    out.extend(edge_feats);
     synthesize_vertices(&steps, da, trust, concave, out);
 }
 

@@ -756,21 +756,35 @@ fn check_p3(
     };
 
     // Schwellen: robuster Messboden + (bei tolerance_bounded) die zugesagte
-    // Toleranz. Für Arc-Spline-Kanäle ist das `channel_tol`; für einen
-    // #395-Kontakt-Prisma OHNE Stufe-2-Rim ist die ehrliche Zusage die
-    // B0-Sliver-Klasse am Kontaktrand ∂P — Kanten ≈0.41·δ, Ecken ≈(√3−1)·δ
-    // ≈0.73·δ (der Prisma tilgt den flächigen 2D-Innenfehler, es bleibt nur
-    // der δ-schmale konkave Saum, Design §1.2/§Umsetzungs-Status). Die Zusage
-    // steht wörtlich im Report; wir lesen sie hier ab, statt eine
-    // channel_tol-Genauigkeit zu unterstellen, die Stufe 1 nicht verspricht.
+    // Toleranz. Für Arc-Spline-Kanäle ist das `channel_tol`. Beim
+    // #395-Kontakt-Prisma unterscheiden wir seit #398 Phase 4 ZWEI Fälle:
+    //
+    //  * Prisma + ∂P-Rand-Fillet (OP_RIM_FILLET, enthaltener Kontakt): Stufe 2
+    //    rundet den konkaven/konvexen B0-Sliver metrisch auf Radius δ; es bleibt
+    //    nur die Fillet-Approximation — eine δ-skalierte Restklasse deutlich
+    //    unter der rohen 0.75·δ-Sliver-Schranke. Empirisch (f398 run_scene)
+    //    p99 ≤ 0.05·δ; wir setzen 0.1·δ als ehrliche, gemessen-robuste Zusage.
+    //  * Prisma OHNE Rim (versetzter Kontakt, Konkavitäts-Gate verweigert den
+    //    Fillet — konvexe ∂P-Kanten): die ehrliche Zusage bleibt die rohe
+    //    B0-Sliver-Klasse — Kanten ≈0.41·δ, Ecken ≈(√3−1)·δ ≈0.73·δ.
+    //
+    // Die Zusage steht wörtlich im Report; wir lesen sie hier ab.
     let exact_tol = exact_rel * z.model_size;
     let prism_only = comp
         .report
         .reasons()
         .iter()
         .any(|r| r.contains("Kontakt-Prisma"));
+    let rim_closed = comp
+        .report
+        .reasons()
+        .iter()
+        .any(|r| r.contains("OP_RIM_FILLET"));
     let threshold = match status {
         CapabilityStatus::Exact => exact_tol,
+        CapabilityStatus::ToleranceBounded if prism_only && rim_closed => {
+            exact_tol + 0.1 * (*delta).abs() as f64 + scene.channel_tol as f64
+        }
         CapabilityStatus::ToleranceBounded if prism_only => {
             exact_tol + 0.75 * (*delta).abs() as f64 + scene.channel_tol as f64
         }

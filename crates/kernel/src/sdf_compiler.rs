@@ -475,11 +475,12 @@ fn emit_node(node: &BoundedCsg, ctx: &mut CompileCtx, open: &crate::csg::OpenBra
         // provenance, which the tape does not track) — emit the child unchanged.
         // This keeps the GPU-TSL and CGAL-C++ backends untouched.
         BoundedCsg::InnerWall { inner, .. } => emit_node(inner, ctx, open),
-        BoundedCsg::ArcChannel { inner, channels, verts, .. } => {
+        BoundedCsg::ArcChannel { inner, channels, verts, rims, .. } => {
             // offset_tree Phase B: naiver Stopp zuerst, dann je Kanal EIN
             // OP_ARC_CHANNEL (pops d, pusht korrigiert) — sequenziell wie
             // `offset_channel::channels_apply`. Phase C4: danach je
-            // Vertex-Kugel EIN OP_VERTEX_SPHERE (`verts_apply`).
+            // Vertex-Kugel EIN OP_VERTEX_SPHERE (`verts_apply`). Phase 4 (#398):
+            // zuletzt je Rim-Block EIN OP_RIM_FILLET (`apply_rims_f32`).
             emit_node(inner, ctx, open);
             let out = &mut ctx.opcodes;
             for ch in channels {
@@ -515,6 +516,9 @@ fn emit_node(node: &BoundedCsg, ctx: &mut CompileCtx, open: &crate::csg::OpenBra
                 out.extend_from_slice(&vs.gates[0]);
                 out.extend_from_slice(&vs.gates[1]);
                 out.extend_from_slice(&vs.gates[2]);
+            }
+            for block in rims {
+                encode_rim_block(block.concave, &block.recs, out);
             }
         }
         BoundedCsg::Shell {
