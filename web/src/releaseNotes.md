@@ -12,6 +12,9 @@ Format, eine Zeile je Eintrag:
 kind = feat | fix | perf. scope und #tickets sind optional. Folgezeilen, die
 eingerückt sind, gehören zum Text davor (Umbruch erlaubt).
 
+## 0.22.0
+- feat(sdf) #398 #384: Bogen-Kontakte sind jetzt vollwertig: Kontaktflächen mit runden Rändern (z. B. ein aufgesetztes Pillen- oder abgerundetes Profil) bekommen exakte Bogen-Korrekturkörper und einen Rand-Fillet, der gerade und runde Kanten in einem Zug verrundet. Nur nach innen gewölbte Bögen und Bohrungs-Ränder bleiben — wie einspringende Ecken — bewusst ungerundet und werden ehrlich mit Schranke gemeldet; diese Schranke erscheint jetzt auch dann, wenn an derselben Naht ein anderer Kontakt sauber schließt (vorher zu optimistisch).
+
 ## 0.21.0
 - feat(sdf) #398 #384: Der Rand-Fillet an koplanaren Kontaktflächen greift jetzt auch bei Nicht-Box-Kontakten: gerade Kontaktrand-Kanten beliebiger (auch nicht-konvexer) Konturen werden sauber verrundet, jede Kontaktinsel bekommt ihren eigenen Saum. An einspringenden Ecken und Bogen-Kanten bleibt bewusst ein kleiner, ehrlich gemeldeter Rest stehen — die Genauigkeits-Angabe nennt dessen Schranke jetzt explizit, statt pauschal zu warnen.
 

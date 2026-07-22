@@ -47,6 +47,7 @@ use fielddraft_kernel::offset_invariants::{
     check_inner_wall_position, check_no_closed_shells, check_offset_leaves_folded,
     check_offsets_pushed,
 };
+use fielddraft_protocol::sketch2d::{Sketch2d, Sketch2dPrimitive};
 use fielddraft_protocol::{FeatureId, Primitive, Transform};
 
 use metricity_lab::field::{CsgField, Field};
@@ -109,6 +110,14 @@ enum Family {
     ClosedShellBoolean,
     /// Offset über einer geschlossenen Shell. Nur P1/P2.
     OffsetShellCombo,
+    /// FC #398 Phase 4: nicht-konvexer koplanarer Kontakt — ein L-/T-/Kreuz-/
+    /// Stufen-Extrudat auf einer Box-Fläche aufgesetzt (Cap koinzident mit der
+    /// Box-Fläche), Erosions-Offset −δ. Der Extrude-Cap ist ein NICHT-konvexes
+    /// Profil mit Reflex-Vertices → Kontakt-Prisma + ∂P-Rand-Fillet (gerade
+    /// Kanten geschlossen, Reflex-Vertices ehrlich als B0-Rest). Prüft die
+    /// Rim-Opcode-Spiegel (CPU=Dual=Tape) und die Over-Fill-Freiheit auf der
+    /// ganzen neuen Kontaktklasse.
+    NonConvexContact,
 }
 
 const FAMILIES: &[Family] = &[
@@ -121,7 +130,32 @@ const FAMILIES: &[Family] = &[
     Family::StackedDualStops,
     Family::ClosedShellBoolean,
     Family::OffsetShellCombo,
+    Family::NonConvexContact,
 ];
+
+/// Ein nicht-konvexes Profil (L/T/Kreuz/Stufe) als CCW-Polygon-Vertices,
+/// enthalten in [-6,6]². `kind` wählt die Form (0..4).
+fn nonconvex_profile(kind: u32) -> Vec<[f32; 2]> {
+    match kind % 4 {
+        // L (ein Reflex-Vertex bei (0,0)).
+        0 => vec![[-6.0, -6.0], [6.0, -6.0], [6.0, 0.0], [0.0, 0.0], [0.0, 6.0], [-6.0, 6.0]],
+        // T (zwei Reflex-Vertices).
+        1 => vec![
+            [-2.0, -6.0], [2.0, -6.0], [2.0, 2.0], [6.0, 2.0], [6.0, 6.0], [-6.0, 6.0],
+            [-6.0, 2.0], [-2.0, 2.0],
+        ],
+        // Kreuz/Plus (vier Reflex-Vertices).
+        2 => vec![
+            [-2.0, -6.0], [2.0, -6.0], [2.0, -2.0], [6.0, -2.0], [6.0, 2.0], [2.0, 2.0],
+            [2.0, 6.0], [-2.0, 6.0], [-2.0, 2.0], [-6.0, 2.0], [-6.0, -2.0], [-2.0, -2.0],
+        ],
+        // Doppel-Stufe (zwei Reflex-Vertices).
+        _ => vec![
+            [-6.0, -6.0], [6.0, -6.0], [6.0, -2.0], [2.0, -2.0], [2.0, 2.0], [-2.0, 2.0],
+            [-2.0, 6.0], [-6.0, 6.0],
+        ],
+    }
+}
 
 /// Eine generierte Szene inkl. allem, was für die Reproduktion nötig ist.
 struct Scene {
@@ -455,6 +489,49 @@ fn generate(family: Family, seed: u64) -> Scene {
                 channel_tol: tol,
             }
         }
+        Family::NonConvexContact => {
+            // A = Über-Stander-Box; B = nicht-konvexes Extrudat, dessen −z-Cap
+            // (nach Rotation z→x die x=ax-Ebene) bündig mit A's +x-Fläche liegt.
+            // Der Kontakt P ist das (ganz in A's Fläche enthaltene) nicht-konvexe
+            // Profil → alle ∂P-Kanten gehören B (homogener Wand-Member); die
+            // Reflex-Vertices bleiben ehrlich als B0-Rest stehen.
+            let ax = rng.range(12.0, 18.0) as f32;
+            let ay = rng.range(12.0, 18.0) as f32;
+            let az = rng.range(12.0, 18.0) as f32;
+            let hh = rng.range(4.0, 8.0) as f32;
+            let kind = (rng.next_u64() % 4) as u32;
+            let prof = nonconvex_profile(kind);
+            let sketch = Sketch2d::Prim(Sketch2dPrimitive::Polygon { vertices: prof });
+            let ext = CsgNode::Extrude {
+                id: id(2),
+                sketch: Box::new(sketch),
+                half_height: hh,
+                wall_subs: None,
+            };
+            // z→x-Rotation (90° um y): local z-Achse → world +x; Cap bei x=ax.
+            let q = [0.0f32, std::f32::consts::FRAC_1_SQRT_2, 0.0, std::f32::consts::FRAC_1_SQRT_2];
+            let b = xform(
+                Transform { translate: [ax + hh, 0.0, 0.0], rotation: q, scale: [1.0; 3] },
+                ext,
+            );
+            let mut base = union(leaf_box(1, [ax, ay, az]), b);
+            // Optional die ganze Szene rigide rotieren (Nähte nicht achsparallel).
+            let rotate_globally = rng.next_f64() < 0.5;
+            if rotate_globally {
+                base = xform(rigid(&mut rng, [0.0; 3]), base);
+            }
+            let delta = -(rng.range(0.5, 2.5) as f32); // Erosion
+            Scene {
+                family,
+                seed,
+                params: format!(
+                    "a=[{ax:.1},{ay:.1},{az:.1}] hh={hh:.1} kind={kind} rot={rotate_globally} delta={delta:.3}"
+                ),
+                node: offset(base.clone(), delta),
+                reference: Some((base, delta)),
+                channel_tol: tol,
+            }
+        }
     }
 }
 
@@ -775,16 +852,30 @@ fn check_p3(
         .reasons()
         .iter()
         .any(|r| r.contains("Kontakt-Prisma"));
-    let rim_closed = comp
+    // FC #398 Phase 4: drei Prisma-Schranken statt zwei — der Rim schließt den
+    // ∂P-Saum entweder GANZ (konvexes P: nur Fillet-Approximation ≤0.1·δ) oder
+    // NUR die geraden Kanten (nicht-konvexes P: an Reflex-Vertices/Bögen bleibt
+    // der ehrliche B0-Rest ≈0.75·δ stehen — das steht wörtlich im Report). Ohne
+    // diese Unterscheidung meldete das Gate für nicht-konvexe Kontakte die enge
+    // 0.1·δ-Schranke (Bound-Over-Claim), obwohl der Report 0.75·δ zusagt.
+    let rim_partial = comp
         .report
         .reasons()
         .iter()
-        .any(|r| r.contains("OP_RIM_FILLET"));
+        .any(|r| r.contains("B0-Rest an") || r.contains("nicht-konvex"));
+    let rim_closed = !rim_partial
+        && comp
+            .report
+            .reasons()
+            .iter()
+            .any(|r| r.contains("OP_RIM_FILLET"));
     let threshold = match status {
         CapabilityStatus::Exact => exact_tol,
         CapabilityStatus::ToleranceBounded if prism_only && rim_closed => {
             exact_tol + 0.1 * (*delta).abs() as f64 + scene.channel_tol as f64
         }
+        // Rim teilweise (nicht-konvex, Reflex-Rest) ODER ganz verweigert
+        // (versetzter Kontakt) → die rohe B0-Sliver-Klasse ≈0.75·δ.
         CapabilityStatus::ToleranceBounded if prism_only => {
             exact_tol + 0.75 * (*delta).abs() as f64 + scene.channel_tol as f64
         }
@@ -922,6 +1013,140 @@ fn coplanar_dilation_family_stats() {
     assert!(
         n_tol > n_cons,
         "Dilations-Prisma greift nicht mehrheitlich (tol={n_tol} cons={n_cons})"
+    );
+}
+
+/// FC #398 Phase 4 — Tiefen-Checks der `NonConvexContact`-Familie:
+///  (a) **Feld-Konsistenz aller Evaluator-Spiegel**: CPU-Interpreter (BVH.sdf),
+///      Dual-Evaluator (`sdf_dual::sdf_gradient`) und das kompilierte Tape
+///      (`eval_opcodes`) liefern für JEDE Szene bit-nah dasselbe Feld — inkl.
+///      der scharfgeschalteten OP_RIM_FILLET-Blöcke.
+///  (b) **Kein Over-Fill jenseits der Schranke**: an Punkten AUSSERHALB der
+///      un-erodierten Union A∪B (die Erosion kann nur schrumpfen) darf das
+///      korrigierte Feld NIEMALS Material behaupten — die harte, konservative
+///      Ehrlichkeitsschranke der ganzen neuen Kontaktklasse.
+///  (c) **rim_closes ⇒ Kontaktrand innerhalb der Zusage**: die gemessene
+///      Nullmengen-Abweichung hält die im Report zugesagte Schranke (konvexer
+///      Rim-Close: ≤0.1·δ; nicht-konvex: der ehrliche 0.75·δ-Rest).
+#[test]
+fn nonconvex_contact_family_stats() {
+    let iters = iters();
+    let mut n_tol = 0usize;
+    let mut n_cons = 0usize;
+    let mut n_other = 0usize;
+    let mut max_dual_diff = 0.0f64;
+    let mut max_tape_diff = 0.0f64;
+    let mut max_overfill = 0.0f64;
+    let mut p99s: Vec<f64> = Vec::new();
+    let mut findings: Vec<String> = Vec::new();
+
+    for seed in 0..iters as u64 {
+        let scene = generate(Family::NonConvexContact, seed);
+        let tag = scene.tag();
+        let comp = run_pipeline(&scene, &mut findings);
+        match comp.report.status() {
+            CapabilityStatus::ToleranceBounded => n_tol += 1,
+            CapabilityStatus::Conservative => n_cons += 1,
+            _ => n_other += 1,
+        }
+        let field = &comp.field;
+        let Some((lo, hi, size)) = aabb_f64(field) else { continue };
+        let compiled = fielddraft_kernel::sdf_compiler::compile_body(field);
+
+        // (a) CPU = Dual = Tape auf zufälligen Punkten im gepolsterten AABB.
+        let pad = size * 0.1;
+        let mut rng = SplitMix64::new(scene.seed ^ 0x9CCF_5E7F_0000_0004);
+        for _ in 0..600 {
+            let p = [
+                rng.range(lo[0] - pad, hi[0] + pad) as f32,
+                rng.range(lo[1] - pad, hi[1] + pad) as f32,
+                rng.range(lo[2] - pad, hi[2] + pad) as f32,
+            ];
+            let cpu = field.sdf(p, EvalMode::Visual) as f64;
+            let dual = fielddraft_kernel::sdf_dual::sdf_gradient(field, p).0 as f64;
+            let tape = fielddraft_kernel::sdf_compiler::eval_opcodes(&compiled.opcodes, p) as f64;
+            if cpu.is_finite() && dual.is_finite() {
+                max_dual_diff = max_dual_diff.max((cpu - dual).abs());
+            }
+            if cpu.is_finite() && tape.is_finite() {
+                max_tape_diff = max_tape_diff.max((cpu - tape).abs());
+            }
+        }
+
+        // (b) Konservativer Over-Fill-Scan: außerhalb der un-erodierten Union
+        // darf das korrigierte Feld kein Material behaupten.
+        if let Some((base, delta)) = &scene.reference {
+            let base_field = CsgField::visual(base);
+            let g = 30usize;
+            let step = [(hi[0] - lo[0]) / g as f64, (hi[1] - lo[1]) / g as f64, (hi[2] - lo[2]) / g as f64];
+            let over = (0..g)
+                .into_par_iter()
+                .map(|i| {
+                    let mut local = 0.0f64;
+                    for j in 0..g {
+                        for k in 0..g {
+                            let p = [
+                                lo[0] + (i as f64 + 0.5) * step[0],
+                                lo[1] + (j as f64 + 0.5) * step[1],
+                                lo[2] + (k as f64 + 0.5) * step[2],
+                            ];
+                            // Abstand zur UN-erodierten Union (d_exact); >0 ⇒ außen.
+                            let d_union = base_field.eval(p);
+                            if d_union > 0.15 {
+                                let corr = field.sdf([p[0] as f32, p[1] as f32, p[2] as f32], EvalMode::Visual) as f64;
+                                if corr < 0.0 {
+                                    local = local.max(-corr);
+                                }
+                            }
+                        }
+                    }
+                    local
+                })
+                .reduce(|| 0.0, f64::max);
+            max_overfill = max_overfill.max(over);
+            if over > 0.05 * delta.abs() as f64 + 0.05 {
+                findings.push(format!("{tag} OVER-FILL außerhalb Union: {over:.4} mm"));
+            }
+
+            // (c) Zusagen-Schranke halten (rim_closes ⇒ eng; sonst B0-Rest).
+            if matches!(comp.report.status(), CapabilityStatus::ToleranceBounded) {
+                if let Some(z) = zero_set_error(field, base, *delta, P3_GRID, P3_PROBE, scene.seed) {
+                    p99s.push(z.p99);
+                    let rim_partial = comp.report.reasons().iter().any(|r| r.contains("B0-Rest an") || r.contains("nicht-konvex"));
+                    let bound = if rim_partial { 0.75 } else { 0.1 } * delta.abs() as f64
+                        + scene.channel_tol as f64
+                        + 3e-4 * z.model_size;
+                    if z.p99 > bound && z.mean > bound {
+                        findings.push(format!(
+                            "{tag} Kontaktrand über Zusage: p99={:.4} mean={:.4} > bound={:.4} (partial={rim_partial}); reasons={:?}",
+                            z.p99, z.mean, bound, comp.report.reasons()
+                        ));
+                    }
+                }
+            }
+        }
+    }
+
+    p99s.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let (mn, md, mx) = if p99s.is_empty() { (0.0, 0.0, 0.0) } else { (p99s[0], p99s[p99s.len() / 2], *p99s.last().unwrap()) };
+    eprintln!(
+        "[nonconvex_contact] {iters} Szenen: tolerance_bounded={n_tol} conservative={n_cons} other={n_other}\n  \
+         Evaluator-Parität: max|CPU−Dual|={max_dual_diff:.2e}  max|CPU−Tape|={max_tape_diff:.2e}\n  \
+         max Over-Fill außerhalb Union={max_overfill:.4} mm\n  \
+         Kontaktrand-p99 über {} Szenen: min={mn:.4} median={md:.4} max={mx:.4} mm",
+        p99s.len()
+    );
+
+    // Evaluator-Spiegel müssen übereinstimmen (f32-Rundung bei Szenen ≤ ~40 mm).
+    assert!(max_dual_diff < 5e-3, "CPU↔Dual weichen ab: {max_dual_diff:.3e}");
+    assert!(max_tape_diff < 5e-3, "CPU↔Tape weichen ab: {max_tape_diff:.3e}");
+    // Die Korrektur greift mehrheitlich (Prisma+Rim, nicht conservative).
+    assert!(n_tol > n_cons, "nicht-konvexes Prisma greift nicht mehrheitlich (tol={n_tol} cons={n_cons})");
+    assert!(
+        findings.is_empty(),
+        "NonConvexContact fand {} Verletzung(en):\n{}",
+        findings.len(),
+        findings.join("\n")
     );
 }
 

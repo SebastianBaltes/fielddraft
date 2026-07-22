@@ -70,6 +70,16 @@ export const OP_VERTEX_SPHERE  = 0x42;
 // n(1) concave(1), je Record 17 Floats: a(3) b(3) n_a(3) n_b(3) n_c(3)
 // delta(1) trust(1). Spiegel von `kernel/src/offset_rim.rs::apply_rims_f32`.
 export const OP_RIM_FILLET     = 0x43;
+// offset_tree FC Phase 4 (#398): GEMISCHTER Rand-Fillet mit BOGEN-Spines —
+// pops den naiven Stopp, pusht die Nearest-Feature-Korrektur über Segment- UND
+// Bogen-Records. Nur bei konvexem Bogen-Kontakt emittiert (dann tragen alle
+// Features diesen Block, OP_RIM_FILLET entfällt für den Stopp). Header
+// n(1) concave(1), je Record 20 Floats: c(3) u(3) v(3) n_a(3) n_b(3) r(1)
+// sweep(1) wall_sign(1) delta(1) trust(1). Segment: sweep<0 (c=Start, u=Richt.,
+// r=Länge, n_b=Wandnormale); Bogen: sweep>0 (c=Zentrum, (u,v)=Basis, r=Radius,
+// Wandnormale RADIAL wall_sign·(q−c)/r). Spiegel von
+// `kernel/src/offset_rim.rs::apply_rims_arc_f32`.
+export const OP_RIM_FILLET_ARC = 0x44;
 
 export const OP_END            = 0xFF;
 

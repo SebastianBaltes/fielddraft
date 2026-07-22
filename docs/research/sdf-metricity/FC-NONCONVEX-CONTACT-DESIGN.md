@@ -326,6 +326,60 @@ Summe grob **6–10 Tage**, überwiegend Synthese.
   Komposition bleibt konservativ korrekt, ∂P-Zerlegung mehrdeutig (bestehendes
   Plan-§9-Kaskaden-Risiko).
 
+## 8b. Phase-4-Abschluss — Umsetzungsstand (2026-07-22)
+
+Phase 4 ist umgesetzt und feldneutral für alle Alt-Szenen (Golden byte-identisch,
+CGAL-Interpreter-Cross-Check 0 Failures über alle 35 Szenen inkl. der neuen).
+
+- **Bogen-∂P-Rand-Fillet — NEUER Opcode `OP_RIM_FILLET_ARC` (0x44).** Der gerade
+  `OP_RIM_FILLET` (0x43) bleibt **byte-identisch** (rein gerade Kontakte emittieren
+  weiter 0x43). Ein Stopp mit mindestens EINER konvexen Bogen-∂P-Kante emittiert
+  STATTDESSEN einen einzigen gemischten `OP_RIM_FILLET_ARC`-Block, der **alle**
+  Features trägt (Geraden als Segment-Records `sweep<0`, Bögen als Bogen-Records
+  `sweep>0`) — in EINER Nearest-Feature-Auswahl. Grund für den gemischten Block
+  statt zweier getrennter Blöcke: an einer Linie↔Bogen-Ecke (abgerundetes
+  Rechteck, Stadion) überlappen die Feature-Schneisen; ein sequenzielles `min`
+  über getrennte Blöcke nähme dort die fernere Kante und **überfüllte** (Design §5).
+  Der Bogen-Spine trägt Zentrum `c`, Basis `(u,v)`, Radius `r`, `sweep` und die
+  RADIALE Wandnormale `wall_sign·(q−c)/r`; die Distanz ist die exakte radiale
+  Tube-Distanz zum Kreisbogen in der Kontaktebene. **Warum neuer Opcode statt
+  Parametrisierung:** die Bogen-Geometrie (Zentrum/Basis/Radius/Sweep + radiale,
+  fußpunkt-abhängige Wandnormale) ist strukturell unvereinbar mit dem
+  Segment-Record; ein `is_arc`-Flag im 0x43-Record hätte die Stride verdoppelt und
+  jeden der sechs Evaluator-Hot-Loops belastet. Der separate Opcode hält 0x43
+  unverändert (Golden-Neutralität) und additiv.
+- **Innen- vs. Außenbogen.** KONVEXE Bögen (Zentrum auf der Material-Seite; der
+  Wandzylinder ist konvex) werden gerundet — der Fillet auf der Außenseite kann
+  nicht selbst-schneiden, Over-Fill = 0. KONKAVE Bögen (Zentrum auf der Luftseite,
+  Material-seitig hohl — der gekrümmte Reflex-Fall, z. B. Kreisloch-Wände) werden
+  wie Reflex-Vertices **ehrlich verweigert** (`residual ≈ 0.75·δ`): dort
+  konvergierte der δ-Tube nach innen und überfüllte für δ nahe/über dem
+  Bogenradius. Reine Bogen-Loops OHNE gerade Anker-Stufe (z. B. Kreis-Cap-Kontakt)
+  werden ebenfalls verweigert — der Wand-Member ist ohne gerade `edge_on_contour`-
+  Stufe nicht eindeutig bestimmbar (Scope-Grenze, Ehrlichkeit vor Näherung).
+- **Bogen-tragende Kontakt-Prismen.** `build_prism_component` verweigert
+  Bogen-Konturen nicht mehr, sondern baut sie als `Extrude(Path)` mit exakten
+  `SketchSegment::Arc`-Bögen (OP_PRIM2D_PATH — in ALLEN Evaluatoren vorhanden).
+  Rein gerade Konturen bleiben `Extrude(Polygon)` (byte-identisch).
+
+### Capability-Vertrag (final, Phase 4)
+
+Für einen dualen Offset-Stopp mit koplanarem submergiertem Kontakt gilt:
+
+| Fall | Status | Zugesagte Schranke |
+|---|---|---|
+| Gleich-Querschnitt-Kontakt S = U (Box=Box) | `exact` | 0 (nur GT-Messboden) |
+| Konvexes P, Rim schließt ∂P ganz (Box-Stack, abgerundetes Rechteck) | `tolerance_bounded` | Fillet-Approximation ≤ `channel_tol` (≈0.1·δ empirisch) |
+| Nicht-konvexes P, Rim schließt GERADE ∂P-Kanten, Reflex-Vertices/konkave Bögen offen | `tolerance_bounded` | B0-Rest an Reflex-Vertices/Bögen ≈0.75·δ |
+| Versetzter (staggered)/gemischter Kontakt — Rim verweigert | `tolerance_bounded` | konkaver B0-Sliver ≈0.75·δ (Prisma-only) |
+| Nicht-Box-Partner ohne planare Facetten / gekrümmter Kontakt / degenerierter Verschnitt | `conservative` | keine (f∓δ unbeschränkt) |
+
+**Multi-Clip-Ehrlichkeit (Phase-4-Fix):** verweigert an EINEM Stopp ein Rim-Loop
+(versetzt/Reflex/konkaver Bogen) und schließt ein anderer sauber, meldet
+`synthesize_stop` NICHT mehr die enge `channel_tol`-Schranke, sondern die weitere
+0.75·δ-Schranke (der `residual` des verweigerten Loops dominiert). Das war zuvor
+ein Bound-Over-Claim: der ehrliche Rest des verweigerten Loops blieb ungenannt.
+
 ## 9. Geschriebene Dateien
 
 - `docs/research/sdf-metricity/FC-NONCONVEX-CONTACT-DESIGN.md` — dieses Dokument.

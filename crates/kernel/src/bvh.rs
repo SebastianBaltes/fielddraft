@@ -546,6 +546,7 @@ impl BoundedCsg {
                 let mut d = d;
                 for block in rims {
                     d = crate::offset_rim::apply_rims_f32(d, p, block.concave, &block.recs);
+                    d = crate::offset_rim::apply_rims_arc_f32(d, p, block.concave, &block.arc_recs);
                 }
                 d
             }
@@ -867,6 +868,7 @@ impl BoundedCsg {
                 // hier mit `sdf_open` übereinstimmen, sonst driften Meshing/Pick.
                 for block in rims {
                     d = crate::offset_rim::apply_rims_f32(d, p, block.concave, &block.recs);
+                    d = crate::offset_rim::apply_rims_arc_f32(d, p, block.concave, &block.arc_recs);
                 }
                 (d, c)
             }

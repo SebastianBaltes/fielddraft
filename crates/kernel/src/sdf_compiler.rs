@@ -105,6 +105,21 @@ pub const OP_VERTEX_SPHERE: u32  = 0x42; // +16
 // scharf, sobald alle Evaluator-Spiegel (WGSL/TSL/CGAL/fidget) stehen.
 pub const OP_RIM_FILLET: u32     = 0x43; // +2+17N
 
+// offset_tree FC Phase 4 (#398): GEMISCHTER Rand-Fillet-Block mit BOGEN-Spines —
+// pops den naiven (Prisma-)Stopp-Wert g, pusht die Nearest-Feature-korrigierte
+// Distanz über Segment- UND Bogen-Records (CPU-Referenz:
+// `offset_rim::apply_rims_arc_f32`; f64-Vertrag: `offset_rim::apply_rims_arc`).
+// Wird NUR emittiert, wenn ein Stopp eine konvexe Bogen-∂P-Kante trägt; dann
+// wandern ALLE Features (auch die geraden, als Segment-Records `sweep < 0`) in
+// diesen Block, und OP_RIM_FILLET entfällt für den Stopp (Feldneutralität: rein
+// gerade Kontakte emittieren weiter 0x43, byte-identisch).
+// Header (2): n_features(1) + concave(1; 0/1, homogen je Stopp).
+// je Feature (20 = RIM_ARC_STRIDE): c(3) u(3) v(3) n_a(3) n_b(3) r(1) sweep(1)
+//   wall_sign(1) delta(1) trust(1). Segment (sweep<0): c=Start, u=Einheitsricht.,
+//   r=Länge, n_b=konstante Wandnormale. Bogen (sweep>0): c=Zentrum, (u,v)=Basis,
+//   r=Radius, Wandnormale RADIAL = wall_sign·(q−c)/r (n_b ungenutzt).
+pub const OP_RIM_FILLET_ARC: u32 = 0x44; // +2+20N
+
 pub const OP_END: u32            = 0xFF;
 
 // ── Compiled output ────────────────────────────────────────────────
@@ -371,6 +386,35 @@ pub fn encode_rim_block(concave: bool, recs: &[crate::offset_rim::RimRecord], ou
     }
 }
 
+/// Stride EINES gemischten Arc-Rand-Fillet-Records im `OP_RIM_FILLET_ARC`-Block:
+/// `c(3) u(3) v(3) n_a(3) n_b(3) r(1) sweep(1) wall_sign(1) delta(1) trust(1)`.
+pub const RIM_ARC_STRIDE: usize = 20;
+
+/// Hängt EINEN `OP_RIM_FILLET_ARC`-Block (Header + gemischte Segment-/Bogen-
+/// Records) an `out` an. Decode-Spiegel ist der `OP_RIM_FILLET_ARC`-Arm in
+/// [`eval_opcodes`].
+pub fn encode_rim_arc_block(
+    concave: bool,
+    recs: &[crate::offset_rim::RimArcRecord],
+    out: &mut Vec<f32>,
+) {
+    out.push(op(OP_RIM_FILLET_ARC));
+    out.push(recs.len() as f32);
+    out.push(if concave { 1.0 } else { 0.0 });
+    for r in recs {
+        out.extend_from_slice(&r.c);
+        out.extend_from_slice(&r.u);
+        out.extend_from_slice(&r.v);
+        out.extend_from_slice(&r.n_a);
+        out.extend_from_slice(&r.n_b);
+        out.push(r.r);
+        out.push(r.sweep);
+        out.push(r.wall_sign);
+        out.push(r.delta);
+        out.push(r.trust);
+    }
+}
+
 fn blend_mode_f32(m: BlendMode) -> f32 {
     match m {
         BlendMode::Fillet => 0.0,
@@ -518,7 +562,16 @@ fn emit_node(node: &BoundedCsg, ctx: &mut CompileCtx, open: &crate::csg::OpenBra
                 out.extend_from_slice(&vs.gates[2]);
             }
             for block in rims {
-                encode_rim_block(block.concave, &block.recs, out);
+                // GENAU eine der beiden Listen ist gefüllt: rein gerade Kontakte
+                // → OP_RIM_FILLET (byte-identisch); Bogen-Präsenz → der gemischte
+                // OP_RIM_FILLET_ARC (Segmente + Bögen in EINER Nearest-Feature-
+                // Auswahl, FC Phase 4).
+                if !block.recs.is_empty() {
+                    encode_rim_block(block.concave, &block.recs, out);
+                }
+                if !block.arc_recs.is_empty() {
+                    encode_rim_arc_block(block.concave, &block.arc_recs, out);
+                }
             }
         }
         BoundedCsg::Shell {
@@ -2003,6 +2056,100 @@ pub fn eval_opcodes_with_volumes(
                     }
                     // Nearest-Feature: strikt kleineres de gewinnt (Gleichstand
                     // → erster Kandidat, wie `apply_rims`).
+                    if de < best_de {
+                        best_de = de;
+                        best_corr = if concave { delta - de } else { de - delta };
+                    }
+                }
+                push_v!(if best_de.is_finite() {
+                    if concave {
+                        g.min(best_corr)
+                    } else {
+                        g.max(best_corr)
+                    }
+                } else {
+                    g
+                });
+            }
+
+            // ── Gemischter Bogen-Rand-Fillet (FC Phase 4, #398) ────
+            // 1:1-Spiegel von `offset_rim::apply_rims_arc_f32`: Nearest-Feature
+            // über Segment- UND Bogen-Records (kleinstes de gewinnt, Gleichstand
+            // → erster). Segment (sweep<0) wie OP_RIM_FILLET, Bogen (sweep>0) mit
+            // Radialnormale wall_sign·(q−c)/r und Sweep-End-Cap. Pops g.
+            OP_RIM_FILLET_ARC => {
+                let n = rd!() as usize;
+                let concave = rd!() > 0.5;
+                let base = pc;
+                pc += n * RIM_ARC_STRIDE;
+                let g = pop_v!();
+                let v3 = |i: usize| [opcodes[i], opcodes[i + 1], opcodes[i + 2]];
+                let dot3 = |a: [f32; 3], b: [f32; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+                let dist3 = |a: [f32; 3], b: [f32; 3]| {
+                    ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt()
+                };
+                let mut best_de = f32::INFINITY;
+                let mut best_corr = 0.0f32;
+                for k in 0..n {
+                    let b = base + k * RIM_ARC_STRIDE;
+                    let c = v3(b);
+                    let u = v3(b + 3);
+                    let vv = v3(b + 6);
+                    let n_a = v3(b + 9);
+                    let n_b = v3(b + 12);
+                    let r = opcodes[b + 15];
+                    let sweep = opcodes[b + 16];
+                    let wall_sign = opcodes[b + 17];
+                    let delta = opcodes[b + 18];
+                    let trust = opcodes[b + 19];
+                    // foot: (de, q, in_cap) + Radialnormale n_b_eff.
+                    let cap_eps = 1e-6f32;
+                    let (de, q, in_cap, n_b_eff) = if sweep < 0.0 {
+                        let len = r.max(1e-12);
+                        let s = dot3([pt[0] - c[0], pt[1] - c[1], pt[2] - c[2]], u);
+                        let t = s / len;
+                        let sc = s.clamp(0.0, len);
+                        let q = [c[0] + u[0] * sc, c[1] + u[1] * sc, c[2] + u[2] * sc];
+                        (dist3(pt, q), q, !(t < -cap_eps || t > 1.0 + cap_eps), n_b)
+                    } else {
+                        let dc = [pt[0] - c[0], pt[1] - c[1], pt[2] - c[2]];
+                        let x = dot3(dc, u);
+                        let y = dot3(dc, vv);
+                        let mut phi = y.atan2(x);
+                        if phi < 0.0 {
+                            phi += std::f32::consts::TAU;
+                        }
+                        let in_cap = phi <= sweep + cap_eps;
+                        let pc2 = phi.clamp(0.0, sweep);
+                        let (sn, cs) = pc2.sin_cos();
+                        let q = [
+                            c[0] + r * (u[0] * cs + vv[0] * sn),
+                            c[1] + r * (u[1] * cs + vv[1] * sn),
+                            c[2] + r * (u[2] * cs + vv[2] * sn),
+                        ];
+                        let d = [q[0] - c[0], q[1] - c[1], q[2] - c[2]];
+                        let nn = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt().max(1e-30);
+                        let n_b_eff = [wall_sign * d[0] / nn, wall_sign * d[1] / nn, wall_sign * d[2] / nn];
+                        (dist3(pt, q), q, in_cap, n_b_eff)
+                    };
+                    if !in_cap || de > trust {
+                        continue;
+                    }
+                    let dq = [pt[0] - q[0], pt[1] - q[1], pt[2] - q[2]];
+                    let side = |nn: [f32; 3]| -> bool {
+                        if dist3(nn, [0.0; 3]) < 0.5 {
+                            return true;
+                        }
+                        let s = dot3(dq, nn);
+                        if concave {
+                            s <= 1e-9
+                        } else {
+                            s >= -1e-9
+                        }
+                    };
+                    if !(side(n_a) && side(n_b_eff)) {
+                        continue;
+                    }
                     if de < best_de {
                         best_de = de;
                         best_corr = if concave { delta - de } else { de - delta };

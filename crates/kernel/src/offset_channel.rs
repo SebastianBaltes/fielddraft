@@ -444,6 +444,34 @@ pub fn rims_aabb(rims: &[crate::offset_rim::RimBlock]) -> Aabb {
                 );
             }
         }
+        // FC Phase 4 (#398): gemischter Arc-Block. Segment (sweep<0): Kapsel um
+        // c…c+u·r. Bogen (sweep>0): konservativ die Kugel um das Zentrum mit
+        // Radius (r_arc + trust) — enthält den ganzen Bogen samt Fillet-Schneise.
+        for r in &block.arc_recs {
+            let t = r.trust;
+            if r.sweep < 0.0 {
+                let a = r.c;
+                let b = [r.c[0] + r.u[0] * r.r, r.c[1] + r.u[1] * r.r, r.c[2] + r.u[2] * r.r];
+                for p in [a, b] {
+                    bb = Aabb::union(
+                        bb,
+                        Aabb {
+                            min: [p[0] - t, p[1] - t, p[2] - t],
+                            max: [p[0] + t, p[1] + t, p[2] + t],
+                        },
+                    );
+                }
+            } else {
+                let rad = r.r + t;
+                bb = Aabb::union(
+                    bb,
+                    Aabb {
+                        min: [r.c[0] - rad, r.c[1] - rad, r.c[2] - rad],
+                        max: [r.c[0] + rad, r.c[1] + rad, r.c[2] + rad],
+                    },
+                );
+            }
+        }
     }
     bb
 }
@@ -2375,6 +2403,91 @@ fn build_prism_member(
     Some(BoundedCsg::from_csg_with_carry(&ext, &carry))
 }
 
+/// Baut das Prisma EINER Kontur — `Extrude(Polygon)` bei rein geraden Kanten
+/// (byte-identisch zu [`build_prism_member`]), `Extrude(Path)` bei Bögen (FC
+/// Phase 4, #398). Der Path trägt die cavalier-Bulges verlustfrei als exakte
+/// `SketchSegment::Arc`-Bögen.
+fn build_prism_contour(
+    contour: &Contour2d,
+    e1: [f64; 3],
+    e2: [f64; 3],
+    n: [f64; 3],
+    o: f64,
+    depth_neg: f64,
+    depth_pos: f64,
+    feat: u32,
+) -> Option<BoundedCsg> {
+    if !contour.has_arcs() {
+        return build_prism_member(&contour.verts, e1, e2, n, o, depth_neg, depth_pos, feat);
+    }
+    let verts = &contour.verts;
+    if verts.len() < 3 {
+        return None;
+    }
+    let half_h = 0.5 * (depth_neg + depth_pos);
+    let center_n = o + 0.5 * (depth_pos - depth_neg);
+    if half_h <= 1e-6 {
+        return None;
+    }
+    // Kontur → geschlossene SketchSegment-Kette: Bulge ≠ 0 → exakter Arc, sonst Line.
+    let m = verts.len();
+    let mut segments: Vec<SketchSegment> = Vec::with_capacity(m);
+    for i in 0..m {
+        let a = verts[i];
+        let b = verts[(i + 1) % m];
+        let bulge = contour.bulges.get(i).copied().unwrap_or(0.0);
+        if bulge.abs() < 1e-12 {
+            segments.push(SketchSegment::Line {
+                start: [a[0] as f32, a[1] as f32],
+                end: [b[0] as f32, b[1] as f32],
+            });
+        } else {
+            let chord = [b[0] - a[0], b[1] - a[1]];
+            let clen = (chord[0] * chord[0] + chord[1] * chord[1]).sqrt();
+            if clen < 1e-9 {
+                continue;
+            }
+            let ab = bulge.abs();
+            let radius = clen * (ab * ab + 1.0) / (4.0 * ab);
+            let s_sag = ab * clen / 2.0;
+            let mm = radius - s_sag;
+            let (mut ox, mut oy) = (-mm * chord[1] / clen, mm * chord[0] / clen);
+            if bulge < 0.0 {
+                ox = -ox;
+                oy = -oy;
+            }
+            let cx = a[0] + chord[0] / 2.0 + ox;
+            let cy = a[1] + chord[1] / 2.0 + oy;
+            let start_angle = (a[1] - cy).atan2(a[0] - cx);
+            let sweep_angle = 4.0 * bulge.atan(); // signiert (cavalier-Konvention)
+            segments.push(SketchSegment::Arc {
+                center: [cx as f32, cy as f32],
+                radius: radius as f32,
+                start_angle: start_angle as f32,
+                sweep_angle: sweep_angle as f32,
+            });
+        }
+    }
+    if segments.len() < 2 {
+        return None;
+    }
+    let sketch = Sketch2d::Prim(Sketch2dPrimitive::Path { segments, closed: true });
+    let ext = CsgNode::Extrude {
+        id: FeatureId::from_u32(feat),
+        sketch: Box::new(sketch),
+        half_height: half_h as f32,
+        wall_subs: None,
+    };
+    let (_, _, quat) = plane_frame(n);
+    let carry = Transform {
+        translate: [(center_n * n[0]) as f32, (center_n * n[1]) as f32, (center_n * n[2]) as f32],
+        rotation: quat,
+        scale: [1.0; 3],
+    };
+    let _ = (e1, e2);
+    Some(BoundedCsg::from_csg_with_carry(&ext, &carry))
+}
+
 /// FC Phase 2 (#398): baut das Kontakt-Prisma EINER [`ClipComponent`] (Design §3).
 /// Der Außenrand wird ein `Extrude(Polygon)`-Member (via [`build_prism_member`]),
 /// jedes Loch als `Difference{ outer, hole }` (identisches `world_transform`, volle
@@ -2394,10 +2507,11 @@ fn build_prism_component(
     depth_pos: f64,
     feat: u32,
 ) -> Option<BoundedCsg> {
-    if comp.outer.has_arcs() || comp.holes.iter().any(|h| h.has_arcs()) {
-        return None; // Bogen-Kontur → P3 (Tape trägt keine Profil-Bögen)
-    }
-    let outer = build_prism_member(&comp.outer.verts, e1, e2, n, o, depth_neg, depth_pos, feat)?;
+    // FC Phase 4 (#398): bogen-tragende Konturen werden als `Extrude(Path)`-
+    // Prisma gebaut (exakte Bogen-Distanz via OP_PRIM2D_PATH — in ALLEN
+    // Evaluator-Spiegeln vorhanden, es ist ein Nutzer-Primitiv). Rein gerade
+    // Konturen bleiben `Extrude(Polygon)` (byte-identisch zum Bestand).
+    let outer = build_prism_contour(&comp.outer, e1, e2, n, o, depth_neg, depth_pos, feat)?;
     if comp.holes.is_empty() {
         return Some(outer);
     }
@@ -2407,7 +2521,7 @@ fn build_prism_component(
         // mit den Außen-Prisma-Feature-Ids (0x0007_0000-Band) kollidiert.
         let hfeat = 0x0008_0000 | ((feat & 0x0FFF) << 4) | (hi as u32 & 0xF);
         let Some(hole_prism) =
-            build_prism_member(&hole.verts, e1, e2, n, o, depth_neg, depth_pos, hfeat)
+            build_prism_contour(hole, e1, e2, n, o, depth_neg, depth_pos, hfeat)
         else {
             continue;
         };

@@ -71,6 +71,7 @@ enum : uint32_t {
   OP_ARC_CHANNEL    = 0x41,
   OP_VERTEX_SPHERE  = 0x42,
   OP_RIM_FILLET     = 0x43,
+  OP_RIM_FILLET_ARC = 0x44,
 
   OP_END            = 0xFF,
 };
@@ -1316,6 +1317,90 @@ inline float eval_opcodes(const float* opcodes, int n, float wx, float wy,
           if (!(side(n_a) && side(n_b) && side(n_c))) continue;
           // Nearest-Feature: strikt kleineres de gewinnt (Gleichstand ->
           // erster Kandidat, wie apply_rims_f32).
+          if (de < best_de) {
+            best_de = de;
+            best_corr = concave ? (delta - de) : (de - delta);
+          }
+        }
+        if (best_de < FD_FLT_MAX) {
+          push_v(concave ? fminf_(g, best_corr) : fmaxf_(g, best_corr));
+        } else {
+          push_v(g);
+        }
+        break;
+      }
+
+      case OP_RIM_FILLET_ARC: {
+        // FC Phase 4 (#398): GEMISCHTER Rand-Fillet mit BOGEN-Spines — 1:1-Port
+        // von offset_rim::apply_rims_arc_f32 / eval_opcodes OP_RIM_FILLET_ARC.
+        // Nearest-Feature ueber Segment- (sweep<0) UND Bogen-Records (sweep>0).
+        // Header n(1) concave(1); je Record 20 Floats: c(3) u(3) v(3) n_a(3)
+        // n_b(3) r(1) sweep(1) wall_sign(1) delta(1) trust(1).
+        const int kArc = 20;
+        int n = (int)rd();
+        bool concave = rd() > 0.5f;
+        int base = pc;
+        pc += n * kArc;
+        float g = pop_v();
+        float best_de = FD_FLT_MAX;
+        float best_corr = 0.0f;
+        for (int k = 0; k < n; ++k) {
+          const float* rec = opcodes + base + k * kArc;
+          const float* c = rec + 0;
+          const float* u = rec + 3;
+          const float* v = rec + 6;
+          const float* n_a = rec + 9;
+          const float* n_bc = rec + 12;  // Segment: konstante Wandnormale
+          float r = rec[15];
+          float sweep = rec[16];
+          float wall_sign = rec[17];
+          float delta = rec[18];
+          float trust = rec[19];
+          const float cap_eps = 1e-6f;
+          float q[3];
+          float de;
+          bool in_cap;
+          float n_b[3];
+          if (sweep < 0.0f) {
+            // Segment c -> c + u*r (u Einheitsrichtung, r Laenge).
+            float len = r > 1e-12f ? r : 1e-12f;
+            float s = (pt[0] - c[0]) * u[0] + (pt[1] - c[1]) * u[1] + (pt[2] - c[2]) * u[2];
+            float t = s / len;
+            float sc = clampf_(s, 0.0f, len);
+            q[0] = c[0] + u[0] * sc;
+            q[1] = c[1] + u[1] * sc;
+            q[2] = c[2] + u[2] * sc;
+            de = std::sqrt(sq_(pt[0] - q[0]) + sq_(pt[1] - q[1]) + sq_(pt[2] - q[2]));
+            in_cap = !(t < -cap_eps || t > 1.0f + cap_eps);
+            n_b[0] = n_bc[0]; n_b[1] = n_bc[1]; n_b[2] = n_bc[2];
+          } else {
+            float dc[3] = {pt[0] - c[0], pt[1] - c[1], pt[2] - c[2]};
+            float x = dc[0] * u[0] + dc[1] * u[1] + dc[2] * u[2];
+            float y = dc[0] * v[0] + dc[1] * v[1] + dc[2] * v[2];
+            float phi = std::atan2(y, x);
+            if (phi < 0.0f) phi += 6.28318530717958647692f;
+            in_cap = phi <= sweep + cap_eps;
+            float pc2 = clampf_(phi, 0.0f, sweep);
+            float sn = std::sin(pc2), cs = std::cos(pc2);
+            q[0] = c[0] + r * (u[0] * cs + v[0] * sn);
+            q[1] = c[1] + r * (u[1] * cs + v[1] * sn);
+            q[2] = c[2] + r * (u[2] * cs + v[2] * sn);
+            de = std::sqrt(sq_(pt[0] - q[0]) + sq_(pt[1] - q[1]) + sq_(pt[2] - q[2]));
+            float d[3] = {q[0] - c[0], q[1] - c[1], q[2] - c[2]};
+            float nn = std::sqrt(sq_(d[0]) + sq_(d[1]) + sq_(d[2]));
+            if (nn < 1e-30f) nn = 1e-30f;
+            n_b[0] = wall_sign * d[0] / nn;
+            n_b[1] = wall_sign * d[1] / nn;
+            n_b[2] = wall_sign * d[2] / nn;
+          }
+          if (!in_cap || de > trust) continue;
+          float dq[3] = {pt[0] - q[0], pt[1] - q[1], pt[2] - q[2]};
+          auto side = [&](const float* nn) -> bool {
+            if (std::sqrt(sq_(nn[0]) + sq_(nn[1]) + sq_(nn[2])) < 0.5f) return true;
+            float s = dq[0] * nn[0] + dq[1] * nn[1] + dq[2] * nn[2];
+            return concave ? (s <= 1e-9f) : (s >= -1e-9f);
+          };
+          if (!(side(n_a) && side(n_b))) continue;
           if (de < best_de) {
             best_de = de;
             best_corr = concave ? (delta - de) : (de - delta);

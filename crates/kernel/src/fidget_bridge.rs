@@ -284,6 +284,7 @@ fn node_to_tree(node: &BoundedCsg, p: &[Tree; 3]) -> Result<Tree, String> {
             // Spiegel von `offset_rim::apply_rims_f32`.
             for block in rims {
                 d = rim_to_tree(&d, p, block);
+                d = rim_arc_to_tree(&d, p, block);
             }
             Ok(d)
         }
@@ -575,6 +576,105 @@ fn rim_to_tree(d: &Tree, p: &[Tree; 3], block: &crate::offset_rim::RimBlock) -> 
     } else {
         win_de - win_delta
     };
+    let candidate = if concave { d.clone().min(corr) } else { d.clone().max(corr) };
+    blend(&any, &candidate, d)
+}
+
+/// Spiegel von [`crate::offset_rim::apply_rims_arc_f32`] als Tree (FC Phase 4,
+/// #398) — der gemischte Segment-/Bogen-Block. Hard-Mask-Nearest-Select wie
+/// [`rim_to_tree`], aber je Record mit Segment- ODER Bogen-Fußpunkt (die
+/// Fallunterscheidung `sweep < 0` steht zur BAUZEIT fest, wird also in Rust
+/// verzweigt, nicht im Tree). eps-Literale exakt wie
+/// [`crate::offset_rim::select_rim_arc_f32`].
+fn rim_arc_to_tree(d: &Tree, p: &[Tree; 3], block: &crate::offset_rim::RimBlock) -> Tree {
+    if block.arc_recs.is_empty() {
+        return d.clone();
+    }
+    let concave = block.concave;
+    let big = 1e30_f64;
+    let le = |a: &Tree, b: &Tree| Tree::from(1.0) - relu(a.clone().compare(b.clone()));
+    let ge = |a: &Tree, b: &Tree| Tree::from(1.0) - relu(b.clone().compare(a.clone()));
+    let blend = |flag: &Tree, x: &Tree, y: &Tree| y.clone() + (x.clone() - y.clone()) * flag.clone();
+
+    let mut best_de = Tree::from(big);
+    let mut win_de = Tree::from(big);
+    let mut win_delta = Tree::from(0.0);
+    let mut any = Tree::from(0.0);
+
+    for rec in &block.arc_recs {
+        let c = t_const3(rec.c);
+        let (de, q, cap_pass, n_b): (Tree, [Tree; 3], Tree, [Tree; 3]) = if rec.sweep < 0.0 {
+            // Segment c → c + u·r (u Einheitsrichtung, r Länge).
+            let u = t_const3(rec.u);
+            let len = (rec.r as f64).max(1e-12);
+            let s = t_dot(&t_sub(p, &c), &u);
+            let t_raw = s.clone() * (1.0 / len);
+            let sc = s.max(0.0).min(len);
+            let q = [
+                c[0].clone() + u[0].clone() * sc.clone(),
+                c[1].clone() + u[1].clone() * sc.clone(),
+                c[2].clone() + u[2].clone() * sc,
+            ];
+            let cap = 1e-6;
+            let cap_pass = ge(&t_raw, &Tree::from(-cap)) * le(&t_raw, &Tree::from(1.0 + cap));
+            (t_norm(&t_sub(p, &q)), q, cap_pass, t_const3(rec.n_b))
+        } else {
+            // Bogen: c=Zentrum, (u,v)=Basis, r=Radius, Wandnormale RADIAL.
+            let u = t_const3(rec.u);
+            let v = t_const3(rec.v);
+            let dc = t_sub(p, &c);
+            let x = t_dot(&dc, &u);
+            let y = t_dot(&dc, &v);
+            let mut phi = y.clone().atan2(x.clone());
+            let zero = Tree::from(0.0);
+            phi = select_lt(&phi, &zero, &(phi.clone() + std::f64::consts::TAU), &phi);
+            let sweep = rec.sweep as f64;
+            // Fußpunkt an φ_c = min(φ, sweep) (φ ≥ 0 bereits).
+            let phi_c = phi.clone().min(sweep);
+            let (s, co) = (phi_c.clone().sin(), phi_c.cos());
+            let q = [
+                c[0].clone() + (u[0].clone() * co.clone() + v[0].clone() * s.clone()) * rec.r as f64,
+                c[1].clone() + (u[1].clone() * co.clone() + v[1].clone() * s.clone()) * rec.r as f64,
+                c[2].clone() + (u[2].clone() * co + v[2].clone() * s) * rec.r as f64,
+            ];
+            // in_cap: φ ≤ sweep + cap.
+            let cap = 1e-6;
+            let cap_pass = le(&phi, &Tree::from(sweep + cap));
+            // Radialnormale wall_sign·(q−c)/r.
+            let dqc = [q[0].clone() - c[0].clone(), q[1].clone() - c[1].clone(), q[2].clone() - c[2].clone()];
+            let nn = t_norm(&dqc).max(1e-9);
+            let ws = rec.wall_sign as f64;
+            let n_b = [
+                dqc[0].clone() * nn.clone().recip() * ws,
+                dqc[1].clone() * nn.clone().recip() * ws,
+                dqc[2].clone() * nn.recip() * ws,
+            ];
+            (t_norm(&t_sub(p, &q)), q, cap_pass, n_b)
+        };
+        let dq = t_sub(p, &q);
+        // Maske: Trust · Cap · Wand-Halbräume (n_a konstant, n_b variabel).
+        let mut pass = le(&de, &Tree::from(rec.trust as f64)) * cap_pass;
+        let eps = 1e-9;
+        // n_a (konstant, |n| ≥ 1).
+        {
+            let dot = t_dot(&dq, &t_const3(rec.n_a));
+            let ind = if concave { le(&dot, &Tree::from(eps)) } else { ge(&dot, &Tree::from(-eps)) };
+            pass = pass * ind;
+        }
+        // n_b (Segment: konstant; Bogen: radial — beide |n| ≈ 1).
+        {
+            let dot = t_dot(&dq, &n_b);
+            let ind = if concave { le(&dot, &Tree::from(eps)) } else { ge(&dot, &Tree::from(-eps)) };
+            pass = pass * ind;
+        }
+        let de_eff = blend(&pass, &de, &Tree::from(big));
+        let is_new = relu(best_de.clone().compare(de_eff.clone()));
+        win_de = blend(&is_new, &de, &win_de);
+        win_delta = blend(&is_new, &Tree::from(rec.delta as f64), &win_delta);
+        best_de = blend(&is_new, &de_eff, &best_de);
+        any = any.max(is_new);
+    }
+    let corr = if concave { win_delta - win_de } else { win_de - win_delta };
     let candidate = if concave { d.clone().min(corr) } else { d.clone().max(corr) };
     blend(&any, &candidate, d)
 }

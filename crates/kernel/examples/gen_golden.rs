@@ -97,6 +97,15 @@ fn tape_has_rim(bvh: &BoundedCsg) -> bool {
         .any(|v| v.to_bits() == fielddraft_kernel::sdf_compiler::OP_RIM_FILLET)
 }
 
+/// `true`, wenn das Tape einen gemischten Bogen-Rand-Fillet-Block trägt
+/// (`OP_RIM_FILLET_ARC`, FC Phase 4).
+fn tape_has_rim_arc(bvh: &BoundedCsg) -> bool {
+    compile_body(bvh)
+        .opcodes
+        .iter()
+        .any(|v| v.to_bits() == fielddraft_kernel::sdf_compiler::OP_RIM_FILLET_ARC)
+}
+
 fn grid_points() -> Vec<[f32; 3]> {
     let mut v = Vec::new();
     let coords = [-18.0f32, -7.3, -1.1, 0.0, 2.7, 6.5, 13.0, 21.0];
@@ -829,4 +838,54 @@ fn main() {
         "golden rim_flush_pocket: kein OP_RIM_FILLET emittiert"
     );
     emit("rim_flush_pocket", &rim_flush_pocket, &pts);
+
+    // ── Bogen-Rand-Fillet (OP_RIM_FILLET_ARC, FC Phase 4, #398) ────────
+    // NEUE Szenen (nur ANHÄNGEN — Feldneutralität der Alt-Szenen). Ein
+    // Stadion-/Pillen-Extrudat (Path: 2 Geraden + 2 Halbkreis-Bögen) koplanar
+    // auf eine Box-Fläche aufgesetzt (z→x-Rotation, Cap bei x=ax), Erosion −δ:
+    // der Kontakt trägt gerade UND konvexe Bogen-∂P-Kanten → der gemischte
+    // OP_RIM_FILLET_ARC-Block (Segment- + Bogen-Records in EINER
+    // Nearest-Feature-Auswahl). Der Golden-Test verifiziert C++-↔-Rust-Parität
+    // auch für den Bogen-Distanz-/Radialnormalen-Pfad.
+    let rim_arc_stadium = {
+        use fielddraft_protocol::sketch2d::{Sketch2d, Sketch2dPrimitive, SketchSegment};
+        use std::f32::consts::{FRAC_1_SQRT_2, FRAC_PI_2, PI};
+        let ax = 16.0f32;
+        let a = CsgNode::Leaf {
+            id: FeatureId::from_u32(1),
+            primitive: Primitive::Box { center: [0.0; 3], half_extents: [ax, 16.0, 16.0] },
+        };
+        let (l, r) = (5.0f32, 4.0f32);
+        let stadium = Sketch2d::Prim(Sketch2dPrimitive::Path {
+            segments: vec![
+                SketchSegment::Line { start: [-l, -r], end: [l, -r] },
+                SketchSegment::Arc { center: [l, 0.0], radius: r, start_angle: -FRAC_PI_2, sweep_angle: PI },
+                SketchSegment::Line { start: [l, r], end: [-l, r] },
+                SketchSegment::Arc { center: [-l, 0.0], radius: r, start_angle: FRAC_PI_2, sweep_angle: PI },
+            ],
+            closed: true,
+        });
+        let hh = 6.0f32;
+        let ext = CsgNode::Extrude {
+            id: FeatureId::from_u32(2),
+            sketch: Box::new(stadium),
+            half_height: hh,
+            wall_subs: None,
+        };
+        let b = CsgNode::Transform(
+            Transform {
+                translate: [ax + hh, 0.0, 0.0],
+                rotation: [0.0, FRAC_1_SQRT_2, 0.0, FRAC_1_SQRT_2],
+                scale: [1.0; 3],
+            },
+            Box::new(ext),
+        );
+        let node = CsgNode::Offset(Box::new(CsgNode::Union(Box::new(a), Box::new(b))), -1.5);
+        real_offset_bvh(&node)
+    };
+    assert!(
+        tape_has_rim_arc(&rim_arc_stadium),
+        "golden rim_arc_stadium: kein OP_RIM_FILLET_ARC emittiert"
+    );
+    emit("rim_arc_stadium", &rim_arc_stadium, &pts);
 }

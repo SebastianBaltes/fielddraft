@@ -115,6 +115,13 @@ inline int payload_len(const float* buf, int n, uint32_t tag, int pc) {
       int np = (int)buf[pc];
       return 2 + 17 * np;
     }
+    case OP_RIM_FILLET_ARC: {
+      // Header n(1) concave(1), je Record 20 Floats (FC Phase 4, #398) —
+      // gemischter Segment-/Bogen-Block.
+      if (pc >= n) return -1;
+      int np = (int)buf[pc];
+      return 2 + 20 * np;
+    }
     case OP_END: return 0;
     default: return -1;
   }
@@ -136,6 +143,7 @@ inline int value_pops(uint32_t tag) {
     case OP_ARC_CHANNEL:
     case OP_VERTEX_SPHERE:
     case OP_RIM_FILLET:
+    case OP_RIM_FILLET_ARC:
     case OP_DISPLACE_VAL:
     case OP_EXTRUDE:
     case OP_REVOLVE_SCALE:

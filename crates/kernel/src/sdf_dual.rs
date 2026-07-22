@@ -517,6 +517,7 @@ fn eval_bounded_d3_open(
             // (dieselbe Stopp-Semantik/Reihenfolge wie der f32- und CPU-Pfad).
             for block in rims {
                 d = apply_rims_dual(d, p, block.concave, &block.recs);
+                d = apply_rims_arc_dual(d, p, block.concave, &block.arc_recs);
             }
             d
         }
@@ -781,6 +782,42 @@ pub(crate) fn apply_rims_dual(
     let delta = D3::from(recs[i].delta as f64);
     let corr = if concave { delta - de } else { de - delta };
     // Konkav min(g, corr), konvex max(g, corr) — Selektion auf den Realteilen.
+    if concave {
+        if g.re <= corr.re {
+            g
+        } else {
+            corr
+        }
+    } else if g.re >= corr.re {
+        g
+    } else {
+        corr
+    }
+}
+
+/// Dual-Spiegel von [`crate::offset_rim::apply_rims_arc_f32`] (FC Phase 4, #398)
+/// — der gemischte Segment-/Bogen-Block. Wie [`apply_rims_dual`]: die
+/// Nearest-Feature-Auswahl + Masken laufen f32 über
+/// [`crate::offset_rim::select_rim_arc_f32`], nur `de = |p − q|` fließt dual
+/// (Lotfußpunkt `q` eingefroren → `‖∇‖ = 1` im aktiven Band).
+pub(crate) fn apply_rims_arc_dual(
+    g: D3,
+    p: [D3; 3],
+    concave: bool,
+    recs: &[crate::offset_rim::RimArcRecord],
+) -> D3 {
+    let p_re = [p[0].re as f32, p[1].re as f32, p[2].re as f32];
+    let Some((i, q, _de)) = crate::offset_rim::select_rim_arc_f32(p_re, concave, recs) else {
+        return g;
+    };
+    let dq = [
+        p[0] - D3::from(q[0] as f64),
+        p[1] - D3::from(q[1] as f64),
+        p[2] - D3::from(q[2] as f64),
+    ];
+    let de = (dq[0] * dq[0] + dq[1] * dq[1] + dq[2] * dq[2]).sqrt();
+    let delta = D3::from(recs[i].delta as f64);
+    let corr = if concave { delta - de } else { de - delta };
     if concave {
         if g.re <= corr.re {
             g

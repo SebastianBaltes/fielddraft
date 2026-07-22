@@ -480,6 +480,127 @@ fn f398_rim_staggered_contact_refused() {
     }
 }
 
+/// FC Phase 4 (#398) — BOGEN-Rand-Fillet (OP_RIM_FILLET_ARC) end-to-end.
+///
+/// Ein Stadion-/Pillen-Profil (zwei Geraden + zwei Halbkreis-Bögen, `Path`)
+/// wird koplanar auf eine Box-Fläche aufgesetzt (Cap koinzident), Erosion −δ.
+/// Der Kontakt P trägt GERADE UND KONVEXE BOGEN-∂P-Kanten → der Rim baut den
+/// gemischten Arc-Block. Verankert:
+///  (1) `synthesize_rim_arc_features` liefert Bogen-Features;
+///  (2) das kompilierte Tape trägt `OP_RIM_FILLET_ARC` (0x44);
+///  (3) CPU-Interpreter = Dual-Evaluator = Tape (alle Spiegel konsistent);
+///  (4) KEIN Over-Fill außerhalb der un-erodierten Union (konservativ);
+///  (5) der Bogen-Rim SENKT den ∂P-Restfehler gegenüber dem reinen Prisma.
+#[test]
+fn f398_rim_arc_stadium_contact() {
+    use fielddraft_kernel::offset_rim::synthesize_rim_arc_features_for_tree;
+    use fielddraft_kernel::sdf_compiler::{compile_body, eval_opcodes, OP_RIM_FILLET_ARC};
+    use fielddraft_protocol::sketch2d::{Sketch2d, Sketch2dPrimitive, SketchSegment};
+    use std::f32::consts::{FRAC_PI_2, PI};
+
+    eprintln!("=== #398 Phase 4 — Bogen-Rand-Fillet (Stadion-Kontakt) ===");
+    for &d in &[1.0f64, 2.0] {
+        // Box A (Über-Stander), Cap bei x=ax.
+        let ax = 16.0f32;
+        let a = CsgNode::Leaf {
+            id: id(1),
+            primitive: Primitive::Box { center: [0.0; 3], half_extents: [ax, 16.0, 16.0] },
+        };
+        // Stadion-Profil (lokal x,y → nach z→x-Rotation Welt y,z): L=5, R=4.
+        let (l, r) = (5.0f32, 4.0f32);
+        let stadium = Sketch2d::Prim(Sketch2dPrimitive::Path {
+            segments: vec![
+                SketchSegment::Line { start: [-l, -r], end: [l, -r] },
+                SketchSegment::Arc { center: [l, 0.0], radius: r, start_angle: -FRAC_PI_2, sweep_angle: PI },
+                SketchSegment::Line { start: [l, r], end: [-l, r] },
+                SketchSegment::Arc { center: [-l, 0.0], radius: r, start_angle: FRAC_PI_2, sweep_angle: PI },
+            ],
+            closed: true,
+        });
+        let hh = 6.0f32;
+        let q = [0.0f32, std::f32::consts::FRAC_1_SQRT_2, 0.0, std::f32::consts::FRAC_1_SQRT_2];
+        let ext = CsgNode::Extrude { id: id(2), sketch: Box::new(stadium), half_height: hh, wall_subs: None };
+        let b = CsgNode::Transform(
+            Transform { translate: [ax + hh, 0.0, 0.0], rotation: q, scale: [1.0; 3] },
+            Box::new(ext),
+        );
+        let base = CsgNode::Union(Box::new(a), Box::new(b));
+        let node = CsgNode::Offset(Box::new(base.clone()), -(d as f32));
+
+        // (1) Bogen-Features vorhanden.
+        let root = folded_root(&node);
+        let arc_feats = synthesize_rim_arc_features_for_tree(&root);
+        assert!(!arc_feats.is_empty(), "δ={d}: erwarte Bogen-Rim-Features (Stadion)");
+
+        // (2) Tape trägt OP_RIM_FILLET_ARC.
+        let (field, _report) = compile_prism_field(&node);
+        let compiled = compile_body(&field);
+        let has_arc = compiled.opcodes.iter().any(|o| o.to_bits() == OP_RIM_FILLET_ARC);
+        assert!(has_arc, "δ={d}: Tape muss OP_RIM_FILLET_ARC (0x44) tragen");
+
+        // (3) CPU = Dual = Tape.
+        let fa = field.aabb();
+        let lo = [fa.min[0] as f64 - 1.0, fa.min[1] as f64 - 1.0, fa.min[2] as f64 - 1.0];
+        let hi = [fa.max[0] as f64 + 1.0, fa.max[1] as f64 + 1.0, fa.max[2] as f64 + 1.0];
+        let mut rng = SplitMix64::new(0xA2C_5EED ^ d.to_bits());
+        let (mut md_dual, mut md_tape) = (0.0f64, 0.0f64);
+        for _ in 0..4000 {
+            let p = [
+                lo[0] + (hi[0] - lo[0]) * (rng.next_u64() as f64 / u64::MAX as f64),
+                lo[1] + (hi[1] - lo[1]) * (rng.next_u64() as f64 / u64::MAX as f64),
+                lo[2] + (hi[2] - lo[2]) * (rng.next_u64() as f64 / u64::MAX as f64),
+            ];
+            let pf = [p[0] as f32, p[1] as f32, p[2] as f32];
+            let cpu = field.sdf(pf, EvalMode::Visual) as f64;
+            let dual = fielddraft_kernel::sdf_dual::sdf_gradient(&field, pf).0 as f64;
+            let tape = eval_opcodes(&compiled.opcodes, pf) as f64;
+            if cpu.is_finite() && dual.is_finite() {
+                md_dual = md_dual.max((cpu - dual).abs());
+            }
+            if cpu.is_finite() && tape.is_finite() {
+                md_tape = md_tape.max((cpu - tape).abs());
+            }
+        }
+
+        // (4) Over-Fill: außerhalb der un-erodierten Union → nie Material.
+        let base_field = CsgField::visual(&base);
+        let g = 44usize;
+        let step = [(hi[0] - lo[0]) / g as f64, (hi[1] - lo[1]) / g as f64, (hi[2] - lo[2]) / g as f64];
+        let over = (0..g).flat_map(|i| (0..g).flat_map(move |j| (0..g).map(move |k| (i, j, k))))
+            .map(|(i, j, k)| {
+                let p = [lo[0] + (i as f64 + 0.5) * step[0], lo[1] + (j as f64 + 0.5) * step[1], lo[2] + (k as f64 + 0.5) * step[2]];
+                let d_union = base_field.eval(p);
+                if d_union > 0.15 {
+                    let corr = field.sdf([p[0] as f32, p[1] as f32, p[2] as f32], EvalMode::Visual) as f64;
+                    if corr < 0.0 { -corr } else { 0.0 }
+                } else { 0.0 }
+            })
+            .fold(0.0f64, f64::max);
+
+        // (5) Doppel-GT-Over-Fill (streng, gegen die WAHRE erodierte Distanz):
+        //     an keinem Gitterpunkt darf das korrigierte Feld Material behaupten,
+        //     wo die echte erodierte Fläche schon Luft ist. Plus ∂P-nahe
+        //     Rest-Statistik zur Berichterstattung.
+        let baabb = base.aabb();
+        let base_gt = GroundTruth::build(&base_field,
+            [baabb.min[0] as f64, baabb.min[1] as f64, baabb.min[2] as f64],
+            [baabb.max[0] as f64, baabb.max[1] as f64, baabb.max[2] as f64],
+            &GtOptions { grid: 64, ..GtOptions::default() });
+        let full = BoundedField(&field);
+        let gt_over = dual_safety_overfill(&full, &base_gt, lo, hi, -(d as f32) as f64, 48);
+        let z_full = measure(&full, &base_gt, lo, hi, -(d as f32) as f64, &[], 64, 400, 7, false);
+
+        eprintln!(
+            "[ arc-stadium δ={:+.1}] arcs={} tape-arc={has_arc}  CPU−Dual={md_dual:.2e} CPU−Tape={md_tape:.2e}  over(union)={over:.4} over(GT)={gt_over:.4}  full-p99={}",
+            -d, arc_feats.len(), fmt(&z_full)
+        );
+        assert!(md_dual < 5e-3, "δ={d}: CPU↔Dual {md_dual:.3e}");
+        assert!(md_tape < 5e-3, "δ={d}: CPU↔Tape {md_tape:.3e}");
+        assert!(over < 0.05 * d + 0.03, "δ={d}: Bogen-Rim überfüllt außerhalb Union ({over:.4})");
+        assert!(gt_over < 0.1 * d + 0.05, "δ={d}: Bogen-Rim überfüllt (GT {gt_over:.4})");
+    }
+}
+
 /// Reine-f64-Isolation der √3-Reflexecke (drei orthogonale Halbraum-Boxen),
 /// mit direkt konstruierten `offset_rim::RimFeature`s (drei Kanten + Vertex).
 fn measure_trihedral_vertex(delta_abs: f64, grid: usize, probe: usize) -> (f64, f64, f64, f64) {

@@ -51,7 +51,7 @@ import {
   OP_WARP_PUSH, OP_WARP_POP, OP_WARP_TWIST, OP_WARP_BEND,
   OP_WARP_TRANSFORM, OP_WARP_REVOLVE,
   OP_WARP_HELIX, OP_HELIX_SCALE, OP_WARP_SWEEP,
-  OP_MASKED_BLEND, OP_ARC_CHANNEL, OP_VERTEX_SPHERE, OP_RIM_FILLET, OP_END,
+  OP_MASKED_BLEND, OP_ARC_CHANNEL, OP_VERTEX_SPHERE, OP_RIM_FILLET, OP_RIM_FILLET_ARC, OP_END,
   worldToLocalFn, halfspaceLocalFn, sdfBoxFn, sdfSphereFn, sdfCylinderFn,
   sdfTorusFn, sdfConeFn, sdfCapsuleFn, sdfHexPrismFn,
   sdfEllipsoidFn, sdfGyroidFn, sdfThreadFn,
@@ -1023,6 +1023,102 @@ export function buildVmSdfEvalFn(
           g,
         );
         pushV(rimResult);
+
+      }).ElseIf(tag.equal(int(OP_RIM_FILLET_ARC)), () => {
+        // offset_tree FC Phase 4 (#398): GEMISCHTER Rand-Fillet mit BOGEN-Spines
+        // — 1:1-Spiegel von `kernel offset_rim::apply_rims_arc_f32` /
+        // `eval_opcodes` OP_RIM_FILLET_ARC-Arm. Nearest-Feature über Segment-
+        // (sweep<0) UND Bogen-Records (sweep>0). Header n(1) concave(1); je
+        // Record 20 Floats: c(3) u(3) v(3) n_a(3) n_b(3) r(1) sweep(1)
+        // wall_sign(1) delta(1) trust(1). Flache Schleife (KEIN setLayout).
+        const nArc = floatToIntFn({ v: rd() }).toVar();
+        const concaveA = rd().toVar();
+        const arcBase = pc.toVar();
+        pc.addAssign(nArc.mul(20));
+        const gA = popV().toVar();
+
+        const pA = vec3(ptx, pty, ptz).toVar();
+        const bestDeA = float(1e30).toVar();
+        const bestCorrA = float(0).toVar();
+        const ka = int(0).toVar();
+        const rA = (base: any, off: number) => opBuf.element(base.add(int(off)));
+        const rA3 = (base: any, off: number) =>
+          vec3(
+            opBuf.element(base.add(int(off))),
+            opBuf.element(base.add(int(off + 1))),
+            opBuf.element(base.add(int(off + 2))),
+          );
+        Loop(nArc, () => {
+          const b = arcBase.add(ka.mul(20)).toVar();
+          const c = rA3(b, 0).toVar();
+          const u = rA3(b, 3).toVar();
+          const v = rA3(b, 6).toVar();
+          const nA = rA3(b, 9).toVar();
+          const nBc = rA3(b, 12).toVar(); // konstante Wandnormale (Segment)
+          const r = rA(b, 15).toVar();
+          const sweep = rA(b, 16).toVar();
+          const wallSign = rA(b, 17).toVar();
+          const delta = rA(b, 18).toVar();
+          const trust = rA(b, 19).toVar();
+
+          const q = vec3(0, 0, 0).toVar();
+          const de = float(0).toVar();
+          const inCap = float(1).toVar(); // 1 = innerhalb Cap
+          const nB = vec3(0, 0, 0).toVar();
+          const capEps = 1e-6;
+          If(sweep.lessThan(0.0), () => {
+            // Segment c → c + u·r (u Einheitsrichtung, r Länge).
+            const len = max(r, 1e-12);
+            const s = pA.sub(c).dot(u).toVar();
+            const t = s.div(len).toVar();
+            const sc = clamp(s, 0.0, len);
+            q.assign(c.add(u.mul(sc)));
+            de.assign(pA.sub(q).length());
+            const oob = max(
+              t.lessThan(-capEps).select(1.0, 0.0),
+              t.greaterThan(1.0 + capEps).select(1.0, 0.0),
+            );
+            inCap.assign(float(1).sub(oob));
+            nB.assign(nBc);
+          }).Else(() => {
+            // Bogen: c=Zentrum, (u,v)=Basis, r=Radius, Wandnormale RADIAL.
+            const dc = pA.sub(c).toVar();
+            const x = dc.dot(u).toVar();
+            const y = dc.dot(v).toVar();
+            const phi = atan2Fn({ y, x }).toVar();
+            If(phi.lessThan(0.0), () => { phi.addAssign(6.2831853); });
+            inCap.assign(phi.lessThanEqual(sweep.add(capEps)).select(1.0, 0.0));
+            const pc2 = clamp(phi, 0.0, sweep);
+            const cs = pc2.cos(), sn = pc2.sin();
+            q.assign(c.add(u.mul(cs).add(v.mul(sn)).mul(r)));
+            de.assign(pA.sub(q).length());
+            const d = q.sub(c).toVar();
+            const nn = max(d.length(), 1e-30);
+            nB.assign(d.div(nn).mul(wallSign));
+          });
+          const dq = pA.sub(q).toVar();
+          const sideMaskA = (nn: any) => {
+            const s = dq.dot(nn);
+            const pass = concaveA.greaterThan(0.5)
+              .select(s.lessThanEqual(1e-9), s.greaterThanEqual(-1e-9))
+              .select(1.0, 0.0);
+            return nn.length().greaterThanEqual(0.5).select(pass, 1.0);
+          };
+          const keepSide = sideMaskA(nA).mul(sideMaskA(nB));
+          const trustKeep = de.lessThanEqual(trust).select(1.0, 0.0);
+          const keep = trustKeep.mul(inCap).mul(keepSide);
+          const effDe = keep.greaterThan(0.5).select(de, float(1e30));
+          If(effDe.lessThan(bestDeA), () => {
+            bestDeA.assign(de);
+            bestCorrA.assign(concaveA.greaterThan(0.5).select(delta.sub(de), de.sub(delta)));
+          });
+          ka.addAssign(1);
+        });
+        const arcResult = bestDeA.lessThan(1e29).select(
+          concaveA.greaterThan(0.5).select(min(gA, bestCorrA), max(gA, bestCorrA)),
+          gA,
+        );
+        pushV(arcResult);
 
       }).ElseIf(tag.equal(int(OP_END)), () => {
         Break();
