@@ -652,17 +652,27 @@ pub fn adaptive_mdc(
                     }
                 }
             }
-            debug_assert!(
-                members.len() > 1 || e_int_sum == 0,
-                "single-child promotion must have no interior intersections \
-                 (pair-level connectivity would have merged it)"
-            );
+            // A single-child promotion carrying interior-edge crossings
+            // means the band is topologically INCOMPLETE at this cluster:
+            // a sign-change grid edge lost a co-owner (a band hole from a
+            // too-tight guard, an empty cycle, or a degenerate tangential
+            // grazing where the field grazes zero), so its connectivity
+            // pair was skipped while the surviving child still records the
+            // edge. Pair-level connectivity guarantees the ×2/×4 double
+            // count of Formula 2 ONLY over a complete band — which the
+            // narrow band explicitly does not maintain (band holes are a
+            // documented, validator-caught, fallback-handled outcome, see
+            // §1 and the fine-edge skip above). So this is not a bug to
+            // assert against: treat it exactly like a degenerate crossing
+            // and poison χ, forbidding the collapse (the region keeps its
+            // finest, safe vertices) instead of mis-counting or panicking.
+            let band_incomplete = members.len() == 1 && e_int_sum != 0;
             // Formula 2 (χ = Σχ − Σe_int/4). The sum is divisible by 4
             // for any clean patch (V(M^f) is even — Appendix II); a
             // remainder signals a degenerate crossing, which poisons
             // the χ validity instead of mis-counting.
             let chi = chi_sum - e_int_sum / 4;
-            let chi_valid = chi_valid && e_int_sum % 4 == 0;
+            let chi_valid = chi_valid && e_int_sum % 4 == 0 && !band_incomplete;
 
             let mut pos = qef.solve();
             let s = root_size / (1u32 << lvl) as f32;
@@ -1174,4 +1184,89 @@ fn nearest_on_pin(p: [f32; 3], pin: &PinGeometry, tau: f32) -> Option<[f32; 3]> 
         }
     }
     best.map(|(q, _)| q)
+}
+
+#[cfg(test)]
+mod tangential_tests {
+    //! Regression tests for #391: the χ (Euler-characteristic) bookkeeping
+    //! must degrade gracefully — never `debug_assert`-panic — when the
+    //! narrow band is topologically incomplete at a tangential / degenerate
+    //! crossing (an eroded-fold rim-fillet field grazes zero and a
+    //! sign-change grid edge loses a co-owner). See the clustering step's
+    //! `band_incomplete` handling.
+    use super::*;
+    use crate::bvh::BoundedCsg;
+    use crate::csg::CsgNode;
+    use crate::mesh_validate;
+    use crate::sketch2d::{Sketch2d, Sketch2dPrimitive};
+    use fielddraft_protocol::sketch2d::SketchSegment;
+    use fielddraft_protocol::FeatureId;
+
+    /// Capsule / stadium: two horizontal lines joined by semicircles,
+    /// each line tangent (C1) to its neighbour arc. A clean tangential
+    /// arc profile — the band stays complete, so the mesh is manifold.
+    fn stadium_extrude() -> CsgNode {
+        use std::f32::consts::PI;
+        let path = Sketch2d::Prim(Sketch2dPrimitive::Path {
+            segments: vec![
+                SketchSegment::Line { start: [-2.0, -1.0], end: [2.0, -1.0] },
+                SketchSegment::Arc { center: [2.0, 0.0], radius: 1.0, start_angle: -PI / 2.0, sweep_angle: PI },
+                SketchSegment::Line { start: [2.0, 1.0], end: [-2.0, 1.0] },
+                SketchSegment::Arc { center: [-2.0, 0.0], radius: 1.0, start_angle: PI / 2.0, sweep_angle: PI },
+            ],
+            closed: true,
+        });
+        CsgNode::Extrude {
+            wall_subs: None,
+            id: FeatureId::from_u32(1),
+            sketch: Box::new(path),
+            half_height: 3.0,
+        }
+    }
+
+    /// A clean tangential-arc profile meshes to a watertight manifold —
+    /// the fix must not degrade quality on the well-behaved path.
+    #[test]
+    fn tangential_arc_profile_yields_manifold_mesh() {
+        let node = BoundedCsg::from_csg(&stadium_extrude());
+        let pin = PinGeometry::empty();
+        let mut result = adaptive_mdc(&node, 0.3, 0.05, LIPSCHITZ_GUARD_DEFAULT, &pin)
+            .expect("tangential stadium must mesh");
+        let sdf = |p: [f32; 3]| node.sdf(p, EvalMode::Visual);
+        mesh_validate::fix_orientation(&mut result.mesh, &sdf);
+        let v = mesh_validate::validate_topology(&result.mesh);
+        assert!(v.watertight, "expected watertight manifold, got {v:?}");
+        assert_eq!(v.non_manifold_edges, 0, "{v:?}");
+        assert!(!result.mesh.indices.is_empty());
+    }
+
+    /// A topologically incomplete band (forced here by a deliberately
+    /// too-tight Lipschitz guard, exactly the local situation a
+    /// non-Lipschitz rim-fillet field produces at a tangential grazing)
+    /// leaves single-child promotions carrying interior-edge counts.
+    /// Before #391 this fired the χ `debug_assert`; it must now complete
+    /// without panicking in debug builds. The band-incomplete regions are
+    /// χ-poisoned (kept at finest resolution), so the emitted mesh is a
+    /// valid — if hole-flagged — result the export validator handles.
+    #[test]
+    fn incomplete_band_does_not_panic() {
+        let s = Sketch2d::Prim(Sketch2dPrimitive::Circle { center: [0.0, 0.0], radius: 2.0 });
+        let node = BoundedCsg::from_csg(&CsgNode::Extrude {
+            wall_subs: None,
+            id: FeatureId::from_u32(1),
+            sketch: Box::new(s),
+            half_height: 2.0,
+        });
+        let pin = PinGeometry::empty();
+        // This grid of tight guards drives band holes across many levels;
+        // every call must return (Ok or Err) without a debug panic.
+        for gi in 0..8 {
+            let guard = 0.2 + gi as f32 * 0.05;
+            let mut c = 0.15f32;
+            while c < 0.45 {
+                let _ = adaptive_mdc(&node, c, 0.05, guard, &pin);
+                c += 0.011;
+            }
+        }
+    }
 }
