@@ -1397,12 +1397,13 @@ fn fc1_member_faces_revolve_refused() {
 
 use crate::offset_capability::{CapabilityReport, CapabilityStatus};
 
-/// Zählt die synthetisierten Kontakt-Prismen (Extrude-Member im 0x0007_0000-
-/// Feature-Id-Band) im korrigierten Baum — je Zusammenhangskomponente eines.
+/// Zählt die synthetisierten AUSSEN-Kontakt-Prismen (Owner-tragendes Band,
+/// `is_prism_feat` ohne HOLE_FLAG) im korrigierten Baum — je Zusammenhangs-
+/// komponente eines (Loch-Prismen zählen NICHT als eigene Komponente mit).
 fn count_contact_prisms(node: &BoundedCsg) -> usize {
     fn is_prism(id: &FeatureId) -> bool {
         id.as_u32_if_flat()
-            .map(|v| (v & 0xFFFF_0000) == 0x0007_0000)
+            .map(|v| is_prism_feat(v) && !is_prism_hole_feat(v))
             .unwrap_or(false)
     }
     match node {
@@ -1528,6 +1529,160 @@ fn fc2_two_component_contact_builds_two_prisms() {
     assert!(
         corrected.sdf([3.0, 3.0, 0.0], EvalMode::Visual) > 0.0,
         "Lücke zwischen den Inseln → außen"
+    );
+}
+
+// ─── Prisma-Provenance (Owner-Fädelung, Folgeprogramm d) ─────────────────────
+//
+// Das Owner-tragende Feature-Id-Schema (`encode_prism_feat`/`prism_owner`, s.
+// offset_channel.rs) ersetzt die anonyme 0x0007_0000-Band-Id. Diese Tests
+// decken (a) Encode/Decode-Roundtrip, (b) Owner an einem echten Kontakt für
+// Außen- UND Loch-Prisma, (d) Ankunft im bvh-Provenance-Pfad (`evaluate`).
+
+/// (a) Roundtrip + Invarianten: Marker, HOLE_FLAG, Owner-Rückgewinnung,
+/// 20-Bit-Budget (BranchId-Overflow-Schutz), Kollisionsfreiheit gegen echte
+/// (kleine) Feature-Ids.
+#[test]
+fn prism_feat_owner_roundtrip() {
+    for &owner in &[0u32, 1, 2, 7, 42, 4094] {
+        for &seq in &[0u32, 1, 5, 63] {
+            let f = encode_prism_feat(owner, seq);
+            assert!(is_prism_feat(f), "Marker fehlt: {f:#x}");
+            assert!(!is_prism_hole_feat(f), "Außen fälschlich als Loch: {f:#x}");
+            assert_eq!(prism_owner(f), Some(owner), "Owner nicht rückgewinnbar: {f:#x}");
+            assert!(f <= 0xF_FFFF, "feat {f:#x} sprengt 20-Bit-BranchId-Budget");
+            assert!(f >= 0x8_0000, "feat {f:#x} kollidiert mit echtem Feature-Id-Raum");
+        }
+    }
+    for &owner in &[1u32, 42, 4094] {
+        for &hi in &[0u32, 1, 2, 3] {
+            let h = encode_prism_hole_feat(owner, 5, hi);
+            assert!(is_prism_feat(h) && is_prism_hole_feat(h), "Loch-Flags fehlen: {h:#x}");
+            assert_eq!(prism_owner(h), Some(owner), "Loch-Owner nicht rückgewinnbar: {h:#x}");
+            assert!(h <= 0xF_FFFF, "Loch-feat {h:#x} sprengt 20-Bit-Budget");
+        }
+    }
+    // Nicht kodierbarer Owner (≥ 4095): Sentinel → None, NIE eine per Masken-
+    // Kappung aliased fremde Feature-Id (Fehlattribution wäre schlimmer als
+    // Verlust). Das feat bleibt trotzdem ein gültiges Prisma im 20-Bit-Budget.
+    for &big in &[4095u32, 4096, 0x1_0000, u32::MAX] {
+        let f = encode_prism_feat(big, 3);
+        assert!(is_prism_feat(f) && f <= 0xF_FFFF, "Sentinel-feat {f:#x} ungültig");
+        assert_eq!(prism_owner(f), None, "Owner {big} darf nicht aliasen: {f:#x}");
+        let h = encode_prism_hole_feat(big, 3, 1);
+        assert_eq!(prism_owner(h), None, "Loch-Owner {big} darf nicht aliasen: {h:#x}");
+    }
+    // Echte Feature-Ids (Bit 19 = 0) sind KEINE Prismen — auch nicht die
+    // größte im 0x700+-Sub-Kontext denkbare (Subs leben im Sub-Feld, nicht hier).
+    for &real in &[0u32, 1, 2, 100, 0x7_FFFF] {
+        assert!(!is_prism_feat(real), "echte Feature-Id {real:#x} fälschlich als Prisma");
+        assert_eq!(prism_owner(real), None);
+    }
+}
+
+/// (b-Außen) Echter Kontakt Box(1)+L-Extrude(2), Erosion: jedes emittierte
+/// Außen-Prisma trägt Owner = min(1, 2) = 1.
+#[test]
+fn fc_outer_prism_carries_owner() {
+    let l = [[-6.0, -6.0], [6.0, -6.0], [6.0, -2.0], [-2.0, -2.0], [-2.0, 6.0], [-6.0, 6.0]];
+    let box_a = CsgNode::Transform(
+        Transform { translate: [0.0, 0.0, -5.0], rotation: [0.0, 0.0, 0.0, 1.0], scale: [1.0; 3] },
+        Box::new(leaf_box(1, [10.0, 10.0, 5.0])),
+    );
+    let ext_b = poly_extrude(2, &l, 5.0, 5.0);
+    let node = CsgNode::Offset(Box::new(CsgNode::Union(Box::new(box_a), Box::new(ext_b))), -2.0);
+    let mut report = CapabilityReport::new();
+    let corrected =
+        synthesize_offset_channels_reported(BoundedCsg::from_csg(&node), 0.01, &mut report);
+
+    fn collect(n: &BoundedCsg, out: &mut Vec<u32>) {
+        match n {
+            BoundedCsg::Extrude { id, .. } => {
+                if let Some(v) = id.as_u32_if_flat() {
+                    if is_prism_feat(v) {
+                        out.push(v);
+                    }
+                }
+            }
+            BoundedCsg::Union { left, right, .. }
+            | BoundedCsg::Difference { left, right, .. }
+            | BoundedCsg::Intersection { left, right, .. } => {
+                collect(left, out);
+                collect(right, out);
+            }
+            BoundedCsg::Offset { inner, .. }
+            | BoundedCsg::ArcChannel { inner, .. }
+            | BoundedCsg::Shell { inner, .. }
+            | BoundedCsg::InnerWall { inner, .. } => collect(inner, out),
+            _ => {}
+        }
+    }
+    let mut feats = Vec::new();
+    collect(&corrected, &mut feats);
+    assert!(!feats.is_empty(), "kein Prisma synthetisiert");
+    for f in &feats {
+        assert_eq!(prism_owner(*f), Some(1), "Prisma-Owner muss min(1,2)=1 sein, feat={f:#x}");
+    }
+}
+
+/// (b-Loch) Der Loch-Pfad (`build_prism_component` mit einem geraden Loch)
+/// erzeugt `Difference{ Außen, Loch }`; beide Extrudes tragen denselben Owner,
+/// nur das Loch hat HOLE_FLAG gesetzt.
+#[test]
+fn fc_hole_prism_carries_owner() {
+    let outer = Contour2d::straight(vec![[-5.0, -5.0], [5.0, -5.0], [5.0, 5.0], [-5.0, 5.0]]);
+    let hole = Contour2d::straight(vec![[-2.0, -2.0], [2.0, -2.0], [2.0, 2.0], [-2.0, 2.0]]);
+    let comp = ClipComponent { outer, holes: vec![hole] };
+    let owner = 3u32;
+    let feat = encode_prism_feat(owner, 0);
+    let (e1, e2, n) = ([1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]);
+    let prism = build_prism_component(&comp, e1, e2, n, 0.0, 2.0, 2.0, feat)
+        .expect("gerades Loch-Prisma muss baubar sein");
+    let BoundedCsg::Difference { left, right, .. } = &prism else {
+        panic!("Loch-Prisma muss ein Difference sein, ist {prism:?}");
+    };
+    let BoundedCsg::Extrude { id: outer_id, .. } = &**left else {
+        panic!("linkes Kind muss der Außen-Extrude sein");
+    };
+    let BoundedCsg::Extrude { id: hole_id, .. } = &**right else {
+        panic!("rechtes Kind muss der Loch-Extrude sein");
+    };
+    let ov = outer_id.as_u32_if_flat().expect("flache Außen-Id");
+    let hv = hole_id.as_u32_if_flat().expect("flache Loch-Id");
+    assert_eq!(prism_owner(ov), Some(owner), "Außen-Owner falsch");
+    assert!(!is_prism_hole_feat(ov), "Außen darf kein HOLE_FLAG tragen");
+    assert_eq!(prism_owner(hv), Some(owner), "Loch-Owner muss gleich Außen-Owner sein");
+    assert!(is_prism_hole_feat(hv), "Loch muss HOLE_FLAG tragen");
+}
+
+/// (d) bvh-Provenance: ein Punkt auf der synthetisierten Prisma-Fläche liefert
+/// über `evaluate` einen Contributor, dessen Feature-Id via `prism_owner` den
+/// Owner auflöst — die Provenance kommt also am Picking-Pfad an.
+#[test]
+fn fc_prism_provenance_reaches_bvh() {
+    let l = [[-6.0, -6.0], [6.0, -6.0], [6.0, -2.0], [-2.0, -2.0], [-2.0, 6.0], [-6.0, 6.0]];
+    let box_a = CsgNode::Transform(
+        Transform { translate: [0.0, 0.0, -5.0], rotation: [0.0, 0.0, 0.0, 1.0], scale: [1.0; 3] },
+        Box::new(leaf_box(1, [10.0, 10.0, 5.0])),
+    );
+    let ext_b = poly_extrude(2, &l, 5.0, 5.0);
+    let node = CsgNode::Offset(Box::new(CsgNode::Union(Box::new(box_a), Box::new(ext_b))), -2.0);
+    let mut report = CapabilityReport::new();
+    let corrected =
+        synthesize_offset_channels_reported(BoundedCsg::from_csg(&node), 0.01, &mut report);
+
+    // (0,-4,0): auf der Kontaktebene z=0, im L-Bodenstreifen → auf der
+    // Prisma-Deckfläche. Der Contributor-Satz muss den Prisma-Owner (1) tragen.
+    let (_d, c) = corrected.evaluate([0.0, -4.0, 0.0], 1e-3, EvalMode::Visual);
+    let resolved: Vec<u32> = c
+        .as_slice()
+        .iter()
+        .filter_map(|b| prism_owner(b.feature_id()))
+        .collect();
+    assert!(
+        resolved.contains(&1),
+        "kein Contributor löst zum Prisma-Owner 1 auf; Contributor-Feature-Ids: {:?}",
+        c.as_slice().iter().map(|b| b.feature_id()).collect::<Vec<_>>()
     );
 }
 

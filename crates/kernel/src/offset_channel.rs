@@ -2304,10 +2304,11 @@ fn synthesize_contact_prisms(
                     let area_a = area2d(&fa.loop3.iter().map(proj).collect::<Vec<_>>()).abs();
                     let area_b = area2d(&fb.loop3.iter().map(proj).collect::<Vec<_>>()).abs();
                     // Provenance-Owner (kleinste Feature-Id) fließt in die
-                    // synthetische Prisma-Feature-Id ein (0x70000-Band).
-                    let _owner = min_feat[i].min(min_feat[j]);
+                    // synthetische Prisma-Feature-Id ein (Owner-tragendes Band,
+                    // s. `encode_prism_feat`).
+                    let owner = min_feat[i].min(min_feat[j]);
                     for comp in &comps {
-                        let feat = 0x0007_0000 | (*prism_idx & 0xFFFF);
+                        let feat = encode_prism_feat(owner, *prism_idx);
                         let Some(prism) =
                             build_prism_component(comp, e1, e2, n, o, fa.depth, fb.depth, feat)
                         else {
@@ -2363,6 +2364,100 @@ fn synthesize_contact_prisms(
         }
     }
     res
+}
+
+// ─── Kontakt-Prisma-Provenance (Owner-tragendes Feature-Id-Schema) ──────
+//
+// Synthetische Kontakt-Prismen (`build_prism_member`/`build_prism_contour`)
+// werden als `CsgNode::Extrude` mit einer eigenen `FeatureId` eingehängt. Diese
+// Feature-Id ist KEINE echte Nutzer-Feature-Id — der Offset/Shell-Term, der das
+// Prisma synthetisiert, trägt körperweise keine Feature-Id (Plan §9). Nach dem
+// Owner-Muster der Vertex-Kugeln/Kanäle (`(owner << 12) | sub`, sub ∈ 0x700+)
+// führen wir stattdessen den bereits berechneten **Owner** (kleinste beteiligte
+// Eltern-Member-Feature-Id) verlustfrei durch die Synthese.
+//
+// Die Feature-Id wird beim Branch-Enumerieren des Extrude mit `<< 12`
+// (`BranchId::SUB_BITS`) in die Branch-Id gehoben, also MUSS sie in 20 Bit
+// passen (sonst überläuft die Branch-Id den u32). Bit-Layout (20 Bit):
+//
+//   bit 19    = 1              PRISM_MARKER — reserviert die obere Hälfte des
+//                              20-Bit-Raums für synthetische Prismen. Echte
+//                              numerische Feature-Ids sind kleine Dokument-
+//                              Zähler (weit unter 0x80000); ein Dokument, das
+//                              je dorthin zählt, sprengt vorher die BranchId.
+//   bit 18    = HOLE_FLAG      0 = Außen-Prisma, 1 = Loch-Prisma (Difference-
+//                              Kind). Hält Außen- und Loch-Ids unterscheidbar.
+//   bits 17:6 = owner          12 Bit → 0..4094; 0xFFF ist Sentinel für „Owner
+//                              nicht kodierbar" (≥ 4095) und dekodiert zu None —
+//                              NIE zu einer aliased fremden Feature-Id. UNIFORM
+//                              bei Außen & Loch, damit `prism_owner` beide
+//                              gleich dekodiert.
+//   bits 5:0  = disc           Außen: laufender Prisma-Index (seq).
+//                              Loch:  (seq_low << 2) | hole_idx (4+2 Bit).
+//
+// Kollisionsfreiheit: echte Feature-Ids haben Bit 19 = 0 (Marker aus); die
+// 0x700+-Sketch-Join-Sub-Ids (`offset_fold::JOIN_ARC_SUB_BASE`) leben im
+// SUB-Feld anderer Branches, nie im Feature-Id-Feld eines Prismas.
+const PRISM_MARKER: u32 = 0x8_0000; // Bit 19
+const PRISM_HOLE_FLAG: u32 = 0x4_0000; // Bit 18
+const PRISM_OWNER_SHIFT: u32 = 6;
+const PRISM_OWNER_MASK: u32 = 0xFFF; // 12 Bit
+const PRISM_DISC_MASK: u32 = 0x3F; // 6 Bit
+const PRISM_OWNER_UNKNOWN: u32 = 0xFFF; // Sentinel: Owner ≥ 4095, nicht kodierbar
+
+/// Klemmt einen Owner ins 12-Bit-Feld: passt er nicht, wird der Sentinel
+/// gespeichert (dekodiert zu `None`) statt per Masken-Kappung zu einer
+/// FALSCHEN fremden Feature-Id zu aliasen. Provenance ist feldneutrale
+/// Metadaten — Verlust ist erlaubt, Fehlattribution nicht.
+#[inline]
+fn clamp_prism_owner(owner: u32) -> u32 {
+    if owner >= PRISM_OWNER_UNKNOWN { PRISM_OWNER_UNKNOWN } else { owner }
+}
+
+/// Kodiert die Feature-Id eines Außen-Kontakt-Prismas: `owner` + laufender
+/// Index `seq` (in der Praxis sind Kontakt-Owner niedrig nummerierte
+/// Basis-Features, der Sentinel-Pfad ist theoretisch).
+#[inline]
+fn encode_prism_feat(owner: u32, seq: u32) -> u32 {
+    PRISM_MARKER | (clamp_prism_owner(owner) << PRISM_OWNER_SHIFT) | (seq & PRISM_DISC_MASK)
+}
+
+/// Kodiert die Feature-Id eines Loch-Prismas — gleicher `owner`, HOLE_FLAG
+/// gesetzt, Disambiguator aus dem niederen Teil des Eltern-`seq` plus
+/// `hole_idx` (0..3).
+#[inline]
+fn encode_prism_hole_feat(owner: u32, seq: u32, hole_idx: u32) -> u32 {
+    PRISM_MARKER
+        | PRISM_HOLE_FLAG
+        | (clamp_prism_owner(owner) << PRISM_OWNER_SHIFT)
+        | (((seq & 0xF) << 2) | (hole_idx & 0x3))
+}
+
+/// True, wenn `feat` (eine flache Feature-Id) ein synthetisches Kontakt-Prisma
+/// benennt — Außen ODER Loch.
+#[inline]
+pub fn is_prism_feat(feat: u32) -> bool {
+    feat & PRISM_MARKER != 0
+}
+
+/// True, wenn `feat` ein Loch-Prisma (Difference-Kind) benennt.
+#[inline]
+pub fn is_prism_hole_feat(feat: u32) -> bool {
+    is_prism_feat(feat) && (feat & PRISM_HOLE_FLAG != 0)
+}
+
+/// Gewinnt den Owner (kleinste beteiligte Eltern-Member-Feature-Id) aus einer
+/// Prisma-Feature-Id zurück. `None`, wenn `feat` kein Prisma ist ODER der Owner
+/// beim Kodieren nicht ins 12-Bit-Feld passte (Sentinel). Für Picking/
+/// Provenance: eine gepickte Prisma-Fläche löst zweistufig auf — primär das
+/// Owner-Feature (dieses Ergebnis), sekundär die Eltern-Flächen im eps-Band.
+#[inline]
+pub fn prism_owner(feat: u32) -> Option<u32> {
+    if !is_prism_feat(feat) {
+        return None;
+    }
+    let ow = (feat >> PRISM_OWNER_SHIFT) & PRISM_OWNER_MASK;
+    if ow == PRISM_OWNER_UNKNOWN { None } else { Some(ow) }
 }
 
 /// Baut einen Kontakt-Prisma-Member `Extrude(P)` mit Π-orientiertem
@@ -2517,9 +2612,12 @@ fn build_prism_component(
     }
     let mut node = outer;
     for (hi, hole) in comp.holes.iter().enumerate() {
-        // Loch-Feature-Id in ein eigenes Band (0x0008_0000) heben, damit sie nicht
-        // mit den Außen-Prisma-Feature-Ids (0x0007_0000-Band) kollidiert.
-        let hfeat = 0x0008_0000 | ((feat & 0x0FFF) << 4) | (hi as u32 & 0xF);
+        // Loch-Feature-Id: gleicher Owner wie das Außen-Prisma, aber HOLE_FLAG
+        // gesetzt (unterscheidbar). Das ROHE Owner-Feld durchreichen (nicht
+        // `prism_owner`-dekodieren): so propagiert auch der Sentinel korrekt,
+        // statt zu Owner 0 zu kollabieren. `seq` = Disc des Außen-Prismas.
+        let owner = (feat >> PRISM_OWNER_SHIFT) & PRISM_OWNER_MASK;
+        let hfeat = encode_prism_hole_feat(owner, feat & PRISM_DISC_MASK, hi as u32);
         let Some(hole_prism) =
             build_prism_contour(hole, e1, e2, n, o, depth_neg, depth_pos, hfeat)
         else {
@@ -2707,7 +2805,7 @@ fn synthesize_contact_prisms_dilation(
                         continue; // Kanten-/Punktkontakt / zu klein
                     }
                     let o = fdot(n, fa.loop3[0]);
-                    let _owner = min_feat[i].min(min_feat[j]);
+                    let owner = min_feat[i].min(min_feat[j]);
                     for comp in &comps {
                         let p2d = &comp.outer.verts;
                         // Zirkumradius von P (In-Ebenen) → Cap-Marge der ¬box-Seite.
@@ -2728,7 +2826,7 @@ fn synthesize_contact_prisms_dilation(
                         // Komplement (sign=−1) → echte Dicke; ¬box (sign=+1) → Marge.
                         let depth_neg = if si < 0.0 { fa.depth } else { margin };
                         let depth_pos = if sj < 0.0 { fb.depth } else { margin };
-                        let feat = 0x0007_0000 | (*prism_idx & 0xFFFF);
+                        let feat = encode_prism_feat(owner, *prism_idx);
                         let Some(prism) =
                             build_prism_component(comp, e1, e2, n, o, depth_neg, depth_pos, feat)
                         else {
@@ -2861,6 +2959,22 @@ pub(crate) fn contact_clips(inner: &BoundedCsg, delta_signed: f64) -> Vec<Contac
     let faces: Vec<Option<Vec<ContactFace>>> =
         members.iter().map(|m| member_contact_faces(m.node)).collect();
 
+    // Kleinste Feature-Id je Member — Provenance-Owner der Sicherheits-Prisma-
+    // Probe (Spiegel von `synthesize_contact_prisms`). Das hier gebaute Prisma
+    // ist ein Wegwerf-Körper NUR für die duale Untermengen-Probe; sein `feat`
+    // erreicht keinen Output (der `ContactClip` trägt keine Prisma-Feature-Id).
+    // Wir kodieren den Owner dennoch schema-konsistent (keine Magic-Konstante).
+    let min_feat: Vec<u32> = members
+        .iter()
+        .map(|m| {
+            crate::brep::branch_pairs::enumerate_branches(m.node)
+                .iter()
+                .map(|b| b.id.feature_id())
+                .min()
+                .unwrap_or(0)
+        })
+        .collect();
+
     let mut out = Vec::new();
     let mut idx = 0u32;
     for i in 0..members.len() {
@@ -2870,6 +2984,7 @@ pub(crate) fn contact_clips(inner: &BoundedCsg, delta_signed: f64) -> Vec<Contac
             };
             let si = members[i].sign as f64;
             let sj = members[j].sign as f64;
+            let owner = min_feat[i].min(min_feat[j]);
             for fa in fi {
                 for fb in fj {
                     // Koinzidenz-Toleranz: Box-Box lose 0.5·δ (status-erhaltend,
@@ -2946,7 +3061,7 @@ pub(crate) fn contact_clips(inner: &BoundedCsg, delta_signed: f64) -> Vec<Contac
                                 if sj < 0.0 { fb.depth } else { margin },
                             )
                         };
-                        let feat = 0x0007_0000 | (idx & 0xFFFF);
+                        let feat = encode_prism_feat(owner, idx);
                         let Some(prism) =
                             build_prism_member(p2d, e1, e2, n, o, depth_neg, depth_pos, feat)
                         else {
