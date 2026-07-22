@@ -1158,5 +1158,230 @@ fn channel_provenance_uses_reserved_band() {
     assert_eq!(branches, branches2, "Kanal-Provenance ist nicht deterministisch");
 }
 
+// ─── FC Phase 1 (#398): Facetten-Extraktion + cavalier-Verschnitt ────
+//
+// FELDNEUTRAL & UNVERDRAHTET — diese Tests decken die neuen (in Phase 1
+// noch nicht verdrahteten) Funktionen `member_contact_faces` und
+// `clip_faces` direkt ab. Die Synthese benutzt sie noch nicht; das Golden-
+// Tape bleibt byte-identisch (separat verifiziert).
 
+use crate::sketch2d::{Sketch2d, Sketch2dPrimitive, SketchSegment};
 
+/// Eine bulge-tragende Kontaktfläche in der z=0-Ebene (`box_rect = false`
+/// erzwingt den cavalier-Pfad). `n`/`o`/`depth` sind für `clip_faces`
+/// belanglos (nur `loop3`, `bulges`, `box_rect` zählen).
+fn face_poly(pts: &[[f64; 2]], bulges: &[f64]) -> ContactFace {
+    ContactFace {
+        n: [0.0, 0.0, 1.0],
+        o: 0.0,
+        loop3: pts.iter().map(|p| [p[0], p[1], 0.0]).collect(),
+        bulges: bulges.to_vec(),
+        depth: 0.0,
+        box_rect: false,
+    }
+}
+
+fn comp_area(c: &Contour2d) -> f64 {
+    let n = c.verts.len();
+    let mut a = 0.0;
+    for i in 0..n {
+        let p = c.verts[i];
+        let q = c.verts[(i + 1) % n];
+        a += p[0] * q[1] - q[0] * p[1];
+    }
+    0.5 * a.abs()
+}
+
+/// L-Form ∩ überragendes Rechteck = die L-Form: EINE nicht-konvexe
+/// Komponente, kein Loch, Fläche exakt 20 (Analog zum Spike, aber über
+/// `clip_faces`).
+#[test]
+fn fc1_clip_l_shape_one_nonconvex_component() {
+    let l = face_poly(
+        &[[0.0, 0.0], [6.0, 0.0], [6.0, 2.0], [2.0, 2.0], [2.0, 6.0], [0.0, 6.0]],
+        &[0.0; 6],
+    );
+    let rect = face_poly(&[[-1.0, -1.0], [7.0, -1.0], [7.0, 7.0], [-1.0, 7.0]], &[0.0; 4]);
+    let comps = clip_faces(&l, &rect, [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], 1e-4, 0.1);
+    assert_eq!(comps.len(), 1, "enthaltener Kontakt: EINE Komponente");
+    assert!(comps[0].holes.is_empty(), "kein Loch");
+    let area = comp_area(&comps[0].outer);
+    assert!((area - 20.0).abs() < 1e-4, "L-Fläche 20 erwartet, got {area}");
+}
+
+/// KERNBELEG der Komponenten-Zerlegung: zwei „⌐"-Konturen verschneiden zu
+/// ZWEI disjunkten 2×2-Inseln (`pos_plines` → zwei Komponenten).
+#[test]
+fn fc1_clip_two_islands() {
+    let l1 = face_poly(
+        &[[0.0, 0.0], [6.0, 0.0], [6.0, 2.0], [2.0, 2.0], [2.0, 6.0], [0.0, 6.0]],
+        &[0.0; 6],
+    );
+    let l2 = face_poly(
+        &[[0.0, 4.0], [4.0, 4.0], [4.0, 0.0], [6.0, 0.0], [6.0, 6.0], [0.0, 6.0]],
+        &[0.0; 6],
+    );
+    let comps = clip_faces(&l1, &l2, [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], 1e-4, 0.1);
+    assert_eq!(comps.len(), 2, "zwei disjunkte Kontaktinseln erwartet");
+    let mut areas: Vec<f64> = comps.iter().map(|c| comp_area(&c.outer)).collect();
+    areas.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    for a in &areas {
+        assert!((a - 4.0).abs() < 1e-4, "jede Insel 2×2=4, got {a}");
+    }
+}
+
+/// Fast-koinzidente Facetten (winzig verschobene Rechtecke): der cavalier-
+/// Verschnitt greift entweder sauber (EINE Komponente ≈ Rechteck) oder
+/// verweigert (kein Sliver-Garbage), niemals mehrere Fetzen.
+#[test]
+fn fc1_clip_near_coincident_cleanup() {
+    let r0 = face_poly(&[[0.0, 0.0], [4.0, 0.0], [4.0, 4.0], [0.0, 4.0]], &[0.0; 4]);
+    let e = 1e-5;
+    let r1 = face_poly(&[[e, e], [4.0 + e, e], [4.0 + e, 4.0 + e], [e, 4.0 + e]], &[0.0; 4]);
+    let comps = clip_faces(&r0, &r1, [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], 1e-4, 0.05);
+    assert!(comps.len() <= 1, "kein Sliver-Garbage, got {} Komponenten", comps.len());
+    if let Some(c) = comps.first() {
+        let area = comp_area(&c.outer);
+        assert!((area - 16.0).abs() < 0.1, "≈16 erwartet, got {area}");
+    }
+}
+
+/// Loch-Repräsentation (`neg_plines` → Löcher) samt Komponenten-Zuordnung:
+/// Platte ∖ Innenkreis liefert einen Außenrand + ein bogen-tragendes Loch,
+/// dessen Schwerpunkt im Außenrand liegt (die Bausteine, die `clip_faces`
+/// für mehrfach-zusammenhängende Kontakte in Phase 2 nutzt).
+#[test]
+fn fc1_hole_contour_and_assignment() {
+    use cavalier_contours::pline_closed;
+    use cavalier_contours::polyline::{BooleanOp, PlineSource};
+    let plate = pline_closed![
+        (0.0, 0.0, 0.0),
+        (10.0, 0.0, 0.0),
+        (10.0, 10.0, 0.0),
+        (0.0, 10.0, 0.0),
+    ];
+    let hole = pline_closed![(7.0, 5.0, 1.0), (3.0, 5.0, 1.0)];
+    let ring = plate.boolean(&hole, BooleanOp::Not);
+    assert_eq!(ring.pos_plines.len(), 1);
+    assert_eq!(ring.neg_plines.len(), 1);
+    let outer = contour_from_pline(&ring.pos_plines[0].pline);
+    let hole_c = contour_from_pline(&ring.neg_plines[0].pline);
+    assert!(hole_c.has_arcs(), "Loch-Rand trägt Bögen (Bulge-Repräsentation)");
+    let centroid = [
+        hole_c.verts.iter().map(|v| v[0]).sum::<f64>() / hole_c.verts.len() as f64,
+        hole_c.verts.iter().map(|v| v[1]).sum::<f64>() / hole_c.verts.len() as f64,
+    ];
+    assert!(point_in_contour(&outer, centroid), "Loch-Schwerpunkt liegt im Außenrand");
+}
+
+// ── member_contact_faces ────────────────────────────────────────────
+
+fn extrude_node(id: u32, prim: Sketch2dPrimitive, half_height: f32) -> CsgNode {
+    CsgNode::Extrude {
+        id: FeatureId::from_u32(id),
+        sketch: Box::new(Sketch2d::Prim(prim)),
+        half_height,
+        wall_subs: None,
+    }
+}
+
+/// Box-Fläche: `member_contact_faces` liefert exakt `box_contact_faces`
+/// (sechs Rechtecke, `box_rect = true`, keine Bögen) — der Box-Fast-Path
+/// bleibt unverändert.
+#[test]
+fn fc1_member_faces_box_unchanged() {
+    let node = BoundedCsg::from_csg(&leaf_box(1, [3.0, 4.0, 5.0]));
+    let via_box = box_contact_faces(&node).expect("Box liefert Flächen");
+    let via_member = member_contact_faces(&node).expect("Box liefert Flächen");
+    assert_eq!(via_member.len(), 6);
+    assert_eq!(via_member.len(), via_box.len());
+    for (a, b) in via_member.iter().zip(&via_box) {
+        assert_eq!(a.n, b.n);
+        assert_eq!(a.o, b.o);
+        assert_eq!(a.loop3, b.loop3);
+        assert_eq!(a.depth, b.depth);
+        assert!(a.box_rect, "Box-Fläche → box_rect (SH-Fast-Path)");
+        assert!(a.bulges.iter().all(|x| *x == 0.0), "Rechteck ohne Bögen");
+    }
+}
+
+/// Extrude eines Kreis-Profils: die Deckel-Facette trägt exakte Bulge-Bögen
+/// und rekonstruiert die Kreisfläche πr² — validiert Bulge-Vorzeichen und
+/// -Betrag durch den Projektions-/cavalier-Pfad.
+#[test]
+fn fc1_member_faces_extrude_cap_bulge() {
+    let r = 3.0f32;
+    let node = BoundedCsg::from_csg(&extrude_node(
+        1,
+        Sketch2dPrimitive::Circle { center: [0.0, 0.0], radius: r },
+        2.0,
+    ));
+    let faces = member_contact_faces(&node).expect("Extrude liefert Flächen");
+    // Ein Kreis-Profil hat keine geraden Segmente → nur die zwei Deckel.
+    assert_eq!(faces.len(), 2, "Deckel + Boden, kein Mantel (reiner Kreis)");
+    for f in &faces {
+        assert!(!f.box_rect, "Extrude-Fläche ist kein Box-Rechteck");
+        assert!(f.bulges.iter().any(|b| b.abs() > 1e-9), "Deckel trägt Bögen");
+        let pl = face_to_pline(f, [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]);
+        use cavalier_contours::polyline::PlineSource;
+        let area = pl.area().abs();
+        let want = std::f64::consts::PI * (r as f64) * (r as f64);
+        assert!((area - want).abs() < 1e-3, "Kreisfläche {want} erwartet, got {area}");
+    }
+}
+
+/// Extrude eines Rechteck-Profils: zwei Deckel + je GERADEM Segment eine
+/// Mantel-Rechteck-Facette (vier Ecken, keine Bögen).
+#[test]
+fn fc1_member_faces_extrude_mantle_rects() {
+    let node = BoundedCsg::from_csg(&extrude_node(
+        1,
+        Sketch2dPrimitive::Rectangle { center: [0.0, 0.0], half_extents: [2.0, 3.0] },
+        1.5,
+    ));
+    let faces = member_contact_faces(&node).expect("Extrude liefert Flächen");
+    // 2 Deckel + 4 Mantel-Rechtecke.
+    assert_eq!(faces.len(), 6);
+    // Mantel-Facetten: Wandnormale in der xy-Ebene (Deckel zeigen entlang ±z).
+    let mantles: Vec<&ContactFace> = faces.iter().filter(|f| f.n[2].abs() < 1e-6).collect();
+    assert_eq!(mantles.len(), 4, "vier Mantel-Rechtecke");
+    for m in &mantles {
+        assert!(!m.box_rect);
+        assert_eq!(m.loop3.len(), 4, "Mantel ist ein Rechteck");
+        assert!(m.bulges.iter().all(|b| *b == 0.0), "Mantel gerade");
+        assert!(m.depth > 0.0, "Mantel trägt eine positive Member-Dicke");
+    }
+    // Die zwei übrigen Facetten sind die Deckel entlang ±z.
+    let caps: Vec<&ContactFace> = faces.iter().filter(|f| f.n[2].abs() > 0.9).collect();
+    assert_eq!(caps.len(), 2, "Deckel + Boden entlang ±z");
+}
+
+/// QuadBezier im Profil ⇒ Deckel verweigert. Ein reines Bézier-Profil (keine
+/// Geraden) liefert gar keine Facette → `None` (Ehrlichkeit vor Näherung).
+#[test]
+fn fc1_member_faces_quadbezier_refused() {
+    let segs = vec![
+        SketchSegment::QuadBezier { p0: [0.0, 0.0], p1: [3.0, 1.0], p2: [3.0, 3.0] },
+        SketchSegment::QuadBezier { p0: [3.0, 3.0], p1: [1.0, 3.0], p2: [0.0, 0.0] },
+    ];
+    let node = BoundedCsg::from_csg(&extrude_node(
+        1,
+        Sketch2dPrimitive::Path { segments: segs, closed: true },
+        1.0,
+    ));
+    assert!(member_contact_faces(&node).is_none(), "reines Bézier-Profil → verweigert");
+}
+
+/// Revolve (gekrümmte Mantelfläche) liefert keine planaren Facetten → `None`.
+#[test]
+fn fc1_member_faces_revolve_refused() {
+    let node = BoundedCsg::from_csg(&CsgNode::Revolve {
+        id: FeatureId::from_u32(1),
+        sketch: Box::new(Sketch2d::Prim(Sketch2dPrimitive::Rectangle {
+            center: [3.0, 0.0],
+            half_extents: [1.0, 2.0],
+        })),
+        wall_subs: None,
+    });
+    assert!(member_contact_faces(&node).is_none(), "Revolve → keine planaren Facetten");
+}

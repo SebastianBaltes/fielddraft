@@ -79,7 +79,7 @@ use serde::Serialize;
 
 use crate::bvh::BoundedCsg;
 use crate::csg::{Aabb, CsgNode, EvalMode};
-use crate::sketch2d::{Sketch2d, Sketch2dPrimitive};
+use crate::sketch2d::{BoundedSketch2d, Sketch2d, Sketch2dPrimitive, SketchSegment};
 use fielddraft_protocol::{FeatureId, Primitive, Transform};
 
 // ─── Daten ───────────────────────────────────────────────────────────────────
@@ -1489,11 +1489,32 @@ fn fnrm(a: [f64; 3]) -> [f64; 3] {
 }
 
 /// Eine planare Member-Fläche in Weltkoordinaten (für den Kontakt-Verschnitt).
+///
+/// Die Kontur ist ein geschlossener Loop aus Welt-3D-Punkten mit **optionalem
+/// Bulge je Kante** (cavalier-Konvention: `bulge[i] = tan(θ/4)` des Bogens von
+/// `loop3[i]` nach `loop3[(i+1)%n]`, `0` = Gerade). Der Bulge ist so signiert
+/// abgelegt, dass er **verbatim** in eine `cavalier_contours::Polyline` fließt,
+/// nachdem `loop3` mit `plane_frame(n)` in die Ebene projiziert wurde — der
+/// Facetten-Extraktor (`member_contact_faces`) rechnet die Orientierungs-
+/// Umkehr der ±n̂-Deckel bereits ein. Eine Box-Rechteck-Fläche ist vier Punkte
+/// mit Bulge `0` (byte-gleich zum alten Rechteck-Pfad).
 struct ContactFace {
     n: [f64; 3],           // Außennormale (Welt, Einheit)
     o: f64,                // Ebenen-Offset n·x = o
-    loop3: Vec<[f64; 3]>,  // Welt-Loop der Fläche (Rechteck-Ecken)
+    loop3: Vec<[f64; 3]>,  // Welt-Loop der Fläche (Rechteck-/Profil-Ecken)
+    /// Signierter Bulge je Loop-Kante (`loop3[i]→loop3[i+1]`); Länge =
+    /// `loop3.len()`. Box-/Mantel-Rechtecke: alle `0`. (FC Phase 1: gelesen erst
+    /// durch den cavalier-Pfad `clip_faces` der Phase-2-Verdrahtung.)
+    #[allow(dead_code)]
+    bulges: Vec<f64>,
     depth: f64,            // volle Member-Dicke normal zur Fläche
+    /// `true`: konvexes achsen-aligniertes Box-Rechteck → der Verschnitt darf
+    /// den metrisch-exakten Sutherland–Hodgman-Fast-Path nehmen. `false`:
+    /// beliebige (ggf. nicht-konvexe / bulge-tragende) Extrude-Kontur → der
+    /// Verschnitt MUSS über `cavalier_contours` laufen. (FC Phase 1: gelesen
+    /// erst durch `clip_faces` der Phase-2-Verdrahtung.)
+    #[allow(dead_code)]
+    box_rect: bool,
 }
 
 /// Die sechs Flächen eines Box-Members in Weltkoordinaten, oder `None`, wenn
@@ -1566,11 +1587,458 @@ fn box_contact_faces(node: &BoundedCsg) -> Option<Vec<ContactFace>> {
                 n,
                 o: fdot(n, fcw),
                 loop3,
+                bulges: vec![0.0; 4], // Rechteck-Ecken, keine Bögen
                 depth: 2.0 * h[k] * scl,
+                box_rect: true,
             });
         }
     }
     Some(out)
+}
+
+// ─── FC Phase 1 (#398): Facetten-Extraktion für Extrude-Member + cavalier- ────
+// Verschnitt (Folgeprogramm c, docs/…/FC-NONCONVEX-CONTACT-DESIGN.md §2/§3).
+//
+// FELDNEUTRAL & UNVERDRAHTET: `member_contact_faces` und `clip_faces` sind der
+// verallgemeinerte Nachbau von `box_contact_faces` + `clip_convex` für
+// NICHT-konvexe / facettierte Kontakte. Die Synthese (`synthesize_contact_*`,
+// `contact_clips`) benutzt sie in Phase 1 NOCH NICHT — Nicht-Box-Kontakte
+// bleiben verweigert (`refused`), kein Tape-Byte ändert sich. Verdrahtung ist
+// Phase 2.
+
+/// Eine 2D-Kontur in der Kontaktebene Π: geschlossener Loop aus In-Ebenen-
+/// Punkten mit optionalem Bulge je Kante (cavalier-Konvention:
+/// `bulges[i] = tan(θ/4)` des Bogens von `verts[i]` nach `verts[(i+1)%n]`,
+/// `0` = Gerade). Ein Box-/Mantel-Rechteck ist vier Punkte mit Bulge `0`.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Contour2d {
+    pub(crate) verts: Vec<[f64; 2]>,
+    pub(crate) bulges: Vec<f64>,
+}
+
+impl Contour2d {
+    /// Gerade Kontur ohne Bögen (Bulges alle `0`).
+    fn straight(verts: Vec<[f64; 2]>) -> Self {
+        let bulges = vec![0.0; verts.len()];
+        Self { verts, bulges }
+    }
+    /// Trägt die Kontur mindestens einen echten Bogen? (FC Phase 1: nur
+    /// Test-/Phase-2-Konsument.)
+    #[allow(dead_code)]
+    pub(crate) fn has_arcs(&self) -> bool {
+        self.bulges.iter().any(|b| b.abs() > 1e-12)
+    }
+}
+
+/// Eine Zusammenhangskomponente eines (ggf. nicht-konvexen, mehrfach-
+/// zusammenhängenden) Kontakts P: äußere Kontur (CCW) samt optionalen Löchern
+/// (aus `cavalier`s `neg_plines`; hier auf CCW normalisiert). Der Box-Box-Fall
+/// ist EINE Komponente ohne Löcher, byte-gleich zum bisherigen Ein-Polygon-P.
+// FC Phase 1: konstruiert (Box-Box-Spiegel + `clip_faces`), gelesen erst durch
+// die Phase-2-Verdrahtung — Felder daher noch dead.
+#[allow(dead_code)]
+#[derive(Clone, Debug)]
+pub(crate) struct ClipComponent {
+    pub(crate) outer: Contour2d,
+    pub(crate) holes: Vec<Contour2d>,
+}
+
+/// Ein Profil-Segment in Sketch-2D-Koordinaten: Startpunkt + Kantentyp zum
+/// nächsten Segment-Start. Zwischenschritt der Facetten-Extraktion.
+/// (FC Phase 1: nur über die noch unverdrahtete `member_contact_faces` erreicht.)
+#[allow(dead_code)]
+enum ProfileSeg {
+    /// Gerade — trägt eine Mantel-Rechteck-Facette.
+    Line { start: [f64; 2] },
+    /// Kreisbogen (Deckel-Bulge = `tan(θ/4)`); Mantel gekrümmt → keine Facette.
+    Arc { start: [f64; 2], bulge: f64 },
+    /// Quadratische Bézier — kein exakter Bulge → der Deckel wird verweigert.
+    Bezier { start: [f64; 2] },
+}
+
+#[allow(dead_code)]
+impl ProfileSeg {
+    fn start(&self) -> [f64; 2] {
+        match self {
+            ProfileSeg::Line { start } | ProfileSeg::Arc { start, .. } | ProfileSeg::Bezier { start } => *start,
+        }
+    }
+    fn bulge(&self) -> f64 {
+        match self {
+            ProfileSeg::Arc { bulge, .. } => *bulge,
+            _ => 0.0,
+        }
+    }
+}
+
+/// Zerlegt eine EINZELNE Sketch-Primitive in ihre geschlossene Segmentkette
+/// (Sketch-2D, CCW-orientiert bei den analytisch konvertierten Formen). `None`
+/// für nicht darstellbare Profile (offene Pfade). Booleans im Sketch-Baum
+/// (Innenrand/Abzug) sind Phase-2-Scope und werden vom Aufrufer verweigert.
+#[allow(dead_code)] // FC Phase 1: unverdrahtet (nur Test-/Phase-2-Konsument)
+fn profile_segments(prim: &Sketch2dPrimitive) -> Option<Vec<ProfileSeg>> {
+    match prim {
+        Sketch2dPrimitive::Rectangle { center, half_extents } => {
+            let (cx, cy) = (center[0] as f64, center[1] as f64);
+            let (hx, hy) = (half_extents[0] as f64, half_extents[1] as f64);
+            Some(vec![
+                ProfileSeg::Line { start: [cx - hx, cy - hy] },
+                ProfileSeg::Line { start: [cx + hx, cy - hy] },
+                ProfileSeg::Line { start: [cx + hx, cy + hy] },
+                ProfileSeg::Line { start: [cx - hx, cy + hy] },
+            ])
+        }
+        Sketch2dPrimitive::Polygon { vertices } => {
+            if vertices.len() < 3 {
+                return None;
+            }
+            Some(vertices.iter().map(|v| ProfileSeg::Line { start: [v[0] as f64, v[1] as f64] }).collect())
+        }
+        Sketch2dPrimitive::Circle { center, radius } => {
+            let (cx, cy, r) = (center[0] as f64, center[1] as f64, *radius as f64);
+            // Voller Kreis als zwei CCW-Halbkreise (Bulge = tan(π/4) = 1).
+            Some(vec![
+                ProfileSeg::Arc { start: [cx + r, cy], bulge: 1.0 },
+                ProfileSeg::Arc { start: [cx - r, cy], bulge: 1.0 },
+            ])
+        }
+        Sketch2dPrimitive::Sector { center, radius, start_angle, sweep_angle } => {
+            let (cx, cy, r) = (center[0] as f64, center[1] as f64, *radius as f64);
+            let (a0, w) = (*start_angle as f64, *sweep_angle as f64);
+            let p1 = [cx + r * a0.cos(), cy + r * a0.sin()];
+            let p2 = [cx + r * (a0 + w).cos(), cy + r * (a0 + w).sin()];
+            // Mittelpunkt → Bogenanfang (Gerade) → Bogenende (Bogen) → zurück (Gerade).
+            Some(vec![
+                ProfileSeg::Line { start: [cx, cy] },
+                ProfileSeg::Arc { start: p1, bulge: (0.25 * w).tan() },
+                ProfileSeg::Line { start: p2 },
+            ])
+        }
+        Sketch2dPrimitive::Path { segments, closed } => {
+            if !closed || segments.is_empty() {
+                return None; // offene Kontur trägt keinen Deckel
+            }
+            let mut out = Vec::with_capacity(segments.len());
+            for seg in segments {
+                match seg {
+                    SketchSegment::Line { start, .. } => {
+                        out.push(ProfileSeg::Line { start: [start[0] as f64, start[1] as f64] });
+                    }
+                    SketchSegment::Arc { center, radius, start_angle, sweep_angle } => {
+                        let s = [
+                            center[0] as f64 + *radius as f64 * (*start_angle as f64).cos(),
+                            center[1] as f64 + *radius as f64 * (*start_angle as f64).sin(),
+                        ];
+                        out.push(ProfileSeg::Arc { start: s, bulge: (0.25 * *sweep_angle as f64).tan() });
+                    }
+                    SketchSegment::QuadBezier { p0, .. } => {
+                        out.push(ProfileSeg::Bezier { start: [p0[0] as f64, p0[1] as f64] });
+                    }
+                }
+            }
+            Some(out)
+        }
+    }
+}
+
+/// Verallgemeinerung von [`box_contact_faces`] auf alle Leaf-Typen mit
+/// analytisch-planaren Facetten (Design §2):
+///
+/// * **Box** → unverändert `box_contact_faces` (Fast-Path; die sechs Rechtecke,
+///   `box_rect = true`).
+/// * **Extrude** → zwei Deckel-/Boden-Facetten (Profil-Kontur mit Bulge-Bögen
+///   für Arc-Segmente; Rectangle/Circle/Sector/Polygon analytisch, QuadBezier
+///   im Profil ⇒ Deckel verweigert) plus je GERADEM Profil-Segment eine
+///   Mantel-Rechteck-Facette.
+/// * **Revolve/Helix/Sweep/…** → `None` (keine planaren Facetten).
+///
+/// Alle Extrude-Facetten tragen `box_rect = false` und zwingen damit den
+/// cavalier-Verschnitt (die Box-Exaktheit bleibt dem SH-Fast-Path vorbehalten).
+#[allow(dead_code)] // FC Phase 1: unverdrahtet (nur Test-/Phase-2-Konsument)
+fn member_contact_faces(node: &BoundedCsg) -> Option<Vec<ContactFace>> {
+    match node {
+        BoundedCsg::Leaf { primitive: Primitive::Box { .. }, .. } => box_contact_faces(node),
+        BoundedCsg::Extrude { sketch, half_height, world_transform, .. } => {
+            extrude_contact_faces(sketch, *half_height as f64, world_transform)
+        }
+        _ => None,
+    }
+}
+
+/// Deckel-/Boden- + Mantel-Facetten eines Extrude-Members. Nur EINZEL-Prim-
+/// Profile (Booleans im Sketch-Baum = Phase-2-Scope → `None`). Uniforme,
+/// positive Skala verlangt (sonst sind Normalen/Dicken nicht mehr metrisch —
+/// wie bei der Box).
+#[allow(dead_code)] // FC Phase 1: unverdrahtet (nur Test-/Phase-2-Konsument)
+fn extrude_contact_faces(
+    sketch: &BoundedSketch2d,
+    half_height: f64,
+    world_transform: &Transform,
+) -> Option<Vec<ContactFace>> {
+    let BoundedSketch2d::Prim { primitive, .. } = sketch else {
+        return None; // zusammengesetztes Profil (Innenrand/Abzug) → Phase 2
+    };
+    let segs = profile_segments(primitive)?;
+    if segs.len() < 2 || half_height <= 1e-6 {
+        return None;
+    }
+    let s = world_transform.scale;
+    if (s[0] - s[1]).abs() > 1e-4 * s[0].abs().max(1.0)
+        || (s[0] - s[2]).abs() > 1e-4 * s[0].abs().max(1.0)
+        || s[0] <= 0.0
+    {
+        return None;
+    }
+    let scl = s[0] as f64;
+    let rot = world_transform.rotation;
+    let tr = [
+        world_transform.translate[0] as f64,
+        world_transform.translate[1] as f64,
+        world_transform.translate[2] as f64,
+    ];
+    let l2w = |p: [f64; 3]| -> [f64; 3] {
+        let sp = [(p[0] * scl) as f32, (p[1] * scl) as f32, (p[2] * scl) as f32];
+        let r = crate::transform::quat_rotate(rot, sp);
+        [r[0] as f64 + tr[0], r[1] as f64 + tr[1], r[2] as f64 + tr[2]]
+    };
+    let rot_dir = |p: [f64; 3]| -> [f64; 3] {
+        let r = crate::transform::quat_rotate(rot, [p[0] as f32, p[1] as f32, p[2] as f32]);
+        fnrm([r[0] as f64, r[1] as f64, r[2] as f64])
+    };
+
+    let has_bezier = segs.iter().any(|s| matches!(s, ProfileSeg::Bezier { .. }));
+    let verts2d: Vec<[f64; 2]> = segs.iter().map(|s| s.start()).collect();
+    let bulges2d: Vec<f64> = segs.iter().map(|s| s.bulge()).collect();
+    // `bulge = tan(θ/4)` divergiert für Bogen-/Sektor-Sweeps → 2π: ein einzelnes
+    // Segment nahe Vollkreis erzeugt einen numerisch entarteten Bulge, der den
+    // cavalier-Verschnitt vergiften würde. Solche Profile ehrlich verweigern.
+    if bulges2d.iter().any(|b| !b.is_finite() || b.abs() > 1e4) {
+        return None;
+    }
+    let mut out = Vec::new();
+
+    // ── Deckel/Boden: die zwei Cap-Ebenen z = ±half_height ──────────────────
+    // Der Sketch-Bulge ist CCW-positiv in (x,y). Die Projektion via
+    // plane_frame(n̂) kehrt die Orientierung am Boden-Deckel (n̂ = −Rẑ) um; das
+    // gleicht `s·bulge` (s = +1 oben, −1 unten) VORAB aus, sodass der Bulge
+    // verbatim in die cavalier-Polyline fließt (siehe `ContactFace`-Doku).
+    if !has_bezier {
+        for cap_s in [1.0f64, -1.0] {
+            let n = rot_dir([0.0, 0.0, cap_s]);
+            let loop3: Vec<[f64; 3]> =
+                verts2d.iter().map(|p| l2w([p[0], p[1], cap_s * half_height])).collect();
+            let bulges: Vec<f64> = bulges2d.iter().map(|b| cap_s * b).collect();
+            let o = fdot(n, loop3[0]);
+            out.push(ContactFace {
+                n,
+                o,
+                loop3,
+                bulges,
+                depth: 2.0 * half_height * scl,
+                box_rect: false,
+            });
+        }
+    }
+
+    // ── Mantel: je GERADEM Segment ein extrudiertes Rechteck ────────────────
+    let prim_sdf = |p: [f64; 2]| -> f64 { primitive.sdf([p[0] as f32, p[1] as f32]) as f64 };
+    let nseg = segs.len();
+    for k in 0..nseg {
+        let ProfileSeg::Line { start: a } = &segs[k] else { continue };
+        let a = *a;
+        let b = segs[(k + 1) % nseg].start();
+        let e = [b[0] - a[0], b[1] - a[1]];
+        let el = (e[0] * e[0] + e[1] * e[1]).sqrt();
+        if el < 1e-9 {
+            continue;
+        }
+        // In-Ebenen-Außennormale (Richtung wachsender Profil-SDF).
+        let mut cand = [e[1] / el, -e[0] / el];
+        let mid = [0.5 * (a[0] + b[0]), 0.5 * (a[1] + b[1])];
+        let eps = 1e-3 * el.max(1.0);
+        let d_plus = prim_sdf([mid[0] + eps * cand[0], mid[1] + eps * cand[1]]);
+        let d_minus = prim_sdf([mid[0] - eps * cand[0], mid[1] - eps * cand[1]]);
+        if d_plus < d_minus {
+            cand = [-cand[0], -cand[1]];
+        }
+        let n = rot_dir([cand[0], cand[1], 0.0]);
+        // Member-Dicke normal zur Wand: Profil-Ausdehnung hinter der Wand.
+        let o_face = cand[0] * a[0] + cand[1] * a[1];
+        let inner_min = verts2d
+            .iter()
+            .map(|v| cand[0] * v[0] + cand[1] * v[1])
+            .fold(f64::INFINITY, f64::min);
+        let depth = ((o_face - inner_min) * scl).max(0.0);
+        let loop3 = vec![
+            l2w([a[0], a[1], -half_height]),
+            l2w([b[0], b[1], -half_height]),
+            l2w([b[0], b[1], half_height]),
+            l2w([a[0], a[1], half_height]),
+        ];
+        let o = fdot(n, loop3[0]);
+        out.push(ContactFace {
+            n,
+            o,
+            loop3,
+            bulges: vec![0.0; 4],
+            depth,
+            box_rect: false,
+        });
+    }
+
+    if out.is_empty() {
+        None
+    } else {
+        Some(out)
+    }
+}
+
+// ─── cavalier-Verschnitt (nicht-konvexe / bulge-tragende Kontakte) ───────────
+
+/// Projiziert eine [`ContactFace`] in die Ebene `(e1,e2)` und baut daraus eine
+/// CCW-normalisierte `cavalier`-Polyline (Bulge verbatim — die Orientierung ist
+/// bereits im Facetten-Bulge eingerechnet).
+#[allow(dead_code)] // FC Phase 1: unverdrahtet (nur Test-/Phase-2-Konsument)
+fn face_to_pline(
+    face: &ContactFace,
+    e1: [f64; 3],
+    e2: [f64; 3],
+) -> cavalier_contours::polyline::Polyline<f64> {
+    use cavalier_contours::polyline::{PlineCreation, PlineSource, PlineSourceMut, Polyline};
+    let mut pl = Polyline::with_capacity(face.loop3.len(), true);
+    for (i, w) in face.loop3.iter().enumerate() {
+        pl.add(fdot(e1, *w), fdot(e2, *w), face.bulges.get(i).copied().unwrap_or(0.0));
+    }
+    if pl.area() < 0.0 {
+        pl.invert_direction_mut();
+    }
+    pl
+}
+
+/// Konvertiert eine `cavalier`-Polyline in eine [`Contour2d`] und normalisiert
+/// die Orientierung auf CCW (positive Fläche).
+#[allow(dead_code)] // FC Phase 1: unverdrahtet (nur Test-/Phase-2-Konsument)
+fn contour_from_pline(pl: &cavalier_contours::polyline::Polyline<f64>) -> Contour2d {
+    use cavalier_contours::polyline::{PlineSource, PlineSourceMut};
+    let mut pl = pl.clone();
+    if pl.area() < 0.0 {
+        pl.invert_direction_mut();
+    }
+    let n = pl.vertex_count();
+    let mut verts = Vec::with_capacity(n);
+    let mut bulges = Vec::with_capacity(n);
+    for i in 0..n {
+        let v = pl.at(i);
+        verts.push([v.x, v.y]);
+        bulges.push(v.bulge);
+    }
+    Contour2d { verts, bulges }
+}
+
+/// Even-Odd-Punkt-in-Kontur (Sehnen-Näherung der Bögen — genügt der
+/// Loch-Komponenten-Zuordnung; die Kontur-Geometrie selbst bleibt exakt).
+#[allow(dead_code)] // FC Phase 1: unverdrahtet (nur Test-/Phase-2-Konsument)
+fn point_in_contour(c: &Contour2d, p: [f64; 2]) -> bool {
+    let n = c.verts.len();
+    if n < 3 {
+        return false;
+    }
+    let mut inside = false;
+    let mut j = n - 1;
+    for i in 0..n {
+        let vi = c.verts[i];
+        let vj = c.verts[j];
+        if (vi[1] > p[1]) != (vj[1] > p[1]) {
+            let t = (p[1] - vi[1]) / (vj[1] - vi[1]);
+            if p[0] < vi[0] + t * (vj[0] - vi[0]) {
+                inside = !inside;
+            }
+        }
+        j = i;
+    }
+    inside
+}
+
+/// Der 2D-Kontakt-Verschnitt zweier koplanarer Member-Facetten in der
+/// gemeinsamen Ebene `(e1,e2)` (Design §3). Box∩Box (`box_rect` bei BEIDEN)
+/// läuft metrisch-exakt über Sutherland–Hodgman und liefert EINE konvexe
+/// Komponente ohne Loch — byte-gleich zum bisherigen Pfad. Sobald EINE Facette
+/// keine Box-Fläche ist, rechnet `cavalier_contours` den booleschen Verschnitt
+/// und spaltet ihn in Zusammenhangskomponenten (`pos_plines`) und Löcher
+/// (`neg_plines`) auf. Sliver-Komponenten unter `overlap_min²` werden verworfen.
+#[allow(dead_code)] // FC Phase 1: unverdrahtet (nur Test-/Phase-2-Konsument)
+fn clip_faces(
+    fa: &ContactFace,
+    fb: &ContactFace,
+    e1: [f64; 3],
+    e2: [f64; 3],
+    cleanup_tol: f64,
+    overlap_min: f64,
+) -> Vec<ClipComponent> {
+    let proj = |w: &[f64; 3]| -> [f64; 2] { [fdot(e1, *w), fdot(e2, *w)] };
+
+    if fa.box_rect && fb.box_rect {
+        // Konvex∩konvex — der exakte SH-Fast-Path (kein cavalier).
+        let mut la: Vec<[f64; 2]> = fa.loop3.iter().map(proj).collect();
+        let mut lb: Vec<[f64; 2]> = fb.loop3.iter().map(proj).collect();
+        if area2d(&la) < 0.0 {
+            la.reverse();
+        }
+        if area2d(&lb) < 0.0 {
+            lb.reverse();
+        }
+        let mut p2d = cleanup_poly(clip_convex(&la, &lb), cleanup_tol);
+        if p2d.len() < 3 || area2d(&p2d).abs() < overlap_min * overlap_min {
+            return Vec::new();
+        }
+        if area2d(&p2d) < 0.0 {
+            p2d.reverse();
+        }
+        return vec![ClipComponent { outer: Contour2d::straight(p2d), holes: Vec::new() }];
+    }
+
+    // Nicht-konvex / bulge-tragend → cavalier boolean(And).
+    use cavalier_contours::polyline::{BooleanOp, PlineSource};
+    let pa = face_to_pline(fa, e1, e2);
+    let pb = face_to_pline(fb, e1, e2);
+    let res = pa.boolean(&pb, BooleanOp::And);
+
+    // Löcher (neg_plines) auf CCW normalisierte Konturen, mit einem inneren
+    // Referenzpunkt für die Komponenten-Zuordnung.
+    let holes: Vec<Contour2d> = res
+        .neg_plines
+        .iter()
+        .filter_map(|h| {
+            let c = contour_from_pline(&h.pline);
+            (c.verts.len() >= 3).then_some(c)
+        })
+        .collect();
+
+    let mut comps = Vec::new();
+    for pos in &res.pos_plines {
+        // Sliver-Schwelle über die (bogen-exakte) cavalier-Fläche.
+        if pos.pline.area().abs() < overlap_min * overlap_min {
+            continue;
+        }
+        let outer = contour_from_pline(&pos.pline);
+        if outer.verts.len() < 3 {
+            continue;
+        }
+        // Löcher der Komponente zuordnen (Referenzpunkt im Loch-Inneren).
+        let my_holes: Vec<Contour2d> = holes
+            .iter()
+            .filter(|h| {
+                let c = [
+                    h.verts.iter().map(|v| v[0]).sum::<f64>() / h.verts.len() as f64,
+                    h.verts.iter().map(|v| v[1]).sum::<f64>() / h.verts.len() as f64,
+                ];
+                point_in_contour(&outer, c)
+            })
+            .cloned()
+            .collect();
+        comps.push(ClipComponent { outer, holes: my_holes });
+    }
+    comps
 }
 
 /// Orthonormale In-Ebenen-Basis (e1, e2) zur Ebenen-Normale n̂ (rechtshändig:
@@ -2197,6 +2665,16 @@ pub(crate) struct ContactClip {
     /// zeigt (Komplement-Dualität, F396 §1.4).
     pub(crate) sign_i: f32,
     pub(crate) sign_j: f32,
+    /// FC-Phase-1-Verallgemeinerung (#398): die Kontaktfläche P als Liste von
+    /// Zusammenhangskomponenten mit optionalen Löchern. Der bestehende Box-Box-
+    /// Pfad füllt hier GENAU EINE gerade Komponente ohne Loch, deren `outer` das
+    /// Ein-Polygon-`p2d` spiegelt — der Ein-Polygon-Konsument (`offset_rim`)
+    /// liest weiter `p2d` und bleibt unberührt. Nicht-konvexe Kontakte (mehrere
+    /// Komponenten / Löcher) füllt erst die Phase-2-Verdrahtung über
+    /// [`clip_faces`]. (FC Phase 1: befüllt, aber noch von keinem Konsumenten
+    /// gelesen — `offset_rim` liest weiter `p2d`.)
+    #[allow(dead_code)]
+    pub(crate) components: Vec<ClipComponent>,
 }
 
 #[inline]
@@ -2321,6 +2799,9 @@ pub(crate) fn contact_clips(inner: &BoundedCsg, delta_signed: f64) -> Vec<Contac
                         continue;
                     }
                     idx += 1;
+                    // Box-Box: EINE gerade Komponente ohne Loch (spiegelt p2d).
+                    let components =
+                        vec![ClipComponent { outer: Contour2d::straight(p2d.clone()), holes: Vec::new() }];
                     out.push(ContactClip {
                         n,
                         e1,
@@ -2333,6 +2814,7 @@ pub(crate) fn contact_clips(inner: &BoundedCsg, delta_signed: f64) -> Vec<Contac
                         n_j: fscl(fb.n, sj),
                         sign_i: members[i].sign,
                         sign_j: members[j].sign,
+                        components,
                     });
                 }
             }

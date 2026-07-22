@@ -661,6 +661,7 @@ mod tests {
             n_j: [-1.0, 0.0, 0.0],
             sign_i: sign,
             sign_j: if concave { 1.0 } else { -1.0 },
+            components: Vec::new(),
         }
     }
 
