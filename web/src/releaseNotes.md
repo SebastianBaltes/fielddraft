@@ -12,6 +12,9 @@ Format, eine Zeile je Eintrag:
 kind = feat | fix | perf. scope und #tickets sind optional. Folgezeilen, die
 eingerückt sind, gehören zum Text davor (Umbruch erlaubt).
 
+## 0.19.1
+- fix(sdf) #392: Skizzen-Pfade aus mehreren Bögen desselben Kreises (z. B. ein aus zwei Halbkreisen gezeichneter Vollkreis) konnten exakt auf der Naht-Symmetrielinie sporadisch innen/außen verwechseln — sichtbar als vereinzelte Pixel-Artefakte auf Symmetrieebenen und als potenzieller Störer für Mesher-Seeds. Aufeinanderfolgende Bögen desselben Kreises werden jetzt beim Auswerten und beim GPU/Mesher-Lowering zu einem Bogen verschmolzen, sodass die fragile Naht gar nicht mehr existiert; alle Evaluatoren klassifizieren dieselbe normalisierte Kontur.
+
 ## 0.19.0
 - feat(sdf) #398 #384: Rand-Fillets an koplanaren Kontaktflächen sind scharfgeschaltet: Wo bisher nach der Kontakt-Prisma-Korrektur ein δ-schmaler Sliver (Erosion) bzw. Keil (Dilation) am Kontaktrand stehen blieb (Restfehler bis ≈0,75·δ), rundet der neue OP_RIM_FILLET-Opcode diesen Rand jetzt metrisch exakt auf Radius δ — der Restfehler sinkt auf die Bau-Toleranz. Wirkt in allen Evaluatoren gleich (CPU, GPU-Renderer, Meshing, Ableitungen); die Capability-Meldung im Offset/Shell-Feature weist den verbesserten Rest ehrlich aus. Versetzte („staggered“) Kontakte, deren Randkanten konvex sind, werden bewusst nicht gefillett — dort bleibt die bisherige ehrliche Zusage bestehen, statt Material fälschlich aufzufüllen.
 

@@ -710,7 +710,19 @@ pub fn path_min_distance(p: [f32; 2], segments: &[SketchSegment]) -> (f32, usize
 /// does not straddle `p.y` cannot toggle the parity and are skipped. Public
 /// so the kernel's dual-number mirror and the GPU SDF-VM (which ports this
 /// per-record) share the same sign test.
+///
+/// **Seam robustness (#392).** The half-open rule is only consistent at a
+/// segment seam if *both* adjoining segments classify the shared vertex on the
+/// same side of `p.y`. Two consecutive arcs of the SAME circle recompute their
+/// shared seam endpoint from different angle representations (e.g. angle `0` on
+/// one side, `2π` on the other), whose `sin` can round to opposite sides of a
+/// symmetry line — the crossing was then double- or zero-counted, flipping the
+/// sign of the 2D distance on a null line. [`merge_cocircular_runs`] fuses such
+/// runs into one arc so the fragile interior seam vanishes; the crossing math
+/// itself is untouched, so every other configuration is bit-for-bit unchanged.
 pub fn path_is_inside(p: [f32; 2], segments: &[SketchSegment]) -> bool {
+    let merged = merge_cocircular_runs(segments);
+    let segments: &[SketchSegment] = merged.as_deref().unwrap_or(segments);
     let mut crossings = 0u32;
     for seg in segments {
         let (y_min, y_max) = seg.y_span_conservative();
@@ -729,6 +741,94 @@ pub fn path_is_inside(p: [f32; 2], segments: &[SketchSegment]) -> bool {
         };
     }
     crossings % 2 == 1
+}
+
+/// Fuse maximal runs of consecutive arcs that lie on the SAME circle and sweep
+/// the same direction into a single arc, so their shared (non-cardinal) seam
+/// vanishes from the even-odd crossing test (#392). Wraps around a closed loop.
+/// Returns `None` when nothing merges — the overwhelmingly common case — so the
+/// hot SDF path pays only an O(n) scan and no allocation. A mirror of
+/// `offset_fold::merge_cocircular_runs`; also applied at GPU/CGAL lowering
+/// (`emit_path_record`) so every evaluator sees the same normalised contour.
+pub fn merge_cocircular_runs(segments: &[SketchSegment]) -> Option<Vec<SketchSegment>> {
+    let n = segments.len();
+    if n < 2 {
+        return None;
+    }
+    // Cheap pre-scan: is there ANY adjacent (incl. wrap-around) co-circular
+    // same-direction arc pair? If not, skip the allocation entirely.
+    let mergeable = |i: usize, j: usize| -> bool {
+        matches!(
+            (&segments[i], &segments[j]),
+            (SketchSegment::Arc { .. }, SketchSegment::Arc { .. })
+        ) && cocircular_same_dir(&segments[i], &segments[j])
+    };
+    if !(0..n).any(|i| mergeable(i, (i + 1) % n)) {
+        return None;
+    }
+    // Build the fused contour. Walk once; extend the current arc while the next
+    // segment is co-circular and same-direction with a combined |sweep| ≤ 2π.
+    let mut out: Vec<SketchSegment> = Vec::with_capacity(n);
+    for seg in segments {
+        match (out.last_mut(), seg) {
+            (
+                Some(SketchSegment::Arc { center: ca, radius: ra, sweep_angle: wa, .. }),
+                SketchSegment::Arc { center: cb, radius: rb, sweep_angle: wb, .. },
+            ) if arcs_cocircular_same_dir(*ca, *ra, *wa, *cb, *rb, *wb) => {
+                *wa = (*wa + *wb).clamp(-std::f32::consts::TAU, std::f32::consts::TAU);
+            }
+            _ => out.push(seg.clone()),
+        }
+    }
+    // Wrap-around: if the last and first entries fused into one circle, fold the
+    // tail arc's sweep into the head and drop the tail.
+    if out.len() >= 2 {
+        let last = out.len() - 1;
+        if let (
+            SketchSegment::Arc { center: cb, radius: rb, sweep_angle: wb, .. },
+            SketchSegment::Arc { center: ca, radius: ra, sweep_angle: wa, .. },
+        ) = (&out[last], &out[0])
+        {
+            if arcs_cocircular_same_dir(*ca, *ra, *wa, *cb, *rb, *wb) {
+                let add = *wb;
+                if let SketchSegment::Arc { start_angle: sa, sweep_angle: wa, .. } = &mut out[0] {
+                    // The tail arc ENDS where the head STARTS, i.e. it spans
+                    // [head_start − add, head_start]. Folding its sweep into the
+                    // head must therefore also rotate the head's start back by
+                    // `add`, or the fused arc covers the wrong angular range.
+                    *sa -= add;
+                    *wa = (*wa + add).clamp(-std::f32::consts::TAU, std::f32::consts::TAU);
+                }
+                out.pop();
+            }
+        }
+    }
+    (out.len() != n).then_some(out)
+}
+
+fn cocircular_same_dir(a: &SketchSegment, b: &SketchSegment) -> bool {
+    match (a, b) {
+        (
+            SketchSegment::Arc { center: ca, radius: ra, sweep_angle: wa, .. },
+            SketchSegment::Arc { center: cb, radius: rb, sweep_angle: wb, .. },
+        ) => arcs_cocircular_same_dir(*ca, *ra, *wa, *cb, *rb, *wb),
+        _ => false,
+    }
+}
+
+fn arcs_cocircular_same_dir(
+    ca: [f32; 2],
+    ra: f32,
+    wa: f32,
+    cb: [f32; 2],
+    rb: f32,
+    wb: f32,
+) -> bool {
+    let tol = (ra.abs() * 1e-5).max(1e-6);
+    let same_circle =
+        (ca[0] - cb[0]).abs() <= tol && (ca[1] - cb[1]).abs() <= tol && (ra - rb).abs() <= tol;
+    let same_dir = (wa >= 0.0) == (wb >= 0.0);
+    same_circle && same_dir && (wa + wb).abs() <= std::f32::consts::TAU + 1e-4
 }
 
 /// +x-ray crossing count (0 or 1) of a straight edge — the classic polygon
@@ -2746,5 +2846,158 @@ mod path_tests {
         let e1 = on_ellipse(start + sweep);
         assert!((first[0] - e0[0]).hypot(first[1] - e0[1]) < 1e-4);
         assert!((last[0] - e1[0]).hypot(last[1] - e1[1]) < 1e-4);
+    }
+
+    // ── #392: seam-robust even-odd parity on symmetry lines ────────────
+
+    /// A full circle split into two semicircular arcs whose shared seams lie
+    /// exactly on the horizontal symmetry line `y = 0` (the arc endpoints are
+    /// (±r, 0)). A query row exactly on `y = 0` runs straight through both
+    /// seams — the historically fragile case where one arc re-derived the seam
+    /// endpoint from angle `0` (`sin = 0`) and the other from angle `2π`
+    /// (`sin ≈ +3.5e-7·r`), landing on opposite sides of the ray, so the seam
+    /// was counted twice or not at all and the 2D distance sign flipped.
+    fn two_semicircle_circle() -> Vec<SketchSegment> {
+        use std::f32::consts::PI;
+        vec![
+            // Upper half: angle 0 → π, endpoints (r,0) and (−r,0).
+            SketchSegment::Arc { center: [0.0, 0.0], radius: 2.0, start_angle: 0.0, sweep_angle: PI },
+            // Lower half: angle π → 2π, back to (r,0).
+            SketchSegment::Arc { center: [0.0, 0.0], radius: 2.0, start_angle: PI, sweep_angle: PI },
+        ]
+    }
+
+    #[test]
+    fn merge_cocircular_runs_fuses_two_semicircles_into_a_circle() {
+        // The normalisation pass must collapse the two-arc circle into one
+        // full-sweep arc (no interior seam), and leave a non-co-circular path
+        // untouched (returns None → no allocation on the hot path).
+        let merged = merge_cocircular_runs(&two_semicircle_circle()).expect("should fuse");
+        assert_eq!(merged.len(), 1, "two co-circular arcs must fuse into one");
+        match merged[0] {
+            SketchSegment::Arc { sweep_angle, .. } => {
+                assert!((sweep_angle.abs() - std::f32::consts::TAU).abs() < 1e-4);
+            }
+            _ => panic!("fused segment must stay an arc"),
+        }
+        // A path without a co-circular arc pair does not merge — the pass
+        // returns None so nothing is allocated on the hot SDF path.
+        let no_merge = vec![
+            SketchSegment::Line { start: [0.0, 0.0], end: [1.0, 0.0] },
+            SketchSegment::Arc { center: [1.0, 1.0], radius: 1.0, start_angle: -1.5, sweep_angle: 1.5 },
+            SketchSegment::Line { start: [1.0, 2.0], end: [0.0, 2.0] },
+        ];
+        assert!(merge_cocircular_runs(&no_merge).is_none());
+    }
+
+    #[test]
+    fn seam_on_symmetry_line_arc_arc_signs_correct() {
+        let segs = two_semicircle_circle();
+        // Interior points ON the seam line y = 0 must be inside (negative sdf).
+        for x in [-1.5f32, -0.5, 0.0, 0.5, 1.5] {
+            let p = [x, 0.0];
+            assert!(path_is_inside(p, &segs), "interior seam point {p:?} classified outside");
+            assert!(sdf_path(p, &segs, true) < 0.0, "sdf sign wrong at interior seam {p:?}");
+        }
+        // Exterior points ON the seam line must be outside (positive sdf).
+        for x in [-3.0f32, -2.5, 2.5, 3.0] {
+            let p = [x, 0.0];
+            assert!(!path_is_inside(p, &segs), "exterior seam point {p:?} classified inside");
+            assert!(sdf_path(p, &segs, true) > 0.0, "sdf sign wrong at exterior seam {p:?}");
+        }
+    }
+
+    #[test]
+    fn seam_band_around_symmetry_line_is_stable() {
+        // Sweep a dense band of query rows straddling y = 0 by tiny f64 steps —
+        // interior rows must all classify inside, exterior rows all outside.
+        // Before the co-circular run-merge, rows exactly on the seam flipped
+        // sign sporadically.
+        let segs = two_semicircle_circle();
+        for i in -200i32..=200 {
+            let y = (i as f64) * 1e-9;
+            assert!(
+                path_is_inside([0.0f32, y as f32], &segs),
+                "seam-band interior flip at y={y:e} (i={i})",
+            );
+            assert!(
+                !path_is_inside([5.0f32, y as f32], &segs),
+                "seam-band exterior flip at y={y:e} (i={i})",
+            );
+        }
+    }
+
+    #[test]
+    fn seam_on_symmetry_line_arc_line_signs_correct() {
+        use std::f32::consts::PI;
+        // Half-disk: a semicircular arc (top) closed by a straight diameter
+        // (bottom) — an arc↔line seam whose endpoints (±r, 0) sit exactly on
+        // the symmetry line y = 0. Each segment keeps its own endpoints, so the
+        // per-segment half-open rule already classifies this seam consistently.
+        let segs = vec![
+            SketchSegment::Arc { center: [0.0, 0.0], radius: 2.0, start_angle: 0.0, sweep_angle: PI },
+            SketchSegment::Line { start: [-2.0, 0.0], end: [2.0, 0.0] },
+        ];
+        // Row exactly on the diameter seam: interior between the caps, exterior
+        // beyond them.
+        for x in [-1.5f32, -0.5, 0.0, 0.5, 1.5] {
+            assert!(path_is_inside([x, 0.0], &segs), "arc↔line seam interior {x} outside");
+        }
+        for x in [-3.0f32, 3.0] {
+            assert!(!path_is_inside([x, 0.0], &segs), "arc↔line seam exterior {x} inside");
+        }
+        // A hair above the diameter is inside the half-disk; a hair below is
+        // outside — the sign is stable straight through the seam.
+        for x in [-1.0f32, 0.0, 1.0] {
+            assert!(path_is_inside([x, 1e-6], &segs), "just above diameter must be inside");
+            assert!(!path_is_inside([x, -1e-6], &segs), "just below diameter must be outside");
+        }
+    }
+
+    #[test]
+    fn wraparound_fold_rotates_start_angle() {
+        use std::f32::consts::PI;
+        // Half-disk (upper semicircle + diameter) whose contour STARTS in the
+        // middle of the arc run: Arc [π/4 → π], the diameter line, then Arc
+        // [0 → π/4] closing back to the start. The last and first segments are
+        // co-circular, so the wrap-around fold fires. The fused head must span
+        // [0, π] — folding only the sweep (keeping start π/4) would cover
+        // [π/4, 5π/4] instead and misclassify the whole upper half.
+        let r = 2.0f32;
+        let segs = vec![
+            SketchSegment::Arc { center: [0.0, 0.0], radius: r, start_angle: PI / 4.0, sweep_angle: 3.0 * PI / 4.0 },
+            SketchSegment::Line { start: [-r, 0.0], end: [r, 0.0] },
+            SketchSegment::Arc { center: [0.0, 0.0], radius: r, start_angle: 0.0, sweep_angle: PI / 4.0 },
+        ];
+        let merged = merge_cocircular_runs(&segs).expect("wrap pair must fuse");
+        assert_eq!(merged.len(), 2);
+        match merged[0] {
+            SketchSegment::Arc { start_angle, sweep_angle, .. } => {
+                assert!(start_angle.abs() < 1e-6, "start must rotate back to 0, got {start_angle}");
+                assert!((sweep_angle - PI).abs() < 1e-6, "sweep must be π, got {sweep_angle}");
+            }
+            _ => panic!("head must stay an arc"),
+        }
+        // (0, 1) is inside the upper half-disk, (0, −1) is outside.
+        assert!(path_is_inside([0.0, 1.0], &segs), "interior of half-disk misclassified");
+        assert!(!path_is_inside([0.0, -1.0], &segs), "below the diameter must be outside");
+    }
+
+    #[test]
+    fn clockwise_cocircular_arcs_also_fuse_and_classify() {
+        use std::f32::consts::PI;
+        // Same circle, both halves drawn CLOCKWISE (negative sweep): the merge
+        // must still fuse them (same direction) and parity stays correct.
+        let segs = vec![
+            SketchSegment::Arc { center: [0.0, 0.0], radius: 2.0, start_angle: 0.0, sweep_angle: -PI },
+            SketchSegment::Arc { center: [0.0, 0.0], radius: 2.0, start_angle: -PI, sweep_angle: -PI },
+        ];
+        assert_eq!(merge_cocircular_runs(&segs).map(|m| m.len()), Some(1));
+        for x in [-1.5f32, 0.0, 1.5] {
+            assert!(path_is_inside([x, 0.0], &segs), "cw-arc interior {x} misclassified");
+        }
+        for x in [-3.0f32, 3.0] {
+            assert!(!path_is_inside([x, 0.0], &segs), "cw-arc exterior {x} misclassified");
+        }
     }
 }

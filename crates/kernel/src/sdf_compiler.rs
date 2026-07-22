@@ -1224,6 +1224,15 @@ fn emit_sketch_primitive(
 /// the shader's crossing test is the plain half-open endpoint rule with one
 /// closed-form root.
 fn emit_path_record(segments: &[SketchSegment], closed: bool, out: &mut Vec<f32>) {
+    // #392: fuse consecutive same-circle arcs first, so the fragile interior
+    // seam (two arc endpoints of one circle re-derived from different angles,
+    // rounding to opposite sides of a symmetry line) never reaches the GPU/CGAL
+    // even-odd test. This is the SAME normalisation the CPU `path_is_inside`
+    // applies, so every evaluator classifies the same contour. A no-op unless a
+    // co-circular run is present, so ordinary profiles are byte-for-byte
+    // unchanged.
+    let merged = fielddraft_protocol::sketch2d::merge_cocircular_runs(segments);
+    let segments: &[SketchSegment] = merged.as_deref().unwrap_or(segments);
     let records: Vec<SketchSegment> = segments
         .iter()
         .flat_map(fielddraft_protocol::sketch2d::split_y_monotone)
@@ -2749,6 +2758,59 @@ mod tests {
             [7.0, 0.0, 3.0],
         ];
         assert_sdf_match(&bvh, &compiled, &points, 1e-3);
+    }
+
+    /// #392: a circle drawn as two semicircular arcs has an interior seam on
+    /// the y = 0 symmetry line. The co-circular run-merge (applied on both the
+    /// CPU `path_is_inside` and the opcode-lowering `emit_path_record`) must
+    /// keep the analytic BVH field and the compiled tape agreeing in sign for
+    /// query points sitting exactly on that seam plane — the fragile
+    /// double/zero-count case. Also checks the sign is correct (negative
+    /// inside), not merely that the two mirrors agree on a wrong value.
+    #[test]
+    fn extruded_two_arc_circle_seam_plane_signs_match() {
+        use crate::sketch2d::{Sketch2d, Sketch2dPrimitive};
+        use std::f32::consts::PI;
+
+        let sketch = Sketch2d::Prim(Sketch2dPrimitive::Path {
+            segments: vec![
+                SketchSegment::Arc { center: [0.0, 0.0], radius: 5.0, start_angle: 0.0, sweep_angle: PI },
+                SketchSegment::Arc { center: [0.0, 0.0], radius: 5.0, start_angle: PI, sweep_angle: PI },
+            ],
+            closed: true,
+        });
+        let csg = CsgNode::Extrude {
+            wall_subs: None,
+            id: FeatureId::from_u32(1),
+            sketch: Box::new(sketch),
+            half_height: 4.0,
+        };
+        let bvh = BoundedCsg::from_csg(&csg);
+        let compiled = compile_body(&bvh);
+
+        // Points exactly on the sketch seam line y = 0 (interior and exterior),
+        // at a few z inside the extrude.
+        let seam_pts = [
+            [0.0f32, 0.0, 0.0],
+            [3.0, 0.0, 0.0],
+            [-3.0, 0.0, 2.0],
+            [4.5, 0.0, -2.0],
+            [7.0, 0.0, 0.0],  // outside the disk
+            [-8.0, 0.0, 1.0], // outside the disk
+        ];
+        assert_sdf_match(&bvh, &compiled, &seam_pts, 1e-3);
+
+        // Sign must be correct, not just mutually consistent.
+        for &(p, inside) in &[
+            ([0.0f32, 0.0, 0.0], true),
+            ([3.0, 0.0, 0.0], true),
+            ([-4.5, 0.0, 0.0], true),
+            ([7.0, 0.0, 0.0], false),
+            ([-8.0, 0.0, 0.0], false),
+        ] {
+            let v = eval_opcodes(&compiled.opcodes, p);
+            assert_eq!(v < 0.0, inside, "wrong sign at seam point {p:?}: {v}");
+        }
     }
 
     #[test]
