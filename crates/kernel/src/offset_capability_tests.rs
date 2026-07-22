@@ -714,11 +714,13 @@ fn rect_extrude(fid: u32, cx: f32, cy: f32, hx: f32, hy: f32, hh: f32) -> CsgNod
 
 /// Bündig ausgeschnittene Tasche aus NICHT-Box-Carriern (Extrude − Extrude): B's
 /// +x-Seitenwand (x=10) ist koplanar mit A's +x-Seitenwand. Die WAHREN Normalen
-/// sind PARALLEL (beide +x) — deshalb sah weder die Prisma-Synthese (kein Box-
-/// Loop) noch die alte Heuristik (wahre Normalen) diesen Kontakt (#395 §4c
-/// „blinder Fleck"). Effektiv (De-Morgan-Komplement, Difference-Rechtskind trägt
-/// −1) sind sie anti-parallel und koinzident → seit #397 löst der eff-Pfad die
-/// ehrliche conservative-Notiz aus.
+/// sind PARALLEL (beide +x); effektiv (De-Morgan-Komplement, Difference-
+/// Rechtskind trägt −1) sind sie anti-parallel und KOINZIDENT (|O_i+O_j|≈0 — ein
+/// echter submergierter Flush-Cut, KEINE versetzte Dünnwand). Vor #398/P2 sah die
+/// Prisma-Synthese diesen Kontakt nicht (nur Box-Loops) → ehrliche conservative-
+/// Notiz. Seit FC Phase 2 liefert `member_contact_faces` die Extrude-Mantel-
+/// Facetten, der Verschnitt baut das Kontakt-Prisma (Komplement-Dualität) → der
+/// Status steigt auf die ehrliche `tolerance_bounded` (Design §0).
 fn extrude_flush_pocket(delta: f32) -> CsgNode {
     // A: x,y,z ∈ [−10,10]; B: x∈[0,10], y,z∈[−4,4].
     let a = rect_extrude(1, 0.0, 0.0, 10.0, 10.0, 10.0);
@@ -727,22 +729,22 @@ fn extrude_flush_pocket(delta: f32) -> CsgNode {
 }
 
 #[test]
-fn extrude_flush_pocket_dilation_is_conservative_397() {
+fn extrude_flush_pocket_dilation_prism_p2() {
     let delta = 2.0f32;
     let node = extrude_flush_pocket(delta);
     let report = report_for(node);
-    // Vor #397: fälschlich `tolerance_bounded` (zu gute Zusage über dem Phantom-
-    // Fin, den ein Arc-Spline-Kanal nicht flächig korrigiert). Seit #397:
-    // ehrliche conservative-Degradierung.
+    // FC Phase 2 (#398): der koinzidente Extrude-Flush-Cut bekommt jetzt ein
+    // Kontakt-Prisma (Komplement-Dualität) → `tolerance_bounded` statt der
+    // früheren `conservative`-Degradierung (design-gewollter Statusaufstieg §0).
     assert_eq!(
         report.status(),
-        CapabilityStatus::Conservative,
-        "parallel-normale Nicht-Box-Tasche muss seit #397 conservative sein — reasons: {:?}",
+        CapabilityStatus::ToleranceBounded,
+        "koinzidenter Extrude-Flush-Cut muss seit P2 per Prisma tolerance_bounded sein — reasons: {:?}",
         report.reasons()
     );
     assert!(
-        report.reasons().iter().any(|r| r.contains("ohne Prisma-Korrektur")),
-        "erwartete den sign-bewussten Ehrlichkeits-Fallback — {:?}",
+        report.reasons().iter().any(|r| r.contains("Kontakt-Prisma")),
+        "erwartete die Dilations-Prisma-Notiz — {:?}",
         report.reasons()
     );
 

@@ -1385,3 +1385,148 @@ fn fc1_member_faces_revolve_refused() {
     });
     assert!(member_contact_faces(&node).is_none(), "Revolve → keine planaren Facetten");
 }
+
+// ─── FC Phase 2 (#398): Prisma-Verdrahtung für Nicht-Box-Kontakte ────
+//
+// End-to-End über den echten Regen-Pfad-Mirror (`from_csg` →
+// `synthesize_offset_channels_reported`): ein koplanarer Kontakt zwischen einer
+// Box und einem Add-gedockten Extrude (nicht-konvexes Profil) muss jetzt ein
+// Kontakt-Prisma erzeugen (statt `refused`), das den flächigen Phantom-Schlitz
+// füllt; die Capability steigt auf `ToleranceBounded` (Prisma gebaut, Rim ist
+// Box-Scope → δ-schmaler ∂P-Saum bleibt, Design §5/§8).
+
+use crate::offset_capability::{CapabilityReport, CapabilityStatus};
+
+/// Zählt die synthetisierten Kontakt-Prismen (Extrude-Member im 0x0007_0000-
+/// Feature-Id-Band) im korrigierten Baum — je Zusammenhangskomponente eines.
+fn count_contact_prisms(node: &BoundedCsg) -> usize {
+    fn is_prism(id: &FeatureId) -> bool {
+        id.as_u32_if_flat()
+            .map(|v| (v & 0xFFFF_0000) == 0x0007_0000)
+            .unwrap_or(false)
+    }
+    match node {
+        BoundedCsg::Extrude { id, .. } => usize::from(is_prism(id)),
+        BoundedCsg::Union { left, right, .. }
+        | BoundedCsg::Difference { left, right, .. }
+        | BoundedCsg::Intersection { left, right, .. } => {
+            count_contact_prisms(left) + count_contact_prisms(right)
+        }
+        BoundedCsg::Offset { inner, .. }
+        | BoundedCsg::ArcChannel { inner, .. }
+        | BoundedCsg::Shell { inner, .. }
+        | BoundedCsg::InnerWall { inner, .. } => count_contact_prisms(inner),
+        _ => 0,
+    }
+}
+
+fn poly_extrude(id: u32, verts: &[[f64; 2]], half_height: f32, z: f32) -> CsgNode {
+    CsgNode::Transform(
+        Transform { translate: [0.0, 0.0, z], rotation: [0.0, 0.0, 0.0, 1.0], scale: [1.0; 3] },
+        Box::new(CsgNode::Extrude {
+            id: FeatureId::from_u32(id),
+            sketch: Box::new(Sketch2d::Prim(Sketch2dPrimitive::Polygon {
+                vertices: verts.iter().map(|v| [v[0] as f32, v[1] as f32]).collect(),
+            })),
+            half_height,
+            wall_subs: None,
+        }),
+    )
+}
+
+/// (a) Box + Add-gedockter L-Extrude, bündige Kontaktebene z = 0. Der Kontakt P
+/// ist die (nicht-konvexe) L-Fläche, enthalten in der Box-Deckelfläche → EIN
+/// Prisma. Feldprobe: naive lässt den submergierten Phantom-Schlitz stehen
+/// (außen), das Prisma füllt ihn (Material). Capability = ToleranceBounded.
+#[test]
+fn fc2_box_plus_ldocked_extrude_builds_prism() {
+    // L-Profil (CCW), enthalten in der 20×20-Box-Deckelfläche.
+    let l = [[-6.0, -6.0], [6.0, -6.0], [6.0, -2.0], [-2.0, -2.0], [-2.0, 6.0], [-6.0, 6.0]];
+    let box_a = CsgNode::Transform(
+        Transform { translate: [0.0, 0.0, -5.0], rotation: [0.0, 0.0, 0.0, 1.0], scale: [1.0; 3] },
+        Box::new(leaf_box(1, [10.0, 10.0, 5.0])),
+    );
+    let ext_b = poly_extrude(2, &l, 5.0, 5.0);
+    let delta = 2.0f32;
+    let node = CsgNode::Offset(Box::new(CsgNode::Union(Box::new(box_a), Box::new(ext_b))), -delta);
+
+    let naive = BoundedCsg::from_csg(&node);
+    let mut report = CapabilityReport::new();
+    let corrected =
+        synthesize_offset_channels_reported(BoundedCsg::from_csg(&node), 0.01, &mut report);
+
+    assert_eq!(
+        count_contact_prisms(&corrected),
+        1,
+        "L-Kontakt (Box+Extrude) muss GENAU ein Kontakt-Prisma erzeugen (nicht refused)"
+    );
+    assert_eq!(
+        report.status(),
+        CapabilityStatus::ToleranceBounded,
+        "Prisma gebaut, Rim Box-Scope → ToleranceBounded; got {:?} — {:?}",
+        report.status(),
+        report.reasons()
+    );
+
+    // Feldprobe im Phantom-Schlitz (auf z=0, im L-Bodenstreifen): naive positiv
+    // (Schlitz/außen), korrigiert gefüllt (Oberfläche/Material).
+    let slit = [0.0f32, -4.0, 0.0];
+    let f_naive = naive.sdf(slit, EvalMode::Visual);
+    let f_corr = corrected.sdf(slit, EvalMode::Visual);
+    assert!(f_naive > 1.0, "naive Phantom-Schlitz erwartet (außen), got {f_naive}");
+    assert!(f_corr < 0.5, "Prisma füllt den Schlitz (Oberfläche/Material), got {f_corr}");
+    assert!(f_corr < f_naive - 1.0, "Prisma muss den Schlitz signifikant füllen");
+
+    // Klar innen (3 mm unter der Ebene, tief im Box-Body): negativ.
+    assert!(
+        corrected.sdf([0.0, -4.0, -3.0], EvalMode::Visual) < 0.0,
+        "tief im Body → negativ"
+    );
+    // Außerhalb der L (auf z=0, aber im ausgesparten L-Winkel bei (0,0)): außen.
+    assert!(
+        corrected.sdf([0.0, 0.0, 0.0], EvalMode::Visual) > 0.0,
+        "L-Aussparung (0,0) → außen (positiv)"
+    );
+    // Weit weg: außen.
+    assert!(corrected.sdf([20.0, 20.0, 20.0], EvalMode::Visual) > 0.0, "fern → positiv");
+}
+
+/// (b) Zwei koplanar gestapelte „⌐"-Extrudes: ihr Kontakt zerfällt in ZWEI
+/// disjunkte 2×2-Inseln (Spike-Fixture `fc1_clip_two_islands`) → ZWEI Prismen.
+/// Feldprobe in BEIDEN Inseln: der Phantom-Schlitz ist in jeder gefüllt.
+#[test]
+fn fc2_two_component_contact_builds_two_prisms() {
+    let l1 = [[0.0, 0.0], [6.0, 0.0], [6.0, 2.0], [2.0, 2.0], [2.0, 6.0], [0.0, 6.0]];
+    let l2 = [[0.0, 4.0], [4.0, 4.0], [4.0, 0.0], [6.0, 0.0], [6.0, 6.0], [0.0, 6.0]];
+    // B1 unten (Deckel z=0, Normale +z), B2 oben (Boden z=0, Normale −z).
+    let b1 = poly_extrude(1, &l1, 5.0, -5.0);
+    let b2 = poly_extrude(2, &l2, 5.0, 5.0);
+    let delta = 1.0f32;
+    let node = CsgNode::Offset(Box::new(CsgNode::Union(Box::new(b1), Box::new(b2))), -delta);
+
+    let naive = BoundedCsg::from_csg(&node);
+    let mut report = CapabilityReport::new();
+    let corrected =
+        synthesize_offset_channels_reported(BoundedCsg::from_csg(&node), 0.01, &mut report);
+
+    assert_eq!(
+        count_contact_prisms(&corrected),
+        2,
+        "Zwei-Insel-Kontakt muss ZWEI Kontakt-Prismen erzeugen (je Komponente eins)"
+    );
+    assert_eq!(report.status(), CapabilityStatus::ToleranceBounded, "{:?}", report.reasons());
+
+    // Insel-Zentren: l1∩l2 = {x∈[4,6],y∈[0,2]} ∪ {x∈[0,2],y∈[4,6]}.
+    for island in [[5.0f32, 1.0, 0.0], [1.0, 5.0, 0.0]] {
+        let f_naive = naive.sdf(island, EvalMode::Visual);
+        let f_corr = corrected.sdf(island, EvalMode::Visual);
+        assert!(f_naive > 0.5, "naive Phantom-Schlitz in Insel {island:?}, got {f_naive}");
+        assert!(f_corr < 0.5, "Prisma füllt Insel {island:?}, got {f_corr}");
+        assert!(f_corr < f_naive - 0.4, "Insel {island:?} signifikant gefüllt");
+    }
+    // Zwischen den Inseln (z=0, in KEINEM Kontakt-Polygon, z. B. (3,3)): außen.
+    assert!(
+        corrected.sdf([3.0, 3.0, 0.0], EvalMode::Visual) > 0.0,
+        "Lücke zwischen den Inseln → außen"
+    );
+}

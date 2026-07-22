@@ -12,6 +12,9 @@ Format, eine Zeile je Eintrag:
 kind = feat | fix | perf. scope und #tickets sind optional. Folgezeilen, die
 eingerückt sind, gehören zum Text davor (Umbruch erlaubt).
 
+## 0.20.0
+- feat(sdf) #398 #384: Offset/Shell korrigieren koplanare Kontaktflächen jetzt auch zwischen Nicht-Box-Körpern: Bei bündig gedockten Extrudes (auch mit nicht-konvexen Profilen wie L-Formen) wird der Kontakt exakt verschnitten und pro Kontaktinsel ein eigener Korrekturkörper eingesetzt — der bisherige „Phantom-Schlitz“ an solchen Nahtstellen verschwindet, und die Genauigkeits-Angabe steigt von „konservativ“ auf „toleranz-beschränkt“. Kontakte mit Bogen-Konturen werden weiterhin ehrlich als Näherung gemeldet (folgt in einer späteren Phase).
+
 ## 0.19.2
 - fix(sdf) #399: Ein Offset auf einen Body, der per Add-Docking aus mehreren Features besteht, erodierte bisher nur das im Ziel-Query genannte Feature — die angedockten Member blieben in Originalgröße stehen (Loch im Verbindungsbereich), und die Genauigkeits-Angabe behauptete fälschlich „exakt“. Der Offset erfasst jetzt immer den ganzen Body samt aller Member (wie es beim Abzieh-Pfad schon immer der Fall war), läuft regulär durch die Korrektur-Pipeline (Kontakt-Prisma + Rand-Fillet) und meldet die Genauigkeit ehrlich.
 

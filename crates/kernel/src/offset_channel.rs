@@ -1503,17 +1503,14 @@ struct ContactFace {
     o: f64,                // Ebenen-Offset n·x = o
     loop3: Vec<[f64; 3]>,  // Welt-Loop der Fläche (Rechteck-/Profil-Ecken)
     /// Signierter Bulge je Loop-Kante (`loop3[i]→loop3[i+1]`); Länge =
-    /// `loop3.len()`. Box-/Mantel-Rechtecke: alle `0`. (FC Phase 1: gelesen erst
-    /// durch den cavalier-Pfad `clip_faces` der Phase-2-Verdrahtung.)
-    #[allow(dead_code)]
+    /// `loop3.len()`. Box-/Mantel-Rechtecke: alle `0`. Vom cavalier-Pfad
+    /// `clip_faces` gelesen.
     bulges: Vec<f64>,
     depth: f64,            // volle Member-Dicke normal zur Fläche
     /// `true`: konvexes achsen-aligniertes Box-Rechteck → der Verschnitt darf
     /// den metrisch-exakten Sutherland–Hodgman-Fast-Path nehmen. `false`:
     /// beliebige (ggf. nicht-konvexe / bulge-tragende) Extrude-Kontur → der
-    /// Verschnitt MUSS über `cavalier_contours` laufen. (FC Phase 1: gelesen
-    /// erst durch `clip_faces` der Phase-2-Verdrahtung.)
-    #[allow(dead_code)]
+    /// Verschnitt MUSS über `cavalier_contours` laufen.
     box_rect: bool,
 }
 
@@ -1622,9 +1619,8 @@ impl Contour2d {
         let bulges = vec![0.0; verts.len()];
         Self { verts, bulges }
     }
-    /// Trägt die Kontur mindestens einen echten Bogen? (FC Phase 1: nur
-    /// Test-/Phase-2-Konsument.)
-    #[allow(dead_code)]
+    /// Trägt die Kontur mindestens einen echten Bogen? (P2: `build_prism_component`
+    /// verweigert Bogen-Konturen; P3 baut sie als `Path`-Prisma.)
     pub(crate) fn has_arcs(&self) -> bool {
         self.bulges.iter().any(|b| b.abs() > 1e-12)
     }
@@ -1634,9 +1630,6 @@ impl Contour2d {
 /// zusammenhängenden) Kontakts P: äußere Kontur (CCW) samt optionalen Löchern
 /// (aus `cavalier`s `neg_plines`; hier auf CCW normalisiert). Der Box-Box-Fall
 /// ist EINE Komponente ohne Löcher, byte-gleich zum bisherigen Ein-Polygon-P.
-// FC Phase 1: konstruiert (Box-Box-Spiegel + `clip_faces`), gelesen erst durch
-// die Phase-2-Verdrahtung — Felder daher noch dead.
-#[allow(dead_code)]
 #[derive(Clone, Debug)]
 pub(crate) struct ClipComponent {
     pub(crate) outer: Contour2d,
@@ -1645,8 +1638,6 @@ pub(crate) struct ClipComponent {
 
 /// Ein Profil-Segment in Sketch-2D-Koordinaten: Startpunkt + Kantentyp zum
 /// nächsten Segment-Start. Zwischenschritt der Facetten-Extraktion.
-/// (FC Phase 1: nur über die noch unverdrahtete `member_contact_faces` erreicht.)
-#[allow(dead_code)]
 enum ProfileSeg {
     /// Gerade — trägt eine Mantel-Rechteck-Facette.
     Line { start: [f64; 2] },
@@ -1656,7 +1647,6 @@ enum ProfileSeg {
     Bezier { start: [f64; 2] },
 }
 
-#[allow(dead_code)]
 impl ProfileSeg {
     fn start(&self) -> [f64; 2] {
         match self {
@@ -1675,7 +1665,6 @@ impl ProfileSeg {
 /// (Sketch-2D, CCW-orientiert bei den analytisch konvertierten Formen). `None`
 /// für nicht darstellbare Profile (offene Pfade). Booleans im Sketch-Baum
 /// (Innenrand/Abzug) sind Phase-2-Scope und werden vom Aufrufer verweigert.
-#[allow(dead_code)] // FC Phase 1: unverdrahtet (nur Test-/Phase-2-Konsument)
 fn profile_segments(prim: &Sketch2dPrimitive) -> Option<Vec<ProfileSeg>> {
     match prim {
         Sketch2dPrimitive::Rectangle { center, half_extents } => {
@@ -1754,7 +1743,6 @@ fn profile_segments(prim: &Sketch2dPrimitive) -> Option<Vec<ProfileSeg>> {
 ///
 /// Alle Extrude-Facetten tragen `box_rect = false` und zwingen damit den
 /// cavalier-Verschnitt (die Box-Exaktheit bleibt dem SH-Fast-Path vorbehalten).
-#[allow(dead_code)] // FC Phase 1: unverdrahtet (nur Test-/Phase-2-Konsument)
 fn member_contact_faces(node: &BoundedCsg) -> Option<Vec<ContactFace>> {
     match node {
         BoundedCsg::Leaf { primitive: Primitive::Box { .. }, .. } => box_contact_faces(node),
@@ -1769,7 +1757,6 @@ fn member_contact_faces(node: &BoundedCsg) -> Option<Vec<ContactFace>> {
 /// Profile (Booleans im Sketch-Baum = Phase-2-Scope → `None`). Uniforme,
 /// positive Skala verlangt (sonst sind Normalen/Dicken nicht mehr metrisch —
 /// wie bei der Box).
-#[allow(dead_code)] // FC Phase 1: unverdrahtet (nur Test-/Phase-2-Konsument)
 fn extrude_contact_faces(
     sketch: &BoundedSketch2d,
     half_height: f64,
@@ -1898,7 +1885,6 @@ fn extrude_contact_faces(
 /// Projiziert eine [`ContactFace`] in die Ebene `(e1,e2)` und baut daraus eine
 /// CCW-normalisierte `cavalier`-Polyline (Bulge verbatim — die Orientierung ist
 /// bereits im Facetten-Bulge eingerechnet).
-#[allow(dead_code)] // FC Phase 1: unverdrahtet (nur Test-/Phase-2-Konsument)
 fn face_to_pline(
     face: &ContactFace,
     e1: [f64; 3],
@@ -1917,7 +1903,6 @@ fn face_to_pline(
 
 /// Konvertiert eine `cavalier`-Polyline in eine [`Contour2d`] und normalisiert
 /// die Orientierung auf CCW (positive Fläche).
-#[allow(dead_code)] // FC Phase 1: unverdrahtet (nur Test-/Phase-2-Konsument)
 fn contour_from_pline(pl: &cavalier_contours::polyline::Polyline<f64>) -> Contour2d {
     use cavalier_contours::polyline::{PlineSource, PlineSourceMut};
     let mut pl = pl.clone();
@@ -1937,7 +1922,6 @@ fn contour_from_pline(pl: &cavalier_contours::polyline::Polyline<f64>) -> Contou
 
 /// Even-Odd-Punkt-in-Kontur (Sehnen-Näherung der Bögen — genügt der
 /// Loch-Komponenten-Zuordnung; die Kontur-Geometrie selbst bleibt exakt).
-#[allow(dead_code)] // FC Phase 1: unverdrahtet (nur Test-/Phase-2-Konsument)
 fn point_in_contour(c: &Contour2d, p: [f64; 2]) -> bool {
     let n = c.verts.len();
     if n < 3 {
@@ -1966,7 +1950,6 @@ fn point_in_contour(c: &Contour2d, p: [f64; 2]) -> bool {
 /// keine Box-Fläche ist, rechnet `cavalier_contours` den booleschen Verschnitt
 /// und spaltet ihn in Zusammenhangskomponenten (`pos_plines`) und Löcher
 /// (`neg_plines`) auf. Sliver-Komponenten unter `overlap_min²` werden verworfen.
-#[allow(dead_code)] // FC Phase 1: unverdrahtet (nur Test-/Phase-2-Konsument)
 fn clip_faces(
     fa: &ContactFace,
     fb: &ContactFace,
@@ -2236,108 +2219,115 @@ fn synthesize_contact_prisms(
     };
     let delta = ctx.delta as f64;
     let coincide_tol = (0.5 * delta).max(1e-3);
+    // #397-Dünnwand-Abgrenzung: für NICHT-Box-Facetten (Extrude-Cap/-Mantel) die
+    // ENGE Koinzidenz-Toleranz — ein echter submergierter Flush-Kontakt ist bis
+    // auf f32-Rundung koinzident (~1e-4), eine bündig gestapelte Wand der Stärke
+    // w unterscheidet sich um genau w. Die lockere 0.5·δ (Box-Fast-Path,
+    // status-erhaltend) würde jede Extrude-Wand w < 0.5·δ fälschlich als Kontakt
+    // sehen und ein Prisma synthetisieren (Dünnwand-Shell-Regression). Box-Box
+    // bleibt bei 0.5·δ — dessen Kalibrierung ist gegen die Goldens/Statustests
+    // gefroren.
+    let coincide_eff = (0.02 * delta).max(1e-3);
     let overlap_min = (0.5 * delta).max(1e-3);
+    let clip_tol = (1e-3 * delta).max(1e-4);
 
-    // Member-Flächen (nur Boxen). Nicht-Box-Member liefern KEINE Flächen —
-    // beteiligt sich ein solcher an einem koplanaren Kontakt, bleibt es
-    // conservative (erkannt über `coplanar_interface_present` beim Aufrufer;
-    // hier zusätzlich: gibt es einen Nicht-Box-Member, verweigern wir den
-    // Exakt-/Toleranz-Aufstieg konservativ).
-    let mut faces: Vec<Vec<ContactFace>> = Vec::with_capacity(members.len());
-    let mut all_box = true;
-    for m in members.iter() {
-        match box_contact_faces(m.node) {
-            Some(f) => faces.push(f),
-            None => {
-                all_box = false;
-                faces.push(Vec::new());
-            }
-        }
-    }
-    if !all_box {
-        // Ein Kontakt-Partner ist kein Box-Member → P nicht exakt bestimmbar.
-        res.refused = true;
-        return res;
-    }
+    // FC Phase 2 (#398): verallgemeinerte Member-Facetten — Box-Fast-Path
+    // (`box_rect = true`) PLUS Extrude-Cap/-Mantel-Konturen (`box_rect = false`).
+    // Ein Member ohne analytisch-planare Facetten (Revolve/Sweep/Mesh) liefert
+    // `None`; seine Kontakte werden hier nicht erfasst (die Kanal-/Capability-
+    // Ehrlichkeit greift beim Aufrufer). Der Box-Box-Fall läuft über den
+    // metrisch-exakten SH-Fast-Path in `clip_faces` (byte-identisches Tape).
+    let faces: Vec<Option<Vec<ContactFace>>> =
+        members.iter().map(|m| member_contact_faces(m.node)).collect();
 
     for i in 0..members.len() {
         for j in (i + 1)..members.len() {
-            for fa in &faces[i] {
-                for fb in &faces[j] {
-                    // Anti-parallel + koinzident (koplanarer Kontakt).
+            let (Some(fi), Some(fj)) = (&faces[i], &faces[j]) else {
+                continue;
+            };
+            for fa in fi {
+                for fb in fj {
+                    // Anti-parallel + koinzident (koplanarer Kontakt). Box-Box:
+                    // lockere 0.5·δ (status-erhaltend); Nicht-Box: enge 0.02·δ
+                    // (Dünnwand-Abgrenzung, s. o.).
                     if fdot(fa.n, fb.n) > -0.9995 {
                         continue;
                     }
-                    if (fa.o + fb.o).abs() > coincide_tol {
+                    let coincide = if fa.box_rect && fb.box_rect {
+                        coincide_tol
+                    } else {
+                        coincide_eff
+                    };
+                    if (fa.o + fb.o).abs() > coincide {
                         continue;
                     }
                     let n = fnrm(fa.n); // Member i liegt auf −n, Member j auf +n.
                     let (e1, e2, _) = plane_frame(n);
-                    let proj = |w: &[f64; 3]| -> [f64; 2] { [fdot(e1, *w), fdot(e2, *w)] };
-                    let mut la: Vec<[f64; 2]> = fa.loop3.iter().map(proj).collect();
-                    let mut lb: Vec<[f64; 2]> = fb.loop3.iter().map(proj).collect();
-                    // Beide CCW normalisieren (SH verlangt CCW-Clip).
-                    if area2d(&la) < 0.0 {
-                        la.reverse();
-                    }
-                    if area2d(&lb) < 0.0 {
-                        lb.reverse();
-                    }
-                    let clip_tol = (1e-3 * delta).max(1e-4);
-                    let p2d = cleanup_poly(clip_convex(&la, &lb), clip_tol);
-                    if p2d.len() < 3 {
-                        continue; // kein flächiger Verschnitt (Kanten-/Punktkontakt)
-                    }
-                    let ap = area2d(&p2d).abs();
-                    if ap < overlap_min * overlap_min {
-                        continue; // Verschnitt zu klein → kein Prisma
+                    // Der Verschnitt: Box∩Box exakt via SH, sonst cavalier boolean(And)
+                    // mit Aufspaltung in Zusammenhangskomponenten + Löcher (§3).
+                    let comps = clip_faces(fa, fb, e1, e2, clip_tol, overlap_min);
+                    if comps.is_empty() {
+                        continue; // kein flächiger Verschnitt / zu klein
                     }
                     // Prisma bauen: Member i-Dicke auf −n, Member j-Dicke auf +n.
                     let o = fa.o;
+                    // Volle Facetten-Flächen für die S = U-Exaktheitsprüfung.
+                    let proj = |w: &[f64; 3]| -> [f64; 2] { [fdot(e1, *w), fdot(e2, *w)] };
+                    let area_a = area2d(&fa.loop3.iter().map(proj).collect::<Vec<_>>()).abs();
+                    let area_b = area2d(&fb.loop3.iter().map(proj).collect::<Vec<_>>()).abs();
                     // Provenance-Owner (kleinste Feature-Id) fließt in die
                     // synthetische Prisma-Feature-Id ein (0x70000-Band).
                     let _owner = min_feat[i].min(min_feat[j]);
-                    let feat = 0x0007_0000 | (*prism_idx & 0xFFFF);
-                    let Some(prism) = build_prism_member(&p2d, e1, e2, n, o, fa.depth, fb.depth, feat)
-                    else {
-                        continue;
-                    };
-                    // Beweistragende Eigenschaft S ⊆ U stichprobenartig prüfen
-                    // (Design §4: das Prisma darf über keine schräge Nachbar-
-                    // fläche hinausragen). Verletzt → verwerfen, conservative.
-                    let guard = (2e-3 * delta as f32).max(1e-3);
-                    if !prism_subset_of_union(&prism, members, guard) {
-                        res.refused = true;
-                        continue;
-                    }
-                    *prism_idx += 1;
-                    res.prisms.push(prism);
-                    // Diese Member sind koplanar korrigiert — die SSI-Naht-
-                    // Synthese über genau dieses Paar liefert nur die
-                    // degenerierten/spurious Nähte, die #394 überhaupt erst
-                    // zur Verweigerung zwangen (koinzidente/tangentiale
-                    // Carrier). Sie wird für das Paar unterdrückt (Design §3.4:
-                    // der Kontakt gehört dem Prisma + ∂P-Rim, nicht der SSI).
-                    if !res.pairs.contains(&(i, j)) {
-                        res.pairs.push((i, j));
-                    }
+                    for comp in &comps {
+                        let feat = 0x0007_0000 | (*prism_idx & 0xFFFF);
+                        let Some(prism) =
+                            build_prism_component(comp, e1, e2, n, o, fa.depth, fb.depth, feat)
+                        else {
+                            // Bogen-Kontur (P3) → nicht als Polygon baubar → ehrlich
+                            // conservative (der flächige Rest bliebe sonst still).
+                            res.refused = true;
+                            continue;
+                        };
+                        // Beweistragende Eigenschaft S ⊆ U stichprobenartig prüfen
+                        // (Design §4: das Prisma darf über keine schräge Nachbar-
+                        // fläche hinausragen). Verletzt → verwerfen, conservative.
+                        let guard = (2e-3 * delta as f32).max(1e-3);
+                        if !prism_subset_of_union(&prism, members, guard) {
+                            res.refused = true;
+                            continue;
+                        }
+                        *prism_idx += 1;
+                        res.prisms.push(prism);
+                        // Diese Member sind koplanar korrigiert — die SSI-Naht-
+                        // Synthese über genau dieses Paar liefert nur die
+                        // degenerierten/spurious Nähte, die #394 überhaupt erst
+                        // zur Verweigerung zwangen (koinzidente/tangentiale
+                        // Carrier). Sie wird für das Paar unterdrückt (Design §3.4:
+                        // der Kontakt gehört dem Prisma + ∂P-Rim, nicht der SSI).
+                        if !res.pairs.contains(&(i, j)) {
+                            res.pairs.push((i, j));
+                        }
 
-                    // Gleicher Querschnitt (P = beide Flächen) ⇒ S = U ⇒ exakt;
-                    // sonst bleibt der ∂P-Sliver (Stufe 2 / Toleranz).
-                    let area_a = area2d(&la).abs();
-                    let area_b = area2d(&lb).abs();
-                    let exact_pair = (ap - area_a).abs() < 1e-3 * area_a.max(1.0)
-                        && (ap - area_b).abs() < 1e-3 * area_b.max(1.0);
-                    if !exact_pair {
-                        res.exact = false;
-                        // Der verbleibende Fehler ist AUSSCHLIESSLICH der
-                        // konkave B0-Sliver am Kontaktrand ∂P (Kanten
-                        // δ·(1/sin(α/2)−1) ≈ 0.41·δ bei 90°-Stufen, Ecken
-                        // (√3−1)·δ ≈ 0.73·δ). Stufe 2 (∂P-Rim-Kanäle + C4-
-                        // Vertex-Kugeln) schließt ihn — sie ist hier noch OFFEN
-                        // (Rückfall-Klausel #395; ein sauberes Prisma schlägt
-                        // zwei halbe Bausteine): siehe `synthesize_rim_channels`.
-                        res.rim_bound = res.rim_bound.max(0.75 * ctx.delta);
+                        // Gleicher Querschnitt (P = beide Flächen, EINE Komponente,
+                        // kein Loch) ⇒ S = U ⇒ exakt; sonst bleibt der ∂P-Sliver
+                        // (Stufe 2 / Toleranz). Mehr-Komponenten- / Loch- /
+                        // nicht-konvexe Kontakte sind nie exakt (der ∂P-Saum ist
+                        // reicher).
+                        let ap = area2d(&comp.outer.verts).abs();
+                        let exact_pair = comps.len() == 1
+                            && comp.holes.is_empty()
+                            && (ap - area_a).abs() < 1e-3 * area_a.max(1.0)
+                            && (ap - area_b).abs() < 1e-3 * area_b.max(1.0);
+                        if !exact_pair {
+                            res.exact = false;
+                            // Der verbleibende Fehler ist AUSSCHLIESSLICH der
+                            // konkave B0-Sliver am Kontaktrand ∂P (Kanten
+                            // δ·(1/sin(α/2)−1) ≈ 0.41·δ bei 90°-Stufen, Ecken
+                            // (√3−1)·δ ≈ 0.73·δ). Stufe 2 (∂P-Rand-Fillet) schließt
+                            // ihn im Box-Scope; für Nicht-Box-Kontakte bleibt er in
+                            // Phase 2 stehen (Rim = Phase 3, Design §5/§8).
+                            res.rim_bound = res.rim_bound.max(0.75 * ctx.delta);
+                        }
                     }
                 }
             }
@@ -2382,6 +2372,52 @@ fn build_prism_member(
         scale: [1.0; 3],
     };
     Some(BoundedCsg::from_csg_with_carry(&ext, &carry))
+}
+
+/// FC Phase 2 (#398): baut das Kontakt-Prisma EINER [`ClipComponent`] (Design §3).
+/// Der Außenrand wird ein `Extrude(Polygon)`-Member (via [`build_prism_member`]),
+/// jedes Loch als `Difference{ outer, hole }` (identisches `world_transform`, volle
+/// z-Durchdringung) abgezogen. Für eine loch- und bogenfreie Komponente ist das
+/// Ergebnis **byte-identisch** zu [`build_prism_member`] am alten Ein-Polygon-P
+/// (Golden-Gate). Trägt die Kontur echte Bögen (`bulge ≠ 0`), kann das
+/// Polygon-/Path-Tape sie in Phase 2 NICHT verlustfrei führen → ehrliche
+/// Verweigerung (`None`, KEINE Sehnen-Näherung; Bogen-Konturen sind P3-Scope,
+/// Design §2/§8).
+fn build_prism_component(
+    comp: &ClipComponent,
+    e1: [f64; 3],
+    e2: [f64; 3],
+    n: [f64; 3],
+    o: f64,
+    depth_neg: f64,
+    depth_pos: f64,
+    feat: u32,
+) -> Option<BoundedCsg> {
+    if comp.outer.has_arcs() || comp.holes.iter().any(|h| h.has_arcs()) {
+        return None; // Bogen-Kontur → P3 (Tape trägt keine Profil-Bögen)
+    }
+    let outer = build_prism_member(&comp.outer.verts, e1, e2, n, o, depth_neg, depth_pos, feat)?;
+    if comp.holes.is_empty() {
+        return Some(outer);
+    }
+    let mut node = outer;
+    for (hi, hole) in comp.holes.iter().enumerate() {
+        // Loch-Feature-Id in ein eigenes Band (0x0008_0000) heben, damit sie nicht
+        // mit den Außen-Prisma-Feature-Ids (0x0007_0000-Band) kollidiert.
+        let hfeat = 0x0008_0000 | ((feat & 0x0FFF) << 4) | (hi as u32 & 0xF);
+        let Some(hole_prism) =
+            build_prism_member(&hole.verts, e1, e2, n, o, depth_neg, depth_pos, hfeat)
+        else {
+            continue;
+        };
+        let bb = node.aabb(); // Difference schrumpft → linke AABB.
+        node = BoundedCsg::Difference {
+            left: Box::new(node),
+            right: Box::new(hole_prism),
+            aabb: bb,
+        };
+    }
+    Some(node)
 }
 
 /// Stichproben-Prüfung S ⊆ U: an einem groben Gitter über der Prisma-AABB
@@ -2509,15 +2545,19 @@ fn synthesize_contact_prisms_dilation(
     };
     let delta = ctx.delta as f64;
     let coincide_tol = (0.5 * delta).max(1e-3);
+    // #397-Dünnwand-Abgrenzung für Nicht-Box-Facetten (s. Erosions-Pfad): eine
+    // dünne Extrude-Shell-Wand (outer − inner, Deckel um w versetzt) darf keinen
+    // Prisma-Kontakt vortäuschen. Box-Box behält 0.5·δ (Status-Gefrier).
+    let coincide_eff = (0.02 * delta).max(1e-3);
     let overlap_min = (0.5 * delta).max(1e-3);
+    let clip_tol = (1e-3 * delta).max(1e-4);
 
-    // Box-Flächen je Member (nur Boxen liefern welche). Nicht-Box-Member (Zylinder,
-    // Sweep, …) liefern keine — ihre Kontakte werden hier nicht erkannt; die
-    // Kanal-Synthese meldet ggf. selbst conservative. Nur wenn ein sonst gültiger
-    // (koinzident+anti-parallel-effektiver) Box-Kandidat NICHT baubar ist,
-    // verweigern wir explizit.
+    // FC Phase 2 (#398): verallgemeinerte Member-Facetten (Box-Fast-Path +
+    // Extrude-Cap/-Mantel). Nicht-Box-Member ohne planare Facetten liefern `None`
+    // und nehmen an keinem Kontakt teil. Der Box-Box-Fall läuft über den SH-Fast-
+    // Path in `clip_faces` (byte-identisches Tape).
     let faces: Vec<Option<Vec<ContactFace>>> =
-        members.iter().map(|m| box_contact_faces(m.node)).collect();
+        members.iter().map(|m| member_contact_faces(m.node)).collect();
 
     for i in 0..members.len() {
         for j in (i + 1)..members.len() {
@@ -2537,70 +2577,65 @@ fn synthesize_contact_prisms_dilation(
                     }
                     let oi = -si * fa.o;
                     let oj = -sj * fb.o;
-                    if (oi + oj).abs() > coincide_tol {
+                    let coincide = if fa.box_rect && fb.box_rect {
+                        coincide_tol
+                    } else {
+                        coincide_eff
+                    };
+                    if (oi + oj).abs() > coincide {
                         continue;
                     }
                     let n = fnrm(eff_i); // Komplement-Außennormale von Member i (Π-Normale).
                     let (e1, e2, _) = plane_frame(n);
-                    let proj = |w: &[f64; 3]| -> [f64; 2] { [fdot(e1, *w), fdot(e2, *w)] };
-                    let mut la: Vec<[f64; 2]> = fa.loop3.iter().map(proj).collect();
-                    let mut lb: Vec<[f64; 2]> = fb.loop3.iter().map(proj).collect();
-                    if area2d(&la) < 0.0 {
-                        la.reverse();
+                    let comps = clip_faces(fa, fb, e1, e2, clip_tol, overlap_min);
+                    if comps.is_empty() {
+                        continue; // Kanten-/Punktkontakt / zu klein
                     }
-                    if area2d(&lb) < 0.0 {
-                        lb.reverse();
-                    }
-                    let clip_tol = (1e-3 * delta).max(1e-4);
-                    let p2d = cleanup_poly(clip_convex(&la, &lb), clip_tol);
-                    if p2d.len() < 3 {
-                        continue; // Kanten-/Punktkontakt
-                    }
-                    let ap = area2d(&p2d).abs();
-                    if ap < overlap_min * overlap_min {
-                        continue;
-                    }
-                    // Zirkumradius von P (In-Ebenen) → Cap-Marge der ¬box-Seite.
-                    let cen = {
-                        let (mut cx, mut cy) = (0.0f64, 0.0);
-                        for q in &p2d {
-                            cx += q[0];
-                            cy += q[1];
-                        }
-                        [cx / p2d.len() as f64, cy / p2d.len() as f64]
-                    };
-                    let p_circ = p2d
-                        .iter()
-                        .map(|q| ((q[0] - cen[0]).powi(2) + (q[1] - cen[1]).powi(2)).sqrt())
-                        .fold(0.0f64, f64::max);
-                    let margin = p_circ + 1.5 * delta;
-                    // Cap-Tiefen: −n-Seite = Member i, +n-Seite = Member j. Box-
-                    // Komplement (sign=−1) → echte Box-Dicke; ¬box (sign=+1) → Marge.
-                    let depth_neg = if si < 0.0 { fa.depth } else { margin };
-                    let depth_pos = if sj < 0.0 { fb.depth } else { margin };
                     let o = fdot(n, fa.loop3[0]);
-                    let feat = 0x0007_0000 | (*prism_idx & 0xFFFF);
-                    let Some(prism) =
-                        build_prism_member(&p2d, e1, e2, n, o, depth_neg, depth_pos, feat)
-                    else {
-                        continue;
-                    };
-                    // Duale Sicherheit S ⊆ {f_inner ≥ 0}.
-                    let guard = (2e-3 * delta as f32).max(1e-3);
-                    if !prism_outside_inner(&prism, members, guard) {
-                        res.refused = true;
-                        continue;
-                    }
                     let _owner = min_feat[i].min(min_feat[j]);
-                    *prism_idx += 1;
-                    res.prisms.push(prism);
-                    if !res.pairs.contains(&(i, j)) {
-                        res.pairs.push((i, j));
+                    for comp in &comps {
+                        let p2d = &comp.outer.verts;
+                        // Zirkumradius von P (In-Ebenen) → Cap-Marge der ¬box-Seite.
+                        let cen = {
+                            let (mut cx, mut cy) = (0.0f64, 0.0);
+                            for q in p2d {
+                                cx += q[0];
+                                cy += q[1];
+                            }
+                            [cx / p2d.len() as f64, cy / p2d.len() as f64]
+                        };
+                        let p_circ = p2d
+                            .iter()
+                            .map(|q| ((q[0] - cen[0]).powi(2) + (q[1] - cen[1]).powi(2)).sqrt())
+                            .fold(0.0f64, f64::max);
+                        let margin = p_circ + 1.5 * delta;
+                        // Cap-Tiefen: −n-Seite = Member i, +n-Seite = Member j. Box-
+                        // Komplement (sign=−1) → echte Dicke; ¬box (sign=+1) → Marge.
+                        let depth_neg = if si < 0.0 { fa.depth } else { margin };
+                        let depth_pos = if sj < 0.0 { fb.depth } else { margin };
+                        let feat = 0x0007_0000 | (*prism_idx & 0xFFFF);
+                        let Some(prism) =
+                            build_prism_component(comp, e1, e2, n, o, depth_neg, depth_pos, feat)
+                        else {
+                            res.refused = true; // Bogen-Kontur (P3) → ehrlich conservative
+                            continue;
+                        };
+                        // Duale Sicherheit S ⊆ {f_inner ≥ 0}.
+                        let guard = (2e-3 * delta as f32).max(1e-3);
+                        if !prism_outside_inner(&prism, members, guard) {
+                            res.refused = true;
+                            continue;
+                        }
+                        *prism_idx += 1;
+                        res.prisms.push(prism);
+                        if !res.pairs.contains(&(i, j)) {
+                            res.pairs.push((i, j));
+                        }
+                        // Restfehler: konvexer B0-Keil am Kontaktrand ∂P (dual zum
+                        // konkaven Sliver), ehrlich als ≈0.75·δ gemeldet (Rim
+                        // Phase 3 im Nicht-Box-Fall; Box-Scope schließt ihn).
+                        res.rim_bound = res.rim_bound.max(0.75 * ctx.delta);
                     }
-                    // Restfehler: konvexer B0-Keil am Kontaktrand ∂P (dual zum
-                    // konkaven Sliver), ehrlich als ≈0.75·δ gemeldet (Stufe-2-Rim
-                    // offen — dasselbe Argument wie im Erosions-Fall).
-                    res.rim_bound = res.rim_bound.max(0.75 * ctx.delta);
                 }
             }
         }
@@ -2696,13 +2731,16 @@ pub(crate) fn contact_clips(inner: &BoundedCsg, delta_signed: f64) -> Vec<Contac
     let coincide_tol = (0.5 * delta).max(1e-3);
     let overlap_min = (0.5 * delta).max(1e-3);
 
+    // FC Phase 2 (#398): Facetten-Quelle verallgemeinert (Box-Fast-Path +
+    // Extrude-Cap/-Mantel). Der ∂P-RAND-FILLET (dieser Konsument) bleibt aber
+    // BOX-Scope (Design §4/§8): `edge_on_rect` klassifiziert gegen Rechtecke,
+    // der Konkavitäts-/Trieder-Vertrag ist auf Box-Box bewiesen. Nur Box∩Box-
+    // Facetten (`box_rect` bei BEIDEN) erzeugen daher einen Rim-`ContactClip`;
+    // Nicht-Box-Kontakte bekommen ein Prisma (Erosions-/Dilations-Synthese),
+    // aber KEINEN Rim in Phase 2 — die `edge_on_contour`-Verallgemeinerung ist
+    // Phase 3. So bleibt das Rim-Tape für Box-Szenen byte-identisch.
     let faces: Vec<Option<Vec<ContactFace>>> =
-        members.iter().map(|m| box_contact_faces(m.node)).collect();
-    // Erosion (Stufe 1) verweigert komplett, sobald ein Kontakt-Partner keine
-    // Box ist (P nicht exakt bestimmbar) — Spiegel von `synthesize_contact_prisms`.
-    if concave && faces.iter().any(|f| f.is_none()) {
-        return Vec::new();
-    }
+        members.iter().map(|m| member_contact_faces(m.node)).collect();
 
     let mut out = Vec::new();
     let mut idx = 0u32;
@@ -2715,6 +2753,10 @@ pub(crate) fn contact_clips(inner: &BoundedCsg, delta_signed: f64) -> Vec<Contac
             let sj = members[j].sign as f64;
             for fa in fi {
                 for fb in fj {
+                    // Rim bleibt Box-Scope: Nicht-Box-Facetten überspringen.
+                    if !(fa.box_rect && fb.box_rect) {
+                        continue;
+                    }
                     // Detektion: koplanar-antiparallel + koinzident. Erosion an
                     // den WAHREN Normalen, Dilation an den effektiven (Komplement).
                     let n = if concave {
@@ -2748,15 +2790,17 @@ pub(crate) fn contact_clips(inner: &BoundedCsg, delta_signed: f64) -> Vec<Contac
                         lb.reverse();
                     }
                     let clip_tol = (1e-3 * delta).max(1e-4);
-                    let mut p2d = cleanup_poly(clip_convex(&la, &lb), clip_tol);
-                    if p2d.len() < 3 {
+                    // Box∩Box läuft über den SH-Fast-Path in `clip_faces` (metrisch
+                    // exakt, EINE gerade Komponente ohne Loch) — byte-identisch zur
+                    // vormaligen inlinen SH-Klippung. Die `components` fließen als
+                    // FC-Phase-1-Datensatz in den `ContactClip` (P3 liest sie; der
+                    // heutige Box-Rim liest weiter `p2d`).
+                    let components = clip_faces(fa, fb, e1, e2, clip_tol, overlap_min);
+                    let Some(comp0) = components.first() else {
                         continue;
-                    }
-                    if area2d(&p2d) < 0.0 {
-                        p2d.reverse();
-                    }
-                    let ap = area2d(&p2d).abs();
-                    if ap < overlap_min * overlap_min {
+                    };
+                    let p2d = comp0.outer.verts.clone();
+                    if p2d.len() < 3 {
                         continue;
                     }
                     // Cap-Tiefen wie in der Prisma-Synthese (für die duale
@@ -2799,9 +2843,6 @@ pub(crate) fn contact_clips(inner: &BoundedCsg, delta_signed: f64) -> Vec<Contac
                         continue;
                     }
                     idx += 1;
-                    // Box-Box: EINE gerade Komponente ohne Loch (spiegelt p2d).
-                    let components =
-                        vec![ClipComponent { outer: Contour2d::straight(p2d.clone()), holes: Vec::new() }];
                     out.push(ContactClip {
                         n,
                         e1,
@@ -2910,23 +2951,26 @@ fn synthesize_stop(
         // #395 Stufe 1: EROSION über Union — koplanares Kontakt-Prisma als Union-Member.
         // Erkennung über die rohen Carrier-Normalen (union_form: signs≡+1 ⇒ die
         // sign-bewusste Fassung ist hier bit-identisch zur Vor-#397-Heuristik).
-        if coplanar_interface_present(
+        // FC Phase 2 (#398): der Prisma-Pfad wird jetzt AUCH für Extrude-
+        // Kontakte getriggert. Das Box-Gate (`coplanar_interface_present`) sieht
+        // nur analytische Halfspace-Facetten — `branch_halfspace_map` registriert
+        // KEINE Extrude/Revolve-Sweeps. Ein zusätzlicher Nicht-Box-Trigger holt
+        // die Extrude-Cap/-Mantel-Kontakte herein; für reine Box-Szenen ist er
+        // `false`, das Gate bleibt bit-identisch (Golden-Byte-Beweis).
+        let box_gate = coplanar_interface_present(
             &branch_maps,
             &branch_lists,
             &signs_true,
             ctx.delta,
             coincide_true,
-        ) {
+        );
+        let nonbox_present = members
+            .iter()
+            .any(|m| !matches!(m.node, BoundedCsg::Leaf { primitive: Primitive::Box { .. }, .. }));
+        if box_gate || nonbox_present {
             let mut prism_idx = 0u32;
             let contact = synthesize_contact_prisms(&members, &ctx, &min_feat, &mut prism_idx);
-            if contact.prisms.is_empty() {
-                // Nichts gebaut (Nicht-Box / degeneriert) → ehrlich wie #394.
-                report.note_conservative(
-                    "Koplanarer/tangentialer Kontakt zweier Boolescher Kinder ohne exakt \
-                     bestimmbares Kontaktpolygon (Nicht-Box-Member/gekrümmt/degeneriert) — \
-                     Offset in der Kontaktzone nur Näherung (submergierte Fläche, f−δ unbeschränkt).",
-                );
-            } else {
+            if !contact.prisms.is_empty() {
                 prisms = contact.prisms;
                 prism_pairs = contact.pairs;
                 if contact.refused {
@@ -2958,7 +3002,22 @@ fn synthesize_stop(
                     ));
                 }
                 // Exakt (S = U): keine Notiz — der Stopp bleibt `exact`.
+            } else if contact.refused {
+                // Kontakt erkannt, aber nicht (voll) baubar — z. B. Bogen-Kontur
+                // (P3-Scope) oder ein Partner ohne planare Facetten → ehrlich #394.
+                report.note_conservative(
+                    "Koplanarer Kontakt nicht (vollständig) als Prisma fassbar (Bogen-Kontur \
+                     oder Nicht-Box-Partner ohne planare Facetten) — Rest bleibt Näherung f−δ.",
+                );
+            } else if box_gate {
+                // Box-Kontakt erkannt, aber kein Prisma baubar (degeneriert) → #394.
+                report.note_conservative(
+                    "Koplanarer/tangentialer Kontakt zweier Boolescher Kinder ohne exakt \
+                     bestimmbares Kontaktpolygon (Nicht-Box-Member/gekrümmt/degeneriert) — \
+                     Offset in der Kontaktzone nur Näherung (submergierte Fläche, f−δ unbeschränkt).",
+                );
             }
+            // Nicht-Box vorhanden, aber kein echter Kontakt → gutartig, keine Notiz.
         }
     } else {
         // #395 Stufe 3: DILATION über Intersection/Difference — koplanares
