@@ -377,6 +377,11 @@ fn bounded_contains_space_filling(node: &BoundedCsg) -> bool {
         // A general sweep is weave-excluded for the same reason (non-analytic
         // surface; the weaver would refine on it pointlessly).
         BoundedCsg::Sweep { .. } => true,
+        // #385 P2: the loft morph surface is non-analytic (an implicit field
+        // mean of the profiles), so it is weave-excluded like Sweep/Helix for
+        // now — a clean mesh, no B-Rep faces. Retained-cap / traced-wall weaving
+        // is P3 (docs/LOFT-FEATURE-PLAN.md §P3).
+        BoundedCsg::Loft { .. } => true,
         BoundedCsg::Extrude { .. } | BoundedCsg::Revolve { .. } | BoundedCsg::Empty => false,
     }
 }

@@ -29,7 +29,7 @@ use serde::Serialize;
 use fielddraft_protocol::{FeatureId, Primitive, Transform};
 
 use crate::csg::{
-    extrude_contributors, OpenBranchSet,
+    extrude_contributors, sdf_loft, BranchId, LoftProfileField, OpenBranchSet,
     revolve_contributors, sdf_extrude,
     Aabb, BlendMode, Contributors, CsgNode, EvalMode, OpenSurface,
 };
@@ -245,6 +245,19 @@ pub enum BoundedCsg {
         world_transform: Transform,
         aabb: Aabb,
     },
+    /// #385 P2: BVH-wrapped N-profile loft (see [`CsgNode::Loft`]). Each
+    /// section's 2D profile is materialised into a pruned [`BoundedSketch2d`];
+    /// the query is brought into loft-local coordinates via `world_transform`,
+    /// then each section is reframed by its own `map` before the 2D eval, morph
+    /// and z-clamp.
+    Loft {
+        id: FeatureId,
+        sections: Vec<LoftBoundedSection>,
+        half_span: f32,
+        world_transform: Transform,
+        aabb: Aabb,
+        wall_subs: Option<std::sync::Arc<Vec<u32>>>,
+    },
     /// K10.3: spatially-masked blend. BVH mirror of
     /// [`CsgNode::MaskedBlend`]. The AABB is the union of both
     /// children (same conservative bound as SmoothUnion).
@@ -291,6 +304,28 @@ pub enum BoundedCsg {
     },
 }
 
+/// #385 P2: one BVH-wrapped loft cross-section (see [`BoundedCsg::Loft`]).
+/// Mirrors [`crate::csg::LoftNodeSection`] with a pruned [`BoundedSketch2d`],
+/// so the shared [`sdf_loft`] field math runs identically on both eval paths.
+#[derive(Debug, Clone)]
+pub struct LoftBoundedSection {
+    pub sketch: Box<BoundedSketch2d>,
+    pub z: f32,
+    pub map: Transform,
+}
+
+impl LoftProfileField for LoftBoundedSection {
+    fn z(&self) -> f32 {
+        self.z
+    }
+    fn map(&self) -> &Transform {
+        &self.map
+    }
+    fn sdf2(&self, uv: [f32; 2]) -> f32 {
+        self.sketch.sdf(uv)
+    }
+}
+
 impl BoundedCsg {
     /// Fold a logical [`CsgNode`] into a query-optimised BVH. The
     /// result carries precomputed AABBs at every node and has
@@ -331,6 +366,7 @@ impl BoundedCsg {
             | BoundedCsg::Revolve { aabb, .. }
             | BoundedCsg::Helix { aabb, .. }
             | BoundedCsg::Sweep { aabb, .. }
+            | BoundedCsg::Loft { aabb, .. }
             | BoundedCsg::MaskedBlend { aabb, .. }
             | BoundedCsg::Morph { aabb, .. }
             | BoundedCsg::ArcChannel { aabb, .. } => *aabb,
@@ -377,7 +413,8 @@ impl BoundedCsg {
             BoundedCsg::Extrude { .. }
             | BoundedCsg::Revolve { .. }
             | BoundedCsg::Helix { .. }
-            | BoundedCsg::Sweep { .. } => {}
+            | BoundedCsg::Sweep { .. }
+            | BoundedCsg::Loft { .. } => {}
         }
     }
 
@@ -666,6 +703,13 @@ impl BoundedCsg {
                 let da = left.sdf_open(p, mode, open);
                 let db = right.sdf_open(p, mode, open);
                 (1.0 - t) * da + t * db
+            }
+            // #385 P2: loft field in loft-local coordinates (see `sdf_loft`).
+            // Shell-retained loft opening is P3; the plain morph is returned
+            // even under an open-branch set.
+            BoundedCsg::Loft { sections, half_span, world_transform, .. } => {
+                let local = world_to_local(world_transform, p);
+                sdf_loft(sections, *half_span, local) * world_transform.min_scale()
             }
         }
     }
@@ -1054,6 +1098,14 @@ impl BoundedCsg {
                 c.extend(cb);
                 (d, c)
             }
+            // #385 P2: the whole loft is one contributor (its feature id) — the
+            // per-cap / per-wall B-Rep face split is P3 (see the `CsgNode::Loft`
+            // counterpart).
+            BoundedCsg::Loft { id, sections, half_span, world_transform, .. } => {
+                let local = world_to_local(world_transform, p);
+                let d = sdf_loft(sections, *half_span, local) * world_transform.min_scale();
+                (d, Contributors::single(BranchId::from_feature(id)))
+            }
         }
     }
 }
@@ -1415,6 +1467,28 @@ fn build(csg: &CsgNode, carry: &Transform) -> BoundedCsg {
                 aabb,
             }
         }
+        CsgNode::Loft { id, sections, half_span, wall_subs } => {
+            let bounded: Vec<LoftBoundedSection> = sections
+                .iter()
+                .map(|s| LoftBoundedSection {
+                    sketch: Box::new(BoundedSketch2d::from_sketch(&s.sketch)),
+                    z: s.z,
+                    map: s.map,
+                })
+                .collect();
+            let local_aabb = crate::csg::loft_local_aabb(
+                bounded.iter().map(|s| (s.sketch.aabb(), &s.map)),
+                *half_span,
+            );
+            BoundedCsg::Loft {
+                id: id.clone(),
+                sections: bounded,
+                half_span: *half_span,
+                world_transform: *carry,
+                aabb: local_aabb.transformed(carry),
+                wall_subs: wall_subs.clone(),
+            }
+        }
     }
 }
 
@@ -1608,6 +1682,10 @@ fn classify_walk(node: &BoundedCsg, info: &mut HybridInfo, role: &str, warp: Opt
         | BoundedCsg::Offset { .. }
         | BoundedCsg::InnerWall { .. }
         | BoundedCsg::Morph { .. }
+        // #385 P2: the loft morph has no hybrid-raytracer / WebGL parametric
+        // mapping yet, so the conservative SDF march is the source of truth (a
+        // tight parametric hull leaf is a P4 web concern).
+        | BoundedCsg::Loft { .. }
         | BoundedCsg::ArcChannel { .. } => {
             info.is_union_only = false;
             info.needs_full_sdf = true;

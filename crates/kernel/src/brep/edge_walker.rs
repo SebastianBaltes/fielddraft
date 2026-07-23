@@ -641,7 +641,8 @@ fn collect_leaf_nodes<'a>(node: &'a BoundedCsg, out: &mut HashMap<u32, &'a Bound
         | BoundedCsg::Extrude { id, .. }
         | BoundedCsg::Revolve { id, .. }
         | BoundedCsg::Helix { id, .. }
-        | BoundedCsg::Sweep { id, .. } => {
+        | BoundedCsg::Sweep { id, .. }
+        | BoundedCsg::Loft { id, .. } => {
             out.insert(BranchId::from_feature(id).feature_id(), node);
         }
         BoundedCsg::Union { left, right, .. }
@@ -704,6 +705,11 @@ pub(crate) fn collect_non_lipschitz_features(node: &BoundedCsg, out: &mut std::c
         }
         // A general sweep's RMF map is likewise not globally Lipschitz.
         BoundedCsg::Sweep { id, .. } => {
+            out.insert(BranchId::from_feature(id).feature_id());
+        }
+        // #385 P2: the loft morph is not 1-Lipschitz in z (P5 L_z term) — same
+        // exemption as Sweep/Helix, so its group is not walked for seams.
+        BoundedCsg::Loft { id, .. } => {
             out.insert(BranchId::from_feature(id).feature_id());
         }
         BoundedCsg::Union { left, right, .. }
@@ -1499,6 +1505,7 @@ pub(crate) fn body_has_warp(node: &BoundedCsg) -> bool {
         | BoundedCsg::Revolve { .. }
         | BoundedCsg::Helix { .. }
         | BoundedCsg::Sweep { .. }
+        | BoundedCsg::Loft { .. }
         | BoundedCsg::Empty => false,
     }
 }

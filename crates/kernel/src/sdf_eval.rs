@@ -236,24 +236,46 @@ pub(crate) fn sdf_sketch_or_mesh_primitive(primitive: &Primitive, p: [f32; 3]) -
             helix_compose(sketch.sdf(q), ell) * scale
         }
         Primitive::ImportedMesh { mesh } => mesh.sdf(p),
-        // #385 P1 PLACEHOLDER: the CSG lowering turns a loft into a first-profile
-        // extrude before it reaches any tree, so a `CsgNode` never carries a Loft
-        // leaf. This arm only serves the non-tree `sdf_primitive` picking
-        // fallback and mirrors the same placeholder: the first profile extruded
-        // over `[offset_0, offset_last]`. TODO(#385 P2): real z-bracket morph.
+        // #385 P2: the loft z-bracket morph — the non-tree `sdf_primitive`
+        // picking fallback (the real render/mesh path runs the `CsgNode::Loft`
+        // tree). Same math as `crate::csg::sdf_loft`, evaluated in the
+        // primitive-local frame `p − center` (as the extrude/helix fallbacks
+        // do): a partition-of-unity `loft_hat` morph of the reframed profile
+        // fields, hard-clamped in z about mid-span (IQ extrude corners).
         Primitive::Loft { profiles, center, .. } => {
-            let z0 = profiles.first().map(|s| s.offset).unwrap_or(0.0);
-            let z1 = profiles.last().map(|s| s.offset).unwrap_or(0.0);
+            let n = profiles.len();
+            if n < 2 {
+                return match profiles.first() {
+                    Some(s) => {
+                        let local = crate::world_to_local(
+                            &s.frame_map,
+                            [p[0] - center[0], p[1] - center[1], p[2] - center[2]],
+                        );
+                        s.sketch.sdf([local[0], local[1]])
+                    }
+                    None => f32::INFINITY,
+                };
+            }
+            let z0 = profiles[0].offset;
+            let z1 = profiles[n - 1].offset;
+            let mid = (z0 + z1) * 0.5;
             let half = ((z1 - z0) * 0.5).abs();
-            let cz = center[2] + (z0 + z1) * 0.5;
-            let local_xy = [p[0] - center[0], p[1] - center[1]];
-            let d_xy = match profiles.first() {
-                Some(s) => s.sketch.sdf(local_xy),
-                None => return f32::INFINITY,
-            };
-            let d_z = (p[2] - cz).abs() - half;
-            let outside = d_xy.max(0.0).hypot(d_z.max(0.0));
-            let inside = d_xy.max(d_z).min(0.0);
+            let p_local = [p[0] - center[0], p[1] - center[1], p[2] - center[2]];
+            let z = p_local[2];
+            let mut d2 = 0.0f32;
+            for j in 0..n {
+                let zc = profiles[j].offset;
+                let z_prev = if j == 0 { zc } else { profiles[j - 1].offset };
+                let z_next = if j + 1 == n { zc } else { profiles[j + 1].offset };
+                let w = crate::csg::loft_hat(z, z_prev, zc, z_next);
+                if w != 0.0 {
+                    let local = crate::world_to_local(&profiles[j].frame_map, p_local);
+                    d2 += w * profiles[j].sketch.sdf([local[0], local[1]]);
+                }
+            }
+            let wz = (z - mid).abs() - half;
+            let outside = d2.max(0.0).hypot(wz.max(0.0));
+            let inside = d2.max(wz).min(0.0);
             outside + inside
         }
         other => unreachable!(

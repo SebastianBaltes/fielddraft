@@ -533,19 +533,30 @@ impl Aabb {
                     if bb2.is_empty() {
                         continue;
                     }
-                    let slab = Self {
-                        min: [
-                            center[0] + bb2.min[0],
-                            center[1] + bb2.min[1],
+                    // Re-express the profile's own 2D AABB in the shared loft
+                    // frame (own → common via `frame_map` forward), then lift
+                    // onto its offset plane and shift by the stack `center`.
+                    let corners = [
+                        [bb2.min[0], bb2.min[1]],
+                        [bb2.max[0], bb2.min[1]],
+                        [bb2.min[0], bb2.max[1]],
+                        [bb2.max[0], bb2.max[1]],
+                    ];
+                    for c in corners {
+                        let scaled = [
+                            c[0] * s.frame_map.scale[0],
+                            c[1] * s.frame_map.scale[1],
+                            0.0,
+                        ];
+                        let r = quat_rotate(s.frame_map.rotation, scaled);
+                        let pt = [
+                            center[0] + r[0] + s.frame_map.translate[0],
+                            center[1] + r[1] + s.frame_map.translate[1],
                             center[2] + s.offset,
-                        ],
-                        max: [
-                            center[0] + bb2.max[0],
-                            center[1] + bb2.max[1],
-                            center[2] + s.offset,
-                        ],
-                    };
-                    acc = if acc.is_empty() { slab } else { Self::union(acc, slab) };
+                        ];
+                        let p = Self { min: pt, max: pt };
+                        acc = if acc.is_empty() { p } else { Self::union(acc, p) };
+                    }
                 }
                 acc
             }
@@ -893,6 +904,37 @@ pub enum CsgNode {
         /// Total profile twist (radians) about the spine, linear in arclength.
         twist: f32,
     },
+    /// #385 P2: N-profile loft — a z-bracketed 2D cross-section morph
+    /// (`docs/LOFT-FEATURE-PLAN.md` Option a). At loft-local height `z` the 2D
+    /// field is the piecewise-linear (bracket) interpolation of the neighbouring
+    /// profile fields, then hard-clamped in `z` to the profile slab exactly like
+    /// [`CsgNode::Extrude`]'s caps (flat, pickable lids). The `sections` are
+    /// stored with **centred** `z` (the slab spans `[-half_span, +half_span]`,
+    /// so the outer placement puts local `z = 0` at mid-span) and ascending;
+    /// each carries the rigid `map` reframing loft-local `(x, y)` into that
+    /// section's own sketch coordinates. Single [`FeatureId`] contributor, same
+    /// rationale as Extrude/Revolve/Helix/Sweep. `Arc` keeps node clones cheap.
+    Loft {
+        id: FeatureId,
+        sections: std::sync::Arc<Vec<LoftNodeSection>>,
+        /// Half the axial span `(offset_last − offset_0) / 2`; the z-clamp is
+        /// the symmetric `|z| − half_span` (IQ extrude cap composition).
+        half_span: f32,
+        /// See [`CsgNode::Extrude::wall_subs`].
+        wall_subs: Option<std::sync::Arc<Vec<u32>>>,
+    },
+}
+
+/// #385 P2: one lowered loft cross-section (see [`CsgNode::Loft`]). Carries the
+/// 2D profile, its **centred** z-coordinate along the loft axis, and the rigid
+/// map from loft-local `(x, y)` into this section's own sketch coordinates
+/// ([`Transform::world_to_local`] of `map`; a Z-rotation + XY-translation, so
+/// distance-preserving).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LoftNodeSection {
+    pub sketch: Box<Sketch2d>,
+    pub z: f32,
+    pub map: Transform,
 }
 
 /// Hashing-only stand-in serialisation for a leaf's [`Primitive`]: an
@@ -1105,38 +1147,42 @@ impl DecodedFeature {
                     )
                 }
             }
-            // #385 P1 PLACEHOLDER: a loft lowers to a plain extrude of its FIRST
-            // profile spanning the full offset range `[offset_0, offset_last]`.
-            // This is AABB-honest and watertight (it IS a real extrude solid),
-            // so the feature regenerates, meshes and renders without panic while
-            // introducing NO half-baked morph semantics. The real z-bracketed
-            // cross-section morph (`CsgNode::Loft` + opcodes) arrives in P2.
-            // TODO(#385 P2): replace with the dedicated CsgNode::Loft node.
+            // #385 P2: the real z-bracketed cross-section morph. The profiles
+            // are stored with CENTRED z (slab `[-half_span, +half_span]`), so an
+            // inner placement translate of `center + mid·axis` puts loft-local
+            // z = 0 at mid-span (letting the eval / opcode reuse the symmetric
+            // IQ extrude cap composition). Each section keeps its resolver-baked
+            // `frame_map` so the morph reads every profile in the shared frame.
             Primitive::Loft { profiles, center, wall_subs } => {
                 let z0 = profiles.first().map(|s| s.offset).unwrap_or(0.0);
                 let z1 = profiles.last().map(|s| s.offset).unwrap_or(0.0);
-                let half_height = ((z1 - z0) * 0.5).abs();
-                let sketch = profiles
-                    .first()
-                    .map(|s| s.sketch.clone())
-                    .unwrap_or(Sketch2d::Empty);
-                let centered = CsgNode::Extrude {
+                let mid = (z0 + z1) * 0.5;
+                let half_span = ((z1 - z0) * 0.5).abs();
+                let sections: Vec<LoftNodeSection> = profiles
+                    .into_iter()
+                    .map(|s| LoftNodeSection {
+                        sketch: Box::new(s.sketch),
+                        z: s.offset - mid,
+                        map: s.frame_map,
+                    })
+                    .collect();
+                let node = CsgNode::Loft {
                     id: id.clone(),
-                    sketch: Box::new(sketch),
-                    half_height,
+                    sections: std::sync::Arc::new(sections),
+                    half_span,
                     wall_subs: wall_subs.map(std::sync::Arc::new),
                 };
-                let mid_z = center[2] + (z0 + z1) * 0.5;
-                if center[0] == 0.0 && center[1] == 0.0 && mid_z == 0.0 {
-                    centered
+                let tz = center[2] + mid;
+                if center[0] == 0.0 && center[1] == 0.0 && tz == 0.0 {
+                    node
                 } else {
                     CsgNode::Transform(
                         Transform {
-                            translate: [center[0], center[1], mid_z],
+                            translate: [center[0], center[1], tz],
                             rotation: [0.0, 0.0, 0.0, 1.0],
                             scale: [1.0, 1.0, 1.0],
                         },
-                        Box::new(centered),
+                        Box::new(node),
                     )
                 }
             }
@@ -1245,6 +1291,14 @@ impl DecodedFeature {
                         wall_subs: wall_subs.as_deref().cloned(),
                     })
                 }
+                CsgNode::Loft { sections, half_span, wall_subs, .. } => {
+                    return Some(loft_export_primitive(
+                        sections,
+                        *half_span,
+                        [0.0, 0.0, -*half_span],
+                        wall_subs.as_deref().cloned(),
+                    ))
+                }
                 // The extrude/revolve self-centering Transform: restore
                 // its translate as the primitive's `center`.
                 CsgNode::Transform(t, inner) => match &**inner {
@@ -1281,6 +1335,20 @@ impl DecodedFeature {
                             start_angle: *start_angle,
                             wall_subs: wall_subs.as_deref().cloned(),
                         })
+                    }
+                    CsgNode::Loft { sections, half_span, wall_subs, .. } => {
+                        // The inner placement is `center + mid·axis` with
+                        // `mid == half_span`; peel the `mid` back out of z.
+                        return Some(loft_export_primitive(
+                            sections,
+                            *half_span,
+                            [
+                                t.translate[0],
+                                t.translate[1],
+                                t.translate[2] - *half_span,
+                            ],
+                            wall_subs.as_deref().cloned(),
+                        ))
                     }
                     _ => cur = inner,
                 },
@@ -1360,6 +1428,14 @@ impl CsgNode {
             }
             CsgNode::Sweep { sketch, path, twist, .. } => {
                 twist.is_finite() && path.iter().all(finite3) && all_finite(sketch.as_ref())
+            }
+            CsgNode::Loft { sections, half_span, .. } => {
+                half_span.is_finite()
+                    && sections.iter().all(|s| {
+                        s.z.is_finite()
+                            && all_finite(&s.map)
+                            && all_finite(s.sketch.as_ref())
+                    })
             }
         }
     }
@@ -2033,7 +2109,8 @@ impl CsgNode {
             | CsgNode::Extrude { .. }
             | CsgNode::Revolve { .. }
             | CsgNode::Helix { .. }
-            | CsgNode::Sweep { .. } => {}
+            | CsgNode::Sweep { .. }
+            | CsgNode::Loft { .. } => {}
         }
     }
 
@@ -2079,14 +2156,14 @@ impl CsgNode {
                 a.collect_leaf_primitives(out);
                 b.collect_leaf_primitives(out);
             }
-            CsgNode::Extrude { .. } | CsgNode::Revolve { .. } | CsgNode::Helix { .. } | CsgNode::Sweep { .. } | CsgNode::Empty => {}
+            CsgNode::Extrude { .. } | CsgNode::Revolve { .. } | CsgNode::Helix { .. } | CsgNode::Sweep { .. } | CsgNode::Loft { .. } | CsgNode::Empty => {}
         }
     }
 
     /// Collect all leaf FeatureIds reachable from this node.
     fn contains_any_target(&self, target_ids: &[FeatureId]) -> bool {
         match self {
-            CsgNode::Leaf { id, .. } | CsgNode::Extrude { id, .. } | CsgNode::Revolve { id, .. } | CsgNode::Helix { id, .. } | CsgNode::Sweep { id, .. } => {
+            CsgNode::Leaf { id, .. } | CsgNode::Extrude { id, .. } | CsgNode::Revolve { id, .. } | CsgNode::Helix { id, .. } | CsgNode::Sweep { id, .. } | CsgNode::Loft { id, .. } => {
                 let root = id.root_ancestor();
                 target_ids.iter().any(|tid| root == tid)
             }
@@ -2137,6 +2214,7 @@ impl CsgNode {
             | CsgNode::Revolve { .. }
             | CsgNode::Helix { .. }
             | CsgNode::Sweep { .. }
+            | CsgNode::Loft { .. }
             | CsgNode::Empty => false,
         }
     }
@@ -2170,7 +2248,7 @@ impl CsgNode {
                 a.collect_leaf_ids(out);
                 b.collect_leaf_ids(out);
             }
-            CsgNode::Extrude { id, .. } | CsgNode::Revolve { id, .. } | CsgNode::Helix { id, .. } | CsgNode::Sweep { id, .. } => {
+            CsgNode::Extrude { id, .. } | CsgNode::Revolve { id, .. } | CsgNode::Helix { id, .. } | CsgNode::Sweep { id, .. } | CsgNode::Loft { id, .. } => {
                 out.push(id.clone());
             }
             CsgNode::Empty => {}
@@ -2358,6 +2436,12 @@ impl CsgNode {
                 } else {
                     sp.sdf(&bounded, p)
                 }
+            }
+            // #385 P2: loft field (see `sdf_loft`). Shell-retained opening of a
+            // loft is not modelled yet (P3) — the plain morph field is returned
+            // even under an open-branch set.
+            CsgNode::Loft { sections, half_span, .. } => {
+                sdf_loft(sections, *half_span, p)
             }
         }
     }
@@ -2665,6 +2749,14 @@ impl CsgNode {
                     None => (f32::INFINITY, Contributors::empty()),
                 }
             }
+            // #385 P2: the whole loft is one contributor (its feature id). The
+            // per-cap / per-wall B-Rep face split (retained planar lids, traced
+            // side walls) is P3 scope; a single contributor is honest for
+            // picking (selects the loft) and never mislabels a face.
+            CsgNode::Loft { id, sections, half_span, .. } => {
+                let d = sdf_loft(sections, *half_span, p);
+                (d, Contributors::single(BranchId::from_feature(id)))
+            }
         }
     }
 
@@ -2817,8 +2909,54 @@ impl CsgNode {
                     bb
                 }
             }
+            CsgNode::Loft { sections, half_span, .. } => {
+                loft_local_aabb(
+                    sections.iter().map(|s| (s.sketch.aabb(), &s.map)),
+                    *half_span,
+                )
+            }
         }
     }
+}
+
+/// #385 P2: the loft-local AABB — union of every section's 2D profile AABB
+/// re-expressed in the shared loft frame (own → common via
+/// [`Transform::quat_rotate`] on `map`; the maps are rigid so the four mapped
+/// corners re-bound it), spread over the axial slab `[-half_span, +half_span]`.
+/// Conservative: the interpolated cross-section at any interior height lies
+/// within the union of the neighbouring profile extents.
+pub(crate) fn loft_local_aabb<'a>(
+    sections: impl Iterator<Item = (crate::sketch2d::Aabb2, &'a Transform)>,
+    half_span: f32,
+) -> Aabb {
+    let mut acc = Aabb::EMPTY;
+    for (bb2, map) in sections {
+        if bb2.is_empty() {
+            continue;
+        }
+        // own → common: invert the loft-local → own `world_to_local(map, ·)`,
+        // i.e. apply `map` forward (rotate + translate, unit scale).
+        let corners = [
+            [bb2.min[0], bb2.min[1]],
+            [bb2.max[0], bb2.min[1]],
+            [bb2.min[0], bb2.max[1]],
+            [bb2.max[0], bb2.max[1]],
+        ];
+        for c in corners {
+            let scaled = [c[0] * map.scale[0], c[1] * map.scale[1], 0.0];
+            let r = quat_rotate(map.rotation, scaled);
+            let x = r[0] + map.translate[0];
+            let y = r[1] + map.translate[1];
+            acc = Aabb::union(
+                acc,
+                Aabb {
+                    min: [x, y, -half_span],
+                    max: [x, y, half_span],
+                },
+            );
+        }
+    }
+    acc
 }
 
 /// Lift a 2D signed distance `d2` into 3D extrude space along the
@@ -2832,6 +2970,108 @@ pub(crate) fn sdf_extrude(d2: f32, z: f32, half_height: f32) -> f32 {
     let outside = (d2.max(0.0).powi(2) + wz.max(0.0).powi(2)).sqrt();
     let inside = d2.max(wz).min(0.0);
     outside + inside
+}
+
+/// #385 P2: one loft cross-section as seen by the shared field math — its
+/// centred z, its rigid loft-local → own-sketch [`Transform`], and its 2D
+/// distance at a point already mapped into the section's own frame. Implemented
+/// by both the unbounded [`LoftNodeSection`] (naive [`Sketch2d`]) and the BVH
+/// [`crate::bvh::BoundedCsg::Loft`]'s pruned section, so the loft field has a
+/// single source of truth ([`sdf_loft`]) on both eval paths.
+pub(crate) trait LoftProfileField {
+    fn z(&self) -> f32;
+    fn map(&self) -> &Transform;
+    fn sdf2(&self, uv: [f32; 2]) -> f32;
+}
+
+impl LoftProfileField for LoftNodeSection {
+    fn z(&self) -> f32 {
+        self.z
+    }
+    fn map(&self) -> &Transform {
+        &self.map
+    }
+    fn sdf2(&self, uv: [f32; 2]) -> f32 {
+        self.sketch.sdf(uv)
+    }
+}
+
+/// #385 P2: the loft distance field in loft-local (centred) coordinates. The
+/// slab spans `[-half_span, +half_span]`; `sections` are ascending in `z`.
+/// Value = the piecewise-linear (bracket) morph of the section 2D fields
+/// (partition-of-unity [`loft_hat`] weights), hard-clamped in `z` by the
+/// symmetric IQ extrude cap composition ([`sdf_extrude`]). This is the CPU
+/// reference the compiled per-section `OP_LOFT_MORPH` accumulator + trailing
+/// `OP_EXTRUDE` tape mirrors 1:1.
+///
+/// TODO(#385 P5): the morph field is NOT 1-Lipschitz in `z` in general — the
+/// worst-case axial gradient is
+///   `L_z ≈ 1 + max_k( max_lateral_shift(profile_k, profile_{k+1})
+///          / (z_{k+1} − z_k) )`,
+/// i.e. the lateral rate at which the level sets slide between profiles. The
+/// sphere-trace `march_relax` damping that keeps the renderer from tunnelling
+/// (grey wall, #382 mode) is P5 scope, not evaluated here.
+pub(crate) fn sdf_loft<S: LoftProfileField>(sections: &[S], half_span: f32, p: [f32; 3]) -> f32 {
+    let z = p[2];
+    let n = sections.len();
+    let mut d2 = 0.0f32;
+    for j in 0..n {
+        let zc = sections[j].z();
+        let z_prev = if j == 0 { zc } else { sections[j - 1].z() };
+        let z_next = if j + 1 == n { zc } else { sections[j + 1].z() };
+        let w = loft_hat(z, z_prev, zc, z_next);
+        // `w == 0` sections contribute exactly `0 · d = 0` (profiles are
+        // non-empty ⇒ `d` finite), matching the static opcode tape which
+        // evaluates every section unconditionally.
+        if w != 0.0 {
+            let local = world_to_local(sections[j].map(), p);
+            d2 += w * sections[j].sdf2([local[0], local[1]]);
+        }
+    }
+    sdf_extrude(d2, z, half_span)
+}
+
+/// #385 P2: the piecewise-linear "hat" (tent) basis weight of a section at
+/// height `z`. Rises 0→1 over `[z_prev, z_self]`, falls 1→0 over
+/// `[z_self, z_next]`; the first/last section (sentinel `z_prev == z_self` resp.
+/// `z_next == z_self`) saturates to 1 beyond its end, so `z` outside the slab
+/// takes the nearest end profile. Over any interior bracket `[z_k, z_{k+1}]`
+/// the two active weights are exactly `(1 − t)` and `t`, so `Σ_j hat_j ≡ 1`
+/// (partition of unity) and the weighted sum is the bracket lerp.
+pub(crate) fn loft_hat(z: f32, z_prev: f32, z_self: f32, z_next: f32) -> f32 {
+    let rise = if z_self <= z_prev {
+        1.0
+    } else {
+        ((z - z_prev) / (z_self - z_prev)).clamp(0.0, 1.0)
+    };
+    let fall = if z_next <= z_self {
+        1.0
+    } else {
+        ((z_next - z) / (z_next - z_self)).clamp(0.0, 1.0)
+    };
+    rise.min(fall)
+}
+
+/// #385 P2: reconstruct a [`Primitive::Loft`] from a lowered [`CsgNode::Loft`]'s
+/// centred sections (raw `offset = z + half_span`, `mid == half_span`).
+fn loft_export_primitive(
+    sections: &[LoftNodeSection],
+    half_span: f32,
+    center: [f32; 3],
+    wall_subs: Option<Vec<u32>>,
+) -> Primitive {
+    Primitive::Loft {
+        profiles: sections
+            .iter()
+            .map(|s| fielddraft_protocol::LoftSection {
+                sketch: (*s.sketch).clone(),
+                offset: s.z + half_span,
+                frame_map: s.map,
+            })
+            .collect(),
+        center,
+        wall_subs,
+    }
 }
 
 /// Retained-boundary combine for an extrude leaf: the 2D retained field
@@ -3210,10 +3450,10 @@ fn classify_residual_offset(
                 }
             }
         }
-        CsgNode::Helix { .. } | CsgNode::Sweep { .. } => {
+        CsgNode::Helix { .. } | CsgNode::Sweep { .. } | CsgNode::Loft { .. } => {
             if erosion {
                 report.note_conservative(
-                    "Offset über einem Sweep/Helix ist nicht analytisch faltbar — Näherung f−δ.",
+                    "Offset über einem Sweep/Helix/Loft ist nicht analytisch faltbar — Näherung f−δ.",
                 );
             }
         }

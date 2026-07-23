@@ -262,7 +262,10 @@ fn walk(node: &BoundedCsg, out: &mut Vec<Branch>) {
         | BoundedCsg::Extrude { .. }
         | BoundedCsg::Revolve { .. }
         | BoundedCsg::Helix { .. }
-        | BoundedCsg::Sweep { .. } => {
+        | BoundedCsg::Sweep { .. }
+        // #385 P2: loft bodies are weave-excluded (see `body.rs`), so this walk
+        // never actually sees one; `leaf_branches` returns no branches for it.
+        | BoundedCsg::Loft { .. } => {
             out.extend(leaf_branches(node));
         }
 
@@ -382,7 +385,9 @@ fn collect_pairs(node: &BoundedCsg, out: &mut Vec<BranchPair>) -> Vec<Branch> {
         | BoundedCsg::Extrude { .. }
         | BoundedCsg::Revolve { .. }
         | BoundedCsg::Helix { .. }
-        | BoundedCsg::Sweep { .. } => {
+        | BoundedCsg::Sweep { .. }
+        // #385 P2: weave-excluded, never reached in practice (leaf_branches → ∅).
+        | BoundedCsg::Loft { .. } => {
             let bs = leaf_branches(node);
             // Intrinsic pairs: the operand's own candidate edges. All branches of
             // a leaf share its AABB, so the overlap box is simply that AABB.

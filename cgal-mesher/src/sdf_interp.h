@@ -66,6 +66,7 @@ enum : uint32_t {
   OP_WARP_HELIX     = 0x36,
   OP_HELIX_SCALE    = 0x37,
   OP_WARP_SWEEP     = 0x38,
+  OP_LOFT_MORPH     = 0x39,
 
   OP_MASKED_BLEND   = 0x40,
   OP_ARC_CHANNEL    = 0x41,
@@ -830,6 +831,24 @@ inline float eval_opcodes(const float* opcodes, int n, float wx, float wy,
         float t = rd();
         float b = pop_v(), a = pop_v();
         push_v((1.0f - t) * a + t * b);
+        break;
+      }
+      case OP_LOFT_MORPH: {
+        // #385 P2: pop this section's 2D field d_j and the running accumulator,
+        // push acc + hat_j(pt.z)·d_j (centred z). loft_hat: rise 0→1 over
+        // [z_prev,z_self], fall 1→0 over [z_self,z_next]; first/last
+        // (z_prev==z_self / z_next==z_self) saturate to 1. Mirror of
+        // `kernel/src/csg.rs::loft_hat`.
+        float z_prev = rd(), z_self = rd(), z_next = rd();
+        float dj = pop_v();
+        float acc = pop_v();
+        float rise = 1.0f;
+        if (z_self > z_prev)
+          rise = fminf_(fmaxf_((pt[2] - z_prev) / (z_self - z_prev), 0.0f), 1.0f);
+        float fall = 1.0f;
+        if (z_next > z_self)
+          fall = fminf_(fmaxf_((z_next - pt[2]) / (z_next - z_self), 0.0f), 1.0f);
+        push_v(acc + fminf_(rise, fall) * dj);
         break;
       }
       case OP_DISPLACE_VAL: {

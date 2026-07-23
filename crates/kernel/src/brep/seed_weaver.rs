@@ -327,7 +327,9 @@ fn has_non_gyroid_non_lipschitz(node: &BoundedCsg) -> bool {
         BoundedCsg::Leaf { primitive, .. } => {
             primitive.is_non_lipschitz() && !matches!(primitive, Primitive::Gyroid { .. })
         }
-        BoundedCsg::Helix { .. } | BoundedCsg::Sweep { .. } => true,
+        // #385 P2: the loft morph joins Helix/Sweep as non-Lipschitz without an
+        // analytic carrier (P5 L_z term).
+        BoundedCsg::Helix { .. } | BoundedCsg::Sweep { .. } | BoundedCsg::Loft { .. } => true,
         BoundedCsg::Union { left, right, .. }
         | BoundedCsg::Difference { left, right, .. }
         | BoundedCsg::Intersection { left, right, .. }

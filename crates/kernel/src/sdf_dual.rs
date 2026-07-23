@@ -751,6 +751,59 @@ fn eval_bounded_d3_open(
                 + D3::from(gz) * (local[2] - D3::from(local[2].re));
             dual * D3::from(world_transform.min_scale() as f64)
         }
+        // #385 P2: dual mirror of `crate::csg::sdf_loft`. The partition-of-unity
+        // `loft_hat` weights ramp smoothly in z (their dual part IS the axial
+        // gradient contribution — the L_z term P5 damps), with the clamp / min
+        // branch selections frozen on the real part; the reframed per-section 2D
+        // fields flow through `eval_sketch_generic` and `world_to_local_d3`.
+        BoundedCsg::Loft { sections, half_span, world_transform, .. } => {
+            let local = world_to_local_d3(world_transform, p);
+            let n = sections.len();
+            let mut d2 = D3::from(0.0);
+            for j in 0..n {
+                let zc = sections[j].z as f64;
+                let z_prev = if j == 0 { zc } else { sections[j - 1].z as f64 };
+                let z_next = if j + 1 == n { zc } else { sections[j + 1].z as f64 };
+                let w = loft_hat_d3(local[2], z_prev, zc, z_next);
+                if w.re != 0.0 {
+                    let sl = world_to_local_d3(&sections[j].map, local);
+                    let dj = eval_sketch_generic(&sections[j].sketch, [sl[0], sl[1]]);
+                    d2 = d2 + w * dj;
+                }
+            }
+            let d = sdf_extrude_generic(d2, local[2], D3::from(*half_span as f64));
+            d * D3::from(world_transform.min_scale() as f64)
+        }
+    }
+}
+
+/// Dual mirror of [`crate::csg::loft_hat`] (#385 P2). The clamp-to-`[0,1]` and
+/// `min` branch selections are frozen on the real part (piecewise-constant), so
+/// within an active ramp the weight's dual part is the true `∂w/∂z`.
+fn loft_hat_d3(z: D3, z_prev: f64, z_self: f64, z_next: f64) -> D3 {
+    let clamp01 = |v: D3| {
+        if v.re < 0.0 {
+            D3::from(0.0)
+        } else if v.re > 1.0 {
+            D3::from(1.0)
+        } else {
+            v
+        }
+    };
+    let rise = if z_self <= z_prev {
+        D3::from(1.0)
+    } else {
+        clamp01((z - D3::from(z_prev)) / D3::from(z_self - z_prev))
+    };
+    let fall = if z_next <= z_self {
+        D3::from(1.0)
+    } else {
+        clamp01((D3::from(z_next) - z) / D3::from(z_next - z_self))
+    };
+    if rise.re <= fall.re {
+        rise
+    } else {
+        fall
     }
 }
 

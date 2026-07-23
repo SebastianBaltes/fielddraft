@@ -7347,11 +7347,11 @@ fn loft_rejects_two_profiles_on_the_same_plane() {
 }
 
 #[test]
-fn loft_feature_executes_and_lowers_to_p1_placeholder_extrude() {
-    // The `loft` FeatureCall parses, resolves two profiles and pushes a
-    // DecodedFeature that regenerates without panic. P1 lowers it to a
-    // placeholder extrude of the first profile over the full span
-    // (half_depth_z = span/2 = 5), so `export_primitive` reports an Extrude.
+fn loft_feature_executes_and_lowers_to_loft_node() {
+    // #385 P2: the `loft` FeatureCall parses, resolves two profiles and pushes a
+    // DecodedFeature carrying the real `CsgNode::Loft`. `export_primitive`
+    // round-trips it back to a `Primitive::Loft` with both sorted sections at
+    // their original offsets (0 and 10).
     let mut doc = empty_ctx();
     let mut ctx = Context::new(&mut doc);
     insert_rect_sketch(&mut ctx, id(1), 10.0, z_frame(0.0));
@@ -7362,12 +7362,15 @@ fn loft_feature_executes_and_lowers_to_p1_placeholder_extrude() {
     });
     LoftFeature.execute(&mut ctx, &id(3), &def).unwrap();
     assert_eq!(ctx.features.len(), 1);
-    match ctx.features[0].export_primitive().expect("placeholder primitive") {
-        Primitive::Extrude { half_depth_z, sketch, .. } => {
-            assert!((half_depth_z - 5.0).abs() < 1e-4, "span/2 = 5");
-            assert!(sketch.sdf([7.0, 7.0]) < 0.0, "placeholder uses first (big) profile");
+    match ctx.features[0].export_primitive().expect("loft primitive") {
+        Primitive::Loft { profiles, .. } => {
+            assert_eq!(profiles.len(), 2, "two sections round-trip");
+            assert!((profiles[0].offset - 0.0).abs() < 1e-4, "first offset 0");
+            assert!((profiles[1].offset - 10.0).abs() < 1e-4, "second offset 10");
+            assert!(profiles[0].sketch.sdf([7.0, 7.0]) < 0.0, "first = big rect");
+            assert!(profiles[1].sketch.sdf([7.0, 7.0]) > 0.0, "second = small rect");
         }
-        other => panic!("expected P1 placeholder Extrude, got {other:?}"),
+        other => panic!("expected a Loft primitive, got {other:?}"),
     }
 }
 
@@ -7375,4 +7378,143 @@ fn loft_feature_executes_and_lowers_to_p1_placeholder_extrude() {
 fn loft_feature_is_registered_in_with_builtins() {
     let registry = FeatureRegistry::with_builtins();
     assert!(registry.get("loft").is_some());
+}
+
+#[test]
+fn loft_resolver_frame_map_places_laterally_shifted_profile() {
+    // #385 P2: end-to-end check of the resolver-baked `frame_map` SIGN. The top
+    // profile's sketch plane is laterally shifted to x=5; after resolve +
+    // lowering + eval the top cross-section must sit at world x∈[0,10], not
+    // mirrored to x∈[-10,0].
+    let mut doc = empty_ctx();
+    let mut ctx = Context::new(&mut doc);
+    insert_rect_sketch(&mut ctx, id(1), 10.0, z_frame(0.0)); // world x∈[-10,10]
+    insert_rect_sketch(
+        &mut ctx,
+        id(2),
+        5.0,
+        crate::sketch::SketchFrame {
+            origin: [5.0, 0.0, 10.0], // shifted +5 in x
+            x_axis: [1.0, 0.0, 0.0],
+            y_axis: [0.0, 1.0, 0.0],
+            normal: [0.0, 0.0, 1.0],
+        },
+    ); // world x∈[0,10]
+
+    let (sections, frame) = ctx
+        .resolve_loft_profiles(&["qCreatedBy(1)".into(), "qCreatedBy(2)".into()])
+        .expect("laterally shifted profiles resolve");
+    assert_eq!(sections.len(), 2);
+    // Section 0 is on the shared frame: identity map.
+    assert!(sections[0].frame_map.translate[0].abs() < 1e-4);
+
+    let feat = DecodedFeature::from_parts(
+        id(3),
+        "loft".into(),
+        fielddraft_protocol::BoolOp::New,
+        Primitive::Loft { profiles: sections, center: [0.0; 3], wall_subs: None },
+        frame.to_transform(),
+        PrimitiveModifiers::NONE,
+        vec![],
+    );
+    let body = crate::bvh::BoundedCsg::from_csg(&CsgNode::from_decoded(&[feat]));
+    let f = |p: [f32; 3]| body.sdf(p, crate::csg::EvalMode::Logical);
+
+    // Top plane (z=10) is exactly the shifted small rect: inside at its world
+    // centre x=5, OUTSIDE at x=-6 (a mirrored map would flip this).
+    assert!(f([5.0, 0.0, 9.99]) < 0.0, "top centre x=5 inside");
+    assert!(f([-6.0, 0.0, 9.99]) > 0.0, "x=-6 outside the shifted top rect");
+    assert!(f([-6.0, 0.0, 0.01]) < 0.0, "x=-6 inside the big bottom rect");
+    // Mid-height lerp: at (7.5, 0, 5) both profile fields give −2.5.
+    assert!((f([7.5, 0.0, 5.0]) - (-2.5)).abs() < 1e-3, "mid lerp at shifted x");
+}
+
+// ─── #385 P2: loft morph field semantics ─────────────────────────────
+
+fn loft_rect(hx: f32, hy: f32) -> fielddraft_protocol::Sketch2d {
+    fielddraft_protocol::Sketch2d::Prim(fielddraft_protocol::Sketch2dPrimitive::Rectangle {
+        center: [0.0, 0.0],
+        half_extents: [hx, hy],
+    })
+}
+
+fn loft_circle(r: f32) -> fielddraft_protocol::Sketch2d {
+    fielddraft_protocol::Sketch2d::Prim(fielddraft_protocol::Sketch2dPrimitive::Circle {
+        center: [0.0, 0.0],
+        radius: r,
+    })
+}
+
+fn loft_sec(sketch: fielddraft_protocol::Sketch2d, offset: f32) -> fielddraft_protocol::LoftSection {
+    fielddraft_protocol::LoftSection { sketch, offset, frame_map: Transform::IDENTITY }
+}
+
+/// Build the loft body and return its world-space SDF sampler.
+fn loft_body(profiles: Vec<fielddraft_protocol::LoftSection>, center: [f32; 3]) -> crate::bvh::BoundedCsg {
+    let feat = DecodedFeature::from_parts(
+        id(1),
+        "loft".into(),
+        fielddraft_protocol::BoolOp::New,
+        Primitive::Loft { profiles, center, wall_subs: None },
+        Transform::IDENTITY,
+        PrimitiveModifiers::NONE,
+        vec![],
+    );
+    crate::bvh::BoundedCsg::from_csg(&CsgNode::from_decoded(&[feat]))
+}
+
+#[test]
+fn loft_two_profiles_morph_and_cap_z() {
+    // Big rect (half 3×2) at z=0 → small rect (half 1×1) at z=4. center 0.
+    let body = loft_body(
+        vec![loft_sec(loft_rect(3.0, 2.0), 0.0), loft_sec(loft_rect(1.0, 1.0), 4.0)],
+        [0.0; 3],
+    );
+    let f = |p: [f32; 3]| body.sdf(p, crate::csg::EvalMode::Logical);
+
+    // Flat, pickable caps: the profile planes are the loft's zero-set lids.
+    assert!(f([0.0, 0.0, 0.0]).abs() < 1e-4, "bottom cap at z=0");
+    assert!(f([0.0, 0.0, 4.0]).abs() < 1e-4, "top cap at z=4");
+    // Interior of each end profile just inside its cap.
+    assert!(f([2.5, 0.0, 0.01]) < 0.0, "inside big rect near bottom");
+    assert!(f([2.5, 0.0, 3.99]) > 0.0, "x=2.5 is OUTSIDE the small top rect");
+    // Mid-height cross-section is the t=0.5 field lerp: at (0,0,2) the interior
+    // distance is 0.5·(-2) + 0.5·(-1) = -1.5.
+    assert!((f([0.0, 0.0, 2.0]) - (-1.5)).abs() < 1e-3, "mid interior = lerp");
+    // The section shrinks with height: x=2.5 is inside at the bottom but the
+    // morphed mid cross-section has pulled in past it.
+    assert!(f([2.5, 0.0, 2.0]) > 0.0, "mid cross-section shrank past x=2.5");
+    // Hard z-clamp outside the slab: 1 mm below/above the caps → distance ≈ 1.
+    assert!((f([0.0, 0.0, -1.0]) - 1.0).abs() < 1e-3, "1mm below bottom cap");
+    assert!((f([0.0, 0.0, 5.0]) - 1.0).abs() < 1e-3, "1mm above top cap");
+}
+
+#[test]
+fn loft_three_profiles_bracket_selection() {
+    // circle r2 @0 → rect(2×1) @3 → circle r1 @6, center 0. A point in the
+    // LOWER bracket must be the circle↔rect lerp only (the top circle,
+    // hat-weight 0 there, must not leak in).
+    let body = loft_body(
+        vec![
+            loft_sec(loft_circle(2.0), 0.0),
+            loft_sec(loft_rect(2.0, 1.0), 3.0),
+            loft_sec(loft_circle(1.0), 6.0),
+        ],
+        [0.0; 3],
+    );
+    let f = |p: [f32; 3]| body.sdf(p, crate::csg::EvalMode::Logical);
+
+    // At z=1.5 (t=0.5 in the [0,3] bracket) the field is the circle↔rect lerp.
+    // circle r2 sdf(0,0) = -2, rect(2×1) sdf(0,0) = -1 → 0.5·(-2)+0.5·(-1)=-1.5.
+    assert!((f([0.0, 0.0, 1.5]) - (-1.5)).abs() < 1e-3, "lower bracket lerp");
+    // The inner profile planes are exact: at z=3 the field is the middle rect.
+    // rect(2×1) sdf(1.5,0) = 1.5-2 = -0.5 (inside); sdf(2.5,0) = 0.5 (outside).
+    assert!((f([1.5, 0.0, 3.0]) - (-0.5)).abs() < 1e-3, "middle plane = rect (inside)");
+    assert!((f([2.5, 0.0, 3.0]) - 0.5).abs() < 1e-3, "middle plane = rect (outside)");
+    // Upper bracket at z=4.5 (t=0.5 in [3,6]): rect↔circle-r1 lerp at (0,0):
+    // 0.5·(-1) + 0.5·(-1) = -1.
+    assert!((f([0.0, 0.0, 4.5]) - (-1.0)).abs() < 1e-3, "upper bracket lerp");
+    // Caps flat and pickable at both ends.
+    assert!(f([0.0, 0.0, 0.0]).abs() < 1e-4, "bottom cap");
+    assert!(f([0.0, 0.0, 6.0]).abs() < 1e-4, "top cap");
 }

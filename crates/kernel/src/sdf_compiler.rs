@@ -73,6 +73,24 @@ pub const OP_WARP_HELIX: u32     = 0x36; // +7: pitch + hand + turns + y_anchor 
 pub const OP_HELIX_SCALE: u32    = 0x37; // +1: scale (world·lipschitz, baked at emission) — pops d2d, composes with point.z (end caps), multiplies
 pub const OP_WARP_SWEEP: u32     = 0x38; // +4 header (N, closed, total_len, twist) + N×10 (point3, n3, b3, arclen); nearest spine point → point ← (twist-rotated u, v, w_cap); compose via OP_HELIX_SCALE
 
+// #385 P2: loft cross-section morph accumulator. Pops the 2D field `d_j` of one
+// section AND the running accumulator `acc`, pushes `acc + hat_j(point.z)·d_j`
+// (the partition-of-unity tent weight `crate::csg::loft_hat`, centred z). One
+// op per section; a leading `OP_PRIM_CONST 0` seeds `acc`, a trailing
+// `OP_EXTRUDE` applies the symmetric z-clamp — see `emit_node`'s Loft arm.
+//
+// TAPE-LAYOUT DECISION (plan §P2 grants latitude "kleinste ehrliche Kodierung"):
+// the plan sketched a two-opcode `OP_WARP_LOFT` (bracket select) + `OP_LOFT_MORPH`
+// (2D lerp) pair for the N=2 case. For a STATIC tape over N profiles the bracket
+// cannot be selected by a jump, so the honest encoding is a partition-of-unity
+// accumulator: every section's field is weighted by its tent basis and summed —
+// exactly the bracket lerp over any interior segment (Σ hat_j ≡ 1). That folds
+// bracket-selection AND the lerp into this ONE compositor; per-section reframing
+// reuses the existing `OP_WARP_TRANSFORM` (0x34), and the z-clamp reuses
+// `OP_EXTRUDE` (0x2C). So a single new opcode (0x39) suffices; the reserved
+// `OP_WARP_LOFT` (0x3A) is intentionally NOT defined.
+pub const OP_LOFT_MORPH: u32     = 0x39; // +3: z_prev + z_self + z_next — pops d_j + acc, pushes acc + hat·d_j
+
 // Masked blend — pops 2 (da, db), evaluates capsule mask, pushes 1.
 pub const OP_MASKED_BLEND: u32   = 0x40; // +var: n + n×point(3) + mask_r+blend_r+mode+is_diff
 
@@ -256,6 +274,11 @@ pub(crate) fn lipschitz_bound(node: &BoundedCsg) -> f32 {
         | BoundedCsg::Revolve { .. }
         | BoundedCsg::Helix { .. }
         | BoundedCsg::Sweep { .. } => 1.0,
+        // TODO(#385 P5): the loft morph is NOT 1-Lipschitz in z — the true
+        // bound is `L_z ≈ 1 + max_k(max_lateral_shift / Δz_k)` (see `sdf_loft`).
+        // Returning 1.0 here matches the other sketch-lifts and is what the
+        // mesher/weave read; the RENDERER damping (`march_relax`) is P5 scope.
+        BoundedCsg::Loft { .. } => 1.0,
 
         // ── Hard booleans: winner branch ───────────────────────────
         // min/max are sup-norm contractions — the gradient is the winning
@@ -753,6 +776,46 @@ fn emit_node(node: &BoundedCsg, ctx: &mut CompileCtx, open: &crate::csg::OpenBra
             out.push(world_transform.min_scale());
             out.push(op(OP_WARP_POP));
         }
+        BoundedCsg::Loft {
+            sections,
+            half_span,
+            world_transform,
+            ..
+        } => {
+            // Tape layout (see OP_LOFT_MORPH): bring the point into loft-local
+            // coordinates, seed the accumulator with 0, then for each section
+            // reframe into its own sketch plane (OP_WARP_TRANSFORM = the rigid
+            // `map`), evaluate its 2D field, and fold it in with its tent weight
+            // (OP_LOFT_MORPH). Finally the symmetric IQ z-clamp (OP_EXTRUDE,
+            // cap_mask=3 — loft shell-opening is P3, so caps are always
+            // retained) and the world scale. Every section is evaluated
+            // unconditionally, matching the CPU `sdf_loft`.
+            //
+            // Loft shell-retained opening is not modelled in P2, so the wall
+            // subs / open-branch set are ignored here (cap_mask stays 3).
+            out.push(op(OP_WARP_PUSH));
+            emit_warp_transform(world_transform, out);
+            out.push(op(OP_PRIM_CONST));
+            out.push(0.0);
+            let n = sections.len();
+            for (j, s) in sections.iter().enumerate() {
+                let z_prev = if j == 0 { s.z } else { sections[j - 1].z };
+                let z_next = if j + 1 == n { s.z } else { sections[j + 1].z };
+                out.push(op(OP_WARP_PUSH));
+                emit_warp_transform(&s.map, out);
+                emit_sketch(&s.sketch, out, 0, None);
+                out.push(op(OP_WARP_POP));
+                out.push(op(OP_LOFT_MORPH));
+                out.push(z_prev);
+                out.push(s.z);
+                out.push(z_next);
+            }
+            out.push(op(OP_EXTRUDE));
+            out.push(*half_span);
+            out.push(world_transform.min_scale());
+            out.push(3.0); // both caps retained
+            out.push(op(OP_WARP_POP));
+        }
     }
 }
 
@@ -1004,10 +1067,11 @@ fn emit_leaf_primitive(prim: &Primitive, t: &Transform, ctx: &mut CompileCtx) {
             out.push(*depth);
             out.push(*half_height);
         }
-        // #385 P1: Loft (like Extrude/Revolve/Helix) is emitted as a BoundedCsg
-        // node, never a leaf primitive; the placeholder lowering additionally
-        // turns it into an extrude before compilation. This fallback const keeps
-        // the leaf emitter total. TODO(#385 P2): dedicated OP_WARP_LOFT.
+        // #385 P2: Loft (like Extrude/Revolve/Helix/Sweep) is emitted from its
+        // own `BoundedCsg::Loft` arm in `emit_node` (OP_LOFT_MORPH + OP_EXTRUDE),
+        // never as a leaf primitive — `from_parts` lowers `Primitive::Loft` to a
+        // `CsgNode::Loft`, so this leaf fallback is unreachable for it and just
+        // keeps the emitter total well-defined.
         Primitive::Extrude { .. }
         | Primitive::Revolve { .. }
         | Primitive::Helix { .. }
@@ -1585,6 +1649,17 @@ pub fn eval_opcodes_with_volumes(
                 let b = pop_v!();
                 let a = pop_v!();
                 push_v!((1.0 - t) * a + t * b);
+            }
+            OP_LOFT_MORPH => {
+                // #385 P2: pop this section's 2D field `d_j` and the running
+                // accumulator, push `acc + hat_j(point.z)·d_j` (centred z).
+                let z_prev = rd!();
+                let z_self = rd!();
+                let z_next = rd!();
+                let dj = pop_v!();
+                let acc = pop_v!();
+                let w = crate::csg::loft_hat(pt[2], z_prev, z_self, z_next);
+                push_v!(acc + w * dj);
             }
             OP_DISPLACE_VAL => {
                 let depth = rd!();

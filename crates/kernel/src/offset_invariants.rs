@@ -49,6 +49,7 @@ fn kind(node: &CsgNode) -> &'static str {
         CsgNode::Revolve { .. } => "Revolve",
         CsgNode::Helix { .. } => "Helix",
         CsgNode::Sweep { .. } => "Sweep",
+        CsgNode::Loft { .. } => "Loft",
     }
 }
 
@@ -77,7 +78,8 @@ fn children(node: &CsgNode) -> Vec<(&CsgNode, &'static str)> {
         | CsgNode::Extrude { .. }
         | CsgNode::Revolve { .. }
         | CsgNode::Helix { .. }
-        | CsgNode::Sweep { .. } => Vec::new(),
+        | CsgNode::Sweep { .. }
+        | CsgNode::Loft { .. } => Vec::new(),
     }
 }
 

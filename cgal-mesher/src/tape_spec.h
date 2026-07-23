@@ -92,6 +92,7 @@ inline int payload_len(const float* buf, int n, uint32_t tag, int pc) {
     case OP_WARP_REVOLVE: return 0;
     case OP_WARP_HELIX: return 7;
     case OP_HELIX_SCALE: return 1;
+    case OP_LOFT_MORPH: return 3; // #385 P2: z_prev + z_self + z_next
     case OP_WARP_SWEEP: {
       if (pc >= n) return -1;
       int np = (int)buf[pc];
@@ -138,6 +139,7 @@ inline int value_pops(uint32_t tag) {
     case OP_SMOOTH_UNION:
     case OP_SMOOTH_DIFF:
     case OP_MORPH:
+    case OP_LOFT_MORPH: // #385 P2: pops section field d_j + accumulator
     case OP_MASKED_BLEND: return 2;
     case OP_SHELL:
     case OP_ARC_CHANNEL:

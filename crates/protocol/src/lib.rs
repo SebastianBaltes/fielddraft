@@ -403,6 +403,19 @@ pub enum Primitive {
 pub struct LoftSection {
     pub sketch: Sketch2d,
     pub offset: f32,
+    /// #385 P2: the rigid 2D reframing map from the shared loft frame into
+    /// **this** section's own sketch coordinates. Each profile is authored in
+    /// its own in-plane basis, which may be laterally shifted and in-plane
+    /// rotated relative to the first (shared) section's frame even though all
+    /// section-plane normals are co-directional. The morph needs every profile
+    /// field expressed in the *common* frame, so the resolver bakes the
+    /// loft-local → section-own reframing here: [`Transform::world_to_local`]
+    /// of this transform maps a loft-local point into the section's `(u, v)`
+    /// plane (the `z` component rides along unused — the map is a pure
+    /// Z-rotation + XY-translation, hence distance-preserving). The first
+    /// section's map is the identity. See `Context::resolve_loft_profiles`.
+    #[serde(default)]
+    pub frame_map: Transform,
 }
 
 /// One instruction of a [`Primitive::CustomSdf`] expression tape — a

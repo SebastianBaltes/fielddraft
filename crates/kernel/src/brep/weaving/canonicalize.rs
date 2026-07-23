@@ -1195,6 +1195,7 @@ fn collect_blend_specs(node: &BoundedCsg, out: &mut Vec<BlendSeamSpec>) {
         | BoundedCsg::Revolve { .. }
         | BoundedCsg::Helix { .. }
         | BoundedCsg::Sweep { .. }
+        | BoundedCsg::Loft { .. }
         | BoundedCsg::Empty => {}
     }
 }

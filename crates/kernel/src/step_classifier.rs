@@ -226,13 +226,12 @@ fn classify_primitive(p: &Primitive) -> StepSupport {
         Primitive::CustomSdf { .. } => StepSupport::Excluded(
             "user-defined SDF expression not representable in B-Rep".into(),
         ),
-        // #385 P1: a loft lowers to a placeholder extrude before it ever reaches
-        // a leaf classifier, so this arm is effectively unreached in P1. Its
-        // honest STEP class is Hard once P2 gives it a real B-Rep (it caps flat
-        // like an extrude/revolve); track the P1 placeholder as degraded so the
-        // classification does not silently over-promise.
+        // #385 P2: the loft has a real morph SDF but no analytic B-Rep yet (its
+        // walls are non-analytic, weave-excluded like Sweep — cap/wall STEP
+        // export is P3). Classify it degraded so STEP export falls back to the
+        // meshed body instead of silently over-promising an analytic solid.
         Primitive::Loft { .. } => StepSupport::Degraded(
-            vec!["loft (P1) exported as first-profile extrude approximation".into()],
+            vec!["loft: non-analytic morph surface, exported as a mesh (analytic B-Rep is P3)".into()],
         ),
     }
 }

@@ -346,13 +346,6 @@ impl<'a> Context<'a> {
         //    basis and axis normal, with the origin lifted onto the first sorted
         //    section's plane so local Z=0 sits at `profiles[0]`.
         let base_key = with_key[0].2;
-        let sections: Vec<::fielddraft_protocol::LoftSection> = with_key
-            .iter()
-            .map(|(s, _, key)| ::fielddraft_protocol::LoftSection {
-                sketch: s.clone(),
-                offset: key - base_key,
-            })
-            .collect();
         let ref0 = &with_key[0].1; // first sorted section's own frame
         let frame = crate::sketch::SketchFrame {
             origin: ref0.origin,
@@ -360,6 +353,32 @@ impl<'a> Context<'a> {
             y_axis: ref0.y_axis,
             normal: axis,
         };
+        // P2 reframing: `frame` is the shared loft frame (loft-local → world is
+        // `L = frame.to_transform()`). Each section keeps its own 2D basis, so
+        // its field must be re-expressed in the shared frame for the morph. The
+        // per-section map `M_i` is the rigid transform whose `world_to_local`
+        // takes a loft-local point into section `i`'s own `(u, v)` plane:
+        //
+        //   world_to_local(M_i, x) = world_to_local(B_i, to_world(L, x))
+        //
+        // with `B_i = f_i.to_transform()` (section-own → world). Since
+        // `world_to_local(t, ·) == to_world(inverse(t), ·)` for a rigid
+        // transform, this composes to `M_i = inverse(inverse(B_i) ∘ L)`. For
+        // the first sorted section `M_0` is (numerically) the identity.
+        let l = frame.to_transform();
+        let sections: Vec<::fielddraft_protocol::LoftSection> = with_key
+            .iter()
+            .map(|(s, f_i, key)| {
+                let b_i = f_i.to_transform();
+                let frame_map =
+                    crate::inverse(&crate::compose_transforms(&crate::inverse(&b_i), &l));
+                ::fielddraft_protocol::LoftSection {
+                    sketch: s.clone(),
+                    offset: key - base_key,
+                    frame_map,
+                }
+            })
+            .collect();
         Ok((sections, frame))
     }
 

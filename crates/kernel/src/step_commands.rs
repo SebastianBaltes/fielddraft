@@ -162,8 +162,9 @@ fn primitive_command(handle: &str, prim: &Primitive) -> Option<Value> {
         | Primitive::Gyroid { .. }
         | Primitive::ImportedMesh { .. }
         | Primitive::CustomSdf { .. }
-        // #385 P1: no dedicated OCCT loft command yet (P2). The placeholder
-        // lowering emits an extrude instead, so this leaf arm is unreached.
+        // #385 P2: no dedicated OCCT loft command yet — the morph surface is
+        // non-analytic, so STEP export uses the meshed body (analytic loft
+        // export is P3).
         | Primitive::Loft { .. } => None,
     }
 }

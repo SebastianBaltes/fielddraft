@@ -303,6 +303,9 @@ pub(super) fn collect_halfspaces(node: &BoundedCsg, out: &mut BranchSurfaceMap) 
             }
         }
         BoundedCsg::Sweep { .. } => {}
+        // #385 P2: loft caps/walls get no analytic carrier yet (weave-excluded);
+        // retained-cap registration is P3.
+        BoundedCsg::Loft { .. } => {}
         BoundedCsg::Empty => {}
     }
 }
@@ -355,6 +358,7 @@ fn collect_revolve_profile_carriers(
         | BoundedCsg::Extrude { .. }
         | BoundedCsg::Helix { .. }
         | BoundedCsg::Sweep { .. }
+        | BoundedCsg::Loft { .. }
         | BoundedCsg::Empty => {}
     }
 }
@@ -442,7 +446,8 @@ pub(super) fn collect_parity(node: &BoundedCsg, flipped: bool, out: &mut std::co
         | BoundedCsg::Extrude { id, .. }
         | BoundedCsg::Revolve { id, .. }
         | BoundedCsg::Helix { id, .. }
-        | BoundedCsg::Sweep { id, .. } => {
+        | BoundedCsg::Sweep { id, .. }
+        | BoundedCsg::Loft { id, .. } => {
             if flipped {
                 out.insert(id.as_u32_or_root().unwrap_or(0));
             }
@@ -518,7 +523,8 @@ fn wall_sub_tables(node: &BoundedCsg) -> HashMap<u32, std::sync::Arc<Vec<u32>>> 
             | BoundedCsg::Extrude { .. }
             | BoundedCsg::Revolve { .. }
             | BoundedCsg::Helix { .. }
-            | BoundedCsg::Sweep { .. } => {}
+            | BoundedCsg::Sweep { .. }
+            | BoundedCsg::Loft { .. } => {}
         }
     }
     let mut out = HashMap::new();

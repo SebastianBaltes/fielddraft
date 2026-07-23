@@ -50,7 +50,7 @@ import {
   OP_OFFSET_2D, OP_NEG, OP_PRIM_HALFSPACE, OP_PRIM_CUSTOM,
   OP_WARP_PUSH, OP_WARP_POP, OP_WARP_TWIST, OP_WARP_BEND,
   OP_WARP_TRANSFORM, OP_WARP_REVOLVE,
-  OP_WARP_HELIX, OP_HELIX_SCALE, OP_WARP_SWEEP,
+  OP_WARP_HELIX, OP_HELIX_SCALE, OP_WARP_SWEEP, OP_LOFT_MORPH,
   OP_MASKED_BLEND, OP_ARC_CHANNEL, OP_VERTEX_SPHERE, OP_RIM_FILLET, OP_RIM_FILLET_ARC, OP_END,
   worldToLocalFn, halfspaceLocalFn, sdfBoxFn, sdfSphereFn, sdfCylinderFn,
   sdfTorusFn, sdfConeFn, sdfCapsuleFn, sdfHexPrismFn,
@@ -481,6 +481,23 @@ export function buildVmSdfEvalFn(
         const t = rd();
         const b = popV(), a = popV();
         pushV(float(1).sub(t).mul(a).add(t.mul(b)));
+      }).ElseIf(tag.equal(int(OP_LOFT_MORPH)), () => {
+        // #385 P2: pop this section's 2D field d_j and the running accumulator,
+        // push acc + hat_j(pt.z)·d_j (centred z). loft_hat: rise 0→1 over
+        // [zPrev,zSelf], fall 1→0 over [zSelf,zNext]; first/last (zPrev==zSelf /
+        // zNext==zSelf) saturate to 1. Mirror of `csg::loft_hat`.
+        const zPrev = rd(), zSelf = rd(), zNext = rd();
+        const dj = popV();
+        const acc = popV();
+        const rise = float(1).toVar();
+        If(zSelf.greaterThan(zPrev), () => {
+          rise.assign(clamp(ptz.sub(zPrev).div(zSelf.sub(zPrev)), 0, 1));
+        });
+        const fall = float(1).toVar();
+        If(zNext.greaterThan(zSelf), () => {
+          fall.assign(clamp(zNext.sub(ptz).div(zNext.sub(zSelf)), 0, 1));
+        });
+        pushV(acc.add(min(rise, fall).mul(dj)));
       }).ElseIf(tag.equal(int(OP_DISPLACE_VAL)), () => {
         const dpth = rd(), freq = rd();
         const d = popV();

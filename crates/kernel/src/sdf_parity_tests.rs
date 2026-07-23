@@ -59,6 +59,27 @@ fn circle_sketch(cx: f32, cy: f32, r: f32) -> Sketch2d {
     Sketch2d::Prim(Sketch2dPrimitive::Circle { center: [cx, cy], radius: r })
 }
 
+fn rect_sketch(hx: f32, hy: f32) -> Sketch2d {
+    Sketch2d::Prim(Sketch2dPrimitive::Rectangle {
+        center: [0.0, 0.0],
+        half_extents: [hx, hy],
+    })
+}
+
+fn loft_section(sketch: Sketch2d, offset: f32, frame_map: Transform) -> fielddraft_protocol::LoftSection {
+    fielddraft_protocol::LoftSection { sketch, offset, frame_map }
+}
+
+/// A rigid 2D reframing map: in-plane rotation `angle` (rad, about local Z)
+/// plus an XY translation — the shape `resolve_loft_profiles` bakes.
+fn z_rot_shift(angle: f32, xy: [f32; 2]) -> Transform {
+    Transform {
+        translate: [xy[0], xy[1], 0.0],
+        rotation: [0.0, 0.0, (angle * 0.5).sin(), (angle * 0.5).cos()],
+        scale: [1.0, 1.0, 1.0],
+    }
+}
+
 /// Mehrere Parametrisierungen je Variante. Der `match` am Ende ist der
 /// Exhaustivitäts-Wächter: eine neue [`Primitive`]-Variante schlägt hier
 /// als Compile-Fehler auf, bis sie Samples bekommt.
@@ -117,6 +138,29 @@ fn primitive_samples() -> Vec<Primitive> {
             lipschitz: 3.0,
             half_extents: [2.5, 2.5, 2.5],
         },
+        // #385 P2: a 2-profile loft (big rect → small rect) with identity
+        // frame maps — exercises the OP_LOFT_MORPH accumulator + OP_EXTRUDE
+        // z-clamp against the CPU tree and dual eval.
+        Primitive::Loft {
+            profiles: vec![
+                loft_section(rect_sketch(3.0, 2.0), 0.0, Transform::IDENTITY),
+                loft_section(rect_sketch(1.0, 1.0), 4.0, Transform::IDENTITY),
+            ],
+            center: [0.0; 3],
+            wall_subs: None,
+        },
+        // A 3-profile loft (circle → rect → circle) with a middle section that
+        // is laterally shifted AND in-plane rotated (a non-identity `frame_map`)
+        // — exercises per-section reframing parity across all three evaluators.
+        Primitive::Loft {
+            profiles: vec![
+                loft_section(circle_sketch(0.0, 0.0, 2.0), 0.0, Transform::IDENTITY),
+                loft_section(rect_sketch(1.5, 1.0), 3.0, z_rot_shift(0.6, [0.5, -0.4])),
+                loft_section(circle_sketch(0.0, 0.0, 1.5), 6.0, Transform::IDENTITY),
+            ],
+            center: [1.0, 0.0, -0.5],
+            wall_subs: None,
+        },
     ];
     // ── Exhaustivitäts-Wächter (KEIN Wildcard-Arm!) ────────────────────
     for p in &samples {
@@ -135,8 +179,6 @@ fn primitive_samples() -> Vec<Primitive> {
             | Primitive::Gyroid { .. }
             | Primitive::Revolve { .. }
             | Primitive::Helix { .. }
-            // #385 P1: Loft lowers to a placeholder extrude before it reaches a
-            // CSG leaf, so it has no direct leaf-parity sample here (P2 adds one).
             | Primitive::Loft { .. }
             | Primitive::CustomSdf { .. } => {}
         }

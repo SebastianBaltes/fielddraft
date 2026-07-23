@@ -55,6 +55,13 @@ export const OP_WARP_REVOLVE   = 0x35;
 export const OP_WARP_HELIX     = 0x36;
 export const OP_HELIX_SCALE    = 0x37;
 export const OP_WARP_SWEEP     = 0x38;
+// #385 P2: loft cross-section morph accumulator. Payload z_prev(1) z_self(1)
+// z_next(1); pops the section field d_j AND the running accumulator, pushes
+// acc + hat_j(point.z)·d_j (partition-of-unity tent weight, centred z). One op
+// per section; a leading OP_PRIM_CONST 0 seeds the accumulator and a trailing
+// OP_EXTRUDE applies the symmetric z-clamp. Mirror of
+// `kernel/src/sdf_compiler.rs` OP_LOFT_MORPH + `csg::loft_hat`.
+export const OP_LOFT_MORPH     = 0x39;
 
 export const OP_MASKED_BLEND   = 0x40;
 // offset_tree Phase B (#384): Kanal-Korrekturkörper an einem dualen

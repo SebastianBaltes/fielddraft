@@ -3951,7 +3951,8 @@ pub fn synthesize_offset_channels_reported(
         | BoundedCsg::Extrude { .. }
         | BoundedCsg::Revolve { .. }
         | BoundedCsg::Helix { .. }
-        | BoundedCsg::Sweep { .. }) => other,
+        | BoundedCsg::Sweep { .. }
+        | BoundedCsg::Loft { .. }) => other,
     }
 }
 

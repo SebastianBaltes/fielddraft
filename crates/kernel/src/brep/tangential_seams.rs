@@ -129,7 +129,9 @@ fn walk(node: &BoundedCsg, shell: Option<f32>, out: &mut Vec<TangentialSeam>) {
         BoundedCsg::Empty
         | BoundedCsg::Leaf { .. }
         | BoundedCsg::Helix { .. }
-        | BoundedCsg::Sweep { .. } => {}
+        | BoundedCsg::Sweep { .. }
+        // #385 P2: loft profile-plane tangential seams are P3 (weave-excluded).
+        | BoundedCsg::Loft { .. } => {}
     }
 }
 
