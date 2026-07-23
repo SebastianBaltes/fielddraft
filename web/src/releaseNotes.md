@@ -12,6 +12,9 @@ Format, eine Zeile je Eintrag:
 kind = feat | fix | perf. scope und #tickets sind optional. Folgezeilen, die
 eingerückt sind, gehören zum Text davor (Umbruch erlaubt).
 
+## 0.25.0
+- feat(sketch) #385 #376: Loft akzeptiert jetzt auch Profile auf einander zugewandten Ebenen (entgegengesetzte Normalen) — nötig u. a. für importierte Onshape-Lofts.
+
 ## 0.24.0
 - feat(onshape) #385 #376: Onshape-Import übersetzt Loft-Features jetzt in echte FieldDraft-Lofts (Profil-Querschnitte aus sheetProfilesArray); Führungskurven werden in v1 noch ignoriert.
 

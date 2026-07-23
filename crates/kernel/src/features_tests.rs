@@ -7224,6 +7224,29 @@ fn insert_rect_sketch(
     );
 }
 
+/// Like [`insert_rect_sketch`] but with explicit (possibly off-centre) corners
+/// so the profile can be ASYMMETRIC — needed to prove an anti-parallel section
+/// is not mirrored (a symmetric rect would look identical mirrored).
+fn insert_rect_corners_sketch(
+    ctx: &mut Context<'_>,
+    sketch_id: FeatureId,
+    corner_a: [f32; 2],
+    corner_b: [f32; 2],
+    frame: crate::sketch::SketchFrame,
+) {
+    use crate::sketch::SketchData;
+    use fielddraft_solver::SketchState;
+    let calls = vec![::fielddraft_protocol::FeatureCall::new(
+        "sketch_rectangle",
+        id(900),
+        json!({ "corner_a": corner_a, "corner_b": corner_b }),
+    )];
+    ctx.sketches.insert(
+        sketch_id,
+        SketchData { state: SketchState::with_origin(), sub_calls: calls, frame },
+    );
+}
+
 /// A +Z-normal plane frame at height `z`.
 fn z_frame(z: f32) -> crate::sketch::SketchFrame {
     crate::sketch::SketchFrame {
@@ -7310,10 +7333,12 @@ fn loft_rejects_tilted_planes() {
 }
 
 #[test]
-fn loft_rejects_anti_parallel_planes() {
-    // A bottom-face-style profile whose normal points AGAINST the first
-    // profile's: with per-section 2D coords (P1) the shared frame would turn
-    // left-handed and mirror the geometry, so the resolver must refuse it.
+fn loft_accepts_anti_parallel_planes() {
+    // #385 P6b: a bottom-face-style profile whose normal points AGAINST the
+    // first profile's is now SUPPORTED — the P2 per-section `frame_map` carries
+    // a π in-plane rotation that mirrors the section into the shared frame as a
+    // proper rigid transform. The resolver used to reject this (#376 blocker);
+    // it must now resolve to two sorted sections.
     let mut doc = empty_ctx();
     let mut ctx = Context::new(&mut doc);
     insert_rect_sketch(&mut ctx, id(1), 10.0, z_frame(0.0));
@@ -7328,10 +7353,14 @@ fn loft_rejects_anti_parallel_planes() {
             normal: [0.0, 0.0, -1.0],
         },
     );
-    let err = ctx
+    let (sections, frame) = ctx
         .resolve_loft_profiles(&["qCreatedBy(1)".into(), "qCreatedBy(2)".into()])
-        .unwrap_err();
-    assert!(err.contains("opposite direction"), "got: {err}");
+        .expect("anti-parallel profiles now resolve");
+    assert_eq!(sections.len(), 2);
+    assert!((sections[0].offset - 0.0).abs() < 1e-4, "first offset 0");
+    assert!((sections[1].offset - 10.0).abs() < 1e-4, "second offset 10");
+    // Shared frame: normal along +Z (the first resolved profile), right-handed.
+    assert!((frame.normal[2] - 1.0).abs() < 1e-4);
 }
 
 #[test]
@@ -7427,6 +7456,123 @@ fn loft_resolver_frame_map_places_laterally_shifted_profile() {
     assert!(f([-6.0, 0.0, 0.01]) < 0.0, "x=-6 inside the big bottom rect");
     // Mid-height lerp: at (7.5, 0, 5) both profile fields give −2.5.
     assert!((f([7.5, 0.0, 5.0]) - (-2.5)).abs() < 1e-3, "mid lerp at shifted x");
+}
+
+#[test]
+fn loft_anti_parallel_profile_is_not_mirrored() {
+    // #385 P6b — THE mirror regression test. The top profile's plane FACES DOWN
+    // (normal −Z, like the bottom face of a body placed above); its map carries
+    // a π in-plane rotation. Both profiles are the SAME asymmetric footprint in
+    // WORLD space — x∈[0,8] (centre x=4) — so if the anti-parallel section were
+    // mirrored the top cross-section would land at x∈[−8,0] instead. We sample
+    // the SDF at the top to prove it sits on the correct world side.
+    let mut doc = empty_ctx();
+    let mut ctx = Context::new(&mut doc);
+    // Bottom (A): +Z plane at z=0, world footprint x∈[0,8], y∈[−2,2].
+    insert_rect_corners_sketch(&mut ctx, id(1), [0.0, -2.0], [8.0, 2.0], z_frame(0.0));
+    // Top (B): plane at z=10 facing DOWN (normal −Z). x_axis +X, y_axis −Y is
+    // right-handed with −Z. A world point (x, y, 10) maps to own (u, v)=(x, −y),
+    // so the SAME world footprint x∈[0,8] is the SAME sketch rect [0,−2]-[8,2].
+    insert_rect_corners_sketch(
+        &mut ctx,
+        id(2),
+        [0.0, -2.0],
+        [8.0, 2.0],
+        crate::sketch::SketchFrame {
+            origin: [0.0, 0.0, 10.0],
+            x_axis: [1.0, 0.0, 0.0],
+            y_axis: [0.0, -1.0, 0.0],
+            normal: [0.0, 0.0, -1.0],
+        },
+    );
+
+    let (sections, frame) = ctx
+        .resolve_loft_profiles(&["qCreatedBy(1)".into(), "qCreatedBy(2)".into()])
+        .expect("anti-parallel profiles resolve (P6b)");
+    assert_eq!(sections.len(), 2);
+
+    let feat = DecodedFeature::from_parts(
+        id(3),
+        "loft".into(),
+        fielddraft_protocol::BoolOp::New,
+        Primitive::Loft { profiles: sections, center: [0.0; 3], wall_subs: None },
+        frame.to_transform(),
+        PrimitiveModifiers::NONE,
+        vec![],
+    );
+    let body = crate::bvh::BoundedCsg::from_csg(&CsgNode::from_decoded(&[feat]));
+    let f = |p: [f32; 3]| body.sdf(p, crate::csg::EvalMode::Logical);
+
+    // TOP (z≈10, dominated by the anti-parallel section B). Correct: footprint
+    // x∈[0,8], so x=4 is INSIDE and x=−4 is OUTSIDE. A mirror would swap these.
+    assert!(f([4.0, 0.0, 9.99]) < 0.0, "top centre x=4 inside (not mirrored)");
+    assert!(f([-4.0, 0.0, 9.99]) > 0.0, "top x=−4 outside (mirror would flip)");
+    // BOTTOM (z≈0, section A) — same world footprint, same signs.
+    assert!(f([4.0, 0.0, 0.01]) < 0.0, "bottom centre x=4 inside");
+    assert!(f([-4.0, 0.0, 0.01]) > 0.0, "bottom x=−4 outside");
+    // The y-asymmetry sanity: y stays within [−2,2] on both ends.
+    assert!(f([4.0, 3.0, 9.99]) > 0.0, "top y=3 outside the [−2,2] band");
+}
+
+#[test]
+fn loft_anti_parallel_first_sorted_section_is_right_handed() {
+    // #385 P6b — exercises the handedness flip in the shared-frame build: when
+    // the FIRST SORTED section is the anti-parallel one, its own (x, y) basis is
+    // right-handed with −axis, so pairing it with +axis would make the shared
+    // frame left-handed and `basis_to_quat` would emit a garbage rotation. The
+    // resolver flips one in-plane axis to keep it valid; the world geometry must
+    // still land on the correct (un-mirrored) footprint.
+    let mut doc = empty_ctx();
+    let mut ctx = Context::new(&mut doc);
+    // Top (T): +Z plane at z=10, world footprint x∈[0,8]. Query FIRST → defines
+    // the axis (+Z).
+    insert_rect_corners_sketch(&mut ctx, id(1), [0.0, -2.0], [8.0, 2.0], z_frame(10.0));
+    // Bottom (Bo): plane at z=0 facing DOWN (normal −Z), same world footprint.
+    insert_rect_corners_sketch(
+        &mut ctx,
+        id(2),
+        [0.0, -2.0],
+        [8.0, 2.0],
+        crate::sketch::SketchFrame {
+            origin: [0.0, 0.0, 0.0],
+            x_axis: [1.0, 0.0, 0.0],
+            y_axis: [0.0, -1.0, 0.0],
+            normal: [0.0, 0.0, -1.0],
+        },
+    );
+
+    // Query order [T, Bo]: axis = +Z; Bo sorts first (z=0) and is anti-parallel.
+    let (sections, frame) = ctx
+        .resolve_loft_profiles(&["qCreatedBy(1)".into(), "qCreatedBy(2)".into()])
+        .expect("resolves with an anti-parallel first-sorted section");
+    assert_eq!(sections.len(), 2);
+    // Frame must stay right-handed: x_axis × y_axis == normal (+Z).
+    let x = frame.x_axis;
+    let y = frame.y_axis;
+    let cross = [
+        x[1] * y[2] - x[2] * y[1],
+        x[2] * y[0] - x[0] * y[2],
+        x[0] * y[1] - x[1] * y[0],
+    ];
+    let d = cross[0] * frame.normal[0] + cross[1] * frame.normal[1] + cross[2] * frame.normal[2];
+    assert!(d > 0.999, "shared frame stays right-handed (x×y·n={d:.4})");
+
+    let feat = DecodedFeature::from_parts(
+        id(3),
+        "loft".into(),
+        fielddraft_protocol::BoolOp::New,
+        Primitive::Loft { profiles: sections, center: [0.0; 3], wall_subs: None },
+        frame.to_transform(),
+        PrimitiveModifiers::NONE,
+        vec![],
+    );
+    let body = crate::bvh::BoundedCsg::from_csg(&CsgNode::from_decoded(&[feat]));
+    let f = |p: [f32; 3]| body.sdf(p, crate::csg::EvalMode::Logical);
+    // World footprint x∈[0,8] at both ends, not mirrored to x∈[−8,0].
+    assert!(f([4.0, 0.0, 0.01]) < 0.0, "bottom centre inside");
+    assert!(f([-4.0, 0.0, 0.01]) > 0.0, "bottom x=−4 outside");
+    assert!(f([4.0, 0.0, 9.99]) < 0.0, "top centre inside");
+    assert!(f([-4.0, 0.0, 9.99]) > 0.0, "top x=−4 outside");
 }
 
 // ─── #385 P2: loft morph field semantics ─────────────────────────────

@@ -239,19 +239,24 @@ impl<'a> Context<'a> {
     /// routes through [`Context::resolve_extrude_faces`] (single planar face),
     /// everything else through [`crate::sketch::resolve_profile_query`] (sketch
     /// region). The **loft axis** is the first resolved profile's plane normal;
-    /// every other profile plane must be **co-directional** with it
-    /// (`n_i·n_0 > 1 − 1e-6` — anti-parallel normals are rejected too, because
-    /// each section keeps its own 2D coordinates in P1 and an opposing basis
-    /// would mirror the geometry; P2's per-section reframing lifts this).
+    /// every other profile plane must be **parallel** to it — but EITHER
+    /// direction is accepted (`|n_i·n_0| > 1 − 1e-6`). Anti-parallel profiles
+    /// (planes facing each other, opposite normals) are supported since P6b:
+    /// the P2 per-section `frame_map` is a full rigid 3D transform, so an
+    /// anti-parallel section's map carries a π-rotation about an in-plane axis,
+    /// which realises the required 2D mirror as a proper rotation (SDF values
+    /// are isometry-invariant). Only genuinely tilted planes are rejected.
     /// Laterally-shifted planes are allowed. Sections are sorted by their signed
     /// projection onto the axis and their `offset` is expressed relative to the
     /// first (lowest) section, so `profiles[0].offset == 0`.
     ///
     /// The returned frame is the first *sorted* section's own frame (its
-    /// in-plane axes, origin on its plane) with the loft axis as normal — all
-    /// normals are co-directional, so this frame is right-handed and
-    /// `frame.to_transform()` places the section stack correctly with local +Z
-    /// along the loft axis.
+    /// in-plane axes, origin on its plane) with the loft axis as normal. When
+    /// that first section is anti-parallel to the axis its own `(x, y)` basis is
+    /// right-handed with `−axis`, so one in-plane axis is flipped to keep
+    /// `(x, y, axis)` right-handed — otherwise `basis_to_quat` would emit a bad
+    /// rotation. `frame.to_transform()` then places the section stack correctly
+    /// with local +Z along the loft axis.
     ///
     /// Errors (returned as a message the caller wraps in a [`FeatureError`]):
     /// fewer than two resolvable profiles, a profile that resolves to no closed
@@ -293,27 +298,22 @@ impl<'a> Context<'a> {
         }
 
         // 2. Loft axis = first profile's plane normal. Every other plane must be
-        //    CO-DIRECTIONAL (not merely parallel): each section keeps its own 2D
-        //    coordinates in P1, so an anti-parallel basis would make the shared
-        //    frame left-handed and mirror the geometry. Lateral shifts are fine.
+        //    PARALLEL, but either direction is fine: a section whose normal is
+        //    anti-parallel (`n·n0 ≈ −1`) is supported since P6b — its P2
+        //    `frame_map` carries a π in-plane rotation that mirrors the profile
+        //    into the shared frame as a proper rigid transform. Only genuinely
+        //    tilted planes (`|n·n0| < 1 − 1e-6`) are rejected. Lateral shifts
+        //    are fine.
         let axis = resolved[0].1.normal;
         let o0 = resolved[0].1.origin;
         let dot = |a: [f32; 3], b: [f32; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
         for (i, (_, f)) in resolved.iter().enumerate().skip(1) {
             let c = dot(f.normal, axis);
-            if c <= 1.0 - 1e-6 {
-                return Err(if c < -(1.0 - 1e-6) {
-                    format!(
-                        "loft profile #{i} faces the opposite direction of the first \
-                         profile's plane (flipped profiles are not supported yet — pick \
-                         faces/planes whose normals point the same way)"
-                    )
-                } else {
-                    format!(
-                        "loft profile #{i} is not parallel to the first profile's plane \
-                         (tilted profiles are not supported yet; n·n0 = {c:.6})"
-                    )
-                });
+            if c.abs() <= 1.0 - 1e-6 {
+                return Err(format!(
+                    "loft profile #{i} is not parallel to the first profile's plane \
+                     (tilted profiles are not supported yet; n·n0 = {c:.6})"
+                ));
             }
         }
 
@@ -347,10 +347,24 @@ impl<'a> Context<'a> {
         //    section's plane so local Z=0 sits at `profiles[0]`.
         let base_key = with_key[0].2;
         let ref0 = &with_key[0].1; // first sorted section's own frame
+        // The shared frame's normal is `axis` (the offset-measuring direction).
+        // Its in-plane basis is taken from the first sorted section, but if that
+        // section is anti-parallel to `axis` its `(x, y)` pair is right-handed
+        // with `−axis`; pairing it with `+axis` would be left-handed and make
+        // `basis_to_quat` (which assumes a proper rotation) emit garbage. Flip
+        // one in-plane axis in that case to keep `(x, y, axis)` right-handed.
+        // The final world geometry is invariant to this choice (the per-section
+        // `frame_map` = inverse(inverse(B_i) ∘ L) cancels L), so we only need a
+        // valid right-handed L; co-directional lofts keep ref0's basis verbatim.
+        let (fx, fy) = if dot(ref0.normal, axis) > 0.0 {
+            (ref0.x_axis, ref0.y_axis)
+        } else {
+            (ref0.x_axis, [-ref0.y_axis[0], -ref0.y_axis[1], -ref0.y_axis[2]])
+        };
         let frame = crate::sketch::SketchFrame {
             origin: ref0.origin,
-            x_axis: ref0.x_axis,
-            y_axis: ref0.y_axis,
+            x_axis: fx,
+            y_axis: fy,
             normal: axis,
         };
         // P2 reframing: `frame` is the shared loft frame (loft-local → world is

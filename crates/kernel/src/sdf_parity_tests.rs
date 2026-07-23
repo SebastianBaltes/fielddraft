@@ -80,6 +80,19 @@ fn z_rot_shift(angle: f32, xy: [f32; 2]) -> Transform {
     }
 }
 
+/// #385 P6b: the reframing map an ANTI-PARALLEL section bakes — a π rotation
+/// about the in-plane X axis (quaternion `(1, 0, 0, 0)`), which maps the z=0
+/// plane onto itself while flipping V, i.e. a proper-rotation realisation of a
+/// 2D mirror. Plus an XY translation. Exercises the full quaternion path in all
+/// three evaluators (a Z-rotation assumption would silently drop the flip).
+fn pi_flip_x_shift(xy: [f32; 2]) -> Transform {
+    Transform {
+        translate: [xy[0], xy[1], 0.0],
+        rotation: [1.0, 0.0, 0.0, 0.0],
+        scale: [1.0, 1.0, 1.0],
+    }
+}
+
 /// Mehrere Parametrisierungen je Variante. Der `match` am Ende ist der
 /// Exhaustivitäts-Wächter: eine neue [`Primitive`]-Variante schlägt hier
 /// als Compile-Fehler auf, bis sie Samples bekommt.
@@ -159,6 +172,25 @@ fn primitive_samples() -> Vec<Primitive> {
                 loft_section(circle_sketch(0.0, 0.0, 1.5), 6.0, Transform::IDENTITY),
             ],
             center: [1.0, 0.0, -0.5],
+            wall_subs: None,
+        },
+        // #385 P6b: a 2-profile loft whose TOP section is ANTI-PARALLEL — its
+        // `frame_map` is a π in-plane rotation (not a Z-rotation). An asymmetric
+        // (off-centre) rectangle makes the flip observable. Cross-evaluator
+        // parity here proves every path applies the full quaternion.
+        Primitive::Loft {
+            profiles: vec![
+                loft_section(
+                    Sketch2d::Prim(Sketch2dPrimitive::Rectangle {
+                        center: [1.5, 0.5],
+                        half_extents: [2.0, 1.0],
+                    }),
+                    0.0,
+                    Transform::IDENTITY,
+                ),
+                loft_section(rect_sketch(1.0, 0.8), 4.0, pi_flip_x_shift([0.3, -0.2])),
+            ],
+            center: [0.5, -1.0, 0.0],
             wall_subs: None,
         },
     ];

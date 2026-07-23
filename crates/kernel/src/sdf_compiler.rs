@@ -254,8 +254,11 @@ fn max_radius_xy(aabb: &crate::csg::Aabb) -> f32 {
 /// factor); the emitted tape / field value is byte-identical to before.
 fn loft_lipschitz_bound(sections: &[crate::bvh::LoftBoundedSection]) -> f32 {
     // Loft-local 2D AABB of one section: its pruned sketch AABB with the rigid
-    // `map` (Z-rotation + XY-translation, unit scale for a loft) applied
-    // forward — the own → common direction, mirroring `loft_local_aabb`.
+    // `map` (a general in-plane rotation + XY-translation, unit scale for a
+    // loft — for an anti-parallel section the rotation is a π-flip about an
+    // in-plane axis, which still maps z=0 corners to z=0, so the dropped `r[2]`
+    // stays zero) applied forward — the own → common direction, mirroring
+    // `loft_local_aabb`.
     let local_bb = |s: &crate::bvh::LoftBoundedSection| -> Option<([f32; 2], [f32; 2])> {
         let bb2 = s.sketch.aabb();
         if bb2.is_empty() {
