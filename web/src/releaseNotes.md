@@ -12,6 +12,9 @@ Format, eine Zeile je Eintrag:
 kind = feat | fix | perf. scope und #tickets sind optional. Folgezeilen, die
 eingerückt sind, gehören zum Text davor (Umbruch erlaubt).
 
+## 0.27.2
+- fix(sdf) #405: „Round All“ wirkt jetzt wirklich — der Radius aus dem Dialog wurde seit Einführung des Features nie geparst, das Feature blieb dadurch still folgenlos. Jetzt rundet es alle harten Boolean-Kanten des Dokuments (Radius 0 = aus).
+
 ## 0.27.1
 - fix(ui) #361: Das Admin-Modell-Dropdown im Assistent-Dialog sitzt jetzt in einer eigenen Zeile unter Titel und Schließen-Button statt eingequetscht daneben.
 

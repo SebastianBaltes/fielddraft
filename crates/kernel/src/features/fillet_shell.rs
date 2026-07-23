@@ -154,9 +154,12 @@ fn build_fillet_cutter(
 #[derive(FeatureSchema)]
 #[schema(type = "round_all")]
 pub struct RoundAllDef {
-    /// Round radius applied to every hard Boolean junction.
-    #[param(default = 2.0)]
-    pub radius: f32,
+    /// Round radius applied to every hard Boolean junction. A `Length` like
+    /// every other physical dimension — `add_round_all` has written the
+    /// `{value, unit}` form since its introduction (890710f2), so an `f32`
+    /// here made every UI-created round_all fail parsing (#405).
+    #[param(default = ::fielddraft_protocol::Length::mm(2.0))]
+    pub radius: ::fielddraft_protocol::Length,
 }
 
 pub struct RoundAllFeature;
@@ -177,15 +180,16 @@ impl FeatureKind for RoundAllFeature {
         def: &Value,
     ) -> Result<(), FeatureError> {
         let d = RoundAllDef::parse(def)?;
-        if d.radius < 0.0 {
+        let radius = d.radius.to_mm();
+        if radius < 0.0 {
             return Err(FeatureError::InvalidParameter {
                 feature: RoundAllDef::TYPE_NAME,
                 name: "radius",
-                message: format!("must be >= 0, got {}", d.radius),
+                message: format!("must be >= 0, got {radius}"),
             });
         }
         // Last `round_all` in the timeline wins (a single global radius).
-        ctx.global_round = if d.radius > 0.0 { Some(d.radius) } else { None };
+        ctx.global_round = if radius > 0.0 { Some(radius) } else { None };
         Ok(())
     }
 }

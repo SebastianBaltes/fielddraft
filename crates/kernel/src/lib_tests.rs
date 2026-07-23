@@ -4073,3 +4073,46 @@ fn thicken_planar_face_via_kernel_api() {
     // the plain L2 corner distance, no rolling-ball rounding (#402).
     assert!(d(-52.0, 52.0, 0.0) > 1.9, "sharp rim, got {}", d(-52.0, 52.0, 0.0));
 }
+
+/// #405: `round_all` end-to-end through the real API. `add_round_all` writes
+/// the radius in `Length` wire form (`{value, unit}`); with the old `f32`
+/// schema every UI-created round_all failed parsing and silently did nothing
+/// (only a low-level ctx test existed — this pins the full chain instead).
+#[test]
+fn round_all_via_kernel_api_rounds_the_junction() {
+    let mut k = Kernel::new();
+    let base = k.add_feature_call("box", r#"{"half_extents":[50.0,50.0,50.0]}"#).unwrap();
+    k.add_feature_call(
+        "box",
+        &format!(
+            r#"{{"half_extents":[20.0,20.0,20.0],"center":[0.0,0.0,50.0],"op":"add","targets":"qCreatedBy({base})"}}"#
+        ),
+    )
+    .unwrap();
+    // Concave junction ring on the top face where the small box emerges.
+    // Outside the crease both hard distances are 1.0 at this probe.
+    let p = |k: &mut Kernel| k.body_sdf_eval(0, 21.0, 0.0, 51.0);
+    let hard = p(&mut k);
+    assert!((hard - 1.0).abs() < 1e-3, "hard crease distance, got {hard}");
+
+    // Exactly the JSON `add_round_all` writes — the #405 repro.
+    let fid = k
+        .add_feature_call("round_all", r#"{"radius":{"value":6.0,"unit":"mm"}}"#)
+        .unwrap();
+    assert_eq!(
+        k.feature_errors.get(&fielddraft_protocol::FeatureId::from_u32(fid)),
+        None,
+        "round_all must parse Length form"
+    );
+    let rounded = p(&mut k);
+    assert!(
+        rounded < hard - 0.1,
+        "smooth union fills the crease: {rounded} !< {hard} - 0.1"
+    );
+
+    // Editing the radius must re-round (the v0.26.0 cache-hash regression).
+    k.replace_feature_call_params(fid, r#"{"radius":{"value":12.0,"unit":"mm"}}"#, false)
+        .unwrap();
+    let rounder = p(&mut k);
+    assert!(rounder < rounded - 0.05, "bigger radius rounds more: {rounder} !< {rounded}");
+}

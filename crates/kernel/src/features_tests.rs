@@ -4961,7 +4961,7 @@ fn round_all_feature_rounds_every_junction() {
                     id(2),
                     json!({ "half_extents": [10.0, 10.0, 10.0], "center": [14.0, 0.0, 0.0] }),
                 ),
-                FeatureCall::new("round_all", id(3), json!({ "radius": 3.0 })),
+                FeatureCall::new("round_all", id(3), json!({ "radius": { "value": 3.0, "unit": "mm" } })),
             ],
             None,
         )
@@ -4981,7 +4981,7 @@ fn round_all_feature_rounds_every_junction() {
     registry
         .regenerate(
             &mut ctx,
-            &[box_call(1, 10.0), FeatureCall::new("round_all", id(3), json!({ "radius": 0.0 }))],
+            &[box_call(1, 10.0), FeatureCall::new("round_all", id(3), json!({ "radius": { "value": 0.0, "unit": "mm" } }))],
             None,
         )
         .unwrap();
