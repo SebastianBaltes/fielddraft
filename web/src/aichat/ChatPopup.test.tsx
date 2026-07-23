@@ -1,10 +1,11 @@
 /**
  * The admin-only model picker (ticket #361).
  *
- * `ChatPopup` renders BaseAIChat's `ChatPanel` with `headerExtra` set to a
- * `<select>` of the server's allowlisted models — but only for admins; a
- * non-admin gets `headerExtra={undefined}` so no picker ever reaches a
- * regular user. We stub `ChatPanel` itself (real one is the submodule's
+ * `ChatPopup` renders BaseAIChat's `ChatPanel` with `subheader` set to a
+ * `<select>` of the server's allowlisted models — its own row below the
+ * title/close row, so it doesn't crowd the header — but only for admins; a
+ * non-admin gets `subheader={undefined}` so no picker ever reaches a regular
+ * user. We stub `ChatPanel` itself (real one is the submodule's
  * floating-launcher UI, irrelevant here) so this test is pinned on exactly
  * that wiring: what FieldDraft passes into the slot.
  */
@@ -19,9 +20,9 @@ import type { KernelStore } from "../store";
 vi.mock("baseaichat", async (importOriginal) => ({
   ...(await importOriginal<typeof import("baseaichat")>()),
   // The real ChatPanel is a floating launcher/panel with its own open state;
-  // all this test needs is to see what lands in `headerExtra`.
-  ChatPanel: ({ headerExtra }: { headerExtra?: ReactNode }) => (
-    <div data-testid="chat-panel">{headerExtra}</div>
+  // all this test needs is to see what lands in `subheader`.
+  ChatPanel: ({ subheader }: { subheader?: ReactNode }) => (
+    <div data-testid="chat-panel">{subheader}</div>
   ),
 }));
 

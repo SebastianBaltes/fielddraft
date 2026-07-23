@@ -39,10 +39,11 @@
   }
 
   /* Admin-only OpenRouter model picker (ticket #361), rendered into the
-     panel's `headerExtra` slot — between the title and the clear/close
-     buttons, so it has to stay compact. */
+     panel's `subheader` slot — its own full-width row below the title/close
+     row, so it no longer has to compete with those for space. */
   & .fd-aichat-model-select {
-    max-width: 11rem;
+    width: 100%;
+    max-width: 20rem;
     padding: var(--space-1) var(--space-2);
     border: 1px solid var(--color-border);
     border-radius: var(--radius-sm);

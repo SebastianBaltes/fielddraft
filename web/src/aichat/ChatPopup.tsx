@@ -9,9 +9,10 @@
  *    rather than a chat that fails on the first message.
  *  · **The model comes from the SERVER.** The proxy's allowlist is the authority;
  *    a hardcoded client-side model id would just earn a 403. Admins may pick
- *    among the allowlisted models via a header dropdown (ticket #361) — the
- *    request still goes through the same proxy allowlist, so an admin can only
- *    ever select a model the server already permits.
+ *    among the allowlisted models via a dropdown of its own row below the
+ *    panel header (ticket #361) — the request still goes through the same
+ *    proxy allowlist, so an admin can only ever select a model the server
+ *    already permits.
  *
  * Loaded lazily by App.tsx: the AI SDK is heavy and most sessions never open the
  * chat.
@@ -35,7 +36,7 @@ export function ChatPopup({
   isAdmin = false,
 }: {
   store: KernelStore;
-  /** Admins get a model picker in the panel header (ticket #361); everyone
+  /** Admins get a model picker below the panel header (ticket #361); everyone
    *  else gets the server's default model with no control over it. */
   isAdmin?: boolean;
 }) {
@@ -69,7 +70,7 @@ export function ChatPopup({
 
   if (!agent) return null;
 
-  const headerExtra =
+  const modelPicker =
     isAdmin && config && config.models.length > 1 ? (
       <select
         className="fd-aichat-model-select"
@@ -95,7 +96,7 @@ export function ChatPopup({
         This wrapper scopes FieldDraft's readability overrides (aichat.css) to the
         embedded BaseAIChat panel — the panel renders in-tree (no portal), so a
         `.fd-aichat` ancestor reliably out-specifies the submodule's `.bac-*`
-        rules without touching third_party. */}
+        rules regardless of stylesheet load order. */}
       <div className="fd-aichat">
         <ChatPanel
           agent={agent}
@@ -103,7 +104,7 @@ export function ChatPopup({
           launcherLabel="Assistent"
           greeting="Ich kann Fragen zu FieldDraft beantworten und das Modell für dich bauen."
           placeholder="Frag mich…"
-          headerExtra={headerExtra}
+          subheader={modelPicker}
         />
       </div>
     </>

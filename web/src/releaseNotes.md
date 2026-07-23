@@ -12,6 +12,9 @@ Format, eine Zeile je Eintrag:
 kind = feat | fix | perf. scope und #tickets sind optional. Folgezeilen, die
 eingerückt sind, gehören zum Text davor (Umbruch erlaubt).
 
+## 0.27.1
+- fix(ui) #361: Das Admin-Modell-Dropdown im Assistent-Dialog sitzt jetzt in einer eigenen Zeile unter Titel und Schließen-Button statt eingequetscht daneben.
+
 ## 0.27.0
 - feat(sdf) #401 #402: Thicken nach Onshape-Vorbild ausgebaut — ein Klick aufs Thicken-Tool öffnet jetzt direkt den Details-Dialog (Abbrechen verwirft das Feature wieder), und Thicken wirkt endlich auch auf planare Flächen: dort entsteht wie bei Extrude eine prismatische Aufdickung mit scharfen Kanten statt gar nichts. Neue Dialog-Parameter nach Onshape: Richtung umkehren, Merge scope und „Merge with all“.
 
