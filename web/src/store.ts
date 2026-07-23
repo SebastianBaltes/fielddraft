@@ -557,8 +557,7 @@ export class KernelStore {
       console.error("fielddraft: addThreadPreset failed", err);
       return -1;
     }
-    this.commit(new Set([id]), id);
-    return id;
+    return this.commitNewFeature(id);
   }
 
   /** K11.0: add a gyroid TPMS infill. Default: 10 mm cells,
@@ -572,8 +571,7 @@ export class KernelStore {
       console.error("fielddraft: addGyroid failed", err);
       return -1;
     }
-    this.commit(new Set([id]), id);
-    return id;
+    return this.commitNewFeature(id);
   }
 
   /** Add a custom-SDF body (default: 15 mm sphere expression in a
@@ -587,8 +585,7 @@ export class KernelStore {
       console.error("fielddraft: addCustomSdf failed", err);
       return -1;
     }
-    this.commit(new Set([id]), id);
-    return id;
+    return this.commitNewFeature(id);
   }
 
   /** Add a `shell` feature and select it so its dialog opens. Faces to open
@@ -604,8 +601,7 @@ export class KernelStore {
       console.error("fielddraft: addShell failed", err);
       return -1;
     }
-    this.commit(new Set([id]), id);
-    return id;
+    return this.commitNewFeature(id);
   }
 
   /** #384 offset_tree: add an `offset` feature. Bodies (scope) and the signed
@@ -620,8 +616,7 @@ export class KernelStore {
       console.error("fielddraft: addOffset failed", err);
       return -1;
     }
-    this.commit(new Set([id]), id);
-    return id;
+    return this.commitNewFeature(id);
   }
 
   /** d: round every Boolean-junction edge globally with `radiusMm`. */
@@ -634,8 +629,7 @@ export class KernelStore {
       console.error("fielddraft: addRoundAll failed", err);
       return -1;
     }
-    this.commit(new Set([id]), id);
-    return id;
+    return this.commitNewFeature(id);
   }
 
   addBoolean(): number {
@@ -647,8 +641,7 @@ export class KernelStore {
       console.error("fielddraft: addBoolean failed", err);
       return -1;
     }
-    this.commit(new Set([id]), id);
-    return id;
+    return this.commitNewFeature(id);
   }
 
   addMaterial(): number {
@@ -660,8 +653,7 @@ export class KernelStore {
       console.error("fielddraft: addMaterial failed", err);
       return -1;
     }
-    this.commit(new Set([id]), id);
-    return id;
+    return this.commitNewFeature(id);
   }
 
   addHole(diameterMm = 6, depthMm = 40): number {
@@ -681,8 +673,7 @@ export class KernelStore {
       console.error("fielddraft: addHole failed", err);
       return -1;
     }
-    this.commit(new Set([id]), id);
-    return id;
+    return this.commitNewFeature(id);
   }
 
   addPrimitive(
@@ -740,8 +731,7 @@ export class KernelStore {
         throw new Error(`addPrimitive: unknown kind "${_exhaustive}"`);
       }
     }
-    this.commit(new Set([id]), id);
-    return id;
+    return this.commitNewFeature(id);
   }
 
   /** Move every selected feature by `(dx, dy, dz)`. */
@@ -865,6 +855,20 @@ export class KernelStore {
     if (id === null) return;
     this.pendingFeature = null;
     this.removeFeature(id);
+  }
+
+  /** Commit a freshly-created feature: flag it as the pending (create-mode)
+   *  feature and select it so its detail dialog opens (#400). Cancelling that
+   *  dialog removes the feature entirely; confirming it — via OK or by
+   *  selecting anything else — just clears the flag (see the `beforeCommit`
+   *  hook and {@link SelectionStore}). EVERY "add feature" path funnels through
+   *  here, so create-mode Cancel behaves identically for every feature type;
+   *  re-entering an EXISTING feature's dialog from the list never sets the flag,
+   *  so its Cancel only rolls back the in-dialog edits. */
+  private commitNewFeature(id: number): number {
+    this.pendingFeature = id;
+    this.commit(new Set([id]), id);
+    return id;
   }
 
   // ── selection ─────────────────────────────────────────────────────
@@ -1007,8 +1011,7 @@ export class KernelStore {
       console.error("fielddraft: addMateConnector failed", err);
       return null;
     }
-    this.commit(new Set([id]), id);
-    return id;
+    return this.commitNewFeature(id);
   }
 
   /**
@@ -1030,8 +1033,7 @@ export class KernelStore {
       this.setTransientError(formatKernelError(err, "Fillet failed"));
       return null;
     }
-    this.commit(new Set([id]), id);
-    return id;
+    return this.commitNewFeature(id);
   }
 
   /** Extrude one or more coplanar planar faces (P1). `faceQueries` are
@@ -1062,9 +1064,7 @@ export class KernelStore {
       this.setTransientError(formatKernelError(err, "Extrude failed"));
       return null;
     }
-    this.pendingFeature = id;
-    this.commit(new Set([id]), id);
-    return id;
+    return this.commitNewFeature(id);
   }
 
   /** #385: loft between N ≥ 2 parallel profile cross-sections. `profileQueries`
@@ -1084,8 +1084,7 @@ export class KernelStore {
       this.setTransientError(formatKernelError(err, "Loft failed"));
       return null;
     }
-    this.commit(new Set([id]), id);
-    return id;
+    return this.commitNewFeature(id);
   }
 
   /** Thicken curved face(s) into a thin wall. Closed non-analytic faces
@@ -1115,8 +1114,7 @@ export class KernelStore {
       this.setTransientError(formatKernelError(err, "Thicken failed"));
       return null;
     }
-    this.commit(new Set([id]), id);
-    return id;
+    return this.commitNewFeature(id);
   }
 
   toggleMeasureMode(): void {
@@ -1660,8 +1658,7 @@ export class KernelStore {
    */
   addFeatureByType(type: string, params: Record<string, unknown> = {}): number {
     const id = this.kernel.addFeatureCall(type, JSON.stringify(params));
-    this.commit(new Set([id]), id);
-    return id;
+    return this.commitNewFeature(id);
   }
 
   /** K8.8: duplicate a feature call. Returns the new feature
@@ -1675,8 +1672,7 @@ export class KernelStore {
       console.error("fielddraft: duplicateFeature failed", err);
       return null;
     }
-    this.commit(new Set([newId]), newId);
-    return newId;
+    return this.commitNewFeature(newId);
   }
 
   /** K8.7: flip a feature's suppressed flag. Returns `true` on
@@ -1799,8 +1795,7 @@ export class KernelStore {
       this.setTransientError(formatKernelError(err, "Move failed"));
       return null;
     }
-    this.commit(new Set([id]), id);
-    return id;
+    return this.commitNewFeature(id);
   }
 
   /** Ticket D6: leave Move mode without acting (Esc, or a list selection). */
@@ -2068,8 +2063,7 @@ export class KernelStore {
       this.setTransientError(formatKernelError(err, "Circular Pattern failed"));
       return null;
     }
-    this.commit(new Set([id]), id);
-    return id;
+    return this.commitNewFeature(id);
   }
 
   addLinearPatternOfLatest(): number | null {
@@ -2087,8 +2081,7 @@ export class KernelStore {
       this.setTransientError(formatKernelError(err, "Linear Pattern failed"));
       return null;
     }
-    this.commit(new Set([id]), id);
-    return id;
+    return this.commitNewFeature(id);
   }
 
   addMirrorOfLatest(): number | null {
@@ -2106,8 +2099,7 @@ export class KernelStore {
       this.setTransientError(formatKernelError(err, "Mirror failed"));
       return null;
     }
-    this.commit(new Set([id]), id);
-    return id;
+    return this.commitNewFeature(id);
   }
 
   /** K8.4: revolve the latest committed sketch around the world
@@ -2127,8 +2119,7 @@ export class KernelStore {
       console.error("fielddraft: addRevolve failed", err);
       return null;
     }
-    this.commit(new Set([id]), id);
-    return id;
+    return this.commitNewFeature(id);
   }
 
   /** Helix-sweep the latest committed sketch (screw threads) with
@@ -2145,8 +2136,7 @@ export class KernelStore {
       console.error("fielddraft: addHelix failed", err);
       return null;
     }
-    this.commit(new Set([id]), id);
-    return id;
+    return this.commitNewFeature(id);
   }
 
   /** Sweep the second-latest sketch (profile) along the latest sketch
@@ -2168,8 +2158,7 @@ export class KernelStore {
       console.error("fielddraft: addSweep failed", err);
       return null;
     }
-    this.commit(new Set([id]), id);
-    return id;
+    return this.commitNewFeature(id);
   }
 
   /** Sweep the latest sketch (profile) along a default 3D control-point path
@@ -2186,8 +2175,7 @@ export class KernelStore {
       console.error("fielddraft: addSweepGizmo failed", err);
       return null;
     }
-    this.commit(new Set([id]), id);
-    return id;
+    return this.commitNewFeature(id);
   }
 
   /** Extrude the latest committed sketch with the given depth
@@ -2220,9 +2208,7 @@ export class KernelStore {
       this.setTransientError(formatKernelError(err, "Extrude failed"));
       return null;
     }
-    this.pendingFeature = id;
-    this.commit(new Set([id]), id);
-    return id;
+    return this.commitNewFeature(id);
   }
 
   showTransientError(message: string): void {

@@ -109,6 +109,15 @@ function runEscape(ctx: KeyboardCommandContext, e: KeyboardEvent): void {
     cur.sketchSession.selection.length > 0
   ) {
     store.clearSketchSelection();
+  } else if (
+    cur.selection.size === 1 &&
+    store.isPendingFeature([...cur.selection][0])
+  ) {
+    // #400: a freshly-created feature's detail dialog is open in create-mode.
+    // Escape cancels it exactly like the dialog's ✗ — dropping the feature
+    // entirely — instead of the plain deselect path, which would CONFIRM it.
+    store.cancelPendingFeature();
+    store.clearSelection();
   } else {
     store.clearSelection();
   }
