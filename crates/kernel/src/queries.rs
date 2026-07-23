@@ -889,8 +889,40 @@ where
     match eref.fingerprint {
         Some(fingerprint) => {
             let stored = TopoRef { kind, id_hash: eref.id_hash, fingerprint };
+            // Identity is provenance-first ACROSS bodies too (the same rule
+            // `naming::resolve` applies within one body): when some body still
+            // carries the exact `id_hash`, resolution is confined to those
+            // bodies. Without this, a fingerprint-identical twin in another
+            // body — two equal boxes placed apart share every body-LOCAL
+            // fingerprint — scores a perfect geometric match (1.0) in the
+            // no-hash branch, ties the hash carrier's score, and the strict
+            // `>` keeps whichever body enumerates first: both of a loft's
+            // profile queries then land on the SAME face ("two loft profiles
+            // lie on the same plane", #385 P4). Cross-body healing still runs
+            // when the hash survives nowhere.
+            let all: Vec<&crate::brep::BRep> = breps.into_iter().collect();
+            let contains_hash = |brep: &crate::brep::BRep| -> bool {
+                let n = match kind {
+                    EntityKind::Face => brep.faces.len(),
+                    EntityKind::Edge => brep.edges.len(),
+                    EntityKind::Vertex => brep.vertices.len(),
+                };
+                (0..n).any(|i| {
+                    let r = match kind {
+                        EntityKind::Face => TopoRef::from_face(brep, FaceId(i as u32)),
+                        EntityKind::Edge => TopoRef::from_edge(brep, EdgeId(i as u32)),
+                        EntityKind::Vertex => TopoRef::from_vertex(brep, VertexId(i as u32)),
+                    };
+                    r.id_hash == eref.id_hash
+                })
+            };
+            let has_hash: Vec<bool> = all.iter().map(|b| contains_hash(b)).collect();
+            let any_hash = has_hash.iter().any(|&h| h);
             let mut best: Option<(f64, usize, EntityHandle)> = None;
-            for (bi, brep) in breps.into_iter().enumerate() {
+            for (bi, brep) in all.iter().enumerate() {
+                if any_hash && !has_hash[bi] {
+                    continue;
+                }
                 let res = resolve(&stored, brep);
                 if !matches!(res.state, ResolutionState::Resolved | ResolutionState::Healed) {
                     continue;

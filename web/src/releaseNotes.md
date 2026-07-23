@@ -12,6 +12,10 @@ Format, eine Zeile je Eintrag:
 kind = feat | fix | perf. scope und #tickets sind optional. Folgezeilen, die
 eingerückt sind, gehören zum Text davor (Umbruch erlaubt).
 
+## 0.23.0
+- feat(sketch) #385: Neues Loft-Feature — zwei oder mehr parallele Profil-Skizzen (oder planare Flächen) werden zu einem Körper überblendet; die Profile wählst du wie beim Extrude über den Profil-Picker im Dialog aus.
+- fix(kernel) #385: Flächen-Auswahlen unterscheiden jetzt zuverlässig zwischen geometrisch identischen Körpern an verschiedenen Positionen — vorher konnten zwei Picks auf die Deckel zweier gleicher Boxen auf dieselbe Fläche zusammenfallen (etwa beim Loft: Fehlermeldung, die Profile lägen auf derselben Ebene).
+
 ## 0.22.0
 - feat(sdf) #398 #384: Bogen-Kontakte sind jetzt vollwertig: Kontaktflächen mit runden Rändern (z. B. ein aufgesetztes Pillen- oder abgerundetes Profil) bekommen exakte Bogen-Korrekturkörper und einen Rand-Fillet, der gerade und runde Kanten in einem Zug verrundet. Nur nach innen gewölbte Bögen und Bohrungs-Ränder bleiben — wie einspringende Ecken — bewusst ungerundet und werden ehrlich mit Schranke gemeldet; diese Schranke erscheint jetzt auch dann, wenn an derselben Naht ein anderer Kontakt sauber schließt (vorher zu optimistisch).
 

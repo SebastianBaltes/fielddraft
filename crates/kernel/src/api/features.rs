@@ -438,6 +438,25 @@ impl Kernel {
         )
     }
 
+    /// #385 P4: append a `loft` feature call that interpolates between N ≥ 2
+    /// parallel profile cross-sections into a solid. `profiles` is a
+    /// comma-separated MultiQuery of sketch-region and/or planar-face queries
+    /// (e.g. `qCreatedBy(<sketch>), qFace(<id_hash>)`) — the same
+    /// "faces and sketch regions" input as Extrude (ticket k280); the dialog's
+    /// query picker accumulates the N profiles in a pick session. An EMPTY
+    /// `profiles` string is allowed (like the empty revolve, ticket 1rax): the
+    /// loft reports its regen error Onshape-style until the picker supplies at
+    /// least two parallel profiles. `op` uses the same `BoolOp::TAG_*` tags as
+    /// `add_primitive`. Returns the new feature id.
+    #[wasm_bindgen(js_name = addLoft)]
+    pub fn add_loft(&mut self, profiles: String, op: u32) -> Result<u32, JsError> {
+        let op_wire = Self::op_wire_name(op)?;
+        self.push_feature_call("loft", serde_json::json!({
+            "profiles": profiles,
+            "operation": op_wire,
+        }))
+    }
+
     /// K8.9: append a `hole` feature call. Thin convenience
     /// wrapper that serialises the typed diameter/depth/translate
     /// into a FeatureCall and bootstraps. Returns the new id.

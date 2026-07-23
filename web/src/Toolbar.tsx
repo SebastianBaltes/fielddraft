@@ -1390,6 +1390,24 @@ export function Toolbar({ store, state }: ToolbarProps) {
           testId="sweep-split-button"
         />
         <FeatureButton
+          kind="loft"
+          title={
+            selectedFaceQueries.length >= 2
+              ? "Loft between the selected face(s)"
+              : "Loft — pick 2+ parallel profiles in the dialog"
+          }
+          testId="loft-latest"
+          disabled={!hasFeatures && !hasSketch}
+          onClick={() => {
+            if (selectedFaceQueries.length >= 2) {
+              store.addLoft(selectedFaceQueries);
+              store.clearElementSelection();
+            } else {
+              store.addLoft([]);
+            }
+          }}
+        />
+        <FeatureButton
           kind="gyroid"
           title="Add Gyroid infill"
           disabled={!hasFeatures}

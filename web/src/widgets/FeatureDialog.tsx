@@ -129,6 +129,7 @@ export const FEATURE_TYPE_META: Record<
   offset: { label: "Offset", glyph: "◉" },
   thicken: { label: "Thicken", glyph: "◗" },
   sweep: { label: "Sweep", glyph: "↝" },
+  loft: { label: "Loft", glyph: "⇅" },
   boolean: { label: "Boolean", glyph: "⊕" },
   material: { label: "Material", glyph: "🎨" },
   transform: { label: "Transform", glyph: "↔" },

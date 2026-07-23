@@ -295,6 +295,7 @@ export type FeatureKindName =
   | "shell"
   | "offset"
   | "sweep"
+  | "loft"
   | "imported_mesh"
   | "translate"
   | "rotate"
@@ -1109,6 +1110,14 @@ export class Kernel {
    *  control points are then editable. Returns the new feature id. */
   addSweepGizmo(profileSketchId: number, op: BoolOpTagValue): number {
     return this.guardMut(() => this.inner.addSweepGizmo(profileSketchId, op));
+  }
+
+  /** #385: append a loft interpolating between N ≥ 2 parallel profile
+   *  cross-sections. `profiles` is a comma-separated MultiQuery of sketch-region
+   *  / planar-face queries; empty is allowed (the dialog's query picker fills it
+   *  afterwards). Returns the new feature id. */
+  addLoft(profiles: string, op: BoolOpTagValue): number {
+    return this.guardMut(() => this.inner.addLoft(profiles, op));
   }
 
   /** K7.4: append an extrude feature that consumes the

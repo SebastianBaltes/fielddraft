@@ -1067,6 +1067,27 @@ export class KernelStore {
     return id;
   }
 
+  /** #385: loft between N ≥ 2 parallel profile cross-sections. `profileQueries`
+   *  are `qCreatedBy(<sketch>)` / `qFace(<idHash>)` strings (one per picked
+   *  profile); they are joined into a single MultiQuery. An EMPTY selection is
+   *  allowed (like the empty revolve, ticket 1rax): the feature is created with
+   *  no profiles and the dialog's query picker accumulates the N profiles
+   *  afterwards — until at least two parallel profiles resolve, the loft reports
+   *  its regen error Onshape-style (red title + tooltip). Returns the new
+   *  feature id, or `null` on a kernel error. */
+  addLoft(profileQueries: string[] = []): number | null {
+    let id: number;
+    try {
+      id = this.kernel.addLoft(profileQueries.join(","), this.state.nextOp);
+    } catch (err) {
+      console.error("fielddraft: addLoft failed", err);
+      this.setTransientError(formatKernelError(err, "Loft failed"));
+      return null;
+    }
+    this.commit(new Set([id]), id);
+    return id;
+  }
+
   /** Thicken curved face(s) into a thin wall. Closed non-analytic faces
    *  (revolved / swept blobs) use the general SDF field-offset band; analytic
    *  faces (sphere / cylinder / torus / cone) fold to exact surfaces. Outward

@@ -7603,3 +7603,86 @@ fn loft_p3_meshes_watertight_with_cap_faces() {
     // No analytic wall face: the morph side wall stays non-analytic (sub 0).
     assert!(!cap_subs.contains(&0), "morph wall must NOT be an analytic woven face");
 }
+
+/// #385 P4: loft FACE profiles must resolve in WORLD space — two identical
+/// boxes placed at different heights present top faces on distinct parallel
+/// world planes (z = 50 and z = 170), even though both faces are the same
+/// plane in their bodies' LOCAL frames (z = 50). Regression for the in-app
+/// find where the resolver reported "two loft profiles lie on the same
+/// plane" for exactly this scene.
+#[test]
+fn loft_resolves_face_profiles_of_placed_bodies_in_world_space() {
+    let registry = FeatureRegistry::with_builtins();
+    let mut doc = empty_ctx();
+    let mut ctx = Context::new(&mut doc);
+    registry
+        .regenerate(
+            &mut ctx,
+            &[
+                box_call_translated(1, 50.0, [0.0, 0.0, 0.0]),
+                box_call_translated(2, 50.0, [100.0, 0.0, 120.0]),
+            ],
+            None,
+        )
+        .unwrap();
+    let woven = crate::body::weave_all(&ctx.features);
+    assert_eq!(woven.len(), 2, "two separate box bodies");
+    let h1 = planar_face_hash(&woven[0].0, [0.0, 0.0, 1.0]).expect("box 1 top");
+    let h2 = planar_face_hash(&woven[1].0, [0.0, 0.0, 1.0]).expect("box 2 top");
+
+    let (sections, frame) = ctx
+        .resolve_loft_profiles(&[format!("qFace({h1})"), format!("qFace({h2})")])
+        .expect("placed top faces sit on distinct parallel world planes");
+    assert_eq!(sections.len(), 2);
+    assert!(
+        (sections[1].offset - 120.0).abs() < 1e-3,
+        "world span 120 between the tops, got {}",
+        sections[1].offset
+    );
+    assert!(
+        (frame.origin[2] - 50.0).abs() < 1e-3,
+        "shared frame sits on the lower top (world z = 50), got {}",
+        frame.origin[2]
+    );
+}
+
+/// #385 P4: fingerprint-carrying face queries (`qFace(<hash> @ cx cy cz r)`,
+/// the canonical form the web picker emits) must STILL resolve provenance-
+/// first across bodies. Two identical boxes placed apart share every body-
+/// LOCAL fingerprint (`@ 0 0 50 50` for both tops), so a purely score-driven
+/// cross-body scan ties at 1.0 and collapses both queries onto the first
+/// body — the app-observed "two loft profiles lie on the same plane" bug.
+/// The exact `id_hash` must confine each query to its own body.
+#[test]
+fn loft_face_fingerprint_queries_resolve_to_their_own_bodies() {
+    let registry = FeatureRegistry::with_builtins();
+    let mut doc = empty_ctx();
+    let mut ctx = Context::new(&mut doc);
+    registry
+        .regenerate(
+            &mut ctx,
+            &[
+                box_call_translated(1, 50.0, [0.0, 0.0, 0.0]),
+                box_call_translated(2, 50.0, [100.0, 0.0, 120.0]),
+            ],
+            None,
+        )
+        .unwrap();
+    let woven = crate::body::weave_all(&ctx.features);
+    let h1 = planar_face_hash(&woven[0].0, [0.0, 0.0, 1.0]).expect("box 1 top");
+    let h2 = planar_face_hash(&woven[1].0, [0.0, 0.0, 1.0]).expect("box 2 top");
+
+    let (sections, frame) = ctx
+        .resolve_loft_profiles(&[
+            format!("qFace({h1} @ 0 0 50 50)"),
+            format!("qFace({h2} @ 0 0 50 50)"),
+        ])
+        .expect("identical local fingerprints must not collapse onto one body");
+    assert_eq!(sections.len(), 2);
+    assert!(
+        (sections[1].offset - 120.0).abs() < 1e-3,
+        "world span 120 between the tops, got {}",
+        sections[1].offset
+    );
+    assert!((frame.origin[2] - 50.0).abs() < 1e-3, "frame on the lower top");
+}
