@@ -219,7 +219,6 @@ export class KernelStore {
       measureMode: false,
       measureSelection: [],
       filletMode: false,
-      thickenMode: false,
       sketchToolParams: initialSketchToolParams(),
       syncState: "offline",
       projectId: null,
@@ -362,7 +361,6 @@ export class KernelStore {
       modes: {
         measure: s.measureMode,
         fillet: s.filletMode,
-        thicken: s.thickenMode,
         mate: s.mateMode,
         ik: s.ikMode,
       },
@@ -1087,19 +1085,21 @@ export class KernelStore {
     return this.commitNewFeature(id);
   }
 
-  /** Thicken curved face(s) into a thin wall. Closed non-analytic faces
-   *  (revolved / swept blobs) use the general SDF field-offset band; analytic
-   *  faces (sphere / cylinder / torus / cone) fold to exact surfaces. Outward
-   *  (Onshape default) by `thicknessMm`; the kernel rejects planar faces and
-   *  composite (boolean) non-analytic carriers with a helpful message. Passing
-   *  `upToFaceQuery` (a `qFace(<idHash>)` target) switches to up-to-face mode:
-   *  the wall grows up to that coaxial face and `thicknessMm` is ignored. */
+  /** Thicken B-Rep face(s) into a solid wall, opening the detail dialog like
+   *  Extrude (#401). A PLANAR face thickens exactly like Extrude — a prismatic
+   *  slab with sharp edges (#402); a curved analytic face (sphere / cylinder /
+   *  torus / cone) folds to exact concentric surfaces; a closed non-analytic
+   *  face uses the general SDF field-offset band. Outward (Onshape default) by
+   *  `thicknessMm`. An EMPTY selection is allowed (like Extrude / Loft): the
+   *  feature is created with no faces and the dialog's query picker fills them
+   *  afterwards. Passing `upToFaceQuery` (a `qFace(<idHash>)` target) switches to
+   *  up-to-face mode: the wall grows up to that coaxial face and `thicknessMm`
+   *  is ignored. */
   addThicken(
-    faceQueries: string[],
+    faceQueries: string[] = [],
     thicknessMm = 2,
     upToFaceQuery = "",
   ): number | null {
-    if (faceQueries.length === 0) return null;
     let id: number;
     try {
       id = this.kernel.addThicken(
@@ -1122,7 +1122,6 @@ export class KernelStore {
       measureMode: !this.state.measureMode,
       measureSelection: [],
       filletMode: false,
-      thickenMode: false,
       mateMode: false,
     });
     this.core.emit();
@@ -1166,21 +1165,6 @@ export class KernelStore {
   toggleFilletMode(): void {
     this.patch({
       filletMode: !this.state.filletMode,
-      thickenMode: false,
-      measureMode: false,
-      measureSelection: [],
-      mateMode: false,
-    });
-    this.core.emit();
-  }
-
-  /** Thicken mode toggle — mirrors `toggleFilletMode`. While active, a
-   *  viewport click on a curved face creates one thicken feature. Mutually
-   *  exclusive with the fillet / mate / measure modes. */
-  toggleThickenMode(): void {
-    this.patch({
-      thickenMode: !this.state.thickenMode,
-      filletMode: false,
       measureMode: false,
       measureSelection: [],
       mateMode: false,
@@ -1192,7 +1176,6 @@ export class KernelStore {
     this.patch({
       mateMode: !this.state.mateMode,
       filletMode: false,
-      thickenMode: false,
       measureMode: false,
       measureSelection: [],
     });

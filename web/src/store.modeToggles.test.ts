@@ -1,8 +1,9 @@
 /**
  * Mode-toggle mutual-exclusion tests for the viewport interaction modes
- * (fillet / thicken / mate / measure). These tools are mode toggles on the
- * main toolbar: activating one clears the others so the next viewport click
- * is unambiguous. Thicken mirrors fillet (click a face after activating).
+ * (fillet / mate / measure). These tools are mode toggles on the main toolbar:
+ * activating one clears the others so the next viewport click is unambiguous.
+ * Thicken is NOT a mode anymore (#401): the toolbar button creates a thicken
+ * feature and opens its dialog, exactly like Extrude/Loft.
  */
 
 import { describe, expect, it, beforeEach } from "vitest";
@@ -86,61 +87,43 @@ describe("KernelStore — interaction-mode toggles", () => {
 
   it("all interaction modes start off", () => {
     const s = store.getState();
-    expect(s.thickenMode).toBe(false);
     expect(s.filletMode).toBe(false);
     expect(s.mateMode).toBe(false);
     expect(s.measureMode).toBe(false);
   });
 
-  it("toggleThickenMode flips the flag and notifies", () => {
+  it("toggleFilletMode flips the flag and notifies", () => {
     let notifications = 0;
     store.subscribe(() => {
       notifications += 1;
     });
-    store.toggleThickenMode();
-    expect(store.getState().thickenMode).toBe(true);
+    store.toggleFilletMode();
+    expect(store.getState().filletMode).toBe(true);
     expect(notifications).toBe(1);
-    store.toggleThickenMode();
-    expect(store.getState().thickenMode).toBe(false);
+    store.toggleFilletMode();
+    expect(store.getState().filletMode).toBe(false);
     expect(notifications).toBe(2);
   });
 
-  it("toggleThickenMode clears the other modes (mutual exclusion)", () => {
+  it("activating one mode clears the others (mutual exclusion)", () => {
     store.toggleFilletMode();
-    store.toggleThickenMode();
-    const s = store.getState();
-    expect(s.thickenMode).toBe(true);
-    expect(s.filletMode).toBe(false);
-    expect(s.mateMode).toBe(false);
-    expect(s.measureMode).toBe(false);
-  });
-
-  it("activating fillet, mate or measure each clears thicken", () => {
-    store.toggleThickenMode();
-    store.toggleFilletMode();
-    expect(store.getState().thickenMode).toBe(false);
-    expect(store.getState().filletMode).toBe(true);
-
-    store.toggleThickenMode();
     store.toggleMateMode();
-    expect(store.getState().thickenMode).toBe(false);
-    expect(store.getState().mateMode).toBe(true);
+    let s = store.getState();
+    expect(s.mateMode).toBe(true);
+    expect(s.filletMode).toBe(false);
 
-    store.toggleThickenMode();
     store.toggleMeasureMode();
-    expect(store.getState().thickenMode).toBe(false);
-    expect(store.getState().measureMode).toBe(true);
+    s = store.getState();
+    expect(s.measureMode).toBe(true);
+    expect(s.mateMode).toBe(false);
+    expect(s.filletMode).toBe(false);
   });
 
   it("at most one interaction mode is active at a time", () => {
     const activeCount = () => {
       const s = store.getState();
-      return [s.thickenMode, s.filletMode, s.mateMode, s.measureMode].filter(
-        Boolean,
-      ).length;
+      return [s.filletMode, s.mateMode, s.measureMode].filter(Boolean).length;
     };
-    store.toggleThickenMode();
-    expect(activeCount()).toBe(1);
     store.toggleFilletMode();
     expect(activeCount()).toBe(1);
     store.toggleMateMode();

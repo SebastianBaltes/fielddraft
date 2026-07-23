@@ -4036,3 +4036,40 @@ fn p1_fillet_cutter_via_kernel_api() {
     assert!(d(s, s, 0.0).abs() < 0.15, "rolling-ball surface ≈0, got {}", d(s, s, 0.0));
     assert!(d(10.0, -10.0, 0.0).abs() < 1e-3, "un-filleted edge stays sharp");
 }
+
+#[test]
+fn thicken_planar_face_via_kernel_api() {
+    // #402 browser repro: thicken the −X face of a box through the REAL API
+    // chain (feature call → partition/cache → compiled opcode stream). In the
+    // app this produced a constant-0 field (grey render) even though the
+    // resolver-level tests passed.
+    let mut k = Kernel::new();
+    k.add_feature_call("box", r#"{"half_extents":[50.0,50.0,50.0]}"#)
+        .unwrap();
+    let faces: serde_json::Value =
+        serde_json::from_str(&k.body_brep_faces(0)).unwrap();
+    let query = faces
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|f| f["normalLocal"][0] == -1.0)
+        .expect("-X face")["query"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    k.add_feature_call(
+        "thicken",
+        &format!(
+            r#"{{"faces":"{query}","thickness":{{"value":2.0,"unit":"mm"}}}}"#
+        ),
+    )
+    .unwrap();
+    let d = |x: f32, y: f32, z: f32| k.body_sdf_eval(0, x, y, z);
+    assert!(d(0.0, 0.0, 0.0) < -49.0, "box centre stays deep inside");
+    assert!(d(-51.0, 0.0, 0.0) < -0.5, "wall interior, got {}", d(-51.0, 0.0, 0.0));
+    assert!((d(-52.0, 0.0, 0.0)).abs() < 1e-2, "new outer wall face, got {}", d(-52.0, 0.0, 0.0));
+    assert!(d(-53.0, 0.0, 0.0) > 0.5, "beyond the wall, got {}", d(-53.0, 0.0, 0.0));
+    // Sharp prismatic rim: outside the slab's y-extent the corner distance is
+    // the plain L2 corner distance, no rolling-ball rounding (#402).
+    assert!(d(-52.0, 52.0, 0.0) > 1.9, "sharp rim, got {}", d(-52.0, 52.0, 0.0));
+}

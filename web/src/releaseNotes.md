@@ -12,6 +12,9 @@ Format, eine Zeile je Eintrag:
 kind = feat | fix | perf. scope und #tickets sind optional. Folgezeilen, die
 eingerückt sind, gehören zum Text davor (Umbruch erlaubt).
 
+## 0.27.0
+- feat(sdf) #401 #402: Thicken nach Onshape-Vorbild ausgebaut — ein Klick aufs Thicken-Tool öffnet jetzt direkt den Details-Dialog (Abbrechen verwirft das Feature wieder), und Thicken wirkt endlich auch auf planare Flächen: dort entsteht wie bei Extrude eine prismatische Aufdickung mit scharfen Kanten statt gar nichts. Neue Dialog-Parameter nach Onshape: Richtung umkehren, Merge scope und „Merge with all“.
+
 ## 0.26.0
 - feat(sdf) #406 #383: Kanten-Fillets sind jetzt echte harte Cutter nach Onshape-Vorbild — an einer geraden konvexen Kante wird ein analytisch exakter Rundungskörper boolesch subtrahiert (zylindrische Rundung entlang der Kante, Ecken bleiben scharf). Damit funktioniert das Abrunden einer einzelnen Würfelkante überhaupt erstmals, und Fillets/Round All greifen jetzt sofort statt erst nach einer späteren Geometrie-Änderung.
 

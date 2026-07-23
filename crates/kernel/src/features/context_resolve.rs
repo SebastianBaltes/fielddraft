@@ -481,8 +481,19 @@ impl<'a> Context<'a> {
             /// The picked face's edge-loops (body-local) for the M1 lateral trim.
             loops: crate::brep::face_lateral_trim::FaceLoops,
         }
+        // A **planar** analytic face has no parameter-shift offset — a normal
+        // offset of a flat face is a plain linear sweep of its boundary. So
+        // Thicken on a planar face reduces to the same prismatic slab a
+        // face-Extrude builds (sharp edges, no Minkowski rounding — #402).
+        // Deferred like bands because the reduction re-borrows `self` via
+        // `resolve_extrude_faces`, which cannot run while the woven cache lives.
+        struct PlanarReq {
+            qi: usize,
+            query: String,
+        }
         let mut walls: Vec<(usize, CsgNode, Transform)> = Vec::new();
         let mut bands: Vec<BandReq> = Vec::new();
+        let mut planars: Vec<PlanarReq> = Vec::new();
         {
             let woven = self.brep_cache.ensure(&self.features);
             for (qi, q) in queries.iter().enumerate() {
@@ -517,6 +528,11 @@ impl<'a> Context<'a> {
                         placement: *placement,
                         loops: crate::brep::face_lateral_trim::sample_face_loops(brep, fid),
                     }),
+                    // Planar face → prismatic (face-extrude) wall, deferred (#402).
+                    SurfaceGeometry::Analytic {
+                        surface: fielddraft_protocol::HalfSpace::Plane { .. },
+                        ..
+                    } => planars.push(PlanarReq { qi, query: q.clone() }),
                     SurfaceGeometry::Analytic { .. } => {
                         let s = crate::brep::face_thicken::thicken_face(
                             brep, fid, placement, outer_off, inner_off,
@@ -597,6 +613,46 @@ impl<'a> Context<'a> {
                 None => band.node,
             };
             walls.push((req.qi, node, band.world));
+        }
+
+        // Pass 3 (woven dropped): each planar face becomes a prismatic slab —
+        // the exact face-extrude reduction (#402). The wall spans
+        // `[-inner_off, +outer_off]` along the face normal, so it maps to a
+        // linear sweep of half-height `(outer+inner)/2` centred at
+        // `(outer-inner)/2` — a symmetric thicken gives `outer=inner=t/2`
+        // (a slab straddling the face), a one-sided thicken grows outward.
+        // Reuses `resolve_extrude_faces`, so the profile, frame and analytic
+        // Arc handling are shared with Extrude (sharp edges, all evaluators).
+        if !planars.is_empty() {
+            let half_depth_z = (outer_off + inner_off) / 2.0;
+            let dz = (outer_off - inner_off) / 2.0;
+            for req in planars {
+                let (sketch, frame) =
+                    self.resolve_extrude_faces(std::slice::from_ref(&req.query))?;
+                // Lower straight to the dedicated `CsgNode::Extrude` (the
+                // `DecodedFeature::from_parts` lowering): a `Primitive::Extrude`
+                // left inside a generic `Leaf` never reaches the 2D-path
+                // opcodes and compiles to a constant-0 field.
+                let slab = CsgNode::Extrude {
+                    id: id.child(format!("{}p", req.qi)),
+                    sketch: Box::new(sketch),
+                    half_height: half_depth_z,
+                    wall_subs: None,
+                };
+                let node = if dz == 0.0 {
+                    slab
+                } else {
+                    CsgNode::Transform(
+                        Transform {
+                            translate: [0.0, 0.0, dz],
+                            rotation: [0.0, 0.0, 0.0, 1.0],
+                            scale: [1.0, 1.0, 1.0],
+                        },
+                        Box::new(slab),
+                    )
+                };
+                walls.push((req.qi, node, frame.to_transform()));
+            }
         }
 
         if walls.is_empty() {

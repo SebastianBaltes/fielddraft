@@ -1492,10 +1492,21 @@ export function Toolbar({ store, state }: ToolbarProps) {
         />
         <FeatureButton
           kind="thicken"
-          title="Click a curved face to thicken it into a wall"
-          testId="thicken-toggle"
-          active={state.thickenMode}
-          onClick={() => store.toggleThickenMode()}
+          title={
+            selectedFaceQueries.length > 0
+              ? "Thicken selected face(s) into a wall"
+              : "Thicken — pick faces in the dialog"
+          }
+          testId="thicken-latest"
+          disabled={!hasFeatures}
+          onClick={() => {
+            if (selectedFaceQueries.length > 0) {
+              store.addThicken(selectedFaceQueries);
+              store.clearElementSelection();
+            } else {
+              store.addThicken([]);
+            }
+          }}
           label="Thicken"
         />
         <FeatureButton

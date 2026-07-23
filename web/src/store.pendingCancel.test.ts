@@ -90,6 +90,11 @@ class FakeKernel {
     this.features.push({ id, name: `Box ${id}`, op: "new", kind: "box" });
     return id;
   }
+  addThicken() {
+    const id = this.nextId++;
+    this.features.push({ id, name: `Thicken ${id}`, op: "add", kind: "thicken" });
+    return id;
+  }
 }
 
 const autosave: AutoSaveHandle = {
@@ -120,6 +125,18 @@ describe("KernelStore — create-mode Cancel deletes the feature (#400)", () => 
   it("flags a primitive tool-add as pending too, not just extrude", () => {
     const id = store.addPrimitive("box");
     expect(store.isPendingFeature(id)).toBe(true);
+  });
+
+  it("Thicken tool opens the dialog directly with an empty selection (#401)", () => {
+    // Clicking the Thicken toolbar button (no face picked) must create the
+    // feature and open its detail dialog — the same create-mode lifecycle as
+    // Extrude/Loft, NOT a viewport pick mode. An empty selection is allowed.
+    const id = store.addThicken([]);
+    expect(id).not.toBeNull();
+    expect(store.isPendingFeature(id!)).toBe(true);
+    // Create-mode Cancel removes the just-created thicken feature entirely.
+    store.cancelPendingFeature();
+    expect(kernel.features.some((f) => f.id === id)).toBe(false);
   });
 
   it("cancelPendingFeature removes the just-created feature entirely", () => {

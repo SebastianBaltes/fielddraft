@@ -17,31 +17,42 @@ use super::{Context, FeatureError, FeatureKind, FeatureSchema, optional_display_
 // solid pipeline (SDF, weave, picking) for free (see
 // [`crate::brep::face_thicken`]). First throw: sphere / cylinder / torus.
 
-/// `thicken` — make a thin solid wall from one or more **curved** analytic
-/// B-Rep faces by offsetting their surfaces along the normal.
+/// `thicken` — make a thin solid wall from one or more B-Rep faces. A **curved**
+/// analytic face folds to concentric offset solids; a **planar** face reduces to
+/// the same prismatic slab a face-Extrude builds (#402), so a flat face behaves
+/// exactly like Extrude (sharp edges, no Minkowski rounding).
 #[derive(FeatureSchema)]
 #[schema(type = "thicken")]
 pub struct ThickenDef {
-    /// Curved B-Rep face(s) to thicken. Comma-separated `qFace(<id_hash>)`
-    /// selections; each becomes its own offset-solid shell and they are unioned.
+    /// B-Rep face(s) to thicken. Comma-separated `qFace(<id_hash>)` selections;
+    /// each becomes its own wall (curved → offset shell, planar → prismatic slab)
+    /// and they are unioned.
     #[param(name = "Faces", default = ::fielddraft_protocol::MultiQuery::new(""), entity_filter = "FACE")]
     pub faces: ::fielddraft_protocol::MultiQuery,
 
     /// Wall thickness grown along the face normal (outside the source solid).
-    /// When `symmetric` is set this is split half in / half out instead.
+    /// Onshape's "Thickness 1". When `symmetric` is set this is split half in /
+    /// half out instead.
     #[param(name = "Thickness", default = ::fielddraft_protocol::Length::mm(2.0))]
     pub thickness: ::fielddraft_protocol::Length,
 
-    /// `true` splits the wall symmetrically about the surface (`±thickness/2`).
-    /// `false` (default, Onshape-style) grows `thickness` outward and
-    /// `inner_thickness` inward.
+    /// `true` splits the wall symmetrically about the surface (`±thickness/2`) —
+    /// Onshape's "Mid plane". `false` (default, Onshape-style) grows `thickness`
+    /// outward and `inner_thickness` inward.
     #[param(name = "Symmetric", default = false)]
     pub symmetric: bool,
 
-    /// Inward wall depth (along −normal) for a two-sided thicken. Only consulted
-    /// when `symmetric` is `false`; `0` (default) makes a pure outward wall.
+    /// Inward wall depth (along −normal) for a two-sided thicken — Onshape's
+    /// "Thickness 2". Only consulted when `symmetric` is `false`; `0` (default)
+    /// makes a pure outward wall.
     #[param(name = "Inner thickness", default = ::fielddraft_protocol::Length::mm(0.0))]
     pub thickness_back: ::fielddraft_protocol::Length,
+
+    /// Flip the primary growth direction (Onshape's opposite-direction arrow):
+    /// swaps the outward/inward offsets so a one-sided wall grows along −normal
+    /// instead of +normal. Ignored in up-to-face mode (the target sets direction).
+    #[param(name = "Reverse direction", default = false)]
+    pub reverse: bool,
 
     /// Optional coaxial **target** face: when set, the wall grows from each source
     /// surface *up to* this face instead of by a fixed `thickness` (Onshape's
@@ -52,10 +63,24 @@ pub struct ThickenDef {
     pub up_to_face: ::fielddraft_protocol::Query,
 
     /// Boolean op used to fold the thickened wall into the running spine.
-    /// Defaults to [`BoolOp::Add`] so the wall merges into the body
-    /// whose face it grew from.
+    /// Defaults to [`BoolOp::Add`] so the wall merges into the body whose face it
+    /// grew from. `Remove`/`Intersect` need an explicit `targets` scope.
     #[param(default = ::fielddraft_protocol::BoolOp::Add)]
     pub operation: BoolOp,
+
+    /// Merge scope: explicit target bodies for the boolean op, as
+    /// `qCreatedBy(<seed_feature>)` queries. Empty falls back to face-owner
+    /// docking (the wall grows into the body whose face it came from); otherwise
+    /// + `merge_with_all` off = no merge (standalone body; warned for
+    /// Add/Remove/Intersect).
+    #[param(name = "Merge scope", default = ::fielddraft_protocol::MultiQuery::new(""), entity_filter = "BODY")]
+    pub targets: ::fielddraft_protocol::MultiQuery,
+
+    /// Merge with all (Onshape): fold the wall into EVERY body it touches instead
+    /// of an explicit scope. Off by default — touching solids never merge
+    /// implicitly; opt in here or name targets above.
+    #[param(name = "Merge with all", default = false)]
+    pub merge_with_all: bool,
 }
 
 /// The analytic wall node for one face: `Difference(outer, inner)` of the two
@@ -164,6 +189,11 @@ impl FeatureKind for ThickenFeature {
             let back = d.thickness_back.to_mm().max(0.0);
             let (outer_off, inner_off) =
                 if d.symmetric { (t / 2.0, t / 2.0) } else { (t, back) };
+            // Reverse (Onshape's opposite-direction arrow): swap the outward and
+            // inward offsets so a one-sided wall grows along −normal. Works for
+            // both the curved (offset-solid) and planar (prismatic) reductions.
+            let (outer_off, inner_off) =
+                if d.reverse { (inner_off, outer_off) } else { (outer_off, inner_off) };
 
             ctx.resolve_thicken_faces(id, &face_queries, outer_off, inner_off)
                 .map_err(|message| FeatureError::InvalidParameter {
@@ -194,13 +224,30 @@ impl FeatureKind for ThickenFeature {
             (Transform::IDENTITY, acc.unwrap())
         };
 
+        // Dock into the body that owns the picked face, exactly like a
+        // face-Extrude: an explicit `Merge scope` wins; then `Merge with all`
+        // (it must override the owner fallback, or checking it would never
+        // change anything — the face owner always resolves); otherwise the wall
+        // grows into the face owner (Add semantics). Empty target_ids keeps it a
+        // standalone body — warned for Add/Remove/Intersect (explicit-scope rule).
+        let mut target_ids = super::merge_scope::target_ids_from_queries(&d.targets);
+        if target_ids.is_empty() && d.merge_with_all {
+            target_ids = ctx.current_body_seed_ids();
+        }
+        if target_ids.is_empty() {
+            target_ids = ctx.face_owner_target_ids(&face_queries);
+        }
+        if let Some(w) = ctx.merge_scope_warning(d.operation, &target_ids) {
+            ctx.warn_feature(id, w);
+        }
+
         ctx.features.push(DecodedFeature {
             id: id.clone(),
             name,
             op: d.operation,
             blend_radius: 0.0,
             blend_mode: crate::csg::BlendMode::Fillet,
-            target_ids: vec![],
+            target_ids,
             transform,
             node,
         });

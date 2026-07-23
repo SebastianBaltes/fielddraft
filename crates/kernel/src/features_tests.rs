@@ -3655,8 +3655,28 @@ fn thicken_torus_face_offsets_the_minor_radius() {
     }
 }
 
+
+/// #402: unwrap a planar-thicken wall into `(centre_z, half_height, sketch)`.
+/// The prismatic slab is a dedicated `CsgNode::Extrude`, optionally inside the
+/// centring `Transform` (one-sided walls have `centre_z != 0`).
+fn planar_wall_parts(node: &CsgNode) -> (f32, f32, fielddraft_protocol::Sketch2d) {
+    let (cz, inner) = match node {
+        CsgNode::Transform(t, inner) => (t.translate[2], inner.as_ref()),
+        other => (0.0, other),
+    };
+    match inner {
+        CsgNode::Extrude { sketch, half_height, .. } => {
+            (cz, *half_height, (**sketch).clone())
+        }
+        other => panic!("expected CsgNode::Extrude slab, got {other:?}"),
+    }
+}
+
 #[test]
-fn thicken_rejects_planar_face_pointing_at_extrude() {
+fn thicken_planar_face_builds_prismatic_slab() {
+    // #402: Thicken on a PLANAR face must behave exactly like a face-Extrude —
+    // a prismatic slab with sharp edges, NOT a rounded Minkowski offset. The
+    // wall must reduce to the same `Primitive::Extrude` a face-extrude builds.
     let registry = FeatureRegistry::with_builtins();
     let mut doc = empty_ctx();
     let mut ctx = Context::new(&mut doc);
@@ -3664,12 +3684,82 @@ fn thicken_rejects_planar_face_pointing_at_extrude() {
         .regenerate(&mut ctx, std::slice::from_ref(&box_call(1, 10.0)), None)
         .unwrap();
     let brep = weave_first(&mut ctx);
-    let top = planar_face_hash(&brep, [0.0, 0.0, 1.0]).unwrap();
+    let top = planar_face_hash(&brep, [0.0, 0.0, 1.0]).expect("a +Z face");
 
-    let err = ctx
-        .resolve_thicken_faces(&id(2), &[format!("qFace({top})")], 2.0, 0.0)
-        .unwrap_err();
-    assert!(err.contains("planar") || err.contains("Extrude"), "got: {err}");
+    // One-sided (default) 4 mm outward wall → [0, 4] along the +Z normal:
+    // half 2, centre +2 — same reduction as a blind face-extrude.
+    let walls = ctx
+        .resolve_thicken_faces(&id(2), &[format!("qFace({top})")], 4.0, 0.0)
+        .expect("planar thicken must build a prismatic wall");
+    assert_eq!(walls.len(), 1, "one face → one wall");
+    let (node, _world) = &walls[0];
+    let (centre_z, half_depth_z, sketch) = planar_wall_parts(node);
+    assert!((half_depth_z - 2.0).abs() < 1e-4, "half {half_depth_z}");
+    assert!((centre_z - 2.0).abs() < 1e-4, "centre z {centre_z}");
+    // The 20×20 top face projects to a [-10, 10]² profile (sharp square edges).
+    let bb = sketch.aabb();
+    assert!((bb.min[0] + 10.0).abs() < 1e-2 && (bb.max[0] - 10.0).abs() < 1e-2, "aabb {bb:?}");
+    assert!(sketch.sdf([0.0, 0.0]) < 0.0, "centre inside the profile");
+    assert!(sketch.sdf([30.0, 0.0]) > 0.0, "far point outside");
+}
+
+#[test]
+fn thicken_planar_negative_axis_face_has_a_real_profile() {
+    // Browser repro (#402): picking the −X face produced an EMPTY extrude
+    // profile — the 2D path SDF degenerated to 0 everywhere, greying out the
+    // whole render. Guard every axis-aligned face, not just +Z.
+    let registry = FeatureRegistry::with_builtins();
+    let mut doc = empty_ctx();
+    let mut ctx = Context::new(&mut doc);
+    registry
+        .regenerate(&mut ctx, std::slice::from_ref(&box_call(1, 10.0)), None)
+        .unwrap();
+    let brep = weave_first(&mut ctx);
+    for normal in [
+        [-1.0, 0.0, 0.0],
+        [1.0, 0.0, 0.0],
+        [0.0, -1.0, 0.0],
+        [0.0, 1.0, 0.0],
+        [0.0, 0.0, -1.0],
+    ] {
+        let face = planar_face_hash(&brep, normal).expect("axis face");
+        let walls = ctx
+            .resolve_thicken_faces(&id(2), &[format!("qFace({face})")], 4.0, 0.0)
+            .unwrap_or_else(|e| panic!("thicken {normal:?}: {e}"));
+        let (node, _) = &walls[0];
+        let (_cz, half_depth_z, sketch) = planar_wall_parts(node);
+        assert!((half_depth_z - 2.0).abs() < 1e-4, "{normal:?} half {half_depth_z}");
+        let bb = sketch.aabb();
+        assert!(
+            (bb.max[0] - bb.min[0] - 20.0).abs() < 1e-2
+                && (bb.max[1] - bb.min[1] - 20.0).abs() < 1e-2,
+            "{normal:?}: degenerate profile aabb {bb:?}"
+        );
+        assert!(sketch.sdf([0.0, 0.0]) < -5.0, "{normal:?}: centre must be deep inside");
+        assert!(sketch.sdf([30.0, 0.0]) > 5.0, "{normal:?}: far point must be outside");
+    }
+}
+
+#[test]
+fn thicken_planar_face_symmetric_straddles_the_face() {
+    // #402: symmetric (Mid plane) thicken splits the slab ±t/2 about the face.
+    let registry = FeatureRegistry::with_builtins();
+    let mut doc = empty_ctx();
+    let mut ctx = Context::new(&mut doc);
+    registry
+        .regenerate(&mut ctx, std::slice::from_ref(&box_call(1, 10.0)), None)
+        .unwrap();
+    let brep = weave_first(&mut ctx);
+    let top = planar_face_hash(&brep, [0.0, 0.0, 1.0]).expect("a +Z face");
+
+    // Symmetric 4 mm ⇒ outer=inner=2 ⇒ span [-2, +2]: half 2, centre 0.
+    let walls = ctx
+        .resolve_thicken_faces(&id(2), &[format!("qFace({top})")], 2.0, 2.0)
+        .expect("symmetric planar thicken");
+    let (node, _) = &walls[0];
+    let (centre_z, half_depth_z, _sketch) = planar_wall_parts(node);
+    assert!((half_depth_z - 2.0).abs() < 1e-4, "half {half_depth_z}");
+    assert!(centre_z.abs() < 1e-4, "centre z {centre_z} should straddle the face");
 }
 
 #[test]
@@ -4052,21 +4142,27 @@ fn thicken_direction_modes_set_outer_and_inner_radii() {
         json!({ "symmetric": false, "thickness_back": { "value": 1.0, "unit": "mm" } }),
     );
     assert!((ro - 7.0).abs() < 1e-3 && (ri - 4.0).abs() < 1e-3, "two-sided {ro}/{ri}");
+    // #402 reverse: swaps outward/inward. outward +2/+0 reversed → +0/−2, so the
+    // wall grows inward: outer stays at r (5), inner shrinks to r−2 (3).
+    let (ro, ri) = radii(json!({ "symmetric": false, "reverse": true }));
+    assert!((ro - 5.0).abs() < 1e-3 && (ri - 3.0).abs() < 1e-3, "reversed {ro}/{ri}");
 }
 
 #[test]
-fn thicken_def_schema_has_six_params() {
+fn thicken_def_schema_params() {
     let schema = ThickenDef::schema_json();
     let params = schema["params"].as_array().expect("params array");
     assert_eq!(
         params.len(),
-        6,
-        "faces, thickness, symmetric, thickness_back, up_to_face, operation"
+        9,
+        "faces, thickness, symmetric, thickness_back, reverse, up_to_face, \
+         operation, targets, merge_with_all"
     );
     let names: Vec<&str> =
         params.iter().filter_map(|p| p["name"].as_str()).collect();
     assert!(names.iter().any(|n| n.contains("Faces")), "{names:?}");
     assert!(names.iter().any(|n| n.contains("Thickness")), "{names:?}");
+    assert!(names.iter().any(|n| n.contains("Reverse direction")), "{names:?}");
     assert!(names.iter().any(|n| n.contains("Up to face")), "{names:?}");
 }
 

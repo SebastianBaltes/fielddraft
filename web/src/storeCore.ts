@@ -109,9 +109,6 @@ export interface StoreState {
   measureSelection: readonly PickedElement[];
   /** K10.6: fillet mode — clicks on edges create fillet_edge features. */
   filletMode: boolean;
-  /** Thicken mode — clicks on curved faces create thicken features (one per
-   *  click), mirroring the edge-click fillet flow. */
-  thickenMode: boolean;
   /** Parameters of the interactive sketch tools (fillet radius, pattern
    *  counts, text value/font, …) consolidated into one object — every
    *  setter in the sketch domain is a one-line patch of this slice.
