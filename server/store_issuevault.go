@@ -589,11 +589,22 @@ func (s *issuevaultStore) SetTicketState(id string, to TicketState, direct bool,
 	// One field now. IssueVault validates the enum (unknown → 400) and manages
 	// closed_at itself on terminal states, so this adapter writes neither an
 	// open/closed derivation nor closed_at.
+	//
+	// IssueVault 0.4.3 now posts the "state: X → Y" audit comment itself on
+	// every state-changing PATCH (author_kind=system, meta.audit=state_change,
+	// actor = token identity by default) — posting the same line client-side
+	// would just duplicate it. Instead we forward the human actor (if any) via
+	// the optional `actor` field so IssueVault stamps *that* name on its own
+	// audit comment instead of the token identity. No human actor (e.g. the
+	// agent.go automated flow) → omit it, and IssueVault attributes the audit
+	// to the token identity, which is correct there.
 	patch := map[string]any{"state": string(to)}
+	if actor := firstActor(actorID); actor != "" {
+		patch["actor"] = actor
+	}
 	if err := s.doJSON(http.MethodPatch, "/tickets/"+id, patch, nil); err != nil {
 		return nil, err
 	}
-	s.postSystemComment(id, "state: "+string(cur.State)+" → "+string(to), firstActor(actorID))
 	return s.GetTicket(id), nil
 }
 
