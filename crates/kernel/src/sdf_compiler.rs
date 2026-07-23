@@ -217,6 +217,93 @@ fn max_radius_xy(aabb: &crate::csg::Aabb) -> f32 {
     (rx * rx + ry * ry).sqrt()
 }
 
+/// Worst-case Lipschitz bound of the compiled LOFT render field (#385 P5).
+///
+/// At a fixed height `z` the cross-section is the tent-weighted lerp
+/// `Σ_k w_k(z)·d_k` of the section 2D profile fields — a convex combination of
+/// 1-Lipschitz fields (`∂f/∂a + ∂f/∂b = 1`, both ≥ 0), so it is 1-Lipschitz
+/// **in (x, y)**. The extra slope is purely axial: over an interior bracket
+/// `[z_k, z_{k+1}]` the field is `(1−t)·d_k + t·d_{k+1}` with
+/// `t = (z − z_k)/Δz_k`, hence
+///   `∂f/∂z = (d_{k+1} − d_k) / Δz_k`.
+/// `|d_{k+1} − d_k|` is the lateral gap between the two profiles' level sets;
+/// combined with the unit in-plane gradient the full 3D gradient norm is
+/// `√(1² + (∂f/∂z)²) ≤ 1 + |∂f/∂z|`, so
+///   `L_z = 1 + max_k( max_lateral_shift(k, k+1) / Δz_k )`.
+/// The linear `1 + …` upper bound is used (matches the `Displace` arm's
+/// additive convention and is conservative vs. the quadrature norm).
+///
+/// `max_lateral_shift` is estimated CONSERVATIVELY from the two sections' 2D
+/// AABBs re-expressed in the shared loft-local frame (each section's `map`
+/// applied forward, exactly as [`crate::csg::loft_local_aabb`] lifts them):
+/// per axis the larger corner displacement `max(|Δmin|, |Δmax|)`, combined in
+/// quadrature. This captures both a lateral TRANSLATION of the profile and a
+/// change of its EXTENT (a small circle growing into a large rectangle over a
+/// short height — the documented worst case that tunnels). It is exactly 0
+/// when consecutive profiles are coincident (`Δmin = Δmax = 0` on both axes)
+/// → `L_z = 1.0`, i.e. no damping.
+///
+/// Over-conservativity is acceptable by design: over-damping only slows the
+/// trace, under-damping tunnels (grey wall, #382/#385 §2 — "lieber zu stark
+/// dämpfen als tunneln"). Known honesty gap: two profiles that share an AABB
+/// but differ in shape (plus-sign vs. filled square) report shift 0 here while
+/// their interior fields can differ by up to ~half the extent — but that is a
+/// boundary that does NOT slide laterally, so it does not move the surface a
+/// ray hits, and is not the render-tunnelling case P5 targets. Flagged, not
+/// fixed. FIELD-NEUTRAL: this only feeds `march_relax` (the renderer STEP
+/// factor); the emitted tape / field value is byte-identical to before.
+fn loft_lipschitz_bound(sections: &[crate::bvh::LoftBoundedSection]) -> f32 {
+    // Loft-local 2D AABB of one section: its pruned sketch AABB with the rigid
+    // `map` (Z-rotation + XY-translation, unit scale for a loft) applied
+    // forward — the own → common direction, mirroring `loft_local_aabb`.
+    let local_bb = |s: &crate::bvh::LoftBoundedSection| -> Option<([f32; 2], [f32; 2])> {
+        let bb2 = s.sketch.aabb();
+        if bb2.is_empty() {
+            return None;
+        }
+        let corners = [
+            [bb2.min[0], bb2.min[1]],
+            [bb2.max[0], bb2.min[1]],
+            [bb2.min[0], bb2.max[1]],
+            [bb2.max[0], bb2.max[1]],
+        ];
+        let mut mn = [f32::INFINITY; 2];
+        let mut mx = [f32::NEG_INFINITY; 2];
+        for c in corners {
+            let scaled = [c[0] * s.map.scale[0], c[1] * s.map.scale[1], 0.0];
+            let r = quat_rotate(s.map.rotation, scaled);
+            let p = [r[0] + s.map.translate[0], r[1] + s.map.translate[1]];
+            for a in 0..2 {
+                mn[a] = mn[a].min(p[a]);
+                mx[a] = mx[a].max(p[a]);
+            }
+        }
+        Some((mn, mx))
+    };
+
+    let mut worst_rate = 0.0f32;
+    for w in sections.windows(2) {
+        let dz = (w[1].z - w[0].z).abs();
+        // Ascending, distinct planes are guaranteed by the resolver (it rejects
+        // two profiles on the same plane); guard the division anyway so a
+        // degenerate node can never emit NaN/∞ into the render step.
+        if dz <= 1e-6 {
+            continue;
+        }
+        let (Some((amn, amx)), Some((bmn, bmx))) = (local_bb(&w[0]), local_bb(&w[1])) else {
+            continue;
+        };
+        let mut sq = 0.0f32;
+        for a in 0..2 {
+            let d = (amn[a] - bmn[a]).abs().max((amx[a] - bmx[a]).abs());
+            sq += d * d;
+        }
+        let shift = sq.sqrt();
+        worst_rate = worst_rate.max(shift / dz);
+    }
+    1.0 + worst_rate
+}
+
 /// Compile-time upper bound on the Lipschitz constant of the COMPILED render
 /// field of `node` (#384, SYNTHESIS §2 Lösung B / §6 Stufe 2). Replaces the
 /// former per-feature guess constants (`REVOLVE_MARCH_RELAX = 0.7` etc.) with
@@ -274,11 +361,14 @@ pub(crate) fn lipschitz_bound(node: &BoundedCsg) -> f32 {
         | BoundedCsg::Revolve { .. }
         | BoundedCsg::Helix { .. }
         | BoundedCsg::Sweep { .. } => 1.0,
-        // TODO(#385 P5): the loft morph is NOT 1-Lipschitz in z — the true
-        // bound is `L_z ≈ 1 + max_k(max_lateral_shift / Δz_k)` (see `sdf_loft`).
-        // Returning 1.0 here matches the other sketch-lifts and is what the
-        // mesher/weave read; the RENDERER damping (`march_relax`) is P5 scope.
-        BoundedCsg::Loft { .. } => 1.0,
+        // #385 P5: the loft morph is NOT 1-Lipschitz in z — the axial gradient
+        // `(d_{k+1} − d_k)/Δz_k` lifts the bound to
+        // `L_z = 1 + max_k(max_lateral_shift / Δz_k)` (see `loft_lipschitz_bound`
+        // for the derivation + conservative shift estimate). This feeds ONLY
+        // `march_relax` (renderer STEP damping, same as Displace/Revolve); the
+        // emitted FIELD is byte-identical, so the mesher/weave are untouched.
+        // Coincident consecutive profiles → shift 0 → `L_z = 1` (no damping).
+        BoundedCsg::Loft { sections, .. } => loft_lipschitz_bound(sections),
 
         // ── Hard booleans: winner branch ───────────────────────────
         // min/max are sup-norm contractions — the gradient is the winning

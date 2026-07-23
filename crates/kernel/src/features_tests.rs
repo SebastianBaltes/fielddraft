@@ -7686,3 +7686,131 @@ fn loft_face_fingerprint_queries_resolve_to_their_own_bodies() {
     );
     assert!((frame.origin[2] - 50.0).abs() < 1e-3, "frame on the lower top");
 }
+
+// ─── #385 P5: loft render-field Lipschitz safety (march_relax damping) ────
+
+/// Build a loft section with a lateral `frame_map` translation, so the profile
+/// is shifted in the shared loft-local frame (own → common forward). Used to
+/// construct a worst-case loft whose level sets slide sideways with height.
+fn loft_sec_shifted(
+    sketch: fielddraft_protocol::Sketch2d,
+    offset: f32,
+    tx: f32,
+    ty: f32,
+) -> fielddraft_protocol::LoftSection {
+    fielddraft_protocol::LoftSection {
+        sketch,
+        offset,
+        frame_map: Transform { translate: [tx, ty, 0.0], ..Transform::IDENTITY },
+    }
+}
+
+/// Worst |∇f| of a compiled render field over a dense 3D grid spanning the
+/// body AABB inflated by 50 % on every side (central differences, eps 2e-3 mm),
+/// exactly the probe geometry of `ticket_382_filleted_field_lipschitz_probe`.
+fn worst_grad_over_aabb(compiled: &crate::sdf_compiler::CompiledSdf, bb: &crate::csg::Aabb) -> f32 {
+    use crate::sdf_compiler::eval_opcodes;
+    let ext = [bb.max[0] - bb.min[0], bb.max[1] - bb.min[1], bb.max[2] - bb.min[2]];
+    let lo = [bb.min[0] - ext[0] * 0.5, bb.min[1] - ext[1] * 0.5, bb.min[2] - ext[2] * 0.5];
+    let hi = [bb.max[0] + ext[0] * 0.5, bb.max[1] + ext[1] * 0.5, bb.max[2] + ext[2] * 0.5];
+    let eps = 2e-3f32;
+    let gradmag = |p: [f32; 3]| {
+        let d = |dx: f32, dy: f32, dz: f32| {
+            eval_opcodes(&compiled.opcodes, [p[0] + dx, p[1] + dy, p[2] + dz])
+        };
+        let gx = (d(eps, 0.0, 0.0) - d(-eps, 0.0, 0.0)) / (2.0 * eps);
+        let gy = (d(0.0, eps, 0.0) - d(0.0, -eps, 0.0)) / (2.0 * eps);
+        let gz = (d(0.0, 0.0, eps) - d(0.0, 0.0, -eps)) / (2.0 * eps);
+        (gx * gx + gy * gy + gz * gz).sqrt()
+    };
+    let mut worst = 0.0f32;
+    let n = 70i32;
+    for ix in 0..=n {
+        for iy in 0..=n {
+            for iz in 0..=n {
+                let t = |i: i32, l: f32, h: f32| l + (h - l) * (i as f32 / n as f32);
+                let p = [t(ix, lo[0], hi[0]), t(iy, lo[1], hi[1]), t(iz, lo[2], hi[2])];
+                worst = worst.max(gradmag(p));
+            }
+        }
+    }
+    worst
+}
+
+/// #385 P5: a WORST-CASE loft (tiny circle → large, laterally-offset rectangle
+/// over a short height) has an axial gradient ≫ 1 — exactly the #382 grey-wall
+/// / tunnelling mode. The compiled render field must report a `march_relax`
+/// small enough that the sphere-trace STEP `minD · march_relax` never oversteps
+/// the surface: `march_relax ≤ 1 / L_measured`, i.e. `march_relax · |∇f| ≤ 1`
+/// at the worst grid point. The FIELD itself is unchanged (feld-neutral) — only
+/// the reported step factor is damped, mirroring Displace/Revolve.
+#[test]
+fn ticket_385_loft_field_lipschitz_probe() {
+    use crate::sdf_compiler::compile_body;
+    // r=0.4 circle at z=0 → half 8×8 rectangle shifted +3,+2 laterally at z=1.
+    // Big lateral slide over a 1 mm height ⇒ steep ∂f/∂z (well above 1).
+    let body = loft_body(
+        vec![
+            loft_sec(loft_circle(0.4), 0.0),
+            loft_sec_shifted(loft_rect(8.0, 8.0), 1.0, 3.0, 2.0),
+        ],
+        [0.0; 3],
+    );
+    let compiled = compile_body(&body);
+    let bb = body.aabb();
+    let worst = worst_grad_over_aabb(&compiled, &bb);
+
+    eprintln!(
+        "ticket_385 loft Lipschitz: worst |∇f| = {worst:.3}, march_relax = {:.4}, \
+         product = {:.4}",
+        compiled.march_relax,
+        compiled.march_relax * worst
+    );
+
+    // The undamped field genuinely violates 1-Lipschitz (proves damping is
+    // needed, not a no-op): the axial slope must exceed 1 by a wide margin.
+    assert!(
+        worst > 3.0,
+        "the worst-case loft field must actually be steep (|∇f| ≫ 1) — got {worst}"
+    );
+    // Damping is engaged: the step factor is well below the undamped 1.0.
+    assert!(
+        compiled.march_relax < 0.5,
+        "march_relax must damp the steep loft field — got {}",
+        compiled.march_relax
+    );
+    // The core safety invariant: a step of `minD · march_relax` never oversteps.
+    // A tiny margin (1.02) absorbs finite-difference noise vs. the L_z bound.
+    assert!(
+        compiled.march_relax * worst <= 1.02,
+        "march_relax must keep the trace step within 1/L — step·|∇f| = {} (march_relax={}, |∇f|={})",
+        compiled.march_relax * worst,
+        compiled.march_relax,
+        worst
+    );
+}
+
+/// #385 P5: a loft between two COINCIDENT profiles (identical shape, same
+/// lateral placement, different heights) has no axial variation at all — the
+/// morph is constant in z, so the field is a plain 1-Lipschitz extrude. The
+/// damping must NOT engage: `march_relax == 1.0` (== the min over the children,
+/// no unnecessary slow-down). Guards against an over-eager loft damper.
+#[test]
+fn ticket_385_loft_coincident_profiles_no_damping() {
+    use crate::sdf_compiler::compile_body;
+    let body = loft_body(
+        vec![loft_sec(loft_rect(3.0, 2.0), 0.0), loft_sec(loft_rect(3.0, 2.0), 4.0)],
+        [0.0; 3],
+    );
+    let compiled = compile_body(&body);
+    assert_eq!(
+        compiled.march_relax, 1.0,
+        "coincident loft profiles must not damp the march step (L_z = 1)"
+    );
+    // And the render field really is ≈1-Lipschitz, confirming no damping is due.
+    let worst = worst_grad_over_aabb(&compiled, &body.aabb());
+    assert!(
+        worst <= 1.05,
+        "coincident-profile loft field must stay ≈1-Lipschitz — worst |∇f| = {worst}"
+    );
+}
