@@ -130,7 +130,11 @@ fn walk(node: &BoundedCsg, shell: Option<f32>, out: &mut Vec<TangentialSeam>) {
         | BoundedCsg::Leaf { .. }
         | BoundedCsg::Helix { .. }
         | BoundedCsg::Sweep { .. }
-        // #385 P2: loft profile-plane tangential seams are P3 (weave-excluded).
+        // #385 P3: no-op stays correct. A tangential seam is where an ANALYTIC
+        // curved WALL grazes a cap; the loft's caps are analytic planes but its
+        // side wall is non-analytic (the morph mean has no analytic carrier), so
+        // there is no analytic wall↔cap tangency to witness. The cap rims are
+        // ordinary (transverse) rim edges, handled by the octree route.
         | BoundedCsg::Loft { .. } => {}
     }
 }

@@ -7518,3 +7518,88 @@ fn loft_three_profiles_bracket_selection() {
     assert!(f([0.0, 0.0, 0.0]).abs() < 1e-4, "bottom cap");
     assert!(f([0.0, 0.0, 6.0]).abs() < 1e-4, "top cap");
 }
+
+/// #385 P3: the two loft end profiles register as analytic `Plane` cap
+/// carriers (retained planar lids, extrude-cap sub-id scheme) and the cap-vs-
+/// wall contributor split resolves a pick on either lid to its cap branch and a
+/// pick on the morph side wall to the whole-feature (sub-0) wall branch.
+#[test]
+fn loft_p3_caps_registered_and_wall_split() {
+    use crate::csg::BranchId;
+    // Big rect (half 3×2) @z=0 → small rect (half 1×1) @z=4, centred slab
+    // (half_span 2, local z ∈ [−2, +2] mapped to world z ∈ [0, 4]).
+    let body = loft_body(
+        vec![loft_sec(loft_rect(3.0, 2.0), 0.0), loft_sec(loft_rect(1.0, 1.0), 4.0)],
+        [0.0; 3],
+    );
+
+    // (1) Both caps are analytic Plane carriers under their reserved cap subs.
+    let map = crate::brep::weaving::branch_halfspace_map(&body);
+    let top = BranchId::from_feature_sub(&id(1), BranchId::EXTRUDE_CAP_TOP_SUB);
+    let bot = BranchId::from_feature_sub(&id(1), BranchId::EXTRUDE_CAP_BOTTOM_SUB);
+    assert!(map.contains_key(&top.as_u32()), "top cap must be an analytic carrier");
+    assert!(map.contains_key(&bot.as_u32()), "bottom cap must be an analytic carrier");
+    assert!(
+        matches!(map[&top.as_u32()].0, fielddraft_protocol::HalfSpace::Plane { .. }),
+        "top cap carrier must be a Plane"
+    );
+
+    // (2) Contributor split (world-space picks via BoundedCsg::evaluate).
+    let eps = 1e-3;
+    let sub_of = |p: [f32; 3]| -> Vec<u32> {
+        body.evaluate(p, eps, crate::csg::EvalMode::Logical)
+            .1
+            .as_slice()
+            .iter()
+            .map(|b| b.sub())
+            .collect()
+    };
+    // Top lid interior (world z=4): resolves to the TOP cap sub only.
+    assert_eq!(sub_of([0.0, 0.0, 4.0]), vec![BranchId::EXTRUDE_CAP_TOP_SUB], "top lid pick");
+    // Bottom lid interior (world z=0): resolves to the BOTTOM cap sub only.
+    assert_eq!(sub_of([0.0, 0.0, 0.0]), vec![BranchId::EXTRUDE_CAP_BOTTOM_SUB], "bottom lid pick");
+    // Mid-height side wall (world z=2 → local z=0, morph boundary at x=2):
+    // resolves to the whole-feature (sub 0) wall branch, never a cap.
+    assert_eq!(sub_of([2.0, 0.0, 2.0]), vec![0], "side wall pick = whole-feature wall");
+}
+
+/// #385 P3: a 2-profile loft meshes watertight, and the octree weave (now
+/// reachable — the loft is no longer fully weave-excluded) materialises the two
+/// end lids as analytic B-Rep faces labelled with the cap sub-ids, while the
+/// non-analytic morph wall is left as an SDF-marched surface (no woven face).
+#[test]
+fn loft_p3_meshes_watertight_with_cap_faces() {
+    use crate::csg::BranchId;
+    let body = loft_body(
+        vec![loft_sec(loft_rect(3.0, 2.0), 0.0), loft_sec(loft_rect(1.0, 1.0), 4.0)],
+        [0.0; 3],
+    );
+
+    // (a)/(b) The triangle mesh from the SDF is non-empty and watertight.
+    let mesh = crate::surface_nets::surface_nets(&body, 64);
+    assert!(!mesh.indices.is_empty(), "loft mesh must be non-empty");
+    let v = crate::mesh_validate::validate_topology(&mesh);
+    assert_eq!(v.boundary_edges, 0, "loft mesh must be watertight (no boundary edges)");
+    assert!(v.watertight, "loft mesh must be watertight");
+
+    // (c) The octree weave produces exactly the two analytic cap faces with the
+    // reserved cap sub-ids; the morph wall gets no woven face.
+    let octree = crate::brep::octree::Octree::build(&body, 0.2);
+    let brep = crate::brep::weaving::weave(&body, &octree);
+    let cap_subs: std::collections::HashSet<u32> = brep
+        .faces
+        .iter()
+        .filter(|f| matches!(f.surface, crate::brep::SurfaceGeometry::Analytic { .. }))
+        .map(|f| f.branch_id.sub())
+        .collect();
+    assert!(
+        cap_subs.contains(&BranchId::EXTRUDE_CAP_TOP_SUB),
+        "woven B-Rep must carry the top cap face, got subs {cap_subs:?}"
+    );
+    assert!(
+        cap_subs.contains(&BranchId::EXTRUDE_CAP_BOTTOM_SUB),
+        "woven B-Rep must carry the bottom cap face, got subs {cap_subs:?}"
+    );
+    // No analytic wall face: the morph side wall stays non-analytic (sub 0).
+    assert!(!cap_subs.contains(&0), "morph wall must NOT be an analytic woven face");
+}

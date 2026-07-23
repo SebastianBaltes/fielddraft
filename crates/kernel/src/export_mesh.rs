@@ -1963,9 +1963,10 @@ fn check_node_analytic(node: &crate::csg::CsgNode) -> Result<(), String> {
         N::Helix { .. } | N::Sweep { .. } => {
             Err("helix/sweep (weave-excluded geometry)".into())
         }
-        // #385 P2: the loft morph is weave-excluded (non-analytic), same as
-        // helix/sweep — analytic STEP export is P3+.
-        N::Loft { .. } => Err("loft (weave-excluded geometry)".into()),
+        // #385 P3: the loft's two planar caps ARE woven analytically now, but
+        // its morph side wall has no analytic carrier, so a fully analytic
+        // export of the body is impossible — keep the mesh fallback.
+        N::Loft { .. } => Err("loft (non-analytic morph side wall)".into()),
     }
 }
 

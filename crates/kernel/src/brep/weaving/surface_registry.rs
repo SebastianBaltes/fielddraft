@@ -303,9 +303,27 @@ pub(super) fn collect_halfspaces(node: &BoundedCsg, out: &mut BranchSurfaceMap) 
             }
         }
         BoundedCsg::Sweep { .. } => {}
-        // #385 P2: loft caps/walls get no analytic carrier yet (weave-excluded);
-        // retained-cap registration is P3.
-        BoundedCsg::Loft { .. } => {}
+        // #385 P3: the two loft end profiles lie in exact planes (loft-local
+        // z = ±half_span, centred slab), so they are retained planar lids —
+        // register them as analytic `Plane` carriers exactly like the extrude
+        // caps ([`collect_extrude_halfspaces`], same ±z-normal / offset =
+        // half_span convention, same reserved cap sub-ids). The morph SIDE WALL
+        // is non-analytic (an implicit field mean of the profiles — plan §1
+        // correspondence-free morph, no per-segment carrier), so it gets no
+        // entry and stays an SDF-marched / tessellated face (like a curved
+        // extrude wall). Field value untouched — carriers are metadata only.
+        BoundedCsg::Loft { id, half_span, world_transform, .. } => {
+            use fielddraft_protocol::HalfSpace;
+            let xf = *world_transform;
+            out.insert(
+                BranchId::from_feature_sub(id, BranchId::EXTRUDE_CAP_TOP_SUB).as_u32(),
+                (HalfSpace::Plane { normal: [0.0, 0.0, 1.0], offset: *half_span }, xf),
+            );
+            out.insert(
+                BranchId::from_feature_sub(id, BranchId::EXTRUDE_CAP_BOTTOM_SUB).as_u32(),
+                (HalfSpace::Plane { normal: [0.0, 0.0, -1.0], offset: *half_span }, xf),
+            );
+        }
         BoundedCsg::Empty => {}
     }
 }

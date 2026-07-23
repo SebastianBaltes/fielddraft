@@ -263,8 +263,11 @@ fn walk(node: &BoundedCsg, out: &mut Vec<Branch>) {
         | BoundedCsg::Revolve { .. }
         | BoundedCsg::Helix { .. }
         | BoundedCsg::Sweep { .. }
-        // #385 P2: loft bodies are weave-excluded (see `body.rs`), so this walk
-        // never actually sees one; `leaf_branches` returns no branches for it.
+        // #385 P3: `branch_pairs` feeds only the analytic SEED path, which still
+        // rejects the loft (non-Lipschitz wall, `scope_supported`); the P3 cap
+        // weaving runs on the OCTREE route, which does not use this walk. And
+        // `leaf_branches` returns ∅ for a loft anyway (no intrinsic pairs — the
+        // two parallel caps never intersect), so this arm is inert for it.
         | BoundedCsg::Loft { .. } => {
             out.extend(leaf_branches(node));
         }
@@ -386,7 +389,7 @@ fn collect_pairs(node: &BoundedCsg, out: &mut Vec<BranchPair>) -> Vec<Branch> {
         | BoundedCsg::Revolve { .. }
         | BoundedCsg::Helix { .. }
         | BoundedCsg::Sweep { .. }
-        // #385 P2: weave-excluded, never reached in practice (leaf_branches → ∅).
+        // #385 P3: seed-path only (octree cap-weaving bypasses this); leaf_branches → ∅.
         | BoundedCsg::Loft { .. } => {
             let bs = leaf_branches(node);
             // Intrinsic pairs: the operand's own candidate edges. All branches of

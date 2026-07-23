@@ -327,8 +327,11 @@ fn has_non_gyroid_non_lipschitz(node: &BoundedCsg) -> bool {
         BoundedCsg::Leaf { primitive, .. } => {
             primitive.is_non_lipschitz() && !matches!(primitive, Primitive::Gyroid { .. })
         }
-        // #385 P2: the loft morph joins Helix/Sweep as non-Lipschitz without an
-        // analytic carrier (P5 L_z term).
+        // #385 P3: the loft morph WALL joins Helix/Sweep as non-Lipschitz
+        // without an analytic carrier (P5 L_z term), so the analytic partial/
+        // seed scope keeps rejecting it — nothing on the wall would resolve.
+        // (The loft's analytic CAPS are woven on the OCTREE route instead, which
+        // this gate does not govern; see `body::bounded_contains_space_filling`.)
         BoundedCsg::Helix { .. } | BoundedCsg::Sweep { .. } | BoundedCsg::Loft { .. } => true,
         BoundedCsg::Union { left, right, .. }
         | BoundedCsg::Difference { left, right, .. }

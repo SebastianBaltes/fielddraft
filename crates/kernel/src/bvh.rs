@@ -29,8 +29,8 @@ use serde::Serialize;
 use fielddraft_protocol::{FeatureId, Primitive, Transform};
 
 use crate::csg::{
-    extrude_contributors, sdf_loft, BranchId, LoftProfileField, OpenBranchSet,
-    revolve_contributors, sdf_extrude,
+    extrude_contributors, loft_contributors, loft_morph_2d, sdf_loft, LoftProfileField,
+    OpenBranchSet, revolve_contributors, sdf_extrude,
     Aabb, BlendMode, Contributors, CsgNode, EvalMode, OpenSurface,
 };
 use crate::sketch2d::BoundedSketch2d;
@@ -1098,13 +1098,15 @@ impl BoundedCsg {
                 c.extend(cb);
                 (d, c)
             }
-            // #385 P2: the whole loft is one contributor (its feature id) — the
-            // per-cap / per-wall B-Rep face split is P3 (see the `CsgNode::Loft`
-            // counterpart).
+            // #385 P3: cap-vs-wall contributor split, mirroring the `CsgNode::Loft`
+            // counterpart. The cap term ties → cap sub-id (retained analytic
+            // Plane lid); the morph wall ties → whole-feature branch (sub 0).
             BoundedCsg::Loft { id, sections, half_span, world_transform, .. } => {
                 let local = world_to_local(world_transform, p);
-                let d = sdf_loft(sections, *half_span, local) * world_transform.min_scale();
-                (d, Contributors::single(BranchId::from_feature(id)))
+                let d2 = loft_morph_2d(sections, local);
+                let d = sdf_extrude(d2, local[2], *half_span) * world_transform.min_scale();
+                let c = loft_contributors(id, d2, local[2], *half_span, eps);
+                (d, c)
             }
         }
     }

@@ -377,11 +377,23 @@ fn bounded_contains_space_filling(node: &BoundedCsg) -> bool {
         // A general sweep is weave-excluded for the same reason (non-analytic
         // surface; the weaver would refine on it pointlessly).
         BoundedCsg::Sweep { .. } => true,
-        // #385 P2: the loft morph surface is non-analytic (an implicit field
-        // mean of the profiles), so it is weave-excluded like Sweep/Helix for
-        // now — a clean mesh, no B-Rep faces. Retained-cap / traced-wall weaving
-        // is P3 (docs/LOFT-FEATURE-PLAN.md §P3).
-        BoundedCsg::Loft { .. } => true,
+        // #385 P3: unlike Helix/Sweep, the loft is NO LONGER fully weave-
+        // excluded. Its two end profiles are exact planes registered as analytic
+        // `Plane` carriers (`surface_registry::collect_halfspaces`), so the
+        // octree route weaves them into two pickable, analytic CAP faces. The
+        // non-analytic morph SIDE WALL (branch sub 0, no half-space carrier —
+        // plan §1 correspondence-free morph) gets no woven face: the weaver's
+        // tessellation fallback simply omits it, leaving the wall as an SDF-
+        // marched surface (the triangle mesh from the SDF stays watertight).
+        // Empirically (rect→rect loft) the octree neither stalls nor mis-refines
+        // on the tame lateral wall — it is a bounded tapered surface, not the
+        // volume-threading thread of a Helix/Sweep that DL-71 excludes. Returning
+        // `false` here is the ONLY weave-status change: the analytic seed/
+        // parametric paths keep rejecting the loft (`has_non_gyroid_non_lipschitz`
+        // / `collect_non_lipschitz_features` still count the non-Lipschitz wall),
+        // so only the octree — which resolves the analytic caps and drops the
+        // wall — handles it.
+        BoundedCsg::Loft { .. } => false,
         BoundedCsg::Extrude { .. } | BoundedCsg::Revolve { .. } | BoundedCsg::Empty => false,
     }
 }

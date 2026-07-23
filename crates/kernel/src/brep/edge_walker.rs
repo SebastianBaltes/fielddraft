@@ -707,8 +707,12 @@ pub(crate) fn collect_non_lipschitz_features(node: &BoundedCsg, out: &mut std::c
         BoundedCsg::Sweep { id, .. } => {
             out.insert(BranchId::from_feature(id).feature_id());
         }
-        // #385 P2: the loft morph is not 1-Lipschitz in z (P5 L_z term) — same
-        // exemption as Sweep/Helix, so its group is not walked for seams.
+        // #385 P3: the loft morph is not 1-Lipschitz in z (P5 L_z term), so its
+        // group stays exempt from the analytic seed/edge-walker seam path — the
+        // side wall has no analytic carrier to trace. This is UNCHANGED from P2:
+        // the P3 cap-weaving happens on the OCTREE route (the caps are analytic
+        // Plane carriers), NOT here, so the loft's non-Lipschitz exemption from
+        // the seed path is still correct.
         BoundedCsg::Loft { id, .. } => {
             out.insert(BranchId::from_feature(id).feature_id());
         }

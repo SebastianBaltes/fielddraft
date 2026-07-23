@@ -2749,13 +2749,17 @@ impl CsgNode {
                     None => (f32::INFINITY, Contributors::empty()),
                 }
             }
-            // #385 P2: the whole loft is one contributor (its feature id). The
-            // per-cap / per-wall B-Rep face split (retained planar lids, traced
-            // side walls) is P3 scope; a single contributor is honest for
-            // picking (selects the loft) and never mislabels a face.
+            // #385 P3: cap-vs-wall contributor split. `d2` (the morphed 2D
+            // cross-section) is compared against the cap term inside
+            // `loft_contributors`, so a point on the planar lid resolves to its
+            // cap sub-id (pickable, retained analytic Plane) and a point on the
+            // morph side wall to the whole-feature branch (sub 0, one traced
+            // face). Field value is unchanged (`sdf_extrude(d2, …)`).
             CsgNode::Loft { id, sections, half_span, .. } => {
-                let d = sdf_loft(sections, *half_span, p);
-                (d, Contributors::single(BranchId::from_feature(id)))
+                let d2 = loft_morph_2d(sections, p);
+                let d = sdf_extrude(d2, p[2], *half_span);
+                let c = loft_contributors(id, d2, p[2], *half_span, eps);
+                (d, c)
             }
         }
     }
@@ -3012,6 +3016,18 @@ impl LoftProfileField for LoftNodeSection {
 /// sphere-trace `march_relax` damping that keeps the renderer from tunnelling
 /// (grey wall, #382 mode) is P5 scope, not evaluated here.
 pub(crate) fn sdf_loft<S: LoftProfileField>(sections: &[S], half_span: f32, p: [f32; 3]) -> f32 {
+    sdf_extrude(loft_morph_2d(sections, p), p[2], half_span)
+}
+
+/// #385 P3: the loft's *un-clamped* morphed 2D cross-section value at `p` — the
+/// tent-weighted lerp of the section profile fields, WITHOUT the z-slab clamp.
+/// This is the `d2` term of [`sdf_loft`] (`sdf_loft = sdf_extrude(d2, z,
+/// half_span)`), split out so the contributor logic ([`loft_contributors`]) can
+/// compare it against the cap term `|z| − half_span` to decide wall-vs-cap
+/// provenance — exactly as the extrude band's `distance` is compared against its
+/// cap term. Field value is untouched: `sdf_loft` still returns the identical
+/// composition, so P3 is feld-neutral.
+pub(crate) fn loft_morph_2d<S: LoftProfileField>(sections: &[S], p: [f32; 3]) -> f32 {
     let z = p[2];
     let n = sections.len();
     let mut d2 = 0.0f32;
@@ -3028,7 +3044,56 @@ pub(crate) fn sdf_loft<S: LoftProfileField>(sections: &[S], half_span: f32, p: [
             d2 += w * sections[j].sdf2([local[0], local[1]]);
         }
     }
-    sdf_extrude(d2, z, half_span)
+    d2
+}
+
+/// #385 P3: contributor band for a **loft** point. The loft SDF is
+/// `max(d2, |z| − half_span)` (the morphed cross-section [`loft_morph_2d`]
+/// hard-clamped to the profile slab, exactly like [`CsgNode::Extrude`]'s caps),
+/// so the nearest surface is whichever term ties the max within `eps`:
+///
+/// * the **cap** term names the reserved top/bottom cap sub-id
+///   ([`BranchId::EXTRUDE_CAP_TOP_SUB`] / `…_BOTTOM_SUB`, the SAME scheme as
+///   extrude/helix caps) — a retained planar lid registered as an analytic
+///   `Plane` carrier ([`crate::brep::weaving::branch_halfspace_map`]);
+/// * the **wall** term names the whole-feature branch (sub 0) — the loft's
+///   morph side wall is one non-analytic surface (an implicit field mean of the
+///   profiles, no per-segment analytic carrier — plan §1 correspondence-free
+///   morph), so it is a single traced/marched face, not per-boundary walls like
+///   an extrude.
+///
+/// At the rim (wall∩cap) BOTH branches are returned so the B-Rep both-branches
+/// gate sees a real edge, uniform with the extrude cap band. `z`/`half_span`
+/// are in the centred loft-local frame, so the cap split is placement-
+/// independent.
+pub(crate) fn loft_contributors(
+    id: &FeatureId,
+    d2: f32,
+    z: f32,
+    half_span: f32,
+    eps: f32,
+) -> Contributors {
+    let wall = d2;
+    let cap = z.abs() - half_span;
+    let d_max = wall.max(cap);
+    let mut c = Contributors::empty();
+    if (wall - d_max).abs() <= eps {
+        c.push(BranchId::from_feature(id));
+    }
+    if (cap - d_max).abs() <= eps {
+        let sub = if z >= 0.0 {
+            BranchId::EXTRUDE_CAP_TOP_SUB
+        } else {
+            BranchId::EXTRUDE_CAP_BOTTOM_SUB
+        };
+        c.push(BranchId::from_feature_sub(id, sub));
+    }
+    // Degenerate guard: never return an empty set — name the whole feature so
+    // the point still has a provenance.
+    if c.is_empty() {
+        c.push(BranchId::from_feature(id));
+    }
+    c
 }
 
 /// #385 P2: the piecewise-linear "hat" (tent) basis weight of a section at
