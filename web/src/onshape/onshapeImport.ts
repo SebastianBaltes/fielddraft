@@ -437,6 +437,81 @@ export async function importOnshapeFeatures(
       continue;
     }
 
+    if (feat.featureType === "loft") {
+      // FieldDraft lofts SOLID bodies only; an Onshape SURFACE loft has no
+      // FieldDraft counterpart, so report and skip rather than fake a solid.
+      const bodyType = params.get("bodyType")?.value ?? "SOLID";
+      if (bodyType !== "SOLID") {
+        result.warnings.push(
+          `${name}: Loft-Bodytyp ${bodyType} (kein SOLID) wird nicht importiert — übersprungen`,
+        );
+        continue;
+      }
+      // Each item of sheetProfilesArray is ONE cross-section; its
+      // `sheetProfileEntities` query points at the sketch region to loft.
+      const arr = params.get("sheetProfilesArray");
+      const items: AnyMsg[] = (arr?.items ?? []).map(msg);
+      const profiles: string[] = [];
+      for (const item of items) {
+        const ip = paramsOf(item);
+        const profileQs = queryStringsOf(ip.get("sheetProfileEntities"))[0];
+        const sketchFid = profileQs ? await profileSketchId(profileQs) : null;
+        const rec = sketchFid ? sketches.get(sketchFid) : undefined;
+        if (!rec) {
+          result.warnings.push(
+            `${name}: ein Loft-Querschnitt ist nicht auflösbar — übersprungen`,
+          );
+          continue;
+        }
+        profiles.push(`qCreatedBy(${rec.fdId})`);
+      }
+      if (profiles.length < 2) {
+        result.warnings.push(
+          `${name}: weniger als 2 auflösbare Loft-Querschnitte (${profiles.length}) — Feature übersprungen`,
+        );
+        continue;
+      }
+      // v1 lofts by straight cross-section morph only: guide curves and
+      // start/end tangency (derivative) conditions are not yet honoured.
+      const guides: AnyMsg[] = (params.get("guidesArray")?.items ?? []).map(msg);
+      if (guides.length > 0 || params.get("addGuides")?.value === true) {
+        result.warnings.push(
+          `${name}: Führungskurven (guidesArray) werden in v1 ignoriert`,
+        );
+      }
+      const startCond = params.get("startCondition")?.value ?? "DEFAULT";
+      const endCond = params.get("endCondition")?.value ?? "DEFAULT";
+      if (startCond !== "DEFAULT" || endCond !== "DEFAULT") {
+        result.warnings.push(
+          `${name}: Loft-Randableitung (${startCond}/${endCond}) wird in v1 ignoriert`,
+        );
+      }
+      const opType = params.get("operationType")?.value ?? "NEW";
+      const operation =
+        opType === "NEW" ? "new" : opType === "REMOVE" ? "remove" : opType === "INTERSECT" ? "intersect" : "add";
+      // Boolean scope → explicit targets (Feature-Scope-Direktive), same as extrude.
+      let targets = "";
+      const scopeQs = queryStringsOf(params.get("booleanScope"))[0];
+      if (scopeQs && operation !== "new") {
+        const scopeRef = await decodeAnyOpRef(scopeQs);
+        if (scopeRef && result.idMap[scopeRef] !== undefined) {
+          targets = `qCreatedBy(${result.idMap[scopeRef]})`;
+        }
+      }
+      const fdId = kernel.addFeatureCall(
+        "loft",
+        JSON.stringify({
+          display_name: name,
+          profiles: profiles.join(", "),
+          operation,
+          ...(targets ? { targets } : {}),
+        }),
+      );
+      result.idMap[feat.featureId] = fdId;
+      result.created.push(fdId);
+      continue;
+    }
+
     if (feat.featureType === "shell") {
       const faceQs = queryStringsOf(params.get("entities"));
       const openFaces: string[] = [];

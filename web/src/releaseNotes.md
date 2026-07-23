@@ -12,6 +12,9 @@ Format, eine Zeile je Eintrag:
 kind = feat | fix | perf. scope und #tickets sind optional. Folgezeilen, die
 eingerückt sind, gehören zum Text davor (Umbruch erlaubt).
 
+## 0.24.0
+- feat(onshape) #385 #376: Onshape-Import übersetzt Loft-Features jetzt in echte FieldDraft-Lofts (Profil-Querschnitte aus sheetProfilesArray); Führungskurven werden in v1 noch ignoriert.
+
 ## 0.23.0
 - feat(sketch) #385: Neues Loft-Feature — zwei oder mehr parallele Profil-Skizzen (oder planare Flächen) werden zu einem Körper überblendet; die Profile wählst du wie beim Extrude über den Profil-Picker im Dialog aus.
 - fix(kernel) #385: Flächen-Auswahlen unterscheiden jetzt zuverlässig zwischen geometrisch identischen Körpern an verschiedenen Positionen — vorher konnten zwei Picks auf die Deckel zweier gleicher Boxen auf dieselbe Fläche zusammenfallen (etwa beim Loft: Fehlermeldung, die Profile lägen auf derselben Ebene).

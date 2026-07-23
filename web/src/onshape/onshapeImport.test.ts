@@ -10,6 +10,25 @@ function kabelbox(): { features: any[] } {
   );
 }
 
+/** The #339 C-channel fixture: has a real `loft` (Loft 1) fed by two sketch
+ *  cross-sections (Sketch 2, Sketch 3). Used for the #376 loft-import path. */
+function ticket339(): { features: any[] } {
+  return JSON.parse(
+    readFileSync(join(__dirname, "fixtures", "ticket339-features.json"), "utf8"),
+  );
+}
+
+/** Grab a deep clone of the loft feature's message body. */
+function loftFeature(doc: { features: any[] }): any {
+  return (doc.features as any[])
+    .map((f) => f.message ?? f)
+    .find((f) => f.featureType === "loft");
+}
+
+function loftParam(loft: any, id: string): any {
+  return loft.parameters.map((p: any) => p.message ?? p).find((p: any) => p.parameterId === id);
+}
+
 /** Mock kernel: allocates sequential ids and reports every face-level
  *  query as uniquely resolving (the REAL uniqueness check runs against
  *  the wasm kernel in the app; here we exercise the translation flow). */
@@ -86,6 +105,58 @@ describe("importOnshapeFeatures — Kabelbox translation flow", () => {
     const sketches = kernel.calls.filter((c) => c.type === "sketch");
     expect(sketches.length).toBe(2);
     expect(result.errors.some((e) => e.includes("löst auf 0"))).toBe(true);
+  });
+});
+
+describe("loft import (#385 / #376 C-channel)", () => {
+  it("translates an Onshape loft into ONE loft call with its cross-sections in order", async () => {
+    const kernel = mockKernel();
+    await importOnshapeFeatures(ticket339(), kernel);
+
+    const lofts = kernel.calls.filter((c) => c.type === "loft");
+    expect(lofts.length).toBe(1);
+    // Two cross-sections: Sketch 2 (fd id 4) then Sketch 3 (fd id 5), in the
+    // order they appear in sheetProfilesArray.
+    expect(lofts[0].params.profiles).toBe("qCreatedBy(4), qCreatedBy(5)");
+    expect(lofts[0].params.operation).toBe("new");
+    expect(lofts[0].params.display_name).toBe("Loft 1");
+  });
+
+  it("does NOT degrade the loft to extrudes or skip it (#376 regression)", async () => {
+    const kernel = mockKernel();
+    const result = await importOnshapeFeatures(ticket339(), kernel);
+
+    // A real loft call exists — the loft is no longer an unknown feature type.
+    expect(kernel.calls.some((c) => c.type === "loft")).toBe(true);
+    expect(
+      result.errors.some((e) => e.includes('Feature-Typ "loft"')),
+    ).toBe(false);
+    // Exactly the three genuine document extrudes (Extrude 1/2 before, Extrude 3
+    // after the loft) — the loft did not spawn extra extrudes standing in for it.
+    expect(kernel.calls.filter((c) => c.type === "extrude").length).toBe(3);
+  });
+
+  it("skips a SURFACE loft with a warning (no fake solid)", async () => {
+    const doc = ticket339();
+    loftParam(loftFeature(doc), "bodyType").value = "SURFACE";
+    const kernel = mockKernel();
+    const result = await importOnshapeFeatures(doc, kernel);
+
+    expect(kernel.calls.some((c) => c.type === "loft")).toBe(false);
+    expect(result.warnings.some((w) => w.includes("SOLID") && w.includes("Loft"))).toBe(true);
+  });
+
+  it("skips a loft with fewer than 2 resolvable profiles, with a warning", async () => {
+    const doc = ticket339();
+    // Drop one cross-section: only a single profile remains.
+    loftParam(loftFeature(doc), "sheetProfilesArray").items.length = 1;
+    const kernel = mockKernel();
+    const result = await importOnshapeFeatures(doc, kernel);
+
+    expect(kernel.calls.some((c) => c.type === "loft")).toBe(false);
+    expect(
+      result.warnings.some((w) => w.includes("weniger als 2") && w.includes("Querschnitt")),
+    ).toBe(true);
   });
 });
 
