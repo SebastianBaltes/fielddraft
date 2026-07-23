@@ -3999,3 +3999,40 @@ fn voxelize_empty_scene_is_empty() {
     assert!(k.voxel_grid_info(32).is_empty());
     assert!(k.voxelize_occupancy(32).is_empty());
 }
+
+/// #406/#383 P1 — the hard fillet cutter through the REAL wasm API chain
+/// (`addFeatureCall` → `bodyBrepEdges` query → compiled opcode stream via
+/// `bodySdfEval`), exactly what the web app runs. Guards against the fillet
+/// working in the raw `apply_edge_fillets` unit path but not end-to-end.
+#[test]
+fn p1_fillet_cutter_via_kernel_api() {
+    let mut k = Kernel::new();
+    k.add_feature_call("box", r#"{"half_extents":[10.0,10.0,10.0]}"#)
+        .unwrap();
+    let edges: serde_json::Value =
+        serde_json::from_str(&k.body_brep_edges(0)).unwrap();
+    let query = edges
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| {
+            let p = e["points"].as_array().unwrap();
+            p[0] == 10.0 && p[1] == 10.0 && p[3] == 10.0 && p[4] == 10.0
+        })
+        .expect("+X/+Y cube edge")["query"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    k.add_feature_call(
+        "fillet_edge",
+        &format!(r#"{{"edge":"{query}","blend_radius":3.0}}"#),
+    )
+    .unwrap();
+    let d = |x: f32, y: f32, z: f32| k.body_sdf_eval(0, x, y, z);
+    // Old sharp edge is carved away; the 45° rolling-ball point is on the
+    // surface; an un-filleted edge stays sharp.
+    assert!(d(10.0, 10.0, 0.0) > 0.2, "old edge must be outside, got {}", d(10.0, 10.0, 0.0));
+    let s = 7.0 + 3.0 / 2.0f32.sqrt();
+    assert!(d(s, s, 0.0).abs() < 0.15, "rolling-ball surface ≈0, got {}", d(s, s, 0.0));
+    assert!(d(10.0, -10.0, 0.0).abs() < 1e-3, "un-filleted edge stays sharp");
+}

@@ -4772,10 +4772,14 @@ fn fillet_edge_query_rounds_the_edge_identity_placement() {
 
     let hard = crate::csg::CsgNode::from_decoded(&ctx.features);
     let filleted = hard.clone().apply_edge_fillets(&ctx.edge_fillets);
+    // #383/#406: the step rim is a STRAIGHT CONVEX edge between two planar
+    // faces → it now becomes a hard analytic cutter (boolean subtraction), not
+    // a `smin` MaskedBlend. The top of the tree is that cutter Difference.
+    assert!(ctx.edge_fillets[0].cutter.is_some(), "planar straight edge → cutter geometry");
+    assert_eq!(count_masked_blends(&filleted), 0, "convex straight edge uses the cutter, not smin");
     assert!(
-        matches!(filleted, crate::csg::CsgNode::MaskedBlend { .. })
-            || count_masked_blends(&filleted) >= 1,
-        "the matching junction became a MaskedBlend",
+        matches!(filleted, crate::csg::CsgNode::Difference(_, _)),
+        "the fillet subtracts a hard cutter at body level",
     );
 
     assert_rounded_at_edge(&hard, &filleted, mid_world);
@@ -4899,28 +4903,14 @@ fn fillet_blend_weaves_as_its_own_analytic_face() {
     use crate::csg::BranchId;
     use fielddraft_protocol::HalfSpace;
 
-    let registry = FeatureRegistry::with_builtins();
-    let mut doc = empty_ctx();
-    let mut ctx = Context::new(&mut doc);
-    let (edge_hash, _mid) = step_geometry(&registry, &mut ctx, [0.0, 0.0, 0.0]);
-    registry
-        .regenerate(
-            &mut ctx,
-            &[FeatureCall::new(
-                "fillet_edge",
-                id(3),
-                json!({ "edge": format!("qEdge({edge_hash})"), "blend_radius": 3.0 }),
-            )],
-            None,
-        )
-        .unwrap();
-
-    let hard = crate::csg::CsgNode::from_decoded(&ctx.features);
-    let filleted = hard.apply_edge_fillets(&ctx.edge_fillets);
-    let body = crate::bvh::BoundedCsg::from_csg(&filleted);
+    // #383/#406: the smin Blend carrier is exercised by a CURVED edge — the
+    // circular cylinder↔box contact rim, which stays on the mask path. A
+    // straight convex edge (a box step) would now become a hard analytic cutter
+    // with no Blend carrier, so this test deliberately uses the curved rim.
+    let (body, _) = cylinder_on_box_filleted(3.0);
 
     // The surface registry detects the blend carrier, keyed on the fillet
-    // feature's own branch (sub 0).
+    // feature's own branch (sub 0). `cylinder_on_box_filleted` uses id(3).
     let fillet_branch = BranchId::from_feature(&id(3)).as_u32();
     let map = crate::brep::weaving::branch_halfspace_map(&body);
     let entry = map.get(&fillet_branch).unwrap_or_else(|| {
@@ -7958,5 +7948,120 @@ fn ticket_385_loft_coincident_profiles_no_damping() {
     assert!(
         worst <= 1.05,
         "coincident-profile loft field must stay ≈1-Lipschitz — worst |∇f| = {worst}"
+    );
+}
+
+/// #406/#383 — resolve the `+X/+Y` edge of a lone box (half-extent `he`) and
+/// return `(edge_hash, edge_midpoint_world)`. Both adjacent faces belong to the
+/// SAME feature (signature `(1,1)`): there is NO Boolean junction, so the old
+/// `smin` mask path could never round it (that was the #406 bug).
+fn cube_pxpy_edge(
+    registry: &FeatureRegistry,
+    ctx: &mut Context<'_>,
+    he: f32,
+) -> (u64, [f32; 3]) {
+    registry
+        .regenerate(ctx, std::slice::from_ref(&box_call(1, he)), None)
+        .unwrap();
+    let woven = crate::body::weave_all(&ctx.features);
+    let (brep, placement) = &woven[0];
+    use crate::brep::naming::TopoRef;
+    use crate::brep::EdgeId;
+    for i in 0..brep.edges.len() {
+        let e = brep.edge(EdgeId(i as u32));
+        let (s0, s1) = (e.signature.0.feature_id(), e.signature.1.feature_id());
+        let pts: Vec<[f32; 3]> = match &e.geometry {
+            crate::brep::EdgeGeometry::Polyline(p) => {
+                p.iter().map(|q| [q[0] as f32, q[1] as f32, q[2] as f32]).collect()
+            }
+            _ => continue,
+        };
+        let a = pts[0];
+        let b = pts[pts.len() - 1];
+        let mid = super::place_point(
+            placement,
+            [(a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0, (a[2] + b[2]) / 2.0],
+        );
+        // +X/+Y edge: runs along Z at x≈+he, y≈+he.
+        if s0 == 1 && s1 == 1 && mid[0] > he - 1.0 && mid[1] > he - 1.0 && mid[2].abs() < 1.0 {
+            let hash = TopoRef::from_edge(brep, EdgeId(i as u32)).id_hash;
+            return (hash, mid);
+        }
+    }
+    panic!("a +X/+Y cube edge exists");
+}
+
+/// #406 + #383: filleting a lone cube edge now produces an analytic HARD CUTTER
+/// (Onshape rolling-ball subtraction), not a wirkungsloser `smin` blend.
+/// Verifies: (a) the fillet actually changes the field of a single primitive's
+/// own edge, (b) the old sharp edge is now OUTSIDE, (c) the tangent-cylinder
+/// surface is on the zero set, (d) UN-filleted edges/corners stay sharp, and
+/// (e) the rounding is bounded to the edge (ends stay sharp — #383).
+#[test]
+fn p1_cube_edge_hard_cutter_fillet() {
+    let registry = FeatureRegistry::with_builtins();
+    let mut doc = empty_ctx();
+    let mut ctx = Context::new(&mut doc);
+    let he = 10.0f32;
+    let r = 3.0f32;
+    let (edge_hash, mid) = cube_pxpy_edge(&registry, &mut ctx, he);
+
+    registry
+        .regenerate(
+            &mut ctx,
+            &[FeatureCall::new(
+                "fillet_edge",
+                id(2),
+                json!({ "edge": format!("qEdge({edge_hash})"), "blend_radius": r }),
+            )],
+            None,
+        )
+        .unwrap();
+    assert_eq!(ctx.edge_fillets.len(), 1, "one fillet pushed");
+    assert!(ctx.edge_fillets[0].cutter.is_some(), "planar straight edge → cutter geometry");
+
+    let hard = crate::csg::CsgNode::from_decoded(&ctx.features);
+    let filleted = hard.clone().apply_edge_fillets(&ctx.edge_fillets);
+    let sdf = |n: &crate::csg::CsgNode, p: [f32; 3]| n.sdf(p, crate::csg::EvalMode::Visual);
+
+    // (a) the field of a LONE primitive's own edge actually moved.
+    let d_hard = sdf(&hard, mid);
+    let d_fill = sdf(&filleted, mid);
+    assert!(d_hard.abs() < 1e-4, "edge midpoint is on the hard surface (f≈0), got {d_hard}");
+    // (b) the point on the OLD sharp edge is now carved away (outside).
+    assert!(d_fill > 0.2, "old sharp edge must now be OUTSIDE the filleted body, got {d_fill}");
+
+    // (c) the rolling-ball surface: centre C=(he−r, he−r, z), the 45° point sits
+    // on the fillet at distance r from C → f≈0.
+    let cx = he - r;
+    let s = r / 2.0f32.sqrt();
+    let on_fillet = [cx + s, cx + s, 0.0];
+    let d_on = sdf(&filleted, on_fillet);
+    assert!(d_on.abs() < 0.15, "tangent-cylinder surface point must be ≈0, got {d_on}");
+    // A point just inside the rolling ball is solid, just outside is void.
+    assert!(sdf(&filleted, [cx + s * 0.7, cx + s * 0.7, 0.0]) < -0.1, "inside fillet is solid");
+    assert!(sdf(&filleted, [cx + s * 1.3, cx + s * 1.3, 0.0]) > 0.1, "outside fillet is void");
+
+    // (d) an UN-filleted edge stays perfectly sharp: the +X/−Y edge at
+    // (he, −he, 0) is untouched (f≈0 there, and its corner is a right angle).
+    let other_edge = [he, -he, 0.0];
+    assert!(
+        (sdf(&filleted, other_edge)).abs() < 1e-3,
+        "un-filleted +X/−Y edge must stay on the surface, got {}",
+        sdf(&filleted, other_edge)
+    );
+    // The +X face well away from the filleted edge is unchanged.
+    assert!((sdf(&filleted, [he, -he * 0.5, 0.0])).abs() < 1e-3, "far +X face unchanged");
+
+    // (e) the rounding is bounded to the edge: BEYOND the top face (z>he) the
+    // corner where the filleted edge terminates stays sharp — the point
+    // (he, he, he) (the cube's top +X+Y corner) is a hard vertex, not rounded
+    // into a sphere. It stays on/at the surface region, never carved to a large
+    // positive distance the way the mid-edge was.
+    let corner = [he, he, he];
+    let d_corner = sdf(&filleted, corner);
+    assert!(
+        d_corner < d_fill,
+        "edge end/corner must stay sharper than the rounded mid-edge: corner {d_corner} vs mid {d_fill}"
     );
 }

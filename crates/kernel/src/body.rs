@@ -845,6 +845,52 @@ pub fn hash_body_payload(features: &[DecodedFeature], indices: &[usize]) -> u64 
     combine_hashes(g, t)
 }
 
+/// #406/#405: hash of the post-pass inputs applied on top of every body's CSG
+/// tree — per-edge fillets (`fillet_edge`) and the global round (`round_all`).
+/// These live OUTSIDE the body's feature payload, so they must be mixed into
+/// the body cache keys separately: without this, adding or editing a fillet
+/// left `payload_hash` unchanged and the cached mesh + compiled SDF were
+/// silently reused (the fillet "did nothing" in the app while every direct
+/// build-path test passed).
+pub fn hash_round_passes(edge_fillets: &[EdgeFillet], global_round: Option<f32>) -> u64 {
+    let mut h = DefaultHasher::new();
+    edge_fillets.len().hash(&mut h);
+    for f in edge_fillets {
+        f.fillet_id.hash(&mut h);
+        f.feature_a.hash(&mut h);
+        f.feature_b.hash(&mut h);
+        f.branch_a.hash(&mut h);
+        f.branch_b.hash(&mut h);
+        f.blend_radius.to_bits().hash(&mut h);
+        f.mask_radius.to_bits().hash(&mut h);
+        std::mem::discriminant(&f.blend_mode).hash(&mut h);
+        f.mask_polyline.len().hash(&mut h);
+        for p in &f.mask_polyline {
+            for v in p {
+                v.to_bits().hash(&mut h);
+            }
+        }
+        match &f.cutter {
+            None => 0u8.hash(&mut h),
+            Some(c) => {
+                1u8.hash(&mut h);
+                for v in c.normal_a.iter().chain(&c.normal_b).chain(&c.edge_start).chain(&c.edge_end) {
+                    v.to_bits().hash(&mut h);
+                }
+                c.radius.to_bits().hash(&mut h);
+            }
+        }
+    }
+    match global_round {
+        None => 0u8.hash(&mut h),
+        Some(r) => {
+            1u8.hash(&mut h);
+            r.to_bits().hash(&mut h);
+        }
+    }
+    h.finish()
+}
+
 /// Compute a body's rigid + uniform-scale **placement** from its anchor
 /// feature (`indices[0]`, the seed Union that started the body — see
 /// [`partition`]). The placement is the anchor transform's rotation +

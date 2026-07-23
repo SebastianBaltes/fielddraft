@@ -12,6 +12,9 @@ Format, eine Zeile je Eintrag:
 kind = feat | fix | perf. scope und #tickets sind optional. Folgezeilen, die
 eingerückt sind, gehören zum Text davor (Umbruch erlaubt).
 
+## 0.26.0
+- feat(sdf) #406 #383: Kanten-Fillets sind jetzt echte harte Cutter nach Onshape-Vorbild — an einer geraden konvexen Kante wird ein analytisch exakter Rundungskörper boolesch subtrahiert (zylindrische Rundung entlang der Kante, Ecken bleiben scharf). Damit funktioniert das Abrunden einer einzelnen Würfelkante überhaupt erstmals, und Fillets/Round All greifen jetzt sofort statt erst nach einer späteren Geometrie-Änderung.
+
 ## 0.25.1
 - fix(ui) #400: Bricht man den Details-Dialog eines gerade per Werkzeug neu angelegten Features mit Abbrechen (oder Escape) ab, wird das Feature jetzt wieder entfernt — bestehende Features aus der Feature-Liste bleiben beim Abbrechen wie bisher erhalten.
 

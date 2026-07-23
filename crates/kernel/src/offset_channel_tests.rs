@@ -1062,6 +1062,7 @@ fn weave_refresh_offset_body_and_fillet_on_offset_edge() {
         mask_radius: 6.0,
         blend_radius: 3.0,
         blend_mode: crate::csg::BlendMode::Fillet,
+        cutter: None,
     };
     let plain = crate::body::build_bounded_for_body_rounded(
         &features, &[0], None, &[], CHANNEL_TOL_RENDER,

@@ -1716,6 +1716,7 @@ fn apply_edge_fillets_replaces_matching_junction() {
         mask_radius: 5.0,
         blend_radius: 3.0,
         blend_mode: BlendMode::Fillet,
+        cutter: None,
     }];
     let result = tree.apply_edge_fillets(&fillets);
     // The top-level Union should have been replaced by
@@ -1752,6 +1753,7 @@ fn apply_edge_fillets_leaves_unmatched_junctions() {
         mask_radius: 5.0,
         blend_radius: 3.0,
         blend_mode: BlendMode::Fillet,
+        cutter: None,
     }];
     let result = tree.apply_edge_fillets(&fillets);
     assert!(matches!(result, CsgNode::Difference(_, _)));
@@ -1796,6 +1798,7 @@ fn fillet_all_edges_stress_test() {
             mask_radius: 8.0,
             blend_radius: 2.0,
             blend_mode: BlendMode::Fillet,
+            cutter: None,
         })
         .collect();
     let result = tree.apply_edge_fillets(&fillets);

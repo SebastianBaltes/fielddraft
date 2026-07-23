@@ -78,6 +78,13 @@ impl FeatureKind for FilletEdgeFeature {
         }
         let mask_radius = d.blend_radius * FILLET_MASK_SCALE;
         for hit in resolved {
+            // #383/#406: if both adjacent faces are planes and the edge is
+            // straight, feed the analytic hard cutter (Onshape rolling-ball
+            // subtraction). Convexity + orthogonality are decided later against
+            // the live field in `apply_edge_fillets`; here we only gather the
+            // geometry. A curved/tessellated neighbour or a non-straight edge
+            // leaves `cutter = None` → the fillet stays on the `smin` mask path.
+            let cutter = build_fillet_cutter(&hit, d.blend_radius);
             ctx.edge_fillets.push(crate::csg::EdgeFillet {
                 fillet_id: id.clone(),
                 feature_a: hit.feature_a,
@@ -88,10 +95,52 @@ impl FeatureKind for FilletEdgeFeature {
                 mask_radius,
                 blend_radius: d.blend_radius,
                 blend_mode: crate::csg::BlendMode::Fillet,
+                cutter,
             });
         }
         Ok(())
     }
+}
+
+/// #383/#406: assemble the analytic cutter inputs from a resolved edge hit.
+/// Requires both adjacent faces to be planes and the edge polyline to be
+/// straight (collinear within tolerance). Returns `None` otherwise — the fillet
+/// then stays on the `smin` mask path.
+fn build_fillet_cutter(
+    hit: &super::context_resolve::FilletEdgeHit,
+    radius: f32,
+) -> Option<crate::csg::FilletCutter> {
+    let normal_a = hit.plane_normal_a?;
+    let normal_b = hit.plane_normal_b?;
+    let poly = &hit.polyline;
+    if poly.len() < 2 {
+        return None;
+    }
+    let start = poly[0];
+    let end = poly[poly.len() - 1];
+    let dir = [end[0] - start[0], end[1] - start[1], end[2] - start[2]];
+    let len = (dir[0] * dir[0] + dir[1] * dir[1] + dir[2] * dir[2]).sqrt();
+    if len <= 1e-4 {
+        return None;
+    }
+    let t = [dir[0] / len, dir[1] / len, dir[2] / len];
+    // Straightness: every interior point must lie on the start→end line.
+    for p in &poly[1..poly.len() - 1] {
+        let w = [p[0] - start[0], p[1] - start[1], p[2] - start[2]];
+        let s = w[0] * t[0] + w[1] * t[1] + w[2] * t[2];
+        let perp = [w[0] - s * t[0], w[1] - s * t[1], w[2] - s * t[2]];
+        let d2 = perp[0] * perp[0] + perp[1] * perp[1] + perp[2] * perp[2];
+        if d2 > 1e-4 {
+            return None; // curved edge — not a P1 hard cutter case
+        }
+    }
+    Some(crate::csg::FilletCutter {
+        normal_a,
+        normal_b,
+        edge_start: start,
+        edge_end: end,
+        radius,
+    })
 }
 
 // ─── Round all edges (global): deburr every Boolean junction ───

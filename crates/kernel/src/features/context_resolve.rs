@@ -7,12 +7,23 @@ use fielddraft_protocol::{FeatureId, Transform};
 /// One resolved fillet edge: the two junction operand features, their full
 /// wall [`crate::csg::BranchId`] u32s (edge signature, with sub) and the
 /// edge's world-space polyline for the mask tube.
+///
+/// #383/#406 hard cutter: when BOTH adjacent faces are analytic planes, their
+/// world-space outward normals are captured (`plane_normal_a`/`_b`). Together
+/// with the polyline endpoints this is everything the analytic fillet cutter
+/// needs (see [`crate::csg::FilletCutter`]); a curved/tessellated neighbour
+/// leaves the field `None` and the fillet stays on the `smin` mask path.
 pub struct FilletEdgeHit {
     pub feature_a: FeatureId,
     pub feature_b: FeatureId,
     pub branch_a: u32,
     pub branch_b: u32,
     pub polyline: Vec<[f32; 3]>,
+    /// World-space normal of the planar face on `branch_a`, if that face is a
+    /// plane. `None` for a curved/tessellated face.
+    pub plane_normal_a: Option<[f32; 3]>,
+    /// World-space normal of the planar face on `branch_b`, if planar.
+    pub plane_normal_b: Option<[f32; 3]>,
 }
 
 use crate::csg::{CsgNode};
@@ -756,12 +767,18 @@ impl<'a> Context<'a> {
 
                 let feature_a = FeatureId::from_u32(edge.signature.0.feature_id());
                 let feature_b = FeatureId::from_u32(edge.signature.1.feature_id());
+                // #383/#406: capture the two adjacent faces' world normals when
+                // they are analytic planes — the analytic hard cutter's inputs.
+                let plane_normal_a = planar_face_normal(brep, placement, edge.signature.0);
+                let plane_normal_b = planar_face_normal(brep, placement, edge.signature.1);
                 out.push(FilletEdgeHit {
                     feature_a,
                     feature_b,
                     branch_a: edge.signature.0.as_u32(),
                     branch_b: edge.signature.1.as_u32(),
                     polyline: world,
+                    plane_normal_a,
+                    plane_normal_b,
                 });
             }
         }
@@ -1074,4 +1091,30 @@ pub(crate) fn place_point(placement: &fielddraft_protocol::Transform, p: [f32; 3
         r[1] + placement.translate[1],
         r[2] + placement.translate[2],
     ]
+}
+
+/// #383/#406: world-space normal of the PLANAR face on `branch`, or `None` if
+/// no face on that branch is an analytic plane. Unlike
+/// [`face_normal_for_branch`] this refuses curved/tessellated faces — the hard
+/// fillet cutter is only defined between two planes.
+fn planar_face_normal(
+    brep: &crate::brep::BRep,
+    placement: &fielddraft_protocol::Transform,
+    branch: crate::csg::BranchId,
+) -> Option<[f32; 3]> {
+    use crate::brep::SurfaceGeometry;
+    use fielddraft_protocol::HalfSpace;
+    for i in 0..brep.faces.len() {
+        if brep.faces[i].branch_id == branch {
+            if let SurfaceGeometry::Analytic { surface: HalfSpace::Plane { .. }, .. } =
+                &brep.faces[i].surface
+            {
+                return Some(
+                    crate::sketch::face_plane_frame(brep, crate::brep::FaceId(i as u32), placement)
+                        .normal,
+                );
+            }
+        }
+    }
+    None
 }

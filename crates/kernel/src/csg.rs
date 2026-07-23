@@ -1502,14 +1502,158 @@ impl CsgNode {
         acc
     }
 
+    /// Apply per-edge fillets to the body tree.
+    ///
+    /// #383/#406: fillets whose edge is straight between two planar faces carry
+    /// analytic [`FilletCutter`] geometry. Those are realised as HARD CUTTERS —
+    /// an exact Box−Cylinder body subtracted from the whole tree (Onshape
+    /// rolling-ball semantics: cylindrical rounding along the edge, sharp
+    /// corners). This is the only mechanism that can round a LONE primitive's
+    /// own edge (a cube edge, `feature_a == feature_b`, has no Boolean junction
+    /// to rewrite — the historic #406 bug). Every remaining fillet (curved
+    /// edges, non-planar faces, or a cutter that fails the convexity/orthogonality
+    /// gate) falls through to the legacy `smin` mask-blend path
+    /// ([`Self::apply_mask_fillets`]).
     pub fn apply_edge_fillets(self, fillets: &[EdgeFillet]) -> Self {
+        if fillets.is_empty() {
+            return self;
+        }
+        // Fillets with analytic cutter geometry try the hard path; the rest go
+        // straight to the mask path.
+        let mask_only: Vec<EdgeFillet> =
+            fillets.iter().filter(|f| f.cutter.is_none()).cloned().collect();
+        let with_cutter: Vec<EdgeFillet> =
+            fillets.iter().filter(|f| f.cutter.is_some()).cloned().collect();
+
+        // 1. Legacy smin mask blend for the non-cutter fillets.
+        let mut node = self.apply_mask_fillets(&mask_only);
+
+        // 2. Hard cutters, subtracted at body level. Convexity + orthogonality
+        //    are decided against the live field of the (already mask-filleted)
+        //    body; a cutter that does not apply falls back to the mask path so
+        //    a convex Boolean-junction edge still rounds.
+        let mut fallback: Vec<EdgeFillet> = Vec::new();
+        for f in &with_cutter {
+            match node.build_edge_cutter(f) {
+                Some(cutter) => {
+                    node = CsgNode::Difference(Box::new(node), Box::new(cutter));
+                }
+                None => fallback.push(f.clone()),
+            }
+        }
+        if !fallback.is_empty() {
+            node = node.apply_mask_fillets(&fallback);
+        }
+        node
+    }
+
+    /// #383/#406: build the exact Box−Cylinder cutter for one straight, convex,
+    /// orthogonal fillet edge, ready to subtract from `self`. Returns `None`
+    /// when the edge fails a gate (degenerate, non-orthogonal dihedral, or
+    /// concave — all deferred to later fillet phases, see
+    /// `docs/FILLET-CUTTER-PLAN.md`). Uses only [`Primitive::Box`] /
+    /// [`Primitive::Cylinder`] + [`CsgNode::Difference`], so it flows through
+    /// every SDF evaluator without a new opcode.
+    fn build_edge_cutter(&self, f: &EdgeFillet) -> Option<CsgNode> {
+        use fielddraft_protocol::{Primitive, Transform};
+        let c = f.cutter.as_ref()?;
+        let r = c.radius;
+        if !(r > 0.0) || !r.is_finite() {
+            return None;
+        }
+        let e0 = c.edge_start;
+        let e1 = c.edge_end;
+        let dir = [e1[0] - e0[0], e1[1] - e0[1], e1[2] - e0[2]];
+        let len = (dir[0] * dir[0] + dir[1] * dir[1] + dir[2] * dir[2]).sqrt();
+        if len <= 1e-4 {
+            return None;
+        }
+        let w = [dir[0] / len, dir[1] / len, dir[2] / len];
+        let mid = [
+            (e0[0] + e1[0]) * 0.5,
+            (e0[1] + e1[1]) * 0.5,
+            (e0[2] + e1[2]) * 0.5,
+        ];
+
+        // Orient both face normals OUTWARD against the live field (independent
+        // of the weaver's sign convention): along the true outward direction
+        // the field grows from ~0 at the edge to positive outside.
+        let na = orient_outward(self, mid, c.normal_a, r)?;
+        let nb = orient_outward(self, mid, c.normal_b, r)?;
+
+        // P1 gate: orthogonal dihedral only (cube-style right-angle edges).
+        let cdot = dot3(na, nb);
+        if cdot.abs() > 2e-2 {
+            return None;
+        }
+        // Both face normals must be perpendicular to the edge (planar straight
+        // edge). Project the box's in-plane axis u ⟂ w and rebuild a clean
+        // right-handed orthonormal frame (u, v, w); the box is symmetric in
+        // u and v so v's sign is irrelevant.
+        let u = normalize3(sub3(na, scale3(w, dot3(na, w))))?;
+        let v = cross3(w, u); // unit (u ⟂ w), right-handed
+
+        // Rolling-ball centre: distance r inside from both faces. cdot≈0 here
+        // so 1/(1+cdot) ≈ 1; keep the general form for robustness.
+        let k = r / (1.0 + cdot);
+        let cen = [
+            mid[0] - k * (na[0] + nb[0]),
+            mid[1] - k * (na[1] + nb[1]),
+            mid[2] - k * (na[2] + nb[2]),
+        ];
+        // Convexity: the ball centre must sit comfortably INSIDE the solid.
+        // A concave edge would place it in empty space (defer to a later phase).
+        if self.sdf(cen, EvalMode::Visual) > -0.5 * r {
+            return None;
+        }
+
+        let box_id = f.fillet_id.child("cut_box");
+        let cyl_id = f.fillet_id.child("cut_cyl");
+
+        // Corner box: r×r cross-section on the edge, full edge length along w.
+        let box_node = CsgNode::Transform(
+            Transform { translate: mid, rotation: quat_from_cols3(u, v, w), scale: [1.0; 3] },
+            Box::new(CsgNode::Leaf {
+                id: box_id,
+                primitive: Primitive::Box {
+                    center: [0.0; 3],
+                    half_extents: [r, r, len * 0.5],
+                },
+            }),
+        );
+        // Tangent cylinder: axis along w (local Y → w), radius r, slightly
+        // longer than the edge so its flat caps sit outside the box → the
+        // rounding runs crisply to the sharp ends.
+        let cyl_node = CsgNode::Transform(
+            Transform {
+                translate: cen,
+                rotation: quat_from_cols3(u, w, cross3(u, w)),
+                scale: [1.0; 3],
+            },
+            Box::new(CsgNode::Leaf {
+                id: cyl_id,
+                primitive: Primitive::Cylinder {
+                    center: [0.0; 3],
+                    radius: r,
+                    half_height: len * 0.5 + r,
+                },
+            }),
+        );
+        Some(CsgNode::Difference(Box::new(box_node), Box::new(cyl_node)))
+    }
+
+    /// Legacy per-edge fillet: rewrite the matching Boolean junction into a
+    /// spatially-masked `smin` blend ([`CsgNode::MaskedBlend`]). Used for
+    /// fillets the analytic hard cutter does not cover (curved edges, non-planar
+    /// faces, non-orthogonal/concave junctions).
+    fn apply_mask_fillets(self, fillets: &[EdgeFillet]) -> Self {
         if fillets.is_empty() {
             return self;
         }
         match self {
             CsgNode::Union(a, b) => {
-                let a = a.apply_edge_fillets(fillets);
-                let b = b.apply_edge_fillets(fillets);
+                let a = a.apply_mask_fillets(fillets);
+                let b = b.apply_mask_fillets(fillets);
                 if let Some((f, provenance)) = find_matching_fillet(&a, &b, fillets) {
                     CsgNode::MaskedBlend {
                         a: Box::new(a),
@@ -1526,8 +1670,8 @@ impl CsgNode {
                 }
             }
             CsgNode::Difference(a, b) => {
-                let a = a.apply_edge_fillets(fillets);
-                let b = b.apply_edge_fillets(fillets);
+                let a = a.apply_mask_fillets(fillets);
+                let b = b.apply_mask_fillets(fillets);
                 if let Some((f, provenance)) = find_matching_fillet(&a, &b, fillets) {
                     CsgNode::MaskedBlend {
                         a: Box::new(a),
@@ -1545,25 +1689,25 @@ impl CsgNode {
             }
             // Recurse into wrappers but don't match on them.
             CsgNode::Transform(t, inner) => {
-                CsgNode::Transform(t, Box::new(inner.apply_edge_fillets(fillets)))
+                CsgNode::Transform(t, Box::new(inner.apply_mask_fillets(fillets)))
             }
             CsgNode::Twist(inner, r) => {
-                CsgNode::Twist(Box::new(inner.apply_edge_fillets(fillets)), r)
+                CsgNode::Twist(Box::new(inner.apply_mask_fillets(fillets)), r)
             }
             CsgNode::Bend(inner, r) => {
-                CsgNode::Bend(Box::new(inner.apply_edge_fillets(fillets)), r)
+                CsgNode::Bend(Box::new(inner.apply_mask_fillets(fillets)), r)
             }
             CsgNode::Shell(inner, t, open) => {
-                CsgNode::Shell(Box::new(inner.apply_edge_fillets(fillets)), t, open)
+                CsgNode::Shell(Box::new(inner.apply_mask_fillets(fillets)), t, open)
             }
             CsgNode::Offset(inner, delta) => {
-                CsgNode::Offset(Box::new(inner.apply_edge_fillets(fillets)), delta)
+                CsgNode::Offset(Box::new(inner.apply_mask_fillets(fillets)), delta)
             }
             CsgNode::InnerWall(inner) => {
-                CsgNode::InnerWall(Box::new(inner.apply_edge_fillets(fillets)))
+                CsgNode::InnerWall(Box::new(inner.apply_mask_fillets(fillets)))
             }
             CsgNode::Displace(inner, d, f) => {
-                CsgNode::Displace(Box::new(inner.apply_edge_fillets(fillets)), d, f)
+                CsgNode::Displace(Box::new(inner.apply_mask_fillets(fillets)), d, f)
             }
             // Leaves and already-blended nodes pass through.
             other => other,
@@ -3749,6 +3893,92 @@ fn apply_op(
     }
 }
 
+// ─── #383/#406 hard-cutter vector helpers ──────────────────────────────────
+
+fn dot3(a: [f32; 3], b: [f32; 3]) -> f32 {
+    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+}
+
+fn sub3(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
+    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
+}
+
+fn scale3(a: [f32; 3], s: f32) -> [f32; 3] {
+    [a[0] * s, a[1] * s, a[2] * s]
+}
+
+fn cross3(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
+    [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    ]
+}
+
+/// Normalise, or `None` if the vector is (near-)degenerate.
+fn normalize3(v: [f32; 3]) -> Option<[f32; 3]> {
+    let l = dot3(v, v).sqrt();
+    if l < 1e-6 {
+        None
+    } else {
+        Some([v[0] / l, v[1] / l, v[2] / l])
+    }
+}
+
+/// Return `n` flipped so it points OUTWARD from the solid at `mid` (an edge
+/// point, field ≈ 0): the outward side is where the field grows. `None` if the
+/// probe is inconclusive (the two sides are indistinguishable).
+fn orient_outward(node: &CsgNode, mid: [f32; 3], n: [f32; 3], r: f32) -> Option<[f32; 3]> {
+    let n = normalize3(n)?;
+    let eps = (0.1 * r).clamp(1e-3, 0.5);
+    let plus = node.sdf([mid[0] + eps * n[0], mid[1] + eps * n[1], mid[2] + eps * n[2]], EvalMode::Visual);
+    let minus = node.sdf([mid[0] - eps * n[0], mid[1] - eps * n[1], mid[2] - eps * n[2]], EvalMode::Visual);
+    if (plus - minus).abs() < 1e-5 {
+        return None;
+    }
+    Some(if plus >= minus { n } else { [-n[0], -n[1], -n[2]] })
+}
+
+/// Unit quaternion `(x,y,z,w)` for the rotation whose matrix COLUMNS are the
+/// orthonormal right-handed basis `(e1, e2, e3)` (i.e. it maps local X→e1,
+/// Y→e2, Z→e3). Mirror of `offset_channel::quat_from_cols` in f32.
+fn quat_from_cols3(e1: [f32; 3], e2: [f32; 3], e3: [f32; 3]) -> [f32; 4] {
+    let m = [
+        [e1[0], e2[0], e3[0]],
+        [e1[1], e2[1], e3[1]],
+        [e1[2], e2[2], e3[2]],
+    ];
+    let tr = m[0][0] + m[1][1] + m[2][2];
+    let (x, y, z, w);
+    if tr > 0.0 {
+        let s = (tr + 1.0).sqrt() * 2.0;
+        w = 0.25 * s;
+        x = (m[2][1] - m[1][2]) / s;
+        y = (m[0][2] - m[2][0]) / s;
+        z = (m[1][0] - m[0][1]) / s;
+    } else if m[0][0] > m[1][1] && m[0][0] > m[2][2] {
+        let s = (1.0 + m[0][0] - m[1][1] - m[2][2]).sqrt() * 2.0;
+        w = (m[2][1] - m[1][2]) / s;
+        x = 0.25 * s;
+        y = (m[0][1] + m[1][0]) / s;
+        z = (m[0][2] + m[2][0]) / s;
+    } else if m[1][1] > m[2][2] {
+        let s = (1.0 + m[1][1] - m[0][0] - m[2][2]).sqrt() * 2.0;
+        w = (m[0][2] - m[2][0]) / s;
+        x = (m[0][1] + m[1][0]) / s;
+        y = 0.25 * s;
+        z = (m[1][2] + m[2][1]) / s;
+    } else {
+        let s = (1.0 + m[2][2] - m[0][0] - m[1][1]).sqrt() * 2.0;
+        w = (m[1][0] - m[0][1]) / s;
+        x = (m[0][2] + m[2][0]) / s;
+        y = (m[1][2] + m[2][1]) / s;
+        z = 0.25 * s;
+    }
+    let l = (x * x + y * y + z * z + w * w).sqrt().max(1e-30);
+    [x / l, y / l, z / l, w / l]
+}
+
 /// K10.4: find the first EdgeFillet that matches a junction between two
 /// subtrees. A fillet matches when one subtree contains feature_a and the
 /// other contains feature_b; the returned [`BlendProvenance`] carries the
@@ -3817,6 +4047,32 @@ pub struct EdgeFillet {
     pub blend_radius: f32,
     /// Fillet or chamfer.
     pub blend_mode: BlendMode,
+    /// #383/#406: analytic hard-cutter inputs, present when both adjacent faces
+    /// are planes and the queried edge is straight. When set, the fillet is
+    /// realised as a boolean subtraction of an exact Box−Cylinder cutter
+    /// (Onshape rolling-ball semantics) instead of the `smin` mask blend — see
+    /// [`CsgNode::apply_edge_fillets`]. `None` keeps the fillet on the mask path
+    /// (curved edges, non-planar faces).
+    pub cutter: Option<FilletCutter>,
+}
+
+/// #383/#406: geometric inputs for an analytic hard fillet cutter on a straight
+/// edge between two planar faces. All in world/CSG eval space. The two normals
+/// are the faces' outward normals up to sign — the sign is re-fixed against the
+/// live field at apply time (see [`CsgNode::build_edge_cutter`]), so the caller
+/// need not guarantee an orientation convention.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct FilletCutter {
+    /// Outward normal of adjacent face A (world, sign re-fixed at apply time).
+    pub normal_a: [f32; 3],
+    /// Outward normal of adjacent face B.
+    pub normal_b: [f32; 3],
+    /// Straight edge endpoints (world). The cutter spans this segment; ends stay
+    /// sharp (no corner blend — Onshape default).
+    pub edge_start: [f32; 3],
+    pub edge_end: [f32; 3],
+    /// Rolling-ball radius (== the fillet's `blend_radius`).
+    pub radius: f32,
 }
 
 /// K10.3: capsule SDF for spatial masks. The capsule is a

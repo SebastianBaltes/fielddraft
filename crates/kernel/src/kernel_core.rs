@@ -202,11 +202,19 @@ impl Kernel {
                 .collect();
 
         let mut new_bodies: Vec<Body> = Vec::with_capacity(partitions.len());
+        // #406/#405: fillets and the global round are post-passes applied on
+        // top of every body's tree, so they are part of every body's cache
+        // identity — mix them into both hashes or a new/edited fillet reuses
+        // the stale mesh + compiled SDF.
+        let round_hash =
+            crate::body::hash_round_passes(&self.edge_fillets, self.global_round);
         for part in partitions {
             let id = part.seed_id(&self.decoded);
             let (geometry_hash, transform_hash) =
                 hash_body_payload_split(&self.decoded, &part.feature_indices);
-            let payload_hash = hash_body_payload(&self.decoded, &part.feature_indices);
+            let geometry_hash = geometry_hash ^ round_hash;
+            let payload_hash =
+                hash_body_payload(&self.decoded, &part.feature_indices) ^ round_hash;
             let target_resolution = self.target_resolution_for(&id);
 
             if let Some(mut prev) = previous.remove(&id) {
