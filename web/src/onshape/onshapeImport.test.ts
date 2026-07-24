@@ -195,3 +195,91 @@ describe("cap side follows the extrude direction (Ticket #339)", () => {
     expect(sketches[1].params.planeQuery).toBe("qCreatedBy(2, CAP_TOP)");
   });
 });
+
+/** The #412 part studio: one sketch, one extrude selecting FOUR sketch
+ *  regions via compressed SKETCH_ENTITY profile queries. */
+function ticket412(): { features: any[] } {
+  return JSON.parse(
+    readFileSync(join(__dirname, "fixtures", "onshape-412-features.json"), "utf8"),
+  );
+}
+
+/** Mock kernel whose `regionQueryAtPoint` is supplied per test — the region
+ *  resolution runs against the REAL decoded #412 queries and REAL interior
+ *  points, only the flood-fill lookup is stubbed. */
+function regionMockKernel(
+  regionAt: (sketchId: number, u: number, v: number) => string,
+): ImportKernel & { calls: { type: string; params: any }[] } {
+  let next = 1;
+  const calls: { type: string; params: any }[] = [];
+  return {
+    calls,
+    addSketch(planeQuery, subCalls) {
+      calls.push({ type: "sketch", params: { planeQuery, subCalls } });
+      return next++;
+    },
+    addFeatureCall(typeName, paramsJson) {
+      calls.push({ type: typeName, params: JSON.parse(paramsJson) });
+      return next++;
+    },
+    resolveQuery() {
+      return [{ kind: "face", idHash: "1", query: "qFace(1)" }];
+    },
+    sceneAabb() {
+      return { min: [0, 0, 0], max: [200, 200, 200], size: [200, 200, 200] };
+    },
+    regionQueryAtPoint: regionAt,
+  };
+}
+
+describe("extrude region selection (#412)", () => {
+  it("maps each Onshape region to its own qRegion → a MultiQuery of distinct regions", async () => {
+    // A kernel that DID subdivide: hand each distinct interior point its own
+    // region index (first-seen order), like a real per-region flood-fill.
+    const seen = new Map<string, number>();
+    const kernel = regionMockKernel((sid, u, v) => {
+      const key = `${Math.round(u)},${Math.round(v)}`;
+      if (!seen.has(key)) seen.set(key, seen.size);
+      return `qRegion(${sid}, ${seen.get(key)})`;
+    });
+    const result = await importOnshapeFeatures(ticket412(), kernel);
+    const extrude = kernel.calls.find((c) => c.type === "extrude")!;
+    // MultiQuery joins top-level with ", "; qRegion's own args also use ", ",
+    // so count the qRegion terms rather than a naive split (parser is
+    // paren-aware, see protocol/src/lib.rs).
+    const profiles = extrude.params.profiles as string;
+    const terms = profiles.match(/qRegion\(1, \d+\)/g) ?? [];
+    expect(terms.length).toBe(4); // four distinct regions, not the whole sketch
+    expect(new Set(terms).size).toBe(4);
+    expect(profiles).not.toContain("qCreatedBy");
+    // A faithful 1:1 selection raises no reduction warning.
+    expect(result.warnings.some((w) => w.includes("FieldDraft findet dafür nur"))).toBe(false);
+  });
+
+  it("warns and falls back to the whole sketch when regions collapse to fewer (imprint mismatch)", async () => {
+    // A kernel like the real one: all four points land in the ONE union region.
+    const kernel = regionMockKernel((sid) => `qRegion(${sid}, 0)`);
+    const result = await importOnshapeFeatures(ticket412(), kernel);
+    const extrude = kernel.calls.find((c) => c.type === "extrude")!;
+    expect(extrude.params.profiles).toBe("qRegion(1, 0)");
+    expect(
+      result.warnings.some((w) => w.includes("Onshape wählte 4 Regionen")),
+      result.warnings.join(" | "),
+    ).toBe(true);
+  });
+
+  it("warns and extrudes the whole sketch when no region resolves", async () => {
+    const kernel = regionMockKernel(() => ""); // every point outside every region
+    const result = await importOnshapeFeatures(ticket412(), kernel);
+    const extrude = kernel.calls.find((c) => c.type === "extrude")!;
+    expect(extrude.params.profiles).toBe("qCreatedBy(1)");
+    expect(result.warnings.some((w) => w.includes("nicht auflösbar"))).toBe(true);
+  });
+
+  it("extrudes the whole sketch (no region resolution) when the kernel lacks regionQueryAtPoint", async () => {
+    const kernel = mockKernel(); // no regionQueryAtPoint
+    await importOnshapeFeatures(ticket412(), kernel);
+    const extrude = kernel.calls.find((c) => c.type === "extrude")!;
+    expect(extrude.params.profiles).toBe("qCreatedBy(1)");
+  });
+});

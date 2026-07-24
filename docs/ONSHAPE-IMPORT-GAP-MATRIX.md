@@ -105,6 +105,16 @@ Alles andere fällt in den Sammel-Zweig (:594) → `errors: "Feature-Typ '<x>' w
 | importDerived (Cross-Document) | L | 411,417 |
 | enclose | L | 418 |
 
+## #412 Region-Query-Auflösung — Befund & Teillösung (2026-07-24)
+
+Der Importer liest jetzt ALLE Profil-Queries eines Extrudes (nicht nur die erste), dekodiert jede qCompressed-SKETCH_ENTITY-Query zu den berandenden sketchEntityIds (`onshapeRegion.ts::decodeRegionQuery`), berechnet daraus einen Innenpunkt (Zentroid der referenzierten Segment-Geometrie, Imprint-abgeleitete `.top/.bottom`-Ids fallen auf ihr Basis-Rechteck zurück) und fragt den Kernel `regionQueryAtPoint` → `qRegion(sketch, i)`. Die distinkten Regionen werden zu einer `profiles`-MultiQuery verbunden.
+
+**Fundamentaler Modell-Mismatch (Kernbefund):** Onshape identifiziert Regionen per **Imprint** — überlappende/verschachtelte Sketch-Kurven zerteilen die Ebene in viele kleine Faces, jede einzeln wählbar. FieldDrafts Regionenmodell ist ein **SDF-Vereinigungs-Flood-Fill** (`sketch_regions.rs::find_regions`): verschachtelte/überlappende geschlossene Profile verschmelzen zu EINER Region. Für #412 (4 Platten als Imprint-Subfaces eines großen Rechtecks) findet der Kernel daher nur **1 Region** — die 4 Onshape-Regionen haben keine FieldDraft-Entsprechung.
+
+Folge/Verhalten: Wo die Auswahl 1:1 auflösbar ist (getrennte, nicht verschachtelte Regionen — der Normalfall), extrudiert der Import jetzt korrekt nur die gewählten Regionen. Wo sie es nicht ist (Imprint wie #412), gibt es eine **sichtbare Warnung** („Onshape wählte N Regionen, FieldDraft findet dafür nur M") und Fallback auf den ganzen Sketch — nie mehr stille Falschgeometrie. Für #412 bleibt die Geometrie damit noch falsch (1 Block statt 4 Platten), aber laut und dokumentiert.
+
+**Offene Kernel-Arbeit für echte #412-Korrektheit:** Imprint-artige Regionen-Subdivision im Sketch-Regionenmodell (Faces an internen Sehnen/Kurven trennen, nicht nur SDF-Union-Flood-Fill). Größerer Kernel-Change, hier bewusst nicht mitgemacht.
+
 ## Empfohlene Paket-Reihenfolge
 
 1. **P0 Quick Wins verifizieren:** ERLEDIGT 2026-07-24 — Ergebnis ernüchternd: nur #413 strukturell korrekt. Neue P0-Folgearbeiten: (a) **Sketch-Region-Query-Auflösung** (qCompressed → sketchEntityIds → Region), ohne die #412 falsch bleibt und vermutlich viele weitere Dokumente stille Falschgeometrie liefern; (b) **#410-Import-Freeze** profilen/fixen; (c) App-Bug #422 ERLEDIGT (v0.28.1, c4f0c619 — view-lose Projekte starten als Iso-Fit auf frische CSG-Bounds, Alt-Pose wird vergessen).

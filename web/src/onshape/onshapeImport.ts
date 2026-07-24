@@ -21,6 +21,7 @@ import {
   type OnshapePlaneRef,
 } from "./onshapeQuery";
 import { translateOnshapeSketch, type SketchSubCall } from "./onshapeSketch";
+import { decodeRegionQuery } from "./onshapeRegion";
 import { resolvePlaneFrame, type PlaneFrameKernel } from "../sketchPlaneFrame";
 
 /** The kernel surface the importer drives — matches `Kernel` in
@@ -34,6 +35,11 @@ export interface ImportKernel extends Partial<PlaneFrameKernel> {
   /** World AABB of everything built so far — the extent a THROUGH_ALL cut
    *  has to clear. `{min, max, size}` in mm. */
   sceneAabb?(): { min: number[]; max: number[]; size: number[] };
+  /** `qRegion(sketchId, i)` for the flood-fill region of `sketchId` that
+   *  contains the sketch-space point `(u, v)` in mm, or `""` when the point
+   *  is outside every region (ticket #412). Optional: a kernel double
+   *  without it degrades to whole-sketch profiles (never wrong regions). */
+  regionQueryAtPoint?(sketchId: number, u: number, v: number): string;
 }
 
 export interface OnshapeImportResult {
@@ -119,6 +125,73 @@ interface SketchRecord {
   /** The FieldDraft plane query the sketch was placed on — the extrude's
    *  local +Z, and the reference plane every end condition measures from. */
   planeQuery: string;
+  /** Onshape sketch-entity id → its 2D vertices in sketch-space mm. Used to
+   *  compute an interior point for a region-query selection (#412). Segments
+   *  carry two endpoints; circles/arcs their four AABB corners. */
+  entityGeom: Map<string, [number, number][]>;
+}
+
+/** Extract every non-construction sketch entity's 2D vertices (mm), keyed by
+ *  Onshape entity id. The same ×1000 metre→mm scale the sketch translation
+ *  uses, so a point computed here is directly comparable to what the kernel
+ *  stored and `regionQueryAtPoint` expects. */
+export function sketchEntityVertices(feat: AnyMsg): Map<string, [number, number][]> {
+  const out = new Map<string, [number, number][]>();
+  const entities: AnyMsg[] = (feat.geometry ?? feat.entities ?? []).map(msg);
+  for (const e of entities) {
+    const id = e.entityId as string | undefined;
+    if (!id || e.isConstruction === true) continue;
+    const g = msg(e.geometry);
+    const bt = typeof g?.btType === "string" ? g.btType : "";
+    if (bt.startsWith("BTCurveGeometryLine")) {
+      const s = typeof e.startParam === "number" ? e.startParam : 0;
+      const t = typeof e.endParam === "number" ? e.endParam : 0;
+      out.set(id, [
+        [(g.pntX + g.dirX * s) * M_TO_MM, (g.pntY + g.dirY * s) * M_TO_MM],
+        [(g.pntX + g.dirX * t) * M_TO_MM, (g.pntY + g.dirY * t) * M_TO_MM],
+      ]);
+    } else if (bt.startsWith("BTCurveGeometryCircle")) {
+      const cx = g.xCenter * M_TO_MM;
+      const cy = g.yCenter * M_TO_MM;
+      const r = g.radius * M_TO_MM;
+      // Centre carries the interior; the AABB corners bound it.
+      out.set(id, [[cx, cy], [cx - r, cy - r], [cx + r, cy + r]]);
+    }
+  }
+  return out;
+}
+
+/** Centroid of the 2D vertices of the sketch entities a region query
+ *  references. A referenced id that is not a raw segment (an imprint-derived
+ *  `<rect>.top`) contributes its base rectangle's real segments instead, so
+ *  the point still lands in the neighbourhood of the selected region. Returns
+ *  `null` when none of the referenced entities have geometry. */
+export function regionInteriorPoint(
+  entityIds: string[],
+  geom: Map<string, [number, number][]>,
+): [number, number] | null {
+  const verts: [number, number][] = [];
+  for (const id of entityIds) {
+    const direct = geom.get(id);
+    if (direct) {
+      verts.push(...direct);
+      continue;
+    }
+    // Imprint-derived id (`base.suffix` with no raw segment): fall back to
+    // every real segment sharing the base.
+    const base = id.split(".")[0];
+    for (const [k, v] of geom) {
+      if (k === base || k.startsWith(`${base}.`)) verts.push(...v);
+    }
+  }
+  if (verts.length === 0) return null;
+  let sx = 0;
+  let sy = 0;
+  for (const [x, y] of verts) {
+    sx += x;
+    sy += y;
+  }
+  return [sx / verts.length, sy / verts.length];
 }
 
 /** What a translated sweep needs to be referable later. */
@@ -323,6 +396,71 @@ function wallQuery(
   return { query: inner ? `qWall(${fdOp}, ${ord}, INNER)` : `qWall(${fdOp}, ${ord})` };
 }
 
+/**
+ * Resolve an extrude's profile selection to a FieldDraft `profiles`
+ * MultiQuery (ticket #412).
+ *
+ * Onshape supplies ONE query per selected sketch region; each decodes to the
+ * sketch-entity ids bounding that region. We turn each into an interior point
+ * and ask the kernel which flood-fill region owns it (`regionQueryAtPoint`),
+ * then join the DISTINCT regions into a MultiQuery — so a multi-region
+ * selection extrudes only those regions, not the whole sketch.
+ *
+ * Fall back to the whole sketch (`qCreatedBy(sketch)`) — WITH a visible
+ * warning, never silently — when:
+ *  - the kernel exposes no `regionQueryAtPoint` (a test double), or
+ *  - a query carries no resolvable region entities, or
+ *  - a query's interior point lies outside every FieldDraft region.
+ *
+ * A visible warning is ALSO raised when Onshape selected more regions than
+ * FieldDraft resolved: its SDF-union region model merges nested/overlapping
+ * profiles that Onshape keeps apart by IMPRINT, so the imprint sub-faces have
+ * no counterpart and the extrude necessarily covers more than Onshape's.
+ */
+async function resolveExtrudeProfiles(
+  profileQss: string[],
+  rec: SketchRecord,
+  kernel: ImportKernel,
+  name: string,
+  result: OnshapeImportResult,
+): Promise<string> {
+  const whole = `qCreatedBy(${rec.fdId})`;
+  if (typeof kernel.regionQueryAtPoint !== "function") return whole;
+
+  // Only the SKETCH_ENTITY region descriptors carry a specific selection; a
+  // plain whole-sketch reference decodes to no region entities.
+  const decoded = await Promise.all(profileQss.map((qs) => decodeRegionQuery(qs)));
+  const regionQueries = decoded.filter(
+    (d): d is NonNullable<typeof d> => !!d && d.isRegionQuery && d.entityIds.length > 0,
+  );
+  if (regionQueries.length === 0) return whole;
+
+  const resolved = new Set<string>();
+  let unresolvable = false;
+  for (const d of regionQueries) {
+    const pt = regionInteriorPoint(d.entityIds, rec.entityGeom);
+    const q = pt ? kernel.regionQueryAtPoint(rec.fdId, pt[0], pt[1]) : "";
+    if (q) resolved.add(q);
+    else unresolvable = true;
+  }
+
+  if (unresolvable || resolved.size === 0) {
+    result.warnings.push(
+      `${name}: Region-Auswahl (${regionQueries.length} Onshape-Region(en)) nicht auflösbar — ` +
+        `ganzer Sketch extrudiert`,
+    );
+    return whole;
+  }
+  if (resolved.size < regionQueries.length) {
+    result.warnings.push(
+      `${name}: Onshape wählte ${regionQueries.length} Regionen, FieldDraft findet dafür nur ` +
+        `${resolved.size} — FieldDrafts SDF-Vereinigung verschmilzt überlappende/verschachtelte ` +
+        `Profile, die Onshape per Imprint trennt (siehe docs/ONSHAPE-IMPORT-GAP-MATRIX.md)`,
+    );
+  }
+  return [...resolved].join(", ");
+}
+
 /** Import a fetched Onshape feature list into the kernel. */
 export async function importOnshapeFeatures(
   featuresJson: { features?: any[] },
@@ -376,6 +514,7 @@ export async function importOnshapeFeatures(
         fdId,
         entityIds: translation.entityIds,
         planeQuery: built.query,
+        entityGeom: sketchEntityVertices(feat),
       });
       result.idMap[feat.featureId] = fdId;
       result.created.push(fdId);
@@ -383,13 +522,18 @@ export async function importOnshapeFeatures(
     }
 
     if (feat.featureType === "extrude") {
-      const profileQs = queryStringsOf(params.get("entities"))[0];
+      const profileQss = queryStringsOf(params.get("entities"));
+      const profileQs = profileQss[0];
       const sketchFid = profileQs ? await profileSketchId(profileQs) : null;
       const rec = sketchFid ? sketches.get(sketchFid) : undefined;
       if (!rec) {
         result.errors.push(`${name}: Profil-Sketch nicht auflösbar — übersprungen`);
         continue;
       }
+      // Which sketch REGIONS did Onshape select? One profile query per chosen
+      // region — resolve each to a FieldDraft `qRegion`; fall back visibly to
+      // the whole sketch when the selection can't be honoured (#412).
+      const profiles = await resolveExtrudeProfiles(profileQss, rec, kernel, name, result);
       // End condition: BLIND / THROUGH_ALL / UP_TO_* (see `endCondition`).
       const upToQs = queryStringsOf(params.get("endBoundEntityFace"))[0];
       let upToQuery: string | undefined;
@@ -421,7 +565,7 @@ export async function importOnshapeFeatures(
         "extrude",
         JSON.stringify({
           display_name: name,
-          profiles: `qCreatedBy(${rec.fdId})`,
+          profiles,
           depth: { value: depthMm, unit: "mm" },
           operation,
           ...(end.symmetric ? { symmetric: true } : {}),

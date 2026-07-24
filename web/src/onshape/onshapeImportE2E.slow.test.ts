@@ -40,6 +40,9 @@ beforeAll(async () => {
 const kabelbox = () =>
   JSON.parse(readFileSync(join(__dirname, "fixtures", "kabelbox-features.json"), "utf8"));
 
+const ticket412 = () =>
+  JSON.parse(readFileSync(join(__dirname, "fixtures", "onshape-412-features.json"), "utf8"));
+
 function wrap(k: WasmKernel): ImportKernel & { raw: WasmKernel } {
   return {
     raw: k,
@@ -61,6 +64,8 @@ function wrap(k: WasmKernel): ImportKernel & { raw: WasmKernel } {
     bodyCount: () => k.bodyCount(),
     bodyBrepFaces: (i: number) => JSON.parse(k.bodyBrepFaces(i)),
     bodyPlacement: (i: number) => JSON.parse(k.bodyPlacement(i)),
+    regionQueryAtPoint: (sketchId: number, u: number, v: number) =>
+      k.regionQueryAtPoint(sketchId, u, v),
   };
 }
 
@@ -182,4 +187,28 @@ describe("Onshape import — Kabelbox end-to-end (real kernel)", () => {
     });
     expect(moved, "at least one plane travels with the resized body").toBeGreaterThan(0);
   });
+});
+
+describe("Onshape import — #412 imprint region selection (real kernel)", () => {
+  // The extrude selects FOUR imprinted sub-faces. FieldDraft's SDF-union region
+  // model merges the nested rectangles into ONE region, so the selection cannot
+  // be honoured 1:1 — the import must SAY SO (not silently extrude a block) and
+  // fall back to that one region rather than crashing.
+  it("resolves the profile to a qRegion and warns about the region reduction", async () => {
+    const kernel = wrap(new WasmKernel());
+    const result = await importOnshapeFeatures(ticket412(), kernel);
+
+    const extrude = (JSON.parse(kernel.raw.toJson()).feature_calls as FeatureCall[]).find(
+      (c) => c.type === "extrude",
+    )!;
+    // A concrete region query, NOT the whole-sketch profile — and NOT a silent
+    // block. (One FieldDraft region here, so a single qRegion term.)
+    expect(String(extrude.params.profiles)).toMatch(/^qRegion\(\d+, \d+\)$/);
+
+    // The mismatch is reported, never hidden.
+    expect(
+      result.warnings.some((w) => w.includes("Onshape wählte 4 Regionen")),
+      result.warnings.join(" | "),
+    ).toBe(true);
+  }, 120_000);
 });

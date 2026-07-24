@@ -12,6 +12,9 @@ Format, eine Zeile je Eintrag:
 kind = feat | fix | perf. scope und #tickets sind optional. Folgezeilen, die
 eingerückt sind, gehören zum Text davor (Umbruch erlaubt).
 
+## 0.29.0
+- feat(onshape) #412: Der Onshape-Import übernimmt jetzt die im Extrude tatsächlich gewählten Sketch-Regionen — die komprimierten Regions-Queries werden dekodiert und auf FieldDraft-Regionen aufgelöst, statt stets den ganzen Sketch zu extrudieren. Kann FieldDrafts Regionenmodell eine Onshape-Auswahl nicht abbilden (Onshape trennt überlappende Profile per Imprint, FieldDraft verschmilzt sie), warnt der Import sichtbar („Onshape wählte N Regionen, FieldDraft findet dafür nur M“) statt still falsche Geometrie zu liefern.
+
 ## 0.28.1
 - fix(ui) #422: Beim Öffnen eines Projekts ohne gespeicherte Ansicht (etwa direkt nach einem Onshape-Import) startet die Kamera jetzt als Iso-Ansicht, die das Modell formatfüllend rahmt — vorher erbte das neue Projekt still die Kameralage des zuvor geöffneten Projekts, die per Autosave sogar dauerhaft hineingeschrieben wurde, und wirkte danach „leer“. Zoom-to-fit holt die Kamera zudem verlässlich aus jeder Extremlage zurück.
 
