@@ -4,6 +4,9 @@ import {
   publishSketchLinePickables,
   clearSketchLinePickables,
   pickSketchLineAtRay,
+  publishSketchPointPickables,
+  clearSketchPointPickables,
+  pickSketchPointAtRay,
   getHoveredSketchLine,
   setHoveredSketchLine,
   subscribeHoveredSketchLine,
@@ -53,6 +56,52 @@ describe("pickSketchLineAtRay zoom-aware tolerance (fs23)", () => {
       target.clone().sub(cam.position).normalize(),
     );
     expect(pickSketchLineAtRay(ray, cam, 900)).toBeNull();
+  });
+});
+
+describe("pickSketchPointAtRay (#404 Hole locations)", () => {
+  beforeEach(() => clearSketchPointPickables());
+
+  const setup = () => {
+    publishSketchPointPickables([
+      {
+        sketchId: 7,
+        points: [
+          { pointId: 1, p: [0, 0, 0] },
+          { pointId: 2, p: [50, 0, 0] },
+        ],
+      },
+    ]);
+    const cam = new THREE.PerspectiveCamera(50, 1, 1, 4000);
+    cam.position.set(0, 0, 600);
+    cam.lookAt(0, 0, 0);
+    cam.updateMatrixWorld(true);
+    return cam;
+  };
+
+  it("hits the point a few px off the ray with the camera tolerance", () => {
+    const cam = setup();
+    const target = new THREE.Vector3(2, 0, 0); // 2 mm off point 1
+    const ray = new THREE.Ray(
+      cam.position.clone(),
+      target.clone().sub(cam.position).normalize(),
+    );
+    expect(pickSketchPointAtRay(ray, cam, 900)).toEqual({
+      sketchId: 7,
+      pointId: 1,
+    });
+    // Fixed 0.5 mm fallback misses 2 mm.
+    expect(pickSketchPointAtRay(ray)).toBeNull();
+  });
+
+  it("misses when the ray is far from every point", () => {
+    const cam = setup();
+    const target = new THREE.Vector3(25, 0, 0); // between the two points
+    const ray = new THREE.Ray(
+      cam.position.clone(),
+      target.clone().sub(cam.position).normalize(),
+    );
+    expect(pickSketchPointAtRay(ray, cam, 900)).toBeNull();
   });
 });
 

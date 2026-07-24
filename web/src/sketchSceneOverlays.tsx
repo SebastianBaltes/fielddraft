@@ -24,8 +24,10 @@ import {
   collectSketchSessionGeometry,
   collectSketchRegionFill,
   collectSketchLinePickables,
+  collectSketchPointPickables,
   type SketchSubCall,
   type SketchLinePickable,
+  type SketchPointPickable,
 } from "./sketchOutline";
 import { buildDraftSketchState } from "./sketchSession";
 import {
@@ -63,6 +65,8 @@ import {
 import {
   publishSketchLinePickables,
   clearSketchLinePickables,
+  publishSketchPointPickables,
+  clearSketchPointPickables,
   getHoveredSketchLine,
   subscribeHoveredSketchLine,
 } from "./sketchLinePickBridge";
@@ -102,6 +106,7 @@ export function SketchOverlay3D() {
       pointPos: number[];
       fillPos: number[] | null;
       linePick: SketchLinePickable[];
+      pointPick: SketchPointPickable[];
       // The sketch's plane frame, so a region click can map world→uv for the
       // kernel's region query (ticket dhjn).
       frame: {
@@ -166,12 +171,19 @@ export function SketchOverlay3D() {
           subCalls as SketchSubCall[],
           frame,
         );
+        // Per-point pickables for the Hole `locations` picker —
+        // `qSketchPoint(sketchId, entityId)`.
+        const pointPick = collectSketchPointPickables(
+          subCalls as SketchSubCall[],
+          frame,
+        );
         out.push({
           id: sketchId,
           linePos,
           pointPos,
           fillPos: fp.length ? fp : null,
           linePick,
+          pointPick,
           frame: {
             origin: frame.origin,
             xAxis: frame.xAxis,
@@ -402,6 +414,20 @@ export function SketchOverlay3D() {
       withLines.map((s) => ({ sketchId: s.id, lines: s.linePick })),
     );
     return () => clearSketchLinePickables();
+  }, [sketches]);
+
+  // Publish per-point pickables so the Hole `locations` picker can ray-cast a
+  // single sketch point and emit `qSketchPoint(sketchId, entityId)`.
+  useEffect(() => {
+    const withPoints = sketches.filter((s) => s.pointPick.length > 0);
+    if (withPoints.length === 0) {
+      clearSketchPointPickables();
+      return;
+    }
+    publishSketchPointPickables(
+      withPoints.map((s) => ({ sketchId: s.id, points: s.pointPick })),
+    );
+    return () => clearSketchPointPickables();
   }, [sketches]);
 
   // A click on a filled region selects the whole sketch as a profile, but only

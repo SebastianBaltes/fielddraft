@@ -1893,21 +1893,44 @@ fn regenerate_resolves_length_formulas_against_variables() {
         ),
     );
     let mut ctx = Context::new(&mut doc);
-    let call = FeatureCall::new(
-        "hole",
-        id(1),
-        json!({
-            // Diameter references a variable via the
-            // K8.11 sigil; depth stays a plain literal.
-            "diameter": { "value": "=width / 5", "unit": "mm" },
-            "depth": { "value": 40.0, "unit": "mm" },
-            "translate": [0.0, 0.0, 0.0],
-        }),
-    );
-    registry.regenerate(&mut ctx, &[call], None).unwrap();
-    assert_eq!(ctx.features.len(), 1);
-    let f = &ctx.features[0];
-    match &f.export_primitive().expect("primitive") {
+    let calls = vec![
+        FeatureCall::new(
+            "box",
+            id(1),
+            json!({ "op": "new", "half_extents": [10.0, 10.0, 10.0] }),
+        ),
+        FeatureCall::new(
+            "sketch",
+            id(2),
+            json!({
+                "plane": "qCreatedBy(origin_plane_xy)",
+                "sub_calls": [
+                    { "type": "sketch_point", "id": "100", "params": { "at": [2.0, 3.0] } }
+                ],
+            }),
+        ),
+        FeatureCall::new(
+            "hole",
+            id(3),
+            json!({
+                // Diameter references a variable via the
+                // K8.11 sigil; depth stays a plain literal.
+                "standard_size": "custom",
+                "diameter": { "value": "=width / 5", "unit": "mm" },
+                "end_type": "blind",
+                "depth": { "value": 40.0, "unit": "mm" },
+                "locations": "qSketchPoint(2, 1)",
+                "targets": "qCreatedBy(1)",
+            }),
+        ),
+    ];
+    registry.regenerate(&mut ctx, &calls, None).unwrap();
+    let cutter = ctx
+        .features
+        .iter()
+        .find(|f| f.id == id(3).child("0"))
+        .expect("hole cutter present under child id 3/0");
+    match &cutter.export_primitive().expect("primitive") {
         Primitive::Cylinder { radius, .. } => {
             // width(50) / 5 / 2 (hole → radius) = 5
             assert!((*radius - 5.0).abs() < 1e-5);
@@ -1942,37 +1965,53 @@ fn regenerate_surfaces_unknown_variable_errors() {
 // ─── K8.9: hole ───────────────────────────────────────────
 
 #[test]
-fn hole_lowers_to_difference_cylinder_with_diameter_halved() {
+fn hole_builds_remove_cylinder_cutter_per_location() {
+    // #404 P1: a box, a sketch point on its top plane, and a blind M6 bore.
+    // The hole lowers to a Remove cylinder cutter (radius = nominal/2 = 3)
+    // scoped to the box, under the hierarchical child id `3/0`.
     let registry = FeatureRegistry::with_builtins();
     let mut doc = empty_ctx();
     let mut ctx = Context::new(&mut doc);
-    let call = FeatureCall::new(
-        "hole",
-        id(1),
-        json!({
-            "diameter": { "value": 6.0, "unit": "mm" },
-            "depth": { "value": 40.0, "unit": "mm" },
-            "translate": [10.0, 0.0, 0.0],
-        }),
-    );
-    registry.regenerate(&mut ctx, &[call], None).unwrap();
-    assert_eq!(ctx.features.len(), 1);
-    let f = &ctx.features[0];
-    // Spine entry uses the hierarchical child id `1/0` so
-    // sync_feature_calls skips it.
-    assert_eq!(f.id, id(1).child("0"));
-    assert!(f.id.parent().is_some());
-    assert_eq!(f.op, BoolOp::Remove);
-    assert_eq!(f.transform.translate, [10.0, 0.0, 0.0]);
-    match &f.export_primitive().expect("primitive") {
-        Primitive::Cylinder {
-            center,
-            radius,
-            half_height,
-        } => {
-            assert_eq!(*center, [0.0, 0.0, 0.0]);
-            assert!((*radius - 3.0).abs() < 1e-5);
-            assert!((*half_height - 20.0).abs() < 1e-5);
+    let calls = vec![
+        FeatureCall::new(
+            "box",
+            id(1),
+            json!({ "op": "new", "half_extents": [10.0, 10.0, 10.0] }),
+        ),
+        FeatureCall::new(
+            "sketch",
+            id(2),
+            json!({
+                "plane": "qCreatedBy(origin_plane_xy)",
+                "sub_calls": [
+                    { "type": "sketch_point", "id": "100", "params": { "at": [2.0, 3.0] } }
+                ],
+            }),
+        ),
+        FeatureCall::new(
+            "hole",
+            id(3),
+            json!({
+                "standard_size": "M6",
+                "end_type": "blind",
+                "depth": { "value": 5.0, "unit": "mm" },
+                "locations": "qSketchPoint(2, 1)",
+                "targets": "qCreatedBy(1)",
+            }),
+        ),
+    ];
+    registry.regenerate(&mut ctx, &calls, None).unwrap();
+    // box + one hole cutter.
+    let cutter = ctx
+        .features
+        .iter()
+        .find(|f| f.id == id(3).child("0"))
+        .expect("hole cutter present under child id 3/0");
+    assert!(cutter.id.parent().is_some());
+    assert_eq!(cutter.op, BoolOp::Remove);
+    match &cutter.export_primitive().expect("primitive") {
+        Primitive::Cylinder { radius, .. } => {
+            assert!((*radius - 3.0).abs() < 1e-5, "M6 → radius 3");
         }
         other => panic!("expected Primitive::Cylinder, got {other:?}"),
     }
@@ -1990,7 +2029,9 @@ fn hole_rejects_non_positive_diameter() {
                 "hole",
                 id(1),
                 json!({
+                    "standard_size": "custom",
                     "diameter": { "value": 0.0, "unit": "mm" },
+                    "end_type": "blind",
                     "depth": { "value": 10.0, "unit": "mm" },
                 }),
             )],

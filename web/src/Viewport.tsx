@@ -103,12 +103,14 @@ import { MeasurePanel } from "./MeasurePanel";
 import { pickSketchAtRay } from "./sketchPickBridge";
 import {
   pickSketchLineAtRay,
+  pickSketchPointAtRay,
   setHoveredSketchLine,
 } from "./sketchLinePickBridge";
 import {
   mapPickToQuery,
   filterAllows,
   filterAllowsSketchLine,
+  filterAllowsSketchPoint,
   filterAllowsSketchRegion,
   elementQueryString,
   resolveElementClick,
@@ -318,6 +320,10 @@ function tryQueryPick(
   // `qRegion(...)` query string for THAT region (or null on a miss). Gated on
   // the picker's `SKETCHREGION` filter — the Revolve/Extrude profile field.
   sketchRegionAtRay?: () => string | null,
+  // #404: resolve a click on a committed sketch POINT to
+  // `qSketchPoint(sketchId, entityId)`. Gated on the picker's `SKETCHPOINT`
+  // filter — the Hole `locations` field.
+  sketchPointAtRay?: () => { sketchId: number; pointId: number } | null,
 ): boolean {
   const picker = getActiveQueryPicker();
   if (!picker) return false;
@@ -347,6 +353,17 @@ function tryQueryPick(
   if (hovered) {
     const query = mapPickToQuery(hovered, picker.entityFilter);
     if (query) return picker.onPick(query);
+  }
+
+  // Sketch-point location pick (`qSketchPoint`): the Hole `locations` field
+  // accepts committed sketch points (free points, endpoints, centres). Not
+  // B-Rep elements (no id_hash), so resolve by ray against the overlay-
+  // published per-point geometry. Runs before the sketch-line path so a point
+  // sitting on a line wins.
+  if (sketchPointAtRay && filterAllowsSketchPoint(picker.entityFilter)) {
+    const hit = sketchPointAtRay();
+    if (hit)
+      return picker.onPick(`qSketchPoint(${hit.sketchId}, ${hit.pointId})`);
   }
 
   // Sketch-line axis pick (`qSketchLine`): the Revolve axis field accepts a
@@ -1262,6 +1279,16 @@ export function Viewport({
         return null;
       }
     };
+    const sketchPointAtClick = (): {
+      sketchId: number;
+      pointId: number;
+    } | null => {
+      const ray = rayAtMouse(event, hostRef.current);
+      if (!ray) return null;
+      const camera = getPublishedPickCamera();
+      const h = hostRef.current?.getBoundingClientRect().height ?? 0;
+      return pickSketchPointAtRay(ray, camera ?? undefined, h);
+    };
     if (
       tryQueryPick(
         click,
@@ -1270,6 +1297,7 @@ export function Viewport({
         (msg) => store.showTransientError(msg),
         sketchLineAtClick,
         sketchRegionAtClick,
+        sketchPointAtClick,
       )
     )
       return;

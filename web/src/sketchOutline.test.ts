@@ -3,6 +3,7 @@ import {
   collectSketchSessionGeometry,
   collectSketchRegionFill,
   collectSketchLineSegments,
+  collectSketchPointPickables,
   SESSION_3D_TYPES,
   type SketchSubCall,
 } from "./sketchOutline";
@@ -175,5 +176,31 @@ describe("collectSketchRegionFill", () => {
     const pos = collectSketchRegionFill(calls, XY, tri);
     expect(pos.length).toBeGreaterThan(0);
     expect(pos.length % 9).toBe(0);
+  });
+});
+
+describe("collectSketchPointPickables (#404 Hole locations)", () => {
+  it("emits each free sketch point with its shared entity id and world pos", () => {
+    // Two free points → solver entity ids 1 and 2 (origin is 0).
+    const calls: SketchSubCall[] = [
+      { type: "sketch_point", params: { at: [2, 3] }, id: 100 },
+      { type: "sketch_point", params: { at: [-4, 5] }, id: 101 },
+    ];
+    const pts = collectSketchPointPickables(calls, XY);
+    // origin (id 0) + the two free points.
+    const byId = new Map(pts.map((p) => [p.pointId, p.p]));
+    expect(byId.get(1)).toEqual([2, 3, 0]);
+    expect(byId.get(2)).toEqual([-4, 5, 0]);
+    expect(byId.get(0)).toEqual([0, 0, 0]);
+  });
+
+  it("maps points through a tilted plane frame", () => {
+    const calls: SketchSubCall[] = [
+      { type: "sketch_point", params: { at: [2, 3] }, id: 100 },
+    ];
+    const pts = collectSketchPointPickables(calls, XZ);
+    // origin (1,2,3) + point: origin + 2*xAxis + 3*yAxis = (1+2, 2, 3+3).
+    const p1 = pts.find((p) => p.pointId === 1);
+    expect(p1?.p).toEqual([3, 2, 6]);
   });
 });

@@ -16,7 +16,7 @@
  */
 
 import * as THREE from "three";
-import type { SketchLinePickable } from "./sketchOutline";
+import type { SketchLinePickable, SketchPointPickable } from "./sketchOutline";
 
 /** All pickable sketch lines of one committed sketch. */
 export interface SketchLinePickables {
@@ -151,6 +151,67 @@ export function pickSketchLineAtRay(
     }
   }
   return best ? { sketchId: best.sketchId, lineId: best.lineId } : null;
+}
+
+// ─── sketch POINT pick (#404 Hole locations) ────────────────────────
+// The Hole tool's `locations` field accepts committed sketch points
+// (`qSketchPoint`). Like sketch lines these are not B-Rep elements, so we
+// publish their per-point world positions (tagged with the shared entity id)
+// and ray-cast against them at click time. Same singleton pattern.
+
+/** All pickable sketch points of one committed sketch. */
+export interface SketchPointPickables {
+  sketchId: number;
+  points: SketchPointPickable[];
+}
+
+let pointPickables: SketchPointPickables[] = [];
+
+/** Replace the set of pickable sketch points. */
+export function publishSketchPointPickables(items: SketchPointPickables[]): void {
+  pointPickables = items;
+}
+
+/** Drop all point pickables (overlay unmount / no visible sketches). */
+export function clearSketchPointPickables(): void {
+  pointPickables = [];
+}
+
+/** Read the current pickable sketch-point set. */
+export function getSketchPointPickables(): SketchPointPickables[] {
+  return pointPickables;
+}
+
+/**
+ * Nearest sketch point the ray passes within a screen-constant tolerance of,
+ * as `{ sketchId, pointId }`, or `null`. Closest hit along the ray wins.
+ * Tolerance is the same screen-space {@link LINE_PICK_PX} budget as lines.
+ */
+export function pickSketchPointAtRay(
+  ray: THREE.Ray,
+  camera?: THREE.Camera,
+  viewportHeightPx = 0,
+): { sketchId: number; pointId: number } | null {
+  let best: { sketchId: number; pointId: number; along: number } | null = null;
+  const p = new THREE.Vector3();
+  const onRay = new THREE.Vector3();
+  for (const sketch of pointPickables) {
+    for (const pt of sketch.points) {
+      p.set(pt.p[0], pt.p[1], pt.p[2]);
+      // Closest point on the ray to `p`, clamped ahead of the origin.
+      const t = Math.max(0, p.clone().sub(ray.origin).dot(ray.direction));
+      onRay.copy(ray.origin).addScaledVector(ray.direction, t);
+      const dist = onRay.distanceTo(p);
+      const radius = camera
+        ? worldPickRadius(camera, p, viewportHeightPx)
+        : 0.5;
+      if (dist > radius) continue;
+      if (!best || t < best.along) {
+        best = { sketchId: sketch.sketchId, pointId: pt.pointId, along: t };
+      }
+    }
+  }
+  return best ? { sketchId: best.sketchId, pointId: best.pointId } : null;
 }
 
 /** Shortest distance between a ray and a segment; writes the point ON the

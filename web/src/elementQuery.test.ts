@@ -3,6 +3,7 @@ import {
   allowedKinds,
   filterAllows,
   filterAllowsSketchLine,
+  filterAllowsSketchPoint,
   filterAllowsSketchRegion,
   queryAcceptedByFilter,
   elementQueryString,
@@ -109,6 +110,32 @@ describe("filterAllowsSketchLine", () => {
     expect(filterAllowsSketchLine("FACE")).toBe(false);
     expect(filterAllowsSketchLine(undefined)).toBe(false);
     expect(filterAllowsSketchLine("")).toBe(false);
+  });
+});
+
+describe("filterAllowsSketchPoint (#404 Hole locations)", () => {
+  it("only the SKETCHPOINT token enables sketch points", () => {
+    expect(filterAllowsSketchPoint("VERTEX,SKETCHPOINT")).toBe(true);
+    expect(filterAllowsSketchPoint("sketchpoint")).toBe(true);
+    expect(filterAllowsSketchPoint("VERTEX")).toBe(false);
+    expect(filterAllowsSketchPoint("SKETCHLINE")).toBe(false);
+    expect(filterAllowsSketchPoint(undefined)).toBe(false);
+    expect(filterAllowsSketchPoint("")).toBe(false);
+  });
+});
+
+describe("queryAcceptedByFilter — SKETCHPOINT location picker (#404)", () => {
+  const f = "VERTEX,SKETCHPOINT";
+  it("accepts sketch-point and vertex location queries", () => {
+    expect(queryAcceptedByFilter("qSketchPoint(5, 1)", f)).toBe(true);
+    expect(queryAcceptedByFilter("qVertex(123)", f)).toBe(true);
+  });
+  it("rejects a sketch-point query when only VERTEX is allowed", () => {
+    expect(queryAcceptedByFilter("qSketchPoint(5, 1)", "VERTEX")).toBe(false);
+  });
+  it("rejects faces and edges", () => {
+    expect(queryAcceptedByFilter("qFace(1)", f)).toBe(false);
+    expect(queryAcceptedByFilter("qEdge(1)", f)).toBe(false);
   });
 });
 

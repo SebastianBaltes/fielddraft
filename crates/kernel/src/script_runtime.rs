@@ -393,7 +393,8 @@ fn query_input_ids(expr: &crate::queries::QueryExpr) -> Vec<String> {
         | Q::AllRegions(f)
         | Q::Region(f, _)
         | Q::Regions(f, _)
-        | Q::SketchLine(f, _) => vec![f.to_string()],
+        | Q::SketchLine(f, _)
+        | Q::SketchPoint(f, _) => vec![f.to_string()],
         Q::EdgeBetween(a, b) => vec![a.to_string(), b.to_string()],
         Q::Intersection(a, b) | Q::AdjacentTo(a, b) | Q::CommonEdge(a, b) => {
             let mut ids = query_input_ids(a);

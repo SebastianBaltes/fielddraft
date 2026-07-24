@@ -76,6 +76,7 @@ pub mod fillet_shell;
 pub mod gyroid;
 pub mod helix;
 pub mod hole;
+pub mod hole_iso;
 pub mod imported_mesh;
 pub mod loft;
 pub mod material;

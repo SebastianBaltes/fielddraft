@@ -979,6 +979,57 @@ impl<'a> Context<'a> {
                     auto_secondary,
                 })
             }
+            // A free sketch point: raw sketch geometry that never enters the
+            // woven B-Rep, so it has no vertex. Look it up in the solved sketch
+            // state by its stable entity id and lift its (u, v) through the
+            // sketch's placement frame. The bore axis is the sketch-plane
+            // normal (Onshape: a sketch point drills along its plane normal).
+            QueryExpr::SketchPoint(sketch_id, entity_id) => {
+                use fielddraft_solver::Entity;
+                let sketch = self.sketches.get(sketch_id)?;
+                let frame = &sketch.frame;
+                let at = sketch.state.entities.iter().find_map(|e| match e {
+                    Entity::Point { id, at } if id.0 == *entity_id => {
+                        Some([at.x as f32, at.y as f32])
+                    }
+                    Entity::Origin { id } if id.0 == *entity_id => Some([0.0, 0.0]),
+                    _ => None,
+                })?;
+                let origin = [
+                    frame.origin[0] + at[0] * frame.x_axis[0] + at[1] * frame.y_axis[0],
+                    frame.origin[1] + at[0] * frame.x_axis[1] + at[1] * frame.y_axis[1],
+                    frame.origin[2] + at[0] * frame.x_axis[2] + at[1] * frame.y_axis[2],
+                ];
+                Some(MateAnchorFrame {
+                    origin,
+                    primary: Some(frame.normal),
+                    auto_secondary: None,
+                })
+            }
+            // A placed mate connector: its resolved CSYS was captured earlier
+            // this regen (mate connectors are datum features, not geometry, so
+            // they live in `ctx.mate_connectors`, not the B-Rep). `qCreatedBy`
+            // that names such a feature drills along the connector's +Z.
+            QueryExpr::CreatedBy(f) => {
+                let target = f.as_u32_or_root();
+                self.mate_connectors
+                    .iter()
+                    .find(|mc| mc.id.as_u32_or_root() == target)
+                    .map(|mc| MateAnchorFrame {
+                        origin: mc.origin,
+                        primary: Some(mc.normal),
+                        auto_secondary: None,
+                    })
+                    // Not a mate connector → fall back to the face anchor path
+                    // (`qCreatedBy(op)` → that feature's first face).
+                    .or_else(|| {
+                        self.resolve_face_frame(expr).map(|fr| MateAnchorFrame {
+                            origin: fr.origin,
+                            primary: Some(fr.normal),
+                            auto_secondary: None,
+                        })
+                    })
+            }
             // Face / created-by / face-of: the anchor IS a face; its normal is +Z.
             _ => self.resolve_face_frame(expr).map(|f| MateAnchorFrame {
                 origin: f.origin,

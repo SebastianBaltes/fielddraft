@@ -457,22 +457,36 @@ impl Kernel {
         }))
     }
 
-    /// K8.9: append a `hole` feature call. Thin convenience
-    /// wrapper that serialises the typed diameter/depth/translate
-    /// into a FeatureCall and bootstraps. Returns the new id.
+    /// #404 P1: append an Onshape-style `hole` feature call. Drills one
+    /// identical cutter per location. `locations` is a comma-separated
+    /// MultiQuery of point/anchor queries (`qSketchPoint(<sketch>, <entity>)`,
+    /// `qCreatedBy(<mate_connector>)`, `qVertex(<hash>)`, faces); `targets` is
+    /// the merge-scope MultiQuery of `qCreatedBy(<seed>)` body queries.
+    /// `standard_size` is an ISO key (`"M6"`, …) or `"custom"`; when custom,
+    /// `diameter_mm` is used. `end_type` is `"blind"` (exact `depth_mm`) or
+    /// `"through_all"`. Diameter/depth go over the wire as `Length`
+    /// (`{value, unit}`) — a bare f32 would silently fail the parse (#405).
+    /// An EMPTY `locations`/`targets` is allowed: the hole reports nothing and
+    /// drills nothing until the dialog's pickers supply them.
     #[wasm_bindgen(js_name = addHole)]
     pub fn add_hole(
         &mut self,
+        standard_size: String,
         diameter_mm: f32,
+        end_type: String,
         depth_mm: f32,
-        tx: f32,
-        ty: f32,
-        tz: f32,
+        locations: String,
+        targets: String,
     ) -> Result<u32, JsError> {
         self.push_feature_call("hole", serde_json::json!({
+            "style": "simple",
+            "hole_type": "drilled",
+            "standard_size": standard_size,
             "diameter": { "value": diameter_mm, "unit": "mm" },
+            "end_type": end_type,
             "depth": { "value": depth_mm, "unit": "mm" },
-            "translate": [tx, ty, tz],
+            "locations": locations,
+            "targets": targets,
         }))
     }
 

@@ -63,6 +63,35 @@ export function collectSketchLinePickables(
   return out;
 }
 
+/** One pickable sketch point: its stable entity id plus its world position.
+ *  Drives the Hole tool's `locations` picker, which emits
+ *  `qSketchPoint(sketchId, entityId)` for the point under the click. */
+export interface SketchPointPickable {
+  pointId: number;
+  p: [number, number, number];
+}
+
+/** Every point entity in the sketch (free `sketch_point`s, line/arc endpoints,
+ *  circle/arc centres, the origin) as a pickable target — mirroring
+ *  {@link collectSketchLinePickables}. We enumerate the solved entity state so
+ *  the ids match the kernel's allocation and the emitted
+ *  `qSketchPoint(sketchId, entityId)` resolves on the kernel side. Onshape lets
+ *  a hole snap to any of these, so we expose them all. */
+export function collectSketchPointPickables(
+  subCalls: SketchSubCall[],
+  frame: PlaneFrame,
+): SketchPointPickable[] {
+  const out: SketchPointPickable[] = [];
+  const state = buildDraftSketchState(subCalls);
+  for (const e of state.entities) {
+    if (e.kind !== "point" && e.kind !== "origin") continue;
+    const at = e.kind === "origin" ? { x: 0, y: 0 } : e.at;
+    const w = planeToWorld(at.x, at.y, frame);
+    out.push({ pointId: e.id, p: [w[0], w[1], w[2]] });
+  }
+  return out;
+}
+
 /** Flat `[ax,ay,az, bx,by,bz, ...]` world-space segment pairs of the
  *  sketch's drawable sub-calls, projected through `frame`. */
 export function collectSketchLineSegments(

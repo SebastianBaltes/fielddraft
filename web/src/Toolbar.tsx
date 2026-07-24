@@ -1291,7 +1291,7 @@ export function Toolbar({ store, state }: ToolbarProps) {
         />
         <FeatureButton
           kind="hole"
-          title="Add Hole (Ø6 x 40 mm, subtract)"
+          title="Hole — pick locations (sketch points / mate connectors) in the dialog"
           onClick={() => store.addHole()}
           draggable
           dragType="fielddraft/primitive"

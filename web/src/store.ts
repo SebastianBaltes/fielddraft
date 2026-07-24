@@ -654,21 +654,34 @@ export class KernelStore {
     return this.commitNewFeature(id);
   }
 
-  addHole(diameterMm = 6, depthMm = 40): number {
+  /** #404 P1: add an Onshape-style Hole and open its detail dialog immediately
+   *  (#401 flow — no blind default placement). The hole starts empty; the
+   *  dialog's location + scope pickers supply the bore points/anchors and the
+   *  target body. `standardSize` is an ISO key (`"M6"`, …) or `"custom"` (uses
+   *  `diameterMm`); `endType` is `"blind"` or `"through_all"`. */
+  addHole(
+    standardSize = "M6",
+    diameterMm = 6,
+    endType = "blind",
+    depthMm = 10,
+    locations = "",
+    targets = "",
+  ): number {
     logUserAction("feature", "add", { kind: "hole" });
-    const offset: [number, number, number] = [0, 0, 0];
     let id: number;
     try {
       id = this.kernel.addHole(
+        standardSize,
         diameterMm,
+        endType,
         depthMm,
-        offset[0],
-        offset[1],
-        offset[2],
+        locations,
+        targets,
       );
     } catch (err) {
       // eslint-disable-next-line no-console
       console.error("fielddraft: addHole failed", err);
+      this.setTransientError(formatKernelError(err, "Hole failed"));
       return -1;
     }
     return this.commitNewFeature(id);

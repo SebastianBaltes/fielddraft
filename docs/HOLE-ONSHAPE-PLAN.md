@@ -288,6 +288,42 @@ gepusht, nie als f32.
 P1 ist die minimal nutzbare Einheit, die das Kern-Ticket-Anliegen (Punkt-Ziel statt
 Weltkoordinate, Norm-Größe M6, mehrere Löcher) bereits erfüllt.
 
+### P1 — Umgesetzt (Stand dieser Iteration)
+
+**Entscheidung Sketch-Punkt-Referenzierung (Frage §7.1, empirisch geklärt):** Ein freier
+Sketch-Punkt taucht **nicht** als B-Rep-Vertex auf — nur Solid-Ränder (Extrude/Revolve)
+erzeugen Vertices, ein loser Punkt trägt nichts zum gewebten Körper bei. `qVertex` kann ihn
+also gar nicht adressieren. Stattdessen: **neue Query `qSketchPoint(sketch_id, entity_id)`**,
+analog zum bereits ausgelieferten `qSketchLine`. Aufgelöst in
+`Context::resolve_mate_anchor` gegen `Context::sketches[sketch_id].state.entities` (Punkt →
+`SketchFrame`-Lift → Origin; Bohrachse = Sketch-Ebenen-Normale). Warum stabil unter
+Regeneration/Reordering: `sketch_id` ist die Feature-eigene ID (nicht positionsbasiert), und
+`entity_id` ist der Solver-`EntityId` aus dem **geteilten Kernel↔Web-Entity-ID-Raum** — der
+Kernel (`SketchState::with_origin`, Origin=0, Punkte ab 1) und das Web
+(`buildDraftSketchState`/`buildGripIndex`, id ab 1) allozieren deterministisch identisch aus
+der Sub-Call-Reihenfolge. (Fragil nur gegenüber Umsortieren INNERHALB des Sketch — dieselbe
+Eigenschaft, die das gesamte Sketch-Grip-System schon hat; nicht schlechter.)
+
+Mate Connectors werden über `qCreatedBy(<mc_feature_id>)` referenziert: `resolve_mate_anchor`
+prüft zuerst `ctx.mate_connectors` (Datum-Features, kein B-Rep) und liefert deren CSYS
+(Origin + +Z) als Bohr-Frame, sonst Fallback auf die Face-Anchor-Auflösung.
+
+**Geliefert:** `HoleDef` mit String-Enums (`style`/`hole_type`/`standard_size`/`end_type`,
+je `variants=`-Liste, so erweitern P2/P3 ohne Wire-Bruch), Maße als `Length`; N Locations →
+N Remove-Zylinder-Cutter unter Kind-IDs `<hole>/<i>`; `blind` (exakte Tiefe, kleine
+Mündungs-ε außerhalb des Materials) + `through_all` (Cutter spannt die Body-Vertex-AABB
+entlang der Bohrachse). Bohrrichtung standardmäßig in den Körper (−Normale), `opposite_direction`
+kippt. ISO-Tabelle `hole_iso.rs` (M2–M12, Transkriptions-Guard `tap≈nenn−steigung`).
+wasm-`add_hole(standard_size, diameter_mm, end_type, depth_mm, locations, targets)` schreibt
+die Length-Wire-Form. Web: `store.addHole()` öffnet den schema-getriebenen Dialog sofort
+(#401-Flow); `locations`-Picker (`entity_filter="VERTEX,SKETCHPOINT"`) via Viewport-Raycast
+auf publizierte Sketch-Punkt-Pickables → `qSketchPoint(...)`.
+
+**Bewusst offen (P2+):** Counterbore/Countersink, Clearance/Tapped + Fit, Bohrspitze,
+up_to_next/up_to_entity, Start-Modi, konditionale Feld-Sichtbarkeit, Sketch-Punkt-Hover-
+Highlight + Box-Select. `diameter_override` ist in P1 als `diameter` (aktiv nur bei
+`standard_size=custom`) umgesetzt; die getrennte Override-über-Norm-Semantik kommt mit P2.
+
 ## 7. Offene Fragen / Risiken
 
 1. **Sketch-Punkt-Referenzierung (größtes Risiko, blockiert P1-Zielselektion):** Taucht ein

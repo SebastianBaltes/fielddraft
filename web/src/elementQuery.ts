@@ -87,6 +87,21 @@ export function filterAllowsSketchLine(entityFilter?: string): boolean {
 }
 
 /**
+ * Does the picker's `entityFilter` opt into committed sketch POINTS
+ * (`qSketchPoint`)? A free sketch point / endpoint / centre is NOT a B-Rep
+ * element (it never enters the woven solid, so it has no id_hash) — it's
+ * addressed by `(sketchId, entityId)` in the shared sketch entity-id space.
+ * The Hole tool's `locations` field carries the `SKETCHPOINT` token so a click
+ * on a sketch point stores it as a bore location.
+ */
+export function filterAllowsSketchPoint(entityFilter?: string): boolean {
+  if (!entityFilter) return false;
+  return entityFilter
+    .split(/[,\s|]+/)
+    .some((t) => t.trim().toUpperCase() === "SKETCHPOINT");
+}
+
+/**
  * Does the picker's `entityFilter` opt into committed sketch REGIONS
  * (`qRegion`/`qRegions`/`qAllRegions`)? The Revolve/Extrude `profiles` field
  * carries the `SKETCHREGION` token (ticket dhjn): with it, a click on one of a
@@ -137,6 +152,8 @@ export function queryAcceptedByFilter(query: string, entityFilter?: string): boo
       return has("VERTEX");
     case "SketchLine":
       return has("SKETCHLINE");
+    case "SketchPoint":
+      return has("SKETCHPOINT");
     case "FaceOf":
       return has("FACE");
     case "Wall":

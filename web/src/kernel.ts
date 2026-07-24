@@ -1042,10 +1042,26 @@ export class Kernel {
     return this.inner.addMirror(sourceId, plane);
   }
 
-  /** K8.9: append a hole feature — a parametric cylinder
-   *  subtract with `Length`-typed diameter and depth. */
-  addHole(diameterMm: number, depthMm: number, tx = 0, ty = 0, tz = 0): number {
-    return this.inner.addHole(diameterMm, depthMm, tx, ty, tz);
+  /** #404 P1: append an Onshape-style hole feature. Drills one identical cutter
+   *  per location. `standardSize` is an ISO key (`"M6"`) or `"custom"`;
+   *  `endType` is `"blind"` or `"through_all"`. `locations`/`targets` are
+   *  comma-separated MultiQuery strings; diameter/depth are `Length`-typed. */
+  addHole(
+    standardSize: string,
+    diameterMm: number,
+    endType: string,
+    depthMm: number,
+    locations: string,
+    targets: string,
+  ): number {
+    return this.inner.addHole(
+      standardSize,
+      diameterMm,
+      endType,
+      depthMm,
+      locations,
+      targets,
+    );
   }
 
   /** K11.0: append a gyroid TPMS infill feature. */

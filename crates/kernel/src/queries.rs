@@ -249,6 +249,16 @@ pub enum QueryExpr {
     /// reach the B-Rep) — the form the Revolve tool stores when the user
     /// picks a sketch line as the revolve axis.
     SketchLine(FeatureId, u32),
+    /// `qSketchPoint(sketch_id, entity_id)` — one point entity of a committed
+    /// sketch, addressed by the sketch feature id and the point's stable solver
+    /// [`EntityId`](fielddraft_solver::EntityId). Unlike `qVertex`, this targets
+    /// raw sketch geometry: a free sketch point never enters the woven B-Rep, so
+    /// it has no vertex to address. The entity id is the shared Kernel↔Web
+    /// sketch entity-id space (the kernel's `SketchState::with_origin`
+    /// allocation order matches the web's `entityIdForGrip`), so the reference
+    /// survives regeneration and document reordering. The form the Hole tool
+    /// stores when the user picks a sketch point as a bore location.
+    SketchPoint(FeatureId, u32),
 }
 
 impl fmt::Display for QueryExpr {
@@ -278,6 +288,7 @@ impl fmt::Display for QueryExpr {
             QueryExpr::Edge(r) => write_element_ref(f, "qEdge", r),
             QueryExpr::Vertex(r) => write_element_ref(f, "qVertex", r),
             QueryExpr::SketchLine(sketch, line) => write!(f, "qSketchLine({sketch}, {line})"),
+            QueryExpr::SketchPoint(sketch, point) => write!(f, "qSketchPoint({sketch}, {point})"),
         }
     }
 }
@@ -488,6 +499,13 @@ pub fn parse_query(input: &str) -> Result<QueryExpr, QueryParseError> {
                 "line id must be a plain number".to_string(),
             ))?;
             Ok(QueryExpr::SketchLine(a, line))
+        }
+        "qSketchPoint" => {
+            let (a, b) = expect_two_ids(&args, "qSketchPoint expects sketch_id and entity_id")?;
+            let point = b.as_u32_if_flat().ok_or(QueryParseError::InvalidFeatureId(
+                "entity id must be a plain number".to_string(),
+            ))?;
+            Ok(QueryExpr::SketchPoint(a, point))
         }
         other => Err(QueryParseError::UnknownQuery(other.to_string())),
     }
@@ -821,7 +839,8 @@ pub fn resolve_query_topo(
         QueryExpr::AllRegions(_)
         | QueryExpr::Region(_, _)
         | QueryExpr::Regions(_, _)
-        | QueryExpr::SketchLine(_, _) => {}
+        | QueryExpr::SketchLine(_, _)
+        | QueryExpr::SketchPoint(_, _) => {}
     }
 
     // Deterministic order: by id_hash, then kind as a stable tie-break.
@@ -1007,6 +1026,14 @@ mod tests {
         assert_eq!(q, QueryExpr::SketchLine(id(7), 42));
         // Display is the canonical wire form and must re-parse.
         assert_eq!(q.to_string(), "qSketchLine(7, 42)");
+        assert_eq!(parse_query(&q.to_string()).unwrap(), q);
+    }
+
+    #[test]
+    fn parses_and_roundtrips_sketch_point() {
+        let q = parse_query("qSketchPoint(7, 1)").unwrap();
+        assert_eq!(q, QueryExpr::SketchPoint(id(7), 1));
+        assert_eq!(q.to_string(), "qSketchPoint(7, 1)");
         assert_eq!(parse_query(&q.to_string()).unwrap(), q);
     }
 

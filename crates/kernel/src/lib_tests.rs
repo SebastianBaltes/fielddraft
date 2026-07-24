@@ -1038,7 +1038,22 @@ fn remove_feature_deletes_hole_and_its_hierarchical_child_spine() {
     let box_id = k
         .add_primitive(Primitive::KIND_BOX, BoolOp::TAG_NEW, 0.0, 0.0, 0.0, 20.0, 20.0, 20.0)
         .unwrap();
-    let hole_id = k.add_hole(6.0, 40.0, 0.0, 0.0, 0.0).unwrap();
+    let sketch_id = k
+        .add_sketch(
+            "qCreatedBy(origin_plane_xy)",
+            r#"[{ "type": "sketch_point", "id": "100", "params": { "at": [0.0, 0.0] } }]"#,
+        )
+        .unwrap();
+    let hole_id = k
+        .add_hole(
+            "M6".to_string(),
+            6.0,
+            "through_all".to_string(),
+            40.0,
+            format!("qSketchPoint({sketch_id}, 1)"),
+            format!("qCreatedBy({box_id})"),
+        )
+        .unwrap();
 
     // The hole lands in `feature_calls` as a flat-id entry and
     // its spine mirror lives under the hierarchical child id
@@ -2928,7 +2943,21 @@ fn hole_without_scope_warns_and_drills_nothing() {
     let _base = k
         .add_primitive(Primitive::KIND_BOX, BoolOp::TAG_NEW, 0.0, 0.0, 0.0, 30.0, 20.0, 30.0)
         .unwrap();
-    k.add_hole(10.0, 40.0, 0.0, 0.0, 0.0).unwrap();
+    let sketch_id = k
+        .add_sketch(
+            "qCreatedBy(origin_plane_xy)",
+            r#"[{ "type": "sketch_point", "id": "100", "params": { "at": [0.0, 0.0] } }]"#,
+        )
+        .unwrap();
+    k.add_hole(
+        "custom".to_string(),
+        10.0,
+        "blind".to_string(),
+        40.0,
+        format!("qSketchPoint({sketch_id}, 1)"),
+        String::new(),
+    )
+    .unwrap();
     assert_eq!(k.body_count(), 2, "an unscoped hole drills nothing (own preview body)");
     let feats: serde_json::Value =
         serde_json::from_str(&k.list_features().unwrap()).unwrap();
@@ -4115,4 +4144,195 @@ fn round_all_via_kernel_api_rounds_the_junction() {
         .unwrap();
     let rounder = p(&mut k);
     assert!(rounder < rounded - 0.05, "bigger radius rounds more: {rounder} !< {rounded}");
+}
+
+// ─── #404 P1: Onshape-style Hole (simple/drilled, sketch-point + MC) ──────
+
+/// End-to-end guard for the P1 Hole feature over the REAL API chain
+/// (`add_feature_call("hole", <exact wire form the addHole setter writes>)`),
+/// not the resolver alone — the ledger where the #402/#405 parse bugs hid.
+/// A box, a sketch point on the XY origin plane, and a blind M6 bore drilled
+/// at that point: the bore is empty (SDF > 0) where solid used to be, the
+/// wall beside it stays solid, and the blind bottom stops the bore.
+#[test]
+fn hole_blind_bore_on_sketch_point_end_to_end() {
+    let mut k = Kernel::new();
+    let box_id = k
+        .add_primitive(Primitive::KIND_BOX, BoolOp::TAG_NEW, 0.0, 0.0, 0.0, 10.0, 10.0, 10.0)
+        .unwrap();
+
+    // One free sketch point at (2, 3) on the XY plane. Its solver EntityId is
+    // 1 (origin is 0) — the shared Kernel↔Web sketch entity-id.
+    let sub_calls = r#"[
+        { "type": "sketch_point", "id": "100", "params": { "at": [2.0, 3.0] } }
+    ]"#;
+    let sketch_id = k.add_sketch("qCreatedBy(origin_plane_xy)", sub_calls).unwrap();
+
+    // Exact wire form the `addHole` setter writes (Length {value,unit}).
+    let params = format!(
+        r#"{{
+            "style": "simple",
+            "hole_type": "drilled",
+            "standard_size": "M6",
+            "diameter": {{ "value": 6.0, "unit": "mm" }},
+            "end_type": "blind",
+            "depth": {{ "value": 5.0, "unit": "mm" }},
+            "locations": "qSketchPoint({sketch_id}, 1)",
+            "targets": "qCreatedBy({box_id})"
+        }}"#
+    );
+    let hole_id = k.add_feature_call("hole", &params).unwrap();
+
+    // Feature must parse+regen cleanly (parse-bug guard).
+    assert_eq!(
+        k.feature_errors.get(&FeatureId::from_u32(hole_id)),
+        None,
+        "hole must parse the Length wire form"
+    );
+    assert_eq!(k.body_count(), 1, "one body: the box, now bored");
+
+    let d = |x: f32, y: f32, z: f32| k.body_sdf_eval(0, x, y, z);
+    // Before: (2,3,-2) was solid box interior; after it is inside the M6 bore.
+    assert!(d(2.0, 3.0, -2.0) > 0.0, "bore interior must be removed");
+    // A point one radius+ away laterally stays solid wall.
+    assert!(d(7.0, 3.0, -2.0) < 0.0, "wall beside the bore stays solid");
+    // Blind depth: 5 mm bore from z=0 downward stops at z=-5, so z=-8 is solid.
+    assert!(d(2.0, 3.0, -8.0) < 0.0, "blind bore must stop at its depth");
+}
+
+/// Through-all pierces the entire body along the bore axis, unlike blind.
+#[test]
+fn hole_through_all_pierces_body() {
+    let mut k = Kernel::new();
+    let box_id = k
+        .add_primitive(Primitive::KIND_BOX, BoolOp::TAG_NEW, 0.0, 0.0, 0.0, 10.0, 10.0, 10.0)
+        .unwrap();
+    let sub_calls = r#"[
+        { "type": "sketch_point", "id": "100", "params": { "at": [2.0, 3.0] } }
+    ]"#;
+    let sketch_id = k.add_sketch("qCreatedBy(origin_plane_xy)", sub_calls).unwrap();
+    let params = format!(
+        r#"{{
+            "style": "simple", "hole_type": "drilled", "standard_size": "M6",
+            "diameter": {{ "value": 6.0, "unit": "mm" }},
+            "end_type": "through_all",
+            "depth": {{ "value": 5.0, "unit": "mm" }},
+            "locations": "qSketchPoint({sketch_id}, 1)",
+            "targets": "qCreatedBy({box_id})"
+        }}"#
+    );
+    let hole_id = k.add_feature_call("hole", &params).unwrap();
+    assert_eq!(k.feature_errors.get(&FeatureId::from_u32(hole_id)), None);
+
+    let d = |x: f32, y: f32, z: f32| k.body_sdf_eval(0, x, y, z);
+    // Bore is open the whole way through the box (z from -10 to 10).
+    assert!(d(2.0, 3.0, -9.0) > 0.0, "through bore open near the bottom");
+    assert!(d(2.0, 3.0, 9.0) > 0.0, "through bore open near the top");
+    // Wall beside it remains solid.
+    assert!(d(7.0, 3.0, 0.0) < 0.0, "wall beside the through bore stays solid");
+}
+
+/// Multiple locations in one feature → multiple bores (Onshape: one Hole
+/// feature, N points → N identical holes).
+#[test]
+fn hole_drills_multiple_locations() {
+    let mut k = Kernel::new();
+    let box_id = k
+        .add_primitive(Primitive::KIND_BOX, BoolOp::TAG_NEW, 0.0, 0.0, 0.0, 10.0, 10.0, 10.0)
+        .unwrap();
+    let sub_calls = r#"[
+        { "type": "sketch_point", "id": "100", "params": { "at": [-5.0, 0.0] } },
+        { "type": "sketch_point", "id": "101", "params": { "at": [5.0, 0.0] } }
+    ]"#;
+    let sketch_id = k.add_sketch("qCreatedBy(origin_plane_xy)", sub_calls).unwrap();
+    // Two points → solver EntityIds 1 and 2.
+    let params = format!(
+        r#"{{
+            "style": "simple", "hole_type": "drilled", "standard_size": "M6",
+            "diameter": {{ "value": 6.0, "unit": "mm" }},
+            "end_type": "through_all",
+            "depth": {{ "value": 5.0, "unit": "mm" }},
+            "locations": "qSketchPoint({sketch_id}, 1), qSketchPoint({sketch_id}, 2)",
+            "targets": "qCreatedBy({box_id})"
+        }}"#
+    );
+    let hole_id = k.add_feature_call("hole", &params).unwrap();
+    assert_eq!(k.feature_errors.get(&FeatureId::from_u32(hole_id)), None);
+
+    let d = |x: f32, y: f32, z: f32| k.body_sdf_eval(0, x, y, z);
+    assert!(d(-5.0, 0.0, 0.0) > 0.0, "first bore open");
+    assert!(d(5.0, 0.0, 0.0) > 0.0, "second bore open");
+    assert!(d(0.0, 0.0, 0.0) < 0.0, "material between the two bores stays solid");
+}
+
+/// A hole with a mate-connector location drills along the connector +Z.
+#[test]
+fn hole_on_mate_connector_bores_along_axis() {
+    let mut k = Kernel::new();
+    let box_id = k
+        .add_primitive(Primitive::KIND_BOX, BoolOp::TAG_NEW, 0.0, 0.0, 0.0, 10.0, 10.0, 10.0)
+        .unwrap();
+    // Find the +Z (top) face query from the woven box.
+    let faces: serde_json::Value =
+        serde_json::from_str(&k.body_brep_faces(0)).unwrap();
+    let top = faces
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|f| {
+            let n = f["normalLocal"].as_array().unwrap();
+            (n[2].as_f64().unwrap() - 1.0).abs() < 1e-3
+        })
+        .expect("box has a +Z face");
+    let top_query = top["query"].as_str().unwrap();
+
+    // Mate connector anchored on the box top face (+Z normal, origin (0,0,10)).
+    let mc_params = serde_json::json!({ "anchor": top_query }).to_string();
+    let mc_id = k.add_feature_call("mate_connector", &mc_params).unwrap();
+    assert_eq!(k.feature_errors.get(&FeatureId::from_u32(mc_id)), None);
+
+    let params = format!(
+        r#"{{
+            "style": "simple", "hole_type": "drilled", "standard_size": "M8",
+            "diameter": {{ "value": 8.0, "unit": "mm" }},
+            "end_type": "blind",
+            "depth": {{ "value": 6.0, "unit": "mm" }},
+            "locations": "qCreatedBy({mc_id})",
+            "targets": "qCreatedBy({box_id})"
+        }}"#
+    );
+    let hole_id = k.add_feature_call("hole", &params).unwrap();
+    assert_eq!(
+        k.feature_errors.get(&FeatureId::from_u32(hole_id)),
+        None,
+        "hole must resolve the mate-connector location"
+    );
+    let d = |x: f32, y: f32, z: f32| k.body_sdf_eval(0, x, y, z);
+    // Bore drilled from the top face (z=10) 6mm down into the box.
+    assert!(d(0.0, 0.0, 7.0) > 0.0, "bore open just under the top face");
+    assert!(d(0.0, 0.0, 0.0) < 0.0, "blind bore stops before mid-box");
+}
+
+/// Schema/table drift guard: the `standard_size` variant keys must be exactly
+/// `custom` plus every ISO_METRIC row, in order.
+#[test]
+fn hole_size_variants_match_iso_table() {
+    use crate::features::hole::HoleDef;
+    use crate::features::hole_iso::ISO_METRIC;
+    use crate::features::FeatureSchema;
+    let schema = HoleDef::schema_json();
+    let params = schema["params"].as_array().expect("params array");
+    let size = params
+        .iter()
+        .find(|p| p["key"] == "standard_size")
+        .expect("standard_size param");
+    let keys: Vec<String> = size["variants"]
+        .as_array()
+        .expect("variants")
+        .iter()
+        .map(|v| v["key"].as_str().unwrap().to_string())
+        .collect();
+    let mut expected = vec!["custom".to_string()];
+    expected.extend(ISO_METRIC.iter().map(|t| t.key.to_string()));
+    assert_eq!(keys, expected, "hole size dropdown drifted from ISO_METRIC");
 }

@@ -12,6 +12,9 @@ Format, eine Zeile je Eintrag:
 kind = feat | fix | perf. scope und #tickets sind optional. Folgezeilen, die
 eingerückt sind, gehören zum Text davor (Umbruch erlaubt).
 
+## 0.28.0
+- feat(kernel) #404: Bohrungs-Feature nach Onshape-Vorlage, Phase 1 — Bohrungen auf Sketch-Punkte und Mate Connectors setzen, mit ISO-Normgrößen (M2–M12, tap/close/free), freiem Durchmesser, Sackloch oder „durch alles“, und mehreren Bohrpunkten in einem Feature. Der Hole-Dialog öffnet direkt aus der Toolbar.
+
 ## 0.27.2
 - fix(sdf) #405: „Round All“ wirkt jetzt wirklich — der Radius aus dem Dialog wurde seit Einführung des Features nie geparst, das Feature blieb dadurch still folgenlos. Jetzt rundet es alle harten Boolean-Kanten des Dokuments (Radius 0 = aus).
 
