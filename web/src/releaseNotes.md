@@ -12,6 +12,9 @@ Format, eine Zeile je Eintrag:
 kind = feat | fix | perf. scope und #tickets sind optional. Folgezeilen, die
 eingerückt sind, gehören zum Text davor (Umbruch erlaubt).
 
+## 0.28.1
+- fix(ui) #422: Beim Öffnen eines Projekts ohne gespeicherte Ansicht (etwa direkt nach einem Onshape-Import) startet die Kamera jetzt als Iso-Ansicht, die das Modell formatfüllend rahmt — vorher erbte das neue Projekt still die Kameralage des zuvor geöffneten Projekts, die per Autosave sogar dauerhaft hineingeschrieben wurde, und wirkte danach „leer“. Zoom-to-fit holt die Kamera zudem verlässlich aus jeder Extremlage zurück.
+
 ## 0.28.0
 - feat(kernel) #404: Bohrungs-Feature nach Onshape-Vorlage, Phase 1 — Bohrungen auf Sketch-Punkte und Mate Connectors setzen, mit ISO-Normgrößen (M2–M12, tap/close/free), freiem Durchmesser, Sackloch oder „durch alles“, und mehreren Bohrpunkten in einem Feature. Der Hole-Dialog öffnet direkt aus der Toolbar.
 

@@ -118,3 +118,17 @@ export function saveCameraPose(camera: THREE.Camera, target: THREE.Vector3): voi
 export function getCameraPose(): CameraPose | null {
   return pose;
 }
+
+/**
+ * Forget the current pose (ticket #422). Called when switching to a project
+ * that has NO saved view: the module-scoped `pose` singleton otherwise still
+ * holds the PREVIOUS project's viewpoint, which the persistence funnel
+ * (`buildPersistableProject` reads `getCameraPose()`) would then autosave into
+ * the freshly opened project. Clearing it makes the next save write no view;
+ * `saveCameraPose` repopulates the singleton from the live camera on the next
+ * rendered frame (after the default-view fit has run), so the project ends up
+ * with ITS OWN framing, never the one it was opened from.
+ */
+export function clearCameraPose(): void {
+  pose = null;
+}

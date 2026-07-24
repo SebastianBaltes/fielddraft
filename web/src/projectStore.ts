@@ -15,7 +15,12 @@ import {
   type AssemblyState,
 } from "./assembly";
 import { INACTIVE_SKETCH_SESSION } from "./sketchSession";
-import { getCameraPose, requestCameraRestore } from "./cameraPoseBridge";
+import {
+  clearCameraPose,
+  getCameraPose,
+  requestCameraRestore,
+} from "./cameraPoseBridge";
+import { requestView } from "./viewCommands";
 import { applyProjectDebug, collectProjectDebug } from "./projectDebug";
 import { logUserAction } from "./userActionLog";
 import {
@@ -123,9 +128,6 @@ export class ProjectStore {
     const project =
       parseProject(persistedProjectJson ?? "") ?? createDefaultProject();
     reseedTabIds(project.tabs);
-    // Ticket pxff: seed the pose bridge so the first CameraPoseSync mount
-    // restores the persisted viewpoint (page reload), not the default view.
-    requestCameraRestore(project.view ?? null);
     // Restore the project's debug-tool state (dialogs, overlays).
     applyProjectDebug(project.debug);
 
@@ -152,11 +154,46 @@ export class ProjectStore {
     );
     this.loadedPartTabId = partTab.id;
 
+    // Ticket #422 / pxff: apply the loaded project's ENVIRONMENT. A saved view
+    // is restored verbatim (page reload); a project without one gets a default
+    // view fitted to its model, never the previous project's stale pose.
+    this.applyProjectView(project);
+
     const initialAssembly: AssemblyState =
       activeTab && activeTab.kind === "assembly"
         ? { active: true, document: activeTab.document, selectedPartId: null }
         : INACTIVE_ASSEMBLY;
     return { project, initialAssembly };
+  }
+
+  /**
+   * Ticket #422: put the TARGET project's camera environment in effect when a
+   * project is opened, switched to or reloaded. With a saved view, restore it
+   * exactly (ticket pxff). WITHOUT one, forget the previous project's pose so it
+   * can never be autosaved into this project (Bug 1), then reset to the default
+   * iso view fitted to the new model (which also rescues the camera from any
+   * absurd standoff/zoom the previous project left behind — Bug 2).
+   *
+   * The fit fires immediately, NOT deferred: `kernel.loadJson` regenerates the
+   * decoded feature spine synchronously (`bootstrap_features_from_calls` +
+   * `rebuild_packed`), and `kernel.sceneAabb` derives its bounds straight from
+   * that spine — so the bounds are fresh the instant loadJson returns, in EVERY
+   * meshing mode (the mesh worker only builds the render mesh, never the CSG
+   * bounds). We therefore republish the fresh bounds here and request the iso
+   * view; the ViewCommandConsumer frames them on the next rendered frame. Must
+   * run AFTER loadJson. An empty project publishes null bounds → the fit frames
+   * the origin. (An earlier attempt deferred the fit to the mesh-ready path,
+   * which is dead code in the sdf-deferred production default where
+   * `dcMeshingEnabled` is false and no worker job is ever posted.)
+   */
+  private applyProjectView(project: Project): void {
+    if (project.view) {
+      requestCameraRestore(project.view);
+      return;
+    }
+    clearCameraPose();
+    this.core.updateSceneBounds();
+    requestView("iso");
   }
 
   /**
@@ -319,10 +356,13 @@ export class ProjectStore {
       // previous project's cube).
       meshedBodies: [],
     };
+    // Ticket #422: apply the target project's camera environment before the
+    // autosave flush. A project without a saved view calls clearCameraPose(),
+    // so the flush persists no view for it instead of the previous project's
+    // stale pose; it then publishes the (synchronously fresh) bounds and fits.
+    this.applyProjectView(project);
     this.core.commit(new Set(), null);
     this.core.autosave.flush();
-    // Ticket pxff: restore the saved viewpoint (if any) onto the live camera.
-    requestCameraRestore(project.view ?? null);
     // Restore the project's debug-tool state (dialogs, overlays).
     applyProjectDebug(project.debug);
     return true;
@@ -478,6 +518,11 @@ export class ProjectStore {
       // could otherwise survive into the new empty project).
       sketchSession: INACTIVE_SKETCH_SESSION,
     };
+    // Ticket #422: a fresh project has no saved view — forget the previous
+    // project's pose (so it isn't autosaved here) and reset to the default view
+    // (empty scene → applied immediately). Runs before commit for symmetry with
+    // the load path.
+    this.applyProjectView(project);
     this.core.commit(new Set(), null);
     this.core.autosave.flush();
   }
