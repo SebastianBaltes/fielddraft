@@ -65,9 +65,9 @@ Alles andere fällt in den Sammel-Zweig (:594) → `errors: "Feature-Typ '<x>' w
 
 | Ticket | Feats | Zustand |
 | --- | ---: | --- |
-| #410 | 18 | **OK** (sketch/extrude/fillet/shell) — Quick Win |
-| #412 | 2  | **OK** (sketch/extrude) — Quick Win |
-| #413 | 6  | **OK** (sketch/extrude/fillet) — Quick Win |
+| #410 | 18 | Feature-Typen OK, aber **Import friert den Tab ein** (100–200 s+ Main-Thread, kein Projekt) — P0-Livetest 2026-07-24 |
+| #412 | 2  | Feature-Typen OK, aber **Geometrie falsch**: Extrude referenziert 4 Sketch-Regionen (qCompressed → SKETCH_ENTITY), Importer extrudiert den ganzen Sketch → ein Block statt Platten — P0-Livetest 2026-07-24 |
+| #413 | 6  | **Struktur korrekt** (SDF-verifiziert: Wanne, 2-mm-Wände); Rest: SWEPT_/CAP_EDGE-Fillets übersprungen, Geschwister-Kanten nicht unterscheidbar — P0-Livetest 2026-07-24 |
 | #414 | 27 | chamfer(1), hole(1) |
 | #416 | 20 | chamfer(2), revolve(1) |
 | #415 | 20 | assignVariable(1), thicken(1), booleanBodies(1) |
@@ -107,7 +107,7 @@ Alles andere fällt in den Sammel-Zweig (:594) → `errors: "Feature-Typ '<x>' w
 
 ## Empfohlene Paket-Reihenfolge
 
-1. **P0 Quick Wins verifizieren:** #410, #412, #413 — 0 neue Feature-Typen; sollten heute end-to-end laufen (Vorbehalt: bekannte Geometrie-Caveats — tangentiale Wände, Sketch-Constraint-/PROJECTED-Lücken).
+1. **P0 Quick Wins verifizieren:** ERLEDIGT 2026-07-24 — Ergebnis ernüchternd: nur #413 strukturell korrekt. Neue P0-Folgearbeiten: (a) **Sketch-Region-Query-Auflösung** (qCompressed → sketchEntityIds → Region), ohne die #412 falsch bleibt und vermutlich viele weitere Dokumente stille Falschgeometrie liefern; (b) **#410-Import-Freeze** profilen/fixen; (c) App-Bug #422 (Kamera-Leak beim Import-Öffnen + wirkungsloses Zoom-to-fit).
 2. **P1 Chamfer + Hole:** schließt **#414** komplett; entblockt zusätzlich 409/416/417/418/419.
 3. **P2 Revolve:** mit P1 schließt das **#416**; entblockt 411/417/418/419.
 4. **P3 Fundament Boolean + Variablen:** booleanBodies-Wiring + assignVariable→setVariable + var-fähiges `mmOf`. Prerequisite für fast alles; mit P1/P2 nun in Reichweite: 415,419,420.
