@@ -552,64 +552,80 @@ pub fn partition(features: &[DecodedFeature]) -> Vec<BodyPartition> {
 /// (placement divided out, matching [`Body::ensure_brep`]); apply the
 /// paired placement to lift a face centroid / normal into world space.
 pub fn weave_all(features: &[DecodedFeature]) -> Vec<(BRep, Transform)> {
-    let parts = partition(features);
-    let mut breps = Vec::with_capacity(parts.len());
-    for part in &parts {
-        let mut body = Body {
-            id: part.seed_id(features),
-            feature_indices: part.feature_indices.clone(),
-            aabb: part.aabb,
-            payload_hash: 0,
-            geometry_hash: 0,
-            transform_hash: 0,
-            mesh_resolution: 0,
-            mesh: Mesh::default(),
-            version: 1,
-            transform_delta: None,
-            last_mesh_transforms: Vec::new(),
-            compiled_sdf: None,
-            placement: Transform::IDENTITY,
-            brep: None,
-        };
-        // Parametric (branch-seed) weave, octree fallback — the same route the
-        // renderer uses. Query resolution previously forced the octree path,
-        // but that path collapses on stacked coplanar extrudes at ≳100 mm scale
-        // (ticket vyee: truncated edges, missing faces → garbage face-extrude
-        // profiles); `id_hash`es are toggle-invariant, so handles resolve
-        // identically on both routes.
-        body.ensure_brep(features, true);
-        let placement = body.placement;
-        breps.push((body.brep.expect("ensure_brep populates the cache").1, placement));
-    }
-    breps
+    partition(features)
+        .iter()
+        .map(|part| weave_one_body(features, part))
+        .collect()
 }
 
-/// Content-keyed lazy cache of the woven B-Reps of an in-flight feature
-/// spine, one entry per body partition.
+/// Weave a SINGLE body partition to its body-local B-Rep, returning it paired
+/// with the body's world placement. The one place the query/regeneration weave
+/// is produced — shared by [`weave_all`] and the per-body [`BrepCache`].
 ///
-/// The key is a content hash of the whole spine
-/// ([`hash_body_payload`] over every feature). When a feature is
-/// appended or mutated the key changes and [`BrepCache::ensure`]
-/// re-weaves; a pure read re-uses the cache. This is the shared
-/// laziness layer behind both the regeneration
-/// [`Context`](crate::features::Context) (mid-loop element queries) and
-/// the FieldSkript `RegenScratch` live context — one weave
-/// implementation, one invalidation rule.
+/// Parametric (branch-seed) weave, octree fallback — the same route the
+/// renderer uses. Query resolution previously forced the octree path, but that
+/// path collapses on stacked coplanar extrudes at ≳100 mm scale (ticket vyee:
+/// truncated edges, missing faces → garbage face-extrude profiles); `id_hash`es
+/// are toggle-invariant, so handles resolve identically on both routes.
+fn weave_one_body(features: &[DecodedFeature], part: &BodyPartition) -> (BRep, Transform) {
+    let mut body = Body {
+        id: part.seed_id(features),
+        feature_indices: part.feature_indices.clone(),
+        aabb: part.aabb,
+        payload_hash: 0,
+        geometry_hash: 0,
+        transform_hash: 0,
+        mesh_resolution: 0,
+        mesh: Mesh::default(),
+        version: 1,
+        transform_delta: None,
+        last_mesh_transforms: Vec::new(),
+        compiled_sdf: None,
+        placement: Transform::IDENTITY,
+        brep: None,
+    };
+    body.ensure_brep(features, true);
+    let placement = body.placement;
+    (body.brep.expect("ensure_brep populates the cache").1, placement)
+}
+
+/// Content-keyed lazy cache of the woven B-Reps of an in-flight feature spine.
+///
+/// Two levels, both keyed by content hash:
+///  - `bodies` is the PER-BODY weave cache, keyed by the placement-invariant
+///    body-local hash ([`hash_body_local_payload`] — the SAME key
+///    [`Body::ensure_brep`] uses). One entry per distinct body STATE, so a body
+///    left unchanged between two `ensure` prefixes — or across regenerations and
+///    Onshape-import steps — is woven exactly ONCE and reused everywhere. This is
+///    what turns the import's per-feature re-weave (O(n²), ticket #410) into a
+///    single weave per distinct body state.
+///  - `prefixes` memoises the assembled per-spine result so a repeated `ensure`
+///    at the same prefix hands back a borrow without re-cloning bodies out of
+///    the per-body cache.
+///
+/// The shared laziness layer behind both the regeneration
+/// [`Context`](crate::features::Context) (mid-loop element queries) and the
+/// FieldSkript `RegenScratch` live context — one weave implementation, one
+/// invalidation rule.
 #[derive(Debug, Default)]
 pub struct BrepCache {
-    /// Insertion-ordered (key → woven breps) entries, oldest first. A small
-    /// keyed cache instead of a single slot: one regeneration can `ensure`
-    /// at several feature prefixes (every weave-needing query feature hits
-    /// it with the features decoded *so far*), and the kernel re-installs
-    /// the cache across regenerations — a single slot would thrash between
-    /// those prefixes and re-weave on every regen.
-    entries: Vec<(u64, Vec<(BRep, Transform)>)>,
+    /// Per-body weave cache: `(body-local key → (woven B-Rep, placement))`,
+    /// LRU-ordered (oldest first). Persists across regenerations, so the same
+    /// body state is never woven twice.
+    bodies: Vec<(u64, (BRep, Transform))>,
+    /// Per-spine assembled results: `(whole-spine key → bodies in partition
+    /// order)`. LRU-ordered. Lets `ensure` return `&[(BRep, Transform)]`.
+    prefixes: Vec<(u64, Vec<(BRep, Transform)>)>,
 }
 
-/// Max retained [`BrepCache`] entries. Generous for the handful of distinct
-/// feature prefixes a document's queries resolve against, small enough that
-/// stale geometry never accumulates meaningfully.
+/// Max retained per-spine [`BrepCache`] prefixes — the handful of distinct
+/// feature prefixes a document's queries resolve against.
 const BREP_CACHE_CAPACITY: usize = 8;
+
+/// Max retained per-body weave entries. An import walks through one distinct
+/// state per feature edit, so this is sized to hold a whole medium document's
+/// worth of body states without evicting a still-live one mid-build.
+const BODY_CACHE_CAPACITY: usize = 64;
 
 impl BrepCache {
     pub fn new() -> Self {
@@ -617,22 +633,59 @@ impl BrepCache {
     }
 
     /// Weave (or reuse) the B-Reps for the current `features` spine and
-    /// return them paired with their world placements. Re-weaves only
-    /// when the content key is not cached.
+    /// return them paired with their world placements. Weaves only the
+    /// bodies whose local content key is not already cached.
     pub fn ensure(&mut self, features: &[DecodedFeature]) -> &[(BRep, Transform)] {
         let all: Vec<usize> = (0..features.len()).collect();
-        let key = hash_body_payload(features, &all);
-        if let Some(i) = self.entries.iter().position(|(k, _)| *k == key) {
+        let prefix_key = hash_body_payload(features, &all);
+        if let Some(i) = self.prefixes.iter().position(|(k, _)| *k == prefix_key) {
             // Refresh recency so repeatedly-used prefixes outlive one-offs.
-            let entry = self.entries.remove(i);
-            self.entries.push(entry);
-        } else {
-            if self.entries.len() >= BREP_CACHE_CAPACITY {
-                self.entries.remove(0);
-            }
-            self.entries.push((key, weave_all(features)));
+            let entry = self.prefixes.remove(i);
+            self.prefixes.push(entry);
+            return &self.prefixes.last().unwrap().1;
         }
-        &self.entries.last().unwrap().1
+        let parts = partition(features);
+        let mut assembled = Vec::with_capacity(parts.len());
+        for part in &parts {
+            let placement = compute_body_placement(features, &part.feature_indices);
+            let key = hash_body_local_payload(features, &part.feature_indices, &placement);
+            let woven = self.ensure_body(features, part, key);
+            assembled.push(woven);
+        }
+        if self.prefixes.len() >= BREP_CACHE_CAPACITY {
+            self.prefixes.remove(0);
+        }
+        self.prefixes.push((prefix_key, assembled));
+        &self.prefixes.last().unwrap().1
+    }
+
+    /// Weave (or reuse) a single body's B-Rep, keyed by its body-local hash.
+    fn ensure_body(
+        &mut self,
+        features: &[DecodedFeature],
+        part: &BodyPartition,
+        key: u64,
+    ) -> (BRep, Transform) {
+        if let Some(i) = self.bodies.iter().position(|(k, _)| *k == key) {
+            let entry = self.bodies.remove(i);
+            let out = entry.1.clone();
+            self.bodies.push(entry);
+            return out;
+        }
+        let woven = weave_one_body(features, part);
+        if self.bodies.len() >= BODY_CACHE_CAPACITY {
+            self.bodies.remove(0);
+        }
+        self.bodies.push((key, woven.clone()));
+        woven
+    }
+
+    /// Borrow a body's cached weave by its body-local key
+    /// ([`hash_body_local_payload`]), or `None` if it has not been woven yet.
+    /// Lets the kernel's remesh reuse the regeneration weave for face tagging
+    /// and query readers instead of a second octree pass (#410).
+    pub fn cached_body(&self, key: u64) -> Option<&(BRep, Transform)> {
+        self.bodies.iter().find(|(k, _)| *k == key).map(|(_, v)| v)
     }
 
     /// Drop the cache, forcing the next [`ensure`](BrepCache::ensure) to
@@ -640,7 +693,8 @@ impl BrepCache {
     /// clearing is a belt-and-braces hook for callers (e.g. a commit) that
     /// prefer eager invalidation.
     pub fn clear(&mut self) {
-        self.entries.clear();
+        self.bodies.clear();
+        self.prefixes.clear();
     }
 }
 

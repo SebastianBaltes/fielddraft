@@ -12,6 +12,9 @@ Format, eine Zeile je Eintrag:
 kind = feat | fix | perf. scope und #tickets sind optional. Folgezeilen, die
 eingerückt sind, gehören zum Text davor (Umbruch erlaubt).
 
+## 0.29.1
+- perf(kernel) #410: Beim Onshape-Import (und jeder Regeneration) wird jeder Körper nur noch einmal gewoben — ein persistenter per-Body-BRep-Cache ersetzt den bisherigen Cache-Schlüssel über die ganze Feature-Historie, der bei jedem neuen Feature sämtliche Körper von Grund auf neu webte (O(n²)).
+
 ## 0.29.0
 - feat(onshape) #412: Der Onshape-Import übernimmt jetzt die im Extrude tatsächlich gewählten Sketch-Regionen — die komprimierten Regions-Queries werden dekodiert und auf FieldDraft-Regionen aufgelöst, statt stets den ganzen Sketch zu extrudieren. Kann FieldDrafts Regionenmodell eine Onshape-Auswahl nicht abbilden (Onshape trennt überlappende Profile per Imprint, FieldDraft verschmilzt sie), warnt der Import sichtbar („Onshape wählte N Regionen, FieldDraft findet dafür nur M“) statt still falsche Geometrie zu liefern.
 

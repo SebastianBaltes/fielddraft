@@ -6,7 +6,7 @@
 use fielddraft_protocol::{BoolOp, Document, FeatureId, Primitive};
 use wasm_bindgen::prelude::*;
 
-use crate::body::{Body, detect_uniform_translation, hash_body_payload, hash_body_payload_split, partition};
+use crate::body::{Body, compute_body_placement, detect_uniform_translation, hash_body_local_payload, hash_body_payload, hash_body_payload_split, partition};
 use crate::body;
 use crate::csg::{CsgNode, DecodedFeature};
 use crate::csg;
@@ -316,6 +316,30 @@ impl Kernel {
         }
 
         self.bodies = new_bodies;
+
+        // #410: the regeneration that just ran wove every body to resolve its
+        // mid-history element queries; those weaves live in `regen_brep_cache`
+        // keyed per body state. Seed each fresh body's B-Rep cache from them so
+        // the face-tagging pass below AND the query readers (resolveQuery /
+        // bodyBrepFaces) reuse that weave instead of paying a SECOND full octree
+        // pass per body on every feature edit — the O(n²) Onshape-import stall.
+        // Gated on `parametric_weave` because the regeneration weave is always
+        // parametric (toggle-invariant id_hashes), so it must not stand in for a
+        // deliberately octree-only display weave during A/B debugging.
+        if self.parametric_weave {
+            for body in &mut self.bodies {
+                if body.brep_cached().is_some() {
+                    continue;
+                }
+                let placement = compute_body_placement(&self.decoded, &body.feature_indices);
+                let key =
+                    hash_body_local_payload(&self.decoded, &body.feature_indices, &placement);
+                if let Some((brep, _)) = self.regen_brep_cache.cached_body(key) {
+                    body.placement = placement;
+                    body.brep = Some((key, brep.clone()));
+                }
+            }
+        }
 
         // Brocken A (A3): face-identity tagging. Skipped while B-Rep output
         // is suppressed (gizmo drag) — `setBrepSuppressed(false)` runs the
@@ -739,6 +763,19 @@ impl Kernel {
             .into_iter()
             .map(|(id, e)| (id, e.to_string()))
             .collect();
+        // #410: publish the FINAL body states into the per-body weave cache.
+        // Mid-history queries wove only the PREFIX states they resolved against,
+        // so without this the remesh's face tagging and the query readers
+        // (`resolveQuery` / `bodyBrepFaces`) would each weave the finished body
+        // AGAIN — and the next feature's regeneration a third time. Measured on
+        // the #410 Kabelbox: dropping this line takes the import from ~15 s back
+        // to ~70 s. `ensure` is per-body content-keyed, so a body a query already
+        // wove is a pure cache hit; only genuinely new states cost a weave.
+        // Skipped while B-Rep output is suppressed (gizmo drag / weaver worker
+        // owns the weave) and when the parametric weave is off (A/B debugging).
+        if !self.brep_suppressed && self.parametric_weave {
+            self.regen_brep_cache.ensure(&self.decoded);
+        }
         // #384 offset_capability: derive the per-feature capability contract of
         // every Offset/Shell feature from the same regen-time expansion the
         // mesher/renderer run. Cheap no-op for documents without offset/shell.
