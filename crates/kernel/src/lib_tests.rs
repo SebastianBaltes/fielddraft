@@ -4336,3 +4336,110 @@ fn hole_size_variants_match_iso_table() {
     expected.extend(ISO_METRIC.iter().map(|t| t.key.to_string()));
     assert_eq!(keys, expected, "hole size dropdown drifted from ISO_METRIC");
 }
+
+/// #414 P1 — the edge chamfer through the REAL wasm API chain: the
+/// `addChamferEdge` SETTER (not a hand-written feature call), the compiled
+/// opcode stream via `bodySdfEval`, a document save/load round-trip, and an
+/// edit of the distance.
+///
+/// Three things this pins that unit tests cannot:
+/// 1. the setter's wire form parses — `distance` must be the `Length`
+///    `{value, unit}` form, the exact shape that broke `round_all` (#405) and
+///    `thicken` (#402) when a schema field was declared as a bare f32;
+/// 2. the chamfer survives persistence — the document carries only the feature
+///    call, and the bevel must be back after `load_json`;
+/// 3. editing the distance actually re-cuts — the v0.26.0 cache-hash
+///    regression, where a post-pass that is not mixed into the body hash
+///    silently reuses the stale mesh + compiled SDF (#406).
+#[test]
+fn chamfer_edge_via_kernel_api_bevels_persists_and_re_cuts() {
+    let mut k = Kernel::new();
+    k.add_feature_call("box", r#"{"half_extents":[10.0,10.0,10.0]}"#).unwrap();
+    let edges: serde_json::Value = serde_json::from_str(&k.body_brep_edges(0)).unwrap();
+    let query = edges
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| {
+            let p = e["points"].as_array().unwrap();
+            p[0] == 10.0 && p[1] == 10.0 && p[3] == 10.0 && p[4] == 10.0
+        })
+        .expect("+X/+Y cube edge")["query"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // (1) exactly what the UI would call.
+    let fid = k.add_chamfer_edge(query.clone(), 3.0).unwrap();
+    assert_eq!(
+        k.feature_errors.get(&fielddraft_protocol::FeatureId::from_u32(fid)),
+        None,
+        "chamfer_edge must parse the Length wire form the setter writes"
+    );
+
+    // The 45° bevel face: through (10,7,0) and (7,10,0), so (8.5,8.5,0) is on
+    // it, the old sharp edge is outside, and an un-chamfered edge is untouched.
+    let probe = |k: &mut Kernel| {
+        (
+            k.body_sdf_eval(0, 8.5, 8.5, 0.0),
+            k.body_sdf_eval(0, 10.0, 10.0, 0.0),
+            k.body_sdf_eval(0, 10.0, -10.0, 0.0),
+        )
+    };
+    let (face, edge, other) = probe(&mut k);
+    assert!(face.abs() < 1e-2, "bevel face on the zero set, got {face}");
+    assert!(edge > 2.0, "old sharp edge carved away, got {edge}");
+    assert!(other.abs() < 1e-2, "un-chamfered edge stays sharp, got {other}");
+
+    // (2) save → load → the bevel is still there.
+    let json = k.to_json().unwrap();
+    let mut k2 = Kernel::new();
+    k2.load_json(&json).unwrap();
+    let (face2, edge2, _) = probe(&mut k2);
+    assert!(face2.abs() < 1e-2, "bevel survives the document round-trip, got {face2}");
+    assert!(edge2 > 2.0, "carved edge survives the round-trip, got {edge2}");
+
+    // (3) edit the distance — a bigger bevel cuts deeper, which only shows if
+    // the chamfer is part of the body cache key.
+    let edited =
+        format!(r#"{{"edge":"{query}","distance":{{"value":6.0,"unit":"mm"}}}}"#);
+    k.replace_feature_call_params(fid, &edited, false).unwrap();
+    // (10−d/2, 10−d/2) is the bevel face's midpoint. The 6 mm plane lies
+    // BEHIND the old 3 mm probe point, so that point is now outside by
+    // 3/√2 ≈ 2.12 — a stale cache would still report ≈ 0 there.
+    let (face6, _, _) = probe(&mut k);
+    assert!(
+        (face6 - 3.0 / 2.0f32.sqrt()).abs() < 1e-2,
+        "the 6 mm bevel must leave the old 3 mm face point outside; stale cache would \
+         keep it at 0, got {face6}"
+    );
+    let new_face = k.body_sdf_eval(0, 7.0, 7.0, 0.0);
+    assert!(new_face.abs() < 1e-2, "the new 6 mm bevel face is on the zero set, got {new_face}");
+}
+
+/// #414: the chamfer must be part of the body cache identity. `hash_round_passes`
+/// is the single gate for every post-pass applied on top of a body's tree; a
+/// field that misses it produces stale BReps rather than a compile error, which
+/// is exactly how the v0.26.0 fillet regression escaped.
+#[test]
+fn chamfer_is_mixed_into_the_body_cache_hash() {
+    use crate::csg::EdgeChamfer;
+    let mk = |distance: f32| EdgeChamfer {
+        chamfer_id: fielddraft_protocol::FeatureId::from_u32(7),
+        normal_a: [1.0, 0.0, 0.0],
+        normal_b: [0.0, 1.0, 0.0],
+        edge_start: [10.0, 10.0, -10.0],
+        edge_end: [10.0, 10.0, 10.0],
+        distance,
+    };
+    let h = |c: &[EdgeChamfer]| crate::body::hash_round_passes(&[], c, None);
+    let none = h(&[]);
+    let three = h(&[mk(3.0)]);
+    let six = h(&[mk(6.0)]);
+    assert_ne!(none, three, "adding a chamfer must change the body hash");
+    assert_ne!(three, six, "editing the distance must change the body hash");
+    let mut moved = mk(3.0);
+    moved.edge_start = [10.0, 10.0, -9.0];
+    assert_ne!(three, h(&[moved]), "moving the edge must change the body hash");
+    assert_eq!(three, h(&[mk(3.0)]), "the hash is stable for equal input");
+}

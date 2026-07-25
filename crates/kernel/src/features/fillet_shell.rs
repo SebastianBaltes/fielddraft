@@ -112,7 +112,20 @@ fn build_fillet_cutter(
 ) -> Option<crate::csg::FilletCutter> {
     let normal_a = hit.plane_normal_a?;
     let normal_b = hit.plane_normal_b?;
-    let poly = &hit.polyline;
+    let (start, end) = straight_edge_endpoints(&hit.polyline)?;
+    Some(crate::csg::FilletCutter {
+        normal_a,
+        normal_b,
+        edge_start: start,
+        edge_end: end,
+        radius,
+    })
+}
+
+/// The endpoints of a polyline that is STRAIGHT — every interior vertex lies on
+/// the start→end line within tolerance. `None` for a curved/degenerate edge,
+/// which is outside the analytic-cutter phase (P1) for both fillet and chamfer.
+fn straight_edge_endpoints(poly: &[[f32; 3]]) -> Option<([f32; 3], [f32; 3])> {
     if poly.len() < 2 {
         return None;
     }
@@ -124,7 +137,6 @@ fn build_fillet_cutter(
         return None;
     }
     let t = [dir[0] / len, dir[1] / len, dir[2] / len];
-    // Straightness: every interior point must lie on the start→end line.
     for p in &poly[1..poly.len() - 1] {
         let w = [p[0] - start[0], p[1] - start[1], p[2] - start[2]];
         let s = w[0] * t[0] + w[1] * t[1] + w[2] * t[2];
@@ -134,13 +146,132 @@ fn build_fillet_cutter(
             return None; // curved edge — not a P1 hard cutter case
         }
     }
-    Some(crate::csg::FilletCutter {
-        normal_a,
-        normal_b,
-        edge_start: start,
-        edge_end: end,
-        radius,
-    })
+    Some((start, end))
+}
+
+// ─── #414: Chamfer Edge Feature ──────────────────────────────────
+//
+// The structurally simpler brother of `fillet_edge`: instead of a rolling-ball
+// cylinder, a PLANAR bevel is cut along the edge. It reuses the whole fillet
+// machinery — the same edge query resolution, the same dihedral gate
+// (`csg::edge_cutter_frame`), the same body-level hard subtraction, the same
+// cache-hash pass — and differs only in the cutter's profile.
+
+/// `chamfer_edge` — planar bevel along a picked edge. Onshape's `EQUAL_OFFSETS`
+/// mode: ONE distance, cut back equally on both adjacent faces (a 45° bevel at
+/// an orthogonal edge). `OPPOSITE_OFFSETS` (two distances) and `ANGLE`
+/// (distance + angle) are documented gaps — see [`crate::csg::EdgeChamfer`].
+#[derive(FeatureSchema)]
+#[schema(type = "chamfer_edge")]
+pub struct ChamferEdgeDef {
+    /// The edge to chamfer (e.g. `qEdge(<id_hash>)`).
+    #[param(name = "Edge", entity_filter = "EDGE")]
+    pub edge: ::fielddraft_protocol::Query,
+    /// Bevel leg length — how far the cut sets back from the edge on EACH
+    /// adjacent face. A `Length` like every other physical dimension (#405).
+    #[param(name = "Distance", default = ::fielddraft_protocol::Length::mm(2.0))]
+    pub distance: ::fielddraft_protocol::Length,
+}
+
+pub struct ChamferEdgeFeature;
+
+impl FeatureKind for ChamferEdgeFeature {
+    fn type_name(&self) -> &'static str {
+        ChamferEdgeDef::TYPE_NAME
+    }
+
+    fn schema_json(&self) -> Value {
+        ChamferEdgeDef::schema_json()
+    }
+
+    fn execute(
+        &self,
+        ctx: &mut Context<'_>,
+        id: &FeatureId,
+        def: &Value,
+    ) -> Result<(), FeatureError> {
+        let d = ChamferEdgeDef::parse(def)?;
+        let distance = d.distance.to_mm();
+        let bad = |name: &'static str, message: String| FeatureError::InvalidParameter {
+            feature: ChamferEdgeDef::TYPE_NAME,
+            name,
+            message,
+        };
+        if !(distance > 0.0) || !distance.is_finite() {
+            return Err(bad("distance", format!("must be > 0, got {distance}")));
+        }
+        let expr = crate::queries::parse_query(d.edge.as_str())
+            .map_err(|e| bad("edge", format!("could not parse edge query: {e}")))?;
+        let resolved = ctx.resolve_fillet_edges(&expr);
+        if resolved.is_empty() {
+            return Err(bad("edge", "edge query resolved to no edge".to_string()));
+        }
+
+        // The dihedral gate needs a FIELD to decide which side of each face is
+        // outward and whether the edge is convex. Build the hard tree of
+        // everything modelled so far once and probe it here, so a chamfer that
+        // cannot be cut fails LOUDLY with the reason instead of silently
+        // producing nothing at apply time (`apply_edge_chamfers` re-runs the
+        // very same gate against the per-body field and skips what it rejects).
+        let probe = crate::csg::CsgNode::from_decoded(&ctx.features);
+        let mut pending = Vec::new();
+        for hit in resolved {
+            let (Some(normal_a), Some(normal_b)) = (hit.plane_normal_a, hit.plane_normal_b) else {
+                return Err(bad(
+                    "edge",
+                    "Chamfer braucht zwei planare Nachbarflächen — an dieser Kante ist \
+                     mindestens eine Fläche gekrümmt oder tesselliert (P1-Grenze, siehe \
+                     docs/FILLET-CUTTER-PLAN.md)"
+                        .to_string(),
+                ));
+            };
+            let Some((start, end)) = straight_edge_endpoints(&hit.polyline) else {
+                return Err(bad(
+                    "edge",
+                    "Chamfer braucht eine GERADE Kante — diese Kante ist gekrümmt \
+                     (P1-Grenze, siehe docs/FILLET-CUTTER-PLAN.md)"
+                        .to_string(),
+                ));
+            };
+            if let Err(why) = crate::csg::edge_cutter_frame(
+                &probe, start, end, normal_a, normal_b, distance,
+            ) {
+                return Err(bad("edge", chamfer_reject_message(why, distance)));
+            }
+            pending.push(crate::csg::EdgeChamfer {
+                chamfer_id: id.clone(),
+                normal_a,
+                normal_b,
+                edge_start: start,
+                edge_end: end,
+                distance,
+            });
+        }
+        ctx.edge_chamfers.append(&mut pending);
+        Ok(())
+    }
+}
+
+/// Turn a dihedral rejection into a message that names the real limitation
+/// rather than leaving the user with a feature that quietly does nothing.
+fn chamfer_reject_message(why: crate::csg::EdgeCutterReject, distance: f32) -> String {
+    use crate::csg::EdgeCutterReject as R;
+    match why {
+        R::NonOrthogonal =>
+            "Chamfer kann diese Kante noch nicht schneiden: der Flächenwinkel ist kein \
+             rechter Winkel. P1 deckt nur orthogonale Kanten ab (P2 in \
+             docs/FILLET-CUTTER-PLAN.md verallgemeinert auf schiefe Prismen)."
+                .to_string(),
+        R::Concave =>
+            "Chamfer kann diese Kante noch nicht schneiden: sie ist KONKAV (eine Innenkante). \
+             Dort müsste Material hinzugefügt statt weggeschnitten werden — P3 in \
+             docs/FILLET-CUTTER-PLAN.md."
+                .to_string(),
+        R::Degenerate => format!(
+            "Chamfer kann diese Kante nicht schneiden: die Kantengeometrie ist entartet, \
+             oder die Fase ({distance} mm) ist zu groß für den umgebenden Körper."
+        ),
+    }
 }
 
 // ─── Round all edges (global): deburr every Boolean junction ───

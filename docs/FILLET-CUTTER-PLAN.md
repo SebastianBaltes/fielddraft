@@ -123,7 +123,63 @@ Selbst-Kante ohne Junction) vorerst wirkungslos — beides ist P2.
 - **P6 — variable Radien, Conic/Curvature-Querschnitt, Full-Round, Face-Blend:**
   vollständiger Onshape-Dialog.
 
-## 6. B-Rep-Weave / Selektierbarkeit
+## 6. Chamfer — derselbe Cutter, anderes Profil (#414)
+
+Der Kanten-**Chamfer** ist der strukturell einfachere Bruder des Fillets und
+läuft seit #414 über exakt dieselbe Mechanik: gerade, konvexe, orthogonale
+Kante → analytischer Cutter → boolesche Subtraktion am Body. Unterschied ist
+allein das **Querschnittsprofil**:
+
+| | Fillet | Chamfer |
+| --- | --- | --- |
+| Profil | Viertelkreis (Rolling Ball) | Gerade (Fase) |
+| Cutter | `Difference(Eck-Box, Tangentialzylinder)` | EINE orientierte Box |
+| Parameter | `blend_radius` | `distance` (EQUAL_OFFSETS) |
+| Fallback | `smin`-Maske | KEINER — ehrlicher Feature-Fehler |
+
+Bei EQUAL_OFFSETS schneidet die Fasenebene beidseits `d` von der Kante zurück,
+geht also durch `mid − d·n_b` und `mid − d·n_a`; ihre Außennormale ist die
+Winkelhalbierende `m = normalize(n_a + n_b)` (an orthogonalen Kanten der
+45°-Schnitt). Im lokalen Rahmen `(u, v)` der beiden Flächennormalen ist das
+Material `{u ≤ 0, v ≤ 0}` und der wegzuschneidende Keil `{u + v ≥ −d}`. Dafür
+genügt **eine einzige orientierte Box** im Rahmen `(m, s = w × m, w)`: entlang
+`m` von der Fasenebene (`−d/√2`) mit Rand `d` nach außen, entlang `s` `±d`
+(beweisbar nicht bindend, denn auf dem Keil gilt `u, v ∈ [−d, 0]` ⟹
+`|u − v| ≤ d < d·√2`), entlang `w` exakt die Kantenlänge — die Enden bleiben
+scharf (#383). Keine Verschneidung mit einer Eck-Box, kein neuer Opcode.
+
+**Kein `smin`-Fallback.** Eine Kante, die das Gate nicht besteht, dürfte NICHT
+still verrundet werden — das wäre genau die Geometrie, die der Nutzer nicht
+wollte. Das `chamfer_edge`-Feature fährt dasselbe Gate schon zur Execute-Zeit
+gegen das harte Feld und meldet den Grund als Feature-Fehler; `apply_edge_chamfers`
+überspringt anschließend nur noch, was das Body-Feld erneut ablehnt.
+
+### Konvexitätstest korrigiert
+
+Der P1-Test aus §4 (`body.sdf(C) < −0.5·r` am Rolling-Ball-Mittelpunkt) kann
+konvex und konkav **nicht** unterscheiden: bei `u = v = −r` ist das Material an
+einer konvexen Kante (`u ≤ 0 UND v ≤ 0`) genauso vorhanden wie an einer
+konkaven (`u ≤ 0 ODER v ≤ 0`). Er hat also reflexe Kanten durchgelassen und
+hätte aus einer Innenecke Material herausgeschnitten. Entscheidend sind die
+beiden **gemischten Quadranten** (`u > 0, v < 0` und `u < 0, v > 0`): an einer
+konvexen Kante sind beide leer, an einer konkaven beide massiv. Der Test liegt
+jetzt in `csg::edge_cutter_frame` und gilt für Fillet UND Chamfer.
+
+### Dokumentierte Lücken (Chamfer P1)
+
+- **`OPPOSITE_OFFSETS`** (zwei verschiedene Abstände) und **`ANGLE`**
+  (Abstand + Winkel) aus Onshape fehlen; es gibt nur `distance`. Beide sind
+  dieselbe Box mit anderer Ebenenlage/-neigung — additive Arbeit, kein Umbau.
+- **Nicht-orthogonale Dieder** (P2 oben): die Winkelhalbierende stimmt weiter,
+  aber die EQUAL_OFFSETS-Rückschnittrichtungen sind dann nicht mehr `−n_a`/`−n_b`,
+  sondern die in-Fläche-Richtungen — die Ebene ist nicht mehr ⟂ zu `n_a + n_b`.
+- **Konkave Kanten** (P3 oben): additiver Füllkörper statt Subtraktion.
+- **Gekrümmte Kanten / Tangent-Propagation** (P5 oben).
+- Der B-Rep-Weave webt weiterhin den harten Baum, die Fasenfläche ist also
+  (wie die Fillet-Fläche) noch keine eigene selektierbare Fläche; der
+  parametrische Export-Pfad lehnt Dokumente mit Chamfern deshalb ab.
+
+## 7. B-Rep-Weave / Selektierbarkeit
 
 P1 wirkt in Mesh + SDF-Render + Pick-Baum (alle drei rufen
 `apply_edge_fillets`). Die Fillet-FLÄCHE als eigene selektierbare

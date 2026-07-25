@@ -1558,54 +1558,9 @@ impl CsgNode {
         use fielddraft_protocol::{Primitive, Transform};
         let c = f.cutter.as_ref()?;
         let r = c.radius;
-        if !(r > 0.0) || !r.is_finite() {
-            return None;
-        }
-        let e0 = c.edge_start;
-        let e1 = c.edge_end;
-        let dir = [e1[0] - e0[0], e1[1] - e0[1], e1[2] - e0[2]];
-        let len = (dir[0] * dir[0] + dir[1] * dir[1] + dir[2] * dir[2]).sqrt();
-        if len <= 1e-4 {
-            return None;
-        }
-        let w = [dir[0] / len, dir[1] / len, dir[2] / len];
-        let mid = [
-            (e0[0] + e1[0]) * 0.5,
-            (e0[1] + e1[1]) * 0.5,
-            (e0[2] + e1[2]) * 0.5,
-        ];
-
-        // Orient both face normals OUTWARD against the live field (independent
-        // of the weaver's sign convention): along the true outward direction
-        // the field grows from ~0 at the edge to positive outside.
-        let na = orient_outward(self, mid, c.normal_a, r)?;
-        let nb = orient_outward(self, mid, c.normal_b, r)?;
-
-        // P1 gate: orthogonal dihedral only (cube-style right-angle edges).
-        let cdot = dot3(na, nb);
-        if cdot.abs() > 2e-2 {
-            return None;
-        }
-        // Both face normals must be perpendicular to the edge (planar straight
-        // edge). Project the box's in-plane axis u ⟂ w and rebuild a clean
-        // right-handed orthonormal frame (u, v, w); the box is symmetric in
-        // u and v so v's sign is irrelevant.
-        let u = normalize3(sub3(na, scale3(w, dot3(na, w))))?;
-        let v = cross3(w, u); // unit (u ⟂ w), right-handed
-
-        // Rolling-ball centre: distance r inside from both faces. cdot≈0 here
-        // so 1/(1+cdot) ≈ 1; keep the general form for robustness.
-        let k = r / (1.0 + cdot);
-        let cen = [
-            mid[0] - k * (na[0] + nb[0]),
-            mid[1] - k * (na[1] + nb[1]),
-            mid[2] - k * (na[2] + nb[2]),
-        ];
-        // Convexity: the ball centre must sit comfortably INSIDE the solid.
-        // A concave edge would place it in empty space (defer to a later phase).
-        if self.sdf(cen, EvalMode::Visual) > -0.5 * r {
-            return None;
-        }
+        let fr =
+            edge_cutter_frame(self, c.edge_start, c.edge_end, c.normal_a, c.normal_b, r).ok()?;
+        let (mid, u, v, w, len, cen) = (fr.mid, fr.u, fr.v, fr.w, fr.len, fr.inner);
 
         let box_id = f.fillet_id.child("cut_box");
         let cyl_id = f.fillet_id.child("cut_cyl");
@@ -1640,6 +1595,85 @@ impl CsgNode {
             }),
         );
         Some(CsgNode::Difference(Box::new(box_node), Box::new(cyl_node)))
+    }
+
+    /// #414: apply per-edge chamfers as hard cutters, subtracted at body level.
+    ///
+    /// The structurally simpler brother of [`Self::apply_edge_fillets`]: where a
+    /// fillet subtracts `corner box − tangent cylinder`, a chamfer subtracts a
+    /// single oriented box whose inner face IS the bevel plane. There is NO
+    /// `smin` fallback — a chamfer has no field-blend analogue, and rounding an
+    /// edge the user asked to bevel would be silently wrong. An edge whose
+    /// dihedral fails the gate is therefore skipped here; the `chamfer_edge`
+    /// feature runs the same gate at execute time and reports it as a hard
+    /// feature error, so the skip is never the user's first signal.
+    pub fn apply_edge_chamfers(self, chamfers: &[EdgeChamfer]) -> Self {
+        if chamfers.is_empty() {
+            return self;
+        }
+        let mut node = self;
+        for c in chamfers {
+            if let Some(cutter) = node.build_chamfer_cutter(c) {
+                node = CsgNode::Difference(Box::new(node), Box::new(cutter));
+            }
+        }
+        node
+    }
+
+    /// #414: the exact bevel cutter for one straight, convex, orthogonal edge.
+    ///
+    /// With EQUAL_OFFSETS the bevel plane cuts `d` back from the edge on BOTH
+    /// adjacent faces, i.e. it passes through `mid − d·n_b` and `mid − d·n_a`
+    /// and its outward normal is the face bisector `m = normalize(n_a + n_b)`
+    /// (a 45° cut at an orthogonal dihedral). In the local frame `(u, v)` of the
+    /// two face normals the material near the edge is `{u ≤ 0, v ≤ 0}` and the
+    /// wedge to remove is `{u + v ≥ −d}` — so ONE oriented box in the frame
+    /// `(m, s, w)` suffices:
+    ///
+    /// - along `m`: from the bevel plane (`−d/√2`) outward by a margin `d`,
+    /// - along `s = w × m`: `±d`, provably non-binding on material
+    ///   (`u, v ∈ [−d, 0]` on the wedge ⟹ `|u − v| ≤ d < d·√2`),
+    /// - along `w`: exactly the edge length, so the ends stay sharp (#383).
+    ///
+    /// No intersection with a corner box is needed, and no new opcode: a single
+    /// [`Primitive::Box`] under a [`CsgNode::Transform`] flows through every
+    /// evaluator (CPU, WGSL, sdf-vm, CGAL) like any other leaf.
+    fn build_chamfer_cutter(&self, c: &EdgeChamfer) -> Option<CsgNode> {
+        use fielddraft_protocol::{Primitive, Transform};
+        let d = c.distance;
+        let fr =
+            edge_cutter_frame(self, c.edge_start, c.edge_end, c.normal_a, c.normal_b, d).ok()?;
+        // Outward bisector of the two faces = the bevel plane's normal.
+        let m = normalize3([
+            fr.na[0] + fr.nb[0],
+            fr.na[1] + fr.nb[1],
+            fr.na[2] + fr.nb[2],
+        ])?;
+        let s = cross3(fr.w, m); // unit, ⟂ m and w; (m, s, w) is right-handed
+        // Plane offset from the edge along m, and the outward margin past it.
+        let inset = d / 2.0f32.sqrt();
+        let margin = d;
+        let m_half = 0.5 * (inset + margin);
+        let m_off = 0.5 * (margin - inset);
+        let centre = [
+            fr.mid[0] + m_off * m[0],
+            fr.mid[1] + m_off * m[1],
+            fr.mid[2] + m_off * m[2],
+        ];
+        Some(CsgNode::Transform(
+            Transform {
+                translate: centre,
+                rotation: quat_from_cols3(m, s, fr.w),
+                scale: [1.0; 3],
+            },
+            Box::new(CsgNode::Leaf {
+                id: c.chamfer_id.child("cut_bevel"),
+                primitive: Primitive::Box {
+                    center: [0.0; 3],
+                    half_extents: [m_half, d, fr.len * 0.5],
+                },
+            }),
+        ))
     }
 
     /// Legacy per-edge fillet: rewrite the matching Boolean junction into a
@@ -3928,6 +3962,132 @@ fn normalize3(v: [f32; 3]) -> Option<[f32; 3]> {
 /// Return `n` flipped so it points OUTWARD from the solid at `mid` (an edge
 /// point, field ≈ 0): the outward side is where the field grows. `None` if the
 /// probe is inconclusive (the two sides are indistinguishable).
+/// Why a straight edge cannot carry an analytic edge cutter (#383/#406/#414).
+///
+/// Shared by the fillet and the chamfer, which differ only in the CUT PROFILE
+/// (rolling-ball cylinder vs. bevel plane) and not in the dihedral they need.
+/// The fillet swallows a rejection and falls back to the `smin` mask path; the
+/// chamfer has no such fallback and reports the reason to the user instead.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EdgeCutterReject {
+    /// Zero-length edge, a normal that is not perpendicular to it, or a face
+    /// whose outward side could not be determined against the field.
+    Degenerate,
+    /// The dihedral is not a right angle — P1 covers cube-style edges only
+    /// (P2 in `docs/FILLET-CUTTER-PLAN.md` generalises to skew prisms).
+    NonOrthogonal,
+    /// The edge is concave: material would have to be ADDED, not removed.
+    Concave,
+}
+
+/// The local frame an analytic edge cutter is built in (#383/#406/#414).
+///
+/// `(u, v, w)` is right-handed and orthonormal with `w` along the edge and
+/// `u` the in-plane projection of `n_a`; `inner` is the rolling-ball centre at
+/// `reach` inside both faces, which doubles as the convexity probe point.
+pub struct EdgeCutterFrame {
+    pub mid: [f32; 3],
+    pub u: [f32; 3],
+    pub v: [f32; 3],
+    pub w: [f32; 3],
+    pub len: f32,
+    /// Face normals re-oriented OUTWARD against the live field.
+    pub na: [f32; 3],
+    pub nb: [f32; 3],
+    pub cdot: f32,
+    /// `mid − reach/(1+cdot)·(n_a + n_b)` — deep inside the material.
+    pub inner: [f32; 3],
+}
+
+/// Classify a straight edge's dihedral against the live field of `node` and
+/// return the frame an analytic cutter is built in.
+///
+/// `reach` is the cutter's local size (the fillet radius / the chamfer
+/// distance); it scales the outward probe and the convexity margin, so a
+/// cutter is only accepted when the edge is convex on ITS OWN length scale.
+/// The normals may point either way — their sign is re-fixed here against the
+/// field, so no caller has to guarantee the weaver's orientation convention.
+pub fn edge_cutter_frame(
+    node: &CsgNode,
+    edge_start: [f32; 3],
+    edge_end: [f32; 3],
+    normal_a: [f32; 3],
+    normal_b: [f32; 3],
+    reach: f32,
+) -> Result<EdgeCutterFrame, EdgeCutterReject> {
+    use EdgeCutterReject as R;
+    if !(reach > 0.0) || !reach.is_finite() {
+        return Err(R::Degenerate);
+    }
+    let dir = sub3(edge_end, edge_start);
+    let len = dot3(dir, dir).sqrt();
+    if len <= 1e-4 {
+        return Err(R::Degenerate);
+    }
+    let w = scale3(dir, 1.0 / len);
+    let mid = scale3(
+        [
+            edge_start[0] + edge_end[0],
+            edge_start[1] + edge_end[1],
+            edge_start[2] + edge_end[2],
+        ],
+        0.5,
+    );
+
+    // Orient both face normals OUTWARD against the live field (independent
+    // of the weaver's sign convention): along the true outward direction
+    // the field grows from ~0 at the edge to positive outside.
+    let na = orient_outward(node, mid, normal_a, reach).ok_or(R::Degenerate)?;
+    let nb = orient_outward(node, mid, normal_b, reach).ok_or(R::Degenerate)?;
+
+    // P1 gate: orthogonal dihedral only (cube-style right-angle edges).
+    let cdot = dot3(na, nb);
+    if cdot.abs() > 2e-2 {
+        return Err(R::NonOrthogonal);
+    }
+    // Both face normals must be perpendicular to the edge (planar straight
+    // edge). Project the in-plane axis u ⟂ w and rebuild a clean right-handed
+    // orthonormal frame (u, v, w).
+    let u = normalize3(sub3(na, scale3(w, dot3(na, w)))).ok_or(R::Degenerate)?;
+    let v = cross3(w, u); // unit (u ⟂ w), right-handed
+
+    // Rolling-ball centre: distance `reach` inside from both faces. cdot≈0 here
+    // so 1/(1+cdot) ≈ 1; keep the general form for robustness.
+    let k = reach / (1.0 + cdot);
+    let inner = [
+        mid[0] - k * (na[0] + nb[0]),
+        mid[1] - k * (na[1] + nb[1]),
+        mid[2] - k * (na[2] + nb[2]),
+    ];
+    // The cutter's own anchor point must sit comfortably INSIDE the solid,
+    // otherwise there is nothing here to cut.
+    if node.sdf(inner, EvalMode::Visual) > -0.5 * reach {
+        return Err(R::Concave);
+    }
+    // CONVEXITY. Note that `inner` alone cannot decide it: at `u = v = −reach`
+    // the material is present for a convex edge (`u ≤ 0 AND v ≤ 0`) *and* for a
+    // concave one (`u ≤ 0 OR v ≤ 0`) — the original P1 gate therefore accepted
+    // reflex edges and would have cut material out of an inside corner.
+    //
+    // The discriminating probes are the two MIXED quadrants (`u > 0, v < 0` and
+    // `u < 0, v > 0`): both are empty at a convex edge and both are solid at a
+    // concave one. Requiring BOTH to be outside also rejects the half-open
+    // (tangential/degenerate) configurations.
+    let eps = (0.25 * reach).clamp(1e-3, 0.5);
+    let mixed = |sa: f32| {
+        let q = [
+            mid[0] + eps * (sa * na[0] - sa * nb[0]),
+            mid[1] + eps * (sa * na[1] - sa * nb[1]),
+            mid[2] + eps * (sa * na[2] - sa * nb[2]),
+        ];
+        node.sdf(q, EvalMode::Visual)
+    };
+    if mixed(1.0) < 0.2 * eps || mixed(-1.0) < 0.2 * eps {
+        return Err(R::Concave);
+    }
+    Ok(EdgeCutterFrame { mid, u, v, w, len, na, nb, cdot, inner })
+}
+
 fn orient_outward(node: &CsgNode, mid: [f32; 3], n: [f32; 3], r: f32) -> Option<[f32; 3]> {
     let n = normalize3(n)?;
     let eps = (0.1 * r).clamp(1e-3, 0.5);
@@ -4073,6 +4233,35 @@ pub struct FilletCutter {
     pub edge_end: [f32; 3],
     /// Rolling-ball radius (== the fillet's `blend_radius`).
     pub radius: f32,
+}
+
+/// #414: per-edge CHAMFER specification — a planar bevel along one straight
+/// edge, Onshape's `EQUAL_OFFSETS` mode (one distance, applied to both faces).
+///
+/// Deliberately NOT an [`EdgeFillet`] with a different profile: a chamfer has
+/// no `smin` mask path, so it needs none of the junction bookkeeping
+/// (`feature_a`/`branch_a`/`mask_polyline`/`blend_mode`) that only the fallback
+/// consumes. What the two DO share — the dihedral gate and the local frame —
+/// is factored into [`edge_cutter_frame`], not into a common record.
+///
+/// Documented gaps (P1): Onshape's `OPPOSITE_OFFSETS` (two distinct distances)
+/// and `ANGLE` (distance + angle) modes are unsupported, as are concave edges
+/// and non-orthogonal dihedrals — see `docs/FILLET-CUTTER-PLAN.md` §5.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EdgeChamfer {
+    /// The chamfer feature's own id — names the cutter leaf.
+    pub chamfer_id: FeatureId,
+    /// Outward normal of adjacent face A (world, sign re-fixed at apply time).
+    pub normal_a: [f32; 3],
+    /// Outward normal of adjacent face B.
+    pub normal_b: [f32; 3],
+    /// Straight edge endpoints (world). The bevel spans exactly this segment;
+    /// its ends stay sharp (no corner blend — Onshape default).
+    pub edge_start: [f32; 3],
+    pub edge_end: [f32; 3],
+    /// EQUAL_OFFSETS leg length `d`: the bevel cuts `d` back from the edge
+    /// along BOTH adjacent faces.
+    pub distance: f32,
 }
 
 /// K10.3: capsule SDF for spatial masks. The capsule is a

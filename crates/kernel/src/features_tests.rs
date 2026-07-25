@@ -16,7 +16,7 @@ fn empty_ctx() -> Document {
 #[test]
 fn with_builtins_registers_the_k1_primitives_and_k4_5_8_extrude() {
     let registry = FeatureRegistry::with_builtins();
-    assert_eq!(registry.len(), 33);
+    assert_eq!(registry.len(), 34);
     assert!(registry.get("box").is_some());
     assert!(registry.get("loft").is_some());
     assert!(registry.get("offset").is_some());
@@ -122,6 +122,7 @@ fn type_names_contains_all_four_builtins() {
             "boolean",
             "box",
             "capsule",
+            "chamfer_edge",
             "circular_pattern",
             "cone",
             "custom_sdf",
@@ -6809,8 +6810,8 @@ fn ticket_350_edge_fillet_reaches_render_and_mesh_body() {
     // call. `render` carries the resolved edge fillets; `hard` is the same body
     // with none, i.e. the field before the round.
     let render =
-        crate::body::build_bounded_for_body_rounded(&k.decoded, &idx, k.global_round, &k.edge_fillets, crate::offset_channel::CHANNEL_TOL_RENDER);
-    let hard = crate::body::build_bounded_for_body_rounded(&k.decoded, &idx, None, &[], crate::offset_channel::CHANNEL_TOL_RENDER);
+        crate::body::build_bounded_for_body_rounded(&k.decoded, &idx, k.global_round, &k.edge_fillets, &k.edge_chamfers, crate::offset_channel::CHANNEL_TOL_RENDER);
+    let hard = crate::body::build_bounded_for_body_rounded(&k.decoded, &idx, None, &[], &[], crate::offset_channel::CHANNEL_TOL_RENDER);
 
     // Near the fillet edge the rendered field must move the surface relative to
     // the hard field. Before the fix these were identical everywhere → #350.
@@ -6856,10 +6857,10 @@ fn ticket_373_compiled_sdf_carries_the_fillet() {
     let idx: Vec<usize> = (0..k.decoded.len()).collect();
 
     let filleted = crate::body::build_bounded_for_body_rounded(
-        &k.decoded, &idx, k.global_round, &k.edge_fillets,
+        &k.decoded, &idx, k.global_round, &k.edge_fillets, &k.edge_chamfers,
         crate::offset_channel::CHANNEL_TOL_RENDER,
     );
-    let hard = crate::body::build_bounded_for_body_rounded(&k.decoded, &idx, None, &[], crate::offset_channel::CHANNEL_TOL_RENDER);
+    let hard = crate::body::build_bounded_for_body_rounded(&k.decoded, &idx, None, &[], &[], crate::offset_channel::CHANNEL_TOL_RENDER);
     let cf = compile_body(&filleted);
     let ch = compile_body(&hard);
 
@@ -6941,7 +6942,7 @@ fn ticket_373_dump_opcode_stream() {
     assert_eq!(k.edge_fillets.len(), 1, "fillet resolved");
     let idx: Vec<usize> = (0..k.decoded.len()).collect();
     let filleted = crate::body::build_bounded_for_body_rounded(
-        &k.decoded, &idx, k.global_round, &k.edge_fillets,
+        &k.decoded, &idx, k.global_round, &k.edge_fillets, &k.edge_chamfers,
         crate::offset_channel::CHANNEL_TOL_RENDER,
     );
     let cf = compile_body(&filleted);
@@ -7119,10 +7120,10 @@ fn ticket_382_filleted_field_is_finite_everywhere() {
     let idx: Vec<usize> = (0..k.decoded.len()).collect();
 
     let filleted = crate::body::build_bounded_for_body_rounded(
-        &k.decoded, &idx, k.global_round, &k.edge_fillets,
+        &k.decoded, &idx, k.global_round, &k.edge_fillets, &k.edge_chamfers,
         crate::offset_channel::CHANNEL_TOL_RENDER,
     );
-    let hard = crate::body::build_bounded_for_body_rounded(&k.decoded, &idx, None, &[], crate::offset_channel::CHANNEL_TOL_RENDER);
+    let hard = crate::body::build_bounded_for_body_rounded(&k.decoded, &idx, None, &[], &[], crate::offset_channel::CHANNEL_TOL_RENDER);
     let cf = compile_body(&filleted);
     let ch = compile_body(&hard);
 
@@ -7235,10 +7236,10 @@ fn ticket_382_filleted_field_lipschitz_probe() {
         .expect("document loads");
     let idx: Vec<usize> = (0..k.decoded.len()).collect();
     let filleted = crate::body::build_bounded_for_body_rounded(
-        &k.decoded, &idx, k.global_round, &k.edge_fillets,
+        &k.decoded, &idx, k.global_round, &k.edge_fillets, &k.edge_chamfers,
         crate::offset_channel::CHANNEL_TOL_RENDER,
     );
-    let hard = crate::body::build_bounded_for_body_rounded(&k.decoded, &idx, None, &[], crate::offset_channel::CHANNEL_TOL_RENDER);
+    let hard = crate::body::build_bounded_for_body_rounded(&k.decoded, &idx, None, &[], &[], crate::offset_channel::CHANNEL_TOL_RENDER);
     let cf = compile_body(&filleted);
     let ch = compile_body(&hard);
 
@@ -8200,4 +8201,211 @@ fn p1_cube_edge_hard_cutter_fillet() {
         d_corner < d_fill,
         "edge end/corner must stay sharper than the rounded mid-edge: corner {d_corner} vs mid {d_fill}"
     );
+}
+
+// ─── #414 P1: Edge chamfer (Onshape EQUAL_OFFSETS) ────────────────────────
+
+/// #414 P1: chamfering a lone cube edge cuts a PLANAR bevel — the structurally
+/// simpler brother of the rolling-ball fillet cutter. Verifies that (a) the
+/// chamfer feature resolves and pushes one `EdgeChamfer`, (b) the old sharp
+/// edge is carved away, (c) the new face is a PLANE through `mid − d·n_a` and
+/// `mid − d·n_b` (probed at several points, all on the zero set), (d) the two
+/// sides of that plane have the correct sign, (e) un-chamfered edges and the
+/// adjacent faces stay untouched, and (f) the bevel is bounded to the edge.
+#[test]
+fn p1_cube_edge_hard_cutter_chamfer() {
+    let registry = FeatureRegistry::with_builtins();
+    let mut doc = empty_ctx();
+    let mut ctx = Context::new(&mut doc);
+    let he = 10.0f32;
+    let d = 3.0f32;
+    let (edge_hash, mid) = cube_pxpy_edge(&registry, &mut ctx, he);
+
+    registry
+        .regenerate(
+            &mut ctx,
+            &[FeatureCall::new(
+                "chamfer_edge",
+                id(2),
+                json!({
+                    "edge": format!("qEdge({edge_hash})"),
+                    "distance": { "value": d, "unit": "mm" },
+                }),
+            )],
+            None,
+        )
+        .unwrap();
+    // (a) one chamfer collected, with the geometry the cutter needs.
+    assert_eq!(ctx.edge_chamfers.len(), 1, "one chamfer pushed");
+    assert_eq!(ctx.edge_chamfers[0].distance, d);
+
+    let hard = crate::csg::CsgNode::from_decoded(&ctx.features);
+    let chamfered = hard.clone().apply_edge_chamfers(&ctx.edge_chamfers);
+    let sdf = |n: &crate::csg::CsgNode, p: [f32; 3]| n.sdf(p, crate::csg::EvalMode::Visual);
+
+    // (b) the old sharp edge is gone: it sat on the hard surface, the bevel
+    // plane is d/√2 further in, so it is now that far OUTSIDE.
+    assert!(sdf(&hard, mid).abs() < 1e-4, "edge midpoint is on the hard surface");
+    let inset = d / 2.0f32.sqrt();
+    let d_edge = sdf(&chamfered, mid);
+    assert!(
+        (d_edge - inset).abs() < 0.05,
+        "old edge must sit {inset} outside the bevel plane, got {d_edge}"
+    );
+
+    // (c) the bevel FACE is planar: it runs from (he, he−d) to (he−d, he) in
+    // the XY cross-section, at every z along the edge. Probe the whole face.
+    for t in [0.0f32, 0.25, 0.5, 0.75, 1.0] {
+        for z in [-6.0f32, 0.0, 6.0] {
+            let p = [he - t * d, he - (1.0 - t) * d, z];
+            let f = sdf(&chamfered, p);
+            assert!(
+                f.abs() < 1e-3,
+                "bevel face point {p:?} must be on the zero set, got {f}"
+            );
+        }
+    }
+
+    // (d) correct sign on both sides of the bevel plane: the outward normal is
+    // the 45° bisector (1,1,0)/√2.
+    let face_mid = [he - d * 0.5, he - d * 0.5, 0.0];
+    let n = 1.0 / 2.0f32.sqrt();
+    let step = 0.5f32;
+    let inside = [face_mid[0] - step * n, face_mid[1] - step * n, 0.0];
+    let outside = [face_mid[0] + step * n, face_mid[1] + step * n, 0.0];
+    assert!(
+        (sdf(&chamfered, inside) + step).abs() < 1e-2,
+        "half a mm inside the bevel the distance is −0.5, got {}",
+        sdf(&chamfered, inside)
+    );
+    assert!(
+        (sdf(&chamfered, outside) - step).abs() < 1e-2,
+        "half a mm outside the bevel the distance is +0.5, got {}",
+        sdf(&chamfered, outside)
+    );
+
+    // (e) an UN-chamfered edge stays perfectly sharp and the far parts of the
+    // two adjacent faces are untouched.
+    assert!(
+        sdf(&chamfered, [he, -he, 0.0]).abs() < 1e-3,
+        "un-chamfered +X/−Y edge must stay on the surface"
+    );
+    assert!(
+        sdf(&chamfered, [he, -he * 0.5, 0.0]).abs() < 1e-3,
+        "+X face away from the chamfer is unchanged"
+    );
+    assert!(
+        sdf(&chamfered, [-he * 0.5, he, 0.0]).abs() < 1e-3,
+        "+Y face away from the chamfer is unchanged"
+    );
+    // The body's interior is untouched.
+    assert!((sdf(&chamfered, [0.0, 0.0, 0.0]) + he).abs() < 1e-3, "centre stays deep inside");
+
+    // (f) the bevel is bounded to the edge: beyond the cube's top face the
+    // +X/+Y/+Z corner is NOT carved as deeply as the mid-edge was.
+    assert!(
+        sdf(&chamfered, [he, he, he]) < d_edge,
+        "the edge END must stay sharper than the bevelled mid-edge"
+    );
+}
+
+/// #414: the chamfer cutter must reach EVERY build path, not just the raw
+/// `apply_edge_chamfers` unit call — the #350/#406 failure mode where a fillet
+/// worked in the unit test but the mesher and the GPU-SDF renderer marched the
+/// untouched field. Pins the mesh path (`build_bounded_with_primitives_rounded`)
+/// and the compiled-opcode path (`compile_sdf_for` via the body cache).
+#[test]
+fn ticket_414_edge_chamfer_reaches_render_and_mesh_body() {
+    let mut k = crate::Kernel::new();
+    k.add_feature_call("box", r#"{"half_extents":[10.0,10.0,10.0]}"#).unwrap();
+    let edges: serde_json::Value = serde_json::from_str(&k.body_brep_edges(0)).unwrap();
+    let query = edges
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| {
+            let p = e["points"].as_array().unwrap();
+            p[0] == 10.0 && p[1] == 10.0 && p[3] == 10.0 && p[4] == 10.0
+        })
+        .expect("+X/+Y cube edge")["query"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    k.add_feature_call(
+        "chamfer_edge",
+        &format!(r#"{{"edge":"{query}","distance":{{"value":3.0,"unit":"mm"}}}}"#),
+    )
+    .unwrap();
+    assert_eq!(k.edge_chamfers.len(), 1, "the chamfer_edge call resolved its edge");
+
+    let idx: Vec<usize> = (0..k.decoded.len()).collect();
+    // Render/SDF path.
+    let chamfered = crate::body::build_bounded_for_body_rounded(
+        &k.decoded, &idx, k.global_round, &k.edge_fillets, &k.edge_chamfers,
+        crate::offset_channel::CHANNEL_TOL_RENDER,
+    );
+    // Mesh path.
+    let (meshed, _) = crate::body::build_bounded_with_primitives_rounded(
+        &k.decoded, &idx, k.global_round, &k.edge_fillets, &k.edge_chamfers,
+        crate::offset_channel::CHANNEL_TOL_RENDER,
+    );
+    let face_mid = [8.5f32, 8.5, 0.0];
+    for (name, b) in [("render", &chamfered), ("mesh", &meshed)] {
+        let f = b.sdf(face_mid, crate::csg::EvalMode::Visual);
+        assert!(f.abs() < 1e-3, "{name} path must carry the bevel face, got {f}");
+        let e = b.sdf([10.0, 10.0, 0.0], crate::csg::EvalMode::Visual);
+        assert!(e > 2.0, "{name} path must have carved the old edge, got {e}");
+    }
+}
+
+/// #414: the chamfer refuses honestly instead of silently doing nothing or —
+/// worse — quietly rounding what the user asked to bevel. A CONCAVE edge (the
+/// inner crease where a small box is fused onto a big one) is P3 territory.
+#[test]
+fn chamfer_edge_rejects_a_concave_edge_with_a_reason() {
+    let mut k = crate::Kernel::new();
+    let base = k.add_feature_call("box", r#"{"half_extents":[50.0,50.0,50.0]}"#).unwrap();
+    k.add_feature_call(
+        "box",
+        &format!(
+            r#"{{"half_extents":[20.0,20.0,20.0],"center":[0.0,0.0,50.0],"op":"add","targets":"qCreatedBy({base})"}}"#
+        ),
+    )
+    .unwrap();
+    let edges: serde_json::Value = serde_json::from_str(&k.body_brep_edges(0)).unwrap();
+    // A crease edge on the big box's top face (z == 50 on both endpoints, and
+    // not on the big box's own rim at |x| == 50 / |y| == 50).
+    let query = edges
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| {
+            let p = e["points"].as_array().unwrap();
+            let f = |i: usize| p[i].as_f64().unwrap();
+            (f(2) - 50.0).abs() < 1e-6
+                && (f(5) - 50.0).abs() < 1e-6
+                && f(0).abs() < 49.0
+                && f(1).abs() < 49.0
+                && f(3).abs() < 49.0
+                && f(4).abs() < 49.0
+        })
+        .expect("a concave crease edge on the fused top face")["query"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let fid = k
+        .add_feature_call(
+            "chamfer_edge",
+            &format!(r#"{{"edge":"{query}","distance":{{"value":3.0,"unit":"mm"}}}}"#),
+        )
+        .unwrap();
+    let err = k
+        .feature_errors
+        .get(&fielddraft_protocol::FeatureId::from_u32(fid))
+        .expect("a concave chamfer must report an error, not do nothing");
+    assert!(
+        err.contains("KONKAV"),
+        "the message must name the real limitation, got: {err}"
+    );
+    assert!(k.edge_chamfers.is_empty(), "no chamfer geometry collected");
 }

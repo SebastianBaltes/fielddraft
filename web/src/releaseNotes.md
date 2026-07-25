@@ -12,6 +12,10 @@ Format, eine Zeile je Eintrag:
 kind = feat | fix | perf. scope und #tickets sind optional. Folgezeilen, die
 eingerückt sind, gehören zum Text davor (Umbruch erlaubt).
 
+## 0.31.0
+- feat(kernel) #414: Kanten-Fasen (Chamfer) als Kernel-Feature — chamfer_edge schneidet planare 45°-Fasen (EQUAL_OFFSETS) an geraden rechtwinkligen Kanten, wirkt in Rendering, Mesh, Picking und Voxel/Export und überlebt Speichern/Laden. UI-Werkzeug und Onshape-Übersetzung folgen.
+- fix(kernel): Der Konvexitätstest der analytischen Kanten-Cutter konnte konvexe und konkave Kanten nicht unterscheiden — ein Fillet auf einer Innenkante hätte dort Material herausgeschnitten. Kanten werden jetzt über die gemischten Quadranten klassifiziert; konkave Kanten werden ehrlich abgelehnt.
+
 ## 0.30.0
 - feat(kernel) #412: Sketch-Regionen folgen jetzt einem echten Imprint-Arrangement — sich schneidende oder verschachtelte Profile zerfallen in atomare Teilflächen, die einzeln wählbar und extrudierbar sind. Der Onshape-Import löst Regions-Auswahlen damit 1:1 auf: vier gewählte Platten ergeben vier Platten statt eines massiven Blocks, ohne Warnung.
 - perf(onshape) #410: Der Import vermascht nicht mehr nach jedem Feature, sondern einmal am Ende — zusammen mit dem Weave-Cache aus 0.29.1 sinkt der Kabelbox-Import im Browser von mehreren Minuten Freeze auf gut 20 Sekunden.

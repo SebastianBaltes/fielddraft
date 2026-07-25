@@ -610,6 +610,23 @@ impl Kernel {
         }))
     }
 
+    /// #414: add a `chamfer_edge` feature selecting an edge by query
+    /// (e.g. `qEdge(<id_hash>)`). `distance_mm` is Onshape's EQUAL_OFFSETS leg
+    /// length: the bevel cuts that far back from the edge on BOTH adjacent
+    /// faces. Written in `Length` wire form like every other physical
+    /// dimension (#405) — a bare f32 here would fail schema parsing.
+    #[wasm_bindgen(js_name = addChamferEdge)]
+    pub fn add_chamfer_edge(
+        &mut self,
+        edge: String,
+        distance_mm: f32,
+    ) -> Result<u32, JsError> {
+        self.push_feature_call("chamfer_edge", serde_json::json!({
+            "edge": edge,
+            "distance": { "value": distance_mm, "unit": "mm" },
+        }))
+    }
+
     /// Add a `shell` feature: hollow the body owning the picked face(s)
     /// — planar or curved (any analytic surface) — to a wall of
     /// `thickness_mm`, opening it flush with each face. `open_faces` is one

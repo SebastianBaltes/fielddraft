@@ -1065,10 +1065,10 @@ fn weave_refresh_offset_body_and_fillet_on_offset_edge() {
         cutter: None,
     };
     let plain = crate::body::build_bounded_for_body_rounded(
-        &features, &[0], None, &[], CHANNEL_TOL_RENDER,
+        &features, &[0], None, &[], &[], CHANNEL_TOL_RENDER,
     );
     let filleted = crate::body::build_bounded_for_body_rounded(
-        &features, &[0], None, std::slice::from_ref(&fillet), CHANNEL_TOL_RENDER,
+        &features, &[0], None, std::slice::from_ref(&fillet), &[], CHANNEL_TOL_RENDER,
     );
     let probe_in = [groove[0], groove[1], 0.0];
     let din = (plain.sdf(probe_in, EvalMode::Visual)

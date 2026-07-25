@@ -1909,6 +1909,12 @@ impl crate::Kernel {
         if !self.edge_fillets.is_empty() {
             return Err("document has edge fillets (SDF-only geometry)".into());
         }
+        // #414: a chamfer is a hard cutter on the SDF tree; the woven B-Rep
+        // still carries the sharp edge, so the parametric route would export
+        // the UN-chamfered solid.
+        if !self.edge_chamfers.is_empty() {
+            return Err("document has edge chamfers (SDF-only geometry)".into());
+        }
         for &fi in feature_indices {
             check_node_analytic(&self.decoded[fi].node)?;
         }

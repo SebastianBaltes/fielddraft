@@ -31,6 +31,7 @@ impl Kernel {
             brep_suppressed: false,
             mesh_version: 0,
             edge_fillets: Vec::new(),
+            edge_chamfers: Vec::new(),
             global_round: None,
             mate_connectors: Vec::new(),
             feature_errors: std::collections::HashMap::new(),

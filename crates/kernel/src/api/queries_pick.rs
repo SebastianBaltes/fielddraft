@@ -19,7 +19,8 @@ impl Kernel {
     #[wasm_bindgen(js_name = sceneAabb)]
     pub fn scene_aabb(&self) -> Result<String, JsError> {
         let tree = csg::CsgNode::from_decoded(&self.decoded)
-            .apply_edge_fillets(&self.edge_fillets);
+            .apply_edge_fillets(&self.edge_fillets)
+            .apply_edge_chamfers(&self.edge_chamfers);
         let bb = tree.aabb();
         let size = bb.size();
         let result = serde_json::json!({
@@ -200,6 +201,7 @@ impl Kernel {
         if self.pick_tree.is_none() {
             let csg = CsgNode::from_decoded(&self.decoded)
                 .apply_edge_fillets(&self.edge_fillets)
+                .apply_edge_chamfers(&self.edge_chamfers)
                 .push_down_offsets()
                 .fold_offset_leaves();
             let mut bounded = crate::offset_channel::synthesize_offset_channels(

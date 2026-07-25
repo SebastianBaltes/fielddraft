@@ -91,6 +91,10 @@ pub struct Kernel {
     /// during the last regenerate pass. Applied as a post-processing
     /// step on the CsgNode tree before meshing.
     pub(crate) edge_fillets: Vec<csg::EdgeFillet>,
+    /// #414: edge chamfers collected from ChamferEdgeFeature calls during the
+    /// last regenerate pass. Applied as a hard-cutter post-pass right after
+    /// `edge_fillets` on the eval/pick/mesh CSG tree.
+    pub(crate) edge_chamfers: Vec<csg::EdgeChamfer>,
     /// d: global round radius from the last `round_all` feature, applied as a
     /// post-pass after `edge_fillets` on the eval/pick/mesh CSG tree.
     pub(crate) global_round: Option<f32>,
@@ -202,12 +206,15 @@ impl Kernel {
                 .collect();
 
         let mut new_bodies: Vec<Body> = Vec::with_capacity(partitions.len());
-        // #406/#405: fillets and the global round are post-passes applied on
-        // top of every body's tree, so they are part of every body's cache
-        // identity — mix them into both hashes or a new/edited fillet reuses
-        // the stale mesh + compiled SDF.
-        let round_hash =
-            crate::body::hash_round_passes(&self.edge_fillets, self.global_round);
+        // #406/#405/#414: fillets, chamfers and the global round are post-passes
+        // applied on top of every body's tree, so they are part of every body's
+        // cache identity — mix them into both hashes or a new/edited fillet or
+        // chamfer reuses the stale mesh + compiled SDF.
+        let round_hash = crate::body::hash_round_passes(
+            &self.edge_fillets,
+            &self.edge_chamfers,
+            self.global_round,
+        );
         for part in partitions {
             let id = part.seed_id(&self.decoded);
             let (geometry_hash, transform_hash) =
@@ -410,6 +417,7 @@ impl Kernel {
             feature_indices,
             self.global_round,
             &self.edge_fillets,
+            &self.edge_chamfers,
             crate::offset_channel::CHANNEL_TOL_RENDER,
         );
         let prim_refs: std::collections::HashMap<u32, &Primitive> =
@@ -439,6 +447,7 @@ impl Kernel {
             feature_indices,
             self.global_round,
             &self.edge_fillets,
+            &self.edge_chamfers,
             crate::offset_channel::CHANNEL_TOL_RENDER,
         );
         sdf_compiler::compile_body(&bounded)
@@ -745,6 +754,8 @@ impl Kernel {
             self.regen_brep_cache = std::mem::take(&mut ctx.brep_cache);
             // K10.4: capture edge fillets collected during regen.
             self.edge_fillets = std::mem::take(&mut ctx.edge_fillets);
+            // #414: same for the edge chamfers.
+            self.edge_chamfers = std::mem::take(&mut ctx.edge_chamfers);
             // d: capture the global round radius (last `round_all` wins).
             self.global_round = ctx.global_round.take();
             // C2: capture resolved mate-connector CSYS for the viewport.
@@ -836,6 +847,7 @@ impl Kernel {
                 &part.feature_indices,
                 self.global_round,
                 &self.edge_fillets,
+                &self.edge_chamfers,
                 crate::offset_channel::CHANNEL_TOL_RENDER,
                 &mut report,
             );

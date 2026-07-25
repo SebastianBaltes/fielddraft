@@ -193,6 +193,9 @@ pub struct Context<'a> {
     /// K10.4: edge fillets collected during regen, applied as a
     /// post-processing pass on the CsgNode tree.
     pub edge_fillets: Vec<crate::csg::EdgeFillet>,
+    /// #414: edge chamfers collected during regen, applied as a hard-cutter
+    /// post-pass right after `edge_fillets` (and before `global_round`).
+    pub edge_chamfers: Vec<crate::csg::EdgeChamfer>,
     /// d: the global round radius from the last `round_all` feature, applied
     /// as a post-pass after `edge_fillets` (rounds every remaining Boolean
     /// junction). `None` when no `round_all` is active.
@@ -222,6 +225,7 @@ impl<'a> Context<'a> {
             features: Vec::new(),
             sketches: HashMap::new(),
             edge_fillets: Vec::new(),
+            edge_chamfers: Vec::new(),
             global_round: None,
             brep_cache: crate::body::BrepCache::new(),
             mate_connectors: Vec::new(),
@@ -351,6 +355,7 @@ impl FeatureRegistry {
         r.register(Box::new(SweepFeature));
         r.register(Box::new(LoftFeature));
         r.register(Box::new(FilletEdgeFeature));
+        r.register(Box::new(ChamferEdgeFeature));
         r.register(Box::new(RoundAllFeature));
         r.register(Box::new(ShellFeature));
         r.register(Box::new(OffsetFeature));

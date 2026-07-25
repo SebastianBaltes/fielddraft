@@ -43,7 +43,7 @@ use serde_json::Value;
 use fielddraft_protocol::{Document, FeatureId};
 
 use crate::body::BrepCache;
-use crate::csg::{DecodedFeature, EdgeFillet};
+use crate::csg::{DecodedFeature, EdgeChamfer, EdgeFillet};
 use crate::features::{Context, FeatureError, FeatureRegistry};
 use crate::sketch::SketchData;
 
@@ -60,6 +60,8 @@ pub struct RegenScratch {
     pub sketches: HashMap<FeatureId, SketchData>,
     /// Edge fillets collected for the post-processing pass.
     pub edge_fillets: Vec<EdgeFillet>,
+    /// #414: edge chamfers collected for the same post-processing pass.
+    pub edge_chamfers: Vec<EdgeChamfer>,
     /// Lazily woven B-Reps of the in-flight geometry, one per body
     /// partition. Content-keyed via the shared [`BrepCache`]: a commit
     /// that changes `features` invalidates it (next query re-weaves), and
@@ -242,6 +244,7 @@ pub fn commit_builtin(
         std::mem::swap(&mut ctx.features, &mut scratch.features);
         std::mem::swap(&mut ctx.sketches, &mut scratch.sketches);
         std::mem::swap(&mut ctx.edge_fillets, &mut scratch.edge_fillets);
+        std::mem::swap(&mut ctx.edge_chamfers, &mut scratch.edge_chamfers);
 
         let before = ctx.features.len();
         let result = feature.execute(&mut ctx, &feature_id, params);
@@ -252,6 +255,7 @@ pub fn commit_builtin(
         std::mem::swap(&mut ctx.features, &mut scratch.features);
         std::mem::swap(&mut ctx.sketches, &mut scratch.sketches);
         std::mem::swap(&mut ctx.edge_fillets, &mut scratch.edge_fillets);
+        std::mem::swap(&mut ctx.edge_chamfers, &mut scratch.edge_chamfers);
 
         // A successful op mutated `features`, so any previously woven
         // B-Reps are stale: drop the cache so the next `fd.q` re-weaves
@@ -490,6 +494,7 @@ impl crate::features::FeatureKind for ScriptFeature {
             features: std::mem::take(&mut ctx.features),
             sketches: std::mem::take(&mut ctx.sketches),
             edge_fillets: std::mem::take(&mut ctx.edge_fillets),
+            edge_chamfers: std::mem::take(&mut ctx.edge_chamfers),
             brep_cache: BrepCache::new(),
             brep_view: Vec::new(),
         };
@@ -502,6 +507,7 @@ impl crate::features::FeatureKind for ScriptFeature {
         ctx.features = scratch.features;
         ctx.sketches = scratch.sketches;
         ctx.edge_fillets = scratch.edge_fillets;
+        ctx.edge_chamfers = scratch.edge_chamfers;
 
         result.map_err(|e| FeatureError::InvalidParameter {
             feature: "fieldskript",

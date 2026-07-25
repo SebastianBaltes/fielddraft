@@ -27,7 +27,7 @@ use crate::brep::octree::Octree;
 use crate::brep::weaving::{weave, weave_parametric};
 use crate::brep::BRep;
 use crate::bvh::BoundedCsg;
-use crate::csg::{Aabb, CsgNode, DecodedFeature, EdgeFillet};
+use crate::csg::{Aabb, CsgNode, DecodedFeature, EdgeChamfer, EdgeFillet};
 use crate::dc::Mesh;
 use crate::sdf_compiler::CompiledSdf;
 
@@ -899,14 +899,25 @@ pub fn hash_body_payload(features: &[DecodedFeature], indices: &[usize]) -> u64 
     combine_hashes(g, t)
 }
 
-/// #406/#405: hash of the post-pass inputs applied on top of every body's CSG
-/// tree — per-edge fillets (`fillet_edge`) and the global round (`round_all`).
+/// #406/#405/#414: hash of the post-pass inputs applied on top of every body's
+/// CSG tree — per-edge fillets (`fillet_edge`), per-edge chamfers
+/// (`chamfer_edge`) and the global round (`round_all`).
+///
 /// These live OUTSIDE the body's feature payload, so they must be mixed into
 /// the body cache keys separately: without this, adding or editing a fillet
 /// left `payload_hash` unchanged and the cached mesh + compiled SDF were
 /// silently reused (the fillet "did nothing" in the app while every direct
 /// build-path test passed).
-pub fn hash_round_passes(edge_fillets: &[EdgeFillet], global_round: Option<f32>) -> u64 {
+///
+/// **Every new post-pass list belongs HERE, in the same call.** This function
+/// is the single cache-key gate for everything that is applied after
+/// `from_decoded`; a field that misses it produces stale BReps, not a compile
+/// error.
+pub fn hash_round_passes(
+    edge_fillets: &[EdgeFillet],
+    edge_chamfers: &[EdgeChamfer],
+    global_round: Option<f32>,
+) -> u64 {
     let mut h = DefaultHasher::new();
     edge_fillets.len().hash(&mut h);
     for f in edge_fillets {
@@ -934,6 +945,20 @@ pub fn hash_round_passes(edge_fillets: &[EdgeFillet], global_round: Option<f32>)
                 c.radius.to_bits().hash(&mut h);
             }
         }
+    }
+    edge_chamfers.len().hash(&mut h);
+    for c in edge_chamfers {
+        c.chamfer_id.hash(&mut h);
+        for v in c
+            .normal_a
+            .iter()
+            .chain(&c.normal_b)
+            .chain(&c.edge_start)
+            .chain(&c.edge_end)
+        {
+            v.to_bits().hash(&mut h);
+        }
+        c.distance.to_bits().hash(&mut h);
     }
     match global_round {
         None => 0u8.hash(&mut h),
@@ -1093,6 +1118,7 @@ pub fn build_bounded_for_body(features: &[DecodedFeature], indices: &[usize]) ->
         indices,
         None,
         &[],
+        &[],
         crate::offset_channel::CHANNEL_TOL_RENDER,
     )
 }
@@ -1112,6 +1138,7 @@ pub fn build_bounded_for_body_rounded(
     indices: &[usize],
     global_round: Option<f32>,
     edge_fillets: &[EdgeFillet],
+    edge_chamfers: &[EdgeChamfer],
     channel_tol: f32,
 ) -> BoundedCsg {
     // Delegate to the report-aware path with a throwaway report — geometry is
@@ -1123,6 +1150,7 @@ pub fn build_bounded_for_body_rounded(
         indices,
         global_round,
         edge_fillets,
+        edge_chamfers,
         channel_tol,
         &mut report,
     )
@@ -1139,11 +1167,14 @@ pub fn build_bounded_for_body_reported(
     indices: &[usize],
     global_round: Option<f32>,
     edge_fillets: &[EdgeFillet],
+    edge_chamfers: &[EdgeChamfer],
     channel_tol: f32,
     report: &mut crate::offset_capability::CapabilityReport,
 ) -> BoundedCsg {
     let sub: Vec<DecodedFeature> = indices.iter().map(|&i| features[i].clone()).collect();
-    let mut csg = CsgNode::from_decoded(&sub).apply_edge_fillets(edge_fillets);
+    let mut csg = CsgNode::from_decoded(&sub)
+        .apply_edge_fillets(edge_fillets)
+        .apply_edge_chamfers(edge_chamfers);
     if let Some(r) = global_round {
         csg = csg.apply_global_round(r);
     }
@@ -1252,7 +1283,7 @@ pub fn build_bounded_with_primitives(
     indices: &[usize],
     channel_tol: f32,
 ) -> (BoundedCsg, std::collections::HashMap<u32, fielddraft_protocol::Primitive>) {
-    build_bounded_with_primitives_rounded(features, indices, None, &[], channel_tol)
+    build_bounded_with_primitives_rounded(features, indices, None, &[], &[], channel_tol)
 }
 
 /// Like [`build_bounded_with_primitives`] but rounds every Boolean junction by
@@ -1264,10 +1295,13 @@ pub fn build_bounded_with_primitives_rounded(
     indices: &[usize],
     global_round: Option<f32>,
     edge_fillets: &[EdgeFillet],
+    edge_chamfers: &[EdgeChamfer],
     channel_tol: f32,
 ) -> (BoundedCsg, std::collections::HashMap<u32, fielddraft_protocol::Primitive>) {
     let sub: Vec<DecodedFeature> = indices.iter().map(|&i| features[i].clone()).collect();
-    let mut csg = CsgNode::from_decoded(&sub).apply_edge_fillets(edge_fillets);
+    let mut csg = CsgNode::from_decoded(&sub)
+        .apply_edge_fillets(edge_fillets)
+        .apply_edge_chamfers(edge_chamfers);
     if let Some(r) = global_round {
         csg = csg.apply_global_round(r);
     }
