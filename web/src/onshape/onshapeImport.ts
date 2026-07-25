@@ -40,6 +40,18 @@ export interface ImportKernel extends Partial<PlaneFrameKernel> {
    *  is outside every region (ticket #412). Optional: a kernel double
    *  without it degrades to whole-sketch profiles (never wrong regions). */
   regionQueryAtPoint?(sketchId: number, u: number, v: number): string;
+  /** JSON array of the sketch's atomic imprint faces (`{index, area, …}`),
+   *  in the kernel's deterministic arrangement order (#412). Used to rank
+   *  candidate faces by area when resolving an Onshape region selection.
+   *  Optional: without it the resolver falls back to edge probing alone. */
+  listSketchRegions?(sketchId: number, resolution: number): string;
+  /** Toggle the synchronous Dual-Contouring mesh pass. The importer turns it
+   *  OFF for the whole walk and back ON once at the end: mid-history query
+   *  resolution needs the woven B-Reps (still produced), but NOT a per-feature
+   *  display mesh — re-meshing all bodies after every one of N features is the
+   *  O(n²) main-thread stall that froze the Onshape import for minutes (#410).
+   *  Optional: a kernel double without it just meshes eagerly. */
+  setSyncMeshing?(enabled: boolean): boolean | void;
 }
 
 export interface OnshapeImportResult {
@@ -165,7 +177,13 @@ export function sketchEntityVertices(feat: AnyMsg): Map<string, [number, number]
  *  references. A referenced id that is not a raw segment (an imprint-derived
  *  `<rect>.top`) contributes its base rectangle's real segments instead, so
  *  the point still lands in the neighbourhood of the selected region. Returns
- *  `null` when none of the referenced entities have geometry. */
+ *  `null` when none of the referenced entities have geometry.
+ *
+ *  NB: this is only a LAST-RESORT locator. Onshape names just a couple of a
+ *  region's bounding edges, and the centroid of two edges generally does NOT
+ *  lie inside the region they bound (it lands in whatever face happens to span
+ *  between them). [`regionFaceIndex`] is the accurate resolver; this remains
+ *  as the fallback when edge probing finds no unique face. */
 export function regionInteriorPoint(
   entityIds: string[],
   geom: Map<string, [number, number][]>,
@@ -192,6 +210,90 @@ export function regionInteriorPoint(
     sy += y;
   }
   return [sx / verts.length, sy / verts.length];
+}
+
+/** How far off a bounding edge to probe for the face it borders, as a fraction
+ *  of the edge's own length. Small enough to stay inside a thin plate (the
+ *  #412 plates are 22 mm thick against 1000+ mm long), large enough to clear
+ *  the kernel's weld tolerance. */
+const EDGE_PROBE_FRACTION = 0.02;
+/** Absolute probe-offset clamp (mm), so a very long edge still probes close. */
+const EDGE_PROBE_MAX_MM = 4;
+
+/** The 2D segments a region-query entity id refers to. An imprint-derived id
+ *  (`<rect>.right`) resolves directly when the sketch published that side as
+ *  its own entity; otherwise every segment sharing the base contributes. */
+function entitySegments(
+  id: string,
+  geom: Map<string, [number, number][]>,
+): [number, number][][] {
+  const direct = geom.get(id);
+  if (direct && direct.length >= 2) return [direct];
+  const base = id.split(".")[0];
+  const out: [number, number][][] = [];
+  for (const [k, v] of geom) {
+    if ((k === base || k.startsWith(`${base}.`)) && v.length >= 2) out.push(v);
+  }
+  return out;
+}
+
+/**
+ * Resolve one Onshape region query to the index of the FieldDraft imprint face
+ * it names — by EDGE ADJACENCY, not by a centroid guess (#412).
+ *
+ * Onshape identifies a region by a couple of its own tight bounding edges (e.g.
+ * the bottom edge of the plate). Probing just off each named edge on both sides
+ * yields, per edge, exactly two adjacent faces: the specific face the edge
+ * bounds, and the large ambient face the sketch's outer rectangle leaves over.
+ * The ambient face borders EVERY named edge, so an intersection would always
+ * collapse onto it; the selected region is instead the **most specific** — the
+ * SMALLEST-area — face adjacent to any named edge.
+ *
+ * Limitation (documented, not silent): a selection of the ambient face itself
+ * cannot be expressed this way, and would resolve to one of its neighbours.
+ * Deriving the face from Onshape's imprint-region naming directly (rather than
+ * from geometry) is the proper fix — see docs/SKETCH-REGION-IMPRINT-PLAN.md §5.
+ *
+ * Returns `null` when no named edge yields an adjacent face — the caller then
+ * falls back to the centroid locator and, failing that, warns.
+ */
+export function regionFaceIndex(
+  entityIds: string[],
+  geom: Map<string, [number, number][]>,
+  faceAt: (u: number, v: number) => number | null,
+  faceArea: (index: number) => number,
+): number | null {
+  let best: number | null = null;
+  let bestArea = Infinity;
+  for (const id of entityIds) {
+    for (const seg of entitySegments(id, geom)) {
+      // Probe off the midpoint of every consecutive vertex pair, both sides.
+      for (let i = 0; i + 1 < seg.length; i++) {
+        const [ax, ay] = seg[i];
+        const [bx, by] = seg[i + 1];
+        const dx = bx - ax;
+        const dy = by - ay;
+        const len = Math.hypot(dx, dy);
+        if (len < 1e-6) continue;
+        const off = Math.min(len * EDGE_PROBE_FRACTION, EDGE_PROBE_MAX_MM);
+        // Unit normal to the edge.
+        const nx = -dy / len;
+        const ny = dx / len;
+        const mx = (ax + bx) / 2;
+        const my = (ay + by) / 2;
+        for (const s of [1, -1]) {
+          const f = faceAt(mx + s * off * nx, my + s * off * ny);
+          if (f === null) continue;
+          const area = faceArea(f);
+          if (area < bestArea) {
+            bestArea = area;
+            best = f;
+          }
+        }
+      }
+    }
+  }
+  return best;
 }
 
 /** What a translated sweep needs to be referable later. */
@@ -435,30 +537,63 @@ async function resolveExtrudeProfiles(
   );
   if (regionQueries.length === 0) return whole;
 
-  const resolved = new Set<string>();
+  // Each resolved query is a `qRegion(sketch, i)`; collect the DISTINCT atomic
+  // face indices the imprint arrangement (#412) assigns.
+  const faceAt = (u: number, v: number): number | null => {
+    const q = kernel.regionQueryAtPoint!(rec.fdId, u, v);
+    const m = q.match(/^qRegion\(\s*\d+\s*,\s*(\d+)\s*\)$/);
+    return m ? Number(m[1]) : null;
+  };
+  // Face areas rank the candidates by specificity (see `regionFaceIndex`).
+  let areas: number[] = [];
+  if (typeof kernel.listSketchRegions === "function") {
+    try {
+      const rows = JSON.parse(kernel.listSketchRegions(rec.fdId, 128)) as {
+        index: number;
+        area: number;
+      }[];
+      for (const r of rows) areas[r.index] = r.area;
+    } catch {
+      areas = [];
+    }
+  }
+  const faceArea = (i: number) => (Number.isFinite(areas[i]) ? areas[i] : Infinity);
+
+  const indices = new Set<number>();
   let unresolvable = false;
   for (const d of regionQueries) {
-    const pt = regionInteriorPoint(d.entityIds, rec.entityGeom);
-    const q = pt ? kernel.regionQueryAtPoint(rec.fdId, pt[0], pt[1]) : "";
-    if (q) resolved.add(q);
+    // Primary: edge adjacency — the most specific face bordering a named edge.
+    let face = regionFaceIndex(d.entityIds, rec.entityGeom, faceAt, faceArea);
+    if (face === null) {
+      // Fallback: the (imprecise) centroid of the named edges' vertices.
+      const pt = regionInteriorPoint(d.entityIds, rec.entityGeom);
+      face = pt ? faceAt(pt[0], pt[1]) : null;
+    }
+    if (face !== null) indices.add(face);
     else unresolvable = true;
   }
 
-  if (unresolvable || resolved.size === 0) {
+  if (unresolvable || indices.size === 0) {
     result.warnings.push(
       `${name}: Region-Auswahl (${regionQueries.length} Onshape-Region(en)) nicht auflösbar — ` +
         `ganzer Sketch extrudiert`,
     );
     return whole;
   }
-  if (resolved.size < regionQueries.length) {
+  if (indices.size < regionQueries.length) {
+    // With the imprint arrangement this should no longer happen for a faithful
+    // 1:1 selection; if it does, two Onshape regions mapped to one FieldDraft
+    // face — report it rather than silently extruding more than Onshape.
     result.warnings.push(
       `${name}: Onshape wählte ${regionQueries.length} Regionen, FieldDraft findet dafür nur ` +
-        `${resolved.size} — FieldDrafts SDF-Vereinigung verschmilzt überlappende/verschachtelte ` +
-        `Profile, die Onshape per Imprint trennt (siehe docs/ONSHAPE-IMPORT-GAP-MATRIX.md)`,
+        `${indices.size} — zwei Auswahlpunkte fielen auf dieselbe atomare Face ` +
+        `(siehe docs/ONSHAPE-IMPORT-GAP-MATRIX.md)`,
     );
   }
-  return [...resolved].join(", ");
+  const sorted = [...indices].sort((a, b) => a - b);
+  return sorted.length === 1
+    ? `qRegion(${rec.fdId}, ${sorted[0]})`
+    : `qRegions(${rec.fdId}, [${sorted.join(", ")}])`;
 }
 
 /** Import a fetched Onshape feature list into the kernel. */
@@ -470,6 +605,28 @@ export async function importOnshapeFeatures(
   const sketches = new Map<string, SketchRecord>();
   const sweeps = new Map<string, SweepRecord>();
 
+  // Batch mode (#410): defer the display mesh for the whole walk and rebuild it
+  // ONCE at the end. Every feature still regenerates (so its plane/edge queries
+  // resolve against the mid-history B-Rep), but re-meshing all bodies after each
+  // of N features is O(n²) main-thread work that froze the import for minutes.
+  kernel.setSyncMeshing?.(false);
+  try {
+    await importFeatures(featuresJson, kernel, result, sketches, sweeps);
+  } finally {
+    kernel.setSyncMeshing?.(true); // one final mesh of the finished document
+  }
+  return result;
+}
+
+/** The feature walk itself — see {@link importOnshapeFeatures}, which wraps this
+ *  in the batch meshing deferral. */
+async function importFeatures(
+  featuresJson: { features?: any[] },
+  kernel: ImportKernel,
+  result: OnshapeImportResult,
+  sketches: Map<string, SketchRecord>,
+  sweeps: Map<string, SweepRecord>,
+): Promise<void> {
   for (const raw of featuresJson.features ?? []) {
     const feat = msg(raw);
     const name: string = feat.name ?? feat.featureId ?? "?";
@@ -737,8 +894,6 @@ export async function importOnshapeFeatures(
 
     result.errors.push(`${name}: Feature-Typ "${feat.featureType}" wird noch nicht importiert`);
   }
-
-  return result;
 }
 
 /** First feature-operation id inside a compressed query (`…opExtrude`

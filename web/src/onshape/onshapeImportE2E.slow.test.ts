@@ -66,6 +66,13 @@ function wrap(k: WasmKernel): ImportKernel & { raw: WasmKernel } {
     bodyPlacement: (i: number) => JSON.parse(k.bodyPlacement(i)),
     regionQueryAtPoint: (sketchId: number, u: number, v: number) =>
       k.regionQueryAtPoint(sketchId, u, v),
+    // The imprint-face list (#412) — ranks candidate faces by area when an
+    // Onshape region selection is resolved to an atomic face.
+    listSketchRegions: (sketchId: number, resolution: number) =>
+      k.listSketchRegions(sketchId, resolution),
+    // Exercise the #410 batch meshing deferral end-to-end: the SDF verification
+    // below then proves the deferred-mesh result is geometrically identical.
+    setSyncMeshing: (enabled: boolean) => k.setSyncMeshing(enabled),
   };
 }
 
@@ -190,25 +197,29 @@ describe("Onshape import — Kabelbox end-to-end (real kernel)", () => {
 });
 
 describe("Onshape import — #412 imprint region selection (real kernel)", () => {
-  // The extrude selects FOUR imprinted sub-faces. FieldDraft's SDF-union region
-  // model merges the nested rectangles into ONE region, so the selection cannot
-  // be honoured 1:1 — the import must SAY SO (not silently extrude a block) and
-  // fall back to that one region rather than crashing.
-  it("resolves the profile to a qRegion and warns about the region reduction", async () => {
+  // The extrude selects FOUR imprinted sub-faces. With the imprint arrangement
+  // (#412) the kernel now subdivides the sheet into atomic plate faces, so the
+  // four Onshape regions map 1:1 to four DISTINCT FieldDraft faces — resolved
+  // into a single `qRegions(sketch, [i,j,k,l])` MultiQuery, no reduction warning.
+  it("resolves the profile to four distinct imprint faces", async () => {
     const kernel = wrap(new WasmKernel());
     const result = await importOnshapeFeatures(ticket412(), kernel);
 
     const extrude = (JSON.parse(kernel.raw.toJson()).feature_calls as FeatureCall[]).find(
       (c) => c.type === "extrude",
     )!;
-    // A concrete region query, NOT the whole-sketch profile — and NOT a silent
-    // block. (One FieldDraft region here, so a single qRegion term.)
-    expect(String(extrude.params.profiles)).toMatch(/^qRegion\(\d+, \d+\)$/);
+    const profiles = String(extrude.params.profiles);
+    // A concrete multi-region query, NOT the whole-sketch profile.
+    const m = profiles.match(/^qRegions\(\d+,\s*\[([\d,\s]+)\]\)$/);
+    expect(m, `profiles = ${profiles}`).not.toBeNull();
+    const indices = m![1].split(",").map((s) => Number(s.trim()));
+    expect(indices.length, `four distinct plate faces: ${profiles}`).toBe(4);
+    expect(new Set(indices).size).toBe(4);
 
-    // The mismatch is reported, never hidden.
+    // No reduction warning — the imprint faces exist 1:1.
     expect(
-      result.warnings.some((w) => w.includes("Onshape wählte 4 Regionen")),
+      result.warnings.some((w) => w.includes("Onshape wählte")),
       result.warnings.join(" | "),
-    ).toBe(true);
+    ).toBe(false);
   }, 120_000);
 });

@@ -259,12 +259,11 @@ pub const SPLINE_LOWER_TOL: f64 = 0.02;
 /// contain. Returns [`Sketch2d::Empty`] when the sub-spine has
 /// no region-forming entries — downstream features should treat
 /// that as "no profile available" and fail fast.
-/// K8.13: variant that takes raw JSON sub-call values
-/// (the format stored in FeatureCall params). Parses each
-/// into a FeatureCall and delegates.
-pub fn build_sketch2d_from_sub_calls_raw(raw: &[serde_json::Value]) -> Sketch2d {
-    let calls: Vec<FeatureCall> = raw
-        .iter()
+/// Parse raw JSON sub-call values (the format stored in a sketch feature's
+/// `sub_calls` param) into [`FeatureCall`]s. Shared by the region arrangement
+/// and the profile lowering.
+pub fn parse_raw_sub_calls(raw: &[serde_json::Value]) -> Vec<FeatureCall> {
+    raw.iter()
         .filter_map(|v| {
             let type_name = v.get("type")?.as_str()?.to_string();
             let id_str = v.get("id")?.as_str().unwrap_or("0");
@@ -272,30 +271,31 @@ pub fn build_sketch2d_from_sub_calls_raw(raw: &[serde_json::Value]) -> Sketch2d 
             let params = v.get("params").cloned().unwrap_or(serde_json::json!({}));
             Some(FeatureCall::new(type_name, id, params))
         })
-        .collect();
-    build_sketch2d_from_sub_calls(&calls)
+        .collect()
 }
 
-/// Grid density for region detection when resolving a profile query
-/// (`qRegion`/`qRegions`/`qAllRegions`). Matches `listSketchRegions`' default
-/// so the region INDEX the UI emitted (from the kernel's own flood-fill order)
-/// addresses the same region here.
-pub const PROFILE_REGION_RESOLUTION: u32 = 128;
+/// K8.13: variant that takes raw JSON sub-call values
+/// (the format stored in FeatureCall params). Parses each
+/// into a FeatureCall and delegates.
+pub fn build_sketch2d_from_sub_calls_raw(raw: &[serde_json::Value]) -> Sketch2d {
+    build_sketch2d_from_sub_calls(&parse_raw_sub_calls(raw))
+}
 
 /// Resolve a profile query against the sketch table to a `(Sketch2d, frame)`,
-/// or `None` when it doesn't resolve to a non-empty profile (ticket dhjn).
+/// or `None` when it doesn't resolve to a non-empty profile (ticket dhjn, #412).
 ///
 /// Honoured query forms — all addressing one sketch feature:
-///   * `qCreatedBy(sketch_id)` — the WHOLE sketch (every closed region).
+///   * `qCreatedBy(sketch_id)` — the WHOLE sketch (lowered union profile, with
+///     its per-entity provenance trace).
 ///   * `qAllRegions(sketch_id)` — same as above, explicit.
-///   * `qRegion(sketch_id, i)` — only the i-th connected region.
-///   * `qRegions(sketch_id, [i, j, …])` — only the listed regions.
+///   * `qRegion(sketch_id, i)` — only the i-th atomic imprint face.
+///   * `qRegions(sketch_id, [i, j, …])` — the union of the listed faces.
 ///
-/// Region indices come from [`crate::sketch_regions::find_regions`] (its
-/// flood-fill order), which is exactly what `listSketchRegions` exposes to the
-/// UI — so the index the user picked addresses the same region here. The
-/// returned profile is the EXACT CSG of the selected region(s)
-/// ([`crate::sketch_regions::restrict_sketch_to_points`]), holes included.
+/// Region indices come from [`crate::sketch_arrangement::arrange`] (its
+/// deterministic order), which is exactly what `listSketchRegions` exposes to
+/// the UI — so the index the user picked addresses the same face here. A
+/// region-restricted profile is the EXACT contour of the selected face(s),
+/// holes included, but carries no provenance trace yet (positional wall subs).
 pub fn resolve_profile_query(
     query: &str,
     sketches: &std::collections::HashMap<FeatureId, SketchData>,
@@ -309,36 +309,36 @@ pub fn resolve_profile_query(
         _ => return None,
     };
     let sketch_data = sketches.get(&sketch_id)?;
-    let (full, traced) = build_sketch2d_traced(&sketch_data.sub_calls);
-    if matches!(full, Sketch2d::Empty) {
-        return None;
-    }
-    let sketch = match indices {
-        None => full,
-        Some(indices) => {
-            // Map each requested index to its region's guaranteed-interior
-            // point, then restrict the profile to the branches containing them.
-            let regions =
-                crate::sketch_regions::find_regions(&full, PROFILE_REGION_RESOLUTION);
-            let points: Vec<[f32; 2]> = indices
-                .iter()
-                .filter_map(|&i| regions.iter().find(|r| r.index == i))
-                .map(|r| r.interior)
-                .collect();
-            if points.is_empty() {
+    match indices {
+        None => {
+            // Whole sketch — the lowered union profile, with its provenance trace.
+            let (full, traced) = build_sketch2d_traced(&sketch_data.sub_calls);
+            if matches!(full, Sketch2d::Empty) {
                 return None;
             }
-            let restricted =
-                crate::sketch_regions::restrict_sketch_to_points(&full, &points);
-            if matches!(restricted, Sketch2d::Empty) {
-                return None;
-            }
-            restricted
+            Some((full, sketch_data.frame, traced))
         }
-    };
-    // The trace stays keyed to the FULL tree; `wall_sub_table` matches the
-    // (possibly restricted) tree as an in-order subsequence against it.
-    Some((sketch, sketch_data.frame, traced))
+        Some(indices) => {
+            // Imprint atomic faces (#412): select the requested faces from the
+            // arrangement and union their EXACT profiles. Region-restricted
+            // profiles carry no stable provenance trace (the atomic-face path
+            // is a fresh contour), so wall subs fall back to positional.
+            let faces = crate::sketch_arrangement::arrange(&sketch_data.sub_calls);
+            let mut acc = Sketch2d::Empty;
+            for &i in &indices {
+                if let Some(f) = faces.get(i as usize) {
+                    acc = match acc {
+                        Sketch2d::Empty => f.profile.clone(),
+                        prev => Sketch2d::Union(Box::new(prev), Box::new(f.profile.clone())),
+                    };
+                }
+            }
+            if matches!(acc, Sketch2d::Empty) {
+                return None;
+            }
+            Some((acc, sketch_data.frame, Vec::new()))
+        }
+    }
 }
 
 pub fn build_sketch2d_from_sub_calls(sub_calls: &[FeatureCall]) -> Sketch2d {
@@ -963,7 +963,7 @@ fn sort_pair(a: f32, b: f32) -> (f32, f32) {
 /// capping A. Each cap is a semicircle (`sweep_angle = −π`) starting
 /// at its first boundary point's angle so the cap bulges away from
 /// the opposite centre — verified by the build test's bounding box.
-fn slot_path_segments(
+pub(crate) fn slot_path_segments(
     center_a: [f32; 2],
     center_b: [f32; 2],
     radius: f32,

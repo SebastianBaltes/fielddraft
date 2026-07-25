@@ -55,6 +55,66 @@ function mockKernel(): ImportKernel & { calls: { type: string; params: any }[] }
   };
 }
 
+describe("importOnshapeFeatures — batch meshing deferral (#410)", () => {
+  it("suppresses the display mesh for the whole walk and rebuilds it once", async () => {
+    // Records the interleaving of feature-building calls and mesh toggles.
+    const log: string[] = [];
+    let next = 1;
+    const kernel: ImportKernel = {
+      addSketch() {
+        log.push("build");
+        return next++;
+      },
+      addFeatureCall() {
+        log.push("build");
+        return next++;
+      },
+      resolveQuery() {
+        return [{ kind: "face", idHash: "1", query: "qFace(1)" }];
+      },
+      sceneAabb() {
+        return { min: [0, 0, 0], max: [200, 200, 200], size: [200, 200, 200] };
+      },
+      setSyncMeshing(enabled: boolean) {
+        log.push(enabled ? "mesh:on" : "mesh:off");
+      },
+    };
+
+    await importOnshapeFeatures(kabelbox(), kernel);
+
+    // Meshing is switched OFF before the first feature is built and back ON only
+    // after the last — never toggled per feature (the O(n²) main-thread stall).
+    expect(log[0]).toBe("mesh:off");
+    expect(log[log.length - 1]).toBe("mesh:on");
+    expect(log.filter((e) => e === "mesh:off")).toHaveLength(1);
+    expect(log.filter((e) => e === "mesh:on")).toHaveLength(1);
+    const firstBuild = log.indexOf("build");
+    const lastBuild = log.lastIndexOf("build");
+    expect(firstBuild).toBeGreaterThan(log.indexOf("mesh:off"));
+    expect(lastBuild).toBeLessThan(log.indexOf("mesh:on"));
+  });
+
+  it("re-enables meshing even when a feature throws", async () => {
+    let on: boolean | null = null;
+    const kernel: ImportKernel = {
+      addSketch() {
+        throw new Error("boom");
+      },
+      addFeatureCall() {
+        return 1;
+      },
+      resolveQuery() {
+        return [{ kind: "face", idHash: "1", query: "qFace(1)" }];
+      },
+      setSyncMeshing(enabled: boolean) {
+        on = enabled;
+      },
+    };
+    await expect(importOnshapeFeatures(kabelbox(), kernel)).rejects.toThrow("boom");
+    expect(on).toBe(true); // finally re-enabled the mesh pass
+  });
+});
+
 describe("importOnshapeFeatures — Kabelbox translation flow", () => {
   it("imports sketches with parametric plane queries", async () => {
     const kernel = mockKernel();
@@ -233,9 +293,9 @@ function regionMockKernel(
 }
 
 describe("extrude region selection (#412)", () => {
-  it("maps each Onshape region to its own qRegion → a MultiQuery of distinct regions", async () => {
+  it("maps four Onshape regions to a qRegions MultiQuery of four distinct faces", async () => {
     // A kernel that DID subdivide: hand each distinct interior point its own
-    // region index (first-seen order), like a real per-region flood-fill.
+    // atomic-face index (first-seen order), like the real imprint arrangement.
     const seen = new Map<string, number>();
     const kernel = regionMockKernel((sid, u, v) => {
       const key = `${Math.round(u)},${Math.round(v)}`;
@@ -244,20 +304,21 @@ describe("extrude region selection (#412)", () => {
     });
     const result = await importOnshapeFeatures(ticket412(), kernel);
     const extrude = kernel.calls.find((c) => c.type === "extrude")!;
-    // MultiQuery joins top-level with ", "; qRegion's own args also use ", ",
-    // so count the qRegion terms rather than a naive split (parser is
-    // paren-aware, see protocol/src/lib.rs).
     const profiles = extrude.params.profiles as string;
-    const terms = profiles.match(/qRegion\(1, \d+\)/g) ?? [];
-    expect(terms.length).toBe(4); // four distinct regions, not the whole sketch
-    expect(new Set(terms).size).toBe(4);
+    // Multiple distinct faces collapse into ONE `qRegions(sketch, [i,j,…])`
+    // expression (extrude only sweeps its first profile query).
+    const m = profiles.match(/^qRegions\(1,\s*\[([\d,\s]+)\]\)$/);
+    expect(m, profiles).not.toBeNull();
+    const idx = m![1].split(",").map((s) => Number(s.trim()));
+    expect(idx.length).toBe(4);
+    expect(new Set(idx).size).toBe(4);
     expect(profiles).not.toContain("qCreatedBy");
     // A faithful 1:1 selection raises no reduction warning.
-    expect(result.warnings.some((w) => w.includes("FieldDraft findet dafür nur"))).toBe(false);
+    expect(result.warnings.some((w) => w.includes("Onshape wählte"))).toBe(false);
   });
 
-  it("warns and falls back to the whole sketch when regions collapse to fewer (imprint mismatch)", async () => {
-    // A kernel like the real one: all four points land in the ONE union region.
+  it("emits a single qRegion when the four points collapse to one face, and warns", async () => {
+    // A degenerate kernel: all four points land in the SAME atomic face.
     const kernel = regionMockKernel((sid) => `qRegion(${sid}, 0)`);
     const result = await importOnshapeFeatures(ticket412(), kernel);
     const extrude = kernel.calls.find((c) => c.type === "extrude")!;

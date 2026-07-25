@@ -173,8 +173,9 @@ impl Kernel {
             .and_then(|v| serde_json::from_value(v.clone()).ok())
             .unwrap_or_default();
 
-        let sketch2d = crate::sketch::build_sketch2d_from_sub_calls_raw(&sub_calls);
-        let regions = sketch_regions::find_regions(&sketch2d, resolution);
+        let _ = resolution; // the arrangement is exact — no grid resolution needed
+        let calls = crate::sketch::parse_raw_sub_calls(&sub_calls);
+        let regions = sketch_regions::find_regions(&calls);
         serde_json::to_string(&regions).map_err(|e| JsError::new(&e.to_string()))
     }
 
@@ -203,9 +204,8 @@ impl Kernel {
             .get("sub_calls")
             .and_then(|v| serde_json::from_value(v.clone()).ok())
             .unwrap_or_default();
-        let sketch2d = crate::sketch::build_sketch2d_from_sub_calls_raw(&sub_calls);
-        let res = crate::sketch::PROFILE_REGION_RESOLUTION;
-        match sketch_regions::region_index_at_point(&sketch2d, [u, v], res) {
+        let calls = crate::sketch::parse_raw_sub_calls(&sub_calls);
+        match sketch_regions::region_index_at_point(&calls, [u, v]) {
             Some(i) => Ok(format!("qRegion({sketch_id}, {i})")),
             None => Ok(String::new()),
         }

@@ -1310,8 +1310,7 @@ fn extrude_qregion_extrudes_only_the_picked_region() {
     );
 
     // Find which region index is the circle (centre x ≈ 40).
-    let whole = crate::sketch::build_sketch2d_from_sub_calls(&sketch_calls);
-    let regions = crate::sketch_regions::find_regions(&whole, 96);
+    let regions = crate::sketch_regions::find_regions(&sketch_calls);
     let circle = regions.iter().find(|r| r.centroid[0] > 20.0).unwrap();
 
     let def = json!({

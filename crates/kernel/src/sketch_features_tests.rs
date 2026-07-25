@@ -1652,7 +1652,7 @@ fn resolve_profile_query_restricts_to_one_region() {
         id(1),
         SketchData {
             state: SketchState::with_origin(),
-            sub_calls: calls,
+            sub_calls: calls.clone(),
             frame: SketchFrame::IDENTITY,
         },
     );
@@ -1663,8 +1663,7 @@ fn resolve_profile_query_restricts_to_one_region() {
     assert!(whole.sdf([40.0, 0.0]) < 0.0);
 
     // Find which region index is the circle (centre x ≈ 40).
-    let regions =
-        crate::sketch_regions::find_regions(&whole, PROFILE_REGION_RESOLUTION);
+    let regions = crate::sketch_regions::find_regions(&calls);
     assert_eq!(regions.len(), 2);
     let circle = regions.iter().find(|r| r.centroid[0] > 20.0).unwrap();
 
@@ -1679,33 +1678,18 @@ fn resolve_profile_query_restricts_to_one_region() {
 fn region_query_at_point_matches_listed_index() {
     // A point inside a region resolves to that region's index — the same
     // index `find_regions` reports (ticket dhjn: UI ↔ kernel agreement).
-    let sketch = Sketch2d::Union(
-        Box::new(Sketch2d::Prim(Sketch2dPrimitive::Circle {
-            center: [-20.0, 0.0],
-            radius: 5.0,
-        })),
-        Box::new(Sketch2d::Prim(Sketch2dPrimitive::Circle {
-            center: [20.0, 0.0],
-            radius: 5.0,
-        })),
-    );
-    let regions =
-        crate::sketch_regions::find_regions(&sketch, PROFILE_REGION_RESOLUTION);
+    let calls = vec![
+        FeatureCall::new("sketch_circle", id(1), json!({ "center": [-20.0, 0.0], "radius": 5.0 })),
+        FeatureCall::new("sketch_circle", id(2), json!({ "center": [20.0, 0.0], "radius": 5.0 })),
+    ];
+    let regions = crate::sketch_regions::find_regions(&calls);
     for r in &regions {
-        let idx = crate::sketch_regions::region_index_at_point(
-            &sketch,
-            r.interior,
-            PROFILE_REGION_RESOLUTION,
-        );
+        let idx = crate::sketch_regions::region_index_at_point(&calls, r.interior);
         assert_eq!(idx, Some(r.index));
     }
     // Outside every region → None.
     assert_eq!(
-        crate::sketch_regions::region_index_at_point(
-            &sketch,
-            [0.0, 0.0],
-            PROFILE_REGION_RESOLUTION
-        ),
+        crate::sketch_regions::region_index_at_point(&calls, [0.0, 0.0]),
         None
     );
 }
@@ -1781,7 +1765,7 @@ fn loop_inference_ignores_dangling_stub() {
     assert!(sketch.sdf([15.0, 4.0]) > 0.0, "right of rectangle outside");
     // The stub is a zero-area line, not a region: a point beside it is out.
     assert!(sketch.sdf([2.0, -5.0]) > 0.0, "the overhanging stub is not a filled region");
-    let regions = crate::sketch_regions::find_regions(&sketch, 96);
+    let regions = crate::sketch_regions::find_regions(&calls);
     assert_eq!(regions.len(), 1, "exactly one region — the rectangle");
 }
 
@@ -1818,7 +1802,7 @@ fn loop_inference_closes_overshooting_edge() {
     let sketch = build_sketch2d_from_sub_calls(&calls);
     assert!(sketch.sdf([5.0, 4.0]) < 0.0, "rectangle centre inside despite overshoot");
     assert!(sketch.sdf([15.0, 4.0]) > 0.0, "right of rectangle outside");
-    let regions = crate::sketch_regions::find_regions(&sketch, 96);
+    let regions = crate::sketch_regions::find_regions(&calls);
     assert_eq!(regions.len(), 1, "exactly one region — the rectangle");
 }
 
@@ -1889,24 +1873,15 @@ fn loop_inference_closes_arc_and_line_into_half_disc() {
     assert!(sketch.sdf([0.0, -5.0]) > 0.0, "below the diameter outside");
     assert!(sketch.sdf([0.0, 15.0]) > 0.0, "above the arc outside");
     // The half-disc is exactly ONE detected region, pickable by qRegion(_,0).
-    let regions =
-        crate::sketch_regions::find_regions(&sketch, PROFILE_REGION_RESOLUTION);
+    let regions = crate::sketch_regions::find_regions(&calls);
     assert_eq!(regions.len(), 1, "one region for the half-disc");
     assert_eq!(
-        crate::sketch_regions::region_index_at_point(
-            &sketch,
-            [0.0, 5.0],
-            PROFILE_REGION_RESOLUTION
-        ),
+        crate::sketch_regions::region_index_at_point(&calls, [0.0, 5.0]),
         Some(0),
         "click inside the half-disc resolves to region 0"
     );
     assert_eq!(
-        crate::sketch_regions::region_index_at_point(
-            &sketch,
-            [0.0, -5.0],
-            PROFILE_REGION_RESOLUTION
-        ),
+        crate::sketch_regions::region_index_at_point(&calls, [0.0, -5.0]),
         None,
         "click below the diameter resolves to no region"
     );
@@ -3046,8 +3021,14 @@ fn wall_sub_table_survives_earlier_edits() {
 }
 
 #[test]
-fn wall_sub_table_region_restriction_keeps_entity_subs() {
-    // Square (lines 3,6,9,12) + separate circle (center 13, circle 14).
+fn wall_sub_table_region_restriction_is_positional_for_imprint_faces() {
+    // #412: region-restricted profiles now come from the imprint arrangement
+    // (`sketch_arrangement`), which builds a FRESH atomic-face contour and does
+    // not yet carry per-entity provenance — so a single picked region falls
+    // back to POSITIONAL wall subs (None). Stable entity-attributed wall subs
+    // for imprint sub-faces are documented follow-up work
+    // (docs/SKETCH-REGION-IMPRINT-PLAN.md §5). The WHOLE-sketch profile keeps
+    // its full entity-attributed trace, verified below.
     let mut calls = square_line_calls();
     let extra: Vec<FeatureCall> = serde_json::from_value(json!([
         {"type":"sketch_circle","id":"5","params":{"center":[50.0,0.0],"radius":4.0}}
@@ -3060,17 +3041,12 @@ fn wall_sub_table_region_restriction_keeps_entity_subs() {
         id(1),
         SketchData {
             state: SketchState::with_origin(),
-            sub_calls: calls,
+            sub_calls: calls.clone(),
             frame: SketchFrame::IDENTITY,
         },
     );
-    // Whole sketch: 4 square walls + 1 circle wall.
-    let (_, _, traced) = resolve_profile_query("qCreatedBy(1)", &sketches).unwrap();
-    let regions = {
-        let (full, _, _) = resolve_profile_query("qCreatedBy(1)", &sketches).unwrap();
-        crate::sketch_regions::find_regions(&full, PROFILE_REGION_RESOLUTION)
-    };
     // Find the circle's region (interior x near 50).
+    let regions = crate::sketch_regions::find_regions(&calls);
     let circle_region = regions
         .iter()
         .find(|r| (r.interior[0] - 50.0).abs() < 10.0)
@@ -3080,15 +3056,14 @@ fn wall_sub_table_region_restriction_keeps_entity_subs() {
         &sketches,
     )
     .unwrap();
-    assert_eq!(
-        wall_sub_table(&restricted, &traced_r),
-        Some(vec![14]),
-        "the restricted profile keeps the circle's ENTITY sub, not a renumbered positional 0"
-    );
+    // Geometry is exact — the circle disc, not the square.
+    assert!(restricted.sdf([50.0, 0.0]) < 0.0, "circle region kept");
+    assert!(restricted.sdf([0.0, 0.0]) > 0.0, "square region dropped");
+    // Positional fallback: no entity trace for the imprint face (yet).
+    assert_eq!(wall_sub_table(&restricted, &traced_r), None);
     // Sanity: the full profile really has all five walls attributed.
     let (full, _, traced_f) = resolve_profile_query("qCreatedBy(1)", &sketches).unwrap();
     assert_eq!(wall_sub_table(&full, &traced_f).map(|t| t.len()), Some(5));
-    let _ = traced;
 }
 
 #[test]

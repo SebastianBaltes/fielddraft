@@ -739,14 +739,24 @@ export class Kernel {
   }
 
   /**
-   * Ticket dhjn: the `qRegion(sketch_id, i)` query for the closed region of
-   * `sketchId` that contains the sketch-space point `(u, v)`, or `""` when the
-   * point is outside every region. Lets a Revolve/Extrude profile picker store
-   * just the clicked region instead of the whole sketch. Region index order
-   * matches the kernel's own flood-fill (same as `listSketchRegions`).
+   * Ticket dhjn: the `qRegion(sketch_id, i)` query for the atomic imprint face
+   * of `sketchId` that contains the sketch-space point `(u, v)`, or `""` when
+   * the point is outside every region. Lets a Revolve/Extrude profile picker
+   * store just the clicked region instead of the whole sketch. Region index
+   * order matches the kernel's arrangement (same as `listSketchRegions`).
    */
   regionQueryAtPoint(sketchId: number, u: number, v: number): string {
     return this.inner.regionQueryAtPoint(sketchId, u, v);
+  }
+
+  /**
+   * The sketch's atomic imprint faces as raw JSON — `{index, centroid,
+   * interior, aabb, area}` per face, in the kernel's deterministic arrangement
+   * order (#412). `resolution` is accepted for call compatibility but ignored:
+   * the arrangement is exact, not grid-sampled.
+   */
+  listSketchRegions(sketchId: number, resolution = 128): string {
+    return this.inner.listSketchRegions(sketchId, resolution);
   }
 
   /**

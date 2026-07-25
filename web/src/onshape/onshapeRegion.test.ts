@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { decodeRegionQuery } from "./onshapeRegion";
-import { regionInteriorPoint, sketchEntityVertices } from "./onshapeImport";
+import { regionFaceIndex, regionInteriorPoint, sketchEntityVertices } from "./onshapeImport";
 
 /** The #412 part studio: one sketch (many imprinted rectangles) + one extrude
  *  whose profile selects FOUR sketch regions via compressed SKETCH_ENTITY
@@ -95,5 +95,43 @@ describe("regionInteriorPoint", () => {
     expect(p[0]).toBeLessThan(2200);
     expect(p[1]).toBeGreaterThan(1690);
     expect(p[1]).toBeLessThan(1730);
+  });
+});
+
+describe("regionFaceIndex", () => {
+  // A 100x40 plate (face 2) sitting inside a much larger ambient face (0).
+  // Probing off ANY of the plate's edges finds both: the plate and the ambient
+  // face. The plate is the specific one, so the smallest area must win.
+  const geom = new Map<string, [number, number][]>([
+    ["P.bottom", [[10, 20], [110, 20]]],
+    ["P.top", [[10, 60], [110, 60]]],
+  ]);
+  const areas: Record<number, number> = { 0: 1_000_000, 1: 900_000, 2: 4_000 };
+  const faceArea = (i: number) => areas[i] ?? Infinity;
+  /** Inside the plate -> 2; anywhere else in the sheet -> the ambient face 0. */
+  const faceAt = (u: number, v: number): number | null =>
+    v > 20 && v < 60 && u > 10 && u < 110 ? 2 : 0;
+
+  it("picks the specific (smallest) face adjacent to a named edge", () => {
+    expect(regionFaceIndex(["P.bottom"], geom, faceAt, faceArea)).toBe(2);
+  });
+
+  it("still picks the plate when a second, unrelated edge is named too", () => {
+    // The ambient face borders BOTH named edges, so an intersection rule would
+    // wrongly return it; the specificity rule keeps the plate.
+    const g2 = new Map(geom);
+    g2.set("Other.right", [
+      [500, 0],
+      [500, 400],
+    ]);
+    expect(regionFaceIndex(["Other.right", "P.top"], g2, faceAt, faceArea)).toBe(2);
+  });
+
+  it("returns null when no named entity has geometry", () => {
+    expect(regionFaceIndex(["ghost"], new Map(), faceAt, faceArea)).toBeNull();
+  });
+
+  it("returns null when every probe lands outside all regions", () => {
+    expect(regionFaceIndex(["P.bottom"], geom, () => null, faceArea)).toBeNull();
   });
 });

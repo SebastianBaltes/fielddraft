@@ -12,6 +12,10 @@ Format, eine Zeile je Eintrag:
 kind = feat | fix | perf. scope und #tickets sind optional. Folgezeilen, die
 eingerückt sind, gehören zum Text davor (Umbruch erlaubt).
 
+## 0.30.0
+- feat(kernel) #412: Sketch-Regionen folgen jetzt einem echten Imprint-Arrangement — sich schneidende oder verschachtelte Profile zerfallen in atomare Teilflächen, die einzeln wählbar und extrudierbar sind. Der Onshape-Import löst Regions-Auswahlen damit 1:1 auf: vier gewählte Platten ergeben vier Platten statt eines massiven Blocks, ohne Warnung.
+- perf(onshape) #410: Der Import vermascht nicht mehr nach jedem Feature, sondern einmal am Ende — zusammen mit dem Weave-Cache aus 0.29.1 sinkt der Kabelbox-Import im Browser von mehreren Minuten Freeze auf gut 20 Sekunden.
+
 ## 0.29.1
 - perf(kernel) #410: Beim Onshape-Import (und jeder Regeneration) wird jeder Körper nur noch einmal gewoben — ein persistenter per-Body-BRep-Cache ersetzt den bisherigen Cache-Schlüssel über die ganze Feature-Historie, der bei jedem neuen Feature sämtliche Körper von Grund auf neu webte (O(n²)).
 
