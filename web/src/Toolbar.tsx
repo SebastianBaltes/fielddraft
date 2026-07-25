@@ -1491,6 +1491,14 @@ export function Toolbar({ store, state }: ToolbarProps) {
           label="Fillet"
         />
         <FeatureButton
+          kind="chamfer_edge"
+          title="Click an edge to chamfer it"
+          testId="chamfer-toggle"
+          active={state.chamferMode}
+          onClick={() => store.toggleChamferMode()}
+          label="Chamfer"
+        />
+        <FeatureButton
           kind="thicken"
           title={
             selectedFaceQueries.length > 0

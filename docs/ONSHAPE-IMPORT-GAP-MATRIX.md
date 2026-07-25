@@ -15,6 +15,8 @@ Der Importer dispatcht in `importOnshapeFeatures` (onshapeImport.ts) nur auf:
 | `loft`      | :440 | loft (nur bodyType SOLID) |
 | `shell`     | :515 | shell |
 | `fillet`    | :538 | fillet_edge (nur filletType EDGE, control RADIUS, CIRCULAR) |
+| `chamfer`   | —    | chamfer_edge (nur EQUAL_OFFSETS bzw. OFFSET_ANGLE @ 45°) |
+| `hole`      | —    | hole (simple/drilled, blind + through-all, Sketch-Punkt-Ziele) |
 
 Alles andere fällt in den Sammel-Zweig (:594) → `errors: "Feature-Typ '<x>' wird noch nicht importiert"` (Feature übersprungen, Import läuft weiter).
 
@@ -26,7 +28,7 @@ Alles andere fällt in den Sammel-Zweig (:594) → `errors: "Feature-Typ '<x>' w
 | newSketch | 225 | OK | vorhanden |
 | assignVariable | 119 | FEHLT | Kernel HAT setVariable (api/variables.rs) — nur Wiring |
 | fillet | 88 | OK | vorhanden |
-| chamfer | 38 | FEHLT | KEIN Edge-Chamfer-Feature (nur SDF-BlendMode::Chamfer) |
+| chamfer | 38 | OK (EQUAL_OFFSETS / 45°) | Kernel-Feature `chamfer_edge` seit v0.31.0 |
 | booleanBodies | 27 | FEHLT | Kernel HAT boolean — nur Wiring |
 | thicken | 25 | FEHLT | Kernel HAT thicken — nur Wiring |
 | mateConnector | 22 | FEHLT | Kernel HAT mate_connector — nur Wiring (Referenzgeo) |
@@ -36,7 +38,7 @@ Alles andere fällt in den Sammel-Zweig (:594) → `errors: "Feature-Typ '<x>' w
 | loft | 16 | OK (SOLID) | 6× SURFACE werden übersprungen |
 | transform | 11 | FEHLT | kein Body-Transform-Feature |
 | deleteBodies | 10 | FEHLT | kein Gegenstück (kann als No-op/Suppress laufen) |
-| hole | 9 | FEHLT | Kernel HAT hole — nur Wiring (Plan: docs/HOLE-ONSHAPE-PLAN.md) |
+| hole | 9 | OK (simple/drilled) | Übersetzer da; cbore/csink/tip/up-to-* melden Warnung (hole P2+) |
 | shell | 6 | OK | vorhanden |
 | printedHole | 6 | FEHLT | auf hole abbildbar |
 | linearPattern | 4 | FEHLT | Kernel HAT linear_pattern — nur Wiring |
@@ -55,6 +57,10 @@ Alles andere fällt in den Sammel-Zweig (:594) → `errors: "Feature-Typ '<x>' w
 - extrude endBound: BLIND 197 (ok), UP_TO_SURFACE 23 (ok, gebacken+Warnung), THROUGH_ALL 12 (ok), **UP_TO_NEXT 6 (FEHLT** — kein endBoundEntityFace-Target, `endCondition` meldet „Zielfläche nicht auflösbar").
 - extrude operation: NEW 92 / REMOVE 79 / ADD 62 / INTERSECT 5 — alle unterstützt.
 - fillet: 88× EDGE + RADIUS + CIRCULAR — voll unterstützt.
+- chamfer: der #414-Chamfer ist `OFFSET_ANGLE` @ 45° (nicht `EQUAL_OFFSETS`) — bei
+  rechtwinklig zusammenstoßenden Flächen deckungsgleich mit der symmetrischen Fase,
+  wird mit genau dieser Einschränkung als Warnung übernommen. Ungleiche Schenkel
+  (`TWO_OFFSETS`, `OPPOSITE_OFFSETS`, Winkel ≠ 45°) werden ausgelassen, nicht genähert.
 - hole style: C_SINK 4, SIMPLE 5, (unspez.) 6.
 - loft bodyType: SOLID 10 (ok), **SURFACE 6 (übersprungen** — alle in #418).
 - Ausdrücke: 6004 literal-parsebar, **153 Variablen/Formeln** (`#Brettstaerke`, `3 mm+#HoleExtraGap`, …) — `mmOf` kann nur Literale, Variablenbezüge fallen auf Defaults zurück → falsche Maße.
@@ -68,7 +74,7 @@ Alles andere fällt in den Sammel-Zweig (:594) → `errors: "Feature-Typ '<x>' w
 | #410 | 18 | **Struktur korrekt** (Shell-Container hohl + Deckel, SDF-verifiziert), aber Import blockiert den Main-Thread ~4–5 min; Fillet-Reste (CAP_EDGE/CAP_FACE, qCommonEdge löst nichts auf) — P0-Livetest 2026-07-24 |
 | #412 | 2  | Feature-Typen OK, aber **Geometrie falsch**: Extrude referenziert 4 Sketch-Regionen (qCompressed → SKETCH_ENTITY), Importer extrudiert den ganzen Sketch → ein Block statt Platten — P0-Livetest 2026-07-24 |
 | #413 | 6  | **Struktur korrekt** (SDF-verifiziert: Wanne, 2-mm-Wände); Rest: SWEPT_/CAP_EDGE-Fillets übersprungen, Geschwister-Kanten nicht unterscheidbar — P0-Livetest 2026-07-24 |
-| #414 | 27 | chamfer(1), hole(1) |
+| #414 | 27 | Feature-Typen **OK** (chamfer + hole übersetzt), aber **Geometrie noch falsch**: Wall-Provenienz region-eingeschränkter Profile fehlt → Chamfer-Kante, Sketch-2-Ebene und 6 Fillets lösen nicht auf — s. Update 2026-07-25 (3) |
 | #416 | 20 | chamfer(2), revolve(1) |
 | #415 | 20 | assignVariable(1), thicken(1), booleanBodies(1) |
 | #409 | 48 | assignVariable(8), hole(4), mirror(3), linearPattern(2), booleanBodies(1), chamfer(1) |
@@ -85,9 +91,9 @@ Alles andere fällt in den Sammel-Zweig (:594) → `errors: "Feature-Typ '<x>' w
 | --- | --- | --- |
 | assignVariable (setVariable-Wiring + Var-fähiges `mmOf`) | M | 409,415,417,418,419,420,421 |
 | booleanBodies (2 Body-Set-Queries → boolean) | M | 409,411,415,417,418,419,420 |
-| chamfer (Edge-Chamfer-Feature exponieren; interim: als fillet nähern) | M–L | 409,414,416,417,418,419 |
+| ~~chamfer~~ ERLEDIGT (`chamfer_edge`, EQUAL_OFFSETS/45°) | — | ~~409,414,416,417,418,419~~ |
 | revolve (Profil + Achsen-Query) | S–M | 411,416,417,418,419 |
-| hole + printedHole (Platzierungs-Query + Style; Plan da) | M | 409,414,417,419,421 |
+| hole ERLEDIGT (P1-Umfang); **printedHole** noch offen | S | 417,419 (printedHole) |
 | mirror (Spiegelebenen-Query + entities) | M | 409,411,417,418,419 |
 | circularPattern (+ linearPattern) (Achse/Richtung + Anzahl + entities) | M | 409,411,417,418,419 |
 | thicken (Face-Query + Dicke) | S–M | 415,417,418,419 |
@@ -136,7 +142,9 @@ Perf-Nebenschauplatz erledigt: #410-Freeze gelöst (v0.29.1 per-Body-BRep-Cache 
 ## Empfohlene Paket-Reihenfolge
 
 1. **P0 Quick Wins verifizieren:** ERLEDIGT 2026-07-24 — Ergebnis ernüchternd: nur #413 strukturell korrekt. Neue P0-Folgearbeiten: (a) **Sketch-Region-Query-Auflösung** (qCompressed → sketchEntityIds → Region), ohne die #412 falsch bleibt und vermutlich viele weitere Dokumente stille Falschgeometrie liefern; (b) **#410-Import-Freeze** profilen/fixen; (c) App-Bug #422 ERLEDIGT (v0.28.1, c4f0c619 — view-lose Projekte starten als Iso-Fit auf frische CSG-Bounds, Alt-Pose wird vergessen).
-2. **P1 Chamfer + Hole:** schließt **#414** komplett; entblockt zusätzlich 409/416/417/418/419.
+2. **P1 Chamfer + Hole:** ERLEDIGT 2026-07-25 (Übersetzer + Web-Verdrahtung). Schließt #414
+   **nicht** komplett — Restblocker ist die Wall-Provenienz region-eingeschränkter Profile
+   (s. u.), nicht mehr die Feature-Typen. Entblockt 409/416/417/418/419.
 3. **P2 Revolve:** mit P1 schließt das **#416**; entblockt 411/417/418/419.
 4. **P3 Fundament Boolean + Variablen:** booleanBodies-Wiring + assignVariable→setVariable + var-fähiges `mmOf`. Prerequisite für fast alles; mit P1/P2 nun in Reichweite: 415,419,420.
 5. **P4 Thicken:** schließt mit P3 **#415**.
@@ -145,3 +153,53 @@ Perf-Nebenschauplatz erledigt: #410-Freeze gelöst (v0.29.1 per-Body-BRep-Cache 
 8. **P7 Long-Tail 417/418/411:** transform, cPlane, projectCurves, laserJoint, importDerived, enclose, SURFACE-Loft, threadCreator. Die drei Mega-/Spezialdokumente; zuletzt, weil teuer und wenig Streuwirkung.
 
 Kern-Einsicht: 11 der 26 fehlenden Typen sind **reine Übersetzer-Verdrahtung** — der Kernel kann revolve/sweep/helix/hole/thicken/boolean/circular_pattern/linear_pattern/mirror/mate_connector/Variablen bereits. Echte Kernel-Neuarbeit brauchen nur chamfer (Edge-Feature), transform, cPlane, projectCurves, SURFACE-loft, laserJoint, importDerived, enclose.
+
+## #414 Chamfer + Hole — Übersetzer geliefert, Restblocker benannt (2026-07-25)
+
+**Neu übersetzt.** `chamfer` → je aufgelöster Kante ein `chamfer_edge`
+(Kernel-Feature seit v0.31.0). Übernommen werden `EQUAL_OFFSETS` (Maß = `width`)
+und `OFFSET_ANGLE` bei exakt 45° (Maß = `width1`) — letzteres mit der ehrlichen
+Warnung, dass es nur an rechtwinklig zusammenstoßenden Flächen deckungsgleich ist.
+`TWO_OFFSETS`, `OPPOSITE_OFFSETS` und jeder andere Winkel werden **ausgelassen**
+statt symmetrisch genähert. `tangentPropagation` wird gemeldet, nicht nachgezogen.
+
+`hole` → ein `hole`-Feature je Onshape-Feature, mit N Sketch-Punkt-Zielen
+(`qSketchPoint(sketch, entity)` aus der `VERTEX`/`SKETCH_ENTITY`-Query), dem
+Durchmesser **wörtlich aus dem Dokument** (kein Umweg über FieldDrafts ISO-Tabelle),
+`blind`/`through_all` und explizitem Body-Scope aus `mergeScope`. Alles darüber
+hinaus meldet den konkret fehlenden Aspekt: Counterbore/Countersink samt Maßen,
+Bohrspitze, Start-Referenz, Endversatz; `up_to_next`/`up_to_entity` werden als
+„durch alles" genähert und genau so benannt. Gewinde bleibt kosmetisch — gebohrt
+wird das Kernloch, exakt wie Onshape es auch tut.
+
+**Nebenbei geschlossen:** Kanten-Queries der Form `CAP_EDGE` (Onshape benennt den
+Kantenzug direkt statt über seine zwei Flächen) werden jetzt übersetzt — dieselbe
+Cap-Rim-Form wie `CAP_FACE`. Das ist der Fillet-Rest aus #410/#413 und betrifft
+Fillet und Chamfer gemeinsam. Die Cap-Seite folgt außerdem endlich dem
+Extrude-Vorzeichen (negative Tiefe ⇒ `CAP_TOP` liegt in der Sketch-Ebene) — im
+#414-Dokument extrudiert das Basis-Feature mit −50 mm.
+
+**Restblocker für #414 (KEIN Chamfer-/Hole-Thema).** Die Ground-Truth-AABB wird in
+X und Y noch verfehlt. Ursache ist die Folgearbeit aus
+`docs/SKETCH-REGION-IMPRINT-PLAN.md` §5: **region-eingeschränkte Profile tragen
+keine Entity-Provenienz**, ihre Wall-Subs fallen auf positionale Nummerierung
+zurück. Im #414-Dokument ist `Extrude 1` region-eingeschränkt, und genau daran
+hängen die Chamfer-Kante (`qWall(2, 8)`), die Ebene von `Sketch 2` (`qWall(2, 17)`
+— und damit der Zielpunkt des Lochs) sowie sechs Fillets: alle lösen auf null
+Flächen auf. Gegenprobe mit Gesamt-Sketch-Profilen (Region-API weggelassen): der
+Chamfer landet, regeneriert und trägt Material ab — der Übersetzer ist es also
+nicht. Zweiter, kleinerer Rest: `Extrude 2` und `Extrude 4` finden ihre Region gar
+nicht und fallen auf den ganzen Sketch zurück (sichtbare Warnung), was die
+Übermaße in X/Y erklärt.
+
+**Testabdeckung.** `onshapeImport.test.ts` prüft den Übersetzungs-Vertrag gegen die
+echte Fixture (`fixtures/onshape-414-features.json`, 27 Features aus dem
+`/features`-Endpoint). `onshapeImport414E2E.slow.test.ts` fährt das echte WASM:
+Ground Truth aus `GET /parts` + `/boundingboxes` (1 Part „JHD", AABB
+x[−65.05, 65.0] · y[−70.13, 0] · z[−50, 50] mm) — Körperzahl und Z-Ausdehnung
+stimmen, die volle AABB ist als `it.fails` festgenagelt, damit sie beim Schließen
+der Provenienz-Lücke laut wird. Dazu ein Render-Mesh-Check über den echten
+Mesher-Worker-Pfad bei App-Auflösung, ein Gitter-Differenz-Beweis, dass die Fase
+nur Material **abträgt** und keines hinzufügt, und die Bohrungs-Parameter durch die
+echte API-Kette (`add_feature_call` → `body_sdf_eval`, Ø6 blind 50 mm, Boden an
+der richtigen Stelle).

@@ -291,6 +291,7 @@ export type FeatureKindName =
   | "mirror"
   | "mate_connector"
   | "fillet_edge"
+  | "chamfer_edge"
   | "round_all"
   | "shell"
   | "offset"
@@ -1539,6 +1540,14 @@ export class Kernel {
   /** DL-61: add a fillet selecting an edge by query (e.g. `qEdge(<idHash>)`). */
   addFilletEdge(edge: string, blendRadius: number): number {
     return this.inner.addFilletEdge(edge, blendRadius);
+  }
+
+  /** #414: add a chamfer selecting an edge by query (e.g. `qEdge(<idHash>)`).
+   *  `distanceMm` is the bevel leg length — how far the cut sets back from the
+   *  edge on EACH adjacent face (Onshape's EQUAL_OFFSETS). The wasm binding
+   *  writes it in `Length` wire form, so callers pass plain millimetres. */
+  addChamferEdge(edge: string, distanceMm: number): number {
+    return this.inner.addChamferEdge(edge, distanceMm);
   }
 
   /** Add a shell feature hollowing the body of the picked planar face(s).

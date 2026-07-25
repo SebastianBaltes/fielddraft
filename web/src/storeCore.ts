@@ -109,6 +109,9 @@ export interface StoreState {
   measureSelection: readonly PickedElement[];
   /** K10.6: fillet mode — clicks on edges create fillet_edge features. */
   filletMode: boolean;
+  /** #414: chamfer mode — the fillet mode's straight-bevel twin; clicks on
+   *  edges create chamfer_edge features. Mutually exclusive with it. */
+  chamferMode: boolean;
   /** Parameters of the interactive sketch tools (fillet radius, pattern
    *  counts, text value/font, …) consolidated into one object — every
    *  setter in the sketch domain is a one-line patch of this slice.

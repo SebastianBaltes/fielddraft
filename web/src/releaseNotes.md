@@ -12,6 +12,11 @@ Format, eine Zeile je Eintrag:
 kind = feat | fix | perf. scope und #tickets sind optional. Folgezeilen, die
 eingerückt sind, gehören zum Text davor (Umbruch erlaubt).
 
+## 0.32.0
+- feat(ui) #414: Fasen-Werkzeug in der Toolbar — Kante anklicken erzeugt eine symmetrische Fase (chamfer_edge), gleicher Workflow wie beim Fillet; Maß im Feature-Dialog änderbar.
+- feat(onshape) #414: Der Import übersetzt jetzt chamfer (EQUAL_OFFSETS exakt, OFFSET_ANGLE bei 45° mit Hinweis) und hole (Durchmesser wörtlich aus dem Dokument, Sackloch/durchgehend, mehrere Bohrpunkte). Nicht Unterstütztes (ungleiche Schenkel, Counterbore/Countersink, Bohrspitze, up-to-next) wird namentlich gemeldet statt still genähert.
+- fix(onshape) #414: CAP_EDGE-Kanten-Queries (Onshape benennt den Kantenzug direkt) werden jetzt aufgelöst, und die Kappen-Seite folgt dem Extrude-Vorzeichen — schließt auch einen Teil der Fillet-Reste aus #410/#413.
+
 ## 0.31.2
 - fix(kernel) #412: Dünne Bretter in großen Körpern rendern jetzt im Viewport — das Mesh-Gitter verfeinert sich automatisch, bis das dünnste Feature erfasst ist. Bisher leitete sich die Zellgröße allein aus der längsten Achse ab: ein 4-m-Regal aus 22-mm-Brettern wurde bei App-Auflösung komplett übersprungen und blieb ohne jede Fehlermeldung unsichtbar.
 

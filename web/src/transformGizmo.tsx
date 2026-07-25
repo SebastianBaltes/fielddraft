@@ -30,6 +30,7 @@ const NO_GIZMO_KINDS: ReadonlySet<string> = new Set([
   "boolean",
   "sketch",
   "fillet_edge",
+  "chamfer_edge",
   "extrude",
   // mate_connector: a datum CSYS positioned by its anchor + offset params, not
   // a free transform — a translate/rotate/scale gizmo would be meaningless and

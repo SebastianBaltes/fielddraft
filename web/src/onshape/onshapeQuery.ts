@@ -221,29 +221,24 @@ function opRefOf(tok: BtonToken): OnshapeOpRef | null {
   return { featureId: tok.p1, op: tok.p2 };
 }
 
+/** The structural landmarks of a decoded query: operation references, wire
+ *  (sketch) markers and the sketch-entity origins associated with them. Shared
+ *  by the plane translation and the EDGE translation (#414), which read the
+ *  same stream for different markers. */
+export interface OnshapeQueryRefs {
+  ops: { idx: number; op: OnshapeOpRef }[];
+  wires: { idx: number; featureId: string }[];
+  origins: { idx: number; origin: OnshapeEntityOrigin }[];
+}
+
 /**
- * Extract the plane semantics from a tokenized sketch-plane query.
- * Order-based literal scan, validated against the Kabelbox corpus:
- * every plane query states its discriminating fields as literals on
- * first use; repeats travel as opaque back-refs.
+ * Scan a token stream for operation refs + sketch-entity origins, in stream
+ * order. A repeated operation suffix travels as an opaque back-ref
+ * (`S11.-e$F4Ns…`), so a BARE feature-id literal also counts as a wire marker
+ * for origin association — in the corpus it always directly precedes its
+ * sketch-entity id.
  */
-export function extractPlaneRef(tokens: BtonToken[]): OnshapePlaneRef {
-  // Literal string values seen, in order.
-  const strs = tokens.filter((t) => t.t === "str");
-  const has = (v: string) => strs.some((t) => t.p1 === v && !t.p2);
-
-  // Default datum plane: `<Top|Front|Right>planeOp` + queryType DUMMY.
-  for (const t of strs) {
-    if (t.p2 === "planeOp" && t.p1 && DEFAULT_PLANES[t.p1] && has("DUMMY")) {
-      return { kind: "default", plane: DEFAULT_PLANES[t.p1] };
-    }
-  }
-
-  // Operation refs + sketch-entity origins, in stream order. A repeated
-  // operation suffix travels as an opaque back-ref (`S11.-e$F4Ns…`), so a
-  // BARE feature-id literal also counts as a wire marker for origin
-  // association — in the corpus it always directly precedes its
-  // sketch-entity id.
+export function extractQueryRefs(tokens: BtonToken[]): OnshapeQueryRefs {
   const ops: { idx: number; op: OnshapeOpRef }[] = [];
   const wires: { idx: number; featureId: string }[] = [];
   const origins: { idx: number; origin: OnshapeEntityOrigin }[] = [];
@@ -279,6 +274,28 @@ export function extractPlaneRef(tokens: BtonToken[]): OnshapePlaneRef {
       }
     }
   });
+  return { ops, wires, origins };
+}
+
+/**
+ * Extract the plane semantics from a tokenized sketch-plane query.
+ * Order-based literal scan, validated against the Kabelbox corpus:
+ * every plane query states its discriminating fields as literals on
+ * first use; repeats travel as opaque back-refs.
+ */
+export function extractPlaneRef(tokens: BtonToken[]): OnshapePlaneRef {
+  // Literal string values seen, in order.
+  const strs = tokens.filter((t) => t.t === "str");
+  const has = (v: string) => strs.some((t) => t.p1 === v && !t.p2);
+
+  // Default datum plane: `<Top|Front|Right>planeOp` + queryType DUMMY.
+  for (const t of strs) {
+    if (t.p2 === "planeOp" && t.p1 && DEFAULT_PLANES[t.p1] && has("DUMMY")) {
+      return { kind: "default", plane: DEFAULT_PLANES[t.p1] };
+    }
+  }
+
+  const { ops, wires, origins } = extractQueryRefs(tokens);
 
   const opsBy = (name: string) => ops.filter((o) => o.op.op === name);
   const extrudes = opsBy("opExtrude");

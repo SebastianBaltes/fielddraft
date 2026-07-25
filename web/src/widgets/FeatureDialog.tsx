@@ -124,6 +124,7 @@ export const FEATURE_TYPE_META: Record<
   mirror: { label: "Mirror", glyph: "◫" },
   mate_connector: { label: "Mate Connector", glyph: "⊕" },
   fillet_edge: { label: "Fillet Edge", glyph: "◠" },
+  chamfer_edge: { label: "Chamfer Edge", glyph: "◺" },
   round_all: { label: "Round All Edges", glyph: "⬭" },
   shell: { label: "Shell", glyph: "⬚" },
   offset: { label: "Offset", glyph: "◉" },

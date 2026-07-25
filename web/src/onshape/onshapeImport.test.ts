@@ -421,3 +421,139 @@ describe("extrude region selection (#412)", () => {
     expect(extrude.params.profiles).toBe("qCreatedBy(1)");
   });
 });
+
+/** The #414 fixture (Onshape doc 17b3c41d…): 27 features, among them the one
+ *  `chamfer` and the one `hole` this ticket added translators for. */
+function ticket414(): { features: any[] } {
+  return JSON.parse(
+    readFileSync(join(__dirname, "fixtures", "onshape-414-features.json"), "utf8"),
+  );
+}
+
+/** A deep-ish clone of one feature message, by Onshape feature type. */
+function featureOfType(doc: { features: any[] }, type: string): any {
+  return (doc.features as any[]).map((f) => f.message ?? f).find((f) => f.featureType === type);
+}
+
+/** Run the importer over ONLY the given features (plus everything they depend
+ *  on) against the mock kernel — the translation contract, not the geometry. */
+async function translate(features: any[]) {
+  const kernel = mockKernel();
+  const result = await importOnshapeFeatures({ features }, kernel);
+  return { kernel, result };
+}
+
+describe("chamfer import (#414)", () => {
+  const doc = ticket414();
+  // Sketch 1 + Extrude 1 are what the chamfer's edge query names.
+  const prefix = () => (doc.features as any[]).slice(0, 2);
+  const chamfer = () => structuredClone(featureOfType(doc, "chamfer"));
+
+  it("translates the document's 45° chamfer into a chamfer_edge on a cap rim", async () => {
+    const { kernel, result } = await translate([...prefix(), chamfer()]);
+    const calls = kernel.calls.filter((c) => c.type === "chamfer_edge");
+    expect(calls.length, result.errors.join(" | ")).toBe(1);
+    // Onshape authored `width1 = 0.5 cm` at 45° — 5 mm of bevel, in `Length`
+    // wire form (a bare f32 would fail schema parsing, #405).
+    expect(calls[0].params.distance).toEqual({ value: 5, unit: "mm" });
+    // The edge is the rim where the extrude's cap meets the wall swept from a
+    // named sketch entity — Onshape's `CAP_EDGE` form.
+    expect(calls[0].params.edge).toMatch(
+      /^qCommonEdge\(qCreatedBy\(\d+, CAP_(TOP|BOTTOM)\), qWall\(\d+, \d+\)\)$/,
+    );
+  });
+
+  it("says out loud that OFFSET_ANGLE 45° is only exact on square corners", async () => {
+    const { result } = await translate([...prefix(), chamfer()]);
+    expect(result.warnings.join(" | ")).toContain("OFFSET_ANGLE 45°");
+    expect(result.warnings.join(" | ")).toContain("rechtwinklig");
+  });
+
+  it("takes EQUAL_OFFSETS verbatim from `width`", async () => {
+    const c = chamfer();
+    const p = c.parameters.map((x: any) => x.message ?? x);
+    p.find((x: any) => x.parameterId === "chamferType").value = "EQUAL_OFFSETS";
+    // `width` is 4.5 cm in the document — the EQUAL_OFFSETS slot.
+    const { kernel } = await translate([...prefix(), c]);
+    const calls = kernel.calls.filter((x) => x.type === "chamfer_edge");
+    expect(calls[0].params.distance).toEqual({ value: 45, unit: "mm" });
+  });
+
+  it("SKIPS an unequal-offset chamfer with a warning instead of squaring it off", async () => {
+    for (const type of ["TWO_OFFSETS", "OPPOSITE_OFFSETS"]) {
+      const c = chamfer();
+      const p = c.parameters.map((x: any) => x.message ?? x);
+      p.find((x: any) => x.parameterId === "chamferType").value = type;
+      const { kernel, result } = await translate([...prefix(), c]);
+      expect(kernel.calls.filter((x) => x.type === "chamfer_edge").length, type).toBe(0);
+      expect(result.warnings.join(" | "), type).toContain(type);
+    }
+  });
+
+  it("SKIPS an OFFSET_ANGLE that is not 45°", async () => {
+    const c = chamfer();
+    const p = c.parameters.map((x: any) => x.message ?? x);
+    p.find((x: any) => x.parameterId === "angle").expression = "30 deg";
+    const { kernel, result } = await translate([...prefix(), c]);
+    expect(kernel.calls.filter((x) => x.type === "chamfer_edge").length).toBe(0);
+    expect(result.warnings.join(" | ")).toContain("30°");
+  });
+});
+
+describe("hole import (#414)", () => {
+  const doc = ticket414();
+  /** Everything the hole depends on: the base sketch/extrudes plus Sketch 2,
+   *  which carries the point the hole is drilled at. */
+  const prefix = () =>
+    (doc.features as any[]).filter((f) => {
+      const t = (f.message ?? f).featureType;
+      return t === "newSketch" || t === "extrude";
+    });
+  const hole = () => structuredClone(featureOfType(doc, "hole"));
+
+  it("drills the document's hole at its SKETCH POINT, Ø6 mm, 50 mm blind", async () => {
+    const { kernel, result } = await translate([...prefix(), hole()]);
+    const calls = kernel.calls.filter((c) => c.type === "hole");
+    expect(calls.length, result.errors.join(" | ")).toBe(1);
+    const p = calls[0].params;
+    // Diameter taken VERBATIM from the document (`holeDiameterV2 = 6 mm`),
+    // not round-tripped through FieldDraft's ISO table.
+    expect(p.standard_size).toBe("custom");
+    expect(p.diameter).toEqual({ value: 6, unit: "mm" });
+    expect(p.end_type).toBe("blind");
+    expect(p.depth).toEqual({ value: 50, unit: "mm" });
+    expect(p.style).toBe("simple");
+    // The location is the sketch point Onshape placed it on…
+    expect(p.locations).toMatch(/^qSketchPoint\(\d+, \d+\)$/);
+    // …and the merge scope became an explicit body target (Scope-Direktive).
+    expect(p.targets).toMatch(/^qCreatedBy\(\d+\)$/);
+  });
+
+  it("reports the countersink it cannot model instead of drilling it silently", async () => {
+    const { result } = await translate([...prefix(), hole()]);
+    const warn = result.warnings.join(" | ");
+    // The document's hole is C_SINK Ø10 mm × 90° with a 118° drill tip.
+    expect(warn).toContain("Countersink");
+    expect(warn).toContain("Bohrspitze");
+  });
+
+  it("approximates an up-to-entity end condition by through-all, and says so", async () => {
+    const h = hole();
+    const p = h.parameters.map((x: any) => x.message ?? x);
+    p.find((x: any) => x.parameterId === "endStyleV2").value = "UP_TO_ENTITY";
+    const { kernel, result } = await translate([...prefix(), h]);
+    const call = kernel.calls.find((c) => c.type === "hole")!;
+    expect(call.params.end_type).toBe("through_all");
+    expect(result.warnings.join(" | ")).toContain("UP_TO_ENTITY");
+  });
+
+  it("skips the hole when no location resolves, instead of drilling nowhere", async () => {
+    // Without Sketch 2 the point the hole sits on does not exist.
+    const noPointPrefix = prefix().filter(
+      (f: any) => (f.message ?? f).featureId !== "FW7hNi1ppStDFOU_1",
+    );
+    const { kernel, result } = await translate([...noPointPrefix, hole()]);
+    expect(kernel.calls.filter((c) => c.type === "hole").length).toBe(0);
+    expect(result.errors.join(" | ")).toContain("keine auflösbare Loch-Position");
+  });
+});

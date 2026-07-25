@@ -495,6 +495,22 @@ function handleMateClick(store: {
   });
 }
 
+/** The hovered B-Rep EDGE as a `qEdge(<idHash>)` query, or `null` with a hint
+ *  posted. DL-61: the edge-picking features (fillet, chamfer) select an edge by
+ *  query — the same element-query path the mate/sketch face clicks use. */
+function hoveredEdgeQuery(
+  store: { showTransientError(msg: string): void },
+  what: string,
+): string | null {
+  const edge = getHoveredElementOfKind("edge");
+  const query = edge ? elementQueryString(edge) : null;
+  if (!query) {
+    store.showTransientError(`${what} needs an edge — hover a B-Rep edge and click.`);
+    return null;
+  }
+  return query;
+}
+
 function handleFilletClick(
   store: {
     addFilletAtEdge(edgeQuery: string, r?: number): void;
@@ -502,18 +518,20 @@ function handleFilletClick(
   },
   _click: PickResult | null,
 ): void {
-  // DL-61: a fillet selects a B-Rep EDGE by query. Use the edge the
-  // overlay published to the pick bridge and emit `qEdge(<idHash>)` for it
-  // — the same element-query path the mate/sketch face clicks use.
-  const edge = getHoveredElementOfKind("edge");
-  const query = edge ? elementQueryString(edge) : null;
-  if (!query) {
-    store.showTransientError(
-      "Fillet needs an edge — hover a B-Rep edge and click.",
-    );
-    return;
-  }
-  store.addFilletAtEdge(query);
+  const query = hoveredEdgeQuery(store, "Fillet");
+  if (query) store.addFilletAtEdge(query);
+}
+
+/** #414: the chamfer's edge pick — the fillet's straight-bevel twin. */
+function handleChamferClick(
+  store: {
+    addChamferAtEdge(edgeQuery: string, d?: number): void;
+    showTransientError(msg: string): void;
+  },
+  _click: PickResult | null,
+): void {
+  const query = hoveredEdgeQuery(store, "Chamfer");
+  if (query) store.addChamferAtEdge(query);
 }
 
 
@@ -1105,6 +1123,7 @@ export function Viewport({
       state?.sketchSession.active ||
       state?.measureMode ||
       state?.filletMode ||
+      state?.chamferMode ||
       state?.mateMode ||
       state?.ikMode ||
       getActiveQueryPicker()
@@ -1349,6 +1368,10 @@ export function Viewport({
     }
     if (state?.filletMode) {
       handleFilletClick(store, click);
+      return;
+    }
+    if (state?.chamferMode) {
+      handleChamferClick(store, click);
       return;
     }
     if (state?.measureMode) {

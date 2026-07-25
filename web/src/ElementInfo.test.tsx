@@ -19,10 +19,17 @@ interface StoreCalls {
   enterSketch: string[];
   addMateConnectorAt: string[];
   addFilletAtEdge: string[];
+  addChamferAtEdge: string[];
 }
 
 function makeCalls(): StoreCalls {
-  return { cleared: 0, enterSketch: [], addMateConnectorAt: [], addFilletAtEdge: [] };
+  return {
+    cleared: 0,
+    enterSketch: [],
+    addMateConnectorAt: [],
+    addFilletAtEdge: [],
+    addChamferAtEdge: [],
+  };
 }
 
 function makeStore(calls: StoreCalls): KernelStore {
@@ -34,6 +41,7 @@ function makeStore(calls: StoreCalls): KernelStore {
     enterSketch: (q: string) => calls.enterSketch.push(q),
     addMateConnectorAt: (q: string) => calls.addMateConnectorAt.push(q),
     addFilletAtEdge: (q: string) => calls.addFilletAtEdge.push(q),
+    addChamferAtEdge: (q: string) => calls.addChamferAtEdge.push(q),
   } as unknown as KernelStore;
 }
 
@@ -113,7 +121,7 @@ describe("ElementInfo", () => {
     act(() => root.unmount());
   });
 
-  it("EDGE: renders only the fillet action; clicking it fires addFilletAtEdge with qEdge and clears", () => {
+  it("EDGE: renders the fillet + chamfer actions; clicking fires addFilletAtEdge with qEdge and clears", () => {
     const calls = makeCalls();
     act(() => {
       root.render(
@@ -128,6 +136,24 @@ describe("ElementInfo", () => {
 
     click(container, "element-action-fillet");
     expect(calls.addFilletAtEdge).toEqual(["qEdge(777)"]);
+    expect(calls.cleared).toBe(1);
+    act(() => root.unmount());
+  });
+
+  it("EDGE: the chamfer action is the fillet's twin — same query, same clear (#414)", () => {
+    const calls = makeCalls();
+    act(() => {
+      root.render(
+        <ElementInfo store={makeStore(calls)} state={makeState({ kind: "edge", idHash: "777" })} />,
+      );
+    });
+
+    const chamfer = container.querySelector('[data-testid="element-action-chamfer"]');
+    expect(chamfer?.textContent).toBe("Fase");
+
+    click(container, "element-action-chamfer");
+    expect(calls.addChamferAtEdge).toEqual(["qEdge(777)"]);
+    expect(calls.addFilletAtEdge).toEqual([]);
     expect(calls.cleared).toBe(1);
     act(() => root.unmount());
   });

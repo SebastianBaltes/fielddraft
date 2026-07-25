@@ -219,6 +219,7 @@ export class KernelStore {
       measureMode: false,
       measureSelection: [],
       filletMode: false,
+      chamferMode: false,
       sketchToolParams: initialSketchToolParams(),
       syncState: "offline",
       projectId: null,
@@ -361,6 +362,7 @@ export class KernelStore {
       modes: {
         measure: s.measureMode,
         fillet: s.filletMode,
+        chamfer: s.chamferMode,
         mate: s.mateMode,
         ik: s.ikMode,
       },
@@ -1047,6 +1049,25 @@ export class KernelStore {
     return this.commitNewFeature(id);
   }
 
+  /**
+   * #414: add a `chamfer_edge` feature selecting an edge by query — the
+   * fillet's straight-bevel twin. `distance` is the leg length: the cut sets
+   * back that far from the edge on BOTH adjacent faces (Onshape's
+   * EQUAL_OFFSETS). Same edge-query resolution and ordering properties as
+   * {@link addFilletAtEdge}.
+   */
+  addChamferAtEdge(edgeQuery: string, distance = 3): number | null {
+    let id: number;
+    try {
+      id = this.kernel.addChamferEdge(edgeQuery, distance);
+    } catch (err) {
+      console.error("fielddraft: addChamferAtEdge failed", err);
+      this.setTransientError(formatKernelError(err, "Chamfer failed"));
+      return null;
+    }
+    return this.commitNewFeature(id);
+  }
+
   /** Extrude one or more coplanar planar faces (P1). `faceQueries` are
    *  `qFace(<idHash>)` strings (one per selected face); they are joined into a
    *  single multi-query and swept `depthMm` blind (outward from the face, the
@@ -1135,6 +1156,7 @@ export class KernelStore {
       measureMode: !this.state.measureMode,
       measureSelection: [],
       filletMode: false,
+      chamferMode: false,
       mateMode: false,
     });
     this.core.emit();
@@ -1178,6 +1200,20 @@ export class KernelStore {
   toggleFilletMode(): void {
     this.patch({
       filletMode: !this.state.filletMode,
+      chamferMode: false,
+      measureMode: false,
+      measureSelection: [],
+      mateMode: false,
+    });
+    this.core.emit();
+  }
+
+  /** #414: the chamfer's edge-pick mode — same contract as
+   *  {@link toggleFilletMode}, and exclusive with it. */
+  toggleChamferMode(): void {
+    this.patch({
+      chamferMode: !this.state.chamferMode,
+      filletMode: false,
       measureMode: false,
       measureSelection: [],
       mateMode: false,
@@ -1189,6 +1225,7 @@ export class KernelStore {
     this.patch({
       mateMode: !this.state.mateMode,
       filletMode: false,
+      chamferMode: false,
       measureMode: false,
       measureSelection: [],
     });
@@ -2034,6 +2071,7 @@ export class KernelStore {
     "scale",
     "hole",
     "fillet_edge",
+    "chamfer_edge",
   ]);
 
   private latestSpineFeature(): FeatureSummary | null {

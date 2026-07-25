@@ -294,14 +294,24 @@ function ElementActions({
           </>
         )}
         {el.kind === "edge" && (
-          <button
-            type="button"
-            className="action"
-            data-testid="element-action-fillet"
-            onClick={() => fire(() => store.addFilletAtEdge(elementQueryString(el)))}
-          >
-            Verrundung
-          </button>
+          <>
+            <button
+              type="button"
+              className="action"
+              data-testid="element-action-fillet"
+              onClick={() => fire(() => store.addFilletAtEdge(elementQueryString(el)))}
+            >
+              Verrundung
+            </button>
+            <button
+              type="button"
+              className="action"
+              data-testid="element-action-chamfer"
+              onClick={() => fire(() => store.addChamferAtEdge(elementQueryString(el)))}
+            >
+              Fase
+            </button>
+          </>
         )}
       </div>
     </div>

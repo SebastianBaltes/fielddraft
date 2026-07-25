@@ -124,6 +124,7 @@ const OP_TO_BUILTIN: Record<string, string> = {
   opRevolve: "revolve",
   opHole: "hole",
   opFillet: "fillet_edge",
+  opChamfer: "chamfer_edge",
   opBoolean: "boolean",
 };
 

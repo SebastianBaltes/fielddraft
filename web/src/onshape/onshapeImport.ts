@@ -17,7 +17,9 @@ import {
   decodePlaneQuery,
   extractOpRefs,
   extractPlaneRef,
+  extractQueryRefs,
   tokenizeBton,
+  type OnshapeEntityOrigin,
   type OnshapePlaneRef,
 } from "./onshapeQuery";
 import { translateOnshapeSketch, type SketchSubCall } from "./onshapeSketch";
@@ -128,6 +130,29 @@ function mmOf(pm: AnyMsg | undefined, fallback = 0): number {
     return parseFloat(m[1]) * UNIT_TO_MM[m[2]];
   }
   if (typeof pm?.value === "number" && pm.value !== 0) return pm.value * M_TO_MM;
+  return fallback;
+}
+
+const RAD_TO_DEG = 180 / Math.PI;
+
+const UNIT_TO_DEG: Record<string, number> = {
+  deg: 1,
+  degree: 1,
+  degrees: 1,
+  rad: RAD_TO_DEG,
+  radian: RAD_TO_DEG,
+  radians: RAD_TO_DEG,
+};
+
+/** Angle parameter → degrees. Same expression-first rule as {@link mmOf};
+ *  Onshape's SI evaluation of an angle is in RADIANS. */
+function degOf(pm: AnyMsg | undefined, fallback = 0): number {
+  const expr = typeof pm?.expression === "string" ? pm.expression : "";
+  const m = expr.match(/^\s*(-?[\d.]+)\s*\*?\s*([a-zA-Z]+)\s*$/);
+  if (m && UNIT_TO_DEG[m[2]] !== undefined) {
+    return parseFloat(m[1]) * UNIT_TO_DEG[m[2]];
+  }
+  if (typeof pm?.value === "number" && pm.value !== 0) return pm.value * RAD_TO_DEG;
   return fallback;
 }
 
@@ -894,7 +919,7 @@ async function importFeatures(
       // edge twice would stack two blends on it, so de-duplicate and say so.
       const queries: string[] = [];
       for (const qs of edgeQs) {
-        const edgeQuery = await buildFilletEdgeQuery(qs, name, result, sketches);
+        const edgeQuery = await buildEdgeQuery(qs, name, result, sketches, sweeps);
         if (edgeQuery && !queries.includes(edgeQuery)) queries.push(edgeQuery);
       }
       if (queries.length && queries.length < edgeQs.length) {
@@ -928,8 +953,268 @@ async function importFeatures(
       continue;
     }
 
+    if (feat.featureType === "chamfer") {
+      await importChamfer(feat, params, name, kernel, result, sketches, sweeps);
+      continue;
+    }
+
+    if (feat.featureType === "hole") {
+      await importHole(feat, params, name, kernel, result, sketches);
+      continue;
+    }
+
     result.errors.push(`${name}: Feature-Typ "${feat.featureType}" wird noch nicht importiert`);
   }
+}
+
+/**
+ * Onshape `chamfer` → one `chamfer_edge` feature per resolved edge (#414).
+ *
+ * FieldDraft's chamfer is EQUAL_OFFSETS only: a symmetric bevel that sets back
+ * `distance` on BOTH adjacent faces. Two Onshape forms lower to it exactly:
+ *  - `EQUAL_OFFSETS` — verbatim, `width` is the leg length.
+ *  - `OFFSET_ANGLE` at exactly 45° — the second leg is `width1 · tan(45°)`,
+ *    i.e. equal to the first WHEN the two faces meet at a right angle. That
+ *    caveat is reported, because it is the one case where the translation is
+ *    an approximation rather than an identity.
+ * Everything else (`TWO_OFFSETS`, `OPPOSITE_OFFSETS`, a non-45° angle) has no
+ * FieldDraft counterpart and is SKIPPED with a warning naming the type — an
+ * asymmetric bevel silently squared off is wrong geometry, not an import.
+ */
+async function importChamfer(
+  feat: AnyMsg,
+  params: Map<string, AnyMsg>,
+  name: string,
+  kernel: ImportKernel,
+  result: OnshapeImportResult,
+  sketches: Map<string, SketchRecord>,
+  sweeps: Map<string, SweepRecord>,
+): Promise<void> {
+  const chamferType = String(params.get("chamferType")?.value ?? "EQUAL_OFFSETS");
+  let distanceMm: number;
+  if (chamferType === "EQUAL_OFFSETS") {
+    distanceMm = mmOf(params.get("width"), 0);
+  } else if (chamferType === "OFFSET_ANGLE") {
+    const angleDeg = degOf(params.get("angle"), 0);
+    if (Math.abs(angleDeg - 45) > 1e-3) {
+      result.warnings.push(
+        `${name}: Fasen-Typ OFFSET_ANGLE mit ${angleDeg}° — FieldDraft kann nur die ` +
+          `symmetrische 45°-Fase; Feature übersprungen`,
+      );
+      return;
+    }
+    distanceMm = mmOf(params.get("width1"), 0);
+    result.warnings.push(
+      `${name}: OFFSET_ANGLE 45° als symmetrische Fase (${distanceMm} mm) übernommen — ` +
+        `deckungsgleich, solange die beiden Flächen rechtwinklig zusammenstoßen`,
+    );
+  } else {
+    result.warnings.push(
+      `${name}: Fasen-Typ ${chamferType} (ungleiche Schenkel) wird nicht unterstützt — ` +
+        `Feature übersprungen`,
+    );
+    return;
+  }
+  if (!(distanceMm > 0)) {
+    result.errors.push(`${name}: Fasen-Maß ist 0 — Feature übersprungen`);
+    return;
+  }
+  const method = String(params.get("chamferMethod")?.value ?? "FACE_OFFSET");
+  if (method !== "FACE_OFFSET") {
+    result.warnings.push(
+      `${name}: Fasen-Methode ${method} wird als Flächen-Offset übernommen`,
+    );
+  }
+  if (params.get("tangentPropagation")?.value === true) {
+    result.warnings.push(
+      `${name}: Tangenten-Fortpflanzung wird nicht nachgezogen — nur die benannten Kanten werden gefast`,
+    );
+  }
+
+  // Same edge translation (and the same sibling-collapse caveat) as fillet.
+  const edgeQs = queryStringsOf(params.get("entities"));
+  const queries: string[] = [];
+  for (const qs of edgeQs) {
+    const edgeQuery = await buildEdgeQuery(qs, name, result, sketches, sweeps);
+    if (edgeQuery && !queries.includes(edgeQuery)) queries.push(edgeQuery);
+  }
+  if (queries.length && queries.length < edgeQs.length) {
+    result.warnings.push(
+      `${name}: ${edgeQs.length} Onshape-Kanten → ${queries.length} unterscheidbare Query(s); ` +
+        `Geschwister-Kanten sind (noch) nicht auseinanderzuhalten`,
+    );
+  }
+
+  let made = 0;
+  for (const edgeQuery of queries) {
+    if (kernel.resolveQuery(edgeQuery).length < 1) {
+      result.errors.push(`${name}: Kanten-Query "${edgeQuery}" löst nichts auf — übersprungen`);
+      continue;
+    }
+    const fdId = kernel.addFeatureCall(
+      "chamfer_edge",
+      JSON.stringify({
+        display_name: name,
+        edge: edgeQuery,
+        distance: { value: distanceMm, unit: "mm" },
+      }),
+    );
+    if (made === 0) result.idMap[feat.featureId] = fdId;
+    result.created.push(fdId);
+    made += 1;
+  }
+}
+
+/**
+ * Onshape `hole` → a FieldDraft `hole` feature (#414, hole P1).
+ *
+ * What lowers EXACTLY: the bore itself — style `SIMPLE`, blind depth or
+ * through-all, N sketch-point locations in one feature, the drill diameter
+ * Onshape computed (for a tapped hole that is the tap-drill Ø, which is the
+ * only volume Onshape cuts either — its thread is a callout, not geometry).
+ *
+ * What is reported and dropped: counterbore/countersink steps, the drill-tip
+ * cone, an explicit start plane, and the `up to next` / `up to entity` end
+ * conditions (hole P3/P4/P5). Each names the aspect it could not honour, so a
+ * user reading the import report knows exactly what the bore is missing —
+ * as opposed to a hole that quietly came out cylindrical.
+ */
+async function importHole(
+  feat: AnyMsg,
+  params: Map<string, AnyMsg>,
+  rawName: string,
+  kernel: ImportKernel,
+  result: OnshapeImportResult,
+  sketches: Map<string, SketchRecord>,
+): Promise<void> {
+  // Onshape's auto-name is the literal template `#featureName` in the feature
+  // list — useless as a label, so fall back to the bore's own description.
+  const metric = String(params.get("unitsSystem")?.value ?? "METRIC") === "METRIC";
+  const table = msg(params.get(metric ? "isoHoleTableEx" : "ansiHoleTableEx")?.value ?? {});
+  const holeKind = String(table.holeType ?? "Drilled");
+  const tapped = /tapped/i.test(holeKind);
+  const diameterMm = tapped
+    ? mmOf(params.get("tapDrillDiameterV2") ?? params.get("tapDrillDiameter"), 0)
+    : mmOf(params.get("holeDiameterV2") ?? params.get("holeDiameter"), 0);
+  const name = rawName.startsWith("#") ? `Bohrung Ø${diameterMm} mm` : rawName;
+  if (!(diameterMm > 0)) {
+    result.errors.push(`${name}: Bohrungsdurchmesser ist 0 — Feature übersprungen`);
+    return;
+  }
+
+  // Locations: one bore per selected sketch point, all sharing the parameters.
+  const locations: string[] = [];
+  const locQs = queryStringsOf(params.get("locations"));
+  for (const qs of locQs) {
+    const ref = await decodeHoleLocation(qs);
+    const rec = ref ? sketches.get(ref.sketchFeatureId) : undefined;
+    const ord = ref && rec ? rec.entityIds[ref.entityId] : undefined;
+    if (!ref || !rec || ord === undefined) {
+      result.errors.push(
+        `${name}: eine Loch-Position ist nicht auflösbar ` +
+          `(${ref ? `Sketch-Entity ${ref.entityId}` : "kein Sketch-Punkt"}) — Bohrung ausgelassen`,
+      );
+      continue;
+    }
+    const q = `qSketchPoint(${rec.fdId}, ${ord})`;
+    if (!locations.includes(q)) locations.push(q);
+  }
+  if (locations.length === 0) {
+    result.errors.push(`${name}: keine auflösbare Loch-Position — Feature übersprungen`);
+    return;
+  }
+
+  // Merge scope → explicit targets (Feature-Scope-Direktive). A hole without a
+  // scope drills nothing, so an unresolvable scope is an error, not a silent
+  // no-op feature.
+  const targets: string[] = [];
+  for (const qs of queryStringsOf(params.get("scope"))) {
+    const opRef = await decodeAnyOpRef(qs);
+    const fd = opRef ? result.idMap[opRef] : undefined;
+    if (fd === undefined) continue;
+    const q = `qCreatedBy(${fd})`;
+    if (!targets.includes(q)) targets.push(q);
+  }
+  if (targets.length === 0) {
+    result.errors.push(`${name}: Bohr-Scope nicht auflösbar — Feature übersprungen`);
+    return;
+  }
+
+  // End condition. Only blind + through-all exist in hole P1; `up to next` /
+  // `up to entity` are approximated by through-all AND said out loud, because
+  // that removes at least as much material as Onshape did, never less.
+  const endStyle = String(params.get("endStyleV2")?.value ?? params.get("endStyle")?.value ?? "BLIND");
+  let endType = "blind";
+  let depthMm = mmOf(params.get("holeDepth"), 0);
+  if (endStyle === "THROUGH" || endStyle === "THROUGH_ALL") {
+    endType = "through_all";
+  } else if (endStyle !== "BLIND") {
+    endType = "through_all";
+    result.warnings.push(
+      `${name}: End-Bedingung ${endStyle} wird noch nicht unterstützt — als „durch alles" gebohrt`,
+    );
+  } else if (!(depthMm > 0)) {
+    endType = "through_all";
+    result.warnings.push(`${name}: Blind-Tiefe fehlt — als „durch alles" gebohrt`);
+  }
+  if (endType === "through_all") depthMm = 0;
+
+  // Everything the P1 bore cannot represent, named individually.
+  const style = String(params.get("styleV2")?.value ?? params.get("style")?.value ?? "SIMPLE");
+  if (style === "C_BORE") {
+    result.warnings.push(
+      `${name}: Senkung (Counterbore Ø${mmOf(params.get("cBoreDiameter"), 0)} mm × ` +
+        `${mmOf(params.get("cBoreDepth"), 0)} mm) wird nicht modelliert — als einfache Bohrung importiert`,
+    );
+  } else if (style === "C_SINK") {
+    result.warnings.push(
+      `${name}: Senkung (Countersink Ø${mmOf(params.get("cSinkDiameter"), 0)} mm × ` +
+        `${degOf(params.get("cSinkAngle"), 0)}°) wird nicht modelliert — als einfache Bohrung importiert`,
+    );
+  } else if (style !== "SIMPLE") {
+    result.warnings.push(`${name}: Loch-Stil ${style} wird als einfache Bohrung importiert`);
+  }
+  if (tapped) {
+    result.warnings.push(
+      `${name}: Gewinde ist kosmetisch (wie in Onshape) — gebohrt wird das Kernloch Ø${diameterMm} mm`,
+    );
+  }
+  const tip = String(params.get("tipAngleStyle")?.value ?? "FLAT");
+  if (endType === "blind" && tip !== "FLAT") {
+    result.warnings.push(
+      `${name}: Bohrspitze (${degOf(params.get("tipAngle"), 0)}°) wird nicht modelliert — flacher Bohrgrund`,
+    );
+  }
+  if (queryStringsOf(params.get("startBoundEntity")).length > 0) {
+    result.warnings.push(
+      `${name}: Start-Referenz (${params.get("startStyle")?.value ?? "?"}) wird ignoriert — ` +
+        `gebohrt wird ab dem Zielpunkt`,
+    );
+  }
+  if (params.get("offset")?.value === true) {
+    result.warnings.push(`${name}: Endversatz (offset) wird ignoriert`);
+  }
+
+  const fdId = kernel.addFeatureCall(
+    "hole",
+    JSON.stringify({
+      display_name: name,
+      style: "simple",
+      hole_type: "drilled",
+      // The bore diameter is taken VERBATIM from Onshape rather than looked up
+      // in FieldDraft's ISO table: the document is the ground truth, and a
+      // standard-size round-trip could silently shift the hole by a tenth.
+      standard_size: "custom",
+      diameter: { value: diameterMm, unit: "mm" },
+      end_type: endType,
+      depth: { value: depthMm, unit: "mm" },
+      opposite_direction: params.get("oppositeDirection")?.value === true,
+      locations: locations.join(", "),
+      targets: targets.join(", "),
+    }),
+  );
+  result.idMap[feat.featureId] = fdId;
+  result.created.push(fdId);
 }
 
 /** First feature-operation id inside a compressed query (`…opExtrude`
@@ -950,12 +1235,17 @@ async function decodeAnyOpRef(qs: string): Promise<string | null> {
 }
 
 /**
- * An Onshape fillet edge query → a FieldDraft `qCommonEdge(faceA, faceB)`.
- *
- * An edge is named by the two faces that meet at it, so the translation is
- * driven by the face markers the query carries:
- *  - `CAP_FACE` ∩ `SWEPT_FACE` — a cap rim (the box's top/bottom edge).
- *  - `CAP_EDGE` / `OFFSET_EDGE` — the rim of a SHELLED body: the cap meets
+ * An Onshape edge query → a FieldDraft `qCommonEdge(faceA, faceB)`. Shared by
+ * the `fillet` and `chamfer` translations (#414): both select EDGES, and an
+ * edge is named by the two faces that meet at it, so the translation is driven
+ * by the markers the query carries:
+ *  - `CAP_FACE` ∩ `SWEPT_FACE` — a cap rim, named by its two FACES.
+ *  - `CAP_EDGE` — the SAME cap rim, but named as an edge in its own right
+ *    (which is what Onshape emits when the user clicks the edge instead of
+ *    rolling it up from faces). The payload still carries the extrude, the
+ *    `isStart` cap flag and the sketch entity whose wall the cap meets, so it
+ *    lowers to the identical FieldDraft form.
+ *  - `OFFSET_EDGE` / `OFFSET_FACE` — the rim of a SHELLED body: the cap meets
  *    the shell's inner wall (`OFFSET_*` is Onshape's name for the shell's
  *    offset surface). The inner wall keeps its outer face's feature id, so
  *    the FieldDraft form is `qCommonEdge(cap, INNER_WALL)`.
@@ -966,11 +1256,12 @@ async function decodeAnyOpRef(qs: string): Promise<string | null> {
  * collapse into one query. The caller de-duplicates and reports the
  * collapse rather than filleting the same edge twice.
  */
-async function buildFilletEdgeQuery(
+async function buildEdgeQuery(
   qs: string,
   name: string,
   result: OnshapeImportResult,
   sketches: Map<string, SketchRecord>,
+  sweeps: Map<string, SweepRecord>,
 ): Promise<string | null> {
   try {
     const { bton, payload } = await decodeOnshapeQueryString(qs);
@@ -980,12 +1271,20 @@ async function buildFilletEdgeQuery(
     const markers = new Set(
       tokens.filter((t) => t.t === "str" && t.p1 && !t.p2).map((t) => t.p1 as string),
     );
-    // The cap side, from the isStart flag (Onshape's START cap = the sketch
-    // plane = FieldDraft CAP_BOTTOM).
+    // The cap side, from the isStart flag. Onshape's START cap is the
+    // SKETCH-PLANE side; which FieldDraft cap that is depends on the extrude's
+    // direction, because a FieldDraft slab is centred on `depth/2` — a NEGATIVE
+    // depth puts CAP_TOP, not CAP_BOTTOM, flush with the sketch plane (the same
+    // bookkeeping `buildPlaneQuery` does for cap PLANES).
     const isStartIdx = tokens.findIndex((t) => t.t === "str" && t.p1 === "isStart");
     const boolTok =
       isStartIdx >= 0 ? tokens.slice(isStartIdx + 1).find((t) => t.t === "bool") : undefined;
-    const capRole = boolTok?.v === true ? "CAP_BOTTOM" : "CAP_TOP";
+    const capRoleOf = (opFeatureId: string): string => {
+      const positive = sweeps.get(opFeatureId)?.depthPositive ?? true;
+      const sketchSide = positive ? "CAP_BOTTOM" : "CAP_TOP";
+      const farSide = positive ? "CAP_TOP" : "CAP_BOTTOM";
+      return boolTok?.v === true ? sketchSide : farSide;
+    };
 
     // Inside a SHELLED body: the hollow's floor/ceiling meets its side — the
     // inner cap against the inner wall. Both faces belong to the SWEEP (an
@@ -999,7 +1298,8 @@ async function buildFilletEdgeQuery(
         result.errors.push(`${name}: Shell-Kante — der geschalte Sweep ist nicht importiert`);
         return null;
       }
-      const innerCap = capRole === "CAP_TOP" ? "INNER_CAP_TOP" : "INNER_CAP_BOTTOM";
+      const innerCap =
+        capRoleOf(sweep!.featureId) === "CAP_TOP" ? "INNER_CAP_TOP" : "INNER_CAP_BOTTOM";
       return `qCommonEdge(qCreatedBy(${fd}, ${innerCap}), qCreatedBy(${fd}, INNER_WALL))`;
     }
 
@@ -1012,20 +1312,77 @@ async function buildFilletEdgeQuery(
       }
       const wall = wallQuery(ref.origin, fd, name, sketches);
       if (!wall.query) {
-        result.errors.push(wall.error ?? `${name}: Fillet-Kante nicht übersetzbar`);
+        result.errors.push(wall.error ?? `${name}: Kante nicht übersetzbar`);
         return null;
       }
-      return `qCommonEdge(qCreatedBy(${fd}, ${capRole}), ${wall.query})`;
+      return `qCommonEdge(qCreatedBy(${fd}, ${capRoleOf(ref.opFeatureId)}), ${wall.query})`;
+    }
+
+    // The same cap rim, named directly as an EDGE. `SWEPT_FACE` alongside means
+    // the query mixes in face-level dependencies we cannot order reliably yet,
+    // so restrict this to the pure edge form rather than guess which origin is
+    // the rim's.
+    if (markers.has("CAP_EDGE") && !markers.has("SWEPT_FACE")) {
+      const refs = extractQueryRefs(tokens);
+      const extrude = refs.ops.find((o) => o.op.op === "opExtrude");
+      const origin = refs.origins[0]?.origin;
+      const fd = extrude ? result.idMap[extrude.op.featureId] : undefined;
+      if (fd === undefined || !origin) {
+        result.errors.push(
+          `${name}: CAP_EDGE-Kante — ${extrude ? "Herkunfts-Sketch-Entity" : "Extrude"} nicht auflösbar`,
+        );
+        return null;
+      }
+      const wall = wallQuery(origin, fd, name, sketches);
+      if (!wall.query) {
+        result.errors.push(wall.error ?? `${name}: Kante nicht übersetzbar`);
+        return null;
+      }
+      return `qCommonEdge(qCreatedBy(${fd}, ${capRoleOf(extrude!.op.featureId)}), ${wall.query})`;
     }
 
     result.errors.push(
-      `${name}: Fillet-Kanten-Form nicht übersetzbar (Marker: ${[...markers]
+      `${name}: Kanten-Form nicht übersetzbar (Marker: ${[...markers]
         .filter((m) => /FACE|EDGE/.test(m))
         .join(", ") || "keine"})`,
     );
     return null;
   } catch (e) {
-    result.errors.push(`${name}: Fillet-Kante nicht dekodierbar (${e instanceof Error ? e.message : e})`);
+    result.errors.push(`${name}: Kante nicht dekodierbar (${e instanceof Error ? e.message : e})`);
+    return null;
+  }
+}
+
+/**
+ * An Onshape hole LOCATION query → the sketch point it names.
+ *
+ * Onshape places holes on `VERTEX` queries; a sketch point travels as
+ * `queryType: SKETCH_ENTITY` + a `sketchEntityId` whose owning sketch is the
+ * preceding `wireOp` marker. Unlike a wall/edge origin the id is usually a
+ * SINGLE-part string (a free point has no `.top`/`.left` suffix), so the
+ * generic two-part origin scan does not see it — read it positionally instead.
+ *
+ * Returns `null` for anything that is not a sketch point (mate connectors,
+ * B-Rep vertices): the caller reports that honestly instead of guessing a
+ * position.
+ */
+async function decodeHoleLocation(qs: string): Promise<OnshapeEntityOrigin | null> {
+  try {
+    const { bton, payload } = await decodeOnshapeQueryString(qs);
+    if (!bton) return null;
+    const tokens = tokenizeBton(payload);
+    const idx = tokens.findIndex((t) => t.t === "str" && t.p1 === "sketchEntityId" && !t.p2);
+    if (idx < 0) return null;
+    const idTok = tokens.slice(idx + 1).find((t) => t.t === "str");
+    if (!idTok?.p1) return null;
+    const { wires } = extractQueryRefs(tokens);
+    const wire = [...wires].reverse().find((w) => w.idx < idx);
+    if (!wire) return null;
+    return {
+      sketchFeatureId: wire.featureId,
+      entityId: idTok.p2 ? `${idTok.p1}.${idTok.p2}` : idTok.p1,
+    };
+  } catch {
     return null;
   }
 }
