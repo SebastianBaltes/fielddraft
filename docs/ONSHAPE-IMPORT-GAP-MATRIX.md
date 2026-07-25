@@ -31,8 +31,8 @@ Alles andere fällt in den Sammel-Zweig (:594) → `errors: "Feature-Typ '<x>' w
 | chamfer | 38 | OK (EQUAL_OFFSETS / 45°) | Kernel-Feature `chamfer_edge` seit v0.31.0 |
 | booleanBodies | 27 | FEHLT | Kernel HAT boolean — nur Wiring |
 | thicken | 25 | FEHLT | Kernel HAT thicken — nur Wiring |
-| mateConnector | 22 | FEHLT | Kernel HAT mate_connector — nur Wiring (Referenzgeo) |
-| revolve | 20 | FEHLT | Kernel HAT revolve — nur Wiring (Achsen-Query) |
+| mateConnector | 22 | FEHLT | Kernel HAT mate_connector — nur Wiring (Referenzgeo). **Zensus zählt nur Top-Level**: implizite MCs als Sketch-Ebene stecken in `subFeatures` (#416: 3×) |
+| revolve | 20 | OK (volle Umdrehung) | Übersetzer seit #416; Teil-Umdrehungen kann der Kernel nicht |
 | mirror | 19 | FEHLT | Kernel HAT mirror — nur Wiring |
 | circularPattern | 16 | FEHLT | Kernel HAT circular_pattern — nur Wiring |
 | loft | 16 | OK (SOLID) | 6× SURFACE werden übersprungen |
@@ -62,6 +62,13 @@ Alles andere fällt in den Sammel-Zweig (:594) → `errors: "Feature-Typ '<x>' w
   wird mit genau dieser Einschränkung als Warnung übernommen. Ungleiche Schenkel
   (`TWO_OFFSETS`, `OPPOSITE_OFFSETS`, Winkel ≠ 45°) werden ausgelassen, nicht genähert.
 - hole style: C_SINK 4, SIMPLE 5, (unspez.) 6.
+- revolve: `RevolveDef` hat KEINEN Winkel — es dreht immer volle 360°. `FULL`
+  ist damit exakt; `ONE_SIDED`/`TWO_SIDED`/`SYMMETRIC` werden nur übernommen,
+  wenn ihre Winkel sich zu 360° addieren (Onshape schreibt genau das für ein
+  30°/330°-Paar), sonst mit Nennung von Typ und Winkel ausgelassen. Als Achse
+  nimmt `revolve.axis` nur `qSketchLine` oder `qEdge`; unsere Kanten-Übersetzung
+  liefert `qCommonEdge`, deshalb ist eine B-Rep-Kante als Achse heute nicht
+  abbildbar (im Korpus ist die Achse praktisch immer eine Konstruktionslinie).
 - loft bodyType: SOLID 10 (ok), **SURFACE 6 (übersprungen** — alle in #418).
 - Ausdrücke: 6004 literal-parsebar, **153 Variablen/Formeln** (`#Brettstaerke`, `3 mm+#HoleExtraGap`, …) — `mmOf` kann nur Literale, Variablenbezüge fallen auf Defaults zurück → falsche Maße.
 
@@ -75,7 +82,7 @@ Alles andere fällt in den Sammel-Zweig (:594) → `errors: "Feature-Typ '<x>' w
 | #412 | 2  | Feature-Typen OK, aber **Geometrie falsch**: Extrude referenziert 4 Sketch-Regionen (qCompressed → SKETCH_ENTITY), Importer extrudiert den ganzen Sketch → ein Block statt Platten — P0-Livetest 2026-07-24 |
 | #413 | 6  | **Struktur korrekt** (SDF-verifiziert: Wanne, 2-mm-Wände); Rest: SWEPT_/CAP_EDGE-Fillets übersprungen, Geschwister-Kanten nicht unterscheidbar — P0-Livetest 2026-07-24 |
 | #414 | 27 | Feature-Typen **OK** (chamfer + hole übersetzt), aber **Geometrie noch falsch**: Wall-Provenienz region-eingeschränkter Profile fehlt → Chamfer-Kante, Sketch-2-Ebene und 6 Fillets lösen nicht auf — s. Update 2026-07-25 (3) |
-| #416 | 20 | chamfer(2), revolve(1) |
+| #416 | 19 | Feature-Typen **OK** (chamfer + revolve übersetzt), aber **Geometrie falsch**: 3 der 5 Sketches liegen auf impliziten Mate-Connectors (Sub-Features!) → 12 der 19 Features fallen aus; dazu ein Kernel-Bug bei abwärts gezeichneter Revolve-Achse — s. Update 2026-07-25 (4) |
 | #415 | 20 | assignVariable(1), thicken(1), booleanBodies(1) |
 | #409 | 48 | assignVariable(8), hole(4), mirror(3), linearPattern(2), booleanBodies(1), chamfer(1) |
 | #419 | 151 | chamfer(12), booleanBodies(8), revolve(7), thicken(7), assignVariable(6), hole(2), printedHole(2), circularPattern(1), linearPattern(1) |
@@ -92,14 +99,14 @@ Alles andere fällt in den Sammel-Zweig (:594) → `errors: "Feature-Typ '<x>' w
 | assignVariable (setVariable-Wiring + Var-fähiges `mmOf`) | M | 409,415,417,418,419,420,421 |
 | booleanBodies (2 Body-Set-Queries → boolean) | M | 409,411,415,417,418,419,420 |
 | ~~chamfer~~ ERLEDIGT (`chamfer_edge`, EQUAL_OFFSETS/45°) | — | ~~409,414,416,417,418,419~~ |
-| revolve (Profil + Achsen-Query) | S–M | 411,416,417,418,419 |
+| ~~revolve~~ ERLEDIGT (Profil + Sketch-Linien-Achse, volle Umdrehung) | — | ~~411,416,417,418,419~~ |
 | hole ERLEDIGT (P1-Umfang); **printedHole** noch offen | S | 417,419 (printedHole) |
 | mirror (Spiegelebenen-Query + entities) | M | 409,411,417,418,419 |
 | circularPattern (+ linearPattern) (Achse/Richtung + Anzahl + entities) | M | 409,411,417,418,419 |
 | thicken (Face-Query + Dicke) | S–M | 415,417,418,419 |
 | sweep (Profil + Pfad-Query) | M | 418,420 |
 | helix | S–M | 420,421 |
-| mateConnector (Referenzgeo; ggf. reine No-op-Aufnahme) | S | 417,421 |
+| mateConnector als **Sketch-Ebene** (Ursprung + Achsenlage aus `originType`/`entityInferenceType`) | M | 416,417,421 |
 | transform (Body verschieben/kopieren — kein Kernel-Feature) | L | 411,417,418 |
 | deleteBodies (No-op/Suppress) | S | 417,418,419 |
 | cPlane (Datum-Ebene als benennbare Referenz) | M | 417,418 |
@@ -145,7 +152,9 @@ Perf-Nebenschauplatz erledigt: #410-Freeze gelöst (v0.29.1 per-Body-BRep-Cache 
 2. **P1 Chamfer + Hole:** ERLEDIGT 2026-07-25 (Übersetzer + Web-Verdrahtung). Schließt #414
    **nicht** komplett — Restblocker ist die Wall-Provenienz region-eingeschränkter Profile
    (s. u.), nicht mehr die Feature-Typen. Entblockt 409/416/417/418/419.
-3. **P2 Revolve:** mit P1 schließt das **#416**; entblockt 411/417/418/419.
+3. **P2 Revolve:** ERLEDIGT 2026-07-25 (Übersetzer + E2E). Schließt **#416**
+   NICHT — dort sind zwei andere Blocker aufgetaucht (Mate-Connector-Ebenen,
+   Kernel-Achsenrichtung, s. u.). Entblockt 411/417/418/419.
 4. **P3 Fundament Boolean + Variablen:** booleanBodies-Wiring + assignVariable→setVariable + var-fähiges `mmOf`. Prerequisite für fast alles; mit P1/P2 nun in Reichweite: 415,419,420.
 5. **P4 Thicken:** schließt mit P3 **#415**.
 6. **P5 Patterns + Mirror** (circular/linear/mirror): schließt mit P1–P4 **#409** und **#419**.
@@ -203,3 +212,67 @@ Mesher-Worker-Pfad bei App-Auflösung, ein Gitter-Differenz-Beweis, dass die Fas
 nur Material **abträgt** und keines hinzufügt, und die Bohrungs-Parameter durch die
 echte API-Kette (`add_feature_call` → `body_sdf_eval`, Ø6 blind 50 mm, Boden an
 der richtigen Stelle).
+
+## #416 Revolve — Übersetzer geliefert, zwei Restblocker (2026-07-25)
+
+**Neu übersetzt.** `revolve` → ein FieldDraft-`revolve`. Profil-Auswahl läuft
+durch dieselbe Region-Auflösung wie beim Extrude, Boolean-Op und `booleanScope`
+durch dieselben Helfer wie bei jedem körperbildenden Feature (die drei
+Kopien davon sind zu `operationOf` / `booleanTargets` zusammengezogen). Neu ist
+allein die **Achse**: Onshape benennt sie mit einer Query auf eine Kante, in der
+Praxis auf eine (meist Konstruktions-)Sketch-Linie — FieldDraft adressiert die
+als `qSketchLine(sketch, entity)`, und der Kernel hebt deren 2D-Endpunkte durch
+den Sketch-Frame in die Welt. Nennt die Query etwas anderes (B-Rep-Kante,
+Datum-Achse, ein Bogen), wird das Feature mit genannter Ursache **ausgelassen**
+statt um eine geratene Achse gedreht. Teil-Umdrehungen ebenso: `RevolveDef` hat
+keinen Winkel, deshalb kommt nur durch, was sich zu 360° addiert.
+
+Nebenbei bekommt eine unübersetzbare **Mate-Connector-Ebene** jetzt eine Meldung,
+die das fehlende Onshape-Konzept benennt, statt „not a qCompressed query“.
+
+**Restblocker 1 — Sketches auf impliziten Mate-Connectors (KEIN Revolve-Thema).**
+Sketch 2, Sketch 4 und Sketch 6 des #416-Dokuments liegen nicht auf einer Ebene
+oder Fläche, sondern auf einem **Mate-Connector, den der Sketch selbst als
+Sub-Feature mitbringt** (`subFeatures[0]`, `originType: ON_ENTITY` +
+`entityInferenceType: CENTER/MID_POINT/POINT`). Der Feature-Typ-Zensus oben zählt
+nur Top-Level-Features und hat diese 3 daher nie gesehen — die Zeile „#416:
+chamfer(2), revolve(1)“ war insofern unvollständig. Folge: von 19 Features landen
+nur 4 (Sketch 1 + 3 Extrudes), die Ground-Truth-AABB wird weit verfehlt
+(FieldDraft x[−4, 32] · y[−26,7, 11] · z[−65, 39,5] mm gegen Onshape
+x[−70,05, 3,07] · y[−26,77, 7,13] · z[−73,08, 35,0] mm). Das ist die Lücke
+`mateConnector`, hier in ihrer teuersten Form: nicht als Referenzgeometrie,
+sondern als **Sketch-Ebene** samt Ursprung und Achsenlage.
+
+**Restblocker 2 — Kernel-Bug: Revolve-Achse abwärts gezeichnet.**
+`features/revolve.rs` legt die Achse auf die lokale Linie `x = 0` und prüft dann,
+ob das Profil dabei auf der NEGATIVEN Seite gelandet ist (die Revolve-SDF faltet
+jede Abfrage auf einen Radius ≥ 0 und würde es dort nie erreichen). Diese Prüfung
+ist ein exaktes `BoundedSketch2d::from_sketch(&aligned).aabb().max[0] <= 0.0`.
+Das #416-Dokument zeichnet seine Konstruktionsachse **abwärts**, die Ausrichtung
+dreht das Profil also um 180° nach −x — wo sein Maximum nicht 0 ist, sondern
+**+2,2e−7 mm**: der numerische Überstand des Bogen-Endpunkts, der genau auf der
+Achse sitzt. Um dieses Haar verfehlt der exakte Test die Rückdrehung, das Profil
+bleibt auf −x, und heraus kommt ein Körper mit korrekter AABB, aber **leerem
+Feld** — `bodySdfEval` ist überall positiv, der Mesher liefert null Dreiecke.
+Gegenprobe im Slow-Test: dieselbe Strecke, nur andersherum gezeichnet
+(`startParam`/`endParam` getauscht), ergibt die korrekte Kugel und rendert. Vom
+Importer aus ist das nicht zu umgehen — eine `qSketchLine`-Query trägt keine
+Richtung. Fix gehört in den Kernel: die Seitenwahl an der Profil-**Fläche** (oder
+einer relativen Toleranz) festmachen statt an einem exakten Vorzeichentest.
+
+**Testabdeckung.** `onshapeImport.test.ts` prüft den Übersetzungs-Vertrag gegen
+die echte Fixture (`fixtures/onshape-416-features.json`, 19 Features aus dem
+`/features`-Endpoint): Achse als `qSketchLine`, ADD mit explizitem Ziel, Skip bei
+Teil-Umdrehung und bei SURFACE, und die Mate-Connector-Meldung.
+`onshapeImport416E2E.slow.test.ts` fährt das echte WASM gegen die
+API-Ground-Truth (1 Part „Part 1“, AABB s. o.): die Mate-Connector-Meldungen sind
+festgenagelt, Part-Zahl + AABB als `it.fails`. Der Revolve selbst läuft dort auf
+einem auf die Right-Ebene **umgepflanzten** Sketch 4 (sonst verschluckt ihn
+Restblocker 1) — mit der Zusicherung, dass aus dem Halbkreis R = 4,94 mm eine
+Kugel wird, samt Render-Mesh über den echten Mesher-Worker-Pfad bei
+App-Auflösung; die abwärts gezeichnete Original-Achse ist als `it.fails` gepinnt.
+
+**Chamfer-Stand im Dokument:** beide Fasen sind `OFFSET_ANGLE` @ 45° mit
+`width1 = 0,5 cm` → je 5 mm, also von v0.32.0 abgedeckt. Sie kommen im
+Volldokument trotzdem nicht an: ihre Kanten-Queries zeigen auf Wände von
+Extrudes, deren Profil-Sketch an Restblocker 1 hängt.

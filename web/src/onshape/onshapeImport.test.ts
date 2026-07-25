@@ -557,3 +557,107 @@ describe("hole import (#414)", () => {
     expect(result.errors.join(" | ")).toContain("keine auflösbare Loch-Position");
   });
 });
+
+/** The #416 fixture (Onshape doc 204cc669…): 19 features, among them the one
+ *  `revolve` this ticket added a translator for, and two 45° chamfers. */
+function ticket416(): { features: any[] } {
+  return JSON.parse(
+    readFileSync(join(__dirname, "fixtures", "onshape-416-features.json"), "utf8"),
+  );
+}
+
+describe("revolve import (#416)", () => {
+  const doc = ticket416();
+  const featureById = (id: string) =>
+    (doc.features as any[]).map((f) => f.message ?? f).find((f) => f.featureId === id);
+  const paramOf = (f: any, id: string) =>
+    f.parameters.map((p: any) => p.message ?? p).find((p: any) => p.parameterId === id);
+
+  /** Everything the revolve depends on: Sketch 1 + Extrude 2 (the body its ADD
+   *  scope names) and Sketch 4, which carries both its profile and its axis.
+   *
+   *  Sketch 4 is REPLANTED on the document's own Right plane. In the document
+   *  it sits on an implicit MATE CONNECTOR, which FieldDraft has no counterpart
+   *  for (see the gap matrix) — a plane gap that would swallow the revolve
+   *  before its own translation ever runs. Substituting a plane query from the
+   *  SAME document isolates what this ticket is about; the untouched document
+   *  is what `onshapeImport416E2E.slow.test.ts` runs. */
+  const prefix = () => {
+    const sketch1 = structuredClone(featureById("FeniPjG8I3vr6X2_0"));
+    const sketch4 = structuredClone(featureById("FUYLAXOHGV4RBJ9_2"));
+    paramOf(sketch4, "sketchPlane").queries = structuredClone(
+      paramOf(sketch1, "sketchPlane").queries,
+    );
+    return [sketch1, structuredClone(featureById("FjQX2yN4ORMPFe0_0")), sketch4];
+  };
+  const revolve = () => structuredClone(featureOfType(doc, "revolve"));
+
+  it("spins the document's profile around its CONSTRUCTION sketch line", async () => {
+    const { kernel, result } = await translate([...prefix(), revolve()]);
+    const calls = kernel.calls.filter((c) => c.type === "revolve");
+    expect(calls.length, result.errors.join(" | ")).toBe(1);
+    const p = calls[0].params;
+    // The axis is a sketch LINE query — the only axis form `RevolveDef` takes
+    // besides a B-Rep edge; the document draws it as a construction line.
+    expect(p.axis).toMatch(/^qSketchLine\(\d+, \d+\)$/);
+    expect(p.profiles).toMatch(/^qCreatedBy\(\d+\)|^qRegions?\(/);
+    // Onshape's ADD with an explicit boolean scope → explicit targets.
+    expect(p.operation).toBe("add");
+    expect(p.targets).toMatch(/^qCreatedBy\(\d+\)$/);
+  });
+
+  it("imports the FULL turn without any angle warning", async () => {
+    const { result } = await translate([...prefix(), revolve()]);
+    expect(result.warnings.join(" | ")).not.toContain("Umdrehung");
+  });
+
+  it("SKIPS a partial revolve instead of closing it into a full ring", async () => {
+    const r = revolve();
+    paramOf(r, "revolveType").value = "ONE_SIDED";
+    paramOf(r, "angle").expression = "90 deg";
+    const { kernel, result } = await translate([...prefix(), r]);
+    expect(kernel.calls.filter((c) => c.type === "revolve").length).toBe(0);
+    expect(result.warnings.join(" | ")).toContain("Teil-Umdrehung");
+    expect(result.warnings.join(" | ")).toContain("90°");
+  });
+
+  it("accepts a TWO_SIDED pair that adds up to a full turn, and says so", async () => {
+    const r = revolve();
+    // The document already carries 30°/330° in the (inactive) angle slots.
+    paramOf(r, "revolveType").value = "TWO_SIDED";
+    const { kernel, result } = await translate([...prefix(), r]);
+    expect(kernel.calls.filter((c) => c.type === "revolve").length).toBe(1);
+    expect(result.warnings.join(" | ")).toContain("TWO_SIDED");
+  });
+
+  it("SKIPS a SURFACE revolve", async () => {
+    const r = revolve();
+    paramOf(r, "bodyType").value = "SURFACE";
+    const { kernel, result } = await translate([...prefix(), r]);
+    expect(kernel.calls.filter((c) => c.type === "revolve").length).toBe(0);
+    expect(result.warnings.join(" | ")).toContain("SURFACE");
+  });
+
+  it("reports an axis it cannot translate instead of guessing one", async () => {
+    // Without Sketch 4 neither the profile nor the axis line exists.
+    const noSketch = prefix().filter((f: any) => f.featureId !== "FUYLAXOHGV4RBJ9_2");
+    const { kernel, result } = await translate([...noSketch, revolve()]);
+    expect(kernel.calls.filter((c) => c.type === "revolve").length).toBe(0);
+    expect(result.errors.join(" | ")).toContain("Profil-Sketch nicht auflösbar");
+  });
+});
+
+describe("mate-connector sketch planes (#416)", () => {
+  const doc = ticket416();
+
+  it("names the missing Onshape concept instead of reporting a decode failure", async () => {
+    // Sketch 4 of the document sits on an implicit mate connector — a
+    // sub-feature of the sketch itself, invisible in the feature-type census.
+    const sketch4 = (doc.features as any[])
+      .map((f) => f.message ?? f)
+      .find((f) => f.featureId === "FUYLAXOHGV4RBJ9_2");
+    const { result } = await translate([structuredClone(sketch4)]);
+    expect(result.errors.join(" | ")).toContain("Mate-Connector");
+    expect(result.errors.join(" | ")).toContain("GAP-MATRIX");
+  });
+});

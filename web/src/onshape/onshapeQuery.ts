@@ -362,7 +362,21 @@ export function extractPlaneRef(tokens: BtonToken[]): OnshapePlaneRef {
 export async function decodePlaneQuery(queryString: string): Promise<OnshapePlaneRef> {
   try {
     const { bton, payload } = await decodeOnshapeQueryString(queryString);
-    if (!bton) return { kind: "unsupported", reason: "not a qCompressed query" };
+    if (!bton) {
+      // An uncompressed FeatureScript query. The one that matters in the corpus
+      // is a sketch placed on an implicit MATE CONNECTOR (a sub-feature of the
+      // sketch itself, #416) — name it, because „not a qCompressed query" tells
+      // a user nothing about which Onshape concept is missing.
+      if (/BodyType\.MATE_CONNECTOR/.test(queryString)) {
+        return {
+          kind: "unsupported",
+          reason:
+            "Sketch liegt auf einem Mate-Connector — FieldDraft hat dafür kein Gegenstück " +
+            "(Lücke „mateConnector“, siehe docs/ONSHAPE-IMPORT-GAP-MATRIX.md)",
+        };
+      }
+      return { kind: "unsupported", reason: "not a qCompressed query" };
+    }
     return extractPlaneRef(tokenizeBton(payload));
   } catch (e) {
     return { kind: "unsupported", reason: e instanceof Error ? e.message : String(e) };

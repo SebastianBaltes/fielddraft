@@ -12,6 +12,10 @@ Format, eine Zeile je Eintrag:
 kind = feat | fix | perf. scope und #tickets sind optional. Folgezeilen, die
 eingerückt sind, gehören zum Text davor (Umbruch erlaubt).
 
+## 0.33.0
+- feat(onshape) #416: Onshape-Revolve-Features werden übersetzt — volle Umdrehung um eine Sketch-Linie (auch Konstruktionslinie), Profil-Regionen und Boolean-Scope wie beim Extrude. Teil-Umdrehungen, Flächen-Revolves und Nicht-Linien-Achsen werden mit klarer Meldung ausgelassen statt geraten.
+- fix(onshape) #416: Sketches auf impliziten Mate-Connectors melden jetzt das fehlende Onshape-Konzept beim Namen statt einer kryptischen Query-Fehlermeldung.
+
 ## 0.32.0
 - feat(ui) #414: Fasen-Werkzeug in der Toolbar — Kante anklicken erzeugt eine symmetrische Fase (chamfer_edge), gleicher Workflow wie beim Fillet; Maß im Feature-Dialog änderbar.
 - feat(onshape) #414: Der Import übersetzt jetzt chamfer (EQUAL_OFFSETS exakt, OFFSET_ANGLE bei 45° mit Hinweis) und hole (Durchmesser wörtlich aus dem Dokument, Sackloch/durchgehend, mehrere Bohrpunkte). Nicht Unterstütztes (ungleiche Schenkel, Counterbore/Countersink, Bohrspitze, up-to-next) wird namentlich gemeldet statt still genähert.

@@ -166,10 +166,28 @@ interface SketchRecord {
    *  (a line is two points, an arc/circle its flattened rim). The region
    *  resolution walks these to find which imprint face a query names (#412). */
   entityGeom: Map<string, [number, number][]>;
+  /** Which of the sketch's entities are straight LINES (construction lines
+   *  included) — the only shape a revolve axis may name (#416). */
+  lineEntityIds: Set<string>;
 }
 
 /** Flattening resolution of an arc/circle rim, in segments per full turn. */
 const ARC_FLATTEN_SEGMENTS = 48;
+
+/** Every entity id of the sketch whose geometry is a STRAIGHT LINE, including
+ *  construction lines — those never reach the B-Rep but are exactly what a
+ *  revolve axis is usually drawn as (#416). Lets the axis translation reject a
+ *  query that names an arc or a point instead of silently emitting a
+ *  `qSketchLine` the kernel then cannot resolve. */
+export function sketchLineEntityIds(feat: AnyMsg): Set<string> {
+  const out = new Set<string>();
+  for (const raw of (feat.geometry ?? feat.entities ?? []) as AnyMsg[]) {
+    const e = msg(raw);
+    const bt = String(msg(e.geometry)?.btType ?? "");
+    if (e.entityId && bt.startsWith("BTCurveGeometryLine")) out.add(e.entityId as string);
+  }
+  return out;
+}
 
 /** Extract every non-construction sketch entity as a 2D POLYLINE (mm), keyed by
  *  Onshape entity id. The same ×1000 metre→mm scale the sketch translation
@@ -546,8 +564,8 @@ function wallQuery(
 }
 
 /**
- * Resolve an extrude's profile selection to a FieldDraft `profiles`
- * MultiQuery (ticket #412).
+ * Resolve a sweep's profile selection (extrude / revolve) to a FieldDraft
+ * `profiles` MultiQuery (ticket #412).
  *
  * Onshape supplies ONE query per selected sketch region; each decodes to the
  * sketch-entity ids bounding that region. [`regionFaceIndex`] maps each to the
@@ -565,7 +583,7 @@ function wallQuery(
  * double), when no query carries region entities at all, or when not a single
  * one of them resolves.
  */
-async function resolveExtrudeProfiles(
+async function resolveProfiles(
   profileQss: string[],
   rec: SketchRecord,
   kernel: ImportKernel,
@@ -657,6 +675,37 @@ async function resolveExtrudeProfiles(
     : `qRegions(${rec.fdId}, [${sorted.join(", ")}])`;
 }
 
+/** Onshape's `operationType` → the FieldDraft boolean op. Shared by every
+ *  body-producing feature (extrude / revolve / loft). */
+function operationOf(params: Map<string, AnyMsg>): string {
+  switch (params.get("operationType")?.value ?? "NEW") {
+    case "NEW":
+      return "new";
+    case "REMOVE":
+      return "remove";
+    case "INTERSECT":
+      return "intersect";
+    default:
+      return "add";
+  }
+}
+
+/** Onshape's `booleanScope` → an explicit FieldDraft `targets` query
+ *  (Feature-Scope-Direktive: a boolean never merges implicitly). Empty for a
+ *  NEW body and whenever the scope names an operation we did not import. */
+async function booleanTargets(
+  params: Map<string, AnyMsg>,
+  operation: string,
+  result: OnshapeImportResult,
+): Promise<string> {
+  if (operation === "new") return "";
+  const scopeQs = queryStringsOf(params.get("booleanScope"))[0];
+  if (!scopeQs) return "";
+  const ref = await decodeAnyOpRef(scopeQs);
+  const fd = ref ? result.idMap[ref] : undefined;
+  return fd === undefined ? "" : `qCreatedBy(${fd})`;
+}
+
 /** Import a fetched Onshape feature list into the kernel. */
 export async function importOnshapeFeatures(
   featuresJson: { features?: any[] },
@@ -733,6 +782,7 @@ async function importFeatures(
         entityIds: translation.entityIds,
         planeQuery: built.query,
         entityGeom: sketchEntityVertices(feat),
+        lineEntityIds: sketchLineEntityIds(feat),
       });
       result.idMap[feat.featureId] = fdId;
       result.created.push(fdId);
@@ -751,7 +801,7 @@ async function importFeatures(
       // Which sketch REGIONS did Onshape select? One profile query per chosen
       // region — resolve each to a FieldDraft `qRegion`; fall back visibly to
       // the whole sketch when the selection can't be honoured (#412).
-      const profiles = await resolveExtrudeProfiles(profileQss, rec, kernel, name, result);
+      const profiles = await resolveProfiles(profileQss, rec, kernel, name, result);
       // End condition: BLIND / THROUGH_ALL / UP_TO_* (see `endCondition`).
       const upToQs = queryStringsOf(params.get("endBoundEntityFace"))[0];
       let upToQuery: string | undefined;
@@ -767,18 +817,8 @@ async function importFeatures(
         continue;
       }
       const depthMm = end.depthMm;
-      const opType = params.get("operationType")?.value ?? "NEW";
-      const operation =
-        opType === "NEW" ? "new" : opType === "REMOVE" ? "remove" : opType === "INTERSECT" ? "intersect" : "add";
-      // Boolean scope → explicit targets (Feature-Scope-Direktive).
-      let targets = "";
-      const scopeQs = queryStringsOf(params.get("booleanScope"))[0];
-      if (scopeQs && operation !== "new") {
-        const scopeRef = await decodeAnyOpRef(scopeQs);
-        if (scopeRef && result.idMap[scopeRef] !== undefined) {
-          targets = `qCreatedBy(${result.idMap[scopeRef]})`;
-        }
-      }
+      const operation = operationOf(params);
+      const targets = await booleanTargets(params, operation, result);
       const fdId = kernel.addFeatureCall(
         "extrude",
         JSON.stringify({
@@ -848,18 +888,8 @@ async function importFeatures(
           `${name}: Loft-Randableitung (${startCond}/${endCond}) wird in v1 ignoriert`,
         );
       }
-      const opType = params.get("operationType")?.value ?? "NEW";
-      const operation =
-        opType === "NEW" ? "new" : opType === "REMOVE" ? "remove" : opType === "INTERSECT" ? "intersect" : "add";
-      // Boolean scope → explicit targets (Feature-Scope-Direktive), same as extrude.
-      let targets = "";
-      const scopeQs = queryStringsOf(params.get("booleanScope"))[0];
-      if (scopeQs && operation !== "new") {
-        const scopeRef = await decodeAnyOpRef(scopeQs);
-        if (scopeRef && result.idMap[scopeRef] !== undefined) {
-          targets = `qCreatedBy(${result.idMap[scopeRef]})`;
-        }
-      }
+      const operation = operationOf(params);
+      const targets = await booleanTargets(params, operation, result);
       const fdId = kernel.addFeatureCall(
         "loft",
         JSON.stringify({
@@ -953,6 +983,11 @@ async function importFeatures(
       continue;
     }
 
+    if (feat.featureType === "revolve") {
+      await importRevolve(feat, params, name, kernel, result, sketches);
+      continue;
+    }
+
     if (feat.featureType === "chamfer") {
       await importChamfer(feat, params, name, kernel, result, sketches, sweeps);
       continue;
@@ -965,6 +1000,125 @@ async function importFeatures(
 
     result.errors.push(`${name}: Feature-Typ "${feat.featureType}" wird noch nicht importiert`);
   }
+}
+
+/**
+ * Onshape `revolve` → a FieldDraft `revolve` feature (#416).
+ *
+ * What lowers EXACTLY: a SOLID full turn. Profile selection goes through the
+ * same region resolution as the extrude ({@link resolveProfiles}), the boolean
+ * op and its scope through the same {@link operationOf} / {@link booleanTargets}
+ * as every other body-producing feature.
+ *
+ * The AXIS is the one genuinely new piece. Onshape names it with a query on a
+ * single edge; in practice that is a (usually construction) SKETCH LINE, which
+ * FieldDraft addresses as `qSketchLine(sketch, entity)` — the kernel lifts its
+ * 2D endpoints through the sketch frame and rotates the profile onto it. A
+ * query that names anything else (a B-Rep edge, a datum axis, an arc) has no
+ * FieldDraft counterpart today: `revolve.axis` accepts `qEdge`/`qSketchLine`
+ * only, and our edge translation produces `qCommonEdge`, which the axis
+ * resolver rejects. Such a revolve is SKIPPED with an error naming the reason
+ * rather than spun around a guessed axis.
+ *
+ * PARTIAL turns have no counterpart either: `RevolveDef` carries no angle, it
+ * always sweeps the full 360°. A `ONE_SIDED`/`TWO_SIDED`/`SYMMETRIC` revolve is
+ * therefore only imported when its angles ADD UP to a full turn (Onshape writes
+ * exactly that for a `TWO_SIDED` 30°/330° pair), and skipped with a warning
+ * naming type and angle otherwise — a 90° sector silently closed into a ring is
+ * wrong geometry, not an import.
+ */
+async function importRevolve(
+  feat: AnyMsg,
+  params: Map<string, AnyMsg>,
+  name: string,
+  kernel: ImportKernel,
+  result: OnshapeImportResult,
+  sketches: Map<string, SketchRecord>,
+): Promise<void> {
+  const bodyType = String(params.get("bodyType")?.value ?? "SOLID");
+  if (bodyType !== "SOLID") {
+    result.warnings.push(
+      `${name}: Revolve-Bodytyp ${bodyType} (kein SOLID) wird nicht importiert — übersprungen`,
+    );
+    return;
+  }
+
+  // Sweep angle: FieldDraft revolves a full turn, nothing else.
+  const revolveType = String(params.get("revolveType")?.value ?? "FULL");
+  const angleDeg = degOf(params.get("angle"), 0);
+  const angleBackDeg = degOf(params.get("angleBack"), 0);
+  const sweepDeg =
+    revolveType === "FULL"
+      ? 360
+      : revolveType === "TWO_SIDED"
+        ? angleDeg + angleBackDeg
+        : angleDeg;
+  if (Math.abs(sweepDeg - 360) > 1e-3) {
+    result.warnings.push(
+      `${name}: Teil-Umdrehung (${revolveType}, ${sweepDeg}°) — FieldDraft dreht ein Profil ` +
+        `immer volle 360°; Feature übersprungen`,
+    );
+    return;
+  }
+  if (revolveType !== "FULL") {
+    result.warnings.push(
+      `${name}: Revolve-Typ ${revolveType} über insgesamt 360° — als volle Umdrehung ` +
+        `übernommen (deckungsgleich)`,
+    );
+  }
+
+  // Profile: same region resolution as the extrude (#412).
+  const profileQss = queryStringsOf(params.get("entities"));
+  const sketchFid = profileQss[0] ? await profileSketchId(profileQss[0]) : null;
+  const rec = sketchFid ? sketches.get(sketchFid) : undefined;
+  if (!rec) {
+    result.errors.push(`${name}: Profil-Sketch nicht auflösbar — übersprungen`);
+    return;
+  }
+  const profiles = await resolveProfiles(profileQss, rec, kernel, name, result);
+
+  // Axis: a straight sketch line, construction included.
+  const axisQs = queryStringsOf(params.get("axis"))[0];
+  const axisRef = axisQs ? await decodeSketchEntityRef(axisQs) : null;
+  const axisRec = axisRef ? sketches.get(axisRef.sketchFeatureId) : undefined;
+  const axisOrd = axisRef && axisRec ? axisRec.entityIds[axisRef.entityId] : undefined;
+  if (!axisRef || !axisRec || axisOrd === undefined) {
+    result.errors.push(
+      `${name}: Revolve-Achse nicht auflösbar ` +
+        `(${axisRef ? `Sketch-Entity ${axisRef.entityId}` : "keine Sketch-Linie benannt"}) — ` +
+        `FieldDraft nimmt als Achse nur eine Sketch-Linie (auch Konstruktionslinie); Feature übersprungen`,
+    );
+    return;
+  }
+  if (!axisRec.lineEntityIds.has(axisRef.entityId)) {
+    result.errors.push(
+      `${name}: Revolve-Achse ${axisRef.entityId} ist keine gerade Sketch-Linie — ` +
+        `Feature übersprungen`,
+    );
+    return;
+  }
+
+  if (queryStringsOf(params.get("wallShape")).length > 0) {
+    result.warnings.push(
+      `${name}: dünnwandiger Revolve (Wandstärke ${mmOf(params.get("thickness1"), 0)} mm) ` +
+        `wird nicht übernommen — importiert wird der volle Körper`,
+    );
+  }
+
+  const operation = operationOf(params);
+  const targets = await booleanTargets(params, operation, result);
+  const fdId = kernel.addFeatureCall(
+    "revolve",
+    JSON.stringify({
+      display_name: name,
+      profiles,
+      axis: `qSketchLine(${axisRec.fdId}, ${axisOrd})`,
+      operation,
+      ...(targets ? { targets } : {}),
+    }),
+  );
+  result.idMap[feat.featureId] = fdId;
+  result.created.push(fdId);
 }
 
 /**
@@ -1106,7 +1260,7 @@ async function importHole(
   const locations: string[] = [];
   const locQs = queryStringsOf(params.get("locations"));
   for (const qs of locQs) {
-    const ref = await decodeHoleLocation(qs);
+    const ref = await decodeSketchEntityRef(qs);
     const rec = ref ? sketches.get(ref.sketchFeatureId) : undefined;
     const ord = ref && rec ? rec.entityIds[ref.entityId] : undefined;
     if (!ref || !rec || ord === undefined) {
@@ -1354,19 +1508,21 @@ async function buildEdgeQuery(
 }
 
 /**
- * An Onshape hole LOCATION query → the sketch point it names.
+ * An Onshape query that names ONE sketch entity directly → that entity.
  *
- * Onshape places holes on `VERTEX` queries; a sketch point travels as
- * `queryType: SKETCH_ENTITY` + a `sketchEntityId` whose owning sketch is the
- * preceding `wireOp` marker. Unlike a wall/edge origin the id is usually a
- * SINGLE-part string (a free point has no `.top`/`.left` suffix), so the
- * generic two-part origin scan does not see it — read it positionally instead.
+ * Two translations need this shape: a hole LOCATION (the sketch point it is
+ * drilled at, #414) and a revolve AXIS (the sketch line it spins around, #416).
+ * Both travel as `queryType: SKETCH_ENTITY` + a `sketchEntityId` whose owning
+ * sketch is the preceding `wireOp` marker. Unlike a wall/edge origin the id is
+ * usually a SINGLE-part string (a free point or a construction line has no
+ * `.top`/`.left` suffix), so the generic two-part origin scan does not see it —
+ * read it positionally instead.
  *
- * Returns `null` for anything that is not a sketch point (mate connectors,
- * B-Rep vertices): the caller reports that honestly instead of guessing a
- * position.
+ * Returns `null` for anything that is not a sketch entity (mate connectors,
+ * B-Rep vertices and edges, datum axes): the caller reports that honestly
+ * instead of guessing a position or an axis.
  */
-async function decodeHoleLocation(qs: string): Promise<OnshapeEntityOrigin | null> {
+async function decodeSketchEntityRef(qs: string): Promise<OnshapeEntityOrigin | null> {
   try {
     const { bton, payload } = await decodeOnshapeQueryString(qs);
     if (!bton) return null;
