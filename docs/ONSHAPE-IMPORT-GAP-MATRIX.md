@@ -115,6 +115,16 @@ Folge/Verhalten: Wo die Auswahl 1:1 auflösbar ist (getrennte, nicht verschachte
 
 **Offene Kernel-Arbeit für echte #412-Korrektheit:** Imprint-artige Regionen-Subdivision im Sketch-Regionenmodell (Faces an internen Sehnen/Kurven trennen, nicht nur SDF-Union-Flood-Fill). Größerer Kernel-Change, hier bewusst nicht mitgemacht.
 
+### Update 2026-07-25 — Imprint-Arrangement gelandet, Resolver-Nachschlag offen
+
+Die Kernel-Subdivision ist da (v0.30.0, 68073b43): `sketch_arrangement.rs` baut ein echtes planares Arrangement über den rohen sub_calls (das Lowering verwirft offene Trennlinien, darum nicht über `Sketch2d`) und ist die einzige Wahrheit für alle Region-Query-Pfade; `sketch_regions.rs` ist nur noch Adapter. T-Junctions zerteilen, Dangling-Spitzen nicht; un-geschnittene Kurven werden als exakte Segmente re-emittiert. Der Web-Resolver sondiert beidseitig neben jeder von der Query benannten Kante (`regionFaceIndex`) statt einen Zentroid zu raten.
+
+**ABER — Live-Ground-Truth-Vergleich gegen die Onshape-API deckte einen Resolver-Fehlgriff auf:** Für Garagenregal_rechts liefert die Auflösung `qRegions(1,[1,2,3,4])` ohne Warnung; korrekt wäre `qRegions(1,[2,3,4])` MIT Reduktions-Warnung (Onshape hat 3 Parts; sein eigener Imprint zerteilt Part JHD in 2 Regionen, die in FieldDrafts Face 4 zusammenfallen). Die „flächenkleinste angrenzende Face"-Heuristik wählte für eine Query Face 1 — einen 604×1500-Block, der komplett außerhalb der Onshape-Geometrie liegt. Fix (Adjazenz-Scoring/Beranden-Validierung) in Arbeit.
+
+**Methodik-Lehre:** Erwartungswerte für Import-Tests NIE aus der eigenen Auflösung ableiten — Ground Truth kommt von der Onshape-API: `GET /api/v6/parts/d/…/e/…` (Part-Liste) + `…/partid/<id>/boundingboxes` (Referenz-AABBs, Meter) + `partstudios/…/shadedviews` (Referenzbild), Basic-Auth mit den Keys aus `.env`.
+
+Perf-Nebenschauplatz erledigt: #410-Freeze gelöst (v0.29.1 per-Body-BRep-Cache + v0.30.0 Batch-Meshing; Browser 4–5 min → ~22 s). Folge-Ticket #423: Octree-Weave-Fallback bei gestapelten koplanaren Extrudes desselben Profils (~6 s, Kabelbox-Deckel).
+
 ## Empfohlene Paket-Reihenfolge
 
 1. **P0 Quick Wins verifizieren:** ERLEDIGT 2026-07-24 — Ergebnis ernüchternd: nur #413 strukturell korrekt. Neue P0-Folgearbeiten: (a) **Sketch-Region-Query-Auflösung** (qCompressed → sketchEntityIds → Region), ohne die #412 falsch bleibt und vermutlich viele weitere Dokumente stille Falschgeometrie liefern; (b) **#410-Import-Freeze** profilen/fixen; (c) App-Bug #422 ERLEDIGT (v0.28.1, c4f0c619 — view-lose Projekte starten als Iso-Fit auf frische CSG-Bounds, Alt-Pose wird vergessen).
