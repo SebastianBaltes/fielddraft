@@ -315,6 +315,22 @@ Each `Body` caches: compiled SDF opcodes, mesh, topology, payload hash (for incr
 * Voxelizes the body's AABB at configurable resolution
 * Narrow-band optimization: only processes voxels near the surface
 * Per-vertex classification (face/edge/vertex) from contributor analysis
+* **Thin-feature refinement** (`dc.rs::resolution_for_thin_features`, viewport
+  path only): `resolution` counts cells along the body's LONGEST axis, which
+  says nothing about its thinnest feature — a 4 m shelf of 22 mm boards meshes
+  at 62 mm cells and every lattice plane steps clean over every board, i.e. an
+  EMPTY mesh and a blank viewport with no error anywhere. `build_mesh_for`
+  therefore raises the resolution until two samples fit across the smallest
+  extent found in the tree (leaf world AABBs, sketch-profile AABBs including
+  cutters, shell thickness), capped by a sampling budget (grid corners × a
+  static per-sample field-cost estimate, so the ceiling means the same wall
+  time whether the body is one extruded profile or a shelled, filleted stack)
+  and taken only when the affordable cell really brings a feature into reach —
+  a 1 mm pin on a 500 mm part is unreachable at any affordable cell, so nothing
+  is spent on it. Chunky bodies — the
+  overwhelming majority — keep their requested resolution exactly. The export
+  mesher is untouched: it takes a user-chosen cell size and runs its own guard
+  (`export_mesh.rs::derive_export_resolution`).
 
 **Marching Cubes** variant (`mdc.rs`) available as alternative mesher.
 

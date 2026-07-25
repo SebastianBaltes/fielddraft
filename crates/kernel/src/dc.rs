@@ -74,6 +74,317 @@ pub const CONTRIBUTOR_SENTINEL: u32 = u32::MAX;
 /// reliably).
 pub(crate) const DC_MARGIN_CELLS: f32 = 2.0;
 
+/// How many grid samples the viewport grid must place across a body's
+/// THINNEST feature. Two is the minimum that makes a thin slab visible
+/// at all *and* gives it two sign changes (one per side); one sample
+/// would leave the slab a single-layer sliver.
+const THIN_FEATURE_SAMPLES: f32 = 2.0;
+
+/// Cost ceiling for the AUTOMATIC refinement below, in *primitive
+/// evaluations*: grid corners × the body's per-sample field cost
+/// ([`eval_cost`]). Corners alone are a bad ceiling — a body whose field
+/// is one extruded profile evaluates 30× faster per sample than a
+/// shelled, filleted one, so the same corner count is half a second in
+/// one document and ten in the next. 10 M primitive evaluations measure
+/// as ~0.2 s of Dual Contouring natively, well under a second in wasm —
+/// the ceiling a body may add to a viewport rebuild, off-thread.
+///
+/// It bounds only the refinement: a resolution the caller asked for
+/// explicitly is never capped, and never lowered.
+const THIN_FEATURE_MAX_SAMPLE_OPS: f64 = 10_000_000.0;
+
+/// Grid resolution the viewport mesher should actually use for `node`.
+///
+/// The uniform DC grid derives its cell from the body's LONGEST axis
+/// (`cell = max_dim / resolution`), which says nothing about the body's
+/// thinnest feature. A 4 m shelf built from 22 mm boards meshes at
+/// 62 mm cells at resolution 64 — no lattice plane lands inside a board,
+/// every sign change is missed and the body renders as an EMPTY mesh
+/// (silently: DC has no way to report "I sampled straight through your
+/// geometry"). That is not a fidelity nuance, it is a blank viewport
+/// (#412 follow-up, Onshape "Garagenregal").
+///
+/// So: find the smallest feature extent in the tree (leaf AABBs, sketch
+/// profile AABBs, shell thickness) and refine the cell until
+/// [`THIN_FEATURE_SAMPLES`] samples fit across it — capped by
+/// [`THIN_FEATURE_MAX_SAMPLE_OPS`], and only when the affordable cell
+/// actually brings a feature into reach. Bodies whose thinnest feature
+/// is already sampled well enough (the overwhelming majority) return
+/// `requested` unchanged, so this is a no-op for everything but genuinely
+/// thin-featured geometry.
+///
+/// Viewport-only: the export mesher takes a user-chosen cell size and
+/// runs its own corner guard ([`crate::export_mesh::derive_export_resolution`]).
+pub fn resolution_for_thin_features(node: &BoundedCsg, requested: u32) -> u32 {
+    if requested == 0 {
+        return requested;
+    }
+    let aabb = node.aabb();
+    if aabb.is_empty() {
+        return requested;
+    }
+    let size = aabb.size();
+    let max_dim = size[0].max(size[1]).max(size[2]);
+    if !(max_dim > 0.0) {
+        return requested;
+    }
+    let base_cell = max_dim / requested as f32;
+    let mut extents = Vec::new();
+    collect_feature_extents(node, &mut extents);
+    let Some(thin) = extents
+        .iter()
+        .copied()
+        .fold(None, |a: Option<f32>, e| Some(a.map_or(e, |a| a.min(e))))
+    else {
+        return requested;
+    };
+    let target_cell = thin / THIN_FEATURE_SAMPLES;
+    if target_cell >= base_cell {
+        return requested;
+    }
+
+    // Sampling cost of the grid `dual_contour_unsimplified` would build
+    // (AABB expanded by DC_MARGIN_CELLS cells on each side, times the
+    // per-sample field cost).
+    let per_sample = eval_cost(node);
+    let ops = |cell: f32| -> f64 {
+        let m = 2.0 * DC_MARGIN_CELLS as f64 + 2.0;
+        let nx = (size[0] as f64 / cell as f64).ceil() + m;
+        let ny = (size[1] as f64 / cell as f64).ceil() + m;
+        let nz = (size[2] as f64 / cell as f64).ceil() + m;
+        nx * ny * nz * per_sample
+    };
+    let mut cell = target_cell;
+    while cell < base_cell && ops(cell) > THIN_FEATURE_MAX_SAMPLE_OPS {
+        cell *= (ops(cell) / THIN_FEATURE_MAX_SAMPLE_OPS)
+            .powf(1.0 / 3.0)
+            .max(1.01) as f32;
+    }
+    if cell >= base_cell {
+        return requested;
+    }
+
+    // Only spend the extra cells when they actually buy VISIBILITY. A grid
+    // whose spacing is smaller than a feature's extent is guaranteed to put a
+    // sample plane inside it; coarser than that, capture is luck. So refine
+    // only if some feature crosses that line by refining — a 1 mm pin on a
+    // 500 mm part stays out of reach at any affordable cell, and paying the
+    // full budget for it would double the mesh cost and still not show it.
+    if !extents.iter().any(|&t| cell < t && t <= base_cell) {
+        return requested;
+    }
+    ((max_dim / cell).ceil() as u32).max(requested)
+}
+
+/// Rough cost of ONE field evaluation of the tree, in primitive
+/// evaluations. Not a benchmark — an order-of-magnitude estimate that
+/// keeps the refinement budget above from meaning wildly different wall
+/// times per document. Deliberately ignores BVH pruning (which only ever
+/// makes the real cost lower, i.e. the estimate errs towards refining
+/// less).
+fn eval_cost(node: &BoundedCsg) -> f64 {
+    use crate::bvh::BoundedCsg as B;
+    match node {
+        B::Empty => 0.0,
+        B::Leaf { primitive, .. } => match primitive {
+            // Mesh SDF: BVH descent + ray parity per sample.
+            Primitive::ImportedMesh { .. } => 12.0,
+            Primitive::Thread { .. } => 4.0,
+            Primitive::Gyroid { .. } => 3.0,
+            _ => 1.0,
+        },
+        B::Extrude { sketch, .. } | B::Revolve { sketch, .. } => sketch_eval_cost(sketch) + 1.0,
+        // Helical/rotation-minimising frame mapping before the 2D eval.
+        B::Helix { sketch, .. } => sketch_eval_cost(sketch) + 8.0,
+        // BVH-pruned nearest-spine-segment search, then the 2D eval.
+        B::Sweep { sketch, .. } => sketch_eval_cost(sketch) + 8.0,
+        B::Loft { sections, .. } => {
+            2.0 + sections
+                .iter()
+                .map(|s| sketch_eval_cost(&s.sketch))
+                .sum::<f64>()
+        }
+        B::Union { left, right, .. }
+        | B::Difference { left, right, .. }
+        | B::Intersection { left, right, .. }
+        | B::Morph { left, right, .. } => eval_cost(left) + eval_cost(right) + 1.0,
+        B::SmoothUnion { left, right, .. } | B::SmoothDifference { left, right, .. } => {
+            eval_cost(left) + eval_cost(right) + 2.0
+        }
+        B::MaskedBlend {
+            left,
+            right,
+            mask_polyline,
+            ..
+        } => eval_cost(left) + eval_cost(right) + 2.0 + mask_polyline.len() as f64,
+        // The wall field evaluates its child on both sides of the offset.
+        B::Shell { inner, .. } => 2.0 * eval_cost(inner) + 2.0,
+        B::Offset { inner, .. } | B::InnerWall { inner, .. } => eval_cost(inner) + 1.0,
+        B::Twist { inner, .. } | B::Bend { inner, .. } | B::Displace { inner, .. } => {
+            eval_cost(inner) + 4.0
+        }
+        B::ArcChannel {
+            inner,
+            channels,
+            verts,
+            rims,
+            ..
+        } => {
+            eval_cost(inner)
+                + 2.0 * channels.len() as f64
+                + verts.len() as f64
+                + 3.0 * rims.len() as f64
+        }
+    }
+}
+
+/// Per-sample cost of a 2D profile tree. A `Path`'s cost is its segment
+/// count — the exact distance is the minimum over every segment.
+fn sketch_eval_cost(sketch: &crate::sketch2d::BoundedSketch2d) -> f64 {
+    use crate::sketch2d::BoundedSketch2d as S;
+    use fielddraft_protocol::Sketch2dPrimitive as P;
+    match sketch {
+        S::Empty => 0.0,
+        S::Prim { primitive, .. } => match primitive {
+            P::Path { segments, .. } => segments.len().max(1) as f64,
+            P::Polygon { vertices } => vertices.len().max(1) as f64,
+            _ => 1.0,
+        },
+        S::Union { left, right, .. }
+        | S::Difference { left, right, .. }
+        | S::Intersection { left, right, .. } => {
+            sketch_eval_cost(left) + sketch_eval_cost(right) + 1.0
+        }
+        S::Offset { inner, .. } => sketch_eval_cost(inner) + 1.0,
+    }
+}
+
+/// Collect every feature's characteristic thin extent in the tree, in
+/// WORLD units. Solids contribute their world AABB's shortest side,
+/// profile-swept nodes their 2D profile primitives' shortest sides
+/// (scaled by the transform's smallest scale factor) plus the sweep
+/// depth, a shell its wall thickness. Boolean operands all count — a
+/// thin CUTTER carves a thin slot, which needs the same sampling
+/// density as a thin solid.
+///
+/// Degenerate extents (zero, negative, non-finite) are dropped: a
+/// zero-height profile line cannot be meshed at any resolution, and
+/// letting it through would drag the target cell to zero on every such
+/// body.
+fn collect_feature_extents(node: &BoundedCsg, out: &mut Vec<f32>) {
+    use crate::bvh::BoundedCsg as B;
+    let mut push = |e: Option<f32>| {
+        if let Some(e) = e {
+            out.push(e);
+        }
+    };
+    match node {
+        B::Empty => {}
+        B::Leaf { aabb, .. } => {
+            let s = aabb.size();
+            push(finite_extent(s[0].min(s[1]).min(s[2])));
+        }
+        B::Extrude {
+            sketch,
+            half_height,
+            world_transform,
+            ..
+        } => {
+            let s = min_scale(world_transform);
+            push(finite_extent(2.0 * half_height.abs() * s));
+            collect_sketch_extents(sketch, s, out);
+        }
+        B::Revolve {
+            sketch,
+            world_transform,
+            ..
+        }
+        | B::Helix {
+            sketch,
+            world_transform,
+            ..
+        }
+        | B::Sweep {
+            sketch,
+            world_transform,
+            ..
+        } => collect_sketch_extents(sketch, min_scale(world_transform), out),
+        B::Loft {
+            sections,
+            world_transform,
+            ..
+        } => {
+            let s = min_scale(world_transform);
+            for sec in sections {
+                collect_sketch_extents(&sec.sketch, s, out);
+            }
+        }
+        B::Union { left, right, .. }
+        | B::Difference { left, right, .. }
+        | B::Intersection { left, right, .. }
+        | B::SmoothUnion { left, right, .. }
+        | B::SmoothDifference { left, right, .. }
+        | B::MaskedBlend { left, right, .. }
+        | B::Morph { left, right, .. } => {
+            collect_feature_extents(left, out);
+            collect_feature_extents(right, out);
+        }
+        B::Shell {
+            inner, thickness, ..
+        } => {
+            push(finite_extent(thickness.abs()));
+            collect_feature_extents(inner, out);
+        }
+        B::Twist { inner, .. }
+        | B::Bend { inner, .. }
+        | B::Displace { inner, .. }
+        | B::Offset { inner, .. }
+        | B::InnerWall { inner, .. }
+        | B::ArcChannel { inner, .. } => collect_feature_extents(inner, out),
+    }
+}
+
+/// Shortest side of every 2D profile primitive in a sketch tree, scaled
+/// into world units. Subtracted profiles count too — they cut slots.
+fn collect_sketch_extents(
+    sketch: &crate::sketch2d::BoundedSketch2d,
+    scale: f32,
+    out: &mut Vec<f32>,
+) {
+    use crate::sketch2d::BoundedSketch2d as S;
+    match sketch {
+        S::Empty => {}
+        S::Prim { aabb, .. } => {
+            let s = aabb.size();
+            if let Some(e) = finite_extent(s[0].min(s[1]) * scale) {
+                out.push(e);
+            }
+        }
+        S::Union { left, right, .. }
+        | S::Difference { left, right, .. }
+        | S::Intersection { left, right, .. } => {
+            collect_sketch_extents(left, scale, out);
+            collect_sketch_extents(right, scale, out);
+        }
+        S::Offset { inner, .. } => collect_sketch_extents(inner, scale, out),
+    }
+}
+
+/// Smallest absolute scale factor of a transform — the one that shrinks
+/// a local extent the most on its way into world space.
+fn min_scale(t: &Transform) -> f32 {
+    let s = t.scale[0].abs().min(t.scale[1].abs()).min(t.scale[2].abs());
+    if s.is_finite() && s > 0.0 {
+        s
+    } else {
+        1.0
+    }
+}
+
+fn finite_extent(e: f32) -> Option<f32> {
+    (e.is_finite() && e > 0.0).then_some(e)
+}
+
 /// Mesh a CSG tree with a uniform-grid Dual Contouring pass.
 ///
 /// `resolution` is the number of cells along the *longest* AABB axis;
@@ -1771,4 +2082,162 @@ mod tests {
             assert!((idx as usize) < mesh.vertex_count());
         }
     }
+
+    // ── thin-feature grid refinement ────────────────────────────────
+
+    /// One 4 m × 22 mm shelf board, extruded 500 mm deep — the shape of the
+    /// Onshape "Garagenregal" body that rendered as an empty viewport: at the
+    /// app's resolution 64 the 62 mm cells step clean over the 22 mm board.
+    fn shelf_board() -> BoundedCsg {
+        use fielddraft_protocol::{Sketch2d, Sketch2dPrimitive};
+        let sketch = Sketch2d::Prim(Sketch2dPrimitive::Rectangle {
+            center: [0.0, 0.0],
+            half_extents: [2000.0, 11.0],
+        });
+        BoundedCsg::from_csg(&crate::csg::CsgNode::Extrude {
+            wall_subs: None,
+            id: FeatureId::from_u32(1),
+            sketch: Box::new(sketch),
+            half_height: 250.0,
+        })
+    }
+
+    #[test]
+    fn thin_board_in_a_large_body_refines_the_grid_until_it_meshes() {
+        let node = shelf_board();
+        // Baseline: the requested resolution samples straight through the
+        // board — this is the silent empty mesh the fix is about.
+        assert_eq!(
+            dual_contour(&node, 64).triangle_count(),
+            0,
+            "precondition: the raw resolution-64 grid misses the board",
+        );
+
+        let refined = resolution_for_thin_features(&node, 64);
+        assert!(refined > 64, "expected refinement, got {refined}");
+        // Cell must end up smaller than the board thickness, or a lattice
+        // plane can still miss it.
+        let cell = 4000.0 / refined as f32;
+        assert!(cell < 22.0, "refined cell {cell} still coarser than the board");
+        assert!(
+            dual_contour(&node, refined).triangle_count() > 0,
+            "refined grid still produced an empty mesh",
+        );
+    }
+
+    #[test]
+    fn thin_feature_refinement_respects_the_sampling_budget() {
+        let node = shelf_board();
+        let cost = eval_cost(&node);
+        for requested in [16, 32, 64, 128] {
+            let refined = resolution_for_thin_features(&node, requested);
+            assert!(refined >= requested, "refinement must never coarsen");
+            let cell = 4000.0_f64 / refined as f64;
+            let m = 2.0 * DC_MARGIN_CELLS as f64 + 2.0;
+            let ops = ((4000.0 / cell).ceil() + m)
+                * ((22.0f64 / cell).ceil() + m)
+                * ((500.0 / cell).ceil() + m)
+                * cost;
+            assert!(
+                ops <= THIN_FEATURE_MAX_SAMPLE_OPS * 1.2,
+                "res {requested} → {refined}: {ops} ops blow the budget",
+            );
+        }
+    }
+
+    #[test]
+    fn an_explicitly_requested_fine_resolution_is_never_lowered() {
+        // The budget governs the AUTOMATIC refinement only. A caller asking
+        // for a grid finer than the budget (export estimates, debug dialogs,
+        // a user cranking the quality slider) gets exactly what it asked for.
+        let node = shelf_board();
+        // 512 cells along 4 m is finer than the board needs (7.8 mm cells for a
+        // 22 mm board) — nothing to add, nothing to take away.
+        assert_eq!(resolution_for_thin_features(&node, 512), 512);
+        assert!(resolution_for_thin_features(&node, 256) >= 256);
+    }
+
+    #[test]
+    fn chunky_bodies_keep_their_requested_resolution() {
+        // A sphere, a box and a boolean of both are sampled plenty finely
+        // already — the refinement must not touch them (no cost regression
+        // for the 99 % case).
+        let features = [
+            sphere_feature(1, [0.0; 3], 20.0),
+            box_feature(2, BoolOp::Add, [10.0, 0.0, 0.0], [15.0, 15.0, 8.0]),
+            cylinder_feature(3, BoolOp::Remove, [0.0; 3], 4.0, 30.0),
+        ];
+        let csg = crate::csg::CsgNode::from_decoded(&features);
+        let node = BoundedCsg::from_csg(&csg);
+        for requested in [24, 32, 48, 64] {
+            assert_eq!(
+                resolution_for_thin_features(&node, requested),
+                requested,
+                "chunky body was refined at resolution {requested}",
+            );
+        }
+    }
+
+    #[test]
+    fn features_beyond_any_affordable_cell_do_not_buy_refinement() {
+        // A 1 mm pin drilled through a 500 mm block: showing it would take
+        // 0.5 mm cells — a billion corners. Refining "as far as the budget
+        // allows" would double the mesh cost and STILL not show the hole, so
+        // the requested resolution stands.
+        let features = [
+            box_feature(1, BoolOp::New, [0.0; 3], [250.0, 250.0, 250.0]),
+            cylinder_feature(2, BoolOp::Remove, [0.0; 3], 0.5, 300.0),
+        ];
+        let csg = crate::csg::CsgNode::from_decoded(&features);
+        let node = BoundedCsg::from_csg(&csg);
+        assert_eq!(resolution_for_thin_features(&node, 64), 64);
+    }
+
+    #[test]
+    fn an_out_of_reach_detail_does_not_block_a_reachable_board() {
+        // Mixed scales: the 22 mm boards ARE reachable, the 1 mm pin is not.
+        // The unreachable feature must not veto the reachable one.
+        use fielddraft_protocol::{Sketch2d, Sketch2dPrimitive};
+        let board = crate::csg::CsgNode::Extrude {
+            wall_subs: None,
+            id: FeatureId::from_u32(1),
+            sketch: Box::new(Sketch2d::Prim(Sketch2dPrimitive::Rectangle {
+                center: [0.0, 0.0],
+                half_extents: [2000.0, 11.0],
+            })),
+            half_height: 250.0,
+        };
+        let pin = crate::csg::CsgNode::from_decoded(&[sphere_feature(2, [0.0, 0.0, 0.0], 0.5)]);
+        let node = BoundedCsg::from_csg(&crate::csg::CsgNode::Union(
+            Box::new(board),
+            Box::new(pin),
+        ));
+        assert!(resolution_for_thin_features(&node, 64) > 64);
+    }
+
+    #[test]
+    fn degenerate_zero_extent_profiles_do_not_trigger_refinement() {
+        use fielddraft_protocol::{Sketch2d, Sketch2dPrimitive};
+        // A zero-height path (a bare line) cannot be meshed at any
+        // resolution; it must not peg the body at the corner budget.
+        let line = Sketch2d::Prim(Sketch2dPrimitive::Path {
+            segments: vec![fielddraft_protocol::SketchSegment::Line {
+                start: [-50.0, 0.0],
+                end: [50.0, 0.0],
+            }],
+            closed: false,
+        });
+        let disc = Sketch2d::Prim(Sketch2dPrimitive::Circle {
+            center: [0.0, 0.0],
+            radius: 50.0,
+        });
+        let node = BoundedCsg::from_csg(&crate::csg::CsgNode::Extrude {
+            wall_subs: None,
+            id: FeatureId::from_u32(1),
+            sketch: Box::new(Sketch2d::Union(Box::new(disc), Box::new(line))),
+            half_height: 20.0,
+        });
+        assert_eq!(resolution_for_thin_features(&node, 48), 48);
+    }
 }
+

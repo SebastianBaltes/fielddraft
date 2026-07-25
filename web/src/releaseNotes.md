@@ -12,6 +12,9 @@ Format, eine Zeile je Eintrag:
 kind = feat | fix | perf. scope und #tickets sind optional. Folgezeilen, die
 eingerückt sind, gehören zum Text davor (Umbruch erlaubt).
 
+## 0.31.2
+- fix(kernel) #412: Dünne Bretter in großen Körpern rendern jetzt im Viewport — das Mesh-Gitter verfeinert sich automatisch, bis das dünnste Feature erfasst ist. Bisher leitete sich die Zellgröße allein aus der längsten Achse ab: ein 4-m-Regal aus 22-mm-Brettern wurde bei App-Auflösung komplett übersprungen und blieb ohne jede Fehlermeldung unsichtbar.
+
 ## 0.31.1
 - fix(onshape) #412: Region-Auswahl wählt keine Phantom-Flächen mehr — eine Onshape-Query, die eine im Sketch nicht (mehr) existierende Kurve benennt, wird ehrlich verworfen (Warnung) statt durch eine Nachbar-Kurve ersetzt; beim Garagenregal wurde so ein 604×1500-mm-Block extrudiert, den Onshape nie gebaut hat. Auflösung jetzt über Boundary-Coverage-Scoring statt „kleinste angrenzende Fläche“; Teil-Auflösung bleibt erhalten (3 von 4 Platten statt Rückfall auf den ganzen Sketch).
 - fix(onshape): Ein Extrude über den ungeteilten Gesamt-Sketch schreibt wieder qCreatedBy statt qRegion — die Regions-Nummerierung hatte die Wand-Referenzen späterer Features verschoben (Kabelbox: 3 Sketches übersprungen).

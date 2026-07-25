@@ -123,6 +123,14 @@ Die Kernel-Subdivision ist da (v0.30.0, 68073b43): `sketch_arrangement.rs` baut 
 
 **Methodik-Lehre:** Erwartungswerte für Import-Tests NIE aus der eigenen Auflösung ableiten — Ground Truth kommt von der Onshape-API: `GET /api/v6/parts/d/…/e/…` (Part-Liste) + `…/partid/<id>/boundingboxes` (Referenz-AABBs, Meter) + `partstudios/…/shadedviews` (Referenzbild), Basic-Auth mit den Keys aus `.env`.
 
+### Update 2026-07-25 (2) — korrekte Geometrie, leerer Viewport: der Mesher sah die Bretter nicht
+
+Nach dem Resolver-Fix (v0.31.1) war die Geometrie richtig, das Projekt rendert im WebGL-Modus trotzdem **nichts**: `meshedBodies` kam mit `positions.length === 0` aus dem Mesher-Worker — ohne Fehler, ohne Warnung. Ursache ist NICHT der Import, sondern der Viewport-Mesher: das DC-Gitter leitet seine Zellgröße allein aus der **längsten** Körperachse ab (`dc.rs`, `cell = max_dim / resolution`). Garagenregal_rechts ist 4 m lang und besteht aus **22-mm-Brettern**; bei der App-Auflösung 64 sind die Zellen 62 mm groß, keine Gitterebene landet in einem Brett, kein Vorzeichenwechsel — leeres Mesh. Bei Auflösung 48 fielen zufällig ein paar Ebenen hinein (596 Dreiecke Schrott), bei 32/64 keine: das „mal geht's, mal nicht" war reine Gitter-Resonanz.
+
+Fix an der Wurzel: `dc.rs::resolution_for_thin_features` (nur Viewport-Pfad, `build_mesh_for`) verfeinert das Gitter, bis zwei Samples über das dünnste Feature des Körpers passen (Leaf-AABBs, Sketch-Profil-AABBs inkl. Schneidwerkzeugen, Shell-Wandstärke) — gedeckelt durch ein Sampling-Budget (Gitterecken × statische Feldkosten-Schätzung) und nur, wenn die bezahlbare Zelle ein Feature wirklich in Reichweite bringt. Regressionstest spielt den echten Worker-Pfad nach (`onshapeImportE2E.slow.test.ts`, „renders through the app's mesher-worker path").
+
+**Lehre für die Testsuite:** Struktur-, SDF- und AABB-Prüfungen beweisen NICHT, dass der Nutzer etwas sieht. Import-Akzeptanztests brauchen mindestens eine Zusicherung über das **Render-Mesh bei App-Auflösung**.
+
 Perf-Nebenschauplatz erledigt: #410-Freeze gelöst (v0.29.1 per-Body-BRep-Cache + v0.30.0 Batch-Meshing; Browser 4–5 min → ~22 s). Folge-Ticket #423: Octree-Weave-Fallback bei gestapelten koplanaren Extrudes desselben Profils (~6 s, Kabelbox-Deckel).
 
 ## Empfohlene Paket-Reihenfolge

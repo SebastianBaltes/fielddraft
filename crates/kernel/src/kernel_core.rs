@@ -422,6 +422,13 @@ impl Kernel {
         );
         let prim_refs: std::collections::HashMap<u32, &Primitive> =
             prims.iter().map(|(k, v)| (*k, v)).collect();
+        // Thin-feature refinement: `resolution` counts cells along the body's
+        // LONGEST axis, so a body whose thinnest feature is orders of magnitude
+        // smaller than its overall size (a 4 m shelf of 22 mm boards) would be
+        // sampled straight through — no sign change, EMPTY mesh, blank viewport.
+        // `resolution_for_thin_features` raises the resolution just enough to
+        // land samples inside those features, capped by a sampling budget.
+        let resolution = dc::resolution_for_thin_features(&bounded, resolution);
         match self.mesh_algorithm {
             2 => mt::marching_tetrahedra(&bounded, resolution),
             _ => dc::dual_contour_with_primitives(&bounded, resolution, &prim_refs),

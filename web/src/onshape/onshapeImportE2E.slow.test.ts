@@ -27,14 +27,19 @@ import { join } from "node:path";
 import initWasm, { Kernel as WasmKernel } from "../wasm/fielddraft_kernel";
 import { importOnshapeFeatures, type ImportKernel } from "./onshapeImport";
 import type { SketchSubCall } from "./onshapeSketch";
+import type { MesherRebuildRequest } from "../mesher.worker";
 import { resolvePlaneFrame } from "../sketchPlaneFrame";
 
 const wasmDir = join(__dirname, "..", "wasm");
 
+/** WASM linear memory — needed to read the worker's mesh buffers by pointer. */
+let wasmMemory: WebAssembly.Memory;
+
 beforeAll(async () => {
-  await initWasm({
+  const exports = (await initWasm({
     module_or_path: readFileSync(join(wasmDir, "fielddraft_kernel_bg.wasm")),
-  });
+  })) as unknown as { memory: WebAssembly.Memory };
+  wasmMemory = exports.memory;
 });
 
 const kabelbox = () =>
@@ -91,6 +96,41 @@ function regenErrors(k: WasmKernel): Map<string, string> {
   const out = new Map<string, string>();
   for (const r of rows) if (r.error) out.set(String(r.id), r.error);
   return out;
+}
+
+/**
+ * Replay of `mesher.worker.ts`'s `handleRebuild` on a fresh kernel: the
+ * SAME call sequence, in the same order, driven by the same request
+ * object the store posts. Anything the app's render mesh depends on that
+ * a bare `loadJson` does not (meshing/B-Rep flags, LOD resolutions, mesh
+ * algorithm) is therefore exercised here — the store→worker path is the
+ * one that showed an empty viewport while `loadJson` alone looked fine.
+ */
+function replayMesherWorker(msg: MesherRebuildRequest): WasmKernel {
+  const kernel = new WasmKernel();
+  kernel.setSyncMeshing(true);
+  kernel.setBrepSuppressed(true);
+  kernel.loadJson(msg.documentJson);
+  kernel.setMeshAlgorithm(msg.meshAlgorithm ?? "mdc");
+  kernel.setMeshResolution(msg.activeMeshResolution);
+  kernel.setContextMeshResolution(msg.contextMeshResolution);
+  kernel.setActiveBodyId(msg.activeBodyId);
+  return kernel;
+}
+
+/** World-space AABB of a body's render mesh, read like the worker reads it. */
+function meshAabb(k: WasmKernel, i: number): { min: number[]; max: number[] } {
+  const n = k.bodyVertexCount(i);
+  const p = new Float32Array(wasmMemory.buffer, k.bodyPositionsPtr(i), n * 3);
+  const min = [Infinity, Infinity, Infinity];
+  const max = [-Infinity, -Infinity, -Infinity];
+  for (let v = 0; v < p.length; v += 3) {
+    for (let c = 0; c < 3; c++) {
+      min[c] = Math.min(min[c], p[v + c]);
+      max[c] = Math.max(max[c], p[v + c]);
+    }
+  }
+  return { min, max };
 }
 
 /** The plane-frame view the sketch overlay uses (kernel-backed). */
@@ -279,4 +319,65 @@ describe("Onshape import — #412 imprint region selection (real kernel)", () =>
       ).toBeGreaterThan(0);
     }
   });
+
+  /**
+   * …and the viewport must actually SHOW it. The shelf is 4 m of 22 mm
+   * boards: at the app's mesh resolution the uniform DC grid has 62 mm
+   * cells, so every lattice plane steps clean over every board — the
+   * mesher worker answered with a body whose positions/indices were
+   * EMPTY, the viewport stayed blank, and nothing anywhere logged a
+   * word (the kernel's SDF, scene AABB and B-Rep were all correct,
+   * which is why the import tests above passed throughout).
+   *
+   * `dc::resolution_for_thin_features` closes that: the grid refines
+   * until samples land inside the thinnest feature of the body.
+   */
+  it("renders through the app's mesher-worker path, at the app's resolutions", () => {
+    // The document the store hands the worker: the imported kernel's JSON,
+    // round-tripped through the main-thread kernel exactly like the app does
+    // (open project → `loadJson` → `toJson()` into the rebuild request).
+    const main = new WasmKernel();
+    main.setSyncMeshing(false); // the mesher worker owns the DC pass
+    main.setBrepSuppressed(true); // …and the weaver worker the B-Rep
+    main.loadJson(kernel.raw.toJson());
+    const documentJson = main.toJson();
+
+    // Resolutions as `Kernel.create` (kernel.ts) sets them, with the
+    // coarse→refine ladder from `WorkerOrchestrator.buildMesherRequest`.
+    const FULL_RES = 64;
+    const CONTEXT_RES = 32;
+    const COARSE_RES = Math.max(8, Math.floor(FULL_RES / 2));
+
+    for (const [pass, res] of [
+      ["initial", COARSE_RES],
+      ["followup", FULL_RES],
+    ] as const) {
+      const worker = replayMesherWorker({
+        type: "rebuild",
+        requestId: 1,
+        documentJson,
+        activeMeshResolution: res,
+        contextMeshResolution: CONTEXT_RES,
+        activeBodyId: 0,
+        meshAlgorithm: "mdc",
+      });
+
+      expect(worker.bodyCount(), `${pass} pass: body count`).toBe(1);
+      expect(
+        worker.bodyTriangleCount(0),
+        `${pass} pass: the worker shipped an EMPTY mesh — blank viewport`,
+      ).toBeGreaterThan(0);
+
+      // Non-empty is not enough: the mesh must be the three plates, not a
+      // few stray triangles from a lucky lattice plane.
+      const bb = meshAabb(worker, 0);
+      expect(bb.min[1], `${pass} pass: mesh ${JSON.stringify(bb)}`).toBeCloseTo(
+        GROUND_TRUTH.y[0],
+        0,
+      );
+      expect(bb.max[1]).toBeCloseTo(GROUND_TRUTH.y[1], 0);
+      expect(bb.min[2]).toBeCloseTo(GROUND_TRUTH.z[0], 0);
+      expect(bb.max[2]).toBeCloseTo(GROUND_TRUTH.z[1], 0);
+    }
+  }, 180_000);
 });
