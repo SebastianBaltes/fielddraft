@@ -27,6 +27,12 @@ pub struct SketchRegion {
     pub aabb: Aabb2,
     /// Approximate area in mm².
     pub area: f32,
+    /// Total boundary length in mm — outer loop plus every hole loop. Callers
+    /// that only know a FEW of a region's bounding curves (the Onshape import,
+    /// #412) rank candidates by the fraction of this length those curves
+    /// account for; without it a huge ambient face is indistinguishable from
+    /// the small plate inside it.
+    pub perimeter: f32,
 }
 
 /// Analyse a sketch's raw sub-calls and return all atomic imprint faces, in the
@@ -41,6 +47,7 @@ pub fn find_regions(sub_calls: &[FeatureCall]) -> Vec<SketchRegion> {
             interior: f.interior,
             aabb: f.aabb,
             area: f.area,
+            perimeter: f.perimeter,
         })
         .collect()
 }
@@ -260,6 +267,39 @@ mod tests {
         assert!(
             find_regions(&calls).is_empty(),
             "a mirrored sketch declines region subdivision"
+        );
+    }
+
+    #[test]
+    fn perimeter_counts_the_outer_loop_plus_every_hole() {
+        // A 40×40 frame around a 20×20 hole: the frame's boundary is BOTH loops
+        // (160 + 80), the inner face's is only its own (80). That difference is
+        // what lets a caller holding one bounding curve tell a small specific
+        // face from the big one around it (#412).
+        let mut calls = rect_lines(1, [0.0, 0.0], [40.0, 40.0]);
+        calls.extend(rect_lines(10, [10.0, 10.0], [30.0, 30.0]));
+        let regions = find_regions(&calls);
+        let frame = regions
+            .iter()
+            .find(|r| r.area > 1000.0)
+            .expect("frame region");
+        let inner = regions
+            .iter()
+            .find(|r| r.area < 1000.0)
+            .expect("inner region");
+        assert!((frame.perimeter - 240.0).abs() < 1e-2, "{}", frame.perimeter);
+        assert!((inner.perimeter - 80.0).abs() < 1e-2, "{}", inner.perimeter);
+    }
+
+    #[test]
+    fn perimeter_of_a_circle_follows_its_flattened_rim() {
+        let regions = find_regions(&[circle(1, [0.0, 0.0], 10.0)]);
+        assert_eq!(regions.len(), 1);
+        // 2π·10 ≈ 62.8, minus the chord shortening of the flattening.
+        assert!(
+            (regions[0].perimeter - 62.83).abs() < 1.0,
+            "{}",
+            regions[0].perimeter
         );
     }
 

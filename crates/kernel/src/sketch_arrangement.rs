@@ -39,6 +39,12 @@ pub struct AtomicFace {
     pub aabb: Aabb2,
     /// Signed area of the face (outer minus holes), always ≥ 0.
     pub area: f32,
+    /// Total length of the face's BOUNDARY — outer loop plus every hole loop —
+    /// measured on the flattened polylines. It is what tells a big ambient face
+    /// apart from a small specific one when a caller only knows a few of the
+    /// bounding curves: the same named curve accounts for a large FRACTION of a
+    /// plate's boundary and a negligible one of the sheet around it (#412).
+    pub perimeter: f32,
 }
 
 /// Endpoint weld tolerance (mm). Snapped / solver-coincident endpoints are
@@ -630,6 +636,10 @@ pub fn arrange(sub_calls: &[FeatureCall]) -> Vec<AtomicFace> {
         if area < MIN_AREA {
             continue;
         }
+        let perimeter: f64 = std::iter::once(&polys[i])
+            .chain(hole_polys.iter().copied())
+            .map(|p| closed_poly_len(p))
+            .sum();
         let interior = interior_excluding(&polys[i], &hole_polys, &profile);
         let aabb = poly_aabb(&polys[i]);
         let centroid = poly_centroid(&polys[i]);
@@ -639,6 +649,7 @@ pub fn arrange(sub_calls: &[FeatureCall]) -> Vec<AtomicFace> {
             centroid,
             aabb,
             area: area as f32,
+            perimeter: perimeter as f32,
         });
     }
 
@@ -835,6 +846,15 @@ fn poly_aabb_f(poly: &[[f64; 2]]) -> Aabb2 {
 }
 fn poly_aabb(poly: &[[f64; 2]]) -> Aabb2 {
     poly_aabb_f(poly)
+}
+/// Length of a CLOSED polyline (the wrap-around edge included).
+fn closed_poly_len(poly: &[[f64; 2]]) -> f64 {
+    if poly.len() < 2 {
+        return 0.0;
+    }
+    (0..poly.len())
+        .map(|i| dist2f(poly[i], poly[(i + 1) % poly.len()]).sqrt())
+        .sum()
 }
 fn poly_centroid(poly: &[[f64; 2]]) -> [f32; 2] {
     let mut s = [0.0f64, 0.0];

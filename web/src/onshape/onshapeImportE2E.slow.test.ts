@@ -197,14 +197,33 @@ describe("Onshape import — Kabelbox end-to-end (real kernel)", () => {
 });
 
 describe("Onshape import — #412 imprint region selection (real kernel)", () => {
-  // The extrude selects FOUR imprinted sub-faces. With the imprint arrangement
-  // (#412) the kernel now subdivides the sheet into atomic plate faces, so the
-  // four Onshape regions map 1:1 to four DISTINCT FieldDraft faces — resolved
-  // into a single `qRegions(sketch, [i,j,k,l])` MultiQuery, no reduction warning.
-  it("resolves the profile to four distinct imprint faces", async () => {
-    const kernel = wrap(new WasmKernel());
-    const result = await importOnshapeFeatures(ticket412(), kernel);
+  // GROUND TRUTH, read off the Onshape REST API of the source document
+  // ("Garagenregal_rechts", parts + bounding boxes, mm). Three parts, all thin
+  // plates; the sketch plane maps u→world y, v→world z:
+  //   JHD  y −1885.1…614.9   z 1700.2…1722.2
+  //   JHH  y −1885.1…−885.1  z  800.2… 822.2
+  //   JHL  y   627.6…2114.9  z 1700.0…1722.2
+  // The extrude carries FOUR region queries, but one of them names a rectangle
+  // side (`oPgfZ6ZnMtct.bottom`) that no longer exists in the sketch — which is
+  // why Onshape itself builds three parts, not four. The importer must resolve
+  // the three real ones, drop the stale one WITH a warning, and above all not
+  // invent the 604×1500 block that the shared left edge also runs along.
+  const GROUND_TRUTH = {
+    y: [-1885.1, 2114.9],
+    z: [800.2, 1722.2],
+    /** Inside the block that the old resolver wrongly picked (world mm). */
+    emptySpot: [250, -2200, 1500] as [number, number, number],
+  };
 
+  let kernel: ImportKernel & { raw: WasmKernel };
+  let result: Awaited<ReturnType<typeof importOnshapeFeatures>>;
+
+  beforeAll(async () => {
+    kernel = wrap(new WasmKernel());
+    result = await importOnshapeFeatures(ticket412(), kernel);
+  }, 120_000);
+
+  it("resolves the profile to the three plate faces Onshape really extrudes", () => {
     const extrude = (JSON.parse(kernel.raw.toJson()).feature_calls as FeatureCall[]).find(
       (c) => c.type === "extrude",
     )!;
@@ -213,13 +232,51 @@ describe("Onshape import — #412 imprint region selection (real kernel)", () =>
     const m = profiles.match(/^qRegions\(\d+,\s*\[([\d,\s]+)\]\)$/);
     expect(m, `profiles = ${profiles}`).not.toBeNull();
     const indices = m![1].split(",").map((s) => Number(s.trim()));
-    expect(indices.length, `four distinct plate faces: ${profiles}`).toBe(4);
-    expect(new Set(indices).size).toBe(4);
+    expect(indices.length, `three plate faces: ${profiles}`).toBe(3);
 
-    // No reduction warning — the imprint faces exist 1:1.
-    expect(
-      result.warnings.some((w) => w.includes("Onshape wählte")),
-      result.warnings.join(" | "),
-    ).toBe(false);
-  }, 120_000);
+    // Each selected face IS one of the three plates: a thin (≈22 mm) strip
+    // whose extent matches a part's bounding box.
+    const faces = JSON.parse(kernel.raw.listSketchRegions(1, 128)) as {
+      index: number;
+      area: number;
+      aabb: { min: [number, number]; max: [number, number] };
+    }[];
+    for (const i of indices) {
+      const f = faces.find((r) => r.index === i)!;
+      const w = f.aabb.max[0] - f.aabb.min[0];
+      const h = f.aabb.max[1] - f.aabb.min[1];
+      expect(Math.min(w, h), `face ${i} is a plate, not a block`).toBeLessThan(25);
+      expect(Math.max(w, h)).toBeGreaterThan(900);
+    }
+  });
+
+  it("warns that the stale fourth selection was dropped", () => {
+    const warn = result.warnings.find((w) => w.includes("Onshape wählte"));
+    expect(warn, result.warnings.join(" | ")).toContain(
+      "Onshape wählte 4 Regionen, FieldDraft findet dafür nur 3",
+    );
+  });
+
+  it("builds the ground-truth geometry — and nothing where Onshape has nothing", () => {
+    // The query string is only the recipe; this is the SOLID. The imported
+    // scene must span exactly the three parts' bounding boxes…
+    const bb = kernel.sceneAabb!() as { min: number[]; max: number[] };
+    expect(bb.min[1], `scene ${JSON.stringify(bb)}`).toBeCloseTo(GROUND_TRUTH.y[0], 0);
+    expect(bb.max[1]).toBeCloseTo(GROUND_TRUTH.y[1], 0);
+    expect(bb.min[2]).toBeCloseTo(GROUND_TRUTH.z[0], 0);
+    expect(bb.max[2]).toBeCloseTo(GROUND_TRUTH.z[1], 0);
+
+    // …and there must be NO material inside the 604×1500 block: that face is a
+    // real region of the sketch, but nobody selected it. Extruding it was the
+    // silent-wrong-geometry bug this test exists for.
+    const [x, y, z] = GROUND_TRUTH.emptySpot;
+    const n = kernel.bodyCount!();
+    expect(n).toBeGreaterThan(0);
+    for (let i = 0; i < n; i++) {
+      expect(
+        kernel.raw.bodySdfEval(i, x, y, z),
+        `body ${i} has material at the unselected block`,
+      ).toBeGreaterThan(0);
+    }
+  });
 });

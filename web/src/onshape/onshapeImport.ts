@@ -137,16 +137,23 @@ interface SketchRecord {
   /** The FieldDraft plane query the sketch was placed on — the extrude's
    *  local +Z, and the reference plane every end condition measures from. */
   planeQuery: string;
-  /** Onshape sketch-entity id → its 2D vertices in sketch-space mm. Used to
-   *  compute an interior point for a region-query selection (#412). Segments
-   *  carry two endpoints; circles/arcs their four AABB corners. */
+  /** Onshape sketch-entity id → the entity's 2D POLYLINE in sketch-space mm
+   *  (a line is two points, an arc/circle its flattened rim). The region
+   *  resolution walks these to find which imprint face a query names (#412). */
   entityGeom: Map<string, [number, number][]>;
 }
 
-/** Extract every non-construction sketch entity's 2D vertices (mm), keyed by
+/** Flattening resolution of an arc/circle rim, in segments per full turn. */
+const ARC_FLATTEN_SEGMENTS = 48;
+
+/** Extract every non-construction sketch entity as a 2D POLYLINE (mm), keyed by
  *  Onshape entity id. The same ×1000 metre→mm scale the sketch translation
  *  uses, so a point computed here is directly comparable to what the kernel
- *  stored and `regionQueryAtPoint` expects. */
+ *  stored and `regionQueryAtPoint` expects.
+ *
+ *  A curve becomes its flattened rim rather than a bounding box: the region
+ *  resolution probes just off the curve for the face it borders, and a box
+ *  diagonal borders nothing. */
 export function sketchEntityVertices(feat: AnyMsg): Map<string, [number, number][]> {
   const out = new Map<string, [number, number][]>();
   const entities: AnyMsg[] = (feat.geometry ?? feat.entities ?? []).map(msg);
@@ -166,131 +173,146 @@ export function sketchEntityVertices(feat: AnyMsg): Map<string, [number, number]
       const cx = g.xCenter * M_TO_MM;
       const cy = g.yCenter * M_TO_MM;
       const r = g.radius * M_TO_MM;
-      // Centre carries the interior; the AABB corners bound it.
-      out.set(id, [[cx, cy], [cx - r, cy - r], [cx + r, cy + r]]);
+      // `BTMSketchCurve` is the unbounded form (a full circle); a
+      // `BTMSketchCurveSegment` carries its arc span in start/endParam as
+      // angles, running CCW — the same convention `translateOnshapeSketch` uses.
+      const unbounded = !String(e.btType ?? "").startsWith("BTMSketchCurveSegment");
+      const a0 = unbounded ? 0 : (e.startParam ?? 0);
+      let sweep = unbounded ? Math.PI * 2 : (e.endParam ?? 0) - a0;
+      while (sweep <= 0) sweep += Math.PI * 2;
+      const steps = Math.max(2, Math.ceil((ARC_FLATTEN_SEGMENTS * sweep) / (Math.PI * 2)));
+      const pts: [number, number][] = [];
+      for (let i = 0; i <= steps; i++) {
+        const a = a0 + (sweep * i) / steps;
+        pts.push([cx + r * Math.cos(a), cy + r * Math.sin(a)]);
+      }
+      out.set(id, pts);
     }
   }
   return out;
 }
 
-/** Centroid of the 2D vertices of the sketch entities a region query
- *  references. A referenced id that is not a raw segment (an imprint-derived
- *  `<rect>.top`) contributes its base rectangle's real segments instead, so
- *  the point still lands in the neighbourhood of the selected region. Returns
- *  `null` when none of the referenced entities have geometry.
- *
- *  NB: this is only a LAST-RESORT locator. Onshape names just a couple of a
- *  region's bounding edges, and the centroid of two edges generally does NOT
- *  lie inside the region they bound (it lands in whatever face happens to span
- *  between them). [`regionFaceIndex`] is the accurate resolver; this remains
- *  as the fallback when edge probing finds no unique face. */
-export function regionInteriorPoint(
-  entityIds: string[],
-  geom: Map<string, [number, number][]>,
-): [number, number] | null {
-  const verts: [number, number][] = [];
-  for (const id of entityIds) {
-    const direct = geom.get(id);
-    if (direct) {
-      verts.push(...direct);
-      continue;
-    }
-    // Imprint-derived id (`base.suffix` with no raw segment): fall back to
-    // every real segment sharing the base.
-    const base = id.split(".")[0];
-    for (const [k, v] of geom) {
-      if (k === base || k.startsWith(`${base}.`)) verts.push(...v);
-    }
-  }
-  if (verts.length === 0) return null;
-  let sx = 0;
-  let sy = 0;
-  for (const [x, y] of verts) {
-    sx += x;
-    sy += y;
-  }
-  return [sx / verts.length, sy / verts.length];
-}
-
-/** How far off a bounding edge to probe for the face it borders, as a fraction
- *  of the edge's own length. Small enough to stay inside a thin plate (the
- *  #412 plates are 22 mm thick against 1000+ mm long), large enough to clear
- *  the kernel's weld tolerance. */
-const EDGE_PROBE_FRACTION = 0.02;
-/** Absolute probe-offset clamp (mm), so a very long edge still probes close. */
+/** How many stations to probe along one named curve. The stations are spread
+ *  by ARC LENGTH, so a long edge is sampled as thoroughly as a short one and
+ *  the measured coverage is a length, not a vertex count. */
+const EDGE_STATIONS = 32;
+/** Absolute probe-offset clamp (mm) — a long edge still probes close enough to
+ *  stay inside the thin plate it bounds (#412 plates are 22 mm thick). */
 const EDGE_PROBE_MAX_MM = 4;
 
-/** The 2D segments a region-query entity id refers to. An imprint-derived id
- *  (`<rect>.right`) resolves directly when the sketch published that side as
- *  its own entity; otherwise every segment sharing the base contributes. */
-function entitySegments(
-  id: string,
-  geom: Map<string, [number, number][]>,
-): [number, number][][] {
-  const direct = geom.get(id);
-  if (direct && direct.length >= 2) return [direct];
-  const base = id.split(".")[0];
-  const out: [number, number][][] = [];
-  for (const [k, v] of geom) {
-    if ((k === base || k.startsWith(`${base}.`)) && v.length >= 2) out.push(v);
-  }
-  return out;
+/** What `listSketchRegions` reports about one atomic imprint face. */
+export interface FaceMetrics {
+  /** Total boundary length (outer loop + hole loops) in mm. */
+  perimeter: number;
+  /** Face area in mm². */
+  area: number;
 }
 
 /**
- * Resolve one Onshape region query to the index of the FieldDraft imprint face
- * it names — by EDGE ADJACENCY, not by a centroid guess (#412).
+ * Resolve ONE Onshape region query to the FieldDraft imprint face it names, by
+ * BOUNDARY COVERAGE (#412).
  *
- * Onshape identifies a region by a couple of its own tight bounding edges (e.g.
- * the bottom edge of the plate). Probing just off each named edge on both sides
- * yields, per edge, exactly two adjacent faces: the specific face the edge
- * bounds, and the large ambient face the sketch's outer rectangle leaves over.
- * The ambient face borders EVERY named edge, so an intersection would always
- * collapse onto it; the selected region is instead the **most specific** — the
- * SMALLEST-area — face adjacent to any named edge.
+ * A region query names a few of the curves that bound ITS region. Walking such
+ * a curve and probing both sides tells us which faces it separates — but that
+ * alone does not identify the region: the big ambient face around the plates
+ * borders every one of those curves too, and so does any large rectangle the
+ * curve happens to run along. What identifies the region is a two-sided fit:
  *
- * Limitation (documented, not silent): a selection of the ambient face itself
- * cannot be expressed this way, and would resolve to one of its neighbours.
- * Deriving the face from Onshape's imprint-region naming directly (rather than
- * from geometry) is the proper fix — see docs/SKETCH-REGION-IMPRINT-PLAN.md §5.
+ *   score = covered length / face perimeter   ×   named curves touching / named
  *
- * Returns `null` when no named edge yields an adjacent face — the caller then
- * falls back to the centroid locator and, failing that, warns.
+ * The first factor is how much of the FACE the query accounts for — half the
+ * plate's perimeter, a few percent of the surrounding sheet's. The second is
+ * how much of the QUERY the face accounts for — the neighbouring block that a
+ * long shared edge also runs along is bounded by that one curve and no other.
+ * Both are fractions in [0, 1]; the highest product wins, smaller area breaks
+ * a tie.
+ *
+ * Strictness that the ticket paid for: a named entity id that the imported
+ * sketch does NOT carry makes the whole query unresolvable. Substituting a
+ * same-prefix sibling (`R.left` for a missing `R.bottom`) is a guess, and in
+ * the #412 document it guessed a 604×1500 block that Onshape never extruded —
+ * silent wrong geometry. An honest `null` lets the caller warn and drop the
+ * region instead.
+ *
+ * Returns `null` when an id is unknown, when every probe lands outside all
+ * faces, or when no candidate face has a usable perimeter.
  */
 export function regionFaceIndex(
   entityIds: string[],
   geom: Map<string, [number, number][]>,
   faceAt: (u: number, v: number) => number | null,
-  faceArea: (index: number) => number,
+  metrics: (index: number) => FaceMetrics | null,
 ): number | null {
-  let best: number | null = null;
-  let bestArea = Infinity;
+  if (entityIds.length === 0) return null;
+  const polylines: [number, number][][] = [];
   for (const id of entityIds) {
-    for (const seg of entitySegments(id, geom)) {
-      // Probe off the midpoint of every consecutive vertex pair, both sides.
-      for (let i = 0; i + 1 < seg.length; i++) {
-        const [ax, ay] = seg[i];
-        const [bx, by] = seg[i + 1];
-        const dx = bx - ax;
-        const dy = by - ay;
-        const len = Math.hypot(dx, dy);
-        if (len < 1e-6) continue;
-        const off = Math.min(len * EDGE_PROBE_FRACTION, EDGE_PROBE_MAX_MM);
-        // Unit normal to the edge.
-        const nx = -dy / len;
-        const ny = dx / len;
-        const mx = (ax + bx) / 2;
-        const my = (ay + by) / 2;
-        for (const s of [1, -1]) {
-          const f = faceAt(mx + s * off * nx, my + s * off * ny);
-          if (f === null) continue;
-          const area = faceArea(f);
-          if (area < bestArea) {
-            bestArea = area;
-            best = f;
-          }
-        }
+    const pts = geom.get(id);
+    if (!pts || pts.length < 2) return null; // names a curve we do not have
+    polylines.push(pts);
+  }
+
+  /** face index → length of named curve running along its boundary. */
+  const covered = new Map<number, number>();
+  /** face index → which named entities touch it (indices into `polylines`). */
+  const touched = new Map<number, Set<number>>();
+
+  polylines.forEach((pts, entity) => {
+    const lens: number[] = [];
+    let total = 0;
+    for (let i = 0; i + 1 < pts.length; i++) {
+      const l = Math.hypot(pts[i + 1][0] - pts[i][0], pts[i + 1][1] - pts[i][1]);
+      lens.push(l);
+      total += l;
+    }
+    if (total < 1e-6) return;
+    const weight = total / EDGE_STATIONS;
+    // Probe half a station spacing off the curve: far enough to be unambiguously
+    // on one side, close enough not to jump over a thin neighbouring face.
+    const off = Math.min(weight / 2, EDGE_PROBE_MAX_MM);
+    for (let k = 0; k < EDGE_STATIONS; k++) {
+      // Station at arc length s, offset by half a spacing so neither endpoint
+      // (where the neighbouring faces change) is probed.
+      let s = (total * (k + 0.5)) / EDGE_STATIONS;
+      let i = 0;
+      while (i < lens.length - 1 && s > lens[i]) {
+        s -= lens[i];
+        i += 1;
       }
+      if (lens[i] < 1e-9) continue;
+      const t = s / lens[i];
+      const dx = pts[i + 1][0] - pts[i][0];
+      const dy = pts[i + 1][1] - pts[i][1];
+      const nx = -dy / lens[i];
+      const ny = dx / lens[i];
+      const px = pts[i][0] + dx * t;
+      const py = pts[i][1] + dy * t;
+      const a = faceAt(px + off * nx, py + off * ny);
+      const b = faceAt(px - off * nx, py - off * ny);
+      // Same face on both sides: here the curve runs THROUGH that face rather
+      // than bounding it (a dangling trim line) — it says nothing about it.
+      if (a === b) continue;
+      for (const f of [a, b]) {
+        if (f === null) continue;
+        covered.set(f, (covered.get(f) ?? 0) + weight);
+        let who = touched.get(f);
+        if (!who) touched.set(f, (who = new Set()));
+        who.add(entity);
+      }
+    }
+  });
+
+  let best: number | null = null;
+  let bestScore = 0;
+  let bestArea = Infinity;
+  for (const [face, len] of covered) {
+    const m = metrics(face);
+    if (!m || !(m.perimeter > 0)) continue;
+    const share = (touched.get(face)?.size ?? 0) / polylines.length;
+    const score = (len / m.perimeter) * share;
+    if (score > bestScore + 1e-9 || (score > bestScore - 1e-9 && m.area < bestArea)) {
+      best = face;
+      bestScore = score;
+      bestArea = m.area;
     }
   }
   return best;
@@ -503,21 +525,20 @@ function wallQuery(
  * MultiQuery (ticket #412).
  *
  * Onshape supplies ONE query per selected sketch region; each decodes to the
- * sketch-entity ids bounding that region. We turn each into an interior point
- * and ask the kernel which flood-fill region owns it (`regionQueryAtPoint`),
- * then join the DISTINCT regions into a MultiQuery — so a multi-region
- * selection extrudes only those regions, not the whole sketch.
+ * sketch-entity ids bounding that region. [`regionFaceIndex`] maps each to the
+ * atomic imprint face it names, and the DISTINCT faces join into one MultiQuery
+ * — so a multi-region selection extrudes only those regions, not the whole
+ * sketch.
  *
- * Fall back to the whole sketch (`qCreatedBy(sketch)`) — WITH a visible
- * warning, never silently — when:
- *  - the kernel exposes no `regionQueryAtPoint` (a test double), or
- *  - a query carries no resolvable region entities, or
- *  - a query's interior point lies outside every FieldDraft region.
+ * Queries that DON'T resolve are dropped, not guessed: the remaining ones still
+ * produce their (correct) regions and a visible warning reports the shortfall.
+ * Extruding three right plates and missing a fourth beats extruding the whole
+ * sheet, and both beat inventing a region nobody selected.
  *
- * A visible warning is ALSO raised when Onshape selected more regions than
- * FieldDraft resolved: its SDF-union region model merges nested/overlapping
- * profiles that Onshape keeps apart by IMPRINT, so the imprint sub-faces have
- * no counterpart and the extrude necessarily covers more than Onshape's.
+ * Falls back to the whole sketch (`qCreatedBy(sketch)`) — WITH a warning where
+ * a selection was actually made — when the kernel exposes no region API (a test
+ * double), when no query carries region entities at all, or when not a single
+ * one of them resolves.
  */
 async function resolveExtrudeProfiles(
   profileQss: string[],
@@ -527,7 +548,12 @@ async function resolveExtrudeProfiles(
   result: OnshapeImportResult,
 ): Promise<string> {
   const whole = `qCreatedBy(${rec.fdId})`;
-  if (typeof kernel.regionQueryAtPoint !== "function") return whole;
+  if (
+    typeof kernel.regionQueryAtPoint !== "function" ||
+    typeof kernel.listSketchRegions !== "function"
+  ) {
+    return whole;
+  }
 
   // Only the SKETCH_ENTITY region descriptors carry a specific selection; a
   // plain whole-sketch reference decodes to no region entities.
@@ -544,36 +570,29 @@ async function resolveExtrudeProfiles(
     const m = q.match(/^qRegion\(\s*\d+\s*,\s*(\d+)\s*\)$/);
     return m ? Number(m[1]) : null;
   };
-  // Face areas rank the candidates by specificity (see `regionFaceIndex`).
-  let areas: number[] = [];
-  if (typeof kernel.listSketchRegions === "function") {
-    try {
-      const rows = JSON.parse(kernel.listSketchRegions(rec.fdId, 128)) as {
-        index: number;
-        area: number;
-      }[];
-      for (const r of rows) areas[r.index] = r.area;
-    } catch {
-      areas = [];
-    }
+  // Perimeter + area rank the candidate faces (see `regionFaceIndex`).
+  const faceMetrics = new Map<number, FaceMetrics>();
+  try {
+    const rows = JSON.parse(kernel.listSketchRegions(rec.fdId, 128)) as {
+      index: number;
+      area: number;
+      perimeter: number;
+    }[];
+    for (const r of rows) faceMetrics.set(r.index, { area: r.area, perimeter: r.perimeter });
+  } catch {
+    faceMetrics.clear();
   }
-  const faceArea = (i: number) => (Number.isFinite(areas[i]) ? areas[i] : Infinity);
+  const metrics = (i: number) => faceMetrics.get(i) ?? null;
 
   const indices = new Set<number>();
-  let unresolvable = false;
+  let unresolved = 0;
   for (const d of regionQueries) {
-    // Primary: edge adjacency — the most specific face bordering a named edge.
-    let face = regionFaceIndex(d.entityIds, rec.entityGeom, faceAt, faceArea);
-    if (face === null) {
-      // Fallback: the (imprecise) centroid of the named edges' vertices.
-      const pt = regionInteriorPoint(d.entityIds, rec.entityGeom);
-      face = pt ? faceAt(pt[0], pt[1]) : null;
-    }
+    const face = regionFaceIndex(d.entityIds, rec.entityGeom, faceAt, metrics);
     if (face !== null) indices.add(face);
-    else unresolvable = true;
+    else unresolved += 1;
   }
 
-  if (unresolvable || indices.size === 0) {
+  if (indices.size === 0) {
     result.warnings.push(
       `${name}: Region-Auswahl (${regionQueries.length} Onshape-Region(en)) nicht auflösbar — ` +
         `ganzer Sketch extrudiert`,
@@ -581,15 +600,32 @@ async function resolveExtrudeProfiles(
     return whole;
   }
   if (indices.size < regionQueries.length) {
-    // With the imprint arrangement this should no longer happen for a faithful
-    // 1:1 selection; if it does, two Onshape regions mapped to one FieldDraft
-    // face — report it rather than silently extruding more than Onshape.
+    // Two ways to lose a region, and the warning names both by count. Either a
+    // query mentions a sketch curve this document does not carry (Onshape's own
+    // selection can be stale — a trimmed-away rectangle it no longer extrudes
+    // either), or two queries landed on the SAME atomic face. Both mean the
+    // extrude covers something other than Onshape's, so say so, don't guess.
+    const collapsed = regionQueries.length - unresolved - indices.size;
+    const reasons: string[] = [];
+    if (unresolved > 0) {
+      reasons.push(`${unresolved} nennen Sketch-Kurven, die dieser Sketch nicht enthält`);
+    }
+    if (collapsed > 0) {
+      reasons.push(`${collapsed} fielen mit einer anderen Auswahl auf dieselbe atomare Face`);
+    }
     result.warnings.push(
       `${name}: Onshape wählte ${regionQueries.length} Regionen, FieldDraft findet dafür nur ` +
-        `${indices.size} — zwei Auswahlpunkte fielen auf dieselbe atomare Face ` +
+        `${indices.size} — ${reasons.join("; ")} ` +
         `(siehe docs/ONSHAPE-IMPORT-GAP-MATRIX.md)`,
     );
   }
+  // Selecting the ONE face an undivided sketch has IS the whole sketch — say so.
+  // The two profiles bound the same area, but only the whole-sketch one carries
+  // the sketch's entity provenance; a region-restricted profile falls back to
+  // positional wall numbering (docs/SKETCH-REGION-IMPRINT-PLAN.md §5), which
+  // silently breaks the `qWall(...)` plane queries of every LATER feature.
+  if (faceMetrics.size === 1 && indices.size === 1) return whole;
+
   const sorted = [...indices].sort((a, b) => a - b);
   return sorted.length === 1
     ? `qRegion(${rec.fdId}, ${sorted[0]})`

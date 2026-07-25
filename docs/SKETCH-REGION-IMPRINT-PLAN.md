@@ -181,20 +181,69 @@ Gemessen am #412-Dokument: die vier Onshape-Auswahlpunkte landeten bei
 großen Restfläche, nur einer in einer Platte.
 
 **Gewählte Lösung (`regionFaceIndex`):** nicht raten, sondern **an den benannten
-Kanten sondieren**. Je Kante beidseitig knapp neben der Kantenmitte abfragen
-(`regionQueryAtPoint`) — das liefert genau die zwei angrenzenden Faces: die
-spezifische Face, die die Kante berandet, und die große Umgebungs-Face. Da die
-Umgebungs-Face an JEDE benannte Kante grenzt, wäre ein Schnitt der Kandidaten-
-mengen immer die Umgebungs-Face; gewählt wird deshalb die **spezifischste, d.h.
-flächenkleinste** angrenzende Face (Flächen aus `listSketchRegions`).
+Kanten sondieren**. Je Kante beidseitig knapp daneben abfragen
+(`regionQueryAtPoint`) — das liefert die Faces, die die Kante trennt.
 
-Ergebnis am #412-Dokument: `qRegions(1, [1, 2, 3, 4])` — die vier Platten, 1:1
-zur Onshape-Auswahl, ohne Reduktions-Warnung.
+### 4a-1. Nachschlag: „flächenkleinste angrenzende Face" war noch immer falsch
+
+Der erste Sondier-Löser wählte die **flächenkleinste** angrenzende Face. Am
+Live-Dokument („Garagenregal_rechts", Ground Truth via Onshape-REST-API: **drei**
+Parts JHD/JHH/JHL, alle 22 mm dünne Platten) lieferte er `qRegions(1,[1,2,3,4])`
+**ohne Warnung** — und Face 1 ist ein 604×1500-Block, den Onshape nie extrudiert
+hat. Stille Falschgeometrie, also genau das, was das Design ausschließen sollte.
+
+Zwei unabhängige Ursachen, beide gefixt:
+
+1. **Geschwister-Substitution.** `oPgfZ6ZnMtct.bottom` existiert im Sketch gar
+   nicht (nur `.left`/`.right` — die Rechteck-Seiten wurden weggetrimmt; deshalb
+   baut auch Onshape selbst nur drei Parts). Der Löser ersetzte die fehlende
+   Kante durch „irgendeine Entity mit gleichem Präfix" und sondierte damit an
+   Kanten, die den Block beranden. **Fix:** eine Query, die eine Kurve nennt, die
+   der importierte Sketch nicht hat, ist **unauflösbar** (`null`) — nichts wird
+   substituiert, nichts erfunden. Ebenso ist der Schwerpunkt-Notnagel
+   (`regionInteriorPoint`) ersatzlos entfallen: er verwandelte „unauflösbar" in
+   „irgendeine Face".
+2. **Falsches Ranking.** „Flächenkleinste angrenzende Face" ist keine Aussage
+   über die Query. Onshape nennt Randkanten IHRER Region — die richtige Frage ist
+   also, **wie gut Kanten und Face zueinander passen**, und zwar beidseitig:
+
+       score = überdeckte Länge / Face-Umfang   ×   berührende Kanten / benannte
+
+   Der erste Faktor trennt die kleine Platte (die benannten Kanten machen ~50 %
+   ihres Randes aus) von der riesigen Umgebungs-Face (~5 %) — genau dafür liefert
+   `listSketchRegions` jetzt zusätzlich `perimeter` (Außenschleife + alle
+   Loch-Schleifen, `sketch_arrangement::closed_poly_len`). Der zweite Faktor
+   trennt die gemeinte Platte vom Nachbar-Block, an dem nur EINE der benannten
+   Kanten entlangläuft. Beide Faktoren sind Anteile in [0,1]; gewinnt das größte
+   Produkt, bei Gleichstand die kleinere Fläche.
+
+Sondiert wird längenproportional (32 Stationen je Kurve, Offset = halber
+Stationsabstand, max. 4 mm), damit eine 1500-mm-Kante wie eine 22-mm-Kante
+abgetastet wird und die gemessene Überdeckung eine **Länge** ist. Liegt auf
+beiden Seiten dieselbe Face, läuft die Kurve **durch** sie hindurch (Dangling-
+Trimmlinie) und zählt gar nicht. Kreise/Bögen liefern dafür ihren **abgewickelten
+Rand** statt (wie früher) AABB-Ecken — an einer Box-Diagonale grenzt nichts.
+
+Ergebnis am #412-Dokument: `qRegions(1, [2, 3, 4])` = JHH/JHL/JHD, deckungs-
+gleich mit den drei Onshape-Parts (im E2E zusätzlich über Szenen-AABB und einen
+SDF-Punkt im Block verifiziert, nicht nur über den Query-String), plus die
+Reduktions-Warnung „Onshape wählte 4 Regionen, FieldDraft findet dafür nur 3".
+
+**Teilauflösung statt Alles-oder-nichts:** nicht auflösbare Queries werden
+verworfen, die übrigen bleiben gültig. Drei richtige Platten zu extrudieren und
+eine zu verpassen ist besser, als den ganzen Sketch zu extrudieren — und beides
+ist besser, als eine Region zu erfinden, die niemand ausgewählt hat. Auf das
+Gesamt-Sketch-Profil fällt der Import nur zurück, wenn **keine** Query auflöst
+(oder der Kernel keine Regionen-API hat). Die Warnung nennt beide Verlustarten
+mit Anzahl: fehlende Kurven bzw. auf dieselbe atomare Face gefallene Auswahlen.
 
 **Grenze (dokumentiert, nicht still):** eine Auswahl der Umgebungs-Face selbst
-ist so nicht ausdrückbar und würde auf eine ihrer Nachbar-Faces fallen. Der
-saubere Endzustand wäre, die Face direkt aus Onshapes Imprint-Regionen-Benennung
-abzuleiten statt aus Geometrie — Folgearbeit.
+ist so nicht ausdrückbar. Der saubere Endzustand wäre, die Face direkt aus
+Onshapes Imprint-Regionen-Benennung abzuleiten statt aus Geometrie —
+Folgearbeit. Ebenso bleibt eine Region unauflösbar, deren Randkurven der
+Sketch-Import gar nicht übersetzt (Kabelbox „Extrude 5": der Sketch verliert 29
+PROJECTED- und 16 OFFSET-Constraints, zwei der vier benannten Kurven fehlen
+darum) — dort greift jetzt sichtbar der Gesamt-Sketch-Fallback.
 
 **Extrude-MultiQuery:** mehrere Faces werden zu EINEM `qRegions(s,[i,j,…])`
 zusammengefasst, nicht komma-verkettet zu mehreren `qRegion`-Termen — der

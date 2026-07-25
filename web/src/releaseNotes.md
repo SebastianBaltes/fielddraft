@@ -12,6 +12,10 @@ Format, eine Zeile je Eintrag:
 kind = feat | fix | perf. scope und #tickets sind optional. Folgezeilen, die
 eingerückt sind, gehören zum Text davor (Umbruch erlaubt).
 
+## 0.31.1
+- fix(onshape) #412: Region-Auswahl wählt keine Phantom-Flächen mehr — eine Onshape-Query, die eine im Sketch nicht (mehr) existierende Kurve benennt, wird ehrlich verworfen (Warnung) statt durch eine Nachbar-Kurve ersetzt; beim Garagenregal wurde so ein 604×1500-mm-Block extrudiert, den Onshape nie gebaut hat. Auflösung jetzt über Boundary-Coverage-Scoring statt „kleinste angrenzende Fläche“; Teil-Auflösung bleibt erhalten (3 von 4 Platten statt Rückfall auf den ganzen Sketch).
+- fix(onshape): Ein Extrude über den ungeteilten Gesamt-Sketch schreibt wieder qCreatedBy statt qRegion — die Regions-Nummerierung hatte die Wand-Referenzen späterer Features verschoben (Kabelbox: 3 Sketches übersprungen).
+
 ## 0.31.0
 - feat(kernel) #414: Kanten-Fasen (Chamfer) als Kernel-Feature — chamfer_edge schneidet planare 45°-Fasen (EQUAL_OFFSETS) an geraden rechtwinkligen Kanten, wirkt in Rendering, Mesh, Picking und Voxel/Export und überlebt Speichern/Laden. UI-Werkzeug und Onshape-Übersetzung folgen.
 - fix(kernel): Der Konvexitätstest der analytischen Kanten-Cutter konnte konvexe und konkave Kanten nicht unterscheiden — ein Fillet auf einer Innenkante hätte dort Material herausgeschnitten. Kanten werden jetzt über die gemischten Quadranten klassifiziert; konkave Kanten werden ehrlich abgelehnt.

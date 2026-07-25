@@ -151,8 +151,8 @@ impl Kernel {
 
 
     /// K8.13: list the connected inside-regions of a sketch.
-    /// Returns a JSON array of `{index, centroid, aabb, area}`
-    /// objects. The sketch is identified by its feature id.
+    /// Returns a JSON array of `{index, centroid, interior, aabb, area,
+    /// perimeter}` objects. The sketch is identified by its feature id.
     #[wasm_bindgen(js_name = listSketchRegions)]
     pub fn list_sketch_regions(
         &self,

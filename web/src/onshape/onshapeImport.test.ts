@@ -264,11 +264,12 @@ function ticket412(): { features: any[] } {
   );
 }
 
-/** Mock kernel whose `regionQueryAtPoint` is supplied per test — the region
- *  resolution runs against the REAL decoded #412 queries and REAL interior
- *  points, only the flood-fill lookup is stubbed. */
+/** Mock kernel whose imprint arrangement is supplied per test — the region
+ *  resolution runs against the REAL decoded #412 queries and the REAL sketch
+ *  geometry, only the arrangement itself is stubbed. */
 function regionMockKernel(
   regionAt: (sketchId: number, u: number, v: number) => string,
+  faces: { index: number; area: number; perimeter: number }[] = [],
 ): ImportKernel & { calls: { type: string; params: any }[] } {
   let next = 1;
   const calls: { type: string; params: any }[] = [];
@@ -289,48 +290,114 @@ function regionMockKernel(
       return { min: [0, 0, 0], max: [200, 200, 200], size: [200, 200, 200] };
     },
     regionQueryAtPoint: regionAt,
+    listSketchRegions: () => JSON.stringify(faces),
   };
 }
 
+/** The imprint arrangement of the #412 sketch, as the real kernel reports it:
+ *  the sheet (0), a 604×1500 block the extrude does NOT select (1) and the
+ *  three plates Onshape turned into parts (2, 3, 4). Rectangles in sketch mm. */
+const PLATES: [number, number, number, number][] = [
+  [-2488.69, 800, -1885.09, 2300], // 1 — block, never extruded
+  [-1885.09, 800.17, -885.09, 822.17], // 2 — JHH
+  [627.63, 1700.0, 2114.91, 1722.24], // 3 — JHL
+  [-1885.09, 1700.24, 614.91, 1722.24], // 4 — JHD
+];
+const SHEET: [number, number, number, number] = [-2488.69, 0, 2511.31, 2300];
+
+const rectPerimeter = (r: [number, number, number, number]) =>
+  2 * (r[2] - r[0]) + 2 * (r[3] - r[1]);
+const rectArea = (r: [number, number, number, number]) => (r[2] - r[0]) * (r[3] - r[1]);
+
+/** `regionQueryAtPoint` over that arrangement. `merge` folds plate indices
+ *  together to emulate an arrangement that did NOT separate them. */
+function arrangementAt(merge: Record<number, number> = {}) {
+  return (sid: number, u: number, v: number): string => {
+    for (let i = 0; i < PLATES.length; i++) {
+      const [x0, y0, x1, y1] = PLATES[i];
+      if (u > x0 && u < x1 && v > y0 && v < y1) return `qRegion(${sid}, ${merge[i + 1] ?? i + 1})`;
+    }
+    const inSheet = u > SHEET[0] && u < SHEET[2] && v > SHEET[1] && v < SHEET[3];
+    return inSheet ? `qRegion(${sid}, 0)` : "";
+  };
+}
+
+/** The face metrics that go with it — the sheet's boundary is its own loop plus
+ *  every plate's, which is precisely what keeps it from winning. */
+function arrangementFaces(merge: Record<number, number> = {}) {
+  const rows = [
+    {
+      index: 0,
+      area: rectArea(SHEET) - PLATES.reduce((s, p) => s + rectArea(p), 0),
+      perimeter: rectPerimeter(SHEET) + PLATES.reduce((s, p) => s + rectPerimeter(p), 0),
+    },
+  ];
+  for (let i = 0; i < PLATES.length; i++) {
+    const index = merge[i + 1] ?? i + 1;
+    const row = rows.find((r) => r.index === index);
+    if (row) {
+      row.area += rectArea(PLATES[i]);
+      row.perimeter += rectPerimeter(PLATES[i]);
+    } else {
+      rows.push({ index, area: rectArea(PLATES[i]), perimeter: rectPerimeter(PLATES[i]) });
+    }
+  }
+  return rows;
+}
+
 describe("extrude region selection (#412)", () => {
-  it("maps four Onshape regions to a qRegions MultiQuery of four distinct faces", async () => {
-    // A kernel that DID subdivide: hand each distinct interior point its own
-    // atomic-face index (first-seen order), like the real imprint arrangement.
-    const seen = new Map<string, number>();
-    const kernel = regionMockKernel((sid, u, v) => {
-      const key = `${Math.round(u)},${Math.round(v)}`;
-      if (!seen.has(key)) seen.set(key, seen.size);
-      return `qRegion(${sid}, ${seen.get(key)})`;
-    });
-    const result = await importOnshapeFeatures(ticket412(), kernel);
+  it("resolves each region query to the plate its named curves bound", async () => {
+    const kernel = regionMockKernel(arrangementAt(), arrangementFaces());
+    await importOnshapeFeatures(ticket412(), kernel);
     const extrude = kernel.calls.find((c) => c.type === "extrude")!;
     const profiles = extrude.params.profiles as string;
-    // Multiple distinct faces collapse into ONE `qRegions(sketch, [i,j,…])`
-    // expression (extrude only sweeps its first profile query).
-    const m = profiles.match(/^qRegions\(1,\s*\[([\d,\s]+)\]\)$/);
-    expect(m, profiles).not.toBeNull();
-    const idx = m![1].split(",").map((s) => Number(s.trim()));
-    expect(idx.length).toBe(4);
-    expect(new Set(idx).size).toBe(4);
-    expect(profiles).not.toContain("qCreatedBy");
-    // A faithful 1:1 selection raises no reduction warning.
-    expect(result.warnings.some((w) => w.includes("Onshape wählte"))).toBe(false);
+    // The three plates Onshape really turned into parts — collapsed into ONE
+    // `qRegions(sketch, [i,j,k])` expression. Face 1 (the 604×1500 block the
+    // long left edge also runs along) must NOT be among them: the query that
+    // named it names a curve this sketch does not have.
+    expect(profiles).toBe("qRegions(1, [2, 3, 4])");
   });
 
-  it("emits a single qRegion when the four points collapse to one face, and warns", async () => {
-    // A degenerate kernel: all four points land in the SAME atomic face.
-    const kernel = regionMockKernel((sid) => `qRegion(${sid}, 0)`);
+  it("warns that a selection naming absent curves was dropped", async () => {
+    const kernel = regionMockKernel(arrangementAt(), arrangementFaces());
+    const result = await importOnshapeFeatures(ticket412(), kernel);
+    const warn = result.warnings.find((w) => w.includes("Onshape wählte"));
+    expect(warn, result.warnings.join(" | ")).toBeTruthy();
+    expect(warn).toContain("Onshape wählte 4 Regionen, FieldDraft findet dafür nur 3");
+    expect(warn).toContain("1 nennen Sketch-Kurven, die dieser Sketch nicht enthält");
+  });
+
+  it("reports a collapse when two queries land on the same atomic face", async () => {
+    // An arrangement that did NOT separate the two upper plates: faces 3 and 4
+    // are one. Two of the resolvable queries then name the same face.
+    const merge = { 4: 3 };
+    const kernel = regionMockKernel(arrangementAt(merge), arrangementFaces(merge));
     const result = await importOnshapeFeatures(ticket412(), kernel);
     const extrude = kernel.calls.find((c) => c.type === "extrude")!;
-    expect(extrude.params.profiles).toBe("qRegion(1, 0)");
-    expect(
-      result.warnings.some((w) => w.includes("Onshape wählte 4 Regionen")),
-      result.warnings.join(" | "),
-    ).toBe(true);
+    expect(extrude.params.profiles).toBe("qRegions(1, [2, 3])");
+    const warn = result.warnings.find((w) => w.includes("Onshape wählte"))!;
+    expect(warn, result.warnings.join(" | ")).toContain(
+      "1 fielen mit einer anderen Auswahl auf dieselbe atomare Face",
+    );
+  });
+
+  it("keeps the whole-sketch profile when the sketch has only ONE face", async () => {
+    // An arrangement that did not subdivide at all: picking its single face is
+    // the whole sketch, and `qCreatedBy` is the form that keeps the entity
+    // provenance later `qWall(...)` plane queries depend on.
+    const only = PLATES[1];
+    const kernel = regionMockKernel(
+      (sid, u, v) =>
+        u > only[0] && u < only[2] && v > only[1] && v < only[3] ? `qRegion(${sid}, 0)` : "",
+      [{ index: 0, area: rectArea(only), perimeter: rectPerimeter(only) }],
+    );
+    await importOnshapeFeatures(ticket412(), kernel);
+    const extrude = kernel.calls.find((c) => c.type === "extrude")!;
+    expect(extrude.params.profiles).toBe("qCreatedBy(1)");
   });
 
   it("warns and extrudes the whole sketch when no region resolves", async () => {
-    const kernel = regionMockKernel(() => ""); // every point outside every region
+    const kernel = regionMockKernel(() => "", arrangementFaces()); // outside everything
     const result = await importOnshapeFeatures(ticket412(), kernel);
     const extrude = kernel.calls.find((c) => c.type === "extrude")!;
     expect(extrude.params.profiles).toBe("qCreatedBy(1)");
@@ -339,6 +406,16 @@ describe("extrude region selection (#412)", () => {
 
   it("extrudes the whole sketch (no region resolution) when the kernel lacks regionQueryAtPoint", async () => {
     const kernel = mockKernel(); // no regionQueryAtPoint
+    await importOnshapeFeatures(ticket412(), kernel);
+    const extrude = kernel.calls.find((c) => c.type === "extrude")!;
+    expect(extrude.params.profiles).toBe("qCreatedBy(1)");
+  });
+
+  it("extrudes the whole sketch when the kernel cannot rank the faces", async () => {
+    // Without `listSketchRegions` there is no perimeter to normalise coverage
+    // against — every candidate would look equally good, so don't pick one.
+    const kernel = regionMockKernel(arrangementAt());
+    delete (kernel as { listSketchRegions?: unknown }).listSketchRegions;
     await importOnshapeFeatures(ticket412(), kernel);
     const extrude = kernel.calls.find((c) => c.type === "extrude")!;
     expect(extrude.params.profiles).toBe("qCreatedBy(1)");

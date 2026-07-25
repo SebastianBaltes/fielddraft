@@ -751,8 +751,9 @@ export class Kernel {
 
   /**
    * The sketch's atomic imprint faces as raw JSON — `{index, centroid,
-   * interior, aabb, area}` per face, in the kernel's deterministic arrangement
-   * order (#412). `resolution` is accepted for call compatibility but ignored:
+   * interior, aabb, area, perimeter}` per face, in the kernel's deterministic
+   * arrangement order (#412). `resolution` is accepted for call compatibility
+   * but ignored:
    * the arrangement is exact, not grid-sampled.
    */
   listSketchRegions(sketchId: number, resolution = 128): string {
