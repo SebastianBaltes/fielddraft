@@ -193,11 +193,32 @@ describe("Onshape import — #416 against the Onshape ground truth", () => {
     // feature-type census of the gap matrix never saw them. The import must say
     // which Onshape concept is missing, not just fail to decode a string.
     const errors = result.errors.join(" | ");
-    expect(errors).toContain("Mate-Connector");
-    expect(
-      result.errors.filter((e) => e.includes("Mate-Connector")).length,
-      errors,
-    ).toBe(3);
+    const planted = result.errors.filter((e) => e.includes("Sketch liegt auf dem Mate-Connector"));
+    expect(planted.length, errors).toBe(3);
+    // Each names the ANCHOR it decoded, so the gap is checkable against the
+    // document rather than a blanket „not supported".
+    expect(planted.filter((e) => e.includes("Sketch-Entity HhKEnMRHLJLB.right")).length).toBe(1);
+    expect(planted.filter((e) => e.includes("Deckfläche von FUwE53MM0gG2CH2_0")).length).toBe(1);
+    expect(planted.filter((e) => e.includes("Deckfläche von FEQ7ajZembzIAXS_1")).length).toBe(1);
+    // And each names the kernel entry point that would have to grow.
+    expect(planted.every((e) => e.includes("resolve_plane_frame")), errors).toBe(true);
+  });
+
+  /**
+   * Sketch 2 is the ROOT of the gap, and its connector needs a SECOND kernel
+   * capability beyond the plane itself: it hangs off an endpoint of a
+   * construction line of Sketch 1, i.e. raw sketch geometry that never enters
+   * the B-Rep. `resolve_mate_anchor` takes `qFace`/`qEdge`/`qVertex`/
+   * `qSketchPoint` but no `qSketchLine`, so even the CONNECTOR cannot be placed
+   * — and with Sketch 2 the whole chain (Extrude 3 → Sketch 3 → Extrude 4 →
+   * Sketch 4 → Revolve 1) falls, which is why the document ends at 4 of 19
+   * features no matter what the web side does.
+   */
+  it("names the second, deeper gap: a connector anchored to a raw sketch line", () => {
+    const err = result.errors.filter((e) => e.includes("rohen Sketch-Linie"));
+    expect(err.length, result.errors.join(" | ")).toBe(1);
+    expect(err[0]).toContain("resolve_mate_anchor");
+    expect(err[0]).toMatch(/qSketchLine\(\d+, \d+\)/);
   });
 
   /**
@@ -207,6 +228,21 @@ describe("Onshape import — #416 against the Onshape ground truth", () => {
    * revolve translation (proven on the real kernel below) but the mate-connector
    * plane gap above: Sketch 2, Sketch 4 and Sketch 6 cannot be placed, so
    * everything drawn on them — including this ticket's revolve — is skipped.
+   *
+   * Two KERNEL capabilities are missing, and both are named by the errors this
+   * suite pins (see the gap matrix for the exact signatures):
+   *
+   *   1. `resolve_plane_frame` (features/context_resolve.rs) takes a plane
+   *      query to exactly two things — one of the three origin datum planes, or
+   *      a resolved B-Rep face. A mate connector is neither, although
+   *      `ctx.mate_connectors` already holds its resolved origin/normal/x-axis.
+   *   2. `resolve_mate_anchor` (same file) has no `QueryExpr::SketchLine` arm,
+   *      so a connector anchored to raw sketch geometry cannot be placed at all
+   *      — which is precisely Sketch 2, the root of the chain.
+   *
+   * The frames those two would have to produce are MEASURED against Onshape's
+   * own `sketches?output3D=true` in `onshapeMateConnector.test.ts`; they are the
+   * acceptance data for the kernel work, not a guess derived from our import.
    *
    * `it.fails` keeps that honest in both directions: today the suite is green
    * WITH the gap documented, and the day mate-connector planes land this test

@@ -674,18 +674,139 @@ describe("revolve import (#416)", () => {
   });
 });
 
-describe("mate-connector sketch planes (#416)", () => {
+/**
+ * Sketches on IMPLICIT mate connectors (#416).
+ *
+ * Three of the document's five sketches are placed on a connector the sketch
+ * carries as its own sub-feature. The connector itself is a FieldDraft feature
+ * — `mate_connector`, built on the same rules (edge tangent / face normal as
+ * +Z, a position `t` along an edge, flip, 90° reorient, offset along its own
+ * axes) — so it is imported. Placing a SKETCH on it is the part FieldDraft's
+ * kernel cannot do yet, and that is reported in full rather than approximated.
+ */
+describe("implicit mate connectors (#416)", () => {
   const doc = ticket416();
+  const featureById = (id: string) =>
+    (doc.features as any[]).map((f) => f.message ?? f).find((f) => f.featureId === id);
+  const paramOf = (f: any, id: string) =>
+    f.parameters.map((p: any) => p.message ?? p).find((p: any) => p.parameterId === id);
+  const rightPlane = () => structuredClone(paramOf(featureById("FeniPjG8I3vr6X2_0"), "sketchPlane").queries);
 
-  it("names the missing Onshape concept instead of reporting a decode failure", async () => {
-    // Sketch 4 of the document sits on an implicit mate connector — a
-    // sub-feature of the sketch itself, invisible in the feature-type census.
-    const sketch4 = (doc.features as any[])
-      .map((f) => f.message ?? f)
-      .find((f) => f.featureId === "FUYLAXOHGV4RBJ9_2");
-    const { result } = await translate([structuredClone(sketch4)]);
-    expect(result.errors.join(" | ")).toContain("Mate-Connector");
-    expect(result.errors.join(" | ")).toContain("GAP-MATRIX");
+  const SKETCH_2 = "FfRxz4hmBrm96Lm_0";
+  const SKETCH_4 = "FUYLAXOHGV4RBJ9_2";
+  const SKETCH_6 = "F2BP3BGeuInpe6G_1";
+
+  /** The chain that carries Sketch 4's connector: its anchor is the cap of
+   *  Extrude 4, which is drawn on Sketch 3. Sketch 3 is REPLANTED on the
+   *  document's own Right plane — in the document it hangs off a cap of an
+   *  extrude that in turn needs Sketch 2, i.e. off this very gap. Everything
+   *  the connector translation reads is the document verbatim. */
+  const capChain = () => {
+    const sketch3 = structuredClone(featureById("FiVOzOHdKGa6422_1"));
+    paramOf(sketch3, "sketchPlane").queries = rightPlane();
+    return [
+      structuredClone(featureById("FeniPjG8I3vr6X2_0")),
+      sketch3,
+      structuredClone(featureById("FEQ7ajZembzIAXS_1")),
+    ];
+  };
+
+  const mateCalls = (kernel: { calls: { type: string; params: any }[] }) =>
+    kernel.calls.filter((c) => c.type === "mate_connector");
+
+  it("imports the connector of Sketch 4 as a mate_connector on the extrude's CAP", async () => {
+    const { kernel, result } = await translate([...capChain(), structuredClone(featureById(SKETCH_4))]);
+    const calls = mateCalls(kernel);
+    expect(calls.length, result.errors.join(" | ")).toBe(1);
+    // CENTER inference on a circular cap EDGE is the cap FACE's own frame:
+    // same origin (the centre), same +Z (the cap normal). Naming the face is
+    // that coordinate system in the form FieldDraft resolves — not a stand-in.
+    expect(calls[0].params.anchor).toMatch(/^qCreatedBy\(\d+, CAP_(TOP|BOTTOM)\)$/);
+    expect(calls[0].params.flip).toBe(false);
+    expect(calls[0].params.offset).toEqual([0, 0, 0]);
+    expect(calls[0].params.reorient).toBe(0);
+  });
+
+  it("still SKIPS the sketch on it, naming the connector and the kernel gap", async () => {
+    const { kernel, result } = await translate([...capChain(), structuredClone(featureById(SKETCH_4))]);
+    // The connector landed; the sketch did not.
+    expect(kernel.calls.filter((c) => c.type === "sketch").length).toBe(2); // Sketch 1 + 3
+    const err = result.errors.find((e) => e.includes("Sketch 4"))!;
+    expect(err).toContain("Mate-Connector");
+    expect(err).toContain("resolve_plane_frame");
+    expect(err).toContain("GAP-MATRIX");
+    // It says the connector itself DID land — otherwise the message would send
+    // the user looking for something that is right there in the tree.
+    expect(err).toMatch(/als Feature \d+ importiert/);
+  });
+
+  it("puts a MID_POINT connector at t = 0.5 on the cap EDGE it names", async () => {
+    const { kernel, result } = await translate([
+      structuredClone(featureById("FeniPjG8I3vr6X2_0")),
+      structuredClone(featureById("FUwE53MM0gG2CH2_0")), // Extrude 1
+      structuredClone(featureById(SKETCH_6)),
+    ]);
+    const calls = mateCalls(kernel);
+    expect(calls.length, result.errors.join(" | ")).toBe(1);
+    // An edge, not a face: a midpoint is a position ALONG the cap's rim.
+    expect(calls[0].params.anchor).toMatch(
+      /^qCommonEdge\(qCreatedBy\(\d+, CAP_(TOP|BOTTOM)\), qWall\(\d+, \d+\)\)$/,
+    );
+    expect(calls[0].params.t).toBe(0.5);
+  });
+
+  it("SKIPS a connector on a raw sketch line and names the kernel limit", async () => {
+    // Sketch 2's connector sits on an ENDPOINT of a construction line of
+    // Sketch 1 — geometry that never enters the B-Rep.
+    const { kernel, result } = await translate([
+      structuredClone(featureById("FeniPjG8I3vr6X2_0")),
+      structuredClone(featureById(SKETCH_2)),
+    ]);
+    expect(mateCalls(kernel).length).toBe(0);
+    const err = result.errors.join(" | ");
+    expect(err).toContain("rohen Sketch-Linie");
+    expect(err).toContain("resolve_mate_anchor");
+    // The query it WOULD use is named, so the gap is checkable, not folklore.
+    expect(err).toMatch(/qSketchLine\(\d+, \d+\)/);
+  });
+
+  it("carries Onshape's realignment offset verbatim, in millimetres", async () => {
+    const sketch4 = structuredClone(featureById(SKETCH_4));
+    const p = (id: string) =>
+      sketch4.subFeatures[0].parameters.find((q: any) => q.parameterId === id);
+    p("translationZ").value = 0.0125; // Onshape reports SI
+    p("flipPrimary").value = true;
+    const { kernel, result } = await translate([...capChain(), sketch4]);
+    const calls = mateCalls(kernel);
+    expect(calls.length, result.errors.join(" | ")).toBe(1);
+    expect(calls[0].params.offset).toEqual([0, 0, 12.5]);
+    expect(calls[0].params.flip).toBe(true);
+  });
+
+  it("takes a 90° rotation as a reorient step", async () => {
+    const sketch4 = structuredClone(featureById(SKETCH_4));
+    sketch4.subFeatures[0].parameters.find((q: any) => q.parameterId === "rotation").value =
+      Math.PI / 2;
+    const { kernel } = await translate([...capChain(), sketch4]);
+    expect(mateCalls(kernel)[0].params.reorient).toBe(1);
+  });
+
+  it("REPORTS a rotation it cannot express instead of rounding it off", async () => {
+    const sketch4 = structuredClone(featureById(SKETCH_4));
+    sketch4.subFeatures[0].parameters.find((q: any) => q.parameterId === "rotation").value =
+      Math.PI / 6; // 30°
+    const { kernel, result } = await translate([...capChain(), sketch4]);
+    expect(result.warnings.join(" | ")).toContain("90°-Schritten");
+    expect(mateCalls(kernel)[0].params.reorient).toBe(0);
+  });
+
+  it("imports a mate connector that stands in the feature list like any other", async () => {
+    // The same feature, just not hidden inside a sketch — 22 of those across
+    // the survey corpus. Lifting the sub-feature out is the whole difference.
+    const standalone = structuredClone(featureById(SKETCH_4).subFeatures[0]);
+    const { kernel, result } = await translate([...capChain(), standalone]);
+    expect(mateCalls(kernel).length, result.errors.join(" | ")).toBe(1);
+    expect(result.idMap[standalone.featureId]).toBeDefined();
   });
 });
 

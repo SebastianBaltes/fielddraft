@@ -20,6 +20,7 @@ Der Importer dispatcht in `importOnshapeFeatures` (onshapeImport.ts) nur auf:
 | `assignVariable` | — | Dokument-Variable (`setVariable`), Ausdruck ausgewertet |
 | `booleanBodies` | — | boolean (Union/Subtract/Intersect, expliziter Scope) |
 | `thicken` | — | thicken (Flächen als `qFace`, beidseitig, Richtungspfeil, Scope) |
+| `mateConnector` | — | mate_connector (Referenzgeometrie; Top-Level **und** implizit als Sketch-Sub-Feature) |
 
 Alles andere fällt in den Sammel-Zweig (:594) → `errors: "Feature-Typ '<x>' wird noch nicht importiert"` (Feature übersprungen, Import läuft weiter).
 
@@ -34,7 +35,7 @@ Alles andere fällt in den Sammel-Zweig (:594) → `errors: "Feature-Typ '<x>' w
 | chamfer | 38 | OK (EQUAL_OFFSETS / 45°) | Kernel-Feature `chamfer_edge` seit v0.31.0 |
 | booleanBodies | 27 | OK | Übersetzer seit P3 |
 | thicken | 25 | OK | Übersetzer seit P4 |
-| mateConnector | 22 | FEHLT | Kernel HAT mate_connector — nur Wiring (Referenzgeo). **Zensus zählt nur Top-Level**: implizite MCs als Sketch-Ebene stecken in `subFeatures` (#416: 3×) |
+| mateConnector | 22 | OK als Referenzgeo | Übersetzer seit 2026-07-26 (3), Top-Level **und** implizit. Offen: ein Sketch DARAUF (Kernel `resolve_plane_frame`) sowie Anker auf roher Sketch-Linie (`resolve_mate_anchor`). **Zensus zählt nur Top-Level**: implizite MCs als Sketch-Ebene stecken in `subFeatures` (#416: 3×) |
 | revolve | 20 | OK (volle Umdrehung) | Übersetzer seit #416; Teil-Umdrehungen kann der Kernel nicht |
 | mirror | 19 | FEHLT | Kernel HAT mirror — nur Wiring |
 | circularPattern | 16 | FEHLT | Kernel HAT circular_pattern — nur Wiring |
@@ -459,3 +460,107 @@ mit derselben Fläche, unter der ein Kollaps von N Referenzen auf eine
 unbemerkt durchgegangen wäre. `onshapeImport415E2E.slow.test.ts` fährt das
 echte WASM: Thicken-Feature-Call, saubere Regeneration, keine eigene Meldung,
 und die ±48,5-mm-Wände über den echten Mesher-Worker-Pfad.
+
+## Update 2026-07-26 (3) — Mate-Connectors übersetzt, Sketch-Ebene braucht den Kernel
+
+**Neu übersetzt: `mateConnector`** — sowohl der im Feature-Baum stehende
+(22 Vorkommen im Korpus) als auch der **implizite**, den ein Sketch als eigenes
+Sub-Feature mitbringt (#416: 3×). Onshapes Connector ist ein Koordinatensystem,
+das aus Geometrie abgeleitet wird: `originType: ON_ENTITY` + `originQuery`
+nennen die Entity, `entityInferenceType` welchen Punkt davon (`MID_POINT`,
+`CENTER`, `POINT` samt `secondaryOriginQuery` für den gemeinten Endpunkt), und
+`translationX/Y/Z` + `rotation` + `flipPrimary` die Nachjustierung. FieldDrafts
+`mate_connector` ist auf denselben Regeln gebaut — +Z ist die Kantentangente
+bzw. die Flächennormale, `t` die Position entlang einer Kante, `offset` eine
+Verschiebung entlang der **eigenen** Achsen in mm, `flip` das Umdrehen von +Z —,
+weshalb die Abbildung eine **Wahl der richtigen Entity** ist und keine
+Nachbildung des Frames. Neu ist `web/src/onshape/onshapeMateConnector.ts`
+(Dekodierung) plus `mateAnchorQuery`/`mateConnectorParams` im Importer.
+
+Eine Feinheit, die keine Näherung ist: `CENTER` auf einer **kreisförmigen
+Cap-Kante** wird auf die Cap-**Fläche** abgebildet. Der Mittelpunkt der
+Deckkanten-Kreislinie *ist* der Mittelpunkt dieser Fläche, und deren Normale
+*ist* die Achse, auf die Onshape +Z legt — die Fläche zu nennen ist also
+dasselbe Koordinatensystem in der Form, die FieldDraft exakt auflöst. Eine
+Drehung überlebt nur in FieldDrafts 90°-Schritten; jeder andere Winkel wird
+gemeldet statt gerundet, denn ein still zurechtgebogener Connector nähme jeden
+Sketch auf ihm mit. Anker werden wie Sketch-Ebenen **auf Eindeutigkeit
+geprüft** (genau eine Bindung, mid-history), sonst übersprungen.
+
+**Die Ebenen selbst — exakt vermessen, nicht abgeleitet.** Onshapes
+`GET /partstudios/…/sketches?includeGeometry=true&output3D=true` meldet jede
+Sketch-Entity in **Weltkoordinaten**; zusammen mit der 2D-Geometrie aus dem
+Feature-Payload ist der Frame `P = Ursprung + u·x + v·y` damit
+**überbestimmt** und prüfbar statt geraten. Für #416 (Residuum ~1e-14 mm, in mm):
+
+| Sketch | Ursprung | x-Achse | y-Achse | Normale |
+| --- | --- | --- | --- | --- |
+| Sketch 1 (Kontrolle, Right-Ebene) | (0; 0; 0) | +Y | +Z | +X |
+| Sketch 2 | (0; 6,5; −65) | +X | −Y | −Z |
+| Sketch 6 | (3; −10,1; −65) | +X | −Z | +Y |
+| Sketch 4 | (−50; −19,2; −55,83) | +X | +Y | +Z |
+
+Die Kontrollzeile ist der Beleg für die Methode: Sketch 1 reproduziert
+FieldDrafts eigenen `origin_plane_yz`-Frame auf die letzte Stelle. Sketch 4 ist
+aus den Entity-Punkten allein **unterbestimmt** (alle liegen auf u = 0), die
+x-Achse kommt deshalb aus
+`GET …/sketches/<id>/tessellatedentities`, das den Bogen ausflacht. Die Rohantwort
+liegt als `fixtures/onshape-416-sketches3d.json` bei; `onshapeMateConnector.test.ts`
+rechnet jede 2D-Entity durch den Frame und vergleicht sie mit Onshapes 3D-Punkt.
+Das sind die **Abnahmedaten für die Kernel-Arbeit**.
+
+**Restblocker: zwei Kernel-Fähigkeiten fehlen — web-seitig ist #416 nicht zu
+bewegen.** Beide sitzen in `crates/kernel/src/features/context_resolve.rs`:
+
+1. **`resolve_plane_frame` (:727)** kennt genau zwei Ausgänge — eine der drei
+   fest verdrahteten Datum-Ebenen (`sketch/frame.rs::datum_plane_frame`, :100)
+   oder den Frame einer aufgelösten B-Rep-Fläche (`resolve_face_frame`, :44).
+   Ein Mate-Connector ist keines von beidem, obwohl `ctx.mate_connectors`
+   seinen aufgelösten `origin`/`normal`/`x_axis` bereits hält. Es fehlt der
+   dritte Zweig: `qCreatedBy(<mc_feature>)` → `SketchFrame { origin, x_axis,
+   y_axis = normal × x_axis, normal }` — genau die Form, die der
+   `CreatedBy`-Zweig von `resolve_mate_anchor` (:1002) schon baut. Dazu gehört
+   der TS-Spiegel in `web/src/sketchPlaneFrame.ts::resolvePlaneFrame`
+   (Konventions-Lock). `ParsedSketchDef` (`sketch/feature.rs:74`) braucht dafür
+   **kein neues Feld**: die Ebene bleibt eine Query.
+2. **`resolve_mate_anchor` (:899)** hat keinen `QueryExpr::SketchLine`-Zweig.
+   Er nimmt `qFace`/`qEdge`/`qVertex`/`qSketchPoint`, aber rohe Sketch-Linien
+   erreichen den B-Rep nie. Sketch 2 hängt genau daran (Endpunkt einer
+   Konstruktionslinie von Sketch 1), und ein `qSketchPoint` hilft nicht: der
+   gäbe als +Z die **Sketch-Ebenen-Normale**, Onshape legt +Z auf die
+   **Linienrichtung**. Der Zweig ist klein — `resolve_axis_world_segment` (:1029)
+   hebt eine `qSketchLine` bereits in ein Weltsegment; daraus folgen Ursprung
+   (bei `t`) und Tangente unmittelbar.
+
+**Warum das web-seitig nicht zu umgehen ist.** Geprüft, nicht vermutet:
+
+- **Keine koplanare Fläche als Ersatz.** Am echten Kernel durchgemessen: die
+  Ebene von Sketch 6 (y = −10,1) schneidet **mitten durch** den Körper, dort
+  liegt weder vor noch nach dem Feature eine Fläche. Sketch 2s Ebene (z = −65)
+  bekäme erst später eine — nach dem Zeitpunkt, zu dem sie gebraucht wird.
+- **Ein Hilfskörper wäre ein Hack.** Eine Offset-Fläche nur als Ebenenträger
+  anzulegen verändert die Teileliste (die Ground Truth ist **ein** Körper) und
+  hängt den Sketch an eine Geometrie, die das Dokument nie hatte.
+- **Die Kette hängt an Sketch 2.** Sketch 2 → Extrude 3 → Sketch 3 → Extrude 4
+  → Sketch 4 → Revolve 1: fällt Sketch 2, fällt alles. Deshalb landen weiterhin
+  **4 von 19** Features, und die AABB bleibt
+  x[−4; 32] · y[−26,7; 11] · z[−65; 39,5] mm gegen Onshapes
+  x[−70,05; 3,07] · y[−26,77; 7,13] · z[−73,08; 35,0] mm. Der
+  Ground-Truth-Test bleibt `it.fails` — mit den zwei Kernel-Einstiegspunkten
+  im Kommentar.
+
+Mit (1) + (2) landen alle drei Sketches und die 15 daran hängenden Features;
+die beiden Fasen des Dokuments (OFFSET_ANGLE @ 45°, je 5 mm) sind seit v0.32.0
+abgedeckt und warten nur auf ihre Wände.
+
+**Testabdeckung.** `onshapeMateConnector.test.ts` (14 Tests): Erkennung der
+unkomprimierten `BodyType.MATE_CONNECTOR`-Ebenenquery, die drei impliziten
+Connectors mit Anker, Inferenz und `t`, ein einteiliger Sketch-Entity-Name
+(`EDMomUfcnXmW` — die Form, an der ein nur zweiteiliger Dekoder scheitert),
+Realignment in mm/Grad, und die vier Frames gegen Onshapes 3D-Geometrie.
+`onshapeImport.test.ts` (8 neue Tests): Cap-Anker als `qCreatedBy(op, CAP_*)`,
+Cap-Kante mit `t = 0,5`, Offset/Flip/Reorient, die gemeldete
+Nicht-90°-Drehung, der übersprungene Sketch-Linien-Anker und ein Connector, der
+im Feature-Baum steht. `onshapeImport416E2E.slow.test.ts` nagelt am echten
+WASM fest, dass genau drei Sketches als „auf Mate-Connector" gemeldet werden,
+jeder seinen Anker nennt, und dass die zweite, tiefere Lücke benannt ist.

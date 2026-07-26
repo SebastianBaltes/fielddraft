@@ -22,6 +22,14 @@ import {
   type OnshapeEntityOrigin,
   type OnshapePlaneRef,
 } from "./onshapeQuery";
+import {
+  anchorT,
+  describeAnchor,
+  implicitMateConnectors,
+  mateConnectorPlaneId,
+  readMateConnector,
+  type OnshapeMateConnector,
+} from "./onshapeMateConnector";
 import { translateOnshapeSketch, type SketchSubCall } from "./onshapeSketch";
 import { decodeRegionQuery } from "./onshapeRegion";
 import {
@@ -598,19 +606,8 @@ function buildPlaneQuery(
         ref.plane === "top" ? "xy" : ref.plane === "front" ? "xz" : "yz";
       return { query: `qCreatedBy(origin_plane_${plane})` };
     }
-    case "cap": {
-      const sweep = sweeps.get(ref.opFeatureId);
-      const fd = idMap[ref.opFeatureId];
-      if (fd === undefined)
-        return { error: `${featureName}: Cap-Ebene referenziert nicht importiertes Feature ${ref.opFeatureId}` };
-      // Onshape's START cap is the SKETCH-PLANE side. Which FieldDraft cap
-      // that is depends on the extrude's direction: growing along +z the
-      // sketch plane is CAP_BOTTOM, growing the other way it is CAP_TOP.
-      const positive = sweep?.depthPositive ?? true;
-      const sketchSide = positive ? "CAP_BOTTOM" : "CAP_TOP";
-      const farSide = positive ? "CAP_TOP" : "CAP_BOTTOM";
-      return { query: `qCreatedBy(${fd}, ${ref.isStart ? sketchSide : farSide})` };
-    }
+    case "cap":
+      return capFaceQuery(ref.opFeatureId, ref.isStart, featureName, idMap, sweeps);
     case "swept": {
       const fd = idMap[ref.opFeatureId];
       if (fd === undefined)
@@ -641,6 +638,27 @@ function buildPlaneQuery(
   }
 }
 
+/** The FieldDraft query for an extrude's cap FACE. Onshape's START cap is the
+ *  SKETCH-PLANE side; which FieldDraft cap that is depends on the extrude's
+ *  direction: growing along +z the sketch plane is CAP_BOTTOM, growing the
+ *  other way it is CAP_TOP. Shared by the sketch-plane translation and the
+ *  mate-connector one, which name the same face for different purposes. */
+function capFaceQuery(
+  opFeatureId: string,
+  isStart: boolean,
+  featureName: string,
+  idMap: Record<string, number>,
+  sweeps: Map<string, SweepRecord>,
+): { query?: string; error?: string } {
+  const fd = idMap[opFeatureId];
+  if (fd === undefined)
+    return { error: `${featureName}: Cap-Ebene referenziert nicht importiertes Feature ${opFeatureId}` };
+  const positive = sweeps.get(opFeatureId)?.depthPositive ?? true;
+  const sketchSide = positive ? "CAP_BOTTOM" : "CAP_TOP";
+  const farSide = positive ? "CAP_TOP" : "CAP_BOTTOM";
+  return { query: `qCreatedBy(${fd}, ${isStart ? sketchSide : farSide})` };
+}
+
 function wallQuery(
   origin: { sketchFeatureId: string; entityId: string },
   fdOp: number,
@@ -656,6 +674,149 @@ function wallQuery(
     return { error: `${featureName}: Sketch-Entity ${origin.entityId} nicht in der Übersetzung` };
   // Onshape's OFFSET_FACE is the shell's inward counterpart of that wall.
   return { query: inner ? `qWall(${fdOp}, ${ord}, INNER)` : `qWall(${fdOp}, ${ord})` };
+}
+
+/**
+ * The FieldDraft ANCHOR query for a decoded mate-connector anchor, plus the
+ * position `t` along it. FieldDraft's `mate_connector` derives its +Z the same
+ * way Onshape does — an edge's tangent, a face's normal — so the translation is
+ * a choice of the right entity, not a re-derivation of the frame.
+ *
+ * `CENTER` inference on a circular CAP EDGE is deliberately mapped to the cap
+ * FACE: the centre of a cap's circular edge IS that face's centre, and the
+ * face's normal is the axis Onshape puts the connector's +Z on. Naming the face
+ * is therefore the SAME coordinate system, expressed in the form FieldDraft
+ * resolves exactly — not an approximation of it.
+ */
+function mateAnchorQuery(
+  mc: OnshapeMateConnector,
+  featureName: string,
+  idMap: Record<string, number>,
+  sketches: Map<string, SketchRecord>,
+  sweeps: Map<string, SweepRecord>,
+): { query?: string; t?: number; error?: string; sketchLine?: boolean } {
+  const a = mc.anchor;
+  if (a.kind === "unsupported") {
+    return { error: `${featureName}: Mate-Connector-Anker nicht lesbar (${a.reason})` };
+  }
+
+  if (a.kind === "capEntity") {
+    const cap = capFaceQuery(a.opFeatureId, a.isStart, featureName, idMap, sweeps);
+    if (cap.error) return { error: cap.error };
+    // The cap face itself, or the centre of the circular edge bounding it —
+    // both are the cap's own coordinate system.
+    if (a.entityType === "FACE" || mc.inference === "CENTER") return { query: cap.query };
+    if (a.entityType === "EDGE") {
+      const wall = wallQuery(a.origin, idMap[a.opFeatureId], featureName, sketches);
+      if (wall.error) return { error: wall.error };
+      const t = anchorT(mc);
+      if (t === null) {
+        return {
+          error:
+            `${featureName}: Mate-Connector-Inferenz "${mc.inference}" auf einer Kante ` +
+            `nicht übersetzbar — FieldDraft kennt nur eine Position t entlang der Kante`,
+        };
+      }
+      return { query: `qCommonEdge(${cap.query}, ${wall.query})`, t };
+    }
+    return {
+      error: `${featureName}: Mate-Connector auf einem ${a.entityType} einer Deckfläche wird nicht übersetzt`,
+    };
+  }
+
+  // A RAW sketch entity: it never enters the B-Rep, so only a sketch-line
+  // anchor has a FieldDraft form at all.
+  const rec = sketches.get(a.origin.sketchFeatureId);
+  if (!rec) {
+    return {
+      error: `${featureName}: Mate-Connector-Anker liegt auf nicht importiertem Sketch ${a.origin.sketchFeatureId}`,
+    };
+  }
+  const ord = rec.entityIds[a.origin.entityId];
+  if (ord === undefined) {
+    return {
+      error: `${featureName}: Mate-Connector-Anker ${a.origin.entityId} nicht in der Sketch-Übersetzung`,
+    };
+  }
+  if (a.entityType !== "EDGE" || !rec.lineEntityIds.has(a.origin.entityId)) {
+    return {
+      error:
+        `${featureName}: Mate-Connector-Anker ${describeAnchor(a)} ist keine gerade Sketch-Linie — ` +
+        `FieldDraft adressiert rohe Sketch-Geometrie nur als qSketchLine`,
+    };
+  }
+  const t = anchorT(mc);
+  if (t === null) {
+    return {
+      error:
+        `${featureName}: Mate-Connector-Inferenz "${mc.inference}" auf einer Sketch-Linie ` +
+        `nicht übersetzbar — der Endpunkt ist aus secondaryOriginQuery nicht bestimmbar`,
+    };
+  }
+  return { query: `qSketchLine(${rec.fdId}, ${ord})`, t, sketchLine: true };
+}
+
+/**
+ * Translate one Onshape mate connector into a FieldDraft `mate_connector`
+ * feature call, or report why it cannot be placed.
+ *
+ * The realignment travels verbatim: Onshape's `translationX/Y/Z` are millimetre
+ * offsets along the connector's OWN axes, which is exactly what FieldDraft's
+ * `offset` means, and `flipPrimary` is `flip`. A rotation about +Z survives
+ * only in FieldDraft's 90° steps (`reorient`); any other angle is reported
+ * rather than rounded, because a silently squared-off connector would take
+ * every sketch on it with it.
+ */
+function mateConnectorParams(
+  mc: OnshapeMateConnector,
+  featureName: string,
+  idMap: Record<string, number>,
+  sketches: Map<string, SketchRecord>,
+  sweeps: Map<string, SweepRecord>,
+): { params?: Record<string, any>; error?: string; warning?: string } {
+  if (mc.originType !== "ON_ENTITY") {
+    return {
+      error: `${featureName}: Mate-Connector-Ursprung "${mc.originType}" wird nicht importiert (nur ON_ENTITY)`,
+    };
+  }
+  const anchor = mateAnchorQuery(mc, featureName, idMap, sketches, sweeps);
+  if (anchor.error || !anchor.query) {
+    return { error: anchor.error ?? `${featureName}: Mate-Connector-Anker nicht übersetzbar` };
+  }
+  if (anchor.sketchLine) {
+    // The query is CORRECT and names exactly the line Onshape names — the
+    // kernel just cannot anchor a connector to raw sketch geometry yet, so
+    // emitting it would only add a feature that fails to regenerate.
+    return {
+      error:
+        `${featureName}: Mate-Connector sitzt auf der rohen Sketch-Linie ${describeAnchor(mc.anchor)} ` +
+        `(${anchor.query}) — FieldDraft verankert Mate-Connectors nur an B-Rep-Geometrie ` +
+        `(Kernel: resolve_mate_anchor kennt qFace/qEdge/qVertex/qSketchPoint, aber kein qSketchLine)`,
+    };
+  }
+
+  let warning: string | undefined;
+  let reorient = 0;
+  if (Math.abs(mc.rotationDeg) > 1e-6) {
+    if (mc.rotationType !== "ABOUT_Z" || Math.abs(mc.rotationDeg % 90) > 1e-6) {
+      warning =
+        `${featureName}: Mate-Connector-Drehung ${mc.rotationDeg.toFixed(1)}° um ${mc.rotationType} ` +
+        `nicht übernommen — FieldDraft dreht nur in 90°-Schritten um +Z`;
+    } else {
+      reorient = Math.round(mc.rotationDeg / 90) % 4;
+    }
+  }
+
+  return {
+    warning,
+    params: {
+      anchor: anchor.query,
+      t: anchor.t ?? 0.5,
+      flip: mc.flipPrimary,
+      reorient,
+      offset: mc.offsetMm,
+    },
+  };
 }
 
 /**
@@ -824,6 +985,94 @@ export async function importOnshapeFeatures(
   return result;
 }
 
+/**
+ * Import one Onshape mate connector as a FieldDraft `mate_connector` feature.
+ * Returns its FieldDraft id, or `null` when it was skipped (with the reason
+ * recorded).
+ *
+ * The anchor is gated exactly like a sketch plane: it must bind to EXACTLY ONE
+ * entity right now (mid-history resolution). A connector on a query that binds
+ * nothing would regenerate as an error, and one that binds several would sit on
+ * whichever the kernel happened to pick first — neither is a connector the
+ * document ever had.
+ */
+async function emitMateConnector(
+  feature: AnyMsg,
+  featureName: string,
+  kernel: ImportKernel,
+  result: OnshapeImportResult,
+  sketches: Map<string, SketchRecord>,
+  sweeps: Map<string, SweepRecord>,
+): Promise<{ fdId: number | null; mc: OnshapeMateConnector }> {
+  const mc = await readMateConnector(feature);
+  const built = mateConnectorParams(mc, featureName, result.idMap, sketches, sweeps);
+  if (built.warning) result.warnings.push(built.warning);
+  if (built.error || !built.params) {
+    result.errors.push(built.error ?? `${featureName}: Mate-Connector nicht übersetzbar`);
+    return { fdId: null, mc };
+  }
+  let matches = 0;
+  try {
+    matches = kernel.resolveQuery(built.params.anchor as string).length;
+  } catch {
+    matches = 0;
+  }
+  if (matches !== 1) {
+    result.errors.push(
+      `${featureName}: Mate-Connector-Anker "${built.params.anchor}" löst auf ${matches} Elemente auf (erwartet 1) — übersprungen`,
+    );
+    return { fdId: null, mc };
+  }
+  const fdId = kernel.addFeatureCall("mate_connector", JSON.stringify(built.params));
+  if (mc.featureId) result.idMap[mc.featureId] = fdId;
+  result.created.push(fdId);
+  return { fdId, mc };
+}
+
+/**
+ * A sketch placed on a MATE CONNECTOR (#416). The connector rides inside the
+ * sketch's own `subFeatures`, so it is imported here — it is reference geometry
+ * in its own right, and the anchor a user can re-attach the sketch to by hand.
+ *
+ * The SKETCH itself is skipped: FieldDraft's `resolve_plane_frame` takes a
+ * plane query to exactly two things, one of the three origin datum planes or a
+ * resolved B-Rep face, and a mate connector is neither. That gap is named in
+ * full rather than papered over — a sketch dropped onto a guessed plane takes
+ * every feature drawn on it to the wrong place.
+ */
+async function importMateConnectorPlane(
+  mcFeatureId: string,
+  sketchFeature: AnyMsg,
+  featureName: string,
+  kernel: ImportKernel,
+  result: OnshapeImportResult,
+  sketches: Map<string, SketchRecord>,
+  sweeps: Map<string, SweepRecord>,
+): Promise<void> {
+  const sub = implicitMateConnectors(sketchFeature).get(mcFeatureId);
+  if (!sub) {
+    result.errors.push(
+      `${featureName}: Ebene nennt den Mate-Connector ${mcFeatureId}, der aber weder als Sub-Feature noch im Dokument steht`,
+    );
+    return;
+  }
+  const { fdId, mc } = await emitMateConnector(
+    sub,
+    `${featureName} · ${String(sub.name ?? "Mate connector")}`,
+    kernel,
+    result,
+    sketches,
+    sweeps,
+  );
+  result.errors.push(
+    `${featureName}: Sketch liegt auf dem Mate-Connector „${mc.name}“ (${describeAnchor(mc.anchor)}) — ` +
+      `FieldDraft kann eine Sketch-Ebene noch nicht auf einem Mate-Connector aufsetzen ` +
+      `(Kernel: resolve_plane_frame kennt nur Datum-Ebenen und B-Rep-Flächen, ` +
+      `siehe docs/ONSHAPE-IMPORT-GAP-MATRIX.md)` +
+      (fdId === null ? "" : ` — der Mate-Connector selbst ist als Feature ${fdId} importiert`),
+  );
+}
+
 /** The feature walk itself — see {@link importOnshapeFeatures}, which wraps this
  *  in the batch meshing deferral. */
 async function importFeatures(
@@ -849,6 +1098,13 @@ async function importFeatures(
       const planeQs = queryStringsOf(params.get("sketchPlane"))[0];
       if (!planeQs) {
         result.errors.push(`${name}: keine Ebenen-Query`);
+        continue;
+      }
+      // Placed on a MATE CONNECTOR? Then the connector travels inside this
+      // sketch's own `subFeatures` (#416) — import it, and report the plane.
+      const mcId = mateConnectorPlaneId(planeQs);
+      if (mcId) {
+        await importMateConnectorPlane(mcId, feat, name, kernel, result, sketches, sweeps);
         continue;
       }
       const ref = await decodePlaneQuery(planeQs);
@@ -885,6 +1141,14 @@ async function importFeatures(
       });
       result.idMap[feat.featureId] = fdId;
       result.created.push(fdId);
+      continue;
+    }
+
+    // A mate connector STANDING IN THE TREE — the same feature the implicit
+    // ones are, just not hidden inside a sketch. Reference geometry: it builds
+    // no body, it gives later features (and the user) a frame to hang on.
+    if (feat.featureType === "mateConnector") {
+      await emitMateConnector(feat, name, kernel, result, sketches, sweeps);
       continue;
     }
 

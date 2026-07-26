@@ -12,6 +12,9 @@ Format, eine Zeile je Eintrag:
 kind = feat | fix | perf. scope und #tickets sind optional. Folgezeilen, die
 eingerückt sind, gehören zum Text davor (Umbruch erlaubt).
 
+## 0.36.0
+- feat(onshape) #416 #417 #421: Onshape-Mate-Connectors (explizite und die impliziten, die ein Sketch als Unter-Feature mitbringt) werden als FieldDraft-Mate-Connectors importiert — inklusive Versatz, Flip und 90°-Ausrichtung; andere Winkel werden benannt gemeldet statt stillschweigend gerundet. Sketches AUF einem Mate-Connector brauchen noch zwei kleine Kernel-Erweiterungen und werden bis dahin benannt übersprungen.
+
 ## 0.35.0
 - feat(onshape) #415: Onshape-Thicken (Fläche aufdicken) wird übersetzt — Wände landen exakt in der von Onshape gemessenen Stärke (±48,5 mm statt vorher ±46,5 mm im Referenzteil). Flächen-Verweise werden strikt aufgelöst: bindet eine Query auf null oder mehrere Flächen, wird sie benannt verworfen statt geraten.
 
