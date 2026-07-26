@@ -39,6 +39,13 @@ interface MockVar {
   formula?: string;
 }
 
+/** A stable stand-in for the kernel's B-Rep face id hash. */
+function mockFaceHash(query: string): string {
+  let h = 0;
+  for (let i = 0; i < query.length; i += 1) h = (h * 31 + query.charCodeAt(i)) >>> 0;
+  return String(h);
+}
+
 function mockKernel(): ImportKernel & {
   calls: { type: string; params: any }[];
   vars: MockVar[];
@@ -60,8 +67,13 @@ function mockKernel(): ImportKernel & {
       calls.push({ type: typeName, params: JSON.parse(paramsJson) });
       return next++;
     },
-    resolveQuery() {
-      return [{ kind: "face", idHash: "1", query: "qFace(1)" }];
+    // ONE face per DISTINCT query. The identity matters for any translation
+    // that has to turn N parametric queries into N id-hash face references
+    // (thicken): a mock that answers every query with the same face would let
+    // a collapse of all N into one pass unnoticed.
+    resolveQuery(query) {
+      const h = mockFaceHash(query);
+      return [{ kind: "face", idHash: h, query: `qFace(${h})` }];
     },
     // A 200 mm cube of "scene": the extent a THROUGH_ALL cut must clear.
     sceneAabb() {
@@ -963,5 +975,155 @@ describe("booleanBodies → FieldDraft-Boolean (#409/#415/#419/#420)", () => {
     // A Subtract leaves its geometry on the TARGET body, so a later Onshape
     // query naming "the boolean's body" must land on that feature.
     expect(result.idMap[bool.featureId]).toBe(result.idMap[extrude1.featureId]);
+  });
+});
+
+// ─── P4: Thicken ────────────────────────────────────────────────
+
+describe("thicken → FieldDraft-Thicken (#415/#417/#418/#419)", () => {
+  const doc = ticket415();
+  /** Sketch 2 + Extrude 2 — the sketch the thickened walls were swept from and
+   *  the extrude that owns them; the thicken's `booleanScope` names the latter. */
+  const prefix = () => (doc.features as any[]).slice(3, 5).map((f) => structuredClone(f));
+  const thicken = () => structuredClone(featureOfType(doc, "thicken"));
+
+  /** The prefix plus a (possibly re-authored) thicken. */
+  const withThicken = (edit: (t: any) => void = () => {}) => {
+    const t = thicken();
+    edit(t);
+    return [...prefix(), t];
+  };
+
+  const thickenCall = (kernel: { calls: { type: string; params: any }[] }) =>
+    kernel.calls.find((c) => c.type === "thicken");
+
+  it("translates the document's thicken: two walls, 2 mm outward, scoped ADD", async () => {
+    const { kernel, result } = await translate(withThicken());
+    expect(result.errors, result.errors.join(" | ")).toHaveLength(0);
+    const call = thickenCall(kernel);
+    expect(call, "no thicken feature was created").toBeTruthy();
+    expect(call!.params.display_name).toBe("Thicken 1");
+    // Onshape names TWO faces; the kernel's thicken takes only the id-hash
+    // form, and the two must stay two.
+    const faces = String(call!.params.faces).split(", ");
+    expect(faces).toHaveLength(2);
+    for (const f of faces) expect(f).toMatch(/^qFace\(\d+\)$/);
+    expect(new Set(faces).size).toBe(2);
+    // 0.2 cm, grown outward — no second direction, no flip.
+    expect(call!.params.thickness).toEqual({ value: 2, unit: "mm" });
+    expect(call!.params.thickness_back).toBeUndefined();
+    expect(call!.params.reverse).toBeUndefined();
+    // ADD with an EXPLICIT scope (Feature-Scope-Direktive).
+    expect(call!.params.operation).toBe("add");
+    expect(call!.params.targets).toMatch(/^qCreatedBy\(\d+\)$/);
+  });
+
+  it("registers the thicken in the id map so later queries can name its body", async () => {
+    const { result } = await translate(withThicken());
+    expect(result.idMap[thicken().featureId]).toBeGreaterThan(0);
+  });
+
+  it("carries Onshape's second thickness over as the inward wall", async () => {
+    const { kernel, result } = await translate(
+      withThicken((t) => {
+        paramOf(t, "thickness2").expression = "0.5 cm";
+      }),
+    );
+    expect(result.errors, result.errors.join(" | ")).toHaveLength(0);
+    expect(thickenCall(kernel)!.params.thickness).toEqual({ value: 2, unit: "mm" });
+    expect(thickenCall(kernel)!.params.thickness_back).toEqual({ value: 5, unit: "mm" });
+  });
+
+  it("maps the direction arrow onto the reverse flag", async () => {
+    const { kernel } = await translate(
+      withThicken((t) => {
+        paramOf(t, "oppositeDirection").value = true;
+      }),
+    );
+    expect(thickenCall(kernel)!.params.reverse).toBe(true);
+  });
+
+  it("rewrites an empty first direction as a flipped one-sided wall", async () => {
+    // Onshape: nothing outward, 3 mm inward. FieldDraft has no zero primary
+    // thickness, but the SAME solid is a 3 mm wall grown the other way.
+    const { kernel, result } = await translate(
+      withThicken((t) => {
+        paramOf(t, "thickness1").expression = "0 cm";
+        paramOf(t, "thickness2").expression = "0.3 cm";
+      }),
+    );
+    expect(result.errors, result.errors.join(" | ")).toHaveLength(0);
+    const call = thickenCall(kernel)!;
+    expect(call.params.thickness).toEqual({ value: 3, unit: "mm" });
+    expect(call.params.thickness_back).toBeUndefined();
+    expect(call.params.reverse).toBe(true);
+  });
+
+  it("evaluates a variable-driven wall thickness instead of guessing one", async () => {
+    const feats = withThicken((t) => {
+      paramOf(t, "thickness1").expression = "#Bohrloch";
+    });
+    // The document's own variable (0.31 cm) declared ahead of the thicken.
+    const { kernel, result } = await translate([
+      structuredClone(featureOfType(doc, "assignVariable")),
+      ...feats,
+    ]);
+    expect(result.warnings.join(" | ")).not.toContain("Bohrloch");
+    expect(thickenCall(kernel)!.params.thickness.value).toBeCloseTo(3.1, 6);
+  });
+
+  it("SKIPS a thicken whose wall thickness is zero", async () => {
+    const { kernel, result } = await translate(
+      withThicken((t) => {
+        paramOf(t, "thickness1").expression = "0 cm";
+      }),
+    );
+    expect(thickenCall(kernel)).toBeUndefined();
+    expect(result.errors.join(" | ")).toContain("Wandstärke ist 0");
+  });
+
+  it("SKIPS a thicken whose faces bind to nothing instead of thickening a guess", async () => {
+    const kernel = mockKernel();
+    kernel.resolveQuery = () => [];
+    const result = await importOnshapeFeatures({ features: withThicken() }, kernel);
+    expect(thickenCall(kernel)).toBeUndefined();
+    expect(result.errors.join(" | ")).toContain("löst auf 0 Flächen auf (erwartet 1)");
+    expect(result.errors.join(" | ")).toContain("keine auflösbare Fläche");
+  });
+
+  it("drops an AMBIGUOUS face — thickening the wrong wall adds phantom material", async () => {
+    const kernel = mockKernel();
+    let call = 0;
+    const real = kernel.resolveQuery.bind(kernel);
+    kernel.resolveQuery = (q: string) => {
+      call += 1;
+      return call === 1 ? [...real(q), ...real(`${q} sibling`)] : real(q);
+    };
+    const result = await importOnshapeFeatures({ features: withThicken() }, kernel);
+    expect(result.errors.join(" | ")).toContain("löst auf 2 Flächen auf (erwartet 1)");
+    // The unambiguous one still lands, and the shortfall is named.
+    expect(String(thickenCall(kernel)!.params.faces).split(", ")).toHaveLength(1);
+    expect(result.warnings.join(" | ")).toContain(
+      "Onshape dickt 2 Flächen auf, FieldDraft 1",
+    );
+  });
+
+  it("makes a NEW body without a merge scope", async () => {
+    const { kernel } = await translate(
+      withThicken((t) => {
+        paramOf(t, "operationType").value = "NEW";
+      }),
+    );
+    expect(thickenCall(kernel)!.params.operation).toBe("new");
+    expect(thickenCall(kernel)!.params.targets).toBeUndefined();
+  });
+
+  it("reports `keep tools`, which only means something for Onshape surfaces", async () => {
+    const { result } = await translate(
+      withThicken((t) => {
+        paramOf(t, "keepTools").value = true;
+      }),
+    );
+    expect(result.warnings.join(" | ")).toContain("Werkzeuge behalten");
   });
 });

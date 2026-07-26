@@ -12,6 +12,9 @@ Format, eine Zeile je Eintrag:
 kind = feat | fix | perf. scope und #tickets sind optional. Folgezeilen, die
 eingerückt sind, gehören zum Text davor (Umbruch erlaubt).
 
+## 0.35.0
+- feat(onshape) #415: Onshape-Thicken (Fläche aufdicken) wird übersetzt — Wände landen exakt in der von Onshape gemessenen Stärke (±48,5 mm statt vorher ±46,5 mm im Referenzteil). Flächen-Verweise werden strikt aufgelöst: bindet eine Query auf null oder mehrere Flächen, wird sie benannt verworfen statt geraten.
+
 ## 0.34.0
 - feat(onshape) #409 #415 #417: Onshape-Variablen und Formeln werden jetzt echt ausgewertet — assignVariable wird zu Dokument-Variablen, und Maß-Ausdrücke wie „3 mm+#HoleExtraGap" oder „(2·sqrt(#TelescopeWeight)/sqrt(3·pi)) cm" rechnen einheiten-bewusst (128 von 140 Korpus-Formeln korrekt). Vorher fielen solche Maße stillschweigend auf Vorgabewerte — die Geometrie sah fehlerfrei aus und war falsch. Nicht auswertbare Ausdrücke werden jetzt laut gemeldet, mit dem ersatzweise verwendeten Wert.
 - feat(onshape) #415: Onshape-Boolean-Features (Vereinigen/Abziehen/Schneiden) werden übersetzt; nicht auflösbare Operanden werden benannt übersprungen statt geraten.

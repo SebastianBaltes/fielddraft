@@ -19,6 +19,7 @@ Der Importer dispatcht in `importOnshapeFeatures` (onshapeImport.ts) nur auf:
 | `hole`      | —    | hole (simple/drilled, blind + through-all, Sketch-Punkt-Ziele) |
 | `assignVariable` | — | Dokument-Variable (`setVariable`), Ausdruck ausgewertet |
 | `booleanBodies` | — | boolean (Union/Subtract/Intersect, expliziter Scope) |
+| `thicken` | — | thicken (Flächen als `qFace`, beidseitig, Richtungspfeil, Scope) |
 
 Alles andere fällt in den Sammel-Zweig (:594) → `errors: "Feature-Typ '<x>' wird noch nicht importiert"` (Feature übersprungen, Import läuft weiter).
 
@@ -32,7 +33,7 @@ Alles andere fällt in den Sammel-Zweig (:594) → `errors: "Feature-Typ '<x>' w
 | fillet | 88 | OK | vorhanden |
 | chamfer | 38 | OK (EQUAL_OFFSETS / 45°) | Kernel-Feature `chamfer_edge` seit v0.31.0 |
 | booleanBodies | 27 | OK | Übersetzer seit P3 |
-| thicken | 25 | FEHLT | Kernel HAT thicken — nur Wiring |
+| thicken | 25 | OK | Übersetzer seit P4 |
 | mateConnector | 22 | FEHLT | Kernel HAT mate_connector — nur Wiring (Referenzgeo). **Zensus zählt nur Top-Level**: implizite MCs als Sketch-Ebene stecken in `subFeatures` (#416: 3×) |
 | revolve | 20 | OK (volle Umdrehung) | Übersetzer seit #416; Teil-Umdrehungen kann der Kernel nicht |
 | mirror | 19 | FEHLT | Kernel HAT mirror — nur Wiring |
@@ -76,7 +77,10 @@ Alles andere fällt in den Sammel-Zweig (:594) → `errors: "Feature-Typ '<x>' w
 
 ## Gap-Matrix (Zeile = Ticket, Zelle = Zustand)
 
-`OK` = alle Feature-Typen unterstützt · Feature-Liste = fehlende Typen (Anzahl)
+`OK` = alle Feature-Typen unterstützt · Feature-Liste = fehlende Typen (Anzahl).
+Zeilen ohne datierten Kommentar stehen noch auf dem **Stand des Erst-Surveys**
+(2026-07-24); welche der dort genannten Typen inzwischen übersetzt sind, sagt
+„Vorkommen aller Feature-Typen" oben und „Feature-Lücken" unten.
 
 | Ticket | Feats | Zustand |
 | --- | ---: | --- |
@@ -85,7 +89,7 @@ Alles andere fällt in den Sammel-Zweig (:594) → `errors: "Feature-Typ '<x>' w
 | #413 | 6  | **Struktur korrekt** (SDF-verifiziert: Wanne, 2-mm-Wände); Rest: SWEPT_/CAP_EDGE-Fillets übersprungen, Geschwister-Kanten nicht unterscheidbar — P0-Livetest 2026-07-24 |
 | #414 | 27 | Feature-Typen **OK** (chamfer + hole übersetzt), aber **Geometrie noch falsch**: Wall-Provenienz region-eingeschränkter Profile fehlt → Chamfer-Kante, Sketch-2-Ebene und 6 Fillets lösen nicht auf — s. Update 2026-07-25 (3) |
 | #416 | 19 | Feature-Typen **OK** (chamfer + revolve übersetzt), aber **Geometrie falsch**: 3 der 5 Sketches liegen auf impliziten Mate-Connectors (Sub-Features!) → 12 der 19 Features fallen aus; dazu ein Kernel-Bug bei abwärts gezeichneter Revolve-Achse — s. Update 2026-07-25 (4) |
-| #415 | 20 | assignVariable(1), thicken(1), booleanBodies(1) |
+| #415 | 20 | Feature-Typen **OK** (thicken übersetzt), aber **Geometrie noch falsch**: die Sketch-Frames auf Wandflächen sind gegenüber Onshape um 90° verdreht → Bodenplatte und Deckelausschnitt liegen quer, X/Y der Ground-Truth-AABB vertauscht — s. Update 2026-07-26 (2) |
 | #409 | 48 | assignVariable(8), hole(4), mirror(3), linearPattern(2), booleanBodies(1), chamfer(1) |
 | #419 | 151 | chamfer(12), booleanBodies(8), revolve(7), thicken(7), assignVariable(6), hole(2), printedHole(2), circularPattern(1), linearPattern(1) |
 | #420 | 23 | assignVariable(7), booleanBodies(1), helix(1), sweep(1) |
@@ -105,7 +109,8 @@ Alles andere fällt in den Sammel-Zweig (:594) → `errors: "Feature-Typ '<x>' w
 | hole ERLEDIGT (P1-Umfang); **printedHole** noch offen | S | 417,419 (printedHole) |
 | mirror (Spiegelebenen-Query + entities) | M | 409,411,417,418,419 |
 | circularPattern (+ linearPattern) (Achse/Richtung + Anzahl + entities) | M | 409,411,417,418,419 |
-| thicken (Face-Query + Dicke) | S–M | 415,417,418,419 |
+| ~~thicken~~ ERLEDIGT (Face-Query → `qFace`, Dicke 1/2, Richtung, Scope) | — | ~~415,417,418,419~~ |
+| **Sketch-Frame auf Face-Ebenen** (FieldDraft leitet die u/v-Basis nur aus der Normalen ab, Onshape aus der Flächen-Parametrisierung → 90°-Verdrehung) | M–L | 415 (offen), vermutlich 414 und jedes Dokument mit Sketch auf Wandfläche |
 | sweep (Profil + Pfad-Query) | M | 418,420 |
 | helix | S–M | 420,421 |
 | mateConnector als **Sketch-Ebene** (Ursprung + Achsenlage aus `originType`/`entityInferenceType`) | M | 416,417,421 |
@@ -158,12 +163,14 @@ Perf-Nebenschauplatz erledigt: #410-Freeze gelöst (v0.29.1 per-Body-BRep-Cache 
    NICHT — dort sind zwei andere Blocker aufgetaucht (Mate-Connector-Ebenen,
    Kernel-Achsenrichtung, s. u.). Entblockt 411/417/418/419.
 4. **P3 Fundament Boolean + Variablen:** ERLEDIGT 2026-07-26 (s. u.). Schließt **kein** Ticket allein — #415 braucht noch `thicken` (P4).
-5. **P4 Thicken:** schließt mit P3 **#415**.
+5. **P4 Thicken:** ERLEDIGT 2026-07-26 (s. u.). Schließt **#415 NICHT** — dort ist
+   ein neuer, allgemeinerer Blocker aufgetaucht (Sketch-Frame auf Wandflächen).
+   Entblockt 417/418/419.
 6. **P5 Patterns + Mirror** (circular/linear/mirror): schließt mit P1–P4 **#409** und **#419**.
 7. **P6 Sweep + Helix + mateConnector + deleteBodies(No-op) + UP_TO_NEXT:** schließt **#420** und **#421**.
 8. **P7 Long-Tail 417/418/411:** transform, cPlane, projectCurves, laserJoint, importDerived, enclose, SURFACE-Loft, threadCreator. Die drei Mega-/Spezialdokumente; zuletzt, weil teuer und wenig Streuwirkung.
 
-Kern-Einsicht: 11 der 26 fehlenden Typen sind **reine Übersetzer-Verdrahtung** — der Kernel kann revolve/sweep/helix/hole/thicken/boolean/circular_pattern/linear_pattern/mirror/mate_connector/Variablen bereits. Echte Kernel-Neuarbeit brauchen nur chamfer (Edge-Feature), transform, cPlane, projectCurves, SURFACE-loft, laserJoint, importDerived, enclose.
+Kern-Einsicht: 11 der 26 ursprünglich fehlenden Typen sind **reine Übersetzer-Verdrahtung** — der Kernel kann revolve/sweep/helix/hole/thicken/boolean/circular_pattern/linear_pattern/mirror/mate_connector/Variablen bereits. Echte Kernel-Neuarbeit brauchen nur chamfer (Edge-Feature), transform, cPlane, projectCurves, SURFACE-loft, laserJoint, importDerived, enclose.
 
 ## #414 Chamfer + Hole — Übersetzer geliefert, Restblocker benannt (2026-07-25)
 
@@ -363,3 +370,92 @@ Schritt (Einheiten-Projektion pro Parameter, dieselbe Kreuzprobe wie bei den
 Variablen). (c) Jeder `setVariable`-Aufruf regeneriert das Dokument einmal
 komplett — bei den 87 Variablen von #417 nur deshalb billig, weil sie am Anfang
 der Historie stehen.
+
+## Update 2026-07-26 (2) — P4 Thicken geliefert, #415-Restblocker ist der Sketch-Frame
+
+**Neu übersetzt: `thicken`.** Onshapes Thicken dickt die Flächen auf, die es
+bekommt — im ganzen Korpus (25 Vorkommen) sind das Flächen eines
+Volumenkörpers, und genau dafür wurde FieldDrafts `thicken` gebaut:
+`thickness1` wächst entlang der Flächennormalen nach außen, `thickness2` nach
+innen, der Richtungspfeil tauscht beide. Eine planare Fläche reduziert auf
+denselben prismatischen Riegel, den ein Face-Extrude baut (#402), eine
+gekrümmte analytische auf konzentrische Offset-Flächen. Die Abbildung ist
+damit eine **Identität, keine Näherung** — und deshalb `thicken` und nicht
+Extrude: ein Extrude bräuchte ein einzelnes planares Profil und könnte eine
+gekrümmte Wand gar nicht tragen.
+
+Der einzige Übersetzungsschritt mit Zähnen ist die **Flächen-Referenz**.
+Onshape benennt jede Fläche mit derselben Creation-Query wie eine Sketch-Ebene
+(hier: `SWEPT_FACE` → `qWall(op, entity)`), das Kernel-Feature nimmt aber
+ausschließlich die ID-Hash-Form `qFace(<hash> @ <fingerprint>)`. Jede
+parametrische Query wird deshalb gegen den Mid-History-B-Rep aufgelöst und als
+kanonische Element-Referenz gespeichert (die Fingerprint-Heilung der
+Namensgebung trägt sie über Regenerationen). Eine Query, die auf **null oder
+mehrere** Flächen bindet, wird mit genannter Anzahl **verworfen**, nicht
+geraten: eine Wand aufzudicken, die Onshape nie gewählt hat, trägt Material
+dort auf, wo das Dokument keines hat. Bleibt keine Fläche übrig, entfällt das
+Feature mit Fehler; bleibt nur ein Teil, sagt eine Warnung wie viele von wie
+vielen. Dicke 1 = 0 bei Dicke 2 > 0 wird als *gespiegelte* einseitige Wand
+geschrieben (dieselbe Geometrie, nur in der Form, die FieldDraft hat);
+Dicke 1 = Dicke 2 = 0 ist ein Fehler. `keepTools` betrifft nur Onshapes
+Flächenkörper und wird als solches gemeldet.
+
+**Verifiziert an der Onshape-Geometrie, nicht an der eigenen.** Im
+#415-Dokument dickt Thicken 1 die beiden Seitenwände von Extrude 2 um 2 mm nach
+außen auf. Onshapes eigene Tessellierung, oberhalb der Bodenplatte
+geschnitten (z > 10 mm), misst dort x ∈ [−25, 25] und **y ∈ [−48,5, 48,5]** —
+also exakt die ±46,5 mm der Sketch-Kante plus 2 mm. Der Slow-Test importiert
+Sketch 2 + Extrude 2 + Thicken 1 als Teildokument, fährt es durch den echten
+Mesher-Worker-Pfad bei App-Auflösung (FULL 64 / CONTEXT 32) und prüft genau
+diese Zahlen.
+
+**Ground-Truth-Korrektur.** `GET …/partid/JKD/boundingboxes` meldet für dieses
+Teil z ∈ [−3, 32,8103] mm, die Tessellierung derselben API (322 074 Vertices)
+aber z ∈ [−3, 32,5]. Die Box-Endpoint-Antwort ist für Teile mit
+Blend-/Spline-Flächen ausdrücklich nur eine obere Schranke, und dieses Teil hat
+sieben Fillets. Maßgeblich ist ab jetzt die Tessellierung — weiterhin Onshapes
+Antwort, nur die exakte. (Festgehalten, weil die 0,31 mm eine Weile wie ein
+fehlendes Feature aussahen.)
+
+**Restblocker für #415 — der Sketch-Frame auf Wandflächen (KEIN Thicken-Thema).**
+FieldDraft leitet die u/v-Basis einer flächengebundenen Sketch-Ebene
+**allein aus der Flächennormalen** ab (`planeBasisFromNormal`, Konventions-Lock
+mit dem Kernel: Weltachse mit der geringsten Ausrichtung zur Normalen als
+Saat, zweimal kreuzen). Onshape leitet sie aus der **Parametrisierung der
+Fläche** ab. Beide Regeln sind deterministisch — und verschieden. Auf der
+Bodenwand dieses Dokuments (n = −Z, gemessen: `qWall(4, 12)` →
+xAxis = +Y, yAxis = +X) hat Onshape xAxis = +X. Der Importer bäckt Onshapes
+2D-Koordinaten aber wörtlich ein, also landen **Sketch 3** (die Bodenplatte mit
+den Montagelaschen, 66 × 127 mm) und **Sketch 4** (der Deckelausschnitt) um 90°
+verdreht. Ergebnis: FieldDraft x ∈ [−63,54, 63,54] · y ∈ [−48,5, 48,5] gegen
+Onshape x ∈ [−33, 33] · y ∈ [−63,55, 63,55] — X und Y vertauscht, z stimmt
+([−3, 32,5], beide). Die AABB bleibt deshalb als `it.fails` gepinnt.
+
+Das ist **kein #415-Sonderfall**: es trifft jeden Sketch auf einer Wandfläche.
+Die Kabelbox fällt nicht darauf herein, weil ihre flächengebundenen Sketches
+auf **Cap-Flächen** sitzen, deren Frame zufällig mit dem der Ursprungsebene
+zusammenfällt. Der Verdacht liegt nahe, dass auch die X/Y-Abweichung von #414
+zu Teilen hierher gehört und nicht nur an der Wall-Provenienz hängt.
+
+Aus dem Feature-Payload allein ist Onshapes Frame **nicht** ableitbar — dort
+steht nur 2D-Geometrie. Zwei gangbare Wege, beide ohne Raten:
+(a) die 3D-Form der Sketch-Entities über `GET /partstudios/…/sketches?output3D=true`
+mitziehen und den Frame aus 2D↔3D-Korrespondenz exakt bestimmen (kostet einen
+zweiten Fetch und damit einen echten Import-Pfad-Umbau); (b) die
+**externen Referenzen** in den Sketch-Constraints auswerten — im #415-Sketch-3
+ist das Rechteck per `OFFSET` von der Flächenberandung abgeleitet
+(`externalMaster`), und ±33/±54,5 sind nachweislich die 8-mm-Aufweitung der
+50 × 93-mm-Wand; eine solche Zuordnung Kante↔Sketch-Kurve legt die Drehung
+eindeutig fest. Beides ist ein eigenes Paket, kein Anhängsel von P4.
+
+**Testabdeckung.** `onshapeImport.test.ts` prüft den Übersetzungs-Vertrag gegen
+die echte Fixture (12 neue Tests): zwei distinkte `qFace`-Referenzen aus zwei
+Onshape-Wänden, 2 mm nach außen, ADD mit explizitem Scope, Dicke 2 → innere
+Wand, Richtungspfeil → `reverse`, die Umschreibung der leeren ersten Richtung,
+eine variablen-getriebene Wandstärke, und die drei Abbruchpfade (Dicke 0,
+Fläche bindet nichts, Fläche bindet mehrdeutig). Der Mock-Kernel liefert dafür
+jetzt **eine Fläche je distinkter Query** — vorher beantwortete er jede Query
+mit derselben Fläche, unter der ein Kollaps von N Referenzen auf eine
+unbemerkt durchgegangen wäre. `onshapeImport415E2E.slow.test.ts` fährt das
+echte WASM: Thicken-Feature-Call, saubere Regeneration, keine eigene Meldung,
+und die ±48,5-mm-Wände über den echten Mesher-Worker-Pfad.

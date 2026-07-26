@@ -1097,6 +1097,11 @@ async function importFeatures(
       continue;
     }
 
+    if (feat.featureType === "thicken") {
+      await importThicken(feat, params, name, kernel, result, sketches, sweeps, env);
+      continue;
+    }
+
     if (feat.featureType === "assignVariable") {
       importAssignVariable(params, name, kernel, env);
       continue;
@@ -1743,6 +1748,127 @@ async function importHole(
       opposite_direction: params.get("oppositeDirection")?.value === true,
       locations: locations.join(", "),
       targets: targets.join(", "),
+    }),
+  );
+  result.idMap[feat.featureId] = fdId;
+  result.created.push(fdId);
+}
+
+/**
+ * Onshape `thicken` → a FieldDraft `thicken` feature (#415/#417/#418/#419).
+ *
+ * Onshape's Thicken offsets the SURFACES it is given into a solid wall. When
+ * those surfaces are faces of a solid (the whole corpus: 25 occurrences, all
+ * face selections) that is precisely FieldDraft's `thicken`, which was built
+ * against this Onshape feature: `thickness1` grows outward along the face
+ * normal, `thickness2` inward, the direction arrow swaps the two. A planar face
+ * reduces to the same prismatic slab a face-Extrude builds (#402), a curved
+ * analytic one to concentric offset surfaces — so the mapping is an identity,
+ * not an approximation. That is why this is `thicken` and not a face-Extrude:
+ * an Extrude would need a single planar profile and could not carry a curved
+ * wall at all.
+ *
+ * The one translation step with teeth is the FACE REFERENCE. Onshape names each
+ * face with the same creation query a sketch plane uses, so the decoding is
+ * {@link decodePlaneQuery} + {@link buildPlaneQuery} — but the kernel's thicken
+ * accepts ONLY the id-hash form `qFace(<hash> @ <fingerprint>)`. Every
+ * parametric query is therefore resolved against the mid-history B-Rep and
+ * stored as the canonical element reference it binds to right now. A query that
+ * binds to no face, or to several, is DROPPED with an error naming the count:
+ * thickening a wall Onshape never picked adds material where the document has
+ * none, and that is the failure mode this whole importer is built to avoid.
+ */
+async function importThicken(
+  feat: AnyMsg,
+  params: Map<string, AnyMsg>,
+  name: string,
+  kernel: ImportKernel,
+  result: OnshapeImportResult,
+  sketches: Map<string, SketchRecord>,
+  sweeps: Map<string, SweepRecord>,
+  env: ExprEnv,
+): Promise<void> {
+  const entityQss = queryStringsOf(params.get("entities"));
+  const faces: string[] = [];
+  for (const qs of entityQss) {
+    const ref = await decodePlaneQuery(qs);
+    const built = buildPlaneQuery(ref, name, result.idMap, sketches, sweeps);
+    if (!built.query) {
+      result.errors.push(built.error ?? `${name}: Fläche nicht übersetzbar`);
+      continue;
+    }
+    // A datum plane has no material to offset — Onshape would not accept it
+    // either, but our plane translation happily produces one, so say why.
+    if (built.query.startsWith("qCreatedBy(origin_plane_")) {
+      result.errors.push(
+        `${name}: "${built.query}" ist eine Ursprungsebene, keine Körperfläche — nicht aufdickbar`,
+      );
+      continue;
+    }
+    const matches = kernel.resolveQuery(built.query).filter((m) => m.kind === "face");
+    if (matches.length !== 1) {
+      result.errors.push(
+        `${name}: Flächen-Query "${built.query}" löst auf ${matches.length} Flächen auf ` +
+          `(erwartet 1) — Fläche ausgelassen`,
+      );
+      continue;
+    }
+    // The fingerprint-carrying canonical form — the only one `thicken` takes.
+    if (!faces.includes(matches[0].query)) faces.push(matches[0].query);
+  }
+  if (faces.length === 0) {
+    result.errors.push(`${name}: keine auflösbare Fläche — Feature übersprungen`);
+    return;
+  }
+  if (faces.length < entityQss.length) {
+    result.warnings.push(
+      `${name}: Onshape dickt ${entityQss.length} Flächen auf, FieldDraft ${faces.length} — ` +
+        `die fehlenden sind oben einzeln genannt`,
+    );
+  }
+
+  let thicknessMm = mmOf(params.get("thickness1"), 0, env);
+  let backMm = mmOf(params.get("thickness2"), 0, env);
+  let reverse = params.get("oppositeDirection")?.value === true;
+  if (!(thicknessMm > 0) && backMm > 0) {
+    // Onshape's first direction is empty: the wall lies entirely on the other
+    // side. Same solid, written in the only form FieldDraft has — a positive
+    // primary thickness plus the flipped growth direction.
+    thicknessMm = backMm;
+    backMm = 0;
+    reverse = !reverse;
+  }
+  if (!(thicknessMm > 0)) {
+    result.errors.push(`${name}: Wandstärke ist 0 — Feature übersprungen`);
+    return;
+  }
+
+  if (params.get("keepTools")?.value === true) {
+    result.warnings.push(
+      `${name}: „Werkzeuge behalten" betrifft nur Onshapes Flächenkörper — FieldDraft dickt ` +
+        `Flächen eines Volumenkörpers auf, die dabei ohnehin erhalten bleiben`,
+    );
+  }
+
+  const operation = operationOf(params);
+  const targets = await booleanTargets(params, operation, result);
+  if (operation !== "new" && !targets) {
+    result.warnings.push(
+      `${name}: Boolean-Scope nicht auflösbar — die Wand wird mit dem Körper verrechnet, ` +
+        `dem die aufgedickte Fläche gehört`,
+    );
+  }
+
+  const fdId = kernel.addFeatureCall(
+    "thicken",
+    JSON.stringify({
+      display_name: name,
+      faces: faces.join(", "),
+      thickness: { value: thicknessMm, unit: "mm" },
+      ...(backMm > 0 ? { thickness_back: { value: backMm, unit: "mm" } } : {}),
+      ...(reverse ? { reverse: true } : {}),
+      operation,
+      ...(targets ? { targets } : {}),
     }),
   );
   result.idMap[feat.featureId] = fdId;
