@@ -17,6 +17,8 @@ Der Importer dispatcht in `importOnshapeFeatures` (onshapeImport.ts) nur auf:
 | `fillet`    | :538 | fillet_edge (nur filletType EDGE, control RADIUS, CIRCULAR) |
 | `chamfer`   | —    | chamfer_edge (nur EQUAL_OFFSETS bzw. OFFSET_ANGLE @ 45°) |
 | `hole`      | —    | hole (simple/drilled, blind + through-all, Sketch-Punkt-Ziele) |
+| `assignVariable` | — | Dokument-Variable (`setVariable`), Ausdruck ausgewertet |
+| `booleanBodies` | — | boolean (Union/Subtract/Intersect, expliziter Scope) |
 
 Alles andere fällt in den Sammel-Zweig (:594) → `errors: "Feature-Typ '<x>' wird noch nicht importiert"` (Feature übersprungen, Import läuft weiter).
 
@@ -26,10 +28,10 @@ Alles andere fällt in den Sammel-Zweig (:594) → `errors: "Feature-Typ '<x>' w
 | --- | ---: | --- | --- |
 | extrude | 238 | OK | vorhanden |
 | newSketch | 225 | OK | vorhanden |
-| assignVariable | 119 | FEHLT | Kernel HAT setVariable (api/variables.rs) — nur Wiring |
+| assignVariable | 119 | OK (ASSIGNED) | Übersetzer seit P3; `MEASURED` (11× in #417) fehlt |
 | fillet | 88 | OK | vorhanden |
 | chamfer | 38 | OK (EQUAL_OFFSETS / 45°) | Kernel-Feature `chamfer_edge` seit v0.31.0 |
-| booleanBodies | 27 | FEHLT | Kernel HAT boolean — nur Wiring |
+| booleanBodies | 27 | OK | Übersetzer seit P3 |
 | thicken | 25 | FEHLT | Kernel HAT thicken — nur Wiring |
 | mateConnector | 22 | FEHLT | Kernel HAT mate_connector — nur Wiring (Referenzgeo). **Zensus zählt nur Top-Level**: implizite MCs als Sketch-Ebene stecken in `subFeatures` (#416: 3×) |
 | revolve | 20 | OK (volle Umdrehung) | Übersetzer seit #416; Teil-Umdrehungen kann der Kernel nicht |
@@ -70,7 +72,7 @@ Alles andere fällt in den Sammel-Zweig (:594) → `errors: "Feature-Typ '<x>' w
   liefert `qCommonEdge`, deshalb ist eine B-Rep-Kante als Achse heute nicht
   abbildbar (im Korpus ist die Achse praktisch immer eine Konstruktionslinie).
 - loft bodyType: SOLID 10 (ok), **SURFACE 6 (übersprungen** — alle in #418).
-- Ausdrücke: 6004 literal-parsebar, **153 Variablen/Formeln** (`#Brettstaerke`, `3 mm+#HoleExtraGap`, …) — `mmOf` kann nur Literale, Variablenbezüge fallen auf Defaults zurück → falsche Maße.
+- Ausdrücke: 6004 literal-parsebar, 153 Variablen/Formeln (`#Brettstaerke`, `3 mm+#HoleExtraGap`, …) — **seit P3 ausgewertet** (`onshapeExpr.ts`), s. Update 2026-07-26.
 
 ## Gap-Matrix (Zeile = Ticket, Zelle = Zustand)
 
@@ -96,8 +98,8 @@ Alles andere fällt in den Sammel-Zweig (:594) → `errors: "Feature-Typ '<x>' w
 
 | Lücke | Aufwand | blockiert Tickets |
 | --- | --- | --- |
-| assignVariable (setVariable-Wiring + Var-fähiges `mmOf`) | M | 409,415,417,418,419,420,421 |
-| booleanBodies (2 Body-Set-Queries → boolean) | M | 409,411,415,417,418,419,420 |
+| ~~assignVariable~~ ERLEDIGT (setVariable-Wiring + var-fähiges `mmOf`) | — | ~~409,415,417,418,419,420,421~~ (Rest: `MEASURED`) |
+| ~~booleanBodies~~ ERLEDIGT (2 Body-Set-Queries → boolean) | — | ~~409,411,415,417,418,419,420~~ |
 | ~~chamfer~~ ERLEDIGT (`chamfer_edge`, EQUAL_OFFSETS/45°) | — | ~~409,414,416,417,418,419~~ |
 | ~~revolve~~ ERLEDIGT (Profil + Sketch-Linien-Achse, volle Umdrehung) | — | ~~411,416,417,418,419~~ |
 | hole ERLEDIGT (P1-Umfang); **printedHole** noch offen | S | 417,419 (printedHole) |
@@ -155,7 +157,7 @@ Perf-Nebenschauplatz erledigt: #410-Freeze gelöst (v0.29.1 per-Body-BRep-Cache 
 3. **P2 Revolve:** ERLEDIGT 2026-07-25 (Übersetzer + E2E). Schließt **#416**
    NICHT — dort sind zwei andere Blocker aufgetaucht (Mate-Connector-Ebenen,
    Kernel-Achsenrichtung, s. u.). Entblockt 411/417/418/419.
-4. **P3 Fundament Boolean + Variablen:** booleanBodies-Wiring + assignVariable→setVariable + var-fähiges `mmOf`. Prerequisite für fast alles; mit P1/P2 nun in Reichweite: 415,419,420.
+4. **P3 Fundament Boolean + Variablen:** ERLEDIGT 2026-07-26 (s. u.). Schließt **kein** Ticket allein — #415 braucht noch `thicken` (P4).
 5. **P4 Thicken:** schließt mit P3 **#415**.
 6. **P5 Patterns + Mirror** (circular/linear/mirror): schließt mit P1–P4 **#409** und **#419**.
 7. **P6 Sweep + Helix + mateConnector + deleteBodies(No-op) + UP_TO_NEXT:** schließt **#420** und **#421**.
@@ -276,3 +278,88 @@ App-Auflösung; die abwärts gezeichnete Original-Achse ist als `it.fails` gepin
 `width1 = 0,5 cm` → je 5 mm, also von v0.32.0 abgedeckt. Sie kommen im
 Volldokument trotzdem nicht an: ihre Kanten-Queries zeigen auf Wände von
 Extrudes, deren Profil-Sketch an Restblocker 1 hängt.
+
+## P3 Variablen + Boolean — geliefert (2026-07-26)
+
+**Neu übersetzt: `assignVariable`.** Onshape deklariert Variablen als Features,
+also in Dokumentreihenfolge und mit Rückgriff auf frühere
+(`#Gesamtlaenge = #Klingenlaenge + #Grifflaenge`). Der Walk baut genau diese
+Tabelle auf und legt jede Variable zusätzlich als **FieldDraft-Dokument-Variable**
+an (`setVariable`: Länge in mm, Winkel in Grad, Zahl roh). Nicht übersetzbar sind
+`mode: MEASURED` (Onshape schreibt dort nur `"?"`, der Wert entsteht erst in
+seiner eigenen Auswertung — 9 Variablen in #417) und Dimensionen ohne
+FieldDraft-Variablenart (Fläche o. ä.). Beides wird benannt; die gemessene
+Variable bleibt undefiniert, die dimensionsfremde wandert immerhin in die
+Ausdruckstabelle des Imports.
+
+Hat die Onshape-Formel eine **treue Projektion** auf FieldDrafts
+(dimensionslose, mm-basierte) Formelsprache, wird sie zusätzlich als `formula`
+mitgegeben — aber nur, wenn FieldDrafts eigener Evaluator (`variableInput.ts`)
+daraus dieselbe Zahl errechnet. Damit bleibt die Abhängigkeit im
+Variablen-Panel editierbar, ohne je driften zu können. Winkel- und
+Trigonometrie-Ausdrücke sind bewusst ausgenommen (FieldDrafts Winkelbasis ist
+Grad, seine `sin()` rechnet im Bogenmaß).
+
+**Neu: variablen-fähige Maße (`web/src/onshape/onshapeExpr.ts`).** Das war die
+stillste Gefahr der Suite: `mmOf` konnte nur Literale, alles andere fiel
+**lautlos** auf einen fest verdrahteten Vorgabewert zurück — die Geometrie sah
+fehlerfrei aus und war falsch. Der neue Evaluator ist **einheiten-bewusst**
+(jeder Wert trägt Längen- und Winkel-Exponenten; Basis mm/Grad), kennt
+Grundrechenarten, Klammern, unäres Minus, Potenz, `#Variablen`, alle Längen- und
+Winkel-Einheiten sowie `sin cos tan asin acos atan atan2 sqrt abs sign floor
+ceil ln log exp round pow min max` und `pi`. **Juxtaposition ist Multiplikation**
+und bindet enger als `*`/`/` — nur so sind `2mm`, `(…) cm`, `1/cm` und
+`4 mm / 2 mm` (ein Verhältnis, keine Fläche) gleichzeitig richtig. Kein `eval`,
+ein handgeschriebener Rekursiv-Absteiger.
+
+Gemessen am echten Korpus (13 Dokumente, `/features`): **128 der 140**
+Variablen-Ausdrücke werten korrekt aus, inklusive der beiden härtesten aus #417 —
+`(round((#BoxMirrorGap+#MirrorDiameter)/2 * sin(1.5 deg) * 1/cm, .1)) cm` → 4 mm
+und `(2 * sqrt(#TelescopeWeight) / sqrt(3*pi)) cm` → 18,4264 mm. Die restlichen
+12 hängen **ausnahmslos** an den 9 `MEASURED`-Variablen von #417.
+
+**Warnungs-Design (nie mehr still).** Scheitert ein Ausdruck, nennt die Meldung
+den Ausdruck, den Parameter, die Ursache (`unbekannte Variable "#X"`,
+`Einheiten passen nicht zusammen`, `gemessener Wert`) und die eingesetzte Zahl:
+Onshapes eigenen ausgewerteten Wert, falls vorhanden — und sonst die Vorgabe,
+mit dem ausdrücklichen Zusatz, dass das Maß damit sehr wahrscheinlich FALSCH
+ist. **Am Korpus gegengeprüft: für keinen einzigen dieser 140 Ausdrücke liefert
+Onshape einen ausgewerteten SI-Wert** (`value` ist immer 0) — der stille
+Rückfall traf also stets die hart verdrahtete Vorgabe. Dieselbe Meldung erscheint
+pro Import nur einmal.
+
+**Neu übersetzt: `booleanBodies`.** `operationType` bildet 1:1 auf FieldDrafts
+drei Boolean-Tabs ab (UNION → Union, SUBTRACTION → Subtract, INTERSECTION →
+Intersect). Beide Operandenlisten sind Body-Queries; jede wird auf die
+**erzeugende Onshape-Operation** dekodiert und über die idMap in
+`qCreatedBy(<feature>)` übersetzt — die einzige Form, die das Kernel-Boolean
+annimmt. Ein nicht auflösbarer Operand führt zum **Überspringen mit Fehler**
+statt zum Raten; eine Subtraktion/Verschneidung ohne Ziel ebenso
+(Feature-Scope-Direktive: nie implizit mit einem zufällig überlappenden Körper
+verrechnen). `keepTools` wird übernommen, Werkzeug-Aufmaß (`offset`) und
+`reFillet` werden als fehlend gemeldet. Der idMap-Eintrag des Booleans zeigt auf
+das Feature, das den **Ergebniskörper besitzt** (erstes Ziel bei Subtract, sonst
+erstes Werkzeug) — so landet eine spätere Onshape-Query auf „den Körper aus dem
+Boolean" auf dem Feature, das diese Geometrie in FieldDraft wirklich trägt.
+
+**Testabdeckung.** `onshapeExpr.test.ts` (25 Tests) deckt Einheiten, Präzedenz,
+Klammern, Variablenketten, Dimensionsfehler, Funktionen und die
+Formel-Projektion ab. `onshapeImport.test.ts` prüft den Übersetzungs-Vertrag
+gegen die echten Fixtures (neu: `onshape-415-features.json`, 20 Features) —
+Variablen in Dokumentreihenfolge, MEASURED-Meldung, Namens-Sanierung,
+Boolean-Fälle samt beider Skip-Pfade, und dass ein kaputter Ausdruck laut wird
+statt still. `onshapeImport415E2E.slow.test.ts` fährt das echte WASM: die
+Variablen landen samt Formel im Kernel, das `boolean`-Feature regeneriert
+fehlerfrei; die Ground-Truth-AABB (1 Part „Part 1", x[−33, 33] · y[−63,55,
+63,55] · z[−3, 32,81] mm) ist als `it.fails` gepinnt, weil dem Dokument noch
+`thicken` (P4) fehlt.
+
+**Offene Reste aus diesem Paket.** (a) `MEASURED`-Variablen — bräuchten eine
+Messung an der importierten Geometrie (Kernel-Arbeit; 9 Variablen, 12 Ausdrücke
+in #417). (b) Feature-Parameter werden **numerisch gebacken**: die
+Dokument-Variable ist da und editierbar, aber ein Extrude trägt seine Tiefe als
+Zahl, nicht als `=Brettstaerke`. Der parametrische Durchgriff wäre der nächste
+Schritt (Einheiten-Projektion pro Parameter, dieselbe Kreuzprobe wie bei den
+Variablen). (c) Jeder `setVariable`-Aufruf regeneriert das Dokument einmal
+komplett — bei den 87 Variablen von #417 nur deshalb billig, weil sie am Anfang
+der Historie stehen.

@@ -32,11 +32,26 @@ function loftParam(loft: any, id: string): any {
 /** Mock kernel: allocates sequential ids and reports every face-level
  *  query as uniquely resolving (the REAL uniqueness check runs against
  *  the wasm kernel in the app; here we exercise the translation flow). */
-function mockKernel(): ImportKernel & { calls: { type: string; params: any }[] } {
+interface MockVar {
+  name: string;
+  value: number;
+  kind: string;
+  formula?: string;
+}
+
+function mockKernel(): ImportKernel & {
+  calls: { type: string; params: any }[];
+  vars: MockVar[];
+} {
   let next = 1;
   const calls: { type: string; params: any }[] = [];
+  const vars: MockVar[] = [];
   return {
     calls,
+    vars,
+    setVariable(name, value, kind, formula) {
+      vars.push({ name, value, kind, formula });
+    },
     addSketch(planeQuery, subCalls) {
       calls.push({ type: "sketch", params: { planeQuery, subCalls } });
       return next++;
@@ -659,5 +674,294 @@ describe("mate-connector sketch planes (#416)", () => {
     const { result } = await translate([structuredClone(sketch4)]);
     expect(result.errors.join(" | ")).toContain("Mate-Connector");
     expect(result.errors.join(" | ")).toContain("GAP-MATRIX");
+  });
+});
+
+// ─── P3: Variablen + Boolean ────────────────────────────────────
+
+/** The #415 document (Onshape `/features`): 20 features, and the smallest one
+ *  in the corpus that carries BOTH an `assignVariable` and a `booleanBodies`. */
+function ticket415(): { features: any[] } {
+  return JSON.parse(
+    readFileSync(join(__dirname, "fixtures", "onshape-415-features.json"), "utf8"),
+  );
+}
+
+const params415 = (feat: any) => feat.parameters.map((p: any) => p.message ?? p);
+
+function paramOf(feat: any, id: string): any {
+  return params415(feat).find((p: any) => p.parameterId === id);
+}
+
+/** A clone of the document's real `assignVariable` feature, re-authored. */
+function variableFeature(
+  doc: { features: any[] },
+  name: string,
+  expression: string,
+  variableType = "LENGTH",
+  mode = "ASSIGNED",
+): any {
+  const f = structuredClone(featureOfType(doc, "assignVariable"));
+  paramOf(f, "name").value = name;
+  paramOf(f, "value").expression = expression;
+  paramOf(f, "variableType").value = variableType;
+  paramOf(f, "mode").value = mode;
+  f.featureId = `FVAR_${name || "anon"}_${expression.length}`;
+  return f;
+}
+
+describe("assignVariable → FieldDraft-Dokumentvariable (#409/#415/#417)", () => {
+  const doc = ticket415();
+
+  it("translates the document's own variable, unit and all", async () => {
+    const { kernel, result } = await translate([
+      structuredClone(featureOfType(doc, "assignVariable")),
+    ]);
+    expect(result.errors, result.errors.join(" | ")).toHaveLength(0);
+    expect(kernel.vars).toHaveLength(1);
+    // `#Bohrloch = 0.31 cm` — FieldDraft stores a length in MILLIMETRES.
+    expect(kernel.vars[0].name).toBe("Bohrloch");
+    expect(kernel.vars[0].value).toBeCloseTo(3.1, 10);
+    expect(kernel.vars[0].kind).toBe("length");
+  });
+
+  it("declares variables IN DOCUMENT ORDER so a later one may use an earlier", async () => {
+    const { kernel, result } = await translate([
+      variableFeature(doc, "Klingenlaenge", "89 cm"),
+      variableFeature(doc, "Grifflaenge", "295 mm"),
+      variableFeature(doc, "Gesamtlaenge", "#Klingenlaenge+#Grifflaenge"),
+    ]);
+    expect(result.errors, result.errors.join(" | ")).toHaveLength(0);
+    expect(kernel.vars.map((v) => [v.name, v.value])).toEqual([
+      ["Klingenlaenge", 890],
+      ["Grifflaenge", 295],
+      ["Gesamtlaenge", 1185],
+    ]);
+  });
+
+  it("keeps the dependency as a FieldDraft formula when it computes the same number", async () => {
+    const { kernel } = await translate([
+      variableFeature(doc, "a", "89 cm"),
+      variableFeature(doc, "b", "295 mm"),
+      variableFeature(doc, "c", "#a+#b"),
+    ]);
+    // Provenance the user can edit: the projection is stored ONLY because
+    // FieldDraft's own evaluator reproduced 1185 mm from it.
+    expect(kernel.vars[2].formula).toBe("(a + b)");
+    // A plain literal keeps no formula.
+    expect(kernel.vars[0].formula).toBeUndefined();
+  });
+
+  it("stores an angle variable in DEGREES and projects no formula for it", async () => {
+    const { kernel } = await translate([
+      variableFeature(doc, "Knaufflachwinkel", "45 deg", "ANGLE"),
+      variableFeature(doc, "Doppelt", "#Knaufflachwinkel*2", "ANGLE"),
+    ]);
+    expect(kernel.vars[0]).toMatchObject({ name: "Knaufflachwinkel", kind: "angle" });
+    expect(kernel.vars[0].value).toBeCloseTo(45, 10);
+    expect(kernel.vars[1].value).toBeCloseTo(90, 10);
+    // FieldDraft's formula language is dimensionless and mm/degree-based;
+    // an angle formula would collide with its radian trigonometry.
+    expect(kernel.vars[1].formula).toBeUndefined();
+  });
+
+  it("stores a NUMBER variable without a unit", async () => {
+    const { kernel } = await translate([variableFeature(doc, "Faktor", "0.592561", "NUMBER")]);
+    expect(kernel.vars[0]).toMatchObject({ name: "Faktor", kind: "number" });
+    expect(kernel.vars[0].value).toBeCloseTo(0.592561, 10);
+  });
+
+  it("reports a MEASURED variable instead of inventing a value", async () => {
+    const { kernel, result } = await translate([
+      variableFeature(doc, "MirrorBoxLength", '"?"', "LENGTH", "MEASURED"),
+    ]);
+    expect(kernel.vars).toHaveLength(0);
+    expect(result.warnings.join(" | ")).toContain("GEMESSEN");
+    expect(result.warnings.join(" | ")).toContain("#MirrorBoxLength");
+  });
+
+  it("reports an unevaluable declaration instead of storing a wrong number", async () => {
+    const { kernel, result } = await translate([
+      variableFeature(doc, "Abgeleitet", "#GibtEsNicht*2"),
+    ]);
+    expect(kernel.vars).toHaveLength(0);
+    expect(result.errors.join(" | ")).toContain('unbekannte Variable "#GibtEsNicht"');
+  });
+
+  it("makes an Onshape name legal for FieldDraft and says so", async () => {
+    const { kernel, result } = await translate([variableFeature(doc, "Brett Stärke!", "15 mm")]);
+    expect(kernel.vars[0].name).toBe("Brett_Stärke_");
+    expect(result.warnings.join(" | ")).toContain("nicht zulässig");
+  });
+
+  it("skips a nameless declaration with an error", async () => {
+    const { kernel, result } = await translate([variableFeature(doc, "", "15 mm")]);
+    expect(kernel.vars).toHaveLength(0);
+    expect(result.errors.join(" | ")).toContain("ohne Variablennamen");
+  });
+});
+
+describe("variablen-fähige Maße — nie mehr still falsch (#409/#415/#417)", () => {
+  const doc = ticket415();
+  /** Sketch 1 + Extrude 1 of the #415 document: a BLIND extrude whose depth
+   *  parameter carries the authored expression and NO evaluated SI value —
+   *  precisely the shape that used to fall through to a default. */
+  const sketchAndExtrude = () =>
+    (doc.features as any[]).slice(1, 3).map((f) => structuredClone(f));
+
+  function withDepth(expression: string): any[] {
+    const feats = sketchAndExtrude();
+    const extrude = feats[1].message ?? feats[1];
+    paramOf(extrude, "depth").expression = expression;
+    return feats;
+  }
+
+  it("takes the literal depth as before", async () => {
+    const { kernel, result } = await translate(sketchAndExtrude());
+    const extrude = kernel.calls.find((c) => c.type === "extrude");
+    expect(extrude, result.errors.join(" | ")).toBeTruthy();
+    expect(Math.abs(extrude!.params.depth.value)).toBeCloseTo(29.5, 6);
+  });
+
+  it("resolves a depth written as a VARIABLE expression", async () => {
+    const feats = [
+      structuredClone(featureOfType(doc, "assignVariable")), // #Bohrloch = 0.31 cm
+      ...withDepth("#Bohrloch*2 + 1 mm"),
+    ];
+    const { kernel, result } = await translate(feats);
+    const extrude = kernel.calls.find((c) => c.type === "extrude");
+    expect(extrude, result.errors.join(" | ")).toBeTruthy();
+    expect(Math.abs(extrude!.params.depth.value)).toBeCloseTo(7.2, 6);
+    // Nothing to report: it evaluated.
+    expect(result.warnings.filter((w) => w.includes("Ausdruck"))).toHaveLength(0);
+  });
+
+  it("SAYS SO when an expression cannot be evaluated, instead of using a default silently", async () => {
+    const { kernel, result } = await translate(withDepth("#Brettstaerke"));
+    const extrude = kernel.calls.find((c) => c.type === "extrude");
+    // The default is still used — but it is now announced, with the cause,
+    // the parameter, the substituted number and the honest verdict.
+    expect(Math.abs(extrude!.params.depth.value)).toBe(25);
+    const warning = result.warnings.find((w) => w.includes("#Brettstaerke"));
+    expect(warning, result.warnings.join(" | ")).toBeTruthy();
+    expect(warning).toContain("nicht auswertbar");
+    expect(warning).toContain('unbekannte Variable "#Brettstaerke"');
+    expect(warning).toContain("Parameter depth");
+    expect(warning).toContain("Vorgabe 25 mm");
+    expect(warning).toContain("FALSCH");
+  });
+
+  it("reports a dimension mismatch (an angle where a length belongs)", async () => {
+    const { result } = await translate(withDepth("45 deg"));
+    const warning = result.warnings.find((w) => w.includes("45 deg"));
+    expect(warning, result.warnings.join(" | ")).toBeTruthy();
+    expect(warning).toContain("erwartet war eine Länge");
+  });
+
+  it("says each broken expression once, not once per parameter read", async () => {
+    const { result } = await translate(withDepth("#Brettstaerke"));
+    expect(result.warnings.filter((w) => w.includes("#Brettstaerke"))).toHaveLength(1);
+  });
+});
+
+describe("booleanBodies → FieldDraft-Boolean (#409/#415/#419/#420)", () => {
+  const doc339 = ticket339();
+  const doc415 = ticket415();
+
+  /** Every feature of the #339 document up to and including its Boolean. */
+  const upToBoolean = (doc: { features: any[] }) => {
+    const feats = doc.features as any[];
+    const idx = feats.findIndex((f) => (f.message ?? f).featureType === "booleanBodies");
+    return feats.slice(0, idx + 1).map((f) => structuredClone(f));
+  };
+
+  it("translates the #339 SUBTRACTION into a scoped FieldDraft Boolean", async () => {
+    const { kernel, result } = await translate(upToBoolean(doc339));
+    const booleans = kernel.calls.filter((c) => c.type === "boolean");
+    expect(booleans.length, result.errors.join(" | ")).toBe(1);
+    expect(booleans[0].params.operation).toBe("Subtract");
+    // Both operand lists are FieldDraft feature references — the only form the
+    // kernel Boolean accepts — and the scope is EXPLICIT.
+    expect(booleans[0].params.tools).toMatch(/^qCreatedBy\(\d+\)$/);
+    expect(booleans[0].params.targets).toMatch(/^qCreatedBy\(\d+\)$/);
+    expect(booleans[0].params.tools).not.toBe(booleans[0].params.targets);
+  });
+
+  it("translates the #415 SUBTRACTION the same way", async () => {
+    const { kernel, result } = await translate(upToBoolean(doc415));
+    const booleans = kernel.calls.filter((c) => c.type === "boolean");
+    expect(booleans.length, result.errors.join(" | ")).toBe(1);
+    expect(booleans[0].params.operation).toBe("Subtract");
+    expect(booleans[0].params.targets).toMatch(/^qCreatedBy\(\d+\)$/);
+  });
+
+  it("maps a UNION onto one tool list and an INTERSECTION onto tools + scope", async () => {
+    for (const [onshapeOp, fieldDraft] of [
+      ["UNION", "Union"],
+      ["INTERSECTION", "Intersect"],
+    ] as const) {
+      const feats = upToBoolean(doc339);
+      const bool = feats[feats.length - 1].message ?? feats[feats.length - 1];
+      paramOf(bool, "operationType").value = onshapeOp;
+      const { kernel, result } = await translate(feats);
+      const booleans = kernel.calls.filter((c) => c.type === "boolean");
+      expect(booleans.length, result.errors.join(" | ")).toBe(1);
+      expect(booleans[0].params.operation).toBe(fieldDraft);
+      if (onshapeOp === "UNION") {
+        // Onshape's union names every body in `tools`; a stray target joins it.
+        expect(booleans[0].params.tools.split(", ")).toHaveLength(2);
+        expect(booleans[0].params.targets).toBeUndefined();
+      } else {
+        expect(booleans[0].params.targets).toMatch(/^qCreatedBy\(\d+\)$/);
+      }
+    }
+  });
+
+  it("carries `keep tools` over", async () => {
+    const feats = upToBoolean(doc339);
+    const bool = feats[feats.length - 1].message ?? feats[feats.length - 1];
+    paramOf(bool, "keepTools").value = true;
+    const { kernel } = await translate(feats);
+    expect(kernel.calls.find((c) => c.type === "boolean")!.params.keep_tools).toBe(true);
+  });
+
+  it("reports the tool clearance it cannot reproduce", async () => {
+    const feats = upToBoolean(doc339);
+    const bool = feats[feats.length - 1].message ?? feats[feats.length - 1];
+    paramOf(bool, "offset").value = true;
+    paramOf(bool, "offsetDistance").expression = "0.2 mm";
+    const { result } = await translate(feats);
+    expect(result.warnings.join(" | ")).toContain("Werkzeug-Aufmaß");
+  });
+
+  it("SKIPS a Boolean whose operand was never imported instead of guessing one", async () => {
+    // Drop the loft the Boolean's tool query names: its operand is now
+    // unresolvable, and a Boolean on the wrong body deletes material silently.
+    const feats = upToBoolean(doc339).filter(
+      (f) => ((f.message ?? f) as any).featureType !== "loft",
+    );
+    const { kernel, result } = await translate(feats);
+    expect(kernel.calls.filter((c) => c.type === "boolean")).toHaveLength(0);
+    expect(result.errors.join(" | ")).toMatch(/(Werkzeug|Ziel)-Körper nicht auflösbar/);
+    expect(result.errors.join(" | ")).toContain("Feature übersprungen");
+  });
+
+  it("SKIPS a subtraction that has no target (no implicit merge scope)", async () => {
+    const feats = upToBoolean(doc339);
+    const bool = feats[feats.length - 1].message ?? feats[feats.length - 1];
+    paramOf(bool, "targets").queries = [];
+    const { kernel, result } = await translate(feats);
+    expect(kernel.calls.filter((c) => c.type === "boolean")).toHaveLength(0);
+    expect(result.errors.join(" | ")).toContain("ohne Ziel-Körper");
+  });
+
+  it("points the id map at the feature that owns the resulting body", async () => {
+    const { result } = await translate(upToBoolean(doc339));
+    const feats = doc339.features as any[];
+    const bool = feats.map((f) => f.message ?? f).find((f) => f.featureType === "booleanBodies");
+    const extrude1 = feats.map((f) => f.message ?? f).find((f) => f.name === "Extrude 1");
+    // A Subtract leaves its geometry on the TARGET body, so a later Onshape
+    // query naming "the boolean's body" must land on that feature.
+    expect(result.idMap[bool.featureId]).toBe(result.idMap[extrude1.featureId]);
   });
 });

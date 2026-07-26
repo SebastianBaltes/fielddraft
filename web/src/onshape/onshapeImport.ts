@@ -24,7 +24,17 @@ import {
 } from "./onshapeQuery";
 import { translateOnshapeSketch, type SketchSubCall } from "./onshapeSketch";
 import { decodeRegionQuery } from "./onshapeRegion";
+import {
+  describeDimension,
+  quantityKind,
+  quantityToDeg,
+  quantityToMm,
+  toFieldDraftFormula,
+  tryEvalOnshapeExpression,
+  type Quantity,
+} from "./onshapeExpr";
 import { resolvePlaneFrame, type PlaneFrameKernel } from "../sketchPlaneFrame";
+import { evalFormula, type VarKind } from "../variableInput";
 
 /** The kernel surface the importer drives — matches `Kernel` in
  *  `web/src/kernel.ts`; narrow so tests can mock it. The geometry readers
@@ -54,6 +64,12 @@ export interface ImportKernel extends Partial<PlaneFrameKernel> {
    *  O(n²) main-thread stall that froze the Onshape import for minutes (#410).
    *  Optional: a kernel double without it just meshes eagerly. */
   setSyncMeshing?(enabled: boolean): boolean | void;
+  /** Upsert a DOCUMENT VARIABLE — the target of Onshape's `assignVariable`
+   *  (#409/#415/#417). `value` is in FieldDraft's base units (mm for a length,
+   *  DEGREES for an angle); `formula` is optional provenance text. Optional:
+   *  a kernel double without it still gets every expression evaluated (the
+   *  importer keeps its own table), the document just carries no variables. */
+  setVariable?(name: string, value: number, kind: VarKind, formula?: string): void;
 }
 
 export interface OnshapeImportResult {
@@ -108,52 +124,126 @@ async function profileSketchId(qs: string): Promise<string | null> {
   return null;
 }
 
-/** Quantity parameter → mm. Onshape carries the authored expression
- *  (`"25 cm"`, `"2.5 mm"`); `value` is the SI evaluation but often 0 in
- *  the features payload, so the expression wins. */
-const UNIT_TO_MM: Record<string, number> = {
-  mm: 1,
-  millimeter: 1,
-  cm: 10,
-  centimeter: 10,
-  m: 1000,
-  meter: 1000,
-  in: 25.4,
-  inch: 25.4,
-  ft: 304.8,
-};
-
-function mmOf(pm: AnyMsg | undefined, fallback = 0): number {
-  const expr = typeof pm?.expression === "string" ? pm.expression : "";
-  const m = expr.match(/^\s*(-?[\d.]+)\s*\*?\s*([a-zA-Z]+)\s*$/);
-  if (m && UNIT_TO_MM[m[2]] !== undefined) {
-    return parseFloat(m[1]) * UNIT_TO_MM[m[2]];
-  }
-  if (typeof pm?.value === "number" && pm.value !== 0) return pm.value * M_TO_MM;
-  return fallback;
-}
-
 const RAD_TO_DEG = 180 / Math.PI;
 
-const UNIT_TO_DEG: Record<string, number> = {
-  deg: 1,
-  degree: 1,
-  degrees: 1,
-  rad: RAD_TO_DEG,
-  radian: RAD_TO_DEG,
-  radians: RAD_TO_DEG,
-};
+/**
+ * The expression context of one import walk: the document variables declared
+ * so far (in document order — a later `assignVariable` may reference an
+ * earlier one), the result the warnings go into, and the feature currently
+ * being translated.
+ *
+ * `feature` is mutable and set ONCE per walk step, before the type dispatch,
+ * so every parameter read below reports the right feature name without
+ * threading it through a dozen signatures.
+ */
+interface ExprEnv {
+  /** Onshape variable name (WITHOUT the `#`) → its evaluated quantity. */
+  vars: Map<string, Quantity>;
+  /** Onshape variable name → the FieldDraft variable it was stored as. */
+  fdNames: Map<string, string>;
+  /** Those of {@link fdNames} a FieldDraft formula may reference: length and
+   *  plain-number variables. An ANGLE variable is deliberately excluded — see
+   *  {@link toFieldDraftFormula}. */
+  fdProjectable: Set<string>;
+  /** Every FieldDraft variable name handed out, to keep them unique. */
+  fdUsed: Set<string>;
+  result: OnshapeImportResult;
+  feature: string;
+  /** Already-emitted warnings — one broken expression is usually read from
+   *  several parameters of the same feature, and saying it once is enough. */
+  seen: Set<string>;
+}
 
-/** Angle parameter → degrees. Same expression-first rule as {@link mmOf};
- *  Onshape's SI evaluation of an angle is in RADIANS. */
-function degOf(pm: AnyMsg | undefined, fallback = 0): number {
-  const expr = typeof pm?.expression === "string" ? pm.expression : "";
-  const m = expr.match(/^\s*(-?[\d.]+)\s*\*?\s*([a-zA-Z]+)\s*$/);
-  if (m && UNIT_TO_DEG[m[2]] !== undefined) {
-    return parseFloat(m[1]) * UNIT_TO_DEG[m[2]];
+function newExprEnv(result: OnshapeImportResult): ExprEnv {
+  return {
+    vars: new Map(),
+    fdNames: new Map(),
+    fdProjectable: new Set(),
+    fdUsed: new Set(),
+    result,
+    feature: "?",
+    seen: new Set(),
+  };
+}
+
+/** Compact number for warning texts (no 12-digit float tails). */
+const fmtNum = (n: number): string => String(Math.round(n * 1e6) / 1e6);
+
+function warnOnce(env: ExprEnv, message: string): void {
+  if (env.seen.has(message)) return;
+  env.seen.add(message);
+  env.result.warnings.push(message);
+}
+
+/**
+ * Quantity parameter → mm (`want = "length"`) or degrees (`want = "angle"`).
+ *
+ * Onshape carries the AUTHORED TEXT (`"25 cm"`, `"3 mm+#HoleExtraGap"`,
+ * `"#Brettstaerke"`) plus `value`, its SI evaluation — which is very often 0
+ * in the `/features` payload, so the expression wins. The expression is
+ * evaluated against the document variables ({@link ExprEnv.vars}) by
+ * `onshapeExpr.ts`.
+ *
+ * The point of this function is what happens when that FAILS. Until #415 the
+ * translation quietly fell through to a hard-coded default whenever the text
+ * was not a bare literal — 153 expressions in the ticket corpus took that
+ * path, and the resulting geometry looked flawless and was wrong. Every
+ * failure now names itself: the expression, the parameter, the cause, and
+ * which number was used instead (Onshape's SI evaluation if it has one, the
+ * feature's default otherwise — and then it says outright that the dimension
+ * is probably wrong).
+ */
+function quantityParam(
+  pm: AnyMsg | undefined,
+  fallback: number,
+  env: ExprEnv,
+  want: "length" | "angle",
+): number {
+  if (!pm) return fallback;
+  const unit = want === "length" ? "mm" : "°";
+  const si =
+    typeof pm.value === "number" && pm.value !== 0
+      ? pm.value * (want === "length" ? M_TO_MM : RAD_TO_DEG)
+      : null;
+  const expr = typeof pm.expression === "string" ? pm.expression.trim() : "";
+  if (!expr) return si ?? fallback;
+
+  const where = pm.parameterId ? ` (Parameter ${pm.parameterId})` : "";
+  const used =
+    si !== null
+      ? `Onshapes ausgewerteter Wert ${fmtNum(si)} ${unit} wird verwendet`
+      : `Vorgabe ${fmtNum(fallback)} ${unit} wird verwendet — das Maß ist damit ` +
+        `mit hoher Wahrscheinlichkeit FALSCH`;
+
+  const ev = tryEvalOnshapeExpression(expr, env.vars);
+  if (!ev.ok) {
+    warnOnce(
+      env,
+      `${env.feature}: Ausdruck "${expr}"${where} nicht auswertbar (${ev.error}) — ${used}`,
+    );
+    return si ?? fallback;
   }
-  if (typeof pm?.value === "number" && pm.value !== 0) return pm.value * RAD_TO_DEG;
-  return fallback;
+  const n = want === "length" ? quantityToMm(ev.q) : quantityToDeg(ev.q);
+  if (n === null) {
+    warnOnce(
+      env,
+      `${env.feature}: Ausdruck "${expr}"${where} ergibt ${describeDimension(ev.q)}, erwartet war ` +
+        `${want === "length" ? "eine Länge" : "ein Winkel"} — ${used}`,
+    );
+    return si ?? fallback;
+  }
+  return n;
+}
+
+/** Quantity parameter → mm. See {@link quantityParam}. */
+function mmOf(pm: AnyMsg | undefined, fallback: number, env: ExprEnv): number {
+  return quantityParam(pm, fallback, env, "length");
+}
+
+/** Angle parameter → degrees. See {@link quantityParam}; Onshape's SI
+ *  evaluation of an angle is in RADIANS. */
+function degOf(pm: AnyMsg | undefined, fallback: number, env: ExprEnv): number {
+  return quantityParam(pm, fallback, env, "angle");
 }
 
 interface SketchRecord {
@@ -404,14 +494,18 @@ function endCondition(
   sketchPlaneQuery: string,
   name: string,
   targetFaceQuery: string | undefined,
+  env: ExprEnv,
 ): EndCondition {
+  const bound = params.get("endBound")?.value ?? "BLIND";
   const out: EndCondition = {
-    depthMm: mmOf(params.get("depth"), 25),
+    // BLIND is the only bound that USES the authored distance — the others
+    // overwrite it below. Reading it regardless would report expression
+    // problems for a parameter that has no effect on the result.
+    depthMm: bound === "BLIND" ? mmOf(params.get("depth"), 25, env) : 0,
     symmetric: params.get("symmetric")?.value === true,
     depthBackMm: 0,
     warnings: [],
   };
-  const bound = params.get("endBound")?.value ?? "BLIND";
 
   if (bound === "THROUGH_ALL") {
     const aabb = kernel.sceneAabb?.();
@@ -452,7 +546,7 @@ function endCondition(
     );
     if (d < 0) out.depthMm = -out.depthMm;
     if (params.get("oppositeDirection")?.value === true) out.depthMm = -out.depthMm;
-    applySecondDirection(params, out, name);
+    applySecondDirection(params, out, name, env);
     if (params.get("hasDraft")?.value === true) {
       out.warnings.push(`${name}: Draft-Winkel wird nicht unterstützt und ignoriert`);
     }
@@ -460,7 +554,7 @@ function endCondition(
   }
 
   if (params.get("oppositeDirection")?.value === true) out.depthMm = -out.depthMm;
-  applySecondDirection(params, out, name);
+  applySecondDirection(params, out, name, env);
   if (params.get("hasDraft")?.value === true) {
     out.warnings.push(`${name}: Draft-Winkel wird nicht unterstützt und ignoriert`);
   }
@@ -471,6 +565,7 @@ function applySecondDirection(
   params: Map<string, AnyMsg>,
   out: EndCondition,
   name: string,
+  env: ExprEnv,
 ): void {
   if (params.get("hasSecondDirection")?.value !== true) return;
   const bound = params.get("secondDirectionBound")?.value ?? "BLIND";
@@ -479,7 +574,7 @@ function applySecondDirection(
       `${name}: zweite Richtung mit ${bound} → als BLIND übernommen`,
     );
   }
-  out.depthBackMm = Math.abs(mmOf(params.get("secondDirectionDepth"), 0));
+  out.depthBackMm = Math.abs(mmOf(params.get("secondDirectionDepth"), 0, env));
 }
 
 /** The world frame of a face/datum query, via the shared resolver. */
@@ -714,6 +809,7 @@ export async function importOnshapeFeatures(
   const result: OnshapeImportResult = { created: [], idMap: {}, warnings: [], errors: [] };
   const sketches = new Map<string, SketchRecord>();
   const sweeps = new Map<string, SweepRecord>();
+  const env = newExprEnv(result);
 
   // Batch mode (#410): defer the display mesh for the whole walk and rebuild it
   // ONCE at the end. Every feature still regenerates (so its plane/edge queries
@@ -721,7 +817,7 @@ export async function importOnshapeFeatures(
   // of N features is O(n²) main-thread work that froze the import for minutes.
   kernel.setSyncMeshing?.(false);
   try {
-    await importFeatures(featuresJson, kernel, result, sketches, sweeps);
+    await importFeatures(featuresJson, kernel, result, sketches, sweeps, env);
   } finally {
     kernel.setSyncMeshing?.(true); // one final mesh of the finished document
   }
@@ -736,6 +832,7 @@ async function importFeatures(
   result: OnshapeImportResult,
   sketches: Map<string, SketchRecord>,
   sweeps: Map<string, SweepRecord>,
+  env: ExprEnv,
 ): Promise<void> {
   for (const raw of featuresJson.features ?? []) {
     const feat = msg(raw);
@@ -745,6 +842,8 @@ async function importFeatures(
       continue;
     }
     const params = paramsOf(feat);
+    // Every parameter read below reports under THIS feature's name.
+    env.feature = name;
 
     if (feat.featureType === "newSketch") {
       const planeQs = queryStringsOf(params.get("sketchPlane"))[0];
@@ -810,7 +909,7 @@ async function importFeatures(
         const built = buildPlaneQuery(upToRef, name, result.idMap, sketches, sweeps);
         if (built.query) upToQuery = built.query;
       }
-      const end = endCondition(params, kernel, rec.planeQuery, name, upToQuery);
+      const end = endCondition(params, kernel, rec.planeQuery, name, upToQuery, env);
       result.warnings.push(...end.warnings);
       if (end.error) {
         result.errors.push(end.error);
@@ -919,7 +1018,7 @@ async function importFeatures(
         JSON.stringify({
           display_name: name,
           open_faces: openFaces.join(", "),
-          thickness: { value: mmOf(params.get("thickness"), 2), unit: "mm" },
+          thickness: { value: mmOf(params.get("thickness"), 2, env), unit: "mm" },
         }),
       );
       result.idMap[feat.featureId] = fdId;
@@ -941,7 +1040,7 @@ async function importFeatures(
       if (section !== "CIRCULAR") {
         result.warnings.push(`${name}: ${section}-Querschnitt → kreisförmig übernommen`);
       }
-      const radiusMm = mmOf(params.get("radius"), 2);
+      const radiusMm = mmOf(params.get("radius"), 2, env);
       const edgeQs = queryStringsOf(params.get("entities"));
 
       // Sibling edges can decode to the same query (the un-resolved BTON
@@ -984,22 +1083,298 @@ async function importFeatures(
     }
 
     if (feat.featureType === "revolve") {
-      await importRevolve(feat, params, name, kernel, result, sketches);
+      await importRevolve(feat, params, name, kernel, result, sketches, env);
       continue;
     }
 
     if (feat.featureType === "chamfer") {
-      await importChamfer(feat, params, name, kernel, result, sketches, sweeps);
+      await importChamfer(feat, params, name, kernel, result, sketches, sweeps, env);
       continue;
     }
 
     if (feat.featureType === "hole") {
-      await importHole(feat, params, name, kernel, result, sketches);
+      await importHole(feat, params, name, kernel, result, sketches, env);
+      continue;
+    }
+
+    if (feat.featureType === "assignVariable") {
+      importAssignVariable(params, name, kernel, env);
+      continue;
+    }
+
+    if (feat.featureType === "booleanBodies") {
+      await importBooleanBodies(feat, params, name, kernel, result, env);
       continue;
     }
 
     result.errors.push(`${name}: Feature-Typ "${feat.featureType}" wird noch nicht importiert`);
   }
+}
+
+/** Characters a FieldDraft identifier may hold (the kernel lexer's rule:
+ *  ASCII word characters plus everything non-ASCII, so `Seitenlänge` passes). */
+const FD_NAME_FORBIDDEN = /[^A-Za-z0-9_\u0080-\uFFFF]/g;
+
+/** A unique, lexer-legal FieldDraft name for an Onshape variable. */
+function fieldDraftVariableName(raw: string, used: Set<string>): string {
+  let base = raw.replace(FD_NAME_FORBIDDEN, "_");
+  if (!base || /^[0-9]/.test(base)) base = `v${base}`;
+  let out = base;
+  for (let n = 2; used.has(out); n += 1) out = `${base}_${n}`;
+  used.add(out);
+  return out;
+}
+
+/**
+ * Onshape `assignVariable` → a FieldDraft DOCUMENT VARIABLE (#409/#415/#417).
+ *
+ * Onshape declares variables as features, so they arrive in document order and
+ * a later one may reference an earlier one (`#Gesamtlaenge = #Klingenlaenge +
+ * #Grifflaenge`). The walk therefore evaluates each declaration against the
+ * table built so far and appends its result — which is also the table every
+ * later quantity parameter is read against ({@link quantityParam}). That
+ * ordering is the whole point: without it, `#Brettstaerke` in an extrude depth
+ * has nothing to resolve to.
+ *
+ * Two Onshape concepts do NOT lower:
+ *  - `mode: MEASURED` — the value comes out of the geometry (Onshape writes
+ *    `"?"` in the feature list, the number lives only inside its own
+ *    evaluation). FieldDraft has no measured variables; the declaration is
+ *    reported and the name stays undefined, so every expression that uses it
+ *    says so on its own.
+ *  - a dimension FieldDraft has no variable kind for (an area, a ratio of
+ *    lengths with a leftover exponent). The value still enters the importer's
+ *    own table — dependent expressions keep evaluating correctly — it just
+ *    does not become a document variable.
+ *
+ * The stored FieldDraft variable additionally carries a FORMULA whenever the
+ * Onshape expression projects faithfully onto FieldDraft's dimensionless,
+ * mm-based formula language ({@link toFieldDraftFormula}) AND FieldDraft's own
+ * evaluator reproduces the number this module computed. That cross-check is
+ * what makes the projection safe to store: a formula that would drift is
+ * dropped, and the variable keeps its plain baked value.
+ */
+function importAssignVariable(
+  params: Map<string, AnyMsg>,
+  name: string,
+  kernel: ImportKernel,
+  env: ExprEnv,
+): void {
+  const result = env.result;
+  const osName = String(params.get("name")?.value ?? "").trim();
+  if (!osName) {
+    result.errors.push(`${name}: assignVariable ohne Variablennamen — übersprungen`);
+    return;
+  }
+  const mode = String(params.get("mode")?.value ?? "ASSIGNED");
+  if (mode !== "ASSIGNED") {
+    result.warnings.push(
+      `${name}: Variable "#${osName}" wird in Onshape aus der Geometrie GEMESSEN (${mode}) — ` +
+        `FieldDraft kennt keine gemessenen Variablen; sie bleibt undefiniert, und jeder Ausdruck, ` +
+        `der sie benutzt, meldet sich einzeln`,
+    );
+    return;
+  }
+  // `value` mirrors whichever of lengthValue/angleValue/numberValue/anyValue
+  // the chosen `variableType` uses, and is the only one that is right for ALL
+  // types (a NUMBER variable's lengthValue still reads `0.0*m`).
+  const byType: Record<string, string> = {
+    LENGTH: "lengthValue",
+    ANGLE: "angleValue",
+    NUMBER: "numberValue",
+    ANY: "anyValue",
+  };
+  const varType = String(params.get("variableType")?.value ?? "ANY");
+  const pm = params.get("value") ?? params.get(byType[varType] ?? "anyValue");
+  const expr = typeof pm?.expression === "string" ? pm.expression.trim() : "";
+  if (!expr) {
+    result.errors.push(`${name}: Variable "#${osName}" hat keinen Wert — übersprungen`);
+    return;
+  }
+  const ev = tryEvalOnshapeExpression(expr, env.vars);
+  if (!ev.ok) {
+    result.errors.push(
+      `${name}: Variable "#${osName}" = "${expr}" nicht auswertbar (${ev.error}) — ` +
+        `Variable nicht angelegt`,
+    );
+    return;
+  }
+  // Known to the importer from here on, whatever FieldDraft can store.
+  env.vars.set(osName, ev.q);
+
+  const kind = quantityKind(ev.q);
+  if (kind === null) {
+    result.warnings.push(
+      `${name}: Variable "#${osName}" ist ${describeDimension(ev.q)} — dafür hat FieldDraft ` +
+        `keine Variablenart; sie wird für die Ausdrücke dieses Imports benutzt, aber nicht ` +
+        `als Dokument-Variable angelegt`,
+    );
+    return;
+  }
+  const value = kind === "angle" ? (quantityToDeg(ev.q) as number) : ev.q.v;
+
+  const existing = env.fdNames.get(osName);
+  const fdName = existing ?? fieldDraftVariableName(osName, env.fdUsed);
+  if (!existing && fdName !== osName) {
+    result.warnings.push(
+      `${name}: Variablenname "#${osName}" ist in FieldDraft nicht zulässig — als "${fdName}" importiert`,
+    );
+  }
+
+  // Parametric provenance, but only when it demonstrably computes the same
+  // number in FieldDraft's own (dimensionless, mm/degree-based) evaluator.
+  let formula: string | undefined;
+  if (expr.includes("#") && kind !== "angle") {
+    const rendered = toFieldDraftFormula(expr, (v) =>
+      env.fdProjectable.has(v) ? env.fdNames.get(v) : undefined,
+    );
+    if (rendered) {
+      const scope: Record<string, number> = {};
+      for (const os of env.fdProjectable) {
+        const fd = env.fdNames.get(os);
+        const q = env.vars.get(os);
+        if (fd && q) scope[fd] = q.v;
+      }
+      try {
+        const check = evalFormula(rendered, scope);
+        if (Math.abs(check - value) <= 1e-6 * Math.max(1, Math.abs(value))) formula = rendered;
+      } catch {
+        // FieldDraft cannot evaluate it — keep the baked number, drop the text.
+      }
+    }
+  }
+
+  env.fdNames.set(osName, fdName);
+  if (kind === "length" || kind === "number") env.fdProjectable.add(osName);
+
+  try {
+    kernel.setVariable?.(fdName, value, kind, formula);
+  } catch (e) {
+    result.errors.push(
+      `${name}: Variable "${fdName}" konnte nicht angelegt werden (${String(e)})`,
+    );
+  }
+}
+
+/** The FieldDraft feature ids owning the bodies a boolean operand names, or
+ *  `null` when one of them points at an Onshape operation this import did not
+ *  produce — in which case the caller SKIPS the feature instead of guessing an
+ *  operand (a Boolean on the wrong body silently deletes material). */
+async function booleanOperands(
+  pm: AnyMsg | undefined,
+  name: string,
+  label: string,
+  result: OnshapeImportResult,
+): Promise<number[] | null> {
+  const out: number[] = [];
+  for (const qs of queryStringsOf(pm)) {
+    const ref = await decodeAnyOpRef(qs);
+    const fd = ref === null ? undefined : result.idMap[ref];
+    if (fd === undefined) {
+      result.errors.push(
+        `${name}: ${label} nicht auflösbar ` +
+          `(${ref ? `Onshape-Operation ${ref} wurde nicht importiert` : "Query benennt keine importierte Operation"}) — ` +
+          `Feature übersprungen`,
+      );
+      return null;
+    }
+    if (!out.includes(fd)) out.push(fd);
+  }
+  return out;
+}
+
+/**
+ * Onshape `booleanBodies` → a FieldDraft `boolean` feature (#409/#415/…/#420).
+ *
+ * `operationType` maps 1:1 onto FieldDraft's three Boolean tabs
+ * (UNION → Union, SUBTRACTION → Subtract, INTERSECTION → Intersect). Both
+ * operand lists are body queries; each is decoded to the Onshape OPERATION
+ * that created the body and looked up in the id map, exactly as
+ * {@link booleanTargets} does for a feature's own boolean scope — the
+ * FieldDraft Boolean accepts `qCreatedBy(<feature>)` and nothing else.
+ *
+ * Scope is never implicit (Feature-Scope-Direktive): a Subtract or Intersect
+ * without resolvable targets is SKIPPED with an error, not turned into a
+ * free-floating tool that happens to overlap something.
+ *
+ * The id map entry for the Boolean itself points at the feature that OWNS the
+ * resulting body — the first target for a Subtract, the first tool otherwise.
+ * A later Onshape query naming "the body the boolean produced" therefore lands
+ * on the FieldDraft feature that actually carries that geometry (the Boolean
+ * feature itself creates none; it re-routes the ops of its operands).
+ */
+async function importBooleanBodies(
+  feat: AnyMsg,
+  params: Map<string, AnyMsg>,
+  name: string,
+  kernel: ImportKernel,
+  result: OnshapeImportResult,
+  env: ExprEnv,
+): Promise<void> {
+  const opType = String(params.get("operationType")?.value ?? "UNION");
+  const operation = { UNION: "Union", SUBTRACTION: "Subtract", INTERSECTION: "Intersect" }[
+    opType
+  ];
+  if (!operation) {
+    result.errors.push(
+      `${name}: Boolean-Operation "${opType}" hat kein FieldDraft-Gegenstück — übersprungen`,
+    );
+    return;
+  }
+
+  const tools = await booleanOperands(params.get("tools"), name, "Werkzeug-Körper", result);
+  if (!tools) return;
+  const targets = await booleanOperands(params.get("targets"), name, "Ziel-Körper", result);
+  if (!targets) return;
+
+  // Onshape's UNION puts every body in `tools`; FieldDraft's Union does the
+  // same, so a stray target simply joins the tool list.
+  const toolIds = operation === "Union" ? [...new Set([...tools, ...targets])] : tools;
+  const targetIds = operation === "Union" ? [] : targets;
+  if (toolIds.length === 0) {
+    result.errors.push(`${name}: Boolean ohne Werkzeug-Körper — übersprungen`);
+    return;
+  }
+  if (operation === "Union" && toolIds.length < 2) {
+    result.errors.push(
+      `${name}: Union mit nur einem auflösbaren Körper — übersprungen (nichts zu vereinigen)`,
+    );
+    return;
+  }
+  if (operation !== "Union" && targetIds.length === 0) {
+    result.errors.push(
+      `${name}: ${operation === "Subtract" ? "Subtraktion" : "Verschneidung"} ohne Ziel-Körper — ` +
+        `übersprungen (FieldDraft verrechnet nie implizit mit einem zufällig überlappenden Körper)`,
+    );
+    return;
+  }
+
+  if (params.get("offset")?.value === true) {
+    const offsetMm = mmOf(params.get("offsetDistance"), 0, env);
+    if (offsetMm !== 0) {
+      result.warnings.push(
+        `${name}: Werkzeug-Aufmaß (${fmtNum(offsetMm)} mm Luft) wird nicht nachgebildet — ` +
+          `es wird ohne Spiel verrechnet`,
+      );
+    }
+  }
+  if (params.get("reFillet")?.value === true) {
+    result.warnings.push(`${name}: „Verrundungen wiederherstellen" wird nicht nachgebildet`);
+  }
+
+  const asQuery = (ids: number[]) => ids.map((i) => `qCreatedBy(${i})`).join(", ");
+  const fdId = kernel.addFeatureCall(
+    "boolean",
+    JSON.stringify({
+      display_name: name,
+      operation,
+      tools: asQuery(toolIds),
+      ...(targetIds.length ? { targets: asQuery(targetIds) } : {}),
+      ...(params.get("keepTools")?.value === true ? { keep_tools: true } : {}),
+    }),
+  );
+  result.created.push(fdId);
+  result.idMap[feat.featureId] = operation === "Subtract" ? targetIds[0] : toolIds[0];
 }
 
 /**
@@ -1034,6 +1409,7 @@ async function importRevolve(
   kernel: ImportKernel,
   result: OnshapeImportResult,
   sketches: Map<string, SketchRecord>,
+  env: ExprEnv,
 ): Promise<void> {
   const bodyType = String(params.get("bodyType")?.value ?? "SOLID");
   if (bodyType !== "SOLID") {
@@ -1045,8 +1421,8 @@ async function importRevolve(
 
   // Sweep angle: FieldDraft revolves a full turn, nothing else.
   const revolveType = String(params.get("revolveType")?.value ?? "FULL");
-  const angleDeg = degOf(params.get("angle"), 0);
-  const angleBackDeg = degOf(params.get("angleBack"), 0);
+  const angleDeg = degOf(params.get("angle"), 0, env);
+  const angleBackDeg = degOf(params.get("angleBack"), 0, env);
   const sweepDeg =
     revolveType === "FULL"
       ? 360
@@ -1100,7 +1476,7 @@ async function importRevolve(
 
   if (queryStringsOf(params.get("wallShape")).length > 0) {
     result.warnings.push(
-      `${name}: dünnwandiger Revolve (Wandstärke ${mmOf(params.get("thickness1"), 0)} mm) ` +
+      `${name}: dünnwandiger Revolve (Wandstärke ${mmOf(params.get("thickness1"), 0, env)} mm) ` +
         `wird nicht übernommen — importiert wird der volle Körper`,
     );
   }
@@ -1143,13 +1519,14 @@ async function importChamfer(
   result: OnshapeImportResult,
   sketches: Map<string, SketchRecord>,
   sweeps: Map<string, SweepRecord>,
+  env: ExprEnv,
 ): Promise<void> {
   const chamferType = String(params.get("chamferType")?.value ?? "EQUAL_OFFSETS");
   let distanceMm: number;
   if (chamferType === "EQUAL_OFFSETS") {
-    distanceMm = mmOf(params.get("width"), 0);
+    distanceMm = mmOf(params.get("width"), 0, env);
   } else if (chamferType === "OFFSET_ANGLE") {
-    const angleDeg = degOf(params.get("angle"), 0);
+    const angleDeg = degOf(params.get("angle"), 0, env);
     if (Math.abs(angleDeg - 45) > 1e-3) {
       result.warnings.push(
         `${name}: Fasen-Typ OFFSET_ANGLE mit ${angleDeg}° — FieldDraft kann nur die ` +
@@ -1157,7 +1534,7 @@ async function importChamfer(
       );
       return;
     }
-    distanceMm = mmOf(params.get("width1"), 0);
+    distanceMm = mmOf(params.get("width1"), 0, env);
     result.warnings.push(
       `${name}: OFFSET_ANGLE 45° als symmetrische Fase (${distanceMm} mm) übernommen — ` +
         `deckungsgleich, solange die beiden Flächen rechtwinklig zusammenstoßen`,
@@ -1240,6 +1617,7 @@ async function importHole(
   kernel: ImportKernel,
   result: OnshapeImportResult,
   sketches: Map<string, SketchRecord>,
+  env: ExprEnv,
 ): Promise<void> {
   // Onshape's auto-name is the literal template `#featureName` in the feature
   // list — useless as a label, so fall back to the bore's own description.
@@ -1248,8 +1626,8 @@ async function importHole(
   const holeKind = String(table.holeType ?? "Drilled");
   const tapped = /tapped/i.test(holeKind);
   const diameterMm = tapped
-    ? mmOf(params.get("tapDrillDiameterV2") ?? params.get("tapDrillDiameter"), 0)
-    : mmOf(params.get("holeDiameterV2") ?? params.get("holeDiameter"), 0);
+    ? mmOf(params.get("tapDrillDiameterV2") ?? params.get("tapDrillDiameter"), 0, env)
+    : mmOf(params.get("holeDiameterV2") ?? params.get("holeDiameter"), 0, env);
   const name = rawName.startsWith("#") ? `Bohrung Ø${diameterMm} mm` : rawName;
   if (!(diameterMm > 0)) {
     result.errors.push(`${name}: Bohrungsdurchmesser ist 0 — Feature übersprungen`);
@@ -1299,7 +1677,7 @@ async function importHole(
   // that removes at least as much material as Onshape did, never less.
   const endStyle = String(params.get("endStyleV2")?.value ?? params.get("endStyle")?.value ?? "BLIND");
   let endType = "blind";
-  let depthMm = mmOf(params.get("holeDepth"), 0);
+  let depthMm = mmOf(params.get("holeDepth"), 0, env);
   if (endStyle === "THROUGH" || endStyle === "THROUGH_ALL") {
     endType = "through_all";
   } else if (endStyle !== "BLIND") {
@@ -1317,13 +1695,13 @@ async function importHole(
   const style = String(params.get("styleV2")?.value ?? params.get("style")?.value ?? "SIMPLE");
   if (style === "C_BORE") {
     result.warnings.push(
-      `${name}: Senkung (Counterbore Ø${mmOf(params.get("cBoreDiameter"), 0)} mm × ` +
-        `${mmOf(params.get("cBoreDepth"), 0)} mm) wird nicht modelliert — als einfache Bohrung importiert`,
+      `${name}: Senkung (Counterbore Ø${mmOf(params.get("cBoreDiameter"), 0, env)} mm × ` +
+        `${mmOf(params.get("cBoreDepth"), 0, env)} mm) wird nicht modelliert — als einfache Bohrung importiert`,
     );
   } else if (style === "C_SINK") {
     result.warnings.push(
-      `${name}: Senkung (Countersink Ø${mmOf(params.get("cSinkDiameter"), 0)} mm × ` +
-        `${degOf(params.get("cSinkAngle"), 0)}°) wird nicht modelliert — als einfache Bohrung importiert`,
+      `${name}: Senkung (Countersink Ø${mmOf(params.get("cSinkDiameter"), 0, env)} mm × ` +
+        `${degOf(params.get("cSinkAngle"), 0, env)}°) wird nicht modelliert — als einfache Bohrung importiert`,
     );
   } else if (style !== "SIMPLE") {
     result.warnings.push(`${name}: Loch-Stil ${style} wird als einfache Bohrung importiert`);
@@ -1336,7 +1714,7 @@ async function importHole(
   const tip = String(params.get("tipAngleStyle")?.value ?? "FLAT");
   if (endType === "blind" && tip !== "FLAT") {
     result.warnings.push(
-      `${name}: Bohrspitze (${degOf(params.get("tipAngle"), 0)}°) wird nicht modelliert — flacher Bohrgrund`,
+      `${name}: Bohrspitze (${degOf(params.get("tipAngle"), 0, env)}°) wird nicht modelliert — flacher Bohrgrund`,
     );
   }
   if (queryStringsOf(params.get("startBoundEntity")).length > 0) {
