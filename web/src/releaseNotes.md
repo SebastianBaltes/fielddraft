@@ -12,6 +12,9 @@ Format, eine Zeile je Eintrag:
 kind = feat | fix | perf. scope und #tickets sind optional. Folgezeilen, die
 eingerückt sind, gehören zum Text davor (Umbruch erlaubt).
 
+## 0.33.1
+- fix(ui): Escape beendet jetzt auch den Fasen-, Fillet- und Mess-Modus (vorher blieb das Werkzeug aktiv und fing weiter Klicks ab).
+
 ## 0.33.0
 - feat(onshape) #416: Onshape-Revolve-Features werden übersetzt — volle Umdrehung um eine Sketch-Linie (auch Konstruktionslinie), Profil-Regionen und Boolean-Scope wie beim Extrude. Teil-Umdrehungen, Flächen-Revolves und Nicht-Linien-Achsen werden mit klarer Meldung ausgelassen statt geraten.
 - fix(onshape) #416: Sketches auf impliziten Mate-Connectors melden jetzt das fehlende Onshape-Konzept beim Namen statt einer kryptischen Query-Fehlermeldung.

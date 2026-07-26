@@ -100,6 +100,12 @@ function runEscape(ctx: KeyboardCommandContext, e: KeyboardEvent): void {
   }
   if (cur.mateMode) {
     store.toggleMateMode();
+  } else if (cur.filletMode) {
+    store.toggleFilletMode();
+  } else if (cur.chamferMode) {
+    store.toggleChamferMode();
+  } else if (cur.measureMode) {
+    store.toggleMeasureMode();
   } else if (cur.sketchSession.active && cur.sketchSession.selectedTool) {
     // P0.1: in a sketch session, Esc drops the active drawing tool and
     // returns to select mode so geometry can be picked.
