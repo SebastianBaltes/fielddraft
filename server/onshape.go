@@ -222,6 +222,35 @@ func (s *Server) handleOnshapeFeatures(w http.ResponseWriter, r *http.Request) {
 	writeOnshapeJSON(w, data)
 }
 
+// handleOnshapeSketches returns the SOLVED sketches of a part studio in WORLD
+// coordinates. The feature tree carries only 2D sketch coordinates; it does not
+// say which in-plane basis Onshape gave a face-mounted sketch. FieldDraft
+// derives that basis from the face normal alone, Onshape from the face's
+// parametrisation — both deterministic, and different, so a sketch on a wall
+// lands rotated (#415). This endpoint is the exact answer: with 2D from the
+// features and 3D from here, the frame is over-determined and can be MEASURED.
+func (s *Server) handleOnshapeSketches(w http.ResponseWriter, r *http.Request) {
+	var ref onshapeRef
+	if !s.onshapeGuard(w, r, &ref) {
+		return
+	}
+	if !validOnshapeID(ref.ElementID) {
+		writeErr(w, http.StatusBadRequest, "invalid element id")
+		return
+	}
+	path := fmt.Sprintf("/api/v6/partstudios/d/%s/w/%s/e/%s/sketches",
+		ref.DocumentID, ref.WorkspaceID, ref.ElementID)
+	// Signed verbatim — the signature covers the query string, so it has to be
+	// the very bytes the request carries.
+	data, err := s.onshape.get(path, "includeGeometry=true&output3D=true")
+	if err != nil {
+		log.Printf("onshape sketches: %v", err)
+		writeErr(w, http.StatusBadGateway, "onshape request failed")
+		return
+	}
+	writeOnshapeJSON(w, data)
+}
+
 // writeOnshapeJSON forwards an upstream body that we have already validated as
 // 2xx. It is passed through verbatim (it is Onshape's JSON, not ours), but only
 // after json.Valid — never hand the client bytes we did not confirm are JSON.

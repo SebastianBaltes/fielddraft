@@ -90,7 +90,7 @@ Zeilen ohne datierten Kommentar stehen noch auf dem **Stand des Erst-Surveys**
 | #413 | 6  | **Struktur korrekt** (SDF-verifiziert: Wanne, 2-mm-Wände); Rest: SWEPT_/CAP_EDGE-Fillets übersprungen, Geschwister-Kanten nicht unterscheidbar — P0-Livetest 2026-07-24 |
 | #414 | 27 | Feature-Typen **OK** (chamfer + hole übersetzt), aber **Geometrie noch falsch**: Wall-Provenienz region-eingeschränkter Profile fehlt → Chamfer-Kante, Sketch-2-Ebene und 6 Fillets lösen nicht auf — s. Update 2026-07-25 (3) |
 | #416 | 19 | Feature-Typen **OK** (chamfer + revolve übersetzt), aber **Geometrie falsch**: 3 der 5 Sketches liegen auf impliziten Mate-Connectors (Sub-Features!) → 12 der 19 Features fallen aus; dazu ein Kernel-Bug bei abwärts gezeichneter Revolve-Achse — s. Update 2026-07-25 (4) |
-| #415 | 20 | Feature-Typen **OK** (thicken übersetzt), aber **Geometrie noch falsch**: die Sketch-Frames auf Wandflächen sind gegenüber Onshape um 90° verdreht → Bodenplatte und Deckelausschnitt liegen quer, X/Y der Ground-Truth-AABB vertauscht — s. Update 2026-07-26 (2) |
+| #415 | 20 | **Geometrie stimmt**: die Ground-Truth-AABB wird getroffen (Render-Mesh x[−33,0; 33,0] · y[−63,54; 63,54] · z[−3,03; 32,55] gegen Onshape x[−33; 33] · y[−63,55; 63,55] · z[−3; 32,5]). Rest: 7 Fillets lösen ihre Kanten nicht auf (kosmetisch) — s. Update 2026-07-26 (4) |
 | #409 | 48 | assignVariable(8), hole(4), mirror(3), linearPattern(2), booleanBodies(1), chamfer(1) |
 | #419 | 151 | chamfer(12), booleanBodies(8), revolve(7), thicken(7), assignVariable(6), hole(2), printedHole(2), circularPattern(1), linearPattern(1) |
 | #420 | 23 | assignVariable(7), booleanBodies(1), helix(1), sweep(1) |
@@ -111,7 +111,7 @@ Zeilen ohne datierten Kommentar stehen noch auf dem **Stand des Erst-Surveys**
 | mirror (Spiegelebenen-Query + entities) | M | 409,411,417,418,419 |
 | circularPattern (+ linearPattern) (Achse/Richtung + Anzahl + entities) | M | 409,411,417,418,419 |
 | ~~thicken~~ ERLEDIGT (Face-Query → `qFace`, Dicke 1/2, Richtung, Scope) | — | ~~415,417,418,419~~ |
-| **Sketch-Frame auf Face-Ebenen** (FieldDraft leitet die u/v-Basis nur aus der Normalen ab, Onshape aus der Flächen-Parametrisierung → 90°-Verdrehung) | M–L | 415 (offen), vermutlich 414 und jedes Dokument mit Sketch auf Wandfläche |
+| ~~Sketch-Frame auf Face-Ebenen~~ ERLEDIGT (Frame an Onshapes 3D-Antwort gemessen, 2D-Koordinaten mit `B_fd⁻¹ ∘ B_os` umgerechnet) | — | ~~415~~, ~~414 (Teil)~~, jedes Dokument mit Sketch auf Wandfläche |
 | sweep (Profil + Pfad-Query) | M | 418,420 |
 | helix | S–M | 420,421 |
 | mateConnector als **Sketch-Ebene** (Ursprung + Achsenlage aus `originType`/`entityInferenceType`) | M | 416,417,421 |
@@ -564,3 +564,155 @@ Nicht-90°-Drehung, der übersprungene Sketch-Linien-Anker und ein Connector, de
 im Feature-Baum steht. `onshapeImport416E2E.slow.test.ts` nagelt am echten
 WASM fest, dass genau drei Sketches als „auf Mate-Connector" gemeldet werden,
 jeder seinen Anker nennt, und dass die zweite, tiefere Lücke benannt ist.
+
+## Update 2026-07-26 (4) — der Sketch-Frame auf Wandflächen ist zu, #415 trifft die Ground Truth
+
+**Der Konflikt.** Ein Sketch ist 2D-Geometrie plus die starre Abbildung, die sie
+in den Raum hebt: `P = Ursprung + u·x + v·y`. Für eine flächengebundene Ebene
+leiten beide Systeme diese Basis deterministisch her — und verschieden:
+FieldDraft allein aus der Flächennormalen (`planeBasisFromNormal`, Weltachse mit
+der geringsten Ausrichtung zur Normalen als Saat, zweimal kreuzen —
+Konventions-Lock mit `face_plane_frame` im Kernel), Onshape aus der
+Parametrisierung der Fläche. Wer Onshapes 2D-Koordinaten wörtlich einbäckt, legt
+den Sketch quer.
+
+**Die Lösung: der IMPORTER rechnet um, keine der beiden Konventionen ändert sich.**
+`B_os` wird an Onshapes eigener Antwort GEMESSEN, `B_fd` kommt aus dem
+gemeinsamen Resolver `web/src/sketchPlaneFrame.ts` (die SSOT, nicht eine Kopie
+der Regel), und die In-Plane-Abbildung `B_fd⁻¹ ∘ B_os` ist eine exakte
+2D-Drehung/Spiegelung samt Ursprungsversatz. Für gleiche Frames — jede
+Ursprungsebene — ist sie die Identität und rührt nichts an. Neu:
+`web/src/onshape/onshapeSketchFrame.ts`.
+
+**Die Frame-Quelle, und warum diese.** `GET /partstudios/…/sketches?includeGeometry=true&output3D=true`
+meldet jede Sketch-Entity in Weltkoordinaten. Zusammen mit der 2D-Geometrie aus
+dem Feature-Payload ist der Frame damit **überbestimmt**: eine Ausgleichsrechnung
+über alle 2D↔3D-Paare liefert x, y und Ursprung, und die Gegenprobe (orthonormale
+Achsen, jeder Punkt auf 1e-6 mm getroffen) sagt, ob das Ergebnis trägt. Am
+#415-Dokument gemessen, Residuum ≤ 1e-9 mm:
+
+| Sketch | Ebene | Ursprung (mm) | Onshape x | Onshape y | FieldDraft x | FieldDraft y | Abbildung |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Sketch 1 (Kontrolle) | Ursprung XY | (0; 0; 0) | +X | +Y | +X | +Y | Identität |
+| Sketch 2 (Kontrolle) | Ursprung YZ | (0; 0; 0) | +Y | +Z | +Y | +Z | Identität |
+| Sketch 3 | Bodenwand, n = −Z | (0; 0; −3) | +X | −Y | +Y | +X | (u, v) → (−v, u) |
+| Sketch 4 | Deckelfläche, n = +Z | (0; 0; 32,5) | +X | +Y | −Y | +X | (u, v) → (−v, u) |
+
+Die beiden Kontrollzeilen sind der Beleg für die Methode: auf den
+Ursprungsebenen reproduziert die Messung FieldDrafts eigene Datum-Frames auf die
+letzte Stelle, und die Umrechnung ist dort die Identität. Genau so muss es sein —
+die Frames stimmten dort schon vorher überein.
+
+Die Alternative (b) der Voranalyse (Constraint-`externalMaster`-Referenzen)
+wurde verworfen: sie ist indirekt und liefert die Drehung nur, wo eine
+Offset-Beziehung zur Flächenberandung besteht, während die 3D-Antwort jeden
+Sketch abdeckt und **prüfbar** ist statt plausibel.
+
+**Was umgeschrieben wird — der PAYLOAD, nicht das Übersetzungsergebnis.**
+`transformSketchFeature` liefert eine Kopie des Onshape-Sketch-Features in
+FieldDrafts Basis. Dadurch sehen ALLE 2D-Leser dieselben Zahlen — die
+Sketch-Übersetzung, die Region-Innenpunkte (`sketchEntityVertices`, #412) und die
+Linien-Erkennung der Revolve-Achse (`sketchLineEntityIds`, #416) —, ohne dass die
+Umrechnung an drei Stellen gespiegelt werden müsste. Bewegt werden Punkte,
+Linien-Stützpunkte und -Richtungen, Kreis-/Ellipsen-Mittelpunkte und -Achsen
+sowie die Winkel eines Bogens; Längen, Radien und Entity-Ids bleiben, weil die
+Abbildung starr ist. `qSketchLine`/`qSketchPoint`-Ordinale ändern sich damit
+nicht — Entities werden transformiert, nicht umnummeriert; Hole-Ziele und
+Revolve-Achsen bleiben dieselben Entities an der jetzt richtigen Stelle.
+
+Drei Feinheiten, die keine Näherung sind:
+
+- **HORIZONTAL/VERTICAL** sind an die Achsen gebunden. Vertauscht die Abbildung
+  die Achsen, tauschen auch sie — sonst arbeitete der Solver gegen die gerade
+  gedrehte Geometrie. Bei einer **schiefen** Drehung gibt es keine treue
+  Entsprechung; dann werden sie **verworfen** (die Geometrie steht explizit da)
+  und das wird gemeldet.
+- **Eine Spiegelung** (die Ebenennormalen zeigen gegeneinander, det = −1) dreht
+  den Umlaufsinn um: derselbe Bogen läuft gegen den Uhrzeigersinn jetzt vom
+  früheren END- zum STARTpunkt, also tauschen Winkel und Endpunkt-Ids mit.
+- **Onshapes Sketch-Ursprung** ist nicht zwangsläufig FieldDrafts (Entity 0 sitzt
+  auf dem Flächen-Zentroid). Liegt er versetzt, werden Bedingungen auf ihn
+  verworfen statt Geometrie an einen Punkt zu ziehen, den dieser Sketch nicht
+  hat. Im #415-Dokument tritt der Fall nicht auf (Versatz exakt 0).
+
+**Erst die Ebene, dann die Basis.** Weicht die gemessene NORMALE von der der
+aufgelösten FieldDraft-Fläche ab, oder liegt Onshapes Ursprung neben dieser
+Ebene, wird **nicht** umgerechnet, sondern ein Fehler gemeldet: dann hat die
+Ebenen-Query eine andere Fläche erwischt, und das wegzurechnen hieße, einen
+Fehlgriff zu kaschieren. Ist der Frame aus der 3D-Antwort nicht bestimmbar (alle
+Stützpunkte kollinear — #415 „Sketch 5", vier Ellipsen auf einer Geraden), wird
+der Sketch wörtlich übernommen und genau das gesagt; geraten wird nichts.
+
+**Live-Pfad.** Neue Proxy-Route `GET /api/onshape/sketches` (`server/onshape.go`,
+sechs Zeilen Handler plus Registrierung) → `platformApi.getOnshapeSketches` →
+`importOnshapeProject` zieht die Antwort neben dem Feature-Baum und reicht sie
+als `sources.sketches3d` in `importOnshapeFeatures`. Ein Fehlschlag versenkt den
+Import **nicht**: der Rest des Dokuments ist davon unberührt, kommt an, und die
+Lücke steht als Warnung obenan. Die Übergabe ist ein Parameter, kein Fetch im
+Importer — deshalb speisen die Tests sie aus Fixtures und brauchen kein Netz.
+
+**Ergebnis #415 — vorher/nachher, am Render-Mesh gemessen (mm):**
+
+| | x | y | z |
+| --- | --- | --- | --- |
+| Onshape (Tessellierung) | [−33; 33] | [−63,55; 63,55] | [−3; 32,5] |
+| FieldDraft **vorher** | [−63,54; 63,54] | [−48,5; 48,5] | [−3,00; 32,50] |
+| FieldDraft **nachher** | [−33,00; 33,00] | [−63,54; 63,54] | [−3,03; 32,55] |
+
+X und Y waren vertauscht; jetzt stimmen sie. Der `it.fails` „matches the Onshape
+ground-truth bounding box" ist ein **echter Pass**, und daneben steht die
+Gegenprobe: ohne Onshapes 3D-Antwort landet dasselbe Dokument weiterhin verdreht
+(damit der Fix nicht still zum No-op werden kann).
+
+**Warum am Render-Mesh und nicht an `sceneAabb`.** `sceneAabb` ist eine
+KONSERVATIVE Schranke über den CSG-Baum. `Extrude 1` profiliert den GESAMTEN
+Sketch 1 — einschließlich der sechs deckungsgleichen `…MirrorCS`-Segmente, die
+Onshape bei x = −273 mm parkt und die weder eine Region beranden noch Material
+tragen. Die Szenen-Box liest deshalb x ∈ [−273; 91] für einen Körper, der bei
+±33 mm endet (vor wie nach diesem Paket — das ist die #412-Regionenlücke, kein
+Frame-Thema). Onshapes Ground Truth ist seine **Tessellierung**, also ist
+FieldDrafts Tessellierung die vergleichbare Antwort — und die einzige, die
+zugleich beweist, dass der Nutzer das Teil sieht.
+
+**Effekt auf #414 (gemessen, nicht vermutet).** Das Dokument hat einen
+flächengebundenen Sketch 3, und der Verdacht der Voranalyse bestätigt sich zur
+Hälfte. Render-Mesh gegen Onshapes AABB x[−65,05; 65,0] · y[−70,13; 0] ·
+z[−50; 50]:
+
+| | x | y | z |
+| --- | --- | --- | --- |
+| FieldDraft **vorher** | [−74,21; 65,0] | [−104,00; 2,74] | [−50; 52,01] |
+| FieldDraft **nachher** | [−67,89; 65,0] | [−70,03; 2,86] | [−50; 50,12] |
+
+Die grobe Y-Überdehnung (−104 statt −70,1) war der Frame-Konflikt und ist weg;
+der Rest (x um 2,8 mm zu weit, y-Maximum 2,9 mm über 0) hängt weiter an der
+**Wall-Provenienz region-eingeschränkter Profile** (docs/SKETCH-REGION-IMPRINT-PLAN.md §5),
+an der dort Chamfer-Kante und sechs Fillets scheitern. #414 bleibt offen, aber
+aus genau einem Grund weniger.
+
+**Testabdeckung.** `onshapeSketchFrame.test.ts` (19 Tests) gegen die echten
+Fixtures: die vier gemessenen Frames samt beider Kontrollzeilen, die Verweigerung
+bei kollinearen Stützpunkten, die 90°-Abbildung mit Determinante und
+Achsentausch, die Erkennung einer FREMDEN Ebene, das Umschreiben von Punkten,
+Linien, Bögen (Drehung wie Spiegelung), der HORIZONTAL/VERTICAL-Tausch, das
+Verwerfen bei schiefer Drehung und bei versetztem Ursprung — und zuletzt die
+eigentliche Abnahme: jede umgerechnete 2D-Entity, durch FieldDrafts Frame in den
+Raum gehoben, landet auf Onshapes eigenem 3D-Punkt (1e-9). `onshapeImport.test.ts`
+(6 neue Tests) prüft die Verdrahtung: unangetastet bei gleichem Frame, gedreht
+samt Bedingung bei anderem, mitverschoben bei versetztem Ursprung, Fehler statt
+Umrechnung bei fremder Ebene, Meldung bei fehlendem Sketch in der 3D-Antwort, und
+Stille, wenn gar keine 3D-Quelle mitkommt. `onshapeProjectImport.test.ts` (2 neu)
+nagelt fest, dass die Antwort für **dieselbe** Part-Studio-Adresse geholt und
+durchgereicht wird und dass ihr Ausfall den Import nicht versenkt.
+`server/onshape_test.go` (2 neu) prüft Pfad, beide Query-Flags und dass die
+HMAC-Signatur den Query-String deckt. `onshapeImport415E2E.slow.test.ts` fährt
+das echte WASM gegen die Ground Truth samt Gegenprobe.
+
+**Offene Reste dieses Pakets.** (a) Ein Sketch, dessen Stützpunkte alle auf einer
+Geraden liegen, bleibt unbestimmbar — aus Punkten allein folgt der Frame dort
+nicht, und die zweite Richtung wäre nur aus `…/sketches/<id>/tessellatedentities`
+zu holen (im Korpus betrifft es genau einen Sketch, dessen Ellipsen der
+Übersetzer ohnehin nicht kennt). (b) Sketches auf Mate-Connectors laufen weiter
+in die Kernel-Lücke von Update (3) und erreichen die Umrechnung gar nicht.
+(c) `sceneAabb` bleibt durch Ganz-Sketch-Profile aufgebläht — das ist die
+Regionen-Auflösung, s. #412.

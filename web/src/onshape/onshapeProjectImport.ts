@@ -128,10 +128,32 @@ export async function importOnshapeProject(
     elementId,
   )) as { features?: unknown[] };
 
+  // Onshapes eigene 3D-Antwort für dieselben Sketches. Sie ist die einzige
+  // exakte Quelle für den Sketch-FRAME auf einer Körperfläche (#415) — ohne sie
+  // landen solche Sketches um 90° verdreht. Ein Fehlschlag darf den Import
+  // trotzdem nicht versenken: der Rest des Dokuments ist davon unberührt, also
+  // wird er importiert und die Lücke benannt.
+  let sketches3d: unknown = null;
+  let sketches3dError: string | null = null;
+  try {
+    sketches3d = await platformApi.getOnshapeSketches(
+      ref.documentId,
+      ref.workspaceId,
+      elementId,
+    );
+  } catch (err) {
+    sketches3dError =
+      `Onshapes 3D-Sketch-Daten sind nicht abrufbar (${String(err)}) — ` +
+      `Sketches auf Körperflächen können um 90° verdreht sein`;
+  }
+
   // A TEMPORARY kernel (its own wasm document — the live one is never touched);
   // the importer drives it feature by feature, its JSON becomes the part tab.
   const kernel = await Kernel.create();
-  const result = await importOnshapeFeatures(featuresJson as any, kernel);
+  const result = await importOnshapeFeatures(featuresJson as any, kernel, {
+    sketches3d: sketches3d as any,
+  });
+  if (sketches3dError) result.warnings.unshift(sketches3dError);
 
   const part = createPartTab("Part 1");
   part.documentJson = kernel.toJson();

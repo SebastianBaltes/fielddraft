@@ -389,6 +389,16 @@ export interface PlatformApi {
     workspaceId: string,
     elementId: string,
   ): Promise<unknown>;
+  /** Fetch a Part Studio's SOLVED sketches in world coordinates
+   *  (`sketches?includeGeometry=true&output3D=true`). Zusammen mit der
+   *  2D-Geometrie aus `getOnshapeFeatures` ist damit Onshapes Sketch-Frame
+   *  messbar — die Voraussetzung dafür, einen flächengebundenen Sketch nicht
+   *  verdreht zu importieren (#415). */
+  getOnshapeSketches(
+    documentId: string,
+    workspaceId: string,
+    elementId: string,
+  ): Promise<unknown>;
 
   // Admin moderation (admin only — the backend re-checks the role on each).
   /** List admin alerts, newest-first. `unseenOnly` adds `?unseen=1`. */
@@ -603,6 +613,12 @@ export const platformApi: PlatformApi = {
   getOnshapeFeatures: (documentId, workspaceId, elementId) =>
     request<unknown>(
       `/api/onshape/features?${new URLSearchParams({ documentId, workspaceId, elementId })}`,
+      { method: "GET" },
+    ),
+
+  getOnshapeSketches: (documentId, workspaceId, elementId) =>
+    request<unknown>(
+      `/api/onshape/sketches?${new URLSearchParams({ documentId, workspaceId, elementId })}`,
       { method: "GET" },
     ),
 

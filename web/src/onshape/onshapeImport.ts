@@ -41,6 +41,15 @@ import {
   tryEvalOnshapeExpression,
   type Quantity,
 } from "./onshapeExpr";
+import {
+  describeXform,
+  inPlaneXform,
+  measureOnshapeSketchFrame,
+  sketches3dByFeature,
+  transformSketchFeature,
+  type OnshapeSketch3d,
+  type OnshapeSketches3d,
+} from "./onshapeSketchFrame";
 import { resolvePlaneFrame, type PlaneFrameKernel } from "../sketchPlaneFrame";
 import { evalFormula, type VarKind } from "../variableInput";
 
@@ -962,15 +971,28 @@ async function booleanTargets(
   return fd === undefined ? "" : `qCreatedBy(${fd})`;
 }
 
+/** Zusatzdaten neben dem Feature-Baum, die der Import mitziehen kann. */
+export interface OnshapeImportSources {
+  /** Onshapes eigene 3D-Antwort für die Sketches des Part Studios
+   *  (`GET /partstudios/…/sketches?includeGeometry=true&output3D=true`). Sie
+   *  ist die einzige exakte Quelle für Onshapes Sketch-FRAME auf einer
+   *  Körperfläche (#415) — fehlt sie, werden flächengebundene Sketches wie
+   *  bisher wörtlich übernommen und das EINMAL gemeldet. Als Parameter (statt
+   *  als Fetch im Importer), damit Tests sie aus Fixtures speisen. */
+  sketches3d?: OnshapeSketches3d | null;
+}
+
 /** Import a fetched Onshape feature list into the kernel. */
 export async function importOnshapeFeatures(
   featuresJson: { features?: any[] },
   kernel: ImportKernel,
+  sources: OnshapeImportSources = {},
 ): Promise<OnshapeImportResult> {
   const result: OnshapeImportResult = { created: [], idMap: {}, warnings: [], errors: [] };
   const sketches = new Map<string, SketchRecord>();
   const sweeps = new Map<string, SweepRecord>();
   const env = newExprEnv(result);
+  const frames3d = sketches3dByFeature(sources.sketches3d);
 
   // Batch mode (#410): defer the display mesh for the whole walk and rebuild it
   // ONCE at the end. Every feature still regenerates (so its plane/edge queries
@@ -978,7 +1000,7 @@ export async function importOnshapeFeatures(
   // of N features is O(n²) main-thread work that froze the import for minutes.
   kernel.setSyncMeshing?.(false);
   try {
-    await importFeatures(featuresJson, kernel, result, sketches, sweeps, env);
+    await importFeatures(featuresJson, kernel, result, sketches, sweeps, env, frames3d);
   } finally {
     kernel.setSyncMeshing?.(true); // one final mesh of the finished document
   }
@@ -1073,6 +1095,86 @@ async function importMateConnectorPlane(
   );
 }
 
+/**
+ * Onshapes 2D-Sketch-Koordinaten in FieldDrafts Sketch-Basis drehen (#415).
+ *
+ * FieldDraft leitet die u/v-Basis einer flächengebundenen Ebene aus der
+ * Flächennormalen ab, Onshape aus der Parametrisierung der Fläche — beides
+ * deterministisch, beides verschieden. Statt an einer der beiden Konventionen
+ * zu rühren (die FieldDraft-Seite ist ein Konventions-Lock mit dem Kernel),
+ * rechnet der Importer um: `B_os` wird an Onshapes eigener 3D-Antwort GEMESSEN,
+ * `B_fd` kommt aus dem gemeinsamen Resolver, und die Differenz ist eine exakte
+ * 2D-Drehung/Spiegelung. Für gleiche Frames (jede Ursprungsebene) ist sie die
+ * Identität und der Payload bleibt unangetastet.
+ *
+ * Fehlt die 3D-Antwort oder ist der Frame aus ihr nicht bestimmbar, wird der
+ * Sketch wie bisher wörtlich übernommen — und genau das gemeldet.
+ */
+function alignSketchFrame(
+  feat: AnyMsg,
+  name: string,
+  planeQuery: string,
+  kernel: ImportKernel,
+  three: OnshapeSketch3d | undefined,
+  result: OnshapeImportResult,
+): AnyMsg {
+  // Ein Kernel-Double ohne Geometrie-Leser kann keinen Frame liefern; das ist
+  // kein Befund, sondern eine Testumgebung.
+  if (typeof kernel.bodyCount !== "function") return feat;
+  const fd = frameOf(kernel, planeQuery);
+  if (!fd) {
+    result.warnings.push(
+      `${name}: FieldDrafts Frame für die Ebene "${planeQuery}" ist nicht ` +
+        `auflösbar — Onshapes 2D-Koordinaten wörtlich übernommen`,
+    );
+    return feat;
+  }
+  const os = measureOnshapeSketchFrame(feat, three);
+  if (!os) {
+    result.warnings.push(
+      three
+        ? `${name}: Onshapes Sketch-Frame ist aus seiner 3D-Antwort nicht bestimmbar ` +
+          `(zu wenige oder kollineare Stützpunkte) — 2D-Koordinaten wörtlich übernommen; ` +
+          `liegt der Sketch auf einer Körperfläche, kann er verdreht sein`
+        : `${name}: fehlt in Onshapes 3D-Sketch-Antwort — Frame ungeprüft, ` +
+          `2D-Koordinaten wörtlich übernommen`,
+    );
+    return feat;
+  }
+
+  const x = inPlaneXform(os, fd);
+  // Erst die Ebene, dann die Basis: weicht die NORMALE ab oder liegt Onshapes
+  // Ursprung neben der Ebene, hat die FieldDraft-Query eine andere Fläche
+  // erwischt. Das umzurechnen hieße, einen Fehlgriff zu kaschieren.
+  if (Math.abs(Math.abs(x.normalDot) - 1) > 1e-6 || Math.abs(x.outOfPlaneMm) > 1e-3) {
+    result.errors.push(
+      `${name}: Onshapes Sketch-Ebene und die aufgelöste FieldDraft-Ebene ` +
+        `"${planeQuery}" sind nicht dieselbe Ebene ` +
+        `(Normalen-Skalarprodukt ${x.normalDot.toFixed(6)}, Abstand ` +
+        `${x.outOfPlaneMm.toFixed(4)} mm) — Koordinaten NICHT umgerechnet`,
+    );
+    return feat;
+  }
+  if (x.identity) return feat;
+
+  const t = transformSketchFeature(feat, x);
+  if (t.droppedAxisConstraints > 0) {
+    result.warnings.push(
+      `${name}: ${t.droppedAxisConstraints}× HORIZONTAL/VERTICAL verworfen — ` +
+        `Onshapes Sketch-Achsen stehen ${describeXform(x)} zu FieldDrafts, ` +
+        `dafür gibt es keine treue Entsprechung`,
+    );
+  }
+  if (t.droppedOriginConstraints > 0) {
+    result.warnings.push(
+      `${name}: ${t.droppedOriginConstraints}× Bedingung auf Onshapes ` +
+        `Sketch-Ursprung verworfen — er liegt nicht auf FieldDrafts Ursprung ` +
+        `(${describeXform(x)})`,
+    );
+  }
+  return t.feature;
+}
+
 /** The feature walk itself — see {@link importOnshapeFeatures}, which wraps this
  *  in the batch meshing deferral. */
 async function importFeatures(
@@ -1082,6 +1184,7 @@ async function importFeatures(
   sketches: Map<string, SketchRecord>,
   sweeps: Map<string, SweepRecord>,
   env: ExprEnv,
+  frames3d: Map<string, OnshapeSketch3d>,
 ): Promise<void> {
   for (const raw of featuresJson.features ?? []) {
     const feat = msg(raw);
@@ -1127,7 +1230,23 @@ async function importFeatures(
           continue;
         }
       }
-      const translation = translateOnshapeSketch(feat);
+      // Onshapes 2D-Koordinaten in FieldDrafts Sketch-Basis drehen (#415).
+      // Umgeschrieben wird der PAYLOAD, damit Übersetzung, Region-Innenpunkte
+      // und jeder spätere 2D-Leser dieselben Zahlen sehen. Ohne die 3D-Quelle
+      // (`sources.sketches3d`) bleibt alles wie bisher — dass sie fehlt, meldet
+      // die Stelle, die sie holen sollte, nicht jeder einzelne Sketch.
+      const aligned =
+        frames3d.size === 0
+          ? feat
+          : alignSketchFrame(
+              feat,
+              name,
+              built.query,
+              kernel,
+              frames3d.get(feat.featureId),
+              result,
+            );
+      const translation = translateOnshapeSketch(aligned);
       for (const [k, v] of Object.entries(translation.diagnostics.unhandled)) {
         result.warnings.push(`${name}: ${v}× nicht übersetzt: ${k}`);
       }
@@ -1136,8 +1255,8 @@ async function importFeatures(
         fdId,
         entityIds: translation.entityIds,
         planeQuery: built.query,
-        entityGeom: sketchEntityVertices(feat),
-        lineEntityIds: sketchLineEntityIds(feat),
+        entityGeom: sketchEntityVertices(aligned),
+        lineEntityIds: sketchLineEntityIds(aligned),
       });
       result.idMap[feat.featureId] = fdId;
       result.created.push(fdId);

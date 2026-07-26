@@ -1248,3 +1248,172 @@ describe("thicken → FieldDraft-Thicken (#415/#417/#418/#419)", () => {
     expect(result.warnings.join(" | ")).toContain("Werkzeuge behalten");
   });
 });
+
+/**
+ * Der Sketch-Frame-Abgleich am IMPORTER (#415) — die Rechnung selbst steht in
+ * `onshapeSketchFrame.test.ts`, hier geht es um die Verdrahtung: wann greift sie,
+ * wann meldet sie sich, und wann rührt sie nichts an.
+ */
+describe("importOnshapeFeatures — Onshapes Sketch-Frame (#415)", () => {
+  /** Ein Kernel-Double MIT Geometrie-Lesern: erst damit löst der Importer
+   *  überhaupt einen FieldDraft-Frame auf (ohne sie ist er in einer
+   *  Testumgebung und hält still). Körperlos — die Ursprungsebenen genügen. */
+  function framedKernel() {
+    const k = mockKernel() as ReturnType<typeof mockKernel> & {
+      bodyCount(): number;
+      bodyBrepFaces(i: number): any[];
+      bodyPlacement(i: number): any;
+    };
+    k.bodyCount = () => 0;
+    k.bodyBrepFaces = () => [];
+    k.bodyPlacement = () => ({
+      translate: [0, 0, 0] as [number, number, number],
+      rotation: [0, 0, 0, 1] as [number, number, number, number],
+      scale: [1, 1, 1] as [number, number, number],
+    });
+    return k;
+  }
+
+  /** Onshapes eigene Query auf die TOP-Ursprungsebene — wörtlich aus dem
+   *  #415-Dokument, damit der Dekoder echte Bytes sieht statt erfundener. */
+  const TOP_PLANE_QUERY: string = (() => {
+    const s1 = ticket415()
+      .features.map((f: any) => f.message ?? f)
+      .find((f: any) => f.name === "Sketch 1");
+    return (paramOf(s1, "sketchPlane").queries[0].message ?? paramOf(s1, "sketchPlane").queries[0])
+      .queryString;
+  })();
+
+  /** Ein Sketch auf der XY-Ursprungsebene mit einer waagerechten Linie. */
+  function sketchOnTop(featureId = "FS1"): any {
+    return {
+      featureType: "newSketch",
+      featureId,
+      name: "Sketch 1",
+      parameters: [
+        {
+          btType: "BTMParameterQueryList-148",
+          parameterId: "sketchPlane",
+          queries: [{ queryString: TOP_PLANE_QUERY }],
+        },
+      ],
+      entities: [
+        {
+          btType: "BTMSketchCurveSegment-155",
+          entityId: "L",
+          startPointId: "L.start",
+          endPointId: "L.end",
+          startParam: 0,
+          endParam: 0.01,
+          geometry: { btType: "BTCurveGeometryLine-117", pntX: 0, pntY: 0, dirX: 1, dirY: 0 },
+        },
+        // Ein dritter, NICHT kollinearer Stützpunkt — mit zweien wäre der Frame
+        // unterbestimmt und die Messung verweigerte (zu Recht) die Auskunft.
+        { btType: "BTMSketchPoint-158", entityId: "P", x: 0, y: 0.005 },
+      ],
+      constraints: [
+        {
+          btType: "BTMSketchConstraint-2",
+          constraintType: "HORIZONTAL",
+          parameters: [
+            { btType: "BTMParameterString-149", parameterId: "localFirst", value: "L" },
+          ],
+        },
+      ],
+    };
+  }
+
+  /** Onshapes 3D-Antwort für {@link sketchOnTop}, mit frei wählbarem Frame. */
+  function threeFor(
+    featureId: string,
+    origin: number[],
+    x: number[],
+    y: number[],
+  ): unknown {
+    const at = (u: number, v: number) => [0, 1, 2].map((c) => origin[c] + u * x[c] + v * y[c]);
+    return {
+      sketches: [
+        {
+          featureId,
+          sketch: "Sketch 1",
+          geomEntities: [
+            { id: "L.start", entityType: "point", point: at(0, 0) },
+            { id: "L.end", entityType: "point", point: at(0.01, 0) },
+            { id: "P", entityType: "point", point: at(0, 0.005) },
+          ],
+        },
+      ],
+    };
+  }
+
+  const lineOf = (kernel: ReturnType<typeof mockKernel>) =>
+    kernel.calls
+      .find((c) => c.type === "sketch")!
+      .params.subCalls.find((s: any) => s.type === "sketch_line");
+
+  const constraintTypes = (kernel: ReturnType<typeof mockKernel>) =>
+    kernel.calls
+      .find((c) => c.type === "sketch")!
+      .params.subCalls.filter((s: any) => s.type.startsWith("sketch_constraint_"))
+      .map((s: any) => s.type);
+
+  it("lässt einen Sketch in Ruhe, dessen Frame ohnehin übereinstimmt", async () => {
+    const kernel = framedKernel();
+    const result = await importOnshapeFeatures(
+      { features: [sketchOnTop()] },
+      kernel,
+      // Onshapes Frame ist hier FieldDrafts Datum-Frame: x = +X, y = +Y.
+      { sketches3d: threeFor("FS1", [0, 0, 0], [1, 0, 0], [0, 1, 0]) as any },
+    );
+    expect(result.errors, result.errors.join(" | ")).toHaveLength(0);
+    expect(lineOf(kernel).params).toEqual({ start: [0, 0], end: [10, 0] });
+    expect(constraintTypes(kernel)).toEqual(["sketch_constraint_horizontal"]);
+  });
+
+  it("dreht die 2D-Koordinaten, wenn Onshapes Basis eine andere ist", async () => {
+    const kernel = framedKernel();
+    // Onshape legt x auf −Y und y auf +X — gegenüber FieldDrafts XY-Datum 90°.
+    const result = await importOnshapeFeatures(
+      { features: [sketchOnTop()] },
+      kernel,
+      { sketches3d: threeFor("FS1", [0, 0, 0], [0, -1, 0], [1, 0, 0]) as any },
+    );
+    expect(result.errors, result.errors.join(" | ")).toHaveLength(0);
+    expect(lineOf(kernel).params).toEqual({ start: [0, 0], end: [0, -10] });
+    // Die Linie liegt jetzt senkrecht — und ihre Bedingung mit ihr.
+    expect(constraintTypes(kernel)).toEqual(["sketch_constraint_vertical"]);
+  });
+
+  it("verschiebt mit, wenn Onshapes Sketch-Ursprung woanders sitzt", async () => {
+    const kernel = framedKernel();
+    await importOnshapeFeatures({ features: [sketchOnTop()] }, kernel, {
+      sketches3d: threeFor("FS1", [0.005, 0.002, 0], [1, 0, 0], [0, 1, 0]) as any,
+    });
+    expect(lineOf(kernel).params).toEqual({ start: [5, 2], end: [15, 2] });
+  });
+
+  it("rechnet NICHT um, wenn die 3D-Antwort eine andere EBENE meint", async () => {
+    const kernel = framedKernel();
+    const result = await importOnshapeFeatures({ features: [sketchOnTop()] }, kernel, {
+      // 12 mm über der XY-Ebene: derselbe Sketch kann das nicht sein.
+      sketches3d: threeFor("FS1", [0, 0, 0.012], [1, 0, 0], [0, 1, 0]) as any,
+    });
+    expect(result.errors.join(" | ")).toContain("nicht dieselbe Ebene");
+    expect(lineOf(kernel).params).toEqual({ start: [0, 0], end: [10, 0] });
+  });
+
+  it("meldet einen Sketch, der in Onshapes 3D-Antwort fehlt", async () => {
+    const kernel = framedKernel();
+    const result = await importOnshapeFeatures({ features: [sketchOnTop()] }, kernel, {
+      sketches3d: threeFor("EIN_ANDERER", [0, 0, 0], [1, 0, 0], [0, 1, 0]) as any,
+    });
+    expect(result.warnings.join(" | ")).toContain("fehlt in Onshapes 3D-Sketch-Antwort");
+  });
+
+  it("bleibt still und unverändert, wenn gar keine 3D-Antwort mitkommt", async () => {
+    const kernel = framedKernel();
+    const result = await importOnshapeFeatures({ features: [sketchOnTop()] }, kernel);
+    expect([...result.errors, ...result.warnings].join(" | ")).not.toContain("3D");
+    expect(lineOf(kernel).params).toEqual({ start: [0, 0], end: [10, 0] });
+  });
+});

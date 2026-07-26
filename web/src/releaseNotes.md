@@ -12,6 +12,9 @@ Format, eine Zeile je Eintrag:
 kind = feat | fix | perf. scope und #tickets sind optional. Folgezeilen, die
 eingerückt sind, gehören zum Text davor (Umbruch erlaubt).
 
+## 0.37.0
+- feat(onshape) #415 #414: Sketches auf Körperflächen landen nicht mehr um 90° verdreht — der Import misst Onshapes tatsächlichen Sketch-Frame an dessen eigener 3D-Antwort und rechnet die 2D-Koordinaten exakt in FieldDrafts Ebenen-Konvention um. Das Referenzteil aus #415 trifft jetzt Onshapes Bounding-Box exakt; die grobe Y-Abweichung in #414 ist damit ebenfalls weg.
+
 ## 0.36.0
 - feat(onshape) #416 #417 #421: Onshape-Mate-Connectors (explizite und die impliziten, die ein Sketch als Unter-Feature mitbringt) werden als FieldDraft-Mate-Connectors importiert — inklusive Versatz, Flip und 90°-Ausrichtung; andere Winkel werden benannt gemeldet statt stillschweigend gerundet. Sketches AUF einem Mate-Connector brauchen noch zwei kleine Kernel-Erweiterungen und werden bis dahin benannt übersprungen.
 

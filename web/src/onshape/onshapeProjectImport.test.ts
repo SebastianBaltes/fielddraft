@@ -15,12 +15,12 @@ import * as platform from "../api/platform";
 vi.mock("../kernel", () => ({
   Kernel: { create: async () => ({ toJson: () => "{}" }) },
 }));
+const importCalls: unknown[] = [];
 vi.mock("./onshapeImport", () => ({
-  importOnshapeFeatures: async () => ({
-    created: ["f1", "f2"],
-    warnings: [],
-    errors: [],
-  }),
+  importOnshapeFeatures: async (_features: unknown, _kernel: unknown, sources: unknown) => {
+    importCalls.push(sources);
+    return { created: ["f1", "f2"], warnings: [], errors: [] };
+  },
 }));
 
 const { importOnshapeProject } = await import("./onshapeProjectImport");
@@ -31,7 +31,13 @@ const EL = "fedcba9876543210fedcba98";
 const URL_WITH_ELEMENT = `https://cad.onshape.com/documents/${DOC}/w/${WS}/e/${EL}`;
 const NOW = "2026-07-13T20:00:00.000Z";
 
-beforeEach(() => vi.restoreAllMocks());
+beforeEach(() => {
+  vi.restoreAllMocks();
+  importCalls.length = 0;
+  // Onshapes 3D-Sketch-Antwort wird bei JEDEM Import mitgezogen (#415); die
+  // Fälle unten prüfen die Projekt-Hülle, nicht sie.
+  vi.spyOn(platform.platformApi, "getOnshapeSketches").mockResolvedValue({ sketches: [] });
+});
 
 describe("importOnshapeProject", () => {
   it("titles the project after the Onshape DOCUMENT and stores the source", async () => {
@@ -132,6 +138,37 @@ describe("importOnshapeProject", () => {
     );
 
     expect(result.project.name).toBe("Mein Projekt");
+  });
+
+  it("zieht Onshapes 3D-Sketch-Antwort mit und reicht sie an den Importer weiter", async () => {
+    vi.spyOn(platform.platformApi, "getOnshapeDocument").mockResolvedValue({ name: "X" });
+    vi.spyOn(platform.platformApi, "getOnshapeFeatures").mockResolvedValue({ features: [] });
+    const sketches = vi
+      .spyOn(platform.platformApi, "getOnshapeSketches")
+      .mockResolvedValue({ sketches: [{ featureId: "F1", geomEntities: [] }] });
+
+    const result = await importOnshapeProject(URL_WITH_ELEMENT, { now: NOW });
+
+    // Dieselbe Part-Studio-Adresse wie der Feature-Abruf — sonst würde ein
+    // Frame gegen die Sketches eines FREMDEN Tabs gemessen.
+    expect(sketches).toHaveBeenCalledWith(DOC, WS, EL);
+    expect(importCalls[0]).toEqual({
+      sketches3d: { sketches: [{ featureId: "F1", geomEntities: [] }] },
+    });
+    expect(result.warnings).toHaveLength(0);
+  });
+
+  it("importiert weiter, wenn die 3D-Sketch-Antwort ausfällt — und sagt es", async () => {
+    vi.spyOn(platform.platformApi, "getOnshapeDocument").mockResolvedValue({ name: "X" });
+    vi.spyOn(platform.platformApi, "getOnshapeFeatures").mockResolvedValue({ features: [] });
+    vi.spyOn(platform.platformApi, "getOnshapeSketches").mockRejectedValue(new Error("503"));
+
+    const result = await importOnshapeProject(URL_WITH_ELEMENT, { now: NOW });
+
+    // Der Rest des Dokuments ist davon unberührt: er kommt an.
+    expect(result.featureCount).toBe(2);
+    expect(importCalls[0]).toEqual({ sketches3d: null });
+    expect(result.warnings[0]).toMatch(/verdreht/);
   });
 
   it("rejects a string that is not an Onshape URL", async () => {

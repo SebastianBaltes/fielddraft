@@ -54,6 +54,17 @@ beforeAll(async () => {
 const ticket415 = (): { features: any[] } =>
   JSON.parse(readFileSync(join(__dirname, "fixtures", "onshape-415-features.json"), "utf8"));
 
+/**
+ * Onshapes eigene 3D-Antwort für dieselben Sketches
+ * (`GET …/sketches?includeGeometry=true&output3D=true`, jede Entity in
+ * Weltkoordinaten). Zusammen mit der 2D-Geometrie aus dem Feature-Payload ist
+ * Onshapes Sketch-FRAME damit überbestimmt und messbar — die Quelle, aus der
+ * der Importer `B_fd⁻¹ ∘ B_os` bildet (#415). Als Fixture, damit der Test kein
+ * Netz braucht; im Betrieb holt `onshapeProjectImport` sie über den Go-Proxy.
+ */
+const sketches3d = (): unknown =>
+  JSON.parse(readFileSync(join(__dirname, "fixtures", "onshape-415-sketches3d.json"), "utf8"));
+
 /** Onshape's own answer for the finished part, in mm (the API reports metres);
  *  x/y from `boundingboxes`, z from the tessellation (see the header). */
 const GROUND_TRUTH = {
@@ -219,7 +230,9 @@ describe("#415 — the Boolean the real kernel regenerates", () => {
 
   beforeAll(async () => {
     kernel = wrap(new WasmKernel());
-    result = await importOnshapeFeatures(ticket415(), kernel);
+    result = await importOnshapeFeatures(ticket415(), kernel, {
+      sketches3d: sketches3d() as any,
+    });
   }, 180_000);
 
   it("creates exactly one `boolean` feature, and it regenerates cleanly", () => {
@@ -292,6 +305,7 @@ describe("#415 — the Boolean the real kernel regenerates", () => {
         ],
       },
       sub,
+      { sketches3d: sketches3d() as any },
     );
     expect(subResult.errors, subResult.errors.join(" | ")).toHaveLength(0);
     expect(sub.raw.bodyCount()).toBe(1);
@@ -337,24 +351,84 @@ describe("#415 — the Boolean the real kernel regenerates", () => {
     }
   }, 180_000);
 
-  // The FULL document is still not importable — but no longer for want of a
-  // translator. What is left is a FRAME mismatch: FieldDraft derives a
-  // face-mounted sketch's in-plane basis from the face NORMAL alone
-  // (`planeBasisFromNormal`: world axis least aligned with n, crossed twice),
-  // while Onshape derives it from the face's own parametrisation. On this
-  // document's bottom wall (n = −Z) FieldDraft gets x = +Y / y = +X where
-  // Onshape has x = +X, so Sketch 3 (the base plate with its mounting tabs) and
-  // Sketch 4 (the top opening) land rotated by 90° — and with them the part's
-  // x and y extents, swapped. Pinned as a KNOWN FAILURE so closing that gap
-  // shows up as a pass instead of silently staying red.
-  it.fails("matches the Onshape ground-truth bounding box", () => {
-    expect(kernel.raw.bodyCount()).toBe(GROUND_TRUTH.parts);
-    const bb = JSON.parse(kernel.raw.sceneAabb()) as { min: number[]; max: number[] };
-    expect(bb.min[0]).toBeCloseTo(GROUND_TRUTH.x[0], 1);
-    expect(bb.max[0]).toBeCloseTo(GROUND_TRUTH.x[1], 1);
-    expect(bb.min[1]).toBeCloseTo(GROUND_TRUTH.y[0], 1);
-    expect(bb.max[1]).toBeCloseTo(GROUND_TRUTH.y[1], 1);
-    expect(bb.min[2]).toBeCloseTo(GROUND_TRUTH.z[0], 1);
-    expect(bb.max[2]).toBeCloseTo(GROUND_TRUTH.z[1], 1);
-  });
+  /**
+   * The whole document against Onshape's own measurement of it.
+   *
+   * This was pinned as a KNOWN FAILURE while a FRAME mismatch stood in the way:
+   * FieldDraft derives a face-mounted sketch's in-plane basis from the face
+   * NORMAL alone (`planeBasisFromNormal`: world axis least aligned with n,
+   * crossed twice), Onshape from the face's own parametrisation. On this
+   * document's bottom wall (n = −Z) FieldDraft has x = +Y / y = +X where Onshape
+   * has x = +X, so Sketch 3 (the base plate with its mounting tabs) and Sketch 4
+   * (the top opening) landed rotated by 90°, and the part measured
+   * x ∈ [−63.54, 63.54] · y ∈ [−48.5, 48.5] — x and y swapped.
+   *
+   * The importer now measures Onshape's frame from its own 3D answer and
+   * rotates the 2D coordinates into FieldDraft's basis before emitting them.
+   *
+   * MEASURED ON THE RENDER MESH, not on `sceneAabb`. `sceneAabb` is a
+   * CONSERVATIVE bound over the CSG tree, and Extrude 1 profiles the WHOLE of
+   * Sketch 1 — including the six coincident `…MirrorCS` construction segments
+   * Onshape parks at x = −273 mm, which bound no region and cut no material.
+   * The scene box therefore reads x ∈ [−273, 91] for a solid that ends at
+   * ±33 mm. Onshape's ground truth is its TESSELLATION, so FieldDraft's
+   * tessellation is the apples-to-apples answer — and it is also the only one
+   * that proves the user sees the part (the #412 lesson).
+   */
+  it("matches the Onshape ground-truth bounding box", () => {
+    expect(kernel.raw.bodyCount(), result.errors.join(" | ")).toBe(GROUND_TRUTH.parts);
+
+    const main = new WasmKernel();
+    main.setSyncMeshing(false);
+    main.setBrepSuppressed(true);
+    main.loadJson(kernel.raw.toJson());
+    const worker = replayMesherWorker({
+      type: "rebuild",
+      requestId: 1,
+      documentJson: main.toJson(),
+      activeMeshResolution: 64,
+      contextMeshResolution: 32,
+      activeBodyId: 0,
+      meshAlgorithm: "mdc",
+    });
+    expect(worker.bodyCount()).toBe(GROUND_TRUTH.parts);
+    expect(
+      worker.bodyTriangleCount(0),
+      "the worker shipped an EMPTY mesh — blank viewport",
+    ).toBeGreaterThan(0);
+
+    const bb = meshAabb(worker, 0);
+    const where = `mesh ${JSON.stringify(bb)}`;
+    expect(bb.min[0], where).toBeCloseTo(GROUND_TRUTH.x[0], 1);
+    expect(bb.max[0], where).toBeCloseTo(GROUND_TRUTH.x[1], 1);
+    // The two assertions the frame transform exists for.
+    expect(bb.min[1], where).toBeCloseTo(GROUND_TRUTH.y[0], 1);
+    expect(bb.max[1], where).toBeCloseTo(GROUND_TRUTH.y[1], 1);
+    expect(bb.min[2], where).toBeCloseTo(GROUND_TRUTH.z[0], 1);
+    expect(bb.max[2], where).toBeCloseTo(GROUND_TRUTH.z[1], 1);
+  }, 180_000);
+
+  /** The counter-proof: WITHOUT Onshape's 3D answer the very same document
+   *  still lands rotated. Keeps the fix from quietly becoming a no-op. */
+  it("lands rotated without Onshape's 3D sketch answer", async () => {
+    const bare = wrap(new WasmKernel());
+    await importOnshapeFeatures(ticket415(), bare);
+    const main = new WasmKernel();
+    main.setSyncMeshing(false);
+    main.setBrepSuppressed(true);
+    main.loadJson(bare.raw.toJson());
+    const worker = replayMesherWorker({
+      type: "rebuild",
+      requestId: 1,
+      documentJson: main.toJson(),
+      activeMeshResolution: 64,
+      contextMeshResolution: 32,
+      activeBodyId: 0,
+      meshAlgorithm: "mdc",
+    });
+    const bb = meshAabb(worker, 0);
+    // x and y carry each other's extent — the defect this pass removed.
+    expect(bb.max[0]).toBeCloseTo(GROUND_TRUTH.y[1], 1);
+    expect(bb.max[1]).toBeCloseTo(48.5, 1);
+  }, 180_000);
 });

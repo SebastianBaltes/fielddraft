@@ -99,6 +99,7 @@ func NewServerWithTickets(store Store, tickets TicketStore) *Server {
 	s.mux.HandleFunc("GET /api/onshape/document", s.handleOnshapeDocument)
 	s.mux.HandleFunc("GET /api/onshape/elements", s.handleOnshapeElements)
 	s.mux.HandleFunc("GET /api/onshape/features", s.handleOnshapeFeatures)
+	s.mux.HandleFunc("GET /api/onshape/sketches", s.handleOnshapeSketches)
 	s.mux.HandleFunc("POST /api/auth/password-reset-request", s.handlePasswordResetRequest)
 	s.mux.HandleFunc("POST /api/auth/password-reset", s.handlePasswordReset)
 	s.mux.HandleFunc("GET /api/projects/{id}/thumbnail", s.handleGetThumbnail)

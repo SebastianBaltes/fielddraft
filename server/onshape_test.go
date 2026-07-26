@@ -177,3 +177,62 @@ func TestOnshapeUpstreamErrorIsNotLeaked(t *testing.T) {
 		t.Fatalf("upstream error body leaked to client: %s", body)
 	}
 }
+
+func sketchesPath() string {
+	return "/api/onshape/sketches?documentId=" + testDoc +
+		"&workspaceId=" + testWs + "&elementId=" + testElem
+}
+
+// The sketches route is what makes a face-mounted sketch land unrotated (#415):
+// it asks for the SOLVED geometry in world coordinates. Both query flags have
+// to reach Onshape — without `output3D` the answer is 2D again and the frame is
+// unmeasurable — and the signature has to cover them verbatim.
+func TestOnshapeSketchesAsksForWorldGeometryAndSignsTheQuery(t *testing.T) {
+	var gotPath, gotQuery string
+	var sigOK bool
+	ts, cookie := onshapeTestEnv(t, func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotQuery = r.URL.RawQuery
+		toSign := strings.ToLower("get\n" + r.Header.Get("On-Nonce") + "\n" +
+			r.Header.Get("Date") + "\napplication/json\n" + r.URL.Path + "\n" +
+			r.URL.RawQuery + "\n")
+		mac := hmac.New(sha256.New, []byte("test-secret"))
+		mac.Write([]byte(toSign))
+		sigOK = r.Header.Get("Authorization") == "On test-access:HmacSHA256:"+
+			base64.StdEncoding.EncodeToString(mac.Sum(nil))
+		_, _ = w.Write([]byte(`{"sketches":[]}`))
+	})
+
+	code, body := getWith(t, ts, sketchesPath(), cookie)
+	if code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", code, body)
+	}
+	want := "/api/v6/partstudios/d/" + testDoc + "/w/" + testWs + "/e/" + testElem + "/sketches"
+	if gotPath != want {
+		t.Fatalf("upstream path: want %s, got %s", want, gotPath)
+	}
+	if gotQuery != "includeGeometry=true&output3D=true" {
+		t.Fatalf("upstream query: got %q", gotQuery)
+	}
+	if !sigOK {
+		t.Fatal("HMAC signature did not cover the query string")
+	}
+	if !strings.Contains(body, `"sketches"`) {
+		t.Fatalf("upstream body not forwarded: %s", body)
+	}
+}
+
+func TestOnshapeSketchesRequiresAuth(t *testing.T) {
+	reached := false
+	ts, _ := onshapeTestEnv(t, func(w http.ResponseWriter, _ *http.Request) {
+		reached = true
+		_, _ = w.Write([]byte(`{}`))
+	})
+	code, _ := getWith(t, ts, sketchesPath(), nil)
+	if code != http.StatusUnauthorized {
+		t.Fatalf("want 401 without session, got %d", code)
+	}
+	if reached {
+		t.Fatal("unauthenticated request reached Onshape")
+	}
+}

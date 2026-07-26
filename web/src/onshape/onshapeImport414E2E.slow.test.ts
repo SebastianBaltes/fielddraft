@@ -38,6 +38,14 @@ beforeAll(async () => {
 const ticket414 = (): { features: any[] } =>
   JSON.parse(readFileSync(join(__dirname, "fixtures", "onshape-414-features.json"), "utf8"));
 
+/** Onshapes eigene 3D-Antwort für dieselben Sketches — die Quelle, aus der der
+ *  Importer Onshapes Sketch-Frame misst (#415). Der Live-Import zieht sie über
+ *  den Go-Proxy mit; hier kommt sie aus der Fixture, damit der Test kein Netz
+ *  braucht. Ohne sie landet Sketch 3 dieses Dokuments (flächengebunden) um 90°
+ *  verdreht und y reichte bis −104 statt −70,1 mm. */
+const sketches3d = (): unknown =>
+  JSON.parse(readFileSync(join(__dirname, "fixtures", "onshape-414-sketches3d.json"), "utf8"));
+
 /**
  * Onshape's own answer for this document, in mm (the API reports metres).
  * ONE solid part, `JHD`.
@@ -128,7 +136,9 @@ describe("Onshape import — #414 against the Onshape ground truth", () => {
 
   beforeAll(async () => {
     kernel = wrap(new WasmKernel());
-    result = await importOnshapeFeatures(ticket414(), kernel);
+    result = await importOnshapeFeatures(ticket414(), kernel, {
+      sketches3d: sketches3d() as any,
+    });
   }, 180_000);
 
   it("builds ONE solid, as Onshape does (part JHD)", () => {
@@ -191,8 +201,16 @@ describe("Onshape import — #414 against the Onshape ground truth", () => {
   /**
    * The remaining #414 gap, pinned as a FAILING test on purpose.
    *
-   * X and Y still overshoot the ground truth. The cause is NOT the chamfer or
-   * hole translation but the kernel follow-up recorded in
+   * X and Y still overshoot the ground truth — but by much less since the
+   * sketch-frame transform landed (#415): this document's `Sketch 3` sits on a
+   * body face, and importing Onshape's 2D coordinates verbatim stretched the
+   * render mesh to y ∈ [−104.00, 2.74] mm. With Onshape's own 3D answer
+   * measured and the coordinates rotated into FieldDraft's basis it now reads
+   * y ∈ [−70.03, 2.86] against Onshape's [−70.13, 0] — the gross overshoot is
+   * gone, the residual ~2.8 mm in x and y is not.
+   *
+   * That residual is NOT the chamfer or hole translation either, but the kernel
+   * follow-up recorded in
    * docs/SKETCH-REGION-IMPRINT-PLAN.md §5: a region-restricted profile carries
    * no entity provenance, so its wall subs fall back to POSITIONAL numbering.
    * Every later feature that names a wall of the region-restricted `Extrude 1`
@@ -230,7 +248,9 @@ describe("Onshape import — #414 chamfer end-to-end (real kernel)", () => {
     kernel = wrap(new WasmKernel());
     delete (kernel as Partial<ImportKernel>).regionQueryAtPoint;
     delete (kernel as Partial<ImportKernel>).listSketchRegions;
-    result = await importOnshapeFeatures(ticket414(), kernel);
+    result = await importOnshapeFeatures(ticket414(), kernel, {
+      sketches3d: sketches3d() as any,
+    });
   }, 180_000);
 
   it("creates the document's chamfer as a 5 mm chamfer_edge that regenerates", () => {
