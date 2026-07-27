@@ -2403,6 +2403,48 @@ impl CsgNode {
         out
     }
 
+    /// Rewrite EVERY leaf id in the subtree to `new_id`.
+    ///
+    /// Needed whenever a decoded feature is COPIED onto the spine under a
+    /// fresh id (the Boolean's `keep_tools` working copies): the geometry has
+    /// to answer to the copy's own id, or the two id-based passes disagree —
+    /// [`crate::body::partition`] matches on the DECODED feature id while
+    /// [`wrap_targeted`] matches on the LEAF id, so a copy whose two ids
+    /// differ would dock into one body and carve another. Re-tagging also
+    /// keeps `qCreatedBy(tool)` naming the tool's own body alone instead of
+    /// additionally naming the cut faces the copy leaves in the target.
+    pub fn retag_leaf_ids(&mut self, new_id: &FeatureId) {
+        match self {
+            CsgNode::Leaf { id, .. }
+            | CsgNode::Extrude { id, .. }
+            | CsgNode::Revolve { id, .. }
+            | CsgNode::Helix { id, .. }
+            | CsgNode::Sweep { id, .. }
+            | CsgNode::Loft { id, .. } => *id = new_id.clone(),
+            CsgNode::Transform(_, inner)
+            | CsgNode::Twist(inner, _)
+            | CsgNode::Bend(inner, _)
+            | CsgNode::Shell(inner, _, _)
+            | CsgNode::InnerWall(inner)
+            | CsgNode::Offset(inner, _)
+            | CsgNode::Displace(inner, _, _) => inner.retag_leaf_ids(new_id),
+            CsgNode::Union(a, b)
+            | CsgNode::Difference(a, b)
+            | CsgNode::Intersection(a, b)
+            | CsgNode::SmoothUnion(a, b, _, _)
+            | CsgNode::SmoothDifference(a, b, _, _)
+            | CsgNode::Morph(a, b, _) => {
+                a.retag_leaf_ids(new_id);
+                b.retag_leaf_ids(new_id);
+            }
+            CsgNode::MaskedBlend { a, b, .. } => {
+                a.retag_leaf_ids(new_id);
+                b.retag_leaf_ids(new_id);
+            }
+            CsgNode::Empty => {}
+        }
+    }
+
     fn collect_leaf_ids(&self, out: &mut Vec<FeatureId>) {
         match self {
             CsgNode::Leaf { id, .. } => out.push(id.clone()),

@@ -124,21 +124,70 @@ impl FeatureKind for BooleanFeature {
             });
         }
 
-        // The first tool in spine order keeps op=Union so it seeds a
-        // BodyPartition. Subsequent tools attach to that body — a union
+        // Which spine entries this Boolean rewrites — its OPERANDS.
+        //
+        // Without `keep_tools` those are the tools themselves: their op is
+        // rewritten in place, so they stop being bodies of their own. That is
+        // Onshape's default — the operation CONSUMES its tools.
+        //
+        // With `keep_tools` the tools have to survive. The Boolean therefore
+        // appends a working COPY of every tool to the spine (a hierarchical
+        // child id under this Boolean, like a pattern clone) and operates on
+        // the copies. The originals keep their op, their id and their body, so
+        // every later query naming a tool still finds the tool standing. The
+        // copies start with NO links and carry their own id down into their
+        // geometry — their only relationships are the ones assigned below.
+        //
+        // Appending is also what makes the subtract work at all: a copy sits
+        // BEHIND its targets in the spine, and `body::partition` walks the
+        // spine once front to back, so a Remove can only dock into a body that
+        // was already seeded.
+        let tool_positions: Vec<usize> = ctx
+            .features
+            .iter()
+            .enumerate()
+            .filter(|(_, f)| tool_ids.contains(&f.id))
+            .map(|(i, _)| i)
+            .collect();
+        let operand_positions: Vec<usize> = if d.keep_tools {
+            tool_positions
+                .into_iter()
+                .map(|src| {
+                    let mut copy = ctx.features[src].clone();
+                    copy.id = id.child(format!("tool_{}", copy.id));
+                    copy.name = format!("{} (Werkzeug)", copy.name);
+                    copy.target_ids.clear();
+                    copy.node.retag_leaf_ids(&copy.id);
+                    ctx.features.push(copy);
+                    ctx.features.len() - 1
+                })
+                .collect()
+        } else {
+            tool_positions
+        };
+
+        // The first operand in spine order keeps op=Union so it seeds a
+        // BodyPartition. Subsequent operands attach to that body — a union
         // routes them in via an explicit `target_ids` link to the seed
         // (pure spatial overlap never merges unions); intersect/subtract
         // dock via AABB overlap.
-        let first_tool_pos = ctx
-            .features
-            .iter()
-            .position(|f| tool_ids.contains(&f.id));
-        let first_tool_id = first_tool_pos.and_then(|p| ctx.features.get(p).map(|f| f.id.clone()));
+        //
+        // The seed LINK is not always the seed's own id: both `partition` and
+        // `wrap_targeted` match a target against the *root ancestor* of a
+        // member id, and a copy's root ancestor is this Boolean. Naming the
+        // Boolean therefore selects exactly this Boolean's copies — and
+        // nothing else, since no other feature makes children under a
+        // Boolean's id.
+        let operand_count = operand_positions.len();
+        let first_tool_pos = operand_positions.first().copied();
+        let first_tool_id = if d.keep_tools {
+            first_tool_pos.map(|_| id.clone())
+        } else {
+            first_tool_pos.map(|p| ctx.features[p].id.clone())
+        };
 
-        for (idx, feature) in ctx.features.iter_mut().enumerate() {
-            if !tool_ids.contains(&feature.id) {
-                continue;
-            }
+        for idx in operand_positions {
+            let feature = &mut ctx.features[idx];
             match op {
                 op if op.is_union() => {
                     // Seed the body with the first tool; route every other
@@ -178,7 +227,7 @@ impl FeatureKind for BooleanFeature {
                     }
                 }
                 BoolOp::Intersect => {
-                    if tool_ids.len() > 1 && Some(idx) == first_tool_pos {
+                    if operand_count > 1 && Some(idx) == first_tool_pos {
                         feature.op = if feature.target_ids.is_empty() {
                             BoolOp::New
                         } else {
@@ -198,7 +247,7 @@ impl FeatureKind for BooleanFeature {
                                     feature.target_ids.push(t.clone());
                                 }
                             }
-                        } else if tool_ids.len() > 1 {
+                        } else if operand_count > 1 {
                             if let Some(seed) = &first_tool_id {
                                 if !feature.target_ids.contains(seed) {
                                     feature.target_ids.push(seed.clone());

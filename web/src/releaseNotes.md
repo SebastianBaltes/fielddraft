@@ -12,6 +12,9 @@ Format, eine Zeile je Eintrag:
 kind = feat | fix | perf. scope und #tickets sind optional. Folgezeilen, die
 eingerückt sind, gehören zum Text davor (Umbruch erlaubt).
 
+## 0.38.5
+- fix(kernel) #428: Eine Boolean-Operation mit „Werkzeuge behalten“ lässt die Werkzeug-Körper jetzt wirklich stehen. Bisher wurde das Häkchen zwar gespeichert, aber nie gelesen: die Werkzeuge wurden ausnahmslos verbraucht und verschwanden kommentarlos aus dem Dokument. Im importierten Regal-Dokument aus Onshape kostete das die vier senkrechten Pfosten — das Modell maß dadurch 887 mm Höhe statt 1840 mm. Jetzt trifft es Onshapes Bereich auf den Millimeter, und drei Skizzen samt einer Extrusion, die auf den Pfosten aufbauen, importieren gleich mit.
+
 ## 0.38.4
 - fix(onshape) #427: Liegt eine Skizze in Onshape auf einer Körperfläche, die FieldDraft zwar parallel, aber um einen Betrag versetzt auflöst, werden die 2D-Koordinaten jetzt trotzdem in FieldDrafts Achsen gedreht — der Versatz wird beziffert gemeldet, statt die Drehung mit zu verwerfen. Bisher landeten Onshapes Zahlen dabei roh auf den falschen Achsen: im Regal-Dokument stand eine Ebene dadurch um 90 Grad verdreht und 1072 mm neben ihrem Platz, und alles, was darauf aufbaute, hing 75 mm unter dem Boden. Jetzt steht es an seinem Platz.
 

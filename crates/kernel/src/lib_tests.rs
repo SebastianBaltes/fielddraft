@@ -3002,6 +3002,125 @@ fn boolean_subtract_carves_only_the_explicit_target() {
     );
 }
 
+/// Per-BODY geometry of a loaded document: one folded CSG tree per
+/// partition, in partition order. The whole-spine tree cannot answer a
+/// `keep_tools` question — with the tool kept, the union of all bodies is
+/// exactly the union of target and tool again. What changes is how that
+/// volume is PARTITIONED, and that is only visible per body.
+#[cfg(test)]
+fn body_trees(k: &Kernel) -> Vec<csg::CsgNode> {
+    body::partition(&k.decoded)
+        .iter()
+        .map(|p| {
+            let sub: Vec<DecodedFeature> = p
+                .feature_indices
+                .iter()
+                .map(|&i| k.decoded[i].clone())
+                .collect();
+            csg::CsgNode::from_decoded(&sub)
+        })
+        .collect()
+}
+
+#[test]
+fn boolean_keep_tools_leaves_the_subtracted_tool_standing_as_its_own_body() {
+    // #428: `keep_tools` was parsed and then never read — whatever the caller
+    // asked for, the tool's op was rewritten to Remove and the tool stopped
+    // being a body. Silent geometry loss: the #409 shelving unit lost its
+    // four posts to exactly this and measured 887 mm of height where Onshape
+    // measures 1840.
+    //
+    // box [-50,50]³ is the target, a sphere r=40 at [30,0,0] the tool. The
+    // sphere pokes 20 mm out of the box's +x face, so "kept" is measurable at
+    // [65,0,0]: inside the sphere, outside the box.
+    let doc = |keep: bool| {
+        serde_json::json!({
+            "schema_version":2,"name":"t","next_feature_id":9,
+            "feature_calls":[
+                {"type":"box","id":1,"params":{"op":"new","half_extents":[50,50,50],"translate":[0,0,0]}},
+                {"type":"sphere","id":2,"params":{"op":"new","radius":40,"translate":[30,0,0]}},
+                {"type":"boolean","id":3,"params":{"keep_tools":keep,"operation":"Subtract","targets":"qCreatedBy(1)","tools":"qCreatedBy(2)"}},
+            ],
+        })
+    };
+    let inside = |t: &csg::CsgNode, p: [f32; 3]| t.sdf(p, csg::EvalMode::Logical) < 0.0;
+
+    // keep_tools = false — the tool is consumed, exactly as before: one body,
+    // and the sphere's volume is gone from the document.
+    let mut off = Kernel::new();
+    off.load_json(&doc(false).to_string()).unwrap();
+    let off_bodies = body_trees(&off);
+    assert_eq!(off_bodies.len(), 1, "a consumed tool leaves a single body");
+    assert!(!inside(&off_bodies[0], [0.0, 0.0, 0.0]), "target is carved");
+    assert!(!inside(&off_bodies[0], [65.0, 0.0, 0.0]), "the tool is gone");
+
+    // keep_tools = true — the cut is the SAME, but the tool survives whole.
+    let mut on = Kernel::new();
+    on.load_json(&doc(true).to_string()).unwrap();
+    assert_eq!(on.body_count(), 2, "the kept tool is a body of its own");
+    let on_bodies = body_trees(&on);
+    let (carved, tool) = (&on_bodies[0], &on_bodies[1]);
+    assert!(!inside(carved, [0.0, 0.0, 0.0]), "the target is still carved");
+    assert!(inside(carved, [-45.0, 0.0, 0.0]), "…and otherwise intact");
+    assert!(inside(tool, [30.0, 0.0, 0.0]), "the kept tool holds its centre");
+    assert!(
+        inside(tool, [65.0, 0.0, 0.0]),
+        "the kept tool keeps its FULL radius — not the leftover cap"
+    );
+    // The kept body is the tool FEATURE, under its own id: every query that
+    // named the tool before the Boolean still names it afterwards. The
+    // Boolean carves with a copy, which is why the original can stay put.
+    let parts = body::partition(&on.decoded);
+    assert_eq!(
+        parts[1].seed_id(&on.decoded),
+        FeatureId::from_u32(2),
+        "the kept body is the tool feature itself"
+    );
+    assert_eq!(
+        parts[0].feature_indices.len(),
+        2,
+        "the target body is target + the Boolean's working copy"
+    );
+}
+
+#[test]
+fn boolean_keep_tools_on_a_union_leaves_both_tools_and_adds_the_merged_body() {
+    // #428, the other half of the rule: `keep_tools` means the Boolean works
+    // on COPIES, whichever operation it is. A union with kept tools therefore
+    // yields Onshape's three result bodies — both originals, untouched and
+    // still separate (no implicit merge), plus the merged body the Boolean
+    // built from its copies.
+    //
+    // Two overlapping boxes: [-30,10]×… and [-10,30]×… along x.
+    let doc = |keep: bool| {
+        serde_json::json!({
+            "schema_version":2,"name":"t","next_feature_id":9,
+            "feature_calls":[
+                {"type":"box","id":1,"params":{"op":"new","half_extents":[20,20,20],"translate":[-10,0,0]}},
+                {"type":"box","id":2,"params":{"op":"new","half_extents":[20,20,20],"translate":[10,0,0]}},
+                {"type":"boolean","id":3,"params":{"keep_tools":keep,"operation":"Union","targets":"","tools":"qCreatedBy(1),qCreatedBy(2)"}},
+            ],
+        })
+    };
+    let inside = |t: &csg::CsgNode, p: [f32; 3]| t.sdf(p, csg::EvalMode::Logical) < 0.0;
+
+    let mut off = Kernel::new();
+    off.load_json(&doc(false).to_string()).unwrap();
+    assert_eq!(off.body_count(), 1, "a consumed union fuses into one body");
+
+    let mut on = Kernel::new();
+    on.load_json(&doc(true).to_string()).unwrap();
+    assert_eq!(on.body_count(), 3, "two kept tools + the merged body");
+    let bodies = body_trees(&on);
+    assert!(inside(&bodies[0], [-25.0, 0.0, 0.0]), "tool 1 stands");
+    assert!(!inside(&bodies[0], [25.0, 0.0, 0.0]), "…and did not absorb tool 2");
+    assert!(inside(&bodies[1], [25.0, 0.0, 0.0]), "tool 2 stands");
+    assert!(
+        inside(&bodies[2], [-25.0, 0.0, 0.0]) && inside(&bodies[2], [25.0, 0.0, 0.0]),
+        "the merged body spans both copies"
+    );
+}
+
 #[test]
 fn reorder_rejected_when_it_creates_a_forward_reference() {
     // The tree is a program: a feature may only reference earlier

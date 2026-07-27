@@ -57,14 +57,15 @@ const GROUND_TRUTH = {
  *
  * The gaps themselves, grouped (see docs/ONSHAPE-IMPORT-GAP-MATRIX.md):
  *
- *  A. `qWall(op, ord)` binds NO face. The cause on record — a tangentially
- *     merged mantle — was MEASURED and refuted in #424: a rounded rectangle
- *     weaves eight separate wall faces, each named by its own sketch entity
- *     (`rounded_rectangle_keeps_one_wall_face_per_sketch_entity`). What is
- *     left for Sketch 4, 5, 13 here is the whole-sketch union of four disjoint
- *     rectangles (Extrude 2 on `qCreatedBy`): Onshape extruded ONE of them and
- *     names a wall of that one, FieldDraft extruded all four, and the walls
- *     the query wants are interior to the union.
+ *  A. CLOSED in #428 — kept here because the diagnosis took three tickets.
+ *     `qWall(op, ord)` bound no face for Sketch 4, 5 and 13. The first cause
+ *     on record (a tangentially merged mantle) was refuted by measurement in
+ *     #424; the second (walls interior to the union of four disjoint
+ *     rectangles) was the right shape of answer but the wrong culprit. The
+ *     actual reason was that `Boolean 1` CONSUMED Extrude 2: the posts were
+ *     folded into the plates' body, so their walls really were interior
+ *     faces — of a body they should never have joined. With `keep_tools`
+ *     honoured they are a body again and all three sketches resolve.
  *  B. The resolved plane is PARALLEL to Onshape's but offset (Sketch 6, 7, 11,
  *     12). Not a decoder defect — measured in #427, the decoder names exactly
  *     the entity Onshape names. The offset is inherited: Sketch 2's stored 2D
@@ -96,7 +97,6 @@ const KNOWN_GAPS = [
   "Bohrung Ø5.1 mm",
   "Chamfer 1",
   "Extrude 12",
-  "Extrude 13",
   "Extrude 14",
   "Extrude 15",
   "Extrude 7",
@@ -109,10 +109,7 @@ const KNOWN_GAPS = [
   "Sketch 10",
   "Sketch 11",
   "Sketch 12",
-  "Sketch 13",
   "Sketch 14",
-  "Sketch 4",
-  "Sketch 5",
   "Sketch 6",
   "Sketch 7",
 ];
@@ -196,20 +193,15 @@ describe("#409 shelving unit", () => {
     // that is merely PARALLEL-OFFSET no longer forfeits the in-plane rotation —
     // so the bound is back on the ground truth.
     expect(bb.min[2], `min of ${JSON.stringify(bb)}`).toBeGreaterThan(GROUND_TRUTH.z[0] - slack);
-    // …and it must actually REACH up, rather than collapsing to a slab. The
-    // span is not Onshape's 1840 mm yet, and one named defect accounts for the
-    // whole difference: `Boolean 1` subtracts the four vertical posts
-    // (Extrude 2) from the top plates with Onshape's „Werkzeuge behalten" set,
-    // and FieldDraft's Boolean PARSES `keep_tools` but never honours it — the
-    // tool feature's op is rewritten to Remove, so the posts stop being bodies
-    // of their own. Delete that single feature from the fixture and the scene
-    // measures z ∈ [0, 1840] — Onshape's own range, to the millimetre. What is
-    // left standing is the top assembly (z ≤ 1825) and the middle shelf
-    // (z ≥ 938): 887 mm. A MEASURED deviation of a named defect, not a
-    // tolerance — it still fails the moment anything else moves, and it belongs
-    // back at 1500 the day the Boolean keeps its tools.
-    const keepToolsSpanMm = 880;
-    expect(bb.max[2] - bb.min[2]).toBeGreaterThan(keepToolsSpanMm);
+    // …and it must actually REACH up, rather than collapsing to a slab. This
+    // bound was down at 880 mm for one release (#428): `Boolean 1` subtracts
+    // the four vertical posts (Extrude 2) from the top plates with Onshape's
+    // „Werkzeuge behalten" set, and FieldDraft's Boolean parsed `keep_tools`
+    // without ever honouring it — the posts were consumed and the shelf lost
+    // its lower structure, leaving the top assembly and the middle shelf,
+    // 887 mm apart. With the flag honoured the posts stand again and the scene
+    // spans Onshape's own z range.
+    expect(bb.max[2] - bb.min[2]).toBeGreaterThan(1500);
 
     // X and Y are deliberately NOT asserted against the ground truth yet: 20 of
     // Onshape's 33 parts are missing (see KNOWN_GAPS), and the ones that ARE

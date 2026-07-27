@@ -246,6 +246,21 @@ Features carry an Onshape-style result-body op (`BoolOp`: `add` / `new` /
   overlap; dropped if nothing matches
 * Feature order within a body always matches document order (deterministic)
 
+**Explizite Boolean-Features (`features/boolean.rs`)** schreiben diese Ops
+rückwirkend auf ihre Werkzeuge: ein Subtract macht aus dem Werkzeug-Feature ein
+`remove` mit Link auf die Ziele, ein Union degradiert alle Werkzeuge bis auf das
+erste zu verlinkten `add`s. Das **verbraucht** die Werkzeuge — sie sind danach
+keine eigenen Körper mehr. Mit `keep_tools` (Onshapes „Werkzeuge behalten",
+#428) arbeitet das Boolean stattdessen auf **Kopien**: es hängt je Werkzeug
+einen Klon mit hierarchischer Kind-Id unter dem Boolean an die Spine
+(`CsgNode::retag_leaf_ids` zieht die neue Id bis in die Blätter) und schreibt
+nur die Klone um. Die Originale behalten Op, Id und Körper, jede spätere Query
+auf sie trifft weiterhin. Der Seed-Link der Klone ist die Id des Booleans
+selbst — `partition` und `wrap_targeted` matchen gegen den Wurzel-Vorfahren, und
+nur die Klone dieses Booleans tragen ihn. Weil die Klone hinter ihren Zielen
+stehen, dockt `partition` sie auch dann an, wenn das Werkzeug im Dokument VOR
+dem Ziel steht.
+
 Defaults: primitives (box, sphere, …) and imported meshes seed `new`
 bodies; extrude/revolve/sweep/thicken default to `add` so e.g. a face
 extrude grows its source body instead of stacking a second Part onto it.
