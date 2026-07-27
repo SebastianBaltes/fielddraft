@@ -978,3 +978,78 @@ löst `qWall(op, entity)` auf genau eine Fläche auf und prüft deren Normale.
   nicht mehr, und die Kette Sketch 6 → Extrude 11 → Sketch 7 hängt jetzt
   sichtbar ~75 mm unter Onshapes Boden. Der #409-E2E hält diese Abweichung als
   gemessene Zahl fest, nicht als Toleranz.
+
+## Update 2026-07-27 (4) — #419 hat endlich einen Test, und der findet eine Drehung
+
+`web/src/onshape/onshapeImport419E2E.slow.test.ts` gibt es jetzt, nach dem
+Muster der vier anderen. Bis dahin war #419 das einzige gemessene Dokument
+**ohne** Test: die Zahlen oben stammten aus einer Wegwerf-Probe, die danach
+gelöscht wurde — nichts im Repo konnte sie reproduzieren, und nichts hätte
+gemerkt, wenn sie sich ändern.
+
+### Die Körperzahl ist nicht monoton (9 → 7 ist eine Verbesserung)
+
+Differenziell gemessen, beide Läufe gegen dieselbe Fixture:
+
+| Größe | v0.38.2 | v0.38.3 |
+|---|---|---|
+| Körper (Onshape: 17) | 9 | **7** |
+| Meldungen | 224 | **212** |
+| scheiternde Features | 125 | **118** |
+
+Repariert wurden genau sieben, kaputt ging keines: `Boolean 2`, `Boolean 4`,
+`Extrude 6`, `Extrude 13`, `Sketch 6`, `Sketch 13`, `Thicken 6`. Dass die
+Körperzahl dabei **fällt**, liegt an den beiden Booleans: sie lösen jetzt auf
+und verschmelzen Körper, die vorher einzeln herumlagen. „Mehr Körper" ist auf
+diesem Dokument also kein Qualitätsmaß — der Test pinnt die Zahl deshalb
+exakt (`toBe(7)`), statt sie nach oben oder unten zu beschränken.
+
+### Das ganze Dokument steht um 90° um Z gedreht
+
+Der Test vergleicht zum ersten Mal achsweise gegen die Grundwahrheit, und da
+fällt auf, was die bloße Auflistung der Bounding-Box nie zeigte:
+
+    unser (x, y, z) = Onshapes (−y, x, z)
+
+Drei der vier waagerechten Schranken passen auf diese Abbildung **exakt**:
+unser x ∈ [−163; 157] gegen Onshapes y ∈ [−157; 163], unser y-Minimum
+−3015,4 gegen Onshapes x-Minimum. (Unser y-Maximum bleibt hinter Onshapes
+85,6 zurück, weil 10 der 17 Teile fehlen — diese eine Schranke taugt als
+Beleg nicht.) z stimmt auf 0,06 mm.
+
+Das ist **keine Frame-Konvention der Bounding-Box-API**: #414, #415 und #416
+prüfen x/y/z direkt gegen dieselbe API und sind grün. Verdächtig ist die
+bekannte Regel-Differenz: FieldDraft leitet die u/v-Basis einer
+flächengebundenen Sketch-Ebene aus der **Normalen** ab, Onshape aus der
+**Parametrisierung** der Fläche (siehe #415 weiter oben). Beide Regeln sind
+deterministisch und verschieden — und ein Wurzel-Sketch, der auf einer Fläche
+sitzt, vererbt die Drehung an alles Nachfolgende.
+
+Die Drehung ist **älter als v0.38.3**: die AABB ist über den #424-Fix hinweg
+bit-identisch, gemessen. Der Test hält sie als die Abbildung fest, die sie
+ist, nicht als weiche Schranke — an dem Tag, an dem der Frame stimmt, fallen
+diese vier Zeilen und gehören durch die direkte Prüfung gegen
+`GROUND_TRUTH.x` / `.y` ersetzt.
+
+### Zusammensetzung der 212 Meldungen
+
+Die Hälfte ist Kaskade — ein Feature scheitert nur, weil etwas fehlt, worauf
+es sich bezieht:
+
+| Anzahl | Ursache |
+|---|---|
+| 67 | Kaskade: Bezug auf ein nicht importiertes Feature |
+| 42 | unbekannte Kanten-Query-Form (#425) |
+| 41 | Kaskade: Profil-Sketch fehlt |
+| 23 | `CAP_EDGE`-Ursprung nicht auflösbar |
+| 9 | `qWall(…)` bindet 0 Flächen (#424) |
+| 7 | Loch-Position ist kein Sketch-Punkt |
+| 6 | Flächen-Referenz für `thicken` |
+| 6 | unbekannte Ebenen-Query-Form |
+| 3 | End-Condition `UP_TO_NEXT` / `UP_TO_SURFACE` |
+| 2 | `startOffset` (verweigert, nicht still versetzt) |
+| 2 | Muster-Achse nicht in Weltkoordinaten auflösbar |
+| 2 | Sketch-Entity fehlt in der Übersetzung |
+| 2 | Feature-Typ `printedHole` ohne Übersetzer |
+
+Rund 50 echte Lücken also; die andere Hälfte fällt mit ihnen.
