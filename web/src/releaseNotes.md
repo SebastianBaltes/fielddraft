@@ -12,6 +12,11 @@ Format, eine Zeile je Eintrag:
 kind = feat | fix | perf. scope und #tickets sind optional. Folgezeilen, die
 eingerückt sind, gehören zum Text davor (Umbruch erlaubt).
 
+## 0.38.0
+- feat(onshape) #409 #416 #419: Onshape-Sketches, die auf einem Mate-Connector liegen, werden jetzt importiert statt übersprungen — samt Connectors auf einer rohen Konstruktionslinie und auf dem Ursprung des Part Studios. Das war der Grund, warum bei manchen Dokumenten schon der erste Sketch fehlte und alles Nachfolgende mit ihm. Ein Mate-Connector taugt damit auch als Spiegelebene.
+- fix(onshape) #409: Der Versatz eines Mate-Connectors wird ausgerechnet statt aus Onshapes Rohwert gelesen. Steht dort eine Formel wie „Höhe minus 3 cm", meldet Onshape schlicht 0 — das Regal stand dadurch 1,8 Meter zu tief.
+- feat(onshape) #409 #419: Linear-, Kreis- und Spiegelmuster haben eigene Tests bekommen; Abstand und Anzahl kommen aus Onshapes Formel, nicht aus dem Rohwert.
+
 ## 0.37.2
 - fix(kernel) #409 #419: Spiegeln spiegelt jetzt wirklich. Bisher wurde nur der Ursprung des Quell-Features an der Ebene gespiegelt, das Bauteil selbst aber nicht gedreht — eine Winkelplatte zeigte danach in dieselbe Richtung wie das Original, und ein aus einem Sketch gebauter Körper landete deckungsgleich auf seinem Original. Der Onshape-Import musste jede Spiegelung deshalb verweigern; das entfällt.
 

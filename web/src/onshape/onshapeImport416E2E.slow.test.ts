@@ -187,21 +187,23 @@ describe("Onshape import — #416 against the Onshape ground truth", () => {
     result = await importOnshapeFeatures(ticket416(), kernel);
   }, 180_000);
 
-  it("reports the mate-connector sketch planes it cannot place, by name", () => {
+  it("places the sketches that sit on implicit mate connectors (#409)", () => {
     // Three of the document's five sketches (2, 4, 6) sit on IMPLICIT MATE
     // CONNECTORS — sub-features of the sketches themselves, which is why the
-    // feature-type census of the gap matrix never saw them. The import must say
-    // which Onshape concept is missing, not just fail to decode a string.
+    // feature-type census of the gap matrix never saw them, and why all three
+    // used to fall together with everything drawn on them.
+    //
+    // Two now land: Sketch 2 on a raw construction line of Sketch 1, Sketch 4 on
+    // the cap of Extrude 4. Both needed kernel work (`resolve_plane_frame` for
+    // the plane, `resolve_mate_anchor` for the sketch-line anchor).
     const errors = result.errors.join(" | ");
     const planted = result.errors.filter((e) => e.includes("Sketch liegt auf dem Mate-Connector"));
-    expect(planted.length, errors).toBe(3);
-    // Each names the ANCHOR it decoded, so the gap is checkable against the
-    // document rather than a blanket „not supported".
-    expect(planted.filter((e) => e.includes("Sketch-Entity HhKEnMRHLJLB.right")).length).toBe(1);
-    expect(planted.filter((e) => e.includes("Deckfläche von FUwE53MM0gG2CH2_0")).length).toBe(1);
-    expect(planted.filter((e) => e.includes("Deckfläche von FEQ7ajZembzIAXS_1")).length).toBe(1);
-    // And each names the kernel entry point that would have to grow.
-    expect(planted.every((e) => e.includes("resolve_plane_frame")), errors).toBe(true);
+    expect(planted.length, errors).toBe(1);
+    // The one left is Sketch 6, and NOT because of its plane: its connector
+    // anchors on a cap EDGE whose `qWall` binds nothing — the tangentially
+    // merged mantle face, the same gap that blocks the fillets below.
+    expect(planted[0]).toContain("Deckfläche von FUwE53MM0gG2CH2_0");
+    expect(errors).toContain("löst auf 0 Elemente auf");
   });
 
   /**
@@ -214,11 +216,13 @@ describe("Onshape import — #416 against the Onshape ground truth", () => {
    * Sketch 4 → Revolve 1) falls, which is why the document ends at 4 of 19
    * features no matter what the web side does.
    */
-  it("names the second, deeper gap: a connector anchored to a raw sketch line", () => {
-    const err = result.errors.filter((e) => e.includes("rohen Sketch-Linie"));
-    expect(err.length, result.errors.join(" | ")).toBe(1);
-    expect(err[0]).toContain("resolve_mate_anchor");
-    expect(err[0]).toMatch(/qSketchLine\(\d+, \d+\)/);
+  it("anchors Sketch 2's connector on the raw construction line it names", () => {
+    const calls = callsOf(kernel.raw).filter((c) => c.type === "mate_connector");
+    const onLine = calls.filter((c) => /^qSketchLine\(\d+, \d+\)$/.test(c.params.anchor));
+    expect(onLine.length, result.errors.join(" | ")).toBe(1);
+    // POINT inference on an ENDPOINT: `t` says which end, and a silent
+    // fallback to the midpoint would move the whole chain half a line along.
+    expect([0, 1]).toContain(onLine[0].params.t);
   });
 
   /**
@@ -229,26 +233,21 @@ describe("Onshape import — #416 against the Onshape ground truth", () => {
    * plane gap above: Sketch 2, Sketch 4 and Sketch 6 cannot be placed, so
    * everything drawn on them — including this ticket's revolve — is skipped.
    *
-   * Two KERNEL capabilities are missing, and both are named by the errors this
-   * suite pins (see the gap matrix for the exact signatures):
+   * The two KERNEL gaps this test used to blame are CLOSED as of #409:
+   * `resolve_plane_frame` lowers a mate connector's CSYS to a plane frame, and
+   * `resolve_mate_anchor` reads `qSketchLine`. Sketch 2 and Sketch 4 land.
    *
-   *   1. `resolve_plane_frame` (features/context_resolve.rs) takes a plane
-   *      query to exactly two things — one of the three origin datum planes, or
-   *      a resolved B-Rep face. A mate connector is neither, although
-   *      `ctx.mate_connectors` already holds its resolved origin/normal/x-axis.
-   *   2. `resolve_mate_anchor` (same file) has no `QueryExpr::SketchLine` arm,
-   *      so a connector anchored to raw sketch geometry cannot be placed at all
-   *      — which is precisely Sketch 2, the root of the chain.
-   *
-   * The frames those two would have to produce are MEASURED against Onshape's
-   * own `sketches?output3D=true` in `onshapeMateConnector.test.ts`; they are the
-   * acceptance data for the kernel work, not a guess derived from our import.
+   * What still keeps the document short of its ground truth is a different gap
+   * altogether, and one this suite also pins above: `qWall(op, ord)` binds no
+   * face where Onshape has one, because FieldDraft splits faces only at creases
+   * — a rounded rectangle has ONE mantle face where Onshape has eight. Sketch
+   * 6's connector, both chamfers and five of the fillets hang on exactly that.
    *
    * `it.fails` keeps that honest in both directions: today the suite is green
-   * WITH the gap documented, and the day mate-connector planes land this test
-   * starts failing and forces someone to promote it to a plain `it`.
+   * WITH the gap documented, and the day `qWall` resolves tangential mantles
+   * this test starts failing and forces someone to promote it to a plain `it`.
    */
-  it.fails("matches the ground-truth part count and AABB (open: mate-connector planes)", () => {
+  it.fails("matches the ground-truth part count and AABB (open: qWall on merged mantles)", () => {
     expect(kernel.raw.bodyCount()).toBe(GROUND_TRUTH.parts);
     const bb = kernel.sceneAabb!() as { min: number[]; max: number[] };
     for (const [c, [lo, hi]] of [GROUND_TRUTH.x, GROUND_TRUTH.y, GROUND_TRUTH.z].entries()) {

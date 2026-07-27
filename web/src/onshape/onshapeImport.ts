@@ -274,24 +274,47 @@ interface SketchRecord {
    *  resolution walks these to find which imprint face a query names (#412). */
   entityGeom: Map<string, [number, number][]>;
   /** Which of the sketch's entities are straight LINES (construction lines
-   *  included) — the only shape a revolve axis may name (#416). */
-  lineEntityIds: Set<string>;
+   *  included), with their 2D endpoints — the only shape a revolve axis (#416)
+   *  or a pattern direction (#409/#419) may name. */
+  lineSegments: Map<string, SketchSegment>;
 }
+
+/** A straight sketch entity's two endpoints in sketch-space mm, in Onshape's
+ *  own start→end order. That ORDER is the direction a pattern runs in — the
+ *  one thing a direction query carries and nothing else can supply (#419). */
+type SketchSegment = [[number, number], [number, number]];
 
 /** Flattening resolution of an arc/circle rim, in segments per full turn. */
 const ARC_FLATTEN_SEGMENTS = 48;
 
-/** Every entity id of the sketch whose geometry is a STRAIGHT LINE, including
- *  construction lines — those never reach the B-Rep but are exactly what a
- *  revolve axis is usually drawn as (#416). Lets the axis translation reject a
- *  query that names an arc or a point instead of silently emitting a
- *  `qSketchLine` the kernel then cannot resolve. */
-export function sketchLineEntityIds(feat: AnyMsg): Set<string> {
-  const out = new Set<string>();
+/**
+ * Every entity of the sketch whose geometry is a STRAIGHT LINE, with its two
+ * endpoints in sketch-space mm — CONSTRUCTION LINES INCLUDED.
+ *
+ * Construction lines never reach the B-Rep, yet they are exactly what a revolve
+ * axis (#416) and a pattern direction/axis (#409/#419) are usually drawn as, so
+ * {@link sketchEntityVertices} (which drops them, being about regions) cannot
+ * serve here. Two translations read this map:
+ *
+ *  - the revolve axis, which only needs to know that the named entity IS a line
+ *    (`qSketchLine` is resolved by the kernel itself);
+ *  - a pattern's direction, which needs the line's WORLD direction and thus its
+ *    endpoints — in Onshape's own start→end order, because that order IS the
+ *    direction Onshape counts `oppositeDirection` against.
+ */
+export function sketchLineSegments(feat: AnyMsg): Map<string, SketchSegment> {
+  const out = new Map<string, SketchSegment>();
   for (const raw of (feat.geometry ?? feat.entities ?? []) as AnyMsg[]) {
     const e = msg(raw);
-    const bt = String(msg(e.geometry)?.btType ?? "");
-    if (e.entityId && bt.startsWith("BTCurveGeometryLine")) out.add(e.entityId as string);
+    const g = msg(e.geometry);
+    const bt = String(g?.btType ?? "");
+    if (!e.entityId || !bt.startsWith("BTCurveGeometryLine")) continue;
+    const s = typeof e.startParam === "number" ? e.startParam : 0;
+    const t = typeof e.endParam === "number" ? e.endParam : 0;
+    out.set(e.entityId as string, [
+      [(g.pntX + g.dirX * s) * M_TO_MM, (g.pntY + g.dirY * s) * M_TO_MM],
+      [(g.pntX + g.dirX * t) * M_TO_MM, (g.pntY + g.dirY * t) * M_TO_MM],
+    ]);
   }
   return out;
 }
@@ -709,6 +732,14 @@ function mateAnchorQuery(
     return { error: `${featureName}: Mate-Connector-Anker nicht lesbar (${a.reason})` };
   }
 
+  // The part studio ORIGIN. Onshape's origin point carries no frame of its own,
+  // so the connector's CSYS is the world one — which is exactly what the Top
+  // datum plane resolves to (origin 0, +Z normal). The realignment offsets
+  // travel from there as they do for any other anchor.
+  if (a.kind === "originPoint") {
+    return { query: "qCreatedBy(origin_plane_xy)" };
+  }
+
   if (a.kind === "capEntity") {
     const cap = capFaceQuery(a.opFeatureId, a.isStart, featureName, idMap, sweeps);
     if (cap.error) return { error: cap.error };
@@ -747,7 +778,7 @@ function mateAnchorQuery(
       error: `${featureName}: Mate-Connector-Anker ${a.origin.entityId} nicht in der Sketch-Übersetzung`,
     };
   }
-  if (a.entityType !== "EDGE" || !rec.lineEntityIds.has(a.origin.entityId)) {
+  if (a.entityType !== "EDGE" || !rec.lineSegments.has(a.origin.entityId)) {
     return {
       error:
         `${featureName}: Mate-Connector-Anker ${describeAnchor(a)} ist keine gerade Sketch-Linie — ` +
@@ -762,6 +793,10 @@ function mateAnchorQuery(
         `nicht übersetzbar — der Endpunkt ist aus secondaryOriginQuery nicht bestimmbar`,
     };
   }
+  // Raw sketch geometry. The kernel resolves it (`resolve_mate_anchor` knows
+  // `qSketchLine` since #409), and `sketchLine` stays on the result because the
+  // UNIQUENESS gate in `emitMateConnector` must not run on it: a sketch line
+  // binds no B-Rep entity, so `resolveQuery` reports nothing about it.
   return { query: `qSketchLine(${rec.fdId}, ${ord})`, t, sketchLine: true };
 }
 
@@ -792,18 +827,6 @@ function mateConnectorParams(
   if (anchor.error || !anchor.query) {
     return { error: anchor.error ?? `${featureName}: Mate-Connector-Anker nicht übersetzbar` };
   }
-  if (anchor.sketchLine) {
-    // The query is CORRECT and names exactly the line Onshape names — the
-    // kernel just cannot anchor a connector to raw sketch geometry yet, so
-    // emitting it would only add a feature that fails to regenerate.
-    return {
-      error:
-        `${featureName}: Mate-Connector sitzt auf der rohen Sketch-Linie ${describeAnchor(mc.anchor)} ` +
-        `(${anchor.query}) — FieldDraft verankert Mate-Connectors nur an B-Rep-Geometrie ` +
-        `(Kernel: resolve_mate_anchor kennt qFace/qEdge/qVertex/qSketchPoint, aber kein qSketchLine)`,
-    };
-  }
-
   let warning: string | undefined;
   let reorient = 0;
   if (Math.abs(mc.rotationDeg) > 1e-6) {
@@ -991,6 +1014,7 @@ export async function importOnshapeFeatures(
   const result: OnshapeImportResult = { created: [], idMap: {}, warnings: [], errors: [] };
   const sketches = new Map<string, SketchRecord>();
   const sweeps = new Map<string, SweepRecord>();
+  const patterns = new Map<string, PatternRecord>();
   const env = newExprEnv(result);
   const frames3d = sketches3dByFeature(sources.sketches3d);
 
@@ -1000,7 +1024,7 @@ export async function importOnshapeFeatures(
   // of N features is O(n²) main-thread work that froze the import for minutes.
   kernel.setSyncMeshing?.(false);
   try {
-    await importFeatures(featuresJson, kernel, result, sketches, sweeps, env, frames3d);
+    await importFeatures(featuresJson, kernel, result, sketches, sweeps, patterns, env, frames3d);
   } finally {
     kernel.setSyncMeshing?.(true); // one final mesh of the finished document
   }
@@ -1016,7 +1040,9 @@ export async function importOnshapeFeatures(
  * entity right now (mid-history resolution). A connector on a query that binds
  * nothing would regenerate as an error, and one that binds several would sit on
  * whichever the kernel happened to pick first — neither is a connector the
- * document ever had.
+ * document ever had. A DATUM-plane anchor is exempt for the same reason a datum
+ * sketch plane is: it names no B-Rep entity, so `resolveQuery` reports nothing
+ * about it — there is no ambiguity for the gate to catch.
  */
 async function emitMateConnector(
   feature: AnyMsg,
@@ -1025,25 +1051,35 @@ async function emitMateConnector(
   result: OnshapeImportResult,
   sketches: Map<string, SketchRecord>,
   sweeps: Map<string, SweepRecord>,
+  env: ExprEnv,
 ): Promise<{ fdId: number | null; mc: OnshapeMateConnector }> {
-  const mc = await readMateConnector(feature);
+  // The realignment offsets are ordinary quantity parameters and go through
+  // the same evaluator every other dimension does. `translationZ` of `#Hoehe-3cm`
+  // is a length; Onshape's `value` field reports 0 for it, and reading that
+  // literally put the whole shelf at the origin instead of 1.8 m above it.
+  const mc = await readMateConnector(feature, (pm, fallback, want) =>
+    quantityParam(pm, fallback, env, want),
+  );
   const built = mateConnectorParams(mc, featureName, result.idMap, sketches, sweeps);
   if (built.warning) result.warnings.push(built.warning);
   if (built.error || !built.params) {
     result.errors.push(built.error ?? `${featureName}: Mate-Connector nicht übersetzbar`);
     return { fdId: null, mc };
   }
-  let matches = 0;
-  try {
-    matches = kernel.resolveQuery(built.params.anchor as string).length;
-  } catch {
-    matches = 0;
-  }
-  if (matches !== 1) {
-    result.errors.push(
-      `${featureName}: Mate-Connector-Anker "${built.params.anchor}" löst auf ${matches} Elemente auf (erwartet 1) — übersprungen`,
-    );
-    return { fdId: null, mc };
+  const anchor = built.params.anchor as string;
+  if (!anchor.startsWith("qCreatedBy(origin_plane_") && !anchor.startsWith("qSketchLine(")) {
+    let matches = 0;
+    try {
+      matches = kernel.resolveQuery(anchor).length;
+    } catch {
+      matches = 0;
+    }
+    if (matches !== 1) {
+      result.errors.push(
+        `${featureName}: Mate-Connector-Anker "${anchor}" löst auf ${matches} Elemente auf (erwartet 1) — übersprungen`,
+      );
+      return { fdId: null, mc };
+    }
   }
   const fdId = kernel.addFeatureCall("mate_connector", JSON.stringify(built.params));
   if (mc.featureId) result.idMap[mc.featureId] = fdId;
@@ -1054,13 +1090,19 @@ async function emitMateConnector(
 /**
  * A sketch placed on a MATE CONNECTOR (#416). The connector rides inside the
  * sketch's own `subFeatures`, so it is imported here — it is reference geometry
- * in its own right, and the anchor a user can re-attach the sketch to by hand.
+ * in its own right, and the anchor the sketch then hangs on.
  *
- * The SKETCH itself is skipped: FieldDraft's `resolve_plane_frame` takes a
- * plane query to exactly two things, one of the three origin datum planes or a
- * resolved B-Rep face, and a mate connector is neither. That gap is named in
- * full rather than papered over — a sketch dropped onto a guessed plane takes
- * every feature drawn on it to the wrong place.
+ * Returns the FieldDraft plane query for the sketch (`qCreatedBy(<connector>)`)
+ * or `null` when the connector itself could not be translated; in that case the
+ * reason is already in `result.errors` and the caller skips the sketch.
+ *
+ * Until #409 the sketch was ALWAYS skipped, because `resolve_plane_frame` took
+ * a plane query to exactly two things — an origin datum plane or a resolved
+ * B-Rep face — and a mate connector is neither. That was one unresolved plane
+ * taking out eleven downstream features in the reference part: every extrude on
+ * the sketch, then the booleans and mirrors on those extrudes. The kernel now
+ * resolves a connector's CSYS as a plane frame, so the sketch lands on the
+ * connector's own origin and rotation rather than on a guess.
  */
 async function importMateConnectorPlane(
   mcFeatureId: string,
@@ -1070,13 +1112,14 @@ async function importMateConnectorPlane(
   result: OnshapeImportResult,
   sketches: Map<string, SketchRecord>,
   sweeps: Map<string, SweepRecord>,
-): Promise<void> {
+  env: ExprEnv,
+): Promise<string | null> {
   const sub = implicitMateConnectors(sketchFeature).get(mcFeatureId);
   if (!sub) {
     result.errors.push(
       `${featureName}: Ebene nennt den Mate-Connector ${mcFeatureId}, der aber weder als Sub-Feature noch im Dokument steht`,
     );
-    return;
+    return null;
   }
   const { fdId, mc } = await emitMateConnector(
     sub,
@@ -1085,14 +1128,16 @@ async function importMateConnectorPlane(
     result,
     sketches,
     sweeps,
+    env,
   );
-  result.errors.push(
-    `${featureName}: Sketch liegt auf dem Mate-Connector „${mc.name}“ (${describeAnchor(mc.anchor)}) — ` +
-      `FieldDraft kann eine Sketch-Ebene noch nicht auf einem Mate-Connector aufsetzen ` +
-      `(Kernel: resolve_plane_frame kennt nur Datum-Ebenen und B-Rep-Flächen, ` +
-      `siehe docs/ONSHAPE-IMPORT-GAP-MATRIX.md)` +
-      (fdId === null ? "" : ` — der Mate-Connector selbst ist als Feature ${fdId} importiert`),
-  );
+  if (fdId === null) {
+    result.errors.push(
+      `${featureName}: Sketch liegt auf dem Mate-Connector „${mc.name}“ ` +
+        `(${describeAnchor(mc.anchor)}), der nicht übersetzt werden konnte — Sketch übersprungen`,
+    );
+    return null;
+  }
+  return `qCreatedBy(${fdId})`;
 }
 
 /**
@@ -1183,6 +1228,7 @@ async function importFeatures(
   result: OnshapeImportResult,
   sketches: Map<string, SketchRecord>,
   sweeps: Map<string, SweepRecord>,
+  patterns: Map<string, PatternRecord>,
   env: ExprEnv,
   frames3d: Map<string, OnshapeSketch3d>,
 ): Promise<void> {
@@ -1204,31 +1250,39 @@ async function importFeatures(
         continue;
       }
       // Placed on a MATE CONNECTOR? Then the connector travels inside this
-      // sketch's own `subFeatures` (#416) — import it, and report the plane.
+      // sketch's own `subFeatures` (#416) — import it and put the sketch ON
+      // it (#409). No uniqueness gate: a connector is datum geometry, it
+      // binds no face, and it is addressed by its own feature id.
       const mcId = mateConnectorPlaneId(planeQs);
+      let planeQuery: string;
       if (mcId) {
-        await importMateConnectorPlane(mcId, feat, name, kernel, result, sketches, sweeps);
-        continue;
-      }
-      const ref = await decodePlaneQuery(planeQs);
-      const built = buildPlaneQuery(ref, name, result.idMap, sketches, sweeps);
-      if (built.error || !built.query) {
-        result.errors.push(built.error ?? `${name}: Ebene nicht übersetzbar`);
-        continue;
-      }
-      // Uniqueness gate for face-level planes: the stored query must
-      // bind exactly ONE face right now (mid-history resolution).
-      if (!built.query.startsWith("qCreatedBy(origin_plane_")) {
-        const matches = kernel.resolveQuery(built.query);
-        if (matches.length !== 1) {
-          result.errors.push(
-            `${name}: Ebenen-Query "${built.query}" löst auf ${matches.length} Flächen auf (erwartet 1) — Sketch übersprungen.` +
-              (built.query.includes("qWall(") && matches.length === 0
-                ? " Ursache ist meist eine tangential verschmolzene Mantelfläche: FieldDraft trennt Flächen nur an Knicken, ein abgerundetes Rechteck hat daher EINE Mantelfläche statt vier Seiten + vier Rundungen (siehe docs/ONSHAPE-IMPORT-STATE.md)."
-                : ""),
-          );
+        const onConnector = await importMateConnectorPlane(
+          mcId, feat, name, kernel, result, sketches, sweeps, env,
+        );
+        if (!onConnector) continue;
+        planeQuery = onConnector;
+      } else {
+        const ref = await decodePlaneQuery(planeQs);
+        const built = buildPlaneQuery(ref, name, result.idMap, sketches, sweeps);
+        if (built.error || !built.query) {
+          result.errors.push(built.error ?? `${name}: Ebene nicht übersetzbar`);
           continue;
         }
+        // Uniqueness gate for face-level planes: the stored query must
+        // bind exactly ONE face right now (mid-history resolution).
+        if (!built.query.startsWith("qCreatedBy(origin_plane_")) {
+          const matches = kernel.resolveQuery(built.query);
+          if (matches.length !== 1) {
+            result.errors.push(
+              `${name}: Ebenen-Query "${built.query}" löst auf ${matches.length} Flächen auf (erwartet 1) — Sketch übersprungen.` +
+                (built.query.includes("qWall(") && matches.length === 0
+                  ? " Ursache ist meist eine tangential verschmolzene Mantelfläche: FieldDraft trennt Flächen nur an Knicken, ein abgerundetes Rechteck hat daher EINE Mantelfläche statt vier Seiten + vier Rundungen (siehe docs/ONSHAPE-IMPORT-STATE.md)."
+                  : ""),
+            );
+            continue;
+          }
+        }
+        planeQuery = built.query;
       }
       // Onshapes 2D-Koordinaten in FieldDrafts Sketch-Basis drehen (#415).
       // Umgeschrieben wird der PAYLOAD, damit Übersetzung, Region-Innenpunkte
@@ -1241,7 +1295,7 @@ async function importFeatures(
           : alignSketchFrame(
               feat,
               name,
-              built.query,
+              planeQuery,
               kernel,
               frames3d.get(feat.featureId),
               result,
@@ -1250,13 +1304,13 @@ async function importFeatures(
       for (const [k, v] of Object.entries(translation.diagnostics.unhandled)) {
         result.warnings.push(`${name}: ${v}× nicht übersetzt: ${k}`);
       }
-      const fdId = kernel.addSketch(built.query, translation.subCalls);
+      const fdId = kernel.addSketch(planeQuery, translation.subCalls);
       sketches.set(feat.featureId, {
         fdId,
         entityIds: translation.entityIds,
-        planeQuery: built.query,
+        planeQuery,
         entityGeom: sketchEntityVertices(aligned),
-        lineEntityIds: sketchLineEntityIds(aligned),
+        lineSegments: sketchLineSegments(aligned),
       });
       result.idMap[feat.featureId] = fdId;
       result.created.push(fdId);
@@ -1267,7 +1321,7 @@ async function importFeatures(
     // ones are, just not hidden inside a sketch. Reference geometry: it builds
     // no body, it gives later features (and the user) a frame to hang on.
     if (feat.featureType === "mateConnector") {
-      await emitMateConnector(feat, name, kernel, result, sketches, sweeps);
+      await emitMateConnector(feat, name, kernel, result, sketches, sweeps, env);
       continue;
     }
 
@@ -1492,6 +1546,21 @@ async function importFeatures(
 
     if (feat.featureType === "booleanBodies") {
       await importBooleanBodies(feat, params, name, kernel, result, env);
+      continue;
+    }
+
+    if (feat.featureType === "linearPattern") {
+      await importLinearPattern(feat, params, name, kernel, result, sketches, patterns, env);
+      continue;
+    }
+
+    if (feat.featureType === "circularPattern") {
+      await importCircularPattern(feat, params, name, kernel, result, sketches, patterns, env);
+      continue;
+    }
+
+    if (feat.featureType === "mirror") {
+      await importMirror(feat, params, name, kernel, result, sketches, sweeps, patterns, env);
       continue;
     }
 
@@ -1854,7 +1923,7 @@ async function importRevolve(
     );
     return;
   }
-  if (!axisRec.lineEntityIds.has(axisRef.entityId)) {
+  if (!axisRec.lineSegments.has(axisRef.entityId)) {
     result.errors.push(
       `${name}: Revolve-Achse ${axisRef.entityId} ist keine gerade Sketch-Linie — ` +
         `Feature übersprungen`,
@@ -2256,6 +2325,571 @@ async function importThicken(
   );
   result.idMap[feat.featureId] = fdId;
   result.created.push(fdId);
+}
+
+// ─── P5: Muster und Spiegelung (#409 / #419) ──────────────────────────────
+//
+// Onshape's three replication features share a shape: a set of BODIES to copy,
+// a rule for where the copies go, and a count. FieldDraft has all three as
+// kernel features, so the work is translation, not construction — with one
+// sharp exception per type, each recorded where it bites.
+
+/** A world-space axis: a unit direction and a point on it. */
+interface WorldAxis {
+  dir: [number, number, number];
+  /** A point ON the axis, in mm — a circular pattern's pivot. */
+  point: [number, number, number];
+}
+
+/** Which Onshape features were imported as a PATTERN, and what they replicate.
+ *  A pattern OF a pattern has no FieldDraft counterpart (the kernel's source
+ *  lookup finds the pattern feature itself, not its clones), so the second one
+ *  has to say that instead of quietly replicating only the original. */
+interface PatternRecord {
+  fdId: number;
+  sourceIds: number[];
+}
+
+const vlen = (v: number[]): number => Math.hypot(v[0], v[1], v[2]);
+
+/**
+ * The world direction (and a point on it) of a straight SKETCH LINE.
+ *
+ * The line's 2D endpoints are lifted through the sketch's own FieldDraft frame
+ * — the same frame the kernel builds its geometry on, so the axis is where the
+ * bodies actually are and not merely where Onshape put them. Onshape's
+ * start→end order is preserved, because that order IS the direction its
+ * `oppositeDirection` flag is counted against (verified against Onshape's own
+ * part boxes for #419: the axis line runs +X→−X and the copies land at −X).
+ */
+function sketchLineAxis(
+  rec: SketchRecord,
+  entityId: string,
+  kernel: ImportKernel,
+): WorldAxis | null {
+  const seg = rec.lineSegments.get(entityId);
+  if (!seg) return null;
+  const f = frameOf(kernel, rec.planeQuery);
+  if (!f) return null;
+  const at = (p: [number, number]): [number, number, number] => [
+    f.origin[0] + f.xAxis[0] * p[0] + f.yAxis[0] * p[1],
+    f.origin[1] + f.xAxis[1] * p[0] + f.yAxis[1] * p[1],
+    f.origin[2] + f.xAxis[2] * p[0] + f.yAxis[2] * p[1],
+  ];
+  const a = at(seg[0]);
+  const b = at(seg[1]);
+  const d = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+  const len = vlen(d);
+  if (len < 1e-9) return null;
+  return { dir: [d[0] / len, d[1] / len, d[2] / len], point: a };
+}
+
+/**
+ * An Onshape pattern DIRECTION / AXIS query → a world axis.
+ *
+ * Exactly one form lowers exactly: a straight SKETCH LINE (construction lines
+ * included). Everything else is reported with the concrete reason.
+ *
+ * The one that hurts is a **swept B-Rep edge** (`SWEPT_EDGE`, #409): its LINE is
+ * known — a lateral edge of an extrude is parallel to that extrude's sweep, i.e.
+ * to its profile sketch's normal — but its ORIENTATION is not. Onshape counts
+ * `oppositeDirection` against the edge's own parametrisation, which lives in
+ * Onshape's B-Rep and appears nowhere in the feature payload. Measured against
+ * Onshape's own part boxes for #409, that orientation is the OPPOSITE of the
+ * sweep (the extrude grows +Z, the edge runs −Z), so "use the sweep direction"
+ * would be a coin flip dressed as a rule — and a pattern with a flipped sign
+ * puts every copy on the wrong side of the part. It is skipped instead, and the
+ * gap-matrix records the way to close it: pull the edge orientation from
+ * Onshape's own answer, the way `sources.sketches3d` already does for frames.
+ */
+async function patternAxis(
+  qs: string | undefined,
+  name: string,
+  label: string,
+  kernel: ImportKernel,
+  result: OnshapeImportResult,
+  sketches: Map<string, SketchRecord>,
+): Promise<WorldAxis | null> {
+  if (!qs) {
+    result.errors.push(`${name}: ${label} fehlt — Feature übersprungen`);
+    return null;
+  }
+  const ref = await decodeSketchEntityRef(qs);
+  if (ref) {
+    const rec = sketches.get(ref.sketchFeatureId);
+    if (!rec) {
+      result.errors.push(
+        `${name}: ${label} liegt in Sketch ${ref.sketchFeatureId}, der nicht importiert wurde — Feature übersprungen`,
+      );
+      return null;
+    }
+    if (!rec.lineSegments.has(ref.entityId)) {
+      result.errors.push(
+        `${name}: ${label} nennt die Sketch-Entity ${ref.entityId}, die keine gerade Linie ist — ` +
+          `Feature übersprungen`,
+      );
+      return null;
+    }
+    const axis = sketchLineAxis(rec, ref.entityId, kernel);
+    if (!axis) {
+      result.errors.push(
+        `${name}: ${label} (Sketch-Linie ${ref.entityId}) ist nicht in Weltkoordinaten auflösbar — ` +
+          `Feature übersprungen`,
+      );
+      return null;
+    }
+    return axis;
+  }
+
+  // Not a sketch entity. Name what it is, so the gap is legible.
+  let markers: string[] = [];
+  try {
+    const { bton, payload } = await decodeOnshapeQueryString(qs);
+    if (bton) {
+      markers = [
+        ...new Set(
+          tokenizeBton(payload)
+            .filter((t) => t.t === "str" && t.p1 && !t.p2 && /EDGE|FACE|VERTEX/.test(t.p1))
+            .map((t) => t.p1 as string),
+        ),
+      ];
+    }
+  } catch {
+    markers = [];
+  }
+  if (markers.includes("SWEPT_EDGE")) {
+    result.errors.push(
+      `${name}: ${label} ist eine Mantelkante eines Extrudes. Ihre GERADE ist bekannt ` +
+        `(parallel zur Extrusionsrichtung), ihre ORIENTIERUNG nicht: Onshape zählt ` +
+        `„oppositeDirection" gegen die Parametrisierung dieser Kante, die nur in Onshapes ` +
+        `B-Rep steht und im Feature-Payload nicht vorkommt (am #409-Dokument nachgemessen: ` +
+        `sie läuft der Extrusionsrichtung ENTGEGEN). Ein geratenes Vorzeichen setzt jede ` +
+        `Kopie auf die falsche Seite — Feature übersprungen ` +
+        `(siehe docs/ONSHAPE-IMPORT-GAP-MATRIX.md)`,
+    );
+    return null;
+  }
+  result.errors.push(
+    `${name}: ${label} ist keine Sketch-Linie (${markers.join(", ") || "unbekannte Query-Form"}) — ` +
+      `FieldDraft nimmt als Muster-Richtung nur eine gerade Sketch-Linie; Feature übersprungen`,
+  );
+  return null;
+}
+
+/**
+ * The bodies a pattern/mirror replicates → the FieldDraft features that own
+ * them. Same decoding as {@link booleanOperands}: an Onshape body query names
+ * the OPERATION that created the body, and `qCreatedBy(<feature>)` is the only
+ * source form the kernel's pattern features accept.
+ *
+ * The extra check here is CHAINING: `#409` patterns the output of an earlier
+ * pattern. FieldDraft cannot do that — its pattern clones are children of the
+ * pattern feature, and a second pattern naming it would clone the pattern
+ * feature rather than its copies (`patterns.rs`, "Pattern-of-pattern isn't
+ * supported"). Rather than silently replicating only the original, that case
+ * is refused by name.
+ */
+async function patternSources(
+  pm: AnyMsg | undefined,
+  name: string,
+  result: OnshapeImportResult,
+  patterns: Map<string, PatternRecord>,
+): Promise<number[] | null> {
+  const out: number[] = [];
+  const qss = queryStringsOf(pm);
+  if (qss.length === 0) {
+    result.errors.push(`${name}: keine Körper ausgewählt — Feature übersprungen`);
+    return null;
+  }
+  for (const qs of qss) {
+    const ref = await decodeAnyOpRef(qs);
+    if (ref !== null && patterns.has(ref)) {
+      result.errors.push(
+        `${name}: der zu vervielfältigende Körper stammt aus dem Muster ${ref} — ` +
+          `FieldDraft kann kein Muster eines Musters (die Kopien sind Kinder des ` +
+          `Muster-Features, nicht eigene Körper); Feature übersprungen`,
+      );
+      return null;
+    }
+    const fd = ref === null ? undefined : result.idMap[ref];
+    if (fd === undefined) {
+      result.errors.push(
+        `${name}: zu vervielfältigender Körper nicht auflösbar ` +
+          `(${ref ? `Onshape-Operation ${ref} wurde nicht importiert` : "Query benennt keine importierte Operation"}) — ` +
+          `Feature übersprungen`,
+      );
+      return null;
+    }
+    if (!out.includes(fd)) out.push(fd);
+  }
+  return out;
+}
+
+/** A COUNT parameter (`instanceCount`) → a positive integer. Onshape writes it
+ *  as a dimensionless quantity expression, so it goes through the same
+ *  variable-aware evaluator as every dimension — `#Faecher` is a legal count. */
+function countOf(pm: AnyMsg | undefined, name: string, label: string, env: ExprEnv): number | null {
+  if (!pm) return null;
+  const expr = typeof pm.expression === "string" ? pm.expression.trim() : "";
+  if (!expr) {
+    return typeof pm.value === "number" && pm.value > 0 ? Math.round(pm.value) : null;
+  }
+  const ev = tryEvalOnshapeExpression(expr, env.vars);
+  if (!ev.ok || quantityKind(ev.q) !== "number") {
+    warnOnce(
+      env,
+      `${name}: ${label} „${expr}" ist keine reine Zahl ` +
+        `(${ev.ok ? describeDimension(ev.q) : ev.error}) — Feature übersprungen`,
+    );
+    return null;
+  }
+  return Math.round(ev.q.v);
+}
+
+/** Onshape's pattern `operationType` against FieldDraft's pattern features,
+ *  which carry NO boolean op of their own: every clone inherits the boolean op
+ *  of the feature it copies. For `NEW` that is exactly Onshape's behaviour;
+ *  anything else is reported rather than approximated. */
+function notePatternOperation(
+  params: Map<string, AnyMsg>,
+  name: string,
+  result: OnshapeImportResult,
+): void {
+  const op = String(params.get("operationType")?.value ?? "NEW");
+  if (op === "NEW") return;
+  result.warnings.push(
+    `${name}: Onshape-Operation ${op} — FieldDrafts Muster kennt keine eigene ` +
+      `Boolean-Operation; jede Kopie erbt die des Quell-Features`,
+  );
+}
+
+/** `skippedInstances` has no FieldDraft counterpart — a pattern is a count, not
+ *  a list. Say so instead of shipping the instances Onshape left out. */
+function noteSkippedInstances(
+  params: Map<string, AnyMsg>,
+  name: string,
+  result: OnshapeImportResult,
+): void {
+  const n = (params.get("skippedInstances")?.items ?? []).length;
+  if (n > 0) {
+    result.warnings.push(
+      `${name}: ${n} ausgelassene Instanz(en) werden nicht nachgebildet — ` +
+        `FieldDrafts Muster ist eine Anzahl, keine Liste; die Kopien werden vollzählig gesetzt`,
+    );
+  }
+}
+
+/**
+ * Onshape `linearPattern` (PART) → a FieldDraft `linear_pattern` (#409/#419).
+ *
+ * The mapping is an identity where it lands: N copies of the same bodies at
+ * `i · distance` along a direction, the original included in the count. Proven
+ * against the real kernel — a sketch extrude patterned along +X at 50 mm gives
+ * bodies at exactly +0/+50/+100 mm.
+ *
+ * What is refused rather than approximated:
+ *  - `patternType` FACE / FEATURE — FieldDraft replicates whole BODIES; a face
+ *    pattern has no counterpart at all, and a feature pattern would need the
+ *    feature's inputs re-evaluated at each station.
+ *  - a SECOND direction (a 2-D grid): that is a pattern OF a pattern, which the
+ *    kernel does not do (see {@link patternSources}).
+ *  - a direction whose orientation is not derivable (see {@link patternAxis}).
+ */
+async function importLinearPattern(
+  feat: AnyMsg,
+  params: Map<string, AnyMsg>,
+  name: string,
+  kernel: ImportKernel,
+  result: OnshapeImportResult,
+  sketches: Map<string, SketchRecord>,
+  patterns: Map<string, PatternRecord>,
+  env: ExprEnv,
+): Promise<void> {
+  const kind = String(params.get("patternType")?.value ?? "PART");
+  if (kind !== "PART") {
+    result.errors.push(
+      `${name}: Muster-Typ ${kind} — FieldDraft vervielfältigt ganze Körper, ` +
+        `${kind === "FACE" ? "kein Flächen-Muster" : "kein Feature-Muster"}; Feature übersprungen`,
+    );
+    return;
+  }
+
+  const sourceIds = await patternSources(params.get("entities"), name, result, patterns);
+  if (!sourceIds) return;
+
+  const axis = await patternAxis(
+    queryStringsOf(params.get("directionOne"))[0],
+    name,
+    "Muster-Richtung",
+    kernel,
+    result,
+    sketches,
+  );
+  if (!axis) return;
+
+  const count = countOf(params.get("instanceCount"), name, "Instanz-Anzahl", env);
+  if (count === null) return;
+  const spacingMm = mmOf(params.get("distance"), 0, env);
+  if (count < 2) {
+    result.warnings.push(`${name}: ${count} Instanz(en) — nichts zu vervielfältigen, übersprungen`);
+    return;
+  }
+  if (!(spacingMm > 0)) {
+    result.errors.push(
+      `${name}: Abstand ${fmtNum(spacingMm)} mm ist nicht positiv — Feature übersprungen`,
+    );
+    return;
+  }
+
+  // A second direction is a GRID, i.e. a pattern of a pattern.
+  const countTwo = countOf(params.get("instanceCountTwo"), name, "Instanz-Anzahl 2", env) ?? 1;
+  if (params.get("hasSecondDirection")?.value === true && countTwo > 1) {
+    result.warnings.push(
+      `${name}: zweite Richtung (${countTwo} Instanzen) wird nicht übernommen — ` +
+        `ein 2D-Raster ist ein Muster eines Musters, das FieldDraft nicht kann; ` +
+        `importiert wird nur die erste Richtung`,
+    );
+  }
+  notePatternOperation(params, name, result);
+  noteSkippedInstances(params, name, result);
+
+  const flip = params.get("oppositeDirection")?.value === true ? -1 : 1;
+  const fdId = kernel.addFeatureCall(
+    "linear_pattern",
+    JSON.stringify({
+      display_name: name,
+      source: sourceIds.map((i) => `qCreatedBy(${i})`).join(", "),
+      direction: [axis.dir[0] * flip, axis.dir[1] * flip, axis.dir[2] * flip],
+      count,
+      spacing: { value: spacingMm, unit: "mm" },
+    }),
+  );
+  result.created.push(fdId);
+  patterns.set(feat.featureId, { fdId, sourceIds });
+  // Like the Boolean (see `importBooleanBodies`): the id map points at the
+  // feature that OWNS the geometry a later Onshape query would name. The
+  // pattern feature itself creates no body of its own — it clones the source's.
+  result.idMap[feat.featureId] = sourceIds[0];
+}
+
+/**
+ * Onshape `circularPattern` (PART) → a FieldDraft `circular_pattern` (#419).
+ *
+ * FieldDraft places instance `i` at `(i / count) · angle_deg` around the axis,
+ * Onshape at `i · angle` when `equalSpace` is off and evenly across a full turn
+ * when it is on. Two of those coincide exactly:
+ *
+ *  - `equalSpace` + 360° — the same ring, `angle_deg = 360`. (Proven against the
+ *    real kernel: 4 instances land on the quarter turns.)
+ *  - no `equalSpace` — `angle` is the step, so `angle_deg = angle · count`
+ *    reproduces every station exactly.
+ *
+ * `equalSpace` over a PARTIAL angle is the one that is refused: whether Onshape
+ * divides that arc by `count` or by `count − 1` decides where every copy but the
+ * first sits, and the corpus carries no partial equal-spaced pattern to measure
+ * it against. Guessing would be an invisible half-step error on every instance.
+ */
+async function importCircularPattern(
+  feat: AnyMsg,
+  params: Map<string, AnyMsg>,
+  name: string,
+  kernel: ImportKernel,
+  result: OnshapeImportResult,
+  sketches: Map<string, SketchRecord>,
+  patterns: Map<string, PatternRecord>,
+  env: ExprEnv,
+): Promise<void> {
+  const kind = String(params.get("patternType")?.value ?? "PART");
+  if (kind !== "PART") {
+    result.errors.push(
+      `${name}: Muster-Typ ${kind} — FieldDraft vervielfältigt ganze Körper, ` +
+        `${kind === "FACE" ? "kein Flächen-Muster" : "kein Feature-Muster"}; Feature übersprungen`,
+    );
+    return;
+  }
+
+  const sourceIds = await patternSources(params.get("entities"), name, result, patterns);
+  if (!sourceIds) return;
+
+  const axis = await patternAxis(
+    queryStringsOf(params.get("axis"))[0],
+    name,
+    "Rotationsachse",
+    kernel,
+    result,
+    sketches,
+  );
+  if (!axis) return;
+
+  const count = countOf(params.get("instanceCount"), name, "Instanz-Anzahl", env);
+  if (count === null) return;
+  if (count < 2) {
+    result.warnings.push(`${name}: ${count} Instanz(en) — nichts zu vervielfältigen, übersprungen`);
+    return;
+  }
+  const angleDeg = degOf(params.get("angle"), 360, env);
+  const equalSpace = params.get("equalSpace")?.value === true;
+  let totalDeg: number;
+  if (equalSpace && Math.abs(angleDeg - 360) < 1e-6) {
+    totalDeg = 360;
+  } else if (!equalSpace) {
+    totalDeg = angleDeg * count;
+  } else {
+    result.errors.push(
+      `${name}: gleichmäßige Verteilung über eine TEIL-Umdrehung (${fmtNum(angleDeg)}°, ` +
+        `${count} Instanzen) — ob Onshape den Bogen durch ${count} oder ${count - 1} teilt, ` +
+        `entscheidet über die Lage jeder Kopie und ist am Korpus nicht nachmessbar; ` +
+        `Feature übersprungen (siehe docs/ONSHAPE-IMPORT-GAP-MATRIX.md)`,
+    );
+    return;
+  }
+  notePatternOperation(params, name, result);
+  noteSkippedInstances(params, name, result);
+
+  const flip = params.get("oppositeDirection")?.value === true ? -1 : 1;
+  const fdId = kernel.addFeatureCall(
+    "circular_pattern",
+    JSON.stringify({
+      display_name: name,
+      source: sourceIds.map((i) => `qCreatedBy(${i})`).join(", "),
+      axis: [axis.dir[0] * flip, axis.dir[1] * flip, axis.dir[2] * flip],
+      center: axis.point,
+      count,
+      angle_deg: totalDeg,
+    }),
+  );
+  result.created.push(fdId);
+  patterns.set(feat.featureId, { fdId, sourceIds });
+  result.idMap[feat.featureId] = sourceIds[0];
+}
+
+/**
+ * Onshape `mirror` (#409) — and why nothing is emitted for it.
+ *
+ * FieldDraft HAS a `mirror` feature, and it is not the one Onshape means.
+ * `MirrorFeature::execute` (crates/kernel/src/features/patterns.rs) reflects the
+ * source feature's `transform.translate` through the plane and drops an
+ * otherwise VERBATIM copy there: it RELOCATES a copy, it does not REFLECT the
+ * geometry. That is exact for a symmetric primitive whose transform origin is
+ * its centre — the toolbar's use case — and wrong for everything else.
+ *
+ * Measured against the real kernel rather than read off the source: a sketch
+ * extrude occupying x ∈ [10, 30] mm, mirrored through the YZ datum, produces a
+ * second body at x ∈ [10, 30] mm — a copy sitting exactly ON the original,
+ * where Onshape has x ∈ [−30, −10]. A sketch-built body carries
+ * `translate = [0, 0, 0]`, so the reflection has nothing to move.
+ *
+ * The condition for the two to agree is sharp: the source body must ALREADY be
+ * symmetric about the plane parallel to the mirror plane through its own
+ * transform origin — which is precisely the case in which nobody would draw a
+ * mirror. Emitting the feature anyway would put a silent duplicate into every
+ * document that has one, so the mirror is skipped and the gap named.
+ *
+ * The plane is still decoded, because it is half of the diagnosis: all three
+ * mirrors of #409 sit on an implicit MATE CONNECTOR, which `resolve_plane_frame`
+ * cannot turn into a plane either (the second, independent blocker — the same
+ * kernel gap that keeps #416's sketches out). The connector is imported as
+ * reference geometry so the plane at least exists in the document.
+ */
+/**
+ * Onshape `mirror` (PART) → a FieldDraft `mirror` (#409 / #419).
+ *
+ * The kernel feature reflects each source body's PLACEMENT through the plane
+ * (`crates/kernel/src/features/patterns.rs`), so the translation is the plane
+ * query plus the source list. It did not always: until the reflection was made
+ * real, `MirrorFeature` moved only the source's origin and left the body
+ * unturned, which put a sketch-based body — origin at the world zero — exactly
+ * on top of its source. This translator refused the feature outright for that
+ * reason; the refusal is gone, the plane-query gaps below are what is left.
+ */
+async function importMirror(
+  feat: AnyMsg,
+  params: Map<string, AnyMsg>,
+  name: string,
+  kernel: ImportKernel,
+  result: OnshapeImportResult,
+  sketches: Map<string, SketchRecord>,
+  sweeps: Map<string, SweepRecord>,
+  patterns: Map<string, PatternRecord>,
+  env: ExprEnv,
+): Promise<void> {
+  const kind = String(params.get("patternType")?.value ?? "PART");
+  if (kind !== "PART") {
+    result.errors.push(
+      `${name}: Spiegel-Typ ${kind} — FieldDraft spiegelt ganze Körper; Feature übersprungen`,
+    );
+    return;
+  }
+
+  const sourceIds = await patternSources(params.get("entities"), name, result, patterns);
+  if (!sourceIds) return;
+
+  const planeQs = queryStringsOf(params.get("mirrorPlane"))[0];
+  if (!planeQs) {
+    result.errors.push(`${name}: keine Spiegelebene benannt — Feature übersprungen`);
+    return;
+  }
+
+  // A mate connector as the mirror plane. Since #409 `resolve_plane_frame`
+  // lowers a connector's CSYS to a plane frame, so the mirror runs on the
+  // connector itself — imported here from the mirror's own `subFeatures`, the
+  // same way a sketch's implicit connector is (#416).
+  let planeQuery: string;
+  const mcId = mateConnectorPlaneId(planeQs);
+  if (mcId) {
+    const sub = implicitMateConnectors(feat).get(mcId);
+    const built = sub
+      ? await emitMateConnector(
+          sub,
+          `${name} · ${String(sub.name ?? "Mate connector")}`,
+          kernel,
+          result,
+          sketches,
+          sweeps,
+          env,
+        )
+      : null;
+    if (built?.fdId == null) {
+      result.errors.push(
+        `${name}: die Spiegelebene ist ein Mate-Connector, der nicht übersetzt werden ` +
+          `konnte — Feature übersprungen`,
+      );
+      return;
+    }
+    planeQuery = `qCreatedBy(${built.fdId})`;
+  } else {
+    const plane = buildPlaneQuery(
+      await decodePlaneQuery(planeQs),
+      name,
+      result.idMap,
+      sketches,
+      sweeps,
+    );
+    if (!plane.query) {
+      result.errors.push(
+        `${name}: Spiegelebene nicht übersetzbar (${plane.error ?? "unbekannte Form"}) — ` +
+          `Feature übersprungen`,
+      );
+      return;
+    }
+    planeQuery = plane.query;
+  }
+
+  notePatternOperation(params, name, result);
+
+  const fdId = kernel.addFeatureCall(
+    "mirror",
+    JSON.stringify({
+      display_name: name,
+      source: sourceIds.map((i) => `qCreatedBy(${i})`).join(", "),
+      plane: planeQuery,
+    }),
+  );
+  result.created.push(fdId);
+  patterns.set(feat.featureId, { fdId, sourceIds });
+  // Like the patterns and the Boolean: a later Onshape query naming this
+  // feature means the geometry, which the SOURCE owns — the mirror only clones.
+  result.idMap[feat.featureId] = sourceIds[0];
 }
 
 /** First feature-operation id inside a compressed query (`…opExtrude`

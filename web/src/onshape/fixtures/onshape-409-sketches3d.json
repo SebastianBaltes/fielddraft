@@ -1,0 +1,1447 @@
+{
+  "sketches" : [ {
+    "sketch" : "Sketch 6",
+    "featureId" : "FpQFfaAB8RCjfQh_9",
+    "featuresUsed" : [ "Extrude 5" ],
+    "geomEntities" : [ {
+      "id" : "iQanY3joGDRx.bottom.start",
+      "entityType" : "point",
+      "point" : [ 0.42509360307379995, -0.13078685688251654, 0.9649999999999999 ]
+    }, {
+      "id" : "iQanY3joGDRx.bottom.end",
+      "entityType" : "point",
+      "point" : [ 0.8250936030738, -0.13078685688251654, 0.9649999999999999 ]
+    }, {
+      "id" : "iQanY3joGDRx.bottom",
+      "entityType" : "lineSegment",
+      "startPoint" : [ 0.42509360307379995, -0.13078685688251654, 0.9649999999999999 ],
+      "endPoint" : [ 0.8250936030738, -0.13078685688251654, 0.9649999999999999 ],
+      "endPointIds" : [ "iQanY3joGDRx.bottom.start", "iQanY3joGDRx.bottom.end" ]
+    }, {
+      "id" : "iQanY3joGDRx.top.start",
+      "entityType" : "point",
+      "point" : [ 0.42509360307379995, -0.5307868568825166, 0.9649999999999999 ]
+    }, {
+      "id" : "iQanY3joGDRx.top.end",
+      "entityType" : "point",
+      "point" : [ 0.8250936030738, -0.5307868568825166, 0.9649999999999999 ]
+    }, {
+      "id" : "iQanY3joGDRx.top",
+      "entityType" : "lineSegment",
+      "startPoint" : [ 0.42509360307379995, -0.5307868568825166, 0.9649999999999999 ],
+      "endPoint" : [ 0.8250936030738, -0.5307868568825166, 0.9649999999999999 ],
+      "endPointIds" : [ "iQanY3joGDRx.top.start", "iQanY3joGDRx.top.end" ]
+    }, {
+      "id" : "iQanY3joGDRx.left.start",
+      "entityType" : "point",
+      "point" : [ 0.42509360307379995, -0.13078685688251654, 0.9649999999999999 ]
+    }, {
+      "id" : "iQanY3joGDRx.left.end",
+      "entityType" : "point",
+      "point" : [ 0.42509360307379995, -0.5307868568825166, 0.9649999999999999 ]
+    }, {
+      "id" : "iQanY3joGDRx.left",
+      "entityType" : "lineSegment",
+      "startPoint" : [ 0.42509360307379995, -0.13078685688251654, 0.9649999999999999 ],
+      "endPoint" : [ 0.42509360307379995, -0.5307868568825166, 0.9649999999999999 ],
+      "endPointIds" : [ "iQanY3joGDRx.left.start", "iQanY3joGDRx.left.end" ]
+    }, {
+      "id" : "iQanY3joGDRx.right.start",
+      "entityType" : "point",
+      "point" : [ 0.8250936030738, -0.13078685688251654, 0.9649999999999999 ]
+    }, {
+      "id" : "iQanY3joGDRx.right.end",
+      "entityType" : "point",
+      "point" : [ 0.8250936030738, -0.5307868568825166, 0.9649999999999999 ]
+    }, {
+      "id" : "iQanY3joGDRx.right",
+      "entityType" : "lineSegment",
+      "startPoint" : [ 0.8250936030738, -0.13078685688251654, 0.9649999999999999 ],
+      "endPoint" : [ 0.8250936030738, -0.5307868568825166, 0.9649999999999999 ],
+      "endPointIds" : [ "iQanY3joGDRx.right.start", "iQanY3joGDRx.right.end" ]
+    } ]
+  }, {
+    "sketch" : "Sketch 1",
+    "featureId" : "FhBUvJiYcqBpE1M_0",
+    "featuresUsed" : [ "Extrude 1" ],
+    "geomEntities" : [ {
+      "id" : "ytjnFzrj1CKN.bottom.start",
+      "entityType" : "point",
+      "point" : [ 0.0, 0.0, 1.81 ]
+    }, {
+      "id" : "ytjnFzrj1CKN.bottom.end",
+      "entityType" : "point",
+      "point" : [ 0.92, 0.0, 1.81 ]
+    }, {
+      "id" : "ytjnFzrj1CKN.bottom",
+      "entityType" : "lineSegment",
+      "startPoint" : [ 0.0, 0.0, 1.81 ],
+      "endPoint" : [ 0.92, 0.0, 1.81 ],
+      "endPointIds" : [ "ytjnFzrj1CKN.bottom.start", "ytjnFzrj1CKN.bottom.end" ]
+    }, {
+      "id" : "ytjnFzrj1CKN.top.start",
+      "entityType" : "point",
+      "point" : [ 3.3677786976552225E-17, -0.5500000000000002, 1.81 ]
+    }, {
+      "id" : "ytjnFzrj1CKN.top.end",
+      "entityType" : "point",
+      "point" : [ 0.92, -0.55, 1.81 ]
+    }, {
+      "id" : "ytjnFzrj1CKN.top",
+      "entityType" : "lineSegment",
+      "startPoint" : [ 5.551115123125783E-17, -0.5500000000000002, 1.81 ],
+      "endPoint" : [ 0.92, -0.5500000000000002, 1.81 ],
+      "endPointIds" : [ "ytjnFzrj1CKN.top.start", "ytjnFzrj1CKN.top.end" ]
+    }, {
+      "id" : "ytjnFzrj1CKN.left.start",
+      "entityType" : "point",
+      "point" : [ 0.0, 0.0, 1.81 ]
+    }, {
+      "id" : "ytjnFzrj1CKN.left.end",
+      "entityType" : "point",
+      "point" : [ 3.3677786976552225E-17, -0.5500000000000002, 1.81 ]
+    }, {
+      "id" : "ytjnFzrj1CKN.left",
+      "entityType" : "lineSegment",
+      "startPoint" : [ 0.0, 0.0, 1.81 ],
+      "endPoint" : [ 0.0, -0.5500000000000002, 1.81 ],
+      "endPointIds" : [ "ytjnFzrj1CKN.left.start", "ytjnFzrj1CKN.left.end" ]
+    }, {
+      "id" : "ytjnFzrj1CKN.right.start",
+      "entityType" : "point",
+      "point" : [ 0.92, 0.0, 1.81 ]
+    }, {
+      "id" : "ytjnFzrj1CKN.right.end",
+      "entityType" : "point",
+      "point" : [ 0.92, -0.55, 1.81 ]
+    }, {
+      "id" : "ytjnFzrj1CKN.right",
+      "entityType" : "lineSegment",
+      "startPoint" : [ 0.92, 0.0, 1.81 ],
+      "endPoint" : [ 0.92, -0.55, 1.81 ],
+      "endPointIds" : [ "ytjnFzrj1CKN.right.start", "ytjnFzrj1CKN.right.end" ]
+    } ]
+  }, {
+    "sketch" : "Sketch 10",
+    "featureId" : "FVHCcXFpir8XyoA_13",
+    "featuresUsed" : [ "Extrude 9" ],
+    "geomEntities" : [ {
+      "id" : "2VXLBgg3LtC8",
+      "entityType" : "point",
+      "point" : [ 0.06, -0.5100000000000001, 0.9124999999999999 ]
+    }, {
+      "id" : "fssTNgABC3Gz.start",
+      "entityType" : "point",
+      "point" : [ 0.06, -0.5100000000000001, 0.9124999999999999 ]
+    }, {
+      "id" : "fssTNgABC3Gz.end",
+      "entityType" : "point",
+      "point" : [ 0.06, -0.04000000000000001, 0.9124999999999999 ]
+    }, {
+      "id" : "fssTNgABC3Gz",
+      "entityType" : "lineSegment",
+      "startPoint" : [ 0.06, -0.5100000000000001, 0.9124999999999999 ],
+      "endPoint" : [ 0.06, -0.04000000000000001, 0.9124999999999999 ],
+      "endPointIds" : [ "fssTNgABC3Gz.start", "fssTNgABC3Gz.end" ],
+      "isConstruction" : true
+    }, {
+      "id" : "6KXTOVmd7X7Q.bottom.start",
+      "entityType" : "point",
+      "point" : [ 0.06, 0.0, 0.9379999999999998 ]
+    }, {
+      "id" : "6KXTOVmd7X7Q.bottom.end",
+      "entityType" : "point",
+      "point" : [ 0.06, -0.5, 0.9379999999999998 ]
+    }, {
+      "id" : "6KXTOVmd7X7Q.bottom",
+      "entityType" : "lineSegment",
+      "startPoint" : [ 0.06, 0.0, 0.9379999999999998 ],
+      "endPoint" : [ 0.06, -0.5, 0.9379999999999998 ],
+      "endPointIds" : [ "6KXTOVmd7X7Q.bottom.start", "6KXTOVmd7X7Q.bottom.end" ]
+    }, {
+      "id" : "6KXTOVmd7X7Q.top.start",
+      "entityType" : "point",
+      "point" : [ 0.06, 0.0, 0.8869999999999999 ]
+    }, {
+      "id" : "6KXTOVmd7X7Q.top.end",
+      "entityType" : "point",
+      "point" : [ 0.06, -0.5, 0.8869999999999999 ]
+    }, {
+      "id" : "6KXTOVmd7X7Q.top",
+      "entityType" : "lineSegment",
+      "startPoint" : [ 0.06, 0.0, 0.8869999999999999 ],
+      "endPoint" : [ 0.06, -0.5, 0.8869999999999999 ],
+      "endPointIds" : [ "6KXTOVmd7X7Q.top.start", "6KXTOVmd7X7Q.top.end" ]
+    }, {
+      "id" : "6KXTOVmd7X7Q.left.start",
+      "entityType" : "point",
+      "point" : [ 0.06, 0.0, 0.9379999999999998 ]
+    }, {
+      "id" : "6KXTOVmd7X7Q.left.end",
+      "entityType" : "point",
+      "point" : [ 0.06, 0.0, 0.8869999999999999 ]
+    }, {
+      "id" : "6KXTOVmd7X7Q.left",
+      "entityType" : "lineSegment",
+      "startPoint" : [ 0.06, 2.4813138128250608E-17, 0.9379999999999998 ],
+      "endPoint" : [ 0.06, 4.042738481737934E-17, 0.8869999999999999 ],
+      "endPointIds" : [ "6KXTOVmd7X7Q.left.start", "6KXTOVmd7X7Q.left.end" ]
+    }, {
+      "id" : "6KXTOVmd7X7Q.right.start",
+      "entityType" : "point",
+      "point" : [ 0.06, -0.5, 0.9379999999999998 ]
+    }, {
+      "id" : "6KXTOVmd7X7Q.right.end",
+      "entityType" : "point",
+      "point" : [ 0.06, -0.5, 0.8869999999999999 ]
+    }, {
+      "id" : "6KXTOVmd7X7Q.right",
+      "entityType" : "lineSegment",
+      "startPoint" : [ 0.06, -0.5, 0.9379999999999998 ],
+      "endPoint" : [ 0.06, -0.5, 0.8869999999999999 ],
+      "endPointIds" : [ "6KXTOVmd7X7Q.right.start", "6KXTOVmd7X7Q.right.end" ]
+    }, {
+      "id" : "IkEnCmWyU110",
+      "entityType" : "point",
+      "point" : [ 0.06, -0.5, 0.9124999999999999 ]
+    } ]
+  }, {
+    "sketch" : "Sketch 11",
+    "featureId" : "FU9cdmO9DPaHZuT_14",
+    "featuresUsed" : [ "Extrude 10", "Extrude 11" ],
+    "geomEntities" : [ {
+      "id" : "OUhPEGp5z47e.bottom.start",
+      "entityType" : "point",
+      "point" : [ 0.07279999999999998, -0.5500000000000002, 0.9649999999999999 ]
+    }, {
+      "id" : "OUhPEGp5z47e.bottom.end",
+      "entityType" : "point",
+      "point" : [ 0.8472000000000001, -0.5500000000000002, 0.9649999999999999 ]
+    }, {
+      "id" : "OUhPEGp5z47e.bottom",
+      "entityType" : "lineSegment",
+      "startPoint" : [ 0.07279999999999998, -0.5500000000000002, 0.9649999999999999 ],
+      "endPoint" : [ 0.8472000000000001, -0.5500000000000002, 0.9649999999999999 ],
+      "endPointIds" : [ "OUhPEGp5z47e.bottom.start", "OUhPEGp5z47e.bottom.end" ]
+    }, {
+      "id" : "OUhPEGp5z47e.top.start",
+      "entityType" : "point",
+      "point" : [ 0.0728, -0.5500000000000002, 0.9429999999999998 ]
+    }, {
+      "id" : "OUhPEGp5z47e.top.end",
+      "entityType" : "point",
+      "point" : [ 0.8472000000000001, -0.5500000000000002, 0.9429999999999998 ]
+    }, {
+      "id" : "OUhPEGp5z47e.top",
+      "entityType" : "lineSegment",
+      "startPoint" : [ 0.07279999999999998, -0.5500000000000002, 0.9429999999999998 ],
+      "endPoint" : [ 0.8472000000000001, -0.5500000000000002, 0.9429999999999998 ],
+      "endPointIds" : [ "OUhPEGp5z47e.top.start", "OUhPEGp5z47e.top.end" ]
+    }, {
+      "id" : "RSxnicdgKXNX.bottom.start",
+      "entityType" : "point",
+      "point" : [ 0.0728, -0.5500000000000002, 0.9429999999999998 ]
+    }, {
+      "id" : "RSxnicdgKXNX.bottom.end",
+      "entityType" : "point",
+      "point" : [ 0.8472000000000001, -0.5500000000000002, 0.9429999999999998 ]
+    }, {
+      "id" : "RSxnicdgKXNX.bottom",
+      "entityType" : "lineSegment",
+      "startPoint" : [ 0.07279999999999998, -0.5500000000000002, 0.9429999999999998 ],
+      "endPoint" : [ 0.8472000000000001, -0.5500000000000002, 0.9429999999999998 ],
+      "endPointIds" : [ "RSxnicdgKXNX.bottom.start", "RSxnicdgKXNX.bottom.end" ]
+    }, {
+      "id" : "RSxnicdgKXNX.top.start",
+      "entityType" : "point",
+      "point" : [ 0.07280000000000002, -0.5500000000000002, 0.8829999999999997 ]
+    }, {
+      "id" : "RSxnicdgKXNX.top.end",
+      "entityType" : "point",
+      "point" : [ 0.8472000000000001, -0.5500000000000002, 0.8829999999999997 ]
+    }, {
+      "id" : "RSxnicdgKXNX.top",
+      "entityType" : "lineSegment",
+      "startPoint" : [ 0.07280000000000003, -0.5500000000000002, 0.8829999999999997 ],
+      "endPoint" : [ 0.8472000000000001, -0.5500000000000002, 0.8829999999999997 ],
+      "endPointIds" : [ "RSxnicdgKXNX.top.start", "RSxnicdgKXNX.top.end" ]
+    }, {
+      "id" : "RSxnicdgKXNX.left.start",
+      "entityType" : "point",
+      "point" : [ 0.0728, -0.5500000000000002, 0.9429999999999998 ]
+    }, {
+      "id" : "RSxnicdgKXNX.left.end",
+      "entityType" : "point",
+      "point" : [ 0.07280000000000002, -0.5500000000000002, 0.8829999999999997 ]
+    }, {
+      "id" : "RSxnicdgKXNX.left",
+      "entityType" : "lineSegment",
+      "startPoint" : [ 0.0728, -0.5500000000000002, 0.9429999999999998 ],
+      "endPoint" : [ 0.07280000000000002, -0.5500000000000002, 0.8829999999999997 ],
+      "endPointIds" : [ "RSxnicdgKXNX.left.start", "RSxnicdgKXNX.left.end" ]
+    }, {
+      "id" : "RSxnicdgKXNX.right.start",
+      "entityType" : "point",
+      "point" : [ 0.8472000000000001, -0.5500000000000002, 0.9429999999999998 ]
+    }, {
+      "id" : "RSxnicdgKXNX.right.end",
+      "entityType" : "point",
+      "point" : [ 0.8472000000000001, -0.5500000000000002, 0.8829999999999997 ]
+    }, {
+      "id" : "RSxnicdgKXNX.right",
+      "entityType" : "lineSegment",
+      "startPoint" : [ 0.8472000000000001, -0.5500000000000002, 0.9429999999999998 ],
+      "endPoint" : [ 0.8472000000000001, -0.5500000000000002, 0.8829999999999997 ],
+      "endPointIds" : [ "RSxnicdgKXNX.right.start", "RSxnicdgKXNX.right.end" ]
+    }, {
+      "id" : "KzkU5Mf6zXlx.bottom.start",
+      "entityType" : "point",
+      "point" : [ 0.07279999999999998, -0.5500000000000002, 0.9649999999999999 ]
+    }, {
+      "id" : "KzkU5Mf6zXlx.bottom.end",
+      "entityType" : "point",
+      "point" : [ 0.06500000000000004, -0.5500000000000002, 0.9649999999999999 ]
+    }, {
+      "id" : "KzkU5Mf6zXlx.bottom",
+      "entityType" : "lineSegment",
+      "startPoint" : [ 0.07279999999999998, -0.5500000000000002, 0.9649999999999999 ],
+      "endPoint" : [ 0.06500000000000004, -0.5500000000000002, 0.9649999999999999 ],
+      "endPointIds" : [ "KzkU5Mf6zXlx.bottom.start", "KzkU5Mf6zXlx.bottom.end" ]
+    }, {
+      "id" : "KzkU5Mf6zXlx.top.start",
+      "entityType" : "point",
+      "point" : [ 0.0728, -0.5500000000000002, 0.9429999999999998 ]
+    }, {
+      "id" : "KzkU5Mf6zXlx.top.end",
+      "entityType" : "point",
+      "point" : [ 0.06500000000000004, -0.5500000000000002, 0.9429999999999998 ]
+    }, {
+      "id" : "KzkU5Mf6zXlx.top",
+      "entityType" : "lineSegment",
+      "startPoint" : [ 0.0728, -0.5500000000000002, 0.9429999999999998 ],
+      "endPoint" : [ 0.06500000000000004, -0.5500000000000002, 0.9429999999999998 ],
+      "endPointIds" : [ "KzkU5Mf6zXlx.top.start", "KzkU5Mf6zXlx.top.end" ]
+    }, {
+      "id" : "KzkU5Mf6zXlx.right.start",
+      "entityType" : "point",
+      "point" : [ 0.06500000000000004, -0.5500000000000002, 0.9649999999999999 ]
+    }, {
+      "id" : "KzkU5Mf6zXlx.right.end",
+      "entityType" : "point",
+      "point" : [ 0.06500000000000004, -0.5500000000000002, 0.9429999999999998 ]
+    }, {
+      "id" : "KzkU5Mf6zXlx.right",
+      "entityType" : "lineSegment",
+      "startPoint" : [ 0.06500000000000004, -0.5500000000000002, 0.9649999999999999 ],
+      "endPoint" : [ 0.06500000000000004, -0.5500000000000002, 0.9429999999999998 ],
+      "endPointIds" : [ "KzkU5Mf6zXlx.right.start", "KzkU5Mf6zXlx.right.end" ]
+    }, {
+      "id" : "WNxhiv4O9GzA.bottom.start",
+      "entityType" : "point",
+      "point" : [ 0.8472000000000001, -0.5500000000000002, 0.9649999999999999 ]
+    }, {
+      "id" : "WNxhiv4O9GzA.bottom.end",
+      "entityType" : "point",
+      "point" : [ 0.8550000000000002, -0.5500000000000002, 0.9649999999999999 ]
+    }, {
+      "id" : "WNxhiv4O9GzA.bottom",
+      "entityType" : "lineSegment",
+      "startPoint" : [ 0.8472000000000001, -0.5500000000000002, 0.9649999999999999 ],
+      "endPoint" : [ 0.8550000000000002, -0.5500000000000002, 0.9649999999999999 ],
+      "endPointIds" : [ "WNxhiv4O9GzA.bottom.start", "WNxhiv4O9GzA.bottom.end" ]
+    }, {
+      "id" : "WNxhiv4O9GzA.top.start",
+      "entityType" : "point",
+      "point" : [ 0.8472000000000001, -0.5500000000000002, 0.9429999999999998 ]
+    }, {
+      "id" : "WNxhiv4O9GzA.top.end",
+      "entityType" : "point",
+      "point" : [ 0.8550000000000002, -0.5500000000000002, 0.9429999999999998 ]
+    }, {
+      "id" : "WNxhiv4O9GzA.top",
+      "entityType" : "lineSegment",
+      "startPoint" : [ 0.8472000000000001, -0.5500000000000002, 0.9429999999999998 ],
+      "endPoint" : [ 0.8550000000000002, -0.5500000000000002, 0.9429999999999998 ],
+      "endPointIds" : [ "WNxhiv4O9GzA.top.start", "WNxhiv4O9GzA.top.end" ]
+    }, {
+      "id" : "WNxhiv4O9GzA.right.start",
+      "entityType" : "point",
+      "point" : [ 0.8550000000000002, -0.5500000000000002, 0.9649999999999999 ]
+    }, {
+      "id" : "WNxhiv4O9GzA.right.end",
+      "entityType" : "point",
+      "point" : [ 0.8550000000000002, -0.5500000000000002, 0.9429999999999998 ]
+    }, {
+      "id" : "WNxhiv4O9GzA.right",
+      "entityType" : "lineSegment",
+      "startPoint" : [ 0.8550000000000002, -0.5500000000000002, 0.9649999999999999 ],
+      "endPoint" : [ 0.8550000000000002, -0.5500000000000002, 0.9429999999999998 ],
+      "endPointIds" : [ "WNxhiv4O9GzA.right.start", "WNxhiv4O9GzA.right.end" ]
+    } ]
+  }, {
+    "sketch" : "Sketch 12",
+    "featureId" : "FOyrsf7vIWHkKeJ_16",
+    "featuresUsed" : [ "Extrude 12" ],
+    "geomEntities" : [ {
+      "id" : "ISbhNLYsyfNU.bottom.start",
+      "entityType" : "point",
+      "point" : [ 0.0728, -0.040000000000000036, 0.9429999999999998 ]
+    }, {
+      "id" : "ISbhNLYsyfNU.bottom.end",
+      "entityType" : "point",
+      "point" : [ 0.1328, -0.040000000000000036, 0.9429999999999998 ]
+    }, {
+      "id" : "ISbhNLYsyfNU.bottom",
+      "entityType" : "lineSegment",
+      "startPoint" : [ 0.0728, -0.040000000000000036, 0.9429999999999998 ],
+      "endPoint" : [ 0.1328, -0.040000000000000036, 0.9429999999999998 ],
+      "endPointIds" : [ "ISbhNLYsyfNU.bottom.start", "ISbhNLYsyfNU.bottom.end" ]
+    }, {
+      "id" : "ISbhNLYsyfNU.top.start",
+      "entityType" : "point",
+      "point" : [ 0.0728, -0.040000000000000036, 0.8829999999999998 ]
+    }, {
+      "id" : "ISbhNLYsyfNU.top.end",
+      "entityType" : "point",
+      "point" : [ 0.13279999999999997, -0.040000000000000036, 0.8829999999999998 ]
+    }, {
+      "id" : "ISbhNLYsyfNU.top",
+      "entityType" : "lineSegment",
+      "startPoint" : [ 0.0728, -0.040000000000000036, 0.8829999999999998 ],
+      "endPoint" : [ 0.13279999999999997, -0.040000000000000036, 0.8829999999999998 ],
+      "endPointIds" : [ "ISbhNLYsyfNU.top.start", "ISbhNLYsyfNU.top.end" ]
+    }, {
+      "id" : "ISbhNLYsyfNU.left.start",
+      "entityType" : "point",
+      "point" : [ 0.0728, -0.040000000000000036, 0.9429999999999998 ]
+    }, {
+      "id" : "ISbhNLYsyfNU.left.end",
+      "entityType" : "point",
+      "point" : [ 0.0728, -0.040000000000000036, 0.8829999999999998 ]
+    }, {
+      "id" : "ISbhNLYsyfNU.left",
+      "entityType" : "lineSegment",
+      "startPoint" : [ 0.0728, -0.040000000000000036, 0.9429999999999998 ],
+      "endPoint" : [ 0.0728, -0.040000000000000036, 0.8829999999999998 ],
+      "endPointIds" : [ "ISbhNLYsyfNU.left.start", "ISbhNLYsyfNU.left.end" ]
+    }, {
+      "id" : "ISbhNLYsyfNU.right.start",
+      "entityType" : "point",
+      "point" : [ 0.1328, -0.040000000000000036, 0.9429999999999998 ]
+    }, {
+      "id" : "ISbhNLYsyfNU.right.end",
+      "entityType" : "point",
+      "point" : [ 0.1328, -0.040000000000000036, 0.8829999999999998 ]
+    }, {
+      "id" : "ISbhNLYsyfNU.right",
+      "entityType" : "lineSegment",
+      "startPoint" : [ 0.1328, -0.040000000000000036, 0.9429999999999998 ],
+      "endPoint" : [ 0.1328, -0.040000000000000036, 0.8829999999999998 ],
+      "endPointIds" : [ "ISbhNLYsyfNU.right.start", "ISbhNLYsyfNU.right.end" ]
+    } ]
+  }, {
+    "sketch" : "Sketch 13",
+    "featureId" : "FnRvZqN33syOjGQ_17",
+    "featuresUsed" : [ "Extrude 13" ],
+    "geomEntities" : [ {
+      "id" : "vELQ48MpjrVE.0.start",
+      "entityType" : "point",
+      "point" : [ 0.92, -0.5100000000000001, 0.9424999999999999 ]
+    }, {
+      "id" : "vELQ48MpjrVE.0.end",
+      "entityType" : "point",
+      "point" : [ 0.92, -0.040000000000000036, 0.9424999999999999 ]
+    }, {
+      "id" : "vELQ48MpjrVE.0",
+      "entityType" : "lineSegment",
+      "startPoint" : [ 0.92, -0.5100000000000001, 0.9424999999999999 ],
+      "endPoint" : [ 0.92, -0.040000000000000036, 0.9424999999999999 ],
+      "endPointIds" : [ "vELQ48MpjrVE.0.start", "vELQ48MpjrVE.0.end" ],
+      "isConstruction" : true
+    }, {
+      "id" : "u4NHf2DLmQrw.start",
+      "entityType" : "point",
+      "point" : [ 0.92, -0.040000000000000036, 0.9424999999999999 ]
+    }, {
+      "id" : "u4NHf2DLmQrw.end",
+      "entityType" : "point",
+      "point" : [ 0.92, -0.08505217166851267, 0.9424999999999999 ]
+    }, {
+      "id" : "u4NHf2DLmQrw",
+      "entityType" : "lineSegment",
+      "startPoint" : [ 0.92, -0.040000000000000036, 0.9424999999999999 ],
+      "endPoint" : [ 0.92, -0.08505217166851267, 0.9424999999999999 ],
+      "endPointIds" : [ "u4NHf2DLmQrw.start", "u4NHf2DLmQrw.end" ]
+    }, {
+      "id" : "C0ibrZSOUxZr.start",
+      "entityType" : "point",
+      "point" : [ 0.92, -0.51, 1.7440822035562817 ]
+    }, {
+      "id" : "C0ibrZSOUxZr.end",
+      "entityType" : "point",
+      "point" : [ 0.92, -0.03999999999999987, 1.0616402859213827 ]
+    }, {
+      "id" : "C0ibrZSOUxZr",
+      "entityType" : "lineSegment",
+      "startPoint" : [ 0.92, -0.5100000000000001, 1.7440822035562817 ],
+      "endPoint" : [ 0.92, -0.03999999999999984, 1.0616402859213827 ],
+      "endPointIds" : [ "C0ibrZSOUxZr.start", "C0ibrZSOUxZr.end" ]
+    }, {
+      "id" : "dWvO5Ag80wMi.start",
+      "entityType" : "point",
+      "point" : [ 0.92, -0.5100000000000001, 1.6603377253305738 ]
+    }, {
+      "id" : "dWvO5Ag80wMi.end",
+      "entityType" : "point",
+      "point" : [ 0.92, -0.03999999999999995, 0.977895807695675 ]
+    }, {
+      "id" : "dWvO5Ag80wMi",
+      "entityType" : "lineSegment",
+      "startPoint" : [ 0.92, -0.5100000000000001, 1.6603377253305738 ],
+      "endPoint" : [ 0.92, -0.03999999999999995, 0.977895807695675 ],
+      "endPointIds" : [ "dWvO5Ag80wMi.start", "dWvO5Ag80wMi.end" ]
+    }, {
+      "id" : "GusWbzlaJIg8.start",
+      "entityType" : "point",
+      "point" : [ 0.92, -0.5100000000000002, 1.7440822035562813 ]
+    }, {
+      "id" : "GusWbzlaJIg8.end",
+      "entityType" : "point",
+      "point" : [ 0.92, -0.5100000000000003, 1.6603377253305738 ]
+    }, {
+      "id" : "GusWbzlaJIg8",
+      "entityType" : "lineSegment",
+      "startPoint" : [ 0.92, -0.5100000000000002, 1.7440822035562813 ],
+      "endPoint" : [ 0.92, -0.5100000000000003, 1.6603377253305738 ],
+      "endPointIds" : [ "GusWbzlaJIg8.start", "GusWbzlaJIg8.end" ]
+    }, {
+      "id" : "OGo2MZXi8rND.start",
+      "entityType" : "point",
+      "point" : [ 0.92, -0.03999999999999994, 1.0616402859213827 ]
+    }, {
+      "id" : "OGo2MZXi8rND.end",
+      "entityType" : "point",
+      "point" : [ 0.92, -0.039999999999999994, 0.977895807695675 ]
+    }, {
+      "id" : "OGo2MZXi8rND",
+      "entityType" : "lineSegment",
+      "startPoint" : [ 0.92, -0.03999999999999994, 1.0616402859213827 ],
+      "endPoint" : [ 0.92, -0.039999999999999994, 0.977895807695675 ],
+      "endPointIds" : [ "OGo2MZXi8rND.start", "OGo2MZXi8rND.end" ]
+    } ]
+  }, {
+    "sketch" : "Sketch 3",
+    "featureId" : "F7jeOnLhdeVqtcW_5",
+    "featuresUsed" : [ "Extrude 3", "Extrude 4" ],
+    "geomEntities" : [ {
+      "id" : "FbSDPYFp3miB.bottom.start",
+      "entityType" : "point",
+      "point" : [ 5.551115123125783E-17, -0.5500000000000002, 1.81 ]
+    }, {
+      "id" : "FbSDPYFp3miB.bottom.end",
+      "entityType" : "point",
+      "point" : [ 0.92, -0.5500000000000003, 1.81 ]
+    }, {
+      "id" : "FbSDPYFp3miB.bottom",
+      "entityType" : "lineSegment",
+      "startPoint" : [ 5.551115123125783E-17, -0.5500000000000002, 1.81 ],
+      "endPoint" : [ 0.92, -0.5500000000000002, 1.81 ],
+      "endPointIds" : [ "FbSDPYFp3miB.bottom.start", "FbSDPYFp3miB.bottom.end" ]
+    }, {
+      "id" : "FbSDPYFp3miB.top.start",
+      "entityType" : "point",
+      "point" : [ -2.4954469834296562E-18, -0.5270000000000001, 1.81 ]
+    }, {
+      "id" : "FbSDPYFp3miB.top.end",
+      "entityType" : "point",
+      "point" : [ 0.92, -0.5270000000000001, 1.81 ]
+    }, {
+      "id" : "FbSDPYFp3miB.top",
+      "entityType" : "lineSegment",
+      "startPoint" : [ 0.0, -0.5270000000000001, 1.81 ],
+      "endPoint" : [ 0.92, -0.5270000000000001, 1.81 ],
+      "endPointIds" : [ "FbSDPYFp3miB.top.start", "FbSDPYFp3miB.top.end" ]
+    }, {
+      "id" : "FbSDPYFp3miB.left.start",
+      "entityType" : "point",
+      "point" : [ 5.551115123125783E-17, -0.5500000000000002, 1.81 ]
+    }, {
+      "id" : "FbSDPYFp3miB.left.end",
+      "entityType" : "point",
+      "point" : [ -2.4954469834296562E-18, -0.5270000000000001, 1.81 ]
+    }, {
+      "id" : "FbSDPYFp3miB.left",
+      "entityType" : "lineSegment",
+      "startPoint" : [ 5.551115123125783E-17, -0.5500000000000002, 1.81 ],
+      "endPoint" : [ 5.551115123125783E-17, -0.5270000000000001, 1.81 ],
+      "endPointIds" : [ "FbSDPYFp3miB.left.start", "FbSDPYFp3miB.left.end" ]
+    }, {
+      "id" : "FbSDPYFp3miB.right.start",
+      "entityType" : "point",
+      "point" : [ 0.92, -0.5500000000000003, 1.81 ]
+    }, {
+      "id" : "FbSDPYFp3miB.right.end",
+      "entityType" : "point",
+      "point" : [ 0.92, -0.5270000000000001, 1.81 ]
+    }, {
+      "id" : "FbSDPYFp3miB.right",
+      "entityType" : "lineSegment",
+      "startPoint" : [ 0.92, -0.5500000000000003, 1.81 ],
+      "endPoint" : [ 0.92, -0.5270000000000001, 1.81 ],
+      "endPointIds" : [ "FbSDPYFp3miB.right.start", "FbSDPYFp3miB.right.end" ]
+    }, {
+      "id" : "HnHTVGUnnzir.bottom.start",
+      "entityType" : "point",
+      "point" : [ 0.0, -0.02300000000000002, 1.81 ]
+    }, {
+      "id" : "HnHTVGUnnzir.bottom.end",
+      "entityType" : "point",
+      "point" : [ 0.92, -0.02300000000000002, 1.81 ]
+    }, {
+      "id" : "HnHTVGUnnzir.bottom",
+      "entityType" : "lineSegment",
+      "startPoint" : [ 0.0, -0.02300000000000002, 1.81 ],
+      "endPoint" : [ 0.92, -0.02300000000000002, 1.81 ],
+      "endPointIds" : [ "HnHTVGUnnzir.bottom.start", "HnHTVGUnnzir.bottom.end" ]
+    }, {
+      "id" : "HnHTVGUnnzir.top.start",
+      "entityType" : "point",
+      "point" : [ 0.0, 0.0, 1.81 ]
+    }, {
+      "id" : "HnHTVGUnnzir.top.end",
+      "entityType" : "point",
+      "point" : [ 0.92, 0.0, 1.81 ]
+    }, {
+      "id" : "HnHTVGUnnzir.top",
+      "entityType" : "lineSegment",
+      "startPoint" : [ 0.0, 0.0, 1.81 ],
+      "endPoint" : [ 0.92, 0.0, 1.81 ],
+      "endPointIds" : [ "HnHTVGUnnzir.top.start", "HnHTVGUnnzir.top.end" ]
+    }, {
+      "id" : "HnHTVGUnnzir.left.start",
+      "entityType" : "point",
+      "point" : [ 0.0, -0.02300000000000002, 1.81 ]
+    }, {
+      "id" : "HnHTVGUnnzir.left.end",
+      "entityType" : "point",
+      "point" : [ 0.0, 0.0, 1.81 ]
+    }, {
+      "id" : "HnHTVGUnnzir.left",
+      "entityType" : "lineSegment",
+      "startPoint" : [ 0.0, -0.02300000000000002, 1.81 ],
+      "endPoint" : [ 0.0, 0.0, 1.81 ],
+      "endPointIds" : [ "HnHTVGUnnzir.left.start", "HnHTVGUnnzir.left.end" ]
+    }, {
+      "id" : "HnHTVGUnnzir.right.start",
+      "entityType" : "point",
+      "point" : [ 0.92, -0.02300000000000002, 1.81 ]
+    }, {
+      "id" : "HnHTVGUnnzir.right.end",
+      "entityType" : "point",
+      "point" : [ 0.92, 0.0, 1.81 ]
+    }, {
+      "id" : "HnHTVGUnnzir.right",
+      "entityType" : "lineSegment",
+      "startPoint" : [ 0.92, -0.02300000000000002, 1.81 ],
+      "endPoint" : [ 0.92, 0.0, 1.81 ],
+      "endPointIds" : [ "HnHTVGUnnzir.right.start", "HnHTVGUnnzir.right.end" ]
+    }, {
+      "id" : "jTxVth8TCEaF.bottom.start",
+      "entityType" : "point",
+      "point" : [ -2.4954469834296562E-18, -0.5270000000000001, 1.81 ]
+    }, {
+      "id" : "jTxVth8TCEaF.bottom.end",
+      "entityType" : "point",
+      "point" : [ 0.023000000000000017, -0.5270000000000001, 1.81 ]
+    }, {
+      "id" : "jTxVth8TCEaF.bottom",
+      "entityType" : "lineSegment",
+      "startPoint" : [ -1.734723475976807E-18, -0.5270000000000001, 1.81 ],
+      "endPoint" : [ 0.023000000000000017, -0.5270000000000001, 1.81 ],
+      "endPointIds" : [ "jTxVth8TCEaF.bottom.start", "jTxVth8TCEaF.bottom.end" ]
+    }, {
+      "id" : "jTxVth8TCEaF.top.start",
+      "entityType" : "point",
+      "point" : [ 0.0, -0.02300000000000002, 1.81 ]
+    }, {
+      "id" : "jTxVth8TCEaF.top.end",
+      "entityType" : "point",
+      "point" : [ 0.023000000000000048, -0.02300000000000002, 1.81 ]
+    }, {
+      "id" : "jTxVth8TCEaF.top",
+      "entityType" : "lineSegment",
+      "startPoint" : [ 0.0, -0.02300000000000002, 1.81 ],
+      "endPoint" : [ 0.023000000000000048, -0.02300000000000002, 1.81 ],
+      "endPointIds" : [ "jTxVth8TCEaF.top.start", "jTxVth8TCEaF.top.end" ]
+    }, {
+      "id" : "jTxVth8TCEaF.left.start",
+      "entityType" : "point",
+      "point" : [ -2.4954469834296562E-18, -0.5270000000000001, 1.81 ]
+    }, {
+      "id" : "jTxVth8TCEaF.left.end",
+      "entityType" : "point",
+      "point" : [ 0.0, -0.02300000000000002, 1.81 ]
+    }, {
+      "id" : "jTxVth8TCEaF.left",
+      "entityType" : "lineSegment",
+      "startPoint" : [ 5.551115123125783E-17, -0.5270000000000001, 1.81 ],
+      "endPoint" : [ 5.551115123125783E-17, -0.02300000000000002, 1.81 ],
+      "endPointIds" : [ "jTxVth8TCEaF.left.start", "jTxVth8TCEaF.left.end" ]
+    }, {
+      "id" : "jTxVth8TCEaF.right.start",
+      "entityType" : "point",
+      "point" : [ 0.023000000000000017, -0.5270000000000001, 1.81 ]
+    }, {
+      "id" : "jTxVth8TCEaF.right.end",
+      "entityType" : "point",
+      "point" : [ 0.023000000000000048, -0.02300000000000002, 1.81 ]
+    }, {
+      "id" : "jTxVth8TCEaF.right",
+      "entityType" : "lineSegment",
+      "startPoint" : [ 0.023000000000000017, -0.5270000000000001, 1.81 ],
+      "endPoint" : [ 0.023000000000000048, -0.02300000000000002, 1.81 ],
+      "endPointIds" : [ "jTxVth8TCEaF.right.start", "jTxVth8TCEaF.right.end" ]
+    }, {
+      "id" : "NvOF9YLTsD3q.bottom.start",
+      "entityType" : "point",
+      "point" : [ 0.92, -0.5270000000000001, 1.81 ]
+    }, {
+      "id" : "NvOF9YLTsD3q.bottom.end",
+      "entityType" : "point",
+      "point" : [ 0.897, -0.5270000000000001, 1.81 ]
+    }, {
+      "id" : "NvOF9YLTsD3q.bottom",
+      "entityType" : "lineSegment",
+      "startPoint" : [ 0.92, -0.5270000000000001, 1.81 ],
+      "endPoint" : [ 0.897, -0.5270000000000001, 1.81 ],
+      "endPointIds" : [ "NvOF9YLTsD3q.bottom.start", "NvOF9YLTsD3q.bottom.end" ]
+    }, {
+      "id" : "NvOF9YLTsD3q.top.start",
+      "entityType" : "point",
+      "point" : [ 0.92, -0.02300000000000002, 1.81 ]
+    }, {
+      "id" : "NvOF9YLTsD3q.top.end",
+      "entityType" : "point",
+      "point" : [ 0.8970000000000002, -0.02300000000000002, 1.81 ]
+    }, {
+      "id" : "NvOF9YLTsD3q.top",
+      "entityType" : "lineSegment",
+      "startPoint" : [ 0.92, -0.02300000000000002, 1.81 ],
+      "endPoint" : [ 0.8970000000000002, -0.02300000000000002, 1.81 ],
+      "endPointIds" : [ "NvOF9YLTsD3q.top.start", "NvOF9YLTsD3q.top.end" ]
+    }, {
+      "id" : "NvOF9YLTsD3q.left.start",
+      "entityType" : "point",
+      "point" : [ 0.92, -0.5270000000000001, 1.81 ]
+    }, {
+      "id" : "NvOF9YLTsD3q.left.end",
+      "entityType" : "point",
+      "point" : [ 0.92, -0.02300000000000002, 1.81 ]
+    }, {
+      "id" : "NvOF9YLTsD3q.left",
+      "entityType" : "lineSegment",
+      "startPoint" : [ 0.92, -0.5270000000000001, 1.81 ],
+      "endPoint" : [ 0.92, -0.02300000000000002, 1.81 ],
+      "endPointIds" : [ "NvOF9YLTsD3q.left.start", "NvOF9YLTsD3q.left.end" ]
+    }, {
+      "id" : "NvOF9YLTsD3q.right.start",
+      "entityType" : "point",
+      "point" : [ 0.897, -0.5270000000000001, 1.81 ]
+    }, {
+      "id" : "NvOF9YLTsD3q.right.end",
+      "entityType" : "point",
+      "point" : [ 0.8970000000000002, -0.02300000000000002, 1.81 ]
+    }, {
+      "id" : "NvOF9YLTsD3q.right",
+      "entityType" : "lineSegment",
+      "startPoint" : [ 0.897, -0.5270000000000001, 1.81 ],
+      "endPoint" : [ 0.8970000000000002, -0.02300000000000002, 1.81 ],
+      "endPointIds" : [ "NvOF9YLTsD3q.right.start", "NvOF9YLTsD3q.right.end" ]
+    } ]
+  }, {
+    "sketch" : "Sketch 5",
+    "featureId" : "FFaydDHmbAtWbyH_9",
+    "featuresUsed" : [ "#featureName" ],
+    "geomEntities" : [ {
+      "id" : "XohjPldIy81Y",
+      "entityType" : "point",
+      "point" : [ 0.92, -0.01150000000000001, 1.7941 ]
+    }, {
+      "id" : "SwUqA5v0m5nL.0.0.start",
+      "entityType" : "point",
+      "point" : [ 0.92, -0.02300000000000002, 1.7625 ]
+    }, {
+      "id" : "SwUqA5v0m5nL.0.0.end",
+      "entityType" : "point",
+      "point" : [ 0.92, 0.0, 1.7625 ]
+    }, {
+      "id" : "SwUqA5v0m5nL.0.0",
+      "entityType" : "lineSegment",
+      "startPoint" : [ 0.92, -0.02300000000000002, 1.7625 ],
+      "endPoint" : [ 0.92, 0.0, 1.7625 ],
+      "endPointIds" : [ "SwUqA5v0m5nL.0.0.start", "SwUqA5v0m5nL.0.0.end" ]
+    }, {
+      "id" : "SwUqA5v0m5nL.0.2.start",
+      "entityType" : "point",
+      "point" : [ 0.92, 0.0, 1.7625 ]
+    }, {
+      "id" : "SwUqA5v0m5nL.0.2.end",
+      "entityType" : "point",
+      "point" : [ 0.92, -0.02300000000000002, 1.7625 ]
+    }, {
+      "id" : "SwUqA5v0m5nL.0.2",
+      "entityType" : "lineSegment",
+      "startPoint" : [ 0.92, 0.0, 1.7625 ],
+      "endPoint" : [ 0.92, -0.02300000000000002, 1.7625 ],
+      "endPointIds" : [ "SwUqA5v0m5nL.0.2.start", "SwUqA5v0m5nL.0.2.end" ],
+      "isConstruction" : true
+    }, {
+      "id" : "N9HBnqNp25dW.0.0.start",
+      "entityType" : "point",
+      "point" : [ 0.92, 0.0, 1.7625 ]
+    }, {
+      "id" : "N9HBnqNp25dW.0.0.end",
+      "entityType" : "point",
+      "point" : [ 0.92, 0.0, 1.81 ]
+    }, {
+      "id" : "N9HBnqNp25dW.0.0",
+      "entityType" : "lineSegment",
+      "startPoint" : [ 0.92, 0.0, 1.7625 ],
+      "endPoint" : [ 0.92, 0.0, 1.81 ],
+      "endPointIds" : [ "N9HBnqNp25dW.0.0.start", "N9HBnqNp25dW.0.0.end" ]
+    }, {
+      "id" : "N9HBnqNp25dW.0.2.start",
+      "entityType" : "point",
+      "point" : [ 0.92, -3.469446951953614E-18, 1.81 ]
+    }, {
+      "id" : "N9HBnqNp25dW.0.2.end",
+      "entityType" : "point",
+      "point" : [ 0.92, -3.469446951953614E-18, 1.7625 ]
+    }, {
+      "id" : "N9HBnqNp25dW.0.2",
+      "entityType" : "lineSegment",
+      "startPoint" : [ 0.92, -3.469446951953614E-18, 1.81 ],
+      "endPoint" : [ 0.92, -3.469446951953614E-18, 1.7625 ],
+      "endPointIds" : [ "N9HBnqNp25dW.0.2.start", "N9HBnqNp25dW.0.2.end" ],
+      "isConstruction" : true
+    }, {
+      "id" : "3skvp68qXMnm.start",
+      "entityType" : "point",
+      "point" : [ 0.92, -0.01150000000000001, 1.7625 ]
+    }, {
+      "id" : "3skvp68qXMnm.end",
+      "entityType" : "point",
+      "point" : [ 0.92, -0.01150000000000001, 1.81 ]
+    }, {
+      "id" : "3skvp68qXMnm",
+      "entityType" : "lineSegment",
+      "startPoint" : [ 0.92, -0.01150000000000001, 1.7625 ],
+      "endPoint" : [ 0.92, -0.01150000000000001, 1.81 ],
+      "endPointIds" : [ "3skvp68qXMnm.start", "3skvp68qXMnm.end" ],
+      "isConstruction" : true
+    } ]
+  }, {
+    "sketch" : "Sketch 14",
+    "featureId" : "Fu6o1ZFH8h4gKml_18",
+    "featuresUsed" : [ "Extrude 14" ],
+    "geomEntities" : [ {
+      "id" : "dE9VSfqolyPg.bottom.start",
+      "entityType" : "point",
+      "point" : [ 0.8800000000000001, 0.039999999999999994, 1.81 ]
+    }, {
+      "id" : "dE9VSfqolyPg.bottom.end",
+      "entityType" : "point",
+      "point" : [ 0.9600000000000001, 0.039999999999999994, 1.81 ]
+    }, {
+      "id" : "dE9VSfqolyPg.bottom",
+      "entityType" : "lineSegment",
+      "startPoint" : [ 0.8800000000000001, 0.039999999999999994, 1.81 ],
+      "endPoint" : [ 0.9600000000000001, 0.039999999999999994, 1.81 ],
+      "endPointIds" : [ "dE9VSfqolyPg.bottom.start", "dE9VSfqolyPg.bottom.end" ]
+    }, {
+      "id" : "dE9VSfqolyPg.top.start",
+      "entityType" : "point",
+      "point" : [ 0.8800000000000001, 0.0, 1.81 ]
+    }, {
+      "id" : "dE9VSfqolyPg.top.end",
+      "entityType" : "point",
+      "point" : [ 0.92, 0.0, 1.81 ]
+    }, {
+      "id" : "dE9VSfqolyPg.top",
+      "entityType" : "lineSegment",
+      "startPoint" : [ 0.8800000000000001, 0.0, 1.81 ],
+      "endPoint" : [ 0.92, 0.0, 1.81 ],
+      "endPointIds" : [ "dE9VSfqolyPg.top.start", "dE9VSfqolyPg.top.end" ]
+    }, {
+      "id" : "dE9VSfqolyPg.left.start",
+      "entityType" : "point",
+      "point" : [ 0.8800000000000001, 0.039999999999999994, 1.81 ]
+    }, {
+      "id" : "dE9VSfqolyPg.left.end",
+      "entityType" : "point",
+      "point" : [ 0.8800000000000001, 0.0, 1.81 ]
+    }, {
+      "id" : "dE9VSfqolyPg.left",
+      "entityType" : "lineSegment",
+      "startPoint" : [ 0.8800000000000001, 0.039999999999999994, 1.81 ],
+      "endPoint" : [ 0.8800000000000001, 0.0, 1.81 ],
+      "endPointIds" : [ "dE9VSfqolyPg.left.start", "dE9VSfqolyPg.left.end" ]
+    }, {
+      "id" : "76tCXFthI99i.0.0.start",
+      "entityType" : "point",
+      "point" : [ 0.92, -0.04, 1.81 ]
+    }, {
+      "id" : "76tCXFthI99i.0.0.end",
+      "entityType" : "point",
+      "point" : [ 0.92, 0.0, 1.81 ]
+    }, {
+      "id" : "76tCXFthI99i.0.0",
+      "entityType" : "lineSegment",
+      "startPoint" : [ 0.92, -0.04, 1.81 ],
+      "endPoint" : [ 0.92, 0.0, 1.81 ],
+      "endPointIds" : [ "76tCXFthI99i.0.0.start", "76tCXFthI99i.0.0.end" ],
+      "isConstruction" : true
+    }, {
+      "id" : "76tCXFthI99i.0.1.start",
+      "entityType" : "point",
+      "point" : [ 0.92, 0.0, 1.81 ]
+    }, {
+      "id" : "76tCXFthI99i.0.1.end",
+      "entityType" : "point",
+      "point" : [ 0.8600000000000001, 0.0, 1.81 ]
+    }, {
+      "id" : "76tCXFthI99i.0.1",
+      "entityType" : "lineSegment",
+      "startPoint" : [ 0.92, 0.0, 1.81 ],
+      "endPoint" : [ 0.8600000000000001, 0.0, 1.81 ],
+      "endPointIds" : [ "76tCXFthI99i.0.1.start", "76tCXFthI99i.0.1.end" ],
+      "isConstruction" : true
+    }, {
+      "id" : "76tCXFthI99i.0.2.start",
+      "entityType" : "point",
+      "point" : [ 0.8600000000000001, -3.469446951953614E-18, 1.81 ]
+    }, {
+      "id" : "76tCXFthI99i.0.2.end",
+      "entityType" : "point",
+      "point" : [ 0.8600000000000001, -0.039999999999999994, 1.81 ]
+    }, {
+      "id" : "76tCXFthI99i.0.2",
+      "entityType" : "lineSegment",
+      "startPoint" : [ 0.8600000000000001, -3.469446951953614E-18, 1.81 ],
+      "endPoint" : [ 0.8600000000000001, -0.039999999999999994, 1.81 ],
+      "endPointIds" : [ "76tCXFthI99i.0.2.start", "76tCXFthI99i.0.2.end" ],
+      "isConstruction" : true
+    }, {
+      "id" : "76tCXFthI99i.0.3.start",
+      "entityType" : "point",
+      "point" : [ 0.8600000000000001, -0.040000000000000015, 1.81 ]
+    }, {
+      "id" : "76tCXFthI99i.0.3.end",
+      "entityType" : "point",
+      "point" : [ 0.92, -0.04000000000000001, 1.81 ]
+    }, {
+      "id" : "76tCXFthI99i.0.3",
+      "entityType" : "lineSegment",
+      "startPoint" : [ 0.8600000000000001, -0.040000000000000015, 1.81 ],
+      "endPoint" : [ 0.92, -0.04000000000000001, 1.81 ],
+      "endPointIds" : [ "76tCXFthI99i.0.3.start", "76tCXFthI99i.0.3.end" ],
+      "isConstruction" : true
+    }, {
+      "id" : "NTJX2TjErK1w.top.start",
+      "entityType" : "point",
+      "point" : [ 0.92, -0.04, 1.81 ]
+    }, {
+      "id" : "NTJX2TjErK1w.top.end",
+      "entityType" : "point",
+      "point" : [ 0.9600000000000001, -0.04, 1.81 ]
+    }, {
+      "id" : "NTJX2TjErK1w.top",
+      "entityType" : "lineSegment",
+      "startPoint" : [ 0.92, -0.04, 1.81 ],
+      "endPoint" : [ 0.9600000000000001, -0.04, 1.81 ],
+      "endPointIds" : [ "NTJX2TjErK1w.top.start", "NTJX2TjErK1w.top.end" ]
+    }, {
+      "id" : "NTJX2TjErK1w.left.start",
+      "entityType" : "point",
+      "point" : [ 0.92, 0.0, 1.81 ]
+    }, {
+      "id" : "NTJX2TjErK1w.left.end",
+      "entityType" : "point",
+      "point" : [ 0.92, -0.04, 1.81 ]
+    }, {
+      "id" : "NTJX2TjErK1w.left",
+      "entityType" : "lineSegment",
+      "startPoint" : [ 0.92, 0.0, 1.81 ],
+      "endPoint" : [ 0.92, -0.04, 1.81 ],
+      "endPointIds" : [ "NTJX2TjErK1w.left.start", "NTJX2TjErK1w.left.end" ]
+    }, {
+      "id" : "exVl27xLp2IA.start",
+      "entityType" : "point",
+      "point" : [ 0.9600000000000001, 0.039999999999999994, 1.81 ]
+    }, {
+      "id" : "exVl27xLp2IA.end",
+      "entityType" : "point",
+      "point" : [ 0.9600000000000001, -0.039999999999999994, 1.81 ]
+    }, {
+      "id" : "exVl27xLp2IA",
+      "entityType" : "lineSegment",
+      "startPoint" : [ 0.9600000000000001, 0.039999999999999994, 1.81 ],
+      "endPoint" : [ 0.9600000000000001, -0.039999999999999994, 1.81 ],
+      "endPointIds" : [ "exVl27xLp2IA.start", "exVl27xLp2IA.end" ]
+    } ]
+  }, {
+    "sketch" : "Sketch 8",
+    "featureId" : "FfqWzMO2etrDQed_11",
+    "featuresUsed" : [ "Extrude 7" ],
+    "geomEntities" : [ {
+      "id" : "aS4yUqUlFgzo",
+      "entityType" : "circle",
+      "center" : [ 0.21026647831836592, -0.16896198425754702, 1.81 ],
+      "radius" : 0.09499999999999999
+    }, {
+      "id" : "aS4yUqUlFgzo.center",
+      "entityType" : "point",
+      "point" : [ 0.21026647831836592, -0.16896198425754702, 1.81 ],
+      "isConstruction" : true
+    } ]
+  }, {
+    "sketch" : "Sketch 2",
+    "featureId" : "Fmgukhe1CDBKQR7_1",
+    "featuresUsed" : [ "Extrude 2" ],
+    "geomEntities" : [ {
+      "id" : "WqViwfwTOO3r.bottom.start",
+      "entityType" : "point",
+      "point" : [ 0.0, 0.0, 0.0 ]
+    }, {
+      "id" : "WqViwfwTOO3r.bottom.end",
+      "entityType" : "point",
+      "point" : [ 0.06, 0.0, 0.0 ]
+    }, {
+      "id" : "WqViwfwTOO3r.bottom",
+      "entityType" : "lineSegment",
+      "startPoint" : [ 0.0, 0.0, 0.0 ],
+      "endPoint" : [ 0.06, 0.0, 0.0 ],
+      "endPointIds" : [ "WqViwfwTOO3r.bottom.start", "WqViwfwTOO3r.bottom.end" ]
+    }, {
+      "id" : "WqViwfwTOO3r.top.start",
+      "entityType" : "point",
+      "point" : [ 0.0, -0.04000000000000001, 0.0 ]
+    }, {
+      "id" : "WqViwfwTOO3r.top.end",
+      "entityType" : "point",
+      "point" : [ 0.06, -0.04000000000000001, 0.0 ]
+    }, {
+      "id" : "WqViwfwTOO3r.top",
+      "entityType" : "lineSegment",
+      "startPoint" : [ 0.0, -0.04000000000000001, 0.0 ],
+      "endPoint" : [ 0.06, -0.04000000000000001, 0.0 ],
+      "endPointIds" : [ "WqViwfwTOO3r.top.start", "WqViwfwTOO3r.top.end" ]
+    }, {
+      "id" : "WqViwfwTOO3r.left.start",
+      "entityType" : "point",
+      "point" : [ 0.0, 0.0, 0.0 ]
+    }, {
+      "id" : "WqViwfwTOO3r.left.end",
+      "entityType" : "point",
+      "point" : [ 0.0, -0.04000000000000001, 0.0 ]
+    }, {
+      "id" : "WqViwfwTOO3r.left",
+      "entityType" : "lineSegment",
+      "startPoint" : [ 0.0, 0.0, 0.0 ],
+      "endPoint" : [ 0.0, -0.04000000000000001, 0.0 ],
+      "endPointIds" : [ "WqViwfwTOO3r.left.start", "WqViwfwTOO3r.left.end" ]
+    }, {
+      "id" : "WqViwfwTOO3r.right.start",
+      "entityType" : "point",
+      "point" : [ 0.06, 0.0, 0.0 ]
+    }, {
+      "id" : "WqViwfwTOO3r.right.end",
+      "entityType" : "point",
+      "point" : [ 0.06, -0.04000000000000001, 0.0 ]
+    }, {
+      "id" : "WqViwfwTOO3r.right",
+      "entityType" : "lineSegment",
+      "startPoint" : [ 0.06, 0.0, 0.0 ],
+      "endPoint" : [ 0.06, -0.04000000000000001, 0.0 ],
+      "endPointIds" : [ "WqViwfwTOO3r.right.start", "WqViwfwTOO3r.right.end" ]
+    }, {
+      "id" : "qn3WXLQ0bKS1.bottom.start",
+      "entityType" : "point",
+      "point" : [ 1.4078279184701667E-17, -0.5500000000000002, 0.0 ]
+    }, {
+      "id" : "qn3WXLQ0bKS1.bottom.end",
+      "entityType" : "point",
+      "point" : [ 0.06000000000000004, -0.5500000000000002, 0.0 ]
+    }, {
+      "id" : "qn3WXLQ0bKS1.bottom",
+      "entityType" : "lineSegment",
+      "startPoint" : [ 1.3877787807814457E-17, -0.5500000000000002, 0.0 ],
+      "endPoint" : [ 0.06000000000000004, -0.5500000000000002, 0.0 ],
+      "endPointIds" : [ "qn3WXLQ0bKS1.bottom.start", "qn3WXLQ0bKS1.bottom.end" ]
+    }, {
+      "id" : "qn3WXLQ0bKS1.top.start",
+      "entityType" : "point",
+      "point" : [ 6.730398389817552E-18, -0.5100000000000001, 0.0 ]
+    }, {
+      "id" : "qn3WXLQ0bKS1.top.end",
+      "entityType" : "point",
+      "point" : [ 0.060000000000000026, -0.5100000000000001, 0.0 ]
+    }, {
+      "id" : "qn3WXLQ0bKS1.top",
+      "entityType" : "lineSegment",
+      "startPoint" : [ 6.938893903907228E-18, -0.5100000000000001, 0.0 ],
+      "endPoint" : [ 0.060000000000000026, -0.5100000000000001, 0.0 ],
+      "endPointIds" : [ "qn3WXLQ0bKS1.top.start", "qn3WXLQ0bKS1.top.end" ]
+    }, {
+      "id" : "qn3WXLQ0bKS1.left.start",
+      "entityType" : "point",
+      "point" : [ 1.4078279184701667E-17, -0.5500000000000002, 0.0 ]
+    }, {
+      "id" : "qn3WXLQ0bKS1.left.end",
+      "entityType" : "point",
+      "point" : [ 6.7303983898175394E-18, -0.5100000000000001, 0.0 ]
+    }, {
+      "id" : "qn3WXLQ0bKS1.left",
+      "entityType" : "lineSegment",
+      "startPoint" : [ 0.0, -0.5500000000000002, 0.0 ],
+      "endPoint" : [ 0.0, -0.5100000000000001, 0.0 ],
+      "endPointIds" : [ "qn3WXLQ0bKS1.left.start", "qn3WXLQ0bKS1.left.end" ]
+    }, {
+      "id" : "qn3WXLQ0bKS1.right.start",
+      "entityType" : "point",
+      "point" : [ 0.06000000000000004, -0.5500000000000002, 0.0 ]
+    }, {
+      "id" : "qn3WXLQ0bKS1.right.end",
+      "entityType" : "point",
+      "point" : [ 0.060000000000000026, -0.5100000000000001, 0.0 ]
+    }, {
+      "id" : "qn3WXLQ0bKS1.right",
+      "entityType" : "lineSegment",
+      "startPoint" : [ 0.06000000000000004, -0.5500000000000002, 0.0 ],
+      "endPoint" : [ 0.06000000000000003, -0.5100000000000001, 0.0 ],
+      "endPointIds" : [ "qn3WXLQ0bKS1.right.start", "qn3WXLQ0bKS1.right.end" ]
+    }, {
+      "id" : "bbm68IvAZ5yI.bottom.start",
+      "entityType" : "point",
+      "point" : [ 0.92, 0.0, 0.0 ]
+    }, {
+      "id" : "bbm68IvAZ5yI.bottom.end",
+      "entityType" : "point",
+      "point" : [ 0.8600000000000001, 0.0, 0.0 ]
+    }, {
+      "id" : "bbm68IvAZ5yI.bottom",
+      "entityType" : "lineSegment",
+      "startPoint" : [ 0.92, 0.0, 0.0 ],
+      "endPoint" : [ 0.8600000000000001, 0.0, 0.0 ],
+      "endPointIds" : [ "bbm68IvAZ5yI.bottom.start", "bbm68IvAZ5yI.bottom.end" ]
+    }, {
+      "id" : "bbm68IvAZ5yI.top.start",
+      "entityType" : "point",
+      "point" : [ 0.92, -0.04, 0.0 ]
+    }, {
+      "id" : "bbm68IvAZ5yI.top.end",
+      "entityType" : "point",
+      "point" : [ 0.8600000000000001, -0.04000000000000001, 0.0 ]
+    }, {
+      "id" : "bbm68IvAZ5yI.top",
+      "entityType" : "lineSegment",
+      "startPoint" : [ 0.92, -0.04, 0.0 ],
+      "endPoint" : [ 0.8600000000000001, -0.04000000000000001, 0.0 ],
+      "endPointIds" : [ "bbm68IvAZ5yI.top.start", "bbm68IvAZ5yI.top.end" ]
+    }, {
+      "id" : "bbm68IvAZ5yI.left.start",
+      "entityType" : "point",
+      "point" : [ 0.92, 0.0, 0.0 ]
+    }, {
+      "id" : "bbm68IvAZ5yI.left.end",
+      "entityType" : "point",
+      "point" : [ 0.92, -0.04, 0.0 ]
+    }, {
+      "id" : "bbm68IvAZ5yI.left",
+      "entityType" : "lineSegment",
+      "startPoint" : [ 0.92, 0.0, 0.0 ],
+      "endPoint" : [ 0.92, -0.04, 0.0 ],
+      "endPointIds" : [ "bbm68IvAZ5yI.left.start", "bbm68IvAZ5yI.left.end" ]
+    }, {
+      "id" : "bbm68IvAZ5yI.right.start",
+      "entityType" : "point",
+      "point" : [ 0.8600000000000001, -3.469446951953614E-18, 0.0 ]
+    }, {
+      "id" : "bbm68IvAZ5yI.right.end",
+      "entityType" : "point",
+      "point" : [ 0.8600000000000001, -0.04, 0.0 ]
+    }, {
+      "id" : "bbm68IvAZ5yI.right",
+      "entityType" : "lineSegment",
+      "startPoint" : [ 0.8600000000000001, -3.469446951953614E-18, 0.0 ],
+      "endPoint" : [ 0.8600000000000001, -0.04, 0.0 ],
+      "endPointIds" : [ "bbm68IvAZ5yI.right.start", "bbm68IvAZ5yI.right.end" ]
+    }, {
+      "id" : "f54v2ENLfuNN.bottom.start",
+      "entityType" : "point",
+      "point" : [ 0.92, -0.5500000000000002, 0.0 ]
+    }, {
+      "id" : "f54v2ENLfuNN.bottom.end",
+      "entityType" : "point",
+      "point" : [ 0.8600000000000002, -0.5500000000000002, 0.0 ]
+    }, {
+      "id" : "f54v2ENLfuNN.bottom",
+      "entityType" : "lineSegment",
+      "startPoint" : [ 0.92, -0.5500000000000002, 0.0 ],
+      "endPoint" : [ 0.8600000000000002, -0.5500000000000002, 0.0 ],
+      "endPointIds" : [ "f54v2ENLfuNN.bottom.start", "f54v2ENLfuNN.bottom.end" ]
+    }, {
+      "id" : "f54v2ENLfuNN.top.start",
+      "entityType" : "point",
+      "point" : [ 0.92, -0.5100000000000001, 0.0 ]
+    }, {
+      "id" : "f54v2ENLfuNN.top.end",
+      "entityType" : "point",
+      "point" : [ 0.8600000000000002, -0.5100000000000001, 0.0 ]
+    }, {
+      "id" : "f54v2ENLfuNN.top",
+      "entityType" : "lineSegment",
+      "startPoint" : [ 0.92, -0.5100000000000001, 0.0 ],
+      "endPoint" : [ 0.8600000000000002, -0.5100000000000001, 0.0 ],
+      "endPointIds" : [ "f54v2ENLfuNN.top.start", "f54v2ENLfuNN.top.end" ]
+    }, {
+      "id" : "f54v2ENLfuNN.left.start",
+      "entityType" : "point",
+      "point" : [ 0.92, -0.5500000000000002, 0.0 ]
+    }, {
+      "id" : "f54v2ENLfuNN.left.end",
+      "entityType" : "point",
+      "point" : [ 0.92, -0.5100000000000001, 0.0 ]
+    }, {
+      "id" : "f54v2ENLfuNN.left",
+      "entityType" : "lineSegment",
+      "startPoint" : [ 0.92, -0.5500000000000002, 0.0 ],
+      "endPoint" : [ 0.92, -0.5100000000000001, 0.0 ],
+      "endPointIds" : [ "f54v2ENLfuNN.left.start", "f54v2ENLfuNN.left.end" ]
+    }, {
+      "id" : "f54v2ENLfuNN.right.start",
+      "entityType" : "point",
+      "point" : [ 0.8600000000000002, -0.5500000000000002, 0.0 ]
+    }, {
+      "id" : "f54v2ENLfuNN.right.end",
+      "entityType" : "point",
+      "point" : [ 0.8600000000000002, -0.5100000000000001, 0.0 ]
+    }, {
+      "id" : "f54v2ENLfuNN.right",
+      "entityType" : "lineSegment",
+      "startPoint" : [ 0.8600000000000002, -0.5500000000000002, 0.0 ],
+      "endPoint" : [ 0.8600000000000002, -0.5100000000000001, 0.0 ],
+      "endPointIds" : [ "f54v2ENLfuNN.right.start", "f54v2ENLfuNN.right.end" ]
+    } ]
+  }, {
+    "sketch" : "Sketch 7",
+    "featureId" : "Fdr8W0YjKaVpRpa_10",
+    "featuresUsed" : [ "Extrude 6" ],
+    "geomEntities" : [ {
+      "id" : "DKSphRdfMTOP.bottom.start",
+      "entityType" : "point",
+      "point" : [ 0.8111017805936422, -0.4507868568825165, 1.4649999999999999 ]
+    }, {
+      "id" : "DKSphRdfMTOP.bottom.end",
+      "entityType" : "point",
+      "point" : [ 0.44110178059364225, -0.4507868568825166, 1.4649999999999999 ]
+    }, {
+      "id" : "DKSphRdfMTOP.bottom",
+      "entityType" : "lineSegment",
+      "startPoint" : [ 0.8111017805936422, -0.4507868568825165, 1.4649999999999999 ],
+      "endPoint" : [ 0.44110178059364225, -0.4507868568825166, 1.4649999999999999 ],
+      "endPointIds" : [ "DKSphRdfMTOP.bottom.start", "DKSphRdfMTOP.bottom.end" ]
+    }, {
+      "id" : "DKSphRdfMTOP.top.start",
+      "entityType" : "point",
+      "point" : [ 0.8111017805936421, -0.15078685688251645, 1.4649999999999999 ]
+    }, {
+      "id" : "DKSphRdfMTOP.top.end",
+      "entityType" : "point",
+      "point" : [ 0.4411017805936422, -0.15078685688251647, 1.4649999999999999 ]
+    }, {
+      "id" : "DKSphRdfMTOP.top",
+      "entityType" : "lineSegment",
+      "startPoint" : [ 0.8111017805936421, -0.15078685688251645, 1.4649999999999999 ],
+      "endPoint" : [ 0.4411017805936422, -0.15078685688251647, 1.4649999999999999 ],
+      "endPointIds" : [ "DKSphRdfMTOP.top.start", "DKSphRdfMTOP.top.end" ]
+    }, {
+      "id" : "DKSphRdfMTOP.left.start",
+      "entityType" : "point",
+      "point" : [ 0.8111017805936422, -0.4507868568825165, 1.4649999999999999 ]
+    }, {
+      "id" : "DKSphRdfMTOP.left.end",
+      "entityType" : "point",
+      "point" : [ 0.8111017805936421, -0.15078685688251645, 1.4649999999999999 ]
+    }, {
+      "id" : "DKSphRdfMTOP.left",
+      "entityType" : "lineSegment",
+      "startPoint" : [ 0.8111017805936422, -0.4507868568825165, 1.4649999999999999 ],
+      "endPoint" : [ 0.8111017805936421, -0.15078685688251645, 1.4649999999999999 ],
+      "endPointIds" : [ "DKSphRdfMTOP.left.start", "DKSphRdfMTOP.left.end" ]
+    }, {
+      "id" : "DKSphRdfMTOP.right.start",
+      "entityType" : "point",
+      "point" : [ 0.44110178059364225, -0.4507868568825166, 1.4649999999999999 ]
+    }, {
+      "id" : "DKSphRdfMTOP.right.end",
+      "entityType" : "point",
+      "point" : [ 0.4411017805936422, -0.15078685688251647, 1.4649999999999999 ]
+    }, {
+      "id" : "DKSphRdfMTOP.right",
+      "entityType" : "lineSegment",
+      "startPoint" : [ 0.44110178059364225, -0.4507868568825165, 1.4649999999999999 ],
+      "endPoint" : [ 0.4411017805936422, -0.15078685688251647, 1.4649999999999999 ],
+      "endPointIds" : [ "DKSphRdfMTOP.right.start", "DKSphRdfMTOP.right.end" ]
+    } ]
+  }, {
+    "sketch" : "Sketch 4",
+    "featureId" : "FIvjVloZU7r7JwS_9",
+    "featuresUsed" : [ "#featureName" ],
+    "geomEntities" : [ {
+      "id" : "L927gNRVdZeQ",
+      "entityType" : "point",
+      "point" : [ 0.9085000000000001, 0.0, 1.7784 ]
+    }, {
+      "id" : "LsTLqfBUy3Sy.0.0.start",
+      "entityType" : "point",
+      "point" : [ 0.92, 0.0, 1.7625 ]
+    }, {
+      "id" : "LsTLqfBUy3Sy.0.0.end",
+      "entityType" : "point",
+      "point" : [ 0.92, 0.0, 1.81 ]
+    }, {
+      "id" : "LsTLqfBUy3Sy.0.0",
+      "entityType" : "lineSegment",
+      "startPoint" : [ 0.92, 0.0, 1.7625 ],
+      "endPoint" : [ 0.92, 0.0, 1.81 ],
+      "endPointIds" : [ "LsTLqfBUy3Sy.0.0.start", "LsTLqfBUy3Sy.0.0.end" ],
+      "isConstruction" : true
+    }, {
+      "id" : "LsTLqfBUy3Sy.0.2.start",
+      "entityType" : "point",
+      "point" : [ 0.92, 0.0, 1.81 ]
+    }, {
+      "id" : "LsTLqfBUy3Sy.0.2.end",
+      "entityType" : "point",
+      "point" : [ 0.92, 0.0, 1.7625 ]
+    }, {
+      "id" : "LsTLqfBUy3Sy.0.2",
+      "entityType" : "lineSegment",
+      "startPoint" : [ 0.92, 0.0, 1.81 ],
+      "endPoint" : [ 0.92, 0.0, 1.7625 ],
+      "endPointIds" : [ "LsTLqfBUy3Sy.0.2.start", "LsTLqfBUy3Sy.0.2.end" ],
+      "isConstruction" : true
+    }, {
+      "id" : "p9pRzhAKNMCD.0.0.start",
+      "entityType" : "point",
+      "point" : [ 0.8970000000000002, 0.0, 1.7625 ]
+    }, {
+      "id" : "p9pRzhAKNMCD.0.0.end",
+      "entityType" : "point",
+      "point" : [ 0.92, 0.0, 1.7625 ]
+    }, {
+      "id" : "p9pRzhAKNMCD.0.0",
+      "entityType" : "lineSegment",
+      "startPoint" : [ 0.8970000000000002, 0.0, 1.7625 ],
+      "endPoint" : [ 0.92, 0.0, 1.7625 ],
+      "endPointIds" : [ "p9pRzhAKNMCD.0.0.start", "p9pRzhAKNMCD.0.0.end" ],
+      "isConstruction" : true
+    }, {
+      "id" : "p9pRzhAKNMCD.0.2.start",
+      "entityType" : "point",
+      "point" : [ 0.92, 0.0, 1.7625 ]
+    }, {
+      "id" : "p9pRzhAKNMCD.0.2.end",
+      "entityType" : "point",
+      "point" : [ 0.897, 0.0, 1.7625 ]
+    }, {
+      "id" : "p9pRzhAKNMCD.0.2",
+      "entityType" : "lineSegment",
+      "startPoint" : [ 0.92, 0.0, 1.7625 ],
+      "endPoint" : [ 0.897, 0.0, 1.7625 ],
+      "endPointIds" : [ "p9pRzhAKNMCD.0.2.start", "p9pRzhAKNMCD.0.2.end" ],
+      "isConstruction" : true
+    }, {
+      "id" : "Xp3EJaMYRxoo.start",
+      "entityType" : "point",
+      "point" : [ 0.9085000000000001, 0.0, 1.7625 ]
+    }, {
+      "id" : "Xp3EJaMYRxoo.end",
+      "entityType" : "point",
+      "point" : [ 0.9085000000000001, 0.0, 1.81 ]
+    }, {
+      "id" : "Xp3EJaMYRxoo",
+      "entityType" : "lineSegment",
+      "startPoint" : [ 0.9085000000000001, 0.0, 1.7625 ],
+      "endPoint" : [ 0.9085000000000001, 0.0, 1.81 ],
+      "endPointIds" : [ "Xp3EJaMYRxoo.start", "Xp3EJaMYRxoo.end" ],
+      "isConstruction" : true
+    } ]
+  }, {
+    "sketch" : "Sketch 9",
+    "featureId" : "FmHUrbR1HXVqQJk_12",
+    "featuresUsed" : [ "Extrude 8" ],
+    "geomEntities" : [ {
+      "id" : "1eAs7MPkrwJ9",
+      "entityType" : "point",
+      "point" : [ 1.3877787807814457E-17, -0.04000000000000001, 0.8824999999999998 ]
+    }, {
+      "id" : "ZNmfsEgxiXqX.bottom.start",
+      "entityType" : "point",
+      "point" : [ 1.3877787807814457E-17, -0.04000000000000001, 0.8824999999999998 ]
+    }, {
+      "id" : "ZNmfsEgxiXqX.bottom.end",
+      "entityType" : "point",
+      "point" : [ 0.06000000000000007, -0.04000000000000001, 0.8824999999999998 ]
+    }, {
+      "id" : "ZNmfsEgxiXqX.bottom",
+      "entityType" : "lineSegment",
+      "startPoint" : [ 1.3877787807814457E-17, -0.04000000000000001, 0.8824999999999998 ],
+      "endPoint" : [ 0.06000000000000007, -0.04000000000000001, 0.8824999999999998 ],
+      "endPointIds" : [ "ZNmfsEgxiXqX.bottom.start", "ZNmfsEgxiXqX.bottom.end" ]
+    }, {
+      "id" : "ZNmfsEgxiXqX.top.start",
+      "entityType" : "point",
+      "point" : [ 3.122502256758253E-17, -0.04000000000000001, 0.9424999999999999 ]
+    }, {
+      "id" : "ZNmfsEgxiXqX.top.end",
+      "entityType" : "point",
+      "point" : [ 0.06000000000000004, -0.04000000000000001, 0.9424999999999999 ]
+    }, {
+      "id" : "ZNmfsEgxiXqX.top",
+      "entityType" : "lineSegment",
+      "startPoint" : [ 3.122502256758253E-17, -0.04000000000000001, 0.9424999999999999 ],
+      "endPoint" : [ 0.06000000000000004, -0.04000000000000001, 0.9424999999999999 ],
+      "endPointIds" : [ "ZNmfsEgxiXqX.top.start", "ZNmfsEgxiXqX.top.end" ]
+    }, {
+      "id" : "ZNmfsEgxiXqX.left.start",
+      "entityType" : "point",
+      "point" : [ 1.3877787807814457E-17, -0.04000000000000001, 0.8824999999999998 ]
+    }, {
+      "id" : "ZNmfsEgxiXqX.left.end",
+      "entityType" : "point",
+      "point" : [ 3.122502256758253E-17, -0.04000000000000001, 0.9424999999999999 ]
+    }, {
+      "id" : "ZNmfsEgxiXqX.left",
+      "entityType" : "lineSegment",
+      "startPoint" : [ 1.3877787807814457E-17, -0.04000000000000001, 0.8824999999999998 ],
+      "endPoint" : [ 1.3877787807814457E-17, -0.04000000000000001, 0.9424999999999999 ],
+      "endPointIds" : [ "ZNmfsEgxiXqX.left.start", "ZNmfsEgxiXqX.left.end" ]
+    }, {
+      "id" : "ZNmfsEgxiXqX.right.start",
+      "entityType" : "point",
+      "point" : [ 0.06000000000000007, -0.04000000000000001, 0.8824999999999998 ]
+    }, {
+      "id" : "ZNmfsEgxiXqX.right.end",
+      "entityType" : "point",
+      "point" : [ 0.06000000000000004, -0.04000000000000001, 0.9424999999999999 ]
+    }, {
+      "id" : "ZNmfsEgxiXqX.right",
+      "entityType" : "lineSegment",
+      "startPoint" : [ 0.06000000000000004, -0.04000000000000001, 0.8824999999999998 ],
+      "endPoint" : [ 0.06000000000000004, -0.04000000000000001, 0.9424999999999999 ],
+      "endPointIds" : [ "ZNmfsEgxiXqX.right.start", "ZNmfsEgxiXqX.right.end" ]
+    } ]
+  } ]
+}

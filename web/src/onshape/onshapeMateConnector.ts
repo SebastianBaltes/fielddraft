@@ -62,6 +62,11 @@ export type OnshapeMateAnchor =
       isStart: boolean;
       origin: OnshapeEntityOrigin;
     }
+  /** The part studio's ORIGIN point — Onshape's `Origin`/`pointOp` creation
+   *  query. No geometry under it at all: this is what the FIRST connector of a
+   *  document anchors on, since nothing has been built yet. Its CSYS is the
+   *  world one, which the realignment then offsets from. */
+  | { kind: "originPoint" }
   | { kind: "unsupported"; reason: string };
 
 /** A decoded mate connector — everything the FieldDraft translation needs. */
@@ -148,6 +153,15 @@ export function decodeMateAnchor(tokens: BtonToken[]): OnshapeMateAnchor {
   const strs = literals(tokens);
   const has = (v: string) => strs.some((t) => t.p1 === v && !t.p2);
 
+  // The part studio's ORIGIN point, which Onshape names as an operation
+  // called `Origin` of type `pointOp`. It carries no `sketchEntityId` and no
+  // feature id, so every marker the rest of this decoder looks for is absent —
+  // it has to be recognised before them, not after. `extractQueryRefs` does
+  // not see it either: `opRefOf` requires an `F…_n` feature id.
+  if (strs.some((t) => t.p1 === "Origin" && t.p2 === "pointOp")) {
+    return { kind: "originPoint" };
+  }
+
   // Anchor entity type: the FIRST `entityType` value in the stream. A cap
   // query states the derived entity first and the cap's own type after it.
   const typeIdx = tokens.findIndex((t) => t.t === "str" && t.p1 === "entityType" && !t.p2);
@@ -222,11 +236,40 @@ function quantityValue(pm: Record<string, any> | undefined): number {
 }
 
 /**
+ * How to turn a quantity parameter into mm / degrees.
+ *
+ * This module decodes; it does not evaluate Onshape expressions, and it must
+ * not — the evaluator needs the document's variables, which only the import
+ * walk has. So the caller supplies the reader, and `readMateConnector` falls
+ * back to Onshape's own SI `value` when none is given (which is what the unit
+ * tests use).
+ *
+ * That fallback is NOT harmless in production: Onshape's `/features` payload
+ * very often reports `value: 0` for a parameter whose `expression` is the real
+ * content — a connector offset of `#Hoehe-3cm` reads as 0 mm, and the sketch on
+ * that connector then sits at the origin instead of 1.8 m above it, with no
+ * complaint anywhere. The importer therefore always passes a real reader.
+ */
+export type QuantityReader = (
+  pm: Record<string, any> | undefined,
+  fallback: number,
+  want: "length" | "angle",
+) => number;
+
+/** mm for a length, degrees for an angle — from Onshape's SI `value` alone. */
+const siQuantity: QuantityReader = (pm, fallback, want) => {
+  if (!pm) return fallback;
+  const v = quantityValue(pm);
+  return want === "length" ? v * M_TO_MM : (v * 180) / Math.PI;
+};
+
+/**
  * Read a `mateConnector` feature (implicit sub-feature or top-level) into its
  * structured form. Every query is decoded; nothing is inferred from names.
  */
 export async function readMateConnector(
   feature: Record<string, any>,
+  quantity: QuantityReader = siQuantity,
 ): Promise<OnshapeMateConnector> {
   const feat = msg(feature);
   const params = paramMap(feat);
@@ -247,12 +290,12 @@ export async function readMateConnector(
     anchor,
     secondary,
     offsetMm: [
-      quantityValue(params.get("translationX")) * M_TO_MM,
-      quantityValue(params.get("translationY")) * M_TO_MM,
-      quantityValue(params.get("translationZ")) * M_TO_MM,
+      quantity(params.get("translationX"), 0, "length"),
+      quantity(params.get("translationY"), 0, "length"),
+      quantity(params.get("translationZ"), 0, "length"),
     ],
     rotationType: String(params.get("rotationType")?.value ?? "ABOUT_Z"),
-    rotationDeg: (quantityValue(params.get("rotation")) * 180) / Math.PI,
+    rotationDeg: quantity(params.get("rotation"), 0, "angle"),
     flipPrimary: params.get("flipPrimary")?.value === true,
     realign: params.get("realign")?.value === true,
   };
@@ -272,7 +315,9 @@ export function anchorT(mc: OnshapeMateConnector): number | null {
   if (mc.inference === "MID_POINT") return 0.5;
   if (mc.inference !== "POINT") return null;
   const sec = mc.secondary;
-  if (!sec || sec.kind === "unsupported") return null;
+  // Only an anchor that NAMES a sketch entity can say which end it means; the
+  // origin point and an unreadable query both leave `t` undetermined.
+  if (!sec || sec.kind === "unsupported" || sec.kind === "originPoint") return null;
   if (sec.origin.entityId.endsWith(".start")) return 0.0;
   if (sec.origin.entityId.endsWith(".end")) return 1.0;
   return null;
@@ -285,6 +330,8 @@ export function describeAnchor(a: OnshapeMateAnchor): string {
       return `Sketch-Entity ${a.origin.entityId} (${a.entityType})`;
     case "capEntity":
       return `${a.entityType} der ${a.isStart ? "Start" : "End"}-Deckfläche von ${a.opFeatureId} (aus ${a.origin.entityId})`;
+    case "originPoint":
+      return "Ursprung des Part Studios";
     case "unsupported":
       return `nicht lesbar (${a.reason})`;
   }

@@ -718,12 +718,38 @@ impl<'a> Context<'a> {
         Ok(out)
     }
 
-    /// Resolve a *plane* query to a world-space [`SketchFrame`],
-    /// accepting both the well-known datum planes
-    /// (`qCreatedBy(origin_plane_xy|xz|yz)`) and real B-Rep faces.
-    /// Datum planes short-circuit before touching the woven B-Rep;
-    /// everything else defers to [`Context::resolve_face_frame`].
-    /// Returns `None` when the query resolves to neither.
+    /// Resolve a *plane* query to a world-space [`SketchFrame`]. Three
+    /// kinds of plane are accepted, in this order:
+    ///
+    /// 1. the well-known datum planes
+    ///    (`qCreatedBy(origin_plane_xy|xz|yz)`),
+    /// 2. a placed `mate_connector` named by `qCreatedBy(<its id>)` — its
+    ///    resolved CSYS IS a plane frame (origin, +Z, +X),
+    /// 3. anything else, deferred to [`Context::resolve_face_frame`].
+    ///
+    /// Returns `None` when the query resolves to none of them.
+    ///
+    /// (2) is what lets a sketch sit on a mate connector (#409). Onshape
+    /// uses that constantly — a sketch anchored to a connector rather than
+    /// to the face under it, so the sketch survives the face being
+    /// re-cut. Without it the Onshape importer had to skip such sketches,
+    /// and skipping the FIRST sketch of a part starves every extrude,
+    /// boolean and mirror downstream of it: one unresolved plane took out
+    /// eleven features in the #409 reference part.
+    ///
+    /// Order matters twice over. The datum check comes first because
+    /// `origin_plane_*` are synthetic ids that no feature owns. The mate
+    /// connector comes before the face because a connector is USUALLY
+    /// anchored to a face — resolving to that face would silently give
+    /// the face's centroid and the face's synthesised basis instead of
+    /// the connector's own origin and rotation, i.e. a plane in the right
+    /// place but with the wrong 2D coordinate system. Wrong-but-plausible
+    /// is worse than absent.
+    ///
+    /// `mate_connectors` is filled during this same regeneration, in
+    /// feature order ([`MateConnectorFeature::execute`]), so a connector
+    /// is visible exactly to the features that come after it — the same
+    /// rule the rest of the feature tree follows.
     pub fn resolve_plane_frame(
         &mut self,
         expr: &crate::queries::QueryExpr,
@@ -731,6 +757,16 @@ impl<'a> Context<'a> {
         if let crate::queries::QueryExpr::CreatedBy(d) = expr {
             if let Some(datum) = crate::sketch::datum_plane_frame(d) {
                 return Some(datum);
+            }
+            let target = d.as_u32_or_root();
+            if let Some(mc) = self
+                .mate_connectors
+                .iter()
+                .find(|mc| mc.id.as_u32_or_root() == target)
+            {
+                return Some(crate::sketch::SketchFrame::from_csys(
+                    mc.origin, mc.normal, mc.x_axis,
+                ));
             }
         }
         self.resolve_face_frame(expr)
@@ -952,6 +988,24 @@ impl<'a> Context<'a> {
                 }
                 None
             }
+            // A RAW SKETCH LINE. It never enters the B-Rep — a construction
+            // line has no wall, and even a profile edge is only addressable
+            // this way before it is swept — but it is a perfectly good frame,
+            // and Onshape anchors connectors on sketch lines constantly. `t`
+            // means what it means for a B-Rep edge, because it goes through the
+            // same [`polyline_point_tangent`]: the line's own two endpoints ARE
+            // the polyline. The sketch plane's normal is the auto-secondary, so
+            // the connector's remaining axes stand square to the sketch it was
+            // drawn in rather than on an arbitrary seed cross.
+            QueryExpr::SketchLine(sketch_id, _) => {
+                let (a, b) = self.resolve_axis_world_segment(expr)?;
+                let (origin, tan) = polyline_point_tangent(&[a, b], t)?;
+                Some(MateAnchorFrame {
+                    origin,
+                    primary: Some(tan),
+                    auto_secondary: self.sketches.get(sketch_id).map(|s| s.frame.normal),
+                })
+            }
             QueryExpr::Vertex(eref) => {
                 use crate::brep::naming::EntityHandle;
                 let woven = self.brep_cache.ensure(&self.features);
@@ -1006,30 +1060,24 @@ impl<'a> Context<'a> {
                     auto_secondary: None,
                 })
             }
-            // A placed mate connector: its resolved CSYS was captured earlier
-            // this regen (mate connectors are datum features, not geometry, so
-            // they live in `ctx.mate_connectors`, not the B-Rep). `qCreatedBy`
-            // that names such a feature drills along the connector's +Z.
-            QueryExpr::CreatedBy(f) => {
-                let target = f.as_u32_or_root();
-                self.mate_connectors
-                    .iter()
-                    .find(|mc| mc.id.as_u32_or_root() == target)
-                    .map(|mc| MateAnchorFrame {
-                        origin: mc.origin,
-                        primary: Some(mc.normal),
-                        auto_secondary: None,
-                    })
-                    // Not a mate connector → fall back to the face anchor path
-                    // (`qCreatedBy(op)` → that feature's first face).
-                    .or_else(|| {
-                        self.resolve_face_frame(expr).map(|fr| MateAnchorFrame {
-                            origin: fr.origin,
-                            primary: Some(fr.normal),
-                            auto_secondary: None,
-                        })
-                    })
-            }
+            // `qCreatedBy(x)` is a PLANE-shaped anchor, so it goes through the
+            // one plane ladder ([`Context::resolve_plane_frame`]): an origin
+            // datum plane, a placed mate connector (whose resolved CSYS was
+            // captured earlier this regen — connectors are datum features, not
+            // geometry, so they live in `ctx.mate_connectors`, not the B-Rep),
+            // or that feature's first face. The connector drills along its +Z,
+            // the datum plane along its normal, the face along its normal.
+            //
+            // The datum rung is what lets a connector sit on the WORLD ORIGIN
+            // (#409): Onshape's default connector anchors on the origin point
+            // and offsets from there, which is a frame with no geometry under
+            // it at all — the first sketch of a part studio has nothing else to
+            // hang on.
+            QueryExpr::CreatedBy(_) => self.resolve_plane_frame(expr).map(|fr| MateAnchorFrame {
+                origin: fr.origin,
+                primary: Some(fr.normal),
+                auto_secondary: None,
+            }),
             // Face / created-by / face-of: the anchor IS a face; its normal is +Z.
             _ => self.resolve_face_frame(expr).map(|f| MateAnchorFrame {
                 origin: f.origin,

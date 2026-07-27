@@ -85,6 +85,24 @@ const DATUM_FRAMES: Record<string, PlaneFrame> = {
   },
 };
 
+/** Frame from a CSYS given as origin + Z + X — mirrors the kernel's
+ *  `SketchFrame::from_csys`, including its Gram-Schmidt re-orthogonalisation
+ *  of X against the normal and the `y = n × x` right-handed closure. */
+export function frameFromCsys(origin: Vec3, normal: Vec3, xAxis: Vec3): PlaneFrame {
+  const n = normalize(normal);
+  const dot = xAxis[0] * n[0] + xAxis[1] * n[1] + xAxis[2] * n[2];
+  const rejected: Vec3 = [
+    xAxis[0] - dot * n[0],
+    xAxis[1] - dot * n[1],
+    xAxis[2] - dot * n[2],
+  ];
+  const x =
+    Math.hypot(rejected[0], rejected[1], rejected[2]) > 1e-6
+      ? normalize(rejected)
+      : planeBasisFromNormal(n).xAxis;
+  return { origin, xAxis: x, yAxis: cross(n, x), normal: n };
+}
+
 /** Minimal kernel surface this resolver needs (subset of `Kernel`). */
 export interface PlaneFrameKernel {
   bodyCount(): number;
@@ -94,13 +112,22 @@ export interface PlaneFrameKernel {
    *  beyond the two regex fast paths below. Optional so the existing
    *  test doubles stay valid. */
   resolveQuery?(query: string): { kind: string; idHash: string }[];
+  /** Placed mate connectors, whose CSYS is a plane frame in its own right
+   *  (#409). Optional for the same reason as `resolveQuery`. */
+  resolvedMateConnectors?(): {
+    id: number;
+    origin: [number, number, number];
+    normal: [number, number, number];
+    x_axis: [number, number, number];
+  }[];
 }
 
 /**
  * Resolve `planeQuery` to a world frame, or `null` when the query matches
- * neither a datum plane nor a face of the current bodies. Face matching
- * mirrors the kernel: `qFace(hash)` by stable id, `qCreatedBy(id)` /
- * `qFaceOf(id)` by owning feature (first hit in body order).
+ * no datum plane, no mate connector and no face of the current bodies.
+ * Face matching mirrors the kernel: `qFace(hash)` by stable id,
+ * `qCreatedBy(id)` / `qFaceOf(id)` by owning feature (first hit in body
+ * order).
  */
 export function resolvePlaneFrame(
   planeQuery: string,
@@ -111,6 +138,16 @@ export function resolvePlaneFrame(
 
   let byHash = planeQuery.match(/^qFace\((\d+)\)$/);
   const byFeature = planeQuery.match(/^q(?:CreatedBy|FaceOf)\((\d+)\)$/);
+  // A placed mate connector's CSYS is a plane frame (#409). This is checked
+  // BEFORE the face lookup, in the kernel's order and for the kernel's
+  // reason: a connector is usually anchored to a face, so falling through
+  // would silently yield that face's centroid and synthesised basis instead
+  // of the connector's own origin and rotation.
+  if (byFeature) {
+    const id = Number(byFeature[1]);
+    const mc = kernel.resolvedMateConnectors?.().find((c) => c.id === id);
+    if (mc) return frameFromCsys(mc.origin, mc.normal, mc.x_axis);
+  }
   if (!byHash && !byFeature) {
     // Any richer form (`qCreatedBy(op, ROLE)`, `qWall`, `qAdjacentTo`,
     // fingerprint-carrying `qFace(h @ fp)` …) is resolved by the KERNEL —

@@ -727,17 +727,22 @@ describe("implicit mate connectors (#416)", () => {
     expect(calls[0].params.reorient).toBe(0);
   });
 
-  it("still SKIPS the sketch on it, naming the connector and the kernel gap", async () => {
+  it("places the sketch ON that connector (#409)", async () => {
     const { kernel, result } = await translate([...capChain(), structuredClone(featureById(SKETCH_4))]);
-    // The connector landed; the sketch did not.
-    expect(kernel.calls.filter((c) => c.type === "sketch").length).toBe(2); // Sketch 1 + 3
-    const err = result.errors.find((e) => e.includes("Sketch 4"))!;
-    expect(err).toContain("Mate-Connector");
-    expect(err).toContain("resolve_plane_frame");
-    expect(err).toContain("GAP-MATRIX");
-    // It says the connector itself DID land — otherwise the message would send
-    // the user looking for something that is right there in the tree.
-    expect(err).toMatch(/als Feature \d+ importiert/);
+    // Sketch 1 + 3 + 4: the sketch on the connector is no longer dropped.
+    // Until #409 taught `resolve_plane_frame` a connector's CSYS, it was —
+    // and skipping a sketch starves every extrude drawn on it, so one
+    // unresolved plane took out a whole branch of the tree.
+    const sketchCalls = kernel.calls.filter((c) => c.type === "sketch");
+    expect(sketchCalls.length, result.errors.join(" | ")).toBe(3);
+    // Its plane names the CONNECTOR feature, not the cap face the connector
+    // happens to sit on — the connector carries its own origin and rotation.
+    const mcId = kernel.calls.findIndex((c) => c.type === "mate_connector");
+    expect(mcId).toBeGreaterThanOrEqual(0);
+    const onConnector = sketchCalls[2].params.planeQuery;
+    expect(onConnector).toMatch(/^qCreatedBy\(\d+\)$/);
+    expect(onConnector).not.toMatch(/CAP_(TOP|BOTTOM)/);
+    expect(result.errors.filter((e) => e.includes("Sketch 4"))).toEqual([]);
   });
 
   it("puts a MID_POINT connector at t = 0.5 on the cap EDGE it names", async () => {
@@ -755,26 +760,32 @@ describe("implicit mate connectors (#416)", () => {
     expect(calls[0].params.t).toBe(0.5);
   });
 
-  it("SKIPS a connector on a raw sketch line and names the kernel limit", async () => {
-    // Sketch 2's connector sits on an ENDPOINT of a construction line of
-    // Sketch 1 — geometry that never enters the B-Rep.
+  it("anchors a connector on a RAW sketch line (#409)", async () => {
+    // Sketch 2's connector sits on an ENDPOINT of a CONSTRUCTION line of
+    // Sketch 1 — geometry that never enters the B-Rep, and which the importer
+    // therefore used to refuse. `resolve_mate_anchor` reads `qSketchLine`
+    // since #409, and it has to: a construction line is exactly what one
+    // anchors a connector to when there is no solid to hang on yet.
     const { kernel, result } = await translate([
       structuredClone(featureById("FeniPjG8I3vr6X2_0")),
       structuredClone(featureById(SKETCH_2)),
     ]);
-    expect(mateCalls(kernel).length).toBe(0);
-    const err = result.errors.join(" | ");
-    expect(err).toContain("rohen Sketch-Linie");
-    expect(err).toContain("resolve_mate_anchor");
-    // The query it WOULD use is named, so the gap is checkable, not folklore.
-    expect(err).toMatch(/qSketchLine\(\d+, \d+\)/);
+    const calls = mateCalls(kernel);
+    expect(calls.length, result.errors.join(" | ")).toBe(1);
+    expect(calls[0].params.anchor).toMatch(/^qSketchLine\(\d+, \d+\)$/);
+    // POINT inference on an endpoint: `t` names WHICH end, and it must not
+    // silently default to the midpoint.
+    expect([0, 1]).toContain(calls[0].params.t);
   });
 
   it("carries Onshape's realignment offset verbatim, in millimetres", async () => {
     const sketch4 = structuredClone(featureById(SKETCH_4));
     const p = (id: string) =>
       sketch4.subFeatures[0].parameters.find((q: any) => q.parameterId === id);
-    p("translationZ").value = 0.0125; // Onshape reports SI
+    // Onshape's AUTHORED TEXT is what counts — its `value` field is 0 for
+    // most expressions in the `/features` payload (#415).
+    p("translationZ").expression = "1.25 cm";
+    p("translationZ").value = 0.0125;
     p("flipPrimary").value = true;
     const { kernel, result } = await translate([...capChain(), sketch4]);
     const calls = mateCalls(kernel);
@@ -785,16 +796,22 @@ describe("implicit mate connectors (#416)", () => {
 
   it("takes a 90° rotation as a reorient step", async () => {
     const sketch4 = structuredClone(featureById(SKETCH_4));
-    sketch4.subFeatures[0].parameters.find((q: any) => q.parameterId === "rotation").value =
-      Math.PI / 2;
+    const rot = sketch4.subFeatures[0].parameters.find(
+      (q: any) => q.parameterId === "rotation",
+    );
+    rot.expression = "90 deg";
+    rot.value = Math.PI / 2;
     const { kernel } = await translate([...capChain(), sketch4]);
     expect(mateCalls(kernel)[0].params.reorient).toBe(1);
   });
 
   it("REPORTS a rotation it cannot express instead of rounding it off", async () => {
     const sketch4 = structuredClone(featureById(SKETCH_4));
-    sketch4.subFeatures[0].parameters.find((q: any) => q.parameterId === "rotation").value =
-      Math.PI / 6; // 30°
+    const rot = sketch4.subFeatures[0].parameters.find(
+      (q: any) => q.parameterId === "rotation",
+    );
+    rot.expression = "30 deg";
+    rot.value = Math.PI / 6;
     const { kernel, result } = await translate([...capChain(), sketch4]);
     expect(result.warnings.join(" | ")).toContain("90°-Schritten");
     expect(mateCalls(kernel)[0].params.reorient).toBe(0);
@@ -1415,5 +1432,134 @@ describe("importOnshapeFeatures — Onshapes Sketch-Frame (#415)", () => {
     const result = await importOnshapeFeatures({ features: [sketchOnTop()] }, kernel);
     expect([...result.errors, ...result.warnings].join(" | ")).not.toContain("3D");
     expect(lineOf(kernel).params).toEqual({ start: [0, 0], end: [10, 0] });
+  });
+});
+
+// ─── P5: Replikations-Features (#409/#419) ───────────────────────────────
+//
+// `linearPattern`, `circularPattern` und `mirror`. Alle drei klonen einen
+// KÖRPER, keine Fläche und kein Feature — Onshapes anderen Muster-Typen fehlt
+// in FieldDraft die Entsprechung, und die werden gemeldet statt genähert.
+//
+// Die Zahlen kommen aus den Dokumenten selbst und stehen durchweg als
+// AUSDRUCK da (`50 cm`, `2`), während Onshapes `value`-Feld 0 meldet — genau
+// die Falle aus #415. Ein Muster, das still auf 0 mm Abstand fällt, sieht in
+// der Baumansicht vollständig aus und baut nichts.
+
+function ticket409(): { features: any[] } {
+  return JSON.parse(
+    readFileSync(join(__dirname, "fixtures", "onshape-409-features.json"), "utf8"),
+  );
+}
+
+function ticket419(): { features: any[] } {
+  return JSON.parse(
+    readFileSync(join(__dirname, "fixtures", "onshape-419-features.json"), "utf8"),
+  );
+}
+
+const callsOfType = (
+  kernel: { calls: { type: string; params: any }[] },
+  type: string,
+) => kernel.calls.filter((c) => c.type === type);
+
+/**
+ * Wie {@link translate}, aber mit einem Kernel, der EBENEN-FRAMES kennt.
+ *
+ * Die Muster-Richtung ist eine Sketch-Linie, und eine Sketch-Linie wird erst
+ * über den Frame ihrer Ebene zu einer Weltrichtung. `mockKernel` hat kein
+ * `bodyCount`, und ohne das liefert `resolvePlaneFrame` grundsätzlich `null` —
+ * die Richtung wäre dann in JEDEM Test unauflösbar, und die Tests würden nur
+ * die Fehlermeldung prüfen statt die Übersetzung.
+ *
+ * Ein leerer Körper-Satz genügt: die Ursprungs-Datum-Ebenen kommen ohne
+ * B-Rep aus, und die Muster dieses Dokuments hängen an genau denen.
+ */
+async function translateWithFrames(features: any[]) {
+  const base = mockKernel();
+  const kernel: typeof base = {
+    ...base,
+    bodyCount: () => 0,
+    bodyBrepFaces: () => [],
+    bodyPlacement: () => ({ translate: [0, 0, 0], rotation: [0, 0, 0, 1], scale: [1, 1, 1] }),
+  };
+  const result = await importOnshapeFeatures({ features }, kernel);
+  return { kernel, result };
+}
+
+/**
+ * Eine Kopie von `feature` unter FREMDER Onshape-Id.
+ *
+ * Damit lässt sich ein Übersetzer isolieren, dessen Eingabe im Dokument an
+ * einer ganz anderen Lücke hängt: das Muster braucht seine Quelle nur im
+ * id-Map, nicht deren echte Geometrie. Dieselbe Umpflanz-Technik benutzen die
+ * #416-Tests für die Sketch-Kette.
+ */
+function standIn(feature: any, asFeatureId: string): any {
+  const copy = structuredClone(feature);
+  copy.featureId = asFeatureId;
+  return copy;
+}
+
+describe("P5 — linearPattern / circularPattern / mirror (#409/#419)", () => {
+  it("übersetzt die beiden Linearmuster aus #409 mit Abstand und Anzahl", async () => {
+    const { kernel, result } = await translateWithFrames(structuredClone(ticket409().features));
+    const patterns = callsOfType(kernel, "linear_pattern");
+    expect(patterns.length, result.errors.join(" | ")).toBe(2);
+
+    // `Linear pattern 1`: 2 Instanzen, 50 cm, Gegenrichtung. Der Abstand steht
+    // NUR im Ausdruck — Onshapes `value` ist hier 0.
+    const p1 = patterns.find((p) => p.params.display_name === "Linear pattern 1")!;
+    expect(p1.params.count).toBe(2);
+    expect(p1.params.spacing).toEqual({ value: 500, unit: "mm" });
+    // `oppositeDirection: true` kehrt die Achse um, statt ein Flag zu setzen,
+    // das FieldDraft nicht hat.
+    expect(Math.hypot(...(p1.params.direction as number[]))).toBeCloseTo(1, 6);
+    expect(p1.params.source).toMatch(/^qCreatedBy\(\d+(, qCreatedBy\(\d+\))*/);
+  });
+
+  it("spiegelt an der Ebene, die Onshape nennt", async () => {
+    // Mirror 1 spiegelt Extrude 9, das in diesem Dokument an einer ANDEREN
+    // Lücke hängt (Extrude 8, End-Condition UP_TO_NEXT). Für die Übersetzung
+    // des Spiegels selbst zählt nur, dass die Quelle im id-Map steht — also
+    // bekommt ein importierbarer Extrude dessen Onshape-Id. Dieselbe
+    // Umpflanz-Technik wie in den #416-Tests.
+    const feats = (ticket409().features as any[]).map((f) => f.message ?? f);
+    const { kernel, result } = await translateWithFrames([
+      // …bis Sketch 3 — die Spiegelebene ist ein Mate-Connector, der auf einer
+      // Linie dieses Sketches sitzt.
+      ...structuredClone(feats.slice(0, 13)),
+      standIn(feats[11], feats[17].featureId), // Extrude 8 ← Extrude 2
+      standIn(feats[11], feats[19].featureId), // Extrude 9 ← Extrude 2
+      structuredClone(feats[20]), // Mirror 1
+    ]);
+    const mirrors = callsOfType(kernel, "mirror");
+    expect(mirrors.length, result.errors.join(" | ")).toBe(1);
+    // Onshape spiegelt hier ZWEI Körper auf einmal; FieldDrafts `source` ist
+    // eine MultiQuery, kein Einzelverweis.
+    expect(mirrors[0].params.source.split(", ")).toHaveLength(2);
+    expect(mirrors[0].params.source).toMatch(/^qCreatedBy\(\d+\), qCreatedBy\(\d+\)$/);
+    // Die Spiegelebene ist ein Mate-Connector auf einer rohen Sketch-Linie —
+    // beides erst seit #409 auflösbar, und beides zusammen genau der Fall, an
+    // dem `mirror` in diesem Dokument bisher scheiterte.
+    // …und zwar auf einen Connector, den dieser Import selbst angelegt hat:
+    // die Ebene nennt ein FieldDraft-Feature, keine Onshape-Id.
+    expect(mirrors[0].params.plane).toMatch(/^qCreatedBy\(\d+\)$/);
+    expect(callsOfType(kernel, "mate_connector").length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("meldet ein FLÄCHEN-Muster, statt es als Körper-Muster zu übersetzen", async () => {
+    const doc = ticket409();
+    const feats = (doc.features as any[]).map((f) => f.message ?? f);
+    const facePattern = structuredClone(feats[36]);
+    facePattern.parameters
+      .map((p: any) => p.message ?? p)
+      .find((p: any) => p.parameterId === "patternType").value = "FACE";
+    const { kernel, result } = await translateWithFrames([
+      ...structuredClone(feats.slice(0, 36)),
+      facePattern,
+    ]);
+    expect(callsOfType(kernel, "linear_pattern").length).toBe(1); // nur Muster 3
+    expect(result.errors.join(" | ")).toContain("kein Flächen-Muster");
   });
 });

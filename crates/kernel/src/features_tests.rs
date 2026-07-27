@@ -4714,6 +4714,125 @@ fn mate_connector_resolves_face_query_to_origin_and_normal() {
     assert!((flipped.origin[2] - 10.0).abs() < 1e-2, "flip keeps the origin");
 }
 
+/// #409: a sketch may sit ON a mate connector, not only on a datum plane
+/// or a face. Onshape does this constantly — anchoring a sketch to a
+/// connector rather than to the face beneath it keeps the sketch alive
+/// when the face is later re-cut — and until now `resolve_plane_frame`
+/// took a plane query to exactly two things, so the importer had to skip
+/// every such sketch and everything drawn on it.
+///
+/// The connector here is deliberately NOT the face it is anchored to: it
+/// is lifted 4 mm along its own +Z. If `resolve_plane_frame` fell through
+/// to the face path (the connector's anchor query is a face query), the
+/// sketch would land at z = 10 instead of z = 14 — a plausible plane in
+/// the wrong place, which is the failure mode worth pinning.
+#[test]
+fn sketch_plane_resolves_to_a_mate_connector() {
+    let registry = FeatureRegistry::with_builtins();
+    let mut doc = empty_ctx();
+    let mut ctx = Context::new(&mut doc);
+
+    // 10 mm half-extent box at the origin → +Z face at z = 10.
+    registry
+        .regenerate(&mut ctx, std::slice::from_ref(&box_call(1, 10.0)), None)
+        .unwrap();
+    let woven = crate::body::weave_all(&ctx.features);
+    let (brep, placement) = &woven[0];
+    let top_hash = (0..brep.face_count())
+        .map(|i| crate::brep::FaceId(i as u32))
+        .find(|f| (crate::sketch::face_plane_frame(brep, *f, placement).normal[2] - 1.0).abs() < 1e-4)
+        .map(|f| crate::brep::naming::TopoRef::from_face(brep, f).id_hash)
+        .expect("box has a +Z face");
+
+    let calls = vec![
+        box_call(1, 10.0),
+        FeatureCall::new(
+            "mate_connector",
+            id(2),
+            json!({
+                "anchor": format!("qFace({top_hash})"),
+                // 4 mm along the connector's OWN +Z — the whole point of
+                // the test: connector origin ≠ face centroid.
+                "offset": [0.0, 0.0, 4.0],
+            }),
+        ),
+        FeatureCall::new(
+            "sketch",
+            id(3),
+            json!({
+                "plane": format!("qCreatedBy({})", id(2)),
+                "sub_calls": [
+                    { "type": "sketch_rectangle", "id": "r1",
+                      "params": { "corner_a": [-2.0, -3.0], "corner_b": [2.0, 3.0] } }
+                ]
+            }),
+        ),
+    ];
+    registry.regenerate(&mut ctx, &calls, None).unwrap();
+
+    let sketch = ctx
+        .sketches
+        .get(&id(3))
+        .expect("the sketch must have been placed, not rejected");
+    let f = &sketch.frame;
+    assert!(
+        (f.normal[2] - 1.0).abs() < 1e-3,
+        "the connector's +Z is the sketch normal, got {:?}",
+        f.normal
+    );
+    assert!(
+        (f.origin[2] - 14.0).abs() < 1e-2,
+        "the sketch sits on the CONNECTOR (z = 10 + 4), not on the face it \
+         is anchored to (z = 10) — got {:?}",
+        f.origin
+    );
+
+    // The frame must be an orthonormal right-handed triple, or
+    // `to_transform` builds a quaternion from a sheared basis and every
+    // 2D coordinate on the sketch lands slightly wrong.
+    let dot = |a: [f32; 3], b: [f32; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+    for (name, v) in [("x", f.x_axis), ("y", f.y_axis), ("n", f.normal)] {
+        assert!((dot(v, v) - 1.0).abs() < 1e-5, "{name} axis not unit: {v:?}");
+    }
+    assert!(dot(f.x_axis, f.y_axis).abs() < 1e-5, "x ⟂ y");
+    assert!(dot(f.x_axis, f.normal).abs() < 1e-5, "x ⟂ n");
+    let cross_xy = [
+        f.x_axis[1] * f.y_axis[2] - f.x_axis[2] * f.y_axis[1],
+        f.x_axis[2] * f.y_axis[0] - f.x_axis[0] * f.y_axis[2],
+        f.x_axis[0] * f.y_axis[1] - f.x_axis[1] * f.y_axis[0],
+    ];
+    assert!(
+        (dot(cross_xy, f.normal) - 1.0).abs() < 1e-5,
+        "x × y must be +n (right-handed), got {cross_xy:?} vs {:?}",
+        f.normal
+    );
+}
+
+/// `from_csys` re-orthogonalises rather than trusting its X axis: a
+/// connector's X comes from an anchor basis or a user rotation, and drift
+/// there does not fail loudly — it shears every sketch built on the frame.
+#[test]
+fn csys_frame_reorthogonalises_a_drifting_x_axis() {
+    use crate::sketch::SketchFrame;
+
+    // X leaning 30 % out of the plane, and not unit length either.
+    let f = SketchFrame::from_csys([1.0, 2.0, 3.0], [0.0, 0.0, 2.0], [4.0, 0.0, 1.2]);
+    assert_eq!(f.origin, [1.0, 2.0, 3.0], "the origin is taken verbatim");
+    assert!((f.normal[2] - 1.0).abs() < 1e-6, "normal normalised: {:?}", f.normal);
+    // The rejection of X against the normal is +X exactly.
+    assert!((f.x_axis[0] - 1.0).abs() < 1e-6, "x re-projected into the plane: {:?}", f.x_axis);
+    assert!(f.x_axis[2].abs() < 1e-6, "x has no out-of-plane part left");
+    assert!((f.y_axis[1] - 1.0).abs() < 1e-6, "y = n × x: {:?}", f.y_axis);
+
+    // X parallel to the normal leaves NO in-plane direction to keep — the
+    // frame must still come out orthonormal rather than degenerate.
+    let d = SketchFrame::from_csys([0.0; 3], [0.0, 0.0, 1.0], [0.0, 0.0, 5.0]);
+    let dot = |a: [f32; 3], b: [f32; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+    assert!((dot(d.x_axis, d.x_axis) - 1.0).abs() < 1e-5, "x unit: {:?}", d.x_axis);
+    assert!(dot(d.x_axis, d.normal).abs() < 1e-5, "x ⟂ n");
+    assert!((dot(d.y_axis, d.y_axis) - 1.0).abs() < 1e-5, "y unit: {:?}", d.y_axis);
+}
+
 #[test]
 fn mate_connector_offset_between_and_owner() {
     let registry = FeatureRegistry::with_builtins();

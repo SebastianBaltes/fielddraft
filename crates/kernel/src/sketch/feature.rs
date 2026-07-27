@@ -198,9 +198,11 @@ impl FeatureKind for SketchFeature {
         let parsed = ParsedSketchDef::parse(def)?;
 
         // C1: resolve the sketch's 3D placement frame from the `plane`
-        // query. Three resolution paths, no silent fallback:
+        // query. Four resolution paths, no silent fallback:
         //   * `qCreatedBy(origin_plane_*)` → the well-known datum frame
         //     (`origin_plane_xy` is the identity frame).
+        //   * `qCreatedBy(<mate_connector>)` → that connector's CSYS
+        //     (#409; Onshape anchors sketches to connectors, not faces).
         //   * a face-yielding query (`qFace(h)`, or `qCreatedBy`/`qFaceOf`
         //     of a prior feature's face) → that face's plane frame.
         //   * anything else → a hard error.

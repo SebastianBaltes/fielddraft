@@ -35,17 +35,17 @@ Alles andere fällt in den Sammel-Zweig (:594) → `errors: "Feature-Typ '<x>' w
 | chamfer | 38 | OK (EQUAL_OFFSETS / 45°) | Kernel-Feature `chamfer_edge` seit v0.31.0 |
 | booleanBodies | 27 | OK | Übersetzer seit P3 |
 | thicken | 25 | OK | Übersetzer seit P4 |
-| mateConnector | 22 | OK als Referenzgeo | Übersetzer seit 2026-07-26 (3), Top-Level **und** implizit. Offen: ein Sketch DARAUF (Kernel `resolve_plane_frame`) sowie Anker auf roher Sketch-Linie (`resolve_mate_anchor`). **Zensus zählt nur Top-Level**: implizite MCs als Sketch-Ebene stecken in `subFeatures` (#416: 3×) |
+| mateConnector | 22 | OK, auch als Ebene | Übersetzer seit 2026-07-26, Top-Level **und** implizit; seit 2026-07-27 auch als SKETCH-EBENE und mit Ankern auf roher Sketch-Linie sowie auf dem Part-Studio-Ursprung. Offen: Inferenz `CENTROID`. **Zensus zählt nur Top-Level**: implizite MCs als Sketch-Ebene stecken in `subFeatures` (#416: 3×) |
 | revolve | 20 | OK (volle Umdrehung) | Übersetzer seit #416; Teil-Umdrehungen kann der Kernel nicht |
-| mirror | 19 | FEHLT | Kernel HAT mirror — nur Wiring |
-| circularPattern | 16 | FEHLT | Kernel HAT circular_pattern — nur Wiring |
+| mirror | 19 | OK (PART) | Übersetzer seit P5; Kernel-`mirror` spiegelt seit P5 wirklich (vorher nur der Feature-Ursprung). Mate-Connector als Spiegelebene seit 2026-07-27 |
+| circularPattern | 16 | OK (PART) | Übersetzer seit P5; `equalSpace` über einen TEIL-Winkel wird verweigert statt geraten |
 | loft | 16 | OK (SOLID) | 6× SURFACE werden übersprungen |
 | transform | 11 | FEHLT | kein Body-Transform-Feature |
 | deleteBodies | 10 | FEHLT | kein Gegenstück (kann als No-op/Suppress laufen) |
 | hole | 9 | OK (simple/drilled) | Übersetzer da; cbore/csink/tip/up-to-* melden Warnung (hole P2+) |
 | shell | 6 | OK | vorhanden |
 | printedHole | 6 | FEHLT | auf hole abbildbar |
-| linearPattern | 4 | FEHLT | Kernel HAT linear_pattern — nur Wiring |
+| linearPattern | 4 | OK (PART, 1 Richtung) | Übersetzer seit P5; ein 2D-Raster (zweite Richtung) ist ein Muster eines Musters und wird benannt gemeldet |
 | cPlane | 4 | FEHLT | kein Datum-Plane-Feature (Sketches reiten auf Face-Queries) |
 | laserJoint | 3 | FEHLT | Custom-Feature (Fingerzinken) — kein Gegenstück |
 | sweep | 3 | FEHLT | Kernel HAT sweep — nur Wiring (Pfad-Query) |
@@ -108,8 +108,8 @@ Zeilen ohne datierten Kommentar stehen noch auf dem **Stand des Erst-Surveys**
 | ~~chamfer~~ ERLEDIGT (`chamfer_edge`, EQUAL_OFFSETS/45°) | — | ~~409,414,416,417,418,419~~ |
 | ~~revolve~~ ERLEDIGT (Profil + Sketch-Linien-Achse, volle Umdrehung) | — | ~~411,416,417,418,419~~ |
 | hole ERLEDIGT (P1-Umfang); **printedHole** noch offen | S | 417,419 (printedHole) |
-| mirror (Spiegelebenen-Query + entities) | M | 409,411,417,418,419 |
-| circularPattern (+ linearPattern) (Achse/Richtung + Anzahl + entities) | M | 409,411,417,418,419 |
+| ~~mirror~~ ERLEDIGT (Ebenen-Query + entities; **Kernel-Reflexion echt gemacht**) | — | ~~409,411,417,418,419~~ (Rest: Mate-Connector als Ebene) |
+| ~~circularPattern (+ linearPattern)~~ ERLEDIGT (Achse aus Sketch-Linie/Ursprungsachse, Anzahl, entities) | — | ~~409,411,417,418,419~~ |
 | ~~thicken~~ ERLEDIGT (Face-Query → `qFace`, Dicke 1/2, Richtung, Scope) | — | ~~415,417,418,419~~ |
 | ~~Sketch-Frame auf Face-Ebenen~~ ERLEDIGT (Frame an Onshapes 3D-Antwort gemessen, 2D-Koordinaten mit `B_fd⁻¹ ∘ B_os` umgerechnet) | — | ~~415~~, ~~414 (Teil)~~, jedes Dokument mit Sketch auf Wandfläche |
 | sweep (Profil + Pfad-Query) | M | 418,420 |
@@ -167,7 +167,10 @@ Perf-Nebenschauplatz erledigt: #410-Freeze gelöst (v0.29.1 per-Body-BRep-Cache 
 5. **P4 Thicken:** ERLEDIGT 2026-07-26 (s. u.). Schließt **#415 NICHT** — dort ist
    ein neuer, allgemeinerer Blocker aufgetaucht (Sketch-Frame auf Wandflächen).
    Entblockt 417/418/419.
-6. **P5 Patterns + Mirror** (circular/linear/mirror): schließt mit P1–P4 **#409** und **#419**.
+6. **P5 Patterns + Mirror:** ERLEDIGT 2026-07-27 (s. u.). Der Übersetzer war
+   nur die halbe Arbeit — `mirror` brauchte zuerst einen **echten** Kernel-Mirror
+   (die alte Implementierung spiegelte nur den Feature-Ursprung). Entblockt
+   409/411/417/418/419.
 7. **P6 Sweep + Helix + mateConnector + deleteBodies(No-op) + UP_TO_NEXT:** schließt **#420** und **#421**.
 8. **P7 Long-Tail 417/418/411:** transform, cPlane, projectCurves, laserJoint, importDerived, enclose, SURFACE-Loft, threadCreator. Die drei Mega-/Spezialdokumente; zuletzt, weil teuer und wenig Streuwirkung.
 
@@ -716,3 +719,138 @@ zu holen (im Korpus betrifft es genau einen Sketch, dessen Ellipsen der
 in die Kernel-Lücke von Update (3) und erreichen die Umrechnung gar nicht.
 (c) `sceneAabb` bleibt durch Ganz-Sketch-Profile aufgebläht — das ist die
 Regionen-Auflösung, s. #412.
+
+## Update 2026-07-27 — P5 Muster + Spiegelung, und warum `mirror` erst den Kernel brauchte
+
+Drei Onshape-Features (`linearPattern`, `circularPattern`, `mirror`) bilden
+zusammen dieselbe Form: eine Menge von KÖRPERN, eine Regel wohin die Kopien
+gehen, eine Anzahl. FieldDraft hat alle drei als Kernel-Features — die Arbeit
+war also Übersetzung, nicht Konstruktion. Bei zweien stimmte das auch.
+
+### `mirror` spiegelte nicht
+
+`MirrorFeature::execute` reflektierte den `translate` des Quell-Features und
+ließ dessen Rotation „verbatim" stehen — der Kommentar nannte das ausdrücklich
+eine bewusste Vereinfachung („chirality-aware mirroring comes later"). Das ist
+aber keine abgeschwächte Spiegelung, sondern **gar keine**: gespiegelt wird der
+URSPRUNG des Features, nicht der Körper. Für einen Sketch-basierten Körper —
+und das ist im Import der Normalfall — liegt dieser Ursprung im Weltnullpunkt,
+die Reflexion bildet ihn auf sich selbst ab, und die Kopie landet **exakt
+deckungsgleich auf dem Original**. Sichtbar wird das nie: zwei identische
+Körper am selben Ort sehen aus wie einer.
+
+Die drei bestehenden Kernel-Tests haben das nicht gefangen, weil alle drei nur
+`clone.transform.translate` prüften — genau die eine Komponente, die die
+Attrappe richtig hatte. Der neue Test misst deshalb das **SDF-Feld** des Klons
+(`features_tests.rs::mirror_moves_the_geometry_not_just_the_feature_origin`)
+und wurde gegengeprüft, indem die alte Implementierung kurz zurückgespielt
+wurde: sie fällt, die alten Tests bleiben grün.
+
+### Die Reflexion passt exakt in die TRS-Form
+
+Der Kernel speichert Platzierungen als Translate/Rotation/Scale. Eine
+Reflexion durch `(p₀, n)` ist `x ↦ A·x + 2(n·p₀)·n` mit `A = I − 2nnᵀ`, und
+`A` zerfällt exakt:
+
+    A = (−I) · R₁₈₀(n)          weil  R₁₈₀(n) = 2nnᵀ − I
+
+also **180°-Drehung um die Ebenennormale plus uniformer Scale −1**; das
+Quaternion ist schlicht `(nₓ, n_y, n_z, 0)`. Uniform ist dabei zweimal
+entscheidend: `compose_transforms` faltet Scale und Rotation getrennt, was nur
+für kommutierende (= uniforme) Scales exakt ist — so wird `reflection ∘ source`
+exakt statt genähert. Und |−1| = 1 macht die Abbildung zur **Isometrie**: das
+SDF des gespiegelten Körpers bleibt ein echtes Distanzfeld, ohne
+Lipschitz-Verlust und ohne March-Dämpfung.
+
+Ein negativer Scale läuft dadurch fast überall ohne Sonderfall durch: die
+AABB-Abbildung vereinigt ohnehin alle acht transformierten Ecken, und der
+Mesher leitet sein Winding aus dem Gradienten des Feldes ab statt es durch die
+Transformation zu schleppen. **Eine** Stelle brauchte einen Fix:
+`Transform::min_scale()` gab den vorzeichenbehafteten Minimalwert zurück, also
+−1 — und dieser Faktor multipliziert in Raymarcher, BVH und Opcode-Tape die
+Distanz. Ein negierter Abstand dreht Körper und Leere um. `min_scale()` nimmt
+jetzt die BETRÄGE (was `dc.rs::min_scale` immer schon tat).
+
+### Was die Übersetzer bewusst verweigern
+
+Geraten wird nichts; jede Lücke meldet sich benannt:
+
+- **`equalSpace` über einen Teil-Winkel** (circularPattern): ob Onshape den
+  Bogen durch `count` oder `count − 1` teilt, entscheidet über die Lage JEDER
+  Kopie außer der ersten, und der Korpus enthält keinen solchen Fall zum
+  Nachmessen. Die beiden exakt deckungsgleichen Fälle (`equalSpace` + 360°,
+  sowie kein `equalSpace`) werden übersetzt.
+- **Zweite Richtung** (linearPattern): ein 2D-Raster ist ein Muster eines
+  Musters — die erste Richtung wird importiert, die zweite gemeldet.
+- **Muster eines Musters**: die Kopien sind Kinder des Muster-Features, keine
+  eigenen Körper; als Quelle nicht adressierbar.
+- **FACE-/FEATURE-Muster**: FieldDraft vervielfältigt ganze Körper.
+- **Mate-Connector als Spiegelebene**: seit 2026-07-27 übersetzt (s. Update 2).
+
+## Update 2026-07-27 (2) — Mate-Connector-Ebenen, Ursprungs-Anker, Ausdruck-Offsets
+
+Die beiden Kernel-Lücken, die #416 blockierten, sind **zu**. Dazu kamen zwei
+Befunde, die erst sichtbar wurden, als der erste Sketch überhaupt landete.
+
+### Was jetzt geht
+
+1. **`resolve_plane_frame` kennt Mate-Connectors.** `qCreatedBy(<mc>)` liefert
+   den CSYS des Connectors als `SketchFrame`, über den neuen Konstruktor
+   `SketchFrame::from_csys(origin, normal, x_axis)` (orthonormalisiert `x`
+   gegen die Normale, schließt mit `y = n × x`). Die Reihenfolge der Leiter ist
+   **Datum → Mate-Connector → Fläche**, und das ist keine Kosmetik: ein
+   Connector sitzt meistens AUF einer Fläche, ein Durchfallen auf den
+   Flächen-Zweig lieferte also still deren Schwerpunkt und deren synthetische
+   Basis statt Ursprung und Drehung des Connectors — eine Ebene am richtigen
+   Ort mit dem falschen 2D-Koordinatensystem. Der TS-Spiegel
+   (`web/src/sketchPlaneFrame.ts`) zieht mit, inklusive `frameFromCsys`.
+2. **`resolve_mate_anchor` kennt `qSketchLine`.** `t` bedeutet dasselbe wie an
+   einer B-Rep-Kante, weil beide durch `polyline_point_tangent` gehen; die
+   Sketch-Ebenen-Normale wird zur Auto-Sekundärachse. Damit landet ein
+   Connector auf einer Konstruktionslinie — genau das, woran man ihn hängt,
+   solange es noch keinen Körper gibt.
+3. **Anker auf dem Part-Studio-URSPRUNG.** Onshapes Default-Connector hängt an
+   der Query `Origin`/`pointOp` — kein `sketchEntityId`, kein Feature, keine
+   Geometrie. Der Decoder erkennt sie als eigene Anker-Art (`originPoint`), der
+   Importer übersetzt sie in `qCreatedBy(origin_plane_xy)`, und
+   `resolve_mate_anchor` kommt über die Datum-Sprosse der Ebenen-Leiter daran.
+   Das ist der Anker des ERSTEN Sketches eines Dokuments; ohne ihn fiel bei
+   #409 die halbe Historie.
+4. **Realignment-Offsets werden AUSGEWERTET.** `readMateConnector` las
+   `translationX/Y/Z` und `rotation` aus Onshapes `value`-Feld — und das ist
+   für einen Ausdruck fast immer 0 (die Falle aus #415, dort für 153 Ausdrücke
+   behoben, hier übersehen). `translationZ = #Hoehe-3cm` kam als 0 mm an. Der
+   Leser nimmt jetzt einen `QuantityReader` entgegen, den der Importer an
+   seinen Ausdrucks-Evaluator bindet. Messbar: die Szene von #409 lag vorher
+   bei z ∈ [−1617; +15] mm, jetzt bei z ∈ [+192; +1825] gegen Onshapes
+   [0; 1840].
+
+### Was #409 noch offen hat — gemessen, nicht geschätzt
+
+`onshapeImport409E2E.slow.test.ts` fixiert die Liste namentlich. 13 von 33
+Körpern stehen; die restlichen Lücken sind **sieben** Klassen, keine davon P5:
+
+| Klasse | Betroffen | Kern |
+|---|---|---|
+| A `qWall(op, ord)` bindet KEINE Fläche | Sketch 4, 5, 13; #416 Sketch 6, Fasen, Fillets | FieldDraft trennt Flächen nur an Knicken — ein abgerundetes Rechteck hat EINE Mantelfläche, Onshape acht |
+| B falsche Ebene aufgelöst (Normale stimmt, Versatz nicht) | Sketch 6, 7, 11, 12 | Der Importer rechnet Koordinaten NICHT um, wenn er die Ebene nicht wirklich getroffen hat |
+| C End-Condition UP_TO_NEXT / UP_TO_SURFACE | Extrude 8, 12 | Zielfläche nicht auflösbar bzw. liegt in der Sketch-Ebene |
+| D Loch-Position ist kein Sketch-Punkt | beide `Bohrung`-Features | |
+| E Mate-Connector-Inferenz `CENTROID` | Sketch 8 | `anchorT` kennt nur MID_POINT/POINT |
+| F Fasen-Kante als EDGE/SWEPT_EDGE | Chamfer 1 | |
+| G unbekannte Ebenen-Query-Form | Sketch 14 | |
+
+Alles andere sind Folgefehler: ein Extrude ohne Profil-Sketch, ein Spiegel
+ohne Quellkörper. **Klasse A ist der größte Hebel** — sie blockiert in #409
+und #416 zusammen die meisten Features und ist eine Kernel-Frage
+(Flächen-Segmentierung), keine Übersetzer-Frage.
+
+### Testabdeckung, die dabei fehlte
+
+Die P5-Übersetzer (`linearPattern`, `circularPattern`, `mirror`) hatten
+**keinen einzigen Unit-Test** — nur den E2E-Lauf, der aus anderen Gründen rot
+war. Nachgeholt in `onshapeImport.test.ts` („P5 — linearPattern /
+circularPattern / mirror"): Abstand und Anzahl aus dem AUSDRUCK, Spiegel auf
+einer Mate-Connector-Ebene, Verweigerung eines FLÄCHEN-Musters. Die
+Umpflanz-Technik der #416-Tests (`standIn`) isoliert dabei den Übersetzer von
+Lücken, die mit ihm nichts zu tun haben.

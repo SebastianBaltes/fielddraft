@@ -57,6 +57,50 @@ impl SketchFrame {
             scale: [1.0, 1.0, 1.0],
         }
     }
+
+    /// Build a frame from a coordinate system given as origin + Z + X —
+    /// the shape a `mate_connector` resolves to, and the shape most CAD
+    /// interchange formats use (STEP's `AXIS2_PLACEMENT_3D` is exactly
+    /// this triple).
+    ///
+    /// `x_axis` is RE-ORTHOGONALISED against `normal` (Gram-Schmidt)
+    /// rather than trusted: a connector's X comes from an anchor's
+    /// in-plane basis or from a user rotation, and a degree of drift there
+    /// would leave `to_transform` building a quaternion from a
+    /// non-orthonormal basis — which does not fail loudly, it shears the
+    /// sketch. `y = normal × x` closes the right-handed triple, matching
+    /// the convention `mate_connector`'s own realignment offset uses.
+    ///
+    /// Falls back to an arbitrary well-conditioned in-plane basis when
+    /// `x_axis` is degenerate or parallel to the normal.
+    pub fn from_csys(origin: [f32; 3], normal: [f32; 3], x_axis: [f32; 3]) -> Self {
+        let normal = normalize3(normal);
+        let dot = x_axis[0] * normal[0] + x_axis[1] * normal[1] + x_axis[2] * normal[2];
+        let rejected = [
+            x_axis[0] - dot * normal[0],
+            x_axis[1] - dot * normal[1],
+            x_axis[2] - dot * normal[2],
+        ];
+        let len2 = rejected[0] * rejected[0] + rejected[1] * rejected[1] + rejected[2] * rejected[2];
+        // Parallel to the normal (or zero) → no in-plane direction survives
+        // the rejection; synthesise one the same way `face_plane_frame` does.
+        let x_axis = if len2 > 1e-12 {
+            normalize3(rejected)
+        } else {
+            let alt = if normal[0].abs() < 0.9 {
+                [1.0, 0.0, 0.0]
+            } else {
+                [0.0, 1.0, 0.0]
+            };
+            normalize3(cross(alt, normal))
+        };
+        Self {
+            origin,
+            x_axis,
+            y_axis: cross(normal, x_axis),
+            normal,
+        }
+    }
 }
 
 /// Build a unit quaternion `(x, y, z, w)` from an orthonormal
