@@ -1452,12 +1452,6 @@ function ticket409(): { features: any[] } {
   );
 }
 
-function ticket419(): { features: any[] } {
-  return JSON.parse(
-    readFileSync(join(__dirname, "fixtures", "onshape-419-features.json"), "utf8"),
-  );
-}
-
 const callsOfType = (
   kernel: { calls: { type: string; params: any }[] },
   type: string,
