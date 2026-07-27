@@ -412,6 +412,11 @@ struct RawFace {
     verts: Vec<usize>,
     /// Per boundary step, the source-segment id of the edge traversed.
     edge_srcs: Vec<usize>,
+    /// Per boundary step, the HALF-EDGE traversed (`edge = h >> 1`,
+    /// direction `h & 1`). Cancelling a half-edge against its twin is what
+    /// turns a set of atomic faces into the boundary of their union
+    /// ([`union_loops`]).
+    half_edges: Vec<usize>,
     area: f64,
 }
 
@@ -425,7 +430,9 @@ struct SourceUse {
     edges: usize,
 }
 
-fn build_faces(sources: &[SketchSegment]) -> (Vec<RawFace>, Vec<[f64; 2]>, Vec<SourceUse>) {
+fn build_faces(
+    sources: &[SketchSegment],
+) -> (Vec<RawFace>, Vec<[f64; 2]>, Vec<SourceUse>, Vec<Edge>) {
     // 1. Flatten every source into straight pieces tagged with the source id.
     let mut pieces: Vec<Piece> = Vec::new();
     let mut src_micro_count = vec![0usize; sources.len()];
@@ -556,12 +563,14 @@ fn build_faces(sources: &[SketchSegment]) -> (Vec<RawFace>, Vec<[f64; 2]>, Vec<S
         }
         let mut face_verts: Vec<usize> = Vec::new();
         let mut face_srcs: Vec<usize> = Vec::new();
+        let mut face_halfs: Vec<usize> = Vec::new();
         let mut h = start;
         let mut ok = false;
         for _ in 0..=edges.len() * 2 {
             visited[h] = true;
             face_verts.push(tail(h));
             face_srcs.push(edges[h >> 1].src);
+            face_halfs.push(h);
             // next(h): clockwise-most turn after twin(h) at head(h).
             let twin = h ^ 1;
             let list = match outgoing.get(&head(h)) {
@@ -589,6 +598,7 @@ fn build_faces(sources: &[SketchSegment]) -> (Vec<RawFace>, Vec<[f64; 2]>, Vec<S
             faces.push(RawFace {
                 verts: face_verts,
                 edge_srcs: face_srcs,
+                half_edges: face_halfs,
                 area,
             });
         }
@@ -599,110 +609,342 @@ fn build_faces(sources: &[SketchSegment]) -> (Vec<RawFace>, Vec<[f64; 2]>, Vec<S
             edges: src_edge_count[i],
         })
         .collect();
-    (faces, verts, uses)
+    (faces, verts, uses, edges)
+}
+
+/// Boundary loops of the UNION of several atomic faces (#424).
+///
+/// Every bounded face is traversed counter-clockwise, so an arrangement edge
+/// shared by two of them is walked ONCE IN EACH DIRECTION. Dropping those
+/// mutually-cancelling half-edge pairs leaves exactly the half-edges that
+/// border the union from outside — the classic half-edge cancellation, and an
+/// EXACT construction, not an approximation: no geometry is recomputed, only
+/// selected.
+///
+/// Why the union needs its own boundary at all: the shared edge is INTERIOR to
+/// the union and therefore produces no wall face. Unioning the two closed
+/// contours instead (the previous behaviour) put the shared sketch curve into
+/// the profile TWICE, which made [`crate::sketch::wall_sub_table`] see a
+/// duplicate sub-id and drop the whole table — the entity-named walls of both
+/// regions degraded to positional subs, and `qWall(op, entity)` could never
+/// bind again (measured on #419: features 24 and 25).
+///
+/// The surviving half-edges form closed loops by construction (every vertex
+/// keeps equal in- and out-degree), so they are re-threaded with the SAME
+/// clockwise-most-turn rule [`build_faces`] uses.
+fn union_loops(
+    selected: &[usize],
+    faces: &[RawFace],
+    edges: &[Edge],
+    verts: &[[f64; 2]],
+) -> Vec<RawFace> {
+    let mut keep: std::collections::HashSet<usize> = std::collections::HashSet::new();
+    for &i in selected {
+        for &h in &faces[i].half_edges {
+            keep.insert(h);
+        }
+    }
+    // Drop every half-edge whose twin also borders the selection: that edge
+    // has selected faces on BOTH sides, so it lies inside the union.
+    let interior: Vec<usize> = keep.iter().copied().filter(|h| keep.contains(&(h ^ 1))).collect();
+    for h in interior {
+        keep.remove(&h);
+    }
+    if keep.is_empty() {
+        return Vec::new();
+    }
+
+    let tail = |h: usize| if h & 1 == 1 { edges[h >> 1].v } else { edges[h >> 1].u };
+    let head = |h: usize| if h & 1 == 1 { edges[h >> 1].u } else { edges[h >> 1].v };
+    let angle = |h: usize| {
+        let t = verts[tail(h)];
+        let hd = verts[head(h)];
+        (hd[1] - t[1]).atan2(hd[0] - t[0])
+    };
+    // The turn rule needs EVERY half-edge at a vertex, not just the kept ones:
+    // "clockwise-most after the twin" is defined against the full local star,
+    // and skipping the interior spokes would turn the wrong corner where three
+    // regions meet. Candidates are filtered to `keep` while stepping instead.
+    let mut outgoing: std::collections::HashMap<usize, Vec<usize>> = std::collections::HashMap::new();
+    for h in 0..edges.len() * 2 {
+        outgoing.entry(tail(h)).or_default().push(h);
+    }
+    for list in outgoing.values_mut() {
+        list.sort_by(|&a, &b| angle(a).partial_cmp(&angle(b)).unwrap());
+    }
+
+    let mut visited: std::collections::HashSet<usize> = std::collections::HashSet::new();
+    let mut out: Vec<RawFace> = Vec::new();
+    let mut starts: Vec<usize> = keep.iter().copied().collect();
+    starts.sort_unstable();
+    for start in starts {
+        if visited.contains(&start) {
+            continue;
+        }
+        let mut loop_verts: Vec<usize> = Vec::new();
+        let mut loop_srcs: Vec<usize> = Vec::new();
+        let mut loop_halfs: Vec<usize> = Vec::new();
+        let mut h = start;
+        let mut closed = false;
+        for _ in 0..=keep.len() {
+            visited.insert(h);
+            loop_verts.push(tail(h));
+            loop_srcs.push(edges[h >> 1].src);
+            loop_halfs.push(h);
+            let Some(list) = outgoing.get(&head(h)) else { break };
+            let Some(idx) = list.iter().position(|&x| x == (h ^ 1)) else { break };
+            // Walk the star clockwise from the twin until a KEPT half-edge
+            // turns up — interior spokes are passed over, not turned into.
+            let mut next = None;
+            for k in 1..=list.len() {
+                let cand = list[(idx + list.len() - k) % list.len()];
+                if keep.contains(&cand) {
+                    next = Some(cand);
+                    break;
+                }
+            }
+            let Some(n) = next else { break };
+            h = n;
+            if h == start {
+                closed = true;
+                break;
+            }
+            if visited.contains(&h) {
+                break;
+            }
+        }
+        if !closed || loop_verts.len() < 3 {
+            continue;
+        }
+        let area = signed_area(&loop_verts, verts);
+        if area > MIN_AREA {
+            out.push(RawFace {
+                verts: loop_verts,
+                edge_srcs: loop_srcs,
+                half_edges: loop_halfs,
+                area,
+            });
+        }
+    }
+    out
 }
 
 // ── public entry ─────────────────────────────────────────────────────
+
+/// Everything the arrangement of one sketch yields, kept together so both
+/// public entries ([`arrange`] and [`arrange_union`]) run the SAME pipeline —
+/// a region index therefore means the same face to both.
+struct Arrangement {
+    sources: Vec<SketchSegment>,
+    src_ids: Vec<Option<u32>>,
+    src_use: Vec<SourceUse>,
+    faces: Vec<RawFace>,
+    edges: Vec<Edge>,
+    verts: Vec<[f64; 2]>,
+    polys: Vec<Vec<[f64; 2]>>,
+    /// Immediate children (holes) per raw face.
+    children: Vec<Vec<usize>>,
+}
+
+impl Arrangement {
+    fn build(sub_calls: &[FeatureCall]) -> Option<Self> {
+        if has_unarrangeable(sub_calls) {
+            return None;
+        }
+        let (sources, src_ids) = collect_sources(sub_calls);
+        if sources.is_empty() {
+            return None;
+        }
+        let (faces, verts, src_use, edges) = build_faces(&sources);
+        if faces.is_empty() {
+            return None;
+        }
+        // Face polygons (coords) for containment tests.
+        let polys: Vec<Vec<[f64; 2]>> = faces
+            .iter()
+            .map(|f| f.verts.iter().map(|&i| verts[i]).collect())
+            .collect();
+        // Immediate-parent per face: smallest-area face strictly containing it.
+        let n = faces.len();
+        let mut parent: Vec<Option<usize>> = vec![None; n];
+        for i in 0..n {
+            let pt = interior_of_poly(&polys[i]);
+            let mut best: Option<usize> = None;
+            for j in 0..n {
+                if i == j || faces[j].area <= faces[i].area {
+                    continue;
+                }
+                if point_in_poly(pt, &polys[j]) {
+                    match best {
+                        Some(b) if faces[b].area <= faces[j].area => {}
+                        _ => best = Some(j),
+                    }
+                }
+            }
+            parent[i] = best;
+        }
+        let children: Vec<Vec<usize>> = (0..n)
+            .map(|j| (0..n).filter(|&i| parent[i] == Some(j)).collect())
+            .collect();
+        Some(Self { sources, src_ids, src_use, faces, edges, verts, polys, children })
+    }
+
+    fn profile_of(&self, face: &RawFace) -> (Sketch2d, crate::sketch::TracedPrim) {
+        face_profile(face, &self.sources, &self.src_ids, &self.verts, &self.src_use)
+    }
+
+    /// Assemble one [`AtomicFace`] from a set of outer loops plus the holes
+    /// they enclose. `outer_area` is the loops' gross area.
+    ///
+    /// Tree shape is `Difference(Difference(Union(o1, o2, …), h1), h2)`, whose
+    /// DFS order is o1, o2, …, h1, h2 — the order
+    /// [`crate::sketch::wall_sub_table`] walks in, so the trace list is pushed
+    /// in exactly that order and the two sequences stay aligned by
+    /// construction.
+    fn assemble(&self, outer: &[RawFace], holes: &[usize]) -> Option<AtomicFace> {
+        let mut profile = Sketch2d::Empty;
+        let mut traces = Vec::new();
+        let mut outer_polys: Vec<Vec<[f64; 2]>> = Vec::new();
+        let mut outer_area = 0.0;
+        for lo in outer {
+            let (p, t) = self.profile_of(lo);
+            if matches!(p, Sketch2d::Empty) {
+                continue;
+            }
+            profile = match profile {
+                Sketch2d::Empty => p,
+                prev => Sketch2d::Union(Box::new(prev), Box::new(p)),
+            };
+            traces.push(t);
+            outer_polys.push(lo.verts.iter().map(|&i| self.verts[i]).collect());
+            outer_area += lo.area;
+        }
+        if matches!(profile, Sketch2d::Empty) {
+            return None;
+        }
+        let mut hole_polys: Vec<&Vec<[f64; 2]>> = Vec::new();
+        let mut hole_area = 0.0;
+        for &c in holes {
+            let (hole, hole_trace) = self.profile_of(&self.faces[c]);
+            if !matches!(hole, Sketch2d::Empty) {
+                profile = Sketch2d::Difference(Box::new(profile), Box::new(hole));
+                traces.push(hole_trace);
+                hole_polys.push(&self.polys[c]);
+                hole_area += self.faces[c].area;
+            }
+        }
+        let area = (outer_area - hole_area).max(0.0);
+        if area < MIN_AREA {
+            return None;
+        }
+        let perimeter: f64 = outer_polys
+            .iter()
+            .chain(hole_polys.iter().copied())
+            .map(|p| closed_poly_len(p))
+            .sum();
+        // The interior point must lie in the LARGEST outer loop: a disjoint
+        // selection has several, and a point from the small one would mislead
+        // every containment test built on it.
+        let biggest = outer_polys
+            .iter()
+            .max_by(|a, b| {
+                signed_area_poly(a).partial_cmp(&signed_area_poly(b)).unwrap()
+            })
+            .expect("non-empty profile has an outer loop");
+        let interior = interior_excluding(biggest, &hole_polys, &profile);
+        let mut aabb = poly_aabb(&outer_polys[0]);
+        for p in &outer_polys[1..] {
+            let a = poly_aabb(p);
+            for c in 0..2 {
+                aabb.min[c] = aabb.min[c].min(a.min[c]);
+                aabb.max[c] = aabb.max[c].max(a.max[c]);
+            }
+        }
+        Some(AtomicFace {
+            profile,
+            interior,
+            centroid: poly_centroid(biggest),
+            aabb,
+            area: area as f32,
+            perimeter: perimeter as f32,
+            traces,
+        })
+    }
+
+    /// The atomic faces in the deterministic public order, each paired with
+    /// its RAW face index (what [`union_loops`] needs).
+    fn atomic_faces(&self) -> Vec<(usize, AtomicFace)> {
+        let mut out: Vec<(usize, AtomicFace)> = (0..self.faces.len())
+            .filter_map(|i| {
+                let f = std::slice::from_ref(&self.faces[i]);
+                self.assemble(f, &self.children[i]).map(|a| (i, a))
+            })
+            .collect();
+        // Deterministic order — geometry-derived, independent of scan order.
+        out.sort_by(|a, b| {
+            (a.1.aabb.min[1], a.1.aabb.min[0], a.1.area)
+                .partial_cmp(&(b.1.aabb.min[1], b.1.aabb.min[0], b.1.area))
+                .unwrap()
+        });
+        out
+    }
+}
 
 /// Compute the bounded atomic imprint faces of a sketch from its raw
 /// sub-calls, in a deterministic order (ascending `aabb.min.y`, then
 /// `aabb.min.x`, then `area`).
 pub fn arrange(sub_calls: &[FeatureCall]) -> Vec<AtomicFace> {
-    if has_unarrangeable(sub_calls) {
+    let Some(arr) = Arrangement::build(sub_calls) else {
         return Vec::new();
-    }
-    let (sources, src_ids) = collect_sources(sub_calls);
-    if sources.is_empty() {
-        return Vec::new();
-    }
-    let (faces, verts, src_use) = build_faces(&sources);
-    if faces.is_empty() {
-        return Vec::new();
-    }
+    };
+    arr.atomic_faces().into_iter().map(|(_, f)| f).collect()
+}
 
-    // Face polygons (coords) for containment tests.
-    let polys: Vec<Vec<[f64; 2]>> = faces
+/// The profile of the UNION of the atomic faces at the given [`arrange`]
+/// indices — ONE region with ONE boundary, not a union of closed contours
+/// (#424).
+///
+/// This is what a multi-region selection (`qRegions(sketch, [i, j])`) must
+/// extrude. The shared boundary between two selected regions lies INSIDE the
+/// result and is dropped by [`union_loops`], so it never enters the profile,
+/// never mints a wall branch nobody can see, and — the reason this exists —
+/// never makes the same sketch curve appear twice in the wall-sub table.
+///
+/// `None` when the sketch has no arrangement or the indices select nothing.
+pub fn arrange_union(sub_calls: &[FeatureCall], indices: &[u32]) -> Option<AtomicFace> {
+    let arr = Arrangement::build(sub_calls)?;
+    let public = arr.atomic_faces();
+    let selected: Vec<usize> = indices
         .iter()
-        .map(|f| f.verts.iter().map(|&i| verts[i]).collect())
+        .filter_map(|&i| public.get(i as usize).map(|(raw, _)| *raw))
         .collect();
-
-    // Immediate-parent per face: smallest-area face strictly containing it.
-    let n = faces.len();
-    let mut parent: Vec<Option<usize>> = vec![None; n];
-    for i in 0..n {
-        let pt = interior_of_poly(&polys[i]);
-        let mut best: Option<usize> = None;
-        for j in 0..n {
-            if i == j || faces[j].area <= faces[i].area {
-                continue;
-            }
-            if point_in_poly(pt, &polys[j]) {
-                match best {
-                    Some(b) if faces[b].area <= faces[j].area => {}
-                    _ => best = Some(j),
-                }
-            }
-        }
-        parent[i] = best;
+    if selected.is_empty() {
+        return None;
     }
-    let children: Vec<Vec<usize>> = (0..n)
-        .map(|j| (0..n).filter(|&i| parent[i] == Some(j)).collect())
-        .collect();
-
-    // Build each atomic face: outer profile minus immediate child profiles.
-    let mut out: Vec<AtomicFace> = Vec::new();
-    for i in 0..n {
-        let (outer, outer_trace) =
-            face_profile(&faces[i], &sources, &src_ids, &verts, &src_use);
-        if matches!(outer, Sketch2d::Empty) {
-            continue;
-        }
-        let mut profile = outer;
-        // DFS order of `Difference(Difference(outer, h1), h2)` is outer, h1,
-        // h2 — the same order [`crate::sketch::wall_sub_table`] walks the tree
-        // in, so pushing each hole's trace as it is folded in keeps the two
-        // sequences aligned by construction.
-        let mut traces = vec![outer_trace];
-        let mut hole_polys: Vec<&Vec<[f64; 2]>> = Vec::new();
-        for &c in &children[i] {
-            let (hole, hole_trace) =
-                face_profile(&faces[c], &sources, &src_ids, &verts, &src_use);
-            if !matches!(hole, Sketch2d::Empty) {
-                profile = Sketch2d::Difference(Box::new(profile), Box::new(hole));
-                traces.push(hole_trace);
-                hole_polys.push(&polys[c]);
+    if selected.len() == 1 {
+        // Nothing to cancel — reuse the atomic face verbatim so a single-region
+        // pick cannot drift from `arrange`.
+        return public
+            .into_iter()
+            .find(|(raw, _)| *raw == selected[0])
+            .map(|(_, f)| f);
+    }
+    let outer = union_loops(&selected, &arr.faces, &arr.edges, &arr.verts);
+    if outer.is_empty() {
+        return None;
+    }
+    // Holes of the union: every hole of a selected face that was not itself
+    // selected. A selected hole is filled by its own selection, so it stops
+    // being a hole — and its boundary already cancelled in `union_loops`.
+    let mut holes: Vec<usize> = Vec::new();
+    for &i in &selected {
+        for &c in &arr.children[i] {
+            if !selected.contains(&c) && !holes.contains(&c) {
+                holes.push(c);
             }
         }
-        let child_area: f64 = children[i].iter().map(|&c| faces[c].area).sum();
-        let area = (faces[i].area - child_area).max(0.0);
-        if area < MIN_AREA {
-            continue;
-        }
-        let perimeter: f64 = std::iter::once(&polys[i])
-            .chain(hole_polys.iter().copied())
-            .map(|p| closed_poly_len(p))
-            .sum();
-        let interior = interior_excluding(&polys[i], &hole_polys, &profile);
-        let aabb = poly_aabb(&polys[i]);
-        let centroid = poly_centroid(&polys[i]);
-        out.push(AtomicFace {
-            profile,
-            interior,
-            centroid,
-            aabb,
-            area: area as f32,
-            perimeter: perimeter as f32,
-            traces,
-        });
     }
-
-    // Deterministic order — geometry-derived, independent of scan order.
-    out.sort_by(|a, b| {
-        (a.aabb.min[1], a.aabb.min[0], a.area)
-            .partial_cmp(&(b.aabb.min[1], b.aabb.min[0], b.area))
-            .unwrap()
-    });
-    out
+    arr.assemble(&outer, &holes)
 }
 
 /// Does the sub-spine contain a tool the arrangement cannot represent? `mirror`
@@ -776,6 +1018,7 @@ fn face_profile(
             },
         );
     }
+    rotate_to_g1_break(&mut segments, &mut seg_src);
     let prim = Sketch2dPrimitive::Path {
         segments,
         closed: true,
@@ -785,6 +1028,38 @@ fn face_profile(
         sources: Some(crate::sketch::TraceSources::PerSegment(seg_src)),
     };
     (Sketch2d::Prim(prim), trace)
+}
+
+/// Rotate a CLOSED boundary loop so it starts at a G1 BREAK (#424).
+///
+/// [`fielddraft_protocol::sketch2d::g1_group_segments`] walks a path linearly
+/// and never joins the last segment back to the first, so a wall that happens
+/// to straddle the loop's seam is cut into TWO boundary groups — two branches,
+/// two coplanar faces, and (when both pieces come from the same sketch curve)
+/// two groups wanting the same sub-id, which makes
+/// [`crate::sketch::wall_sub_table`] refuse the whole table.
+///
+/// Where the seam falls is an artefact of where the DCEL traversal started, so
+/// this is not a cosmetic ordering question: it decides how many walls the
+/// solid has. Starting the loop at a real crease makes the decomposition a
+/// property of the GEOMETRY alone. A loop that is smooth all the way round (a
+/// circle) has no break and stays as it is — one group either way.
+fn rotate_to_g1_break(segments: &mut Vec<SketchSegment>, srcs: &mut Vec<Option<u32>>) {
+    use fielddraft_protocol::sketch2d::{g1_continuous, PATH_G1_COS_THRESHOLD};
+    let n = segments.len();
+    if n < 2 {
+        return;
+    }
+    let Some(start) = (0..n).find(|&i| {
+        !g1_continuous(&segments[(i + n - 1) % n], &segments[i], PATH_G1_COS_THRESHOLD)
+    }) else {
+        return;
+    };
+    if start == 0 {
+        return;
+    }
+    segments.rotate_left(start);
+    srcs.rotate_left(start);
 }
 
 // ── geometry helpers ─────────────────────────────────────────────────
@@ -806,6 +1081,16 @@ fn sort2(a: f32, b: f32) -> (f32, f32) {
     } else {
         (b, a)
     }
+}
+
+fn signed_area_poly(poly: &[[f64; 2]]) -> f64 {
+    let mut acc = 0.0;
+    for i in 0..poly.len() {
+        let p = poly[i];
+        let q = poly[(i + 1) % poly.len()];
+        acc += p[0] * q[1] - q[0] * p[1];
+    }
+    acc / 2.0
 }
 
 fn signed_area(loop_ids: &[usize], verts: &[[f64; 2]]) -> f64 {

@@ -319,29 +319,19 @@ pub fn resolve_profile_query(
             Some((full, sketch_data.frame, traced))
         }
         Some(indices) => {
-            // Imprint atomic faces (#412): select the requested faces from the
-            // arrangement and union their EXACT profiles. Each atomic face
-            // brings its own per-segment provenance (#424), so a picked region
-            // names its walls by SKETCH ENTITY exactly as the whole sketch
-            // does — `qWall(op, entity)` binds on regions too. Concatenating
-            // the traces in selection order matches the DFS order of the
-            // left-leaning `Union` chain built here.
-            let faces = crate::sketch_arrangement::arrange(&sketch_data.sub_calls);
-            let mut acc = Sketch2d::Empty;
-            let mut traced: Vec<TracedPrim> = Vec::new();
-            for &i in &indices {
-                if let Some(f) = faces.get(i as usize) {
-                    acc = match acc {
-                        Sketch2d::Empty => f.profile.clone(),
-                        prev => Sketch2d::Union(Box::new(prev), Box::new(f.profile.clone())),
-                    };
-                    traced.extend(f.traces.iter().cloned());
-                }
-            }
-            if matches!(acc, Sketch2d::Empty) {
+            // Imprint atomic faces (#412): the selection's EXACT profile, as
+            // ONE region with ONE boundary
+            // ([`crate::sketch_arrangement::arrange_union`]). Its per-segment
+            // provenance (#424) names every wall by SKETCH ENTITY exactly as
+            // the whole sketch does, so `qWall(op, entity)` binds on regions
+            // too — including a selection of SEVERAL ADJACENT regions, whose
+            // shared boundary is interior to the union and therefore carries
+            // no wall at all.
+            let face = crate::sketch_arrangement::arrange_union(&sketch_data.sub_calls, &indices)?;
+            if matches!(face.profile, Sketch2d::Empty) {
                 return None;
             }
-            Some((acc, sketch_data.frame, traced))
+            Some((face.profile, sketch_data.frame, face.traces))
         }
     }
 }

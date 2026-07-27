@@ -57,23 +57,27 @@ const GROUND_TRUTH = {
  * deleted — which is the point: the file has to be edited when the import gets
  * better, so the record cannot quietly go stale.
  *
- * 216 messages fall on these 118 features, and MOST of them are cascade — a
- * feature failing only because something it refers to never got built:
+ * 192 messages fall on these 107 features, and MOST of them are cascade — a
+ * feature failing only because something it refers to never got built. Measured
+ * after #424 (was 216 on 118 features):
  *
- *    40  cascade: profile sketch missing
- *    32  cascade: wall plane names a feature that was not imported
- *    29  cascade: EDGE query names a sweep that was not imported     (see #425)
- *    61  chamfer/fillet edge shape with no FieldDraft counterpart    → #425 rest
- *    10  cascade: cap plane names a feature that was not imported
- *     8  no resolvable face / target or tool body for a boolean
- *     7  `qWall(…)` binds 0 or several faces                         → #424
- *     7  hole position is not a plain sketch point
- *     6  unknown plane-query form
- *     3  `startOffset` (refused, not misplaced)
+ *    44  chamfer/fillet edge shape with no FieldDraft counterpart    → #429
+ *    31  cascade: profile sketch missing
+ *    27  cascade: wall plane names a feature that was not imported
+ *    25  cascade: EDGE query names a sweep that was not imported     (see #425)
+ *     5  `qWall(…)` binds 0 faces                                    → #424 rest
+ *     5  Onshape's sketch plane stands SKEW to the resolved wall
+ *     4  `startOffset` (refused, not misplaced)
  *     3  end condition UP_TO_NEXT / UP_TO_SURFACE
+ *     3  no resolvable face / target or tool body for a boolean
  *     2  pattern axis not resolvable in world coordinates
+ *     2  hole position is not a plain sketch point
  *     2  feature type `printedHole` has no translator
- *     6  singletons (mate-connector plane, skew sketch plane, …)
+ *     2  unknown plane-query form
+ *    37  the rest: cap planes naming unimported features, undecodable
+ *        edge/face query types, `qCreatedBy(op, CAP_TOP)` binding SEVERAL
+ *        faces (Sketch 11 — a new shape, exposed only once the extrudes
+ *        around it started importing)
  *
  * The edge count moved 42+23 → 29+61 in #425 without a single message
  * disappearing, and that IS the finding: the 65 edge queries that used to fail
@@ -86,12 +90,9 @@ const GROUND_TRUTH = {
 const KNOWN_GAPS = [
   "3D Printed Hole 2",
   "3D Printed Hole 3",
-  "Bohrung Ø1.8 mm",
   "Bohrung Ø5.6 mm",
-  "Boolean 1",
   "Boolean 3",
   "Boolean 5",
-  "Boolean 6",
   "Boolean 7",
   "Boolean 8",
   "Chamfer 1",
@@ -108,16 +109,12 @@ const KNOWN_GAPS = [
   "Extrude 12",
   "Extrude 14",
   "Extrude 15",
-  "Extrude 16",
   "Extrude 17",
   "Extrude 18",
   "Extrude 19",
-  "Extrude 20",
   "Extrude 21",
   "Extrude 22",
-  "Extrude 23",
   "Extrude 24",
-  "Extrude 25",
   "Extrude 26",
   "Extrude 27",
   "Extrude 28",
@@ -131,17 +128,13 @@ const KNOWN_GAPS = [
   "Extrude 36",
   "Extrude 37",
   "Extrude 38",
-  "Extrude 39",
   "Extrude 40",
   "Extrude 41",
   "Extrude 42",
-  "Extrude 43",
   "Extrude 44",
   "Extrude 45",
   "Extrude 46",
   "Extrude 47",
-  "Extrude 48",
-  "Extrude 49",
   "Extrude 5",
   "Extrude 50",
   "Extrude 51",
@@ -268,28 +261,52 @@ describe("#419 multi-part assembly", () => {
     // own bodies now. The error list did NOT move (212 messages, same names),
     // so these three are bodies that were being swallowed, not features that
     // newly import.
-    expect(kernel.raw.bodyCount()).toBe(10);
+    //
+    // 10 → 12 in #424, and this time it IS new features: `qRegions(...)` over
+    // several regions used to union the regions' closed CONTOURS, which put a
+    // shared boundary line into the profile twice and made the wall-sub table
+    // collapse to positional subs. With the union's own boundary the walls
+    // carry their sketch entity again, `qWall(24, 121/133/136)` binds, and
+    // eleven features (Boolean 1, Boolean 6, eight extrudes, one hole) left
+    // KNOWN_GAPS above. 216 → 192 messages.
+    expect(kernel.raw.bodyCount()).toBe(12);
 
     // Without these the geometry would be a fraction of the assembly and still
     // look plausible — which is exactly how a broken import hides.
     //
-    // `fillet_edge` was on this list until #425 and is deliberately NOT any
-    // more. It was represented by exactly ONE feature, and that one was
-    // fabricated: the edge query named a face of a PATTERN COPY, the
-    // marker-based decoder ignored the copy and filleted the corresponding edge
-    // of the pattern's original instead. Measured after #425, every one of this
-    // document's 102 blend edges either names a sweep that never imports (29)
-    // or a shape with no FieldDraft counterpart (61) — so a fillet appearing
-    // here again means an EXTRUDE started importing, and this line should come
-    // back with it.
+    // `fillet_edge` left this list in #425 and came BACK in #424 — which is
+    // exactly what #425 predicted would happen and why it was written down.
+    //
+    // In #425 the one fillet on the list was fabricated: the edge query named a
+    // face of a PATTERN COPY, and the marker-based decoder silently filleted
+    // the corresponding edge of the pattern's ORIGINAL. The line was then
+    // pinned as `not.toContain` with the note that a fillet reappearing means
+    // an EXTRUDE started importing. It did: `Extrude 24` now builds, and with
+    // it `Fillet 16` resolves — as FOUR distinct calls, one per corner of that
+    // extrude, `qCommonEdge(qWall(27, a), qWall(27, b))` over the wall pairs
+    // 7/10, 4/10, 4/13, 7/13. Four different edges of one rectangular boss, no
+    // two queries alike: the failure mode #425 guarded against was one query
+    // appearing twice.
     const kinds = new Set(
       (JSON.parse(kernel.raw.toJson()).feature_calls as { type: string }[]).map((c) => c.type),
     );
-    for (const k of ["extrude", "revolve", "thicken", "boolean", "mate_connector"]) {
+    for (const k of [
+      "extrude",
+      "revolve",
+      "thicken",
+      "boolean",
+      "mate_connector",
+      "fillet_edge",
+    ]) {
       expect([...kinds], `feature kinds: ${[...kinds].join(", ")}`).toContain(k);
     }
-    expect([...kinds], "a blend on #419 means an extrude started importing").not.toContain(
-      "fillet_edge",
+    // No two blends may carry the SAME resolved edge — that is what a
+    // fabricated one looks like (#414: `Fillet 1` and `Fillet 2` identical).
+    const blendEdges = (JSON.parse(kernel.raw.toJson()).feature_calls as any[])
+      .filter((c) => c.type === "fillet_edge" || c.type === "chamfer_edge")
+      .map((c) => c.params.edge as string);
+    expect(new Set(blendEdges).size, `blend edges: ${blendEdges.join(" | ")}`).toBe(
+      blendEdges.length,
     );
   }, 900_000);
 

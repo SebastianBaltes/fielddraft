@@ -79,10 +79,13 @@ const GROUND_TRUTH = {
  *     away and turned 90°.
  *  C. End conditions UP_TO_NEXT / UP_TO_SURFACE (Extrude 8, 12).
  *  D. Hole positions that are not plain sketch points (both `Bohrung`s).
- *  E. A cap-edge mate-connector anchor that binds nothing because its extrude
- *     is missing (Mirror 2). CENTROID inference itself is closed since v0.38.1:
- *     on a straight edge the centroid IS the midpoint, so Sketch 8 and its
- *     connector now import.
+ *  E. ~~A cap-edge mate-connector anchor that binds nothing because its extrude
+ *     is missing (Mirror 2).~~ CLOSED in #424: the extrude it anchors on is
+ *     `qRegions(...)` over several regions, whose walls used to fall back to
+ *     POSITIONAL subs; with the union boundary they carry their sketch entity
+ *     again, the anchor binds, and `Mirror 2` plus its connector import.
+ *     CENTROID inference was closed earlier (v0.38.1): on a straight edge the
+ *     centroid IS the midpoint, so Sketch 8 and its connector import too.
  *  H. `startOffset` — Onshape starts the extrusion on a plane offset from the
  *     sketch (Extrude 7: 100 mm). FieldDraft's extrude always begins on the
  *     profile plane, so this is refused rather than silently misplaced.
@@ -103,8 +106,7 @@ const KNOWN_GAPS = [
   "Extrude 8",
   "Extrude 9",
   "Mirror 1",
-  "Mirror 2",
-  "Mirror 2 · Mate connector",
+  // `Mirror 2` and `Mirror 2 · Mate connector` left this list in #424 — see E.
   "Mirror 3",
   "Sketch 10",
   "Sketch 11",

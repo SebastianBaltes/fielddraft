@@ -1129,7 +1129,7 @@ pub fn tangent_at_joint(prev: &SketchSegment, cur: &SketchSegment, cos_threshold
 /// surface? The pairwise predicate behind [`g1_group_segments`], usable
 /// incrementally so the SDF hot path can derive group ids without allocating
 /// the full vec.
-fn g1_continuous(prev: &SketchSegment, cur: &SketchSegment, cos_threshold: f32) -> bool {
+pub fn g1_continuous(prev: &SketchSegment, cur: &SketchSegment, cos_threshold: f32) -> bool {
     tangent_at_joint(prev, cur, cos_threshold) && same_carrier(prev, cur)
 }
 

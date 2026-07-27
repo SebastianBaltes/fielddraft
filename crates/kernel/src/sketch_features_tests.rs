@@ -3084,6 +3084,147 @@ fn wall_sub_table_region_restriction_keeps_entity_ids() {
     assert_eq!(got, vec![3, 6, 9, 12]);
 }
 
+/// #424 — TWO ADJACENT regions selected together. Measured on the #419
+/// document (features 24 and 25, `qRegions(6, [1, 2])` / `[4, 5]`): the
+/// selection's walls fell back to POSITIONAL subs 0, 1, 2, … and every one of
+/// the document's seven remaining `qWall(op, entity)` messages hung on it.
+///
+/// The cause was not the naming schema but the profile: unioning the two
+/// regions' CLOSED CONTOURS put the shared middle line into the boundary
+/// TWICE, `wall_sub_table` saw a duplicate sub and — correctly, because two
+/// walls that share a sub collapse into one branch — refused the whole table.
+/// The shared line is INTERIOR to the union and bounds nothing, so the fix is
+/// to not put it in the profile at all (`arrange_union`).
+#[test]
+fn wall_sub_table_two_adjacent_regions_keep_entity_ids() {
+    // Two unit squares side by side, sharing the middle line x = 10.
+    // Entity ids: each line allocates 2 points + itself → 3, 6, 9, 12, …
+    let calls: Vec<FeatureCall> = serde_json::from_value(json!([
+        {"type":"sketch_line","id":"1","params":{"start":[0.0,0.0],"end":[10.0,0.0]}},
+        {"type":"sketch_line","id":"2","params":{"start":[10.0,0.0],"end":[10.0,10.0]}},
+        {"type":"sketch_line","id":"3","params":{"start":[10.0,10.0],"end":[0.0,10.0]}},
+        {"type":"sketch_line","id":"4","params":{"start":[0.0,10.0],"end":[0.0,0.0]}},
+        {"type":"sketch_line","id":"5","params":{"start":[10.0,0.0],"end":[20.0,0.0]}},
+        {"type":"sketch_line","id":"6","params":{"start":[20.0,0.0],"end":[20.0,10.0]}},
+        {"type":"sketch_line","id":"7","params":{"start":[20.0,10.0],"end":[10.0,10.0]}}
+    ]))
+    .unwrap();
+    let mut sketches = HashMap::new();
+    sketches.insert(
+        id(1),
+        SketchData {
+            state: SketchState::with_origin(),
+            sub_calls: calls.clone(),
+            frame: SketchFrame::IDENTITY,
+        },
+    );
+    let faces = crate::sketch_arrangement::arrange(&calls);
+    assert_eq!(faces.len(), 2, "two atomic regions");
+    let left = faces.iter().position(|f| f.interior[0] < 10.0).expect("left region");
+    let right = faces.iter().position(|f| f.interior[0] > 10.0).expect("right region");
+
+    let (both, _, traced) =
+        resolve_profile_query(&format!("qRegions(1, [{left}, {right}])"), &sketches).unwrap();
+    // Geometry: the 20x10 union, solid across the former seam.
+    assert!(both.sdf([5.0, 5.0]) < 0.0, "left half kept");
+    assert!(both.sdf([15.0, 5.0]) < 0.0, "right half kept");
+    assert!(both.sdf([10.0, 5.0]) < 0.0, "the seam is INSIDE the union");
+    assert!(both.sdf([25.0, 5.0]) > 0.0, "outside stays outside");
+
+    // The walls of that union are named by their line entities, with NO
+    // duplicate and NO seam — the table exists again, which is the point.
+    //
+    // FOUR entries, not six, and that is the honest geometry: a wall is a
+    // G1-continuous boundary group, and the union's bottom edge is line 1 and
+    // line 5 in one straight run (top likewise line 3 + line 7). Each merged
+    // run takes the SMALLEST entity id in it, so `qWall(op, 15)` does not bind
+    // — the bottom-right line is not a wall of its own any more. Onshape folds
+    // the same two faces together and calls the result `MERGE` (#429).
+    let mut got = wall_sub_table(&both, &traced).expect("attributable multi-region profile");
+    got.sort_unstable();
+    assert_eq!(got, vec![3, 9, 12, 18], "four G1 walls, no duplicate, no seam");
+}
+
+/// The same union where NO two outer walls are collinear: then every one of
+/// them keeps its own sketch entity, which is what `qWall(op, entity)` needs.
+#[test]
+fn wall_sub_table_two_adjacent_regions_name_every_wall() {
+    // Square (0,0)-(10,10) plus a triangle hanging off its right edge. The
+    // triangle REUSES the square's right line (entity 6) as its third side, so
+    // that line is the shared boundary and lands inside the union.
+    let calls: Vec<FeatureCall> = serde_json::from_value(json!([
+        {"type":"sketch_line","id":"1","params":{"start":[0.0,0.0],"end":[10.0,0.0]}},
+        {"type":"sketch_line","id":"2","params":{"start":[10.0,0.0],"end":[10.0,10.0]}},
+        {"type":"sketch_line","id":"3","params":{"start":[10.0,10.0],"end":[0.0,10.0]}},
+        {"type":"sketch_line","id":"4","params":{"start":[0.0,10.0],"end":[0.0,0.0]}},
+        {"type":"sketch_line","id":"5","params":{"start":[10.0,0.0],"end":[20.0,5.0]}},
+        {"type":"sketch_line","id":"6","params":{"start":[20.0,5.0],"end":[10.0,10.0]}}
+    ]))
+    .unwrap();
+    let mut sketches = HashMap::new();
+    sketches.insert(
+        id(1),
+        SketchData {
+            state: SketchState::with_origin(),
+            sub_calls: calls.clone(),
+            frame: SketchFrame::IDENTITY,
+        },
+    );
+    let faces = crate::sketch_arrangement::arrange(&calls);
+    assert_eq!(faces.len(), 2, "square + triangle");
+    let sq = faces.iter().position(|f| f.interior[0] < 10.0).expect("square");
+    let tri = faces.iter().position(|f| f.interior[0] > 10.0).expect("triangle");
+
+    let (both, _, traced) =
+        resolve_profile_query(&format!("qRegions(1, [{sq}, {tri}])"), &sketches).unwrap();
+    assert!(both.sdf([5.0, 5.0]) < 0.0, "square kept");
+    assert!(both.sdf([12.0, 5.0]) < 0.0, "triangle kept");
+    assert!(both.sdf([10.0, 5.0]) < 0.0, "the shared line is INSIDE");
+
+    let mut got = wall_sub_table(&both, &traced).expect("attributable multi-region profile");
+    got.sort_unstable();
+    // 3, 9, 12 = the square's remaining sides; 15, 18 = the triangle's two
+    // free sides. Entity 6 — the shared line — is gone, as it must be.
+    assert_eq!(got, vec![3, 9, 12, 15, 18]);
+}
+
+/// The union must keep a hole that only ONE of the selected regions owns —
+/// and it must drop one the selection fills in itself.
+#[test]
+fn arrange_union_keeps_unselected_holes() {
+    let calls: Vec<FeatureCall> = serde_json::from_value(json!([
+        {"type":"sketch_line","id":"1","params":{"start":[0.0,0.0],"end":[10.0,0.0]}},
+        {"type":"sketch_line","id":"2","params":{"start":[10.0,0.0],"end":[10.0,10.0]}},
+        {"type":"sketch_line","id":"3","params":{"start":[10.0,10.0],"end":[0.0,10.0]}},
+        {"type":"sketch_line","id":"4","params":{"start":[0.0,10.0],"end":[0.0,0.0]}},
+        {"type":"sketch_line","id":"5","params":{"start":[10.0,0.0],"end":[20.0,0.0]}},
+        {"type":"sketch_line","id":"6","params":{"start":[20.0,0.0],"end":[20.0,10.0]}},
+        {"type":"sketch_line","id":"7","params":{"start":[20.0,10.0],"end":[10.0,10.0]}},
+        {"type":"sketch_circle","id":"8","params":{"center":[15.0,5.0],"radius":2.0}}
+    ]))
+    .unwrap();
+    let faces = crate::sketch_arrangement::arrange(&calls);
+    let left = faces.iter().position(|f| f.interior[0] < 10.0).expect("left");
+    let right = faces
+        .iter()
+        .position(|f| f.interior[0] > 10.0 && f.area > 50.0)
+        .expect("right ring");
+    let disc = faces
+        .iter()
+        .position(|f| f.area < 20.0)
+        .expect("the disc inside the right square");
+
+    let ring = crate::sketch_arrangement::arrange_union(&calls, &[left as u32, right as u32])
+        .expect("union");
+    assert!(ring.profile.sdf([15.0, 5.0]) > 0.0, "the unselected disc stays a hole");
+    assert!(ring.profile.sdf([10.0, 5.0]) < 0.0, "the seam is inside");
+
+    let filled =
+        crate::sketch_arrangement::arrange_union(&calls, &[left as u32, right as u32, disc as u32])
+            .expect("union");
+    assert!(filled.profile.sdf([15.0, 5.0]) < 0.0, "selecting the disc fills the hole");
+}
+
 #[test]
 fn wall_sub_table_falls_back_for_svg_paths() {
     // `sketch_path` allocates only point entities — no curve provenance,
@@ -3262,3 +3403,4 @@ fn region_extrude_walls_resolve_by_sketch_entity() {
         }
     }
 }
+
