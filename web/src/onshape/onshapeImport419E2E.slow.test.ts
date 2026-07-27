@@ -254,7 +254,14 @@ describe("#419 multi-part assembly", () => {
     // around separately. A bound in either direction would have called that
     // either a regression or a win; it is neither. Onshape's own answer is 17
     // parts (GROUND_TRUTH.parts) and that stays the target.
-    expect(kernel.raw.bodyCount()).toBe(7);
+    //
+    // 7 → 10 in v0.38.5 (#428): eight of this document's booleans carry
+    // Onshape's „Werkzeuge behalten", and FieldDraft parsed `keep_tools`
+    // without ever honouring it — the tools were consumed. They stand as their
+    // own bodies now. The error list did NOT move (212 messages, same names),
+    // so these three are bodies that were being swallowed, not features that
+    // newly import.
+    expect(kernel.raw.bodyCount()).toBe(10);
 
     // Without these the geometry would be a fraction of the assembly and still
     // look plausible — which is exactly how a broken import hides.
