@@ -124,9 +124,44 @@ pub(super) fn collect_prim_walls(prim: &Sketch2dPrimitive, base: u32, out: &mut 
                 }
             }
         }
-        // Sector mixes radial lines + an arc into a single boundary group 0,
-        // which no single analytic surface matches → tessellated (DL-50).
-        Sketch2dPrimitive::Sector { .. } => {}
+        // A Sector (pie wedge) has THREE analytic boundary pieces, and
+        // `edge_count()` has always reserved three group slots for them:
+        // 0 = the arc → an infinite cylinder about the extrusion axis,
+        // 1/2 = the radial flanks at `start_angle` / `start_angle + sweep`
+        // → planes through the sector centre. Skipping them (ticket #423)
+        // left EVERY wall branch of a sector-profiled sweep out of the
+        // half-space map, so `seed_branch_pairs` reported every candidate
+        // pair unresolved, the seed wireframe came back empty, and the
+        // hybrid weave bailed the whole body to the octree — 5.9 s on the
+        // Onshape Kabelbox lid for a nine-edge result. A sector reaches a
+        // profile whenever an arc entity closes no loop (`sketch/lower.rs`),
+        // which is the common case for imported sketches.
+        //
+        // A full-turn sector has no flanks (they coincide inside the disk),
+        // so only the arc is registered — the wedge IS a circle there.
+        Sketch2dPrimitive::Sector { center, radius, start_angle, sweep_angle } => {
+            if fielddraft_protocol::sketch2d::sector_is_degenerate(*radius, *sweep_angle) {
+                return;
+            }
+            out.push((base, SketchWall::Circle { center: *center, radius: *radius }));
+            if fielddraft_protocol::sketch2d::sector_is_full_turn(*sweep_angle) {
+                return;
+            }
+            // Outward flank normals: the interior sits at angles BETWEEN
+            // `start` and `end`, so the start flank's outward normal is its
+            // direction rotated −90° (times the sweep sign) and the end
+            // flank's is rotated +90°. Both lines pass through `center`, so
+            // the plane offset is `n·center`.
+            let sign = if *sweep_angle >= 0.0 { 1.0f32 } else { -1.0 };
+            let end_angle = start_angle + sweep_angle;
+            for (g, angle, rot) in [(1u32, *start_angle, -sign), (2, end_angle, sign)] {
+                let (c, s) = (angle.cos(), angle.sin());
+                // rot = −1 → (x, y) ↦ (y, −x); rot = +1 → (x, y) ↦ (−y, x).
+                let normal = [-rot * s, rot * c];
+                let offset = normal[0] * center[0] + normal[1] * center[1];
+                out.push((base + g, SketchWall::Line { normal, offset }));
+            }
+        }
     }
 }
 

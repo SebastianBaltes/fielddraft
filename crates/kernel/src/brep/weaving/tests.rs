@@ -2702,3 +2702,96 @@ fn box_with_through_hole_has_outer_and_one_inner_loop() {
     assert_eq!(outer_bounds, 7, "one FACE_OUTER_BOUND per face");
     assert_eq!(inner_bounds, 3, "two plate holes + one cylinder inner rim");
 }
+
+
+// ── #423: a Sector profile's walls must lift analytically ────────────────
+
+/// A pie-wedge extrude used to register only its two CAPS: `collect_prim_walls`
+/// skipped `Sector` outright, so all three wall branches were missing from the
+/// half-space map. Every candidate branch pair touching a wall then came back
+/// `unresolved` from `seed_branch_pairs`, the seed wireframe was empty, and the
+/// hybrid weave bailed the whole body to the octree (#423). Now the arc lifts to
+/// an infinite cylinder about the extrusion axis and each radial flank to a
+/// plane through the sector centre.
+#[test]
+fn sector_extrude_registers_arc_cylinder_and_both_flank_planes() {
+    use crate::sketch2d::{Sketch2d, Sketch2dPrimitive};
+    use std::f32::consts::FRAC_PI_2;
+    // Quarter wedge in the first quadrant, radius 10, extruded ±2 about z.
+    let csg = CsgNode::Extrude {
+        wall_subs: None,
+        id: FeatureId::from_u32(7),
+        sketch: Box::new(Sketch2d::Prim(Sketch2dPrimitive::Sector {
+            center: [0.0, 0.0],
+            radius: 10.0,
+            start_angle: 0.0,
+            sweep_angle: FRAC_PI_2,
+        })),
+        half_height: 2.0,
+    };
+    let body = BoundedCsg::from_csg(&csg);
+    let map = branch_halfspace_map(&body);
+    assert_eq!(map.len(), 5, "2 caps + 3 walls, got {:?}", map.len());
+
+    let sub = |n: u32| {
+        map.get(&crate::csg::BranchId::from_feature_sub(&FeatureId::from_u32(7), n).as_u32())
+            .unwrap_or_else(|| panic!("wall sub {n} missing from the half-space map"))
+    };
+    // Group 0 — the arc → an infinite cylinder of the sector radius.
+    match &sub(0).0 {
+        HalfSpace::InfiniteCylinder { radius } => assert!((*radius - 10.0).abs() < 1e-5),
+        other => panic!("arc wall must be a cylinder, got {other:?}"),
+    }
+    // Group 1 — the flank at start_angle = 0 (the +x axis). Its outward
+    // normal points AWAY from the interior (which lies at positive y), i.e. −y.
+    match &sub(1).0 {
+        HalfSpace::Plane { normal, offset } => {
+            assert!((normal[0]).abs() < 1e-5 && (normal[1] + 1.0).abs() < 1e-5, "{normal:?}");
+            assert!((*offset).abs() < 1e-5, "line through the centre ⇒ offset 0, got {offset}");
+        }
+        other => panic!("flank must be a plane, got {other:?}"),
+    }
+    // Group 2 — the flank at 90° (the +y axis), outward normal −x.
+    match &sub(2).0 {
+        HalfSpace::Plane { normal, offset } => {
+            assert!((normal[0] + 1.0).abs() < 1e-5 && normal[1].abs() < 1e-5, "{normal:?}");
+            assert!((*offset).abs() < 1e-5, "line through the centre ⇒ offset 0, got {offset}");
+        }
+        other => panic!("flank must be a plane, got {other:?}"),
+    }
+}
+
+/// The flank normals must point OUT of the wedge for either sweep sign — a
+/// flipped normal would invert the face winding and the weave would classify
+/// the sector's material as its complement.
+#[test]
+fn sector_flank_normals_point_out_of_the_wedge() {
+    use crate::sketch2d::{Sketch2d, Sketch2dPrimitive};
+    use std::f32::consts::FRAC_PI_2;
+    for sweep in [FRAC_PI_2, -FRAC_PI_2] {
+        let csg = CsgNode::Extrude {
+            wall_subs: None,
+            id: FeatureId::from_u32(3),
+            sketch: Box::new(Sketch2d::Prim(Sketch2dPrimitive::Sector {
+                center: [1.0, 2.0],
+                radius: 6.0,
+                start_angle: 0.4,
+                sweep_angle: sweep,
+            })),
+            half_height: 1.0,
+        };
+        let body = BoundedCsg::from_csg(&csg);
+        let map = branch_halfspace_map(&body);
+        // A point just inside the wedge, at mid-sweep and half the radius.
+        let mid = 0.4 + sweep * 0.5;
+        let inside = [1.0 + 3.0 * mid.cos(), 2.0 + 3.0 * mid.sin()];
+        for n in [1u32, 2] {
+            let (hs, _) = map
+                .get(&crate::csg::BranchId::from_feature_sub(&FeatureId::from_u32(3), n).as_u32())
+                .expect("flank present");
+            let HalfSpace::Plane { normal, offset } = hs else { panic!("flank is a plane") };
+            let d = normal[0] * inside[0] + normal[1] * inside[1] - offset;
+            assert!(d < 0.0, "sweep {sweep}: flank {n} normal faces inward (d = {d})");
+        }
+    }
+}

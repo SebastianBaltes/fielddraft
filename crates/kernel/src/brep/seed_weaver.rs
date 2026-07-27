@@ -661,7 +661,19 @@ fn build_seed_wireframe_tracked(body: &BoundedCsg, mode: SeedMode) -> Option<See
             let (a32, b32) = (x.as_u32(), y.as_u32());
             (a32.min(b32), a32.max(b32))
         };
-        let seeded: HashSet<(u32, u32)> = seeds.iter().map(|s| ckey(s.a, s.b)).collect();
+        // Seeds bucketed by canonical pair, ONCE. The triple loop below needs
+        // each of its three pairs' seed lists; rescanning the flat `seeds`
+        // vector per triple made this stage O(#triples · #seeds). On the
+        // Onshape Kabelbox lid (64 branches ⇒ ~3·10³ triples over ~10⁵ seeds)
+        // that was 3.4 s of the body's 3.8 s weave — pure bookkeeping, no
+        // geometry (#423). Bucketing preserves each pair's seed ORDER, so the
+        // "fewest seeds" pick and the `step_by` stride below choose exactly the
+        // same guesses as the scan did.
+        let mut by_pair: HashMap<(u32, u32), Vec<[f32; 3]>> = HashMap::new();
+        for s in &seeds {
+            by_pair.entry(ckey(s.a, s.b)).or_default().push(s.point);
+        }
+        let seeded: HashSet<(u32, u32)> = by_pair.keys().copied().collect();
         let mut partner: HashMap<u32, HashSet<u32>> = HashMap::new();
         for &(x, y) in &seeded {
             partner.entry(x).or_default().insert(y);
@@ -683,14 +695,10 @@ fn build_seed_wireframe_tracked(body: &BoundedCsg, mode: SeedMode) -> Option<See
         const GUESS_CAP: usize = 48;
         for t in triples {
             let branches = [BranchId(t[0]), BranchId(t[1]), BranchId(t[2])];
-            let mut best: Option<Vec<[f32; 3]>> = None;
+            let mut best: Option<&Vec<[f32; 3]>> = None;
             for (x, y) in [(t[0], t[1]), (t[0], t[2]), (t[1], t[2])] {
-                let list: Vec<[f32; 3]> = seeds
-                    .iter()
-                    .filter(|s| ckey(s.a, s.b) == (x, y))
-                    .map(|s| s.point)
-                    .collect();
-                if best.as_ref().is_none_or(|b| list.len() < b.len()) && !list.is_empty() {
+                let Some(list) = by_pair.get(&(x, y)) else { continue };
+                if best.is_none_or(|b| list.len() < b.len()) && !list.is_empty() {
                     best = Some(list);
                 }
             }
@@ -2468,6 +2476,121 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// #423 — the Onshape Kabelbox lid in miniature: TWO extrudes of the SAME
+    /// sector profile, stacked coplanar (the lower one docked to the upper by an
+    /// Add, so it is ONE body). Before the fix the profile's `Sector` walls had
+    /// no analytic carrier, so `seed_branch_pairs` reported EVERY candidate pair
+    /// unresolved, the seed wireframe came back empty, and both the strict and
+    /// the hybrid weaver returned `None` — the whole body fell through to the
+    /// octree (5.9 s and a degenerate 2-vertex B-Rep on the real lid).
+    ///
+    /// The assertion is the ROUTE, not an edge count: nothing may be unresolved
+    /// and the strict analytic weave must produce the body, so `Body::ensure_brep`
+    /// never reaches its octree arm.
+    #[test]
+    fn stacked_coplanar_sector_extrudes_weave_analytically() {
+        use std::f32::consts::FRAC_PI_2;
+        let sector = || {
+            Sketch2d::Prim(Sketch2dPrimitive::Sector {
+                center: [0.0, 0.0],
+                radius: 20.0,
+                start_angle: 0.0,
+                sweep_angle: FRAC_PI_2,
+            })
+        };
+        let at = |dz: f32, hh: f32, id: u32| {
+            CsgNode::Transform(
+                fielddraft_protocol::Transform {
+                    translate: [0.0, 0.0, dz],
+                    ..fielddraft_protocol::Transform::IDENTITY
+                },
+                Box::new(CsgNode::Extrude {
+                    wall_subs: None,
+                    id: FeatureId::from_u32(id),
+                    sketch: Box::new(sector()),
+                    half_height: hh,
+                }),
+            )
+        };
+        // Lower slab z ∈ [0, 8], upper slab z ∈ [8, 11] — coincident at z = 8.
+        let body = BoundedCsg::from_csg(&CsgNode::Union(
+            Box::new(at(4.0, 4.0, 1)),
+            Box::new(at(9.5, 1.5, 2)),
+        ));
+
+        let SeedResult { seeds, unresolved } = seed_branch_pairs(&body);
+        assert!(
+            unresolved.is_empty(),
+            "every branch pair must lift analytically, {} did not: {:?}",
+            unresolved.len(),
+            unresolved
+                .iter()
+                .map(|p| (p.a.as_u32(), p.b.as_u32()))
+                .collect::<Vec<_>>()
+        );
+        assert!(!seeds.is_empty(), "the analytic route must produce seeds");
+
+        // Both extrudes contribute 2 caps + 3 walls; none may be missing.
+        let map = branch_halfspace_map(&body);
+        assert_eq!(map.len(), 10, "2 × (2 caps + 3 sector walls)");
+
+        // The strict route carries the body — so `ensure_brep` takes the
+        // analytic arm and never builds an octree for it.
+        let strict = weave_branch_seeds(&body).expect("strict analytic weave");
+        assert!(
+            !strict.edges.is_empty() && !strict.faces.is_empty(),
+            "analytic weave must produce a real B-Rep, got {} edges / {} faces",
+            strict.edges.len(),
+            strict.faces.len()
+        );
+        // The coincident WALL carriers of the two features (identical profile,
+        // pure z offset) must NOT seed a transversal edge: `CoincidenceRegistry`
+        // gates them and `finish_weave` canonicalises the per-side duplicates,
+        // so every wall edge is attributed to ONE feature. A cross-feature
+        // wall×wall edge would be a phantom seam manufactured out of float drift.
+        for e in &strict.edges {
+            let cross = e.signature.0.feature_id() != e.signature.1.feature_id();
+            let both_walls = e.signature.0.sub() < 3 && e.signature.1.sub() < 3;
+            assert!(
+                !(cross && both_walls),
+                "coincident walls of the two stacked features must not seed an edge: {:?}",
+                e.signature
+            );
+        }
+        // Route comparison against the octree this body used to fall to
+        // (min_cell 0.5 — finer than the real lid's 6.45 mm): the analytic
+        // weave carries the SAME face count with strictly fewer, unfragmented
+        // edges. Both routes materialise the z = 8 seam ring where feature 1's
+        // top cap meets feature 2's bottom cap; with identical profiles that
+        // ring is not a silhouette crease, so suppressing it is a deliberate
+        // FOLLOW-UP (it needs the coincident back-to-back caps to retire the
+        // pair, not a tolerance). What this test pins is that #423 did not make
+        // it worse: the analytic route is never coarser than the octree.
+        let oct = crate::brep::octree::Octree::build(&body, 0.5);
+        let octree_brep = crate::brep::weaving::weave(&body, &oct);
+        assert_eq!(
+            strict.faces.len(),
+            octree_brep.faces.len(),
+            "analytic and octree weave must agree on the face count"
+        );
+        assert!(
+            strict.edges.len() <= octree_brep.edges.len(),
+            "analytic weave must not be more fragmented than the octree: {} vs {}",
+            strict.edges.len(),
+            octree_brep.edges.len()
+        );
+
+        // The hybrid route must agree — it is the one `Body::ensure_brep` falls
+        // to, and a non-empty `skipped` there would drag the octree back in.
+        let tracked =
+            build_seed_wireframe_tracked(&body, SeedMode::Partial).expect("partial wireframe");
+        assert!(
+            tracked.skipped.is_empty(),
+            "a skipped pair re-introduces the whole-body octree fill: {:?}",
+            tracked.skipped
+        );
     }
 
     #[test]

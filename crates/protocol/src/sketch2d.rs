@@ -334,7 +334,15 @@ impl Sketch2dPrimitive {
                 sweep_angle,
             } => {
                 let d = sdf_sector(p, *center, *radius, *start_angle, *sweep_angle);
-                (d, 0)
+                let pieces =
+                    sector_boundary_distances(p, *center, *radius, *start_angle, *sweep_angle);
+                let mut best = 0u32;
+                for g in 1..SECTOR_GROUPS {
+                    if pieces[g] < pieces[best as usize] {
+                        best = g as u32;
+                    }
+                }
+                (d, best)
             }
             Self::Path { segments, closed } => {
                 if segments.is_empty() {
@@ -416,8 +424,28 @@ impl Sketch2dPrimitive {
                 }
                 band
             }
-            // Sector keeps the single-group simplification of `sdf_with_edge`.
-            Self::Sector { .. } => SketchEdgeBand::single(self.sdf(p), 0),
+            // Sector: arc (group 0) + the two radial flanks (1 = start,
+            // 2 = end), matching `sdf_with_edge` and `edge_count() == 3`.
+            // At the two arc ends the arc and one flank tie inside `eps`,
+            // so a pie-wedge corner reports both branches — exactly what a
+            // sweep needs to weave the corner edge.
+            Self::Sector {
+                center,
+                radius,
+                start_angle,
+                sweep_angle,
+            } => {
+                let pieces =
+                    sector_boundary_distances(p, *center, *radius, *start_angle, *sweep_angle);
+                let min_d = pieces.iter().copied().fold(f32::INFINITY, f32::min);
+                let mut band = SketchEdgeBand::new(self.sdf(p));
+                for (g, d) in pieces.iter().enumerate() {
+                    if d.is_finite() && d - min_d <= eps {
+                        band.push(g as u32);
+                    }
+                }
+                band
+            }
             Self::Path { segments, closed } => {
                 let n = segments.len();
                 if n == 0 {
@@ -1203,6 +1231,104 @@ fn sdf_sector(
         // distance ensures the exterior is consistently > 0.
         d_edge.max(d_circle.max(0.0))
     }
+}
+
+/// Boundary branches a [`Sketch2dPrimitive::Sector`] contributes:
+/// `0` = the arc, `1` = the radial flank at `start_angle`, `2` = the
+/// radial flank at `start_angle + sweep_angle`. Matches
+/// [`Sketch2dPrimitive::edge_count`], which has always reserved three
+/// slots — only the *attribution* used to collapse them onto group 0.
+pub const SECTOR_GROUPS: usize = 3;
+
+/// A closed sector's sweep is a full turn to within this angle, i.e. the
+/// two radial flanks coincide and lie strictly inside the disk — the
+/// wedge degenerates to a plain circle with no flank branches.
+const SECTOR_FULL_SWEEP_EPS: f32 = 1e-6;
+
+/// Does `sweep` close the sector into a full disk? The SINGLE definition,
+/// shared by the branch attribution here and the weaver's wall lift
+/// (`brep::weaving::sketch_surfaces::collect_prim_walls`). If those two
+/// ever disagreed at the boundary, one side would register a flank carrier
+/// the other never reports as a branch — and a branch with a carrier but no
+/// field (or the reverse) is exactly what bails a body to the octree.
+pub fn sector_is_full_turn(sweep: f32) -> bool {
+    sweep.abs() >= std::f32::consts::TAU - SECTOR_FULL_SWEEP_EPS
+}
+
+/// Is `sweep` too small to bound any area at all? Shared for the same
+/// reason as [`sector_is_full_turn`].
+pub fn sector_is_degenerate(radius: f32, sweep: f32) -> bool {
+    !(radius > 0.0) || sweep.abs() < 1e-6
+}
+
+/// Unsigned distance from `p` to each of a sector's three boundary
+/// pieces, in [`SECTOR_GROUPS`] order (arc, start flank, end flank).
+/// A piece that is not part of the boundary — both flanks of a
+/// full-turn sector, every piece of a degenerate (r ≤ 0) sector —
+/// yields `f32::INFINITY`, so an `argmin` over the result never names it.
+///
+/// Purely analytic: point-to-arc is the radial projection with an
+/// endpoint fallback outside the angular span, point-to-flank is the
+/// ordinary point-to-segment distance. No sampling, no tolerance on the
+/// geometry itself (`SECTOR_FULL_SWEEP_EPS` only classifies the
+/// full-turn degeneracy).
+pub fn sector_boundary_distances(
+    p: [f32; 2],
+    center: [f32; 2],
+    radius: f32,
+    start: f32,
+    sweep: f32,
+) -> [f32; SECTOR_GROUPS] {
+    if sector_is_degenerate(radius, sweep) {
+        return [f32::INFINITY; SECTOR_GROUPS];
+    }
+    let dx = p[0] - center[0];
+    let dy = p[1] - center[1];
+    let dist = (dx * dx + dy * dy).sqrt();
+
+    // ── group 0: the arc ────────────────────────────────────────────
+    let half = sweep.abs() * 0.5;
+    let mid = start + sweep * 0.5;
+    let full_turn = sector_is_full_turn(sweep);
+    let mut rel = dy.atan2(dx) - mid;
+    while rel > std::f32::consts::PI {
+        rel -= std::f32::consts::TAU;
+    }
+    while rel < -std::f32::consts::PI {
+        rel += std::f32::consts::TAU;
+    }
+    let end = start + sweep;
+    let arc_end_point = |a: f32| [center[0] + radius * a.cos(), center[1] + radius * a.sin()];
+    let d_arc = if full_turn || rel.abs() <= half {
+        // The radial projection lands ON the arc.
+        (dist - radius).abs()
+    } else {
+        // Outside the angular span — the nearest arc point is an end.
+        let da = dist_2d(p, arc_end_point(start));
+        let db = dist_2d(p, arc_end_point(end));
+        da.min(db)
+    };
+    if full_turn {
+        return [d_arc, f32::INFINITY, f32::INFINITY];
+    }
+
+    // ── groups 1/2: the radial flanks, centre → rim ─────────────────
+    let flank = |a: f32| {
+        let (ex, ey) = (a.cos(), a.sin());
+        let t = (dx * ex + dy * ey).clamp(0.0, radius);
+        let cx = center[0] + ex * t;
+        let cy = center[1] + ey * t;
+        dist_2d(p, [cx, cy])
+    };
+    [d_arc, flank(start), flank(end)]
+}
+
+/// Plain 2D Euclidean distance (not squared — see `point_seg_dist2`
+/// elsewhere for the squared convention).
+fn dist_2d(a: [f32; 2], b: [f32; 2]) -> f32 {
+    let dx = a[0] - b[0];
+    let dy = a[1] - b[1];
+    (dx * dx + dy * dy).sqrt()
 }
 
 /// distance functions). Walks every edge, tracks the minimum
@@ -2999,5 +3125,89 @@ mod path_tests {
         for x in [-3.0f32, 3.0] {
             assert!(!path_is_inside([x, 0.0], &segs), "cw-arc exterior {x} misclassified");
         }
+    }
+
+    // ── #423: a Sector's three boundary branches ────────────────────────
+
+    /// A pie wedge has three analytic boundary pieces, and `edge_count()`
+    /// has always reserved three group slots. Until #423 the attribution
+    /// collapsed all of them onto group 0 ("single-group simplification"),
+    /// which left an extruded sector's walls out of the weaver's half-space
+    /// map and sent the whole body to the octree. Group order: 0 = arc,
+    /// 1 = the flank at `start_angle`, 2 = the flank at `start + sweep`.
+    #[test]
+    fn sector_reports_arc_and_both_flanks_as_distinct_groups() {
+        use std::f32::consts::FRAC_PI_2;
+        // Quarter wedge in the first quadrant, radius 10, centred at origin.
+        let sector = Sketch2dPrimitive::Sector {
+            center: [0.0, 0.0],
+            radius: 10.0,
+            start_angle: 0.0,
+            sweep_angle: FRAC_PI_2,
+        };
+        assert_eq!(sector.edge_count(), 3);
+
+        // Mid-arc (45°) → the arc.
+        let m = 10.0 * std::f32::consts::FRAC_1_SQRT_2;
+        assert_eq!(sector.sdf_with_edge([m, m]).1, 0, "mid-arc is group 0");
+        // Halfway along the +x flank (start_angle = 0) → group 1.
+        assert_eq!(sector.sdf_with_edge([5.0, 0.0]).1, 1, "+x flank is group 1");
+        // Halfway along the +y flank (start + sweep = 90°) → group 2.
+        assert_eq!(sector.sdf_with_edge([0.0, 5.0]).1, 2, "+y flank is group 2");
+    }
+
+    /// At a pie wedge's rim corner the arc and the adjoining flank tie, so
+    /// the eps-band carries BOTH — that is what lets an extruded sector
+    /// weave the corner edge where its cylinder wall meets its flank plane.
+    #[test]
+    fn sector_corner_band_carries_arc_and_flank() {
+        use std::f32::consts::FRAC_PI_2;
+        let sector = Sketch2dPrimitive::Sector {
+            center: [0.0, 0.0],
+            radius: 10.0,
+            start_angle: 0.0,
+            sweep_angle: FRAC_PI_2,
+        };
+        // The rim end of the start flank: (10, 0) is on the arc AND on the flank.
+        let band = sector.sdf_with_edges([10.0, 0.0], 1e-3);
+        let mut groups = band.groups().to_vec();
+        groups.sort_unstable();
+        assert_eq!(groups, vec![0, 1], "arc + start flank tie at the rim corner");
+    }
+
+    /// A full-turn sector IS a circle: its two flanks coincide and lie
+    /// strictly inside the disk, so they are not boundary branches at all.
+    /// Everything must report the arc, or an extruded full sector would
+    /// grow two phantom wall branches through its own interior.
+    #[test]
+    fn full_turn_sector_has_only_the_arc_branch() {
+        let disk = Sketch2dPrimitive::Sector {
+            center: [1.0, -2.0],
+            radius: 4.0,
+            start_angle: 0.3,
+            sweep_angle: std::f32::consts::TAU,
+        };
+        let d = sector_boundary_distances([1.0, -2.0], [1.0, -2.0], 4.0, 0.3, std::f32::consts::TAU);
+        assert!(d[0].is_finite(), "the arc stays a branch");
+        assert!(!d[1].is_finite() && !d[2].is_finite(), "no flank branches on a full turn");
+        for p in [[5.0f32, -2.0], [1.0, 2.0], [-3.0, -2.0]] {
+            assert_eq!(disk.sdf_with_edge(p).1, 0, "{p:?} must report the arc");
+        }
+    }
+
+    /// The flank distances are genuine point-to-SEGMENT distances (centre →
+    /// rim), not point-to-infinite-line: beyond the rim the nearest flank
+    /// point is its endpoint. Without that a far-away point would be
+    /// attributed to a flank the sector's boundary never reaches there.
+    #[test]
+    fn sector_flank_distance_is_segment_not_line() {
+        use std::f32::consts::FRAC_PI_2;
+        // Far out along +x, well past the rim at (10, 0).
+        let d = sector_boundary_distances([30.0, 0.0], [0.0, 0.0], 10.0, 0.0, FRAC_PI_2);
+        // Flank 1 ends at (10, 0) ⇒ distance 20, not 0 (the infinite line).
+        assert!((d[1] - 20.0).abs() < 1e-4, "flank is a segment: {}", d[1]);
+        // The arc is nearer (radial distance 20 as well, tie) — the point is
+        // outside either way; what matters is that the flank is not 0.
+        assert!(d[1] > 1.0);
     }
 }
