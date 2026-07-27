@@ -12,6 +12,9 @@ Format, eine Zeile je Eintrag:
 kind = feat | fix | perf. scope und #tickets sind optional. Folgezeilen, die
 eingerückt sind, gehören zum Text davor (Umbruch erlaubt).
 
+## 0.38.3
+- fix(sketch) #424: Eine Fläche, die aus einer ausgewählten Skizzen-REGION entstanden ist, trägt jetzt denselben Namen wie eine aus der ganzen Skizze: den der Kante, die sie gezeichnet hat. Bisher wurden die Wände solcher Körper einfach durchnumeriert — jede Bezugnahme auf „diese Wand“, etwa ein Sketch darauf oder eine Fase daran, ging deshalb ins Leere, sobald das Profil eine Region war. Beim Onshape-Import waren davon ganze Skizzen samt allem, was darauf aufbaut, betroffen.
+
 ## 0.38.2
 - fix(onshape) #409 #419: Eine Extrusion, die in Onshape nicht auf der Skizzenebene beginnt, sondern auf einer davon versetzten Ebene, wird jetzt gemeldet statt still an der falschen Stelle gebaut. Bisher fiel der Versatz unter den Tisch — der Körper stand dann um genau diesen Betrag daneben, ohne dass irgendwo etwas dazu stand. Im Regal-Dokument war das ein Zylinder 100 mm zu hoch, im Schienen-Dokument betrifft es sieben Extrusionen.
 

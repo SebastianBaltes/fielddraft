@@ -3021,14 +3021,13 @@ fn wall_sub_table_survives_earlier_edits() {
 }
 
 #[test]
-fn wall_sub_table_region_restriction_is_positional_for_imprint_faces() {
-    // #412: region-restricted profiles now come from the imprint arrangement
-    // (`sketch_arrangement`), which builds a FRESH atomic-face contour and does
-    // not yet carry per-entity provenance — so a single picked region falls
-    // back to POSITIONAL wall subs (None). Stable entity-attributed wall subs
-    // for imprint sub-faces are documented follow-up work
-    // (docs/SKETCH-REGION-IMPRINT-PLAN.md §5). The WHOLE-sketch profile keeps
-    // its full entity-attributed trace, verified below.
+fn wall_sub_table_region_restriction_keeps_entity_ids() {
+    // #424: region-restricted profiles come from the imprint arrangement
+    // (`sketch_arrangement`), which builds a FRESH atomic-face contour — but
+    // that contour now carries the SKETCH ENTITY each boundary piece came
+    // from, so a picked region names its walls exactly as the whole sketch
+    // does. Before, a region fell back to POSITIONAL subs 0,1,2,… and every
+    // `qWall(op, entity)` on it bound nothing (the Onshape-import class A).
     let mut calls = square_line_calls();
     let extra: Vec<FeatureCall> = serde_json::from_value(json!([
         {"type":"sketch_circle","id":"5","params":{"center":[50.0,0.0],"radius":4.0}}
@@ -3059,11 +3058,30 @@ fn wall_sub_table_region_restriction_is_positional_for_imprint_faces() {
     // Geometry is exact — the circle disc, not the square.
     assert!(restricted.sdf([50.0, 0.0]) < 0.0, "circle region kept");
     assert!(restricted.sdf([0.0, 0.0]) > 0.0, "square region dropped");
-    // Positional fallback: no entity trace for the imprint face (yet).
-    assert_eq!(wall_sub_table(&restricted, &traced_r), None);
+    // The circle is ONE entity: origin(0) + four lines (2 points + line each,
+    // ids 1..12) then the circle's centre point (13) and the circle (14).
+    assert_eq!(
+        wall_sub_table(&restricted, &traced_r),
+        Some(vec![14]),
+        "the picked disc's single wall is named by the CIRCLE entity"
+    );
     // Sanity: the full profile really has all five walls attributed.
     let (full, _, traced_f) = resolve_profile_query("qCreatedBy(1)", &sketches).unwrap();
     assert_eq!(wall_sub_table(&full, &traced_f).map(|t| t.len()), Some(5));
+
+    // …and the SQUARE region names its four walls by their line entities —
+    // the same ids the whole-sketch profile uses (3, 6, 9, 12).
+    let square_region = regions
+        .iter()
+        .find(|r| r.interior[0].abs() < 20.0)
+        .expect("square region found");
+    let (sq, _, traced_sq) =
+        resolve_profile_query(&format!("qRegion(1, {})", square_region.index), &sketches)
+            .unwrap();
+    assert!(sq.sdf([5.0, 5.0]) < 0.0, "square region kept");
+    let mut got = wall_sub_table(&sq, &traced_sq).expect("attributable region");
+    got.sort_unstable();
+    assert_eq!(got, vec![3, 6, 9, 12]);
 }
 
 #[test]
@@ -3083,4 +3101,164 @@ fn wall_sub_table_falls_back_for_svg_paths() {
     let (tree, traced) = build_sketch2d_traced(&calls);
     assert!(!matches!(tree, Sketch2d::Empty), "path lowered");
     assert_eq!(wall_sub_table(&tree, &traced), None);
+}
+
+/// #424 — the LOAD-BEARING counter-evidence for the Onshape gap matrix's
+/// class A. The hypothesis on record was that FieldDraft splits faces only at
+/// creases, so a profile with tangential rounds ends up with ONE mantle face
+/// and the per-entity wall subs have nothing to sit on. Measured, that is
+/// false: a rounded rectangle weaves EIGHT wall faces, each named by the
+/// sketch entity that drew it. If this test ever goes red, the hypothesis has
+/// become true and `qWall` on rounded profiles is genuinely unfixable at the
+/// naming layer — which would be a very different ticket.
+#[test]
+fn rounded_rectangle_keeps_one_wall_face_per_sketch_entity() {
+    let pi2 = std::f32::consts::FRAC_PI_2;
+    // 40×20 rounded rectangle, corner radius 5, centred on the origin:
+    // four straight walls interleaved with four TANGENT quarter arcs.
+    let calls: Vec<FeatureCall> = serde_json::from_value(json!([
+        {"type":"sketch_line","id":"1","params":{"start":[-15.0,-10.0],"end":[15.0,-10.0]}},
+        {"type":"sketch_arc","id":"2","params":{"center":[15.0,-5.0],"radius":5.0,"start_angle":-pi2,"sweep_angle":pi2}},
+        {"type":"sketch_line","id":"3","params":{"start":[20.0,-5.0],"end":[20.0,5.0]}},
+        {"type":"sketch_arc","id":"4","params":{"center":[15.0,5.0],"radius":5.0,"start_angle":0.0,"sweep_angle":pi2}},
+        {"type":"sketch_line","id":"5","params":{"start":[15.0,10.0],"end":[-15.0,10.0]}},
+        {"type":"sketch_arc","id":"6","params":{"center":[-15.0,5.0],"radius":5.0,"start_angle":pi2,"sweep_angle":pi2}},
+        {"type":"sketch_line","id":"7","params":{"start":[-20.0,5.0],"end":[-20.0,-5.0]}},
+        {"type":"sketch_arc","id":"8","params":{"center":[-15.0,-5.0],"radius":5.0,"start_angle":std::f32::consts::PI,"sweep_angle":pi2}}
+    ]))
+    .unwrap();
+
+    // Entity ids: a line allocates 2 points + itself, an arc centre + start +
+    // end + itself — so the eight curves land on 3, 7, 10, 14, 17, 21, 24, 28.
+    let (tree, traced) = build_sketch2d_traced(&calls);
+    assert_eq!(
+        wall_sub_table(&tree, &traced),
+        Some(vec![3, 7, 10, 14, 17, 21, 24, 28]),
+        "eight boundary groups, each named by its own curve entity"
+    );
+
+    // …and the woven solid really carries eight distinct WALL faces.
+    let registry = FeatureRegistry::with_builtins();
+    let mut doc = Document::default();
+    let mut ctx = Context::new(&mut doc);
+    registry
+        .regenerate(
+            &mut ctx,
+            &[
+                FeatureCall::new("sketch", id(1), json!({
+                    "plane": "qCreatedBy(origin_plane_xy)", "sub_calls": calls })),
+                FeatureCall::new("extrude", id(2), json!({
+                    "profiles": "qCreatedBy(1)", "depth": {"value": 10.0, "unit": "mm"} })),
+            ],
+            None,
+        )
+        .unwrap();
+    let woven = crate::body::weave_all(&ctx.features);
+    assert_eq!(woven.len(), 1, "one body");
+    let mut walls: Vec<u32> = woven[0]
+        .0
+        .faces
+        .iter()
+        .filter(|f| crate::queries::face_role(f) == crate::queries::FaceRole::Wall)
+        .map(|f| f.branch_id.sub())
+        .collect();
+    walls.sort_unstable();
+    assert_eq!(walls, vec![3, 7, 10, 14, 17, 21, 24, 28]);
+}
+
+/// #424 — a REGION-restricted extrude binds `qWall(op, entity)` end to end.
+/// This is the case the Onshape import actually hits: Onshape selects an
+/// imprint region, FieldDraft extrudes it, and a later sketch names one of its
+/// walls. Until the imprint contour carried provenance, the walls were
+/// numbered 0,1,2,… and every such query bound nothing.
+#[test]
+fn region_extrude_walls_resolve_by_sketch_entity() {
+    // Two rectangles side by side, drawn as lines and sharing the x=10 edge —
+    // the shape of a trimmed Onshape sketch. Only the LEFT one is extruded.
+    let mut subs: Vec<serde_json::Value> = Vec::new();
+    let mut n = 0;
+    for (x0, x1) in [(0.0f32, 10.0f32), (10.0, 25.0)] {
+        for (a, b) in [
+            ([x0, 0.0], [x1, 0.0]),
+            ([x1, 0.0], [x1, 8.0]),
+            ([x1, 8.0], [x0, 8.0]),
+            ([x0, 8.0], [x0, 0.0]),
+        ] {
+            n += 1;
+            subs.push(json!({"type":"sketch_line","id":n.to_string(),
+                "params":{"start":a,"end":b}}));
+        }
+    }
+    let calls: Vec<FeatureCall> = serde_json::from_value(json!(subs)).unwrap();
+
+    let registry = FeatureRegistry::with_builtins();
+    let mut doc = Document::default();
+    let mut ctx = Context::new(&mut doc);
+    registry
+        .regenerate(
+            &mut ctx,
+            std::slice::from_ref(&FeatureCall::new("sketch", id(1), json!({
+                "plane": "qCreatedBy(origin_plane_xy)", "sub_calls": calls }))),
+            None,
+        )
+        .unwrap();
+    // The left rectangle is the region with the smaller x — `arrange`'s order
+    // is (min y, min x, area), so it comes first among the two.
+    let faces = crate::sketch_arrangement::arrange(&ctx.sketches[&id(1)].sub_calls);
+    assert_eq!(faces.len(), 2, "two atomic faces");
+    let left = faces
+        .iter()
+        .position(|f| f.interior[0] < 10.0)
+        .expect("left face");
+
+    let mut doc = Document::default();
+    let mut ctx = Context::new(&mut doc);
+    registry
+        .regenerate(
+            &mut ctx,
+            &[
+                FeatureCall::new("sketch", id(1), json!({
+                    "plane": "qCreatedBy(origin_plane_xy)", "sub_calls": calls })),
+                FeatureCall::new("extrude", id(2), json!({
+                    "profiles": format!("qRegion(1, {left})"),
+                    "depth": {"value": 4.0, "unit": "mm"} })),
+            ],
+            None,
+        )
+        .unwrap();
+    let breps: Vec<crate::brep::BRep> =
+        crate::body::weave_all(&ctx.features).into_iter().map(|(b, _)| b).collect();
+
+    // Line k's own entity id is 3·(k+1); the left rectangle is lines 1..4.
+    // Each names EXACTLY one wall, and it is the wall that line drew.
+    for (line_idx, want_normal) in [
+        (0usize, [0.0f32, -1.0, 0.0]), // y = 0
+        (1, [1.0, 0.0, 0.0]),          // x = 10
+        (2, [0.0, 1.0, 0.0]),          // y = 8
+        (3, [-1.0, 0.0, 0.0]),         // x = 0
+    ] {
+        let entity = 3 * (line_idx as u32 + 1);
+        let q = crate::queries::parse_query(&format!("qWall(2, {entity})")).unwrap();
+        let hits = crate::queries::resolve_query_topo(&breps, &q);
+        assert_eq!(hits.len(), 1, "qWall(2, {entity}) binds exactly one face");
+        let fid = (0..breps[0].faces.len())
+            .map(|i| crate::brep::FaceId(i as u32))
+            .find(|&i| {
+                crate::brep::naming::TopoRef::from_face(&breps[0], i).id_hash == hits[0].id_hash
+            })
+            .expect("the hit is a face of this brep");
+        let f = &breps[0].faces[fid.0 as usize];
+        let fielddraft_protocol::HalfSpace::Plane { normal, .. } = (match &f.surface {
+            crate::brep::SurfaceGeometry::Analytic { surface, .. } => surface,
+            _ => panic!("wall {entity} is not analytic"),
+        }) else {
+            panic!("wall {entity} is not a plane");
+        };
+        for i in 0..3 {
+            assert!(
+                (normal[i] - want_normal[i]).abs() < 1e-4,
+                "wall {entity}: normal {normal:?}, expected {want_normal:?}"
+            );
+        }
+    }
 }

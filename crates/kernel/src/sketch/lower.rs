@@ -320,23 +320,28 @@ pub fn resolve_profile_query(
         }
         Some(indices) => {
             // Imprint atomic faces (#412): select the requested faces from the
-            // arrangement and union their EXACT profiles. Region-restricted
-            // profiles carry no stable provenance trace (the atomic-face path
-            // is a fresh contour), so wall subs fall back to positional.
+            // arrangement and union their EXACT profiles. Each atomic face
+            // brings its own per-segment provenance (#424), so a picked region
+            // names its walls by SKETCH ENTITY exactly as the whole sketch
+            // does — `qWall(op, entity)` binds on regions too. Concatenating
+            // the traces in selection order matches the DFS order of the
+            // left-leaning `Union` chain built here.
             let faces = crate::sketch_arrangement::arrange(&sketch_data.sub_calls);
             let mut acc = Sketch2d::Empty;
+            let mut traced: Vec<TracedPrim> = Vec::new();
             for &i in &indices {
                 if let Some(f) = faces.get(i as usize) {
                     acc = match acc {
                         Sketch2d::Empty => f.profile.clone(),
                         prev => Sketch2d::Union(Box::new(prev), Box::new(f.profile.clone())),
                     };
+                    traced.extend(f.traces.iter().cloned());
                 }
             }
             if matches!(acc, Sketch2d::Empty) {
                 return None;
             }
-            Some((acc, sketch_data.frame, Vec::new()))
+            Some((acc, sketch_data.frame, traced))
         }
     }
 }
@@ -370,13 +375,13 @@ pub enum TraceSources {
 }
 
 /// Entity-allocation record of one sub-call, from the registry replay.
-struct CallAlloc {
+pub(crate) struct CallAlloc {
     /// `next_entity_id` before the call — the id of its FIRST entity.
-    first: u32,
+    pub(crate) first: u32,
     /// Curve entities (line/circle/arc/ellipse/bspline) the call
     /// allocated, in allocation order. Empty for pure-point tools
     /// (slot, polygon) and failed/unknown calls.
-    curves: Vec<u32>,
+    pub(crate) curves: Vec<u32>,
 }
 
 /// Replay the sub-spine through the REAL tool registry into a scratch
@@ -384,7 +389,7 @@ struct CallAlloc {
 /// implementations are the single allocation authority (the same code
 /// the regeneration runs), so this can never drift from the kernel —
 /// unlike a third hand-maintained allocation table.
-fn replay_allocations(sub_calls: &[FeatureCall]) -> Vec<CallAlloc> {
+pub(crate) fn replay_allocations(sub_calls: &[FeatureCall]) -> Vec<CallAlloc> {
     use fielddraft_solver::Entity;
     let registry = super::tools::SketchToolRegistry::with_builtins();
     let mut state = fielddraft_solver::SketchState::with_origin();

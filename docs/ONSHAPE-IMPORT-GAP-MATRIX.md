@@ -913,3 +913,68 @@ Die Kernel-Pathologie dahinter bleibt **unerklärt, nur nicht mehr ausgelöst**:
 dieselbe Revolve als `new` kostet 0,35 s, als `remove` das 4500-fache.
 Reproduzierbar auf Commit `0df5d1e7` mit der #419-Fixture — als Perf-Ticket
 **#426** geführt, damit die Latenz nicht mit dem Symptom verschwindet.
+
+## Update 2026-07-27 (4) — Klasse A gemessen: die verschmolzene Mantelfläche gibt es nicht (#424)
+
+### Die führende Hypothese war falsch
+
+Klasse A stand seit Beginn unter der Erklärung: FieldDraft trennt Flächen nur an
+Knicken, also hat ein Profil mit tangential angesetzten Rundungen EINE
+Mantelfläche, wo Onshape acht benennt — die per-Segment-Subs hätten dann keine
+Flächen, auf denen sie sitzen könnten. Diese Erklärung stand sogar wörtlich in
+der Fehlermeldung des Importers und im Kopf des #409-E2E-Tests.
+
+Gemessen ist sie **falsch**. Ein abgerundetes Rechteck (vier Linien, vier
+tangentiale Viertelbögen) extrudiert zu **acht getrennten WALL-Flächen** mit den
+Subs 3, 7, 10, 14, 17, 21, 24, 28 — je einer pro Sketch-Entity, Sub 28
+eingeschlossen, also genau der Wert aus dem Ticket-Titel. Festgehalten als
+`rounded_rectangle_keeps_one_wall_face_per_sketch_entity`
+(`crates/kernel/src/sketch_features_tests.rs`); geht der Test rot, ist die
+Hypothese nachträglich wahr geworden.
+
+### Die echte Ursache: region-eingeschränkte Profile hatten keine Herkunft
+
+Der Dump aller BRep-Flächen je Feature trennt die beiden Kandidaten sauber:
+
+| #419-Feature | Profil | Subs vorher | Subs nachher |
+|---|---|---|---|
+| 13 (Revolve 2) | `qRegion(6, 14)` | 0, 1, 2 | **13, 25, 28** |
+| 8 (Revolve) | `qRegion(…)` | 0, 1, 2 | **64, 190, 193** |
+| 7, 10, 16 (ganzer Sketch) | `qCreatedBy` | 34…166 | unverändert |
+
+Wo das Profil der **ganze Sketch** ist, standen die stabilen Entity-Ids längst
+da. Wo Onshape eine **Region** auswählt, fielen die Wände auf die positionale
+Nummerierung 0, 1, 2, … zurück — und eine Entity-Id wie 28 kommt dort nie vor.
+Grund: `resolve_profile_query` baute region-eingeschränkte Profile aus
+`sketch_arrangement::arrange`, und dessen frisch getraversierte Atom-Face-Kontur
+trug keine Provenienz (dokumentiert als Folgearbeit in
+`SKETCH-REGION-IMPRINT-PLAN.md` §5).
+
+**Behoben:** Die Arrangement-Kanten kennen ihre Quelle bereits (`Piece.src`);
+sie wird jetzt über denselben Registry-Replay, aus dem der Ganz-Sketch-Trace
+kommt (`sketch::replay_allocations`), auf die **Sketch-Kurven-Entity**
+abgebildet und als `TracedPrim`/`TraceSources::PerSegment` an jeder `AtomicFace`
+mitgeführt. Eine gepickte Region benennt ihre Wände damit exakt wie der ganze
+Sketch. Nachweis end-to-end: `region_extrude_walls_resolve_by_sketch_entity`
+löst `qWall(op, entity)` auf genau eine Fläche auf und prüft deren Normale.
+
+### Was danach noch offen ist
+
+- **`qRegions(…)` mit mehreren Regionen** bleibt positional: zwei benachbarte
+  Regionen teilen sich eine Randlinie, die geteilte Sub kollidiert, und
+  `wall_sub_table` verwirft die Tabelle lieber ganz, als halb zu benennen
+  (#419 Feature 24 und 25). Sauber wäre, die Innenkanten der Vereinigung vor
+  dem Tabellenbau zu streichen — sie sind im Ergebnis keine Wände.
+- **#409s Extrude 2** ist ein dritter Fall: `qCreatedBy(4)` vereinigt VIER
+  disjunkte Rechtecke, Onshape hat nur eines extrudiert und benennt dessen
+  Wand. Die Tabelle ist stabil, die gesuchte Wand existiert im Körper nur
+  nicht. Das ist keine Namensfrage, sondern eine Profilfrage.
+- **Neuer Befund zu Klasse B:** #409s Sketch 6 nennt als `SWEPT_FACE`-Ursprung
+  die Entity `<rect>.bottom` von Sketch 11 — die zugehörige Wand liegt bei
+  x = 1072,5, Onshapes Sketch-Ebene aber bei z = 965, also 2,5 mm neben der
+  Wand aus Linie #11 derselben Skizze. Der Dekoder liest die falsche
+  Ursprungs-Entity. Solange die Wände positional numeriert waren, traf
+  `qWall(12, 3)` diese Fläche **zufällig**; mit korrekter Benennung tut es das
+  nicht mehr, und die Kette Sketch 6 → Extrude 11 → Sketch 7 hängt jetzt
+  sichtbar ~75 mm unter Onshapes Boden. Der #409-E2E hält diese Abweichung als
+  gemessene Zahl fest, nicht als Toleranz.

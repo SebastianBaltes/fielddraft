@@ -45,6 +45,12 @@ pub struct AtomicFace {
     /// bounding curves: the same named curve accounts for a large FRACTION of a
     /// plate's boundary and a negligible one of the sheet around it (#412).
     pub perimeter: f32,
+    /// Per-primitive provenance of [`profile`](Self::profile), in the tree's
+    /// DFS (= emission) order — outer loop first, then each hole. This is what
+    /// lets a region-restricted extrude carry STABLE, entity-attributed wall
+    /// subs instead of positional ones, so `qWall(op, entity)` binds a face on
+    /// a picked region exactly as it does on a whole-sketch profile (#424).
+    pub traces: Vec<crate::sketch::TracedPrim>,
 }
 
 /// Endpoint weld tolerance (mm). Snapped / solver-coincident endpoints are
@@ -63,10 +69,24 @@ struct Piece {
     src: usize,
 }
 
-/// Collect every non-construction entity's exact boundary segments.
-fn collect_sources(sub_calls: &[FeatureCall]) -> Vec<SketchSegment> {
+/// Collect every non-construction entity's exact boundary segments, each
+/// tagged with the SKETCH CURVE ENTITY it came from (`None` = the tool has no
+/// per-segment curve entity to name, e.g. the point-only polygon/slot/path
+/// tools). The ids come from the same registry replay the whole-sketch
+/// provenance trace uses ([`crate::sketch::replay_allocations`]), so the two
+/// paths can never drift apart.
+///
+/// LOCKSTEP: for a multi-curve tool the emission order below must match the
+/// tool's `apply()` allocation order. Today that is only `sketch_rectangle`
+/// (bottom, right, top, left in both) — anything else emits one curve or none.
+fn collect_sources(sub_calls: &[FeatureCall]) -> (Vec<SketchSegment>, Vec<Option<u32>>) {
+    let allocs = crate::sketch::replay_allocations(sub_calls);
     let mut out: Vec<SketchSegment> = Vec::new();
-    for call in sub_calls {
+    let mut src_ids: Vec<Option<u32>> = Vec::new();
+    for (ci, call) in sub_calls.iter().enumerate() {
+        let curves: &[u32] = allocs.get(ci).map(|a| a.curves.as_slice()).unwrap_or(&[]);
+        // Everything this call pushes gets attributed at the end of the arm.
+        let before = out.len();
         if call
             .params
             .get("construction")
@@ -205,8 +225,22 @@ fn collect_sources(sub_calls: &[FeatureCall]) -> Vec<SketchSegment> {
             // their geometry.
             _ => {}
         }
+        // Attribute this call's freshly pushed segments. One curve entity
+        // (line, arc, circle, ellipse, spline) names ALL of them — an ellipse
+        // and a spline are one entity split into many beziers. Several curves
+        // (rectangle) map positionally, which the LOCKSTEP note above pins
+        // down. No curve at all (polygon, slot, path) means no stable name.
+        let pushed = out.len() - before;
+        for k in 0..pushed {
+            src_ids.push(match curves.len() {
+                0 => None,
+                1 => Some(curves[0]),
+                n if n == pushed => Some(curves[k]),
+                _ => None,
+            });
+        }
     }
-    out
+    (out, src_ids)
 }
 
 fn push_polygon(out: &mut Vec<SketchSegment>, flat: &[f32]) {
@@ -577,7 +611,7 @@ pub fn arrange(sub_calls: &[FeatureCall]) -> Vec<AtomicFace> {
     if has_unarrangeable(sub_calls) {
         return Vec::new();
     }
-    let sources = collect_sources(sub_calls);
+    let (sources, src_ids) = collect_sources(sub_calls);
     if sources.is_empty() {
         return Vec::new();
     }
@@ -618,16 +652,24 @@ pub fn arrange(sub_calls: &[FeatureCall]) -> Vec<AtomicFace> {
     // Build each atomic face: outer profile minus immediate child profiles.
     let mut out: Vec<AtomicFace> = Vec::new();
     for i in 0..n {
-        let outer = face_profile(&faces[i], &sources, &verts, &src_use);
+        let (outer, outer_trace) =
+            face_profile(&faces[i], &sources, &src_ids, &verts, &src_use);
         if matches!(outer, Sketch2d::Empty) {
             continue;
         }
         let mut profile = outer;
+        // DFS order of `Difference(Difference(outer, h1), h2)` is outer, h1,
+        // h2 — the same order [`crate::sketch::wall_sub_table`] walks the tree
+        // in, so pushing each hole's trace as it is folded in keeps the two
+        // sequences aligned by construction.
+        let mut traces = vec![outer_trace];
         let mut hole_polys: Vec<&Vec<[f64; 2]>> = Vec::new();
         for &c in &children[i] {
-            let hole = face_profile(&faces[c], &sources, &verts, &src_use);
+            let (hole, hole_trace) =
+                face_profile(&faces[c], &sources, &src_ids, &verts, &src_use);
             if !matches!(hole, Sketch2d::Empty) {
                 profile = Sketch2d::Difference(Box::new(profile), Box::new(hole));
+                traces.push(hole_trace);
                 hole_polys.push(&polys[c]);
             }
         }
@@ -650,6 +692,7 @@ pub fn arrange(sub_calls: &[FeatureCall]) -> Vec<AtomicFace> {
             aabb,
             area: area as f32,
             perimeter: perimeter as f32,
+            traces,
         });
     }
 
@@ -678,18 +721,24 @@ fn has_unarrangeable(sub_calls: &[FeatureCall]) -> bool {
 /// equivalent `Union` of sub-paths). Line-sourced edges stay exact; a curved
 /// source used fully & un-cut is emitted as its exact `SketchSegment`; a curved
 /// source that was cut is emitted as its constituent straight micro-lines.
+///
+/// Returns the path together with its [`crate::sketch::TracedPrim`] — one
+/// stable sketch-entity id per emitted SEGMENT, in the same order, so the
+/// picked region's walls carry the same names a whole-sketch profile's do.
 fn face_profile(
     face: &RawFace,
     sources: &[SketchSegment],
+    src_ids: &[Option<u32>],
     verts: &[[f64; 2]],
     src_use: &[SourceUse],
-) -> Sketch2d {
+) -> (Sketch2d, crate::sketch::TracedPrim) {
     // Count how many boundary steps each source contributes.
     let mut counts: std::collections::HashMap<usize, usize> = std::collections::HashMap::new();
     for &s in &face.edge_srcs {
         *counts.entry(s).or_insert(0) += 1;
     }
     let mut segments: Vec<SketchSegment> = Vec::new();
+    let mut seg_src: Vec<Option<u32>> = Vec::new();
     let mut emitted_full: std::collections::HashSet<usize> = std::collections::HashSet::new();
     let n = face.verts.len();
     for step in 0..n {
@@ -708,6 +757,7 @@ fn face_profile(
         {
             if emitted_full.insert(src) {
                 segments.push(sources[src]);
+                seg_src.push(src_ids[src]);
             }
             continue;
         }
@@ -715,14 +765,26 @@ fn face_profile(
             start: [a[0] as f32, a[1] as f32],
             end: [b[0] as f32, b[1] as f32],
         });
+        seg_src.push(src_ids[src]);
     }
     if segments.is_empty() {
-        return Sketch2d::Empty;
+        return (
+            Sketch2d::Empty,
+            crate::sketch::TracedPrim {
+                prim: Sketch2dPrimitive::Path { segments: Vec::new(), closed: true },
+                sources: None,
+            },
+        );
     }
-    Sketch2d::Prim(Sketch2dPrimitive::Path {
+    let prim = Sketch2dPrimitive::Path {
         segments,
         closed: true,
-    })
+    };
+    let trace = crate::sketch::TracedPrim {
+        prim: prim.clone(),
+        sources: Some(crate::sketch::TraceSources::PerSegment(seg_src)),
+    };
+    (Sketch2d::Prim(prim), trace)
 }
 
 // ── geometry helpers ─────────────────────────────────────────────────

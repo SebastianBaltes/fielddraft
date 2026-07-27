@@ -1299,7 +1299,7 @@ async function importFeatures(
             result.errors.push(
               `${name}: Ebenen-Query "${built.query}" löst auf ${matches.length} Flächen auf (erwartet 1) — Sketch übersprungen.` +
                 (built.query.includes("qWall(") && matches.length === 0
-                  ? " Ursache ist meist eine tangential verschmolzene Mantelfläche: FieldDraft trennt Flächen nur an Knicken, ein abgerundetes Rechteck hat daher EINE Mantelfläche statt vier Seiten + vier Rundungen (siehe docs/ONSHAPE-IMPORT-STATE.md)."
+                  ? " Eine Wand trägt den Namen der Sketch-Entity, die sie erzeugt hat — löst sie nicht auf, gehört die genannte Entity nicht zum Rand des extrudierten Profils (siehe docs/ONSHAPE-IMPORT-GAP-MATRIX.md, Klasse A)."
                   : ""),
             );
             continue;
