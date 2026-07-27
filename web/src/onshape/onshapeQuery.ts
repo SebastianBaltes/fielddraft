@@ -7,22 +7,34 @@
  *   query=qCompressed(1.0,"<payload>",id);
  *
  * The payload is Onshape's BTON dictionary text — either plain
- * (`%B5$Query…`) or zlib/base64 (`&<hexlen>$eJ…`). We tokenize it and
- * extract the fields the sketch-plane translation needs. The grammar is
- * only partially reverse-engineered (string back-references stay
- * opaque), but every DISCRIMINATING field of the plane queries appears
- * as a literal on first use — validated against the Kabelbox corpus in
- * `fixtures/`. Anything that doesn't match a known shape comes back as
+ * (`%B5$Query…`) or zlib/base64 (`&<hexlen>$eJ…`). Two readings sit on the same
+ * tokenizer:
+ *
+ *  - {@link parseBton} rebuilds the actual document tree, resolving the string
+ *    back-references, so a value can be read AT ITS KEY. The EDGE translation
+ *    (#425) uses it; it is the only reading that can tell a query's own fields
+ *    from those of the ancestors its disambiguation nests.
+ *  - {@link extractPlaneRef} scans the flat token stream for literals. Every
+ *    DISCRIMINATING field of a PLANE query appears as a literal on first use, so
+ *    the scan suffices there — validated against the Kabelbox corpus.
+ *
+ * Anything that doesn't match a known shape comes back as
  * `{kind: "unsupported"}` so the import dialog can fail VISIBLY — never
- * silently fall back to XY.
+ * silently fall back to XY, never round a plausible-looking wrong edge.
  *
  * Token vocabulary (empirical):
  *   `M<hex>` map · `A<hex>` array · `C<hex>` class back-ref (0-based)
  *   `S<hex>$s` string · `S<h1>.<h2>$s1s2` two-part string
- *   `S-<ref>.<h>$suffix` ref+suffix string (ref left unresolved)
- *   `B<hex>$Name` class/enum introduction · `R<hex>`/`E<hex>` back-refs
+ *   `S-<ref>.<h>$suffix` table reference + literal suffix
+ *   `B<hex>$Name` class/enum introduction · `R<hex>` string back-ref
+ *   `E<hex>` shared SUB-STRUCTURE (a table we do not reconstruct)
  *   `D-?<hex>` number · `T`/`F` booleans · `%` root marker
  */
+
+/** One component of a BTON string: either spelled out or a back-reference
+ *  into the string table. `S12.6$F…wireOp` is two literal parts,
+ *  `S-13.5$right` a table reference followed by a literal one. */
+export type BtonPart = { lit: string } | { ref: number };
 
 /** One BTON token. Literal strings carry their parts; back-references
  *  stay opaque (`ref`). */
@@ -36,6 +48,12 @@ export interface BtonToken {
   n?: number;
   /** bool value. */
   v?: boolean;
+  /** str/enum/refstr: the parts as written, literal or referenced. The
+   *  structured parser needs the distinction (only LITERAL parts enter the
+   *  string table); the flat scans read `p1`/`p2` instead. */
+  parts?: BtonPart[];
+  /** ref: written as `E<hex>` — a shared SUB-STRUCTURE, not a string. */
+  structural?: boolean;
 }
 
 /** Strip the `qCompressed` wrapper and inflate the payload when it is
@@ -112,34 +130,43 @@ export function tokenizeBton(payload: string): BtonToken[] {
       if (payload[i] !== "$") throw new Error(`expected $ at ${i}`);
       i += 1;
       const parts: string[] = [];
+      const raw: BtonPart[] = [];
       let ref: number | undefined;
       for (const len of lens) {
         if (len < 0) {
           ref = -len;
+          raw.push({ ref: -len });
           continue;
         }
-        parts.push(payload.slice(i, i + len));
+        const lit = payload.slice(i, i + len);
+        parts.push(lit);
+        raw.push({ lit });
         i += len;
       }
       if (ref !== undefined) {
-        out.push({ t: "refstr", n: ref, p1: parts.join(".") });
+        out.push({ t: "refstr", n: ref, p1: parts.join("."), parts: raw });
       } else {
         out.push({
           t: c === "B" ? "enum" : "str",
           p1: parts[0] ?? "",
           p2: parts.slice(1).join("."),
+          parts: raw,
         });
       }
       continue;
     }
     if (c === "R" || c === "E") {
-      // `R<hex>` is a string back-reference. `E<hex>` appears where a VALUE
-      // is expected and is likewise a back-reference (structure sharing) —
-      // we do not resolve either, but a well-formed token we happen not to
-      // interpret must never abort the decode: throwing here killed every
-      // edge query of a document that used it.
+      // `R<hex>` is a STRING back-reference (into the table of parts every
+      // literal string introduces). `E<hex>` appears where a VALUE is
+      // expected and shares a whole previously-emitted SUB-STRUCTURE — a
+      // different table, which we do not reconstruct. Keeping the two apart
+      // matters: resolving an `E` against the string table yields a
+      // plausible-looking but WRONG string, and that string then lands in a
+      // map-key slot. A well-formed token we happen not to interpret must
+      // never abort the decode either — throwing here killed every edge
+      // query of a document that used it.
       i += 1;
-      out.push({ t: "ref", n: hex() });
+      out.push({ t: "ref", n: hex(), structural: c === "E" });
       continue;
     }
     if (c === "M" || c === "A" || c === "C") {
@@ -160,6 +187,148 @@ export function tokenizeBton(payload: string): BtonToken[] {
     throw new Error(`unknown BTON syntax '${c}' at ${i}`);
   }
   return out;
+}
+
+/** A BTON document as a plain JS value. Maps become objects (their keys are
+ *  always strings), arrays arrays, class wrappers are transparent — a class
+ *  intro only names the value that follows. */
+export type BtonValue =
+  | string
+  | number
+  | boolean
+  | BtonValue[]
+  | { [k: string]: BtonValue };
+
+/** A back-reference the string tables could not resolve. It is a VALUE, not a
+ *  string, so every consumer that expects text rejects it instead of guessing.
+ *  (Onshape shares whole sub-structures too; those refs live in a table we do
+ *  not reconstruct, and the fields they carry are disambiguation metadata we
+ *  do not read.) */
+export interface BtonUnresolved {
+  unresolvedRef: number;
+}
+
+export function isUnresolved(v: BtonValue | undefined): v is BtonValue & BtonUnresolved {
+  return typeof v === "object" && v !== null && !Array.isArray(v) && "unresolvedRef" in v;
+}
+
+/**
+ * The two string tables a BTON payload builds up as it is read. Empirically
+ * calibrated against the #419 fillet/chamfer corpus (103 payloads), where every
+ * reading is cross-checked by a hard constraint: a map KEY must come out as one
+ * of Onshape's field names, and a class ref (`C<n>`) as a class name.
+ *
+ *  - `all` — every string INTRODUCED, in order: class names (`B…`), each
+ *    literal part of a multi-part string, and then the joined string itself.
+ *    `C<n>` and the negative part-lengths inside a string index this table.
+ *  - `parts` — the same list WITHOUT class names and WITHOUT the joined
+ *    composites. `R<n>` indexes this one.
+ *
+ * That the two tables differ is not a guess: `C12` resolves to `Id` only with
+ * the class names counted, and a replayed map key `R13` resolves to
+ * `sketchEntityId` only with them left out. Both hold across the corpus.
+ */
+interface BtonStrings {
+  all: string[];
+  parts: string[];
+}
+
+/** Read one string token, registering the parts it introduces. */
+function readBtonString(tok: BtonToken, st: BtonStrings, isClass: boolean): string {
+  const resolved: string[] = [];
+  for (const part of tok.parts ?? []) {
+    if ("lit" in part) {
+      resolved.push(part.lit);
+      st.all.push(part.lit);
+      if (!isClass) st.parts.push(part.lit);
+    } else {
+      const s = st.all[part.ref];
+      if (s === undefined) throw new Error(`BTON: string ref ${part.ref} out of range`);
+      resolved.push(s);
+    }
+  }
+  const joined = resolved.join(".");
+  // A multi-part string also registers the joined form — that is the entry a
+  // later `<featureId>.<op>` reference points at.
+  if ((tok.parts?.length ?? 0) > 1) st.all.push(joined);
+  return joined;
+}
+
+/**
+ * Parse a tokenized BTON payload into a plain JS value.
+ *
+ * The grammar is small: a class intro (`B<len>$Name`) or class ref (`C<n>`)
+ * merely NAMES the value that follows, `M<n>` is a map of n key/value pairs,
+ * `A<n>` an array of n values, and everything else is a leaf. Unlike the flat
+ * marker scans this yields the actual field structure, so a value can be read
+ * AT ITS KEY (`sketchEntityId`) instead of by its shape — the mistake that
+ * cost #419 six sketch planes.
+ *
+ * Throws on a malformed stream (unbalanced containers, a string ref pointing
+ * past the table); the callers turn that into a visible "unsupported" result.
+ */
+export function parseBton(tokens: BtonToken[]): BtonValue {
+  const st: BtonStrings = { all: [], parts: [] };
+  const cur = { i: 0 };
+  const value = parseBtonValue(tokens, cur, st);
+  if (cur.i !== tokens.length) {
+    throw new Error(`BTON: ${tokens.length - cur.i} trailing token(s)`);
+  }
+  return value;
+}
+
+function parseBtonValue(tokens: BtonToken[], cur: { i: number }, st: BtonStrings): BtonValue {
+  const tok = tokens[cur.i];
+  if (!tok) throw new Error("BTON: unexpected end of stream");
+  cur.i += 1;
+  switch (tok.t) {
+    case "enum":
+      // Class introduction: name it, then read the value it wraps.
+      readBtonString(tok, st, true);
+      return parseBtonValue(tokens, cur, st);
+    case "cls":
+      // Class back-reference — same, but the name is already known.
+      return parseBtonValue(tokens, cur, st);
+    case "map": {
+      const out: { [k: string]: BtonValue } = {};
+      for (let k = 0; k < (tok.n ?? 0); k += 1) {
+        const key = parseBtonValue(tokens, cur, st);
+        const val = parseBtonValue(tokens, cur, st);
+        // A key we cannot name gets a synthetic one rather than aborting the
+        // parse. Onshape shares whole sub-structures through a second table we
+        // do not reconstruct, and those shared branches are TOPOLOGY
+        // disambiguation metadata — nothing the translation reads. Throwing
+        // here threw the well-formed ROOT away with them (9 of #416's 22 edge
+        // queries). The `?` prefix cannot collide with an Onshape field name,
+        // so a lost key can never masquerade as one.
+        out[typeof key === "string" ? key : `?${k}`] = val;
+      }
+      return out;
+    }
+    case "arr": {
+      const out: BtonValue[] = [];
+      for (let k = 0; k < (tok.n ?? 0); k += 1) out.push(parseBtonValue(tokens, cur, st));
+      return out;
+    }
+    case "str":
+    case "refstr":
+      return readBtonString(tok, st, false);
+    case "ref": {
+      const s = tok.structural ? undefined : st.parts[tok.n ?? -1];
+      return s === undefined ? { unresolvedRef: tok.n ?? -1 } : s;
+    }
+    case "num":
+      return tok.n ?? 0;
+    case "bool":
+      return tok.v === true;
+  }
+}
+
+/** Decode + tokenize + parse in one step. */
+export async function parseQueryDocument(queryString: string): Promise<BtonValue | null> {
+  const { bton, payload } = await decodeOnshapeQueryString(queryString);
+  if (!bton) return null;
+  return parseBton(tokenizeBton(payload));
 }
 
 /** An operation reference extracted from the token stream: the Onshape
@@ -389,6 +558,246 @@ export function extractPlaneRef(tokens: BtonToken[]): OnshapePlaneRef {
   }
 
   return { kind: "unsupported", reason: "no known plane query shape" };
+}
+
+/** A B-Rep FACE an Onshape query names, in the terms FieldDraft can express. */
+export type OnshapeFaceRef =
+  /** A sweep's cap. `isStart` is Onshape's sketch-plane side. */
+  | { kind: "cap"; opFeatureId: string; isStart: boolean }
+  /** The lateral wall swept from one sketch entity. */
+  | { kind: "wall"; opFeatureId: string; origin: OnshapeEntityOrigin }
+  /** A shelled body's inner skin (Onshape `OFFSET_FACE`), wall side. */
+  | { kind: "innerWall"; opFeatureId: string }
+  /** A shelled body's inner skin, cap side. */
+  | { kind: "innerCap"; opFeatureId: string; isStart: boolean };
+
+/**
+ * What a decoded fillet/chamfer EDGE query names. FieldDraft addresses a B-Rep
+ * edge as `qCommonEdge(faceA, faceB)` — the edge where two named faces meet —
+ * so every supported shape lowers to a PAIR of faces. A shape that does not is
+ * refused by name rather than approximated: rounding the wrong edge is a silent
+ * geometry defect, a refusal is a line in the import report.
+ */
+export type OnshapeEdgeRef =
+  | { kind: "faces"; a: OnshapeFaceRef; b: OnshapeFaceRef }
+  | { kind: "unsupported"; reason: string };
+
+const asMap = (v: BtonValue | undefined): { [k: string]: BtonValue } | null =>
+  typeof v === "object" && v !== null && !Array.isArray(v) && !("unresolvedRef" in v)
+    ? (v as { [k: string]: BtonValue })
+    : null;
+
+const asText = (v: BtonValue | undefined): string | null => (typeof v === "string" ? v : null);
+
+/**
+ * A `queryType`, but only if it LOOKS like one. Onshape's query types are
+ * SCREAMING_CASE tokens; a string table drifts by one where a shared
+ * sub-structure was skipped, and then a `queryType` slot reads `bottom`,
+ * `opRevolve` or `1` — a value from a neighbouring slot. Those are not query
+ * types, and reporting „Flächenform bottom" would blame Onshape for our own
+ * decode. Anything that fails this test is refused as UNDECODED.
+ */
+function queryTypeOf(v: BtonValue | undefined): string | null {
+  const s = asText(v);
+  return s && /^[A-Z][A-Z_0-9]*$/.test(s) ? s : null;
+}
+
+/** Onshape ids travel as `Id[["<featureId>.<op>"]]` — one array level around a
+ *  dotted string. Split it, and only accept the full form: a bare `opExtrude`
+ *  is a back-reference whose owning feature we cannot recover. */
+function opRefOfValue(v: BtonValue | undefined): OnshapeOpRef | null {
+  const s = asText(Array.isArray(v) ? v[0] : v);
+  if (!s) return null;
+  const dot = s.indexOf(".");
+  if (dot < 0) return null;
+  const featureId = s.slice(0, dot);
+  if (!/^F[A-Za-z0-9]+_\d+$/.test(featureId)) return null;
+  return { featureId, op: s.slice(dot + 1) };
+}
+
+/**
+ * The SKETCH ENTITIES an entity descends from, read out of its
+ * `ORIGINAL_DEPENDENCY` disambiguation — at the KEYS `operationId` and
+ * `sketchEntityId`, never by the shape of a string.
+ *
+ * Onshape replays a repeated `operationId` as a back-reference to a string PART
+ * (`"wireOp"`), which on its own no longer names a sketch. Such an entry
+ * inherits the sketch of the entry BEFORE it — that is what a back-reference to
+ * the preceding value means, and it is not left as an assumption: the caller
+ * looks the entity id up in exactly that sketch's entity table, and a 12-random-
+ * character id that is not in it fails the translation visibly. In the one
+ * corpus query where two sketches meet (#419 `Fillet 7`), the inherited sketch
+ * is the one whose entity ids the following originals actually carry.
+ */
+function sketchOriginals(root: { [k: string]: BtonValue }): OnshapeEntityOrigin[] {
+  const out: OnshapeEntityOrigin[] = [];
+  const dd = root.disambiguationData;
+  if (!Array.isArray(dd)) return out;
+  for (const entry of dd) {
+    const em = asMap(entry);
+    if (!em || asText(em.disambiguationType) !== "ORIGINAL_DEPENDENCY") continue;
+    const originals = Array.isArray(em.originals) ? em.originals : [];
+    let sketchFeatureId: string | null = null;
+    for (const o of originals) {
+      const om = asMap(o);
+      if (!om || queryTypeOf(om.queryType) !== "SKETCH_ENTITY") continue;
+      const op = opRefOfValue(om.operationId);
+      if (op) sketchFeatureId = op.op === "wireOp" ? op.featureId : null;
+      const entityId = asText(om.sketchEntityId);
+      if (!entityId || !sketchFeatureId) continue;
+      out.push({ sketchFeatureId, entityId });
+    }
+  }
+  return out;
+}
+
+/** One face of an edge's `derivedFrom` pair. */
+function faceRefOf(v: BtonValue): OnshapeFaceRef | { reason: string } {
+  const m = asMap(v);
+  if (!m) return { reason: "Fläche als geteilte Rück-Referenz (nicht auflösbar)" };
+  const qt = queryTypeOf(m.queryType);
+  const op = opRefOfValue(m.operationId);
+  if (!qt) return { reason: "Flächen-Query, deren queryType nicht dekodierbar ist" };
+  if (!op) return { reason: `Flächen-Query ${qt} ohne lesbare Operations-Id` };
+  if (qt === "CAP_FACE") {
+    if (typeof m.isStart !== "boolean") return { reason: "CAP_FACE ohne isStart-Flag" };
+    return { kind: "cap", opFeatureId: op.featureId, isStart: m.isStart };
+  }
+  if (qt === "SWEPT_FACE") {
+    const origins = sketchOriginals(m);
+    if (origins.length !== 1) {
+      return {
+        reason: `SWEPT_FACE mit ${origins.length} Herkunfts-Skizzenelementen (genau eines erwartet)`,
+      };
+    }
+    return { kind: "wall", opFeatureId: op.featureId, origin: origins[0] };
+  }
+  if (qt === "OFFSET_FACE") return { kind: "innerWall", opFeatureId: op.featureId };
+  return { reason: `Flächenform ${qt}` };
+}
+
+/**
+ * Translate a parsed fillet/chamfer edge query into the face pair FieldDraft
+ * names it by.
+ *
+ * The discriminator is the ROOT `queryType` — not the set of markers anywhere in
+ * the document, which was the earlier rule and is provably wrong: a query's
+ * disambiguation nests the FULL queries of the entities it descends from, so a
+ * boolean-derived edge carries `CAP_FACE`, `SWEPT_EDGE` and `SKETCH_ENTITY`
+ * markers that belong to its ancestors, not to itself.
+ */
+export function extractEdgeRef(doc: BtonValue): OnshapeEdgeRef {
+  const root = asMap(doc);
+  if (!root) return { kind: "unsupported", reason: "Kanten-Query ist kein BTON-Objekt" };
+  const qt = queryTypeOf(root.queryType);
+  if (!qt) {
+    return { kind: "unsupported", reason: "queryType der Kante nicht dekodierbar" };
+  }
+  const op = opRefOfValue(root.operationId);
+  const unsupported = (reason: string): OnshapeEdgeRef => ({ kind: "unsupported", reason });
+
+  // A LATERAL edge of a sweep: where the walls swept from two neighbouring
+  // sketch entities meet. Onshape names it by those entities, FieldDraft by the
+  // two walls — the same edge, said the same way.
+  if (qt === "SWEPT_EDGE") {
+    if (!op) return unsupported("SWEPT_EDGE ohne lesbare Operations-Id");
+    const origins = sketchOriginals(root);
+    if (origins.length !== 2) {
+      return unsupported(
+        `SWEPT_EDGE aus ${origins.length} Skizzenelementen — eine Kante ist der Schnitt von GENAU zwei Wänden`,
+      );
+    }
+    return {
+      kind: "faces",
+      a: { kind: "wall", opFeatureId: op.featureId, origin: origins[0] },
+      b: { kind: "wall", opFeatureId: op.featureId, origin: origins[1] },
+    };
+  }
+
+  // A cap RIM, named as an edge in its own right: the cap meets the wall swept
+  // from the one sketch entity the edge descends from.
+  if (qt === "CAP_EDGE") {
+    if (!op) return unsupported("CAP_EDGE ohne lesbare Operations-Id");
+    if (typeof root.isStart !== "boolean") return unsupported("CAP_EDGE ohne isStart-Flag");
+    const origins = sketchOriginals(root);
+    if (origins.length !== 1) {
+      return unsupported(
+        `CAP_EDGE aus ${origins.length} Skizzenelementen — welches davon die Wand trägt, sagt die Query nicht`,
+      );
+    }
+    return {
+      kind: "faces",
+      a: { kind: "cap", opFeatureId: op.featureId, isStart: root.isStart },
+      b: { kind: "wall", opFeatureId: op.featureId, origin: origins[0] },
+    };
+  }
+
+  // The same rim, named as the INTERSECTION of its two faces (what Onshape
+  // emits when the user rolled the edge up from faces rather than clicking it).
+  if (qt === "INTERSECT") {
+    const df = Array.isArray(root.derivedFrom) ? root.derivedFrom : [];
+    if (df.length !== 2) {
+      return unsupported(`INTERSECT-Kante aus ${df.length} Flächen (genau zwei erwartet)`);
+    }
+    const a = faceRefOf(df[0]);
+    const b = faceRefOf(df[1]);
+    if ("reason" in a) return unsupported(`INTERSECT-Kante: ${a.reason}`);
+    if ("reason" in b) return unsupported(`INTERSECT-Kante: ${b.reason}`);
+    return { kind: "faces", a, b };
+  }
+
+  // A SHELLED body's inner rim: the hollow's floor meets its side. Both faces
+  // belong to the SWEEP — an inner face keeps the outer one's provenance; the
+  // shell only hollowed it — so the sweep comes out of the TRUE_DEPENDENCY the
+  // offset edge carries, not out of the shell op the root names.
+  if (qt === "OFFSET_EDGE") {
+    const dd = Array.isArray(root.disambiguationData) ? root.disambiguationData : [];
+    for (const entry of dd) {
+      const em = asMap(entry);
+      if (!em || asText(em.disambiguationType) !== "TRUE_DEPENDENCY") continue;
+      const df = Array.isArray(em.derivedFrom) ? em.derivedFrom : [];
+      for (const d of df) {
+        const dm = asMap(d);
+        const dop = dm ? opRefOfValue(dm.operationId) : null;
+        if (!dm || !dop || asText(dm.queryType) !== "CAP_EDGE") continue;
+        if (typeof dm.isStart !== "boolean") continue;
+        return {
+          kind: "faces",
+          a: { kind: "innerCap", opFeatureId: dop.featureId, isStart: dm.isStart },
+          b: { kind: "innerWall", opFeatureId: dop.featureId },
+        };
+      }
+    }
+    return unsupported("OFFSET_EDGE ohne den geschalten Sweep (TRUE_DEPENDENCY)");
+  }
+
+  // Everything else is a topological history FieldDraft has no name for. Say
+  // WHICH one — „Kantenform X" is a gap-matrix line, „nicht übersetzbar" is not.
+  const named: Record<string, string> = {
+    MERGE: "aus einer Boolean-Vereinigung hervorgegangene Kante (MERGE)",
+    COPY: "Kante einer Muster-Kopie (COPY)",
+    SPLIT: "Bruchstück einer von einer Boolean geteilten Kante (SPLIT)",
+    BLEND_EDGE: "Kante einer bereits verrundeten/gefasten Fläche (BLEND_EDGE)",
+    BLEND_FACE: "Kante an einer Verrundungsfläche (BLEND_FACE)",
+    CAP_FACE: "ganze Deckelfläche statt einer Kante (CAP_FACE)",
+  };
+  return unsupported(
+    `${named[qt] ?? `Onshape-Kantenform ${qt}`} — FieldDraft benennt Kanten über zwei Flächen und hat dafür kein Gegenstück`,
+  );
+}
+
+/** Decode + tokenize + parse + extract an EDGE query in one step. */
+export async function decodeEdgeQuery(queryString: string): Promise<OnshapeEdgeRef> {
+  try {
+    const doc = await parseQueryDocument(queryString);
+    if (doc === null) return { kind: "unsupported", reason: "keine qCompressed-Query" };
+    return extractEdgeRef(doc);
+  } catch (e) {
+    return {
+      kind: "unsupported",
+      reason: `Kante nicht dekodierbar (${e instanceof Error ? e.message : String(e)})`,
+    };
+  }
 }
 
 /** Convenience: decode + tokenize + extract in one step. Tokenizer or

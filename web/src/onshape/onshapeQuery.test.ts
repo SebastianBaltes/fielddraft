@@ -2,7 +2,15 @@ import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { decodePlaneQuery, decodeOnshapeQueryString, tokenizeBton } from "./onshapeQuery";
+import {
+  decodeEdgeQuery,
+  decodePlaneQuery,
+  decodeOnshapeQueryString,
+  parseBton,
+  parseQueryDocument,
+  tokenizeBton,
+  type OnshapeEdgeRef,
+} from "./onshapeQuery";
 
 /** Load a live-captured feature JSON, unwrapped to the feature messages. */
 function fixtureFeatures(file: string): any[] {
@@ -240,6 +248,248 @@ describe("decodePlaneQuery — failure visibility", () => {
   it("garbage payloads surface the tokenizer error", async () => {
     const ref = await decodePlaneQuery('query=qCompressed(1.0,"%Z9$nope",id);');
     expect(ref.kind).toBe("unsupported");
+  });
+});
+
+/** The `entities` query strings of one fillet/chamfer feature, in order. */
+function edgeQueriesOf(features: any[], name: string): string[] {
+  const feat = features.find((m) => m.name === name);
+  expect(feat, `feature ${name}`).toBeTruthy();
+  const param = feat.parameters
+    .map((p: any) => p.message ?? p)
+    .find((p: any) => p.parameterId === "entities");
+  return (param.queries ?? []).map((q: any) => (q.message ?? q).queryString as string);
+}
+
+/**
+ * The BTON string tables — the piece of the format that had to be reverse-
+ * engineered for #425, and the piece that decides whether a value is read at
+ * its KEY or at a position.
+ *
+ * A payload builds up two tables as it is read, and they are NOT the same one:
+ * `C<n>` (class) and the negative part-lengths inside a string index the table
+ * WITH the class names and the joined composites in it; `R<n>` indexes the one
+ * with only the literal parts. Get either wrong by one and the decode still
+ * "works" — it just returns a neighbouring string, which is how a map key comes
+ * out as `bottom` and a query type as `opRevolve`.
+ */
+describe("parseBton — the two string tables", () => {
+  // #409 „Chamfer 1", verbatim: the smallest real SWEPT_EDGE in the corpus.
+  const CHAMFER_1_409 =
+    "%B5$QueryM5S12$disambiguationDataA1M2S12$disambiguationTypeS13$ORIGINAL_DEPENDENCY" +
+    "S9$originalsA2C0M5Sa$entityTypeBa$EntityTypeS4$EDGESb$historyTypeS8$CREATION" +
+    "Sb$operationIdB2$IdA1S12.6$Fu6o1ZFH8h4gKml_18wireOpS9$queryTypeSd$SKETCH_ENTITY" +
+    "Se$sketchEntityIdSc.6$dE9VSfqolyPgbottomC0M5R4R5R6R7R8RaRbRcRdSc$exVl27xLp2IA" +
+    "R4R5R6R7R8CbA1S12.9$FJaU8k5c579SOul_18opExtrudeRbSa$SWEPT_EDGE";
+
+  it("replays a compressed map with its FIELD NAMES, not with neighbours", () => {
+    // The second `originals` entry is written as nine back-references plus one
+    // literal. Only the literal (`exVl27xLp2IA`) is spelled out — everything
+    // else, INCLUDING the key `sketchEntityId`, comes out of the table.
+    expect(parseBton(tokenizeBton(CHAMFER_1_409))).toEqual({
+      disambiguationData: [
+        {
+          disambiguationType: "ORIGINAL_DEPENDENCY",
+          originals: [
+            {
+              entityType: "EDGE",
+              historyType: "CREATION",
+              operationId: ["Fu6o1ZFH8h4gKml_18.wireOp"],
+              queryType: "SKETCH_ENTITY",
+              sketchEntityId: "dE9VSfqolyPg.bottom",
+            },
+            {
+              entityType: "EDGE",
+              historyType: "CREATION",
+              // The replayed operation id resolves to the SUFFIX part alone —
+              // the sketch is the preceding entry's, and the entity id below is
+              // what proves it (it is looked up in that sketch's table).
+              operationId: "wireOp",
+              queryType: "SKETCH_ENTITY",
+              sketchEntityId: "exVl27xLp2IA",
+            },
+          ],
+        },
+      ],
+      entityType: "EDGE",
+      historyType: "CREATION",
+      operationId: ["FJaU8k5c579SOul_18.opExtrude"],
+      queryType: "SWEPT_EDGE",
+    });
+  });
+
+  it("resolves a string that is written as `<table entry> + suffix`", async () => {
+    // #419 „Fillet 15": the second entity travels as `S-13.5$right` — a
+    // reference to `pozkE6lurT5A` plus the literal `right`. Reading that ref
+    // one slot off yields `bottom.right`, which looks like an entity id and is
+    // not one.
+    const feats = fixtureFeatures("onshape-419-features.json");
+    const doc: any = await parseQueryDocument(edgeQueriesOf(feats, "Fillet 15")[1]);
+    const ids = doc.disambiguationData[0].originals.map((o: any) => o.sketchEntityId);
+    expect(ids).toEqual(["RRAmtdnwAfCb.bottom", "RRAmtdnwAfCb.left"]);
+  });
+
+  it("parses every fillet/chamfer edge query of the corpus", async () => {
+    // 206 payloads over eight fixtures. The parse is the floor the translation
+    // stands on: it may report a shape as unsupported, it may not fall over.
+    let n = 0;
+    for (const file of [
+      "onshape-419-features.json",
+      "onshape-409-features.json",
+      "onshape-414-features.json",
+      "onshape-415-features.json",
+      "onshape-416-features.json",
+      "kabelbox-features.json",
+      "ticket339-features.json",
+    ]) {
+      for (const feat of fixtureFeatures(file)) {
+        if (feat.featureType !== "fillet" && feat.featureType !== "chamfer") continue;
+        for (const qs of edgeQueriesOf(fixtureFeatures(file), feat.name)) {
+          const doc = await parseQueryDocument(qs);
+          expect(doc, `${file} ${feat.name}`).toBeTruthy();
+          n += 1;
+        }
+      }
+    }
+    expect(n).toBe(206);
+  });
+});
+
+/**
+ * Ticket #425 — the EDGE shapes of `fillet` and `chamfer`.
+ *
+ * FieldDraft addresses an edge as `qCommonEdge(faceA, faceB)`, so a shape is
+ * either lowered to a pair of faces or REFUSED by name. The refusals matter as
+ * much as the translations: the decoder this replaced discriminated on the set
+ * of markers found ANYWHERE in the payload, and a query's disambiguation nests
+ * the full queries of its ancestors — so a boolean-derived edge carried
+ * `CAP_FACE` and `SWEPT_FACE` markers belonging to faces that are not its own,
+ * and got translated into an edge of the pattern ORIGINAL. Two different #414
+ * fillets came out with the identical query that way.
+ */
+describe("decodeEdgeQuery — Ticket #425", () => {
+  const faceKinds = (ref: OnshapeEdgeRef) =>
+    ref.kind === "faces" ? [ref.a.kind, ref.b.kind] : [ref.kind];
+
+  it("#409 Chamfer 1: SWEPT_EDGE = the corner where two swept walls meet", async () => {
+    const feats = fixtureFeatures("onshape-409-features.json");
+    const ref = await decodeEdgeQuery(edgeQueriesOf(feats, "Chamfer 1")[0]);
+    expect(ref).toEqual({
+      kind: "faces",
+      a: {
+        kind: "wall",
+        opFeatureId: "FJaU8k5c579SOul_18",
+        origin: { sketchFeatureId: "Fu6o1ZFH8h4gKml_18", entityId: "dE9VSfqolyPg.bottom" },
+      },
+      b: {
+        kind: "wall",
+        opFeatureId: "FJaU8k5c579SOul_18",
+        // The sketch is INHERITED from the entry before it (the operation id was
+        // replayed as a back-reference) — and it is checked, not assumed: the
+        // importer looks this id up in exactly that sketch's entity table.
+        origin: { sketchFeatureId: "Fu6o1ZFH8h4gKml_18", entityId: "exVl27xLp2IA" },
+      },
+    });
+  });
+
+  it("#419 Chamfer 11: both SWEPT_EDGEs name their own pair of walls", async () => {
+    const feats = fixtureFeatures("onshape-419-features.json");
+    const ids = [];
+    for (const qs of edgeQueriesOf(feats, "Chamfer 11")) {
+      const ref = await decodeEdgeQuery(qs);
+      expect(faceKinds(ref)).toEqual(["wall", "wall"]);
+      if (ref.kind !== "faces" || ref.a.kind !== "wall" || ref.b.kind !== "wall") return;
+      ids.push([ref.a.origin.entityId, ref.b.origin.entityId]);
+    }
+    // Two DIFFERENT edges — the old decoder collapsed sibling edges into one.
+    expect(ids).toEqual([
+      ["D3GaT2WoTJJE", "DpzrxFGDJsRl"],
+      ["DpzrxFGDJsRl", "I2Ckp3kppzV1"],
+    ]);
+  });
+
+  it("#419 Chamfer 5: CAP_EDGE = the cap against the wall it descends from", async () => {
+    const feats = fixtureFeatures("onshape-419-features.json");
+    const ref = await decodeEdgeQuery(edgeQueriesOf(feats, "Chamfer 5")[0]);
+    expect(ref).toEqual({
+      kind: "faces",
+      a: { kind: "cap", opFeatureId: "FuEM5hJm4ZF6lHu_11", isStart: false },
+      b: {
+        kind: "wall",
+        opFeatureId: "FuEM5hJm4ZF6lHu_11",
+        origin: { sketchFeatureId: "F2ZztNtd6WHnwmB_11", entityId: "mwr4t9YMihpG.bottom" },
+      },
+    });
+  });
+
+  it("Kabelbox Fillet 1: OFFSET_EDGE = the SHELLED body's inner rim", async () => {
+    // The shell op only hollowed the body; both faces still belong to the
+    // sweep, which the offset edge names through its TRUE_DEPENDENCY.
+    const ref = await decodeEdgeQuery(edgeQueriesOf(kabelbox(), "Fillet 1")[0]);
+    expect(ref).toEqual({
+      kind: "faces",
+      a: { kind: "innerCap", opFeatureId: "Fz9Ll1Nhy8Iyyah_0", isStart: true },
+      b: { kind: "innerWall", opFeatureId: "Fz9Ll1Nhy8Iyyah_0" },
+    });
+  });
+
+  it("#414 Fillet 3: INTERSECT names its two faces — across TWO sweeps", async () => {
+    // The wall belongs to one extrude and the cap to another. The marker-based
+    // decoder used the first operation it found for BOTH.
+    const ref = await decodeEdgeQuery(edgeQueriesOf(fixtureFeatures("onshape-414-features.json"), "Fillet 3")[0]);
+    expect(ref.kind).toBe("faces");
+    if (ref.kind !== "faces") return;
+    expect(ref.a).toEqual({
+      kind: "wall",
+      opFeatureId: "FdtzO9AArGbv004_1",
+      origin: { sketchFeatureId: "FGnfhqBaFuIRIZp_0", entityId: "F2cYeD5tmibR" },
+    });
+    expect(ref.b).toEqual({ kind: "cap", opFeatureId: "F3WyOgYA1MVUHhI_1", isStart: true });
+  });
+
+  it("refuses the shapes with no FieldDraft counterpart, by name", async () => {
+    const f419 = fixtureFeatures("onshape-419-features.json");
+    const cases: [string, string, number, RegExp][] = [
+      // A boolean merged two edges into one — which of them FieldDraft should
+      // name is not a question the query answers.
+      ["MERGE", "Fillet 5", 0, /MERGE/],
+      // The edge of a pattern INSTANCE; FieldDraft has no name for one.
+      ["COPY", "Fillet 6", 0, /COPY/],
+      // A fragment of an edge a boolean cut in two.
+      ["SPLIT", "Fillet 14", 0, /SPLIT/],
+      // An edge of an EARLIER chamfer's blend face.
+      ["BLEND_EDGE", "Fillet 12", 0, /BLEND_EDGE/],
+      // Three profile curves meet there — an edge is the seam of exactly two
+      // faces, so which two is not determined.
+      ["SWEPT_EDGE ×3", "Fillet 7", 4, /SWEPT_EDGE aus 3/],
+    ];
+    for (const [label, feat, index, pattern] of cases) {
+      const ref = await decodeEdgeQuery(edgeQueriesOf(f419, feat)[index]);
+      expect(ref.kind, `${label} (${feat})`).toBe("unsupported");
+      if (ref.kind !== "unsupported") return;
+      expect(ref.reason, `${label} (${feat})`).toMatch(pattern);
+    }
+  });
+
+  it("never reports a drifted string as if it were an Onshape shape", async () => {
+    // Where a payload shares a whole sub-structure, our string table falls
+    // behind Onshape's and a `queryType` slot reads a neighbouring value
+    // (`bottom`, `opRevolve`, `1`). Those must come back as UNDECODED, not as
+    // „Flächenform bottom" — that would blame Onshape for our own gap.
+    const f419 = fixtureFeatures("onshape-419-features.json");
+    const reasons: string[] = [];
+    for (const feat of f419) {
+      if (feat.featureType !== "fillet" && feat.featureType !== "chamfer") continue;
+      for (const qs of edgeQueriesOf(f419, feat.name)) {
+        const ref = await decodeEdgeQuery(qs);
+        if (ref.kind === "unsupported") reasons.push(ref.reason);
+      }
+    }
+    expect(reasons.length).toBeGreaterThan(0);
+    for (const r of reasons) {
+      const shape = /Flächenform (\S+)/.exec(r)?.[1] ?? /Onshape-Kantenform (\S+)/.exec(r)?.[1];
+      if (shape) expect(shape, r).toMatch(/^[A-Z][A-Z_0-9]*$/);
+    }
   });
 });
 

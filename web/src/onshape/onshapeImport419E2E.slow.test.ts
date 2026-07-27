@@ -57,24 +57,31 @@ const GROUND_TRUTH = {
  * deleted — which is the point: the file has to be edited when the import gets
  * better, so the record cannot quietly go stale.
  *
- * 212 messages fall on these 118 features, and HALF of them are cascade — a
+ * 216 messages fall on these 118 features, and MOST of them are cascade — a
  * feature failing only because something it refers to never got built:
  *
- *    67  cascade: refers to a feature that was not imported
- *    42  unknown chamfer/fillet edge-query form  → #425
- *    41  cascade: profile sketch missing
- *    23  CAP_EDGE origin entity unresolvable
- *     9  `qWall(…)` binds 0 faces                → #424
+ *    40  cascade: profile sketch missing
+ *    32  cascade: wall plane names a feature that was not imported
+ *    29  cascade: EDGE query names a sweep that was not imported     (see #425)
+ *    61  chamfer/fillet edge shape with no FieldDraft counterpart    → #425 rest
+ *    10  cascade: cap plane names a feature that was not imported
+ *     8  no resolvable face / target or tool body for a boolean
+ *     7  `qWall(…)` binds 0 or several faces                         → #424
  *     7  hole position is not a plain sketch point
- *     6  face reference for `thicken`
  *     6  unknown plane-query form
+ *     3  `startOffset` (refused, not misplaced)
  *     3  end condition UP_TO_NEXT / UP_TO_SURFACE
- *     2  `startOffset` (refused, not misplaced)
  *     2  pattern axis not resolvable in world coordinates
- *     2  sketch entity absent from the translation
- *     1× ×2 feature type `printedHole` has no translator
+ *     2  feature type `printedHole` has no translator
+ *     6  singletons (mate-connector plane, skew sketch plane, …)
  *
- * So the ~50 REAL gaps are what to work on; the other half follows for free.
+ * The edge count moved 42+23 → 29+61 in #425 without a single message
+ * disappearing, and that IS the finding: the 65 edge queries that used to fail
+ * as „unknown form" / „origin unresolvable" now decode — 29 of them all the way
+ * to a NAMED sweep that this document never imports (cascade), the other 61 to a
+ * shape (boolean MERGE/SPLIT, pattern COPY, earlier BLEND) FieldDraft cannot
+ * name. #419's blend features therefore hang on the extrudes, not on the
+ * decoder.
  */
 const KNOWN_GAPS = [
   "3D Printed Hole 2",
@@ -265,12 +272,25 @@ describe("#419 multi-part assembly", () => {
 
     // Without these the geometry would be a fraction of the assembly and still
     // look plausible — which is exactly how a broken import hides.
+    //
+    // `fillet_edge` was on this list until #425 and is deliberately NOT any
+    // more. It was represented by exactly ONE feature, and that one was
+    // fabricated: the edge query named a face of a PATTERN COPY, the
+    // marker-based decoder ignored the copy and filleted the corresponding edge
+    // of the pattern's original instead. Measured after #425, every one of this
+    // document's 102 blend edges either names a sweep that never imports (29)
+    // or a shape with no FieldDraft counterpart (61) — so a fillet appearing
+    // here again means an EXTRUDE started importing, and this line should come
+    // back with it.
     const kinds = new Set(
       (JSON.parse(kernel.raw.toJson()).feature_calls as { type: string }[]).map((c) => c.type),
     );
-    for (const k of ["extrude", "revolve", "thicken", "boolean", "fillet_edge", "mate_connector"]) {
+    for (const k of ["extrude", "revolve", "thicken", "boolean", "mate_connector"]) {
       expect([...kinds], `feature kinds: ${[...kinds].join(", ")}`).toContain(k);
     }
+    expect([...kinds], "a blend on #419 means an extrude started importing").not.toContain(
+      "fillet_edge",
+    );
   }, 900_000);
 
   it("stands 90° rotated about Z — pinned as the measured defect it is", async () => {

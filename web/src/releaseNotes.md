@@ -12,6 +12,9 @@ Format, eine Zeile je Eintrag:
 kind = feat | fix | perf. scope und #tickets sind optional. Folgezeilen, die
 eingerückt sind, gehören zum Text davor (Umbruch erlaubt).
 
+## 0.39.0
+- feat(onshape) #425: Fasen und Verrundungen aus Onshape erkennen jetzt auch die senkrechte Kante zwischen zwei Wänden — bisher kannte der Import nur den Rand einer Deckfläche. Ebenso wichtig: Kanten, für die FieldDraft keinen Namen hat (eine Kante, die aus einer Boolean-Verschmelzung stammt, die Kante einer Muster-Kopie oder die einer bereits verrundeten Fläche), werden jetzt beim Namen genannt und übersprungen, statt still auf eine ähnlich aussehende Kante gelegt zu werden. Im Testkorpus wurden dadurch zwei Verrundungen erfunden, die auf der falschen Kante saßen; drei neue entstehen an der richtigen. Gemessen: von 206 Kanten-Angaben der Testdokumente sind 78 übersetzbar, die übrigen 128 melden ihre Onshape-Form im Klartext.
+
 ## 0.38.5
 - fix(kernel) #428: Eine Boolean-Operation mit „Werkzeuge behalten“ lässt die Werkzeug-Körper jetzt wirklich stehen. Bisher wurde das Häkchen zwar gespeichert, aber nie gelesen: die Werkzeuge wurden ausnahmslos verbraucht und verschwanden kommentarlos aus dem Dokument. Im importierten Regal-Dokument aus Onshape kostete das die vier senkrechten Pfosten — das Modell maß dadurch 887 mm Höhe statt 1840 mm. Jetzt trifft es Onshapes Bereich auf den Millimeter, und drei Skizzen samt einer Extrusion, die auf den Pfosten aufbauen, importieren gleich mit.
 

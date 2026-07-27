@@ -13,13 +13,13 @@
  */
 
 import {
+  decodeEdgeQuery,
   decodeOnshapeQueryString,
   decodePlaneQuery,
-  extractOpRefs,
-  extractPlaneRef,
   extractQueryRefs,
   tokenizeBton,
   type OnshapeEntityOrigin,
+  type OnshapeFaceRef,
   type OnshapePlaneRef,
 } from "./onshapeQuery";
 import {
@@ -2953,26 +2953,57 @@ async function decodeAnyOpRef(qs: string): Promise<string | null> {
 }
 
 /**
- * An Onshape edge query → a FieldDraft `qCommonEdge(faceA, faceB)`. Shared by
- * the `fillet` and `chamfer` translations (#414): both select EDGES, and an
- * edge is named by the two faces that meet at it, so the translation is driven
- * by the markers the query carries:
- *  - `CAP_FACE` ∩ `SWEPT_FACE` — a cap rim, named by its two FACES.
- *  - `CAP_EDGE` — the SAME cap rim, but named as an edge in its own right
- *    (which is what Onshape emits when the user clicks the edge instead of
- *    rolling it up from faces). The payload still carries the extrude, the
- *    `isStart` cap flag and the sketch entity whose wall the cap meets, so it
- *    lowers to the identical FieldDraft form.
- *  - `OFFSET_EDGE` / `OFFSET_FACE` — the rim of a SHELLED body: the cap meets
- *    the shell's inner wall (`OFFSET_*` is Onshape's name for the shell's
- *    offset surface). The inner wall keeps its outer face's feature id, so
- *    the FieldDraft form is `qCommonEdge(cap, INNER_WALL)`.
+ * One face of an edge, in FieldDraft's query language.
  *
- * Known limit: Onshape compresses repeated strings into back-references
- * whose index scheme we do not resolve yet, so two SIBLING edges of one
- * fillet (e.g. the two long rim edges) decode to the SAME markers and
- * collapse into one query. The caller de-duplicates and reports the
- * collapse rather than filleting the same edge twice.
+ * Onshape's START cap is the SKETCH-PLANE side; which FieldDraft cap that is
+ * depends on the extrude's DIRECTION, because a FieldDraft slab is centred on
+ * `depth/2` — a negative depth puts CAP_TOP, not CAP_BOTTOM, flush with the
+ * sketch plane (the same bookkeeping `buildPlaneQuery` does for cap planes).
+ */
+function faceQueryOf(
+  face: OnshapeFaceRef,
+  name: string,
+  idMap: Record<string, number>,
+  sketches: Map<string, SketchRecord>,
+  sweeps: Map<string, SweepRecord>,
+): { query?: string; error?: string } {
+  const fd = idMap[face.opFeatureId];
+  if (fd === undefined) {
+    return { error: `${name}: Kanten-Query nennt das nicht importierte Feature ${face.opFeatureId}` };
+  }
+  const capRole = (opFeatureId: string, isStart: boolean, inner: boolean): string => {
+    const positive = sweeps.get(opFeatureId)?.depthPositive ?? true;
+    const top = isStart ? !positive : positive;
+    return `${inner ? "INNER_" : ""}CAP_${top ? "TOP" : "BOTTOM"}`;
+  };
+  switch (face.kind) {
+    case "cap":
+      return { query: `qCreatedBy(${fd}, ${capRole(face.opFeatureId, face.isStart, false)})` };
+    case "innerCap":
+      return { query: `qCreatedBy(${fd}, ${capRole(face.opFeatureId, face.isStart, true)})` };
+    case "innerWall":
+      return { query: `qCreatedBy(${fd}, INNER_WALL)` };
+    case "wall": {
+      const wall = wallQuery(face.origin, fd, name, sketches);
+      return wall.query ? { query: wall.query } : { error: wall.error };
+    }
+  }
+}
+
+/**
+ * An Onshape edge query → a FieldDraft `qCommonEdge(faceA, faceB)`. Shared by
+ * the `fillet` and `chamfer` translations (#414/#425): both select EDGES, and
+ * FieldDraft names an edge by the two faces that meet at it.
+ *
+ * The shape recognition lives in {@link decodeEdgeQuery}, which reads the
+ * PARSED query document (root `queryType` + the fields at their keys). This
+ * function only lowers the decoded face pair — cap, wall, shell skin — into
+ * kernel query text and reports, per query, why one could not be built.
+ *
+ * Known limit (#425, measured on the #419 corpus): an edge whose history runs
+ * through a boolean, a pattern copy or an earlier blend is REFUSED by name. Two
+ * SIBLING edges of one fillet can still decode to the same face pair, which the
+ * caller de-duplicates rather than filleting the same edge twice.
  */
 async function buildEdgeQuery(
   qs: string,
@@ -2981,94 +3012,18 @@ async function buildEdgeQuery(
   sketches: Map<string, SketchRecord>,
   sweeps: Map<string, SweepRecord>,
 ): Promise<string | null> {
-  try {
-    const { bton, payload } = await decodeOnshapeQueryString(qs);
-    if (!bton) return null;
-    const tokens = tokenizeBton(payload);
-    const ref = extractPlaneRef(tokens);
-    const markers = new Set(
-      tokens.filter((t) => t.t === "str" && t.p1 && !t.p2).map((t) => t.p1 as string),
-    );
-    // The cap side, from the isStart flag. Onshape's START cap is the
-    // SKETCH-PLANE side; which FieldDraft cap that is depends on the extrude's
-    // direction, because a FieldDraft slab is centred on `depth/2` — a NEGATIVE
-    // depth puts CAP_TOP, not CAP_BOTTOM, flush with the sketch plane (the same
-    // bookkeeping `buildPlaneQuery` does for cap PLANES).
-    const isStartIdx = tokens.findIndex((t) => t.t === "str" && t.p1 === "isStart");
-    const boolTok =
-      isStartIdx >= 0 ? tokens.slice(isStartIdx + 1).find((t) => t.t === "bool") : undefined;
-    const capRoleOf = (opFeatureId: string): string => {
-      const positive = sweeps.get(opFeatureId)?.depthPositive ?? true;
-      const sketchSide = positive ? "CAP_BOTTOM" : "CAP_TOP";
-      const farSide = positive ? "CAP_TOP" : "CAP_BOTTOM";
-      return boolTok?.v === true ? sketchSide : farSide;
-    };
-
-    // Inside a SHELLED body: the hollow's floor/ceiling meets its side — the
-    // inner cap against the inner wall. Both faces belong to the SWEEP (an
-    // inner face keeps its outer face's feature id); the shell op only
-    // hollowed it, so take the sweep op out of the stream rather than the
-    // query's outermost op.
-    if (markers.has("OFFSET_EDGE") || markers.has("OFFSET_FACE")) {
-      const sweep = extractOpRefs(tokens).find((o) => /^op(Extrude|Revolve|Sweep)$/.test(o.op));
-      const fd = sweep ? result.idMap[sweep.featureId] : undefined;
-      if (fd === undefined) {
-        result.errors.push(`${name}: Shell-Kante — der geschalte Sweep ist nicht importiert`);
-        return null;
-      }
-      const innerCap =
-        capRoleOf(sweep!.featureId) === "CAP_TOP" ? "INNER_CAP_TOP" : "INNER_CAP_BOTTOM";
-      return `qCommonEdge(qCreatedBy(${fd}, ${innerCap}), qCreatedBy(${fd}, INNER_WALL))`;
-    }
-
-    // Cap rim: cap ∩ the wall swept from a named sketch entity.
-    if (ref.kind === "swept" && markers.has("CAP_FACE")) {
-      const fd = result.idMap[ref.opFeatureId];
-      if (fd === undefined) {
-        result.errors.push(`${name}: Kanten-Query referenziert nicht importiertes Feature`);
-        return null;
-      }
-      const wall = wallQuery(ref.origin, fd, name, sketches);
-      if (!wall.query) {
-        result.errors.push(wall.error ?? `${name}: Kante nicht übersetzbar`);
-        return null;
-      }
-      return `qCommonEdge(qCreatedBy(${fd}, ${capRoleOf(ref.opFeatureId)}), ${wall.query})`;
-    }
-
-    // The same cap rim, named directly as an EDGE. `SWEPT_FACE` alongside means
-    // the query mixes in face-level dependencies we cannot order reliably yet,
-    // so restrict this to the pure edge form rather than guess which origin is
-    // the rim's.
-    if (markers.has("CAP_EDGE") && !markers.has("SWEPT_FACE")) {
-      const refs = extractQueryRefs(tokens);
-      const extrude = refs.ops.find((o) => o.op.op === "opExtrude");
-      const origin = refs.origins[0]?.origin;
-      const fd = extrude ? result.idMap[extrude.op.featureId] : undefined;
-      if (fd === undefined || !origin) {
-        result.errors.push(
-          `${name}: CAP_EDGE-Kante — ${extrude ? "Herkunfts-Sketch-Entity" : "Extrude"} nicht auflösbar`,
-        );
-        return null;
-      }
-      const wall = wallQuery(origin, fd, name, sketches);
-      if (!wall.query) {
-        result.errors.push(wall.error ?? `${name}: Kante nicht übersetzbar`);
-        return null;
-      }
-      return `qCommonEdge(qCreatedBy(${fd}, ${capRoleOf(extrude!.op.featureId)}), ${wall.query})`;
-    }
-
-    result.errors.push(
-      `${name}: Kanten-Form nicht übersetzbar (Marker: ${[...markers]
-        .filter((m) => /FACE|EDGE/.test(m))
-        .join(", ") || "keine"})`,
-    );
-    return null;
-  } catch (e) {
-    result.errors.push(`${name}: Kante nicht dekodierbar (${e instanceof Error ? e.message : e})`);
+  const ref = await decodeEdgeQuery(qs);
+  if (ref.kind === "unsupported") {
+    result.errors.push(`${name}: ${ref.reason}`);
     return null;
   }
+  const a = faceQueryOf(ref.a, name, result.idMap, sketches, sweeps);
+  const b = faceQueryOf(ref.b, name, result.idMap, sketches, sweeps);
+  if (!a.query || !b.query) {
+    result.errors.push(a.error ?? b.error ?? `${name}: Kante nicht übersetzbar`);
+    return null;
+  }
+  return `qCommonEdge(${a.query}, ${b.query})`;
 }
 
 /**

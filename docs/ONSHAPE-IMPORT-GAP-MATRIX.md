@@ -837,7 +837,7 @@ Körpern stehen; die restlichen Lücken sind **sieben** Klassen, keine davon P5:
 | C End-Condition UP_TO_NEXT / UP_TO_SURFACE | Extrude 8, 12 | Zielfläche nicht auflösbar bzw. liegt in der Sketch-Ebene |
 | D Loch-Position ist kein Sketch-Punkt | beide `Bohrung`-Features | |
 | E Mate-Connector-Inferenz `CENTROID` | Sketch 8 | `anchorT` kennt nur MID_POINT/POINT |
-| F Fasen-Kante als EDGE/SWEPT_EDGE (**#425**) | Chamfer 1 | |
+| F ~~Fasen-Kante als EDGE/SWEPT_EDGE~~ (**#425**, Dekoder erledigt) | Chamfer 1 | `SWEPT_EDGE` wird übersetzt; Chamfer 1 hängt jetzt an `Extrude 14`, das nicht importiert (Folgefehler, s. Update (6)) |
 | G unbekannte Ebenen-Query-Form | Sketch 14 | |
 
 Alles andere sind Folgefehler: ein Extrude ohne Profil-Sketch, ein Spiegel
@@ -1186,3 +1186,97 @@ und ist noch nicht gemessen.
 Erklärung, die die Beobachtung trifft, ist noch keine gemessene Ursache. Beide
 A-Thesen erklärten „Wand ist innen" korrekt und lagen trotzdem daneben. Erst
 das Differenzial gegen einen echten Rebuild hat entschieden.
+
+## Update 2026-07-27 (6) — Klasse F: die Kanten-Formen sind gezählt, nicht geschätzt (#425)
+
+### Was gemessen wurde
+
+Ticket #425 sprach von „41 Vorkommen" der Marker `EDGE`, `SWEPT_EDGE` und
+`CAP_FACE` in Kanten-Position. Beides war zu korrigieren. Erstens die Zahl:
+**#419 hat 102** `entities`-Queries an `fillet`/`chamfer`, das gesamte Fixture-
+Korpus **206** (#409 genau 1, #414 29, #415 37, #416 22, Kabelbox 9, #339 6).
+Zweitens die Methode: `EDGE` steht in **jeder einzelnen** dieser Queries — es ist
+der Entity-Typ-Filter, keine Form. Und der bisherige Dekoder hat genau danach
+unterschieden, nämlich nach der MENGE der Marker irgendwo im Dokument. Das ist
+nachweislich falsch: die Disambiguierung einer Query schachtelt die **vollen
+Queries ihrer Vorfahren** ein, eine boolean-abgeleitete Kante trägt also
+`CAP_FACE`- und `SWEPT_FACE`-Marker, die Flächen gehören, die nicht ihre sind.
+
+Unterschieden wird jetzt am **Wurzel-`queryType`**. Verteilung über alle 206,
+und was daraus wird:
+
+| Wurzel-`queryType` | Anz. | abgebildet | FieldDraft-Form |
+|---|---:|---:|---|
+| `INTERSECT` (Kante = Schnitt zweier Flächen) | 78 | 17 | `qCommonEdge(a, b)`, sofern BEIDE Flächen `CAP_FACE`/`SWEPT_FACE`/`OFFSET_FACE` sind; die übrigen 61 haben eine `MERGE`-, `COPY`- oder `SPLIT`-Fläche |
+| `CAP_EDGE` (Deckel-Rand direkt benannt) | 42 | 40 | `qCommonEdge(cap, qWall)`; 2 nennen drei Ursprünge und sagen nicht, welcher die Wand trägt |
+| `COPY` (Kante einer Muster-Kopie) | 22 | 0 | **keine** — FieldDraft benennt keine Muster-Instanz |
+| `MERGE` (aus einer Boolean verschmolzene Kante) | 20 | 0 | **keine** — welche der beiden Ursprungskanten gemeint ist, sagt die Query nicht |
+| `SWEPT_EDGE` (senkrechte Kante zweier Wände) | 20 | 17 | `qCommonEdge(qWall, qWall)` — **neu in #425**; 3 nennen drei Skizzenelemente |
+| `BLEND_EDGE`/`BLEND_FACE` (Kante an einer früheren Verrundung) | 14 | 0 | **keine** |
+| `SPLIT` (Bruchstück einer geteilten Kante) | 4 | 0 | **keine** |
+| `OFFSET_EDGE` (Innenrand einer Schale) | 4 | 4 | `qCommonEdge(INNER_CAP_*, INNER_WALL)` |
+| `CAP_FACE` (ganze Fläche statt Kante) · undekodierbar | 2 | 0 | **keine** |
+
+**78 der 206 sind abbildbar**, die restlichen **128 werden namentlich
+abgelehnt** — „Kante einer Muster-Kopie (COPY)" statt „Kanten-Form nicht
+übersetzbar (Marker: EDGE, SWEPT_EDGE)". Die mit Abstand größte Restklasse ist
+nicht eine Kanten-, sondern eine FLÄCHEN-Frage: 61 `INTERSECT`-Kanten scheitern
+daran, dass eine ihrer beiden Flächen selbst aus einer Boolean oder einem Muster
+stammt.
+
+### Der BTON-Dekoder liest jetzt strukturiert, nicht flach
+
+`parseBton` baut das Query-Dokument als Objektbaum auf. Dafür mussten die
+**zwei String-Tabellen** des Formats rekonstruiert werden, und sie sind nicht
+dieselbe: `C<n>` (Klasse) und die negativen Teil-Längen innerhalb eines Strings
+indizieren die Tabelle **mit** Klassennamen und zusammengesetzten Strings,
+`R<n>` die **ohne** beide. Eine Verwechslung fällt nicht auf — sie liefert den
+Nachbar-String, und dann heißt ein Map-Schlüssel `bottom` und ein `queryType`
+`opRevolve`. Kalibriert an **allen 699 BTON-Queries der Fixtures** (nicht nur den
+Kanten-Queries) über eine harte Bedingung: ein Schlüssel MUSS ein
+Onshape-Feldname sein. Ergebnis: je 4431 saubere `entityType`/`historyType`/
+`operationId`/`queryType`-Schlüssel. In 41 der 699 Payloads driftet die Tabelle
+trotzdem — dort teilt Onshape ganze Unterstrukturen über einen zweiten
+Verweis-Raum, den wir nicht rekonstruieren. Diese Zweige sind
+TOPOLOGY-Disambiguierung, also nichts, was die Übersetzung liest: der Parser gibt
+ihnen einen synthetischen Schlüssel (`?0`, kollidiert mit keinem Feldnamen)
+statt die wohlgeformte WURZEL mit ihnen wegzuwerfen — daran starben vorher 9 der
+22 Kanten-Queries von #416. Ein Wert, der so entsteht, wird als **undekodiert**
+gemeldet und nie als Onshape-Form ausgegeben.
+
+### Vorher/Nachher, gemessen
+
+| Dokument | Blend-Features vorher | nachher | Meldungen vorher → nachher |
+|---|---:|---:|---|
+| #416 | 6 (2 Fasen + 4 Fillets) | **7** (2 + 5) | 14 → 16 |
+| #414 | 9 | **8** | 22 → 24 |
+| #415 | 2 | **0** | 37 → 39 |
+| #419 | 1 | **0** | 212 → 216 |
+| #409 | 0 | 0 | 22 → 22 |
+
+Neu entstehen in #416 zwei Fillets aus der **`SWEPT_EDGE`-Form**
+(`qCommonEdge(qWall(6, 10), qWall(6, 17))`) und in #414 eines aus einer
+`INTERSECT`-Kante, deren beide Flächen zu **verschiedenen** Sweeps gehören — der
+Marker-Dekoder nahm für beide dieselbe Operation.
+
+Weg fallen ausschließlich **erfundene** Kanten. In #414 hatten `Fillet 1` und
+`Fillet 2` die **identische** Query `qCommonEdge(qCreatedBy(2, CAP_TOP),
+qWall(2, 5))`; in #419 und #415 nannte der alte Dekoder für eine Fläche einer
+Muster-KOPIE die entsprechende Kante des Musters-ORIGINALS. Das ist genau der
+Fall, den #425 verbietet: eine still geratene Zuordnung, die die falsche Kante
+verrundet, ist schlimmer als eine gemeldete Lücke.
+
+### Was Klasse F NICHT gelöst hat
+
+`Chamfer 1` in **#409** dekodiert jetzt korrekt als `SWEPT_EDGE` über
+`dE9VSfqolyPg.bottom` × `exVl27xLp2IA` — und scheitert eine Stufe später daran,
+dass `Extrude 14` (`FJaU8k5c579SOul_18`) gar nicht importiert. In **#419** gilt
+das für **29 der 102** Kanten-Queries: die Form ist verstanden, der Sweep fehlt.
+Klasse F ist damit als *Dekoder*-Lücke geschlossen und als *Folgefehler* der
+Klassen A–C sichtbar geworden — der Fortschritt steht in der Fehlermeldung, nicht
+in der Körperzahl.
+
+**Offen bleibt** die topologische Historie: `MERGE`, `SPLIT`, `COPY`,
+`BLEND_EDGE` (zusammen 60 der 206, plus 61 `INTERSECT`-Kanten mit einer solchen
+Fläche) brauchen einen Namen für „die Kante NACH einer Boolean/einem Muster". Das ist dieselbe Frage wie Klasse A und gehört in
+den Kernel, nicht in den Übersetzer.
