@@ -387,3 +387,57 @@ describe("die Umrechnung landet, wo Onshape landet", () => {
     expect(checked, `${name}: keine 2D↔3D-Zuordnung gefunden`).toBeGreaterThan(3);
   });
 });
+
+/**
+ * Ticket #427: die Ebene liegt PARALLEL DANEBEN.
+ *
+ * Der Importer hat diesen Fall früher wie „schiefe Ebene" behandelt und die
+ * Umrechnung ganz verworfen — Onshapes 2D-Zahlen landeten dann roh auf
+ * FieldDrafts anders orientierten Achsen. Dieser Test hält fest, warum das
+ * falsch war: die In-Plane-Abbildung ist auch bei beliebigem Versatz EXAKT, und
+ * die umgerechnete Geometrie trifft Onshapes eigene Punkte auf die letzte
+ * Stelle — verschoben um genau den gemeldeten Versatz, sonst nichts.
+ */
+describe("parallel versetzte Ebene (#427)", () => {
+  const doc = features415();
+  const three3d = fx("onshape-415-sketches3d.json");
+  const three = sketches3dByFeature(three3d);
+  const offsetMm = 50;
+
+  it("die Abbildung bleibt exakt, der Versatz bleibt der einzige Fehler", () => {
+    const feat = sketchNamed(doc, "Sketch 3");
+    const os = measureOnshapeSketchFrame(feat, three.get(feat.featureId))!;
+    // Dieselbe Ebene wie im Test darüber, nur um `offsetMm` entlang ihrer
+    // Normalen verschoben — die Fläche, die eine Query „daneben" greift.
+    const fd = fdFrame([0, 0, -3 + offsetMm * -1], [0, 0, -1]);
+    const x = inPlaneXform(os, fd);
+
+    // Die Basis ist unverändert bestimmt; NUR der Abstand meldet den Fehlgriff.
+    expect(Math.abs(x.normalDot)).toBeCloseTo(1, 12);
+    expect(Math.abs(x.outOfPlaneMm)).toBeCloseTo(offsetMm, 9);
+    expect(x.axisAligned).toBe(true);
+
+    const moved = transformSketchFeature(feat, x).feature;
+    const byId = new Map<string, any>(
+      (three3d.sketches.find((s: any) => s.featureId === feat.featureId).geomEntities as any[]).map(
+        (e: any) => [e.id, e],
+      ),
+    );
+    let checked = 0;
+    for (const [id, [u, v]] of sketchPoints2d(moved)) {
+      const p = byId.get(id)?.point ?? byId.get(id)?.center;
+      if (!p) continue;
+      checked += 1;
+      for (let c = 0; c < 3; c++) {
+        const world = fd.origin[c] / 1000 + u * fd.xAxis[c] + v * fd.yAxis[c];
+        // Onshapes Punkt plus der Versatz entlang FieldDrafts Normalen — der
+        // Rest stimmt auf Nanometer.
+        expect(world, `${id} Achse ${c}`).toBeCloseTo(
+          p[c] - (x.outOfPlaneMm / 1000) * fd.normal[c],
+          9,
+        );
+      }
+    }
+    expect(checked).toBeGreaterThan(3);
+  });
+});

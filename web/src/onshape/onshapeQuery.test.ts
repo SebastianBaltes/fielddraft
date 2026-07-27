@@ -163,6 +163,74 @@ describe("decodePlaneQuery — #419 rail assembly", () => {
   });
 });
 
+/**
+ * #427 stood on the claim that the plane decoder picks the WRONG `SWEPT_FACE`
+ * origin entity for the #409 shelf — that it names a wall Onshape does not mean.
+ * It does not, and this is the measurement that says so: the entity it names is
+ * checked against Onshape's OWN world geometry (the `sketches?output3D=true`
+ * answer), which is the only source that can settle it. The wall Onshape means
+ * is the one swept from an edge lying IN the plane the dependent sketch sits on.
+ */
+describe("decodePlaneQuery — #409 shelf, SWEPT_FACE origin (Ticket #427)", () => {
+  const feats = fixtureFeatures("onshape-409-features.json");
+  const three = (JSON.parse(
+    readFileSync(join(__dirname, "fixtures", "onshape-409-sketches3d.json"), "utf8"),
+  ).sketches ?? []) as any[];
+
+  /** Every world point of a sketch entity, in mm (the payload reports metres). */
+  const worldPointsMm = (featureId: string, entityId: string): number[][] => {
+    const s = three.find((x) => x.featureId === featureId);
+    const e = (s?.geomEntities ?? []).find((g: any) => g.id === entityId);
+    const pts = [e?.point, e?.startPoint, e?.endPoint].filter(Boolean) as number[][];
+    return pts.map((p) => p.map((v) => v * 1000));
+  };
+
+  it("Sketch 6 names the edge that sweeps into the plane it sits on", async () => {
+    const ref = await decodePlaneQuery(planeQueryOf(feats, "Sketch 6"));
+    expect(ref).toEqual({
+      kind: "swept",
+      opFeatureId: "Fki57tHha8xZm97_14", // Extrude 10
+      origin: {
+        sketchFeatureId: "FU9cdmO9DPaHZuT_14", // Sketch 11
+        entityId: "OUhPEGp5z47e.bottom",
+      },
+    });
+    if (ref.kind !== "swept") return;
+
+    // The named edge runs at z = 965 …
+    const edge = worldPointsMm(ref.origin.sketchFeatureId, ref.origin.entityId);
+    expect(edge.length).toBeGreaterThan(0);
+    for (const p of edge) expect(p[2]).toBeCloseTo(965, 6);
+    // … and Sketch 6 itself lies at z = 965. Extruding that edge sweeps exactly
+    // this plane: the decoder names the face Onshape names.
+    const sketch6 = (three.find((x) => x.featureId === "FpQFfaAB8RCjfQh_9")?.geomEntities ?? [])
+      .filter((g: any) => g.point)
+      .map((g: any) => g.point[2] * 1000);
+    expect(sketch6.length).toBeGreaterThan(0);
+    for (const z of sketch6) expect(z).toBeCloseTo(965, 6);
+  });
+
+  it("Sketch 11 likewise names the edge in its own plane", async () => {
+    const ref = await decodePlaneQuery(planeQueryOf(feats, "Sketch 11"));
+    expect(ref).toEqual({
+      kind: "swept",
+      opFeatureId: "FBH24UYdTchhs9i_1", // Extrude 2
+      origin: {
+        sketchFeatureId: "Fmgukhe1CDBKQR7_1", // Sketch 2
+        entityId: "qn3WXLQ0bKS1.bottom",
+      },
+    });
+    if (ref.kind !== "swept") return;
+    // y = −550 in Onshape's world — the plane Sketch 11 sits on.
+    for (const p of worldPointsMm(ref.origin.sketchFeatureId, ref.origin.entityId)) {
+      expect(p[1]).toBeCloseTo(-550, 6);
+    }
+    for (const g of three.find((x) => x.featureId === "FU9cdmO9DPaHZuT_14")?.geomEntities ?? []) {
+      if (g.point) expect(g.point[1] * 1000).toBeCloseTo(-550, 6);
+    }
+  });
+});
+
 describe("decodePlaneQuery — failure visibility", () => {
   it("unknown wrappers come back unsupported, never a silent default", async () => {
     const ref = await decodePlaneQuery('query = qEverything(id + "X");');

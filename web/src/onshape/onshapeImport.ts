@@ -1177,6 +1177,18 @@ async function importMateConnectorPlane(
  *
  * Fehlt die 3D-Antwort oder ist der Frame aus ihr nicht bestimmbar, wird der
  * Sketch wie bisher wörtlich übernommen — und genau das gemeldet.
+ *
+ * Zwei Befunde, die früher EINER waren (#427): „die Ebene steht schief" und
+ * „die Ebene liegt parallel daneben" sind verschiedene Fehler, und nur der
+ * erste macht die Umrechnung sinnlos. Steht die Normale, ist die In-Plane-
+ * Abbildung EXAKT bestimmt, ganz gleich wie weit die Ebenen auseinanderliegen;
+ * sie dann wegzuwerfen verhindert keinen Fehler, sondern erzeugt einen viel
+ * größeren: Onshapes 2D-Zahlen landen auf FieldDrafts anders orientierten
+ * Achsen. Im #409-Regal war das der Unterschied zwischen 50 mm Versatz und
+ * einer um 90° verdrehten Ebene 1072,5 mm daneben — genau der Betrag, den
+ * Sketch 11 als 2D-v-Koordinate trägt. Der Versatz bleibt ein FEHLER (die
+ * Query hat eine andere Fläche erwischt), nur wird er jetzt beziffert statt
+ * verstärkt.
  */
 function alignSketchFrame(
   feat: AnyMsg,
@@ -1211,17 +1223,25 @@ function alignSketchFrame(
   }
 
   const x = inPlaneXform(os, fd);
-  // Erst die Ebene, dann die Basis: weicht die NORMALE ab oder liegt Onshapes
-  // Ursprung neben der Ebene, hat die FieldDraft-Query eine andere Fläche
-  // erwischt. Das umzurechnen hieße, einen Fehlgriff zu kaschieren.
-  if (Math.abs(Math.abs(x.normalDot) - 1) > 1e-6 || Math.abs(x.outOfPlaneMm) > 1e-3) {
+  // Steht die Normale schief, ist die In-Plane-Abbildung gegenstandslos: die
+  // beiden Ebenen teilen keine Richtung, in der man drehen könnte.
+  if (Math.abs(Math.abs(x.normalDot) - 1) > 1e-6) {
     result.errors.push(
-      `${name}: Onshapes Sketch-Ebene und die aufgelöste FieldDraft-Ebene ` +
-        `"${planeQuery}" sind nicht dieselbe Ebene ` +
-        `(Normalen-Skalarprodukt ${x.normalDot.toFixed(6)}, Abstand ` +
-        `${x.outOfPlaneMm.toFixed(4)} mm) — Koordinaten NICHT umgerechnet`,
+      `${name}: Onshapes Sketch-Ebene steht schief zur aufgelösten FieldDraft-Ebene ` +
+        `"${planeQuery}" (Normalen-Skalarprodukt ${x.normalDot.toFixed(6)}) — ` +
+        `Koordinaten NICHT umgerechnet`,
     );
     return feat;
+  }
+  // Parallel, aber daneben: die Query hat eine andere Fläche erwischt — ein
+  // Fehler, der genannt gehört. Die Basis stimmt trotzdem, also wird IN der
+  // Ebene umgerechnet und nur der Versatz bleibt stehen.
+  if (Math.abs(x.outOfPlaneMm) > 1e-3) {
+    result.errors.push(
+      `${name}: die aufgelöste FieldDraft-Ebene "${planeQuery}" liegt ` +
+        `${x.outOfPlaneMm.toFixed(4)} mm neben Onshapes Sketch-Ebene — Koordinaten IN der ` +
+        `Ebene umgerechnet, der Versatz bleibt`,
+    );
   }
   if (x.identity) return feat;
 

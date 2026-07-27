@@ -12,6 +12,9 @@ Format, eine Zeile je Eintrag:
 kind = feat | fix | perf. scope und #tickets sind optional. Folgezeilen, die
 eingerückt sind, gehören zum Text davor (Umbruch erlaubt).
 
+## 0.38.4
+- fix(onshape) #427: Liegt eine Skizze in Onshape auf einer Körperfläche, die FieldDraft zwar parallel, aber um einen Betrag versetzt auflöst, werden die 2D-Koordinaten jetzt trotzdem in FieldDrafts Achsen gedreht — der Versatz wird beziffert gemeldet, statt die Drehung mit zu verwerfen. Bisher landeten Onshapes Zahlen dabei roh auf den falschen Achsen: im Regal-Dokument stand eine Ebene dadurch um 90 Grad verdreht und 1072 mm neben ihrem Platz, und alles, was darauf aufbaute, hing 75 mm unter dem Boden. Jetzt steht es an seinem Platz.
+
 ## 0.38.3
 - fix(sketch) #424: Eine Fläche, die aus einer ausgewählten Skizzen-REGION entstanden ist, trägt jetzt denselben Namen wie eine aus der ganzen Skizze: den der Kante, die sie gezeichnet hat. Bisher wurden die Wände solcher Körper einfach durchnumeriert — jede Bezugnahme auf „diese Wand“, etwa ein Sketch darauf oder eine Fase daran, ging deshalb ins Leere, sobald das Profil eine Region war. Beim Onshape-Import waren davon ganze Skizzen samt allem, was darauf aufbaut, betroffen.
 

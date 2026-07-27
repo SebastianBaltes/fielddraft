@@ -1053,3 +1053,98 @@ es sich bezieht:
 | 2 | Feature-Typ `printedHole` ohne Übersetzer |
 
 Rund 50 echte Lücken also; die andere Hälfte fällt mit ihnen.
+
+## Update 2026-07-27 (5) — Klasse B gemessen: der Dekoder liest richtig, die Ebene erbt einen Versatz (#427)
+
+Der Befund am Ende von Update (4) — „#409s Sketch 6 nennt als `SWEPT_FACE`-
+Ursprung die falsche Entity" — ist **widerlegt**. Gegen Onshapes eigene
+3D-Antwort geprüft, nennt der Dekoder exakt die Entity, die Onshape nennt.
+
+### Was die Query wirklich sagt
+
+Sketch 6s Ebenen-Query, entpackt:
+
+    Query { queryType: SWEPT_FACE, entityType: FACE,
+            operationId: [Fki57tHha8xZm97_14 opExtrude]      // Extrude 10
+            disambiguationData: [ORIGINAL_DEPENDENCY, originals: [
+              SKETCH_ENTITY OUhPEGp5z47e.bottom @ FU9cdmO9DPaHZuT_14   // Sketch 11
+              SKETCH_ENTITY KzkU5Mf6zXlx.<ref> @ dito
+              SKETCH_ENTITY WNxhiv4O9GzA.<ref> @ dito ]] }
+
+Die drei genannten Kanten sind **kollinear** — sie laufen in Sketch 11 alle bei
+z = 965 von x = 65 bis x = 855 und verschmelzen in Onshape zu EINER Wandfläche.
+Jede von ihnen benennt dieselbe Ebene; der Dekoder nimmt die erste
+(`OUhPEGp5z47e.bottom`), und Onshapes 3D-Antwort bestätigt: diese Kante liegt
+bei z = 965, und Sketch 6 liegt bei z = 965. Der Dekoder trifft.
+
+### Die Kette, die den Fehler wirklich erzeugt
+
+1. **Sketch 2s 2D-Geometrie im `features`-Payload widerspricht Onshapes eigener
+   3D-Antwort** — bei zwei seiner vier Rechtecke um genau 50 mm (2D y = −500,
+   3D y = −550). Die beiden betroffenen Rechtecke hängen an EXTERNEN
+   `COINCIDENT`-Referenzen, und die löst Onshape erst bei der **Regenerierung**
+   auf: der Feature-Payload trägt den Autoren-Startwert, nicht die Lösung.
+   `measureOnshapeSketchFrame` fittet einen starren Frame über ALLE Paare, kein
+   starrer Frame erklärt 16 gute und 16 um 50 mm verschobene Punkte, also
+   liefert die Messung `null` → „Frame nicht bestimmbar", Koordinaten wörtlich.
+2. Damit steht jede Wand von Extrude 2 um 50 mm falsch, also auch die Ebene von
+   **Sketch 11** (`qWall(5, 15)`: Normale exakt richtig, Abstand 49,9999 mm).
+3. **Und hier stand der Verstärker:** `alignSketchFrame` verwarf die
+   Umrechnung, sobald die Ebene um irgendeinen Betrag danebenlag. Sketch 11s
+   2D-Koordinaten landeten dadurch ROH auf FieldDrafts Achsen — Onshapes
+   v-Koordinate 1072,5 auf FieldDrafts +X. Genau daher kam die „Wand bei
+   x = 1072,5": es ist keine Wand, es ist eine 2D-Zahl auf der falschen Achse.
+   Extrude 10s Mantel stand danach um 90° verdreht, und `qWall(12, 3)` — die
+   RICHTIG benannte Wand — lag senkrecht zu Onshapes Ebene.
+
+### Der Fix (v0.38.4)
+
+`alignSketchFrame` trennt die beiden Befunde, die vorher einer waren:
+
+| Fall | vorher | jetzt |
+|---|---|---|
+| Normale schief (`\|n·n\|` ≠ 1) | Fehler, keine Umrechnung | unverändert |
+| Ebene parallel versetzt | Fehler, keine Umrechnung | Fehler **mit Betrag**, Umrechnung IN der Ebene |
+
+Steht die Normale, ist die In-Plane-Abbildung exakt bestimmt — sie
+wegzuwerfen verhindert keinen Fehler, sondern erzeugt einen viel größeren.
+Gemessen an #409 Sketch 6:
+
+| | vorher | nachher |
+|---|---|---|
+| Normalen-Skalarprodukt zu Onshapes Ebene | 0,000000 | 1,000000 |
+| Abstand | −1072,5 mm | 4,86 mm |
+| Szenen-Untergrenze z (Grundwahrheit 0) | −74,8 mm | +938,1 mm |
+
+Die 4,86 mm sind ein **eigener, kleinerer Rest**: FieldDraft löst Sketch 11
+selbst, und drei `DISTANCE`-Bedingungen übersetzen nicht — die eigene Lösung
+weicht von Onshapes um 4,9 mm ab.
+
+### Was Klasse B noch offen hat
+
+- **Der Wurzelfehler (50 mm)** bleibt: der `features`-Payload ist ein
+  Startwert, keine Lösung. Sauber wäre, die 2D-Koordinaten aus Onshapes
+  3D-Antwort **zurückzurechnen** statt sie nur zu prüfen — d.h. den Frame
+  robust (Konsens statt Kleinste-Quadrate über alles) zu messen und danach
+  jede Entity, für die es einen 3D-Punkt gibt, aus ihm neu zu setzen. Gemessen:
+  patcht man Sketch 2s 16 Linien aus der 3D-Antwort, verschwinden Sketch 11s
+  Meldung und der 50-mm-Versatz vollständig.
+- **Der 4,9-mm-Rest** braucht die fehlenden `DISTANCE`-Bedingungen.
+
+### Nebenbefund: `Boolean 1` verschluckt das ganze Traggerüst
+
+`Boolean 1` zieht die vier senkrechten Pfosten (Extrude 2) von den
+Deckplatten ab, mit Onshapes „Werkzeuge behalten" (`keepTools=true`). Der
+Importer reicht das als `keep_tools: true` durch, `crates/kernel/src/features/
+boolean.rs` **parst das Feld und benutzt es nie**: die Werkzeug-Features
+bekommen bedingungslos `BoolOp::Remove` und hören damit auf, eigene Körper zu
+sein. Gemessen: löscht man dieses eine Feature aus der Fixture, misst die Szene
+z ∈ [0; 1840] — Onshapes Bereich auf den Millimeter. Mit ihm reicht sie nur von
+z = 938 (Mittelboden) bis z = 1825 (Deckplatte), 887 mm.
+
+Bis dahin hat der #409-E2E die Spannweiten-Schranke von 1500 mm auf diese
+gemessene Zahl zurückgenommen — im selben Stil wie die z-Untergrenze davor:
+eine benannte Defektzahl, keine Toleranz. Sie gehört zurück auf 1500, sobald
+der Boolean seine Werkzeuge behält. (Vorher war die 1500er-Schranke grün, weil
+die falsch platzierte Klasse-B-Kette 75 mm unter den Boden hing — sie maß einen
+Defekt, nicht die Höhe.)

@@ -1409,14 +1409,29 @@ describe("importOnshapeFeatures — Onshapes Sketch-Frame (#415)", () => {
     expect(lineOf(kernel).params).toEqual({ start: [5, 2], end: [15, 2] });
   });
 
-  it("rechnet NICHT um, wenn die 3D-Antwort eine andere EBENE meint", async () => {
+  it("rechnet NICHT um, wenn die 3D-Antwort eine SCHIEFE Ebene meint", async () => {
     const kernel = framedKernel();
     const result = await importOnshapeFeatures({ features: [sketchOnTop()] }, kernel, {
-      // 12 mm über der XY-Ebene: derselbe Sketch kann das nicht sein.
-      sketches3d: threeFor("FS1", [0, 0, 0.012], [1, 0, 0], [0, 1, 0]) as any,
+      // y auf +Z: die Normale steht senkrecht auf FieldDrafts XY-Datum. Es gibt
+      // keine gemeinsame Richtung, in der man drehen könnte.
+      sketches3d: threeFor("FS1", [0, 0, 0], [1, 0, 0], [0, 0, 1]) as any,
     });
-    expect(result.errors.join(" | ")).toContain("nicht dieselbe Ebene");
+    expect(result.errors.join(" | ")).toContain("steht schief");
     expect(lineOf(kernel).params).toEqual({ start: [0, 0], end: [10, 0] });
+  });
+
+  it("beziffert eine PARALLEL versetzte Ebene und rechnet trotzdem um (#427)", async () => {
+    // 12 mm über der XY-Ebene: die Query hat eine andere Fläche erwischt — ein
+    // Fehler, der genannt gehört. Die BASIS stimmt aber, und sie wegzuwerfen
+    // hieße, Onshapes 2D-Zahlen auf fremde Achsen zu legen: im #409-Regal wurde
+    // aus 50 mm Versatz so eine um 90° verdrehte Ebene 1072,5 mm daneben.
+    const kernel = framedKernel();
+    const result = await importOnshapeFeatures({ features: [sketchOnTop()] }, kernel, {
+      // Zusätzlich 90° gedreht, damit sichtbar wird, DASS umgerechnet wurde.
+      sketches3d: threeFor("FS1", [0, 0, 0.012], [0, -1, 0], [1, 0, 0]) as any,
+    });
+    expect(result.errors.join(" | ")).toContain("12.0000 mm neben Onshapes Sketch-Ebene");
+    expect(lineOf(kernel).params).toEqual({ start: [0, 0], end: [0, -10] });
   });
 
   it("meldet einen Sketch, der in Onshapes 3D-Antwort fehlt", async () => {
