@@ -340,15 +340,39 @@ impl FeatureKind for CircularPatternFeature {
 
 // ─── K8.2: Mirror ────────────────────────────────────────────────
 //
-// Completes the K8 Pattern block with the degenerate case: a
-// single clone produced by reflecting the source feature's
-// translate through a plane defined by a point and a normal.
-// The rotation is kept verbatim — reflecting a rotation would
-// flip chirality, which is a separate feature request (and
-// would need a sign flip on one sketch axis to actually matter
-// at the geometry level). For K8.2 the aim is "this body appears
-// on the other side of the plane"; chiral-aware mirroring comes
-// later with body-level symmetry.
+// A single clone whose PLACEMENT is the source's placement composed
+// with the reflection through the mirror plane.
+//
+// The first cut reflected only `transform.translate` and kept the
+// rotation verbatim. That is not a mirror: it relocates the source's
+// ORIGIN and leaves the body itself unturned, so an L-bracket came out
+// pointing the same way as its original, and a sketch-based body — whose
+// translate is the world origin — landed exactly ON TOP of its source.
+// The Onshape importer had to refuse every `mirror` feature rather than
+// emit that silent duplicate (`web/src/onshape/onshapeImport.ts`).
+//
+// The reflection through the plane `(p0, n)` is the affine map
+//
+//     x ↦ A·x + 2(n·p0)·n,    A = I − 2nnᵀ
+//
+// and `A` factors EXACTLY into the TRS form this kernel stores:
+//
+//     A = (−I) · R₁₈₀(n)
+//
+// because `R₁₈₀(n) = 2nnᵀ − I`. So the reflection is a rotation of 180°
+// about the plane normal together with a UNIFORM scale of −1 — the
+// quaternion is simply `(nₓ, n_y, n_z, 0)`.
+//
+// Uniform matters twice over. `compose_transforms` folds scale and
+// rotation independently, which is exact only when the scale commutes
+// with the rotation — it does here, so `reflection ∘ source` is exact
+// rather than approximated. And |−1| = 1 makes the map an ISOMETRY:
+// the mirrored body's SDF stays a true distance field, no Lipschitz
+// slack, no march damping. Downstream, `min_scale()` takes magnitudes
+// (see `fielddraft_protocol::Transform::min_scale`), the AABB mapping
+// unions all eight transformed corners, and the mesher derives its
+// winding from the field's gradient — so a negative scale needs no
+// special case in any of them.
 
 /// `mirror` — reflect a source feature's translate through a
 /// plane.
@@ -415,6 +439,34 @@ impl FeatureKind for MirrorFeature {
             });
         }
 
+        // The plane normal must be a unit vector — `A = I − 2nnᵀ` is a
+        // reflection only then, and `resolve_plane_frame` is not the only
+        // producer of these frames. A degenerate normal would silently
+        // scale the clone instead of mirroring it.
+        let n_len = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
+        if !(n_len > 1e-6) {
+            return Err(FeatureError::InvalidParameter {
+                feature: MirrorDef::TYPE_NAME,
+                name: "plane",
+                message: "mirror plane has a degenerate normal".to_string(),
+            });
+        }
+        let n = [n[0] / n_len, n[1] / n_len, n[2] / n_len];
+
+        // The reflection as a TRS placement (see the block comment):
+        // rotate 180° about `n`, scale by −1 uniformly, then translate by
+        // `2(n·p0)·n` so the plane itself stays fixed.
+        let n_dot_p0 = n[0] * plane_point[0] + n[1] * plane_point[1] + n[2] * plane_point[2];
+        let reflection = ::fielddraft_protocol::Transform {
+            translate: [
+                2.0 * n_dot_p0 * n[0],
+                2.0 * n_dot_p0 * n[1],
+                2.0 * n_dot_p0 * n[2],
+            ],
+            rotation: [n[0], n[1], n[2], 0.0],
+            scale: [-1.0, -1.0, -1.0],
+        };
+
         for source_fid in &source_ids {
             let source_feature = ctx
                 .features
@@ -426,24 +478,14 @@ impl FeatureKind for MirrorFeature {
                 })?
                 .clone();
 
-            // Reflect p through the plane: p' = p - 2 * ((p - p0) · n) * n
-            let p = source_feature.transform.translate;
-            let rel = [
-                p[0] - plane_point[0],
-                p[1] - plane_point[1],
-                p[2] - plane_point[2],
-            ];
-            let dot = rel[0] * n[0] + rel[1] * n[1] + rel[2] * n[2];
-            let reflected = [
-                p[0] - 2.0 * dot * n[0],
-                p[1] - 2.0 * dot * n[1],
-                p[2] - 2.0 * dot * n[2],
-            ];
-
             let mut clone = source_feature.clone();
             clone.id = id.child(format!("{source_fid}_1"));
             clone.name = format!("{} mirror", source_feature.name);
-            clone.transform.translate = reflected;
+            // `reflection ∘ source`: the source is placed first, then the
+            // whole thing is reflected — the source's own rotation and
+            // scale are carried through instead of being dropped.
+            clone.transform =
+                crate::transform::compose_transforms(&reflection, &source_feature.transform);
             ctx.features.push(clone);
         }
 

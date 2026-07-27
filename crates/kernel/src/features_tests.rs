@@ -2185,6 +2185,148 @@ fn mirror_through_a_real_face_uses_its_offset_plane() {
     assert!(clone.transform.translate[2].abs() < 1e-4);
 }
 
+/// The world SDF of a single spine feature, for the mirror tests below.
+/// Sampling the FIELD is the point: a mirror that only moves a feature's
+/// origin passes every assertion made about `transform.translate` and
+/// still puts the geometry in the wrong place.
+fn feature_field(feat: &crate::csg::DecodedFeature) -> impl Fn([f32; 3]) -> f32 {
+    let body = crate::bvh::BoundedCsg::from_csg(&CsgNode::from_decoded(std::slice::from_ref(feat)));
+    move |p| body.sdf(p, crate::csg::EvalMode::Logical)
+}
+
+/// A body whose GEOMETRY sits away from its feature origin — the case the
+/// old translate-only mirror got silently wrong. An extruded sketch has its
+/// origin at the world origin, so reflecting only the origin left the clone
+/// exactly on top of its source; the Onshape importer had to refuse every
+/// `mirror` feature because of it (#409/#419).
+#[test]
+fn mirror_moves_the_geometry_not_just_the_feature_origin() {
+    let registry = FeatureRegistry::with_builtins();
+    let mut doc = empty_ctx();
+    let mut ctx = Context::new(&mut doc);
+    registry
+        .regenerate(
+            &mut ctx,
+            &[
+                // Profile x ∈ [2, 8] — entirely on the +X side of the mirror
+                // plane, and NOT centred on the feature origin.
+                FeatureCall::new(
+                    "sketch",
+                    id(1),
+                    json!({
+                        "plane": "qCreatedBy(origin_plane_xy)",
+                        "sub_calls": [{
+                            "type": "sketch_rectangle",
+                            "id": "r1",
+                            "params": { "corner_a": [2.0, -3.0], "corner_b": [8.0, 3.0] }
+                        }]
+                    }),
+                ),
+                FeatureCall::new(
+                    "extrude",
+                    id(2),
+                    json!({
+                        "profiles": format!("qCreatedBy({})", id(1)),
+                        "depth": { "value": 4.0, "unit": "mm" }
+                    }),
+                ),
+                FeatureCall::new(
+                    "mirror",
+                    id(3),
+                    json!({
+                        "source": format!("qCreatedBy({})", id(2)),
+                        "plane": "qCreatedBy(origin_plane_yz)"
+                    }),
+                ),
+            ],
+            None,
+        )
+        .unwrap();
+
+    let source = ctx.features.iter().find(|f| f.id == id(2)).expect("extrude");
+    let clone = ctx
+        .features
+        .iter()
+        .find(|f| f.id == id(3).child("2_1"))
+        .expect("mirror clone");
+    let (src, mir) = (feature_field(source), feature_field(clone));
+
+    // The source is where we put it, and nowhere on the far side.
+    assert!(src([5.0, 0.0, 1.0]) < 0.0, "source solid at x = +5");
+    assert!(src([-5.0, 0.0, 1.0]) > 0.0, "source empty at x = −5");
+    // The clone is the reflection: solid at −5, and — the assertion the old
+    // translate-only mirror failed — NOT sitting on top of its source.
+    assert!(mir([-5.0, 0.0, 1.0]) < 0.0, "clone solid at the mirrored x = −5");
+    assert!(mir([5.0, 0.0, 1.0]) > 0.0, "clone must not overlap its source");
+}
+
+/// A mirror is not a rotation. Reflecting through the XZ plane maps
+/// `(x, y) ↦ (x, −y)`; the only rigid turn that moves the profile to the
+/// same side in y is a 180° turn about Z, which gives `(−x, −y)` and drags
+/// x along with it. A profile that is asymmetric in BOTH axes tells the two
+/// apart, so this pins the handedness flip rather than the displacement.
+#[test]
+fn mirror_flips_handedness_rather_than_turning_the_body() {
+    let registry = FeatureRegistry::with_builtins();
+    let mut doc = empty_ctx();
+    let mut ctx = Context::new(&mut doc);
+    registry
+        .regenerate(
+            &mut ctx,
+            &[
+                // Profile x ∈ [2, 8], y ∈ [1, 5] — asymmetric in both axes.
+                FeatureCall::new(
+                    "sketch",
+                    id(1),
+                    json!({
+                        "plane": "qCreatedBy(origin_plane_xy)",
+                        "sub_calls": [{
+                            "type": "sketch_rectangle",
+                            "id": "r1",
+                            "params": { "corner_a": [2.0, 1.0], "corner_b": [8.0, 5.0] }
+                        }]
+                    }),
+                ),
+                FeatureCall::new(
+                    "extrude",
+                    id(2),
+                    json!({
+                        "profiles": format!("qCreatedBy({})", id(1)),
+                        "depth": { "value": 4.0, "unit": "mm" }
+                    }),
+                ),
+                FeatureCall::new(
+                    "mirror",
+                    id(3),
+                    json!({
+                        "source": format!("qCreatedBy({})", id(2)),
+                        "plane": "qCreatedBy(origin_plane_xz)"
+                    }),
+                ),
+            ],
+            None,
+        )
+        .unwrap();
+
+    let clone = ctx
+        .features
+        .iter()
+        .find(|f| f.id == id(3).child("2_1"))
+        .expect("mirror clone");
+    assert!(
+        clone.transform.is_mirrored(),
+        "the clone's placement must flip handedness, scale = {:?}",
+        clone.transform.scale
+    );
+
+    let mir = feature_field(clone);
+    // Reflection maps the profile centre (5, 3) to (5, −3): y flips, x does not.
+    assert!(mir([5.0, -3.0, 1.0]) < 0.0, "clone solid at the reflected centre");
+    // A 180° turn about Z would have landed it at (−5, −3) — same side in y,
+    // wrong side in x. That is the failure mode this separates out.
+    assert!(mir([-5.0, -3.0, 1.0]) > 0.0, "a 180° turn is not a mirror");
+}
+
 #[test]
 fn mirror_errors_on_unresolvable_plane() {
     // A plane query that resolves to neither a datum nor a real

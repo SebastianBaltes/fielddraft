@@ -879,8 +879,29 @@ impl Transform {
             && self.scale == [1.0, 1.0, 1.0]
     }
 
+    /// The most conservative Lipschitz factor of this placement: every
+    /// caller multiplies a LOCAL distance by it to get a world distance
+    /// that never overshoots.
+    ///
+    /// Taken over the MAGNITUDES. A negative scale factor mirrors — it
+    /// still maps a unit of local length to a unit of world length, so
+    /// the factor it contributes is `|s|`. Signing it would negate the
+    /// field itself and turn the body inside out (solid ↔ void), which
+    /// is what `mirror` used to have to route around. `dc.rs::min_scale`
+    /// has always taken the magnitude; this is the same rule at the
+    /// source, for the raymarcher, the BVH and the opcode tape.
     pub fn min_scale(&self) -> f32 {
-        self.scale[0].min(self.scale[1]).min(self.scale[2])
+        self.scale[0].abs().min(self.scale[1].abs()).min(self.scale[2].abs())
+    }
+
+    /// Does this placement flip handedness? True for an odd number of
+    /// negative scale factors — a mirrored body. Face windings and
+    /// surface normals derived from the SDF gradient follow the field
+    /// and need no correction; anything that carries an orientation
+    /// through the transform ALGEBRAICALLY (rather than re-deriving it
+    /// from the field) does.
+    pub fn is_mirrored(&self) -> bool {
+        self.scale[0] * self.scale[1] * self.scale[2] < 0.0
     }
 }
 

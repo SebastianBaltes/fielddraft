@@ -12,6 +12,9 @@ Format, eine Zeile je Eintrag:
 kind = feat | fix | perf. scope und #tickets sind optional. Folgezeilen, die
 eingerückt sind, gehören zum Text davor (Umbruch erlaubt).
 
+## 0.37.2
+- fix(kernel) #409 #419: Spiegeln spiegelt jetzt wirklich. Bisher wurde nur der Ursprung des Quell-Features an der Ebene gespiegelt, das Bauteil selbst aber nicht gedreht — eine Winkelplatte zeigte danach in dieselbe Richtung wie das Original, und ein aus einem Sketch gebauter Körper landete deckungsgleich auf seinem Original. Der Onshape-Import musste jede Spiegelung deshalb verweigern; das entfällt.
+
 ## 0.37.1
 - perf(kernel) #423: Körper aus Kreissektor-Profilen (ein Bogen, der keine Kontur schließt — im Onshape-Import der Normalfall) werden wieder analytisch vermascht statt über den Octree. Der Deckel der Kabelbox brauchte dafür 5,9 Sekunden und lieferte eine entartete Kantenmenge; jetzt fällt beides weg. Nebenbei: das Seed-Bucketing im Weber macht aus 3,4 Sekunden reiner Buchhaltung einen Bruchteil davon.
 
