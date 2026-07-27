@@ -131,6 +131,18 @@ describe("implicit mate connectors — decoding", () => {
     expect(anchorT(mc)).toBeNull();
   });
 
+  it("reads #419's CENTROID connector, and only calls it a midpoint on a STRAIGHT edge", async () => {
+    const doc419 = JSON.parse(
+      readFileSync(join(__dirname, "fixtures", "onshape-419-features.json"), "utf8"),
+    );
+    const mc = await connectorOf(doc419, "FTYfIm6bhe5zwOg_7"); // Sketch 9
+    expect(mc.inference).toBe("CENTROID");
+    // Straightness is the caller's to establish (it holds the sketch record);
+    // without that vouch a centroid is not a position along the edge at all.
+    expect(anchorT(mc)).toBeNull();
+    expect(anchorT(mc, true)).toBe(0.5);
+  });
+
   it("reads the realignment: this document adds none", async () => {
     for (const id of [SKETCH_2, SKETCH_4, SKETCH_6]) {
       const mc = await connectorOf(doc, id);

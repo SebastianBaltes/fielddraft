@@ -785,7 +785,9 @@ function mateAnchorQuery(
         `FieldDraft adressiert rohe Sketch-Geometrie nur als qSketchLine`,
     };
   }
-  const t = anchorT(mc);
+  // Straightness is established above, so a CENTROID anchor has a `t` here that
+  // it would not have on a curved edge.
+  const t = anchorT(mc, true);
   if (t === null) {
     return {
       error:

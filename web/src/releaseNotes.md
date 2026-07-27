@@ -12,6 +12,11 @@ Format, eine Zeile je Eintrag:
 kind = feat | fix | perf. scope und #tickets sind optional. Folgezeilen, die
 eingerückt sind, gehören zum Text davor (Umbruch erlaubt).
 
+## 0.38.1
+- fix(onshape) #419: Ein Sketch, der auf einer schlicht gezeichneten Linie aufsetzt, wird jetzt gefunden. Bisher erkannte der Import die Kante nur an ihrer zusammengesetzten Schreibweise; eine einfache Linie fiel durchs Raster und der Sketch galt als „Ebene nicht übersetzbar“ — obwohl Onshapes Angabe längst verstanden war.
+- fix(onshape) #419: Sketches auf der Mantelfläche eines Rotationskörpers werden importiert. Bisher wurde eine Seitenwand nur akzeptiert, wenn sie aus einer Extrusion stammte; bei einem gedrehten Körper brach die Kette dort ab, samt allem, was darauf aufbaute.
+- fix(onshape) #419: Ein Mate-Connector, der auf dem Schwerpunkt einer geraden Linie sitzt, landet jetzt auf deren Mitte statt zu scheitern. Auf einer runden Kante bleibt er bewusst abgelehnt: dort liegt der Schwerpunkt im Zentrum und damit neben der Kante.
+
 ## 0.38.0
 - feat(onshape) #409 #416 #419: Onshape-Sketches, die auf einem Mate-Connector liegen, werden jetzt importiert statt übersprungen — samt Connectors auf einer rohen Konstruktionslinie und auf dem Ursprung des Part Studios. Das war der Grund, warum bei manchen Dokumenten schon der erste Sketch fehlte und alles Nachfolgende mit ihm. Ein Mate-Connector taugt damit auch als Spiegelebene.
 - fix(onshape) #409: Der Versatz eines Mate-Connectors wird ausgerechnet statt aus Onshapes Rohwert gelesen. Steht dort eine Formel wie „Höhe minus 3 cm", meldet Onshape schlicht 0 — das Regal stand dadurch 1,8 Meter zu tief.

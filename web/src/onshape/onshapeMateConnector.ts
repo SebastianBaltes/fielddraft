@@ -311,8 +311,13 @@ export async function readMateConnector(
  * — it is the centre of a circular one, which FieldDraft reaches through the
  * FACE the edge bounds, so it has no `t`.
  */
-export function anchorT(mc: OnshapeMateConnector): number | null {
+export function anchorT(mc: OnshapeMateConnector, straightEdge = false): number | null {
   if (mc.inference === "MID_POINT") return 0.5;
+  // `CENTROID` is the mean position of the entity, which lies ON the edge only
+  // when the edge is STRAIGHT — there it is the midpoint. On a circular rim the
+  // centroid is the rim's centre, a point the edge never passes through, so the
+  // caller has to vouch for straightness (#419).
+  if (mc.inference === "CENTROID" && straightEdge) return 0.5;
   if (mc.inference !== "POINT") return null;
   const sec = mc.secondary;
   // Only an anchor that NAMES a sketch entity can say which end it means; the

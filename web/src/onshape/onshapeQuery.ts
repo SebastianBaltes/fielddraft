@@ -237,16 +237,28 @@ export interface OnshapeQueryRefs {
  * (`S11.-e$F4Ns…`), so a BARE feature-id literal also counts as a wire marker
  * for origin association — in the corpus it always directly precedes its
  * sketch-entity id.
+ *
+ * An entity id is read from the MAP KEY `sketchEntityId`, not from its shape.
+ * Both forms occur: a sub-piece of a construction primitive carries a suffix
+ * (`pozkE6lurT5A.right`, `mckFvNyxoF2z.0`), a plainly drawn line does not
+ * (`pfTtMVvYeZsa`). Keying off the two-part shape alone — as this did until
+ * #419 — silently drops every undotted id, and a `SWEPT_FACE` plane whose
+ * origin went missing reads as "unsupported query shape", which is a lie: the
+ * shape was understood, one value fell through the sieve.
  */
 export function extractQueryRefs(tokens: BtonToken[]): OnshapeQueryRefs {
   const ops: { idx: number; op: OnshapeOpRef }[] = [];
   const wires: { idx: number; featureId: string }[] = [];
   const origins: { idx: number; origin: OnshapeEntityOrigin }[] = [];
+  // Set by the literal key, consumed by the very next string token — BTON is
+  // a flat key/value stream, so the value is whatever string follows.
+  let entityIdExpected = false;
   tokens.forEach((t, idx) => {
     const op = opRefOf(t);
     if (op) {
       ops.push({ idx, op });
       if (op.op === "wireOp") wires.push({ idx, featureId: op.featureId });
+      entityIdExpected = false;
       return;
     }
     if (
@@ -258,17 +270,32 @@ export function extractQueryRefs(tokens: BtonToken[]): OnshapeQueryRefs {
       // Bare feature id, literal or with an opaque ref suffix (a repeated
       // operation name compressed away) — a wire/operation marker.
       wires.push({ idx, featureId: t.p1 });
+      entityIdExpected = false;
       return;
     }
-    // A sketch-entity id is a two-part string following its wire marker.
-    if (t.t === "str" && t.p1 && t.p2) {
+    // A back-referenced value CONSUMES the key slot: its string cannot be
+    // reconstructed here, and letting the flag survive would pin the key to
+    // the next unrelated literal.
+    if (t.t === "refstr") {
+      entityIdExpected = false;
+      return;
+    }
+    if (t.t !== "str" || !t.p1) return;
+    if (t.p1 === "sketchEntityId" && !t.p2) {
+      entityIdExpected = true;
+      return;
+    }
+    // A sketch-entity id: the value of `sketchEntityId`, or a two-part string
+    // following its wire marker (the corpus form the decoder was built on).
+    if (t.p2 || entityIdExpected) {
+      entityIdExpected = false;
       const wire = [...wires].reverse().find((w) => w.idx < idx);
       if (wire) {
         origins.push({
           idx,
           origin: {
             sketchFeatureId: wire.featureId,
-            entityId: `${t.p1}.${t.p2}`,
+            entityId: t.p2 ? `${t.p1}.${t.p2}` : t.p1,
           },
         });
       }
@@ -300,6 +327,13 @@ export function extractPlaneRef(tokens: BtonToken[]): OnshapePlaneRef {
   const opsBy = (name: string) => ops.filter((o) => o.op.op === name);
   const extrudes = opsBy("opExtrude");
   const fillets = opsBy("opFillet");
+  // A lateral wall is a wall whichever op swept it: FieldDraft names it
+  // `qWall(op, entity)` from the PROFILE-EDGE ordinal, and a revolve builds
+  // its mantle from the same profile edges an extrude does (#419 — six of its
+  // sketches sit on the mantle of a revolve). A cap is NOT widened the same
+  // way: `capFaceQuery` needs the sweep direction to know which FieldDraft cap
+  // Onshape's `isStart` names, and only an extrude records one.
+  const sweptOps = [...extrudes, ...opsBy("opRevolve")].sort((a, b) => a.idx - b.idx);
 
   // CAP_FACE: cap of an extrude, side from the isStart flag.
   if (has("CAP_FACE") && !has("SWEPT_FACE")) {
@@ -315,16 +349,16 @@ export function extractPlaneRef(tokens: BtonToken[]): OnshapePlaneRef {
     return { kind: "unsupported", reason: "CAP_FACE without extrude op / isStart flag" };
   }
 
-  // SWEPT_FACE: wall of an extrude from a sketch entity; optionally
-  // disambiguated by BLEND_FACE adjacency and a boolean SPLIT peer.
+  // SWEPT_FACE: wall of a sweep (extrude or revolve) from a sketch entity;
+  // optionally disambiguated by BLEND_FACE adjacency and a boolean SPLIT peer.
   if (has("SWEPT_FACE")) {
-    if (extrudes.length === 0 || origins.length === 0) {
-      return { kind: "unsupported", reason: "SWEPT_FACE without extrude op / origin entity" };
+    if (sweptOps.length === 0 || origins.length === 0) {
+      return { kind: "unsupported", reason: "SWEPT_FACE without sweep op / origin entity" };
     }
     const primary = origins[0].origin;
     const out: OnshapePlaneRef = {
       kind: "swept",
-      opFeatureId: extrudes[0].op.featureId,
+      opFeatureId: sweptOps[0].op.featureId,
       origin: primary,
     };
     // A shelled body's inner wall is a face of the SAME sweep, offset inward.
@@ -341,7 +375,7 @@ export function extractPlaneRef(tokens: BtonToken[]): OnshapePlaneRef {
       const peerOrigin = origins.find((o) => o.origin.entityId !== primary.entityId);
       if (peerOrigin) {
         const known = new Set<string>([
-          extrudes[0].op.featureId,
+          sweptOps[0].op.featureId,
           out.blendFilletId ?? "",
           ...origins.map((o) => o.origin.sketchFeatureId),
         ]);

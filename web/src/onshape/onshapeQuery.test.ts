@@ -4,14 +4,15 @@ import { join } from "node:path";
 
 import { decodePlaneQuery, decodeOnshapeQueryString, tokenizeBton } from "./onshapeQuery";
 
-/** Load the live-captured Kabelbox feature JSON (the corpus every
- *  extraction rule was calibrated against). */
-function kabelbox(): any[] {
-  const raw = readFileSync(
-    join(__dirname, "fixtures", "kabelbox-features.json"),
-    "utf8",
-  );
+/** Load a live-captured feature JSON, unwrapped to the feature messages. */
+function fixtureFeatures(file: string): any[] {
+  const raw = readFileSync(join(__dirname, "fixtures", file), "utf8");
   return (JSON.parse(raw).features ?? []).map((f: any) => f.message ?? f);
+}
+
+/** The Kabelbox corpus — the one every extraction rule was calibrated against. */
+function kabelbox(): any[] {
+  return fixtureFeatures("kabelbox-features.json");
 }
 
 function planeQueryOf(features: any[], name: string): string {
@@ -116,6 +117,49 @@ describe("decodePlaneQuery — Kabelbox corpus (live-captured)", () => {
       }
     }
     expect(count).toBeGreaterThan(10);
+  });
+});
+
+/**
+ * The #419 document (a long rail assembly) broke two assumptions the Kabelbox
+ * corpus never exercised, and both failed the same misleading way: the plane
+ * came back "unsupported", which reads as "we don't understand this query" when
+ * in truth the query was understood and one value fell out of the sieve.
+ */
+describe("decodePlaneQuery — #419 rail assembly", () => {
+  const feats = fixtureFeatures("onshape-419-features.json");
+
+  it("reads an entity id that carries NO dot suffix", async () => {
+    // A sub-piece of a construction primitive is `<base>.<suffix>`
+    // (`pozkE6lurT5A.right`); a plainly drawn line is just `pfTtMVvYeZsa`.
+    // Keying off the dotted SHAPE dropped every undotted id on the floor.
+    const ref = await decodePlaneQuery(planeQueryOf(feats, "Sketch 4"));
+    expect(ref).toEqual({
+      kind: "swept",
+      opFeatureId: "FDuA7djDoDV41hj_7",
+      origin: { sketchFeatureId: "FLZMozrL9HQb6CN_2", entityId: "pfTtMVvYeZsa" },
+    });
+  });
+
+  it("accepts the wall of a REVOLVE, not just of an extrude", async () => {
+    // FieldDraft names a lateral wall `qWall(op, entity)` from the profile-edge
+    // ordinal, and a revolve sweeps its mantle from the same profile edges.
+    for (const name of ["Sketch 6", "Sketch 13"]) {
+      const ref = await decodePlaneQuery(planeQueryOf(feats, name));
+      expect(ref, name).toEqual({
+        kind: "swept",
+        opFeatureId: "FMmPnhPvNpoB96B_3",
+        origin: { sketchFeatureId: "FLZMozrL9HQb6CN_2", entityId: "46y5P1bc7KXF" },
+      });
+    }
+  });
+
+  it("still reports the cap of a THICKEN as unsupported rather than guessing", async () => {
+    // `capFaceQuery` needs the sweep DIRECTION to know which FieldDraft cap
+    // Onshape's `isStart` names, and only an extrude records one. Guessing
+    // would put the sketch on the far side of the wall — plausible and wrong.
+    const ref = await decodePlaneQuery(planeQueryOf(feats, "Sketch 17"));
+    expect(ref.kind).toBe("unsupported");
   });
 });
 
