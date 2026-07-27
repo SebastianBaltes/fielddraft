@@ -1280,3 +1280,91 @@ in der Körperzahl.
 `BLEND_EDGE` (zusammen 60 der 206, plus 61 `INTERSECT`-Kanten mit einer solchen
 Fläche) brauchen einen Namen für „die Kante NACH einer Boolean/einem Muster". Das ist dieselbe Frage wie Klasse A und gehört in
 den Kernel, nicht in den Übersetzer.
+
+## Update 2026-07-27 (7) — Klasse A: die 7 restlichen `qWall`-Fehlschläge gemessen und behoben; #416 gehört NICHT dazu
+
+Der Rest-Umfang von Klasse A (#424) waren zuletzt **#416 Sketch 6 samt Fasen und
+Fillets** sowie die **7 verbliebenen `qWall(…) löst auf 0 Flächen auf`** in #419.
+Beides ist jetzt auseinanderdividiert — und es sind **zwei verschiedene Dinge**.
+
+### #419: 7 von 7 = positionaler Fallback, eine einzige Ursache
+
+Alle sieben Meldungen hingen an **Feature 24**, einem `qRegions(6, [1, 2])`.
+Der Flächen-Dump trennt die beiden Ticket-Kandidaten eindeutig:
+
+| Feature | Profil | Wand-Subs vorher |
+|---|---|---|
+| 23 | `qRegions(6, [4, 7])` | 103, 106, 109, 112, 115, 130, 148 (Entity-Ids) |
+| 24 | `qRegions(6, [1, 2])` | **0, 2, 3, 5** (positionell) |
+| 25 | `qRegions(6, [4, 5])` | **1, 2, 2, 6** (positionell, mit Dublette) |
+
+Es ist **nicht** die Flächensegmentierung (die These des Tickets, in Update (4)
+schon einmal widerlegt), sondern das **Profil**: `resolve_profile_query` legte
+die geschlossenen Umrisse der ausgewählten Regionen übereinander. Grenzen zwei
+Regionen aneinander, steht ihre gemeinsame Randlinie damit **zweimal** in der
+Kontur. `wall_sub_table` verwirft eine Tabelle mit doppeltem Sub — zwei Wände mit
+gleichem Sub würden zu einer Branch kollabieren — und fällt auf 0, 1, 2, … zurück.
+Eine Entity-Id wie 121 kann dort nie vorkommen. Regionen 4 und 7 (Feature 23)
+grenzen nicht aneinander, deshalb funktionierte dieses eine.
+
+Ein **zweiter**, davon unabhängiger Defekt trat beim Beheben zutage:
+`g1_group_segments` läuft linear und schließt das letzte Segment nie ans erste
+zurück. Fiel die Naht der geschlossenen Kontur mitten in eine glatte Wand, zerfiel
+diese in **zwei** Randgruppen — und stammten beide aus derselben Skizzenkurve,
+wollten beide denselben Sub. Wo die Naht lag, entschied bisher der Startpunkt der
+DCEL-Traversierung, also ein Zufall der Implementierung.
+
+**Behoben in v0.39.1** (`sketch_arrangement::arrange_union` +
+`rotate_to_g1_break`): die Vereinigung mehrerer Regionen bekommt ihre eigene
+Außenkontur über Halbkanten-Cancellation, und jede geschlossene Kontur beginnt an
+einem G1-Knick.
+
+Gemessen an den Fixtures:
+
+| Dokument | vorher | nachher |
+|---|---|---|
+| #419 Meldungen | 216 | **192** |
+| #419 Features in KNOWN_GAPS | 118 | **107** |
+| #419 Körper | 10 | **12** |
+| #419 `qWall` bindet 0 | 7 | **5** (auf Feature 31, das es vorher nicht gab) |
+| #409 Lücken | 19 | **17** (`Mirror 2` + sein Mate-Connector importieren) |
+
+Neu importierend in #419: `Boolean 1`, `Boolean 6`, acht Extrusionen, eine
+Bohrung. `fillet_edge` kehrt zurück — wie in Update (6) vorhergesagt: `Fillet 16`
+löst als **vier verschiedene** Kanten-Queries auf, eine je Ecke von Extrude 24.
+
+### #416: 0 von 5 sind Klasse A — die Meldungen haben drei andere Ursachen
+
+`Sketch 6` samt seiner Fasen und Fillets gehört **nicht** in Klasse A. Der Dump
+(`resolveQuery` auf jede Teil-Query einzeln) zeigt:
+
+| Meldung | Teil-Query | bindet | Ursache |
+|---|---|---:|---|
+| Sketch 6 · Mate connector, Fillet 2 (3×) | `qCreatedBy(3, CAP_TOP)` | **0** | Feature 3 hat im gewobenen B-Rep **gar keine Deckfläche** — nur sechs WALLs. Seine Kappen sind von Extrude 2 und Extrude 5 aufgezehrt. |
+| Fillet 2 | `qWall(3, 13)`, `qWall(3, 19)` | **0** | Entities 13 und 19 liegen nicht auf dem Rand der Region, die FieldDraft extrudiert (f3s Wände sind 10, 16, 26, 44, 50, 53). `qWall(3, 16)` bindet dagegen sauber. |
+| Fillet 4 | `qCreatedBy(6, CAP_BOTTOM)` → 1, `qWall(13, 4)` → 1 | **0** | Beide Seiten binden je genau eine Fläche — die liegen aber auf **verschiedenen Körpern** (1 und 2), teilen also keine Kante. |
+
+Die Wand-Sub-Tabelle von Feature 3 ist **stabil und entity-basiert**. Es fehlt
+kein Name; es fehlt die Fläche bzw. der gemeinsame Körper. Das sind
+Geometrie-/Docking-Fragen und gehören nicht in dieses Ticket. #416s Szenen-AABB
+weicht ohnehin deutlich von Onshapes ab (Größen 102 × 67 × 105 gegen 73 × 34 × 108),
+was auf eine Ursache **vor** der Benennung deutet.
+
+### Klasse A (#424) — Stand
+
+- #409: erledigt (Update 5, `keep_tools`).
+- #419: von 12 → 7 → **5** Meldungen; die 5 sitzen auf einem Feature, das erst
+  durch diesen Fix entsteht, und sind noch nicht gemessen.
+- #416: **kein** Klasse-A-Fall.
+
+### Klasse „abgeleitete Geometrie" (#429) — am Kernel gemessen
+
+| Onshape-Form | Anzahl | FieldDraft, gemessen |
+|---|---:|---|
+| `MERGE` (Kante) | 20 | **Kernel kann es**: `qCommonEdge(qCreatedBy(a), qCreatedBy(b))` löst die Nahtkanten mit stabilem `id_hash` auf. Lücke liegt im **Übersetzer**. |
+| `COPY` | 22 | **Kein Name.** Drei Kopien eines Quaders tragen identische Branch-Ids UND identische `id_hash` — `BranchId::from_feature` faltet die hierarchische Klon-Id auf ihren Wurzel-Vorfahren, `spatial_index` wird pro B-Rep vergeben und ist bei je einem Körper pro Kopie überall 0. Das verletzt die Eindeutigkeitszusage von `qFace(hash)`. |
+| `BLEND_EDGE` / `BLEND_FACE` | 14 | Name ist entworfen (`BlendProvenance.branch` = Fillet-Id, Sub 0), die **Fläche fehlt**: an einem verrundeten Absatz liefert `qCreatedBy(fillet, BLEND)` 0. |
+| `SPLIT` | 4 | nur `spatial_index` — eine Sortierung nach Schwerpunkt, also positionell. `qAdjacentTo` ist als Disambiguator vorhanden, der Übersetzer-Zweig fehlt. |
+| `INTERSECT` mit solcher Fläche | 61 | Folgefehler der drei Zeilen darüber. |
+
+Entwurf, wie diese Namen entstehen sollen: **`docs/DERIVED-NAMING-PLAN.md`**.
