@@ -1,0 +1,76 @@
+# Aufteilung der Rust-Testsuite in Stufen.
+#
+# WARUM: gemessen am 2026-07-27, optimiert gebaut (siehe `[profile.test]` in
+# Cargo.toml), kosten 1444 Tests zusammen 1287 s CPU. Davon liegen **89 % in
+# 103 Tests**:
+#
+#     api::lichen        802 s    38 Tests   62 %   Lichen-Vermascher
+#     metricity-lab      163 s    24 Tests   13 %   SDF-Metricity-Forschung (#384)
+#     export_mesh        144 s    41 Tests   11 %   Mesh-Export/Adaptive-Route
+#     alles andere       178 s  1341 Tests   14 %
+#
+# Ein einzelner Test — `lichen_polyhedra_eps_sampling_watertight_and_complete` —
+# braucht allein 110 s. Diese Tests sind Vermaschungs-Abnahmen: sie müssen
+# laufen, wenn der Mesher angefasst wurde, und sonst nicht.
+#
+# WELCHES PROFIL WANN (`just test-*` ruft sie auf):
+#
+#     Code unter …                              → Profil
+#     crates/kernel/src/api/lichen.rs           → mesh
+#     crates/kernel/src/{export_mesh,mdc*,dc,
+#       mesher_*,decimate*,mesh_validate,
+#       sdf_dual,*marching_cubes*}.rs           → mesh
+#     crates/kernel/src/offset_*.rs             → offset
+#     crates/metricity-lab/**                   → offset
+#     alles übrige                              → default (nichts zu tun)
+#
+# Die Standard-Suite ist eine SCHWARZE Liste: neue Tests landen automatisch in
+# ihr. Das ist Absicht — ein neuer Test soll ohne Zutun laufen. Wird er dabei
+# teuer, meldet `slow-timeout` unten ihn als SLOW; dann gehört er entweder
+# repariert oder in ein thematisches Profil verschoben.
+
+# --- Standard: alles außer den drei Schwergewichten ----------------------
+# ~15 s. Das ist die Suite für die Edit-Schleife (`just test`).
+[profile.default]
+default-filter = 'not (package(metricity-lab) | test(/^api::lichen::/) | test(/^export_mesh::/))'
+# Kein `terminate-after`: das wäre auf einer ausgelasteten Maschine flakig.
+# Die SLOW-Markierung in der Zusammenfassung ist das Signal, kein Fehler.
+slow-timeout = { period = "20s" }
+
+# --- Thematisch: Vermascher ----------------------------------------------
+# ~2 min. Nach jeder Änderung an Lichen, Dual-Contouring, Export-Route.
+# Enthält bewusst auch die billigen Mesher-Module, die in `default` schon
+# mitlaufen — wer am Mesher arbeitet, will sie zusammen sehen.
+[profile.mesh]
+default-filter = '''
+    test(/^api::(lichen|export)::/)
+  | test(/^(export_mesh|export_3mf|export)::/)
+  | test(/^(dc|mdc|mdc_adaptive|dual_marching_cubes|marching_cubes33)::/)
+  | test(/^(mesher_points|mesher_cdt|mesher_patch|mesh_validate)::/)
+  | test(/^(decimate|decimate_builtin|lichen_metrics|sdf_dual)::/)
+'''
+slow-timeout = { period = "120s" }
+
+# --- Thematisch: Offset / Metricity --------------------------------------
+# ~40 s. Nach Änderungen an Offset, Shell, Rim — und an der
+# Metricity-Forschung (#384), deren Fuzz- und Report-Läufe hier wohnen.
+[profile.offset]
+default-filter = 'package(metricity-lab) | test(/^offset_/)'
+slow-timeout = { period = "60s" }
+
+# --- Voll: alles, ohne die Diagnose-Harnische ----------------------------
+# ~3 min. Das Gate vor einem Commit, der den Kern anfasst.
+[profile.full]
+default-filter = 'all()'
+slow-timeout = { period = "120s" }
+
+# --- Tief: zusätzlich die 27 `#[ignore]`-Harnische -----------------------
+# Die `zz_*`-, `*_dump`-, `*_probe`- und `*_survey`-Tests sind keine
+# Regressionstests, sondern instrumentierte Untersuchungen, die im Baum
+# bleiben (Gyroid-Baselines, Reach-Proben, Timing-Profile). Sie drucken
+# Befunde statt zu behaupten, und einige sind ausdrücklich `_wip`. Ein roter
+# Lauf hier ist ein Befund, kein Regress. Aufruf: `just test-deep`.
+[profile.deep]
+default-filter = 'all()'
+slow-timeout = { period = "300s" }
+fail-fast = false

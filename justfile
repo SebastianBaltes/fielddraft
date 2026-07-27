@@ -118,22 +118,104 @@ release-image:
     mv "$TMP" "$OUT"
     echo "✔ $OUT ($(du -h "$OUT" | cut -f1)) — ship to the server, then devops runs deploy.yml -e only_app=fielddraft"
 
-# Run the fast local test suite: Rust unit tests + Vitest.
-# Two suites are intentionally *not* included here, both meant to run
-# on demand at integration points rather than on every feature change:
-#   * Playwright smoke tests (`just test-e2e`) — headed Chromium, real WebGPU.
-#   * The slow kernel-acceptance suite (`just test-slow`) — drives the real
-#     wasm kernel end-to-end (Onshape import), tens of seconds per file.
+# --- Tests -------------------------------------------------------------
+#
+# Die Suite ist GESTUFT, weil ihre Kosten extrem ungleich verteilt sind:
+# 89 % der Rust-Test-CPU stecken in 103 von 1444 Tests (Lichen-Vermascher,
+# Mesh-Export, Metricity-Forschung). Welcher Test in welche Stufe gehört
+# und warum, steht in `.config/nextest.toml` — das ist die SSOT der
+# Aufteilung, nicht dieses Justfile.
+#
+#   just test        Rust-Kern + Vitest         12 s    ← Edit-Schleife
+#   just test-mesh   Vermascher                 88 s    ← nach Mesher-Arbeit
+#   just test-offset Offset + Metricity         25 s    ← nach Offset-Arbeit
+#   just test-full   alles, beide Seiten        ~4 min  ← Gate vor dem Commit
+#   just test-deep   + Diagnose-Harnische       ~20 min ← selten, auf Verdacht
+#   just test-slow   wasm-Abnahme (Onshape)     ~2 min  ← nach Import-Arbeit
+#   just test-e2e    Playwright, echtes WebGPU          ← vor dem Deploy
+#
+# Gemessen am 2026-07-27 auf 24 Kernen. Vorher lag `just test` bei 36 min —
+# nicht wegen der Menge der Tests, sondern weil sie unoptimiert gebaut
+# wurden (siehe `[profile.test]` in Cargo.toml) und `cargo test` die
+# Test-Binaries seriell fährt.
+
+# Bewusst NICHT dabei: test-slow (echter wasm-Kernel) und test-e2e (headed
+# Chromium) — Integrationspunkte, keine Edit-Schleife.
+#
+# Standard-Suite für die Edit-Schleife: Rust-Kern + Vitest, ~12 s.
 test: test-rust test-web
 
-test-rust:
-    cargo test --workspace
+# Schnelle Rust-Suite: alles außer Lichen, Mesh-Export und Metricity.
+test-rust: _nextest
+    cargo nextest run --workspace
 
-test-web: build-wasm
+# Thematisch: Vermascher — Lichen, Dual-Contouring, Export-Route.
+test-mesh: _nextest
+    cargo nextest run --workspace --profile mesh
+
+# Thematisch: Offset, Shell, Rim und die Metricity-Forschung (#384).
+test-offset: _nextest
+    cargo nextest run --workspace --profile offset
+
+# Voll: jeder Rust-Test plus beide Web-Suiten. Gate vor einem Kern-Commit.
+test-full: _nextest build-wasm
+    cargo nextest run --workspace --profile full
+    cd web && {{nvm_use}} && npm run test
+    cd web && {{nvm_use}} && npm run test:slow
+
+# Die 27 `#[ignore]`-Diagnose-Harnische: Gyroid-Baselines, Reach-Proben,
+# Timing-Profile, `zz_*`-Untersuchungen. Das sind instrumentierte Befunde,
+# keine Regressionstests — ein roter Lauf hier ist ein Messergebnis, kein
+# Regress (zwei sind ausdrücklich `_wip` und bekanntermaßen rot). Einen
+# einzelnen Harnisch mit Ausgabe fahren:
+#   cargo nextest run --profile deep --run-ignored ignored-only \
+#     -E 'test(zz_gyroid_baseline)' --no-capture
+#
+# Zusätzlich zur vollen Suite die Diagnose-Harnische fahren.
+test-deep: _nextest
+    cargo nextest run --workspace --profile deep --run-ignored all
+
+# cargo-nextest ist der Runner: er fährt alle Test-Binaries in EINEM
+# Parallel-Pool (cargo test fährt sie seriell — allein dadurch blockierte
+# das Kernel-Binary die Tests von metricity-lab), misst jeden Test einzeln
+# und markiert neue Ausreißer als SLOW. `cargo test --workspace` funktioniert
+# unverändert weiter, ist aber die langsamere Variante.
+#
+# nextest bereitstellen (vorgebautes Binary, kein Compile).
+_nextest:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    command -v cargo-nextest >/dev/null && exit 0
+    echo "▶ cargo-nextest fehlt — installiere es nach ~/.cargo/bin"
+    curl -sSLf https://get.nexte.st/latest/linux | tar -xz -C "${CARGO_HOME:-$HOME/.cargo}/bin"
+
+# Nur die schnellen Vitest-Tests (ohne `*.slow.test.ts`).
+test-web: _wasm-present
     cd web && {{nvm_use}} && npm run test
 
-# Slow acceptance suite (`*.slow.test.ts`): the real wasm kernel driven
-# end-to-end. Run it after kernel/query/import changes.
+# Die schnellen Vitest-Tests laden den wasm-Kernel NIE — das tun per
+# Konvention nur die `*.slow.test.ts` (siehe web/vitest.config.ts). Sie
+# brauchen die Dateien in web/src/wasm trotzdem, weil `src/kernel.ts` sie
+# importiert und Vite das Modul auflösen muss. Ein FRISCHER Build ist dafür
+# aber unnötig, und er kostete 53 s von 75 s Gesamtlaufzeit — mehr als alle
+# 3346 Tests zusammen (wasm-bindgen + wasm-opt laufen auch bei unveränderten
+# Quellen). Deshalb hier nur: bauen, falls nicht da.
+#
+# ACHTUNG, bewusster Handel: dadurch prüft `just test` nicht mehr, ob der
+# Kern fürs wasm-Target überhaupt kompiliert (target-gated Code kann so
+# durchrutschen). `test-slow`, `test-e2e` und `test-full` hängen weiterhin
+# hart an `build-wasm` — dort ist Frische Pflicht, nicht Komfort.
+_wasm-present:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    [ -f web/src/wasm/fielddraft_kernel_bg.wasm ] && exit 0
+    echo "▶ web/src/wasm fehlt — baue den Kernel einmalig"
+    just build-wasm
+
+# Die `*.slow.test.ts` treiben den echten wasm-Kernel end-to-end; erzwingt
+# deshalb einen frischen Build.
+#
+# wasm-Abnahme: echter Kernel end-to-end (Onshape-Import), nach Kern-Arbeit.
 test-slow: build-wasm
     cd web && {{nvm_use}} && npm run test:slow
 
@@ -142,6 +224,8 @@ test-slow: build-wasm
 # pipeline incompatibilities, drawIndexed crashes, pointer-event
 # routing through the canvas, etc. Requires `just install-e2e`
 # once to fetch the Chromium binary.
+#
+# E2E: Playwright, headed Chromium mit echtem WebGPU.
 test-e2e: build-wasm
     cd web && {{nvm_use}} && npm run e2e
 

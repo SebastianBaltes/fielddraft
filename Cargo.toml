@@ -18,3 +18,23 @@ publish = false
 opt-level = 3
 lto = "fat"
 codegen-units = 1
+
+# Tests OPTIMIERT bauen. Der Kern ist numerischer Code — SDF-Marching,
+# Octree-Rekursion, Dreiecks-Prädikate — und der ist unoptimiert nicht
+# „etwas" langsamer, sondern eine Größenordnung: gemessen am 2026-07-27
+# lief `cargo test --workspace` in 2158 s (36 min), mit opt-level 2 in
+# 173 s. Faktor 12,5, für rund eine Minute mehr Compile-Zeit einmalig.
+# Das war der eigentliche Grund, warum die Suite als unbenutzbar galt —
+# nicht ihre Größe.
+#
+# `debug-assertions` und `overflow-checks` bleiben AN (Default des
+# test-Profils): sie kosten wenig und der Kern verlässt sich auf sie.
+[profile.test]
+opt-level = 2
+
+# Abhängigkeiten werden beim Testen nach dem dev-Profil gebaut, nicht nach
+# test. Ohne diesen Block bliebe fremder Mathe-Code (glam, nalgebra …)
+# unoptimiert. Nur `"*"` — unsere eigenen Crates regelt der Block oben,
+# damit inkrementelle Rebuilds klein bleiben.
+[profile.dev.package."*"]
+opt-level = 2

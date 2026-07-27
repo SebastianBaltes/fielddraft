@@ -63,13 +63,28 @@ Der Dev‑Server läuft dann auf `http://localhost:5173`. **Benötigt einen WebG
 
 ### Tests
 
+Die Suite ist **gestuft**, weil ihre Kosten extrem ungleich verteilt sind: 89 % der Rust‑Test‑CPU stecken in 103 von 1444 Tests — Vermaschungs‑Abnahmen, die nur laufen müssen, wenn der Mesher angefasst wurde.
+
 ```bash
-just test            # Rust‑Unit‑Tests + Vitest (schneller lokaler Lauf)
-just test-rust       # nur cargo test --workspace
-just test-web        # nur Vitest
-just test-e2e        # Playwright E2E (headed Chromium mit echtem WebGPU)
+just test            # Standard: Rust‑Kern + Vitest             12 s
+just test-mesh       # thematisch: Lichen, DC, Export‑Route      88 s
+just test-offset     # thematisch: Offset, Shell, Metricity      25 s
+just test-full       # alles, beide Seiten (Gate vor Commit)    ~4 min
+just test-deep       # + die 27 #[ignore]‑Diagnose‑Harnische   ~20 min
+just test-slow       # wasm‑Abnahme (Onshape‑Import)            ~2 min
+just test-e2e        # Playwright E2E (headed Chromium, WebGPU)
 just install-e2e     # einmalig: Playwright‑Chromium herunterladen
 ```
+
+**Welche Stufe wann** — die Zuordnung Quelldatei → Profil steht als SSOT in `.config/nextest.toml`, zusammen mit den Messwerten, die sie begründen. Kurz: `api/lichen.rs`, `export_mesh.rs`, `mdc*`, `dc`, `mesher_*` → `test-mesh`; `offset_*.rs` und `crates/metricity-lab/` → `test-offset`; alles übrige ist in `just test` schon drin.
+
+Die Standard‑Suite ist eine **schwarze Liste**: neue Tests laufen ohne Zutun mit. Wird einer teuer, markiert nextest ihn in der Zusammenfassung als `SLOW` — dann gehört er repariert oder in ein thematisches Profil.
+
+Drei Fallen, die hier teuer waren — `just test` lag vorher bei **36 Minuten**, und die Menge der Tests war nur der kleinste Grund davon:
+
+- **Tests optimiert bauen.** Der Kern ist numerischer Code; unoptimiert ist er nicht etwas, sondern **12,5×** langsamer (gemessen: 2158 s → 173 s). Das regelt `[profile.test]` in der Wurzel‑`Cargo.toml` — wer es entfernt, macht die Suite wieder unbenutzbar.
+- **`cargo test` fährt Test‑Binaries seriell**, `cargo nextest` alle in einem Pool. Allein dadurch blockierte das Kernel‑Binary die Tests von `metricity-lab`. `cargo test --workspace` funktioniert weiter, ist aber die langsamere Variante.
+- **`just test` baut die WASM nicht mehr neu.** `wasm-bindgen` + `wasm-opt` laufen auch bei unveränderten Quellen und kosteten 53 s — mehr als alle 3346 Tests zusammen. Die schnellen Vitest‑Tests laden den Kernel nie (das tun per Konvention nur die `*.slow.test.ts`), sie brauchen die Dateien nur zur Modul‑Auflösung; gebaut wird jetzt nur, wenn sie fehlen. **Der Handel:** `just test` prüft damit nicht mehr, ob der Kern fürs wasm‑Target kompiliert. `just test-slow`, `test-e2e` und `test-full` erzwingen weiterhin einen frischen Build.
 
 ### Backend (optional, für Auth + Projekt‑Sync)
 
@@ -335,7 +350,8 @@ Tests werden **von Anfang an** mitentwickelt, nicht nachgezogen. Die Pyramide:
 - **TypeScript‑Unit‑Tests** (`vitest`) für Frontend‑Logik: Projekt‑Store, Auto‑Save‑Debouncing, `localStorage`‑Wrapper, UI‑Reducer. Komponententests für R3F‑Szenen via `@react-three/test-renderer`.
 - **WASM‑Contract‑Tests:** TypeScript testet die WASM‑Bindings gegen dokumentierte Verträge, damit ABI‑Drift früh auffällt.
 - **Playwright‑E2E‑Tests** (headed Chromium mit echtem WebGPU): Auth‑Flows, Projekt‑CRUD, Auto‑Save, Offline/Online‑Sync, Sketch‑Constraint‑Workflow, Extrude und STL‑Export (Download byteweise gegen Goldfile), Visual‑Regression‑Screenshots.
-- **Lokaler Testlauf:** `just test` führt Rust‑Tests und Vitest aus; `just test-e2e` startet die Playwright‑Suite separat.
+- **Lokaler Testlauf:** gestuft — `just test` für die Edit‑Schleife, `just test-mesh` / `just test-offset` nach Arbeit am jeweiligen Subsystem, `just test-full` als Gate vor dem Commit, `just test-deep` für die `#[ignore]`‑Diagnose‑Harnische. Aufteilung und Messwerte in `.config/nextest.toml`, Kommandos oben unter [Tests](#tests).
+- **Diagnose‑Harnische statt Regressionstests:** Untersuchungen, die Befunde drucken statt zu behaupten (Gyroid‑Baselines, Reach‑Proben, Timing‑Profile), bleiben als `#[ignore]`‑Tests im Baum — Namenskonvention `zz_*`, `*_dump`, `*_probe`, `*_survey*`. Sie sind nicht Teil eines Gates; ein roter Lauf dort ist ein Messergebnis, kein Regress.
 
 ## 10. Roadmap
 
