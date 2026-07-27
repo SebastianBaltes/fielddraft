@@ -832,12 +832,12 @@ Körpern stehen; die restlichen Lücken sind **sieben** Klassen, keine davon P5:
 
 | Klasse | Betroffen | Kern |
 |---|---|---|
-| A `qWall(op, ord)` bindet KEINE Fläche | Sketch 4, 5, 13; #416 Sketch 6, Fasen, Fillets | FieldDraft trennt Flächen nur an Knicken — ein abgerundetes Rechteck hat EINE Mantelfläche, Onshape acht |
+| A `qWall(op, ord)` bindet KEINE Fläche (**#424**) | Sketch 4, 5, 13; #416 Sketch 6, Fasen, Fillets | FieldDraft trennt Flächen nur an Knicken — ein abgerundetes Rechteck hat EINE Mantelfläche, Onshape acht |
 | B falsche Ebene aufgelöst (Normale stimmt, Versatz nicht) | Sketch 6, 7, 11, 12 | Der Importer rechnet Koordinaten NICHT um, wenn er die Ebene nicht wirklich getroffen hat |
 | C End-Condition UP_TO_NEXT / UP_TO_SURFACE | Extrude 8, 12 | Zielfläche nicht auflösbar bzw. liegt in der Sketch-Ebene |
 | D Loch-Position ist kein Sketch-Punkt | beide `Bohrung`-Features | |
 | E Mate-Connector-Inferenz `CENTROID` | Sketch 8 | `anchorT` kennt nur MID_POINT/POINT |
-| F Fasen-Kante als EDGE/SWEPT_EDGE | Chamfer 1 | |
+| F Fasen-Kante als EDGE/SWEPT_EDGE (**#425**) | Chamfer 1 | |
 | G unbekannte Ebenen-Query-Form | Sketch 14 | |
 
 Alles andere sind Folgefehler: ein Extrude ohne Profil-Sketch, ein Spiegel
@@ -911,4 +911,5 @@ Eine einzige `addFeatureCall revolve` (Revolve 5, `remove`) verbrauchte
 Körper; seit die nicht mehr gebaut werden, ist der ganze Import in 2,8 s durch.
 Die Kernel-Pathologie dahinter bleibt **unerklärt, nur nicht mehr ausgelöst**:
 dieselbe Revolve als `new` kostet 0,35 s, als `remove` das 4500-fache.
-Reproduzierbar auf Commit `0df5d1e7` mit der #419-Fixture.
+Reproduzierbar auf Commit `0df5d1e7` mit der #419-Fixture — als Perf-Ticket
+**#426** geführt, damit die Latenz nicht mit dem Symptom verschwindet.
