@@ -791,6 +791,42 @@ fn build_seed_wireframe_tracked(body: &BoundedCsg, mode: SeedMode) -> Option<See
         // seed walks to the concurrence), capped — witnesses are corners, a
         // handful of starts per triple finds them all.
         const GUESS_CAP: usize = 48;
+        // …and the cap is not the right STOPPING rule (#433). A triple's
+        // concurrences are a property of the three SURFACES, not of the seed
+        // list: three planes meet in exactly ONE point, a quadric triple in at
+        // most eight. The seeds only supply Newton STARTS, so spending all 48
+        // of them (64 with the stride's rounding) on a triple whose single
+        // corner the first start already found is repetition. Measured on the
+        // #419 rail body: 48 545 triples → 3.1 M Newton runs, 903 k of which
+        // re-derived a point already in hand — 10.9 s of a 12 s weave, for 23
+        // witnesses, and the same six weaves made 89 % of the 107 s import.
+        //
+        // So the loop stops when the solution set stops GROWING: a start whose
+        // Newton yields nothing new (no convergence, or a concurrence already
+        // in `solved`) is barren, and `NO_NEW_STOP` barren starts in a row end
+        // the triple. A triple with several genuine corners keeps searching as
+        // long as its starts keep producing them — the rule follows the
+        // surfaces' algebra instead of the seed count.
+        const NO_NEW_STOP: usize = 8;
+        // Two Newton results are the SAME concurrence below this distance. The
+        // Newton runs in f32 and stops at a residual of `VERTEX_REFINE_TOL`
+        // (1e-3 mm), so two starts converging on one corner land at most about
+        // that far apart; twice that separates "same solution" from "second
+        // corner" with margin.
+        //
+        // `solved` decides ONLY when to stop, never whether the gates below
+        // run — and that distinction is measured, not stylistic. Skipping the
+        // gates for a duplicate looks free (the same point must earn the same
+        // verdict) but is not: at a GRAZING corner the activity test is a
+        // knife-edge, the f32 Newton scatters its results by microns across
+        // it, and a later start can legitimately land on the accepting side of
+        // a point an earlier one was refused on. Suppressing those re-tests
+        // dropped a witness in `lichen_adv_graze_sphere_plane_watertight`
+        // (sphere meeting a plane at 3.6°) and took its mesh's Hausdorff
+        // distance from 0.0021 to 0.0454 — 20× worse. Every start that runs
+        // is therefore judged exactly as before; only the number of starts
+        // changed.
+        const SOLUTION_MERGE: f64 = 2.0 * crate::brep::tol::VERTEX_REFINE_TOL as f64;
         for t in triples {
             let branches = [BranchId(t[0]), BranchId(t[1]), BranchId(t[2])];
             let mut best: Option<&Vec<[f32; 3]>> = None;
@@ -802,7 +838,14 @@ fn build_seed_wireframe_tracked(body: &BoundedCsg, mode: SeedMode) -> Option<See
             }
             let Some(guesses) = best else { continue };
             let stride = (guesses.len() / GUESS_CAP).max(1);
+            // This triple's concurrences, as far as found, and how many starts
+            // in a row have added nothing to them.
+            let mut solved: Vec<[f64; 3]> = Vec::new();
+            let mut barren = 0usize;
             for g in guesses.iter().step_by(stride) {
+                if barren >= NO_NEW_STOP {
+                    break;
+                }
                 let start = [g[0] as f64, g[1] as f64, g[2] as f64];
                 // The corner Newton solves the UN-warped analytic concurrence;
                 // seeds live in the warped world → pull the start back via T.
@@ -814,6 +857,7 @@ fn build_seed_wireframe_tracked(body: &BoundedCsg, mode: SeedMode) -> Option<See
                 let TripleRefine::Refined(p) =
                     refine_triple_vertex(&halfspaces, &branches, start)
                 else {
+                    barren += 1;
                     continue;
                 };
                 // Warp: Politur im UN-gewarpten Raum. Displace: Politur zieht
@@ -823,6 +867,12 @@ fn build_seed_wireframe_tracked(body: &BoundedCsg, mode: SeedMode) -> Option<See
                 } else {
                     polish_corner(&branches, p)
                 };
+                if solved.iter().any(|q| dist3(*q, p) < SOLUTION_MERGE) {
+                    barren += 1;
+                } else {
+                    solved.push(p);
+                    barren = 0;
+                }
                 // Only ACTIVE concurrences become witnesses: extended analytic
                 // surfaces concur outside the material too — far off (a cap
                 // plane crossing a box edge line) or even ON the body boundary

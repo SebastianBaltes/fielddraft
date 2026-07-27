@@ -12,6 +12,9 @@ Format, eine Zeile je Eintrag:
 kind = feat | fix | perf. scope und #tickets sind optional. Folgezeilen, die
 eingerückt sind, gehören zum Text davor (Umbruch erlaubt).
 
+## 0.39.4
+- perf(kernel) #433: Das große Baugruppen-Dokument aus Onshape importiert in gut einem Drittel der Zeit — gemessen 107 Sekunden vorher, 36 Sekunden nachher. Die Zeit lag nicht verteilt über die 150 Features, sondern in sechs einzelnen Aufrufen: sie machten 89 Prozent des Imports aus, und in jedem davon steckten neun Zehntel in derselben Rechnung. Der Kanten-Weber sucht die Eckpunkte eines Körpers, indem er von jeder gefundenen Naht aus nachrechnet, wo sich drei Flächen treffen — und startete diese Rechnung 48 Mal je Flächen-Tripel, obwohl drei ebene Flächen sich nur in genau einem Punkt treffen können. Auf einem Körper waren das drei Millionen Rechnungen für 23 Ecken. Jetzt hört die Suche auf, sobald sie nichts Neues mehr findet. Dieselben Ecken, dieselbe Geometrie, dieselben Körper — nur ohne die Wiederholung. Spürbar überall dort, wo viele Features auf einem Körper stehen, nicht nur beim Import.
+
 ## 0.39.3
 - perf(kernel) #426: Eine Boolean gegen einen langen Körper bleibt nicht mehr minutenlang stehen. Wenn der analytische Kanten-Weber einzelne Nähte nicht auflösen kann, holte er sie bisher aus einem Gitter über den GANZEN Körper — auf einer 3 m langen Baugruppen-Schiene waren das 1,5 Millionen Zellen und 14 Minuten, um zwei Nähte von 0,17 mm und 0,017 mm Breite zu flicken, die Zellen dieser Größe ohnehin nicht auflösen können. Jetzt wird das Gitter genau dort aufgespannt, wo die offenen Nähte liegen, und in deren Maßstab: derselbe Aufruf braucht 5 Sekunden statt 14 Minuten, und die Nähte werden dabei zum ersten Mal fein genug abgetastet. Ausgelöst wurde das in einem Onshape-Import; sichtbar wird es überall dort, wo ein Verschneiden großer Körper bisher scheinbar hängen blieb.
 

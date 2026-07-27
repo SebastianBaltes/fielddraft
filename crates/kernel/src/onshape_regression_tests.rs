@@ -97,3 +97,52 @@ fn onshape_419_revolve_remove_stays_bounded() {
     // The repair must still BUILD the document, not just build it fast.
     assert_eq!(bodies, 5, "the recorded prefix partitions into 5 bodies");
 }
+
+/// #433 — the WHOLE #419 import, not just its worst call: 49 recorded kernel
+/// calls (12 sketches, 37 features), the same sequence the browser makes.
+///
+/// It exists because the number had no home. #426 left „läuft jetzt in 2,8 s"
+/// in the record while the import had grown to **107,5 s** in the browser — no
+/// test measured it, so it could drift by a factor of 40 unnoticed. This bound
+/// is that measurement, kept honestly: an instrument, not a repair.
+///
+/// The distribution behind the number (measured, native, before the #433 fix):
+/// 73,4 s over 49 calls, of which the top six take 65,4 s — a HOTSPOT, not
+/// mass. Every one of the six is a weave of the same two mid-size bodies
+/// (10×44×44 mm, 12×50×55 mm), and 87 % of each weave sat in ONE stage: the
+/// triple-point witness Newton (`seed_weaver`, stage 2b). It ran 48 starts per
+/// branch triple — 3,1 M Newton runs over 48 545 triples, 903 k of them
+/// re-solving a corner already in hand — to keep 23 witnesses. Stopping when
+/// the solution set stops growing (`NO_NEW_STOP`) takes the replay to 21 s.
+///
+/// The bound is 45 s: 2,1× the measured 21 s. `.config/nextest.toml` gives
+/// this test the machine to itself (`threads-required`), because next to
+/// 1 400 parallel tests the same replay costs 52 s — a bound that had to
+/// absorb THAT could no longer tell a doubling of the work from load.
+#[test]
+fn onshape_419_full_import_stays_bounded() {
+    let (timings, bodies) = replay(include_str!("testdata/onshape419_full_import.json"));
+    let total_ms: f64 = timings.iter().sum();
+    assert_eq!(timings.len(), 49, "the recorded import is 49 kernel calls");
+
+    assert!(
+        total_ms < 45_000.0,
+        "the #419 import doubled: {total_ms:.0} ms for 49 calls \
+         (73 400 ms before the #433 witness fix, 17 400 ms after). \
+         Per-call ms: {timings:?}",
+    );
+
+    // A single call must not eat the budget either: the six calls that made up
+    // 89 % of the old total were 8,3–13,4 s each, now 1,7–2,8 s. 10 s keeps the
+    // pre-fix hotspot visible as a failure without policing normal variance.
+    let worst_ms = timings.iter().copied().fold(0.0f64, f64::max);
+    assert!(
+        worst_ms < 10_000.0,
+        "a single call of the #419 import is back to hotspot size: {worst_ms:.0} ms. \
+         Per-call ms: {timings:?}",
+    );
+
+    // Same document, not just a faster one. 12 bodies is the pin the web E2E
+    // (`onshapeImport419E2E.slow.test.ts`) asserts on the same input.
+    assert_eq!(bodies, 12, "the #419 import partitions into 12 bodies");
+}

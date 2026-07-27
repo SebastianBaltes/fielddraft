@@ -77,6 +77,18 @@ slow-timeout = { period = "60s" }
 default-filter = 'all()'
 slow-timeout = { period = "120s" }
 
+# Der #419-Import-Schranke (#433) bekommt die Maschine für sich. Sie MISST
+# eine Zeit, und neben 1 400 parallel laufenden Tests misst sie die Auslastung
+# der Maschine mit: derselbe Lauf kostet allein 21 s und im vollen Profil
+# 52 s — Faktor 2,5, einzelne Aufrufe bis Faktor 10. Eine Schranke, die diesen
+# Faktor einpreisen müsste, könnte eine Verdopplung der echten Arbeit nicht
+# mehr von Last unterscheiden. `threads-required = "num-cpus"` reserviert alle
+# Test-Threads, der Test läuft also exklusiv; das kostet die ~20 s einmal am
+# Ende des Laufs und macht die Zahl aussagekräftig.
+[[profile.full.overrides]]
+filter = 'test(/^onshape_regression_tests::onshape_419_full_import/)'
+threads-required = "num-cpus"
+
 # --- Tief: zusätzlich die 27 `#[ignore]`-Harnische -----------------------
 # Die `zz_*`-, `*_dump`-, `*_probe`- und `*_survey`-Tests sind keine
 # Regressionstests, sondern instrumentierte Untersuchungen, die im Baum
@@ -87,3 +99,8 @@ slow-timeout = { period = "120s" }
 default-filter = 'all()'
 slow-timeout = { period = "300s" }
 fail-fast = false
+
+# Wie im vollen Profil: die Zeit-Schranke misst nur allein etwas.
+[[profile.deep.overrides]]
+filter = 'test(/^onshape_regression_tests::onshape_419_full_import/)'
+threads-required = "num-cpus"
