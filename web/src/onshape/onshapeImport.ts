@@ -547,6 +547,27 @@ function endCondition(
     warnings: [],
   };
 
+  // Onshape can begin the extrusion on a plane OFFSET from the sketch
+  // (`startOffset` + `startOffsetDistance`), so the material spans
+  // [offset, offset + depth] along the normal instead of [0, depth].
+  // FieldDraft's extrude has no such field — `depth`/`depth_back` are both
+  // measured FROM the profile plane — so translating this by dropping the
+  // offset would put the body `startOffsetDistance` away from where Onshape
+  // has it, and nothing would say so. #409's Extrude 7 (100 mm) is exactly
+  // that case, and #419 carries seven more.
+  if (params.get("startOffset")?.value === true) {
+    const startBound = params.get("startOffsetBound")?.value ?? "BLIND";
+    const offsetMm = mmOf(params.get("startOffsetDistance"), 0, env);
+    if (startBound !== "BLIND" || Math.abs(offsetMm) > 1e-6) {
+      out.error =
+        `${name}: Start-Offset (${startBound}${
+          startBound === "BLIND" ? `, ${offsetMm.toFixed(2)} mm` : ""
+        }) — FieldDrafts Extrude beginnt immer auf der Skizzenebene; ` +
+        `den Versatz zu verschweigen hieße, den Körper still zu versetzen`;
+      return out;
+    }
+  }
+
   if (bound === "THROUGH_ALL") {
     const aabb = kernel.sceneAabb?.();
     if (aabb) {

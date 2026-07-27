@@ -66,8 +66,13 @@ const GROUND_TRUTH = {
  *     silently misplaced geometry.
  *  C. End conditions UP_TO_NEXT / UP_TO_SURFACE (Extrude 8, 12).
  *  D. Hole positions that are not plain sketch points (both `Bohrung`s).
- *  E. Mate-connector inference CENTROID (Sketch 8), and a cap-edge anchor that
- *     binds nothing because its extrude is missing (Mirror 2).
+ *  E. A cap-edge mate-connector anchor that binds nothing because its extrude
+ *     is missing (Mirror 2). CENTROID inference itself is closed since v0.38.1:
+ *     on a straight edge the centroid IS the midpoint, so Sketch 8 and its
+ *     connector now import.
+ *  H. `startOffset` — Onshape starts the extrusion on a plane offset from the
+ *     sketch (Extrude 7: 100 mm). FieldDraft's extrude always begins on the
+ *     profile plane, so this is refused rather than silently misplaced.
  *  F. A chamfer edge in EDGE/SWEPT_EDGE form (Chamfer 1).
  *  G. A plane query shape the decoder does not know (Sketch 14).
  *
@@ -98,8 +103,6 @@ const KNOWN_GAPS = [
   "Sketch 5",
   "Sketch 6",
   "Sketch 7",
-  "Sketch 8",
-  "Sketch 8 · Mate connector",
 ];
 
 function wrap(k: WasmKernel): ImportKernel & { raw: WasmKernel } {

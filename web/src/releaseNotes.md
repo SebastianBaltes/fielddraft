@@ -12,6 +12,9 @@ Format, eine Zeile je Eintrag:
 kind = feat | fix | perf. scope und #tickets sind optional. Folgezeilen, die
 eingerückt sind, gehören zum Text davor (Umbruch erlaubt).
 
+## 0.38.2
+- fix(onshape) #409 #419: Eine Extrusion, die in Onshape nicht auf der Skizzenebene beginnt, sondern auf einer davon versetzten Ebene, wird jetzt gemeldet statt still an der falschen Stelle gebaut. Bisher fiel der Versatz unter den Tisch — der Körper stand dann um genau diesen Betrag daneben, ohne dass irgendwo etwas dazu stand. Im Regal-Dokument war das ein Zylinder 100 mm zu hoch, im Schienen-Dokument betrifft es sieben Extrusionen.
+
 ## 0.38.1
 - fix(onshape) #419: Ein Sketch, der auf einer schlicht gezeichneten Linie aufsetzt, wird jetzt gefunden. Bisher erkannte der Import die Kante nur an ihrer zusammengesetzten Schreibweise; eine einfache Linie fiel durchs Raster und der Sketch galt als „Ebene nicht übersetzbar“ — obwohl Onshapes Angabe längst verstanden war.
 - fix(onshape) #419: Sketches auf der Mantelfläche eines Rotationskörpers werden importiert. Bisher wurde eine Seitenwand nur akzeptiert, wenn sie aus einer Extrusion stammte; bei einem gedrehten Körper brach die Kette dort ab, samt allem, was darauf aufbaute.
