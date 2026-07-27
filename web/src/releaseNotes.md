@@ -12,6 +12,9 @@ Format, eine Zeile je Eintrag:
 kind = feat | fix | perf. scope und #tickets sind optional. Folgezeilen, die
 eingerückt sind, gehören zum Text davor (Umbruch erlaubt).
 
+## 0.39.3
+- perf(kernel) #426: Eine Boolean gegen einen langen Körper bleibt nicht mehr minutenlang stehen. Wenn der analytische Kanten-Weber einzelne Nähte nicht auflösen kann, holte er sie bisher aus einem Gitter über den GANZEN Körper — auf einer 3 m langen Baugruppen-Schiene waren das 1,5 Millionen Zellen und 14 Minuten, um zwei Nähte von 0,17 mm und 0,017 mm Breite zu flicken, die Zellen dieser Größe ohnehin nicht auflösen können. Jetzt wird das Gitter genau dort aufgespannt, wo die offenen Nähte liegen, und in deren Maßstab: derselbe Aufruf braucht 5 Sekunden statt 14 Minuten, und die Nähte werden dabei zum ersten Mal fein genug abgetastet. Ausgelöst wurde das in einem Onshape-Import; sichtbar wird es überall dort, wo ein Verschneiden großer Körper bisher scheinbar hängen blieb.
+
 ## 0.39.2
 - fix(kernel) #431: Die Kopien eines Musters bekommen endlich eigene Flächen-Namen. Bisher trugen alle Kopien dieselben Namen wie das Original — ein Quader mit dreifachem linearem Muster hatte 18 Flächen, aber nur 6 verschiedene Namen. Wer eine Fläche einer Kopie ansprach (eine Skizze darauf, eine Fase an ihrer Kante, ein Bohrungs-Ziel), traf deshalb irgendeine der drei — meist die des Originals, und zwar lautlos. Genau so ist im Onshape-Testkorpus einmal eine Verrundung an einer Kante gelandet, an der in Onshape gar keine sitzt. Jetzt wird der Unterscheidungs-Index über ALLE Körper hinweg vergeben statt je Körper: 18 Flächen, 18 Namen, und jeder Name trifft genau eine Fläche. Namen, die schon vorher eindeutig waren, bleiben unverändert — ein Dokument ohne Muster merkt nichts davon. Offen bleibt, dass dieser Name die LAGE der Kopie beschreibt: dreht man die Musterrichtung um, tauschen die Kopien ihre Namen.
 

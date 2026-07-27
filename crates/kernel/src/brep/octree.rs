@@ -161,6 +161,17 @@ pub struct OctreeConfig {
     /// octree is identical either way; only the eval cost changes. Off is
     /// for A/B debugging.
     pub specialize: bool,
+    /// Restrict the build to this world-space REGION instead of the whole
+    /// body AABB (#426). The root cell becomes `region ∩ body.aabb()`, so the
+    /// octree localises topology only where the caller needs it. `None`
+    /// (the default) is the whole body.
+    ///
+    /// This exists because the hybrid seed weave repairs a HANDFUL of
+    /// unresolved seams from the octree wireframe and discards everything
+    /// else: on a 3 m assembly rail (#426) the whole-body octree was 1.54
+    /// million leaves and 14 minutes, to fill two seams 0.17 mm and 0.017 mm
+    /// wide — which cells that coarse cannot even resolve.
+    pub region: Option<Aabb>,
 }
 
 /// How much coarser a `Face` cell may be than a feature cell. Faces carry no
@@ -190,6 +201,7 @@ impl Default for OctreeConfig {
             eps_factor: 0.5,
             root_margin_factor: 0.01,
             specialize: true,
+            region: None,
         }
     }
 }
@@ -221,11 +233,23 @@ impl Octree {
         Octree::build_with(body, OctreeConfig::with_min_cell_size(min_cell_size))
     }
 
+    /// Build an octree that only covers `region` (#426) — the root cell is
+    /// `region ∩ body.aabb()`, and `min_cell_size` is scaled to the region so
+    /// a local repair is resolved at the LOCAL scale, never the whole body's.
+    pub fn build_region(body: &BoundedCsg, min_cell_size: f32, region: Aabb) -> Octree {
+        let mut cfg = OctreeConfig::with_min_cell_size(min_cell_size);
+        cfg.region = Some(region);
+        Octree::build_with(body, cfg)
+    }
+
     /// Build an octree for `body` with explicit [`OctreeConfig`].
     pub fn build_with(body: &BoundedCsg, cfg: OctreeConfig) -> Octree {
         let mut leaves = Vec::new();
 
-        let aabb = body.aabb();
+        let aabb = match cfg.region {
+            Some(r) => Aabb::intersect(r, body.aabb()),
+            None => body.aabb(),
+        };
         if aabb.is_empty() {
             return Octree { leaves };
         }
@@ -809,6 +833,87 @@ mod tests {
         // Topology is byte-identical to the uniform build.
         assert_eq!(octree.distinct_edge_signatures().len(), 12);
         assert_eq!(octree.distinct_vertex_branch_sets().len(), 8);
+    }
+
+    /// #426: a whole-body octree on a LONG body is unaffordable, and the
+    /// hybrid seed weave only ever needs the octree where its unresolved seams
+    /// are. `build_region` scopes the root to that neighbourhood — cost falls
+    /// with the region, and (the part that actually matters) the cell size
+    /// scales with the region too, so a sub-millimetre repair is resolved at
+    /// its own scale instead of the body's.
+    ///
+    /// The measured case: a 3 087 mm assembly rail whose two unresolved seams
+    /// were 0.17 mm and 0.017 mm wide. `topology_min_cell_size` CEILs at 10 mm,
+    /// so the whole-body octree paved 1.54 million leaves — cells 600× wider
+    /// than the seams, i.e. provably incapable of resolving them — in 14 min.
+    #[test]
+    fn build_region_scopes_the_root_and_the_cell_size() {
+        // A long thin bar: 400 × 20 × 20 — the SHAPE that makes the whole-body
+        // octree unaffordable while every feature of interest is local. (The
+        // measured #426 body was 3 087 mm; the ratio below is already decisive
+        // at 400 mm, and keeping the bar short keeps this test in the
+        // edit-loop suite.)
+        let csg = CsgNode::Leaf {
+            id: FeatureId::from_u32(1),
+            primitive: Primitive::Box {
+                center: [0.0, 0.0, 0.0],
+                half_extents: [200.0, 10.0, 10.0],
+            },
+        };
+        let body = BoundedCsg::from_csg(&csg);
+
+        // What `body::topology_min_cell_size` would hand the whole-body build.
+        let body_cell = 10.0;
+        let whole = Octree::build(&body, body_cell);
+
+        // One 2 mm neighbourhood near one end of the bar, resolved at its own
+        // scale (region / 32, the same divisor the body-wide rule uses).
+        let region = Aabb {
+            min: [190.0, 9.0, 9.0],
+            max: [192.0, 11.0, 11.0],
+        };
+        let scoped = Octree::build_region(&body, 2.0 / 32.0, region);
+
+        assert!(
+            scoped.leaves().len() * 20 < whole.leaves().len(),
+            "scoped build must be orders of magnitude smaller: {} vs {}",
+            scoped.leaves().len(),
+            whole.leaves().len(),
+        );
+        assert!(
+            !scoped.leaves().is_empty(),
+            "the region straddles the bar's +Y/+Z edge, so it must carry cells",
+        );
+
+        // Every cell lies inside the region (plus the root margin) — the build
+        // never wanders off into the rest of the body.
+        let margin = 0.1;
+        for c in scoped.leaves() {
+            for k in 0..3 {
+                assert!(
+                    c.aabb.min[k] >= region.min[k] - margin
+                        && c.aabb.max[k] <= region.max[k] + margin,
+                    "cell {:?} escapes the region {region:?}",
+                    c.aabb,
+                );
+            }
+        }
+
+        // And the point of the exercise: the scoped cells are FINER than
+        // anything the whole-body build could offer there.
+        let cell_edge = |c: &OctreeCell| {
+            let s = c.aabb.size();
+            s[0].max(s[1]).max(s[2])
+        };
+        let finest_scoped = scoped
+            .edge_cells()
+            .chain(scoped.vertex_cells())
+            .map(cell_edge)
+            .fold(f32::INFINITY, f32::min);
+        assert!(
+            finest_scoped < body_cell,
+            "scoped cells must beat the body-wide {body_cell} mm floor, got {finest_scoped}",
+        );
     }
 
     #[test]

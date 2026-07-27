@@ -15,6 +15,12 @@
 #
 # WELCHES PROFIL WANN (`just test-*` ruft sie auf):
 #
+# AUSSERDEM ausgeschlossen: `onshape_regression_tests` — echte
+# Onshape-Dokumente, als aufgezeichnete Kernel-Aufrufe eingefroren, gegen den
+# echten `Kernel` nachgespielt. Ein Replay kostet Sekunden statt Millisekunden
+# (#426: 6 s), und es ist ein Integrations-Gate, keine Edit-Schleifen-Suite.
+# Läuft in `just test-full` und `just test-deep`.
+#
 #     Code unter …                              → Profil
 #     crates/kernel/src/api/lichen.rs           → mesh
 #     crates/kernel/src/{export_mesh,mdc*,dc,
@@ -32,7 +38,14 @@
 # --- Standard: alles außer den drei Schwergewichten ----------------------
 # ~15 s. Das ist die Suite für die Edit-Schleife (`just test`).
 [profile.default]
-default-filter = 'not (package(metricity-lab) | test(/^api::lichen::/) | test(/^export_mesh::/))'
+default-filter = '''
+  not (
+      package(metricity-lab)
+    | test(/^api::lichen::/)
+    | test(/^export_mesh::/)
+    | test(/^onshape_regression_tests::/)
+  )
+'''
 # Kein `terminate-after`: das wäre auf einer ausgelasteten Maschine flakig.
 # Die SLOW-Markierung in der Zusammenfassung ist das Signal, kein Fehler.
 slow-timeout = { period = "20s" }

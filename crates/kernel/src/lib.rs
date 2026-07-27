@@ -104,3 +104,7 @@ pub fn wasm_version() -> String {
 #[cfg(test)]
 #[path = "lib_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "onshape_regression_tests.rs"]
+mod onshape_regression_tests;

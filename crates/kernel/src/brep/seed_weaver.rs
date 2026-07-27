@@ -33,7 +33,7 @@
 
 use std::collections::HashMap;
 
-use crate::brep::branch_seed::{seed_branch_pairs, SeedResult};
+use crate::brep::branch_seed::{seed_branch_pairs, EdgeSeed, SeedResult};
 use crate::brep::edge_trace::{
     edge_tangent, project_to_edge, trace_edge, EdgeEnd, Field, TraceParams,
 };
@@ -47,7 +47,7 @@ use crate::brep::extraction::both_branches_active;
 use crate::brep::vec3::{add, dist as dist3, dot, normalize, scale, sub};
 use crate::brep::weaving::{branch_halfspace_map, finish_weave};
 use crate::brep::{BRep, Edge, EdgeGeometry, HermiteSample, Vertex, VertexId};
-use crate::csg::BranchId;
+use crate::csg::{Aabb, BranchId};
 use crate::bvh::BoundedCsg;
 
 /// Canonical `(lo, hi)` signature key of a branch pair — the identity the
@@ -63,6 +63,11 @@ fn pair_key(a: BranchId, b: BranchId) -> (u32, u32) {
 struct SeedWireframe {
     brep: BRep,
     skipped: std::collections::HashSet<(u32, u32)>,
+    /// Where each skipped seam LIVES (#426): the world AABB the octree fill
+    /// has to cover for that pair. `None` for a pair whose locality is not
+    /// known (it never seeded and carries no candidate box) — one such entry
+    /// forces the fill back to the whole body.
+    skipped_regions: Vec<Option<Aabb>>,
 }
 
 /// How `build_seed_wireframe` reacts to a branch pair / corner the analytic
@@ -142,7 +147,7 @@ pub fn weave_branch_seeds_hybrid(body: &BoundedCsg, min_cell: f32) -> Option<BRe
     if !scope_supported_partial(body) {
         return None;
     }
-    let SeedWireframe { mut brep, skipped } =
+    let SeedWireframe { mut brep, skipped, skipped_regions } =
         build_seed_wireframe_tracked(body, SeedMode::Partial)?;
     if brep.edges.is_empty() && brep.vertices.is_empty() {
         return None;
@@ -156,13 +161,106 @@ pub fn weave_branch_seeds_hybrid(body: &BoundedCsg, min_cell: f32) -> Option<BRe
 
     drop_pair_edges(&mut brep, &skipped);
 
-    let octree = crate::brep::octree::Octree::build(body, min_cell);
+    // #426: the fill consumes ONLY edges whose signature is in `skipped`, so
+    // the octree needs to cover only where those seams live. Paving the whole
+    // body instead cost 14 minutes on a 3 m assembly rail — 1.54 million leaves
+    // at the 10 mm cell `topology_min_cell_size` ceils to — to repair two seams
+    // 0.17 mm and 0.017 mm wide, which cells that coarse cannot resolve at all.
+    // Scoped to the seams, the same repair is both bounded AND resolved: the
+    // cell size scales with the region, not with the body. The scoped build is
+    // never coarser and never larger than the whole-body build it replaces —
+    // the cell is clamped at `min_cell`, and the root is a sub-box of the same
+    // body AABB — so this can only ever remove work, never add any.
+    let region = skipped_regions
+        .iter()
+        .try_fold(Aabb::EMPTY, |acc, r| r.map(|r| Aabb::union(acc, r)))
+        .filter(|r| !r.is_empty());
+    let octree = match region {
+        Some(region) => {
+            let s = region.size();
+            let largest = s[0].max(s[1]).max(s[2]);
+            let cell = (largest / SEAM_REGION_CELL_DIVISOR).clamp(1e-3, min_cell.max(1e-3));
+            crate::brep::octree::Octree::build_region(body, cell, region)
+        }
+        None => crate::brep::octree::Octree::build(body, min_cell),
+    };
     let oct = crate::brep::edge_walker::build_wireframe(body, &octree);
     let weld = crate::brep::edge_walker::VERTEX_CLUSTER_GAP_FACTOR
         * crate::brep::edge_walker::max_vertex_cell_size(&octree);
     merge_octree_fill(&mut brep, &oct, &skipped, weld);
 
     Some(finish_weave(brep, body))
+}
+
+/// Multiple of a seam's own extent kept as breathing room around it when the
+/// octree fill is scoped to that seam (#426). The SSI seeds mark the seam but
+/// need not cover its full run, so the box is grown by its own size before the
+/// octree sees it.
+const SEAM_REGION_PAD_FACTOR: f32 = 2.0;
+
+/// Absolute floor for that breathing room, relative to the body diagonal — a
+/// pair that seeded a single point would otherwise get a zero-size region.
+const SEAM_REGION_MIN_PAD_FRACTION: f32 = 1e-4;
+
+/// How many cells across the scoped fill region resolves. Mirrors the DIVISOR
+/// of [`crate::body::topology_min_cell_size`], applied to the REGION instead of
+/// the whole body, so a sub-millimetre repair is resolved at its own scale.
+const SEAM_REGION_CELL_DIVISOR: f32 = 32.0;
+
+/// Where each skipped seam lives, so the octree fill can be scoped to it
+/// instead of paving the whole body (#426).
+///
+/// A pair that produced SSI seeds is localised by those seeds — they lie ON the
+/// seam. A pair that never seeded (`unresolved`: no analytic carrier, or SSI
+/// `Unsupported`) falls back to its candidate box, which is the operands' AABB
+/// overlap. A pair that is neither yields `None`, and one `None` sends the fill
+/// back to the whole body — the pre-#426 behaviour, kept as the safe default
+/// rather than guessing a locality we do not have.
+fn skipped_seam_regions(
+    body: &BoundedCsg,
+    skipped: &std::collections::HashSet<(u32, u32)>,
+    seeds: &[EdgeSeed],
+    unresolved: &[crate::brep::branch_pairs::BranchPair],
+) -> Vec<Option<Aabb>> {
+    if skipped.is_empty() {
+        return Vec::new();
+    }
+    let diag = {
+        let s = body.aabb().size();
+        (s[0] * s[0] + s[1] * s[1] + s[2] * s[2]).sqrt()
+    };
+    let mut seeded: HashMap<(u32, u32), Aabb> = HashMap::new();
+    for s in seeds {
+        let key = pair_key(s.a, s.b);
+        if !skipped.contains(&key) {
+            continue;
+        }
+        let point = Aabb { min: s.point, max: s.point };
+        let entry = seeded.entry(key).or_insert(Aabb::EMPTY);
+        *entry = Aabb::union(*entry, point);
+    }
+    let mut candidates: HashMap<(u32, u32), Aabb> = HashMap::new();
+    for pair in unresolved {
+        let key = pair_key(pair.a, pair.b);
+        let entry = candidates.entry(key).or_insert(Aabb::EMPTY);
+        *entry = Aabb::union(*entry, pair.overlap);
+    }
+    // Deterministic order: `skipped` is a HashSet, and the union below is
+    // order-independent, but a stable order keeps debug output reproducible.
+    let mut keys: Vec<(u32, u32)> = skipped.iter().copied().collect();
+    keys.sort_unstable();
+    keys.into_iter()
+        .map(|key| {
+            if let Some(bb) = seeded.get(&key).filter(|bb| !bb.is_empty()) {
+                let s = bb.size();
+                let largest = s[0].max(s[1]).max(s[2]);
+                let pad = (SEAM_REGION_PAD_FACTOR * largest)
+                    .max(SEAM_REGION_MIN_PAD_FRACTION * diag);
+                return Some(bb.expanded(pad));
+            }
+            candidates.get(&key).copied().filter(|bb| !bb.is_empty())
+        })
+        .collect()
 }
 
 /// Remove every edge whose canonical signature is in `skipped`, compacting
@@ -1573,7 +1671,8 @@ fn build_seed_wireframe_tracked(body: &BoundedCsg, mode: SeedMode) -> Option<See
         }
     }
 
-    Some(SeedWireframe { brep, skipped })
+    let skipped_regions = skipped_seam_regions(body, &skipped, &seeds, &unresolved);
+    Some(SeedWireframe { brep, skipped, skipped_regions })
 }
 
 #[cfg(test)]
