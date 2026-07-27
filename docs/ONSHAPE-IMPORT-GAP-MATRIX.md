@@ -832,7 +832,7 @@ Körpern stehen; die restlichen Lücken sind **sieben** Klassen, keine davon P5:
 
 | Klasse | Betroffen | Kern |
 |---|---|---|
-| A `qWall(op, ord)` bindet KEINE Fläche (**#424**) | Sketch 4, 5, 13; #416 Sketch 6, Fasen, Fillets | FieldDraft trennt Flächen nur an Knicken — ein abgerundetes Rechteck hat EINE Mantelfläche, Onshape acht |
+| A `qWall(op, ord)` bindet KEINE Fläche (**#424**, für #409 erledigt in **#428**) | ~~Sketch 4, 5, 13~~; #416 Sketch 6, Fasen, Fillets | ~~FieldDraft trennt Flächen nur an Knicken~~ — zweimal widerlegt, s. Update (5): die Wände lagen im Inneren eines Körpers, dem sie nie hätten beitreten dürfen |
 | B falsche Ebene aufgelöst (Normale stimmt, Versatz nicht) | Sketch 6, 7, 11, 12 | Der Importer rechnet Koordinaten NICHT um, wenn er die Ebene nicht wirklich getroffen hat |
 | C End-Condition UP_TO_NEXT / UP_TO_SURFACE | Extrude 8, 12 | Zielfläche nicht auflösbar bzw. liegt in der Sketch-Ebene |
 | D Loch-Position ist kein Sketch-Punkt | beide `Bohrung`-Features | |
@@ -1148,3 +1148,41 @@ eine benannte Defektzahl, keine Toleranz. Sie gehört zurück auf 1500, sobald
 der Boolean seine Werkzeuge behält. (Vorher war die 1500er-Schranke grün, weil
 die falsch platzierte Klasse-B-Kette 75 mm unter den Boden hing — sie maß einen
 Defekt, nicht die Höhe.)
+
+## Update 2026-07-27 (5) — Klasse A war in #409 gar keine Flächen-Frage (#428)
+
+Klasse A hatte zwei Erklärungen, und **beide waren falsch**. Die erste — „ein
+abgerundetes Rechteck hat EINE Mantelfläche" — hat Update (4) gemessen und
+widerlegt: es sind acht, jede unter ihrer eigenen Sketch-Entity. Die zweite,
+danach eingesetzte — „Extrude 2 vereinigt vier disjunkte Rechtecke, die
+gesuchten Wände liegen im Inneren dieser Vereinigung" — stimmte in der
+Beobachtung, aber nicht in der Ursache. Die Wände lagen tatsächlich innen. Nur
+kam die Vereinigung nicht vom Extrude.
+
+Sie kam von `Boolean 1`. Onshape zieht dort die vier senkrechten Pfosten mit
+`keepTools=true` von den Platten ab; FieldDraft hat `keep_tools` geparst und
+nie gelesen (#428). Die Pfosten hörten damit auf, eigene Körper zu sein — sie
+wurden in den Plattenkörper gefaltet, und ihre Mantelflächen wurden dadurch
+Innenflächen eines Körpers, dem sie nie hätten beitreten dürfen. `qWall`
+suchte eine Außenfläche und fand keine.
+
+**Gemessen an #409** (v0.38.4 → v0.38.5): z-Spannweite 886,9 mm → **1840,0 mm**,
+z-Bereich [938,1; 1825] → **[0; 1840]** — Onshapes eigener Bereich auf den
+Millimeter. Körper 13 → 15, Import-Fehler 30 → 22. Aus `KNOWN_GAPS` fallen vier
+Namen (`Sketch 4`, `Sketch 5`, `Sketch 13`, `Extrude 13`), **keiner kommt
+hinzu**. Die Schranke `keepToolsSpanMm` entfällt, der Test steht wieder auf
+seinen ursprünglichen 1500 mm.
+
+**An #419** steigt die Körperzahl 7 → 10 bei **unveränderter** Fehlerliste (212
+Meldungen, identische Namen): acht Booleans dieses Dokuments tragen „Werkzeuge
+behalten", die zusätzlichen Körper wurden vorher schlicht verschluckt. Der
+exakte Pin im E2E-Test ist entsprechend nachgezogen.
+
+Was von Klasse A bleibt, ist **#416** (Sketch 6, Fasen, Fillets) — dort gibt es
+keine Boolean mit behaltenen Werkzeugen, die Ursache muss also eine andere sein
+und ist noch nicht gemessen.
+
+**Methodische Lehre, zum dritten Mal in dieser Matrix:** eine plausible
+Erklärung, die die Beobachtung trifft, ist noch keine gemessene Ursache. Beide
+A-Thesen erklärten „Wand ist innen" korrekt und lagen trotzdem daneben. Erst
+das Differenzial gegen einen echten Rebuild hat entschieden.
