@@ -854,3 +854,61 @@ circularPattern / mirror"): Abstand und Anzahl aus dem AUSDRUCK, Spiegel auf
 einer Mate-Connector-Ebene, Verweigerung eines FLÄCHEN-Musters. Die
 Umpflanz-Technik der #416-Tests (`standIn`) isoliert dabei den Übersetzer von
 Lücken, die mit ihm nichts zu tun haben.
+
+## Update 2026-07-27 (3) — #419 gemessen, drei Dekoder-Defekte, ein stiller Versatz
+
+### #419 zum ersten Mal mit Zahlen statt Vermutungen
+
+Grundwahrheit aus Onshapes REST-API: **17 Solid-Parts**, Bounding-Box
+x ∈ [−3015,4; 85,6], y ∈ [−157; 163], z ∈ [−151; 169] mm. Der Import (v0.38.2)
+liefert **9 Körper**, 224 Meldungen, Laufzeit **2,8 s** — vorher 26 min.
+
+| Größe | vorher | v0.38.2 |
+|---|---|---|
+| Körper (Onshape: 17) | 9 | 9 |
+| Meldungen | 223 | 224 |
+| übersetzbare Sketch-Ebenen-Queries | 26/37 | **32/37** |
+| Laufzeit | 26 min | **2,8 s** |
+
+Dass die Körperzahl gleich bleibt, obwohl sechs Ebenen mehr dekodieren, ist der
+Befund: Sketch 4, 6 und 13 scheitern jetzt **einen Schritt später und mit der
+richtigen Begründung** — nicht mehr „Ebenen-Query nicht übersetzbar", sondern
+„`qWall(…)` bindet 0 Flächen". Das ist Klasse A, also Kernel, nicht Übersetzer.
+
+### Drei Dekoder-Defekte mit derselben irreführenden Meldung (v0.38.1)
+
+1. **Ungepunktete Entity-Id.** `extractQueryRefs` erkannte eine Sketch-Entity an
+   ihrer *Gestalt* `<basis>.<suffix>`. Eine schlicht gezeichnete Linie hat aber
+   `pfTtMVvYeZsa` ohne Punkt. Jetzt wird der Wert am Schlüssel `sketchEntityId`
+   gelesen; ein per Rück-Referenz gefüllter Wert verbraucht den Schlüssel-Slot.
+2. **Seitenwand nur von `opExtrude`.** Der Kernel ist dort sweep-agnostisch
+   (`revolve.rs:205` und `extrude.rs:378` füllen `wall_subs` beide aus
+   `sketch::wall_sub_table`, `QueryExpr::Wall` fragt nicht nach dem Sweep), also
+   zählt jetzt auch `opRevolve` — sechs #419-Sketches sitzen auf einem Mantel.
+   `CAP_FACE` bleibt extrude-only: `capFaceQuery` braucht die Sweep-Richtung.
+3. **`CENTROID` auf gerader Kante** ist deren Mitte (Klasse E, damit zu). Auf
+   einer runden Kante bleibt sie abgelehnt — dort liegt der Schwerpunkt im
+   Zentrum, also neben der Kante. Der Aufrufer bürgt für die Geradheit.
+
+### Neue Klasse H: `startOffset` (v0.38.2)
+
+Onshape kann die Extrusion auf einer Ebene **neben** der Skizze beginnen
+(`startOffset` + `startOffsetDistance`); das Material spannt dann
+[offset, offset+depth]. FieldDrafts Extrude hat kein solches Feld — `depth` und
+`depth_back` messen beide von der Profilebene. Der Übersetzer hat den Versatz
+bisher **stillschweigend verworfen** und den Körper um genau diesen Betrag
+versetzt gebaut: #409s Extrude 7 (100 mm) schob die Szene auf z = 2154,7 mm,
+314 mm über Onshapes Maximum von 1840. #419 trägt sieben solche Extrusionen.
+Wird jetzt gemeldet statt still versetzt.
+
+Damit für #409: **E ist zu** (Sketch 8 + Connector importieren), **H ist neu**
+(Extrude 7 bleibt offen, aber aus dem richtigen Grund), offene Features 25 → 23.
+
+### Die 26 Minuten waren eine Boolean gegen einen falsch platzierten Körper
+
+Eine einzige `addFeatureCall revolve` (Revolve 5, `remove`) verbrauchte
+1 566 927 ms von 1 569 951 ms — 99,8 %. Ihr Ziel war einer der Start-Offset-
+Körper; seit die nicht mehr gebaut werden, ist der ganze Import in 2,8 s durch.
+Die Kernel-Pathologie dahinter bleibt **unerklärt, nur nicht mehr ausgelöst**:
+dieselbe Revolve als `new` kostet 0,35 s, als `remove` das 4500-fache.
+Reproduzierbar auf Commit `0df5d1e7` mit der #419-Fixture.
