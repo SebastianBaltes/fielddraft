@@ -1081,6 +1081,11 @@ fn build_seed_wireframe_tracked(body: &BoundedCsg, mode: SeedMode) -> Option<See
             if !traced.closed
                 && (matches!(traced.ends.0, EdgeEnd::Open) || matches!(traced.ends.1, EdgeEnd::Open))
             {
+                if std::env::var("SEED_WEAVER_TRACE_DEBUG").is_ok() {
+                    let len: f64 = traced.points.windows(2).map(|w| dist3(w[0], w[1])).sum();
+                    eprintln!("OPENEND pair=({a:?},{b:?}) 0x{:x} 0x{:x} pts={} len={len:.6} ends={:?} seed={seed_pt:?}",
+                        a.as_u32(), b.as_u32(), traced.points.len(), traced.ends);
+                }
                 if mode == SeedMode::Partial {
                     skipped.insert(pair_key(a, b));
                     continue;
@@ -2783,6 +2788,132 @@ mod tests {
             sketch: Box::new(sketch),
         });
         assert_seed_matches_octree(&body, 0.5);
+    }
+
+    /// The profile of the #435 tests: a trapezoid whose right wall runs at 45°.
+    /// Extruded it gives a PLANE, revolved about the local y-axis a 45° CONE —
+    /// the exact pair the #419 rail fails on. The left wall (constant `r`)
+    /// adds the plane/CYLINDER flavour of the same identity.
+    fn tangency_trapezoid(shift_x: f32) -> Sketch2d {
+        use fielddraft_protocol::SketchSegment;
+        let seg = |a: [f32; 2], b: [f32; 2]| SketchSegment::Line {
+            start: [a[0] + shift_x, a[1]],
+            end: [b[0] + shift_x, b[1]],
+        };
+        Sketch2d::Prim(Sketch2dPrimitive::Path {
+            segments: vec![
+                seg([2.0, -4.0], [8.0, -4.0]),
+                seg([8.0, -4.0], [4.0, 0.0]), // 45° ⇒ cone half-angle π/4
+                seg([4.0, 0.0], [2.0, 0.0]),
+                seg([2.0, 0.0], [2.0, -4.0]), // constant r ⇒ cylinder
+            ],
+            closed: true,
+        })
+    }
+
+    /// `Extrude(profile) ∖ Revolve(profile)` — the #419 configuration — with a
+    /// far-away chip welded on so the model DIAGONAL is assembly-sized. That
+    /// is not decoration: every trace tolerance of the analytic route scales
+    /// with the diagonal (`min_step = 1e-4 · diag`), and it is precisely that
+    /// scaling which makes the split double root untraceable. On a 12 mm body
+    /// the same contact traces to a clean stop and nothing fails.
+    fn tangency_body(revolve_shift_x: f32, tilt_rad: f32) -> BoundedCsg {
+        let revolve = CsgNode::Revolve {
+            wall_subs: None,
+            id: FeatureId::from_u32(11),
+            sketch: Box::new(tangency_trapezoid(revolve_shift_x)),
+        };
+        let revolve = if tilt_rad == 0.0 {
+            revolve
+        } else {
+            let (s, c) = (0.5 * tilt_rad).sin_cos();
+            CsgNode::Transform(
+                fielddraft_protocol::Transform {
+                    rotation: [s, 0.0, 0.0, c],
+                    ..fielddraft_protocol::Transform::IDENTITY
+                },
+                Box::new(revolve),
+            )
+        };
+        BoundedCsg::from_csg(&CsgNode::Union(
+            Box::new(CsgNode::Difference(
+                Box::new(CsgNode::Extrude {
+                    wall_subs: None,
+                    id: FeatureId::from_u32(10),
+                    sketch: Box::new(tangency_trapezoid(0.0)),
+                    half_height: 3.0,
+                }),
+                Box::new(revolve),
+            )),
+            Box::new(box_leaf(20, [1500.0, 0.0, 0.0], [5.0, 5.0, 5.0])),
+        ))
+    }
+
+    /// #435 — a document that EXTRUDES a profile and also REVOLVES it makes the
+    /// extruded wall the exact tangent plane of the revolved wall along their
+    /// shared profile segment. `sweep_contact_pairs` must name those pairs from
+    /// the carriers alone, so they never reach SSI.
+    #[test]
+    fn extrude_revolve_of_one_profile_is_a_tangential_contact() {
+        use crate::brep::weaving::branch_halfspace_map;
+        let body = tangency_body(0.0, 0.0);
+        let map = branch_halfspace_map(&body);
+        let pairs = crate::brep::tangential_seams::sweep_contact_pairs(&body, &map);
+
+        // Group 1 is the 45° segment (extrude plane × revolve CONE), group 3
+        // the constant-r segment (extrude plane × revolve CYLINDER). Groups 0
+        // and 2 are constant-y: the revolve lifts them to PLANES, and two
+        // planes are never tangent — they cross or coincide.
+        let expect: std::collections::HashSet<(u32, u32)> = [1u32, 3]
+            .iter()
+            .map(|g| {
+                let a = BranchId::from_feature_sub(&FeatureId::from_u32(10), *g).as_u32();
+                let b = BranchId::from_feature_sub(&FeatureId::from_u32(11), *g).as_u32();
+                (a.min(b), a.max(b))
+            })
+            .collect();
+        assert_eq!(
+            pairs, expect,
+            "exactly the two shared-profile wall pairs are tangential contacts"
+        );
+
+        // The body still weaves, of course — but note what this test does NOT
+        // claim. A SYNTHETIC tangency is bit-exact: both carriers come out of
+        // the same f32 literals, so SSI's parameter scan sees the double root
+        // as a clean no-crossing and emits nothing at all. The stall needs the
+        // root to SPLIT, and that needs the two carriers to be derived through
+        // DIFFERENT transform chains (in #419 the extrude keeps the sketch
+        // frame while the revolve rotates into its axis frame). Measured: with
+        // this gate disabled the body below still weaves. The route guard is
+        // therefore the frozen real document —
+        // `onshape_regression_tests::onshape_419_revolve_remove_stays_bounded`.
+        assert!(weave_branch_seeds(&body).is_some(), "body must stay weavable");
+    }
+
+    /// The counter-test that matters after #433: the gate must fire on the
+    /// TANGENT configuration and on nothing that merely comes close.
+    #[test]
+    fn near_tangential_extrude_revolve_is_not_a_contact() {
+        use crate::brep::weaving::branch_halfspace_map;
+        // (a) Frames parallel, profiles 10 µm apart: the cone apex misses the
+        //     extrude wall plane by ~7 µm and the cylinder's radius by 10 µm —
+        //     both far outside the tolerance. Every wall pair still crosses.
+        let body = tangency_body(0.01, 0.0);
+        let map = branch_halfspace_map(&body);
+        assert!(
+            crate::brep::tangential_seams::sweep_contact_pairs(&body, &map).is_empty(),
+            "a 10 µm offset is a transversal crossing, not a tangency"
+        );
+
+        // (b) Same profiles, but the revolve tilted 1° out of the extrusion
+        //     direction: the structural gate (`e ⊥ Π_revolve`) already fails,
+        //     so no carrier test even runs.
+        let body = tangency_body(0.0, std::f32::consts::PI / 180.0);
+        let map = branch_halfspace_map(&body);
+        assert!(
+            crate::brep::tangential_seams::sweep_contact_pairs(&body, &map).is_empty(),
+            "a 1° tilt takes the extrusion direction off the revolve's profile normal"
+        );
     }
 
     #[test]

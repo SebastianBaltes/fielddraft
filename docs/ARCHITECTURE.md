@@ -273,6 +273,17 @@ plan Phases 2+3) welds seam vertices, merges duplicate seam edges per
 class, culls membrane faces and drops fins (ticket o2j9, closed). The
 invariant gate (`brep/classification_gate.rs`) pins Euler-Poincaré and
 manifold orientation on the scenario matrix. The SSI core (`brep/ssi.rs`)
+Was sich nur BERÜHRT, wird ebenso vor SSI aussortiert (#435): extrudiert
+und rotiert ein Dokument DASSELBE Profil, ist die extrudierte Wand exakt
+die Tangentialebene der rotierten entlang der gemeinsamen Profillinie —
+eine Doppelgerade statt einer Schnittkurve.
+`brep/tangential_seams.rs::sweep_contact_pairs` erkennt das an den
+Trägern (Ebene durch Kegelspitze mit `|n̂·â| = sin α`, bzw. achsparallel
+im Zylinderabstand) hinter einem strukturellen Gatter (Extrusions­richtung
+= Normale der Rotations-Profilebene) und nimmt das Paar aus der
+Seed-Menge; eine B-Rep-Kante gehört dort nicht hin, weil an einer
+Tangentialberührung entweder nur EINE der beiden Flächen den Rand bildet
+oder das Material auf null zusammenläuft. The SSI core (`brep/ssi.rs`)
 covers revolved spline walls (`HalfSpace::RevolvedProfile`) both coaxially
 (2D profile-curve roots → exact circles) and non-coaxially (the general
 2D-parameter scan: the profile carrier is a signed implicit under any

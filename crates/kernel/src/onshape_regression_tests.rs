@@ -28,8 +28,8 @@ struct RecordedCall {
     params: String,
 }
 
-/// Replay a recorded call list, returning `(per-call milliseconds, body count)`.
-fn replay(json: &str) -> (Vec<f64>, usize) {
+/// Replay a recorded call list, returning `(per-call milliseconds, kernel)`.
+fn replay(json: &str) -> (Vec<f64>, Kernel) {
     let calls: Vec<RecordedCall> = serde_json::from_str(json).expect("recorded call list");
     let mut kernel = Kernel::new();
     let mut timings = Vec::with_capacity(calls.len());
@@ -44,7 +44,15 @@ fn replay(json: &str) -> (Vec<f64>, usize) {
         }
         timings.push(t.elapsed().as_secs_f64() * 1e3);
     }
-    (timings, kernel.body_count())
+    (timings, kernel)
+}
+
+/// `(vertices, edges, faces)` of a replayed body's woven B-Rep.
+fn brep_counts(kernel: &mut Kernel, body: usize) -> (u64, u64, u64) {
+    let j: serde_json::Value =
+        serde_json::from_str(&kernel.body_brep_counts(body)).expect("counts json");
+    let n = |k: &str| j[k].as_u64().expect("count field");
+    (n("vertices"), n("edges"), n("faces"))
 }
 
 /// #426 — a `revolve` with `operation: remove` against a target body took
@@ -71,9 +79,22 @@ fn replay(json: &str) -> (Vec<f64>, usize) {
 /// ~5 s with the same body count. The bound below is deliberately loose — it
 /// exists to catch the return of a MINUTES-long stall, not to police seconds,
 /// so it cannot flake under CPU load.
+///
+/// #435 finished the job by removing the fallback instead of making it cheap.
+/// The two failing pairs were never seams: `Extrude 8` and `Revolve 5` sweep
+/// the SAME sketch profile, which makes each extruded wall the exact TANGENT
+/// PLANE of the revolved wall along their shared segment (measured: apex on
+/// plane to 8e-7 mm, `|n̂·â| = sin α` to 4e-8). A tangent plane meets a cone in
+/// a DOUBLE line, so there is no transversal curve to trace — the tracer was
+/// right to stall. `brep::tangential_seams::sweep_contact_pairs` now names the
+/// configuration from the carriers and keeps the pair out of the seed set, and
+/// the body stays on the strict analytic route. The counts pinned below are
+/// that route: a timing bound cannot tell the routes apart without flaking,
+/// but the topology can.
 #[test]
 fn onshape_419_revolve_remove_stays_bounded() {
-    let (timings, bodies) = replay(include_str!("testdata/onshape419_revolve_boolean.json"));
+    let (timings, mut kernel) = replay(include_str!("testdata/onshape419_revolve_boolean.json"));
+    let bodies = kernel.body_count();
 
     // Call 10 is `Revolve 5` — `{"profiles":"qCreatedBy(6)","axis":
     // "qSketchLine(6, 82)","operation":"remove","targets":"qCreatedBy(10)"}`.
@@ -96,6 +117,23 @@ fn onshape_419_revolve_remove_stays_bounded() {
 
     // The repair must still BUILD the document, not just build it fast.
     assert_eq!(bodies, 5, "the recorded prefix partitions into 5 bodies");
+
+    // Body 4 is `Extrude 8 ∖ Revolve 5` — the one that carries the tangential
+    // contact. Its topology names the route it took (#435):
+    //
+    //     octree fallback   54 vertices, 110 edges, 37 faces
+    //     strict analytic   52 vertices,  74 edges, 37 faces
+    //
+    // Same 37 faces either way: the contact never bounded a face, it only
+    // polluted two of them. The 36 extra edges were the octree's attempt to
+    // resolve the double line — 35 sub-micron NURBS loops (0.02–0.07 mm across)
+    // heaped onto the extrude wall and the cone, plus one stub. A rise back
+    // towards 110 means the pair is being traced again.
+    assert_eq!(
+        brep_counts(&mut kernel, 4),
+        (52, 74, 37),
+        "body 4 must weave on the STRICT analytic route (octree gave 54/110/37)",
+    );
 }
 
 /// #433 — the WHOLE #419 import, not just its worst call: 49 recorded kernel
@@ -121,7 +159,8 @@ fn onshape_419_revolve_remove_stays_bounded() {
 /// absorb THAT could no longer tell a doubling of the work from load.
 #[test]
 fn onshape_419_full_import_stays_bounded() {
-    let (timings, bodies) = replay(include_str!("testdata/onshape419_full_import.json"));
+    let (timings, kernel) = replay(include_str!("testdata/onshape419_full_import.json"));
+    let bodies = kernel.body_count();
     let total_ms: f64 = timings.iter().sum();
     assert_eq!(timings.len(), 49, "the recorded import is 49 kernel calls");
 

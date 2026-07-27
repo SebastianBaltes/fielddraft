@@ -62,6 +62,13 @@ pub fn seed_branch_pairs(body: &BoundedCsg) -> SeedResult {
     // SSI case, decided HERE because this is the one place that has both the
     // surfaces and the body context the registry needs.
     let registry = CoincidenceRegistry::build(body);
+    // …and the same question one degree further out (#435): which pairs merely
+    // TOUCH. A profile that a document both extrudes and revolves makes the
+    // extruded wall the exact tangent plane of the revolved one along their
+    // shared profile curve — see [`sweep_contact_pairs`] for the identity, for
+    // why no B-Rep edge belongs there, and for why the pair therefore must not
+    // enter the seed set.
+    let tangential = crate::brep::tangential_seams::sweep_contact_pairs(body, &map);
     let mut result = SeedResult::default();
 
     for pair in enumerate_branch_pairs(body) {
@@ -90,6 +97,17 @@ pub fn seed_branch_pairs(body: &BoundedCsg) -> SeedResult {
         // floods SSI with `implicit ≡ 0` pseudo-roots (a circle per sample).
         if pair.a.as_u32() == pair.b.as_u32() {
             continue;
+        }
+
+        // A TANGENTIAL contact has no transversal curve either — and unlike a
+        // coincidence, SSI does not notice: under f32 noise the double root
+        // splits into two mirror arcs, the tracer stalls on them, and the
+        // whole body falls to the octree (#435).
+        {
+            let (a, b) = (pair.a.as_u32(), pair.b.as_u32());
+            if tangential.contains(&(a.min(b), a.max(b))) {
+                continue;
+            }
         }
 
         let (Some((ha, ta)), Some((hb, tb))) =
