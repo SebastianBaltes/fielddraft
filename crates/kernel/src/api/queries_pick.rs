@@ -76,10 +76,9 @@ impl Kernel {
     /// changed.
     #[wasm_bindgen(js_name = healElementRefs)]
     pub fn heal_element_refs(&mut self) -> String {
-        // Weave every body's B-Rep (cached — a no-op when current).
-        for body in &mut self.bodies {
-            body.ensure_brep(&self.decoded, self.parametric_weave);
-        }
+        // Weave every body's B-Rep and stamp the scope-wide naming (#431);
+        // cached — a no-op when current.
+        self.ensure_named_breps();
         let breps: Vec<&crate::brep::BRep> =
             self.bodies.iter().filter_map(|b| b.brep_cached()).collect();
 
@@ -107,9 +106,7 @@ impl Kernel {
                 return serde_json::json!({ "error": e.to_string() }).to_string();
             }
         };
-        for body in &mut self.bodies {
-            body.ensure_brep(&self.decoded, self.parametric_weave);
-        }
+        self.ensure_named_breps(); // #431: scope-wide naming stamp
         let breps: Vec<crate::brep::BRep> = self
             .bodies
             .iter()

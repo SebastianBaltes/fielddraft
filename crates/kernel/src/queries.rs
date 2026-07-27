@@ -1214,6 +1214,7 @@ mod tests {
                 None,
             ));
         }
+        crate::brep::naming::stamp_single(&mut brep);
         brep
     }
 
@@ -1371,6 +1372,7 @@ mod tests {
             BranchId::from_feature_sub(&f7, BranchId::EXTRUDE_CAP_BOTTOM_SUB).inner_wall(),
         ));
         brep.add_face(blend_face(BranchId::from_feature_sub(&f9, 0)));
+        crate::brep::naming::stamp_single(&mut brep);
         brep
     }
 
@@ -1469,6 +1471,7 @@ mod tests {
         let mut brep = BRep::new();
         brep.add_face(plane_face(BranchId::from_feature_sub(&f7, 3)));
         brep.add_face(plane_face(BranchId::from_feature_sub(&f7, 3).inner_wall()));
+        crate::brep::naming::stamp_single(&mut brep);
         let outer = resolve_query_topo(
             std::slice::from_ref(&brep),
             &QueryExpr::Wall(id(7), 3, false),
@@ -1541,6 +1544,7 @@ mod tests {
         brep.add_face(wall_a);
         brep.add_face(wall_b);
         brep.add_face(blend);
+        crate::brep::naming::stamp_single(&mut brep);
         brep
     }
 

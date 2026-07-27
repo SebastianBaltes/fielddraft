@@ -401,6 +401,24 @@ impl Solid {
 
 // ─── container ───────────────────────────────────────────────────────────────
 
+/// Per-entity spatial disambiguation indices, parallel to the three arenas
+/// (#431). Written by exactly one authority —
+/// [`naming::stamp_scope`](crate::brep::naming::stamp_scope) — and read back
+/// through [`BRep::spatial_index`] when a semantic id is minted.
+///
+/// The index is what separates several entities that share one branch
+/// signature (a wall split by a boolean, and — since #431 — the same wall in
+/// several copies of a pattern). It is assigned across the whole **body set**,
+/// not per B-Rep: pattern copies are separate bodies whose B-Reps are woven
+/// body-LOCAL and are therefore byte-identical, so a per-B-Rep index left all
+/// copies at 0 and made `qFace(hash)` ambiguous.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct SpatialIndices {
+    pub vertices: Vec<u32>,
+    pub edges: Vec<u32>,
+    pub faces: Vec<u32>,
+}
+
 /// The top-level index-arena B-Rep. All entities live in flat `Vec`s and
 /// reference each other through newtype handles. Later extraction phases push
 /// entities through `add_*` and read them back through the accessors.
@@ -411,6 +429,11 @@ pub struct BRep {
     pub faces: Vec<Face>,
     pub shells: Vec<Shell>,
     pub solids: Vec<Solid>,
+    /// Naming stamp — see [`SpatialIndices`]. Derived state: every weave
+    /// route ends in `finish_weave`, which stamps the B-Rep as its own
+    /// one-body scope; assembling several bodies re-stamps them together.
+    #[serde(default)]
+    pub spatial: SpatialIndices,
 }
 
 impl BRep {
@@ -471,6 +494,26 @@ impl BRep {
 
     pub fn solid(&self, id: SolidId) -> &Solid {
         &self.solids[id.0 as usize]
+    }
+
+    /// Arena slot `i`'s naming stamp (see [`SpatialIndices`]).
+    ///
+    /// An unstamped B-Rep reports 0, which is correct for every entity with a
+    /// unique branch signature and wrong only for a colliding group — so the
+    /// debug build asserts the stamp is present rather than minting a
+    /// silently-colliding name.
+    pub fn spatial_index(&self, kind: naming::EntityKind, i: usize) -> u32 {
+        let (stamp, arena) = match kind {
+            naming::EntityKind::Vertex => (&self.spatial.vertices, self.vertices.len()),
+            naming::EntityKind::Edge => (&self.spatial.edges, self.edges.len()),
+            naming::EntityKind::Face => (&self.spatial.faces, self.faces.len()),
+        };
+        debug_assert_eq!(
+            stamp.len(),
+            arena,
+            "B-Rep was never stamped by naming::stamp_scope — {kind:?} ids would collide"
+        );
+        stamp.get(i).copied().unwrap_or(0)
     }
 
     // ── counts ──────────────────────────────────────────────────────────

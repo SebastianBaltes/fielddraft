@@ -358,6 +358,35 @@ impl Kernel {
         self.mesh_version = self.mesh_version.wrapping_add(1);
     }
 
+    /// Weave every body's B-Rep and stamp the **document-wide** naming scope
+    /// (#431).
+    ///
+    /// `spatial_index` — the tie-breaker that separates entities sharing one
+    /// branch signature — is assigned across ALL bodies, not per B-Rep. It has
+    /// to be: a pattern copy is its own body, its B-Rep is woven body-LOCAL
+    /// (placement divided out), so the copies are byte-identical and a
+    /// per-B-Rep index left every copy at 0 — three faces, one `id_hash`,
+    /// `qFace(hash)` binding whichever body came first.
+    ///
+    /// Every path that mints or reads an `id_hash` (`bodyBrepFaces` /
+    /// `bodyBrepEdges` / `bodyBrepVertices`, `resolveQuery`, the query healer)
+    /// must come through here instead of weaving one body on its own.
+    pub(crate) fn ensure_named_breps(&mut self) {
+        let parametric = self.parametric_weave;
+        for body in &mut self.bodies {
+            body.ensure_brep(&self.decoded, parametric);
+        }
+        let mut scope: Vec<(&mut crate::brep::BRep, fielddraft_protocol::Transform)> = self
+            .bodies
+            .iter_mut()
+            .filter_map(|b| {
+                let placement = b.placement;
+                b.brep.as_mut().map(|(_, brep)| (brep, placement))
+            })
+            .collect();
+        crate::brep::naming::stamp_scope(&mut scope);
+    }
+
     /// Brocken A (A3): tag every freshly-built mesh with per-vertex B-Rep
     /// FACE IDENTITY so a hovered/clicked triangle resolves to a stable
     /// face. Bodies carried through the affine fast-path keep their old

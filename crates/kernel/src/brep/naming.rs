@@ -37,6 +37,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use fielddraft_protocol::Transform;
+
 use crate::brep::{BRep, EdgeGeometry, EdgeId, FaceId, SurfaceGeometry, VertexId};
 
 /// Version marker of the branch-sub-id layout the semantic IDs hash over.
@@ -138,56 +140,172 @@ pub enum EntityHandle {
 // ─── spatial disambiguation ───────────────────────────────────────────────
 
 /// Assign a `spatial_index` to every entity of `kind` sharing a branch
-/// signature. Entities with a unique signature get index 0; colliding groups
-/// are ordered by centroid along a stable X → Y → Z axis sweep (lexicographic),
-/// with the original arena index as a final deterministic tie-break. Returns a
-/// vector parallel to the kind's arena: `out[i]` is entity `i`'s spatial index.
+/// signature — **across the whole body set**, not per B-Rep (#431).
 ///
+/// Entities with a unique signature get index 0. A colliding group is numbered
+/// in two levels, so that going multi-body cannot disturb a name that was
+/// already unambiguous:
+///
+/// 1. **Between bodies.** The bodies that contribute to the group are ranked
+///    by the mean **world** centroid of their own members (body-local centroid
+///    folded through the body's `placement`), lexicographically X → Y → Z, with
+///    the body index as the final tie-break. Each body's block of indices
+///    starts after all the members of lower-ranked bodies.
+/// 2. **Inside one body.** Members are ordered by their **body-local**
+///    centroid on the same X → Y → Z sweep, arena index as tie-break — exactly
+///    as before #431. Keeping this level local is what makes the stamp
+///    invariant under a body move *or rotation*, and what leaves every
+///    document whose bodies share no branch signature byte-identically named.
+///
+/// Why the split is needed at all: a pattern copy is its own body, and a body's
+/// B-Rep is woven body-LOCAL (placement divided out — see `Body::ensure_brep`),
+/// so all copies are byte-identical. Only the placement tells them apart.
+///
+/// `out[b]` is body `b`'s index vector, parallel to that body's `kind` arena.
 /// See DL-32 for the axis order / tie-break rationale.
-fn spatial_indices(brep: &BRep, kind: EntityKind) -> Vec<u32> {
-    // Group arena slots by their semantic signature (the *un-indexed* hash),
-    // then within each multi-member group order by centroid and number them.
+fn scope_spatial_indices(bodies: &[(&BRep, Transform)], kind: EntityKind) -> Vec<Vec<u32>> {
     use std::collections::HashMap;
-    let n = match kind {
+    let count_of = |brep: &BRep| match kind {
         EntityKind::Vertex => brep.vertices.len(),
         EntityKind::Edge => brep.edges.len(),
         EntityKind::Face => brep.faces.len(),
     };
-    let mut groups: HashMap<u64, Vec<usize>> = HashMap::new();
-    for i in 0..n {
-        let sig = base_signature_hash(brep, kind, i);
-        groups.entry(sig).or_default().push(i);
+    let mut out: Vec<Vec<u32>> = bodies.iter().map(|(b, _)| vec![0u32; count_of(b)]).collect();
+
+    // Group (body, arena slot) pairs by their semantic signature — the
+    // *un-indexed* hash — over every body at once.
+    let mut groups: HashMap<u64, Vec<(usize, usize)>> = HashMap::new();
+    for (bi, (brep, _)) in bodies.iter().enumerate() {
+        for i in 0..count_of(brep) {
+            groups.entry(base_signature_hash(brep, kind, i)).or_default().push((bi, i));
+        }
     }
-    let mut out = vec![0u32; n];
+
     for members in groups.values() {
         if members.len() <= 1 {
             continue; // unique signature → spatial_index 0
         }
-        let centroids: Vec<[f64; 3]> =
-            members.iter().map(|&i| entity_centroid(brep, kind, i)).collect();
-        // Group-relative sweep epsilon: an axis difference below one millionth
-        // of the group's own spread is float jitter, not geometry — without
-        // this, a nanometre wobble on the leading axis flips the whole order
-        // (plan finding B1). Floor at the old absolute 1e-9 for degenerate
-        // (near-coincident) groups.
-        let spread = (0..3)
-            .map(|k| {
-                let (lo, hi) = centroids
-                    .iter()
-                    .fold((f64::MAX, f64::MIN), |(lo, hi), c| (lo.min(c[k]), hi.max(c[k])));
-                hi - lo
-            })
-            .fold(0.0_f64, f64::max);
-        let eps = (spread * 1e-6).max(1e-9);
-        let mut ordered: Vec<usize> = (0..members.len()).collect();
-        ordered.sort_by(|&a, &b| {
-            cmp_axis_order(centroids[a], centroids[b], eps).then(members[a].cmp(&members[b]))
-        });
-        for (idx, &m) in ordered.iter().enumerate() {
-            out[members[m]] = idx as u32;
+        // Level 2 first: per body, the local ordering of its own members.
+        let mut per_body: HashMap<usize, Vec<usize>> = HashMap::new();
+        for &(bi, i) in members {
+            per_body.entry(bi).or_default().push(i);
+        }
+        let mut blocks: Vec<(usize, Vec<usize>, [f64; 3])> = Vec::with_capacity(per_body.len());
+        for (bi, mut slots) in per_body {
+            let (brep, placement) = bodies[bi];
+            let local: Vec<[f64; 3]> =
+                slots.iter().map(|&i| entity_centroid(brep, kind, i)).collect();
+            let eps = sweep_eps(&local);
+            let mut ordered: Vec<usize> = (0..slots.len()).collect();
+            ordered.sort_by(|&a, &b| {
+                cmp_axis_order(local[a], local[b], eps).then(slots[a].cmp(&slots[b]))
+            });
+            // Mean WORLD centroid of this body's members — the body's rank key.
+            let mut mean = [0.0f64; 3];
+            for c in &local {
+                let w = to_world(*c, &placement);
+                for k in 0..3 {
+                    mean[k] += w[k];
+                }
+            }
+            for m in mean.iter_mut() {
+                *m /= local.len() as f64;
+            }
+            slots = ordered.iter().map(|&o| slots[o]).collect();
+            blocks.push((bi, slots, mean));
+        }
+        // Level 1: rank the bodies by their world key, then number straight
+        // through the blocks.
+        let keys: Vec<[f64; 3]> = blocks.iter().map(|(_, _, k)| *k).collect();
+        let eps = sweep_eps(&keys);
+        blocks.sort_by(|a, b| cmp_axis_order(a.2, b.2, eps).then(a.0.cmp(&b.0)));
+        let mut next = 0u32;
+        for (bi, slots, _) in &blocks {
+            for &i in slots {
+                out[*bi][i] = next;
+                next += 1;
+            }
         }
     }
     out
+}
+
+/// Group-relative sweep epsilon: an axis difference below one millionth of the
+/// group's own spread is float jitter, not geometry — without this, a nanometre
+/// wobble on the leading axis flips the whole order (plan finding B1). Floored
+/// at an absolute 1e-9 for degenerate (near-coincident) groups.
+fn sweep_eps(centroids: &[[f64; 3]]) -> f64 {
+    let spread = (0..3)
+        .map(|k| {
+            let (lo, hi) = centroids
+                .iter()
+                .fold((f64::MAX, f64::MIN), |(lo, hi), c| (lo.min(c[k]), hi.max(c[k])));
+            hi - lo
+        })
+        .fold(0.0_f64, f64::max);
+    (spread * 1e-6).max(1e-9)
+}
+
+/// Fold a body-local point through a body `placement` (rigid + uniform scale,
+/// exactly the form `compute_body_placement` produces) into world space.
+fn to_world(p: [f64; 3], t: &Transform) -> [f64; 3] {
+    let s = t.scale[0] as f64;
+    let scaled = [p[0] * s, p[1] * s, p[2] * s];
+    let (qx, qy, qz, qw) = (
+        t.rotation[0] as f64,
+        t.rotation[1] as f64,
+        t.rotation[2] as f64,
+        t.rotation[3] as f64,
+    );
+    let u = [
+        2.0 * (qy * scaled[2] - qz * scaled[1]),
+        2.0 * (qz * scaled[0] - qx * scaled[2]),
+        2.0 * (qx * scaled[1] - qy * scaled[0]),
+    ];
+    [
+        scaled[0] + qw * u[0] + qy * u[2] - qz * u[1] + t.translate[0] as f64,
+        scaled[1] + qw * u[1] + qz * u[0] - qx * u[2] + t.translate[1] as f64,
+        scaled[2] + qw * u[2] + qx * u[1] - qy * u[0] + t.translate[2] as f64,
+    ]
+}
+
+// ─── the one writer of the naming stamp ───────────────────────────────────
+
+/// Stamp every body's [`SpatialIndices`] from the whole set's point of view
+/// (#431). The **only** writer of the stamp; [`BRep::spatial_index`] is the
+/// only reader.
+///
+/// Call this wherever a set of bodies is assembled — `BrepCache::ensure`,
+/// `Kernel::ensure_named_breps` — and after any single weave (`finish_weave` stamps
+/// its result as a one-body scope, so a standalone `weave()` is never
+/// unstamped).
+pub fn stamp_scope(bodies: &mut [(&mut BRep, Transform)]) {
+    let plan = {
+        let view: Vec<(&BRep, Transform)> = bodies.iter().map(|(b, t)| (&**b, *t)).collect();
+        [
+            scope_spatial_indices(&view, EntityKind::Vertex),
+            scope_spatial_indices(&view, EntityKind::Edge),
+            scope_spatial_indices(&view, EntityKind::Face),
+        ]
+    };
+    for (bi, (brep, _)) in bodies.iter_mut().enumerate() {
+        brep.spatial.vertices = plan[0][bi].clone();
+        brep.spatial.edges = plan[1][bi].clone();
+        brep.spatial.faces = plan[2][bi].clone();
+    }
+}
+
+/// Stamp a standalone B-Rep as its own one-body scope.
+pub fn stamp_single(brep: &mut BRep) {
+    stamp_scope(&mut [(brep, Transform::IDENTITY)]);
+}
+
+/// [`stamp_scope`] for an owned body set — the shape `BrepCache::ensure`
+/// assembles and `Kernel::bodies` exposes.
+pub fn stamp_owned_scope(bodies: &mut [(BRep, Transform)]) {
+    let mut view: Vec<(&mut BRep, Transform)> =
+        bodies.iter_mut().map(|(b, t)| (&mut *b, *t)).collect();
+    stamp_scope(&mut view);
 }
 
 /// The signature hash of arena slot `i` *without* a spatial index — used purely
@@ -204,7 +322,7 @@ fn base_signature_hash(brep: &BRep, kind: EntityKind, i: usize) -> u64 {
 }
 
 /// Lexicographic comparison of two centroids in X → Y → Z order. `eps` is the
-/// caller's group-relative jitter floor (see `spatial_indices`): differences
+/// caller's group-relative jitter floor (see [`sweep_eps`]): differences
 /// at or below it don't decide the order, the next axis does.
 fn cmp_axis_order(a: [f64; 3], b: [f64; 3], eps: f64) -> std::cmp::Ordering {
     for k in 0..3 {
@@ -379,7 +497,7 @@ impl TopoRef {
     /// Build a reference to a specific edge of `brep`, with the correct spatial
     /// index for that slot.
     pub fn from_edge(brep: &BRep, id: EdgeId) -> Self {
-        let si = spatial_indices(brep, EntityKind::Edge)[id.0 as usize];
+        let si = brep.spatial_index(EntityKind::Edge, id.0 as usize);
         let e = brep.edge(id);
         Self {
             kind: EntityKind::Edge,
@@ -390,7 +508,7 @@ impl TopoRef {
 
     /// Build a reference to a specific face of `brep`.
     pub fn from_face(brep: &BRep, id: FaceId) -> Self {
-        let si = spatial_indices(brep, EntityKind::Face)[id.0 as usize];
+        let si = brep.spatial_index(EntityKind::Face, id.0 as usize);
         Self {
             kind: EntityKind::Face,
             id_hash: face_id(brep.face(id).branch_id, si),
@@ -400,7 +518,7 @@ impl TopoRef {
 
     /// Build a reference to a specific vertex of `brep`.
     pub fn from_vertex(brep: &BRep, id: VertexId) -> Self {
-        let si = spatial_indices(brep, EntityKind::Vertex)[id.0 as usize];
+        let si = brep.spatial_index(EntityKind::Vertex, id.0 as usize);
         Self {
             kind: EntityKind::Vertex,
             id_hash: vertex_id(&brep.vertex(id).branches, si),
@@ -540,10 +658,10 @@ const STRONG_SIM: f64 = 0.8;
 ///    within [`CLOSE_MARGIN`] demotes to `Ambiguous` (with no hash there is
 ///    nothing to break a tie, however similar the twins are).
 ///
-/// Never panics and never allocates beyond the per-kind index vector.
+/// Never panics.
 pub fn resolve(old: &TopoRef, new_brep: &BRep) -> Resolution {
     let kind = old.kind;
-    let si = spatial_indices(new_brep, kind);
+    let si = |i: usize| new_brep.spatial_index(kind, i);
     let count = match kind {
         EntityKind::Vertex => new_brep.vertices.len(),
         EntityKind::Edge => new_brep.edges.len(),
@@ -569,12 +687,12 @@ pub fn resolve(old: &TopoRef, new_brep: &BRep) -> Resolution {
     };
     let id_of = |i: usize| -> u64 {
         match kind {
-            EntityKind::Vertex => vertex_id(&new_brep.vertices[i].branches, si[i]),
+            EntityKind::Vertex => vertex_id(&new_brep.vertices[i].branches, si(i)),
             EntityKind::Edge => {
                 let e = &new_brep.edges[i];
-                edge_id(e.signature.0, e.signature.1, si[i])
+                edge_id(e.signature.0, e.signature.1, si(i))
             }
-            EntityKind::Face => face_id(new_brep.faces[i].branch_id, si[i]),
+            EntityKind::Face => face_id(new_brep.faces[i].branch_id, si(i)),
         }
     };
 
@@ -733,9 +851,9 @@ mod tests {
         assert_eq!(b.edge_count(), 12);
 
         let ids = |brep: &BRep| -> (Vec<u64>, Vec<u64>, Vec<u64>) {
-            let si_e = spatial_indices(brep, EntityKind::Edge);
-            let si_f = spatial_indices(brep, EntityKind::Face);
-            let si_v = spatial_indices(brep, EntityKind::Vertex);
+            let si_e = &brep.spatial.edges;
+            let si_f = &brep.spatial.faces;
+            let si_v = &brep.spatial.vertices;
             let mut e: Vec<u64> = brep
                 .edges
                 .iter()
@@ -1010,7 +1128,8 @@ mod tests {
             None,
         ));
 
-        let si = spatial_indices(&brep, EntityKind::Edge);
+        stamp_single(&mut brep);
+        let si = brep.spatial.edges.clone();
         // Ordered by centroid X (0.0 before 5.0), independent of insertion.
         assert_eq!(si[e_near.0 as usize], 0, "near edge → spatial index 0");
         assert_eq!(si[e_far.0 as usize], 1, "far edge → spatial index 1");
@@ -1034,15 +1153,9 @@ mod tests {
     fn unique_signatures_get_spatial_index_zero() {
         // A plain cube has 12 unique edge signatures and 8 unique vertex sets.
         let brep = cube_brep(1.0);
-        assert!(spatial_indices(&brep, EntityKind::Edge)
-            .iter()
-            .all(|&i| i == 0));
-        assert!(spatial_indices(&brep, EntityKind::Vertex)
-            .iter()
-            .all(|&i| i == 0));
-        assert!(spatial_indices(&brep, EntityKind::Face)
-            .iter()
-            .all(|&i| i == 0));
+        assert!(brep.spatial.edges.iter().all(|&i| i == 0));
+        assert!(brep.spatial.vertices.iter().all(|&i| i == 0));
+        assert!(brep.spatial.faces.iter().all(|&i| i == 0));
     }
 
     // ── 4. Missing ───────────────────────────────────────────────────────

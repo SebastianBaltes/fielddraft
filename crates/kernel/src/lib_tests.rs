@@ -4562,3 +4562,131 @@ fn chamfer_is_mixed_into_the_body_cache_hash() {
     assert_ne!(three, h(&[moved]), "moving the edge must change the body hash");
     assert_eq!(three, h(&[mk(3.0)]), "the hash is stable for equal input");
 }
+
+// ─── #431: Muster-Kopien tragen unterscheidbare Flächen-Hashes ────
+//
+// Before #431 the `spatial_index` that disambiguates entities sharing a
+// branch signature was assigned PER B-REP. A pattern copy is its own body
+// and its B-Rep is woven body-LOCAL (placement divided out), so all copies
+// were byte-identical, every index was 0, and three faces carried ONE
+// `id_hash` — `qFace(hash)` bound whichever body came first. Measured on a
+// 3-copy linear pattern of a box: 18 faces, 6 distinct hashes.
+
+/// Every face `id_hash` of every body, in body / arena order, after the
+/// document-wide naming stamp.
+fn all_face_hashes(k: &mut Kernel) -> Vec<u64> {
+    use crate::brep::naming::TopoRef;
+    use crate::brep::FaceId;
+    k.ensure_named_breps();
+    let mut out = Vec::new();
+    for body in &k.bodies {
+        let Some(brep) = body.brep_cached() else { continue };
+        for i in 0..brep.faces.len() {
+            out.push(TopoRef::from_face(brep, FaceId(i as u32)).id_hash);
+        }
+    }
+    out
+}
+
+fn boxed_linear_pattern(count: u32) -> Kernel {
+    let mut k = Kernel::new();
+    let box_id = k
+        .add_primitive(Primitive::KIND_BOX, BoolOp::TAG_NEW, 0.0, 0.0, 0.0, 10.0, 10.0, 10.0)
+        .unwrap();
+    k.add_linear_pattern(box_id, 1.0, 0.0, 0.0, count, 40.0).unwrap();
+    k
+}
+
+#[test]
+fn pattern_copies_get_distinct_face_hashes() {
+    let mut k = boxed_linear_pattern(3);
+    let hashes = all_face_hashes(&mut k);
+    assert_eq!(hashes.len(), 18, "3 copies × 6 box faces");
+
+    let mut uniq = hashes.clone();
+    uniq.sort_unstable();
+    uniq.dedup();
+    assert_eq!(
+        uniq.len(),
+        18,
+        "every face of every pattern copy needs its own id_hash (was 6 before #431)"
+    );
+
+    // …and each of them addresses EXACTLY one face, not "one of three".
+    for h in &hashes {
+        let json = k.resolve_query(&format!("qFace({h})"));
+        let hits: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            hits.as_array().map(|a| a.len()).unwrap_or(0),
+            1,
+            "qFace({h}) must bind exactly one face, got {json}"
+        );
+    }
+}
+
+#[test]
+fn circular_pattern_copies_get_distinct_face_hashes() {
+    // The circular pattern rotates its copies, so the body placements carry
+    // a quaternion — the world fold in the naming stamp has to honour it.
+    let mut k = Kernel::new();
+    let box_id = k
+        .add_primitive(Primitive::KIND_BOX, BoolOp::TAG_NEW, 40.0, 0.0, 0.0, 5.0, 5.0, 5.0)
+        .unwrap();
+    k.add_circular_pattern(box_id, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 4, 360.0).unwrap();
+    let hashes = all_face_hashes(&mut k);
+    assert_eq!(hashes.len(), 24, "4 copies × 6 box faces");
+    let mut uniq = hashes.clone();
+    uniq.sort_unstable();
+    uniq.dedup();
+    assert_eq!(uniq.len(), 24, "every face of every circular copy needs its own id_hash");
+}
+
+#[test]
+fn pattern_face_hashes_are_reproducible() {
+    // A unique name is worthless if it is not also stable: the same document
+    // built twice must mint the same hashes.
+    let a = all_face_hashes(&mut boxed_linear_pattern(3));
+    let b = all_face_hashes(&mut boxed_linear_pattern(3));
+    assert_eq!(a, b, "the same document must hash identically on a rebuild");
+}
+
+#[test]
+fn an_unrelated_body_does_not_shift_pattern_hashes() {
+    // The stamp is scope-wide, so a body added to the document is a new
+    // scope member — it must NOT renumber the pattern. It cannot: it has a
+    // different branch signature, so it joins no group of the pattern's.
+    // Inserted at the FRONT of the spine with its own id, so the pattern's
+    // own feature ids (and therefore its branch ids) are untouched.
+    let before = all_face_hashes(&mut boxed_linear_pattern(3));
+
+    let mut k = boxed_linear_pattern(3);
+    // Append an unrelated far-away box, then MOVE its call to the front of
+    // the spine: it now regenerates before the pattern while the pattern's
+    // own feature ids — and therefore its branch ids — stay untouched.
+    k.add_primitive(Primitive::KIND_BOX, BoolOp::TAG_NEW, 0.0, 500.0, 0.0, 3.0, 3.0, 3.0)
+        .unwrap();
+    let extra = k.document.feature_calls.pop().expect("just appended");
+    let extra_id = extra.id.clone();
+    k.document.feature_calls.insert(0, extra);
+    k.bootstrap_features_from_calls().unwrap();
+    let after = all_face_hashes(&mut k);
+    assert_eq!(after.len(), before.len() + 6, "the extra box adds 6 faces");
+
+    let extra_hashes: Vec<String> = {
+        let json = k.resolve_query(&format!("qCreatedBy({extra_id})"));
+        let refs: serde_json::Value = serde_json::from_str(&json).unwrap();
+        refs.as_array()
+            .map(|a| a.iter().map(|r| r["idHash"].as_str().unwrap().to_string()).collect())
+            .unwrap_or_default()
+    };
+    assert_eq!(extra_hashes.len(), 6, "the unrelated box contributes 6 faces");
+    let pattern_after: Vec<u64> = after
+        .iter()
+        .copied()
+        .filter(|h| !extra_hashes.contains(&h.to_string()))
+        .collect();
+    assert_eq!(
+        pattern_after, before,
+        "an unrelated body must not renumber the pattern's faces"
+    );
+}

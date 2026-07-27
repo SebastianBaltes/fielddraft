@@ -58,8 +58,9 @@ die zwei Flächen benennen, deren Schnitt gemeint ist.
 
 ### 2.2 Was heute keinen Namen hat
 
-**Muster-Kopien — der härteste Befund.** Ein Quader, `linear_pattern` mit
-Anzahl 3:
+**Muster-Kopien — der härteste Befund.** *(Behoben in v0.39.2, #431 — siehe
+Schritt 1 unten. Der Befund bleibt als Messprotokoll stehen.)* Ein Quader,
+`linear_pattern` mit Anzahl 3:
 
     b0 f3 feat=1 sub=0 branch=4096 hash=6025886176426920981
     b1 f3 feat=1 sub=0 branch=4096 hash=6025886176426920981
@@ -77,6 +78,14 @@ eigener Körper — also überall 0.
 Das ist nicht nur eine fehlende Fähigkeit, sondern eine **Verletzung der
 Eindeutigkeitszusage von `qFace(hash)`**: derselbe Hash bezeichnet drei
 verschiedene Flächen. Genau das hat in #414 die erfundene Verrundung erzeugt.
+
+Nachgemessen wurde außerdem, **warum** die Kopien nicht auseinanderzuhalten
+waren: das B-Rep eines Körpers wird **body-LOKAL** gewoben (`Body::ensure_brep`
+teilt die `placement` heraus, damit ein reiner Move den Weave-Cache nicht
+invalidiert). Die drei Kopien sind damit byteweise identisch — auch ihre
+Fingerprint-Schwerpunkte (alle drei meldeten `[-10, 0, 0]` für dieselbe Wand).
+Nur die `placement` unterscheidet sie. Jede Disambiguierung muss also durch die
+Weltlage gehen; die Geometrie im B-Rep gibt nichts her.
 
 **Verrundungsflächen.** `BlendProvenance.branch` ist als „Fillet-Feature-Id,
 Sub 0" definiert, `FaceRole::Blend` existiert, `qCreatedBy(f, BLEND)` ist
@@ -172,11 +181,13 @@ Das ist ein **Breaking Change am Wire-Format** (`branchId` in
 `bodyBrepFaces`, alle persistierten `qFace(hash)`). Das ist erwünscht: es
 repariert eine Eindeutigkeitszusage, die heute nachweislich verletzt ist (§2.2).
 
-**Vorleistung, unabhängig davon nützlich:** `spatial_index` **körperübergreifend**
-vergeben statt pro B-Rep. Dann kollidieren die Kopien wenigstens nicht mehr
-still — sie werden nach Schwerpunkt durchnumeriert und `qFace(hash)` ist wieder
-eindeutig. Das ist aber ein *positioneller* Name; er überlebt keine Änderung des
-Muster-Abstands. Als Übergang tauglich, als Ziel nicht.
+**Vorleistung, unabhängig davon nützlich — erledigt in v0.39.2 (#431):**
+`spatial_index` **körperübergreifend** vergeben statt pro B-Rep. Dann
+kollidieren die Kopien nicht mehr still — sie werden nach Schwerpunkt
+durchnumeriert und `qFace(hash)` ist wieder eindeutig. Das ist aber ein
+*positioneller* Name; er überlebt keine Umsortierung der Kopien (Richtung
+umdrehen, Abstand negieren). Als Übergang tauglich, als Ziel nicht — das Ziel
+bleibt E1.
 
 ### E2 — Der Blend-Träger wird eine echte B-Rep-Fläche
 
@@ -227,7 +238,7 @@ Fähigkeit, mehrere vorhandene zu kombinieren:
 | Schritt | Inhalt | Voraussetzung |
 | --- | --- | --- |
 | 0 | **Erledigt (v0.39.1):** Mehrfach-Region-Profile bekommen die Kontur ihrer Vereinigung; geschlossene Konturen starten am G1-Knick | — |
-| 1 | `spatial_index` körperübergreifend — `qFace(hash)` wieder eindeutig | — |
+| 1 | **Erledigt (v0.39.2, #431):** `spatial_index` körperübergreifend — `qFace(hash)` wieder eindeutig | — |
 | 2 | Messen, warum der Blend-Träger keine Fläche wird | — |
 | 3 | E2: Blend-Fläche + Übersetzer-Zweig `BLEND_FACE` / `BLEND_EDGE` | 2 |
 | 4 | `qUnion(a, b)` + Übersetzer-Zweig `MERGE` (Fläche) | — |
@@ -237,6 +248,50 @@ Fähigkeit, mehrere vorhandene zu kombinieren:
 Schritte 1–5 sind je für sich abgeschlossen und messbar. Schritt 6 ist der
 Breaking Change und sollte erst laufen, wenn 1–5 gezeigt haben, wie viel ohne
 ihn schon zusammenkommt.
+
+### Schritt 1 — wie er ausgeführt wurde (v0.39.2, #431)
+
+`spatial_index` ist jetzt **gestempelter Zustand** des B-Reps
+(`BRep::spatial`, drei zu den Arenen parallele `Vec<u32>`) statt einer
+Größe, die jeder Leser für sich neu ausrechnet. Genau **ein** Schreiber:
+`brep::naming::stamp_scope`. Gestempelt wird an drei Stellen —
+`weaving::finish_weave` (Einzelkörper, der Trichter aller Weave-Routen),
+`BrepCache::ensure` (der zusammengesetzte Prefix ist der Scope) und
+`Kernel::ensure_named_breps` (der Dokument-Scope, den `bodyBrepFaces` /
+`bodyBrepEdges` / `bodyBrepVertices` / `resolveQuery` / der Query-Healer
+benutzen). Nebeneffekt: `TopoRef::from_face` rechnete die Indextabelle bisher
+bei **jedem** Aufruf neu — in einer Schleife über alle Flächen also O(F²)
+inklusive Polylinien-Kopien. Jetzt ist der Lesezugriff O(1).
+
+Die Nummerierung ist **zweistufig**, damit der Schritt keinen Namen bewegt,
+der schon eindeutig war:
+
+1. **Zwischen Körpern** — die an einer Signaturgruppe beteiligten Körper
+   werden nach dem mittleren **Welt**-Schwerpunkt ihrer eigenen Mitglieder
+   sortiert (X → Y → Z, Körperindex als Tie-Break).
+2. **Innerhalb eines Körpers** — wie bisher nach dem **körperlokalen**
+   Schwerpunkt. Das hält den Stempel invariant gegen Verschieben *und Drehen*
+   eines Körpers und lässt jedes Dokument, dessen Körper keine Branch-Signatur
+   teilen, byteweise gleich benannt.
+
+**Gemessen (`lib_tests.rs`, Quader + `linear_pattern` Anzahl 3):**
+
+| | vorher | nachher |
+| --- | ---: | ---: |
+| Flächen gesamt | 18 | 18 |
+| verschiedene `id_hash` | **6** | **18** |
+| `qFace(hash)` je Hash | 1 von 3 Kandidaten | genau 1 |
+
+Der Körper an `x = 0` behält seine alten Hashes; nur die Kopien werden neu
+nummeriert. Alle sechs Onshape-E2E-Suiten blieben unverändert grün
+(`#419`: `bodyCount() == 12`, 107 `KNOWN_GAPS`; `#409`: 19 `KNOWN_GAPS`) —
+im Korpus teilt kein Körperpaar eine Branch-Signatur.
+
+**Was Schritt 1 ausdrücklich NICHT leistet:** der Name ist positionell. Er
+ist reproduzierbar (gleicher Aufbau → gleiche Hashes) und unempfindlich gegen
+unbeteiligte Körper (beides als Test gepinnt), aber er wandert, sobald die
+Kopien ihre Reihenfolge tauschen — Musterrichtung umdrehen, Abstand negieren,
+Kopie in der Mitte einfügen. Dafür ist E1 da.
 
 ---
 

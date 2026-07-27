@@ -175,7 +175,9 @@ impl Kernel {
         if !self.brep_export_allowed(i) {
             return "[]".into();
         }
-        self.bodies[i].ensure_brep(&self.decoded, self.parametric_weave);
+        // #431: names are minted against the WHOLE body set, so weave and
+        // stamp every body before reading this one's `id_hash`es.
+        self.ensure_named_breps();
         let placement = self.bodies[i].placement;
         let brep = self.bodies[i].brep_cached().expect("woven above");
         let s = placement.scale[0];
@@ -299,7 +301,7 @@ impl Kernel {
         if !self.brep_export_allowed(i) {
             return "[]".into();
         }
-        self.bodies[i].ensure_brep(&self.decoded, self.parametric_weave);
+        self.ensure_named_breps(); // #431: scope-wide naming stamp
         let brep = self.bodies[i].brep_cached().expect("woven above");
         let mut faces = Vec::with_capacity(brep.faces.len());
         for (k, face) in brep.faces.iter().enumerate() {
@@ -335,7 +337,7 @@ impl Kernel {
         if !self.brep_export_allowed(i) {
             return "[]".into();
         }
-        self.bodies[i].ensure_brep(&self.decoded, self.parametric_weave);
+        self.ensure_named_breps(); // #431: scope-wide naming stamp
         let brep = self.bodies[i].brep_cached().expect("woven above");
         let mut verts = Vec::with_capacity(brep.vertices.len());
         for (k, vertex) in brep.vertices.iter().enumerate() {

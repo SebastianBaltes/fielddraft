@@ -179,7 +179,17 @@ pub fn weave_pure_octree(body: &BoundedCsg, octree: &Octree) -> BRep {
 /// wireframe was produced; everything downstream — face grouping, loop
 /// ordering, watertightness, the stable `id_hash` naming — is byte-identical,
 /// so toggling parametric weaving never changes a body's element handles.
-pub(crate) fn finish_weave(mut brep: BRep, body: &BoundedCsg) -> BRep {
+pub(crate) fn finish_weave(brep: BRep, body: &BoundedCsg) -> BRep {
+    // Every weave route funnels through here, so this is where a B-Rep gets
+    // its naming stamp (#431). A standalone weave is its own one-body scope;
+    // assembling several bodies (`BrepCache::ensure`, `Kernel::ensure_named_breps`)
+    // re-stamps them together so pattern copies stop colliding.
+    let mut out = finish_weave_inner(brep, body);
+    crate::brep::naming::stamp_single(&mut out);
+    out
+}
+
+fn finish_weave_inner(mut brep: BRep, body: &BoundedCsg) -> BRep {
     upgrade_hermite_edges(&mut brep);
 
     let halfspaces = branch_halfspace_map(body);

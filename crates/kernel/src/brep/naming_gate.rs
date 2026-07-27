@@ -92,6 +92,7 @@ fn gate_swap_no_misbind() {
     let mut old = BRep::new();
     let lo_old = old.add_edge(edge_at(0.0, -5.0));
     let hi_old = old.add_edge(edge_at(0.0, 5.0));
+    crate::brep::naming::stamp_single(&mut old);
     let ref_lo = TopoRef::from_edge(&old, lo_old);
     let ref_hi = TopoRef::from_edge(&old, hi_old);
     assert_ne!(ref_lo.id_hash, ref_hi.id_hash);
@@ -101,6 +102,7 @@ fn gate_swap_no_misbind() {
     let mut new = BRep::new();
     let lo_new = new.add_edge(edge_at(5e-9, -5.0));
     let hi_new = new.add_edge(edge_at(-5e-9, 5.0));
+    crate::brep::naming::stamp_single(&mut new);
 
     let res_lo = resolve(&ref_lo, &new);
     let res_hi = resolve(&ref_hi, &new);

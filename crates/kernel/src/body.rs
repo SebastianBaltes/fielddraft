@@ -652,6 +652,11 @@ impl BrepCache {
             let woven = self.ensure_body(features, part, key);
             assembled.push(woven);
         }
+        // The assembled prefix IS the naming scope: re-stamp the (cloned)
+        // bodies together so entities that share a branch signature across
+        // bodies — pattern copies — get distinct ids (#431). The per-body
+        // cache keeps its one-body stamp; only this copy is scope-stamped.
+        crate::brep::naming::stamp_owned_scope(&mut assembled);
         if self.prefixes.len() >= BREP_CACHE_CAPACITY {
             self.prefixes.remove(0);
         }
