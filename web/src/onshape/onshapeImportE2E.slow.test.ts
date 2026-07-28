@@ -292,9 +292,14 @@ describe("Onshape import — #412 imprint region selection (real kernel)", () =>
 
   it("warns that the stale fourth selection was dropped", () => {
     const warn = result.warnings.find((w) => w.includes("Onshape wählte"));
+    // Since #440 the warning no longer counts faces against queries — one
+    // Onshape region may legitimately be several of our faces — so it names
+    // what happened instead: how many regions Onshape chose, how many faces
+    // they became, and why any went missing.
     expect(warn, result.warnings.join(" | ")).toContain(
-      "Onshape wählte 4 Regionen, FieldDraft findet dafür nur 3",
+      "Onshape wählte 4 Regionen, FieldDraft bildet sie auf 3 atomare Face(s) ab",
     );
+    expect(warn).toContain("Sketch-Kurven, die dieser Sketch nicht enthält");
   });
 
   it("builds the ground-truth geometry — and nothing where Onshape has nothing", () => {

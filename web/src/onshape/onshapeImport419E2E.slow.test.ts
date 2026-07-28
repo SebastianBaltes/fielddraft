@@ -310,6 +310,52 @@ describe("#419 multi-part assembly", () => {
     );
   }, 900_000);
 
+  it("gives `Revolve 1` its whole profile, and `Thicken 6` a real face (#440)", async () => {
+    const { kernel } = await importFixture();
+    const calls = JSON.parse(kernel.raw.toJson()).feature_calls as any[];
+    const named = (n: string) => calls.find((c) => c.params?.display_name === n)!;
+
+    // Onshape's `Revolve 1` selects two regions of Sketch 3; the lower one is
+    // the rectangle x ∈ [9.25; 16.99] × y ∈ [−60.93; −46.68], which OUR
+    // arrangement splits at y = −52.83 (a neighbouring rectangle's top edge
+    // runs through it). #412 mapped a region to its single best face and lost
+    // the upper half in silence, so the revolve came out with a 6.15 mm GAP in
+    // its radial profile — 46.68 … 52.83 local had no material at all. Face 6
+    // is that band.
+    expect(named("Revolve 1").params.profiles).toBe("qRegions(6, [4, 6, 7])");
+    // Same document, same defect, other feature: Onshape's `Extrude 4` selects
+    // the THREE strips one rectangle is cut into. Two of them name literally
+    // the same curves and differ only in where those curves are trimmed.
+    expect(named("Extrude 4").params.profiles).toBe("qRegions(6, [3, 4, 5])");
+
+    // And the point of the exercise: `Thicken 6` names the cylinder wall the
+    // revolve sweeps at r = 7.735 mm. With the gap, that wall was buried under
+    // `Extrude 4`'s block along its whole length — the face did not exist and
+    // the query bound the wrong one. Now it resolves to exactly one face, on
+    // the revolve (feature 23), and it is that cylinder.
+    const faces = String(named("Thicken 6").params.faces);
+    const hits = kernel.resolveQuery(faces);
+    expect(hits.length, `Thicken 6 faces = ${faces}`).toBe(1);
+    const body9 = JSON.parse(kernel.raw.bodyBrepFaces(9)) as any[];
+    const carrier = body9.find((f) => String(f.idHash) === String(hits[0].idHash));
+    expect(carrier, `body 9 faces: ${body9.map((f) => f.idHash).join(",")}`).toBeTruthy();
+    expect(carrier.featureId).toBe(23);
+    expect(carrier.surfaceParams?.kind).toBe("cylinder");
+    expect(carrier.surfaceParams?.radius).toBeCloseTo(7.735, 3);
+
+    // What it still does NOT do is cut, and #440's research doc says why: the
+    // feature's boolean scope is `Extrude 16`'s body, and that body does not
+    // meet the revolve at all in our import. The proof is one line up the tree
+    // — `Boolean 1` subtracts the very same two bodies and is equally inert.
+    // Both are downstream of `Extrude 16`'s UP_TO_SURFACE end condition
+    // (`oppositeDirection: true`), which is its own gap, not a region one.
+    const thicken = named("Thicken 6");
+    const before = kernel.raw.bodyBrepCounts(10);
+    kernel.raw.setFeatureSuppressed(thicken.id, true);
+    expect(kernel.raw.bodyBrepCounts(10)).toBe(before);
+    kernel.raw.setFeatureSuppressed(thicken.id, false);
+  }, 900_000);
+
   it("stands 90° rotated about Z — pinned as the measured defect it is", async () => {
     const { kernel } = await importFixture();
     const bb = JSON.parse(kernel.raw.sceneAabb()) as { min: number[]; max: number[] };

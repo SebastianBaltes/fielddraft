@@ -390,8 +390,8 @@ describe("extrude region selection (#412)", () => {
     const result = await importOnshapeFeatures(ticket412(), kernel);
     const warn = result.warnings.find((w) => w.includes("Onshape wählte"));
     expect(warn, result.warnings.join(" | ")).toBeTruthy();
-    expect(warn).toContain("Onshape wählte 4 Regionen, FieldDraft findet dafür nur 3");
-    expect(warn).toContain("1 nennen Sketch-Kurven, die dieser Sketch nicht enthält");
+    expect(warn).toContain("Onshape wählte 4 Regionen, FieldDraft bildet sie auf 3 atomare");
+    expect(warn).toContain("Sketch-Kurven, die dieser Sketch nicht enthält");
   });
 
   it("reports a collapse when two queries land on the same atomic face", async () => {
@@ -404,7 +404,7 @@ describe("extrude region selection (#412)", () => {
     expect(extrude.params.profiles).toBe("qRegions(1, [2, 3])");
     const warn = result.warnings.find((w) => w.includes("Onshape wählte"))!;
     expect(warn, result.warnings.join(" | ")).toContain(
-      "1 fielen mit einer anderen Auswahl auf dieselbe atomare Face",
+      "1 fielen auf dieselbe atomare Face wie eine andere",
     );
   });
 

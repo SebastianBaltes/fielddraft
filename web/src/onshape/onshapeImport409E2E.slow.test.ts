@@ -79,13 +79,24 @@ const GROUND_TRUTH = {
  *     away and turned 90°.
  *  C. End conditions UP_TO_NEXT / UP_TO_SURFACE (Extrude 8, 12).
  *  D. Hole positions that are not plain sketch points (both `Bohrung`s).
- *  E. ~~A cap-edge mate-connector anchor that binds nothing because its extrude
- *     is missing (Mirror 2).~~ CLOSED in #424: the extrude it anchors on is
- *     `qRegions(...)` over several regions, whose walls used to fall back to
- *     POSITIONAL subs; with the union boundary they carry their sketch entity
- *     again, the anchor binds, and `Mirror 2` plus its connector import.
- *     CENTROID inference was closed earlier (v0.38.1): on a straight edge the
- *     centroid IS the midpoint, so Sketch 8 and its connector import too.
+ *  E. A cap-edge mate-connector anchor (`Mirror 2`) that binds nothing. Closed
+ *     in #424, REOPENED in #440 — and the reason is worth the paragraph,
+ *     because it looks like a regression and is the shadow of a correction.
+ *     `Extrude 4` selects two regions of Sketch 3, a 920×500 frame. Its first
+ *     region query is bounded by `jTxVth8TCEaF.left`/`.right` and by the pieces
+ *     of the long top/bottom lines BETWEEN them — i.e. the 20×460 left rail.
+ *     #412 read the query as a flat list of curve ids, so the two long lines
+ *     went in UNTRIMMED (920 mm each), and the face they accounted for best was
+ *     the 880×460 MIDDLE PANEL — a body Onshape never extrudes. #440 trims each
+ *     boundary edge to its imprint vertices and the profile is the frame's two
+ *     rails, as Onshape has it.
+ *     The rails are DISJOINT, though, and both are fenced by the same two long
+ *     lines. `wall_sub_table` refuses a table whose ids repeat (two walls with
+ *     one sub would collapse into one face), so the walls fall back to
+ *     POSITIONAL subs, and `qWall(8, 45)` — the anchor's entity-named wall —
+ *     stops binding. The right repair is per-loop wall naming in the kernel
+ *     (#429's territory), NOT re-widening the profile: the alternative is a
+ *     mate connector that works because the body under it is 44× too big.
  *  H. `startOffset` — Onshape starts the extrusion on a plane offset from the
  *     sketch (Extrude 7: 100 mm). FieldDraft's extrude always begins on the
  *     profile plane, so this is refused rather than silently misplaced.
@@ -106,7 +117,8 @@ const KNOWN_GAPS = [
   "Extrude 8",
   "Extrude 9",
   "Mirror 1",
-  // `Mirror 2` and `Mirror 2 · Mate connector` left this list in #424 — see E.
+  "Mirror 2",
+  "Mirror 2 · Mate connector",
   "Mirror 3",
   "Sketch 10",
   "Sketch 11",
