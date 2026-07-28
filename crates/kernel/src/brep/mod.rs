@@ -530,6 +530,28 @@ impl BRep {
         self.faces.len()
     }
 
+    /// Faces whose boundary is NOT a set of connected rings — the faces the
+    /// weaver could not order and emitted through the unordered last-resort
+    /// fallback (`materialize_faces`, "could not order face loops"). Such a
+    /// face has no traversable boundary: it cannot be exported as valid STEP,
+    /// and its presence means the topology arriving at the weaver was
+    /// incomplete (an edge the tracer never found) or over-complete (an
+    /// interior seam that is not part of any ring).
+    ///
+    /// This is the DEFECT itself rather than the log line that announces it:
+    /// the warning is printed once per `materialize_faces` pass and a body can
+    /// be re-woven several times per document, so counting messages counts
+    /// re-runs; counting faces counts geometry (#436).
+    pub fn open_face_count(&self) -> usize {
+        self.faces
+            .iter()
+            .filter(|f| {
+                !f.outer.is_connected_ring(&self.edges)
+                    || !f.inner.iter().all(|lp| lp.is_connected_ring(&self.edges))
+            })
+            .count()
+    }
+
     pub fn shell_count(&self) -> usize {
         self.shells.len()
     }

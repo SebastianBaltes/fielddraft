@@ -55,6 +55,27 @@ fn brep_counts(kernel: &mut Kernel, body: usize) -> (u64, u64, u64) {
     (n("vertices"), n("edges"), n("faces"))
 }
 
+/// Per body: how many of its faces have NO traversable boundary
+/// ([`crate::brep::BRep::open_face_count`]) — the faces the weaver had to emit
+/// through the unordered last-resort fallback, announced on stderr as
+/// "could not order face loops".
+///
+/// This is the #436 instrument. It counts FACES, not log lines: the warning is
+/// printed once per `materialize_faces` pass, a weave runs that pass twice when
+/// the coincidence repair fires, and a document re-weaves a body on several of
+/// its calls — so the message count (81 on this replay before the fix) mixes
+/// the defect with the number of times the weaver looked at it. The per-body
+/// face count is the defect alone, and it is what an exporter would trip over.
+fn open_faces(kernel: &mut Kernel) -> Vec<u64> {
+    (0..kernel.body_count())
+        .map(|i| {
+            let j: serde_json::Value =
+                serde_json::from_str(&kernel.body_brep_counts(i)).expect("counts json");
+            j["openFaces"].as_u64().expect("openFaces field")
+        })
+        .collect()
+}
+
 /// #426 — a `revolve` with `operation: remove` against a target body took
 /// **26 minutes** in the browser (14.4 min native release), 99.8 % of the whole
 /// #419 import. The same rotation as a NEW body costs 0.35 s.
@@ -123,16 +144,42 @@ fn onshape_419_revolve_remove_stays_bounded() {
     //
     //     octree fallback   54 vertices, 110 edges, 37 faces
     //     strict analytic   52 vertices,  74 edges, 37 faces
+    //     …plus #436        51 vertices,  80 edges, 37 faces
     //
-    // Same 37 faces either way: the contact never bounded a face, it only
-    // polluted two of them. The 36 extra edges were the octree's attempt to
-    // resolve the double line — 35 sub-micron NURBS loops (0.02–0.07 mm across)
-    // heaped onto the extrude wall and the cone, plus one stub. A rise back
-    // towards 110 means the pair is being traced again.
+    // Same 37 faces on every route: the contact never bounded a face, it only
+    // polluted two of them. The 36 extra edges of the octree were its attempt
+    // to resolve the double line — 35 sub-micron NURBS loops (0.02–0.07 mm
+    // across) heaped onto the extrude wall and the cone, plus one stub. A rise
+    // back towards 110 means the pair is being traced again.
+    //
+    // The +6 edges over the 74 are #436: seams whose whole active interval used
+    // to fall between two SSI samples and was never traced at all — among them
+    // the 39 mm rib flank at y = 3 and the 10.4 mm slot flank at y = −19.48,
+    // both on the z = −24.8 plate. The vertex that goes with them is a LOSS,
+    // not a gain: two of the newly traced seams end on corners the old,
+    // edge-less topology had left as separate cluster termini, and the corner
+    // clustering now merges that pair into one vertex.
     assert_eq!(
         brep_counts(&mut kernel, 4),
-        (52, 74, 37),
+        (51, 80, 37),
         "body 4 must weave on the STRICT analytic route (octree gave 54/110/37)",
+    );
+
+    // #436 instrument — faces whose boundary is not a traversable ring, per
+    // body. Before the interval seeding: `[0, 0, 0, 0, 28]`. The three faces
+    // that closed are the ones whose ONLY missing edge was such an unseeded
+    // interval; the other 25 are still short at least one edge for a reason
+    // this ticket did not settle (a seam whose interval boundaries are not both
+    // known corners, and a second family where a face carries an INTERIOR seam
+    // that belongs to no ring at all — see the follow-up).
+    //
+    // Both directions are meaningful: a rise means seams stopped being traced,
+    // a fall means the remaining families are being solved. Neither may pass
+    // silently.
+    assert_eq!(
+        open_faces(&mut kernel),
+        vec![0, 0, 0, 0, 25],
+        "faces without a traversable boundary (#436); was [0, 0, 0, 0, 28]",
     );
 }
 
@@ -159,7 +206,7 @@ fn onshape_419_revolve_remove_stays_bounded() {
 /// absorb THAT could no longer tell a doubling of the work from load.
 #[test]
 fn onshape_419_full_import_stays_bounded() {
-    let (timings, kernel) = replay(include_str!("testdata/onshape419_full_import.json"));
+    let (timings, mut kernel) = replay(include_str!("testdata/onshape419_full_import.json"));
     let bodies = kernel.body_count();
     let total_ms: f64 = timings.iter().sum();
     assert_eq!(timings.len(), 49, "the recorded import is 49 kernel calls");
@@ -184,4 +231,16 @@ fn onshape_419_full_import_stays_bounded() {
     // Same document, not just a faster one. 12 bodies is the pin the web E2E
     // (`onshapeImport419E2E.slow.test.ts`) asserts on the same input.
     assert_eq!(bodies, 12, "the #419 import partitions into 12 bodies");
+
+    // #436 instrument on the WHOLE document — faces without a traversable
+    // boundary, per body. Nine of them, on three bodies, and the interval
+    // seeding that repaired three faces of the revolve prefix moves NONE of
+    // these: whatever is missing here is a different family. Nailing the number
+    // down is the point — it is the only place the document's open faces are
+    // counted, and it was drifting unwatched.
+    assert_eq!(
+        open_faces(&mut kernel),
+        vec![0, 0, 0, 0, 0, 0, 2, 0, 0, 1, 6, 0],
+        "faces without a traversable boundary (#436)",
+    );
 }

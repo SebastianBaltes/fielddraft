@@ -29,9 +29,10 @@ impl Kernel {
     }
 
     /// Counts of the body's feature-based B-Rep entities as a JSON
-    /// object: `{"vertices","edges","faces","shells","solids",
+    /// object: `{"vertices","edges","faces","openFaces","shells","solids",
     /// "watertight"}`. `watertight` reflects the body's single outer
-    /// shell's `is_closed` flag.
+    /// shell's `is_closed` flag; `openFaces` counts the faces whose boundary
+    /// is not a traversable ring (#436).
     ///
     /// This is the **real** B-Rep topology (sharp corners / edges /
     /// trimmed faces from the analytic weave). The B-Rep is woven
@@ -44,7 +45,7 @@ impl Kernel {
     pub fn body_brep_counts(&mut self, i: usize) -> String {
         if !self.brep_export_allowed(i) {
             return serde_json::json!({
-                "vertices": 0, "edges": 0, "faces": 0,
+                "vertices": 0, "edges": 0, "faces": 0, "openFaces": 0,
                 "shells": 0, "solids": 0, "watertight": false,
             })
             .to_string();
@@ -58,6 +59,11 @@ impl Kernel {
             "vertices": brep.vertex_count(),
             "edges": brep.edge_count(),
             "faces": brep.face_count(),
+            // Faces the weaver could not order into rings (#436) — see
+            // [`BRep::open_face_count`]. `watertight` alone does not catch
+            // them: a face with an unordered boundary can still hand every
+            // edge to the shell's two-uses tally.
+            "openFaces": brep.open_face_count(),
             "shells": brep.shell_count(),
             "solids": brep.solid_count(),
             "watertight": watertight,
